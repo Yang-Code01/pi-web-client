@@ -1,0 +1,19 @@
+# 依赖与构建产物
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 本机工作目录：计划、样张、实测日志、截图、临时状态目录
+.scratch/
+
+# 探针原始输出与临时会话（体积大、含本机会话内容）
+probes/out/
+probes/tmp/
+
+# 日志
+*.log
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini

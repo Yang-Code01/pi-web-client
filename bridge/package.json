@@ -1,0 +1,27 @@
+{
+  "name": "pi-web-client-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Web bridge for @earendil-works/pi-coding-agent — RPC sessions, approvals, tunnel, push",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --experimental-strip-types src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2"
+  }
+}

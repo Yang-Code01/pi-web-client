@@ -1,0 +1,28 @@
+{
+  "name": "pi-web-client",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "start": "npm run build:bridge && node bridge/dist/index.js",
+    "build:bridge": "npm --prefix bridge run build",
+    "build:web": "npm --prefix web run build",
+    "build": "npm run build:bridge && npm run build:web",
+    "dev:web": "npm --prefix web run dev",
+    "typecheck": "npm --prefix bridge run typecheck && npm --prefix web run typecheck",
+    "test": "node bridge/tests/e2e.mjs",
+    "test:rpc": "node bridge/tests/write-after-end.mjs",
+    "test:ask": "node --experimental-transform-types bridge/tests/ask-unit.mjs && node bridge/tests/ask-e2e.mjs",
+    "test:ask:ui": "node bridge/tests/ask-ui.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0"
+  }
+}

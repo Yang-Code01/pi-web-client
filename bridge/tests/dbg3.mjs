@@ -1,0 +1,10 @@
+import fs from "node:fs";
+import { WebSocket } from "ws";
+const STATE="F:/pi-web-client/.scratch/test-state"; const BASE="http://127.0.0.1:7867";
+const pass=fs.readFileSync(`${STATE}/passphrase.txt`,"utf8").trim();
+const r=await fetch(`${BASE}/api/login`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({passphrase:pass})});
+const cookie=(r.headers.get("set-cookie")||"").split(";")[0];
+const ws=new WebSocket(`${BASE.replace("http","ws")}/ws`,{headers:{cookie}});
+ws.on("open",()=>{console.log("open");ws.send(JSON.stringify({type:"create",cwd:"F:/pi-web-client",name:"模型测试"}));});
+ws.on("message",(b)=>{const m=JSON.parse(b.toString());console.log("<<",m.type,JSON.stringify(m).slice(0,220));});
+setTimeout(()=>{ws.close();process.exit(0);},12000);

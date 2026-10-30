@@ -1,0 +1,21 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import WebSocket from "file:///F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs";
+const BASE = "http://127.0.0.1:7864";
+const STATE = path.join(process.env.LOCALAPPDATA, "pi-web-client");
+const pass = fs.readFileSync(path.join(STATE, "passphrase.txt"), "utf8").trim();
+const login = await fetch(`${BASE}/api/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ passphrase: pass }) });
+const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
+const ws = new WebSocket(`ws://127.0.0.1:7864/ws`, { headers: { cookie } });
+ws.on("message", (b) => {
+  const m = JSON.parse(b.toString());
+  if (m.type === "session") console.log("state:", JSON.stringify({ id: m.state.id, owned: m.state.owned, origin: m.state.origin }));
+});
+await new Promise((r) => ws.on("open", r));
+const id = "b7334a4d-8d7d-489f-904d-dbbd95a88d3e";
+ws.send(JSON.stringify({ type: "claim", sessionId: id }));
+await new Promise((r) => setTimeout(r, 3500));
+ws.send(JSON.stringify({ type: "close", sessionId: id }));
+await new Promise((r) => setTimeout(r, 600));
+ws.close();
