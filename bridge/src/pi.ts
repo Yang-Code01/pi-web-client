@@ -35,6 +35,9 @@ function launcherCandidates(): string[] {
       const file = path.join(dir, name);
       if (!fs.existsSync(file)) continue;
       try {
+        // POSIX 上 npm 把 pi 做成指向 cli.js 的 symlink，读进来就是 40 MB 的 bundle；
+        // 启动器脚本本身只有几行，超过 1 MB 就直接跳过。
+        if (fs.statSync(file).size > 1_000_000) continue;
         const text = fs.readFileSync(file, "utf8");
         for (const m of text.matchAll(/"([^"]*pi-coding-agent[^"]*cli\.js)"/g)) out.push(m[1]);
         for (const m of text.matchAll(/([A-Za-z]:\\[^\s"]*pi-coding-agent[^\s"]*cli\.js)/g)) out.push(m[1]);

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 
@@ -170,12 +171,31 @@ export class Tunnel extends EventEmitter {
   }
 }
 
-/** Locates the cloudflared binary (winget installs it under Program Files (x86)). */
+/** 在 PATH 里找一个可执行文件（Windows 试 .exe，POSIX 试原名）。 */
+function findOnPath(name: string): string | null {
+  const names = process.platform === "win32" ? [`${name}.exe`, name] : [name];
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const file of names) {
+      const full = path.join(dir, file);
+      try {
+        if (fs.statSync(full).isFile()) return full;
+      } catch {
+        /* 不在这个目录 */
+      }
+    }
+  }
+  return null;
+}
+
+/** Locates the cloudflared binary: env → PATH → 常见安装位置（winget / brew / apt）。 */
 export function findCloudflared(): string | null {
   const candidates = [
     process.env.CLOUDFLARED_BIN,
+    findOnPath("cloudflared"),
     "C:\\Program Files (x86)\\cloudflared\\cloudflared.exe",
     "C:\\Program Files\\cloudflared\\cloudflared.exe",
+    "/opt/homebrew/bin/cloudflared",
     "/usr/local/bin/cloudflared",
     "/usr/bin/cloudflared",
   ].filter(Boolean) as string[];

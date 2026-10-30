@@ -25,17 +25,20 @@
 
 ## 要求
 
-- Node ≥ 22.19（本机 v24.11.1）
-- pi `1.4.0`（`@earendil-works/pi-coding-agent`），bridge 会自己找 CLI：`PI_BIN` → `%LOCALAPPDATA%\nvm\v*\node_modules\...` → PATH 里的 `pi*.cmd` → `npm root -g`
-- 可选：cloudflared（`winget install Cloudflare.cloudflared`），只有要从公网访问才需要
+- **Node ≥ 22.19**（本机 v24.11.1，LTS 22/24 都可以）。仓库里的 `.nvmrc` 指向 24。
+- **pi 必须先装好**，它不是本项目的 npm 依赖：`npm i -g @earendil-works/pi-coding-agent@1.4.0`。bridge 启动时只负责去磁盘上找它的 `cli.js`，找不到会直接报错并列出所有试过的路径。
+  - 查找顺序：`PI_BIN` → nvm（`%LOCALAPPDATA%\nvm\v*`，仅 Windows）→ PATH 里的 `pi` / `pi.cmd` / `pi.bat` 启动器 → node 同级的 `node_modules` → `npm root -g` → `%APPDATA%\npm`、`%ProgramData%\npm`（仅 Windows）。
+  - 也就是说：**pi 是用 npm 全局装的就能自动找到**（Linux/macOS 走 `npm root -g`）；用 pnpm / bun / 装在项目里，就把 `PI_BIN` 指到 `.../pi-coding-agent/dist/bundle/cli.js`。
+- 可选：cloudflared（Windows `winget install Cloudflare.cloudflared`，macOS `brew install cloudflared`），只有要从公网访问才需要。找它时依次试 `CLOUDFLARED_BIN` → `PATH` → 几个常见安装位置。
+- 部署时 **`bridge/ext/` 要跟着走**：审批门禁是那里的 `approval-gate.ts`，`bridge/dist/` 里没有它，只拷 `dist/` 会静默失去全部审批拦截。
 
 ## 跑起来
 
 ```bash
-npm --prefix bridge install
+npm --prefix bridge install    # 不要加 --omit=dev：npm start 要靠 devDependencies 里的 tsc 编译
 npm --prefix web install
-npm run build:web      # 前端产物；只改了 bridge/ 不用跑
-npm start              # 先 tsc 编译 bridge，再跑 dist/index.js
+npm run build:web              # 前端产物；只改了 bridge/ 不用跑（漏了会是 503 而不是白屏）
+npm start                      # 先 tsc 编译 bridge，再跑 dist/index.js
 ```
 
 首次启动会打印一次口令（也写在状态目录的 `passphrase.txt`）：
