@@ -289,7 +289,11 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/session" && req.method === "GET") {
       const id = url.searchParams.get("id");
       if (!id) return json(res, 400, { error: "id required" });
-      return json(res, 200, sessions.snapshot(id));
+      try {
+        return json(res, 200, sessions.snapshot(id));
+      } catch (err: any) {
+        return json(res, 404, { error: String(err?.message ?? err) });
+      }
     }
 
     if (url.pathname === "/api/push/subscribe" && req.method === "POST") {
@@ -405,10 +409,17 @@ async function main(): Promise<void> {
       try {
         switch (msg.type) {
           case "stepup": {
+            const ip = clientIp(req.headers, req.socket.remoteAddress);
+            if (!loginAllowed(ip)) {
+              send({ type: "notice", text: "试太多次了，等一分钟再试", level: "error" });
+              return;
+            }
             if (!verifyPassphrase(String(msg.passphrase ?? ""))) {
+              log(`stepup failed from ${ip}`);
               send({ type: "notice", text: "口令不对", level: "error" });
               return;
             }
+            resetLoginAttempts(ip);
             (ws as any).stepUntil = Date.now() + STEP_UP_MS;
             send({ type: "stepup-ok", until: (ws as any).stepUntil });
             return;
@@ -419,12 +430,14 @@ async function main(): Promise<void> {
           }
           case "subscribe": {
             const snap = sessions.snapshot(msg.sessionId);
+            (ws as any).watching = String(msg.sessionId);
             send({ type: "session", sessionId: msg.sessionId, ...snap });
             return;
           }
           case "claim": {
             if (!(await requireStepUp())) return;
             const session = await sessions.claim(String(msg.sessionId));
+            (ws as any).watching = session.state.id;
             send({ type: "session", sessionId: session.state.id, ...session.snapshot() });
             return;
           }
@@ -437,6 +450,7 @@ async function main(): Promise<void> {
           case "create": {
             if (!(await requireStepUp())) return;
             const session = await sessions.create(String(msg.cwd || process.cwd()), msg.name);
+            (ws as any).watching = session.state.id;
             send({ type: "session", sessionId: session.state.id, ...session.snapshot() });
             broadcast({ type: "session.state", session: session.state });
             return;
@@ -519,6 +533,7 @@ async function main(): Promise<void> {
             return;
           }
           case "close": {
+            if (!(await requireStepUp())) return;
             await sessions.close(msg.sessionId);
             return;
           }
@@ -531,7 +546,7 @@ async function main(): Promise<void> {
     });
   });
 
-  sessions.startGc();
+  sessions.startGc((id) => [...wss.clients].some((client) => (client as any).watching === id));
 
   server.listen(cfg.port, cfg.host, () => {
     log(`listening on http://${cfg.host}:${cfg.port}`);

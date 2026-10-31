@@ -16,6 +16,7 @@ import path from "node:path";
 
 const SHELL_TOOLS = new Set(["bash", "powershell", "shell", "run_command", "execute", "exec", "terminal"]);
 const WRITE_TOOLS = new Set(["write", "edit", "multiedit", "apply_patch", "create_file", "str_replace"]);
+const COMPOUND = /[;&|`<>\r\n]|\$\(/;
 
 const SHELL_PATTERNS: { re: RegExp; why: string }[] = [
   { re: /(^|[\s;&|(])(rm|rmdir|del|erase|unlink)\s+/i, why: "删除文件" },
@@ -96,7 +97,11 @@ export default function approvalGate(pi: any): void {
     if (!risk) return undefined;
 
     const detail = risk.detail.slice(0, 900);
-    if (allowedPatterns().some((p) => detail.includes(p))) {
+    // Patterns are per session (PI_WEB_ALLOW_FILE) and match the whole leading word(s), never a
+    // substring; chained/redirected commands always ask, since a prefix says nothing about the rest.
+    const remembered =
+      !COMPOUND.test(detail) && allowedPatterns().some((p) => p && (detail === p || detail.startsWith(`${p} `)));
+    if (remembered) {
       console.error(`[approval-gate] remembered pattern allowed: ${detail.slice(0, 80)}`);
       return undefined;
     }

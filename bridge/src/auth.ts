@@ -110,7 +110,14 @@ export function parseCookies(header: string | undefined): Record<string, string>
     if (i < 0) continue;
     const k = part.slice(0, i).trim();
     const v = part.slice(i + 1).trim();
-    if (k) out[k] = decodeURIComponent(v);
+    if (!k) continue;
+    // Cookies on 127.0.0.1 are shared with every other local port; one malformed %-escape from
+    // another app must not make every request here throw.
+    try {
+      out[k] = decodeURIComponent(v);
+    } catch {
+      out[k] = v;
+    }
   }
   return out;
 }
@@ -135,6 +142,9 @@ const attempts = new Map<string, { count: number; resetAt: number }>();
 
 export function loginAllowed(ip: string): boolean {
   const now = Date.now();
+  if (attempts.size > 10_000) {
+    for (const [key, value] of attempts) if (value.resetAt < now) attempts.delete(key);
+  }
   const rec = attempts.get(ip);
   if (!rec || rec.resetAt < now) {
     attempts.set(ip, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
@@ -156,8 +166,16 @@ export function isTunnelRequest(headers: Record<string, string | string[] | unde
   return Boolean(headers["cf-connecting-ip"] || headers["x-forwarded-proto"] === "https");
 }
 
+function isLoopback(ip: string | undefined): boolean {
+  return /^(::1|::ffff:127\.\d+\.\d+\.\d+|127\.\d+\.\d+\.\d+)$/.test(ip ?? "");
+}
+
+/**
+ * cf-connecting-ip is only believed when the peer is loopback (the local cloudflared). A LAN client
+ * could otherwise send a fresh fake value per request and dodge the per-IP login limit.
+ */
 export function clientIp(headers: Record<string, string | string[] | undefined>, socketIp: string | undefined): string {
   const cf = headers["cf-connecting-ip"];
-  if (typeof cf === "string" && cf) return cf;
+  if (isLoopback(socketIp) && typeof cf === "string" && cf) return cf;
   return socketIp || "unknown";
 }
