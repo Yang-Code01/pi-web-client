@@ -103,6 +103,7 @@ function publicAsk(ask: PendingAsk): AskRequest {
 }
 
 const IDLE_GC_MS = 2 * 60 * 60 * 1000;
+const IDLE_EVICT_MS = 10 * 60 * 1000;
 
 function lockPath(id: string): string {
   return statePath("locks", `${id}.lock`);
@@ -182,12 +183,31 @@ function contentText(content: unknown): string {
     .join("\n");
 }
 
+const WRITE_TOOLS = new Set(["write", "edit", "multiedit", "apply_patch", "create_file", "str_replace"]);
+/** Chained / redirected / substituted commands are never remembered (the gate refuses them too). */
+const COMPOUND = /[;&|`<>\r\n]|\$\(/;
+
+/**
+ * What "本会话允许这类" remembers. A write is pinned to its exact path; a shell command to its
+ * leading program (+ subcommand), and only when the command is a single plain command.
+ */
 function derivePattern(message: string): string | null {
-  const detail = message.split("→").pop()?.trim() ?? "";
+  const arrow = message.indexOf("→");
+  if (arrow < 0) return null;
+  const tool = message.slice(0, arrow).trim().toLowerCase();
+  const detail = message.slice(arrow + 1).trim();
+  if (!detail) return null;
+  if (WRITE_TOOLS.has(tool)) return detail;
+  if (COMPOUND.test(detail)) return null;
   const tokens = detail.split(/\s+/).filter(Boolean);
   if (!tokens.length) return null;
   const second = tokens[1] ?? "";
   return second && !second.startsWith("-") ? `${tokens[0]} ${second}` : tokens[0];
+}
+
+/** Remembered approvals are per session, matching the button's promise. */
+function allowFile(id: string): string {
+  return statePath("allow", `${id}.json`);
 }
 
 /** Context budget is one global number: `{"value": 200000}` in the state dir. */
@@ -291,6 +311,11 @@ export class Session extends EventEmitter {
   private tailTimer: NodeJS.Timeout | null = null;
   private tailSig = "";
   private draftCounter = 0;
+  /** Set while close() is taking pi down on purpose: its exit and shutdown noise are expected. */
+  private closing = false;
+  private closeQuietly = false;
+  /** When our own pi last exited: writes up to then are ours, not a terminal's (see openLive D8). */
+  ownExitAt = 0;
   private draftId: string | null = null;
   private userCounter = 0;
 
@@ -440,7 +465,7 @@ export class Session extends EventEmitter {
       cwd,
       logPath: statePath("logs", `${id}.log`),
       env: {
-        PI_WEB_ALLOW_FILE: statePath("allow.json"),
+        PI_WEB_ALLOW_FILE: allowFile(id),
         // The ask-user extensions post here instead of opening a dialog (see PLAN-ask.md).
         ...(this.askUrl ? { PI_WEB_ASK: this.askUrl, PI_WEB_ASK_TOKEN: this.askToken } : {}),
       },
@@ -451,14 +476,20 @@ export class Session extends EventEmitter {
     this.rpc.on("stderr", () => this.touch());
     this.rpc.on("log", (line: string) => this.emitWs({ type: "notice", sessionId: id, text: line, level: "warn" }));
     this.rpc.on("exit", (reason: string) => {
-      const wasRunning = this.state.running;
+      const closing = this.closing;
+      const quiet = this.closeQuietly;
+      this.closing = false;
+      this.closeQuietly = false;
+      this.ownExitAt = Date.now();
       this.state.owned = false;
       this.setState({ running: false });
       releaseLock(id);
       this.clearApprovals();
       this.clearAsks();
-      this.emitWs({ type: "notice", sessionId: id, text: `pi 进程已退出：${reason}`, level: "warn" });
-      void wasRunning;
+      // A stop the user asked for is not news; only an exit nobody asked for is worth the stderr tail.
+      if (closing) {
+        if (!quiet) this.emitWs({ type: "notice", sessionId: id, text: "已停止运行，历史留在磁盘，发消息会自动接管。", level: "info" });
+      } else this.emitWs({ type: "notice", sessionId: id, text: `pi 进程意外退出：${reason}`, level: "warn" });
       // keep reading the file from now on so the transcript stays current
       this.startTail();
     });
@@ -663,6 +694,8 @@ export class Session extends EventEmitter {
         });
         break;
       case "extension_error":
+        // Shutting down mid-turn trips pi's own turn_end boundary; that is noise, not an extension bug.
+        if (this.closing) break;
         this.emitWs({ type: "notice", sessionId: this.state.id, text: `扩展错误：${ev.error}`, level: "error" });
         break;
       case "auto_retry_start":
@@ -677,7 +710,14 @@ export class Session extends EventEmitter {
   private onUiRequest(req: any): void {
     const id = String(req.id ?? "");
     if (!id) return;
-    if (req.method === "confirm" || req.method === "select" || req.method === "input" || req.method === "editor") {
+    // select / input / editor are questions, not approvals (e.g. ask_user_question's rpc fallback
+    // walks its questionnaire with them). They go through the ask drawer and are answered with
+    // `{value}`; answering them with `{confirmed}` made pi read every reply as a dismissal.
+    if (req.method === "select" || req.method === "input" || req.method === "editor") {
+      this.askViaDialog(id, req);
+      return;
+    }
+    if (req.method === "confirm") {
       const approval: ApprovalRequest = {
         id,
         sessionId: this.state.id,
@@ -696,19 +736,42 @@ export class Session extends EventEmitter {
     this.rpc?.uiRespond({ id, cancelled: true });
   }
 
+  private askViaDialog(uiId: string, req: any): void {
+    const options = req.method === "select" && Array.isArray(req.options) ? req.options.map(String) : [];
+    const prompt = String(req.title ?? req.message ?? req.prompt ?? "").trim() || "请回答";
+    const question: AskQuestion = {
+      id: "q1",
+      prompt,
+      options: options.map((o: string) => ({ value: o, label: o })),
+      allowOther: true,
+    };
+    const { id: askId, outcome } = this.ask([question], `ui.${req.method}`);
+    // pi resolves its own dialog when the timeout runs out; take the drawer down with it.
+    const timer = typeof req.timeout === "number" && req.timeout > 0 ? setTimeout(() => this.cancelAsk(askId, "超时了"), req.timeout) : null;
+    void outcome.then((out) => {
+      if (timer) clearTimeout(timer);
+      const value = out.answers?.[0]?.value;
+      if (out.cancelled || typeof value !== "string") this.rpc?.uiRespond({ id: uiId, cancelled: true });
+      else this.rpc?.uiRespond({ id: uiId, value });
+    });
+  }
+
   answerApproval(id: string, decision: "approve" | "reject" | "cancel" | "always"): void {
     const req = this.approvals.get(id);
     if (!req) return;
     if (decision === "always") {
       const pattern = derivePattern(req.message);
       if (pattern) {
-        const file = statePath("allow.json");
+        const file = allowFile(this.state.id);
         const data = readJson<{ patterns: string[] }>(file, { patterns: [] });
+        if (!Array.isArray(data.patterns)) data.patterns = [];
         if (!data.patterns.includes(pattern)) {
           data.patterns.push(pattern);
           writeJson(file, data);
         }
-        this.emitWs({ type: "notice", sessionId: this.state.id, text: `已记住「${pattern}」，这一类不再问你`, level: "info" });
+        this.emitWs({ type: "notice", sessionId: this.state.id, text: `已记住「${pattern}」，本会话内这一类不再问你`, level: "info" });
+      } else {
+        this.emitWs({ type: "notice", sessionId: this.state.id, text: "这是复合命令，只批准了这一次，不会记住", level: "info" });
       }
     }
     this.approvals.delete(id);
@@ -924,12 +987,32 @@ export class Session extends EventEmitter {
     return Date.now() - this.lastActivity;
   }
 
-  async close(): Promise<void> {
+  async close(opts: { quiet?: boolean } = {}): Promise<void> {
     this.clearApprovals();
     this.clearAsks();
     this.stopTail();
     if (this.rpc) {
       const rpc = this.rpc;
+      this.closing = true;
+      this.closeQuietly = Boolean(opts.quiet);
+      // Ending stdin mid-turn kills pi before it persists the assistant message, and its turn_end
+      // boundary then reports "could not resolve the persisted assistant entry ID". Abort first
+      // and give the turn a moment to settle on disk.
+      if (this.state.running && rpc.alive) {
+        rpc.fire("abort");
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, 5000);
+          const check = () => {
+            if (!this.state.running || !rpc.alive) {
+              clearTimeout(t);
+              this.off("state", check);
+              resolve();
+            }
+          };
+          this.on("state", check);
+          check();
+        });
+      }
       rpc.kill();
       await new Promise<void>((resolve) => {
         const t = setTimeout(resolve, 2000);
@@ -947,7 +1030,7 @@ export class Session extends EventEmitter {
 
   sleep(): void {
     if (this.state.running) return;
-    void this.close().then(() => {
+    void this.close({ quiet: true }).then(() => {
       this.emitWs({ type: "notice", sessionId: this.state.id, text: "会话已休眠（消息仍在，下次发消息会自动唤醒）", level: "info" });
       this.emitWs({ type: "session.state", session: this.state });
     });
@@ -1101,10 +1184,15 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
+  /** Only ids this bridge spawned or found on disk; anything else from a client is refused. */
+  private known(id: string): boolean {
+    return Boolean(id) && (this.sessions.has(id) || this.metas().some((m) => m.id === id));
+  }
+
   /** Sidebar rename. Live sessions also write the name into the session file through pi. */
   async rename(id: string, name: string): Promise<Session> {
     // Only rename sessions we can actually show: `ensure` would otherwise materialize a phantom.
-    if (!this.sessions.has(id) && !this.metas().some((m) => m.id === id)) throw new Error("找不到这个会话");
+    if (!this.known(id)) throw new Error("找不到这个会话");
     const session = this.ensure(id);
     await session.rename(name);
     this.emit("ws", { type: "session.state", session: session.state });
@@ -1120,14 +1208,18 @@ export class SessionManager extends EventEmitter {
   }
 
   async openLive(id: string): Promise<Session> {
+    if (!this.known(id)) throw new Error("找不到这个会话");
     const session = this.ensure(id);
     if (session.live) return session;
-    // D8: a file that changed seconds ago probably still has a terminal writer.
+    // D8: a file that changed seconds ago probably still has a terminal writer — unless the last
+    // write came from our own pi, which has exited since (stop → reclaim right away must work).
     const file = session.state.file;
     if (file) {
       try {
-        const ageMs = Date.now() - fs.statSync(file).mtimeMs;
-        if (ageMs < 20000) {
+        const mtime = fs.statSync(file).mtimeMs;
+        const ageMs = Date.now() - mtime;
+        const ours = session.ownExitAt > 0 && mtime <= session.ownExitAt + 1000;
+        if (ageMs < 20000 && !ours) {
           throw new Error("这个会话 20 秒前还在被写入——终端里的 pi 可能还开着。先退出那边的会话，再在这里继续。");
         }
       } catch (e: any) {
@@ -1196,6 +1288,7 @@ export class SessionManager extends EventEmitter {
   }
 
   snapshot(id: string) {
+    if (!this.known(id)) throw new Error("找不到这个会话");
     // Handing a snapshot to a client is "the user is looking at it now".
     const session = this.ensure(id);
     session.markSeen();
@@ -1234,7 +1327,11 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  startGc(): void {
+  /**
+   * `isWatched` says whether some client is looking at a session right now. Read-only sessions
+   * nobody watches are dropped after a while: each one holds its transcript and a 400ms file poll.
+   */
+  startGc(isWatched: (id: string) => boolean = () => false): void {
     if (this.gcTimer) return;
     this.sweepLocks();
     this.gcTimer = setInterval(() => {
@@ -1245,6 +1342,16 @@ export class SessionManager extends EventEmitter {
         if (s.approvals.size) continue;
         if (s.asks.size) continue;
         if (s.idleFor() > IDLE_GC_MS) s.sleep();
+      }
+      for (const [id, s] of this.sessions) {
+        if (s.live || s.state.running || s.state.done) continue;
+        if (s.approvals.size || s.asks.size) continue;
+        // A web-born session with no file yet only exists in memory; evicting it would lose it.
+        if (!s.state.file) continue;
+        if (isWatched(id) || s.idleFor() < IDLE_EVICT_MS) continue;
+        s.stopTail();
+        s.removeAllListeners();
+        this.sessions.delete(id);
       }
     }, 60_000);
     this.gcTimer.unref?.();

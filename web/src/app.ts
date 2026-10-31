@@ -16,12 +16,17 @@ export class App {
   /** Questions from the model waiting for an answer (PLAN-ask.md). */
   private asks: AskRequest[] = [];
   /** Question ids this page has already put on screen, so a re-subscribe does not re-open them. */
-  private askSeen = new Set<string>();
-  private askSheetId: string | null = null;
+  /** Per-ask progress in the composer panel (active tab + drafts), kept across re-renders. */
+  private askDrafts = new Map<string, { active: number; drafts: Map<string, AskAnswer> }>();
+  private askFolded = false;
   private connected = false;
   private tab: Tab = "sessions";
   private chat!: ChatView;
-  private pending: (() => void) | null = null;
+  private pending: (() => void)[] = [];
+  /** Local-clock end of the step-up window; 0 = must verify before the next write (public only). */
+  private stepUntil = 0;
+  /** The bridge refused a write for lack of step-up: re-sync the view once the user verifies. */
+  private stepResync = false;
   private composerText = "";
   private images: { data: string; mimeType: string }[] = [];
   /** "+N 图" 徽标：点开是待发图片管理页。 */
@@ -53,6 +58,10 @@ export class App {
   private budget: number | null = null;
   private rate = 0;
   private turnAt: number | null = null;
+  /** What pi is doing right now, for the status line under the composer ("" = just running). */
+  private activity = "";
+  private runSince: number | null = null;
+  private hintStatus: HTMLElement | null = null;
   private turnChars = { cjk: 0, other: 0 };
   private rateAt = 0;
   /** Sidebar rename: which card is an input, its draft, and whether to select the text. */
@@ -76,11 +85,9 @@ export class App {
     this.applyPrefs();
     this.build();
     this.wire();
-    // A pending question card in the transcript re-opens the drawer; the card itself has no
-    // reference to the app and must not gain one.
-    window.addEventListener("pi-ask-open", () => {
-      if (this.asks.length) this.openAskSheet(this.asks[0].id);
-    });
+    // A pending question card in the transcript jumps to the composer panel; the card itself has
+    // no reference to the app and must not gain one.
+    window.addEventListener("pi-ask-open", () => this.focusAsk());
     this.startClock();
     this.socket.connect();
     this.routeFromHash();
@@ -185,6 +192,7 @@ export class App {
       for (const node of document.querySelectorAll<HTMLElement>(".approval .hint[data-deadline]")) {
         node.textContent = this.leftText(Number(node.dataset.deadline));
       }
+      if (this.session?.running) this.fillHintStatus();
     }, 1000);
   }
 
@@ -240,6 +248,8 @@ export class App {
     this.rateAt = 0;
     this.turnAt = null;
     this.turnChars = { cjk: 0, other: 0 };
+    this.activity = "";
+    this.runSince = null;
     this.socket.send({ type: "subscribe", sessionId: id });
     this.renderAll();
   }
@@ -259,6 +269,8 @@ export class App {
         if (this.skillPop) this.renderSkillList();
         break;
       case "hello":
+        // A new socket starts unverified on the bridge side.
+        this.stepUntil = 0;
         this.sessions = msg.sessions ?? [];
         if (msg.manage) this.manage = msg.manage as ManageState;
         if (this.currentId && !this.session) this.session = this.sessions.find((x) => x.id === this.currentId) ?? null;
@@ -280,10 +292,6 @@ export class App {
         this.approvals = (msg.approvals ?? []) as ApprovalRequest[];
         this.asks = (msg.asks ?? []) as AskRequest[];
         this.renderAll();
-        // A live question this page has not shown yet opens by itself: a reload must never leave the
-        // model waiting behind a bar the user has not noticed.
-        const fresh = this.asks.find((a) => !this.askSeen.has(a.id));
-        if (fresh && !this.sheet) this.openAskSheet(fresh.id);
         // A takeover from the model sheet unlocks it; reopen so the list is usable right away.
         if (this.sheetKind === "model" && this.session?.owned) this.openModelSheet();
         break;
@@ -303,6 +311,7 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.trackChars(msg.field, msg.text);
         this.chat.delta(msg.id, msg.field, msg.text);
+        this.setActivity(msg.field === "thinking" ? "思考中" : "正在写回复");
         break;
       case "usage":
         if (msg.sessionId !== this.currentId) break;
@@ -325,6 +334,10 @@ export class App {
       case "tool":
         if (msg.sessionId !== this.currentId) break;
         this.chat.toolEvent(msg.phase, msg);
+        if (msg.phase === "start") {
+          const summary = typeof msg.summary === "string" ? msg.summary.replace(/\s+/g, " ").trim() : "";
+          this.setActivity(`正在执行 ${msg.name ?? "工具"}${summary ? ` · ${summary.slice(0, 120)}` : ""}`);
+        } else if (msg.phase === "end") this.setActivity("思考中");
         break;
       case "approval.add":
         if (msg.sessionId === this.currentId) this.approvals = [...this.approvals, msg.approval];
@@ -332,9 +345,11 @@ export class App {
         this.renderApprovals();
         this.renderQueue();
         this.renderTabs();
+        this.fillHintStatus();
         break;
       case "approval.remove":
         this.approvals = this.approvals.filter((a) => a.id !== msg.id);
+        this.fillHintStatus();
         this.renderApprovals();
         this.renderQueue();
         this.renderTabs();
@@ -348,17 +363,15 @@ export class App {
           break;
         }
         this.asks = [...this.asks.filter((a) => a.id !== ask.id), ask];
+        this.askFolded = false;
         this.renderAsks();
         this.renderQueue();
         this.renderTabs();
         this.renderSessions();
-        // The drawer cannot be missed; the bar stays for once it is closed.
-        if (!this.askSheetId && !this.sheet) this.openAskSheet(ask.id);
         break;
       }
       case "ask.remove":
         this.asks = this.asks.filter((a) => a.id !== msg.id);
-        if (this.askSheetId === msg.id) this.closeSheet();
         this.renderAsks();
         this.renderQueue();
         this.renderTabs();
@@ -366,6 +379,14 @@ export class App {
         break;
       case "pi.status":
         if (this.session && this.session.id === msg.sessionId) this.session = { ...this.session, running: msg.running };
+        if (msg.sessionId === this.currentId) {
+          if (msg.running) {
+            this.runSince = Date.now();
+            this.activity = "思考中";
+          } else this.activity = "";
+          this.fillHintStatus();
+          if (this.textarea && !this.asks.length) this.textarea.placeholder = msg.running ? "跑着呢，再发会自动排队…" : "说点什么…";
+        }
         if (!msg.running) this.turnAt = null;
         this.renderTop();
         this.renderSessions();
@@ -401,15 +422,19 @@ export class App {
         if (!msg.sessionId || msg.sessionId === this.currentId) this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: msg.text, level: msg.level ?? "info" });
         break;
       case "need-stepup":
+        // Our window and the bridge's disagreed (e.g. after a reconnect): that write was dropped.
+        this.stepUntil = 0;
+        this.stepResync = true;
+        this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: "口令验证已过期，刚才的操作没有执行，验证后请重做一次", level: "warn" });
         this.askStepUp();
         break;
       case "stepup-ok":
+        // Own clock with a margin, so we re-ask a little before the bridge would refuse.
+        this.stepUntil = Date.now() + 9 * 60 * 1000;
         this.closeModal();
-        if (this.pending) {
-          const run = this.pending;
-          this.pending = null;
-          run();
-        }
+        for (const run of this.pending.splice(0)) run();
+        if (this.stepResync && this.currentId) this.socket.send({ type: "subscribe", sessionId: this.currentId });
+        this.stepResync = false;
         break;
       case "tunnel":
         this.tunnel = msg.tunnel;
@@ -426,7 +451,13 @@ export class App {
     const idx = this.sessions.findIndex((s) => s.id === state.id);
     if (idx >= 0) this.sessions[idx] = state;
     else this.sessions.unshift(state);
-    if (this.currentId === state.id) this.session = state;
+    if (this.currentId === state.id) {
+      const prev = this.session;
+      this.session = state;
+      // The writer bar (接管 / 停止运行) and the status line both hang off these two flags.
+      if (prev?.owned !== state.owned || prev?.origin !== state.origin) this.renderChat();
+      else this.fillHintStatus();
+    }
     this.renderTop();
     this.renderSessions();
   }
@@ -458,7 +489,10 @@ export class App {
     form.append(h, p, input, err, submit);
     modal.append(form);
     modal.onclick = (ev) => {
-      if (ev.target === modal) this.closeModal();
+      if (ev.target !== modal) return;
+      // Dismissed: whatever was waiting for the passphrase is abandoned, not sent later.
+      this.pending = [];
+      this.closeModal();
     };
     form.onsubmit = (ev) => {
       ev.preventDefault();
@@ -479,32 +513,36 @@ export class App {
     if (!this.currentId) return;
     const text = this.composerText.trim();
     if (!text && !this.images.length) return;
+    if (text && !this.images.length && this.answerFromComposer(text)) return;
     const payload = { type: "prompt", sessionId: this.currentId, text, images: this.images };
-    this.composerText = "";
-    this.images = [];
-    this.chat.add({ id: `local:${Date.now()}`, kind: "user", text: text || "（图片）", images: [] });
-    this.renderChat();
-    this.act(() => this.socket.send(payload));
+    // Clear the composer only once the message really goes out: a dismissed step-up keeps the draft.
+    this.act(() => {
+      this.composerText = "";
+      this.images = [];
+      this.chat.add({ id: `local:${Date.now()}`, kind: "user", text: text || "（图片）", images: [] });
+      this.renderChat();
+      this.socket.send(payload);
+    });
     if (navigator.storage?.persist) void navigator.storage.persist();
   }
 
+  /** Writes from a public (tunnel) page need a fresh step-up; queue them behind the modal. */
   private act(run: () => void): void {
-    if (this.me.public) {
-      this.pending = run;
-      this.socket.send({ type: "stepup", passphrase: "" });
-      // empty passphrase fails; the modal takes over
-      this.pending = run;
-      this.askStepUp();
+    if (!this.me.public || Date.now() < this.stepUntil) {
+      run();
       return;
     }
-    run();
+    this.pending.push(run);
+    this.askStepUp();
   }
 
   private decide(approval: ApprovalRequest, decision: "approve" | "reject" | "always"): void {
-    this.act(() => this.socket.send({ type: "approve", sessionId: approval.sessionId, approvalId: approval.id, decision }));
-    this.approvals = this.approvals.filter((a) => a.id !== approval.id);
-    this.renderApprovals();
-    this.renderTabs();
+    this.act(() => {
+      this.socket.send({ type: "approve", sessionId: approval.sessionId, approvalId: approval.id, decision });
+      this.approvals = this.approvals.filter((a) => a.id !== approval.id);
+      this.renderApprovals();
+      this.renderTabs();
+    });
   }
 
   private async enablePush(): Promise<void> {
@@ -554,6 +592,44 @@ export class App {
   private startTurn(): void {
     this.turnAt = performance.now();
     this.turnChars = { cjk: 0, other: 0 };
+  }
+
+  private setActivity(text: string): void {
+    if (this.activity === text) return;
+    this.activity = text;
+    this.fillHintStatus();
+  }
+
+  /** The line under the composer: what pi is doing and for how long, or the key hints when idle. */
+  private fillHintStatus(): void {
+    const box = this.hintStatus;
+    if (!box) return;
+    const running = Boolean(this.session?.running);
+    if (!running) {
+      this.runSince = null;
+      box.className = "hint-status";
+      box.replaceChildren(el("kbd", "", "Enter"), el("span", "", "发送 · Shift+Enter 换行 · "), el("kbd", "", PASTE_KEY), el("span", "", " 粘贴截图"));
+      return;
+    }
+    if (this.runSince == null) this.runSince = Date.now();
+    const waiting = this.asks.length ? "等你回答上面的问题" : this.approvals.length ? "等你批准" : "";
+    const what = waiting || this.activity || "运行中";
+    let spin = box.querySelector<HTMLElement>(".act-spin");
+    let text = box.querySelector<HTMLElement>(".act-text");
+    let time = box.querySelector<HTMLElement>(".act-time");
+    if (!spin || !text || !time) {
+      spin = el("span", "act-spin");
+      text = el("span", "act-text");
+      time = el("span", "act-time");
+      const stop = el("button", "btn danger", "中断");
+      stop.onclick = () => this.act(() => this.socket.send({ type: "abort", sessionId: this.currentId }));
+      box.replaceChildren(spin, text, time, stop);
+    }
+    box.className = `hint-status busy${waiting ? " wait" : ""}`;
+    text.textContent = what;
+    text.title = what;
+    const secs = Math.max(0, Math.round((Date.now() - this.runSince) / 1000));
+    time.textContent = secs >= 60 ? `${Math.floor(secs / 60)}分${String(secs % 60).padStart(2, "0")}秒` : `${secs}秒`;
   }
 
   /** usage.output is the whole message's output tokens, so this is the average over the turn. */
@@ -665,11 +741,9 @@ export class App {
   // ---------------------------------------------------------------- model sheet
   private closeSheet(): void {
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
-    if (this.askSheetId) this.askSeen.add(this.askSheetId);
     this.sheet?.remove();
     this.sheet = null;
     this.sheetKind = null;
-    this.askSheetId = null;
     this.imageSheetPaint = null;
   }
 
@@ -1430,6 +1504,7 @@ export class App {
   private renderChat(): void {
     const host = this.els.composerHost;
     host.replaceChildren();
+    this.hintStatus = null;
     this.modelChip = null;
     this.textarea = null;
     this.skillPop = null;
@@ -1505,17 +1580,10 @@ export class App {
     }
 
     const hint = el("div", "hint");
-    if (s?.running) {
-      hint.append(el("span", "", "pi 正在干活"));
-      const stop = el("button", "btn danger", "中断");
-      stop.onclick = () => this.act(() => this.socket.send({ type: "abort", sessionId: this.currentId }));
-      hint.append(stop);
-    } else {
-      hint.append(el("kbd", "", "Enter"));
-      hint.append(el("span", "", "发送 · Shift+Enter 换行 · "));
-      hint.append(el("kbd", "", PASTE_KEY));
-      hint.append(el("span", "", " 粘贴截图"));
-    }
+    const status = el("div", "hint-status");
+    this.hintStatus = status;
+    this.fillHintStatus();
+    hint.append(status);
     const tools = el("div", "hint-tools");
     const skillBtn = el("button", "btn ghost", "技能");
     skillBtn.title = "搜索并插入技能命令（/skill:name）";
@@ -1530,6 +1598,7 @@ export class App {
 
     host.append(row, fileInput, hint);
     if (this.approvals.length) host.append(this.approvalNode());
+    this.renderAsks();
 
     scrollChat(this.els.scroll);
   }
@@ -1667,22 +1736,145 @@ export class App {
   }
 
   // ---------------------------------------------------------------- asks
-  /** The pinned bar above the composer: proof that something is waiting even with the drawer shut. */
+  /**
+   * The question lives in the composer, not in a modal: options sit right above the textarea,
+   * typing in the textarea answers it, and the user can wander off to other sessions and come
+   * back (the bridge re-sends pending asks on subscribe). Nothing pops up on its own.
+   */
   private renderAsks(): void {
-    const existing = this.els.composerHost.querySelector(".ask-slot");
-    existing?.remove();
-    if (!this.asks.length) return;
+    const host = this.els.composerHost;
+    host.querySelector(".ask-slot")?.remove();
+    this.fillHintStatus();
+    if (this.textarea) {
+      const s = this.session;
+      this.textarea.placeholder = this.asks.length
+        ? "直接打字回答（Enter 提交），或点上面的选项…"
+        : s?.running
+          ? "跑着呢，再发会自动排队…"
+          : "说点什么…";
+    }
+    for (const id of [...this.askDrafts.keys()]) if (!this.asks.some((a) => a.id === id)) this.askDrafts.delete(id);
+    const ask = this.asks[0];
+    if (!ask || !this.currentId) return;
+    const st = this.askState(ask);
+    const total = ask.questions.length;
+    const q = ask.questions[st.active];
+
     const slot = el("div", "ask-slot");
-    const first = this.asks[0].questions[0]?.prompt ?? "";
+    const head = el("div", "ask-head");
     const more = this.asks.length > 1 ? `（还有 ${this.asks.length - 1} 份）` : "";
-    slot.append(el("span", "t", `待你回答${more}`));
-    slot.append(el("span", "m", first.slice(0, 60)));
-    const go = el("button", "btn primary", "回答");
-    go.onclick = () => this.openAskSheet(this.asks[0].id);
-    slot.append(go);
-    const hintIndex = this.els.composerHost.querySelector(".hint");
-    if (hintIndex) this.els.composerHost.insertBefore(slot, hintIndex);
-    else this.els.composerHost.append(slot);
+    head.append(el("span", "t", `${total > 1 ? `需要你回答 · ${total} 题` : "需要你回答"}${more}`));
+    if (this.askFolded) head.append(el("span", "m", q.prompt.split("\n")[0].slice(0, 80)));
+    const fold = el("button", "btn ghost", this.askFolded ? "展开" : "收起");
+    fold.onclick = () => {
+      this.askFolded = !this.askFolded;
+      this.renderAsks();
+    };
+    const cancel = el("button", "btn ghost danger-text", "取消提问");
+    cancel.title = "告诉模型你不回答这次提问";
+    cancel.onclick = () => this.answerAsk(ask, null);
+    head.append(fold, cancel);
+    slot.append(head);
+
+    if (!this.askFolded) {
+      if (total > 1) {
+        const tabs = el("div", "ask-tabs");
+        ask.questions.forEach((x, i) => {
+          const tab = el("button", "ask-tab", `${x.label ?? `Q${i + 1}`}${st.drafts.has(x.id) ? " ✓" : ""}`);
+          if (i === st.active) tab.classList.add("on");
+          if (st.drafts.has(x.id)) tab.classList.add("done");
+          tab.onclick = () => {
+            st.active = i;
+            this.renderAsks();
+          };
+          tabs.append(tab);
+        });
+        slot.append(tabs);
+      }
+      slot.append(el("div", "ask-prompt", q.prompt));
+      const chosen = st.drafts.get(q.id);
+      if (q.options.length) {
+        const list = el("div", "ask-opts");
+        q.options.forEach((opt, i) => {
+          const btn = el("button", "ask-opt");
+          if (chosen && !chosen.wasCustom && chosen.value === opt.value) btn.classList.add("on");
+          btn.append(el("div", "l", opt.label));
+          if (opt.description) btn.append(el("div", "d", opt.description));
+          btn.onclick = () => this.pickAnswer(ask, { id: q.id, value: opt.value, label: opt.label, index: i + 1 });
+          list.append(btn);
+        });
+        slot.append(list);
+      }
+      if (chosen?.wasCustom) slot.append(el("div", "ask-draft", `已填：${chosen.label}`));
+      if (q.allowOther === false) slot.append(el("div", "ask-note", "这题只能从选项里选。"));
+      if (total > 1) {
+        const missing = ask.questions.filter((x) => !st.drafts.has(x.id)).length;
+        const submit = el("button", "btn primary", missing ? `还差 ${missing} 题` : "提交全部回答");
+        submit.disabled = missing > 0;
+        submit.onclick = () => {
+          const answers = ask.questions.map((x) => st.drafts.get(x.id)).filter(Boolean) as AskAnswer[];
+          if (answers.length === total) this.answerAsk(ask, answers);
+        };
+        const foot = el("div", "ask-foot");
+        foot.append(submit);
+        slot.append(foot);
+      }
+    }
+
+    const row = host.querySelector(".row");
+    if (row) host.insertBefore(slot, row);
+    else host.append(slot);
+  }
+
+  private askState(ask: AskRequest): { active: number; drafts: Map<string, AskAnswer> } {
+    let st = this.askDrafts.get(ask.id);
+    if (!st) {
+      st = { active: 0, drafts: new Map() };
+      this.askDrafts.set(ask.id, st);
+    }
+    return st;
+  }
+
+  /** One question answers at once; several collect drafts and wait for 提交. */
+  private pickAnswer(ask: AskRequest, answer: AskAnswer): void {
+    if (ask.questions.length === 1) {
+      this.answerAsk(ask, [answer]);
+      return;
+    }
+    const st = this.askState(ask);
+    st.drafts.set(answer.id, answer);
+    const next = ask.questions.findIndex((x, i) => i > st.active && !st.drafts.has(x.id));
+    if (next >= 0) st.active = next;
+    else {
+      const left = ask.questions.findIndex((x) => !st.drafts.has(x.id));
+      if (left >= 0) st.active = left;
+    }
+    this.renderAsks();
+  }
+
+  /** Text typed in the composer while a question is open answers the active question. */
+  private answerFromComposer(text: string): boolean {
+    const ask = this.asks[0];
+    if (!ask) return false;
+    const q = ask.questions[this.askState(ask).active];
+    if (!q || q.allowOther === false) return false;
+    this.composerText = "";
+    if (this.textarea) {
+      this.textarea.value = "";
+      this.textarea.style.height = "auto";
+    }
+    this.askFolded = false;
+    this.pickAnswer(ask, { id: q.id, value: text, label: text, wasCustom: true });
+    return true;
+  }
+
+  private focusAsk(): void {
+    if (!this.asks.length) return;
+    this.go("chat");
+    this.askFolded = false;
+    this.renderAsks();
+    this.els.composerHost.querySelector(".ask-slot")?.scrollIntoView({ block: "nearest" });
+    this.textarea?.focus();
   }
 
   private askCard(ask: AskRequest): HTMLElement {
@@ -1690,131 +1882,14 @@ export class App {
     card.append(el("div", "t", ask.questions.length > 1 ? `需要你回答 · ${ask.questions.length} 题` : "需要你回答"));
     card.append(el("div", "m", ask.questions.map((q, i) => `${ask.questions.length > 1 ? `${q.label ?? `Q${i + 1}`}：` : ""}${q.prompt}`).join("\n")));
     const actions = el("div", "actions");
-    const go = el("button", "btn primary", "回答");
-    go.onclick = () => this.openAskSheet(ask.id);
+    const go = el("button", "btn primary", "去回答");
+    go.onclick = () => this.focusAsk();
     const cancel = el("button", "btn danger", "取消这次提问");
     cancel.onclick = () => this.answerAsk(ask, null);
     actions.append(cancel, go);
     card.append(actions);
     return card;
   }
-
-  /** Single question answers on click; several use tabs + an explicit 提交, exactly like the TUI. */
-  private openAskSheet(askId: string): void {
-    const ask = this.asks.find((a) => a.id === askId);
-    if (!ask) return;
-    this.closeSheet();
-    this.askSheetId = askId;
-
-    const back = el("div", "sheet-back");
-    const sheet = el("div", "sheet ask-sheet");
-    const head = el("div", "sheet-head");
-    const total = ask.questions.length;
-    head.append(el("div", "sheet-title", total > 1 ? `需要你回答 · ${total} 题` : "需要你回答"));
-    const hide = el("button", "btn ghost", "收起");
-    hide.onclick = () => this.closeSheet();
-    head.append(hide);
-    sheet.append(head);
-
-    const tabsRow = el("div", "ask-tabs");
-    const panel = el("div", "ask-panel");
-    const foot = el("div", "sheet-foot");
-    const drafts = new Map<string, AskAnswer>();
-    let active = 0;
-
-    const paint = () => {
-      tabsRow.replaceChildren();
-      if (total > 1) {
-        ask.questions.forEach((q, i) => {
-          const label = q.label ?? `Q${i + 1}`;
-          const tab = el("button", "ask-tab", `${label}${drafts.has(q.id) ? " ✓" : ""}`);
-          if (i === active) tab.classList.add("on");
-          if (drafts.has(q.id)) tab.classList.add("done");
-          tab.onclick = () => {
-            active = i;
-            paint();
-          };
-          tabsRow.append(tab);
-        });
-      }
-
-      const q = ask.questions[active];
-      panel.replaceChildren(el("div", "ask-prompt", q.prompt));
-      const chosen = drafts.get(q.id);
-      const list = el("div", "ask-opts");
-      for (const opt of q.options) {
-        const btn = el("button", "ask-opt");
-        if (chosen && !chosen.wasCustom && chosen.value === opt.value) btn.classList.add("on");
-        btn.append(el("div", "l", opt.label));
-        if (opt.description) btn.append(el("div", "d", opt.description));
-        btn.onclick = () => {
-          const answer: AskAnswer = { id: q.id, value: opt.value, label: opt.label, index: q.options.indexOf(opt) + 1 };
-          if (total === 1) {
-            this.answerAsk(ask, [answer]);
-            return;
-          }
-          drafts.set(q.id, answer);
-          const next = ask.questions.findIndex((x, i) => i > active && !drafts.has(x.id));
-          if (next >= 0) active = next;
-          paint();
-        };
-        list.append(btn);
-      }
-      if (q.allowOther !== false) {
-        const other = el("button", "ask-opt other", "自己写…");
-        other.onclick = () => {
-          const wrap = el("div", "ask-other");
-          const input = el("input");
-          input.placeholder = "写下你的答案";
-          const ok = el("button", "btn primary", "确定");
-          const send = () => {
-            const text = input.value.trim();
-            if (!text) return;
-            const answer: AskAnswer = { id: q.id, value: text, label: text, wasCustom: true };
-            if (total === 1) {
-              this.answerAsk(ask, [answer]);
-              return;
-            }
-            drafts.set(q.id, answer);
-            if (active < total - 1) active += 1;
-            paint();
-          };
-          ok.onclick = send;
-          input.addEventListener("keydown", (e) => {
-            if ((e as KeyboardEvent).key === "Enter") send();
-          });
-          wrap.append(input, ok);
-          other.replaceWith(wrap);
-          input.focus();
-        };
-        list.append(other);
-      }
-      panel.append(list);
-
-      foot.replaceChildren();
-      const cancel = el("button", "btn danger", "取消这次提问");
-      cancel.onclick = () => this.answerAsk(ask, null);
-      foot.append(cancel);
-      if (total > 1) {
-        const missing = ask.questions.filter((x) => !drafts.has(x.id)).length;
-        const submit = el("button", "btn primary", missing ? `还差 ${missing} 题` : "提交");
-        submit.disabled = missing > 0;
-        submit.onclick = () => {
-          const answers = ask.questions.map((x) => drafts.get(x.id)).filter(Boolean) as AskAnswer[];
-          if (answers.length !== total) return;
-          this.answerAsk(ask, answers);
-        };
-        foot.append(submit);
-      }
-    };
-
-    sheet.append(tabsRow, panel, foot);
-    back.append(sheet);
-    this.overlay(back);
-    this.sheet = back;
-    paint();
-  }
-
   /** `null` answers = the user cancelled the whole questionnaire. */
   private answerAsk(ask: AskRequest, answers: AskAnswer[] | null): void {
     const payload = answers
@@ -1823,7 +1898,6 @@ export class App {
     this.act(() => this.socket.send(payload));
     // Optimistic: `ask.remove` from the bridge has the final say for every other tab.
     this.asks = this.asks.filter((a) => a.id !== ask.id);
-    if (this.askSheetId === ask.id) this.closeSheet();
     this.renderAsks();
     this.renderQueue();
     this.renderTabs();
@@ -1847,7 +1921,10 @@ export class App {
       this.decide(a, "approve");
     };
     const always = el("button", "btn", "本会话允许这类");
-    always.onclick = () => this.decide(a, "always");
+    always.onclick = () => {
+      if (!confirm("批准这条命令，并在本会话内不再询问同一类命令？")) return;
+      this.decide(a, "always");
+    };
     const reject = el("button", "btn danger", "拒绝");
     reject.onclick = () => this.decide(a, "reject");
 

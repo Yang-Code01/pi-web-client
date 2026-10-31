@@ -243,7 +243,8 @@ export class ChatView {
   private failureCard(key: string, input: FailureInput, ms?: number): void {
     const next = buildFailureCard(input, ms);
     const prev = this.failCards.get(key);
-    // A rebuild must not slam the raw log shut under the cursor: carry the user's expand over.
+    // A rebuild must not slam the card or the raw log shut under the cursor: carry the user's expand over.
+    if (prev?.hasAttribute("open")) next.setAttribute("open", "");
     if (prev?.querySelector("details.raw")?.hasAttribute("open")) {
       next.querySelector("details.raw")?.setAttribute("open", "");
     }
@@ -431,20 +432,22 @@ function durationText(ms?: number): string {
 
 /**
  * The failure card: `EXIT n` + one-sentence title, then why / next, then only the key lines of
- * the output (see `excerpt`), with the raw text folded underneath. Deliberately not collapsible as
- * a whole — the point of the card is that the conclusion is readable without any click; only the
- * raw log hides. `benign` / `abort` failures fade to a gray card so a run of grep misses does not
- * read like an emergency.
+ * the output (see `excerpt`), with the raw text folded underneath. Folded by default: the summary
+ * row (exit code, title, command) is the conclusion, the rest is one click away — a long run of
+ * failures must not push the conversation off screen. `benign` / `abort` failures fade to a gray
+ * card so a run of grep misses does not read like an emergency.
  */
 function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
   const d = diagnose(input);
   const calm = d.level === "benign" || d.level === "abort";
-  const card = el("div", calm ? "fcard calm" : "fcard");
+  const card = el("details", calm ? "fcard calm" : "fcard");
 
-  const top = el("div", "top");
+  const top = el("summary", "top");
   top.append(
+    el("span", "chev", "▸"),
     el("span", "badge", d.exit === null ? LEVEL_LABEL[d.level] : `EXIT ${d.exit}`),
     el("span", "ttl", d.title),
+    el("span", "sum-cmd", input.cmd ? `${input.tool} · ${input.cmd}` : input.tool),
   );
   const grid = el("div", "grid");
   grid.append(
