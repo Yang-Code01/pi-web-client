@@ -18,6 +18,7 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
+import { Terminals, openConsole } from "./terminal.ts";
 import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { Notifier } from "./notify.ts";
@@ -25,7 +26,8 @@ import { Tunnel, findCloudflared } from "./tunnel.ts";
 import { resolvePi } from "./pi.ts";
 import { APP_NAME, VERSION, ensureStateDirs, readJson, statePath, sessionsRoot } from "./paths.ts";
 import { clipboardFiles, listDirs, makeDir } from "./dirs.ts";
-import { openPreview, readAttachableImage, serveRaw } from "./preview.ts";
+import { gitInfo } from "./git.ts";
+import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
 
 interface Config {
   port: number;
@@ -292,6 +294,22 @@ async function main(): Promise<void> {
       return json(res, 200, listDirs(url.searchParams.get("path") ?? "", url.searchParams.get("files") === "1"));
     }
 
+    // Q-021: the branch under the composer. A branch name is this machine's working state, so a
+    // tunnel visitor neither needs it nor may have it (same call as /api/clipboard-files).
+    if (url.pathname === "/api/git" && req.method === "GET") {
+      if (publicReq) return json(res, 200, { repo: null });
+      const dir = (url.searchParams.get("dir") ?? "").trim();
+      if (!dir) return json(res, 400, { repo: null, error: "dir 不能为空" });
+      if (!path.isAbsolute(dir)) return json(res, 400, { repo: null, error: "dir 必须是绝对路径" });
+      try {
+        const info = await gitInfo(dir, url.searchParams.get("fresh") === "1");
+        return json(res, 200, info ?? { repo: null });
+      } catch (err: any) {
+        // A missing git, a corrupt repo, a timeout: the line just keeps its key hints.
+        return json(res, 200, { repo: null, error: String(err?.message ?? err).slice(0, 200) });
+      }
+    }
+
     // Ctrl+V of a file copied in Explorer: the page gets bytes only, so read the real path here.
     // Over the tunnel this machine's clipboard is not the visitor's, so refuse.
     if (url.pathname === "/api/clipboard-files" && req.method === "GET") {
@@ -317,12 +335,31 @@ async function main(): Promise<void> {
 
     if (url.pathname === "/api/preview" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
-      const where = sessions.locate(String(body.sessionId ?? ""));
+      const sessionId = String(body.sessionId ?? "");
+      const where = sessions.locate(sessionId);
       if (!where) return json(res, 404, { error: "找不到这个会话" });
       try {
-        return json(res, 200, openPreview(where, String(body.path ?? "")));
+        const info = openPreview(where, String(body.path ?? ""));
+        // Text files opened here become writable for this session (D50).
+        rememberEditable(sessionId, info);
+        return json(res, 200, info);
       } catch (err: any) {
         return json(res, 400, { error: String(err?.message ?? err) });
+      }
+    }
+
+    // The file explorer's save: only paths /api/preview handed out as text may be written.
+    if (url.pathname === "/api/save" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const sessionId = String(body.sessionId ?? "");
+      if (!sessions.locate(sessionId)) return json(res, 404, { error: "找不到这个会话" });
+      try {
+        const out = savePreviewFile(sessionId, body);
+        log(`save ${out.path} (${out.size} bytes) from ${sessionId.slice(0, 8)}`);
+        return json(res, 200, out);
+      } catch (err: any) {
+        const status = Number(err?.status) || 400;
+        return json(res, status, { error: String(err?.message ?? err) });
       }
     }
 
@@ -394,6 +431,12 @@ async function main(): Promise<void> {
     }
   };
 
+  // Terminals live in the bridge, not in a connection: a page reload re-attaches and replays output.
+  const terminals = new Terminals({
+    onData: (id, data) => broadcast({ type: "term.data", id, data }),
+    onExit: (id, code) => broadcast({ type: "term.exit", id, code }),
+  });
+
   sessions.on("ws", broadcast);
   sessions.on("approval", (approval) => {
     const session = sessions.get(approval.sessionId);
@@ -427,6 +470,7 @@ async function main(): Promise<void> {
       pi: pi.version,
       sessions: sessions.list(),
       manage: sessions.manage.snapshot(),
+      trash: sessions.trashList(),
       tunnel: tunnel.state,
       public: (ws as any).publicReq,
     });
@@ -472,6 +516,67 @@ async function main(): Promise<void> {
             send({ type: "catalog", models: await sessions.models(true).catch(() => []) });
             return;
           }
+          // ---------------------------------------------------------------- terminals (Q-007/Q-008)
+          case "term.open": {
+            if ((ws as any).publicReq) {
+              send({ type: "term.error", message: "终端只对本机 / 局域网开放：走公网隧道时禁用" });
+              return;
+            }
+            if (!(await requireStepUp())) return;
+            const opened = terminals.open({
+              cols: Number(msg.cols),
+              rows: Number(msg.rows),
+              cwd: msg.cwd ? String(msg.cwd) : undefined,
+            });
+            if ("error" in opened) {
+              send({ type: "term.error", message: opened.error });
+              return;
+            }
+            broadcast({ type: "term.opened", ...opened });
+            log(`terminal ${opened.id} opened (${opened.shell}) in ${opened.cwd}`);
+            return;
+          }
+          case "term.attach": {
+            const id = String(msg.id ?? "");
+            const history = terminals.history(id);
+            const meta = terminals.describe(id);
+            if (history === null || !meta) send({ type: "term.gone", id });
+            else send({ type: "term.replay", id, data: history, ...meta });
+            return;
+          }
+          case "term.input": {
+            if ((ws as any).publicReq) return;
+            terminals.write(String(msg.id ?? ""), String(msg.data ?? ""));
+            return;
+          }
+          case "term.resize": {
+            terminals.resize(String(msg.id ?? ""), Number(msg.cols), Number(msg.rows));
+            return;
+          }
+          case "term.close": {
+            terminals.close(String(msg.id ?? ""));
+            return;
+          }
+          case "term.list": {
+            send({ type: "term.list", items: terminals.list() });
+            return;
+          }
+          case "term.elevate":
+          case "open.script": {
+            if ((ws as any).publicReq) {
+              send({ type: "notice", text: "公网访问时不能在你电脑上开窗口", level: "error" });
+              return;
+            }
+            if (!(await requireStepUp())) return;
+            const res = openConsole({
+              cwd: msg.cwd ? String(msg.cwd) : undefined,
+              file: msg.type === "open.script" ? String(msg.file ?? "") : undefined,
+              admin: Boolean(msg.admin),
+            });
+            log(`${msg.type}${msg.admin ? " (admin)" : ""}: ${res.message}`);
+            send({ type: "notice", text: res.message, level: res.ok ? "info" : "error" });
+            return;
+          }
           case "subscribe": {
             const snap = sessions.snapshot(msg.sessionId);
             (ws as any).watching = String(msg.sessionId);
@@ -495,9 +600,13 @@ async function main(): Promise<void> {
             if (!(await requireStepUp())) return;
             const name = typeof msg.name === "string" && msg.name.trim() ? msg.name.trim().slice(0, 120) : undefined;
             const session = await sessions.create(String(msg.cwd || process.cwd()), name);
+            // Q-022: created from the pin strip's ＋ → pinned at the end of the strip, and every
+            // client hears about the arrangement (the strip is a projection of manage.pin).
+            if (msg.pin) sessions.pinLast(session.state.id);
             (ws as any).watching = session.state.id;
             send({ type: "session", sessionId: session.state.id, ...session.snapshot() });
             broadcast({ type: "session.state", session: session.state });
+            if (msg.pin) broadcast({ type: "manage", manage: sessions.manage.snapshot() });
             return;
           }
           case "mkdir": {
@@ -590,10 +699,32 @@ async function main(): Promise<void> {
               broadcast({ type: "manage", manage: sessions.manage.snapshot() });
               return;
             }
-            if (action === "delete") {
-              const removed = await sessions.remove(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
-              broadcast({ type: "session.gone", ids: removed });
+            if (action === "trash" || action === "delete") {
+              const report = await sessions.trash(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
+              if (report.removed.length) broadcast({ type: "session.gone", ids: report.removed });
               broadcast({ type: "manage", manage: sessions.manage.snapshot() });
+              broadcast({ type: "trash", items: sessions.trashList() });
+              // The sheet sits above the transcript, so the outcome has to come back on its own channel.
+              if (report.skipped.length || report.removed.length) send({ type: "delete.result", ...report });
+              return;
+            }
+            if (action === "trash.list") {
+              send({ type: "trash", items: sessions.trashList() });
+              return;
+            }
+            if (action === "restore") {
+              const report = sessions.restore(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
+              if (report.restored.length) broadcast({ type: "manage", manage: sessions.manage.snapshot() });
+              broadcast({ type: "trash", items: sessions.trashList() });
+              if (report.restored.length) send({ type: "sessions.list", sessions: sessions.list() });
+              send({ type: "restore.result", ...report });
+              return;
+            }
+            if (action === "purge") {
+              // Empty ids = empty the whole bin: that is the only action here that destroys data.
+              const report = sessions.purge(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
+              broadcast({ type: "trash", items: sessions.trashList() });
+              send({ type: "purge.result", ...report });
               return;
             }
             send({ type: "notice", text: `未知的管理操作 ${action}`, level: "warn" });
@@ -625,6 +756,7 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     log("shutting down");
+    terminals.closeAll();
     tunnel.stop();
     await sessions.shutdown();
     server.close();

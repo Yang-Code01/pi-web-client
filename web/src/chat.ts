@@ -1,5 +1,6 @@
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
 import { renderMarkdown } from "./md.ts";
+import { mountTurnRail, type TurnRail } from "./turns.ts";
 import type { Item, ToolItem, UserItem } from "./types.ts";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -15,6 +16,49 @@ function timeOf(ts?: string): string {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
+/**
+ * Q-016: one fold trigger for the whole transcript. The history used to carry five shapes — a text
+ * button in the top-right, a text button under the content, a bare chevron, another bare chevron and
+ * a summary with no arrow at all. Same chevron, same place, same label now; each owner keeps its own
+ * state machine (`this.collapsed`, the `folded` class, `<details open>`), only the trigger is shared.
+ */
+function foldHead(cls = ""): HTMLButtonElement & { setOpen(open: boolean): void } {
+  const head = el("button", cls ? `fold-head ${cls}` : "fold-head") as HTMLButtonElement & {
+    setOpen(open: boolean): void;
+  };
+  head.type = "button";
+  const label = el("span", "fold-label", "展开");
+  head.append(el("span", "chev", "▸"), label);
+  head.setOpen = (open: boolean) => {
+    head.setAttribute("aria-expanded", String(open));
+    label.textContent = open ? "收起" : "展开";
+    head.title = open ? "收起" : "展开全文";
+  };
+  return head;
+}
+
+/** What the run is doing right now, for the hover card in the composer (Q-017). */
+export interface LiveInfo {
+  name?: string;
+  args?: string;
+  summary?: string;
+  output?: string;
+  thinking?: string;
+  startedAt?: number;
+}
+
+/** One line, capped — tool args are for orientation, not for reading the whole object. */
+function compactArgs(args: unknown): string {
+  if (args == null) return "";
+  let text: string;
+  try {
+    text = typeof args === "string" ? args : JSON.stringify(args);
+  } catch {
+    text = String(args);
+  }
+  return text.replace(/\s+/g, " ").trim().slice(0, 400);
+}
+
 export class ChatView {
   private cards = new Map<string, HTMLElement>();
   private toolCards = new Map<string, HTMLElement>();
@@ -26,18 +70,203 @@ export class ChatView {
   /** Failures also get a card right after the module, keyed by toolCallId. */
   private failCards = new Map<string, HTMLElement>();
   private failAnchor: HTMLElement | null = null;
-  private atBottom = true;
+  /** Following the stream: new content scrolls the view to the bottom. Cleared the moment the user says "I want to read up there". */
+  private following = true;
+  /** One pending frame at most — a burst of updates must cost one scroll, not one per update. */
+  private pendingScroll = 0;
+  /** Something arrived while the user was reading up top. */
+  private unread = false;
+  private jump: HTMLButtonElement;
   /** Files the agent wrote or edited in this session, latest last. */
   private written = new Map<string, { tool: string; at: number }>();
   /** Assistant replies the user folded; kept across rebuilds and session re-renders. */
   private collapsed = new Set<string>();
+  /** Live view of the running tool call — nothing here is rendered in the transcript. */
+  private live: LiveInfo = {};
+  /** Which tool call the live output belongs to; a stale update must not overwrite a newer tool. */
+  private liveKey = "";
   /** This turn's written files, as chips under the ops module. */
   private opsFiles: HTMLElement | null = null;
+  /** The user turns, in order — one tick on the rail each. `reset()` refills it through `add()`. */
+  private turns: { node: HTMLElement; label: string }[] = [];
+  /** 右缘的轮次缩略图（Q-028）。它挂在滚动视口外面，所以不会随之滚走。 */
+  private turnRail: TurnRail;
+  /** 缩略图里悬停/点击时在正文高亮的那条消息。 */
+  private flashNode: HTMLElement | null = null;
+  private flashTimer = 0;
+  private railPending = 0;
+  /** 跳转时的平滑滚动还在路上 —— 这期间的 scroll 事件不能当成「用户回到底部」把跟流重新打开。 */
+  private holdFollow = 0;
 
   constructor(private root: HTMLElement) {
-    root.addEventListener("scroll", () => {
-      this.atBottom = root.scrollHeight - root.scrollTop - root.clientHeight < 80;
+    this.jump = el("button", "chat-jump") as HTMLButtonElement;
+    this.jump.type = "button";
+    // Q-027: one round arrow in the middle of the transcript; when something arrived while reading
+    // up top, the word “new” rides next to it instead of a second, wider bar.
+    this.jump.append(el("span", "jump-arrow", "↓"), el("span", "jump-new", "new"));
+    this.jump.hidden = true;
+    this.jump.onclick = () => this.follow();
+
+    // 挂在 .chat-pane（滚动视口的父节点）而不是 root：缩略图要跟着视口停住，不能跟内容一起滚。
+    this.turnRail = mountTurnRail(this.root.parentElement ?? this.root, {
+      onPick: (index) => this.jumpToTurn(index),
+      onHover: (index) => this.flashTurn(index),
+      viewport: this.root,
     });
+
+    // Intent first: a wheel/touch event is what the user meant, long before the (async, frame-coalesced)
+    // scroll event lands. Waiting for `scroll` let the burst that was already in flight drag the view
+    // back down — that was the "一卡一卡" tug of war.
+    root.addEventListener("wheel", (ev) => {
+      if ((ev as WheelEvent).deltaY < 0) this.stopFollowing();
+    }, { passive: true });
+    let touchY: number | null = null;
+    root.addEventListener("touchstart", (ev) => {
+      touchY = (ev as TouchEvent).touches[0]?.clientY ?? null;
+    }, { passive: true });
+    root.addEventListener("touchmove", (ev) => {
+      const y = (ev as TouchEvent).touches[0]?.clientY ?? null;
+      // Finger moving down means the content is moving up: the user is reading history.
+      if (touchY !== null && y !== null && y - touchY > 6) this.stopFollowing();
+      touchY = y;
+    }, { passive: true });
+    root.addEventListener("keydown", (ev) => {
+      const key = (ev as KeyboardEvent).key;
+      if (key === "PageUp" || key === "ArrowUp" || key === "Home") this.stopFollowing();
+    });
+
+    root.addEventListener("scroll", () => {
+      if (performance.now() >= this.holdFollow && this.nearBottom()) this.resumeFollowing();
+      this.queueRailSync();
+    });
+
+    // The composer grows and shrinks under the transcript; while following, that must not unstick us.
+    new ResizeObserver(() => {
+      if (this.following) this.scheduleScroll();
+    }).observe(root);
+  }
+
+  /** Distance left below the viewport, in px. Small enough that "at the bottom" means what it says. */
+  private nearBottom(): boolean {
+    const gap = this.root.scrollHeight - this.root.scrollTop - this.root.clientHeight;
+    return gap <= 24;
+  }
+
+  private stopFollowing(): void {
+    if (!this.following) return;
+    this.following = false;
+    this.renderJump();
+  }
+
+  private resumeFollowing(): void {
+    if (this.following && !this.unread) return;
+    this.following = true;
+    this.unread = false;
+    this.renderJump();
+  }
+
+  private renderJump(): void {
+    this.jump.classList.toggle("has-new", this.unread);
+    this.jump.hidden = this.following;
+    // The visible text is a glyph, so the meaning has to live somewhere readable.
+    const label = this.unread ? "有新内容，回到底部" : "回到底部";
+    this.jump.title = label;
+    this.jump.setAttribute("aria-label", label);
+  }
+
+  /** Jump to the bottom and keep following — used by the button, by reset(), and by "I just sent a message". */
+  follow(): void {
+    this.following = true;
+    this.unread = false;
+    this.renderJump();
+    if (this.pendingScroll) cancelAnimationFrame(this.pendingScroll);
+    this.pendingScroll = 0;
+    this.root.scrollTop = this.root.scrollHeight;
+    this.scheduleScroll();
+    this.queueRailSync();
+  }
+
+  /** 缩略图的那一下跳动不该每滚动一下就算一遍，一帧一次。 */
+  private queueRailSync(): void {
+    if (this.railPending) return;
+    this.railPending = requestAnimationFrame(() => {
+      this.railPending = 0;
+      const last = this.turns.length - 1;
+      if (last < 0) return;
+      // 「你在哪一轮」= 视口顶部已经翻过去的最后一轮；已经在底部就是最后一轮。
+      let at = 0;
+      if (!this.nearBottom()) {
+        const base = this.root.getBoundingClientRect().top + 72;
+        for (let i = 0; i <= last; i++) {
+          const node = this.turns[i].node;
+          if (node.isConnected && node.getBoundingClientRect().top > base) break;
+          at = i;
+        }
+      } else at = last;
+      this.turnRail.setCurrent(at);
+    });
+  }
+
+  /** 点缩略图里的一行：把那一轮滚到视口顶部（最后一轮则直接回到底部继续跟流）。 */
+  private jumpToTurn(index: number): void {
+    const turn = this.turns[index];
+    if (!turn || !turn.node.isConnected) return;
+    this.flashTurn(index, 1200);
+    if (index === this.turns.length - 1) {
+      this.follow();
+      return;
+    }
+    this.stopFollowing();
+    if (this.pendingScroll) cancelAnimationFrame(this.pendingScroll);
+    this.pendingScroll = 0;
+    // 从底部往上跳的第一帧 scroll 事件里，视口其实还没离开底部；不挡住它就会立刻 resumeFollowing。
+    this.holdFollow = performance.now() + 900;
+    const top = turn.node.getBoundingClientRect().top - this.root.getBoundingClientRect().top + this.root.scrollTop - 6;
+    this.root.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  }
+
+  /** 悬停预览：正文里给对应那条用户消息描一圈边（`ms` > 0 时自己消失，用于点击后的短暂标记）。 */
+  private flashTurn(index: number | null, ms = 0): void {
+    clearTimeout(this.flashTimer);
+    if (this.flashNode) {
+      this.flashNode.classList.remove("turn-flash");
+      this.flashNode = null;
+    }
+    const node = index === null ? null : (this.turns[index]?.node ?? null);
+    if (!node) return;
+    node.classList.add("turn-flash");
+    this.flashNode = node;
+    if (ms > 0) this.flashTimer = window.setTimeout(() => this.flashTurn(null), ms);
+  }
+
+  /** 一轮用户输入 = 缩略图上的一根刻度。`reset()` 也会经由 `add()` 走到这里。 */
+  private noteTurn(item: UserItem, node: HTMLElement): void {
+    const one = (item.text ?? "").replace(/\s+/g, " ").trim();
+    const images = item.images?.length ?? 0;
+    const label = one || (images ? `（${images} 张图片）` : "（空消息）");
+    this.turns.push({ node, label });
+    this.turnRail.add(label);
+    this.queueRailSync();
+  }
+
+  private scheduleScroll(): void {
+    if (this.pendingScroll) return;
+    this.pendingScroll = requestAnimationFrame(() => {
+      this.pendingScroll = 0;
+      // Re-checked at execution time: the user may have scrolled away while this frame was queued.
+      if (!this.following) return;
+      this.root.scrollTop = this.root.scrollHeight;
+    });
+  }
+
+  /** Everything the transcript appends goes in *before* the jump button, which must stay the last child. */
+  private push(node: HTMLElement): void {
+    this.root.insertBefore(node, this.jump);
+  }
+
+  /** Keeps the tail marker and the jump button children of the scroller no matter how it is rebuilt. */
+  private mountChrome(): void {
+    this.root.append(this.jump);
   }
 
   reset(items: Item[]): void {
@@ -52,16 +281,37 @@ export class ChatView {
     this.failAnchor = null;
     this.written.clear();
     this.opsFiles = null;
+    this.live = {};
+    this.liveKey = "";
+    this.turns = [];
+    this.turnRail.clear();
+    this.flashTurn(null);
+    // Chrome first: `push()` inserts before the jump button, so it has to be in the DOM already.
+    this.mountChrome();
     for (const item of items) this.add(item);
-    this.scrollToEnd(true);
+    this.follow();
   }
 
+  /**
+   * Called after every append. While following it schedules one frame; while the user is reading up
+   * top it only raises the "有新内容" hint and never touches scrollTop.
+   */
   private scrollToEnd(force = false): void {
-    if (force || this.atBottom) {
-      requestAnimationFrame(() => {
-        this.root.scrollTop = this.root.scrollHeight;
-      });
+    if (force) {
+      this.follow();
+      return;
     }
+    if (!this.following) {
+      this.unread = true;
+      this.renderJump();
+      return;
+    }
+    this.scheduleScroll();
+  }
+
+  /** Snapshot for the composer's hover card. */
+  liveInfo(): LiveInfo {
+    return this.live;
   }
 
   add(item: Item): void {
@@ -75,7 +325,7 @@ export class ChatView {
         existing.remove();
         this.cards.set(item.id, fresh);
         this.toolCards.set(item.toolCallId, fresh);
-        this.root.append(fresh);
+        this.push(fresh);
         this.scrollToEnd();
         return;
       }
@@ -88,7 +338,7 @@ export class ChatView {
     this.cards.set(item.id, node);
     if (item.kind === "tool") {
       this.toolCards.set(item.toolCallId, node);
-      if (this.isAskTool(item.name)) this.root.append(node);
+      if (this.isAskTool(item.name)) this.push(node);
       else {
         this.ensureOps().append(node);
         this.refreshOps();
@@ -96,7 +346,8 @@ export class ChatView {
       }
       if (!this.isAskTool(item.name) && (item.isError || item.status === "error")) this.failFromItem(item);
     } else {
-      this.root.append(node);
+      this.push(node);
+      if (item.kind === "user") this.noteTurn(item, node);
     }
     this.scrollToEnd();
   }
@@ -111,7 +362,7 @@ export class ChatView {
     const rebuilt = this.build(item);
     if (item.kind === "tool" && this.isAskTool(item.name)) {
       node.remove();
-      this.root.append(rebuilt);
+      this.push(rebuilt);
     } else node.replaceWith(rebuilt);
     this.cards.delete(id);
     this.cards.set(item.id, rebuilt);
@@ -130,6 +381,7 @@ export class ChatView {
     const buf = this.draftBuffers.get(id) ?? { text: "", thinking: "" };
     buf[field] += text;
     this.draftBuffers.set(id, buf);
+    if (field === "thinking") this.live.thinking = buf.thinking.slice(-800);
 
     if (field === "text") {
       node.classList.remove("no-text");
@@ -160,7 +412,7 @@ export class ChatView {
       });
       this.toolCards.set(key, card);
       this.cards.set(`live-tool:${key}`, card);
-      if (this.isAskTool(data.name)) this.root.append(card);
+      if (this.isAskTool(data.name)) this.push(card);
       else {
         this.ensureOps().append(card);
         this.refreshOps();
@@ -168,6 +420,21 @@ export class ChatView {
       }
     }
     if (!card) return;
+
+    // Live snapshot for the hover card: name/summary once, output as it streams.
+    if (phase === "start" || this.liveKey !== key) {
+      this.liveKey = key;
+      this.live = {
+        name: String(data.name ?? "tool"),
+        args: compactArgs(data.args),
+        summary: String(data.summary ?? ""),
+        output: "",
+        thinking: this.live.thinking,
+        startedAt: Date.now(),
+      };
+    }
+    if (phase === "update" && data.partial) this.live.output = String(data.partial).slice(-2000);
+    if (phase === "end") this.live.output = String(data.result ?? this.live.output ?? "").slice(-2000);
 
     // A question card paints itself from the tool item (buildAsk): no stream, no raw output, and a
     // cancelled question is not a failure worth a red border.
@@ -266,7 +533,7 @@ export class ChatView {
       const box = this.opsBox;
       if (anchor) anchor.after(next);
       else if (box && box.parentNode === this.root) box.after(next);
-      else this.root.append(next);
+      else this.push(next);
     }
     this.failCards.set(key, next);
     this.failAnchor = next;
@@ -284,7 +551,7 @@ export class ChatView {
     const who = el("div", "who");
     if (item.kind === "user") {
       who.textContent = `你 · ${timeOf(item.ts)}`;
-      wrap.append(who, this.buildUserBody(item));
+      wrap.append(who, this.foldable(this.buildUserBody(item), 240));
     } else {
       who.textContent = `${item.model ?? "pi"} · ${timeOf(item.ts)}${item.stopReason === "aborted" ? " · 已中断" : ""}`;
       wrap.append(who);
@@ -296,14 +563,12 @@ export class ChatView {
         body.append(renderMarkdown(item.text));
         const peek = el("button", "msg-peek", previewLine(item.text));
         peek.title = "展开回答";
-        const fold = el("button", "msg-fold");
-        fold.type = "button";
+        const fold = foldHead("msg-fold");
         peek.type = "button";
         const id = item.id;
         const apply = (collapsed: boolean) => {
           wrap.classList.toggle("collapsed", collapsed);
-          fold.textContent = collapsed ? "▸ 展开" : "▾ 收起";
-          fold.title = collapsed ? "展开回答" : "收起回答";
+          fold.setOpen(!collapsed);
         };
         const toggle = () => {
           const next = !wrap.classList.contains("collapsed");
@@ -372,7 +637,7 @@ export class ChatView {
     summary.append(el("span", "chev", "▸"), title);
     const body = el("div", "ops-body");
     box.append(summary, body);
-    this.root.append(box);
+    this.push(box);
     this.opsBody = body;
     this.opsTitle = title;
     this.opsBox = box;
@@ -403,8 +668,43 @@ export class ChatView {
     if (running) title.append(el("span", "ops-flag live", " · 运行中"));
   }
 
-  private buildUserBody(item: UserItem): HTMLElement {
-    const body = el("div", "body");
+  /**
+   * Q-004: only tall blocks get a fold control. The test is measured height, not a character
+   * count, so a narrow pane folds sooner than a wide one — and it is re-measured when the pane
+   * is resized by its grip (Q-003), which a one-shot check would miss.
+   */
+  private foldable(body: HTMLElement, maxPx: number): HTMLElement {
+    if (!body.childNodes.length) return body;
+    const box = el("div", "foldable");
+    const clip = el("div", "fold-body");
+    clip.append(body);
+    const btn = foldHead("fold-btn");
+    const apply = () => {
+      btn.setOpen(!box.classList.contains("folded"));
+    };
+    btn.onclick = () => {
+      box.classList.toggle("folded");
+      apply();
+    };
+    let tall = false;
+    const measure = () => {
+      // scrollHeight is the content height, so it reads the same while folded and after a resize.
+      const next = body.scrollHeight > maxPx + 8;
+      if (next === tall) return;
+      tall = next;
+      box.classList.toggle("has-fold", tall);
+      if (!tall) box.classList.remove("folded");
+      apply();
+    };
+    new ResizeObserver(measure).observe(clip);
+    box.append(clip, btn);
+    apply();
+    // The node is measured before it is in the document, so re-check once layout is real.
+    requestAnimationFrame(measure);
+    return box;
+  }
+
+  private buildUserBody(item: UserItem): HTMLElement {    const body = el("div", "body");
     body.textContent = item.text;
     if (item.images?.length) {
       const tag = el("div", "notice", `附 ${item.images.length} 张图片`);
@@ -489,7 +789,7 @@ export class ChatView {
       }
       body.append(row);
     });
-    card.append(body);
+    card.append(this.foldable(body, 220));
     if (pending) {
       card.classList.add("clickable");
       card.title = "点一下打开答题";
@@ -552,7 +852,9 @@ function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
   const meta = [keep.length ? `关键行 ${keep.length} 行` : "输出为空，只有退出码", durationText(ms)].filter(Boolean);
   const foot = el("div", "foot");
   const rawBox = el("details", "raw");
-  rawBox.append(el("summary", undefined, `完整输出（${raw.length} 字符）`), el("pre", undefined, raw));
+  const rawTop = el("summary", "raw-top");
+  rawTop.append(el("span", "chev", "▸"), el("span", undefined, `完整输出（${raw.length} 字符）`));
+  rawBox.append(rawTop, el("pre", undefined, raw));
   foot.append(el("span", undefined, meta.join(" · ")), rawBox);
   card.append(foot);
   return card;

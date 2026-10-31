@@ -2,8 +2,8 @@
  * Probe: session management (D46) against the real bridge.
  *
  * Covers: hand-set order survives a restart, archiving hides nothing from the API,
- * deleting a plain session removes the file + its name override, and a live session
- * refuses to be deleted.
+ * deleting a plain session removes the file + its name override, a live session is skipped
+ * with a reason instead of failing the whole batch (Q-001), and a mixed batch still deletes.
  *
  * Run: node bridge/tests/manage-check.mjs
  */
@@ -165,24 +165,66 @@ try {
   send({ type: "manage", action: "delete", ids: [ids.a] });
   const gone = await waitFor("session.gone");
   assert(gone && gone.ids.includes(ids.a), "session.gone broadcast");
-  assert(!fs.existsSync(fileA), "session file deleted");
+  const binA = path.join(STATE, "trash", `${ids.a}.jsonl`);
+  const binIndex = () => JSON.parse(fs.readFileSync(path.join(STATE, "trash.json"), "utf8")).items;
+  assert(!fs.existsSync(fileA), "deleted session left the sessions dir");
+  assert(fs.existsSync(binA), "payload landed in the bin");
+  const recA = binIndex().find((it) => it.id === ids.a);
+  assert(recA && recA.file === fileA && recA.size > 0, `bin remembers where it came from (got ${JSON.stringify(recA)})`);
   assert(!(await order()).includes(ids.a), "deleted session left the list");
   const names = JSON.parse(fs.readFileSync(path.join(STATE, "names.json"), "utf8"));
   assert(!names[ids.a], "name override cleaned up");
   assert(!JSON.parse(fs.readFileSync(path.join(STATE, "manage.json"), "utf8")).order.includes(ids.a), "manage.json cleaned up");
-  log("delete removed file + name + manage entry");
+  log("delete moved the file to the bin, not into the void");
 
-  // 4. A live session refuses to go.
+  // 3b. Restore puts the file back where it came from and the list picks it up again.
+  send({ type: "manage", action: "restore", ids: [ids.a] });
+  const back = await waitFor("restore.result", (m) => m.restored?.includes(ids.a), 8000);
+  assert(back, `restore reported (got ${JSON.stringify(back)})`);
+  assert(fs.existsSync(fileA), "restored file is back at its original path");
+  assert(!fs.existsSync(binA), "payload left the bin");
+  assert(!binIndex().some((it) => it.id === ids.a), "bin index dropped the row");
+  assert((await order()).includes(ids.a), "restored session is listed again");
+  log("restore undid the delete");
+
+  // 3c. Bin it again, so the restart check below means something.
+  send({ type: "manage", action: "delete", ids: [ids.a] });
+  await waitFor("session.gone", (m) => m.ids?.includes?.(ids.a), 8000);
+
+  // 4. A live session is skipped, not fatal: partial success is the whole point of Q-001.
   ws.send(JSON.stringify({ type: "create", cwd: CWD }));
   const created = await waitFor("session", (m) => m.state?.owned === true, 90000);
   assert(created, "live session created");
   const liveId = created.sessionId;
-  const refusal = waitFor("notice", (m) => m.level === "error" && /不能删/.test(m.text), 8000);
+  const result = waitFor("delete.result", () => true, 8000);
   send({ type: "manage", action: "delete", ids: [liveId] });
-  const notice = await refusal;
-  assert(notice, `live delete refused (got ${JSON.stringify(notice)})`);
+  const only = await result;
+  assert(only.skipped?.some((s) => s.id === liveId && s.reason), `live delete skipped with a reason (got ${JSON.stringify(only)})`);
+  assert(!only.removed?.length, "nothing removed");
   assert((await order()).includes(liveId), "live session still there");
-  log("live delete refused:", notice.text.slice(0, 40));
+  log("live delete skipped:", only.skipped[0].reason);
+
+  // 4b. Mixed batch: the idle one goes, the live one comes back as skipped.
+  const mixed = waitFor("delete.result", (m) => m.removed?.length > 0, 8000);
+  send({ type: "manage", action: "delete", ids: [ids.c, liveId] });
+  const report = await mixed;
+  assert(report.removed.includes(ids.c), `idle session in the batch deleted (got ${JSON.stringify(report)})`);
+  assert(!report.removed.includes(liveId), "live session not deleted");
+  const binC = path.join(STATE, "trash", `${ids.c}.jsonl`);
+  assert(!fs.existsSync(fileC), "mixed batch moved the idle file out of the sessions dir");
+  assert(fs.existsSync(binC), "mixed batch put the idle file in the bin");
+  assert((await order()).includes(liveId), "live session survived the mixed batch");
+  log("mixed batch: removed", report.removed.length, "skipped", report.skipped.length);
+
+  // 4c. Purging is the only irreversible step: the payloads are really unlinked.
+  const purgeResult = waitFor("purge.result", (m) => m.purged?.length > 0, 8000);
+  send({ type: "manage", action: "purge", ids: [] });
+  const purged = await purgeResult;
+  assert(purged.purged.includes(ids.c) && purged.purged.includes(ids.a), `purge reported ${JSON.stringify(purged)}`);
+  assert(!fs.existsSync(binC) && !fs.existsSync(binA), "purged payloads are gone from disk");
+  assert(!fs.existsSync(fileC) && !fs.existsSync(fileA), "…and did not come back to the sessions dir");
+  assert(binIndex().length === 0, "bin index emptied");
+  log("purge destroyed", purged.purged.length, "payloads");
 
   // 5. Restart: the arrangement is part of the state, not of this process.
   ws.close();
@@ -192,10 +234,10 @@ try {
   await until(() => fs.existsSync(path.join(STATE, "passphrase.txt")), 15000, "passphrase (restart)");
   await connect();
   now = await order();
-  const pinnedFirst = now[0] === ids.b;
-  const afterPin = now.slice(1).filter((id) => id === ids.c || id === ids.a);
-  assert(pinnedFirst, `pinned survived restart (got ${now.map((x) => x.slice(-1)).join("")})`);
-  assert(afterPin[0] === ids.c, "manual order survived restart");
+  assert(now[0] === ids.b, `pinned survived restart (got ${now.map((x) => x.slice(-1)).join("")})`);
+  // The created session may be locked by its own still-running pi child, which discover() hides.
+  assert(!now.includes(ids.a) && !now.includes(ids.c), "deleted sessions stay deleted after restart");
+  assert(JSON.parse(fs.readFileSync(path.join(STATE, "manage.json"), "utf8")).pin[0] === ids.b, "pin still in manage.json");
   log("restart kept the arrangement");
 
   console.log("ALL OK");

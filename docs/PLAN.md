@@ -136,7 +136,7 @@ F:/pi-web-client/
 | M5 | 通知 + 隧道 + 托盘 + 自启 | 关掉页面，微信收到「有件事等你」，点链接回到审批；微信被 `ret:-2` 拒时 Web Push 补上 |
 | M6 | 打磨：图片、diff、控制条、移动端手势 | 手机相册选图能发；diff 有行号；模型能切 |
 
-**进度（实现后更新）**：M0–M4 已实现并端到端验证（`bridge/tests/e2e.mjs` PASS：流式、审批 add/remove、拒绝后 blocking、abort settled；`bridge/tests/browser.mjs` 跑真实 Chromium：手机 390×844 与桌面 1440×900 截图都能出全流程）。M5 的代码（Web Push + 微信 + cloudflared）已写但**没有实测过公网**；M6 只做了图片（2048px JPEG 压缩）与模型/思考档位的 WS 命令，diff 卡片与手势未做。
+**进度（实现后更新）**：M0–M4 已实现并端到端验证（`bridge/tests/e2e.mjs` PASS：流式、审批 add/remove、拒绝后 blocking、abort settled；`bridge/tests/browser.mjs` 跑真实 Chromium：手机 390×844 与桌面 1440×900 截图都能出全流程）。M5 的代码（Web Push + 微信 + cloudflared）已写但**没有实测过公网**；M6 只做了图片（2048px JPEG 压缩）与模型/思考档位的 WS 命令，diff 卡片与手势未做。**计划外的加做（D50）：文件资源管理器**——顶栏 `📁 文件` 打开 viewer 的「浏览/预览/编辑」三态，走盘符、就地编辑并保存（`node bridge/tests/save-check.mjs` + `node probes/fs-ui.mjs` 全绿）。
 
 ## 5. 最终验收（照你最初那句）
 

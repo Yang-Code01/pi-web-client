@@ -93,6 +93,52 @@ export interface SessionState {
   archived?: boolean;
   /** Tool permission mode the approval gate enforces (state/allow/<id>.json `mode`). */
   permission?: PermissionMode;
+  /** Another process (the pi terminal) holds the lock, so this one is read-only and undeletable. */
+  locked?: boolean;
+}
+
+export interface RemoveReport {
+  removed: string[];
+  /** Ids left alone, with the reason the manager shows next to the name. */
+  skipped: { id: string; name: string; reason: string }[];
+}
+
+/** One deleted session, parked in the bridge's own bin until it is emptied for real. */
+export interface TrashItem {
+  id: string;
+  name: string;
+  /** Where the file lived; restore puts it back here. */
+  file: string;
+  cwd?: string;
+  deletedAt: number;
+  size: number;
+}
+
+/** Trash payloads live next to the bridge's state, never in pi's sessions dir. */
+function trashPayload(id: string): string {
+  return statePath("trash", `${id}.jsonl`);
+}
+
+/** rename() answers EXDEV when the agent dir sits on another volume than the bridge state dir. */
+function moveFile(src: string, dst: string): void {
+  ensureDir(path.dirname(dst));
+  try {
+    fs.renameSync(src, dst);
+  } catch (err: any) {
+    if (err?.code !== "EXDEV") throw err;
+    fs.copyFileSync(src, dst);
+    fs.unlinkSync(src);
+  }
+}
+
+function readTrash(): TrashItem[] {
+  const raw = readJson<{ items?: unknown }>(statePath("trash.json"), {});
+  const items = Array.isArray(raw.items) ? (raw.items as TrashItem[]) : [];
+  return items.filter((it) => it && typeof it.id === "string" && typeof it.file === "string");
+}
+
+function writeTrash(items: TrashItem[]): void {
+  writeJson(statePath("trash.json"), { items });
 }
 
 export type PermissionMode = "readonly" | "strict" | "ask" | "auto";
@@ -1198,8 +1244,9 @@ export class SessionManager extends EventEmitter {
     const flag = (id: string) => ({ pinned: manage.pin.includes(id), archived: manage.archived.includes(id) });
     for (const s of this.sessions.values()) {
       seen.add(s.state.id);
+      const lock = readLock(s.state.id);
       // Copy: these flags must not leak into the live state a session broadcasts.
-      out.push({ ...s.state, ...flag(s.state.id) });
+      out.push({ ...s.state, ...flag(s.state.id), locked: Boolean(lock && lock.pid !== process.pid) });
     }
     for (const meta of this.discover()) {
       if (seen.has(meta.id)) continue;
@@ -1365,6 +1412,11 @@ export class SessionManager extends EventEmitter {
     this.manage.arrange(pin, order);
   }
 
+  /** Q-022: 置顶横条的 ＋ 建出来的会话，落到 pin 列表末尾。 */
+  pinLast(id: string): void {
+    this.manage.pinLast(id);
+  }
+
   setArchived(ids: string[], on: boolean): void {
     this.manage.setArchived(ids, on);
   }
@@ -1373,38 +1425,57 @@ export class SessionManager extends EventEmitter {
    * Delete session files. The only destructive operation in the bridge: a live session or one with
    * a pending approval is never deleted (its writer would keep writing to a removed file), and a
    * session locked by the terminal is left alone.
+   *
+   * Partial success on purpose: a busy session no longer cancels the whole batch. It used to throw
+   * before any unlink, so the client cleared its selection, nothing was deleted, no `session.gone`
+   * was broadcast, and the cards stayed on screen with no visible reason.
+   *
+   * Deleting only moves the file into the bin (`purge` is the one irreversible step). The file leaves
+   * pi's sessions dir, which is why pi itself and the list stop showing it.
    */
-  async remove(ids: string[]): Promise<string[]> {
+  async trash(ids: string[]): Promise<RemoveReport> {
     const metas = new Map(this.metas().map((m) => [m.id, m]));
-    const targets: { id: string; file: string | null }[] = [];
-    const busy: string[] = [];
+    const targets: { id: string; name: string; file: string | null; cwd?: string }[] = [];
+    const skipped: RemoveReport["skipped"] = [];
     for (const id of ids) {
       const session = this.sessions.get(id);
       const meta = metas.get(id);
       if (!session && !meta) continue;
       const name = session?.state.name ?? meta?.name ?? id.slice(0, 8);
       const lock = readLock(id);
-      if (session?.live || (session && session.approvals.size > 0) || (lock && lock.pid !== process.pid)) {
-        busy.push(name);
+      const why = session?.live
+        ? "正在运行"
+        : session && session.approvals.size > 0
+          ? "有待批准的请求"
+          : lock && lock.pid !== process.pid
+            ? "终端正在使用"
+            : "";
+      if (why) {
+        skipped.push({ id, name, reason: why });
         continue;
       }
-      targets.push({ id, file: session?.state.file ?? meta?.file ?? null });
+      targets.push({ id, name, file: session?.state.file ?? meta?.file ?? null, cwd: session?.state.cwd ?? meta?.cwd });
     }
-    if (busy.length) throw new Error(`${busy.length} 个会话正在运行/待确认，不能删：${busy.slice(0, 2).join("、")}`);
+    const binned: TrashItem[] = [];
     for (const t of targets) {
-      if (t.file) {
-        try {
-          fs.unlinkSync(t.file);
-        } catch {
-          /* already gone */
-        }
+      if (!t.file) {
+        skipped.push({ id: t.id, name: t.name, reason: "找不到会话文件" });
+        continue;
+      }
+      try {
+        const size = fs.statSync(t.file).size;
+        moveFile(t.file, trashPayload(t.id));
+        binned.push({ id: t.id, name: t.name, file: t.file, cwd: t.cwd, deletedAt: Date.now(), size });
+      } catch (err: any) {
+        skipped.push({ id: t.id, name: t.name, reason: `文件移不进垃圾箱（${err?.code ?? err}）` });
+        continue;
       }
       const session = this.sessions.get(t.id);
       if (session) {
         try {
           await session.close();
         } catch {
-          /* closing a read-only tail cannot fail the delete */
+          /* closing a read-only tail cannot fail the move */
         }
         this.sessions.delete(t.id);
       }
@@ -1412,9 +1483,69 @@ export class SessionManager extends EventEmitter {
       forgetOrigin(t.id);
       this.manage.forget(t.id);
     }
-    // The file scan is cached for a few seconds; a delete must not be resurrected by it.
+    if (binned.length) {
+      const gone = new Set(binned.map((b) => b.id));
+      writeTrash([...readTrash().filter((it) => !gone.has(it.id)), ...binned]);
+    }
+    // The file scan is cached for a few seconds; a move must not be resurrected by it.
     this.cache = null;
-    return targets.map((t) => t.id);
+    return { removed: binned.map((t) => t.id), skipped };
+  }
+
+  /** Newest first. Rows whose payload vanished are dropped instead of shown as dead entries. */
+  trashList(): TrashItem[] {
+    const items = readTrash();
+    const alive = items.filter((it) => fs.existsSync(trashPayload(it.id)));
+    if (alive.length !== items.length) writeTrash(alive);
+    return alive.sort((a, b) => b.deletedAt - a.deletedAt);
+  }
+
+  /** Put files back where they came from. Locks and approvals do not apply: nothing is running. */
+  restore(ids: string[]): { restored: string[]; skipped: { id: string; reason: string }[] } {
+    const items = readTrash();
+    const byId = new Map(items.map((it) => [it.id, it]));
+    const restored: string[] = [];
+    const skipped: { id: string; reason: string }[] = [];
+    for (const id of ids) {
+      const it = byId.get(id);
+      if (!it) {
+        skipped.push({ id, reason: "不在垃圾箱里" });
+        continue;
+      }
+      try {
+        moveFile(trashPayload(id), it.file);
+        restored.push(id);
+      } catch (err: any) {
+        skipped.push({ id, reason: `还原失败（${err?.code ?? err}）` });
+      }
+    }
+    if (restored.length) {
+      const back = new Set(restored);
+      writeTrash(items.filter((it) => !back.has(it.id)));
+      this.cache = null;
+    }
+    return { restored, skipped };
+  }
+
+  /** The one irreversible action. No ids empties the whole bin. */
+  purge(ids?: string[]): { purged: string[] } {
+    const items = readTrash();
+    const want = ids?.length ? new Set(ids) : null;
+    const purged: string[] = [];
+    for (const it of items) {
+      if (want && !want.has(it.id)) continue;
+      try {
+        fs.unlinkSync(trashPayload(it.id));
+      } catch {
+        /* already gone */
+      }
+      purged.push(it.id);
+    }
+    if (purged.length) {
+      const gone = new Set(purged);
+      writeTrash(items.filter((it) => !gone.has(it.id)));
+    }
+    return { purged };
   }
 
   snapshot(id: string) {

@@ -68,6 +68,17 @@ export class Manage {
     this.save();
   }
 
+  /**
+   * Q-022: a session created from the pin strip's ＋ arrives pinned. Appended, not unshifted, so
+   * it lands right next to the button that made it instead of jumping over older pins.
+   */
+  pinLast(id: string): void {
+    if (!id || this.data.archived.includes(id)) return;
+    this.data.pin = [...this.data.pin.filter((x) => x !== id), id];
+    this.data.order = this.data.order.filter((x) => x !== id);
+    this.save();
+  }
+
   setArchived(idsIn: string[], on: boolean): void {
     const keep = new Set(this.data.archived);
     for (const id of idsIn) {
