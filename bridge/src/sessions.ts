@@ -314,6 +314,8 @@ export class Session extends EventEmitter {
   /** Set while close() is taking pi down on purpose: its exit and shutdown noise are expected. */
   private closing = false;
   private closeQuietly = false;
+  /** When our own pi last exited: writes up to then are ours, not a terminal's (see openLive D8). */
+  ownExitAt = 0;
   private draftId: string | null = null;
   private userCounter = 0;
 
@@ -478,6 +480,7 @@ export class Session extends EventEmitter {
       const quiet = this.closeQuietly;
       this.closing = false;
       this.closeQuietly = false;
+      this.ownExitAt = Date.now();
       this.state.owned = false;
       this.setState({ running: false });
       releaseLock(id);
@@ -1208,12 +1211,15 @@ export class SessionManager extends EventEmitter {
     if (!this.known(id)) throw new Error("找不到这个会话");
     const session = this.ensure(id);
     if (session.live) return session;
-    // D8: a file that changed seconds ago probably still has a terminal writer.
+    // D8: a file that changed seconds ago probably still has a terminal writer — unless the last
+    // write came from our own pi, which has exited since (stop → reclaim right away must work).
     const file = session.state.file;
     if (file) {
       try {
-        const ageMs = Date.now() - fs.statSync(file).mtimeMs;
-        if (ageMs < 20000) {
+        const mtime = fs.statSync(file).mtimeMs;
+        const ageMs = Date.now() - mtime;
+        const ours = session.ownExitAt > 0 && mtime <= session.ownExitAt + 1000;
+        if (ageMs < 20000 && !ours) {
           throw new Error("这个会话 20 秒前还在被写入——终端里的 pi 可能还开着。先退出那边的会话，再在这里继续。");
         }
       } catch (e: any) {
