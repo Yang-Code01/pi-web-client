@@ -18,8 +18,7 @@ export interface MdOptions {
   imageSrc?: (src: string) => string | null;
 }
 
-/** Extensions worth linking even as a bare file name (`README.md`). */
-const PREVIEW_EXT = "md|markdown|html?|png|jpe?g|gif|svg|webp|txt|csv|log|json|pdf";
+/** Extensions worth linking when the text names a file that has a directory part. */
 const CODE_EXT =
   "md|markdown|html?|png|jpe?g|gif|svg|webp|bmp|ico|txt|csv|tsv|log|json|jsonl|ya?ml|toml|ini|xml|pdf|tsx?|jsx?|mjs|cjs|vue|svelte|css|scss|less|py|rb|go|rs|java|kt|cs|cpp|cc|c|h|hpp|sh|ps1|bat|cmd|sql|lua|php|swift|dart|r|gradle|properties|env|lock|conf|cfg";
 // Name characters: no whitespace, quotes, brackets or CJK punctuation.
@@ -27,15 +26,16 @@ const NAME = "[^\\s`'\"<>|*?:()\\[\\]{}，。；：！？、（）【】「」�
 const WIN_ABS = `[A-Za-z]:[\\\\/](?:${NAME}+[\\\\/])*${NAME}+\\.[A-Za-z0-9]{1,10}`;
 const POSIX_ABS = `(?<![\\w.])/(?:${NAME}+/)+${NAME}+\\.(?:${CODE_EXT})`;
 const REL_DIR = `(?<![\\w./\\\\])(?:\\.{1,2}[\\\\/])?(?:${NAME}+[\\\\/])+${NAME}+\\.(?:${CODE_EXT})`;
-const BARE = `(?<![\\w./\\\\-])${NAME}+\\.(?:${PREVIEW_EXT})`;
-const PATH_RE = new RegExp(`(${WIN_ABS})|(${POSIX_ABS})|(${REL_DIR})|(${BARE})(?![\\w])`, "g");
-const PATH_WHOLE = new RegExp(`^(?:${WIN_ABS}|${POSIX_ABS}|${REL_DIR}|${BARE})$`);
+// A bare name (`问题记录.md`) is deliberately NOT a path: it does not say where the file is, and
+// guessing a directory for it opens the wrong file sooner or later. Use a path, or the file manager.
+const PATH_RE = new RegExp(`(${WIN_ABS})|(${POSIX_ABS})|(${REL_DIR})`, "g");
+const PATH_WHOLE = new RegExp(`^(?:${WIN_ABS}|${POSIX_ABS}|${REL_DIR})$`);
 
 function stripTrail(p: string): string {
   return p.replace(/[.,;:!?)\]}'"]+$/, "");
 }
 
-/** Does a code span (`src/app.ts`) name a file? */
+/** Does a code span (`src/app.ts`) name a file? A bare name (`README.md`) does not count. */
 export function looksLikePath(text: string): boolean {
   const t = text.trim();
   if (!t || t.length > 400 || /\s/.test(t) || /^[a-z]+:\/\//i.test(t)) return false;

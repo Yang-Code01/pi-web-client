@@ -67,6 +67,25 @@ export interface SessionState {
   /** Sidebar arrangement from the bridge (state/manage.json). */
   pinned?: boolean;
   archived?: boolean;
+  /** Another process (the pi terminal) holds the lock: read-only, and the bridge refuses to delete it. */
+  locked?: boolean;
+}
+
+/** What `manage/delete` did: partial success, so both halves matter (see Q-001). */
+export interface DeleteReport {
+  removed: string[];
+  skipped: { id: string; name: string; reason: string }[];
+}
+
+/** A deleted session parked in the bridge's bin: gone from the list, not gone from disk. */
+export interface TrashItem {
+  id: string;
+  name: string;
+  /** Where the file lived; restore puts it back here. */
+  file: string;
+  cwd?: string;
+  deletedAt: number;
+  size: number;
 }
 
 /** The part of the sidebar the user owns: pin, manual order, archive (D46). */
@@ -157,3 +176,12 @@ export interface PreviewInfo {
 
 /** Tool permission mode the bridge's approval gate enforces per session. */
 export type PermissionMode = "readonly" | "strict" | "ask" | "auto";
+
+/** Q-021: what the bridge knows about the repo holding a directory. Present = it is a repository. */
+export interface GitInfo {
+  repo: string;
+  branch: string;
+  detached: boolean;
+  empty: boolean;
+  dirty: number;
+}

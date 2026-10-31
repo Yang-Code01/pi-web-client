@@ -125,42 +125,6 @@ function mimeOf(file: string): string {
   return looksText(file) ? "text/plain; charset=utf-8" : "application/octet-stream";
 }
 
-// The transcript is the evidence for "this path showed up in the session": cache its lowercased
-// text per file version, a couple of sessions at a time.
-const transcriptCache = new Map<string, { key: string; text: string }>();
-
-function transcript(file: string): string {
-  try {
-    const st = fs.statSync(file);
-    const key = `${st.size}:${st.mtimeMs}`;
-    const hit = transcriptCache.get(file);
-    if (hit?.key === key) return hit.text;
-    const text = fs.readFileSync(file, "utf8").toLowerCase();
-    transcriptCache.delete(file);
-    transcriptCache.set(file, { key, text });
-    while (transcriptCache.size > 3) transcriptCache.delete(transcriptCache.keys().next().value!);
-    return text;
-  } catch {
-    return "";
-  }
-}
-
-function mentioned(sessionFile: string | null, raw: string, abs: string): boolean {
-  if (!sessionFile) return false;
-  const text = transcript(sessionFile);
-  if (!text) return false;
-  const forms = new Set<string>();
-  for (const p of [raw, abs]) {
-    if (!p || p.length < 3) continue;
-    const lower = p.toLowerCase();
-    forms.add(lower);
-    forms.add(lower.replace(/\\/g, "/"));
-    forms.add(lower.replace(/\\/g, "\\\\")); // as JSON-escaped in the jsonl
-  }
-  for (const f of forms) if (text.includes(f)) return true;
-  return false;
-}
-
 function issue(root: string): string {
   const now = Date.now();
   for (const [t, v] of tokens) if (now - v.at > TOKEN_TTL_MS) tokens.delete(t);
@@ -181,10 +145,9 @@ export function openPreview(session: { cwd: string; file: string | null }, rawPa
     /* keep raw */
   }
   const abs = path.isAbsolute(decoded) ? path.resolve(decoded) : path.resolve(session.cwd, decoded);
+  // Reads follow /api/dirs, which already lists any drive: a second, narrower rule here only made
+  // the same path openable in one place and not the other (D50).
   const inCwd = isUnder(abs, session.cwd);
-  if (!inCwd && !mentioned(session.file, decoded, abs)) {
-    throw new Error("这个文件既不在会话工作目录里，也没在会话里出现过，不能预览");
-  }
   let st: fs.Stats;
   try {
     st = fs.statSync(abs);
@@ -196,6 +159,121 @@ export function openPreview(session: { cwd: string; file: string | null }, rawPa
   const root = inCwd ? path.resolve(session.cwd) : path.dirname(abs);
   const rel = path.relative(root, abs).split(path.sep).map(encodeURIComponent).join("/");
   return { token: issue(root), rel, name: path.basename(abs), abs, size: st.size, mtime: st.mtimeMs, kind: kindOf(abs) };
+}
+
+/**
+ * Writable text files: only what this page opened through /api/preview, and only text ≤ 2 MB.
+ * The token grants reads under a root directory, which is far wider than "this file" — writes
+ * therefore never trust the token, only this registry (D50).
+ */
+const MAX_EDIT_BYTES = 2 * 1024 * 1024;
+interface EditGrant {
+  real: string;
+  size: number;
+  mtime: number;
+  bom: boolean;
+}
+const editable = new Map<string, Map<string, EditGrant>>();
+
+function hasBom(file: string): boolean {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const b = Buffer.alloc(3);
+    const n = fs.readSync(fd, b, 0, 3, 0);
+    return n === 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf;
+  } catch {
+    return false;
+  } finally {
+    if (fd != null) fs.closeSync(fd);
+  }
+}
+
+const canEdit = (info: PreviewInfo): boolean => (info.kind === "markdown" || info.kind === "text") && info.size <= MAX_EDIT_BYTES;
+
+/** Remember a file as writable for this session, so `/api/save` has something to check against. */
+export function rememberEditable(sessionId: string, info: PreviewInfo): void {
+  if (!sessionId || !canEdit(info)) return;
+  let m = editable.get(sessionId);
+  if (!m) {
+    m = new Map();
+    editable.set(sessionId, m);
+  }
+  if (m.size >= 200) m.clear();
+  m.set(norm(info.abs), { real: info.abs, size: info.size, mtime: info.mtime, bom: hasBom(info.abs) });
+}
+
+export interface SaveResult {
+  path: string;
+  mtime: number;
+  size: number;
+}
+
+function fail(status: number, message: string): never {
+  throw Object.assign(new Error(message), { status });
+}
+
+function uniqueCopy(file: string): string {
+  const dir = path.dirname(file);
+  const ext = path.extname(file);
+  const base = path.basename(file, ext);
+  for (let i = 1; i < 100; i++) {
+    const cand = path.join(dir, i === 1 ? `${base}.copy${ext}` : `${base}.copy-${i}${ext}`);
+    if (!fs.existsSync(cand)) return cand;
+  }
+  fail(409, "副本文档太多了，先清理一下");
+}
+
+/**
+ * Write back a file the page edited. Optimistic lock on mtime + size: a file pi changed while it was
+ * open is refused with 409 instead of being silently overwritten. `copy: true` writes a sibling
+ * `<name>.copy<ext>` instead (the conflict bar's third choice).
+ */
+export function savePreviewFile(
+  sessionId: string,
+  input: { path?: unknown; text?: unknown; mtime?: unknown; size?: unknown; copy?: unknown },
+): SaveResult {
+  const rawPath = String(input.path ?? "").trim();
+  if (!rawPath) fail(400, "路径为空");
+  if (typeof input.text !== "string") fail(400, "内容必须是字符串");
+  const text = input.text;
+  if (Buffer.byteLength(text, "utf8") > MAX_EDIT_BYTES) fail(400, `内容超过 2 MB，浏览器里改不了这么大的文件`);
+  const grant = editable.get(sessionId)?.get(norm(rawPath));
+  if (!grant) fail(403, "这个文件没有在本页打开过，不能直接保存");
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(grant.real);
+  } catch {
+    fail(404, `文件不见了：${grant.real}`);
+  }
+  if (!st.isFile()) fail(400, `不是文件：${grant.real}`);
+  const copy = input.copy === true;
+  let target = grant.real;
+  if (copy) {
+    target = uniqueCopy(grant.real);
+  } else {
+    const mtime = Number(input.mtime);
+    const size = Number(input.size);
+    if (!Number.isFinite(mtime) || Math.abs(st.mtimeMs - mtime) > 0.5 || st.size !== size) {
+      fail(409, "文件在你编辑期间被改过了");
+    }
+  }
+  const payload = (grant.bom ? "\ufeff" : "") + text;
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmp, payload, "utf8");
+  try {
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* the rename already moved it */
+    }
+    throw err;
+  }
+  const after = fs.statSync(target);
+  editable.get(sessionId)!.set(norm(target), { real: target, size: after.size, mtime: after.mtimeMs, bom: grant.bom });
+  return { path: target, mtime: after.mtimeMs, size: after.size };
 }
 
 /** `/raw/<token>/<rel>`: returns false when the url is not a raw url at all. */

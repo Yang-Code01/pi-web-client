@@ -31,6 +31,24 @@ button, input, textarea { font: inherit; color: inherit; }
 a { color: var(--accent); text-decoration: none; }
 #app { height: 100%; zoom: var(--ui-scale, 1); }
 
+/* ---------------------------------------------------------------- scrollbars
+   一根细竖线：轨道透明，滑块 4px 圆头、低对比度，指上去变亮、按住变强调色。
+   只用 ::-webkit-scrollbar 这套（不用 scrollbar-width/color）：标准属性一旦设置，
+   Chromium 就改走原生滚动条，两端会带 ▲▼ 按钮且无法去掉 —— 实测过，这里只能二选一。 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+/* 关掉经典滚动条两端的 ▲▼ 箭头按钮：深色界面里它们最刺眼 */
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #3a4658;
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+  min-height: 40px;
+}
+::-webkit-scrollbar-thumb:hover { background: #55657c; }
+::-webkit-scrollbar-thumb:active { background: var(--accent); }
+::-webkit-scrollbar-corner { background: transparent; }
 /* ---------------------------------------------------------------- login */
 .login {
   height: 100%;
@@ -83,8 +101,8 @@ a { color: var(--accent); text-decoration: none; }
 .app {
   height: 100%;
   display: grid;
-  grid-template-rows: auto 1fr auto;
-  grid-template-areas: "top" "main" "tabs";
+  grid-template-rows: auto auto 1fr auto;
+  grid-template-areas: "top" "pins" "main" "tabs";
 }
 .topbar {
   grid-area: top;
@@ -109,8 +127,11 @@ a { color: var(--accent); text-decoration: none; }
 
 /* minmax(0,1fr), not 1fr: a grid track sized by min-content lets long monospace
    paths push the pane wider than the phone viewport (cards then clip at the edge). */
-.main { grid-area: main; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr); }
+.main { grid-area: main; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr); position: relative; }
 .main > .pane { min-width: 0; }
+/* Column dividers exist only in the three-column desktop layout (see the @media block). */
+.col-grip { display: none; }
+body.col-resizing { cursor: col-resize; user-select: none; }
 .pane { overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
 .pane[hidden] { display: none; }
 .icon-btn {
@@ -225,7 +246,12 @@ a { color: var(--accent); text-decoration: none; }
 .new-sheet .ns-row { display: flex; gap: 8px; }
 .new-sheet .ns-row .ns-input { flex: 1; min-width: 0; }
 .new-sheet .ns-row .btn { flex: none; }
-.new-sheet .ns-browser { margin-top: 8px; border: 1px solid var(--line-soft); border-radius: 10px; padding: 4px 8px 8px; }
+.new-sheet .ns-browser {
+  margin-top: 8px; border: 1px solid var(--line-soft); border-radius: 10px; padding: 4px 8px 8px;
+  /* 目录一多就把弹层撑破（列表要自己滚，弹层不许被撑高）：min-height:0 才能让 flex 子项收缩 */
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+}
+.new-sheet .ns-browser .dir-list { max-height: min(42vh, 360px); }
 .new-sheet .ns-error { color: var(--danger); font-size: 12.5px; min-height: 1em; padding-top: 8px; }
 .new-sheet .ns-status { display: flex; align-items: center; gap: 8px; padding: 10px 12px; margin-top: 4px; border-radius: 10px; background: #0b1f28; color: var(--accent); font-size: 13px; }
 .new-sheet .ns-status[hidden] { display: none; }
@@ -289,7 +315,10 @@ a { color: var(--accent); text-decoration: none; }
 .sheet.mgr-sheet {
   width: min(1100px, 96vw); height: min(88vh, 900px); max-height: 88vh;
   border-radius: 16px; border: 1px solid var(--line); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
-  grid-template-rows: auto auto minmax(0, 1fr) auto; min-width: 0;
+  /* Flex, not the sheet's grid: the bin hides the toolbar, and a grid would then hand the spare
+     row to the footer instead of to the list. */
+  display: flex; flex-direction: column;
+  min-width: 0;
 }
 .mgr-tools { display: grid; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); }
 .mgr-search {
@@ -304,7 +333,7 @@ a { color: var(--accent); text-decoration: none; }
   background: var(--panel-2); color: var(--text); font-size: 12.5px;
 }
 .mgr-filters .btn { padding: 5px 10px; font-size: 12px; }
-.mgr-body { overflow-y: auto; padding: 6px 10px 10px; min-height: 0; }
+.mgr-body { overflow-y: auto; padding: 6px 10px 10px; min-height: 0; flex: 1 1 auto; }
 .mgr-group { display: grid; gap: 2px; margin-bottom: 6px; }
 .mgr-group-head {
   position: sticky; top: -6px; z-index: 1; display: flex; align-items: center; gap: 8px;
@@ -354,11 +383,24 @@ a { color: var(--accent); text-decoration: none; }
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 14px;
   border-top: 1px solid var(--line-soft);
 }
-.mgr-foot .spacer { flex: 1; }
+.mgr-foot .spacer, .trash-head .spacer { flex: 1; }
 .mgr-foot .btn { padding: 6px 12px; font-size: 12.5px; }
 .mgr-foot .btn.danger.armed { border-color: var(--danger); background: #2a0f16; font-weight: 600; }
 .mgr-all { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--dim); cursor: pointer; }
 .mgr-count { font: 12px/1 var(--mono); color: var(--faint); }
+/* Delete outcome (Q-001): the sheet covers the transcript, so the reason has to live in the sheet. */
+.mgr-note { padding: 8px 14px; border-top: 1px solid var(--line-soft); font-size: 12.5px; line-height: 1.45; color: var(--warn); background: rgba(251, 191, 36, 0.07); }
+/* The bin lives in the same sheet as the list: same width, same footer, one click away. */
+/* Sits right after 重置 in the filter row, and stays there in the bin view (the filters hide
+   around it), so it doubles as the way back. */
+.mgr-bin { margin-left: 2px; }
+.mgr-bin-hint { font-size: 12px; color: var(--faint); }
+.mgr-bin.on { color: var(--accent); border-color: var(--accent); background: rgba(96, 165, 250, 0.12); }
+.trash-head { display: flex; align-items: center; gap: 2px; padding: 12px 14px 6px; font-size: 12px; color: var(--text); }
+.trash-head .btn { padding: 4px 10px; font-size: 12px; }
+.trash-head .faint { color: var(--faint); }
+.trash-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+.trash-row .mgr-sub { flex-wrap: wrap; row-gap: 2px; }
 @media (max-width: 720px) {
   .sheet-back.center { padding: 0; }
   .sheet.mgr-sheet { width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
@@ -369,11 +411,38 @@ a { color: var(--accent); text-decoration: none; }
 }
 
 /* ---------------------------------------------------------------- chat */
-.chat-pane { display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+.chat-pane { display: grid; grid-template-rows: 1fr auto auto; min-height: 0; position: relative; }
 .chat-scroll { padding: 16px 14px 8px; display: flex; flex-direction: column; gap: 12px; }
 /* 这个列容器有确定高度且 overflow-y:auto；子项若自带 overflow:hidden（如 .fcard），
    min-height:auto 会退化成 0，于是长会话里被 flex 压缩成 2px 细线。统一禁止收缩。 */
 .chat-scroll > * { flex: 0 0 auto; }
+/* 「回到底部」：滚动视口底部正中一颗圆钮，只有一枚向下箭头（Q-027：原来是一整条写着「回到底部 /
+   有新内容 ↓」的胶囊，太占横面）。掉队期间收到新内容时，箭头旁才长出「new」小标。
+   sticky 而不是 absolute —— absolute 会跟着内容一起滚走。margin-top 负值与自身高度相抵，不占版面。 */
+.chat-jump {
+  position: sticky; bottom: 6px; align-self: center; margin: -36px 0 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0;
+  width: 30px; height: 30px; padding: 0; border-radius: 999px;
+  /* 不透明：半透明会让下面的正文透上来，一枚箭头后面隐约露出「334」比留白更难看 */
+  border: 1px solid var(--line); background: #121820;
+  color: var(--fg-dim); font-size: 13px; line-height: 1; cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+  z-index: 5;
+}
+.chat-jump[hidden] { display: none; }
+.chat-jump .jump-arrow { display: block; transform: translateY(-0.5px); }
+/* The badge only exists while something is waiting; without it the button is a plain circle. */
+.chat-jump .jump-new { display: none; }
+.chat-jump:hover { color: var(--fg); border-color: var(--accent); }
+.chat-jump.has-new {
+  width: auto; padding: 0 9px 0 8px; gap: 6px;
+  color: var(--accent); border-color: rgba(124, 196, 255, .5);
+}
+.chat-jump.has-new .jump-new {
+  display: inline-flex; align-items: center; height: 16px; padding: 0 5px;
+  border-radius: 999px; background: rgba(124, 196, 255, .18);
+  font-size: 10px; letter-spacing: .08em;
+}
 .msg { max-width: 100%; }
 /* model ids are lowercase by nature: no uppercase transform, just wide tracking */
 .msg .who { font-size: 11px; color: var(--faint); letter-spacing: 0.06em; margin-bottom: 4px; }
@@ -485,6 +554,9 @@ a { color: var(--accent); text-decoration: none; }
 }
 .fcard.calm .foot { border-top-color: var(--line-soft); }
 .fcard .foot details.raw { border: 0; flex: none; }
+.fcard .foot details.raw > summary.raw-top { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.raw .chev { font-size: 10px; color: var(--faint); transition: transform 0.15s ease; }
+.raw[open] .chev { transform: rotate(90deg); }
 .fcard .foot details.raw > summary {
   cursor: pointer; list-style: none; padding: 0; color: var(--dim); border-bottom: 1px dashed #2a3442;
 }
@@ -554,6 +626,33 @@ a { color: var(--accent); text-decoration: none; }
 .composer .hint-status { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 1 1 260px; }
 .composer .hint-status.busy { color: var(--accent); font-size: 12px; }
 .composer .hint-status.wait { color: var(--warn, #d29922); }
+/* Q-021: 会话目录是 git 仓库时，这颗 chip 顶掉右边的按键提示（提示挪进 title） */
+.composer .hint-status .git-chip {
+  flex: none;
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 26ch;
+  border: 1px solid var(--line-soft); background: var(--panel); color: var(--text);
+  border-radius: 999px; padding: 2px 9px;
+  font-family: var(--mono); font-size: 11px;
+  cursor: pointer;
+}
+.composer .hint-status .git-chip:hover { border-color: var(--line); background: var(--panel-2); }
+.composer .hint-status .git-chip:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
+.composer .hint-status .git-chip .git-glyph { flex: none; color: var(--accent); font-size: 12px; line-height: 1; }
+.composer .hint-status .git-chip .git-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer .hint-status .git-chip .git-dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--warn, #d29922); }
+.composer .hint-status .git-chip .git-count { flex: none; color: var(--warn, #d29922); font-size: 10.5px; }
+.composer .hint-status .git-chip .git-tag { flex: none; color: var(--faint); font-size: 10px; letter-spacing: 0.04em; }
+/* 运行态：分支只是一枚尾标，窄了就让它先被切掉 */
+.composer .hint-status .git-chip.flat {
+  flex: 0 1 auto; overflow: hidden;
+  max-width: 18ch; padding: 0 2px;
+  border: 0; background: none; color: var(--faint);
+}
+.composer .hint-status .git-chip.flat .git-glyph { color: var(--muted); }
+.composer .hint-status .git-chip.flat .git-dot,
+.composer .hint-status .git-chip.flat .git-count,
+.composer .hint-status .git-chip.flat .git-tag { display: none; }
 .composer .hint-status .act-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
 .composer .hint-status .act-time { flex: none; color: var(--faint); font-family: var(--mono); }
 .composer .hint-status .btn { flex: none; padding: 4px 10px; font-size: 12px; }
@@ -563,6 +662,33 @@ a { color: var(--accent); text-decoration: none; }
   animation: act-spin 0.8s linear infinite;
 }
 .composer .hint-status.wait .act-spin { animation: none; border-right-color: currentColor; opacity: 0.8; }
+/* Hover detail for the activity line (Q-006): the untruncated step plus the running clock. */
+.composer .hint-status { position: relative; }
+.composer .hint-status .act-pop {
+  position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 40;
+  display: none; gap: 3px; padding: 9px 11px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--panel-2); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  font-size: 12px; line-height: 1.45; color: var(--dim);
+  min-width: 160px; max-width: min(560px, 80vw); pointer-events: none;
+}
+/* Q-029: 不再跟着 :hover 走 —— 悬停满 3 秒由 JS 打上 .peek（web/src/app.ts 的 wireHintPeek），
+   此后鼠标离开也不消失，点卡片外面才关。:focus-within 保留给键盘（焦点在「中断」上立刻可读）。 */
+.composer .hint-status.busy.peek .act-pop, .composer .hint-status.busy:focus-within .act-pop { display: grid; pointer-events: auto; }
+.composer .hint-status .act-pop-main { color: var(--text); font-family: var(--mono); word-break: break-word; }
+/* Q-017: 参数 / 输出 / 思考 三类附加行。标签窄列，值可折行；输出保留换行并限高。 */
+.composer .hint-status .act-pop-row {
+  display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 6px;
+  align-items: baseline; padding-top: 3px; border-top: 1px solid var(--line);
+}
+.composer .hint-status .act-pop-label { color: var(--faint); font-size: 11px; }
+.composer .hint-status .act-pop-val {
+  font-family: var(--mono); word-break: break-word; white-space: pre-wrap; overflow: hidden;
+}
+/* 行数限制用 max-height + em 表达（不用 line-clamp，它的 vendor 前缀常年被 lint 念叨）。 */
+.composer .hint-status .act-pop-row.args .act-pop-val { max-height: 2.9em; }
+.composer .hint-status .act-pop-row.out .act-pop-val { max-height: 8.7em; color: var(--fg-dim); }
+.composer .hint-status .act-pop-row.think .act-pop-val { max-height: 4.4em; font-style: italic; }
+.composer .hint-status .act-pop-meta { color: var(--faint); font-family: var(--mono); }
 @keyframes act-spin { to { transform: rotate(360deg); } }
 /* the compact + model buttons sit at the far right of the hint row, past the keyboard hint */
 .composer .hint-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; }
@@ -576,6 +702,71 @@ a { color: var(--accent); text-decoration: none; }
   animation: act-spin 0.8s linear infinite;
 }
 .composer .hint-tools .release-btn:hover { color: var(--warn); border-color: #3a2f14; }
+
+/* An ask panel that was closed mid-answer still shows what was filled in. */
+.ask-lost { border-color: rgba(251, 191, 36, 0.35); }
+.ask-lost-head { font-size: 13px; color: var(--warn); }
+.ask-lost-sub { font-size: 12.5px; color: var(--dim); }
+.ask-lost-actions { display: flex; gap: 8px; margin-top: 2px; }
+
+/* ---------------------------------------------------------------- pinned strip (shown when the left column is collapsed) */
+.pin-strip {
+  grid-area: pins;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  overflow-x: auto;
+}
+.pin-strip[hidden] { display: none; }
+.pin-strip-label { flex: 0 0 auto; font-size: 11px; letter-spacing: 0.06em; color: var(--faint); margin-right: 2px; }
+.pin-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--line-soft);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.pin-chip:hover { border-color: var(--line); background: var(--panel-2); }
+/* Q-022: ★ 自己是一颗按钮（button 不能套 button）—— 点星星取消置顶，点其余打开会话 */
+.pin-star {
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 4px 3px 4px 9px;
+  border-radius: 999px 0 0 999px;
+  cursor: pointer;
+}
+.pin-star:hover { text-shadow: 0 0 6px rgba(124, 196, 255, 0.55); }
+.pin-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 3px 11px 3px 3px;
+  border-radius: 0 999px 999px 0;
+  cursor: pointer;
+}
+.pin-star:focus-visible, .pin-open:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: -1px; }
+.pin-chip .pin-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pin-chip small { color: var(--faint); font-size: 11px; }
+.pin-empty { flex: 0 0 auto; color: var(--faint); font-size: 12px; }
+.pin-expand { margin-left: auto; color: var(--faint); padding: 3px 11px; }
+.pin-expand:hover { color: var(--accent); }
 
 /* ---------------------------------------------------------------- tabs (mobile) */
 .tabs {
@@ -612,23 +803,29 @@ a { color: var(--accent); text-decoration: none; }
 
 /* ---------------------------------------------------------------- desktop */
 @media (min-width: 900px) {
-  .app { grid-template-rows: auto 1fr; grid-template-areas: "top" "main"; }
+  .app { grid-template-rows: auto auto 1fr; grid-template-areas: "top" "pins" "main"; }
   .tabs { display: none; }
-  .main { grid-template-columns: 280px minmax(0, 1fr) 300px; }
-  .main.no-left { grid-template-columns: minmax(0, 1fr) 300px; }
-  .main.no-right { grid-template-columns: 280px minmax(0, 1fr); }
+  .main { --sessions-w: 280px; --queue-w: 300px; grid-template-columns: var(--sessions-w) minmax(0, 1fr) var(--queue-w); }
+  .main.no-left { grid-template-columns: minmax(0, 1fr) var(--queue-w); }
+  .main.no-right { grid-template-columns: var(--sessions-w) minmax(0, 1fr); }
   .main.no-left.no-right { grid-template-columns: minmax(0, 1fr); }
+  /* Column dividers (Q-003). Absolute inside .main, not inside a pane: the panes scroll. */
+  .col-grip { display: block; position: absolute; top: 0; bottom: 0; width: 9px; z-index: 6; cursor: col-resize; touch-action: none; }
+  .col-grip::after { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: transparent; transition: background 0.12s; }
+  .col-grip:hover::after, .col-grip.dragging::after { background: var(--accent); }
+  .col-grip.grip-l { left: calc(var(--sessions-w) - 4px); }
+  .col-grip.grip-r { right: calc(var(--queue-w) - 4px); }
+  .main.no-left .grip-l, .main.no-right .grip-r { display: none; }
   .main .pane { border-right: 1px solid var(--line-soft); }
   .main .pane:last-child { border-right: 0; border-left: 1px solid var(--line-soft); }
   .main .pane.chat-pane { border-right: 0; }
-  .chat-scroll { padding: 22px 26px 10px; }
+  /* 右边留 34px：缩略图那条刻度带要有一格干净的走廊，不能压在气泡边缘上（Q-028）。 */
+  .chat-scroll { padding: 22px 34px 10px 26px; }
   .composer { padding: 12px 26px 16px; }
-  .msg .body { max-width: 760px; }
-  .chat-scroll > * { max-width: 820px; }
-  /* collapsing a column is for focus: the transcript and composer reclaim the freed width */
-  .main.no-left .chat-scroll > *, .main.no-right .chat-scroll > *,
-  .main.no-left .composer > *, .main.no-right .composer > * { width: 100%; max-width: 100%; }
-  .main.no-left .msg .body, .main.no-right .msg .body { max-width: 100%; }
+  /* 全屏铺满：不再限阅读宽度（Q-025 用户口径 —— 屏幕宽度尽量用上，窄了就自然变窄）。 */
+  .msg .body { max-width: 100%; }
+  /* 全宽，但排除「回到底部」那颗药丸：它靠 align-self:center 定位，被拉成整行就变成一个横条。 */
+  .chat-scroll > *:not(.chat-jump) { width: 100%; max-width: 100%; }
 }
 @media (max-width: 899px) {
   .pane[hidden] { display: none; }
@@ -684,6 +881,7 @@ a { color: var(--accent); text-decoration: none; }
 .sheet {
   background: var(--panel); border-top: 1px solid var(--line);
   border-radius: 18px 18px 0 0; max-height: 78vh; display: grid; grid-template-rows: auto 1fr auto;
+  overflow: hidden; /* 任何一块内容高了都只在自己的框里滚，不许画到弹层外面 */
   padding-bottom: env(safe-area-inset-bottom, 0px);
   animation: sheet-up 180ms ease-out;
 }
@@ -862,9 +1060,41 @@ a { color: var(--accent); text-decoration: none; }
 .qa-body { display: grid; gap: 10px; padding: 8px 2px 2px; }
 .qa-q { display: grid; gap: 4px; }
 .qa-label { font: 11px/1.4 var(--mono); color: var(--faint); letter-spacing: 0.04em; }
-.qa-prompt { font-size: 13.5px; line-height: 1.5; color: var(--text); }
+/* Prompts arrive with real newlines; without pre-wrap a multi-line question renders as one blob. */
+.qa-prompt { font-size: 13.5px; line-height: 1.5; color: var(--text); white-space: pre-wrap; word-break: break-word; }
 .qa-a { font-size: 13px; color: var(--ok); }
 .qa-a.pending { color: var(--faint); }
+
+/* Q-004: long blocks fold down to a few lines; short ones never show the control. */
+.foldable { position: relative; }
+.foldable .fold-body { overflow: hidden; }
+.foldable.folded .fold-body {
+  max-height: 240px;
+  -webkit-mask-image: linear-gradient(180deg, #000 68%, rgba(0, 0, 0, 0.15));
+  mask-image: linear-gradient(180deg, #000 68%, rgba(0, 0, 0, 0.15));
+}
+/* Q-016: one fold trigger for the whole transcript — chevron on the left, label on the right,
+   same size and same hover everywhere. Each owner keeps its own open/closed state. */
+.fold-head {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  padding: 3px 7px 3px 2px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font: 12px/1.4 var(--sans, inherit);
+  color: var(--muted);
+  cursor: pointer;
+}
+.fold-head .chev { font-size: 10px; color: var(--faint); transition: transform 0.15s ease; }
+.fold-head[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.fold-head:hover { color: var(--text); background: var(--panel-2); }
+.fold-head:hover .chev { color: var(--text); }
+.foldable.has-fold .fold-head { display: inline-flex; }
+/* A folded ask card must still be clickable as a whole to open the answer sheet. */
+.qa-card .foldable .fold-body { padding-bottom: 2px; }
 
 /* ---------------------------------------------------------------- file preview */
 .icon-btn.wide { width: auto; padding: 0 9px; font: 12px/1 var(--sans, inherit); white-space: nowrap; }
@@ -982,6 +1212,9 @@ a { color: var(--accent); text-decoration: none; }
 .dir-head .dir-path { flex: 1; min-width: 0; }
 .dir-head .dir-mk { flex: none; padding: 4px 10px; font-size: 12px; }
 .dir-head .dir-mk[hidden], .dir-mkrow[hidden] { display: none; }
+/* Q-019: 定位回会话工作目录 —— 三个 dir-picker 的路径行都有这一颗，没会话时置灰 */
+.dir-head .dir-home { flex: none; padding: 4px 10px; font-size: 12px; white-space: nowrap; }
+.dir-head .dir-home:disabled { opacity: 0.45; cursor: default; }
 .dir-mkrow { padding: 2px 0 6px; }
 .dir-mkrow .ns-input { padding: 7px 10px; }
 .dir-mkrow .dir-mkerr { padding-top: 4px; min-height: 0; }
@@ -1025,13 +1258,9 @@ a { color: var(--accent); text-decoration: none; }
 
 /* ---- collapsible assistant replies ---- */
 .msg.assistant .who { display: flex; align-items: center; gap: 8px; }
-.msg-fold {
-  margin-left: auto; border: 0; background: none; color: var(--faint);
-  font: 11px var(--sans); cursor: pointer; padding: 1px 6px; border-radius: 4px;
-  opacity: 0; transition: opacity .15s, color .15s;
-}
-.msg.assistant:hover .msg-fold, .msg.assistant.collapsed .msg-fold, .msg-fold:focus-visible { opacity: 1; }
-.msg-fold:hover { color: var(--text); background: var(--panel-2); }
+/* Was hover-only; hidden triggers were the least discoverable part of the old inconsistency. */
+.msg-fold { display: inline-flex; margin: 0 0 0 auto; padding: 1px 6px; font-size: 11px; color: var(--faint); }
+.msg.assistant.collapsed .msg-fold { color: var(--muted); }
 .msg-peek { display: none; }
 .msg.assistant.collapsed .body { display: none; }
 .msg.assistant.collapsed .msg-peek {
@@ -1041,7 +1270,6 @@ a { color: var(--accent); text-decoration: none; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .msg.assistant.collapsed .msg-peek:hover { color: var(--text); border-color: var(--accent-dim); }
-@media (hover: none) { .msg-fold { opacity: 1; } }
 
 /* ---- file picker: insert an absolute path into the composer ---- */
 .sheet.file-picker { display: flex; flex-direction: column; gap: 10px; max-height: min(640px, 86vh); }
@@ -1080,3 +1308,254 @@ a { color: var(--accent); text-decoration: none; }
 }
 .file-picker .sheet-head { gap: 8px; }
 .file-picker .sheet-title { flex: 1; min-width: 0; }
+
+/* ---------------------------------------------------------------- file explorer (D50) */
+/* 浏览 / 预览 / 编辑：viewer 一个面板三态 */
+.pane-seg { margin-right: 6px; }
+.pane-seg button:disabled { opacity: 0.4; cursor: default; }
+.viewer-body.browse { display: flex; flex-direction: column; overflow: hidden; }
+.viewer-browse { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 12px 12px; }
+.dirpicker { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.dirpicker .dir-filter { margin: 8px 0; padding: 8px 12px; font-size: 13px; }
+.dirpicker .dir-list { flex: 1; min-height: 0; max-height: none; overflow: auto; }
+
+/* 编辑态：行号 + textarea + 底栏（保存 / 状态），冲突条从底部再加一行 */
+.viewer-body.edit { display: flex; flex-direction: column; overflow: hidden; }
+.ed { flex: 1; min-height: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); overflow: hidden; background: #0a0f14; }
+.ed-gutter {
+  padding: 12px 10px 12px 14px; text-align: right; color: var(--faint); font: 12.5px/1.55 var(--mono);
+  user-select: none; white-space: pre; overflow: hidden; border-right: 1px solid var(--line-soft);
+}
+.ed-ta {
+  width: 100%; height: 100%; resize: none; border: 0; outline: none; background: transparent; color: var(--text);
+  font: 12.5px/1.55 var(--mono); padding: 12px 14px; white-space: pre; overflow: auto; tab-size: 2;
+  caret-color: var(--accent);
+}
+.ed-ta::selection { background: #1d4f66; }
+.ed-foot {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line-soft); background: var(--panel);
+}
+.ed-path { flex: 1; min-width: 0; font: 11px/1.4 var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.ed-msg { flex: none; font-size: 11.5px; color: var(--dim); }
+.ed-msg.ok { color: #6ee7a8; }
+.ed-msg.err { color: var(--danger); max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-conflict {
+  display: grid; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line);
+  background: #241a12; color: #f3c893; font-size: 12.5px;
+}
+.ed-conflict-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.ed-conflict-row .btn { color: #f3c893; border-color: #4a3a28; }
+
+/* 两三选项的小弹窗（未保存离开 / 放弃改动） */
+.choose-back { position: fixed; inset: 0; z-index: 66; background: rgba(3, 5, 8, 0.62); display: grid; place-items: center; padding: 20px; }
+.choose {
+  display: grid; gap: 14px; width: min(420px, 100%); padding: 16px; border-radius: 14px;
+  background: var(--panel); border: 1px solid var(--line); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+}
+.choose-title { font-size: 14px; font-weight: 600; }
+.choose-row { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
+.file-picker-body { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding: 0 12px; }
+.file-picker-body .dirpicker { padding-bottom: 12px; }
+/* 窄屏：标题只留文件名，工具按钮只留必需的（❌ 复制路径 / ↗ 新标签页 藏起来） */
+@media (max-width: 760px) {
+  /* 窄屏头部换两行：第一行文件名，第二行 浏览/预览/编辑 + 工具，否则名字会被挤成 0 宽 */
+  .viewer-head { flex-wrap: wrap; row-gap: 6px; gap: 6px; padding: 8px 8px calc(8px + env(safe-area-inset-top, 0px)); }
+  .viewer-titles { flex: 1 0 100%; }
+  .viewer-tools { margin-left: 0; }
+  .viewer-path { display: none; }
+  .viewer-btn.wide-only { display: none; }
+  .pane-seg { margin-right: 2px; }
+  .viewer-seg button { padding: 5px 8px; }
+}
+
+/* 快捷键 sheet: one row per action, the combo as a key-cap button. */
+.keys-sheet .hint { margin: 2px 0 10px; line-height: 1.5; }
+.keys-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+.keys-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; }
+.keys-row:hover { background: var(--bg-2, rgba(255, 255, 255, 0.04)); }
+.keys-name { flex: 1 1 auto; min-width: 0; font-size: 13px; }
+.keys-chip {
+  font: inherit; font-size: 12px; letter-spacing: 0.04em; padding: 4px 10px; cursor: pointer;
+  border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text);
+  min-width: 96px; text-align: center;
+}
+.keys-chip.empty { color: var(--muted); border-style: dashed; }
+.keys-chip:hover { border-color: var(--accent); color: var(--accent); }
+.sheet-foot { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* Terminal dock (Q-007): the shell runs in the bridge, this is only the view. */
+.term-dock {
+  display: flex; flex-direction: column; min-height: 0;
+  height: min(46vh, 420px);
+  border-top: 1px solid var(--line);
+  background: #0b0d10;
+}
+/* Q-026: 终端高度可拖 —— 顶边一条 7px 的抓取带，等于给 dock 换了一条可移动的边框。 */
+.term-grip {
+  flex: none; height: 7px; margin-bottom: -1px;
+  cursor: ns-resize; touch-action: none;
+  background: transparent;
+}
+.term-grip:hover, .term-grip.dragging {
+  background: linear-gradient(180deg, transparent 2px, var(--accent-dim) 2px, var(--accent-dim) 4px, transparent 4px);
+}
+body.row-resizing { cursor: ns-resize; user-select: none; }
+.term-dock[hidden] { display: none; }
+.term-head {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12px; color: var(--muted);
+}
+.term-head .spacer { flex: 1 1 auto; }
+.term-title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.term-btn {
+  font: inherit; font-size: 12px; padding: 3px 9px; cursor: pointer;
+  border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text);
+}
+.term-btn:hover { border-color: var(--accent); color: var(--accent); }
+.term-body { flex: 1 1 auto; min-height: 0; padding: 6px 4px 4px 8px; }
+.term-body .xterm { height: 100%; }
+.term-body .xterm-viewport { background: transparent !important; }
+@media (max-width: 900px) { .term-dock { height: min(38vh, 320px); } }
+
+/* Right-click menu in the file browser (Q-008). */
+.ctx-menu {
+  position: fixed; z-index: 95; min-width: 186px; padding: 4px;
+  border-radius: 10px; border: 1px solid var(--line); background: #14181d;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
+}
+.ctx-item {
+  display: block; width: 100%; text-align: left; font: inherit; font-size: 13px;
+  padding: 7px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text); cursor: pointer;
+}
+.ctx-item:hover { background: rgba(255, 255, 255, 0.07); }
+.ctx-item:last-child { color: var(--muted); }
+
+/* Q-013: the last thing in the pin strip is a way to start a session. */
+.pin-chip.pin-new {
+  border-color: rgba(124, 196, 255, 0.45);
+  color: var(--accent);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 10px;
+}
+/* Q-014: the path row in the file browser is a breadcrumb. */
+.dir-path .crumb {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  padding: 1px 2px;
+  border-radius: 4px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.dir-path .crumb:hover { background: rgba(124, 196, 255, 0.12); }
+.dir-path .crumb.root { color: var(--muted); }
+.dir-path .crumb-sep { color: var(--muted); opacity: 0.6; padding: 0 1px; }
+
+/* Q-015: a session held by the pi CLI terminal is not "running forever" — say so, quietly. */
+.badge.lock,
+.mgr-tag.lock { color: var(--muted); border-color: var(--line); background: rgba(255, 255, 255, 0.03); }
+.pin-strip-label.has-pending { color: var(--warn); }
+.pin-chip.wait { border-color: #3a2f14; }
+.pin-chip.wait small { color: var(--warn); }
+.pin-chip.run small { color: var(--accent); }
+.pin-chip.lock small { color: var(--muted); }
+.pin-chip.done small { color: var(--ok); }
+
+/* ---------------------------------------------------------------- 轮次缩略图（Q-028）
+   对话右缘一条刻度带：一根刻度 = 一轮用户输入，位置随内容滚动而高亮当前那一轮。鼠标移到带上才
+   展开左侧的小列表（每行一轮输入，单行右对齐，末行＝当前轮），点一行或一根刻度就跳回那一轮。
+   带子放在滚动条（10px）左边 —— 压在滚动条上就没法拖了。 */
+.turn-rail {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+  width: 14px; padding: 12px 0; z-index: 7;
+}
+.turn-rail[hidden] { display: none; }
+.turn-tick {
+  width: 9px; height: 2px; padding: 0; border: 0; border-radius: 1px;
+  background: #3d495b; cursor: pointer;
+  transition: background 0.12s ease, width 0.12s ease;
+}
+/* 当前这一轮（落在视口顶部的那一轮）稍宽稍亮；鼠标扫到的那一轮用强调色 */
+.turn-tick.cur { width: 11px; background: #8d99ab; }
+.turn-tick.hot, .turn-tick:hover { width: 14px; background: var(--accent); }
+/* 展开时刻度让位：弹层正好盖住这一列，行尾那根短横接替它 —— 看起来是同一块面板，不是一个框外面
+   还挂着一列刻度（用户口径：鼠标移上去「要和 chat 融合到同一个框里面」）。 */
+.turn-rail:hover .turn-tick,
+.turn-rail:has(:focus-visible) .turn-tick { opacity: 0; }
+
+.turn-list {
+  /* right: 0 = 面板右缘就是刻度那一列的右缘（再往右 2px 是 10px 宽的滚动条）。 */
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  display: none; grid-template-columns: minmax(0, 1fr); grid-auto-rows: min-content; gap: 1px;
+  width: min(420px, 42vw); max-height: min(62vh, 440px);
+  overflow-y: auto; overscroll-behavior: contain;
+  /* 右内边距小一点：那一列短横要贴着面板右缘（参考图里就是这样），不能缩进一大截。 */
+  padding: 8px 4px 8px 8px; border-radius: 14px;
+  background: #1a1e25; border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+/* 展开靠 :hover / :focus-within —— 列表是带子的子节点，指针从刻度扫到列表也算没离开 */
+.turn-rail:hover .turn-list,
+/* 键盘 Tab 进来也要展开；但鼠标点完那一行随即失去「可见焦点」，列表不会一直挂着不关 */
+.turn-rail:has(:focus-visible) .turn-list { display: grid; }
+.turn-list::-webkit-scrollbar { width: 6px; }
+.turn-list::-webkit-scrollbar-thumb { border-width: 2px; min-height: 20px; }
+.turn-row {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  width: 100%; padding: 5px 6px 5px 9px; border: 0; border-radius: 8px;
+  background: transparent; color: #c2cad6; font-size: 13px; line-height: 1.5;
+  text-align: right; cursor: pointer;
+}
+.turn-row .txt { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 行尾短横就是「刻度」在这一行的化身：平时 10px，当前这一轮拉长到 24px 并且更白（参考图里
+   最后一行就是这么一条长横）。 */
+.turn-row .dash {
+  flex: 0 0 10px; height: 1px; border-radius: 1px; background: #4b5668;
+  transition: flex-basis 0.14s ease, background 0.14s ease;
+}
+.turn-row.cur { color: var(--text); background: rgba(255, 255, 255, 0.055); }
+.turn-row.cur .dash { flex-basis: 24px; background: #e8edf4; }
+.turn-row.hot, .turn-row:hover { background: rgba(125, 211, 252, 0.16); color: #fff; }
+.turn-row.hot .dash, .turn-row:hover .dash { background: var(--accent); }
+
+/* 悬停预览：正文里对应那条用户消息描一圈边（点完那一下也会亮一下再退掉） */
+.msg.user .body { transition: border-color 0.16s ease, box-shadow 0.16s ease; }
+.msg.user.turn-flash .body {
+  border-color: rgba(125, 211, 252, 0.55);
+  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.32), 0 0 22px rgba(125, 211, 252, 0.12);
+}
+
+/* 窄屏 / 没有指针设备（手机）：这条带子没地方放，也没法悬停 —— 不显示 */
+@media (hover: none), (max-width: 899px) {
+  .turn-rail { display: none; }
+}
+
+/* ---------------------------------------------------------------- 左栏收起时的路径（D61）
+   会话卡片上写着 cwd，左栏一收就没处看；这时路径接到状态行最前面、分支 chip 旁边（见 app.ts 的
+   syncCwdChip / fillHintStatus）。左栏展开时不显示 —— 选中的那张卡片上就是同一个路径。 */
+.cwd-chip {
+  flex: 0 1 auto; min-width: 0; max-width: 42ch;
+  display: inline-flex; align-items: center;
+  padding: 0; border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: 11.5px; font-family: var(--mono); color: var(--dim);
+}
+.cwd-chip[hidden] { display: none; }
+.cwd-chip:hover { color: var(--text); }
+.cwd-chip:focus-visible { outline: 1px solid var(--accent-dim); outline-offset: 3px; border-radius: 4px; }
+.cwd-chip .cwd-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
