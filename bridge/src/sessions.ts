@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { RpcChild } from "./rpc.ts";
-import { loadEntries, listSessionFiles, type SessionFileMeta } from "./sessionfile.ts";
+import { loadEntries, listSessionFiles, titleFromUserText, type SessionFileMeta } from "./sessionfile.ts";
 import { entriesToItems, summarizeToolArgs, type Item, type ToolItem } from "./items.ts";
 import { fileURLToPath } from "node:url";
 import { ensureDir, sessionsRoot, statePath, readJson, writeJson } from "./paths.ts";
@@ -86,9 +86,26 @@ export interface SessionState {
   truncated?: boolean;
   approvals: number;
   asks?: number;
+  /** First user message (title-normalized); lets the manager search what a session was about. */
+  preview?: string;
   /** Sidebar arrangement (bridge-side state/manage.json), only filled in by list(). */
   pinned?: boolean;
   archived?: boolean;
+  /** Tool permission mode the approval gate enforces (state/allow/<id>.json `mode`). */
+  permission?: PermissionMode;
+}
+
+export type PermissionMode = "readonly" | "strict" | "ask" | "auto";
+const PERMISSION_MODES: PermissionMode[] = ["readonly", "strict", "ask", "auto"];
+const PERMISSION_LABEL: Record<PermissionMode, string> = {
+  readonly: "只读",
+  strict: "逐个确认",
+  ask: "危险时确认",
+  auto: "全自动",
+};
+
+export function isPermissionMode(v: unknown): v is PermissionMode {
+  return typeof v === "string" && (PERMISSION_MODES as string[]).includes(v);
 }
 
 /** Only these fields ever leave the bridge; `resolve` is nobody else's business. */
@@ -210,6 +227,21 @@ function allowFile(id: string): string {
   return statePath("allow", `${id}.json`);
 }
 
+/** The gate re-reads this file on every tool call, so a change applies to the very next call. */
+function readPermission(id: string): PermissionMode {
+  if (!id) return "ask";
+  const file = allowFile(id);
+  if (!fs.existsSync(file)) return "ask";
+  const mode = readJson<{ mode?: unknown }>(file, {})?.mode;
+  return isPermissionMode(mode) ? mode : "ask";
+}
+
+function writePermission(id: string, mode: PermissionMode): void {
+  const file = allowFile(id);
+  const data = readJson<Record<string, unknown>>(file, {});
+  writeJson(file, { ...(data && typeof data === "object" ? data : {}), mode });
+}
+
 /** Context budget is one global number: `{"value": 200000}` in the state dir. */
 function budgetFile(): string {
   return statePath("budget.json");
@@ -287,6 +319,41 @@ function preferredName(id: string, name: string | null, nameAt: string | null): 
   return override.name;
 }
 
+/**
+ * Sessions this bridge created. The file itself does not say who started it, and the sidebar must
+ * tell web sessions from terminal (pi CLI) ones even after a bridge restart.
+ */
+let webOrigins: Set<string> | null = null;
+
+function readWebOrigins(): Set<string> {
+  if (webOrigins) return webOrigins;
+  const raw = readJson<unknown>(statePath("web-sessions.json"), []);
+  webOrigins = new Set(Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : []);
+  return webOrigins;
+}
+
+function setWebOrigin(id: string, on: boolean): void {
+  const all = readWebOrigins();
+  if (all.has(id) === on) return;
+  if (on) all.add(id);
+  else all.delete(id);
+  try {
+    writeJson(statePath("web-sessions.json"), [...all]);
+  } catch {
+    /* an unwritable state dir only costs persistence */
+  }
+}
+
+export function forgetOrigin(id: string): void {
+  setWebOrigin(id, false);
+}
+
+function originOf(id: string): "web" | "disk" {
+  return readWebOrigins().has(id) ? "web" : "disk";
+}
+
+const DEFAULT_NAME = "新会话";
+
 export class Session extends EventEmitter {
   readonly state: SessionState;
   items: Item[] = [];
@@ -329,11 +396,11 @@ export class Session extends EventEmitter {
     const onDiskName = preferredName(id, meta?.name ?? null, meta?.nameAt ?? null);
     this.state = {
       id,
-      name: opts.name ?? onDiskName ?? meta?.firstUserText?.slice(0, 40) ?? "新会话",
+      name: opts.name ?? onDiskName ?? meta?.firstUserText?.slice(0, 40) ?? DEFAULT_NAME,
       cwd: meta?.cwd ?? process.cwd(),
       file: meta?.file ?? null,
       owned: false,
-      origin: "disk",
+      origin: id ? originOf(id) : "disk",
       running: false,
       done: false,
       updatedAt: Date.now(),
@@ -341,6 +408,8 @@ export class Session extends EventEmitter {
       startedAt: meta?.startedAt ?? new Date().toISOString(),
       approvals: 0,
       asks: 0,
+      permission: readPermission(id),
+      ...(meta?.firstUserText ? { preview: meta.firstUserText } : {}),
     };
     if (meta) this.loadFromFile();
   }
@@ -352,6 +421,12 @@ export class Session extends EventEmitter {
   /** The user opened this session: whatever finished before now has been seen. */
   markSeen(): void {
     if (this.state.done) this.setState({ done: false });
+  }
+
+  applyPermission(mode: PermissionMode): void {
+    if (this.state.permission === mode) return;
+    this.setState({ permission: mode }, { touch: false });
+    this.emitWs({ type: "notice", sessionId: this.state.id, text: `权限模式已切换为「${PERMISSION_LABEL[mode]}」，下一次工具调用起生效`, level: mode === "auto" ? "warn" : "info" });
   }
 
   private emitWs(payload: any): void {
@@ -449,7 +524,10 @@ export class Session extends EventEmitter {
     }
     this.state.owned = true;
     // Provenance, not current writer path: a web-born session stays "web" after it is closed and reclaimed.
-    if (!opts.resume) this.state.origin = "web";
+    if (!opts.resume) {
+      this.state.origin = "web";
+      setWebOrigin(id, true);
+    }
 
     const args = ["--mode", "rpc"];
     if (process.env.PI_WEB_NO_EXT === "1") args.push("-ne");
@@ -862,6 +940,17 @@ export class Session extends EventEmitter {
       images: (images ?? []).map((i) => ({ mimeType: i.mimeType })),
       ts: new Date().toISOString(),
     });
+    // A web-born session has no title until it says something; the terminal would show the first
+    // message too. Sidebar-only: nothing is appended to the session file.
+    if (this.state.name === DEFAULT_NAME || !this.state.preview) {
+      const title = titleFromUserText(text);
+      if (title) {
+        const patch: Partial<SessionState> = {};
+        if (!this.state.preview) patch.preview = title;
+        if (this.state.name === DEFAULT_NAME) patch.name = title.slice(0, 40);
+        this.setState(patch, { touch: false });
+      }
+    }
     const res = await this.rpc.request<any>("prompt", { ...message }, 60000);
     const disposition = res?.disposition;
     if (disposition === "handled" && res?.error) throw new Error(String(res.error));
@@ -887,9 +976,12 @@ export class Session extends EventEmitter {
   async skills(): Promise<SkillInfo[]> {
     if (this.skillsCache && Date.now() - this.skillsCache.at < 120_000) return this.skillsCache.list;
     let list: SkillInfo[] = [];
+    let fromPi = false;
     if (this.rpc?.alive) {
       try {
-        const res = await this.rpc.request<any>("get_commands", {}, 8000);
+        // A freshly spawned pi answers only after loading every extension; that can take >8s.
+        const res = await this.rpc.request<any>("get_commands", {}, 30000);
+        fromPi = true;
         for (const c of res?.commands ?? []) {
           if (c?.source !== "skill") continue;
           const name = String(c.name ?? "").replace(/^skill:/, "");
@@ -902,7 +994,8 @@ export class Session extends EventEmitter {
     }
     if (!list.length) list = scanSkills(this.state.cwd || process.cwd());
     const ranked = rankSkills(list);
-    this.skillsCache = { at: Date.now(), list: ranked };
+    // Only pi's own answer is worth keeping; a fallback list is retried on the next open.
+    this.skillsCache = fromPi ? { at: Date.now(), list: ranked } : null;
     return ranked;
   }
 
@@ -1122,6 +1215,9 @@ export class SessionManager extends EventEmitter {
         startedAt: meta.startedAt,
         approvals: 0,
         asks: 0,
+        origin: originOf(meta.id),
+        permission: readPermission(meta.id),
+        ...(meta.firstUserText ? { preview: meta.firstUserText } : {}),
         ...flag(meta.id),
       });
     }
@@ -1142,6 +1238,14 @@ export class SessionManager extends EventEmitter {
 
   get(id: string): Session | undefined {
     return this.sessions.get(id);
+  }
+
+  /** Where a session works and logs, whether or not it is loaded. */
+  locate(id: string): { cwd: string; file: string | null } | null {
+    const s = this.sessions.get(id);
+    if (s) return { cwd: s.state.cwd, file: s.state.file };
+    const meta = this.metas().find((m) => m.id === id);
+    return meta ? { cwd: meta.cwd, file: meta.file } : null;
   }
 
   /** Skill list for a session, or for a plain cwd when no session object is loaded yet. */
@@ -1174,6 +1278,13 @@ export class SessionManager extends EventEmitter {
   }
 
   async create(cwd: string, name?: string): Promise<Session> {
+    let isDir = false;
+    try {
+      isDir = fs.statSync(cwd).isDirectory();
+    } catch {
+      /* reported below */
+    }
+    if (!isDir) throw new Error(`工作目录不存在：${cwd}`);
     const id = crypto.randomUUID();
     const session = new Session(this.cli, null, { id, name });
     session.state.cwd = cwd;
@@ -1196,6 +1307,15 @@ export class SessionManager extends EventEmitter {
     const session = this.ensure(id);
     await session.rename(name);
     this.emit("ws", { type: "session.state", session: session.state });
+    return session;
+  }
+
+  /** Composer permission button: persisted per session, picked up by the gate on the next tool call. */
+  setPermission(id: string, mode: PermissionMode): Session {
+    if (!this.known(id)) throw new Error("找不到这个会话");
+    const session = this.ensure(id);
+    writePermission(id, mode);
+    session.applyPermission(mode);
     return session;
   }
 
@@ -1228,6 +1348,15 @@ export class SessionManager extends EventEmitter {
     }
     await session.startLive({ resume: Boolean(session.state.file) });
     this.emit("ws", { type: "session.state", session: session.state });
+    if (session.state.origin !== "web") {
+      // pi's TUI reads the session file once at startup: an open terminal will not see what the web adds.
+      this.emit("ws", {
+        type: "notice",
+        sessionId: id,
+        level: "warn",
+        text: `网页已接管这个终端会话。终端里如果还开着它，那边不会同步网页里的对话，也不要在那边继续输入（会分叉）——请先在终端退出 pi。要回终端接着聊：点「让回终端」，再运行 pi --session ${id}`,
+      });
+    }
     return session;
   }
 
@@ -1280,6 +1409,7 @@ export class SessionManager extends EventEmitter {
         this.sessions.delete(t.id);
       }
       forgetName(t.id);
+      forgetOrigin(t.id);
       this.manage.forget(t.id);
     }
     // The file scan is cached for a few seconds; a delete must not be resurrected by it.
@@ -1310,8 +1440,17 @@ export class SessionManager extends EventEmitter {
   async close(id: string): Promise<void> {
     const session = this.sessions.get(id);
     if (!session) return;
-    await session.close();
+    const terminal = session.state.origin !== "web";
+    await session.close({ quiet: terminal });
     session.startTail();
+    if (terminal) {
+      this.emit("ws", {
+        type: "notice",
+        sessionId: id,
+        level: "info",
+        text: `已让回终端。在终端运行 pi --session ${id} 打开它，就能看到网页里的全部对话（已经开着的旧 pi 窗口不会自己刷新，要重开）。`,
+      });
+    }
   }
 
   /** Dead writers' lock files leak when their session file is gone; sweep them on a timer. */

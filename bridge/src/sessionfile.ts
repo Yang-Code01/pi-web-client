@@ -117,10 +117,13 @@ export function readMeta(file: string): SessionFileMeta | null {
       nameAt = typeof entry.timestamp === "string" ? entry.timestamp : null;
     }
     if (!firstUserText && entry?.type === "message" && entry.message?.role === "user") {
-      const text = extractText(entry.message.content);
-      if (text.trim()) firstUserText = text.trim().slice(0, 120);
+      const text = titleFromUserText(extractText(entry.message.content));
+      if (text) firstUserText = text;
     }
   }
+
+  // The first user message often sits behind a huge system-prompt entry that the head window cuts.
+  if (!firstUserText && stat.size > HEAD_BYTES) firstUserText = scanFirstUserText(file, stat.size);
 
   // `/name` appends to the tail, so a long transcript's newest name is not in the head.
   if (stat.size > HEAD_BYTES) {
@@ -153,6 +156,65 @@ export function extractText(content: unknown): string {
     if (c && typeof c === "object" && (c as any).type === "text") parts.push(String((c as any).text ?? ""));
   }
   return parts.join("\n");
+}
+
+/**
+ * A sidebar title from a user message: a `/skill:x` command reaches the file already expanded as
+ * `<skill name="x" …>…</skill> args`, which would title the session with the skill's own prose.
+ */
+export function titleFromUserText(raw: string): string | null {
+  let text = raw.trim();
+  const skill = /^<skill\s+name="([^"]+)"[^>]*>[\s\S]*?<\/skill>\s*([\s\S]*)$/.exec(text);
+  if (skill) text = `/skill:${skill[1]}${skill[2].trim() ? ` ${skill[2].trim()}` : ""}`;
+  text = text.replace(/\s+/g, " ").trim();
+  return text ? text.slice(0, 120) : null;
+}
+
+const FIRST_USER_SCAN_BYTES = 4 * 1024 * 1024;
+/** Deep scans are not free and the sidebar re-lists every few seconds: remember the answer. */
+const firstUserCache = new Map<string, { size: number; text: string | null }>();
+const USER_ROLE = Buffer.from('"role":"user"');
+
+/** Walk whole lines (without parsing the big ones) until the first user message. */
+function scanFirstUserText(file: string, size: number): string | null {
+  const hit = firstUserCache.get(file);
+  if (hit && (hit.text !== null || hit.size === size)) return hit.text;
+  let text: string | null = null;
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const chunk = Buffer.alloc(256 * 1024);
+    let rest = Buffer.alloc(0);
+    let pos = 0;
+    outer: while (pos < Math.min(size, FIRST_USER_SCAN_BYTES)) {
+      const n = fs.readSync(fd, chunk, 0, chunk.length, pos);
+      if (n <= 0) break;
+      pos += n;
+      let buf = Buffer.concat([rest, chunk.subarray(0, n)]);
+      let nl: number;
+      while ((nl = buf.indexOf(10)) >= 0) {
+        const line = buf.subarray(0, nl);
+        buf = buf.subarray(nl + 1);
+        if (line.indexOf(USER_ROLE) < 0) continue;
+        try {
+          const entry = JSON.parse(line.toString("utf8"));
+          if (entry?.type === "message" && entry.message?.role === "user") {
+            text = titleFromUserText(extractText(entry.message.content));
+            if (text) break outer;
+          }
+        } catch {
+          /* not a whole entry */
+        }
+      }
+      rest = Buffer.from(buf);
+    }
+  } catch {
+    /* unreadable file: no title, same as before */
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+  firstUserCache.set(file, { size, text });
+  return text;
 }
 
 /** Session files live in ~/.pi/agent/sessions/--<encoded cwd>--/<ts>_<id>.jsonl */

@@ -32,14 +32,18 @@ const SHELL_PATTERNS: { re: RegExp; why: string }[] = [
   { re: /\bgit\s+(remote\s+(set-url|add)|config\s+--global)\b/i, why: "改 git 远端/全局配置" },
 ];
 
-function allowedPatterns(): string[] {
+type Mode = "readonly" | "strict" | "ask" | "auto";
+
+/** `{patterns, mode}` per session; re-read on every call so the web button applies immediately. */
+function readAllow(): { patterns: string[]; mode: Mode } {
   const file = process.env.PI_WEB_ALLOW_FILE;
-  if (!file) return [];
+  if (!file) return { patterns: [], mode: "ask" };
   try {
     const data = JSON.parse(fs.readFileSync(file, "utf8"));
-    return Array.isArray(data.patterns) ? data.patterns.map(String) : [];
+    const mode: Mode = ["readonly", "strict", "ask", "auto"].includes(data.mode) ? data.mode : "ask";
+    return { patterns: Array.isArray(data.patterns) ? data.patterns.map(String) : [], mode };
   } catch {
-    return [];
+    return { patterns: [], mode: "ask" };
   }
 }
 
@@ -93,14 +97,31 @@ export default function approvalGate(pi: any): void {
     const toolName = String(event.toolName ?? "tool");
     const input = (event.input ?? {}) as Record<string, unknown>;
     const cwd = String(ctx.cwd ?? process.cwd());
-    const risk = riskOf(toolName, input, cwd);
+    const { patterns, mode } = readAllow();
+    const lower = toolName.toLowerCase();
+    const acts = SHELL_TOOLS.has(lower) || WRITE_TOOLS.has(lower);
+
+    if (mode === "auto") return undefined;
+    if (mode === "readonly" && acts) {
+      return {
+        block: true,
+        reason: "当前是只读模式（用户在 pi-web-client 设置）：不能写文件、不能执行命令。只读取和分析，把要做的改动写成方案告诉用户。",
+      };
+    }
+
+    let risk = riskOf(toolName, input, cwd);
+    // Strict: every write and every command stops, not only the risky ones.
+    if (!risk && mode === "strict" && acts) {
+      const detail = SHELL_TOOLS.has(lower) ? shellCommand(input).trim() : targetPath(input).trim();
+      risk = { why: SHELL_TOOLS.has(lower) ? "执行命令" : "写文件", detail: detail || JSON.stringify(input).slice(0, 300) };
+    }
     if (!risk) return undefined;
 
     const detail = risk.detail.slice(0, 900);
     // Patterns are per session (PI_WEB_ALLOW_FILE) and match the whole leading word(s), never a
     // substring; chained/redirected commands always ask, since a prefix says nothing about the rest.
     const remembered =
-      !COMPOUND.test(detail) && allowedPatterns().some((p) => p && (detail === p || detail.startsWith(`${p} `)));
+      !COMPOUND.test(detail) && patterns.some((p) => p && (detail === p || detail.startsWith(`${p} `)));
     if (remembered) {
       console.error(`[approval-gate] remembered pattern allowed: ${detail.slice(0, 80)}`);
       return undefined;
@@ -110,7 +131,7 @@ export default function approvalGate(pi: any): void {
       return { block: true, reason: "这个会话没有可用的审批界面（ctx.hasUI=false），危险操作已被拦下。" };
     }
 
-    const ok = await ctx.ui.confirm(`危险操作：${risk.why}`, `${toolName} → ${detail}`, { timeout: 5 * 60 * 1000 });
+    const ok = await ctx.ui.confirm(`${risk.why === "执行命令" || risk.why === "写文件" ? "需要确认" : "危险操作"}：${risk.why}`, `${toolName} → ${detail}`, { timeout: 5 * 60 * 1000 });
     if (!ok) {
       return {
         block: true,

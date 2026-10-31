@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { agentDir, readJson, statePath, writeJson } from "./paths.ts";
 
@@ -64,11 +65,22 @@ function scanDir(dir: string, source: SkillInfo["source"], out: Map<string, Skil
 /**
  * Disk fallback for sessions without a live rpc child (pi itself is the
  * authoritative source: `get_commands` reports what the resource loader found).
+ * Mirrors pi's default locations: ~/.pi/agent/skills, ~/.agents/skills, and project
+ * `.pi/skills` plus `.agents/skills` from cwd up to the repo root.
  */
 export function scanSkills(cwd: string): SkillInfo[] {
   const found = new Map<string, SkillInfo>();
-  scanDir(path.join(agentDir(), "skills"), "user", found);
   scanDir(path.join(cwd, ".pi", "skills"), "project", found);
+  let dir = path.resolve(cwd);
+  for (;;) {
+    scanDir(path.join(dir, ".agents", "skills"), "project", found);
+    if (fs.existsSync(path.join(dir, ".git"))) break;
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  scanDir(path.join(agentDir(), "skills"), "user", found);
+  scanDir(path.join(os.homedir(), ".agents", "skills"), "user", found);
   return [...found.values()];
 }
 

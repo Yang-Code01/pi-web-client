@@ -1,7 +1,8 @@
 import { api } from "./api.ts";
-import { ChatView, createEl as el } from "./chat.ts";
+import { ChatView, createEl as el, fileIcon } from "./chat.ts";
+import { renderMarkdown } from "./md.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskRequest, ApprovalRequest, Item, ManageState, Me, ModelInfo, SessionState, SkillInfo, TunnelState } from "./types.ts";
+import type { AskAnswer, AskRequest, ApprovalRequest, Item, ManageState, Me, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TunnelState } from "./types.ts";
 
 type Tab = "sessions" | "chat" | "queue";
 
@@ -28,7 +29,12 @@ export class App {
   /** The bridge refused a write for lack of step-up: re-sync the view once the user verifies. */
   private stepResync = false;
   private composerText = "";
-  private images: { data: string; mimeType: string }[] = [];
+  private images: PendingImage[] = [];
+  /** Long pastes kept apart from the typed text; joined in front of it on send. */
+  private pastes: PasteBlock[] = [];
+  private pasteHost: HTMLElement | null = null;
+  /** Unsent composer text + images per session, so switching sessions never carries a draft over. */
+  private drafts = loadDrafts();
   /** "+N 图" 徽标：点开是待发图片管理页。 */
   private imageBadge: HTMLButtonElement | null = null;
   /** 待发图片弹窗的重绘钩子（删掉/新贴一张后刷新缩略图）。 */
@@ -52,7 +58,12 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | null = null;
+  /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
+  private creating: { finish: (error?: string) => void } | null = null;
+  private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
+  /** Session whose claim is in flight: spawning pi takes a few seconds. */
+  private claiming: string | null = null;
   private usage: { contextTokens: number | null; contextWindow: number | null } = { contextTokens: null, contextWindow: null };
   /** Context budget chosen in the model sheet (bridge enforces it); null = window size. */
   private budget: number | null = null;
@@ -71,12 +82,18 @@ export class App {
   private renameCaret: number | null = null;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
   private manage: ManageState = { pin: [], order: [], archived: [] };
-  private managing = false;
-  private picked = new Set<string>();
   private archivedOpen = false;
   private filter = "";
   /** Delete is two-step: the last click arms it, the next one within 4s sends it. */
-  private deleteArm: { ids: string[]; at: number } | null = null;
+  private mgr: MgrView = loadMgrView();
+  private mgrPicked = new Set<string>();
+  private mgrCollapsed = new Set<string>();
+  private mgrRename: { id: string; draft: string } | null = null;
+  private mgrDelArm: { key: string; at: number } | null = null;
+  private mgrRefresh: (() => void) | null = null;
+  private mgrPainting = false;
+  private viewer: Viewer | null = null;
+  private cardDelArm: { id: string; at: number } | null = null;
   private dragId: string | null = null;
 
   constructor(me: Me) {
@@ -88,6 +105,11 @@ export class App {
     // A pending question card in the transcript jumps to the composer panel; the card itself has
     // no reference to the app and must not gain one.
     window.addEventListener("pi-ask-open", () => this.focusAsk());
+    window.addEventListener("pagehide", () => this.noteDraft());
+    window.addEventListener("pi-preview", (ev) => {
+      const path = (ev as CustomEvent<{ path?: string }>).detail?.path;
+      if (path) void this.openPreview(path);
+    });
     this.startClock();
     this.socket.connect();
     this.routeFromHash();
@@ -112,18 +134,20 @@ export class App {
     const look = el("button", "icon-btn icon-text", "Aa");
     look.title = "字号与颜色";
     look.onclick = () => this.openDisplaySheet();
-    topbar.append(collapseLeft, dot, title, sub, look, collapseRight);
+    const files = el("button", "icon-btn wide", "📂 产物");
+    files.title = "本会话写过的文件（md / html / 图片…点开预览）";
+    files.onclick = () => this.openArtifactsSheet();
+    files.hidden = true;
+    topbar.append(collapseLeft, dot, title, sub, files, look, collapseRight);
 
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
     const sessionsInner = el("div", "session-list");
     const create = el("div", "new-session");
-    const newCwd = el("input");
-    newCwd.placeholder = "新会话的工作目录（如 F:/pi-web-client）";
     const newBtn = el("button", "btn primary", "开新会话");
-    newBtn.onclick = () => void this.newSession();
-    create.append(newCwd, newBtn);
+    newBtn.onclick = () => this.openNewSessionSheet();
+    create.append(newBtn);
     // The filter must not lose focus on every keystroke, so it lives outside the repainted list.
     const manageBar = el("div", "manage-bar");
     const sessFilter = el("input", "session-filter");
@@ -133,13 +157,11 @@ export class App {
       this.renderSessions();
     };
     const manageBtn = el("button", "tool-btn", "管理");
-    manageBtn.title = "多选：置顶、归档、删除";
-    manageBtn.onclick = () => this.toggleManaging();
+    manageBtn.title = "管理全部会话：检索、筛选、排序、分组、批量操作";
+    manageBtn.onclick = () => this.openManager();
     manageBar.append(sessFilter, manageBtn);
     const sessList = el("div", "session-cards");
-    const actions = el("div", "manage-actions");
-    // Bulk actions sit above the list: the pane scrolls, and a bar at the bottom would clip.
-    sessionsInner.append(create, manageBar, actions, sessList);
+    sessionsInner.append(create, manageBar, sessList);
     sessionsPane.append(sessionsInner);
 
     const chatPane = el("section", "pane chat-pane");
@@ -169,7 +191,7 @@ export class App {
     shell.append(topbar, main, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, collapseLeft, collapseRight, look, dot, title, sub, main, sessionsPane, sessionsInner, newCwd, manageBar, sessFilter, manageBtn, sessList, actions, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, collapseLeft, collapseRight, look, files, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.chat = new ChatView(scroll);
   }
 
@@ -207,6 +229,19 @@ export class App {
     window.addEventListener("hashchange", () => this.routeFromHash());
     // 粘贴截图：桌面端 Ctrl+V / ⌘V 无论焦点在输入框还是页面上都落到待发图片里。
     window.addEventListener("paste", (ev) => this.onPaste(ev));
+    // Drop files anywhere on the chat while a session is open.
+    window.addEventListener("dragover", (ev) => {
+      if (this.currentId && ev.dataTransfer?.types.includes("Files")) ev.preventDefault();
+    });
+    window.addEventListener("drop", (ev) => {
+      if (!this.currentId || !ev.dataTransfer?.files.length || document.querySelector(".modal")) return;
+      ev.preventDefault();
+      const { images, others } = splitImages(Array.from(ev.dataTransfer.files));
+      if (images.length) void this.addImages(images);
+      if (others.length) {
+        this.warn(`浏览器拖拽拿不到「${others.map((f) => f.name).join("、")}」的完整路径。请在资源管理器里复制它再 ${PASTE_KEY}，或用「文件」按钮选`);
+      }
+    });
     if (window.matchMedia("(min-width: 900px)").matches) this.tab = "sessions";
     this.renderAll();
   }
@@ -235,14 +270,48 @@ export class App {
     this.renderTabs();
   }
 
+  // ---------------------------------------------------------------- drafts
+  /** Records the current composer as the open session's draft. */
+  private noteDraft(): void {
+    if (!this.currentId) return;
+    if (this.composerText || this.images.length || this.pastes.length) {
+      this.drafts.set(this.currentId, { text: this.composerText, images: [...this.images], pastes: this.pastes.map((p) => ({ ...p })) });
+    }
+    else this.drafts.delete(this.currentId);
+    this.persistDrafts();
+  }
+
+  /** Stash the open session's draft and load `next`'s (empty when it has none). */
+  private switchDraft(next: string | null): void {
+    this.noteDraft();
+    const d = next ? this.drafts.get(next) : undefined;
+    this.composerText = d?.text ?? "";
+    this.images = d ? [...d.images] : [];
+    this.pastes = d ? d.pastes.map((p) => ({ ...p })) : [];
+  }
+
+  private persistDrafts(): void {
+    // Text + paste blocks only: pasted images are too big for localStorage and are kept in memory for this tab.
+    const keep = [...this.drafts]
+      .filter(([, d]) => d.text.trim() || d.pastes.length)
+      .slice(-50)
+      .map(([id, d]) => (d.pastes.length ? [id, d.text, d.pastes.map((p) => p.text)] : [id, d.text]));
+    try {
+      if (keep.length) localStorage.setItem("pi.drafts", JSON.stringify(keep));
+      else localStorage.removeItem("pi.drafts");
+    } catch {
+      /* quota / private mode */
+    }
+  }
+
   private openSession(id: string): void {
     if (this.currentId === id) return;
+    this.switchDraft(id);
     this.currentId = id;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
     if (this.session?.done) this.session.done = false;
     this.approvals = [];
     this.asks = [];
-    this.images = [];
     this.usage = { contextTokens: null, contextWindow: null };
     this.rate = 0;
     this.rateAt = 0;
@@ -279,8 +348,13 @@ export class App {
         if (this.currentId) this.socket.send({ type: "subscribe", sessionId: this.currentId });
         break;
       case "session":
+        this.creating?.finish();
         // bridge sends the snapshot as {sessionId, state, items, approvals, budget}
-        if (msg.sessionId) this.currentId = String(msg.sessionId);
+        if (msg.sessionId) {
+          // A freshly created session arrives here without openSession(): give it its own (empty) draft.
+          if (String(msg.sessionId) !== this.currentId) this.switchDraft(String(msg.sessionId));
+          this.currentId = String(msg.sessionId);
+        }
         this.usage = { contextTokens: null, contextWindow: null };
         this.rate = 0;
         this.turnAt = null;
@@ -399,14 +473,19 @@ export class App {
       case "session.gone": {
         const gone = new Set<string>((msg.ids ?? []) as string[]);
         this.sessions = this.sessions.filter((s) => !gone.has(s.id));
-        for (const id of gone) this.picked.delete(id);
+        for (const id of gone) this.mgrPicked.delete(id);
         if (this.renameId && gone.has(this.renameId)) {
           this.renameId = null;
           this.renameDraft = "";
         }
+        for (const id of gone) this.drafts.delete(id);
+        this.persistDrafts();
         if (this.currentId && gone.has(this.currentId)) {
           this.currentId = null;
           this.session = null;
+          this.composerText = "";
+          this.images = [];
+          this.pastes = [];
           this.chat.reset([]);
           this.renderAll();
           this.go("sessions", true);
@@ -419,6 +498,12 @@ export class App {
         this.mergeSession(msg.session);
         break;
       case "notice":
+        // A failed create comes back as an untargeted error notice: show it in the dialog instead.
+        if (this.creating && !msg.sessionId && msg.level === "error") {
+          this.creating.finish(String(msg.text ?? "启动失败"));
+          break;
+        }
+        if (this.claiming && msg.level === "error" && (!msg.sessionId || msg.sessionId === this.claiming)) this.endClaim();
         if (!msg.sessionId || msg.sessionId === this.currentId) this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: msg.text, level: msg.level ?? "info" });
         break;
       case "need-stepup":
@@ -436,6 +521,12 @@ export class App {
         if (this.stepResync && this.currentId) this.socket.send({ type: "subscribe", sessionId: this.currentId });
         this.stepResync = false;
         break;
+      case "mkdir.result": {
+        const done = this.mkdirWaits.get(String(msg.reqId ?? ""));
+        this.mkdirWaits.delete(String(msg.reqId ?? ""));
+        done?.({ path: msg.path, error: msg.error });
+        break;
+      }
       case "tunnel":
         this.tunnel = msg.tunnel;
         this.renderTop();
@@ -448,8 +539,11 @@ export class App {
 
   private mergeSession(state: SessionState | undefined): void {
     if (!state) return;
+    // Set before renderChat below, which runs when `owned` flips.
+    if (state.owned && state.id === this.claiming) this.claiming = null;
     const idx = this.sessions.findIndex((s) => s.id === state.id);
-    if (idx >= 0) this.sessions[idx] = state;
+    // Spread: live updates may omit list-only fields such as the preview.
+    if (idx >= 0) this.sessions[idx] = { ...this.sessions[idx], ...state };
     else this.sessions.unshift(state);
     if (this.currentId === state.id) {
       const prev = this.session;
@@ -511,16 +605,24 @@ export class App {
   // ---------------------------------------------------------------- actions
   private sendPrompt(): void {
     if (!this.currentId) return;
-    const text = this.composerText.trim();
+    const typed = this.composerText.trim();
+    const pasted = this.pastes.map((p) => p.text.trim()).filter(Boolean);
+    const text = [...pasted, typed].filter(Boolean).join("\n\n");
     if (!text && !this.images.length) return;
-    if (text && !this.images.length && this.answerFromComposer(text)) return;
+    if (typed && !pasted.length && !this.images.length && this.answerFromComposer(typed)) return;
     const payload = { type: "prompt", sessionId: this.currentId, text, images: this.images };
     // Clear the composer only once the message really goes out: a dismissed step-up keeps the draft.
     this.act(() => {
-      this.composerText = "";
-      this.images = [];
-      this.chat.add({ id: `local:${Date.now()}`, kind: "user", text: text || "（图片）", images: [] });
-      this.renderChat();
+      // The step-up modal may have sat in between: only clear the composer if we are still there.
+      if (this.currentId === payload.sessionId) {
+        this.composerText = "";
+        this.images = [];
+        this.pastes = [];
+        this.chat.add({ id: `local:${Date.now()}`, kind: "user", text: text || "（图片）", images: [] });
+        this.renderChat();
+      }
+      if (payload.sessionId) this.drafts.delete(payload.sessionId);
+      this.persistDrafts();
       this.socket.send(payload);
     });
     if (navigator.storage?.persist) void navigator.storage.persist();
@@ -744,6 +846,7 @@ export class App {
     this.sheet?.remove();
     this.sheet = null;
     this.sheetKind = null;
+    this.mgrRefresh = null;
     this.imageSheetPaint = null;
   }
 
@@ -756,7 +859,7 @@ export class App {
       if (ev.target === back) this.closeSheet();
     };
 
-    const sheet = el("div", "sheet");
+    const sheet = el("div", "sheet model-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", "模型与思考"));
     const close = el("button", "btn ghost", "关闭");
@@ -764,18 +867,65 @@ export class App {
     head.append(close);
     sheet.append(head);
 
+    // Everything below is a draft until 确认: browsing models must not switch the live session.
+    const startBudget = this.budget ?? null;
+    const startModel = this.session?.model;
+    const startLevel = this.session?.thinkingLevel ?? "";
+    let draftBudget = startBudget;
+    let draftModel = startModel;
+    let draftLevel = startLevel;
+    const foot = el("div", "sheet-foot");
+    const footHint = el("div", "sheet-foot-hint");
+    const cancel = el("button", "btn ghost", "取消");
+    cancel.onclick = () => this.closeSheet();
+    const confirm = el("button", "btn primary", "确认") as HTMLButtonElement;
+    foot.append(footHint, cancel, confirm);
+    const refreshFoot = (): void => {
+      const changes: string[] = [];
+      if (draftModel !== startModel) changes.push(`模型 → ${shortModelName(this.models.find((m) => m.id === draftModel)?.name ?? draftModel ?? "")}`);
+      if (draftLevel !== startLevel) changes.push(`思考 → ${draftLevel}`);
+      if (draftBudget !== startBudget) changes.push(`预算 → ${draftBudget ? compactSize(draftBudget) : "不设"}`);
+      confirm.disabled = !changes.length;
+      footHint.textContent = changes.length ? changes.join("，") : "未改动";
+      footHint.title = footHint.textContent;
+    };
+    confirm.onclick = () => {
+      const sessionId = this.currentId;
+      const model = this.models.find((m) => m.id === draftModel);
+      const modelChanged = draftModel !== startModel && !!model;
+      const levelChanged = draftLevel !== startLevel && !!draftLevel;
+      const budgetChanged = draftBudget !== startBudget;
+      if (!sessionId || (!modelChanged && !levelChanged && !budgetChanged)) return;
+      const budget = draftBudget;
+      const level = draftLevel;
+      this.act(() => {
+        if (budgetChanged) {
+          this.budget = budget;
+          this.socket.send({ type: "setBudget", sessionId, budget });
+        }
+        // The level rides along with the model switch so the bridge applies it after pi's clamp.
+        if (modelChanged && model) this.socket.send({ type: "setModel", sessionId, provider: model.provider, modelId: model.id, level: level || undefined });
+        else if (levelChanged) this.socket.send({ type: "setThinking", sessionId, level });
+        if (this.session && this.session.id === sessionId && (modelChanged || levelChanged)) {
+          this.session = { ...this.session, ...(modelChanged && model ? { model: model.id, modelName: model.name } : {}), thinkingLevel: level || this.session.thinkingLevel };
+        }
+        this.fillModelChip();
+        this.renderTop();
+      });
+      this.closeSheet();
+    };
+
     // Context budget: enforced by the bridge (one auto-compaction per turn when it is blown).
     const budgetBox = el("div", "levels");
     budgetBox.append(el("div", "levels-label", "上下文预算"));
     const budgetChips = el("div", "chips");
     for (const value of BUDGETS) {
-      const on = (value ?? null) === (this.budget ?? null);
+      const on = (value ?? null) === startBudget;
       const chip = el("button", `chip${on ? " on" : ""}`, value ? compactSize(value) : "不设");
       chip.onclick = () => {
-        this.budget = value ?? null;
-        this.act(() => this.socket.send({ type: "setBudget", sessionId: this.currentId, budget: value ?? null }));
+        draftBudget = value ?? null;
         for (const other of budgetChips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
-        this.fillModelChip();
+        refreshFoot();
       };
       budgetChips.append(chip);
     }
@@ -786,10 +936,9 @@ export class App {
     // Switching only works on a session this bridge owns; a terminal-owned one has no rpc child.
     if (this.session && !this.session.owned) {
       const notice = el("div", "takeover warn", "这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。");
-      const claim = el("button", "btn primary", "接管会话");
-      claim.onclick = () => this.act(() => this.socket.send({ type: "claim", sessionId: this.currentId }));
-      notice.append(claim);
-      sheet.append(notice);
+      notice.append(this.claimButton());
+      sheet.append(notice, foot);
+      refreshFoot();
       back.append(sheet);
       this.overlay(back);
       this.sheet = back;
@@ -802,42 +951,57 @@ export class App {
       sheet.append(empty);
     }
 
-    const current = this.session?.model;
     const list = el("div", "model-list");
+    const levelsBox = el("div", "levels");
+    const chips = el("div", "chips");
+    const paintLevels = (): void => {
+      const picked = this.models.find((m) => m.id === draftModel);
+      const levels = picked?.levels ?? ["off", "low", "medium", "high"];
+      // Same rule pi applies when switching: keep the level if the new model has it.
+      if (!levels.includes(draftLevel)) draftLevel = levels.includes(startLevel) ? startLevel : levels[0] ?? "";
+      chips.replaceChildren();
+      for (const level of levels) {
+        const chip = el("button", `chip${level === draftLevel ? " on" : ""}`, level);
+        chip.onclick = () => {
+          draftLevel = level;
+          paintLevels();
+          refreshFoot();
+        };
+        chips.append(chip);
+      }
+    };
     for (const m of this.models) {
-      const row = el("button", `model-row${m.id === current ? " on" : ""}`);
-      row.append(el("span", "m-name", shortModelName(m.name)));
+      const row = el("button", `model-row${m.id === draftModel ? " on" : ""}`);
+      row.dataset.id = m.id;
+      const nameEl = el("span", "m-name", shortModelName(m.name));
+      if (m.id === startModel) nameEl.append(el("span", "m-cur", "当前"));
+      row.append(nameEl);
       const meta = [compactSize(m.contextWindow), m.id].filter(Boolean).join(" · ");
       row.append(el("span", "m-meta", meta));
-      if (m.id === current) row.append(el("span", "m-check", "✓"));
+      const check = el("span", "m-check", m.id === draftModel ? "✓" : "");
+      row.append(check);
       row.onclick = () => {
-        this.socket.send({ type: "setModel", sessionId: this.currentId, provider: m.provider, modelId: m.id });
-        this.session = this.session ? { ...this.session, model: m.id, modelName: m.name, thinkingLevel: m.levels.includes(this.session.thinkingLevel ?? "") ? this.session.thinkingLevel : m.levels[0] } : this.session;
-        this.closeSheet();
-        this.renderTop();
+        draftModel = m.id;
+        for (const other of list.querySelectorAll<HTMLElement>(".model-row")) {
+          const on = other.dataset.id === m.id;
+          other.classList.toggle("on", on);
+          const c = other.querySelector(".m-check");
+          if (c) c.textContent = on ? "✓" : "";
+        }
+        paintLevels();
+        refreshFoot();
+      };
+      row.ondblclick = () => {
+        if (!confirm.disabled) confirm.click();
       };
       list.append(row);
     }
     sheet.append(list);
 
-    const picked = this.models.find((m) => m.id === current);
-    const levels = picked?.levels ?? ["off", "low", "medium", "high"];
-    const levelsBox = el("div", "levels");
-    levelsBox.append(el("div", "levels-label", "思考档位"));
-    const chips = el("div", "chips");
-    for (const level of levels) {
-      const on = level === this.session?.thinkingLevel;
-      const chip = el("button", `chip${on ? " on" : ""}`, level);
-      chip.onclick = () => {
-        this.socket.send({ type: "setThinking", sessionId: this.currentId, level });
-        if (this.session) this.session = { ...this.session, thinkingLevel: level };
-        for (const other of chips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
-        this.renderTop();
-      };
-      chips.append(chip);
-    }
-    levelsBox.append(chips);
-    sheet.append(levelsBox);
+    levelsBox.append(el("div", "levels-label", "思考档位"), chips);
+    paintLevels();
+    sheet.append(levelsBox, foot);
+    refreshFoot();
 
     back.append(sheet);
     this.overlay(back);
@@ -1008,23 +1172,275 @@ export class App {
     const end = field.selectionEnd ?? start;
     const next = `${text.slice(0, start)}${command}${text.slice(end)}`;
     this.composerText = next;
+    this.noteDraft();
     field.value = next;
     const caret = start + command.length;
     field.focus();
     field.setSelectionRange(caret, caret);
-    field.style.height = "auto";
-    field.style.height = `${Math.min(180, field.scrollHeight)}px`;
+    this.fitComposer();
   }
 
-  private async newSession(): Promise<void> {
-    const cwd = (this.els.newCwd as HTMLInputElement).value.trim() || this.sessions[0]?.cwd || "";
-    if (!cwd) {
-      alert("先填一个工作目录，例如 F:/pi-web-client");
-      return;
+  private defaultCwd(): string {
+    const latest = [...this.sessions].sort((a, b) => b.updatedAt - a.updatedAt)[0]?.cwd;
+    return localStorage.getItem("pi.lastCwd") || latest || "";
+  }
+
+  private createSession(cwd: string, name: string, onSent: () => void): void {
+    localStorage.setItem("pi.lastCwd", cwd);
+    const recent = this.recentCwds().filter((c) => c !== cwd);
+    localStorage.setItem("pi.recentCwds", JSON.stringify([cwd, ...recent].slice(0, 12)));
+    this.act(() => {
+      onSent();
+      this.socket.send({ type: "create", cwd, ...(name ? { name } : {}) });
+    });
+  }
+
+  private recentCwds(): string[] {
+    try {
+      const raw = JSON.parse(localStorage.getItem("pi.recentCwds") ?? "[]");
+      return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
+    } catch {
+      return [];
     }
-    this.act(() => this.socket.send({ type: "create", cwd }));
   }
 
+  /** Dropdown = what you started from here, then every directory the listed sessions live in. */
+  private recentCwdOptions(): HTMLElement {
+    const list = el("datalist");
+    list.id = "pi-recent-cwds";
+    const seen = new Set<string>();
+    const all = [...this.recentCwds(), ...[...this.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => s.cwd)];
+    for (const cwd of all) {
+      if (!cwd || seen.has(cwd.toLowerCase())) continue;
+      seen.add(cwd.toLowerCase());
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = cwd;
+      list.append(opt);
+      if (seen.size >= 20) break;
+    }
+    return list;
+  }
+
+  private openNewSessionSheet(): void {
+    this.closeSheet();
+    this.sheetKind = "new";
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back && !this.creating) this.closeSheet();
+    };
+    const sheet = el("div", "sheet new-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", "开新会话"));
+    const close = el("button", "btn ghost", "取消");
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+
+    const nameField = el("input", "ns-input") as HTMLInputElement;
+    nameField.placeholder = "可留空：发第一条消息后自动用它取名";
+    nameField.maxLength = 120;
+    const cwdField = el("input", "ns-input mono") as HTMLInputElement;
+    cwdField.placeholder = "例如 E:\\yqm\\pi-web-client";
+    cwdField.value = this.defaultCwd();
+    cwdField.setAttribute("list", "pi-recent-cwds");
+    const browseBtn = el("button", "btn ghost", "📁 浏览");
+    const cwdRow = el("div", "ns-row");
+    cwdRow.append(cwdField, browseBtn);
+
+    const browser = el("div", "ns-browser");
+    browser.hidden = true;
+    const where = el("div", "dir-path");
+    const mkBtn = el("button", "btn ghost dir-mk", "＋ 新建文件夹") as HTMLButtonElement;
+    mkBtn.title = "在当前目录下新建一个文件夹";
+    const dirHead = el("div", "dir-head");
+    dirHead.append(where, mkBtn);
+    const mkRow = el("div", "dir-mkrow");
+    mkRow.hidden = true;
+    const mkInput = el("input", "ns-input mono") as HTMLInputElement;
+    mkInput.placeholder = "新文件夹名";
+    mkInput.maxLength = 255;
+    const mkOk = el("button", "btn primary", "创建") as HTMLButtonElement;
+    const mkCancel = el("button", "btn ghost", "取消") as HTMLButtonElement;
+    const mkErr = el("div", "ns-error dir-mkerr");
+    const mkFields = el("div", "ns-row");
+    mkFields.append(mkInput, mkOk, mkCancel);
+    mkRow.append(mkFields, mkErr);
+    const list = el("div", "model-list dir-list");
+    browser.append(dirHead, mkRow, list);
+
+    const err = el("div", "ns-error");
+    const status = el("div", "ns-status");
+    status.hidden = true;
+    status.append(el("span", "act-spin"), el("span", "", "正在启动会话…（拉起 pi 进程，通常要几秒）"));
+    const foot = el("div", "dir-foot");
+    const ok = el("button", "btn primary", "创建");
+    foot.append(ok);
+
+    sheet.append(
+      head,
+      el("label", "ns-label", "会话名称"),
+      nameField,
+      el("label", "ns-label", "工作目录"),
+      cwdRow,
+      this.recentCwdOptions(),
+      browser,
+      err,
+      status,
+      foot,
+    );
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+
+    let current = "";
+    const go = async (target: string, fallback: boolean): Promise<void> => {
+      list.replaceChildren(el("div", "empty", "读取中…"));
+      let res: Awaited<ReturnType<typeof api.dirs>>;
+      try {
+        res = await api.dirs(target);
+      } catch (ex: any) {
+        list.replaceChildren(el("div", "empty", `读取失败：${ex?.message ?? ex}`));
+        return;
+      }
+      if (this.sheet !== back) return;
+      // A typed path that does not exist: start from the drive list instead of a dead end.
+      if (res.error && target && fallback) return go("", false);
+      current = res.path;
+      where.textContent = current || "此电脑";
+      mkBtn.hidden = !current || !!res.error;
+      closeMk();
+      // Walking the tree is choosing: the field always shows where you are.
+      if (current) cwdField.value = current;
+      list.replaceChildren();
+      if (res.parent !== null) {
+        const up = el("button", "model-row dir-row", "↑ 上一级");
+        up.onclick = () => void go(res.parent ?? "", false);
+        list.append(up);
+      }
+      if (res.error) list.append(el("div", "empty", res.error));
+      else if (!res.dirs.length) list.append(el("div", "empty", "没有子目录"));
+      for (const name of res.dirs) {
+        const row = el("button", "model-row dir-row", `📁 ${name}`);
+        row.onclick = () => void go(current ? `${current.replace(/[\\/]+$/, "")}\\${name}` : name, false);
+        list.append(row);
+      }
+      list.scrollTop = 0;
+    };
+    browseBtn.onclick = () => {
+      browser.hidden = !browser.hidden;
+      browseBtn.textContent = browser.hidden ? "📁 浏览" : "收起";
+      if (!browser.hidden) void go(cwdField.value.trim(), true);
+    };
+
+    let mkBusy = false;
+    const setMkBusy = (busy: boolean): void => {
+      mkBusy = busy;
+      mkInput.disabled = busy;
+      mkOk.disabled = busy;
+      mkOk.textContent = busy ? "创建中…" : "创建";
+    };
+    function closeMk(): void {
+      mkRow.hidden = true;
+      mkErr.textContent = "";
+      mkInput.value = "";
+    }
+    mkBtn.onclick = () => {
+      if (!current) return;
+      mkRow.hidden = false;
+      mkErr.textContent = "";
+      mkInput.focus();
+    };
+    mkCancel.onclick = () => {
+      if (!mkBusy) closeMk();
+    };
+    const submitMk = (): void => {
+      const name = mkInput.value.trim();
+      const parent = current;
+      if (!name || !parent || mkBusy) return;
+      if (/[\\/]/.test(name)) {
+        mkErr.textContent = "文件夹名里不能有 / 或 \\（一次只建一层）";
+        return;
+      }
+      this.act(() => {
+        const reqId = `mk:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+        setMkBusy(true);
+        mkErr.textContent = "";
+        const timer = setTimeout(() => {
+          if (!this.mkdirWaits.delete(reqId)) return;
+          setMkBusy(false);
+          mkErr.textContent = "服务端没有响应，稍后再试";
+        }, 15000);
+        this.mkdirWaits.set(reqId, (res) => {
+          clearTimeout(timer);
+          if (this.sheet !== back) return;
+          setMkBusy(false);
+          if (res.error || !res.path) {
+            mkErr.textContent = res.error ?? "创建失败";
+            mkInput.focus();
+            return;
+          }
+          // Step into the new folder: that also makes it the chosen working directory.
+          void go(res.path, false);
+        });
+        this.socket.send({ type: "mkdir", reqId, parent, name });
+      });
+    };
+    mkOk.onclick = submitMk;
+    mkInput.onkeydown = (ev) => {
+      if (ev.isComposing) return;
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        submitMk();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!mkBusy) closeMk();
+      }
+    };
+
+    const setBusy = (busy: boolean): void => {
+      status.hidden = !busy;
+      for (const node of [nameField, cwdField, browseBtn, ok, close] as (HTMLInputElement | HTMLButtonElement)[]) node.disabled = busy;
+      browser.classList.toggle("disabled", busy);
+      ok.textContent = busy ? "启动中…" : "创建";
+    };
+    const submit = (): void => {
+      if (this.creating) return;
+      const cwd = cwdField.value.trim();
+      if (!cwd) {
+        err.textContent = "先选一个工作目录";
+        cwdField.focus();
+        return;
+      }
+      err.textContent = "";
+      this.createSession(cwd, nameField.value.trim(), () => {
+        setBusy(true);
+        const timer = setTimeout(() => this.creating?.finish("等了 60 秒还没启动起来，看看服务端日志"), 60000);
+        this.creating = {
+          finish: (error) => {
+            clearTimeout(timer);
+            this.creating = null;
+            if (this.sheet !== back) return;
+            if (!error) {
+              this.closeSheet();
+              return;
+            }
+            setBusy(false);
+            err.textContent = error;
+          },
+        };
+      });
+    };
+    ok.onclick = submit;
+    for (const field of [nameField, cwdField]) {
+      field.onkeydown = (ev) => {
+        if (ev.key === "Enter" && !ev.isComposing) {
+          ev.preventDefault();
+          submit();
+        }
+      };
+    }
+    queueMicrotask(() => nameField.focus());
+  }
   // ---------------------------------------------------------------- render
   private renderAll(): void {
     this.renderTop();
@@ -1042,6 +1458,7 @@ export class App {
     const running = this.session?.running;
     dot.className = `dot ${!this.connected ? "bad" : running ? "busy" : this.session?.owned ? "live" : ""}`;
     title.textContent = this.session ? this.session.name : "pi";
+    this.els.files.hidden = !this.currentId;
     const bits: string[] = [];
     if (this.me.public) bits.push("公网");
     if (this.tunnel.status === "up" && this.tunnel.url) bits.push(this.tunnel.url.replace("https://", ""));
@@ -1112,20 +1529,15 @@ export class App {
     const ordered = [...this.sessions].sort((a, b) => this.arrangeCompare(a, b));
     if (this.renameId && !ordered.some((s) => s.id === this.renameId)) this.renameId = null;
     // A deleted or now-hidden session must not stay "picked".
-    for (const id of [...this.picked]) if (!ordered.some((s) => s.id === id)) this.picked.delete(id);
 
     const visible = ordered.filter((s) => !this.manage.archived.includes(s.id) && this.matchesFilter(s));
     const archived = ordered.filter((s) => this.manage.archived.includes(s.id) && this.matchesFilter(s));
     const pinned = visible.filter((s) => this.manage.pin.includes(s.id));
     const rest = visible.filter((s) => !this.manage.pin.includes(s.id));
-
-    this.els.manageBtn.textContent = this.managing ? "完成" : "管理";
-    this.els.manageBtn.classList.toggle("on", this.managing);
-    this.els.actions.classList.toggle("managing", this.managing);
+    if (this.sheetKind === "manage") this.mgrRefresh?.();
 
     if (!ordered.length) {
       host.append(el("div", "empty", "还没有会话。上面开一个，或在终端里 pi 一下。"));
-      this.renderManageActions();
       return;
     }
     if (pinned.length) host.append(this.sessionSection("pin", "置顶", pinned));
@@ -1133,7 +1545,6 @@ export class App {
     if (!visible.length) host.append(el("div", "empty", this.filter ? "没有匹配的会话。" : "都归档了，展开下面的「已归档」看看。"));
     if (archived.length) host.append(this.sessionSection("archived", "已归档", this.archivedOpen ? archived : []));
     this.renameFocus = false;
-    this.renderManageActions();
   }
 
   private sessionSection(kind: "pin" | "rest" | "archived", title: string, list: SessionState[]): HTMLElement {
@@ -1179,31 +1590,18 @@ export class App {
   private sessionCard(s: SessionState): HTMLElement {
     const editing = this.renameId === s.id;
     const archived = this.manage.archived.includes(s.id);
-    const picked = this.picked.has(s.id);
     const cls = ["session-card"];
     if (s.id === this.currentId) cls.push("active");
     if (editing) cls.push("editing");
     if (archived) cls.push("archived");
-    if (picked) cls.push("picked");
     const card = el("div", cls.join(" "));
     card.dataset.id = s.id;
     // A button cannot host a text field, so the card is a div acting as one.
     card.setAttribute("role", "button");
     card.tabIndex = 0;
-    const open = () => {
-      this.go("chat", true);
-      location.hash = `#/s/${s.id}`;
-      this.openSession(s.id);
-    };
     card.onclick = () => {
       if (editing) return; // clicking the editing card is not "open"
-      if (this.managing) {
-        if (picked) this.picked.delete(s.id);
-        else this.picked.add(s.id);
-        this.renderSessions();
-        return;
-      }
-      open();
+      this.openFromList(s.id);
     };
     card.onkeydown = (ev) => {
       if (ev.target !== card) return; // let the buttons and the input own their keys
@@ -1212,7 +1610,7 @@ export class App {
         card.click();
       }
     };
-    if (!this.managing && !this.filter) {
+    if (!this.filter) {
       card.draggable = true;
       card.ondragstart = (ev) => {
         this.dragId = s.id;
@@ -1249,9 +1647,11 @@ export class App {
     }
 
     const row = el("div", "row");
-    if (this.managing) row.append(el("span", `check${picked ? " on" : ""}`, picked ? "✓" : ""));
-    else row.append(el("span", "grip", "⣿"));
-    row.append(el("span", `dot ${s.running ? "busy" : s.owned ? "live" : ""}`));
+    const bottomActs = el("span", "card-acts bottom");
+    row.append(el("span", "grip", "⣿"));
+    const dot = el("span", `dot ${s.running ? "busy" : s.owned ? "live" : ""}`);
+    dot.title = s.running ? "运行中" : s.owned ? "网页已接管（pi 进程在本服务里）" : "未接管（只读历史；发消息会自动接管）";
+    row.append(dot);
     if (editing) {
       const field = el("input", "rename-input");
       field.value = this.renameDraft;
@@ -1285,7 +1685,12 @@ export class App {
       row.append(field);
     } else {
       row.append(el("span", "name", s.name || s.id.slice(0, 8)));
-      if (!this.managing) {
+      const web = s.origin === "web";
+      const src = el("span", `src-tag ${web ? "web" : "cli"}`, web ? "网页" : "CLI");
+      src.title = web ? "在网页里新建的会话" : "在终端 pi CLI 里创建的会话";
+      row.append(src);
+      {
+        const acts = el("span", "card-acts");
         const pinned = this.manage.pin.includes(s.id);
         const pin = el("button", `pin-btn${pinned ? " pinned" : ""}`, pinned ? "★" : "☆");
         pin.title = pinned ? "取消置顶" : "置顶";
@@ -1294,7 +1699,6 @@ export class App {
           ev.stopPropagation();
           this.togglePin(s.id);
         };
-        row.append(pin);
         const rename = el("button", "rename-btn", "✎");
         rename.title = "改个名字";
         rename.setAttribute("aria-label", "重命名会话");
@@ -1302,18 +1706,44 @@ export class App {
           ev.stopPropagation();
           this.startRename(s);
         };
-        row.append(rename);
+        const archived = this.manage.archived.includes(s.id);
+        const archive = el("button", "card-act");
+        archive.innerHTML = archived ? ICON_UNARCHIVE : ICON_ARCHIVE;
+        archive.title = archived ? "取消归档（放回列表）" : "归档（收进「已归档」，文件不动）";
+        archive.setAttribute("aria-label", archive.title);
+        archive.onclick = (ev) => {
+          ev.stopPropagation();
+          this.act(() => this.socket.send({ type: "manage", action: "archive", ids: [s.id], on: !archived }));
+        };
+        const armed = this.cardDelArm?.id === s.id;
+        const busy = s.running || s.owned || s.approvals > 0;
+        const del = el("button", `card-act del${armed ? " armed" : ""}`) as HTMLButtonElement;
+        if (armed) del.textContent = "删除?";
+        else del.innerHTML = ICON_TRASH;
+        del.disabled = busy;
+        del.title = busy ? "网页正在运行/接管这个会话，先停止运行再删" : armed ? "再点一次：永久删除会话文件（不进回收站）" : "删除（会删掉 pi 的会话文件，不可恢复）";
+        del.setAttribute("aria-label", "删除会话");
+        del.onclick = (ev) => {
+          ev.stopPropagation();
+          this.deleteOne(s.id);
+        };
+        acts.append(pin, rename);
+        row.append(acts);
+        bottomActs.append(archive, del);
       }
     }
     card.append(row);
     card.append(el("div", "cwd", s.cwd));
     const meta = el("div", "meta");
     meta.append(el("span", "", relativeTime(s.updatedAt)));
+    const tail = el("span", "meta-tail");
+    if (bottomActs.childElementCount) tail.append(bottomActs);
     // Bottom-right corner: the one thing worth interrupting for, worst first.
-    if (s.asks && s.asks > 0) meta.append(el("span", "badge wait", s.asks > 1 ? `待回答 ${s.asks}` : "待回答"));
-    else if (s.approvals > 0) meta.append(el("span", "badge wait", s.approvals > 1 ? `待确认 ${s.approvals}` : "待确认"));
-    else if (s.done && s.id !== this.currentId) meta.append(el("span", "badge done", "完成"));
-    else if (s.running) meta.append(el("span", "badge run", "运行中"));
+    if (s.asks && s.asks > 0) tail.append(el("span", "badge wait", s.asks > 1 ? `待回答 ${s.asks}` : "待回答"));
+    else if (s.approvals > 0) tail.append(el("span", "badge wait", s.approvals > 1 ? `待确认 ${s.approvals}` : "待确认"));
+    else if (s.done && s.id !== this.currentId) tail.append(el("span", "badge done", "完成"));
+    else if (s.running) tail.append(el("span", "badge run", "运行中"));
+    meta.append(tail);
     card.append(meta);
     return card;
   }
@@ -1392,80 +1822,769 @@ export class App {
     this.sendArrangement(pin, order);
   }
 
-  private toggleManaging(on?: boolean): void {
-    this.managing = on ?? !this.managing;
-    if (!this.managing) {
-      this.picked.clear();
-      this.deleteArm = null;
+  // ---------------------------------------------------------------- file preview
+  private openArtifactsSheet(): void {
+    if (!this.currentId) return;
+    this.closeSheet();
+    this.sheetKind = "display";
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet art-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", "本会话的产物"));
+    const close = el("button", "btn ghost", "关闭");
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const list = el("div", "art-list");
+    const items = this.chat.artifacts();
+    if (!items.length) list.append(el("div", "empty", "这个会话还没写过文件。AI 回复里提到的路径也可以直接点开预览。"));
+    for (const it of items) {
+      const row = el("button", "art-row");
+      const name = it.path.split(/[\\/]/).filter(Boolean).pop() ?? it.path;
+      row.append(el("span", "art-ico", previewIcon(it.path)), el("span", "art-name", name), el("span", "art-tool", it.tool === "write" ? "写入" : "修改"), el("span", "art-path", it.path));
+      row.title = it.path;
+      row.onclick = () => {
+        this.closeSheet();
+        void this.openPreview(it.path);
+      };
+      list.append(row);
     }
-    this.renderSessions();
+    // Free-form path: anything in the cwd or mentioned in the session.
+    const foot = el("div", "art-foot");
+    const input = el("input", "ns-input mono") as HTMLInputElement;
+    input.placeholder = "输入路径预览（相对会话工作目录，或绝对路径）";
+    const go = el("button", "btn", "预览");
+    const submit = () => {
+      const p = input.value.trim();
+      if (!p) return;
+      this.closeSheet();
+      void this.openPreview(p);
+    };
+    go.onclick = submit;
+    input.onkeydown = (ev) => {
+      if (ev.key === "Enter") submit();
+    };
+    foot.append(input, go);
+    sheet.append(head, list, foot);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
   }
 
-  private pickedInOrder(): string[] {
-    return this.sessions
-      .filter((s) => this.picked.has(s.id))
-      .sort((a, b) => this.arrangeCompare(a, b))
-      .map((s) => s.id);
+  private async openPreview(path: string, sessionId: string | null = this.currentId): Promise<void> {
+    if (!sessionId) return;
+    const v = this.ensureViewer();
+    v.sessionId = sessionId;
+    v.path = path;
+    v.info = null;
+    v.error = "";
+    v.text = null;
+    v.mode = "render";
+    this.paintViewer();
+    try {
+      v.info = await api.preview(sessionId, path);
+    } catch (err: any) {
+      if (this.viewer !== v || v.path !== path) return;
+      v.error = String(err?.message ?? err);
+      this.paintViewer();
+      return;
+    }
+    if (this.viewer !== v || v.path !== path) return;
+    v.path = v.info.abs;
+    await this.loadViewerText();
   }
 
-  private pinPicked(on: boolean): void {
-    const ids = this.pickedInOrder();
+  /** md / text / html-source need the bytes; html and images load by url. */
+  private async loadViewerText(force = false): Promise<void> {
+    const v = this.viewer;
+    const info = v?.info;
+    if (!v || !info) return;
+    const needs = info.kind === "markdown" || info.kind === "text" || (info.kind === "html" && v.mode === "source");
+    if (needs && v.text == null) {
+      if (info.size > 3 * 1024 * 1024 && !force) {
+        v.error = `文件有 ${(info.size / 1024 / 1024).toFixed(1)} MB，太大了，用「新标签页」打开看。`;
+        this.paintViewer();
+        return;
+      }
+      this.paintViewer();
+      try {
+        const res = await fetch(rawUrl(info));
+        if (!res.ok) throw new Error(await res.text());
+        v.text = await res.text();
+      } catch (err: any) {
+        v.error = String(err?.message ?? err);
+      }
+      if (this.viewer !== v || v.info !== info) return;
+    }
+    this.paintViewer();
+  }
+
+  private ensureViewer(): Viewer {
+    if (this.viewer) return this.viewer;
+    const root = el("aside", "viewer");
+    const saved = Number(localStorage.getItem("pi.viewerW"));
+    if (saved >= 320) root.style.setProperty("--viewer-w", `${saved}px`);
+    const grip = el("div", "viewer-grip");
+    grip.title = "拖动调整宽度";
+    grip.onpointerdown = (ev) => {
+      ev.preventDefault();
+      grip.setPointerCapture(ev.pointerId);
+      root.classList.add("resizing");
+      const move = (e: PointerEvent) => {
+        const w = Math.max(320, Math.min(window.innerWidth - 120, window.innerWidth - e.clientX));
+        root.style.setProperty("--viewer-w", `${w}px`);
+      };
+      const up = () => {
+        grip.removeEventListener("pointermove", move);
+        root.classList.remove("resizing");
+        const w = parseInt(root.style.getPropertyValue("--viewer-w"), 10);
+        if (w) localStorage.setItem("pi.viewerW", String(w));
+      };
+      grip.addEventListener("pointermove", move);
+      grip.addEventListener("pointerup", up, { once: true });
+    };
+    const head = el("div", "viewer-head");
+    const body = el("div", "viewer-body");
+    root.append(grip, head, body);
+    root.tabIndex = -1;
+    root.onkeydown = (ev) => {
+      if (ev.key === "Escape") {
+        ev.stopPropagation();
+        this.closeViewer();
+      }
+    };
+    this.overlay(root);
+    this.viewer = { root, head, body, sessionId: "", path: "", info: null, error: "", text: null, mode: "render", full: localStorage.getItem("pi.viewerFull") === "1" };
+    return this.viewer;
+  }
+
+  private closeViewer(): void {
+    this.viewer?.root.remove();
+    this.viewer = null;
+  }
+
+  private paintViewer(): void {
+    const v = this.viewer;
+    if (!v) return;
+    const { root, head, body, info } = v;
+    root.classList.toggle("full", v.full);
+    head.replaceChildren();
+    const title = el("div", "viewer-title");
+    const name = info?.name ?? v.path.split(/[\\/]/).filter(Boolean).pop() ?? v.path;
+    title.append(el("span", "viewer-ico", previewIcon(name)), el("span", "viewer-name", name));
+    const sub = el("div", "viewer-path", info ? `${info.abs} · ${fmtSize(info.size)}` : v.path);
+    sub.title = info?.abs ?? v.path;
+    const left = el("div", "viewer-titles");
+    left.append(title, sub);
+    const tools = el("div", "viewer-tools");
+    const tbtn = (text: string, tip: string, fn: () => void, on = false) => {
+      const b = el("button", `viewer-btn${on ? " on" : ""}`, text) as HTMLButtonElement;
+      b.title = tip;
+      b.onclick = fn;
+      tools.append(b);
+      return b;
+    };
+    if (info && (info.kind === "markdown" || info.kind === "html")) {
+      const seg = el("div", "viewer-seg");
+      for (const [m, label] of [["render", "渲染"], ["source", "源码"]] as const) {
+        const b = el("button", v.mode === m ? "on" : "", label);
+        b.onclick = () => {
+          if (v.mode === m) return;
+          v.mode = m;
+          void this.loadViewerText();
+        };
+        seg.append(b);
+      }
+      tools.append(seg);
+    }
+    tbtn("⟳", "刷新（重新读取文件）", () => void this.openPreview(v.path, v.sessionId));
+    if (info) {
+      tbtn("↗", "在新标签页打开", () => window.open(rawUrl(info), "_blank", "noopener"));
+      tbtn("⧉", "复制路径", () => void navigator.clipboard?.writeText(info.abs));
+    }
+    tbtn(v.full ? "🗗" : "⛶", v.full ? "退出全屏" : "全屏", () => {
+      v.full = !v.full;
+      localStorage.setItem("pi.viewerFull", v.full ? "1" : "0");
+      this.paintViewer();
+    }, v.full);
+    tbtn("✕", "关闭（Esc）", () => this.closeViewer());
+    head.append(left, tools);
+
+    // Keep an html iframe alive across header-only repaints (its own state / scroll matter).
+    const frame = body.querySelector<HTMLIFrameElement>("iframe.viewer-frame");
+    if (info?.kind === "html" && v.mode === "render" && !v.error && frame?.dataset.src === rawUrl(info)) return;
+
+    body.replaceChildren();
+    body.className = "viewer-body";
+    if (v.error) {
+      const box = el("div", "viewer-msg err");
+      box.append(el("div", "", v.error));
+      if (info) {
+        const open = el("button", "btn", "新标签页打开");
+        open.onclick = () => window.open(rawUrl(info), "_blank", "noopener");
+        box.append(open);
+      }
+      body.append(box);
+      return;
+    }
+    if (!info) {
+      body.append(viewerLoading("正在打开…"));
+      return;
+    }
+    const url = rawUrl(info);
+    if (info.kind === "html" && v.mode === "render") {
+      const f = el("iframe", "viewer-frame") as HTMLIFrameElement;
+      // No allow-same-origin: the page runs in an opaque origin and cannot reach this app.
+      f.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-modals allow-downloads");
+      f.referrerPolicy = "no-referrer";
+      f.src = url;
+      f.dataset.src = url;
+      body.classList.add("frame");
+      body.append(f);
+      return;
+    }
+    if (info.kind === "image") {
+      const img = el("img", "viewer-img") as HTMLImageElement;
+      img.src = url;
+      img.alt = info.name;
+      body.classList.add("image");
+      body.append(img);
+      return;
+    }
+    if (info.kind === "binary") {
+      const box = el("div", "viewer-msg");
+      box.append(el("div", "", `二进制文件（${fmtSize(info.size)}），这里不直接显示。`));
+      const open = el("button", "btn", "新标签页打开 / 下载");
+      open.onclick = () => window.open(url, "_blank", "noopener");
+      box.append(open);
+      body.append(box);
+      return;
+    }
+    if (v.text == null) {
+      body.append(viewerLoading("正在读取…"));
+      return;
+    }
+    if (info.kind === "markdown" && v.mode === "render") {
+      const doc = el("article", "md-doc");
+      const dir = url.slice(0, url.lastIndexOf("/") + 1);
+      doc.append(
+        renderMarkdown(v.text, {
+          doc: true,
+          openPath: (p) => void this.openPreview(resolveFrom(info.abs, p), v.sessionId),
+          imageSrc: (src) => {
+            if (/^[A-Za-z]:[\\/]|^\//.test(src) || /^data:/i.test(src)) return null;
+            try {
+              return new URL(src, location.origin + dir).pathname;
+            } catch {
+              return null;
+            }
+          },
+        }),
+      );
+      body.append(doc);
+      return;
+    }
+    const pre = el("pre", "viewer-src");
+    const lines = v.text.split(/\r?\n/);
+    const gutter = el("div", "ln-gutter", lines.map((_, k) => k + 1).join("\n"));
+    const code = el("code", "", v.text);
+    pre.append(gutter, code);
+    body.append(pre);
+  }
+
+  private openFromList(id: string): void {
+    this.go("chat", true);
+    location.hash = `#/s/${id}`;
+    this.openSession(id);
+  }
+
+  private pinIds(ids: string[], on: boolean): void {
     if (!ids.length) return;
     const pin = on ? [...ids, ...this.manage.pin.filter((id) => !ids.includes(id))] : this.manage.pin.filter((id) => !ids.includes(id));
     const order = on ? this.manage.order.filter((id) => !ids.includes(id)) : [...ids, ...this.manage.order.filter((id) => !ids.includes(id))];
     this.sendArrangement(pin, order);
   }
 
-  private archivePicked(): void {
-    const ids = this.pickedInOrder();
+  private archiveIds(ids: string[], on: boolean): void {
     if (!ids.length) return;
-    const allArchived = ids.every((id) => this.manage.archived.includes(id));
-    this.act(() => this.socket.send({ type: "manage", action: "archive", ids, on: !allArchived }));
-    this.picked.clear();
-    this.deleteArm = null;
-    this.renderSessions();
+    this.act(() => this.socket.send({ type: "manage", action: "archive", ids, on }));
   }
 
-  private deletePicked(): void {
-    const ids = this.pickedInOrder();
-    if (!ids.length) return;
-    const armed = this.deleteArm != null && Date.now() - this.deleteArm.at < 4000 && this.deleteArm.ids.join() === ids.join();
-    if (!armed) {
-      this.deleteArm = { ids, at: Date.now() };
-      this.renderManageActions();
-      setTimeout(() => {
-        if (this.deleteArm && Date.now() - this.deleteArm.at >= 4000) {
-          this.deleteArm = null;
-          this.renderManageActions();
-        }
-      }, 4100);
+  /** Per-card delete needs a second click within 4s. */
+  private deleteOne(id: string): void {
+    if (this.cardDelArm?.id === id && Date.now() - this.cardDelArm.at < 4000) {
+      this.cardDelArm = null;
+      this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
+      this.renderSessions();
       return;
     }
-    this.deleteArm = null;
-    this.act(() => this.socket.send({ type: "manage", action: "delete", ids }));
-    this.renderManageActions();
+    this.cardDelArm = { id, at: Date.now() };
+    this.renderSessions();
+    setTimeout(() => {
+      if (this.cardDelArm?.id === id && Date.now() - this.cardDelArm.at >= 4000) {
+        this.cardDelArm = null;
+        this.renderSessions();
+      }
+    }, 4100);
   }
 
-  private renderManageActions(): void {
-    const bar = this.els.actions;
-    bar.replaceChildren();
-    if (!this.managing) return;
-    const ids = this.pickedInOrder();
-    const what = el("span", "what", ids.length ? `选 ${ids.length} 个` : "点卡片多选");
-    const pin = el("button", "btn", "置顶");
-    pin.disabled = !ids.length;
-    pin.onclick = () => this.pinPicked(true);
-    const unpin = el("button", "btn", "取消置顶");
-    unpin.disabled = !ids.length;
-    unpin.onclick = () => this.pinPicked(false);
-    const allArchived = ids.length > 0 && ids.every((id) => this.manage.archived.includes(id));
-    const archive = el("button", "btn", allArchived ? "恢复" : "归档");
-    archive.disabled = !ids.length;
-    archive.onclick = () => this.archivePicked();
-    const del = el("button", "btn danger", this.deleteArm ? "再点一次删除" : "删除");
-    del.disabled = !ids.length;
-    del.onclick = () => this.deletePicked();
-    bar.append(what, pin, unpin, archive, del);
+  // ---------------------------------------------------------------- session manager
+  private static busy(s: SessionState): boolean {
+    return s.running || s.owned || s.approvals > 0;
+  }
+
+  private mgrMatches(s: SessionState): boolean {
+    const v = this.mgr;
+    const archived = this.manage.archived.includes(s.id);
+    const pinned = this.manage.pin.includes(s.id);
+    if (v.origin !== "all" && (s.origin === "web" ? "web" : "cli") !== v.origin) return false;
+    if (v.status === "pin" && !(pinned && !archived)) return false;
+    if (v.status === "normal" && (pinned || archived)) return false;
+    if (v.status === "archived" && !archived) return false;
+    if (v.status === "active" && archived) return false;
+    if (v.time !== "all" && timeBucket(s.updatedAt) !== v.time) return false;
+    if (v.cwd && s.cwd !== v.cwd) return false;
+    const words = v.q.toLowerCase().split(/\s+/).filter(Boolean);
+    if (words.length) {
+      const hay = `${s.name}\n${s.cwd}\n${s.preview ?? ""}`.toLowerCase();
+      if (!words.every((w) => hay.includes(w))) return false;
+    }
+    return true;
+  }
+
+  private mgrCompare(a: SessionState, b: SessionState): number {
+    const created = (s: SessionState) => Date.parse(s.startedAt ?? "") || s.updatedAt;
+    let d = 0;
+    switch (this.mgr.sort) {
+      case "updated":
+        d = a.updatedAt - b.updatedAt;
+        break;
+      case "created":
+        d = created(a) - created(b);
+        break;
+      case "name":
+        d = (a.name || "").localeCompare(b.name || "", "zh-CN");
+        break;
+      case "cwd":
+        d = a.cwd.localeCompare(b.cwd, "zh-CN") || a.updatedAt - b.updatedAt;
+        break;
+    }
+    return this.mgr.desc ? -d : d;
+  }
+
+  /** Groups in display order; "none" is a single headless group. */
+  private mgrGroups(list: SessionState[]): { key: string; label: string; items: SessionState[] }[] {
+    const g = this.mgr.group;
+    if (g === "none") return [{ key: "", label: "", items: list }];
+    const keyOf = (s: SessionState): [string, string] => {
+      if (g === "cwd") return [`cwd:${s.cwd}`, s.cwd];
+      if (g === "origin") return s.origin === "web" ? ["origin:web", "网页创建"] : ["origin:cli", "pi CLI 创建"];
+      if (g === "status") {
+        if (this.manage.archived.includes(s.id)) return ["status:archived", "已归档"];
+        return this.manage.pin.includes(s.id) ? ["status:pin", "置顶"] : ["status:normal", "普通"];
+      }
+      const t = timeBucket(s.updatedAt);
+      return [`time:${t}`, t === "today" ? "今天" : t === "week" ? "本周" : "更早"];
+    };
+    const map = new Map<string, { key: string; label: string; items: SessionState[] }>();
+    for (const s of list) {
+      const [key, label] = keyOf(s);
+      let grp = map.get(key);
+      if (!grp) map.set(key, (grp = { key, label, items: [] }));
+      grp.items.push(s);
+    }
+    const fixed = ["status:pin", "status:normal", "status:archived", "time:today", "time:week", "time:older", "origin:web", "origin:cli"];
+    const groups = [...map.values()];
+    if (g === "cwd") {
+      const latest = (x: { items: SessionState[] }) => Math.max(...x.items.map((s) => s.updatedAt));
+      groups.sort((a, b) => latest(b) - latest(a));
+    } else groups.sort((a, b) => fixed.indexOf(a.key) - fixed.indexOf(b.key));
+    return groups;
+  }
+
+  private saveMgr(): void {
+    try {
+      localStorage.setItem("pi.mgr", JSON.stringify(this.mgr));
+    } catch {
+      /* private mode */
+    }
+  }
+
+  private mgrArm(key: string): boolean {
+    if (this.mgrDelArm?.key === key && Date.now() - this.mgrDelArm.at < 4000) {
+      this.mgrDelArm = null;
+      return true;
+    }
+    this.mgrDelArm = { key, at: Date.now() };
+    setTimeout(() => {
+      if (this.mgrDelArm?.key === key && Date.now() - this.mgrDelArm.at >= 4000) {
+        this.mgrDelArm = null;
+        this.mgrRefresh?.();
+      }
+    }, 4100);
+    return false;
+  }
+
+  private applyRename(id: string, raw: string): void {
+    const name = raw.trim().replace(/\s+/g, " ");
+    const target = this.sessions.find((s) => s.id === id);
+    if (!target || !name || name === target.name) return;
+    // The bridge records the name before it answers, so showing it now is not a lie.
+    target.name = name;
+    if (this.session?.id === id) this.session = { ...this.session, name };
+    this.act(() => this.socket.send({ type: "rename", sessionId: id, name }));
+  }
+
+  private openManager(): void {
+    this.closeSheet();
+    this.sheetKind = "manage";
+    this.mgrPicked.clear();
+    this.mgrRename = null;
+    this.mgrDelArm = null;
+    const back = el("div", "sheet-back center");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    back.onkeydown = (ev) => {
+      if (ev.key === "Escape") this.closeSheet();
+    };
+    const sheet = el("div", "sheet mgr-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", "会话管理"));
+    const close = el("button", "btn ghost", "关闭");
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+
+    // The toolbar is built once so the search box keeps focus while the body repaints.
+    const tools = el("div", "mgr-tools");
+    const q = el("input", "mgr-search") as HTMLInputElement;
+    q.type = "search";
+    q.placeholder = "搜索 名字 / 目录 / 首条消息（空格分隔多个词）";
+    q.value = this.mgr.q;
+    q.oninput = () => {
+      this.mgr.q = q.value;
+      this.saveMgr();
+      paint();
+    };
+    const select = <K extends keyof MgrView>(key: K, label: string, opts: [string, string][]) => {
+      const wrap = el("label", "mgr-field");
+      wrap.append(el("span", "", label));
+      const s = el("select", "") as HTMLSelectElement;
+      for (const [v, t] of opts) {
+        const o = el("option", "", t) as HTMLOptionElement;
+        o.value = v;
+        s.append(o);
+      }
+      s.value = String(this.mgr[key]);
+      s.onchange = () => {
+        (this.mgr as any)[key] = s.value;
+        if (key === "sort") {
+          this.mgr.desc = s.value === "updated" || s.value === "created";
+          syncDir();
+        }
+        this.saveMgr();
+        paint();
+      };
+      wrap.append(s);
+      return { wrap, s };
+    };
+    const origin = select("origin", "来源", [["all", "全部"], ["web", "网页"], ["cli", "CLI"]]);
+    const status = select("status", "状态", [["all", "全部"], ["active", "未归档"], ["pin", "置顶"], ["normal", "普通"], ["archived", "已归档"]]);
+    const time = select("time", "更新", [["all", "全部"], ["today", "今天"], ["week", "本周"], ["older", "更早"]]);
+    const cwd = select("cwd", "目录", [["", "全部"]]);
+    const group = select("group", "分组", [["none", "不分组"], ["cwd", "按目录"], ["origin", "按来源"], ["status", "按状态"], ["time", "按时间"]]);
+    const sort = select("sort", "排序", [["updated", "最近更新"], ["created", "创建时间"], ["name", "名称"], ["cwd", "工作目录"]]);
+    const dir = el("button", "btn ghost mgr-dir") as HTMLButtonElement;
+    const syncDir = () => {
+      dir.textContent = this.mgr.desc ? "↓ 降序" : "↑ 升序";
+    };
+    syncDir();
+    dir.onclick = () => {
+      this.mgr.desc = !this.mgr.desc;
+      syncDir();
+      this.saveMgr();
+      paint();
+    };
+    const reset = el("button", "btn ghost", "重置");
+    reset.onclick = () => {
+      this.mgr = defaultMgrView();
+      this.saveMgr();
+      q.value = "";
+      for (const [k, x] of [["origin", origin], ["status", status], ["time", time], ["cwd", cwd], ["group", group], ["sort", sort]] as const) {
+        x.s.value = String(this.mgr[k]);
+      }
+      syncDir();
+      paint();
+    };
+    const filters = el("div", "mgr-filters");
+    filters.append(origin.wrap, status.wrap, time.wrap, cwd.wrap, group.wrap, sort.wrap, dir, reset);
+    tools.append(q, filters);
+
+    const body = el("div", "mgr-body");
+    const foot = el("div", "mgr-foot");
+    sheet.append(head, tools, body, foot);
+    back.append(sheet);
+
+    let cwdKey = "";
+    const fillCwds = () => {
+      const counts = new Map<string, number>();
+      for (const s of this.sessions) counts.set(s.cwd, (counts.get(s.cwd) ?? 0) + 1);
+      const list = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0], "zh-CN"));
+      if (this.mgr.cwd && !counts.has(this.mgr.cwd)) list.push([this.mgr.cwd, 0]);
+      const key = list.map(([c, n]) => `${c}\u0000${n}`).join("\u0001");
+      if (key === cwdKey) return;
+      cwdKey = key;
+      const keep = this.mgr.cwd;
+      cwd.s.replaceChildren();
+      for (const [v, t] of [["", `全部（${counts.size} 个目录）`], ...list.map(([c, n]) => [c, `${c}（${n}）`])]) {
+        const o = el("option", "", t as string) as HTMLOptionElement;
+        o.value = v as string;
+        cwd.s.append(o);
+      }
+      cwd.s.value = keep;
+    };
+
+    const paint = () => {
+      fillCwds();
+      const scrollTop = body.scrollTop;
+      const shown = this.sessions.filter((s) => this.mgrMatches(s)).sort((a, b) => this.mgrCompare(a, b));
+      const shownIds = new Set(shown.map((s) => s.id));
+      for (const id of [...this.mgrPicked]) if (!shownIds.has(id)) this.mgrPicked.delete(id);
+      this.mgrPainting = true;
+      body.replaceChildren();
+      this.mgrPainting = false;
+      if (!shown.length) body.append(el("div", "empty", this.sessions.length ? "没有符合条件的会话。" : "还没有会话。"));
+      for (const grp of this.mgrGroups(shown)) {
+        const sec = el("div", "mgr-group");
+        if (grp.key) {
+          const collapsed = this.mgrCollapsed.has(grp.key);
+          const gh = el("div", `mgr-group-head${collapsed ? " collapsed" : ""}`);
+          const all = grp.items.every((s) => this.mgrPicked.has(s.id));
+          const box = el("input", "") as HTMLInputElement;
+          box.type = "checkbox";
+          box.checked = all;
+          box.indeterminate = !all && grp.items.some((s) => this.mgrPicked.has(s.id));
+          box.title = "选中本组";
+          box.onclick = (ev) => ev.stopPropagation();
+          box.onchange = () => {
+            for (const s of grp.items) {
+              if (box.checked) this.mgrPicked.add(s.id);
+              else this.mgrPicked.delete(s.id);
+            }
+            paint();
+          };
+          gh.append(box, el("span", "caret", collapsed ? "▸" : "▾"), el("span", "label", grp.label), el("span", "count", String(grp.items.length)));
+          gh.title = grp.label;
+          gh.onclick = () => {
+            if (collapsed) this.mgrCollapsed.delete(grp.key);
+            else this.mgrCollapsed.add(grp.key);
+            paint();
+          };
+          sec.append(gh);
+          if (collapsed) {
+            body.append(sec);
+            continue;
+          }
+        }
+        for (const s of grp.items) sec.append(this.mgrRow(s, paint));
+        body.append(sec);
+      }
+      body.scrollTop = scrollTop;
+      paintFoot(shown);
+      const input = body.querySelector<HTMLInputElement>(".mgr-rename");
+      if (input && document.activeElement !== input) {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+    };
+
+    const paintFoot = (shown: SessionState[]) => {
+      foot.replaceChildren();
+      const ids = shown.filter((s) => this.mgrPicked.has(s.id)).map((s) => s.id);
+      const picked = shown.filter((s) => this.mgrPicked.has(s.id));
+      const allBox = el("input", "") as HTMLInputElement;
+      allBox.type = "checkbox";
+      allBox.checked = shown.length > 0 && ids.length === shown.length;
+      allBox.indeterminate = ids.length > 0 && ids.length < shown.length;
+      allBox.disabled = !shown.length;
+      allBox.onchange = () => {
+        if (allBox.checked) for (const s of shown) this.mgrPicked.add(s.id);
+        else this.mgrPicked.clear();
+        paint();
+      };
+      const allLabel = el("label", "mgr-all");
+      allLabel.append(allBox, el("span", "", "全选"));
+      const info = el("span", "mgr-count", `已选 ${ids.length} · 显示 ${shown.length} / 共 ${this.sessions.length}`);
+      const btn = (text: string, fn: () => void, cls = "btn") => {
+        const b = el("button", cls, text) as HTMLButtonElement;
+        b.disabled = !ids.length;
+        b.onclick = fn;
+        return b;
+      };
+      const deletable = picked.filter((s) => !App.busy(s)).map((s) => s.id);
+      const delKey = `bulk:${deletable.join(",")}`;
+      const armed = this.mgrDelArm?.key === delKey;
+      const del = btn(armed ? `再点一次：永久删除 ${deletable.length} 个` : deletable.length < ids.length ? `删除（${deletable.length} 个可删）` : "删除", () => {
+        if (this.mgrArm(delKey)) {
+          this.act(() => this.socket.send({ type: "manage", action: "delete", ids: deletable }));
+          for (const id of deletable) this.mgrPicked.delete(id);
+        }
+        paint();
+      }, `btn danger${armed ? " armed" : ""}`);
+      del.disabled = !deletable.length;
+      if (deletable.length < ids.length) del.title = "运行中 / 网页接管中 / 待确认的会话不能删，先停止运行";
+      const spacer = el("span", "spacer");
+      foot.append(
+        allLabel,
+        info,
+        spacer,
+        btn("置顶", () => this.pinIds(ids, true)),
+        btn("取消置顶", () => this.pinIds(ids, false)),
+        btn("归档", () => this.archiveIds(ids, true)),
+        btn("恢复", () => this.archiveIds(ids, false)),
+        del,
+      );
+    };
+
+    this.mgrRefresh = paint;
+    this.overlay(back);
+    this.sheet = back;
+    paint();
+    q.focus();
+  }
+
+  private mgrRow(s: SessionState, repaint: () => void): HTMLElement {
+    const archived = this.manage.archived.includes(s.id);
+    const pinned = this.manage.pin.includes(s.id);
+    const picked = this.mgrPicked.has(s.id);
+    const row = el("div", `mgr-row${picked ? " picked" : ""}${archived ? " archived" : ""}${s.id === this.currentId ? " current" : ""}`);
+    const box = el("input", "") as HTMLInputElement;
+    box.type = "checkbox";
+    box.checked = picked;
+    box.onchange = () => {
+      if (box.checked) this.mgrPicked.add(s.id);
+      else this.mgrPicked.delete(s.id);
+      repaint();
+    };
+    row.onclick = (ev) => {
+      const t = ev.target as HTMLElement;
+      if (t.closest("button, input, a")) return;
+      box.checked = !box.checked;
+      box.onchange?.(new Event("change"));
+    };
+
+    const main = el("div", "mgr-main");
+    const line = el("div", "mgr-name-line");
+    if (this.mgrRename?.id === s.id) {
+      const input = el("input", "mgr-rename") as HTMLInputElement;
+      input.value = this.mgrRename.draft;
+      input.maxLength = 120;
+      input.oninput = () => {
+        if (this.mgrRename) this.mgrRename.draft = input.value;
+      };
+      const finish = (save: boolean) => {
+        const r = this.mgrRename;
+        if (!r || r.id !== s.id) return;
+        this.mgrRename = null;
+        if (save) this.applyRename(s.id, r.draft);
+        this.renderSessions();
+      };
+      input.onkeydown = (ev) => {
+        if (ev.key === "Enter") finish(true);
+        else if (ev.key === "Escape") {
+          ev.stopPropagation();
+          finish(false);
+        }
+      };
+      input.onblur = () => {
+        // A repaint replaces the row; that is not the user leaving the field.
+        if (!this.mgrPainting) finish(true);
+      };
+      line.append(input);
+    } else {
+      const name = el("span", "mgr-name", s.name || "(未命名)");
+      name.title = s.name;
+      line.append(name);
+    }
+    const tag = (cls: string, text: string, title = "") => {
+      const t = el("span", `mgr-tag ${cls}`, text);
+      if (title) t.title = title;
+      line.append(t);
+    };
+    if (pinned && !archived) tag("pin", "置顶");
+    if (archived) tag("arch", "已归档");
+    tag(s.origin === "web" ? "web" : "cli", s.origin === "web" ? "网页" : "CLI", s.origin === "web" ? "在网页里新建的会话" : "在终端 pi CLI 里创建的会话");
+    if (s.asks && s.asks > 0) tag("wait", "待回答");
+    else if (s.approvals > 0) tag("wait", "待确认");
+    else if (s.running) tag("run", "运行中");
+    else if (s.owned) tag("live", "已接管");
+    main.append(line);
+    const sub = el("div", "mgr-sub");
+    const cwdEl = el("span", "mgr-cwd", s.cwd);
+    cwdEl.title = s.cwd;
+    sub.append(cwdEl);
+    if (s.preview) {
+      const p = el("span", "mgr-preview", s.preview);
+      p.title = s.preview;
+      sub.append(p);
+    }
+    main.append(sub);
+
+    const times = el("div", "mgr-times");
+    const created = Date.parse(s.startedAt ?? "");
+    const up = el("span", "", `更新 ${relativeTime(s.updatedAt)}`);
+    up.title = new Date(s.updatedAt).toLocaleString();
+    times.append(up);
+    if (created) {
+      const c = el("span", "", `创建 ${new Date(created).toLocaleDateString()}`);
+      c.title = new Date(created).toLocaleString();
+      times.append(c);
+    }
+
+    const acts = el("div", "mgr-acts");
+    const act = (html: string, title: string, fn: () => void, cls = "card-act") => {
+      const b = el("button", cls) as HTMLButtonElement;
+      b.innerHTML = html;
+      b.title = title;
+      b.setAttribute("aria-label", title);
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        fn();
+      };
+      acts.append(b);
+      return b;
+    };
+    const open = el("button", "btn ghost mgr-open", "打开") as HTMLButtonElement;
+    open.onclick = (ev) => {
+      ev.stopPropagation();
+      this.closeSheet();
+      this.openFromList(s.id);
+    };
+    acts.append(open);
+    act(pinned ? "★" : "☆", pinned ? "取消置顶" : "置顶", () => this.pinIds([s.id], !pinned), `card-act${pinned ? " pinned" : ""}`);
+    act("✎", "重命名", () => {
+      this.mgrRename = { id: s.id, draft: s.name || "" };
+      repaint();
+    });
+    act(archived ? ICON_UNARCHIVE : ICON_ARCHIVE, archived ? "恢复（取消归档）" : "归档（文件不动，只是收起来）", () => this.archiveIds([s.id], !archived));
+    const key = `one:${s.id}`;
+    const armed = this.mgrDelArm?.key === key;
+    const busy = App.busy(s);
+    const del = act(
+      armed ? "删除?" : ICON_TRASH,
+      busy ? "网页正在运行/接管这个会话，先停止运行再删" : armed ? "再点一次：永久删除会话文件" : "删除（删掉 pi 的会话文件，不可恢复）",
+      () => {
+        if (this.mgrArm(key)) this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [s.id] }));
+        repaint();
+      },
+      `card-act del${armed ? " armed" : ""}`,
+    );
+    del.disabled = busy;
+
+    row.append(box, main, times, acts);
+    return row;
   }
 
   private startRename(s: SessionState): void {
@@ -1486,19 +2605,44 @@ export class App {
   private commitRename(): void {
     const id = this.renameId;
     if (!id) return;
-    const name = this.renameDraft.trim().replace(/\s+/g, " ");
-    const before = this.sessions.find((s) => s.id === id)?.name ?? "";
+    const name = this.renameDraft;
     this.renameId = null;
     this.renameDraft = "";
-    // The bridge records the name before it answers, so showing it now is not a lie.
-    if (name && name !== before) {
-      const target = this.sessions.find((s) => s.id === id);
-      if (target) target.name = name;
-      if (this.session?.id === id) this.session = { ...this.session, name };
-    }
+    this.applyRename(id, name);
     this.renderSessions();
-    if (!name || name === before) return;
-    this.act(() => this.socket.send({ type: "rename", sessionId: id, name }));
+  }
+
+  private claimButton(): HTMLButtonElement {
+    const claim = el("button", "btn primary claim-btn") as HTMLButtonElement;
+    if (this.claiming && this.claiming === this.currentId) {
+      claim.append(el("span", "act-spin"), el("span", "", "接管中…"));
+      claim.disabled = true;
+      claim.title = "正在拉起 pi 进程，通常要几秒";
+    } else claim.textContent = "接管会话";
+    claim.onclick = () => this.startClaim();
+    return claim;
+  }
+
+  private startClaim(): void {
+    const id = this.currentId;
+    if (!id || this.claiming) return;
+    this.act(() => {
+      this.socket.send({ type: "claim", sessionId: id });
+      this.claiming = id;
+      this.renderChat();
+      if (this.sheetKind === "model") this.openModelSheet();
+      setTimeout(() => {
+        if (this.claiming !== id) return;
+        this.endClaim();
+        this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: "等了 60 秒还没接管成功，看看服务端日志", level: "warn" });
+      }, 60000);
+    });
+  }
+
+  private endClaim(): void {
+    this.claiming = null;
+    this.renderChat();
+    if (this.sheetKind === "model") this.openModelSheet();
   }
 
   private renderChat(): void {
@@ -1519,37 +2663,33 @@ export class App {
     if (s && !s.owned) {
       const bar = el("div", "takeover warn");
       bar.append(el("span", "", "这个会话来自磁盘（只读预览）。发消息会自动接管；终端里如果有 pi 在写同一个文件，先退出那边。"));
-      const claim = el("button", "btn primary", "接管会话");
-      claim.onclick = () => this.act(() => this.socket.send({ type: "claim", sessionId: this.currentId }));
-      bar.append(claim);
-      host.append(bar);
-    } else if (s?.owned) {
-      const fromWeb = s.origin === "web";
-      const bar = el("div", "takeover");
-      bar.append(
-        el(
-          "span",
-          "",
-          fromWeb
-            ? "网页是这个会话的写者。停止后 pi 进程退出，历史留在磁盘，随时能再接管。"
-            : "网页是这个会话的写者。要回终端接着聊，先在这里让回去。",
-        ),
-      );
-      const giveBack = el("button", "btn ghost", fromWeb ? "停止运行" : "让回终端");
-      giveBack.onclick = () => this.act(() => this.socket.send({ type: "close", sessionId: this.currentId }));
-      bar.append(giveBack);
+      bar.append(this.claimButton());
       host.append(bar);
     }
 
     const row = el("div", "row");
+    const box = el("div", "composer-input");
     const input = el("textarea");
-    input.placeholder = s?.running ? "跑着呢，再发会自动排队…" : "说点什么…";
+    input.placeholder = s?.running ? "跑着呢，再发会自动排队…（Enter 发送）" : "说点什么…（Enter 发送，Shift+Enter 换行）";
     this.textarea = input;
     input.value = this.composerText;
+    const pasteHost = el("div", "paste-list");
+    this.pasteHost = pasteHost;
+    box.append(pasteHost, input);
     input.oninput = () => {
       this.composerText = input.value;
-      input.style.height = "auto";
-      input.style.height = `${Math.min(180, input.scrollHeight)}px`;
+      this.noteDraft();
+      this.fitComposer();
+    };
+    input.onpaste = (ev) => {
+      // A big paste becomes its own folded block, so what you type next stays separate and visible.
+      const pasted = ev.clipboardData?.getData("text/plain") ?? "";
+      if (pasted.split("\n").length < PASTE_LINES && pasted.length < PASTE_CHARS) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.pastes.push({ text: pasted.replace(/\r\n/g, "\n"), open: false });
+      this.noteDraft();
+      this.renderPastes();
     };
     input.onkeydown = (ev) => {
       if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
@@ -1558,21 +2698,8 @@ export class App {
       }
     };
 
-    const fileInput = el("input");
-    fileInput.type = "file";
-    fileInput.accept = "image/*";
-    fileInput.multiple = true;
-    fileInput.style.display = "none";
-    fileInput.onchange = () => void this.addImages(fileInput.files);
-
-    const attach = el("button", "btn ghost", "图片");
-    attach.title = `添加图片（也可以直接 ${PASTE_KEY} 粘贴截图）`;
-    attach.onclick = () => fileInput.click();
-
-    const sendBtn = el("button", "btn primary", "发送");
-    sendBtn.onclick = () => this.sendPrompt();
-
-    row.append(input, attach, sendBtn);
+    // Enter sends; the slot the send button used holds the tool-permission switch.
+    row.append(box, this.permissionButton());
     if (this.images.length) {
       const badge = this.pendingImagesBadge();
       row.append(badge);
@@ -1588,31 +2715,335 @@ export class App {
     const skillBtn = el("button", "btn ghost", "技能");
     skillBtn.title = "搜索并插入技能命令（/skill:name）";
     skillBtn.onclick = () => this.openSkillPalette();
+    const pathBtn = el("button", "btn ghost", "文件");
+    pathBtn.title = `选文件：图片直接附加，其他文件插入完整路径（pi 会自己去读）。截图或资源管理器里复制的文件也可以 ${PASTE_KEY}`;
+    pathBtn.onclick = () => this.openFilePicker();
     const chip = el("button", "model-chip");
     chip.onclick = () => this.openModelSheet();
     chip.append(el("span", "chip-model", ""), el("span", "chip-ctx", ""), el("span", "chip-rate", ""), el("span", "chip-level", ""));
     this.modelChip = chip;
-    tools.append(skillBtn, chip);
+    tools.append(skillBtn, pathBtn, chip);
+    if (s?.owned) {
+      // The explanation lives in the tooltip so it no longer costs the composer a whole row.
+      const fromWeb = s.origin === "web";
+      const release = el("button", "btn ghost release-btn", fromWeb ? "释放会话" : "让回终端");
+      release.title = fromWeb
+        ? "网页是这个会话的写者。释放后 pi 进程退出，历史留在磁盘；再发消息会自动重新接管。"
+        : "网页是这个会话的写者。要回终端接着聊，先在这里让回去。";
+      release.onclick = () => this.act(() => this.socket.send({ type: "close", sessionId: this.currentId }));
+      tools.append(release);
+    }
     hint.append(tools);
     this.fillModelChip();
 
-    host.append(row, fileInput, hint);
+    host.append(row, hint);
+    this.fitComposer();
+    this.renderPastes();
     if (this.approvals.length) host.append(this.approvalNode());
     this.renderAsks();
 
     scrollChat(this.els.scroll);
   }
 
+  // ---------------------------------------------------------------- permission mode
+  private permissionButton(): HTMLElement {
+    const mode = this.session?.permission ?? "ask";
+    const meta = PERM_MODES.find((m) => m.id === mode) ?? PERM_MODES[2];
+    const btn = el("button", `perm-btn perm-${mode}`) as HTMLButtonElement;
+    btn.append(el("span", "perm-ico", meta.icon), el("span", "perm-label", meta.label), el("span", "perm-caret", "▾"));
+    btn.title = `权限模式：${meta.label}——${meta.desc}`;
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      this.togglePermissionMenu(btn);
+    };
+    return btn;
+  }
+
+  private togglePermissionMenu(anchor: HTMLElement): void {
+    const open = document.querySelector(".perm-menu");
+    if (open) {
+      open.remove();
+      return;
+    }
+    const sessionId = this.currentId;
+    if (!sessionId) return;
+    const current = this.session?.permission ?? "ask";
+    const menu = el("div", "perm-menu");
+    menu.append(el("div", "perm-menu-title", "工具权限（只对这个会话）"));
+    const close = (): void => {
+      menu.remove();
+      document.removeEventListener("pointerdown", outside, true);
+      document.removeEventListener("keydown", onKey, true);
+    };
+    const outside = (ev: Event): void => {
+      if (!menu.contains(ev.target as Node) && ev.target !== anchor && !anchor.contains(ev.target as Node)) close();
+    };
+    const onKey = (ev: KeyboardEvent): void => {
+      if (ev.key === "Escape") {
+        ev.stopPropagation();
+        close();
+      }
+    };
+    for (const m of PERM_MODES) {
+      const row = el("button", `perm-opt perm-${m.id}${m.id === current ? " on" : ""}`);
+      row.append(el("span", "perm-ico", m.icon), el("span", "perm-name", m.label), el("span", "perm-check", m.id === current ? "✓" : ""), el("span", "perm-desc", m.desc));
+      row.onclick = () => {
+        close();
+        if (m.id === current) return;
+        this.act(() => {
+          this.socket.send({ type: "setPermission", sessionId, mode: m.id });
+          if (this.session?.id === sessionId) {
+            this.session = { ...this.session, permission: m.id };
+            this.renderChat();
+          }
+        });
+      };
+      menu.append(row);
+    }
+    const r = anchor.getBoundingClientRect();
+    menu.style.right = `${Math.max(8, window.innerWidth - r.right)}px`;
+    menu.style.bottom = `${window.innerHeight - r.top + 6}px`;
+    document.body.append(menu);
+    document.addEventListener("pointerdown", outside, true);
+    document.addEventListener("keydown", onKey, true);
+  }
+
+  private warn(text: string): void {
+    this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text, level: "warn" });
+  }
+
+  /** Auto-height for the main composer textarea. */
+  private fitComposer(): void {
+    const input = this.textarea;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(180, input.scrollHeight)}px`;
+  }
+
+  /** Long pastes live in their own foldable box above what the user types next. */
+  private renderPastes(): void {
+    const host = this.pasteHost;
+    if (!host) return;
+    host.replaceChildren();
+    host.hidden = !this.pastes.length;
+    host.parentElement?.classList.toggle("has-pastes", this.pastes.length > 0);
+    this.pastes.forEach((p, index) => {
+      const block = el("div", `paste-block${p.open ? " open" : ""}`);
+      const head = el("div", "paste-head");
+      const toggle = el("button", "paste-toggle") as HTMLButtonElement;
+      toggle.type = "button";
+      const lines = p.text.split("\n").length;
+      toggle.append(
+        el("span", "chev", p.open ? "▾" : "▸"),
+        el("span", "paste-title", `粘贴的内容${this.pastes.length > 1 ? ` #${index + 1}` : ""}`),
+        el("span", "paste-meta", `${lines} 行 · ${p.text.length} 字`),
+        el("span", "paste-peek", p.open ? "" : p.text.replace(/\s+/g, " ").trim().slice(0, 80)),
+      );
+      toggle.title = p.open ? "收起" : "展开查看 / 编辑";
+      toggle.onclick = () => {
+        p.open = !p.open;
+        this.renderPastes();
+      };
+      const drop = el("button", "paste-x", "×") as HTMLButtonElement;
+      drop.type = "button";
+      drop.title = "删掉这段粘贴的内容";
+      drop.onclick = () => {
+        this.pastes.splice(index, 1);
+        this.noteDraft();
+        this.renderPastes();
+        this.textarea?.focus();
+      };
+      head.append(toggle, drop);
+      block.append(head);
+      if (p.open) {
+        const body = el("textarea", "paste-body") as HTMLTextAreaElement;
+        body.value = p.text;
+        body.spellcheck = false;
+        body.oninput = () => {
+          p.text = body.value;
+          this.noteDraft();
+          const meta = head.querySelector(".paste-meta");
+          if (meta) meta.textContent = `${p.text.split("\n").length} 行 · ${p.text.length} 字`;
+        };
+        block.append(body);
+      }
+      host.append(block);
+    });
+  }
+
   private async addImages(files: FileList | readonly File[] | null): Promise<void> {
     const list = files ? Array.from(files) : [];
     if (!list.length) return;
     for (const file of list) {
-      const bitmap = await createImageBitmap(file).catch(() => null);
+      const isSvg = file.type === "image/svg+xml" || /\.svg$/i.test(file.name);
+      const bitmap = isSvg ? await rasterizeSvg(file) : await createImageBitmap(file).catch(() => null);
+      if (isSvg && !bitmap) {
+        this.warn(`SVG「${file.name}」渲染失败，没有附加`);
+        continue;
+      }
       const data = await downscale(file, bitmap);
       this.images.push(data);
     }
     this.updateImageBadge();
     this.imageSheetPaint?.();
+  }
+
+  /** Put file paths into the composer at the caret, the way a terminal paste of a copied file does. */
+  private insertPaths(paths: string[]): void {
+    if (!paths.length) return;
+    const input = this.textarea;
+    const value = input ? input.value : this.composerText;
+    const start = input ? input.selectionStart : value.length;
+    const end = input ? input.selectionEnd : value.length;
+    const before = value.slice(0, start);
+    const after = value.slice(end);
+    const pad = before && !/\s$/.test(before) ? " " : "";
+    const tail = after && !/^\s/.test(after) ? " " : "";
+    const chunk = `${pad}${paths.join(" ")}${tail}`;
+    this.composerText = before + chunk + after;
+    this.noteDraft();
+    if (input) {
+      input.value = this.composerText;
+      const caret = start + chunk.length;
+      input.focus();
+      input.setSelectionRange(caret, caret);
+      input.dispatchEvent(new Event("input"));
+    }
+  }
+
+  /** A pasted non-image file only carries its name: ask the bridge for the real path on this machine. */
+  private async pastePaths(names: string[]): Promise<void> {
+    const fallback = `用「文件」按钮选，或在资源管理器里 Shift+右键 →「复制为路径」后再粘贴`;
+    if (this.me.public) {
+      this.warn(`通过公网访问时拿不到「${names.join("、")}」的路径。${fallback}`);
+      return;
+    }
+    let paths: string[] = [];
+    try {
+      paths = (await api.clipboardFiles()).paths;
+    } catch (ex: any) {
+      this.warn(`${ex?.message ?? ex}。${fallback}`);
+      return;
+    }
+    const wanted = new Set(names.map((n) => n.toLowerCase()));
+    const hits = paths.filter((p) => wanted.has((p.split(/[\\/]/).pop() ?? "").toLowerCase()));
+    if (!hits.length) {
+      this.warn(`剪贴板里找不到「${names.join("、")}」的路径（复制的文件不在这台电脑上？）。${fallback}`);
+      return;
+    }
+    this.insertPaths(hits);
+  }
+
+  /** Browse this machine (where pi runs) and insert the chosen file's absolute path. */
+  private openFilePicker(): void {
+    this.closeSheet();
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet file-picker");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", "选择文件 · 图片直接附加，其他插入路径"));
+    // The list browses the machine pi runs on; a phone needs its own gallery for photos.
+    const deviceInput = el("input") as HTMLInputElement;
+    deviceInput.type = "file";
+    deviceInput.accept = "image/*";
+    deviceInput.multiple = true;
+    deviceInput.style.display = "none";
+    deviceInput.onchange = () => {
+      const files = Array.from(deviceInput.files ?? []);
+      this.closeSheet();
+      void this.addImages(files);
+    };
+    const device = el("button", "btn ghost", "从本设备选图片");
+    device.title = "从当前浏览器所在的设备（例如手机相册）选图片附加";
+    device.onclick = () => deviceInput.click();
+    head.append(deviceInput, device);
+    const close = el("button", "btn ghost", "关闭");
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const where = el("div", "dir-path");
+    const filter = el("input", "ns-input") as HTMLInputElement;
+    filter.placeholder = "筛选当前目录…";
+    const list = el("div", "model-list dir-list");
+    sheet.append(head, where, filter, list);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+
+    let current = "";
+    let res: Awaited<ReturnType<typeof api.dirs>> | null = null;
+    const join = (name: string) => (current ? `${current.replace(/[\\/]+$/, "")}${current.includes("/") && !current.includes("\\") ? "/" : "\\"}${name}` : name);
+    const paint = (): void => {
+      if (!res) return;
+      const q = filter.value.trim().toLowerCase();
+      const hit = (n: string) => !q || n.toLowerCase().includes(q);
+      list.replaceChildren();
+      if (res.parent !== null) {
+        const up = el("button", "model-row dir-row", "↑ 上一级");
+        up.onclick = () => void go(res?.parent ?? "");
+        list.append(up);
+      }
+      if (res.error) {
+        list.append(el("div", "empty", res.error));
+        return;
+      }
+      for (const name of res.dirs.filter(hit)) {
+        const row = el("button", "model-row dir-row", `📁 ${name}`);
+        row.onclick = () => void go(join(name));
+        list.append(row);
+      }
+      for (const name of (res.files ?? []).filter(hit)) {
+        const row = el("button", "model-row dir-row file-row");
+        row.append(el("span", "ico", fileIcon(name)), el("span", "nm", name));
+        row.title = join(name);
+        row.onclick = () => {
+          const full = join(name);
+          if (ATTACH_IMAGE.test(name)) {
+            row.disabled = true;
+            row.classList.add("busy");
+            void api
+              .image(full)
+              .then(async (file) => {
+                await this.addImages([file]);
+                if (this.sheet === back) this.closeSheet();
+              })
+              .catch((ex: any) => {
+                row.disabled = false;
+                row.classList.remove("busy");
+                this.warn(`附加图片失败：${ex?.message ?? ex}`);
+              });
+            return;
+          }
+          this.closeSheet();
+          this.insertPaths([full]);
+        };
+        list.append(row);
+      }
+      if (!list.querySelector(".dir-row:not(:first-child)") && !res.dirs.length && !(res.files ?? []).length) list.append(el("div", "empty", "空目录"));
+    };
+    const go = async (target: string): Promise<void> => {
+      list.replaceChildren(el("div", "empty", "读取中…"));
+      let next: Awaited<ReturnType<typeof api.dirs>>;
+      try {
+        next = await api.dirs(target, true);
+      } catch (ex: any) {
+        list.replaceChildren(el("div", "empty", `读取失败：${ex?.message ?? ex}`));
+        return;
+      }
+      if (this.sheet !== back) return;
+      if (next.error && target && target === start) return go("");
+      res = next;
+      current = next.path;
+      where.textContent = current || "此电脑";
+      filter.value = "";
+      paint();
+      list.scrollTop = 0;
+    };
+    filter.oninput = paint;
+    const start = this.session?.cwd ?? "";
+    void go(start);
+    filter.focus();
   }
 
   /** 待发图片的入口：点一下看缩略图、单张删。 */
@@ -1624,7 +3055,8 @@ export class App {
     return badge;
   }
 
-  /** 不改文字、不重建输入框，只换徽标文字：贴图、删图都走这里。 */  private updateImageBadge(): void {
+  /** 不改文字、不重建输入框，只换徽标文字：贴图、删图都走这里。 */
+  private updateImageBadge(): void {
     if (!this.images.length) {
       this.imageBadge?.remove();
       this.imageBadge = null;
@@ -1704,10 +3136,10 @@ export class App {
   }
 
   /**
-   * 粘贴处理（Ctrl+V / ⌘V）。只接管剪贴板里带图片的情况：
-   * - 纯图片（截图/复制的图片）→ 吃掉默认行为，只加图片；
-   * - 图片 + 文字（从网页/Office 复制）→ 文字照常插入输入框，图片另存；
-   * - 纯文字/文件 → 完全不管，交给浏览器原样处理。
+   * 粘贴处理（Ctrl+V / ⌘V）。只接管剪贴板里带文件（截图、复制的文件）的情况：
+   * - 图片 → 和以前一样作为图片附上；
+   * - 其它文件 → 像终端那样把完整路径插进输入框（路径由 bridge 读本机剪贴板得到）；
+   * - 带文字时文字照常插入；纯文字完全不管，交给浏览器原样处理。
    * 焦点在别的输入框（重命名、口令框）或弹窗里时不抢。
    */
   private onPaste(ev: ClipboardEvent): void {
@@ -1716,11 +3148,13 @@ export class App {
     const targetTag = target?.tagName ?? "";
     const editable = targetTag === "INPUT" || targetTag === "TEXTAREA" || Boolean(target?.isContentEditable);
     if (editable && target !== this.textarea) return;
-    const files = imageFilesFrom(ev.clipboardData);
+    const files = pastedFilesFrom(ev.clipboardData);
     if (!files.length) return;
     const text = ev.clipboardData?.getData("text/plain") ?? "";
     if (!text.trim()) ev.preventDefault();
-    void this.addImages(files);
+    const { images, others } = splitImages(files);
+    if (images.length) void this.addImages(images);
+    if (others.length) void this.pastePaths(others.map((f) => f.name));
   }
 
   private renderApprovals(): void {
@@ -1859,9 +3293,10 @@ export class App {
     const q = ask.questions[this.askState(ask).active];
     if (!q || q.allowOther === false) return false;
     this.composerText = "";
+    this.noteDraft();
     if (this.textarea) {
       this.textarea.value = "";
-      this.textarea.style.height = "auto";
+      this.fitComposer();
     }
     this.askFolded = false;
     this.pickAnswer(ask, { id: q.id, value: text, label: text, wasCustom: true });
@@ -2047,6 +3482,12 @@ const DEFAULT_PREFS: Prefs = { scale: 1, accent: "冰蓝", text: "normal" };
 /** Context-budget presets in the model sheet; null = no ceiling (use the window). */
 const BUDGETS: (number | null)[] = [null, 100_000, 200_000, 500_000, 1_000_000];
 
+const SVG = (body: string) =>
+  `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+const ICON_ARCHIVE = SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/>');
+const ICON_UNARCHIVE = SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M12 17v-6"/><path d="m9.5 13.5 2.5-2.5 2.5 2.5"/>');
+const ICON_TRASH = SVG('<path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/><path d="M9 7V4h6v3"/>');
+
 const SIZES: [number, string][] = [
   [0.9, "小"],
   [1, "标准"],
@@ -2100,6 +3541,126 @@ function savePrefs(prefs: Prefs): void {
   }
 }
 
+interface Viewer {
+  root: HTMLElement;
+  head: HTMLElement;
+  body: HTMLElement;
+  sessionId: string;
+  path: string;
+  info: PreviewInfo | null;
+  error: string;
+  text: string | null;
+  mode: "render" | "source";
+  full: boolean;
+}
+
+const PERM_MODES: { id: PermissionMode; icon: string; label: string; desc: string }[] = [
+  { id: "readonly", icon: "🔒", label: "只读", desc: "不能写文件、不能执行命令，只读取和分析（适合先出方案）" },
+  { id: "strict", icon: "✋", label: "逐个确认", desc: "每次写文件、执行命令都要你批准；读文件不用" },
+  { id: "ask", icon: "🛡", label: "危险时确认", desc: "只拦删除、push、装依赖、写项目外文件等危险操作（默认）" },
+  { id: "auto", icon: "⚡", label: "全自动", desc: "不拦截任何操作，风险自负" },
+];
+
+type PendingImage = { data: string; mimeType: string };
+type PasteBlock = { text: string; open: boolean };
+type Draft = { text: string; images: PendingImage[]; pastes: PasteBlock[] };
+
+/** A paste this long (lines or characters) becomes its own foldable block. */
+const PASTE_LINES = 6;
+const PASTE_CHARS = 400;
+
+function loadDrafts(): Map<string, Draft> {
+  const map = new Map<string, Draft>();
+  try {
+    const raw = JSON.parse(localStorage.getItem("pi.drafts") ?? "[]");
+    if (Array.isArray(raw)) {
+      for (const [id, text, pastes] of raw) {
+        if (typeof id !== "string" || typeof text !== "string") continue;
+        const blocks = Array.isArray(pastes) ? pastes.filter((p): p is string => typeof p === "string").map((p) => ({ text: p, open: false })) : [];
+        map.set(id, { text, images: [], pastes: blocks });
+      }
+    }
+  } catch {
+    /* corrupt: start clean */
+  }
+  return map;
+}
+
+function rawUrl(info: PreviewInfo): string {
+  return `/raw/${info.token}/${info.rel}`;
+}
+
+/** A link inside a previewed document is relative to that document, not to the session cwd. */
+function resolveFrom(docAbs: string, p: string): string {
+  let target = p;
+  try {
+    target = decodeURIComponent(p);
+  } catch {
+    /* keep */
+  }
+  if (/^[A-Za-z]:[\\/]/.test(target) || target.startsWith("/") || target.startsWith("\\")) return target;
+  const sep = docAbs.includes("\\") ? "\\" : "/";
+  const dir = docAbs.slice(0, Math.max(docAbs.lastIndexOf("\\"), docAbs.lastIndexOf("/")));
+  return `${dir}${sep}${target.replace(/[\\/]/g, sep)}`;
+}
+
+function previewIcon(p: string): string {
+  const ext = p.split(".").pop()?.toLowerCase() ?? "";
+  if (/^(md|markdown|mdx)$/.test(ext)) return "📝";
+  if (/^html?$/.test(ext)) return "🌐";
+  if (/^(png|jpe?g|gif|svg|webp|bmp|ico|avif)$/.test(ext)) return "🖼";
+  return "📄";
+}
+
+function fmtSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function viewerLoading(text: string): HTMLElement {
+  const box = el("div", "viewer-msg");
+  box.append(el("span", "act-spin"), el("span", "", text));
+  return box;
+}
+
+type TimeBucket = "today" | "week" | "older";
+
+interface MgrView {
+  q: string;
+  origin: "all" | "web" | "cli";
+  status: "all" | "active" | "pin" | "normal" | "archived";
+  time: "all" | TimeBucket;
+  cwd: string;
+  group: "none" | "cwd" | "origin" | "status" | "time";
+  sort: "updated" | "created" | "name" | "cwd";
+  desc: boolean;
+}
+
+function defaultMgrView(): MgrView {
+  return { q: "", origin: "all", status: "all", time: "all", cwd: "", group: "none", sort: "updated", desc: true };
+}
+
+function loadMgrView(): MgrView {
+  try {
+    const raw = JSON.parse(localStorage.getItem("pi.mgr") ?? "null");
+    if (raw && typeof raw === "object") return { ...defaultMgrView(), ...raw };
+  } catch {
+    /* corrupt or unavailable */
+  }
+  return defaultMgrView();
+}
+
+/** 本周 starts on Monday, local time. */
+function timeBucket(ts: number): TimeBucket {
+  const day = new Date();
+  day.setHours(0, 0, 0, 0);
+  if (ts >= day.getTime()) return "today";
+  const monday = new Date(day);
+  monday.setDate(day.getDate() - ((day.getDay() + 6) % 7));
+  return ts >= monday.getTime() ? "week" : "older";
+}
+
 function relativeTime(ts: number): string {
   const diff = Date.now() - ts;
   if (diff < 60_000) return "刚刚";
@@ -2126,23 +3687,59 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
 const PASTE_KEY = /Mac|iPhone|iPad|iPod/.test(`${navigator.platform} ${navigator.userAgent}`) ? "⌘V" : "Ctrl+V";
 
 /**
- * 从剪贴板里抖出图片 File。截图粘贴在 Chrome/Safari/Firefox 上都以 file item 出现，
- * 但 Safari 有时只给 files 不给 items，所以两条路都试。
+ * 从剪贴板里抖出文件（截图、从资源管理器复制的文件）。截图粘贴在 Chrome/Safari/Firefox 上都以
+ * file item 出现，但 Safari 有时只给 files 不给 items，所以两条路都试。
  */
-function imageFilesFrom(data: DataTransfer | null): File[] {
+function pastedFilesFrom(data: DataTransfer | null): File[] {
   if (!data) return [];
   const out: File[] = [];
   for (const item of Array.from(data.items ?? [])) {
-    if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+    if (item.kind !== "file") continue;
     const file = item.getAsFile();
     if (file) out.push(file);
   }
-  if (!out.length) {
-    for (const file of Array.from(data.files ?? [])) {
-      if (file.type.startsWith("image/")) out.push(file);
-    }
-  }
+  if (!out.length) out.push(...Array.from(data.files ?? []));
   return out;
+}
+
+/** Images keep going to the model as pixels; every other file is referenced by path. */
+function splitImages(files: File[]): { images: File[]; others: File[] } {
+  const images: File[] = [];
+  const others: File[] = [];
+  for (const f of files) (f.type.startsWith("image/") ? images : others).push(f);
+  return { images, others };
+}
+
+/** Picked files with these extensions get attached like a pasted image instead of inserted as a path. */
+const ATTACH_IMAGE = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
+
+/** SVG has no pixels: render it through an <img> (scripts never run there) onto a canvas. */
+async function rasterizeSvg(file: File): Promise<ImageBitmap | null> {
+  const url = URL.createObjectURL(file.type ? file : new Blob([file], { type: "image/svg+xml" }));
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    let w = img.naturalWidth;
+    let h = img.naturalHeight;
+    if (!w || !h) {
+      w = 1024;
+      h = 1024;
+    }
+    const scale = Math.max(1, 1024 / Math.max(w, h));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(w * scale);
+    canvas.height = Math.round(h * scale);
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#fff"; // jpeg has no alpha; transparent svg strokes would vanish on black
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return await createImageBitmap(canvas);
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 async function downscale(file: File, bitmap: ImageBitmap | null): Promise<{ data: string; mimeType: string }> {
