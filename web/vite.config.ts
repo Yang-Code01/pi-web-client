@@ -5,6 +5,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": "http://127.0.0.1:7864",
+      "/raw": "http://127.0.0.1:7864",
       "/healthz": "http://127.0.0.1:7864",
       "/ws": { target: "ws://127.0.0.1:7864", ws: true },
     },

@@ -61,6 +61,9 @@ export interface SessionState {
   approvals: number;
   /** Questions waiting for an answer (see PLAN-ask.md). */
   asks?: number;
+  /** First user message, for searching in the manager. */
+  preview?: string;
+  permission?: PermissionMode;
   /** Sidebar arrangement from the bridge (state/manage.json). */
   pinned?: boolean;
   archived?: boolean;
@@ -141,3 +144,16 @@ export interface SkillInfo {
   uses: number;
   lastUsed: number;
 }
+
+export interface PreviewInfo {
+  token: string;
+  rel: string;
+  name: string;
+  abs: string;
+  size: number;
+  mtime: number;
+  kind: "markdown" | "html" | "image" | "text" | "binary";
+}
+
+/** Tool permission mode the bridge's approval gate enforces per session. */
+export type PermissionMode = "readonly" | "strict" | "ask" | "auto";

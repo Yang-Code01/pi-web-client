@@ -1,4 +1,4 @@
-import type { Me, SessionState, TunnelState } from "./types.ts";
+import type { Me, PreviewInfo, SessionState, TunnelState } from "./types.ts";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "same-origin", ...init });
@@ -21,6 +21,27 @@ export const api = {
     req<{ ok: true }>("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ passphrase }) }),
   logout: () => req<{ ok: true }>("/api/logout", { method: "POST" }),
   sessions: () => req<{ sessions: SessionState[]; tunnel: TunnelState }>("/api/sessions"),
+  dirs: (path: string, files = false) =>
+    req<{ path: string; parent: string | null; dirs: string[]; files?: string[]; error?: string }>(`/api/dirs?path=${encodeURIComponent(path)}${files ? "&files=1" : ""}`),
+  clipboardFiles: () => req<{ paths: string[] }>("/api/clipboard-files"),
+  /** Bytes of an image on the bridge machine, as a File the composer can attach. */
+  image: async (path: string): Promise<File> => {
+    const res = await fetch(`/api/image?path=${encodeURIComponent(path)}`, { credentials: "same-origin" });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      let message = text;
+      try {
+        message = JSON.parse(text).error ?? text;
+      } catch {
+        /* keep raw text */
+      }
+      throw new Error(message || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    return new File([blob], path.split(/[\\/]/).pop() ?? "image", { type: blob.type });
+  },
+  preview: (sessionId: string, path: string) =>
+    req<PreviewInfo>("/api/preview", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId, path }) }),
   tunnel: (action: "start" | "stop") =>
     req<{ tunnel: TunnelState }>("/api/tunnel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) }),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),

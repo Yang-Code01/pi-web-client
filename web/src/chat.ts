@@ -27,6 +27,12 @@ export class ChatView {
   private failCards = new Map<string, HTMLElement>();
   private failAnchor: HTMLElement | null = null;
   private atBottom = true;
+  /** Files the agent wrote or edited in this session, latest last. */
+  private written = new Map<string, { tool: string; at: number }>();
+  /** Assistant replies the user folded; kept across rebuilds and session re-renders. */
+  private collapsed = new Set<string>();
+  /** This turn's written files, as chips under the ops module. */
+  private opsFiles: HTMLElement | null = null;
 
   constructor(private root: HTMLElement) {
     root.addEventListener("scroll", () => {
@@ -44,6 +50,8 @@ export class ChatView {
     this.opsBox = null;
     this.failCards.clear();
     this.failAnchor = null;
+    this.written.clear();
+    this.opsFiles = null;
     for (const item of items) this.add(item);
     this.scrollToEnd(true);
   }
@@ -84,6 +92,7 @@ export class ChatView {
       else {
         this.ensureOps().append(node);
         this.refreshOps();
+        this.noteWrite(item.name, item.args);
       }
       if (!this.isAskTool(item.name) && (item.isError || item.status === "error")) this.failFromItem(item);
     } else {
@@ -106,6 +115,7 @@ export class ChatView {
     } else node.replaceWith(rebuilt);
     this.cards.delete(id);
     this.cards.set(item.id, rebuilt);
+    if (id !== item.id && this.collapsed.delete(id)) this.collapsed.add(item.id);
     if (item.kind === "tool") {
       this.toolCards.set(item.toolCallId, rebuilt);
       this.refreshOps();
@@ -154,6 +164,7 @@ export class ChatView {
       else {
         this.ensureOps().append(card);
         this.refreshOps();
+        this.noteWrite(data.name, data.args);
       }
     }
     if (!card) return;
@@ -283,7 +294,28 @@ export class ChatView {
       if ((item.text || "").trim()) {
         const body = el("div", "body");
         body.append(renderMarkdown(item.text));
-        wrap.append(body);
+        const peek = el("button", "msg-peek", previewLine(item.text));
+        peek.title = "展开回答";
+        const fold = el("button", "msg-fold");
+        fold.type = "button";
+        peek.type = "button";
+        const id = item.id;
+        const apply = (collapsed: boolean) => {
+          wrap.classList.toggle("collapsed", collapsed);
+          fold.textContent = collapsed ? "▸ 展开" : "▾ 收起";
+          fold.title = collapsed ? "展开回答" : "收起回答";
+        };
+        const toggle = () => {
+          const next = !wrap.classList.contains("collapsed");
+          if (next) this.collapsed.add(id);
+          else this.collapsed.delete(id);
+          apply(next);
+        };
+        fold.onclick = toggle;
+        peek.onclick = toggle;
+        apply(this.collapsed.has(id));
+        who.append(fold);
+        wrap.append(body, peek);
       } else {
         wrap.classList.add("no-text");
       }
@@ -297,6 +329,38 @@ export class ChatView {
     this.opsTitle = null;
     this.opsBox = null;
     this.failAnchor = null;
+    this.opsFiles = null;
+  }
+
+  /** Files written or edited so far, newest first. */
+  artifacts(): { path: string; tool: string }[] {
+    return [...this.written.entries()].reverse().map(([path, v]) => ({ path, tool: v.tool }));
+  }
+
+  /** A write/edit lands in the session's artifact list and as a chip under this turn's module. */
+  private noteWrite(name: unknown, args: unknown): void {
+    const tool = String(name ?? "").toLowerCase();
+    if (!WRITE_TOOLS.has(tool)) return;
+    const path = toolPath(args);
+    if (!path) return;
+    this.written.delete(path);
+    this.written.set(path, { tool, at: Date.now() });
+    const box = this.opsBox;
+    if (!box || box.parentNode !== this.root) return;
+    if (!this.opsFiles || !this.opsFiles.isConnected) {
+      this.opsFiles = el("div", "ops-files");
+      this.opsFiles.append(el("span", "ops-files-label", "产物"));
+      box.after(this.opsFiles);
+      if (this.failAnchor === null) this.failAnchor = this.opsFiles;
+    }
+    const files = this.opsFiles;
+    if ([...files.querySelectorAll<HTMLElement>(".file-chip")].some((c) => c.dataset.path === path)) return;
+    const chip = el("button", "file-chip");
+    chip.dataset.path = path;
+    chip.title = `预览 ${path}`;
+    chip.append(el("span", "ico", fileIcon(path)), el("span", "nm", baseName(path)));
+    chip.onclick = () => openPreview(path);
+    files.append(chip);
   }
 
   /** Lazily create the `<details>` that collects this turn's tool calls. */
@@ -358,6 +422,16 @@ export class ChatView {
     head.append(el("span", "name", item.name));
     head.append(el("span", "cmd", toolSummary(item)));
     head.append(el("span", "status", item.status === "running" ? "运行中…" : item.isError ? "失败" : ""));
+    const path = toolPath(item.args);
+    if (path) {
+      const view = el("button", "tool-preview", "预览");
+      view.title = `预览 ${path}`;
+      view.onclick = (ev) => {
+        ev.stopPropagation();
+        openPreview(path);
+      };
+      head.append(view);
+    }
     card.append(head);
 
     if (item.result || item.partialResult) {
@@ -514,6 +588,34 @@ function parseAskResult(text: string, questions: any[], single: boolean): (strin
   return out;
 }
 
+const WRITE_TOOLS = new Set(["write", "edit", "multiedit", "multi_edit", "create", "str_replace_editor", "apply_patch"]);
+
+function toolPath(args: unknown): string {
+  if (!args || typeof args !== "object") return "";
+  const a = args as Record<string, unknown>;
+  for (const key of ["path", "file_path", "filePath", "file", "filename"]) {
+    const v = a[key];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+}
+
+function baseName(p: string): string {
+  return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+}
+
+export function fileIcon(p: string): string {
+  const ext = p.split(".").pop()?.toLowerCase() ?? "";
+  if (/^(md|markdown|mdx)$/.test(ext)) return "📝";
+  if (/^html?$/.test(ext)) return "🌐";
+  if (/^(png|jpe?g|gif|svg|webp|bmp|ico|avif)$/.test(ext)) return "🖼";
+  return "📄";
+}
+
+function openPreview(path: string): void {
+  window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path } }));
+}
+
 function toolSummary(item: ToolItem): string {
   const args = item.args as Record<string, unknown> | undefined;
   if (args && typeof args === "object") {
@@ -527,3 +629,14 @@ function toolSummary(item: ToolItem): string {
 }
 
 export { el as createEl };
+
+/** One plain-text line standing in for a folded reply. */
+function previewLine(text: string): string {
+  const plain = text
+    .replace(/```[\s\S]*?```/g, " [代码] ")
+    .replace(/[#>*_`|~-]+/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  return plain.length > 120 ? `${plain.slice(0, 120)}…` : plain || "（已收起）";
+}

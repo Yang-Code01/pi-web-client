@@ -18,12 +18,14 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
-import { SessionManager, type AskAnswer, type AskQuestion } from "./sessions.ts";
+import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { Notifier } from "./notify.ts";
 import { Tunnel, findCloudflared } from "./tunnel.ts";
 import { resolvePi } from "./pi.ts";
 import { APP_NAME, VERSION, ensureStateDirs, readJson, statePath, sessionsRoot } from "./paths.ts";
+import { clipboardFiles, listDirs, makeDir } from "./dirs.ts";
+import { openPreview, readAttachableImage, serveRaw } from "./preview.ts";
 
 interface Config {
   port: number;
@@ -210,6 +212,9 @@ async function main(): Promise<void> {
       return json(res, 200, { ok: true, version: VERSION, pi: pi.version, public: publicReq });
     }
 
+    // Capability-token file serving for previews: no cookie needed (sandboxed iframes have none).
+    if (url.pathname.startsWith("/raw/") && serveRaw(req, res, url.pathname)) return;
+
     // ------------------------------------------------------------ ask-user (loopback only)
     // The `question` / `questionnaire` extensions run inside our pi child; in rpc mode they cannot
     // open a dialog, so they post the question here and we hold the request open until the browser
@@ -280,6 +285,45 @@ async function main(): Promise<void> {
         pushCount: notifier.subscriptionCount(),
         sessionsRoot: sessionsRoot(),
       });
+    }
+
+    // Folder picker for new sessions: the browser cannot see this machine's absolute paths.
+    if (url.pathname === "/api/dirs" && req.method === "GET") {
+      return json(res, 200, listDirs(url.searchParams.get("path") ?? "", url.searchParams.get("files") === "1"));
+    }
+
+    // Ctrl+V of a file copied in Explorer: the page gets bytes only, so read the real path here.
+    // Over the tunnel this machine's clipboard is not the visitor's, so refuse.
+    if (url.pathname === "/api/clipboard-files" && req.method === "GET") {
+      if (publicReq) return json(res, 403, { error: "通过公网访问时读不到你电脑的剪贴板" });
+      try {
+        return json(res, 200, { paths: await clipboardFiles() });
+      } catch (err: any) {
+        return json(res, 500, { error: `读不了剪贴板：${String(err?.message ?? err).slice(0, 200)}` });
+      }
+    }
+
+    // An image picked in the file browser gets attached, not referenced by path.
+    if (url.pathname === "/api/image" && req.method === "GET") {
+      try {
+        const img = readAttachableImage(url.searchParams.get("path") ?? "");
+        res.writeHead(200, { "content-type": img.mime, "content-length": String(img.data.length), "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        res.end(img.data);
+        return;
+      } catch (err: any) {
+        return json(res, 400, { error: String(err?.message ?? err) });
+      }
+    }
+
+    if (url.pathname === "/api/preview" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const where = sessions.locate(String(body.sessionId ?? ""));
+      if (!where) return json(res, 404, { error: "找不到这个会话" });
+      try {
+        return json(res, 200, openPreview(where, String(body.path ?? "")));
+      } catch (err: any) {
+        return json(res, 400, { error: String(err?.message ?? err) });
+      }
     }
 
     if (url.pathname === "/api/sessions") {
@@ -449,10 +493,24 @@ async function main(): Promise<void> {
           }
           case "create": {
             if (!(await requireStepUp())) return;
-            const session = await sessions.create(String(msg.cwd || process.cwd()), msg.name);
+            const name = typeof msg.name === "string" && msg.name.trim() ? msg.name.trim().slice(0, 120) : undefined;
+            const session = await sessions.create(String(msg.cwd || process.cwd()), name);
             (ws as any).watching = session.state.id;
             send({ type: "session", sessionId: session.state.id, ...session.snapshot() });
             broadcast({ type: "session.state", session: session.state });
+            return;
+          }
+          case "mkdir": {
+            // New-session folder picker: one level, under a folder the user is browsing.
+            if (!(await requireStepUp())) return;
+            const reqId = String(msg.reqId ?? "");
+            try {
+              const created = makeDir(String(msg.parent ?? ""), String(msg.name ?? ""));
+              log(`mkdir ${created}`);
+              send({ type: "mkdir.result", reqId, path: created });
+            } catch (err: any) {
+              send({ type: "mkdir.result", reqId, error: String(err?.message ?? err) });
+            }
             return;
           }
           case "abort": {
@@ -479,12 +537,21 @@ async function main(): Promise<void> {
           }
           case "setModel": {
             if (!(await requireStepUp())) return;
-            await sessions.get(msg.sessionId)?.setModel(msg.provider, msg.modelId);
+            const live = sessions.get(msg.sessionId);
+            await live?.setModel(msg.provider, msg.modelId);
+            // Confirmed together in the model sheet: apply the level after the switch, which may clamp it.
+            if (live && typeof msg.level === "string" && msg.level) await live.setThinking(msg.level);
             return;
           }
           case "setThinking": {
             if (!(await requireStepUp())) return;
             await sessions.get(msg.sessionId)?.setThinking(String(msg.level));
+            return;
+          }
+          case "setPermission": {
+            if (!(await requireStepUp())) return;
+            if (!isPermissionMode(msg.mode)) return;
+            sessions.setPermission(String(msg.sessionId ?? ""), msg.mode);
             return;
           }
           case "setBudget": {
