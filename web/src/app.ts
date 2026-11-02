@@ -6,6 +6,7 @@ import { ChatView, createEl as el } from "./chat.ts";
 import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
+import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { Socket } from "./ws.ts";
 import type { AskAnswer, AskRequest, ApprovalRequest, DeleteReport, GitInfo, Item, ManageState, Me, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
 
@@ -172,6 +173,14 @@ export class App {
   private stepCount = 0;
   /** Q-022: which pin chip to focus once the strip repaints (the unpinned one is gone). */
   private pinFocus: number | null = null;
+  /** Q-035: the hover bubble on a pin chip (归档 / 重命名 / 删除), only ever one at a time. */
+  private pinMenu: { handle: PinMenuHandle; chip: HTMLElement; id: string } | null = null;
+  /** Both the 180ms open delay and the 220ms close delay ride on this one timer. */
+  private pinMenuTimer = 0;
+  /** Id of the chip currently animating out — the strip must not repaint underneath it. */
+  private pinAnim: string | null = null;
+  /** Q-035: the pin chip's delete flight lands here — the same bin the manager sheet toggles. */
+  private binBtn: HTMLButtonElement | null = null;
   /** Q-021: branch of the repo holding the session cwd; `gitCwd` keeps a stale answer off the line. */
   private git: GitInfo | null = null;
   private gitCwd = "";
@@ -258,7 +267,15 @@ export class App {
     manageBtn.dataset.act = "manage";
     manageBtn.title = "管理全部会话：检索、筛选、排序、分组、批量操作";
     manageBtn.onclick = () => this.openManager();
-    manageBar.append(sessFilter, manageBtn);
+    // Q-035: the pin chip's delete animation needs a bin on screen to fly into. Until now the trash
+    // was two clicks away (管理 → 🗑); this opens the same view in one.
+    const binBtn = el("button", "tool-btn bin-btn") as HTMLButtonElement;
+    binBtn.dataset.act = "trash";
+    // 文字而不是 🗑：这颗按钮只有 31px 高、左栏又窄，emoji 在这个尺寸下会糊成一小块，
+    // 而它是删除动效的落点，得让人一眼认出那是「垃圾箱」。
+    binBtn.append(el("span", "bin-label", "垃圾箱"));
+    binBtn.onclick = () => this.openManager("trash");
+    manageBar.append(sessFilter, binBtn, manageBtn);
     const sessList = el("div", "session-cards");
     sessionsInner.append(create, manageBar, sessList);
     sessionsPane.append(sessionsInner);
@@ -300,7 +317,8 @@ export class App {
     shell.append(topbar, pinStrip, main, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    this.binBtn = binBtn;
     this.chat = new ChatView(scroll);
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
@@ -794,6 +812,7 @@ export class App {
       }
       case "trash": {
         this.trash = Array.isArray(msg.items) ? (msg.items as TrashItem[]) : this.trash;
+        this.renderBinCount();
         this.mgrRefresh?.();
         break;
       }
@@ -2071,6 +2090,7 @@ export class App {
   /** Pinned / plain / archived sections. Every drag and every star click ends up in one arrange message. */
   private renderSessions(): void {
     this.renderPinStrip();
+    this.renderBinCount();
     const host = this.els.sessList;
     // A re-render mid-edit must not eat the caret: remember where it was before the DOM swap.
     const active = document.activeElement as HTMLElement | null;
@@ -3497,15 +3517,17 @@ export class App {
     this.act(() => this.socket.send({ type: "rename", sessionId: id, name }));
   }
 
-  private openManager(): void {
+  private openManager(view: "list" | "trash" = "list"): void {
     this.closeSheet();
     this.sheetKind = "manage";
     this.mgrPicked.clear();
     this.mgrRename = null;
     this.mgrDelArm = null;
     this.mgrNote = "";
-    this.mgrView = "list";
+    this.mgrView = view;
     this.mgrTrashPick.clear();
+    // Q-035: the left column's 🗑 opens straight into the bin, so ask for the list right away.
+    if (view === "trash") this.socket.send({ type: "manage", action: "trash.list" });
     const back = el("div", "sheet-back center");
     back.onclick = (ev) => {
       if (ev.target === back) this.closeSheet();
@@ -5261,6 +5283,7 @@ export class App {
       open.title = [s.name || s.id, s.cwd ?? "", badge?.title ?? ""].filter(Boolean).join(" · ");
       open.onclick = () => this.openFromList(s.id);
       chip.append(star, open);
+      this.wirePinHover(chip, s);
       host.append(chip);
     }
     if (!pins.length) host.append(el("span", "pin-empty", "在这里 ☆ 置顶一个会话，收起左栏也能点到。"));
@@ -5289,6 +5312,203 @@ export class App {
       if (same) same.focus();
       else focusStar(add);
     }
+  }
+
+  /* ------------------------------------------------------------------ Q-035 */
+
+  /** 180ms 后才弹（鼠标扫过不算），离开 220ms 才收（从胶囊挪进气泡也不算）。 */
+  private wirePinHover(chip: HTMLElement, s: SessionState): void {
+    chip.addEventListener("pointerenter", () => this.openPinMenuSoon(chip, s));
+    chip.addEventListener("pointerleave", () => this.closePinMenuSoon());
+  }
+
+  private openPinMenuSoon(chip: HTMLElement, s: SessionState): void {
+    window.clearTimeout(this.pinMenuTimer);
+    if (this.pinAnim || this.pinMenu?.chip === chip) return;
+    this.pinMenuTimer = window.setTimeout(() => this.showPinMenu(chip, s), 180);
+  }
+
+  private closePinMenuSoon(): void {
+    window.clearTimeout(this.pinMenuTimer);
+    if (this.pinMenu?.handle.pinned()) return;
+    this.pinMenuTimer = window.setTimeout(() => this.closePinMenu(), 220);
+  }
+
+  private closePinMenu(): void {
+    window.clearTimeout(this.pinMenuTimer);
+    const cur = this.pinMenu;
+    if (!cur) return;
+    this.pinMenu = null;
+    cur.handle.close();
+  }
+
+  private showPinMenu(chip: HTMLElement, s: SessionState): void {
+    if (this.pinAnim || !chip.isConnected) return;
+    this.closePinMenu();
+    const handle = openPinMenu(chip, {
+      name: s.name || s.id,
+      cwd: s.cwd,
+      onArchive: () => this.archiveFromPin(s.id, chip),
+      onRename: (name) => {
+        this.closePinMenu();
+        this.applyRename(s.id, name);
+        // applyRename 只改数据、不重画（管理条那边由调用方负责），这里得自己补一次，
+        // 否则胶囊还挂着旧名字直到下一次列表刷新。
+        this.renderSessions();
+      },
+      onDelete: () => this.deleteFromPin(s.id, chip),
+    });
+    this.pinMenu = { handle, chip, id: s.id };
+    // 指针从胶囊直接挪进气泡：中间那段空隙不能把它关了。
+    handle.node.addEventListener("pointerenter", () => window.clearTimeout(this.pinMenuTimer));
+    handle.node.addEventListener("pointerleave", () => this.closePinMenuSoon());
+  }
+
+  /**
+   * 归档动效：胶囊压扁 → 横着滑进条尾的抽屉 → 抽屉合盖计数 +1 → 塌缩让位，然后才真的发归档。
+   * 先演后发：归档是幂等的，而桥的回声会重建整条置顶条，抽屉就跟着没了。
+   */
+  private archiveFromPin(id: string, chip: HTMLElement): void {
+    if (this.pinAnim) return;
+    this.closePinMenu();
+    if (this.calm()) {
+      this.archiveIds([id], true);
+      this.pinNote("已归档 1 个 · 在左栏「已归档」里");
+      return;
+    }
+    const host = this.els.pinStrip;
+    if (!host.contains(chip)) return;
+    this.pinAnim = id;
+    const ease = "cubic-bezier(.22,.68,0,1)";
+    const tray = el("div", "pin-tray");
+    tray.append(el("div", "pin-tray-lid"), el("div", "pin-tray-body"), el("span", "pin-tray-count", "1"));
+    host.insertBefore(tray, host.querySelector(".pin-new"));
+    const r = chip.getBoundingClientRect();
+    const t = tray.getBoundingClientRect();
+    const dx = t.left + t.width / 2 - (r.left + r.width / 2);
+    const dy = t.top + t.height / 2 - (r.top + r.height / 2);
+    const w = r.width;
+    tray.animate([{ opacity: "0", transform: "translateY(-4px)" }, { opacity: "1", transform: "none" }], { duration: 140, easing: ease });
+    const lid = tray.querySelector(".pin-tray-lid");
+    lid?.animate(
+      [{ transform: "rotate(0deg)" }, { transform: "rotate(-46deg)", offset: 0.45 }, { transform: "rotate(0deg)" }],
+      { duration: 460, easing: ease },
+    );
+    const fly = chip.animate(
+      [
+        { transform: "none", opacity: "1", offset: 0 },
+        { transform: "scale(1.07, .66)", opacity: "1", offset: 0.34 },
+        { transform: `translate(${dx}px, ${dy}px) scale(.22, .22)`, opacity: "0", offset: 0.92 },
+        { transform: `translate(${dx}px, ${dy}px) scale(.22, .22)`, opacity: "0", offset: 1 },
+      ],
+      { duration: 520, easing: ease, fill: "forwards" },
+    );
+    fly.onfinish = () => {
+      tray.querySelector(".pin-tray-count")?.animate(
+        [{ opacity: "0", transform: "translateX(-50%) scale(.4)" }, { opacity: "1", transform: "translateX(-50%) scale(1)" }],
+        { duration: 220, easing: ease, fill: "both" },
+      );
+      // 塌缩让位只动这一颗胶囊：chip.parentElement 就是 .pin-strip 本身，
+      // 早先版本动的就是它，结果整条缩成 24px（只剩左右 padding）并横向溢出。
+      chip.animate([{ width: `${w}px` }, { width: "0px" }], { duration: 240, easing: ease, fill: "forwards" });
+      window.setTimeout(() => {
+        this.pinAnim = null;
+        this.archiveIds([id], true);
+        this.pinNote("已归档 1 个 · 在左栏「已归档」里");
+      }, 240);
+    };
+  }
+
+  /**
+   * 删除动效：胶囊先被拿起来（fixed 克隆体），左栏自动展开露出那颗🗑，再沿弧线飞进去、桶闪一下。
+   * 展开后置顶条就整条消失了（它只在左栏收起时显示），所以飞行体必须是脱离文档流的克隆。
+   */
+  private deleteFromPin(id: string, chip: HTMLElement): void {
+    if (this.pinAnim) return;
+    this.closePinMenu();
+    if (this.calm()) {
+      this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
+      this.pinNote("已移入垃圾箱 · 在左栏🗑里可以还原");
+      return;
+    }
+    const r = chip.getBoundingClientRect();
+    const clone = chip.cloneNode(true) as HTMLElement;
+    clone.classList.add("pin-flyer");
+    clone.removeAttribute("data-pin-key");
+    Object.assign(clone.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+    document.body.append(clone);
+    this.pinAnim = id;
+    if (this.collapsed.sessions) {
+      this.collapsed.sessions = false;
+      writeFlag("pi.collapse.sessions", false);
+      this.renderPanes();
+      this.renderTop();
+    }
+    // 等一帧让左栏真的上屏，再量垃圾桶的位置。
+    window.setTimeout(() => {
+      const b = this.binBtn?.getBoundingClientRect();
+      const sx = r.left + r.width / 2;
+      const sy = r.top + r.height / 2;
+      const tx = b ? b.left + b.width / 2 : sx;
+      const ty = b ? b.top + b.height / 2 : sy + 40;
+      const mx = (sx + tx) / 2;
+      const my = (sy + ty) / 2 + 26;
+      const at = (u: number) => ({
+        x: (1 - u) * (1 - u) * sx + 2 * (1 - u) * u * mx + u * u * tx,
+        y: (1 - u) * (1 - u) * sy + 2 * (1 - u) * u * my + u * u * ty,
+      });
+      const frames: Keyframe[] = [0, 0.3, 0.6, 0.85, 1].map((u, i) => {
+        const p = at(u);
+        const scale = i === 4 ? 0.18 : 1 - 0.5 * u;
+        return {
+          transform: `translate(${p.x - sx}px, ${p.y - sy}px) scale(${scale}) rotate(${-10 * u}deg)`,
+          opacity: i === 4 ? "0" : "1",
+          offset: u,
+        };
+      });
+      clone.animate(frames, { duration: 620, easing: "cubic-bezier(.4,0,.25,1)", fill: "forwards" }).onfinish = () => {
+        clone.remove();
+        this.pinAnim = null;
+        this.pulseBin();
+        this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
+        this.pinNote("已移入垃圾箱 · 在左栏🗑里可以还原");
+      };
+    }, 220);
+  }
+
+  /** 「少动」偏好下不演动效，直接做那一步。 */
+  private calm(): boolean {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  private pulseBin(): void {
+    const bin = this.binBtn;
+    if (!bin) return;
+    bin.classList.add("hit");
+    bin.animate([{ transform: "scale(1)" }, { transform: "scale(1.22)" }, { transform: "scale(1)" }], { duration: 340, easing: "cubic-bezier(.22,.68,0,1)" });
+    window.setTimeout(() => bin.classList.remove("hit"), 900);
+  }
+
+  /** 删除/归档之后一句话交代去向；不占状态行，2.6s 自己走。 */
+  private pinNote(text: string): void {
+    document.querySelector(".pin-note")?.remove();
+    const note = el("div", "pin-note", text);
+    document.body.append(note);
+    note.animate([{ opacity: "0", transform: "translateY(6px)" }, { opacity: "1", transform: "none" }], { duration: 160, easing: "ease-out" });
+    window.setTimeout(() => {
+      note.animate([{ opacity: "1" }, { opacity: "0" }], { duration: 220, easing: "ease-out", fill: "forwards" }).onfinish = () => note.remove();
+    }, 2400);
+  }
+
+  /** 左栏那颗🗑上的数字：垃圾箱里有几个，点开就是那个视图。 */
+  private renderBinCount(): void {
+    const bin = this.binBtn;
+    if (!bin) return;
+    const n = this.trash.length;
+    bin.title = n ? `垃圾箱里 ${n} 个会话（删掉的会先进这里，可以还原）` : "垃圾箱：删掉的会话会先进这里，可以还原";
+    bin.classList.toggle("has-trash", n > 0);
+    const count = bin.querySelector(".bin-count") ?? bin.appendChild(el("span", "bin-count"));
+    count.textContent = n ? String(n) : "";
   }
 
   private renderTabs(): void {
