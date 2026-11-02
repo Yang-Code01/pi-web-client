@@ -476,3 +476,19 @@
 **代价**：token 就写在页面的 DOM 里，页面自己的脚本读得到、也能伪造上报——但它只能让**自己的**查看器多出一步，真正的越界仍由 `api.preview`（按会话 cwd 校验）和 `/raw` 的 `isUnder(grant.root)` 挡着；每次点击都要重新走一次 `api.preview`（一次 stat + 一次 token 签发）；栈上限 60 步；iframe 内 `target=_blank`、`download`、`#锚点` 既不拦也不记；外链那一格只能显示「跳出了目录树 / 主机名 + 在新标签打开」，原来的页面态已经随 iframe 一起没了。
 
 **可改**：`HISTORY_MAX` 与 `vhist` 在 `web/src/app.ts`；按钮位置在 `paintViewer()` 的 `viewer-nav` 一段；外链占位文案在 `showExt()` 与 `viewer-msg.ext` 的渲染里；注入脚本在 `bridge/src/preview.ts` 的 `navScript()`（想改成拦截式只需在 click 里 `preventDefault`，但那会打断页面自己的路由）。验证：`npm run build:bridge && npm run build:web && node probes/round23-nav.mjs`（12 步：初始两个按钮都灰 / 点链接后标题跟随且 `←` 亮 / `←` 真回上一页 / `→` 再前进 / 点外链记一步且回得来 / 外链占位带出口 / `⟳` 不多记一步 / `#锚点` 不记 / 关预览再打开历史还在 / 滚动位置来回后回到 420px / 换会话历史各一份 / 切回来还在；截图在 `.scratch/round23-nav/shots/`）。
+
+## D64 置顶条胶囊悬停弹气泡（归档 / 重命名 / 删除），删除时胶囊飞进左栏那颗「垃圾箱」
+
+用户口径（m01571）：「置顶条每个会话悬停弹出小气泡，气泡里放 归档 / 重命名 / 删除，点击后有对应动效（删除要有倒进垃圾桶的效果）」。二轮收紧：气泡里**只放这三个**（不加取消置顶）、**只改置顶条**（左栏卡片不动）、删除「画面是直接丢入垃圾桶，但是不会真的删除。复用会话管理的垃圾桶机制」。第三轮「做几个原型设计出来让我选」，先在 `.scratch/pinactions/prototype/` 出了八个可播放样张（`window.__seek` 定格），用户选定：删除 = **B（左栏自动展开、飞向左栏真实的🗑）**、归档 = **A（压扁滑进条尾抽屉）**、气泡 = **③ 竖排 + 会话名头**、重命名 = **气泡里就地变输入框**。
+
+**决定**：气泡是 `web/src/pinmenu.ts` 的 `openPinMenu(anchor, opts)`，挂在 **`body`** 上、`position: fixed`、贴胶囊下沿 6px 并夹在窗口内；悬停 180ms 才弹、指针离开 220ms 才收（从胶囊挪进气泡时清掉计时器）；重命名输入框开着时 `pinned()` 为真，指针走了也不关。归档：条尾插 `.pin-tray` 抽屉 → 这一颗胶囊 `scale(1.07, .66)` 压扁 → `translate(dx, dy) scale(.22)` 滑进抽屉 → 计数弹一下 → 胶囊宽度塌到 0 → **240ms 之后**才发 `manage/archive`。删除：克隆一颗 `.pin-flyer`（`fixed`，带上原胶囊的 rect）挂到 `body` → 左栏若收着就先展开（`renderPanes()`，置顶条整条消失）→ 220ms 后量 `.bin-btn` 的 rect → 二次贝塞尔（控制点往下偏 26px）五帧 `translate + scale(1→.18) + rotate(-10deg)`、620ms → 落地删克隆、`pulseBin()` 闪一下、发 `manage/delete`。左栏 `manageBar` 在「过滤」与「管理」之间加一颗 `button.bin-btn`：文字「垃圾箱」+ 红色计数徽标，点它 `openManager("trash")` 直接进垃圾箱视图。
+
+**为什么归档要「先演后发」**：归档是幂等的，而桥的回声会 `host.replaceChildren()` 把整条置顶条重建——抽屉、压扁中的胶囊、计数全都会跟着没；所以动效先在本地走完（520 + 240ms）才发帧，最后一句去向提示 `已归档 1 个 · 在左栏「已归档」里` 负责解释东西去哪了。
+
+**为什么气泡必须挂 `body`**：`.pin-strip` 是 `overflow-x: auto`，条里任何溢出的东西都会被裁掉，而条又贴着窗口顶——向上弹被窗口切、向下弹被条裁。所以气泡只能往下弹、并且必须挂在条外面（绝对定位在条里也不行）。样张第一版就是这么被切掉一半的。
+
+**坑（都是这一轮真踩到的）**：① `chip.parentElement` **就是 `.pin-strip` 本身**——塌缩动画早先写在 `slot = chip.parentElement` 上，结果整条被压成 24px（只剩左右 padding）并横向溢出，探针里「条宽度 > 600px」的断言抓住；② 归档后胶囊不换名字：`applyRename()` 只改数据不重画（管理条那边由调用方负责重画），气泡回调必须自己补一次 `renderSessions()`；③ `.bin-btn` 最初用 🗑，而它只有 31px 高、左栏 280px 宽，emoji 在这个尺寸下糊成一小块、还和暗底同色——改成文字「垃圾箱」+ 徽标才看清（它是删除动效的落点，必须一眼认得出）；④ 飞行体必须是**脱离文档流的克隆**：展开左栏后置顶条就 `display:none`，原节点跟着没了，不能直接飞原节点。
+
+**代价**：这套只在「桌面宽 + 左栏收起」时存在（置顶条本身就这么显示）；删除会把左栏顶出来、顺带把整条置顶条切走——这是用户选的方向，代价认了；`prefers-reduced-motion: reduce` 下三个动作都不演动效、直接做那一步（`calm()`）。
+
+**可改**：时长与缓动在 `web/src/app.ts` 的 `archiveFromPin()` / `deleteFromPin()`；气泡宽度与配色在 `web/src/styles.css` 的 `.pin-menu` 一节；抽屉尺寸在 `.pin-tray`；三个动作要增减就改 `pinmenu.ts` 里的 `row()` 调用。验证：`npm run build:web && node probes/round24-pinactions.mjs`（六组断言：气泡挂在 `body` 且在胶囊下方、三行顺序 archive/rename/delete、移开 220ms 内收起、就地改名发 `rename` 且名字当场换掉、归档出抽屉且整条不被压扁且发 `archive`、删除克隆飞进左栏且条已收起且发 `delete` 且徽标变 1、最后点「垃圾箱」直达垃圾箱视图；截图在 `.scratch/round24-pinactions/shots/`）。回归：`round1-ui` / `round19` / `round20-turns` / `round21-cwd-line` / `round22-dirsize` / `round22-hl` / `round23-nav` / `fs-ui` 全绿，`npm run typecheck` 干净。
