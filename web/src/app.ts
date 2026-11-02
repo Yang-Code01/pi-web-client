@@ -4,6 +4,7 @@ import "@xterm/xterm/css/xterm.css";
 import { api } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
+import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { Socket } from "./ws.ts";
 import type { AskAnswer, AskRequest, ApprovalRequest, DeleteReport, GitInfo, Item, ManageState, Me, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
@@ -2690,9 +2691,19 @@ export class App {
       return;
     }
     const pre = el("pre", "viewer-src");
+    // Q-031: 代码/配置类文件按扩展名上色；不认识的语言、超过 200 KB 的文件保持纯文本。
+    const hl = highlightFragment(v.text, info.name);
     const lines = v.text.split(/\r?\n/);
     const gutter = el("div", "ln-gutter", lines.map((_, k) => k + 1).join("\n"));
-    const code = el("code", "", v.text);
+    const code = el("code");
+    if (hl === null) {
+      code.textContent = v.text;
+    } else {
+      code.className = "hl";
+      code.append(hl);
+      pre.classList.add("hl");
+      pre.dataset.lang = langOf(info.name) ?? "";
+    }
     pre.append(gutter, code);
     body.append(pre);
   }
@@ -2869,10 +2880,33 @@ export class App {
     body.dataset.editPath = info.abs;
     const wrap = el("div", "ed");
     const gutter = el("div", "ed-gutter");
+    // Q-034: 编辑态也上色 —— 底下铺一层同字体、同 padding 的 <pre><code class="hl">，
+    // textarea 自己的文字保持透明，只负责光标、选区、输入法；三层（行号 / 高亮 / 输入）一起滚动。
+    const code = el("div", "ed-code");
+    const pre = el("pre", "ed-hl hl");
+    const hl = el("code", "hl");
+    pre.append(hl);
     const ta = el("textarea", "ed-ta") as HTMLTextAreaElement;
     ta.value = v.draft ?? v.text ?? "";
     ta.wrap = "off";
     ta.spellcheck = false;
+    const useHl = Boolean(langOf(info.name));
+    code.classList.toggle("plain", !useHl);
+    let hlTimer = 0;
+    const paintHl = (): void => {
+      if (!useHl) return;
+      // 结尾换行时 textarea 会多显示一行空行，这里补一个零宽字符让 <pre> 也占住那一行。
+      const text = ta.value.endsWith("\n") ? `${ta.value}\u200b` : ta.value;
+      const frag = ta.value.length > HL_MAX_BYTES ? null : highlightFragment(text, info.name);
+      hl.replaceChildren();
+      if (frag) hl.append(frag);
+      else hl.textContent = text;
+    };
+    const scheduleHl = (): void => {
+      if (!useHl) return;
+      window.clearTimeout(hlTimer);
+      hlTimer = window.setTimeout(paintHl, 60);
+    };
     const sync = (): void => {
       const n = ta.value.split("\n").length;
       if (gutter.dataset.n !== String(n)) {
@@ -2888,10 +2922,20 @@ export class App {
       v.dirty = true;
       v.conflict = null;
       sync();
+      scheduleHl();
     };
     ta.onscroll = () => {
       gutter.scrollTop = ta.scrollTop;
+      pre.scrollTop = ta.scrollTop;
+      pre.scrollLeft = ta.scrollLeft;
     };
+    // 输入法组字期间没法把透明文字和下层高亮对齐（候选框里的字只有 textarea 自己有），
+    // 先把自己的字显出来、把高亮层藏起来，组完字再切回去。
+    ta.addEventListener("compositionstart", () => code.classList.add("composing"));
+    ta.addEventListener("compositionend", () => {
+      code.classList.remove("composing");
+      scheduleHl();
+    });
     ta.onkeydown = (ev) => {
       if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") {
         ev.preventDefault();
@@ -2913,7 +2957,9 @@ export class App {
       }
     };
     sync();
-    wrap.append(gutter, ta);
+    paintHl();
+    code.append(pre, ta);
+    wrap.append(gutter, code);
 
     const path = el("div", "ed-path", info.abs);
     path.title = info.abs;
@@ -4506,7 +4552,10 @@ export class App {
 
   private askCard(ask: AskRequest): HTMLElement {
     const card = el("div", "approval");
-    card.append(el("div", "t", ask.questions.length > 1 ? `需要你回答 · ${ask.questions.length} 题` : "需要你回答"));
+    const t = el("div", "t", ask.questions.length > 1 ? `需要你回答 · ${ask.questions.length} 题` : "需要你回答");
+    // Q-033: 提问不设上限；发问方若给了时长，只在 tooltip 里交代一句。
+    if (ask.timeoutMs) t.title = `发问方要求 ${Math.round(ask.timeoutMs / 1000)} 秒内作答，已忽略（提问不设上限）`;
+    card.append(t);
     card.append(el("div", "m", ask.questions.map((q, i) => `${ask.questions.length > 1 ? `${q.label ?? `Q${i + 1}`}：` : ""}${q.prompt}`).join("\n")));
     const actions = el("div", "actions");
     const go = el("button", "btn primary", "去回答");

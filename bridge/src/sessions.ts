@@ -57,6 +57,8 @@ export interface AskRequest {
   sessionName: string;
   questions: AskQuestion[];
   createdAt: number;
+  /** Q-033：发问方给的超时（毫秒）。只作参考，卡片不会因此消失。 */
+  timeoutMs?: number;
 }
 
 export interface AskOutcome {
@@ -162,6 +164,7 @@ function publicAsk(ask: PendingAsk): AskRequest {
     sessionName: ask.sessionName,
     questions: ask.questions,
     createdAt: ask.createdAt,
+    ...(ask.timeoutMs ? { timeoutMs: ask.timeoutMs } : {}),
   };
 }
 
@@ -838,6 +841,8 @@ export class Session extends EventEmitter {
     // walks its questionnaire with them). They go through the ask drawer and are answered with
     // `{value}`; answering them with `{confirmed}` made pi read every reply as a dismissal.
     if (req.method === "select" || req.method === "input" || req.method === "editor") {
+      // Q-033: 记下发问方给的时长（不再采用），下次排查「题目自己消失」时有据可查。
+      this.logUiTimeout(String(req.method), req.timeout);
       this.askViaDialog(id, req);
       return;
     }
@@ -860,6 +865,21 @@ export class Session extends EventEmitter {
     this.rpc?.uiRespond({ id, cancelled: true });
   }
 
+  /** Q-032: 把「为什么没发生」写进用户正在看的那段聊天，而不是默默失败。 */
+  notice(text: string, level: "info" | "warn" | "error" = "info"): void {
+    this.emitWs({ type: "notice", sessionId: this.state.id, text, level });
+  }
+
+  private logUiTimeout(method: string, timeout: unknown): void {
+    const ms = typeof timeout === "number" && timeout > 0 ? timeout : null;
+    if (ms !== null) this.notice(`ui.${method} 请求带了 ${Math.round(ms / 1000)} 秒超时，已忽略（提问不设上限）`, "info");
+  }
+
+  /**
+   * Q-033: a question waits forever — `req.timeout` is logged, never obeyed. pi 那边到点会自己
+   * 结算（`uiRespond` 变成空操作），所以这里再按它的时长把卡片撤掉只会丢题；晚到的回答由
+   * `answerAsk()` 的 no-op 兜住。
+   */
   private askViaDialog(uiId: string, req: any): void {
     const options = req.method === "select" && Array.isArray(req.options) ? req.options.map(String) : [];
     const prompt = String(req.title ?? req.message ?? req.prompt ?? "").trim() || "请回答";
@@ -869,11 +889,8 @@ export class Session extends EventEmitter {
       options: options.map((o: string) => ({ value: o, label: o })),
       allowOther: true,
     };
-    const { id: askId, outcome } = this.ask([question], `ui.${req.method}`);
-    // pi resolves its own dialog when the timeout runs out; take the drawer down with it.
-    const timer = typeof req.timeout === "number" && req.timeout > 0 ? setTimeout(() => this.cancelAsk(askId, "超时了"), req.timeout) : null;
+    const { id: askId, outcome } = this.ask([question], `ui.${req.method}`, req.timeout);
     void outcome.then((out) => {
-      if (timer) clearTimeout(timer);
       const value = out.answers?.[0]?.value;
       if (out.cancelled || typeof value !== "string") this.rpc?.uiRespond({ id: uiId, cancelled: true });
       else this.rpc?.uiRespond({ id: uiId, value });
@@ -912,14 +929,16 @@ export class Session extends EventEmitter {
   }
 
   // ------------------------------------------------------------------ asks
-  /** Register a question and stay pending until answered, cancelled, or this session dies. No timeout on purpose. */
-  ask(questions: AskQuestion[], tool: string): { id: string; outcome: Promise<AskOutcome> } {
+  /** Register a question and stay pending until answered, cancelled, or this session dies. No timeout on purpose (Q-033). */
+  ask(questions: AskQuestion[], tool: string, timeoutMs?: unknown): { id: string; outcome: Promise<AskOutcome> } {
+    const asked = typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : 0;
     const ask: PendingAsk = {
       id: `ask_${crypto.randomUUID().slice(0, 8)}`,
       sessionId: this.state.id,
       sessionName: this.state.name,
       questions,
       createdAt: Date.now(),
+      ...(asked ? { timeoutMs: asked } : {}),
       resolve: () => {},
     };
     const pending = new Promise<AskOutcome>((resolve) => {

@@ -1175,6 +1175,30 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .viewer-src .ln-gutter { padding: 12px 10px 12px 14px; text-align: right; color: var(--faint); user-select: none; white-space: pre; border-right: 1px solid var(--line-soft); }
 .viewer-src code { padding: 12px 14px; white-space: pre; overflow-x: auto; }
 
+/* ------------------------------------------------------------------ Q-031 语法高亮
+   Token 色直接落在现有调色板上（accent / ok / warn / danger + 两个补充色相），不引外部主题文件：
+   highlight.js 的 class 名很少变，换主题时只改这一段。大于 200 KB 或语言不认识时根本不会出现
+   这些 class，所以纯文本文件的外观一个像素都不会动。 */
+.hl .hljs-comment, .hl code .hljs-comment, .hl code .hljs-quote { color: var(--faint); font-style: italic; }
+.hl code .hljs-keyword, .hl code .hljs-selector-tag, .hl code .hljs-selector-pseudo,
+.hl code .hljs-doctag, .hl code .hljs-section,
+.hl code .hljs-name, .hl code .hljs-strong { color: #c9a2ff; }
+.hl code .hljs-string, .hl code .hljs-regexp, .hl code .hljs-attr-value, .hl code .hljs-addition,
+.hl code .hljs-template-tag, .hl code .hljs-template-variable { color: #86d9a5; }
+.hl code .hljs-number, .hl code .hljs-symbol, .hl code .hljs-bullet, .hl code .hljs-link,
+.hl code .hljs-literal, .hl code .hljs-variable.constant_ { color: #e8b27a; }
+.hl code .hljs-title, .hl code .hljs-title.class_, .hl code .hljs-title.function_,
+.hl code .hljs-attr, .hl code .hljs-attribute, .hl code .hljs-property, .hl code .hljs-selector-class,
+.hl code .hljs-selector-id, .hl code .hljs-selector-attr { color: var(--accent); }
+.hl code .hljs-type, .hl code .hljs-built_in, .hl code .hljs-class, .hl code .hljs-namespace,
+.hl code .hljs-tag { color: var(--warn); }
+.hl code .hljs-variable, .hl code .hljs-params, .hl code .hljs-punctuation { color: var(--text); }
+.hl code .hljs-meta, .hl code .hljs-meta .hljs-keyword, .hl code .hljs-comment .hljs-doctag { color: var(--dim); }
+.hl code .hljs-section { font-weight: 600; }
+.hl code .hljs-deletion { color: var(--danger); }
+.hl code .hljs-emphasis { font-style: italic; }
+.hl code .hljs-strong { font-weight: 600; }
+
 .md-doc { max-width: 860px; margin: 0 auto; padding: 22px 28px 60px; font-size: 14.5px; line-height: 1.7; color: var(--text); word-wrap: break-word; }
 .md-doc h1, .md-doc h2, .md-doc h3, .md-doc h4, .md-doc h5, .md-doc h6 { margin: 1.4em 0 0.6em; line-height: 1.3; }
 .md-doc h1 { font-size: 1.8em; padding-bottom: 0.3em; border-bottom: 1px solid var(--line); }
@@ -1277,6 +1301,27 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .file-row { display: flex; align-items: center; gap: 8px; }
 .file-row .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---- D62: 盘占用与文件大小。Drive rows answer "还够不够用" at a glance; file rows keep a
+   大小/时间 column that a 322 行目录 can be scanned down without reading every name. ---- */
+.vol-row { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 13px; text-align: left; }
+.vol-row .vol-letter { flex: 0 0 24px; color: var(--text); }
+.vol-bar { flex: 1 1 auto; min-width: 40px; height: 6px; border-radius: 3px; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line-soft); overflow: hidden; }
+.vol-bar > i { display: block; height: 100%; border-radius: 3px; background: #4d7ea8; }
+.vol-row.tight .vol-bar > i { background: var(--warn); }
+.vol-row.full .vol-bar > i { background: var(--danger); }
+.vol-row .vol-pct { flex: 0 0 36px; text-align: right; font-size: 11.5px; color: var(--dim); }
+.vol-row.full .vol-pct { color: var(--danger); }
+.vol-row .vol-free { flex: 0 0 auto; min-width: 78px; text-align: right; font-size: 11.5px; color: var(--faint); }
+.file-row .ico { flex: 0 0 auto; }
+.file-row .nm { flex: 1 1 auto; }
+.file-row .size { flex: 0 0 auto; min-width: 62px; text-align: right; font: 11.5px var(--mono); color: var(--faint); }
+.file-row .mtime { flex: 0 0 auto; min-width: 68px; text-align: right; font: 11.5px var(--mono); color: var(--faint); }
+.dirpicker.narrow .vol-row .vol-pct { display: none; }
+.dirpicker.narrow .file-row .size { min-width: 54px; }
+/* A grid with no explicit column sizes its track to the widest row, so a long name would widen the
+   whole list instead of being ellipsised. Pin the track to the container and the ellipsis works. */
+.dir-list { grid-template-columns: minmax(0, 1fr); overflow-x: hidden; }
+
 /* ---- long pastes: their own foldable box inside the composer, apart from the typed text ---- */
 .composer-input { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .composer-input textarea { width: 100%; }
@@ -1332,6 +1377,18 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   caret-color: var(--accent);
 }
 .ed-ta::selection { background: #1d4f66; }
+/* Q-034：编辑态高亮。文字由下层 <pre> 画，textarea 只留光标与选区（字透明），
+   两者字体 / 行高 / padding / tab-size 必须完全一致，否则光标会跑偏。 */
+.ed-code { position: relative; min-width: 0; overflow: hidden; }
+.ed-hl {
+  position: absolute; inset: 0; margin: 0; padding: 12px 14px; overflow: hidden; pointer-events: none;
+  font: 12.5px/1.55 var(--mono); white-space: pre; tab-size: 2; color: var(--text);
+}
+.ed-code .ed-ta { position: relative; z-index: 1; color: transparent; caret-color: var(--accent); }
+.ed-code .ed-ta::selection { background: rgba(29, 79, 102, .55); color: transparent; }
+.ed-code.plain .ed-ta { color: var(--text); }
+.ed-code.composing .ed-hl { visibility: hidden; }
+.ed-code.composing .ed-ta { color: var(--text); }
 .ed-foot {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--line-soft); background: var(--panel);
