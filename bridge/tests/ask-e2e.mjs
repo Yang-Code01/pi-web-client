@@ -82,6 +82,28 @@ try {
 
   const publicTunnel = await post({ token: "x", questions: q }, { "cf-connecting-ip": "203.0.113.9" });
   check("POST /api/ask through the tunnel → 403", publicTunnel.status === 403, String(publicTunnel.status));
+  const tunnelBody = await publicTunnel.json();
+  check("the tunnel 403 names the reason", tunnelBody.error === "tunnel" && /公网/.test(String(tunnelBody.text ?? "")), JSON.stringify(tunnelBody).slice(0, 120));
+
+  // Q-032: 拒绝必须留下痕迹 —— 浏览器那边只看到「表单没弹出来」，现在要顺带收到一句说明。
+  {
+    const guardLogin = await fetch(`${BASE}/api/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ passphrase: PASS }),
+    });
+    const guardCookie = (guardLogin.headers.get("set-cookie") ?? "").split(";")[0];
+    const guardWs = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie: guardCookie } });
+    const guardSeen = [];
+    guardWs.on("message", (buf) => guardSeen.push(JSON.parse(buf.toString())));
+    await new Promise((r) => guardWs.on("open", r));
+    await post({ token: "x", questions: q }, { "cf-connecting-ip": "203.0.113.9" });
+    for (let i = 0; i < 40 && !guardSeen.some((m) => m.type === "notice"); i++) await sleep(80);
+    const notice = guardSeen.find((m) => m.type === "notice");
+    check("a refused ask tells the browser why", Boolean(notice) && /公网/.test(String(notice?.text ?? "")), JSON.stringify(notice ?? null).slice(0, 140));
+    check("the notice is a warn", notice?.level === "warn", String(notice?.level));
+    guardWs.close();
+  }
 
   const gate = await fetch(`${BASE}/api/sessions`);
   check("the cookie gate still covers /api/sessions → 401", gate.status === 401, String(gate.status));

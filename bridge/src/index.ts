@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
@@ -25,7 +26,7 @@ import { Notifier } from "./notify.ts";
 import { Tunnel, findCloudflared } from "./tunnel.ts";
 import { resolvePi } from "./pi.ts";
 import { APP_NAME, VERSION, ensureStateDirs, readJson, statePath, sessionsRoot } from "./paths.ts";
-import { clipboardFiles, listDirs, makeDir } from "./dirs.ts";
+import { clipboardFiles, listDirs, makeDir, statFiles } from "./dirs.ts";
 import { gitInfo } from "./git.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
 
@@ -192,6 +193,14 @@ async function main(): Promise<void> {
   };
 
   log(`${APP_NAME} ${VERSION} — pi ${pi.version} @ ${pi.cli}`);
+  // Q-032: 扩展丢了就只剩「模型把表单写成文字」，而那是无声的。启动时把在场情况写进日志。
+  try {
+    const dir = path.join(os.homedir(), ".pi", "agent", "extensions");
+    const seen = ["question.ts", "questionnaire.ts"].map((n) => `${n.replace(/\.ts$/, "")}=${fs.existsSync(path.join(dir, n)) ? "在" : "缺"}`);
+    log(`ask 扩展：${seen.join(" ")}（缺了就只能由模型把表单写成文字）`);
+  } catch {
+    /* 只是诊断信息 */
+  }
 
   // Last line of defence: a single stray stream error used to kill the whole bridge (and with it
   // every connected client). Log it loudly and keep serving — sessions each own their child and
@@ -202,6 +211,27 @@ async function main(): Promise<void> {
   };
   process.on("uncaughtException", survive("uncaughtException"));
   process.on("unhandledRejection", survive("unhandledRejection"));
+
+  /**
+   * Q-032: 被拒的提问必须说出理由。
+   *
+   * 用户端只看到「表单没弹出来」：静默 403 让人以为是模型的毛病。这里把理由写进该会话的
+   * 聊天区（找得到 token 就定向、找不到就全体广播），同时回 403 给扩展，让它也能把原因
+   * 带回给模型。
+   */
+  const askRefused = async (req: http.IncomingMessage, res: http.ServerResponse, text: string, why: string) => {
+    let body: any = null;
+    try {
+      body = await readBody(req);
+    } catch {
+      /* 理由不需要请求体，读不到就算了 */
+    }
+    const session = body?.token ? sessions.byAskToken(String(body.token)) : null;
+    log(`ask rejected (${why})${session ? ` for ${session.state.id.slice(0, 8)}` : ""}`);
+    if (session) session.notice(text, "warn");
+    else broadcast({ type: "notice", text, level: "warn" });
+    return json(res, 403, { error: why, text });
+  };
 
   // ---------------------------------------------------------------- http
   const server = http.createServer(async (req, res) => {
@@ -223,9 +253,11 @@ async function main(): Promise<void> {
     // answers. This route sits in front of the cookie gate on purpose (the child has no cookie) and
     // is hostile to the tunnel: public requests, non-loopback peers and unknown tokens all 403.
     if (url.pathname === "/api/ask" && req.method === "POST") {
-      if (publicReq) return json(res, 403, { error: "forbidden" });
+      // Q-032: 403 不能是哑的 —— 用户看到的只是「表单没弹出来」，无从知道原因。这里把理由
+      // 写进该会话的 notice（隧道 + 非回环对端都是同一个理由）。
+      if (publicReq) return askRefused(req, res, "你正通过公网隧道访问，浏览器里的表单回不到本机；请用 127.0.0.1 的地址打开再提问。", "tunnel");
       const peer = req.socket.remoteAddress ?? "";
-      if (!/^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(peer)) return json(res, 403, { error: "forbidden" });
+      if (!/^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(peer)) return askRefused(req, res, "提问只接受本机回环的请求（扩展与网页必须在这台电脑上）。", "non-loopback");
       let body: any;
       try {
         body = await readBody(req);
@@ -290,8 +322,11 @@ async function main(): Promise<void> {
     }
 
     // Folder picker for new sessions: the browser cannot see this machine's absolute paths.
+    // D62: `stats=1` answers file sizes/mtimes for the same directory, so the rows can paint first.
     if (url.pathname === "/api/dirs" && req.method === "GET") {
-      return json(res, 200, listDirs(url.searchParams.get("path") ?? "", url.searchParams.get("files") === "1"));
+      const dir = url.searchParams.get("path") ?? "";
+      if (url.searchParams.get("stats") === "1") return json(res, 200, { files: statFiles(dir) });
+      return json(res, 200, listDirs(dir, url.searchParams.get("files") === "1"));
     }
 
     // Q-021: the branch under the composer. A branch name is this machine's working state, so a

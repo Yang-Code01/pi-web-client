@@ -9,6 +9,36 @@ import { createEl as el, fileIcon } from "./chat.ts";
 
 const IMAGE_FILES = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
 
+type Volume = { root: string; total: number; free: number };
+type FileStat = { name: string; size: number; mtime: number };
+
+const UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
+
+/** Sizes sit in a column, so they get one decimal at most and never a trailing ".0". */
+export function formatBytes(n: number): string {
+  let value = Number.isFinite(n) && n > 0 ? n : 0;
+  let unit = 0;
+  while (value >= 1024 && unit < UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const text = unit === 0 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/, "");
+  return `${text} ${UNITS[unit]}`;
+}
+
+/** Today → 18:37, this year → 11-01, older → 2025-12-31 (same idea as the composer's activity peek). */
+export function formatTime(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (d.getFullYear() === now.getFullYear()) return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Below this the picker is a popover (the attachment sheet), not a pane: the percentage goes. */
+const NARROW_PX = 460;
+
 export interface DirPickerState {
   path: string;
   parent: string | null;
@@ -91,11 +121,54 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
 
   let current = "";
   let res: Awaited<ReturnType<typeof api.dirs>> | null = null;
+  /** D62: file sizes land in a second request; keyed by name so a repaint (筛选) keeps them. */
+  let stats = new Map<string, FileStat>();
+  /** Guards against a slow answer for the folder we already left. */
+  let statToken = 0;
+  const fileRows = new Map<string, { size: HTMLElement; time: HTMLElement }>();
   /** Drive letters have no drive to letter, so join with the separator the path already uses. */
   const join = (name: string): string => {
     if (!current) return name;
     const sep = current.includes("/") && !current.includes("\\") ? "/" : "\\";
     return `${current.replace(/[\\/]+$/, "")}${sep}${name}`;
+  };
+
+  /** D62: a drive row carries its own fill bar, since a bare `C:\` says nothing about "够不够用". */
+  const volumeRow = (vol: Volume, label: string): HTMLElement => {
+    const used = Math.max(0, vol.total - vol.free);
+    const pct = vol.total > 0 ? Math.min(100, Math.round((used / vol.total) * 100)) : 0;
+    const row = el("button", "model-row vol-row");
+    if (pct >= 95) row.classList.add("full");
+    else if (pct >= 85) row.classList.add("tight");
+    const bar = el("span", "vol-bar");
+    const fill = el("i");
+    fill.style.width = `${pct}%`;
+    bar.append(fill);
+    row.append(el("span", "vol-letter", label), bar, el("span", "vol-pct", `${pct}%`), el("span", "vol-free", `${formatBytes(vol.free)} 可用`));
+    row.title = `${label}\\ 共 ${formatBytes(vol.total)} · 已用 ${formatBytes(used)} · 剩 ${formatBytes(vol.free)}`;
+    row.onclick = () => void go(vol.root);
+    return row;
+  };
+
+  /** D62: sizes are a second round trip, so a sleeping network folder never holds up the names. */
+  const fillStats = (dir: string): void => {
+    if (!listFiles || !dir) return;
+    const token = ++statToken;
+    void api
+      .fileStats(dir)
+      .then((payload) => {
+        if (!root.isConnected || token !== statToken || dir !== current) return;
+        // Tolerate an older bridge that answers the listing instead of `{ files: [...] }`.
+        const rows = Array.isArray(payload?.files) ? payload.files : [];
+        stats = new Map(rows.filter((f) => f && typeof f.size === "number").map((f) => [f.name, f]));
+        for (const [name, cells] of fileRows) {
+          const st = stats.get(name);
+          if (!st) continue;
+          cells.size.textContent = formatBytes(st.size);
+          cells.time.textContent = formatTime(st.mtime);
+        }
+      })
+      .catch(() => {});
   };
 
   const paint = (): void => {
@@ -104,7 +177,9 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     const hit = (n: string) => !q || n.toLowerCase().includes(q);
     const dirs = res.dirs.filter(hit);
     const files = (res.files ?? []).filter(hit);
+    const volumes = new Map((res.volumes ?? []).map((v) => [v.root, v]));
     list.replaceChildren();
+    fileRows.clear();
     if (res.parent !== null) {
       const up = el("button", "model-row dir-row", "↑ 上一级");
       up.onclick = () => void go(res?.parent ?? "");
@@ -115,13 +190,26 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       return;
     }
     for (const name of dirs) {
+      const vol = current === "" ? volumes.get(name) : undefined;
+      if (vol) {
+        list.append(volumeRow(vol, name.replace(/[\\/]+$/, "")));
+        continue;
+      }
       const row = el("button", "model-row dir-row", `📁 ${name}`);
       row.onclick = () => void go(join(name));
       list.append(row);
     }
     for (const name of files) {
       const row = el("button", "model-row dir-row file-row");
-      row.append(el("span", "ico", fileIcon(name)), el("span", "nm", name));
+      const size = el("span", "size");
+      const time = el("span", "mtime");
+      const st = stats.get(name);
+      if (st) {
+        size.textContent = formatBytes(st.size);
+        time.textContent = formatTime(st.mtime);
+      }
+      fileRows.set(name, { size, time });
+      row.append(el("span", "ico", fileIcon(name)), el("span", "nm", name), size, time);
       row.title = join(name);
       row.onclick = () => opts.onPick?.(join(name), name, row);
       if (opts.onContext) {
@@ -139,6 +227,9 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
 
   const go = async (target: string): Promise<void> => {
     list.replaceChildren(el("div", "empty", "读取中…"));
+    // Leaving the folder: drop its sizes and any answer still in flight for it.
+    stats = new Map();
+    statToken += 1;
     let next: Awaited<ReturnType<typeof api.dirs>>;
     try {
       next = await api.dirs(target, listFiles);
@@ -156,7 +247,19 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     opts.onState?.({ path: current, parent: next.parent, error: next.error ?? "", dirs: next.dirs, files: next.files ?? [] });
     paint();
     list.scrollTop = 0;
+    fillStats(current);
   };
+
+  // A narrow container (the attachment sheet) spares no room for a percentage: path and 剩余 stay.
+  const narrow = new ResizeObserver(() => {
+    if (!root.isConnected) {
+      narrow.disconnect();
+      return;
+    }
+    const width = root.getBoundingClientRect().width;
+    root.classList.toggle("narrow", width > 0 && width < NARROW_PX);
+  });
+  narrow.observe(root);
 
   if (showFilter) filter.oninput = () => paint();
   if (opts.autoStart !== false) void go(opts.start);

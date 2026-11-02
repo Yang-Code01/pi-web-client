@@ -1,5 +1,5 @@
 /**
- * The ask-user drawer, driven in real Chromium against its own throwaway bridge.
+ * The inline ask panel, driven in real Chromium against its own throwaway bridge.
  *
  *   node bridge/tests/ask-ui.mjs
  *
@@ -22,6 +22,7 @@ const STATE = path.join(ROOT, ".scratch", "ask-ui-state");
 const BASE = `http://127.0.0.1:${PORT}`;
 const OUT = path.join(ROOT, ".scratch", "shots");
 const PASS = "ask-ui-pass";
+const ASK_WAIT = 90000; // the model needs a turn or two to call the tool
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -105,38 +106,33 @@ const shot = async (name) => {
 };
 
 try {
-  // -- turn 1: single question, answered from the drawer -------------------
+  // -- turn 1: single question, answered from the inline panel ------------
   const start1 = seen.length;
   ws.send(JSON.stringify({
     type: "prompt",
     sessionId,
     text: "只调用 question 工具一次，问我「选左边还是右边？」，选项只要「左边」和「右边」。不要做任何别的事。",
   }));
-  await page.waitForSelector(".ask-sheet", { timeout: 240000 });
-  check("the drawer opens by itself when a question arrives", true);
-  check("the pinned bar is there too", await page.locator(".ask-slot").isVisible(), await page.locator(".ask-slot").innerText().catch(() => ""));
+  await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
+  check("the inline panel opens by itself when a question arrives", true);
   const progress = seen.filter((m) => m.type === "pi.status" && m.running === true).length > 0;
   check("the turn is waiting on us", progress, "");
-  await shot("drawer-single");
+  check("the panel sits in the composer", await page.locator(".composer .ask-slot .ask-opts").isVisible());
+  await shot("panel-single");
 
   // Reload: the pending ask must come back from the snapshot, not from live events.
   await page.reload();
   await page.waitForSelector(".app", { timeout: 20000 });
-  const replayed = await page.waitForSelector(".ask-sheet", { timeout: 20000 }).then(() => true).catch(() => false);
+  const replayed = await page.waitForSelector(".ask-slot .ask-opts", { timeout: 20000 }).then(() => true).catch(() => false);
   check("a reload replays the pending question", replayed);
-  await shot("drawer-replayed");
+  await shot("panel-replayed");
 
   await page.locator(".ask-opt", { hasText: "右边" }).click();
-  await page.waitForSelector(".ask-sheet", { state: "detached", timeout: 20000 });
-  check("answering closes the drawer", true);
-  await page.waitForFunction(() => !document.querySelector(".ask-slot"), null, { timeout: 20000 }).catch(() => {});
-  check("the pinned bar clears", !(await page.locator(".ask-slot").isVisible().catch(() => false)));
+  await page.waitForSelector(".ask-slot", { state: "detached", timeout: 20000 });
+  check("answering puts the panel away", true);
   await waitTurnEnd(start1, "question");
   const r1 = toolResult("question");
   check("the model got the chosen option", /User selected: 2\. 右边/.test(r1), r1.slice(0, 100));
-  const bubble = await page.locator(".qa-card").last().innerText().catch(() => "");
-  check("the transcript keeps a Q/A bubble", /✓\s*右边/.test(bubble), bubble.replace(/\n/g, " | ").slice(0, 120));
-  await shot("bubble");
 
   // -- turn 2: questionnaire, two tabs, explicit submit -------------------
   const start2 = seen.length;
@@ -145,16 +141,16 @@ try {
     sessionId,
     text: "只调用 questionnaire 工具一次，问我两个问题：1) 主题，选项「商务」「休闲」；2) 语气，选项「正式」「轻松」。不要做任何别的事。",
   }));
-  await page.waitForSelector(".ask-sheet", { timeout: 240000 });
+  await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
   const tabs = await page.locator(".ask-tab").count();
   check("both questions show up as tabs", tabs === 2, String(tabs));
   await page.locator(".ask-opt", { hasText: "商务" }).click();
   await page.locator(".ask-opt", { hasText: "轻松" }).click();
-  await shot("drawer-multi");
-  const submit = page.locator(".sheet-foot .btn.primary");
+  await shot("panel-multi");
+  const submit = page.locator(".ask-foot .btn.primary");
   check("submit becomes available once every question is answered", (await submit.innerText()).includes("提交"), await submit.innerText());
   await submit.click();
-  await page.waitForSelector(".ask-sheet", { state: "detached", timeout: 20000 });
+  await page.waitForSelector(".ask-slot", { state: "detached", timeout: 20000 });
   await waitTurnEnd(start2, "questionnaire");
   const r2 = toolResult("questionnaire");
   check("both answers reached the model", /主题: user selected: 1\. 商务/.test(r2) && /语气: user selected: 2\. 轻松/.test(r2), r2.replace(/\n/g, " | ").slice(0, 140));
@@ -166,25 +162,27 @@ try {
     sessionId,
     text: "只调用 question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
   }));
-  await page.waitForSelector(".ask-sheet", { timeout: 240000 });
-  await page.locator(".sheet-foot .btn.danger").click();
-  await page.waitForSelector(".ask-sheet", { state: "detached", timeout: 20000 });
+  await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
+  await page.locator(".ask-head .btn.danger-text", { hasText: "取消提问" }).click();
+  await page.waitForSelector(".ask-slot", { state: "detached", timeout: 20000 });
+  check("取消提问 puts the panel away", true);
   await waitTurnEnd(start3, "cancel");
   const r3 = toolResult("question");
-  check("cancelling from the drawer tells the model", /cancel/i.test(r3), r3.slice(0, 100));
+  check("cancelling tells the model", /cancel/i.test(r3), r3.slice(0, 100));
 
-  // -- turn 4: 自己写 (free text) ------------------------------------------
+  // -- turn 4: 自己写（直接打字回答） ----------------------------------------
   const start4 = seen.length;
   ws.send(JSON.stringify({
     type: "prompt",
     sessionId,
     text: "只调用 question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
   }));
-  await page.waitForSelector(".ask-sheet", { timeout: 240000 });
-  await page.locator(".ask-opt.other").click();
-  await page.locator(".ask-other input").fill("随便写点");
-  await page.locator(".ask-other input").press("Enter");
-  await page.waitForSelector(".ask-sheet", { state: "detached", timeout: 20000 });
+  await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
+  const free = page.locator(".composer-input textarea");
+  await free.fill("随便写点");
+  await free.press("Enter");
+  await page.waitForSelector(".ask-slot", { state: "detached", timeout: 20000 });
+  check("typing in the composer answers the question", true);
   await waitTurnEnd(start4, "free text");
   const r4 = toolResult("question");
   check("free text reaches the model as User wrote", /User wrote: 随便写点/.test(r4), r4.slice(0, 100));
@@ -201,36 +199,41 @@ try {
     sessionId,
     text: "只调用 question 工具一次，问我「选左边还是右边？」，选项只要「左边」和「右边」。不要做任何别的事。",
   }));
-  await p.waitForSelector(".ask-sheet", { timeout: 240000 });
+  await p.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
   await p.screenshot({ path: path.join(OUT, "ask-phone.png") });
   log("shot ask-phone.png");
   await p.locator(".ask-opt", { hasText: "左边" }).click();
-  await p.waitForSelector(".ask-sheet", { state: "detached", timeout: 20000 });
+  await p.waitForSelector(".ask-slot", { state: "detached", timeout: 20000 });
   await waitTurnEnd(start5, "phone");
   check("works on a 390px phone viewport", true);
 
-  // -- turn 6: 停止运行 releases a pending question ------------------------
+  // -- turn 6: 中断 releases a pending question ------------------------
   const start6 = seen.length;
   ws.send(JSON.stringify({
     type: "prompt",
     sessionId,
     text: "只调用 question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
   }));
-  await page.waitForSelector(".ask-sheet", { timeout: 240000 });
-  // The drawer is modal: you have to put it away before the composer is reachable again.
-  await page.locator(".sheet-head .btn.ghost").click();
-  await page.waitForSelector(".ask-sheet", { state: "detached", timeout: 20000 });
-  check("收起 leaves the pinned bar in place", await page.locator(".ask-slot").isVisible());
-  await page.locator(".takeover .btn.ghost", { hasText: "停止运行" }).click();
-  await page.waitForSelector(".ask-sheet", { state: "detached", timeout: 30000 }).catch(() => {});
+  await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
+  await page.locator(".ask-head .btn.ghost", { hasText: "收起" }).click();
+  const folded = await page.locator(".ask-slot").isVisible();
+  const optsGone = (await page.locator(".ask-slot .ask-opts").count()) === 0;
+  check("收起 keeps the head and drops the answers", folded && optsGone, JSON.stringify({ folded, optsGone }));
+  await page.locator('[data-act="interrupt"]').click();
+  await page.waitForSelector(".ask-slot", { state: "detached", timeout: 30000 }).catch(() => {});
   await sleep(800);
-  check("stopping the run clears the pinned bar", !(await page.locator(".ask-slot").isVisible().catch(() => false)));
+  check("interrupting the run clears the panel", !(await page.locator(".ask-slot").isVisible().catch(() => false)));
   await sleep(1500);
   const removed = seen.slice(start6).filter((m) => m.type === "ask.remove");
   check("the pending ask was cancelled, not left hanging", removed.some((m) => m.status === "cancelled"), JSON.stringify(removed.map((m) => m.status)));
-  const list = await (await fetch(`${BASE}/api/sessions`, { headers: { cookie: `${cookieName}=${cookieValue}` } })).json();
-  const row = (list.sessions ?? []).find((x) => x.id === sessionId);
-  check("the child really stopped", row ? row.owned === false : true, JSON.stringify({ owned: row?.owned }));
+  // 中断只结束这一轮，pi 子进程留在会话里继续待命（`owned` 仍为 true 是正常的），
+  // 所以要验证的是「这一轮停了」，不是「进程没了」。
+  const stopped = () => {
+    const st = seen.slice(start6).filter((m) => m.type === "pi.status" && m.sessionId === sessionId);
+    return st.some((m) => m.running === true) && st.at(-1)?.running === false;
+  };
+  for (let i = 0; i < 20 && !stopped(); i++) await sleep(500);
+  check("the run really stopped", stopped(), "");
 } catch (err) {
   check(`unexpected: ${err?.message ?? String(err)}`, false);
   await shot("failure").catch(() => {});

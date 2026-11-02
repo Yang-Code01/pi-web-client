@@ -116,6 +116,8 @@ export interface AskRequest {
   sessionName: string;
   questions: AskQuestion[];
   createdAt: number;
+  /** Q-033：发问方给的超时（毫秒）。只用来写 tooltip，卡片不会因此消失。 */
+  timeoutMs?: number;
 }
 
 export interface AskAnswer {
