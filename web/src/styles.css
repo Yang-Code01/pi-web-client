@@ -1155,6 +1155,13 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   background: transparent; color: var(--dim); font-size: 13px; cursor: pointer;
 }
 .viewer-btn:hover, .viewer-btn.on { color: var(--text); background: var(--panel-2); }
+/* 预览的返回 / 前进（D63）：紧贴文件名左边，没历史就置灰。 */
+.viewer-nav { display: flex; align-items: center; gap: 2px; flex: none; }
+.viewer-btn[disabled] { opacity: 0.32; cursor: default; }
+.viewer-btn[disabled]:hover { color: var(--dim); background: transparent; }
+.viewer-msg.ext { flex-direction: column; align-items: flex-start; gap: 8px; }
+.viewer-msg.ext > div { max-width: 100%; word-break: break-all; }
+.viewer-tip { color: var(--faint); font-size: 12px; }
 .viewer-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-right: 4px; }
 .viewer-seg button { padding: 5px 10px; border: 0; background: transparent; color: var(--dim); font-size: 12px; cursor: pointer; }
 .viewer-seg button.on { background: var(--accent); color: #04202b; font-weight: 600; }

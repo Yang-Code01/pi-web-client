@@ -178,6 +178,8 @@ export class App {
   private mgrRefresh: (() => void) | null = null;
   private mgrPainting = false;
   private viewer: Viewer | null = null;
+  /** 预览历史，按会话分开（D63）：关预览保留、刷新页面清空、切会话各自一份。 */
+  private vhist = new Map<string, { steps: VStep[]; at: number }>();
   private cardDelArm: { id: string; at: number } | null = null;
   private dragId: string | null = null;
 
@@ -447,6 +449,33 @@ export class App {
     });
 
     window.addEventListener("hashchange", () => this.routeFromHash());
+    // 预览的返回 / 前进（D63）：Alt+← / Alt+→ 顺手，但浏览器的默认后退要挡掉。
+    window.addEventListener(
+      "keydown",
+      (ev) => {
+        if (!this.viewer || !ev.altKey || ev.ctrlKey || ev.metaKey) return;
+        if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+        ev.preventDefault();
+        this.goStep(ev.key === "ArrowLeft" ? -1 : 1);
+      },
+      true,
+    );
+    // 预览页里的链接点击（D63）：用 token 认人，不靠 ev.source（跨文档导航后指针不相等）。
+    window.addEventListener("message", (ev) => {
+      const d = ev.data as { t?: string; rel?: string; href?: string; y?: number; tk?: string } | null;
+      if (!d || (d.t !== "pi-nav" && d.t !== "pi-y")) return;
+      const v = this.viewer;
+      if (!v) return;
+      const expect = v.frameToken || v.info?.token || "";
+      if (!expect || d.tk !== expect) return;
+      if (d.t === "pi-y") {
+        // html 页里的滚动位置只能靠它自己报：按钮返回/前进时没有别的渠道拿到（D63）。
+        const top = this.histOf(v.sessionId).steps[this.histOf(v.sessionId).at];
+        if (top) top.y = Math.max(0, Number(d.y) || 0);
+        return;
+      }
+      void this.trackRawNav(String(d.rel ?? ""), String(d.href ?? ""), Number(d.y) || 0, String(d.tk ?? ""));
+    });
     this.installShortcuts();
     // 粘贴截图：桌面端 Ctrl+V / ⌘V 无论焦点在输入框还是页面上都落到待发图片里。
     window.addEventListener("paste", (ev) => this.onPaste(ev));
@@ -2398,12 +2427,17 @@ export class App {
     this.sheet = back;
   }
 
-  private async openPreview(path: string, sessionId: string | null = this.currentId): Promise<void> {
+  private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false): Promise<void> {
     if (!sessionId) return;
     // 编辑中直接点别的文件：先问一句未保存的改动（D50）。
     const open = this.viewer;
     if (open?.pane === "edit" && open.dirty && open.info?.abs !== path) {
       if (!(await this.leaveEditor(open))) return;
+    }
+    // 打开一个新文件是历史里的一步；⟳ 刷新、返回/前进自己不算（D63）。
+    if (!replace) {
+      this.rememberScroll();
+      this.pushStep({ path }, sessionId);
     }
     const v = this.ensureViewer();
     v.sessionId = sessionId;
@@ -2411,6 +2445,7 @@ export class App {
     v.draft = null;
     v.dirty = false;
     v.conflict = null;
+    v.ext = null;
     v.path = path;
     v.info = null;
     v.error = "";
@@ -2427,6 +2462,8 @@ export class App {
     }
     if (this.viewer !== v || v.path !== path) return;
     v.path = v.info.abs;
+    // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
+    if (!replace) this.retargetTop(path, v.info.abs, sessionId);
     await this.loadViewerText();
   }
 
@@ -2506,6 +2543,11 @@ export class App {
       dirty: false,
       lastDir: localStorage.getItem("pi.fsDir") ?? "",
       conflict: null,
+      frame: null,
+      framePath: "",
+      frameToken: "",
+      ext: null,
+      pendingScroll: 0,
     };
     return this.viewer;
   }
@@ -2531,6 +2573,142 @@ export class App {
     this.viewer = null;
   }
 
+  // ------------------------------------------------------- 预览历史（D63）
+  /** 每个会话一条栈；第一次用到才建。 */
+  private histOf(sessionId: string): { steps: VStep[]; at: number } {
+    let h = this.vhist.get(sessionId);
+    if (!h) {
+      h = { steps: [], at: -1 };
+      this.vhist.set(sessionId, h);
+    }
+    return h;
+  }
+
+  /** 记一步。重复打开同一份文件不会多出一格（只把位置移过去）。
+   *  路径比较要归一化：同一个文件可能以 \\ 或 / 两种写法进来。 */
+  private pushStep(step: VStep, sessionId: string): void {
+    const h = this.histOf(sessionId);
+    const cur = h.steps[h.at];
+    if (cur && samePath(cur.path, step.path)) return;
+    if (cur && !cur.path && !step.path && (cur.url ?? "") === (step.url ?? "")) return;
+    h.steps = h.steps.slice(0, h.at + 1);
+    h.steps.push(step);
+    // 往前记着新的一步，说明后退分支已经作废（和浏览器的行为一致）。
+    if (h.steps.length > HISTORY_MAX) h.steps.shift();
+    h.at = h.steps.length - 1;
+  }
+
+  /** 相对路径解析成绝对路径之后，把刚记的那一步对齐。 */
+  private retargetTop(raw: string, abs: string, sessionId: string): void {
+    if (samePath(raw, abs)) return;
+    const h = this.histOf(sessionId);
+    const top = h.steps[h.at];
+    if (top && top.path && samePath(top.path, raw)) top.path = abs;
+  }
+
+  /** 记下「当前这一步」的滚动位置：普通预览从 body 拿，html 由页面点击时上报（y 传入）。 */
+  private rememberScroll(y?: number): void {
+    const v = this.viewer;
+    if (!v) return;
+    const h = this.histOf(v.sessionId);
+    const top = h.steps[h.at];
+    if (!top) return;
+    const pos = typeof y === "number" && y > 0 ? y : v.info?.kind === "html" ? -1 : (v.body?.scrollTop ?? -1);
+    if (pos >= 0) top.y = pos;
+  }
+
+  private goStep(delta: number): void {
+    const v = this.viewer;
+    if (!v) return;
+    const h = this.histOf(v.sessionId);
+    const at = h.at + delta;
+    if (at < 0 || at >= h.steps.length) return;
+    this.rememberScroll();
+    h.at = at;
+    void this.openStep(h.steps[at]);
+  }
+
+  private async openStep(step: VStep): Promise<void> {
+    const v = this.viewer;
+    if (!v) return;
+    if (step.path) {
+      await this.openPreview(step.path, v.sessionId, true);
+      if (step.y) this.restoreScroll(step.y);
+      return;
+    }
+    this.showExt(v, step.url ?? "", step.label ?? "外部链接");
+  }
+
+  /** 切到一个「不是文件」的占位态：外站、或跳出目录树被 403 的那一跳（D63）。
+   *  头部、正文、← → 都跟着换成占位，否则头部还挂着上一个文件名。 */
+  private showExt(v: Viewer, url: string, label: string): void {
+    v.ext = { url, label };
+    v.path = url || label;
+    v.info = null;
+    v.error = "";
+    v.text = null;
+    v.mode = "render";
+    v.pane = "preview";
+    this.paintViewer();
+  }
+
+  private restoreScroll(y: number): void {
+    const v = this.viewer;
+    if (!v || !y) return;
+    if (v.info?.kind === "html" && v.mode === "render" && v.frame) {
+      // iframe 可能还没 load，先存着，load 里再发一次。
+      v.pendingScroll = y;
+      try {
+        v.frame.contentWindow?.postMessage({ t: "pi-scroll", y }, "*");
+      } catch {
+        /* frame not ready */
+      }
+      return;
+    }
+    v.body.scrollTop = y;
+  }
+
+  /**
+   * iframe 里的页面点了链接（D63）。页面自己已经跳过去了，这里只做两件事：
+   * 把「现在打开的是谁」对齐，把这一跳记进返回栈。
+   */
+  private async trackRawNav(rel: string, href: string, y: number, tk: string): Promise<void> {
+    const v = this.viewer;
+    if (!v) return;
+    this.rememberScroll(y);
+    const cur = v.info;
+    const external = safeExternalUrl(href);
+    if (!rel || !cur) {
+      // 外站，或者 ../ 跳出目录树（那边会 403）：记一格占位，← 依然能回来。
+      this.pushStep({ path: null, url: external ?? undefined, label: external ? hostOf(external) : "跳出了目录树" }, v.sessionId);
+      this.showExt(v, external ?? "", external ? hostOf(external) : "跳出了目录树");
+      return;
+    }
+    const abs = absFromRel(cur.root, rel);
+    let next: PreviewInfo;
+    try {
+      next = await api.preview(v.sessionId, abs);
+    } catch {
+      this.pushStep({ path: null, label: `${abs}（打不开）` }, v.sessionId);
+      this.showExt(v, "", `${abs}（打不开）`);
+      return;
+    }
+    if (this.viewer !== v) return;
+    this.pushStep({ path: next.abs }, v.sessionId);
+    if (next.kind === "html") {
+      // iframe 已经在显示它了：只对齐头部，不要重挂 iframe（那会白跳一次回原文件）。
+      v.path = next.abs;
+      v.info = next;
+      v.mode = "render";
+      v.ext = null;
+      v.framePath = next.abs;
+      if (tk) v.frameToken = tk;
+      this.paintViewer();
+      return;
+    }
+    await this.openPreview(next.abs, v.sessionId, true);
+  }
+
   private paintViewer(): void {
     const v = this.viewer;
     if (!v) return;
@@ -2539,13 +2717,25 @@ export class App {
     head.replaceChildren();
     const title = el("div", "viewer-title");
     const browsing = v.pane === "browse";
-    const name = info?.name ?? (browsing ? "浏览本机文件" : (v.path.split(/[\\/]/).filter(Boolean).pop() ?? v.path));
-    title.append(el("span", "viewer-ico", browsing && !info ? "📁" : previewIcon(name)), el("span", "viewer-name", name));
-    const subText = info ? `${info.abs} · ${fmtSize(info.size)}` : browsing ? v.lastDir || this.session?.cwd || "此电脑" : v.path;
+    const name = info?.name ?? (v.ext ? v.ext.label : browsing ? "浏览本机文件" : (v.path.split(/[\\/]/).filter(Boolean).pop() ?? v.path));
+    title.append(el("span", "viewer-ico", browsing && !info ? "📁" : v.ext ? "🔗" : previewIcon(name)), el("span", "viewer-name", name));
+    const subText = info ? `${info.abs} · ${fmtSize(info.size)}` : v.ext ? v.ext.url : browsing ? v.lastDir || this.session?.cwd || "此电脑" : v.path;
     const sub = el("div", "viewer-path", subText);
     sub.title = info?.abs ?? subText;
     const left = el("div", "viewer-titles");
     left.append(title, sub);
+    // 返回 / 前进：历史是「这个会话看过哪些文件」，关预览不丢（D63）。
+    const h = this.histOf(v.sessionId);
+    const nav = el("div", "viewer-nav");
+    const back = el("button", "viewer-btn", "←") as HTMLButtonElement;
+    back.title = "后退（Alt+←）";
+    back.disabled = h.at <= 0;
+    if (!back.disabled) back.onclick = () => this.goStep(-1);
+    const fwd = el("button", "viewer-btn", "→") as HTMLButtonElement;
+    fwd.title = "前进（Alt+→）";
+    fwd.disabled = h.at >= h.steps.length - 1;
+    if (!fwd.disabled) fwd.onclick = () => this.goStep(1);
+    nav.append(back, fwd);
     const tools = el("div", "viewer-tools");
     const tbtn = (text: string, tip: string, fn: () => void, on = false) => {
       const b = el("button", `viewer-btn${on ? " on" : ""}`, text) as HTMLButtonElement;
@@ -2590,7 +2780,7 @@ export class App {
       }
       tools.append(seg);
     }
-    tbtn("⟳", "刷新（重新读取文件）", () => void this.openPreview(v.path, v.sessionId));
+    tbtn("⟳", "刷新（重新读取文件）", () => void this.openPreview(v.path, v.sessionId, true));
     if (info) {
       const open = tbtn("↗", "在新标签页打开", () => this.openRawTab(rawUrl(info)));
       open.classList.add("wide-only");
@@ -2604,24 +2794,43 @@ export class App {
       this.paintViewer();
     }, v.full);
     tbtn("✕", "关闭（Esc）", () => this.closeViewer());
-    head.append(left, tools);
+    head.append(nav, left, tools);
 
     // 浏览态：列表挂上就保持状态（滚动、筛选、当前位置），重绘时不要拆掉（D50）。
     if (v.pane === "browse") {
+      v.frame = null;
       if (!body.querySelector(":scope > .viewer-browse")) this.mountBrowser(v);
       return;
     }
     if (v.pane === "edit") {
+      v.frame = null;
       this.mountEditor(v);
       return;
     }
     body.removeAttribute("data-edit-path");
     // Keep an html iframe alive across header-only repaints (its own state / scroll matter).
     const frame = body.querySelector<HTMLIFrameElement>("iframe.viewer-frame");
-    if (info?.kind === "html" && v.mode === "render" && !v.error && frame?.dataset.src === rawUrl(info)) return;
+    if (info?.kind === "html" && v.mode === "render" && !v.error && frame && v.framePath === info.abs) return;
 
     body.replaceChildren();
     body.className = "viewer-body";
+    v.frame = null;
+    if (v.ext) {
+      // 外链 / 越界：应用里没东西可渲染，只说清楚发生了什么并给个出口（D63）。
+      const box = el("div", "viewer-msg ext");
+      box.append(el("div", "", v.ext.url || v.ext.label));
+      const href = safeExternalUrl(v.ext.url);
+      if (href) {
+        // 只开 http(s)：这个地址来自用户自己的页面，不是我们要重定向的地方。
+        const url = href;
+        const open = el("button", "btn", "在新标签打开");
+        open.onclick = () => openExternal(url);
+        box.append(open);
+      }
+      box.append(el("div", "viewer-tip", "← 回到上一个文件"));
+      body.append(box);
+      return;
+    }
     if (v.error) {
       const box = el("div", "viewer-msg err");
       box.append(el("div", "", v.error));
@@ -2645,6 +2854,18 @@ export class App {
       f.referrerPolicy = "no-referrer";
       f.src = url;
       f.dataset.src = url;
+      v.frame = f;
+      v.framePath = info.abs;
+      v.frameToken = info.token;
+      f.addEventListener("load", () => {
+        if (!v.pendingScroll) return;
+        try {
+          f.contentWindow?.postMessage({ t: "pi-scroll", y: v.pendingScroll }, "*");
+        } catch {
+          /* frame went away */
+        }
+        v.pendingScroll = 0;
+      });
       body.classList.add("frame");
       body.append(f);
       return;
@@ -5245,6 +5466,17 @@ function glyph(src: string): Node {
 }
 
 /** Opens a link in a new tab, but only if it stays on this origin (previews are same-origin /raw/…). */
+/** 外链只放行 http(s)，并且始终交给一个带 rel=noopener 的真链接去开（和 openSameOrigin 同一个理由）。 */
+function openExternal(url: string): void {
+  const safe = safeExternalUrl(url);
+  if (!safe) return;
+  const a = document.createElement("a");
+  a.href = safe;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.click();
+}
+
 function openSameOrigin(url: string): void {
   const target = new URL(url, location.href);
   if (target.origin !== location.origin) return;
@@ -5335,6 +5567,26 @@ interface Viewer {
   lastDir: string;
   /** 409 冲突说明，有值就显示冲突条。 */
   conflict: string | null;
+  /** 当前挂着的 html iframe；只看它发来的 postMessage（D63）。 */
+  frame: HTMLIFrameElement | null;
+  /** iframe 里**实际显示**的文件与它当初用哪个 token 取的。导航后两者都会变，
+   *  所以不能拿 v.info 现算（D63）。 */
+  framePath: string;
+  frameToken: string;
+  /** 外链 / 越界占位：这一格没法在应用里预览，只给个出口。 */
+  ext: { url: string; label: string } | null;
+  /** 回到一步 html 预览时要回放的滚动位置，等 iframe load 再发（D63）。 */
+  pendingScroll: number;
+}
+
+/** 预览历史里的一步（D63）。`path` 为空表示「外链 / 越界」这种应用里打不开的地方。 */
+interface VStep {
+  path: string | null;
+  /** 外链占位项：记下当时的 url，前进回来时给个出口。 */
+  url?: string;
+  label?: string;
+  /** 离开这一步时滚到哪儿，返回时回放。 */
+  y?: number;
 }
 
 const PERM_MODES: { id: PermissionMode; icon: string; label: string; desc: string }[] = [
@@ -5351,6 +5603,9 @@ type Draft = { text: string; images: PendingImage[]; pastes: PasteBlock[] };
 /** A paste this long (lines or characters) becomes its own foldable block. */
 const PASTE_LINES = 6;
 const PASTE_CHARS = 400;
+
+/** 预览返回栈最多记多少步（D63）。超了就丢掉最早的一步，和浏览器一样。 */
+const HISTORY_MAX = 60;
 
 function loadDrafts(): Map<string, Draft> {
   const map = new Map<string, Draft>();
@@ -5385,6 +5640,48 @@ function resolveFrom(docAbs: string, p: string): string {
   const sep = docAbs.includes("\\") ? "\\" : "/";
   const dir = docAbs.slice(0, Math.max(docAbs.lastIndexOf("\\"), docAbs.lastIndexOf("/")));
   return `${dir}${sep}${target.replace(/[\\/]/g, sep)}`;
+}
+
+/** 页面里的外链只认 http(s)：`javascript:` / `file:` / 自定义协议一律当没给。 */
+/** 同一个文件的两种写法（\\ 与 /）算同一份。 */
+function samePath(a: string | null | undefined, b: string | null | undefined): boolean {
+  const na = (a ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const nb = (b ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return na !== "" && na === nb;
+}
+
+function safeExternalUrl(raw: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  return u.href;
+}
+
+function hostOf(raw: string): string {
+  try {
+    return new URL(raw).host || raw.slice(0, 80);
+  } catch {
+    return raw.slice(0, 80);
+  }
+}
+
+/** `/raw/<token>/<rel>` 里的 rel 换成绝对路径（root 来自 PreviewInfo，D63）。 */
+function absFromRel(root: string, rel: string): string {
+  const sep = root.includes("\\") ? "\\" : "/";
+  let out = root.replace(/[\\/]+$/, "");
+  for (const seg of rel.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      out = out.replace(/[\\/][^\\/]+$/, "");
+      continue;
+    }
+    out += sep + seg;
+  }
+  return out;
 }
 
 function previewIcon(p: string): string {
