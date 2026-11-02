@@ -171,6 +171,8 @@ export interface PreviewInfo {
   rel: string;
   name: string;
   abs: string;
+  /** Root the token is scoped to: `rel` is relative to this (D63). */
+  root: string;
   size: number;
   mtime: number;
   kind: "markdown" | "html" | "image" | "text" | "binary";
