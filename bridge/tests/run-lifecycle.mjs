@@ -182,7 +182,7 @@ try {
   await sleep(500);
   send({ type: "prompt", sessionId: sid, text: "after compact" });
   await waitFor((m) => m.type === "notice" && m.sessionId === sid && /压缩完成后发出/.test(m.text), 5000, "held notice");
-  await waitFor((m) => m.type === "notice" && m.sessionId === sid && /上下文已压缩/.test(m.text), COMPACT_MS + 10000, "compaction_end");
+  await waitFor((m) => m.sessionId === sid && ((m.type === "notice" && /上下文已压缩/.test(m.text)) || (m.type === "item.add" && m.item?.kind === "summary" && m.item.variant === "compaction")), COMPACT_MS + 10000, "compaction_end");
   await waitFor((m) => m.type === "item.replace" && m.sessionId === sid && m.item?.text === "echo: after compact", 10000, "held message answered");
   const sliceC = seen.slice(markC);
   check(!sliceC.some((m) => m.type === "notice" && /timeout after/.test(m.text)), "no 20 s timeout reported");

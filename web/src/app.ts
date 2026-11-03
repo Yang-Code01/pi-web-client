@@ -116,7 +116,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
@@ -129,6 +129,24 @@ export class App {
   private ext: ExtUi = { status: [], widgets: [], title: null };
   private extAbove: HTMLElement | null = null;
   private extBelow: HTMLElement | null = null;
+  /** #25 inline completion: `/command` at the start, `@path` anywhere. */
+  private complete: {
+    mode: "cmd" | "file";
+    start: number;
+    end: number;
+    query: string;
+    items: { insert: string; label: string; desc?: string; tag?: string }[];
+    sel: number;
+    node: HTMLElement;
+  } | null = null;
+  /** pi's commands for the current session (get_commands), for the `/` menu. */
+  private piCommands: { sessionId: string; at: number; list: { name: string; description: string; source: string }[] } | null = null;
+  private fileQuerySeq = 0;
+  /** A fork / clone is being done by pi (a throwaway child takes a second or two). */
+  private branching = false;
+  private afterOpen: { id: string; text: string } | null = null;
+  /** Shells the bridge can open (term.list), for the ＋ menu (#23). */
+  private termShells: { id: string; label: string }[] = [];
   /** pi's queue for the current session (queue_update), shown above the editor (#14). */
   private queue: { steering: string[]; followUp: string[] } = { steering: [], followUp: [] };
   private queueBar: HTMLElement | null = null;
@@ -337,6 +355,7 @@ export class App {
     this.binBtn = binBtn;
     this.chat = new ChatView(scroll);
     this.chat.onBashStop = () => this.act(() => this.socket.send({ type: "abortBash", sessionId: this.currentId }));
+    this.chat.onFork = (item, index) => this.forkAt({ entryId: item.id, index, text: item.text });
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
   }
@@ -627,6 +646,11 @@ export class App {
         if (this.sheetKind === "model") this.openModelSheet();
         this.fillModelChip();
         break;
+      case "commands":
+        if (msg.sessionId !== this.currentId) break;
+        this.piCommands = { sessionId: String(msg.sessionId), at: Date.now(), list: Array.isArray(msg.commands) ? msg.commands : [] };
+        if (this.complete?.mode === "cmd") this.updateComplete();
+        break;
       case "skills":
         this.skills = (msg.commands ?? []) as SkillInfo[];
         this.skillsAt = Date.now();
@@ -664,6 +688,10 @@ export class App {
         this.queue = msg.queue ? { steering: msg.queue.steering ?? [], followUp: msg.queue.followUp ?? [] } : { steering: [], followUp: [] };
         this.stats = { tokens: null, cost: null };
         this.chat.reset((msg.items ?? []) as Item[]);
+        if (this.afterOpen && this.afterOpen.id === msg.sessionId) {
+          this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: this.afterOpen.text, level: "info" });
+          this.afterOpen = null;
+        }
         this.approvals = (msg.approvals ?? []) as ApprovalRequest[];
         this.asks = (msg.asks ?? []) as AskRequest[];
         this.renderAll();
@@ -797,6 +825,28 @@ export class App {
         this.putInComposer(String(msg.text ?? ""));
         break;
       }
+      case "tree":
+        if (msg.sessionId === this.currentId && this.sheetKind === "tree") this.fillTreeSheet(Array.isArray(msg.nodes) ? msg.nodes : [], Boolean(msg.truncated));
+        break;
+      case "branch.result":
+      case "import.result": {
+        this.branching = false;
+        if (msg.error) {
+          this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: `${msg.type === "import.result" ? "导入" : "分叉 / 复制"}失败：${msg.error}`, level: "error" });
+          break;
+        }
+        const id = String(msg.sessionId ?? "");
+        if (!id) break;
+        this.closeSheet();
+        this.openSession(id);
+        if (typeof msg.text === "string" && msg.text.trim()) this.putInComposer(msg.text);
+        // Said once the new session's snapshot is in: the snapshot resets the transcript.
+        this.afterOpen = {
+          id,
+          text: msg.type === "import.result" ? "已导入，这是导入的会话。" : msg.text ? "已分叉成新会话，原来那条消息放回了输入框。" : "已复制成新会话。",
+        };
+        break;
+      }
       case "queue.restore": {
         // Stop cleared pi's queue (#9): like the terminal's Esc, the unsent text comes back to the editor.
         if (msg.sessionId !== this.currentId) break;
@@ -908,6 +958,7 @@ export class App {
         break;
       }
       case "term.list": {
+        if (Array.isArray(msg.shells)) this.termShells = msg.shells.map((x: { id?: unknown; label?: unknown }) => ({ id: String(x.id ?? ""), label: String(x.label ?? x.id ?? "") }));
         // D70: the shells outlive the page. Adopt whatever the bridge still has, then replay each.
         const items = Array.isArray(msg.items) ? (msg.items as { id?: unknown }[]) : [];
         for (const item of items) if (item?.id) this.socket.send({ type: "term.attach", id: String(item.id) });
@@ -1137,6 +1188,39 @@ export class App {
         this.openModelSheet();
         this.sheet?.querySelector(".session-info")?.scrollIntoView({ block: "start" });
         return done();
+      case "tree":
+      case "fork":
+        // The terminal's /fork is a picker over the user messages; the tree sheet is that picker.
+        this.openTreeSheet();
+        return done();
+      case "clone":
+        this.cloneSession();
+        return done();
+      case "import":
+        if (!arg) {
+          say("用法：/import <会话 .jsonl 文件的完整路径>", "warn");
+          return true;
+        }
+        this.act(() => this.socket.send({ type: "import", path: arg }));
+        return done();
+      case "export":
+        // pi's own HTML export, in a new tab (#24). `/export jsonl` downloads the raw session file.
+        window.open(`/api/export?id=${encodeURIComponent(sessionId)}&format=${/jsonl/i.test(arg) ? "jsonl" : "html"}`, "_blank", "noopener");
+        return done();
+      case "debug":
+        window.open(`/api/log?id=${encodeURIComponent(sessionId)}`, "_blank", "noopener");
+        return done();
+      case "copy": {
+        const text = this.chat.lastAssistantText();
+        if (!text) {
+          say("还没有可复制的回复。", "warn");
+          return true;
+        }
+        const copied = navigator.clipboard?.writeText(text);
+        if (!copied) say("这个地址拿不到剪贴板（http 的局域网地址浏览器不给），可以用回复右上角的 ⧉。", "warn");
+        else void copied.then(() => say("已复制最后一条回复。"));
+        return done();
+      }
       case "quit":
       case "exit":
         say("网页里不需要退出。要停掉这个会话的 pi 进程，点输入框下方的「释放会话 / 让回终端」。");
@@ -1657,8 +1741,10 @@ export class App {
     }
     budgetBox.append(budgetChips);
     budgetBox.append(el("div", "budget-hint", "用量超过预算时，这轮结束后自动压缩一次。"));
-    sheet.append(budgetBox);
-    sheet.append(this.sessionInfoBox());
+    // One grid row for both: the sheet's rows are fixed (the model list is the 1fr one).
+    const top = el("div", "sheet-top");
+    top.append(budgetBox, this.sessionInfoBox());
+    sheet.append(top);
 
     // Switching only works on a session this bridge owns; a terminal-owned one has no rpc child.
     if (this.session && !this.session.owned) {
@@ -4323,7 +4409,13 @@ export class App {
       this.composerText = input.value;
       this.noteDraft();
       this.fitComposer();
+      this.updateComplete();
     };
+    input.onclick = () => this.updateComplete();
+    // A click on a suggestion blurs the field first: give the click time to land.
+    input.onblur = () => setTimeout(() => {
+      if (document.activeElement !== this.textarea) this.closeComplete();
+    }, 150);
     input.onpaste = (ev) => {
       // A big paste becomes its own folded block, so what you type next stays separate and visible.
       const pasted = ev.clipboardData?.getData("text/plain") ?? "";
@@ -4335,8 +4427,10 @@ export class App {
       this.renderPastes();
     };
     input.onkeydown = (ev) => {
+      if (this.completeKey(ev)) return;
       if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
         ev.preventDefault();
+        this.closeComplete();
         // Same keys as the terminal while a run is going: Enter steers it, Alt+Enter waits for it (#14).
         this.sendPrompt(ev.altKey ? "followUp" : "steer");
       }
@@ -4451,6 +4545,32 @@ export class App {
       box.append(fileRow);
     }
 
+    // #24: export / download / pi log — plain links, the bridge streams the files.
+    if (s?.id) {
+      const links = el("div", "info-links");
+      const link = (label: string, href: string, title: string) => {
+        const a = el("a", "btn ghost", label) as HTMLAnchorElement;
+        a.href = href;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.title = title;
+        links.append(a);
+      };
+      const id = encodeURIComponent(s.id);
+      if (s.file) {
+        link("导出 HTML", `/api/export?id=${id}`, "pi 自带的单文件 HTML 导出（/export），在新标签页打开");
+        link("下载 JSONL", `/api/export?id=${id}&format=jsonl`, "原始会话文件");
+      }
+      link("pi 日志", `/api/log?id=${id}`, "这个会话的 pi 进程 stderr（网页接管过才有）");
+      if (s.file) {
+        const tree = el("button", "btn ghost", "会话树 / 分叉") as HTMLButtonElement;
+        tree.title = "看分支、从任意一条消息分叉、复制当前分支（/tree /fork /clone）";
+        tree.onclick = () => this.openTreeSheet();
+        links.append(tree);
+      }
+      box.append(links);
+    }
+
     // `/compact [instructions]`: happens now, not on 确认 — it is an action, not a setting.
     const compact = el("div", "info-compact");
     const hint = el("input") as HTMLInputElement;
@@ -4472,6 +4592,247 @@ export class App {
     compact.append(hint, go);
     box.append(compact);
     return box;
+  }
+
+  // ---------------------------------------------------------------- tree / fork / clone (#17)
+  private forkAt(target: { entryId: string; index?: number; text?: string }): void {
+    const sessionId = this.currentId;
+    if (!sessionId || this.branching) return;
+    this.act(() => {
+      this.branching = true;
+      this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: "正在分叉（pi 在写新的会话文件）…", level: "info" });
+      this.socket.send({ type: "fork", sessionId, ...target });
+    });
+  }
+
+  private cloneSession(): void {
+    const sessionId = this.currentId;
+    if (!sessionId || this.branching) return;
+    this.act(() => {
+      this.branching = true;
+      this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: "正在复制当前分支为新会话…", level: "info" });
+      this.socket.send({ type: "clone", sessionId });
+    });
+  }
+
+  /** The session's user messages as a tree; every one is a fork point (#17). */
+  private openTreeSheet(): void {
+    if (!this.currentId) return;
+    this.closeSheet();
+    this.sheetKind = "tree";
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet tree-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", "会话树"));
+    const clone = el("button", "btn ghost", "复制当前分支") as HTMLButtonElement;
+    clone.title = "把当前这条分支整个复制成一个新会话（/clone）";
+    clone.onclick = () => this.cloneSession();
+    const close = el("button", "btn ghost", "关闭");
+    close.onclick = () => this.closeSheet();
+    head.append(clone, close);
+    const body = el("div", "tree-body", "读取中…");
+    sheet.append(head, body);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    this.socket.send({ type: "tree", sessionId: this.currentId });
+  }
+
+  private fillTreeSheet(nodes: { id: string; parent: string | null; text: string; ts: string | null; current: boolean }[], truncated: boolean): void {
+    const body = this.sheet?.querySelector(".tree-body");
+    if (!body) return;
+    body.replaceChildren();
+    if (!nodes.length) {
+      body.append(el("div", "empty", "这个会话还没有写到磁盘的消息。"));
+      return;
+    }
+    body.append(
+      el(
+        "div",
+        "tree-hint",
+        "每条是你发过的一条消息，缩进表示分支。⑂ = 从这条消息之前分叉成新会话（消息放回输入框）；● = pi 会接着走的那条分支。终端里 /tree 切到的分支，要在终端里继续，或者分叉出来。",
+      ),
+    );
+    if (truncated) body.append(el("div", "tree-hint warn", "会话文件太大，只读了后半段：更早的分支没有画出来。"));
+    const kids = new Map<string | null, typeof nodes>();
+    for (const n of nodes) {
+      const key = n.parent && nodes.some((m) => m.id === n.parent) ? n.parent : null;
+      if (!kids.has(key)) kids.set(key, []);
+      kids.get(key)!.push(n);
+    }
+    const walk = (parent: string | null, depth: number) => {
+      for (const n of kids.get(parent) ?? []) {
+        const row = el("div", `tree-row${n.current ? " current" : ""}`);
+        row.style.paddingLeft = `${8 + Math.min(depth, 12) * 16}px`;
+        row.append(el("span", "tree-dot", n.current ? "●" : "○"), el("span", "tree-text", n.text));
+        const when = n.ts ? new Date(n.ts) : null;
+        if (when && !Number.isNaN(when.getTime())) row.append(el("span", "tree-ts", when.toLocaleString()));
+        const fork = el("button", "tool-btn", "⑂ 分叉") as HTMLButtonElement;
+        fork.title = "从这条消息之前分叉成新会话，消息放回输入框";
+        fork.onclick = () => this.forkAt({ entryId: n.id, text: n.text });
+        row.append(fork);
+        row.title = n.text;
+        body.append(row);
+        // Indent only where the path splits: a straight chain stays flat.
+        walk(n.id, (kids.get(n.id)?.length ?? 0) > 1 ? depth + 1 : depth);
+      }
+    };
+    walk(null, 0);
+  }
+
+  // ---------------------------------------------------------------- inline completion (#25)
+  /** Look at the text left of the caret and open / refresh / close the suggestion list. */
+  private updateComplete(): void {
+    const field = this.textarea;
+    if (!field || !this.currentId) return this.closeComplete();
+    const text = field.value;
+    const caret = field.selectionStart ?? text.length;
+    if (caret !== (field.selectionEnd ?? caret)) return this.closeComplete();
+    const before = text.slice(0, caret);
+    const tokenEnd = (from: number) => {
+      const m = /^[^\s]*/.exec(text.slice(from));
+      return from + (m ? m[0].length : 0);
+    };
+    const cmd = /^\/([^\s]*)$/.exec(before);
+    if (cmd) {
+      const query = cmd[1];
+      if (!this.piCommands || this.piCommands.sessionId !== this.currentId || Date.now() - this.piCommands.at > 60_000) {
+        this.piCommands = { sessionId: this.currentId, at: Date.now(), list: this.piCommands?.sessionId === this.currentId ? this.piCommands.list : [] };
+        this.socket.send({ type: "commands", sessionId: this.currentId, cwd: this.session?.cwd });
+      }
+      this.showComplete("cmd", 0, tokenEnd(caret), query, this.commandItems(query));
+      return;
+    }
+    const at = /(?:^|\s)@([^\s@]*)$/.exec(before);
+    if (at) {
+      const query = at[1];
+      const start = caret - query.length - 1;
+      const end = tokenEnd(caret);
+      const seq = ++this.fileQuerySeq;
+      const sessionId = this.currentId;
+      // Keep the old rows while the next answer is on its way: no flicker per keystroke.
+      if (!this.complete || this.complete.mode !== "file") this.showComplete("file", start, end, query, []);
+      else Object.assign(this.complete, { start, end, query });
+      fetch(`/api/files?id=${encodeURIComponent(sessionId)}&q=${encodeURIComponent(query)}`, { credentials: "same-origin" })
+        .then((r) => r.json())
+        .then((out: { files?: string[] }) => {
+          if (seq !== this.fileQuerySeq || this.complete?.mode !== "file" || this.currentId !== sessionId) return;
+          const items = (out.files ?? []).map((f) => ({ insert: `@${f} `, label: f, tag: "文件" }));
+          this.showComplete("file", start, end, query, items);
+        })
+        .catch(() => {
+          /* no list is fine: the user keeps typing */
+        });
+      return;
+    }
+    this.closeComplete();
+  }
+
+  /** Built-in commands the page runs itself, then pi's own (extension / template / skill). */
+  private commandItems(query: string): { insert: string; label: string; desc?: string; tag?: string }[] {
+    const q = query.toLowerCase();
+    const all: { insert: string; label: string; desc?: string; tag?: string }[] = BUILTIN_COMMANDS.map(([name, desc]) => ({ insert: `/${name} `, label: `/${name}`, desc, tag: "内建" }));
+    const tagOf: Record<string, string> = { extension: "扩展", prompt: "模板", skill: "技能" };
+    for (const c of this.piCommands?.list ?? []) {
+      if (all.some((x) => x.label === `/${c.name}`)) continue;
+      all.push({ insert: `/${c.name} `, label: `/${c.name}`, desc: c.description, tag: tagOf[c.source] ?? c.source });
+    }
+    if (!q) return all.slice(0, 40);
+    const starts = all.filter((x) => x.label.slice(1).toLowerCase().startsWith(q));
+    // Descriptions only for longer queries: two letters match half the skill blurbs.
+    const contains = all.filter((x) => !starts.includes(x) && (x.label.toLowerCase().includes(q) || (q.length >= 3 && (x.desc ?? "").toLowerCase().includes(q))));
+    return [...starts, ...contains].slice(0, 40);
+  }
+
+  private showComplete(mode: "cmd" | "file", start: number, end: number, query: string, items: { insert: string; label: string; desc?: string; tag?: string }[]): void {
+    let node = this.complete?.node;
+    if (!node || !node.isConnected) {
+      node = el("div", "complete-pop");
+      const row = this.els.composerHost.querySelector(".row");
+      if (row) this.els.composerHost.insertBefore(node, row);
+      else this.els.composerHost.append(node);
+    }
+    const sel = this.complete && this.complete.mode === mode ? Math.min(this.complete.sel, Math.max(0, items.length - 1)) : 0;
+    this.complete = { mode, start, end, query, items, sel, node };
+    this.paintComplete();
+  }
+
+  private paintComplete(): void {
+    const c = this.complete;
+    if (!c) return;
+    c.node.replaceChildren();
+    if (!c.items.length) {
+      c.node.append(el("div", "complete-empty", c.mode === "file" ? (c.query ? `找不到「${c.query}」` : "输入文件名的一部分…") : "没有匹配的命令"));
+      return;
+    }
+    c.items.forEach((item, i) => {
+      const row = el("button", `complete-row${i === c.sel ? " on" : ""}`) as HTMLButtonElement;
+      row.type = "button";
+      row.append(el("span", "complete-label", item.label));
+      if (item.tag) row.append(el("span", "complete-tag", item.tag));
+      if (item.desc) row.append(el("span", "complete-desc", item.desc));
+      row.onmousedown = (ev) => ev.preventDefault(); // keep the caret in the textarea
+      row.onclick = () => this.pickComplete(i);
+      c.node.append(row);
+    });
+    c.node.querySelector(".complete-row.on")?.scrollIntoView({ block: "nearest" });
+  }
+
+  /** Arrow keys / Enter / Tab / Esc while the list is open. Returns true when it took the key. */
+  private completeKey(ev: KeyboardEvent): boolean {
+    const c = this.complete;
+    if (!c || ev.isComposing) return false;
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.closeComplete();
+      return true;
+    }
+    if (!c.items.length) return false;
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      c.sel = (c.sel + (ev.key === "ArrowDown" ? 1 : -1) + c.items.length) % c.items.length;
+      this.paintComplete();
+      return true;
+    }
+    if ((ev.key === "Enter" && !ev.shiftKey && !ev.altKey) || ev.key === "Tab") {
+      // Already typed out in full: Enter sends instead of completing to the same text.
+      const typed = this.textarea?.value.slice(c.start, c.end).trim() ?? "";
+      if (ev.key === "Enter" && typed === c.items[c.sel]?.insert.trim()) {
+        this.closeComplete();
+        return false;
+      }
+      ev.preventDefault();
+      this.pickComplete(c.sel);
+      return true;
+    }
+    return false;
+  }
+
+  private pickComplete(index: number): void {
+    const c = this.complete;
+    const field = this.textarea;
+    if (!c || !field) return;
+    const item = c.items[index];
+    if (!item) return;
+    const text = field.value;
+    const next = `${text.slice(0, c.start)}${item.insert}${text.slice(c.end).replace(/^ /, "")}`;
+    const caret = c.start + item.insert.length;
+    this.closeComplete();
+    field.value = next;
+    this.composerText = next;
+    this.noteDraft();
+    field.focus();
+    field.setSelectionRange(caret, caret);
+    this.fitComposer();
+  }
+
+  private closeComplete(): void {
+    this.complete?.node.remove();
+    this.complete = null;
   }
 
   /** What pi has queued for after the current step / run, with a way to take it back (#14). */
@@ -5301,9 +5662,42 @@ export class App {
   }
 
   /** Ask the bridge for one more shell, starting in the session's cwd. */
-  private requestTerminal(): void {
+  private requestTerminal(shell?: string): void {
     const cwd = this.session?.cwd ?? undefined;
-    this.socket.send({ type: "term.open", cols: 100, rows: 26, cwd });
+    this.socket.send({ type: "term.open", cols: 100, rows: 26, cwd, ...(shell ? { shell } : {}) });
+  }
+
+  /** #23: ＋ offers every shell the bridge found (PowerShell, Git Bash, cmd · $SHELL, zsh, bash…). */
+  private openShellMenu(anchor: HTMLElement): void {
+    const existing = document.querySelector(".term-menu");
+    if (existing) {
+      existing.remove();
+      return;
+    }
+    if (this.termShells.length < 2) {
+      this.requestTerminal();
+      return;
+    }
+    const menu = el("div", "term-menu");
+    for (const sh of this.termShells) {
+      const item = el("button", "term-menu-item", sh.label) as HTMLButtonElement;
+      item.type = "button";
+      item.onclick = () => {
+        menu.remove();
+        this.requestTerminal(sh.id);
+      };
+      menu.append(item);
+    }
+    const r = anchor.getBoundingClientRect();
+    menu.style.left = `${Math.round(r.left)}px`;
+    menu.style.bottom = `${Math.round(window.innerHeight - r.top + 4)}px`;
+    document.body.append(menu);
+    const away = (ev: MouseEvent) => {
+      if (menu.contains(ev.target as Node) || ev.target === anchor) return;
+      menu.remove();
+      document.removeEventListener("mousedown", away, true);
+    };
+    document.addEventListener("mousedown", away, true);
   }
 
   /** The dock is created once and shared by every tab; `term.opened` / `term.replay` fill it. */
@@ -5315,8 +5709,8 @@ export class App {
     const head = el("div", "term-head");
     const strip = el("div", "term-tabs");
     const more = el("button", "term-new", "＋") as HTMLButtonElement;
-    more.title = "再开一个终端（最多 4 个）";
-    more.onclick = () => this.requestTerminal();
+    more.title = "再开一个终端（最多 4 个），可选 shell";
+    more.onclick = () => this.openShellMenu(more);
     const admin = el("button", "term-btn", "管理员") as HTMLButtonElement;
     admin.title = "给当前标签开一个管理员 PowerShell 窗口（提权进程的输出浏览器接管不了，所以它在桌面上）";
     admin.onclick = () => {
@@ -6003,19 +6397,31 @@ const ICON_ARCHIVE = SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path 
 const ICON_UNARCHIVE = SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M12 17v-6"/><path d="m9.5 13.5 2.5-2.5 2.5 2.5"/>');
 const ICON_TRASH = SVG('<path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/><path d="M9 7V4h6v3"/>');
 
+/** `/` menu entries the page runs itself (see runBuiltinCommand), with what they do. */
+const BUILTIN_COMMANDS: [string, string][] = [
+  ["new", "开新会话"],
+  ["resume", "到会话列表里选一个"],
+  ["model", "选模型 / 思考档位"],
+  ["thinking", "思考档位（/thinking high）"],
+  ["name", "会话名（/name 新名字）"],
+  ["session", "会话信息：用量、费用、文件"],
+  ["compact", "压缩上下文（/compact 要保留什么）"],
+  ["tree", "会话树：看分支、从任意消息分叉"],
+  ["fork", "从某条消息之前分叉"],
+  ["clone", "复制当前分支为新会话"],
+  ["import", "导入会话文件（/import 路径）"],
+  ["export", "导出 HTML（/export jsonl 下载原文件）"],
+  ["copy", "复制最后一条回复"],
+  ["debug", "这个会话的 pi 日志"],
+  ["hotkeys", "快捷键"],
+];
+
 const RUNNING_PLACEHOLDER = "跑着呢：Enter 引导当前任务 · Alt+Enter 等这轮做完再处理";
 
 /** pi built-in commands the page cannot run yet → the issue that tracks them (#22). */
 const UNSUPPORTED_BUILTINS: Record<string, string> = {
-  tree: "#17",
-  fork: "#17",
-  clone: "#17",
-  import: "#17",
-  export: "#24",
-  share: "#24",
-  copy: "#24",
-  bug: "#24",
-  debug: "#24",
+  share: "#38",
+  bug: "#38",
   settings: "#26",
   "scoped-models": "#26",
   reload: "#26",

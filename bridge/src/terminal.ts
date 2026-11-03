@@ -44,20 +44,51 @@ interface Term {
 const MAX_TERMS = 4;
 const KEEP_BYTES = 200_000;
 
-const SHELLS: { file: string; label: string }[] = [
-  { file: "C:/Program Files/PowerShell/7/pwsh.exe", label: "pwsh" },
-  { file: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", label: "powershell" },
-];
+export interface ShellChoice {
+  /** Stable key the page sends back in `term.open`. */
+  id: string;
+  label: string;
+  file: string;
+  args: string[];
+}
+
+/**
+ * Shells this machine actually has, best first (#23). Windows: PowerShell 7, Windows PowerShell,
+ * Git Bash (the shell pi's own `bash` tool uses, docs/windows.md), cmd. Elsewhere: the user's
+ * `$SHELL`, then zsh / bash / sh — the old list only knew Windows paths and fell back to cmd.exe.
+ */
+export function availableShells(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env, exists: (f: string) => boolean = fs.existsSync): ShellChoice[] {
+  const out: ShellChoice[] = [];
+  const add = (id: string, label: string, file: string | undefined, args: string[]) => {
+    if (!file || !exists(file) || out.some((s) => s.file === file || s.id === id)) return;
+    out.push({ id, label, file, args });
+  };
+  if (platform === "win32") {
+    const pf = env.ProgramFiles ?? "C:/Program Files";
+    const pf86 = env["ProgramFiles(x86)"] ?? "C:/Program Files (x86)";
+    const sys = path.join(env.SystemRoot ?? "C:/Windows", "System32");
+    add("pwsh", "pwsh", path.join(pf, "PowerShell", "7", "pwsh.exe"), ["-NoLogo"]);
+    add("powershell", "powershell", path.join(sys, "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo"]);
+    add("git-bash", "Git Bash", path.join(pf, "Git", "bin", "bash.exe"), ["--login", "-i"]);
+    add("git-bash", "Git Bash", path.join(pf86, "Git", "bin", "bash.exe"), ["--login", "-i"]);
+    add("cmd", "cmd", env.ComSpec ?? path.join(sys, "cmd.exe"), []);
+    return out;
+  }
+  const login = env.SHELL;
+  if (login) add(path.basename(login), path.basename(login), login, ["-l"]);
+  add("zsh", "zsh", "/bin/zsh", ["-l"]);
+  add("bash", "bash", "/bin/bash", ["-l"]);
+  add("sh", "sh", "/bin/sh", []);
+  return out;
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(value)));
 }
 
-function pickShell(): { file: string; args: string[]; label: string } {
-  for (const { file, label } of SHELLS) {
-    if (fs.existsSync(file)) return { file, args: ["-NoLogo"], label };
-  }
-  return { file: process.env.ComSpec ?? "cmd.exe", args: [], label: "cmd" };
+function pickShell(wanted?: string): ShellChoice | null {
+  const all = availableShells();
+  return all.find((s) => s.id === wanted) ?? all[0] ?? null;
 }
 
 function resolveCwd(wanted: string | undefined): string {
@@ -81,12 +112,19 @@ export class Terminals {
     return [...this.terms].map(([id, term]) => ({ id, shell: term.shell, cwd: term.cwd, cols: 0, rows: 0 }));
   }
 
-  open(opts: { cols?: number; rows?: number; cwd?: string }): OpenedTerm | { error: string } {
+  /** What the ＋ menu offers. */
+  shells(): { id: string; label: string }[] {
+    return availableShells().map(({ id, label }) => ({ id, label }));
+  }
+
+  open(opts: { cols?: number; rows?: number; cwd?: string; shell?: string }): OpenedTerm | { error: string } {
     if (this.terms.size >= MAX_TERMS) return { error: `最多同时开 ${MAX_TERMS} 个终端，先关掉一个` };
     const cols = clamp(opts.cols ?? 100, 20, 400);
     const rows = clamp(opts.rows ?? 30, 5, 200);
     const cwd = resolveCwd(opts.cwd);
-    const { file, args, label } = pickShell();
+    const picked = pickShell(opts.shell);
+    if (!picked) return { error: "这台电脑上没找到可用的 shell" };
+    const { file, args, label } = picked;
     const env = { ...process.env } as Record<string, string>;
     for (const key of Object.keys(env)) if (key.startsWith("PI_") || env[key] === undefined) delete env[key];
     env.TERM = "xterm-256color";
@@ -169,7 +207,9 @@ export class Terminals {
 export function openConsole(options: { cwd?: string; file?: string; admin?: boolean }): { ok: boolean; message: string } {
   if (process.platform !== "win32") return { ok: false, message: "提权只支持 Windows" };
   const cwd = resolveCwd(options.cwd);
-  const shell = pickShell();
+  // The -NoLogo / -File / -NoExit arguments below are PowerShell's: only a PowerShell will do here.
+  const shell = availableShells().find((s) => s.id === "pwsh" || s.id === "powershell");
+  if (!shell) return { ok: false, message: "这台电脑上没找到 PowerShell" };
   const quote = (value: string): string => `'${value.replace(/'/g, "''")}'`;
   // A script runs and the window closes with it; a bare terminal stays open to be typed into.
   const args = ["-NoLogo"];

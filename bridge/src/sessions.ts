@@ -3,10 +3,10 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { RpcChild } from "./rpc.ts";
-import { loadEntries, listSessionFiles, titleFromUserText, type SessionFileMeta } from "./sessionfile.ts";
-import { BASH_KEEP, entriesToItems, summarizeToolArgs, type BashItem, type Item, type ToolItem } from "./items.ts";
-import { fileURLToPath } from "node:url";
-import { ensureDir, sessionsRoot, statePath, readJson, writeJson } from "./paths.ts";
+import { loadEntries, listSessionFiles, readMeta, titleFromUserText, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
+import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, summarizeToolArgs, type BashItem, type Item, type ToolItem } from "./items.ts";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { ensureDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
 import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
@@ -162,6 +162,40 @@ export interface ExtUiState {
 export function stripAnsi(text: string): string {
   // CSI sequences, then OSC sequences (terminated by BEL or ST).
   return text.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "");
+}
+
+export interface TreeNode {
+  /** Entry id of the user message. */
+  id: string;
+  /** Nearest earlier user message on its path, or null at the root. */
+  parent: string | null;
+  text: string;
+  ts: string | null;
+  /** On the branch pi would resume. */
+  current: boolean;
+}
+
+/** pi's folder name for a cwd under the default sessions dir (session-manager.js getDefaultSessionDirPath). */
+/** First line of a session file, parsed (or null). */
+export function readHeader(file: string): { type?: string; version?: number; id?: string; cwd?: string } | null {
+  try {
+    const fd = fs.openSync(file, "r");
+    try {
+      const buf = Buffer.alloc(64 * 1024);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      const line = buf.subarray(0, n).toString("utf8").split("\n")[0];
+      const head = JSON.parse(line);
+      return head?.type === "session" ? head : null;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+export function encodeCwd(cwd: string): string {
+  return `--${path.resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 }
 
 export function isPermissionMode(v: unknown): v is PermissionMode {
@@ -770,6 +804,15 @@ export class Session extends EventEmitter {
         break;
       }
       case "message_end": {
+        if (ev.message?.role === "custom") {
+          // An extension's pi.sendMessage(): shown like the TUI shows it (display:true only), #31.
+          const item = customMessageItem(`custom:${Date.now()}`, new Date().toISOString(), ev.message);
+          if (item) {
+            this.upsert(item);
+            this.emitWs({ type: "item.add", sessionId: this.state.id, item });
+          }
+          break;
+        }
         if (ev.message?.role !== "assistant") break;
         const msg = ev.message;
         let text = "";
@@ -876,6 +919,14 @@ export class Session extends EventEmitter {
       case "compaction_end":
         // A compaction that will be retried is still in progress for prompt()'s purposes.
         if (!ev.willRetry) this.endCompaction();
+        if (!ev.aborted && !ev.errorMessage && typeof ev.result?.summary === "string" && ev.result.summary.trim()) {
+          // Same card the file view draws for a compaction entry (#31): the summary is what the model now sees.
+          const before = typeof ev.result.tokensBefore === "number" ? `（压缩前约 ${Math.round(ev.result.tokensBefore / 1000)}K token）` : "";
+          const item: Item = { id: `compaction:${Date.now()}`, ts: new Date().toISOString(), kind: "summary", variant: "compaction", title: `上下文已压缩${before}`, text: ev.result.summary };
+          this.upsert(item);
+          this.emitWs({ type: "item.add", sessionId: this.state.id, item });
+          break;
+        }
         this.emitWs({
           type: "notice",
           sessionId: this.state.id,
@@ -1294,6 +1345,24 @@ export class Session extends EventEmitter {
     return ranked;
   }
 
+  /**
+   * Everything `/` can reach in this session (#25): extension commands, prompt templates and skills,
+   * as pi reports them (get_commands). Without a live pi only the skills on disk are known.
+   */
+  async commands(): Promise<{ name: string; description: string; source: string }[]> {
+    if (this.rpc?.alive) {
+      try {
+        const res = await this.rpc.request<any>("get_commands", {}, 30000);
+        return (res?.commands ?? [])
+          .filter((c: any) => c && typeof c.name === "string" && c.name)
+          .map((c: any) => ({ name: String(c.name), description: String(c.description ?? ""), source: String(c.source ?? "") }));
+      } catch {
+        /* fall through */
+      }
+    }
+    return scanSkills(this.state.cwd || process.cwd()).map((sk) => ({ name: `skill:${sk.name}`, description: sk.description, source: "skill" }));
+  }
+
   /** Called after a pick so the next list reflects the new usage count. */
   dropSkillCache(): void {
     this.skillsCache = null;
@@ -1656,6 +1725,140 @@ export class SessionManager extends EventEmitter {
     await session.startLive({ resume: false, cwd, name });
     this.emit("ws", { type: "session.state", session: session.state });
     return session;
+  }
+
+  // ------------------------------------------------------------ tree / fork / clone / import (#17)
+
+  /**
+   * The session's user messages as a tree: each one hangs under the nearest earlier user message
+   * on its own path. `current` marks the branch pi would resume (D74). Read straight from the file,
+   * so it works for read-only sessions too.
+   */
+  tree(id: string): { nodes: TreeNode[]; truncated: boolean } {
+    const where = this.locate(id);
+    if (!where?.file || !fs.existsSync(where.file)) return { nodes: [], truncated: false };
+    const { entries, truncated } = loadEntries(where.file);
+    const byId = new Map<string, SessionEntry>();
+    for (const e of entries) if (e?.id) byId.set(e.id, e);
+    const onBranch = new Set(currentBranch(entries).map((e) => e.id));
+    const isUser = (e: SessionEntry | undefined) => e?.type === "message" && e.message?.role === "user";
+    const nodes: TreeNode[] = [];
+    for (const e of entries) {
+      if (!isUser(e)) continue;
+      let parent: string | null = null;
+      const seen = new Set<string>();
+      let cur = typeof e.parentId === "string" ? byId.get(e.parentId) : undefined;
+      while (cur && !seen.has(cur.id)) {
+        seen.add(cur.id);
+        if (isUser(cur)) {
+          parent = cur.id;
+          break;
+        }
+        cur = typeof cur.parentId === "string" ? byId.get(cur.parentId) : undefined;
+      }
+      const text = titleFromUserText(contentText(e.message.content)) ?? "（图片）";
+      nodes.push({ id: e.id, parent, text: text.slice(0, 160), ts: e.timestamp ?? null, current: onBranch.has(e.id) });
+    }
+    return { nodes, truncated };
+  }
+
+  /**
+   * `/fork` (before a user message: the history up to it becomes a new session and the message's
+   * text comes back for the editor) and `/clone` (the current branch, whole).
+   *
+   * Done with pi's own SessionManager loaded from the installed package, in this process:
+   * `open()` only reads the source and `createBranchedSession()` writes the *new* file exactly as
+   * pi's /fork would (header with parentSession, labels, compaction re-chaining). A throwaway
+   * `pi --mode rpc --session <file>` was tried first and rejected: opening a session runs model
+   * resolution, which can append a thinking_level_change entry to the SOURCE file — a second
+   * writer on a file a terminal may own (D8).
+   */
+  async branchOff(id: string, how: { entryId?: string; index?: number; text?: string } | "clone"): Promise<{ sessionId: string; text: string | null }> {
+    const where = this.locate(id);
+    if (!where?.file || !fs.existsSync(where.file)) throw new Error("这个会话还没有写到磁盘，发过一条消息之后才能分叉 / 复制");
+    // open() migrates v1/v2 files by rewriting them in place: never do that to a file we do not own.
+    const header = readHeader(where.file);
+    if (header?.version !== 3) throw new Error("这个会话文件是旧格式，先在终端里用 pi 打开一次让它升级，再来分叉");
+    const { SessionManager: PiSessions } = await this.piSessionModule();
+    const sm = PiSessions.open(where.file, path.dirname(where.file));
+    let targetLeafId: string | null;
+    let text: string | null = null;
+    if (how === "clone") {
+      targetLeafId = sm.getLeafId();
+      if (!targetLeafId) throw new Error("这个会话是空的，没有可复制的内容");
+    } else {
+      const isUser = (e: any) => e?.type === "message" && e.message?.role === "user";
+      let entry = how.entryId ? sm.getEntry(how.entryId) : undefined;
+      if (!isUser(entry) && typeof how.index === "number") {
+        // Live items carry bridge ids, not entry ids: find the message among the current branch's.
+        const norm = (t: string) => t.replace(/\s+/g, " ").trim();
+        const users = (sm.getBranch(sm.getLeafId()) as any[]).filter(isUser);
+        const byIndex = users[how.index];
+        if (byIndex && (!how.text || norm(contentText(byIndex.message.content)) === norm(how.text))) entry = byIndex;
+        else if (how.text) entry = [...users].reverse().find((u) => norm(contentText(u.message.content)) === norm(how.text!));
+      }
+      if (!isUser(entry)) throw new Error("在会话文件里找不到这条消息（可能还没写盘），刷新后再试");
+      targetLeafId = entry.parentId ?? null;
+      text = contentText(entry.message.content);
+    }
+    if (targetLeafId) {
+      const file = sm.createBranchedSession(targetLeafId);
+      if (file && fs.existsSync(file)) {
+        this.cache = null;
+        const meta = readMeta(file);
+        this.emit("ws", { type: "sessions.list", sessions: this.list() });
+        return { sessionId: meta?.id ?? "", text };
+      }
+    }
+    // Forking at the very first message leaves nothing to keep (pi writes no empty file either):
+    // that is a new session in the same folder with the message back in the editor.
+    let cwdOk = false;
+    try {
+      cwdOk = fs.statSync(where.cwd).isDirectory();
+    } catch {
+      /* reported below */
+    }
+    if (!cwdOk) throw new Error(`会话的工作目录已经不存在：${where.cwd}`);
+    const fresh = await this.create(where.cwd);
+    return { sessionId: fresh.state.id, text };
+  }
+
+  private piSessions: Promise<any> | null = null;
+
+  /** pi's session-manager module from the installed package (cli = <pkg>/dist/bundle/cli.js). */
+  private piSessionModule(): Promise<any> {
+    if (!this.piSessions) {
+      const pkg = path.dirname(path.dirname(path.dirname(this.cli)));
+      const file = path.join(pkg, "dist", "core", "session-manager.js");
+      this.piSessions = import(pathToFileURL(file).href).catch((err) => {
+        this.piSessions = null;
+        throw new Error(`加载不了 pi 的会话模块（${file}）：${(err as Error).message}`);
+      });
+    }
+    return this.piSessions;
+  }
+
+  /**
+   * `/import <path>`: what pi's importFromJsonl does — copy the file (never move, never overwrite)
+   * into the session folder for its cwd, then it is an ordinary session on the list.
+   */
+  importFile(source: string): { sessionId: string } {
+    const src = path.resolve(source.trim().replace(/^"(.*)"$/, "$1"));
+    if (!src.endsWith(".jsonl") || !fs.existsSync(src) || !fs.statSync(src).isFile()) throw new Error(`不是一个存在的 .jsonl 文件：${src}`);
+    const meta = readMeta(src);
+    if (!meta) throw new Error("文件第一行不是 pi 的会话头（type: session），不能导入");
+    if (this.metas().some((m) => m.id === meta.id)) throw new Error(`会话 ${meta.id} 已经在列表里了`);
+    const root = sessionsRootInfo();
+    // pi's layout: a custom session dir is flat; the default one has a folder per cwd.
+    const dir = root.source === "default" || root.source === "PI_AGENT_DIR" ? path.join(root.dir, encodeCwd(meta.cwd)) : root.dir;
+    fs.mkdirSync(dir, { recursive: true });
+    const { name, ext } = path.parse(path.basename(src));
+    let dest = path.join(dir, `${name}${ext}`);
+    for (let n = 1; fs.existsSync(dest); n++) dest = path.join(dir, `${name}-${n}${ext}`);
+    fs.copyFileSync(src, dest, fs.constants.COPYFILE_EXCL);
+    this.cache = null;
+    this.emit("ws", { type: "sessions.list", sessions: this.list() });
+    return { sessionId: meta.id };
   }
 
   /** Only ids this bridge spawned or found on disk; anything else from a client is refused. */
