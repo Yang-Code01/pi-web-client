@@ -1221,3 +1221,21 @@
 **可改：** 四类与 `quick/form/long` 三档的具体文案（`web/src/notesheet.ts` 顶部 `NOTE_KINDS` / `MODE_LABEL`）；单条最多 24 张、单图 20MB（`bridge/src/notes.ts` 的 `MAX_SHOTS` / `MAX_SHOT_BYTES`）；默认快捷键 `Ctrl+Shift+B`（`app.ts` 的 `DEFAULT_KEYS`）。想让「已处理」也立刻消失就把 `.notes-switch` 默认打勾，但那样就没有「回头看看处理了什么」的地方了。
 
 **验证：** `node probes/bug-notes.mjs`（真桥、临时状态目录、纯 WS，32 条断言；含 `notes.life` 归档打时间戳 / 复原清空 / 错 life 被拒 / `trashed` 只打标记 / `notes.purge` 只清垃圾箱那条）：hello 带 `notes`、空标题取正文首行、同 id 是更新（`createdAt` 不变、`updatedAt` 前进）、`issue`/`commit` 落盘、错 status / 错 kind 被拒且状态不变、截图落到 `assets/<id>/` 且 `/api/image` 读得回 `image/png`、第二张换名不覆盖、删图只删自己那条、删记录连目录一起清、桥杀掉后 JSON 仍在。`node probes/bug-notes-ui.mjs`（真 Chromium + 隔离桥，37 条断言（含归档视图不给「＋ 记一条」、检索命中 / 空态 / 清空））：没开会话也能开、光标落在记一条、Enter 存一条、按钮只显示图标且计数在 `title`、行内归档后从列表消失 → 归档抽屉可见 → 复原回列表 → 删到垃圾箱 → 只读 + 复原 + 彻底删除 + 清空垃圾箱、真 paste 事件贴图并随保存落盘、缩略图回到编辑器、状态 pill 转已处理后从待处理消失、「显示已处理」翻回来、复制 Markdown 进剪贴板（含截图绝对路径）、交给 agent 菜单两项、Escape 先关菜单再关面板、刷新后记录还在。截图：`.scratch/bug-notes/shots/desktop.png`。
+
+## D109 测试环境技能住进仓库 `.pi/skills/`：项目级零安装，不走 npm 包也不拷用户目录
+
+**问题：** 「起一份隔离测试实例」这套流程一直只活在本机 `~/.pi/agent/skills/pi-web-client-test-dev/`——跟着作者这台机器走，不跟仓库走。新机器 clone 下来部署完之后，这个技能不存在，验收 / 复现「别动我正在用的 7864」那套操作得靠人嘴传。
+
+**决定：**
+- 技能进仓库：`.pi/skills/pi-web-client-test-dev/`（`SKILL.md` + `bin/env.mjs`），pi 在**本仓库或其子目录**里跑时按项目级技能自动发现，不需要 `pi install`、不需要 `npm postinstall`，也不写用户的 `~/.pi/agent/skills/`。
+- `.gitignore` 原来整目录忽略 `.pi/`，改成只忽略一层内容（`.pi/*`）并对 `.pi/skills/` 开白名单（`!.pi/skills/`）——`.pi/` 里别的都是本机产物（任务日志、sessions），只有技能该进版本库。
+- 本机那份 `~/.pi/agent/skills/pi-web-client-test-dev/` 删掉，仓库版成为唯一来源。pi 遇同名技能是「先发现者生效 + 启动警告」，两份都留等于每个会话头上挂一条警告，而且改一份、生效的是另一份。
+- `SKILL.md` 顺手通用化：开浏览器给 Windows / macOS / Linux 三块命令，判据写明「窗口标题只在 Windows 实测过，mac/Linux 没有等价判据，用 `/` 的 HTTP 200 + 让用户自己确认」；PowerShell / `taskkill` 那些条目标成 Windows 专属。`bin/env.mjs` 不用改平台逻辑——`killTree()` 早就按 `process.platform` 分了 `taskkill /T /F` 和 `process.kill(-pid, "SIGTERM")`（`env.mjs:182-191`），`npm` 调用的 `shell` 也按平台切（`env.mjs:137,145`）。
+
+**为什么不用 pi 包（`pi install ./`）：** 这是个要在本仓库里验代码的工具，不是要在任何目录下都能用的通用能力。包机制多一次「部署完还得记得 install」，而项目级技能的可见范围（仓库内）恰好等于它该有的范围。**为什么不用 postinstall 拷到用户目录：** 装个 web 客户端顺手改用户的技能目录，属于不请自来的副作用；而且只有走 `npm install` 才触发，从 worktree 起的实例根本没这一步。
+
+**为什么只搬不拆：** 技能的价值在于「先确认代码来源再启动」「7864 绝不碰」「口令恒为 test」这些约束被写在能自动加载的文档里，拆成脚本 + README 反而更容易被跳过。
+
+**可改：** 以后真要给别处的人当通用工具用（任意目录可调），再加 `package.json` 的 `pi.skills` 清单发 npm 包，`.pi/skills/` 那份继续留着当项目级入口也不冲突（改名避开同名警告即可）。mac/Linux 上的端口独占探测与 `xdg-open` 判据都还没实测，第一次在那些平台上跑完 `ports` 应当把结论补回 `SKILL.md`。
+
+**验证：** 从仓库内路径跑 `node .pi/skills/pi-web-client-test-dev/bin/env.mjs list`（空表）、`ports --peers 1`（`base` 17864、三个端口齐全）、`start --dir F:/pi-web-client --name smoke`（打印 `登录自检 HTTP 200（口令 test 生效）`、`/healthz` 回 `{"ok":true,…}`）、`stop --id smoke`（回到空表）。`git check-ignore` 对 `SKILL.md` 与 `bin/env.mjs` 均返回未忽略。
