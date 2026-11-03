@@ -265,6 +265,27 @@ function readLock(id: string): { pid: number; at: number } | null {
   }
 }
 
+/**
+ * #30: a terminal pi that runs the session-lock extension (bridge/ext/session-lock.ts) holds
+ * `<locks>/<id>.tty.json` while the session is open there. Dead pids are pruned on read.
+ */
+export function readTtyLock(id: string): { pid: number } | null {
+  const file = statePath("locks", `${id}.tty.json`);
+  if (!fs.existsSync(file)) return null;
+  try {
+    const pid = Number(JSON.parse(fs.readFileSync(file, "utf8"))?.pid);
+    if (Number.isFinite(pid) && pid > 0 && pid !== process.pid && pidAlive(pid)) return { pid };
+  } catch {
+    /* unreadable: treat as stale */
+  }
+  try {
+    fs.unlinkSync(file);
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 function takeLock(id: string): boolean {
   const existing = readLock(id);
   if (existing && existing.pid !== process.pid) return false;
@@ -1675,7 +1696,7 @@ export class SessionManager extends EventEmitter {
       seen.add(s.state.id);
       const lock = readLock(s.state.id);
       // Copy: these flags must not leak into the live state a session broadcasts.
-      out.push({ ...s.state, ...flag(s.state.id), locked: Boolean(lock && lock.pid !== process.pid) });
+      out.push({ ...s.state, ...flag(s.state.id), locked: Boolean((lock && lock.pid !== process.pid) || (!s.live && readTtyLock(s.state.id))) });
     }
     for (const meta of this.discover()) {
       if (seen.has(meta.id)) continue;
@@ -1695,6 +1716,7 @@ export class SessionManager extends EventEmitter {
         permission: readPermission(meta.id),
         ...(meta.firstUserText ? { preview: meta.firstUserText } : {}),
         ...flag(meta.id),
+        ...(readTtyLock(meta.id) ? { locked: true } : {}),
       });
     }
     // Pinned first, then the hand-made order, then the new ones by creation time (D45 + D46).
@@ -1945,6 +1967,9 @@ export class SessionManager extends EventEmitter {
     if (!this.known(id)) throw new Error("找不到这个会话");
     const session = this.ensure(id);
     if (session.live) return session;
+    // #30: a terminal pi with the session-lock extension says so explicitly — no guessing by mtime.
+    const tty = readTtyLock(id);
+    if (tty) throw new Error(`终端里的 pi（PID ${tty.pid}）正开着这个会话。先在那边退出（/quit）或换个会话，再在这里接管。`);
     // D8: a file that changed seconds ago probably still has a terminal writer — unless the last
     // write came from our own pi, which has exited since (stop → reclaim right away must work).
     const file = session.state.file;

@@ -1931,3 +1931,30 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .settings-sheet .settings-changelog { font-size: 13px; }
 @media (max-width: 640px) { .settings-sheet .settings-row { grid-template-columns: minmax(0, 1fr); } .settings-sheet .settings-row .settings-hint { grid-column: 1; } }
 .trust-bar { display: flex; gap: 10px; align-items: center; }
+
+/* #27 登录 / 凭据 */
+.settings-sheet .login-list { display: grid; gap: 4px; }
+.settings-sheet .login-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; padding: 7px 10px; border: 1px solid var(--line-soft); border-radius: 8px; }
+.settings-sheet .login-row.on { border-color: #1d3a2a; }
+.settings-sheet .login-name { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-sheet .login-status { font-size: 12px; color: var(--faint); justify-self: end; }
+.settings-sheet .login-status.ok { color: var(--ok); }
+.settings-sheet .login-acts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.settings-sheet .login-acts .btn { padding: 3px 10px; font-size: 12.5px; }
+.settings-sheet .login-run { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 10px; }
+.settings-sheet .login-title { font-weight: 600; font-size: 13.5px; }
+.settings-sheet .login-event { font-size: 13px; word-break: break-all; }
+.settings-sheet .login-event a { color: var(--accent); }
+.settings-sheet .login-code { font: 600 18px var(--mono); letter-spacing: 2px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; margin-left: 4px; }
+.settings-sheet .login-prompt { display: grid; gap: 6px; font-size: 13px; }
+.settings-sheet .login-result { font-size: 13px; color: var(--ok); }
+.settings-sheet .login-result.bad { color: var(--danger); }
+.settings-sheet .settings-lockext { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 10px; }
+.settings-sheet .cli-out { margin: 0; max-height: 240px; overflow: auto; padding: 8px 10px; background: #0a0f14; border: 1px solid var(--line); border-radius: 8px; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-all; }
+.settings-sheet .ns-advanced { border: 1px solid var(--line-soft); border-radius: 10px; }
+.settings-sheet .ns-advanced > summary { cursor: pointer; padding: 8px 12px; font-size: 13px; color: var(--faint); }
+.settings-sheet .ns-adv-grid { display: grid; gap: 8px; padding: 4px 12px 12px; }
+.settings-sheet .ns-adv-field { display: grid; gap: 4px; }
+.settings-sheet .ns-adv-label { font-size: 12px; color: var(--faint); }
+.settings-sheet .info-compact { display: flex; gap: 6px; align-items: center; }
+.settings-sheet .info-compact .ns-input:first-child { flex: 1; min-width: 0; }
