@@ -1958,3 +1958,6 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .settings-sheet .ns-adv-label { font-size: 12px; color: var(--faint); }
 .settings-sheet .info-compact { display: flex; gap: 6px; align-items: center; }
 .settings-sheet .info-compact .ns-input:first-child { flex: 1; min-width: 0; }
+/* #38 share / bug sheets */
+.share-sheet .ns-adv-flag { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.5; cursor: pointer; }
+.share-sheet .ns-adv-flag input { margin-top: 3px; flex: none; }
