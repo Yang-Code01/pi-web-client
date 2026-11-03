@@ -127,3 +127,7 @@ refresh.addEventListener("click", async () => {
 void load();
 // 第 1 片的实时性够用了：5 秒一轮，不需要为一张空壳页再开一条 WS。
 setInterval(() => void load(), 5000);
+
+// 在主页面里作为弹框的 iframe 打开时，「‹ 回 pi」会把整个 iframe 换成主页面，
+// 所以嵌入式隐藏它 —— 关闭按钮已在弹框标题栏里。
+if (window.self !== window.top) document.body.classList.add("embedded");

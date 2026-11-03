@@ -83,6 +83,16 @@ body {
   background: #1b2029;
 }
 
+/* 在主页面的弹框里：标题栏已经有「关闭」，这条链接会把 iframe 换成主页面。 */
+body.embedded .back {
+  display: none;
+}
+
+/* 弹框标题栏已经写着「局域网」，iframe 里那个同名粗体就别重复了（状态点与昵称保留）。 */
+body.embedded .who strong {
+  display: none;
+}
+
 .tab {
   border: 1px solid transparent;
   background: transparent;
