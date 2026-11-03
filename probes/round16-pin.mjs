@@ -131,7 +131,7 @@ log("fake bridge on", BASE);
 let browser;
 try {
   browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: { width: 1180, height: 860 } });
+  const context = await browser.newContext({ viewport: { width: 1180, height: 860 }, locale: "zh-CN" });
   const page = await context.newPage();
   page.on("pageerror", (e) => log("page error:", e.message, (e.stack ?? "").split(String.fromCharCode(10)).slice(0, 4).join(" | ")));
   await page.goto(BASE, { waitUntil: "networkidle" });

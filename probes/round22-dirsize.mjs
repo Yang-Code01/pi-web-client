@@ -206,7 +206,7 @@ const fileRows = (page) =>
 let browser;
 try {
   browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  const context = await browser.newContext({ viewport: { width: 1400, height: 900 }, locale: "zh-CN" });
   const page = await context.newPage();
   page.on("console", (m) => { if (m.type() === "error") log("console:", m.text()); });
   page.on("pageerror", (e) => log("page error:", e.message));

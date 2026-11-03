@@ -92,7 +92,7 @@ async function waitTurnEnd(start, label) {
 
 // ---------------------------------------------------------------- browser
 const browser = await chromium.launch();
-const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "zh-CN" });
 await ctx.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
 const page = await ctx.newPage();
 page.on("pageerror", (e) => log("pageerror:", e.message));
@@ -188,7 +188,7 @@ try {
   check("free text reaches the model as User wrote", /User wrote: 随便写点/.test(r4), r4.slice(0, 100));
 
   // -- phone layout --------------------------------------------------------
-  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, locale: "zh-CN" });
   await phone.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
   const p = await phone.newPage();
   await p.goto(`${BASE}/#/s/${sessionId}`);
