@@ -48,7 +48,52 @@ function defaultOpen(path: string): void {
   window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path } }));
 }
 
-function fileLink(path: string, label: string, opts: MdOptions, code = false): HTMLElement {
+/** An `<img>` for a markdown image, or null when the source may not be loaded (see `imageSrc`). */
+function imageNode(alt: string, rawSrc: string, opts: MdOptions): HTMLImageElement | null {
+  const src = /^https?:\/\//i.test(rawSrc) ? rawSrc : opts.imageSrc?.(rawSrc) ?? null;
+  if (!src) return null;
+  const img = document.createElement("img");
+  img.src = src;
+  img.alt = alt;
+  img.loading = "lazy";
+  img.referrerPolicy = "no-referrer";
+  return img;
+}
+
+/** The anchor a markdown link asks for: external tab, in-page anchor, or file preview. */
+function wrapHref(node: Node, href: string, opts: MdOptions): Node {
+  if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
+    const a = document.createElement("a");
+    a.href = href;
+    a.target = "_blank";
+    a.rel = "noreferrer";
+    a.appendChild(node);
+    return a;
+  }
+  if (href.startsWith("#")) {
+    const span = document.createElement("span");
+    span.className = "md-anchor";
+    span.appendChild(node);
+    return span;
+  }
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(href) || /^[A-Za-z]:[\\/]/.test(href)) {
+    const path = href.split("#")[0];
+    const a = document.createElement("a");
+    a.className = "file-link";
+    a.href = "#";
+    a.title = `预览 ${path}`;
+    a.appendChild(node);
+    a.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      (opts.openPath ?? defaultOpen)(path);
+    };
+    return a;
+  }
+  return document.createTextNode(node.textContent ?? "");
+}
+
+function fileLink(path: string, label: string, opts: MdOptions, code = false, inlineLabel = false): HTMLElement {
   const a = document.createElement("a");
   a.className = code ? "file-link code" : "file-link";
   a.href = "#";
@@ -57,6 +102,10 @@ function fileLink(path: string, label: string, opts: MdOptions, code = false): H
     const c = document.createElement("code");
     c.textContent = label;
     a.appendChild(c);
+  } else if (inlineLabel) {
+    // `[`docs/`](docs/)`: the label is markdown too, so a code span stays a code span instead of
+    // showing its backticks. Nested links are suppressed — an <a> inside an <a> is not a thing.
+    inlineInto(a, label, { ...opts, openPath: () => {} });
   } else a.textContent = label;
   a.onclick = (ev) => {
     ev.preventDefault();
@@ -83,7 +132,7 @@ function textWithPaths(target: Node, text: string, opts: MdOptions): void {
 }
 
 const INLINE =
-  /(`[^`\n]+`)|(!\[[^\]\n]*\]\([^\s)]+(?:\s+"[^"]*")?\))|(\[[^\]\n]+\]\([^\s)]+(?:\s+"[^"]*")?\))|(\*\*[^*\n]+\*\*|__[^_\n]+__)|(~~[^~\n]+~~)|((?<![\w*])\*[^*\s][^*\n]*\*(?!\w)|(?<![\w_])_[^_\s][^_\n]*_(?![\w_]))|(https?:\/\/[^\s<>()（）]+[^\s<>()（）.,;:!?。，；：！？])/g;
+  /(`[^`\n]+`)|(!\[[^\]\n]*\]\([^\s)]+(?:\s+"[^"]*")?\))|((?<!!)\[(?:[^\[\]\n]+|\[[^\]\n]*\])+\]\([^\s)]+(?:\s+"[^"]*")?\))|(\*\*[^*\n]+\*\*|__[^_\n]+__)|(~~[^~\n]+~~)|((?<![\w*])\*[^*\s][^*\n]*\*(?!\w)|(?<![\w_])_[^_\s][^_\n]*_(?![\w_]))|(https?:\/\/[^\s<>()（）]+[^\s<>()（）.,;:!?。，；：！？])/g;
 
 function inlineInto(target: Node, text: string, opts: MdOptions): void {
   const re = new RegExp(INLINE.source, "g");
@@ -102,33 +151,35 @@ function inlineInto(target: Node, text: string, opts: MdOptions): void {
       }
     } else if (m[2]) {
       const im = /^!\[([^\]]*)\]\(([^\s)]+)/.exec(token)!;
-      const src = /^https?:\/\//i.test(im[2]) ? im[2] : opts.imageSrc?.(im[2]) ?? null;
-      if (src) {
-        const img = document.createElement("img");
-        img.src = src;
-        img.alt = im[1];
-        img.loading = "lazy";
-        img.referrerPolicy = "no-referrer";
-        target.appendChild(img);
-      } else target.appendChild(document.createTextNode(im[1] ? `[图片：${im[1]}]` : "[图片]"));
+      const img = imageNode(im[1], im[2], opts);
+      if (img) target.appendChild(img);
+      else target.appendChild(document.createTextNode(im[1] ? `[图片：${im[1]}]` : "[图片]"));
     } else if (m[3]) {
-      const lm = /^\[([^\]]+)\]\(([^\s)]+)/.exec(token)!;
+      const lm = /^\[((?:[^\[\]\n]+|\[[^\]\n]*\])+)\]\(([^\s)]+)/.exec(token)!;
+      const label = lm[1];
       const href = lm[2];
-      if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
+      // `[![badge](https://…)](https://…)`: the label is an image. Before the label could contain
+      // brackets this fell through to the *inner* link and rendered `<a>![License…</a>](LICENSE)`.
+      const pic = /^!\[([^\]]*)\]\(([^\s)]+)\)$/.exec(label);
+      if (pic) {
+        const img = imageNode(pic[1], pic[2], opts);
+        if (img) target.appendChild(wrapHref(img, href, opts));
+        else target.appendChild(document.createTextNode(pic[1] || "[图片]"));
+      } else if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
         const a = document.createElement("a");
         a.href = href;
         a.target = "_blank";
         a.rel = "noreferrer";
-        inlineInto(a, lm[1], { ...opts, openPath: () => {} });
+        inlineInto(a, label, { ...opts, openPath: () => {} });
         target.appendChild(a);
       } else if (href.startsWith("#")) {
         const span = document.createElement("span");
         span.className = "md-anchor";
-        inlineInto(span, lm[1], opts);
+        inlineInto(span, label, opts);
         target.appendChild(span);
       } else if (!/^[a-z][a-z0-9+.-]*:/i.test(href) || /^[A-Za-z]:[\\/]/.test(href)) {
-        target.appendChild(fileLink(href.split("#")[0], lm[1], opts));
-      } else target.appendChild(document.createTextNode(lm[1]));
+        target.appendChild(fileLink(href.split("#")[0], label, opts, false, true));
+      } else target.appendChild(document.createTextNode(label));
     } else if (m[4]) {
       const strong = document.createElement("strong");
       inlineInto(strong, token.slice(2, -2), opts);

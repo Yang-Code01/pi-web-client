@@ -165,8 +165,12 @@ export class App {
   private keys: Record<string, string> = loadKeys();
   /** action id whose row is waiting for the next key press. */
   private capturing: string | null = null;
-  /** The one shell panel (Q-007); the bridge owns the process, this is just the view. */
-  private term: { id: string; term: Terminal; fit: FitAddon; dock: HTMLElement } | null = null;
+  /** D70: one shell per tab, all inside one dock; the bridge owns the processes (max 4). */
+  private termDock: HTMLElement | null = null;
+  private termTabStrip: HTMLElement | null = null;
+  private termBodies: HTMLElement | null = null;
+  private termTabs = new Map<string, TermTab>();
+  private termActive: string | null = null;
   /** Outcome of the last delete, shown above the manager's footer (the transcript is behind the sheet). */
   private mgrNote = "";
   /** Tool calls seen in the current turn, for the activity popover. */
@@ -461,9 +465,8 @@ export class App {
       this.connected = s === "open";
       this.renderTop();
       this.renderSessions();
-      // A shell outlives the page: re-attach and replay what it printed while we were away.
-      const saved = sessionStorage.getItem("pi.termId");
-      if (this.connected && saved && !this.term) this.socket.send({ type: "term.attach", id: saved });
+      // A shell outlives the page: ask the bridge what is still running and rebuild a tab per shell.
+      if (this.connected) this.socket.send({ type: "term.list" });
     });
 
     window.addEventListener("hashchange", () => this.routeFromHash());
@@ -851,31 +854,36 @@ export class App {
         if (!msg.sessionId || msg.sessionId === this.currentId) this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: msg.text, level: msg.level ?? "info" });
         break;
       case "term.opened": {
-        this.mountTerminal(String(msg.id ?? ""), String(msg.shell ?? "shell"), String(msg.cwd ?? ""));
+        this.addTermTab(String(msg.id ?? ""), String(msg.shell ?? "shell"), String(msg.cwd ?? ""));
+        break;
+      }
+      case "term.list": {
+        // D70: the shells outlive the page. Adopt whatever the bridge still has, then replay each.
+        const items = Array.isArray(msg.items) ? (msg.items as { id?: unknown }[]) : [];
+        for (const item of items) if (item?.id) this.socket.send({ type: "term.attach", id: String(item.id) });
         break;
       }
       case "term.replay": {
         const id = String(msg.id ?? "");
-        if (!this.term) this.mountTerminal(id, String(msg.shell ?? "shell"), String(msg.cwd ?? ""));
-        if (this.term?.id === id) this.term.term.write(String(msg.data ?? ""));
+        const view = this.termTabs.get(id) ?? this.addTermTab(id, String(msg.shell ?? "shell"), String(msg.cwd ?? ""));
+        // Replay is the whole buffer: reset first or a reconnect appends the history twice.
+        view.term.reset();
+        view.term.write(String(msg.data ?? ""));
         break;
       }
       case "term.data": {
-        const id = String(msg.id ?? "");
-        if (this.term?.id === id) this.term.term.write(String(msg.data ?? ""));
+        this.termTabs.get(String(msg.id ?? ""))?.term.write(String(msg.data ?? ""));
         break;
       }
       case "term.exit": {
-        const id = String(msg.id ?? "");
-        if (this.term?.id === id) this.term.term.write(`\r\n[进程已退出，exit ${Number(msg.code ?? 0)}]\r\n`);
+        this.termTabs.get(String(msg.id ?? ""))?.term.write(`\r\n[进程已退出，exit ${Number(msg.code ?? 0)}]\r\n`);
         break;
       }
       case "term.gone": {
-        if (this.term?.id === String(msg.id ?? "")) this.closeTerminal();
+        this.closeTermTab(String(msg.id ?? ""), false);
         break;
       }
       case "term.error": {
-        sessionStorage.removeItem("pi.termId");
         this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: String(msg.message ?? "终端启动失败"), level: "error" });
         break;
       }
@@ -2593,6 +2601,27 @@ export class App {
     this.viewer = null;
   }
 
+  /**
+   * D69: 把文件交给这台电脑自己的文件管理器（打开所在目录、并把文件选中）。
+   * 这是「浏览器里打不开这个格式」时唯一有用的退路：xlsm / pdf / docx 就该用 Excel / Acrobat 打开。
+   * 只对本机 / 局域网开放 —— 桥那边对公网连接直接 403。
+   */
+  private revealButton(abs: string): HTMLButtonElement {
+    const btn = el("button", "btn", "📂 在文件夹中显示") as HTMLButtonElement;
+    btn.title = `在这台电脑的文件管理器里打开 ${abs}，文件会被选中`;
+    btn.onclick = () => {
+      btn.disabled = true;
+      api
+        .reveal(abs)
+        .then((res) => this.warn(res.message))
+        .catch((err: Error) => this.warn(`打不开文件管理器：${err.message}`))
+        .finally(() => {
+          btn.disabled = false;
+        });
+    };
+    return btn;
+  }
+
   // ------------------------------------------------------- 预览历史（D63）
   /** 每个会话一条栈；第一次用到才建。 */
   private histOf(sessionId: string): { steps: VStep[]; at: number } {
@@ -2857,7 +2886,7 @@ export class App {
       if (info) {
         const open = el("button", "btn", "新标签页打开");
         open.onclick = () => this.openRawTab(rawUrl(info));
-        box.append(open);
+        box.append(open, this.revealButton(info.abs));
       }
       body.append(box);
       return;
@@ -2903,7 +2932,8 @@ export class App {
       box.append(el("div", "", `二进制文件（${fmtSize(info.size)}），这里不直接显示。`));
       const open = el("button", "btn", "新标签页打开 / 下载");
       open.onclick = () => openSameOrigin(url);
-      box.append(open);
+      // D69: the useful move for an xlsm / pdf / docx is the machine's own file manager, not a download.
+      box.append(open, this.revealButton(info.abs));
       body.append(box);
       return;
     }
@@ -3000,6 +3030,42 @@ export class App {
     };
   }
 
+  /**
+   * D71: 「复制路径」——把下面正在浏览的那个目录的路径复制走（工作目录按钮只管「跳回」，不管「拿走」）。
+   * 剪贴板在 http 的局域网地址上是 undefined，所以 optional chaining 必须包住调用本身。
+   */
+  private dirCopy(getPath: () => string): { node: HTMLButtonElement; bind: () => void } {
+    const node = el("button", "btn ghost dir-copy", "⧉ 复制路径") as HTMLButtonElement;
+    node.dataset.act = "dir-copy";
+    const sync = (): void => {
+      const path = (getPath() || "").trim();
+      node.disabled = !path;
+      node.title = path ? `复制目录路径 ${path}` : "先在下面选一个目录（盘符列表没有路径可复制）";
+    };
+    sync();
+    return {
+      node,
+      bind: () => {
+        sync();
+        node.onclick = () => {
+          const path = (getPath() || "").trim();
+          if (!path) return;
+          const copy = navigator.clipboard?.writeText(path);
+          if (!copy) {
+            this.warn("这个地址不是安全上下文（http 局域网），浏览器不允许读剪贴板");
+            return;
+          }
+          void copy.then(() => {
+            node.textContent = "已复制";
+            setTimeout(() => {
+              if (node.isConnected) node.textContent = "⧉ 复制路径";
+            }, 1100);
+          });
+        };
+      },
+    };
+  }
+
   private mountBrowser(v: Viewer): void {
     const body = v.body;
     body.replaceChildren();
@@ -3007,12 +3073,16 @@ export class App {
     const host = el("div", "viewer-browse");
     body.append(host);
     const home = this.dirHome(() => this.session?.cwd ?? "");
+    // D71: the copy button reads the picker live, so it always copies the directory actually listed.
+    let pickerPath = (): string => "";
+    const copy = this.dirCopy(() => pickerPath());
     const picker = mountDirPicker(host, {
       start: v.lastDir || this.session?.cwd || "",
       files: true,
       fallback: true,
-      head: [home.node],
+      head: [home.node, copy.node],
       onState: (s) => {
+        copy.bind();
         if (!s.path) return;
         v.lastDir = s.path;
         localStorage.setItem("pi.fsDir", s.path);
@@ -3020,7 +3090,9 @@ export class App {
       onPick: (abs) => void this.pickFromBrowser(v, abs),
       onContext: (abs, name, ev) => this.fileMenu(v, abs, name, ev),
     });
+    pickerPath = () => picker.path();
     home.bind(picker);
+    copy.bind();
   }
 
   /** Q-008: right-click a file — run a script with PowerShell, or elevated on the desktop. */
@@ -4908,7 +4980,7 @@ export class App {
     }
     if (this.tunnel.error) host.append(el("div", "notice warn", this.tunnel.error));
     const termTools = el("div", "tools");
-    const termBtn = el("button", "btn", this.term ? "回到终端" : "打开终端");
+    const termBtn = el("button", "btn", this.termTabs.size ? `回到终端${this.termTabs.size > 1 ? `（${this.termTabs.size}）` : ""}` : "打开终端");
     termBtn.dataset.act = "terminal";
     termBtn.title = "在这台电脑上开一个 PowerShell（本机 / 局域网可用，公网隧道下禁用）";
     termBtn.onclick = () => this.openTerminal();
@@ -4927,48 +4999,84 @@ export class App {
     host.append(el("div", "hint", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
   }
 
-  // ---------------------------------------------------------------- terminal (Q-007)
-  /** Ask the bridge for a shell. The passphrase gate lives on the bridge side, not here. */
+  // ---------------------------------------------------------------- terminal (Q-007 · D70)
+  /**
+   * 终端多开：一个 dock，多个标签，每个标签一个真的 shell（桥里 `MAX_TERMS = 4`）。
+   * 这个按钮只负责「把 dock 拿出来 / 聚焦当前标签」，再开一个是 dock 里的 `＋`。
+   */
   private openTerminal(): void {
     // Q-026: the dock lives in the chat column, so the right pane (运行 / 队列) is the one stealing
     // its width — fold it away before showing the shell. Only when it is actually there to fold
     // (desktop, expanded): on a narrow tab layout there is nothing to gain and the flag would be
     // remembered for the next visit.
     if (window.matchMedia("(min-width: 900px)").matches && !this.collapsed.queue) this.togglePane("queue");
-    if (this.term) {
-      this.term.dock.hidden = false;
-      this.term.term.focus();
+    if (this.termDock) {
+      this.termDock.hidden = false;
+      const active = (this.termActive && this.termTabs.get(this.termActive)) || [...this.termTabs.values()][0];
+      if (active) this.activateTerm(active.id);
+      else this.requestTerminal();
       return;
     }
-    const cwd = this.session?.cwd ?? undefined;
-    this.act(() => this.socket.send({ type: "term.open", cols: 100, rows: 26, cwd }));
+    this.requestTerminal();
   }
 
-  private mountTerminal(id: string, shell: string, cwd: string): void {
-    this.closeTerminal();
+  /** Ask the bridge for one more shell, starting in the session's cwd. */
+  private requestTerminal(): void {
+    const cwd = this.session?.cwd ?? undefined;
+    this.socket.send({ type: "term.open", cols: 100, rows: 26, cwd });
+  }
+
+  /** The dock is created once and shared by every tab; `term.opened` / `term.replay` fill it. */
+  private ensureTermDock(): HTMLElement {
+    if (this.termDock) return this.termDock;
     const dock = el("section", "term-dock");
-    const head = el("div", "term-head");
-    const title = el("div", "term-title", cwd ? `${shell} · ${cwd}` : shell);
-    title.title = "在这台电脑上运行的 PowerShell，输出直接回到这里";
-    const admin = el("button", "term-btn", "管理员");
-    admin.title = "开一个管理员 PowerShell 窗口（提权进程的输出浏览器接管不了，所以它在桌面上）";
-    // Q-023: without admin:true the bridge never added -Verb RunAs, so this opened a plain shell
-    // under an "管理员" label. The flag is the whole point of the button.
-    admin.onclick = () => this.act(() => this.socket.send({ type: "term.elevate", cwd, admin: true }));
-    const close = el("button", "term-btn", "关闭");
-    close.title = "结束这个终端进程";
-    close.onclick = () => {
-      this.socket.send({ type: "term.close", id });
-      this.closeTerminal();
-    };
-    head.append(title, el("div", "spacer"), admin, close);
-    const body = el("div", "term-body");
-    // Q-026: the height was a constant (`min(46vh, 420px)`); a shell you are reading deserves a drag.
     const grip = el("div", "term-grip");
     grip.title = "拖动调整终端高度（双击复位）";
-    dock.append(grip, head, body);
+    const head = el("div", "term-head");
+    const strip = el("div", "term-tabs");
+    const more = el("button", "term-new", "＋") as HTMLButtonElement;
+    more.title = "再开一个终端（最多 4 个）";
+    more.onclick = () => this.requestTerminal();
+    const admin = el("button", "term-btn", "管理员") as HTMLButtonElement;
+    admin.title = "给当前标签开一个管理员 PowerShell 窗口（提权进程的输出浏览器接管不了，所以它在桌面上）";
+    admin.onclick = () => {
+      const active = this.termActive ? this.termTabs.get(this.termActive) : null;
+      // Q-023: without admin:true the bridge never added -Verb RunAs, so this opened a plain shell
+      // under an "管理员" label. The flag is the whole point of the button.
+      this.act(() => this.socket.send({ type: "term.elevate", cwd: active?.cwd ?? this.session?.cwd ?? "", admin: true }));
+    };
+    const close = el("button", "term-btn", "关闭") as HTMLButtonElement;
+    close.title = "结束当前这个终端（其它标签不动）";
+    close.onclick = () => {
+      const id = this.termActive;
+      if (id) this.closeTermTab(id, true);
+      else this.disposeTermDock();
+    };
+    head.append(strip, more, el("div", "spacer"), admin, close);
+    const bodies = el("div", "term-bodies");
+    dock.append(grip, head, bodies);
     this.els.chatPane.append(dock);
     this.wireTermGrip(grip, dock);
+    this.termDock = dock;
+    this.termTabStrip = strip;
+    this.termBodies = bodies;
+    return dock;
+  }
+
+  /** One tab = one shell: its own xterm, its own body, its own socket id. */
+  private addTermTab(id: string, shell: string, cwd: string): TermTab {
+    const existing = this.termTabs.get(id);
+    if (existing) return existing;
+    this.ensureTermDock();
+    // The tab shows the directory (the dock is obviously a shell; the shell name lives in the title),
+    // plus an ordinal — two shells in the same cwd would otherwise read identically, and "…#2" appended
+    // to `powershell · …` is exactly what the ellipsis eats first.
+    const base = cwd ? shortDir(cwd) : shell;
+    const twins = [...this.termTabs.values()].filter((t) => (t.cwd ? shortDir(t.cwd) : t.shell) === base).length;
+    const name = twins ? `${base} #${twins + 1}` : base;
+    const body = el("div", "term-body");
+    body.dataset.id = id;
+    this.termBodies!.append(body);
 
     const term = new Terminal({
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
@@ -4980,31 +5088,81 @@ export class App {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(body);
-    this.term = { id, term, fit, dock };
-    sessionStorage.setItem("pi.termId", id);
+
+    const tab = el("button", "term-tab") as HTMLButtonElement;
+    tab.dataset.id = id;
+    tab.title = cwd ? `${shell} · ${cwd}` : shell;
+    tab.append(el("span", "term-tab-label", name));
+    const kill = el("span", "term-tab-x", "×");
+    kill.title = "关掉这个终端";
+    kill.onclick = (ev) => {
+      ev.stopPropagation();
+      this.closeTermTab(id, true);
+    };
+    tab.append(kill);
+    tab.onclick = () => this.activateTerm(id);
+    this.termTabStrip!.append(tab);
+
+    const view: TermTab = { id, shell, cwd, term, fit, body, tab };
+    this.termTabs.set(id, view);
     term.onData((data) => this.socket.send({ type: "term.input", id, data }));
     term.onResize(({ cols, rows }) => this.socket.send({ type: "term.resize", id, cols, rows }));
-    const measure = (): void => {
-      try {
-        fit.fit();
-      } catch {
-        // the panel can be hidden mid-layout; the next resize event retries
-      }
-    };
-    new ResizeObserver(measure).observe(body);
+    // A hidden body has no measurable size, so only the visible tab is worth fitting here.
+    new ResizeObserver(() => {
+      if (this.termActive === id) this.fitTerm(view);
+    }).observe(body);
+    this.activateTerm(id);
+    return view;
+  }
+
+  private fitTerm(view: TermTab): void {
+    try {
+      view.fit.fit();
+    } catch {
+      // the panel can be hidden mid-layout; the next resize event retries
+    }
+  }
+
+  private activateTerm(id: string): void {
+    const view = this.termTabs.get(id);
+    if (!view || !this.termDock) return;
+    this.termActive = id;
+    this.termDock.hidden = false;
+    for (const [tid, other] of this.termTabs) {
+      other.body.hidden = tid !== id;
+      other.tab.classList.toggle("on", tid === id);
+    }
     requestAnimationFrame(() => {
-      measure();
-      term.focus();
+      this.fitTerm(view);
+      view.term.focus();
     });
   }
 
-  private closeTerminal(): void {
-    sessionStorage.removeItem("pi.termId");
-    if (!this.term) return;
-    this.term.term.dispose();
-    this.term.dock.remove();
-    this.term = null;
+  /** `kill` = also tell the bridge to end the process (false when the bridge said it is already gone). */
+  private closeTermTab(id: string, kill: boolean): void {
+    const view = this.termTabs.get(id);
+    if (!view) return;
+    if (kill) this.socket.send({ type: "term.close", id });
+    view.term.dispose();
+    view.body.remove();
+    view.tab.remove();
+    this.termTabs.delete(id);
+    if (this.termActive !== id) return;
+    this.termActive = null;
+    const next = [...this.termTabs.keys()][0];
+    if (next) this.activateTerm(next);
+    else this.disposeTermDock();
   }
+
+  private disposeTermDock(): void {
+    for (const id of [...this.termTabs.keys()]) this.closeTermTab(id, false);
+    this.termDock?.remove();
+    this.termDock = null;
+    this.termTabStrip = null;
+    this.termBodies = null;
+    this.termActive = null;
+  }
+
 
   // ---------------------------------------------------------------- shortcuts
   /** One global keydown; what it fires depends on what the user bound in 快捷键. */
@@ -5764,6 +5922,17 @@ function savePrefs(prefs: Prefs): void {
 
 type ViewerPane = "browse" | "preview" | "edit";
 
+/** D70: one open shell — its xterm, its body, its tab button. */
+interface TermTab {
+  id: string;
+  shell: string;
+  cwd: string;
+  term: Terminal;
+  fit: FitAddon;
+  body: HTMLElement;
+  tab: HTMLButtonElement;
+}
+
 /** 浏览器里能改的上限；桥端 `preview.ts` 的 MAX_EDIT_BYTES 必须与它一致。 */
 const MAX_EDIT_BYTES = 2 * 1024 * 1024;
 
@@ -5911,6 +6080,9 @@ function previewIcon(p: string): string {
   if (/^(png|jpe?g|gif|svg|webp|bmp|ico|avif)$/.test(ext)) return "🖼";
   return "📄";
 }
+
+/** Last segment of a path, for a tab label ("pwsh · pi-web-client"). */
+const shortDir = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 
 function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`;

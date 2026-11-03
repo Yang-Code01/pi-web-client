@@ -101,6 +101,10 @@ a { color: var(--accent); text-decoration: none; }
 .app {
   height: 100%;
   display: grid;
+  /* minmax(0,1fr), not an implicit `auto` column: an auto track is sized by its items'
+     min-content, so two wide topbar buttons (📂 产物 / 📁 文件管理器) plus a long session name
+     pushed the whole shell to 730px on a 390px phone and every card got clipped at the right edge. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto 1fr auto;
   grid-template-areas: "top" "pins" "main" "tabs";
 }
@@ -1186,25 +1190,25 @@ body.col-resizing { cursor: col-resize; user-select: none; }
    Token 色直接落在现有调色板上（accent / ok / warn / danger + 两个补充色相），不引外部主题文件：
    highlight.js 的 class 名很少变，换主题时只改这一段。大于 200 KB 或语言不认识时根本不会出现
    这些 class，所以纯文本文件的外观一个像素都不会动。 */
-.hl .hljs-comment, .hl code .hljs-comment, .hl code .hljs-quote { color: var(--faint); font-style: italic; }
-.hl code .hljs-keyword, .hl code .hljs-selector-tag, .hl code .hljs-selector-pseudo,
-.hl code .hljs-doctag, .hl code .hljs-section,
-.hl code .hljs-name, .hl code .hljs-strong { color: #c9a2ff; }
-.hl code .hljs-string, .hl code .hljs-regexp, .hl code .hljs-attr-value, .hl code .hljs-addition,
-.hl code .hljs-template-tag, .hl code .hljs-template-variable { color: #86d9a5; }
-.hl code .hljs-number, .hl code .hljs-symbol, .hl code .hljs-bullet, .hl code .hljs-link,
-.hl code .hljs-literal, .hl code .hljs-variable.constant_ { color: #e8b27a; }
-.hl code .hljs-title, .hl code .hljs-title.class_, .hl code .hljs-title.function_,
-.hl code .hljs-attr, .hl code .hljs-attribute, .hl code .hljs-property, .hl code .hljs-selector-class,
-.hl code .hljs-selector-id, .hl code .hljs-selector-attr { color: var(--accent); }
-.hl code .hljs-type, .hl code .hljs-built_in, .hl code .hljs-class, .hl code .hljs-namespace,
-.hl code .hljs-tag { color: var(--warn); }
-.hl code .hljs-variable, .hl code .hljs-params, .hl code .hljs-punctuation { color: var(--text); }
-.hl code .hljs-meta, .hl code .hljs-meta .hljs-keyword, .hl code .hljs-comment .hljs-doctag { color: var(--dim); }
-.hl code .hljs-section { font-weight: 600; }
-.hl code .hljs-deletion { color: var(--danger); }
-.hl code .hljs-emphasis { font-style: italic; }
-.hl code .hljs-strong { font-weight: 600; }
+.hl .hljs-comment, .hl .hljs-comment, .hl .hljs-quote { color: var(--faint); font-style: italic; }
+.hl .hljs-keyword, .hl .hljs-selector-tag, .hl .hljs-selector-pseudo,
+.hl .hljs-doctag, .hl .hljs-section,
+.hl .hljs-name, .hl .hljs-strong { color: #c9a2ff; }
+.hl .hljs-string, .hl .hljs-regexp, .hl .hljs-attr-value, .hl .hljs-addition,
+.hl .hljs-template-tag, .hl .hljs-template-variable { color: #86d9a5; }
+.hl .hljs-number, .hl .hljs-symbol, .hl .hljs-bullet, .hl .hljs-link,
+.hl .hljs-literal, .hl .hljs-variable.constant_ { color: #e8b27a; }
+.hl .hljs-title, .hl .hljs-title.class_, .hl .hljs-title.function_,
+.hl .hljs-attr, .hl .hljs-attribute, .hl .hljs-property, .hl .hljs-selector-class,
+.hl .hljs-selector-id, .hl .hljs-selector-attr { color: var(--accent); }
+.hl .hljs-type, .hl .hljs-built_in, .hl .hljs-class, .hl .hljs-namespace,
+.hl .hljs-tag { color: var(--warn); }
+.hl .hljs-variable, .hl .hljs-params, .hl .hljs-punctuation { color: var(--text); }
+.hl .hljs-meta, .hl .hljs-meta .hljs-keyword, .hl .hljs-comment .hljs-doctag { color: var(--dim); }
+.hl .hljs-section { font-weight: 600; }
+.hl .hljs-deletion { color: var(--danger); }
+.hl .hljs-emphasis { font-style: italic; }
+.hl .hljs-strong { font-weight: 600; }
 
 .md-doc { max-width: 860px; margin: 0 auto; padding: 22px 28px 60px; font-size: 14.5px; line-height: 1.7; color: var(--text); word-wrap: break-word; }
 .md-doc h1, .md-doc h2, .md-doc h3, .md-doc h4, .md-doc h5, .md-doc h6 { margin: 1.4em 0 0.6em; line-height: 1.3; }
@@ -1473,16 +1477,40 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   font-size: 12px; color: var(--muted);
 }
 .term-head .spacer { flex: 1 1 auto; }
-.term-title {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+/* D68: 一个标签一个 shell。标签条自己横滚，不把「＋」和右侧按钮挤出去。 */
+.term-tabs {
+  display: flex; align-items: center; gap: 4px;
+  flex: 0 1 auto; min-width: 0; max-width: 60%;
+  overflow-x: auto; scrollbar-width: none;
 }
+.term-tabs::-webkit-scrollbar { display: none; }
+.term-tab {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 190px; flex: none;
+  padding: 2px 4px 2px 8px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--dim);
+  font: 12px/1.5 inherit;
+}
+.term-tab:hover { color: var(--text); border-color: #2f3746; }
+.term-tab.on { color: var(--text); background: var(--panel-2); border-color: var(--accent-dim); }
+.term-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.term-tab-x { flex: none; padding: 0 3px; border-radius: 4px; color: var(--faint); }
+.term-tab-x:hover { color: var(--danger); background: #2a1418; }
+.term-new {
+  flex: none; width: 22px; height: 22px; display: grid; place-items: center;
+  cursor: pointer; border-radius: 6px;
+  border: 1px solid var(--line); background: transparent; color: var(--dim);
+  font: 13px/1 var(--mono);
+}
+.term-new:hover { border-color: var(--accent); color: var(--accent); }
 .term-btn {
   font: inherit; font-size: 12px; padding: 3px 9px; cursor: pointer;
   border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text);
 }
 .term-btn:hover { border-color: var(--accent); color: var(--accent); }
+/* 每个标签一个 body，非当前标签整个不占位（xterm 在隐藏容器里量不出尺寸，切回来会重 fit）。 */
+.term-bodies { flex: 1 1 auto; min-height: 0; display: flex; }
 .term-body { flex: 1 1 auto; min-height: 0; padding: 6px 4px 4px 8px; }
+.term-body[hidden] { display: none; }
 .term-body .xterm { height: 100%; }
 .term-body .xterm-viewport { background: transparent !important; }
 @media (max-width: 900px) { .term-dock { height: min(38vh, 320px); } }

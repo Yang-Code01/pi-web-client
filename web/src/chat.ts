@@ -1,4 +1,5 @@
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
+import { highlightFragment } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
 import type { Item, ToolItem, UserItem } from "./types.ts";
@@ -8,6 +9,38 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   if (cls) node.className = cls;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+/** Tools whose summary is a shell command — those get coloured. */
+const SHELL_TOOLS = new Set(["bash", "shell", "powershell", "pwsh", "run_command", "exec", "execute", "cmd", "sh"]);
+
+/**
+ * Highlight `text` into `node` under `label` (a fence alias or a file name); false when the highlighter
+ * declines (unknown language, too big) and the caller should fall back to plain text.
+ */
+function highlightAs(node: HTMLElement, text: string, label: string): boolean {
+  const frag = highlightFragment(text, label);
+  if (!frag) return false;
+  node.classList.add("hl");
+  node.replaceChildren(frag);
+  return true;
+}
+
+/** One line of shell on a tool card: coloured when it really is a command, plain otherwise. */
+function setCommand(node: HTMLElement, text: string, tool: string | undefined): void {
+  if (tool && SHELL_TOOLS.has(tool.toLowerCase()) && text.length <= 4000 && highlightAs(node, text, "bash")) return;
+  node.textContent = text;
+}
+
+/**
+ * Tool output is arbitrary (logs, JSON, csv…), so only a unified diff earns colours — that is the
+ * case where highlighting actually helps you read it. Everything else stays plain text.
+ */
+function setOutput(node: HTMLElement, text: string): void {
+  const head = text.slice(0, 2000);
+  const diff = /^(?:diff --git |@@ |\+\+\+ |--- )/m.test(head);
+  if (diff && text.length <= 20_000 && highlightAs(node, text, "diff")) return;
+  node.textContent = text;
 }
 
 function timeOf(ts?: string): string {
@@ -95,7 +128,9 @@ export class ChatView {
   private flashNode: HTMLElement | null = null;
   private flashTimer = 0;
   private railPending = 0;
-  /** 跳转时的平滑滚动还在路上 —— 这期间的 scroll 事件不能当成「用户回到底部」把跟流重新打开。 */
+  /** A finger is on the transcript right now — programmatic scrolling must stay out of its way. */
+  private touching = false;
+  /** Jump 时的平滑滚动还在路上 —— 这期间的 scroll 事件不能当成「用户回到底部」把跟流重新打开。 */
   private holdFollow = 0;
 
   constructor(private root: HTMLElement) {
@@ -120,23 +155,34 @@ export class ChatView {
     root.addEventListener("wheel", (ev) => {
       if ((ev as WheelEvent).deltaY < 0) this.stopFollowing();
     }, { passive: true });
-    let touchY: number | null = null;
+    let touchStartY: number | null = null;
     root.addEventListener("touchstart", (ev) => {
-      touchY = (ev as TouchEvent).touches[0]?.clientY ?? null;
+      touchStartY = (ev as TouchEvent).touches[0]?.clientY ?? null;
+      this.touching = true;
     }, { passive: true });
     root.addEventListener("touchmove", (ev) => {
       const y = (ev as TouchEvent).touches[0]?.clientY ?? null;
-      // Finger moving down means the content is moving up: the user is reading history.
-      if (touchY !== null && y !== null && y - touchY > 6) this.stopFollowing();
-      touchY = y;
+      // Compare with where the finger *started*, not with the previous sample (D68). A real drag
+      // arrives as dozens of 1–5px touchmove events, so a per-event 6px threshold never fires and the
+      // stream keeps pinning the view to the bottom under the user's finger. Finger down = the content
+      // is moving up = the user is reading history.
+      if (touchStartY !== null && y !== null && y - touchStartY > 6) this.stopFollowing();
     }, { passive: true });
+    const endTouch = (): void => {
+      touchStartY = null;
+      this.touching = false;
+    };
+    root.addEventListener("touchend", endTouch, { passive: true });
+    root.addEventListener("touchcancel", endTouch, { passive: true });
     root.addEventListener("keydown", (ev) => {
       const key = (ev as KeyboardEvent).key;
       if (key === "PageUp" || key === "ArrowUp" || key === "Home") this.stopFollowing();
     });
 
     root.addEventListener("scroll", () => {
-      if (performance.now() >= this.holdFollow && this.nearBottom()) this.resumeFollowing();
+      // Mid-gesture the viewport brushes past the bottom by accident (the drag started at the bottom),
+      // so "near bottom" is not an intent to follow while a finger is down.
+      if (!this.touching && performance.now() >= this.holdFollow && this.nearBottom()) this.resumeFollowing();
       this.queueRailSync();
     });
 
@@ -253,8 +299,9 @@ export class ChatView {
     if (this.pendingScroll) return;
     this.pendingScroll = requestAnimationFrame(() => {
       this.pendingScroll = 0;
-      // Re-checked at execution time: the user may have scrolled away while this frame was queued.
-      if (!this.following) return;
+      // Re-checked at execution time: the user may have scrolled away while this frame was queued,
+      // or may be holding the transcript right now (D68) — never fight a finger in progress.
+      if (!this.following || this.touching) return;
       this.root.scrollTop = this.root.scrollHeight;
     });
   }
@@ -446,7 +493,7 @@ export class ChatView {
 
     if (phase === "start") {
       const cmd = card.querySelector<HTMLElement>(".cmd");
-      if (cmd && data.summary) cmd.textContent = String(data.summary);
+      if (cmd && data.summary) setCommand(cmd, String(data.summary), data.name ? String(data.name) : undefined);
       const status = card.querySelector<HTMLElement>(".status");
       if (status) status.textContent = "运行中…";
     } else if (phase === "update" && data.partial) {
@@ -467,7 +514,7 @@ export class ChatView {
           out = el("div", "out");
           card.append(out);
         }
-        out.textContent = String(data.result);
+        setOutput(out, String(data.result));
       }
       const details = card.querySelector<HTMLDetailsElement>("details");
       if (details) details.open = Boolean(data.isError);
@@ -486,7 +533,7 @@ export class ChatView {
     if (cmd && item.args != null) {
       const args = item.args as Record<string, unknown>;
       const summary = ["command", "cmd", "file_path", "path", "pattern", "query"].map((k) => args?.[k]).find((v) => typeof v === "string");
-      if (typeof summary === "string") cmd.textContent = summary;
+      if (typeof summary === "string") setCommand(cmd, summary, item.name);
     }
     const status = card.querySelector<HTMLElement>(".status");
     if (status && item.status && item.status !== "unknown") status.textContent = item.status === "error" ? "失败" : "完成";
@@ -496,7 +543,7 @@ export class ChatView {
         out = el("div", "out");
         card.append(out);
       }
-      out.textContent = item.result;
+      setOutput(out, item.result);
     }
     if (item.isError) card.classList.add("err");
     if (item.status && item.status !== "unknown" && item.status !== "running") card.dataset.running = "0";
@@ -720,7 +767,9 @@ export class ChatView {
     if (item.isError || item.status === "error") card.classList.add("err");
     const head = el("div", "head");
     head.append(el("span", "name", item.name));
-    head.append(el("span", "cmd", toolSummary(item)));
+    const cmdSpan = el("span", "cmd");
+    setCommand(cmdSpan, toolSummary(item), item.name);
+    head.append(cmdSpan);
     head.append(el("span", "status", item.status === "running" ? "运行中…" : item.isError ? "失败" : ""));
     const path = toolPath(item.args);
     if (path) {
@@ -736,7 +785,7 @@ export class ChatView {
 
     if (item.result || item.partialResult) {
       const out = el("div", "out");
-      out.textContent = String(item.result ?? item.partialResult ?? "");
+      setOutput(out, String(item.result ?? item.partialResult ?? ""));
       if (item.durationMs) {
         const details = el("details");
         details.append(el("summary", "", `${Math.round(item.durationMs / 100) / 10}s`));

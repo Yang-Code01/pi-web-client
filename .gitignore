@@ -17,3 +17,6 @@ probes/tmp/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# pi 自己的任务日志（bg_run 等）
+.pi/
