@@ -788,3 +788,42 @@
   - 只读会话的命令列表。
 - `node bridge/tests/shells.mjs` 覆盖三个平台的 shell 列表。
 - 真 Chromium：三种摘要卡片、⧉ 复制到剪贴板、`/ex` 与 `@chat` 补全及采纳、`/tree` 的缩进（8 / 24 / 24 / 24px）与分叉后消息回到输入框、「会话」一节的导出链接与宽度（560px，不再溢出）、终端 `＋` 菜单（powershell / Git Bash / cmd）。
+
+## D78 pi 设置、项目信任、新建会话的启动参数都交给 pi 自己的模块读写；权限模式「只读」改白名单（#26 #21 #28 #29）
+
+**决定：**
+1. **`pimods.ts`**：D77 里加载 pi 会话模块的做法推广成通用的 `piModule(cli, "core/xxx.js")`，带缓存，加载失败时给出明确报错。测试用 `PI_WEB_PI_PKG` 指向真 pi 包，这样 `PI_BIN` 可以继续用假 pi。
+2. **设置（#26）**：
+   - 读：直接读文件。
+   - 写：用 pi 的 `FileSettingsStorage.withLock`，和运行中的 pi 是同一把 proper-lockfile 锁。写入时以**当时磁盘上的内容**为底，只改页面动过的字段（`a.b` 点路径；`null` 表示删除，并顺带清掉删空的父对象）。「编辑 JSON」整份替换，替换前先校验。`__proto__` 之类的键直接忽略。
+   - 项目设置：照 pi 的规则，未信任的项目拒绝写入。
+   - 表单只放常用项，其余走 JSON：模型、思考档位、`enabledModels`（`/scoped-models`）、两种队列方式、`defaultTools`、压缩、重试、`blockImages`、`enableSkillCommands`、`shellPath`，以及只在全局生效的 `httpProxy` 和 `defaultProjectTrust`。
+   - 运行中能改的四项（引导 / 后续消息的处理方式、自动压缩、自动重试）保存时顺带用 RPC `set_*` 应用到当前会话。其余设置要 `/reload`：网页里的 reload 就是重启这个会话的 pi，历史在磁盘上。`/changelog` 读 pi 包里的 `CHANGELOG.md`。
+3. **项目信任（#21）**：用 pi 的 `ProjectTrustStore`、`hasTrustRequiringProjectResources`、`getProjectTrustOptions`，选项和终端 `/trust` 完全相同，决定写进 `<agentDir>/trust.json`。
+   - 会话快照带上 `trust`。项目需要信任、又没有保存过决定、实际也不会加载时，输入框上方出现提示条。
+   - **不做**「仅本次信任」（`--approve`）：网页里的会话会反复重启 pi，一次性的决定没有落脚的地方。要么保存，要么不信任。
+4. **启动参数（#28）**：新建会话的「高级」里可以设 `--model` `--thinking` `--tools` `--no-builtin-tools` `-e` `--skill` `--append-system-prompt` `-ne` `-nc` `--no-mcp` `--offline`。
+   - `launch.ts` 在拉起进程**之前**校验：一个字段一条规则，`--tools` 不能把普通名字和 `+x` / `-x` 混用（pi 也拒绝）。
+   - 参数存在 `state/launch/<id>.json`，每次这个会话的 pi 启动（含接管、`/reload`）都带上；审批门禁的 `-e` 始终在最前面。
+5. **权限模式（#29）**：
+   - **只读**改成白名单：read / grep / find / ls / tool_search / codemode / MCP 资源读取、网页的提问工具、声明了 `readOnlyHint: true` 的工具。其余一律拦下，包括没有声明的 MCP 工具和扩展工具，以前它们会被放行。
+   - **逐个确认**对所有「不确定只看」的工具都弹审批。对这类工具选「本会话允许这类」，记住的是工具名（`tool:<名字>`），而不是参数前缀。
+   - `codemode` 本身放行，因为脚本里调用的每个工具都会作为嵌套调用、各自经过 `tool_call` 钩子（已核对 `agent-session.js` 的 `_beforeToolCall` 带 `parentToolCallId`）。
+
+**为什么：**
+- 设置、信任、锁的格式都由 pi 定义，自己实现迟早和 pi 不一致；D77 已经证明直接用 pi 的模块比起一个 pi 进程更可靠。
+- RPC 不能弹信任提示，没决定过的项目在网页里会静默丢掉 `.pi` 配置，用户无从知道（#21）。
+- 只读模式的黑名单漏掉了所有 MCP 和扩展工具，名不副实（#29）。
+
+**代价 / 可改：**
+- 依赖 pi 包内部路径 `dist/core/settings-manager.js`、`trust-manager.js`（同 D77）。
+- 「逐个确认」比以前问得多：MCP 和扩展工具现在也会问。**可改**
+
+**验证：**
+- `node bridge/tests/settings-trust.mjs`：
+  - 全局设置首次创建、补丁合并时保留别人改的键、删空的父对象被清掉、非法 JSON 被拒、整份替换、忽略 `__proto__`；
+  - 未决定项目的信任状态与选项、未信任时项目设置拒写、信任后写入 `trust.json` 并可以写项目设置；
+  - 错误的启动参数在拉起前被拒，正确的启动参数出现在 pi 的 argv 里、`/reload` 之后仍在；
+  - 四个运行时设置送达 pi；更新日志接口可用。
+- `node bridge/tests/gate-modes.mjs`（直接驱动门禁）：17 条全过。修改前的门禁有 4 条失败：MCP 和扩展工具在只读模式下放行、在逐个确认模式下不问。
+- 真 Chromium：信任提示条 → 信任 → `trust.json` 写入、提示条消失；全局表单改两项后保存，文件里只多了这两项；项目页显示项目自己的值；更新日志可读；新建会话的「高级」显示 6 个字段和 5 个开关。

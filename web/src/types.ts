@@ -98,6 +98,8 @@ export interface SessionState {
   archived?: boolean;
   /** Another process (the pi terminal) holds the lock: read-only, and the bridge refuses to delete it. */
   locked?: boolean;
+  /** Launch options chosen at creation (#28), one line. */
+  launch?: string;
 }
 
 /** What `manage/delete` did: partial success, so both halves matter (see Q-001). */
