@@ -7,8 +7,9 @@ import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
+import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, ModelInfo, Note, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
 
 type Tab = "sessions" | "chat" | "queue";
 
@@ -100,6 +101,11 @@ export class App {
 
   private els: Record<string, HTMLElement> = {};
   private models: ModelInfo[] = [];
+  /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
+  private notesSheet: NotesSheet | null = null;
+  private notes: Note[] = [];
+  /** 新会话建好后要填进输入框的文字（「交给 agent → 新开会话」，不自动发送）。 */
+  private prefillNext: string | null = null;
   private sheet: HTMLElement | null = null;
   private modelChip: HTMLButtonElement | null = null;
   private textarea: HTMLTextAreaElement | null = null;
@@ -219,7 +225,7 @@ export class App {
   /** The bin, as the bridge last reported it. Nothing here is visible in the session list. */
   private trash: TrashItem[] = [];
   /** action id → key combo (“ctrl+shift+k”); only what the user set in 快捷键 lives here. */
-  private keys: Record<string, string> = loadKeys();
+  private keys: Record<string, string> = { ...DEFAULT_KEYS, ...loadKeys() };
   /** action id whose row is waiting for the next key press. */
   private capturing: string | null = null;
   /** D70: one shell per tab, all inside one dock; the bridge owns the processes (max 4). */
@@ -320,7 +326,13 @@ export class App {
     fs.onclick = () => this.openFiles();
     fs.hidden = true;
     this.els.fs = fs;
-    topbar.append(collapseLeft, dot, title, sub, files, term, fs, look, collapseRight);
+    // D95：记录不跟会话绑定，所以它跟终端一样常显；计数只在有待处理时出现。
+    const notes = el("button", "icon-btn wide notes-btn", "🐞 bug");
+    notes.title = "记录 bug / 变更 / 想法 / 杂事";
+    notes.dataset.act = "notes";
+    notes.onclick = () => this.openNotes();
+    this.els.notes = notes;
+    topbar.append(collapseLeft, dot, title, sub, files, term, fs, notes, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -841,6 +853,7 @@ export class App {
         break;
       case "hello":
         if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
+        if (Array.isArray(msg.notes)) this.setNotes(msg.notes as Note[]);
         // Badge: whether anything installed has an update (bridge caches this for 6 hours).
         this.socket.send({ type: "ext.updates", ...(this.session?.cwd ? { cwd: this.session.cwd } : {}) });
         // A new socket starts unverified on the bridge side.
@@ -882,6 +895,18 @@ export class App {
         this.approvals = (msg.approvals ?? []) as ApprovalRequest[];
         this.asks = (msg.asks ?? []) as AskRequest[];
         this.renderAll();
+        // 「交给 agent → 新开会话」：会话建好之后才把文字填进去。此刻 textarea 已经指向新会话。
+        if (this.prefillNext && this.currentId) {
+          const text = this.prefillNext;
+          this.prefillNext = null;
+          this.composerText = text;
+          if (this.textarea) {
+            this.textarea.value = text;
+            this.fitComposer();
+            this.textarea.focus();
+          }
+          this.noteDraft();
+        }
         // Q-021: 切会话＝换 cwd，分支要跟着换。
         void this.refreshGit(true);
         // A takeover from the model sheet unlocks it; reopen so the list is usable right away.
@@ -1044,6 +1069,15 @@ export class App {
         window.open(String(msg.url), "_blank", "noopener");
         break;
       }
+      case "notes":
+        this.setNotes((msg.notes ?? []) as Note[]);
+        break;
+      case "notes.saved":
+        this.notesSheet?.saved(msg);
+        break;
+      case "notes.shot":
+        this.notesSheet?.shot(msg);
+        break;
       case "bug.done": {
         if (msg.error) {
           this.flashShare(`没有提交成功：${msg.error}`, true);
@@ -3686,6 +3720,63 @@ export class App {
   }
 
   /** 📁 文件：viewer 直接停在浏览态，接着上次的目录。 */
+  // ---------------------------------------------------------------- 记录（D101）
+  /** 顶栏 🐞：本地随手记，不跟会话走，所以没有 currentId 也能开。 */
+  private openNotes(): void {
+    if (!this.notesSheet) {
+      const notesHost: NotesHost = {
+        send: (msg) => this.socket.send(msg),
+        notes: () => this.notes,
+        session: () => (this.currentId ? { id: this.currentId, name: this.session?.name ?? "" } : null),
+        prefill: (text) => this.prefill(text),
+        newSessionWith: (text) => this.newSessionWith(text),
+      };
+      const sheet = new NotesSheet(notesHost);
+      sheet.onClose = () => {
+        this.notesSheet = null;
+      };
+      sheet.mount(document.getElementById("app") ?? document.body);
+      this.notesSheet = sheet;
+      this.act(() => this.socket.send({ type: "notes.list" }));
+    }
+    this.notesSheet.focusComposer();
+  }
+
+  private setNotes(notes: Note[]): void {
+    this.notes = notes;
+    this.notesSheet?.setNotes(notes);
+    this.paintNotesBadge();
+  }
+
+  private paintNotesBadge(): void {
+    const btn = this.els.notes;
+    if (!btn) return;
+    const count = this.notes.filter((n) => n.status === "pending").length;
+    btn.replaceChildren(el("span", "notes-glyph", "🐞"), el("span", "", count ? `bug ${count}` : "bug"));
+    btn.classList.toggle("has-pending", count > 0);
+    btn.title = count ? `记录：${count} 条待处理` : "记录 bug / 变更 / 想法 / 杂事";
+  }
+
+  /** 「交给 agent → 预填到当前会话」：只填，不发送。 */
+  private prefill(text: string): void {
+    if (!this.textarea || !this.currentId) {
+      this.newSessionWith(text);
+      return;
+    }
+    this.textarea.value = text;
+    this.composerText = text;
+    this.noteDraft();
+    this.fitComposer();
+    this.textarea.focus();
+    this.textarea.setSelectionRange(text.length, text.length);
+  }
+
+  /** 「交给 agent → 新开会话」：会话建好之后才填（见 case "session"）。 */
+  private newSessionWith(text: string): void {
+    this.prefillNext = text;
+    this.openNewSessionSheet();
+  }
+
   private openFiles(): void {
     if (!this.currentId) return;
     const v = this.ensureViewer();
@@ -7602,6 +7693,9 @@ export class App {
       case "files":
         this.openFiles();
         break;
+      case "notes":
+        this.openNotes();
+        break;
       case "look":
         this.openDisplaySheet();
         break;
@@ -8323,12 +8417,16 @@ const SHORTCUTS: { id: string; label: string }[] = [
   { id: "queue", label: "收起 / 展开右栏" },
   { id: "artifacts", label: "产物列表" },
   { id: "files", label: "文件管理器" },
+  { id: "notes", label: "bug 记录" },
   { id: "look", label: "字号与配色" },
   { id: "skills", label: "技能面板" },
   { id: "attach", label: "附加文件" },
   { id: "terminal", label: "打开终端" },
   { id: "interrupt", label: "中断当前回复" },
 ];
+
+/** 出厂就带的组合键；用户改过的以 localStorage 里的为准。 */
+const DEFAULT_KEYS: Record<string, string> = { notes: "ctrl+shift+b" };
 
 /** The browser owns these; a page must never swallow them. */
 const RESERVED_KEYS = new Set([

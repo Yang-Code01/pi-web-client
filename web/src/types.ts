@@ -228,3 +228,24 @@ export interface GitInfo {
   empty: boolean;
   dirty: number;
 }
+
+/** 记录（D95）：bridge/src/notes.ts 的 Note 镜像，落在状态目录，不属于任何会话。 */
+export type NoteKind = "bug" | "change" | "idea" | "chore";
+export type NoteStatus = "pending" | "done" | "dropped";
+export type NoteMode = "quick" | "form" | "long";
+export interface Note {
+  id: string;
+  kind: NoteKind;
+  status: NoteStatus;
+  mode: NoteMode;
+  title: string;
+  body: string;
+  /** 桥那台机器上的绝对路径（`/api/image?path=` 直接读）。 */
+  shots: string[];
+  sessionId: string | null;
+  sessionName: string | null;
+  issue: string;
+  commit: string;
+  createdAt: number;
+  updatedAt: number;
+}

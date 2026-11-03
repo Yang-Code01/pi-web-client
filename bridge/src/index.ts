@@ -34,6 +34,7 @@ import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trust
 import { cleanLaunch } from "./launch.ts";
 import { isWriteOp, runPiCli } from "./picli.ts";
 import { reportBug, shareSession } from "./pishare.ts";
+import { addShot, deleteNote, listNotes, removeShot, saveNote, setNoteStatus, type NoteKind, type NoteMode, type NoteStatus } from "./notes.ts";
 import { mcpAddRequest, searchMcp, searchPackages, type McpInstallOption } from "./market.ts";
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
@@ -621,6 +622,7 @@ async function main(): Promise<void> {
       tunnel: tunnel.state,
       public: (ws as any).publicReq,
       ui: readUiPrefs(),
+      notes: listNotes(),
     });
     // The model catalog needs a throwaway pi child (~1s), so it follows the handshake.
     void sessions
@@ -1085,6 +1087,75 @@ async function main(): Promise<void> {
               send({ type: "bug.done", sessionId, id: out.id, delivery: out.delivery, ...(out.zip ? { download: `/api/bugzip?name=${encodeURIComponent(path.basename(out.zip))}` } : {}) });
             } catch (err: any) {
               send({ type: "bug.done", sessionId, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          // ------------------------------------------------ 记录（bug / 变更 / 想法 / 杂事）
+          // 用户自己的随手记，和 pi 的会话无关：不 step-up、不隧道拦截（登录进来的就是本人）。
+          case "notes.list": {
+            send({ type: "notes", notes: listNotes() });
+            return;
+          }
+          case "notes.save": {
+            try {
+              const note = saveNote({
+                id: typeof msg.id === "string" ? msg.id : undefined,
+                kind: msg.kind as NoteKind | undefined,
+                mode: msg.mode as NoteMode | undefined,
+                title: typeof msg.title === "string" ? msg.title : undefined,
+                body: typeof msg.body === "string" ? msg.body : undefined,
+                sessionId: typeof msg.sessionId === "string" ? msg.sessionId : null,
+                sessionName: typeof msg.sessionName === "string" ? msg.sessionName : null,
+                issue: typeof msg.issue === "string" ? msg.issue : undefined,
+                commit: typeof msg.commit === "string" ? msg.commit : undefined,
+              });
+              broadcast({ type: "notes", notes: listNotes() });
+              send({ type: "notes.saved", note });
+            } catch (err: any) {
+              send({ type: "notes.saved", error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "notes.status": {
+            try {
+              const note = setNoteStatus(String(msg.id ?? ""), msg.status as NoteStatus, {
+                ...(typeof msg.issue === "string" ? { issue: msg.issue } : {}),
+                ...(typeof msg.commit === "string" ? { commit: msg.commit } : {}),
+              });
+              if (!note) send({ type: "notes.saved", error: "这条记录已经不在了" });
+              else broadcast({ type: "notes", notes: listNotes() });
+            } catch (err: any) {
+              send({ type: "notes.saved", error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "notes.delete": {
+            const id = String(msg.id ?? "");
+            if (!deleteNote(id)) send({ type: "notes.saved", error: "这条记录已经不在了" });
+            else {
+              log(`note deleted ${id}`);
+              broadcast({ type: "notes", notes: listNotes() });
+            }
+            return;
+          }
+          case "notes.shot": {
+            const id = String(msg.id ?? "");
+            try {
+              const out = addShot(id, String(msg.dataUrl ?? msg.data ?? ""));
+              broadcast({ type: "notes", notes: listNotes() });
+              send({ type: "notes.shot", id, path: out.path, shots: out.shots });
+            } catch (err: any) {
+              send({ type: "notes.shot", id, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "notes.shot.remove": {
+            try {
+              const shots = removeShot(String(msg.id ?? ""), String(msg.path ?? ""));
+              broadcast({ type: "notes", notes: listNotes() });
+              send({ type: "notes.shot", id: String(msg.id ?? ""), shots });
+            } catch (err: any) {
+              send({ type: "notes.shot", error: String(err?.message ?? err) });
             }
             return;
           }
