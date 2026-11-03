@@ -67,6 +67,20 @@ body {
 .tabs {
   display: flex;
   gap: 4px;
+  margin-left: auto;
+}
+
+.back {
+  color: var(--faint);
+  text-decoration: none;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.back:hover {
+  color: var(--text);
+  background: #1b2029;
 }
 
 .tab {
