@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>局域网 · pi</title>
+    <link rel="stylesheet" href="/src/peer/peer.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="who">
+        <span id="dot" class="dot" title="peer 状态"></span>
+        <strong>局域网</strong>
+        <span id="me" class="muted">连接中…</span>
+      </div>
+      <nav class="tabs">
+        <button data-view="chat" class="tab">对话</button>
+        <button data-view="contacts" class="tab">通讯录</button>
+        <button data-view="online" class="tab is-on">在线</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="view-chat" class="view" hidden>
+        <p class="empty">还没有对话。第 2 片接上文字消息后，这里会出现 1:1 的聊天线程。</p>
+      </section>
+
+      <section id="view-contacts" class="view" hidden>
+        <p class="empty">通讯录还是空的。第 3 片接上好友请求后，这里的每一条都有「请求 / 已确认 / 收藏」三种状态。</p>
+      </section>
+
+      <section id="view-online" class="view">
+        <ul id="peers" class="peers"></ul>
+        <p id="online-empty" class="empty">在线列表为空。同一局域网里的人打开 pi 后会自动出现在这里。</p>
+        <form id="add" class="add">
+          <input id="addr" placeholder="手动地址，例如 192.168.1.7:7865" autocomplete="off" />
+          <button type="submit">添加</button>
+          <button type="button" id="refresh">重新广播</button>
+        </form>
+        <p id="add-error" class="error" hidden></p>
+      </section>
+    </main>
+
+    <script type="module" src="/src/peer/main.ts"></script>
+  </body>
+</html>

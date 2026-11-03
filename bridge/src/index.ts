@@ -38,11 +38,14 @@ import { mcpAddRequest, searchMcp, searchPackages, type McpInstallOption } from 
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
+import { PeerHost, peerEntry } from "./peer.ts";
 
 interface Config {
   port: number;
   host: string;
   tunnelAuto: boolean;
+  /** 局域网 peer 的 HTTP 端口（#45）；`PI_PEER=0` 关掉整块功能。 */
+  peerPort: number;
 }
 
 const STEP_UP_MS = 10 * 60 * 1000;
@@ -54,6 +57,7 @@ function loadConfig(): Config {
     port: Number(process.env.PI_WEB_PORT || cfg.port || 7864),
     host: process.env.PI_WEB_HOST || cfg.host || "127.0.0.1",
     tunnelAuto: process.env.PI_WEB_TUNNEL === "1" || Boolean(cfg.tunnelAuto),
+    peerPort: Number(process.env.PI_PEER_PORT || 7865),
   };
 }
 
@@ -83,7 +87,9 @@ const MIME: Record<string, string> = {
 
 function serveStatic(res: http.ServerResponse, rel: string): void {
   const clean = rel.split("?")[0];
-  const target = path.join(WEB_ROOT, path.normalize(clean).replace(/^([/\\])+/, ""));
+  // 第二张页面：`/peer` 落到 peer.html，不能掉进 index.html 兜底（否则打开的是聊天界面）。
+  const wanted = clean === "/peer" || clean === "/peer/" ? "/peer.html" : clean;
+  const target = path.join(WEB_ROOT, path.normalize(wanted).replace(/^([/\\])+/, ""));
   const file = target.startsWith(WEB_ROOT) && fs.existsSync(target) && fs.statSync(target).isFile() ? target : path.join(WEB_ROOT, "index.html");
   if (!fs.existsSync(file)) {
     res.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
@@ -230,6 +236,12 @@ async function main(): Promise<void> {
   process.on("uncaughtException", survive("uncaughtException"));
   process.on("unhandledRejection", survive("unhandledRejection"));
 
+  // #45：peer 是独立子进程（自己绑 7865、要被局域网访问），bridge 只托管它并把状态转给页面。
+  const peerOn = process.env.PI_PEER !== "0";
+  const peer = new PeerHost({ port: cfg.peerPort, entry: peerOn ? peerEntry() : null, log });
+  if (peerOn) peer.start();
+  else log("peer 已禁用（PI_PEER=0）");
+
   /**
    * Q-032: 被拒的提问必须说出理由。
    *
@@ -315,6 +327,27 @@ async function main(): Promise<void> {
       resetLoginAttempts(ip);
       log(`login ok from ${ip}${publicReq ? " (tunnel)" : ""}`);
       return json(res, 200, { ok: true }, { "set-cookie": [sessionCookie(issueSessionToken(), publicReq)] });
+    }
+
+    // ---------------------------------------------------------------- peer (#45)
+    if (url.pathname === "/api/peer") {
+      const view = peer.view();
+      return json(res, 200, { ...view, enabled: peerOn && view.enabled });
+    }
+    if (url.pathname === "/api/peer/add" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.addManual(String(body?.addr ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/refresh" && req.method === "POST") {
+      try {
+        return json(res, 200, await peer.refresh());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
     }
 
     if (url.pathname === "/api/logout" && req.method === "POST") {
@@ -1247,6 +1280,8 @@ async function main(): Promise<void> {
   });
 
   sessions.startGc((id) => [...wss.clients].some((client) => (client as any).watching === id));
+
+  process.on("exit", () => peer.stop());
 
   server.listen(cfg.port, cfg.host, () => {
     log(`listening on http://${cfg.host}:${cfg.port}`);
