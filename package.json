@@ -5,7 +5,8 @@
   "version": "0.1.0",
   "engines": { "node": ">=22.19.0" },
   "scripts": {
-    "start": "npm run build:bridge && node bridge/dist/index.js",
+    "start": "npm run build:bridge && npm run build:web && node bridge/dist/index.js",
+    "start:nobuild": "node bridge/dist/index.js",
     "build:bridge": "npm --prefix bridge run build",
     "build:web": "npm --prefix web run build",
     "build": "npm run build:bridge && npm run build:web",

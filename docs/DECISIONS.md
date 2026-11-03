@@ -442,3 +442,140 @@
 **代价**：收起左栏时状态行左边多一段等宽字（约 130px，`max-width: 42ch`）；路径过长时按尾部省略，看不到叶子目录（`title` 里有全文，点一下也能复制）；没有仓库的会话里它排在按键提示前面。
 
 **可改**：样式在 `styles.css` 末尾「左栏收起时的路径（D61）」那一节；要改成「左栏展开也显示」就把 `syncCwdChip()` 里的 `collapsed.sessions &&` 去掉；要加回字形/标签只在 `cwdChipNode()` 里加一个 `span`。验证：`npm run build:web && node probes/round21-cwd-line.mjs`（展开时隐藏 / 收起时显示且是当前会话的 cwd / 与分支 chip 同一行且紧挨其左 / 不再有独立的 cwd 行 / 点击复制 / 换会话跟着换 / 窄屏消失 / 拉回桌面宽度又出现；截图落在 `.scratch/round21-cwd-line/shots/`）。
+
+## D62 `npm start` 必须连前端一起打包：`web/dist` 是 gitignore 的产物，没人替你重建
+
+**症状**：源码 `main` 已经是最新（`865c32c`），但界面上「📁 文件管理器」不见了，退回只有「📂 产物」的老样子。
+
+**根因**：`web/dist` 被 `.gitignore` 掉，是纯生成物；bridge 的 `WEB_ROOT` 默认就指它（`bridge/src/index.ts:50-77`），`npm start` 原来只跑 `build:bridge` 就 `node bridge/dist/index.js`。于是**改了 `web/src` 之后重启服务，服务端换的是新 bridge、发给浏览器的还是上一次 `build:web` 的旧 JS**。实测证据：旧产物 `index-BS6jAuac.js` 时间戳 `10/31 17:55`，而带文件管理器的提交 `a81a429` 是 `11/1 04:26`；旧 JS 里搜「产物」3 处、搜「文件管理器」**0 处**。D50 之前最后一次 `build:web` 恰好停在 `feat/web-ux-sessions-files` 那个分支上。
+
+**决定**：`start` = `build:bridge && build:web && node dist/index.js`（约多 2 秒）；另留 `start:nobuild` 供「刚 build 过、只想重启进程」的场景。README「跑起来」删掉手写 `npm run build:web` 那一行——少一条要背的规矩。
+
+**为什么不是「启动时检查 dist 比 src 旧就自动重建」**：`web/src` 有 20 个模块，比较 mtime 要把整棵树 stat 一遍、还要处理「src 没变但换分支」这类假阳性，光判据本身的代码就比一行 `npm run build:web` 长；直接每次重建在 2 秒的量级上根本不用优化。**可改**（真想省那 2 秒就退回 `start:nobuild`）。
+
+**顺带记下一个会误导排查的隐藏条件**：`renderTop()` 里 `this.els.fs.hidden = !this.currentId`（`web/src/app.ts:1982`，`files`/`fs` 两颗按钮同一条规矩）——**没选中会话时按钮本来就不显示**。所以「最新构建 + 停在没有会话的首页」看起来和「旧产物」一模一样，判断前必须先看 dist 产物有没有这个字符串：`grep -l 文件管理器 web/dist/assets/*.js`。
+
+**验证**：`PI_WEB_PORT=7866 PI_WEB_STATE=.scratch/d62-state npm start` — 日志里依次出现 `built in ~1.9s`（vite）与 `listening on http://127.0.0.1:7866`；`grep -l 文件管理器 web/dist/assets/*.js` 有命中；旧产物被清掉（vite 每次换 hash 文件名）。
+
+## D63 `.app` 的隐式列改成 `minmax(0, 1fr)`：顶栏两颗按钮把 390px 的手机撑到 730px
+
+**症状**：手机上（390×844）每一张卡片右缘都被切掉一截，横向能拖动；截 README 图时一眼就看出来。
+
+**根因**：`.app` 只声明了 `grid-template-rows`，**没声明列**，于是隐式列是 `auto` —— `auto` 轨道的尺寸由子项的 min-content 决定。顶栏是 flex，里面 `📂 产物`（64px）、`📁 文件管理器`（99px）、`Aa`、`⌘` 这些 `flex: none` 的按钮加起来约 300px，会话名又给了 453px（`white-space: nowrap` 的 min-content），顶栏的 min-content 就是 730px，整条隐式列跟着变成 730px，`.main` 和 `nav.tabs` 一起被拉到 730；`documentElement.scrollWidth` 实测 730。
+
+**决定**：`.app` 补一行 `grid-template-columns: minmax(0, 1fr);`，跟 `.main` 早就写过的那句同一个理由（那里的注释已经解释过「1fr 会被 min-content 撑开」）。
+
+**为什么不是「窄屏把两颗 wide 按钮藏掉」**：藏掉等于手机上再也进不去文件管理器（顶栏是它唯一的入口，palette 里只有「产物列表」没有「文件管理器」）。让列可以被压缩、名字走已有的 ellipsis，比砍功能对。
+
+**验证**：`node probes/readme-shots.mjs` 的手机那段会在截图前量一次 `document.documentElement.scrollWidth` 并打印越界元素链（修之前是 `730`，链条一路 `.app → .topbar → .title`；修之后视口 390、顶栏里的 `.title` 只剩 113px 走省略号，越界的只剩 `span.cmd` 这类按设计被 `.pane{overflow-x:hidden}` 裁掉的工具命令行）。**可改**：如果真嫌 113px 太窄，就把 `📂 产物 / 📁 文件管理器` 的文字在窄屏换成纯图标（要给按钮加一个 `span.label` 才好按 CSS 隐藏，属于下一步）。
+
+## D64 语法高亮自己写，不引库：单趟词法器 + 「token 拼回去必须等于原文」这条不变量
+
+**症状**：预览一个 `.ts` 文件，只有行号和等宽字，一个字都不上色。用户当 bug 报上来。
+
+**先查清的事实**：不是 `.ts` 的问题，是**整个应用从来没有高亮器** —— `grep -rn "highlight|prism|shiki|hljs|tokenize|syntax" web/src bridge/src` 零命中，`web/package.json` 的 dependencies 只有 `@xterm/xterm` 和 `@xterm/addon-fit`。真正的「格式支持」只有五种 kind（`bridge/src/preview.ts`）：markdown（`.md .markdown .mdx`）/ html（`.html .htm .xhtml`）/ image（9 种图片扩展名）/ text（**内容嗅探**，不是白名单：前 8 KB 无 NUL 且控制字符 <5%）/ binary。所以能预览的格式很宽，能高亮的格式是 0：`.ts .py .go .json .yaml .sql …` 全落在 `text`，渲染就是 `app.ts` 里那三行「行号 + `textContent`」。
+
+**决定**：新写 `web/src/highlight.ts`（约 330 行），零依赖、同步、单趟扫描，产出 `{kind,text}[]`；`highlightInto()` 用 `createTextNode` / `span.textContent` 拼 DOM。接三处：文件预览（按扩展名 `langOfFile`）、markdown 围栏（按 fence alias `langOfAlias`，`md.ts` 早就写了 `pre.dataset.lang`）、工具卡命令行（`SHELL_TOOLS` 那批只上 bash）+ 工具输出里的 unified diff。**编辑态不动**：`<textarea>` 天然不能分色，要改就得上 CodeMirror/contenteditable，那是另一个量级的坑（输入法、光标、撤销）。
+
+**为什么不引 highlight.js / shiki**：实测代价 —— 自带词法器 + 10 种语言规则让 bundle 从 `448.50 KB` 涨到 `456.09 KB`（gzip `127.00 → 130.17 KB`，**+3.2 KB**）；highlight.js 按需挑语言大约是这个的十倍量级，shiki 还要异步加载语法文件。更要紧的是 `md.ts` 开头那条规矩：**全仓不用 innerHTML**（agent 输出是不可信文本）。highlight.js / shiki 的常规用法都是吐 HTML 字符串，要守住这条就得再过一层转义，反而比手写贵。也不引正则字面量：模板字符串 `${}` 内部当整体字符串处理，正则字面量不识别 —— 这两处错色不影响读代码，但不会把字符弄丢。
+
+**安全 / 正确性的底线**：`tokens.map(t => t.t).join("") === source`。词法器可以错色，**绝不能吞字符**。这条不是空话：第一版把 `/*` 同时声明成 css 的行注释，于是 `a { color: #fff; /* c */ background: url('x.png'); }` 整行被当成一条注释吞掉 —— 是这条不变量先报的警（`probes/highlight-check.mjs`）。未知语言 / 超长文本（>60 000 字符）一律回落成单个 plain token，调用方不用特判。
+
+**验证**：`node --experimental-strip-types probes/highlight-check.mjs` —— 10 组样例（js/ts、python、markup、css、diff、bash、json、sql、yaml）重建一致性 + `#fff` 不是注释 + 未知语言回落 + 扩展名/别名映射；`node probes/readme-shots.mjs` 打开 `bridge/ext/approval-gate.ts` 后断言 `.viewer-src .tok-keyword` 与 `.tok-comment` 存在（当前 11 个 keyword / 1 个 comment / 25 个 string），README 的 files.png 就是它。
+
+**可改**：配色在 `styles.css` 的「syntax colours（D64）」那一节，十个 `.tok-*` 类；要加语言只在 `highlight.ts` 的 `SPECS` + `BY_EXT` 各加一行（`kw` 是空格分隔的关键字表）；`MAX_HIGHLIGHT_CHARS` 控制多大就不上色；工具卡想连输出一起上色，改 `chat.ts` 的 `setOutput()` 判据即可（现在只认 unified diff，因为日志 / JSON 上色只是噪音）。
+
+## D65 markdown 内联解析的两处漏网：嵌套图片链接、链接标签里的行内代码
+
+**症状**：预览 `README.md`（D64 之后随手一看），首行徽章变成 `![License: Apache-2.0](LICENSE)`，正文里 `[`docs/`](docs/)` 显示成带反引号的粗体字。
+
+**根因（两处都在 `md.ts` 的内联正则里）**：
+
+1. 链接标签的字符类是 `[^\]\n]+` —— **不许出现 `]`**。而 `[![badge](https://…)](LICENSE)` 的标签里正好有一个 `]`，外层链接整个匹配不上；扫描指针往后挪到 `[License: Apache-2.0]` 时，**内层**那段反而当成了链接。实测 DOM：`<a href="https://img.shields.io/…">![License: Apache-2.0</a>](LICENSE)` —— 半个链接 + 一堆标点。
+2. 文件名链接走 `fileLink()`，它对标签只做 `a.textContent = label`，**不再往下解析**。于是 `` `docs/` `` 里的反引号原样留在屏幕上（外部链接那条分支早就调 `inlineInto` 了，内部分支漏了）。
+
+**决定**：链接标签允许一层嵌套方括号（`\[(?:[^\[\]\n]+|\[[^\]\n]*\])+\]`），并在标签前面加 `(?<!!)` —— 这样 `![…]` 永远归「图片」那条分支，不会再被当成链接的半个身子；标签若是图片就渲染成 `<a><img></a>`（`wrapHref`/`imageNode` 两个小工具，顺手把 m[2] 分支里重复的建图代码也收进去）；`fileLink()` 加一个 `inlineLabel` 开关，内部链接的标签也过一遍 `inlineInto`（嵌套链接用 `openPath: ()=>{}` 掐掉，`<a>` 套 `<a>` 不成立）。
+
+**为什么只支持一层嵌套**：markdown 的标签嵌套是有限文法，一层足够覆盖徽章这种真实写法；再深就得写真正的内联解析器，而这条正则体系（340 行、无依赖、无 innerHTML）本来就是「够用就好」的取舍。
+
+**验证**：`node probes/readme-shots.mjs` 起好临时桥后额外断言一次 README 渲染 —— `rawImageSyntax: 0`（没有原始 `![`）、`rawBracketTail: 0`（没有裸的 `](LICENSE)`）、`badges: 1`、`codeInLink: 10`。改前实测是 `1 / 1 / 0 / 0`，而且第一条断言会直接抛错。
+
+**可改**：`INLINE` 正则里 m[3] 那一条；`fileLink` 的第五个参数（`inlineLabel`）；`wrapHref()` 决定标签里装图片时该跳去哪。
+
+## D66 滚动竞争的真凶是「拿每个 touchmove 和上一次比」：改成和手势起点比，并在手指按住期间禁用程序化滚动
+
+**症状**：手机上发完消息、回复正在流式输出时向上滑，视口被一下一下拽回底部，滑动几乎无效。
+
+**先复现**：`probes/scroll-race.mjs` —— 桩桥（不碰 pi、不花模型调用）+ 真触摸（CDP `Input.dispatchTouchEvent`）+ 每 80ms 一条 `delta` 的真流式。同时跑两种手势：
+
+| 手势 | 改前 gap 轨迹 | 改前结果 |
+| --- | --- | --- |
+| 快滑 18px × 12 | `[3, 339]` | PASS（能挣脱） |
+| 慢滑 4px × 40 | `[0, 4, 55, 4, 4]` | FAIL：`stopAt=-1`，收尾 8 次采样里 **6 次钉在底部** |
+
+**根因（两条，都在 D54 那套状态机的输入侧）**：
+
+1. `touchmove` 里 `if (y - touchY > 6) stopFollowing(); touchY = y;` —— **每个事件都跟上一个事件比**。真机慢滑每个 `touchmove` 只报 1–5px，阈值永远跨不过去，于是 `following` 一直是 `true`，每帧 `scrollTop = scrollHeight`。D54 当初是为了干掉「等 `scroll` 事件」的滞后才改成意图优先，但手势判据本身写成了逐帧差分。
+2. `scroll` 事件里 `if (nearBottom()) resumeFollowing()` **不区分手指是否还按着**。拖拽起点本来就在底部，任何一个中间态 `gap ≤ 24` 都会把跟流重新打开 —— 轨迹里那个 `55 → 4` 的回落就是它。
+
+**决定**：`touchstart` 记 `touchStartY`，`touchmove` 和**手势起点**比（`y - touchStartY > 6`），并新增 `touching` 标记（`touchend` / `touchcancel` 清掉）；`touching` 期间 `scheduleScroll()` 的 rAF 直接返回、`scroll` 事件不 `resumeFollowing()`。
+
+**为什么不是「把阈值调小」**：逐帧差分的阈值调到 2px 会在轻点时误判（点击抖动 1–2px），调到 0 又会在任何噪声上停跟；错的是「和上一次比」这个判据，不是那个数字。**为什么不在 `scroll` 里判断方向**：程序化滚动自己也会触发 `scroll`，方向信息不可信——D54 已经吃过这个亏。
+
+**代价**：手势最初约 6px 的拖拽仍然被跟流吃掉（阈值本身）；手指按住不动时视口不再自动跟随（这是有意的：用户的手在流上）。回到距底 24px 内仍然自动恢复跟流，这条有专门断言。
+
+**验证**：`node probes/scroll-race.mjs` 三段断言 —— 快滑 `stop after 36px`、慢滑 `stop after 12px`（改前是 `Infinity`）、`back to bottom: jumpHidden=true / gap=0`；任何一段失败都退出码非 0。改前慢滑 FAIL，改后三段全 PASS。
+
+**可改**：阈值 `6` 在 `chat.ts` 的 `touchmove` 里；`touching` 抑制的两处（`scheduleScroll` 的 rAF、`scroll` 处理器的 `resumeFollowing`）；那条「拖到底要恢复跟流」的断言用的是 `scrollTop` 而不是再模拟一次拖拽——无头 Chrome 会合帧连续的 `touchMove`，模拟拖拽测的是合帧器不是应用。
+
+## D67 「在文件夹中显示」：打不开的格式交给系统的文件管理器，而不是让网页启动它
+
+**需求**：文件管理器里点开一个 `.xlsm`，预览只能给出「二进制文件（65.9 KB），这里不直接显示」+「新标签页打开 / 下载」。真正想要的是**在这台电脑的文件管理器里打开它所在的目录，文件已经选中**，然后自己双击用 Excel 打开。浏览器下载一份副本再去找，是绕远路。
+
+**决定**：桥新增 `POST /api/reveal`（`bridge/src/terminal.ts` 的 `revealInFileManager` / `revealCommand`），前端在**「二进制文件」面板**和**「预览出错」面板**各加一颗「📂 在文件夹中显示」，点击后 toast 回桥的原话。三平台命令：
+
+| 平台 | 命令 | 效果 |
+| --- | --- | --- |
+| Windows | `explorer.exe /select,<abs>` | 打开所在目录**并选中文件** |
+| macOS | `open -R <abs>` | Finder 里选中 |
+| Linux | `xdg-open <dirname>` | 只开目录（没有可移植的 reveal 动作） |
+
+**为什么不做「用默认程序直接打开」**：那是让网页在桌面上启动任意文件关联程序（`.exe` 也在关联表里），比「打开一个目录」高一个风险等级；而用户的原话就是「用户可以自己打开」。**为什么按钮只放在这两个面板、不放顶栏工具条**：顶栏已经有 ↗（新标签页）、⧉（复制路径）、📎（引用路径）三颗，再加一颗会挤；而且这条动作只在「这里打不开」的语境里才有意义。
+
+**安全**：信任级与 `/api/preview` 相同（能打开这个页面的人本来就能全盘读，D50），但它**在桌面上产生可见动作**，所以 `publicReq`（隧道进来的）**直接 403**，连 step-up 都不给——和终端禁用同一条线（D52）。错误响应统一是 `{error}`，跟其他路由一致（第一版返回 `{message}`，被探针当场抓出来）。
+
+**启动方式沿用 `openConsole` 的教训**：`spawn(..., {stdio:"ignore"}).unref()`，**不 detached** —— Windows 上 `DETACHED_PROCESS` 没有桌面关联，窗口会静默不出现（Q-008 踩过）。`explorer.exe` 成功时也返回退出码 1，所以只报「命令已发出」，不假装知道窗口开没开。
+
+**验证**：`node probes/reveal-check.mjs` —— 三平台命令形状断言（含中日文带空格路径 `/select,C:\Users\me\我的 文档\a.xlsm` 仍是**一个** argv）+ 缺文件 400 + 目录 400 + `cf-connecting-ip` 伪造的隧道请求 403；加 `REVEAL_OPEN=1` 会真的弹一次窗口（已实测：资源管理器停在 fixture 目录、文件被选中，桥日志 `reveal ... → ok`）。UI 侧另用一次临时 Playwright 复核：二进制面板上两颗按钮都在（`新标签页打开 / 下载`、`📂 在文件夹中显示`）。
+
+**可改**：`revealCommand` 的三条分支（要给 Linux 补文件选中就得上 `dbus` 的 FileManager1）；按钮位置在 `paintViewer()` 的 binary / error 两个分支；要不要顺手在顶栏给一个「任何文件都能在文件夹里显示」的图标，是下一步的事。
+
+## D68 终端多开 = 一个 dock + 标签条：桥早就支持 4 个，卡住的是前端只有一个槽位
+
+**需求**：终端要能同时开多个。
+
+**先查清的事实**：桥这边**已经**支持多开 —— `bridge/src/terminal.ts` 的 `Terminals` 是个 `Map<id, Term>`，`MAX_TERMS = 4`，`term.list` / `term.attach` / `term.data` 全都带 id。真正的限制在前端：`app.ts` 只有一个 `private term: {...} | null`，`mountTerminal()` 第一件事就是 `closeTerminal()`，所以第二次「打开终端」只是把上一个顶掉。**结论：这次不用改桥，改前端。**
+
+**决定**：一个 `.term-dock`，头部一条 `.term-tabs`，一个标签一个 shell（各自的 xterm + 各自的 `.term-body`），`＋` 再要一个；`管理员` / `关闭` 作用于当前标签，`×` 只关自己那一个。标签文字 = 目录名（`pi-web-client`），同名时加序号（`pi-web-client #2`），完整 `shell · cwd` 在 `title` 里。
+
+**为什么标签只写目录名**：第一版写的是 `powershell · pi-web-client #2`，实测 190px 的标签里 ellipsis 先把 `#2` 吃掉，两个标签看起来完全一样。把 shell 名挪进 `title`、把序号放末尾，才是短的能分辨的写法。
+
+**为什么标签条自己横滚**：`＋` 和右侧按钮必须永远点得到；`.term-tabs { max-width: 60%; overflow-x: auto }`（滚动条隐藏）。
+
+**换回页面时怎么恢复**：连接建立后发 `term.list`，对每个还活着的 shell 发 `term.attach` 拿全量回放。`term.replay` 是**整段**缓冲，所以写入前先 `term.reset()` —— 断线重连时不清就会把历史追加两遍。sessionStorage 里那个 `pi.termId` 一并删掉：终端属于桥，不属于某个浏览器标签页。
+
+**代价**：非当前标签的 body 是 `hidden`，xterm 在隐藏容器里量不出尺寸，所以切回来要重 `fit()`（`activateTerm()` 里下一帧做）；最多 4 个（桥的上限，超了会以 `term.error` 回一条提示）。
+
+**验证**：`node probes/terminal-multi.mjs` —— 两层：UI 层（1 个标签 → `＋` → 2 个、任意时刻只有 1 个 body 可见、点标签切 `.on`、标签可分辨），协议层（**另开一个 WS 客户端**分别给两个 id 发 `term.input`，确认回显各自回到自己的 id、两条流不交叉）。xterm 是画在 canvas 上的，DOM 里读不到文字，所以「两个 shell 是两个进程」只能这么证。
+
+## D69 文件管理器里「复制路径」：和工作目录按钮并排，复制的是**正在浏览**的那个目录
+
+**需求**：点开文件管理器后，在「⌂ 工作目录」旁边加一个复制按钮，复制下方选中的目录路径。
+
+**决定**：`dirCopy()` 与 `dirHome()` 并排返回 `{node, bind}`，挂在 `.dir-head` 的 `head: [home.node, copy.node]` 上；`bind()` 在每次 `onState` 里重跑，点击时读 `picker.path()` —— **实时值，不是打开面板时的快照**（先切两层目录再点，复制到的必须是当前那层）。点完按钮自身文字闪 1.1 秒「已复制」。
+
+**细节**：`navigator.clipboard` 在 http 的局域网地址上是 `undefined`，所以 optional chaining 必须包住**调用**（`navigator.clipboard?.writeText(...)`）而不是只包属性，否则 `.then` 会抛 TypeError；拿不到剪贴板时给一条明确的提示，而不是静默失败。盘符列表（此电脑）没有路径，按钮 `disabled`。
+
+**只加在文件管理器，不加在另外两个目录选择器**：附件选择器和新会话 sheet 的「浏览」也有 `⌂ 工作目录`，但那两个的用途是「选一个就走」，复制路径没有落点；等真有人要再说（`dirCopy()` 已经是现成的，加一行就到）。
+
+**验证**：`node probes/dir-copy.mjs` —— 断言两颗按钮在路径行上且复制紧跟在「工作目录」之后；切进 `alpha/` 后点复制，剪贴板内容 `=== path.join(WORK,"alpha")`；按钮显示「已复制」；点面包屑回「此电脑」后按钮 `disabled`。剪贴板读写在探针里用 `context.grantPermissions(["clipboard-read","clipboard-write"])` 打开。

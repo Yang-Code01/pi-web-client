@@ -61,6 +61,9 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sessionId, ...body }),
     }),
+  /** D67: open the folder holding this file in the desktop's own file manager (local / LAN only). */
+  reveal: (path: string) =>
+    req<{ ok: boolean; message: string }>("/api/reveal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) }),
   tunnel: (action: "start" | "stop") =>
     req<{ tunnel: TunnelState }>("/api/tunnel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) }),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),

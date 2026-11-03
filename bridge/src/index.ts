@@ -18,7 +18,7 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
-import { Terminals, openConsole } from "./terminal.ts";
+import { Terminals, openConsole, revealInFileManager } from "./terminal.ts";
 import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { Notifier } from "./notify.ts";
@@ -361,6 +361,18 @@ async function main(): Promise<void> {
         const status = Number(err?.status) || 400;
         return json(res, status, { error: String(err?.message ?? err) });
       }
+    }
+
+    // D67: reveal a file in the desktop's own file manager. Same trust level as /api/preview (any
+    // logged-in page may ask — it can already read the whole disk), but it *acts* on the desktop, so a
+    // tunnel visitor is refused outright instead of getting a step-up prompt for it.
+    if (url.pathname === "/api/reveal" && req.method === "POST") {
+      if (publicReq) return json(res, 403, { error: "通过公网访问时不会在你的桌面上打开文件夹，回本机操作" });
+      const body = await readBody(req).catch(() => ({}));
+      const out = revealInFileManager(String(body.path ?? ""));
+      log(`reveal ${String(body.path ?? "")} → ${out.ok ? "ok" : out.message}`);
+      // Errors carry `{error}` like every other route — api.ts's error path reads that field.
+      return out.ok ? json(res, 200, out) : json(res, 400, { error: out.message });
     }
 
     if (url.pathname === "/api/sessions") {

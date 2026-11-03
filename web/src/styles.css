@@ -101,6 +101,10 @@ a { color: var(--accent); text-decoration: none; }
 .app {
   height: 100%;
   display: grid;
+  /* minmax(0,1fr), not an implicit `auto` column: an auto track is sized by its items'
+     min-content, so two wide topbar buttons (📂 产物 / 📁 文件管理器) plus a long session name
+     pushed the whole shell to 730px on a 390px phone and every card got clipped at the right edge. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto 1fr auto;
   grid-template-areas: "top" "pins" "main" "tabs";
 }
@@ -1175,6 +1179,20 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .viewer-src .ln-gutter { padding: 12px 10px 12px 14px; text-align: right; color: var(--faint); user-select: none; white-space: pre; border-right: 1px solid var(--line-soft); }
 .viewer-src code { padding: 12px 14px; white-space: pre; overflow-x: auto; }
 
+/* ---------------------------------------------------------------- syntax colours (D64)
+   一个调色板给三处用：文件预览、markdown 围栏、工具卡的命令行 / diff。
+   都是低饱和的深色主题配色，和 --accent / --ok / --danger 同一套底子。 */
+.tok-comment { color: #6b7280; font-style: italic; }
+.tok-string { color: #a3d18a; }
+.tok-number { color: #e5c07b; }
+.tok-keyword { color: #c792ea; }
+.tok-type { color: var(--accent); }
+.tok-func { color: #82aaff; }
+.tok-attr { color: #fbbf24; }
+.tok-punct { color: var(--dim); }
+.tok-add { color: var(--ok); }
+.tok-del { color: var(--danger); }
+
 .md-doc { max-width: 860px; margin: 0 auto; padding: 22px 28px 60px; font-size: 14.5px; line-height: 1.7; color: var(--text); word-wrap: break-word; }
 .md-doc h1, .md-doc h2, .md-doc h3, .md-doc h4, .md-doc h5, .md-doc h6 { margin: 1.4em 0 0.6em; line-height: 1.3; }
 .md-doc h1 { font-size: 1.8em; padding-bottom: 0.3em; border-bottom: 1px solid var(--line); }
@@ -1409,16 +1427,40 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   font-size: 12px; color: var(--muted);
 }
 .term-head .spacer { flex: 1 1 auto; }
-.term-title {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+/* D68: 一个标签一个 shell。标签条自己横滚，不把「＋」和右侧按钮挤出去。 */
+.term-tabs {
+  display: flex; align-items: center; gap: 4px;
+  flex: 0 1 auto; min-width: 0; max-width: 60%;
+  overflow-x: auto; scrollbar-width: none;
 }
+.term-tabs::-webkit-scrollbar { display: none; }
+.term-tab {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 190px; flex: none;
+  padding: 2px 4px 2px 8px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--dim);
+  font: 12px/1.5 inherit;
+}
+.term-tab:hover { color: var(--text); border-color: #2f3746; }
+.term-tab.on { color: var(--text); background: var(--panel-2); border-color: var(--accent-dim); }
+.term-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.term-tab-x { flex: none; padding: 0 3px; border-radius: 4px; color: var(--faint); }
+.term-tab-x:hover { color: var(--danger); background: #2a1418; }
+.term-new {
+  flex: none; width: 22px; height: 22px; display: grid; place-items: center;
+  cursor: pointer; border-radius: 6px;
+  border: 1px solid var(--line); background: transparent; color: var(--dim);
+  font: 13px/1 var(--mono);
+}
+.term-new:hover { border-color: var(--accent); color: var(--accent); }
 .term-btn {
   font: inherit; font-size: 12px; padding: 3px 9px; cursor: pointer;
   border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text);
 }
 .term-btn:hover { border-color: var(--accent); color: var(--accent); }
+/* 每个标签一个 body，非当前标签整个不占位（xterm 在隐藏容器里量不出尺寸，切回来会重 fit）。 */
+.term-bodies { flex: 1 1 auto; min-height: 0; display: flex; }
 .term-body { flex: 1 1 auto; min-height: 0; padding: 6px 4px 4px 8px; }
+.term-body[hidden] { display: none; }
 .term-body .xterm { height: 100%; }
 .term-body .xterm-viewport { background: transparent !important; }
 @media (max-width: 900px) { .term-dock { height: min(38vh, 320px); } }

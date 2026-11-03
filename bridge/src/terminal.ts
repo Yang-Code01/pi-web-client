@@ -16,6 +16,7 @@
  */
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import * as pty from "node-pty";
 
@@ -197,4 +198,43 @@ export function openConsole(options: { cwd?: string; file?: string; admin?: bool
     ? "提权进程的控制台不归网页管，输入输出都在那个窗口里；UAC 里点了取消，窗口就不会出现。"
     : "它开在自己的窗口里，输入输出都不回网页。";
   return { ok: true, message: `已在这台电脑上打开${what}，工作目录 ${cwd}。${why}` };
+}
+
+/**
+ * D67: hand a file to the desktop's own file manager. The web viewer can only render text, markdown,
+ * html and images; for everything else (xlsm, pdf, docx, a 400 MB video) the useful move is "open the
+ * folder on that machine, with the file already selected" and let the user double-click it in Excel or
+ * whatever owns the extension.
+ *
+ * The command is `explorer /select,` on Windows (folder + selection), `open -R` on macOS (Finder
+ * reveal), and `xdg-open <dir>` on Linux, which has no portable "reveal" verb.
+ */
+export function revealCommand(file: string, platform: NodeJS.Platform = process.platform): { cmd: string; args: string[] } {
+  if (platform === "win32") return { cmd: "explorer.exe", args: [`/select,${file}`] };
+  if (platform === "darwin") return { cmd: "open", args: ["-R", file] };
+  return { cmd: "xdg-open", args: [path.dirname(file)] };
+}
+
+/**
+ * Open the folder holding `file` in the desktop file manager. Fire-and-forget: `explorer.exe` exits
+ * with code 1 even on success, so the only honest report is "the command was started".
+ */
+export function revealInFileManager(file: string): { ok: boolean; message: string } {
+  const abs = path.resolve(file.trim().replace(/^["'`]+|["'`]+$/g, ""));
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(abs);
+  } catch {
+    return { ok: false, message: `文件不存在：${abs}` };
+  }
+  if (st.isDirectory()) return { ok: false, message: `这是个目录，不是文件：${abs}` };
+  const { cmd, args } = revealCommand(abs);
+  try {
+    // Not detached: on Windows a DETACHED_PROCESS has no desktop association, and Start-Process-style
+    // launchers silently do nothing. explorer hands the window to its own process and exits at once.
+    spawn(cmd, args, { stdio: "ignore", windowsHide: false }).unref();
+  } catch (err) {
+    return { ok: false, message: `打不开文件管理器：${(err as Error).message}` };
+  }
+  return { ok: true, message: `已在这台电脑的文件管理器里打开 ${path.dirname(abs)}` };
 }
