@@ -30,8 +30,10 @@ import { APP_NAME, VERSION, ensureStateDirs, readJson, statePath, sessionsRootIn
 import { clipboardFiles, listDirs, makeDir, statFiles } from "./dirs.ts";
 import { gitInfo } from "./git.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
-import { changelog, readSettings, setTrust, trustInfo, writeSettings } from "./pisettings.ts";
+import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
 import { cleanLaunch } from "./launch.ts";
+import { isWriteOp, runPiCli } from "./picli.ts";
+import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
 
 interface Config {
@@ -605,6 +607,11 @@ async function main(): Promise<void> {
       return false;
     };
 
+    // A login waiting on this page's answers (or an OAuth callback server) must not outlive it.
+    ws.on("close", () => {
+      for (const id of ((ws as any).logins ?? []) as string[]) cancelLogin(id);
+    });
+
     ws.on("message", async (raw) => {
       let msg: any;
       try {
@@ -898,6 +905,42 @@ async function main(): Promise<void> {
             send({ type: "notice", sessionId: session.state.id, text: "已重新加载：pi 进程重启，设置、扩展、技能、模板、AGENTS.md 都是最新的了。", level: "info" });
             return;
           }
+          case "picli": {
+            // #33: pi install / remove / update / list, pi mcp list / add / remove / login / logout.
+            const op = String(msg.op ?? "");
+            if (isWriteOp(op) && !(await requireStepUp())) return;
+            const runId = `cli_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+            let run: ReturnType<typeof runPiCli>;
+            try {
+              run = runPiCli(pi.cli, msg, (chunk) => send({ type: "picli.out", runId, text: chunk }));
+            } catch (err: any) {
+              send({ type: "picli.done", runId, op, code: -1, error: String(err?.message ?? err) });
+              return;
+            }
+            send({ type: "picli.start", runId, op });
+            if (isWriteOp(op)) log(`pi ${op} ${JSON.stringify({ ...msg, type: undefined }).slice(0, 200)}`);
+            const out = await run.done;
+            send({ type: "picli.done", runId, op, code: out.code, data: out.data });
+            // A new package can bring providers, skills or extensions: refresh what the page lists.
+            if (isWriteOp(op) && op.startsWith("pkg.")) broadcast({ type: "catalog", models: await sessions.models(true).catch(() => []) });
+            return;
+          }
+          case "lockext.get": {
+            send({ type: "lockext", ...(await lockExtStatus(pi.cli)) });
+            return;
+          }
+          case "lockext.set": {
+            // #30: install / remove the terminal session-lock extension in pi's global settings.
+            if (!(await requireStepUp())) return;
+            try {
+              const status = msg.on ? await installLockExt(pi.cli) : await uninstallLockExt(pi.cli);
+              log(`session-lock extension ${status.installed ? "installed" : "removed"}: ${status.path}`);
+              send({ type: "lockext", ...status, saved: true });
+            } catch (err: any) {
+              send({ type: "settings.error", scope: "global", message: String(err?.message ?? err) });
+            }
+            return;
+          }
           case "trust.get": {
             send({ type: "trust", cwd: String(msg.cwd ?? ""), trust: await trustFor(String(msg.cwd ?? "")) });
             return;
@@ -908,6 +951,56 @@ async function main(): Promise<void> {
             const trust = await setTrust(pi.cli, cwd, Number(msg.option));
             log(`trust ${cwd} → ${trust.saved ? (trust.saved.decision ? "trusted" : "untrusted") + " @ " + trust.saved.path : "cleared"}`);
             send({ type: "trust", cwd, trust, saved: true });
+            return;
+          }
+          // ------------------------------------------------ /login /logout (#27)
+          case "auth.list": {
+            send({ type: "auth.providers", providers: await listProviders(pi.cli) });
+            return;
+          }
+          case "auth.login": {
+            if (!(await requireStepUp())) return;
+            const provider = String(msg.provider ?? "");
+            const method = msg.method === "oauth" ? "oauth" : "api_key";
+            try {
+              const { loginId, done } = await startLogin(pi.cli, provider, method, { send });
+              (ws as any).logins = [...((ws as any).logins ?? []), loginId];
+              send({ type: "auth.started", loginId, provider, method });
+              log(`login ${provider} (${method}) started`);
+              void done
+                .then(async () => {
+                  log(`login ${provider} ok`);
+                  send({ type: "auth.done", loginId, provider, ok: true });
+                  send({ type: "auth.providers", providers: await listProviders(pi.cli) });
+                  // New credentials can make new models available: refresh everyone's catalog.
+                  broadcast({ type: "catalog", models: await sessions.models(true).catch(() => []) });
+                })
+                .catch((err: any) => {
+                  const message = String(err?.message ?? err);
+                  log(`login ${provider} failed: ${message}`);
+                  send({ type: "auth.done", loginId, provider, ok: false, error: /cancel|abort/i.test(message) ? "已取消" : message });
+                });
+            } catch (err: any) {
+              send({ type: "auth.done", loginId: null, provider, ok: false, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "auth.answer": {
+            if (!(await requireStepUp())) return;
+            answerLogin(String(msg.loginId ?? ""), String(msg.promptId ?? ""), typeof msg.value === "string" ? msg.value : null);
+            return;
+          }
+          case "auth.cancel": {
+            cancelLogin(String(msg.loginId ?? ""));
+            return;
+          }
+          case "auth.logout": {
+            if (!(await requireStepUp())) return;
+            const provider = String(msg.provider ?? "");
+            await logoutProvider(pi.cli, provider);
+            log(`logout ${provider}`);
+            send({ type: "auth.providers", providers: await listProviders(pi.cli) });
+            broadcast({ type: "catalog", models: await sessions.models(true).catch(() => []) });
             return;
           }
           case "commands": {

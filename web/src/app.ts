@@ -149,6 +149,16 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /** #27 the 登录 tab: providers as pi sees them, a filter, and the login running right now. */
+  private authProviders: AuthProvider[] | null = null;
+  /** #30: is the terminal session-lock extension in pi's global extensions? */
+  private lockExt: { installed: boolean; path: string } | null = null;
+  /** #33 扩展与 MCP: package rows, MCP servers, and the console of the last pi command. */
+  private pkgRows: { scope: "user" | "project"; source: string; path: string | null }[] | null = null;
+  private mcpRows: McpServerRow[] | null = null;
+  private cliRun: { runId: string | null; op: string; out: string; code: number | null | undefined; error?: string } | null = null;
+  private authFilter = "";
+  private login: { loginId: string | null; provider: string; method: string; events: AuthEventView[]; prompt: { promptId: string; prompt: AuthPromptView } | null; result: string | null; ok: boolean } | null = null;
   private afterOpen: { id: string; text: string } | null = null;
   /** Shells the bridge can open (term.list), for the ＋ menu (#23). */
   private termShells: { id: string; label: string }[] = [];
@@ -838,6 +848,74 @@ export class App {
         if (this.sheetKind === "settings") this.paintSettings();
         break;
       }
+      case "lockext":
+        this.lockExt = { installed: Boolean(msg.installed), path: String(msg.path ?? "") };
+        if (msg.saved) this.flashSettings(msg.installed ? "已装进 pi 的全局扩展：之后启动的终端 pi 会登记自己开着的会话" : "已从 pi 的全局扩展里移除");
+        if (this.sheetKind === "settings" && this.settingsTab === "global") this.paintSettings();
+        break;
+      case "picli.start":
+        // The two listings run in the background; only a user's command takes over the console.
+        if (msg.op === "pkg.list" || msg.op === "mcp.list") break;
+        this.cliRun = { runId: String(msg.runId), op: String(msg.op), out: "", code: undefined };
+        this.paintExtIfOpen();
+        break;
+      case "picli.out":
+        if (this.cliRun && this.cliRun.runId === msg.runId) {
+          this.cliRun.out = (this.cliRun.out + String(msg.text ?? "")).slice(-60_000);
+          const pre = this.sheet?.querySelector<HTMLElement>(".cli-out");
+          if (pre) {
+            pre.textContent = this.cliRun.out;
+            pre.scrollTop = pre.scrollHeight;
+          } else this.paintExtIfOpen();
+        }
+        break;
+      case "picli.done": {
+        const op = String(msg.op ?? "");
+        if (op === "pkg.list") this.pkgRows = Array.isArray(msg.data) ? msg.data : [];
+        else if (op === "mcp.list") this.mcpRows = Array.isArray(msg.data?.servers) ? msg.data.servers : [];
+        else {
+          if (this.cliRun && (this.cliRun.runId === msg.runId || !this.cliRun.runId)) {
+            this.cliRun.code = typeof msg.code === "number" ? msg.code : null;
+            if (msg.error) this.cliRun.error = String(msg.error);
+          } else if (msg.error) this.flashSettings(String(msg.error), true);
+          // Re-read what changed.
+          if (op.startsWith("pkg.")) this.socket.send({ type: "picli", op: "pkg.list", cwd: this.session?.cwd });
+          if (op.startsWith("mcp.")) {
+            this.mcpRows = null;
+            this.socket.send({ type: "picli", op: "mcp.list", cwd: this.session?.cwd });
+          }
+        }
+        this.paintExtIfOpen();
+        break;
+      }
+      case "auth.providers":
+        this.authProviders = Array.isArray(msg.providers) ? msg.providers : [];
+        if (this.sheetKind === "settings" && this.settingsTab === "login") this.paintSettings();
+        break;
+      case "auth.started":
+        this.login = { loginId: String(msg.loginId), provider: String(msg.provider), method: String(msg.method), events: [], prompt: null, result: null, ok: false };
+        this.paintLoginIfOpen();
+        break;
+      case "auth.event":
+        if (this.login && this.login.loginId === msg.loginId && msg.event) this.login.events.push(msg.event as AuthEventView);
+        this.paintLoginIfOpen();
+        break;
+      case "auth.prompt":
+        if (this.login && this.login.loginId === msg.loginId) this.login.prompt = { promptId: String(msg.promptId), prompt: msg.prompt as AuthPromptView };
+        this.paintLoginIfOpen();
+        break;
+      case "auth.prompt.cancel":
+        if (this.login && this.login.prompt?.promptId === msg.promptId) this.login.prompt = null;
+        this.paintLoginIfOpen();
+        break;
+      case "auth.done":
+        if (this.login && (this.login.loginId === msg.loginId || msg.loginId === null)) {
+          this.login.prompt = null;
+          this.login.ok = Boolean(msg.ok);
+          this.login.result = msg.ok ? `已登录 ${msg.provider}，凭据由 pi 存进 auth.json。正在运行的会话「重新加载」后用上新凭据。` : `没有登录成功：${msg.error ?? "未知原因"}`;
+        } else if (!msg.ok && msg.error) this.flashSettings(String(msg.error), true);
+        this.paintLoginIfOpen();
+        break;
       case "settings.error":
         this.flashSettings(String(msg.message ?? "保存失败"), true);
         break;
@@ -1235,6 +1313,11 @@ export class App {
         return done();
       case "changelog":
         this.openSettingsSheet("changelog");
+        return done();
+      case "login":
+      case "logout":
+        this.authFilter = arg;
+        this.openSettingsSheet("login");
         return done();
       case "reload":
         if (!owned) {
@@ -4734,6 +4817,7 @@ export class App {
     this.closeSheet();
     this.sheetKind = "settings";
     this.settingsTab = tab;
+    if (tab === "login") this.authProviders = null; // re-read: someone may have logged in from the terminal
     const back = el("div", "sheet-back");
     back.onclick = (ev) => {
       if (ev.target === back) this.closeSheet();
@@ -4752,6 +4836,7 @@ export class App {
     this.overlay(back);
     this.sheet = back;
     this.socket.send({ type: "settings.get", scope: "global" });
+    this.socket.send({ type: "lockext.get" });
     if (this.session?.cwd) {
       this.socket.send({ type: "settings.get", scope: "project", cwd: this.session.cwd });
       this.socket.send({ type: "trust.get", cwd: this.session.cwd });
@@ -4780,6 +4865,8 @@ export class App {
       ["global", "全局"],
       ["project", cwd ? `项目（${cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd}）` : "项目"],
       ["trust", "项目信任"],
+      ["login", "登录 / 凭据"],
+      ["ext", "扩展与 MCP"],
       ["changelog", "更新日志"],
     ];
     for (const [id, label] of tabDefs) {
@@ -4794,6 +4881,8 @@ export class App {
     }
     body.replaceChildren();
     if (this.settingsTab === "trust") return this.paintTrust(body);
+    if (this.settingsTab === "login") return this.paintLogin(body);
+    if (this.settingsTab === "ext") return this.paintExt(body);
     if (this.settingsTab === "changelog") return this.paintChangelog(body);
     const scope = this.settingsTab;
     const view = this.settingsView[scope];
@@ -4869,6 +4958,7 @@ export class App {
       form.append(row);
     }
     body.append(form);
+    if (scope === "global") body.append(this.lockExtBox());
     const foot = el("div", "settings-foot");
     const json = el("button", "btn ghost", "编辑 JSON") as HTMLButtonElement;
     json.onclick = () => this.paintSettingsJson(body, view);
@@ -4901,6 +4991,30 @@ export class App {
       };
       body.append(reload, btn);
     }
+  }
+
+  /** #30: the session lock for terminal pi — the half of D8 the bridge cannot do on its own. */
+  private lockExtBox(): HTMLElement {
+    const box = el("div", "settings-lockext");
+    box.append(el("div", "settings-label", "终端联动：会话锁"));
+    box.append(
+      el(
+        "div",
+        "settings-hint",
+        "pi 自己不锁会话文件，网页和终端同时写同一个会话会分叉。装上这个小扩展后，终端里的 pi 会登记自己开着的会话（网页就不会去接管它，列表里显示「终端占用」），打开一个网页正在写的会话时也会先提醒你。只影响之后启动的终端 pi。",
+      ),
+    );
+    const st = this.lockExt;
+    const row = el("div", "settings-foot");
+    row.append(el("span", `login-status${st?.installed ? " ok" : ""}`, st ? (st.installed ? `已安装（${st.path}）` : "未安装") : "读取中…"));
+    row.append(el("span", "spacer"));
+    if (st) {
+      const b = el("button", st.installed ? "btn ghost" : "btn", st.installed ? "移除" : "安装到 pi 的全局扩展") as HTMLButtonElement;
+      b.onclick = () => this.act(() => this.socket.send({ type: "lockext.set", on: !st.installed }));
+      row.append(b);
+    }
+    box.append(row);
+    return box;
   }
 
   private paintSettingsJson(body: HTMLElement, view: SettingsView): void {
@@ -4950,6 +5064,318 @@ export class App {
     });
     body.append(opts);
     if (this.session?.owned) body.append(el("div", "settings-hint", "改了之后，正在运行的会话要「重新加载」（/reload）才会按新的决定加载项目资源。"));
+  }
+
+  private paintExtIfOpen(): void {
+    if (this.sheetKind === "settings" && this.settingsTab === "ext") this.paintSettings();
+  }
+
+  /** Run one of pi's maintenance subcommands (bridge/src/picli.ts); the console shows its output. */
+  private piCli(req: Record<string, unknown>): void {
+    const cwd = this.session?.cwd;
+    this.act(() => {
+      this.cliRun = { runId: null, op: String(req.op), out: "", code: undefined };
+      this.socket.send({ type: "picli", ...(cwd ? { cwd } : {}), ...req });
+      this.paintExtIfOpen();
+    });
+  }
+
+  /** #33: packages and MCP servers, what `pi install/list/remove/update` and `pi mcp …` do. */
+  private paintExt(body: HTMLElement): void {
+    const cwd = this.session?.cwd;
+    if (!this.pkgRows) this.socket.send({ type: "picli", op: "pkg.list", ...(cwd ? { cwd } : {}) });
+    if (!this.mcpRows) this.socket.send({ type: "picli", op: "mcp.list", ...(cwd ? { cwd } : {}) });
+    const busy = Boolean(this.cliRun && this.cliRun.code === undefined && !this.cliRun.error);
+    body.append(el("div", "settings-hint", "这里跑的就是 pi 的 install / remove / update 和 mcp 子命令。装完、改完之后，正在运行的会话要「重新加载」才看得到；装包等于让它的代码在这台电脑上运行，只装你信得过的。"));
+
+    // packages
+    body.append(el("div", "settings-label", "pi 包（扩展 / 技能 / 模板 / 主题）"));
+    const pkgs = el("div", "login-list");
+    if (!this.pkgRows) pkgs.append(el("div", "empty", "读取中…"));
+    else if (!this.pkgRows.length) pkgs.append(el("div", "empty", "还没有装任何包"));
+    for (const p of this.pkgRows ?? []) {
+      const row = el("div", "login-row");
+      const name = el("div", "login-name");
+      name.append(el("span", "", p.source));
+      if (p.path) name.title = p.path;
+      row.append(name, el("span", "login-status", p.scope === "project" ? "项目" : "全局"));
+      const acts = el("div", "login-acts");
+      const up = el("button", "btn", "更新") as HTMLButtonElement;
+      up.disabled = busy;
+      // A local source is stored relative to the settings file (..\pkg): hand pi the resolved path.
+      const ref = /^(npm:|git:|https?:|ssh:)/.test(p.source) ? p.source : (p.path ?? p.source);
+      up.onclick = () => this.piCli({ op: "pkg.update", target: ref });
+      const rm = el("button", "btn ghost", "卸载") as HTMLButtonElement;
+      rm.disabled = busy;
+      rm.onclick = () => this.piCli({ op: "pkg.remove", source: ref, local: p.scope === "project" });
+      acts.append(up, rm);
+      row.append(acts);
+      pkgs.append(row);
+    }
+    body.append(pkgs);
+    const install = el("div", "info-compact");
+    const src = el("input", "ns-input mono") as HTMLInputElement;
+    src.placeholder = "npm:@scope/pkg · git:github.com/user/repo · ./local/path";
+    const scope = el("select", "ns-input") as HTMLSelectElement;
+    scope.append(new Option("全局", "global"), new Option("当前项目", "project"));
+    scope.style.flex = "0 0 auto";
+    scope.style.width = "auto";
+    const go = el("button", "btn primary", "安装") as HTMLButtonElement;
+    go.disabled = busy;
+    go.onclick = () => {
+      if (!src.value.trim()) return;
+      this.piCli({ op: "pkg.install", source: src.value.trim(), local: scope.value === "project" });
+    };
+    install.append(src, scope, go);
+    body.append(install);
+    const updates = el("div", "settings-trust-opts");
+    for (const [target, label, title] of [
+      ["extensions", "更新全部包", "pi update --extensions"],
+      ["models", "刷新模型目录", "pi update --models"],
+      ["self", "更新 pi 本体", "pi update：网页正在用的 pi 也会被替换，完成后最好重启 bridge"],
+    ] as const) {
+      const b = el("button", "btn ghost", label) as HTMLButtonElement;
+      b.title = title;
+      b.disabled = busy;
+      b.onclick = () => this.piCli({ op: "pkg.update", target });
+      updates.append(b);
+    }
+    body.append(updates);
+
+    // MCP
+    body.append(el("div", "settings-label", "MCP 服务器"));
+    const mcp = el("div", "login-list");
+    if (!this.mcpRows) mcp.append(el("div", "empty", "连接各个服务器检查状态中…（pi mcp list）"));
+    else if (!this.mcpRows.length) mcp.append(el("div", "empty", "没有配置 MCP 服务器"));
+    for (const m of this.mcpRows ?? []) {
+      const row = el("div", `login-row${m.state === "connected" ? " on" : ""}`);
+      const name = el("div", "login-name");
+      name.append(el("span", "", m.name), el("span", "settings-hint", ` ${m.scope ?? ""}${m.exposure ? ` · ${m.exposure}` : ""}`));
+      if (m.transport) name.title = m.transport;
+      const state = m.enabled === false ? "已停用" : m.state === "connected" ? `已连接 · ${m.tools?.length ?? 0} 个工具` : (m.state ?? "未知");
+      row.append(name, el("span", `login-status${m.state === "connected" ? " ok" : ""}`, state));
+      const acts = el("div", "login-acts");
+      if (m.error) acts.append(el("span", "settings-hint", m.error.slice(0, 200)));
+      const loginBtn = el("button", "btn", "OAuth 登录") as HTMLButtonElement;
+      loginBtn.title = "pi mcp login：在这台电脑上打开浏览器完成授权";
+      loginBtn.disabled = busy;
+      loginBtn.onclick = () => this.piCli({ op: "mcp.login", name: m.name });
+      const logoutBtn = el("button", "btn ghost", "登出") as HTMLButtonElement;
+      logoutBtn.disabled = busy;
+      logoutBtn.onclick = () => this.piCli({ op: "mcp.logout", name: m.name });
+      const rm = el("button", "btn ghost", "删除") as HTMLButtonElement;
+      rm.disabled = busy;
+      rm.onclick = () => this.piCli({ op: "mcp.remove", name: m.name, local: m.scope === "project" });
+      acts.append(loginBtn, logoutBtn, rm);
+      row.append(acts);
+      mcp.append(row);
+    }
+    body.append(mcp);
+    const add = el("details", "ns-advanced");
+    add.append(el("summary", "", "添加 MCP 服务器（pi mcp add）"));
+    const grid = el("div", "ns-adv-grid");
+    const field = (label: string, input: HTMLElement) => {
+      const w = el("label", "ns-adv-field");
+      w.append(el("span", "ns-adv-label", label), input);
+      grid.append(w);
+    };
+    const mName = el("input", "ns-input mono") as HTMLInputElement;
+    mName.placeholder = "名字，例如 github";
+    field("名字", mName);
+    const mUrl = el("input", "ns-input mono") as HTMLInputElement;
+    mUrl.placeholder = "HTTP 服务器填 URL；stdio 服务器留空，填下面的命令";
+    field("URL", mUrl);
+    const mCmd = el("input", "ns-input mono") as HTMLInputElement;
+    mCmd.placeholder = "例如 npx";
+    field("启动命令（stdio）", mCmd);
+    const mArgs = el("textarea", "ns-input mono") as HTMLTextAreaElement;
+    mArgs.rows = 2;
+    mArgs.placeholder = "一行一个参数，例如\n-y\n@modelcontextprotocol/server-github";
+    field("参数", mArgs);
+    const mEnv = el("textarea", "ns-input mono") as HTMLTextAreaElement;
+    mEnv.rows = 2;
+    mEnv.placeholder = "一行一个 KEY=VALUE";
+    field("环境变量", mEnv);
+    const mScope = el("select", "ns-input") as HTMLSelectElement;
+    mScope.append(new Option("全局（~/.pi/agent/mcp.json）", "global"), new Option("当前项目（.pi/mcp.json）", "project"));
+    field("写到", mScope);
+    const mGo = el("button", "btn primary", "添加") as HTMLButtonElement;
+    mGo.disabled = busy;
+    mGo.onclick = () => {
+      const lines = (t: string) => t.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      this.piCli({
+        op: "mcp.add",
+        name: mName.value.trim(),
+        url: mUrl.value.trim() || undefined,
+        command: mCmd.value.trim() || undefined,
+        args: lines(mArgs.value),
+        env: lines(mEnv.value),
+        local: mScope.value === "project",
+      });
+    };
+    grid.append(mGo);
+    add.append(grid);
+    body.append(add);
+
+    // console of the last write
+    const run = this.cliRun;
+    if (run && run.op !== "pkg.list" && run.op !== "mcp.list") {
+      const status = run.error ? `没跑起来：${run.error}` : run.code === undefined ? `正在运行 ${run.op}…` : run.code === 0 ? `${run.op} 完成` : `${run.op} 退出码 ${run.code}`;
+      body.append(el("div", `login-result${run.error || (run.code !== undefined && run.code !== 0) ? " bad" : ""}`, status));
+      const pre = el("pre", "cli-out", run.out || "");
+      body.append(pre);
+      queueMicrotask(() => (pre.scrollTop = pre.scrollHeight));
+    }
+  }
+
+  private paintLoginIfOpen(): void {
+    if (this.sheetKind === "settings" && this.settingsTab === "login") this.paintSettings();
+  }
+
+  /** #27: pi's providers with their login methods, and the login in progress (prompts / URLs / codes). */
+  private paintLogin(body: HTMLElement): void {
+    if (!this.authProviders) {
+      body.append(el("div", "empty", "读取中…"));
+      this.socket.send({ type: "auth.list" });
+      return;
+    }
+    const run = this.login;
+    if (run) {
+      const box = el("div", "login-run");
+      box.append(el("div", "login-title", `登录 ${run.provider}（${run.method === "oauth" ? "OAuth" : "API key"}）`));
+      for (const ev of run.events) {
+        const line = el("div", "login-event");
+        if (ev.type === "auth_url") {
+          const a = el("a", "", ev.url) as HTMLAnchorElement;
+          a.href = ev.url;
+          a.target = "_blank";
+          a.rel = "noopener";
+          line.append(el("span", "", "在浏览器里打开："), a);
+          if (ev.instructions) line.append(el("div", "settings-hint", ev.instructions));
+        } else if (ev.type === "device_code") {
+          const a = el("a", "", ev.verificationUri) as HTMLAnchorElement;
+          a.href = ev.verificationUri;
+          a.target = "_blank";
+          a.rel = "noopener";
+          line.append(el("span", "", "打开 "), a, el("span", "", " 输入："), el("code", "login-code", ev.userCode));
+        } else {
+          line.append(el("span", ev.type === "progress" ? "settings-hint" : "", ev.message));
+          for (const l of ev.type === "info" ? (ev.links ?? []) : []) {
+            const a = el("a", "", l.label ?? l.url) as HTMLAnchorElement;
+            a.href = l.url;
+            a.target = "_blank";
+            a.rel = "noopener";
+            line.append(el("span", "", " "), a);
+          }
+        }
+        box.append(line);
+      }
+      const p = run.prompt;
+      if (p) {
+        const form = el("div", "login-prompt");
+        form.append(el("div", "", p.prompt.message));
+        if (p.prompt.type === "select") {
+          const opts = el("div", "settings-trust-opts");
+          for (const o of p.prompt.options ?? []) {
+            const b = el("button", "btn", o.label) as HTMLButtonElement;
+            if (o.description) b.title = o.description;
+            b.onclick = () => this.answerLogin(o.id);
+            opts.append(b);
+          }
+          form.append(opts);
+        } else {
+          const input = el("input", "ns-input mono") as HTMLInputElement;
+          input.type = p.prompt.type === "secret" ? "password" : "text";
+          input.autocomplete = "off";
+          input.placeholder = p.prompt.placeholder ?? (p.prompt.type === "manual_code" ? "把浏览器最后跳转到的网址（或授权码）粘贴到这里" : "");
+          const go = el("button", "btn primary", "提交") as HTMLButtonElement;
+          const submit = () => {
+            if (!input.value.trim()) return;
+            this.answerLogin(input.value.trim());
+          };
+          go.onclick = submit;
+          input.onkeydown = (ev) => {
+            if (ev.key === "Enter" && !ev.isComposing) submit();
+          };
+          const row = el("div", "info-compact");
+          row.append(input, go);
+          form.append(row);
+          queueMicrotask(() => input.focus());
+        }
+        box.append(form);
+      }
+      if (run.result) box.append(el("div", `login-result${run.ok ? "" : " bad"}`, run.result));
+      const foot = el("div", "settings-foot");
+      if (!run.result) {
+        const cancel = el("button", "btn ghost", "取消登录") as HTMLButtonElement;
+        cancel.onclick = () => {
+          if (run.loginId) this.socket.send({ type: "auth.cancel", loginId: run.loginId });
+        };
+        foot.append(cancel);
+      } else {
+        const back = el("button", "btn ghost", "返回列表") as HTMLButtonElement;
+        back.onclick = () => {
+          this.login = null;
+          this.paintSettings();
+        };
+        foot.append(back);
+      }
+      box.append(foot);
+      body.append(box);
+      if (!run.result) return;
+    }
+    body.append(
+      el("div", "settings-hint", "和终端的 /login 一样，凭据由 pi 写进 ~/.pi/agent/auth.json，网页只转达提示、不保存也不回显密钥。OAuth 的回调落在运行 bridge 的这台电脑上；在别的设备上登录时，按提示把浏览器最后跳转到的网址粘贴回来。"),
+    );
+    const filter = el("input", "ns-input") as HTMLInputElement;
+    filter.placeholder = "按名字筛选 provider…";
+    filter.value = this.authFilter;
+    const list = el("div", "login-list");
+    const paintList = () => {
+      list.replaceChildren();
+      const q = filter.value.trim().toLowerCase();
+      for (const p of this.authProviders ?? []) {
+        if (q && !p.id.toLowerCase().includes(q) && !p.name.toLowerCase().includes(q)) continue;
+        const row = el("div", `login-row${p.configured ? " on" : ""}`);
+        const name = el("div", "login-name");
+        name.append(el("span", "", p.name), el("span", "settings-hint", ` ${p.id}`));
+        const where = p.stored ? `已登录（auth.json · ${p.stored === "oauth" ? "OAuth" : "API key"}）` : p.configured ? `已配置（${p.label ?? p.source ?? "环境"}）` : "未配置";
+        row.append(name, el("span", `login-status${p.configured ? " ok" : ""}`, where));
+        const acts = el("div", "login-acts");
+        for (const m of p.methods) {
+          const b = el("button", "btn", m.type === "oauth" ? "OAuth 登录" : "填 API key") as HTMLButtonElement;
+          b.title = m.label;
+          b.disabled = Boolean(this.login && !this.login.result);
+          b.onclick = () => this.act(() => this.socket.send({ type: "auth.login", provider: p.id, method: m.type }));
+          acts.append(b);
+        }
+        if (!p.methods.length) acts.append(el("span", "settings-hint", "只能用环境变量等方式配置"));
+        if (p.stored) {
+          const out = el("button", "btn ghost", "登出") as HTMLButtonElement;
+          out.title = "从 auth.json 删掉这个 provider 的凭据（不会撤销 provider 那边的授权，也不动环境变量）";
+          out.onclick = () => this.act(() => this.socket.send({ type: "auth.logout", provider: p.id }));
+          acts.append(out);
+        }
+        row.append(acts);
+        list.append(row);
+      }
+      if (!list.childElementCount) list.append(el("div", "empty", "没有匹配的 provider"));
+    };
+    filter.oninput = () => {
+      this.authFilter = filter.value;
+      paintList();
+    };
+    paintList();
+    body.append(filter, list);
+  }
+
+  private answerLogin(value: string): void {
+    const run = this.login;
+    const p = run?.prompt;
+    if (!run?.loginId || !p) return;
+    run.prompt = null;
+    this.act(() => this.socket.send({ type: "auth.answer", loginId: run.loginId, promptId: p.promptId, value }));
+    this.paintLoginIfOpen();
   }
 
   private paintChangelog(body: HTMLElement): void {
@@ -6805,9 +7231,46 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["reload", "重启这个会话的 pi，读到最新设置 / 扩展 / 技能"],
   ["trust", "项目信任：要不要加载这个目录的 .pi 配置"],
   ["changelog", "pi 更新日志"],
+  ["login", "登录模型 provider（API key / OAuth）"],
+  ["logout", "登出某个 provider"],
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "changelog";
+type SettingsTab = "global" | "project" | "trust" | "login" | "ext" | "changelog";
+
+interface McpServerRow {
+  name: string;
+  scope?: string;
+  source?: string;
+  enabled?: boolean;
+  exposure?: string;
+  transport?: string;
+  state?: string;
+  tools?: string[];
+  error?: string;
+}
+
+interface AuthProvider {
+  id: string;
+  name: string;
+  methods: { type: "api_key" | "oauth"; label: string }[];
+  configured: boolean;
+  source: string | null;
+  label: string | null;
+  stored: "api_key" | "oauth" | null;
+}
+
+type AuthEventView =
+  | { type: "info"; message: string; links?: { url: string; label?: string }[] }
+  | { type: "auth_url"; url: string; instructions?: string }
+  | { type: "device_code"; userCode: string; verificationUri: string; expiresInSeconds?: number }
+  | { type: "progress"; message: string };
+
+interface AuthPromptView {
+  type: "text" | "secret" | "select" | "manual_code";
+  message: string;
+  placeholder: string | null;
+  options: { id: string; label: string; description: string | null }[] | null;
+}
 
 interface SettingsView {
   scope: "global" | "project";
@@ -6863,8 +7326,6 @@ const RUNNING_PLACEHOLDER = "跑着呢：Enter 引导当前任务 · Alt+Enter �
 const UNSUPPORTED_BUILTINS: Record<string, string> = {
   share: "#38",
   bug: "#38",
-  login: "#27",
-  logout: "#27",
 };
 
 /** Everything a shortcut can fire, in the order the 快捷键 sheet lists it. */

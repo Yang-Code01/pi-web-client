@@ -827,3 +827,54 @@
   - 四个运行时设置送达 pi；更新日志接口可用。
 - `node bridge/tests/gate-modes.mjs`（直接驱动门禁）：17 条全过。修改前的门禁有 4 条失败：MCP 和扩展工具在只读模式下放行、在逐个确认模式下不问。
 - 真 Chromium：信任提示条 → 信任 → `trust.json` 写入、提示条消失；全局表单改两项后保存，文件里只多了这两项；项目页显示项目自己的值；更新日志可读；新建会话的「高级」显示 6 个字段和 5 个开关。
+
+## D79 `/login` 由 pi 的 ModelRuntime 在 bridge 里跑、提问经 WS 转给页面；pi 的包 / MCP 子命令做成面板；给终端 pi 一个会话锁扩展（#27 #33 #30）
+
+**决定：**
+1. **登录（#27）**：pi 的登录与界面无关：`ModelRuntime.login(provider, "api_key" | "oauth", { prompt, notify })`。
+   - bridge 用 `piModule` 建一个 ModelRuntime（`authPath` / `modelsPath` 指向 `agentDir()`，不联网刷新）。`prompt`（text / secret / select / manual_code）转成 `auth.prompt` 发给页面，等 `auth.answer` 回来。`notify`（auth_url / device_code / info / progress）原样转成 `auth.event`。
+   - 凭据由 pi 在自己的锁下写进 `auth.json`。bridge 不保存凭据，也从不把凭据发回页面；provider 列表只带「存的是 api_key 还是 oauth」这个类型。
+   - 页面断开时取消它发起的登录；取消或中止统一报「已取消」。登录或登出后重新拉模型目录并广播。
+   - OAuth 回调落在运行 bridge 的机器上；从别的设备登录时，用流程自己的 `manual_code` 提问，把跳转后的网址粘贴回来（pi docs/providers.md）。
+   - 设备 id 用 pi 的 `SettingsManager.getOrCreateDeviceId()`，和终端 `/login` 一致。
+2. **包与 MCP（#33）**：`picli.ts` 只有一组固定操作：`pkg.list / install / remove / update(self|extensions|models|all|来源)`、`mcp.list / add / remove / login / logout`。
+   - 每个操作由 bridge 拼 argv、逐项校验（服务名字符集、不允许换行、URL 必须是 http(s)、环境变量必须是 KEY=VALUE），页面从不传命令行。
+   - 输出实时转发；`pi list` 的文本和 `pi mcp list --json` 解析成行，`mcp list` 退出码为 1 也照样解析。
+   - 本地路径的包在 settings 里存的是相对路径（`..\pkg`），卸载和更新时改用 `pi list` 给出的绝对路径，pi 能对上。
+3. **会话锁（#30）**：`bridge/ext/session-lock.ts` 是给**终端** pi 用的扩展。
+   - 「安装」：把它复制到 `state/ext/`，写入本 bridge 的锁目录，再加进 pi 全局 settings 的 `extensions`（走 D78 的写入方式，只动这一个键）。
+   - 装上之后，终端 pi 打开会话时写 `<locks>/<id>.tty.json`（自己的 pid），切换或退出时删掉。如果打开的会话正被 bridge 写，会先问「退出 pi / 仍然打开」。
+   - bridge 看到存活的 tty 登记：列表显示「终端占用」，接管时报出终端 pi 的 PID 并拒绝；pid 已死的登记读到时直接清掉。
+   - bridge 自己起的 pi（带 `PI_WEB_ALLOW_FILE`）里，这个扩展什么也不做。
+   - 这补上了 D8 里 bridge 单方面做不到的那一半：一个开着但闲置超过 20 秒的终端 pi。
+
+**为什么：**
+- 登录、MCP、包管理以前都只能回终端做，和「一个画面做完」的目标相反。
+- 登录流程交给 pi 自己跑，provider 增减、OAuth 细节变化都不用跟着改。
+- 会话锁只能由 pi 那一侧登记：bridge 看不到另一个进程打开了哪个文件。
+
+**代价 / 可改：**
+- `/share`、`/bug` 仍未做（#38）。pi 的实现和 TUI 绑在一起，需要单独设计。
+- 「更新 pi 本体」会替换 bridge 正在用的 pi，完成后最好重启 bridge。
+- 会话锁只对装了扩展、并且是之后启动的终端 pi 有效。**可改**
+
+**验证：**
+- `login-flow.mjs`（fixture agent 目录，不联网）：
+  - provider 列表来自 pi（42 个），openai 有两种登录方式；
+  - API key 以 secret 提问出现，答完后 pi 写入 `auth.json`，列表只显示类型；登录后重新广播模型目录；密钥从未出现在任何发往页面的消息里；
+  - 在提问处取消，什么都不存；
+  - Anthropic OAuth 的选择题、`https://claude.ai/oauth/authorize…` 链接都送到了页面，取消后不留凭据；
+  - 登出后凭据被删。
+- `session-lock.mjs`：
+  - 扩展本身：登记、切换、退出时释放；网页在写时先问，可选退出或仍然打开；在 bridge 的子进程里不生效。
+  - bridge 一侧：显示「终端占用」、拒绝接管并给出原因、登记撤掉后可以接管、清掉死 pid 的登记；安装 / 移除只动 `extensions`。
+  - 另外用真 pi（rpc 模式）加载扩展核对过：登记文件随进程出现、退出后消失。
+- `pi-cli.mjs`（真 pi CLI，fixture 目录）：
+  - argv 的组装与拒绝、`pi list` 的解析；
+  - 本地包的安装（输出实时转发）、列出、按绝对路径卸载；
+  - MCP 服务器的添加、列出（失败状态和错误都在）、删除；
+  - 非法请求在任何东西运行之前就被拒绝。
+- 真 Chromium：
+  - 登录：DeepSeek API key 输入框是 password 类型，提交后 `auth.json` 写入，列表显示「已登录（auth.json · API key）」；
+  - 会话锁：安装后显示安装路径；
+  - 扩展与 MCP：失败的 MCP 服务器显示错误，安装本地包后控制台显示「Installed …」，并出现在列表里。

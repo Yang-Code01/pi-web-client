@@ -11,7 +11,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { agentDir, readJson } from "./paths.ts";
+import { fileURLToPath } from "node:url";
+import { agentDir, ensureDir, readJson, statePath } from "./paths.ts";
 import { piModule, piPackageDir } from "./pimods.ts";
 
 export type SettingsScope = "global" | "project";
@@ -175,4 +176,47 @@ export function changelog(cli: string, maxBytes = 60_000): string {
   } catch {
     return "";
   }
+}
+
+// ------------------------------------------------------------------ terminal session lock (#30)
+
+/** Where the installed copy lives: bridge state, with this bridge's lock dir written in. */
+export function lockExtPath(): string {
+  return statePath("ext", "session-lock.ts");
+}
+
+export async function lockExtStatus(cli: string): Promise<{ installed: boolean; path: string }> {
+  const file = lockExtPath();
+  const view = await readSettings(cli, "global", null);
+  const list = Array.isArray(view.json?.extensions) ? (view.json!.extensions as unknown[]).map(String) : [];
+  return { installed: fs.existsSync(file) && list.some((p) => path.resolve(p) === path.resolve(file)), path: file };
+}
+
+/**
+ * Put the session-lock extension into pi's *global* extensions, so every terminal pi announces the
+ * sessions it has open (and warns before opening one the web is writing). Written through pi's
+ * settings lock like any other settings change; only the `extensions` list is touched.
+ */
+export async function installLockExt(cli: string): Promise<{ installed: boolean; path: string }> {
+  const template = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "session-lock.ts");
+  const source = fs.readFileSync(template, "utf8");
+  if (!source.includes('"__LOCK_DIR__"')) throw new Error("session-lock.ts 模板缺少 __LOCK_DIR__ 占位");
+  const file = lockExtPath();
+  ensureDir(path.dirname(file));
+  fs.writeFileSync(file, source.replace('"__LOCK_DIR__"', JSON.stringify(statePath("locks"))));
+  const view = await readSettings(cli, "global", null);
+  if (view.error) throw new Error(`全局 settings.json 读不了：${view.error}`);
+  const list = Array.isArray(view.json?.extensions) ? (view.json!.extensions as unknown[]).map(String) : [];
+  if (!list.some((p) => path.resolve(p) === path.resolve(file))) await writeSettings(cli, "global", null, { patch: { extensions: [...list, file] } });
+  return lockExtStatus(cli);
+}
+
+export async function uninstallLockExt(cli: string): Promise<{ installed: boolean; path: string }> {
+  const file = lockExtPath();
+  const view = await readSettings(cli, "global", null);
+  const list = Array.isArray(view.json?.extensions) ? (view.json!.extensions as unknown[]).map(String) : [];
+  const next = list.filter((p) => path.resolve(p) !== path.resolve(file));
+  if (next.length !== list.length) await writeSettings(cli, "global", null, { patch: { extensions: next.length ? next : null } });
+  fs.rmSync(file, { force: true });
+  return lockExtStatus(cli);
 }
