@@ -491,3 +491,15 @@ main {
 .requests .talk {
   min-width: 56px;
 }
+
+/* 在线行右侧的「好友」小标 —— 说明为什么这一行没有「加好友」。 */
+.peer .tag {
+  margin-left: 0;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: #d8c48a;
+  background: #1b1810;
+  white-space: nowrap;
+}
