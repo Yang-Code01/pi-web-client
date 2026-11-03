@@ -44,7 +44,15 @@
       </section>
 
       <section id="view-contacts" class="view" hidden>
-        <p class="empty">通讯录还是空的。第 3 片接上好友请求后，这里的每一条都有「请求 / 已确认 / 收藏」三种状态。</p>
+        <div class="contacts">
+          <section id="requests-box" class="requests" hidden>
+            <h2>等着你处理</h2>
+            <ul id="requests"></ul>
+          </section>
+          <p id="contacts-error" class="error" hidden></p>
+          <ul id="contacts"></ul>
+          <p id="contacts-empty" class="empty">通讯录还是空的。到「在线」里选一个人，点「加好友」——对方接受后就会出现在这里。文件只给好友发。</p>
+        </div>
       </section>
 
       <section id="view-online" class="view">

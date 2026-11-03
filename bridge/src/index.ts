@@ -366,6 +366,23 @@ async function main(): Promise<void> {
         return json(res, 400, { error: (err as Error).message });
       }
     }
+    if (url.pathname === "/api/peer/contacts" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.contacts());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/friend" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const action = String(body?.action ?? "");
+      if (!["request", "accept", "favorite", "remove"].includes(action)) return json(res, 400, { error: "未知动作" });
+      try {
+        return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as "request", Boolean(body?.on)));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
     if (url.pathname === "/api/peer/add" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       try {

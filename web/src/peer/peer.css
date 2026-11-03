@@ -205,7 +205,7 @@ main {
   margin-left: auto;
 }
 
-.peer .talk {
+.talk {
   background: #222834;
   color: var(--text);
   border: 1px solid var(--line);
@@ -216,7 +216,7 @@ main {
   white-space: nowrap;
 }
 
-.peer .talk:hover {
+.talk:hover {
   border-color: var(--accent);
 }
 
@@ -395,4 +395,99 @@ main {
   .threads {
     max-height: 28vh;
   }
+}
+
+/* ---- 通讯录（第 3 片） ---- */
+
+.contacts {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.contacts ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.requests h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.request,
+.contact {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #161a22;
+}
+
+.contact.is-fav {
+  border-color: #4a3f1f;
+  background: #1b1810;
+}
+
+.presence {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.presence.is-up {
+  color: #3ecf8e;
+}
+
+.contact-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.contact-main strong {
+  font-weight: 600;
+}
+
+.contact-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.contact-actions small {
+  margin: 0;
+}
+
+.talk.ghost {
+  background: transparent;
+}
+
+.talk.danger:hover {
+  border-color: #d9534f;
+  color: #ff9c99;
+}
+
+.talk:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+/* 请求行：名字在左，接受/不理推到右边（不然按钮贴着昵称，像文字的一部分）。 */
+.requests .talk:first-of-type {
+  margin-left: auto;
+}
+
+.requests .talk {
+  min-width: 56px;
 }

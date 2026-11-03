@@ -8,7 +8,10 @@ export interface Queued {
   peerId: string;
   addr: string;
   port: number;
-  entry: Entry;
+  /** 信封类型：`text` 要收据，好友请求/接受不要。 */
+  kind: "text" | "friend-request" | "friend-accept";
+  /** text 时是整条 Entry，其余是控制消息体。 */
+  payload: unknown;
   at: number;
   tries: number;
   nextAt: number;
@@ -41,8 +44,12 @@ export class Outbox {
 
   private load(): void {
     try {
-      const raw = JSON.parse(fs.readFileSync(this.file(), "utf8")) as Queued[];
-      this.items = Array.isArray(raw) ? raw.filter((item) => item && item.id && item.entry) : [];
+      const raw = JSON.parse(fs.readFileSync(this.file(), "utf8")) as Array<Queued & { entry?: Entry }>;
+      this.items = Array.isArray(raw)
+        ? raw
+            .filter((item) => item && item.id && (item.payload || item.entry))
+            .map((item) => (item.payload ? item : { ...item, kind: "text" as const, payload: item.entry }))
+        : [];
     } catch {
       this.items = [];
     }

@@ -165,6 +165,14 @@ export class PeerHost {
     return this.request("POST", "/send", { peer, text });
   }
 
+  contacts(): Promise<{ contacts: unknown[] }> {
+    return this.request("GET", "/contacts");
+  }
+
+  friend(peer: string, action: "request" | "accept" | "favorite" | "remove", on?: boolean): Promise<unknown> {
+    return this.request("POST", "/friend", { peer, action, on });
+  }
+
   addManual(addr: string): Promise<any> {
     return this.call("/peer/add", { addr });
   }
