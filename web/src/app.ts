@@ -8,7 +8,7 @@ import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
 
 type Tab = "sessions" | "chat" | "queue";
 
@@ -519,9 +519,13 @@ export class App {
   private wire(): void {
     // Q-021: 从别的窗口（或终端）切回来时，用户可能刚在里面切过分支。
     window.addEventListener("focus", () => void this.refreshGit(true));
+    // D91: tell the bridge whether someone is looking, so it only pings Windows / WeChat when not.
+    for (const name of ["focus", "blur"]) window.addEventListener(name, () => this.reportPresence());
+    document.addEventListener("visibilitychange", () => this.reportPresence());
     this.socket.on((msg) => this.onMessage(msg));
     this.socket.onStatus((s) => {
       this.connected = s === "open";
+      if (this.connected) this.reportPresence();
       this.renderTop();
       this.renderSessions();
       // A shell outlives the page: ask the bridge what is still running and rebuild a tab per shell.
@@ -863,6 +867,10 @@ export class App {
         if (this.sheetKind === "settings") this.paintSettings();
         break;
       }
+      case "notify":
+        this.me = { ...this.me, notify: msg.on !== false };
+        if (this.sheetKind === "settings" && this.settingsTab === "notify") this.paintSettings();
+        break;
       case "lockext":
         this.lockExt = { installed: Boolean(msg.installed), path: String(msg.path ?? "") };
         if (msg.saved) this.flashSettings(msg.installed ? "已装进 pi 的全局扩展：之后启动的终端 pi 会登记自己开着的会话" : "已从 pi 的全局扩展里移除");
@@ -1052,7 +1060,7 @@ export class App {
             this.stepCount = 0;
           } else this.activity = "";
           this.fillHintStatus();
-          if (this.textarea && !this.asks.length) this.textarea.placeholder = msg.running ? RUNNING_PLACEHOLDER : "说点什么…";
+          if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
         }
         if (!msg.running) this.turnAt = null;
         this.renderTop();
@@ -1226,6 +1234,17 @@ export class App {
     }
     this.renderTop();
     this.renderSessions();
+  }
+
+  /**
+   * "Looking" = this tab is visible and its window has focus. Measured a tick later: during a
+   * blur caused by clicking into the preview iframe, focus has not landed anywhere yet.
+   */
+  private reportPresence(): void {
+    setTimeout(() => {
+      if (!this.connected) return;
+      this.socket.send({ type: "presence", active: document.visibilityState === "visible" && document.hasFocus() });
+    }, 0);
   }
 
   private notifyUnread(sessionId: string): void {
@@ -4708,7 +4727,7 @@ export class App {
     const row = el("div", "row");
     const box = el("div", "composer-input");
     const input = el("textarea");
-    input.placeholder = s?.running ? RUNNING_PLACEHOLDER : "说点什么…（Enter 发送，Shift+Enter 换行）";
+    input.placeholder = this.composerPlaceholder();
     this.textarea = input;
     input.value = this.composerText;
     const pasteHost = el("div", "paste-list");
@@ -5004,6 +5023,7 @@ export class App {
       ["trust", "项目信任"],
       ["login", "登录 / 凭据"],
       ["ext", "扩展与 MCP"],
+      ["notify", "通知"],
       ["changelog", "更新日志"],
     ];
     for (const [id, label] of tabDefs) {
@@ -5020,6 +5040,7 @@ export class App {
     if (this.settingsTab === "trust") return this.paintTrust(body);
     if (this.settingsTab === "login") return this.paintLogin(body);
     if (this.settingsTab === "ext") return this.paintExtSettings(body);
+    if (this.settingsTab === "notify") return this.paintNotify(body);
     if (this.settingsTab === "changelog") return this.paintChangelog(body);
     const scope = this.settingsTab;
     const view = this.settingsView[scope];
@@ -5028,6 +5049,43 @@ export class App {
       return;
     }
     this.paintSettingsForm(body, view);
+  }
+
+  /** D91: one switch for both channels; the page in front never gets pinged anyway. */
+  private paintNotify(body: HTMLElement): void {
+    const on = this.me.notify !== false;
+    const row = el("label", "settings-row");
+    row.append(el("span", "settings-label", "需要你时发通知"));
+    const box = el("input") as HTMLInputElement;
+    box.type = "checkbox";
+    box.checked = on;
+    box.onchange = () => {
+      this.socket.send({ type: "notify.set", on: box.checked });
+      this.flashSettings(box.checked ? "已打开通知" : "已关闭通知：不再推 Windows 通知，也不发微信");
+    };
+    row.append(box);
+    body.append(row);
+    body.append(
+      el(
+        "div",
+        "hint",
+        "等你批准或回答时，推送到 Windows 通知（Web Push）和微信。正看着这个页面时不发：只有切到别的标签页、最小化浏览器或切到别的程序时才发。一份问卷只发一条。",
+      ),
+    );
+    const tools = el("div", "actions");
+    tools.style.display = "flex";
+    tools.style.gap = "8px";
+    tools.style.flexWrap = "wrap";
+    const push = el("button", "btn", "在这台设备开启 Web Push");
+    push.onclick = () => void this.enablePush();
+    const test = el("button", "btn", "发测试通知");
+    test.onclick = async () => {
+      const res = await api.notifyTest().catch((e) => ({ push: 0, wechat: String(e.message ?? e) }));
+      this.flashSettings(`测试通知：Web Push 送达 ${res.push} 台；微信：${res.wechat}`);
+    };
+    tools.append(push, test);
+    body.append(tools);
+    body.append(el("div", "hint", `Web Push 已订阅 ${this.me.pushCount} 台设备。测试通知不受开关影响，页面在前也会弹。`));
   }
 
   private paintSettingsForm(body: HTMLElement, view: SettingsView): void {
@@ -6692,18 +6750,16 @@ export class App {
    * typing in the textarea answers it, and the user can wander off to other sessions and come
    * back (the bridge re-sends pending asks on subscribe). Nothing pops up on its own.
    */
+  private composerPlaceholder(): string {
+    if (this.asks.length) return ASK_PLACEHOLDER;
+    return this.session?.running ? RUNNING_PLACEHOLDER : IDLE_PLACEHOLDER;
+  }
+
   private renderAsks(): void {
     const host = this.els.composerHost;
     host.querySelector(".ask-slot")?.remove();
     this.fillHintStatus();
-    if (this.textarea) {
-      const s = this.session;
-      this.textarea.placeholder = this.asks.length
-        ? "直接打字回答（Enter 提交），或点上面的选项…"
-        : s?.running
-          ? RUNNING_PLACEHOLDER
-          : "说点什么…";
-    }
+    if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
     if (this.askLost && !this.asks.length) {
       const lost = this.askLostBlock();
       const row = host.querySelector(".row");
@@ -6753,19 +6809,23 @@ export class App {
         const list = el("div", "ask-opts");
         q.options.forEach((opt, i) => {
           const btn = el("button", "ask-opt");
-          if (chosen && !chosen.wasCustom && chosen.value === opt.value) btn.classList.add("on");
-          btn.append(el("div", "l", opt.label));
+          const on = q.multiSelect ? Boolean(chosen?.picks?.includes(i + 1)) : Boolean(chosen && !chosen.wasCustom && chosen.value === opt.value);
+          if (on) btn.classList.add("on");
+          btn.append(el("div", "l", `${q.multiSelect ? (on ? "☑ " : "☐ ") : ""}${opt.label}`));
           if (opt.description) btn.append(el("div", "d", opt.description));
-          btn.onclick = () => this.pickAnswer(ask, { id: q.id, value: opt.value, label: opt.label, index: i + 1 });
+          btn.onclick = () =>
+            q.multiSelect ? this.togglePick(ask, q, i + 1) : this.pickAnswer(ask, { id: q.id, value: opt.value, label: opt.label, index: i + 1 });
           list.append(btn);
         });
         slot.append(list);
       }
+      if (q.multiSelect) slot.append(el("div", "ask-note", "可以多选；也可以在输入框里另外写几句。"));
       if (chosen?.wasCustom) slot.append(el("div", "ask-draft", `已填：${chosen.label}`));
+      if (chosen?.text) slot.append(el("div", "ask-draft", `另写：${chosen.text}`));
       if (q.allowOther === false) slot.append(el("div", "ask-note", "这题只能从选项里选。"));
-      if (total > 1) {
+      if (total > 1 || q.multiSelect) {
         const missing = ask.questions.filter((x) => !st.drafts.has(x.id)).length;
-        const submit = el("button", "btn primary", missing ? `还差 ${missing} 题` : "提交全部回答");
+        const submit = el("button", "btn primary", missing ? (total > 1 ? `还差 ${missing} 题` : "先选一项或写几句") : total > 1 ? "提交全部回答" : "提交");
         submit.disabled = missing > 0;
         submit.onclick = () => {
           const answers = ask.questions.map((x) => st.drafts.get(x.id)).filter(Boolean) as AskAnswer[];
@@ -6893,6 +6953,28 @@ export class App {
     this.renderAsks();
   }
 
+  /** Multi-select: a click toggles one option; nothing is sent until 提交. */
+  private togglePick(ask: AskRequest, q: AskQuestion, n: number): void {
+    const st = this.askState(ask);
+    const prev = st.drafts.get(q.id);
+    const picks = new Set(prev?.picks ?? []);
+    if (picks.has(n)) picks.delete(n);
+    else picks.add(n);
+    this.setMultiDraft(ask, q, [...picks].sort((a, b) => a - b), prev?.text ?? "");
+    this.saveAskDrafts();
+    this.renderAsks();
+  }
+
+  private setMultiDraft(ask: AskRequest, q: AskQuestion, picks: number[], text: string): void {
+    const st = this.askState(ask);
+    if (!picks.length && !text) {
+      st.drafts.delete(q.id);
+      return;
+    }
+    const label = [...picks.map((n) => q.options[n - 1]?.label ?? String(n)), ...(text ? [text] : [])].join("、");
+    st.drafts.set(q.id, { id: q.id, value: label, label, picks, ...(text ? { text } : {}) });
+  }
+
   /** Text typed in the composer while a question is open answers the active question. */
   private answerFromComposer(text: string): boolean {
     const ask = this.asks[0];
@@ -6906,6 +6988,13 @@ export class App {
       this.fitComposer();
     }
     this.askFolded = false;
+    if (q.multiSelect) {
+      // The typed words join the ticked options; the question still waits for 提交.
+      this.setMultiDraft(ask, q, this.askState(ask).drafts.get(q.id)?.picks ?? [], text);
+      this.saveAskDrafts();
+      this.renderAsks();
+      return true;
+    }
     this.pickAnswer(ask, { id: q.id, value: text, label: text, wasCustom: true });
     return true;
   }
@@ -7849,7 +7938,7 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["logout", "登出某个 provider"],
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "ext" | "changelog";
+type SettingsTab = "global" | "project" | "trust" | "login" | "ext" | "notify" | "changelog";
 
 interface ExtPackage {
   scope: "user" | "project";
@@ -8012,7 +8101,13 @@ const SETTING_FIELDS: {
   { key: "defaultProjectTrust", label: "没有决定时的项目信任", kind: "select", options: ["ask", "always", "never"], globalOnly: true, hint: "网页里 ask 等于 never（不能弹提示）" },
 ];
 
-const RUNNING_PLACEHOLDER = "跑着呢：Enter 引导当前任务 · Alt+Enter 等这轮做完再处理";
+/**
+ * The composer's placeholder is its shortcut card: these are the only keys it has (Shift+Enter
+ * used to be mentioned once and then overwritten by the bare 「说点什么…」 on the next repaint).
+ */
+const IDLE_PLACEHOLDER = "Enter 发送 · Shift+Enter 换行";
+const RUNNING_PLACEHOLDER = "跑着呢：Enter 引导当前任务 · Alt+Enter 等这轮做完再处理 · Shift+Enter 换行";
+const ASK_PLACEHOLDER = "直接打字回答当前题（Enter 作答 · Shift+Enter 换行），或点上面的选项";
 
 /** pi built-in commands the page cannot run yet → the issue that tracks them (#22). */
 const UNSUPPORTED_BUILTINS: Record<string, string> = {};

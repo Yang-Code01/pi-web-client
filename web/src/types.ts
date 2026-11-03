@@ -139,6 +139,8 @@ export interface AskQuestion {
   prompt: string;
   options: AskOption[];
   allowOther?: boolean;
+  /** 多选：答案带 `picks`（1 起的序号）和可选的 `text`。 */
+  multiSelect?: boolean;
 }
 
 export interface AskRequest {
@@ -157,6 +159,10 @@ export interface AskAnswer {
   label: string;
   wasCustom?: boolean;
   index?: number;
+  /** 多选题选中的选项序号（1 起）。 */
+  picks?: number[];
+  /** 多选题另外写的话。 */
+  text?: string;
 }
 
 export interface TunnelState {
@@ -173,6 +179,8 @@ export interface Me {
   tunnel: TunnelState;
   pushKey: string | null;
   pushCount: number;
+  /** 「pi 设置 → 通知」总开关（D91）。 */
+  notify?: boolean;
   sessionsRoot: string;
 }
 

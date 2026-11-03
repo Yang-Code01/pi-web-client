@@ -12,6 +12,7 @@ import { ensureDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJs
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
 import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
+import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -43,6 +44,8 @@ export interface AskQuestion {
   prompt: string;
   options: AskOption[];
   allowOther?: boolean;
+  /** 多选：答案带 `picks`（1 起的选项序号）和可选的 `text`。 */
+  multiSelect?: boolean;
 }
 
 export interface AskAnswer {
@@ -51,6 +54,10 @@ export interface AskAnswer {
   label: string;
   wasCustom?: boolean;
   index?: number;
+  /** 多选题选中的选项序号（1 起）。 */
+  picks?: number[];
+  /** 多选题另外写的话。 */
+  text?: string;
 }
 
 export interface AskRequest {
@@ -70,6 +77,18 @@ export interface AskOutcome {
 
 interface PendingAsk extends AskRequest {
   resolve: (out: AskOutcome) => void;
+}
+
+/** D90: one `ask_user_question` call whose dialogs are answered from a single web ask. */
+interface OpenQuestionnaire {
+  askId: string;
+  questions: QuestionnaireQuestion[];
+  /** null until the user submits (or cancels) the web ask. */
+  outcome: AskOutcome | null;
+  /** Questions whose dialog already arrived. */
+  taken: Set<string>;
+  /** Dialogs that arrived before the answers did. */
+  waiting: { uiId: string; req: any; question: QuestionnaireQuestion }[];
 }
 
 export interface SessionState {
@@ -486,6 +505,8 @@ export class Session extends EventEmitter {
   rpc: RpcChild | null = null;
   readonly approvals = new Map<string, ApprovalRequest>();
   readonly asks = new Map<string, PendingAsk>();
+  /** D90：还没结束的 `ask_user_question` 问卷，按 toolCallId。 */
+  private questionnaires = new Map<string, OpenQuestionnaire>();
   /** Handed to the child in PI_WEB_ASK_TOKEN so only our own pi can post questions. */
   readonly askToken = crypto.randomUUID();
   /** Set by SessionManager: where the child posts asks (loopback only). */
@@ -896,6 +917,7 @@ export class Session extends EventEmitter {
         break;
       }
       case "tool_execution_start": {
+        if (ev.toolName === "ask_user_question") this.openQuestionnaire(String(ev.toolCallId ?? ""), ev.args);
         this.emitWs({
           type: "tool",
           phase: "start",
@@ -912,6 +934,7 @@ export class Session extends EventEmitter {
         break;
       }
       case "tool_execution_end": {
+        this.closeQuestionnaire(String(ev.toolCallId ?? ""));
         {
           const at = this.items.findIndex((it) => it.kind === "tool" && it.toolCallId === String(ev.toolCallId));
           if (at >= 0) {
@@ -1013,6 +1036,7 @@ export class Session extends EventEmitter {
     if (req.method === "select" || req.method === "input" || req.method === "editor") {
       // Q-033: 记下发问方给的时长（不再采用），下次排查「题目自己消失」时有据可查。
       this.logUiTimeout(String(req.method), req.timeout);
+      if (this.fillFromQuestionnaire(id, req)) return;
       this.askViaDialog(id, req);
       return;
     }
@@ -1043,6 +1067,63 @@ export class Session extends EventEmitter {
   private logUiTimeout(method: string, timeout: unknown): void {
     const ms = typeof timeout === "number" && timeout > 0 ? timeout : null;
     if (ms !== null) this.notice(`ui.${method} 请求带了 ${Math.round(ms / 1000)} 秒超时，已忽略（提问不设上限）`, "info");
+  }
+
+  /**
+   * D90: the whole `ask_user_question` questionnaire goes to the page as one ask the moment the
+   * tool starts; the walker's one-question-at-a-time dialogs are then answered from it.
+   */
+  private openQuestionnaire(toolCallId: string, args: unknown): void {
+    if (!toolCallId || this.questionnaires.has(toolCallId)) return;
+    const questions = parseQuestionnaire(args);
+    if (!questions) return;
+    const { id, outcome } = this.ask(
+      questions.map(({ key: _key, ...q }) => q),
+      "ask_user_question",
+    );
+    const open: OpenQuestionnaire = { askId: id, questions, outcome: null, taken: new Set(), waiting: [] };
+    this.questionnaires.set(toolCallId, open);
+    void outcome.then((out) => {
+      open.outcome = out;
+      for (const w of open.waiting.splice(0)) this.replyFromQuestionnaire(open, w.uiId, w.req, w.question);
+    });
+  }
+
+  /** The tool is over (answered, cancelled, aborted): an ask still on screen has nobody to answer. */
+  private closeQuestionnaire(toolCallId: string): void {
+    const open = this.questionnaires.get(toolCallId);
+    if (!open) return;
+    this.questionnaires.delete(toolCallId);
+    if (this.asks.has(open.askId)) this.cancelAsk(open.askId, "提问已结束");
+  }
+
+  /** True when the dialog belongs to an open questionnaire and will be answered from it. */
+  private fillFromQuestionnaire(uiId: string, req: any): boolean {
+    const title = String(req.title ?? req.message ?? req.prompt ?? "");
+    for (const open of this.questionnaires.values()) {
+      const question = matchDialog(open.questions, title, open.taken);
+      if (!question) continue;
+      // The walker asks each question once; a second dialog for it (e.g. a reply it did not
+      // accept) is asked on its own instead of answered with the same reply again.
+      open.taken.add(question.id);
+      if (open.outcome) this.replyFromQuestionnaire(open, uiId, req, question);
+      else open.waiting.push({ uiId, req, question });
+      return true;
+    }
+    return false;
+  }
+
+  private replyFromQuestionnaire(open: OpenQuestionnaire, uiId: string, req: any, question: QuestionnaireQuestion): void {
+    const out = open.outcome!;
+    if (out.cancelled || !out.answers) {
+      this.rpc?.uiRespond({ id: uiId, cancelled: true });
+      return;
+    }
+    const answer = out.answers.find((a) => a.id === question.id);
+    const lines = Array.isArray(req.options) ? req.options.map(String) : [];
+    const value = answer ? replyFor(question, answer, String(req.method), lines) : null;
+    if (value === null) this.askViaDialog(uiId, req);
+    else this.rpc?.uiRespond({ id: uiId, value });
   }
 
   /**
@@ -1128,6 +1209,14 @@ export class Session extends EventEmitter {
     for (const q of ask.questions) {
       const got = answers.find((a) => a.id === q.id);
       if (!got) continue;
+      if (q.multiSelect) {
+        const picks = [...new Set((got.picks ?? []).map(Number))].filter((n) => Number.isInteger(n) && n >= 1 && n <= q.options.length).sort((a, b) => a - b);
+        const text = q.allowOther === false ? "" : String(got.text ?? "").trim();
+        if (!picks.length && !text) continue;
+        const label = [...picks.map((n) => q.options[n - 1].label), ...(text ? [text] : [])].join("、");
+        clean.push({ id: q.id, value: label, label, picks, ...(text ? { text } : {}) });
+        continue;
+      }
       // Values must come from the offered options unless the question allowed free text.
       const known = q.options.find((o) => o.value === got.value);
       if (known)
@@ -1156,6 +1245,7 @@ export class Session extends EventEmitter {
   }
 
   clearAsks(): void {
+    this.questionnaires.clear();
     for (const id of [...this.asks.keys()]) this.cancelAsk(id, "这一轮结束了");
   }
 
