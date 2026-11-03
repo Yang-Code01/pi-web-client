@@ -320,7 +320,12 @@ export class App {
     fs.onclick = () => this.openFiles();
     fs.hidden = true;
     this.els.fs = fs;
-    topbar.append(collapseLeft, dot, title, sub, files, term, fs, look, collapseRight);
+    // #45: the peer lives on its own page (/peer); this is the only way in from here.
+    const peer = el("button", "icon-btn wide", "🌐 局域网");
+    peer.title = "局域网：发现同一网段的人，直接对话、传文件";
+    peer.dataset.act = "peer";
+    peer.onclick = () => window.open("/peer", "_blank", "noopener");
+    topbar.append(collapseLeft, dot, title, sub, files, term, fs, peer, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
