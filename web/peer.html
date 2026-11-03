@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>局域网 · pi</title>
+    <title>内网通 · pi</title>
     <link rel="stylesheet" href="/src/peer/peer.css" />
   </head>
   <body>
     <header class="bar">
       <div class="who">
         <span id="dot" class="dot" title="peer 状态"></span>
-        <strong>局域网</strong>
+        <strong>内网通</strong>
         <span id="me" class="muted">连接中…</span>
       </div>
       <a class="back" href="/" title="回到 pi 主页面">‹ 回 pi</a>
@@ -85,14 +85,14 @@
       </section>
 
       <section id="view-online" class="view">
-        <ul id="peers" class="peers"></ul>
-        <p id="online-empty" class="empty">在线列表为空。同一局域网里的人打开 pi 后会自动出现在这里。</p>
         <form id="add" class="add">
           <input id="addr" placeholder="手动地址，例如 192.168.1.7:7865" autocomplete="off" />
           <button type="submit">添加</button>
           <button type="button" id="refresh">重新广播</button>
         </form>
         <p id="add-error" class="error" hidden></p>
+        <ul id="peers" class="peers"></ul>
+        <p id="online-empty" class="empty">在线列表为空。同一个内网里的人打开 pi 后会自动出现在这里。</p>
       </section>
     </main>
 

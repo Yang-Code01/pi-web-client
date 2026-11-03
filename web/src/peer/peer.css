@@ -162,7 +162,7 @@ main {
 .add {
   display: flex;
   gap: 8px;
-  margin-top: 16px;
+  margin: 0 0 14px;
 }
 
 .add input {

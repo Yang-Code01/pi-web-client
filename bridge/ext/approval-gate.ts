@@ -44,7 +44,7 @@ type Mode = "readonly" | "strict" | "ask" | "auto";
  */
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", "tool_search", "codemode", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "peer_find", "peer_history"]);
 /**
- * 给局域网上的人发文字（#45 第 5 片，决定 33）：它不写本地磁盘，所以严格模式下放行，
+ * 给内网通里的人发文字（#45 第 5 片，决定 33）：它不写本地磁盘，所以严格模式下放行，
  * 但只读模式下仍然拦——「只读」的意思是别往外说话，不只是别改文件。
  */
 const PEER_SEND = new Set(["peer_send"]);
@@ -131,7 +131,7 @@ async function peerCall(pathname: string, init?: RequestInit): Promise<any> {
     });
   } catch (err) {
     // 只在这一层加「连不上」：走到下面说明 peer 是活的，报的是业务错误。
-    throw new Error(`连不上 peer（${PEER_PORT}）：${(err as Error).message}。局域网没开时这些工具用不了，别重试。`);
+    throw new Error(`连不上 peer（${PEER_PORT}）：${(err as Error).message}。内网通没开时这些工具用不了，别重试。`);
   }
   const text = await res.text();
   let body: any = {};
@@ -155,9 +155,9 @@ const describe = (peer: any): string =>
 const peerTools = [
   {
     name: "peer_find",
-    label: "找局域网里的人",
-    description: "在局域网里找人和自己所在的 pi 节点：返回昵称、主机名、nodeId、是否在线、是不是好友。昵称会重名，所以后面调 peer_history / peer_send 时用 nodeId。",
-    promptSnippet: "peer_find(query?) → 局域网里的人（昵称 / nodeId / 在线 / 好友）",
+    label: "找内网通里的人",
+    description: "在内网通里找人和自己所在的 pi 节点：返回昵称、主机名、nodeId、是否在线、是不是好友。昵称会重名，所以后面调 peer_history / peer_send 时用 nodeId。",
+    promptSnippet: "peer_find(query?) → 内网通里的人（昵称 / nodeId / 在线 / 好友）",
     parameters: {
       type: "object",
       properties: {
@@ -169,7 +169,7 @@ const peerTools = [
     async execute(_id: string, params: any) {
       const body = await peerCall(`/tools/find?q=${encodeURIComponent(String(params?.query ?? ""))}`);
       const peers: any[] = body.peers ?? [];
-      if (!peers.length) return textResult("没找到人。局域网里目前没有别人在线，也没加过好友。", { count: 0 });
+      if (!peers.length) return textResult("没找到人。内网通里目前没有别人在线，也没加过好友。", { count: 0 });
       const lines = peers.map(describe);
       const head = "找到 " + peers.length + " 个人：";
       const tail = "发消息用 peer_send(nodeId, text)，看历史用 peer_history(nodeId)。";
@@ -178,8 +178,8 @@ const peerTools = [
   },
   {
     name: "peer_history",
-    label: "看局域网的对话",
-    description: "读某个人和本机的局域网对话（只读，历史存在本机）。返回每条消息的时间、谁发的、内容；文件消息显示文件名和大小。",
+    label: "看内网通的对话",
+    description: "读某个人和本机的内网通对话（只读，历史存在本机）。返回每条消息的时间、谁发的、内容；文件消息显示文件名和大小。",
     parameters: {
       type: "object",
       properties: {
@@ -207,9 +207,9 @@ const peerTools = [
   },
   {
     name: "peer_send",
-    label: "给局域网上的人发文字",
-    description: "给局域网里的某个人发一条文字消息（不是邮件、不是通知：对方在 pi 的「局域网」页里看到）。只能发文字，不能发文件。发之前先用 peer_find 确认 nodeId。",
-    promptSnippet: "peer_send(peer, text) → 给本机局域网里的某个人发文字（消息上会标「🤖 agent 代发」）",
+    label: "给内网通里的人发文字",
+    description: "给内网通里的某个人发一条文字消息（不是邮件、不是通知：对方在 pi 的「局域网」页里看到）。只能发文字，不能发文件。发之前先用 peer_find 确认 nodeId。",
+    promptSnippet: "peer_send(peer, text) → 给本机内网通里的某个人发文字（消息上会标「🤖 agent 代发」）",
     parameters: {
       type: "object",
       properties: {

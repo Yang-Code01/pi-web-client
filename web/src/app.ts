@@ -321,8 +321,8 @@ export class App {
     fs.hidden = true;
     this.els.fs = fs;
     // #45: the peer is a dialog over the page, not a separate tab — same as 终端.
-    const peer = el("button", "icon-btn wide", "🌐 局域网");
-    peer.title = "局域网：发现同一网段的人，直接对话、传文件";
+    const peer = el("button", "icon-btn wide", "🌐 内网通");
+    peer.title = "内网通：发现同一内网里的人，直接对话、传文件";
     peer.dataset.act = "peer";
     peer.onclick = () => this.openPeerSheet();
     topbar.append(collapseLeft, dot, title, sub, files, term, fs, peer, look, collapseRight);
@@ -2063,14 +2063,14 @@ export class App {
 
     const sheet = el("div", "sheet peer-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", "局域网"));
+    head.append(el("div", "sheet-title", "内网通"));
     const close = el("button", "btn ghost", "关闭");
     close.onclick = () => this.closeSheet();
     head.append(close);
 
     const frame = document.createElement("iframe");
     frame.className = "peer-frame";
-    frame.title = "局域网";
+    frame.title = "内网通";
     // 带一个每次打开都变的 query：`peer.html` 里引的 bundle 文件名是构建哈希，
     // 但 HTML 自己会被浏览器缓存 —— 不换 query 的话，弹框会一直加载上一次构建的页面
     // （第 2 片上线时，用户看到的「在线」里就没有「发消息」按钮）。
