@@ -1,17 +1,28 @@
 import type { GitInfo, Me, PreviewInfo, SessionState, TunnelState } from "./types.ts";
 
+/**
+ * D108: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
+ * 翻译用的键（`errText()` 拿 `code` + `params` 查词典）。两个字段都挂到 Error 上，认不出 `code`
+ * 的地方仍然能用 `err?.message` 显示兜底句。
+ */
+async function failOf(res: Response, text: string): Promise<Error> {
+  let message = text;
+  let code: string | undefined;
+  let params: Record<string, string | number> | undefined;
+  try {
+    const body = JSON.parse(text);
+    message = body.error ?? text;
+    code = body.code;
+    params = body.params;
+  } catch {
+    /* keep raw text */
+  }
+  return Object.assign(new Error(message || `HTTP ${res.status}`), { status: res.status, code, params });
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "same-origin", ...init });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    let message = text;
-    try {
-      message = JSON.parse(text).error ?? text;
-    } catch {
-      /* keep raw text */
-    }
-    throw Object.assign(new Error(message || `HTTP ${res.status}`), { status: res.status });
-  }
+  if (!res.ok) throw await failOf(res, await res.text().catch(() => ""));
   return (await res.json()) as T;
 }
 
@@ -50,16 +61,7 @@ export const api = {
   /** Bytes of an image on the bridge machine, as a File the composer can attach. */
   image: async (path: string): Promise<File> => {
     const res = await fetch(`/api/image?path=${encodeURIComponent(path)}`, { credentials: "same-origin" });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      let message = text;
-      try {
-        message = JSON.parse(text).error ?? text;
-      } catch {
-        /* keep raw text */
-      }
-      throw new Error(message || `HTTP ${res.status}`);
-    }
+    if (!res.ok) throw await failOf(res, await res.text().catch(() => ""));
     const blob = await res.blob();
     return new File([blob], path.split(/[\\/]/).pop() ?? "image", { type: blob.type });
   },

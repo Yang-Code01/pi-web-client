@@ -10,6 +10,7 @@
  */
 
 import { highlightFragment } from "./highlight.ts";
+import { tr } from "./i18n/index.ts";
 
 export interface MdOptions {
   /** Rendering a whole document rather than a chat message. */
@@ -81,7 +82,7 @@ function wrapHref(node: Node, href: string, opts: MdOptions): Node {
     const a = document.createElement("a");
     a.className = "file-link";
     a.href = "#";
-    a.title = `预览 ${path}`;
+    a.title = tr("预览 {p1}", { p1: path });
     a.appendChild(node);
     a.onclick = (ev) => {
       ev.preventDefault();
@@ -97,7 +98,7 @@ function fileLink(path: string, label: string, opts: MdOptions, code = false, in
   const a = document.createElement("a");
   a.className = code ? "file-link code" : "file-link";
   a.href = "#";
-  a.title = `预览 ${path}`;
+  a.title = tr("预览 {p1}", { p1: path });
   if (code) {
     const c = document.createElement("code");
     c.textContent = label;
@@ -159,7 +160,7 @@ function inlineInto(target: Node, text: string, opts: MdOptions): void {
       const im = /^!\[([^\]]*)\]\(([^\s)]+)/.exec(token)!;
       const img = imageNode(im[1], im[2], opts);
       if (img) target.appendChild(img);
-      else target.appendChild(document.createTextNode(im[1] ? `[图片：${im[1]}]` : "[图片]"));
+      else target.appendChild(document.createTextNode(im[1] ? tr("[图片：{p1}]", { p1: im[1] }) : tr("[图片]")));
     } else if (m[3]) {
       const lm = /^\[((?:[^\[\]\n]|\[[^\]\n]*\])+)\]\(([^\s)]+)/.exec(token)!;
       const label = lm[1];
@@ -170,7 +171,7 @@ function inlineInto(target: Node, text: string, opts: MdOptions): void {
       if (pic) {
         const img = imageNode(pic[1], pic[2], opts);
         if (img) target.appendChild(wrapHref(img, href, opts));
-        else target.appendChild(document.createTextNode(pic[1] || "[图片]"));
+        else target.appendChild(document.createTextNode(pic[1] || tr("[图片]")));
       } else if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
         const a = document.createElement("a");
         a.href = href;

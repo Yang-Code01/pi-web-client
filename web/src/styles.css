@@ -18,6 +18,15 @@
   color-scheme: dark;
 }
 
+/*
+ * D108: 日文要自己的字体栈。Windows 上 "Segoe UI" 根本没有 CJK 字形，日文会一路落到 Microsoft YaHei，
+ * 汉字按简体字形（直 / 骨 / 次 …）画出来 —— 一眼就是机翻。不改字体等于没本地化。
+ * 不打包 webfont：仓库从来没引过，为这点字形多背 1–2 MB 不值。
+ */
+html:lang(ja) {
+  --sans: -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", "Noto Sans JP", sans-serif;
+}
+
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
