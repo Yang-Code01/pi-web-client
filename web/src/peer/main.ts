@@ -45,6 +45,21 @@ interface Thread {
   online: boolean;
 }
 
+interface Contact {
+  nodeId: string;
+  nickname: string;
+  hostname: string;
+  port: number;
+  friend: boolean;
+  favorite: boolean;
+  incoming: boolean;
+  outgoing: boolean;
+  at: number;
+  online: boolean;
+  addr: string;
+  livePort: number;
+}
+
 const MAX_TEXT_BYTES = 32 * 1024;
 
 const dot = document.querySelector("#dot") as HTMLElement;
@@ -64,9 +79,15 @@ const messagesEl = document.querySelector("#messages") as HTMLUListElement;
 const compose = document.querySelector("#compose") as HTMLFormElement;
 const textInput = document.querySelector("#text") as HTMLTextAreaElement;
 const sendError = document.querySelector("#send-error") as HTMLElement;
+const contactsList = document.querySelector("#contacts") as HTMLUListElement;
+const contactsEmpty = document.querySelector("#contacts-empty") as HTMLElement;
+const requestsBox = document.querySelector("#requests-box") as HTMLElement;
+const requestsList = document.querySelector("#requests") as HTMLUListElement;
+const contactsError = document.querySelector("#contacts-error") as HTMLElement;
 
 let meStatus: PeerStatus | null = null;
 let threads: Thread[] = [];
+let contacts: Contact[] = [];
 let active: string | null = null;
 let sending = false;
 
@@ -137,9 +158,117 @@ function renderOnline(): void {
       void openThread(peer.nodeId);
     });
     li.append(left, right, talk);
+    const known = contactOf(peer.nodeId);
+    if (!known?.friend) {
+      const pending = Boolean(known?.incoming || known?.outgoing);
+      const add = el("button", "talk ghost", pending ? (known?.incoming ? "接受请求" : "等对方接受") : "加好友");
+      add.type = "button";
+      add.disabled = pending && !known?.incoming;
+      add.addEventListener("click", () => void friendAction(peer.nodeId, known?.incoming ? "accept" : "request"));
+      li.append(add);
+    }
     list.append(li);
   }
   empty.hidden = peers.length > 0;
+}
+
+// ---------------------------------------------------------------- 通讯录
+
+function contactOf(nodeId: string): Contact | undefined {
+  return contacts.find((contact) => contact.nodeId === nodeId);
+}
+
+/** 收藏只在用户点的时候变（决定 12），所以这里全部是显式动作。 */
+async function friendAction(nodeId: string, action: "request" | "accept" | "favorite" | "remove", on?: boolean): Promise<void> {
+  contactsError.hidden = true;
+  try {
+    const res = await fetch("/api/peer/friend", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ peer: nodeId, action, on }),
+    });
+    const body = (await res.json()) as { error?: string };
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+    await loadContacts();
+    await load();
+  } catch (err) {
+    contactsError.textContent = (err as Error).message;
+    contactsError.hidden = false;
+  }
+}
+
+function contactRow(contact: Contact): HTMLLIElement {
+  const li = el("li", `contact${contact.favorite ? " is-fav" : ""}`);
+  const dotSpan = el("span", `presence ${contact.online ? "is-up" : "is-off"}`, contact.online ? "●" : "○");
+  dotSpan.title = contact.online ? "在线" : "不在线";
+  const main = el("div", "contact-main");
+  const name = el("strong", "", contact.nickname + (contact.favorite ? " ★" : ""));
+  const sub = el("small", "", `${contact.hostname || "?"}${contact.addr ? ` · ${contact.addr}:${contact.livePort || contact.port}` : ""}`);
+  main.append(name, sub);
+  li.append(dotSpan, main);
+
+  const actions = el("div", "contact-actions");
+  if (contact.friend) {
+    const talk = el("button", "talk", "发消息");
+    talk.type = "button";
+    talk.addEventListener("click", () => {
+      switchTo("chat");
+      void openThread(contact.nodeId);
+    });
+    const fav = el("button", "talk ghost", contact.favorite ? "取消收藏" : "收藏");
+    fav.type = "button";
+    fav.addEventListener("click", () => void friendAction(contact.nodeId, "favorite", !contact.favorite));
+    actions.append(talk, fav);
+  } else if (contact.outgoing) {
+    actions.append(el("small", "muted", "已发请求，等对方接受"));
+  }
+  const del = el("button", "talk ghost danger", "删除");
+  del.type = "button";
+  del.title = "只从我的通讯录里移除，对方那边不变";
+  del.addEventListener("click", () => void friendAction(contact.nodeId, "remove"));
+  actions.append(del);
+  li.append(actions);
+  return li;
+}
+
+function renderContacts(): void {
+  const pending = contacts.filter((contact) => contact.incoming && !contact.friend);
+  requestsBox.hidden = pending.length === 0;
+  requestsList.innerHTML = "";
+  for (const contact of pending) {
+    const li = el("li", "request");
+    const who = el("div", "contact-main");
+    who.append(el("strong", "", contact.nickname), el("small", "", `${contact.hostname || "?"} 想加你好友`));
+    const ok = el("button", "talk", "接受");
+    ok.type = "button";
+    ok.addEventListener("click", () => void friendAction(contact.nodeId, "accept"));
+    const no = el("button", "talk ghost", "不理");
+    no.type = "button";
+    no.title = "只从待处理里拿掉，不告诉对方";
+    no.addEventListener("click", () => void friendAction(contact.nodeId, "remove"));
+    li.append(who, ok, no);
+    requestsList.append(li);
+  }
+
+  const list_ = contacts.filter((contact) => contact.friend || contact.outgoing);
+  contactsList.innerHTML = "";
+  for (const contact of list_) contactsList.append(contactRow(contact));
+  contactsEmpty.hidden = list_.length > 0 || pending.length > 0;
+}
+
+async function loadContacts(): Promise<void> {
+  try {
+    const res = await fetch("/api/peer/contacts", { headers: { accept: "application/json" } });
+    if (res.status === 401) return;
+    const body = (await res.json()) as { contacts?: Contact[]; error?: string };
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+    contacts = body.contacts ?? [];
+    renderContacts();
+    renderOnline();
+  } catch (err) {
+    contactsError.textContent = `通讯录读取失败：${(err as Error).message}`;
+    contactsError.hidden = false;
+  }
 }
 
 // ---------------------------------------------------------------- 对话
@@ -329,8 +458,10 @@ textInput.addEventListener("keydown", (event) => {
 });
 
 void load().then(() => loadThreads());
+void loadContacts();
 // 在线表与线程列表 5 秒一轮；正在看的对话 2 秒一轮 —— 都是回环请求，不值得为局域网这张页面开 WS。
 setInterval(() => void load().then(() => loadThreads()), 5000);
+setInterval(() => void loadContacts(), 5000);
 setInterval(() => void loadMessages(), 2000);
 
 // 在主页面里作为弹框的 iframe 打开时，「‹ 回 pi」会把整个 iframe 换成主页面，

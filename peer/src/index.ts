@@ -5,6 +5,7 @@ import { createPeerServer } from "./http.ts";
 import { History } from "./history.ts";
 import { Outbox } from "./outbox.ts";
 import { Messages, uuidv7 } from "./messages.ts";
+import { Relations } from "./peers.ts";
 
 const cfg = loadConfig();
 const nodeId = ensureNodeId();
@@ -28,12 +29,18 @@ const discovery = new Discovery(cfg, nodeId, log);
 discovery.on("change", (online: unknown[]) => log(`在线 ${online.length} 台`));
 
 const history = new History(log);
-const messages = new Messages({ cfg, nodeId, discovery, history, outbox: null as never, log });
+const relations = new Relations(log);
+const messages = new Messages({ cfg, nodeId, discovery, history, outbox: null as never, relations, log });
 // 回环没注入 outbox 之前先建好：`deliver` 只依赖网络，`settled` 才依赖 outbox 本身。
 const outbox = new Outbox({
   log,
   deliver: (item) => messages.deliver(item),
   settled: (item, verdict) => {
+    // 只有文字需要回执；好友请求/接受在通讯录里已经有了自己的状态。
+    if (item.kind !== "text") {
+      if (!verdict.ok) log(`控制消息 ${item.kind} → ${item.addr}:${item.port} 没送到：${verdict.error}`);
+      return;
+    }
     const status = verdict.ok ? "delivered" : "failed";
     history.append(item.peerId, {
       id: uuidv7(),
@@ -48,7 +55,7 @@ const outbox = new Outbox({
 });
 messages.attachOutbox(outbox);
 
-const server = createPeerServer({ cfg, nodeId, discovery, history, messages });
+const server = createPeerServer({ cfg, nodeId, discovery, history, messages, relations });
 
 server.on("error", (err: NodeJS.ErrnoException) => {
   // 端口被占 = 已经有一份 peer 在跑。直接退出而不是自动换端口：bridge 要能看出「没起来」。

@@ -174,6 +174,58 @@ try {
   }
   log("ok 不认识的 from 拿不到写入（409 可重试）");
 
+  // 第 3 片：好友。A 发请求 → B 通讯录出现「待接受」→ B 接受 → 两边都变成好友。
+  const ask = await fetch("http://127.0.0.1:17965/friend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sb, action: "request" }),
+  });
+  if (!ask.ok) throw new Error(`发好友请求失败：${ask.status} ${await ask.text()}`);
+  const incoming = await until(
+    "B 收到好友请求",
+    async () => {
+      const body = await (await fetch("http://127.0.0.1:17966/contacts")).json();
+      const hit = body.contacts?.find((c) => c.nodeId === sa);
+      return hit?.incoming && !hit.friend ? body : false;
+    },
+    8000,
+  );
+  void incoming;
+  log("ok 好友请求到达对端（待接受）");
+
+  const accept = await fetch("http://127.0.0.1:17966/friend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sa, action: "accept" }),
+  });
+  if (!accept.ok) throw new Error(`接受好友失败：${accept.status} ${await accept.text()}`);
+  const bothFriends = await until(
+    "两边都成为好友",
+    async () => {
+      const [a, b] = await Promise.all([
+        (await fetch("http://127.0.0.1:17965/contacts")).json(),
+        (await fetch("http://127.0.0.1:17966/contacts")).json(),
+      ]);
+      const fa = a.contacts?.find((c) => c.nodeId === sb);
+      const fb = b.contacts?.find((c) => c.nodeId === sa);
+      return fa?.friend && fb?.friend && !fa.outgoing && !fb.incoming ? { fa, fb } : false;
+    },
+    8000,
+  );
+  void bothFriends;
+  log("ok 接受后两边都是好友（outgoing / incoming 都清掉）");
+
+  const fav = await (await fetch("http://127.0.0.1:17965/friend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sb, action: "favorite", on: true }),
+  })).json();
+  if (!fav.contact?.favorite) throw new Error("收藏没生效");
+  // 收藏是单向偏好，不该传到对端。
+  const bSide = await (await fetch("http://127.0.0.1:17966/contacts")).json();
+  if (bSide.contacts?.find((c) => c.nodeId === sa)?.favorite) throw new Error("收藏被同步到了对端");
+  log("ok 收藏只在本机生效");
+
   // 离线超时：B 关掉后 30 秒内必须从 A 的列表里消失（这里只验「关了就不是 online 了」，
   // 30 秒本身等不起，所以直接杀掉再看一轮 —— 真实超时逻辑由 prune 的 OFFLINE_MS 保证）。
   B.kill();

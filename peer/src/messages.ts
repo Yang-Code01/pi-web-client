@@ -5,6 +5,7 @@ import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import type { Entry, History, PeerIdentity } from "./history.ts";
 import type { Outbox, Queued, Verdict } from "./outbox.ts";
+import type { Relations } from "./peers.ts";
 
 /** 单条文本上限（决定 25）：再长就让用户改发文件，协议这边硬拒 32 KB。 */
 export const MAX_TEXT_BYTES = 32 * 1024;
@@ -48,6 +49,7 @@ export class Messages {
       discovery: Discovery;
       history: History;
       outbox: Outbox | null;
+      relations: Relations;
       log: (msg: string) => void;
     },
   ) {}
@@ -79,7 +81,7 @@ export class Messages {
     const id = uuidv7(at);
     const entry = this.entry(id, at, this.me(), peerId, "text", { text: trimmed });
     this.ctx.history.append(peerId, entry);
-    const item: Queued = { id, peerId, addr: peer.addr, port: peer.port, entry, at, tries: 0, nextAt: 0 };
+    const item: Queued = { id, peerId, addr: peer.addr, port: peer.port, kind: "text", payload: entry, at, tries: 0, nextAt: 0 };
     const outbox = this.ctx.outbox;
     if (!outbox) throw new Error("outbox 还没准备好");
     outbox.add(item);
@@ -89,15 +91,19 @@ export class Messages {
   /** outbox 的投递器：一次 HTTP POST，4xx 里带 `retryable` 决定「等 24 小时」还是「立刻红」。 */
   async deliver(item: Queued): Promise<Verdict> {
     try {
+      const body =
+        item.kind === "text"
+          ? { proto: PROTO, kind: "text", message: item.payload }
+          : { proto: PROTO, kind: item.kind, control: item.payload };
       const res = await fetch(`http://${item.addr}:${item.port}/peer/inbox`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ proto: PROTO, kind: "text", message: item.entry }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(4000),
       });
-      const body = (await res.json().catch(() => ({}))) as { error?: string; retryable?: boolean };
+      const reply = (await res.json().catch(() => ({}))) as { error?: string; retryable?: boolean };
       if (res.ok) return { ok: true };
-      return { ok: false, retryable: body.retryable !== false, error: body.error ?? `HTTP ${res.status}` };
+      return { ok: false, retryable: reply.retryable !== false, error: reply.error ?? `HTTP ${res.status}` };
     } catch (err) {
       // 连不上（对端关了 / 换了 IP）先当可重试：24 小时内他再上线还能补到。
       return { ok: false, retryable: true, error: (err as Error).message };
@@ -110,6 +116,8 @@ export class Messages {
     const kind = String(body.kind ?? "");
     if (kind === "text") return this.acceptText(fromAddr, body.message);
     if (kind === "receipt") return this.acceptReceipt(body.receipt);
+    if (kind === "friend-request") return this.acceptFriendRequest(fromAddr, body.control);
+    if (kind === "friend-accept") return this.acceptFriendAccept(fromAddr, body.control);
     return { status: 400, body: { error: "unknown kind", retryable: false } };
   }
 
@@ -138,6 +146,52 @@ export class Messages {
     if (!id || !ackId) return { status: 400, body: { error: "bad receipt", retryable: false } };
     const status = receipt.ack.status === "failed" ? "failed" : "delivered";
     this.ctx.log(`回执 ${ackId.slice(0, 8)} → ${status}`);
+    return { status: 200, body: { ok: true } };
+  }
+
+  /**
+   * 好友请求 / 接受（第 3 片）。和文字走同一条 inbox + outbox：补投、去重、IP 校验都白捡。
+   * 只是不产生历史行 —— 通讯录里「他请求我」是个状态，不是一段对话。
+   */
+  sendControl(peerId: string, kind: "friend-request" | "friend-accept"): { ok: true } {
+    const peer = this.ctx.discovery.byId(peerId);
+    if (!peer) throw new Error("这个人已经不在线了：刷新在线列表再试");
+    const who = this.ctx.relations.get(peerId);
+    const identity: PeerIdentity = {
+      nodeId: peerId,
+      nickname: who?.nickname ?? peer.nickname,
+      hostname: who?.hostname || peer.hostname,
+      port: who?.port || peer.port,
+    };
+    if (kind === "friend-request") this.ctx.relations.request(identity);
+    else this.ctx.relations.accepted(identity);
+    const at = Date.now();
+    const id = uuidv7(at);
+    // 对端只知道「谁在敲」，所以控制消息也带上自己的完整身份。
+    const control = { id, at, from: this.me() };
+    const outbox = this.ctx.outbox;
+    if (!outbox) throw new Error("outbox 还没准备好");
+    outbox.add({ id, peerId, addr: peer.addr, port: peer.port, kind, payload: control, at, tries: 0, nextAt: 0 });
+    return { ok: true };
+  }
+
+  private async acceptFriendRequest(fromAddr: string, control: any): Promise<InboxResult> {
+    const claimed = control?.from as PeerIdentity | undefined;
+    if (!claimed?.nodeId) return { status: 400, body: { error: "bad control", retryable: false } };
+    const check = await this.verifySource(fromAddr, claimed);
+    if (check) return check;
+    this.ctx.relations.incomingRequest(claimed);
+    this.ctx.log(`收到好友请求：${claimed.nickname ?? claimed.nodeId.slice(0, 8)}`);
+    return { status: 200, body: { ok: true } };
+  }
+
+  private async acceptFriendAccept(fromAddr: string, control: any): Promise<InboxResult> {
+    const claimed = control?.from as PeerIdentity | undefined;
+    if (!claimed?.nodeId) return { status: 400, body: { error: "bad control", retryable: false } };
+    const check = await this.verifySource(fromAddr, claimed);
+    if (check) return check;
+    this.ctx.relations.accepted(claimed);
+    this.ctx.log(`对方接受了你的好友请求：${claimed.nickname ?? claimed.nodeId.slice(0, 8)}`);
     return { status: 200, body: { ok: true } };
   }
 

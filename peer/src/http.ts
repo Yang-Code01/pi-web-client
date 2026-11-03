@@ -5,6 +5,7 @@ import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
 import type { History } from "./history.ts";
 import type { Messages } from "./messages.ts";
+import type { Relations } from "./peers.ts";
 
 export interface PeerContext {
   cfg: PeerConfig;
@@ -12,6 +13,7 @@ export interface PeerContext {
   discovery: Discovery;
   history: History;
   messages: Messages;
+  relations: Relations;
 }
 
 const MAX_BODY = 1024 * 1024;
@@ -58,7 +60,7 @@ function readBody(req: http.IncomingMessage): Promise<any> {
  * - 对端是谁不看它自报的字段，看 `req.socket.remoteAddress`（决定 7/10）。
  */
 export function createPeerServer(ctx: PeerContext): http.Server {
-  const { cfg, nodeId, discovery, history, messages } = ctx;
+  const { cfg, nodeId, discovery, history, messages, relations } = ctx;
   const identity = () => ({ nodeId, nickname: cfg.nickname, hostname: os.hostname(), port: cfg.port, version: VERSION });
 
   return http.createServer(async (req, res) => {
@@ -133,6 +135,54 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         try {
           const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""));
           return json(res, 200, result);
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      // 第 3 片：通讯录。收藏 / 删除 / 接受都在这里改，对方只收到一条控制消息。
+      if (url.pathname === "/contacts" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const online = new Map(discovery.online().map((peer) => [peer.nodeId, peer]));
+        const contacts = relations.list().map((contact) => {
+          const peer = online.get(contact.nodeId);
+          return { ...contact, online: Boolean(peer), addr: peer?.addr ?? "", livePort: peer?.port ?? 0 };
+        });
+        return json(res, 200, { ok: true, contacts });
+      }
+
+      if (url.pathname === "/friend" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const peerId = String(body?.peer ?? "");
+        const action = String(body?.action ?? "");
+        const who = discovery.byId(peerId);
+        if (!peerId) return json(res, 400, { error: "缺 peer" });
+        try {
+          if (action === "request") {
+            if (!who) return json(res, 400, { error: "这个人已经不在线了" });
+            messages.sendControl(peerId, "friend-request");
+            return json(res, 200, { ok: true, contact: relations.get(peerId) });
+          }
+          if (action === "accept") {
+            const known = relations.get(peerId);
+            if (!known?.incoming) return json(res, 400, { error: "没有待接受的请求" });
+            if (!who) return json(res, 400, { error: "他不在线，等他在线再接受（否则他不知道）" });
+            relations.accept({ nodeId: peerId, nickname: known.nickname, hostname: known.hostname, port: known.port });
+            messages.sendControl(peerId, "friend-accept");
+            return json(res, 200, { ok: true, contact: relations.get(peerId) });
+          }
+          if (action === "favorite") {
+            const known = relations.get(peerId);
+            if (!known) return json(res, 400, { error: "不在通讯录里" });
+            relations.favorite({ nodeId: peerId, nickname: known.nickname, hostname: known.hostname, port: known.port }, Boolean(body?.on));
+            return json(res, 200, { ok: true, contact: relations.get(peerId) });
+          }
+          if (action === "remove") {
+            relations.remove(peerId);
+            return json(res, 200, { ok: true });
+          }
+          return json(res, 400, { error: "未知动作" });
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });
         }

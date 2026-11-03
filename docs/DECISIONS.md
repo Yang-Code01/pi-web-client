@@ -1129,3 +1129,35 @@
 **验证**：`node bridge/tests/peer-e2e.mjs` 的「不认识的 from 拿不到写入（409 可重试）」段：伪造一个陌生 nodeId 直接 POST `/peer/inbox`，断言 409 且 `retryable === true`，历史里没多出任何一行；正常两实例之间（同机，源 IP 在集合里）文字照常送达。
 
 >>>>>>> 135cad0 (feat(peer): 第 2 片——1:1 文字、历史、回执、补投（#45，D102 D103）)
+## D104 好友请求也走 `/peer/inbox`：一条通道，不新开协议
+
+**症状**：第 3 片要发「加好友」「接受」两种短消息。最省事的写法是另开 `POST /peer/friend` 直连对端——但那样就得重新实现补投、去重、来源校验、24 小时过期这一整套，而这些在第 2 片刚刚做完。
+
+**根因**：好友请求和文字消息在传输层没有任何区别：都是一次「我对你说句话」，都可能因为对方离线、IP 漂移、组播被挡而要重试。
+
+**决定**（`peer/src/messages.ts` 的 `sendControl()` / `accept()`）：
+1. 新的信封是 `{proto, kind:"friend-request"|"friend-accept", control:{id, at, from}}`，与 `kind:"text"` 共用 `/peer/inbox`、`Outbox`、`verifySource()`；
+2. `Outbox.Queued` 从「塞一条 `entry`」改成「`kind` + `payload`」，`text` 的 payload 就是那条 Entry，控制消息的就是 control 体；老 `outbox.json` 读进来按 `kind:"text"` 迁移；
+3. 只有 `kind === "text"` 在 `settled` 里追加回执行——好友请求没有「已送达」这个概念，它的进度就是通讯录里的状态；
+4. 关系状态落在 `~/.pi-peer/peers.json`（`nodeId → {friend, favorite, incoming, outgoing}`），控制消息不改历史 JSONL。
+
+**为什么**：省掉的不是一百行代码，是「另一条路上没有 IP 校验」这个洞——第 4 片的文件写入本来就要靠好友关系把关，门上的锁必须和消息走同一道验证。
+
+**可改**：「不理」目前只删本地 `incoming`，不通知对方（对方会一直显示「已发请求」）；真需要「拒绝」再发一条 `friend-reject` 控制消息，信封已经现成。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「好友请求到达对端（待接受）」「接受后两边都是好友（outgoing / incoming 都清掉）」「收藏只在本机生效」三段。
+
+## D105 「接受」要求对方在线，否则按钮直接说等一会儿
+
+**症状**：好友请求存在本地，接受时如果对端已经下线，`friend-accept` 进 outbox 也能补投——但对方那份 `outgoing` 会一直挂着，界面显示「已发请求」，直到他 24 小时内再上线。
+
+**根因**：接受这个动作必须有回执才完整（双向确认），而回执只能送到在线的对端。
+
+**决定**（`peer/src/http.ts` 的 `/friend`）：`action:"accept"` 在 `discovery.byId(peerId)` 为空时直接 400「他不在线，等他在线再接受」，不写自己这边的状态、也不排队。请求（`request`）则相反：必须能立刻发出，否则用户点了没反应。
+
+**为什么**：宁可让按钮说「等一会儿」，也不要造出一个「我这边是好友、他那边还挂着请求」的分叉状态——分叉之后没有任何地方会自动收敛。
+
+**可改**：真要支持离线接受，得给 `friend-accept` 加一次幂等重放 + 对方上线时主动 `friend-request` 复述；v1 不做。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「接受后两边都是好友」段（B 接受时 A 在线，两边 `friend` 同时为真）；人工验证：把对端杀掉后点「接受」→ 页面报「他不在线，等他在线再接受」。
+>>>>>>> 5249cdf (feat(peer): 第 3 片——好友请求、通讯录、收藏（#45，D104 D105）)
