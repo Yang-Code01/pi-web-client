@@ -3,8 +3,7 @@
  *
  * Two layers, because a canvas-rendered xterm cannot be read out of the DOM:
  *
- *   1. UI: `打开终端` gives one tab, `＋` gives a second, exactly one body is visible at a time and
- *      clicking a tab moves the `.on` marker.
+ *   1. UI: 顶栏「>_ 终端」给一个标签，`＋` 给第二个，任何时刻只有一个 body 可见，点标签会把 `.on` 挪过去。
  *   2. Protocol: an independent WS client sends `term.input` to each tab id and checks that the
  *      echoed marker comes back on `term.data` **tagged with that same id** — i.e. the two shells are
  *      really two processes, not one view of one process.
@@ -125,7 +124,7 @@ await sleep(1500);
 await page.locator('[data-act="terminal"]').click();
 await page.waitForSelector(".term-dock", { timeout: 15000 });
 await page.waitForSelector(".term-body .xterm", { timeout: 15000 });
-ok((await page.locator(".term-tab").count()) === 1, "打开终端 gives one tab");
+ok((await page.locator(".term-tab").count()) === 1, "顶栏「>_ 终端」给一个标签");
 ok((await page.locator(".term-body:not([hidden])").count()) === 1, "exactly one body is visible");
 
 await page.locator(".term-new").click();
