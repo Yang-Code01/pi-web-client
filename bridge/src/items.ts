@@ -34,7 +34,24 @@ export interface NoticeItem extends ItemBase {
   text: string;
   level?: "info" | "warn" | "error";
 }
-export type Item = UserItem | AssistantItem | ToolItem | NoticeItem;
+/** A command the user ran with `!cmd` / `!!cmd` (pi's RPC `bash`, stored as a bashExecution message). */
+export interface BashItem extends ItemBase {
+  kind: "bash";
+  command: string;
+  output: string;
+  exitCode?: number | null;
+  cancelled?: boolean;
+  truncated?: boolean;
+  fullOutputPath?: string;
+  /** `!!`: kept in the session, never sent to the model. */
+  excludeFromContext?: boolean;
+  status: "running" | "done";
+  error?: string;
+}
+export type Item = UserItem | AssistantItem | ToolItem | NoticeItem | BashItem;
+
+/** Output kept for a `!cmd` card (its tail: the end of a long output is what tells you how it went). */
+export const BASH_KEEP = 20000;
 
 export function summarizeToolArgs(args: unknown): string {
   if (args == null) return "";
@@ -45,7 +62,7 @@ export function summarizeToolArgs(args: unknown): string {
   }
   try {
     const s = JSON.stringify(args);
-    return s.length > 160 ? s.slice(0, 160) + "…" : s;
+    return s.length > 160 ? `${s.slice(0, 160)}…` : s;
   } catch {
     return "";
   }
@@ -63,12 +80,39 @@ export function contentText(content: unknown): string {
   return parts.join("\n");
 }
 
+/**
+ * The branch pi would resume: walk `parentId` up from the last entry (pi re-opens a file with its
+ * last line as the leaf, docs/session-format.md; DECISIONS D26). Entries on other branches — left
+ * behind by `/tree` or a resumed fork point — are dropped instead of being interleaved by file order.
+ *
+ * A missing parent (the head of a file read from its tail only) ends the walk there; a parentId
+ * cycle (corrupt file) does too. Files whose entries carry no ids at all are returned unchanged.
+ */
+export function currentBranch(entries: SessionEntry[]): SessionEntry[] {
+  if (!entries.length) return entries;
+  const byId = new Map<string, SessionEntry>();
+  for (const e of entries) if (e && typeof e.id === "string" && e.id) byId.set(e.id, e);
+  const leaf = entries[entries.length - 1];
+  if (!byId.size || typeof leaf?.id !== "string" || !leaf.id) return entries;
+  // Pre-tree files (no parentId field) are linear by construction.
+  if (entries.some((e) => e && !("parentId" in e))) return entries;
+  const path: SessionEntry[] = [];
+  const seen = new Set<string>();
+  let cur: SessionEntry | undefined = leaf;
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    path.push(cur);
+    cur = typeof cur.parentId === "string" ? byId.get(cur.parentId) : undefined;
+  }
+  return path.reverse();
+}
+
 /** Convert pi session entries (from disk) into renderable items. */
 export function entriesToItems(entries: SessionEntry[]): Item[] {
   const items: Item[] = [];
   const toolIndex = new Map<string, ToolItem>();
 
-  for (const entry of entries) {
+  for (const entry of currentBranch(entries)) {
     if (entry.type === "compaction") {
       items.push({ id: entry.id, kind: "notice", text: "上下文已压缩", level: "info" });
       continue;
@@ -113,6 +157,20 @@ export function entriesToItems(entries: SessionEntry[]): Item[] {
         toolIndex.set(item.toolCallId, item);
         items.push(item);
       }
+    } else if (msg.role === "bashExecution") {
+      items.push({
+        id: entry.id,
+        ts: entry.timestamp,
+        kind: "bash",
+        command: String(msg.command ?? ""),
+        output: String(msg.output ?? "").slice(-BASH_KEEP),
+        exitCode: typeof msg.exitCode === "number" ? msg.exitCode : null,
+        cancelled: Boolean(msg.cancelled),
+        truncated: Boolean(msg.truncated),
+        ...(typeof msg.fullOutputPath === "string" ? { fullOutputPath: msg.fullOutputPath } : {}),
+        excludeFromContext: Boolean(msg.excludeFromContext),
+        status: "done",
+      });
     } else if (msg.role === "toolResult") {
       const target = toolIndex.get(String(msg.toolCallId ?? ""));
       if (target) {

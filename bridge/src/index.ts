@@ -641,7 +641,32 @@ async function main(): Promise<void> {
           case "prompt": {
             if (!(await requireStepUp())) return;
             const session = await sessions.openLive(msg.sessionId);
-            await session.prompt(String(msg.text ?? ""), msg.images);
+            await session.prompt(
+              String(msg.text ?? ""),
+              msg.images,
+              typeof msg.clientId === "string" ? msg.clientId.slice(0, 80) : undefined,
+              msg.behavior === "followUp" ? "followUp" : "steer",
+            );
+            return;
+          }
+          case "bash": {
+            // `!cmd` / `!!cmd` from the composer (#16): runs through pi so the output joins the context.
+            if (!(await requireStepUp())) return;
+            const command = String(msg.command ?? "").trim();
+            if (!command) return;
+            const session = await sessions.openLive(msg.sessionId);
+            await session.bash(command, msg.excludeFromContext === true);
+            return;
+          }
+          case "abortBash": {
+            if (!(await requireStepUp())) return;
+            sessions.get(msg.sessionId)?.abortBash();
+            return;
+          }
+          case "clearQueue": {
+            // The queue bar's 撤回: pi's queue back into the editor, like Alt+Up in the terminal (#14).
+            if (!(await requireStepUp())) return;
+            await sessions.get(msg.sessionId)?.withdrawQueue();
             return;
           }
           case "create": {
@@ -677,7 +702,8 @@ async function main(): Promise<void> {
           }
           case "compact": {
             if (!(await requireStepUp())) return;
-            await sessions.get(msg.sessionId)?.compact();
+            const instructions = typeof msg.instructions === "string" && msg.instructions.trim() ? msg.instructions.trim().slice(0, 4000) : undefined;
+            await sessions.get(msg.sessionId)?.compact(instructions);
             return;
           }
           case "answer": {

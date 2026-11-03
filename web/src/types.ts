@@ -33,7 +33,27 @@ export interface NoticeItem extends ItemBase {
   text: string;
   level?: "info" | "warn" | "error";
 }
-export type Item = UserItem | AssistantItem | ToolItem | NoticeItem;
+/** `!cmd` / `!!cmd` run through pi's RPC bash (#16). */
+export interface BashItem extends ItemBase {
+  kind: "bash";
+  command: string;
+  output: string;
+  exitCode?: number | null;
+  cancelled?: boolean;
+  truncated?: boolean;
+  fullOutputPath?: string;
+  excludeFromContext?: boolean;
+  status: "running" | "done";
+  error?: string;
+}
+export type Item = UserItem | AssistantItem | ToolItem | NoticeItem | BashItem;
+
+/** What pi extensions drew with ctx.ui.setStatus / setWidget / setTitle (fire-and-forget in RPC). */
+export interface ExtUi {
+  status: { key: string; text: string }[];
+  widgets: { key: string; lines: string[]; placement: "aboveEditor" | "belowEditor" }[];
+  title: string | null;
+}
 
 export interface ApprovalRequest {
   id: string;

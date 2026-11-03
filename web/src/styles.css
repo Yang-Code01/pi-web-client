@@ -1809,3 +1809,45 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 @media (prefers-reduced-motion: reduce) {
   .pin-menu { animation: none; }
 }
+
+/* #18 extension status / widgets (ctx.ui.setStatus / setWidget over RPC) */
+.composer .ext-widgets:empty { display: none; }
+.composer .ext-widgets { display: flex; flex-direction: column; gap: 4px; }
+.composer .ext-widgets.above { margin-bottom: 6px; }
+.composer .ext-widgets.below { margin-top: 6px; }
+.composer .ext-widget { margin: 0; padding: 6px 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel); color: var(--faint); font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 9.5em; overflow-y: auto; }
+.composer .ext-status { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--faint); font: 12px/1.4 var(--mono); }
+.composer .ext-status-item { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+/* #14 queue bar: what pi will take after this step (引导) or after this run (之后) */
+.composer .queue-bar { margin-bottom: 6px; padding: 6px 10px; border: 1px dashed var(--line); border-radius: 10px; background: var(--panel); display: flex; flex-direction: column; gap: 3px; }
+.composer .queue-bar[hidden] { display: none; }
+.composer .queue-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--faint); }
+.composer .queue-item { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; min-width: 0; }
+.composer .queue-tag { flex: none; font-size: 11px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--accent); }
+.composer .queue-item.followUp .queue-tag { color: var(--faint); }
+.composer .queue-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* #16 `!cmd` card */
+.msg.bash .bash-card { border: 1px solid var(--line-soft); border-radius: 10px; background: #0a0f14; overflow: hidden; }
+.msg.bash .bash-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 10px; border-bottom: 1px solid var(--line-soft); }
+.msg.bash .bash-cmd { font: 12.5px/1.4 var(--mono); color: var(--text); word-break: break-all; flex: 1 1 200px; }
+.msg.bash .bash-tag { font-size: 11px; color: var(--accent); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; }
+.msg.bash .bash-tag.off { color: var(--faint); }
+.msg.bash .bash-state { font: 11.5px var(--mono); color: var(--ok); }
+.msg.bash .bash-state.bad { color: var(--danger); }
+.msg.bash.running .bash-state { color: var(--warn); }
+.msg.bash .bash-out { margin: 0; padding: 8px 10px; font: 12px/1.45 var(--mono); color: #c9d1d9; white-space: pre-wrap; word-break: break-word; max-height: 22em; overflow-y: auto; }
+.msg.bash .bash-out:empty { display: none; }
+.msg.bash .bash-foot { padding: 6px 10px; font-size: 12px; color: var(--faint); border-top: 1px solid var(--line-soft); word-break: break-all; }
+.msg.bash .bash-foot.bad { color: var(--danger); }
+
+/* #15 会话 section of the model sheet */
+.session-info .info-grid { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 12.5px; margin: 4px 0 8px; }
+.session-info .info-k { color: var(--faint); }
+.session-info .info-v { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+.session-info .info-file { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.session-info .info-path { font: 11.5px var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 220px; min-width: 0; }
+.session-info .info-compact { display: flex; gap: 6px; }
+.session-info .info-compact input { flex: 1; min-width: 0; box-sizing: border-box; padding: 8px 10px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; }
+.session-info .info-compact input:focus { outline: none; border-color: var(--accent); }

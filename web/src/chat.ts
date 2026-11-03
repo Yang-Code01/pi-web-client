@@ -2,7 +2,10 @@ import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./
 import { highlightFragment } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
-import type { Item, ToolItem, UserItem } from "./types.ts";
+import type { BashItem, Item, ToolItem, UserItem } from "./types.ts";
+
+/** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
+const BASH_SHOW = 20000;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -114,6 +117,8 @@ export class ChatView {
   private written = new Map<string, { tool: string; at: number }>();
   /** Assistant replies the user folded; kept across rebuilds and session re-renders. */
   private collapsed = new Set<string>();
+  /** Set by the app: the 停止 button on a running `!cmd` card. */
+  onBashStop: ((id: string) => void) | null = null;
   /** Live view of the running tool call — nothing here is rendered in the transcript. */
   private live: LiveInfo = {};
   /** Which tool call the live output belongs to; a stale update must not overwrite a newer tool. */
@@ -399,6 +404,21 @@ export class ChatView {
     this.scrollToEnd();
   }
 
+  /**
+   * The bridge's copy of a message this page already drew optimistically under `localId`: keep the
+   * node (the turn rail points at it) and only re-key it. Pages that never drew it just add it.
+   */
+  adopt(localId: string, item: Item): void {
+    const node = this.cards.get(localId);
+    if (!node) {
+      this.add(item);
+      return;
+    }
+    this.cards.delete(localId);
+    this.cards.set(item.id, node);
+    if (this.collapsed.delete(localId)) this.collapsed.add(item.id);
+  }
+
   replace(id: string, item: Item): void {
     const node = this.cards.get(id);
     this.draftBuffers.delete(id);
@@ -593,6 +613,7 @@ export class ChatView {
       return node;
     }
     if (item.kind === "tool") return this.buildTool(item);
+    if (item.kind === "bash") return this.buildBash(item);
 
     const wrap = el("div", `msg ${item.kind}`);
     const who = el("div", "who");
@@ -763,6 +784,66 @@ export class ChatView {
       body.append(tag);
     }
     return body;
+  }
+
+  /** A `!cmd` the user ran: its own card, not part of the model's tool module (#16). */
+  private buildBash(item: BashItem): HTMLElement {
+    const wrap = el("div", `msg bash ${item.status}`);
+    wrap.append(el("div", "who", `你 · ${item.excludeFromContext ? "!!" : "!"} 命令 · ${timeOf(item.ts)}`));
+    const card = el("div", "bash-card");
+    const head = el("div", "bash-head");
+    head.append(el("code", "bash-cmd", `$ ${item.command}`));
+    const tag = el("span", `bash-tag${item.excludeFromContext ? " off" : ""}`, item.excludeFromContext ? "不进上下文" : "下一条消息时进上下文");
+    tag.title = item.excludeFromContext
+      ? "!! 命令：输出存在会话里，但不会发给模型"
+      : "! 命令：输出会在你发下一条消息时一起交给模型（pi 的规则）";
+    head.append(tag);
+    let state: string;
+    let cls = "";
+    if (item.status === "running") state = "运行中…";
+    else if (item.error) {
+      state = "失败";
+      cls = " bad";
+    } else if (item.cancelled) {
+      state = "已停止";
+      cls = " bad";
+    } else if (item.exitCode === 0) state = "exit 0";
+    else {
+      state = item.exitCode == null ? "结束" : `exit ${item.exitCode}`;
+      cls = item.exitCode == null ? "" : " bad";
+    }
+    head.append(el("span", `bash-state${cls}`, state));
+    if (item.status === "running") {
+      const stop = el("button", "tool-btn bash-stop", "停止") as HTMLButtonElement;
+      stop.type = "button";
+      stop.onclick = () => this.onBashStop?.(item.id);
+      head.append(stop);
+    }
+    const out = el("pre", "bash-out", item.output || (item.status === "running" ? "" : "（没有输出）"));
+    card.append(head, out);
+    if (item.error) card.append(el("div", "bash-foot bad", item.error));
+    if (item.truncated) card.append(el("div", "bash-foot", `输出太长，只显示末尾。完整内容：${item.fullOutputPath ?? "（pi 没给路径）"}`));
+    wrap.append(card);
+    return wrap;
+  }
+
+  /** Streamed output of a running `!cmd`. */
+  bashDelta(id: string, text: string): void {
+    const node = this.cards.get(id);
+    const out = node?.querySelector<HTMLElement>(".bash-out");
+    if (!out) return;
+    const next = (out.textContent ?? "") + text;
+    out.textContent = next.length > BASH_SHOW ? next.slice(-BASH_SHOW) : next;
+    out.scrollTop = out.scrollHeight;
+    this.scrollToEnd();
+  }
+
+  /** Bubbles of queued messages that were pulled back into the editor (#9, #14). */
+  remove(ids: string[]): void {
+    for (const id of ids) {
+      this.cards.get(id)?.remove();
+      this.cards.delete(id);
+    }
   }
 
   private buildTool(item: ToolItem): HTMLElement {
