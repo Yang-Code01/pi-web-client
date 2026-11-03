@@ -130,13 +130,12 @@ export class PeerHost {
     };
   }
 
-  private async call(pathname: string, body?: unknown): Promise<any> {
-    const payload = JSON.stringify(body ?? {});
+  private async request(method: "GET" | "POST", pathname: string, body?: unknown): Promise<any> {
     const res = await fetch(`http://127.0.0.1:${this.opts.port}${pathname}`, {
-      method: "POST",
+      method,
       headers: { "content-type": "application/json" },
-      body: payload,
-      signal: AbortSignal.timeout(2000),
+      body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
+      signal: AbortSignal.timeout(4000),
     });
     const text = await res.text();
     let parsed: any = null;
@@ -146,8 +145,24 @@ export class PeerHost {
       parsed = { error: text };
     }
     if (!res.ok) throw new Error(parsed?.error ?? `peer 回 ${res.status}`);
-    await this.poll();
+    if (method === "POST") await this.poll();
     return parsed;
+  }
+
+  private call(pathname: string, body?: unknown): Promise<any> {
+    return this.request("POST", pathname, body);
+  }
+
+  threads(): Promise<{ threads: unknown[] }> {
+    return this.request("GET", "/threads");
+  }
+
+  history(peer: string, limit = 200): Promise<{ entries: unknown[] }> {
+    return this.request("GET", `/messages?peer=${encodeURIComponent(peer)}&limit=${limit}`);
+  }
+
+  sendText(peer: string, text: string): Promise<{ ok: boolean; id: string; at: number }> {
+    return this.request("POST", "/send", { peer, text });
   }
 
   addManual(addr: string): Promise<any> {

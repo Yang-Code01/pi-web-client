@@ -330,9 +330,39 @@ async function main(): Promise<void> {
     }
 
     // ---------------------------------------------------------------- peer (#45)
+    // 页面要 cookie；本机回环不加 cookie 也放行，方便 e2e 与 `/api/peer` 的健康检查。
+    // 隧道过来又没 cookie 的请求一律 401，否则 `/api/peer/add` 就能被公网改配置。
+    const loopbackPeer = /^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(req.socket.remoteAddress ?? "");
+    if (url.pathname.startsWith("/api/peer") && !ok && !loopbackPeer) {
+      return json(res, 401, { error: "unauthorized" });
+    }
     if (url.pathname === "/api/peer") {
       const view = peer.view();
       return json(res, 200, { ...view, enabled: peerOn && view.enabled });
+    }
+    if (url.pathname === "/api/peer/threads" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.threads());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/messages" && req.method === "GET") {
+      const who = url.searchParams.get("peer") ?? "";
+      if (!who) return json(res, 400, { error: "缺 peer" });
+      try {
+        return json(res, 200, await peer.history(who, Number(url.searchParams.get("limit")) || 200));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/send" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
     }
     if (url.pathname === "/api/peer/add" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));

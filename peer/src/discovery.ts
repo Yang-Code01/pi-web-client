@@ -100,9 +100,10 @@ export class Discovery extends EventEmitter {
       if (err) this.log(`组播发送失败：${err.message}`);
     });
     for (const target of this.manualTargets()) {
-      sock.send(payload, target.port, target.address, (err) => {
-        if (err) this.log(`手动地址 ${target.address}:${target.port} 发送失败：${err.message}`);
-      });
+      // 手动地址填的是对端的 HTTP 口（`ip:7865`），不是组播端口：UDP 单播到那里没人收，
+      // 所以每轮都敲一次 `/peer/hello`。组播被交换机挡住时，这是唯一能把在线状态维持住的路
+      // —— 只敲一次的话，对方 30 秒不上 announce 就从列表里掉出去了。
+      void this.sendHello(target.address, target.port);
     }
   }
 

@@ -23,7 +23,24 @@
 
     <main>
       <section id="view-chat" class="view" hidden>
-        <p class="empty">还没有对话。第 2 片接上文字消息后，这里会出现 1:1 的聊天线程。</p>
+        <div class="chat">
+          <aside class="threads">
+            <ul id="threads"></ul>
+            <p id="threads-empty" class="empty">还没有对话。从「在线」里选一个人，点「发消息」。</p>
+          </aside>
+          <div class="thread">
+            <p id="thread-empty" class="empty">左边还没有人。打开「在线」，点一个人的「发消息」。</p>
+            <div id="thread-box" hidden>
+              <header id="thread-head" class="thread-head"></header>
+              <ul id="messages" class="messages"></ul>
+              <p id="send-error" class="error" hidden></p>
+              <form id="compose" class="compose">
+                <textarea id="text" rows="2" placeholder="说点什么。Enter 发送，Shift+Enter 换行" autocomplete="off"></textarea>
+                <button type="submit">发送</button>
+              </form>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section id="view-contacts" class="view" hidden>

@@ -3,11 +3,15 @@ import os from "node:os";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
+import type { History } from "./history.ts";
+import type { Messages } from "./messages.ts";
 
 export interface PeerContext {
   cfg: PeerConfig;
   nodeId: string;
   discovery: Discovery;
+  history: History;
+  messages: Messages;
 }
 
 const MAX_BODY = 1024 * 1024;
@@ -54,7 +58,7 @@ function readBody(req: http.IncomingMessage): Promise<any> {
  * - 对端是谁不看它自报的字段，看 `req.socket.remoteAddress`（决定 7/10）。
  */
 export function createPeerServer(ctx: PeerContext): http.Server {
-  const { cfg, nodeId, discovery } = ctx;
+  const { cfg, nodeId, discovery, history, messages } = ctx;
   const identity = () => ({ nodeId, nickname: cfg.nickname, hostname: os.hostname(), port: cfg.port, version: VERSION });
 
   return http.createServer(async (req, res) => {
@@ -102,10 +106,36 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         return json(res, 200, { ok: true, manual: cfg.manual });
       }
 
-      if (url.pathname === "/peer/inbox") {
-        // 第 2 片接文字与回执，第 3 片接好友请求。现在只回「协议在、kind 不认识」，
-        // 免得对端把 501 当成「这台机器不是 peer」。
-        return json(res, 400, { error: "unknown kind", proto: PROTO });
+      if (url.pathname === "/peer/inbox" && req.method === "POST") {
+        const body = await readBody(req).catch(() => null);
+        if (!body) return json(res, 400, { error: "bad body", retryable: false });
+        const result = await messages.accept(from, body);
+        return json(res, result.status, result.body);
+      }
+
+      // 以下三条只给本机页面 / pi 工具用。历史只在回环上可读（决定 4；隧道里那条 403 是设计好的）。
+      if (url.pathname === "/threads" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        return json(res, 200, { ok: true, threads: history.threads(discovery.online()) });
+      }
+
+      if (url.pathname === "/messages" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const peerId = url.searchParams.get("peer") ?? "";
+        if (!peerId) return json(res, 400, { error: "缺 peer" });
+        const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 200));
+        return json(res, 200, { ok: true, peer: peerId, entries: history.read(peerId, limit) });
+      }
+
+      if (url.pathname === "/send" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        try {
+          const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""));
+          return json(res, 200, result);
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
       }
 
       return json(res, 404, { error: "not found" });

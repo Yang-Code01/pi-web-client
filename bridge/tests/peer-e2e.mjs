@@ -108,6 +108,72 @@ try {
   await until("手动地址后 C 也看到 A", seenBy(17968, sa), 8000);
   log("ok 手动地址兜底");
 
+  // ---- 第 2 片：1:1 文字 ----
+  const send = await fetch("http://127.0.0.1:17965/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sb, text: "你好，乙" }),
+  });
+  if (!send.ok) throw new Error(`/send 回 ${send.status}：${await send.text()}`);
+
+  const inB = await until(
+    "B 收到文字",
+    async () => {
+      const res = await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`);
+      const body = await res.json();
+      return body.entries?.some((e) => e.kind === "text" && e.text === "你好，乙") ? body : false;
+    },
+    8000,
+  );
+  log("ok 文字送到对端");
+
+  const entry = inB.entries.find((e) => e.kind === "text" && e.text === "你好，乙");
+  const dupRes = await fetch("http://127.0.0.1:17966/peer/inbox", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ proto: 1, kind: "text", message: entry }),
+  });
+  const dupBody = await dupRes.json();
+  if (!dupRes.ok || !dupBody.dup) throw new Error(`重复投递应回 dup，实际 ${dupRes.status} ${JSON.stringify(dupBody)}`);
+  const again = await (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`)).json();
+  if (again.entries.filter((e) => e.text === "你好，乙").length !== 1) throw new Error("重复投递写了两行");
+  log("ok 同一条消息只存一次（dedupe）");
+
+  const receipt = await until(
+    "A 拿到 delivered 回执",
+    async () => {
+      const res = await fetch(`http://127.0.0.1:17965/messages?peer=${sb}`);
+      const body = await res.json();
+      return body.entries?.some((e) => e.kind === "receipt" && e.ack?.status === "delivered") ? body : false;
+    },
+    8000,
+  );
+  void receipt;
+  log("ok 送达回执（append 一行 receipt）");
+
+  const tooLong = await fetch("http://127.0.0.1:17965/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sb, text: "字".repeat(12_000) }),
+  });
+  if (tooLong.status !== 400) throw new Error(`超长文字应 400，实际 ${tooLong.status}`);
+  log("ok 超 32 KB 拒收");
+
+  const spoof = await fetch("http://127.0.0.1:17966/peer/inbox", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      proto: 1,
+      kind: "text",
+      message: { id: "spoof-1", at: Date.now(), from: { nodeId: "who-am-i", nickname: "冒充者", port: 1 }, to: { kind: "node", id: sb }, kind: "text", text: "我是甲" },
+    }),
+  });
+  const spoofBody = await spoof.json();
+  if (spoof.status !== 409 || spoofBody.retryable !== true) {
+    throw new Error(`来源不明的 from 应 409 且可重试，实际 ${spoof.status} ${JSON.stringify(spoofBody)}`);
+  }
+  log("ok 不认识的 from 拿不到写入（409 可重试）");
+
   // 离线超时：B 关掉后 30 秒内必须从 A 的列表里消失（这里只验「关了就不是 online 了」，
   // 30 秒本身等不起，所以直接杀掉再看一轮 —— 真实超时逻辑由 prune 的 OFFLINE_MS 保证）。
   B.kill();
