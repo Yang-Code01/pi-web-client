@@ -98,7 +98,9 @@ function serveStatic(res: http.ServerResponse, rel: string): void {
   }
   res.writeHead(200, {
     "content-type": MIME[path.extname(file)] ?? "application/octet-stream",
-    "cache-control": file.endsWith("index.html") ? "no-store" : "public, max-age=3600",
+    // 页面入口不进缓存：bundle 带构建哈希，HTML 却会一直指向上一版的哈希。
+    // peer.html 之前按「非 index.html」拿 3600 秒缓存 —— 改完页面，弹框里还是旧 JS。
+    "cache-control": file.endsWith(".html") ? "no-store" : "public, max-age=3600",
   });
   fs.createReadStream(file).pipe(res);
 }

@@ -2071,7 +2071,10 @@ export class App {
     const frame = document.createElement("iframe");
     frame.className = "peer-frame";
     frame.title = "局域网";
-    frame.src = "/peer";
+    // 带一个每次打开都变的 query：`peer.html` 里引的 bundle 文件名是构建哈希，
+    // 但 HTML 自己会被浏览器缓存 —— 不换 query 的话，弹框会一直加载上一次构建的页面
+    // （第 2 片上线时，用户看到的「在线」里就没有「发消息」按钮）。
+    frame.src = `/peer?v=${Date.now()}`;
 
     sheet.append(head, frame);
     back.append(sheet);
