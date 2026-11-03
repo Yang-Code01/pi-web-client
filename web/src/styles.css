@@ -833,6 +833,9 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* ---------------------------------------------------------------- modal */
 .modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); display: grid; place-items: center; padding: 20px; z-index: 50; }
+/* Opened from inside a sheet (z-index 60): the modal band has to beat its own parent, or the sheet
+   swallows the clicks (#49 — this also un-hid the passphrase prompt when a write starts in 设置). */
+.modal.hi { z-index: 62; }
 .modal form { width: min(360px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: grid; gap: 12px; }
 .modal input { padding: 11px 13px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; font-family: var(--mono); }
 
@@ -1164,11 +1167,14 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 .viewer {
   --viewer-w: min(760px, 55vw);
-  position: fixed; top: 0; right: 0; bottom: 0; width: var(--viewer-w); max-width: 100vw; z-index: 55;
+  position: fixed; top: 0; right: 0; bottom: 0; width: var(--viewer-w); max-width: 100vw; z-index: 46;
   display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--bg, #0b0d10);
   border-left: 1px solid var(--line); box-shadow: -18px 0 50px rgba(0, 0, 0, 0.45);
   animation: viewer-in 160ms ease-out; outline: none;
 }
+/* D111: 与终端同一条层带 —— 谁最后被点 / 聚焦谁拿 47，另一扇回落到自己的底值（预览 46 / 终端 45）。
+   两扇窗都压不过口令 modal 50 与底部 sheet 60。 */
+.viewer.front { z-index: 47; }
 @keyframes viewer-in { from { transform: translateX(24px); opacity: 0.4; } }
 .viewer.full { width: 100vw; border-left: 0; }
 .viewer.resizing { user-select: none; }
@@ -1486,8 +1492,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* Terminal dialog (D92 · Q-007): the shell runs in the bridge, this is only the view. 它浮在页面上，
    不再占对话栏的宽度；最小化 = [hidden]，桥里的 shell 照旧在跑。
-   z-index 45：在顶栏（20）和输入框浮层（40）之上，但比弹口令的 modal（50）、文件预览（55）、
-   底部 sheet（60）低 —— 那些东西该盖住终端。 */
+   z-index 45：在顶栏（20）和输入框浮层（40）之上，但比弹口令的 modal（50）、底部 sheet（60）低 ——
+   那些东西该盖住终端。和文件预览（46）是平等的两扇窗，D111：点 / 聚焦哪一扇，哪一扇拿 47。 */
 /* 现在宽 / 高由 JS 按窗口与缩放算好写进 style（CSS 里的 vh/vw 在 #app 的 zoom 下会被再乘一次），
    这里的尺寸只是 JS 未跑之前的兜底。 */
 .term-dock {
@@ -1505,6 +1511,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 @keyframes term-pop { from { transform: translate(-50%, 10px); opacity: 0.4; } }
 /* 拖过 / 拉过之后是 left/top 钉住的，就不再重放「从底部弹上来」那个位移。 */
 .term-dock.pinned { animation: none; }
+/* D111: 最后被点 / 聚焦的那扇浮窗在上；终端抢到 47 时压在文件预览（46）上面。 */
+.term-dock.front { z-index: 47; }
 /* D93: 标题栏空白处是「拖走」，右下角那只角是「拖大拖小」。 */
 body.win-dragging, body.win-dragging .term-head { cursor: grabbing; user-select: none; }
 body.win-resizing, body.win-resizing .term-grip, body.win-resizing .term-resize { cursor: nwse-resize; user-select: none; }
@@ -2044,6 +2052,11 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .ext-host .ext-reload { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
 .ext-host .login-row a { color: var(--accent); text-decoration: none; }
 .ext-switch { display: flex; gap: 8px; align-items: center; font-size: 13px; cursor: pointer; }
+/* #49: the pi CLI itself, above the inventory — the program every row below runs in. */
+.settings-sheet .ext-pi { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.settings-sheet .ext-pi .settings-foot { padding-top: 0; flex-wrap: wrap; }
+.settings-sheet .ext-pi .pi-name { font-size: 13px; font-weight: 600; }
+.settings-sheet .ext-pi .pi-ver { font: 12px var(--mono); color: var(--faint); }
 
 /* ---------------------------------------------------------------- 记录（D108）
    顶栏 🐞 打开的本地随手记：左边一份列表、右边一个常驻编辑器。

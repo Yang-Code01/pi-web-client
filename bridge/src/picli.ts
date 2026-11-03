@@ -12,7 +12,7 @@ export type PiCliOp =
   | { op: "pkg.list"; cwd?: string }
   | { op: "pkg.install"; source: string; local?: boolean; cwd?: string }
   | { op: "pkg.remove"; source: string; local?: boolean; cwd?: string }
-  | { op: "pkg.update"; target: "self" | "extensions" | "models" | "all" | string; cwd?: string }
+  | { op: "pkg.update"; target: "self" | "extensions" | "models" | "all" | string; force?: boolean; cwd?: string }
   | { op: "mcp.list"; cwd?: string }
   | { op: "mcp.add"; name: string; command?: string; args?: string[]; url?: string; env?: string[]; local?: boolean; cwd?: string; description?: string }
   | { op: "mcp.remove"; name: string; local?: boolean; cwd?: string }
@@ -47,6 +47,8 @@ export function buildArgs(req: Record<string, unknown>): { args: string[]; timeo
     case "pkg.update": {
       const t = String(req.target ?? "self");
       const args = t === "self" ? ["update"] : t === "extensions" ? ["update", "--extensions"] : t === "models" ? ["update", "--models"] : t === "all" ? ["update", "--all"] : ["update", text(t, "包来源")];
+      // #49: `--force` reinstalls pi even when it is already the latest (the failure-recovery path).
+      if (req.force === true) args.push("--force");
       return { args, timeoutMs: 15 * 60_000, parse: null };
     }
     case "mcp.list":

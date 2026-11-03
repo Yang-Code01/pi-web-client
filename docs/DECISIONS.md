@@ -985,7 +985,7 @@
 
 **决定：**
 - 入口只有一个：顶栏 `>_ 终端`，紧挨着 `📂 产物`。右栏那一节（标题 + 按钮 + 提示）整段删掉。
-- 终端是**浮在页面上的 dialog**（`position: fixed`，挂进 `#app` 跟着外观缩放；z-index 45 —— 在顶栏 20 与输入框浮层 40 之上，比口令 modal 50、文件预览 55、底部 sheet 60 低，那些东西该盖住终端），不再是对话栏里的一行；因此 Q-026 的「打开终端先折叠右栏」一并作废。
+- 终端是**浮在页面上的 dialog**（`position: fixed`，挂进 `#app` 跟着外观缩放；z-index 45 —— 在顶栏 20 与输入框浮层 40 之上，比口令 modal 50、底部 sheet 60 低，那些东西该盖住终端；和文件预览的上下关系见 D111），不再是对话栏里的一行；因此 Q-026 的「打开终端先折叠右栏」一并作废。
 - `－` = **最小化**：只把 dialog `hidden`，标签、xterm、桥里的进程都不动；顶栏按钮亮起并写数量（`>_ 终端 2`）。只有标签上的 `×` / `关闭` 才 `term.close`。
 - 刷新 / 重连不自动弹窗：`term.list` 接管回来的标签先挂在收起态，按钮上有数量，点一下回到同一个进程（桥 `term.replay` 全量回放）。
 - 收起后再打开要重新 `fit()`：xterm 在 `display:none` 的容器里量不出尺寸，所以 `showTermDock()` 里补一次 fit + focus；反过来，接管 shell 时 dialog 必须短暂可见才挂 xterm（同一个任务里立刻藏回去，不会闪），否则挂上去的是 0 宽字符。
@@ -1264,3 +1264,37 @@
 **已知限制**：`zh-TW` / `zh-HK` 落简体中文（繁体本次不做）；`pi` / 命令 / 路径 / `md`·`json` 这些不译；界面把一句话拆成几段拼接的地方（`"打开 "` + 链接）在语序不同的语言里依赖键保留首尾空格，译文顺序无法自由调整（**可改**：真要治得重排 DOM）。
 
 **验证**：`npm --prefix web run typecheck`（含 i18n-check）；`bridge/tests/i18n-ui.mjs`（en-US 上下文里登录 → 开「Appearance & language」→ 切三语 → 发一条消息，断言 `<html lang>`、顶栏按钮文字、面板标题都跟着变，截中 / 英 / 日三张图）；其余既有 Playwright 脚本全部固定 `locale: "zh-CN"` 后原样通过。
+
+
+## D111 文件预览与终端按「最后被点 / 聚焦的那扇在前」叠放
+
+**问题：** 同时打开文件预览（右侧固定面板）和终端（浮在页面上的 dialog）时，预览永远盖着终端：终端默认 1080px 宽、底部居中，和右侧 760px 的预览在右下角重叠一大块，而预览的 z-index（55）比终端（45）高。用户点终端、在里面打字，被预览挡掉的那半截也不会让开；点预览时它本来就在上面，于是看起来像「终端点不动」。
+
+**决定：**
+- 两扇窗放进同一条层带（终端底值 45、预览 46），谁最后被点 / 聚焦谁拿 `.front` = 47；同一时间只有一扇带 `.front`（`App.raiseWindow()`），另一扇回落到自己的底值，所以不会有平手。
+- 判定入口集中在 `App.wireWindowRaise()`：窗内 `pointerdown`（终端标题栏 / xterm、预览的头部与正文）、窗内 `focusin`（键盘 Tab 进来）；打开或换文件时主动抬到前面（`openPreview()` 与 `showTermDock()`）。点进 html 预览的 iframe 时指针事件不跨文档，靠 `window` 的 `blur` + 一 tick 后看 `document.activeElement` 是不是那扇窗里的 `IFRAME` 补一次（`blur` 到别的窗口时不打扰叠放）。
+- 整条层带仍在口令 modal（50）与底部 sheet（60）之下：能盖住浮窗的只有真正的模态，另一扇窗不行。因此预览从 55 降到 46/47 之后，口令 modal 第一次能盖住它（以前会躲在预览后面）。
+
+**为什么：** 两扇窗都是「随时要用」的工具，不是模态；用户对浮窗的预期就是桌面窗口那一套——点谁谁到前面。用固定 z-index 排序（预览永远在上）等于让重叠区域里的终端永远用不了，只能先关预览。层级带留在 modal 之下，是因为输入口令 / 回答问卷这类「必须处理完」的东西不该被工具窗压住。
+
+**可改：** 层带数值（45/46/47）与「前窗要不要更深的阴影」都在 `web/src/styles.css` 的 `.viewer` / `.term-dock` 两节；判定入口在 `App.wireWindowRaise()`。
+
+**验证：** `probes/window-front.mjs`（桩桥 + 真 Chromium，量 `elementFromPoint` 而不是只看 class）：先开终端（47）→ 打开 md 预览后它盖过终端（重叠点命中 `.viewer`，预览 47 / 终端 45）→ 点终端左侧可见区（300, 终端中线）终端回到 47、重叠点命中 `.term-dock` → 点预览上方（1300,200）预览回到 47 → 换成 html 预览、把终端抬回前面后点进 iframe，预览仍能盖回来 → `.modal` 仍是 50 > 47。截图 `.scratch/window-front/shots/`。回归：`probes/round12-preview-links.mjs`、`probes/term-dialog.mjs` 全绿，`npm run typecheck` 干净。
+
+## D112 设置里能更新 pi 本体（`#49`）
+
+**问题：** 网页客户端自己就是 pi 的前端，但「升级 pi」只能开终端敲 `pi update`；设置里的「关于」只写着 `pi 1.4.0`，看着像版本号，其实没法动。桥里其实早就有 `pkg.update` 通道（`target: self` 就是 `pi update`），只是前端从来只拿它更新扩展包。
+
+**决定：**
+- 入口放在「扩展与 MCP」页顶部一行「pi 本体」：当前版本、最新版本（带来源）、检查时间、`重新检查`、`更新 pi`。它是这一页唯一不属于「装了哪些东西」的东西，但正是下面所有东西跑在里面的程序，所以放在清单上面而不是塞进清单。
+- 检查是懒的：第一次画这一页时发一次 `pi.update.check`，桥里按来源缓存 30 分钟（`bridge/src/piupdate.ts` 的 memo，与扩展版本检查同一条 `newer()` 语义）；`重新检查` 带 `force` 绕过缓存。检查是读操作，公网也能查。
+- 来源顺序：先问 **npm 安装源**（按 npm 自己的规则解析 `registry`：`npm_config_registry` / `NPM_CONFIG_REGISTRY` / `~/.npmrc` / `%APPDATA%/npm/etc/npmrc` / 官方源），失败再问 `https://pi.dev/api/latest-version`，两个都失败就把两条失败原因一起显示，`更新 pi` 仍然可点（`pi update` 自己会重新查一次，不该因为我们查不到就不让用户动）。
+- 点更新先弹确认框（`.modal.hi`）：要联网、可能几分钟、会替换全局安装的 pi、期间别关页面、失败没有自动回滚。确认后走现成的 `picli` 通道（`pkg.update` + `target: "self"`，失败后那一次带 `--force`），输出进同一个控制台，公网只读与 step-up 由桥原有逻辑拦。
+- 更新成功后桥自己重读包里的 `package.json` 并 `broadcast({type:"pi.version"})`：页面上的版本号立刻变，**不用重启桥**。但正在跑的会话进程是旧代码，所以提示「已开着的会话仍是旧版本」，给一颗 `重启当前会话`（现有 `reload`）；另给 `看更新日志`，点了才切页，不自动跳走。
+- 顺带修了一个既有的层级 bug：`.sheet-back`（60）盖在 `.modal`（50）之上，所以**在设置面板里**触发的口令验证框（写操作要 `requireStepUp`）其实被面板挡住了，只能盲打。新增 `.modal.hi { z-index: 62 }`，确认框与口令框都用它 —— 从弹层里打开的模态必须压过它自己的父层。
+
+**为什么：** 用户升级 pi 的动机几乎总是「网页客户端里少了个新功能」，所以要更新的东西就该出现在同一个设置面板里，而不是让他切到终端。检查与安装必须分成两件事：检查随便点，安装要确认，因为后者会替换掉正在服务这台网页的程序，失败时没有回滚。版本号必须从磁盘重读而不能乐观 +1，否则一次失败的 `npm install` 会让页面报一个并不存在的版本。
+
+**可改：** 缓存时长（`bridge/src/piupdate.ts` 的 `TTL`）、来源顺序与文案、确认框里的话、`--force` 是不是直接给 —— 都在 `paintPiUpdate()` / `confirmPiUpdate()` 与 `piupdate.ts` 顶部。
+
+**验证：** `probes/pi-update.mjs`（桩桥 + 真 Chromium）：行里显示 `pi 1.4.0` / `最新 1.5.0（npm …）`，懒检查只发一次且不带 `force`；确认框写着「全局安装的 pi（1.4.0 → 1.5.0）」且 z-index 62 > 弹层 60、屏幕中心的点击真的落在框上；确认后桥收到 `{op: pkg.update, target: self}`（无 `force`）；安装成功后行变 `pi 1.5.0` +「已是最新」+「已更新到 1.5.0」+ 重启/日志按钮，控制台里是 `Updated pi from 1.4.0 to 1.5.0`；`看更新日志` 切页并读到内容；失败时出现「强制重装（--force）」，点它确认后桥收到 `force: true`；查不到最新版时显示两条失败原因而按钮仍在；`重新检查` 的请求带 `force: true`；公网时按钮禁用且有只读提示。真实网络另跑过两次 `piLatest(true)`：正常拿到 `{"latest":"1.5.0","source":"npm 源 registry.npmmirror.com"}`，把 registry 指到死端口后回落到 `{"latest":"1.5.0","source":"pi.dev"}`。回归：`probes/window-front.mjs`、`probes/round12-preview-links.mjs`、`probes/term-dialog.mjs` 全绿，`npm run typecheck` 干净。截图 `.scratch/pi-update/shots/`。
