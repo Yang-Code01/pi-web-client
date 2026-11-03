@@ -144,7 +144,7 @@ try {
   const retryEnd = sliceA.findIndex((m) => m.type === "notice" && /重试后仍失败/.test(m.text));
   check(firstIdle > retryEnd, "no idle status before the retried run settled (agent_end ≠ end)");
   const duringRetry = piLog().find((e) => e.text === "sent during retry");
-  check(duringRetry?.t === "prompt" && duringRetry.behavior === "followUp", `message sent mid-retry was queued (pi saw ${JSON.stringify(duringRetry)})`);
+  check(duringRetry?.t === "prompt" && (duringRetry.behavior === "steer" || duringRetry.behavior === "followUp"), `message sent mid-retry was queued (pi saw ${JSON.stringify(duringRetry)})`);
   check(!notices(sid).some((n) => /already processing/i.test(n.text)), "no 'Agent is already processing' error");
   const errs = sliceA.filter((m) => (m.type === "item.replace" || m.type === "item.add") && m.item?.stopReason === "error").map((m) => m.item.errorMessage);
   check(errs.includes("429 Too Many Requests") && errs.includes("401 invalid api key"), `errorMessage carried on assistant items (${JSON.stringify(errs)})`);
@@ -157,17 +157,21 @@ try {
   await waitFor((m) => m.type === "delta" && m.sessionId === sid && seen.indexOf(m) >= markB, 10000, "streaming");
   send({ type: "prompt", sessionId: sid, text: "queued-1" });
   send({ type: "prompt", sessionId: sid, text: "queued-2" });
-  await waitFor((m) => m.type === "queue" && m.sessionId === sid && m.followUp?.length === 2, 10000, "two queued");
+  await waitFor((m) => m.type === "queue" && m.sessionId === sid && (m.steering?.length ?? 0) + (m.followUp?.length ?? 0) === 2, 10000, "two queued");
   send({ type: "abort", sessionId: sid });
   const restore = await waitFor((m) => m.type === "queue.restore" && m.sessionId === sid, 10000, "queue.restore");
   check(JSON.stringify(restore.texts) === JSON.stringify(["queued-1", "queued-2"]), `queued text handed back (${JSON.stringify(restore.texts)})`);
   await waitFor((m) => m.type === "notice" && m.sessionId === sid && /已撤回 2 条/.test(m.text), 10000, "withdraw notice");
-  const rebuilt = [...seen.slice(markB)].reverse().find((m) => m.type === "items" && m.sessionId === sid);
-  check(rebuilt && !rebuilt.items.some((it) => it.kind === "user" && /^queued-/.test(it.text)), "withdrawn bubbles removed from the transcript");
-  check(rebuilt && rebuilt.items.some((it) => it.kind === "user" && it.text === "SLOW stream"), "the sent message stays");
+  const removed = seen.slice(markB).find((m) => m.type === "item.remove" && m.sessionId === sid);
+  const userIdsByText = new Map(seen.filter((m) => m.type === "item.add" && m.item?.kind === "user").map((m) => [m.item.text, m.item.id]));
+  check(
+    removed && removed.ids.includes(userIdsByText.get("queued-1")) && removed.ids.includes(userIdsByText.get("queued-2")),
+    "withdrawn bubbles removed from the transcript (item.remove)",
+  );
+  check(removed && !removed.ids.includes(userIdsByText.get("SLOW stream")), "the sent message stays");
   await sleep(2000);
   const after = piLog();
-  check(after.some((e) => e.t === "clear_queue" && e.followUp?.length === 2), "clear_queue reached pi");
+  check(after.some((e) => e.t === "clear_queue" && (e.steering?.length ?? 0) + (e.followUp?.length ?? 0) === 2), "clear_queue reached pi");
   check(!after.some((e) => (e.t === "turn" || e.t === "resume-queue") && /^queued-/.test(e.text)), "queued messages did not run after stop");
 
   // ------------------------------------------------------------------ C. long compaction (#11)

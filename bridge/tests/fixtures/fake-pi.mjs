@@ -31,6 +31,7 @@ let abortRequested = false;
 let steering = [];
 let followUp = [];
 let settleWaiters = [];
+let bashAborted = false;
 
 const queueUpdate = () => out({ type: "queue_update", steering: [...steering], followUp: [...followUp] });
 const assistant = (text, extra = {}) => ({
@@ -170,6 +171,29 @@ async function handle(cmd) {
       note({ t: "compact-end" });
       return ok(id, type, { summary: "…" });
     }
+    case "bash": {
+      // `!cmd`: "sleep…" streams until abort_bash (5 s max), "fail…" exits 2, anything else echoes.
+      const command = String(cmd.command ?? "");
+      note({ t: "bash", command, exclude: cmd.excludeFromContext ?? false });
+      bashAborted = false;
+      if (command.startsWith("sleep")) {
+        let output = "";
+        for (let i = 0; i < 50 && !bashAborted; i++) {
+          const delta = `tick ${i}\n`;
+          output += delta;
+          out({ type: "bash_execution_update", id, delta });
+          await sleep(100);
+        }
+        return ok(id, type, { output, exitCode: bashAborted ? undefined : 0, cancelled: bashAborted, truncated: false });
+      }
+      const output = `ran: ${command}\n`;
+      out({ type: "bash_execution_update", id, delta: output });
+      return ok(id, type, { output, exitCode: command.startsWith("fail") ? 2 : 0, cancelled: false, truncated: false });
+    }
+    case "abort_bash":
+      bashAborted = true;
+      note({ t: "abort_bash" });
+      return ok(id, type);
     default:
       return fail(id, type ?? "parse", `fake pi: unsupported command ${type}`);
   }

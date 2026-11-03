@@ -129,6 +129,14 @@ export class App {
   private ext: ExtUi = { status: [], widgets: [], title: null };
   private extAbove: HTMLElement | null = null;
   private extBelow: HTMLElement | null = null;
+  /** pi's queue for the current session (queue_update), shown above the editor (#14). */
+  private queue: { steering: string[]; followUp: string[] } = { steering: [], followUp: [] };
+  private queueBar: HTMLElement | null = null;
+  /** Cumulative numbers from get_session_stats, for the 会话 section of the model sheet (#15). */
+  private stats: { tokens: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number } | null; cost: number | null } = {
+    tokens: null,
+    cost: null,
+  };
   private rate = 0;
   private turnAt: number | null = null;
   /** What pi is doing right now, for the status line under the composer ("" = just running). */
@@ -328,6 +336,7 @@ export class App {
     Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.binBtn = binBtn;
     this.chat = new ChatView(scroll);
+    this.chat.onBashStop = () => this.act(() => this.socket.send({ type: "abortBash", sessionId: this.currentId }));
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
   }
@@ -652,6 +661,8 @@ export class App {
         else if (msg.session) this.session = msg.session;
         this.budget = typeof msg.budget === "number" ? msg.budget : null;
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
+        this.queue = msg.queue ? { steering: msg.queue.steering ?? [], followUp: msg.queue.followUp ?? [] } : { steering: [], followUp: [] };
+        this.stats = { tokens: null, cost: null };
         this.chat.reset((msg.items ?? []) as Item[]);
         this.approvals = (msg.approvals ?? []) as ApprovalRequest[];
         this.asks = (msg.asks ?? []) as AskRequest[];
@@ -670,6 +681,19 @@ export class App {
         if (typeof msg.clientId === "string") this.chat.adopt(msg.clientId, msg.item as Item);
         else this.chat.add(msg.item as Item);
         break;
+      case "item.remove":
+        if (msg.sessionId !== this.currentId) break;
+        this.chat.remove(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
+        break;
+      case "bash.delta":
+        if (msg.sessionId !== this.currentId) break;
+        this.chat.bashDelta(String(msg.id ?? ""), String(msg.text ?? ""));
+        break;
+      case "queue":
+        if (msg.sessionId !== this.currentId) break;
+        this.queue = { steering: Array.isArray(msg.steering) ? msg.steering.map(String) : [], followUp: Array.isArray(msg.followUp) ? msg.followUp.map(String) : [] };
+        this.fillQueueBar();
+        break;
       case "item.replace":
         if (msg.sessionId !== this.currentId) break;
         this.chat.replace(msg.id, msg.item as Item);
@@ -687,6 +711,7 @@ export class App {
       case "stats":
         if (msg.sessionId !== this.currentId) break;
         if (typeof msg.budget === "number" || msg.budget === null) this.budget = msg.budget ?? null;
+        this.stats = { tokens: msg.tokens && typeof msg.tokens === "object" ? msg.tokens : null, cost: typeof msg.cost === "number" ? msg.cost : null };
         this.usage = {
           contextTokens: typeof msg.context?.tokens === "number" ? msg.context.tokens : null,
           contextWindow: typeof msg.context?.contextWindow === "number" ? msg.context.contextWindow : this.usage.contextWindow,
@@ -789,7 +814,7 @@ export class App {
             this.stepCount = 0;
           } else this.activity = "";
           this.fillHintStatus();
-          if (this.textarea && !this.asks.length) this.textarea.placeholder = msg.running ? "跑着呢，再发会自动排队…" : "说点什么…";
+          if (this.textarea && !this.asks.length) this.textarea.placeholder = msg.running ? RUNNING_PLACEHOLDER : "说点什么…";
         }
         if (!msg.running) this.turnAt = null;
         this.renderTop();
@@ -1011,7 +1036,7 @@ export class App {
   }
 
   // ---------------------------------------------------------------- actions
-  private sendPrompt(): void {
+  private sendPrompt(behavior: "steer" | "followUp" = "steer"): void {
     if (!this.currentId) return;
     const typed = this.composerText.trim();
     const pasted = this.pastes.map((p) => p.text.trim()).filter(Boolean);
@@ -1022,7 +1047,7 @@ export class App {
     // The bubble below is optimistic; the bridge echoes `clientId` back so this page adopts its own
     // broadcast instead of drawing the message twice (#19).
     const clientId = `local:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-    const payload = { type: "prompt", sessionId: this.currentId, text, images: this.images, clientId };
+    const payload = { type: "prompt", sessionId: this.currentId, text, images: this.images, clientId, behavior };
     // Clear the composer only once the message really goes out: a dismissed step-up keeps the draft.
     this.act(() => {
       // The step-up modal may have sat in between: only clear the composer if we are still there.
@@ -1059,8 +1084,12 @@ export class App {
       return true;
     };
     if (typed.startsWith("!")) {
-      say(`「${typed.startsWith("!!") ? "!!" : "!"}命令」在网页里还不支持（#16），没有发给模型。可以先用下方的终端运行。`, "warn");
-      return true;
+      // `!cmd`: output joins the context on the next message; `!!cmd`: kept out of it (#16).
+      const exclude = typed.startsWith("!!");
+      const command = typed.slice(exclude ? 2 : 1).trim();
+      if (!command) return false;
+      this.act(() => this.socket.send({ type: "bash", sessionId, command, excludeFromContext: exclude }));
+      return done();
     }
     const m = /^\/([a-z][a-z-]*)(?:\s+([\s\S]*))?$/.exec(typed);
     if (!m) return false;
@@ -1103,6 +1132,10 @@ export class App {
         return done();
       case "hotkeys":
         this.openKeysSheet();
+        return done();
+      case "session":
+        this.openModelSheet();
+        this.sheet?.querySelector(".session-info")?.scrollIntoView({ block: "start" });
         return done();
       case "quit":
       case "exit":
@@ -1625,6 +1658,7 @@ export class App {
     budgetBox.append(budgetChips);
     budgetBox.append(el("div", "budget-hint", "用量超过预算时，这轮结束后自动压缩一次。"));
     sheet.append(budgetBox);
+    sheet.append(this.sessionInfoBox());
 
     // Switching only works on a session this bridge owns; a terminal-owned one has no rpc child.
     if (this.session && !this.session.owned) {
@@ -4279,7 +4313,7 @@ export class App {
     const row = el("div", "row");
     const box = el("div", "composer-input");
     const input = el("textarea");
-    input.placeholder = s?.running ? "跑着呢，再发会自动排队…（Enter 发送）" : "说点什么…（Enter 发送，Shift+Enter 换行）";
+    input.placeholder = s?.running ? RUNNING_PLACEHOLDER : "说点什么…（Enter 发送，Shift+Enter 换行）";
     this.textarea = input;
     input.value = this.composerText;
     const pasteHost = el("div", "paste-list");
@@ -4303,7 +4337,8 @@ export class App {
     input.onkeydown = (ev) => {
       if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
         ev.preventDefault();
-        this.sendPrompt();
+        // Same keys as the terminal while a run is going: Enter steers it, Alt+Enter waits for it (#14).
+        this.sendPrompt(ev.altKey ? "followUp" : "steer");
       }
     };
 
@@ -4354,13 +4389,118 @@ export class App {
     const extBelow = el("div", "ext-widgets below");
     this.extAbove = extAbove;
     this.extBelow = extBelow;
-    host.append(extAbove, row, hint, extBelow);
+    const queueBar = el("div", "queue-bar");
+    this.queueBar = queueBar;
+    host.append(extAbove, queueBar, row, hint, extBelow);
     this.fillExt();
+    this.fillQueueBar();
     this.fitComposer();
     this.renderPastes();
     if (this.approvals.length) host.append(this.approvalNode());
     this.renderAsks();
     this.syncCwdChip();
+  }
+
+  /**
+   * The model sheet's 会话 section (#15, the web side of `/session` and `/compact`): context and
+   * cumulative usage, cost, the session file, and a compaction you can steer with instructions.
+   */
+  private sessionInfoBox(): HTMLElement {
+    const s = this.session;
+    const box = el("div", "levels session-info");
+    box.append(el("div", "levels-label", "会话"));
+    const grid = el("div", "info-grid");
+    const row = (label: string, value: string, title?: string) => {
+      const v = el("span", "info-v", value);
+      if (title) v.title = title;
+      grid.append(el("span", "info-k", label), v);
+      return v;
+    };
+    const n = (x?: number) => (typeof x === "number" ? x.toLocaleString("en-US") : "–");
+    if (s?.owned) {
+      const used = this.usage.contextTokens;
+      const win = this.usage.contextWindow;
+      row("上下文", used == null ? "–（压缩后要等下一轮才有数）" : `${n(used)}${win ? ` / ${n(win)}（${Math.round((used / win) * 100)}%）` : ""}`);
+      const t = this.stats.tokens;
+      row("累计 token", t ? `输入 ${n(t.input)} · 输出 ${n(t.output)} · 缓存读 ${n(t.cacheRead)} · 缓存写 ${n(t.cacheWrite)}` : "–");
+      row("累计费用", this.stats.cost == null ? "–" : `$${this.stats.cost.toFixed(4)}`, "pi 按模型价格表算的估计值（get_session_stats）");
+    } else {
+      row("用量", "接管后可见（数字来自正在运行的 pi）");
+    }
+    if (s?.id) row("会话 ID", s.id);
+    box.append(grid);
+
+    if (s?.file) {
+      const fileRow = el("div", "info-file");
+      const path = el("code", "info-path", s.file);
+      path.title = s.file;
+      const copy = el("button", "btn ghost", "⧉ 复制路径") as HTMLButtonElement;
+      copy.onclick = () => {
+        const done = navigator.clipboard?.writeText(s.file ?? "");
+        if (!done) {
+          this.warn("这个地址拿不到剪贴板（http 的局域网地址浏览器不给）");
+          return;
+        }
+        void done.then(() => {
+          copy.textContent = "已复制";
+          setTimeout(() => (copy.textContent = "⧉ 复制路径"), 1100);
+        });
+      };
+      fileRow.append(path, copy);
+      if (!this.me.public) fileRow.append(this.revealButton(s.file));
+      box.append(fileRow);
+    }
+
+    // `/compact [instructions]`: happens now, not on 确认 — it is an action, not a setting.
+    const compact = el("div", "info-compact");
+    const hint = el("input") as HTMLInputElement;
+    hint.placeholder = "压缩时要特别保留什么（可选，例如：保留接口设计的决定）";
+    const go = el("button", "btn", "立即压缩") as HTMLButtonElement;
+    go.disabled = !s?.owned || Boolean(s?.running);
+    go.title = !s?.owned ? "接管会话后才能压缩" : s?.running ? "这一轮结束后再压缩" : "把较早的对话总结成摘要，腾出上下文";
+    const run = () => {
+      const sessionId = this.currentId;
+      if (!sessionId || go.disabled) return;
+      const instructions = hint.value.trim();
+      this.act(() => this.socket.send({ type: "compact", sessionId, instructions: instructions || undefined }));
+      this.closeSheet();
+    };
+    go.onclick = run;
+    hint.onkeydown = (ev) => {
+      if (ev.key === "Enter" && !ev.isComposing) run();
+    };
+    compact.append(hint, go);
+    box.append(compact);
+    return box;
+  }
+
+  /** What pi has queued for after the current step / run, with a way to take it back (#14). */
+  private fillQueueBar(): void {
+    const bar = this.queueBar;
+    if (!bar) return;
+    const rows = [
+      ...this.queue.steering.map((text) => ({ text, kind: "steer" as const })),
+      ...this.queue.followUp.map((text) => ({ text, kind: "followUp" as const })),
+    ];
+    bar.replaceChildren();
+    bar.hidden = !rows.length;
+    if (!rows.length) return;
+    const head = el("div", "queue-head");
+    head.append(el("span", "queue-title", `排队中 ${rows.length} 条`));
+    const back = el("button", "tool-btn", "撤回到输入框") as HTMLButtonElement;
+    back.type = "button";
+    back.title = "从 pi 的队列里拿回来，放回输入框（终端里的 Alt+↑）";
+    back.onclick = () => this.act(() => this.socket.send({ type: "clearQueue", sessionId: this.currentId }));
+    head.append(back);
+    bar.append(head);
+    for (const row of rows) {
+      const line = el("div", `queue-item ${row.kind}`);
+      const tag = el("span", "queue-tag", row.kind === "steer" ? "引导" : "之后");
+      tag.title = row.kind === "steer" ? "当前这步工具跑完、下一次调用模型前插入" : "整轮做完以后再处理";
+      line.append(tag, el("span", "queue-text", row.text.replace(/\s+/g, " ")));
+      line.title = row.text;
+      bar.append(line);
+    }
   }
 
   /** Extension widgets above / below the editor, status lines below, title on the browser tab. */
@@ -4787,7 +4927,7 @@ export class App {
       this.textarea.placeholder = this.asks.length
         ? "直接打字回答（Enter 提交），或点上面的选项…"
         : s?.running
-          ? "跑着呢，再发会自动排队…"
+          ? RUNNING_PLACEHOLDER
           : "说点什么…";
     }
     if (this.askLost && !this.asks.length) {
@@ -5863,6 +6003,8 @@ const ICON_ARCHIVE = SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path 
 const ICON_UNARCHIVE = SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M12 17v-6"/><path d="m9.5 13.5 2.5-2.5 2.5 2.5"/>');
 const ICON_TRASH = SVG('<path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/><path d="M9 7V4h6v3"/>');
 
+const RUNNING_PLACEHOLDER = "跑着呢：Enter 引导当前任务 · Alt+Enter 等这轮做完再处理";
+
 /** pi built-in commands the page cannot run yet → the issue that tracks them (#22). */
 const UNSUPPORTED_BUILTINS: Record<string, string> = {
   tree: "#17",
@@ -5874,7 +6016,6 @@ const UNSUPPORTED_BUILTINS: Record<string, string> = {
   copy: "#24",
   bug: "#24",
   debug: "#24",
-  session: "#15",
   settings: "#26",
   "scoped-models": "#26",
   reload: "#26",

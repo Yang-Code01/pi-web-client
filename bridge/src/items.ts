@@ -34,7 +34,24 @@ export interface NoticeItem extends ItemBase {
   text: string;
   level?: "info" | "warn" | "error";
 }
-export type Item = UserItem | AssistantItem | ToolItem | NoticeItem;
+/** A command the user ran with `!cmd` / `!!cmd` (pi's RPC `bash`, stored as a bashExecution message). */
+export interface BashItem extends ItemBase {
+  kind: "bash";
+  command: string;
+  output: string;
+  exitCode?: number | null;
+  cancelled?: boolean;
+  truncated?: boolean;
+  fullOutputPath?: string;
+  /** `!!`: kept in the session, never sent to the model. */
+  excludeFromContext?: boolean;
+  status: "running" | "done";
+  error?: string;
+}
+export type Item = UserItem | AssistantItem | ToolItem | NoticeItem | BashItem;
+
+/** Output kept for a `!cmd` card (its tail: the end of a long output is what tells you how it went). */
+export const BASH_KEEP = 20000;
 
 export function summarizeToolArgs(args: unknown): string {
   if (args == null) return "";
@@ -140,6 +157,20 @@ export function entriesToItems(entries: SessionEntry[]): Item[] {
         toolIndex.set(item.toolCallId, item);
         items.push(item);
       }
+    } else if (msg.role === "bashExecution") {
+      items.push({
+        id: entry.id,
+        ts: entry.timestamp,
+        kind: "bash",
+        command: String(msg.command ?? ""),
+        output: String(msg.output ?? "").slice(-BASH_KEEP),
+        exitCode: typeof msg.exitCode === "number" ? msg.exitCode : null,
+        cancelled: Boolean(msg.cancelled),
+        truncated: Boolean(msg.truncated),
+        ...(typeof msg.fullOutputPath === "string" ? { fullOutputPath: msg.fullOutputPath } : {}),
+        excludeFromContext: Boolean(msg.excludeFromContext),
+        status: "done",
+      });
     } else if (msg.role === "toolResult") {
       const target = toolIndex.get(String(msg.toolCallId ?? ""));
       if (target) {
