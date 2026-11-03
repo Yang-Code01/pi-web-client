@@ -116,7 +116,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
@@ -853,6 +853,42 @@ export class App {
         if (msg.saved) this.flashSettings(msg.installed ? "已装进 pi 的全局扩展：之后启动的终端 pi 会登记自己开着的会话" : "已从 pi 的全局扩展里移除");
         if (this.sheetKind === "settings" && this.settingsTab === "global") this.paintSettings();
         break;
+      case "share.progress":
+      case "bug.progress":
+        this.flashShare(String(msg.text ?? ""));
+        break;
+      case "share.done": {
+        if (msg.error) {
+          this.flashShare(`没有分享成功：${msg.error}`, true);
+          break;
+        }
+        this.closeSheet();
+        const via = msg.via === "radius" ? "Radius（组织内可见）" : "私有 GitHub gist";
+        this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: `已分享到${via}：${msg.url}${msg.gistUrl ? `（gist：${msg.gistUrl}）` : ""}`, level: "info" });
+        void navigator.clipboard?.writeText(String(msg.url)).catch(() => {});
+        window.open(String(msg.url), "_blank", "noopener");
+        break;
+      }
+      case "bug.done": {
+        if (msg.error) {
+          this.flashShare(`没有提交成功：${msg.error}`, true);
+          break;
+        }
+        this.closeSheet();
+        if (msg.download) {
+          const a = document.createElement("a");
+          a.href = String(msg.download);
+          a.download = "";
+          a.click();
+        }
+        this.chat.add({
+          id: `n:${Date.now()}`,
+          kind: "notice",
+          text: msg.delivery === "upload" ? `bug 报告已上传给 pi 开发者，报告 ID：${msg.id}` : `bug 报告已导出成 zip 并开始下载，报告 ID：${msg.id}`,
+          level: "info",
+        });
+        break;
+      }
       case "picli.start":
         // The two listings run in the background; only a user's command takes over the console.
         if (msg.op === "pkg.list" || msg.op === "mcp.list") break;
@@ -1313,6 +1349,12 @@ export class App {
         return done();
       case "changelog":
         this.openSettingsSheet("changelog");
+        return done();
+      case "share":
+        this.openShareSheet();
+        return done();
+      case "bug":
+        this.openBugSheet(arg);
         return done();
       case "login":
       case "logout":
@@ -5066,6 +5108,88 @@ export class App {
     if (this.session?.owned) body.append(el("div", "settings-hint", "改了之后，正在运行的会话要「重新加载」（/reload）才会按新的决定加载项目资源。"));
   }
 
+  // ---------------------------------------------------------------- /share /bug (#38)
+  private flashShare(text: string, bad = false): void {
+    const note = this.sheet?.querySelector<HTMLElement>(".share-note");
+    if (note) {
+      note.textContent = text;
+      note.classList.toggle("bad", bad);
+      if (bad) this.sheet?.querySelectorAll<HTMLButtonElement>(".share-go").forEach((b) => (b.disabled = false));
+    } else if (text) this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text, level: bad ? "error" : "info" });
+  }
+
+  private shareSheet(title: string): { back: HTMLElement; sheet: HTMLElement; body: HTMLElement } {
+    this.closeSheet();
+    this.sheetKind = "share";
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet settings-sheet share-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", title));
+    const close = el("button", "btn ghost", "取消");
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const body = el("div", "settings-body");
+    sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note share-note"), body);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    return { back, sheet, body };
+  }
+
+  /** `/share`: pi's own order — Radius when logged in (or required by settings), else a private gist. */
+  private openShareSheet(): void {
+    const sessionId = this.currentId;
+    if (!sessionId) return;
+    const { body } = this.shareSheet("分享会话（/share）");
+    body.append(
+      el("div", "settings-hint", "会把这个会话（当前分支）上传出这台电脑，然后给你一个查看链接。会话里可能有你的提示词、工具参数、命令输出、读过的文件内容，以及对话里出现过的凭据——先确认里面没有不该给别人看的东西。"),
+      el("div", "settings-hint", "去向和终端的 /share 一样：登录了 Radius 就传到 Radius（组织内可见），否则用 GitHub CLI 建一个私有 gist（要先 gh auth login）。设置里的 sessionShareDestination 可以强制其中一种。"),
+    );
+    const go = el("button", "btn primary share-go", "确认上传并生成链接") as HTMLButtonElement;
+    go.onclick = () => {
+      go.disabled = true;
+      this.flashShare("准备中…");
+      this.act(() => this.socket.send({ type: "share", sessionId }));
+    };
+    const foot = el("div", "settings-foot");
+    foot.append(el("span", "spacer"), go);
+    body.append(foot);
+  }
+
+  /** `/bug`: what pi's report contains (settings redacted, no keys); upload or zip. */
+  private openBugSheet(hint: string): void {
+    const sessionId = this.currentId;
+    if (!sessionId) return;
+    const { body } = this.shareSheet("给 pi 开发者报告 bug（/bug）");
+    body.append(el("div", "settings-hint", "报告会发给 pi 的开发者（Earendil），不公开。里面有 pi 版本、操作系统、这个会话用的模型和 provider 配置（不含 API key）、设置（敏感字段已去掉），以及这个会话里 provider 报过的错。"));
+    const desc = el("textarea", "settings-json") as HTMLTextAreaElement;
+    desc.style.minHeight = "110px";
+    desc.placeholder = "出了什么问题？（可选）";
+    desc.value = hint;
+    body.append(desc);
+    const wrap = el("label", "ns-adv-flag");
+    const include = el("input") as HTMLInputElement;
+    include.type = "checkbox";
+    wrap.append(include, el("span", "", "附上这个会话的完整记录（你的消息、模型输出、工具调用和结果，包括读过的文件内容和命令输出）"));
+    body.append(wrap);
+    body.append(el("div", "settings-hint", "和终端相比少两样：不能让模型写摘要，报告里也不列出加载的扩展（网页这边拿不到运行中的会话对象）。"));
+    const foot = el("div", "settings-foot");
+    const send = (delivery: "upload" | "zip") => {
+      for (const b of foot.querySelectorAll<HTMLButtonElement>("button")) b.disabled = true;
+      this.flashShare(delivery === "upload" ? "上传中…" : "打包中…");
+      this.act(() => this.socket.send({ type: "bug", sessionId, hint: desc.value.trim(), includeSession: include.checked, delivery }));
+    };
+    const zip = el("button", "btn share-go", "导出 zip（自己看过再发）") as HTMLButtonElement;
+    zip.onclick = () => send("zip");
+    const up = el("button", "btn primary share-go", "上传给 pi 开发者") as HTMLButtonElement;
+    up.onclick = () => send("upload");
+    foot.append(el("span", "spacer"), zip, up);
+    body.append(foot);
+  }
+
   private paintExtIfOpen(): void {
     if (this.sheetKind === "settings" && this.settingsTab === "ext") this.paintSettings();
   }
@@ -7231,6 +7355,8 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["reload", "重启这个会话的 pi，读到最新设置 / 扩展 / 技能"],
   ["trust", "项目信任：要不要加载这个目录的 .pi 配置"],
   ["changelog", "pi 更新日志"],
+  ["share", "上传会话、生成查看链接（Radius 或私有 gist）"],
+  ["bug", "给 pi 开发者提交 bug 报告（/bug 描述）"],
   ["login", "登录模型 provider（API key / OAuth）"],
   ["logout", "登出某个 provider"],
 ];
@@ -7323,10 +7449,7 @@ const SETTING_FIELDS: {
 const RUNNING_PLACEHOLDER = "跑着呢：Enter 引导当前任务 · Alt+Enter 等这轮做完再处理";
 
 /** pi built-in commands the page cannot run yet → the issue that tracks them (#22). */
-const UNSUPPORTED_BUILTINS: Record<string, string> = {
-  share: "#38",
-  bug: "#38",
-};
+const UNSUPPORTED_BUILTINS: Record<string, string> = {};
 
 /** Everything a shortcut can fire, in the order the 快捷键 sheet lists it. */
 const SHORTCUTS: { id: string; label: string }[] = [

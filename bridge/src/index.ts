@@ -33,6 +33,7 @@ import { listFiles, rankFiles } from "./filesearch.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
 import { cleanLaunch } from "./launch.ts";
 import { isWriteOp, runPiCli } from "./picli.ts";
+import { reportBug, shareSession } from "./pishare.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
 
@@ -487,6 +488,16 @@ async function main(): Promise<void> {
       return json(res, 200, { cwd, files });
     }
 
+    // #38: a bug report exported as zip, downloaded once it is written.
+    if (url.pathname === "/api/bugzip" && req.method === "GET") {
+      const name = url.searchParams.get("name") ?? "";
+      const file = statePath("bug-reports", name);
+      if (!/^pi-bug-report-[\w-]+\.zip$/.test(name) || !fs.existsSync(file)) return json(res, 404, { error: "没有这个报告" });
+      res.writeHead(200, { "content-type": "application/zip", "cache-control": "no-store", "content-disposition": `attachment; filename="${name}"` });
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+
     // Diagnostics (#24, the web stand-in for `/debug`): this session's pi stderr log kept by the bridge.
     if (url.pathname === "/api/log" && req.method === "GET") {
       const id = url.searchParams.get("id") ?? "";
@@ -923,6 +934,45 @@ async function main(): Promise<void> {
             send({ type: "picli.done", runId, op, code: out.code, data: out.data });
             // A new package can bring providers, skills or extensions: refresh what the page lists.
             if (isWriteOp(op) && op.startsWith("pkg.")) broadcast({ type: "catalog", models: await sessions.models(true).catch(() => []) });
+            return;
+          }
+          // ------------------------------------------------ /share /bug (#38)
+          case "share": {
+            if (!(await requireStepUp())) return;
+            const sessionId = String(msg.sessionId ?? "");
+            const where = sessions.locate(sessionId);
+            if (!where?.file || !fs.existsSync(where.file)) {
+              send({ type: "share.done", sessionId, error: "这个会话还没有写到磁盘，没有可分享的内容" });
+              return;
+            }
+            try {
+              const out = await shareSession(pi.cli, where.file, where.cwd, (text) => send({ type: "share.progress", sessionId, text }));
+              log(`share ${sessionId} via ${out.via}`);
+              send({ type: "share.done", sessionId, ...out });
+            } catch (err: any) {
+              send({ type: "share.done", sessionId, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "bug": {
+            if (!(await requireStepUp())) return;
+            const sessionId = String(msg.sessionId ?? "");
+            const where = sessions.locate(sessionId);
+            if (!where?.file || !fs.existsSync(where.file)) {
+              send({ type: "bug.done", sessionId, error: "这个会话还没有写到磁盘" });
+              return;
+            }
+            try {
+              const out = await reportBug(pi.cli, where.file, where.cwd, {
+                hint: typeof msg.hint === "string" ? msg.hint.slice(0, 4000) : undefined,
+                includeSession: msg.includeSession === true,
+                delivery: msg.delivery === "upload" ? "upload" : "zip",
+              });
+              log(`bug report ${out.id} (${out.delivery})`);
+              send({ type: "bug.done", sessionId, id: out.id, delivery: out.delivery, ...(out.zip ? { download: `/api/bugzip?name=${encodeURIComponent(path.basename(out.zip))}` } : {}) });
+            } catch (err: any) {
+              send({ type: "bug.done", sessionId, error: String(err?.message ?? err) });
+            }
             return;
           }
           case "lockext.get": {

@@ -878,3 +878,33 @@
   - 登录：DeepSeek API key 输入框是 password 类型，提交后 `auth.json` 写入，列表显示「已登录（auth.json · API key）」；
   - 会话锁：安装后显示安装路径；
   - 扩展与 MCP：失败的 MCP 服务器显示错误，安装本地包后控制台显示「Installed …」，并出现在列表里。
+
+## D80 `/share` 与 `/bug` 用 pi 导出的现成函数在 bridge 里拼出来，读会话文件、不写（#38）
+
+**决定：**
+1. **`/share`**：照 pi `session-share.js` 的顺序。
+   - 先读 `sessionShareDestination`：项目设置优先，其次全局，默认 `auto`。
+   - 不是 `gist` 时，如果登录了 Radius，就把 pi 的 `serializeSessionBranch` 产出的 JSONL POST 到 `<Radius 网关>/v1/artifacts`（组织内可见），返回 `canonical_url`。设置要求 `radius` 但没登录 Radius 时，直接拒绝并说明。
+   - 否则先 `gh auth status`，再用 `pi --export` 导出 HTML，然后 `gh gist create --public=false`，查看链接用 pi 的 `getShareViewerUrl(gistId)`。
+   - 页面拿到链接后自动复制并在新标签页打开。
+2. **`/bug`**：报告用 pi 的 `collectBugReportMetadata` / `collectBugReportDiagnostics`，设置的敏感字段已经去掉，不含 API key。
+   - 模型取这个会话最后一条 assistant 消息里的 provider 和 model。
+   - 可选附上会话记录（`serializeSessionBranch`）。
+   - 「上传」走 pi 的 `uploadBugReport`；登录了 Radius 就带上 Radius token，没登录则匿名上传；离线时拒绝。「导出 zip」走 `writeBugReportArchive`，写到 `state/bug-reports/`，再由 `/api/bugzip`（只认 `pi-bug-report-*.zip` 这种文件名）让浏览器下载。
+3. 两个弹层在发出前都把会带走的内容说清楚；都要 step-up。
+
+**为什么：** pi 的这两个命令是 TUI 专用（对话框和运行中的 AgentSession 绑在一起），RPC 里没有。但真正决定「上传什么、传到哪」的那部分 pi 都导出了，直接复用就和终端行为一致。
+
+**和终端的差别（因为 bridge 里没有运行中的会话对象）：**
+- 分享和报告里附的会话记录**没有**结尾那条 `pi.share` 条目（系统提示词和工具 schema）。
+- 报告不列出加载的扩展；也不提供「让模型写摘要」这个选项。
+- 不往会话文件里追加「报过 bug」的记录（bridge 不写 pi 的会话文件）。
+
+**验证：**
+- `node bridge/tests/share-bug.mjs`（真 pi 模块，用 `PI_WEB_GH_JS` 替身代替 gh，离线）：
+  - 没登录 Radius 时走私有 gist，链接是 `https://pi.dev/session/#<id>`，gh 收到的是 pi 的 HTML 导出；
+  - gh 没登录时提示怎么修；设置要求 Radius 却没登录时拒绝；
+  - 导出的 zip 里有 `report.json`（以及勾选时的 `session.jsonl`）；不附会话记录时 zip 里没有对话内容；
+  - 离线时拒绝上传；`/api/bugzip` 不接受路径穿越，也需要登录。
+- Radius 上传要联网、要账号，**未实测**，只做了代码对照。
+- 真 Chromium：`/share` 打开新标签页 `https://pi.dev/session/#0123abcd`，聊天里出现链接；`/bug 描述` 会预填描述，导出 zip 后浏览器开始下载 `pi-bug-report-<id>.zip`。
