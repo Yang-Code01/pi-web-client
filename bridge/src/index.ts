@@ -34,6 +34,8 @@ import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trust
 import { cleanLaunch } from "./launch.ts";
 import { isWriteOp, runPiCli } from "./picli.ts";
 import { reportBug, shareSession } from "./pishare.ts";
+import { mcpAddRequest, searchMcp, searchPackages, type McpInstallOption } from "./market.ts";
+import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
 
@@ -604,6 +606,7 @@ async function main(): Promise<void> {
       trash: sessions.trashList(),
       tunnel: tunnel.state,
       public: (ws as any).publicReq,
+      ui: readUiPrefs(),
     });
     // The model catalog needs a throwaway pi child (~1s), so it follows the handshake.
     void sessions
@@ -919,6 +922,11 @@ async function main(): Promise<void> {
           case "picli": {
             // #33: pi install / remove / update / list, pi mcp list / add / remove / login / logout.
             const op = String(msg.op ?? "");
+            // D81: from the public tunnel the extension manager is read-only.
+            if (isWriteOp(op) && (ws as any).publicReq) {
+              send({ type: "picli.done", runId: null, op, code: -1, error: "通过公网访问时扩展与 MCP 只能查看，安装 / 卸载 / 更新请在本机或局域网操作" });
+              return;
+            }
             if (isWriteOp(op) && !(await requireStepUp())) return;
             const runId = `cli_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
             let run: ReturnType<typeof runPiCli>;
@@ -934,6 +942,86 @@ async function main(): Promise<void> {
             send({ type: "picli.done", runId, op, code: out.code, data: out.data });
             // A new package can bring providers, skills or extensions: refresh what the page lists.
             if (isWriteOp(op) && op.startsWith("pkg.")) broadcast({ type: "catalog", models: await sessions.models(true).catch(() => []) });
+            return;
+          }
+          // ------------------------------------------------ 扩展 manager (D81)
+          case "ui.set": {
+            if (!(await requireStepUp())) return;
+            const prefs = writeUiPrefs({ ...(typeof msg.showExtButton === "boolean" ? { showExtButton: msg.showExtButton } : {}) });
+            broadcast({ type: "ui", ui: prefs });
+            return;
+          }
+          case "ext.inventory": {
+            const cwd = msg.cwd ? String(msg.cwd) : null;
+            try {
+              const inv = await inventory(pi.cli, cwd, msg.check !== false);
+              send({ type: "ext.inventory", cwd, ...inv });
+              broadcast({ type: "ext.updates", count: inv.updates });
+            } catch (err: any) {
+              send({ type: "ext.inventory", cwd, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "ext.updates": {
+            const cwd = msg.cwd ? String(msg.cwd) : null;
+            send({ type: "ext.updates", count: await updateCount(pi.cli, cwd).catch(() => 0) });
+            return;
+          }
+          case "ext.store": {
+            const limit = Math.min(100, Math.max(1, Number(msg.limit) || 20));
+            try {
+              send({ type: "ext.store", query: String(msg.query ?? ""), items: await searchPackages(String(msg.query ?? ""), limit) });
+            } catch (err: any) {
+              send({ type: "ext.store", query: String(msg.query ?? ""), items: [], error: `查不到 npm：${err?.message ?? err}` });
+            }
+            return;
+          }
+          case "mcp.store": {
+            const limit = Math.min(100, Math.max(1, Number(msg.limit) || 20));
+            try {
+              send({ type: "mcp.store", query: String(msg.query ?? ""), ...(await searchMcp(String(msg.query ?? ""), limit)) });
+            } catch (err: any) {
+              send({ type: "mcp.store", query: String(msg.query ?? ""), items: [], error: `查不到 MCP Registry：${err?.message ?? err}` });
+            }
+            return;
+          }
+          case "ext.toggle":
+          case "mcp.toggle":
+          case "mcp.bump":
+          case "mcp.install": {
+            if ((ws as any).publicReq) {
+              send({ type: "notice", text: "通过公网访问时扩展与 MCP 只能查看", level: "warn" });
+              return;
+            }
+            if (!(await requireStepUp())) return;
+            try {
+              if (msg.type === "ext.toggle") {
+                await toggleExtension(pi.cli, { id: String(msg.id ?? ""), scope: msg.scope === "project" ? "project" : msg.scope === "builtin" ? "builtin" : "user", how: String(msg.how ?? "") }, msg.enable === true, msg.cwd ? String(msg.cwd) : null);
+                send({ type: "ext.changed", what: "extension", id: msg.id });
+              } else if (msg.type === "mcp.toggle") {
+                toggleMcp(String(msg.file ?? ""), String(msg.name ?? ""), msg.enable === true);
+                send({ type: "ext.changed", what: "mcp", id: msg.name });
+              } else if (msg.type === "mcp.bump") {
+                bumpMcp(String(msg.file ?? ""), String(msg.name ?? ""), String(msg.version ?? ""));
+                send({ type: "ext.changed", what: "mcp", id: msg.name });
+              } else {
+                const { req, vars } = mcpAddRequest(msg.option as McpInstallOption, {
+                  name: String(msg.name ?? ""),
+                  values: msg.values && typeof msg.values === "object" ? msg.values : {},
+                  local: msg.local === true,
+                  exposure: typeof msg.exposure === "string" ? msg.exposure : undefined,
+                  description: typeof msg.description === "string" ? msg.description : undefined,
+                });
+                const runId = `cli_${Date.now().toString(36)}`;
+                send({ type: "picli.start", runId, op: "mcp.add" });
+                const out = await runPiCli(pi.cli, { ...req, cwd: msg.cwd ? String(msg.cwd) : undefined }, (chunk) => send({ type: "picli.out", runId, text: chunk })).done;
+                send({ type: "picli.done", runId, op: "mcp.add", code: out.code, vars });
+                if (out.code === 0) send({ type: "ext.changed", what: "mcp", id: msg.name, vars });
+              }
+            } catch (err: any) {
+              send({ type: "notice", text: String(err?.message ?? err), level: "error" });
+              send({ type: "ext.error", message: String(err?.message ?? err) });
+            }
             return;
           }
           // ------------------------------------------------ /share /bug (#38)
