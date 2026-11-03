@@ -1961,3 +1961,11 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* #38 share / bug sheets */
 .share-sheet .ns-adv-flag { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.5; cursor: pointer; }
 .share-sheet .ns-adv-flag input { margin-top: 3px; flex: none; }
+
+/* 会话 section folds (default closed) so the model list keeps its room */
+.session-info .session-info-head { display: flex; align-items: baseline; gap: 6px; width: 100%; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; min-width: 0; }
+.session-info .session-info-head:hover .levels-label { color: var(--text); }
+.session-info .session-info-caret { flex: none; width: 1em; color: var(--faint); font-size: 11px; }
+.session-info .session-info-peek { flex: 1; min-width: 0; color: var(--faint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-info .session-info-body { display: grid; gap: 8px; min-width: 0; }
+.session-info .session-info-body[hidden] { display: none; }

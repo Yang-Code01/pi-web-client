@@ -1322,7 +1322,7 @@ export class App {
         this.openKeysSheet();
         return done();
       case "session":
-        this.openModelSheet();
+        this.openModelSheet(true);
         this.sheet?.querySelector(".session-info")?.scrollIntoView({ block: "start" });
         return done();
       case "tree":
@@ -1825,8 +1825,14 @@ export class App {
     this.imageSheetPaint = null;
   }
 
-  private openModelSheet(): void {
+  /** The model sheet's 会话 section: folded unless asked for (/session). */
+  private sessionInfoOpen = false;
+
+  private openModelSheet(expandSession = false): void {
     if (!this.currentId) return;
+    // Re-renders (catalog arrived, takeover finished) keep what the user unfolded; a fresh open folds.
+    const reopening = this.sheetKind === "model";
+    this.sessionInfoOpen = expandSession || (reopening && this.sessionInfoOpen);
     this.closeSheet();
     this.sheetKind = "model";
     const back = el("div", "sheet-back");
@@ -4754,7 +4760,13 @@ export class App {
   private sessionInfoBox(): HTMLElement {
     const s = this.session;
     const box = el("div", "levels session-info");
-    box.append(el("div", "levels-label", "会话"));
+    // Folded by default: the model list below is what this sheet is for (/session opens it unfolded).
+    const head = el("button", "session-info-head") as HTMLButtonElement;
+    head.type = "button";
+    const caret = el("span", "session-info-caret");
+    const peek = el("span", "session-info-peek");
+    head.append(caret, el("span", "levels-label", "会话"), peek);
+    box.append(head);
     const grid = el("div", "info-grid");
     const row = (label: string, value: string, title?: string) => {
       const v = el("span", "info-v", value);
@@ -4851,6 +4863,29 @@ export class App {
     };
     compact.append(hint, go);
     box.append(compact);
+    // Everything after the header folds into one body; the header keeps a one-line summary.
+    const body = el("div", "session-info-body");
+    while (head.nextSibling) body.append(head.nextSibling);
+    box.append(body);
+    const used = this.usage.contextTokens;
+    const win = this.usage.contextWindow;
+    const bits: string[] = [];
+    if (s?.owned && used != null) bits.push(`上下文 ${compactSize(used) || used}${win ? `/${compactSize(win)}` : ""}`);
+    if (s?.owned && this.stats.cost != null) bits.push(`$${this.stats.cost.toFixed(4)}`);
+    bits.push("导出 · 会话树 · 压缩");
+    peek.textContent = bits.join(" · ");
+    const paint = () => {
+      body.hidden = !this.sessionInfoOpen;
+      caret.textContent = this.sessionInfoOpen ? "▾" : "▸";
+      peek.hidden = this.sessionInfoOpen;
+      head.setAttribute("aria-expanded", String(this.sessionInfoOpen));
+      head.title = this.sessionInfoOpen ? "收起会话信息" : "展开：用量、费用、会话文件、导出、会话树、立即压缩";
+    };
+    head.onclick = () => {
+      this.sessionInfoOpen = !this.sessionInfoOpen;
+      paint();
+    };
+    paint();
     return box;
   }
 
