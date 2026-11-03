@@ -1033,3 +1033,60 @@
 **可改**：内层 40 字符时旧正则已 >3s、30 字符以内仍在毫秒级——这是事后测量，不是设计目标；将来放宽标签长度不必再动这条正则。
 
 **验证**：把 `web/src/md.ts` 用 esbuild 打成 ESM，喂该会话全部 213 段 `text`/`result`/`command`：旧正则在前 61 条里就有 6 处单行不返回（第一处 item#23），新正则一趟跑完、0 停滞（同一段文本 2ms）。改后 headless 打开该会话 → 1.5s 内渲染 159 条消息；`npm --prefix web run build` 通过。
+## D96 peer 是独立子进程：bridge `fork` 托管，崩了退避重启，端口被占不重启
+
+（D95 是链接正则那条；这里是 #45 的第一篇。）
+
+**决定**（`bridge/src/peer.ts` + `peer/src/index.ts`）：
+1. `peer/` 是独立进程，自己绑 `0.0.0.0:7865`；bridge 用 `child_process.fork` 起它，stdout/stderr 逐行转进 bridge 日志（`[peer]` 前缀）。
+2. 非 0 退出按 1s → 2s → 4s 重启，第 4 次还死就停手并在页面显示「连续退出 N 次」。
+3. 退出码 **2** 表示 peer 自己判定端口被占（`EADDRINUSE`）：不重启，只报「另一份 peer 在跑」。
+4. `PI_PEER=0` 时整块不启用；`peer/dist` 不存在时报「还没构建」而不是崩。
+
+**为什么**：peer 要能被局域网访问（绑 `0.0.0.0`），而 bridge 默认只绑回环；两者生命周期也不同——peer 崩了 bridge 必须活着，否则页面连自己为什么看不到在线列表都不知道。端口冲突是唯一「重试也没用」的失败，所以用退出码把它和「偶发崩溃」分开，避免无限重启刷日志。
+
+**可改**：重启次数（3）与退避基数（1s）。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「端口被占时退出码 2」；手动 `kill` 掉 peer 进程后 bridge 日志出现 `[peer] ... 收到 SIGTERM` 与重启记录，页面 `/api/peer` 的 `running` 相应变 false 再变 true。
+
+## D97 页面只跟 bridge 说话，peer 的 `/status` 只认回环
+
+**决定**：`peer.html` 只请求 `127.0.0.1:7864` 的 `/api/peer`（cookie 认证）；peer 的 `/status`、`/peer/add`、`/peer/refresh` 一律拒绝非回环的来源（403）。对局域网开放的只有协议面：`/peer/hello`，以及第 2 片起的 `/peer/inbox`。
+
+**为什么**：cookie、CORS、隧道只在一处（bridge）；而且 `/status` 带的是本机配置（收件箱路径、隐身开关），不该让同网段的人随便读。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 只走回环；非回环路径靠 `http.ts` 的 `isLoopback()` 拒掉——从另一台机器 `curl http://<ip>:7865/status` 应得 403（真机验收项）。
+
+## D98 「当场确认」走 HTTP `/peer/hello`，不走 UDP 回包
+
+**症状**：两台机器能互见，但要等下一轮 announce（最多 10 秒）；手动填了地址却要等半天才有反应。
+
+**根因**：announce 是发到组播端口（7866）的，回给对端也只能打到它的发现端口——而对方要的确认信息（nickname / http 端口）必须进它的状态表，走 HTTP 才有确定性。
+
+**决定**（`peer/src/discovery.ts`）：收到 unknown / 换了 IP 的 `hello` 时，单播 `POST /peer/hello` 到对方的 HTTP 口（announce 里带着端口），同一个 `nodeId` 10 秒内只回一次；手动地址也走这条。
+
+**为什么**：组播被交换机挡住时，这条路是唯一能在秒级把对方拉进列表的通道（也让「手动地址」真的可用，而不是「等十秒看看」）。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的手动地址段——A 不广播给 C（不同组播端口），`POST /peer/add` 后 8 秒内 A、C 双向可见。
+
+## D99 隐身 = 不广播、不回 hello，只被动记录
+
+**决定**：`hidden` 打开时 peer 不发 announce、不响应 `/peer/hello`（回 `{hidden:true}`），但仍然接收并记录别人——所以隐身的人看得见别人，别人看不见他。
+
+**为什么**：如果用「照常收发但把自己标记成隐藏」来实现，任何一台机器只要抓到一个包就知道你在线，隐身就成了自欺。反过来「彻底断网」又会让隐身的人失去一切信息。
+
+**可改**：是否允许「手动填了地址的人也能看见隐身的我」（真机验收时再定，见 #45 已知限制）。
+
+**验证**：`peer/src/discovery.ts` 的 `packet`/`sendHello` 早退分支；e2e 里 C 与 A/B 的隔离段用的是「不同组播端口」，隐身分支暂由代码路径 + 真机验收覆盖。
+
+## D100 第二张页面 `peer.html`：vite 多入口，`/peer` 由 bridge 显式映射
+
+**决定**：
+1. `web/vite.config.ts` 的 `build.rollupOptions.input` 加 `peer: peer.html`，产物落在 `web/dist/peer.html`。
+2. `bridge/src/index.ts` 的 `serveStatic()` 把 `/peer`、`/peer/` 改写成 `/peer.html`，其余未知路径仍旧回落 `index.html`（SPA 的登录页要靠它）。
+3. 页面数据 5 秒轮询 `/api/peer`（第 1 片不另开 WS）。
+
+**为什么**：局域网界面和聊天界面是两种东西（一块是「谁在」+ 传输，一块是会话流），塞进同一个 SPA 会让路由和状态互相污染；而 vite 的多入口是零配置代价的隔离。`/peer` 这条映射必须显式写，否则新页面会被 SPA 兜底吞掉，打开的是聊天界面。
+
+**验证**：`npm run build` 后 `web/dist/peer.html` 存在；`curl -H 'cookie: …' http://127.0.0.1:7864/peer` 返回的 HTML 里含 `<title>局域网 · pi</title>` 与 peer 的 bundle；截图见 `.scratch/peer/online.png`（在线列表里有一台对端）。
+>>>>>>> 977f881 (feat(peer): 骨架——组播发现、手动地址、在线列表、bridge 托管、peer.html（#45 第 1 片，D96–D100）)
