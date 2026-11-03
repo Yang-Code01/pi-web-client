@@ -131,8 +131,14 @@ function textWithPaths(target: Node, text: string, opts: MdOptions): void {
   if (last < text.length) target.appendChild(document.createTextNode(text.slice(last)));
 }
 
+// Link labels may nest brackets (`[![badge](a)](b)`), so the label is `(?:plain char | [balanced])+`.
+// D95: the `plain char` branch must NOT be `[^\[\]\n]+` — `(x+|\[…\])+` is ambiguous (any run of
+// label text can be split into pieces in exponentially many ways), and on a `[…]` that never closes
+// with `](` the engine burns 2^n steps. That is not theory: a tool result containing a code line like
+// `|| [...this.termTabs.get(id)]` was enough to freeze the chat page forever on session c24330ab
+// (D95); user messages are plain text and never reach this regex.
 const INLINE =
-  /(`[^`\n]+`)|(!\[[^\]\n]*\]\([^\s)]+(?:\s+"[^"]*")?\))|((?<!!)\[(?:[^\[\]\n]+|\[[^\]\n]*\])+\]\([^\s)]+(?:\s+"[^"]*")?\))|(\*\*[^*\n]+\*\*|__[^_\n]+__)|(~~[^~\n]+~~)|((?<![\w*])\*[^*\s][^*\n]*\*(?!\w)|(?<![\w_])_[^_\s][^_\n]*_(?![\w_]))|(https?:\/\/[^\s<>()（）]+[^\s<>()（）.,;:!?。，；：！？])/g;
+  /(`[^`\n]+`)|(!\[[^\]\n]*\]\([^\s)]+(?:\s+"[^"]*")?\))|((?<!!)\[(?:[^\[\]\n]|\[[^\]\n]*\])+\]\([^\s)]+(?:\s+"[^"]*")?\))|(\*\*[^*\n]+\*\*|__[^_\n]+__)|(~~[^~\n]+~~)|((?<![\w*])\*[^*\s][^*\n]*\*(?!\w)|(?<![\w_])_[^_\s][^_\n]*_(?![\w_]))|(https?:\/\/[^\s<>()（）]+[^\s<>()（）.,;:!?。，；：！？])/g;
 
 function inlineInto(target: Node, text: string, opts: MdOptions): void {
   const re = new RegExp(INLINE.source, "g");
@@ -155,7 +161,7 @@ function inlineInto(target: Node, text: string, opts: MdOptions): void {
       if (img) target.appendChild(img);
       else target.appendChild(document.createTextNode(im[1] ? `[图片：${im[1]}]` : "[图片]"));
     } else if (m[3]) {
-      const lm = /^\[((?:[^\[\]\n]+|\[[^\]\n]*\])+)\]\(([^\s)]+)/.exec(token)!;
+      const lm = /^\[((?:[^\[\]\n]|\[[^\]\n]*\])+)\]\(([^\s)]+)/.exec(token)!;
       const label = lm[1];
       const href = lm[2];
       // `[![badge](https://…)](https://…)`: the label is an image. Before the label could contain
