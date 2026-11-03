@@ -2061,6 +2061,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .notes-body { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: 0; }
 .notes-side { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line-soft); }
 .notes-new { margin: 10px 10px 6px; justify-content: flex-start; }
+.notes-search {
+  margin: 0 10px 8px; width: calc(100% - 20px); padding: 6px 9px; font-size: 12.5px;
+  color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; outline: none;
+}
+.notes-search:focus { border-color: var(--accent-dim); }
+.notes-editor-empty-hint { font-size: 12.5px; color: var(--faint); }
+.notes-search::placeholder { color: var(--faint); }
 .notes-items { overflow-y: auto; padding: 0 8px 10px; display: flex; flex-direction: column; gap: 6px; }
 .notes-empty { padding: 18px 10px; color: var(--faint); font-size: 12.5px; text-align: center; }
 

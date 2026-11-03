@@ -164,6 +164,16 @@ try {
   await page.click('.notes-viewbtn:has-text("归档")');
   await until(async () => (await page.locator(".note-row").count()) === 1, 5000, "归档抽屉里出现");
   check("归档抽屉里能看到它", (await page.locator(".note-row-title").textContent()) === "临时：试试归档和垃圾箱");
+  check("归档是管理列表：没有「＋ 记一条」", await page.locator(".notes-new").isHidden());
+  await page.fill(".notes-search", "临时");
+  await page.waitForTimeout(120);
+  check("检索命中", (await page.locator(".note-row").count()) === 1);
+  await page.fill(".notes-search", "zzz");
+  await page.waitForTimeout(120);
+  check("检索不到时给空态", (await page.locator(".note-row").count()) === 0 && (await page.locator(".notes-empty").textContent()) === "没有匹配的记录。");
+  await page.fill(".notes-search", "");
+  await page.waitForTimeout(120);
+  check("清空检索后回来", (await page.locator(".note-row").count()) === 1);
   await page.locator(".note-row").first().hover();
   await page.locator('.note-row-act[title="复原：放回列表"]').click();
   await until(async () => (await page.locator(".note-row").count()) === 0, 5000, "复原后归档抽屉空了");

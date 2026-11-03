@@ -1035,6 +1035,7 @@
 - **归档 / 垃圾箱跟「处理状态」正交**：`status`（待处理 / 已处理 / 已忽略）是「我处理到哪一步」，`life`（在列表 / 归档 / 垃圾箱）是「这条还该不该占列表」。列表只看在列表里的；`📦 归档` 和 `🗑️ 垃圾箱` 两个按钮（在「显示已处理」右边）各自点开看各自的数据、再点一下回列表，按钮上带条数。
 - 每条记录行尾有两颗小图标（悬停才出现，避免把行变成按钮墙）：在列表里是「归档 / 删到垃圾箱」，归档里是「复原 / 删到垃圾箱」，垃圾箱里是「复原 / 彻底删除」。垃圾箱支持**一键清空**，清空前 confirm。
 - 归档 / 垃圾箱都只是打时间戳（`archivedAt` / `deletedAt`），文件不删；只有「彻底删除」和「清空垃圾箱」才动磁盘，并且连 `assets/<id>/` 一起删。
+- **归档 / 垃圾箱是「管理列表」，不是「写的地方」**：这两个视图里没有 `＋ 记一条`，编辑器空态只说「复原放回列表才能改」，左栏只留检索（标题 / 正文 / issue / commit 子串，大小写不敏感，三个视图通用）。理由不是洁癖：在这两堆里新建的记录按定义属于列表，存下去之后广播一到、`setNotes` 判定「这条不该待在这堆里」就把编辑器关了——用户看到的是「点了保存，没存上」。现在 `save()` 里还留了一道兜底：不在列表视图就先切回列表。
 - 三档录入（`quick` / `form` / `long`）= 同一个编辑器的三副样子：`quick` 一行、Enter 存（Shift+Enter 换行）；`form` 多两栏加高；`long` 等宽、给日志栈。存下之后正文还能改、图能加能删。
 - 截图只从用户手上进来：Ctrl+V 粘贴 / 拖进编辑器 / `＋ 图` 选文件。粘贴的图先以 data URL 挂在 `pendingShots`，**随条目的「保存」一起**上传——不然一条还没存下的记录会在磁盘上先长出一个目录。
 - 存储：`stateDir()/notes/bug-notes.json` + `notes/assets/<id>/shot-<n>.<ext>`。图不塞 JSON：base64 会让文件在几十张图后变成几 MB，而列表每次都要整读。截图记**绝对路径**，因为「交给 agent」时它要能直接读。
@@ -1051,4 +1052,4 @@
 
 **可改：** 四类与 `quick/form/long` 三档的具体文案（`web/src/notesheet.ts` 顶部 `NOTE_KINDS` / `MODE_LABEL`）；单条最多 24 张、单图 20MB（`bridge/src/notes.ts` 的 `MAX_SHOTS` / `MAX_SHOT_BYTES`）；默认快捷键 `Ctrl+Shift+B`（`app.ts` 的 `DEFAULT_KEYS`）。想让「已处理」也立刻消失就把 `.notes-switch` 默认打勾，但那样就没有「回头看看处理了什么」的地方了。
 
-**验证：** `node probes/bug-notes.mjs`（真桥、临时状态目录、纯 WS，32 条断言；含 `notes.life` 归档打时间戳 / 复原清空 / 错 life 被拒 / `trashed` 只打标记 / `notes.purge` 只清垃圾箱那条）：hello 带 `notes`、空标题取正文首行、同 id 是更新（`createdAt` 不变、`updatedAt` 前进）、`issue`/`commit` 落盘、错 status / 错 kind 被拒且状态不变、截图落到 `assets/<id>/` 且 `/api/image` 读得回 `image/png`、第二张换名不覆盖、删图只删自己那条、删记录连目录一起清、桥杀掉后 JSON 仍在。`node probes/bug-notes-ui.mjs`（真 Chromium + 隔离桥，33 条断言）：没开会话也能开、光标落在记一条、Enter 存一条、按钮只显示图标且计数在 `title`、行内归档后从列表消失 → 归档抽屉可见 → 复原回列表 → 删到垃圾箱 → 只读 + 复原 + 彻底删除 + 清空垃圾箱、真 paste 事件贴图并随保存落盘、缩略图回到编辑器、状态 pill 转已处理后从待处理消失、「显示已处理」翻回来、复制 Markdown 进剪贴板（含截图绝对路径）、交给 agent 菜单两项、Escape 先关菜单再关面板、刷新后记录还在。截图：`.scratch/bug-notes/shots/desktop.png`。
+**验证：** `node probes/bug-notes.mjs`（真桥、临时状态目录、纯 WS，32 条断言；含 `notes.life` 归档打时间戳 / 复原清空 / 错 life 被拒 / `trashed` 只打标记 / `notes.purge` 只清垃圾箱那条）：hello 带 `notes`、空标题取正文首行、同 id 是更新（`createdAt` 不变、`updatedAt` 前进）、`issue`/`commit` 落盘、错 status / 错 kind 被拒且状态不变、截图落到 `assets/<id>/` 且 `/api/image` 读得回 `image/png`、第二张换名不覆盖、删图只删自己那条、删记录连目录一起清、桥杀掉后 JSON 仍在。`node probes/bug-notes-ui.mjs`（真 Chromium + 隔离桥，37 条断言（含归档视图不给「＋ 记一条」、检索命中 / 空态 / 清空））：没开会话也能开、光标落在记一条、Enter 存一条、按钮只显示图标且计数在 `title`、行内归档后从列表消失 → 归档抽屉可见 → 复原回列表 → 删到垃圾箱 → 只读 + 复原 + 彻底删除 + 清空垃圾箱、真 paste 事件贴图并随保存落盘、缩略图回到编辑器、状态 pill 转已处理后从待处理消失、「显示已处理」翻回来、复制 Markdown 进剪贴板（含截图绝对路径）、交给 agent 菜单两项、Escape 先关菜单再关面板、刷新后记录还在。截图：`.scratch/bug-notes/shots/desktop.png`。

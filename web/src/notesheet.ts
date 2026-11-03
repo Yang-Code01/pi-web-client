@@ -76,6 +76,9 @@ export class NotesSheet {
   private doneWrap!: HTMLElement;
   private viewBtns: Record<"archived" | "trash", HTMLButtonElement> = {} as never;
   private clearTrash!: HTMLButtonElement;
+  private newBtn!: HTMLButtonElement;
+  private searchEl!: HTMLInputElement;
+  private query = "";
   private sel: string | null = null;
   /** 编辑器里现在是什么：null = 没在编辑。 */
   private editing: { id: string | null; note: Partial<Note> } | null = null;
@@ -108,7 +111,17 @@ export class NotesSheet {
     const left = el("div", "notes-side");
     const newBtn = el("button", "btn ghost notes-new", "＋ 记一条");
     newBtn.onclick = () => this.newNote();
-    left.append(newBtn, (this.listEl = el("div", "notes-items")));
+    this.newBtn = newBtn;
+    // 归档 / 垃圾箱是「管理已有记录」的两堆，不是写的地方：那里只给检索（下面这个框），不给「＋ 记一条」。
+    const search = el("input", "ns-input notes-search") as HTMLInputElement;
+    search.type = "search";
+    search.placeholder = "搜标题 / 正文";
+    search.oninput = () => {
+      this.query = search.value.trim().toLowerCase();
+      this.paintList();
+    };
+    this.searchEl = search;
+    left.append(newBtn, search, (this.listEl = el("div", "notes-items")));
     body.append(left, (this.editorEl = el("div", "notes-editor")));
     sheet.append(body);
 
@@ -176,6 +189,7 @@ export class NotesSheet {
       trash.replaceChildren(el("span", "", "🗑️ 垃圾箱"), ...(trashed ? [el("span", "n", String(trashed))] : []));
     }
     this.doneWrap.hidden = this.view !== "active";
+    this.newBtn.hidden = this.view !== "active";
     this.clearTrash.hidden = this.view !== "trash";
     this.clearTrash.textContent = trashed ? `清空垃圾箱（${trashed}）` : "清空垃圾箱";
   }
@@ -244,7 +258,13 @@ export class NotesSheet {
   }
 
   private visible(): Note[] {
-    return this.host.notes().filter((n) => n.kind === this.kind && this.inView(n));
+    const q = this.query;
+    return this.host.notes().filter((n) => n.kind === this.kind && this.inView(n) && (!q || this.matches(n, q)));
+  }
+
+  /** 检索只看人写得出来的字段：标题、正文、issue / commit 号。 */
+  private matches(n: Note, q: string): boolean {
+    return [n.title, n.body, n.issue, n.commit].some((v) => String(v ?? "").toLowerCase().includes(q));
   }
 
   private paintTabs(): void {
@@ -272,8 +292,13 @@ export class NotesSheet {
   private paintList(): void {
     const rows = this.visible();
     if (!rows.length) {
-      const empty =
-        this.view === "trash" ? "垃圾箱是空的。" : this.view === "archived" ? "还没有归档的记录。" : `这一类里没有${this.showDone ? "" : "待处理的"}记录。`;
+      const empty = this.query
+        ? "没有匹配的记录。"
+        : this.view === "trash"
+          ? "垃圾箱是空的。"
+          : this.view === "archived"
+            ? "还没有归档的记录。"
+            : `这一类里没有${this.showDone ? "" : "待处理的"}记录。`;
       this.listEl.replaceChildren(el("div", "notes-empty", empty));
       return;
     }
@@ -403,14 +428,22 @@ export class NotesSheet {
   private paintEditor(): void {
     if (!this.editing) {
       const empty = el("div", "notes-editor-empty");
-      empty.append(
-        el("div", "notes-editor-empty-title", "左栏点一条来改，或者"),
-        (() => {
-          const b = el("button", "btn primary", "＋ 记一条");
-          b.onclick = () => this.newNote();
-          return b;
-        })(),
-      );
+      if (this.view === "active") {
+        empty.append(
+          el("div", "notes-editor-empty-title", "左栏点一条来改，或者"),
+          (() => {
+            const b = el("button", "btn primary", "＋ 记一条");
+            b.onclick = () => this.newNote();
+            return b;
+          })(),
+        );
+      } else {
+        // 归档 / 垃圾箱只能看和复原：这里不摆「记一条」，不然存下去的新记录不在这堆里，看起来像没存上。
+        empty.append(
+          el("div", "notes-editor-empty-title", this.view === "trash" ? "垃圾箱里的记录不能改。" : "归档里的记录不能直接改。"),
+          el("div", "notes-editor-empty-hint", "左栏点一条看一眼；要改先「复原」放回列表。"),
+        );
+      }
       this.editorEl.replaceChildren(empty);
       return;
     }
@@ -745,6 +778,8 @@ export class NotesSheet {
   /** 保存（新建或更新）。保存成功前不动选择状态，避免广播先到把光标位置搅乱。 */
   private save(): void {
     if (!this.editing) return;
+    // 归档 / 垃圾箱里存出来的新记录属于列表：先切回列表，不然 ack 一到就被「这条不该待在这堆里」关掉编辑器。
+    if (this.view !== "active") this.setView("active");
     const note = this.editing.note;
     if (!(note.body ?? "").trim() && !(note.title ?? "").trim()) {
       this.say("先写点什么再存", true);
