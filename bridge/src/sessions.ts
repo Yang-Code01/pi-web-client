@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { RpcChild } from "./rpc.ts";
 import { loadEntries, listSessionFiles, titleFromUserText, type SessionFileMeta } from "./sessionfile.ts";
-import { entriesToItems, summarizeToolArgs, type Item, type ToolItem } from "./items.ts";
+import { BASH_KEEP, entriesToItems, summarizeToolArgs, type BashItem, type Item, type ToolItem } from "./items.ts";
 import { fileURLToPath } from "node:url";
 import { ensureDir, sessionsRoot, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
@@ -454,8 +454,11 @@ export class Session extends EventEmitter {
   private compaction: { done: Promise<void>; resolve: () => void } | null = null;
   /** User items sent while a run was active, i.e. sitting in pi's queue until delivered or cleared. */
   private queuedUser: { id: string; text: string }[] = [];
-  /** Bubbles of messages that stop pulled back from the queue; dropped once the run has settled. */
-  private withdrawOnSettle: { ids: string[]; count: number } | null = null;
+  /** pi's queue as of the last queue_update, so a page opened mid-run sees it too (#14). */
+  private queue: { steering: string[]; followUp: string[] } = { steering: [], followUp: [] };
+  /** The `!cmd` running right now; pi streams its output as bash_execution_update (#16). */
+  private bashRun: { itemId: string; output: string } | null = null;
+  private bashCounter = 0;
   /**
    * What extensions put on screen with ctx.ui.setStatus / setWidget / setTitle. These are
    * fire-and-forget in RPC (no response), so the bridge keeps the latest state for late joiners.
@@ -653,6 +656,8 @@ export class Session extends EventEmitter {
       this.endCompaction();
       // The extensions that drew these live in the process that just ended.
       this.resetExtUi();
+      this.setQueue([], []);
+      this.bashRun = null;
       // A stop the user asked for is not news; only an exit nobody asked for is worth the stderr tail.
       if (closing) {
         if (!quiet) this.emitWs({ type: "notice", sessionId: id, text: "已停止运行，历史留在磁盘，发消息会自动接管。", level: "info" });
@@ -732,9 +737,9 @@ export class Session extends EventEmitter {
       case "agent_settled": {
         // Whatever was queued has been delivered or cleared by now.
         this.queuedUser = [];
+        this.setQueue([], []);
         this.setState({ running: false, done: true });
         this.emitWs({ type: "pi.status", sessionId: this.state.id, running: false });
-        if (this.withdrawOnSettle) this.applyWithdraw();
         void this.refreshStats();
         break;
       }
@@ -854,8 +859,14 @@ export class Session extends EventEmitter {
         break;
       }
       case "queue_update": {
-        // Spread first: the event's own `type: "queue_update"` used to overwrite ours.
-        this.emitWs({ ...ev, type: "queue", sessionId: this.state.id });
+        this.setQueue(ev.steering, ev.followUp);
+        break;
+      }
+      case "bash_execution_update": {
+        const run = this.bashRun;
+        if (!run || typeof ev.delta !== "string") break;
+        run.output = (run.output + ev.delta).slice(-BASH_KEEP);
+        this.emitWs({ type: "bash.delta", sessionId: this.state.id, id: run.itemId, text: ev.delta });
         break;
       }
       case "compaction_start":
@@ -1065,7 +1076,12 @@ export class Session extends EventEmitter {
    * `clientId` is the id the sending page gave its optimistic bubble: the broadcast carries it so
    * that page adopts the bubble instead of drawing a second one, and every other page draws it.
    */
-  async prompt(text: string, images?: { data: string; mimeType: string }[], clientId?: string): Promise<void> {
+  async prompt(
+    text: string,
+    images?: { data: string; mimeType: string }[],
+    clientId?: string,
+    behavior: "steer" | "followUp" = "steer",
+  ): Promise<void> {
     if (!this.rpc?.alive) throw new Error("会话没在运行");
     // pi throws on a prompt submitted mid-compaction: hold it until the compaction is over.
     if (this.compaction) {
@@ -1076,7 +1092,8 @@ export class Session extends EventEmitter {
     const message: any = { type: "prompt", message: text };
     // pi rejects a bare prompt while a run is active; queue it instead. `running` spans
     // agent_start … agent_settled, so retries and overflow recovery count as running too.
-    if (this.state.running) message.streamingBehavior = "followUp";
+    // Like the terminal: Enter steers the current task, Alt+Enter waits until it is done (#14).
+    if (this.state.running) message.streamingBehavior = behavior === "followUp" ? "followUp" : "steer";
     if (images?.length) {
       message.images = images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType }));
     }
@@ -1116,47 +1133,109 @@ export class Session extends EventEmitter {
     // `abort` alone leaves queued messages in place and pi runs them as soon as it is idle
     // (docs/rpc-commands.md clear_queue). Clear first: pi handles clear_queue synchronously, and
     // commands are dispatched in arrival order, so the queue is empty before abort starts.
-    const cleared = rpc.request<{ steering?: unknown[]; followUp?: unknown[] }>("clear_queue", {}, 10000);
-    // Snapshot now: agent_settled may be processed before this response's promise callback runs.
-    const queued = this.queuedUser.slice();
+    const withdrawn = this.withdrawQueue();
     // Fire and forget: abort's response can stall while a dialog is pending.
     try {
       rpc.fire("abort", {});
     } catch {
       /* ignore */
     }
-    void cleared
-      .then((data) => {
-        const texts = [...(data?.steering ?? []), ...(data?.followUp ?? [])].map(String).filter((t) => t.trim());
-        if (!texts.length) return;
-        // Same as the terminal's Esc: the queued text goes back to the editor instead of vanishing.
-        this.emitWs({ type: "queue.restore", sessionId: this.state.id, texts });
-        // Their bubbles claim they were sent: drop them (matched by text, oldest first).
-        const ids: string[] = [];
-        const pool = [...queued];
-        for (const text of texts) {
-          const at = pool.findIndex((q) => q.text === text);
-          if (at >= 0) ids.push(pool.splice(at, 1)[0].id);
-        }
-        this.withdrawOnSettle = { ids, count: texts.length };
-        // Rebuilding the transcript mid-stream would drop the live draft: wait for the settle.
-        if (!this.state.running) this.applyWithdraw();
-      })
-      .catch(() => {
-        /* an old pi without clear_queue: abort still went out */
-      });
+    void withdrawn;
   }
 
-  private applyWithdraw(): void {
-    const pending = this.withdrawOnSettle;
-    this.withdrawOnSettle = null;
-    if (!pending) return;
-    if (pending.ids.length) {
-      const drop = new Set(pending.ids);
-      this.items = this.items.filter((it) => !drop.has(it.id));
-      this.emitWs({ type: "items", sessionId: this.state.id, items: this.items });
+  /**
+   * Take everything out of pi's queue and hand the text back to the editor (`queue.restore`),
+   * dropping the bubbles of those messages: they were never sent. Used by stop and by the queue
+   * bar's 撤回 button (#9, #14).
+   */
+  async withdrawQueue(): Promise<number> {
+    const rpc = this.rpc;
+    if (!rpc?.alive) return 0;
+    const cleared = rpc.request<{ steering?: unknown[]; followUp?: unknown[] }>("clear_queue", {}, 10000);
+    // Snapshot now: agent_settled may be processed before this response's promise callback runs.
+    const queued = this.queuedUser.slice();
+    let data: { steering?: unknown[]; followUp?: unknown[] };
+    try {
+      data = await cleared;
+    } catch {
+      return 0; // an old pi without clear_queue
     }
-    this.emitWs({ type: "notice", sessionId: this.state.id, text: `已撤回 ${pending.count} 条排队中的消息，放回了输入框。`, level: "info" });
+    const texts = [...(data?.steering ?? []), ...(data?.followUp ?? [])].map(String).filter((t) => t.trim());
+    if (!texts.length) return 0;
+    // Same as the terminal's Esc / Alt+Up: the queued text goes back to the editor.
+    this.emitWs({ type: "queue.restore", sessionId: this.state.id, texts });
+    // Their bubbles claim they were sent: drop them (matched by text, oldest first).
+    const ids: string[] = [];
+    const pool = [...queued];
+    for (const text of texts) {
+      const at = pool.findIndex((q) => q.text === text);
+      if (at >= 0) ids.push(pool.splice(at, 1)[0].id);
+    }
+    this.queuedUser = this.queuedUser.filter((q) => !ids.includes(q.id));
+    this.applyWithdraw(ids, texts.length);
+    return texts.length;
+  }
+
+  private setQueue(steering: unknown, followUp: unknown): void {
+    const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : []);
+    const next = { steering: list(steering), followUp: list(followUp) };
+    if (JSON.stringify(next) === JSON.stringify(this.queue)) return;
+    this.queue = next;
+    this.emitWs({ type: "queue", sessionId: this.state.id, ...next });
+  }
+
+  /** `!cmd` (`!!cmd` = excludeFromContext): pi's RPC bash, streamed into a card of its own (#16). */
+  async bash(command: string, excludeFromContext: boolean): Promise<void> {
+    const rpc = this.rpc;
+    if (!rpc?.alive) throw new Error("会话没在运行");
+    if (this.bashRun) throw new Error("上一条 ! 命令还在跑，等它结束或先停掉它");
+    const item: BashItem = {
+      id: `bash:${++this.bashCounter}`,
+      kind: "bash",
+      command,
+      output: "",
+      excludeFromContext,
+      status: "running",
+      ts: new Date().toISOString(),
+    };
+    this.upsert(item);
+    this.emitWs({ type: "item.add", sessionId: this.state.id, item });
+    const run = { itemId: item.id, output: "" };
+    this.bashRun = run;
+    let done: BashItem;
+    try {
+      // A shell command can run for a long time; pi answers when it exits or is aborted.
+      const r = await rpc.request<any>("bash", { command, ...(excludeFromContext ? { excludeFromContext: true } : {}) }, 24 * 3600 * 1000);
+      done = {
+        ...item,
+        output: String(r?.output ?? run.output).slice(-BASH_KEEP),
+        exitCode: typeof r?.exitCode === "number" ? r.exitCode : null,
+        cancelled: Boolean(r?.cancelled),
+        truncated: Boolean(r?.truncated),
+        ...(typeof r?.fullOutputPath === "string" ? { fullOutputPath: r.fullOutputPath } : {}),
+        status: "done",
+      };
+    } catch (err: any) {
+      done = { ...item, output: run.output, status: "done", error: String(err?.message ?? err) };
+    } finally {
+      if (this.bashRun === run) this.bashRun = null;
+    }
+    this.upsert(done, item.id);
+    this.emitWs({ type: "item.replace", sessionId: this.state.id, id: item.id, item: done });
+  }
+
+  abortBash(): void {
+    if (this.bashRun) this.rpc?.fire("abort_bash", {});
+  }
+
+  private applyWithdraw(ids: string[], count: number): void {
+    if (ids.length) {
+      const drop = new Set(ids);
+      this.items = this.items.filter((it) => !drop.has(it.id));
+      // Targeted removal, not a full `items` resend: that would also wipe the live draft mid-run.
+      this.emitWs({ type: "item.remove", sessionId: this.state.id, ids });
+    }
+    this.emitWs({ type: "notice", sessionId: this.state.id, text: `已撤回 ${count} 条排队中的消息，放回了输入框。`, level: "info" });
   }
 
   /** Compaction is long (minutes on a big context); its events, not a short timeout, bound it. */
@@ -1346,6 +1425,7 @@ export class Session extends EventEmitter {
     asks: AskRequest[];
     budget: number | null;
     ext: ExtUiState;
+    queue: { steering: string[]; followUp: string[] };
   } {
     return {
       state: this.state,
@@ -1354,6 +1434,7 @@ export class Session extends EventEmitter {
       asks: [...this.asks.values()].map(publicAsk),
       budget: this.contextBudget,
       ext: this.extUi(),
+      queue: this.queue,
     };
   }
 
