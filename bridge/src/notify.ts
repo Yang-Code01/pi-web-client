@@ -26,12 +26,24 @@ function wechatStateDir(): string {
 export class Notifier {
   private vapid: { publicKey: string; privateKey: string };
   private subs: PushSubscriptionRecord[] = [];
+  /** 「pi 设置 → 通知」的总开关：关掉后需要你时不推 Web Push，也不发微信（测试通知不受影响）。 */
+  private on = true;
 
   constructor() {
     ensureStateDirs();
     this.vapid = this.loadVapid();
     webpush.setVapidDetails("mailto:pi-web-client@localhost", this.vapid.publicKey, this.vapid.privateKey);
     this.subs = readJson<PushSubscriptionRecord[]>(statePath("push-subs.json"), []);
+    this.on = readJson<{ enabled?: boolean }>(statePath("notify.json"), {}).enabled !== false;
+  }
+
+  get enabled(): boolean {
+    return this.on;
+  }
+
+  setEnabled(on: boolean): void {
+    this.on = on;
+    writeJson(statePath("notify.json"), { enabled: on });
   }
 
   private loadVapid(): { publicKey: string; privateKey: string } {
@@ -62,12 +74,13 @@ export class Notifier {
     writeJson(statePath("push-subs.json"), this.subs);
   }
 
-  async push(title: string, body: string, url: string): Promise<{ sent: number; failed: number }> {
+  /** `force`: show it even on a page that is in front (the 发测试通知 button is clicked from one). */
+  async push(title: string, body: string, url: string, force = false): Promise<{ sent: number; failed: number }> {
     let sent = 0;
     let failed = 0;
     for (const sub of [...this.subs]) {
       try {
-        await webpush.sendNotification(sub as any, JSON.stringify({ title, body, url }), { TTL: 600 });
+        await webpush.sendNotification(sub as any, JSON.stringify({ title, body, url, ...(force ? { force: true } : {}) }), { TTL: 600 });
         sent += 1;
       } catch (err: any) {
         failed += 1;
@@ -141,8 +154,8 @@ export class Notifier {
   }
 
   /** Both channels; Web Push first (fast), WeChat as the reliable one. */
-  async notify(title: string, body: string, url: string): Promise<{ push: number; wechat: string }> {
-    const push = await this.push(title, body, url).catch(() => ({ sent: 0, failed: 0 }));
+  async notify(title: string, body: string, url: string, force = false): Promise<{ push: number; wechat: string }> {
+    const push = await this.push(title, body, url, force).catch(() => ({ sent: 0, failed: 0 }));
     const wx = await this.wechat(`${title}\n${body}\n${url}`).catch((e) => ({ ok: false, reason: String(e) }));
     return { push: push.sent, wechat: wx.ok ? "ok" : wx.reason ?? "failed" };
   }

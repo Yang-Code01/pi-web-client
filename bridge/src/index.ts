@@ -335,6 +335,7 @@ async function main(): Promise<void> {
         tunnel: tunnel.state,
         pushKey: notifier.vapidPublicKey,
         pushCount: notifier.subscriptionCount(),
+        notify: notifier.enabled,
         sessionsRoot: sessionsRootInfo().dir,
         sessionsRootSource: sessionsRootInfo().source,
       });
@@ -529,7 +530,7 @@ async function main(): Promise<void> {
     }
 
     if (url.pathname === "/api/notify-test" && req.method === "POST") {
-      const result = await notifier.notify("pi-web-client 测试", "如果你看到这条，通知链路是通的。", `${publicReq ? tunnel.state.url ?? "" : "http://127.0.0.1:" + cfg.port}`);
+      const result = await notifier.notify("pi-web-client 测试", "如果你看到这条，通知链路是通的。", `${publicReq ? tunnel.state.url ?? "" : "http://127.0.0.1:" + cfg.port}`, true);
       return json(res, 200, result);
     }
 
@@ -571,7 +572,16 @@ async function main(): Promise<void> {
   });
 
   sessions.on("ws", broadcast);
+  /**
+   * D91: no Windows / WeChat ping while somebody is looking at a page (visible tab in a focused
+   * window); the page reports that over its socket. The service worker checks again on arrival.
+   */
+  const shouldNotify = (): boolean => {
+    if (!notifier.enabled) return false;
+    return ![...wss.clients].some((c) => c.readyState === WebSocket.OPEN && (c as any).present === true);
+  };
   sessions.on("approval", (approval) => {
+    if (!shouldNotify()) return;
     const session = sessions.get(approval.sessionId);
     const name = session?.state.name ?? approval.sessionId.slice(0, 8);
     const body = approval.message.replace(/\s+/g, " ").slice(0, 140);
@@ -585,6 +595,10 @@ async function main(): Promise<void> {
     const body = (first?.prompt ?? "").replace(/\s+/g, " ").slice(0, 140);
     const more = ask.questions.length > 1 ? `（${ask.questions.length} 题）` : "";
     const link = tunnel.state.url ? `${tunnel.state.url}/#/s/${ask.sessionId}` : `http://127.0.0.1:${cfg.port}/#/s/${ask.sessionId}`;
+    if (!shouldNotify()) {
+      log(`ask-push skipped ${String(tool)} ${ask.id} (${notifier.enabled ? "page in front" : "notifications off"})`);
+      return;
+    }
     void notifier.notify(`需要你回答${more} · ${name}`, body, link);
     log(`ask-push ${String(tool)} ${ask.id} → ${name}`);
   });
@@ -635,6 +649,17 @@ async function main(): Promise<void> {
       }
       try {
         switch (msg.type) {
+          case "presence": {
+            (ws as any).present = msg.active === true;
+            return;
+          }
+          case "notify.set": {
+            if (!(await requireStepUp())) return;
+            notifier.setEnabled(msg.on === true);
+            log(`notifications ${notifier.enabled ? "on" : "off"}`);
+            broadcast({ type: "notify", on: notifier.enabled });
+            return;
+          }
           case "stepup": {
             const ip = clientIp(req.headers, req.socket.remoteAddress);
             if (!loginAllowed(ip)) {

@@ -959,3 +959,22 @@
   - 扩展商店前 20 按月下载量排（billion-context 265 万、pi-mcp-adapter 136 万…），搜索 subagent 有结果；
   - MCP 商店前 20 按 star 排（browser-use ★119,890…），安装表单可以选运行方式；
   - 在设置里关掉开关后，按钮消失。
+## D90 `ask_user_question` 整份问卷一次给网页，逐题对话框由桥回填
+
+**问题：** 网页上问卷只能一题一题答、答了回不去，每题还各推一次通知。D47 的 `/api/ask` 旁路靠全局 `question.ts` / `questionnaire.ts`，这两个扩展已经不在了；现在的提问工具是 `@juicesharp/rpiv-ask-user-question`，它在 rpc 下走 `rpc-fallback.ts`：每题一个 `ui.select`（多选题是 `ui.input`），桥的 `askViaDialog()` 把每个对话框包成一份单题 ask，单题点选即答。它自带的外部作答通道（`rpiv:ask-user:answer`）对 rpc 宿主回 `unsupported_host`，走不通。
+
+**决定：** 桥在 `tool_execution_start`（`toolName === "ask_user_question"`）就拿到整份问卷参数，立刻发一份多题 ask（复用 tab + 提交 + 可回改的面板，多选题打勾）。之后到来的对话框按标题认题（`[header] question`，去空白比前缀，`bridge/src/questionnaire.ts`），按答案回填：单选发对话框里那一行原文，自己写的发原文；多选发 `1,3` 加可选的 `; 文字`。认不出的对话框照旧单独问；工具结束（`tool_execution_end`）时还挂着的 ask 撤掉。
+
+**为什么不改 npm 包：** 包一升级就被覆盖；回填只依赖它公开的回复解析（序号 / 原行 / 任意文字算自写），对不上时退回原来的逐题模式，代价可接受。
+
+**验证：** `bridge/tests/questionnaire-unit.mjs`（需先 `npm run build:bridge`，Node 26 不再支持 `--experimental-transform-types`，可把 `../src/*.ts` 换成 `../dist/*.js` 跑）；真 Chromium + 真模型探针 `.scratch/q-probe.mjs`。
+
+## D91 页面在前台时不发通知；「pi 设置 → 通知」总开关
+
+**问题：** Windows 右下角的「需要你回答」通知（Web Push，`via Microsoft Edge`）在用户正看着页面时也弹，且一份问卷每题一条。
+
+**决定：**
+- 页面在 `focus` / `blur` / `visibilitychange` 和连上时发 `{type:"presence", active}`（`visible && document.hasFocus()`）；桥只要有一个连接 `active` 就不推 Web Push、也不发微信。
+- `sw.js` 收到推送时再查一次：有 `focused && visible` 的窗口就不弹（Chromium 在有聚焦窗口时不强制显示）。测试通知带 `force`，照弹。
+- 总开关存 `state/notify.json`，`/api/me` 带 `notify`，WS `notify.set`（要 step-up）后广播 `notify`。开关放在「pi 设置」新的「通知」页，同页有「开启 Web Push」「发测试通知」。
+- 输入框占位文字统一由 `composerPlaceholder()` 给出（空闲 / 运行中 / 问卷三种都写 Shift+Enter 换行），不再被 `renderAsks()` 覆盖成光秃秃的「说点什么…」。
