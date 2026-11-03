@@ -2,7 +2,7 @@
  * Probe: Q-007 — the terminal button must give a real shell that streams back into the page.
  *
  * Runs a throwaway bridge (port 7898, state under .scratch/round7-term/) because the terminal needs
- * node-pty on the bridge side; then drives the real UI: click 打开终端 → answer the step-up prompt →
+ * node-pty on the bridge side; then drives the real UI: click 顶栏「>_ 终端」 → answer the step-up prompt →
  * type a command → read the output out of the xterm DOM.
  *
  * Run: node probes/round7-term.mjs   (needs `npm run build` first)
@@ -72,8 +72,9 @@ try {
   await page.goto(BASE, { waitUntil: "networkidle" });
 
   // 终端 card in the right rail
-  const openBtn = page.getByRole("button", { name: "打开终端" });
-  await until(async () => (await openBtn.count()) > 0, 8000, "terminal card");
+  // D92: 终端入口是顶栏那颗「>_ 终端」，在 产物 旁边。
+  const openBtn = page.locator('[data-act="terminal"]').first();
+  await until(async () => (await openBtn.count()) > 0, 8000, "terminal button");
   await openBtn.click();
 
   // Loopback writes skip the step-up gate; a tunnel-side client would get the modal first.

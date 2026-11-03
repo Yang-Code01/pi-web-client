@@ -162,13 +162,9 @@ try {
   await page.locator(".session-card").first().click();
   await until(async () => (await page.locator(".topbar .title").innerText()).includes("提权探针"), 6000, "session opened");
 
-  // The terminal entry lives in the right pane (通道 / 终端 / 快捷键 / 关于). The pane may already be
-  // open — the toggle persists in localStorage — so only collapse/expand when it is actually hidden.
+  // D92: 终端入口是顶栏那颗「>_ 终端」（在 产物 旁边），不再在右栏里。
   const termBtn = page.locator('[data-act="terminal"]').first();
-  if (!(await termBtn.isVisible().catch(() => false))) {
-    await page.locator(".icon-btn.side-toggle[data-side=right]").first().click();
-  }
-  await until(async () => termBtn.isVisible(), 6000, "打开终端 button");
+  await until(async () => termBtn.isVisible(), 6000, "terminal button");
   await termBtn.click();
   await until(async () => (await page.locator(".term-dock").count()) > 0, 8000, "terminal dock");
 

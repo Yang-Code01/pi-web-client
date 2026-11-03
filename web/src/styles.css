@@ -155,6 +155,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .icon-btn:hover { color: var(--text); border-color: #2f3746; background: var(--panel-2); }
 .icon-btn[aria-pressed="true"] { color: var(--faint); }
+/* D92: 顶栏那颗「终端」—— 有 shell 在跑（含收起状态）就点亮，点一下回到同一个进程。 */
+.icon-btn.term-live { color: var(--accent); border-color: var(--accent-dim); background: #0b1c24; }
 .icon-btn.alert { color: var(--warn); border-color: #3a2f14; background: #1c1608; }
 .icon-btn.side-toggle { display: none; }
 @media (min-width: 900px) { .icon-btn.side-toggle { display: grid; } }
@@ -415,7 +417,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 
 /* ---------------------------------------------------------------- chat */
-.chat-pane { display: grid; grid-template-rows: 1fr auto auto; min-height: 0; position: relative; }
+.chat-pane { display: grid; grid-template-rows: 1fr auto; min-height: 0; position: relative; }
 .chat-scroll { padding: 16px 14px 8px; display: flex; flex-direction: column; gap: 12px; }
 /* 这个列容器有确定高度且 overflow-y:auto；子项若自带 overflow:hidden（如 .fcard），
    min-height:auto 会退化成 0，于是长会话里被 flex 压缩成 2px 细线。统一禁止收缩。 */
@@ -1465,14 +1467,40 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .keys-chip:hover { border-color: var(--accent); color: var(--accent); }
 .sheet-foot { display: flex; justify-content: flex-end; gap: 8px; }
 
-/* Terminal dock (Q-007): the shell runs in the bridge, this is only the view. */
+/* Terminal dialog (D92 · Q-007): the shell runs in the bridge, this is only the view. 它浮在页面上，
+   不再占对话栏的宽度；最小化 = [hidden]，桥里的 shell 照旧在跑。
+   z-index 45：在顶栏（20）和输入框浮层（40）之上，但比弹口令的 modal（50）、文件预览（55）、
+   底部 sheet（60）低 —— 那些东西该盖住终端。 */
+/* 现在宽 / 高由 JS 按窗口与缩放算好写进 style（CSS 里的 vh/vw 在 #app 的 zoom 下会被再乘一次），
+   这里的尺寸只是 JS 未跑之前的兜底。 */
 .term-dock {
-  display: flex; flex-direction: column; min-height: 0;
+  position: fixed; z-index: 45;
+  left: 50%; bottom: 14px; transform: translateX(-50%);
+  width: min(1080px, calc(100vw - 32px));
   height: min(46vh, 420px);
-  border-top: 1px solid var(--line);
+  display: flex; flex-direction: column; min-height: 0;
+  border: 1px solid var(--line); border-radius: 14px;
   background: #0b0d10;
+  box-shadow: 0 26px 60px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  animation: term-pop 140ms ease-out;
 }
-/* Q-026: 终端高度可拖 —— 顶边一条 7px 的抓取带，等于给 dock 换了一条可移动的边框。 */
+@keyframes term-pop { from { transform: translate(-50%, 10px); opacity: 0.4; } }
+/* 拖过 / 拉过之后是 left/top 钉住的，就不再重放「从底部弹上来」那个位移。 */
+.term-dock.pinned { animation: none; }
+/* D93: 标题栏空白处是「拖走」，右下角那只角是「拖大拖小」。 */
+body.win-dragging, body.win-dragging .term-head { cursor: grabbing; user-select: none; }
+body.win-resizing, body.win-resizing .term-grip, body.win-resizing .term-resize { cursor: nwse-resize; user-select: none; }
+.term-resize {
+  position: absolute; right: 0; bottom: 0; width: 18px; height: 18px;
+  cursor: nwse-resize; touch-action: none;
+}
+.term-resize::after {
+  content: ""; position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px;
+  border-right: 2px solid var(--faint); border-bottom: 2px solid var(--faint); border-radius: 0 0 3px 0;
+}
+.term-resize:hover::after, .term-resize.dragging::after { border-color: var(--accent); }
+/* Q-026 · D93: 终端高度可拖 —— 顶边一条 7px 的抓取带（只改高），右下角那只角同时改宽高。 */
 .term-grip {
   flex: none; height: 7px; margin-bottom: -1px;
   cursor: ns-resize; touch-action: none;
@@ -1487,6 +1515,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   display: flex; align-items: center; gap: 8px; padding: 6px 10px;
   border-bottom: 1px solid var(--line-soft);
   font-size: 12px; color: var(--muted);
+  cursor: grab;
 }
 .term-head .spacer { flex: 1 1 auto; }
 /* D68: 一个标签一个 shell。标签条自己横滚，不把「＋」和右侧按钮挤出去。 */
@@ -1519,13 +1548,25 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text);
 }
 .term-btn:hover { border-color: var(--accent); color: var(--accent); }
+/* 「－」比两个字窄一点，不给它和「关闭」一样的宽。 */
+.term-btn.min-btn { padding: 3px 8px; font-size: 13px; line-height: 1; }
 /* 每个标签一个 body，非当前标签整个不占位（xterm 在隐藏容器里量不出尺寸，切回来会重 fit）。 */
 .term-bodies { flex: 1 1 auto; min-height: 0; display: flex; }
 .term-body { flex: 1 1 auto; min-height: 0; padding: 6px 4px 4px 8px; }
 .term-body[hidden] { display: none; }
 .term-body .xterm { height: 100%; }
 .term-body .xterm-viewport { background: transparent !important; }
-@media (max-width: 900px) { .term-dock { height: min(38vh, 320px); } }
+/* 窄屏：dialog 贴两侧，底边让开底部三标签（tabs 只在窄屏存在）。 */
+@media (max-width: 899px) {
+  .term-dock {
+    width: calc(100vw - 16px);
+    height: min(42vh, 340px);
+    bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+  }
+  .term-head { gap: 6px; padding: 6px 8px; }
+  .term-tabs { max-width: 46%; }
+  .term-btn { padding: 3px 6px; }
+}
 
 /* Right-click menu in the file browser (Q-008). */
 .ctx-menu {

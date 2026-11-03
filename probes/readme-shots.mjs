@@ -281,7 +281,7 @@ async function shootRealBridge() {
     await ctx.close();
   }
 
-  // 3) 真终端 + 多开（D68）：右栏「打开终端」起一个 PowerShell，再点「＋」开第二个，两个标签各跑一条命令。
+  // 3) 真终端 + 多开（D68·D92）：顶栏「>_ 终端」起一个 PowerShell，再点「＋」开第二个，两个标签各跑一条命令。
   {
     const { page, ctx } = await open(1440, 900);
     await openDemo(page);

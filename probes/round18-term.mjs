@@ -1,7 +1,9 @@
 /**
- * Probe: Q-025 — opening the terminal folds the right pane away (the dock lives in the chat column,
- * so that column is the only thing stealing its width), and the dock's top edge is a grip you can
- * drag up/down, remembered across mounts, double-click to reset.
+ * Probe: Q-025 — 打开终端后 dock 顶边是抓取带，拖上/拖下改高度，记住，双击复位。
+ *
+ * **D92 之后只有抓取带那段还成立**：终端不再是对话栏底部的 dock，也不再折叠右栏（Q-026 作废），
+ * 刷新后也不自动弹窗。活的行为看 probes/term-dialog.mjs；这个脚本里折叠右栏 / 重新挂载那几条
+ * 断言已经过时，路径也还是另一台机器的。
  *
  * Stands in for the bridge: it answers `term.open` with `term.opened` and ignores input.
  *

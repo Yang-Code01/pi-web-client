@@ -228,6 +228,12 @@ export class App {
   private termBodies: HTMLElement | null = null;
   private termTabs = new Map<string, TermTab>();
   private termActive: string | null = null;
+  /** D92: the dialog is on screen (not minimized). The shells themselves live in the bridge. */
+  private termOpen = false;
+  /** D93: dialog 的位置 / 大小（布局 px），null = 还没读过 localStorage。 */
+  private termGeom: TermGeom | null = null;
+  /** D92: 什么时候发出的 `term.open`（0 = 没有在飞），shell 到了 / 报错 / 超时都会清掉它。 */
+  private termWantAt = 0;
   /** Outcome of the last delete, shown above the manager's footer (the transcript is behind the sheet). */
   private mgrNote = "";
   /** Tool calls seen in the current turn, for the activity popover. */
@@ -300,13 +306,21 @@ export class App {
     files.dataset.act = "artifacts";
     files.onclick = () => this.openArtifactsSheet();
     files.hidden = true;
+    // D92: the shell sits next to 产物 now — it is a dialog over the page, and this button is both
+    // its opener and the place it minimizes back to. Not session-scoped, so it never hides.
+    const term = el("button", "icon-btn wide", ">_ 终端");
+    term.dataset.act = "terminal";
+    term.setAttribute("aria-label", "终端");
+    term.title = "在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）";
+    term.onclick = () => this.openTerminal();
+    this.els.term = term;
     const fs = el("button", "icon-btn wide", "📁 文件管理器");
     fs.title = "文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件";
     fs.dataset.act = "files";
     fs.onclick = () => this.openFiles();
     fs.hidden = true;
     this.els.fs = fs;
-    topbar.append(collapseLeft, dot, title, sub, files, fs, look, collapseRight);
+    topbar.append(collapseLeft, dot, title, sub, files, term, fs, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -378,7 +392,7 @@ export class App {
     shell.append(topbar, pinStrip, main, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.binBtn = binBtn;
     this.chat = new ChatView(scroll);
     this.chat.onBashStop = () => this.act(() => this.socket.send({ type: "abortBash", sessionId: this.currentId }));
@@ -444,54 +458,192 @@ export class App {
     };
   }
 
-  /**
-   * Q-026: the terminal dock's height. A row grip behaves like the column one: drag writes the
-   * height straight onto the dock (so xterm refits through its ResizeObserver), release remembers
-   * it, double-click forgets it and returns to the CSS default.
-   */
-  private wireTermGrip(grip: HTMLElement, dock: HTMLElement): void {
-    const clamp = (h: number) => Math.round(Math.max(140, Math.min(window.innerHeight - 240, h)));
-    const saved = Number(localStorage.getItem("pi.termH"));
-    if (Number.isFinite(saved) && saved >= 140) dock.style.height = `${clamp(saved)}px`;
-    grip.onpointerdown = (ev) => {
-      if (ev.button !== 0) return;
-      ev.preventDefault();
-      // Anchor on the dock's bottom edge: the drag moves the top edge, the shell keeps its bottom.
-      const bottom = dock.getBoundingClientRect().bottom;
-      grip.setPointerCapture(ev.pointerId);
-      grip.classList.add("dragging");
-      document.body.classList.add("row-resizing");
-      const move = (e: PointerEvent) => {
-        dock.style.height = `${clamp(bottom - e.clientY)}px`;
-      };
-      const done = () => {
-        grip.removeEventListener("pointermove", move);
-        grip.removeEventListener("pointerup", done);
-        grip.removeEventListener("pointercancel", done);
-        grip.classList.remove("dragging");
-        document.body.classList.remove("row-resizing");
-        const h = parseInt(dock.style.height, 10);
-        if (Number.isFinite(h) && h > 0) {
-          try {
-            localStorage.setItem("pi.termH", String(h));
-          } catch {
-            // the size still holds for this visit
-          }
-        }
-      };
-      grip.addEventListener("pointermove", move);
-      grip.addEventListener("pointerup", done);
-      grip.addEventListener("pointercancel", done);
-    };
-    grip.ondblclick = () => {
-      dock.style.removeProperty("height");
-      try {
-        localStorage.removeItem("pi.termH");
-      } catch {
-        // nothing to forget
+  // ---------------------------------------------------------------- terminal geometry (D92 · D93)
+  /** 拖拽量到的是视觉尺寸，而 style 里的 px 是 `#app` 被 zoom 缩过的布局尺寸：两者差一个缩放。 */
+  private termScale(): number {
+    return this.prefs.scale || 1;
+  }
+
+  /** 没存过几何时 dialog 的多大：底部居中，宽高跟着窗口（布局 px，已按缩放折算）。 */
+  private termDefaults(): { w: number; h: number } {
+    const s = this.termScale();
+    const vw = window.innerWidth / s;
+    const vh = window.innerHeight / s;
+    const narrow = window.matchMedia("(max-width: 899px)").matches;
+    return { w: narrow ? vw - 16 : Math.min(1080, vw - 32), h: narrow ? Math.min(vh * 0.42, 340) : Math.min(vh * 0.46, 420) };
+  }
+
+  /** 底边至少要留出的空：桌面上是 margin，窄屏上还要让开底部三标签（不 56px 与 CSS 里的 bottom 一致）。 */
+  private termInset(): number {
+    return window.matchMedia("(max-width: 899px)").matches ? 56 : 14;
+  }
+
+  private loadTermGeom(): TermGeom {
+    if (this.termGeom) return this.termGeom;
+    const geom: TermGeom = {};
+    try {
+      const raw = JSON.parse(localStorage.getItem("pi.termGeom") ?? "null") as Record<string, unknown> | null;
+      if (raw && typeof raw === "object") {
+        for (const k of ["l", "t", "w", "h"] as const) if (Number.isFinite(Number(raw[k]))) geom[k] = Number(raw[k]);
       }
+    } catch {
+      // 存坏了就当没存过，下次拖动再写
+    }
+    // Q-026 的老键：只记了高度，没有位置。
+    if (geom.w === undefined && geom.h === undefined) {
+      const h = Number(localStorage.getItem("pi.termH"));
+      if (Number.isFinite(h) && h >= 140) geom.h = h;
+    }
+    this.termGeom = geom;
+    return geom;
+  }
+
+  private saveTermGeom(dock: HTMLElement): void {
+    const s = this.termScale();
+    const r = dock.getBoundingClientRect();
+    const geom: TermGeom = { l: Math.round(r.left / s), t: Math.round(r.top / s), w: Math.round(r.width / s), h: Math.round(r.height / s) };
+    this.termGeom = geom;
+    try {
+      localStorage.setItem("pi.termGeom", JSON.stringify(geom));
+      localStorage.removeItem("pi.termH");
+    } catch {
+      // 存不下也不影响这次访问
+    }
+  }
+
+  /**
+   * 把存过的位置 / 大小铺到 dialog 上。没存过位置就继续用 CSS 那套底部居中（只把宽高清成算好的
+   * 默认值 —— CSS 里的 `vh`/`vw` 在 `#app` 的 zoom 下会被再乘一次，铺满会溢出屏幕）。
+   */
+  private applyTermGeom(dock: HTMLElement): void {
+    const s = this.termScale();
+    const base = this.termDefaults();
+    const geom = this.loadTermGeom();
+    const vw = window.innerWidth / s;
+    const vh = window.innerHeight / s - this.termInset();
+    const w = clampNum(geom.w ?? base.w, Math.min(280, vw), vw);
+    const h = clampNum(geom.h ?? base.h, Math.min(140, vh), vh);
+    dock.style.width = `${w}px`;
+    dock.style.height = `${h}px`;
+    if (geom.l === undefined || geom.t === undefined) return;
+    this.pinTerm(dock, { l: geom.l, t: geom.t, w, h });
+  }
+
+  /** 把 dialog 从「CSS 居中」改成 left/top 钉住：传了 box 就用它，否则量当前位置。 */
+  private pinTerm(dock: HTMLElement, box?: TermBox): TermBox {
+    const s = this.termScale();
+    const at = box ?? (() => {
+      const r = dock.getBoundingClientRect();
+      return { l: r.left / s, t: r.top / s, w: r.width / s, h: r.height / s };
+    })();
+    const vw = window.innerWidth / s;
+    const vh = window.innerHeight / s - this.termInset();
+    const l = clampNum(at.l, 0, Math.max(0, vw - at.w));
+    const t = clampNum(at.t, 0, Math.max(0, vh - at.h));
+    dock.classList.add("pinned");
+    dock.style.left = `${l}px`;
+    dock.style.top = `${t}px`;
+    dock.style.bottom = "auto";
+    dock.style.transform = "none";
+    return { l, t, w: at.w, h: at.h };
+  }
+
+  private resetTermGeom(): void {
+    const dock = this.termDock;
+    this.termGeom = {};
+    try {
+      localStorage.removeItem("pi.termGeom");
+      localStorage.removeItem("pi.termH");
+    } catch {
+      // 忘不掉也还能用这一次
+    }
+    if (!dock) return;
+    dock.classList.remove("pinned");
+    for (const prop of ["left", "top", "bottom", "transform", "width", "height"]) dock.style.removeProperty(prop);
+    this.applyTermGeom(dock);
+    this.fitActiveTerm();
+  }
+
+  /**
+   * 三处拖拽共用的骨架：按住 → 捕获指针 → 每帧按指针位移算新几何 → 松手存盘。
+   * `step` 收到的是「布局 px」的位移（已经除过缩放），所以要怎么写都跟得上指针。
+   */
+  private dragTerm(
+    handle: HTMLElement,
+    dock: HTMLElement,
+    kind: "move" | "size" | "grip",
+    step: (box: TermBox, dx: number, dy: number, view: { vw: number; vh: number }) => void,
+  ): void {
+    handle.onpointerdown = (ev) => {
+      if (ev.button !== 0) return;
+      // 标题栏里的标签 / ＋ / 按钮要能点，只有空白处才是「拖走」。
+      if (kind === "move" && (ev.target as HTMLElement).closest("button")) return;
+      ev.preventDefault();
+      const s = this.termScale();
+      const box = this.pinTerm(dock);
+      const x0 = ev.clientX;
+      const y0 = ev.clientY;
+      // vh 已经是「能用到多低」（扣掉了底部 tab 那条）。
+      const view = { vw: window.innerWidth / s, vh: window.innerHeight / s - this.termInset() };
+      handle.setPointerCapture(ev.pointerId);
+      handle.classList.add("dragging");
+      const cls = kind === "move" ? "win-dragging" : "win-resizing";
+      document.body.classList.add(cls);
+      const move = (e: PointerEvent) => step(box, (e.clientX - x0) / s, (e.clientY - y0) / s, view);
+      const done = () => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", done);
+        handle.removeEventListener("pointercancel", done);
+        handle.classList.remove("dragging");
+        document.body.classList.remove(cls);
+        this.saveTermGeom(dock);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", done);
+      handle.addEventListener("pointercancel", done);
     };
   }
+
+  /** 标题栏空白处：拖走。双击复原（位置 + 大小一起忘掉）。 */
+  private wireTermMove(head: HTMLElement, dock: HTMLElement): void {
+    this.dragTerm(head, dock, "move", (box, dx, dy, view) => {
+      dock.style.left = `${clampNum(box.l + dx, 0, Math.max(0, view.vw - box.w))}px`;
+      dock.style.top = `${clampNum(box.t + dy, 0, Math.max(0, view.vh - box.h))}px`;
+    });
+    head.ondblclick = (ev) => {
+      if ((ev.target as HTMLElement).closest("button")) return;
+      this.resetTermGeom();
+    };
+  }
+
+  /** 右下角：宽 + 高一起拖。 */
+  private wireTermResize(handle: HTMLElement, dock: HTMLElement): void {
+    this.dragTerm(handle, dock, "size", (box, dx, dy, view) => {
+      dock.style.width = `${clampNum(box.w + dx, 320, Math.max(320, view.vw - box.l))}px`;
+      dock.style.height = `${clampNum(box.h + dy, 140, Math.max(140, view.vh - box.t))}px`;
+    });
+    handle.ondblclick = () => this.resetTermGeom();
+  }
+
+  /**
+   * Q-026 的老手势：顶边那条抓取带只改高度（宽不动）。底边钉住 —— 拖动改的是上边缘，双击复原。
+   */
+  private wireTermGrip(grip: HTMLElement, dock: HTMLElement): void {
+    this.dragTerm(grip, dock, "grip", (box, _dx, dy) => {
+      const bottom = box.t + box.h;
+      const h = clampNum(box.h - dy, 140, bottom);
+      dock.style.top = `${clampNum(bottom - h, 0, bottom)}px`;
+      dock.style.height = `${h}px`;
+    });
+    grip.ondblclick = () => this.resetTermGeom();
+  }
+
+  /** 拖过大小之后要重算 xterm 的列数行数（ResizeObserver 也会追一次，这里是为了拖动时就对上）。 */
+  private fitActiveTerm(): void {
+    const view = (this.termActive && this.termTabs.get(this.termActive)) || [...this.termTabs.values()][0];
+    if (view) this.fitTerm(view);
+  }
+
 
   private togglePane(side: "sessions" | "queue"): void {
     this.collapsed[side] = !this.collapsed[side];
@@ -1181,6 +1333,8 @@ export class App {
         break;
       }
       case "term.error": {
+        // 那个 shell 没开成：把在飞的标记清掉，不然按钮会以为还有一次在启动中。
+        this.termWantAt = 0;
         this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: String(msg.message ?? "终端启动失败"), level: "error" });
         break;
       }
@@ -1800,6 +1954,8 @@ export class App {
     root.setProperty("--text", text.text);
     root.setProperty("--dim", text.dim);
     root.setProperty("--faint", text.faint);
+    // D93: 终端 dialog 的几何按缩放换算，改了字号 / 缩放后得重新夹一次（不然 pinned 的那块会溢出）。
+    if (this.termDock) this.applyTermGeom(this.termDock);
   }
 
   private openDisplaySheet(): void {
@@ -7122,16 +7278,6 @@ export class App {
       host.append(link);
     }
     if (this.tunnel.error) host.append(el("div", "notice warn", this.tunnel.error));
-    const termTools = el("div", "tools");
-    const termBtn = el("button", "btn", this.termTabs.size ? `回到终端${this.termTabs.size > 1 ? `（${this.termTabs.size}）` : ""}` : "打开终端");
-    termBtn.dataset.act = "terminal";
-    termBtn.title = "在这台电脑上开一个 PowerShell（本机 / 局域网可用，公网隧道下禁用）";
-    termBtn.onclick = () => this.openTerminal();
-    termTools.append(termBtn);
-    host.append(el("h2", "", "终端"));
-    host.append(termTools);
-    host.append(el("div", "hint", "真的 PowerShell，跑在这台电脑上。本机直接可用；走公网隧道时禁用。"));
-
     const keysTools = el("div", "tools");
     const keysBtn = el("button", "btn", Object.keys(this.keys).length ? `快捷键（已设 ${Object.keys(this.keys).length} 个）` : "设置快捷键");
     keysBtn.onclick = () => this.openKeysSheet();
@@ -7145,25 +7291,57 @@ export class App {
     host.append(el("div", "hint", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
   }
 
-  // ---------------------------------------------------------------- terminal (Q-007 · D70)
+  // ---------------------------------------------------------------- terminal (Q-007 · D70 · D92)
   /**
-   * 终端多开：一个 dock，多个标签，每个标签一个真的 shell（桥里 `MAX_TERMS = 4`）。
-   * 这个按钮只负责「把 dock 拿出来 / 聚焦当前标签」，再开一个是 dock 里的 `＋`。
+   * 终端是一个浮在页面上的 dialog（D92）：一个 dock、多个标签，每个标签一个真的 shell（桥里
+   * `MAX_TERMS = 4`）。顶栏那颗「终端」按钮只负责把它拿出来 / 把焦点带回当前标签；它被「－」收起来
+   * 之后，桥里的 shell 和这里的 xterm 都还在跑，再打开看到的还是同一个进程。
    */
   private openTerminal(): void {
-    // Q-026: the dock lives in the chat column, so the right pane (运行 / 队列) is the one stealing
-    // its width — fold it away before showing the shell. Only when it is actually there to fold
-    // (desktop, expanded): on a narrow tab layout there is nothing to gain and the flag would be
-    // remembered for the next visit.
-    if (window.matchMedia("(min-width: 900px)").matches && !this.collapsed.queue) this.togglePane("queue");
-    if (this.termDock) {
-      this.termDock.hidden = false;
+    if (this.termTabs.size) {
       const active = (this.termActive && this.termTabs.get(this.termActive)) || [...this.termTabs.values()][0];
+      this.showTermDock();
       if (active) this.activateTerm(active.id);
-      else this.requestTerminal();
       return;
     }
+    // 还没有 shell：先要一个，`term.opened` 到了再开 dialog。连点两下不该开出两个 shell——
+    // 刚发出去 6 秒内算「正在开」；超时就当没开成，否则漏一个 frame 这颗按钮就永远不响应了。
+    if (Date.now() - this.termWantAt < 6000) return;
+    this.termWantAt = Date.now();
     this.requestTerminal();
+  }
+
+  /** 把 dialog 拿出来并重新 fit：它 display:none 的时候 xterm 量不出尺寸。 */
+  private showTermDock(): void {
+    const dock = this.ensureTermDock();
+    const was = this.termOpen;
+    dock.hidden = false;
+    this.termOpen = true;
+    this.paintTermButton();
+    if (was) return;
+    requestAnimationFrame(() => {
+      const view = (this.termActive && this.termTabs.get(this.termActive)) || [...this.termTabs.values()][0];
+      if (!view) return;
+      this.fitTerm(view);
+      view.term.focus();
+    });
+  }
+
+  /** D92「－」：收起，不是结束。桥里的 shell 与这里的 xterm 都还活着，再点顶栏就回到原样。 */
+  private minimizeTerm(): void {
+    if (!this.termDock) return;
+    this.termDock.hidden = true;
+    this.termOpen = false;
+    this.paintTermButton();
+  }
+
+  /** 顶栏那颗按钮的字：几个 shell 在跑就写几个，收起状态也看得到。 */
+  private paintTermButton(): void {
+    const btn = this.els.term;
+    if (!btn) return;
+    const n = this.termTabs.size;
+    btn.textContent = n > 1 ? `>_ 终端 ${n}` : ">_ 终端";
+    btn.classList.toggle("term-live", n > 0);
   }
 
   /** Ask the bridge for one more shell, starting in the session's cwd. */
@@ -7205,12 +7383,14 @@ export class App {
     document.addEventListener("mousedown", away, true);
   }
 
-  /** The dock is created once and shared by every tab; `term.opened` / `term.replay` fill it. */
+  /** The dialog is created once and shared by every tab; `term.opened` / `term.replay` fill it. */
   private ensureTermDock(): HTMLElement {
     if (this.termDock) return this.termDock;
     const dock = el("section", "term-dock");
+    // 收起态起步：有没有 shell 在跑，由顶栏那颗按钮说。
+    dock.hidden = true;
     const grip = el("div", "term-grip");
-    grip.title = "拖动调整终端高度（双击复位）";
+    grip.title = "拖动调整终端高度（双击复原）";
     const head = el("div", "term-head");
     const strip = el("div", "term-tabs");
     const more = el("button", "term-new", "＋") as HTMLButtonElement;
@@ -7224,6 +7404,10 @@ export class App {
       // under an "管理员" label. The flag is the whole point of the button.
       this.act(() => this.socket.send({ type: "term.elevate", cwd: active?.cwd ?? this.session?.cwd ?? "", admin: true }));
     };
+    // D92: 收起 ≠ 关掉。这颗把视图藏起来，shell 继续跑；要真结束，用标签上的 × 或「关闭」。
+    const min = el("button", "term-btn min-btn", "－") as HTMLButtonElement;
+    min.title = "最小化：收回顶栏的「终端」按钮，shell 继续在后台跑（标签上的 × 才结束它）";
+    min.onclick = () => this.minimizeTerm();
     const close = el("button", "term-btn", "关闭") as HTMLButtonElement;
     close.title = "结束当前这个终端（其它标签不动）";
     close.onclick = () => {
@@ -7231,11 +7415,23 @@ export class App {
       if (id) this.closeTermTab(id, true);
       else this.disposeTermDock();
     };
-    head.append(strip, more, el("div", "spacer"), admin, close);
+    head.append(strip, more, el("div", "spacer"), admin, min, close);
     const bodies = el("div", "term-bodies");
-    dock.append(grip, head, bodies);
-    this.els.chatPane.append(dock);
+    // D93: 右下角那颗抓取带拖宽 + 拖高；标题栏空白处拖走整个 dialog。
+    const resize = el("div", "term-resize");
+    resize.title = "拖动调整终端大小（双击复原）";
+    dock.append(grip, head, bodies, resize);
+    // 浮在页面上（overlay 进 #app，跟着外观缩放）：终端不再占对话栏的宽度，也就没有 Q-026 里
+    // 「先折叠右栏」那件事了。
+    this.overlay(dock);
     this.wireTermGrip(grip, dock);
+    this.wireTermMove(head, dock);
+    this.wireTermResize(resize, dock);
+    this.applyTermGeom(dock);
+    // 窗口变小了，别把 dialog 留在屏幕外面。
+    window.addEventListener("resize", () => {
+      if (this.termDock) this.applyTermGeom(this.termDock);
+    });
     this.termDock = dock;
     this.termTabStrip = strip;
     this.termBodies = bodies;
@@ -7246,7 +7442,11 @@ export class App {
   private addTermTab(id: string, shell: string, cwd: string): TermTab {
     const existing = this.termTabs.get(id);
     if (existing) return existing;
-    this.ensureTermDock();
+    const dock = this.ensureTermDock();
+    // D92: 标签可能在 dialog 收起时到达（刷新后接管上一个页面留下的 shell）。xterm 在挂载时就量
+    // 字符宽，display:none 的容器量出来是 0 —— 所以先让它可见再挂，没人在等就同一个任务里收回去。
+    const keep = this.termWantAt > 0 || this.termOpen;
+    dock.hidden = false;
     // The tab shows the directory (the dock is obviously a shell; the shell name lives in the title),
     // plus an ordinal — two shells in the same cwd would otherwise read identically, and "…#2" appended
     // to `powershell · …` is exactly what the ellipsis eats first.
@@ -7284,13 +7484,23 @@ export class App {
 
     const view: TermTab = { id, shell, cwd, term, fit, body, tab };
     this.termTabs.set(id, view);
+    this.paintTermButton();
     term.onData((data) => this.socket.send({ type: "term.input", id, data }));
     term.onResize(({ cols, rows }) => this.socket.send({ type: "term.resize", id, cols, rows }));
     // A hidden body has no measurable size, so only the visible tab is worth fitting here.
     new ResizeObserver(() => {
-      if (this.termActive === id) this.fitTerm(view);
+      if (this.termOpen && this.termActive === id) this.fitTerm(view);
     }).observe(body);
     this.activateTerm(id);
+    // `keep` was read before mounting: the tab may have arrived for a minimized dialog, and a
+    // terminal nobody asked for must not pop up on its own.
+    if (keep) {
+      this.termWantAt = 0;
+      this.showTermDock();
+    } else {
+      dock.hidden = true;
+      this.termOpen = false;
+    }
     return view;
   }
 
@@ -7304,13 +7514,14 @@ export class App {
 
   private activateTerm(id: string): void {
     const view = this.termTabs.get(id);
-    if (!view || !this.termDock) return;
+    if (!view) return;
     this.termActive = id;
-    this.termDock.hidden = false;
     for (const [tid, other] of this.termTabs) {
       other.body.hidden = tid !== id;
       other.tab.classList.toggle("on", tid === id);
     }
+    // 收起的时候不 fit 也不抢焦点：容器是 display:none，量出来的尺寸没有意义（showTermDock 补）。
+    if (!this.termOpen) return;
     requestAnimationFrame(() => {
       this.fitTerm(view);
       view.term.focus();
@@ -7326,6 +7537,7 @@ export class App {
     view.body.remove();
     view.tab.remove();
     this.termTabs.delete(id);
+    this.paintTermButton();
     if (this.termActive !== id) return;
     this.termActive = null;
     const next = [...this.termTabs.keys()][0];
@@ -7340,6 +7552,9 @@ export class App {
     this.termTabStrip = null;
     this.termBodies = null;
     this.termActive = null;
+    this.termOpen = false;
+    this.termWantAt = 0;
+    this.paintTermButton();
   }
 
 
@@ -8018,18 +8233,6 @@ interface StoreMcpItem {
   options: McpOptionView[];
 }
 
-interface McpServerRow {
-  name: string;
-  scope?: string;
-  source?: string;
-  enabled?: boolean;
-  exposure?: string;
-  transport?: string;
-  state?: string;
-  tools?: string[];
-  error?: string;
-}
-
 interface AuthProvider {
   id: string;
   name: string;
@@ -8179,6 +8382,11 @@ function shortcutAllowed(combo: string): boolean {
 }
 
 /** “Ctrl+Shift+K” for display. */
+/** 把一个数夹进 [min, max]；max 比 min 还小时取 min（窗口比 dialog 还窄时不出现负尺寸）。 */
+function clampNum(value: number, min: number, max: number): number {
+  return Math.round(Math.max(min, Math.min(Math.max(min, max), value)));
+}
+
 function keyLabel(combo: string): string {
   return combo
     .split("+")
@@ -8320,6 +8528,22 @@ interface TermTab {
   fit: FitAddon;
   body: HTMLElement;
   tab: HTMLButtonElement;
+}
+
+/** D93: 终端 dialog 的几何，一律用「布局 px」（`#app` 的 zoom 之前的值），存在 `pi.termGeom`。 */
+interface TermGeom {
+  l?: number;
+  t?: number;
+  w?: number;
+  h?: number;
+}
+
+/** 一次拖拽开始时的快照（同上，布局 px）。 */
+interface TermBox {
+  l: number;
+  t: number;
+  w: number;
+  h: number;
 }
 
 /** 浏览器里能改的上限；桥端 `preview.ts` 的 MAX_EDIT_BYTES 必须与它一致。 */
