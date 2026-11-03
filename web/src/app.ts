@@ -8,7 +8,7 @@ import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskRequest, ApprovalRequest, DeleteReport, GitInfo, Item, ManageState, Me, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
+import type { AskAnswer, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
 
 type Tab = "sessions" | "chat" | "queue";
 
@@ -125,6 +125,10 @@ export class App {
   private usage: { contextTokens: number | null; contextWindow: number | null } = { contextTokens: null, contextWindow: null };
   /** Context budget chosen in the model sheet (bridge enforces it); null = window size. */
   private budget: number | null = null;
+  /** Extension status lines / widgets / title for the current session (#18). */
+  private ext: ExtUi = { status: [], widgets: [], title: null };
+  private extAbove: HTMLElement | null = null;
+  private extBelow: HTMLElement | null = null;
   private rate = 0;
   private turnAt: number | null = null;
   /** What pi is doing right now, for the status line under the composer ("" = just running). */
@@ -647,6 +651,7 @@ export class App {
         if (msg.state) this.session = msg.state as SessionState;
         else if (msg.session) this.session = msg.session;
         this.budget = typeof msg.budget === "number" ? msg.budget : null;
+        this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
         this.chat.reset((msg.items ?? []) as Item[]);
         this.approvals = (msg.approvals ?? []) as ApprovalRequest[];
         this.asks = (msg.asks ?? []) as AskRequest[];
@@ -662,7 +667,8 @@ export class App {
         break;
       case "item.add":
         if (msg.sessionId !== this.currentId) break;
-        this.chat.add(msg.item as Item);
+        if (typeof msg.clientId === "string") this.chat.adopt(msg.clientId, msg.item as Item);
+        else this.chat.add(msg.item as Item);
         break;
       case "item.replace":
         if (msg.sessionId !== this.currentId) break;
@@ -752,6 +758,18 @@ export class App {
         this.renderQueue();
         this.renderTabs();
         this.renderSessions();
+        break;
+      }
+      case "ext.ui":
+        if (msg.sessionId !== this.currentId) break;
+        this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
+        this.fillExt();
+        break;
+      case "editor.set": {
+        // ctx.ui.setEditorText: the extension replaces what is in the editor, like in the terminal.
+        if (msg.sessionId !== this.currentId) break;
+        this.composerText = "";
+        this.putInComposer(String(msg.text ?? ""));
         break;
       }
       case "queue.restore": {
@@ -1000,7 +1018,11 @@ export class App {
     const text = [...pasted, typed].filter(Boolean).join("\n\n");
     if (!text && !this.images.length) return;
     if (typed && !pasted.length && !this.images.length && this.answerFromComposer(typed)) return;
-    const payload = { type: "prompt", sessionId: this.currentId, text, images: this.images };
+    if (typed && !pasted.length && !this.images.length && this.runBuiltinCommand(typed)) return;
+    // The bubble below is optimistic; the bridge echoes `clientId` back so this page adopts its own
+    // broadcast instead of drawing the message twice (#19).
+    const clientId = `local:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    const payload = { type: "prompt", sessionId: this.currentId, text, images: this.images, clientId };
     // Clear the composer only once the message really goes out: a dismissed step-up keeps the draft.
     this.act(() => {
       // The step-up modal may have sat in between: only clear the composer if we are still there.
@@ -1008,7 +1030,7 @@ export class App {
         this.composerText = "";
         this.images = [];
         this.pastes = [];
-        this.chat.add({ id: `local:${Date.now()}`, kind: "user", text: text || "（图片）", images: [] });
+        this.chat.add({ id: clientId, kind: "user", text: text || "（图片）", images: [], ts: new Date().toISOString() });
         this.renderChat();
       }
       if (payload.sessionId) this.drafts.delete(payload.sessionId);
@@ -1016,6 +1038,81 @@ export class App {
       this.socket.send(payload);
     });
     if (navigator.storage?.persist) void navigator.storage.persist();
+  }
+
+  /**
+   * pi's terminal-only commands (`/tree`, `/export`, `!cmd` …) are not commands over RPC: sent as a
+   * prompt they reach the model as plain text (agent-session.js only runs extension commands and
+   * expands /skill: and templates). Do what the page can, refuse the rest without sending (#22).
+   * Returns true when the input was consumed here.
+   */
+  private runBuiltinCommand(typed: string): boolean {
+    const sessionId = this.currentId;
+    if (!sessionId) return false;
+    const say = (text: string, level: "info" | "warn" = "info") =>
+      this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text, level });
+    const done = () => {
+      this.composerText = "";
+      if (this.textarea) this.textarea.value = "";
+      this.noteDraft();
+      this.fitComposer();
+      return true;
+    };
+    if (typed.startsWith("!")) {
+      say(`「${typed.startsWith("!!") ? "!!" : "!"}命令」在网页里还不支持（#16），没有发给模型。可以先用下方的终端运行。`, "warn");
+      return true;
+    }
+    const m = /^\/([a-z][a-z-]*)(?:\s+([\s\S]*))?$/.exec(typed);
+    if (!m) return false;
+    const [, name, rest = ""] = m;
+    const arg = rest.trim();
+    const owned = Boolean(this.session?.owned);
+    switch (name) {
+      case "new":
+        this.openNewSessionSheet();
+        return done();
+      case "resume":
+        this.go("sessions");
+        if (this.collapsed.sessions) this.togglePane("sessions");
+        return done();
+      case "model":
+        this.openModelSheet();
+        return done();
+      case "thinking": {
+        if (!arg) {
+          this.openModelSheet();
+          return done();
+        }
+        if (!owned) {
+          say("先接管这个会话，再切换思考档位。", "warn");
+          return true;
+        }
+        this.act(() => this.socket.send({ type: "setThinking", sessionId, level: arg }));
+        return done();
+      }
+      case "name":
+        if (!arg) say(`当前会话名：${this.session?.name || "（未命名）"}`);
+        else this.applyRename(sessionId, arg);
+        return done();
+      case "compact":
+        if (!owned) {
+          say("先接管这个会话，再压缩上下文。", "warn");
+          return true;
+        }
+        this.act(() => this.socket.send({ type: "compact", sessionId, instructions: arg || undefined }));
+        return done();
+      case "hotkeys":
+        this.openKeysSheet();
+        return done();
+      case "quit":
+      case "exit":
+        say("网页里不需要退出。要停掉这个会话的 pi 进程，点输入框下方的「释放会话 / 让回终端」。");
+        return done();
+    }
+    const pending = UNSUPPORTED_BUILTINS[name];
+    if (!pending) return false; // extension commands, prompt templates, /skill:… go to pi
+    say(`「/${name}」在网页里还没有对应功能（${pending}），没有发给模型。`, "warn");
+    return true;
   }
 
   /** Writes from a public (tunnel) page need a fresh step-up; queue them behind the modal. */
@@ -4253,12 +4350,48 @@ export class App {
     hint.append(tools);
     this.fillModelChip();
 
-    host.append(row, hint);
+    const extAbove = el("div", "ext-widgets above");
+    const extBelow = el("div", "ext-widgets below");
+    this.extAbove = extAbove;
+    this.extBelow = extBelow;
+    host.append(extAbove, row, hint, extBelow);
+    this.fillExt();
     this.fitComposer();
     this.renderPastes();
     if (this.approvals.length) host.append(this.approvalNode());
     this.renderAsks();
     this.syncCwdChip();
+  }
+
+  /** Extension widgets above / below the editor, status lines below, title on the browser tab. */
+  private fillExt(): void {
+    const ext = this.currentId ? this.ext : { status: [], widgets: [], title: null };
+    document.title = ext.title ? `${ext.title} · pi` : "pi";
+    const block = (lines: string[], cls: string, title: string) => {
+      const node = el("pre", cls, lines.join("\n"));
+      node.title = title;
+      return node;
+    };
+    if (this.extAbove) {
+      this.extAbove.replaceChildren(
+        ...ext.widgets.filter((w) => w.placement === "aboveEditor" && w.lines.length).map((w) => block(w.lines, "ext-widget", `扩展小部件：${w.key}`)),
+      );
+    }
+    if (this.extBelow) {
+      const nodes: HTMLElement[] = ext.widgets
+        .filter((w) => w.placement === "belowEditor" && w.lines.length)
+        .map((w) => block(w.lines, "ext-widget", `扩展小部件：${w.key}`));
+      if (ext.status.length) {
+        const line = el("div", "ext-status");
+        for (const st of ext.status) {
+          const chip = el("span", "ext-status-item", st.text);
+          chip.title = `扩展状态：${st.key}`;
+          line.append(chip);
+        }
+        nodes.push(line);
+      }
+      this.extBelow.replaceChildren(...nodes);
+    }
   }
 
   // ---------------------------------------------------------------- permission mode
@@ -5729,6 +5862,27 @@ const SVG = (body: string) =>
 const ICON_ARCHIVE = SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/>');
 const ICON_UNARCHIVE = SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M12 17v-6"/><path d="m9.5 13.5 2.5-2.5 2.5 2.5"/>');
 const ICON_TRASH = SVG('<path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/><path d="M9 7V4h6v3"/>');
+
+/** pi built-in commands the page cannot run yet → the issue that tracks them (#22). */
+const UNSUPPORTED_BUILTINS: Record<string, string> = {
+  tree: "#17",
+  fork: "#17",
+  clone: "#17",
+  import: "#17",
+  export: "#24",
+  share: "#24",
+  copy: "#24",
+  bug: "#24",
+  debug: "#24",
+  session: "#15",
+  settings: "#26",
+  "scoped-models": "#26",
+  reload: "#26",
+  changelog: "#26",
+  login: "#27",
+  logout: "#27",
+  trust: "#21",
+};
 
 /** Everything a shortcut can fire, in the order the 快捷键 sheet lists it. */
 const SHORTCUTS: { id: string; label: string }[] = [

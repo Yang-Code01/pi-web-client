@@ -399,6 +399,21 @@ export class ChatView {
     this.scrollToEnd();
   }
 
+  /**
+   * The bridge's copy of a message this page already drew optimistically under `localId`: keep the
+   * node (the turn rail points at it) and only re-key it. Pages that never drew it just add it.
+   */
+  adopt(localId: string, item: Item): void {
+    const node = this.cards.get(localId);
+    if (!node) {
+      this.add(item);
+      return;
+    }
+    this.cards.delete(localId);
+    this.cards.set(item.id, node);
+    if (this.collapsed.delete(localId)) this.collapsed.add(item.id);
+  }
+
   replace(id: string, item: Item): void {
     const node = this.cards.get(id);
     this.draftBuffers.delete(id);

@@ -121,6 +121,7 @@ node probes/terminal-multi.mjs                                        # 终端�
 node probes/dir-copy.mjs                                             # ⧉ 复制路径：切目录后剪贴板是当前目录，此电脑上禁用
 node bridge/tests/run-lifecycle.mjs                                   # 一轮的边界：重试期间不算空闲、停止清队列、长压缩不超时（假 pi，不花模型调用，需先 build:bridge）
 node bridge/tests/session-dirs.mjs                                    # 会话目录解析顺序与列表不截断（D73）
+node bridge/tests/session-sync.mjs                                    # 分支只显示当前一支、用户消息多端同步、扩展状态/小部件、/compact 指令（D74，假 pi）
 ```
 
 `npm run typecheck` 分别跑 bridge 和 web 的 `tsc --noEmit`。
