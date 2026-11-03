@@ -740,6 +740,17 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   cursor: pointer;
 }
 .pin-chip:hover { border-color: var(--line); background: var(--panel-2); }
+/* 当前会话：整颗胶囊填色 + 描边，收起左栏后一眼能看出「我正在跟哪一个说话」。
+   hover 规则在上面，所以这条放后面，鼠标扫过去也不会把当前会话的颜色盖掉。 */
+.pin-chip.cur {
+  background: rgba(125, 211, 252, 0.16);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.pin-chip.cur:hover { background: rgba(125, 211, 252, 0.22); border-color: var(--accent); }
+.pin-chip.cur .pin-name { font-weight: 600; }
+.pin-chip.cur small { color: #bfe6f7; }
+.pin-chip.cur .pin-star { color: #bfe6f7; }
 /* Q-022: ★ 自己是一颗按钮（button 不能套 button）—— 点星星取消置顶，点其余打开会话 */
 .pin-star {
   border: 0;
