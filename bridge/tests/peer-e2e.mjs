@@ -226,6 +226,30 @@ try {
   if (bSide.contacts?.find((c) => c.nodeId === sa)?.favorite) throw new Error("收藏被同步到了对端");
   log("ok 收藏只在本机生效");
 
+  // ---- 第 5 片：pi 的三个工具（找 / 看历史 / 代发文字） ----
+  const found = await (await fetch("http://127.0.0.1:17965/tools/find?q=" + encodeURIComponent("乙"))).json();
+  const hit = (found.peers || []).find((p) => p.nodeId === sb);
+  if (!hit) throw new Error(`/tools/find 没找到乙：${JSON.stringify(found)}`);
+  if (!hit.friend || !hit.online) throw new Error(`/tools/find 应报在线且已好友：${JSON.stringify(hit)}`);
+  log("ok /tools/find 能按昵称找到人（带在线/好友）");
+
+  const viaSend = await fetch("http://127.0.0.1:17965/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sb, text: "这条是 agent 代发的", via: "pi" }),
+  });
+  if (!viaSend.ok) throw new Error(`/send(via=pi) 回 ${viaSend.status}：${await viaSend.text()}`);
+  const viaEntry = await until(
+    "B 收到 agent 代发的消息",
+    async () => {
+      const body = await (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}&limit=20`)).json();
+      return (body.entries || []).find((e) => e.text === "这条是 agent 代发的" && e.via === "pi");
+    },
+    8000,
+  );
+  void viaEntry;
+  log("ok agent 代发的消息带 via=pi（对端徽章）");
+
   // ---- 第 4 片：文件。先造一个 3 MB 的二进制文件（跨 3 个分块），发过去逐字节比对。 ----
   const { createHash } = await import("node:crypto");
   const payload = Buffer.alloc(3 * 1024 * 1024 + 137);

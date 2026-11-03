@@ -28,6 +28,8 @@ export interface Entry {
   ack?: { id: string; status: "delivered" | "failed"; error?: string };
   /** `kind:"file"` 的元数据。文件本体不在历史里，只留一份能被 UI 画成卡片的描述（D106）。 */
   file?: { name: string; size: number; mime: string; sha256?: string };
+  /** 谁写的这条消息：`"pi"` = 由 pi（agent）代发，界面挂 🤖 徽章（决定 33）。 */
+  via?: "pi";
 }
 
 export interface ThreadSummary {

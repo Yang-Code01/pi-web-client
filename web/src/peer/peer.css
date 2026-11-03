@@ -335,6 +335,13 @@ main {
   align-self: flex-start;
 }
 
+.msg .agent {
+  font-size: 11px;
+  color: var(--muted, #8b93a7);
+  margin: 0 0 3px 2px;
+  align-self: flex-start;
+}
+
 .bubble {
   padding: 8px 11px;
   border-radius: 12px;

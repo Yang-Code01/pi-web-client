@@ -34,6 +34,7 @@ interface Entry {
   text?: string;
   ack?: { id: string; status: "delivered" | "failed"; error?: string };
   file?: { name: string; size: number; mime: string; sha256?: string };
+  via?: "pi";
 }
 
 interface Thread {
@@ -382,6 +383,7 @@ function renderMessages(entries: Entry[]): void {
         meta.textContent = `${clock(entry.at)} · 已发出`;
       }
     }
+    if (entry.via === "pi") li.append(el("small", "agent", "🤖 agent 代发"));
     li.append(bubble, meta);
     messagesEl.append(li);
   }

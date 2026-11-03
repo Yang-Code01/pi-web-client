@@ -1181,3 +1181,16 @@
 
 **验证**：`node bridge/tests/peer-e2e.mjs` 的「非好友发文件被拒（403）」「文件送到对端（3072 KB，哈希一致）」「落盘内容逐字节一致」「同一文件只留一张卡片」「没有 token 写不进盘（410）」五段；人工：在本机测试环境点「📎」选 `docs/shots/peer-online.png` 发给自己那台，对端出现图片气泡。
 >>>>>>> 8ecbd16 (feat(peer): 第 4 片——文件与图片（收方 token、分块续传、哈希核对、文件管理器式选择器）（#45，D106）)
+
+## D107 agent 发局域网的文字：三个工具挂在门禁扩展里，直连 peer 回环，消息带 `via:"pi"`
+
+**症状**：#45 的价值锚点是「agent 在链路里」——人能发消息、agent 能读能发，但对端分不清「这句话是人打的还是 agent 打的」；而且 pi 的会话是子进程，没有 cookie，也没有理由让它绕 bridge。
+
+**根因**：① 工具的注册面只有 pi 扩展（`bridge/ext/approval-gate.ts`，与 #40 的门禁同一个文件），bridge 的 HTTP 路由不是 pi 的工具注册点；② 会话子进程继承 bridge 的环境，因此 `PI_PEER_PORT` 可由 bridge 在 `main()` 里写进 `process.env` 再被 `rpc.ts:57` 的 `{...process.env, ...opts.env}` 带下去；③ 人对「这条是 agent 说的」有真实需求（群里开口的是人还是机器，决定你信不信）。
+
+**决定**：三个工具 `peer_find(query?)` / `peer_history(peer, limit)` / `peer_send(peer, text)` 注册在 `bridge/ext/approval-gate.ts` 内，直接 `fetch http://127.0.0.1:${PI_PEER_PORT}/tools/find|/messages|/send`，不经过 bridge；`peer_send` 发出的 entry 带 `via:"pi"`，对端与自己的气泡上都显示「🤖 agent 代发」；门禁侧把 `peer_find`/`peer_history` 加进只读白名单，`peer_send` 单列 `PEER_SEND` 集合——**只读模式仍然拦**（它会碰到别人），**严格模式放行**（决定 33：文字不设审批，文件才设）。
+
+**为什么**：走回环而不是 bridge，是因为 peer 的三个接口本来就只认回环（决定 2），pi 子进程就在本机，少一跳少一处鉴权分叉；`via` 放在 entry 上而不是 UI 推导，是因为接收方也要看到（消息体是唯一的真相来源，本地推断在对端不成立）；严格模式放行 `peer_send` 而不放行全部，是因为「发文字」正是这个功能存在的理由，拦了就等于把它关掉。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 19 段全过，其中「/tools/find 能按昵称找到人（带在线/好友）」「agent 代发的消息带 via=pi（对端徽章）」两段直击本决定；扩展用假 `pi` 对象跑注册，三个工具名齐全，`peer_find` 对真实 peer 返回「找到 2 个人」，`peer_send` 对不存在的 nodeId 报「这个人已经不在线了」（业务错误不再被包成「连不上 peer」）。
+>>>>>>> 7addcda (feat(peer): 第 5 片——pi 的 peer_find / peer_history / peer_send，消息带 via=pi（#45，D107）)

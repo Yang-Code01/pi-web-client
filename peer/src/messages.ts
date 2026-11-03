@@ -68,7 +68,7 @@ export class Messages {
   }
 
   /** 本机发出：先落历史（bubble 立刻出现），再进 outbox 补投。`retryable` 的失败不在这里发生。 */
-  send(peerId: string, text: string): { ok: true; id: string; at: number } {
+  send(peerId: string, text: string, via?: "pi"): { ok: true; id: string; at: number } {
     const trimmed = text.replace(/\s+$/, "");
     if (!trimmed.trim()) throw new Error("空消息");
     const bytes = Buffer.byteLength(trimmed, "utf8");
@@ -79,7 +79,7 @@ export class Messages {
     if (!peer) throw new Error("这个人已经不在线了：刷新在线列表再试");
     const at = Date.now();
     const id = uuidv7(at);
-    const entry = this.entry(id, at, this.me(), peerId, "text", { text: trimmed });
+    const entry = this.entry(id, at, this.me(), peerId, "text", { text: trimmed, ...(via ? { via } : {}) });
     this.ctx.history.append(peerId, entry);
     const item: Queued = { id, peerId, addr: peer.addr, port: peer.port, kind: "text", payload: entry, at, tries: 0, nextAt: 0 };
     const outbox = this.ctx.outbox;
@@ -135,7 +135,8 @@ export class Messages {
     if (seen.has(id)) return { status: 200, body: { ok: true, dup: true } };
 
     const at = Number(message?.at) || Date.now();
-    this.ctx.history.append(claimed.nodeId, this.entry(id, at, claimed, this.ctx.nodeId, "text", { text }));
+    // `via` 跟着消息走：对端也要能看见「这条是 agent 代发的」，不能只在自己这边挂徽章。
+    this.ctx.history.append(claimed.nodeId, this.entry(id, at, claimed, this.ctx.nodeId, "text", { text, ...(message?.via === "pi" ? { via: "pi" as const } : {}) }));
     this.ctx.log(`收到 ${claimed.nickname || claimed.nodeId.slice(0, 8)} 的消息（${Buffer.byteLength(text, "utf8")} 字节）`);
     return { status: 200, body: { ok: true, id } };
   }

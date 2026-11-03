@@ -161,8 +161,8 @@ export class PeerHost {
     return this.request("GET", `/messages?peer=${encodeURIComponent(peer)}&limit=${limit}`);
   }
 
-  sendText(peer: string, text: string): Promise<{ ok: boolean; id: string; at: number }> {
-    return this.request("POST", "/send", { peer, text });
+  sendText(peer: string, text: string, via?: "pi"): Promise<{ ok: boolean; id: string; at: number }> {
+    return this.request("POST", "/send", via ? { peer, text, via } : { peer, text });
   }
 
   contacts(): Promise<{ contacts: unknown[] }> {

@@ -228,6 +228,10 @@ async function main(): Promise<void> {
   const tunnelBin = findCloudflared();
   const tunnel = new Tunnel(cfg.port, tunnelBin ?? "");
 
+  // 第 5 片：pi 子进程里的 peer_* 工具直连 peer 的回环端口（决定 33）。
+  // rpc.ts 起子进程时是 `{...process.env, ...opts.env}`，所以这里设一次就传下去了。
+  process.env.PI_PEER_PORT = String(cfg.peerPort);
+
   const log = (msg: string) => {
     const line = `${new Date().toISOString()} ${msg}`;
     console.log(line);
@@ -381,7 +385,8 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/peer/send" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       try {
-        return json(res, 200, await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? "")));
+        const via = body?.via === "pi" ? ("pi" as const) : undefined;
+        return json(res, 200, await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? ""), via));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }

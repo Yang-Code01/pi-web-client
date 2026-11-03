@@ -185,11 +185,31 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
         const body = await readBody(req).catch(() => ({}));
         try {
-          const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""));
+          const via = body?.via === "pi" ? ("pi" as const) : undefined;
+          const result = messages.send(String(body?.peer ?? ""), String(body?.text ?? ""), via);
           return json(res, 200, result);
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });
         }
+      }
+
+      // pi 的三个工具里「找人」这一步（第 5 片，决定 33）：昵称可以重名，
+      // 所以必须把 nodeId 一起给模型，让它下次直接用 id。
+      if (url.pathname === "/tools/find" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+        const online = new Map(discovery.online().map((peer) => [peer.nodeId, peer]));
+        const seen = new Set<string>();
+        const rows: Record<string, unknown>[] = [];
+        const push = (nodeId: string, nickname: string, hostname: string, port: number): void => {
+          if (seen.has(nodeId)) return;
+          seen.add(nodeId);
+          rows.push({ nodeId, nickname, hostname, port, online: online.has(nodeId), friend: relations.isFriend(nodeId) });
+        };
+        for (const contact of relations.list()) push(contact.nodeId, contact.nickname, contact.hostname, contact.port);
+        for (const peer of online.values()) push(peer.nodeId, peer.nickname, peer.hostname, peer.port);
+        const hit = q ? rows.filter((row) => `${row.nickname} ${row.hostname} ${row.nodeId}`.toLowerCase().includes(q)) : rows;
+        return json(res, 200, { ok: true, peers: hit.slice(0, 20) });
       }
 
       // 第 3 片：通讯录。收藏 / 删除 / 接受都在这里改，对方只收到一条控制消息。
