@@ -2,7 +2,22 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-type Listing = { path: string; parent: string | null; dirs: string[]; files?: string[]; error?: string };
+export type Volume = { root: string; total: number; free: number };
+export type FileStat = { name: string; size: number; mtime: number };
+
+type Listing = { path: string; parent: string | null; dirs: string[]; files?: string[]; volumes?: Volume[]; error?: string };
+
+/** Used/total for one drive root; null when the volume refuses to answer (a sleeping network drive). */
+function volumeOf(root: string): Volume | null {
+  try {
+    const st = fs.statfsSync(root);
+    const total = Number(st.blocks) * Number(st.bsize);
+    const free = Number(st.bavail) * Number(st.bsize);
+    return total > 0 ? { root, total, free } : null;
+  } catch {
+    return null;
+  }
+}
 
 /** One level of folders (and files when asked); an empty path lists the roots (drive letters on Windows). */
 export function listDirs(raw: string, withFiles = false): Listing {
@@ -10,11 +25,16 @@ export function listDirs(raw: string, withFiles = false): Listing {
   if (!target) {
     if (process.platform !== "win32") return listDirs("/", withFiles);
     const drives: string[] = [];
+    const volumes: Volume[] = [];
     for (let c = 65; c <= 90; c++) {
       const root = `${String.fromCharCode(c)}:\\`;
-      if (fs.existsSync(root)) drives.push(root);
+      if (!fs.existsSync(root)) continue;
+      drives.push(root);
+      // D62: one statfs per drive (0ms), so a drive row can show 占用/剩余 instead of a bare letter.
+      const vol = volumeOf(root);
+      if (vol) volumes.push(vol);
     }
-    return { path: "", parent: null, dirs: drives, ...(withFiles ? { files: [] } : {}) };
+    return { path: "", parent: null, dirs: drives, volumes, ...(withFiles ? { files: [] } : {}) };
   }
   const abs = path.resolve(target);
   const up = path.dirname(abs);
@@ -39,6 +59,35 @@ export function listDirs(raw: string, withFiles = false): Listing {
   } catch (err: any) {
     return { path: abs, parent, dirs: [], ...(withFiles ? { files: [] } : {}), error: err?.code === "ENOENT" ? "目录不存在" : `读不了这个目录：${err?.code ?? err}` };
   }
+}
+
+/**
+ * Sizes and mtimes for the files directly inside `dir`. Deliberately a second request (D62): a
+ * folder on a sleeping network drive answers `listDirs` in milliseconds but `stat` slowly, so the
+ * names paint first and these cells fill in when they are ready.
+ */
+export function statFiles(raw: string): FileStat[] {
+  const target = raw.trim();
+  if (!target) return [];
+  const abs = path.resolve(target);
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(abs, { withFileTypes: true }).filter((d) => !/^(\$|System Volume Information$)/i.test(d.name));
+  } catch {
+    return [];
+  }
+  const out: FileStat[] = [];
+  for (const d of entries) {
+    if (d.isDirectory()) continue;
+    try {
+      const st = fs.statSync(path.join(abs, d.name));
+      if (st.isDirectory()) continue;
+      out.push({ name: d.name, size: st.size, mtime: st.mtimeMs });
+    } catch {
+      // Vanished between readdir and stat (or a link to nowhere): just leave the row without a size.
+    }
+  }
+  return out;
 }
 
 /**

@@ -4,8 +4,9 @@ import "@xterm/xterm/css/xterm.css";
 import { api } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
-import { highlightInto, langOfFile } from "./highlight.ts";
+import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
+import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { Socket } from "./ws.ts";
 import type { AskAnswer, AskRequest, ApprovalRequest, DeleteReport, GitInfo, Item, ManageState, Me, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
 
@@ -164,7 +165,7 @@ export class App {
   private keys: Record<string, string> = loadKeys();
   /** action id whose row is waiting for the next key press. */
   private capturing: string | null = null;
-  /** D68: one shell per tab, all inside one dock; the bridge owns the processes (max 4). */
+  /** D70: one shell per tab, all inside one dock; the bridge owns the processes (max 4). */
   private termDock: HTMLElement | null = null;
   private termTabStrip: HTMLElement | null = null;
   private termBodies: HTMLElement | null = null;
@@ -176,12 +177,22 @@ export class App {
   private stepCount = 0;
   /** Q-022: which pin chip to focus once the strip repaints (the unpinned one is gone). */
   private pinFocus: number | null = null;
+  /** Q-035: the hover bubble on a pin chip (归档 / 重命名 / 删除), only ever one at a time. */
+  private pinMenu: { handle: PinMenuHandle; chip: HTMLElement; id: string } | null = null;
+  /** Both the 180ms open delay and the 220ms close delay ride on this one timer. */
+  private pinMenuTimer = 0;
+  /** Id of the chip currently animating out — the strip must not repaint underneath it. */
+  private pinAnim: string | null = null;
+  /** Q-035: the pin chip's delete flight lands here — the same bin the manager sheet toggles. */
+  private binBtn: HTMLButtonElement | null = null;
   /** Q-021: branch of the repo holding the session cwd; `gitCwd` keeps a stale answer off the line. */
   private git: GitInfo | null = null;
   private gitCwd = "";
   private mgrRefresh: (() => void) | null = null;
   private mgrPainting = false;
   private viewer: Viewer | null = null;
+  /** 预览历史，按会话分开（D63）：关预览保留、刷新页面清空、切会话各自一份。 */
+  private vhist = new Map<string, { steps: VStep[]; at: number }>();
   private cardDelArm: { id: string; at: number } | null = null;
   private dragId: string | null = null;
 
@@ -260,7 +271,15 @@ export class App {
     manageBtn.dataset.act = "manage";
     manageBtn.title = "管理全部会话：检索、筛选、排序、分组、批量操作";
     manageBtn.onclick = () => this.openManager();
-    manageBar.append(sessFilter, manageBtn);
+    // Q-035: the pin chip's delete animation needs a bin on screen to fly into. Until now the trash
+    // was two clicks away (管理 → 🗑); this opens the same view in one.
+    const binBtn = el("button", "tool-btn bin-btn") as HTMLButtonElement;
+    binBtn.dataset.act = "trash";
+    // 文字而不是 🗑：这颗按钮只有 31px 高、左栏又窄，emoji 在这个尺寸下会糊成一小块，
+    // 而它是删除动效的落点，得让人一眼认出那是「垃圾箱」。
+    binBtn.append(el("span", "bin-label", "垃圾箱"));
+    binBtn.onclick = () => this.openManager("trash");
+    manageBar.append(sessFilter, binBtn, manageBtn);
     const sessList = el("div", "session-cards");
     sessionsInner.append(create, manageBar, sessList);
     sessionsPane.append(sessionsInner);
@@ -302,7 +321,8 @@ export class App {
     shell.append(topbar, pinStrip, main, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    this.binBtn = binBtn;
     this.chat = new ChatView(scroll);
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
@@ -450,6 +470,33 @@ export class App {
     });
 
     window.addEventListener("hashchange", () => this.routeFromHash());
+    // 预览的返回 / 前进（D63）：Alt+← / Alt+→ 顺手，但浏览器的默认后退要挡掉。
+    window.addEventListener(
+      "keydown",
+      (ev) => {
+        if (!this.viewer || !ev.altKey || ev.ctrlKey || ev.metaKey) return;
+        if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+        ev.preventDefault();
+        this.goStep(ev.key === "ArrowLeft" ? -1 : 1);
+      },
+      true,
+    );
+    // 预览页里的链接点击（D63）：用 token 认人，不靠 ev.source（跨文档导航后指针不相等）。
+    window.addEventListener("message", (ev) => {
+      const d = ev.data as { t?: string; rel?: string; href?: string; y?: number; tk?: string } | null;
+      if (!d || (d.t !== "pi-nav" && d.t !== "pi-y")) return;
+      const v = this.viewer;
+      if (!v) return;
+      const expect = v.frameToken || v.info?.token || "";
+      if (!expect || d.tk !== expect) return;
+      if (d.t === "pi-y") {
+        // html 页里的滚动位置只能靠它自己报：按钮返回/前进时没有别的渠道拿到（D63）。
+        const top = this.histOf(v.sessionId).steps[this.histOf(v.sessionId).at];
+        if (top) top.y = Math.max(0, Number(d.y) || 0);
+        return;
+      }
+      void this.trackRawNav(String(d.rel ?? ""), String(d.href ?? ""), Number(d.y) || 0, String(d.tk ?? ""));
+    });
     this.installShortcuts();
     // 粘贴截图：桌面端 Ctrl+V / ⌘V 无论焦点在输入框还是页面上都落到待发图片里。
     window.addEventListener("paste", (ev) => this.onPaste(ev));
@@ -768,6 +815,7 @@ export class App {
       }
       case "trash": {
         this.trash = Array.isArray(msg.items) ? (msg.items as TrashItem[]) : this.trash;
+        this.renderBinCount();
         this.mgrRefresh?.();
         break;
       }
@@ -810,7 +858,7 @@ export class App {
         break;
       }
       case "term.list": {
-        // D68: the shells outlive the page. Adopt whatever the bridge still has, then replay each.
+        // D70: the shells outlive the page. Adopt whatever the bridge still has, then replay each.
         const items = Array.isArray(msg.items) ? (msg.items as { id?: unknown }[]) : [];
         for (const item of items) if (item?.id) this.socket.send({ type: "term.attach", id: String(item.id) });
         break;
@@ -2050,6 +2098,7 @@ export class App {
   /** Pinned / plain / archived sections. Every drag and every star click ends up in one arrange message. */
   private renderSessions(): void {
     this.renderPinStrip();
+    this.renderBinCount();
     const host = this.els.sessList;
     // A re-render mid-edit must not eat the caret: remember where it was before the DOM swap.
     const active = document.activeElement as HTMLElement | null;
@@ -2406,12 +2455,17 @@ export class App {
     this.sheet = back;
   }
 
-  private async openPreview(path: string, sessionId: string | null = this.currentId): Promise<void> {
+  private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false): Promise<void> {
     if (!sessionId) return;
     // 编辑中直接点别的文件：先问一句未保存的改动（D50）。
     const open = this.viewer;
     if (open?.pane === "edit" && open.dirty && open.info?.abs !== path) {
       if (!(await this.leaveEditor(open))) return;
+    }
+    // 打开一个新文件是历史里的一步；⟳ 刷新、返回/前进自己不算（D63）。
+    if (!replace) {
+      this.rememberScroll();
+      this.pushStep({ path }, sessionId);
     }
     const v = this.ensureViewer();
     v.sessionId = sessionId;
@@ -2419,6 +2473,7 @@ export class App {
     v.draft = null;
     v.dirty = false;
     v.conflict = null;
+    v.ext = null;
     v.path = path;
     v.info = null;
     v.error = "";
@@ -2435,6 +2490,8 @@ export class App {
     }
     if (this.viewer !== v || v.path !== path) return;
     v.path = v.info.abs;
+    // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
+    if (!replace) this.retargetTop(path, v.info.abs, sessionId);
     await this.loadViewerText();
   }
 
@@ -2514,6 +2571,11 @@ export class App {
       dirty: false,
       lastDir: localStorage.getItem("pi.fsDir") ?? "",
       conflict: null,
+      frame: null,
+      framePath: "",
+      frameToken: "",
+      ext: null,
+      pendingScroll: 0,
     };
     return this.viewer;
   }
@@ -2540,7 +2602,7 @@ export class App {
   }
 
   /**
-   * D67: 把文件交给这台电脑自己的文件管理器（打开所在目录、并把文件选中）。
+   * D69: 把文件交给这台电脑自己的文件管理器（打开所在目录、并把文件选中）。
    * 这是「浏览器里打不开这个格式」时唯一有用的退路：xlsm / pdf / docx 就该用 Excel / Acrobat 打开。
    * 只对本机 / 局域网开放 —— 桥那边对公网连接直接 403。
    */
@@ -2560,6 +2622,142 @@ export class App {
     return btn;
   }
 
+  // ------------------------------------------------------- 预览历史（D63）
+  /** 每个会话一条栈；第一次用到才建。 */
+  private histOf(sessionId: string): { steps: VStep[]; at: number } {
+    let h = this.vhist.get(sessionId);
+    if (!h) {
+      h = { steps: [], at: -1 };
+      this.vhist.set(sessionId, h);
+    }
+    return h;
+  }
+
+  /** 记一步。重复打开同一份文件不会多出一格（只把位置移过去）。
+   *  路径比较要归一化：同一个文件可能以 \\ 或 / 两种写法进来。 */
+  private pushStep(step: VStep, sessionId: string): void {
+    const h = this.histOf(sessionId);
+    const cur = h.steps[h.at];
+    if (cur && samePath(cur.path, step.path)) return;
+    if (cur && !cur.path && !step.path && (cur.url ?? "") === (step.url ?? "")) return;
+    h.steps = h.steps.slice(0, h.at + 1);
+    h.steps.push(step);
+    // 往前记着新的一步，说明后退分支已经作废（和浏览器的行为一致）。
+    if (h.steps.length > HISTORY_MAX) h.steps.shift();
+    h.at = h.steps.length - 1;
+  }
+
+  /** 相对路径解析成绝对路径之后，把刚记的那一步对齐。 */
+  private retargetTop(raw: string, abs: string, sessionId: string): void {
+    if (samePath(raw, abs)) return;
+    const h = this.histOf(sessionId);
+    const top = h.steps[h.at];
+    if (top && top.path && samePath(top.path, raw)) top.path = abs;
+  }
+
+  /** 记下「当前这一步」的滚动位置：普通预览从 body 拿，html 由页面点击时上报（y 传入）。 */
+  private rememberScroll(y?: number): void {
+    const v = this.viewer;
+    if (!v) return;
+    const h = this.histOf(v.sessionId);
+    const top = h.steps[h.at];
+    if (!top) return;
+    const pos = typeof y === "number" && y > 0 ? y : v.info?.kind === "html" ? -1 : (v.body?.scrollTop ?? -1);
+    if (pos >= 0) top.y = pos;
+  }
+
+  private goStep(delta: number): void {
+    const v = this.viewer;
+    if (!v) return;
+    const h = this.histOf(v.sessionId);
+    const at = h.at + delta;
+    if (at < 0 || at >= h.steps.length) return;
+    this.rememberScroll();
+    h.at = at;
+    void this.openStep(h.steps[at]);
+  }
+
+  private async openStep(step: VStep): Promise<void> {
+    const v = this.viewer;
+    if (!v) return;
+    if (step.path) {
+      await this.openPreview(step.path, v.sessionId, true);
+      if (step.y) this.restoreScroll(step.y);
+      return;
+    }
+    this.showExt(v, step.url ?? "", step.label ?? "外部链接");
+  }
+
+  /** 切到一个「不是文件」的占位态：外站、或跳出目录树被 403 的那一跳（D63）。
+   *  头部、正文、← → 都跟着换成占位，否则头部还挂着上一个文件名。 */
+  private showExt(v: Viewer, url: string, label: string): void {
+    v.ext = { url, label };
+    v.path = url || label;
+    v.info = null;
+    v.error = "";
+    v.text = null;
+    v.mode = "render";
+    v.pane = "preview";
+    this.paintViewer();
+  }
+
+  private restoreScroll(y: number): void {
+    const v = this.viewer;
+    if (!v || !y) return;
+    if (v.info?.kind === "html" && v.mode === "render" && v.frame) {
+      // iframe 可能还没 load，先存着，load 里再发一次。
+      v.pendingScroll = y;
+      try {
+        v.frame.contentWindow?.postMessage({ t: "pi-scroll", y }, "*");
+      } catch {
+        /* frame not ready */
+      }
+      return;
+    }
+    v.body.scrollTop = y;
+  }
+
+  /**
+   * iframe 里的页面点了链接（D63）。页面自己已经跳过去了，这里只做两件事：
+   * 把「现在打开的是谁」对齐，把这一跳记进返回栈。
+   */
+  private async trackRawNav(rel: string, href: string, y: number, tk: string): Promise<void> {
+    const v = this.viewer;
+    if (!v) return;
+    this.rememberScroll(y);
+    const cur = v.info;
+    const external = safeExternalUrl(href);
+    if (!rel || !cur) {
+      // 外站，或者 ../ 跳出目录树（那边会 403）：记一格占位，← 依然能回来。
+      this.pushStep({ path: null, url: external ?? undefined, label: external ? hostOf(external) : "跳出了目录树" }, v.sessionId);
+      this.showExt(v, external ?? "", external ? hostOf(external) : "跳出了目录树");
+      return;
+    }
+    const abs = absFromRel(cur.root, rel);
+    let next: PreviewInfo;
+    try {
+      next = await api.preview(v.sessionId, abs);
+    } catch {
+      this.pushStep({ path: null, label: `${abs}（打不开）` }, v.sessionId);
+      this.showExt(v, "", `${abs}（打不开）`);
+      return;
+    }
+    if (this.viewer !== v) return;
+    this.pushStep({ path: next.abs }, v.sessionId);
+    if (next.kind === "html") {
+      // iframe 已经在显示它了：只对齐头部，不要重挂 iframe（那会白跳一次回原文件）。
+      v.path = next.abs;
+      v.info = next;
+      v.mode = "render";
+      v.ext = null;
+      v.framePath = next.abs;
+      if (tk) v.frameToken = tk;
+      this.paintViewer();
+      return;
+    }
+    await this.openPreview(next.abs, v.sessionId, true);
+  }
+
   private paintViewer(): void {
     const v = this.viewer;
     if (!v) return;
@@ -2568,13 +2766,25 @@ export class App {
     head.replaceChildren();
     const title = el("div", "viewer-title");
     const browsing = v.pane === "browse";
-    const name = info?.name ?? (browsing ? "浏览本机文件" : (v.path.split(/[\\/]/).filter(Boolean).pop() ?? v.path));
-    title.append(el("span", "viewer-ico", browsing && !info ? "📁" : previewIcon(name)), el("span", "viewer-name", name));
-    const subText = info ? `${info.abs} · ${fmtSize(info.size)}` : browsing ? v.lastDir || this.session?.cwd || "此电脑" : v.path;
+    const name = info?.name ?? (v.ext ? v.ext.label : browsing ? "浏览本机文件" : (v.path.split(/[\\/]/).filter(Boolean).pop() ?? v.path));
+    title.append(el("span", "viewer-ico", browsing && !info ? "📁" : v.ext ? "🔗" : previewIcon(name)), el("span", "viewer-name", name));
+    const subText = info ? `${info.abs} · ${fmtSize(info.size)}` : v.ext ? v.ext.url : browsing ? v.lastDir || this.session?.cwd || "此电脑" : v.path;
     const sub = el("div", "viewer-path", subText);
     sub.title = info?.abs ?? subText;
     const left = el("div", "viewer-titles");
     left.append(title, sub);
+    // 返回 / 前进：历史是「这个会话看过哪些文件」，关预览不丢（D63）。
+    const h = this.histOf(v.sessionId);
+    const nav = el("div", "viewer-nav");
+    const back = el("button", "viewer-btn", "←") as HTMLButtonElement;
+    back.title = "后退（Alt+←）";
+    back.disabled = h.at <= 0;
+    if (!back.disabled) back.onclick = () => this.goStep(-1);
+    const fwd = el("button", "viewer-btn", "→") as HTMLButtonElement;
+    fwd.title = "前进（Alt+→）";
+    fwd.disabled = h.at >= h.steps.length - 1;
+    if (!fwd.disabled) fwd.onclick = () => this.goStep(1);
+    nav.append(back, fwd);
     const tools = el("div", "viewer-tools");
     const tbtn = (text: string, tip: string, fn: () => void, on = false) => {
       const b = el("button", `viewer-btn${on ? " on" : ""}`, text) as HTMLButtonElement;
@@ -2619,7 +2829,7 @@ export class App {
       }
       tools.append(seg);
     }
-    tbtn("⟳", "刷新（重新读取文件）", () => void this.openPreview(v.path, v.sessionId));
+    tbtn("⟳", "刷新（重新读取文件）", () => void this.openPreview(v.path, v.sessionId, true));
     if (info) {
       const open = tbtn("↗", "在新标签页打开", () => this.openRawTab(rawUrl(info)));
       open.classList.add("wide-only");
@@ -2633,24 +2843,43 @@ export class App {
       this.paintViewer();
     }, v.full);
     tbtn("✕", "关闭（Esc）", () => this.closeViewer());
-    head.append(left, tools);
+    head.append(nav, left, tools);
 
     // 浏览态：列表挂上就保持状态（滚动、筛选、当前位置），重绘时不要拆掉（D50）。
     if (v.pane === "browse") {
+      v.frame = null;
       if (!body.querySelector(":scope > .viewer-browse")) this.mountBrowser(v);
       return;
     }
     if (v.pane === "edit") {
+      v.frame = null;
       this.mountEditor(v);
       return;
     }
     body.removeAttribute("data-edit-path");
     // Keep an html iframe alive across header-only repaints (its own state / scroll matter).
     const frame = body.querySelector<HTMLIFrameElement>("iframe.viewer-frame");
-    if (info?.kind === "html" && v.mode === "render" && !v.error && frame?.dataset.src === rawUrl(info)) return;
+    if (info?.kind === "html" && v.mode === "render" && !v.error && frame && v.framePath === info.abs) return;
 
     body.replaceChildren();
     body.className = "viewer-body";
+    v.frame = null;
+    if (v.ext) {
+      // 外链 / 越界：应用里没东西可渲染，只说清楚发生了什么并给个出口（D63）。
+      const box = el("div", "viewer-msg ext");
+      box.append(el("div", "", v.ext.url || v.ext.label));
+      const href = safeExternalUrl(v.ext.url);
+      if (href) {
+        // 只开 http(s)：这个地址来自用户自己的页面，不是我们要重定向的地方。
+        const url = href;
+        const open = el("button", "btn", "在新标签打开");
+        open.onclick = () => openExternal(url);
+        box.append(open);
+      }
+      box.append(el("div", "viewer-tip", "← 回到上一个文件"));
+      body.append(box);
+      return;
+    }
     if (v.error) {
       const box = el("div", "viewer-msg err");
       box.append(el("div", "", v.error));
@@ -2674,6 +2903,18 @@ export class App {
       f.referrerPolicy = "no-referrer";
       f.src = url;
       f.dataset.src = url;
+      v.frame = f;
+      v.framePath = info.abs;
+      v.frameToken = info.token;
+      f.addEventListener("load", () => {
+        if (!v.pendingScroll) return;
+        try {
+          f.contentWindow?.postMessage({ t: "pi-scroll", y: v.pendingScroll }, "*");
+        } catch {
+          /* frame went away */
+        }
+        v.pendingScroll = 0;
+      });
       body.classList.add("frame");
       body.append(f);
       return;
@@ -2691,7 +2932,7 @@ export class App {
       box.append(el("div", "", `二进制文件（${fmtSize(info.size)}），这里不直接显示。`));
       const open = el("button", "btn", "新标签页打开 / 下载");
       open.onclick = () => openSameOrigin(url);
-      // D67: the useful move for an xlsm / pdf / docx is the machine's own file manager, not a download.
+      // D69: the useful move for an xlsm / pdf / docx is the machine's own file manager, not a download.
       box.append(open, this.revealButton(info.abs));
       body.append(box);
       return;
@@ -2721,11 +2962,19 @@ export class App {
       return;
     }
     const pre = el("pre", "viewer-src");
+    // Q-031: 代码/配置类文件按扩展名上色；不认识的语言、超过 200 KB 的文件保持纯文本。
+    const hl = highlightFragment(v.text, info.name);
     const lines = v.text.split(/\r?\n/);
     const gutter = el("div", "ln-gutter", lines.map((_, k) => k + 1).join("\n"));
     const code = el("code");
-    // D64: colour by extension; unknown extensions stay plain text (highlightInto falls back).
-    highlightInto(code, v.text, langOfFile(info.name));
+    if (hl === null) {
+      code.textContent = v.text;
+    } else {
+      code.className = "hl";
+      code.append(hl);
+      pre.classList.add("hl");
+      pre.dataset.lang = langOf(info.name) ?? "";
+    }
     pre.append(gutter, code);
     body.append(pre);
   }
@@ -2782,7 +3031,7 @@ export class App {
   }
 
   /**
-   * D69: 「复制路径」——把下面正在浏览的那个目录的路径复制走（工作目录按钮只管「跳回」，不管「拿走」）。
+   * D71: 「复制路径」——把下面正在浏览的那个目录的路径复制走（工作目录按钮只管「跳回」，不管「拿走」）。
    * 剪贴板在 http 的局域网地址上是 undefined，所以 optional chaining 必须包住调用本身。
    */
   private dirCopy(getPath: () => string): { node: HTMLButtonElement; bind: () => void } {
@@ -2824,7 +3073,7 @@ export class App {
     const host = el("div", "viewer-browse");
     body.append(host);
     const home = this.dirHome(() => this.session?.cwd ?? "");
-    // D69: the copy button reads the picker live, so it always copies the directory actually listed.
+    // D71: the copy button reads the picker live, so it always copies the directory actually listed.
     let pickerPath = (): string => "";
     const copy = this.dirCopy(() => pickerPath());
     const picker = mountDirPicker(host, {
@@ -2944,10 +3193,33 @@ export class App {
     body.dataset.editPath = info.abs;
     const wrap = el("div", "ed");
     const gutter = el("div", "ed-gutter");
+    // Q-034: 编辑态也上色 —— 底下铺一层同字体、同 padding 的 <pre><code class="hl">，
+    // textarea 自己的文字保持透明，只负责光标、选区、输入法；三层（行号 / 高亮 / 输入）一起滚动。
+    const code = el("div", "ed-code");
+    const pre = el("pre", "ed-hl hl");
+    const hl = el("code", "hl");
+    pre.append(hl);
     const ta = el("textarea", "ed-ta") as HTMLTextAreaElement;
     ta.value = v.draft ?? v.text ?? "";
     ta.wrap = "off";
     ta.spellcheck = false;
+    const useHl = Boolean(langOf(info.name));
+    code.classList.toggle("plain", !useHl);
+    let hlTimer = 0;
+    const paintHl = (): void => {
+      if (!useHl) return;
+      // 结尾换行时 textarea 会多显示一行空行，这里补一个零宽字符让 <pre> 也占住那一行。
+      const text = ta.value.endsWith("\n") ? `${ta.value}\u200b` : ta.value;
+      const frag = ta.value.length > HL_MAX_BYTES ? null : highlightFragment(text, info.name);
+      hl.replaceChildren();
+      if (frag) hl.append(frag);
+      else hl.textContent = text;
+    };
+    const scheduleHl = (): void => {
+      if (!useHl) return;
+      window.clearTimeout(hlTimer);
+      hlTimer = window.setTimeout(paintHl, 60);
+    };
     const sync = (): void => {
       const n = ta.value.split("\n").length;
       if (gutter.dataset.n !== String(n)) {
@@ -2963,10 +3235,20 @@ export class App {
       v.dirty = true;
       v.conflict = null;
       sync();
+      scheduleHl();
     };
     ta.onscroll = () => {
       gutter.scrollTop = ta.scrollTop;
+      pre.scrollTop = ta.scrollTop;
+      pre.scrollLeft = ta.scrollLeft;
     };
+    // 输入法组字期间没法把透明文字和下层高亮对齐（候选框里的字只有 textarea 自己有），
+    // 先把自己的字显出来、把高亮层藏起来，组完字再切回去。
+    ta.addEventListener("compositionstart", () => code.classList.add("composing"));
+    ta.addEventListener("compositionend", () => {
+      code.classList.remove("composing");
+      scheduleHl();
+    });
     ta.onkeydown = (ev) => {
       if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") {
         ev.preventDefault();
@@ -2988,7 +3270,9 @@ export class App {
       }
     };
     sync();
-    wrap.append(gutter, ta);
+    paintHl();
+    code.append(pre, ta);
+    wrap.append(gutter, code);
 
     const path = el("div", "ed-path", info.abs);
     path.title = info.abs;
@@ -3305,15 +3589,17 @@ export class App {
     this.act(() => this.socket.send({ type: "rename", sessionId: id, name }));
   }
 
-  private openManager(): void {
+  private openManager(view: "list" | "trash" = "list"): void {
     this.closeSheet();
     this.sheetKind = "manage";
     this.mgrPicked.clear();
     this.mgrRename = null;
     this.mgrDelArm = null;
     this.mgrNote = "";
-    this.mgrView = "list";
+    this.mgrView = view;
     this.mgrTrashPick.clear();
+    // Q-035: the left column's 🗑 opens straight into the bin, so ask for the list right away.
+    if (view === "trash") this.socket.send({ type: "manage", action: "trash.list" });
     const back = el("div", "sheet-back center");
     back.onclick = (ev) => {
       if (ev.target === back) this.closeSheet();
@@ -4581,7 +4867,10 @@ export class App {
 
   private askCard(ask: AskRequest): HTMLElement {
     const card = el("div", "approval");
-    card.append(el("div", "t", ask.questions.length > 1 ? `需要你回答 · ${ask.questions.length} 题` : "需要你回答"));
+    const t = el("div", "t", ask.questions.length > 1 ? `需要你回答 · ${ask.questions.length} 题` : "需要你回答");
+    // Q-033: 提问不设上限；发问方若给了时长，只在 tooltip 里交代一句。
+    if (ask.timeoutMs) t.title = `发问方要求 ${Math.round(ask.timeoutMs / 1000)} 秒内作答，已忽略（提问不设上限）`;
+    card.append(t);
     card.append(el("div", "m", ask.questions.map((q, i) => `${ask.questions.length > 1 ? `${q.label ?? `Q${i + 1}`}：` : ""}${q.prompt}`).join("\n")));
     const actions = el("div", "actions");
     const go = el("button", "btn primary", "去回答");
@@ -4710,7 +4999,7 @@ export class App {
     host.append(el("div", "hint", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
   }
 
-  // ---------------------------------------------------------------- terminal (Q-007 · D68)
+  // ---------------------------------------------------------------- terminal (Q-007 · D70)
   /**
    * 终端多开：一个 dock，多个标签，每个标签一个真的 shell（桥里 `MAX_TERMS = 4`）。
    * 这个按钮只负责「把 dock 拿出来 / 聚焦当前标签」，再开一个是 dock 里的 `＋`。
@@ -5152,6 +5441,7 @@ export class App {
       open.title = [s.name || s.id, s.cwd ?? "", badge?.title ?? ""].filter(Boolean).join(" · ");
       open.onclick = () => this.openFromList(s.id);
       chip.append(star, open);
+      this.wirePinHover(chip, s);
       host.append(chip);
     }
     if (!pins.length) host.append(el("span", "pin-empty", "在这里 ☆ 置顶一个会话，收起左栏也能点到。"));
@@ -5180,6 +5470,203 @@ export class App {
       if (same) same.focus();
       else focusStar(add);
     }
+  }
+
+  /* ------------------------------------------------------------------ Q-035 */
+
+  /** 180ms 后才弹（鼠标扫过不算），离开 220ms 才收（从胶囊挪进气泡也不算）。 */
+  private wirePinHover(chip: HTMLElement, s: SessionState): void {
+    chip.addEventListener("pointerenter", () => this.openPinMenuSoon(chip, s));
+    chip.addEventListener("pointerleave", () => this.closePinMenuSoon());
+  }
+
+  private openPinMenuSoon(chip: HTMLElement, s: SessionState): void {
+    window.clearTimeout(this.pinMenuTimer);
+    if (this.pinAnim || this.pinMenu?.chip === chip) return;
+    this.pinMenuTimer = window.setTimeout(() => this.showPinMenu(chip, s), 180);
+  }
+
+  private closePinMenuSoon(): void {
+    window.clearTimeout(this.pinMenuTimer);
+    if (this.pinMenu?.handle.pinned()) return;
+    this.pinMenuTimer = window.setTimeout(() => this.closePinMenu(), 220);
+  }
+
+  private closePinMenu(): void {
+    window.clearTimeout(this.pinMenuTimer);
+    const cur = this.pinMenu;
+    if (!cur) return;
+    this.pinMenu = null;
+    cur.handle.close();
+  }
+
+  private showPinMenu(chip: HTMLElement, s: SessionState): void {
+    if (this.pinAnim || !chip.isConnected) return;
+    this.closePinMenu();
+    const handle = openPinMenu(chip, {
+      name: s.name || s.id,
+      cwd: s.cwd,
+      onArchive: () => this.archiveFromPin(s.id, chip),
+      onRename: (name) => {
+        this.closePinMenu();
+        this.applyRename(s.id, name);
+        // applyRename 只改数据、不重画（管理条那边由调用方负责），这里得自己补一次，
+        // 否则胶囊还挂着旧名字直到下一次列表刷新。
+        this.renderSessions();
+      },
+      onDelete: () => this.deleteFromPin(s.id, chip),
+    });
+    this.pinMenu = { handle, chip, id: s.id };
+    // 指针从胶囊直接挪进气泡：中间那段空隙不能把它关了。
+    handle.node.addEventListener("pointerenter", () => window.clearTimeout(this.pinMenuTimer));
+    handle.node.addEventListener("pointerleave", () => this.closePinMenuSoon());
+  }
+
+  /**
+   * 归档动效：胶囊压扁 → 横着滑进条尾的抽屉 → 抽屉合盖计数 +1 → 塌缩让位，然后才真的发归档。
+   * 先演后发：归档是幂等的，而桥的回声会重建整条置顶条，抽屉就跟着没了。
+   */
+  private archiveFromPin(id: string, chip: HTMLElement): void {
+    if (this.pinAnim) return;
+    this.closePinMenu();
+    if (this.calm()) {
+      this.archiveIds([id], true);
+      this.pinNote("已归档 1 个 · 在左栏「已归档」里");
+      return;
+    }
+    const host = this.els.pinStrip;
+    if (!host.contains(chip)) return;
+    this.pinAnim = id;
+    const ease = "cubic-bezier(.22,.68,0,1)";
+    const tray = el("div", "pin-tray");
+    tray.append(el("div", "pin-tray-lid"), el("div", "pin-tray-body"), el("span", "pin-tray-count", "1"));
+    host.insertBefore(tray, host.querySelector(".pin-new"));
+    const r = chip.getBoundingClientRect();
+    const t = tray.getBoundingClientRect();
+    const dx = t.left + t.width / 2 - (r.left + r.width / 2);
+    const dy = t.top + t.height / 2 - (r.top + r.height / 2);
+    const w = r.width;
+    tray.animate([{ opacity: "0", transform: "translateY(-4px)" }, { opacity: "1", transform: "none" }], { duration: 140, easing: ease });
+    const lid = tray.querySelector(".pin-tray-lid");
+    lid?.animate(
+      [{ transform: "rotate(0deg)" }, { transform: "rotate(-46deg)", offset: 0.45 }, { transform: "rotate(0deg)" }],
+      { duration: 460, easing: ease },
+    );
+    const fly = chip.animate(
+      [
+        { transform: "none", opacity: "1", offset: 0 },
+        { transform: "scale(1.07, .66)", opacity: "1", offset: 0.34 },
+        { transform: `translate(${dx}px, ${dy}px) scale(.22, .22)`, opacity: "0", offset: 0.92 },
+        { transform: `translate(${dx}px, ${dy}px) scale(.22, .22)`, opacity: "0", offset: 1 },
+      ],
+      { duration: 520, easing: ease, fill: "forwards" },
+    );
+    fly.onfinish = () => {
+      tray.querySelector(".pin-tray-count")?.animate(
+        [{ opacity: "0", transform: "translateX(-50%) scale(.4)" }, { opacity: "1", transform: "translateX(-50%) scale(1)" }],
+        { duration: 220, easing: ease, fill: "both" },
+      );
+      // 塌缩让位只动这一颗胶囊：chip.parentElement 就是 .pin-strip 本身，
+      // 早先版本动的就是它，结果整条缩成 24px（只剩左右 padding）并横向溢出。
+      chip.animate([{ width: `${w}px` }, { width: "0px" }], { duration: 240, easing: ease, fill: "forwards" });
+      window.setTimeout(() => {
+        this.pinAnim = null;
+        this.archiveIds([id], true);
+        this.pinNote("已归档 1 个 · 在左栏「已归档」里");
+      }, 240);
+    };
+  }
+
+  /**
+   * 删除动效：胶囊先被拿起来（fixed 克隆体），左栏自动展开露出那颗🗑，再沿弧线飞进去、桶闪一下。
+   * 展开后置顶条就整条消失了（它只在左栏收起时显示），所以飞行体必须是脱离文档流的克隆。
+   */
+  private deleteFromPin(id: string, chip: HTMLElement): void {
+    if (this.pinAnim) return;
+    this.closePinMenu();
+    if (this.calm()) {
+      this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
+      this.pinNote("已移入垃圾箱 · 在左栏🗑里可以还原");
+      return;
+    }
+    const r = chip.getBoundingClientRect();
+    const clone = chip.cloneNode(true) as HTMLElement;
+    clone.classList.add("pin-flyer");
+    clone.removeAttribute("data-pin-key");
+    Object.assign(clone.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+    document.body.append(clone);
+    this.pinAnim = id;
+    if (this.collapsed.sessions) {
+      this.collapsed.sessions = false;
+      writeFlag("pi.collapse.sessions", false);
+      this.renderPanes();
+      this.renderTop();
+    }
+    // 等一帧让左栏真的上屏，再量垃圾桶的位置。
+    window.setTimeout(() => {
+      const b = this.binBtn?.getBoundingClientRect();
+      const sx = r.left + r.width / 2;
+      const sy = r.top + r.height / 2;
+      const tx = b ? b.left + b.width / 2 : sx;
+      const ty = b ? b.top + b.height / 2 : sy + 40;
+      const mx = (sx + tx) / 2;
+      const my = (sy + ty) / 2 + 26;
+      const at = (u: number) => ({
+        x: (1 - u) * (1 - u) * sx + 2 * (1 - u) * u * mx + u * u * tx,
+        y: (1 - u) * (1 - u) * sy + 2 * (1 - u) * u * my + u * u * ty,
+      });
+      const frames: Keyframe[] = [0, 0.3, 0.6, 0.85, 1].map((u, i) => {
+        const p = at(u);
+        const scale = i === 4 ? 0.18 : 1 - 0.5 * u;
+        return {
+          transform: `translate(${p.x - sx}px, ${p.y - sy}px) scale(${scale}) rotate(${-10 * u}deg)`,
+          opacity: i === 4 ? "0" : "1",
+          offset: u,
+        };
+      });
+      clone.animate(frames, { duration: 620, easing: "cubic-bezier(.4,0,.25,1)", fill: "forwards" }).onfinish = () => {
+        clone.remove();
+        this.pinAnim = null;
+        this.pulseBin();
+        this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
+        this.pinNote("已移入垃圾箱 · 在左栏🗑里可以还原");
+      };
+    }, 220);
+  }
+
+  /** 「少动」偏好下不演动效，直接做那一步。 */
+  private calm(): boolean {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  private pulseBin(): void {
+    const bin = this.binBtn;
+    if (!bin) return;
+    bin.classList.add("hit");
+    bin.animate([{ transform: "scale(1)" }, { transform: "scale(1.22)" }, { transform: "scale(1)" }], { duration: 340, easing: "cubic-bezier(.22,.68,0,1)" });
+    window.setTimeout(() => bin.classList.remove("hit"), 900);
+  }
+
+  /** 删除/归档之后一句话交代去向；不占状态行，2.6s 自己走。 */
+  private pinNote(text: string): void {
+    document.querySelector(".pin-note")?.remove();
+    const note = el("div", "pin-note", text);
+    document.body.append(note);
+    note.animate([{ opacity: "0", transform: "translateY(6px)" }, { opacity: "1", transform: "none" }], { duration: 160, easing: "ease-out" });
+    window.setTimeout(() => {
+      note.animate([{ opacity: "1" }, { opacity: "0" }], { duration: 220, easing: "ease-out", fill: "forwards" }).onfinish = () => note.remove();
+    }, 2400);
+  }
+
+  /** 左栏那颗🗑上的数字：垃圾箱里有几个，点开就是那个视图。 */
+  private renderBinCount(): void {
+    const bin = this.binBtn;
+    if (!bin) return;
+    const n = this.trash.length;
+    bin.title = n ? `垃圾箱里 ${n} 个会话（删掉的会先进这里，可以还原）` : "垃圾箱：删掉的会话会先进这里，可以还原";
+    bin.classList.toggle("has-trash", n > 0);
+    const count = bin.querySelector(".bin-count") ?? bin.appendChild(el("span", "bin-count"));
+    count.textContent = n ? String(n) : "";
   }
 
   private renderTabs(): void {
@@ -5357,6 +5844,17 @@ function glyph(src: string): Node {
 }
 
 /** Opens a link in a new tab, but only if it stays on this origin (previews are same-origin /raw/…). */
+/** 外链只放行 http(s)，并且始终交给一个带 rel=noopener 的真链接去开（和 openSameOrigin 同一个理由）。 */
+function openExternal(url: string): void {
+  const safe = safeExternalUrl(url);
+  if (!safe) return;
+  const a = document.createElement("a");
+  a.href = safe;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.click();
+}
+
 function openSameOrigin(url: string): void {
   const target = new URL(url, location.href);
   if (target.origin !== location.origin) return;
@@ -5424,7 +5922,7 @@ function savePrefs(prefs: Prefs): void {
 
 type ViewerPane = "browse" | "preview" | "edit";
 
-/** D68: one open shell — its xterm, its body, its tab button. */
+/** D70: one open shell — its xterm, its body, its tab button. */
 interface TermTab {
   id: string;
   shell: string;
@@ -5458,6 +5956,26 @@ interface Viewer {
   lastDir: string;
   /** 409 冲突说明，有值就显示冲突条。 */
   conflict: string | null;
+  /** 当前挂着的 html iframe；只看它发来的 postMessage（D63）。 */
+  frame: HTMLIFrameElement | null;
+  /** iframe 里**实际显示**的文件与它当初用哪个 token 取的。导航后两者都会变，
+   *  所以不能拿 v.info 现算（D63）。 */
+  framePath: string;
+  frameToken: string;
+  /** 外链 / 越界占位：这一格没法在应用里预览，只给个出口。 */
+  ext: { url: string; label: string } | null;
+  /** 回到一步 html 预览时要回放的滚动位置，等 iframe load 再发（D63）。 */
+  pendingScroll: number;
+}
+
+/** 预览历史里的一步（D63）。`path` 为空表示「外链 / 越界」这种应用里打不开的地方。 */
+interface VStep {
+  path: string | null;
+  /** 外链占位项：记下当时的 url，前进回来时给个出口。 */
+  url?: string;
+  label?: string;
+  /** 离开这一步时滚到哪儿，返回时回放。 */
+  y?: number;
 }
 
 const PERM_MODES: { id: PermissionMode; icon: string; label: string; desc: string }[] = [
@@ -5474,6 +5992,9 @@ type Draft = { text: string; images: PendingImage[]; pastes: PasteBlock[] };
 /** A paste this long (lines or characters) becomes its own foldable block. */
 const PASTE_LINES = 6;
 const PASTE_CHARS = 400;
+
+/** 预览返回栈最多记多少步（D63）。超了就丢掉最早的一步，和浏览器一样。 */
+const HISTORY_MAX = 60;
 
 function loadDrafts(): Map<string, Draft> {
   const map = new Map<string, Draft>();
@@ -5508,6 +6029,48 @@ function resolveFrom(docAbs: string, p: string): string {
   const sep = docAbs.includes("\\") ? "\\" : "/";
   const dir = docAbs.slice(0, Math.max(docAbs.lastIndexOf("\\"), docAbs.lastIndexOf("/")));
   return `${dir}${sep}${target.replace(/[\\/]/g, sep)}`;
+}
+
+/** 页面里的外链只认 http(s)：`javascript:` / `file:` / 自定义协议一律当没给。 */
+/** 同一个文件的两种写法（\\ 与 /）算同一份。 */
+function samePath(a: string | null | undefined, b: string | null | undefined): boolean {
+  const na = (a ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const nb = (b ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return na !== "" && na === nb;
+}
+
+function safeExternalUrl(raw: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  return u.href;
+}
+
+function hostOf(raw: string): string {
+  try {
+    return new URL(raw).host || raw.slice(0, 80);
+  } catch {
+    return raw.slice(0, 80);
+  }
+}
+
+/** `/raw/<token>/<rel>` 里的 rel 换成绝对路径（root 来自 PreviewInfo，D63）。 */
+function absFromRel(root: string, rel: string): string {
+  const sep = root.includes("\\") ? "\\" : "/";
+  let out = root.replace(/[\\/]+$/, "");
+  for (const seg of rel.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      out = out.replace(/[\\/][^\\/]+$/, "");
+      continue;
+    }
+    out += sep + seg;
+  }
+  return out;
 }
 
 function previewIcon(p: string): string {

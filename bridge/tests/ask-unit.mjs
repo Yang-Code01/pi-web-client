@@ -81,4 +81,16 @@ assert.equal((await third.outcome).cancelled, true);
 assert.equal(session.asks.size, 0);
 assert.equal(session.state.asks, 0);
 
+// 7. a dialog's timeout is logged, never obeyed (Q-033) -------------------
+const before = session.asks.size;
+session.onUiRequest({ id: "ui-1", method: "select", title: "选一个", options: ["A", "B"], timeout: 40 });
+assert.equal(session.asks.size, before + 1, "the dialog opened an ask");
+assert.equal(seen.at(-1).type, "ask.add");
+assert.equal(seen.at(-1).ask.timeoutMs, 40, "the caller's timeout rides along for the card tooltip");
+const uiAsk = seen.at(-1).ask;
+await new Promise((r) => setTimeout(r, 120));
+assert.equal(session.asks.size, before + 1, "past the timeout the question is still waiting");
+session.answerAsk(uiAsk.id, [{ id: "q1", value: "A", label: "A" }]);
+assert.equal(session.asks.size, before, "answering still settles it");
+
 console.log("ask-unit: ok");

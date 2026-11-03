@@ -1,5 +1,5 @@
 /**
- * Probe: does swiping up during streaming survive the stream? (D66)
+ * Probe: does swiping up during streaming survive the stream? (D68)
  *
  * Reproduces the reported "scroll competition": send a message, the reply streams in, swipe up to
  * read history — and the view keeps getting yanked back down. Runs a stub bridge (no pi, no model),

@@ -201,7 +201,7 @@ export function openConsole(options: { cwd?: string; file?: string; admin?: bool
 }
 
 /**
- * D67: hand a file to the desktop's own file manager. The web viewer can only render text, markdown,
+ * D69: hand a file to the desktop's own file manager. The web viewer can only render text, markdown,
  * html and images; for everything else (xlsm, pdf, docx, a 400 MB video) the useful move is "open the
  * folder on that machine, with the file already selected" and let the user double-click it in Excel or
  * whatever owns the extension.

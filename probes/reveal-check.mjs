@@ -1,5 +1,5 @@
 /**
- * Probe: "在文件夹中显示" (D67) — the way out of a preview the viewer cannot render.
+ * Probe: "在文件夹中显示" (D69) — the way out of a preview the viewer cannot render.
  *
  * Two layers, because only one of them is safe to run unattended:
  *

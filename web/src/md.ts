@@ -9,7 +9,7 @@
  * caller). File paths in either mode become links that open the preview drawer.
  */
 
-import { highlightInto, langOfAlias } from "./highlight.ts";
+import { highlightFragment } from "./highlight.ts";
 
 export interface MdOptions {
   /** Rendering a whole document rather than a chat message. */
@@ -256,9 +256,17 @@ export function renderMarkdown(src: string, opts: MdOptions = {}): DocumentFragm
       const pre = document.createElement("pre");
       if (fence[2]) pre.dataset.lang = fence[2];
       const code = document.createElement("code");
-      const src = body.join("\n");
-      // D64: a fenced block with a known alias gets coloured; anything else stays inert text.
-      highlightInto(code, src, langOfAlias(fence[2]));
+      const text = body.join("\n");
+      // Q-031: 围栏带语言且我们认识 → 上色；否则照旧纯文本。片段由高亮器的白名单构造，不经过
+      // innerHTML（本文件的规矩：agent 输出永远是文本，不当标记解）。
+      const hlFrag = fence[2] ? highlightFragment(text, fence[2]) : null;
+      if (hlFrag === null) {
+        code.textContent = text;
+      } else {
+        code.className = "hl";
+        code.append(hlFrag);
+        pre.classList.add("hl");
+      }
       pre.appendChild(code);
       frag.appendChild(pre);
       continue;

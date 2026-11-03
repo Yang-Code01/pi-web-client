@@ -21,6 +21,9 @@ export interface PreviewInfo {
   rel: string;
   name: string;
   abs: string;
+  /** Root the token is scoped to: `rel` is relative to this, so a link inside the page can be
+   * mapped back to an absolute path by the client (D63). */
+  root: string;
   size: number;
   mtime: number;
   kind: PreviewKind;
@@ -158,7 +161,7 @@ export function openPreview(session: { cwd: string; file: string | null }, rawPa
   // Root = cwd when possible so `../assets/x.css` from a nested page still resolves.
   const root = inCwd ? path.resolve(session.cwd) : path.dirname(abs);
   const rel = path.relative(root, abs).split(path.sep).map(encodeURIComponent).join("/");
-  return { token: issue(root), rel, name: path.basename(abs), abs, size: st.size, mtime: st.mtimeMs, kind: kindOf(abs) };
+  return { token: issue(root), rel, root, name: path.basename(abs), abs, size: st.size, mtime: st.mtimeMs, kind: kindOf(abs) };
 }
 
 /**
@@ -276,6 +279,56 @@ export function savePreviewFile(
   return { path: target, mtime: after.mtimeMs, size: after.size };
 }
 
+/**
+ * Injected into every html page served from /raw (D63). It only *reports*: a click on a link is
+ * posted to the viewer, nothing is cancelled, the page navigates exactly as it always did.
+ *
+ * The viewer needs this because the page runs in an opaque origin (no allow-same-origin), so the
+ * parent cannot read `contentWindow.location` and cannot see that a navigation happened at all.
+ * Reports are anonymous (`parent.postMessage("*")`): an opaque origin has no other way out.
+ */
+function navScript(token: string): string {
+  // ASCII-only on purpose: the response is utf-8, but escaping keeps this safe to concatenate into
+  // a document with any charset.
+  const js = (s: string) =>
+    JSON.stringify(s).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  return `<script data-pi-nav="1">(function(){
+var T=${js(token)};
+function post(m){try{parent.postMessage(m,"*")}catch(e){}}
+function rel(href){var u;try{u=new URL(href,location.href)}catch(e){return null}
+var pre="/raw/"+T+"/",p=u.pathname||"";
+if(p.indexOf(pre)!==0)return "";
+var out=p.slice(pre.length);
+try{out=out.split("/").map(decodeURIComponent).join("/")}catch(e){}
+return out}
+function tell(href){var r=rel(href);if(r===null)return;post({t:"pi-nav",tk:T,rel:r,href:String(href||""),y:window.scrollY||0})}
+document.addEventListener("click",function(e){
+var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;
+if(!a||a.target==="_blank"||a.hasAttribute("download"))return;
+var h=a.getAttribute("href")||"";if(!h||h.charAt(0)==="#")return;tell(a.href)},true);
+document.addEventListener("submit",function(e){var f=e.target;if(f&&f.action)tell(f.action)},true);
+window.addEventListener("message",function(e){var d=e.data;if(!d||d.t!=="pi-scroll")return;
+try{window.scrollTo(0,d.y||0)}catch(x){}});
+var pend=0;
+function beat(){pend=0;post({t:"pi-y",tk:T,y:window.scrollY||0})}
+window.addEventListener("scroll",function(){if(pend)return;pend=1;requestAnimationFrame(beat)},{passive:true});
+})();</script>`;
+}
+
+/** Insert the nav script right after `<head>` (so a `location =` in head is still reported) or, when
+ * there is no head, after `<body>`; last resort: in front. Byte-level so any encoding survives. */
+function injectNav(buf: Buffer, script: Buffer): Buffer {
+  const lower = buf.toString("latin1").toLowerCase();
+  for (const tag of ["<head", "<body"]) {
+    const i = lower.indexOf(tag);
+    if (i < 0) continue;
+    const close = lower.indexOf(">", i);
+    if (close < 0) continue;
+    return Buffer.concat([buf.subarray(0, close + 1), script, buf.subarray(close + 1)]);
+  }
+  return Buffer.concat([script, buf]);
+}
+
 /** `/raw/<token>/<rel>`: returns false when the url is not a raw url at all. */
 export function serveRaw(req: http.IncomingMessage, res: http.ServerResponse, pathname: string): boolean {
   const m = /^\/raw\/([A-Za-z0-9_-]+)\/(.*)$/.exec(pathname);
@@ -317,15 +370,30 @@ export function serveRaw(req: http.IncomingMessage, res: http.ServerResponse, pa
     deny(404, "not found");
     return true;
   }
-  res.writeHead(200, {
-    "content-type": mimeOf(abs),
-    "content-length": String(st.size),
+  const base = {
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
     // Opaque origin: scripts run, but cannot reach cookies, storage or the bridge API.
     "content-security-policy": "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads",
     "referrer-policy": "no-referrer",
-  });
+  };
+  // html pages get the click reporter spliced in (D63). Everything else streams as-is.
+  if (mimeOf(abs).startsWith("text/html") && st.size < 4 * 1024 * 1024) {
+    let buf: Buffer;
+    try {
+      buf = fs.readFileSync(abs);
+    } catch {
+      deny(404, "not found");
+      return true;
+    }
+    const out = injectNav(buf, Buffer.from(navScript(m[1]), "utf8"));
+    // 不要在这里锁 charset：原始字节没动（脚本是纯 ASCII 的），页面自己的 <meta charset> 说了算。
+    // 锁成 utf-8 会把 GBK 的老页面变成乱码。
+    res.writeHead(200, { ...base, "content-type": "text/html", "content-length": String(out.length) });
+    res.end(req.method === "HEAD" ? undefined : out);
+    return true;
+  }
+  res.writeHead(200, { ...base, "content-type": mimeOf(abs), "content-length": String(st.size) });
   if (req.method === "HEAD") {
     res.end();
     return true;

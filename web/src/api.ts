@@ -22,7 +22,18 @@ export const api = {
   logout: () => req<{ ok: true }>("/api/logout", { method: "POST" }),
   sessions: () => req<{ sessions: SessionState[]; tunnel: TunnelState }>("/api/sessions"),
   dirs: (path: string, files = false) =>
-    req<{ path: string; parent: string | null; dirs: string[]; files?: string[]; error?: string }>(`/api/dirs?path=${encodeURIComponent(path)}${files ? "&files=1" : ""}`),
+    req<{
+      path: string;
+      parent: string | null;
+      dirs: string[];
+      files?: string[];
+      /** D62: used/total per drive root, only when listing the roots (empty path). */
+      volumes?: { root: string; total: number; free: number }[];
+      error?: string;
+    }>(`/api/dirs?path=${encodeURIComponent(path)}${files ? "&files=1" : ""}`),
+  /** D62: sizes/mtimes for one directory, asked for separately so the file rows can paint first. */
+  fileStats: (path: string) =>
+    req<{ files: { name: string; size: number; mtime: number }[] }>(`/api/dirs?path=${encodeURIComponent(path)}&stats=1`),
   clipboardFiles: () => req<{ paths: string[] }>("/api/clipboard-files"),
   /**
    * Q-021: branch of the repo containing `dir`, or null when it is not in one (or the bridge is
@@ -61,7 +72,7 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sessionId, ...body }),
     }),
-  /** D67: open the folder holding this file in the desktop's own file manager (local / LAN only). */
+  /** D69: open the folder holding this file in the desktop's own file manager (local / LAN only). */
   reveal: (path: string) =>
     req<{ ok: boolean; message: string }>("/api/reveal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) }),
   tunnel: (action: "start" | "stop") =>

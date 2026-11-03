@@ -1,5 +1,5 @@
 /**
- * Probe: 终端多开 (D68) — one dock, one tab per shell, each tab its own pty.
+ * Probe: 终端多开 (D70) — one dock, one tab per shell, each tab its own pty.
  *
  * Two layers, because a canvas-rendered xterm cannot be read out of the DOM:
  *

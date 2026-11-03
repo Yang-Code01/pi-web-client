@@ -443,7 +443,56 @@
 
 **可改**：样式在 `styles.css` 末尾「左栏收起时的路径（D61）」那一节；要改成「左栏展开也显示」就把 `syncCwdChip()` 里的 `collapsed.sessions &&` 去掉；要加回字形/标签只在 `cwdChipNode()` 里加一个 `span`。验证：`npm run build:web && node probes/round21-cwd-line.mjs`（展开时隐藏 / 收起时显示且是当前会话的 cwd / 与分支 chip 同一行且紧挨其左 / 不再有独立的 cwd 行 / 点击复制 / 换会话跟着换 / 窄屏消失 / 拉回桌面宽度又出现；截图落在 `.scratch/round21-cwd-line/shots/`）。
 
-## D62 `npm start` 必须连前端一起打包：`web/dist` 是 gitignore 的产物，没人替你重建
+## D62 目录选择器里，盘行给占用条、文件行给「大小 + 修改时间」
+
+用户口径（m00810／m00811）：「文件管理器、文件、新会话……我需要看得到容量，比如你的文件大小之类的，总得看得到吧，占用情况之类的」——三个入口指的是新会话的 📁 浏览、文件浏览器 viewer、附件选择器，它们共用 `web/src/dirpicker.ts` 一份实现。
+
+**决定**：盘列表（`此电脑`，即空 path）每行变成 `C:` + 填充条 + `79%` + `55.7 GB 可用`，`title` 里写全 `共 / 已用 / 剩`；`>85%` 转琥珀（`.tight`）、`>95%` 转红（`.full`）。文件行右侧两列：大小（1024 进制、至多一位小数、去掉 `.0`）与修改时间（当天 `00:52`、今年 `09-24`、跨年 `2024-06-01`），两列都右对齐成一条竖线。容器窄于 460px（附件选择器那种弹层）时只丢掉百分比，路径与剩余容量保留。
+
+**为什么盘子行要给剩余而不是已用**：用户问的是「够不够用」。百分比给的是「快满了」，剩余给的是「还能装多少」——两个都留，已用只进 tooltip。
+
+**为什么占用只做到盘一级**：文件夹大小没有系统 API，只能递归遍历整棵子树；一个 `node_modules` 就是上万次 stat，放不进「点一下就出列表」的交互。文件大小则本来就在 `stat` 里，顺手。同时实测 `fs.statfsSync` 对 C…I 六个盘各 **0ms**，与 `Get-Volume` 数值完全一致，所以盘行没有性能借口。
+
+**为什么文件大小走第二个请求**：`stat` 在本地盘 4776 个文件 97ms，但在睡眠的网络盘或机械盘上会是秒级，把「名字已经能看、能点」拖成「转圈」。所以 `listDirs` 先回名字，前端立刻画行，再打 `/api/dirs?path=…&stats=1`（`statFiles()`，同样的过滤与 2000 上限）按 name 回填两列。目录一换就 `statToken += 1`，迟到的旧答案直接丢掉，不会串到新目录的行上；`paint()`（筛选重画）从缓存里补，不会把这一排清空。
+
+**坑（和 D60 同一类）**：`.dir-list` 是 `display: grid` 且没写 `grid-template-columns`，隐式列按 max-content 定宽 —— 一行长名字就把整个列表撑宽，`.nm` 的 `text-overflow: ellipsis` 永远不触发。补 `grid-template-columns: minmax(0, 1fr)`（顺带 `overflow-x: hidden`）之后省略号才真的出现；探针用 `scrollWidth - clientWidth > 0` 盯着这一条。
+
+**代价**：盘行比原来高（6px 条 + 百分比），六个盘刚好占满 `42vh` 的弹层；窄容器里百分比消失，只能靠条长和剩余数字估；mtime 用的是浏览器本地时区；网络盘坏掉时那一行大小就是空的（`statSync` 抛错即跳过，不报错也不显示 `?`）。
+
+**可改**：格式函数 `formatBytes()` / `formatTime()` 与阈值 `NARROW_PX = 460` 都在 `web/src/dirpicker.ts` 顶部；配色在 `styles.css` 的 `.vol-row` 一段（用 `--warn` / `--danger`）；要显示「已用」就把 `.vol-free` 换成 `已用 x / 共 y`。验证：`npm run build:web && node probes/round22-dirsize.mjs`（名字先出、大小后到；四种单位；三档时间格式；大小与时间各自右对齐成一条线；长名省略；筛选不清空大小；进子目录不串行；此电脑三条盘行、D: 92% 琥珀且条按比例填充、tooltip 写全；窄容器丢百分比；截图在 `.scratch/round22-dirsize/shots/`）。
+
+## D63 预览里的链接跳转能退了：一支按会话分开的返回/前进栈
+
+用户口径（m01226）：「现在打开某个文件时，文件里面有链接，点击后，能打开新文件。比如在 html。里面点击一个连接，重新打开的新 html。但是无法返回了。需要追加返回功能」。摸事实时还追问出三条边界：返回覆盖**所有预览**（html 内链、md 内链、浏览态点开的文件、文本里的路径链接）；HTML 里为了拿到导航信息**只注入一个只上报的小脚本、沙箱不放宽**；历史**活在内存里、按会话分开**（关掉预览不丢，刷新页面清空），目录态不算一步，外链**不拦截但记一条占位**。
+
+**决定**：查看器标题栏最左边加 `←` / `→`（`Alt+←`、`Alt+→` 同一套），栈是 `Map<sessionId, { steps, at }>`，`HISTORY_MAX = 60`。一步 = 一次「打开文件」（`VStep = { path, url?, label?, y? }`；`path` 为 `null` 表示外链或跳出目录树的占位）。`⟳` 刷新走 `openPreview(..., replace = true)`，不记步；在当前这一步重新打开同一份文件不记新的一步；点链接、点浏览里的文件算新的一步，并截断前进分支（与浏览器一致）。
+
+**为什么往 `/raw` 的 HTML 里注入脚本**：iframe 是 `sandbox="allow-scripts …"` 且**没有** `allow-same-origin`，页面跑在不透明源里，父页面读不到 `contentWindow.location`，也调不到它的 `history`——链接点了、页面跳了，应用一侧完全看不见，这正是「退不回去」的根。放开 `allow-same-origin` 固然能直接用原生历史，但等于把用户自己写的 HTML 放进应用的源里（能读 cookie、能 DOM 化界面）。所以反过来做：`serveRaw()` 在 `<head>` 之后插入 `navScript(token)`，它只 `postMessage`（click / submit / scroll），**一律不 `preventDefault`**，页面照旧自己跳，父页面只负责「知道跳了、记一步、对齐标题」。
+
+**用 token 认人，不用 `ev.source`**：最初写的是 `ev.source !== v.frame.contentWindow → 忽略`，实测恒为假（跨文档导航后两个 WindowProxy 指针不相等，调试打印 `sameSource=false`），消息全被丢掉。改成页面在每条上报里带 `tk`（签发时注入的 token），客户端用 `v.frameToken || v.info.token` 比对——`api.preview` 每次都会换发新 token，所以「iframe 里现在这份文档当初用的是哪个 token」必须单独记在 `v.frameToken` 上，不能拿 `v.info.token` 现算。
+
+**坑**：① 注入必须放在 `writeHead` **之前**——原来的 `serveRaw()` 先无条件 `writeHead(200)` 再判 HEAD，注入分支又写一次响应头，直接 `ERR_HTTP_HEADERS_SENT`；② iframe 的「保活」判据从 `frame.dataset.src === rawUrl(info)` 改成 `v.framePath === info.abs`——跟着链接走的 iframe 自己换了地址，`rawUrl(info)` 会因为 token 变了而不相等，判据一错就把 iframe 重挂、白跳回原文件；③ 路径比较要归一化（`\` 与 `/`、末尾斜杠、大小写），否则「同一次打开」会在栈里留两格；④ HTML 的滚动位置只能靠页面自己上报（`scroll` 事件 rAF 合并后发 `{t:"pi-y"}`），按钮返回/前进时没有任何别的渠道能拿到它。
+
+**代价**：token 就写在页面的 DOM 里，页面自己的脚本读得到、也能伪造上报——但它只能让**自己的**查看器多出一步，真正的越界仍由 `api.preview`（按会话 cwd 校验）和 `/raw` 的 `isUnder(grant.root)` 挡着；每次点击都要重新走一次 `api.preview`（一次 stat + 一次 token 签发）；栈上限 60 步；iframe 内 `target=_blank`、`download`、`#锚点` 既不拦也不记；外链那一格只能显示「跳出了目录树 / 主机名 + 在新标签打开」，原来的页面态已经随 iframe 一起没了。
+
+**可改**：`HISTORY_MAX` 与 `vhist` 在 `web/src/app.ts`；按钮位置在 `paintViewer()` 的 `viewer-nav` 一段；外链占位文案在 `showExt()` 与 `viewer-msg.ext` 的渲染里；注入脚本在 `bridge/src/preview.ts` 的 `navScript()`（想改成拦截式只需在 click 里 `preventDefault`，但那会打断页面自己的路由）。验证：`npm run build:bridge && npm run build:web && node probes/round23-nav.mjs`（12 步：初始两个按钮都灰 / 点链接后标题跟随且 `←` 亮 / `←` 真回上一页 / `→` 再前进 / 点外链记一步且回得来 / 外链占位带出口 / `⟳` 不多记一步 / `#锚点` 不记 / 关预览再打开历史还在 / 滚动位置来回后回到 420px / 换会话历史各一份 / 切回来还在；截图在 `.scratch/round23-nav/shots/`）。
+
+## D64 置顶条胶囊悬停弹气泡（归档 / 重命名 / 删除），删除时胶囊飞进左栏那颗「垃圾箱」
+
+用户口径（m01571）：「置顶条每个会话悬停弹出小气泡，气泡里放 归档 / 重命名 / 删除，点击后有对应动效（删除要有倒进垃圾桶的效果）」。二轮收紧：气泡里**只放这三个**（不加取消置顶）、**只改置顶条**（左栏卡片不动）、删除「画面是直接丢入垃圾桶，但是不会真的删除。复用会话管理的垃圾桶机制」。第三轮「做几个原型设计出来让我选」，先在 `.scratch/pinactions/prototype/` 出了八个可播放样张（`window.__seek` 定格），用户选定：删除 = **B（左栏自动展开、飞向左栏真实的🗑）**、归档 = **A（压扁滑进条尾抽屉）**、气泡 = **③ 竖排 + 会话名头**、重命名 = **气泡里就地变输入框**。
+
+**决定**：气泡是 `web/src/pinmenu.ts` 的 `openPinMenu(anchor, opts)`，挂在 **`body`** 上、`position: fixed`、贴胶囊下沿 6px 并夹在窗口内；悬停 180ms 才弹、指针离开 220ms 才收（从胶囊挪进气泡时清掉计时器）；重命名输入框开着时 `pinned()` 为真，指针走了也不关。归档：条尾插 `.pin-tray` 抽屉 → 这一颗胶囊 `scale(1.07, .66)` 压扁 → `translate(dx, dy) scale(.22)` 滑进抽屉 → 计数弹一下 → 胶囊宽度塌到 0 → **240ms 之后**才发 `manage/archive`。删除：克隆一颗 `.pin-flyer`（`fixed`，带上原胶囊的 rect）挂到 `body` → 左栏若收着就先展开（`renderPanes()`，置顶条整条消失）→ 220ms 后量 `.bin-btn` 的 rect → 二次贝塞尔（控制点往下偏 26px）五帧 `translate + scale(1→.18) + rotate(-10deg)`、620ms → 落地删克隆、`pulseBin()` 闪一下、发 `manage/delete`。左栏 `manageBar` 在「过滤」与「管理」之间加一颗 `button.bin-btn`：文字「垃圾箱」+ 红色计数徽标，点它 `openManager("trash")` 直接进垃圾箱视图。
+
+**为什么归档要「先演后发」**：归档是幂等的，而桥的回声会 `host.replaceChildren()` 把整条置顶条重建——抽屉、压扁中的胶囊、计数全都会跟着没；所以动效先在本地走完（520 + 240ms）才发帧，最后一句去向提示 `已归档 1 个 · 在左栏「已归档」里` 负责解释东西去哪了。
+
+**为什么气泡必须挂 `body`**：`.pin-strip` 是 `overflow-x: auto`，条里任何溢出的东西都会被裁掉，而条又贴着窗口顶——向上弹被窗口切、向下弹被条裁。所以气泡只能往下弹、并且必须挂在条外面（绝对定位在条里也不行）。样张第一版就是这么被切掉一半的。
+
+**坑（都是这一轮真踩到的）**：① `chip.parentElement` **就是 `.pin-strip` 本身**——塌缩动画早先写在 `slot = chip.parentElement` 上，结果整条被压成 24px（只剩左右 padding）并横向溢出，探针里「条宽度 > 600px」的断言抓住；② 归档后胶囊不换名字：`applyRename()` 只改数据不重画（管理条那边由调用方负责重画），气泡回调必须自己补一次 `renderSessions()`；③ `.bin-btn` 最初用 🗑，而它只有 31px 高、左栏 280px 宽，emoji 在这个尺寸下糊成一小块、还和暗底同色——改成文字「垃圾箱」+ 徽标才看清（它是删除动效的落点，必须一眼认得出）；④ 飞行体必须是**脱离文档流的克隆**：展开左栏后置顶条就 `display:none`，原节点跟着没了，不能直接飞原节点。
+
+**代价**：这套只在「桌面宽 + 左栏收起」时存在（置顶条本身就这么显示）；删除会把左栏顶出来、顺带把整条置顶条切走——这是用户选的方向，代价认了；`prefers-reduced-motion: reduce` 下三个动作都不演动效、直接做那一步（`calm()`）。
+
+**可改**：时长与缓动在 `web/src/app.ts` 的 `archiveFromPin()` / `deleteFromPin()`；气泡宽度与配色在 `web/src/styles.css` 的 `.pin-menu` 一节；抽屉尺寸在 `.pin-tray`；三个动作要增减就改 `pinmenu.ts` 里的 `row()` 调用。验证：`npm run build:web && node probes/round24-pinactions.mjs`（六组断言：气泡挂在 `body` 且在胶囊下方、三行顺序 archive/rename/delete、移开 220ms 内收起、就地改名发 `rename` 且名字当场换掉、归档出抽屉且整条不被压扁且发 `archive`、删除克隆飞进左栏且条已收起且发 `delete` 且徽标变 1、最后点「垃圾箱」直达垃圾箱视图；截图在 `.scratch/round24-pinactions/shots/`）。回归：`round1-ui` / `round19` / `round20-turns` / `round21-cwd-line` / `round22-dirsize` / `round22-hl` / `round23-nav` / `fs-ui` 全绿，`npm run typecheck` 干净。
+## D65 `npm start` 必须连前端一起打包：`web/dist` 是 gitignore 的产物，没人替你重建
 
 **症状**：源码 `main` 已经是最新（`865c32c`），但界面上「📁 文件管理器」不见了，退回只有「📂 产物」的老样子。
 
@@ -457,7 +506,7 @@
 
 **验证**：`PI_WEB_PORT=7866 PI_WEB_STATE=.scratch/d62-state npm start` — 日志里依次出现 `built in ~1.9s`（vite）与 `listening on http://127.0.0.1:7866`；`grep -l 文件管理器 web/dist/assets/*.js` 有命中；旧产物被清掉（vite 每次换 hash 文件名）。
 
-## D63 `.app` 的隐式列改成 `minmax(0, 1fr)`：顶栏两颗按钮把 390px 的手机撑到 730px
+## D66 `.app` 的隐式列改成 `minmax(0, 1fr)`：顶栏两颗按钮把 390px 的手机撑到 730px
 
 **症状**：手机上（390×844）每一张卡片右缘都被切掉一截，横向能拖动；截 README 图时一眼就看出来。
 
@@ -469,23 +518,7 @@
 
 **验证**：`node probes/readme-shots.mjs` 的手机那段会在截图前量一次 `document.documentElement.scrollWidth` 并打印越界元素链（修之前是 `730`，链条一路 `.app → .topbar → .title`；修之后视口 390、顶栏里的 `.title` 只剩 113px 走省略号，越界的只剩 `span.cmd` 这类按设计被 `.pane{overflow-x:hidden}` 裁掉的工具命令行）。**可改**：如果真嫌 113px 太窄，就把 `📂 产物 / 📁 文件管理器` 的文字在窄屏换成纯图标（要给按钮加一个 `span.label` 才好按 CSS 隐藏，属于下一步）。
 
-## D64 语法高亮自己写，不引库：单趟词法器 + 「token 拼回去必须等于原文」这条不变量
-
-**症状**：预览一个 `.ts` 文件，只有行号和等宽字，一个字都不上色。用户当 bug 报上来。
-
-**先查清的事实**：不是 `.ts` 的问题，是**整个应用从来没有高亮器** —— `grep -rn "highlight|prism|shiki|hljs|tokenize|syntax" web/src bridge/src` 零命中，`web/package.json` 的 dependencies 只有 `@xterm/xterm` 和 `@xterm/addon-fit`。真正的「格式支持」只有五种 kind（`bridge/src/preview.ts`）：markdown（`.md .markdown .mdx`）/ html（`.html .htm .xhtml`）/ image（9 种图片扩展名）/ text（**内容嗅探**，不是白名单：前 8 KB 无 NUL 且控制字符 <5%）/ binary。所以能预览的格式很宽，能高亮的格式是 0：`.ts .py .go .json .yaml .sql …` 全落在 `text`，渲染就是 `app.ts` 里那三行「行号 + `textContent`」。
-
-**决定**：新写 `web/src/highlight.ts`（约 330 行），零依赖、同步、单趟扫描，产出 `{kind,text}[]`；`highlightInto()` 用 `createTextNode` / `span.textContent` 拼 DOM。接三处：文件预览（按扩展名 `langOfFile`）、markdown 围栏（按 fence alias `langOfAlias`，`md.ts` 早就写了 `pre.dataset.lang`）、工具卡命令行（`SHELL_TOOLS` 那批只上 bash）+ 工具输出里的 unified diff。**编辑态不动**：`<textarea>` 天然不能分色，要改就得上 CodeMirror/contenteditable，那是另一个量级的坑（输入法、光标、撤销）。
-
-**为什么不引 highlight.js / shiki**：实测代价 —— 自带词法器 + 10 种语言规则让 bundle 从 `448.50 KB` 涨到 `456.09 KB`（gzip `127.00 → 130.17 KB`，**+3.2 KB**）；highlight.js 按需挑语言大约是这个的十倍量级，shiki 还要异步加载语法文件。更要紧的是 `md.ts` 开头那条规矩：**全仓不用 innerHTML**（agent 输出是不可信文本）。highlight.js / shiki 的常规用法都是吐 HTML 字符串，要守住这条就得再过一层转义，反而比手写贵。也不引正则字面量：模板字符串 `${}` 内部当整体字符串处理，正则字面量不识别 —— 这两处错色不影响读代码，但不会把字符弄丢。
-
-**安全 / 正确性的底线**：`tokens.map(t => t.t).join("") === source`。词法器可以错色，**绝不能吞字符**。这条不是空话：第一版把 `/*` 同时声明成 css 的行注释，于是 `a { color: #fff; /* c */ background: url('x.png'); }` 整行被当成一条注释吞掉 —— 是这条不变量先报的警（`probes/highlight-check.mjs`）。未知语言 / 超长文本（>60 000 字符）一律回落成单个 plain token，调用方不用特判。
-
-**验证**：`node --experimental-strip-types probes/highlight-check.mjs` —— 10 组样例（js/ts、python、markup、css、diff、bash、json、sql、yaml）重建一致性 + `#fff` 不是注释 + 未知语言回落 + 扩展名/别名映射；`node probes/readme-shots.mjs` 打开 `bridge/ext/approval-gate.ts` 后断言 `.viewer-src .tok-keyword` 与 `.tok-comment` 存在（当前 11 个 keyword / 1 个 comment / 25 个 string），README 的 files.png 就是它。
-
-**可改**：配色在 `styles.css` 的「syntax colours（D64）」那一节，十个 `.tok-*` 类；要加语言只在 `highlight.ts` 的 `SPECS` + `BY_EXT` 各加一行（`kw` 是空格分隔的关键字表）；`MAX_HIGHLIGHT_CHARS` 控制多大就不上色；工具卡想连输出一起上色，改 `chat.ts` 的 `setOutput()` 判据即可（现在只认 unified diff，因为日志 / JSON 上色只是噪音）。
-
-## D65 markdown 内联解析的两处漏网：嵌套图片链接、链接标签里的行内代码
+## D67 markdown 内联解析的两处漏网：嵌套图片链接、链接标签里的行内代码
 
 **症状**：预览 `README.md`（D64 之后随手一看），首行徽章变成 `![License: Apache-2.0](LICENSE)`，正文里 `[`docs/`](docs/)` 显示成带反引号的粗体字。
 
@@ -502,7 +535,7 @@
 
 **可改**：`INLINE` 正则里 m[3] 那一条；`fileLink` 的第五个参数（`inlineLabel`）；`wrapHref()` 决定标签里装图片时该跳去哪。
 
-## D66 滚动竞争的真凶是「拿每个 touchmove 和上一次比」：改成和手势起点比，并在手指按住期间禁用程序化滚动
+## D68 滚动竞争的真凶是「拿每个 touchmove 和上一次比」：改成和手势起点比，并在手指按住期间禁用程序化滚动
 
 **症状**：手机上发完消息、回复正在流式输出时向上滑，视口被一下一下拽回底部，滑动几乎无效。
 
@@ -528,7 +561,7 @@
 
 **可改**：阈值 `6` 在 `chat.ts` 的 `touchmove` 里；`touching` 抑制的两处（`scheduleScroll` 的 rAF、`scroll` 处理器的 `resumeFollowing`）；那条「拖到底要恢复跟流」的断言用的是 `scrollTop` 而不是再模拟一次拖拽——无头 Chrome 会合帧连续的 `touchMove`，模拟拖拽测的是合帧器不是应用。
 
-## D67 「在文件夹中显示」：打不开的格式交给系统的文件管理器，而不是让网页启动它
+## D69 「在文件夹中显示」：打不开的格式交给系统的文件管理器，而不是让网页启动它
 
 **需求**：文件管理器里点开一个 `.xlsm`，预览只能给出「二进制文件（65.9 KB），这里不直接显示」+「新标签页打开 / 下载」。真正想要的是**在这台电脑的文件管理器里打开它所在的目录，文件已经选中**，然后自己双击用 Excel 打开。浏览器下载一份副本再去找，是绕远路。
 
@@ -550,7 +583,7 @@
 
 **可改**：`revealCommand` 的三条分支（要给 Linux 补文件选中就得上 `dbus` 的 FileManager1）；按钮位置在 `paintViewer()` 的 binary / error 两个分支；要不要顺手在顶栏给一个「任何文件都能在文件夹里显示」的图标，是下一步的事。
 
-## D68 终端多开 = 一个 dock + 标签条：桥早就支持 4 个，卡住的是前端只有一个槽位
+## D70 终端多开 = 一个 dock + 标签条：桥早就支持 4 个，卡住的是前端只有一个槽位
 
 **需求**：终端要能同时开多个。
 
@@ -568,7 +601,7 @@
 
 **验证**：`node probes/terminal-multi.mjs` —— 两层：UI 层（1 个标签 → `＋` → 2 个、任意时刻只有 1 个 body 可见、点标签切 `.on`、标签可分辨），协议层（**另开一个 WS 客户端**分别给两个 id 发 `term.input`，确认回显各自回到自己的 id、两条流不交叉）。xterm 是画在 canvas 上的，DOM 里读不到文字，所以「两个 shell 是两个进程」只能这么证。
 
-## D69 文件管理器里「复制路径」：和工作目录按钮并排，复制的是**正在浏览**的那个目录
+## D71 文件管理器里「复制路径」：和工作目录按钮并排，复制的是**正在浏览**的那个目录
 
 **需求**：点开文件管理器后，在「⌂ 工作目录」旁边加一个复制按钮，复制下方选中的目录路径。
 

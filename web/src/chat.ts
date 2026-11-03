@@ -1,5 +1,5 @@
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
-import { highlightInto } from "./highlight.ts";
+import { highlightFragment } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
 import type { Item, ToolItem, UserItem } from "./types.ts";
@@ -11,13 +11,25 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return node;
 }
 
-/** Tools whose summary is a shell command — those get coloured (D64). */
+/** Tools whose summary is a shell command — those get coloured. */
 const SHELL_TOOLS = new Set(["bash", "shell", "powershell", "pwsh", "run_command", "exec", "execute", "cmd", "sh"]);
+
+/**
+ * Highlight `text` into `node` under `label` (a fence alias or a file name); false when the highlighter
+ * declines (unknown language, too big) and the caller should fall back to plain text.
+ */
+function highlightAs(node: HTMLElement, text: string, label: string): boolean {
+  const frag = highlightFragment(text, label);
+  if (!frag) return false;
+  node.classList.add("hl");
+  node.replaceChildren(frag);
+  return true;
+}
 
 /** One line of shell on a tool card: coloured when it really is a command, plain otherwise. */
 function setCommand(node: HTMLElement, text: string, tool: string | undefined): void {
-  if (tool && SHELL_TOOLS.has(tool.toLowerCase()) && text.length <= 4000) highlightInto(node, text, "bash");
-  else node.textContent = text;
+  if (tool && SHELL_TOOLS.has(tool.toLowerCase()) && text.length <= 4000 && highlightAs(node, text, "bash")) return;
+  node.textContent = text;
 }
 
 /**
@@ -26,8 +38,9 @@ function setCommand(node: HTMLElement, text: string, tool: string | undefined): 
  */
 function setOutput(node: HTMLElement, text: string): void {
   const head = text.slice(0, 2000);
-  if (text.length <= 20_000 && /^(?:diff --git |@@ |\+\+\+ |--- )/m.test(head)) highlightInto(node, text, "diff");
-  else node.textContent = text;
+  const diff = /^(?:diff --git |@@ |\+\+\+ |--- )/m.test(head);
+  if (diff && text.length <= 20_000 && highlightAs(node, text, "diff")) return;
+  node.textContent = text;
 }
 
 function timeOf(ts?: string): string {
@@ -149,7 +162,7 @@ export class ChatView {
     }, { passive: true });
     root.addEventListener("touchmove", (ev) => {
       const y = (ev as TouchEvent).touches[0]?.clientY ?? null;
-      // Compare with where the finger *started*, not with the previous sample (D66). A real drag
+      // Compare with where the finger *started*, not with the previous sample (D68). A real drag
       // arrives as dozens of 1–5px touchmove events, so a per-event 6px threshold never fires and the
       // stream keeps pinning the view to the bottom under the user's finger. Finger down = the content
       // is moving up = the user is reading history.
@@ -287,7 +300,7 @@ export class ChatView {
     this.pendingScroll = requestAnimationFrame(() => {
       this.pendingScroll = 0;
       // Re-checked at execution time: the user may have scrolled away while this frame was queued,
-      // or may be holding the transcript right now (D66) — never fight a finger in progress.
+      // or may be holding the transcript right now (D68) — never fight a finger in progress.
       if (!this.following || this.touching) return;
       this.root.scrollTop = this.root.scrollHeight;
     });

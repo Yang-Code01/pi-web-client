@@ -268,11 +268,11 @@ async function shootRealBridge() {
     await page.locator(".file-row", { hasText: "approval-gate.ts" }).first().click();
     await until(async () => (await page.locator(".viewer .viewer-name").textContent()) === "approval-gate.ts", 10000, "approval-gate.ts preview");
     await sleep(900);
-    // D64: a .ts preview must actually be coloured, not just line-numbered.
+    // Q-031: a .ts preview must actually be coloured (main's highlight.js, not my old lexer), not just line-numbered.
     const toks = await page.evaluate(() => {
       const count = (sel) => document.querySelectorAll(sel).length;
-      const first = document.querySelector(".viewer-src code .tok-keyword")?.textContent ?? "";
-      return { kw: count(".viewer-src .tok-keyword"), comment: count(".viewer-src .tok-comment"), str: count(".viewer-src .tok-string"), first };
+      const first = document.querySelector(".viewer-src code .hljs-keyword")?.textContent ?? "";
+      return { kw: count(".viewer-src .hljs-keyword"), comment: count(".viewer-src .hljs-comment"), str: count(".viewer-src .hljs-string"), first };
     });
     log("highlight tokens in approval-gate.ts:", JSON.stringify(toks));
     if (!toks.kw || !toks.comment) throw new Error("预览没有高亮：.ts 文件应当有 keyword / comment token");
@@ -320,12 +320,29 @@ async function shootRealBridge() {
         rawBracketTail: (text.match(/\]\(LICENSE\)/g) ?? []).length,
         badges: doc.querySelectorAll("a img, span img").length,
         codeInLink: doc.querySelectorAll("a.file-link code").length,
-        fenceTokens: doc.querySelectorAll("pre code [class^=tok-]").length,
+        fenceTokens: doc.querySelectorAll("pre code [class^=hljs-]").length,
       };
     });
     log("markdown inline render:", JSON.stringify(md));
-    if (md.rawImageSyntax || md.rawBracketTail) throw new Error("markdown 里留下了原始 ![...] / ](...) 文本（D65 回归）");
-    if (!md.codeInLink) throw new Error("链接标签里的行内代码又变成字面反引号了（D65 回归）");
+    if (md.rawImageSyntax || md.rawBracketTail) throw new Error("markdown 里留下了原始 ![...] / ](...) 文本（D67 回归）");
+    if (!md.codeInLink) throw new Error("链接标签里的行内代码又变成字面反引号了（D67 回归）");
+  }
+
+  // 3c) 工具卡上的命令行也吃同一套 hljs 颜色（本 PR 在 main 之外多做的那一处接入）。
+  {
+    const { page } = await open(1440, 900);
+    await openDemo(page);
+    await page.evaluate(() => {
+      for (const d of document.querySelectorAll("details.ops")) d.open = true;
+    });
+    await sleep(600);
+    const card = await page.evaluate(() => ({
+      colored: document.querySelectorAll(".tool .cmd.hl").length,
+      spans: document.querySelectorAll(".tool .cmd.hl span").length,
+      firstText: document.querySelector(".tool .cmd.hl")?.textContent?.slice(0, 40) ?? "",
+    }));
+    log("tool card highlight:", JSON.stringify(card));
+    if (!card.colored || !card.spans) throw new Error("工具卡命令行没有上色（highlightAs 没生效）");
   }
 
   // 4) 手机：同一段对话，底部三标签 + 折叠的工具栏。
