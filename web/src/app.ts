@@ -3752,9 +3752,10 @@ export class App {
     const btn = this.els.notes;
     if (!btn) return;
     const count = this.notes.filter((n) => n.status === "pending").length;
-    btn.replaceChildren(el("span", "notes-glyph", "🐞"), el("span", "notes-label", count ? `bug ${count}` : "bug"));
+    // 顶栏只要图标：小字「bug N」把这一行挤得没地方，计数放 title 里。
+    btn.replaceChildren(el("span", "notes-glyph", "🐞"));
     btn.classList.toggle("has-pending", count > 0);
-    btn.title = count ? `记录：${count} 条待处理` : "记录 bug / 变更 / 想法 / 杂事";
+    btn.title = count ? `记录：${count} 条待处理（Ctrl+Shift+B）` : "记录 bug / 变更 / 想法 / 杂事（Ctrl+Shift+B）";
   }
 
   /** 「交给 agent → 预填到当前会话」：只填，不发送。 */

@@ -248,4 +248,7 @@ export interface Note {
   commit: string;
   createdAt: number;
   updatedAt: number;
+  /** 归档 / 丢进垃圾箱的时间；都没有就是正常在列表里。 */
+  archivedAt: number | null;
+  deletedAt: number | null;
 }

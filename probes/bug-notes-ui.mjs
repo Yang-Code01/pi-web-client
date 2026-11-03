@@ -76,6 +76,7 @@ try {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: "zh-CN" });
   await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: BASE });
   const page = await ctx.newPage();
+  page.on("dialog", (d) => void d.accept());
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(BASE, { waitUntil: "domcontentloaded" });
@@ -100,7 +101,8 @@ try {
   await page.press(".note-body", "Enter");
   await until(async () => (await page.locator(".note-row").count()) === 1, 6000, "列表出现一条");
   check("左栏多一条", true, await page.locator(".note-row-title").first().textContent());
-  check("按钮上带待处理计数", /bug 1/.test((await btn.textContent()) ?? ""), await btn.textContent());
+  check("按钮只有图标（没有小字）", ((await btn.textContent()) ?? "").trim() === "🐞", await btn.textContent());
+  check("待处理计数挪到 title 里", /1 条待处理/.test((await btn.getAttribute("title")) ?? ""), await btn.getAttribute("title"));
   check("落盘的标题 = 正文首行", JSON.parse(fs.readFileSync(path.join(STATE, "notes", "bug-notes.json"), "utf8")).notes[0].title === "手机横屏时顶栏被挤出屏幕");
 
   // ---- 3. 贴一张图，保存后缩略图进来
@@ -149,6 +151,56 @@ try {
   check("复制出来是 Markdown 带标题", clip.includes("## 手机横屏时顶栏被挤出屏幕"), clip.slice(0, 60).replace(/\n/g, " ⏎ "));
   check("复制里带截图绝对路径", clip.includes(shotPath), clip.includes("assets") ? "含 assets 路径" : "缺路径");
 
+  // ---- 5.5 归档 / 垃圾箱：列表里看不到，抽屉里能看到，复原 / 彻底删
+  await page.click(".notes-new");
+  await page.fill(".note-body", "临时：试试归档和垃圾箱");
+  await page.press(".note-body", "Enter");
+  await until(async () => (await page.locator(".note-row").count()) === 2, 6000, "第二条");
+  const temp = page.locator(".note-row", { hasText: "临时：试试归档和垃圾箱" });
+  await temp.hover();
+  await temp.locator('.note-row-act[title="归档"]').click();
+  await until(async () => (await page.locator(".note-row").count()) === 1, 5000, "归档后从列表消失");
+  check("归档后不在列表里", true);
+  await page.click('.notes-viewbtn:has-text("归档")');
+  await until(async () => (await page.locator(".note-row").count()) === 1, 5000, "归档抽屉里出现");
+  check("归档抽屉里能看到它", (await page.locator(".note-row-title").textContent()) === "临时：试试归档和垃圾箱");
+  await page.locator(".note-row").first().hover();
+  await page.locator('.note-row-act[title="复原：放回列表"]').click();
+  await until(async () => (await page.locator(".note-row").count()) === 0, 5000, "复原后归档抽屉空了");
+  await page.click('.notes-viewbtn:has-text("归档")');
+  await until(async () => (await page.locator(".note-row").count()) === 2, 5000, "复原后回到列表");
+  check("复原后回到列表", true);
+
+  await temp.hover();
+  await temp.locator('.note-row-act[title="删到垃圾箱"]').click();
+  await until(async () => (await page.locator(".note-row").count()) === 1, 5000, "删到垃圾箱后从列表消失");
+  check("删到垃圾箱后不在列表里", true);
+  await page.click('.notes-viewbtn:has-text("垃圾箱")');
+  await until(async () => (await page.locator(".note-row").count()) === 1, 5000, "垃圾箱里出现");
+  await page.locator(".note-row").first().click();
+  await page.waitForTimeout(200);
+  check("垃圾箱里只读（没有编辑框、有提示条）", (await page.locator(".note-body-view").count()) === 1 && (await page.locator(".note-life-bar.trash").count()) === 1);
+  check("垃圾箱里有「清空垃圾箱」", await page.locator(".notes-clear").isVisible());
+  check("垃圾箱里那条带「彻底删除」图标", (await page.locator('.note-row-act[title="彻底删除（不能撤销）"]').count()) === 1);
+  await page.locator(".note-row").first().hover();
+  await page.locator('.note-row-act[title="复原：放回列表"]').click();
+  await until(async () => (await page.locator(".note-row").count()) === 0, 5000, "复原后垃圾箱空了");
+  await page.click('.notes-viewbtn:has-text("垃圾箱")');
+  await until(async () => (await page.locator(".note-row").count()) === 2, 5000, "垃圾箱复原后回到列表");
+  check("从垃圾箱复原也回到列表", true);
+
+  await temp.hover();
+  await temp.locator('.note-row-act[title="删到垃圾箱"]').click();
+  await page.click('.notes-viewbtn:has-text("垃圾箱")');
+  await until(async () => (await page.locator(".note-row").count()) === 1, 5000, "垃圾箱里又出现");
+  await page.click(".notes-clear");
+  await until(async () => (await page.locator(".note-row").count()) === 0, 5000, "清空后垃圾箱一条不剩");
+  check("一键清空垃圾箱", true);
+  const left = JSON.parse(fs.readFileSync(path.join(STATE, "notes", "bug-notes.json"), "utf8")).notes;
+  check("清空后 JSON 里只剩没删的那条", left.length === 1 && left[0].title === "手机横屏时顶栏被挤出屏幕", `${left.length} 条`);
+  await page.click('.notes-viewbtn:has-text("垃圾箱")');
+  await page.locator(".note-row").first().click();
+
   // ---- 6. 「交给 agent」菜单两选一
   await page.locator('.note-actions button:has-text("交给 agent")').click();
   await page.waitForSelector(".note-handoff", { timeout: 3000 });
@@ -163,7 +215,7 @@ try {
   // ---- 7. 刷新后还在（落盘不是内存）
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForSelector('[data-act="notes"]', { timeout: 20000 });
-  await until(async () => /bug 0|bug$/.test(((await page.locator('[data-act="notes"]').textContent()) ?? "").trim()), 5000, "刷新后计数归零").catch(() => {});
+  await until(async () => !/1 条待处理/.test((await page.locator('[data-act="notes"]').getAttribute("title")) ?? ""), 5000, "刷新后计数归零");
   await page.click('[data-act="notes"]');
   await page.click(".notes-switch input");
   await until(async () => (await page.locator(".note-row").count()) === 1, 5000, "刷新后仍有那一条");

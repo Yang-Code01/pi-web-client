@@ -34,7 +34,20 @@ import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trust
 import { cleanLaunch } from "./launch.ts";
 import { isWriteOp, runPiCli } from "./picli.ts";
 import { reportBug, shareSession } from "./pishare.ts";
-import { addShot, deleteNote, listNotes, removeShot, saveNote, setNoteStatus, type NoteKind, type NoteMode, type NoteStatus } from "./notes.ts";
+import {
+  addShot,
+  deleteNote,
+  listNotes,
+  purgeTrash,
+  removeShot,
+  saveNote,
+  setNoteLife,
+  setNoteStatus,
+  type NoteKind,
+  type NoteLife,
+  type NoteMode,
+  type NoteStatus,
+} from "./notes.ts";
 import { mcpAddRequest, searchMcp, searchPackages, type McpInstallOption } from "./market.ts";
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
@@ -1156,6 +1169,26 @@ async function main(): Promise<void> {
               send({ type: "notes.shot", id: String(msg.id ?? ""), shots });
             } catch (err: any) {
               send({ type: "notes.shot", error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "notes.life": {
+            try {
+              const note = setNoteLife(String(msg.id ?? ""), String(msg.life ?? "") as NoteLife);
+              broadcast({ type: "notes", notes: listNotes() });
+              send({ type: "notes.saved", note });
+            } catch (err: any) {
+              send({ type: "notes.saved", error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "notes.purge": {
+            try {
+              const ids = typeof msg.id === "string" && msg.id ? [msg.id] : undefined;
+              purgeTrash(ids);
+              broadcast({ type: "notes", notes: listNotes() });
+            } catch (err: any) {
+              send({ type: "notes.saved", error: String(err?.message ?? err) });
             }
             return;
           }

@@ -14,6 +14,9 @@ export const NOTE_STATUSES = ["pending", "done", "dropped"] as const;
 export type NoteStatus = (typeof NOTE_STATUSES)[number];
 export const NOTE_MODES = ["quick", "form", "long"] as const;
 export type NoteMode = (typeof NOTE_MODES)[number];
+/** 生命周期：在列表里 → 归档 → 垃圾箱。跟 status（待处理/已处理/已忽略）是两回事。 */
+export const NOTE_LIVES = ["active", "archived", "trashed"] as const;
+export type NoteLife = (typeof NOTE_LIVES)[number];
 
 export interface Note {
   id: string;
@@ -32,6 +35,9 @@ export interface Note {
   commit: string;
   createdAt: number;
   updatedAt: number;
+  /** 归档 / 丢进垃圾箱的时间；二者都没有就是正常在列表里。 */
+  archivedAt: number | null;
+  deletedAt: number | null;
 }
 
 interface Store {
@@ -130,6 +136,8 @@ export function saveNote(input: NoteInput): Note {
     commit: text(input.commit, 120),
     createdAt: at,
     updatedAt: at,
+    archivedAt: null,
+    deletedAt: null,
   };
   save([note, ...notes]);
   return note;
@@ -145,6 +153,46 @@ export function setNoteStatus(id: string, status: NoteStatus, patch: { issue?: s
   note.updatedAt = Date.now();
   save(notes);
   return note;
+}
+
+/**
+ * 归档 / 复原 / 丢垃圾箱。复原一律回到「列表里」，不记「原来是在垃圾箱还是在归档」——
+ * 记录不是树，多一层「从哪儿来的」只会在界面上多一条没人看的痕迹。
+ */
+export function setNoteLife(id: string, life: NoteLife): Note | null {
+  const notes = listNotes();
+  const note = notes.find((n) => n.id === id);
+  if (!note) return null;
+  const at = Date.now();
+  const want = pick(NOTE_LIVES, life, "life", "active");
+  if (want === "active") {
+    note.archivedAt = null;
+    note.deletedAt = null;
+  } else if (want === "archived") {
+    note.archivedAt = at;
+    note.deletedAt = null;
+  } else {
+    note.deletedAt = at;
+  }
+  note.updatedAt = at;
+  save(notes);
+  return note;
+}
+
+/** 清空垃圾箱（或只清一条）。`undefined` 就是「全清」。 */
+export function purgeTrash(ids?: string[]): string[] {
+  const notes = listNotes();
+  const doomed = notes.filter((n) => n.deletedAt && (!ids || ids.includes(n.id)));
+  if (!doomed.length) return [];
+  save(notes.filter((n) => !doomed.includes(n)));
+  for (const n of doomed) {
+    try {
+      fs.rmSync(assetsDir(n.id), { recursive: true, force: true });
+    } catch {
+      /* 目录本来就没有 */
+    }
+  }
+  return doomed.map((n) => n.id);
 }
 
 /** 删条目连同它的截图目录：截图只属于这一条，留下就是垃圾。 */

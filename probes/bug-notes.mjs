@@ -162,6 +162,25 @@ try {
   const shotBad = await wait("notes.shot", (m) => Boolean(m.error));
   check("非图片 data URL 被拒", Boolean(shotBad.error), shotBad.error);
 
+  // ---- 5.5 归档 / 垃圾箱 / 清空（记录先不真删，只打标记）
+  send({ type: "notes.save", kind: "idea", body: "临时：归档和垃圾箱" });
+  const n2 = (await wait("notes.saved", (m) => !m.error && m.note?.body === "临时：归档和垃圾箱")).note;
+  send({ type: "notes.life", id: n2.id, life: "archived" });
+  await wait("notes.saved", (m) => m.note?.id === n2.id && m.note.archivedAt);
+  check("归档只打时间戳，记录还在", read().notes.length === 2 && read().notes.find((n) => n.id === n2.id).archivedAt > 0);
+  send({ type: "notes.life", id: n2.id, life: "active" });
+  await until(() => !read().notes.find((n) => n.id === n2.id).archivedAt, 4000, "复原清掉 archivedAt");
+  check("复原清掉归档时间", !read().notes.find((n) => n.id === n2.id).deletedAt);
+  send({ type: "notes.life", id: n2.id, life: "nope" });
+  const badLife = await wait("notes.saved", (m) => Boolean(m.error));
+  check("错 life 被拒", /life/.test(String(badLife.error)), badLife.error);
+  send({ type: "notes.life", id: n2.id, life: "trashed" });
+  await until(() => read().notes.find((n) => n.id === n2.id)?.deletedAt > 0, 4000, "deletedAt");
+  check("删到垃圾箱仍留在 JSON 里", read().notes.length === 2);
+  send({ type: "notes.purge" });
+  await until(() => read().notes.length === 1, 4000, "清空垃圾箱");
+  check("清空垃圾箱只清掉垃圾箱里那条", read().notes[0].id === n1.id);
+
   // ---- 6. 删记录：连 assets/<id>/ 一起
   send({ type: "notes.delete", id: n1.id });
   await until(() => read().notes.length === 0, 4000, "记录被删");
@@ -177,8 +196,9 @@ try {
 
   // ---- 8. 重启后还在
   send({ type: "notes.save", kind: "idea", body: "重启也要还在" });
-  const last = await wait("notes.saved", (m) => !m.error);
+  const last = await wait("notes.saved", (m) => !m.error && m.note?.body === "重启也要还在");
   check("再存一条想法", last.note.kind === "idea", last.note.kind);
+  check("存完立刻就在文件里", read().notes.some((n) => n.body === "重启也要还在"), JSON.stringify(read().notes.map((n) => n.body)));
   ws.close();
   stop();
   await until(() => read().notes.length >= 1, 4000, "落盘");
