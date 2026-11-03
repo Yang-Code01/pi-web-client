@@ -159,7 +159,10 @@ function renderOnline(): void {
     });
     li.append(left, right, talk);
     const known = contactOf(peer.nodeId);
-    if (!known?.friend) {
+    if (known?.friend) {
+      // 已经是好友就不给「加好友」——但没有任何提示的话，看不出为什么别人有、他没有。
+      li.append(el("small", "tag", known.favorite ? "★ 好友" : "好友"));
+    } else {
       const pending = Boolean(known?.incoming || known?.outgoing);
       const add = el("button", "talk ghost", pending ? (known?.incoming ? "接受请求" : "等对方接受") : "加好友");
       add.type = "button";
