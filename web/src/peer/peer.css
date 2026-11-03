@@ -1,0 +1,789 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1115;
+  --panel: #171a21;
+  --line: #262b35;
+  --text: #e7e9ee;
+  --muted: #8b93a1;
+  --accent: #6ea8fe;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  min-height: 100vh;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.muted {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+
+.dot.is-up {
+  background: var(--ok);
+}
+
+.dot.is-down {
+  background: var(--warn);
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.back {
+  color: var(--faint);
+  text-decoration: none;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.back:hover {
+  color: var(--text);
+  background: #1b2029;
+}
+
+/* 在主页面的弹框里：标题栏已经有「关闭」，这条链接会把 iframe 换成主页面。 */
+body.embedded .back {
+  display: none;
+}
+
+/* 弹框标题栏已经写着「局域网」，iframe 里那个同名粗体就别重复了（状态点与昵称保留）。 */
+body.embedded .who strong {
+  display: none;
+}
+
+.tab {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.is-on {
+  color: var(--text);
+  background: #222834;
+  border-color: var(--line);
+}
+
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.view[hidden] {
+  display: none;
+}
+
+.empty {
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.peers {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.peers:empty {
+  display: none;
+}
+
+.peer {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.peer small {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.add {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.add input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.add button {
+  background: #222834;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.add button:hover {
+  border-color: var(--accent);
+}
+
+.error {
+  color: var(--warn);
+  margin: 8px 0 0;
+}
+
+/* ---- 对话（第 2 片） ---- */
+
+main {
+  max-width: 1000px;
+}
+
+.peer small {
+  margin-left: auto;
+}
+
+.talk {
+  background: #222834;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.talk:hover {
+  border-color: var(--accent);
+}
+
+.chat {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 14px;
+  min-height: 58vh;
+}
+
+.threads {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 62vh;
+  overflow: auto;
+}
+
+.threads:empty {
+  display: none;
+}
+
+.threads li.thread {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.threads li.thread.is-on {
+  border-color: var(--accent);
+  background: #1b2230;
+}
+
+.thread-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.thread small,
+.meta {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.live {
+  color: var(--ok);
+  font-size: 12px;
+  border: 1px solid rgba(74, 222, 128, 0.35);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 12px;
+}
+
+#thread-box {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  gap: 10px;
+}
+
+#thread-box[hidden] {
+  display: none;
+}
+
+.thread-head {
+  font-weight: 600;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.messages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 120px;
+  max-height: 46vh;
+  overflow: auto;
+}
+
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 76%;
+}
+
+.msg.mine {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.msg.theirs {
+  align-self: flex-start;
+}
+
+.msg .agent {
+  font-size: 11px;
+  color: var(--muted, #8b93a7);
+  margin: 0 0 3px 2px;
+  align-self: flex-start;
+}
+
+.bubble {
+  padding: 8px 11px;
+  border-radius: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #232936;
+}
+
+.msg.mine .bubble {
+  background: #2b3b57;
+}
+
+.bubble.is-bad {
+  border: 1px solid rgba(251, 191, 36, 0.5);
+}
+
+.compose {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.compose textarea {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  min-height: 44px;
+  max-height: 160px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.compose textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.compose button {
+  background: var(--accent);
+  color: #0b1020;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .chat {
+    grid-template-columns: 1fr;
+  }
+
+  .threads {
+    max-height: 28vh;
+  }
+}
+
+/* ---- 通讯录（第 3 片） ---- */
+
+.contacts {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.contacts ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.requests h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.request,
+.contact {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #161a22;
+}
+
+.contact.is-fav {
+  border-color: #4a3f1f;
+  background: #1b1810;
+}
+
+.presence {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.presence.is-up {
+  color: #3ecf8e;
+}
+
+.contact-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.contact-main strong {
+  font-weight: 600;
+}
+
+.contact-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.contact-actions small {
+  margin: 0;
+}
+
+.talk.ghost {
+  background: transparent;
+}
+
+.talk.danger:hover {
+  border-color: #d9534f;
+  color: #ff9c99;
+}
+
+.talk:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+/* 请求行：名字在左，接受/不理推到右边（不然按钮贴着昵称，像文字的一部分）。 */
+.requests .talk:first-of-type {
+  margin-left: auto;
+}
+
+.requests .talk {
+  min-width: 56px;
+}
+
+/* 在线行右侧的「好友」小标 —— 说明为什么这一行没有「加好友」。 */
+.peer .tag {
+  margin-left: 0;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: #d8c48a;
+  background: #1b1810;
+  white-space: nowrap;
+}
+
+/* ---- 第 4 片：文件 ---- */
+
+.compose .attach {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.file-card {
+  max-width: 320px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.file-card .thumb {
+  display: block;
+  max-width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  background: #0b0d11;
+}
+
+.file-card .file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.file-card .file-icon {
+  flex: 0 0 auto;
+}
+
+.file-card .file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-card .file-size {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.file-card .file-get {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.msg .file-card {
+  margin-bottom: 4px;
+}
+
+.transfers {
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px 0;
+  display: grid;
+  gap: 6px;
+}
+
+.transfer {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.transfer-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+
+.transfer-bar {
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.transfer-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--p, 0%);
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.transfer.is-bad .transfer-bar::after {
+  background: #e5534b;
+}
+
+/* ---- 文件选择器 ---- */
+
+.picker {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.picker[hidden] {
+  display: none;
+}
+
+.picker-box {
+  width: min(920px, 94vw);
+  height: min(620px, 86vh);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  background: #14171d;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.picker-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.picker-head strong {
+  font-size: 14px;
+}
+
+.picker-head #picker-close {
+  margin-left: auto;
+  padding: 2px 8px;
+}
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.crumb {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.crumb:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg);
+}
+
+.crumb + .crumb::before {
+  content: "› ";
+  color: var(--muted);
+}
+
+.picker-body {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.picker-side {
+  border-right: 1px solid var(--line);
+  padding: 10px;
+  overflow: auto;
+}
+
+.picker-side .side-title {
+  margin: 10px 6px 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.picker-side ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.picker-side .place {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+  border: 0;
+  background: none;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.picker-side .place:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.file-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow: auto;
+}
+
+.file-item {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.file-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.file-item.is-picked {
+  background: rgba(88, 166, 255, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(88, 166, 255, 0.4);
+}
+
+.file-item .file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-item .file-info {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.picker-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.picker-foot #picker-sel {
+  margin-right: auto;
+  font-size: 12px;
+}

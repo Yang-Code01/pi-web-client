@@ -120,7 +120,7 @@ export function diagnose(input: FailureInput): Diagnosis {
       ...base,
       level: "abort",
       title: tr("命令被中断，没有跑完"),
-      cause: tr("手动停止 / 会话被打断 / 超时 —— 不是命令自己报错{p1}", { p1: lines ? `（中断前已有 ${lines} 行输出）` : "" }),
+      cause: tr("手动停止 / 会话被打断 / 超时 —— 不是命令自己报错{p1}", { p1: lines ? tr("（中断前已有 {p1} 行输出）", { p1: lines }) : "" }),
       next: tr("只关心结果就重跑一次；这轮不看了也可以"),
     };
   }
@@ -147,7 +147,7 @@ export function diagnose(input: FailureInput): Diagnosis {
       ...base,
       level: "fail",
       title: tr("没找到要替换的原文，文件没被改"),
-      cause: tr("oldText 必须逐字节匹配（含空白、换行、CRLF）{p1}", { p1: target ? `。目标：${target[1]}` : "" }),
+      cause: tr("oldText 必须逐字节匹配（含空白、换行、CRLF）{p1}", { p1: target ? tr("。目标：{p1}", { p1: target[1] }) : "" }),
       next: tr("先 read 一遍确认现状（可能已被改过），再用更短、更独特的片段作 oldText"),
     };
   }

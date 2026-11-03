@@ -7,8 +7,9 @@ import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
+import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
@@ -102,6 +103,11 @@ export class App {
 
   private els: Record<string, HTMLElement> = {};
   private models: ModelInfo[] = [];
+  /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
+  private notesSheet: NotesSheet | null = null;
+  private notes: Note[] = [];
+  /** 新会话建好后要填进输入框的文字（「交给 agent → 新开会话」，不自动发送）。 */
+  private prefillNext: string | null = null;
   private sheet: HTMLElement | null = null;
   private modelChip: HTMLButtonElement | null = null;
   private textarea: HTMLTextAreaElement | null = null;
@@ -118,7 +124,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "peer" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
@@ -221,7 +227,7 @@ export class App {
   /** The bin, as the bridge last reported it. Nothing here is visible in the session list. */
   private trash: TrashItem[] = [];
   /** action id → key combo (“ctrl+shift+k”); only what the user set in 快捷键 lives here. */
-  private keys: Record<string, string> = loadKeys();
+  private keys: Record<string, string> = { ...DEFAULT_KEYS, ...loadKeys() };
   /** action id whose row is waiting for the next key press. */
   private capturing: string | null = null;
   /** D70: one shell per tab, all inside one dock; the bridge owns the processes (max 4). */
@@ -323,7 +329,18 @@ export class App {
     fs.onclick = () => this.openFiles();
     fs.hidden = true;
     this.els.fs = fs;
-    topbar.append(collapseLeft, dot, title, sub, files, term, fs, look, collapseRight);
+    // D108：记录不跟会话绑定，所以它跟终端一样常显；计数只在 title 里。
+    const notes = el("button", "icon-btn wide notes-btn", "🐞 bug");
+    notes.title = tr("记录 bug / 变更 / 想法 / 杂事");
+    notes.dataset.act = "notes";
+    notes.onclick = () => this.openNotes();
+    this.els.notes = notes;
+    // #45: the peer is a dialog over the page, not a separate tab — same as 终端.
+    const peer = el("button", "icon-btn wide", tr("🌐 内网通"));
+    peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
+    peer.dataset.act = "peer";
+    peer.onclick = () => this.openPeerSheet();
+    topbar.append(collapseLeft, dot, title, sub, files, term, fs, notes, peer, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -846,6 +863,7 @@ export class App {
         break;
       case "hello":
         if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
+        if (Array.isArray(msg.notes)) this.setNotes(msg.notes as Note[]);
         // Badge: whether anything installed has an update (bridge caches this for 6 hours).
         this.socket.send({ type: "ext.updates", ...(this.session?.cwd ? { cwd: this.session.cwd } : {}) });
         // A new socket starts unverified on the bridge side.
@@ -887,6 +905,18 @@ export class App {
         this.approvals = (msg.approvals ?? []) as ApprovalRequest[];
         this.asks = (msg.asks ?? []) as AskRequest[];
         this.renderAll();
+        // 「交给 agent → 新开会话」：会话建好之后才把文字填进去。此刻 textarea 已经指向新会话。
+        if (this.prefillNext && this.currentId) {
+          const text = this.prefillNext;
+          this.prefillNext = null;
+          this.composerText = text;
+          if (this.textarea) {
+            this.textarea.value = text;
+            this.fitComposer();
+            this.textarea.focus();
+          }
+          this.noteDraft();
+        }
         // Q-021: 切会话＝换 cwd，分支要跟着换。
         void this.refreshGit(true);
         // A takeover from the model sheet unlocks it; reopen so the list is usable right away.
@@ -1049,6 +1079,15 @@ export class App {
         window.open(String(msg.url), "_blank", "noopener");
         break;
       }
+      case "notes":
+        this.setNotes((msg.notes ?? []) as Note[]);
+        break;
+      case "notes.saved":
+        this.notesSheet?.saved(msg);
+        break;
+      case "notes.shot":
+        this.notesSheet?.shot(msg);
+        break;
       case "bug.done": {
         if (msg.error) {
           this.flashShare(tr("没有提交成功：{p1}", { p1: errText(msg) }), true);
@@ -1304,7 +1343,7 @@ export class App {
           break;
         }
         if (this.claiming && msg.level === "error" && (!msg.sessionId || msg.sessionId === this.claiming)) this.endClaim();
-        // D108：`code` 存在时按语言渲染，否则显示 bridge 给的原句（多数是 pi 产出的文本）。
+        // D110：`code` 存在时按语言渲染，否则显示 bridge 给的原句（多数是 pi 产出的文本）。
         if (!msg.sessionId || msg.sessionId === this.currentId) this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: msg.code ? errText(msg) : msg.text, level: msg.level ?? "info" });
         break;
       case "term.opened": {
@@ -1753,7 +1792,7 @@ export class App {
     chip.append(el("span", "git-glyph", "⎇"), el("span", "git-branch", label));
     if (git.dirty) chip.append(el("span", "git-dot", ""), el("span", "git-count", String(git.dirty)));
     if (git.detached) chip.append(el("span", "git-tag", "detached"));
-    const lines = [tr("⎇ {p1}{p2}", { p1: label, p2: git.dirty ? ` · ${git.dirty} 个未提交改动` : "" })];
+    const lines = [tr("⎇ {p1}{p2}", { p1: label, p2: git.dirty ? tr(" · {p1} 个未提交改动", { p1: git.dirty }) : "" })];
     if (git.detached) lines.push(tr("detached HEAD：不在任何分支上"));
     if (git.empty) lines.push(tr("仓库里还没有提交"));
     lines.push(git.repo, "", tr("Enter 发送 · Shift+Enter 换行 · {p1} 粘贴截图", { p1: PASTE_KEY }), tr("点一下复制分支名"));
@@ -1935,7 +1974,7 @@ export class App {
     if (output) rows.push(row(tr("输出"), output, "out"));
     const thinking = tailText(live.thinking ?? "", 3, 240);
     if (thinking) rows.push(row(tr("思考"), thinking, "think"));
-    rows.push(el("div", "act-pop-meta", tr("已运行 {p1}{p2}", { p1: dur, p2: this.stepCount > 1 ? ` · 本轮第 ${this.stepCount} 次工具调用` : "" })));
+    rows.push(el("div", "act-pop-meta", tr("已运行 {p1}{p2}", { p1: dur, p2: this.stepCount > 1 ? tr(" · 本轮第 {p1} 次工具调用", { p1: this.stepCount }) : "" })));
     pop.replaceChildren(...rows);
   }
 
@@ -1980,7 +2019,7 @@ export class App {
     head.append(close);
     sheet.append(head);
 
-    // 语言放第一组：换语言是「整页立刻变样」的事，比字号更需要一眼找到（D108）。
+    // 语言放第一组：换语言是「整页立刻变样」的事，比字号更需要一眼找到（D110）。
     const langBox = el("div", "levels");
     langBox.append(el("div", "levels-label", tr("语言")));
     const langChips = el("div", "chips");
@@ -2062,7 +2101,7 @@ export class App {
   }
 
   /**
-   * Switch language live (D108): no reload — a reload would drop the WS connection and the
+   * Switch language live (D110): no reload — a reload would drop the WS connection and the
    * scroll position, which reads as "something broke". Sheet + topbar are rebuilt just below;
    * `renderAll()` handles every other view.
    */
@@ -2084,7 +2123,7 @@ export class App {
    * the session list, `renderSessions()` the chips — neither touches these.
    */
   private paintChrome(): void {
-    const { look, files, term, fs, manageBtn, binBtn, tabs } = this.els;
+    const { look, files, term, fs, notes, peer, manageBtn, binBtn, tabs } = this.els;
     const newBtn = this.els.newBtn as HTMLButtonElement;
     const sessFilter = this.els.sessFilter as HTMLInputElement;
     look.title = tr("外观与语言");
@@ -2096,6 +2135,13 @@ export class App {
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
     fs.textContent = tr("📁 文件管理器");
     fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
+    // 记录与内网通是顶栏常显的两颗（#45 / D108），标题也要跟着换；
+    // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写。
+    if (notes) this.paintNotesBadge();
+    if (peer) {
+      peer.textContent = tr("🌐 内网通");
+      peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
+    }
     newBtn.textContent = tr("开新会话");
     sessFilter.placeholder = tr("过滤名字 / 目录");
     manageBtn.textContent = tr("管理");
@@ -2112,6 +2158,42 @@ export class App {
       if (head && head.nodeType === Node.TEXT_NODE) head.textContent = next;
       else btn.prepend(next);
     }
+  }
+
+  // ---------------------------------------------------------------- peer sheet (#45)
+  /**
+   * The LAN page as a dialog rather than a new tab: it is one more thing you look at while the
+   * session stays put. The body is an iframe of the standalone `/peer` document, so the peer page
+   * keeps its own entry (openable directly) without a second implementation; the iframe is removed
+   * on close, which also stops its polling.
+   */
+  private openPeerSheet(): void {
+    this.closeSheet();
+    this.sheetKind = "peer";
+    const back = el("div", "sheet-back center");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+
+    const sheet = el("div", "sheet peer-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("内网通")));
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+
+    const frame = document.createElement("iframe");
+    frame.className = "peer-frame";
+    frame.title = tr("内网通");
+    // 带一个每次打开都变的 query：`peer.html` 里引的 bundle 文件名是构建哈希，
+    // 但 HTML 自己会被浏览器缓存 —— 不换 query 的话，弹框会一直加载上一次构建的页面
+    // （第 2 片上线时，用户看到的「在线」里就没有「发消息」按钮）。
+    frame.src = `/peer?v=${Date.now()}`;
+
+    sheet.append(head, frame);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
   }
 
   // ---------------------------------------------------------------- model sheet
@@ -3759,6 +3841,64 @@ export class App {
   }
 
   /** 📁 文件：viewer 直接停在浏览态，接着上次的目录。 */
+  // ---------------------------------------------------------------- 记录（D108）
+  /** 顶栏 🐞：本地随手记，不跟会话走，所以没有 currentId 也能开。 */
+  private openNotes(): void {
+    if (!this.notesSheet) {
+      const notesHost: NotesHost = {
+        send: (msg) => this.socket.send(msg),
+        notes: () => this.notes,
+        session: () => (this.currentId ? { id: this.currentId, name: this.session?.name ?? "" } : null),
+        prefill: (text) => this.prefill(text),
+        newSessionWith: (text) => this.newSessionWith(text),
+      };
+      const sheet = new NotesSheet(notesHost);
+      sheet.onClose = () => {
+        this.notesSheet = null;
+      };
+      sheet.mount(document.getElementById("app") ?? document.body);
+      this.notesSheet = sheet;
+      this.act(() => this.socket.send({ type: "notes.list" }));
+    }
+    this.notesSheet.focusComposer();
+  }
+
+  private setNotes(notes: Note[]): void {
+    this.notes = notes;
+    this.notesSheet?.setNotes(notes);
+    this.paintNotesBadge();
+  }
+
+  private paintNotesBadge(): void {
+    const btn = this.els.notes;
+    if (!btn) return;
+    const count = this.notes.filter((n) => n.status === "pending").length;
+    // 顶栏只要图标：小字「bug N」把这一行挤得没地方，计数放 title 里。
+    btn.replaceChildren(el("span", "notes-glyph", "🐞"));
+    btn.classList.toggle("has-pending", count > 0);
+    btn.title = count ? tr("记录：{p1} 条待处理（Ctrl+Shift+B）", { p1: count }) : tr("记录 bug / 变更 / 想法 / 杂事（Ctrl+Shift+B）");
+  }
+
+  /** 「交给 agent → 预填到当前会话」：只填，不发送。 */
+  private prefill(text: string): void {
+    if (!this.textarea || !this.currentId) {
+      this.newSessionWith(text);
+      return;
+    }
+    this.textarea.value = text;
+    this.composerText = text;
+    this.noteDraft();
+    this.fitComposer();
+    this.textarea.focus();
+    this.textarea.setSelectionRange(text.length, text.length);
+  }
+
+  /** 「交给 agent → 新开会话」：会话建好之后才填（见 case "session"）。 */
+  private newSessionWith(text: string): void {
+    this.prefillNext = text;
+    this.openNewSessionSheet();
+  }
+
   private openFiles(): void {
     if (!this.currentId) return;
     const v = this.ensureViewer();
@@ -5086,7 +5226,7 @@ export class App {
     if (s?.owned) {
       const used = this.usage.contextTokens;
       const win = this.usage.contextWindow;
-      row(tr("上下文"), used == null ? tr("–（压缩后要等下一轮才有数）") : tr("{p1}{p2}", { p1: n(used), p2: win ? ` / ${n(win)}（${Math.round((used / win) * 100)}%）` : "" }));
+      row(tr("上下文"), used == null ? tr("–（压缩后要等下一轮才有数）") : tr("{p1}{p2}", { p1: n(used), p2: win ? tr(" / {p1}（{p2}%）", { p1: n(win), p2: Math.round((used / win) * 100) }) : "" }));
       const t = this.stats.tokens;
       row(tr("累计 token"), t ? tr("输入 {p1} · 输出 {p2} · 缓存读 {p3} · 缓存写 {p4}", { p1: n(t.input), p2: n(t.output), p3: n(t.cacheRead), p4: n(t.cacheWrite) }) : "–");
       row(tr("累计费用"), this.stats.cost == null ? "–" : `$${this.stats.cost.toFixed(4)}`, tr("pi 按模型价格表算的估计值（get_session_stats）"));
@@ -7005,7 +7145,7 @@ export class App {
     const slot = el("div", "ask-slot");
     const head = el("div", "ask-head");
     const more = this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
-    head.append(el("span", "t", tr("{p1}{p2}", { p1: total > 1 ? `需要你回答 · ${total} 题` : tr("需要你回答"), p2: more })));
+    head.append(el("span", "t", tr("{p1}{p2}", { p1: total > 1 ? tr("需要你回答 · {p1} 题", { p1: total }) : tr("需要你回答"), p2: more })));
     if (this.askFolded) head.append(el("span", "m", q.prompt.split("\n")[0].slice(0, 80)));
     const fold = el("button", "btn ghost", this.askFolded ? tr("展开") : tr("收起"));
     fold.onclick = () => {
@@ -7244,7 +7384,7 @@ export class App {
     // Q-033: 提问不设上限；发问方若给了时长，只在 tooltip 里交代一句。
     if (ask.timeoutMs) t.title = tr("发问方要求 {p1} 秒内作答，已忽略（提问不设上限）", { p1: Math.round(ask.timeoutMs / 1000) });
     card.append(t);
-    card.append(el("div", "m", ask.questions.map((q, i) => tr("{p1}{p2}", { p1: ask.questions.length > 1 ? `${q.label ?? `Q${i + 1}`}：` : "", p2: q.prompt })).join("\n")));
+    card.append(el("div", "m", ask.questions.map((q, i) => tr("{p1}{p2}", { p1: ask.questions.length > 1 ? tr("{p1}：", { p1: q.label ?? `Q${i + 1}` }) : "", p2: q.prompt })).join("\n")));
     const actions = el("div", "actions");
     const go = el("button", "btn primary", tr("去回答"));
     go.onclick = () => this.focusAsk();
@@ -7675,6 +7815,9 @@ export class App {
         break;
       case "files":
         this.openFiles();
+        break;
+      case "notes":
+        this.openNotes();
         break;
       case "look":
         this.openDisplaySheet();
@@ -8397,12 +8540,16 @@ const SHORTCUTS: { id: string; label: string }[] = [
   { id: "queue", label: tr("收起 / 展开右栏") },
   { id: "artifacts", label: tr("产物列表") },
   { id: "files", label: tr("文件管理器") },
+  { id: "notes", label: tr("bug 记录") },
   { id: "look", label: tr("字号与配色") },
   { id: "skills", label: tr("技能面板") },
   { id: "attach", label: tr("附加文件") },
   { id: "terminal", label: tr("打开终端") },
   { id: "interrupt", label: tr("中断当前回复") },
 ];
+
+/** 出厂就带的组合键；用户改过的以 localStorage 里的为准。 */
+const DEFAULT_KEYS: Record<string, string> = { notes: "ctrl+shift+b" };
 
 /** The browser owns these; a page must never swallow them. */
 const RESERVED_KEYS = new Set([
@@ -8570,7 +8717,7 @@ const ACCENT_LABELS: [string, string][] = [
   ["slate", tr("银灰")],
 ];
 
-/** D108 之前 `pi.prefs.accent` 存的是中文色名，读到就换成新 id。 */
+/** D110 之前 `pi.prefs.accent` 存的是中文色名，读到就换成新 id。 */
 const LEGACY_ACCENTS: Record<string, string> = {
   冰蓝: "ice",
   青绿: "teal",
@@ -8873,7 +9020,7 @@ function tailText(text: string, maxLines: number, maxChars: number): string {
   return tail;
 }
 
-/** 会话列表的时间戳：一分钟内「刚刚」，其余交给 Intl（D108）。 */
+/** 会话列表的时间戳：一分钟内「刚刚」，其余交给 Intl（D110）。 */
 function relativeTime(ts: number): string {
   return fmtRelative(ts);
 }

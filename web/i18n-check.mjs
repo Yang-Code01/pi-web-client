@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * D108 门禁：界面文案不许绕过 `tr()`。
+ * D110 门禁：界面文案不许绕过 `tr()`。
  *
  * 三件事：
  *   1. `web/src/**` 里出现中文、却**没**包进 `tr(...)` 的字符串 —— 换语言时会漏成中文。
@@ -118,7 +118,11 @@ function walk(file, out) {
         } else if (!inLogicCall(node)) out.bare.push({ file: path.relative(here, file), line: sf.getLineAndCharacterOfPosition(node.getStart()).line + 1, start: node.getStart(sf), end: node.getEnd(), text });
       }
     } else if (ts.isTemplateExpression(node) && CJK.test(node.getText(sf))) {
-      // 模板串：整段算一个键（占位符由 codemod 换成 {p1}…，位置对应 templateSpans 顺序）
+      // 模板串：整段算一个键（占位符由 codemod 换成 {p1}…，位置对应 templateSpans 顺序）。
+      // 没走 tr() 的模板串同样要报：只查普通字面量的话，`${count} 条待处理` 这种会漏掉。
+      if (!isTrKey(node) && !inLogicCall(node)) {
+        out.bare.push({ file: path.relative(here, file), line: sf.getLineAndCharacterOfPosition(node.getStart()).line + 1, start: node.getStart(sf), end: node.getEnd(), text: node.getText(sf).replace(/\s+/g, " ").slice(0, 60) });
+      }
       if (isTrKey(node)) {
         const key = node.head.text + node.templateSpans.map((s, i) => `{p${i + 1}}` + s.literal.text).join("");
         out.keys.add(key);
@@ -170,6 +174,14 @@ if (args.has("--context")) {
     console.log([esc(k), c ? `${c.file}:${c.line}` : "", esc(c?.src ?? "")].join("\t"));
   }
   console.error(`\n${zhKeys.length} keys`);
+  process.exit(0);
+}
+if (args.has("--templates")) {
+  // 模板串（`${count} 条待处理`）没法自动包，只能人看：单独列出来，位置 + 原文。
+  for (const b of out.bare) {
+    if (!b.text.startsWith("`")) continue;
+    console.log(`${b.file}:${b.line}	${b.text}`);
+  }
   process.exit(0);
 }
 if (args.has("--json")) {
