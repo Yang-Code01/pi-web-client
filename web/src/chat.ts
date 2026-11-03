@@ -139,6 +139,8 @@ export class ChatView {
   private touching = false;
   /** Jump 时的平滑滚动还在路上 —— 这期间的 scroll 事件不能当成「用户回到底部」把跟流重新打开。 */
   private holdFollow = 0;
+  /** scrollTop at the previous `scroll` event: only a viewport moving *down* may reopen the follow (D94). */
+  private lastTop = 0;
 
   constructor(private root: HTMLElement) {
     this.jump = el("button", "chat-jump") as HTMLButtonElement;
@@ -160,7 +162,7 @@ export class ChatView {
     // scroll event lands. Waiting for `scroll` let the burst that was already in flight drag the view
     // back down — that was the "一卡一卡" tug of war.
     root.addEventListener("wheel", (ev) => {
-      if ((ev as WheelEvent).deltaY < 0) this.stopFollowing();
+      if ((ev as WheelEvent).deltaY < 0) this.holdUp();
     }, { passive: true });
     let touchStartY: number | null = null;
     root.addEventListener("touchstart", (ev) => {
@@ -183,13 +185,19 @@ export class ChatView {
     root.addEventListener("touchcancel", endTouch, { passive: true });
     root.addEventListener("keydown", (ev) => {
       const key = (ev as KeyboardEvent).key;
-      if (key === "PageUp" || key === "ArrowUp" || key === "Home") this.stopFollowing();
+      if (key === "PageUp" || key === "ArrowUp" || key === "Home") this.holdUp();
     });
 
     root.addEventListener("scroll", () => {
       // Mid-gesture the viewport brushes past the bottom by accident (the drag started at the bottom),
       // so "near bottom" is not an intent to follow while a finger is down.
-      if (!this.touching && performance.now() >= this.holdFollow && this.nearBottom()) this.resumeFollowing();
+      // D94: a wheel / smooth-scroll animation leaves the bottom a few px per frame, so its first
+      // `scroll` events still read gap ≤ 24. Only a viewport that moved down (or held still) means
+      // "back at the bottom"; programmatic scrolls only ever go down, so they still pass.
+      const top = this.root.scrollTop;
+      const movingDown = top >= this.lastTop;
+      this.lastTop = top;
+      if (!this.touching && movingDown && performance.now() >= this.holdFollow && this.nearBottom()) this.resumeFollowing();
       this.queueRailSync();
     });
 
@@ -203,6 +211,12 @@ export class ChatView {
   private nearBottom(): boolean {
     const gap = this.root.scrollHeight - this.root.scrollTop - this.root.clientHeight;
     return gap <= 24;
+  }
+
+  /** Wheel / key up: stop following and keep the follow closed while the smooth-scroll animation plays out. */
+  private holdUp(): void {
+    this.holdFollow = Math.max(this.holdFollow, performance.now() + 300);
+    this.stopFollowing();
   }
 
   private stopFollowing(): void {
