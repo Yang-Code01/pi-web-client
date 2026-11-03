@@ -128,6 +128,22 @@ function json(res: http.ServerResponse, status: number, body: unknown, extra: Re
 }
 
 /**
+ * D108：错误响应带**稳定错误码**。`error` 仍是中文兜底句（日志、curl、旧前端都还读它），
+ * 前端拿 `code` + `params` 去查词典（`bridge.err.<code>`），查不到才显示 `error`。
+ * 码一旦发出去就别改名：改名的代价是用户界面里出现一句中文兜底。
+ */
+function fail(
+  res: http.ServerResponse,
+  status: number,
+  code: string,
+  error: string,
+  params?: Record<string, string | number>,
+  extra: Record<string, unknown> = {},
+): void {
+  json(res, status, { ...extra, error, code, ...(params ? { params } : {}) });
+}
+
+/**
  * Whatever the child posts is untrusted input: drop questions without a prompt, invent ids and
  * labels, and accept options as bare strings (the `question` tool) or objects (the `questionnaire`).
  */
@@ -306,11 +322,11 @@ async function main(): Promise<void> {
 
     if (url.pathname === "/api/login" && req.method === "POST") {
       const ip = clientIp(req.headers, req.socket.remoteAddress);
-      if (!loginAllowed(ip)) return json(res, 429, { error: "试太多次了，等一分钟再试" });
+      if (!loginAllowed(ip)) return fail(res, 429, "too_many_attempts", "试太多次了，等一分钟再试");
       const body = await readBody(req).catch(() => ({}));
       if (!verifyPassphrase(String(body.passphrase ?? ""))) {
         log(`login failed from ${ip}`);
-        return json(res, 401, { error: "口令不对" });
+        return fail(res, 401, "bad_passphrase", "口令不对");
       }
       resetLoginAttempts(ip);
       log(`login ok from ${ip}${publicReq ? " (tunnel)" : ""}`);
@@ -354,8 +370,8 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/git" && req.method === "GET") {
       if (publicReq) return json(res, 200, { repo: null });
       const dir = (url.searchParams.get("dir") ?? "").trim();
-      if (!dir) return json(res, 400, { repo: null, error: "dir 不能为空" });
-      if (!path.isAbsolute(dir)) return json(res, 400, { repo: null, error: "dir 必须是绝对路径" });
+      if (!dir) return fail(res, 400, "dir_empty", "dir 不能为空", undefined, { repo: null });
+      if (!path.isAbsolute(dir)) return fail(res, 400, "dir_not_absolute", "dir 必须是绝对路径", undefined, { repo: null });
       try {
         const info = await gitInfo(dir, url.searchParams.get("fresh") === "1");
         return json(res, 200, info ?? { repo: null });
@@ -368,11 +384,11 @@ async function main(): Promise<void> {
     // Ctrl+V of a file copied in Explorer: the page gets bytes only, so read the real path here.
     // Over the tunnel this machine's clipboard is not the visitor's, so refuse.
     if (url.pathname === "/api/clipboard-files" && req.method === "GET") {
-      if (publicReq) return json(res, 403, { error: "通过公网访问时读不到你电脑的剪贴板" });
+      if (publicReq) return fail(res, 403, "clipboard_public", "通过公网访问时读不到你电脑的剪贴板");
       try {
         return json(res, 200, { paths: await clipboardFiles() });
       } catch (err: any) {
-        return json(res, 500, { error: `读不了剪贴板：${String(err?.message ?? err).slice(0, 200)}` });
+        return fail(res, 500, "clipboard_read_failed", `读不了剪贴板：${String(err?.message ?? err).slice(0, 200)}`);
       }
     }
 
@@ -392,7 +408,7 @@ async function main(): Promise<void> {
       const body = await readBody(req).catch(() => ({}));
       const sessionId = String(body.sessionId ?? "");
       const where = sessions.locate(sessionId);
-      if (!where) return json(res, 404, { error: "找不到这个会话" });
+      if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
       try {
         const info = openPreview(where, String(body.path ?? ""));
         // Text files opened here become writable for this session (D50).
@@ -407,7 +423,7 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/save" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       const sessionId = String(body.sessionId ?? "");
-      if (!sessions.locate(sessionId)) return json(res, 404, { error: "找不到这个会话" });
+      if (!sessions.locate(sessionId)) return fail(res, 404, "session_not_found", "找不到这个会话");
       try {
         const out = savePreviewFile(sessionId, body);
         log(`save ${out.path} (${out.size} bytes) from ${sessionId.slice(0, 8)}`);
@@ -422,7 +438,7 @@ async function main(): Promise<void> {
     // logged-in page may ask — it can already read the whole disk), but it *acts* on the desktop, so a
     // tunnel visitor is refused outright instead of getting a step-up prompt for it.
     if (url.pathname === "/api/reveal" && req.method === "POST") {
-      if (publicReq) return json(res, 403, { error: "通过公网访问时不会在你的桌面上打开文件夹，回本机操作" });
+      if (publicReq) return fail(res, 403, "reveal_public", "通过公网访问时不会在你的桌面上打开文件夹，回本机操作");
       const body = await readBody(req).catch(() => ({}));
       const out = revealInFileManager(String(body.path ?? ""));
       log(`reveal ${String(body.path ?? "")} → ${out.ok ? "ok" : out.message}`);
@@ -450,7 +466,7 @@ async function main(): Promise<void> {
       const id = url.searchParams.get("id") ?? "";
       const format = url.searchParams.get("format") === "jsonl" ? "jsonl" : "html";
       const where = id ? sessions.locate(id) : null;
-      if (!where?.file || !fs.existsSync(where.file)) return json(res, 404, { error: "这个会话还没有写到磁盘（发过一条消息之后才有文件）" });
+      if (!where?.file || !fs.existsSync(where.file)) return fail(res, 404, "session_no_file", "这个会话还没有写到磁盘（发过一条消息之后才有文件）");
       const base = (sessions.get(id)?.state.name || path.basename(where.file, ".jsonl")).replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 80) || "session";
       const disposition = (name: string, inline: boolean) => `${inline ? "inline" : "attachment"}; filename="session.${name.split(".").pop()}"; filename*=UTF-8''${encodeURIComponent(name)}`;
       if (format === "jsonl") {
@@ -466,7 +482,7 @@ async function main(): Promise<void> {
       const timer = setTimeout(() => child.kill(), 60_000);
       child.on("close", (code) => {
         clearTimeout(timer);
-        if (code !== 0 || !fs.existsSync(out)) return json(res, 500, { error: `pi --export 失败（exit ${code}）：${err.trim()}` });
+        if (code !== 0 || !fs.existsSync(out)) return fail(res, 500, "export_failed", `pi --export 失败（exit ${code}）：${err.trim()}`, { p1: code ?? -1 });
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-disposition": disposition(`${base}.html`, url.searchParams.get("download") !== "1") });
         fs.createReadStream(out).pipe(res);
       });
@@ -483,9 +499,9 @@ async function main(): Promise<void> {
       const where = sessions.locate(url.searchParams.get("id") ?? "");
       const cwd = where?.cwd ?? "";
       try {
-        if (!cwd || !fs.statSync(cwd).isDirectory()) return json(res, 404, { error: "会话的工作目录不存在", files: [] });
+        if (!cwd || !fs.statSync(cwd).isDirectory()) return fail(res, 404, "cwd_missing", "会话的工作目录不存在", undefined, { files: [] });
       } catch {
-        return json(res, 404, { error: "会话的工作目录不存在", files: [] });
+        return fail(res, 404, "cwd_missing", "会话的工作目录不存在", undefined, { files: [] });
       }
       const files = rankFiles(await listFiles(cwd), url.searchParams.get("q") ?? "");
       return json(res, 200, { cwd, files });
@@ -495,7 +511,7 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/bugzip" && req.method === "GET") {
       const name = url.searchParams.get("name") ?? "";
       const file = statePath("bug-reports", name);
-      if (!/^pi-bug-report-[\w-]+\.zip$/.test(name) || !fs.existsSync(file)) return json(res, 404, { error: "没有这个报告" });
+      if (!/^pi-bug-report-[\w-]+\.zip$/.test(name) || !fs.existsSync(file)) return fail(res, 404, "report_not_found", "没有这个报告");
       res.writeHead(200, { "content-type": "application/zip", "cache-control": "no-store", "content-disposition": `attachment; filename="${name}"` });
       fs.createReadStream(file).pipe(res);
       return;
@@ -505,7 +521,7 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/log" && req.method === "GET") {
       const id = url.searchParams.get("id") ?? "";
       const file = statePath("logs", `${id.replace(/[^\w.-]/g, "")}.log`);
-      if (!id || !fs.existsSync(file)) return json(res, 404, { error: "这个会话还没有 pi 进程日志（网页接管过才会有）" });
+      if (!id || !fs.existsSync(file)) return fail(res, 404, "no_process_log", "这个会话还没有 pi 进程日志（网页接管过才会有）");
       res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
       fs.createReadStream(file).pipe(res);
       return;
@@ -521,7 +537,7 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/tunnel" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       if (body.action === "start") {
-        if (!tunnelBin) return json(res, 400, { error: "没找到 cloudflared" });
+        if (!tunnelBin) return fail(res, 400, "cloudflared_missing", "没找到 cloudflared");
         tunnel.start();
       } else if (body.action === "stop") {
         tunnel.stop();
@@ -530,7 +546,13 @@ async function main(): Promise<void> {
     }
 
     if (url.pathname === "/api/notify-test" && req.method === "POST") {
-      const result = await notifier.notify("pi-web-client 测试", "如果你看到这条，通知链路是通的。", `${publicReq ? tunnel.state.url ?? "" : "http://127.0.0.1:" + cfg.port}`, true);
+      const test =
+        uiLang === "en"
+          ? { title: "pi-web-client test", body: "If you can read this, push notifications work." }
+          : uiLang === "ja"
+            ? { title: "pi-web-client テスト", body: "これが見えていれば、通知は届いています。" }
+            : { title: "pi-web-client 测试", body: "如果你看到这条，通知链路是通的。" };
+      const result = await notifier.notify(test.title, test.body, `${publicReq ? tunnel.state.url ?? "" : "http://127.0.0.1:" + cfg.port}`, true);
       return json(res, 200, result);
     }
 
@@ -576,6 +598,16 @@ async function main(): Promise<void> {
    * D91: no Windows / WeChat ping while somebody is looking at a page (visible tab in a focused
    * window); the page reports that over its socket. The service worker checks again on arrival.
    */
+  /**
+   * D108：推送标题跟界面语言。页面连上 WS 时上报一次（`{type:"lang"}`），这里只留最近一个值，
+   * 不落盘 —— bridge 重启就回落中文。正文（审批描述、问题原文）是 pi 产出的，不翻译。
+   */
+  let uiLang: "zh-Hans" | "en" | "ja" = "zh-Hans";
+  const notifyTitle = (kind: "approval" | "ask", name: string, count: number): string => {
+    if (uiLang === "en") return kind === "approval" ? `Approval needed · ${name}` : `Answer needed${count > 1 ? ` (${count} questions)` : ""} · ${name}`;
+    if (uiLang === "ja") return kind === "approval" ? `承認が必要です · ${name}` : `回答が必要です${count > 1 ? `（${count} 問）` : ""} · ${name}`;
+    return kind === "approval" ? `需要你批准 · ${name}` : `需要你回答${count > 1 ? `（${count} 题）` : ""} · ${name}`;
+  };
   const shouldNotify = (): boolean => {
     if (!notifier.enabled) return false;
     return ![...wss.clients].some((c) => c.readyState === WebSocket.OPEN && (c as any).present === true);
@@ -586,20 +618,19 @@ async function main(): Promise<void> {
     const name = session?.state.name ?? approval.sessionId.slice(0, 8);
     const body = approval.message.replace(/\s+/g, " ").slice(0, 140);
     const link = tunnel.state.url ? `${tunnel.state.url}/#/s/${approval.sessionId}` : `http://127.0.0.1:${cfg.port}/#/s/${approval.sessionId}`;
-    void notifier.notify(`需要你批准 · ${name}`, body, link);
+    void notifier.notify(notifyTitle("approval", name, 1), body, link);
   });
   sessions.on("ask", (ask, tool) => {
     const session = sessions.get(ask.sessionId);
     const name = session?.state.name ?? ask.sessionId.slice(0, 8);
     const first = ask.questions[0];
     const body = (first?.prompt ?? "").replace(/\s+/g, " ").slice(0, 140);
-    const more = ask.questions.length > 1 ? `（${ask.questions.length} 题）` : "";
     const link = tunnel.state.url ? `${tunnel.state.url}/#/s/${ask.sessionId}` : `http://127.0.0.1:${cfg.port}/#/s/${ask.sessionId}`;
     if (!shouldNotify()) {
       log(`ask-push skipped ${String(tool)} ${ask.id} (${notifier.enabled ? "page in front" : "notifications off"})`);
       return;
     }
-    void notifier.notify(`需要你回答${more} · ${name}`, body, link);
+    void notifier.notify(notifyTitle("ask", name, ask.questions.length), body, link);
     log(`ask-push ${String(tool)} ${ask.id} → ${name}`);
   });
   tunnel.on("state", (state) => {
@@ -653,6 +684,11 @@ async function main(): Promise<void> {
             (ws as any).present = msg.active === true;
             return;
           }
+          case "lang": {
+            // 只有推送标题用得上，别的什么都不用动，所以不需要 step-up。
+            if (msg.lang === "zh-Hans" || msg.lang === "en" || msg.lang === "ja") uiLang = msg.lang;
+            return;
+          }
           case "notify.set": {
             if (!(await requireStepUp())) return;
             notifier.setEnabled(msg.on === true);
@@ -663,12 +699,12 @@ async function main(): Promise<void> {
           case "stepup": {
             const ip = clientIp(req.headers, req.socket.remoteAddress);
             if (!loginAllowed(ip)) {
-              send({ type: "notice", text: "试太多次了，等一分钟再试", level: "error" });
+              send({ type: "notice", code: "too_many_attempts", text: "试太多次了，等一分钟再试", level: "error" });
               return;
             }
             if (!verifyPassphrase(String(msg.passphrase ?? ""))) {
               log(`stepup failed from ${ip}`);
-              send({ type: "notice", text: "口令不对", level: "error" });
+              send({ type: "notice", code: "bad_passphrase", text: "口令不对", level: "error" });
               return;
             }
             resetLoginAttempts(ip);
@@ -729,7 +765,7 @@ async function main(): Promise<void> {
           case "term.elevate":
           case "open.script": {
             if ((ws as any).publicReq) {
-              send({ type: "notice", text: "公网访问时不能在你电脑上开窗口", level: "error" });
+              send({ type: "notice", code: "window_public", text: "公网访问时不能在你电脑上开窗口", level: "error" });
               return;
             }
             if (!(await requireStepUp())) return;
@@ -949,7 +985,7 @@ async function main(): Promise<void> {
             const op = String(msg.op ?? "");
             // D81: from the public tunnel the extension manager is read-only.
             if (isWriteOp(op) && (ws as any).publicReq) {
-              send({ type: "picli.done", runId: null, op, code: -1, error: "通过公网访问时扩展与 MCP 只能查看，安装 / 卸载 / 更新请在本机或局域网操作" });
+              send({ type: "picli.done", runId: null, op, code: -1, error: "通过公网访问时扩展与 MCP 只能查看，安装 / 卸载 / 更新请在本机或局域网操作", errCode: "picli_public" });
               return;
             }
             if (isWriteOp(op) && !(await requireStepUp())) return;
@@ -997,7 +1033,7 @@ async function main(): Promise<void> {
             try {
               send({ type: "ext.store", query: String(msg.query ?? ""), items: await searchPackages(String(msg.query ?? ""), limit) });
             } catch (err: any) {
-              send({ type: "ext.store", query: String(msg.query ?? ""), items: [], error: `查不到 npm：${err?.message ?? err}` });
+              send({ type: "ext.store", query: String(msg.query ?? ""), items: [], error: `查不到 npm：${err?.message ?? err}`, errCode: "npm_lookup_failed" });
             }
             return;
           }
@@ -1006,7 +1042,7 @@ async function main(): Promise<void> {
             try {
               send({ type: "mcp.store", query: String(msg.query ?? ""), ...(await searchMcp(String(msg.query ?? ""), limit)) });
             } catch (err: any) {
-              send({ type: "mcp.store", query: String(msg.query ?? ""), items: [], error: `查不到 MCP Registry：${err?.message ?? err}` });
+              send({ type: "mcp.store", query: String(msg.query ?? ""), items: [], error: `查不到 MCP Registry：${err?.message ?? err}`, errCode: "registry_lookup_failed" });
             }
             return;
           }
@@ -1055,7 +1091,7 @@ async function main(): Promise<void> {
             const sessionId = String(msg.sessionId ?? "");
             const where = sessions.locate(sessionId);
             if (!where?.file || !fs.existsSync(where.file)) {
-              send({ type: "share.done", sessionId, error: "这个会话还没有写到磁盘，没有可分享的内容" });
+              send({ type: "share.done", sessionId, error: "这个会话还没有写到磁盘，没有可分享的内容", errCode: "session_no_file" });
               return;
             }
             try {
@@ -1072,7 +1108,7 @@ async function main(): Promise<void> {
             const sessionId = String(msg.sessionId ?? "");
             const where = sessions.locate(sessionId);
             if (!where?.file || !fs.existsSync(where.file)) {
-              send({ type: "bug.done", sessionId, error: "这个会话还没有写到磁盘" });
+              send({ type: "bug.done", sessionId, error: "这个会话还没有写到磁盘", errCode: "session_no_file" });
               return;
             }
             try {

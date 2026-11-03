@@ -3,10 +3,13 @@ import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 
+/** D108: `errCode` + `errParams` 让前端把这句话翻成当前语言（`error` 仍是中文兜底）。 */
 export interface TunnelState {
   status: "off" | "starting" | "up" | "error";
   url: string | null;
   error: string | null;
+  errCode?: string;
+  errParams?: Record<string, string | number>;
   updatedAt: number;
 }
 
@@ -50,7 +53,7 @@ export class Tunnel extends EventEmitter {
     try {
       child = spawn(this.bin, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env });
     } catch (err: any) {
-      this.setState({ status: "error", error: `启动 cloudflared 失败：${err.message}` });
+      this.setState({ status: "error", error: `启动 cloudflared 失败：${err.message}`, errCode: "cloudflared_spawn", errParams: { p1: err.message } });
       return;
     }
     this.child = child;
@@ -72,7 +75,7 @@ export class Tunnel extends EventEmitter {
     child.stdout?.on("data", watch);
 
     child.on("error", (err) => {
-      this.setState({ status: "error", error: `cloudflared 错误：${err.message}` });
+      this.setState({ status: "error", error: `cloudflared 错误：${err.message}`, errCode: "cloudflared_error", errParams: { p1: err.message } });
     });
 
     child.on("exit", (code) => {
@@ -88,7 +91,7 @@ export class Tunnel extends EventEmitter {
     // Give cloudflared a deadline: if no URL after 40s, restart it.
     const deadline = setTimeout(() => {
       if (!found && this.child === child) {
-        this.setState({ status: "error", error: "40 秒没拿到 trycloudflare 地址，重试中" });
+        this.setState({ status: "error", error: "40 秒没拿到 trycloudflare 地址，重试中", errCode: "tunnel_no_url" });
         try {
           child.kill();
         } catch {
@@ -120,7 +123,7 @@ export class Tunnel extends EventEmitter {
       }
       await new Promise((r) => setTimeout(r, 1500));
     }
-    this.setState({ status: "error", error: "隧道地址拿到了，但 60 秒内一直连不上" });
+    this.setState({ status: "error", error: "隧道地址拿到了，但 60 秒内一直连不上", errCode: "tunnel_unreachable" });
   }
 
   private async probe(url: string): Promise<boolean> {
@@ -139,7 +142,7 @@ export class Tunnel extends EventEmitter {
       if (!this.child || this.state.url !== url) return;
       const ok = await this.probe(url);
       if (!ok && this.state.status === "up") {
-        this.setState({ status: "error", error: "隧道断了（530），正在换新地址" });
+        this.setState({ status: "error", error: "隧道断了（530），正在换新地址", errCode: "tunnel_lost" });
         try {
           this.child?.kill();
         } catch {

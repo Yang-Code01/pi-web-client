@@ -5,7 +5,8 @@ import path from "node:path";
 export type Volume = { root: string; total: number; free: number };
 export type FileStat = { name: string; size: number; mtime: number };
 
-type Listing = { path: string; parent: string | null; dirs: string[]; files?: string[]; volumes?: Volume[]; error?: string };
+/** D108: `errCode` 让前端把 `error` 那句中文换成本地语言（见 web/src/i18n 的 errText）。 */
+type Listing = { path: string; parent: string | null; dirs: string[]; files?: string[]; volumes?: Volume[]; error?: string; errCode?: string };
 
 /** Used/total for one drive root; null when the volume refuses to answer (a sleeping network drive). */
 function volumeOf(root: string): Volume | null {
@@ -57,7 +58,7 @@ export function listDirs(raw: string, withFiles = false): Listing {
       .slice(0, 2000);
     return { path: abs, parent, dirs, files };
   } catch (err: any) {
-    return { path: abs, parent, dirs: [], ...(withFiles ? { files: [] } : {}), error: err?.code === "ENOENT" ? "目录不存在" : `读不了这个目录：${err?.code ?? err}` };
+    return { path: abs, parent, dirs: [], ...(withFiles ? { files: [] } : {}), error: err?.code === "ENOENT" ? "目录不存在" : `读不了这个目录：${err?.code ?? err}`, errCode: err?.code === "ENOENT" ? "dirs_missing" : "dirs_unreadable" };
   }
 }
 
