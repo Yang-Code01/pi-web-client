@@ -3,6 +3,7 @@ import { highlightFragment } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
 import type { BashItem, Item, ToolItem, UserItem } from "./types.ts";
+import { fmtTime, tr } from "./i18n/index.ts";
 
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
 const BASH_SHOW = 20000;
@@ -49,7 +50,7 @@ function setOutput(node: HTMLElement, text: string): void {
 function timeOf(ts?: string): string {
   if (!ts) return "";
   const d = new Date(ts);
-  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  return Number.isNaN(d.getTime()) ? "" : fmtTime(d);
 }
 
 /**
@@ -63,12 +64,12 @@ function foldHead(cls = ""): HTMLButtonElement & { setOpen(open: boolean): void 
     setOpen(open: boolean): void;
   };
   head.type = "button";
-  const label = el("span", "fold-label", "展开");
+  const label = el("span", "fold-label", tr("展开"));
   head.append(el("span", "chev", "▸"), label);
   head.setOpen = (open: boolean) => {
     head.setAttribute("aria-expanded", String(open));
-    label.textContent = open ? "收起" : "展开";
-    head.title = open ? "收起" : "展开全文";
+    label.textContent = open ? tr("收起") : tr("展开");
+    head.title = open ? tr("收起") : tr("展开全文");
   };
   return head;
 }
@@ -139,6 +140,8 @@ export class ChatView {
   private touching = false;
   /** Jump 时的平滑滚动还在路上 —— 这期间的 scroll 事件不能当成「用户回到底部」把跟流重新打开。 */
   private holdFollow = 0;
+  /** scrollTop at the previous `scroll` event: only a viewport moving *down* may reopen the follow (D94). */
+  private lastTop = 0;
 
   constructor(private root: HTMLElement) {
     this.jump = el("button", "chat-jump") as HTMLButtonElement;
@@ -160,7 +163,7 @@ export class ChatView {
     // scroll event lands. Waiting for `scroll` let the burst that was already in flight drag the view
     // back down — that was the "一卡一卡" tug of war.
     root.addEventListener("wheel", (ev) => {
-      if ((ev as WheelEvent).deltaY < 0) this.stopFollowing();
+      if ((ev as WheelEvent).deltaY < 0) this.holdUp();
     }, { passive: true });
     let touchStartY: number | null = null;
     root.addEventListener("touchstart", (ev) => {
@@ -183,13 +186,19 @@ export class ChatView {
     root.addEventListener("touchcancel", endTouch, { passive: true });
     root.addEventListener("keydown", (ev) => {
       const key = (ev as KeyboardEvent).key;
-      if (key === "PageUp" || key === "ArrowUp" || key === "Home") this.stopFollowing();
+      if (key === "PageUp" || key === "ArrowUp" || key === "Home") this.holdUp();
     });
 
     root.addEventListener("scroll", () => {
       // Mid-gesture the viewport brushes past the bottom by accident (the drag started at the bottom),
       // so "near bottom" is not an intent to follow while a finger is down.
-      if (!this.touching && performance.now() >= this.holdFollow && this.nearBottom()) this.resumeFollowing();
+      // D94: a wheel / smooth-scroll animation leaves the bottom a few px per frame, so its first
+      // `scroll` events still read gap ≤ 24. Only a viewport that moved down (or held still) means
+      // "back at the bottom"; programmatic scrolls only ever go down, so they still pass.
+      const top = this.root.scrollTop;
+      const movingDown = top >= this.lastTop;
+      this.lastTop = top;
+      if (!this.touching && movingDown && performance.now() >= this.holdFollow && this.nearBottom()) this.resumeFollowing();
       this.queueRailSync();
     });
 
@@ -203,6 +212,12 @@ export class ChatView {
   private nearBottom(): boolean {
     const gap = this.root.scrollHeight - this.root.scrollTop - this.root.clientHeight;
     return gap <= 24;
+  }
+
+  /** Wheel / key up: stop following and keep the follow closed while the smooth-scroll animation plays out. */
+  private holdUp(): void {
+    this.holdFollow = Math.max(this.holdFollow, performance.now() + 300);
+    this.stopFollowing();
   }
 
   private stopFollowing(): void {
@@ -222,7 +237,7 @@ export class ChatView {
     this.jump.classList.toggle("has-new", this.unread);
     this.jump.hidden = this.following;
     // The visible text is a glyph, so the meaning has to live somewhere readable.
-    const label = this.unread ? "有新内容，回到底部" : "回到底部";
+    const label = this.unread ? tr("有新内容，回到底部") : tr("回到底部");
     this.jump.title = label;
     this.jump.setAttribute("aria-label", label);
   }
@@ -296,7 +311,7 @@ export class ChatView {
   private noteTurn(item: UserItem, node: HTMLElement): void {
     const one = (item.text ?? "").replace(/\s+/g, " ").trim();
     const images = item.images?.length ?? 0;
-    const label = one || (images ? `（${images} 张图片）` : "（空消息）");
+    const label = one || (images ? tr("（{p1} 张图片）", { p1: images }) : tr("（空消息）"));
     this.turns.push({ node, label });
     this.turnRail.add(label);
     this.queueRailSync();
@@ -517,7 +532,7 @@ export class ChatView {
       const cmd = card.querySelector<HTMLElement>(".cmd");
       if (cmd && data.summary) setCommand(cmd, String(data.summary), data.name ? String(data.name) : undefined);
       const status = card.querySelector<HTMLElement>(".status");
-      if (status) status.textContent = "运行中…";
+      if (status) status.textContent = tr("运行中…");
     } else if (phase === "update" && data.partial) {
       let out = card.querySelector<HTMLElement>(".out");
       if (!out) {
@@ -529,7 +544,7 @@ export class ChatView {
       card.classList.toggle("err", Boolean(data.isError));
       card.dataset.running = "0";
       const status = card.querySelector<HTMLElement>(".status");
-      if (status) status.textContent = data.isError ? "失败" : `${Math.round(Number(data.durationMs ?? 0) / 100) / 10}s`;
+      if (status) status.textContent = data.isError ? tr("失败") : `${Math.round(Number(data.durationMs ?? 0) / 100) / 10}s`;
       if (data.result) {
         let out = card.querySelector<HTMLElement>(".out");
         if (!out) {
@@ -558,7 +573,7 @@ export class ChatView {
       if (typeof summary === "string") setCommand(cmd, summary, item.name);
     }
     const status = card.querySelector<HTMLElement>(".status");
-    if (status && item.status && item.status !== "unknown") status.textContent = item.status === "error" ? "失败" : "完成";
+    if (status && item.status && item.status !== "unknown") status.textContent = item.status === "error" ? tr("失败") : tr("完成");
     if (item.result) {
       let out = card.querySelector<HTMLElement>(".out");
       if (!out) {
@@ -630,13 +645,13 @@ export class ChatView {
     if (item.kind === "assistant") (wrap as HTMLElement & { _raw?: string })._raw = item.text;
     const who = el("div", "who");
     if (item.kind === "user") {
-      who.textContent = `你 · ${timeOf(item.ts)}`;
+      who.textContent = tr("你 · {p1}", { p1: timeOf(item.ts) });
       if (item.text.trim()) who.append(copyButton(() => item.text));
       if (this.onFork && item.text.trim()) {
         // #17 `/fork`: a new session holding everything before this message, the message back in the editor.
         const fork = el("button", "msg-copy msg-fork", "⑂") as HTMLButtonElement;
         fork.type = "button";
-        fork.title = "从这条消息之前分叉成新会话（这条消息放回输入框）";
+        fork.title = tr("从这条消息之前分叉成新会话（这条消息放回输入框）");
         fork.onclick = (ev) => {
           ev.stopPropagation();
           const index = [...this.root.querySelectorAll(".msg.user")].indexOf(wrap);
@@ -646,7 +661,7 @@ export class ChatView {
       }
       wrap.append(who, this.foldable(this.buildUserBody(item), 240));
     } else {
-      who.textContent = `${item.model ?? "pi"} · ${timeOf(item.ts)}${item.stopReason === "aborted" ? " · 已中断" : ""}`;
+      who.textContent = tr("{p1} · {p2}{p3}", { p1: item.model ?? "pi", p2: timeOf(item.ts), p3: item.stopReason === "aborted" ? tr(" · 已中断") : "" });
       if (item.text.trim()) who.append(copyButton(() => item.text));
       wrap.append(who);
       // A message that only carries thinking/tool calls has no prose to show:
@@ -656,7 +671,7 @@ export class ChatView {
         const body = el("div", "body");
         body.append(renderMarkdown(item.text));
         const peek = el("button", "msg-peek", previewLine(item.text));
-        peek.title = "展开回答";
+        peek.title = tr("展开回答");
         const fold = foldHead("msg-fold");
         peek.type = "button";
         const id = item.id;
@@ -681,7 +696,7 @@ export class ChatView {
       // A failed call usually has no prose at all: without this the turn ends in an empty bubble
       // and the reason (bad key, rate limit, context overflow…) is invisible.
       if (item.stopReason === "error") {
-        wrap.append(el("div", "msg-error", `模型调用出错：${item.errorMessage?.trim() || "pi 没有给出原因"}`));
+        wrap.append(el("div", "msg-error", tr("模型调用出错：{p1}", { p1: item.errorMessage?.trim() || tr("pi 没有给出原因") })));
       }
     }
     return wrap;
@@ -713,7 +728,7 @@ export class ChatView {
     if (!box || box.parentNode !== this.root) return;
     if (!this.opsFiles || !this.opsFiles.isConnected) {
       this.opsFiles = el("div", "ops-files");
-      this.opsFiles.append(el("span", "ops-files-label", "产物"));
+      this.opsFiles.append(el("span", "ops-files-label", tr("产物")));
       box.after(this.opsFiles);
       if (this.failAnchor === null) this.failAnchor = this.opsFiles;
     }
@@ -721,7 +736,7 @@ export class ChatView {
     if ([...files.querySelectorAll<HTMLElement>(".file-chip")].some((c) => c.dataset.path === path)) return;
     const chip = el("button", "file-chip");
     chip.dataset.path = path;
-    chip.title = `预览 ${path}`;
+    chip.title = tr("预览 {p1}", { p1: path });
     chip.append(el("span", "ico", fileIcon(path)), el("span", "nm", baseName(path)));
     chip.onclick = () => openPreview(path);
     files.append(chip);
@@ -732,7 +747,7 @@ export class ChatView {
     if (this.opsBody) return this.opsBody;
     const box = el("details", "ops");
     const summary = el("summary", "ops-summary");
-    const title = el("span", "ops-title", "工具操作");
+    const title = el("span", "ops-title", tr("工具操作"));
     summary.append(el("span", "chev", "▸"), title);
     const body = el("div", "ops-body");
     box.append(summary, body);
@@ -762,9 +777,9 @@ export class ChatView {
       if (card.dataset.running === "1") running += 1;
     }
     const parts = [...counts].map(([name, n]) => `${name} ×${n}`);
-    title.replaceChildren(document.createTextNode(`${cards.length} 个操作 · ${parts.join(" · ")}`));
-    if (errors) title.append(el("span", "ops-flag err", ` · ${errors} 失败`));
-    if (running) title.append(el("span", "ops-flag live", " · 运行中"));
+    title.replaceChildren(document.createTextNode(tr("{p1} 个操作 · {p2}", { p1: cards.length, p2: parts.join(" · ") })));
+    if (errors) title.append(el("span", "ops-flag err", tr(" · {p1} 失败", { p1: errors })));
+    if (running) title.append(el("span", "ops-flag live", tr(" · 运行中")));
   }
 
   /**
@@ -806,7 +821,7 @@ export class ChatView {
   private buildUserBody(item: UserItem): HTMLElement {    const body = el("div", "body");
     body.textContent = item.text;
     if (item.images?.length) {
-      const tag = el("div", "notice", `附 ${item.images.length} 张图片`);
+      const tag = el("div", "notice", tr("附 {p1} 张图片", { p1: item.images.length }));
       body.append(tag);
     }
     return body;
@@ -815,40 +830,40 @@ export class ChatView {
   /** A `!cmd` the user ran: its own card, not part of the model's tool module (#16). */
   private buildBash(item: BashItem): HTMLElement {
     const wrap = el("div", `msg bash ${item.status}`);
-    wrap.append(el("div", "who", `你 · ${item.excludeFromContext ? "!!" : "!"} 命令 · ${timeOf(item.ts)}`));
+    wrap.append(el("div", "who", tr("你 · {p1} 命令 · {p2}", { p1: item.excludeFromContext ? "!!" : "!", p2: timeOf(item.ts) })));
     const card = el("div", "bash-card");
     const head = el("div", "bash-head");
     head.append(el("code", "bash-cmd", `$ ${item.command}`));
-    const tag = el("span", `bash-tag${item.excludeFromContext ? " off" : ""}`, item.excludeFromContext ? "不进上下文" : "下一条消息时进上下文");
+    const tag = el("span", `bash-tag${item.excludeFromContext ? " off" : ""}`, item.excludeFromContext ? tr("不进上下文") : tr("下一条消息时进上下文"));
     tag.title = item.excludeFromContext
-      ? "!! 命令：输出存在会话里，但不会发给模型"
-      : "! 命令：输出会在你发下一条消息时一起交给模型（pi 的规则）";
+      ? tr("!! 命令：输出存在会话里，但不会发给模型")
+      : tr("! 命令：输出会在你发下一条消息时一起交给模型（pi 的规则）");
     head.append(tag);
     let state: string;
     let cls = "";
-    if (item.status === "running") state = "运行中…";
+    if (item.status === "running") state = tr("运行中…");
     else if (item.error) {
-      state = "失败";
+      state = tr("失败");
       cls = " bad";
     } else if (item.cancelled) {
-      state = "已停止";
+      state = tr("已停止");
       cls = " bad";
     } else if (item.exitCode === 0) state = "exit 0";
     else {
-      state = item.exitCode == null ? "结束" : `exit ${item.exitCode}`;
+      state = item.exitCode == null ? tr("结束") : `exit ${item.exitCode}`;
       cls = item.exitCode == null ? "" : " bad";
     }
     head.append(el("span", `bash-state${cls}`, state));
     if (item.status === "running") {
-      const stop = el("button", "tool-btn bash-stop", "停止") as HTMLButtonElement;
+      const stop = el("button", "tool-btn bash-stop", tr("停止")) as HTMLButtonElement;
       stop.type = "button";
       stop.onclick = () => this.onBashStop?.(item.id);
       head.append(stop);
     }
-    const out = el("pre", "bash-out", item.output || (item.status === "running" ? "" : "（没有输出）"));
+    const out = el("pre", "bash-out", item.output || (item.status === "running" ? "" : tr("（没有输出）")));
     card.append(head, out);
     if (item.error) card.append(el("div", "bash-foot bad", item.error));
-    if (item.truncated) card.append(el("div", "bash-foot", `输出太长，只显示末尾。完整内容：${item.fullOutputPath ?? "（pi 没给路径）"}`));
+    if (item.truncated) card.append(el("div", "bash-foot", tr("输出太长，只显示末尾。完整内容：{p1}", { p1: item.fullOutputPath ?? tr("（pi 没给路径）") })));
     wrap.append(card);
     return wrap;
   }
@@ -891,11 +906,11 @@ export class ChatView {
     const cmdSpan = el("span", "cmd");
     setCommand(cmdSpan, toolSummary(item), item.name);
     head.append(cmdSpan);
-    head.append(el("span", "status", item.status === "running" ? "运行中…" : item.isError ? "失败" : ""));
+    head.append(el("span", "status", item.status === "running" ? tr("运行中…") : item.isError ? tr("失败") : ""));
     const path = toolPath(item.args);
     if (path) {
-      const view = el("button", "tool-preview", "预览");
-      view.title = `预览 ${path}`;
+      const view = el("button", "tool-preview", tr("预览"));
+      view.title = tr("预览 {p1}", { p1: path });
       view.onclick = (ev) => {
         ev.stopPropagation();
         openPreview(path);
@@ -941,8 +956,8 @@ export class ChatView {
     const pending = item.status === "running";
 
     const head = el("div", "head");
-    head.append(el("span", "name", single ? "提问" : `问卷 · ${questions.length} 题`));
-    head.append(el("span", "status", pending ? "等你回答…" : ""));
+    head.append(el("span", "name", single ? tr("提问") : tr("问卷 · {p1} 题", { p1: questions.length })));
+    head.append(el("span", "status", pending ? tr("等你回答…") : ""));
     card.append(head);
 
     const answers = parseAskResult(String(item.result ?? item.partialResult ?? ""), questions, single);
@@ -955,14 +970,14 @@ export class ChatView {
       if (hit) row.append(el("div", "qa-a", `✓ ${hit}`));
       else if (!pending) {
         const cancelled = /cancel|取消/i.test(String(item.result ?? ""));
-        row.append(el("div", "qa-a pending", cancelled ? "已取消" : "未回答"));
+        row.append(el("div", "qa-a pending", cancelled ? tr("已取消") : tr("未回答")));
       }
       body.append(row);
     });
     card.append(this.foldable(body, 220));
     if (pending) {
       card.classList.add("clickable");
-      card.title = "点一下打开答题";
+      card.title = tr("点一下打开答题");
       card.onclick = () => window.dispatchEvent(new CustomEvent("pi-ask-open"));
     }
     return card;
@@ -995,8 +1010,8 @@ function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
   );
   const grid = el("div", "grid");
   grid.append(
-    el("span", "k", "为什么"), el("span", "v", d.cause || "—"),
-    el("span", "k", "下一步"), el("span", "v", d.next || "—"),
+    el("span", "k", tr("为什么")), el("span", "v", d.cause || "—"),
+    el("span", "k", tr("下一步")), el("span", "v", d.next || "—"),
   );
   const cmdbar = el("div", "cmdbar");
   cmdbar.append(el("span", "dot", "▪"), el("span", "c", input.cmd ? `${input.tool} · ${input.cmd}` : input.tool));
@@ -1007,7 +1022,7 @@ function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
     const body = el("div", "body");
     let prev = -1;
     for (const [i, hit] of keep) {
-      if (prev >= 0 && i > prev + 1) body.append(el("div", "gap", `… 跳过 ${i - prev - 1} 行`));
+      if (prev >= 0 && i > prev + 1) body.append(el("div", "gap", tr("… 跳过 {p1} 行", { p1: i - prev - 1 })));
       const row = el("div", hit ? "ln hit" : "ln");
       row.append(el("span", "no", String(i + 1)), el("span", "tx", lines[i] || " "));
       body.append(row);
@@ -1018,12 +1033,12 @@ function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
     card.append(ex);
   }
 
-  const raw = normalize(input.out) || "（没有输出）";
-  const meta = [keep.length ? `关键行 ${keep.length} 行` : "输出为空，只有退出码", durationText(ms)].filter(Boolean);
+  const raw = normalize(input.out) || tr("（没有输出）");
+  const meta = [keep.length ? tr("关键行 {p1} 行", { p1: keep.length }) : tr("输出为空，只有退出码"), durationText(ms)].filter(Boolean);
   const foot = el("div", "foot");
   const rawBox = el("details", "raw");
   const rawTop = el("summary", "raw-top");
-  rawTop.append(el("span", "chev", "▸"), el("span", undefined, `完整输出（${raw.length} 字符）`));
+  rawTop.append(el("span", "chev", "▸"), el("span", undefined, tr("完整输出（{p1} 字符）", { p1: raw.length })));
   rawBox.append(rawTop, el("pre", undefined, raw));
   foot.append(el("span", undefined, meta.join(" · ")), rawBox);
   card.append(foot);
@@ -1043,7 +1058,7 @@ function parseAskResult(text: string, questions: any[], single: boolean): (strin
   if (single) {
     const wrote = lines.find((l) => l.startsWith("User wrote: "));
     const selected = lines.find((l) => l.startsWith("User selected: "));
-    if (wrote) out[0] = `（自己写）${wrote.slice("User wrote: ".length)}`;
+    if (wrote) out[0] = tr("（自己写）{p1}", { p1: wrote.slice("User wrote: ".length) });
     else if (selected) out[0] = selected.replace(/^User selected: \d+\.\s*/, "");
     return out;
   }
@@ -1054,7 +1069,7 @@ function parseAskResult(text: string, questions: any[], single: boolean): (strin
     const rest = line.slice(label.length + 2);
     const wrote = rest.match(/^user wrote:\s*(.*)$/);
     const selected = rest.match(/^user selected:\s*\d+\.\s*(.*)$/);
-    if (wrote) out[i] = `（自己写）${wrote[1]}`;
+    if (wrote) out[i] = tr("（自己写）{p1}", { p1: wrote[1] });
     else if (selected) out[i] = selected[1];
   });
   return out;
@@ -1105,24 +1120,24 @@ export { el as createEl };
 /** One plain-text line standing in for a folded reply. */
 function previewLine(text: string): string {
   const plain = text
-    .replace(/```[\s\S]*?```/g, " [代码] ")
+    .replace(/```[\s\S]*?```/g, ` ${tr("代码")} `)
     .replace(/[#>*_`|~-]+/g, " ")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
-  return plain.length > 120 ? `${plain.slice(0, 120)}…` : plain || "（已收起）";
+  return plain.length > 120 ? `${plain.slice(0, 120)}…` : plain || tr("（已收起）");
 }
 
 /** ⧉ in a message header: copies the raw markdown / text, as `/copy` does in the terminal (#24). */
 function copyButton(text: () => string): HTMLButtonElement {
   const btn = el("button", "msg-copy", "⧉") as HTMLButtonElement;
   btn.type = "button";
-  btn.title = "复制原文";
+  btn.title = tr("复制原文");
   btn.onclick = (ev) => {
     ev.stopPropagation();
     const done = navigator.clipboard?.writeText(text());
     if (!done) {
-      btn.title = "这个地址拿不到剪贴板（http 的局域网地址浏览器不给）";
+      btn.title = tr("这个地址拿不到剪贴板（http 的局域网地址浏览器不给）");
       btn.textContent = "✕";
       return;
     }

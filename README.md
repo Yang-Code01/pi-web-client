@@ -142,6 +142,18 @@ node bridge/tests/ext-manager.mjs                                     # 扩展�
 
 `npm run typecheck` 分别跑 bridge 和 web 的 `tsc --noEmit`。
 
+## 测试环境（隔离实例）
+
+`/skill:pi-web-client-test-dev` 一条命令起一份能和正式实例并存的 web：口令恒为 `test`，端口从 17864 自动探测，支持多开、可指定 worktree 或分支，不碰正式跑在 7864 上的那份。技能随仓库分发，就在 `.pi/skills/pi-web-client-test-dev/`（`bin/env.mjs` 就是那个脚本），pi 在**本仓库或其子目录**里跑时自动发现，不需要单独安装（D109）：
+
+```bash
+node .pi/skills/pi-web-client-test-dev/bin/env.mjs start --dir <仓库或 worktree 绝对路径> [--name t1] [--peers 1] [--build]
+node .pi/skills/pi-web-client-test-dev/bin/env.mjs list          # 在跑哪些
+node .pi/skills/pi-web-client-test-dev/bin/env.mjs stop --id t1 # 或 --all
+```
+
+端口、pid 与实例 state 目录登记在 `~/.pi/agent/state/pi-web-test-dev/instances.json`；7864 / 7865 / 7866 硬保留给正式实例，不会被分配。
+
 ## 还没做
 
 [`docs/PLAN.md`](docs/PLAN.md) 的 M5 后段与 M6：公网实测、微信/Web Push 的实机验收、开机自启与托盘、diff 卡片、移动端手势（左右滑切标签）。与 pi CLI 能力对齐的盘点见 [#8](https://github.com/Yang-Code01/pi-web-client/issues/8)，其中各项已经做完；做不到的（扩展的自定义 TUI 组件、接上终端里正在跑的进程）见那里的「架构上限」。

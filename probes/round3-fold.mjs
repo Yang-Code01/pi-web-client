@@ -108,7 +108,7 @@ try {
   assert(res.ok && cookie.includes("="), `login worked (got ${res.status})`);
 
   browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: { width: 1280, height: 820 } });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 820 }, locale: "zh-CN" });
   await context.addCookies([{ name: cookie.split("=")[0], value: cookie.split("=").slice(1).join("="), url: BASE }]);
   const page = await context.newPage();
   page.on("pageerror", (e) => log("page error:", e.message));

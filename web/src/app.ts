@@ -7,8 +7,11 @@ import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
+import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
+import { tr } from "./i18n/index.ts";
+import { applyLang, detectLang, errText, fmtDate, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
 
@@ -34,26 +37,26 @@ function sessionBadge(s: SessionState, currentId: string | null): SessionBadge |
   if (s.asks && s.asks > 0) {
     return {
       kind: "ask",
-      text: s.asks > 1 ? `待回答 ${s.asks}` : "待回答",
+      text: s.asks > 1 ? tr("待回答 {p1}", { p1: s.asks }) : tr("待回答"),
       cls: "wait",
-      title: "在等你回答问卷，这个会话停在这儿了",
+      title: tr("在等你回答问卷，这个会话停在这儿了"),
       pending: true,
     };
   }
   if (s.approvals > 0) {
     return {
       kind: "approve",
-      text: s.approvals > 1 ? `待确认 ${s.approvals}` : "待确认",
+      text: s.approvals > 1 ? tr("待确认 {p1}", { p1: s.approvals }) : tr("待确认"),
       cls: "wait",
-      title: "在等你确认这条命令",
+      title: tr("在等你确认这条命令"),
       pending: true,
     };
   }
   if (s.locked) {
-    return { kind: "locked", text: "终端占用", cls: "lock", title: "pi CLI 在终端里正用着这个会话，网页这边只能看", pending: false };
+    return { kind: "locked", text: tr("终端占用"), cls: "lock", title: tr("pi CLI 在终端里正用着这个会话，网页这边只能看"), pending: false };
   }
-  if (s.running) return { kind: "run", text: "运行中", cls: "run", title: "agent 正在推进", pending: false };
-  if (s.done && s.id !== currentId) return { kind: "done", text: "完成", cls: "done", title: "", pending: false };
+  if (s.running) return { kind: "run", text: tr("运行中"), cls: "run", title: tr("agent 正在推进"), pending: false };
+  if (s.done && s.id !== currentId) return { kind: "done", text: tr("完成"), cls: "done", title: "", pending: false };
   return null;
 }
 
@@ -100,6 +103,11 @@ export class App {
 
   private els: Record<string, HTMLElement> = {};
   private models: ModelInfo[] = [];
+  /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
+  private notesSheet: NotesSheet | null = null;
+  private notes: Note[] = [];
+  /** 新会话建好后要填进输入框的文字（「交给 agent → 新开会话」，不自动发送）。 */
+  private prefillNext: string | null = null;
   private sheet: HTMLElement | null = null;
   private modelChip: HTMLButtonElement | null = null;
   private textarea: HTMLTextAreaElement | null = null;
@@ -116,7 +124,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "peer" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
@@ -223,7 +231,7 @@ export class App {
   /** The bin, as the bridge last reported it. Nothing here is visible in the session list. */
   private trash: TrashItem[] = [];
   /** action id → key combo (“ctrl+shift+k”); only what the user set in 快捷键 lives here. */
-  private keys: Record<string, string> = loadKeys();
+  private keys: Record<string, string> = { ...DEFAULT_KEYS, ...loadKeys() };
   /** action id whose row is waiting for the next key press. */
   private capturing: string | null = null;
   /** D70: one shell per tab, all inside one dock; the bridge owns the processes (max 4). */
@@ -234,7 +242,7 @@ export class App {
   private termActive: string | null = null;
   /** D92: the dialog is on screen (not minimized). The shells themselves live in the bridge. */
   private termOpen = false;
-  /** D94: 两扇浮窗里最后被点 / 聚焦的那扇（`.front`）；同一时间只有一扇。 */
+  /** D111: 两扇浮窗里最后被点 / 聚焦的那扇（`.front`）；同一时间只有一扇。 */
   private winFront: HTMLElement | null = null;
   /** D93: dialog 的位置 / 大小（布局 px），null = 还没读过 localStorage。 */
   private termGeom: TermGeom | null = null;
@@ -268,6 +276,7 @@ export class App {
   constructor(me: Me) {
     this.me = me;
     this.tunnel = me.tunnel;
+    applyLang(this.prefs.lang);
     this.applyPrefs();
     this.loadAskDrafts();
     this.build();
@@ -304,49 +313,60 @@ export class App {
     collapseRight.dataset.act = "queue";
     collapseRight.onclick = () => this.togglePane("queue");
     const look = el("button", "icon-btn icon-text", "Aa");
-    look.title = "字号与颜色";
+    look.title = tr("字号与颜色");
     look.dataset.act = "look";
     look.onclick = () => this.openDisplaySheet();
-    const files = el("button", "icon-btn wide", "📂 产物");
-    files.title = "本会话写过的文件（md / html / 图片…点开预览）";
+    const files = el("button", "icon-btn wide", tr("📂 产物"));
+    files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
     files.dataset.act = "artifacts";
     files.onclick = () => this.openArtifactsSheet();
     files.hidden = true;
     // D92: the shell sits next to 产物 now — it is a dialog over the page, and this button is both
     // its opener and the place it minimizes back to. Not session-scoped, so it never hides.
-    const term = el("button", "icon-btn wide", ">_ 终端");
+    const term = el("button", "icon-btn wide", tr(">_ 终端"));
     term.dataset.act = "terminal";
-    term.setAttribute("aria-label", "终端");
-    term.title = "在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）";
+    term.setAttribute("aria-label", tr("终端"));
+    term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
     term.onclick = () => this.openTerminal();
     this.els.term = term;
-    const fs = el("button", "icon-btn wide", "📁 文件管理器");
-    fs.title = "文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件";
+    const fs = el("button", "icon-btn wide", tr("📁 文件管理器"));
+    fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
     fs.dataset.act = "files";
     fs.onclick = () => this.openFiles();
     fs.hidden = true;
     this.els.fs = fs;
-    topbar.append(collapseLeft, dot, title, sub, files, term, fs, look, collapseRight);
+    // D108：记录不跟会话绑定，所以它跟终端一样常显；计数只在 title 里。
+    const notes = el("button", "icon-btn wide notes-btn", "🐞 bug");
+    notes.title = tr("记录 bug / 变更 / 想法 / 杂事");
+    notes.dataset.act = "notes";
+    notes.onclick = () => this.openNotes();
+    this.els.notes = notes;
+    // #45: the peer is a dialog over the page, not a separate tab — same as 终端.
+    const peer = el("button", "icon-btn wide", tr("🌐 内网通"));
+    peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
+    peer.dataset.act = "peer";
+    peer.onclick = () => this.openPeerSheet();
+    topbar.append(collapseLeft, dot, title, sub, files, term, fs, notes, peer, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
     const sessionsInner = el("div", "session-list");
     const create = el("div", "new-session");
-    const newBtn = el("button", "btn primary", "开新会话");
+    const newBtn = el("button", "btn primary", tr("开新会话"));
     newBtn.dataset.act = "new";
     newBtn.onclick = () => this.openNewSessionSheet();
     create.append(newBtn);
     // The filter must not lose focus on every keystroke, so it lives outside the repainted list.
     const manageBar = el("div", "manage-bar");
     const sessFilter = el("input", "session-filter");
-    sessFilter.placeholder = "过滤名字 / 目录";
+    sessFilter.placeholder = tr("过滤名字 / 目录");
     sessFilter.oninput = () => {
       this.filter = sessFilter.value.trim();
       this.renderSessions();
     };
-    const manageBtn = el("button", "tool-btn", "管理");
+    const manageBtn = el("button", "tool-btn", tr("管理"));
     manageBtn.dataset.act = "manage";
-    manageBtn.title = "管理全部会话：检索、筛选、排序、分组、批量操作";
+    manageBtn.title = tr("管理全部会话：检索、筛选、排序、分组、批量操作");
     manageBtn.onclick = () => this.openManager();
     // Q-035: the pin chip's delete animation needs a bin on screen to fly into. Until now the trash
     // was two clicks away (管理 → 🗑); this opens the same view in one.
@@ -354,7 +374,7 @@ export class App {
     binBtn.dataset.act = "trash";
     // 文字而不是 🗑：这颗按钮只有 31px 高、左栏又窄，emoji 在这个尺寸下会糊成一小块，
     // 而它是删除动效的落点，得让人一眼认出那是「垃圾箱」。
-    binBtn.append(el("span", "bin-label", "垃圾箱"));
+    binBtn.append(el("span", "bin-label", tr("垃圾箱")));
     binBtn.onclick = () => this.openManager("trash");
     manageBar.append(sessFilter, binBtn, manageBtn);
     const sessList = el("div", "session-cards");
@@ -372,9 +392,9 @@ export class App {
 
     // Dividers live in `main` (absolutely positioned), not inside the panes: those scroll.
     const gripL = el("div", "col-grip grip-l");
-    gripL.title = "拖动调整会话列表宽度 · 双击复位";
+    gripL.title = tr("拖动调整会话列表宽度 · 双击复位");
     const gripR = el("div", "col-grip grip-r");
-    gripR.title = "拖动调整右栏宽度 · 双击复位";
+    gripR.title = tr("拖动调整右栏宽度 · 双击复位");
 
     main.append(sessionsPane, chatPane, queuePane, gripL, gripR);
 
@@ -384,9 +404,9 @@ export class App {
 
     const tabs = el("nav", "tabs");
     const tabDefs: [Tab, string][] = [
-      ["sessions", "会话"],
-      ["chat", "对话"],
-      ["queue", "需要你"],
+      ["sessions", tr("会话")],
+      ["chat", tr("对话")],
+      ["queue", tr("需要你")],
     ];
     for (const [key, label] of tabDefs) {
       const btn = el("button", "", label);
@@ -398,8 +418,10 @@ export class App {
     shell.append(topbar, pinStrip, main, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.binBtn = binBtn;
+    // 顶栏这批按钮只构造一次，语言一切换就得靠 paintChrome() 重写文字（renderAll 碰不到它们）。
+    this.paintChrome();
     this.chat = new ChatView(scroll);
     this.chat.onBashStop = () => this.act(() => this.socket.send({ type: "abortBash", sessionId: this.currentId }));
     this.chat.onFork = (item, index) => this.forkAt({ entryId: item.id, index, text: item.text });
@@ -660,8 +682,8 @@ export class App {
 
   private leftText(deadline: number): string {
     const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
-    if (left === 0) return "已超时，正在拒绝…";
-    return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} 后自动拒绝`;
+    if (left === 0) return tr("已超时，正在拒绝…");
+    return tr("{p1}:{p2} 后自动拒绝", { p1: Math.floor(left / 60), p2: String(left % 60).padStart(2, "0") });
   }
 
   /** One timer for every visible deadline chip; renderApprovals only creates them. */
@@ -679,7 +701,7 @@ export class App {
     window.addEventListener("focus", () => void this.refreshGit(true));
     // D91: tell the bridge whether someone is looking, so it only pings Windows / WeChat when not.
     for (const name of ["focus", "blur"]) window.addEventListener(name, () => this.reportPresence());
-    // D94: 点进预览里的 iframe 时，指针事件不跨文档，父窗口只收到 blur —— 等焦点落定，只有落在
+    // D111: 点进预览里的 iframe 时，指针事件不跨文档，父窗口只收到 blur —— 等焦点落定，只有落在
     // iframe 上才补一次置顶（切到别的窗口时不打扰当前的叠放）。
     window.addEventListener("blur", () => {
       setTimeout(() => {
@@ -741,7 +763,7 @@ export class App {
       const { images, others } = splitImages(Array.from(ev.dataTransfer.files));
       if (images.length) void this.addImages(images);
       if (others.length) {
-        this.warn(`浏览器拖拽拿不到「${others.map((f) => f.name).join("、")}」的完整路径。请在资源管理器里复制它再 ${PASTE_KEY}，或用「文件」按钮选`);
+        this.warn(tr("浏览器拖拽拿不到「{p1}」的完整路径。请在资源管理器里复制它再 {p2}，或用「文件」按钮选", { p1: others.map((f) => f.name).join(tr("、")), p2: PASTE_KEY }));
       }
     });
     if (window.matchMedia("(min-width: 900px)").matches) this.tab = "sessions";
@@ -857,6 +879,7 @@ export class App {
         break;
       case "hello":
         if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
+        if (Array.isArray(msg.notes)) this.setNotes(msg.notes as Note[]);
         // Badge: whether anything installed has an update (bridge caches this for 6 hours).
         this.socket.send({ type: "ext.updates", ...(this.session?.cwd ? { cwd: this.session.cwd } : {}) });
         // A new socket starts unverified on the bridge side.
@@ -898,6 +921,18 @@ export class App {
         this.approvals = (msg.approvals ?? []) as ApprovalRequest[];
         this.asks = (msg.asks ?? []) as AskRequest[];
         this.renderAll();
+        // 「交给 agent → 新开会话」：会话建好之后才把文字填进去。此刻 textarea 已经指向新会话。
+        if (this.prefillNext && this.currentId) {
+          const text = this.prefillNext;
+          this.prefillNext = null;
+          this.composerText = text;
+          if (this.textarea) {
+            this.textarea.value = text;
+            this.fitComposer();
+            this.textarea.focus();
+          }
+          this.noteDraft();
+        }
         // Q-021: 切会话＝换 cwd，分支要跟着换。
         void this.refreshGit(true);
         // A takeover from the model sheet unlocks it; reopen so the list is usable right away.
@@ -933,7 +968,7 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.trackChars(msg.field, msg.text);
         this.chat.delta(msg.id, msg.field, msg.text);
-        this.setActivity(msg.field === "thinking" ? "思考中" : "正在写回复");
+        this.setActivity(msg.field === "thinking" ? tr("思考中") : tr("正在写回复"));
         break;
       case "usage":
         if (msg.sessionId !== this.currentId) break;
@@ -962,8 +997,8 @@ export class App {
           // be pasted after it (up to 120 chars, usually cut mid-path) while the hover card (Q-017)
           // already carries the full summary, args, output and thinking — the line was pure noise.
           this.stepCount += 1;
-          this.setActivity(`正在执行 ${msg.name ?? "工具"}`);
-        } else if (msg.phase === "end") this.setActivity("思考中");
+          this.setActivity(tr("正在执行 {p1}", { p1: msg.name ?? "工具" }));
+        } else if (msg.phase === "end") this.setActivity(tr("思考中"));
         break;
       case "approval.add":
         if (msg.sessionId === this.currentId) this.approvals = [...this.approvals, msg.approval];
@@ -1008,7 +1043,7 @@ export class App {
         const gone = this.asks.find((a) => a.id === msg.id);
         const mine = msg.sessionId === this.currentId;
         this.asks = this.asks.filter((a) => a.id !== msg.id);
-        if (gone && mine && gone.id !== this.lastAnsweredAsk) this.keepLostAsk(gone, String(msg.reason ?? "问卷已关闭"));
+        if (gone && mine && gone.id !== this.lastAnsweredAsk) this.keepLostAsk(gone, String(msg.reason ?? tr("问卷已关闭")));
         if (gone && mine) this.lastAnsweredAsk = null;
         this.renderAsks();
         this.renderQueue();
@@ -1031,7 +1066,7 @@ export class App {
       case "settings": {
         const view = msg as SettingsView;
         this.settingsView[view.scope] = view;
-        if (msg.saved) this.flashSettings(`已保存到 ${view.path}`);
+        if (msg.saved) this.flashSettings(tr("已保存到 {p1}", { p1: view.path }));
         if (this.sheetKind === "settings") this.paintSettings();
         break;
       }
@@ -1041,7 +1076,7 @@ export class App {
         break;
       case "lockext":
         this.lockExt = { installed: Boolean(msg.installed), path: String(msg.path ?? "") };
-        if (msg.saved) this.flashSettings(msg.installed ? "已装进 pi 的全局扩展：之后启动的终端 pi 会登记自己开着的会话" : "已从 pi 的全局扩展里移除");
+        if (msg.saved) this.flashSettings(msg.installed ? tr("已装进 pi 的全局扩展：之后启动的终端 pi 会登记自己开着的会话") : tr("已从 pi 的全局扩展里移除"));
         if (this.sheetKind === "settings" && this.settingsTab === "global") this.paintSettings();
         break;
       case "share.progress":
@@ -1050,19 +1085,28 @@ export class App {
         break;
       case "share.done": {
         if (msg.error) {
-          this.flashShare(`没有分享成功：${msg.error}`, true);
+          this.flashShare(tr("没有分享成功：{p1}", { p1: errText(msg) }), true);
           break;
         }
         this.closeSheet();
-        const via = msg.via === "radius" ? "Radius（组织内可见）" : "私有 GitHub gist";
-        this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: `已分享到${via}：${msg.url}${msg.gistUrl ? `（gist：${msg.gistUrl}）` : ""}`, level: "info" });
+        const via = msg.via === "radius" ? tr("Radius（组织内可见）") : tr("私有 GitHub gist");
+        this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: tr("已分享到{p1}：{p2}{p3}", { p1: via, p2: msg.url, p3: msg.gistUrl ? `（gist：${msg.gistUrl}）` : "" }), level: "info" });
         void navigator.clipboard?.writeText(String(msg.url)).catch(() => {});
         window.open(String(msg.url), "_blank", "noopener");
         break;
       }
+      case "notes":
+        this.setNotes((msg.notes ?? []) as Note[]);
+        break;
+      case "notes.saved":
+        this.notesSheet?.saved(msg);
+        break;
+      case "notes.shot":
+        this.notesSheet?.shot(msg);
+        break;
       case "bug.done": {
         if (msg.error) {
-          this.flashShare(`没有提交成功：${msg.error}`, true);
+          this.flashShare(tr("没有提交成功：{p1}", { p1: errText(msg) }), true);
           break;
         }
         this.closeSheet();
@@ -1075,7 +1119,7 @@ export class App {
         this.chat.add({
           id: `n:${Date.now()}`,
           kind: "notice",
-          text: msg.delivery === "upload" ? `bug 报告已上传给 pi 开发者，报告 ID：${msg.id}` : `bug 报告已导出成 zip 并开始下载，报告 ID：${msg.id}`,
+          text: msg.delivery === "upload" ? tr("bug 报告已上传给 pi 开发者，报告 ID：{p1}", { p1: msg.id }) : tr("bug 报告已导出成 zip 并开始下载，报告 ID：{p1}", { p1: msg.id }),
           level: "info",
         });
         break;
@@ -1101,8 +1145,8 @@ export class App {
         if (op === "pkg.list" || op === "mcp.list") break;
         if (this.cliRun && (this.cliRun.runId === msg.runId || !this.cliRun.runId)) {
           this.cliRun.code = typeof msg.code === "number" ? msg.code : null;
-          if (msg.error) this.cliRun.error = String(msg.error);
-        } else if (msg.error) this.flashSettings(String(msg.error), true);
+          if (msg.error) this.cliRun.error = errText(msg);
+        } else if (msg.error) this.flashSettings(errText(msg), true);
         if (Array.isArray(msg.vars) && msg.vars.length) this.extVars = msg.vars.map(String);
         if (msg.code === 0) {
           this.extDirty = true;
@@ -1152,7 +1196,7 @@ export class App {
         break;
       case "ext.inventory":
         this.extInvLoading = false;
-        if (msg.error) this.flashSettings(String(msg.error), true);
+        if (msg.error) this.flashSettings(errText(msg), true);
         else this.extInv = msg as ExtInventory;
         if (typeof msg.updates === "number") {
           this.extUpdates = msg.updates;
@@ -1163,12 +1207,12 @@ export class App {
       case "ext.store":
         if (String(msg.query ?? "") !== this.extStore.query) break;
         this.extStore.items = Array.isArray(msg.items) ? msg.items : [];
-        this.extStore.error = msg.error;
+        this.extStore.error = msg.error ? errText(msg) : msg.error;
         this.paintExtIfOpen();
         break;
       case "mcp.store":
         if (String(msg.query ?? "") !== this.mcpStore.query) break;
-        this.mcpStore = { ...this.mcpStore, items: Array.isArray(msg.items) ? msg.items : [], error: msg.error, building: Boolean(msg.building), starsComplete: Boolean(msg.starsComplete), hasToken: Boolean(msg.hasToken) };
+        this.mcpStore = { ...this.mcpStore, items: Array.isArray(msg.items) ? msg.items : [], error: msg.error ? errText(msg) : msg.error, building: Boolean(msg.building), starsComplete: Boolean(msg.starsComplete), hasToken: Boolean(msg.hasToken) };
         this.paintExtIfOpen();
         break;
       case "ext.changed":
@@ -1177,7 +1221,7 @@ export class App {
         this.loadExtInventory();
         break;
       case "ext.error":
-        this.flashSettings(String(msg.message ?? "操作失败"), true);
+        this.flashSettings(String(msg.message ?? tr("操作失败")), true);
         break;
       case "auth.providers":
         this.authProviders = Array.isArray(msg.providers) ? msg.providers : [];
@@ -1203,16 +1247,16 @@ export class App {
         if (this.login && (this.login.loginId === msg.loginId || msg.loginId === null)) {
           this.login.prompt = null;
           this.login.ok = Boolean(msg.ok);
-          this.login.result = msg.ok ? `已登录 ${msg.provider}，凭据由 pi 存进 auth.json。正在运行的会话「重新加载」后用上新凭据。` : `没有登录成功：${msg.error ?? "未知原因"}`;
+          this.login.result = msg.ok ? tr("已登录 {p1}，凭据由 pi 存进 auth.json。正在运行的会话「重新加载」后用上新凭据。", { p1: msg.provider }) : tr("没有登录成功：{p1}", { p1: msg.error ?? "未知原因" });
         } else if (!msg.ok && msg.error) this.flashSettings(String(msg.error), true);
         this.paintLoginIfOpen();
         break;
       case "settings.error":
-        this.flashSettings(String(msg.message ?? "保存失败"), true);
+        this.flashSettings(String(msg.message ?? tr("保存失败")), true);
         break;
       case "trust": {
         if (this.session && msg.cwd === this.session.cwd) this.trust = (msg.trust as TrustState) ?? null;
-        if (msg.saved) this.flashSettings("信任决定已保存（写在 trust.json，终端里的 pi 也认）");
+        if (msg.saved) this.flashSettings(tr("信任决定已保存（写在 trust.json，终端里的 pi 也认）"));
         if (this.sheetKind === "settings") this.paintSettings();
         this.renderChat();
         break;
@@ -1224,7 +1268,7 @@ export class App {
       case "import.result": {
         this.branching = false;
         if (msg.error) {
-          this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: `${msg.type === "import.result" ? "导入" : "分叉 / 复制"}失败：${msg.error}`, level: "error" });
+          this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: tr("{p1}失败：{p2}", { p1: msg.type === "import.result" ? "导入" : "分叉 / 复制", p2: msg.error }), level: "error" });
           break;
         }
         const id = String(msg.sessionId ?? "");
@@ -1235,7 +1279,7 @@ export class App {
         // Said once the new session's snapshot is in: the snapshot resets the transcript.
         this.afterOpen = {
           id,
-          text: msg.type === "import.result" ? "已导入，这是导入的会话。" : msg.text ? "已分叉成新会话，原来那条消息放回了输入框。" : "已复制成新会话。",
+          text: msg.type === "import.result" ? tr("已导入，这是导入的会话。") : msg.text ? tr("已分叉成新会话，原来那条消息放回了输入框。") : tr("已复制成新会话。"),
         };
         break;
       }
@@ -1251,7 +1295,7 @@ export class App {
         if (msg.sessionId === this.currentId) {
           if (msg.running) {
             this.runSince = Date.now();
-            this.activity = "思考中";
+            this.activity = tr("思考中");
             // Q-024: the hover card says "本轮第 N 次工具调用", so N is per run and starts over here.
             this.stepCount = 0;
           } else this.activity = "";
@@ -1296,10 +1340,10 @@ export class App {
         const removed: string[] = Array.isArray(msg.removed) ? msg.removed.map(String) : [];
         const skipped: DeleteReport["skipped"] = Array.isArray(msg.skipped) ? msg.skipped : [];
         const parts: string[] = [];
-        if (removed.length) parts.push(`已移入垃圾箱 ${removed.length} 个`);
+        if (removed.length) parts.push(tr("已移入垃圾箱 {p1} 个", { p1: removed.length }));
         if (skipped.length) {
-          const names = skipped.slice(0, 3).map((s: DeleteReport["skipped"][number]) => `${s.name}（${s.reason}）`).join("、");
-          parts.push(`${skipped.length} 个没删：${names}${skipped.length > 3 ? " 等" : ""}`);
+          const names = skipped.slice(0, 3).map((s: DeleteReport["skipped"][number]) => tr("{p1}（{p2}）", { p1: s.name, p2: s.reason })).join(tr("、"));
+          parts.push(tr("{p1} 个没删：{p2}{p3}", { p1: skipped.length, p2: names, p3: skipped.length > 3 ? " 等" : "" }));
         }
         this.mgrNote = parts.join(" · ");
         this.mgrRefresh?.();
@@ -1315,15 +1359,15 @@ export class App {
         const restored: string[] = Array.isArray(msg.restored) ? msg.restored.map(String) : [];
         const skipped: { id: string; reason: string }[] = Array.isArray(msg.skipped) ? msg.skipped : [];
         const parts: string[] = [];
-        if (restored.length) parts.push(`已还原 ${restored.length} 个`);
-        if (skipped.length) parts.push(`${skipped.length} 个没还原：${skipped.slice(0, 3).map((s) => s.reason).join("、")}`);
+        if (restored.length) parts.push(tr("已还原 {p1} 个", { p1: restored.length }));
+        if (skipped.length) parts.push(tr("{p1} 个没还原：{p2}", { p1: skipped.length, p2: skipped.slice(0, 3).map((s) => s.reason).join("、") }));
         this.mgrNote = parts.join(" · ");
         this.mgrRefresh?.();
         break;
       }
       case "purge.result": {
         const purged: string[] = Array.isArray(msg.purged) ? msg.purged.map(String) : [];
-        this.mgrNote = purged.length ? `已彻底删除 ${purged.length} 个` : "垃圾箱里没有可删除的东西";
+        this.mgrNote = purged.length ? tr("已彻底删除 {p1} 个", { p1: purged.length }) : tr("垃圾箱里没有可删除的东西");
         this.mgrRefresh?.();
         break;
       }
@@ -1339,11 +1383,12 @@ export class App {
       case "notice":
         // A failed create comes back as an untargeted error notice: show it in the dialog instead.
         if (this.creating && !msg.sessionId && msg.level === "error") {
-          this.creating.finish(String(msg.text ?? "启动失败"));
+          this.creating.finish(msg.code ? errText(msg) : String(msg.text ?? tr("启动失败")));
           break;
         }
         if (this.claiming && msg.level === "error" && (!msg.sessionId || msg.sessionId === this.claiming)) this.endClaim();
-        if (!msg.sessionId || msg.sessionId === this.currentId) this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: msg.text, level: msg.level ?? "info" });
+        // D110：`code` 存在时按语言渲染，否则显示 bridge 给的原句（多数是 pi 产出的文本）。
+        if (!msg.sessionId || msg.sessionId === this.currentId) this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: msg.code ? errText(msg) : msg.text, level: msg.level ?? "info" });
         break;
       case "term.opened": {
         this.addTermTab(String(msg.id ?? ""), String(msg.shell ?? "shell"), String(msg.cwd ?? ""));
@@ -1369,7 +1414,7 @@ export class App {
         break;
       }
       case "term.exit": {
-        this.termTabs.get(String(msg.id ?? ""))?.term.write(`\r\n[进程已退出，exit ${Number(msg.code ?? 0)}]\r\n`);
+        this.termTabs.get(String(msg.id ?? ""))?.term.write(tr("\r\n[进程已退出，exit {p1}]\r\n", { p1: Number(msg.code ?? 0) }));
         break;
       }
       case "term.gone": {
@@ -1379,14 +1424,14 @@ export class App {
       case "term.error": {
         // 那个 shell 没开成：把在飞的标记清掉，不然按钮会以为还有一次在启动中。
         this.termWantAt = 0;
-        this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: String(msg.message ?? "终端启动失败"), level: "error" });
+        this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: String(msg.message ?? tr("终端启动失败")), level: "error" });
         break;
       }
       case "need-stepup":
         // Our window and the bridge's disagreed (e.g. after a reconnect): that write was dropped.
         this.stepUntil = 0;
         this.stepResync = true;
-        this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: "口令验证已过期，刚才的操作没有执行，验证后请重做一次", level: "warn" });
+        this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: tr("口令验证已过期，刚才的操作没有执行，验证后请重做一次"), level: "warn" });
         this.askStepUp();
         break;
       case "stepup-ok":
@@ -1455,19 +1500,19 @@ export class App {
     if (document.querySelector(".modal")) return;
     const modal = el("div", "modal hi");
     const form = el("form");
-    const h = el("h2", "", "再验一次口令");
+    const h = el("h2", "", tr("再验一次口令"));
     h.style.margin = "0";
     h.style.fontSize = "16px";
-    const p = el("p", "", "公网访问下，写入和批准前要重新验一次口令（10 分钟内免重复）。");
+    const p = el("p", "", tr("公网访问下，写入和批准前要重新验一次口令（10 分钟内免重复）。"));
     p.style.color = "var(--faint)";
     p.style.fontSize = "13px";
     p.style.margin = "0";
     const input = el("input");
     input.type = "password";
     input.autocomplete = "current-password";
-    input.placeholder = "口令";
+    input.placeholder = tr("口令");
     const err = el("div", "err");
-    const submit = el("button", "btn primary", "继续");
+    const submit = el("button", "btn primary", tr("继续"));
     submit.type = "submit";
     form.append(h, p, input, err, submit);
     modal.append(form);
@@ -1511,7 +1556,7 @@ export class App {
         this.composerText = "";
         this.images = [];
         this.pastes = [];
-        this.chat.add({ id: clientId, kind: "user", text: text || "（图片）", images: [], ts: new Date().toISOString() });
+        this.chat.add({ id: clientId, kind: "user", text: text || tr("（图片）"), images: [], ts: new Date().toISOString() });
         this.renderChat();
       }
       if (payload.sessionId) this.drafts.delete(payload.sessionId);
@@ -1569,19 +1614,19 @@ export class App {
           return done();
         }
         if (!owned) {
-          say("先接管这个会话，再切换思考档位。", "warn");
+          say(tr("先接管这个会话，再切换思考档位。"), "warn");
           return true;
         }
         this.act(() => this.socket.send({ type: "setThinking", sessionId, level: arg }));
         return done();
       }
       case "name":
-        if (!arg) say(`当前会话名：${this.session?.name || "（未命名）"}`);
+        if (!arg) say(tr("当前会话名：{p1}", { p1: this.session?.name || "（未命名）" }));
         else this.applyRename(sessionId, arg);
         return done();
       case "compact":
         if (!owned) {
-          say("先接管这个会话，再压缩上下文。", "warn");
+          say(tr("先接管这个会话，再压缩上下文。"), "warn");
           return true;
         }
         this.act(() => this.socket.send({ type: "compact", sessionId, instructions: arg || undefined }));
@@ -1603,7 +1648,7 @@ export class App {
         return done();
       case "import":
         if (!arg) {
-          say("用法：/import <会话 .jsonl 文件的完整路径>", "warn");
+          say(tr("用法：/import <会话 .jsonl 文件的完整路径>"), "warn");
           return true;
         }
         this.act(() => this.socket.send({ type: "import", path: arg }));
@@ -1631,7 +1676,7 @@ export class App {
         return done();
       case "reload":
         if (!owned) {
-          say("这个会话没在网页里运行：下次接管时用的就是最新设置。", "warn");
+          say(tr("这个会话没在网页里运行：下次接管时用的就是最新设置。"), "warn");
           return true;
         }
         this.act(() => this.socket.send({ type: "reload", sessionId }));
@@ -1646,22 +1691,22 @@ export class App {
       case "copy": {
         const text = this.chat.lastAssistantText();
         if (!text) {
-          say("还没有可复制的回复。", "warn");
+          say(tr("还没有可复制的回复。"), "warn");
           return true;
         }
         const copied = navigator.clipboard?.writeText(text);
-        if (!copied) say("这个地址拿不到剪贴板（http 的局域网地址浏览器不给），可以用回复右上角的 ⧉。", "warn");
-        else void copied.then(() => say("已复制最后一条回复。"));
+        if (!copied) say(tr("这个地址拿不到剪贴板（http 的局域网地址浏览器不给），可以用回复右上角的 ⧉。"), "warn");
+        else void copied.then(() => say(tr("已复制最后一条回复。")));
         return done();
       }
       case "quit":
       case "exit":
-        say("网页里不需要退出。要停掉这个会话的 pi 进程，点输入框下方的「释放会话 / 让回终端」。");
+        say(tr("网页里不需要退出。要停掉这个会话的 pi 进程，点输入框下方的「释放会话 / 让回终端」。"));
         return done();
     }
     const pending = UNSUPPORTED_BUILTINS[name];
     if (!pending) return false; // extension commands, prompt templates, /skill:… go to pi
-    say(`「/${name}」在网页里还没有对应功能（${pending}），没有发给模型。`, "warn");
+    say(tr("「/{p1}」在网页里还没有对应功能（{p2}），没有发给模型。", { p1: name, p2: pending }), "warn");
     return true;
   }
 
@@ -1686,12 +1731,12 @@ export class App {
 
   private async enablePush(): Promise<void> {
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-      alert("这个浏览器/地址不支持 Web Push（iOS 需要先「添加到主屏幕」）");
+      alert(tr("这个浏览器/地址不支持 Web Push（iOS 需要先「添加到主屏幕」）"));
       return;
     }
     const reg = await navigator.serviceWorker.register("/sw.js");
     if (!this.me.pushKey) {
-      alert("服务端没给 push 公钥");
+      alert(tr("服务端没给 push 公钥"));
       return;
     }
     const permission = await Notification.requestPermission();
@@ -1702,7 +1747,7 @@ export class App {
       applicationServerKey: urlBase64ToUint8Array(this.me.pushKey) as unknown as BufferSource,
     });
     await api.subscribe(sub.toJSON());
-    alert("已开启：需要你的时候会推到这个设备");
+    alert(tr("已开启：需要你的时候会推到这个设备"));
   }
 
   /** Overlays live inside #app so they scale with the appearance zoom. */
@@ -1711,7 +1756,7 @@ export class App {
   }
 
   /**
-   * D94: 文件预览与终端是两扇平等的浮窗，谁最后被点 / 聚焦谁在上面。同一时间只有一扇带 `.front`
+   * D111: 文件预览与终端是两扇平等的浮窗，谁最后被点 / 聚焦谁在上面。同一时间只有一扇带 `.front`
    * （z-index 47），另一扇回落到自己的底值（预览 46 / 终端 45），所以不存在平手；整条层带仍在
    * 口令 modal（50）与底部 sheet（60）之下 —— 能盖住窗的只有真正的模态，不是另一扇窗。
    */
@@ -1801,7 +1846,7 @@ export class App {
    * into the title, because Shift+Enter is the one shortcut nobody finds by accident alone.
    */
   private gitChip(git: GitInfo, flat = false): HTMLButtonElement {
-    const label = git.branch || (git.empty ? "(无提交)" : "(未知)");
+    const label = git.branch || (git.empty ? tr("(无提交)") : tr("(未知)"));
     const chip = el("button", flat ? "git-chip flat" : "git-chip") as HTMLButtonElement;
     chip.type = "button";
     chip.dataset.act = "git";
@@ -1809,10 +1854,10 @@ export class App {
     chip.append(el("span", "git-glyph", "⎇"), el("span", "git-branch", label));
     if (git.dirty) chip.append(el("span", "git-dot", ""), el("span", "git-count", String(git.dirty)));
     if (git.detached) chip.append(el("span", "git-tag", "detached"));
-    const lines = [`⎇ ${label}${git.dirty ? ` · ${git.dirty} 个未提交改动` : ""}`];
-    if (git.detached) lines.push("detached HEAD：不在任何分支上");
-    if (git.empty) lines.push("仓库里还没有提交");
-    lines.push(git.repo, "", `Enter 发送 · Shift+Enter 换行 · ${PASTE_KEY} 粘贴截图`, "点一下复制分支名");
+    const lines = [tr("⎇ {p1}{p2}", { p1: label, p2: git.dirty ? tr(" · {p1} 个未提交改动", { p1: git.dirty }) : "" })];
+    if (git.detached) lines.push(tr("detached HEAD：不在任何分支上"));
+    if (git.empty) lines.push(tr("仓库里还没有提交"));
+    lines.push(git.repo, "", tr("Enter 发送 · Shift+Enter 换行 · {p1} 粘贴截图", { p1: PASTE_KEY }), tr("点一下复制分支名"));
     chip.title = lines.join("\n");
     chip.onclick = () => {
       // `navigator.clipboard` is undefined over plain http:// on a LAN address — optional chaining has
@@ -1824,9 +1869,9 @@ export class App {
       void copy
         .then(() => {
           if (!shown) return;
-          shown.textContent = "已复制";
+          shown.textContent = tr("已复制");
           setTimeout(() => {
-            if (shown.isConnected && shown.textContent === "已复制") shown.textContent = back;
+            if (shown.isConnected && shown.textContent === tr("已复制")) shown.textContent = back;
           }, 900);
         })
         .catch(() => {});
@@ -1929,12 +1974,12 @@ export class App {
         box.replaceChildren(this.gitChip(git));
         return;
       }
-      box.replaceChildren(el("kbd", "", "Enter"), el("span", "", "发送 · Shift+Enter 换行 · "), el("kbd", "", PASTE_KEY), el("span", "", " 粘贴截图"));
+      box.replaceChildren(el("kbd", "", "Enter"), el("span", "", tr("发送 · Shift+Enter 换行 · ")), el("kbd", "", PASTE_KEY), el("span", "", tr(" 粘贴截图")));
       return;
     }
     if (this.runSince == null) this.runSince = Date.now();
-    const waiting = this.asks.length ? "等你回答上面的问题" : this.approvals.length ? "等你批准" : "";
-    const what = waiting || this.activity || "运行中";
+    const waiting = this.asks.length ? tr("等你回答上面的问题") : this.approvals.length ? tr("等你批准") : "";
+    const what = waiting || this.activity || tr("运行中");
     let spin = box.querySelector<HTMLElement>(".act-spin");
     let text = box.querySelector<HTMLElement>(".act-text");
     let time = box.querySelector<HTMLElement>(".act-time");
@@ -1942,9 +1987,9 @@ export class App {
       spin = el("span", "act-spin");
       text = el("span", "act-text");
       time = el("span", "act-time");
-      const stop = el("button", "btn danger", "中断");
+      const stop = el("button", "btn danger", tr("中断"));
       stop.dataset.act = "interrupt";
-      stop.title = "中断当前回复";
+      stop.title = tr("中断当前回复");
       stop.onclick = () => this.act(() => this.socket.send({ type: "abort", sessionId: this.currentId }));
       box.replaceChildren(spin, text, time, stop);
       // Q-029: only the label, the clock and the card are hover targets — not the rest of the row.
@@ -1955,7 +2000,7 @@ export class App {
     text.textContent = what;
     text.title = "";
     const secs = Math.max(0, Math.round((Date.now() - this.runSince) / 1000));
-    const dur = secs >= 60 ? `${Math.floor(secs / 60)}分${String(secs % 60).padStart(2, "0")}秒` : `${secs}秒`;
+    const dur = secs >= 60 ? tr("{p1}分{p2}秒", { p1: Math.floor(secs / 60), p2: String(secs % 60).padStart(2, "0") }) : tr("{p1}秒", { p1: secs });
     time.textContent = dur;
     // Q-021: 运行态以运行信息为主，分支只是一枚扁平尾标 —— 窄了它先被省略，撑不掉「正在执行 …」。
     const chip = box.querySelector<HTMLElement>(".git-chip");
@@ -1984,14 +2029,14 @@ export class App {
       line.append(el("span", "act-pop-label", label), el("span", "act-pop-val", value));
       return line;
     };
-    if (live.name) rows.push(row("工具", [live.name, live.summary].filter(Boolean).join(" · ")));
+    if (live.name) rows.push(row(tr("工具"), [live.name, live.summary].filter(Boolean).join(" · ")));
     const args = oneLine(live.args ?? "", 220);
-    if (args) rows.push(row("参数", args, "args"));
+    if (args) rows.push(row(tr("参数"), args, "args"));
     const output = tailText(live.output ?? "", 6, 420);
-    if (output) rows.push(row("输出", output, "out"));
+    if (output) rows.push(row(tr("输出"), output, "out"));
     const thinking = tailText(live.thinking ?? "", 3, 240);
-    if (thinking) rows.push(row("思考", thinking, "think"));
-    rows.push(el("div", "act-pop-meta", `已运行 ${dur}${this.stepCount > 1 ? ` · 本轮第 ${this.stepCount} 次工具调用` : ""}`));
+    if (thinking) rows.push(row(tr("思考"), thinking, "think"));
+    rows.push(el("div", "act-pop-meta", tr("已运行 {p1}{p2}", { p1: dur, p2: this.stepCount > 1 ? tr(" · 本轮第 {p1} 次工具调用", { p1: this.stepCount }) : "" })));
     pop.replaceChildren(...rows);
   }
 
@@ -2030,17 +2075,30 @@ export class App {
 
     const sheet = el("div", "sheet display-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", "字号与颜色"));
-    const close = el("button", "btn ghost", "关闭");
+    head.append(el("div", "sheet-title", tr("外观与语言")));
+    const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(close);
     sheet.append(head);
 
+    // 语言放第一组：换语言是「整页立刻变样」的事，比字号更需要一眼找到（D110）。
+    const langBox = el("div", "levels");
+    langBox.append(el("div", "levels-label", tr("语言")));
+    const langChips = el("div", "chips");
+    for (const [code, label] of LANGS) {
+      const chip = el("button", `chip${this.prefs.lang === code ? " on" : ""}`, label);
+      chip.setAttribute("lang", code === "zh-Hans" ? "zh-Hans" : code);
+      chip.onclick = () => this.setPrefLang(code);
+      langChips.append(chip);
+    }
+    langBox.append(langChips);
+    sheet.append(langBox);
+
     const sizeBox = el("div", "levels");
-    sizeBox.append(el("div", "levels-label", "字号"));
+    sizeBox.append(el("div", "levels-label", tr("字号")));
     const sizeChips = el("div", "chips");
     for (const [scale, label] of SIZES) {
-      const chip = el("button", `chip${Math.abs(this.prefs.scale - scale) < 0.005 ? " on" : ""}`, label);
+      const chip = el("button", `chip${Math.abs(this.prefs.scale - scale) < 0.005 ? " on" : ""}`, tr(label));
       chip.onclick = () => {
         this.prefs = { ...this.prefs, scale };
         savePrefs(this.prefs);
@@ -2053,15 +2111,15 @@ export class App {
     sheet.append(sizeBox);
 
     const colorBox = el("div", "levels");
-    colorBox.append(el("div", "levels-label", "颜色"));
+    colorBox.append(el("div", "levels-label", tr("颜色")));
     const swatches = el("div", "swatches");
-    for (const name of Object.keys(ACCENTS)) {
-      const sw = el("button", `swatch${this.prefs.accent === name ? " on" : ""}`);
-      sw.style.setProperty("--sw", ACCENTS[name].accent);
-      sw.title = name;
-      sw.setAttribute("aria-label", name);
+    for (const [id, label] of ACCENT_LABELS) {
+      const sw = el("button", `swatch${this.prefs.accent === id ? " on" : ""}`);
+      sw.style.setProperty("--sw", ACCENTS[id].accent);
+      sw.title = tr(label);
+      sw.setAttribute("aria-label", tr(label));
       sw.onclick = () => {
-        this.prefs = { ...this.prefs, accent: name };
+        this.prefs = { ...this.prefs, accent: id };
         savePrefs(this.prefs);
         this.applyPrefs();
         for (const other of swatches.querySelectorAll(".swatch")) other.classList.toggle("on", other === sw);
@@ -2072,10 +2130,10 @@ export class App {
     sheet.append(colorBox);
 
     const textBox = el("div", "levels");
-    textBox.append(el("div", "levels-label", "文字亮度"));
+    textBox.append(el("div", "levels-label", tr("文字亮度")));
     const textChips = el("div", "chips");
     for (const [key, label] of TEXT_STEPS) {
-      const chip = el("button", `chip${this.prefs.text === key ? " on" : ""}`, label);
+      const chip = el("button", `chip${this.prefs.text === key ? " on" : ""}`, tr(label));
       chip.onclick = () => {
         this.prefs = { ...this.prefs, text: key };
         savePrefs(this.prefs);
@@ -2088,9 +2146,10 @@ export class App {
     sheet.append(textBox);
 
     const foot = el("div", "sheet-foot");
-    const reset = el("button", "btn ghost", "恢复默认");
+    const reset = el("button", "btn ghost", tr("恢复默认"));
     reset.onclick = () => {
-      this.prefs = { ...DEFAULT_PREFS };
+      // 恢复默认只恢复字号/颜色/亮度：语言是「我是谁」，不该被配色重置带走。
+      this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang };
       savePrefs(this.prefs);
       this.applyPrefs();
       this.openDisplaySheet();
@@ -2098,6 +2157,102 @@ export class App {
     foot.append(reset);
     sheet.append(foot);
 
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+  }
+
+  /**
+   * Switch language live (D110): no reload — a reload would drop the WS connection and the
+   * scroll position, which reads as "something broke". Sheet + topbar are rebuilt just below;
+   * `renderAll()` handles every other view.
+   */
+  private setPrefLang(next: Lang): void {
+    if (next === this.prefs.lang) return;
+    this.prefs = { ...this.prefs, lang: next };
+    savePrefs(this.prefs);
+    applyLang(next);
+    // 推送标题跟界面语言走：bridge 只在内存里记这一个值。
+    this.socket.send({ type: "lang", lang: next });
+    this.paintChrome();
+    this.renderAll();
+    if (this.sheetKind === "display") this.openDisplaySheet();
+  }
+
+  /**
+   * Retranslate the bits that are built once and never re-rendered: the topbar's fixed four
+   * buttons, the new-session button and the two filter placeholders. `renderTop()` only repaints
+   * the session list, `renderSessions()` the chips — neither touches these.
+   */
+  private paintChrome(): void {
+    const { look, files, term, fs, notes, peer, manageBtn, binBtn, tabs } = this.els;
+    const newBtn = this.els.newBtn as HTMLButtonElement;
+    const sessFilter = this.els.sessFilter as HTMLInputElement;
+    look.title = tr("外观与语言");
+    look.setAttribute("aria-label", tr("外观与语言"));
+    files.textContent = tr("📂 产物");
+    files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
+    term.textContent = tr(">_ 终端");
+    term.setAttribute("aria-label", tr("终端"));
+    term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
+    fs.textContent = tr("📁 文件管理器");
+    fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
+    // 记录与内网通是顶栏常显的两颗（#45 / D108），标题也要跟着换；
+    // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写。
+    if (notes) this.paintNotesBadge();
+    if (peer) {
+      peer.textContent = tr("🌐 内网通");
+      peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
+    }
+    newBtn.textContent = tr("开新会话");
+    sessFilter.placeholder = tr("过滤名字 / 目录");
+    manageBtn.textContent = tr("管理");
+    manageBtn.title = tr("管理全部会话：检索、筛选、排序、分组、批量操作");
+    const binLabel = binBtn.querySelector(".bin-label");
+    if (binLabel) binLabel.textContent = tr("垃圾箱");
+    // 底部 tab 的文字也是构造期写死的，renderTabs() 只切状态不碰文字。
+    // 只改首个文本节点：`.pip` 徽标是 renderTabs 追加的子节点，textContent 会把它们抹掉。
+    const labels: Record<string, string> = { sessions: tr("会话"), chat: tr("对话"), queue: tr("需要你") };
+    for (const btn of Array.from(tabs.querySelectorAll<HTMLButtonElement>("button"))) {
+      const next = labels[btn.dataset.tab ?? ""];
+      if (!next) continue;
+      const head = btn.firstChild;
+      if (head && head.nodeType === Node.TEXT_NODE) head.textContent = next;
+      else btn.prepend(next);
+    }
+  }
+
+  // ---------------------------------------------------------------- peer sheet (#45)
+  /**
+   * The LAN page as a dialog rather than a new tab: it is one more thing you look at while the
+   * session stays put. The body is an iframe of the standalone `/peer` document, so the peer page
+   * keeps its own entry (openable directly) without a second implementation; the iframe is removed
+   * on close, which also stops its polling.
+   */
+  private openPeerSheet(): void {
+    this.closeSheet();
+    this.sheetKind = "peer";
+    const back = el("div", "sheet-back center");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+
+    const sheet = el("div", "sheet peer-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("内网通")));
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+
+    const frame = document.createElement("iframe");
+    frame.className = "peer-frame";
+    frame.title = tr("内网通");
+    // 带一个每次打开都变的 query：`peer.html` 里引的 bundle 文件名是构建哈希，
+    // 但 HTML 自己会被浏览器缓存 —— 不换 query 的话，弹框会一直加载上一次构建的页面
+    // （第 2 片上线时，用户看到的「在线」里就没有「发消息」按钮）。
+    frame.src = `/peer?v=${Date.now()}`;
+
+    sheet.append(head, frame);
     back.append(sheet);
     this.overlay(back);
     this.sheet = back;
@@ -2130,8 +2285,8 @@ export class App {
 
     const sheet = el("div", "sheet model-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", "模型与思考"));
-    const close = el("button", "btn ghost", "关闭");
+    head.append(el("div", "sheet-title", tr("模型与思考")));
+    const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(close);
     sheet.append(head);
@@ -2145,17 +2300,17 @@ export class App {
     let draftLevel = startLevel;
     const foot = el("div", "sheet-foot");
     const footHint = el("div", "sheet-foot-hint");
-    const cancel = el("button", "btn ghost", "取消");
+    const cancel = el("button", "btn ghost", tr("取消"));
     cancel.onclick = () => this.closeSheet();
-    const confirm = el("button", "btn primary", "确认") as HTMLButtonElement;
+    const confirm = el("button", "btn primary", tr("确认")) as HTMLButtonElement;
     foot.append(footHint, cancel, confirm);
     const refreshFoot = (): void => {
       const changes: string[] = [];
-      if (draftModel !== startModel) changes.push(`模型 → ${shortModelName(this.models.find((m) => m.id === draftModel)?.name ?? draftModel ?? "")}`);
-      if (draftLevel !== startLevel) changes.push(`思考 → ${draftLevel}`);
-      if (draftBudget !== startBudget) changes.push(`预算 → ${draftBudget ? compactSize(draftBudget) : "不设"}`);
+      if (draftModel !== startModel) changes.push(tr("模型 → {p1}", { p1: shortModelName(this.models.find((m) => m.id === draftModel)?.name ?? draftModel ?? "") }));
+      if (draftLevel !== startLevel) changes.push(tr("思考 → {p1}", { p1: draftLevel }));
+      if (draftBudget !== startBudget) changes.push(tr("预算 → {p1}", { p1: draftBudget ? compactSize(draftBudget) : tr("不设") }));
       confirm.disabled = !changes.length;
-      footHint.textContent = changes.length ? changes.join("，") : "未改动";
+      footHint.textContent = changes.length ? changes.join(tr("，")) : tr("未改动");
       footHint.title = footHint.textContent;
     };
     confirm.onclick = () => {
@@ -2186,11 +2341,11 @@ export class App {
 
     // Context budget: enforced by the bridge (one auto-compaction per turn when it is blown).
     const budgetBox = el("div", "levels");
-    budgetBox.append(el("div", "levels-label", "上下文预算"));
+    budgetBox.append(el("div", "levels-label", tr("上下文预算")));
     const budgetChips = el("div", "chips");
     for (const value of BUDGETS) {
       const on = (value ?? null) === startBudget;
-      const chip = el("button", `chip${on ? " on" : ""}`, value ? compactSize(value) : "不设");
+      const chip = el("button", `chip${on ? " on" : ""}`, value ? compactSize(value) : tr("不设"));
       chip.onclick = () => {
         draftBudget = value ?? null;
         for (const other of budgetChips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
@@ -2199,7 +2354,7 @@ export class App {
       budgetChips.append(chip);
     }
     budgetBox.append(budgetChips);
-    budgetBox.append(el("div", "budget-hint", "用量超过预算时，这轮结束后自动压缩一次。"));
+    budgetBox.append(el("div", "budget-hint", tr("用量超过预算时，这轮结束后自动压缩一次。")));
     // One grid row for both: the sheet's rows are fixed (the model list is the 1fr one).
     const top = el("div", "sheet-top");
     top.append(budgetBox, this.sessionInfoBox());
@@ -2207,7 +2362,7 @@ export class App {
 
     // Switching only works on a session this bridge owns; a terminal-owned one has no rpc child.
     if (this.session && !this.session.owned) {
-      const notice = el("div", "takeover warn", "这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。");
+      const notice = el("div", "takeover warn", tr("这个会话现在没有写入权，切不了模型。接管之后就正常了——终端里如果有 pi 在写同一个文件，先退出那边。"));
       notice.append(this.claimButton());
       sheet.append(notice, foot);
       refreshFoot();
@@ -2218,7 +2373,7 @@ export class App {
     }
 
     if (!this.models.length) {
-      const empty = el("div", "empty", "模型列表还没加载好，稍等一下，或者点这里重试。");
+      const empty = el("div", "empty", tr("模型列表还没加载好，稍等一下，或者点这里重试。"));
       empty.onclick = () => this.socket.send({ type: "models" });
       sheet.append(empty);
     }
@@ -2246,7 +2401,7 @@ export class App {
       const row = el("button", `model-row${m.id === draftModel ? " on" : ""}`);
       row.dataset.id = m.id;
       const nameEl = el("span", "m-name", shortModelName(m.name));
-      if (m.id === startModel) nameEl.append(el("span", "m-cur", "当前"));
+      if (m.id === startModel) nameEl.append(el("span", "m-cur", tr("当前")));
       row.append(nameEl);
       const meta = [compactSize(m.contextWindow), m.id].filter(Boolean).join(" · ");
       row.append(el("span", "m-meta", meta));
@@ -2270,7 +2425,7 @@ export class App {
     }
     sheet.append(list);
 
-    levelsBox.append(el("div", "levels-label", "思考档位"), chips);
+    levelsBox.append(el("div", "levels-label", tr("思考档位")), chips);
     paintLevels();
     sheet.append(levelsBox, foot);
     refreshFoot();
@@ -2301,10 +2456,10 @@ export class App {
     const pop = el("div", "skill-pop");
     const panel = el("div", "skill-panel");
     const search = el("input", "skill-search") as HTMLInputElement;
-    search.placeholder = "搜索技能：名字或描述…";
+    search.placeholder = tr("搜索技能：名字或描述…");
     search.spellcheck = false;
     const list = el("div", "skill-list");
-    const foot = el("div", "skill-foot", "1–9 直接选 · ↑↓ 选 · Enter 确认 · Esc 关闭");
+    const foot = el("div", "skill-foot", tr("1–9 直接选 · ↑↓ 选 · Enter 确认 · Esc 关闭"));
     panel.append(search, list, foot);
     pop.append(panel);
     this.els.composerHost.append(pop);
@@ -2398,11 +2553,11 @@ export class App {
     list.replaceChildren();
 
     if (!this.skills.length) {
-      list.append(el("div", "skill-empty", "技能列表还没到，稍等一下…"));
+      list.append(el("div", "skill-empty", tr("技能列表还没到，稍等一下…")));
       return;
     }
     if (!items.length) {
-      list.append(el("div", "skill-empty", `没有匹配「${this.skillQuery}」的技能`));
+      list.append(el("div", "skill-empty", tr("没有匹配「{p1}」的技能", { p1: this.skillQuery })));
       return;
     }
     this.skillSel = Math.min(this.skillSel, items.length - 1);
@@ -2481,7 +2636,7 @@ export class App {
    */
   private launchOptionsBox(): { node: HTMLElement; read: () => Record<string, unknown> } {
     const box = el("details", "ns-advanced");
-    box.append(el("summary", "", "高级：启动参数（相当于 pi 的命令行选项）"));
+    box.append(el("summary", "", tr("高级：启动参数（相当于 pi 的命令行选项）")));
     const grid = el("div", "ns-adv-grid");
     const field = (label: string, input: HTMLElement, hint?: string) => {
       const wrap = el("label", "ns-adv-field");
@@ -2490,27 +2645,27 @@ export class App {
       grid.append(wrap);
     };
     const model = el("select", "ns-input") as HTMLSelectElement;
-    model.append(new Option("（用默认模型）", ""));
+    model.append(new Option(tr("（用默认模型）"), ""));
     for (const m of this.models) model.append(new Option(`${shortModelName(m.name)} · ${m.provider}`, `${m.provider}/${m.id}`));
-    field("模型 --model", model);
+    field(tr("模型 --model"), model);
     const thinking = el("select", "ns-input") as HTMLSelectElement;
-    for (const lv of ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"]) thinking.append(new Option(lv || "（默认）", lv));
-    field("思考 --thinking", thinking);
+    for (const lv of ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"]) thinking.append(new Option(lv || tr("（默认）"), lv));
+    field(tr("思考 --thinking"), thinking);
     const tools = el("input", "ns-input mono") as HTMLInputElement;
-    tools.placeholder = "例如 read,grep,find,ls 或 +codemode,-write";
-    field("工具 --tools", tools, "普通名字＝只用这些；+x / -x＝在默认基础上增减（两种不能混用）");
+    tools.placeholder = tr("例如 read,grep,find,ls 或 +codemode,-write");
+    field(tr("工具 --tools"), tools, tr("普通名字＝只用这些；+x / -x＝在默认基础上增减（两种不能混用）"));
     const ext = el("textarea", "ns-input mono") as HTMLTextAreaElement;
     ext.rows = 2;
-    ext.placeholder = "一行一个扩展文件或目录";
-    field("额外扩展 -e", ext);
+    ext.placeholder = tr("一行一个扩展文件或目录");
+    field(tr("额外扩展 -e"), ext);
     const skills = el("textarea", "ns-input mono") as HTMLTextAreaElement;
     skills.rows = 2;
-    skills.placeholder = "一行一个技能文件或目录";
-    field("额外技能 --skill", skills);
+    skills.placeholder = tr("一行一个技能文件或目录");
+    field(tr("额外技能 --skill"), skills);
     const prompt = el("textarea", "ns-input") as HTMLTextAreaElement;
     prompt.rows = 3;
-    prompt.placeholder = "追加到系统提示词的文字（或一个文件路径）";
-    field("追加系统提示词", prompt);
+    prompt.placeholder = tr("追加到系统提示词的文字（或一个文件路径）");
+    field(tr("追加系统提示词"), prompt);
     const flags = el("div", "ns-adv-flags");
     const flag = (key: string, label: string, title: string) => {
       const wrap = el("label", "ns-adv-flag");
@@ -2521,11 +2676,11 @@ export class App {
       wrap.append(box, el("span", "", label));
       flags.append(wrap);
     };
-    flag("noBuiltinTools", "不要内置工具", "--no-builtin-tools：关掉 read/bash/edit/write 等，只留扩展工具");
-    flag("noExtensions", "不加载扩展", "-ne：不加载已发现 / 配置 / 内置的扩展（审批门禁照样加载）");
-    flag("noContextFiles", "不读 AGENTS.md", "-nc：不读 AGENTS.md / CLAUDE.md");
-    flag("noMcp", "不连 MCP", "--no-mcp");
-    flag("offline", "离线", "--offline：不做自动联网（例如刷新模型目录）");
+    flag("noBuiltinTools", tr("不要内置工具"), tr("--no-builtin-tools：关掉 read/bash/edit/write 等，只留扩展工具"));
+    flag("noExtensions", tr("不加载扩展"), tr("-ne：不加载已发现 / 配置 / 内置的扩展（审批门禁照样加载）"));
+    flag("noContextFiles", tr("不读 AGENTS.md"), tr("-nc：不读 AGENTS.md / CLAUDE.md"));
+    flag("noMcp", tr("不连 MCP"), "--no-mcp");
+    flag("offline", tr("离线"), tr("--offline：不做自动联网（例如刷新模型目录）"));
     grid.append(flags);
     box.append(grid);
     const read = () => {
@@ -2577,33 +2732,33 @@ export class App {
     };
     const sheet = el("div", "sheet new-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", "开新会话"));
-    const close = el("button", "btn ghost", "取消");
+    head.append(el("div", "sheet-title", tr("开新会话")));
+    const close = el("button", "btn ghost", tr("取消"));
     close.onclick = () => this.closeSheet();
     head.append(close);
 
     const nameField = el("input", "ns-input") as HTMLInputElement;
-    nameField.placeholder = "可留空：发第一条消息后自动用它取名";
+    nameField.placeholder = tr("可留空：发第一条消息后自动用它取名");
     nameField.maxLength = 120;
     const cwdField = el("input", "ns-input mono") as HTMLInputElement;
-    cwdField.placeholder = "例如 E:\\yqm\\pi-web-client";
+    cwdField.placeholder = tr("例如 E:\\yqm\\pi-web-client");
     cwdField.value = this.defaultCwd();
     cwdField.setAttribute("list", "pi-recent-cwds");
-    const browseBtn = el("button", "btn ghost", "📁 浏览");
+    const browseBtn = el("button", "btn ghost", tr("📁 浏览"));
     const cwdRow = el("div", "ns-row");
     cwdRow.append(cwdField, browseBtn);
 
     const browser = el("div", "ns-browser");
     browser.hidden = true;
-    const mkBtn = el("button", "btn ghost dir-mk", "＋ 新建文件夹") as HTMLButtonElement;
-    mkBtn.title = "在当前目录下新建一个文件夹";
+    const mkBtn = el("button", "btn ghost dir-mk", tr("＋ 新建文件夹")) as HTMLButtonElement;
+    mkBtn.title = tr("在当前目录下新建一个文件夹");
     const mkRow = el("div", "dir-mkrow");
     mkRow.hidden = true;
     const mkInput = el("input", "ns-input mono") as HTMLInputElement;
-    mkInput.placeholder = "新文件夹名";
+    mkInput.placeholder = tr("新文件夹名");
     mkInput.maxLength = 255;
-    const mkOk = el("button", "btn primary", "创建") as HTMLButtonElement;
-    const mkCancel = el("button", "btn ghost", "取消") as HTMLButtonElement;
+    const mkOk = el("button", "btn primary", tr("创建")) as HTMLButtonElement;
+    const mkCancel = el("button", "btn ghost", tr("取消")) as HTMLButtonElement;
     const mkErr = el("div", "ns-error dir-mkerr");
     const mkFields = el("div", "ns-row");
     mkFields.append(mkInput, mkOk, mkCancel);
@@ -2632,17 +2787,17 @@ export class App {
     const err = el("div", "ns-error");
     const status = el("div", "ns-status");
     status.hidden = true;
-    status.append(el("span", "act-spin"), el("span", "", "正在启动会话…（拉起 pi 进程，通常要几秒）"));
+    status.append(el("span", "act-spin"), el("span", "", tr("正在启动会话…（拉起 pi 进程，通常要几秒）")));
     const foot = el("div", "dir-foot");
-    const ok = el("button", "btn primary", "创建");
+    const ok = el("button", "btn primary", tr("创建"));
     foot.append(ok);
     const advanced = this.launchOptionsBox();
 
     sheet.append(
       head,
-      el("label", "ns-label", "会话名称"),
+      el("label", "ns-label", tr("会话名称")),
       nameField,
-      el("label", "ns-label", "工作目录"),
+      el("label", "ns-label", tr("工作目录")),
       cwdRow,
       this.recentCwdOptions(),
       browser,
@@ -2658,7 +2813,7 @@ export class App {
     // 打开面板时才去读目录：这里只绑定开关。
     browseBtn.onclick = () => {
       browser.hidden = !browser.hidden;
-      browseBtn.textContent = browser.hidden ? "📁 浏览" : "收起";
+      browseBtn.textContent = browser.hidden ? tr("📁 浏览") : tr("收起");
       if (!browser.hidden) void picker?.go(cwdField.value.trim());
     };
     let mkBusy = false;
@@ -2666,7 +2821,7 @@ export class App {
       mkBusy = busy;
       mkInput.disabled = busy;
       mkOk.disabled = busy;
-      mkOk.textContent = busy ? "创建中…" : "创建";
+      mkOk.textContent = busy ? tr("创建中…") : tr("创建");
     };
     function closeMk(): void {
       mkRow.hidden = true;
@@ -2687,7 +2842,7 @@ export class App {
       const parent = current;
       if (!name || !parent || mkBusy) return;
       if (/[\\/]/.test(name)) {
-        mkErr.textContent = "文件夹名里不能有 / 或 \\（一次只建一层）";
+        mkErr.textContent = tr("文件夹名里不能有 / 或 \\（一次只建一层）");
         return;
       }
       this.act(() => {
@@ -2697,14 +2852,14 @@ export class App {
         const timer = setTimeout(() => {
           if (!this.mkdirWaits.delete(reqId)) return;
           setMkBusy(false);
-          mkErr.textContent = "服务端没有响应，稍后再试";
+          mkErr.textContent = tr("服务端没有响应，稍后再试");
         }, 15000);
         this.mkdirWaits.set(reqId, (res) => {
           clearTimeout(timer);
           if (this.sheet !== back) return;
           setMkBusy(false);
           if (res.error || !res.path) {
-            mkErr.textContent = res.error ?? "创建失败";
+            mkErr.textContent = res.error ? errText(res) : tr("创建失败");
             mkInput.focus();
             return;
           }
@@ -2731,13 +2886,13 @@ export class App {
       status.hidden = !busy;
       for (const node of [nameField, cwdField, browseBtn, ok, close] as (HTMLInputElement | HTMLButtonElement)[]) node.disabled = busy;
       browser.classList.toggle("disabled", busy);
-      ok.textContent = busy ? "启动中…" : "创建";
+      ok.textContent = busy ? tr("启动中…") : tr("创建");
     };
     const submit = (): void => {
       if (this.creating) return;
       const cwd = cwdField.value.trim();
       if (!cwd) {
-        err.textContent = "先选一个工作目录";
+        err.textContent = tr("先选一个工作目录");
         cwdField.focus();
         return;
       }
@@ -2747,7 +2902,7 @@ export class App {
         nameField.value.trim(),
         () => {
         setBusy(true);
-        const timer = setTimeout(() => this.creating?.finish("等了 60 秒还没启动起来，看看服务端日志"), 60000);
+        const timer = setTimeout(() => this.creating?.finish(tr("等了 60 秒还没启动起来，看看服务端日志")), 60000);
         this.creating = {
           finish: (error) => {
             clearTimeout(timer);
@@ -2797,16 +2952,16 @@ export class App {
     this.els.files.hidden = !this.currentId;
     this.els.fs.hidden = !this.currentId;
     const bits: string[] = [];
-    if (this.me.public) bits.push("公网");
+    if (this.me.public) bits.push(tr("公网"));
     if (this.tunnel.status === "up" && this.tunnel.url) bits.push(this.tunnel.url.replace("https://", ""));
-    else if (this.tunnel.status === "starting") bits.push("隧道启动中…");
-    else if (this.tunnel.status === "error") bits.push("隧道异常");
+    else if (this.tunnel.status === "starting") bits.push(tr("隧道启动中…"));
+    else if (this.tunnel.status === "error") bits.push(tr("隧道异常"));
 
-    if (!this.connected) bits.push("离线");
+    if (!this.connected) bits.push(tr("离线"));
     sub.textContent = bits.join(" · ");
 
-    setToggle(collapseLeft, this.collapsed.sessions, "会话列表");
-    setToggle(collapseRight, this.collapsed.queue, "待办队列");
+    setToggle(collapseLeft, this.collapsed.sessions, tr("会话列表"));
+    setToggle(collapseRight, this.collapsed.queue, tr("待办队列"));
     collapseRight.classList.toggle("alert", this.collapsed.queue && (this.approvals.length > 0 || this.asks.length > 0));
     this.fillModelChip();
   }
@@ -2826,7 +2981,7 @@ export class App {
     if (!model || !ctx || !rateEl || !levelEl) return;
 
     const name = shortModelName(this.session?.modelName ?? this.session?.model ?? "");
-    model.textContent = name || "模型";
+    model.textContent = name || tr("模型");
 
     const thinking = this.session?.thinkingLevel ?? "";
     levelEl.textContent = thinking || "–";
@@ -2837,7 +2992,7 @@ export class App {
     if (used != null && win) {
       ctx.textContent = `${compactSize(used)}/${compactSize(win)}`;
       ctx.classList.toggle("hot", used / win >= (this.budget ? 0.9 : 0.8));
-      ctx.title = this.budget ? `上下文预算 ${compactSize(this.budget)}：超了就自动压缩` : "";
+      ctx.title = this.budget ? tr("上下文预算 {p1}：超了就自动压缩", { p1: compactSize(this.budget) }) : "";
     } else if (win) {
       ctx.textContent = `–/${compactSize(win)}`;
       ctx.classList.remove("hot");
@@ -2849,7 +3004,7 @@ export class App {
     rateEl.textContent = this.rate >= 1 ? `${Math.round(this.rate)} tok/s` : "– tok/s";
     rateEl.classList.toggle("live", this.turnAt != null);
 
-    chip.title = [this.session?.modelName ?? this.session?.model ?? "模型", ctx.textContent, rateEl.textContent, thinking ? `思考 ${thinking}` : "思考 –"]
+    chip.title = [this.session?.modelName ?? this.session?.model ?? tr("模型"), ctx.textContent, rateEl.textContent, thinking ? tr("思考 {p1}", { p1: thinking }) : tr("思考 –")]
       .filter(Boolean)
       .join(" · ");
   }
@@ -2876,13 +3031,13 @@ export class App {
     if (this.sheetKind === "manage") this.mgrRefresh?.();
 
     if (!ordered.length) {
-      host.append(el("div", "empty", "还没有会话。上面开一个，或在终端里 pi 一下。"));
+      host.append(el("div", "empty", tr("还没有会话。上面开一个，或在终端里 pi 一下。")));
       return;
     }
-    if (pinned.length) host.append(this.sessionSection("pin", "置顶", pinned));
-    host.append(this.sessionSection("rest", this.manage.pin.length ? "会话" : "会话 · 按创建时间", rest));
-    if (!visible.length) host.append(el("div", "empty", this.filter ? "没有匹配的会话。" : "都归档了，展开下面的「已归档」看看。"));
-    if (archived.length) host.append(this.sessionSection("archived", "已归档", this.archivedOpen ? archived : []));
+    if (pinned.length) host.append(this.sessionSection("pin", tr("置顶"), pinned));
+    host.append(this.sessionSection("rest", this.manage.pin.length ? tr("会话") : tr("会话 · 按创建时间"), rest));
+    if (!visible.length) host.append(el("div", "empty", this.filter ? tr("没有匹配的会话。") : tr("都归档了，展开下面的「已归档」看看。")));
+    if (archived.length) host.append(this.sessionSection("archived", tr("已归档"), this.archivedOpen ? archived : []));
     this.renameFocus = false;
   }
 
@@ -2989,14 +3144,14 @@ export class App {
     const bottomActs = el("span", "card-acts bottom");
     row.append(el("span", "grip", "⣿"));
     const dot = el("span", `dot ${s.running ? "busy" : s.owned ? "live" : ""}`);
-    dot.title = s.running ? "运行中" : s.owned ? "网页已接管（pi 进程在本服务里）" : "未接管（只读历史；发消息会自动接管）";
+    dot.title = s.running ? tr("运行中") : s.owned ? tr("网页已接管（pi 进程在本服务里）") : tr("未接管（只读历史；发消息会自动接管）");
     row.append(dot);
     if (editing) {
       const field = el("input", "rename-input");
       field.value = this.renameDraft;
       field.spellcheck = false;
       field.maxLength = 120;
-      field.setAttribute("aria-label", "会话名称");
+      field.setAttribute("aria-label", tr("会话名称"));
       field.oninput = () => {
         this.renameDraft = field.value;
       };
@@ -3025,22 +3180,22 @@ export class App {
     } else {
       row.append(el("span", "name", s.name || s.id.slice(0, 8)));
       const web = s.origin === "web";
-      const src = el("span", `src-tag ${web ? "web" : "cli"}`, web ? "网页" : "CLI");
-      src.title = web ? "在网页里新建的会话" : "在终端 pi CLI 里创建的会话";
+      const src = el("span", `src-tag ${web ? "web" : "cli"}`, web ? tr("网页") : "CLI");
+      src.title = web ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话");
       row.append(src);
       {
         const acts = el("span", "card-acts");
         const pinned = this.manage.pin.includes(s.id);
         const pin = el("button", `pin-btn${pinned ? " pinned" : ""}`, pinned ? "★" : "☆");
-        pin.title = pinned ? "取消置顶" : "置顶";
+        pin.title = pinned ? tr("取消置顶") : tr("置顶");
         pin.setAttribute("aria-label", pin.title);
         pin.onclick = (ev) => {
           ev.stopPropagation();
           this.togglePin(s.id);
         };
         const rename = el("button", "rename-btn", "✎");
-        rename.title = "改个名字";
-        rename.setAttribute("aria-label", "重命名会话");
+        rename.title = tr("改个名字");
+        rename.setAttribute("aria-label", tr("重命名会话"));
         rename.onclick = (ev) => {
           ev.stopPropagation();
           this.startRename(s);
@@ -3048,7 +3203,7 @@ export class App {
         const archived = this.manage.archived.includes(s.id);
         const archive = el("button", "card-act");
         archive.append(...iconNodes(archived ? ICON_UNARCHIVE : ICON_ARCHIVE));
-        archive.title = archived ? "取消归档（放回列表）" : "归档（收进「已归档」，文件不动）";
+        archive.title = archived ? tr("取消归档（放回列表）") : tr("归档（收进「已归档」，文件不动）");
         archive.setAttribute("aria-label", archive.title);
         archive.onclick = (ev) => {
           ev.stopPropagation();
@@ -3057,11 +3212,11 @@ export class App {
         const armed = this.cardDelArm?.id === s.id;
         const busy = App.busy(s);
         const del = el("button", `card-act del${armed ? " armed" : ""}`) as HTMLButtonElement;
-        if (armed) del.textContent = "删除?";
+        if (armed) del.textContent = tr("删除?");
         else del.append(...iconNodes(ICON_TRASH));
         del.disabled = busy;
-        del.title = busy ? App.busyWhy(s) : armed ? "再点一次：移入垃圾箱" : "删除（先进垃圾箱，可在会话管理里还原）";
-        del.setAttribute("aria-label", "删除会话");
+        del.title = busy ? App.busyWhy(s) : armed ? tr("再点一次：移入垃圾箱") : tr("删除（先进垃圾箱，可在会话管理里还原）");
+        del.setAttribute("aria-label", tr("删除会话"));
         del.onclick = (ev) => {
           ev.stopPropagation();
           this.deleteOne(s.id);
@@ -3174,17 +3329,17 @@ export class App {
     };
     const sheet = el("div", "sheet art-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", "本会话的产物"));
-    const close = el("button", "btn ghost", "关闭");
+    head.append(el("div", "sheet-title", tr("本会话的产物")));
+    const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(close);
     const list = el("div", "art-list");
     const items = this.chat.artifacts();
-    if (!items.length) list.append(el("div", "empty", "这个会话还没写过文件。AI 回复里提到的路径也可以直接点开预览。"));
+    if (!items.length) list.append(el("div", "empty", tr("这个会话还没写过文件。AI 回复里提到的路径也可以直接点开预览。")));
     for (const it of items) {
       const row = el("button", "art-row");
       const name = it.path.split(/[\\/]/).filter(Boolean).pop() ?? it.path;
-      row.append(el("span", "art-ico", previewIcon(it.path)), el("span", "art-name", name), el("span", "art-tool", it.tool === "write" ? "写入" : "修改"), el("span", "art-path", it.path));
+      row.append(el("span", "art-ico", previewIcon(it.path)), el("span", "art-name", name), el("span", "art-tool", it.tool === "write" ? tr("写入") : tr("修改")), el("span", "art-path", it.path));
       row.title = it.path;
       row.onclick = () => {
         this.closeSheet();
@@ -3195,8 +3350,8 @@ export class App {
     // Free-form path: anything in the cwd or mentioned in the session.
     const foot = el("div", "art-foot");
     const input = el("input", "ns-input mono") as HTMLInputElement;
-    input.placeholder = "输入路径预览（相对会话工作目录，或绝对路径）";
-    const go = el("button", "btn", "预览");
+    input.placeholder = tr("输入路径预览（相对会话工作目录，或绝对路径）");
+    const go = el("button", "btn", tr("预览"));
     const submit = () => {
       const p = input.value.trim();
       if (!p) return;
@@ -3245,7 +3400,7 @@ export class App {
       v.info = await api.preview(sessionId, path);
     } catch (err: any) {
       if (this.viewer !== v || v.path !== path) return;
-      v.error = String(err?.message ?? err);
+      v.error = errText(err);
       this.paintViewer();
       return;
     }
@@ -3264,7 +3419,7 @@ export class App {
     const needs = info.kind === "markdown" || info.kind === "text" || (info.kind === "html" && v.mode === "source");
     if (needs && v.text == null) {
       if (info.size > 3 * 1024 * 1024 && !force) {
-        v.error = `文件有 ${(info.size / 1024 / 1024).toFixed(1)} MB，太大了，用「新标签页」打开看。`;
+        v.error = tr("文件有 {p1} MB，太大了，用「新标签页」打开看。", { p1: (info.size / 1024 / 1024).toFixed(1) });
         this.paintViewer();
         return;
       }
@@ -3274,7 +3429,7 @@ export class App {
         if (!res.ok) throw new Error(await res.text());
         v.text = await res.text();
       } catch (err: any) {
-        v.error = String(err?.message ?? err);
+        v.error = errText(err);
       }
       if (this.viewer !== v || v.info !== info) return;
     }
@@ -3287,7 +3442,7 @@ export class App {
     const saved = Number(localStorage.getItem("pi.viewerW"));
     if (saved >= 320) root.style.setProperty("--viewer-w", `${saved}px`);
     const grip = el("div", "viewer-grip");
-    grip.title = "拖动调整宽度";
+    grip.title = tr("拖动调整宽度");
     grip.onpointerdown = (ev) => {
       ev.preventDefault();
       grip.setPointerCapture(ev.pointerId);
@@ -3371,14 +3526,14 @@ export class App {
    * 只对本机 / 局域网开放 —— 桥那边对公网连接直接 403。
    */
   private revealButton(abs: string): HTMLButtonElement {
-    const btn = el("button", "btn", "📂 在文件夹中显示") as HTMLButtonElement;
-    btn.title = `在这台电脑的文件管理器里打开 ${abs}，文件会被选中`;
+    const btn = el("button", "btn", tr("📂 在文件夹中显示")) as HTMLButtonElement;
+    btn.title = tr("在这台电脑的文件管理器里打开 {p1}，文件会被选中", { p1: abs });
     btn.onclick = () => {
       btn.disabled = true;
       api
         .reveal(abs)
         .then((res) => this.warn(res.message))
-        .catch((err: Error) => this.warn(`打不开文件管理器：${err.message}`))
+        .catch((err: Error) => this.warn(tr("打不开文件管理器：{p1}", { p1: err.message })))
         .finally(() => {
           btn.disabled = false;
         });
@@ -3449,7 +3604,7 @@ export class App {
       if (step.y) this.restoreScroll(step.y);
       return;
     }
-    this.showExt(v, step.url ?? "", step.label ?? "外部链接");
+    this.showExt(v, step.url ?? "", step.label ?? tr("外部链接"));
   }
 
   /** 切到一个「不是文件」的占位态：外站、或跳出目录树被 403 的那一跳（D63）。
@@ -3493,8 +3648,8 @@ export class App {
     const external = safeExternalUrl(href);
     if (!rel || !cur) {
       // 外站，或者 ../ 跳出目录树（那边会 403）：记一格占位，← 依然能回来。
-      this.pushStep({ path: null, url: external ?? undefined, label: external ? hostOf(external) : "跳出了目录树" }, v.sessionId);
-      this.showExt(v, external ?? "", external ? hostOf(external) : "跳出了目录树");
+      this.pushStep({ path: null, url: external ?? undefined, label: external ? hostOf(external) : tr("跳出了目录树") }, v.sessionId);
+      this.showExt(v, external ?? "", external ? hostOf(external) : tr("跳出了目录树"));
       return;
     }
     const abs = absFromRel(cur.root, rel);
@@ -3502,8 +3657,8 @@ export class App {
     try {
       next = await api.preview(v.sessionId, abs);
     } catch {
-      this.pushStep({ path: null, label: `${abs}（打不开）` }, v.sessionId);
-      this.showExt(v, "", `${abs}（打不开）`);
+      this.pushStep({ path: null, label: tr("{p1}（打不开）", { p1: abs }) }, v.sessionId);
+      this.showExt(v, "", tr("{p1}（打不开）", { p1: abs }));
       return;
     }
     if (this.viewer !== v) return;
@@ -3530,9 +3685,9 @@ export class App {
     head.replaceChildren();
     const title = el("div", "viewer-title");
     const browsing = v.pane === "browse";
-    const name = info?.name ?? (v.ext ? v.ext.label : browsing ? "浏览本机文件" : (v.path.split(/[\\/]/).filter(Boolean).pop() ?? v.path));
+    const name = info?.name ?? (v.ext ? v.ext.label : browsing ? tr("浏览本机文件") : (v.path.split(/[\\/]/).filter(Boolean).pop() ?? v.path));
     title.append(el("span", "viewer-ico", browsing && !info ? "📁" : v.ext ? "🔗" : previewIcon(name)), el("span", "viewer-name", name));
-    const subText = info ? `${info.abs} · ${fmtSize(info.size)}` : v.ext ? v.ext.url : browsing ? v.lastDir || this.session?.cwd || "此电脑" : v.path;
+    const subText = info ? `${info.abs} · ${fmtSize(info.size)}` : v.ext ? v.ext.url : browsing ? v.lastDir || this.session?.cwd || tr("此电脑") : v.path;
     const sub = el("div", "viewer-path", subText);
     sub.title = info?.abs ?? subText;
     const left = el("div", "viewer-titles");
@@ -3541,11 +3696,11 @@ export class App {
     const h = this.histOf(v.sessionId);
     const nav = el("div", "viewer-nav");
     const back = el("button", "viewer-btn", "←") as HTMLButtonElement;
-    back.title = "后退（Alt+←）";
+    back.title = tr("后退（Alt+←）");
     back.disabled = h.at <= 0;
     if (!back.disabled) back.onclick = () => this.goStep(-1);
     const fwd = el("button", "viewer-btn", "→") as HTMLButtonElement;
-    fwd.title = "前进（Alt+→）";
+    fwd.title = tr("前进（Alt+→）");
     fwd.disabled = h.at >= h.steps.length - 1;
     if (!fwd.disabled) fwd.onclick = () => this.goStep(1);
     nav.append(back, fwd);
@@ -3560,20 +3715,20 @@ export class App {
     // 浏览 / 预览 / 编辑：同一个面板的三种状态（D50）
     const panes = el("div", "viewer-seg pane-seg");
     for (const [p, label] of [
-      ["browse", "浏览"],
-      ["preview", "预览"],
-      ["edit", "编辑"],
+      ["browse", tr("浏览")],
+      ["preview", tr("预览")],
+      ["edit", tr("编辑")],
     ] as const) {
       const b = el("button", v.pane === p ? "on" : "", label) as HTMLButtonElement;
       if (p === "edit" && !this.editable(v)) {
         b.disabled = true;
         b.title = !info
-          ? "先预览一个文本文件"
+          ? tr("先预览一个文本文件")
           : info.kind === "binary"
-            ? "二进制文件改不了"
+            ? tr("二进制文件改不了")
             : info.size > MAX_EDIT_BYTES
-              ? "超过 2 MB，浏览器里改不了"
-              : "只有 md / text 能编辑";
+              ? tr("超过 2 MB，浏览器里改不了")
+              : tr("只有 md / text 能编辑");
       }
       if (p === "preview" && !info) b.disabled = true;
       b.onclick = () => void this.setPane(p);
@@ -3582,7 +3737,7 @@ export class App {
     tools.append(panes);
     if (info && (info.kind === "markdown" || info.kind === "html") && v.pane === "preview") {
       const seg = el("div", "viewer-seg");
-      for (const [m, label] of [["render", "渲染"], ["source", "源码"]] as const) {
+      for (const [m, label] of [["render", tr("渲染")], ["source", tr("源码")]] as const) {
         const b = el("button", v.mode === m ? "on" : "", label);
         b.onclick = () => {
           if (v.mode === m) return;
@@ -3593,20 +3748,20 @@ export class App {
       }
       tools.append(seg);
     }
-    tbtn("⟳", "刷新（重新读取文件）", () => void this.openPreview(v.path, v.sessionId, true));
+    tbtn("⟳", tr("刷新（重新读取文件）"), () => void this.openPreview(v.path, v.sessionId, true));
     if (info) {
-      const open = tbtn("↗", "在新标签页打开", () => this.openRawTab(rawUrl(info)));
+      const open = tbtn("↗", tr("在新标签页打开"), () => this.openRawTab(rawUrl(info)));
       open.classList.add("wide-only");
-      const copy = tbtn("⧉", "复制路径", () => void navigator.clipboard?.writeText(info.abs));
+      const copy = tbtn("⧉", tr("复制路径"), () => void navigator.clipboard?.writeText(info.abs));
       copy.classList.add("wide-only");
-      tbtn("📎", "把这个路径引用到输入框", () => this.insertPaths([info.abs]));
+      tbtn("📎", tr("把这个路径引用到输入框"), () => this.insertPaths([info.abs]));
     }
-    tbtn(v.full ? "🗗" : "⛶", v.full ? "退出全屏" : "全屏", () => {
+    tbtn(v.full ? "🗗" : "⛶", v.full ? tr("退出全屏") : tr("全屏"), () => {
       v.full = !v.full;
       localStorage.setItem("pi.viewerFull", v.full ? "1" : "0");
       this.paintViewer();
     }, v.full);
-    tbtn("✕", "关闭（Esc）", () => this.closeViewer());
+    tbtn("✕", tr("关闭（Esc）"), () => this.closeViewer());
     head.append(nav, left, tools);
 
     // 浏览态：列表挂上就保持状态（滚动、筛选、当前位置），重绘时不要拆掉（D50）。
@@ -3636,11 +3791,11 @@ export class App {
       if (href) {
         // 只开 http(s)：这个地址来自用户自己的页面，不是我们要重定向的地方。
         const url = href;
-        const open = el("button", "btn", "在新标签打开");
+        const open = el("button", "btn", tr("在新标签打开"));
         open.onclick = () => openExternal(url);
         box.append(open);
       }
-      box.append(el("div", "viewer-tip", "← 回到上一个文件"));
+      box.append(el("div", "viewer-tip", tr("← 回到上一个文件")));
       body.append(box);
       return;
     }
@@ -3648,7 +3803,7 @@ export class App {
       const box = el("div", "viewer-msg err");
       box.append(el("div", "", v.error));
       if (info) {
-        const open = el("button", "btn", "新标签页打开");
+        const open = el("button", "btn", tr("新标签页打开"));
         open.onclick = () => this.openRawTab(rawUrl(info));
         box.append(open, this.revealButton(info.abs));
       }
@@ -3656,7 +3811,7 @@ export class App {
       return;
     }
     if (!info) {
-      body.append(viewerLoading("正在打开…"));
+      body.append(viewerLoading(tr("正在打开…")));
       return;
     }
     const url = rawUrl(info);
@@ -3693,8 +3848,8 @@ export class App {
     }
     if (info.kind === "binary") {
       const box = el("div", "viewer-msg");
-      box.append(el("div", "", `二进制文件（${fmtSize(info.size)}），这里不直接显示。`));
-      const open = el("button", "btn", "新标签页打开 / 下载");
+      box.append(el("div", "", tr("二进制文件（{p1}），这里不直接显示。", { p1: fmtSize(info.size) })));
+      const open = el("button", "btn", tr("新标签页打开 / 下载"));
       open.onclick = () => openSameOrigin(url);
       // D69: the useful move for an xlsm / pdf / docx is the machine's own file manager, not a download.
       box.append(open, this.revealButton(info.abs));
@@ -3702,7 +3857,7 @@ export class App {
       return;
     }
     if (v.text == null) {
-      body.append(viewerLoading("正在读取…"));
+      body.append(viewerLoading(tr("正在读取…")));
       return;
     }
     if (info.kind === "markdown" && v.mode === "render") {
@@ -3753,6 +3908,64 @@ export class App {
   }
 
   /** 📁 文件：viewer 直接停在浏览态，接着上次的目录。 */
+  // ---------------------------------------------------------------- 记录（D108）
+  /** 顶栏 🐞：本地随手记，不跟会话走，所以没有 currentId 也能开。 */
+  private openNotes(): void {
+    if (!this.notesSheet) {
+      const notesHost: NotesHost = {
+        send: (msg) => this.socket.send(msg),
+        notes: () => this.notes,
+        session: () => (this.currentId ? { id: this.currentId, name: this.session?.name ?? "" } : null),
+        prefill: (text) => this.prefill(text),
+        newSessionWith: (text) => this.newSessionWith(text),
+      };
+      const sheet = new NotesSheet(notesHost);
+      sheet.onClose = () => {
+        this.notesSheet = null;
+      };
+      sheet.mount(document.getElementById("app") ?? document.body);
+      this.notesSheet = sheet;
+      this.act(() => this.socket.send({ type: "notes.list" }));
+    }
+    this.notesSheet.focusComposer();
+  }
+
+  private setNotes(notes: Note[]): void {
+    this.notes = notes;
+    this.notesSheet?.setNotes(notes);
+    this.paintNotesBadge();
+  }
+
+  private paintNotesBadge(): void {
+    const btn = this.els.notes;
+    if (!btn) return;
+    const count = this.notes.filter((n) => n.status === "pending").length;
+    // 顶栏只要图标：小字「bug N」把这一行挤得没地方，计数放 title 里。
+    btn.replaceChildren(el("span", "notes-glyph", "🐞"));
+    btn.classList.toggle("has-pending", count > 0);
+    btn.title = count ? tr("记录：{p1} 条待处理（Ctrl+Shift+B）", { p1: count }) : tr("记录 bug / 变更 / 想法 / 杂事（Ctrl+Shift+B）");
+  }
+
+  /** 「交给 agent → 预填到当前会话」：只填，不发送。 */
+  private prefill(text: string): void {
+    if (!this.textarea || !this.currentId) {
+      this.newSessionWith(text);
+      return;
+    }
+    this.textarea.value = text;
+    this.composerText = text;
+    this.noteDraft();
+    this.fitComposer();
+    this.textarea.focus();
+    this.textarea.setSelectionRange(text.length, text.length);
+  }
+
+  /** 「交给 agent → 新开会话」：会话建好之后才填（见 case "session"）。 */
+  private newSessionWith(text: string): void {
+    this.prefillNext = text;
+    this.openNewSessionSheet();
+  }
+
   private openFiles(): void {
     if (!this.currentId) return;
     const v = this.ensureViewer();
@@ -3774,12 +3987,12 @@ export class App {
    * breadcrumb crawl. `getCwd` is re-read on click, so 切会话 while the pane is open still lands right.
    */
   private dirHome(getCwd: () => string): { node: HTMLButtonElement; bind: (picker: DirPicker) => void } {
-    const node = el("button", "btn ghost dir-home", "⌂ 工作目录") as HTMLButtonElement;
+    const node = el("button", "btn ghost dir-home", tr("⌂ 工作目录")) as HTMLButtonElement;
     node.dataset.act = "dir-home";
     const sync = (): void => {
       const cwd = (getCwd() || "").trim();
       node.disabled = !cwd;
-      node.title = cwd ? `回到会话的工作目录 ${cwd}` : "还没有会话，也就没有工作目录可回";
+      node.title = cwd ? tr("回到会话的工作目录 {p1}", { p1: cwd }) : tr("还没有会话，也就没有工作目录可回");
     };
     sync();
     return {
@@ -3799,12 +4012,12 @@ export class App {
    * 剪贴板在 http 的局域网地址上是 undefined，所以 optional chaining 必须包住调用本身。
    */
   private dirCopy(getPath: () => string): { node: HTMLButtonElement; bind: () => void } {
-    const node = el("button", "btn ghost dir-copy", "⧉ 复制路径") as HTMLButtonElement;
+    const node = el("button", "btn ghost dir-copy", tr("⧉ 复制路径")) as HTMLButtonElement;
     node.dataset.act = "dir-copy";
     const sync = (): void => {
       const path = (getPath() || "").trim();
       node.disabled = !path;
-      node.title = path ? `复制目录路径 ${path}` : "先在下面选一个目录（盘符列表没有路径可复制）";
+      node.title = path ? tr("复制目录路径 {p1}", { p1: path }) : tr("先在下面选一个目录（盘符列表没有路径可复制）");
     };
     sync();
     return {
@@ -3816,13 +4029,13 @@ export class App {
           if (!path) return;
           const copy = navigator.clipboard?.writeText(path);
           if (!copy) {
-            this.warn("这个地址不是安全上下文（http 局域网），浏览器不允许读剪贴板");
+            this.warn(tr("这个地址不是安全上下文（http 局域网），浏览器不允许读剪贴板"));
             return;
           }
           void copy.then(() => {
-            node.textContent = "已复制";
+            node.textContent = tr("已复制");
             setTimeout(() => {
-              if (node.isConnected) node.textContent = "⧉ 复制路径";
+              if (node.isConnected) node.textContent = tr("⧉ 复制路径");
             }, 1100);
           });
         };
@@ -3866,16 +4079,16 @@ export class App {
     const items: { label: string; run: () => void }[] = [];
     if (script) {
       items.push({
-        label: "用 PowerShell 运行",
+        label: tr("用 PowerShell 运行"),
         run: () => this.act(() => this.socket.send({ type: "open.script", file: abs, cwd, admin: false })),
       });
       items.push({
-        label: "以管理员身份运行",
+        label: tr("以管理员身份运行"),
         run: () => this.act(() => this.socket.send({ type: "open.script", file: abs, cwd, admin: true })),
       });
     }
-    items.push({ label: "打开", run: () => void this.pickFromBrowser(v, abs) });
-    items.push({ label: "复制路径", run: () => void navigator.clipboard?.writeText(abs) });
+    items.push({ label: tr("打开"), run: () => void this.pickFromBrowser(v, abs) });
+    items.push({ label: tr("复制路径"), run: () => void navigator.clipboard?.writeText(abs) });
     this.showMenu(ev.clientX, ev.clientY, items);
   }
 
@@ -3931,11 +4144,11 @@ export class App {
     if (v.pane !== "edit" || !v.dirty) return true;
     const ta = v.body.querySelector<HTMLTextAreaElement>(".ed-ta");
     if (ta) v.draft = ta.value;
-    const name = v.info?.name ?? "文件";
-    const choice = await this.choose(`「${name}」还没保存`, [
-      { id: "save", label: "保存", primary: true },
-      { id: "drop", label: "放弃改动" },
-      { id: "cancel", label: "取消" },
+    const name = v.info?.name ?? tr("文件");
+    const choice = await this.choose(tr("「{p1}」还没保存", { p1: name }), [
+      { id: "save", label: tr("保存"), primary: true },
+      { id: "drop", label: tr("放弃改动") },
+      { id: "cancel", label: tr("取消") },
     ]);
     if (choice === "save") return this.saveViewer();
     if (choice === "drop") {
@@ -4042,19 +4255,19 @@ export class App {
     path.title = info.abs;
     const msg = el("div", "ed-msg", "");
     const foot = el("div", "ed-foot");
-    const drop = el("button", "btn ghost", "放弃");
+    const drop = el("button", "btn ghost", tr("放弃"));
     drop.onclick = async () => {
       if (!v.dirty) return;
-      const ok = await this.choose(`放弃「${info.name}」的改动？`, [
-        { id: "yes", label: "放弃", danger: true },
-        { id: "cancel", label: "取消", primary: true },
+      const ok = await this.choose(tr("放弃「{p1}」的改动？", { p1: info.name }), [
+        { id: "yes", label: tr("放弃"), danger: true },
+        { id: "cancel", label: tr("取消"), primary: true },
       ]);
       if (ok !== "yes") return;
       v.dirty = false;
       v.draft = null;
       await this.openPreview(info.abs, v.sessionId);
     };
-    const save = el("button", "btn primary", "保存");
+    const save = el("button", "btn primary", tr("保存"));
     save.title = "Ctrl / ⌘ + S";
     save.onclick = () => void this.saveViewer();
     foot.append(path, msg, drop, save);
@@ -4067,13 +4280,13 @@ export class App {
     const body = v.body;
     body.querySelector(".ed-conflict")?.remove();
     const bar = el("div", "ed-conflict");
-    bar.append(el("div", "ed-conflict-txt", "这个文件在你编辑期间被改过了（可能是 pi 写的）"));
+    bar.append(el("div", "ed-conflict-txt", tr("这个文件在你编辑期间被改过了（可能是 pi 写的）")));
     const row = el("div", "ed-conflict-row");
-    const overwrite = el("button", "btn ghost", "覆盖磁盘上的版本");
+    const overwrite = el("button", "btn ghost", tr("覆盖磁盘上的版本"));
     overwrite.onclick = () => void this.overwriteFile(v, abs);
-    const copy = el("button", "btn ghost", "另存副本");
+    const copy = el("button", "btn ghost", tr("另存副本"));
     copy.onclick = () => void this.saveAsCopy(v, abs);
-    const reload = el("button", "btn ghost", "放弃我的改动");
+    const reload = el("button", "btn ghost", tr("放弃我的改动"));
     reload.onclick = () => {
       v.dirty = false;
       v.draft = null;
@@ -4093,12 +4306,12 @@ export class App {
     try {
       v.info = await api.preview(v.sessionId, abs);
     } catch (err: any) {
-      this.toastInEditor(v, String(err?.message ?? err));
+      this.toastInEditor(v, errText(err));
       return;
     }
     v.conflict = null;
     if (v.info.kind !== "markdown" && v.info.kind !== "text") {
-      this.toastInEditor(v, "文件已经不是文本了，没法再编辑");
+      this.toastInEditor(v, tr("文件已经不是文本了，没法再编辑"));
       return;
     }
     await this.saveViewer();
@@ -4113,9 +4326,9 @@ export class App {
       v.draft = null;
       v.conflict = null;
       await this.openPreview(r.path, v.sessionId);
-      this.warn(`已另存为 ${r.path}`);
+      this.warn(tr("已另存为 {p1}", { p1: r.path }));
     } catch (err: any) {
-      this.toastInEditor(v, String(err?.message ?? err));
+      this.toastInEditor(v, errText(err));
     }
   }
 
@@ -4141,13 +4354,13 @@ export class App {
       v.dirty = false;
       v.conflict = null;
       if (msg) {
-        msg.textContent = `已保存 · ${new Date().toLocaleTimeString()}`;
+        msg.textContent = tr("已保存 · {p1}", { p1: fmtTime() });
         msg.className = "ed-msg ok";
       }
       return true;
     } catch (err: any) {
       if (err?.status === 409) {
-        v.conflict = String(err?.message ?? err);
+        v.conflict = errText(err);
         // 上一条「已保存」此刻已经过时，别让它和冲突条并排站着。
         if (msg) {
           msg.textContent = "";
@@ -4156,7 +4369,7 @@ export class App {
         this.paintConflict(v, v.info.abs);
         return false;
       }
-      this.toastInEditor(v, String(err?.message ?? err));
+      this.toastInEditor(v, errText(err));
       return false;
     }
   }
@@ -4238,8 +4451,8 @@ export class App {
   }
 
   private static busyWhy(s: SessionState): string {
-    if (s.locked) return "终端正在使用这个会话，先在那边退出再删";
-    return "网页正在运行/接管这个会话，先停止运行再删";
+    if (s.locked) return tr("终端正在使用这个会话，先在那边退出再删");
+    return tr("网页正在运行/接管这个会话，先停止运行再删");
   }
 
   private mgrMatches(s: SessionState): boolean {
@@ -4287,13 +4500,13 @@ export class App {
     if (g === "none") return [{ key: "", label: "", items: list }];
     const keyOf = (s: SessionState): [string, string] => {
       if (g === "cwd") return [`cwd:${s.cwd}`, s.cwd];
-      if (g === "origin") return s.origin === "web" ? ["origin:web", "网页创建"] : ["origin:cli", "pi CLI 创建"];
+      if (g === "origin") return s.origin === "web" ? ["origin:web", tr("网页创建")] : ["origin:cli", tr("pi CLI 创建")];
       if (g === "status") {
-        if (this.manage.archived.includes(s.id)) return ["status:archived", "已归档"];
-        return this.manage.pin.includes(s.id) ? ["status:pin", "置顶"] : ["status:normal", "普通"];
+        if (this.manage.archived.includes(s.id)) return ["status:archived", tr("已归档")];
+        return this.manage.pin.includes(s.id) ? ["status:pin", tr("置顶")] : ["status:normal", tr("普通")];
       }
       const t = timeBucket(s.updatedAt);
-      return [`time:${t}`, t === "today" ? "今天" : t === "week" ? "本周" : "更早"];
+      return [`time:${t}`, t === "today" ? tr("今天") : t === "week" ? tr("本周") : tr("更早")];
     };
     const map = new Map<string, { key: string; label: string; items: SessionState[] }>();
     for (const s of list) {
@@ -4373,7 +4586,7 @@ export class App {
     };
     const sheet = el("div", "sheet mgr-sheet");
     const head = el("div", "sheet-head");
-    const titleEl = el("div", "sheet-title", "会话管理");
+    const titleEl = el("div", "sheet-title", tr("会话管理"));
     // The bin is a second view of the same sheet: same width, same footer, one click away.
     // It lives in the toolbar (right of 重置) rather than the title bar, and the row stays put
     // even in the bin view, so it doubles as the way back.
@@ -4384,7 +4597,7 @@ export class App {
       if (this.mgrView === "trash") this.socket.send({ type: "manage", action: "trash.list" });
       paint();
     };
-    const close = el("button", "btn ghost", "关闭");
+    const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(titleEl, close);
 
@@ -4392,7 +4605,7 @@ export class App {
     const tools = el("div", "mgr-tools");
     const q = el("input", "mgr-search") as HTMLInputElement;
     q.type = "search";
-    q.placeholder = "搜索 名字 / 目录 / 首条消息（空格分隔多个词）";
+    q.placeholder = tr("搜索 名字 / 目录 / 首条消息（空格分隔多个词）");
     q.value = this.mgr.q;
     q.oninput = () => {
       this.mgr.q = q.value;
@@ -4421,15 +4634,15 @@ export class App {
       wrap.append(s);
       return { wrap, s };
     };
-    const origin = select("origin", "来源", [["all", "全部"], ["web", "网页"], ["cli", "CLI"]]);
-    const status = select("status", "状态", [["all", "全部"], ["active", "未归档"], ["pin", "置顶"], ["normal", "普通"], ["archived", "已归档"]]);
-    const time = select("time", "更新", [["all", "全部"], ["today", "今天"], ["week", "本周"], ["older", "更早"]]);
-    const cwd = select("cwd", "目录", [["", "全部"]]);
-    const group = select("group", "分组", [["none", "不分组"], ["cwd", "按目录"], ["origin", "按来源"], ["status", "按状态"], ["time", "按时间"]]);
-    const sort = select("sort", "排序", [["updated", "最近更新"], ["created", "创建时间"], ["name", "名称"], ["cwd", "工作目录"]]);
+    const origin = select("origin", tr("来源"), [["all", tr("全部")], ["web", tr("网页")], ["cli", "CLI"]]);
+    const status = select("status", tr("状态"), [["all", tr("全部")], ["active", tr("未归档")], ["pin", tr("置顶")], ["normal", tr("普通")], ["archived", tr("已归档")]]);
+    const time = select("time", tr("更新"), [["all", tr("全部")], ["today", tr("今天")], ["week", tr("本周")], ["older", tr("更早")]]);
+    const cwd = select("cwd", tr("目录"), [["", tr("全部")]]);
+    const group = select("group", tr("分组"), [["none", tr("不分组")], ["cwd", tr("按目录")], ["origin", tr("按来源")], ["status", tr("按状态")], ["time", tr("按时间")]]);
+    const sort = select("sort", tr("排序"), [["updated", tr("最近更新")], ["created", tr("创建时间")], ["name", tr("名称")], ["cwd", tr("工作目录")]]);
     const dir = el("button", "btn ghost mgr-dir") as HTMLButtonElement;
     const syncDir = () => {
-      dir.textContent = this.mgr.desc ? "↓ 降序" : "↑ 升序";
+      dir.textContent = this.mgr.desc ? tr("↓ 降序") : tr("↑ 升序");
     };
     syncDir();
     dir.onclick = () => {
@@ -4438,7 +4651,7 @@ export class App {
       this.saveMgr();
       paint();
     };
-    const reset = el("button", "btn ghost", "重置");
+    const reset = el("button", "btn ghost", tr("重置"));
     reset.onclick = () => {
       this.mgr = defaultMgrView();
       this.saveMgr();
@@ -4450,7 +4663,7 @@ export class App {
       paint();
     };
     const filters = el("div", "mgr-filters");
-    const binHint = el("span", "mgr-bin-hint", "删掉的会话在这里，可以还原或彻底删除");
+    const binHint = el("span", "mgr-bin-hint", tr("删掉的会话在这里，可以还原或彻底删除"));
     binHint.hidden = true;
     filters.append(origin.wrap, status.wrap, time.wrap, cwd.wrap, group.wrap, sort.wrap, dir, reset, binHint, bin);
     tools.append(q, filters);
@@ -4473,7 +4686,7 @@ export class App {
       cwdKey = key;
       const keep = this.mgr.cwd;
       cwd.s.replaceChildren();
-      for (const [v, t] of [["", `全部（${counts.size} 个目录）`], ...list.map(([c, n]) => [c, `${c}（${n}）`])]) {
+      for (const [v, t] of [["", tr("全部（{p1} 个目录）", { p1: counts.size })], ...list.map(([c, n]) => [c, tr("{p1}（{p2}）", { p1: c, p2: n })])]) {
         const o = el("option", "", t as string) as HTMLOptionElement;
         o.value = v as string;
         cwd.s.append(o);
@@ -4490,7 +4703,7 @@ export class App {
       this.mgrPainting = true;
       body.replaceChildren();
       this.mgrPainting = false;
-      if (!shown.length) body.append(el("div", "empty", this.sessions.length ? "没有符合条件的会话。" : "还没有会话。"));
+      if (!shown.length) body.append(el("div", "empty", this.sessions.length ? tr("没有符合条件的会话。") : tr("还没有会话。")));
       for (const grp of this.mgrGroups(shown)) {
         const sec = el("div", "mgr-group");
         if (grp.key) {
@@ -4501,7 +4714,7 @@ export class App {
           box.type = "checkbox";
           box.checked = all;
           box.indeterminate = !all && grp.items.some((s) => this.mgrPicked.has(s.id));
-          box.title = "选中本组";
+          box.title = tr("选中本组");
           box.onclick = (ev) => ev.stopPropagation();
           box.onchange = () => {
             for (const s of grp.items) {
@@ -4554,21 +4767,21 @@ export class App {
       line.append(name);
       const sub = el("div", "mgr-sub");
       sub.append(
-        el("span", "", it.cwd || "未知目录"),
-        el("span", "", `删除于 ${relativeTime(it.deletedAt)}`),
+        el("span", "", it.cwd || tr("未知目录")),
+        el("span", "", tr("删除于 {p1}", { p1: relativeTime(it.deletedAt) })),
         el("span", "", fmtSize(it.size || 0)),
       );
       main.append(line, sub);
       const acts = el("div", "mgr-acts");
-      const restore = el("button", "btn ghost mgr-open", "还原") as HTMLButtonElement;
+      const restore = el("button", "btn ghost mgr-open", tr("还原")) as HTMLButtonElement;
       restore.onclick = (ev) => {
         ev.stopPropagation();
         this.act(() => this.socket.send({ type: "manage", action: "restore", ids: [it.id] }));
       };
       const armKey = `purge1:${it.id}`;
       const armed = this.mgrDelArm?.key === armKey;
-      const del = el("button", `card-act del${armed ? " armed" : ""}`, armed ? "删?" : "删") as HTMLButtonElement;
-      del.title = armed ? "再点一次：真的销毁这个文件" : "彻底删除（不可恢复）";
+      const del = el("button", `card-act del${armed ? " armed" : ""}`, armed ? tr("删?") : tr("删")) as HTMLButtonElement;
+      del.title = armed ? tr("再点一次：真的销毁这个文件") : tr("彻底删除（不可恢复）");
       del.setAttribute("aria-label", del.title);
       del.onclick = (ev) => {
         ev.stopPropagation();
@@ -4600,15 +4813,15 @@ export class App {
         paint();
       };
       const allLabel = el("label", "mgr-all");
-      allLabel.append(allBox, el("span", "", "全选"));
+      allLabel.append(allBox, el("span", "", tr("全选")));
       const total = items.reduce((n, it) => n + (it.size || 0), 0);
-      const info = el("span", "mgr-count", `已选 ${ids.length} · 共 ${items.length} 个 · 占 ${fmtSize(total)}`);
-      const restoreBtn = el("button", "btn", "还原所选") as HTMLButtonElement;
+      const info = el("span", "mgr-count", tr("已选 {p1} · 共 {p2} 个 · 占 {p3}", { p1: ids.length, p2: items.length, p3: fmtSize(total) }));
+      const restoreBtn = el("button", "btn", tr("还原所选")) as HTMLButtonElement;
       restoreBtn.disabled = !ids.length;
       restoreBtn.onclick = () => this.act(() => this.socket.send({ type: "manage", action: "restore", ids }));
       const pickedArm = `purge:${ids.join(",")}`;
       const pickedArmed = this.mgrDelArm?.key === pickedArm;
-      const purgeBtn = el("button", `btn danger${pickedArmed ? " armed" : ""}`, pickedArmed ? `再点一次：销毁 ${ids.length} 个` : "彻底删除所选") as HTMLButtonElement;
+      const purgeBtn = el("button", `btn danger${pickedArmed ? " armed" : ""}`, pickedArmed ? tr("再点一次：销毁 {p1} 个", { p1: ids.length }) : tr("彻底删除所选")) as HTMLButtonElement;
       purgeBtn.disabled = !ids.length;
       purgeBtn.onclick = () => {
         if (this.mgrArm(pickedArm)) this.act(() => this.socket.send({ type: "manage", action: "purge", ids }));
@@ -4624,19 +4837,19 @@ export class App {
       const scrollTop = body.scrollTop;
       body.replaceChildren();
       if (!items.length) {
-        body.append(el("div", "empty", "垃圾箱是空的。删掉的会话会先放到这里，清空才真的销毁。"));
+        body.append(el("div", "empty", tr("垃圾箱是空的。删掉的会话会先放到这里，清空才真的销毁。")));
       } else {
         const total = items.reduce((n, it) => n + (it.size || 0), 0);
         const bar = el("div", "trash-head");
         bar.append(
-          el("span", "", `最近删除 ${items.length} 个`),
-          el("span", "faint", ` · 占 ${fmtSize(total)}`),
+          el("span", "", tr("最近删除 {p1} 个", { p1: items.length })),
+          el("span", "faint", tr(" · 占 {p1}", { p1: fmtSize(total) })),
           el("span", "spacer"),
         );
         // One button for the whole bin, so clearing never needs a select-all first.
         const allArmed = this.mgrDelArm?.key === "purge:all";
-        const empty = el("button", `btn danger${allArmed ? " armed" : ""}`, allArmed ? `再点一次：清空 ${items.length} 个` : "一键清空") as HTMLButtonElement;
-        empty.title = "垃圾箱里的文件会被真的删掉，无法还原";
+        const empty = el("button", `btn danger${allArmed ? " armed" : ""}`, allArmed ? tr("再点一次：清空 {p1} 个", { p1: items.length }) : tr("一键清空")) as HTMLButtonElement;
+        empty.title = tr("垃圾箱里的文件会被真的删掉，无法还原");
         empty.onclick = () => {
           if (this.mgrArm("purge:all")) this.act(() => this.socket.send({ type: "manage", action: "purge", ids: [] }));
           paint();
@@ -4651,11 +4864,11 @@ export class App {
 
     const paint = () => {
       const inTrash = this.mgrView === "trash";
-      titleEl.textContent = inTrash ? "垃圾箱" : "会话管理";
-      if (inTrash) bin.textContent = "← 会话列表";
-      else bin.textContent = this.trash.length ? `🗑 垃圾箱 (${this.trash.length})` : "🗑 垃圾箱";
+      titleEl.textContent = inTrash ? tr("垃圾箱") : tr("会话管理");
+      if (inTrash) bin.textContent = tr("← 会话列表");
+      else bin.textContent = this.trash.length ? tr("🗑 垃圾箱 ({p1})", { p1: this.trash.length }) : tr("🗑 垃圾箱");
       bin.classList.toggle("on", inTrash);
-      bin.title = inTrash ? "回到会话列表" : "最近删除的会话都在这里，清空才真的销毁";
+      bin.title = inTrash ? tr("回到会话列表") : tr("最近删除的会话都在这里，清空才真的销毁");
       // The toolbar itself stays (it carries the bin toggle); only the filters go away,
       // because filtering and sorting the bin is not a thing anyone asked for.
       for (const node of [q, origin.wrap, status.wrap, time.wrap, cwd.wrap, group.wrap, sort.wrap, dir, reset]) {
@@ -4683,8 +4896,8 @@ export class App {
         paint();
       };
       const allLabel = el("label", "mgr-all");
-      allLabel.append(allBox, el("span", "", "全选"));
-      const info = el("span", "mgr-count", `已选 ${ids.length} · 显示 ${shown.length} / 共 ${this.sessions.length}`);
+      allLabel.append(allBox, el("span", "", tr("全选")));
+      const info = el("span", "mgr-count", tr("已选 {p1} · 显示 {p2} / 共 {p3}", { p1: ids.length, p2: shown.length, p3: this.sessions.length }));
       const btn = (text: string, fn: () => void, cls = "btn") => {
         const b = el("button", cls, text) as HTMLButtonElement;
         b.disabled = !ids.length;
@@ -4694,7 +4907,7 @@ export class App {
       const deletable = picked.filter((s) => !App.busy(s)).map((s) => s.id);
       const delKey = `bulk:${deletable.join(",")}`;
       const armed = this.mgrDelArm?.key === delKey;
-      const del = btn(armed ? `再点一次：移入垃圾箱 ${deletable.length} 个` : deletable.length < ids.length ? `删除（${deletable.length} 个可删）` : "删除", () => {
+      const del = btn(armed ? tr("再点一次：移入垃圾箱 {p1} 个", { p1: deletable.length }) : deletable.length < ids.length ? tr("删除（{p1} 个可删）", { p1: deletable.length }) : tr("删除"), () => {
         if (this.mgrArm(delKey)) {
           // No optimistic clear: the bridge reports what it actually removed, and the paint() below
           // prunes picked ids against the list that is really left.
@@ -4703,16 +4916,16 @@ export class App {
         paint();
       }, `btn danger${armed ? " armed" : ""}`);
       del.disabled = !deletable.length;
-      if (deletable.length < ids.length) del.title = "运行中 / 网页接管中 / 待确认的会话不能删，先停止运行";
+      if (deletable.length < ids.length) del.title = tr("运行中 / 网页接管中 / 待确认的会话不能删，先停止运行");
       const spacer = el("span", "spacer");
       foot.append(
         allLabel,
         info,
         spacer,
-        btn("置顶", () => this.pinIds(ids, true)),
-        btn("取消置顶", () => this.pinIds(ids, false)),
-        btn("归档", () => this.archiveIds(ids, true)),
-        btn("恢复", () => this.archiveIds(ids, false)),
+        btn(tr("置顶"), () => this.pinIds(ids, true)),
+        btn(tr("取消置顶"), () => this.pinIds(ids, false)),
+        btn(tr("归档"), () => this.archiveIds(ids, true)),
+        btn(tr("恢复"), () => this.archiveIds(ids, false)),
         del,
       );
     };
@@ -4773,7 +4986,7 @@ export class App {
       };
       line.append(input);
     } else {
-      const name = el("span", "mgr-name", s.name || "(未命名)");
+      const name = el("span", "mgr-name", s.name || tr("(未命名)"));
       name.title = s.name;
       line.append(name);
     }
@@ -4782,12 +4995,12 @@ export class App {
       if (title) t.title = title;
       line.append(t);
     };
-    if (pinned && !archived) tag("pin", "置顶");
-    if (archived) tag("arch", "已归档");
-    tag(s.origin === "web" ? "web" : "cli", s.origin === "web" ? "网页" : "CLI", s.origin === "web" ? "在网页里新建的会话" : "在终端 pi CLI 里创建的会话");
+    if (pinned && !archived) tag("pin", tr("置顶"));
+    if (archived) tag("arch", tr("已归档"));
+    tag(s.origin === "web" ? "web" : "cli", s.origin === "web" ? tr("网页") : "CLI", s.origin === "web" ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话"));
     const badge = sessionBadge(s, this.currentId);
     if (badge) tag(badge.cls, badge.text, badge.title);
-    else if (s.owned) tag("live", "已接管", "这个会话由网页接管着");
+    else if (s.owned) tag("live", tr("已接管"), tr("这个会话由网页接管着"));
     main.append(line);
     const sub = el("div", "mgr-sub");
     const cwdEl = el("span", "mgr-cwd", s.cwd);
@@ -4802,12 +5015,12 @@ export class App {
 
     const times = el("div", "mgr-times");
     const created = Date.parse(s.startedAt ?? "");
-    const up = el("span", "", `更新 ${relativeTime(s.updatedAt)}`);
-    up.title = new Date(s.updatedAt).toLocaleString();
+    const up = el("span", "", tr("更新 {p1}", { p1: relativeTime(s.updatedAt) }));
+    up.title = `${fmtDate(s.updatedAt)} ${fmtTime(s.updatedAt)}`;
     times.append(up);
     if (created) {
-      const c = el("span", "", `创建 ${new Date(created).toLocaleDateString()}`);
-      c.title = new Date(created).toLocaleString();
+      const c = el("span", "", tr("创建 {p1}", { p1: fmtDate(created) }));
+      c.title = `${fmtDate(created)} ${fmtTime(created)}`;
       times.append(c);
     }
 
@@ -4824,25 +5037,25 @@ export class App {
       acts.append(b);
       return b;
     };
-    const open = el("button", "btn ghost mgr-open", "打开") as HTMLButtonElement;
+    const open = el("button", "btn ghost mgr-open", tr("打开")) as HTMLButtonElement;
     open.onclick = (ev) => {
       ev.stopPropagation();
       this.closeSheet();
       this.openFromList(s.id);
     };
     acts.append(open);
-    act(pinned ? "★" : "☆", pinned ? "取消置顶" : "置顶", () => this.pinIds([s.id], !pinned), `card-act${pinned ? " pinned" : ""}`);
-    act("✎", "重命名", () => {
+    act(pinned ? "★" : "☆", pinned ? tr("取消置顶") : tr("置顶"), () => this.pinIds([s.id], !pinned), `card-act${pinned ? " pinned" : ""}`);
+    act("✎", tr("重命名"), () => {
       this.mgrRename = { id: s.id, draft: s.name || "" };
       repaint();
     });
-    act(archived ? ICON_UNARCHIVE : ICON_ARCHIVE, archived ? "恢复（取消归档）" : "归档（文件不动，只是收起来）", () => this.archiveIds([s.id], !archived));
+    act(archived ? ICON_UNARCHIVE : ICON_ARCHIVE, archived ? tr("恢复（取消归档）") : tr("归档（文件不动，只是收起来）"), () => this.archiveIds([s.id], !archived));
     const key = `one:${s.id}`;
     const armed = this.mgrDelArm?.key === key;
     const busy = App.busy(s);
     const del = act(
-      armed ? "删除?" : ICON_TRASH,
-      busy ? App.busyWhy(s) : armed ? "再点一次：移入垃圾箱" : "删除（先进垃圾箱，可还原）",
+      armed ? tr("删除?") : ICON_TRASH,
+      busy ? App.busyWhy(s) : armed ? tr("再点一次：移入垃圾箱") : tr("删除（先进垃圾箱，可还原）"),
       () => {
         if (this.mgrArm(key)) this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [s.id] }));
         repaint();
@@ -4883,10 +5096,10 @@ export class App {
   private claimButton(): HTMLButtonElement {
     const claim = el("button", "btn primary claim-btn") as HTMLButtonElement;
     if (this.claiming && this.claiming === this.currentId) {
-      claim.append(el("span", "act-spin"), el("span", "", "接管中…"));
+      claim.append(el("span", "act-spin"), el("span", "", tr("接管中…")));
       claim.disabled = true;
-      claim.title = "正在拉起 pi 进程，通常要几秒";
-    } else claim.textContent = "接管会话";
+      claim.title = tr("正在拉起 pi 进程，通常要几秒");
+    } else claim.textContent = tr("接管会话");
     claim.onclick = () => this.startClaim();
     return claim;
   }
@@ -4902,7 +5115,7 @@ export class App {
       setTimeout(() => {
         if (this.claiming !== id) return;
         this.endClaim();
-        this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: "等了 60 秒还没接管成功，看看服务端日志", level: "warn" });
+        this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: tr("等了 60 秒还没接管成功，看看服务端日志"), level: "warn" });
       }, 60000);
     });
   }
@@ -4923,7 +5136,7 @@ export class App {
     this.skillPop = null;
     this.imageBadge = null;
     if (!this.currentId) {
-      const hint = el("div", "empty", "左边选一个会话，或开一个新的。");
+      const hint = el("div", "empty", tr("左边选一个会话，或开一个新的。"));
       host.append(hint);
       return;
     }
@@ -4933,8 +5146,8 @@ export class App {
     const t = this.trust;
     if (t && s && t.cwd === s.cwd && t.needed && !t.saved && !t.effective) {
       const bar = el("div", "takeover warn trust-bar");
-      bar.append(el("span", "", "这个目录有 pi 的项目配置（.pi/ 下的设置、扩展、技能或 MCP）。网页里的 pi 不能弹信任提示，所以没有加载它们。"));
-      const go = el("button", "btn", "决定是否信任…") as HTMLButtonElement;
+      bar.append(el("span", "", tr("这个目录有 pi 的项目配置（.pi/ 下的设置、扩展、技能或 MCP）。网页里的 pi 不能弹信任提示，所以没有加载它们。")));
+      const go = el("button", "btn", tr("决定是否信任…")) as HTMLButtonElement;
       go.onclick = () => this.openSettingsSheet("trust");
       bar.append(go);
       host.append(bar);
@@ -4942,7 +5155,7 @@ export class App {
 
     if (s && !s.owned) {
       const bar = el("div", "takeover warn");
-      bar.append(el("span", "", "这个会话来自磁盘（只读预览）。发消息会自动接管；终端里如果有 pi 在写同一个文件，先退出那边。"));
+      bar.append(el("span", "", tr("这个会话来自磁盘（只读预览）。发消息会自动接管；终端里如果有 pi 在写同一个文件，先退出那边。")));
       bar.append(this.claimButton());
       host.append(bar);
     }
@@ -5004,13 +5217,13 @@ export class App {
     this.fillHintStatus();
     hint.append(status);
     const tools = el("div", "hint-tools");
-    const skillBtn = el("button", "btn ghost", "技能");
+    const skillBtn = el("button", "btn ghost", tr("技能"));
     skillBtn.dataset.act = "skills";
-    skillBtn.title = "搜索并插入技能命令（/skill:name）";
+    skillBtn.title = tr("搜索并插入技能命令（/skill:name）");
     skillBtn.onclick = () => this.openSkillPalette();
-    const pathBtn = el("button", "btn ghost", "文件");
+    const pathBtn = el("button", "btn ghost", tr("文件"));
     pathBtn.dataset.act = "attach";
-    pathBtn.title = `选文件：图片直接附加，其他文件插入完整路径（pi 会自己去读）。截图或资源管理器里复制的文件也可以 ${PASTE_KEY}`;
+    pathBtn.title = tr("选文件：图片直接附加，其他文件插入完整路径（pi 会自己去读）。截图或资源管理器里复制的文件也可以 {p1}", { p1: PASTE_KEY });
     pathBtn.onclick = () => this.openFilePicker();
     const chip = el("button", "model-chip");
     chip.onclick = () => this.openModelSheet();
@@ -5018,8 +5231,8 @@ export class App {
     this.modelChip = chip;
     tools.append(skillBtn);
     if (this.uiPrefs.showExtButton) {
-      const extBtn = el("button", "btn ghost ext-btn", "扩展") as HTMLButtonElement;
-      extBtn.title = "已安装的扩展与 MCP、扩展商店、MCP 商店（可在 pi 设置 → 扩展与 MCP 里隐藏这个按钮）";
+      const extBtn = el("button", "btn ghost ext-btn", tr("扩展")) as HTMLButtonElement;
+      extBtn.title = tr("已安装的扩展与 MCP、扩展商店、MCP 商店（可在 pi 设置 → 扩展与 MCP 里隐藏这个按钮）");
       extBtn.onclick = () => this.openExtManager();
       this.extButton = extBtn;
       tools.append(extBtn);
@@ -5029,10 +5242,10 @@ export class App {
     if (s?.owned) {
       // The explanation lives in the tooltip so it no longer costs the composer a whole row.
       const fromWeb = s.origin === "web";
-      const release = el("button", "btn ghost release-btn", fromWeb ? "释放会话" : "让回终端");
+      const release = el("button", "btn ghost release-btn", fromWeb ? tr("释放会话") : tr("让回终端"));
       release.title = fromWeb
-        ? "网页是这个会话的写者。释放后 pi 进程退出，历史留在磁盘；再发消息会自动重新接管。"
-        : "网页是这个会话的写者。要回终端接着聊，先在这里让回去。";
+        ? tr("网页是这个会话的写者。释放后 pi 进程退出，历史留在磁盘；再发消息会自动重新接管。")
+        : tr("网页是这个会话的写者。要回终端接着聊，先在这里让回去。");
       release.onclick = () => this.act(() => this.socket.send({ type: "close", sessionId: this.currentId }));
       tools.append(release);
     }
@@ -5067,7 +5280,7 @@ export class App {
     head.type = "button";
     const caret = el("span", "session-info-caret");
     const peek = el("span", "session-info-peek");
-    head.append(caret, el("span", "levels-label", "会话"), peek);
+    head.append(caret, el("span", "levels-label", tr("会话")), peek);
     box.append(head);
     const grid = el("div", "info-grid");
     const row = (label: string, value: string, title?: string) => {
@@ -5080,20 +5293,20 @@ export class App {
     if (s?.owned) {
       const used = this.usage.contextTokens;
       const win = this.usage.contextWindow;
-      row("上下文", used == null ? "–（压缩后要等下一轮才有数）" : `${n(used)}${win ? ` / ${n(win)}（${Math.round((used / win) * 100)}%）` : ""}`);
+      row(tr("上下文"), used == null ? tr("–（压缩后要等下一轮才有数）") : tr("{p1}{p2}", { p1: n(used), p2: win ? tr(" / {p1}（{p2}%）", { p1: n(win), p2: Math.round((used / win) * 100) }) : "" }));
       const t = this.stats.tokens;
-      row("累计 token", t ? `输入 ${n(t.input)} · 输出 ${n(t.output)} · 缓存读 ${n(t.cacheRead)} · 缓存写 ${n(t.cacheWrite)}` : "–");
-      row("累计费用", this.stats.cost == null ? "–" : `$${this.stats.cost.toFixed(4)}`, "pi 按模型价格表算的估计值（get_session_stats）");
+      row(tr("累计 token"), t ? tr("输入 {p1} · 输出 {p2} · 缓存读 {p3} · 缓存写 {p4}", { p1: n(t.input), p2: n(t.output), p3: n(t.cacheRead), p4: n(t.cacheWrite) }) : "–");
+      row(tr("累计费用"), this.stats.cost == null ? "–" : `$${this.stats.cost.toFixed(4)}`, tr("pi 按模型价格表算的估计值（get_session_stats）"));
     } else {
-      row("用量", "接管后可见（数字来自正在运行的 pi）");
+      row(tr("用量"), tr("接管后可见（数字来自正在运行的 pi）"));
     }
-    if (s?.id) row("会话 ID", s.id);
-    if (s?.launch) row("启动参数", s.launch);
+    if (s?.id) row(tr("会话 ID"), s.id);
+    if (s?.launch) row(tr("启动参数"), s.launch);
     const t = this.trust;
     if (t && s && t.cwd === s.cwd && t.needed) {
-      const v = row("项目信任", t.saved ? `${t.saved.decision ? "已信任" : "不信任"}（${t.saved.path}）` : `未决定 → ${t.effective ? "加载" : "不加载"} .pi 配置`);
+      const v = row(tr("项目信任"), t.saved ? tr("{p1}（{p2}）", { p1: t.saved.decision ? tr("已信任") : tr("不信任"), p2: t.saved.path }) : tr("未决定 → {p1} .pi 配置", { p1: t.effective ? tr("加载") : tr("不加载") }));
       v.style.cursor = "pointer";
-      v.title = "点这里修改（/trust）";
+      v.title = tr("点这里修改（/trust）");
       v.onclick = () => this.openSettingsSheet("trust");
     }
     box.append(grid);
@@ -5102,16 +5315,16 @@ export class App {
       const fileRow = el("div", "info-file");
       const path = el("code", "info-path", s.file);
       path.title = s.file;
-      const copy = el("button", "btn ghost", "⧉ 复制路径") as HTMLButtonElement;
+      const copy = el("button", "btn ghost", tr("⧉ 复制路径")) as HTMLButtonElement;
       copy.onclick = () => {
         const done = navigator.clipboard?.writeText(s.file ?? "");
         if (!done) {
-          this.warn("这个地址拿不到剪贴板（http 的局域网地址浏览器不给）");
+          this.warn(tr("这个地址拿不到剪贴板（http 的局域网地址浏览器不给）"));
           return;
         }
         void done.then(() => {
-          copy.textContent = "已复制";
-          setTimeout(() => (copy.textContent = "⧉ 复制路径"), 1100);
+          copy.textContent = tr("已复制");
+          setTimeout(() => (copy.textContent = tr("⧉ 复制路径")), 1100);
         });
       };
       fileRow.append(path, copy);
@@ -5132,13 +5345,13 @@ export class App {
       };
       const id = encodeURIComponent(s.id);
       if (s.file) {
-        link("导出 HTML", `/api/export?id=${id}`, "pi 自带的单文件 HTML 导出（/export），在新标签页打开");
-        link("下载 JSONL", `/api/export?id=${id}&format=jsonl`, "原始会话文件");
+        link(tr("导出 HTML"), `/api/export?id=${id}`, tr("pi 自带的单文件 HTML 导出（/export），在新标签页打开"));
+        link(tr("下载 JSONL"), `/api/export?id=${id}&format=jsonl`, tr("原始会话文件"));
       }
-      link("pi 日志", `/api/log?id=${id}`, "这个会话的 pi 进程 stderr（网页接管过才有）");
+      link(tr("pi 日志"), `/api/log?id=${id}`, tr("这个会话的 pi 进程 stderr（网页接管过才有）"));
       if (s.file) {
-        const tree = el("button", "btn ghost", "会话树 / 分叉") as HTMLButtonElement;
-        tree.title = "看分支、从任意一条消息分叉、复制当前分支（/tree /fork /clone）";
+        const tree = el("button", "btn ghost", tr("会话树 / 分叉")) as HTMLButtonElement;
+        tree.title = tr("看分支、从任意一条消息分叉、复制当前分支（/tree /fork /clone）");
         tree.onclick = () => this.openTreeSheet();
         links.append(tree);
       }
@@ -5148,10 +5361,10 @@ export class App {
     // `/compact [instructions]`: happens now, not on 确认 — it is an action, not a setting.
     const compact = el("div", "info-compact");
     const hint = el("input") as HTMLInputElement;
-    hint.placeholder = "压缩时要特别保留什么（可选，例如：保留接口设计的决定）";
-    const go = el("button", "btn", "立即压缩") as HTMLButtonElement;
+    hint.placeholder = tr("压缩时要特别保留什么（可选，例如：保留接口设计的决定）");
+    const go = el("button", "btn", tr("立即压缩")) as HTMLButtonElement;
     go.disabled = !s?.owned || Boolean(s?.running);
-    go.title = !s?.owned ? "接管会话后才能压缩" : s?.running ? "这一轮结束后再压缩" : "把较早的对话总结成摘要，腾出上下文";
+    go.title = !s?.owned ? tr("接管会话后才能压缩") : s?.running ? tr("这一轮结束后再压缩") : tr("把较早的对话总结成摘要，腾出上下文");
     const run = () => {
       const sessionId = this.currentId;
       if (!sessionId || go.disabled) return;
@@ -5172,16 +5385,16 @@ export class App {
     const used = this.usage.contextTokens;
     const win = this.usage.contextWindow;
     const bits: string[] = [];
-    if (s?.owned && used != null) bits.push(`上下文 ${compactSize(used) || used}${win ? `/${compactSize(win)}` : ""}`);
+    if (s?.owned && used != null) bits.push(tr("上下文 {p1}{p2}", { p1: compactSize(used) || used, p2: win ? `/${compactSize(win)}` : "" }));
     if (s?.owned && this.stats.cost != null) bits.push(`$${this.stats.cost.toFixed(4)}`);
-    bits.push("导出 · 会话树 · 压缩");
+    bits.push(tr("导出 · 会话树 · 压缩"));
     peek.textContent = bits.join(" · ");
     const paint = () => {
       body.hidden = !this.sessionInfoOpen;
       caret.textContent = this.sessionInfoOpen ? "▾" : "▸";
       peek.hidden = this.sessionInfoOpen;
       head.setAttribute("aria-expanded", String(this.sessionInfoOpen));
-      head.title = this.sessionInfoOpen ? "收起会话信息" : "展开：用量、费用、会话文件、导出、会话树、立即压缩";
+      head.title = this.sessionInfoOpen ? tr("收起会话信息") : tr("展开：用量、费用、会话文件、导出、会话树、立即压缩");
     };
     head.onclick = () => {
       this.sessionInfoOpen = !this.sessionInfoOpen;
@@ -5203,8 +5416,8 @@ export class App {
     };
     const sheet = el("div", "sheet settings-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", "pi 设置"));
-    const close = el("button", "btn ghost", "关闭");
+    head.append(el("div", "sheet-title", tr("pi 设置")));
+    const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(close);
     const tabs = el("div", "settings-tabs");
@@ -5241,13 +5454,13 @@ export class App {
     const cwd = this.session?.cwd ?? "";
     tabs.replaceChildren();
     const tabDefs: [SettingsTab, string][] = [
-      ["global", "全局"],
-      ["project", cwd ? `项目（${cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd}）` : "项目"],
-      ["trust", "项目信任"],
-      ["login", "登录 / 凭据"],
-      ["ext", "扩展与 MCP"],
-      ["notify", "通知"],
-      ["changelog", "更新日志"],
+      ["global", tr("全局")],
+      ["project", cwd ? tr("项目（{p1}）", { p1: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd }) : tr("项目")],
+      ["trust", tr("项目信任")],
+      ["login", tr("登录 / 凭据")],
+      ["ext", tr("扩展与 MCP")],
+      ["notify", tr("通知")],
+      ["changelog", tr("更新日志")],
     ];
     for (const [id, label] of tabDefs) {
       const b = el("button", `chip${this.settingsTab === id ? " on" : ""}`, label) as HTMLButtonElement;
@@ -5268,7 +5481,7 @@ export class App {
     const scope = this.settingsTab;
     const view = this.settingsView[scope];
     if (!view || (scope === "project" && view.cwd !== cwd)) {
-      body.append(el("div", "empty", "读取中…"));
+      body.append(el("div", "empty", tr("读取中…")));
       return;
     }
     this.paintSettingsForm(body, view);
@@ -5278,13 +5491,13 @@ export class App {
   private paintNotify(body: HTMLElement): void {
     const on = this.me.notify !== false;
     const row = el("label", "settings-row");
-    row.append(el("span", "settings-label", "需要你时发通知"));
+    row.append(el("span", "settings-label", tr("需要你时发通知")));
     const box = el("input") as HTMLInputElement;
     box.type = "checkbox";
     box.checked = on;
     box.onchange = () => {
       this.socket.send({ type: "notify.set", on: box.checked });
-      this.flashSettings(box.checked ? "已打开通知" : "已关闭通知：不再推 Windows 通知，也不发微信");
+      this.flashSettings(box.checked ? tr("已打开通知") : tr("已关闭通知：不再推 Windows 通知，也不发微信"));
     };
     row.append(box);
     body.append(row);
@@ -5292,37 +5505,37 @@ export class App {
       el(
         "div",
         "hint",
-        "等你批准或回答时，推送到 Windows 通知（Web Push）和微信。正看着这个页面时不发：只有切到别的标签页、最小化浏览器或切到别的程序时才发。一份问卷只发一条。",
+        tr("等你批准或回答时，推送到 Windows 通知（Web Push）和微信。正看着这个页面时不发：只有切到别的标签页、最小化浏览器或切到别的程序时才发。一份问卷只发一条。"),
       ),
     );
     const tools = el("div", "actions");
     tools.style.display = "flex";
     tools.style.gap = "8px";
     tools.style.flexWrap = "wrap";
-    const push = el("button", "btn", "在这台设备开启 Web Push");
+    const push = el("button", "btn", tr("在这台设备开启 Web Push"));
     push.onclick = () => void this.enablePush();
-    const test = el("button", "btn", "发测试通知");
+    const test = el("button", "btn", tr("发测试通知"));
     test.onclick = async () => {
       const res = await api.notifyTest().catch((e) => ({ push: 0, wechat: String(e.message ?? e) }));
-      this.flashSettings(`测试通知：Web Push 送达 ${res.push} 台；微信：${res.wechat}`);
+      this.flashSettings(tr("测试通知：Web Push 送达 {p1} 台；微信：{p2}", { p1: res.push, p2: res.wechat }));
     };
     tools.append(push, test);
     body.append(tools);
-    body.append(el("div", "hint", `Web Push 已订阅 ${this.me.pushCount} 台设备。测试通知不受开关影响，页面在前也会弹。`));
+    body.append(el("div", "hint", tr("Web Push 已订阅 {p1} 台设备。测试通知不受开关影响，页面在前也会弹。", { p1: this.me.pushCount })));
   }
 
   private paintSettingsForm(body: HTMLElement, view: SettingsView): void {
     const scope = view.scope;
-    body.append(el("div", "settings-path", `${view.exists ? "" : "（还没有这个文件，保存时创建）"}${view.path}`));
+    body.append(el("div", "settings-path", tr("{p1}{p2}", { p1: view.exists ? "" : tr("（还没有这个文件，保存时创建）"), p2: view.path })));
     if (scope === "project" && !view.writable) {
-      body.append(el("div", "takeover warn", "这个项目没有被信任：pi 不会读它的 .pi/settings.json，也拒绝写它。先到「项目信任」里信任它。"));
+      body.append(el("div", "takeover warn", tr("这个项目没有被信任：pi 不会读它的 .pi/settings.json，也拒绝写它。先到「项目信任」里信任它。")));
     }
-    if (view.error) body.append(el("div", "takeover warn", `${view.error}。下面的表单不可用，用「编辑 JSON」修好文件。`));
+    if (view.error) body.append(el("div", "takeover warn", tr("{p1}。下面的表单不可用，用「编辑 JSON」修好文件。", { p1: view.error })));
     const data = (view.json ?? {}) as Record<string, unknown>;
     const get = (key: string): unknown => key.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), data);
     const patch: Record<string, unknown> = {};
     const form = el("div", "settings-form");
-    const save = el("button", "btn primary", "保存") as HTMLButtonElement;
+    const save = el("button", "btn primary", tr("保存")) as HTMLButtonElement;
     save.disabled = true;
     const mark = (key: string, value: unknown) => {
       patch[key] = value;
@@ -5336,17 +5549,17 @@ export class App {
       let input: HTMLInputElement | HTMLSelectElement;
       if (f.kind === "bool") {
         const sel = el("select", "ns-input") as HTMLSelectElement;
-        sel.append(new Option("（默认）", ""), new Option("开", "true"), new Option("关", "false"));
+        sel.append(new Option(tr("（默认）"), ""), new Option(tr("开"), "true"), new Option(tr("关"), "false"));
         sel.value = typeof current === "boolean" ? String(current) : "";
         sel.onchange = () => mark(f.key, sel.value === "" ? null : sel.value === "true");
         input = sel;
       } else if (f.kind === "select" || f.kind === "model") {
         const sel = el("select", "ns-input") as HTMLSelectElement;
-        sel.append(new Option("（默认）", ""));
+        sel.append(new Option(tr("（默认）"), ""));
         const opts = f.kind === "model" ? this.models.map((m) => [`${m.provider}/${m.id}`, `${shortModelName(m.name)} · ${m.provider}`]) : (f.options ?? []).map((o) => [o, o]);
         for (const [v, label] of opts) sel.append(new Option(label, v));
         const cur = typeof current === "string" ? current : "";
-        if (cur && ![...sel.options].some((o) => o.value === cur)) sel.append(new Option(`${cur}（当前）`, cur));
+        if (cur && ![...sel.options].some((o) => o.value === cur)) sel.append(new Option(tr("{p1}（当前）", { p1: cur }), cur));
         sel.value = cur;
         sel.onchange = () => {
           if (f.kind === "model") {
@@ -5359,7 +5572,7 @@ export class App {
       } else {
         const inp = el("input", `ns-input${f.kind === "text" ? "" : " mono"}`) as HTMLInputElement;
         if (f.kind === "number") inp.type = "number";
-        inp.placeholder = f.placeholder ?? "（默认）";
+        inp.placeholder = f.placeholder ?? tr("（默认）");
         inp.value = f.kind === "list" ? (Array.isArray(current) ? current.join(", ") : "") : current == null ? "" : String(current);
         inp.oninput = () => {
           const v = inp.value.trim();
@@ -5378,7 +5591,7 @@ export class App {
     body.append(form);
     if (scope === "global") body.append(this.lockExtBox());
     const foot = el("div", "settings-foot");
-    const json = el("button", "btn ghost", "编辑 JSON") as HTMLButtonElement;
+    const json = el("button", "btn ghost", tr("编辑 JSON")) as HTMLButtonElement;
     json.onclick = () => this.paintSettingsJson(body, view);
     foot.append(json, el("span", "spacer"), save);
     body.append(foot);
@@ -5397,10 +5610,10 @@ export class App {
       });
     };
     if (this.session?.owned) {
-      const reload = el("div", "settings-hint", "新开的会话直接用新设置；正在运行的会话里，除了队列方式、自动压缩、自动重试，其它要重新加载（重启这个会话的 pi）才生效。");
-      const btn = el("button", "btn ghost", "重新加载当前会话") as HTMLButtonElement;
+      const reload = el("div", "settings-hint", tr("新开的会话直接用新设置；正在运行的会话里，除了队列方式、自动压缩、自动重试，其它要重新加载（重启这个会话的 pi）才生效。"));
+      const btn = el("button", "btn ghost", tr("重新加载当前会话")) as HTMLButtonElement;
       btn.disabled = Boolean(this.session.running);
-      btn.title = this.session.running ? "这一轮结束后再重新加载" : "/reload";
+      btn.title = this.session.running ? tr("这一轮结束后再重新加载") : "/reload";
       btn.onclick = () => {
         const sessionId = this.currentId;
         if (!sessionId) return;
@@ -5414,20 +5627,20 @@ export class App {
   /** #30: the session lock for terminal pi — the half of D8 the bridge cannot do on its own. */
   private lockExtBox(): HTMLElement {
     const box = el("div", "settings-lockext");
-    box.append(el("div", "settings-label", "终端联动：会话锁"));
+    box.append(el("div", "settings-label", tr("终端联动：会话锁")));
     box.append(
       el(
         "div",
         "settings-hint",
-        "pi 自己不锁会话文件，网页和终端同时写同一个会话会分叉。装上这个小扩展后，终端里的 pi 会登记自己开着的会话（网页就不会去接管它，列表里显示「终端占用」），打开一个网页正在写的会话时也会先提醒你。只影响之后启动的终端 pi。",
+        tr("pi 自己不锁会话文件，网页和终端同时写同一个会话会分叉。装上这个小扩展后，终端里的 pi 会登记自己开着的会话（网页就不会去接管它，列表里显示「终端占用」），打开一个网页正在写的会话时也会先提醒你。只影响之后启动的终端 pi。"),
       ),
     );
     const st = this.lockExt;
     const row = el("div", "settings-foot");
-    row.append(el("span", `login-status${st?.installed ? " ok" : ""}`, st ? (st.installed ? `已安装（${st.path}）` : "未安装") : "读取中…"));
+    row.append(el("span", `login-status${st?.installed ? " ok" : ""}`, st ? (st.installed ? tr("已安装（{p1}）", { p1: st.path }) : tr("未安装")) : tr("读取中…")));
     row.append(el("span", "spacer"));
     if (st) {
-      const b = el("button", st.installed ? "btn ghost" : "btn", st.installed ? "移除" : "安装到 pi 的全局扩展") as HTMLButtonElement;
+      const b = el("button", st.installed ? "btn ghost" : "btn", st.installed ? tr("移除") : tr("安装到 pi 的全局扩展")) as HTMLButtonElement;
       b.onclick = () => this.act(() => this.socket.send({ type: "lockext.set", on: !st.installed }));
       row.append(b);
     }
@@ -5442,15 +5655,15 @@ export class App {
     ta.value = view.raw || "{\n}\n";
     ta.spellcheck = false;
     const foot = el("div", "settings-foot");
-    const back = el("button", "btn ghost", "回到表单") as HTMLButtonElement;
+    const back = el("button", "btn ghost", tr("回到表单")) as HTMLButtonElement;
     back.onclick = () => this.paintSettings();
-    const save = el("button", "btn primary", "保存整个文件") as HTMLButtonElement;
+    const save = el("button", "btn primary", tr("保存整个文件")) as HTMLButtonElement;
     save.disabled = view.scope === "project" && !view.writable;
     save.onclick = () => {
       try {
         JSON.parse(ta.value);
       } catch (err) {
-        this.flashSettings(`不是合法的 JSON：${(err as Error).message}`, true);
+        this.flashSettings(tr("不是合法的 JSON：{p1}", { p1: (err as Error).message }), true);
         return;
       }
       const raw = ta.value;
@@ -5464,24 +5677,26 @@ export class App {
     const t = this.trust;
     const cwd = this.session?.cwd ?? "";
     if (!t || t.cwd !== cwd) {
-      body.append(el("div", "empty", cwd ? "读取中…" : "先打开一个会话"));
+      body.append(el("div", "empty", cwd ? tr("读取中…") : tr("先打开一个会话")));
       return;
     }
     const lines = [
-      t.needed ? "这个目录有需要信任才会加载的 pi 资源（.pi/settings.json、.pi/mcp.json、.pi/extensions|skills|prompts|themes、SYSTEM.md 等）。" : "这个目录没有需要信任的 pi 资源，信任与否都不影响。",
-      t.saved ? `已保存的决定：${t.saved.decision ? "信任" : "不信任"}（${t.saved.path}）` : `没有保存的决定。全局 defaultProjectTrust = ${t.fallback}，网页里的 pi 不能弹提示，所以${t.effective ? "会加载" : "不会加载"}。`,
-      "决定写在 ~/.pi/agent/trust.json，和终端里的 /trust 是同一份。",
+      t.needed ? tr("这个目录有需要信任才会加载的 pi 资源（.pi/settings.json、.pi/mcp.json、.pi/extensions|skills|prompts|themes、SYSTEM.md 等）。") : tr("这个目录没有需要信任的 pi 资源，信任与否都不影响。"),
+      t.saved ? tr("已保存的决定：{p1}（{p2}）", { p1: t.saved.decision ? tr("信任") : tr("不信任"), p2: t.saved.path }) : tr("没有保存的决定。全局 defaultProjectTrust = {p1}，网页里的 pi 不能弹提示，所以{p2}。", { p1: t.fallback, p2: t.effective ? tr("会加载") : tr("不会加载") }),
+      tr("决定写在 ~/.pi/agent/trust.json，和终端里的 /trust 是同一份。"),
     ];
     for (const l of lines) body.append(el("div", "settings-hint", l));
     const opts = el("div", "settings-trust-opts");
     t.options.forEach((o, i) => {
-      const label = o.label === "Trust" ? "信任这个目录" : o.label === "Do not trust" ? "不信任" : o.label.replace(/^Trust parent folder \((.*)\)$/, "信任上级目录 $1");
+      // bridge 只给英文标签（Trust / Do not trust / Trust parent folder (…)），这里翻成人话。
+      const parent = /^Trust parent folder \((.*)\)$/.exec(o.label);
+      const label = o.label === "Trust" ? tr("信任这个目录") : o.label === "Do not trust" ? tr("不信任") : parent ? tr("信任上级目录 {p1}", { p1: parent[1] }) : o.label;
       const b = el("button", `btn${o.trusted ? " primary" : ""}`, label) as HTMLButtonElement;
       b.onclick = () => this.act(() => this.socket.send({ type: "trust.set", cwd, option: i }));
       opts.append(b);
     });
     body.append(opts);
-    if (this.session?.owned) body.append(el("div", "settings-hint", "改了之后，正在运行的会话要「重新加载」（/reload）才会按新的决定加载项目资源。"));
+    if (this.session?.owned) body.append(el("div", "settings-hint", tr("改了之后，正在运行的会话要「重新加载」（/reload）才会按新的决定加载项目资源。")));
   }
 
   // ---------------------------------------------------------------- /share /bug (#38)
@@ -5504,7 +5719,7 @@ export class App {
     const sheet = el("div", "sheet settings-sheet share-sheet");
     const head = el("div", "sheet-head");
     head.append(el("div", "sheet-title", title));
-    const close = el("button", "btn ghost", "取消");
+    const close = el("button", "btn ghost", tr("取消"));
     close.onclick = () => this.closeSheet();
     head.append(close);
     const body = el("div", "settings-body");
@@ -5519,15 +5734,15 @@ export class App {
   private openShareSheet(): void {
     const sessionId = this.currentId;
     if (!sessionId) return;
-    const { body } = this.shareSheet("分享会话（/share）");
+    const { body } = this.shareSheet(tr("分享会话（/share）"));
     body.append(
-      el("div", "settings-hint", "会把这个会话（当前分支）上传出这台电脑，然后给你一个查看链接。会话里可能有你的提示词、工具参数、命令输出、读过的文件内容，以及对话里出现过的凭据——先确认里面没有不该给别人看的东西。"),
-      el("div", "settings-hint", "去向和终端的 /share 一样：登录了 Radius 就传到 Radius（组织内可见），否则用 GitHub CLI 建一个私有 gist（要先 gh auth login）。设置里的 sessionShareDestination 可以强制其中一种。"),
+      el("div", "settings-hint", tr("会把这个会话（当前分支）上传出这台电脑，然后给你一个查看链接。会话里可能有你的提示词、工具参数、命令输出、读过的文件内容，以及对话里出现过的凭据——先确认里面没有不该给别人看的东西。")),
+      el("div", "settings-hint", tr("去向和终端的 /share 一样：登录了 Radius 就传到 Radius（组织内可见），否则用 GitHub CLI 建一个私有 gist（要先 gh auth login）。设置里的 sessionShareDestination 可以强制其中一种。")),
     );
-    const go = el("button", "btn primary share-go", "确认上传并生成链接") as HTMLButtonElement;
+    const go = el("button", "btn primary share-go", tr("确认上传并生成链接")) as HTMLButtonElement;
     go.onclick = () => {
       go.disabled = true;
-      this.flashShare("准备中…");
+      this.flashShare(tr("准备中…"));
       this.act(() => this.socket.send({ type: "share", sessionId }));
     };
     const foot = el("div", "settings-foot");
@@ -5539,28 +5754,28 @@ export class App {
   private openBugSheet(hint: string): void {
     const sessionId = this.currentId;
     if (!sessionId) return;
-    const { body } = this.shareSheet("给 pi 开发者报告 bug（/bug）");
-    body.append(el("div", "settings-hint", "报告会发给 pi 的开发者（Earendil），不公开。里面有 pi 版本、操作系统、这个会话用的模型和 provider 配置（不含 API key）、设置（敏感字段已去掉），以及这个会话里 provider 报过的错。"));
+    const { body } = this.shareSheet(tr("给 pi 开发者报告 bug（/bug）"));
+    body.append(el("div", "settings-hint", tr("报告会发给 pi 的开发者（Earendil），不公开。里面有 pi 版本、操作系统、这个会话用的模型和 provider 配置（不含 API key）、设置（敏感字段已去掉），以及这个会话里 provider 报过的错。")));
     const desc = el("textarea", "settings-json") as HTMLTextAreaElement;
     desc.style.minHeight = "110px";
-    desc.placeholder = "出了什么问题？（可选）";
+    desc.placeholder = tr("出了什么问题？（可选）");
     desc.value = hint;
     body.append(desc);
     const wrap = el("label", "ns-adv-flag");
     const include = el("input") as HTMLInputElement;
     include.type = "checkbox";
-    wrap.append(include, el("span", "", "附上这个会话的完整记录（你的消息、模型输出、工具调用和结果，包括读过的文件内容和命令输出）"));
+    wrap.append(include, el("span", "", tr("附上这个会话的完整记录（你的消息、模型输出、工具调用和结果，包括读过的文件内容和命令输出）")));
     body.append(wrap);
-    body.append(el("div", "settings-hint", "和终端相比少两样：不能让模型写摘要，报告里也不列出加载的扩展（网页这边拿不到运行中的会话对象）。"));
+    body.append(el("div", "settings-hint", tr("和终端相比少两样：不能让模型写摘要，报告里也不列出加载的扩展（网页这边拿不到运行中的会话对象）。")));
     const foot = el("div", "settings-foot");
     const send = (delivery: "upload" | "zip") => {
       for (const b of foot.querySelectorAll<HTMLButtonElement>("button")) b.disabled = true;
-      this.flashShare(delivery === "upload" ? "上传中…" : "打包中…");
+      this.flashShare(delivery === "upload" ? tr("上传中…") : tr("打包中…"));
       this.act(() => this.socket.send({ type: "bug", sessionId, hint: desc.value.trim(), includeSession: include.checked, delivery }));
     };
-    const zip = el("button", "btn share-go", "导出 zip（自己看过再发）") as HTMLButtonElement;
+    const zip = el("button", "btn share-go", tr("导出 zip（自己看过再发）")) as HTMLButtonElement;
     zip.onclick = () => send("zip");
-    const up = el("button", "btn primary share-go", "上传给 pi 开发者") as HTMLButtonElement;
+    const up = el("button", "btn primary share-go", tr("上传给 pi 开发者")) as HTMLButtonElement;
     up.onclick = () => send("upload");
     foot.append(el("span", "spacer"), zip, up);
     body.append(foot);
@@ -5608,7 +5823,7 @@ export class App {
     box.type = "checkbox";
     box.checked = this.uiPrefs.showExtButton;
     box.onchange = () => this.act(() => this.socket.send({ type: "ui.set", showExtButton: box.checked }));
-    row.append(box, el("span", "", "在输入框下方显示「扩展」按钮（点开就是下面这套管理界面）"));
+    row.append(box, el("span", "", tr("在输入框下方显示「扩展」按钮（点开就是下面这套管理界面）")));
     body.append(row);
     const host = el("div", "ext-host");
     body.append(host);
@@ -5625,35 +5840,41 @@ export class App {
   private paintPiUpdate(body: HTMLElement): void {
     const box = el("div", "ext-pi");
     const row = el("div", "settings-foot");
-    row.append(el("span", "pi-name", "pi 本体"), el("span", "pi-ver", `pi ${this.me.pi}`));
+    row.append(el("span", "pi-name", tr("pi 本体")), el("span", "pi-ver", `pi ${this.me.pi}`));
     const upd = this.piUpd;
     const hint = el("span", "settings-hint");
-    if (this.piChecking) hint.textContent = "联网检查版本中…";
+    if (this.piChecking) hint.textContent = tr("联网检查版本中…");
     else if (!upd) hint.textContent = "";
-    else if (upd.error) hint.textContent = `没查到最新版：${upd.error}`;
-    else hint.textContent = `最新 ${upd.latest}（${upd.source ?? ""}） · 检查于 ${new Date(upd.checkedAt).toLocaleTimeString()}`;
+    else if (upd.error) hint.textContent = tr("没查到最新版：{p1}", { p1: upd.error });
+    else
+      hint.textContent = tr("最新 {p1}（{p2}） · 检查于 {p3}", {
+        p1: upd.latest ?? "",
+        p2: upd.source ?? "",
+        p3: new Date(upd.checkedAt).toLocaleTimeString(),
+      });
     row.append(hint, el("span", "spacer"));
-    const recheck = el("button", "btn ghost", "重新检查") as HTMLButtonElement;
+    const recheck = el("button", "btn ghost", tr("重新检查")) as HTMLButtonElement;
     recheck.disabled = this.piChecking;
-    recheck.title = "绕过桥的 30 分钟缓存，重新问一次";
+    recheck.title = tr("绕过桥的 30 分钟缓存，重新问一次");
     recheck.onclick = () => this.checkPiUpdate(true);
     row.append(recheck);
     const busy = this.extBusy() || this.piUpdRun === "running";
     if (upd?.update || (upd && upd.error)) {
-      const go = el("button", "btn primary", this.piUpdRun === "running" ? "更新中…" : "更新 pi") as HTMLButtonElement;
+      const go = el("button", "btn primary", this.piUpdRun === "running" ? tr("更新中…") : tr("更新 pi")) as HTMLButtonElement;
       go.disabled = busy;
       go.onclick = () => this.confirmPiUpdate(false);
       row.append(go);
     } else if (upd && !upd.error) {
-      row.append(el("span", "settings-hint", "已是最新"));
-    }    box.append(row);
+      row.append(el("span", "settings-hint", tr("已是最新")));
+    }
+    box.append(row);
     if (this.piUpdRun === "ok") {
-      box.append(el("div", "login-result", `已更新到 ${this.me.pi}。已开着的会话仍是旧版本，新开的会话自动用新版。`));
+      box.append(el("div", "login-result", tr("已更新到 {p1}。已开着的会话仍是旧版本，新开的会话自动用新版。", { p1: this.me.pi })));
       const tools = el("div", "settings-foot");
       if (this.session?.owned) {
-        const again = el("button", "btn", "重启当前会话") as HTMLButtonElement;
+        const again = el("button", "btn", tr("重启当前会话")) as HTMLButtonElement;
         again.disabled = Boolean(this.session.running);
-        again.title = this.session.running ? "这一轮结束后再重启" : "重启这个会话的 pi，读到新版本";
+        again.title = this.session.running ? tr("这一轮结束后再重启") : tr("重启这个会话的 pi，读到新版本");
         again.onclick = () => {
           const sessionId = this.currentId;
           if (!sessionId) return;
@@ -5661,7 +5882,7 @@ export class App {
         };
         tools.append(again);
       }
-      const log = el("button", "btn ghost", "看更新日志");
+      const log = el("button", "btn ghost", tr("看更新日志"));
       log.onclick = () => {
         this.settingsTab = "changelog";
         this.paintSettings();
@@ -5669,10 +5890,10 @@ export class App {
       tools.append(log);
       box.append(tools);
     } else if (this.piUpdRun === "fail") {
-      box.append(el("div", "login-result bad", "更新失败：看下面的输出。常见原因是网络，或上一次更新只换了一半。"));
-      const force = el("button", "btn", "强制重装（--force）") as HTMLButtonElement;
+      box.append(el("div", "login-result bad", tr("更新失败：看下面的输出。常见原因是网络，或上一次更新只换了一半。")));
+      const force = el("button", "btn", tr("强制重装（--force）")) as HTMLButtonElement;
       force.disabled = busy;
-      force.title = "不带 --force 时，已经是最新就什么都不做；强制重装会真的再装一遍";
+      force.title = tr("不带 --force 时，已经是最新就什么都不做；强制重装会真的再装一遍");
       force.onclick = () => this.confirmPiUpdate(true);
       box.append(force);
     }
@@ -5693,20 +5914,27 @@ export class App {
     if (document.querySelector(".modal")) return;
     const modal = el("div", "modal hi");
     const form = el("form");
-    const h = el("h2", "", force ? "强制重装 pi？" : "更新 pi？");
+    const h = el("h2", "", force ? tr("强制重装 pi？") : tr("更新 pi？"));
     h.style.margin = "0";
     h.style.fontSize = "16px";
-    const latest = this.piUpd?.latest && this.piUpd.update ? `（${this.me.pi} → ${this.piUpd.latest}）` : `（当前 ${this.me.pi}）`;
-    const p = el("p", "", `要联网，可能几分钟；会替换全局安装的 pi${latest}。期间不要关页面；失败没有自动回滚，重装可再点一次。`);
+    const latest =
+      this.piUpd?.latest && this.piUpd.update
+        ? tr("（{p1} → {p2}）", { p1: this.me.pi, p2: this.piUpd.latest })
+        : tr("（当前 {p1}）", { p1: this.me.pi });
+    const p = el(
+      "p",
+      "",
+      tr("要联网，可能几分钟；会替换全局安装的 pi{p1}。期间不要关页面；失败没有自动回滚，重装可再点一次。", { p1: latest }),
+    );
     p.style.color = "var(--faint)";
     p.style.fontSize = "13px";
     p.style.margin = "0";
     const btns = el("div", "settings-foot");
     btns.append(el("span", "spacer"));
-    const cancel = el("button", "btn ghost", "取消");
+    const cancel = el("button", "btn ghost", tr("取消"));
     cancel.type = "button";
     cancel.onclick = () => this.closeModal();
-    const ok = el("button", "btn primary", force ? "强制重装" : "更新");
+    const ok = el("button", "btn primary", force ? tr("强制重装") : tr("更新"));
     ok.type = "submit";
     btns.append(cancel, ok);
     form.append(h, p, btns);
@@ -5736,8 +5964,8 @@ export class App {
     };
     const sheet = el("div", "sheet settings-sheet ext-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", "扩展与 MCP"));
-    const close = el("button", "btn ghost", "关闭");
+    head.append(el("div", "sheet-title", tr("扩展与 MCP")));
+    const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(close);
     const body = el("div", "settings-body");
@@ -5764,7 +5992,7 @@ export class App {
     btn.querySelector(".ext-badge")?.remove();
     if (this.extUpdates > 0) {
       const badge = el("span", "ext-badge", String(this.extUpdates));
-      badge.title = `${this.extUpdates} 个可以更新`;
+      badge.title = tr("{p1} 个可以更新", { p1: this.extUpdates });
       btn.append(badge);
     }
   }
@@ -5788,9 +6016,9 @@ export class App {
     host.replaceChildren();
     const tabs = el("div", "settings-tabs ext-tabs");
     const def: ["installed" | "ext" | "mcp", string][] = [
-      ["installed", this.extUpdates ? `已安装（${this.extUpdates} 个可更新）` : "已安装"],
-      ["ext", "扩展商店"],
-      ["mcp", "MCP 商店"],
+      ["installed", this.extUpdates ? tr("已安装（{p1} 个可更新）", { p1: this.extUpdates }) : tr("已安装")],
+      ["ext", tr("扩展商店")],
+      ["mcp", tr("MCP 商店")],
     ];
     for (const [id, label] of def) {
       const b = el("button", `chip${this.extTab === id ? " on" : ""}`, label) as HTMLButtonElement;
@@ -5801,14 +6029,14 @@ export class App {
       tabs.append(b);
     }
     host.append(tabs);
-    if (this.me.public) host.append(el("div", "takeover warn", "通过公网访问：这里只能查看，安装 / 卸载 / 更新 / 启停请在本机或局域网操作。"));
+    if (this.me.public) host.append(el("div", "takeover warn", tr("通过公网访问：这里只能查看，安装 / 卸载 / 更新 / 启停请在本机或局域网操作。")));
     if (this.extDirty) {
       const bar = el("div", "takeover ext-reload");
-      bar.append(el("span", "", "改动要「重新加载」后，正在运行的会话才看得到（新开的会话直接生效）。"));
+      bar.append(el("span", "", tr("改动要「重新加载」后，正在运行的会话才看得到（新开的会话直接生效）。")));
       if (this.session?.owned) {
-        const b = el("button", "btn", "重新加载当前会话") as HTMLButtonElement;
+        const b = el("button", "btn", tr("重新加载当前会话")) as HTMLButtonElement;
         b.disabled = Boolean(this.session.running);
-        b.title = this.session.running ? "这一轮结束后再重新加载" : "/reload";
+        b.title = this.session.running ? tr("这一轮结束后再重新加载") : "/reload";
         b.onclick = () => {
           const sessionId = this.currentId;
           if (!sessionId) return;
@@ -5822,7 +6050,7 @@ export class App {
     }
     if (this.extVars.length) {
       host.append(
-        el("div", "takeover warn", `这个 MCP 服务要用到密钥，mcp.json 里只写了变量引用。请在系统环境变量里设置：${this.extVars.join("、")}，然后重启 bridge（或至少重新加载会话）。`),
+        el("div", "takeover warn", tr("这个 MCP 服务要用到密钥，mcp.json 里只写了变量引用。请在系统环境变量里设置：{p1}，然后重启 bridge（或至少重新加载会话）。", { p1: this.extVars.join(tr("、")) })),
       );
     }
     if (this.extTab === "installed") this.paintExtInstalled(host);
@@ -5831,8 +6059,7 @@ export class App {
     // console of the last command
     const run = this.cliRun;
     if (run && run.op !== "pkg.list" && run.op !== "mcp.list") {
-      const status = run.error ? `没跑起来：${run.error}` : run.code === undefined ? `正在运行 ${run.op}…` : run.code === 0 ? `${run.op} 完成` : `${run.op} 退出码 ${run.code}`;
-      host.append(el("div", `login-result${run.error || (run.code !== undefined && run.code !== 0) ? " bad" : ""}`, status));
+      const status = run.error ? tr("没跑起来：{p1}", { p1: run.error }) : run.code === undefined ? tr("正在运行 {p1}…", { p1: run.op }) : run.code === 0 ? tr("{p1} 完成", { p1: run.op }) : tr("{p1} 退出码 {p2}", { p1: run.op, p2: run.code ?? -1 });      host.append(el("div", `login-result${run.error || (run.code !== undefined && run.code !== 0) ? " bad" : ""}`, status));
       const pre = el("pre", "cli-out", run.out || "");
       host.append(pre);
       queueMicrotask(() => (pre.scrollTop = pre.scrollHeight));
@@ -5848,11 +6075,11 @@ export class App {
     const busy = this.extBusy();
     const cwd = this.session?.cwd;
     const top = el("div", "settings-foot");
-    top.append(el("span", "settings-hint", this.extInvLoading ? "联网检查版本中…" : inv ? `检查于 ${new Date(inv.checkedAt).toLocaleTimeString()}` : ""));
+    top.append(el("span", "settings-hint", this.extInvLoading ? tr("联网检查版本中…") : inv ? tr("检查于 {p1}", { p1: fmtTime(inv.checkedAt) }) : ""));
     top.append(el("span", "spacer"));
     const updatable = inv ? [...inv.packages.filter((p) => p.update).map((p) => ({ kind: "pkg" as const, p })), ...inv.mcp.filter((m) => m.version.update).map((m) => ({ kind: "mcp" as const, m }))] : [];
     if (updatable.length) {
-      const all = el("button", "btn primary", `全部更新（${updatable.length}）`) as HTMLButtonElement;
+      const all = el("button", "btn primary", tr("全部更新（{p1}）", { p1: updatable.length })) as HTMLButtonElement;
       all.disabled = busy;
       all.onclick = () => {
         for (const u of updatable) {
@@ -5862,7 +6089,7 @@ export class App {
       };
       top.append(all);
     }
-    const refresh = el("button", "btn ghost", "刷新") as HTMLButtonElement;
+    const refresh = el("button", "btn ghost", tr("刷新")) as HTMLButtonElement;
     refresh.onclick = () => {
       this.loadExtInventory();
       this.paintExtIfOpen();
@@ -5870,30 +6097,30 @@ export class App {
     top.append(refresh);
     host.append(top);
     if (!inv) {
-      host.append(el("div", "empty", "读取中…（列出包和 MCP 服务器、连接一遍检查状态）"));
+      host.append(el("div", "empty", tr("读取中…（列出包和 MCP 服务器、连接一遍检查状态）")));
       return;
     }
 
-    host.append(el("div", "settings-label", "pi 包"));
+    host.append(el("div", "settings-label", tr("pi 包")));
     const pkgs = el("div", "login-list");
-    if (!inv.packages.length) pkgs.append(el("div", "empty", "还没有装任何包，去「扩展商店」看看"));
+    if (!inv.packages.length) pkgs.append(el("div", "empty", tr("还没有装任何包，去「扩展商店」看看")));
     for (const p of inv.packages) {
       const row = el("div", "login-row");
       const name = el("div", "login-name");
-      name.append(el("span", "", p.name ?? p.source), el("span", "settings-hint", ` ${p.version ? `v${p.version}` : ""}${p.pinned && p.origin !== "local" ? " · 固定版本" : ""}`));
+      name.append(el("span", "", p.name ?? p.source), el("span", "settings-hint", tr(" {p1}{p2}", { p1: p.version ? `v${p.version}` : "", p2: p.pinned && p.origin !== "local" ? tr(" · 固定版本") : "" })));
       name.title = `${p.source}${p.path ? `\n${p.path}` : ""}`;
-      const tag = p.update ? `可更新到 ${p.latest}` : p.origin === "local" ? "本地" : p.checkError ? "没查到最新版" : p.pinned ? "" : "最新";
-      row.append(name, el("span", `login-status${p.update ? " warn" : p.origin !== "local" && !p.checkError && !p.pinned ? " ok" : ""}`, `${p.scope === "project" ? "项目 · " : ""}${tag}`));
+      const tag = p.update ? tr("可更新到 {p1}", { p1: p.latest ?? "" }) : p.origin === "local" ? tr("本地") : p.checkError ? tr("没查到最新版") : p.pinned ? "" : tr("最新");
+      row.append(name, el("span", `login-status${p.update ? " warn" : p.origin !== "local" && !p.checkError && !p.pinned ? " ok" : ""}`, tr("{p1}{p2}", { p1: p.scope === "project" ? tr("项目 · ") : "", p2: tag })));
       const acts = el("div", "login-acts");
       if (p.update) {
-        const up = el("button", "btn primary", "更新") as HTMLButtonElement;
+        const up = el("button", "btn primary", tr("更新")) as HTMLButtonElement;
         up.disabled = busy;
         up.onclick = () => this.piCli({ op: "pkg.update", target: this.pkgRef(p) });
         acts.append(up);
       }
       const key = `pkg:${p.source}`;
       const armed = this.extArm?.key === key;
-      const rm = el("button", `btn ghost${armed ? " danger" : ""}`, armed ? "确认卸载？" : "卸载") as HTMLButtonElement;
+      const rm = el("button", `btn ghost${armed ? " danger" : ""}`, armed ? tr("确认卸载？") : tr("卸载")) as HTMLButtonElement;
       rm.disabled = busy;
       rm.onclick = () => {
         if (this.extArmed(key)) this.piCli({ op: "pkg.remove", source: this.pkgRef(p), local: p.scope === "project" });
@@ -5905,16 +6132,16 @@ export class App {
     }
     host.append(pkgs);
 
-    host.append(el("div", "settings-label", "扩展（内置 / 单独的文件）"));
+    host.append(el("div", "settings-label", tr("扩展（内置 / 单独的文件）")));
     const exts = el("div", "login-list");
     for (const x of inv.extensions) {
       const row = el("div", `login-row${x.enabled ? " on" : ""}`);
       const name = el("div", "login-name");
-      name.append(el("span", "", x.label), el("span", "settings-hint", ` ${x.scope === "builtin" ? "内置" : x.scope === "project" ? "项目" : "全局"}${x.how === "listed" ? " · settings 里列出" : x.how === "discovered" ? " · extensions 目录" : ""}`));
+      name.append(el("span", "", x.label), el("span", "settings-hint", tr(" {p1}{p2}", { p1: x.scope === "builtin" ? tr("内置") : x.scope === "project" ? tr("项目") : tr("全局"), p2: x.how === "listed" ? tr(" · settings 里列出") : x.how === "discovered" ? tr(" · extensions 目录") : "" })));
       name.title = x.id;
-      row.append(name, el("span", `login-status${x.enabled ? " ok" : ""}`, x.enabled ? "启用" : "已停用"));
+      row.append(name, el("span", `login-status${x.enabled ? " ok" : ""}`, x.enabled ? tr("启用") : tr("已停用")));
       const acts = el("div", "login-acts");
-      const t = el("button", "btn", x.enabled ? "停用" : "启用") as HTMLButtonElement;
+      const t = el("button", "btn", x.enabled ? tr("停用") : tr("启用")) as HTMLButtonElement;
       t.disabled = busy;
       t.onclick = () => this.act(() => this.socket.send({ type: "ext.toggle", id: x.id, scope: x.scope, how: x.how, enable: !x.enabled, ...(cwd ? { cwd } : {}) }));
       acts.append(t);
@@ -5923,41 +6150,41 @@ export class App {
     }
     host.append(exts);
 
-    host.append(el("div", "settings-label", "MCP 服务器"));
+    host.append(el("div", "settings-label", tr("MCP 服务器")));
     const mcp = el("div", "login-list");
-    if (inv.mcpError) mcp.append(el("div", "settings-hint", `pi mcp list 出错：${inv.mcpError}`));
-    if (!inv.mcp.length) mcp.append(el("div", "empty", "没有配置 MCP 服务器，去「MCP 商店」看看"));
+    if (inv.mcpError) mcp.append(el("div", "settings-hint", tr("pi mcp list 出错：{p1}", { p1: inv.mcpError })));
+    if (!inv.mcp.length) mcp.append(el("div", "empty", tr("没有配置 MCP 服务器，去「MCP 商店」看看")));
     for (const m of inv.mcp) {
       const row = el("div", `login-row${m.state === "connected" ? " on" : ""}`);
       const name = el("div", "login-name");
       const v = m.version;
-      name.append(el("span", "", m.name), el("span", "settings-hint", ` ${m.scope}${v.version ? ` · v${v.version}` : v.identifier ? " · 始终用最新" : ""}${m.exposure ? ` · ${m.exposure}` : ""}`));
+      name.append(el("span", "", m.name), el("span", "settings-hint", tr(" {p1}{p2}{p3}", { p1: m.scope, p2: v.version ? ` · v${v.version}` : v.identifier ? tr(" · 始终用最新") : "", p3: m.exposure ? ` · ${m.exposure}` : "" })));
       if (m.transport) name.title = m.transport;
-      const state = !m.enabled ? "已停用" : m.state === "connected" ? `已连接 · ${m.tools.length} 个工具` : (m.state ?? "未知");
-      row.append(name, el("span", `login-status${v.update ? " warn" : m.state === "connected" ? " ok" : ""}`, v.update ? `可更新到 ${v.latest} · ${state}` : state));
+      const state = !m.enabled ? tr("已停用") : m.state === "connected" ? tr("已连接 · {p1} 个工具", { p1: m.tools.length }) : (m.state ?? tr("未知"));
+      row.append(name, el("span", `login-status${v.update ? " warn" : m.state === "connected" ? " ok" : ""}`, v.update ? tr("可更新到 {p1} · {p2}", { p1: v.latest ?? "", p2: state }) : state));
       const acts = el("div", "login-acts");
       if (m.error) acts.append(el("span", "settings-hint", m.error.slice(0, 200)));
       if (m.tools.length) {
         const tools = el("details", "ext-tools");
-        tools.append(el("summary", "", `工具（${m.tools.length}）`), el("div", "settings-hint", m.tools.join(" · ")));
+        tools.append(el("summary", "", tr("工具（{p1}）", { p1: m.tools.length })), el("div", "settings-hint", m.tools.join(" · ")));
         acts.append(tools);
       }
       if (v.update && v.latest) {
-        const up = el("button", "btn primary", "更新") as HTMLButtonElement;
+        const up = el("button", "btn primary", tr("更新")) as HTMLButtonElement;
         up.disabled = busy;
         up.onclick = () => this.act(() => this.socket.send({ type: "mcp.bump", file: m.source, name: m.name, version: v.latest }));
         acts.append(up);
       }
-      const t = el("button", "btn", m.enabled ? "停用" : "启用") as HTMLButtonElement;
+      const t = el("button", "btn", m.enabled ? tr("停用") : tr("启用")) as HTMLButtonElement;
       t.disabled = busy;
       t.onclick = () => this.act(() => this.socket.send({ type: "mcp.toggle", file: m.source, name: m.name, enable: !m.enabled }));
-      const login = el("button", "btn ghost", "OAuth 登录") as HTMLButtonElement;
-      login.title = "pi mcp login：在这台电脑上打开浏览器完成授权";
+      const login = el("button", "btn ghost", tr("OAuth 登录")) as HTMLButtonElement;
+      login.title = tr("pi mcp login：在这台电脑上打开浏览器完成授权");
       login.disabled = busy;
       login.onclick = () => this.piCli({ op: "mcp.login", name: m.name });
       const key = `mcp:${m.source}:${m.name}`;
       const armed = this.extArm?.key === key;
-      const rm = el("button", `btn ghost${armed ? " danger" : ""}`, armed ? "确认删除？" : "删除") as HTMLButtonElement;
+      const rm = el("button", `btn ghost${armed ? " danger" : ""}`, armed ? tr("确认删除？") : tr("删除")) as HTMLButtonElement;
       rm.disabled = busy;
       rm.onclick = () => {
         if (this.extArmed(key)) this.piCli({ op: "mcp.remove", name: m.name, local: m.scope === "project" });
@@ -5971,11 +6198,11 @@ export class App {
 
     // install by source (git / local paths the store does not have)
     const more = el("details", "ns-advanced");
-    more.append(el("summary", "", "按来源安装包 / 手动添加 MCP 服务器"));
+    more.append(el("summary", "", tr("按来源安装包 / 手动添加 MCP 服务器")));
     const grid = el("div", "ns-adv-grid");
     const src = el("input", "ns-input mono") as HTMLInputElement;
     src.placeholder = "npm:@scope/pkg · git:github.com/user/repo · ./local/path";
-    const go = el("button", "btn", "安装包") as HTMLButtonElement;
+    const go = el("button", "btn", tr("安装包")) as HTMLButtonElement;
     go.disabled = busy;
     go.onclick = () => {
       if (src.value.trim()) this.piCli({ op: "pkg.install", source: src.value.trim(), local: this.extScope === "project" });
@@ -5984,12 +6211,12 @@ export class App {
     r1.append(src, go);
     grid.append(r1);
     const mName = el("input", "ns-input mono") as HTMLInputElement;
-    mName.placeholder = "MCP 服务名，例如 github";
+    mName.placeholder = tr("MCP 服务名，例如 github");
     const mUrl = el("input", "ns-input mono") as HTMLInputElement;
-    mUrl.placeholder = "HTTP 服务器 URL（stdio 服务器留空，填下面的命令）";
+    mUrl.placeholder = tr("HTTP 服务器 URL（stdio 服务器留空，填下面的命令）");
     const mCmd = el("input", "ns-input mono") as HTMLInputElement;
-    mCmd.placeholder = "启动命令 + 参数（空格分隔），例如 npx -y @modelcontextprotocol/server-everything";
-    const mGo = el("button", "btn", "添加 MCP") as HTMLButtonElement;
+    mCmd.placeholder = tr("启动命令 + 参数（空格分隔），例如 npx -y @modelcontextprotocol/server-everything");
+    const mGo = el("button", "btn", tr("添加 MCP")) as HTMLButtonElement;
     mGo.disabled = busy;
     mGo.onclick = () => {
       const parts = mCmd.value.trim().split(/\s+/).filter(Boolean);
@@ -6019,7 +6246,7 @@ export class App {
       }, 350);
     };
     const scope = el("select", "ns-input") as HTMLSelectElement;
-    scope.append(new Option("装到全局", "global"), new Option("装到当前项目", "project"));
+    scope.append(new Option(tr("装到全局"), "global"), new Option(tr("装到当前项目"), "project"));
     scope.value = this.extScope;
     scope.style.flex = "0 0 auto";
     scope.style.width = "auto";
@@ -6028,7 +6255,7 @@ export class App {
     bar.append(q, scope);
     host.append(bar);
     const chips = el("div", "settings-trust-opts");
-    chips.append(el("span", "settings-hint", store.query ? "搜索结果，按热度排：" : "热度前"));
+    chips.append(el("span", "settings-hint", store.query ? tr("搜索结果，按热度排：") : tr("热度前")));
     for (const n of [10, 20, 50]) {
       const b = el("button", `chip${store.limit === n ? " on" : ""}`, String(n)) as HTMLButtonElement;
       b.onclick = () => {
@@ -6051,12 +6278,12 @@ export class App {
       this.paintExtIfOpen();
     };
     if (store.items === null && !store.error) this.socket.send({ type: "ext.store", query: store.query, limit: store.limit });
-    this.storeHeader(host, store, "搜索 pi 扩展（npm 上带 pi-package 关键字的包）", run);
-    host.append(el("div", "settings-hint", "来源是 npm（和 pi.dev/packages 画廊同一批包），按月下载量排序。装包等于让它的代码在这台电脑上运行，只装你信得过的。"));
+    this.storeHeader(host, store, tr("搜索 pi 扩展（npm 上带 pi-package 关键字的包）"), run);
+    host.append(el("div", "settings-hint", tr("来源是 npm（和 pi.dev/packages 画廊同一批包），按月下载量排序。装包等于让它的代码在这台电脑上运行，只装你信得过的。")));
     const list = el("div", "login-list");
     if (store.error) list.append(el("div", "empty", store.error));
-    else if (!store.items) list.append(el("div", "empty", "查询中…"));
-    else if (!store.items.length) list.append(el("div", "empty", "没有找到"));
+    else if (!store.items) list.append(el("div", "empty", tr("查询中…")));
+    else if (!store.items.length) list.append(el("div", "empty", tr("没有找到")));
     const installed = new Set((this.extInv?.packages ?? []).map((p) => p.name).filter(Boolean));
     const busy = this.extBusy();
     (store.items ?? []).forEach((p, i) => {
@@ -6067,12 +6294,12 @@ export class App {
       link.target = "_blank";
       link.rel = "noopener";
       name.append(el("span", "ext-rank", `${i + 1}`), link, el("span", "settings-hint", ` v${p.version}${p.publisher ? ` · ${p.publisher}` : ""}`));
-      row.append(name, el("span", "login-status", `月下载 ${p.monthly.toLocaleString("en-US")}`));
+      row.append(name, el("span", "login-status", tr("月下载 {p1}", { p1: p.monthly.toLocaleString("en-US") })));
       const acts = el("div", "login-acts");
       if (p.description) acts.append(el("span", "settings-hint ext-desc", p.description));
-      if (installed.has(p.name)) acts.append(el("span", "login-status ok", "已安装"));
+      if (installed.has(p.name)) acts.append(el("span", "login-status ok", tr("已安装")));
       else {
-        const b = el("button", "btn primary", "安装") as HTMLButtonElement;
+        const b = el("button", "btn primary", tr("安装")) as HTMLButtonElement;
         b.disabled = busy;
         b.onclick = () => this.piCli({ op: "pkg.install", source: `npm:${p.name}`, local: this.extScope === "project" });
         acts.append(b);
@@ -6092,15 +6319,15 @@ export class App {
       this.paintExtIfOpen();
     };
     if (store.items === null && !store.error) this.socket.send({ type: "mcp.store", query: store.query, limit: store.limit });
-    this.storeHeader(host, store, "搜索 MCP 服务（官方 MCP Registry）", run);
-    const notes: string[] = ["来源是官方 MCP Registry，按仓库的 GitHub star 排序。"];
-    if (store.building) notes.push("排行数据正在后台建立（第一次约 2 分钟），现在显示的是 Registry 的直接搜索结果，没有 star。");
-    else if (store.items && !store.starsComplete) notes.push(store.hasToken ? "部分仓库的 star 没查到。" : "没登录 GitHub CLI（gh），star 只查到一部分：运行 gh auth login 后排行更准。");
+    this.storeHeader(host, store, tr("搜索 MCP 服务（官方 MCP Registry）"), run);
+    const notes: string[] = [tr("来源是官方 MCP Registry，按仓库的 GitHub star 排序。")];
+    if (store.building) notes.push(tr("排行数据正在后台建立（第一次约 2 分钟），现在显示的是 Registry 的直接搜索结果，没有 star。"));
+    else if (store.items && !store.starsComplete) notes.push(store.hasToken ? tr("部分仓库的 star 没查到。") : tr("没登录 GitHub CLI（gh），star 只查到一部分：运行 gh auth login 后排行更准。"));
     host.append(el("div", "settings-hint", notes.join("")));
     const list = el("div", "login-list");
     if (store.error) list.append(el("div", "empty", store.error));
-    else if (!store.items) list.append(el("div", "empty", "查询中…"));
-    else if (!store.items.length) list.append(el("div", "empty", "没有找到"));
+    else if (!store.items) list.append(el("div", "empty", tr("查询中…")));
+    else if (!store.items.length) list.append(el("div", "empty", tr("没有找到")));
     const busy = this.extBusy();
     const installedText = (this.extInv?.mcp ?? []).map((m) => `${m.name} ${m.transport ?? ""}`).join("\n");
     (store.items ?? []).forEach((m, i) => {
@@ -6114,7 +6341,7 @@ export class App {
       const acts = el("div", "login-acts");
       if (m.description) acts.append(el("span", "settings-hint ext-desc", m.description));
       if (m.repo) {
-        const a = el("a", "settings-hint", "仓库") as HTMLAnchorElement;
+        const a = el("a", "settings-hint", tr("仓库")) as HTMLAnchorElement;
         a.href = m.repo;
         a.target = "_blank";
         a.rel = "noopener";
@@ -6122,13 +6349,13 @@ export class App {
       }
       const already = m.options.some((o) => installedText.includes(o.identifier));
       for (const o of m.options) acts.append(el("span", `ext-kind${o.unavailable ? " off" : ""}`, o.label));
-      if (already) acts.append(el("span", "login-status ok", "已安装"));
+      if (already) acts.append(el("span", "login-status ok", tr("已安装")));
       else if (this.mcpForm?.item === m.name) acts.append(this.mcpInstallForm(m));
       else {
         const usable = m.options.some((o) => !o.unavailable);
-        const b = el("button", "btn primary", "安装") as HTMLButtonElement;
+        const b = el("button", "btn primary", tr("安装")) as HTMLButtonElement;
         b.disabled = busy || !usable;
-        b.title = usable ? "" : m.options.map((o) => o.unavailable).filter(Boolean).join("；");
+        b.title = usable ? "" : m.options.map((o) => o.unavailable).filter(Boolean).join(tr("；"));
         b.onclick = () => {
           const first = Math.max(0, m.options.findIndex((o) => !o.unavailable));
           this.mcpForm = { item: m.name, name: this.slug(m), option: first, values: {}, exposure: "", description: "", local: this.extScope === "project" };
@@ -6155,7 +6382,7 @@ export class App {
     if (m.options.length > 1) {
       const pick = el("select", "ns-input") as HTMLSelectElement;
       m.options.forEach((o, i) => {
-        const opt = new Option(`${o.label}${o.unavailable ? `（${o.unavailable.split("：")[0]}）` : ""}`, String(i));
+        const opt = new Option(tr("{p1}{p2}", { p1: o.label, p2: o.unavailable ? tr("（{p1}）", { p1: o.unavailable.split("：")[0] }) : "" }), String(i));
         opt.disabled = Boolean(o.unavailable);
         pick.append(opt);
       });
@@ -6165,21 +6392,21 @@ export class App {
         f.values = {};
         this.paintExtIfOpen();
       };
-      box.append(this.formRow("运行方式", pick));
+      box.append(this.formRow(tr("运行方式"), pick));
     }
     const opt = m.options[f.option];
     const name = el("input", "ns-input mono") as HTMLInputElement;
     name.value = f.name;
     name.oninput = () => (f.name = name.value.trim());
-    box.append(this.formRow("服务名", name));
+    box.append(this.formRow(tr("服务名"), name));
     const field = (key: string, fd: McpFieldView) => {
       if (fd.secret) {
         const v = key.startsWith("env:") ? fd.name : `${f.name}_${fd.name}`.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
-        box.append(this.formRow(`${fd.name}${fd.required ? " *" : ""}`, el("span", "settings-hint", `密钥：mcp.json 里写成 \${${v}}，请在系统环境变量里设置它。${fd.description ? ` ${fd.description}` : ""}`)));
+        box.append(this.formRow(`${fd.name}${fd.required ? " *" : ""}`, el("span", "settings-hint", tr("密钥：mcp.json 里写成 ${{p1}}，请在系统环境变量里设置它。{p2}", { p1: v, p2: fd.description ? ` ${fd.description}` : "" }))));
         return;
       }
       const input = el("input", "ns-input mono") as HTMLInputElement;
-      input.placeholder = fd.description || (fd.required ? "必填" : "可选");
+      input.placeholder = fd.description || (fd.required ? tr("必填") : tr("可选"));
       input.value = f.values[key] ?? fd.default ?? "";
       if (input.value) f.values[key] = input.value;
       input.oninput = () => (f.values[key] = input.value);
@@ -6187,29 +6414,29 @@ export class App {
     };
     for (const e of opt.env) field(`env:${e.name}`, e);
     for (const h of opt.headers) field(`header:${h.name}`, h);
-    if (opt.kind === "remote") box.append(this.formRow("地址", el("code", "settings-hint", opt.url ?? "")));
-    else box.append(this.formRow("包", el("code", "settings-hint", `${opt.identifier}${opt.version ? ` ${opt.version}` : ""}`)));
+    if (opt.kind === "remote") box.append(this.formRow(tr("地址"), el("code", "settings-hint", opt.url ?? "")));
+    else box.append(this.formRow(tr("包"), el("code", "settings-hint", `${opt.identifier}${opt.version ? ` ${opt.version}` : ""}`)));
     const adv = el("details", "ns-advanced");
-    adv.append(el("summary", "", "高级"));
+    adv.append(el("summary", "", tr("高级")));
     const exp = el("select", "ns-input") as HTMLSelectElement;
-    exp.append(new Option("codemode（默认）", ""), new Option("deferred", "deferred"), new Option("direct", "direct"), new Option("hidden", "hidden"));
+    exp.append(new Option(tr("codemode（默认）"), ""), new Option("deferred", "deferred"), new Option("direct", "direct"), new Option("hidden", "hidden"));
     exp.value = f.exposure;
     exp.onchange = () => (f.exposure = exp.value);
     const desc = el("input", "ns-input") as HTMLInputElement;
-    desc.placeholder = "描述（写进系统提示词，帮模型知道它能做什么）";
+    desc.placeholder = tr("描述（写进系统提示词，帮模型知道它能做什么）");
     desc.value = f.description;
     desc.oninput = () => (f.description = desc.value);
     const advGrid = el("div", "ns-adv-grid");
-    advGrid.append(this.formRow("exposure", exp), this.formRow("描述", desc));
+    advGrid.append(this.formRow("exposure", exp), this.formRow(tr("描述"), desc));
     adv.append(advGrid);
     box.append(adv);
     const foot = el("div", "settings-foot");
-    const cancel = el("button", "btn ghost", "取消") as HTMLButtonElement;
+    const cancel = el("button", "btn ghost", tr("取消")) as HTMLButtonElement;
     cancel.onclick = () => {
       this.mcpForm = null;
       this.paintExtIfOpen();
     };
-    const go = el("button", "btn primary", `安装到${this.extScope === "project" ? "当前项目" : "全局"}`) as HTMLButtonElement;
+    const go = el("button", "btn primary", tr("安装到{p1}", { p1: this.extScope === "project" ? tr("当前项目") : tr("全局") })) as HTMLButtonElement;
     go.disabled = this.extBusy() || Boolean(opt.unavailable);
     go.onclick = () => {
       const cwd = this.session?.cwd;
@@ -6237,14 +6464,14 @@ export class App {
   /** #27: pi's providers with their login methods, and the login in progress (prompts / URLs / codes). */
   private paintLogin(body: HTMLElement): void {
     if (!this.authProviders) {
-      body.append(el("div", "empty", "读取中…"));
+      body.append(el("div", "empty", tr("读取中…")));
       this.socket.send({ type: "auth.list" });
       return;
     }
     const run = this.login;
     if (run) {
       const box = el("div", "login-run");
-      box.append(el("div", "login-title", `登录 ${run.provider}（${run.method === "oauth" ? "OAuth" : "API key"}）`));
+      box.append(el("div", "login-title", tr("登录 {p1}（{p2}）", { p1: run.provider, p2: run.method === "oauth" ? "OAuth" : "API key" })));
       for (const ev of run.events) {
         const line = el("div", "login-event");
         if (ev.type === "auth_url") {
@@ -6252,14 +6479,14 @@ export class App {
           a.href = ev.url;
           a.target = "_blank";
           a.rel = "noopener";
-          line.append(el("span", "", "在浏览器里打开："), a);
+          line.append(el("span", "", tr("在浏览器里打开：")), a);
           if (ev.instructions) line.append(el("div", "settings-hint", ev.instructions));
         } else if (ev.type === "device_code") {
           const a = el("a", "", ev.verificationUri) as HTMLAnchorElement;
           a.href = ev.verificationUri;
           a.target = "_blank";
           a.rel = "noopener";
-          line.append(el("span", "", "打开 "), a, el("span", "", " 输入："), el("code", "login-code", ev.userCode));
+          line.append(el("span", "", tr("打开 ")), a, el("span", "", tr(" 输入：")), el("code", "login-code", ev.userCode));
         } else {
           line.append(el("span", ev.type === "progress" ? "settings-hint" : "", ev.message));
           for (const l of ev.type === "info" ? (ev.links ?? []) : []) {
@@ -6289,8 +6516,8 @@ export class App {
           const input = el("input", "ns-input mono") as HTMLInputElement;
           input.type = p.prompt.type === "secret" ? "password" : "text";
           input.autocomplete = "off";
-          input.placeholder = p.prompt.placeholder ?? (p.prompt.type === "manual_code" ? "把浏览器最后跳转到的网址（或授权码）粘贴到这里" : "");
-          const go = el("button", "btn primary", "提交") as HTMLButtonElement;
+          input.placeholder = p.prompt.placeholder ?? (p.prompt.type === "manual_code" ? tr("把浏览器最后跳转到的网址（或授权码）粘贴到这里") : "");
+          const go = el("button", "btn primary", tr("提交")) as HTMLButtonElement;
           const submit = () => {
             if (!input.value.trim()) return;
             this.answerLogin(input.value.trim());
@@ -6309,13 +6536,13 @@ export class App {
       if (run.result) box.append(el("div", `login-result${run.ok ? "" : " bad"}`, run.result));
       const foot = el("div", "settings-foot");
       if (!run.result) {
-        const cancel = el("button", "btn ghost", "取消登录") as HTMLButtonElement;
+        const cancel = el("button", "btn ghost", tr("取消登录")) as HTMLButtonElement;
         cancel.onclick = () => {
           if (run.loginId) this.socket.send({ type: "auth.cancel", loginId: run.loginId });
         };
         foot.append(cancel);
       } else {
-        const back = el("button", "btn ghost", "返回列表") as HTMLButtonElement;
+        const back = el("button", "btn ghost", tr("返回列表")) as HTMLButtonElement;
         back.onclick = () => {
           this.login = null;
           this.paintSettings();
@@ -6327,10 +6554,10 @@ export class App {
       if (!run.result) return;
     }
     body.append(
-      el("div", "settings-hint", "和终端的 /login 一样，凭据由 pi 写进 ~/.pi/agent/auth.json，网页只转达提示、不保存也不回显密钥。OAuth 的回调落在运行 bridge 的这台电脑上；在别的设备上登录时，按提示把浏览器最后跳转到的网址粘贴回来。"),
+      el("div", "settings-hint", tr("和终端的 /login 一样，凭据由 pi 写进 ~/.pi/agent/auth.json，网页只转达提示、不保存也不回显密钥。OAuth 的回调落在运行 bridge 的这台电脑上；在别的设备上登录时，按提示把浏览器最后跳转到的网址粘贴回来。")),
     );
     const filter = el("input", "ns-input") as HTMLInputElement;
-    filter.placeholder = "按名字筛选 provider…";
+    filter.placeholder = tr("按名字筛选 provider…");
     filter.value = this.authFilter;
     const list = el("div", "login-list");
     const paintList = () => {
@@ -6341,27 +6568,27 @@ export class App {
         const row = el("div", `login-row${p.configured ? " on" : ""}`);
         const name = el("div", "login-name");
         name.append(el("span", "", p.name), el("span", "settings-hint", ` ${p.id}`));
-        const where = p.stored ? `已登录（auth.json · ${p.stored === "oauth" ? "OAuth" : "API key"}）` : p.configured ? `已配置（${p.label ?? p.source ?? "环境"}）` : "未配置";
+        const where = p.stored ? tr("已登录（auth.json · {p1}）", { p1: p.stored === "oauth" ? "OAuth" : "API key" }) : p.configured ? tr("已配置（{p1}）", { p1: p.label ?? p.source ?? tr("环境") }) : tr("未配置");
         row.append(name, el("span", `login-status${p.configured ? " ok" : ""}`, where));
         const acts = el("div", "login-acts");
         for (const m of p.methods) {
-          const b = el("button", "btn", m.type === "oauth" ? "OAuth 登录" : "填 API key") as HTMLButtonElement;
+          const b = el("button", "btn", m.type === "oauth" ? tr("OAuth 登录") : tr("填 API key")) as HTMLButtonElement;
           b.title = m.label;
           b.disabled = Boolean(this.login && !this.login.result);
           b.onclick = () => this.act(() => this.socket.send({ type: "auth.login", provider: p.id, method: m.type }));
           acts.append(b);
         }
-        if (!p.methods.length) acts.append(el("span", "settings-hint", "只能用环境变量等方式配置"));
+        if (!p.methods.length) acts.append(el("span", "settings-hint", tr("只能用环境变量等方式配置")));
         if (p.stored) {
-          const out = el("button", "btn ghost", "登出") as HTMLButtonElement;
-          out.title = "从 auth.json 删掉这个 provider 的凭据（不会撤销 provider 那边的授权，也不动环境变量）";
+          const out = el("button", "btn ghost", tr("登出")) as HTMLButtonElement;
+          out.title = tr("从 auth.json 删掉这个 provider 的凭据（不会撤销 provider 那边的授权，也不动环境变量）");
           out.onclick = () => this.act(() => this.socket.send({ type: "auth.logout", provider: p.id }));
           acts.append(out);
         }
         row.append(acts);
         list.append(row);
       }
-      if (!list.childElementCount) list.append(el("div", "empty", "没有匹配的 provider"));
+      if (!list.childElementCount) list.append(el("div", "empty", tr("没有匹配的 provider")));
     };
     filter.oninput = () => {
       this.authFilter = filter.value;
@@ -6381,19 +6608,19 @@ export class App {
   }
 
   private paintChangelog(body: HTMLElement): void {
-    body.append(el("div", "empty", "读取中…"));
+    body.append(el("div", "empty", tr("读取中…")));
     fetch("/api/changelog", { credentials: "same-origin" })
       .then((r) => r.json())
       .then((out: { version?: string; text?: string }) => {
         if (this.settingsTab !== "changelog") return;
         body.replaceChildren();
-        body.append(el("div", "settings-path", `当前 pi ${out.version ?? ""}`));
+        body.append(el("div", "settings-path", tr("当前 pi {p1}", { p1: out.version ?? "" })));
         const md = el("div", "settings-changelog");
-        md.append(renderMarkdown(out.text || "（这个 pi 包里没有 CHANGELOG.md）"));
+        md.append(renderMarkdown(out.text || tr("（这个 pi 包里没有 CHANGELOG.md）")));
         body.append(md);
       })
       .catch((err: Error) => {
-        body.replaceChildren(el("div", "empty", `读不到更新日志：${err.message}`));
+        body.replaceChildren(el("div", "empty", tr("读不到更新日志：{p1}", { p1: err.message })));
       });
   }
 
@@ -6403,7 +6630,7 @@ export class App {
     if (!sessionId || this.branching) return;
     this.act(() => {
       this.branching = true;
-      this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: "正在分叉（pi 在写新的会话文件）…", level: "info" });
+      this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: tr("正在分叉（pi 在写新的会话文件）…"), level: "info" });
       this.socket.send({ type: "fork", sessionId, ...target });
     });
   }
@@ -6413,7 +6640,7 @@ export class App {
     if (!sessionId || this.branching) return;
     this.act(() => {
       this.branching = true;
-      this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: "正在复制当前分支为新会话…", level: "info" });
+      this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: tr("正在复制当前分支为新会话…"), level: "info" });
       this.socket.send({ type: "clone", sessionId });
     });
   }
@@ -6429,14 +6656,14 @@ export class App {
     };
     const sheet = el("div", "sheet tree-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", "会话树"));
-    const clone = el("button", "btn ghost", "复制当前分支") as HTMLButtonElement;
-    clone.title = "把当前这条分支整个复制成一个新会话（/clone）";
+    head.append(el("div", "sheet-title", tr("会话树")));
+    const clone = el("button", "btn ghost", tr("复制当前分支")) as HTMLButtonElement;
+    clone.title = tr("把当前这条分支整个复制成一个新会话（/clone）");
     clone.onclick = () => this.cloneSession();
-    const close = el("button", "btn ghost", "关闭");
+    const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(clone, close);
-    const body = el("div", "tree-body", "读取中…");
+    const body = el("div", "tree-body", tr("读取中…"));
     sheet.append(head, body);
     back.append(sheet);
     this.overlay(back);
@@ -6449,17 +6676,17 @@ export class App {
     if (!body) return;
     body.replaceChildren();
     if (!nodes.length) {
-      body.append(el("div", "empty", "这个会话还没有写到磁盘的消息。"));
+      body.append(el("div", "empty", tr("这个会话还没有写到磁盘的消息。")));
       return;
     }
     body.append(
       el(
         "div",
         "tree-hint",
-        "每条是你发过的一条消息，缩进表示分支。⑂ = 从这条消息之前分叉成新会话（消息放回输入框）；● = pi 会接着走的那条分支。终端里 /tree 切到的分支，要在终端里继续，或者分叉出来。",
+        tr("每条是你发过的一条消息，缩进表示分支。⑂ = 从这条消息之前分叉成新会话（消息放回输入框）；● = pi 会接着走的那条分支。终端里 /tree 切到的分支，要在终端里继续，或者分叉出来。"),
       ),
     );
-    if (truncated) body.append(el("div", "tree-hint warn", "会话文件太大，只读了后半段：更早的分支没有画出来。"));
+    if (truncated) body.append(el("div", "tree-hint warn", tr("会话文件太大，只读了后半段：更早的分支没有画出来。")));
     const kids = new Map<string | null, typeof nodes>();
     for (const n of nodes) {
       const key = n.parent && nodes.some((m) => m.id === n.parent) ? n.parent : null;
@@ -6472,9 +6699,9 @@ export class App {
         row.style.paddingLeft = `${8 + Math.min(depth, 12) * 16}px`;
         row.append(el("span", "tree-dot", n.current ? "●" : "○"), el("span", "tree-text", n.text));
         const when = n.ts ? new Date(n.ts) : null;
-        if (when && !Number.isNaN(when.getTime())) row.append(el("span", "tree-ts", when.toLocaleString()));
-        const fork = el("button", "tool-btn", "⑂ 分叉") as HTMLButtonElement;
-        fork.title = "从这条消息之前分叉成新会话，消息放回输入框";
+        if (when && !Number.isNaN(when.getTime())) row.append(el("span", "tree-ts", `${fmtDate(when)} ${fmtTime(when)}`));
+        const fork = el("button", "tool-btn", tr("⑂ 分叉")) as HTMLButtonElement;
+        fork.title = tr("从这条消息之前分叉成新会话，消息放回输入框");
         fork.onclick = () => this.forkAt({ entryId: n.id, text: n.text });
         row.append(fork);
         row.title = n.text;
@@ -6523,7 +6750,7 @@ export class App {
         .then((r) => r.json())
         .then((out: { files?: string[] }) => {
           if (seq !== this.fileQuerySeq || this.complete?.mode !== "file" || this.currentId !== sessionId) return;
-          const items = (out.files ?? []).map((f) => ({ insert: `@${f} `, label: f, tag: "文件" }));
+          const items = (out.files ?? []).map((f) => ({ insert: `@${f} `, label: f, tag: tr("文件") }));
           this.showComplete("file", start, end, query, items);
         })
         .catch(() => {
@@ -6537,8 +6764,8 @@ export class App {
   /** Built-in commands the page runs itself, then pi's own (extension / template / skill). */
   private commandItems(query: string): { insert: string; label: string; desc?: string; tag?: string }[] {
     const q = query.toLowerCase();
-    const all: { insert: string; label: string; desc?: string; tag?: string }[] = BUILTIN_COMMANDS.map(([name, desc]) => ({ insert: `/${name} `, label: `/${name}`, desc, tag: "内建" }));
-    const tagOf: Record<string, string> = { extension: "扩展", prompt: "模板", skill: "技能" };
+    const all: { insert: string; label: string; desc?: string; tag?: string }[] = BUILTIN_COMMANDS.map(([name, desc]) => ({ insert: `/${name} `, label: `/${name}`, desc, tag: tr("内建") }));
+    const tagOf: Record<string, string> = { extension: tr("扩展"), prompt: tr("模板"), skill: tr("技能") };
     for (const c of this.piCommands?.list ?? []) {
       if (all.some((x) => x.label === `/${c.name}`)) continue;
       all.push({ insert: `/${c.name} `, label: `/${c.name}`, desc: c.description, tag: tagOf[c.source] ?? c.source });
@@ -6568,7 +6795,7 @@ export class App {
     if (!c) return;
     c.node.replaceChildren();
     if (!c.items.length) {
-      c.node.append(el("div", "complete-empty", c.mode === "file" ? (c.query ? `找不到「${c.query}」` : "输入文件名的一部分…") : "没有匹配的命令"));
+      c.node.append(el("div", "complete-empty", c.mode === "file" ? (c.query ? tr("找不到「{p1}」", { p1: c.query }) : tr("输入文件名的一部分…")) : tr("没有匹配的命令")));
       return;
     }
     c.items.forEach((item, i) => {
@@ -6650,17 +6877,17 @@ export class App {
     bar.hidden = !rows.length;
     if (!rows.length) return;
     const head = el("div", "queue-head");
-    head.append(el("span", "queue-title", `排队中 ${rows.length} 条`));
-    const back = el("button", "tool-btn", "撤回到输入框") as HTMLButtonElement;
+    head.append(el("span", "queue-title", tr("排队中 {p1} 条", { p1: rows.length })));
+    const back = el("button", "tool-btn", tr("撤回到输入框")) as HTMLButtonElement;
     back.type = "button";
-    back.title = "从 pi 的队列里拿回来，放回输入框（终端里的 Alt+↑）";
+    back.title = tr("从 pi 的队列里拿回来，放回输入框（终端里的 Alt+↑）");
     back.onclick = () => this.act(() => this.socket.send({ type: "clearQueue", sessionId: this.currentId }));
     head.append(back);
     bar.append(head);
     for (const row of rows) {
       const line = el("div", `queue-item ${row.kind}`);
-      const tag = el("span", "queue-tag", row.kind === "steer" ? "引导" : "之后");
-      tag.title = row.kind === "steer" ? "当前这步工具跑完、下一次调用模型前插入" : "整轮做完以后再处理";
+      const tag = el("span", "queue-tag", row.kind === "steer" ? tr("引导") : tr("之后"));
+      tag.title = row.kind === "steer" ? tr("当前这步工具跑完、下一次调用模型前插入") : tr("整轮做完以后再处理");
       line.append(tag, el("span", "queue-text", row.text.replace(/\s+/g, " ")));
       line.title = row.text;
       bar.append(line);
@@ -6678,18 +6905,18 @@ export class App {
     };
     if (this.extAbove) {
       this.extAbove.replaceChildren(
-        ...ext.widgets.filter((w) => w.placement === "aboveEditor" && w.lines.length).map((w) => block(w.lines, "ext-widget", `扩展小部件：${w.key}`)),
+        ...ext.widgets.filter((w) => w.placement === "aboveEditor" && w.lines.length).map((w) => block(w.lines, "ext-widget", tr("扩展小部件：{p1}", { p1: w.key }))),
       );
     }
     if (this.extBelow) {
       const nodes: HTMLElement[] = ext.widgets
         .filter((w) => w.placement === "belowEditor" && w.lines.length)
-        .map((w) => block(w.lines, "ext-widget", `扩展小部件：${w.key}`));
+        .map((w) => block(w.lines, "ext-widget", tr("扩展小部件：{p1}", { p1: w.key })));
       if (ext.status.length) {
         const line = el("div", "ext-status");
         for (const st of ext.status) {
           const chip = el("span", "ext-status-item", st.text);
-          chip.title = `扩展状态：${st.key}`;
+          chip.title = tr("扩展状态：{p1}", { p1: st.key });
           line.append(chip);
         }
         nodes.push(line);
@@ -6704,7 +6931,7 @@ export class App {
     const meta = PERM_MODES.find((m) => m.id === mode) ?? PERM_MODES[2];
     const btn = el("button", `perm-btn perm-${mode}`) as HTMLButtonElement;
     btn.append(el("span", "perm-ico", meta.icon), el("span", "perm-label", meta.label), el("span", "perm-caret", "▾"));
-    btn.title = `权限模式：${meta.label}——${meta.desc}`;
+    btn.title = tr("权限模式：{p1}——{p2}", { p1: meta.label, p2: meta.desc });
     btn.onclick = (ev) => {
       ev.stopPropagation();
       this.togglePermissionMenu(btn);
@@ -6722,7 +6949,7 @@ export class App {
     if (!sessionId) return;
     const current = this.session?.permission ?? "ask";
     const menu = el("div", "perm-menu");
-    menu.append(el("div", "perm-menu-title", "工具权限（只对这个会话）"));
+    menu.append(el("div", "perm-menu-title", tr("工具权限（只对这个会话）")));
     const close = (): void => {
       menu.remove();
       document.removeEventListener("pointerdown", outside, true);
@@ -6788,18 +7015,18 @@ export class App {
       const lines = p.text.split("\n").length;
       toggle.append(
         el("span", "chev", p.open ? "▾" : "▸"),
-        el("span", "paste-title", `粘贴的内容${this.pastes.length > 1 ? ` #${index + 1}` : ""}`),
-        el("span", "paste-meta", `${lines} 行 · ${p.text.length} 字`),
+        el("span", "paste-title", tr("粘贴的内容{p1}", { p1: this.pastes.length > 1 ? ` #${index + 1}` : "" })),
+        el("span", "paste-meta", tr("{p1} 行 · {p2} 字", { p1: lines, p2: p.text.length })),
         el("span", "paste-peek", p.open ? "" : p.text.replace(/\s+/g, " ").trim().slice(0, 80)),
       );
-      toggle.title = p.open ? "收起" : "展开查看 / 编辑";
+      toggle.title = p.open ? tr("收起") : tr("展开查看 / 编辑");
       toggle.onclick = () => {
         p.open = !p.open;
         this.renderPastes();
       };
       const drop = el("button", "paste-x", "×") as HTMLButtonElement;
       drop.type = "button";
-      drop.title = "删掉这段粘贴的内容";
+      drop.title = tr("删掉这段粘贴的内容");
       drop.onclick = () => {
         this.pastes.splice(index, 1);
         this.noteDraft();
@@ -6816,7 +7043,7 @@ export class App {
           p.text = body.value;
           this.noteDraft();
           const meta = head.querySelector(".paste-meta");
-          if (meta) meta.textContent = `${p.text.split("\n").length} 行 · ${p.text.length} 字`;
+          if (meta) meta.textContent = tr("{p1} 行 · {p2} 字", { p1: p.text.split("\n").length, p2: p.text.length });
         };
         block.append(body);
       }
@@ -6831,7 +7058,7 @@ export class App {
       const isSvg = file.type === "image/svg+xml" || /\.svg$/i.test(file.name);
       const bitmap = isSvg ? await rasterizeSvg(file) : await createImageBitmap(file).catch(() => null);
       if (isSvg && !bitmap) {
-        this.warn(`SVG「${file.name}」渲染失败，没有附加`);
+        this.warn(tr("SVG「{p1}」渲染失败，没有附加", { p1: file.name }));
         continue;
       }
       const data = await downscale(file, bitmap);
@@ -6866,22 +7093,22 @@ export class App {
 
   /** A pasted non-image file only carries its name: ask the bridge for the real path on this machine. */
   private async pastePaths(names: string[]): Promise<void> {
-    const fallback = `用「文件」按钮选，或在资源管理器里 Shift+右键 →「复制为路径」后再粘贴`;
+    const fallback = tr("用「文件」按钮选，或在资源管理器里 Shift+右键 →「复制为路径」后再粘贴");
     if (this.me.public) {
-      this.warn(`通过公网访问时拿不到「${names.join("、")}」的路径。${fallback}`);
+      this.warn(tr("通过公网访问时拿不到「{p1}」的路径。{p2}", { p1: names.join(tr("、")), p2: fallback }));
       return;
     }
     let paths: string[] = [];
     try {
       paths = (await api.clipboardFiles()).paths;
     } catch (ex: any) {
-      this.warn(`${ex?.message ?? ex}。${fallback}`);
+      this.warn(tr("{p1}。{p2}", { p1: ex?.message ?? ex, p2: fallback }));
       return;
     }
     const wanted = new Set(names.map((n) => n.toLowerCase()));
     const hits = paths.filter((p) => wanted.has((p.split(/[\\/]/).pop() ?? "").toLowerCase()));
     if (!hits.length) {
-      this.warn(`剪贴板里找不到「${names.join("、")}」的路径（复制的文件不在这台电脑上？）。${fallback}`);
+      this.warn(tr("剪贴板里找不到「{p1}」的路径（复制的文件不在这台电脑上？）。{p2}", { p1: names.join(tr("、")), p2: fallback }));
       return;
     }
     this.insertPaths(hits);
@@ -6896,7 +7123,7 @@ export class App {
     };
     const sheet = el("div", "sheet file-picker");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", "选择文件 · 图片直接附加，其他插入路径"));
+    head.append(el("div", "sheet-title", tr("选择文件 · 图片直接附加，其他插入路径")));
     // The list browses the machine pi runs on; a phone needs its own gallery for photos.
     const deviceInput = el("input") as HTMLInputElement;
     deviceInput.type = "file";
@@ -6908,11 +7135,11 @@ export class App {
       this.closeSheet();
       void this.addImages(files);
     };
-    const device = el("button", "btn ghost", "从本设备选图片");
-    device.title = "从当前浏览器所在的设备（例如手机相册）选图片附加";
+    const device = el("button", "btn ghost", tr("从本设备选图片"));
+    device.title = tr("从当前浏览器所在的设备（例如手机相册）选图片附加");
     device.onclick = () => deviceInput.click();
     head.append(deviceInput, device);
-    const close = el("button", "btn ghost", "关闭");
+    const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(close);
     const host = el("div", "file-picker-body");
@@ -6945,7 +7172,7 @@ export class App {
           .catch((ex: any) => {
             row.disabled = false;
             row.classList.remove("busy");
-            this.warn(`附加图片失败：${ex?.message ?? ex}`);
+            this.warn(tr("附加图片失败：{p1}", { p1: ex?.message ?? ex }));
           });
       },
     });
@@ -6955,9 +7182,9 @@ export class App {
 
   /** 待发图片的入口：点一下看缩略图、单张删。 */
   private pendingImagesBadge(): HTMLButtonElement {
-    const badge = el("button", "badge image-badge", `+${this.images.length} 图`) as HTMLButtonElement;
+    const badge = el("button", "badge image-badge", tr("+{p1} 图", { p1: this.images.length })) as HTMLButtonElement;
     badge.type = "button";
-    badge.title = "查看 / 删除待发图片";
+    badge.title = tr("查看 / 删除待发图片");
     badge.onclick = () => this.openImageSheet();
     return badge;
   }
@@ -6970,7 +7197,7 @@ export class App {
       return;
     }
     if (this.imageBadge) {
-      this.imageBadge.textContent = `+${this.images.length} 图`;
+      this.imageBadge.textContent = tr("+{p1} 图", { p1: this.images.length });
       return;
     }
     const row = this.els.composerHost.querySelector(".row");
@@ -6991,13 +7218,13 @@ export class App {
     const sheet = el("div", "sheet image-sheet");
     const head = el("div", "sheet-head");
     const title = el("div", "sheet-title", "");
-    const close = el("button", "btn ghost", "关闭");
+    const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(title, close);
 
     const grid = el("div", "image-grid");
     const foot = el("div", "sheet-foot");
-    const clear = el("button", "btn danger", "全部清空");
+    const clear = el("button", "btn danger", tr("全部清空"));
     clear.onclick = () => {
       this.images = [];
       this.updateImageBadge();
@@ -7011,20 +7238,20 @@ export class App {
         this.closeSheet();
         return;
       }
-      title.textContent = `待发图片 ${this.images.length} 张`;
+      title.textContent = tr("待发图片 {p1} 张", { p1: this.images.length });
       grid.replaceChildren();
       this.images.forEach((image, index) => {
         const tile = el("div", "image-tile");
         const thumb = el("img", "image-thumb") as HTMLImageElement;
         thumb.src = `data:${image.mimeType};base64,${image.data}`;
-        thumb.alt = `待发图片 ${index + 1}`;
+        thumb.alt = tr("待发图片 {p1}", { p1: index + 1 });
         // 序号常驻：删掉一张后重新编号，跟在输入框里写「第 2 张」对得上。
         const no = el("span", "image-no", String(index + 1));
         tile.append(no);
         const drop = el("button", "image-x", "×") as HTMLButtonElement;
         drop.type = "button";
-        drop.title = "删掉这张";
-        drop.setAttribute("aria-label", `删掉第 ${index + 1} 张图片`);
+        drop.title = tr("删掉这张");
+        drop.setAttribute("aria-label", tr("删掉第 {p1} 张图片", { p1: index + 1 }));
         drop.onclick = () => {
           this.images.splice(index, 1);
           this.updateImageBadge();
@@ -7106,16 +7333,16 @@ export class App {
 
     const slot = el("div", "ask-slot");
     const head = el("div", "ask-head");
-    const more = this.asks.length > 1 ? `（还有 ${this.asks.length - 1} 份）` : "";
-    head.append(el("span", "t", `${total > 1 ? `需要你回答 · ${total} 题` : "需要你回答"}${more}`));
+    const more = this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
+    head.append(el("span", "t", tr("{p1}{p2}", { p1: total > 1 ? tr("需要你回答 · {p1} 题", { p1: total }) : tr("需要你回答"), p2: more })));
     if (this.askFolded) head.append(el("span", "m", q.prompt.split("\n")[0].slice(0, 80)));
-    const fold = el("button", "btn ghost", this.askFolded ? "展开" : "收起");
+    const fold = el("button", "btn ghost", this.askFolded ? tr("展开") : tr("收起"));
     fold.onclick = () => {
       this.askFolded = !this.askFolded;
       this.renderAsks();
     };
-    const cancel = el("button", "btn ghost danger-text", "取消提问");
-    cancel.title = "告诉模型你不回答这次提问";
+    const cancel = el("button", "btn ghost danger-text", tr("取消提问"));
+    cancel.title = tr("告诉模型你不回答这次提问");
     cancel.onclick = () => this.answerAsk(ask, null);
     head.append(fold, cancel);
     slot.append(head);
@@ -7151,13 +7378,13 @@ export class App {
         });
         slot.append(list);
       }
-      if (q.multiSelect) slot.append(el("div", "ask-note", "可以多选；也可以在输入框里另外写几句。"));
-      if (chosen?.wasCustom) slot.append(el("div", "ask-draft", `已填：${chosen.label}`));
-      if (chosen?.text) slot.append(el("div", "ask-draft", `另写：${chosen.text}`));
-      if (q.allowOther === false) slot.append(el("div", "ask-note", "这题只能从选项里选。"));
+      if (q.multiSelect) slot.append(el("div", "ask-note", tr("可以多选；也可以在输入框里另外写几句。")));
+      if (chosen?.wasCustom) slot.append(el("div", "ask-draft", tr("已填：{p1}", { p1: chosen.label })));
+      if (chosen?.text) slot.append(el("div", "ask-draft", tr("另写：{p1}", { p1: chosen.text })));
+      if (q.allowOther === false) slot.append(el("div", "ask-note", tr("这题只能从选项里选。")));
       if (total > 1 || q.multiSelect) {
         const missing = ask.questions.filter((x) => !st.drafts.has(x.id)).length;
-        const submit = el("button", "btn primary", missing ? (total > 1 ? `还差 ${missing} 题` : "先选一项或写几句") : total > 1 ? "提交全部回答" : "提交");
+        const submit = el("button", "btn primary", missing ? (total > 1 ? tr("还差 {p1} 题", { p1: missing }) : tr("先选一项或写几句")) : total > 1 ? tr("提交全部回答") : tr("提交"));
         submit.disabled = missing > 0;
         submit.onclick = () => {
           const answers = ask.questions.map((x) => st.drafts.get(x.id)).filter(Boolean) as AskAnswer[];
@@ -7187,23 +7414,23 @@ export class App {
       })
       .filter((x): x is string => x !== null);
     if (!lines.length) return; // nothing was filled in: losing it costs the user nothing
-    const title = ask.questions.length === 1 ? ask.questions[0].prompt : `${ask.questions.length} 题的问卷`;
+    const title = ask.questions.length === 1 ? ask.questions[0].prompt : tr("{p1} 题的问卷", { p1: ask.questions.length });
     this.askLost = { id: ask.id, title: title.slice(0, 80), reason, lines };
   }
 
   private askLostBlock(): HTMLElement {
     const lost = this.askLost!;
     const box = el("div", "ask-slot ask-lost");
-    box.append(el("div", "ask-lost-head", `问卷没答完就关闭了：${lost.reason}`));
-    box.append(el("div", "ask-lost-sub", `你已填的 ${lost.lines.length} 题还留着，可以接着用。`));
+    box.append(el("div", "ask-lost-head", tr("问卷没答完就关闭了：{p1}", { p1: lost.reason })));
+    box.append(el("div", "ask-lost-sub", tr("你已填的 {p1} 题还留着，可以接着用。", { p1: lost.lines.length })));
     const actions = el("div", "ask-lost-actions");
-    const put = el("button", "btn", "把已填答案放进输入框");
+    const put = el("button", "btn", tr("把已填答案放进输入框"));
     put.onclick = () => {
       this.putInComposer(lost.lines.join("\n\n"));
       this.askLost = null;
       this.renderAsks();
     };
-    const dismiss = el("button", "tool-btn", "忽略");
+    const dismiss = el("button", "tool-btn", tr("忽略"));
     dismiss.onclick = () => {
       this.askLost = null;
       this.renderAsks();
@@ -7303,7 +7530,7 @@ export class App {
       st.drafts.delete(q.id);
       return;
     }
-    const label = [...picks.map((n) => q.options[n - 1]?.label ?? String(n)), ...(text ? [text] : [])].join("、");
+    const label = [...picks.map((n) => q.options[n - 1]?.label ?? String(n)), ...(text ? [text] : [])].join(tr("、"));
     st.drafts.set(q.id, { id: q.id, value: label, label, picks, ...(text ? { text } : {}) });
   }
 
@@ -7342,15 +7569,15 @@ export class App {
 
   private askCard(ask: AskRequest): HTMLElement {
     const card = el("div", "approval");
-    const t = el("div", "t", ask.questions.length > 1 ? `需要你回答 · ${ask.questions.length} 题` : "需要你回答");
+    const t = el("div", "t", ask.questions.length > 1 ? tr("需要你回答 · {p1} 题", { p1: ask.questions.length }) : tr("需要你回答"));
     // Q-033: 提问不设上限；发问方若给了时长，只在 tooltip 里交代一句。
-    if (ask.timeoutMs) t.title = `发问方要求 ${Math.round(ask.timeoutMs / 1000)} 秒内作答，已忽略（提问不设上限）`;
+    if (ask.timeoutMs) t.title = tr("发问方要求 {p1} 秒内作答，已忽略（提问不设上限）", { p1: Math.round(ask.timeoutMs / 1000) });
     card.append(t);
-    card.append(el("div", "m", ask.questions.map((q, i) => `${ask.questions.length > 1 ? `${q.label ?? `Q${i + 1}`}：` : ""}${q.prompt}`).join("\n")));
+    card.append(el("div", "m", ask.questions.map((q, i) => tr("{p1}{p2}", { p1: ask.questions.length > 1 ? tr("{p1}：", { p1: q.label ?? `Q${i + 1}` }) : "", p2: q.prompt })).join("\n")));
     const actions = el("div", "actions");
-    const go = el("button", "btn primary", "去回答");
+    const go = el("button", "btn primary", tr("去回答"));
     go.onclick = () => this.focusAsk();
-    const cancel = el("button", "btn danger", "取消这次提问");
+    const cancel = el("button", "btn danger", tr("取消这次提问"));
     cancel.onclick = () => this.answerAsk(ask, null);
     actions.append(cancel, go);
     card.append(actions);
@@ -7385,17 +7612,17 @@ export class App {
     const m = el("div", "m", a.message);
     const actions = el("div", "actions");
 
-    const approve = el("button", "btn primary", "批准");
+    const approve = el("button", "btn primary", tr("批准"));
     approve.onclick = () => {
-      if (!confirm("确认批准这条命令？")) return;
+      if (!confirm(tr("确认批准这条命令？"))) return;
       this.decide(a, "approve");
     };
-    const always = el("button", "btn", "本会话允许这类");
+    const always = el("button", "btn", tr("本会话允许这类"));
     always.onclick = () => {
-      if (!confirm("批准这条命令，并在本会话内不再询问同一类命令？")) return;
+      if (!confirm(tr("批准这条命令，并在本会话内不再询问同一类命令？"))) return;
       this.decide(a, "always");
     };
-    const reject = el("button", "btn danger", "拒绝");
+    const reject = el("button", "btn danger", tr("拒绝"));
     reject.onclick = () => this.decide(a, "reject");
 
     actions.append(reject, always, approve);
@@ -7413,14 +7640,14 @@ export class App {
     host.replaceChildren();
     const pending = this.approvals;
     if (!pending.length && !this.asks.length) {
-      host.append(el("div", "empty", "没有等你的事。"));
+      host.append(el("div", "empty", tr("没有等你的事。")));
     } else {
       if (this.asks.length) {
-        host.append(el("h2", "", "等你回答"));
+        host.append(el("h2", "", tr("等你回答")));
         for (const a of this.asks) host.append(this.askCard(a));
       }
       if (pending.length) {
-        host.append(el("h2", "", "等你批准"));
+        host.append(el("h2", "", tr("等你批准")));
         for (const a of pending) host.append(this.approvalCard(a));
       }
     }
@@ -7429,14 +7656,14 @@ export class App {
     tools.style.display = "flex";
     tools.style.gap = "8px";
     tools.style.flexWrap = "wrap";
-    const push = el("button", "btn", "开启 Web Push");
+    const push = el("button", "btn", tr("开启 Web Push"));
     push.onclick = () => void this.enablePush();
-    const test = el("button", "btn", "发测试通知");
+    const test = el("button", "btn", tr("发测试通知"));
     test.onclick = async () => {
       const res = await api.notifyTest().catch((e) => ({ push: 0, wechat: String(e.message ?? e) }));
-      alert(`Web Push 送达 ${res.push} 台；微信：${res.wechat}`);
+      alert(tr("Web Push 送达 {p1} 台；微信：{p2}", { p1: res.push, p2: res.wechat }));
     };
-    const tun = el("button", "btn", this.tunnel.status === "up" ? "关掉公网隧道" : "开公网隧道");
+    const tun = el("button", "btn", this.tunnel.status === "up" ? tr("关掉公网隧道") : tr("开公网隧道"));
     tun.onclick = async () => {
       const res = await api.tunnel(this.tunnel.status === "up" ? "stop" : "start").catch(() => null);
       if (res) this.tunnel = res.tunnel;
@@ -7444,26 +7671,26 @@ export class App {
       this.renderQueue();
     };
     tools.append(push, test, tun);
-    host.append(el("h2", "", "通道"));
+    host.append(el("h2", "", tr("通道")));
     host.append(tools);
-    host.append(el("div", "hint", `Web Push 订阅 ${this.me.pushCount} 台设备`));
+    host.append(el("div", "hint", tr("Web Push 订阅 {p1} 台设备", { p1: this.me.pushCount })));
     if (this.tunnel.url) {
       const link = el("a", "", this.tunnel.url);
       link.href = this.tunnel.url;
       link.target = "_blank";
       host.append(link);
     }
-    if (this.tunnel.error) host.append(el("div", "notice warn", this.tunnel.error));
+    if (this.tunnel.error) host.append(el("div", "notice warn", errText(this.tunnel)));
     const keysTools = el("div", "tools");
-    const keysBtn = el("button", "btn", Object.keys(this.keys).length ? `快捷键（已设 ${Object.keys(this.keys).length} 个）` : "设置快捷键");
+    const keysBtn = el("button", "btn", Object.keys(this.keys).length ? tr("快捷键（已设 {p1} 个）", { p1: Object.keys(this.keys).length }) : tr("设置快捷键"));
     keysBtn.onclick = () => this.openKeysSheet();
-    const piSettings = el("button", "btn", "pi 设置") as HTMLButtonElement;
-    piSettings.title = "pi 的 settings.json（全局 / 项目）、项目信任、更新日志（/settings）";
+    const piSettings = el("button", "btn", tr("pi 设置")) as HTMLButtonElement;
+    piSettings.title = tr("pi 的 settings.json（全局 / 项目）、项目信任、更新日志（/settings）");
     piSettings.onclick = () => this.openSettingsSheet("global");
     keysTools.append(keysBtn, piSettings);
-    host.append(el("h2", "", "快捷键"));
+    host.append(el("h2", "", tr("快捷键")));
     host.append(keysTools);
-    host.append(el("h2", "", "关于"));
+    host.append(el("h2", "", tr("关于")));
     host.append(el("div", "hint", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
   }
 
@@ -7518,7 +7745,7 @@ export class App {
     const btn = this.els.term;
     if (!btn) return;
     const n = this.termTabs.size;
-    btn.textContent = n > 1 ? `>_ 终端 ${n}` : ">_ 终端";
+    btn.textContent = n > 1 ? tr(">_ 终端 {p1}", { p1: n }) : tr(">_ 终端");
     btn.classList.toggle("term-live", n > 0);
   }
 
@@ -7568,14 +7795,14 @@ export class App {
     // 收起态起步：有没有 shell 在跑，由顶栏那颗按钮说。
     dock.hidden = true;
     const grip = el("div", "term-grip");
-    grip.title = "拖动调整终端高度（双击复原）";
+    grip.title = tr("拖动调整终端高度（双击复原）");
     const head = el("div", "term-head");
     const strip = el("div", "term-tabs");
-    const more = el("button", "term-new", "＋") as HTMLButtonElement;
-    more.title = "再开一个终端（最多 4 个），可选 shell";
+    const more = el("button", "term-new", tr("＋")) as HTMLButtonElement;
+    more.title = tr("再开一个终端（最多 4 个），可选 shell");
     more.onclick = () => this.openShellMenu(more);
-    const admin = el("button", "term-btn", "管理员") as HTMLButtonElement;
-    admin.title = "给当前标签开一个管理员 PowerShell 窗口（提权进程的输出浏览器接管不了，所以它在桌面上）";
+    const admin = el("button", "term-btn", tr("管理员")) as HTMLButtonElement;
+    admin.title = tr("给当前标签开一个管理员 PowerShell 窗口（提权进程的输出浏览器接管不了，所以它在桌面上）");
     admin.onclick = () => {
       const active = this.termActive ? this.termTabs.get(this.termActive) : null;
       // Q-023: without admin:true the bridge never added -Verb RunAs, so this opened a plain shell
@@ -7583,11 +7810,11 @@ export class App {
       this.act(() => this.socket.send({ type: "term.elevate", cwd: active?.cwd ?? this.session?.cwd ?? "", admin: true }));
     };
     // D92: 收起 ≠ 关掉。这颗把视图藏起来，shell 继续跑；要真结束，用标签上的 × 或「关闭」。
-    const min = el("button", "term-btn min-btn", "－") as HTMLButtonElement;
-    min.title = "最小化：收回顶栏的「终端」按钮，shell 继续在后台跑（标签上的 × 才结束它）";
+    const min = el("button", "term-btn min-btn", tr("－")) as HTMLButtonElement;
+    min.title = tr("最小化：收回顶栏的「终端」按钮，shell 继续在后台跑（标签上的 × 才结束它）");
     min.onclick = () => this.minimizeTerm();
-    const close = el("button", "term-btn", "关闭") as HTMLButtonElement;
-    close.title = "结束当前这个终端（其它标签不动）";
+    const close = el("button", "term-btn", tr("关闭")) as HTMLButtonElement;
+    close.title = tr("结束当前这个终端（其它标签不动）");
     close.onclick = () => {
       const id = this.termActive;
       if (id) this.closeTermTab(id, true);
@@ -7597,7 +7824,7 @@ export class App {
     const bodies = el("div", "term-bodies");
     // D93: 右下角那颗抓取带拖宽 + 拖高；标题栏空白处拖走整个 dialog。
     const resize = el("div", "term-resize");
-    resize.title = "拖动调整终端大小（双击复原）";
+    resize.title = tr("拖动调整终端大小（双击复原）");
     dock.append(grip, head, bodies, resize);
     this.wireWindowRaise(dock);
     // 浮在页面上（overlay 进 #app，跟着外观缩放）：终端不再占对话栏的宽度，也就没有 Q-026 里
@@ -7652,7 +7879,7 @@ export class App {
     tab.title = cwd ? `${shell} · ${cwd}` : shell;
     tab.append(el("span", "term-tab-label", name));
     const kill = el("span", "term-tab-x", "×");
-    kill.title = "关掉这个终端";
+    kill.title = tr("关掉这个终端");
     kill.onclick = (ev) => {
       ev.stopPropagation();
       this.closeTermTab(id, true);
@@ -7782,6 +8009,9 @@ export class App {
       case "files":
         this.openFiles();
         break;
+      case "notes":
+        this.openNotes();
+        break;
       case "look":
         this.openDisplaySheet();
         break;
@@ -7807,7 +8037,7 @@ export class App {
       const base = node.dataset.baseTitle ?? node.title;
       node.dataset.baseTitle = base;
       const combo = this.keys[id];
-      const hint = combo ? `　〔${keyLabel(combo)}〕` : "";
+      const hint = combo ? tr("　〔{p1}〕", { p1: keyLabel(combo) }) : "";
       if (base) node.title = `${base}${hint}`;
       else if (combo) node.title = keyLabel(combo);
     }
@@ -7822,8 +8052,8 @@ export class App {
     };
     const sheet = el("div", "sheet keys-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", "快捷键"));
-    const close = el("button", "btn ghost", "关闭");
+    head.append(el("div", "sheet-title", tr("快捷键")));
+    const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(close);
     sheet.append(head);
@@ -7831,7 +8061,7 @@ export class App {
       el(
         "div",
         "hint",
-        "点右边的键钮再按下组合键。组合要带 Ctrl / Alt / Shift，F2–F10 可以单独用；浏览器自己占的键（Ctrl+W、F5…）不收。点已设好的键钮可以清除。",
+        tr("点右边的键钮再按下组合键。组合要带 Ctrl / Alt / Shift，F2–F10 可以单独用；浏览器自己占的键（Ctrl+W、F5…）不收。点已设好的键钮可以清除。"),
       ),
     );
     const list = el("div", "keys-list");
@@ -7841,7 +8071,7 @@ export class App {
         const row = el("div", "keys-row");
         row.append(el("div", "keys-name", act.label));
         const combo = this.keys[act.id];
-        const button = el("button", `keys-chip${combo ? "" : " empty"}`, this.capturing === act.id ? "按下组合键…" : combo ? keyLabel(combo) : "未设置") as HTMLButtonElement;
+        const button = el("button", `keys-chip${combo ? "" : " empty"}`, this.capturing === act.id ? tr("按下组合键…") : combo ? keyLabel(combo) : tr("未设置")) as HTMLButtonElement;
         button.onclick = () => {
           if (combo) {
             delete this.keys[act.id];
@@ -7854,7 +8084,7 @@ export class App {
         };
         row.append(button);
         if (combo) {
-          const clear = el("button", "btn ghost small", "清除");
+          const clear = el("button", "btn ghost small", tr("清除"));
           clear.onclick = () => {
             delete this.keys[act.id];
             saveKeys(this.keys);
@@ -7869,14 +8099,14 @@ export class App {
     paint();
     sheet.append(list);
     const foot = el("div", "sheet-foot");
-    const clearAll = el("button", "btn ghost", "全部清空");
+    const clearAll = el("button", "btn ghost", tr("全部清空"));
     clearAll.onclick = () => {
       this.keys = {};
       saveKeys(this.keys);
       this.paintShortcutTitles();
       paint();
     };
-    const done = el("button", "btn primary", "完成");
+    const done = el("button", "btn primary", tr("完成"));
     done.onclick = () => this.closeSheet();
     foot.append(clearAll, done);
     sheet.append(foot);
@@ -7951,7 +8181,7 @@ export class App {
     const btn = el("button", "cwd-chip") as HTMLButtonElement;
     const path = el("span", "cwd-path", cwd);
     btn.append(path);
-    btn.title = `${cwd}\n点一下复制路径`;
+    btn.title = tr("{p1}\n点一下复制路径", { p1: cwd });
     btn.onclick = () => {
       // 和 git chip 一样：`navigator.clipboard` 在局域网 http 下不存在，可选链要包住调用不是属性。
       const copy = navigator.clipboard?.writeText(cwd);
@@ -7959,9 +8189,9 @@ export class App {
       const back = path.textContent ?? cwd;
       void copy
         .then(() => {
-          path.textContent = "已复制";
+          path.textContent = tr("已复制");
           setTimeout(() => {
-            if (path.isConnected && path.textContent === "已复制") path.textContent = back;
+            if (path.isConnected && path.textContent === tr("已复制")) path.textContent = back;
           }, 900);
         })
         .catch(() => {});
@@ -7990,7 +8220,7 @@ export class App {
     host.replaceChildren();
     host.hidden = false;
     const pending = pins.filter((s) => sessionBadge(s, this.currentId)?.pending).length;
-    const label = el("span", "pin-strip-label", pending ? `置顶 · ${pending} 个待处理` : pins.length ? "置顶" : "左栏已收");
+    const label = el("span", "pin-strip-label", pending ? tr("置顶 · {p1} 个待处理", { p1: pending }) : pins.length ? tr("置顶") : tr("左栏已收"));
     if (pending) label.classList.add("has-pending");
     host.append(label);
     for (const s of pins) {
@@ -8008,8 +8238,8 @@ export class App {
       const star = el("button", "pin-star", "★") as HTMLButtonElement;
       star.type = "button";
       star.dataset.pinKey = `${s.id}:star`;
-      star.title = `取消置顶 ${s.name || s.id}`;
-      star.setAttribute("aria-label", `取消置顶 ${s.name || s.id}`);
+      star.title = tr("取消置顶 {p1}", { p1: s.name || s.id });
+      star.setAttribute("aria-label", tr("取消置顶 {p1}", { p1: s.name || s.id }));
       star.onclick = () => {
         this.pinFocus = Math.max(pins.indexOf(s), 0);
         this.togglePin(s.id);
@@ -8018,7 +8248,7 @@ export class App {
       open.type = "button";
       open.dataset.pinKey = `${s.id}:open`;
       open.append(el("span", "pin-name", s.name || s.id), el("small", "", badge ? badge.text : relativeTime(s.updatedAt)));
-      open.title = [s.name || s.id, s.cwd ?? "", badge?.title ?? "", s.id === this.currentId ? "（当前会话）" : ""]
+      open.title = [s.name || s.id, s.cwd ?? "", badge?.title ?? "", s.id === this.currentId ? tr("（当前会话）") : ""]
         .filter(Boolean)
         .join(" · ");
       open.onclick = () => this.openFromList(s.id);
@@ -8026,17 +8256,17 @@ export class App {
       this.wirePinHover(chip, s);
       host.append(chip);
     }
-    if (!pins.length) host.append(el("span", "pin-empty", "在这里 ☆ 置顶一个会话，收起左栏也能点到。"));
+    if (!pins.length) host.append(el("span", "pin-empty", tr("在这里 ☆ 置顶一个会话，收起左栏也能点到。")));
     // Q-013: with the left pane hidden this is the only visible way to start a session.
     // Q-022: 从这颗 ＋ 建的会话自动置顶，否则建完在这条里根本看不见。
-    const add = el("button", "pin-chip pin-new", "＋");
-    add.title = "开新会话（自动置顶到这条里）";
+    const add = el("button", "pin-chip pin-new", tr("＋"));
+    add.title = tr("开新会话（自动置顶到这条里）");
     add.dataset.act = "new";
     add.dataset.pinKey = "new";
     add.onclick = () => this.openNewSessionSheet(true);
     host.append(add);
-    const expand = el("button", "pin-chip pin-expand", "展开左栏 ▸");
-    expand.title = "展开左侧会话栏（也可以双击分隔条位置的边）";
+    const expand = el("button", "pin-chip pin-expand", tr("展开左栏 ▸"));
+    expand.title = tr("展开左侧会话栏（也可以双击分隔条位置的边）");
     expand.dataset.pinKey = "expand";
     expand.onclick = () => this.togglePane("sessions");
     host.append(expand);
@@ -8113,7 +8343,7 @@ export class App {
     this.closePinMenu();
     if (this.calm()) {
       this.archiveIds([id], true);
-      this.pinNote("已归档 1 个 · 在左栏「已归档」里");
+      this.pinNote(tr("已归档 1 个 · 在左栏「已归档」里"));
       return;
     }
     const host = this.els.pinStrip;
@@ -8154,7 +8384,7 @@ export class App {
       window.setTimeout(() => {
         this.pinAnim = null;
         this.archiveIds([id], true);
-        this.pinNote("已归档 1 个 · 在左栏「已归档」里");
+        this.pinNote(tr("已归档 1 个 · 在左栏「已归档」里"));
       }, 240);
     };
   }
@@ -8168,7 +8398,7 @@ export class App {
     this.closePinMenu();
     if (this.calm()) {
       this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
-      this.pinNote("已移入垃圾箱 · 在左栏🗑里可以还原");
+      this.pinNote(tr("已移入垃圾箱 · 在左栏🗑里可以还原"));
       return;
     }
     const r = chip.getBoundingClientRect();
@@ -8211,7 +8441,7 @@ export class App {
         this.pinAnim = null;
         this.pulseBin();
         this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [id] }));
-        this.pinNote("已移入垃圾箱 · 在左栏🗑里可以还原");
+        this.pinNote(tr("已移入垃圾箱 · 在左栏🗑里可以还原"));
       };
     }, 220);
   }
@@ -8245,7 +8475,7 @@ export class App {
     const bin = this.binBtn;
     if (!bin) return;
     const n = this.trash.length;
-    bin.title = n ? `垃圾箱里 ${n} 个会话（删掉的会先进这里，可以还原）` : "垃圾箱：删掉的会话会先进这里，可以还原";
+    bin.title = n ? tr("垃圾箱里 {p1} 个会话（删掉的会先进这里，可以还原）", { p1: n }) : tr("垃圾箱：删掉的会话会先进这里，可以还原");
     bin.classList.toggle("has-trash", n > 0);
     const count = bin.querySelector(".bin-count") ?? bin.appendChild(el("span", "bin-count"));
     count.textContent = n ? String(n) : "";
@@ -8266,7 +8496,7 @@ function setToggle(btn: HTMLElement, collapsed: boolean, label: string): void {
   // Expanded: the chevron points at the edge it will retract to. Collapsed: it points back out.
   const right = btn.dataset.side === "right";
   btn.textContent = collapsed ? (right ? "«" : "»") : (right ? "»" : "«");
-  btn.title = collapsed ? `展开${label}` : `收起${label}`;
+  btn.title = collapsed ? tr("展开{p1}", { p1: label }) : tr("收起{p1}", { p1: label });
   btn.setAttribute("aria-pressed", String(collapsed));
 }
 
@@ -8286,7 +8516,7 @@ function writeFlag(key: string, value: boolean): void {
   }
 }
 
-type Prefs = { scale: number; accent: string; text: "soft" | "normal" | "bright" };
+type Prefs = { scale: number; accent: string; text: "soft" | "normal" | "bright"; lang: Lang };
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
 /** How long the peek card must stay before it stops following the pointer (Q-029). */
@@ -8294,7 +8524,7 @@ const PEEK_DELAY_MS = 3000;
 /** Grace after the pointer leaves, so crossing the 8px gap into the card isn't a "leave". */
 const PEEK_GAP_MS = 200;
 
-const DEFAULT_PREFS: Prefs = { scale: 1, accent: "冰蓝", text: "normal" };
+const DEFAULT_PREFS: Prefs = { scale: 1, accent: "ice", text: "normal", lang: "zh-Hans" };
 
 /** Context-budget presets in the model sheet; null = no ceiling (use the window). */
 const BUDGETS: (number | null)[] = [null, 100_000, 200_000, 500_000, 1_000_000];
@@ -8307,30 +8537,30 @@ const ICON_TRASH = SVG('<path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6
 
 /** `/` menu entries the page runs itself (see runBuiltinCommand), with what they do. */
 const BUILTIN_COMMANDS: [string, string][] = [
-  ["new", "开新会话"],
-  ["resume", "到会话列表里选一个"],
-  ["model", "选模型 / 思考档位"],
-  ["thinking", "思考档位（/thinking high）"],
-  ["name", "会话名（/name 新名字）"],
-  ["session", "会话信息：用量、费用、文件"],
-  ["compact", "压缩上下文（/compact 要保留什么）"],
-  ["tree", "会话树：看分支、从任意消息分叉"],
-  ["fork", "从某条消息之前分叉"],
-  ["clone", "复制当前分支为新会话"],
-  ["import", "导入会话文件（/import 路径）"],
-  ["export", "导出 HTML（/export jsonl 下载原文件）"],
-  ["copy", "复制最后一条回复"],
-  ["debug", "这个会话的 pi 日志"],
-  ["hotkeys", "快捷键"],
-  ["settings", "pi 设置（全局 / 项目）"],
-  ["scoped-models", "循环切换的模型范围"],
-  ["reload", "重启这个会话的 pi，读到最新设置 / 扩展 / 技能"],
-  ["trust", "项目信任：要不要加载这个目录的 .pi 配置"],
-  ["changelog", "pi 更新日志"],
-  ["share", "上传会话、生成查看链接（Radius 或私有 gist）"],
-  ["bug", "给 pi 开发者提交 bug 报告（/bug 描述）"],
-  ["login", "登录模型 provider（API key / OAuth）"],
-  ["logout", "登出某个 provider"],
+  ["new", tr("开新会话")],
+  ["resume", tr("到会话列表里选一个")],
+  ["model", tr("选模型 / 思考档位")],
+  ["thinking", tr("思考档位（/thinking high）")],
+  ["name", tr("会话名（/name 新名字）")],
+  ["session", tr("会话信息：用量、费用、文件")],
+  ["compact", tr("压缩上下文（/compact 要保留什么）")],
+  ["tree", tr("会话树：看分支、从任意消息分叉")],
+  ["fork", tr("从某条消息之前分叉")],
+  ["clone", tr("复制当前分支为新会话")],
+  ["import", tr("导入会话文件（/import 路径）")],
+  ["export", tr("导出 HTML（/export jsonl 下载原文件）")],
+  ["copy", tr("复制最后一条回复")],
+  ["debug", tr("这个会话的 pi 日志")],
+  ["hotkeys", tr("快捷键")],
+  ["settings", tr("pi 设置（全局 / 项目）")],
+  ["scoped-models", tr("循环切换的模型范围")],
+  ["reload", tr("重启这个会话的 pi，读到最新设置 / 扩展 / 技能")],
+  ["trust", tr("项目信任：要不要加载这个目录的 .pi 配置")],
+  ["changelog", tr("pi 更新日志")],
+  ["share", tr("上传会话、生成查看链接（Radius 或私有 gist）")],
+  ["bug", tr("给 pi 开发者提交 bug 报告（/bug 描述）")],
+  ["login", tr("登录模型 provider（API key / OAuth）")],
+  ["logout", tr("登出某个 provider")],
 ];
 
 type SettingsTab = "global" | "project" | "trust" | "login" | "ext" | "notify" | "changelog";
@@ -8466,49 +8696,53 @@ const SETTING_FIELDS: {
   placeholder?: string;
   globalOnly?: boolean;
 }[] = [
-  { key: "defaultModel", label: "默认模型", kind: "model", hint: "defaultProvider + defaultModel" },
-  { key: "defaultThinkingLevel", label: "默认思考档位", kind: "select", options: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
-  { key: "enabledModels", label: "循环切换的模型范围", kind: "list", hint: "enabledModels，逗号分隔，支持通配（终端的 /scoped-models）", placeholder: "例如 claude-*, gpt-5*" },
-  { key: "steeringMode", label: "引导消息处理方式", kind: "select", options: ["one-at-a-time", "all"], hint: "一条一条交给模型，还是攒着一次给" },
-  { key: "followUpMode", label: "排到之后的消息处理方式", kind: "select", options: ["one-at-a-time", "all"] },
-  { key: "defaultTools", label: "默认工具", kind: "list", hint: "逗号分隔；普通名字＝只用这些，+x / -x＝在默认基础上增减", placeholder: "read, bash, edit, write" },
-  { key: "compaction.enabled", label: "自动压缩", kind: "bool" },
-  { key: "compaction.reserveTokens", label: "压缩：保留的空余 token", kind: "number", placeholder: "16384" },
-  { key: "compaction.keepRecentTokens", label: "压缩：保留最近的 token", kind: "number", placeholder: "20000" },
-  { key: "retry.enabled", label: "自动重试", kind: "bool" },
-  { key: "retry.maxRetries", label: "最多重试次数", kind: "number", placeholder: "3" },
-  { key: "images.blockImages", label: "不给模型发图片", kind: "bool" },
-  { key: "enableSkillCommands", label: "技能注册成 /skill:名字", kind: "bool" },
-  { key: "shellPath", label: "shell 路径", kind: "text", hint: "bash 工具用的 shell（Windows 默认找 Git Bash）" },
-  { key: "httpProxy", label: "HTTP 代理", kind: "text", globalOnly: true, placeholder: "http://127.0.0.1:7890" },
-  { key: "defaultProjectTrust", label: "没有决定时的项目信任", kind: "select", options: ["ask", "always", "never"], globalOnly: true, hint: "网页里 ask 等于 never（不能弹提示）" },
+  { key: "defaultModel", label: tr("默认模型"), kind: "model", hint: "defaultProvider + defaultModel" },
+  { key: "defaultThinkingLevel", label: tr("默认思考档位"), kind: "select", options: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+  { key: "enabledModels", label: tr("循环切换的模型范围"), kind: "list", hint: tr("enabledModels，逗号分隔，支持通配（终端的 /scoped-models）"), placeholder: tr("例如 claude-*, gpt-5*") },
+  { key: "steeringMode", label: tr("引导消息处理方式"), kind: "select", options: ["one-at-a-time", "all"], hint: tr("一条一条交给模型，还是攒着一次给") },
+  { key: "followUpMode", label: tr("排到之后的消息处理方式"), kind: "select", options: ["one-at-a-time", "all"] },
+  { key: "defaultTools", label: tr("默认工具"), kind: "list", hint: tr("逗号分隔；普通名字＝只用这些，+x / -x＝在默认基础上增减"), placeholder: "read, bash, edit, write" },
+  { key: "compaction.enabled", label: tr("自动压缩"), kind: "bool" },
+  { key: "compaction.reserveTokens", label: tr("压缩：保留的空余 token"), kind: "number", placeholder: "16384" },
+  { key: "compaction.keepRecentTokens", label: tr("压缩：保留最近的 token"), kind: "number", placeholder: "20000" },
+  { key: "retry.enabled", label: tr("自动重试"), kind: "bool" },
+  { key: "retry.maxRetries", label: tr("最多重试次数"), kind: "number", placeholder: "3" },
+  { key: "images.blockImages", label: tr("不给模型发图片"), kind: "bool" },
+  { key: "enableSkillCommands", label: tr("技能注册成 /skill:名字"), kind: "bool" },
+  { key: "shellPath", label: tr("shell 路径"), kind: "text", hint: tr("bash 工具用的 shell（Windows 默认找 Git Bash）") },
+  { key: "httpProxy", label: tr("HTTP 代理"), kind: "text", globalOnly: true, placeholder: "http://127.0.0.1:7890" },
+  { key: "defaultProjectTrust", label: tr("没有决定时的项目信任"), kind: "select", options: ["ask", "always", "never"], globalOnly: true, hint: tr("网页里 ask 等于 never（不能弹提示）") },
 ];
 
 /**
  * The composer's placeholder is its shortcut card: these are the only keys it has (Shift+Enter
  * used to be mentioned once and then overwritten by the bare 「说点什么…」 on the next repaint).
  */
-const IDLE_PLACEHOLDER = "Enter 发送 · Shift+Enter 换行";
-const RUNNING_PLACEHOLDER = "跑着呢：Enter 引导当前任务 · Alt+Enter 等这轮做完再处理 · Shift+Enter 换行";
-const ASK_PLACEHOLDER = "直接打字回答当前题（Enter 作答 · Shift+Enter 换行），或点上面的选项";
+const IDLE_PLACEHOLDER = tr("Enter 发送 · Shift+Enter 换行");
+const RUNNING_PLACEHOLDER = tr("跑着呢：Enter 引导当前任务 · Alt+Enter 等这轮做完再处理 · Shift+Enter 换行");
+const ASK_PLACEHOLDER = tr("直接打字回答当前题（Enter 作答 · Shift+Enter 换行），或点上面的选项");
 
 /** pi built-in commands the page cannot run yet → the issue that tracks them (#22). */
 const UNSUPPORTED_BUILTINS: Record<string, string> = {};
 
 /** Everything a shortcut can fire, in the order the 快捷键 sheet lists it. */
 const SHORTCUTS: { id: string; label: string }[] = [
-  { id: "new", label: "开新会话" },
-  { id: "manage", label: "会话管理（含垃圾箱）" },
-  { id: "sessions", label: "收起 / 展开左栏" },
-  { id: "queue", label: "收起 / 展开右栏" },
-  { id: "artifacts", label: "产物列表" },
-  { id: "files", label: "文件管理器" },
-  { id: "look", label: "字号与配色" },
-  { id: "skills", label: "技能面板" },
-  { id: "attach", label: "附加文件" },
-  { id: "terminal", label: "打开终端" },
-  { id: "interrupt", label: "中断当前回复" },
+  { id: "new", label: tr("开新会话") },
+  { id: "manage", label: tr("会话管理（含垃圾箱）") },
+  { id: "sessions", label: tr("收起 / 展开左栏") },
+  { id: "queue", label: tr("收起 / 展开右栏") },
+  { id: "artifacts", label: tr("产物列表") },
+  { id: "files", label: tr("文件管理器") },
+  { id: "notes", label: tr("bug 记录") },
+  { id: "look", label: tr("字号与配色") },
+  { id: "skills", label: tr("技能面板") },
+  { id: "attach", label: tr("附加文件") },
+  { id: "terminal", label: tr("打开终端") },
+  { id: "interrupt", label: tr("中断当前回复") },
 ];
+
+/** 出厂就带的组合键；用户改过的以 localStorage 里的为准。 */
+const DEFAULT_KEYS: Record<string, string> = { notes: "ctrl+shift+b" };
 
 /** The browser owns these; a page must never swallow them. */
 const RESERVED_KEYS = new Set([
@@ -8645,20 +8879,45 @@ function openSameOrigin(url: string): void {
 }
 
 const SIZES: [number, string][] = [
-  [0.9, "小"],
-  [1, "标准"],
-  [1.12, "大"],
-  [1.25, "特大"],
+  [0.9, tr("小")],
+  [1, tr("标准")],
+  [1.12, tr("大")],
+  [1.25, tr("特大")],
 ];
 
-/** Accent pairs: the bright tint plus the dark wash used for filled states. */
+/**
+ * Accent pairs: the bright tint plus the dark wash used for filled states. Keys are stable ids —
+ * they are persisted in `pi.prefs`, so they must not be translated; the tooltip goes through
+ * `ACCENT_LABELS` + `tr()`. Older builds stored the Chinese colour names: `LEGACY_ACCENTS` is the
+ * migration `readPrefs` uses, and deleting it would silently reset everyone's colour.
+ */
 const ACCENTS: Record<string, { accent: string; dim: string }> = {
-  冰蓝: { accent: "#7dd3fc", dim: "#0e3a4d" },
-  青绿: { accent: "#5eead4", dim: "#0d3b36" },
-  紫: { accent: "#c4b5fd", dim: "#2a2148" },
-  琥珀: { accent: "#fcd34d", dim: "#3d2e0b" },
-  玫瑰: { accent: "#fda4af", dim: "#3d1a22" },
-  银灰: { accent: "#cbd5e1", dim: "#252b36" },
+  ice: { accent: "#7dd3fc", dim: "#0e3a4d" },
+  teal: { accent: "#5eead4", dim: "#0d3b36" },
+  violet: { accent: "#c4b5fd", dim: "#2a2148" },
+  amber: { accent: "#fcd34d", dim: "#3d2e0b" },
+  rose: { accent: "#fda4af", dim: "#3d1a22" },
+  slate: { accent: "#cbd5e1", dim: "#252b36" },
+};
+
+/** 色块的显示名（中文原文，交给 tr() 翻）：顺序就是面板里色块的顺序。 */
+const ACCENT_LABELS: [string, string][] = [
+  ["ice", tr("冰蓝")],
+  ["teal", tr("青绿")],
+  ["violet", tr("紫")],
+  ["amber", tr("琥珀")],
+  ["rose", tr("玫瑰")],
+  ["slate", tr("银灰")],
+];
+
+/** D110 之前 `pi.prefs.accent` 存的是中文色名，读到就换成新 id。 */
+const LEGACY_ACCENTS: Record<string, string> = {
+  冰蓝: "ice",
+  青绿: "teal",
+  紫: "violet",
+  琥珀: "amber",
+  玫瑰: "rose",
+  银灰: "slate",
 };
 
 const TEXTS: Record<Prefs["text"], { text: string; dim: string; faint: string }> = {
@@ -8668,24 +8927,27 @@ const TEXTS: Record<Prefs["text"], { text: string; dim: string; faint: string }>
 };
 
 const TEXT_STEPS: [Prefs["text"], string][] = [
-  ["soft", "柔和"],
-  ["normal", "标准"],
-  ["bright", "明亮"],
+  ["soft", tr("柔和")],
+  ["normal", tr("标准")],
+  ["bright", tr("明亮")],
 ];
 
 function readPrefs(): Prefs {
   try {
     const raw = localStorage.getItem("pi.prefs");
-    if (!raw) return { ...DEFAULT_PREFS };
+    if (!raw) return { ...DEFAULT_PREFS, lang: detectLang() };
     const p = JSON.parse(raw);
     const scale = Number(p?.scale);
+    const accent = LEGACY_ACCENTS[String(p?.accent)] ?? String(p?.accent);
     return {
       scale: SIZES.some(([s]) => Math.abs(s - scale) < 0.005) ? scale : DEFAULT_PREFS.scale,
-      accent: ACCENTS[String(p?.accent)] ? String(p.accent) : DEFAULT_PREFS.accent,
+      accent: ACCENTS[accent] ? accent : DEFAULT_PREFS.accent,
       text: TEXT_STEPS.some(([k]) => k === p?.text) ? (p.text as Prefs["text"]) : DEFAULT_PREFS.text,
+      // 没存过语言（第一次打开、或老版本升上来）就跟着浏览器走。
+      lang: isLang(p?.lang) ? p.lang : detectLang(),
     };
   } catch {
-    return { ...DEFAULT_PREFS };
+    return { ...DEFAULT_PREFS, lang: detectLang() };
   }
 }
 
@@ -8772,10 +9034,10 @@ interface VStep {
 }
 
 const PERM_MODES: { id: PermissionMode; icon: string; label: string; desc: string }[] = [
-  { id: "readonly", icon: "🔒", label: "只读", desc: "只放行读文件 / 搜索 / 列目录这类只看的工具，写文件、执行命令、MCP 与扩展工具一律拦下（适合先出方案）" },
-  { id: "strict", icon: "✋", label: "逐个确认", desc: "写文件、执行命令、调用 MCP / 扩展工具都要你批准；只看的工具不用" },
-  { id: "ask", icon: "🛡", label: "危险时确认", desc: "只拦删除、push、装依赖、写项目外文件等危险操作（默认）" },
-  { id: "auto", icon: "⚡", label: "全自动", desc: "不拦截任何操作，风险自负" },
+  { id: "readonly", icon: "🔒", label: tr("只读"), desc: tr("只放行读文件 / 搜索 / 列目录这类只看的工具，写文件、执行命令、MCP 与扩展工具一律拦下（适合先出方案）") },
+  { id: "strict", icon: "✋", label: tr("逐个确认"), desc: tr("写文件、执行命令、调用 MCP / 扩展工具都要你批准；只看的工具不用") },
+  { id: "ask", icon: "🛡", label: tr("危险时确认"), desc: tr("只拦删除、push、装依赖、写项目外文件等危险操作（默认）") },
+  { id: "auto", icon: "⚡", label: tr("全自动"), desc: tr("不拦截任何操作，风险自负") },
 ];
 
 type PendingImage = { data: string; mimeType: string };
@@ -8951,12 +9213,9 @@ function tailText(text: string, maxLines: number, maxChars: number): string {
   return tail;
 }
 
+/** 会话列表的时间戳：一分钟内「刚刚」，其余交给 Intl（D110）。 */
 function relativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  return new Date(ts).toLocaleDateString("zh-CN");
+  return fmtRelative(ts);
 }
 
 function urlBase64ToUint8Array(base64: string): Uint8Array {

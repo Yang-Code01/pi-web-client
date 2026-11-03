@@ -18,6 +18,15 @@
   color-scheme: dark;
 }
 
+/*
+ * D110: 日文要自己的字体栈。Windows 上 "Segoe UI" 根本没有 CJK 字形，日文会一路落到 Microsoft YaHei，
+ * 汉字按简体字形（直 / 骨 / 次 …）画出来 —— 一眼就是机翻。不改字体等于没本地化。
+ * 不打包 webfont：仓库从来没引过，为这点字形多背 1–2 MB 不值。
+ */
+html:lang(ja) {
+  --sans: -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", "Noto Sans JP", sans-serif;
+}
+
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
@@ -318,6 +327,13 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* ---------------------------------------------------------------- session manager */
 .sheet-back.center { align-items: center; justify-items: center; padding: 16px; }
+.sheet.peer-sheet {
+  width: min(1000px, 94vw); height: min(82vh, 780px); max-height: 82vh;
+  border-radius: 16px; border: 1px solid var(--line); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+}
+.peer-frame { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
 .sheet.mgr-sheet {
   width: min(1100px, 96vw); height: min(88vh, 900px); max-height: 88vh;
   border-radius: 16px; border: 1px solid var(--line); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
@@ -410,6 +426,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 @media (max-width: 720px) {
   .sheet-back.center { padding: 0; }
   .sheet.mgr-sheet { width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
+  .sheet.peer-sheet { width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
   .mgr-row { grid-template-columns: auto minmax(0, 1fr); }
   .mgr-times { display: none; }
   .mgr-acts { grid-column: 2; justify-content: flex-end; }
@@ -1155,7 +1172,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   border-left: 1px solid var(--line); box-shadow: -18px 0 50px rgba(0, 0, 0, 0.45);
   animation: viewer-in 160ms ease-out; outline: none;
 }
-/* D94: 与终端同一条层带 —— 谁最后被点 / 聚焦谁拿 47，另一扇回落到自己的底值（预览 46 / 终端 45）。
+/* D111: 与终端同一条层带 —— 谁最后被点 / 聚焦谁拿 47，另一扇回落到自己的底值（预览 46 / 终端 45）。
    两扇窗都压不过口令 modal 50 与底部 sheet 60。 */
 .viewer.front { z-index: 47; }
 @keyframes viewer-in { from { transform: translateX(24px); opacity: 0.4; } }
@@ -1476,7 +1493,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* Terminal dialog (D92 · Q-007): the shell runs in the bridge, this is only the view. 它浮在页面上，
    不再占对话栏的宽度；最小化 = [hidden]，桥里的 shell 照旧在跑。
    z-index 45：在顶栏（20）和输入框浮层（40）之上，但比弹口令的 modal（50）、底部 sheet（60）低 ——
-   那些东西该盖住终端。和文件预览（46）是平等的两扇窗，D94：点 / 聚焦哪一扇，哪一扇拿 47。 */
+   那些东西该盖住终端。和文件预览（46）是平等的两扇窗，D111：点 / 聚焦哪一扇，哪一扇拿 47。 */
 /* 现在宽 / 高由 JS 按窗口与缩放算好写进 style（CSS 里的 vh/vw 在 #app 的 zoom 下会被再乘一次），
    这里的尺寸只是 JS 未跑之前的兜底。 */
 .term-dock {
@@ -1494,7 +1511,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 @keyframes term-pop { from { transform: translate(-50%, 10px); opacity: 0.4; } }
 /* 拖过 / 拉过之后是 left/top 钉住的，就不再重放「从底部弹上来」那个位移。 */
 .term-dock.pinned { animation: none; }
-/* D94: 最后被点 / 聚焦的那扇浮窗在上；终端抢到 47 时压在文件预览（46）上面。 */
+/* D111: 最后被点 / 聚焦的那扇浮窗在上；终端抢到 47 时压在文件预览（46）上面。 */
 .term-dock.front { z-index: 47; }
 /* D93: 标题栏空白处是「拖走」，右下角那只角是「拖大拖小」。 */
 body.win-dragging, body.win-dragging .term-head { cursor: grabbing; user-select: none; }
@@ -2040,3 +2057,137 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .settings-sheet .ext-pi .settings-foot { padding-top: 0; flex-wrap: wrap; }
 .settings-sheet .ext-pi .pi-name { font-size: 13px; font-weight: 600; }
 .settings-sheet .ext-pi .pi-ver { font: 12px var(--mono); color: var(--faint); }
+
+/* ---------------------------------------------------------------- 记录（D108）
+   顶栏 🐞 打开的本地随手记：左边一份列表、右边一个常驻编辑器。
+   它不属于任何会话，所以是 dialog 而不是 tab；宽度比普通 sheet 宽一倍，两边才放得下。 */
+.notes-btn { gap: 6px; }
+.notes-btn.has-pending { border-color: var(--accent-dim); color: var(--accent); background: #101c24; }
+.notes-glyph { font-size: 12px; }
+
+.notes-sheet { grid-template-rows: auto minmax(0, 1fr) auto; }
+.notes-head { gap: 12px; flex-wrap: wrap; }
+.notes-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.notes-tab {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px;
+  border: 1px solid transparent; background: transparent; color: var(--dim); font-size: 12.5px;
+}
+.notes-tab:hover { background: var(--panel-2); }
+.notes-tab.on { border-color: #1f3a4a; background: #101c24; color: var(--text); }
+.notes-tab .n { font: 10.5px/1 var(--mono); padding: 2px 5px; border-radius: 999px; background: var(--accent-dim); color: var(--accent); }
+.notes-switch { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); cursor: pointer; }
+.notes-switch[hidden] { display: none; }
+
+/* 「显示已处理」右边那两个抽屉：归档 / 垃圾箱。带计数，点谁就看谁，再点回列表。 */
+.notes-views { display: flex; gap: 4px; }
+.notes-viewbtn {
+  display: flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 8px;
+  border: 1px solid transparent; background: transparent; color: var(--dim); font-size: 12px; cursor: pointer;
+}
+.notes-viewbtn:hover { background: var(--panel-2); color: var(--text); }
+.notes-viewbtn.on { border-color: #2a4a5c; background: #101c24; color: var(--accent); }
+.notes-viewbtn .n { font: 11px var(--mono); color: var(--faint); }
+
+.notes-body { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: 0; }
+.notes-side { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line-soft); }
+.notes-new { margin: 10px 10px 6px; justify-content: flex-start; }
+.notes-search {
+  margin: 0 10px 8px; width: calc(100% - 20px); padding: 6px 9px; font-size: 12.5px;
+  color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; outline: none;
+}
+.notes-search:focus { border-color: var(--accent-dim); }
+.notes-editor-empty-hint { font-size: 12.5px; color: var(--faint); }
+.notes-search::placeholder { color: var(--faint); }
+.notes-items { overflow-y: auto; padding: 0 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.notes-empty { padding: 18px 10px; color: var(--faint); font-size: 12.5px; text-align: center; }
+
+.note-row { position: relative; display: block; width: 100%; text-align: left; padding: 9px 10px; border-radius: 10px; border: 1px solid transparent; background: transparent; color: var(--text); cursor: pointer; }
+.note-row:hover { background: var(--panel-2); }
+.note-row.on { border-color: #1f3a4a; background: #101c24; }
+.note-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* 行尾两个小图标：默认隐形，悬停 / 键盘聚焦才露出来，免得列表看着像工具栏。 */
+.note-row-acts { margin-left: auto; display: flex; gap: 3px; opacity: 0; transition: opacity 120ms; }
+.note-row:hover .note-row-acts, .note-row:focus-within .note-row-acts { opacity: 1; }
+.note-row-act {
+  width: 22px; height: 22px; display: grid; place-items: center; border-radius: 7px;
+  border: 1px solid var(--line); background: #121820; color: var(--dim); font-size: 12px; cursor: pointer;
+}
+.note-row-act:hover { color: var(--text); background: #182230; }
+.note-row-act.danger:hover { color: #ff8b7a; border-color: #6b2a24; background: #2a1512; }
+.note-row-top { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+.note-row-title { font-size: 12.8px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-row-body { margin-top: 2px; font-size: 11.8px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-row-shot { margin-top: 6px; width: 100%; height: 44px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); opacity: 0.85; }
+.note-row-meta { display: flex; gap: 8px; margin-top: 4px; font: 10.5px/1.3 var(--mono); color: var(--faint); }
+.note-pill { flex: 0 0 auto; font: 10.5px/1 var(--mono); padding: 3px 6px; border-radius: 999px; border: 1px solid; }
+.note-pill.pending { color: var(--warn); border-color: #4a3a12; background: #1d1708; }
+.note-pill.done { color: var(--ok); border-color: #1d3f2a; background: #0d1a12; }
+.note-pill.dropped { color: var(--faint); border-color: var(--line); background: var(--panel-2); }
+
+.notes-editor { overflow-y: auto; padding: 12px; }
+.notes-editor-empty { height: 100%; display: grid; place-content: center; justify-items: center; gap: 8px; color: var(--faint); font-size: 12.5px; }
+.notes-editor-empty-title { color: var(--dim); }
+.note-ed { display: flex; flex-direction: column; gap: 8px; min-height: 100%; }
+.note-modes { gap: 4px; }
+.note-title { width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); font-size: 14px; font-weight: 600; }
+.note-body { width: 100%; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); resize: vertical; line-height: 1.6; font-size: 13px; }
+.note-body.mono { font-family: var(--mono); font-size: 12.3px; }
+.note-title:focus, .note-body:focus, .note-meta-input:focus { outline: none; border-color: var(--accent-dim); box-shadow: 0 0 0 2px #0e3a4d55; }
+
+.note-shots { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.note-shot { position: relative; }
+.note-shot img { display: block; width: 88px; height: 60px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+.note-shot-x { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--dim); font-size: 10px; line-height: 1; display: grid; place-items: center; }
+.note-shot-x:hover { color: var(--danger); border-color: var(--danger); }
+.note-add-shot { padding: 6px 10px; border-radius: 8px; border: 1px dashed var(--line); background: transparent; color: var(--faint); font-size: 12px; cursor: pointer; }
+/* 原生 file input 只当 picker 用，露出来就是一行 "Choose Files / No file chosen" */
+.note-add-shot input[type="file"] { display: none; }
+.note-add-shot:hover { color: var(--dim); border-color: #2f3746; }
+.note-shots-hint { font-size: 11.5px; color: var(--faint); }
+.note-meta { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font: 11px/1.4 var(--mono); color: var(--faint); }
+.note-meta-input { width: 96px; padding: 5px 7px; border-radius: 6px; border: 1px solid var(--line-soft); background: transparent; font: 11px/1.4 var(--mono); }
+.note-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+/* 四个动作同一副骨架：等高、同内距、同圆角，只靠颜色分主次（保存实心、删除红字）。 */
+.note-actions .btn { padding: 7px 13px; font-size: 13px; line-height: 18px; border-radius: 9px; }
+.notes-tabs-sep { width: 1px; height: 15px; background: var(--line); margin: 0 3px; align-self: center; }
+
+/* 归档 / 垃圾箱里打开一条时的提示条：这两堆里的条目不该看着跟列表里一样。 */
+.note-life-bar {
+  display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 9px;
+  border: 1px dashed #2b3a48; background: #0e161e; color: var(--dim); font-size: 12px;
+}
+.note-life-bar.trash { border-color: #4a2a26; background: #1a1210; color: #d8a79f; }
+.note-life-bar .grow { flex: 1; }
+.note-title-view { margin-top: 4px; font-size: 14px; font-weight: 600; }
+.note-body-view {
+  margin: 6px 0 0; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line-soft);
+  background: #0b1015; color: var(--dim); font: 12.5px/1.65 var(--mono); white-space: pre-wrap; word-break: break-word;
+}
+
+.note-foot-hint { margin-top: auto; padding-top: 10px; border-top: 1px dashed var(--line-soft); font: 11px/1.5 var(--mono); color: var(--faint); }
+
+.notes-foot { gap: 10px; }
+.notes-hint { font-size: 11.5px; color: var(--faint); }
+.notes-hint.bad { color: var(--danger); }
+
+.note-handoff { position: fixed; z-index: 80; min-width: 260px; display: grid; gap: 2px; padding: 6px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55); }
+.note-handoff button { display: grid; gap: 2px; text-align: left; padding: 7px 9px; border-radius: 8px; border: 0; background: transparent; }
+.note-handoff button:hover { background: #1b2028; }
+.handoff-label { font-size: 12.5px; color: var(--text); }
+.handoff-hint { font-size: 11px; color: var(--faint); }
+
+@media (min-width: 760px) {
+  /* 比普通 sheet 宽一倍、也给足高度：左边一列 + 右边编辑器，矮了编辑器就只剩一条缝。 */
+  .sheet.notes-sheet { width: min(1000px, 100%); min-height: min(620px, 78vh); }
+}
+@media (max-width: 620px) {
+  /* 窄屏上「归档 / 垃圾箱」只剩图标：标题、计数都在 title 里 */
+  .notes-viewbtn span:not(.n) { display: none; }
+}
+
+@media (max-width: 860px) {
+  .notes-body { grid-template-columns: 1fr; grid-template-rows: minmax(140px, 40%) minmax(0, 1fr); }
+  .notes-side { border-right: 0; border-bottom: 1px solid var(--line-soft); }
+  .notes-editor { padding: 10px; }
+}

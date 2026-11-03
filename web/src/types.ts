@@ -169,6 +169,9 @@ export interface TunnelState {
   status: "off" | "starting" | "up" | "error";
   url: string | null;
   error: string | null;
+  /** D110：bridge 侧带回来的错误码与参数（翻成当前语言用，见 i18n 的 errText）。 */
+  errCode?: string;
+  errParams?: Record<string, string | number>;
   updatedAt: number;
 }
 
@@ -227,4 +230,28 @@ export interface GitInfo {
   detached: boolean;
   empty: boolean;
   dirty: number;
+}
+
+/** 记录（D95）：bridge/src/notes.ts 的 Note 镜像，落在状态目录，不属于任何会话。 */
+export type NoteKind = "bug" | "change" | "idea" | "chore";
+export type NoteStatus = "pending" | "done" | "dropped";
+export type NoteMode = "quick" | "form" | "long";
+export interface Note {
+  id: string;
+  kind: NoteKind;
+  status: NoteStatus;
+  mode: NoteMode;
+  title: string;
+  body: string;
+  /** 桥那台机器上的绝对路径（`/api/image?path=` 直接读）。 */
+  shots: string[];
+  sessionId: string | null;
+  sessionName: string | null;
+  issue: string;
+  commit: string;
+  createdAt: number;
+  updatedAt: number;
+  /** 归档 / 丢进垃圾箱的时间；都没有就是正常在列表里。 */
+  archivedAt: number | null;
+  deletedAt: number | null;
 }

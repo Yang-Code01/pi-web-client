@@ -985,7 +985,7 @@
 
 **决定：**
 - 入口只有一个：顶栏 `>_ 终端`，紧挨着 `📂 产物`。右栏那一节（标题 + 按钮 + 提示）整段删掉。
-- 终端是**浮在页面上的 dialog**（`position: fixed`，挂进 `#app` 跟着外观缩放；z-index 45 —— 在顶栏 20 与输入框浮层 40 之上，比口令 modal 50、底部 sheet 60 低，那些东西该盖住终端；和文件预览的上下关系见 D94），不再是对话栏里的一行；因此 Q-026 的「打开终端先折叠右栏」一并作废。
+- 终端是**浮在页面上的 dialog**（`position: fixed`，挂进 `#app` 跟着外观缩放；z-index 45 —— 在顶栏 20 与输入框浮层 40 之上，比口令 modal 50、底部 sheet 60 低，那些东西该盖住终端；和文件预览的上下关系见 D111），不再是对话栏里的一行；因此 Q-026 的「打开终端先折叠右栏」一并作废。
 - `－` = **最小化**：只把 dialog `hidden`，标签、xterm、桥里的进程都不动；顶栏按钮亮起并写数量（`>_ 终端 2`）。只有标签上的 `×` / `关闭` 才 `term.close`。
 - 刷新 / 重连不自动弹窗：`term.list` 接管回来的标签先挂在收起态，按钮上有数量，点一下回到同一个进程（桥 `term.replay` 全量回放）。
 - 收起后再打开要重新 `fit()`：xterm 在 `display:none` 的容器里量不出尺寸，所以 `showTermDock()` 里补一次 fit + focus；反过来，接管 shell 时 dialog 必须短暂可见才挂 xterm（同一个任务里立刻藏回去，不会闪），否则挂上去的是 0 宽字符。
@@ -1010,7 +1010,263 @@
 
 **验证：** `probes/term-dialog.mjs` 新增：顶边抓取带改高度并写入 `pi.termGeom.h`、双击清空并回默认高度；拖标题栏位移与指针 1:1 且大小不变、`l/t` 落盘；右下角缩小 300×100 时宽高同时变而左上角不动、`w/h` 落盘；刷新后 dialog 回到存档的同一位置与大小；视口缩到 390×820 后仍不越界且压在底部三标签上方。另有一次性的 `#app zoom 1.25` 检查（`.scratch/zoom-term.mjs`，不入库）：dialog 整块在 1280×860 视野内，拖动 +100/−100 与缩放 −200/−150 都 1:1。
 
-## D94 文件预览与终端按「最后被点 / 聚焦的那扇在前」叠放
+## D94 滚轮上滚被拽回底部：恢复跟流只认「视口在往下走」，滚轮 / 方向键上翻后再挡 300ms
+
+**症状**：桌面上回复流式输出时，鼠标往上滚，有时滚不上去，视口上下抖动。
+
+**根因**：D54 / D68 的状态机里，`wheel` 向上会同步 `stopFollowing()`，但 `scroll` 事件中只要 `nearBottom()`（gap ≤ 24）就 `resumeFollowing()`。触控板 / 高精度鼠标每个事件只移动几像素，Chrome 的平滑滚动也把一格分成几帧动画，所以手势开头的几个 `scroll` 事件仍在 24px 以内 → 跟流被立刻打开 → 下一段 `delta` 的 rAF 执行 `scrollTop = scrollHeight`，把视口拉回底部，还会打断正在进行的平滑动画。D68 只为触摸加了 `touching` 保护，滚轮和键盘没有。
+
+**决定**（`web/src/chat.ts`）：
+1. `scroll` 处理器记录 `lastTop`，只有 `scrollTop >= lastTop`（视口向下移动或不动）且 `nearBottom()` 时才 `resumeFollowing()`。
+2. `wheel` 向上 / `PageUp` / `ArrowUp` / `Home` 改走 `holdUp()`：`stopFollowing()` 之外再把 `holdFollow` 推到 `now + 300ms`（取 max，不缩短 `jumpToTurn` 的 900ms），盖住平滑动画的剩余帧。
+
+**为什么现在可以看方向**：D68 担心程序化滚动也会触发 `scroll`。但程序化滚动只发生在已经跟流时（或 `follow()` 主动打开），方向一定向下，不会误判。内容变短导致 `scrollTop` 被钳制时方向向上，不会把跟流打开，这正是想要的结果。
+
+**验证**：`node probes/scroll-race.mjs` 新增 `wheel-tiny`（真实 `mouse.wheel` −4px × 20）和 `wheel-smooth1..3`（一次 wheel 事件 + 4 帧各上移 5px，模拟 Chrome 平滑动画；无头 Chrome 不播放滚轮动画）。断言：离开底部后，手势期间和之后 1 秒内 gap 不再回到 ≤ 2。改前两次运行都 FAIL（`wheel-tiny` 的 gap 轨迹为 `51,4,0,4,55,4,…` 共 8 次回弹；`wheel-smooth` 有时有 7 次回弹）；改后连续三次全部 PASS，原有触摸和「回到底部恢复跟流」断言也保持 PASS。
+
+## D95 链接标签的正则不许用嵌套量词：一行 tool 输出曾让会话打开即卡死
+
+**决定**：`web/src/md.ts` 里 link label 的「一段普通字符」由贪心 `+` 改为逐字匹配——`(?:[^\[\]\n]+|\[[^\]\n]*\])+` → `(?:[^\[\]\n]|\[[^\]\n]*\])+`，`INLINE` 第 3 组和 `inlineInto` 里取 label 的那条正则各一处。接受的语法集合不变（`A+|B` 与 `A|B` 的 Kleene 闭包同语言），只去掉歧义。
+
+**为什么**：`(x+|…)+` 对同一段标签文本有指数级的切分方式，而 md 是**一行一行**送进 `inlineInto` 的——只要某一行里有一段够长的 `[…]` 后面不是 `](`，引擎就得把所有切分试完才认输，主线程再也回不到事件循环，Chromium 就报「此页面没有响应」。实测：会话 `c24330ab…`（名字 `bug`）第 23 条 tool 结果里的一行 TypeScript（`… || [...this.termTabs…`）就够，旧正则在那行上 3 秒都不返回，页面永远画不出来。别的会话没卡只是没撞上这种长方括号行。user 消息走的是 `body.textContent = item.text`（纯文本，不过 renderMarkdown），所以当时怀疑的 `[Image: …]` 注释其实不触发——真正触发的是 tool 输出里的代码行。
+
+**可改**：内层 40 字符时旧正则已 >3s、30 字符以内仍在毫秒级——这是事后测量，不是设计目标；将来放宽标签长度不必再动这条正则。
+
+**验证**：把 `web/src/md.ts` 用 esbuild 打成 ESM，喂该会话全部 213 段 `text`/`result`/`command`：旧正则在前 61 条里就有 6 处单行不返回（第一处 item#23），新正则一趟跑完、0 停滞（同一段文本 2ms）。改后 headless 打开该会话 → 1.5s 内渲染 159 条消息；`npm --prefix web run build` 通过。
+## D96 peer 是独立子进程：bridge `fork` 托管，崩了退避重启，端口被占不重启
+
+（D95 是链接正则那条；这里是 #45 的第一篇。）
+
+**决定**（`bridge/src/peer.ts` + `peer/src/index.ts`）：
+1. `peer/` 是独立进程，自己绑 `0.0.0.0:7865`；bridge 用 `child_process.fork` 起它，stdout/stderr 逐行转进 bridge 日志（`[peer]` 前缀）。
+2. 非 0 退出按 1s → 2s → 4s 重启，第 4 次还死就停手并在页面显示「连续退出 N 次」。
+3. 退出码 **2** 表示 peer 自己判定端口被占（`EADDRINUSE`）：不重启，只报「另一份 peer 在跑」。
+4. `PI_PEER=0` 时整块不启用；`peer/dist` 不存在时报「还没构建」而不是崩。
+
+**为什么**：peer 要能被局域网访问（绑 `0.0.0.0`），而 bridge 默认只绑回环；两者生命周期也不同——peer 崩了 bridge 必须活着，否则页面连自己为什么看不到在线列表都不知道。端口冲突是唯一「重试也没用」的失败，所以用退出码把它和「偶发崩溃」分开，避免无限重启刷日志。
+
+**可改**：重启次数（3）与退避基数（1s）。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「端口被占时退出码 2」；手动 `kill` 掉 peer 进程后 bridge 日志出现 `[peer] ... 收到 SIGTERM` 与重启记录，页面 `/api/peer` 的 `running` 相应变 false 再变 true。
+
+## D97 页面只跟 bridge 说话，peer 的 `/status` 只认回环
+
+**决定**：`peer.html` 只请求 `127.0.0.1:7864` 的 `/api/peer`（cookie 认证）；peer 的 `/status`、`/peer/add`、`/peer/refresh` 一律拒绝非回环的来源（403）。对局域网开放的只有协议面：`/peer/hello`，以及第 2 片起的 `/peer/inbox`。
+
+**为什么**：cookie、CORS、隧道只在一处（bridge）；而且 `/status` 带的是本机配置（收件箱路径、隐身开关），不该让同网段的人随便读。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 只走回环；非回环路径靠 `http.ts` 的 `isLoopback()` 拒掉——从另一台机器 `curl http://<ip>:7865/status` 应得 403（真机验收项）。
+
+## D98 「当场确认」走 HTTP `/peer/hello`，不走 UDP 回包
+
+**症状**：两台机器能互见，但要等下一轮 announce（最多 10 秒）；手动填了地址却要等半天才有反应。
+
+**根因**：announce 是发到组播端口（7866）的，回给对端也只能打到它的发现端口——而对方要的确认信息（nickname / http 端口）必须进它的状态表，走 HTTP 才有确定性。
+
+**决定**（`peer/src/discovery.ts`）：收到 unknown / 换了 IP 的 `hello` 时，单播 `POST /peer/hello` 到对方的 HTTP 口（announce 里带着端口），同一个 `nodeId` 10 秒内只回一次；手动地址也走这条。
+
+**为什么**：组播被交换机挡住时，这条路是唯一能在秒级把对方拉进列表的通道（也让「手动地址」真的可用，而不是「等十秒看看」）。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的手动地址段——A 不广播给 C（不同组播端口），`POST /peer/add` 后 8 秒内 A、C 双向可见。
+
+## D99 隐身 = 不广播、不回 hello，只被动记录
+
+**决定**：`hidden` 打开时 peer 不发 announce、不响应 `/peer/hello`（回 `{hidden:true}`），但仍然接收并记录别人——所以隐身的人看得见别人，别人看不见他。
+
+**为什么**：如果用「照常收发但把自己标记成隐藏」来实现，任何一台机器只要抓到一个包就知道你在线，隐身就成了自欺。反过来「彻底断网」又会让隐身的人失去一切信息。
+
+**可改**：是否允许「手动填了地址的人也能看见隐身的我」（真机验收时再定，见 #45 已知限制）。
+
+**验证**：`peer/src/discovery.ts` 的 `packet`/`sendHello` 早退分支；e2e 里 C 与 A/B 的隔离段用的是「不同组播端口」，隐身分支暂由代码路径 + 真机验收覆盖。
+
+## D100 第二张页面 `peer.html`：vite 多入口，`/peer` 由 bridge 显式映射
+
+**决定**：
+1. `web/vite.config.ts` 的 `build.rollupOptions.input` 加 `peer: peer.html`，产物落在 `web/dist/peer.html`。
+2. `bridge/src/index.ts` 的 `serveStatic()` 把 `/peer`、`/peer/` 改写成 `/peer.html`，其余未知路径仍旧回落 `index.html`（SPA 的登录页要靠它）。
+3. 页面数据 5 秒轮询 `/api/peer`（第 1 片不另开 WS）。
+
+**为什么**：局域网界面和聊天界面是两种东西（一块是「谁在」+ 传输，一块是会话流），塞进同一个 SPA 会让路由和状态互相污染；而 vite 的多入口是零配置代价的隔离。`/peer` 这条映射必须显式写，否则新页面会被 SPA 兜底吞掉，打开的是聊天界面。
+
+**验证**：`npm run build` 后 `web/dist/peer.html` 存在；`curl -H 'cookie: …' http://127.0.0.1:7864/peer` 返回的 HTML 里含 `<title>局域网 · pi</title>` 与 peer 的 bundle；截图见 `.scratch/peer/online.png`（在线列表里有一台对端）。
+
+
+## D102 消息与回执都只追加：回执是新的一行，过期判断靠「最近 2000 条 id」
+
+**症状**：一条消息发出后想显示「已送达」，最自然的写法是把那行 JSONL 改一遍（把 `status: sent` 改成 `delivered`）；一旦中途断电，文件里就留半行坏 JSON，而且第 3 片的好友请求、第 4 片的文件卡都会各自再改一遍同一行。
+
+**根因**：追加写只要 `appendFileSync` 一次系统调用，是「要么整行进去、要么没进去」；原地改要先读全文、定位行、重写整个文件，中间任何一次崩溃都留下截断的文件——而历史是只增不减的，文件只会越来越大。
+
+**决定**（`peer/src/history.ts`）：
+1. 每段对话一个 `<nodeId>.jsonl`，一行一条 `{id, at, from, to:{kind,id}, kind, text?, ack?}`；`kind` 只有 `text` / `receipt`（v1.1 再加 group 系）。
+2. 送达 = 追加一条 `kind:"receipt"`、`ack:{id, status:"delivered"|"failed", error?}` 的新行，原来那条文本一个字节都不动。
+3. 补投查重不另建状态文件：读该对话最近 2000 条的 `id` 做集合（`recentIds()`），命中就不写。
+4. 读取只读尾巴 512 KB，切掉可能截断的第一行；坏行跳过而不是整份报废。
+
+**为什么**：回执、好友请求、文件卡都在复用同一份历史，append-only 让它们互不干扰；查重用「读尾巴」而不是「写索引」，省掉一个会在崩溃时和 JSONL 不一致的旁路状态。
+
+**可改**：查重窗口 2000 条、尾巴 512 KB 都是拍的数字；对话过万条后要换成「按 offset 的 ring index」，不是现在。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「同一条消息只存一次（dedupe）」把收到的 `entry` 原样重投一次，回 `{dup:true}` 且历史里仍只有一行；「送达回执」段断言 A 侧出现 `kind:"receipt"` 且 `ack.status==="delivered"`。
+
+## D103 来源对不上先握手再说：409 可重试，而不是判「伪造」
+
+**症状**：一个还没被学到（组播被交换机挡住）或刚换了网卡的对端发来消息时，按「来源 IP 不在 nodeId 的 IP 集合里就拒」的字面实现，会把正常消息全部拒掉——对方重试也没用，因为两边都没机会交换新地址。
+
+**根因**：`from` 里自报的 nodeId 只能证明「他想让我以为他是谁」；来源 IP 才是唯一可信的一半，但 IP 本身是会变的（DHCP、多网卡、VPN）。判定「伪造」需要的是「这个人不可能在这个 IP 上」，而单次不匹配不构成这个结论。
+
+**决定**（`peer/src/messages.ts` 的 `verifySource()`）：
+1. 不认识的 nodeId → 立刻单播一次 `/peer/hello`（让对端把当前地址报上来），同时回 **409 + `retryable: true`**；
+2. 认识但 IP 不在集合里 → 也先握手一次，再查；还是不在才 409 可重试，并记一行「来源 IP 漂移」；
+3. 判「不可重试」的只有一种情况：`proto` 不匹配（400）或压根不是合法消息（400）。
+4. 文本超过 32 KB 直接 413 且 `retryable:false`——重试一万次也还是太长。
+
+**为什么**：把「可能是漂移」和「确定是伪造」分开以后，outbox 的 24 小时补投才有意义（只有真·伪造会被立刻丢掉）；而 `retryable` 让 4xx 也承载「以后还可以试」的语义，不用把这类失败伪装成 5xx。
+
+**可改**：IP 集合留 5 分钟；真出现「同网段有人拿别人的 nodeId 发消息」时，下一步是签名（issue 里明确没做）。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「不认识的 from 拿不到写入（409 可重试）」段：伪造一个陌生 nodeId 直接 POST `/peer/inbox`，断言 409 且 `retryable === true`，历史里没多出任何一行；正常两实例之间（同机，源 IP 在集合里）文字照常送达。
+
+## D104 好友请求也走 `/peer/inbox`：一条通道，不新开协议
+
+**症状**：第 3 片要发「加好友」「接受」两种短消息。最省事的写法是另开 `POST /peer/friend` 直连对端——但那样就得重新实现补投、去重、来源校验、24 小时过期这一整套，而这些在第 2 片刚刚做完。
+
+**根因**：好友请求和文字消息在传输层没有任何区别：都是一次「我对你说句话」，都可能因为对方离线、IP 漂移、组播被挡而要重试。
+
+**决定**（`peer/src/messages.ts` 的 `sendControl()` / `accept()`）：
+1. 新的信封是 `{proto, kind:"friend-request"|"friend-accept", control:{id, at, from}}`，与 `kind:"text"` 共用 `/peer/inbox`、`Outbox`、`verifySource()`；
+2. `Outbox.Queued` 从「塞一条 `entry`」改成「`kind` + `payload`」，`text` 的 payload 就是那条 Entry，控制消息的就是 control 体；老 `outbox.json` 读进来按 `kind:"text"` 迁移；
+3. 只有 `kind === "text"` 在 `settled` 里追加回执行——好友请求没有「已送达」这个概念，它的进度就是通讯录里的状态；
+4. 关系状态落在 `~/.pi-peer/peers.json`（`nodeId → {friend, favorite, incoming, outgoing}`），控制消息不改历史 JSONL。
+
+**为什么**：省掉的不是一百行代码，是「另一条路上没有 IP 校验」这个洞——第 4 片的文件写入本来就要靠好友关系把关，门上的锁必须和消息走同一道验证。
+
+**可改**：「不理」目前只删本地 `incoming`，不通知对方（对方会一直显示「已发请求」）；真需要「拒绝」再发一条 `friend-reject` 控制消息，信封已经现成。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「好友请求到达对端（待接受）」「接受后两边都是好友（outgoing / incoming 都清掉）」「收藏只在本机生效」三段。
+
+## D105 「接受」要求对方在线，否则按钮直接说等一会儿
+
+**症状**：好友请求存在本地，接受时如果对端已经下线，`friend-accept` 进 outbox 也能补投——但对方那份 `outgoing` 会一直挂着，界面显示「已发请求」，直到他 24 小时内再上线。
+
+**根因**：接受这个动作必须有回执才完整（双向确认），而回执只能送到在线的对端。
+
+**决定**（`peer/src/http.ts` 的 `/friend`）：`action:"accept"` 在 `discovery.byId(peerId)` 为空时直接 400「他不在线，等他在线再接受」，不写自己这边的状态、也不排队。请求（`request`）则相反：必须能立刻发出，否则用户点了没反应。
+
+**为什么**：宁可让按钮说「等一会儿」，也不要造出一个「我这边是好友、他那边还挂着请求」的分叉状态——分叉之后没有任何地方会自动收敛。
+
+**可改**：真要支持离线接受，得给 `friend-accept` 加一次幂等重放 + 对方上线时主动 `friend-request` 复述；v1 不做。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「接受后两边都是好友」段（B 接受时 A 在线，两边 `friend` 同时为真）；人工验证：把对端杀掉后点「接受」→ 页面报「他不在线，等他在线再接受」。
+
+## D106 文件只认收方发的 token：`begin` 验好友、分块写盘、`end` 核哈希
+
+**症状**：第 2 片只做了文字。用户第一次真正想用的是「发个截图 / 发个文件」，而文字通道跑通只证明了「能连上」，没有证明「不可信的来源写不进我的盘」。
+
+**根因**：如果收文件复用一个「`from` 说得对就收」的入口，那么伪造 `from` 的人可以往你指定的盘里写任意大小、任意后缀的文件——文字伪造只是刷屏，文件伪造是写盘，后者不可撤销。
+
+**决定**（`peer/src/files.ts` + `peer/src/http.ts`）：
+1. 收方先 `POST /peer/file/begin` 验三件事：来源（复用 `messages.verify` 的 IP 集合）、**是好友**（决定 9）、收件盘余量（`fs.statfsSync`，留 5 GB 且留 10%）。三关都过才生成 token，`.part` 文件在收件目录里。
+2. 分块 `POST /peer/file/chunk?token=&offset=` 要求 `offset` 正好接上已收字节数（错位回 409 并带上真实 offset，天然支持续传）；token 每收到一块就把 60 秒有效期往后推（决定 24）——固定 60 秒会和 2 GB 文件、和续传同时打架。
+3. `end` 核大小 + 核 sha256，对上了才从 `<token>.part` 改名为最终文件（重名加 ` (2)`），往历史里追加**一行** `kind:"file"` 卡片。对不上就丢弃并回不可重试。
+4. 发送方只把**路径**交给 peer（页面、peer 同机），由 peer 自己读盘算哈希；剪贴板截图没有路径，走 `/files/upload` 把字节递过来（上限 64 MB）。
+5. 收件目录里「哪个 id 对应哪个文件」记在 `statePath("files.json")`，`GET /files?id=` 只认这个索引——不接受任意路径，避免把 `/files` 变成一个能读全盘的回环接口。
+
+**为什么**：token 的意义不是加密，而是**把「谁可以写盘」这件事收敛到一个收方亲自签发的短期凭据上**。伪造者连 `begin` 都过不去，后面两条路由对他就是死路；而正常路径上 token 又不会因为文件大、网慢而失效。
+
+**可改**：token 目前只存内存，peer 重启后未完成的传输作废（对方重新 `begin` 会拿到新 token 并从 0 开始，因为 `.part` 名字是旧 token）。真要做跨重启续传，得把 token 落盘并让 `.part` 名与 messageId 绑定。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「非好友发文件被拒（403）」「文件送到对端（3072 KB，哈希一致）」「落盘内容逐字节一致」「同一文件只留一张卡片」「没有 token 写不进盘（410）」五段；人工：在本机测试环境点「📎」选 `docs/shots/peer-online.png` 发给自己那台，对端出现图片气泡。
+
+## D107 agent 发局域网的文字：三个工具挂在门禁扩展里，直连 peer 回环，消息带 `via:"pi"`
+
+**症状**：#45 的价值锚点是「agent 在链路里」——人能发消息、agent 能读能发，但对端分不清「这句话是人打的还是 agent 打的」；而且 pi 的会话是子进程，没有 cookie，也没有理由让它绕 bridge。
+
+**根因**：① 工具的注册面只有 pi 扩展（`bridge/ext/approval-gate.ts`，与 #40 的门禁同一个文件），bridge 的 HTTP 路由不是 pi 的工具注册点；② 会话子进程继承 bridge 的环境，因此 `PI_PEER_PORT` 可由 bridge 在 `main()` 里写进 `process.env` 再被 `rpc.ts:57` 的 `{...process.env, ...opts.env}` 带下去；③ 人对「这条是 agent 说的」有真实需求（群里开口的是人还是机器，决定你信不信）。
+
+**决定**：三个工具 `peer_find(query?)` / `peer_history(peer, limit)` / `peer_send(peer, text)` 注册在 `bridge/ext/approval-gate.ts` 内，直接 `fetch http://127.0.0.1:${PI_PEER_PORT}/tools/find|/messages|/send`，不经过 bridge；`peer_send` 发出的 entry 带 `via:"pi"`，对端与自己的气泡上都显示「🤖 agent 代发」；门禁侧把 `peer_find`/`peer_history` 加进只读白名单，`peer_send` 单列 `PEER_SEND` 集合——**只读模式仍然拦**（它会碰到别人），**严格模式放行**（决定 33：文字不设审批，文件才设）。
+
+**为什么**：走回环而不是 bridge，是因为 peer 的三个接口本来就只认回环（决定 2），pi 子进程就在本机，少一跳少一处鉴权分叉；`via` 放在 entry 上而不是 UI 推导，是因为接收方也要看到（消息体是唯一的真相来源，本地推断在对端不成立）；严格模式放行 `peer_send` 而不放行全部，是因为「发文字」正是这个功能存在的理由，拦了就等于把它关掉。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 19 段全过，其中「/tools/find 能按昵称找到人（带在线/好友）」「agent 代发的消息带 via=pi（对端徽章）」两段直击本决定；扩展用假 `pi` 对象跑注册，三个工具名齐全，`peer_find` 对真实 peer 返回「找到 2 个人」，`peer_send` 对不存在的 nodeId 报「这个人已经不在线了」（业务错误不再被包成「连不上 peer」）。
+
+## D108 记录（🐞 bug）住在顶栏、落在状态目录，一个 dialog 收四类随手记
+
+**问题：** 用这个页面时，bug、要改的地方、想法、杂事都只能「先记在别处」——聊天里说完就沉了，而且这些事大多不是当前会话的事（换会话、甚至还没开会话时也会想到）。已有一个 `/bug`（D80），但它是**把报告发给 pi 的开发者**：跟会话绑定、要上传 / 打包，用来记「我自己待会儿要处理的」完全不对路。
+
+**决定：**
+- 入口是顶栏一颗 `🐞 bug`（`data-act="notes"`，插在 `📁 文件管理器` 与 `Aa` 之间），**常显**：跟终端一样不随 `currentId` 隐藏——记录不属于任何会话。**只有图标**，数量进 `title`（`记录：3 条待处理（Ctrl+Shift+B）`）：顶栏已经在 620px 处挤过一次（D108 之后那条 `fix(notes)` 提交就是它翻车的现场），再挂一串小字等于把问题还回去。
+- 面板是 dialog（`.sheet.notes-sheet`，桌面 `min(1000px,100%)`、高 `min(620px,78vh)`）：左边列表 + 右边常驻编辑器（样张 A）。新建是列表顶部 `＋ 记一条`；打开面板光标直接落进那一格。
+- 四类固定枚举：`bug` / `change` / `idea` / `chore`，默认 `bug`；tab 上带待处理计数。默认只看 `pending`，一个「显示已处理」开关翻出 `done` / `dropped`。
+- **归档 / 垃圾箱跟「处理状态」正交**：`status`（待处理 / 已处理 / 已忽略）是「我处理到哪一步」，`life`（在列表 / 归档 / 垃圾箱）是「这条还该不该占列表」。
+- **但归档 / 垃圾箱和四类 tab 同级、互斥**：它们在**同一条 tab 带**里（`🐞 bug · ◆ 变更 · ◇ 想法 · ○ 杂事 │ 📦 归档 · 🗑️ 垃圾箱`），选了归档就不是「bug 这一类」——归档 / 垃圾箱里的列表不按类过滤，一次看全部。理由：「看哪些 bug」和「看归档了什么」是两个问题，叠在一起要三个维度一起点才找得到东西；把它们摆成同级，选哪个都只有一个高亮，脑子里只有一个当前视图。
+- 每条记录行尾有两颗小图标（悬停才出现，避免把行变成按钮墙）：在列表里是「归档 / 删除」，归档里是「复原 / 删除」，垃圾箱里是「复原 / 彻底删除」。按钮名就叫**删除**，行为是放进垃圾箱（可复原）；彻底删是垃圾箱里才有的第二个动作。垃圾箱支持**一键清空**，清空前 confirm。
+- 编辑器底部四个动作（保存 / 复制 Markdown / 交给 agent / 删除）一副骨架：等高、同内距、同圆角，只靠颜色分主次（保存实心、删除红字），不给某一个偷偷加大内距。
+- 归档 / 垃圾箱都只是打时间戳（`archivedAt` / `deletedAt`），文件不删；只有「彻底删除」和「清空垃圾箱」才动磁盘，并且连 `assets/<id>/` 一起删。
+- **归档 / 垃圾箱是「管理列表」，不是「写的地方」**：这两个视图里没有 `＋ 记一条`，编辑器空态只说「复原放回列表才能改」，左栏只留检索（标题 / 正文 / issue / commit 子串，大小写不敏感，三个视图通用）。理由不是洁癖：在这两堆里新建的记录按定义属于列表，存下去之后广播一到、`setNotes` 判定「这条不该待在这堆里」就把编辑器关了——用户看到的是「点了保存，没存上」。现在 `save()` 里还留了一道兜底：不在列表视图就先切回列表。
+- 三档录入（`quick` / `form` / `long`）= 同一个编辑器的三副样子：`quick` 一行、Enter 存（Shift+Enter 换行）；`form` 多两栏加高；`long` 等宽、给日志栈。存下之后正文还能改、图能加能删。
+- 截图只从用户手上进来：Ctrl+V 粘贴 / 拖进编辑器 / `＋ 图` 选文件。粘贴的图先以 data URL 挂在 `pendingShots`，**随条目的「保存」一起**上传——不然一条还没存下的记录会在磁盘上先长出一个目录。
+- 存储：`stateDir()/notes/bug-notes.json` + `notes/assets/<id>/shot-<n>.<ext>`。图不塞 JSON：base64 会让文件在几十张图后变成几 MB，而列表每次都要整读。截图记**绝对路径**，因为「交给 agent」时它要能直接读。
+- 每条字段：`id / kind / status / mode / title / body / shots / sessionId / sessionName / issue / commit / createdAt / updatedAt`。会话只是**静默记下**（列表不显示），标题为空时取正文首行 60 字。写操作不做 step-up、隧道不拦：登录进来的就是本人，记录也不进 pi 的会话文件。
+- 枚举值一律校验后拒绝（`不认识的 kind：wat`），不静默退回默认值——打错一个字会把「想法」悄悄记成 bug。
+- 出口三个，都在记录上：**复制 Markdown**（单条）· **导出全部**（当前 tab + 当前筛选）· **交给 agent**（菜单两选一：预填到当前会话的输入框；或新开会话、建好后填进那个会话）。两个都**不自动发送**。
+- 状态 / issue / commit 是**立刻落盘**的（`notes.status`），不跟正文的「保存」一批——所以它们不会让 `dirty` 拦住「交给 agent」。
+
+**为什么归档和垃圾箱不合并：** 归档是「这条已经定了、但我想留着查」，垃圾箱是「这条我删了、可能反悔」。合成一个「回收站」的话，处理完的东西会和误删的东西混在一起，而它们的心智完全不同（前者不该复原，后者几乎一定会）。代价只是两个视图 + 两个工具栏位置，比一个语义含混的列表便宜。
+
+**为什么删图 / 删记录要分「打标记」和「真删」：** 打标记能撤销，真删不能。默认路径必须是能撤销的那条（🗑️ 删到垃圾箱），能撤销的路径上不给「彻底删除」以外的入口。
+
+**为什么不做「一键建 GitHub issue」：** `gh` 要走代理、还要登录态，失败路径比功能本身长（D80 的教训）；本期只留 `issue` 号字段，用户把号粘进来即可。**为什么不做自动抓屏：** `getDisplayMedia` 要用户选源、服务端 puppeteer 要装浏览器，两个都比「Ctrl+V 贴一下」重，收益还只是省一次粘贴。
+
+**可改：** 四类与 `quick/form/long` 三档的具体文案（`web/src/notesheet.ts` 顶部 `NOTE_KINDS` / `MODE_LABEL`）；单条最多 24 张、单图 20MB（`bridge/src/notes.ts` 的 `MAX_SHOTS` / `MAX_SHOT_BYTES`）；默认快捷键 `Ctrl+Shift+B`（`app.ts` 的 `DEFAULT_KEYS`）。想让「已处理」也立刻消失就把 `.notes-switch` 默认打勾，但那样就没有「回头看看处理了什么」的地方了。
+
+**验证：** `node probes/bug-notes.mjs`（真桥、临时状态目录、纯 WS，32 条断言；含 `notes.life` 归档打时间戳 / 复原清空 / 错 life 被拒 / `trashed` 只打标记 / `notes.purge` 只清垃圾箱那条）：hello 带 `notes`、空标题取正文首行、同 id 是更新（`createdAt` 不变、`updatedAt` 前进）、`issue`/`commit` 落盘、错 status / 错 kind 被拒且状态不变、截图落到 `assets/<id>/` 且 `/api/image` 读得回 `image/png`、第二张换名不覆盖、删图只删自己那条、删记录连目录一起清、桥杀掉后 JSON 仍在。`node probes/bug-notes-ui.mjs`（真 Chromium + 隔离桥，37 条断言（含归档视图不给「＋ 记一条」、检索命中 / 空态 / 清空））：没开会话也能开、光标落在记一条、Enter 存一条、按钮只显示图标且计数在 `title`、行内归档后从列表消失 → 归档抽屉可见 → 复原回列表 → 删到垃圾箱 → 只读 + 复原 + 彻底删除 + 清空垃圾箱、真 paste 事件贴图并随保存落盘、缩略图回到编辑器、状态 pill 转已处理后从待处理消失、「显示已处理」翻回来、复制 Markdown 进剪贴板（含截图绝对路径）、交给 agent 菜单两项、Escape 先关菜单再关面板、刷新后记录还在。截图：`.scratch/bug-notes/shots/desktop.png`。
+
+## D109 测试环境技能住进仓库 `.pi/skills/`：项目级零安装，不走 npm 包也不拷用户目录
+
+**问题：** 「起一份隔离测试实例」这套流程一直只活在本机 `~/.pi/agent/skills/pi-web-client-test-dev/`——跟着作者这台机器走，不跟仓库走。新机器 clone 下来部署完之后，这个技能不存在，验收 / 复现「别动我正在用的 7864」那套操作得靠人嘴传。
+
+**决定：**
+- 技能进仓库：`.pi/skills/pi-web-client-test-dev/`（`SKILL.md` + `bin/env.mjs`），pi 在**本仓库或其子目录**里跑时按项目级技能自动发现，不需要 `pi install`、不需要 `npm postinstall`，也不写用户的 `~/.pi/agent/skills/`。
+- `.gitignore` 原来整目录忽略 `.pi/`，改成只忽略一层内容（`.pi/*`）并对 `.pi/skills/` 开白名单（`!.pi/skills/`）——`.pi/` 里别的都是本机产物（任务日志、sessions），只有技能该进版本库。
+- 本机那份 `~/.pi/agent/skills/pi-web-client-test-dev/` 删掉，仓库版成为唯一来源。pi 遇同名技能是「先发现者生效 + 启动警告」，两份都留等于每个会话头上挂一条警告，而且改一份、生效的是另一份。
+- `SKILL.md` 顺手通用化：开浏览器给 Windows / macOS / Linux 三块命令，判据写明「窗口标题只在 Windows 实测过，mac/Linux 没有等价判据，用 `/` 的 HTTP 200 + 让用户自己确认」；PowerShell / `taskkill` 那些条目标成 Windows 专属。`bin/env.mjs` 不用改平台逻辑——`killTree()` 早就按 `process.platform` 分了 `taskkill /T /F` 和 `process.kill(-pid, "SIGTERM")`（`env.mjs:182-191`），`npm` 调用的 `shell` 也按平台切（`env.mjs:137,145`）。
+
+**为什么不用 pi 包（`pi install ./`）：** 这是个要在本仓库里验代码的工具，不是要在任何目录下都能用的通用能力。包机制多一次「部署完还得记得 install」，而项目级技能的可见范围（仓库内）恰好等于它该有的范围。**为什么不用 postinstall 拷到用户目录：** 装个 web 客户端顺手改用户的技能目录，属于不请自来的副作用；而且只有走 `npm install` 才触发，从 worktree 起的实例根本没这一步。
+
+**为什么只搬不拆：** 技能的价值在于「先确认代码来源再启动」「7864 绝不碰」「口令恒为 test」这些约束被写在能自动加载的文档里，拆成脚本 + README 反而更容易被跳过。
+
+**可改：** 以后真要给别处的人当通用工具用（任意目录可调），再加 `package.json` 的 `pi.skills` 清单发 npm 包，`.pi/skills/` 那份继续留着当项目级入口也不冲突（改名避开同名警告即可）。mac/Linux 上的端口独占探测与 `xdg-open` 判据都还没实测，第一次在那些平台上跑完 `ports` 应当把结论补回 `SKILL.md`。
+
+**验证：** 从仓库内路径跑 `node .pi/skills/pi-web-client-test-dev/bin/env.mjs list`（空表）、`ports --peers 1`（`base` 17864、三个端口齐全）、`start --dir F:/pi-web-client --name smoke`（打印 `登录自检 HTTP 200（口令 test 生效）`、`/healthz` 回 `{"ok":true,…}`）、`stop --id smoke`（回到空表）。`git check-ignore` 对 `SKILL.md` 与 `bin/env.mjs` 均返回未忽略。
+## D110 界面支持中 / 英 / 日：键就是中文原文，切换即时重渲染，不整页刷新
+
+**要做什么**：这个客户端之前是纯中文硬编码（`web/src` 里 850 多处中文字面量，`<html lang="zh-CN">`，时间一律 `toLocaleString("zh-CN")`）。现在要能切简体中文 / English / 日本語，开关放在原来的「字号与颜色」面板里，面板随之改名「外观与语言」。
+
+**决定**（`web/src/i18n/`，约 880 条键 × 3 种语言）：
+
+1. **键 = 中文原文**（gettext 风格）：`tr("关闭")`。中文直接返回键本身，只有 en / ja 需要词典。好处是改造过程可以一段一段来——没进词典的中文照常显示中文，不会出现「键名」这种空壳；坏处是键全带上引号（键里有全角括号、箭头、空格，不加引号直接语法错）。
+2. **函数名是 `tr`，不是 `t`**：这个仓库里 `t` 早被当局部变量用惯了（`const t = this.trust`、`t: TimeBucket`、`const t = ev.target`… 20 多处），一个叫 `t` 的 import 会把这些地方的含义偷走。
+3. **`|ctx` 后缀消歧**：同一个中文两种语气（`"关闭|toggle"`）→ 两条键，后缀不展示。
+4. **占位符 `{p1}`…**，模板串由一次性 codemod（`.scratch/i18n/codemod.mjs`，TS 编译器 API）转换；值可以是函数，英文复数 / 日文量词这类用 `Intl.PluralRules` 写。
+5. **存储**：跟字号同一份 `pi.prefs`（localStorage）。`accent` 那三个键顺手从中文色名换成稳定 id（`ice` / `teal` / …）——它们是要落盘的，翻译了就丢色；老值靠 `LEGACY_ACCENTS` 迁移。**恢复默认不动语言**：语言是「我是谁」，不该被配色重置带走。
+6. **首次打开跟浏览器**（`navigator.languages`）：`zh*` → 简体，`ja*` → 日文，其余（含认不出的）→ 英文；存过就存过的。
+7. **切换即时生效**：`applyLang()` 改 `<html lang>` → `paintChrome()` 重写那些「只构造一次」的按钮（顶栏四颗、开新会话、筛选占位符、底部三 tab）→ `renderAll()` 重画其余 → 当前面板重开。**不整页 reload**：reload 会断 WS、丢滚动位置，看起来像出错。
+8. **字体**：`html:lang(ja)` 换成日文字体栈（`Hiragino Sans` / `Yu Gothic UI` / `Meiryo` / `Noto Sans JP`）。Windows 上 `Segoe UI` 没有 CJK 字形，日文会一路落到 `Microsoft YaHei` 按简体字形画（直 / 骨 / 次 一眼就是机翻）。**不打包 webfont**：仓库从来没引过，为这点字形多背 1–2 MB 不值（**可改**）。
+9. **时间 / 数字走 Intl**：`fmtTime` / `fmtDate` / `fmtNum` / `fmtRelative`（一分钟内「刚刚」，其余 `Intl.RelativeTimeFormat`）。原来手写的「N 分钟前 / toLocaleDateString("zh-CN")」全删。
+10. **不给模型看的文案不翻**：`bridge/ext/approval-gate.ts` 的 label / description / promptSnippet、决策日志、门禁拒绝理由保持中文——读者是模型与维护者，界面上切语言不该让模型收到的工具说明跟着变（会话中途换措辞只会让上下文前后不一致）。
+11. **后端错误码化**：bridge 回 `{ error: 中文兜底, code, params }`，前端 `errText()` 先查 `bridge.err.<code>`，查不到才用兜底文案。通知文案（`需要你批准 · 会话名`）跟界面语言走：页面连上 WS 时上报当前语言，bridge 只存内存里最近一个值，不落盘。
+12. **测试固定看中文**：所有 Playwright 脚本的 `newContext()` 都显式 `locale: "zh-CN"`（原来靠 Playwright 默认 `en-US`，恰好没触发过检测逻辑，但检测一上线就会把断言全变成英文）。约 30 个脚本。
+13. **门禁 `web/i18n-check.mjs`**：`web/src` 里出现中文却没进 `tr()` 就失败；en / ja 键集合必须与代码里的键**完全一致**；不许空串。接在 `npm --prefix web run typecheck` 后面。
+
+**为什么用中文原文当键，而不用 `session.close` 这种符号键**：符号键要求改造时**一次性**把 850 处全填上三份文案，否则界面出现空壳或键名；而这次改造是渐进的长跑，中文当键让每一步都是可运行、可截图的中间态。代价是「同一个中文在不同语境要两种洋文」时得手动加 `|ctx`，以及词典查不到时会静默回落中文（靠 `i18n-check` 与 `tr()` 的一次性 `console.warn` 兜住）。
+
+**已知限制**：`zh-TW` / `zh-HK` 落简体中文（繁体本次不做）；`pi` / 命令 / 路径 / `md`·`json` 这些不译；界面把一句话拆成几段拼接的地方（`"打开 "` + 链接）在语序不同的语言里依赖键保留首尾空格，译文顺序无法自由调整（**可改**：真要治得重排 DOM）。
+
+**验证**：`npm --prefix web run typecheck`（含 i18n-check）；`bridge/tests/i18n-ui.mjs`（en-US 上下文里登录 → 开「Appearance & language」→ 切三语 → 发一条消息，断言 `<html lang>`、顶栏按钮文字、面板标题都跟着变，截中 / 英 / 日三张图）；其余既有 Playwright 脚本全部固定 `locale: "zh-CN"` 后原样通过。
+
+
+## D111 文件预览与终端按「最后被点 / 聚焦的那扇在前」叠放
 
 **问题：** 同时打开文件预览（右侧固定面板）和终端（浮在页面上的 dialog）时，预览永远盖着终端：终端默认 1080px 宽、底部居中，和右侧 760px 的预览在右下角重叠一大块，而预览的 z-index（55）比终端（45）高。用户点终端、在里面打字，被预览挡掉的那半截也不会让开；点预览时它本来就在上面，于是看起来像「终端点不动」。
 
@@ -1025,7 +1281,7 @@
 
 **验证：** `probes/window-front.mjs`（桩桥 + 真 Chromium，量 `elementFromPoint` 而不是只看 class）：先开终端（47）→ 打开 md 预览后它盖过终端（重叠点命中 `.viewer`，预览 47 / 终端 45）→ 点终端左侧可见区（300, 终端中线）终端回到 47、重叠点命中 `.term-dock` → 点预览上方（1300,200）预览回到 47 → 换成 html 预览、把终端抬回前面后点进 iframe，预览仍能盖回来 → `.modal` 仍是 50 > 47。截图 `.scratch/window-front/shots/`。回归：`probes/round12-preview-links.mjs`、`probes/term-dialog.mjs` 全绿，`npm run typecheck` 干净。
 
-## D95 设置里能更新 pi 本体（`#49`）
+## D112 设置里能更新 pi 本体（`#49`）
 
 **问题：** 网页客户端自己就是 pi 的前端，但「升级 pi」只能开终端敲 `pi update`；设置里的「关于」只写着 `pi 1.4.0`，看着像版本号，其实没法动。桥里其实早就有 `pkg.update` 通道（`target: self` 就是 `pi update`），只是前端从来只拿它更新扩展包。
 

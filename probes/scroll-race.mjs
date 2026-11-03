@@ -225,6 +225,52 @@ for (const [label, step, moves] of [["fast", 18, 12], ["slow", 4, 40]]) {
       `  stop after ${stopAfterPx}px, ended gap=${last.gap} pinnedTail=${pinnedTail}/8 → ${held && prompt ? "PASS" : "FAIL"}`,
   );
 }
+// D94: desktop wheel. A touchpad / high-res mouse moves a few px per event and Chrome's smooth scroll
+// animates a notch over several frames, so the first `scroll` events still read gap ≤ 24 — which used
+// to reopen the follow and let the next delta snap the view back ("上下抖动"). Pass = once the view has
+// left the bottom it never comes back to it during the gesture or the second after.
+async function wheelSteps(label, run) {
+  await page.evaluate(() => document.querySelector(".chat-jump")?.click());
+  await sleep(400);
+  const gaps = await run();
+  for (let i = 0; i < 8; i += 1) {
+    await sleep(120);
+    gaps.push((await geom()).gap);
+  }
+  const left = gaps.findIndex((g) => g > 0);
+  const snaps = left < 0 ? gaps.length : gaps.slice(left).filter((g) => g <= 2).length;
+  const ok = left >= 0 && snaps === 0;
+  result[label] = ok;
+  console.log(`${label.padEnd(12)}: gaps ${JSON.stringify(gaps)} snap-backs=${snaps} → ${ok ? "PASS" : "FAIL"}`);
+}
+await wheelSteps("wheel-tiny", async () => {
+  await page.mouse.move(195, 420);
+  const gaps = [];
+  for (let i = 0; i < 20; i += 1) {
+    await page.mouse.wheel(0, -4);
+    await sleep(16);
+    gaps.push((await geom()).gap);
+  }
+  return gaps;
+});
+// Headless Chrome does not animate wheel scrolls, so play the animation the way Chrome does: one wheel
+// event, then the viewport stepping up a few px per frame.
+// Whether a delta lands inside those 4 frames is luck, so play it three times.
+for (const n of [1, 2, 3]) await wheelSteps(`wheel-smooth${n}`, () =>
+  page.evaluate(async () => {
+    const root = document.querySelector(".chat-scroll");
+    root.dispatchEvent(new WheelEvent("wheel", { deltaY: -20, bubbles: true }));
+    const gaps = [];
+    for (let i = 0; i < 4; i += 1) {
+      await new Promise((r) => requestAnimationFrame(r));
+      root.scrollTop -= 5;
+      gaps.push(Math.round(root.scrollHeight - root.scrollTop - root.clientHeight));
+    }
+    return gaps;
+  }),
+);
+await sleep(400); // let the wheel's follow hold expire before the back-to-bottom check
+
 // Getting back to the bottom must hand control back to the stream — the fix must not leave the
 // transcript permanently unfollowed. Using scrollTop (what a wheel / keyboard / a settled drag all end
 // up dispatching) instead of another synthetic drag: headless Chrome coalesces rapid touchMoves, so a

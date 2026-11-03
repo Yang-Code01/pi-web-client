@@ -109,7 +109,7 @@ try {
   const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
 
   browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: "zh-CN" });
   await context.addCookies([{ name: cookie.split("=")[0], value: cookie.split("=").slice(1).join("="), url: BASE }]);
   const page = await context.newPage();
   page.on("pageerror", (e) => log("page error:", e.message));
@@ -199,7 +199,7 @@ try {
   log("7 dirty guard ok");
 
   // ---- 8. 手机：viewer 占满、编辑整屏
-  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "zh-CN" });
   await phone.addCookies([{ name: cookie.split("=")[0], value: cookie.split("=").slice(1).join("="), url: BASE }]);
   const mp = await phone.newPage();
   mp.on("pageerror", (e) => log("mobile page error:", e.message));

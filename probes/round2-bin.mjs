@@ -93,7 +93,7 @@ try {
   assert(cookie.includes("="), `no session cookie in ${JSON.stringify(setCookie)}`);
 
   browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 820 } });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 820 }, locale: "zh-CN" });
   await context.addCookies([{ name: cookie.split("=")[0], value: cookie.split("=").slice(1).join("="), url: BASE }]);
   const page = await context.newPage();
   page.on("pageerror", (e) => log("page error:", e.message));

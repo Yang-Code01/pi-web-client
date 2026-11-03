@@ -25,7 +25,7 @@ const sid = await new Promise((resolve, reject) => {
 });
 
 const browser = await chromium.launch();
-const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, locale: "zh-CN" });
 const page = await ctx.newPage();
 page.on("pageerror", (e) => log("pageerror:", e.message));
 await page.goto(`${BASE}/#/s/${sid}`, { waitUntil: "domcontentloaded" });

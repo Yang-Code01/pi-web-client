@@ -152,7 +152,7 @@ const shown = (page) =>
 let browser;
 try {
   browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: { width: 1400, height: 900 }, permissions: ["clipboard-read", "clipboard-write"] });
+  const context = await browser.newContext({ viewport: { width: 1400, height: 900 }, permissions: ["clipboard-read", "clipboard-write"], locale: "zh-CN" });
   const page = await context.newPage();
   page.on("console", (m) => { if (m.type() === "error") log("console:", m.text()); });
   page.on("pageerror", (e) => log("page error:", e.message, (e.stack ?? "").split(String.fromCharCode(10)).slice(0, 4).join(" | ")));

@@ -1,0 +1,20 @@
+{
+  "name": "pi-web-client-peer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LAN peer for pi-web-client — discovery, chat, file sharing (no runtime dependencies)",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}

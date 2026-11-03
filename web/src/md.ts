@@ -10,6 +10,7 @@
  */
 
 import { highlightFragment } from "./highlight.ts";
+import { tr } from "./i18n/index.ts";
 
 export interface MdOptions {
   /** Rendering a whole document rather than a chat message. */
@@ -81,7 +82,7 @@ function wrapHref(node: Node, href: string, opts: MdOptions): Node {
     const a = document.createElement("a");
     a.className = "file-link";
     a.href = "#";
-    a.title = `预览 ${path}`;
+    a.title = tr("预览 {p1}", { p1: path });
     a.appendChild(node);
     a.onclick = (ev) => {
       ev.preventDefault();
@@ -97,7 +98,7 @@ function fileLink(path: string, label: string, opts: MdOptions, code = false, in
   const a = document.createElement("a");
   a.className = code ? "file-link code" : "file-link";
   a.href = "#";
-  a.title = `预览 ${path}`;
+  a.title = tr("预览 {p1}", { p1: path });
   if (code) {
     const c = document.createElement("code");
     c.textContent = label;
@@ -131,8 +132,14 @@ function textWithPaths(target: Node, text: string, opts: MdOptions): void {
   if (last < text.length) target.appendChild(document.createTextNode(text.slice(last)));
 }
 
+// Link labels may nest brackets (`[![badge](a)](b)`), so the label is `(?:plain char | [balanced])+`.
+// D95: the `plain char` branch must NOT be `[^\[\]\n]+` — `(x+|\[…\])+` is ambiguous (any run of
+// label text can be split into pieces in exponentially many ways), and on a `[…]` that never closes
+// with `](` the engine burns 2^n steps. That is not theory: a tool result containing a code line like
+// `|| [...this.termTabs.get(id)]` was enough to freeze the chat page forever on session c24330ab
+// (D95); user messages are plain text and never reach this regex.
 const INLINE =
-  /(`[^`\n]+`)|(!\[[^\]\n]*\]\([^\s)]+(?:\s+"[^"]*")?\))|((?<!!)\[(?:[^\[\]\n]+|\[[^\]\n]*\])+\]\([^\s)]+(?:\s+"[^"]*")?\))|(\*\*[^*\n]+\*\*|__[^_\n]+__)|(~~[^~\n]+~~)|((?<![\w*])\*[^*\s][^*\n]*\*(?!\w)|(?<![\w_])_[^_\s][^_\n]*_(?![\w_]))|(https?:\/\/[^\s<>()（）]+[^\s<>()（）.,;:!?。，；：！？])/g;
+  /(`[^`\n]+`)|(!\[[^\]\n]*\]\([^\s)]+(?:\s+"[^"]*")?\))|((?<!!)\[(?:[^\[\]\n]|\[[^\]\n]*\])+\]\([^\s)]+(?:\s+"[^"]*")?\))|(\*\*[^*\n]+\*\*|__[^_\n]+__)|(~~[^~\n]+~~)|((?<![\w*])\*[^*\s][^*\n]*\*(?!\w)|(?<![\w_])_[^_\s][^_\n]*_(?![\w_]))|(https?:\/\/[^\s<>()（）]+[^\s<>()（）.,;:!?。，；：！？])/g;
 
 function inlineInto(target: Node, text: string, opts: MdOptions): void {
   const re = new RegExp(INLINE.source, "g");
@@ -153,9 +160,9 @@ function inlineInto(target: Node, text: string, opts: MdOptions): void {
       const im = /^!\[([^\]]*)\]\(([^\s)]+)/.exec(token)!;
       const img = imageNode(im[1], im[2], opts);
       if (img) target.appendChild(img);
-      else target.appendChild(document.createTextNode(im[1] ? `[图片：${im[1]}]` : "[图片]"));
+      else target.appendChild(document.createTextNode(im[1] ? tr("[图片：{p1}]", { p1: im[1] }) : tr("[图片]")));
     } else if (m[3]) {
-      const lm = /^\[((?:[^\[\]\n]+|\[[^\]\n]*\])+)\]\(([^\s)]+)/.exec(token)!;
+      const lm = /^\[((?:[^\[\]\n]|\[[^\]\n]*\])+)\]\(([^\s)]+)/.exec(token)!;
       const label = lm[1];
       const href = lm[2];
       // `[![badge](https://…)](https://…)`: the label is an image. Before the label could contain
@@ -164,7 +171,7 @@ function inlineInto(target: Node, text: string, opts: MdOptions): void {
       if (pic) {
         const img = imageNode(pic[1], pic[2], opts);
         if (img) target.appendChild(wrapHref(img, href, opts));
-        else target.appendChild(document.createTextNode(pic[1] || "[图片]"));
+        else target.appendChild(document.createTextNode(pic[1] || tr("[图片]")));
       } else if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
         const a = document.createElement("a");
         a.href = href;
