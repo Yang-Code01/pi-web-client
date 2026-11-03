@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { Readable } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   authorized,
@@ -125,6 +126,25 @@ function readBody(req: http.IncomingMessage): Promise<any> {
         reject(err as Error);
       }
     });
+    req.on("error", reject);
+  });
+}
+
+/** 读原始字节（上传剪贴板图片）。和 readBody 的区别只有「不 JSON.parse」。 */
+function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > limit) {
+        reject(new Error("body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
@@ -381,6 +401,54 @@ async function main(): Promise<void> {
         return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as "request", Boolean(body?.on)));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // 第 4 片：文件。路径版直接让 peer 读盘；字节版给剪贴板截图用。
+    if (url.pathname === "/api/peer/sendfile" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.sendFile(String(body?.peer ?? ""), String(body?.path ?? ""), body?.name ? String(body.name) : undefined));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/upload" && req.method === "POST") {
+      const raw = await readRaw(req, 64 * 1024 * 1024).catch(() => null);
+      if (!raw) return json(res, 413, { error: "太大了（上限 64 MB）" });
+      try {
+        return json(res, 200, await peer.upload(url.searchParams.get("peer") ?? "", url.searchParams.get("name") || "粘贴的图片.png", raw));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/transfers" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.transfers());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/fs" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.browse(url.searchParams.get("path") ?? ""));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/file" && req.method === "GET") {
+      try {
+        const upstream = await peer.fileStream(url.searchParams.get("id") ?? "");
+        if (!upstream.ok || !upstream.body) return json(res, upstream.status, { error: "取不到这个文件" });
+        const headers: Record<string, string> = { "cache-control": "private, max-age=60" };
+        for (const key of ["content-type", "content-length", "content-disposition"]) {
+          const value = upstream.headers.get(key);
+          if (value) headers[key] = value;
+        }
+        res.writeHead(200, headers);
+        Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
+        return;
+      } catch (err) {
+        return json(res, 404, { error: (err as Error).message });
       }
     }
     if (url.pathname === "/api/peer/add" && req.method === "POST") {

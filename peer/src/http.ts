@@ -1,8 +1,15 @@
+import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { statePath } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
+import { CHUNK } from "./files.ts";
+import type { Files } from "./files.ts";
+import { listDir } from "./fsbrowse.ts";
 import type { History } from "./history.ts";
 import type { Messages } from "./messages.ts";
 import type { Relations } from "./peers.ts";
@@ -14,9 +21,12 @@ export interface PeerContext {
   history: History;
   messages: Messages;
   relations: Relations;
+  files: Files;
 }
 
 const MAX_BODY = 1024 * 1024;
+/** 分块请求的体上限：一个 CHUNK 再加一点余量。 */
+const MAX_CHUNK = CHUNK + 64 * 1024;
 
 function isLoopback(req: http.IncomingMessage): boolean {
   const addr = req.socket.remoteAddress ?? "";
@@ -59,8 +69,27 @@ function readBody(req: http.IncomingMessage): Promise<any> {
  * - `/peer/hello` 与将来的 `/peer/inbox` 对局域网开放（这就是协议本体），靠 `proto` 挡旧版本；
  * - 对端是谁不看它自报的字段，看 `req.socket.remoteAddress`（决定 7/10）。
  */
+/** 读原始字节（文件分块用），不做 JSON 解析。 */
+function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > limit) {
+        reject(new Error("body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 export function createPeerServer(ctx: PeerContext): http.Server {
-  const { cfg, nodeId, discovery, history, messages, relations } = ctx;
+  const { cfg, nodeId, discovery, history, messages, relations, files } = ctx;
   const identity = () => ({ nodeId, nickname: cfg.nickname, hostname: os.hostname(), port: cfg.port, version: VERSION });
 
   return http.createServer(async (req, res) => {
@@ -112,6 +141,29 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const body = await readBody(req).catch(() => null);
         if (!body) return json(res, 400, { error: "bad body", retryable: false });
         const result = await messages.accept(from, body);
+        return json(res, result.status, result.body);
+      }
+
+      // 第 4 片：文件。三条都在局域网面上，但都没法绕过 begin（决定 13/24）：
+      // token 只在收方 begin 成功后才存在，伪造 from 的人拿不到 token，写不进盘。
+      if (url.pathname === "/peer/file/begin" && req.method === "POST") {
+        const body = await readBody(req).catch(() => null);
+        if (!body) return json(res, 400, { error: "bad begin", retryable: false });
+        const result = await files.begin(from, body, (addr, who) => messages.verify(addr, who));
+        return json(res, result.status, result.body);
+      }
+
+      if (url.pathname === "/peer/file/chunk" && req.method === "POST") {
+        const token = url.searchParams.get("token") ?? "";
+        const offset = Number(url.searchParams.get("offset"));
+        const data = await readRaw(req, MAX_CHUNK).catch(() => null);
+        if (!data) return json(res, 413, { error: "分块太大", retryable: false });
+        const result = files.chunk(token, Number.isFinite(offset) ? offset : -1, data);
+        return json(res, result.status, result.body);
+      }
+
+      if (url.pathname === "/peer/file/end" && req.method === "POST") {
+        const result = files.end(url.searchParams.get("token") ?? "");
         return json(res, result.status, result.body);
       }
 
@@ -186,6 +238,73 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         } catch (err) {
           return json(res, 400, { error: (err as Error).message });
         }
+      }
+
+      // 第 4 片：本机侧。发文件走「传路径」而不是「传字节」——页面、peer 在同一台机器上，
+      // 让 peer 直接读盘比浏览器先把 2 GB 塞进 base64 再吐出来快得多；剪贴板里的图走 upload 兜底。
+      if (url.pathname === "/files/send" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const peerId = String(body?.peer ?? "");
+        const file = String(body?.path ?? "");
+        if (!peerId || !file) return json(res, 400, { error: "缺 peer 或 path" });
+        if (!relations.isFriend(peerId)) return json(res, 403, { error: "先加好友才能发文件" });
+        try {
+          const stat = fs.statSync(file);
+          if (!stat.isFile()) return json(res, 400, { error: "这不是一个文件" });
+          const name = String(body?.name ?? "") || path.basename(file);
+          return json(res, 200, await files.send(peerId, file, name));
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      if (url.pathname === "/files/upload" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const peerId = url.searchParams.get("peer") ?? "";
+        const name = url.searchParams.get("name") ?? "粘贴的图片.png";
+        if (!peerId) return json(res, 400, { error: "缺 peer" });
+        if (!relations.isFriend(peerId)) return json(res, 403, { error: "先加好友才能发文件" });
+        const data = await readRaw(req, 64 * 1024 * 1024).catch(() => null);
+        if (!data) return json(res, 413, { error: "太大了（上限 64 MB）" });
+        const tmp = path.join(statePath("out"), `up-${randomUUID()}${path.extname(name)}`);
+        fs.writeFileSync(tmp, data);
+        return json(res, 200, await files.send(peerId, tmp, name));
+      }
+
+      if (url.pathname === "/files" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const stored = files.storedPath(url.searchParams.get("id") ?? "");
+        if (!stored) return json(res, 404, { error: "没有这个文件" });
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(stored.path);
+        } catch {
+          return json(res, 404, { error: "文件已经被挪走或删掉了" });
+        }
+        const type = stored.mime || "application/octet-stream";
+        const inline = /^image\//.test(type) || type.startsWith("text/") || type === "application/pdf";
+        res.writeHead(200, {
+          "content-type": type,
+          "content-length": stat.size,
+          "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(stored.name)}`,
+          "cache-control": "private, max-age=60",
+        });
+        return void fs.createReadStream(stored.path).pipe(res);
+      }
+
+      if (url.pathname === "/fs" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        try {
+          return json(res, 200, { ok: true, ...listDir(url.searchParams.get("path") ?? "") });
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
+      }
+
+      if (url.pathname === "/transfers" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        return json(res, 200, { ok: true, transfers: files.transfers_(), free: files.free() });
       }
 
       return json(res, 404, { error: "not found" });

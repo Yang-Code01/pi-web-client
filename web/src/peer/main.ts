@@ -30,9 +30,10 @@ interface Entry {
   at: number;
   from: { nodeId: string; nickname?: string; hostname?: string; port?: number };
   to: { kind: "node" | "group"; id: string };
-  kind: "text" | "receipt";
+  kind: "text" | "receipt" | "file";
   text?: string;
   ack?: { id: string; status: "delivered" | "failed"; error?: string };
+  file?: { name: string; size: number; mime: string; sha256?: string };
 }
 
 interface Thread {
@@ -84,12 +85,26 @@ const contactsEmpty = document.querySelector("#contacts-empty") as HTMLElement;
 const requestsBox = document.querySelector("#requests-box") as HTMLElement;
 const requestsList = document.querySelector("#requests") as HTMLUListElement;
 const contactsError = document.querySelector("#contacts-error") as HTMLElement;
+const attach = document.querySelector("#attach") as HTMLButtonElement;
+const transfersEl = document.querySelector("#transfers") as HTMLUListElement;
+const picker = document.querySelector("#picker") as HTMLElement;
+const crumbs = document.querySelector("#crumbs") as HTMLElement;
+const placesEl = document.querySelector("#places") as HTMLUListElement;
+const rootsEl = document.querySelector("#roots") as HTMLUListElement;
+const filesEl = document.querySelector("#files") as HTMLUListElement;
+const pickerSel = document.querySelector("#picker-sel") as HTMLElement;
+const pickerUp = document.querySelector("#picker-up") as HTMLButtonElement;
+const pickerSend = document.querySelector("#picker-send") as HTMLButtonElement;
+const pickerClose = document.querySelector("#picker-close") as HTMLButtonElement;
 
 let meStatus: PeerStatus | null = null;
 let threads: Thread[] = [];
 let contacts: Contact[] = [];
 let active: string | null = null;
 let sending = false;
+let pickerDir = "";
+let pickerParent: string | null = null;
+let picked: BrowseEntry | null = null;
 
 const byteLen = (text: string): number => new TextEncoder().encode(text).length;
 
@@ -295,6 +310,48 @@ function renderThreads(): void {
   }
 }
 
+function sizeOf(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+}
+
+/**
+ * 文件在对话里是一张卡片（决定 106）：图片直接缩略图，其它给名字、大小、下载。
+ * 只认 `id`，不拼任意路径——收件目录里有什么，由 peer 的索引说了算。
+ */
+function fileCard(entry: Entry, mine: boolean): HTMLElement {
+  const file = entry.file!;
+  const card = el("div", "file-card");
+  const isImage = /^image\//.test(file.mime);
+  if (isImage) {
+    const img = el("img", "thumb");
+    img.src = `/api/peer/file?id=${encodeURIComponent(entry.id)}`;
+    img.alt = file.name;
+    img.loading = "lazy";
+    img.addEventListener("error", () => {
+      img.replaceWith(el("p", "muted", "图片没取到（可能已经被清理）"));
+    });
+    card.append(img);
+  }
+  const row = el("div", "file-row");
+  row.append(
+    el("span", "file-icon", isImage ? "🖼" : "📄"),
+    el("span", "file-name", file.name),
+    el("small", "file-size", sizeOf(file.size)),
+  );
+  card.append(row);
+  if (!mine) {
+    const link = el("a", "file-get", "另存 / 打开");
+    link.href = `/api/peer/file?id=${encodeURIComponent(entry.id)}`;
+    link.target = "_blank";
+    link.rel = "noopener";
+    row.append(link);
+  }
+  return card;
+}
+
 function renderMessages(entries: Entry[]): void {
   const self = meStatus?.nodeId ?? "";
   const acks = new Map<string, "delivered" | "failed">();
@@ -304,15 +361,24 @@ function renderMessages(entries: Entry[]): void {
   const nearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
   messagesEl.innerHTML = "";
   for (const entry of entries) {
-    if (entry.kind !== "text") continue;
+    if (entry.kind === "receipt") continue;
     const mine = entry.from.nodeId === self;
     const li = el("li", `msg ${mine ? "mine" : "theirs"}`);
-    const bubble = el("div", "bubble", entry.text ?? "");
     const meta = el("small", "meta", clock(entry.at));
+    let bubble: HTMLElement;
+    if (entry.kind === "file" && entry.file) {
+      bubble = fileCard(entry, mine);
+    } else {
+      bubble = el("div", "bubble", entry.text ?? "");
+    }
     if (mine) {
       const ack = acks.get(entry.id);
-      meta.textContent = `${clock(entry.at)} · ${ack === "failed" ? "没送到" : ack === "delivered" ? "已送达" : "发送中…"}`;
-      if (ack === "failed") bubble.classList.add("is-bad");
+      if (entry.kind === "text") {
+        meta.textContent = `${clock(entry.at)} · ${ack === "failed" ? "没送到" : ack === "delivered" ? "已送达" : "发送中…"}`;
+        if (ack === "failed") bubble.classList.add("is-bad");
+      } else {
+        meta.textContent = `${clock(entry.at)} · 已发出`;
+      }
     }
     li.append(bubble, meta);
     messagesEl.append(li);
@@ -389,6 +455,185 @@ async function send(): Promise<void> {
     sendError.hidden = false;
   } finally {
     sending = false;
+  }
+}
+
+// ---------------------------------------------------------------- 文件 / 选择器
+
+interface BrowseEntry {
+  name: string;
+  path: string;
+  dir: boolean;
+  size: number;
+  mtime: number;
+  mime?: string;
+}
+
+interface Browse {
+  path: string;
+  parent: string | null;
+  roots: { name: string; path: string }[];
+  places: { name: string; path: string }[];
+  entries: BrowseEntry[];
+}
+
+function pickerNotice(text: string): void {
+  pickerSel.textContent = text;
+}
+
+async function browse(dir: string): Promise<void> {
+  try {
+    const res = await fetch(`/api/peer/fs?path=${encodeURIComponent(dir)}`, { headers: { accept: "application/json" } });
+    const body = (await res.json()) as Browse & { error?: string };
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+    pickerDir = body.path;
+    pickerParent = body.parent;
+    picked = null;
+    pickerSend.disabled = true;
+    pickerNotice("还没选文件");
+
+    crumbs.innerHTML = "";
+    const segments = body.path.split(/[\/]/).filter(Boolean);
+    let acc = body.path.startsWith("/") ? "/" : "";
+    for (const segment of segments) {
+      acc = acc.endsWith("/") || acc.endsWith("\\") ? `${acc}${segment}` : `${acc}\${segment}`;
+      const target = acc;
+      const crumb = el("button", "crumb", segment);
+      crumb.type = "button";
+      crumb.addEventListener("click", () => void browse(target));
+      crumbs.append(crumb);
+    }
+
+    placesEl.innerHTML = "";
+    for (const place of body.places) {
+      const item = el("li");
+      const button = el("button", "ghost place", place.name);
+      button.addEventListener("click", () => void browse(place.path));
+      item.append(button);
+      placesEl.append(item);
+    }
+    rootsEl.innerHTML = "";
+    for (const root of body.roots) {
+      const item = el("li");
+      const button = el("button", "ghost place", root.name);
+      button.addEventListener("click", () => void browse(root.path));
+      item.append(button);
+      rootsEl.append(item);
+    }
+
+    filesEl.innerHTML = "";
+    if (!body.entries.length) filesEl.append(el("li", "empty", "这个文件夹是空的"));
+    for (const entry of body.entries) {
+      const item = el("li", `file-item${entry.dir ? " is-dir" : ""}`);
+      item.dataset.path = entry.path;
+      const name = el("span", "file-name", entry.name);
+      const info = el("small", "file-info", entry.dir ? "文件夹" : sizeOf(entry.size));
+      item.append(el("span", "file-icon", entry.dir ? "📁" : "📄"), name, info);
+      item.addEventListener("click", () => {
+        if (entry.dir) {
+          void browse(entry.path);
+          return;
+        }
+        for (const other of filesEl.querySelectorAll(".file-item")) other.classList.remove("is-picked");
+        item.classList.add("is-picked");
+        picked = entry;
+        pickerSend.disabled = false;
+        pickerNotice(`${entry.name} · ${sizeOf(entry.size)}`);
+      });
+      item.addEventListener("dblclick", () => {
+        if (entry.dir) void browse(entry.path);
+      });
+      filesEl.append(item);
+    }
+  } catch (err) {
+    pickerNotice(`读不了这个文件夹：${(err as Error).message}`);
+  }
+}
+
+function openPicker(): void {
+  picker.hidden = false;
+  void browse(pickerDir || "");
+}
+
+function closePicker(): void {
+  picker.hidden = true;
+}
+
+function showSendError(text: string): void {
+  sendError.textContent = text;
+  sendError.hidden = false;
+}
+
+async function sendPath(path: string, name?: string): Promise<void> {
+  if (!active) return;
+  try {
+    const res = await fetch("/api/peer/sendfile", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ peer: active, path, name }),
+    });
+    const body = (await res.json()) as { error?: string };
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+    textInput.focus();
+  } catch (err) {
+    showSendError(`发文件失败：${(err as Error).message}`);
+  }
+}
+
+/** 拖进来 / 粘贴的图没有磁盘路径，只能把字节递过去（上限 64 MB）。 */
+async function uploadBlob(name: string, blob: Blob): Promise<void> {
+  if (!active) return;
+  if (blob.size > 64 * 1024 * 1024) return showSendError(`「${name}」太大（上限 64 MB），用「📎」从磁盘选`);
+  try {
+    const res = await fetch(`/api/peer/upload?peer=${encodeURIComponent(active)}&name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "content-type": blob.type || "application/octet-stream" },
+      body: blob,
+    });
+    const body = (await res.json()) as { error?: string };
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+  } catch (err) {
+    showSendError(`发文件失败：${(err as Error).message}`);
+  }
+}
+
+interface Transfer {
+  id: string;
+  peerId: string;
+  direction: "out" | "in";
+  name: string;
+  size: number;
+  bytes: number;
+  status: "sending" | "receiving" | "done" | "failed";
+  error?: string;
+}
+
+async function loadTransfers(): Promise<void> {
+  if (!active) {
+    transfersEl.hidden = true;
+    return;
+  }
+  try {
+    const res = await fetch("/api/peer/transfers", { headers: { accept: "application/json" } });
+    if (!res.ok) return;
+    const body = (await res.json()) as { transfers: Transfer[] };
+    const live = (body.transfers ?? []).filter((t) => t.peerId === active && t.status !== "done");
+    transfersEl.innerHTML = "";
+    transfersEl.hidden = live.length === 0;
+    for (const transfer of live) {
+      const item = el("li", `transfer${transfer.status === "failed" ? " is-bad" : ""}`);
+      const percent = transfer.size ? Math.min(100, Math.round((transfer.bytes / transfer.size) * 100)) : 0;
+      item.append(
+        el("span", "transfer-name", `${transfer.direction === "out" ? "发出" : "接收"} ${transfer.name}`),
+        el("span", "transfer-bar"),
+        el("small", "transfer-info", transfer.status === "failed" ? (transfer.error ?? "失败") : `${percent}% · ${sizeOf(transfer.bytes)} / ${sizeOf(transfer.size)}`),
+      );
+      (item.querySelector(".transfer-bar") as HTMLElement).style.setProperty("--p", `${percent}%`);
+      transfersEl.append(item);
+    }
+    if (live.length) await loadMessages();
+  } catch {
+    /* 下一轮再试 */
   }
 }
 
@@ -470,3 +715,47 @@ setInterval(() => void loadMessages(), 2000);
 // 在主页面里作为弹框的 iframe 打开时，「‹ 回 pi」会把整个 iframe 换成主页面，
 // 所以嵌入式隐藏它 —— 关闭按钮已在弹框标题栏里。
 if (window.self !== window.top) document.body.classList.add("embedded");
+
+attach.addEventListener("click", () => openPicker());
+pickerClose.addEventListener("click", () => closePicker());
+pickerUp.addEventListener("click", () => {
+  if (pickerParent) void browse(pickerParent);
+});
+pickerSend.addEventListener("click", () => {
+  if (!picked) return;
+  void sendPath(picked.path, picked.name);
+  closePicker();
+});
+picker.addEventListener("click", (event) => {
+  if (event.target === picker) closePicker();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !picker.hidden) closePicker();
+});
+
+// 拖文件进对话：浏览器不给磁盘路径（安全），所以走字节上传。
+for (const type of ["dragover", "drop"] as const) {
+  threadBox.addEventListener(type, (event) => {
+    event.preventDefault();
+    if (type !== "drop") return;
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    for (const file of files) void uploadBlob(file.name, file);
+  });
+}
+
+// 粘贴截图：Ctrl+V 在输入框里贴的是 image/png 的 Blob，不是路径。
+textInput.addEventListener("paste", (event) => {
+  const items = Array.from(event.clipboardData?.items ?? []);
+  const shots = items.filter((item) => item.kind === "file" && item.type.startsWith("image/"));
+  if (!shots.length) return;
+  event.preventDefault();
+  shots.forEach((item, index) => {
+    const blob = item.getAsFile();
+    if (!blob) return;
+    const ext = blob.type.split("/")[1] || "png";
+    const stamp = new Date().toLocaleTimeString("zh-CN", { hour12: false }).replace(/:/g, "");
+    void uploadBlob(`截图 ${stamp}${index ? `-${index}` : ""}.${ext}`, blob);
+  });
+});
+
+setInterval(() => void loadTransfers(), 1000);

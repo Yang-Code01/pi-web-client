@@ -195,6 +195,11 @@ export class Messages {
     return { status: 200, body: { ok: true } };
   }
 
+  /** 文件通道复用同一套来源校验（决定 10）：`null` 表示来源可信。 */
+  verify(addr: string, who: PeerIdentity): Promise<InboxResult | null> {
+    return this.verifySource(addr, who);
+  }
+
   /**
    * 决定 7/10：不看 `from` 里自报什么，看来源 IP 在不在这个 nodeId 的 IP 集合里。
    * 不匹配时不直接判「伪造」——先敲一次 hello 让对方把当前 IP 报上来，还是不对才 409 可重试。

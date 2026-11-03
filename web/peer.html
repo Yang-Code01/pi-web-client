@@ -21,6 +21,33 @@
       </nav>
     </header>
 
+    <!-- 文件选择器：照资源管理器的样子做（面包屑 + 左侧常用位置 + 盘符 + 列表），
+         用户点名要「参考文件管理器」。只在本机 loopback 上列目录。 -->
+    <div id="picker" class="picker" hidden>
+      <div class="picker-box" role="dialog" aria-label="选择要发送的文件">
+        <header class="picker-head">
+          <strong id="picker-title">选择文件</strong>
+          <span id="picker-hint" class="muted">点一下文件名选中，双击文件夹进入</span>
+          <button type="button" id="picker-close" class="ghost" title="关掉">✕</button>
+        </header>
+        <nav id="crumbs" class="crumbs"></nav>
+        <div class="picker-body">
+          <aside class="picker-side">
+            <p class="side-title">常用</p>
+            <ul id="places"></ul>
+            <p class="side-title">这台电脑</p>
+            <ul id="roots"></ul>
+          </aside>
+          <ul id="files" class="file-list"></ul>
+        </div>
+        <footer class="picker-foot">
+          <span id="picker-sel" class="muted">还没选文件</span>
+          <button type="button" id="picker-up" class="ghost">上一层</button>
+          <button type="button" id="picker-send" disabled>发送</button>
+        </footer>
+      </div>
+    </div>
+
     <main>
       <section id="view-chat" class="view" hidden>
         <div class="chat">
@@ -34,8 +61,10 @@
               <header id="thread-head" class="thread-head"></header>
               <ul id="messages" class="messages"></ul>
               <p id="send-error" class="error" hidden></p>
+              <ul id="transfers" class="transfers" hidden></ul>
               <form id="compose" class="compose">
-                <textarea id="text" rows="2" placeholder="说点什么。Enter 发送，Shift+Enter 换行" autocomplete="off"></textarea>
+                <button type="button" id="attach" class="attach" title="发文件（也可以直接拖进来，或 Ctrl+V 粘贴截图）">📎</button>
+                <textarea id="text" rows="2" placeholder="说点什么。Enter 发送，Shift+Enter 换行；拖文件 / 粘贴截图直接发" autocomplete="off"></textarea>
                 <button type="submit">发送</button>
               </form>
             </div>

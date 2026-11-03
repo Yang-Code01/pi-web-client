@@ -226,6 +226,61 @@ try {
   if (bSide.contacts?.find((c) => c.nodeId === sa)?.favorite) throw new Error("收藏被同步到了对端");
   log("ok 收藏只在本机生效");
 
+  // ---- 第 4 片：文件。先造一个 3 MB 的二进制文件（跨 3 个分块），发过去逐字节比对。 ----
+  const { createHash } = await import("node:crypto");
+  const payload = Buffer.alloc(3 * 1024 * 1024 + 137);
+  for (let i = 0; i < payload.length; i++) payload[i] = (i * 31 + 7) % 256;
+  const srcFile = path.join(ROOT, "报告 e2e.bin");
+  fs.writeFileSync(srcFile, payload);
+  const wantHash = createHash("sha256").update(payload).digest("hex");
+
+  // 非好友不能发文件：C 不是 A 的好友，必须 403 且不可重试。
+  const notFriend = await fetch("http://127.0.0.1:17965/files/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sc, path: srcFile }),
+  });
+  if (notFriend.status !== 403) throw new Error(`非好友发文件应 403，实际 ${notFriend.status} ${await notFriend.text()}`);
+  log("ok 非好友发文件被拒（403）");
+
+  const sendFile = await fetch("http://127.0.0.1:17965/files/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sb, path: srcFile }),
+  });
+  if (!sendFile.ok) throw new Error(`发文件失败：${sendFile.status} ${await sendFile.text()}`);
+
+  const gotFile = await until(
+    "B 收到文件卡片",
+    async () => {
+      const body = await (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`)).json();
+      return body.entries?.find((e) => e.kind === "file") ?? false;
+    },
+    30000,
+  );
+  if (gotFile.file.size !== payload.length) throw new Error(`大小不对：${gotFile.file.size} vs ${payload.length}`);
+  if (gotFile.file.sha256 !== wantHash) throw new Error("文件卡片里的哈希不对");
+  log(`ok 文件送到对端（${Math.round(gotFile.file.size / 1024)} KB，哈希一致）`);
+
+  const stored = await (await fetch(`http://127.0.0.1:17966/files?id=${gotFile.id}`)).arrayBuffer();
+  const gotHash = createHash("sha256").update(Buffer.from(stored)).digest("hex");
+  if (gotHash !== wantHash) throw new Error("落盘内容与源文件不一致");
+  log("ok 落盘内容逐字节一致");
+
+  const again2 = await (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`)).json();
+  if (again2.entries.filter((e) => e.kind === "file").length !== 1) throw new Error("文件重发写了多张卡片");
+  log("ok 同一文件只留一张卡片");
+
+  // token 是发的凭据：随便编一个必须被拒。
+  for (const [p, body] of [
+    ["/peer/file/chunk?token=made-up&offset=0", Buffer.from("x")],
+    ["/peer/file/end?token=made-up", undefined],
+  ]) {
+    const bad = await fetch(`http://127.0.0.1:17966${p}`, { method: "POST", body });
+    if (bad.status !== 410) throw new Error(`${p} 应 410，实际 ${bad.status}`);
+  }
+  log("ok 没有 token 写不进盘（410）");
+
   // 离线超时：B 关掉后 30 秒内必须从 A 的列表里消失（这里只验「关了就不是 online 了」，
   // 30 秒本身等不起，所以直接杀掉再看一轮 —— 真实超时逻辑由 prune 的 OFFLINE_MS 保证）。
   B.kill();

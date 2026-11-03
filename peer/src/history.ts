@@ -9,7 +9,7 @@ import { statePath } from "./config.ts";
  * `SessionHeader`/`SessionEntry`，字段含义都不一样；硬套只会在对方升级时炸在自己这边。
  * 这里的 schema 只有六个字段，v1.1 加群聊时 `to.kind` 和 `kind` 已经留好位置。
  */
-export type EntryKind = "text" | "receipt";
+export type EntryKind = "text" | "receipt" | "file";
 
 export interface PeerIdentity {
   nodeId: string;
@@ -26,6 +26,8 @@ export interface Entry {
   kind: EntryKind;
   text?: string;
   ack?: { id: string; status: "delivered" | "failed"; error?: string };
+  /** `kind:"file"` 的元数据。文件本体不在历史里，只留一份能被 UI 画成卡片的描述（D106）。 */
+  file?: { name: string; size: number; mime: string; sha256?: string };
 }
 
 export interface ThreadSummary {

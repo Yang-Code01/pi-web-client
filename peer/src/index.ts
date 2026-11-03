@@ -6,6 +6,7 @@ import { History } from "./history.ts";
 import { Outbox } from "./outbox.ts";
 import { Messages, uuidv7 } from "./messages.ts";
 import { Relations } from "./peers.ts";
+import { Files } from "./files.ts";
 
 const cfg = loadConfig();
 const nodeId = ensureNodeId();
@@ -55,7 +56,9 @@ const outbox = new Outbox({
 });
 messages.attachOutbox(outbox);
 
-const server = createPeerServer({ cfg, nodeId, discovery, history, messages, relations });
+const files = new Files({ cfg, nodeId, discovery, history, relations, log });
+
+const server = createPeerServer({ cfg, nodeId, discovery, history, messages, relations, files });
 
 server.on("error", (err: NodeJS.ErrnoException) => {
   // 端口被占 = 已经有一份 peer 在跑。直接退出而不是自动换端口：bridge 要能看出「没起来」。
@@ -65,6 +68,7 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 
 server.listen(cfg.port, cfg.bind, () => {
   log(`peer ${VERSION} (proto ${PROTO}) — ${cfg.nickname} — ${cfg.bind}:${cfg.port} — state ${stateDir()}`);
+  log(`收件目录 ${cfg.inbox}`);
   if (cfg.hidden) log("隐身：只收不发，不会出现在别人的在线列表里");
   discovery.start();
   outbox.start();

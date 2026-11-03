@@ -173,6 +173,38 @@ export class PeerHost {
     return this.request("POST", "/friend", { peer, action, on });
   }
 
+  /** 发文件：只把**路径**交给 peer，字节由 peer 自己读盘（同机，省一次全量中转）。 */
+  sendFile(peer: string, file: string, name?: string): Promise<{ ok: boolean; id: string }> {
+    return this.request("POST", "/files/send", { peer, path: file, name });
+  }
+
+  /** 剪贴板里的图没有路径，只能把字节递过去。 */
+  async upload(peer: string, name: string, data: Buffer): Promise<{ ok: boolean; id: string }> {
+    const res = await fetch(`http://127.0.0.1:${this.opts.port}/files/upload?peer=${encodeURIComponent(peer)}&name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: data,
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await res.text();
+    const parsed = text ? JSON.parse(text) : null;
+    if (!res.ok) throw new Error(parsed?.error ?? `HTTP ${res.status}`);
+    return parsed;
+  }
+
+  transfers(): Promise<{ transfers: unknown[]; free: number }> {
+    return this.request("GET", "/transfers");
+  }
+
+  browse(dir: string): Promise<any> {
+    return this.request("GET", `/fs?path=${encodeURIComponent(dir)}`);
+  }
+
+  /** 收件目录里的文件；返回原始响应，由调用方 pipe 给浏览器（图片是几 MB，不能转 JSON）。 */
+  fileStream(id: string): Promise<Response> {
+    return fetch(`http://127.0.0.1:${this.opts.port}/files?id=${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(30_000) });
+  }
+
   addManual(addr: string): Promise<any> {
     return this.call("/peer/add", { addr });
   }
