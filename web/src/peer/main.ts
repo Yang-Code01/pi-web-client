@@ -325,7 +325,9 @@ function fileCard(entry: Entry, mine: boolean): HTMLElement {
   const file = entry.file!;
   const card = el("div", "file-card");
   const isImage = /^image\//.test(file.mime);
-  if (isImage) {
+  // 自己发出去的那张只留卡片、不拉缩略图：文件在你自己的盘上，收件目录里没有副本，
+  // 硬拉 `/api/peer/file` 只会得到 404（用户看到的就是一个空图片框）。
+  if (isImage && !mine) {
     const img = el("img", "thumb");
     img.src = `/api/peer/file?id=${encodeURIComponent(entry.id)}`;
     img.alt = file.name;
