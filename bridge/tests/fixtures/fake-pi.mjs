@@ -32,6 +32,8 @@ let steering = [];
 let followUp = [];
 let settleWaiters = [];
 let bashAborted = false;
+// What the bridge started us with (launch options, #28).
+note({ t: "argv", argv: process.argv.slice(2), cwd: process.cwd() });
 
 const queueUpdate = () => out({ type: "queue_update", steering: [...steering], followUp: [...followUp] });
 const assistant = (text, extra = {}) => ({
@@ -123,6 +125,14 @@ async function handle(cmd) {
       return ok(id, type, { models: [{ id: "fake-model", name: "Fake Model", provider: "stub", reasoning: false, input: ["text"], contextWindow: 200000 }] });
     case "get_commands":
       return ok(id, type, { commands: [] });
+    case "set_steering_mode":
+    case "set_follow_up_mode":
+      note({ t: type, mode: cmd.mode });
+      return ok(id, type);
+    case "set_auto_compaction":
+    case "set_auto_retry":
+      note({ t: type, enabled: cmd.enabled });
+      return ok(id, type);
     case "set_session_name":
       return ok(id, type);
     case "prompt": {

@@ -116,7 +116,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
@@ -144,6 +144,11 @@ export class App {
   private fileQuerySeq = 0;
   /** A fork / clone is being done by pi (a throwaway child takes a second or two). */
   private branching = false;
+  /** #21: trust state of the current session's folder (from the session snapshot). */
+  private trust: TrustState | null = null;
+  /** #26: last settings read per scope, and which tab the settings sheet shows. */
+  private settingsView: { global?: SettingsView; project?: SettingsView } = {};
+  private settingsTab: SettingsTab = "global";
   private afterOpen: { id: string; text: string } | null = null;
   /** Shells the bridge can open (term.list), for the ＋ menu (#23). */
   private termShells: { id: string; label: string }[] = [];
@@ -685,6 +690,7 @@ export class App {
         else if (msg.session) this.session = msg.session;
         this.budget = typeof msg.budget === "number" ? msg.budget : null;
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
+        if ("trust" in msg) this.trust = (msg.trust as TrustState | null) ?? null;
         this.queue = msg.queue ? { steering: msg.queue.steering ?? [], followUp: msg.queue.followUp ?? [] } : { steering: [], followUp: [] };
         this.stats = { tokens: null, cost: null };
         this.chat.reset((msg.items ?? []) as Item[]);
@@ -823,6 +829,23 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.composerText = "";
         this.putInComposer(String(msg.text ?? ""));
+        break;
+      }
+      case "settings": {
+        const view = msg as SettingsView;
+        this.settingsView[view.scope] = view;
+        if (msg.saved) this.flashSettings(`已保存到 ${view.path}`);
+        if (this.sheetKind === "settings") this.paintSettings();
+        break;
+      }
+      case "settings.error":
+        this.flashSettings(String(msg.message ?? "保存失败"), true);
+        break;
+      case "trust": {
+        if (this.session && msg.cwd === this.session.cwd) this.trust = (msg.trust as TrustState) ?? null;
+        if (msg.saved) this.flashSettings("信任决定已保存（写在 trust.json，终端里的 pi 也认）");
+        if (this.sheetKind === "settings") this.paintSettings();
+        this.renderChat();
         break;
       }
       case "tree":
@@ -1202,6 +1225,23 @@ export class App {
           return true;
         }
         this.act(() => this.socket.send({ type: "import", path: arg }));
+        return done();
+      case "settings":
+      case "scoped-models":
+        this.openSettingsSheet("global");
+        return done();
+      case "trust":
+        this.openSettingsSheet("trust");
+        return done();
+      case "changelog":
+        this.openSettingsSheet("changelog");
+        return done();
+      case "reload":
+        if (!owned) {
+          say("这个会话没在网页里运行：下次接管时用的就是最新设置。", "warn");
+          return true;
+        }
+        this.act(() => this.socket.send({ type: "reload", sessionId }));
         return done();
       case "export":
         // pi's own HTML export, in a new tab (#24). `/export jsonl` downloads the raw session file.
@@ -2005,14 +2045,82 @@ export class App {
     return localStorage.getItem("pi.lastCwd") || latest || "";
   }
 
-  private createSession(cwd: string, name: string, onSent: () => void, pin = false): void {
+  private createSession(cwd: string, name: string, onSent: () => void, pin = false, options?: Record<string, unknown>): void {
     localStorage.setItem("pi.lastCwd", cwd);
     const recent = this.recentCwds().filter((c) => c !== cwd);
     localStorage.setItem("pi.recentCwds", JSON.stringify([cwd, ...recent].slice(0, 12)));
     this.act(() => {
       onSent();
-      this.socket.send({ type: "create", cwd, ...(name ? { name } : {}), ...(pin ? { pin: true } : {}) });
+      this.socket.send({ type: "create", cwd, ...(name ? { name } : {}), ...(pin ? { pin: true } : {}), ...(options && Object.keys(options).length ? { options } : {}) });
     });
+  }
+
+  /**
+   * #28 「高级」: the pi CLI flags for one session (--model, --thinking, --tools, -e, --skill,
+   * --append-system-prompt, -ne, -nc, --no-mcp, --offline). The bridge validates and remembers them,
+   * so taking the session over again later starts pi with the same flags.
+   */
+  private launchOptionsBox(): { node: HTMLElement; read: () => Record<string, unknown> } {
+    const box = el("details", "ns-advanced");
+    box.append(el("summary", "", "高级：启动参数（相当于 pi 的命令行选项）"));
+    const grid = el("div", "ns-adv-grid");
+    const field = (label: string, input: HTMLElement, hint?: string) => {
+      const wrap = el("label", "ns-adv-field");
+      wrap.append(el("span", "ns-adv-label", label), input);
+      if (hint) wrap.append(el("span", "ns-adv-hint", hint));
+      grid.append(wrap);
+    };
+    const model = el("select", "ns-input") as HTMLSelectElement;
+    model.append(new Option("（用默认模型）", ""));
+    for (const m of this.models) model.append(new Option(`${shortModelName(m.name)} · ${m.provider}`, `${m.provider}/${m.id}`));
+    field("模型 --model", model);
+    const thinking = el("select", "ns-input") as HTMLSelectElement;
+    for (const lv of ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"]) thinking.append(new Option(lv || "（默认）", lv));
+    field("思考 --thinking", thinking);
+    const tools = el("input", "ns-input mono") as HTMLInputElement;
+    tools.placeholder = "例如 read,grep,find,ls 或 +codemode,-write";
+    field("工具 --tools", tools, "普通名字＝只用这些；+x / -x＝在默认基础上增减（两种不能混用）");
+    const ext = el("textarea", "ns-input mono") as HTMLTextAreaElement;
+    ext.rows = 2;
+    ext.placeholder = "一行一个扩展文件或目录";
+    field("额外扩展 -e", ext);
+    const skills = el("textarea", "ns-input mono") as HTMLTextAreaElement;
+    skills.rows = 2;
+    skills.placeholder = "一行一个技能文件或目录";
+    field("额外技能 --skill", skills);
+    const prompt = el("textarea", "ns-input") as HTMLTextAreaElement;
+    prompt.rows = 3;
+    prompt.placeholder = "追加到系统提示词的文字（或一个文件路径）";
+    field("追加系统提示词", prompt);
+    const flags = el("div", "ns-adv-flags");
+    const flag = (key: string, label: string, title: string) => {
+      const wrap = el("label", "ns-adv-flag");
+      const box = el("input") as HTMLInputElement;
+      box.type = "checkbox";
+      box.dataset.key = key;
+      wrap.title = title;
+      wrap.append(box, el("span", "", label));
+      flags.append(wrap);
+    };
+    flag("noBuiltinTools", "不要内置工具", "--no-builtin-tools：关掉 read/bash/edit/write 等，只留扩展工具");
+    flag("noExtensions", "不加载扩展", "-ne：不加载已发现 / 配置 / 内置的扩展（审批门禁照样加载）");
+    flag("noContextFiles", "不读 AGENTS.md", "-nc：不读 AGENTS.md / CLAUDE.md");
+    flag("noMcp", "不连 MCP", "--no-mcp");
+    flag("offline", "离线", "--offline：不做自动联网（例如刷新模型目录）");
+    grid.append(flags);
+    box.append(grid);
+    const read = () => {
+      const out: Record<string, unknown> = {};
+      if (model.value) out.model = model.value;
+      if (thinking.value) out.thinking = thinking.value;
+      if (tools.value.trim()) out.tools = tools.value.trim();
+      if (ext.value.trim()) out.extensions = ext.value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      if (skills.value.trim()) out.skills = skills.value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+      if (prompt.value.trim()) out.appendSystemPrompt = prompt.value.trim();
+      for (const cb of flags.querySelectorAll<HTMLInputElement>("input[type=checkbox]")) if (cb.checked && cb.dataset.key) out[cb.dataset.key] = true;
+      return out;
+    };
+    return { node: box, read };
   }
 
   private recentCwds(): string[] {
@@ -2109,6 +2217,7 @@ export class App {
     const foot = el("div", "dir-foot");
     const ok = el("button", "btn primary", "创建");
     foot.append(ok);
+    const advanced = this.launchOptionsBox();
 
     sheet.append(
       head,
@@ -2118,6 +2227,7 @@ export class App {
       cwdRow,
       this.recentCwdOptions(),
       browser,
+      advanced.node,
       err,
       status,
       foot,
@@ -2213,7 +2323,10 @@ export class App {
         return;
       }
       err.textContent = "";
-      this.createSession(cwd, nameField.value.trim(), () => {
+      this.createSession(
+        cwd,
+        nameField.value.trim(),
+        () => {
         setBusy(true);
         const timer = setTimeout(() => this.creating?.finish("等了 60 秒还没启动起来，看看服务端日志"), 60000);
         this.creating = {
@@ -2229,7 +2342,10 @@ export class App {
             err.textContent = error;
           },
         };
-      }, autoPin);
+        },
+        autoPin,
+        advanced.read(),
+      );
     };
     ok.onclick = submit;
     for (const field of [nameField, cwdField]) {
@@ -4389,6 +4505,17 @@ export class App {
     }
     const s = this.session;
 
+    // #21: RPC cannot show pi's trust prompt, so an undecided project silently loses its .pi config.
+    const t = this.trust;
+    if (t && s && t.cwd === s.cwd && t.needed && !t.saved && !t.effective) {
+      const bar = el("div", "takeover warn trust-bar");
+      bar.append(el("span", "", "这个目录有 pi 的项目配置（.pi/ 下的设置、扩展、技能或 MCP）。网页里的 pi 不能弹信任提示，所以没有加载它们。"));
+      const go = el("button", "btn", "决定是否信任…") as HTMLButtonElement;
+      go.onclick = () => this.openSettingsSheet("trust");
+      bar.append(go);
+      host.append(bar);
+    }
+
     if (s && !s.owned) {
       const bar = el("div", "takeover warn");
       bar.append(el("span", "", "这个会话来自磁盘（只读预览）。发消息会自动接管；终端里如果有 pi 在写同一个文件，先退出那边。"));
@@ -4522,6 +4649,14 @@ export class App {
       row("用量", "接管后可见（数字来自正在运行的 pi）");
     }
     if (s?.id) row("会话 ID", s.id);
+    if (s?.launch) row("启动参数", s.launch);
+    const t = this.trust;
+    if (t && s && t.cwd === s.cwd && t.needed) {
+      const v = row("项目信任", t.saved ? `${t.saved.decision ? "已信任" : "不信任"}（${t.saved.path}）` : `未决定 → ${t.effective ? "加载" : "不加载"} .pi 配置`);
+      v.style.cursor = "pointer";
+      v.title = "点这里修改（/trust）";
+      v.onclick = () => this.openSettingsSheet("trust");
+    }
     box.append(grid);
 
     if (s?.file) {
@@ -4592,6 +4727,246 @@ export class App {
     compact.append(hint, go);
     box.append(compact);
     return box;
+  }
+
+  // ---------------------------------------------------------------- pi settings / trust (#26 #21)
+  private openSettingsSheet(tab: SettingsTab): void {
+    this.closeSheet();
+    this.sheetKind = "settings";
+    this.settingsTab = tab;
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet settings-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", "pi 设置"));
+    const close = el("button", "btn ghost", "关闭");
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const tabs = el("div", "settings-tabs");
+    const body = el("div", "settings-body");
+    const note = el("div", "settings-note");
+    sheet.append(head, tabs, note, body);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    this.socket.send({ type: "settings.get", scope: "global" });
+    if (this.session?.cwd) {
+      this.socket.send({ type: "settings.get", scope: "project", cwd: this.session.cwd });
+      this.socket.send({ type: "trust.get", cwd: this.session.cwd });
+    }
+    this.paintSettings();
+  }
+
+  private flashSettings(text: string, bad = false): void {
+    const note = this.sheet?.querySelector<HTMLElement>(".settings-note");
+    if (!note) {
+      this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text, level: bad ? "error" : "info" });
+      return;
+    }
+    note.textContent = text;
+    note.classList.toggle("bad", bad);
+  }
+
+  private paintSettings(): void {
+    const sheet = this.sheet?.querySelector(".settings-sheet");
+    if (!sheet) return;
+    const tabs = sheet.querySelector<HTMLElement>(".settings-tabs")!;
+    const body = sheet.querySelector<HTMLElement>(".settings-body")!;
+    const cwd = this.session?.cwd ?? "";
+    tabs.replaceChildren();
+    const tabDefs: [SettingsTab, string][] = [
+      ["global", "全局"],
+      ["project", cwd ? `项目（${cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd}）` : "项目"],
+      ["trust", "项目信任"],
+      ["changelog", "更新日志"],
+    ];
+    for (const [id, label] of tabDefs) {
+      const b = el("button", `chip${this.settingsTab === id ? " on" : ""}`, label) as HTMLButtonElement;
+      b.disabled = (id === "project" || id === "trust") && !cwd;
+      b.onclick = () => {
+        this.settingsTab = id;
+        this.flashSettings("");
+        this.paintSettings();
+      };
+      tabs.append(b);
+    }
+    body.replaceChildren();
+    if (this.settingsTab === "trust") return this.paintTrust(body);
+    if (this.settingsTab === "changelog") return this.paintChangelog(body);
+    const scope = this.settingsTab;
+    const view = this.settingsView[scope];
+    if (!view || (scope === "project" && view.cwd !== cwd)) {
+      body.append(el("div", "empty", "读取中…"));
+      return;
+    }
+    this.paintSettingsForm(body, view);
+  }
+
+  private paintSettingsForm(body: HTMLElement, view: SettingsView): void {
+    const scope = view.scope;
+    body.append(el("div", "settings-path", `${view.exists ? "" : "（还没有这个文件，保存时创建）"}${view.path}`));
+    if (scope === "project" && !view.writable) {
+      body.append(el("div", "takeover warn", "这个项目没有被信任：pi 不会读它的 .pi/settings.json，也拒绝写它。先到「项目信任」里信任它。"));
+    }
+    if (view.error) body.append(el("div", "takeover warn", `${view.error}。下面的表单不可用，用「编辑 JSON」修好文件。`));
+    const data = (view.json ?? {}) as Record<string, unknown>;
+    const get = (key: string): unknown => key.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), data);
+    const patch: Record<string, unknown> = {};
+    const form = el("div", "settings-form");
+    const save = el("button", "btn primary", "保存") as HTMLButtonElement;
+    save.disabled = true;
+    const mark = (key: string, value: unknown) => {
+      patch[key] = value;
+      save.disabled = !Object.keys(patch).length || Boolean(view.error) || (scope === "project" && !view.writable);
+    };
+    for (const f of SETTING_FIELDS) {
+      if (f.globalOnly && scope !== "global") continue;
+      const row = el("label", "settings-row");
+      row.append(el("span", "settings-label", f.label));
+      const current = f.kind === "model" ? (get("defaultProvider") && get("defaultModel") ? `${get("defaultProvider")}/${get("defaultModel")}` : "") : get(f.key);
+      let input: HTMLInputElement | HTMLSelectElement;
+      if (f.kind === "bool") {
+        const sel = el("select", "ns-input") as HTMLSelectElement;
+        sel.append(new Option("（默认）", ""), new Option("开", "true"), new Option("关", "false"));
+        sel.value = typeof current === "boolean" ? String(current) : "";
+        sel.onchange = () => mark(f.key, sel.value === "" ? null : sel.value === "true");
+        input = sel;
+      } else if (f.kind === "select" || f.kind === "model") {
+        const sel = el("select", "ns-input") as HTMLSelectElement;
+        sel.append(new Option("（默认）", ""));
+        const opts = f.kind === "model" ? this.models.map((m) => [`${m.provider}/${m.id}`, `${shortModelName(m.name)} · ${m.provider}`]) : (f.options ?? []).map((o) => [o, o]);
+        for (const [v, label] of opts) sel.append(new Option(label, v));
+        const cur = typeof current === "string" ? current : "";
+        if (cur && ![...sel.options].some((o) => o.value === cur)) sel.append(new Option(`${cur}（当前）`, cur));
+        sel.value = cur;
+        sel.onchange = () => {
+          if (f.kind === "model") {
+            const at = sel.value.indexOf("/");
+            mark("defaultProvider", sel.value ? sel.value.slice(0, at) : null);
+            mark("defaultModel", sel.value ? sel.value.slice(at + 1) : null);
+          } else mark(f.key, sel.value || null);
+        };
+        input = sel;
+      } else {
+        const inp = el("input", `ns-input${f.kind === "text" ? "" : " mono"}`) as HTMLInputElement;
+        if (f.kind === "number") inp.type = "number";
+        inp.placeholder = f.placeholder ?? "（默认）";
+        inp.value = f.kind === "list" ? (Array.isArray(current) ? current.join(", ") : "") : current == null ? "" : String(current);
+        inp.oninput = () => {
+          const v = inp.value.trim();
+          if (!v) return mark(f.key, null);
+          if (f.kind === "number") return mark(f.key, Number(v));
+          if (f.kind === "list") return mark(f.key, v.split(",").map((x) => x.trim()).filter(Boolean));
+          mark(f.key, v);
+        };
+        input = inp;
+      }
+      input.disabled = Boolean(view.error) || (scope === "project" && !view.writable);
+      row.append(input);
+      if (f.hint) row.append(el("span", "settings-hint", f.hint));
+      form.append(row);
+    }
+    body.append(form);
+    const foot = el("div", "settings-foot");
+    const json = el("button", "btn ghost", "编辑 JSON") as HTMLButtonElement;
+    json.onclick = () => this.paintSettingsJson(body, view);
+    foot.append(json, el("span", "spacer"), save);
+    body.append(foot);
+    save.onclick = () => {
+      const sessionId = this.currentId;
+      const changed = { ...patch };
+      this.act(() => {
+        this.socket.send({ type: "settings.set", scope, ...(scope === "project" ? { cwd: view.cwd } : {}), patch: changed });
+        // The four a running pi takes without a restart: apply them to the open session now.
+        const runtime: Record<string, unknown> = {};
+        if ("steeringMode" in changed && changed.steeringMode) runtime.steeringMode = changed.steeringMode;
+        if ("followUpMode" in changed && changed.followUpMode) runtime.followUpMode = changed.followUpMode;
+        if (typeof changed["compaction.enabled"] === "boolean") runtime.autoCompaction = changed["compaction.enabled"];
+        if (typeof changed["retry.enabled"] === "boolean") runtime.autoRetry = changed["retry.enabled"];
+        if (sessionId && this.session?.owned && Object.keys(runtime).length) this.socket.send({ type: "runtime", sessionId, ...runtime });
+      });
+    };
+    if (this.session?.owned) {
+      const reload = el("div", "settings-hint", "新开的会话直接用新设置；正在运行的会话里，除了队列方式、自动压缩、自动重试，其它要重新加载（重启这个会话的 pi）才生效。");
+      const btn = el("button", "btn ghost", "重新加载当前会话") as HTMLButtonElement;
+      btn.disabled = Boolean(this.session.running);
+      btn.title = this.session.running ? "这一轮结束后再重新加载" : "/reload";
+      btn.onclick = () => {
+        const sessionId = this.currentId;
+        if (!sessionId) return;
+        this.act(() => this.socket.send({ type: "reload", sessionId }));
+        this.closeSheet();
+      };
+      body.append(reload, btn);
+    }
+  }
+
+  private paintSettingsJson(body: HTMLElement, view: SettingsView): void {
+    body.replaceChildren();
+    body.append(el("div", "settings-path", view.path));
+    const ta = el("textarea", "settings-json") as HTMLTextAreaElement;
+    ta.value = view.raw || "{\n}\n";
+    ta.spellcheck = false;
+    const foot = el("div", "settings-foot");
+    const back = el("button", "btn ghost", "回到表单") as HTMLButtonElement;
+    back.onclick = () => this.paintSettings();
+    const save = el("button", "btn primary", "保存整个文件") as HTMLButtonElement;
+    save.disabled = view.scope === "project" && !view.writable;
+    save.onclick = () => {
+      try {
+        JSON.parse(ta.value);
+      } catch (err) {
+        this.flashSettings(`不是合法的 JSON：${(err as Error).message}`, true);
+        return;
+      }
+      const raw = ta.value;
+      this.act(() => this.socket.send({ type: "settings.set", scope: view.scope, ...(view.scope === "project" ? { cwd: view.cwd } : {}), raw }));
+    };
+    foot.append(back, el("span", "spacer"), save);
+    body.append(ta, foot);
+  }
+
+  private paintTrust(body: HTMLElement): void {
+    const t = this.trust;
+    const cwd = this.session?.cwd ?? "";
+    if (!t || t.cwd !== cwd) {
+      body.append(el("div", "empty", cwd ? "读取中…" : "先打开一个会话"));
+      return;
+    }
+    const lines = [
+      t.needed ? "这个目录有需要信任才会加载的 pi 资源（.pi/settings.json、.pi/mcp.json、.pi/extensions|skills|prompts|themes、SYSTEM.md 等）。" : "这个目录没有需要信任的 pi 资源，信任与否都不影响。",
+      t.saved ? `已保存的决定：${t.saved.decision ? "信任" : "不信任"}（${t.saved.path}）` : `没有保存的决定。全局 defaultProjectTrust = ${t.fallback}，网页里的 pi 不能弹提示，所以${t.effective ? "会加载" : "不会加载"}。`,
+      "决定写在 ~/.pi/agent/trust.json，和终端里的 /trust 是同一份。",
+    ];
+    for (const l of lines) body.append(el("div", "settings-hint", l));
+    const opts = el("div", "settings-trust-opts");
+    t.options.forEach((o, i) => {
+      const label = o.label === "Trust" ? "信任这个目录" : o.label === "Do not trust" ? "不信任" : o.label.replace(/^Trust parent folder \((.*)\)$/, "信任上级目录 $1");
+      const b = el("button", `btn${o.trusted ? " primary" : ""}`, label) as HTMLButtonElement;
+      b.onclick = () => this.act(() => this.socket.send({ type: "trust.set", cwd, option: i }));
+      opts.append(b);
+    });
+    body.append(opts);
+    if (this.session?.owned) body.append(el("div", "settings-hint", "改了之后，正在运行的会话要「重新加载」（/reload）才会按新的决定加载项目资源。"));
+  }
+
+  private paintChangelog(body: HTMLElement): void {
+    body.append(el("div", "empty", "读取中…"));
+    fetch("/api/changelog", { credentials: "same-origin" })
+      .then((r) => r.json())
+      .then((out: { version?: string; text?: string }) => {
+        if (this.settingsTab !== "changelog") return;
+        body.replaceChildren();
+        body.append(el("div", "settings-path", `当前 pi ${out.version ?? ""}`));
+        const md = el("div", "settings-changelog");
+        md.append(renderMarkdown(out.text || "（这个 pi 包里没有 CHANGELOG.md）"));
+        body.append(md);
+      })
+      .catch((err: Error) => {
+        body.replaceChildren(el("div", "empty", `读不到更新日志：${err.message}`));
+      });
   }
 
   // ---------------------------------------------------------------- tree / fork / clone (#17)
@@ -5633,7 +6008,10 @@ export class App {
     const keysTools = el("div", "tools");
     const keysBtn = el("button", "btn", Object.keys(this.keys).length ? `快捷键（已设 ${Object.keys(this.keys).length} 个）` : "设置快捷键");
     keysBtn.onclick = () => this.openKeysSheet();
-    keysTools.append(keysBtn);
+    const piSettings = el("button", "btn", "pi 设置") as HTMLButtonElement;
+    piSettings.title = "pi 的 settings.json（全局 / 项目）、项目信任、更新日志（/settings）";
+    piSettings.onclick = () => this.openSettingsSheet("global");
+    keysTools.append(keysBtn, piSettings);
     host.append(el("h2", "", "快捷键"));
     host.append(keysTools);
     host.append(el("h2", "", "关于"));
@@ -6422,6 +6800,61 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["copy", "复制最后一条回复"],
   ["debug", "这个会话的 pi 日志"],
   ["hotkeys", "快捷键"],
+  ["settings", "pi 设置（全局 / 项目）"],
+  ["scoped-models", "循环切换的模型范围"],
+  ["reload", "重启这个会话的 pi，读到最新设置 / 扩展 / 技能"],
+  ["trust", "项目信任：要不要加载这个目录的 .pi 配置"],
+  ["changelog", "pi 更新日志"],
+];
+
+type SettingsTab = "global" | "project" | "trust" | "changelog";
+
+interface SettingsView {
+  scope: "global" | "project";
+  cwd: string | null;
+  path: string;
+  exists: boolean;
+  raw: string;
+  json: Record<string, unknown> | null;
+  error: string | null;
+  writable: boolean;
+}
+
+interface TrustState {
+  cwd: string;
+  needed: boolean;
+  saved: { path: string; decision: boolean } | null;
+  fallback: "ask" | "always" | "never";
+  effective: boolean;
+  options: { label: string; trusted: boolean }[];
+}
+
+/** The settings.json fields the 设置 form edits (pi docs/settings.md); the rest via 编辑 JSON. */
+const SETTING_FIELDS: {
+  key: string;
+  label: string;
+  kind: "text" | "number" | "bool" | "select" | "list" | "model";
+  options?: string[];
+  hint?: string;
+  placeholder?: string;
+  globalOnly?: boolean;
+}[] = [
+  { key: "defaultModel", label: "默认模型", kind: "model", hint: "defaultProvider + defaultModel" },
+  { key: "defaultThinkingLevel", label: "默认思考档位", kind: "select", options: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+  { key: "enabledModels", label: "循环切换的模型范围", kind: "list", hint: "enabledModels，逗号分隔，支持通配（终端的 /scoped-models）", placeholder: "例如 claude-*, gpt-5*" },
+  { key: "steeringMode", label: "引导消息处理方式", kind: "select", options: ["one-at-a-time", "all"], hint: "一条一条交给模型，还是攒着一次给" },
+  { key: "followUpMode", label: "排到之后的消息处理方式", kind: "select", options: ["one-at-a-time", "all"] },
+  { key: "defaultTools", label: "默认工具", kind: "list", hint: "逗号分隔；普通名字＝只用这些，+x / -x＝在默认基础上增减", placeholder: "read, bash, edit, write" },
+  { key: "compaction.enabled", label: "自动压缩", kind: "bool" },
+  { key: "compaction.reserveTokens", label: "压缩：保留的空余 token", kind: "number", placeholder: "16384" },
+  { key: "compaction.keepRecentTokens", label: "压缩：保留最近的 token", kind: "number", placeholder: "20000" },
+  { key: "retry.enabled", label: "自动重试", kind: "bool" },
+  { key: "retry.maxRetries", label: "最多重试次数", kind: "number", placeholder: "3" },
+  { key: "images.blockImages", label: "不给模型发图片", kind: "bool" },
+  { key: "enableSkillCommands", label: "技能注册成 /skill:名字", kind: "bool" },
+  { key: "shellPath", label: "shell 路径", kind: "text", hint: "bash 工具用的 shell（Windows 默认找 Git Bash）" },
+  { key: "httpProxy", label: "HTTP 代理", kind: "text", globalOnly: true, placeholder: "http://127.0.0.1:7890" },
+  { key: "defaultProjectTrust", label: "没有决定时的项目信任", kind: "select", options: ["ask", "always", "never"], globalOnly: true, hint: "网页里 ask 等于 never（不能弹提示）" },
 ];
 
 const RUNNING_PLACEHOLDER = "跑着呢：Enter 引导当前任务 · Alt+Enter 等这轮做完再处理";
@@ -6430,13 +6863,8 @@ const RUNNING_PLACEHOLDER = "跑着呢：Enter 引导当前任务 · Alt+Enter �
 const UNSUPPORTED_BUILTINS: Record<string, string> = {
   share: "#38",
   bug: "#38",
-  settings: "#26",
-  "scoped-models": "#26",
-  reload: "#26",
-  changelog: "#26",
   login: "#27",
   logout: "#27",
-  trust: "#21",
 };
 
 /** Everything a shortcut can fire, in the order the 快捷键 sheet lists it. */
@@ -6695,8 +7123,8 @@ interface VStep {
 }
 
 const PERM_MODES: { id: PermissionMode; icon: string; label: string; desc: string }[] = [
-  { id: "readonly", icon: "🔒", label: "只读", desc: "不能写文件、不能执行命令，只读取和分析（适合先出方案）" },
-  { id: "strict", icon: "✋", label: "逐个确认", desc: "每次写文件、执行命令都要你批准；读文件不用" },
+  { id: "readonly", icon: "🔒", label: "只读", desc: "只放行读文件 / 搜索 / 列目录这类只看的工具，写文件、执行命令、MCP 与扩展工具一律拦下（适合先出方案）" },
+  { id: "strict", icon: "✋", label: "逐个确认", desc: "写文件、执行命令、调用 MCP / 扩展工具都要你批准；只看的工具不用" },
   { id: "ask", icon: "🛡", label: "危险时确认", desc: "只拦删除、push、装依赖、写项目外文件等危险操作（默认）" },
   { id: "auto", icon: "⚡", label: "全自动", desc: "不拦截任何操作，风险自负" },
 ];

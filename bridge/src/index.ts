@@ -30,6 +30,8 @@ import { APP_NAME, VERSION, ensureStateDirs, readJson, statePath, sessionsRootIn
 import { clipboardFiles, listDirs, makeDir, statFiles } from "./dirs.ts";
 import { gitInfo } from "./git.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
+import { changelog, readSettings, setTrust, trustInfo, writeSettings } from "./pisettings.ts";
+import { cleanLaunch } from "./launch.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
 
 interface Config {
@@ -179,6 +181,15 @@ async function main(): Promise<void> {
   const cfg = loadConfig();
   const fresh = ensurePassphrase();
   const pi = resolvePi();
+  /** #21: trust state for a cwd, or null when pi's trust module cannot be loaded / cwd is gone. */
+  const trustFor = async (cwd: string) => {
+    if (!cwd || !fs.existsSync(cwd)) return null;
+    try {
+      return await trustInfo(pi.cli, cwd);
+    } catch {
+      return null;
+    }
+  };
   const sessions = new SessionManager(pi.cli, `http://127.0.0.1:${cfg.port}/api/ask`);
   const notifier = new Notifier();
   const tunnelBin = findCloudflared();
@@ -456,6 +467,11 @@ async function main(): Promise<void> {
       return;
     }
 
+    // `/changelog` (#26): what is new in the installed pi.
+    if (url.pathname === "/api/changelog" && req.method === "GET") {
+      return json(res, 200, { version: pi.version, text: changelog(pi.cli) });
+    }
+
     // #25 `@` in the composer: fuzzy file search under the session's cwd (relative paths).
     if (url.pathname === "/api/files" && req.method === "GET") {
       const where = sessions.locate(url.searchParams.get("id") ?? "");
@@ -683,14 +699,14 @@ async function main(): Promise<void> {
           case "subscribe": {
             const snap = sessions.snapshot(msg.sessionId);
             (ws as any).watching = String(msg.sessionId);
-            send({ type: "session", sessionId: msg.sessionId, ...snap });
+            send({ type: "session", sessionId: msg.sessionId, ...snap, trust: await trustFor(snap.state.cwd) });
             return;
           }
           case "claim": {
             if (!(await requireStepUp())) return;
             const session = await sessions.claim(String(msg.sessionId));
             (ws as any).watching = session.state.id;
-            send({ type: "session", sessionId: session.state.id, ...session.snapshot() });
+            send({ type: "session", sessionId: session.state.id, ...session.snapshot(), trust: await trustFor(session.state.cwd) });
             return;
           }
           case "prompt": {
@@ -766,12 +782,14 @@ async function main(): Promise<void> {
           case "create": {
             if (!(await requireStepUp())) return;
             const name = typeof msg.name === "string" && msg.name.trim() ? msg.name.trim().slice(0, 120) : undefined;
-            const session = await sessions.create(String(msg.cwd || process.cwd()), name);
+            // #28: CLI flags for this session, validated before anything is spawned.
+            const launch = cleanLaunch(msg.options);
+            const session = await sessions.create(String(msg.cwd || process.cwd()), name, launch);
             // Q-022: created from the pin strip's ＋ → pinned at the end of the strip, and every
             // client hears about the arrangement (the strip is a projection of manage.pin).
             if (msg.pin) sessions.pinLast(session.state.id);
             (ws as any).watching = session.state.id;
-            send({ type: "session", sessionId: session.state.id, ...session.snapshot() });
+            send({ type: "session", sessionId: session.state.id, ...session.snapshot(), trust: await trustFor(session.state.cwd) });
             broadcast({ type: "session.state", session: session.state });
             if (msg.pin) broadcast({ type: "manage", manage: sessions.manage.snapshot() });
             return;
@@ -840,6 +858,56 @@ async function main(): Promise<void> {
           case "skills": {
             const list = await sessions.skillsFor(String(msg.sessionId ?? ""), msg.cwd ? String(msg.cwd) : undefined);
             send({ type: "skills", sessionId: msg.sessionId ?? null, commands: list });
+            return;
+          }
+          // ------------------------------------------------ settings / trust / reload (#26 #21)
+          case "settings.get": {
+            const scope = msg.scope === "project" ? "project" : "global";
+            const cwd = scope === "project" ? String(msg.cwd ?? "") || null : null;
+            send({ type: "settings", ...(await readSettings(pi.cli, scope, cwd)) });
+            return;
+          }
+          case "settings.set": {
+            if (!(await requireStepUp())) return;
+            const scope = msg.scope === "project" ? "project" : "global";
+            const cwd = scope === "project" ? String(msg.cwd ?? "") || null : null;
+            try {
+              const view = await writeSettings(pi.cli, scope, cwd, {
+                patch: msg.patch && typeof msg.patch === "object" && !Array.isArray(msg.patch) ? msg.patch : undefined,
+                raw: typeof msg.raw === "string" ? msg.raw : undefined,
+              });
+              log(`settings ${scope} written: ${view.path}`);
+              send({ type: "settings", ...view, saved: true });
+            } catch (err: any) {
+              send({ type: "settings.error", scope, message: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "runtime": {
+            if (!(await requireStepUp())) return;
+            const session = sessions.get(String(msg.sessionId ?? ""));
+            const done = session ? await session.applyRuntime(msg) : [];
+            if (done.length) send({ type: "notice", sessionId: msg.sessionId, text: `已应用到当前会话：${done.join("、")}`, level: "info" });
+            return;
+          }
+          case "reload": {
+            if (!(await requireStepUp())) return;
+            const session = await sessions.reload(String(msg.sessionId ?? ""));
+            (ws as any).watching = session.state.id;
+            send({ type: "session", sessionId: session.state.id, ...session.snapshot(), trust: await trustFor(session.state.cwd) });
+            send({ type: "notice", sessionId: session.state.id, text: "已重新加载：pi 进程重启，设置、扩展、技能、模板、AGENTS.md 都是最新的了。", level: "info" });
+            return;
+          }
+          case "trust.get": {
+            send({ type: "trust", cwd: String(msg.cwd ?? ""), trust: await trustFor(String(msg.cwd ?? "")) });
+            return;
+          }
+          case "trust.set": {
+            if (!(await requireStepUp())) return;
+            const cwd = String(msg.cwd ?? "");
+            const trust = await setTrust(pi.cli, cwd, Number(msg.option));
+            log(`trust ${cwd} → ${trust.saved ? (trust.saved.decision ? "trusted" : "untrusted") + " @ " + trust.saved.path : "cleared"}`);
+            send({ type: "trust", cwd, trust, saved: true });
             return;
           }
           case "commands": {

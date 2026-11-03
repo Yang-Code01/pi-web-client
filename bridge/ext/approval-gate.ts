@@ -34,6 +34,26 @@ const SHELL_PATTERNS: { re: RegExp; why: string }[] = [
 
 type Mode = "readonly" | "strict" | "ask" | "auto";
 
+/**
+ * Tools that only look (#29). Read-only mode is a whitelist: these, the web's question tools, and
+ * any tool whose own annotations say `readOnlyHint: true` (MCP servers declare it). Everything else —
+ * MCP tools without the hint, extension tools, unknown names — is blocked, not waved through.
+ * `codemode` itself is allowed: the tools its script calls come through this hook one by one
+ * (pi passes them as nested tool calls with `parentToolCallId`, agent-session.js), so a write
+ * inside a script is still stopped.
+ */
+const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", "tool_search", "codemode", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]);
+const ASK_TOOLS = new Set(["question", "questionnaire", "ask_user_question", "ask_user"]);
+
+function readOnlyHint(pi: any, toolName: string): boolean {
+  try {
+    const tool = (pi.getAllTools?.() ?? []).find((t: any) => t?.name === toolName);
+    return tool?.annotations?.readOnlyHint === true;
+  } catch {
+    return false;
+  }
+}
+
 /** `{patterns, mode}` per session; re-read on every call so the web button applies immediately. */
 function readAllow(): { patterns: string[]; mode: Mode } {
   const file = process.env.PI_WEB_ALLOW_FILE;
@@ -100,9 +120,10 @@ export default function approvalGate(pi: any): void {
     const { patterns, mode } = readAllow();
     const lower = toolName.toLowerCase();
     const acts = SHELL_TOOLS.has(lower) || WRITE_TOOLS.has(lower);
+    const looksOnly = READ_ONLY_TOOLS.has(lower) || ASK_TOOLS.has(lower) || readOnlyHint(pi, toolName);
 
     if (mode === "auto") return undefined;
-    if (mode === "readonly" && acts) {
+    if (mode === "readonly" && !looksOnly) {
       return {
         block: true,
         reason: "当前是只读模式（用户在 pi-web-client 设置）：不能写文件、不能执行命令。只读取和分析，把要做的改动写成方案告诉用户。",
@@ -111,9 +132,12 @@ export default function approvalGate(pi: any): void {
 
     let risk = riskOf(toolName, input, cwd);
     // Strict: every write and every command stops, not only the risky ones.
-    if (!risk && mode === "strict" && acts) {
-      const detail = SHELL_TOOLS.has(lower) ? shellCommand(input).trim() : targetPath(input).trim();
-      risk = { why: SHELL_TOOLS.has(lower) ? "执行命令" : "写文件", detail: detail || JSON.stringify(input).slice(0, 300) };
+    // Strict: every call that is not known to only look stops — writes, commands, and tools the
+    // gate knows nothing about (MCP, extensions) alike.
+    if (!risk && mode === "strict" && !looksOnly) {
+      const detail = SHELL_TOOLS.has(lower) ? shellCommand(input).trim() : WRITE_TOOLS.has(lower) ? targetPath(input).trim() : "";
+      const why = SHELL_TOOLS.has(lower) ? "执行命令" : WRITE_TOOLS.has(lower) ? "写文件" : `调用工具 ${toolName}`;
+      risk = { why, detail: detail || JSON.stringify(input).slice(0, 300) };
     }
     if (!risk) return undefined;
 
@@ -121,7 +145,8 @@ export default function approvalGate(pi: any): void {
     // Patterns are per session (PI_WEB_ALLOW_FILE) and match the whole leading word(s), never a
     // substring; chained/redirected commands always ask, since a prefix says nothing about the rest.
     const remembered =
-      !COMPOUND.test(detail) && patterns.some((p) => p && (detail === p || detail.startsWith(`${p} `)));
+      patterns.includes(`tool:${lower}`) ||
+      (!COMPOUND.test(detail) && patterns.some((p) => p && !p.startsWith("tool:") && (detail === p || detail.startsWith(`${p} `))));
     if (remembered) {
       console.error(`[approval-gate] remembered pattern allowed: ${detail.slice(0, 80)}`);
       return undefined;
@@ -131,7 +156,7 @@ export default function approvalGate(pi: any): void {
       return { block: true, reason: "这个会话没有可用的审批界面（ctx.hasUI=false），危险操作已被拦下。" };
     }
 
-    const ok = await ctx.ui.confirm(`${risk.why === "执行命令" || risk.why === "写文件" ? "需要确认" : "危险操作"}：${risk.why}`, `${toolName} → ${detail}`, { timeout: 5 * 60 * 1000 });
+    const ok = await ctx.ui.confirm(`${risk.why === "执行命令" || risk.why === "写文件" || risk.why.startsWith("调用工具") ? "需要确认" : "危险操作"}：${risk.why}`, `${toolName} → ${detail}`, { timeout: 5 * 60 * 1000 });
     if (!ok) {
       return {
         block: true,

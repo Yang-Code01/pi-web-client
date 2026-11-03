@@ -5,7 +5,9 @@ import path from "node:path";
 import { RpcChild } from "./rpc.ts";
 import { loadEntries, listSessionFiles, readMeta, titleFromUserText, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
 import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, summarizeToolArgs, type BashItem, type Item, type ToolItem } from "./items.ts";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { piModule } from "./pimods.ts";
+import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions } from "./launch.ts";
 import { ensureDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
@@ -97,6 +99,8 @@ export interface SessionState {
   permission?: PermissionMode;
   /** Another process (the pi terminal) holds the lock, so this one is read-only and undeletable. */
   locked?: boolean;
+  /** Launch options chosen when the session was created on the web (#28), as one line. */
+  launch?: string;
 }
 
 export interface RemoveReport {
@@ -303,6 +307,9 @@ const COMPOUND = /[;&|`<>\r\n]|\$\(/;
  * What "本会话允许这类" remembers. A write is pinned to its exact path; a shell command to its
  * leading program (+ subcommand), and only when the command is a single plain command.
  */
+/** Same list as bridge/ext/approval-gate.ts SHELL_TOOLS. */
+const SHELL_TOOL_NAMES = new Set(["bash", "powershell", "shell", "run_command", "execute", "exec", "terminal"]);
+
 function derivePattern(message: string): string | null {
   const arrow = message.indexOf("→");
   if (arrow < 0) return null;
@@ -310,6 +317,9 @@ function derivePattern(message: string): string | null {
   const detail = message.slice(arrow + 1).trim();
   if (!detail) return null;
   if (WRITE_TOOLS.has(tool)) return detail;
+  // #29: strict mode also asks for tools the gate knows nothing about (MCP, extensions). For those
+  // "always" means the tool itself — its arguments are JSON, not a command line with a prefix.
+  if (!SHELL_TOOL_NAMES.has(tool)) return `tool:${tool}`;
   if (COMPOUND.test(detail)) return null;
   const tokens = detail.split(/\s+/).filter(Boolean);
   if (!tokens.length) return null;
@@ -526,6 +536,8 @@ export class Session extends EventEmitter {
       permission: readPermission(id),
       ...(meta?.firstUserText ? { preview: meta.firstUserText } : {}),
     };
+    const launch = id ? describeLaunch(readLaunch(id)) : "";
+    if (launch) this.state.launch = launch;
     if (meta) this.loadFromFile();
   }
 
@@ -655,6 +667,10 @@ export class Session extends EventEmitter {
     const args = ["--mode", "rpc"];
     if (process.env.PI_WEB_NO_EXT === "1") args.push("-ne");
     args.push("-e", approvalGatePath());
+    // #28: the flags chosen at creation, every time this session's pi starts (resume included).
+    const launch = readLaunch(id);
+    args.push(...launchArgs(launch));
+    this.state.launch = describeLaunch(launch) || undefined;
     if (opts.resume && this.state.file) args.push("--session", this.state.file);
     else args.push("--session-id", id);
     if (opts.name && !opts.resume) args.push("--name", opts.name);
@@ -1410,6 +1426,34 @@ export class Session extends EventEmitter {
     }
   }
 
+  /**
+   * Settings a running pi can take without a restart (#26): queue delivery modes, automatic
+   * compaction, automatic retry. Everything else in settings.json needs /reload.
+   */
+  async applyRuntime(r: { steeringMode?: string; followUpMode?: string; autoCompaction?: boolean; autoRetry?: boolean }): Promise<string[]> {
+    const rpc = this.rpc;
+    if (!rpc?.alive) return [];
+    const done: string[] = [];
+    const mode = (m: unknown) => (m === "all" || m === "one-at-a-time" ? m : null);
+    if (mode(r.steeringMode)) {
+      await rpc.request("set_steering_mode", { mode: r.steeringMode }, 15000);
+      done.push("引导消息处理方式");
+    }
+    if (mode(r.followUpMode)) {
+      await rpc.request("set_follow_up_mode", { mode: r.followUpMode }, 15000);
+      done.push("后续消息处理方式");
+    }
+    if (typeof r.autoCompaction === "boolean") {
+      await rpc.request("set_auto_compaction", { enabled: r.autoCompaction }, 15000);
+      done.push("自动压缩");
+    }
+    if (typeof r.autoRetry === "boolean") {
+      await rpc.request("set_auto_retry", { enabled: r.autoRetry }, 15000);
+      done.push("自动重试");
+    }
+    return done;
+  }
+
   async setThinking(level: string): Promise<void> {
     await this.rpc?.request("set_thinking_level", { level } as any);
     this.setState({ thinkingLevel: level });
@@ -1709,7 +1753,7 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
-  async create(cwd: string, name?: string): Promise<Session> {
+  async create(cwd: string, name?: string, launch: LaunchOptions = {}): Promise<Session> {
     let isDir = false;
     try {
       isDir = fs.statSync(cwd).isDirectory();
@@ -1718,6 +1762,7 @@ export class SessionManager extends EventEmitter {
     }
     if (!isDir) throw new Error(`工作目录不存在：${cwd}`);
     const id = crypto.randomUUID();
+    writeLaunch(id, launch);
     const session = new Session(this.cli, null, { id, name });
     session.state.cwd = cwd;
     this.wire(session);
@@ -1725,6 +1770,19 @@ export class SessionManager extends EventEmitter {
     await session.startLive({ resume: false, cwd, name });
     this.emit("ws", { type: "session.state", session: session.state });
     return session;
+  }
+
+  /**
+   * `/reload` (#26): pi re-reads settings, extensions, skills, templates and context files only at
+   * startup over RPC, so the web's reload is a restart of this session's pi — history stays on disk.
+   */
+  async reload(id: string): Promise<Session> {
+    const session = this.sessions.get(id);
+    if (!session?.live) throw new Error("这个会话没有在运行，下次接管时自然就是最新的设置");
+    if (session.state.running) throw new Error("这一轮还在跑，结束后再重新加载");
+    await session.close({ quiet: true });
+    session.ownExitAt = Date.now();
+    return this.openLive(id);
   }
 
   // ------------------------------------------------------------ tree / fork / clone / import (#17)
@@ -1823,19 +1881,9 @@ export class SessionManager extends EventEmitter {
     return { sessionId: fresh.state.id, text };
   }
 
-  private piSessions: Promise<any> | null = null;
-
-  /** pi's session-manager module from the installed package (cli = <pkg>/dist/bundle/cli.js). */
+  /** pi's session-manager module from the installed package (see pimods.ts). */
   private piSessionModule(): Promise<any> {
-    if (!this.piSessions) {
-      const pkg = path.dirname(path.dirname(path.dirname(this.cli)));
-      const file = path.join(pkg, "dist", "core", "session-manager.js");
-      this.piSessions = import(pathToFileURL(file).href).catch((err) => {
-        this.piSessions = null;
-        throw new Error(`加载不了 pi 的会话模块（${file}）：${(err as Error).message}`);
-      });
-    }
-    return this.piSessions;
+    return piModule(this.cli, "core/session-manager.js");
   }
 
   /**
