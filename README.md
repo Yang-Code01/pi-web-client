@@ -90,6 +90,7 @@ PI_WEB_HOST=0.0.0.0 npm start
 - pi 设置与项目信任（D78）：右栏「pi 设置」（或 `/settings`）改全局 / 项目 `settings.json`——常用项是表单，其余「编辑 JSON」，写入走 pi 自己的文件锁、只动改过的字段；`/trust` 决定是否加载项目的 `.pi` 配置（写 `trust.json`，和终端同一份；网页里 pi 不能弹信任提示，所以没决定过的项目会在输入框上方提示）；`/reload` 重启这个会话的 pi 读最新设置；`/changelog` 看 pi 更新日志。新建会话的「高级」里可以给这个会话定 `--model` `--thinking` `--tools` `-e` `--skill` `--append-system-prompt` `-ne` `-nc` `--no-mcp` `--offline`，之后再接管也沿用。
 - 登录、扩展与终端联动（D79）：「pi 设置 → 登录 / 凭据」就是 `/login` `/logout`——pi 自己跑登录流程（API key 或 OAuth），网页只转达它的提问、授权链接和设备码，凭据由 pi 写进 `auth.json`；「扩展与 MCP」跑 pi 的 `install / remove / update` 和 `mcp add / list / remove / login / logout`；「全局」页底部可以把「会话锁」扩展装进 pi 的全局扩展，之后终端里的 pi 会登记自己开着的会话，网页不会去接管它（显示「终端占用」），终端打开网页正在写的会话前也会先提醒。
 - 分享与报 bug（D80）：`/share` 照 pi 的顺序上传会话——登录了 Radius 传 Radius，否则用 GitHub CLI 建私有 gist，回一个 pi 的查看链接；`/bug` 用 pi 自己的报告格式（设置去敏、不含 API key，可选附上会话记录），上传给 pi 开发者或导出 zip 下载。两者发出前都先说明会带走什么。
+- 扩展管理（D81）：输入框下「技能」旁的「扩展」按钮（可在 pi 设置 → 扩展与 MCP 里关掉；有可更新时带数字角标）打开扩展与 MCP 管理：「已安装」列出 pi 包（带版本）、内置与单独的扩展、MCP 服务器和它们的工具，打开时联网查更新，只在有新版时出现「更新 / 全部更新」，扩展和 MCP 可以启停，卸载要 4 秒内再点一次；「扩展商店」是 npm 上的 pi 包（和 pi.dev 画廊同源）按月下载量排、「MCP 商店」是官方 MCP Registry 按 GitHub star 排，都能搜索、取前 10/20/50、一键安装（MCP 支持 npx / uvx / Docker / 远程 HTTP，密钥只以 `${变量}` 写进 mcp.json）。公网隧道下只读。
 - 提问：模型调 `question` / `questionnaire` 时，问题直接弹成底部抽屉（多题 tab + 提交，单题点选即答，可「自己写」或取消），composer 上方另有一条「待你回答」顶条；答过的 Q/A 留在聊天里当气泡，刷新后还在。终端里跑同样的工具，界面一行没变。
 - 图片：手机相册选图，或桌面直接 `Ctrl+V` / `⌘V` 粘贴截图（压到 ≤2048px 的 JPEG 再发）；点 composer 里的「+N 图」可看缩略图、单张删掉或全部清空。
 - 产物与文件（D50）：`📂 产物` 是「本会话写/改过的文件」清单（按工具调用推出来，不需要 pi 配合），点一下直接预览——md / html 渲染、图片直接看、代码带行号和语法高亮。`📁 文件管理器` 是全盘浏览：浏览 / 预览 / 编辑三种状态共用一个面板，路径行上「⌂ 工作目录」旁边还有一颗「⧉ 复制路径」把当前目录复制走（D71）；文本就地改、`Ctrl+S` 保存；保存时发现磁盘上这个文件已经被 pi 改过，会拦下来问「覆盖 / 另存副本 / 放弃」。**这台机器上除了二进制和 >2 MB 的文件，基本都能读写**，所以口令别给不信任的人。
@@ -136,6 +137,7 @@ node bridge/tests/login-flow.mjs                                      # /login /
 node bridge/tests/session-lock.mjs                                    # 终端会话锁扩展 + bridge 拒绝接管 + 安装 / 移除（D79）
 node bridge/tests/pi-cli.mjs                                          # pi install / list / remove 与 pi mcp add / list / remove（D79，真 pi CLI，fixture 目录）
 node bridge/tests/share-bug.mjs                                       # /share（假 gh）与 /bug（zip / 离线拒绝上传）（D80，不联网）
+node bridge/tests/ext-manager.mjs                                     # 扩展管理：清单与版本、启停、MCP 改版本、商店→pi mcp add、按钮开关、公网只读（D81）
 ```
 
 `npm run typecheck` 分别跑 bridge 和 web 的 `tsc --noEmit`。

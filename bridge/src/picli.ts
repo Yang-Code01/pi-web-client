@@ -60,6 +60,15 @@ export function buildArgs(req: Record<string, unknown>): { args: string[]; timeo
         extra.push("--env", kv);
       }
       if (typeof req.description === "string" && req.description.trim()) extra.push("--description", text(req.description, "描述", 1000));
+      for (const h of Array.isArray(req.headers) ? req.headers : []) {
+        const kv = text(h, "header", 4000);
+        if (!/^[A-Za-z0-9-]+=/.test(kv)) throw new Error(`header 要写成 Name=Value：${kv.slice(0, 40)}`);
+        extra.push("--header", kv);
+      }
+      if (typeof req.exposure === "string" && req.exposure) {
+        if (!["codemode", "deferred", "direct", "hidden"].includes(req.exposure)) throw new Error("exposure 只能是 codemode / deferred / direct / hidden");
+        extra.push("--exposure", req.exposure);
+      }
       if (typeof req.url === "string" && req.url.trim()) {
         const url = text(req.url, "URL", 2000);
         if (!/^https?:\/\//i.test(url)) throw new Error("URL 要以 http:// 或 https:// 开头");

@@ -908,3 +908,54 @@
   - 离线时拒绝上传；`/api/bugzip` 不接受路径穿越，也需要登录。
 - Radius 上传要联网、要账号，**未实测**，只做了代码对照。
 - 真 Chromium：`/share` 打开新标签页 `https://pi.dev/session/#0123abcd`，聊天里出现链接；`/bug 描述` 会预填描述，导出 zip 后浏览器开始下载 `pi-bug-report-<id>.zip`。
+
+## D81 扩展管理：输入框「扩展」按钮与设置页共用一套界面；商店用 npm（pi-package）和官方 MCP Registry
+
+**决定**（来自 grill-me 的讨论，用户逐项确认）：
+1. **入口**：输入框下「技能」旁边的「扩展」按钮打开弹窗；「pi 设置 → 扩展与 MCP」显示同一套内容，并带一个「在输入框下显示扩展按钮」开关。
+   - 开关默认开，存在 bridge 的 `state/ui.json`，所以各设备一致。
+   - 有可更新的条目时，按钮带数字角标：页面加载时向 bridge 要一次计数，bridge 缓存 6 小时，这一步不连接任何 MCP 服务器。
+2. **已安装**分三类：
+   - pi 包（版本取自包里的 `package.json`）；
+   - 内置扩展和单独的扩展文件（`<agentDir>/extensions`、`<cwd>/.pi/extensions`、settings 里列出的路径）；
+   - MCP 服务器及其工具（`pi mcp list --json`）。
+3. **更新检查**：打开弹窗就联网检查。
+   - npm 包：本地版本对比 npm 的 `latest`。
+   - 没有固定 ref 的 git 包：`git ls-remote HEAD` 对比本地 HEAD。
+   - 固定了版本的 npx / uvx MCP 服务器：对比 npm / PyPI 上的最新版。
+   - 本地包、远程 MCP、固定了版本的包都不检查。
+   - 只有确实有新版时才出现「更新」，另有「全部更新（N）」。包更新走 `pi update <来源>`；MCP 更新是改写 mcp.json 里那个固定的版本号。
+4. **启停**：照 `pi config` 的写法，往 settings 的 `extensions` 里写 `-builtin:x` / `-<绝对路径>`；MCP 服务器在它自己的 mcp.json 里写 `enabled: false`。
+   - 已用真 pi 验证：`-<绝对路径>` 能让 `extensions/` 下自动发现的扩展不加载；`-builtin:llama.cpp` 能去掉 `/llama`。
+   - 只允许改 pi 的 mcp.json（全局，或某个项目的 `.pi/mcp.json`）。
+5. **卸载 / 删除 MCP**：4 秒内再点一次才执行。改动之后弹窗顶部出现「重新加载当前会话」，其他运行中的会话不受影响。
+6. **扩展商店**：npm 搜索 `keywords:pi-package`，和 pi.dev/packages 画廊同一个来源（画廊没有公开 API）。按月下载量排序，空搜索时显示前 10 / 20 / 50。已装的标「已安装」。
+7. **MCP 商店**：官方 Registry 里状态为 active 的最新版本，按条目仓库的 GitHub star 排序。
+   - 排行索引每天在后台建一次：几千个条目，本机约 2 分钟。有 gh 令牌时 star 走 GraphQL 批量查询；没有就匿名尽力查，并提示登录 gh。
+   - 第一次还没有索引时，直接用 Registry 的搜索接口回答，不带 star。
+   - npx、uvx、Docker、远程 HTTP 四种都能装：本机缺 uvx / Docker 时置灰并给出安装链接；SSE 远程不支持（pi 不支持这种传输）。
+   - 安装表单：服务名可改、填必填变量 / header、选全局或项目；「高级」里有 exposure 和描述。
+   - **密钥只以 `${变量}` 写进 mcp.json**，header 模板（`Bearer {token}`）保留原形，装完提示要设置哪些环境变量。
+8. **其他**：默认装到全局，可选当前项目；公网隧道下扩展管理只读（包括原来的 picli 写操作）；联网查询走 pi 设置里的 `httpProxy`，没有则用 `HTTPS_PROXY`（bridge 自己实现了 CONNECT 隧道，没加依赖）。
+
+**为什么：**
+- 要在一个画面里完成扩展的「看、找、装、更、停」，而且和终端 pi 的行为一致：安装和卸载都走 pi 的 CLI，启停写 pi 认的那些条目。
+- 热度数据只能来自真实信号：npm 下载量、GitHub star。Registry 自己没有热度字段。
+
+**代价 / 可改：**
+- 第一次建 MCP 排行索引要几分钟。
+- 很多 Registry 条目没有仓库链接（抽样约 6 成没有），这些条目的 star 记为 0。
+- MCP 的「已安装」标记靠包名或地址出现在命令里来判断，是近似的。**可改**
+
+**验证：**
+- `node bridge/tests/ext-manager.mjs`（真 pi CLI，fixture 目录）：
+  - 商店条目转成 `pi mcp add` 的参数：四种运行方式、密钥变成变量、header 模板、缺必填项被拒；
+  - 包和 MCP 服务器带版本，并查到了 MCP 的 npm 新版；
+  - 内置扩展和单独扩展的启停写入与还原，其他设置不动；MCP 的停用和改版本；只允许改 mcp.json；
+  - 商店安装产出的是带 `${变量}` 的远程服务器；按钮开关保存在 bridge；公网连接被拒、但能查看。
+- 用真 pi 核对过 `-<路径>` 和 `-builtin:x` 的效果（`.scratch/excl-probe.mjs`）。
+- 真 Chromium：
+  - 按钮显示角标 1；弹窗三个标签；已安装页列出内置、单独的扩展和 MCP（含可更新提示）；
+  - 扩展商店前 20 按月下载量排（billion-context 265 万、pi-mcp-adapter 136 万…），搜索 subagent 有结果；
+  - MCP 商店前 20 按 star 排（browser-use ★119,890…），安装表单可以选运行方式；
+  - 在设置里关掉开关后，按钮消失。

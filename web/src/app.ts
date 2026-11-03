@@ -116,7 +116,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
@@ -154,8 +154,20 @@ export class App {
   /** #30: is the terminal session-lock extension in pi's global extensions? */
   private lockExt: { installed: boolean; path: string } | null = null;
   /** #33 扩展与 MCP: package rows, MCP servers, and the console of the last pi command. */
-  private pkgRows: { scope: "user" | "project"; source: string; path: string | null }[] | null = null;
-  private mcpRows: McpServerRow[] | null = null;
+  /** D81 扩展 manager state. */
+  private uiPrefs: { showExtButton: boolean } = { showExtButton: true };
+  private extUpdates = 0;
+  private extTab: "installed" | "ext" | "mcp" = "installed";
+  private extInv: ExtInventory | null = null;
+  private extInvLoading = false;
+  private extStore: { query: string; limit: number; items: StorePkg[] | null; error?: string } = { query: "", limit: 20, items: null };
+  private mcpStore: { query: string; limit: number; items: StoreMcpItem[] | null; error?: string; building?: boolean; starsComplete?: boolean; hasToken?: boolean } = { query: "", limit: 20, items: null };
+  private extScope: "global" | "project" = "global";
+  private extArm: { key: string; until: number } | null = null;
+  private extDirty = false;
+  private mcpForm: { name: string; option: number; values: Record<string, string>; exposure: string; description: string; local: boolean; item: string } | null = null;
+  private extVars: string[] = [];
+  private extButton: HTMLButtonElement | null = null;
   private cliRun: { runId: string | null; op: string; out: string; code: number | null | undefined; error?: string } | null = null;
   private authFilter = "";
   private login: { loginId: string | null; provider: string; method: string; events: AuthEventView[]; prompt: { promptId: string; prompt: AuthPromptView } | null; result: string | null; ok: boolean } | null = null;
@@ -672,6 +684,9 @@ export class App {
         if (this.skillPop) this.renderSkillList();
         break;
       case "hello":
+        if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
+        // Badge: whether anything installed has an update (bridge caches this for 6 hours).
+        this.socket.send({ type: "ext.updates", ...(this.session?.cwd ? { cwd: this.session.cwd } : {}) });
         // A new socket starts unverified on the bridge side.
         this.stepUntil = 0;
         this.sessions = msg.sessions ?? [];
@@ -907,23 +922,59 @@ export class App {
         break;
       case "picli.done": {
         const op = String(msg.op ?? "");
-        if (op === "pkg.list") this.pkgRows = Array.isArray(msg.data) ? msg.data : [];
-        else if (op === "mcp.list") this.mcpRows = Array.isArray(msg.data?.servers) ? msg.data.servers : [];
-        else {
-          if (this.cliRun && (this.cliRun.runId === msg.runId || !this.cliRun.runId)) {
-            this.cliRun.code = typeof msg.code === "number" ? msg.code : null;
-            if (msg.error) this.cliRun.error = String(msg.error);
-          } else if (msg.error) this.flashSettings(String(msg.error), true);
-          // Re-read what changed.
-          if (op.startsWith("pkg.")) this.socket.send({ type: "picli", op: "pkg.list", cwd: this.session?.cwd });
-          if (op.startsWith("mcp.")) {
-            this.mcpRows = null;
-            this.socket.send({ type: "picli", op: "mcp.list", cwd: this.session?.cwd });
-          }
+        if (op === "pkg.list" || op === "mcp.list") break;
+        if (this.cliRun && (this.cliRun.runId === msg.runId || !this.cliRun.runId)) {
+          this.cliRun.code = typeof msg.code === "number" ? msg.code : null;
+          if (msg.error) this.cliRun.error = String(msg.error);
+        } else if (msg.error) this.flashSettings(String(msg.error), true);
+        if (Array.isArray(msg.vars) && msg.vars.length) this.extVars = msg.vars.map(String);
+        if (msg.code === 0) {
+          this.extDirty = true;
+          if (op === "mcp.add") this.mcpForm = null;
         }
+        // Re-read what changed (and whether updates are left).
+        this.loadExtInventory();
         this.paintExtIfOpen();
         break;
       }
+      case "ui":
+        if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
+        this.renderChat();
+        if (this.sheetKind === "settings" && this.settingsTab === "ext") this.paintSettings();
+        break;
+      case "ext.updates":
+        this.extUpdates = Number(msg.count) || 0;
+        this.paintExtButton();
+        break;
+      case "ext.inventory":
+        this.extInvLoading = false;
+        if (msg.error) this.flashSettings(String(msg.error), true);
+        else this.extInv = msg as ExtInventory;
+        if (typeof msg.updates === "number") {
+          this.extUpdates = msg.updates;
+          this.paintExtButton();
+        }
+        this.paintExtIfOpen();
+        break;
+      case "ext.store":
+        if (String(msg.query ?? "") !== this.extStore.query) break;
+        this.extStore.items = Array.isArray(msg.items) ? msg.items : [];
+        this.extStore.error = msg.error;
+        this.paintExtIfOpen();
+        break;
+      case "mcp.store":
+        if (String(msg.query ?? "") !== this.mcpStore.query) break;
+        this.mcpStore = { ...this.mcpStore, items: Array.isArray(msg.items) ? msg.items : [], error: msg.error, building: Boolean(msg.building), starsComplete: Boolean(msg.starsComplete), hasToken: Boolean(msg.hasToken) };
+        this.paintExtIfOpen();
+        break;
+      case "ext.changed":
+        this.extDirty = true;
+        if (Array.isArray(msg.vars) && msg.vars.length) this.extVars = msg.vars.map(String);
+        this.loadExtInventory();
+        break;
+      case "ext.error":
+        this.flashSettings(String(msg.message ?? "操作失败"), true);
+        break;
       case "auth.providers":
         this.authProviders = Array.isArray(msg.providers) ? msg.providers : [];
         if (this.sheetKind === "settings" && this.settingsTab === "login") this.paintSettings();
@@ -4723,7 +4774,16 @@ export class App {
     chip.onclick = () => this.openModelSheet();
     chip.append(el("span", "chip-model", ""), el("span", "chip-ctx", ""), el("span", "chip-rate", ""), el("span", "chip-level", ""));
     this.modelChip = chip;
-    tools.append(skillBtn, pathBtn, chip);
+    tools.append(skillBtn);
+    if (this.uiPrefs.showExtButton) {
+      const extBtn = el("button", "btn ghost ext-btn", "扩展") as HTMLButtonElement;
+      extBtn.title = "已安装的扩展与 MCP、扩展商店、MCP 商店（可在 pi 设置 → 扩展与 MCP 里隐藏这个按钮）";
+      extBtn.onclick = () => this.openExtManager();
+      this.extButton = extBtn;
+      tools.append(extBtn);
+      this.paintExtButton();
+    } else this.extButton = null;
+    tools.append(pathBtn, chip);
     if (s?.owned) {
       // The explanation lives in the tooltip so it no longer costs the composer a whole row.
       const fromWeb = s.origin === "web";
@@ -4959,7 +5019,7 @@ export class App {
     body.replaceChildren();
     if (this.settingsTab === "trust") return this.paintTrust(body);
     if (this.settingsTab === "login") return this.paintLogin(body);
-    if (this.settingsTab === "ext") return this.paintExt(body);
+    if (this.settingsTab === "ext") return this.paintExtSettings(body);
     if (this.settingsTab === "changelog") return this.paintChangelog(body);
     const scope = this.settingsTab;
     const view = this.settingsView[scope];
@@ -5227,6 +5287,23 @@ export class App {
 
   private paintExtIfOpen(): void {
     if (this.sheetKind === "settings" && this.settingsTab === "ext") this.paintSettings();
+    else if (this.sheetKind === "ext") {
+      const host = this.sheet?.querySelector<HTMLElement>(".ext-host");
+      if (host) {
+        // Keep the scroll position and the focused search box across repaints.
+        const body = host.parentElement;
+        const top = body?.scrollTop ?? 0;
+        const focused = document.activeElement instanceof HTMLInputElement && host.contains(document.activeElement) ? document.activeElement.placeholder : null;
+        const caret = focused ? (document.activeElement as HTMLInputElement).selectionStart : null;
+        this.paintExtManager(host);
+        if (body) body.scrollTop = top;
+        if (focused) {
+          const again = [...host.querySelectorAll<HTMLInputElement>("input")].find((i) => i.placeholder === focused);
+          again?.focus();
+          if (again && caret !== null) again.setSelectionRange(caret, caret);
+        }
+      }
+    }
   }
 
   /** Run one of pi's maintenance subcommands (bridge/src/picli.ts); the console shows its output. */
@@ -5240,151 +5317,527 @@ export class App {
   }
 
   /** #33: packages and MCP servers, what `pi install/list/remove/update` and `pi mcp …` do. */
-  private paintExt(body: HTMLElement): void {
-    const cwd = this.session?.cwd;
-    if (!this.pkgRows) this.socket.send({ type: "picli", op: "pkg.list", ...(cwd ? { cwd } : {}) });
-    if (!this.mcpRows) this.socket.send({ type: "picli", op: "mcp.list", ...(cwd ? { cwd } : {}) });
-    const busy = Boolean(this.cliRun && this.cliRun.code === undefined && !this.cliRun.error);
-    body.append(el("div", "settings-hint", "这里跑的就是 pi 的 install / remove / update 和 mcp 子命令。装完、改完之后，正在运行的会话要「重新加载」才看得到；装包等于让它的代码在这台电脑上运行，只装你信得过的。"));
+  // ---------------------------------------------------------------- 扩展 manager (D81)
+  /** Settings → 扩展与 MCP: the composer-button switch, then the same manager as the dialog. */
+  private paintExtSettings(body: HTMLElement): void {
+    const row = el("label", "ns-adv-flag ext-switch");
+    const box = el("input") as HTMLInputElement;
+    box.type = "checkbox";
+    box.checked = this.uiPrefs.showExtButton;
+    box.onchange = () => this.act(() => this.socket.send({ type: "ui.set", showExtButton: box.checked }));
+    row.append(box, el("span", "", "在输入框下方显示「扩展」按钮（点开就是下面这套管理界面）"));
+    body.append(row);
+    const host = el("div", "ext-host");
+    body.append(host);
+    if (!this.extInv && !this.extInvLoading) this.loadExtInventory();
+    this.paintExtManager(host);
+  }
 
-    // packages
-    body.append(el("div", "settings-label", "pi 包（扩展 / 技能 / 模板 / 主题）"));
-    const pkgs = el("div", "login-list");
-    if (!this.pkgRows) pkgs.append(el("div", "empty", "读取中…"));
-    else if (!this.pkgRows.length) pkgs.append(el("div", "empty", "还没有装任何包"));
-    for (const p of this.pkgRows ?? []) {
-      const row = el("div", "login-row");
-      const name = el("div", "login-name");
-      name.append(el("span", "", p.source));
-      if (p.path) name.title = p.path;
-      row.append(name, el("span", "login-status", p.scope === "project" ? "项目" : "全局"));
-      const acts = el("div", "login-acts");
-      const up = el("button", "btn", "更新") as HTMLButtonElement;
-      up.disabled = busy;
-      // A local source is stored relative to the settings file (..\pkg): hand pi the resolved path.
-      const ref = /^(npm:|git:|https?:|ssh:)/.test(p.source) ? p.source : (p.path ?? p.source);
-      up.onclick = () => this.piCli({ op: "pkg.update", target: ref });
-      const rm = el("button", "btn ghost", "卸载") as HTMLButtonElement;
-      rm.disabled = busy;
-      rm.onclick = () => this.piCli({ op: "pkg.remove", source: ref, local: p.scope === "project" });
-      acts.append(up, rm);
-      row.append(acts);
-      pkgs.append(row);
-    }
-    body.append(pkgs);
-    const install = el("div", "info-compact");
-    const src = el("input", "ns-input mono") as HTMLInputElement;
-    src.placeholder = "npm:@scope/pkg · git:github.com/user/repo · ./local/path";
-    const scope = el("select", "ns-input") as HTMLSelectElement;
-    scope.append(new Option("全局", "global"), new Option("当前项目", "project"));
-    scope.style.flex = "0 0 auto";
-    scope.style.width = "auto";
-    const go = el("button", "btn primary", "安装") as HTMLButtonElement;
-    go.disabled = busy;
-    go.onclick = () => {
-      if (!src.value.trim()) return;
-      this.piCli({ op: "pkg.install", source: src.value.trim(), local: scope.value === "project" });
+  /** The dialog the composer's 扩展 button opens. */
+  private openExtManager(tab: "installed" | "ext" | "mcp" = "installed"): void {
+    this.closeSheet();
+    this.sheetKind = "ext";
+    this.extTab = tab;
+    this.extDirty = false;
+    this.extVars = [];
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
     };
-    install.append(src, scope, go);
-    body.append(install);
-    const updates = el("div", "settings-trust-opts");
-    for (const [target, label, title] of [
-      ["extensions", "更新全部包", "pi update --extensions"],
-      ["models", "刷新模型目录", "pi update --models"],
-      ["self", "更新 pi 本体", "pi update：网页正在用的 pi 也会被替换，完成后最好重启 bridge"],
-    ] as const) {
-      const b = el("button", "btn ghost", label) as HTMLButtonElement;
-      b.title = title;
-      b.disabled = busy;
-      b.onclick = () => this.piCli({ op: "pkg.update", target });
-      updates.append(b);
-    }
-    body.append(updates);
+    const sheet = el("div", "sheet settings-sheet ext-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", "扩展与 MCP"));
+    const close = el("button", "btn ghost", "关闭");
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const body = el("div", "settings-body");
+    const host = el("div", "ext-host");
+    body.append(host);
+    sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    this.extInv = null;
+    this.loadExtInventory();
+    this.paintExtManager(host);
+  }
 
-    // MCP
-    body.append(el("div", "settings-label", "MCP 服务器"));
-    const mcp = el("div", "login-list");
-    if (!this.mcpRows) mcp.append(el("div", "empty", "连接各个服务器检查状态中…（pi mcp list）"));
-    else if (!this.mcpRows.length) mcp.append(el("div", "empty", "没有配置 MCP 服务器"));
-    for (const m of this.mcpRows ?? []) {
-      const row = el("div", `login-row${m.state === "connected" ? " on" : ""}`);
-      const name = el("div", "login-name");
-      name.append(el("span", "", m.name), el("span", "settings-hint", ` ${m.scope ?? ""}${m.exposure ? ` · ${m.exposure}` : ""}`));
-      if (m.transport) name.title = m.transport;
-      const state = m.enabled === false ? "已停用" : m.state === "connected" ? `已连接 · ${m.tools?.length ?? 0} 个工具` : (m.state ?? "未知");
-      row.append(name, el("span", `login-status${m.state === "connected" ? " ok" : ""}`, state));
-      const acts = el("div", "login-acts");
-      if (m.error) acts.append(el("span", "settings-hint", m.error.slice(0, 200)));
-      const loginBtn = el("button", "btn", "OAuth 登录") as HTMLButtonElement;
-      loginBtn.title = "pi mcp login：在这台电脑上打开浏览器完成授权";
-      loginBtn.disabled = busy;
-      loginBtn.onclick = () => this.piCli({ op: "mcp.login", name: m.name });
-      const logoutBtn = el("button", "btn ghost", "登出") as HTMLButtonElement;
-      logoutBtn.disabled = busy;
-      logoutBtn.onclick = () => this.piCli({ op: "mcp.logout", name: m.name });
-      const rm = el("button", "btn ghost", "删除") as HTMLButtonElement;
-      rm.disabled = busy;
-      rm.onclick = () => this.piCli({ op: "mcp.remove", name: m.name, local: m.scope === "project" });
-      acts.append(loginBtn, logoutBtn, rm);
-      row.append(acts);
-      mcp.append(row);
-    }
-    body.append(mcp);
-    const add = el("details", "ns-advanced");
-    add.append(el("summary", "", "添加 MCP 服务器（pi mcp add）"));
-    const grid = el("div", "ns-adv-grid");
-    const field = (label: string, input: HTMLElement) => {
-      const w = el("label", "ns-adv-field");
-      w.append(el("span", "ns-adv-label", label), input);
-      grid.append(w);
-    };
-    const mName = el("input", "ns-input mono") as HTMLInputElement;
-    mName.placeholder = "名字，例如 github";
-    field("名字", mName);
-    const mUrl = el("input", "ns-input mono") as HTMLInputElement;
-    mUrl.placeholder = "HTTP 服务器填 URL；stdio 服务器留空，填下面的命令";
-    field("URL", mUrl);
-    const mCmd = el("input", "ns-input mono") as HTMLInputElement;
-    mCmd.placeholder = "例如 npx";
-    field("启动命令（stdio）", mCmd);
-    const mArgs = el("textarea", "ns-input mono") as HTMLTextAreaElement;
-    mArgs.rows = 2;
-    mArgs.placeholder = "一行一个参数，例如\n-y\n@modelcontextprotocol/server-github";
-    field("参数", mArgs);
-    const mEnv = el("textarea", "ns-input mono") as HTMLTextAreaElement;
-    mEnv.rows = 2;
-    mEnv.placeholder = "一行一个 KEY=VALUE";
-    field("环境变量", mEnv);
-    const mScope = el("select", "ns-input") as HTMLSelectElement;
-    mScope.append(new Option("全局（~/.pi/agent/mcp.json）", "global"), new Option("当前项目（.pi/mcp.json）", "project"));
-    field("写到", mScope);
-    const mGo = el("button", "btn primary", "添加") as HTMLButtonElement;
-    mGo.disabled = busy;
-    mGo.onclick = () => {
-      const lines = (t: string) => t.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-      this.piCli({
-        op: "mcp.add",
-        name: mName.value.trim(),
-        url: mUrl.value.trim() || undefined,
-        command: mCmd.value.trim() || undefined,
-        args: lines(mArgs.value),
-        env: lines(mEnv.value),
-        local: mScope.value === "project",
-      });
-    };
-    grid.append(mGo);
-    add.append(grid);
-    body.append(add);
+  /** Fresh inventory with online version checks (the bridge caches registry answers for 30 minutes). */
+  private loadExtInventory(): void {
+    this.extInvLoading = true;
+    this.socket.send({ type: "ext.inventory", check: true, ...(this.session?.cwd ? { cwd: this.session.cwd } : {}) });
+  }
 
-    // console of the last write
+  private paintExtButton(): void {
+    const btn = this.extButton;
+    if (!btn) return;
+    btn.querySelector(".ext-badge")?.remove();
+    if (this.extUpdates > 0) {
+      const badge = el("span", "ext-badge", String(this.extUpdates));
+      badge.title = `${this.extUpdates} 个可以更新`;
+      btn.append(badge);
+    }
+  }
+
+  private extArmed(key: string): boolean {
+    if (this.extArm && this.extArm.key === key && Date.now() < this.extArm.until) {
+      this.extArm = null;
+      return true;
+    }
+    this.extArm = { key, until: Date.now() + 4000 };
+    setTimeout(() => {
+      if (this.extArm?.key === key && Date.now() >= this.extArm.until) {
+        this.extArm = null;
+        this.paintExtIfOpen();
+      }
+    }, 4100);
+    return false;
+  }
+
+  private paintExtManager(host: HTMLElement): void {
+    host.replaceChildren();
+    const tabs = el("div", "settings-tabs ext-tabs");
+    const def: ["installed" | "ext" | "mcp", string][] = [
+      ["installed", this.extUpdates ? `已安装（${this.extUpdates} 个可更新）` : "已安装"],
+      ["ext", "扩展商店"],
+      ["mcp", "MCP 商店"],
+    ];
+    for (const [id, label] of def) {
+      const b = el("button", `chip${this.extTab === id ? " on" : ""}`, label) as HTMLButtonElement;
+      b.onclick = () => {
+        this.extTab = id;
+        this.paintExtIfOpen();
+      };
+      tabs.append(b);
+    }
+    host.append(tabs);
+    if (this.me.public) host.append(el("div", "takeover warn", "通过公网访问：这里只能查看，安装 / 卸载 / 更新 / 启停请在本机或局域网操作。"));
+    if (this.extDirty) {
+      const bar = el("div", "takeover ext-reload");
+      bar.append(el("span", "", "改动要「重新加载」后，正在运行的会话才看得到（新开的会话直接生效）。"));
+      if (this.session?.owned) {
+        const b = el("button", "btn", "重新加载当前会话") as HTMLButtonElement;
+        b.disabled = Boolean(this.session.running);
+        b.title = this.session.running ? "这一轮结束后再重新加载" : "/reload";
+        b.onclick = () => {
+          const sessionId = this.currentId;
+          if (!sessionId) return;
+          this.act(() => this.socket.send({ type: "reload", sessionId }));
+          this.extDirty = false;
+          this.paintExtIfOpen();
+        };
+        bar.append(b);
+      }
+      host.append(bar);
+    }
+    if (this.extVars.length) {
+      host.append(
+        el("div", "takeover warn", `这个 MCP 服务要用到密钥，mcp.json 里只写了变量引用。请在系统环境变量里设置：${this.extVars.join("、")}，然后重启 bridge（或至少重新加载会话）。`),
+      );
+    }
+    if (this.extTab === "installed") this.paintExtInstalled(host);
+    else if (this.extTab === "ext") this.paintExtStore(host);
+    else this.paintMcpStore(host);
+    // console of the last command
     const run = this.cliRun;
     if (run && run.op !== "pkg.list" && run.op !== "mcp.list") {
       const status = run.error ? `没跑起来：${run.error}` : run.code === undefined ? `正在运行 ${run.op}…` : run.code === 0 ? `${run.op} 完成` : `${run.op} 退出码 ${run.code}`;
-      body.append(el("div", `login-result${run.error || (run.code !== undefined && run.code !== 0) ? " bad" : ""}`, status));
+      host.append(el("div", `login-result${run.error || (run.code !== undefined && run.code !== 0) ? " bad" : ""}`, status));
       const pre = el("pre", "cli-out", run.out || "");
-      body.append(pre);
+      host.append(pre);
       queueMicrotask(() => (pre.scrollTop = pre.scrollHeight));
     }
+  }
+
+  private extBusy(): boolean {
+    return Boolean(this.cliRun && this.cliRun.code === undefined && !this.cliRun.error) || Boolean(this.me.public);
+  }
+
+  private paintExtInstalled(host: HTMLElement): void {
+    const inv = this.extInv;
+    const busy = this.extBusy();
+    const cwd = this.session?.cwd;
+    const top = el("div", "settings-foot");
+    top.append(el("span", "settings-hint", this.extInvLoading ? "联网检查版本中…" : inv ? `检查于 ${new Date(inv.checkedAt).toLocaleTimeString()}` : ""));
+    top.append(el("span", "spacer"));
+    const updatable = inv ? [...inv.packages.filter((p) => p.update).map((p) => ({ kind: "pkg" as const, p })), ...inv.mcp.filter((m) => m.version.update).map((m) => ({ kind: "mcp" as const, m }))] : [];
+    if (updatable.length) {
+      const all = el("button", "btn primary", `全部更新（${updatable.length}）`) as HTMLButtonElement;
+      all.disabled = busy;
+      all.onclick = () => {
+        for (const u of updatable) {
+          if (u.kind === "pkg") this.piCli({ op: "pkg.update", target: this.pkgRef(u.p) });
+          else if (u.m.version.latest) this.act(() => this.socket.send({ type: "mcp.bump", file: u.m.source, name: u.m.name, version: u.m.version.latest }));
+        }
+      };
+      top.append(all);
+    }
+    const refresh = el("button", "btn ghost", "刷新") as HTMLButtonElement;
+    refresh.onclick = () => {
+      this.loadExtInventory();
+      this.paintExtIfOpen();
+    };
+    top.append(refresh);
+    host.append(top);
+    if (!inv) {
+      host.append(el("div", "empty", "读取中…（列出包和 MCP 服务器、连接一遍检查状态）"));
+      return;
+    }
+
+    host.append(el("div", "settings-label", "pi 包"));
+    const pkgs = el("div", "login-list");
+    if (!inv.packages.length) pkgs.append(el("div", "empty", "还没有装任何包，去「扩展商店」看看"));
+    for (const p of inv.packages) {
+      const row = el("div", "login-row");
+      const name = el("div", "login-name");
+      name.append(el("span", "", p.name ?? p.source), el("span", "settings-hint", ` ${p.version ? `v${p.version}` : ""}${p.pinned && p.origin !== "local" ? " · 固定版本" : ""}`));
+      name.title = `${p.source}${p.path ? `\n${p.path}` : ""}`;
+      const tag = p.update ? `可更新到 ${p.latest}` : p.origin === "local" ? "本地" : p.checkError ? "没查到最新版" : p.pinned ? "" : "最新";
+      row.append(name, el("span", `login-status${p.update ? " warn" : p.origin !== "local" && !p.checkError && !p.pinned ? " ok" : ""}`, `${p.scope === "project" ? "项目 · " : ""}${tag}`));
+      const acts = el("div", "login-acts");
+      if (p.update) {
+        const up = el("button", "btn primary", "更新") as HTMLButtonElement;
+        up.disabled = busy;
+        up.onclick = () => this.piCli({ op: "pkg.update", target: this.pkgRef(p) });
+        acts.append(up);
+      }
+      const key = `pkg:${p.source}`;
+      const armed = this.extArm?.key === key;
+      const rm = el("button", `btn ghost${armed ? " danger" : ""}`, armed ? "确认卸载？" : "卸载") as HTMLButtonElement;
+      rm.disabled = busy;
+      rm.onclick = () => {
+        if (this.extArmed(key)) this.piCli({ op: "pkg.remove", source: this.pkgRef(p), local: p.scope === "project" });
+        this.paintExtIfOpen();
+      };
+      acts.append(rm);
+      row.append(acts);
+      pkgs.append(row);
+    }
+    host.append(pkgs);
+
+    host.append(el("div", "settings-label", "扩展（内置 / 单独的文件）"));
+    const exts = el("div", "login-list");
+    for (const x of inv.extensions) {
+      const row = el("div", `login-row${x.enabled ? " on" : ""}`);
+      const name = el("div", "login-name");
+      name.append(el("span", "", x.label), el("span", "settings-hint", ` ${x.scope === "builtin" ? "内置" : x.scope === "project" ? "项目" : "全局"}${x.how === "listed" ? " · settings 里列出" : x.how === "discovered" ? " · extensions 目录" : ""}`));
+      name.title = x.id;
+      row.append(name, el("span", `login-status${x.enabled ? " ok" : ""}`, x.enabled ? "启用" : "已停用"));
+      const acts = el("div", "login-acts");
+      const t = el("button", "btn", x.enabled ? "停用" : "启用") as HTMLButtonElement;
+      t.disabled = busy;
+      t.onclick = () => this.act(() => this.socket.send({ type: "ext.toggle", id: x.id, scope: x.scope, how: x.how, enable: !x.enabled, ...(cwd ? { cwd } : {}) }));
+      acts.append(t);
+      row.append(acts);
+      exts.append(row);
+    }
+    host.append(exts);
+
+    host.append(el("div", "settings-label", "MCP 服务器"));
+    const mcp = el("div", "login-list");
+    if (inv.mcpError) mcp.append(el("div", "settings-hint", `pi mcp list 出错：${inv.mcpError}`));
+    if (!inv.mcp.length) mcp.append(el("div", "empty", "没有配置 MCP 服务器，去「MCP 商店」看看"));
+    for (const m of inv.mcp) {
+      const row = el("div", `login-row${m.state === "connected" ? " on" : ""}`);
+      const name = el("div", "login-name");
+      const v = m.version;
+      name.append(el("span", "", m.name), el("span", "settings-hint", ` ${m.scope}${v.version ? ` · v${v.version}` : v.identifier ? " · 始终用最新" : ""}${m.exposure ? ` · ${m.exposure}` : ""}`));
+      if (m.transport) name.title = m.transport;
+      const state = !m.enabled ? "已停用" : m.state === "connected" ? `已连接 · ${m.tools.length} 个工具` : (m.state ?? "未知");
+      row.append(name, el("span", `login-status${v.update ? " warn" : m.state === "connected" ? " ok" : ""}`, v.update ? `可更新到 ${v.latest} · ${state}` : state));
+      const acts = el("div", "login-acts");
+      if (m.error) acts.append(el("span", "settings-hint", m.error.slice(0, 200)));
+      if (m.tools.length) {
+        const tools = el("details", "ext-tools");
+        tools.append(el("summary", "", `工具（${m.tools.length}）`), el("div", "settings-hint", m.tools.join(" · ")));
+        acts.append(tools);
+      }
+      if (v.update && v.latest) {
+        const up = el("button", "btn primary", "更新") as HTMLButtonElement;
+        up.disabled = busy;
+        up.onclick = () => this.act(() => this.socket.send({ type: "mcp.bump", file: m.source, name: m.name, version: v.latest }));
+        acts.append(up);
+      }
+      const t = el("button", "btn", m.enabled ? "停用" : "启用") as HTMLButtonElement;
+      t.disabled = busy;
+      t.onclick = () => this.act(() => this.socket.send({ type: "mcp.toggle", file: m.source, name: m.name, enable: !m.enabled }));
+      const login = el("button", "btn ghost", "OAuth 登录") as HTMLButtonElement;
+      login.title = "pi mcp login：在这台电脑上打开浏览器完成授权";
+      login.disabled = busy;
+      login.onclick = () => this.piCli({ op: "mcp.login", name: m.name });
+      const key = `mcp:${m.source}:${m.name}`;
+      const armed = this.extArm?.key === key;
+      const rm = el("button", `btn ghost${armed ? " danger" : ""}`, armed ? "确认删除？" : "删除") as HTMLButtonElement;
+      rm.disabled = busy;
+      rm.onclick = () => {
+        if (this.extArmed(key)) this.piCli({ op: "mcp.remove", name: m.name, local: m.scope === "project" });
+        this.paintExtIfOpen();
+      };
+      acts.append(t, login, rm);
+      row.append(acts);
+      mcp.append(row);
+    }
+    host.append(mcp);
+
+    // install by source (git / local paths the store does not have)
+    const more = el("details", "ns-advanced");
+    more.append(el("summary", "", "按来源安装包 / 手动添加 MCP 服务器"));
+    const grid = el("div", "ns-adv-grid");
+    const src = el("input", "ns-input mono") as HTMLInputElement;
+    src.placeholder = "npm:@scope/pkg · git:github.com/user/repo · ./local/path";
+    const go = el("button", "btn", "安装包") as HTMLButtonElement;
+    go.disabled = busy;
+    go.onclick = () => {
+      if (src.value.trim()) this.piCli({ op: "pkg.install", source: src.value.trim(), local: this.extScope === "project" });
+    };
+    const r1 = el("div", "info-compact");
+    r1.append(src, go);
+    grid.append(r1);
+    const mName = el("input", "ns-input mono") as HTMLInputElement;
+    mName.placeholder = "MCP 服务名，例如 github";
+    const mUrl = el("input", "ns-input mono") as HTMLInputElement;
+    mUrl.placeholder = "HTTP 服务器 URL（stdio 服务器留空，填下面的命令）";
+    const mCmd = el("input", "ns-input mono") as HTMLInputElement;
+    mCmd.placeholder = "启动命令 + 参数（空格分隔），例如 npx -y @modelcontextprotocol/server-everything";
+    const mGo = el("button", "btn", "添加 MCP") as HTMLButtonElement;
+    mGo.disabled = busy;
+    mGo.onclick = () => {
+      const parts = mCmd.value.trim().split(/\s+/).filter(Boolean);
+      this.piCli({ op: "mcp.add", name: mName.value.trim(), url: mUrl.value.trim() || undefined, command: parts[0], args: parts.slice(1), local: this.extScope === "project" });
+    };
+    grid.append(mName, mUrl, mCmd, mGo);
+    more.append(grid);
+    host.append(more);
+  }
+
+  /** A local package is stored relative to its settings file: hand pi the resolved path. */
+  private pkgRef(p: { source: string; path: string | null }): string {
+    return /^(npm:|git:|https?:|ssh:)/.test(p.source) ? p.source : (p.path ?? p.source);
+  }
+
+  private storeHeader(host: HTMLElement, store: { query: string; limit: number }, placeholder: string, run: () => void): void {
+    const bar = el("div", "info-compact");
+    const q = el("input", "ns-input") as HTMLInputElement;
+    q.placeholder = placeholder;
+    q.value = store.query;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    q.oninput = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        store.query = q.value.trim();
+        run();
+      }, 350);
+    };
+    const scope = el("select", "ns-input") as HTMLSelectElement;
+    scope.append(new Option("装到全局", "global"), new Option("装到当前项目", "project"));
+    scope.value = this.extScope;
+    scope.style.flex = "0 0 auto";
+    scope.style.width = "auto";
+    scope.disabled = !this.session?.cwd;
+    scope.onchange = () => (this.extScope = scope.value === "project" ? "project" : "global");
+    bar.append(q, scope);
+    host.append(bar);
+    const chips = el("div", "settings-trust-opts");
+    chips.append(el("span", "settings-hint", store.query ? "搜索结果，按热度排：" : "热度前"));
+    for (const n of [10, 20, 50]) {
+      const b = el("button", `chip${store.limit === n ? " on" : ""}`, String(n)) as HTMLButtonElement;
+      b.onclick = () => {
+        store.limit = n;
+        run();
+      };
+      chips.append(b);
+    }
+    host.append(chips);
+    queueMicrotask(() => {
+      if (document.activeElement === document.body) q.focus();
+    });
+  }
+
+  private paintExtStore(host: HTMLElement): void {
+    const store = this.extStore;
+    const run = () => {
+      store.items = null;
+      this.socket.send({ type: "ext.store", query: store.query, limit: store.limit });
+      this.paintExtIfOpen();
+    };
+    if (store.items === null && !store.error) this.socket.send({ type: "ext.store", query: store.query, limit: store.limit });
+    this.storeHeader(host, store, "搜索 pi 扩展（npm 上带 pi-package 关键字的包）", run);
+    host.append(el("div", "settings-hint", "来源是 npm（和 pi.dev/packages 画廊同一批包），按月下载量排序。装包等于让它的代码在这台电脑上运行，只装你信得过的。"));
+    const list = el("div", "login-list");
+    if (store.error) list.append(el("div", "empty", store.error));
+    else if (!store.items) list.append(el("div", "empty", "查询中…"));
+    else if (!store.items.length) list.append(el("div", "empty", "没有找到"));
+    const installed = new Set((this.extInv?.packages ?? []).map((p) => p.name).filter(Boolean));
+    const busy = this.extBusy();
+    (store.items ?? []).forEach((p, i) => {
+      const row = el("div", "login-row");
+      const name = el("div", "login-name");
+      const link = el("a", "", p.name) as HTMLAnchorElement;
+      link.href = p.link;
+      link.target = "_blank";
+      link.rel = "noopener";
+      name.append(el("span", "ext-rank", `${i + 1}`), link, el("span", "settings-hint", ` v${p.version}${p.publisher ? ` · ${p.publisher}` : ""}`));
+      row.append(name, el("span", "login-status", `月下载 ${p.monthly.toLocaleString("en-US")}`));
+      const acts = el("div", "login-acts");
+      if (p.description) acts.append(el("span", "settings-hint ext-desc", p.description));
+      if (installed.has(p.name)) acts.append(el("span", "login-status ok", "已安装"));
+      else {
+        const b = el("button", "btn primary", "安装") as HTMLButtonElement;
+        b.disabled = busy;
+        b.onclick = () => this.piCli({ op: "pkg.install", source: `npm:${p.name}`, local: this.extScope === "project" });
+        acts.append(b);
+      }
+      row.append(acts);
+      list.append(row);
+    });
+    host.append(list);
+  }
+
+  private paintMcpStore(host: HTMLElement): void {
+    const store = this.mcpStore;
+    const run = () => {
+      store.items = null;
+      this.mcpForm = null;
+      this.socket.send({ type: "mcp.store", query: store.query, limit: store.limit });
+      this.paintExtIfOpen();
+    };
+    if (store.items === null && !store.error) this.socket.send({ type: "mcp.store", query: store.query, limit: store.limit });
+    this.storeHeader(host, store, "搜索 MCP 服务（官方 MCP Registry）", run);
+    const notes: string[] = ["来源是官方 MCP Registry，按仓库的 GitHub star 排序。"];
+    if (store.building) notes.push("排行数据正在后台建立（第一次约 2 分钟），现在显示的是 Registry 的直接搜索结果，没有 star。");
+    else if (store.items && !store.starsComplete) notes.push(store.hasToken ? "部分仓库的 star 没查到。" : "没登录 GitHub CLI（gh），star 只查到一部分：运行 gh auth login 后排行更准。");
+    host.append(el("div", "settings-hint", notes.join("")));
+    const list = el("div", "login-list");
+    if (store.error) list.append(el("div", "empty", store.error));
+    else if (!store.items) list.append(el("div", "empty", "查询中…"));
+    else if (!store.items.length) list.append(el("div", "empty", "没有找到"));
+    const busy = this.extBusy();
+    const installedText = (this.extInv?.mcp ?? []).map((m) => `${m.name} ${m.transport ?? ""}`).join("\n");
+    (store.items ?? []).forEach((m, i) => {
+      const row = el("div", "login-row");
+      const name = el("div", "login-name");
+      name.append(el("span", "ext-rank", `${i + 1}`), el("span", "", m.title));
+      name.append(el("span", "settings-hint", ` ${m.name}${m.version ? ` · v${m.version}` : ""}`));
+      name.title = m.name;
+      const right = el("span", "login-status", m.stars ? `★ ${m.stars.toLocaleString("en-US")}` : "");
+      row.append(name, right);
+      const acts = el("div", "login-acts");
+      if (m.description) acts.append(el("span", "settings-hint ext-desc", m.description));
+      if (m.repo) {
+        const a = el("a", "settings-hint", "仓库") as HTMLAnchorElement;
+        a.href = m.repo;
+        a.target = "_blank";
+        a.rel = "noopener";
+        acts.append(a);
+      }
+      const already = m.options.some((o) => installedText.includes(o.identifier));
+      for (const o of m.options) acts.append(el("span", `ext-kind${o.unavailable ? " off" : ""}`, o.label));
+      if (already) acts.append(el("span", "login-status ok", "已安装"));
+      else if (this.mcpForm?.item === m.name) acts.append(this.mcpInstallForm(m));
+      else {
+        const usable = m.options.some((o) => !o.unavailable);
+        const b = el("button", "btn primary", "安装") as HTMLButtonElement;
+        b.disabled = busy || !usable;
+        b.title = usable ? "" : m.options.map((o) => o.unavailable).filter(Boolean).join("；");
+        b.onclick = () => {
+          const first = Math.max(0, m.options.findIndex((o) => !o.unavailable));
+          this.mcpForm = { item: m.name, name: this.slug(m), option: first, values: {}, exposure: "", description: "", local: this.extScope === "project" };
+          this.paintExtIfOpen();
+        };
+        acts.append(b);
+        if (!usable) acts.append(el("span", "settings-hint", m.options.map((o) => o.unavailable).filter(Boolean)[0] ?? ""));
+      }
+      row.append(acts);
+      list.append(row);
+    });
+    host.append(list);
+  }
+
+  private slug(m: StoreMcpItem): string {
+    const base = (m.name.split("/").pop() || m.title).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+    return base.replace(/-mcp(-server)?$/, "").replace(/^mcp-/, "") || "mcp";
+  }
+
+  /** Name, required fields (secrets become ${VAR}), scope; advanced: exposure, description. */
+  private mcpInstallForm(m: StoreMcpItem): HTMLElement {
+    const f = this.mcpForm!;
+    const box = el("div", "ext-form");
+    if (m.options.length > 1) {
+      const pick = el("select", "ns-input") as HTMLSelectElement;
+      m.options.forEach((o, i) => {
+        const opt = new Option(`${o.label}${o.unavailable ? `（${o.unavailable.split("：")[0]}）` : ""}`, String(i));
+        opt.disabled = Boolean(o.unavailable);
+        pick.append(opt);
+      });
+      pick.value = String(f.option);
+      pick.onchange = () => {
+        f.option = Number(pick.value);
+        f.values = {};
+        this.paintExtIfOpen();
+      };
+      box.append(this.formRow("运行方式", pick));
+    }
+    const opt = m.options[f.option];
+    const name = el("input", "ns-input mono") as HTMLInputElement;
+    name.value = f.name;
+    name.oninput = () => (f.name = name.value.trim());
+    box.append(this.formRow("服务名", name));
+    const field = (key: string, fd: McpFieldView) => {
+      if (fd.secret) {
+        const v = key.startsWith("env:") ? fd.name : `${f.name}_${fd.name}`.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+        box.append(this.formRow(`${fd.name}${fd.required ? " *" : ""}`, el("span", "settings-hint", `密钥：mcp.json 里写成 \${${v}}，请在系统环境变量里设置它。${fd.description ? ` ${fd.description}` : ""}`)));
+        return;
+      }
+      const input = el("input", "ns-input mono") as HTMLInputElement;
+      input.placeholder = fd.description || (fd.required ? "必填" : "可选");
+      input.value = f.values[key] ?? fd.default ?? "";
+      if (input.value) f.values[key] = input.value;
+      input.oninput = () => (f.values[key] = input.value);
+      box.append(this.formRow(`${fd.name}${fd.required ? " *" : ""}`, input));
+    };
+    for (const e of opt.env) field(`env:${e.name}`, e);
+    for (const h of opt.headers) field(`header:${h.name}`, h);
+    if (opt.kind === "remote") box.append(this.formRow("地址", el("code", "settings-hint", opt.url ?? "")));
+    else box.append(this.formRow("包", el("code", "settings-hint", `${opt.identifier}${opt.version ? ` ${opt.version}` : ""}`)));
+    const adv = el("details", "ns-advanced");
+    adv.append(el("summary", "", "高级"));
+    const exp = el("select", "ns-input") as HTMLSelectElement;
+    exp.append(new Option("codemode（默认）", ""), new Option("deferred", "deferred"), new Option("direct", "direct"), new Option("hidden", "hidden"));
+    exp.value = f.exposure;
+    exp.onchange = () => (f.exposure = exp.value);
+    const desc = el("input", "ns-input") as HTMLInputElement;
+    desc.placeholder = "描述（写进系统提示词，帮模型知道它能做什么）";
+    desc.value = f.description;
+    desc.oninput = () => (f.description = desc.value);
+    const advGrid = el("div", "ns-adv-grid");
+    advGrid.append(this.formRow("exposure", exp), this.formRow("描述", desc));
+    adv.append(advGrid);
+    box.append(adv);
+    const foot = el("div", "settings-foot");
+    const cancel = el("button", "btn ghost", "取消") as HTMLButtonElement;
+    cancel.onclick = () => {
+      this.mcpForm = null;
+      this.paintExtIfOpen();
+    };
+    const go = el("button", "btn primary", `安装到${this.extScope === "project" ? "当前项目" : "全局"}`) as HTMLButtonElement;
+    go.disabled = this.extBusy() || Boolean(opt.unavailable);
+    go.onclick = () => {
+      const cwd = this.session?.cwd;
+      this.act(() => {
+        this.cliRun = { runId: null, op: "mcp.add", out: "", code: undefined };
+        this.socket.send({ type: "mcp.install", option: opt, name: f.name, values: f.values, local: this.extScope === "project", exposure: f.exposure, description: f.description, ...(cwd ? { cwd } : {}) });
+        this.paintExtIfOpen();
+      });
+    };
+    foot.append(el("span", "spacer"), cancel, go);
+    box.append(foot);
+    return box;
+  }
+
+  private formRow(label: string, input: HTMLElement): HTMLElement {
+    const row = el("label", "settings-row");
+    row.append(el("span", "settings-label", label), input);
+    return row;
   }
 
   private paintLoginIfOpen(): void {
@@ -7397,6 +7850,84 @@ const BUILTIN_COMMANDS: [string, string][] = [
 ];
 
 type SettingsTab = "global" | "project" | "trust" | "login" | "ext" | "changelog";
+
+interface ExtPackage {
+  scope: "user" | "project";
+  source: string;
+  path: string | null;
+  name: string | null;
+  version: string | null;
+  origin: "npm" | "git" | "local";
+  pinned: boolean;
+  latest: string | null;
+  update: boolean;
+  checkError?: string;
+}
+interface ExtLoose {
+  id: string;
+  label: string;
+  scope: "user" | "project" | "builtin";
+  how: "builtin" | "discovered" | "listed";
+  enabled: boolean;
+}
+interface ExtMcp {
+  name: string;
+  scope: string;
+  source: string;
+  enabled: boolean;
+  exposure: string | null;
+  transport: string | null;
+  state: string | null;
+  tools: string[];
+  error: string | null;
+  version: { registry: string | null; identifier: string | null; version: string | null; latest: string | null; update: boolean };
+}
+interface ExtInventory {
+  packages: ExtPackage[];
+  extensions: ExtLoose[];
+  mcp: ExtMcp[];
+  mcpError: string | null;
+  updates: number;
+  checkedAt: number;
+}
+interface StorePkg {
+  name: string;
+  version: string;
+  description: string;
+  monthly: number;
+  weekly: number;
+  link: string;
+  publisher: string | null;
+}
+interface McpFieldView {
+  name: string;
+  description: string;
+  required: boolean;
+  secret: boolean;
+  default: string | null;
+  template?: string | null;
+}
+interface McpOptionView {
+  kind: "npm" | "pypi" | "oci" | "remote";
+  label: string;
+  identifier: string;
+  version: string | null;
+  url?: string;
+  transport: string;
+  env: McpFieldView[];
+  headers: McpFieldView[];
+  args: string[];
+  unavailable?: string;
+}
+interface StoreMcpItem {
+  name: string;
+  title: string;
+  description: string;
+  version: string;
+  repo: string | null;
+  stars: number;
+  options: McpOptionView[];
+}
 
 interface McpServerRow {
   name: string;
