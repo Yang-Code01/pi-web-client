@@ -434,6 +434,16 @@ export class Session extends EventEmitter {
   ownExitAt = 0;
   private draftId: string | null = null;
   private userCounter = 0;
+  /**
+   * Open while pi is compacting (ours or its own threshold/overflow run). pi throws on any prompt
+   * submitted in that window (agent-session.js: "Cannot submit a prompt while compaction is in
+   * progress"), so prompt() waits on it instead of bouncing the user's message.
+   */
+  private compaction: { done: Promise<void>; resolve: () => void } | null = null;
+  /** User items sent while a run was active, i.e. sitting in pi's queue until delivered or cleared. */
+  private queuedUser: { id: string; text: string }[] = [];
+  /** Bubbles of messages that stop pulled back from the queue; dropped once the run has settled. */
+  private withdrawOnSettle: { ids: string[]; count: number } | null = null;
 
   constructor(
     private cli: string,
@@ -613,6 +623,7 @@ export class Session extends EventEmitter {
       releaseLock(id);
       this.clearApprovals();
       this.clearAsks();
+      this.endCompaction();
       // A stop the user asked for is not news; only an exit nobody asked for is worth the stderr tail.
       if (closing) {
         if (!quiet) this.emitWs({ type: "notice", sessionId: id, text: "已停止运行，历史留在磁盘，发消息会自动接管。", level: "info" });
@@ -685,9 +696,16 @@ export class Session extends EventEmitter {
         this.emitWs({ type: "pi.status", sessionId: this.state.id, running: true });
         break;
       case "agent_end":
+        // Not the end of the run: retries, overflow recovery, compaction, steering and follow-ups
+        // can all carry on after it (docs/rpc.md "Run lifecycle"). Only agent_settled is idle.
+        void this.refreshStats();
+        break;
       case "agent_settled": {
+        // Whatever was queued has been delivered or cleared by now.
+        this.queuedUser = [];
         this.setState({ running: false, done: true });
         this.emitWs({ type: "pi.status", sessionId: this.state.id, running: false });
+        if (this.withdrawOnSettle) this.applyWithdraw();
         void this.refreshStats();
         break;
       }
@@ -737,6 +755,7 @@ export class Session extends EventEmitter {
           thinking,
           model: msg.model,
           stopReason: msg.stopReason,
+          ...(typeof msg.errorMessage === "string" && msg.errorMessage ? { errorMessage: msg.errorMessage } : {}),
         };
         if (draft) {
           this.emitWs({ type: "item.replace", sessionId: this.state.id, id: draft, item });
@@ -806,13 +825,17 @@ export class Session extends EventEmitter {
         break;
       }
       case "queue_update": {
-        this.emitWs({ type: "queue", sessionId: this.state.id, ...ev });
+        // Spread first: the event's own `type: "queue_update"` used to overwrite ours.
+        this.emitWs({ ...ev, type: "queue", sessionId: this.state.id });
         break;
       }
       case "compaction_start":
+        this.beginCompaction();
         this.emitWs({ type: "notice", sessionId: this.state.id, text: "开始压缩上下文…", level: "info" });
         break;
       case "compaction_end":
+        // A compaction that will be retried is still in progress for prompt()'s purposes.
+        if (!ev.willRetry) this.endCompaction();
         this.emitWs({
           type: "notice",
           sessionId: this.state.id,
@@ -825,8 +848,25 @@ export class Session extends EventEmitter {
         if (this.closing) break;
         this.emitWs({ type: "notice", sessionId: this.state.id, text: `扩展错误：${ev.error}`, level: "error" });
         break;
-      case "auto_retry_start":
-        this.emitWs({ type: "notice", sessionId: this.state.id, text: `请求失败，重试中…`, level: "warn" });
+      case "auto_retry_start": {
+        const attempt = Number(ev.attempt);
+        const max = Number(ev.maxAttempts);
+        const delay = Number(ev.delayMs);
+        const count = Number.isFinite(attempt) && Number.isFinite(max) && max > 0 ? `（第 ${attempt}/${max} 次）` : "";
+        const wait = Number.isFinite(delay) && delay > 0 ? `${Math.round(delay / 1000)} 秒后` : "";
+        const why = typeof ev.errorMessage === "string" && ev.errorMessage ? `：${ev.errorMessage.slice(0, 300)}` : "";
+        this.emitWs({ type: "notice", sessionId: this.state.id, text: `请求失败${why}。${wait}重试${count}…`, level: "warn" });
+        break;
+      }
+      case "auto_retry_end":
+        if (ev.success) this.emitWs({ type: "notice", sessionId: this.state.id, text: "重试成功，继续。", level: "info" });
+        else
+          this.emitWs({
+            type: "notice",
+            sessionId: this.state.id,
+            text: `重试后仍失败${typeof ev.finalError === "string" && ev.finalError ? `：${ev.finalError.slice(0, 500)}` : ""}`,
+            level: "error",
+          });
         break;
       default:
         break;
@@ -889,7 +929,7 @@ export class Session extends EventEmitter {
       options: options.map((o: string) => ({ value: o, label: o })),
       allowOther: true,
     };
-    const { id: askId, outcome } = this.ask([question], `ui.${req.method}`, req.timeout);
+    const { outcome } = this.ask([question], `ui.${req.method}`, req.timeout);
     void outcome.then((out) => {
       const value = out.answers?.[0]?.value;
       if (out.cancelled || typeof value !== "string") this.rpc?.uiRespond({ id: uiId, cancelled: true });
@@ -992,14 +1032,23 @@ export class Session extends EventEmitter {
   // ---------------------------------------------------------------- commands
   async prompt(text: string, images?: { data: string; mimeType: string }[]): Promise<void> {
     if (!this.rpc?.alive) throw new Error("会话没在运行");
+    // pi throws on a prompt submitted mid-compaction: hold it until the compaction is over.
+    if (this.compaction) {
+      this.emitWs({ type: "notice", sessionId: this.state.id, text: "正在压缩上下文，这条消息会在压缩完成后发出。", level: "info" });
+      await this.compaction.done;
+      if (!this.rpc?.alive) throw new Error("会话已经停止，这条消息没有发出");
+    }
     const message: any = { type: "prompt", message: text };
-    // pi rejects a bare prompt while a turn is streaming; queue it instead.
+    // pi rejects a bare prompt while a run is active; queue it instead. `running` spans
+    // agent_start … agent_settled, so retries and overflow recovery count as running too.
     if (this.state.running) message.streamingBehavior = "followUp";
     if (images?.length) {
       message.images = images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType }));
     }
+    const userId = `user:${++this.userCounter}`;
+    if (message.streamingBehavior) this.queuedUser.push({ id: userId, text });
     this.upsert({
-      id: `user:${++this.userCounter}`,
+      id: userId,
       kind: "user",
       text,
       images: (images ?? []).map((i) => ({ mimeType: i.mimeType })),
@@ -1022,19 +1071,82 @@ export class Session extends EventEmitter {
   }
 
   abort(): void {
-    // Fire and forget: abort's response can stall while a dialog is pending.
     this.clearApprovals();
     this.clearAsks();
+    const rpc = this.rpc;
+    if (!rpc?.alive) return;
+    // `abort` alone leaves queued messages in place and pi runs them as soon as it is idle
+    // (docs/rpc-commands.md clear_queue). Clear first: pi handles clear_queue synchronously, and
+    // commands are dispatched in arrival order, so the queue is empty before abort starts.
+    const cleared = rpc.request<{ steering?: unknown[]; followUp?: unknown[] }>("clear_queue", {}, 10000);
+    // Snapshot now: agent_settled may be processed before this response's promise callback runs.
+    const queued = this.queuedUser.slice();
+    // Fire and forget: abort's response can stall while a dialog is pending.
     try {
-      this.rpc?.fire("abort", {});
+      rpc.fire("abort", {});
     } catch {
       /* ignore */
     }
+    void cleared
+      .then((data) => {
+        const texts = [...(data?.steering ?? []), ...(data?.followUp ?? [])].map(String).filter((t) => t.trim());
+        if (!texts.length) return;
+        // Same as the terminal's Esc: the queued text goes back to the editor instead of vanishing.
+        this.emitWs({ type: "queue.restore", sessionId: this.state.id, texts });
+        // Their bubbles claim they were sent: drop them (matched by text, oldest first).
+        const ids: string[] = [];
+        const pool = [...queued];
+        for (const text of texts) {
+          const at = pool.findIndex((q) => q.text === text);
+          if (at >= 0) ids.push(pool.splice(at, 1)[0].id);
+        }
+        this.withdrawOnSettle = { ids, count: texts.length };
+        // Rebuilding the transcript mid-stream would drop the live draft: wait for the settle.
+        if (!this.state.running) this.applyWithdraw();
+      })
+      .catch(() => {
+        /* an old pi without clear_queue: abort still went out */
+      });
   }
 
+  private applyWithdraw(): void {
+    const pending = this.withdrawOnSettle;
+    this.withdrawOnSettle = null;
+    if (!pending) return;
+    if (pending.ids.length) {
+      const drop = new Set(pending.ids);
+      this.items = this.items.filter((it) => !drop.has(it.id));
+      this.emitWs({ type: "items", sessionId: this.state.id, items: this.items });
+    }
+    this.emitWs({ type: "notice", sessionId: this.state.id, text: `已撤回 ${pending.count} 条排队中的消息，放回了输入框。`, level: "info" });
+  }
+
+  /** Compaction is long (minutes on a big context); its events, not a short timeout, bound it. */
   async compact(): Promise<void> {
-    await this.rpc?.request("compact", {} as any);
+    const rpc = this.rpc;
+    if (!rpc?.alive) return;
+    this.beginCompaction();
+    try {
+      await rpc.request("compact", {}, 30 * 60 * 1000);
+    } finally {
+      this.endCompaction();
+    }
     void this.refreshStats();
+  }
+
+  private beginCompaction(): void {
+    if (this.compaction) return;
+    let resolve = () => {};
+    const done = new Promise<void>((r) => {
+      resolve = r;
+    });
+    this.compaction = { done, resolve };
+  }
+
+  private endCompaction(): void {
+    const current = this.compaction;
+    this.compaction = null;
+    current?.resolve();
   }
 
   /** Skills pi knows about (via get_commands), with a disk fallback for sessions with no rpc child. */

@@ -459,6 +459,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .msg .body code { font-family: var(--mono); font-size: 12.5px; background: #0e141b; padding: 1px 5px; border-radius: 5px; }
 .msg .body pre code { background: none; padding: 0; }
 .msg.assistant.no-text { display: none; }
+.msg .msg-error { margin-top: 6px; padding: 9px 12px; border: 1px solid #40222a; border-radius: 10px; background: #2a0f16; color: var(--danger); font-size: 13px; white-space: pre-wrap; word-break: break-word; }
 /* every tool call of a turn collapses into one module: the transcript stays prose-only */
 .ops {
   border: 1px solid var(--line-soft);

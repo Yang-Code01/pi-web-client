@@ -74,6 +74,7 @@ PI_WEB_HOST=0.0.0.0 npm start
 | `PI_WEB_ROOT` | 前端静态目录 | `web/dist` |
 | `PI_WEB_NO_EXT=1` | 不加载审批门禁扩展 | 关 |
 | `PI_BIN` | 指定 pi 的 `cli.js` | 自动找 |
+| `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` | 与 pi 同名同义：桥按 pi 的顺序找会话目录（环境变量 → 全局 `settings.json` 的 `sessionDir` → `~/.pi/agent/sessions`，D73） | 跟随 pi |
 
 ## 能做什么
 
@@ -118,6 +119,8 @@ node probes/scroll-race.mjs                                          # 滚动竞
 node probes/reveal-check.mjs                                         # 在文件夹中显示：三平台命令 + 缺文件/目录/隧道 403（REVEAL_OPEN=1 真弹窗）
 node probes/terminal-multi.mjs                                        # 终端多开：标签切换 + 两条独立 pty 流不串（真桥 + 真 PowerShell）
 node probes/dir-copy.mjs                                             # ⧉ 复制路径：切目录后剪贴板是当前目录，此电脑上禁用
+node bridge/tests/run-lifecycle.mjs                                   # 一轮的边界：重试期间不算空闲、停止清队列、长压缩不超时（假 pi，不花模型调用，需先 build:bridge）
+node bridge/tests/session-dirs.mjs                                    # 会话目录解析顺序与列表不截断（D73）
 ```
 
 `npm run typecheck` 分别跑 bridge 和 web 的 `tsc --noEmit`。

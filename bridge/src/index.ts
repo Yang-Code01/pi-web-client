@@ -25,7 +25,7 @@ import { bumpSkillUsage } from "./skills.ts";
 import { Notifier } from "./notify.ts";
 import { Tunnel, findCloudflared } from "./tunnel.ts";
 import { resolvePi } from "./pi.ts";
-import { APP_NAME, VERSION, ensureStateDirs, readJson, statePath, sessionsRoot } from "./paths.ts";
+import { APP_NAME, VERSION, ensureStateDirs, readJson, statePath, sessionsRootInfo } from "./paths.ts";
 import { clipboardFiles, listDirs, makeDir, statFiles } from "./dirs.ts";
 import { gitInfo } from "./git.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
@@ -317,7 +317,8 @@ async function main(): Promise<void> {
         tunnel: tunnel.state,
         pushKey: notifier.vapidPublicKey,
         pushCount: notifier.subscriptionCount(),
-        sessionsRoot: sessionsRoot(),
+        sessionsRoot: sessionsRootInfo().dir,
+        sessionsRootSource: sessionsRootInfo().source,
       });
     }
 
