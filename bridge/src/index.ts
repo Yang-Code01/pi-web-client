@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { Readable } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   authorized,
@@ -38,11 +39,14 @@ import { mcpAddRequest, searchMcp, searchPackages, type McpInstallOption } from 
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
+import { PeerHost, peerEntry } from "./peer.ts";
 
 interface Config {
   port: number;
   host: string;
   tunnelAuto: boolean;
+  /** 局域网 peer 的 HTTP 端口（#45）；`PI_PEER=0` 关掉整块功能。 */
+  peerPort: number;
 }
 
 const STEP_UP_MS = 10 * 60 * 1000;
@@ -54,6 +58,7 @@ function loadConfig(): Config {
     port: Number(process.env.PI_WEB_PORT || cfg.port || 7864),
     host: process.env.PI_WEB_HOST || cfg.host || "127.0.0.1",
     tunnelAuto: process.env.PI_WEB_TUNNEL === "1" || Boolean(cfg.tunnelAuto),
+    peerPort: Number(process.env.PI_PEER_PORT || 7865),
   };
 }
 
@@ -83,7 +88,9 @@ const MIME: Record<string, string> = {
 
 function serveStatic(res: http.ServerResponse, rel: string): void {
   const clean = rel.split("?")[0];
-  const target = path.join(WEB_ROOT, path.normalize(clean).replace(/^([/\\])+/, ""));
+  // 第二张页面：`/peer` 落到 peer.html，不能掉进 index.html 兜底（否则打开的是聊天界面）。
+  const wanted = clean === "/peer" || clean === "/peer/" ? "/peer.html" : clean;
+  const target = path.join(WEB_ROOT, path.normalize(wanted).replace(/^([/\\])+/, ""));
   const file = target.startsWith(WEB_ROOT) && fs.existsSync(target) && fs.statSync(target).isFile() ? target : path.join(WEB_ROOT, "index.html");
   if (!fs.existsSync(file)) {
     res.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
@@ -92,7 +99,9 @@ function serveStatic(res: http.ServerResponse, rel: string): void {
   }
   res.writeHead(200, {
     "content-type": MIME[path.extname(file)] ?? "application/octet-stream",
-    "cache-control": file.endsWith("index.html") ? "no-store" : "public, max-age=3600",
+    // 页面入口不进缓存：bundle 带构建哈希，HTML 却会一直指向上一版的哈希。
+    // peer.html 之前按「非 index.html」拿 3600 秒缓存 —— 改完页面，弹框里还是旧 JS。
+    "cache-control": file.endsWith(".html") ? "no-store" : "public, max-age=3600",
   });
   fs.createReadStream(file).pipe(res);
 }
@@ -117,6 +126,25 @@ function readBody(req: http.IncomingMessage): Promise<any> {
         reject(err as Error);
       }
     });
+    req.on("error", reject);
+  });
+}
+
+/** 读原始字节（上传剪贴板图片）。和 readBody 的区别只有「不 JSON.parse」。 */
+function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > limit) {
+        reject(new Error("body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
@@ -200,6 +228,10 @@ async function main(): Promise<void> {
   const tunnelBin = findCloudflared();
   const tunnel = new Tunnel(cfg.port, tunnelBin ?? "");
 
+  // 第 5 片：pi 子进程里的 peer_* 工具直连 peer 的回环端口（决定 33）。
+  // rpc.ts 起子进程时是 `{...process.env, ...opts.env}`，所以这里设一次就传下去了。
+  process.env.PI_PEER_PORT = String(cfg.peerPort);
+
   const log = (msg: string) => {
     const line = `${new Date().toISOString()} ${msg}`;
     console.log(line);
@@ -229,6 +261,12 @@ async function main(): Promise<void> {
   };
   process.on("uncaughtException", survive("uncaughtException"));
   process.on("unhandledRejection", survive("unhandledRejection"));
+
+  // #45：peer 是独立子进程（自己绑 7865、要被局域网访问），bridge 只托管它并把状态转给页面。
+  const peerOn = process.env.PI_PEER !== "0";
+  const peer = new PeerHost({ port: cfg.peerPort, entry: peerOn ? peerEntry() : null, log });
+  if (peerOn) peer.start();
+  else log("peer 已禁用（PI_PEER=0）");
 
   /**
    * Q-032: 被拒的提问必须说出理由。
@@ -315,6 +353,123 @@ async function main(): Promise<void> {
       resetLoginAttempts(ip);
       log(`login ok from ${ip}${publicReq ? " (tunnel)" : ""}`);
       return json(res, 200, { ok: true }, { "set-cookie": [sessionCookie(issueSessionToken(), publicReq)] });
+    }
+
+    // ---------------------------------------------------------------- peer (#45)
+    // 页面要 cookie；本机回环不加 cookie 也放行，方便 e2e 与 `/api/peer` 的健康检查。
+    // 隧道过来又没 cookie 的请求一律 401，否则 `/api/peer/add` 就能被公网改配置。
+    const loopbackPeer = /^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(req.socket.remoteAddress ?? "");
+    if (url.pathname.startsWith("/api/peer") && !ok && !loopbackPeer) {
+      return json(res, 401, { error: "unauthorized" });
+    }
+    if (url.pathname === "/api/peer") {
+      const view = peer.view();
+      return json(res, 200, { ...view, enabled: peerOn && view.enabled });
+    }
+    if (url.pathname === "/api/peer/threads" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.threads());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/messages" && req.method === "GET") {
+      const who = url.searchParams.get("peer") ?? "";
+      if (!who) return json(res, 400, { error: "缺 peer" });
+      try {
+        return json(res, 200, await peer.history(who, Number(url.searchParams.get("limit")) || 200));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/send" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const via = body?.via === "pi" ? ("pi" as const) : undefined;
+        return json(res, 200, await peer.sendText(String(body?.peer ?? ""), String(body?.text ?? ""), via));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/contacts" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.contacts());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/friend" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const action = String(body?.action ?? "");
+      if (!["request", "accept", "favorite", "remove"].includes(action)) return json(res, 400, { error: "未知动作" });
+      try {
+        return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as "request", Boolean(body?.on)));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // 第 4 片：文件。路径版直接让 peer 读盘；字节版给剪贴板截图用。
+    if (url.pathname === "/api/peer/sendfile" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.sendFile(String(body?.peer ?? ""), String(body?.path ?? ""), body?.name ? String(body.name) : undefined));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/upload" && req.method === "POST") {
+      const raw = await readRaw(req, 64 * 1024 * 1024).catch(() => null);
+      if (!raw) return json(res, 413, { error: "太大了（上限 64 MB）" });
+      try {
+        return json(res, 200, await peer.upload(url.searchParams.get("peer") ?? "", url.searchParams.get("name") || "粘贴的图片.png", raw));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/transfers" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.transfers());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/fs" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.browse(url.searchParams.get("path") ?? ""));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/file" && req.method === "GET") {
+      try {
+        const upstream = await peer.fileStream(url.searchParams.get("id") ?? "");
+        if (!upstream.ok || !upstream.body) return json(res, upstream.status, { error: "取不到这个文件" });
+        const headers: Record<string, string> = { "cache-control": "private, max-age=60" };
+        for (const key of ["content-type", "content-length", "content-disposition"]) {
+          const value = upstream.headers.get(key);
+          if (value) headers[key] = value;
+        }
+        res.writeHead(200, headers);
+        Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
+        return;
+      } catch (err) {
+        return json(res, 404, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/add" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.addManual(String(body?.addr ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/refresh" && req.method === "POST") {
+      try {
+        return json(res, 200, await peer.refresh());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
     }
 
     if (url.pathname === "/api/logout" && req.method === "POST") {
@@ -1247,6 +1402,8 @@ async function main(): Promise<void> {
   });
 
   sessions.startGc((id) => [...wss.clients].some((client) => (client as any).watching === id));
+
+  process.on("exit", () => peer.stop());
 
   server.listen(cfg.port, cfg.host, () => {
     log(`listening on http://${cfg.host}:${cfg.port}`);
