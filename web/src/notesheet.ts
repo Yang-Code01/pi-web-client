@@ -9,17 +9,18 @@
  */
 import { createEl as el } from "./chat.ts";
 import type { Note, NoteKind, NoteMode, NoteStatus } from "./types.ts";
+import { tr } from "./i18n/index.ts";
 
 export const NOTE_KINDS: { id: NoteKind; label: string; glyph: string }[] = [
   { id: "bug", label: "bug", glyph: "🐞" },
-  { id: "change", label: "变更", glyph: "◆" },
-  { id: "idea", label: "想法", glyph: "◇" },
-  { id: "chore", label: "杂事", glyph: "○" },
+  { id: "change", label: tr("变更"), glyph: "◆" },
+  { id: "idea", label: tr("想法"), glyph: "◇" },
+  { id: "chore", label: tr("杂事"), glyph: "○" },
 ];
 
-const STATUS_LABEL: Record<NoteStatus, string> = { pending: "待处理", done: "已处理", dropped: "已忽略" };
+const STATUS_LABEL: Record<NoteStatus, string> = { pending: tr("待处理"), done: tr("已处理"), dropped: tr("已忽略") };
 const NEXT_STATUS: Record<NoteStatus, NoteStatus> = { pending: "done", done: "dropped", dropped: "pending" };
-const MODE_LABEL: Record<NoteMode, string> = { quick: "随手记", form: "表单", long: "长文本" };
+const MODE_LABEL: Record<NoteMode, string> = { quick: tr("随手记"), form: tr("表单"), long: tr("长文本") };
 /** 左栏在看哪一堆：在列表里 / 归档 / 垃圾箱。 */
 type View = "active" | "archived" | "trash";
 
@@ -99,22 +100,22 @@ export class NotesSheet {
     const sheet = el("div", "sheet notes-sheet");
 
     const head = el("div", "sheet-head notes-head");
-    head.append(el("div", "sheet-title", "🐞 bug 记录"));
+    head.append(el("div", "sheet-title", tr("🐞 bug 记录")));
     const tabs = el("div", "notes-tabs");
     this.tabsEl = tabs;
     this.doneWrap = this.doneSwitch();
-    head.append(tabs, el("div", "grow"), this.doneWrap, closeButton("关闭", () => this.close()));
+    head.append(tabs, el("div", "grow"), this.doneWrap, closeButton(tr("关闭"), () => this.close()));
     sheet.append(head);
 
     const body = el("div", "notes-body");
     const left = el("div", "notes-side");
-    const newBtn = el("button", "btn ghost notes-new", "＋ 记一条");
+    const newBtn = el("button", "btn ghost notes-new", tr("＋ 记一条"));
     newBtn.onclick = () => this.newNote();
     this.newBtn = newBtn;
     // 归档 / 垃圾箱是「管理已有记录」的两堆，不是写的地方：那里只给检索（下面这个框），不给「＋ 记一条」。
     const search = el("input", "ns-input notes-search") as HTMLInputElement;
     search.type = "search";
-    search.placeholder = "搜标题 / 正文";
+    search.placeholder = tr("搜标题 / 正文");
     search.oninput = () => {
       this.query = search.value.trim().toLowerCase();
       this.paintList();
@@ -126,12 +127,12 @@ export class NotesSheet {
 
     const foot = el("div", "sheet-foot notes-foot");
     this.hintEl = el("span", "notes-hint", "");
-    const clear = el("button", "btn danger notes-clear", "清空垃圾箱");
-    clear.title = "把垃圾箱里的记录彻底删掉（截图一起删），不能撤销";
+    const clear = el("button", "btn danger notes-clear", tr("清空垃圾箱"));
+    clear.title = tr("把垃圾箱里的记录彻底删掉（截图一起删），不能撤销");
     clear.onclick = () => this.emptyTrash();
     this.clearTrash = clear;
-    const exportAll = el("button", "btn ghost", "导出全部");
-    exportAll.title = "把当前筛选下的记录导出成一份 Markdown";
+    const exportAll = el("button", "btn ghost", tr("导出全部"));
+    exportAll.title = tr("把当前筛选下的记录导出成一份 Markdown");
     exportAll.onclick = () => this.exportAll();
     foot.append(this.hintEl, clear, exportAll);
     sheet.append(foot);
@@ -181,7 +182,7 @@ export class NotesSheet {
     this.doneWrap.hidden = this.view !== "active";
     this.newBtn.hidden = this.view !== "active";
     this.clearTrash.hidden = this.view !== "trash";
-    this.clearTrash.textContent = trashed ? `清空垃圾箱（${trashed}）` : "清空垃圾箱";
+    this.clearTrash.textContent = trashed ? tr("清空垃圾箱（{p1}）", { p1: trashed }) : tr("清空垃圾箱");
   }
 
   private doneSwitch(): HTMLElement {
@@ -192,7 +193,7 @@ export class NotesSheet {
       this.showDone = input.checked;
       this.paintList();
     };
-    label.append(input, el("span", "", "显示已处理"));
+    label.append(input, el("span", "", tr("显示已处理")));
     return label;
   }
 
@@ -276,8 +277,8 @@ export class NotesSheet {
       btn.onclick = () => this.setView(on ? "active" : id);
       tabs.push(btn);
     };
-    view("archived", "📦", "归档", notes.filter((n) => n.archivedAt && !n.deletedAt).length);
-    view("trash", "🗑️", "垃圾箱", notes.filter((n) => n.deletedAt).length);
+    view("archived", "📦", tr("归档"), notes.filter((n) => n.archivedAt && !n.deletedAt).length);
+    view("trash", "🗑️", tr("垃圾箱"), notes.filter((n) => n.deletedAt).length);
     this.tabsEl.replaceChildren(...tabs);
   }
 
@@ -285,12 +286,12 @@ export class NotesSheet {
     const rows = this.visible();
     if (!rows.length) {
       const empty = this.query
-        ? "没有匹配的记录。"
+        ? tr("没有匹配的记录。")
         : this.view === "trash"
-          ? "垃圾箱是空的。"
+          ? tr("垃圾箱是空的。")
           : this.view === "archived"
-            ? "还没有归档的记录。"
-            : `这一类里没有${this.showDone ? "" : "待处理的"}记录。`;
+            ? tr("还没有归档的记录。")
+            : tr("这一类里没有{p1}记录。", { p1: this.showDone ? "" : tr("待处理的") });
       this.listEl.replaceChildren(el("div", "notes-empty", empty));
       return;
     }
@@ -341,18 +342,18 @@ export class NotesSheet {
     };
     if (this.view === "trash") {
       acts.append(
-        mk("↺", "复原：放回列表", () => this.setLife(n.id, "active")),
-        mk("✕", "彻底删除（不能撤销）", () => this.purgeOne(n.id), true),
+        mk("↺", tr("复原：放回列表"), () => this.setLife(n.id, "active")),
+        mk("✕", tr("彻底删除（不能撤销）"), () => this.purgeOne(n.id), true),
       );
     } else if (this.view === "archived") {
       acts.append(
-        mk("↺", "复原：放回列表", () => this.setLife(n.id, "active")),
-        mk("🗑️", "删除（放垃圾箱，可复原）", () => this.setLife(n.id, "trashed")),
+        mk("↺", tr("复原：放回列表"), () => this.setLife(n.id, "active")),
+        mk("🗑️", tr("删除（放垃圾箱，可复原）"), () => this.setLife(n.id, "trashed")),
       );
     } else {
       acts.append(
-        mk("📦", "归档", () => this.setLife(n.id, "archived")),
-        mk("🗑️", "删除（放垃圾箱，可复原）", () => this.setLife(n.id, "trashed")),
+        mk("📦", tr("归档"), () => this.setLife(n.id, "archived")),
+        mk("🗑️", tr("删除（放垃圾箱，可复原）"), () => this.setLife(n.id, "trashed")),
       );
     }
     return acts;
@@ -373,7 +374,7 @@ export class NotesSheet {
 
   private purgeOne(id: string): void {
     const note = this.host.notes().find((n) => n.id === id);
-    if (!confirm(`彻底删掉「${note?.title ?? "这条记录"}」？截图一起删，不能撤销。`)) return;
+    if (!confirm(tr("彻底删掉「{p1}」？截图一起删，不能撤销。", { p1: note?.title ?? tr("这条记录") }))) return;
     this.host.send({ type: "notes.purge", id });
     if (this.sel === id) {
       this.sel = null;
@@ -386,7 +387,7 @@ export class NotesSheet {
   private emptyTrash(): void {
     const doomed = this.host.notes().filter((n) => n.deletedAt);
     if (!doomed.length) return;
-    if (!confirm(`垃圾箱里的 ${doomed.length} 条全部彻底删掉？截图一起删，不能撤销。`)) return;
+    if (!confirm(tr("垃圾箱里的 {p1} 条全部彻底删掉？截图一起删，不能撤销。", { p1: doomed.length }))) return;
     this.host.send({ type: "notes.purge" });
     this.sel = null;
     this.editing = null;
@@ -422,9 +423,9 @@ export class NotesSheet {
       const empty = el("div", "notes-editor-empty");
       if (this.view === "active") {
         empty.append(
-          el("div", "notes-editor-empty-title", "左栏点一条来改，或者"),
+          el("div", "notes-editor-empty-title", tr("左栏点一条来改，或者")),
           (() => {
-            const b = el("button", "btn primary", "＋ 记一条");
+            const b = el("button", "btn primary", tr("＋ 记一条"));
             b.onclick = () => this.newNote();
             return b;
           })(),
@@ -432,8 +433,8 @@ export class NotesSheet {
       } else {
         // 归档 / 垃圾箱只能看和复原：这里不摆「记一条」，不然存下去的新记录不在这堆里，看起来像没存上。
         empty.append(
-          el("div", "notes-editor-empty-title", this.view === "trash" ? "垃圾箱里的记录不能改。" : "归档里的记录不能直接改。"),
-          el("div", "notes-editor-empty-hint", "左栏点一条看一眼；要改先「复原」放回列表。"),
+          el("div", "notes-editor-empty-title", this.view === "trash" ? tr("垃圾箱里的记录不能改。") : tr("归档里的记录不能直接改。")),
+          el("div", "notes-editor-empty-hint", tr("左栏点一条看一眼；要改先「复原」放回列表。")),
         );
       }
       this.editorEl.replaceChildren(empty);
@@ -463,7 +464,7 @@ export class NotesSheet {
         titleField.hidden = mode === "quick";
         bodyField.rows = mode === "long" ? 14 : mode === "form" ? 8 : 3;
         bodyField.classList.toggle("mono", mode === "long");
-        bodyField.placeholder = mode === "long" ? "粘贴日志、堆栈、复现命令……" : mode === "form" ? "复现步骤 / 期望 vs 实际 / 环境……" : "记一句就行，Enter 保存 · Shift+Enter 换行";
+        bodyField.placeholder = mode === "long" ? tr("粘贴日志、堆栈、复现命令……") : mode === "form" ? tr("复现步骤 / 期望 vs 实际 / 环境……") : tr("记一句就行，Enter 保存 · Shift+Enter 换行");
         if (mode !== "quick") titleField.focus();
         else bodyField.focus();
       };
@@ -471,7 +472,7 @@ export class NotesSheet {
     }
 
     const titleField = el("input", "ns-input note-title") as HTMLInputElement;
-    titleField.placeholder = "标题（留空就取正文第一行）";
+    titleField.placeholder = tr("标题（留空就取正文第一行）");
     titleField.value = note.title ?? "";
     titleField.hidden = (note.mode ?? "quick") === "quick";
     titleField.oninput = () => {
@@ -488,13 +489,13 @@ export class NotesSheet {
 
     const bodyField = el("textarea", `ns-input note-body${(note.mode ?? "quick") === "long" ? " mono" : ""}`) as HTMLTextAreaElement;
     bodyField.rows = note.mode === "long" ? 14 : note.mode === "form" ? 8 : 3;
-    bodyField.placeholder = note.mode === "long" ? "粘贴日志、堆栈、复现命令……" : note.mode === "form" ? "复现步骤 / 期望 vs 实际 / 环境……" : "记一句就行，Enter 保存 · Shift+Enter 换行";
+    bodyField.placeholder = note.mode === "long" ? tr("粘贴日志、堆栈、复现命令……") : note.mode === "form" ? tr("复现步骤 / 期望 vs 实际 / 环境……") : tr("记一句就行，Enter 保存 · Shift+Enter 换行");
     bodyField.value = note.body ?? "";
     bodyField.oninput = () => {
       if (!this.editing) return;
       this.editing.note.body = bodyField.value;
       this.dirty = true;
-      count.textContent = `${bodyField.value.length} 字`;
+      count.textContent = tr("{p1} 字", { p1: bodyField.value.length });
     };
     bodyField.onkeydown = (ev) => {
       if (ev.key !== "Enter") return;
@@ -519,13 +520,13 @@ export class NotesSheet {
     };
 
     const count = el("span", "notes-hint");
-    count.textContent = `${(note.body ?? "").length} 字`;
+    count.textContent = tr("{p1} 字", { p1: (note.body ?? "").length });
     box.append(modes, titleField, bodyField, this.shotsStrip(note), this.metaRow(note), this.actionRow(note), count);
     // 编辑器比内容高的时候，底下这块不是白留的：说清楚这条落哪儿了，以及交给 agent 时给的是什么。
     const where = el("div", "note-foot-hint");
     where.textContent = this.editing.id
-      ? `这条存于状态目录 notes/bug-notes.json；图在 notes/assets/${this.editing.id}/，交给 agent 时给的是绝对路径。`
-      : "还没存：Enter 存一条（Shift+Enter 换行），或点上面的「保存」。";
+      ? tr("这条存于状态目录 notes/bug-notes.json；图在 notes/assets/{p1}/，交给 agent 时给的是绝对路径。", { p1: this.editing.id })
+      : tr("还没存：Enter 存一条（Shift+Enter 换行），或点上面的「保存」。");
     box.append(where);
 
     const scrollTop = this.editorEl.scrollTop;
@@ -536,8 +537,8 @@ export class NotesSheet {
   /** 「已归档」提示条（垃圾箱在 paintTrashed 里另画，那个连按钮都不一样）。 */
   private lifeBar(note: Partial<Note>): HTMLElement {
     const bar = el("div", "note-life-bar");
-    bar.append(el("span", "life-text", "已归档 · 不在列表里，复原才回来"));
-    const back = el("button", "btn ghost", "复原");
+    bar.append(el("span", "life-text", tr("已归档 · 不在列表里，复原才回来")));
+    const back = el("button", "btn ghost", tr("复原"));
     back.onclick = () => {
       if (this.editing?.id) this.setLife(this.editing.id, "active");
     };
@@ -547,18 +548,18 @@ export class NotesSheet {
 
   private paintTrashed(box: HTMLElement, note: Partial<Note>): void {
     const bar = el("div", "note-life-bar trash");
-    bar.append(el("span", "life-text", "在垃圾箱里 · 不能编辑，复原后才会回到列表"));
-    const back = el("button", "btn ghost", "复原");
+    bar.append(el("span", "life-text", tr("在垃圾箱里 · 不能编辑，复原后才会回到列表")));
+    const back = el("button", "btn ghost", tr("复原"));
     back.onclick = () => {
       if (this.editing?.id) this.setLife(this.editing.id, "active");
     };
-    const kill = el("button", "btn danger", "彻底删除");
+    const kill = el("button", "btn danger", tr("彻底删除"));
     kill.onclick = () => {
       if (this.editing?.id) this.purgeOne(this.editing.id);
     };
     bar.append(el("div", "grow"), back, kill);
     box.append(bar);
-    box.append(el("div", "note-title-view", note.title ?? "未命名"));
+    box.append(el("div", "note-title-view", note.title ?? tr("未命名")));
     box.append(el("pre", "note-body-view", note.body ?? ""));
     if (note.shots?.length) {
       const strip = el("div", "note-shots");
@@ -574,7 +575,7 @@ export class NotesSheet {
       box.append(strip);
     }
     const meta = el("div", "note-meta");
-    meta.append(el("span", "note-meta-time", `删于 ${stamp(note.deletedAt ?? Date.now())}`));
+    meta.append(el("span", "note-meta-time", tr("删于 {p1}", { p1: stamp(note.deletedAt ?? Date.now()) })));
     box.append(meta);
   }
 
@@ -587,19 +588,19 @@ export class NotesSheet {
       img.alt = alt;
       img.onclick = () => window.open(src, "_blank");
       const x = el("button", "note-shot-x", "×");
-      x.title = "移除这张图";
+      x.title = tr("移除这张图");
       x.onclick = remove;
       tile.append(img, x);
       strip.append(tile);
     };
     for (const path of note.shots ?? []) add(`/api/image?path=${encodeURIComponent(path)}`, path.split(/[\\/]/).pop() ?? "", () => this.removeShot(path));
-    this.pendingShots.forEach((dataUrl, i) => add(dataUrl, `新图 ${i + 1}`, () => {
+    this.pendingShots.forEach((dataUrl, i) => add(dataUrl, tr("新图 {p1}", { p1: i + 1 }), () => {
       this.pendingShots.splice(i, 1);
       this.dirty = true;
       this.paintEditor();
     }));
     const pick = el("label", "note-add-shot");
-    pick.append(el("span", "", "＋ 图"));
+    pick.append(el("span", "", tr("＋ 图")));
     const input = el("input") as HTMLInputElement;
     input.type = "file";
     input.accept = "image/*";
@@ -611,7 +612,7 @@ export class NotesSheet {
     };
     pick.append(input);
     if ((note.shots?.length ?? 0) + this.pendingShots.length < 24) strip.append(pick);
-    strip.append(el("span", "note-shots-hint", "Ctrl+V 粘贴截图 / 拖文件进来 · 保存时一起落盘"));
+    strip.append(el("span", "note-shots-hint", tr("Ctrl+V 粘贴截图 / 拖文件进来 · 保存时一起落盘")));
     return strip;
   }
 
@@ -619,7 +620,7 @@ export class NotesSheet {
     const row = el("div", "note-meta");
     const status = note.status ?? "pending";
     const pill = el("button", `note-pill ${status}`, STATUS_LABEL[status]);
-    pill.title = "点一下改状态：待处理 → 已处理 → 已忽略";
+    pill.title = tr("点一下改状态：待处理 → 已处理 → 已忽略");
     pill.onclick = () => this.cycleStatus();
     row.append(pill);
 
@@ -645,35 +646,35 @@ export class NotesSheet {
 
     const session = note.sessionName ?? note.sessionId;
     if (session) row.append(el("span", "note-meta-session", session));
-    if (note.updatedAt) row.append(el("span", "note-meta-time", `改于 ${stamp(note.updatedAt)}`));
+    if (note.updatedAt) row.append(el("span", "note-meta-time", tr("改于 {p1}", { p1: stamp(note.updatedAt) })));
     return row;
   }
 
   private actionRow(note: Partial<Note>): HTMLElement {
     const row = el("div", "note-actions");
-    const save = el("button", "btn primary", "保存");
+    const save = el("button", "btn primary", tr("保存"));
     save.onclick = () => this.save();
     row.append(save);
-    const copy = el("button", "btn ghost", "复制 Markdown");
+    const copy = el("button", "btn ghost", tr("复制 Markdown"));
     copy.onclick = () => {
       const full = this.fullNote(note);
       if (!full) return;
-      void copyText(noteMarkdown(full)).then((ok) => this.say(ok ? "已复制到剪贴板" : "复制失败：浏览器不给剪贴板权限", !ok));
+      void copyText(noteMarkdown(full)).then((ok) => this.say(ok ? tr("已复制到剪贴板") : tr("复制失败：浏览器不给剪贴板权限"), !ok));
     };
-    const hand = el("button", "btn ghost", "交给 agent ▾");
+    const hand = el("button", "btn ghost", tr("交给 agent ▾"));
     hand.onclick = () => {
       const full = this.fullNote(note);
       if (!full) return;
       if (this.dirty) {
-        this.say("先把改动按「保存」存一下，交给 agent 的是存下的内容", true);
+        this.say(tr("先把改动按「保存」存一下，交给 agent 的是存下的内容"), true);
         return;
       }
       this.handoffMenu(hand, noteMarkdown(full));
     };
     row.append(copy, hand);
     if (this.editing?.id) {
-      const del = el("button", "btn danger", "删除");
-      del.title = "放进垃圾箱（可复原），不是彻底删";
+      const del = el("button", "btn danger", tr("删除"));
+      del.title = tr("放进垃圾箱（可复原），不是彻底删");
       del.onclick = () => {
         const id = this.editing?.id;
         if (!id) return;
@@ -705,11 +706,11 @@ export class NotesSheet {
       };
       pop.append(b);
     };
-    add("预填到当前会话", "写进输入框，Enter 才发", () => {
+    add(tr("预填到当前会话"), tr("写进输入框，Enter 才发"), () => {
       this.host.prefill(text);
       this.close();
     });
-    add("新开一个会话", "建好后填进那个会话的输入框，不自动发送", () => {
+    add(tr("新开一个会话"), tr("建好后填进那个会话的输入框，不自动发送"), () => {
       this.host.newSessionWith(text);
       this.close();
     });
@@ -744,9 +745,9 @@ export class NotesSheet {
     const session = this.host.session();
     const now = Date.now();
     const body = note.body ?? "";
-    const title = (note.title ?? "").trim() || body.trim().split("\n")[0]?.slice(0, 60) || "未命名";
+    const title = (note.title ?? "").trim() || body.trim().split("\n")[0]?.slice(0, 60) || tr("未命名");
     if (!body.trim() && !title.trim()) {
-      this.say("先写点什么", true);
+      this.say(tr("先写点什么"), true);
       return null;
     }
     return {
@@ -775,7 +776,7 @@ export class NotesSheet {
     if (this.view !== "active") this.setView("active");
     const note = this.editing.note;
     if (!(note.body ?? "").trim() && !(note.title ?? "").trim()) {
-      this.say("先写点什么再存", true);
+      this.say(tr("先写点什么再存"), true);
       return;
     }
     const session = this.host.session();
@@ -794,7 +795,7 @@ export class NotesSheet {
       archivedAt: note.archivedAt ?? null,
       deletedAt: note.deletedAt ?? null,
     });
-    this.say("保存中…");
+    this.say(tr("保存中…"));
   }
 
   /** 切走之前把改动存掉；草稿不存（用户可能只是点开看看又去别处）。 */
@@ -836,7 +837,7 @@ export class NotesSheet {
   private async addFiles(files: File[]): Promise<void> {
     const images = files.filter((f) => f.type.startsWith("image/"));
     if (!images.length) {
-      this.say("只收图片（截图 / png / jpg / webp / gif）", true);
+      this.say(tr("只收图片（截图 / png / jpg / webp / gif）"), true);
       return;
     }
     const room = Math.max(0, 24 - (this.editing?.note.shots?.length ?? 0) - this.pendingShots.length);
@@ -846,7 +847,7 @@ export class NotesSheet {
     }
     this.dirty = true;
     this.paintEditor();
-    this.say(`${this.pendingShots.length} 张待保存`);
+    this.say(tr("{p1} 张待保存", { p1: this.pendingShots.length }));
   }
 
   private uploadPending(id: string): void {
@@ -895,12 +896,12 @@ export class NotesSheet {
     this.dirty = false;
     this.paintList();
     this.uploadPending(note.id);
-    this.say("已保存");
+    this.say(tr("已保存"));
   }
 
   shot(msg: any): void {
     if (msg.error) {
-      this.say(`附图失败：${msg.error}`, true);
+      this.say(tr("附图失败：{p1}", { p1: msg.error }), true);
       return;
     }
     if (this.editing && msg.shots) {
@@ -912,18 +913,18 @@ export class NotesSheet {
   exportAll(): void {
     const rows = this.visible();
     if (!rows.length) {
-      this.say("这一类里没有可导出的记录", true);
+      this.say(tr("这一类里没有可导出的记录"), true);
       return;
     }
     const label = NOTE_KINDS.find((k) => k.id === this.kind)?.label ?? this.kind;
-    const md = [`# ${label} 记录 · ${stamp(Date.now())}`, ""].concat(rows.map((n) => `${noteMarkdown(n)}\n---`)).join("\n\n");
+    const md = [tr("# {p1} 记录 · {p2}", { p1: label, p2: stamp(Date.now()) }), ""].concat(rows.map((n) => `${noteMarkdown(n)}\n---`)).join("\n\n");
     const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `${label}-notes-${new Date().toISOString().slice(0, 10)}.md`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-    this.say(`已导出 ${rows.length} 条`);
+    this.say(tr("已导出 {p1} 条", { p1: rows.length }));
   }
 }
 
@@ -937,7 +938,7 @@ function readDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(new Error("读不出这张图"));
+    reader.onerror = () => reject(new Error(tr("读不出这张图")));
     reader.readAsDataURL(file);
   });
 }

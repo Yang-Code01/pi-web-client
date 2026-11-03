@@ -1,4 +1,11 @@
+
+import { applyLang, getLang, tr } from "../i18n/index.ts";
+
 /** `peer.html` 的脚本：只跟 bridge 说话（cookie + `/api/peer*`），从不直接连 7865。 */
+
+// 内网通是独立页面（`peer.html`），跟主界面共用同一份 `pi.prefs.lang`：
+// 日文字体栈挂在 `html:lang(ja)` 上，这行不写就没有。
+applyLang(getLang());
 
 interface OnlinePeer {
   nodeId: string;
@@ -111,9 +118,9 @@ const byteLen = (text: string): number => new TextEncoder().encode(text).length;
 
 function ago(ts: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
-  if (s < 5) return "刚刚";
-  if (s < 60) return `${s} 秒前`;
-  if (s < 3600) return `${Math.round(s / 60)} 分钟前`;
+  if (s < 5) return tr("刚刚");
+  if (s < 60) return tr("{p1} 秒前", { p1: s });
+  if (s < 3600) return tr("{p1} 分钟前", { p1: Math.round(s / 60) });
   return new Date(ts).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
@@ -142,20 +149,20 @@ function switchTo(view: string): void {
 function renderStatus(view: PeerView | null, note = ""): void {
   if (!view) {
     dot.className = "dot";
-    me.textContent = note || "拿不到状态";
+    me.textContent = note || tr("拿不到状态");
     return;
   }
   const up = view.enabled && view.running;
   dot.className = `dot ${up ? "is-up" : "is-down"}`;
-  dot.title = up ? "peer 在跑" : view.reason || "peer 没在跑";
+  dot.title = up ? tr("peer 在跑") : view.reason || tr("peer 没在跑");
   meStatus = view.status;
   if (!view.status) {
-    me.textContent = view.enabled ? view.reason || "peer 正在启动" : "peer 未启用（PI_PEER=0 或还没构建）";
+    me.textContent = view.enabled ? view.reason || tr("peer 正在启动") : tr("peer 未启用（PI_PEER=0 或还没构建）");
     renderOnline();
     return;
   }
   const cfg = view.status.config;
-  const flags = [cfg.hidden ? "隐身" : "", cfg.pauseFiles ? "暂停收文件" : "", cfg.dnd ? "免打扰" : ""].filter(Boolean).join(" · ");
+  const flags = [cfg.hidden ? tr("隐身") : "", cfg.pauseFiles ? tr("暂停收文件") : "", cfg.dnd ? tr("免打扰") : ""].filter(Boolean).join(" · ");
   me.textContent = `${view.status.nickname} · ${view.status.nodeId.slice(0, 8)} · :${view.status.port}${flags ? ` · ${flags}` : ""}`;
   renderOnline();
 }
@@ -167,7 +174,7 @@ function renderOnline(): void {
     const li = el("li", "peer");
     const left = el("span", "", peer.nickname);
     const right = el("small", "", `${peer.hostname || "?"} · ${peer.addr}:${peer.port} · ${ago(peer.lastSeen)}`);
-    const talk = el("button", "talk", "发消息");
+    const talk = el("button", "talk", tr("发消息"));
     talk.type = "button";
     talk.addEventListener("click", () => {
       switchTo("chat");
@@ -177,10 +184,10 @@ function renderOnline(): void {
     const known = contactOf(peer.nodeId);
     if (known?.friend) {
       // 已经是好友就不给「加好友」——但没有任何提示的话，看不出为什么别人有、他没有。
-      li.append(el("small", "tag", known.favorite ? "★ 好友" : "好友"));
+      li.append(el("small", "tag", known.favorite ? tr("★ 好友") : tr("好友")));
     } else {
       const pending = Boolean(known?.incoming || known?.outgoing);
-      const add = el("button", "talk ghost", pending ? (known?.incoming ? "接受请求" : "等对方接受") : "加好友");
+      const add = el("button", "talk ghost", pending ? (known?.incoming ? tr("接受请求") : tr("等对方接受")) : tr("加好友"));
       add.type = "button";
       add.disabled = pending && !known?.incoming;
       add.addEventListener("click", () => void friendAction(peer.nodeId, known?.incoming ? "accept" : "request"));
@@ -219,7 +226,7 @@ async function friendAction(nodeId: string, action: "request" | "accept" | "favo
 function contactRow(contact: Contact): HTMLLIElement {
   const li = el("li", `contact${contact.favorite ? " is-fav" : ""}`);
   const dotSpan = el("span", `presence ${contact.online ? "is-up" : "is-off"}`, contact.online ? "●" : "○");
-  dotSpan.title = contact.online ? "在线" : "不在线";
+  dotSpan.title = contact.online ? tr("在线") : tr("不在线");
   const main = el("div", "contact-main");
   const name = el("strong", "", contact.nickname + (contact.favorite ? " ★" : ""));
   const sub = el("small", "", `${contact.hostname || "?"}${contact.addr ? ` · ${contact.addr}:${contact.livePort || contact.port}` : ""}`);
@@ -228,22 +235,22 @@ function contactRow(contact: Contact): HTMLLIElement {
 
   const actions = el("div", "contact-actions");
   if (contact.friend) {
-    const talk = el("button", "talk", "发消息");
+    const talk = el("button", "talk", tr("发消息"));
     talk.type = "button";
     talk.addEventListener("click", () => {
       switchTo("chat");
       void openThread(contact.nodeId);
     });
-    const fav = el("button", "talk ghost", contact.favorite ? "取消收藏" : "收藏");
+    const fav = el("button", "talk ghost", contact.favorite ? tr("取消收藏") : tr("收藏"));
     fav.type = "button";
     fav.addEventListener("click", () => void friendAction(contact.nodeId, "favorite", !contact.favorite));
     actions.append(talk, fav);
   } else if (contact.outgoing) {
-    actions.append(el("small", "muted", "已发请求，等对方接受"));
+    actions.append(el("small", "muted", tr("已发请求，等对方接受")));
   }
-  const del = el("button", "talk ghost danger", "删除");
+  const del = el("button", "talk ghost danger", tr("删除"));
   del.type = "button";
-  del.title = "只从我的通讯录里移除，对方那边不变";
+  del.title = tr("只从我的通讯录里移除，对方那边不变");
   del.addEventListener("click", () => void friendAction(contact.nodeId, "remove"));
   actions.append(del);
   li.append(actions);
@@ -257,13 +264,13 @@ function renderContacts(): void {
   for (const contact of pending) {
     const li = el("li", "request");
     const who = el("div", "contact-main");
-    who.append(el("strong", "", contact.nickname), el("small", "", `${contact.hostname || "?"} 想加你好友`));
-    const ok = el("button", "talk", "接受");
+    who.append(el("strong", "", contact.nickname), el("small", "", tr("{p1} 想加你好友", { p1: contact.hostname || "?" })));
+    const ok = el("button", "talk", tr("接受"));
     ok.type = "button";
     ok.addEventListener("click", () => void friendAction(contact.nodeId, "accept"));
-    const no = el("button", "talk ghost", "不理");
+    const no = el("button", "talk ghost", tr("不理"));
     no.type = "button";
-    no.title = "只从待处理里拿掉，不告诉对方";
+    no.title = tr("只从待处理里拿掉，不告诉对方");
     no.addEventListener("click", () => void friendAction(contact.nodeId, "remove"));
     li.append(who, ok, no);
     requestsList.append(li);
@@ -285,7 +292,7 @@ async function loadContacts(): Promise<void> {
     renderContacts();
     renderOnline();
   } catch (err) {
-    contactsError.textContent = `通讯录读取失败：${(err as Error).message}`;
+    contactsError.textContent = tr("通讯录读取失败：{p1}", { p1: (err as Error).message });
     contactsError.hidden = false;
   }
 }
@@ -303,8 +310,8 @@ function renderThreads(): void {
     const li = el("li", `thread${thread.nodeId === active ? " is-on" : ""}`);
     const top = el("div", "thread-top");
     top.append(el("strong", "", thread.nickname));
-    if (thread.online) top.append(el("span", "live", "在线"));
-    const last = thread.last?.kind === "text" ? thread.last.text ?? "" : thread.last?.ack?.status === "failed" ? "（没送到）" : "（已送达）";
+    if (thread.online) top.append(el("span", "live", tr("在线")));
+    const last = thread.last?.kind === "text" ? thread.last.text ?? "" : thread.last?.ack?.status === "failed" ? tr("（没送到）") : tr("（已送达）");
     li.append(top, el("small", "", `${ago(thread.last?.at ?? Date.now())} · ${last.slice(0, 40)}`));
     li.addEventListener("click", () => void openThread(thread.nodeId));
     threadList.append(li);
@@ -334,7 +341,7 @@ function fileCard(entry: Entry, mine: boolean): HTMLElement {
     img.alt = file.name;
     img.loading = "lazy";
     img.addEventListener("error", () => {
-      img.replaceWith(el("p", "muted", "图片没取到（可能已经被清理）"));
+      img.replaceWith(el("p", "muted", tr("图片没取到（可能已经被清理）")));
     });
     card.append(img);
   }
@@ -346,7 +353,7 @@ function fileCard(entry: Entry, mine: boolean): HTMLElement {
   );
   card.append(row);
   if (!mine) {
-    const link = el("a", "file-get", "另存 / 打开");
+    const link = el("a", "file-get", tr("另存 / 打开"));
     link.href = `/api/peer/file?id=${encodeURIComponent(entry.id)}`;
     link.target = "_blank";
     link.rel = "noopener";
@@ -377,13 +384,13 @@ function renderMessages(entries: Entry[]): void {
     if (mine) {
       const ack = acks.get(entry.id);
       if (entry.kind === "text") {
-        meta.textContent = `${clock(entry.at)} · ${ack === "failed" ? "没送到" : ack === "delivered" ? "已送达" : "发送中…"}`;
+        meta.textContent = tr("{p1} · {p2}", { p1: clock(entry.at), p2: ack === "failed" ? "没送到" : ack === "delivered" ? "已送达" : "发送中…" });
         if (ack === "failed") bubble.classList.add("is-bad");
       } else {
-        meta.textContent = `${clock(entry.at)} · 已发出`;
+        meta.textContent = tr("{p1} · 已发出", { p1: clock(entry.at) });
       }
     }
-    if (entry.via === "pi") li.append(el("small", "agent", "🤖 agent 代发"));
+    if (entry.via === "pi") li.append(el("small", "agent", tr("🤖 agent 代发")));
     li.append(bubble, meta);
     messagesEl.append(li);
   }
@@ -405,7 +412,7 @@ async function loadMessages(): Promise<void> {
 async function openThread(nodeId: string): Promise<void> {
   active = nodeId;
   const meta = threadMeta(nodeId);
-  threadHead.textContent = meta ? `${meta.nickname}${meta.online ? " · 在线" : " · 离线"}` : nodeId.slice(0, 8);
+  threadHead.textContent = meta ? tr("{p1}{p2}", { p1: meta.nickname, p2: meta.online ? " · 在线" : " · 离线" }) : nodeId.slice(0, 8);
   threadBox.hidden = false;
   threadEmpty.hidden = true;
   sendError.hidden = true;
@@ -424,7 +431,7 @@ async function loadThreads(): Promise<void> {
     if (!active && threads.length) await openThread(threads[0].nodeId);
     else if (active) {
       const meta = threadMeta(active);
-      if (meta) threadHead.textContent = `${meta.nickname}${meta.online ? " · 在线" : " · 离线"}`;
+      if (meta) threadHead.textContent = tr("{p1}{p2}", { p1: meta.nickname, p2: meta.online ? " · 在线" : " · 离线" });
     }
   } catch {
     /* 下一轮再试 */
@@ -437,7 +444,7 @@ async function send(): Promise<void> {
   if (!text.trim()) return;
   const bytes = byteLen(text);
   if (bytes > MAX_TEXT_BYTES) {
-    sendError.textContent = `太长（${Math.round(bytes / 1024)} KB，上限 32 KB）：这一版还不能转成文件，先删一点。`;
+    sendError.textContent = tr("太长（{p1} KB，上限 32 KB）：这一版还不能转成文件，先删一点。", { p1: Math.round(bytes / 1024) });
     sendError.hidden = false;
     return;
   }
@@ -494,7 +501,7 @@ async function browse(dir: string): Promise<void> {
     pickerParent = body.parent;
     picked = null;
     pickerSend.disabled = true;
-    pickerNotice("还没选文件");
+    pickerNotice(tr("还没选文件"));
 
     crumbs.innerHTML = "";
     const segments = body.path.split(/[\/]/).filter(Boolean);
@@ -526,12 +533,12 @@ async function browse(dir: string): Promise<void> {
     }
 
     filesEl.innerHTML = "";
-    if (!body.entries.length) filesEl.append(el("li", "empty", "这个文件夹是空的"));
+    if (!body.entries.length) filesEl.append(el("li", "empty", tr("这个文件夹是空的")));
     for (const entry of body.entries) {
       const item = el("li", `file-item${entry.dir ? " is-dir" : ""}`);
       item.dataset.path = entry.path;
       const name = el("span", "file-name", entry.name);
-      const info = el("small", "file-info", entry.dir ? "文件夹" : sizeOf(entry.size));
+      const info = el("small", "file-info", entry.dir ? tr("文件夹") : sizeOf(entry.size));
       item.append(el("span", "file-icon", entry.dir ? "📁" : "📄"), name, info);
       item.addEventListener("click", () => {
         if (entry.dir) {
@@ -550,7 +557,7 @@ async function browse(dir: string): Promise<void> {
       filesEl.append(item);
     }
   } catch (err) {
-    pickerNotice(`读不了这个文件夹：${(err as Error).message}`);
+    pickerNotice(tr("读不了这个文件夹：{p1}", { p1: (err as Error).message }));
   }
 }
 
@@ -628,9 +635,9 @@ async function loadTransfers(): Promise<void> {
       const item = el("li", `transfer${transfer.status === "failed" ? " is-bad" : ""}`);
       const percent = transfer.size ? Math.min(100, Math.round((transfer.bytes / transfer.size) * 100)) : 0;
       item.append(
-        el("span", "transfer-name", `${transfer.direction === "out" ? "发出" : "接收"} ${transfer.name}`),
+        el("span", "transfer-name", tr("{p1} {p2}", { p1: transfer.direction === "out" ? "发出" : "接收", p2: transfer.name })),
         el("span", "transfer-bar"),
-        el("small", "transfer-info", transfer.status === "failed" ? (transfer.error ?? "失败") : `${percent}% · ${sizeOf(transfer.bytes)} / ${sizeOf(transfer.size)}`),
+        el("small", "transfer-info", transfer.status === "failed" ? (transfer.error ?? tr("失败")) : `${percent}% · ${sizeOf(transfer.bytes)} / ${sizeOf(transfer.size)}`),
       );
       (item.querySelector(".transfer-bar") as HTMLElement).style.setProperty("--p", `${percent}%`);
       transfersEl.append(item);
@@ -646,11 +653,11 @@ async function loadTransfers(): Promise<void> {
 async function load(): Promise<void> {
   try {
     const res = await fetch("/api/peer", { headers: { accept: "application/json" } });
-    if (res.status === 401) return renderStatus(null, "还没登录：先在主页面用口令登录");
-    if (!res.ok) return renderStatus(null, `状态读取失败（HTTP ${res.status}）`);
+    if (res.status === 401) return renderStatus(null, tr("还没登录：先在主页面用口令登录"));
+    if (!res.ok) return renderStatus(null, tr("状态读取失败（HTTP {p1}）", { p1: res.status }));
     renderStatus((await res.json()) as PeerView);
   } catch (err) {
-    renderStatus(null, `连不上 bridge：${(err as Error).message}`);
+    renderStatus(null, tr("连不上 bridge：{p1}", { p1: (err as Error).message }));
   }
 }
 
@@ -692,7 +699,7 @@ refresh.addEventListener("click", async () => {
     await fetch("/api/peer/refresh", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     await load();
   } catch (err) {
-    addError.textContent = `广播失败：${(err as Error).message}`;
+    addError.textContent = tr("广播失败：{p1}", { p1: (err as Error).message });
     addError.hidden = false;
   }
 });
@@ -758,7 +765,7 @@ textInput.addEventListener("paste", (event) => {
     if (!blob) return;
     const ext = blob.type.split("/")[1] || "png";
     const stamp = new Date().toLocaleTimeString("zh-CN", { hour12: false }).replace(/:/g, "");
-    void uploadBlob(`截图 ${stamp}${index ? `-${index}` : ""}.${ext}`, blob);
+    void uploadBlob(tr("截图 {p1}{p2}.{p3}", { p1: stamp, p2: index ? `-${index}` : "", p3: ext }), blob);
   });
 });
 

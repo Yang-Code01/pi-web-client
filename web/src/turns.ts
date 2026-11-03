@@ -1,3 +1,6 @@
+
+import { tr } from "./i18n/index.ts";
+
 /**
  * 轮次缩略图（turn rail）：对话右缘一条刻度带，一根刻度 = 一轮用户输入。鼠标移到带上才展开左侧的
  * 小列表 —— 每行是那一轮的开头（单行、右对齐、超出打点），末行＝当前这一轮。点一行（或一根刻度）
@@ -93,8 +96,8 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
       tick.type = "button";
       tick.className = "turn-tick";
       tick.dataset.i = String(index);
-      tick.title = `第 ${index + 1} 轮：${labels[index]}`;
-      tick.setAttribute("aria-label", `跳到第 ${index + 1} 轮：${labels[index]}`);
+      tick.title = tr("第 {p1} 轮：{p2}", { p1: index + 1, p2: labels[index] });
+      tick.setAttribute("aria-label", tr("跳到第 {p1} 轮：{p2}", { p1: index + 1, p2: labels[index] }));
       tick.onclick = () => opts.onPick(index);
       tick.onpointerenter = () => {
         hot = index;
@@ -109,7 +112,7 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
       row.type = "button";
       row.className = "turn-row";
       row.dataset.i = String(index);
-      row.title = `第 ${index + 1} 轮：${label}`;
+      row.title = tr("第 {p1} 轮：{p2}", { p1: index + 1, p2: label });
       const text = document.createElement("span");
       text.className = "txt";
       text.textContent = label;

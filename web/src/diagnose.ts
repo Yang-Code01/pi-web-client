@@ -1,3 +1,6 @@
+
+import { tr } from "./i18n/index.ts";
+
 /**
  * Failure diagnosis: turn a raw tool failure into "what happened / why / what next".
  *
@@ -50,10 +53,10 @@ const TRAILER = /^\s*Command (?:exited with code \d+|aborted)\s*$/;
 const TRAILER_TAIL = /\n*Command (?:exited with code \d+|aborted)\s*$/;
 
 export const LEVEL_LABEL: Record<Level, string> = {
-  fail: "失败",
-  warn: "可疑",
-  benign: "多半正常",
-  abort: "已中断",
+  fail: tr("失败"),
+  warn: tr("可疑"),
+  benign: tr("多半正常"),
+  abort: tr("已中断"),
 };
 
 export function normalize(out: unknown): string {
@@ -76,33 +79,33 @@ function lastMatch(re: RegExp, text: string): string {
 }
 
 const PY_CAUSE: Record<string, string> = {
-  UnicodeDecodeError: "按默认编码（本机 GBK）读了 UTF-8 / 二进制文件",
-  UnicodeEncodeError: "按 GBK 编码写出，但内容里有无 GBK 字符",
-  ModuleNotFoundError: "依赖没装，或跑在了别的 Python 环境里",
-  FileNotFoundError: "路径不存在（相对路径的 cwd 可能不是你以为的那个）",
-  AssertionError: "断言失败：程序跑到这行时假设不成立",
-  ParserError: "解析失败：输入格式不对，或流式数据被截断",
-  SyntaxError: "语法错误：转义写坏了，或多/少了括号",
-  TypeError: "类型不对：参数个数或类型不匹配",
-  AttributeError: "对象没有这个属性，多半是接口变了或返回了 null",
-  NameError: "变量没定义（笔误，或该在的作用域里没有）",
-  KeyError: "字典里没这个键，输入结构跟预期不符",
+  UnicodeDecodeError: tr("按默认编码（本机 GBK）读了 UTF-8 / 二进制文件"),
+  UnicodeEncodeError: tr("按 GBK 编码写出，但内容里有无 GBK 字符"),
+  ModuleNotFoundError: tr("依赖没装，或跑在了别的 Python 环境里"),
+  FileNotFoundError: tr("路径不存在（相对路径的 cwd 可能不是你以为的那个）"),
+  AssertionError: tr("断言失败：程序跑到这行时假设不成立"),
+  ParserError: tr("解析失败：输入格式不对，或流式数据被截断"),
+  SyntaxError: tr("语法错误：转义写坏了，或多/少了括号"),
+  TypeError: tr("类型不对：参数个数或类型不匹配"),
+  AttributeError: tr("对象没有这个属性，多半是接口变了或返回了 null"),
+  NameError: tr("变量没定义（笔误，或该在的作用域里没有）"),
+  KeyError: tr("字典里没这个键，输入结构跟预期不符"),
 };
 
 /** [match, title, why, next] — errno families worth naming. */
 const ERRNO: Array<[RegExp, string, string, string]> = [
-  [/ENOENT|No such file or directory/, "找不到文件 / 目录", "这个路径不存在", "确认拼写；相对路径要看 cwd 是不是你以为的那个"],
-  [/EACCES|Permission denied/, "没有权限读写", "权限不足，被系统挡住了", "换个可写目录，或改文件权限 / 用管理员终端"],
-  [/EADDRINUSE|address already in use/i, "端口被占用", "要绑的端口已经有人在用了", "netstat -ano 找出占用的 PID，杀掉或换端口"],
-  [/ECONNREFUSED|Connection refused/, "对方端口没开", "连得到主机，但那个端口没服务在听", "确认服务起来了、端口号对不对"],
-  [/ETIMEDOUT|timed out/i, "等到超时", "等太久没有响应，多半是卡住了", "拆小一点重跑，看卡在哪一步"],
+  [/ENOENT|No such file or directory/, tr("找不到文件 / 目录"), tr("这个路径不存在"), tr("确认拼写；相对路径要看 cwd 是不是你以为的那个")],
+  [/EACCES|Permission denied/, tr("没有权限读写"), tr("权限不足，被系统挡住了"), tr("换个可写目录，或改文件权限 / 用管理员终端")],
+  [/EADDRINUSE|address already in use/i, tr("端口被占用"), tr("要绑的端口已经有人在用了"), tr("netstat -ano 找出占用的 PID，杀掉或换端口")],
+  [/ECONNREFUSED|Connection refused/, tr("对方端口没开"), tr("连得到主机，但那个端口没服务在听"), tr("确认服务起来了、端口号对不对")],
+  [/ETIMEDOUT|timed out/i, tr("等到超时"), tr("等太久没有响应，多半是卡住了"), tr("拆小一点重跑，看卡在哪一步")],
 ];
 
 const GIT_CAUSE: Array<[RegExp, string, string]> = [
-  [/not a git repository/i, "当前目录不在 git 仓库里（cwd 不对）", "cd 到仓库根目录，或确认这个子目录有没有自己的 .git"],
-  [/would be overwritten by merge/i, "工作区有未提交的改动挡着", "先 commit 或 stash，再 pull"],
-  [/has no upstream branch/i, "分支还没有上游", "git push -u origin <分支名>"],
-  [/did not match any file/i, "路径 / 分支名写错了", "核对名字，或 git ls-files 看一眼"],
+  [/not a git repository/i, tr("当前目录不在 git 仓库里（cwd 不对）"), tr("cd 到仓库根目录，或确认这个子目录有没有自己的 .git")],
+  [/would be overwritten by merge/i, tr("工作区有未提交的改动挡着"), tr("先 commit 或 stash，再 pull")],
+  [/has no upstream branch/i, tr("分支还没有上游"), tr("git push -u origin <分支名>")],
+  [/did not match any file/i, tr("路径 / 分支名写错了"), tr("核对名字，或 git ls-files 看一眼")],
 ];
 
 export function diagnose(input: FailureInput): Diagnosis {
@@ -116,9 +119,9 @@ export function diagnose(input: FailureInput): Diagnosis {
     return {
       ...base,
       level: "abort",
-      title: "命令被中断，没有跑完",
-      cause: `手动停止 / 会话被打断 / 超时 —— 不是命令自己报错${lines ? `（中断前已有 ${lines} 行输出）` : ""}`,
-      next: "只关心结果就重跑一次；这轮不看了也可以",
+      title: tr("命令被中断，没有跑完"),
+      cause: tr("手动停止 / 会话被打断 / 超时 —— 不是命令自己报错{p1}", { p1: lines ? tr("（中断前已有 {p1} 行输出）", { p1: lines }) : "" }),
+      next: tr("只关心结果就重跑一次；这轮不看了也可以"),
     };
   }
 
@@ -128,13 +131,13 @@ export function diagnose(input: FailureInput): Diagnosis {
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l.startsWith("- "));
-    const first = items.slice(0, 3).map((l) => l.slice(2)).join("；");
+    const first = items.slice(0, 3).map((l) => l.slice(2)).join(tr("；"));
     return {
       ...base,
       level: "warn",
-      title: `参数不合格，${validation[1]} 没执行（${items.length} 处）`,
+      title: tr("参数不合格，{p1} 没执行（{p2} 处）", { p1: validation[1], p2: items.length }),
       cause: first + (items.length > 3 ? " …" : ""),
-      next: "补上这些字段再调一次 —— 这是调用方的问题，不是你的环境坏了",
+      next: tr("补上这些字段再调一次 —— 这是调用方的问题，不是你的环境坏了"),
     };
   }
 
@@ -143,9 +146,9 @@ export function diagnose(input: FailureInput): Diagnosis {
     return {
       ...base,
       level: "fail",
-      title: "没找到要替换的原文，文件没被改",
-      cause: `oldText 必须逐字节匹配（含空白、换行、CRLF）${target ? `。目标：${target[1]}` : ""}`,
-      next: "先 read 一遍确认现状（可能已被改过），再用更短、更独特的片段作 oldText",
+      title: tr("没找到要替换的原文，文件没被改"),
+      cause: tr("oldText 必须逐字节匹配（含空白、换行、CRLF）{p1}", { p1: target ? tr("。目标：{p1}", { p1: target[1] }) : "" }),
+      next: tr("先 read 一遍确认现状（可能已被改过），再用更短、更独特的片段作 oldText"),
     };
   }
 
@@ -154,13 +157,13 @@ export function diagnose(input: FailureInput): Diagnosis {
     const kind = /^([A-Za-z_][\w.]*(?:Error|Exception))/.exec(errLine)![1];
     const hint =
       kind === "UnicodeDecodeError" || kind === "UnicodeEncodeError"
-        ? "显式指定 encoding='utf-8'（或 errors='replace'）"
-        : "看下面 Traceback 最后三行，定位到具体文件:行";
+        ? tr("显式指定 encoding='utf-8'（或 errors='replace'）")
+        : tr("看下面 Traceback 最后三行，定位到具体文件:行");
     return {
       ...base,
       level: "fail",
-      title: `Python 报错：${kind}`,
-      cause: PY_CAUSE[kind] ?? "程序抛了异常，栈顶在 Traceback 里",
+      title: tr("Python 报错：{p1}", { p1: kind }),
+      cause: PY_CAUSE[kind] ?? tr("程序抛了异常，栈顶在 Traceback 里"),
       next: hint,
     };
   }
@@ -171,16 +174,16 @@ export function diagnose(input: FailureInput): Diagnosis {
       .split("\n")
       .map((l) => l.trim())
       .find((l) => errno[0].test(l));
-    return { ...base, level: "fail", title: errno[1], cause: where ? `${errno[2]}：${where.slice(0, 120)}` : errno[2], next: errno[3] };
+    return { ...base, level: "fail", title: errno[1], cause: where ? tr("{p1}：{p2}", { p1: errno[2], p2: where.slice(0, 120) }) : errno[2], next: errno[3] };
   }
 
   if (/Failed to connect|Could not resolve host|unable to access|SSL_ERROR|Proxy CONNECT aborted/i.test(out)) {
     return {
       ...base,
       level: "fail",
-      title: "网络不通，没连上对方",
-      cause: "连接失败（本机直连 GitHub 是断的，要走 127.0.0.1:18791 代理）",
-      next: "带代理重试：git -c http.https://github.com/.proxy=http://127.0.0.1:18791 push；或先 curl 验证代理在不在",
+      title: tr("网络不通，没连上对方"),
+      cause: tr("连接失败（本机直连 GitHub 是断的，要走 127.0.0.1:18791 代理）"),
+      next: tr("带代理重试：git -c http.https://github.com/.proxy=http://127.0.0.1:18791 push；或先 curl 验证代理在不在"),
     };
   }
 
@@ -190,9 +193,9 @@ export function diagnose(input: FailureInput): Diagnosis {
     return {
       ...base,
       level: "fail",
-      title: "git 拒绝执行",
+      title: tr("git 拒绝执行"),
       cause: known ? known[1] : gitFatal,
-      next: known ? known[2] : "看下面完整输出",
+      next: known ? known[2] : tr("看下面完整输出"),
     };
   }
 
@@ -203,8 +206,8 @@ export function diagnose(input: FailureInput): Diagnosis {
       ...base,
       level: "fail",
       title: crossLine.replace(/^✗\s*/, "").slice(0, 90),
-      cause: problems ? `自检脚本报了 ${problems[1]} 个问题（第一个在上面）` : "自检脚本判定不一致",
-      next: "按提示跑修复命令；要全量清单就展开原始输出",
+      cause: problems ? tr("自检脚本报了 {p1} 个问题（第一个在上面）", { p1: problems[1] }) : tr("自检脚本判定不一致"),
+      next: tr("按提示跑修复命令；要全量清单就展开原始输出"),
     };
   }
 
@@ -214,9 +217,9 @@ export function diagnose(input: FailureInput): Diagnosis {
     return {
       ...base,
       level: "benign",
-      title: `没有结果（exit ${exit}），通常不算故障`,
-      cause: "grep / rg / ls / find 这类工具「没找到」也返回非 0",
-      next: "换个关键词或路径再看；真报错会带上 error / fatal 字样",
+      title: tr("没有结果（exit {p1}），通常不算故障", { p1: exit }),
+      cause: tr("grep / rg / ls / find 这类工具「没找到」也返回非 0"),
+      next: tr("换个关键词或路径再看；真报错会带上 error / fatal 字样"),
     };
   }
 
@@ -224,9 +227,9 @@ export function diagnose(input: FailureInput): Diagnosis {
     return {
       ...base,
       level: "warn",
-      title: "命令正常退出（exit 0），但被标成了失败",
-      cause: "工具报了 isError，输出里没有可识别的错误行",
-      next: "展开原始输出看看",
+      title: tr("命令正常退出（exit 0），但被标成了失败"),
+      cause: tr("工具报了 isError，输出里没有可识别的错误行"),
+      next: tr("展开原始输出看看"),
     };
   }
 
@@ -237,9 +240,9 @@ export function diagnose(input: FailureInput): Diagnosis {
   return {
     ...base,
     level: "fail",
-    title: exit === null ? "工具报错" : `命令失败（exit ${exit}）`,
-    cause: firstBad ? firstBad.slice(0, 160) : "输出里没有明显错误行，可能失败原因在上一段里",
-    next: "看下面完整输出；说不清就问 pi",
+    title: exit === null ? tr("工具报错") : tr("命令失败（exit {p1}）", { p1: exit }),
+    cause: firstBad ? firstBad.slice(0, 160) : tr("输出里没有明显错误行，可能失败原因在上一段里"),
+    next: tr("看下面完整输出；说不清就问 pi"),
   };
 }
 

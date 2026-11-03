@@ -1,4 +1,5 @@
 import { createEl as el } from "./chat.ts";
+import { tr } from "./i18n/index.ts";
 
 /**
  * 置顶条每颗会话胶囊的悬停气泡（Q-035）：归档 / 重命名 / 删除。
@@ -37,7 +38,7 @@ export function openPinMenu(anchor: HTMLElement, opts: PinMenuOpts): PinMenuHand
   node.dataset.pinMenu = opts.name;
 
   const head = el("div", "pm-head");
-  head.append(el("div", "pm-name", opts.name || "未命名会话"), el("div", "pm-cwd", opts.cwd || "未知目录"));
+  head.append(el("div", "pm-name", opts.name || tr("未命名会话")), el("div", "pm-cwd", opts.cwd || tr("未知目录")));
 
   const row = (act: string, icon: string, text: string, run: () => void): HTMLButtonElement => {
     const btn = el("button", `pm-item${act === "delete" ? " danger" : ""}`) as HTMLButtonElement;
@@ -52,12 +53,12 @@ export function openPinMenu(anchor: HTMLElement, opts: PinMenuOpts): PinMenuHand
     return btn;
   };
 
-  const archive = row("archive", "▤", "归档", () => opts.onArchive());
-  const rename = row("rename", "✎", "重命名", () => startEdit());
-  const remove = row("delete", "🗑️", "删除", () => opts.onDelete());
-  archive.title = "收进左栏「已归档」，不删任何东西";
-  rename.title = "就地改名，回车保存";
-  remove.title = "移进垃圾箱，可以在会话管理里还原";
+  const archive = row("archive", "▤", tr("归档"), () => opts.onArchive());
+  const rename = row("rename", "✎", tr("重命名"), () => startEdit());
+  const remove = row("delete", "🗑️", tr("删除"), () => opts.onDelete());
+  archive.title = tr("收进左栏「已归档」，不删任何东西");
+  rename.title = tr("就地改名，回车保存");
+  remove.title = tr("移进垃圾箱，可以在会话管理里还原");
 
   node.append(head, archive, rename, remove);
 
@@ -67,7 +68,7 @@ export function openPinMenu(anchor: HTMLElement, opts: PinMenuOpts): PinMenuHand
     input.type = "text";
     input.value = opts.name;
     input.spellcheck = false;
-    input.setAttribute("aria-label", "会话名");
+    input.setAttribute("aria-label", tr("会话名"));
     rename.replaceChildren(el("span", "pm-ico", "✎"), input);
     rename.classList.add("editing");
     rename.onclick = null;
@@ -78,7 +79,7 @@ export function openPinMenu(anchor: HTMLElement, opts: PinMenuOpts): PinMenuHand
       editing = false;
       const next = input.value.trim().replace(/\s+/g, " ");
       rename.classList.remove("editing");
-      rename.replaceChildren(el("span", "pm-ico", "✎"), el("span", "pm-text", "重命名"));
+      rename.replaceChildren(el("span", "pm-ico", "✎"), el("span", "pm-text", tr("重命名")));
       rename.onclick = (ev) => {
         ev.stopPropagation();
         startEdit();

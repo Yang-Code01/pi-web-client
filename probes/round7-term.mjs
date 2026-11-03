@@ -61,7 +61,7 @@ log("bridge up, passphrase read");
 let browser;
 try {
   browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: { width: 1280, height: 880 } });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 880 }, locale: "zh-CN" });
   const login = await context.request.post(`${BASE}/api/login`, { data: { passphrase } });
   assert(login.ok(), `login ok (got ${login.status()})`);
   const page = await context.newPage();

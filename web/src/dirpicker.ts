@@ -1,5 +1,6 @@
 import { api } from "./api.ts";
 import { createEl as el, fileIcon } from "./chat.ts";
+import { tr } from "./i18n/index.ts";
 
 /**
  * One directory browser, three call sites: the new-session sheet's 📁 浏览, the attachment picker,
@@ -92,13 +93,13 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
   /** Q-014: the path is a breadcrumb — every segment jumps back to that level. */
   const crumb = (label: string, target: string, root = false): HTMLElement => {
     const button = el("button", root ? "crumb root" : "crumb", label);
-    button.title = target ? `跳到 ${target}` : "此电脑";
+    button.title = target ? tr("跳到 {p1}", { p1: target }) : tr("此电脑");
     button.onclick = () => void go(target);
     return button;
   };
   const paintCrumbs = (): void => {
     where.replaceChildren();
-    where.append(crumb("此电脑", "", true));
+    where.append(crumb(tr("此电脑"), "", true));
     if (!current) return;
     const sep = current.includes("\\") ? "\\" : "/";
     const parts = current.split(sep).filter((part) => part !== "");
@@ -113,7 +114,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
   const listFiles = opts.files === true;
   const showFilter = opts.filter ?? listFiles;
   const filter = el("input", "ns-input dir-filter") as HTMLInputElement;
-  filter.placeholder = "筛选当前目录…";
+  filter.placeholder = tr("筛选当前目录…");
   const list = el("div", "model-list dir-list");
   if (showFilter) root.append(dirHead, filter, ...(opts.beforeList ?? []), list);
   else root.append(dirHead, ...(opts.beforeList ?? []), list);
@@ -144,8 +145,8 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     const fill = el("i");
     fill.style.width = `${pct}%`;
     bar.append(fill);
-    row.append(el("span", "vol-letter", label), bar, el("span", "vol-pct", `${pct}%`), el("span", "vol-free", `${formatBytes(vol.free)} 可用`));
-    row.title = `${label}\\ 共 ${formatBytes(vol.total)} · 已用 ${formatBytes(used)} · 剩 ${formatBytes(vol.free)}`;
+    row.append(el("span", "vol-letter", label), bar, el("span", "vol-pct", `${pct}%`), el("span", "vol-free", tr("{p1} 可用", { p1: formatBytes(vol.free) })));
+    row.title = tr("{p1}\\ 共 {p2} · 已用 {p3} · 剩 {p4}", { p1: label, p2: formatBytes(vol.total), p3: formatBytes(used), p4: formatBytes(vol.free) });
     row.onclick = () => void go(vol.root);
     return row;
   };
@@ -181,7 +182,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     list.replaceChildren();
     fileRows.clear();
     if (res.parent !== null) {
-      const up = el("button", "model-row dir-row", "↑ 上一级");
+      const up = el("button", "model-row dir-row", tr("↑ 上一级"));
       up.onclick = () => void go(res?.parent ?? "");
       list.append(up);
     }
@@ -221,12 +222,12 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       list.append(row);
     }
     if (!dirs.length && !files.length) {
-      list.append(el("div", "empty", res.dirs.length || (res.files ?? []).length ? "没有匹配项" : "空目录"));
+      list.append(el("div", "empty", res.dirs.length || (res.files ?? []).length ? tr("没有匹配项") : tr("空目录")));
     }
   };
 
   const go = async (target: string): Promise<void> => {
-    list.replaceChildren(el("div", "empty", "读取中…"));
+    list.replaceChildren(el("div", "empty", tr("读取中…")));
     // Leaving the folder: drop its sizes and any answer still in flight for it.
     stats = new Map();
     statToken += 1;
@@ -234,7 +235,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     try {
       next = await api.dirs(target, listFiles);
     } catch (ex: any) {
-      if (root.isConnected) list.replaceChildren(el("div", "empty", `读取失败：${ex?.message ?? ex}`));
+      if (root.isConnected) list.replaceChildren(el("div", "empty", tr("读取失败：{p1}", { p1: ex?.message ?? ex })));
       return;
     }
     if (!root.isConnected) return;

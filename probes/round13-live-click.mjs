@@ -32,7 +32,7 @@ try {
 }
 
 const browser = await chromium.launch();
-const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 }, locale: "zh-CN" });
 await ctx.addCookies([{ name: name0, value, domain: host, path: "/" }]);
 const page = await ctx.newPage();
 

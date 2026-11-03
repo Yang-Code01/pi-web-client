@@ -117,13 +117,15 @@ export class Terminals {
     return availableShells().map(({ id, label }) => ({ id, label }));
   }
 
-  open(opts: { cols?: number; rows?: number; cwd?: string; shell?: string }): OpenedTerm | { error: string } {
-    if (this.terms.size >= MAX_TERMS) return { error: `最多同时开 ${MAX_TERMS} 个终端，先关掉一个` };
+  open(opts: { cols?: number; rows?: number; cwd?: string; shell?: string }):
+    | OpenedTerm
+    | { error: string; errCode?: string; errParams?: Record<string, string | number> } {
+    if (this.terms.size >= MAX_TERMS) return { error: `最多同时开 ${MAX_TERMS} 个终端，先关掉一个`, errCode: "term_limit", errParams: { p1: MAX_TERMS } };
     const cols = clamp(opts.cols ?? 100, 20, 400);
     const rows = clamp(opts.rows ?? 30, 5, 200);
     const cwd = resolveCwd(opts.cwd);
     const picked = pickShell(opts.shell);
-    if (!picked) return { error: "这台电脑上没找到可用的 shell" };
+    if (!picked) return { error: "这台电脑上没找到可用的 shell", errCode: "term_no_shell" };
     const { file, args, label } = picked;
     const env = { ...process.env } as Record<string, string>;
     for (const key of Object.keys(env)) if (key.startsWith("PI_") || env[key] === undefined) delete env[key];
@@ -134,7 +136,7 @@ export class Terminals {
     try {
       proc = pty.spawn(file, args, { name: "xterm-256color", cols, rows, cwd, env });
     } catch (err) {
-      return { error: `启动终端失败：${(err as Error).message}` };
+      return { error: `启动终端失败：${(err as Error).message}`, errCode: "term_spawn_failed", errParams: { p1: (err as Error).message } };
     }
     this.seq += 1;
     const id = `t${this.seq.toString(36)}-${Date.now().toString(36)}`;

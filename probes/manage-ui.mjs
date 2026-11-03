@@ -99,7 +99,7 @@ try {
   const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
 
   browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ viewport: { width: 1180, height: 860 } });
+  const context = await browser.newContext({ viewport: { width: 1180, height: 860 }, locale: "zh-CN" });
   await context.addCookies([{ name: cookie.split("=")[0], value: cookie.split("=").slice(1).join("="), url: BASE }]);
   const page = await context.newPage();
   page.on("pageerror", (e) => log("page error:", e.message));

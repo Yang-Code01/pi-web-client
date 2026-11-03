@@ -169,6 +169,9 @@ export interface TunnelState {
   status: "off" | "starting" | "up" | "error";
   url: string | null;
   error: string | null;
+  /** D110：bridge 侧带回来的错误码与参数（翻成当前语言用，见 i18n 的 errText）。 */
+  errCode?: string;
+  errParams?: Record<string, string | number>;
   updatedAt: number;
 }
 

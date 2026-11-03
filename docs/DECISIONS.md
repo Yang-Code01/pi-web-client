@@ -1239,3 +1239,28 @@
 **可改：** 以后真要给别处的人当通用工具用（任意目录可调），再加 `package.json` 的 `pi.skills` 清单发 npm 包，`.pi/skills/` 那份继续留着当项目级入口也不冲突（改名避开同名警告即可）。mac/Linux 上的端口独占探测与 `xdg-open` 判据都还没实测，第一次在那些平台上跑完 `ports` 应当把结论补回 `SKILL.md`。
 
 **验证：** 从仓库内路径跑 `node .pi/skills/pi-web-client-test-dev/bin/env.mjs list`（空表）、`ports --peers 1`（`base` 17864、三个端口齐全）、`start --dir F:/pi-web-client --name smoke`（打印 `登录自检 HTTP 200（口令 test 生效）`、`/healthz` 回 `{"ok":true,…}`）、`stop --id smoke`（回到空表）。`git check-ignore` 对 `SKILL.md` 与 `bin/env.mjs` 均返回未忽略。
+## D110 界面支持中 / 英 / 日：键就是中文原文，切换即时重渲染，不整页刷新
+
+**要做什么**：这个客户端之前是纯中文硬编码（`web/src` 里 850 多处中文字面量，`<html lang="zh-CN">`，时间一律 `toLocaleString("zh-CN")`）。现在要能切简体中文 / English / 日本語，开关放在原来的「字号与颜色」面板里，面板随之改名「外观与语言」。
+
+**决定**（`web/src/i18n/`，约 880 条键 × 3 种语言）：
+
+1. **键 = 中文原文**（gettext 风格）：`tr("关闭")`。中文直接返回键本身，只有 en / ja 需要词典。好处是改造过程可以一段一段来——没进词典的中文照常显示中文，不会出现「键名」这种空壳；坏处是键全带上引号（键里有全角括号、箭头、空格，不加引号直接语法错）。
+2. **函数名是 `tr`，不是 `t`**：这个仓库里 `t` 早被当局部变量用惯了（`const t = this.trust`、`t: TimeBucket`、`const t = ev.target`… 20 多处），一个叫 `t` 的 import 会把这些地方的含义偷走。
+3. **`|ctx` 后缀消歧**：同一个中文两种语气（`"关闭|toggle"`）→ 两条键，后缀不展示。
+4. **占位符 `{p1}`…**，模板串由一次性 codemod（`.scratch/i18n/codemod.mjs`，TS 编译器 API）转换；值可以是函数，英文复数 / 日文量词这类用 `Intl.PluralRules` 写。
+5. **存储**：跟字号同一份 `pi.prefs`（localStorage）。`accent` 那三个键顺手从中文色名换成稳定 id（`ice` / `teal` / …）——它们是要落盘的，翻译了就丢色；老值靠 `LEGACY_ACCENTS` 迁移。**恢复默认不动语言**：语言是「我是谁」，不该被配色重置带走。
+6. **首次打开跟浏览器**（`navigator.languages`）：`zh*` → 简体，`ja*` → 日文，其余（含认不出的）→ 英文；存过就存过的。
+7. **切换即时生效**：`applyLang()` 改 `<html lang>` → `paintChrome()` 重写那些「只构造一次」的按钮（顶栏四颗、开新会话、筛选占位符、底部三 tab）→ `renderAll()` 重画其余 → 当前面板重开。**不整页 reload**：reload 会断 WS、丢滚动位置，看起来像出错。
+8. **字体**：`html:lang(ja)` 换成日文字体栈（`Hiragino Sans` / `Yu Gothic UI` / `Meiryo` / `Noto Sans JP`）。Windows 上 `Segoe UI` 没有 CJK 字形，日文会一路落到 `Microsoft YaHei` 按简体字形画（直 / 骨 / 次 一眼就是机翻）。**不打包 webfont**：仓库从来没引过，为这点字形多背 1–2 MB 不值（**可改**）。
+9. **时间 / 数字走 Intl**：`fmtTime` / `fmtDate` / `fmtNum` / `fmtRelative`（一分钟内「刚刚」，其余 `Intl.RelativeTimeFormat`）。原来手写的「N 分钟前 / toLocaleDateString("zh-CN")」全删。
+10. **不给模型看的文案不翻**：`bridge/ext/approval-gate.ts` 的 label / description / promptSnippet、决策日志、门禁拒绝理由保持中文——读者是模型与维护者，界面上切语言不该让模型收到的工具说明跟着变（会话中途换措辞只会让上下文前后不一致）。
+11. **后端错误码化**：bridge 回 `{ error: 中文兜底, code, params }`，前端 `errText()` 先查 `bridge.err.<code>`，查不到才用兜底文案。通知文案（`需要你批准 · 会话名`）跟界面语言走：页面连上 WS 时上报当前语言，bridge 只存内存里最近一个值，不落盘。
+12. **测试固定看中文**：所有 Playwright 脚本的 `newContext()` 都显式 `locale: "zh-CN"`（原来靠 Playwright 默认 `en-US`，恰好没触发过检测逻辑，但检测一上线就会把断言全变成英文）。约 30 个脚本。
+13. **门禁 `web/i18n-check.mjs`**：`web/src` 里出现中文却没进 `tr()` 就失败；en / ja 键集合必须与代码里的键**完全一致**；不许空串。接在 `npm --prefix web run typecheck` 后面。
+
+**为什么用中文原文当键，而不用 `session.close` 这种符号键**：符号键要求改造时**一次性**把 850 处全填上三份文案，否则界面出现空壳或键名；而这次改造是渐进的长跑，中文当键让每一步都是可运行、可截图的中间态。代价是「同一个中文在不同语境要两种洋文」时得手动加 `|ctx`，以及词典查不到时会静默回落中文（靠 `i18n-check` 与 `tr()` 的一次性 `console.warn` 兜住）。
+
+**已知限制**：`zh-TW` / `zh-HK` 落简体中文（繁体本次不做）；`pi` / 命令 / 路径 / `md`·`json` 这些不译；界面把一句话拆成几段拼接的地方（`"打开 "` + 链接）在语序不同的语言里依赖键保留首尾空格，译文顺序无法自由调整（**可改**：真要治得重排 DOM）。
+
+**验证**：`npm --prefix web run typecheck`（含 i18n-check）；`bridge/tests/i18n-ui.mjs`（en-US 上下文里登录 → 开「Appearance & language」→ 切三语 → 发一条消息，断言 `<html lang>`、顶栏按钮文字、面板标题都跟着变，截中 / 英 / 日三张图）；其余既有 Playwright 脚本全部固定 `locale: "zh-CN"` 后原样通过。
