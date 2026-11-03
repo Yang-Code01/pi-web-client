@@ -93,7 +93,8 @@ try {
   await btn.click();
   await page.waitForSelector(".notes-sheet", { timeout: 5000 });
   check("面板打开", (await page.locator(".notes-sheet").count()) === 1);
-  check("四个类型 tab", (await page.locator(".notes-tab").count()) === 4, await page.locator(".notes-tab").allTextContents());
+  const kindTabs = page.locator(".notes-tab:not(.notes-viewtab)");
+  check("四类 tab + 归档 / 垃圾箱同一条", (await kindTabs.count()) === 4 && (await page.locator(".notes-viewtab").count()) === 2, await page.locator(".notes-tab").allTextContents());
   check("开面板就把光标放进记一条", await page.evaluate(() => document.activeElement?.classList.contains("note-body")));
 
   // ---- 2. 打字 + Enter 存一条
@@ -161,10 +162,11 @@ try {
   await temp.locator('.note-row-act[title="归档"]').click();
   await until(async () => (await page.locator(".note-row").count()) === 1, 5000, "归档后从列表消失");
   check("归档后不在列表里", true);
-  await page.click('.notes-viewbtn:has-text("归档")');
+  await page.click('.notes-viewtab:has-text("归档")');
   await until(async () => (await page.locator(".note-row").count()) === 1, 5000, "归档抽屉里出现");
   check("归档抽屉里能看到它", (await page.locator(".note-row-title").textContent()) === "临时：试试归档和垃圾箱");
   check("归档是管理列表：没有「＋ 记一条」", await page.locator(".notes-new").isHidden());
+  check("归档和四类同一条 tab、互斥（只剩一个高亮）", (await page.locator(".notes-tab.on").count()) === 1);
   await page.fill(".notes-search", "临时");
   await page.waitForTimeout(120);
   check("检索命中", (await page.locator(".note-row").count()) === 1);
@@ -177,15 +179,15 @@ try {
   await page.locator(".note-row").first().hover();
   await page.locator('.note-row-act[title="复原：放回列表"]').click();
   await until(async () => (await page.locator(".note-row").count()) === 0, 5000, "复原后归档抽屉空了");
-  await page.click('.notes-viewbtn:has-text("归档")');
+  await page.click('.notes-viewtab:has-text("归档")');
   await until(async () => (await page.locator(".note-row").count()) === 2, 5000, "复原后回到列表");
   check("复原后回到列表", true);
 
   await temp.hover();
-  await temp.locator('.note-row-act[title="删到垃圾箱"]').click();
+  await temp.locator('.note-row-act[title="删除（放垃圾箱，可复原）"]').click();
   await until(async () => (await page.locator(".note-row").count()) === 1, 5000, "删到垃圾箱后从列表消失");
   check("删到垃圾箱后不在列表里", true);
-  await page.click('.notes-viewbtn:has-text("垃圾箱")');
+  await page.click('.notes-viewtab:has-text("垃圾箱")');
   await until(async () => (await page.locator(".note-row").count()) === 1, 5000, "垃圾箱里出现");
   await page.locator(".note-row").first().click();
   await page.waitForTimeout(200);
@@ -195,20 +197,20 @@ try {
   await page.locator(".note-row").first().hover();
   await page.locator('.note-row-act[title="复原：放回列表"]').click();
   await until(async () => (await page.locator(".note-row").count()) === 0, 5000, "复原后垃圾箱空了");
-  await page.click('.notes-viewbtn:has-text("垃圾箱")');
+  await page.click('.notes-viewtab:has-text("垃圾箱")');
   await until(async () => (await page.locator(".note-row").count()) === 2, 5000, "垃圾箱复原后回到列表");
   check("从垃圾箱复原也回到列表", true);
 
   await temp.hover();
-  await temp.locator('.note-row-act[title="删到垃圾箱"]').click();
-  await page.click('.notes-viewbtn:has-text("垃圾箱")');
+  await temp.locator('.note-row-act[title="删除（放垃圾箱，可复原）"]').click();
+  await page.click('.notes-viewtab:has-text("垃圾箱")');
   await until(async () => (await page.locator(".note-row").count()) === 1, 5000, "垃圾箱里又出现");
   await page.click(".notes-clear");
   await until(async () => (await page.locator(".note-row").count()) === 0, 5000, "清空后垃圾箱一条不剩");
   check("一键清空垃圾箱", true);
   const left = JSON.parse(fs.readFileSync(path.join(STATE, "notes", "bug-notes.json"), "utf8")).notes;
   check("清空后 JSON 里只剩没删的那条", left.length === 1 && left[0].title === "手机横屏时顶栏被挤出屏幕", `${left.length} 条`);
-  await page.click('.notes-viewbtn:has-text("垃圾箱")');
+  await page.click('.notes-viewtab:has-text("垃圾箱")');
   await page.locator(".note-row").first().click();
 
   // ---- 6. 「交给 agent」菜单两选一

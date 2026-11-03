@@ -2117,7 +2117,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .note-shots-hint { font-size: 11.5px; color: var(--faint); }
 .note-meta { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font: 11px/1.4 var(--mono); color: var(--faint); }
 .note-meta-input { width: 96px; padding: 5px 7px; border-radius: 6px; border: 1px solid var(--line-soft); background: transparent; font: 11px/1.4 var(--mono); }
-.note-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.note-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+/* 四个动作同一副骨架：等高、同内距、同圆角，只靠颜色分主次（保存实心、删除红字）。 */
+.note-actions .btn { padding: 7px 13px; font-size: 13px; line-height: 18px; border-radius: 9px; }
+.notes-tabs-sep { width: 1px; height: 15px; background: var(--line); margin: 0 3px; align-self: center; }
 
 /* 归档 / 垃圾箱里打开一条时的提示条：这两堆里的条目不该看着跟列表里一样。 */
 .note-life-bar {

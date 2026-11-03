@@ -74,7 +74,6 @@ export class NotesSheet {
   private view: View = "active";
   private showDone = false;
   private doneWrap!: HTMLElement;
-  private viewBtns: Record<"archived" | "trash", HTMLButtonElement> = {} as never;
   private clearTrash!: HTMLButtonElement;
   private newBtn!: HTMLButtonElement;
   private searchEl!: HTMLInputElement;
@@ -104,7 +103,7 @@ export class NotesSheet {
     const tabs = el("div", "notes-tabs");
     this.tabsEl = tabs;
     this.doneWrap = this.doneSwitch();
-    head.append(tabs, el("div", "grow"), this.doneWrap, this.viewButtons(), closeButton("关闭", () => this.close()));
+    head.append(tabs, el("div", "grow"), this.doneWrap, closeButton("关闭", () => this.close()));
     sheet.append(head);
 
     const body = el("div", "notes-body");
@@ -145,49 +144,40 @@ export class NotesSheet {
     this.paintEditor();
   }
 
-  /** 「显示已处理」右边那两个：归档、垃圾箱。点谁就只看谁，再点一次回到列表。 */
-  private viewButtons(): HTMLElement {
-    const box = el("div", "notes-views");
-    const mk = (view: "archived" | "trash", glyph: string, label: string) => {
-      const b = el("button", "notes-viewbtn", `${glyph} ${label}`) as HTMLButtonElement;
-      b.onclick = () => this.setView(this.view === view ? "active" : view);
-      this.viewBtns[view] = b;
-      box.append(b);
-      return b;
-    };
-    mk("archived", "📦", "归档");
-    mk("trash", "🗑️", "垃圾箱");
-    return box;
+  /** 选一类：如果现在正看着归档 / 垃圾箱，先回列表。 */
+  private setKind(kind: NoteKind): void {
+    if (this.view === "active" && this.kind === kind) return;
+    this.flush();
+    this.kind = kind;
+    this.view = "active";
+    this.resetPick();
+    this.paintHead();
+    this.paintTabs();
+    this.paintList();
+    this.paintEditor();
+  }
+
+  private resetPick(): void {
+    this.sel = null;
+    this.editing = null;
+    this.pendingShots = [];
+    this.dirty = false;
   }
 
   private setView(view: View): void {
     if (this.view === view) return;
     this.flush();
     this.view = view;
-    this.sel = null;
-    this.editing = null;
-    this.pendingShots = [];
-    this.dirty = false;
+    this.resetPick();
     this.paintHead();
+    this.paintTabs();
     this.paintList();
     this.paintEditor();
   }
 
   /** 头部那些会变的（计数、当前在哪一堆、清空按钮只在垃圾箱出现）。 */
   private paintHead(): void {
-    const notes = this.host.notes();
-    const archived = notes.filter((n) => n.archivedAt && !n.deletedAt).length;
-    const trashed = notes.filter((n) => n.deletedAt).length;
-    const arch = this.viewBtns.archived;
-    const trash = this.viewBtns.trash;
-    if (arch) {
-      arch.classList.toggle("on", this.view === "archived");
-      arch.replaceChildren(el("span", "", "📦 归档"), ...(archived ? [el("span", "n", String(archived))] : []));
-    }
-    if (trash) {
-      trash.classList.toggle("on", this.view === "trash");
-      trash.replaceChildren(el("span", "", "🗑️ 垃圾箱"), ...(trashed ? [el("span", "n", String(trashed))] : []));
-    }
+    const trashed = this.host.notes().filter((n) => n.deletedAt).length;
     this.doneWrap.hidden = this.view !== "active";
     this.newBtn.hidden = this.view !== "active";
     this.clearTrash.hidden = this.view !== "trash";
@@ -259,7 +249,7 @@ export class NotesSheet {
 
   private visible(): Note[] {
     const q = this.query;
-    return this.host.notes().filter((n) => n.kind === this.kind && this.inView(n) && (!q || this.matches(n, q)));
+    return this.host.notes().filter((n) => this.inView(n) && (this.view !== "active" || n.kind === this.kind) && (!q || this.matches(n, q)));
   }
 
   /** 检索只看人写得出来的字段：标题、正文、issue / commit 号。 */
@@ -267,26 +257,28 @@ export class NotesSheet {
     return [n.title, n.body, n.issue, n.commit].some((v) => String(v ?? "").toLowerCase().includes(q));
   }
 
+  /** 一条 tab 带：四类 + 归档 / 垃圾箱。归它们同级、互斥——选了归档就不再是「bug 这一类」。 */
   private paintTabs(): void {
     const notes = this.host.notes();
-    this.tabsEl.replaceChildren(
-      ...NOTE_KINDS.map((k) => {
-        const pending = notes.filter((n) => n.kind === k.id && n.status === "pending" && !n.archivedAt && !n.deletedAt).length;
-        const btn = el("button", `notes-tab${this.kind === k.id ? " on" : ""}`, `${k.glyph} ${k.label}`);
-        if (pending) btn.append(el("span", "n", String(pending)));
-        btn.onclick = () => {
-          this.kind = k.id;
-          this.sel = null;
-          this.editing = null;
-          this.pendingShots = [];
-          this.dirty = false;
-          this.paintTabs();
-          this.paintList();
-          this.paintEditor();
-        };
-        return btn;
-      }),
-    );
+    const tabs: HTMLElement[] = NOTE_KINDS.map((k) => {
+      const pending = notes.filter((n) => n.kind === k.id && n.status === "pending" && !n.archivedAt && !n.deletedAt).length;
+      const on = this.view === "active" && this.kind === k.id;
+      const btn = el("button", `notes-tab${on ? " on" : ""}`, `${k.glyph} ${k.label}`);
+      if (pending) btn.append(el("span", "n", String(pending)));
+      btn.onclick = () => this.setKind(k.id);
+      return btn;
+    });
+    tabs.push(el("span", "notes-tabs-sep"));
+    const view = (id: "archived" | "trash", glyph: string, label: string, count: number) => {
+      const on = this.view === id;
+      const btn = el("button", `notes-tab notes-viewtab${on ? " on" : ""}`, `${glyph} ${label}`);
+      if (count) btn.append(el("span", "n", String(count)));
+      btn.onclick = () => this.setView(on ? "active" : id);
+      tabs.push(btn);
+    };
+    view("archived", "📦", "归档", notes.filter((n) => n.archivedAt && !n.deletedAt).length);
+    view("trash", "🗑️", "垃圾箱", notes.filter((n) => n.deletedAt).length);
+    this.tabsEl.replaceChildren(...tabs);
   }
 
   private paintList(): void {
@@ -304,7 +296,7 @@ export class NotesSheet {
     }
     this.listEl.replaceChildren(
       ...rows.map((n) => {
-        // 行本身是 div 而不是 <button>：里面还要放「归档 / 删到垃圾箱」两个小按钮，button 套 button 点不动。
+        // 行本身是 div 而不是 <button>：里面还要放「归档 / 删除」两个小按钮，button 套 button 点不动。
         const row = el("div", `note-row${n.id === this.sel ? " on" : ""}`) as HTMLElement;
         row.tabIndex = 0;
         row.setAttribute("role", "button");
@@ -355,12 +347,12 @@ export class NotesSheet {
     } else if (this.view === "archived") {
       acts.append(
         mk("↺", "复原：放回列表", () => this.setLife(n.id, "active")),
-        mk("🗑️", "删到垃圾箱", () => this.setLife(n.id, "trashed")),
+        mk("🗑️", "删除（放垃圾箱，可复原）", () => this.setLife(n.id, "trashed")),
       );
     } else {
       acts.append(
         mk("📦", "归档", () => this.setLife(n.id, "archived")),
-        mk("🗑️", "删到垃圾箱", () => this.setLife(n.id, "trashed")),
+        mk("🗑️", "删除（放垃圾箱，可复原）", () => this.setLife(n.id, "trashed")),
       );
     }
     return acts;
@@ -680,7 +672,8 @@ export class NotesSheet {
     };
     row.append(copy, hand);
     if (this.editing?.id) {
-      const del = el("button", "btn danger", "删到垃圾箱");
+      const del = el("button", "btn danger", "删除");
+      del.title = "放进垃圾箱（可复原），不是彻底删";
       del.onclick = () => {
         const id = this.editing?.id;
         if (!id) return;
@@ -691,7 +684,7 @@ export class NotesSheet {
         this.dirty = false;
         this.paintEditor();
       };
-      row.append(el("div", "grow"), del);
+      row.append(del);
     }
     return row;
   }
