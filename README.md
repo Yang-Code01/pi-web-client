@@ -6,7 +6,6 @@
 
 - `bridge/` — 一个 Node 进程：管 pi 子进程（`--mode rpc`）、HTTP+WS、口令登录、审批转发、隧道与推送。
 - `web/` — Vite + TypeScript 前端（无 UI 框架），手机/桌面共用一套组件。
-- `shared/` — 两端共用的协议类型。
 - `probes/` — 摸 pi 的 RPC 边界时写的一次性探针，留着当证据。
 
 设计文档、决策记录、实测报告都在 [`docs/`](docs/)（[`PLAN.md`](docs/PLAN.md)、[`DECISIONS.md`](docs/DECISIONS.md)、[`pi-integration-facts.md`](docs/pi-integration-facts.md)）。**想知道「pi 的 RPC 到底能干什么」，先看 [`docs/pi-integration-facts.md`](docs/pi-integration-facts.md)。**
@@ -86,6 +85,8 @@ PI_WEB_HOST=0.0.0.0 npm start
 - 中断：挂起的审批会一起清掉（pi 的 `abort` 在 dialog 挂起时不会返回，所以先 `cancelled` 再 `abort`）。
 - 排队：跑着的时候继续发——Enter 引导当前任务（steer），Alt+Enter 等这轮做完再处理（followUp），同终端；输入框上方的「排队中」条能把排队的消息撤回到输入框（D75）。
 - `!命令` / `!!命令`：在 pi 里执行，输出成卡片，`!` 的输出随下一条消息进上下文，`!!` 不进；模型面板的「会话」一节有累计 token、费用、会话文件，以及带指令的「立即压缩」（`/session`、`/compact <指令>` 也能到这里）。
+- 分支与导出（D77）：`/tree` 打开会话树（缩进=分支，● = pi 会接着走的那条），任何一条用户消息都能 ⑂ 分叉成新会话（消息放回输入框），`/clone` 复制当前分支，`/import <路径>` 导入别处的会话文件；`/export` 用 pi 自带的 HTML 导出在新标签页打开（`/export jsonl` 下载原文件），`/copy` 或消息右上角 ⧉ 复制原文。
+- 输入补全（D77）：输入框开头打 `/` 列出内建命令 + 扩展命令 + 提示词模板 + 技能；任意位置打 `@` 模糊搜索工作目录里的文件。终端 `＋` 可以选 shell（PowerShell / Git Bash / cmd，macOS / Linux 用 `$SHELL`）。
 - 提问：模型调 `question` / `questionnaire` 时，问题直接弹成底部抽屉（多题 tab + 提交，单题点选即答，可「自己写」或取消），composer 上方另有一条「待你回答」顶条；答过的 Q/A 留在聊天里当气泡，刷新后还在。终端里跑同样的工具，界面一行没变。
 - 图片：手机相册选图，或桌面直接 `Ctrl+V` / `⌘V` 粘贴截图（压到 ≤2048px 的 JPEG 再发）；点 composer 里的「+N 图」可看缩略图、单张删掉或全部清空。
 - 产物与文件（D50）：`📂 产物` 是「本会话写/改过的文件」清单（按工具调用推出来，不需要 pi 配合），点一下直接预览——md / html 渲染、图片直接看、代码带行号和语法高亮。`📁 文件管理器` 是全盘浏览：浏览 / 预览 / 编辑三种状态共用一个面板，路径行上「⌂ 工作目录」旁边还有一颗「⧉ 复制路径」把当前目录复制走（D71）；文本就地改、`Ctrl+S` 保存；保存时发现磁盘上这个文件已经被 pi 改过，会拦下来问「覆盖 / 另存副本 / 放弃」。**这台机器上除了二进制和 >2 MB 的文件，基本都能读写**，所以口令别给不信任的人。
@@ -124,13 +125,15 @@ node bridge/tests/run-lifecycle.mjs                                   # 一轮�
 node bridge/tests/session-dirs.mjs                                    # 会话目录解析顺序与列表不截断（D73）
 node bridge/tests/session-sync.mjs                                    # 分支只显示当前一支、用户消息多端同步、扩展状态/小部件、/compact 指令（D74，假 pi）
 node bridge/tests/composer-actions.mjs                                # 引导/排到之后与队列撤回、!cmd 卡片（D75，假 pi）
+node bridge/tests/branch-ops.mjs                                      # 会话树 / 分叉 / 复制 / 导入 / 导出 / @ 文件搜索（D77，真 pi，不调模型）
+node bridge/tests/shells.mjs                                          # 终端可选 shell（Windows / macOS / Linux，需先 build:bridge）
 ```
 
 `npm run typecheck` 分别跑 bridge 和 web 的 `tsc --noEmit`。
 
 ## 还没做
 
-[`docs/PLAN.md`](docs/PLAN.md) 的 M5 后段与 M6：公网实测、微信/Web Push 的实机验收、开机自启与托盘、diff 卡片、移动端手势（左右滑切标签）。模型切换、思考档位、压缩上下文、文件/终端/产物都已经做了。
+[`docs/PLAN.md`](docs/PLAN.md) 的 M5 后段与 M6：公网实测、微信/Web Push 的实机验收、开机自启与托盘、diff 卡片、移动端手势（左右滑切标签）。与 pi CLI 能力对齐的剩余项在 [#8](https://github.com/Yang-Code01/pi-web-client/issues/8) 跟踪。
 
 ## 安全模型（别跳过）
 

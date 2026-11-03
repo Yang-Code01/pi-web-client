@@ -737,3 +737,54 @@
 **代价**：一条横排里最多一颗填色胶囊，颜色与 `.pin-chip.wait`（等审批的暗黄描边）可能同屏；两者不冲突（一个是填充、一个是描边 + `small` 的文字色），实测同屏可分辨。
 
 **验证**：`node probes/pin-current.mjs`（桩桥 + 真 Chromium）——打开 A 并收起左栏 → 只有 A 的胶囊带 `.cur`/`aria-current`，且与 B 的胶囊**底色、描边、字重三项都不同**（不硬编码色值，换主题也成立）；点 B 的胶囊 → 标记搬家、A 复原；切到未置顶的 C → 这条里没有任何 `.cur`；展开左栏 → 整条横栏重新隐藏。证据图：`docs/shots/pin-current.png`（A 是当前会话）；探针支持 `PIN_DIST=<另一份 web/dist>` 跑「改之前」的对照，那时六条断言全红、两颗胶囊底色同为 `rgb(18,21,26)`、字重同为 400。
+
+## D77 分叉 / 复制用 pi 自己的 SessionManager 写新文件；会话树、导入、导出、`/` `@` 补全、终端选 shell、摘要卡片（#17 #23 #24 #25 #31 #32）
+
+**决定：**
+1. **分叉 / 复制（#17）**：bridge 从 pi 安装目录 import `dist/core/session-manager.js`（由 `cli.js` 往上三级定位，首次加载约 2 秒，之后复用）。
+   - 分叉：`SessionManager.open(源文件).createBranchedSession(用户消息的 parentId)`，消息原文放回输入框。
+   - 复制：在当前 leaf 上做同样的操作。
+   - 新文件由 pi 自己的代码写出：header 带 `parentSession`、label 重建、compaction 重新串链，和终端里 `/fork` `/clone` 的结果一致。源文件只读不写。v1/v2 旧格式拒绝分叉，因为 `open()` 会原地迁移重写。
+   - 在第一条消息处分叉，pi 本来就不写空文件，所以等于在同一目录开一个新会话，再把消息放回输入框。
+   - 实时气泡的 id 不是 entry id：用「当前分支第 N 条用户消息 + 原文」对上 entry。
+2. **会话树**：bridge 直接读文件，把用户消息按「最近的前一条用户消息」挂成树，`current` 标出 pi 会接着走的那条（D74）。
+   - 每一条都能分叉，废弃分支上的也行（pi 的 `getEntry` 不限当前分支）。
+   - **不做**「切换 leaf」：RPC 没有这个命令，终端 `/tree` 只改内存里的 leaf。要在废弃分支上继续，就从那里分叉。
+3. **导入（`/import <路径>`）**：照 pi 的 `importFromJsonl` 做，`COPYFILE_EXCL` 复制进该 cwd 对应的会话目录（自定义 sessionDir 时是平铺目录），重名加 `-1`；同 id 已在列表里就拒绝。原文件不动。
+4. **导出（#24）**：
+   - `GET /api/export?id=` 跑 `pi --export <文件> <state/exports/id.html>`，在新标签页打开；`&format=jsonl` 直接把会话文件作为附件下载。
+   - `GET /api/log?id=` 是网页版 `/debug`，返回该会话 pi 进程的 stderr 日志。
+   - `/copy` 和消息头上的 ⧉ 复制原文（markdown）。
+   - `/share`、`/bug` 需要外部服务，拆到 #38。
+5. **补全（#25）**：
+   - 输入框开头 `/` → 内建命令（网页能执行的那些，见 D74）+ `get_commands` 返回的扩展命令、提示词模板、技能。没有活进程时只列磁盘上的技能。
+   - 任意位置 `@` → `GET /api/files`：git 仓库用 `git ls-files --cached --others --exclude-standard`，否则有界遍历（跳过 node_modules 等），每个 cwd 缓存 10 秒，按「文件名命中 > 路径命中 > 子序列」排序，插入 `@相对路径 `，和终端一样。
+   - ↑↓ 选、Enter / Tab 采纳、Esc 关闭；已经完整输入的命令按 Enter 直接发送。
+6. **终端（#23）**：`availableShells()` 按平台列出这台机器真有的 shell。
+   - Windows：pwsh、powershell、Git Bash、cmd。
+   - 其他：`$SHELL`、zsh、bash、sh。
+   - `＋` 有多个可选时弹菜单；「管理员」窗口只用 PowerShell。
+7. **摘要卡片（#31）**：compaction 的 summary（live 来自 `compaction_end.result`，读盘来自 entry）、`branch_summary`、`display:true` 的扩展消息（`custom_message` entry 和 live 的 `role:"custom"`），画成默认折叠的卡片。工具耗时：会话文件里没有，不补。
+8. **`shared/protocol.ts` 删除（#32）**：它是没人 import 的旧协议草稿，字段名 `t:` 和实际的 `type:` 对不上。
+9. **布局修复（D75 引入的）**：模型面板是固定行的 grid（模型列表是 `1fr` 那一行），「会话」一节插进去后占掉了这一行，长路径还把面板撑到约 1000px。现在把它和预算放进同一个 `.sheet-top`，并设 `min-width: 0`。
+
+**为什么：**
+- 最先试的是起一个临时 `pi --mode rpc --session <源文件>` 子进程再发 `fork`，测试抓到它会往**源文件**追加一行 `thinking_level_change`：打开会话时 pi 会做模型解析。源文件可能正被终端写着（D8），这等于第二个写者。直接用 pi 的 SessionManager 只读源、只写新文件，也省掉起进程的时间。
+- 其余几项都是终端里随手能做、网页上却要切走的事。
+
+**代价 / 可改：**
+- 依赖 pi 包内部路径 `dist/core/session-manager.js`，不在它的 `exports` 里；升级 pi 后如果路径变了，分叉 / 复制会报「加载不了 pi 的会话模块」，其他功能不受影响。
+- `@` 搜索在超大仓库里最多看 2 万个文件。
+- 导入时，导入文件的 cwd 不存在也照样复制，等接管时才会报错。**可改**
+
+**验证：**
+- `node bridge/tests/branch-ops.mjs`（用本机真 pi，不调模型），覆盖：
+  - 树的嵌套和 current 标记；
+  - 在当前分支和废弃分支上分叉、按位置加原文分叉，新文件内容和 `parentSession` 正确，**源文件逐字节不变**；
+  - 复制只取当前分支；
+  - 导入是复制、重复导入被拒；
+  - HTML / JSONL 导出、未登录 401、没有日志时 404；
+  - `@` 搜索的首位命中、子序列匹配、忽略目录；
+  - 只读会话的命令列表。
+- `node bridge/tests/shells.mjs` 覆盖三个平台的 shell 列表。
+- 真 Chromium：三种摘要卡片、⧉ 复制到剪贴板、`/ex` 与 `@chat` 补全及采纳、`/tree` 的缩进（8 / 24 / 24 / 24px）与分叉后消息回到输入框、「会话」一节的导出链接与宽度（560px，不再溢出）、终端 `＋` 菜单（powershell / Git Bash / cmd）。

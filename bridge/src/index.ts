@@ -3,6 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   authorized,
@@ -28,6 +29,7 @@ import { resolvePi } from "./pi.ts";
 import { APP_NAME, VERSION, ensureStateDirs, readJson, statePath, sessionsRootInfo } from "./paths.ts";
 import { clipboardFiles, listDirs, makeDir, statFiles } from "./dirs.ts";
 import { gitInfo } from "./git.ts";
+import { listFiles, rankFiles } from "./filesearch.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
 
 interface Config {
@@ -425,6 +427,58 @@ async function main(): Promise<void> {
       }
     }
 
+    // #24 `/export`: the session as pi's own self-contained HTML (`pi --export`, opened in a tab), or the
+    // raw JSONL file as a download. Read-only on the session file; works whether or not it is live.
+    if (url.pathname === "/api/export" && req.method === "GET") {
+      const id = url.searchParams.get("id") ?? "";
+      const format = url.searchParams.get("format") === "jsonl" ? "jsonl" : "html";
+      const where = id ? sessions.locate(id) : null;
+      if (!where?.file || !fs.existsSync(where.file)) return json(res, 404, { error: "这个会话还没有写到磁盘（发过一条消息之后才有文件）" });
+      const base = (sessions.get(id)?.state.name || path.basename(where.file, ".jsonl")).replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 80) || "session";
+      const disposition = (name: string, inline: boolean) => `${inline ? "inline" : "attachment"}; filename="session.${name.split(".").pop()}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+      if (format === "jsonl") {
+        res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store", "content-disposition": disposition(`${base}.jsonl`, false) });
+        fs.createReadStream(where.file).pipe(res);
+        return;
+      }
+      const out = statePath("exports", `${id}.html`);
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      const child = spawn(process.execPath, [pi.cli, "--export", where.file, out], { cwd: os.homedir(), stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+      let err = "";
+      child.stderr.on("data", (b) => (err = (err + String(b)).slice(-2000)));
+      const timer = setTimeout(() => child.kill(), 60_000);
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0 || !fs.existsSync(out)) return json(res, 500, { error: `pi --export 失败（exit ${code}）：${err.trim()}` });
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-disposition": disposition(`${base}.html`, url.searchParams.get("download") !== "1") });
+        fs.createReadStream(out).pipe(res);
+      });
+      return;
+    }
+
+    // #25 `@` in the composer: fuzzy file search under the session's cwd (relative paths).
+    if (url.pathname === "/api/files" && req.method === "GET") {
+      const where = sessions.locate(url.searchParams.get("id") ?? "");
+      const cwd = where?.cwd ?? "";
+      try {
+        if (!cwd || !fs.statSync(cwd).isDirectory()) return json(res, 404, { error: "会话的工作目录不存在", files: [] });
+      } catch {
+        return json(res, 404, { error: "会话的工作目录不存在", files: [] });
+      }
+      const files = rankFiles(await listFiles(cwd), url.searchParams.get("q") ?? "");
+      return json(res, 200, { cwd, files });
+    }
+
+    // Diagnostics (#24, the web stand-in for `/debug`): this session's pi stderr log kept by the bridge.
+    if (url.pathname === "/api/log" && req.method === "GET") {
+      const id = url.searchParams.get("id") ?? "";
+      const file = statePath("logs", `${id.replace(/[^\w.-]/g, "")}.log`);
+      if (!id || !fs.existsSync(file)) return json(res, 404, { error: "这个会话还没有 pi 进程日志（网页接管过才会有）" });
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+
     if (url.pathname === "/api/push/subscribe" && req.method === "POST") {
       const body = await readBody(req).catch(() => null);
       if (!body?.endpoint || !body?.keys?.p256dh) return json(res, 400, { error: "bad subscription" });
@@ -575,6 +629,7 @@ async function main(): Promise<void> {
               cols: Number(msg.cols),
               rows: Number(msg.rows),
               cwd: msg.cwd ? String(msg.cwd) : undefined,
+              shell: msg.shell ? String(msg.shell) : undefined,
             });
             if ("error" in opened) {
               send({ type: "term.error", message: opened.error });
@@ -606,7 +661,7 @@ async function main(): Promise<void> {
             return;
           }
           case "term.list": {
-            send({ type: "term.list", items: terminals.list() });
+            send({ type: "term.list", items: terminals.list(), shells: terminals.shells() });
             return;
           }
           case "term.elevate":
@@ -661,6 +716,45 @@ async function main(): Promise<void> {
           case "abortBash": {
             if (!(await requireStepUp())) return;
             sessions.get(msg.sessionId)?.abortBash();
+            return;
+          }
+          case "tree": {
+            // #17: read from the session file, so read-only sessions have a tree too.
+            const sessionId = String(msg.sessionId ?? "");
+            send({ type: "tree", sessionId, ...sessions.tree(sessionId) });
+            return;
+          }
+          case "fork":
+          case "clone": {
+            if (!(await requireStepUp())) return;
+            const sessionId = String(msg.sessionId ?? "");
+            const reqId = String(msg.reqId ?? "");
+            try {
+              const out = await sessions.branchOff(
+                sessionId,
+                msg.type === "clone"
+                  ? "clone"
+                  : {
+                      entryId: typeof msg.entryId === "string" ? msg.entryId : undefined,
+                      index: Number.isInteger(msg.index) ? msg.index : undefined,
+                      text: typeof msg.text === "string" ? msg.text : undefined,
+                    },
+              );
+              log(`${msg.type} ${sessionId} → ${out.sessionId}`);
+              send({ type: "branch.result", reqId, from: sessionId, ...out });
+            } catch (err: any) {
+              send({ type: "branch.result", reqId, from: sessionId, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "import": {
+            if (!(await requireStepUp())) return;
+            try {
+              const out = sessions.importFile(String(msg.path ?? ""));
+              send({ type: "import.result", ...out });
+            } catch (err: any) {
+              send({ type: "import.result", error: String(err?.message ?? err) });
+            }
             return;
           }
           case "clearQueue": {
@@ -746,6 +840,16 @@ async function main(): Promise<void> {
           case "skills": {
             const list = await sessions.skillsFor(String(msg.sessionId ?? ""), msg.cwd ? String(msg.cwd) : undefined);
             send({ type: "skills", sessionId: msg.sessionId ?? null, commands: list });
+            return;
+          }
+          case "commands": {
+            // #25: the `/` menu — pi's own commands for this session (extension / template / skill).
+            const sessionId = String(msg.sessionId ?? "");
+            const session = sessions.get(sessionId);
+            const commands = session
+              ? await session.commands()
+              : (await sessions.skillsFor(sessionId, msg.cwd ? String(msg.cwd) : undefined)).map((sk) => ({ name: `skill:${sk.name}`, description: sk.description, source: "skill" }));
+            send({ type: "commands", sessionId, commands });
             return;
           }
           case "skillUsed": {

@@ -119,6 +119,8 @@ export class ChatView {
   private collapsed = new Set<string>();
   /** Set by the app: the 停止 button on a running `!cmd` card. */
   onBashStop: ((id: string) => void) | null = null;
+  /** Set by the app: ⑂ on a user message (#17). `index` = its position among user messages. */
+  onFork: ((item: { id: string; text: string }, index: number) => void) | null = null;
   /** Live view of the running tool call — nothing here is rendered in the transcript. */
   private live: LiveInfo = {};
   /** Which tool call the live output belongs to; a stale update must not overwrite a newer tool. */
@@ -614,14 +616,38 @@ export class ChatView {
     }
     if (item.kind === "tool") return this.buildTool(item);
     if (item.kind === "bash") return this.buildBash(item);
+    if (item.kind === "summary") {
+      // Folded by default: it is context the model reads, not something the user needs to reread.
+      const box = el("details", `summary-card ${item.variant}`);
+      box.append(el("summary", "", `${item.title} · ${timeOf(item.ts)}`));
+      const body = el("div", "body");
+      body.append(renderMarkdown(item.text));
+      box.append(body);
+      return box;
+    }
 
     const wrap = el("div", `msg ${item.kind}`);
+    if (item.kind === "assistant") (wrap as HTMLElement & { _raw?: string })._raw = item.text;
     const who = el("div", "who");
     if (item.kind === "user") {
       who.textContent = `你 · ${timeOf(item.ts)}`;
+      if (item.text.trim()) who.append(copyButton(() => item.text));
+      if (this.onFork && item.text.trim()) {
+        // #17 `/fork`: a new session holding everything before this message, the message back in the editor.
+        const fork = el("button", "msg-copy msg-fork", "⑂") as HTMLButtonElement;
+        fork.type = "button";
+        fork.title = "从这条消息之前分叉成新会话（这条消息放回输入框）";
+        fork.onclick = (ev) => {
+          ev.stopPropagation();
+          const index = [...this.root.querySelectorAll(".msg.user")].indexOf(wrap);
+          this.onFork?.({ id: item.id, text: item.text }, index);
+        };
+        who.append(fork);
+      }
       wrap.append(who, this.foldable(this.buildUserBody(item), 240));
     } else {
       who.textContent = `${item.model ?? "pi"} · ${timeOf(item.ts)}${item.stopReason === "aborted" ? " · 已中断" : ""}`;
+      if (item.text.trim()) who.append(copyButton(() => item.text));
       wrap.append(who);
       // A message that only carries thinking/tool calls has no prose to show:
       // an empty bubble there is pure noise. `delta()` appends `.stream` itself,
@@ -825,6 +851,15 @@ export class ChatView {
     if (item.truncated) card.append(el("div", "bash-foot", `输出太长，只显示末尾。完整内容：${item.fullOutputPath ?? "（pi 没给路径）"}`));
     wrap.append(card);
     return wrap;
+  }
+
+  /** The last answer with prose, for `/copy` (#24). */
+  lastAssistantText(): string | null {
+    for (const node of [...this.root.querySelectorAll<HTMLElement>(".msg.assistant")].reverse()) {
+      const text = (node as HTMLElement & { _raw?: string })._raw;
+      if (text && text.trim()) return text;
+    }
+    return null;
   }
 
   /** Streamed output of a running `!cmd`. */
@@ -1076,4 +1111,25 @@ function previewLine(text: string): string {
     .replace(/\s+/g, " ")
     .trim();
   return plain.length > 120 ? `${plain.slice(0, 120)}…` : plain || "（已收起）";
+}
+
+/** ⧉ in a message header: copies the raw markdown / text, as `/copy` does in the terminal (#24). */
+function copyButton(text: () => string): HTMLButtonElement {
+  const btn = el("button", "msg-copy", "⧉") as HTMLButtonElement;
+  btn.type = "button";
+  btn.title = "复制原文";
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    const done = navigator.clipboard?.writeText(text());
+    if (!done) {
+      btn.title = "这个地址拿不到剪贴板（http 的局域网地址浏览器不给）";
+      btn.textContent = "✕";
+      return;
+    }
+    void done.then(() => {
+      btn.textContent = "✓";
+      setTimeout(() => (btn.textContent = "⧉"), 1000);
+    });
+  };
+  return btn;
 }

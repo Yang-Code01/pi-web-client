@@ -48,7 +48,25 @@ export interface BashItem extends ItemBase {
   status: "running" | "done";
   error?: string;
 }
-export type Item = UserItem | AssistantItem | ToolItem | NoticeItem | BashItem;
+/**
+ * Text pi put into the context that is neither the user's nor the model's: a compaction summary,
+ * the summary of a branch left behind by /tree, or a message an extension injected (#31).
+ */
+export interface SummaryItem extends ItemBase {
+  kind: "summary";
+  variant: "compaction" | "branch" | "custom";
+  title: string;
+  text: string;
+}
+export type Item = UserItem | AssistantItem | ToolItem | NoticeItem | BashItem | SummaryItem;
+
+/** A custom (extension) message, if pi would show it: `display:false` ones stay hidden, like in the TUI. */
+export function customMessageItem(id: string, ts: string | undefined, raw: any): SummaryItem | null {
+  if (!raw || raw.display === false) return null;
+  const text = contentText(raw.content).trim();
+  if (!text) return null;
+  return { id, ts, kind: "summary", variant: "custom", title: `扩展消息 · ${String(raw.customType ?? "custom")}`, text: text.slice(0, BASH_KEEP) };
+}
 
 /** Output kept for a `!cmd` card (its tail: the end of a long output is what tells you how it went). */
 export const BASH_KEEP = 20000;
@@ -114,7 +132,20 @@ export function entriesToItems(entries: SessionEntry[]): Item[] {
 
   for (const entry of currentBranch(entries)) {
     if (entry.type === "compaction") {
-      items.push({ id: entry.id, kind: "notice", text: "上下文已压缩", level: "info" });
+      const before = typeof entry.tokensBefore === "number" ? `（压缩前约 ${Math.round(entry.tokensBefore / 1000)}K token）` : "";
+      const summary = typeof entry.summary === "string" ? entry.summary : "";
+      if (summary.trim()) items.push({ id: entry.id, ts: entry.timestamp, kind: "summary", variant: "compaction", title: `上下文已压缩${before}`, text: summary });
+      else items.push({ id: entry.id, kind: "notice", text: `上下文已压缩${before}`, level: "info" });
+      continue;
+    }
+    if (entry.type === "branch_summary") {
+      const summary = typeof entry.summary === "string" ? entry.summary : "";
+      if (summary.trim()) items.push({ id: entry.id, ts: entry.timestamp, kind: "summary", variant: "branch", title: "另一条分支的摘要（/tree 切换分支时生成）", text: summary });
+      continue;
+    }
+    if (entry.type === "custom_message") {
+      const item = customMessageItem(entry.id, entry.timestamp, entry);
+      if (item) items.push(item);
       continue;
     }
     // Model switches are not a transcript event: the composer chip already carries the model
@@ -157,6 +188,9 @@ export function entriesToItems(entries: SessionEntry[]): Item[] {
         toolIndex.set(item.toolCallId, item);
         items.push(item);
       }
+    } else if (msg.role === "custom") {
+      const item = customMessageItem(entry.id, entry.timestamp, msg);
+      if (item) items.push(item);
     } else if (msg.role === "bashExecution") {
       items.push({
         id: entry.id,

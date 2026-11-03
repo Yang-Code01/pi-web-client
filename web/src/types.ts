@@ -46,7 +46,14 @@ export interface BashItem extends ItemBase {
   status: "running" | "done";
   error?: string;
 }
-export type Item = UserItem | AssistantItem | ToolItem | NoticeItem | BashItem;
+/** Compaction / branch summary / extension message (#31). */
+export interface SummaryItem extends ItemBase {
+  kind: "summary";
+  variant: "compaction" | "branch" | "custom";
+  title: string;
+  text: string;
+}
+export type Item = UserItem | AssistantItem | ToolItem | NoticeItem | BashItem | SummaryItem;
 
 /** What pi extensions drew with ctx.ui.setStatus / setWidget / setTitle (fire-and-forget in RPC). */
 export interface ExtUi {
