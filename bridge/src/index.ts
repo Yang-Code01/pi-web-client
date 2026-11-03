@@ -641,7 +641,7 @@ async function main(): Promise<void> {
           case "prompt": {
             if (!(await requireStepUp())) return;
             const session = await sessions.openLive(msg.sessionId);
-            await session.prompt(String(msg.text ?? ""), msg.images);
+            await session.prompt(String(msg.text ?? ""), msg.images, typeof msg.clientId === "string" ? msg.clientId.slice(0, 80) : undefined);
             return;
           }
           case "create": {
@@ -677,7 +677,8 @@ async function main(): Promise<void> {
           }
           case "compact": {
             if (!(await requireStepUp())) return;
-            await sessions.get(msg.sessionId)?.compact();
+            const instructions = typeof msg.instructions === "string" && msg.instructions.trim() ? msg.instructions.trim().slice(0, 4000) : undefined;
+            await sessions.get(msg.sessionId)?.compact(instructions);
             return;
           }
           case "answer": {

@@ -56,6 +56,18 @@ async function turn(text) {
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
+  if (text.startsWith("EXT")) {
+    // Fire-and-forget extension UI (rpc-mode.js): none of these may be answered.
+    const ui = (method, fields) => out({ type: "extension_ui_request", id: `ui-${method}-${Date.now()}`, method, ...fields });
+    ui("notify", { message: "\u001b[33m索引已更新\u001b[0m", notifyType: "warning" });
+    ui("setStatus", { statusKey: "lint", statusText: "\u001b[32mlint ✓\u001b[0m 3 files" });
+    ui("setStatus", { statusKey: "gone", statusText: "temporary" });
+    ui("setStatus", { statusKey: "gone", statusText: undefined });
+    ui("setWidget", { widgetKey: "todo", widgetLines: ["TODO", "- a", "- b"], widgetPlacement: "aboveEditor" });
+    ui("setWidget", { widgetKey: "foot", widgetLines: ["below line"], widgetPlacement: "belowEditor" });
+    ui("setTitle", { title: "pi — fake title" });
+    ui("set_editor_text", { text: "prefilled by extension" });
+  }
   if (text.startsWith("RETRY")) {
     out({ type: "message_start", message: assistant("") });
     out({ type: "message_end", message: assistant("", { stopReason: "error", errorMessage: "429 Too Many Requests" }) });
@@ -150,7 +162,7 @@ async function handle(cmd) {
     }
     case "compact": {
       compacting = true;
-      note({ t: "compact-start" });
+      note({ t: "compact-start", instructions: cmd.customInstructions ?? null });
       out({ type: "compaction_start", reason: "manual" });
       await sleep(COMPACT_MS);
       compacting = false;
@@ -179,7 +191,10 @@ process.stdin.on("data", (chunk) => {
       out({ type: "response", command: "parse", success: false, error: "Failed to parse command" });
       continue;
     }
-    if (cmd.type === "extension_ui_response") continue;
+    if (cmd.type === "extension_ui_response") {
+      note({ t: "ui-response", id: cmd.id });
+      continue;
+    }
     void handle(cmd);
   }
 });

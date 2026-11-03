@@ -35,6 +35,13 @@ export interface NoticeItem extends ItemBase {
 }
 export type Item = UserItem | AssistantItem | ToolItem | NoticeItem;
 
+/** What pi extensions drew with ctx.ui.setStatus / setWidget / setTitle (fire-and-forget in RPC). */
+export interface ExtUi {
+  status: { key: string; text: string }[];
+  widgets: { key: string; lines: string[]; placement: "aboveEditor" | "belowEditor" }[];
+  title: string | null;
+}
+
 export interface ApprovalRequest {
   id: string;
   sessionId: string;

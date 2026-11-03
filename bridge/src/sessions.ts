@@ -152,6 +152,18 @@ const PERMISSION_LABEL: Record<PermissionMode, string> = {
   auto: "全自动",
 };
 
+export interface ExtUiState {
+  status: { key: string; text: string }[];
+  widgets: { key: string; lines: string[]; placement: "aboveEditor" | "belowEditor" }[];
+  title: string | null;
+}
+
+/** Extensions style their text for the terminal; the page only wants the characters. */
+export function stripAnsi(text: string): string {
+  // CSI sequences, then OSC sequences (terminated by BEL or ST).
+  return text.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "");
+}
+
 export function isPermissionMode(v: unknown): v is PermissionMode {
   return typeof v === "string" && (PERMISSION_MODES as string[]).includes(v);
 }
@@ -444,6 +456,13 @@ export class Session extends EventEmitter {
   private queuedUser: { id: string; text: string }[] = [];
   /** Bubbles of messages that stop pulled back from the queue; dropped once the run has settled. */
   private withdrawOnSettle: { ids: string[]; count: number } | null = null;
+  /**
+   * What extensions put on screen with ctx.ui.setStatus / setWidget / setTitle. These are
+   * fire-and-forget in RPC (no response), so the bridge keeps the latest state for late joiners.
+   */
+  private extStatus = new Map<string, string>();
+  private extWidgets = new Map<string, { lines: string[]; placement: "aboveEditor" | "belowEditor" }>();
+  private extTitle: string | null = null;
 
   constructor(
     private cli: string,
@@ -522,14 +541,22 @@ export class Session extends EventEmitter {
       const sig = `${stat.size}:${Math.round(stat.mtimeMs)}`;
       if (sig === this.tailSig) return;
       this.tailSig = sig;
-      const before = this.items.length;
+      const before = this.items;
       this.loadFromFile();
       this.touch();
-      if (this.items.length > before) {
-        const added = this.items.slice(before);
-        for (const item of added) this.emitWs({ type: "item.add", sessionId: this.state.id, item });
+      // Usually the file only grew, so the old transcript is a prefix of the new one. A branch
+      // switch in the terminal (/tree, then a new message) replaces part of it: resend everything.
+      const prefix = before.length <= this.items.length && before.every((it, i) => it.id === this.items[i].id);
+      if (!prefix) this.emitWs({ type: "items", sessionId: this.state.id, items: this.items });
+      else {
+        // Same ids can still carry new content: a tool card gets its result from a later line.
+        for (let i = 0; i < before.length; i++) {
+          if (JSON.stringify(before[i]) !== JSON.stringify(this.items[i])) {
+            this.emitWs({ type: "item.replace", sessionId: this.state.id, id: before[i].id, item: this.items[i] });
+          }
+        }
+        for (const item of this.items.slice(before.length)) this.emitWs({ type: "item.add", sessionId: this.state.id, item });
       }
-      if (!this.items.length) this.emitWs({ type: "items", sessionId: this.state.id, items: [] });
     } catch {
       /* ignore */
     }
@@ -624,6 +651,8 @@ export class Session extends EventEmitter {
       this.clearApprovals();
       this.clearAsks();
       this.endCompaction();
+      // The extensions that drew these live in the process that just ended.
+      this.resetExtUi();
       // A stop the user asked for is not news; only an exit nobody asked for is worth the stderr tail.
       if (closing) {
         if (!quiet) this.emitWs({ type: "notice", sessionId: id, text: "已停止运行，历史留在磁盘，发消息会自动接管。", level: "info" });
@@ -877,6 +906,8 @@ export class Session extends EventEmitter {
   private onUiRequest(req: any): void {
     const id = String(req.id ?? "");
     if (!id) return;
+    // Fire-and-forget methods: pi does not wait for (or expect) a response to these.
+    if (this.onExtUi(req)) return;
     // select / input / editor are questions, not approvals (e.g. ask_user_question's rpc fallback
     // walks its questionnaire with them). They go through the ask drawer and are answered with
     // `{value}`; answering them with `{confirmed}` made pi read every reply as a dismissal.
@@ -1030,7 +1061,11 @@ export class Session extends EventEmitter {
   }
 
   // ---------------------------------------------------------------- commands
-  async prompt(text: string, images?: { data: string; mimeType: string }[]): Promise<void> {
+  /**
+   * `clientId` is the id the sending page gave its optimistic bubble: the broadcast carries it so
+   * that page adopts the bubble instead of drawing a second one, and every other page draws it.
+   */
+  async prompt(text: string, images?: { data: string; mimeType: string }[], clientId?: string): Promise<void> {
     if (!this.rpc?.alive) throw new Error("会话没在运行");
     // pi throws on a prompt submitted mid-compaction: hold it until the compaction is over.
     if (this.compaction) {
@@ -1047,13 +1082,16 @@ export class Session extends EventEmitter {
     }
     const userId = `user:${++this.userCounter}`;
     if (message.streamingBehavior) this.queuedUser.push({ id: userId, text });
-    this.upsert({
+    const userItem: Item = {
       id: userId,
       kind: "user",
       text,
       images: (images ?? []).map((i) => ({ mimeType: i.mimeType })),
       ts: new Date().toISOString(),
-    });
+    };
+    this.upsert(userItem);
+    // Other pages watching this session (phone + desktop) only learn about the message from here.
+    this.emitWs({ type: "item.add", sessionId: this.state.id, item: userItem, ...(clientId ? { clientId } : {}) });
     // A web-born session has no title until it says something; the terminal would show the first
     // message too. Sidebar-only: nothing is appended to the session file.
     if (this.state.name === DEFAULT_NAME || !this.state.preview) {
@@ -1122,12 +1160,13 @@ export class Session extends EventEmitter {
   }
 
   /** Compaction is long (minutes on a big context); its events, not a short timeout, bound it. */
-  async compact(): Promise<void> {
+  /** `instructions` = what `/compact <text>` adds in the terminal: what the summary must keep. */
+  async compact(instructions?: string): Promise<void> {
     const rpc = this.rpc;
     if (!rpc?.alive) return;
     this.beginCompaction();
     try {
-      await rpc.request("compact", {}, 30 * 60 * 1000);
+      await rpc.request("compact", instructions ? { customInstructions: instructions } : {}, 30 * 60 * 1000);
     } finally {
       this.endCompaction();
     }
@@ -1237,12 +1276,76 @@ export class Session extends EventEmitter {
     this.state.updatedAt = Date.now();
   }
 
+  /** notify / setStatus / setWidget / setTitle / set_editor_text (docs/rpc-extension-ui.md). */
+  private onExtUi(req: any): boolean {
+    switch (req.method) {
+      case "notify": {
+        const kind = String(req.notifyType ?? "info");
+        const level = kind === "error" ? "error" : kind === "warning" ? "warn" : "info";
+        const text = stripAnsi(String(req.message ?? "")).trim();
+        if (text) this.emitWs({ type: "notice", sessionId: this.state.id, text, level });
+        return true;
+      }
+      case "setStatus": {
+        const key = String(req.statusKey ?? "");
+        const text = typeof req.statusText === "string" ? stripAnsi(req.statusText).trim() : "";
+        if (!key) return true;
+        if (text) this.extStatus.set(key, text.slice(0, 300));
+        else this.extStatus.delete(key);
+        this.emitExtUi();
+        return true;
+      }
+      case "setWidget": {
+        const key = String(req.widgetKey ?? "");
+        if (!key) return true;
+        if (Array.isArray(req.widgetLines)) {
+          const lines = req.widgetLines.slice(0, 40).map((l: unknown) => stripAnsi(String(l ?? "")).slice(0, 400));
+          this.extWidgets.set(key, { lines, placement: req.widgetPlacement === "belowEditor" ? "belowEditor" : "aboveEditor" });
+        } else this.extWidgets.delete(key);
+        this.emitExtUi();
+        return true;
+      }
+      case "setTitle": {
+        const title = stripAnsi(String(req.title ?? "")).trim();
+        this.extTitle = title ? title.slice(0, 200) : null;
+        this.emitExtUi();
+        return true;
+      }
+      case "set_editor_text":
+        this.emitWs({ type: "editor.set", sessionId: this.state.id, text: String(req.text ?? "") });
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  extUi(): ExtUiState {
+    return {
+      status: [...this.extStatus].map(([key, text]) => ({ key, text })),
+      widgets: [...this.extWidgets].map(([key, w]) => ({ key, ...w })),
+      title: this.extTitle,
+    };
+  }
+
+  private emitExtUi(): void {
+    this.emitWs({ type: "ext.ui", sessionId: this.state.id, ext: this.extUi() });
+  }
+
+  private resetExtUi(): void {
+    if (!this.extStatus.size && !this.extWidgets.size && !this.extTitle) return;
+    this.extStatus.clear();
+    this.extWidgets.clear();
+    this.extTitle = null;
+    this.emitExtUi();
+  }
+
   snapshot(): {
     state: SessionState;
     items: Item[];
     approvals: ApprovalRequest[];
     asks: AskRequest[];
     budget: number | null;
+    ext: ExtUiState;
   } {
     return {
       state: this.state,
@@ -1250,6 +1353,7 @@ export class Session extends EventEmitter {
       approvals: [...this.approvals.values()],
       asks: [...this.asks.values()].map(publicAsk),
       budget: this.contextBudget,
+      ext: this.extUi(),
     };
   }
 

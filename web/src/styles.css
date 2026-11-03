@@ -1798,3 +1798,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 @media (prefers-reduced-motion: reduce) {
   .pin-menu { animation: none; }
 }
+
+/* #18 extension status / widgets (ctx.ui.setStatus / setWidget over RPC) */
+.composer .ext-widgets:empty { display: none; }
+.composer .ext-widgets { display: flex; flex-direction: column; gap: 4px; }
+.composer .ext-widgets.above { margin-bottom: 6px; }
+.composer .ext-widgets.below { margin-top: 6px; }
+.composer .ext-widget { margin: 0; padding: 6px 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel); color: var(--faint); font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 9.5em; overflow-y: auto; }
+.composer .ext-status { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--faint); font: 12px/1.4 var(--mono); }
+.composer .ext-status-item { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
