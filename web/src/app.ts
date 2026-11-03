@@ -6099,6 +6099,12 @@ export class App {
       // ★ = 取消置顶, the rest = 打开会话.
       const chip = el("div", "pin-chip");
       if (badge) chip.classList.add(badge.cls);
+      // 当前会话：整颗胶囊填色（aria-current 给读屏器，title 里也补一句），
+      // 否则收起左栏后这一排胶囊长得一模一样，分不出自己正在跟哪个会话说话。
+      if (s.id === this.currentId) {
+        chip.classList.add("cur");
+        chip.setAttribute("aria-current", "true");
+      }
       const star = el("button", "pin-star", "★") as HTMLButtonElement;
       star.type = "button";
       star.dataset.pinKey = `${s.id}:star`;
@@ -6112,7 +6118,9 @@ export class App {
       open.type = "button";
       open.dataset.pinKey = `${s.id}:open`;
       open.append(el("span", "pin-name", s.name || s.id), el("small", "", badge ? badge.text : relativeTime(s.updatedAt)));
-      open.title = [s.name || s.id, s.cwd ?? "", badge?.title ?? ""].filter(Boolean).join(" · ");
+      open.title = [s.name || s.id, s.cwd ?? "", badge?.title ?? "", s.id === this.currentId ? "（当前会话）" : ""]
+        .filter(Boolean)
+        .join(" · ");
       open.onclick = () => this.openFromList(s.id);
       chip.append(star, open);
       this.wirePinHover(chip, s);
