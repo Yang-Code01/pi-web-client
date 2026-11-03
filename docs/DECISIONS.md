@@ -612,3 +612,39 @@
 **只加在文件管理器，不加在另外两个目录选择器**：附件选择器和新会话 sheet 的「浏览」也有 `⌂ 工作目录`，但那两个的用途是「选一个就走」，复制路径没有落点；等真有人要再说（`dirCopy()` 已经是现成的，加一行就到）。
 
 **验证**：`node probes/dir-copy.mjs` —— 断言两颗按钮在路径行上且复制紧跟在「工作目录」之后；切进 `alpha/` 后点复制，剪贴板内容 `=== path.join(WORK,"alpha")`；按钮显示「已复制」；点面包屑回「此电脑」后按钮 `disabled`。剪贴板读写在探针里用 `context.grantPermissions(["clipboard-read","clipboard-write"])` 打开。
+
+## D72 一轮的边界以 `agent_settled` 为准；停止 = 先 `clear_queue` 再 `abort`；压缩期间的消息由桥扣住（#9 #10 #11 #12）
+
+**决定：**
+1. `running` / `done` 只在 `agent_start` → `agent_settled` 之间翻转，`agent_end` 只刷新统计。取代 D45 说明里「`agent_end`/`agent_settled` 置 `done:true`」那半句；D30 的「跑着就加 `followUp`」因此覆盖到重试、溢出恢复整段。
+2. 中断在 D19（先清审批）之后再补一步：`clear_queue`（等应答）紧跟 `abort`（照旧 fire-and-forget）。清出来的文本以 `queue.restore` 推回输入框；这些消息的气泡等本轮 settle 后从桥的 transcript 里删掉，再整份 `items` 重发。
+3. 手动 / 自动压缩的 RPC 超时从默认 20 秒改成 30 分钟，真正的边界看 `compaction_start` / `compaction_end`。这段时间里到达的 `prompt` 在桥里等压缩结束再发，同时给一条「压缩完成后发出」的提示。
+4. assistant 消息带上 `errorMessage`（live 与读盘两条路径都带），聊天里画成红色错误块；`auto_retry_start` 写明原因、第几次、几秒后，`auto_retry_end` 失败时报 `finalError`。
+
+**为什么：**
+- pi 文档写明 `agent_end` 只是一次底层 run 结束，重试 / compaction / steering / follow-up 都会接着跑，「不会自动继续」的唯一信号是 `agent_settled`（`docs/rpc.md` Run lifecycle）。以前在 `agent_end` 就判空闲，于是重试那几秒卡片显示「完成」，这时发出的消息不带 `streamingBehavior`，被 pi 以 `Agent is already processing` 拒掉。
+- `abort` 不清队列，pi 一空闲就把排队的消息接着跑（`docs/rpc-commands.md` clear_queue：官方 Esc 语义就是先 `clear_queue` 再 `abort`）。`clear_queue` 在 pi 里是同步的（`session.clearQueue()`），命令又按到达顺序分派，所以 `abort` 开跑之前队列已经空了，不必等它的应答再发 `abort`。
+- 桥的 `rpc.request` 默认 20 秒，大上下文压缩常常超过它：网页报超时，pi 实际还在压。另外 pi 在压缩中收到 `prompt` 会直接抛错（`agent-session.js`：`Cannot submit a prompt while compaction is in progress`）；而自动压缩发生在 `running=false` 的空档，用户正好会在这时发消息。
+- 出错的回复往往一个字都没有，只有 `stopReason:"error"` + `errorMessage`；以前只认 `aborted`，于是错误回合只剩一个空气泡。
+
+**附带修掉：** `queue_update` 转发时写成 `{ type: "queue", ...ev }`，事件自带的 `type: "queue_update"` 把它盖掉了，网页从来没收到过 `queue`。改成先展开再覆盖 `type`（队列面板本身仍在 #14）。
+
+**代价：** 撤回后整份 `items` 重发，会把只存在于网页的 notice（比如上一条「重试中」）一起清掉；错误卡片在 transcript 里，不受影响。
+
+**验证：** `node bridge/tests/run-lifecycle.mjs`（约 40 秒）。它用脚本化的假 pi `bridge/tests/fixtures/fake-pi.mjs`（`PI_BIN` 指过去）复刻 pi 1.4.0 的三条规则：跑着时收到裸 prompt 就拒、压缩中收到 prompt 就拒、`abort` 不清队列。断言：重试期间不出现空闲状态、期间发的消息带 `followUp`、两条 `errorMessage` 都到达；停止后排队消息不再运行、文本回到 `queue.restore`、气泡被删；22 秒的压缩不报超时，期间发的消息在 `compact-end` 之后才到达 pi。修复前的代码在第一条断言就失败。
+
+## D73 会话目录按 pi 自己的顺序解析，列表不再每个目录截断 60 个（#20）
+
+**决定：**
+- `agentDir()` = `PI_CODING_AGENT_DIR`（展开 `~`）→ `~/.pi/agent`。
+- 会话根 = `PI_CODING_AGENT_SESSION_DIR` → 全局 `settings.json` 的 `sessionDir`（绝对路径或 `~`）→ `<agentDir>/sessions`。
+- 原来的 `PI_AGENT_DIR` 保留为**只给桥用的测试缝**，优先级最高，不传给 pi 子进程（探针靠它把列表指到 fixture，同时让 pi 继续用真实的 auth/models）。
+- `listSessionFiles` 同时读根目录下平铺的 `.jsonl`（自定义 sessionDir 的布局，pi `listSessionsFromDir`）和 `--<cwd>--/` 子目录（默认布局），去掉每目录 60 个的上限。
+- 元数据按 `mtime + size` 缓存，列表刷新时只做 `stat`。
+- `/api/me` 多回一个 `sessionsRootSource`，说明答案从哪来。
+
+**为什么：** 以前桥读的是一个 pi 不认识的变量名，也不看 `PI_CODING_AGENT_SESSION_DIR` 和 `sessionDir`。用户改了其中任何一个，网页列的是旧目录，而网页起的 pi 子进程（继承了环境变量）把新会话写到了别处，于是「网页新建的会话在网页上看不到」。60 的上限会让老会话悄悄消失。缓存是去掉上限的前提：D26 要求列表阶段只碰文件头，而侧栏每隔几秒就重列一次。
+
+**不覆盖：** 项目级 `.pi/settings.json` 的 `sessionDir`，以及相对路径的全局 `sessionDir`。在 pi 里它们都相对各项目的 cwd 解析，不存在一个能列的统一目录；遇到相对路径时打一行日志，然后回落到默认目录。**可改**
+
+**验证：** `node bridge/tests/session-dirs.mjs`（直接 import `.ts`）覆盖六种解析顺序、平铺加嵌套共 135 个会话全部列出、缓存能跟上改名和删除。

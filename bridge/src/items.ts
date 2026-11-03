@@ -15,6 +15,8 @@ export interface AssistantItem extends ItemBase {
   thinking: string;
   model?: string;
   stopReason?: string;
+  /** pi's AssistantMessage.errorMessage when stopReason is "error" (provider failure, overflow…). */
+  errorMessage?: string;
 }
 export interface ToolItem extends ItemBase {
   kind: "tool";
@@ -95,7 +97,8 @@ export function entriesToItems(entries: SessionEntry[]): Item[] {
         else if (c.type === "toolCall") calls.push(c);
       }
       if (text.trim() || thinking.trim() || calls.length === 0) {
-        items.push({ id: entry.id, ts: entry.timestamp, kind: "assistant", text, thinking, model: msg.model, stopReason: msg.stopReason });
+        const errorMessage = typeof msg.errorMessage === "string" && msg.errorMessage ? msg.errorMessage : undefined;
+        items.push({ id: entry.id, ts: entry.timestamp, kind: "assistant", text, thinking, model: msg.model, stopReason: msg.stopReason, ...(errorMessage ? { errorMessage } : {}) });
       }
       for (const call of calls) {
         const item: ToolItem = {

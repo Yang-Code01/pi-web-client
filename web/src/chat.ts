@@ -628,8 +628,13 @@ export class ChatView {
         apply(this.collapsed.has(id));
         who.append(fold);
         wrap.append(body, peek);
-      } else {
+      } else if (item.stopReason !== "error") {
         wrap.classList.add("no-text");
+      }
+      // A failed call usually has no prose at all: without this the turn ends in an empty bubble
+      // and the reason (bad key, rate limit, context overflow…) is invisible.
+      if (item.stopReason === "error") {
+        wrap.append(el("div", "msg-error", `模型调用出错：${item.errorMessage?.trim() || "pi 没有给出原因"}`));
       }
     }
     return wrap;

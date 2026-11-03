@@ -14,6 +14,8 @@ export interface AssistantItem extends ItemBase {
   model?: string;
   modelName?: string;
   stopReason?: string;
+  /** Set by pi when stopReason is "error": the provider's own message (401, rate limit, overflow…). */
+  errorMessage?: string;
 }
 export interface ToolItem extends ItemBase {
   kind: "tool";

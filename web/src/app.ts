@@ -754,6 +754,13 @@ export class App {
         this.renderSessions();
         break;
       }
+      case "queue.restore": {
+        // Stop cleared pi's queue (#9): like the terminal's Esc, the unsent text comes back to the editor.
+        if (msg.sessionId !== this.currentId) break;
+        const texts = Array.isArray(msg.texts) ? msg.texts.map(String).filter((t: string) => t.trim()) : [];
+        if (texts.length) this.putInComposer(texts.join("\n\n"));
+        break;
+      }
       case "pi.status":
         if (this.session && this.session.id === msg.sessionId) this.session = { ...this.session, running: msg.running };
         if (msg.sessionId === this.currentId) {

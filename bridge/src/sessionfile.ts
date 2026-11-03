@@ -217,30 +217,55 @@ function scanFirstUserText(file: string, size: number): string | null {
   return text;
 }
 
-/** Session files live in ~/.pi/agent/sessions/--<encoded cwd>--/<ts>_<id>.jsonl */
-export function listSessionFiles(root: string, limitPerDir = 60): SessionFileMeta[] {
-  let dirs: string[] = [];
+/** The sidebar re-lists every few seconds: re-read a file's head/tail only when it changed. */
+const metaCache = new Map<string, { mtime: number; size: number; meta: SessionFileMeta }>();
+
+function cachedMeta(file: string): SessionFileMeta | null {
+  let stat: fs.Stats;
   try {
-    dirs = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(root, d.name));
+    stat = fs.statSync(file);
+  } catch {
+    metaCache.delete(file);
+    return null;
+  }
+  const hit = metaCache.get(file);
+  if (hit && hit.mtime === stat.mtimeMs && hit.size === stat.size) return hit.meta;
+  const meta = readMeta(file);
+  if (meta) metaCache.set(file, { mtime: stat.mtimeMs, size: stat.size, meta });
+  else metaCache.delete(file);
+  return meta;
+}
+
+function jsonlIn(dir: string): string[] {
+  try {
+    return fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => path.join(dir, f));
   } catch {
     return [];
   }
+}
+
+/**
+ * Session files live in `<root>/--<encoded cwd>--/<ts>_<id>.jsonl` (pi's default layout), or flat
+ * in `<root>/<ts>_<id>.jsonl` when the user set a custom session dir (pi's listSessionsFromDir).
+ * Both are read, and every file is listed: a per-folder cap used to hide older sessions silently.
+ */
+export function listSessionFiles(root: string): SessionFileMeta[] {
+  let dirs: string[] = [];
+  try {
+    dirs = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory() || d.isSymbolicLink()).map((d) => path.join(root, d.name));
+  } catch {
+    return [];
+  }
+  const files = [...jsonlIn(root), ...dirs.flatMap(jsonlIn)];
+  const seen = new Set(files);
+  for (const key of metaCache.keys()) if (!seen.has(key)) metaCache.delete(key);
   const out: SessionFileMeta[] = [];
-  for (const dir of dirs) {
-    let files: string[] = [];
-    try {
-      files = fs
-        .readdirSync(dir)
-        .filter((f) => f.endsWith(".jsonl"))
-        .map((f) => path.join(dir, f));
-    } catch {
-      continue;
-    }
-    files.sort((a, b) => (a < b ? 1 : -1)); // timestamp prefix sorts desc
-    for (const file of files.slice(0, limitPerDir)) {
-      const meta = readMeta(file);
-      if (meta) out.push(meta);
-    }
+  for (const file of files) {
+    const meta = cachedMeta(file);
+    if (meta) out.push(meta);
   }
   out.sort((a, b) => b.mtime - a.mtime);
   return out;
