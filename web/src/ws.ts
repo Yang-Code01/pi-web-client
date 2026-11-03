@@ -19,7 +19,7 @@ export class Socket {
 
     ws.onopen = () => {
       this.retry = 0;
-      // D108：把界面语言告诉 bridge —— 它不落盘，只用来写推送标题（「需要你批准 · 会话名」）。
+      // D110：把界面语言告诉 bridge —— 它不落盘，只用来写推送标题（「需要你批准 · 会话名」）。
       ws.send(JSON.stringify({ type: "lang", lang: getLang() }));
       this.setStatus("open");
       for (const msg of this.queue.splice(0)) ws.send(msg);

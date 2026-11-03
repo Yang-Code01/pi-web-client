@@ -1,7 +1,7 @@
 import type { GitInfo, Me, PreviewInfo, SessionState, TunnelState } from "./types.ts";
 
 /**
- * D108: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
+ * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
  * 翻译用的键（`errText()` 拿 `code` + `params` 查词典）。两个字段都挂到 Error 上，认不出 `code`
  * 的地方仍然能用 `err?.message` 显示兜底句。
  */

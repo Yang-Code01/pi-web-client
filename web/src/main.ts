@@ -5,7 +5,7 @@ import type { Me } from "./types.ts";
 import { applyLang, detectLang, errText, isLang, tr, type Lang } from "./i18n/index.ts";
 
 /**
- * 登录页在 App 之前就画出来了，所以语言得在这时先定下来（D108）：读 `pi.prefs.lang`,
+ * 登录页在 App 之前就画出来了，所以语言得在这时先定下来（D110）：读 `pi.prefs.lang`,
  * 没存过/非法就问浏览器。App 的构造函数会再 apply 一遍，两边同源，不会打架。
  */
 function bootLang(): Lang {

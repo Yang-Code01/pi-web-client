@@ -170,7 +170,7 @@ function json(res: http.ServerResponse, status: number, body: unknown, extra: Re
 }
 
 /**
- * D108：错误响应带**稳定错误码**。`error` 仍是中文兜底句（日志、curl、旧前端都还读它），
+ * D110：错误响应带**稳定错误码**。`error` 仍是中文兜底句（日志、curl、旧前端都还读它），
  * 前端拿 `code` + `params` 去查词典（`bridge.err.<code>`），查不到才显示 `error`。
  * 码一旦发出去就别改名：改名的代价是用户界面里出现一句中文兜底。
  */
@@ -768,7 +768,7 @@ async function main(): Promise<void> {
    * window); the page reports that over its socket. The service worker checks again on arrival.
    */
   /**
-   * D108：推送标题跟界面语言。页面连上 WS 时上报一次（`{type:"lang"}`），这里只留最近一个值，
+   * D110：推送标题跟界面语言。页面连上 WS 时上报一次（`{type:"lang"}`），这里只留最近一个值，
    * 不落盘 —— bridge 重启就回落中文。正文（审批描述、问题原文）是 pi 产出的，不翻译。
    */
   let uiLang: "zh-Hans" | "en" | "ja" = "zh-Hans";

@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 
-/** D108: `errCode` + `errParams` 让前端把这句话翻成当前语言（`error` 仍是中文兜底）。 */
+/** D110: `errCode` + `errParams` 让前端把这句话翻成当前语言（`error` 仍是中文兜底）。 */
 export interface TunnelState {
   status: "off" | "starting" | "up" | "error";
   url: string | null;
