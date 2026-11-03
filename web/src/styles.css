@@ -318,6 +318,13 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* ---------------------------------------------------------------- session manager */
 .sheet-back.center { align-items: center; justify-items: center; padding: 16px; }
+.sheet.peer-sheet {
+  width: min(1000px, 94vw); height: min(82vh, 780px); max-height: 82vh;
+  border-radius: 16px; border: 1px solid var(--line); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+}
+.peer-frame { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
 .sheet.mgr-sheet {
   width: min(1100px, 96vw); height: min(88vh, 900px); max-height: 88vh;
   border-radius: 16px; border: 1px solid var(--line); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
@@ -410,6 +417,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 @media (max-width: 720px) {
   .sheet-back.center { padding: 0; }
   .sheet.mgr-sheet { width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
+  .sheet.peer-sheet { width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
   .mgr-row { grid-template-columns: auto minmax(0, 1fr); }
   .mgr-times { display: none; }
   .mgr-acts { grid-column: 2; justify-content: flex-end; }
@@ -2028,7 +2036,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .ext-host .login-row a { color: var(--accent); text-decoration: none; }
 .ext-switch { display: flex; gap: 8px; align-items: center; font-size: 13px; cursor: pointer; }
 
-/* ---------------------------------------------------------------- 记录（D101）
+/* ---------------------------------------------------------------- 记录（D108）
    顶栏 🐞 打开的本地随手记：左边一份列表、右边一个常驻编辑器。
    它不属于任何会话，所以是 dialog 而不是 tab；宽度比普通 sheet 宽一倍，两边才放得下。 */
 .notes-btn { gap: 6px; }

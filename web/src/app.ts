@@ -122,7 +122,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "peer" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
@@ -326,13 +326,18 @@ export class App {
     fs.onclick = () => this.openFiles();
     fs.hidden = true;
     this.els.fs = fs;
-    // D95：记录不跟会话绑定，所以它跟终端一样常显；计数只在有待处理时出现。
+    // D108：记录不跟会话绑定，所以它跟终端一样常显；计数只在 title 里。
     const notes = el("button", "icon-btn wide notes-btn", "🐞 bug");
     notes.title = "记录 bug / 变更 / 想法 / 杂事";
     notes.dataset.act = "notes";
     notes.onclick = () => this.openNotes();
     this.els.notes = notes;
-    topbar.append(collapseLeft, dot, title, sub, files, term, fs, notes, look, collapseRight);
+    // #45: the peer is a dialog over the page, not a separate tab — same as 终端.
+    const peer = el("button", "icon-btn wide", "🌐 内网通");
+    peer.title = "内网通：发现同一内网里的人，直接对话、传文件";
+    peer.dataset.act = "peer";
+    peer.onclick = () => this.openPeerSheet();
+    topbar.append(collapseLeft, dot, title, sub, files, term, fs, notes, peer, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -2075,6 +2080,42 @@ export class App {
     this.sheet = back;
   }
 
+  // ---------------------------------------------------------------- peer sheet (#45)
+  /**
+   * The LAN page as a dialog rather than a new tab: it is one more thing you look at while the
+   * session stays put. The body is an iframe of the standalone `/peer` document, so the peer page
+   * keeps its own entry (openable directly) without a second implementation; the iframe is removed
+   * on close, which also stops its polling.
+   */
+  private openPeerSheet(): void {
+    this.closeSheet();
+    this.sheetKind = "peer";
+    const back = el("div", "sheet-back center");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+
+    const sheet = el("div", "sheet peer-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", "内网通"));
+    const close = el("button", "btn ghost", "关闭");
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+
+    const frame = document.createElement("iframe");
+    frame.className = "peer-frame";
+    frame.title = "内网通";
+    // 带一个每次打开都变的 query：`peer.html` 里引的 bundle 文件名是构建哈希，
+    // 但 HTML 自己会被浏览器缓存 —— 不换 query 的话，弹框会一直加载上一次构建的页面
+    // （第 2 片上线时，用户看到的「在线」里就没有「发消息」按钮）。
+    frame.src = `/peer?v=${Date.now()}`;
+
+    sheet.append(head, frame);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+  }
+
   // ---------------------------------------------------------------- model sheet
   private closeSheet(): void {
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
@@ -3720,7 +3761,7 @@ export class App {
   }
 
   /** 📁 文件：viewer 直接停在浏览态，接着上次的目录。 */
-  // ---------------------------------------------------------------- 记录（D101）
+  // ---------------------------------------------------------------- 记录（D108）
   /** 顶栏 🐞：本地随手记，不跟会话走，所以没有 currentId 也能开。 */
   private openNotes(): void {
     if (!this.notesSheet) {

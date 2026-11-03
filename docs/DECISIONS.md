@@ -1024,12 +1024,178 @@
 
 **验证**：`node probes/scroll-race.mjs` 新增 `wheel-tiny`（真实 `mouse.wheel` −4px × 20）和 `wheel-smooth1..3`（一次 wheel 事件 + 4 帧各上移 5px，模拟 Chrome 平滑动画；无头 Chrome 不播放滚轮动画）。断言：离开底部后，手势期间和之后 1 秒内 gap 不再回到 ≤ 2。改前两次运行都 FAIL（`wheel-tiny` 的 gap 轨迹为 `51,4,0,4,55,4,…` 共 8 次回弹；`wheel-smooth` 有时有 7 次回弹）；改后连续三次全部 PASS，原有触摸和「回到底部恢复跟流」断言也保持 PASS。
 
-## D101 记录（🐞 bug）住在顶栏、落在状态目录，一个 dialog 收四类随手记
+## D95 链接标签的正则不许用嵌套量词：一行 tool 输出曾让会话打开即卡死
+
+**决定**：`web/src/md.ts` 里 link label 的「一段普通字符」由贪心 `+` 改为逐字匹配——`(?:[^\[\]\n]+|\[[^\]\n]*\])+` → `(?:[^\[\]\n]|\[[^\]\n]*\])+`，`INLINE` 第 3 组和 `inlineInto` 里取 label 的那条正则各一处。接受的语法集合不变（`A+|B` 与 `A|B` 的 Kleene 闭包同语言），只去掉歧义。
+
+**为什么**：`(x+|…)+` 对同一段标签文本有指数级的切分方式，而 md 是**一行一行**送进 `inlineInto` 的——只要某一行里有一段够长的 `[…]` 后面不是 `](`，引擎就得把所有切分试完才认输，主线程再也回不到事件循环，Chromium 就报「此页面没有响应」。实测：会话 `c24330ab…`（名字 `bug`）第 23 条 tool 结果里的一行 TypeScript（`… || [...this.termTabs…`）就够，旧正则在那行上 3 秒都不返回，页面永远画不出来。别的会话没卡只是没撞上这种长方括号行。user 消息走的是 `body.textContent = item.text`（纯文本，不过 renderMarkdown），所以当时怀疑的 `[Image: …]` 注释其实不触发——真正触发的是 tool 输出里的代码行。
+
+**可改**：内层 40 字符时旧正则已 >3s、30 字符以内仍在毫秒级——这是事后测量，不是设计目标；将来放宽标签长度不必再动这条正则。
+
+**验证**：把 `web/src/md.ts` 用 esbuild 打成 ESM，喂该会话全部 213 段 `text`/`result`/`command`：旧正则在前 61 条里就有 6 处单行不返回（第一处 item#23），新正则一趟跑完、0 停滞（同一段文本 2ms）。改后 headless 打开该会话 → 1.5s 内渲染 159 条消息；`npm --prefix web run build` 通过。
+## D96 peer 是独立子进程：bridge `fork` 托管，崩了退避重启，端口被占不重启
+
+（D95 是链接正则那条；这里是 #45 的第一篇。）
+
+**决定**（`bridge/src/peer.ts` + `peer/src/index.ts`）：
+1. `peer/` 是独立进程，自己绑 `0.0.0.0:7865`；bridge 用 `child_process.fork` 起它，stdout/stderr 逐行转进 bridge 日志（`[peer]` 前缀）。
+2. 非 0 退出按 1s → 2s → 4s 重启，第 4 次还死就停手并在页面显示「连续退出 N 次」。
+3. 退出码 **2** 表示 peer 自己判定端口被占（`EADDRINUSE`）：不重启，只报「另一份 peer 在跑」。
+4. `PI_PEER=0` 时整块不启用；`peer/dist` 不存在时报「还没构建」而不是崩。
+
+**为什么**：peer 要能被局域网访问（绑 `0.0.0.0`），而 bridge 默认只绑回环；两者生命周期也不同——peer 崩了 bridge 必须活着，否则页面连自己为什么看不到在线列表都不知道。端口冲突是唯一「重试也没用」的失败，所以用退出码把它和「偶发崩溃」分开，避免无限重启刷日志。
+
+**可改**：重启次数（3）与退避基数（1s）。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「端口被占时退出码 2」；手动 `kill` 掉 peer 进程后 bridge 日志出现 `[peer] ... 收到 SIGTERM` 与重启记录，页面 `/api/peer` 的 `running` 相应变 false 再变 true。
+
+## D97 页面只跟 bridge 说话，peer 的 `/status` 只认回环
+
+**决定**：`peer.html` 只请求 `127.0.0.1:7864` 的 `/api/peer`（cookie 认证）；peer 的 `/status`、`/peer/add`、`/peer/refresh` 一律拒绝非回环的来源（403）。对局域网开放的只有协议面：`/peer/hello`，以及第 2 片起的 `/peer/inbox`。
+
+**为什么**：cookie、CORS、隧道只在一处（bridge）；而且 `/status` 带的是本机配置（收件箱路径、隐身开关），不该让同网段的人随便读。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 只走回环；非回环路径靠 `http.ts` 的 `isLoopback()` 拒掉——从另一台机器 `curl http://<ip>:7865/status` 应得 403（真机验收项）。
+
+## D98 「当场确认」走 HTTP `/peer/hello`，不走 UDP 回包
+
+**症状**：两台机器能互见，但要等下一轮 announce（最多 10 秒）；手动填了地址却要等半天才有反应。
+
+**根因**：announce 是发到组播端口（7866）的，回给对端也只能打到它的发现端口——而对方要的确认信息（nickname / http 端口）必须进它的状态表，走 HTTP 才有确定性。
+
+**决定**（`peer/src/discovery.ts`）：收到 unknown / 换了 IP 的 `hello` 时，单播 `POST /peer/hello` 到对方的 HTTP 口（announce 里带着端口），同一个 `nodeId` 10 秒内只回一次；手动地址也走这条。
+
+**为什么**：组播被交换机挡住时，这条路是唯一能在秒级把对方拉进列表的通道（也让「手动地址」真的可用，而不是「等十秒看看」）。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的手动地址段——A 不广播给 C（不同组播端口），`POST /peer/add` 后 8 秒内 A、C 双向可见。
+
+## D99 隐身 = 不广播、不回 hello，只被动记录
+
+**决定**：`hidden` 打开时 peer 不发 announce、不响应 `/peer/hello`（回 `{hidden:true}`），但仍然接收并记录别人——所以隐身的人看得见别人，别人看不见他。
+
+**为什么**：如果用「照常收发但把自己标记成隐藏」来实现，任何一台机器只要抓到一个包就知道你在线，隐身就成了自欺。反过来「彻底断网」又会让隐身的人失去一切信息。
+
+**可改**：是否允许「手动填了地址的人也能看见隐身的我」（真机验收时再定，见 #45 已知限制）。
+
+**验证**：`peer/src/discovery.ts` 的 `packet`/`sendHello` 早退分支；e2e 里 C 与 A/B 的隔离段用的是「不同组播端口」，隐身分支暂由代码路径 + 真机验收覆盖。
+
+## D100 第二张页面 `peer.html`：vite 多入口，`/peer` 由 bridge 显式映射
+
+**决定**：
+1. `web/vite.config.ts` 的 `build.rollupOptions.input` 加 `peer: peer.html`，产物落在 `web/dist/peer.html`。
+2. `bridge/src/index.ts` 的 `serveStatic()` 把 `/peer`、`/peer/` 改写成 `/peer.html`，其余未知路径仍旧回落 `index.html`（SPA 的登录页要靠它）。
+3. 页面数据 5 秒轮询 `/api/peer`（第 1 片不另开 WS）。
+
+**为什么**：局域网界面和聊天界面是两种东西（一块是「谁在」+ 传输，一块是会话流），塞进同一个 SPA 会让路由和状态互相污染；而 vite 的多入口是零配置代价的隔离。`/peer` 这条映射必须显式写，否则新页面会被 SPA 兜底吞掉，打开的是聊天界面。
+
+**验证**：`npm run build` 后 `web/dist/peer.html` 存在；`curl -H 'cookie: …' http://127.0.0.1:7864/peer` 返回的 HTML 里含 `<title>局域网 · pi</title>` 与 peer 的 bundle；截图见 `.scratch/peer/online.png`（在线列表里有一台对端）。
+
+
+## D102 消息与回执都只追加：回执是新的一行，过期判断靠「最近 2000 条 id」
+
+**症状**：一条消息发出后想显示「已送达」，最自然的写法是把那行 JSONL 改一遍（把 `status: sent` 改成 `delivered`）；一旦中途断电，文件里就留半行坏 JSON，而且第 3 片的好友请求、第 4 片的文件卡都会各自再改一遍同一行。
+
+**根因**：追加写只要 `appendFileSync` 一次系统调用，是「要么整行进去、要么没进去」；原地改要先读全文、定位行、重写整个文件，中间任何一次崩溃都留下截断的文件——而历史是只增不减的，文件只会越来越大。
+
+**决定**（`peer/src/history.ts`）：
+1. 每段对话一个 `<nodeId>.jsonl`，一行一条 `{id, at, from, to:{kind,id}, kind, text?, ack?}`；`kind` 只有 `text` / `receipt`（v1.1 再加 group 系）。
+2. 送达 = 追加一条 `kind:"receipt"`、`ack:{id, status:"delivered"|"failed", error?}` 的新行，原来那条文本一个字节都不动。
+3. 补投查重不另建状态文件：读该对话最近 2000 条的 `id` 做集合（`recentIds()`），命中就不写。
+4. 读取只读尾巴 512 KB，切掉可能截断的第一行；坏行跳过而不是整份报废。
+
+**为什么**：回执、好友请求、文件卡都在复用同一份历史，append-only 让它们互不干扰；查重用「读尾巴」而不是「写索引」，省掉一个会在崩溃时和 JSONL 不一致的旁路状态。
+
+**可改**：查重窗口 2000 条、尾巴 512 KB 都是拍的数字；对话过万条后要换成「按 offset 的 ring index」，不是现在。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「同一条消息只存一次（dedupe）」把收到的 `entry` 原样重投一次，回 `{dup:true}` 且历史里仍只有一行；「送达回执」段断言 A 侧出现 `kind:"receipt"` 且 `ack.status==="delivered"`。
+
+## D103 来源对不上先握手再说：409 可重试，而不是判「伪造」
+
+**症状**：一个还没被学到（组播被交换机挡住）或刚换了网卡的对端发来消息时，按「来源 IP 不在 nodeId 的 IP 集合里就拒」的字面实现，会把正常消息全部拒掉——对方重试也没用，因为两边都没机会交换新地址。
+
+**根因**：`from` 里自报的 nodeId 只能证明「他想让我以为他是谁」；来源 IP 才是唯一可信的一半，但 IP 本身是会变的（DHCP、多网卡、VPN）。判定「伪造」需要的是「这个人不可能在这个 IP 上」，而单次不匹配不构成这个结论。
+
+**决定**（`peer/src/messages.ts` 的 `verifySource()`）：
+1. 不认识的 nodeId → 立刻单播一次 `/peer/hello`（让对端把当前地址报上来），同时回 **409 + `retryable: true`**；
+2. 认识但 IP 不在集合里 → 也先握手一次，再查；还是不在才 409 可重试，并记一行「来源 IP 漂移」；
+3. 判「不可重试」的只有一种情况：`proto` 不匹配（400）或压根不是合法消息（400）。
+4. 文本超过 32 KB 直接 413 且 `retryable:false`——重试一万次也还是太长。
+
+**为什么**：把「可能是漂移」和「确定是伪造」分开以后，outbox 的 24 小时补投才有意义（只有真·伪造会被立刻丢掉）；而 `retryable` 让 4xx 也承载「以后还可以试」的语义，不用把这类失败伪装成 5xx。
+
+**可改**：IP 集合留 5 分钟；真出现「同网段有人拿别人的 nodeId 发消息」时，下一步是签名（issue 里明确没做）。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「不认识的 from 拿不到写入（409 可重试）」段：伪造一个陌生 nodeId 直接 POST `/peer/inbox`，断言 409 且 `retryable === true`，历史里没多出任何一行；正常两实例之间（同机，源 IP 在集合里）文字照常送达。
+
+## D104 好友请求也走 `/peer/inbox`：一条通道，不新开协议
+
+**症状**：第 3 片要发「加好友」「接受」两种短消息。最省事的写法是另开 `POST /peer/friend` 直连对端——但那样就得重新实现补投、去重、来源校验、24 小时过期这一整套，而这些在第 2 片刚刚做完。
+
+**根因**：好友请求和文字消息在传输层没有任何区别：都是一次「我对你说句话」，都可能因为对方离线、IP 漂移、组播被挡而要重试。
+
+**决定**（`peer/src/messages.ts` 的 `sendControl()` / `accept()`）：
+1. 新的信封是 `{proto, kind:"friend-request"|"friend-accept", control:{id, at, from}}`，与 `kind:"text"` 共用 `/peer/inbox`、`Outbox`、`verifySource()`；
+2. `Outbox.Queued` 从「塞一条 `entry`」改成「`kind` + `payload`」，`text` 的 payload 就是那条 Entry，控制消息的就是 control 体；老 `outbox.json` 读进来按 `kind:"text"` 迁移；
+3. 只有 `kind === "text"` 在 `settled` 里追加回执行——好友请求没有「已送达」这个概念，它的进度就是通讯录里的状态；
+4. 关系状态落在 `~/.pi-peer/peers.json`（`nodeId → {friend, favorite, incoming, outgoing}`），控制消息不改历史 JSONL。
+
+**为什么**：省掉的不是一百行代码，是「另一条路上没有 IP 校验」这个洞——第 4 片的文件写入本来就要靠好友关系把关，门上的锁必须和消息走同一道验证。
+
+**可改**：「不理」目前只删本地 `incoming`，不通知对方（对方会一直显示「已发请求」）；真需要「拒绝」再发一条 `friend-reject` 控制消息，信封已经现成。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「好友请求到达对端（待接受）」「接受后两边都是好友（outgoing / incoming 都清掉）」「收藏只在本机生效」三段。
+
+## D105 「接受」要求对方在线，否则按钮直接说等一会儿
+
+**症状**：好友请求存在本地，接受时如果对端已经下线，`friend-accept` 进 outbox 也能补投——但对方那份 `outgoing` 会一直挂着，界面显示「已发请求」，直到他 24 小时内再上线。
+
+**根因**：接受这个动作必须有回执才完整（双向确认），而回执只能送到在线的对端。
+
+**决定**（`peer/src/http.ts` 的 `/friend`）：`action:"accept"` 在 `discovery.byId(peerId)` 为空时直接 400「他不在线，等他在线再接受」，不写自己这边的状态、也不排队。请求（`request`）则相反：必须能立刻发出，否则用户点了没反应。
+
+**为什么**：宁可让按钮说「等一会儿」，也不要造出一个「我这边是好友、他那边还挂着请求」的分叉状态——分叉之后没有任何地方会自动收敛。
+
+**可改**：真要支持离线接受，得给 `friend-accept` 加一次幂等重放 + 对方上线时主动 `friend-request` 复述；v1 不做。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「接受后两边都是好友」段（B 接受时 A 在线，两边 `friend` 同时为真）；人工验证：把对端杀掉后点「接受」→ 页面报「他不在线，等他在线再接受」。
+
+## D106 文件只认收方发的 token：`begin` 验好友、分块写盘、`end` 核哈希
+
+**症状**：第 2 片只做了文字。用户第一次真正想用的是「发个截图 / 发个文件」，而文字通道跑通只证明了「能连上」，没有证明「不可信的来源写不进我的盘」。
+
+**根因**：如果收文件复用一个「`from` 说得对就收」的入口，那么伪造 `from` 的人可以往你指定的盘里写任意大小、任意后缀的文件——文字伪造只是刷屏，文件伪造是写盘，后者不可撤销。
+
+**决定**（`peer/src/files.ts` + `peer/src/http.ts`）：
+1. 收方先 `POST /peer/file/begin` 验三件事：来源（复用 `messages.verify` 的 IP 集合）、**是好友**（决定 9）、收件盘余量（`fs.statfsSync`，留 5 GB 且留 10%）。三关都过才生成 token，`.part` 文件在收件目录里。
+2. 分块 `POST /peer/file/chunk?token=&offset=` 要求 `offset` 正好接上已收字节数（错位回 409 并带上真实 offset，天然支持续传）；token 每收到一块就把 60 秒有效期往后推（决定 24）——固定 60 秒会和 2 GB 文件、和续传同时打架。
+3. `end` 核大小 + 核 sha256，对上了才从 `<token>.part` 改名为最终文件（重名加 ` (2)`），往历史里追加**一行** `kind:"file"` 卡片。对不上就丢弃并回不可重试。
+4. 发送方只把**路径**交给 peer（页面、peer 同机），由 peer 自己读盘算哈希；剪贴板截图没有路径，走 `/files/upload` 把字节递过来（上限 64 MB）。
+5. 收件目录里「哪个 id 对应哪个文件」记在 `statePath("files.json")`，`GET /files?id=` 只认这个索引——不接受任意路径，避免把 `/files` 变成一个能读全盘的回环接口。
+
+**为什么**：token 的意义不是加密，而是**把「谁可以写盘」这件事收敛到一个收方亲自签发的短期凭据上**。伪造者连 `begin` 都过不去，后面两条路由对他就是死路；而正常路径上 token 又不会因为文件大、网慢而失效。
+
+**可改**：token 目前只存内存，peer 重启后未完成的传输作废（对方重新 `begin` 会拿到新 token 并从 0 开始，因为 `.part` 名字是旧 token）。真要做跨重启续传，得把 token 落盘并让 `.part` 名与 messageId 绑定。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 的「非好友发文件被拒（403）」「文件送到对端（3072 KB，哈希一致）」「落盘内容逐字节一致」「同一文件只留一张卡片」「没有 token 写不进盘（410）」五段；人工：在本机测试环境点「📎」选 `docs/shots/peer-online.png` 发给自己那台，对端出现图片气泡。
+
+## D107 agent 发局域网的文字：三个工具挂在门禁扩展里，直连 peer 回环，消息带 `via:"pi"`
+
+**症状**：#45 的价值锚点是「agent 在链路里」——人能发消息、agent 能读能发，但对端分不清「这句话是人打的还是 agent 打的」；而且 pi 的会话是子进程，没有 cookie，也没有理由让它绕 bridge。
+
+**根因**：① 工具的注册面只有 pi 扩展（`bridge/ext/approval-gate.ts`，与 #40 的门禁同一个文件），bridge 的 HTTP 路由不是 pi 的工具注册点；② 会话子进程继承 bridge 的环境，因此 `PI_PEER_PORT` 可由 bridge 在 `main()` 里写进 `process.env` 再被 `rpc.ts:57` 的 `{...process.env, ...opts.env}` 带下去；③ 人对「这条是 agent 说的」有真实需求（群里开口的是人还是机器，决定你信不信）。
+
+**决定**：三个工具 `peer_find(query?)` / `peer_history(peer, limit)` / `peer_send(peer, text)` 注册在 `bridge/ext/approval-gate.ts` 内，直接 `fetch http://127.0.0.1:${PI_PEER_PORT}/tools/find|/messages|/send`，不经过 bridge；`peer_send` 发出的 entry 带 `via:"pi"`，对端与自己的气泡上都显示「🤖 agent 代发」；门禁侧把 `peer_find`/`peer_history` 加进只读白名单，`peer_send` 单列 `PEER_SEND` 集合——**只读模式仍然拦**（它会碰到别人），**严格模式放行**（决定 33：文字不设审批，文件才设）。
+
+**为什么**：走回环而不是 bridge，是因为 peer 的三个接口本来就只认回环（决定 2），pi 子进程就在本机，少一跳少一处鉴权分叉；`via` 放在 entry 上而不是 UI 推导，是因为接收方也要看到（消息体是唯一的真相来源，本地推断在对端不成立）；严格模式放行 `peer_send` 而不放行全部，是因为「发文字」正是这个功能存在的理由，拦了就等于把它关掉。
+
+**验证**：`node bridge/tests/peer-e2e.mjs` 19 段全过，其中「/tools/find 能按昵称找到人（带在线/好友）」「agent 代发的消息带 via=pi（对端徽章）」两段直击本决定；扩展用假 `pi` 对象跑注册，三个工具名齐全，`peer_find` 对真实 peer 返回「找到 2 个人」，`peer_send` 对不存在的 nodeId 报「这个人已经不在线了」（业务错误不再被包成「连不上 peer」）。
+
+## D108 记录（🐞 bug）住在顶栏、落在状态目录，一个 dialog 收四类随手记
 
 **问题：** 用这个页面时，bug、要改的地方、想法、杂事都只能「先记在别处」——聊天里说完就沉了，而且这些事大多不是当前会话的事（换会话、甚至还没开会话时也会想到）。已有一个 `/bug`（D80），但它是**把报告发给 pi 的开发者**：跟会话绑定、要上传 / 打包，用来记「我自己待会儿要处理的」完全不对路。
 
 **决定：**
-- 入口是顶栏一颗 `🐞 bug`（`data-act="notes"`，插在 `📁 文件管理器` 与 `Aa` 之间），**常显**：跟终端一样不随 `currentId` 隐藏——记录不属于任何会话。**只有图标**，数量进 `title`（`记录：3 条待处理（Ctrl+Shift+B）`）：顶栏已经在 620px 处挤过一次（D101 之后那条 `fix(notes)` 提交就是它翻车的现场），再挂一串小字等于把问题还回去。
+- 入口是顶栏一颗 `🐞 bug`（`data-act="notes"`，插在 `📁 文件管理器` 与 `Aa` 之间），**常显**：跟终端一样不随 `currentId` 隐藏——记录不属于任何会话。**只有图标**，数量进 `title`（`记录：3 条待处理（Ctrl+Shift+B）`）：顶栏已经在 620px 处挤过一次（D108 之后那条 `fix(notes)` 提交就是它翻车的现场），再挂一串小字等于把问题还回去。
 - 面板是 dialog（`.sheet.notes-sheet`，桌面 `min(1000px,100%)`、高 `min(620px,78vh)`）：左边列表 + 右边常驻编辑器（样张 A）。新建是列表顶部 `＋ 记一条`；打开面板光标直接落进那一格。
 - 四类固定枚举：`bug` / `change` / `idea` / `chore`，默认 `bug`；tab 上带待处理计数。默认只看 `pending`，一个「显示已处理」开关翻出 `done` / `dropped`。
 - **归档 / 垃圾箱跟「处理状态」正交**：`status`（待处理 / 已处理 / 已忽略）是「我处理到哪一步」，`life`（在列表 / 归档 / 垃圾箱）是「这条还该不该占列表」。
