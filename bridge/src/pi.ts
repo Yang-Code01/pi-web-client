@@ -91,7 +91,8 @@ export function resolvePi(): { cli: string; version: string } {
   );
 }
 
-function readVersion(cli: string): string {
+/** Version of the pi package sitting next to the bundle; re-read after `pi update` replaces it (#49). */
+export function readVersion(cli: string): string {
   const pkg = path.join(path.dirname(path.dirname(path.dirname(cli))), "package.json");
   try {
     return JSON.parse(fs.readFileSync(pkg, "utf8")).version ?? "unknown";

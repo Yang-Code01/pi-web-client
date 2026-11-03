@@ -169,6 +169,10 @@ export class App {
   private extVars: string[] = [];
   private extButton: HTMLButtonElement | null = null;
   private cliRun: { runId: string | null; op: string; out: string; code: number | null | undefined; error?: string } | null = null;
+  /** #49 pi 本体：the version check's answer, the last self-update's outcome, and whether a check is in flight. */
+  private piUpd: { latest: string | null; source?: string; checkedAt: number; update: boolean; error?: string } | null = null;
+  private piChecking = false;
+  private piUpdRun: "running" | "ok" | "fail" | null = null;
   private authFilter = "";
   private login: { loginId: string | null; provider: string; method: string; events: AuthEventView[]; prompt: { promptId: string; prompt: AuthPromptView } | null; result: string | null; ok: boolean } | null = null;
   private afterOpen: { id: string; text: string } | null = null;
@@ -230,6 +234,8 @@ export class App {
   private termActive: string | null = null;
   /** D92: the dialog is on screen (not minimized). The shells themselves live in the bridge. */
   private termOpen = false;
+  /** D94: 两扇浮窗里最后被点 / 聚焦的那扇（`.front`）；同一时间只有一扇。 */
+  private winFront: HTMLElement | null = null;
   /** D93: dialog 的位置 / 大小（布局 px），null = 还没读过 localStorage。 */
   private termGeom: TermGeom | null = null;
   /** D92: 什么时候发出的 `term.open`（0 = 没有在飞），shell 到了 / 报错 / 超时都会清掉它。 */
@@ -673,6 +679,16 @@ export class App {
     window.addEventListener("focus", () => void this.refreshGit(true));
     // D91: tell the bridge whether someone is looking, so it only pings Windows / WeChat when not.
     for (const name of ["focus", "blur"]) window.addEventListener(name, () => this.reportPresence());
+    // D94: 点进预览里的 iframe 时，指针事件不跨文档，父窗口只收到 blur —— 等焦点落定，只有落在
+    // iframe 上才补一次置顶（切到别的窗口时不打扰当前的叠放）。
+    window.addEventListener("blur", () => {
+      setTimeout(() => {
+        const at = document.activeElement as HTMLElement | null;
+        if (at?.tagName !== "IFRAME") return;
+        const win = at.closest(".viewer, .term-dock") as HTMLElement | null;
+        if (win) this.raiseWindow(win);
+      }, 0);
+    });
     document.addEventListener("visibilitychange", () => this.reportPresence());
     this.socket.on((msg) => this.onMessage(msg));
     this.socket.onStatus((s) => {
@@ -1092,6 +1108,12 @@ export class App {
           this.extDirty = true;
           if (op === "mcp.add") this.mcpForm = null;
         }
+        if (op === "pkg.update" && this.piUpdRun === "running") {
+          this.piUpdRun = msg.code === 0 && !msg.error ? "ok" : "fail";
+          // The bridge re-read the package's version after a successful update; ask again so the row
+          // compares the new version instead of the one it saw before the install.
+          if (this.piUpdRun === "ok") this.checkPiUpdate();
+        }
         // Re-read what changed (and whether updates are left).
         this.loadExtInventory();
         this.paintExtIfOpen();
@@ -1105,6 +1127,28 @@ export class App {
       case "ext.updates":
         this.extUpdates = Number(msg.count) || 0;
         this.paintExtButton();
+        break;
+      case "pi.update.status": {
+        this.piChecking = false;
+        if (msg.current) this.me.pi = String(msg.current);
+        this.piUpd = {
+          latest: msg.latest ? String(msg.latest) : null,
+          source: msg.source ? String(msg.source) : undefined,
+          checkedAt: Number(msg.checkedAt) || Date.now(),
+          update: msg.update === true,
+          ...(msg.error ? { error: String(msg.error) } : {}),
+        };
+        this.paintExtIfOpen();
+        this.renderQueue();
+        break;
+      }
+      case "pi.version":
+        // #49: `pi update` replaced the package on disk; the bridge re-read its version for us.
+        if (msg.version) {
+          this.me.pi = String(msg.version);
+          this.paintExtIfOpen();
+          this.renderQueue();
+        }
         break;
       case "ext.inventory":
         this.extInvLoading = false;
@@ -1409,7 +1453,7 @@ export class App {
   // ---------------------------------------------------------------- step-up
   private askStepUp(): void {
     if (document.querySelector(".modal")) return;
-    const modal = el("div", "modal");
+    const modal = el("div", "modal hi");
     const form = el("form");
     const h = el("h2", "", "再验一次口令");
     h.style.margin = "0";
@@ -1664,6 +1708,24 @@ export class App {
   /** Overlays live inside #app so they scale with the appearance zoom. */
   private overlay(node: HTMLElement): void {
     (document.getElementById("app") ?? document.body).append(node);
+  }
+
+  /**
+   * D94: 文件预览与终端是两扇平等的浮窗，谁最后被点 / 聚焦谁在上面。同一时间只有一扇带 `.front`
+   * （z-index 47），另一扇回落到自己的底值（预览 46 / 终端 45），所以不存在平手；整条层带仍在
+   * 口令 modal（50）与底部 sheet（60）之下 —— 能盖住窗的只有真正的模态，不是另一扇窗。
+   */
+  private raiseWindow(win: HTMLElement | null): void {
+    if (!win || !win.isConnected || this.winFront === win) return;
+    this.winFront?.classList.remove("front");
+    this.winFront = win;
+    win.classList.add("front");
+  }
+
+  /** 指针落进窗里 / 焦点进了窗：把它抬到另一扇窗之上（iframe 的点击走 wire() 里的 blur）。 */
+  private wireWindowRaise(win: HTMLElement): void {
+    win.addEventListener("pointerdown", () => this.raiseWindow(win), true);
+    win.addEventListener("focusin", () => this.raiseWindow(win));
   }
 
   /** Live rate from streamed characters; message_end replaces it with the authoritative count. */
@@ -3165,6 +3227,8 @@ export class App {
       this.pushStep({ path }, sessionId);
     }
     const v = this.ensureViewer();
+    // 刚打开 / 换了一份文件：它该在终端上面（否则点了链接却看不见内容）。
+    this.raiseWindow(v.root);
     v.sessionId = sessionId;
     v.pane = "preview";
     v.draft = null;
@@ -3245,6 +3309,7 @@ export class App {
     const body = el("div", "viewer-body");
     root.append(grip, head, body);
     root.tabIndex = -1;
+    this.wireWindowRaise(root);
     root.onkeydown = (ev) => {
       if (ev.key === "Escape") {
         ev.stopPropagation();
@@ -3252,6 +3317,7 @@ export class App {
       }
     };
     this.overlay(root);
+    this.raiseWindow(root);
     this.viewer = {
       root,
       head,
@@ -3294,6 +3360,7 @@ export class App {
       });
       return;
     }
+    if (this.winFront === v.root) this.winFront = null;
     v.root.remove();
     this.viewer = null;
   }
@@ -5534,6 +5601,8 @@ export class App {
   // ---------------------------------------------------------------- 扩展 manager (D81)
   /** Settings → 扩展与 MCP: the composer-button switch, then the same manager as the dialog. */
   private paintExtSettings(body: HTMLElement): void {
+    // #49: pi itself sits above the inventory — it is the program doing all of the below.
+    this.paintPiUpdate(body);
     const row = el("label", "ns-adv-flag ext-switch");
     const box = el("input") as HTMLInputElement;
     box.type = "checkbox";
@@ -5545,6 +5614,113 @@ export class App {
     body.append(host);
     if (!this.extInv && !this.extInvLoading) this.loadExtInventory();
     this.paintExtManager(host);
+  }
+
+  /**
+   * #49: one row for the CLI the bridge drives — current version, the latest release, and a single
+   * 更新 button that runs `pi update` through the same console as the extension operations. The
+   * check is lazy (first paint of this page, then the bridge's 30-minute cache) and 「重新检查」
+   * bypasses that cache.
+   */
+  private paintPiUpdate(body: HTMLElement): void {
+    const box = el("div", "ext-pi");
+    const row = el("div", "settings-foot");
+    row.append(el("span", "pi-name", "pi 本体"), el("span", "pi-ver", `pi ${this.me.pi}`));
+    const upd = this.piUpd;
+    const hint = el("span", "settings-hint");
+    if (this.piChecking) hint.textContent = "联网检查版本中…";
+    else if (!upd) hint.textContent = "";
+    else if (upd.error) hint.textContent = `没查到最新版：${upd.error}`;
+    else hint.textContent = `最新 ${upd.latest}（${upd.source ?? ""}） · 检查于 ${new Date(upd.checkedAt).toLocaleTimeString()}`;
+    row.append(hint, el("span", "spacer"));
+    const recheck = el("button", "btn ghost", "重新检查") as HTMLButtonElement;
+    recheck.disabled = this.piChecking;
+    recheck.title = "绕过桥的 30 分钟缓存，重新问一次";
+    recheck.onclick = () => this.checkPiUpdate(true);
+    row.append(recheck);
+    const busy = this.extBusy() || this.piUpdRun === "running";
+    if (upd?.update || (upd && upd.error)) {
+      const go = el("button", "btn primary", this.piUpdRun === "running" ? "更新中…" : "更新 pi") as HTMLButtonElement;
+      go.disabled = busy;
+      go.onclick = () => this.confirmPiUpdate(false);
+      row.append(go);
+    } else if (upd && !upd.error) {
+      row.append(el("span", "settings-hint", "已是最新"));
+    }    box.append(row);
+    if (this.piUpdRun === "ok") {
+      box.append(el("div", "login-result", `已更新到 ${this.me.pi}。已开着的会话仍是旧版本，新开的会话自动用新版。`));
+      const tools = el("div", "settings-foot");
+      if (this.session?.owned) {
+        const again = el("button", "btn", "重启当前会话") as HTMLButtonElement;
+        again.disabled = Boolean(this.session.running);
+        again.title = this.session.running ? "这一轮结束后再重启" : "重启这个会话的 pi，读到新版本";
+        again.onclick = () => {
+          const sessionId = this.currentId;
+          if (!sessionId) return;
+          this.act(() => this.socket.send({ type: "reload", sessionId }));
+        };
+        tools.append(again);
+      }
+      const log = el("button", "btn ghost", "看更新日志");
+      log.onclick = () => {
+        this.settingsTab = "changelog";
+        this.paintSettings();
+      };
+      tools.append(log);
+      box.append(tools);
+    } else if (this.piUpdRun === "fail") {
+      box.append(el("div", "login-result bad", "更新失败：看下面的输出。常见原因是网络，或上一次更新只换了一半。"));
+      const force = el("button", "btn", "强制重装（--force）") as HTMLButtonElement;
+      force.disabled = busy;
+      force.title = "不带 --force 时，已经是最新就什么都不做；强制重装会真的再装一遍";
+      force.onclick = () => this.confirmPiUpdate(true);
+      box.append(force);
+    }
+    body.append(box);
+    // Lazy: ask once per visit, and only when the answer is missing or older than the bridge's cache.
+    if (!this.piChecking && (!this.piUpd || Date.now() - this.piUpd.checkedAt > 30 * 60_000)) this.checkPiUpdate();
+  }
+
+  private checkPiUpdate(force = false): void {
+    if (this.piChecking) return;
+    this.piChecking = true;
+    this.socket.send({ type: "pi.update.check", ...(force ? { force: true } : {}) });
+    this.paintExtIfOpen();
+  }
+
+  /** The update replaces the globally installed pi: say what that costs before running it. */
+  private confirmPiUpdate(force: boolean): void {
+    if (document.querySelector(".modal")) return;
+    const modal = el("div", "modal hi");
+    const form = el("form");
+    const h = el("h2", "", force ? "强制重装 pi？" : "更新 pi？");
+    h.style.margin = "0";
+    h.style.fontSize = "16px";
+    const latest = this.piUpd?.latest && this.piUpd.update ? `（${this.me.pi} → ${this.piUpd.latest}）` : `（当前 ${this.me.pi}）`;
+    const p = el("p", "", `要联网，可能几分钟；会替换全局安装的 pi${latest}。期间不要关页面；失败没有自动回滚，重装可再点一次。`);
+    p.style.color = "var(--faint)";
+    p.style.fontSize = "13px";
+    p.style.margin = "0";
+    const btns = el("div", "settings-foot");
+    btns.append(el("span", "spacer"));
+    const cancel = el("button", "btn ghost", "取消");
+    cancel.type = "button";
+    cancel.onclick = () => this.closeModal();
+    const ok = el("button", "btn primary", force ? "强制重装" : "更新");
+    ok.type = "submit";
+    btns.append(cancel, ok);
+    form.append(h, p, btns);
+    modal.append(form);
+    modal.onclick = (ev) => {
+      if (ev.target === modal) this.closeModal();
+    };
+    form.onsubmit = (ev) => {
+      ev.preventDefault();
+      this.closeModal();
+      this.piUpdRun = "running";
+      this.piCli({ op: "pkg.update", target: "self", ...(force ? { force: true } : {}) });
+    };
+    this.overlay(modal);
   }
 
   /** The dialog the composer's 扩展 button opens. */
@@ -7316,6 +7492,8 @@ export class App {
     const dock = this.ensureTermDock();
     const was = this.termOpen;
     dock.hidden = false;
+    // 点顶栏「终端」= 激活它：盖过旁边开着的文件预览，然后才轮到预览里的下一次点击把它压回去。
+    this.raiseWindow(dock);
     this.termOpen = true;
     this.paintTermButton();
     if (was) return;
@@ -7421,6 +7599,7 @@ export class App {
     const resize = el("div", "term-resize");
     resize.title = "拖动调整终端大小（双击复原）";
     dock.append(grip, head, bodies, resize);
+    this.wireWindowRaise(dock);
     // 浮在页面上（overlay 进 #app，跟着外观缩放）：终端不再占对话栏的宽度，也就没有 Q-026 里
     // 「先折叠右栏」那件事了。
     this.overlay(dock);
@@ -7547,6 +7726,7 @@ export class App {
 
   private disposeTermDock(): void {
     for (const id of [...this.termTabs.keys()]) this.closeTermTab(id, false);
+    if (this.termDock && this.winFront === this.termDock) this.winFront = null;
     this.termDock?.remove();
     this.termDock = null;
     this.termTabStrip = null;

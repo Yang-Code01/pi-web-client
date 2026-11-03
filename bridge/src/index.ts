@@ -25,7 +25,7 @@ import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } fr
 import { bumpSkillUsage } from "./skills.ts";
 import { Notifier } from "./notify.ts";
 import { Tunnel, findCloudflared } from "./tunnel.ts";
-import { resolvePi } from "./pi.ts";
+import { resolvePi, readVersion } from "./pi.ts";
 import { APP_NAME, VERSION, ensureStateDirs, readJson, statePath, sessionsRootInfo } from "./paths.ts";
 import { clipboardFiles, listDirs, makeDir, statFiles } from "./dirs.ts";
 import { gitInfo } from "./git.ts";
@@ -34,9 +34,10 @@ import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trust
 import { cleanLaunch } from "./launch.ts";
 import { isWriteOp, runPiCli } from "./picli.ts";
 import { reportBug, shareSession } from "./pishare.ts";
-import { mcpAddRequest, searchMcp, searchPackages, type McpInstallOption } from "./market.ts";
+import { mcpAddRequest, newer, searchMcp, searchPackages, type McpInstallOption } from "./market.ts";
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
+import { piLatest } from "./piupdate.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
 
 interface Config {
@@ -186,6 +187,9 @@ async function main(): Promise<void> {
   const cfg = loadConfig();
   const fresh = ensurePassphrase();
   const pi = resolvePi();
+  // #49: `pi update` replaces the package on disk while this process keeps running, so the version
+  // the page shows is re-read after a successful self-update instead of staying frozen at boot.
+  let piVersion = pi.version;
   /** #21: trust state for a cwd, or null when pi's trust module cannot be loaded / cwd is gone. */
   const trustFor = async (cwd: string) => {
     if (!cwd || !fs.existsSync(cwd)) return null;
@@ -210,7 +214,7 @@ async function main(): Promise<void> {
     }
   };
 
-  log(`${APP_NAME} ${VERSION} — pi ${pi.version} @ ${pi.cli}`);
+  log(`${APP_NAME} ${VERSION} — pi ${piVersion} @ ${pi.cli}`);
   // Q-032: 扩展丢了就只剩「模型把表单写成文字」，而那是无声的。启动时把在场情况写进日志。
   try {
     const dir = path.join(os.homedir(), ".pi", "agent", "extensions");
@@ -259,7 +263,7 @@ async function main(): Promise<void> {
     const ok = authorized(cookieHeader);
 
     if (url.pathname === "/healthz") {
-      return json(res, 200, { ok: true, version: VERSION, pi: pi.version, public: publicReq });
+      return json(res, 200, { ok: true, version: VERSION, pi: piVersion, public: publicReq });
     }
 
     // Capability-token file serving for previews: no cookie needed (sandboxed iframes have none).
@@ -329,7 +333,7 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/me") {
       return json(res, 200, {
         version: VERSION,
-        pi: pi.version,
+        pi: piVersion,
         public: publicReq,
         passphrase: currentPassphrase() ? null : "",
         tunnel: tunnel.state,
@@ -475,7 +479,7 @@ async function main(): Promise<void> {
 
     // `/changelog` (#26): what is new in the installed pi.
     if (url.pathname === "/api/changelog" && req.method === "GET") {
-      return json(res, 200, { version: pi.version, text: changelog(pi.cli) });
+      return json(res, 200, { version: piVersion, text: changelog(pi.cli) });
     }
 
     // #25 `@` in the composer: fuzzy file search under the session's cwd (relative paths).
@@ -614,7 +618,7 @@ async function main(): Promise<void> {
     send({
       type: "hello",
       version: VERSION,
-      pi: pi.version,
+      pi: piVersion,
       sessions: sessions.list(),
       manage: sessions.manage.snapshot(),
       trash: sessions.trashList(),
@@ -965,8 +969,28 @@ async function main(): Promise<void> {
             if (isWriteOp(op)) log(`pi ${op} ${JSON.stringify({ ...msg, type: undefined }).slice(0, 200)}`);
             const out = await run.done;
             send({ type: "picli.done", runId, op, code: out.code, data: out.data });
+            // #49: a successful self-update replaced the package under us; re-read its version so the
+            // page's 「pi x.y.z」 stops lying without a bridge restart (running sessions keep the old code).
+            if (out.code === 0 && op === "pkg.update") {
+              const target = msg.target === undefined ? "self" : String(msg.target);
+              if (target === "self" || target === "all") {
+                const from = piVersion;
+                piVersion = readVersion(pi.cli);
+                if (piVersion !== from) broadcast({ type: "pi.version", version: piVersion, previous: from });
+              }
+            }
             // A new package can bring providers, skills or extensions: refresh what the page lists.
             if (isWriteOp(op) && op.startsWith("pkg.")) broadcast({ type: "catalog", models: await sessions.models(true).catch(() => []) });
+            return;
+          }
+          case "pi.update.check": {
+            // #49: read-only, so the tunnel may ask too; `force` is the row's 重新检查.
+            try {
+              const latest = await piLatest(msg.force === true);
+              send({ type: "pi.update.status", current: piVersion, latest: latest.latest, source: latest.source, checkedAt: latest.checkedAt, update: newer(latest.latest, piVersion) });
+            } catch (err: any) {
+              send({ type: "pi.update.status", current: piVersion, latest: null, checkedAt: Date.now(), error: String(err?.message ?? err) });
+            }
             return;
           }
           // ------------------------------------------------ 扩展 manager (D81)
