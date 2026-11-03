@@ -3752,7 +3752,7 @@ export class App {
     const btn = this.els.notes;
     if (!btn) return;
     const count = this.notes.filter((n) => n.status === "pending").length;
-    btn.replaceChildren(el("span", "notes-glyph", "🐞"), el("span", "", count ? `bug ${count}` : "bug"));
+    btn.replaceChildren(el("span", "notes-glyph", "🐞"), el("span", "notes-label", count ? `bug ${count}` : "bug"));
     btn.classList.toggle("has-pending", count > 0);
     btn.title = count ? `记录：${count} 条待处理` : "记录 bug / 变更 / 想法 / 杂事";
   }

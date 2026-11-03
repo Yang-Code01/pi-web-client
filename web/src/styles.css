@@ -2106,6 +2106,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   /* 比普通 sheet 宽一倍、也给足高度：左边一列 + 右边编辑器，矮了编辑器就只剩一条缝。 */
   .sheet.notes-sheet { width: min(1000px, 100%); min-height: min(620px, 78vh); }
 }
+@media (max-width: 620px) {
+  /* 顶栏窄了先收字：只留 🐞（计数在 title 里），不然 390px 的屏幕上按钮会被挤出屏幕 */
+  .notes-label { display: none; }
+  .notes-btn { padding: 0 8px; gap: 0; }
+}
+
 @media (max-width: 860px) {
   .notes-body { grid-template-columns: 1fr; grid-template-rows: minmax(140px, 40%) minmax(0, 1fr); }
   .notes-side { border-right: 0; border-bottom: 1px solid var(--line-soft); }
