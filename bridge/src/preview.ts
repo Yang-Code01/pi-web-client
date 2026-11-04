@@ -137,8 +137,62 @@ function issue(root: string): string {
   return token;
 }
 
-/** Throws a user-facing (Chinese) message when the path may not be previewed. */
-export function openPreview(session: { cwd: string; file: string | null }, rawPath: string): PreviewInfo {
+/** Nearest ancestor (inclusive) holding `.git` (a dir, or a file for worktrees), else null. */
+export function gitRootOf(dir: string): string | null {
+  let cur = path.resolve(dir);
+  for (;;) {
+    if (fs.existsSync(path.join(cur, ".git"))) return cur;
+    const up = path.dirname(cur);
+    if (up === cur) return null;
+    cur = up;
+  }
+}
+
+/** `/x/y` or `\x\y` with no drive — on Windows not an absolute path at all (`//x` is UNC). */
+export function isRootless(p: string): boolean {
+  return /^[\\/](?![\\/])/.test(p);
+}
+
+/**
+ * Where a drive-less root path (`/openwiki/a.md`) may point, best first (D113). On Windows
+ * `path.resolve` would glue it onto the drive the bridge happens to run from, which is almost
+ * never what a link means. Like GitHub, a link in a document means "from that document's repo";
+ * without a document, try the session's cwd and its repo. The bridge's own drive stays last so
+ * nothing that opened before stops opening. No searching: only these fixed bases.
+ */
+export function rootlessCandidates(p: string, cwd: string, base?: string | null): string[] {
+  const rel = p.replace(/^[\\/]+/, "");
+  const bases: string[] = [];
+  if (base) {
+    const r = gitRootOf(path.dirname(path.resolve(base)));
+    if (r) bases.push(r);
+  }
+  bases.push(path.resolve(cwd));
+  const cr = gitRootOf(cwd);
+  if (cr) bases.push(cr);
+  const out: string[] = [];
+  for (const b of bases) {
+    const c = path.resolve(b, rel);
+    if (!out.some((o) => norm(o) === norm(c))) out.push(c);
+  }
+  const legacy = path.resolve(p);
+  if (!out.some((o) => norm(o) === norm(legacy))) out.push(legacy);
+  return out;
+}
+
+function isFileAt(p: string): boolean {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Throws a user-facing (Chinese) message when the path may not be previewed. `base` is the
+ * absolute path of the document the link was clicked in, if any (only used for D113).
+ */
+export function openPreview(session: { cwd: string; file: string | null }, rawPath: string, base?: string | null): PreviewInfo {
   const raw = rawPath.trim().replace(/^["'`]+|["'`]+$/g, "").replace(/^file:\/\/\/?/i, "");
   if (!raw) throw new Error("路径为空");
   let decoded = raw;
@@ -147,7 +201,13 @@ export function openPreview(session: { cwd: string; file: string | null }, rawPa
   } catch {
     /* keep raw */
   }
-  const abs = path.isAbsolute(decoded) ? path.resolve(decoded) : path.resolve(session.cwd, decoded);
+  let abs = path.isAbsolute(decoded) ? path.resolve(decoded) : path.resolve(session.cwd, decoded);
+  if (isWin && isRootless(decoded)) {
+    const tried = rootlessCandidates(decoded, session.cwd, base);
+    const hit = tried.find(isFileAt);
+    if (!hit) throw new Error(`文件不存在：${tried.join(" ／ ")}`);
+    abs = hit;
+  }
   // Reads follow /api/dirs, which already lists any drive: a second, narrower rule here only made
   // the same path openable in one place and not the other (D50).
   const inCwd = isUnder(abs, session.cwd);

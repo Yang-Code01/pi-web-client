@@ -583,7 +583,8 @@ async function main(): Promise<void> {
       const where = sessions.locate(sessionId);
       if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
       try {
-        const info = openPreview(where, String(body.path ?? ""));
+        const base = typeof body.base === "string" && body.base ? body.base : null;
+        const info = openPreview(where, String(body.path ?? ""), base);
         // Text files opened here become writable for this session (D50).
         rememberEditable(sessionId, info);
         return json(res, 200, info);

@@ -1298,3 +1298,20 @@
 **可改：** 缓存时长（`bridge/src/piupdate.ts` 的 `TTL`）、来源顺序与文案、确认框里的话、`--force` 是不是直接给 —— 都在 `paintPiUpdate()` / `confirmPiUpdate()` 与 `piupdate.ts` 顶部。
 
 **验证：** `probes/pi-update.mjs`（桩桥 + 真 Chromium）：行里显示 `pi 1.4.0` / `最新 1.5.0（npm …）`，懒检查只发一次且不带 `force`；确认框写着「全局安装的 pi（1.4.0 → 1.5.0）」且 z-index 62 > 弹层 60、屏幕中心的点击真的落在框上；确认后桥收到 `{op: pkg.update, target: self}`（无 `force`）；安装成功后行变 `pi 1.5.0` +「已是最新」+「已更新到 1.5.0」+ 重启/日志按钮，控制台里是 `Updated pi from 1.4.0 to 1.5.0`；`看更新日志` 切页并读到内容；失败时出现「强制重装（--force）」，点它确认后桥收到 `force: true`；查不到最新版时显示两条失败原因而按钮仍在；`重新检查` 的请求带 `force: true`；公网时按钮禁用且有只读提示。真实网络另跑过两次 `piLatest(true)`：正常拿到 `{"latest":"1.5.0","source":"npm 源 registry.npmmirror.com"}`，把 registry 指到死端口后回落到 `{"latest":"1.5.0","source":"pi.dev"}`。回归：`probes/window-front.mjs`、`probes/round12-preview-links.mjs`、`probes/term-dialog.mjs` 全绿，`npm run typecheck` 干净。截图 `.scratch/pi-update/shots/`。
+
+## D113 Windows 上无盘符根路径（`/x/y.md`）按「文档所在仓库根 → 会话 cwd → cwd 所在仓库根」解析（#64）
+
+**问题：** 预览一份仓库里的 md（例如 OpenWiki 生成的 `openwiki/quickstart.md`），点 `[x](/openwiki/architecture/overview.md)`，提示 `文件不存在：E:\openwiki\architecture\overview.md`。前端 `resolveFrom` 对 `/` 开头的链接原样转交；bridge 的 `openPreview` 里 `path.isAbsolute("/openwiki/…")` 在 Windows 上为真，`path.resolve` 补上的是 **bridge 进程自己所在的盘**（这台机器上是 E:），而文档和会话都在 C:。聊天里出现的同类路径也走这条路，结果一样。
+
+**决定：**
+- 只处理 Windows 上的「无盘符根路径」：`/x`、`\x`（`isRootless`，排除 UNC `//`、`\`）。带盘符的绝对路径、相对路径，以及 POSIX 上真正的 `/x` 行为都不变。
+- 候选顺序（`rootlessCandidates`）：① 链接所在文档的 git 仓库根（前端点 md 内链接时把文档绝对路径作为 `base` 传给 `/api/preview`）→ ② 会话 cwd → ③ cwd 所在的 git 仓库根 → ④ 原来的 `path.resolve`（bridge 所在盘根，放在最后，保证以前能打开的仍然能打开）。第一个存在的文件胜出。
+- 仓库根 = 向上找第一个含 `.git`（目录，或 worktree 的文件）的目录；纯文件系统判断，不起 git 进程。
+- 全部落空时，报错一次列出所有候选（`文件不存在：A ／ B ／ …`），让人看出到底试了哪里，而不是只看到一个莫名其妙的 E:\ 路径。
+- `openPreview` 成功后 `retargetTop` 已经会把返回栈那一步改成解析后的绝对路径，⟳ 刷新、←/→ 都用绝对路径，不再依赖 `base`。
+
+**为什么：** 仓库里 md 的 `/` 链接，在 GitHub 上的约定就是「从仓库根算起」，文档作者（包括 OpenWiki 这类生成器）按这个语义写；在 Windows 上把它理解成「bridge 碰巧所在的盘根」几乎永远是错的。聊天里没有文档可依，只能退到会话目录及其仓库。
+
+**不做：** 不在 cwd 的子目录里搜同名路径。会话 cwd 是 `C:\api`（多个仓库的父目录、本身不是仓库）时，聊天里的 `/openwiki/x.md` 仍然打不开——这和 `md.ts` 对裸文件名的立场一致：路径没说清在哪，就不猜。
+
+**验证：** `probes/round23-rootless-path.mjs`（`node --experimental-strip-types`，在临时目录里造 `parent/repo/.git` + `docs/*.md`，直接调用 `openPreview`）：文档内链接按文档仓库根打开（cwd 在仓库外也行）；无 base 时按 cwd、再按 cwd 的仓库根；cwd 在仓库外且无 base 时报错并列出候选；`\docs\b.md` 同样生效，UNC 不算；带盘符和相对路径不变；候选顺序以原行为结尾。另用真实场景复核：会话 cwd `C:\api`、文档 `C:\api\cas3-onecas-api\openwiki\quickstart.md` 里的 `/openwiki/architecture/overview.md` → `C:\api\cas3-onecas-api\openwiki\architecture\overview.md`。`npm run typecheck` 干净。

@@ -3369,7 +3369,7 @@ export class App {
     this.sheet = back;
   }
 
-  private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false): Promise<void> {
+  private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false, base?: string): Promise<void> {
     if (!sessionId) return;
     // 编辑中直接点别的文件：先问一句未保存的改动（D50）。
     const open = this.viewer;
@@ -3397,7 +3397,7 @@ export class App {
     v.mode = "render";
     this.paintViewer();
     try {
-      v.info = await api.preview(sessionId, path);
+      v.info = await api.preview(sessionId, path, base);
     } catch (err: any) {
       if (this.viewer !== v || v.path !== path) return;
       v.error = errText(err);
@@ -3866,7 +3866,8 @@ export class App {
       doc.append(
         renderMarkdown(v.text, {
           doc: true,
-          openPath: (p) => void this.openPreview(resolveFrom(info.abs, p), v.sessionId),
+          // 带上这份文档：`/x/y.md` 这种无盘符的链接由 bridge 按它所在的仓库根解析（D113）。
+          openPath: (p) => void this.openPreview(resolveFrom(info.abs, p), v.sessionId, false, info.abs),
           imageSrc: (src) => {
             if (/^[A-Za-z]:[\\/]|^\//.test(src) || /^data:/i.test(src)) return null;
             try {
