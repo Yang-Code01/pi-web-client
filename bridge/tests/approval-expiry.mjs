@@ -10,6 +10,10 @@
  * (`bridge/tests/fixtures/fake-pi.mjs`, scenarios `"APPROVAL…"` and `"ASK…"`), so "the tool call was
  * really discarded" and "the process really went away" are both provable.
  *
+ * Two clocks have to agree (review of #82): nobody in front of a page for the threshold, **and** the
+ * card itself hanging for the threshold. An approval that pops up long after you left is still too
+ * young to be thrown away — phase D.
+ *
  * `npm --prefix bridge run build && node bridge/tests/approval-expiry.mjs`
  */
 import fs from "node:fs";
@@ -328,10 +332,46 @@ async function askExpiresToo() {
   }
 }
 
+// ---------------------------------- D. an absence that began earlier cannot expire a new card
+async function freshCardIsNotExpired() {
+  log("D. 人早就走了之后才冒出来的审批，在它自己变老之前不会被丢");
+  const bridge = await startBridge({ name: "fresh", port: 7911 });
+  try {
+    // Nobody ever reports presence, so `absentFor()` has been growing since the bridge booted.
+    // Waiting here is what makes the first half of the rule true *before* the card exists.
+    await sleep(IDLE_MS + 1500);
+    const tab = await client(bridge);
+    const sid = await newSession(tab, "approval");
+    log("  session", sid);
+    tab.send({ type: "subscribe", sessionId: sid });
+    await tab.waitFor((m) => m.type === "session" && m.sessionId === sid, 10000, "snapshot");
+    await hangApproval(tab, sid);
+    const bornAt = Date.now();
+    const pid = lastLaunch(bridge.records(), sid)?.pid;
+
+    // TICK_MS is shorter than IDLE_MS, so at least one tick really looked at this card while it
+    // was still young. The absence half was already past the threshold; the card's own age was not.
+    await sleep(TICK_MS + 300);
+    check(!tab.seen.some((m) => m.type === "notice" && m.code === "approval_expired"), "人早走了满阈值，但卡片才挂上 1 秒多 —— 这一轮 tick 没丢它");
+    check(!tab.seen.some((m) => m.type === "approval.remove"), "审批卡片还在（没走 cancel 那条路）");
+    check(!exited(bridge.records(), pid), "它的 pi 进程也还在");
+
+    // The card's own clock runs out eventually: same threshold, counted from its birth.
+    const expired = await tab.waitFor((m) => m.type === "notice" && m.sessionId === sid && m.code === "approval_expired", IDLE_MS + TICK_WAIT, "eventual expiry");
+    check(expired._at - bornAt >= IDLE_MS, `它自己挂满阈值之后才过期（挂上后 ${expired._at - bornAt} ms）`);
+    check(tab.seen.some((m) => m.type === "approval.remove" && m.decision === "cancel"), "到那时才走 cancel 那条路");
+    await tab.waitFor((m) => m.type === "notice" && m.sessionId === sid && /休眠/.test(m.text), TICK_WAIT, "sleep notice");
+    check(exited(bridge.records(), pid), "然后 pi 进程真的退了");
+  } finally {
+    await bridge.stop();
+  }
+}
+
 try {
   await expiresWhenNobodyPresent();
   await neverExpiresWhileSomebodyIsPresent();
   await askExpiresToo();
+  await freshCardIsNotExpired();
 } catch (err) {
   failed = true;
   console.error("ERROR", err.message);

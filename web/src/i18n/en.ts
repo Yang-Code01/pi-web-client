@@ -69,6 +69,7 @@ export const en: Dict = {
   "bridge.err.dirs_unreadable": "Could not read this directory.",
   "bridge.err.approval_expired": "\"{p1}\" waited for an approval nobody was in front of the page to give, so it expired. That tool call was dropped — send it again if you still need it.",
   "bridge.err.ask_expired": "A question waited with nobody in front of the page, so it expired. That question was dropped.",
+  "bridge.err.session_slept": "This session's pi process went to sleep. The messages are all here; your next message wakes it up again.",
   "\r\n[进程已退出，exit {p1}]\r\n": "\r\n[process exited, exit {p1}]\r\n",
   " · {p1} 失败": " · {p1} failed",
   " · 占 {p1}": " · uses {p1}",

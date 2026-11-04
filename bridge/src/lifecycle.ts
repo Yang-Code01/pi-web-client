@@ -31,6 +31,12 @@ export const DEFAULT_WATERMARK_BYTES = 2.5 * 1024 ** 3;
  */
 export const CAP_PROTECT_MS = 60 * 1000;
 
+/**
+ * What the panel may read and write: the two 「可改」 thresholds of D120 §5. `abortGraceMs` is not in
+ * here on purpose — it is the watchdog's test seam, and the page has no business with it.
+ */
+export type LifecycleThresholds = Pick<Lifecycle, "idleMs" | "watermarkBytes">;
+
 /** A threshold, or null when it is not one: `true` is not 1 ms, and 0 would mean "reap at once". */
 function positive(raw: unknown): number | null {
   if (typeof raw !== "number" && typeof raw !== "string") return null;
@@ -69,9 +75,10 @@ export interface LifecyclePatch {
 }
 
 /**
- * Merge a panel edit into `lifecycle.json`, keeping whatever was there before. A field that is not a
- * positive number is dropped rather than guessed at, and `null` comes back when nothing survived so
- * the caller can say so — dropping a bad edit must never leave a half-written file behind.
+ * Merge a panel edit into `lifecycle.json`, keeping whatever was there before. All or nothing: the
+ * panel prints 「已保存」 whenever this returns non-null, so a patch that *names* a field and gets it
+ * wrong is refused whole (`null`, nothing written, both old values still in force) — saving the good
+ * half quietly would tell the user something untrue about the bad half.
  *
  * Nothing is cached: the next `lifecycle()` call (i.e. the next GC tick) already reads the new value,
  * which is what makes "改完不用重启桥" true for the idle threshold.
@@ -79,6 +86,9 @@ export interface LifecyclePatch {
 export function writeLifecycle(patch: LifecyclePatch): Lifecycle | null {
   const idleMs = positive(patch.idleMs);
   const watermarkBytes = positive(patch.watermarkBytes);
+  // `undefined` is "the patch says nothing about this field"; anything else is a value to judge.
+  if (patch.idleMs !== undefined && idleMs === null) return null;
+  if (patch.watermarkBytes !== undefined && watermarkBytes === null) return null;
   if (idleMs === null && watermarkBytes === null) return null;
   const file = statePath("lifecycle.json");
   const current = readJson<Record<string, unknown>>(file, {});

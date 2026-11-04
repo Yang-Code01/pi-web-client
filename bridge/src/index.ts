@@ -1183,8 +1183,11 @@ async function main(): Promise<void> {
             return;
           }
           // D120 / #80: the manual way out when memory is needed now. Only idle sessions sleep; a run
-          // in flight is named in the receipt instead of being interrupted.
+          // in flight is named in the receipt instead of being interrupted. It ends processes, so it
+          // sits on the same step-up shelf as every other write: a public page must not be able to do
+          // this with nothing but a socket message.
           case "runtime.sleepAll": {
+            if (!(await requireStepUp())) return;
             const receipt = await sessions.sleepAll();
             send({ type: "runtime.sleepAll", ...receipt });
             // The page must see the number drop now, not on the next 60 s tick.

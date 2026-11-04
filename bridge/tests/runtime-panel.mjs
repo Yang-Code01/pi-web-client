@@ -260,6 +260,12 @@ async function sampling() {
       "runtime.stats 广播",
     );
     check(pushed.running === 2 && pushed.totalBytes === stats.totalBytes, "GC tick 上广播的也是同一份数字");
+    // 测试缝不上界面：`abortGraceMs` 是 watchdog 的注入点，`runtime.stats` 只发两个可改的阈值。
+    check(
+      pushed.lifecycle && Object.keys(pushed.lifecycle).sort().join(",") === "idleMs,watermarkBytes",
+      `lifecycle 只带 idleMs / watermarkBytes（${JSON.stringify(pushed.lifecycle)}）`,
+    );
+    check("abortGraceMs" in (pushed.lifecycle ?? {}) === false, "abortGraceMs 没有跟着发到界面上");
     const samples = bridge.samples();
     check(samples.length >= 2, `采样跟着 tick 走：${samples.length} 次命令调用，没有新增定时器`);
   } finally {

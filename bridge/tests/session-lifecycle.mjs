@@ -262,7 +262,8 @@ async function thresholdFile() {
       "sleep notice from the file's threshold",
     );
     check(Boolean(slept), "the threshold in lifecycle.json took effect (the 30-minute default did not)");
-    // The bridge reads the file; it does not own it yet (runtime.set comes with #78).
+    // The panel can write this file too (`runtime.settings`, #78); nothing in this run edits it,
+    // so the value on disk must still be the one the test put there.
     const onDisk = JSON.parse(fs.readFileSync(path.join(ROOT, "file", "state", "lifecycle.json"), "utf8"));
     check(onDisk.idleMs === IDLE_MS, `the file is untouched (${JSON.stringify(onDisk)})`);
   } finally {

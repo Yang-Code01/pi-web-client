@@ -13,7 +13,7 @@ import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
 import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
 import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
-import { lifecycle, gcTickMs, capProtectMs, type Lifecycle } from "./lifecycle.ts";
+import { lifecycle, gcTickMs, capProtectMs, type Lifecycle, type LifecycleThresholds } from "./lifecycle.ts";
 import { absentFor } from "./presence.ts";
 import { sampleMemory } from "./runtime.ts";
 
@@ -124,8 +124,9 @@ export interface RuntimeStats {
   /**
    * The two thresholds in force, so the panel can show them and prove a change took (#78). Read on
    * every call, which is the same read the GC tick does — nothing is cached between ticks.
+   * `abortGraceMs` stays inside: it is a test seam, not a number for the page.
    */
-  lifecycle: Lifecycle;
+  lifecycle: LifecycleThresholds;
 }
 
 /** A session 「全部休眠」 had to leave alone (#80 / D120). `why` is a fixed id, not a sentence. */
@@ -1870,13 +1871,19 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * #82/D120: nobody has had a page in front for the whole threshold, so the approval or the
-   * questionnaire on screen is waiting on nobody. Drop them with a line in the timeline saying which
-   * one died, then sleep like an idle session would — `close()` aborts first, so the interrupted
-   * turn still lands on disk.
+   * #82/D120: the approval or the questionnaire on screen is waiting on nobody. Two clocks have to
+   * agree before it is dropped — nobody has had a page in front for the whole threshold, *and* this
+   * card has been hanging for the whole threshold itself. Without the second clock a card that pops
+   * up 30 minutes after you left would be thrown away on the very next tick, before you could even
+   * come back. Expired ones get a line in the timeline saying which died; the session sleeps only
+   * when nothing is left pending, and `close()` aborts first, so the interrupted turn still lands on
+   * disk.
    */
-  expireUnattended(): void {
+  expireUnattended(cfg: Lifecycle): void {
+    const now = Date.now();
+    const hanging = (since: number) => now - since >= cfg.idleMs;
     for (const approval of [...this.approvals.values()]) {
+      if (!hanging(approval.createdAt)) continue;
       const which = summarizeApproval(approval);
       this.answerApproval(approval.id, "cancel");
       this.notice(`「${which}」这条审批没有人看，已过期；那次工具调用已丢弃，需要的话重新发一次。`, "info", {
@@ -1885,9 +1892,13 @@ export class Session extends EventEmitter {
       });
     }
     for (const ask of [...this.asks.values()]) {
+      if (!hanging(ask.createdAt)) continue;
       this.cancelAsk(ask.id, "没有人看，已过期");
       this.notice("这个提问没有人看，已过期；这次提问已丢弃。", "info", { code: "ask_expired" });
     }
+    // A card too young to expire is still somebody's to answer: taking the process down would drop
+    // exactly the thing this rule exists to keep alive.
+    if (this.approvals.size || this.asks.size) return;
     void this.sleepNow();
   }
 
@@ -1897,7 +1908,7 @@ export class Session extends EventEmitter {
     // (#79: the cap and 「全部休眠」 walk the same list the idle rule does).
     if (this.closing) return Promise.resolve();
     return this.close({ quiet: true }).then(() => {
-      this.notice("会话已休眠（消息仍在，下次发消息会自动唤醒）");
+      this.notice("会话已休眠（消息仍在，下次发消息会自动唤醒）", "info", { code: "session_slept" });
       this.emitWs({ type: "session.state", session: this.state });
     });
   }
@@ -2494,7 +2505,16 @@ export class SessionManager extends EventEmitter {
       })
       .sort((a, b) => b.idleMs - a.idleMs);
     const totalBytes = sample.failure === null && sessions.length ? [...sample.bytes.values()].reduce((sum, n) => sum + n, 0) : null;
-    return { running: sessions.length, totalBytes, unavailable: sample.failure !== null, sessions, lifecycle: lifecycle() };
+    const cfg = lifecycle();
+    return {
+      running: sessions.length,
+      totalBytes,
+      unavailable: sample.failure !== null,
+      sessions,
+      // Only what the panel shows and may edit. The full `Lifecycle` also carries `abortGraceMs`,
+      // which is a test seam (D120 §3): it is not sent to the page.
+      lifecycle: { idleMs: cfg.idleMs, watermarkBytes: cfg.watermarkBytes },
+    };
   }
 
   /**
@@ -2570,7 +2590,8 @@ export class SessionManager extends EventEmitter {
    * A finished run with no pi event for `idleMs` sleeps: the process goes, messages and session file
    * stay, and the next message wakes it (D120). Nobody watching counts as activity — a tab left open
    * unattended is exactly what this reaps. A pending approval or ask is the one thing that can hold
-   * a session longer, and only as long as somebody is in front of a page (#82).
+   * a session longer, and only while nobody is in front of a page *and* the card is itself that old
+   * (#82) — a card cannot be expired by an absence that started before it existed.
    */
   private sleepIdleSessions(cfg: Lifecycle): void {
     // Whether a pending approval is still worth keeping is a fact about the person, not the session:
@@ -2581,7 +2602,7 @@ export class SessionManager extends EventEmitter {
       if (s.approvals.size || s.asks.size) {
         // A pending approval means its turn is in flight, so this branch has to sit before the
         // `running` guard: that turn is exactly what sits there waiting on nobody (#82).
-        if (unattended > cfg.idleMs) s.expireUnattended();
+        if (unattended > cfg.idleMs) s.expireUnattended(cfg);
         continue;
       }
       if (s.state.running) continue;

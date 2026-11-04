@@ -4,7 +4,8 @@
  * 观察面全是 WS：
  *   A. 改值 → 回一条带新值的 `runtime.stats`；**重启桥**之后再问，还是新值（不是默认的 30 分钟 / 2.5 GB）；
  *   B. 非法值（0 / 负数 / 非数字 / 空 / 什么都没有）被拒绝：回 `saved: false`，值不变，也不写盘
- *      （重启后依旧不变）——走公共隧道来的连接连改都不许改（step-up，与其它写设置的动作同级）；
+ *      （重启后依旧不变）—— **整份 patch 要么都过、要么都不写**（一好一坏也不写）；
+ *      走公共隧道来的连接连改都不许改（step-up，与其它写设置的动作同级）；
  *   C. 改空闲阈值**立即**生效：不重启、不设 `PI_WEB_IDLE_MS`，改完下一个 tick 就按新值休眠；
  *   D. 改小水位之后，**下一个 tick 的广播**里就是新值：判定用的那个数每个 tick 重取，不在启动时缓存。
  *      （按水位踢人是 #79，这里只验它将来会读到的那个数。）
@@ -245,6 +246,9 @@ async function refusedValues() {
       { what: "空字串", patch: { watermarkBytes: "" } },
       { what: "什么都没有", patch: {} },
       { what: "true", patch: { idleMs: true } },
+      // 一好一坏：合法的那一半也不能偷偷写进去 —— 面板看到非 null 就说「已保存」，
+      // 那样用户会以为两个数都生效了。
+      { what: "一好一坏（idleMs 合法、watermarkBytes 是 -1）", patch: { idleMs: 9 * MIN, watermarkBytes: -1 } },
     ];
     for (const bad of bads) {
       const answer = await edit(page, bad.patch, `refused ${bad.what}`);

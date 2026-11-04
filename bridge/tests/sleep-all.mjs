@@ -1,10 +1,12 @@
 /**
  * 「全部休眠」（#80 / D120）：设置 → 运行时的那个出口，一次性收掉所有空闲会话，**正在跑的一轮绝不动**。
  *
- * 三件事，都从外面看（WS 消息 + 桩 pi 自己的记录，bridge/tests/fixtures/fake-pi.mjs）：
+ * 四件事，都从外面看（WS 消息 + 桩 pi 自己的记录，bridge/tests/fixtures/fake-pi.mjs）：
  *   1. 回执 `runtime.sleepAll` 带 `slept` 与 `skipped[{id,name,why:"running"}]` —— 在跑的那个被点名跳过；
  *   2. 桩 pi 的记录里，在跑那个进程**没有收到 abort**，也没退出；空闲那个真退了（`exit` 行）；
- *   3. 回执之后桥立刻广播一条新的 `runtime.stats`（数字当场变小），不必等下一个 GC tick。
+ *   3. 回执之后桥立刻广播一条新的 `runtime.stats`（数字当场变小），不必等下一个 GC tick；
+ *   4. 从公共隧道来的连接按不了这个钮：先要口令（`need-stepup`），一个会话都不睡 ——
+ *      这个动作会结束进程，和 `runtime.settings` 同一条规矩（公网只读）。
  *
  * 阈值不用挤：这条消息不吃空闲阈值，所以 `idleMs` 留在 30 分钟、GC tick 留在 60 秒，
  * 期间发生的任何休眠都只可能是按钮点出来的。
@@ -94,10 +96,10 @@ async function startBridge(name) {
   return { out, cookie, records, stop: () => child.kill() };
 }
 
-async function client(bridge) {
+async function client(bridge, headers = {}) {
   const seen = [];
   const waits = new Set();
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie: bridge.cookie } });
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie: bridge.cookie, ...headers } });
   ws.on("message", (buf) => {
     const msg = JSON.parse(buf.toString());
     msg._at = Date.now();
@@ -251,9 +253,40 @@ async function nothingToSleep() {
   }
 }
 
+// ---------------------------------------------------------------- C. the public tunnel must step up
+async function publicCannotSleepAll() {
+  log("C. 从公共隧道来的连接按「全部休眠」→ 只要口令（need-stepup），一个会话都不睡");
+  const bridge = await startBridge("public");
+  try {
+    const page = await client(bridge);
+    const sid = await newSession(page, "本机那个");
+    await settled(page, sid, "hello");
+    const pid = lastLaunch(bridge.records(), sid)?.pid;
+    check(Boolean(pid), `先有一个空闲的 pi 进程可以（不）被睡（${pid}）`);
+
+    const pub = await client(bridge, { "cf-connecting-ip": "203.0.113.9" });
+    const mark = pub.seen.length;
+    pub.send({ type: "runtime.sleepAll" });
+    const answer = await pub.waitFor(
+      (m) => (m.type === "need-stepup" || m.type === "runtime.sleepAll") && pub.seen.indexOf(m) >= mark,
+      5000,
+      "public sleepAll",
+    );
+    // The case returns on the step-up check itself, so this frame is the whole answer: nothing ran.
+    check(answer.type === "need-stepup", `公网连接被要求重新输口令（${answer.type}）`);
+    check(!page.seen.some((m) => m.type === "runtime.sleepAll"), "没有回执 —— 那次点击没有走到休眠");
+    check(!page.notices(sid).some((n) => /休眠/.test(n.text)), "那个会话也没有收到休眠说明");
+    check(!exited(bridge.records(), pid), "它的 pi 进程还在（没有被休眠）");
+    pub.close();
+  } finally {
+    bridge.stop();
+  }
+}
+
 try {
   await oneIdleOneRunning();
   await nothingToSleep();
+  await publicCannotSleepAll();
 } catch (err) {
   failed = true;
   console.error("ERROR", err.message);
