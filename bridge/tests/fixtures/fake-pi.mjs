@@ -9,8 +9,10 @@
  *  - `agent_end` is not the end: a retry continues the run until `agent_settled`.
  *
  * Scenarios are picked by the prompt text: "SLOW…" streams until aborted, "RETRY…" fails, retries
- * once and fails for good, "SILENT…" sends nothing after agent_start, "TOOLHANG…" starts a tool and
- * then goes quiet, anything else is echoed back.
+      // `pid`: several sessions share this log, so a test can tell whose abort this was (#81).
+      note({ t: "abort", pid: process.pid, queued: steering.length + followUp.length });
+      // The turn cannot settle while it waits on a dialog, so abort answers it (pi does this too).
+      pendingConfirm?.("aborted");
  *
  * Env: FAKE_PI_LOG (jsonl of what the stub saw), FAKE_COMPACT_MS (manual compaction length).
  */
@@ -33,6 +35,10 @@ let steering = [];
 let followUp = [];
 let settleWaiters = [];
 let bashAborted = false;
+/** Resolver of the turn's pending confirm (#82): answered by `extension_ui_response` or `abort`. */
+let pendingConfirm = null;
+/** The command the stub claims it is about to run, so the approval card has something to show. */
+const CONFIRM_MESSAGE = "rm -rf build/";
 // What the bridge started us with (launch options, #28), plus the PI_WEB_* vars it let through:
 // the bridge strips its own settings, and a test can assert one did not reach pi (#76).
 note({ t: "argv", pid: process.pid, argv: process.argv.slice(2), cwd: process.cwd(), piWeb: Object.keys(process.env).filter((k) => k.startsWith("PI_WEB_")) });
@@ -104,6 +110,38 @@ async function turn(text) {
     ui("setWidget", { widgetKey: "foot", widgetLines: ["below line"], widgetPlacement: "belowEditor" });
     ui("setTitle", { title: "pi — fake title" });
     ui("set_editor_text", { text: "prefilled by extension" });
+  }
+  if (text.startsWith("APPROVAL")) {
+    // One approval on screen until somebody answers it: what the bridge's expiry rule is about (#82).
+    out({ type: "message_start", message: assistant("") });
+    const id = `ui-confirm-${Date.now()}`;
+    note({ t: "confirm-asked", id, message: CONFIRM_MESSAGE });
+    const reply = await new Promise((resolve) => {
+      pendingConfirm = resolve;
+      out({ type: "extension_ui_request", id, method: "confirm", title: "需要确认", message: CONFIRM_MESSAGE });
+    });
+    pendingConfirm = null;
+    note({ t: "confirm-reply", id, reply });
+    out({ type: "message_end", message: assistant(`confirm: ${reply}`, { stopReason: reply === "aborted" ? "aborted" : "stop" }) });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
+  if (text.startsWith("ASK")) {
+    // What the `question` extension really does in rpc mode: post to the bridge and wait for the
+    // browser (#82). The bridge holds this request open exactly as long as the ask is pending.
+    out({ type: "message_start", message: assistant("") });
+    const question = { id: "q1", label: "Q1", prompt: "选哪个", options: [{ value: "a", label: "A" }], allowOther: true };
+    const answer = await fetch(process.env.PI_WEB_ASK, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: process.env.PI_WEB_ASK_TOKEN, tool: "question", questions: [question] }),
+    })
+      .then((r) => r.json())
+      .catch(() => ({ cancelled: true }));
+    note({ t: "ask-reply", cancelled: Boolean(answer.cancelled), answers: answer.answers ?? null });
+    out({ type: "message_end", message: assistant(`ask: ${answer.cancelled ? "cancelled" : "answered"}`, { stopReason: answer.cancelled ? "aborted" : "stop" }) });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
   }
   if (text.startsWith("RETRY")) {
     out({ type: "message_start", message: assistant("") });
@@ -201,6 +239,8 @@ async function handle(cmd) {
     case "abort": {
       // `pid`: several sessions share this log, so a test can tell whose abort this was (#81).
       note({ t: "abort", pid: process.pid, queued: steering.length + followUp.length });
+      // The turn cannot settle while it waits on a dialog, so abort answers it (pi does this too).
+      pendingConfirm?.("aborted");
       if (!running) return ok(id, type);
       abortRequested = true;
       await new Promise((r) => settleWaiters.push(r));
@@ -267,7 +307,8 @@ process.stdin.on("data", (chunk) => {
       continue;
     }
     if (cmd.type === "extension_ui_response") {
-      note({ t: "ui-response", id: cmd.id });
+      note({ t: "ui-response", id: cmd.id, confirmed: cmd.confirmed, cancelled: cmd.cancelled });
+      pendingConfirm?.(cmd.cancelled ? "cancelled" : cmd.confirmed === true ? "approved" : "rejected");
       continue;
     }
     void handle(cmd);
