@@ -21,6 +21,7 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
+import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, revealInFileManager } from "./terminal.ts";
 import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
 import { bumpSkillUsage } from "./skills.ts";
@@ -1170,6 +1171,16 @@ async function main(): Promise<void> {
           case "runtime.stats": {
             (ws as any).wantsRuntime = true;
             send({ type: "runtime.stats", ...(await sessions.runtimeStats()) });
+            return;
+          }
+          // D120 / #78: the one write the runtime panel has — the two thresholds, into
+          // `lifecycle.json` so a restarted bridge keeps them. The answer is a fresh stats frame,
+          // and `saved: false` says the value was refused (a 0 or a non-number would be worse than
+          // the old one).
+          case "runtime.settings": {
+            if (!(await requireStepUp())) return;
+            const saved = writeLifecycle({ idleMs: msg.idleMs, watermarkBytes: msg.watermarkBytes });
+            send({ type: "runtime.stats", ...(await sessions.runtimeStats()), saved: saved !== null });
             return;
           }
           case "reload": {

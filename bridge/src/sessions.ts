@@ -114,6 +114,11 @@ export interface RuntimeStats {
   unavailable: boolean;
   /** Idle longest first. */
   sessions: RuntimeSession[];
+  /**
+   * The two thresholds in force, so the panel can show them and prove a change took (#78). Read on
+   * every call, which is the same read the GC tick does — nothing is cached between ticks.
+   */
+  lifecycle: Lifecycle;
 }
 
 export interface SessionState {
@@ -2438,7 +2443,7 @@ export class SessionManager extends EventEmitter {
       })
       .sort((a, b) => b.idleMs - a.idleMs);
     const totalBytes = sample.failure === null && sessions.length ? [...sample.bytes.values()].reduce((sum, n) => sum + n, 0) : null;
-    return { running: sessions.length, totalBytes, unavailable: sample.failure !== null, sessions };
+    return { running: sessions.length, totalBytes, unavailable: sample.failure !== null, sessions, lifecycle: lifecycle() };
   }
 
   /** Push the runtime numbers on every GC tick, so the panel is live without a timer of its own. */

@@ -1102,8 +1102,16 @@ export class App {
           totalBytes: typeof msg.totalBytes === "number" ? msg.totalBytes : null,
           unavailable: msg.unavailable === true,
           sessions: Array.isArray(msg.sessions) ? (msg.sessions as RuntimeStats["sessions"]) : [],
+          lifecycle: {
+            idleMs: Number(msg.lifecycle?.idleMs ?? 0),
+            watermarkBytes: Number(msg.lifecycle?.watermarkBytes ?? 0),
+          },
         };
-        if (this.sheetKind === "settings" && this.settingsTab === "runtime") this.paintSettings();
+        // D120 / #78：`saved` 只在回答一次阈值写入时出现。
+        if (msg.saved === true) this.flashSettings(tr("已保存：空闲阈值下一个 tick 就生效，不用重启桥。"));
+        if (msg.saved === false) this.flashSettings(tr("没有保存：阈值必须是大于 0 的数。"), true);
+        // 回答自己的写入一定要重画；每分钟一次的广播则不能把正在输入的阈值抢掉（换 DOM 就是丢光标、丢草稿）。
+        if (this.sheetKind === "settings" && this.settingsTab === "runtime" && (msg.saved !== undefined || !runtimeThresholdFocused())) this.paintSettings();
         break;
       case "lockext":
         this.lockExt = { installed: Boolean(msg.installed), path: String(msg.path ?? "") };
@@ -5644,7 +5652,8 @@ export class App {
 
   /**
    * D120 / #77：谁在吃内存。数字来自桥自己拉起的那些 pi 子进程（`tasklist` / `ps`），
-   * 读不到就写「不可用」—— 不留空、不写 0，不猜。这里只看得见，不提供任何操作。
+   * 读不到就写「不可用」—— 不留空、不写 0，不猜。
+   * D120 / #78：下面多了一个阈值区 —— 这一页上唯一能改的东西，改的就是回收判据本身。
    */
   private paintRuntime(body: HTMLElement): void {
     const stats = this.runtimeStats;
@@ -5669,19 +5678,61 @@ export class App {
     );
     if (!stats.sessions.length) {
       body.append(el("div", "empty", tr("现在没有在运行的 pi：发一条消息才会拉起一个。")));
-      return;
+    } else {
+      const list = el("div", "runtime-list");
+      for (const s of stats.sessions) {
+        const row = el("div", "runtime-row");
+        row.append(el("span", "runtime-name", s.name || s.id));
+        row.append(el("span", "runtime-idle", tr("闲了 {p1}", { p1: idleLabel(s.idleMs) })));
+        if (s.running) row.append(el("span", "runtime-tag", tr("在跑")));
+        const bytes = typeof s.bytes === "number" ? fmtSize(s.bytes) : tr("不可用");
+        row.append(el("span", `runtime-bytes${typeof s.bytes === "number" ? "" : " bad"}`, bytes));
+        list.append(row);
+      }
+      body.append(list);
     }
-    const list = el("div", "runtime-list");
-    for (const s of stats.sessions) {
-      const row = el("div", "runtime-row");
-      row.append(el("span", "runtime-name", s.name || s.id));
-      row.append(el("span", "runtime-idle", tr("闲了 {p1}", { p1: idleLabel(s.idleMs) })));
-      if (s.running) row.append(el("span", "runtime-tag", tr("在跑")));
-      const bytes = typeof s.bytes === "number" ? fmtSize(s.bytes) : tr("不可用");
-      row.append(el("span", `runtime-bytes${typeof s.bytes === "number" ? "" : " bad"}`, bytes));
-      list.append(row);
-    }
-    body.append(list);
+    body.append(this.runtimeThresholds(stats));
+  }
+
+  /**
+   * D120 / #78：两个阈值就地可改。写了就落 `<state>/lifecycle.json`（重启桥也还在），空闲那个
+   * 下一个 tick 就按新值判定，水位等下一次采样。输入框里的值只在非注焦时才被重写成桥报的值，
+   * 否则一次 tick 广播就能把输入草稿抹掉。
+   */
+  private runtimeThresholds(stats: RuntimeStats): HTMLElement {
+    const box = el("div", "runtime-thresholds");
+    const row = (cls: string, label: string, unit: string, value: number): HTMLInputElement => {
+      const line = el("label", `runtime-threshold ${cls}`);
+      line.append(el("span", "settings-label", label));
+      const input = el("input", "ns-input mono") as HTMLInputElement;
+      // 文本而不是 number：0 / 负数 / 非数字 要能被看见并被我们自己的校验拒掉（“abc”在 number 里直接变空）。
+      input.type = "text";
+      input.inputMode = "decimal";
+      input.value = plainNumber(value);
+      line.append(input, el("span", "runtime-unit", unit));
+      box.append(line);
+      return input;
+    };
+    const idle = row("idle", tr("空闲多久休眠"), tr("分钟"), stats.lifecycle.idleMs / MINUTE_MS);
+    const limit = row("watermark", tr("内存水位"), "GB", stats.lifecycle.watermarkBytes / GB);
+    const foot = el("div", "runtime-thresholds-foot");
+    foot.append(el("div", "hint", tr("空闲阈值下一个 tick 就生效；内存水位等下一次采样（60 秒一次）。两个值都写进桥的状态目录，重启桥也还在。")));
+    const save = el("button", "btn primary", tr("保存阈值")) as HTMLButtonElement;
+    save.onclick = () => {
+      const idleMs = thresholdOf(idle.value, MINUTE_MS);
+      const watermarkBytes = thresholdOf(limit.value, GB);
+      if (idleMs === null || watermarkBytes === null) {
+        // 旧值就是桥报的那个：拒绝之后屏幕上也不能留一个假的「已生效」。
+        this.flashSettings(tr("没有保存：阈值必须是大于 0 的数。"), true);
+        idle.value = plainNumber(stats.lifecycle.idleMs / MINUTE_MS);
+        limit.value = plainNumber(stats.lifecycle.watermarkBytes / GB);
+        return;
+      }
+      this.act(() => this.socket.send({ type: "runtime.settings", idleMs, watermarkBytes }));
+    };
+    foot.append(save);
+    box.append(foot);
+    return box;
   }
 
   private paintSettingsForm(body: HTMLElement, view: SettingsView): void {
@@ -9443,6 +9494,31 @@ function idleLabel(ms: number): string {
   if (ms < 60_000) return tr("{p1} 秒", { p1: fmtNum(Math.max(0, Math.round(ms / 1000))) });
   if (ms < 3_600_000) return tr("{p1} 分钟", { p1: fmtNum(Math.round(ms / 60_000)) });
   return tr("{p1} 小时", { p1: fmtNum(Math.round(ms / 3_600_000)) });
+}
+
+/** D120 / #78：运行时阈值的两个单位。GB 与 `fmtSize` 同一套（1024 进制）。 */
+const MINUTE_MS = 60_000;
+const GB = 1024 ** 3;
+
+/**
+ * 面板上的一个阈值输入（单位 → 毫秒 / 字节）。空、非数字、0、负数都不算数：它们会把阈值变成
+ * 「立刻回收」，比旧值糟糕得多。
+ */
+function thresholdOf(text: string, unit: number): number | null {
+  const raw = text.trim();
+  const value = Number(raw);
+  return raw !== "" && Number.isFinite(value) && value > 0 ? Math.round(value * unit) : null;
+}
+
+/** 输入框里显示的当前值：没有必要的小数就不写（30 / 2.5，而不是 30.00）。 */
+function plainNumber(n: number): string {
+  return String(Number(n.toFixed(2)));
+}
+
+/** 阈值输入框正在被输入时，别让 tick 广播把面板重画掉（换掉 DOM 就是丢光标、丢草稿）。 */
+function runtimeThresholdFocused(): boolean {
+  const active = document.activeElement;
+  return active instanceof HTMLElement && Boolean(active.closest(".runtime-threshold"));
 }
 
 function viewerLoading(text: string): HTMLElement {

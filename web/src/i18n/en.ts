@@ -1048,4 +1048,11 @@ export const en: Dict = {
   "在跑": "running",
   "内存数字来自桥自己拉起的那些 pi 子进程（Windows 用 tasklist，macOS / Linux 用 ps），不按进程名过滤。读不到就写「不可用」，不猜、不留空。": "The numbers come from the pi child processes the bridge itself started (tasklist on Windows, ps on macOS / Linux), not from filtering by process name. When the reading fails it says “unavailable” — no guessing, no zeros.",
   "现在没有在运行的 pi：发一条消息才会拉起一个。": "No pi is running right now: sending a message starts one.",
+  "空闲多久休眠": "Sleep after idling",
+  "分钟": "minutes",
+  "内存水位": "Memory watermark",
+  "保存阈值": "Save thresholds",
+  "空闲阈值下一个 tick 就生效；内存水位等下一次采样（60 秒一次）。两个值都写进桥的状态目录，重启桥也还在。": "The idle threshold applies from the next tick; the watermark waits for the next sample (once a minute). Both are written into the bridge's state directory, so restarting the bridge keeps them.",
+  "已保存：空闲阈值下一个 tick 就生效，不用重启桥。": "Saved: the idle threshold applies from the next tick — no bridge restart needed.",
+  "没有保存：阈值必须是大于 0 的数。": "Not saved: a threshold has to be a number greater than 0.",
 };
