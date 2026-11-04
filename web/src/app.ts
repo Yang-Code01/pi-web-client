@@ -379,7 +379,11 @@ export class App {
     peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     peer.dataset.act = "peer";
     peer.onclick = () => this.openPeerSheet();
-    topbar.append(collapseLeft, dot, wsToggle, wstabs, sub, files, term, fs, notes, peer, look, collapseRight);
+    // 左边这组单独包一层：它 flex:1 吃掉剩余宽度，右边那排工具才永远贴右。
+    // 之前没有这一层，标签条一收起来（display:none）就没人撑开，工具会一路滑到左边来。
+    const lead = el("div", "topbar-lead");
+    lead.append(collapseLeft, dot, wsToggle, wstabs);
+    topbar.append(lead, sub, files, term, fs, notes, peer, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");

@@ -130,7 +130,9 @@ a { color: var(--accent); text-decoration: none; }
   top: 0;
   z-index: 20;
 }
-.topbar .title { font-weight: 600; font-size: 15px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* D116/D118：标题位换成工作区标签条，所以标题规则删掉了。
+   lead 是左半边（折叠键 + 状态点 + 标签条），它吃掉剩余宽度，右侧工具才固定贴右。 */
+.topbar-lead { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; }
 /* ---------------------------------------------------------------- D116 工作区标签条
    第 1 行取代了原来的会话名：左边是工作区，溢出就横向滚（用渐隐提示，不加可见滚动条）。 */
 .wstabs { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
