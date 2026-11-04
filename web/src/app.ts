@@ -301,6 +301,8 @@ export class App {
   private dragWs: string | null = null;
   /** 顶栏第 2 行正在拖的会话 id。 */
   private pinDrag: string | null = null;
+  /** 刚钉上的工作区：等回声重渲染之后还要在这个新节点上重放一次「从托盘长出来」。 */
+  private wsFlyIn: { id: string; tray: { x: number; y: number }; at: number } | null = null;
   private spacePickerAway: ((ev: Event) => void) | null = null;
 
   constructor(me: Me) {
@@ -3184,6 +3186,8 @@ export class App {
     }
     // 溢出提示：不量就不知道最后几个标签被切掉了。
     host.classList.toggle("fade", host.scrollWidth > host.clientWidth + 1);
+    // 回声重渲染会换掉节点，刚启动的「从托盘长出来」得在新节点上重放一次。
+    this.playFlyIn();
   }
 
   /** 顶栏标签的横向拖拽：只重排置顶的那几个，其余工作区的相对顺序不动。 */
@@ -3750,11 +3754,133 @@ export class App {
     return this.manage.pinned.includes(id);
   }
 
+  /**
+   * 钉 / 取消钉一颗工作区。取消时那颗标签飞进「还有 N 个」，钉上时从那里长出来；
+   * 旁边的标签按前后位置差平移过去（FLIP），别让整条瞬移（D119）。
+   */
   private toggleSpacePin(id: string, on: boolean): void {
+    const before = this.wsSnapshot();
+    // 两个方向要的托盘坐标不一样：
+    //   飞出去 → 渲染**后**的位置（渲染前那儿还是这颗标签自己占着，飞过去等于飞进空白）
+    //   长出来 → 渲染**前**的位置（新标签会把托盘往右挤，起点得是挤之前的地方）
+    const trayBefore = this.trayPoint();
+    const tab = this.els.wstabs.querySelector<HTMLElement>(`.wstab[data-ws="${id}"]`);
+    const from = tab?.getBoundingClientRect() ?? null;
+    // 当前工作区的标签取消 ★ 也不会消失（D117 的破例），所以它不需要飞走。
+    const leaving = !on && tab && from && id !== this.currentWsId() ? this.cloneTab(tab, from) : null;
+
     this.manage = { ...this.manage, pinned: on ? [...this.manage.pinned.filter((x) => x !== id), id] : this.manage.pinned.filter((x) => x !== id) };
     this.renderWorkspaceTabs();
     this.renderSessions();
     this.sendWs({ op: "pin", id, on });
+
+    if (this.calm()) {
+      leaving?.remove();
+      return;
+    }
+    if (leaving && from) this.flyToTray(leaving, from, this.trayPoint());
+    if (on) this.flyFromTray(id, trayBefore);
+    this.flipTabs(before);
+  }
+
+  /** 动画前每颗标签的位置（FLIP 的 First）。 */
+  private wsSnapshot(): Map<string, DOMRect> {
+    const map = new Map<string, DOMRect>();
+    for (const n of this.els.wstabs.querySelectorAll<HTMLElement>(".wstab[data-ws]")) {
+      const key = n.dataset.ws;
+      if (key != null) map.set(key, n.getBoundingClientRect());
+    }
+    return map;
+  }
+
+  /** 「还有 N 个」那一点的坐标；它不在时退到标签条右端。 */
+  private trayPoint(): { x: number; y: number } {
+    const more = this.els.wstabs.querySelector<HTMLElement>(".wstab.more");
+    const r = more?.getBoundingClientRect() ?? this.els.wstabs.getBoundingClientRect();
+    return { x: r.left + Math.min(r.width, 30) / 2, y: r.top + r.height / 2 };
+  }
+
+  /** 把标签拷一份钉在原地当飞行体（原地那颗随后会被重渲染删掉）。 */
+  private cloneTab(tab: HTMLElement, rect: DOMRect): HTMLElement {
+    const clone = tab.cloneNode(true) as HTMLElement;
+    clone.classList.add("ws-flyer");
+    clone.removeAttribute("data-ws");
+    clone.removeAttribute("role");
+    clone.removeAttribute("tabindex");
+    Object.assign(clone.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+    document.body.append(clone);
+    return clone;
+  }
+
+  /** 取消置顶：这颗标签缩进「还有 N 个」。 */
+  private flyToTray(clone: HTMLElement, from: DOMRect, tray: { x: number; y: number }): void {
+    const cx = from.left + from.width / 2;
+    const cy = from.top + from.height / 2;
+    clone
+      .animate(
+        [
+          { transform: "none", opacity: 1 },
+          { transform: `translate(${tray.x - cx}px, ${tray.y - cy}px) scale(0.24)`, opacity: 0 },
+        ],
+        { duration: 260, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" },
+      )
+      .onfinish = () => {
+        clone.remove();
+        this.pulseTray();
+      };
+  }
+
+  /**
+   * 置顶：新长出来的这颗从「还有 N 个」的位置展开。
+   * 桥的 manage 回声会把整条重渲染（replaceChildren），节点一换动画就没了，所以把「刚钉上」
+   * 这件事记 600ms，重渲染时在新节点上重放（见 renderWorkspaceTabs 末尾）。
+   */
+  private flyFromTray(id: string, tray: { x: number; y: number }): void {
+    this.wsFlyIn = { id, tray, at: Date.now() };
+    this.playFlyIn();
+  }
+
+  private playFlyIn(): void {
+    const want = this.wsFlyIn;
+    if (!want) return;
+    if (Date.now() - want.at > 600) {
+      this.wsFlyIn = null;
+      return;
+    }
+    const { id, tray } = want;
+    const tab = this.els.wstabs.querySelector<HTMLElement>(`.wstab[data-ws="${id}"]`);
+    if (!tab) return;
+    const r = tab.getBoundingClientRect();
+    const dx = tray.x - (r.left + r.width / 2);
+    const dy = tray.y - (r.top + r.height / 2);
+    tab.animate(
+      [
+        { transform: `translate(${dx}px, ${dy}px) scale(0.24)`, opacity: 0 },
+        { transform: "none", opacity: 1 },
+      ],
+      { duration: 260, easing: "cubic-bezier(.2,.7,.2,1)" },
+    );
+    this.pulseTray();
+  }
+
+  /** 邻居按位置差平移过去，整条不会瞬移。 */
+  private flipTabs(before: Map<string, DOMRect>): void {
+    for (const n of this.els.wstabs.querySelectorAll<HTMLElement>(".wstab[data-ws]")) {
+      const key = n.dataset.ws;
+      const old = key != null ? before.get(key) : undefined;
+      if (!old) continue;
+      const now = n.getBoundingClientRect();
+      const dx = old.left - now.left;
+      if (Math.abs(dx) < 1) continue;
+      n.animate([{ transform: `translateX(${dx}px)` }, { transform: "none" }], { duration: 200, easing: "cubic-bezier(.2,.7,.2,1)" });
+    }
+  }
+
+  /** 「还有 N 个」自己也弹一下，表示东西进去了。 */
+  private pulseTray(): void {
+    const more = this.els.wstabs.querySelector<HTMLElement>(".wstab.more");
+    if (!more) return;
+    more.animate([{ transform: "scale(1)" }, { transform: "scale(1.12)" }, { transform: "scale(1)" }], { duration: 240, easing: "cubic-bezier(.22,.68,0,1)" });
   }
 
   private wsSpace(id: string): Workspace | null {

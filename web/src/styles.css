@@ -2348,3 +2348,6 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .ws-toggle:hover { color: var(--text); background: var(--panel); border-color: var(--line-soft); }
 .ws-toggle:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
+
+/* D119 标签飞进/飞出「还有 N 个」时的飞行体：脱离文档流，只负责画那一段 */
+.ws-flyer { position: fixed; z-index: 950; pointer-events: none; margin: 0; box-sizing: border-box; }
