@@ -2329,5 +2329,5 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .wstab.over-l::before, .pin-chip.over-l::before { left: -3px; }
 .wstab.over-r::after, .pin-chip.over-r::after { right: -3px; }
 .wstab.dragging, .pin-chip.dragging { opacity: 0.45; }
-.wstab[draggable="true"], .pin-chip[draggable="true"] { cursor: grab; }
-.wstab.dragging, .pin-chip.dragging { cursor: grabbing; }
+/* 光标跟会话卡片/胶囊一致：普通 pointer。不自己发明 grab 手势（实测反馈）。 */
+.wstab.drop-ws { background: rgba(125, 211, 252, 0.18); border-bottom-color: var(--accent); color: var(--text); }

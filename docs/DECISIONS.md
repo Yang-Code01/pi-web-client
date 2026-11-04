@@ -1487,3 +1487,8 @@
 - **工作区标签**：`draggable`，落点按 `clientX` 判左右半区、画一条竖插线；放手后照着顶栏 DOM 重排 `workspaces`，发 `workspace.op = reorder`。没画在顶栏里的（未置顶）接在后面，相对顺序不动。
 - **会话胶囊**：同样一套，但提交的是 `arrange(groups)` —— 第 2 行的顺序就是该工作区 `members` 的顺序，桥上会把没画出来的会话按旧顺序缀回去。
 - 两套拖拽用不同字段（`dragWs` / `pinDrag`），互不抢；落点线是 `.over-l` / `.over-r` 的 `::before` / `::after`。
+
+**会话跨工作区拖拽 + 光标（实测反馈）：**
+
+- **胶囊拖到工作区标签上 = 移到那个工作区**：标签的 `dragover` 先看 `pinDrag`（正在拖会话），命中就只高亮自己（`.drop-ws`）不再做标签排序；放手发 `workspace.op = assign`，桥把它追加到那个工作区的组尾。左栏卡片拖到别的分组本来就走 `arrange(groups)`，两条路都通。
+- **光标不自己发明**：顶栏标签和胶囊用 `cursor: pointer`，跟会话卡片一致；之前给 `draggable` 加的 `cursor: grab` 已删掉。

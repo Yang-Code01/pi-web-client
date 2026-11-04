@@ -3159,6 +3159,13 @@ export class App {
       for (const n of this.els.wstabs.querySelectorAll(".over-l,.over-r")) n.classList.remove("over-l", "over-r");
     };
     tab.ondragover = (ev) => {
+      // 拖的是会话胶囊 → 这颗标签是「移到这个工作区」的落点（不是排序）。
+      if (this.pinDrag) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        tab.classList.add("drop-ws");
+        return;
+      }
       if (!this.dragWs || this.dragWs === id) return;
       ev.preventDefault();
       ev.stopPropagation();
@@ -3167,8 +3174,18 @@ export class App {
       tab.classList.toggle("over-l", !after);
       tab.classList.toggle("over-r", after);
     };
-    tab.ondragleave = () => tab.classList.remove("over-l", "over-r");
+    tab.ondragleave = () => tab.classList.remove("over-l", "over-r", "drop-ws");
     tab.ondrop = (ev) => {
+      if (this.pinDrag) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        tab.classList.remove("drop-ws");
+        const moved = this.pinDrag;
+        this.pinDrag = null;
+        // 拖到标签上 = 换归属（桥把它追加到那个工作区的组尾）。
+        this.assignSessions([moved], id);
+        return;
+      }
       const src = this.dragWs;
       if (!src || src === id) return;
       ev.preventDefault();
@@ -3212,6 +3229,7 @@ export class App {
       this.pinDrag = null;
       chip.classList.remove("dragging");
       for (const n of this.els.pinStrip.querySelectorAll(".over-l,.over-r")) n.classList.remove("over-l", "over-r");
+      for (const n of this.els.wstabs.querySelectorAll(".drop-ws")) n.classList.remove("drop-ws");
     };
     chip.ondragover = (ev) => {
       if (!this.pinDrag || this.pinDrag === id) return;
