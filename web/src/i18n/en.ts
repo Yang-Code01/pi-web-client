@@ -1048,4 +1048,10 @@ export const en: Dict = {
   "在跑": "running",
   "内存数字来自桥自己拉起的那些 pi 子进程（Windows 用 tasklist，macOS / Linux 用 ps），不按进程名过滤。读不到就写「不可用」，不猜、不留空。": "The numbers come from the pi child processes the bridge itself started (tasklist on Windows, ps on macOS / Linux), not from filtering by process name. When the reading fails it says “unavailable” — no guessing, no zeros.",
   "现在没有在运行的 pi：发一条消息才会拉起一个。": "No pi is running right now: sending a message starts one.",
+  "全部休眠": "Sleep all",
+  "把所有空闲的会话休眠掉：消息都在，下一条消息唤醒；正在跑的一轮不动。": "Put every idle session to sleep: messages stay, the next message wakes it. A run in flight is left alone.",
+  "没有可以休眠的会话：本来就都是空的。": "Nothing to put to sleep: there was nothing running.",
+  "已休眠 {p1} 个会话。": "Put {p1} session(s) to sleep.",
+  "一个都没睡：{p1} 还在跑，没有动。": "Nothing went to sleep: {p1} is still running, left untouched.",
+  "已休眠 {p1} 个会话；{p2} 还在跑，没有动。": "Put {p1} session(s) to sleep; {p2} is still running and was left untouched.",
 };

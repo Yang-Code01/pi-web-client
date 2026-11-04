@@ -1172,6 +1172,15 @@ async function main(): Promise<void> {
             send({ type: "runtime.stats", ...(await sessions.runtimeStats()) });
             return;
           }
+          // D120 / #80: the manual way out when memory is needed now. Only idle sessions sleep; a run
+          // in flight is named in the receipt instead of being interrupted.
+          case "runtime.sleepAll": {
+            const receipt = await sessions.sleepAll();
+            send({ type: "runtime.sleepAll", ...receipt });
+            // The page must see the number drop now, not on the next 60 s tick.
+            broadcastRuntime(await sessions.runtimeStats());
+            return;
+          }
           case "reload": {
             if (!(await requireStepUp())) return;
             const session = await sessions.reload(String(msg.sessionId ?? ""));

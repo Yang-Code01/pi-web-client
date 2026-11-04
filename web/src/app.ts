@@ -9,7 +9,7 @@ import { renderMarkdown } from "./md.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
@@ -161,6 +161,8 @@ export class App {
   private settingsTab: SettingsTab = "global";
   /** D120 / #77：`runtime.stats` 的最后一帧；null = 还没问过（「读取中…」）。 */
   private runtimeStats: RuntimeStats | null = null;
+  /** D120 / #80：「全部休眠」的最后一次回执（null = 这次打开面板还没按过）。 */
+  private sleepAllReceipt: SleepAllReceipt | null = null;
   /** #27 the 登录 tab: providers as pi sees them, a filter, and the login running right now. */
   private authProviders: AuthProvider[] | null = null;
   /** #30: is the terminal session-lock extension in pi's global extensions? */
@@ -1105,6 +1107,15 @@ export class App {
         };
         if (this.sheetKind === "settings" && this.settingsTab === "runtime") this.paintSettings();
         break;
+      case "runtime.sleepAll": {
+        // D120 / #80：回执点名没睡的那几个，比一个「完成」有用得多。
+        this.sleepAllReceipt = {
+          slept: Array.isArray(msg.slept) ? (msg.slept as string[]).map(String) : [],
+          skipped: Array.isArray(msg.skipped) ? (msg.skipped as SleepAllReceipt["skipped"]) : [],
+        };
+        if (this.sheetKind === "settings" && this.settingsTab === "runtime") this.paintSettings();
+        break;
+      }
       case "lockext":
         this.lockExt = { installed: Boolean(msg.installed), path: String(msg.path ?? "") };
         if (msg.saved) this.flashSettings(msg.installed ? tr("已装进 pi 的全局扩展：之后启动的终端 pi 会登记自己开着的会话") : tr("已从 pi 的全局扩展里移除"));
@@ -5524,7 +5535,11 @@ export class App {
     this.sheetKind = "settings";
     this.settingsTab = tab;
     if (tab === "login") this.authProviders = null; // re-read: someone may have logged in from the terminal
-    if (tab === "runtime") this.socket.send({ type: "runtime.stats" });
+    if (tab === "runtime") {
+      // 上一次按按钮的回执已经过期了：打开面板时重新问数字，也从一张白纸开始。
+      this.sleepAllReceipt = null;
+      this.socket.send({ type: "runtime.stats" });
+    }
     const back = el("div", "sheet-back");
     back.onclick = (ev) => {
       if (ev.target === back) this.closeSheet();
@@ -5644,7 +5659,10 @@ export class App {
 
   /**
    * D120 / #77：谁在吃内存。数字来自桥自己拉起的那些 pi 子进程（`tasklist` / `ps`），
-   * 读不到就写「不可用」—— 不留空、不写 0，不猜。这里只看得见，不提供任何操作。
+   * 读不到就写「不可用」—— 不留空、不写 0，不猜。
+   *
+   * D120 / #80：临时要腾内存时的出口是这里那个「全部休眠」。它只收空闲的，正在跑的一轮
+   * 一定不动，也一定不会出现在「已休眠」里（回执点名跳过的是谁）。
    */
   private paintRuntime(body: HTMLElement): void {
     const stats = this.runtimeStats;
@@ -5660,6 +5678,19 @@ export class App {
         cost ? tr("运行中 pi：{p1} 个 · {p2}", { p1: stats.running, p2: cost }) : tr("运行中 pi：{p1} 个", { p1: stats.running }),
       ),
     );
+    // 一个 pi 都没起的时候按钮灰着：按下去也没东西可睡，不值得试一次才知道。
+    const sleepAll = el("button", "btn ghost", tr("全部休眠")) as HTMLButtonElement;
+    sleepAll.title = tr("把所有空闲的会话休眠掉：消息都在，下一条消息唤醒；正在跑的一轮不动。");
+    sleepAll.disabled = stats.running === 0;
+    sleepAll.onclick = () => {
+      this.sleepAllReceipt = null;
+      this.socket.send({ type: "runtime.sleepAll" });
+      this.paintSettings();
+    };
+    const actions = el("div", "runtime-actions");
+    actions.append(sleepAll);
+    body.append(actions);
+    if (this.sleepAllReceipt) body.append(el("div", "runtime-sleep-all", sleepAllText(this.sleepAllReceipt)));
     body.append(
       el(
         "div",
@@ -9443,6 +9474,19 @@ function idleLabel(ms: number): string {
   if (ms < 60_000) return tr("{p1} 秒", { p1: fmtNum(Math.max(0, Math.round(ms / 1000))) });
   if (ms < 3_600_000) return tr("{p1} 分钟", { p1: fmtNum(Math.round(ms / 60_000)) });
   return tr("{p1} 小时", { p1: fmtNum(Math.round(ms / 3_600_000)) });
+}
+
+/**
+ * 「全部休眠」的回执说人话（D120 / #80）：睡了几个，以及**点名**哪几个还在跑 —— 用户得能确认
+ * 自己没有把任务弄丢，而不是看到一个「完成」。
+ */
+function sleepAllText(receipt: SleepAllReceipt): string {
+  const names = receipt.skipped.map((s) => s.name || s.id).join(tr("、"));
+  const slept = receipt.slept.length;
+  if (!slept && !names) return tr("没有可以休眠的会话：本来就都是空的。");
+  if (!names) return tr("已休眠 {p1} 个会话。", { p1: slept });
+  if (!slept) return tr("一个都没睡：{p1} 还在跑，没有动。", { p1: names });
+  return tr("已休眠 {p1} 个会话；{p2} 还在跑，没有动。", { p1: slept, p2: names });
 }
 
 function viewerLoading(text: string): HTMLElement {

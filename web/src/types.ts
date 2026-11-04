@@ -199,6 +199,14 @@ export interface RuntimeStats {
   sessions: RuntimeSessionRow[];
 }
 
+/** Mirrors bridge/src/sessions.ts RuntimeStats 的兄弟：`runtime.sleepAll` 的回执（D120 / #80）。 */
+export interface SleepAllReceipt {
+  /** 已经请去睡觉的会话 id。 */
+  slept: string[];
+  /** 因为在跑而没动的会话，`why` 是固定 id，不是句子。 */
+  skipped: { id: string; name: string; why: "running" }[];
+}
+
 export interface RuntimeSessionRow {
   id: string;
   name: string;
