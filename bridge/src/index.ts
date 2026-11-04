@@ -1050,13 +1050,14 @@ async function main(): Promise<void> {
             // #28: CLI flags for this session, validated before anything is spawned.
             const launch = cleanLaunch(msg.options);
             const session = await sessions.create(String(msg.cwd || process.cwd()), name, launch);
-            // Q-022: created from the pin strip's ＋ → pinned at the end of the strip, and every
-            // client hears about the arrangement (the strip is a projection of manage.pin).
+            // Q-022: created from the pin strip's ＋ → ★ and filed into the workspace it was made in,
+            // so every client hears about the arrangement (the strip is a projection of manage).
             if (msg.pin) sessions.pinLast(session.state.id);
+            if (typeof msg.ws === "string") sessions.manage.assign([session.state.id], msg.ws);
             (ws as any).watching = session.state.id;
             send({ type: "session", sessionId: session.state.id, ...session.snapshot(), trust: await trustFor(session.state.cwd) });
             broadcast({ type: "session.state", session: session.state });
-            if (msg.pin) broadcast({ type: "manage", manage: sessions.manage.snapshot() });
+            if (msg.pin || typeof msg.ws === "string") broadcast({ type: "manage", manage: sessions.manage.snapshot() });
             return;
           }
           case "mkdir": {
@@ -1565,7 +1566,37 @@ async function main(): Promise<void> {
             if (!(await requireStepUp())) return;
             const action = String(msg.action ?? "");
             if (action === "arrange") {
-              sessions.arrange(msg.pin, msg.order);
+              sessions.arrange(msg.groups);
+              broadcast({ type: "manage", manage: sessions.manage.snapshot() });
+              return;
+            }
+            if (action === "pin") {
+              // ★ is a set now: the order inside a workspace comes from `members`, not from this.
+              sessions.manage.setPinned(String(msg.id ?? ""), msg.on !== false);
+              broadcast({ type: "manage", manage: sessions.manage.snapshot() });
+              return;
+            }
+            if (action === "workspace") {
+              // Workspaces are user-owned display state, like pin/archive — same step-up gate.
+              const op = String(msg.op ?? "");
+              const id = String(msg.id ?? "");
+              if (op === "new") {
+                sessions.manage.addWorkspace(String(msg.name ?? ""), String(msg.color ?? ""), String(msg.icon ?? ""));
+              } else if (op === "patch") {
+                const patch: { name?: string; color?: string; icon?: string } = {};
+                if (msg.name != null) patch.name = String(msg.name);
+                if (msg.color != null) patch.color = String(msg.color);
+                if (msg.icon != null) patch.icon = String(msg.icon);
+                sessions.manage.patchWorkspace(id, patch);
+              } else if (op === "reorder") {
+                sessions.manage.orderWorkspaces(msg.order);
+              } else if (op === "remove") {
+                sessions.manage.removeWorkspace(id);
+              } else if (op === "assign") {
+                sessions.manage.assign(Array.isArray(msg.ids) ? msg.ids.map(String) : [], String(msg.ws ?? ""));
+              } else {
+                return;
+              }
               broadcast({ type: "manage", manage: sessions.manage.snapshot() });
               return;
             }

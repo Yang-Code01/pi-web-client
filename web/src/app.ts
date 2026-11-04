@@ -9,7 +9,7 @@ import { renderMarkdown } from "./md.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState, Workspace } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
@@ -226,8 +226,8 @@ export class App {
   private renameDraft = "";
   private renameFocus = false;
   private renameCaret: number | null = null;
-  /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
-  private manage: ManageState = { pin: [], order: [], archived: [] };
+  /** Sidebar arrangement owned by the user: workspaces / membership / ★ / archive (D46 + D116). */
+  private manage: ManageState = { workspaces: [], members: {}, pin: [], archived: [] };
   private archivedOpen = false;
   private filter = "";
   /** Delete is two-step: the last click arms it, the next one within 4s sends it. */
@@ -283,6 +283,12 @@ export class App {
   private vhist = new Map<string, { steps: VStep[]; at: number }>();
   private cardDelArm: { id: string; at: number } | null = null;
   private dragId: string | null = null;
+  /** D116: 当前工作区（标签页高亮那个）。切区顺带切到该区的第一个会话。 */
+  private curWs = loadStr("pi.ws") || UNGROUPED;
+  /** 左栏分组折叠态：纯视图开关，跟归属不同权，所以存 localStorage 而不是 manage.json。 */
+  private wsClosed = new Set<string>(loadStrList("pi.wsCollapsed"));
+  /** 刚发出一条 workspace.new，等回声到了才知道新 id —— 记下旧的一批，好识别哪个是新的。 */
+  private wsPendingNew: Set<string> | null = null;
 
   constructor(me: Me) {
     this.me = me;
@@ -317,7 +323,8 @@ export class App {
     collapseLeft.dataset.act = "sessions";
     collapseLeft.onclick = () => this.togglePane("sessions");
     const dot = el("span", "dot");
-    const title = el("div", "title", "pi");
+    // D116: 标题位现在是工作区标签条（会话名不再占这里 —— 当前会话由第 2 行高亮的胶囊与左栏选中态表达）。
+    const wstabs = el("nav", "wstabs");
     const sub = el("div", "sub", "");
     const collapseRight = el("button", "icon-btn side-toggle");
     collapseRight.dataset.side = "right";
@@ -357,7 +364,7 @@ export class App {
     peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     peer.dataset.act = "peer";
     peer.onclick = () => this.openPeerSheet();
-    topbar.append(collapseLeft, dot, title, sub, files, term, fs, notes, peer, look, collapseRight);
+    topbar.append(collapseLeft, dot, wstabs, sub, files, term, fs, notes, peer, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -429,7 +436,7 @@ export class App {
     shell.append(topbar, pinStrip, main, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, wstabs, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.binBtn = binBtn;
     // 顶栏这批按钮只构造一次，语言一切换就得靠 paintChrome() 重写文字（renderAll 碰不到它们）。
     this.paintChrome();
@@ -1374,6 +1381,8 @@ export class App {
         break;
       case "manage":
         if (msg.manage) this.manage = msg.manage as ManageState;
+        this.adoptNewWorkspace();
+        this.renderWorkspaceTabs();
         this.renderSessions();
         break;
       case "session.gone": {
@@ -2727,7 +2736,7 @@ export class App {
     localStorage.setItem("pi.recentCwds", JSON.stringify([cwd, ...recent].slice(0, 12)));
     this.act(() => {
       onSent();
-      this.socket.send({ type: "create", cwd, ...(name ? { name } : {}), ...(pin ? { pin: true } : {}), ...(options && Object.keys(options).length ? { options } : {}) });
+      this.socket.send({ type: "create", cwd, ...(name ? { name } : {}), ...(pin ? { pin: true } : {}), ...(options && Object.keys(options).length ? { options } : {}), ws: this.currentWsId() });
     });
   }
 
@@ -3046,11 +3055,53 @@ export class App {
     this.renderTabs();
   }
 
+  /**
+   * D116: 第 1 行就是工作区标签条（取代原来的会话名）。双击改名、⋯ 开设置表、溢出横向滚动。
+   */
+  private renderWorkspaceTabs(): void {
+    const host = this.els.wstabs;
+    if (!host) return;
+    const focused = document.activeElement instanceof HTMLInputElement && host.contains(document.activeElement) ? document.activeElement.value : null;
+    host.replaceChildren();
+    const cur = this.currentWsId();
+    for (const id of this.wsOrder()) {
+      const tab = el("button", `wstab${id === cur ? " on" : ""}`) as HTMLButtonElement;
+      tab.type = "button";
+      tab.dataset.ws = id;
+      const space = this.wsSpace(id);
+      const accent = this.wsAccent(id);
+      const dot = el("span", "ws-dot");
+      if (accent) dot.style.background = accent;
+      else dot.classList.add("bare");
+      if (space?.icon) tab.append(el("span", "ws-icon", space.icon));
+      tab.append(dot, el("span", "ws-name", this.wsName(id)));
+      const list = this.groupSessions(id);
+      const pending = list.filter((s) => sessionBadge(s, this.currentId)?.pending).length;
+      tab.append(el("span", pending ? "ws-n pend" : "ws-n", pending ? tr("待 {p1}", { p1: pending }) : String(list.length)));
+      tab.title = pending ? tr("{p1} · {p2} 个会话，{p3} 个待处理", { p1: this.wsName(id), p2: list.length, p3: pending }) : tr("{p1} · {p2} 个会话", { p1: this.wsName(id), p2: list.length });
+      tab.onclick = () => this.setWorkspace(id);
+      if (id !== UNGROUPED) tab.ondblclick = () => this.renameWorkspaceInline(tab, id);
+      host.append(tab);
+    }
+    const add = el("button", "wstab add") as HTMLButtonElement;
+    add.type = "button";
+    add.textContent = "+";
+    add.title = tr("新建工作区");
+    add.onclick = () => this.newWorkspace();
+    host.append(add);
+    if (focused != null) {
+      const input = host.querySelector<HTMLInputElement>("input");
+      if (input) input.value = focused;
+    }
+    // 溢出提示：不量就不知道最后几个标签被切掉了。
+    host.classList.toggle("fade", host.scrollWidth > host.clientWidth + 1);
+  }
+
   private renderTop(): void {
-    const { dot, title, sub, collapseLeft, collapseRight } = this.els;
+    const { dot, sub, collapseLeft, collapseRight } = this.els;
     const running = this.session?.running;
     dot.className = `dot ${!this.connected ? "bad" : running ? "busy" : this.session?.owned ? "live" : ""}`;
-    title.textContent = this.session ? this.session.name : "pi";
+    this.renderWorkspaceTabs();
     this.els.files.hidden = !this.currentId;
     this.els.fs.hidden = !this.currentId;
     const bits: string[] = [];
@@ -3111,7 +3162,10 @@ export class App {
       .join(" · ");
   }
 
-  /** Pinned / plain / archived sections. Every drag and every star click ends up in one arrange message. */
+  /**
+   * D116: 一级 = 工作区（可折叠）→ 末尾「未分组」→ 末尾独立「已归档」。
+   * 每个分组自己是一个拖拽容器：落点后 `commitArrangement` 读的就是这些容器的顺序。
+   */
   private renderSessions(): void {
     this.renderPinStrip();
     this.renderBinCount();
@@ -3122,63 +3176,111 @@ export class App {
     this.renameCaret = typing ? (active as HTMLInputElement).selectionStart : null;
     host.replaceChildren();
 
-    const ordered = [...this.sessions].sort((a, b) => this.arrangeCompare(a, b));
-    if (this.renameId && !ordered.some((s) => s.id === this.renameId)) this.renameId = null;
+    if (this.renameId && !this.sessions.some((s) => s.id === this.renameId)) this.renameId = null;
     // A deleted or now-hidden session must not stay "picked".
-
-    const visible = ordered.filter((s) => !this.manage.archived.includes(s.id) && this.matchesFilter(s));
-    const archived = ordered.filter((s) => this.manage.archived.includes(s.id) && this.matchesFilter(s));
-    const pinned = visible.filter((s) => this.manage.pin.includes(s.id));
-    const rest = visible.filter((s) => !this.manage.pin.includes(s.id));
     if (this.sheetKind === "manage") this.mgrRefresh?.();
 
-    if (!ordered.length) {
-      host.append(el("div", "empty", tr("还没有会话。上面开一个，或在终端里 pi 一下。")));
-      return;
+    const archived = this.sessions.filter((s) => this.manage.archived.includes(s.id) && this.matchesFilter(s));
+    let shown = 0;
+    for (const ws of this.wsOrder()) {
+      const list = this.groupSessions(ws);
+      // 空工作区也要画（否则没地方往里面拖）；只有「什么都没建、未分组也空」时才跳过。
+      if (!list.length && ws === UNGROUPED && !this.manage.workspaces.length) continue;
+      shown += list.length;
+      host.append(this.wsSection(ws, list));
     }
-    if (pinned.length) host.append(this.sessionSection("pin", tr("置顶"), pinned));
-    host.append(this.sessionSection("rest", this.manage.pin.length ? tr("会话") : tr("会话 · 按创建时间"), rest));
-    if (!visible.length) host.append(el("div", "empty", this.filter ? tr("没有匹配的会话。") : tr("都归档了，展开下面的「已归档」看看。")));
-    if (archived.length) host.append(this.sessionSection("archived", tr("已归档"), this.archivedOpen ? archived : []));
+    if (!this.sessions.length) host.append(el("div", "empty", tr("还没有会话。上面开一个，或在终端里 pi 一下。")));
+    else if (!shown) host.append(el("div", "empty", this.filter ? tr("没有匹配的会话。") : tr("都归档了，展开下面的「已归档」看看。")));
+    if (archived.length) host.append(this.archiveSection(archived));
     this.renameFocus = false;
   }
 
-  private sessionSection(kind: "pin" | "rest" | "archived", title: string, list: SessionState[]): HTMLElement {
+  private wsSection(ws: string, list: SessionState[]): HTMLElement {
     const sec = el("div", "session-sec");
-    sec.dataset.sec = kind;
+    sec.dataset.ws = ws;
+    if (ws === UNGROUPED) sec.classList.add("ungrouped");
+    if (ws === this.currentWsId()) sec.classList.add("cur-ws");
     const head = el("div", "sess-head");
-    if (kind === "archived") {
-      const toggle = () => {
-        this.archivedOpen = !this.archivedOpen;
-        this.renderSessions();
+    const closed = this.wsClosed.has(ws);
+    const caret = el("span", "chev", closed ? "▸" : "▾");
+    const dot = el("span", "ws-dot");
+    const accent = this.wsAccent(ws);
+    if (accent) dot.style.background = accent;
+    else dot.classList.add("bare");
+    const space = this.wsSpace(ws);
+    const label = el("span", "label");
+    if (space?.icon) label.append(el("span", "ws-icon", space.icon));
+    label.append(document.createTextNode(this.wsName(ws)));
+    label.ondblclick = (ev) => {
+      if (ws === UNGROUPED) return;
+      ev.preventDefault();
+      this.renameWorkspaceInline(label, ws);
+    };
+    const toggle = (ev: Event) => {
+      ev.stopPropagation();
+      if (closed) this.wsClosed.delete(ws);
+      else this.wsClosed.add(ws);
+      saveStrList("pi.wsCollapsed", [...this.wsClosed]);
+      this.renderSessions();
+    };
+    caret.onclick = toggle;
+    dot.onclick = toggle;
+    label.onclick = () => this.setWorkspace(ws);
+    head.append(caret, dot, label, el("span", "n", String(list.length)));
+    if (ws !== UNGROUPED) {
+      const more = el("button", "sess-more", "⋯") as HTMLButtonElement;
+      more.type = "button";
+      more.title = tr("重命名 / 改色 / 删除这个工作区");
+      more.onclick = (ev) => {
+        ev.stopPropagation();
+        this.openWorkspaceSheet(ws);
       };
-      const chev = el("span", "chev", this.archivedOpen ? "▾" : "▸");
-      chev.onclick = toggle;
-      const label = el("span", "label", title);
-      label.onclick = toggle;
-      head.append(chev, label);
-    } else {
-      head.append(el("span", "label", title));
+      head.append(more);
     }
-    head.append(el("span", "n", String(kind === "archived" ? this.archivedTotal() : list.length)));
     sec.append(head);
 
     const cards = el("div", "session-cards");
+    if (closed) cards.hidden = true;
     for (const s of list) cards.append(this.sessionCard(s));
-    if (kind !== "archived") {
-      cards.ondragover = (ev) => {
-        if (!this.dragId) return;
-        ev.preventDefault();
-      };
-      cards.ondrop = (ev) => {
-        if (!this.dragId) return;
-        ev.preventDefault();
-        const node = this.dragNode(this.dragId);
-        if (node) cards.append(node);
-        this.commitArrangement();
-        this.dragId = null;
-      };
-    }
+    // 整个分组都是落点：拖到组头、或拖进空组 = 归到这个工作区。
+    sec.ondragover = (ev) => {
+      if (!this.dragId) return;
+      ev.preventDefault();
+      sec.classList.add("drop-on");
+    };
+    sec.ondragleave = (ev) => {
+      if (ev.target === sec) sec.classList.remove("drop-on");
+    };
+    sec.ondrop = (ev) => {
+      if (!this.dragId) return;
+      ev.preventDefault();
+      sec.classList.remove("drop-on");
+      const node = this.dragNode(this.dragId);
+      if (node) cards.append(node);
+      this.commitArrangement();
+      this.dragId = null;
+    };
+    sec.append(cards);
+    return sec;
+  }
+
+  /** 已归档不进分组、也不进顶栏第 2 行：它是末尾一个独立的折叠区（跟以前一样）。 */
+  private archiveSection(list: SessionState[]): HTMLElement {
+    const sec = el("div", "session-sec");
+    sec.dataset.sec = "archived";
+    const head = el("div", "sess-head");
+    const toggle = () => {
+      this.archivedOpen = !this.archivedOpen;
+      this.renderSessions();
+    };
+    const chev = el("span", "chev", this.archivedOpen ? "▾" : "▸");
+    chev.onclick = toggle;
+    const label = el("span", "label", tr("已归档"));
+    label.onclick = toggle;
+    head.append(chev, label, el("span", "n", String(this.archivedTotal())));
+    sec.append(head);
+    const cards = el("div", "session-cards");
+    for (const s of this.archivedOpen ? list : []) cards.append(this.sessionCard(s));
     sec.append(cards);
     return sec;
   }
@@ -3347,22 +3449,210 @@ export class App {
   }
 
   /** Mirrors bridge/src/manage.ts: pinned by hand, then manual order, then new ones newest first. */
-  private arrangeCompare(a: SessionState, b: SessionState): number {
-    const aa = this.manage.archived.includes(a.id);
-    const ba = this.manage.archived.includes(b.id);
-    if (aa !== ba) return aa ? 1 : -1;
-    const ap = this.manage.pin.indexOf(a.id);
-    const bp = this.manage.pin.indexOf(b.id);
-    if (ap >= 0 || bp >= 0) {
-      if (ap < 0) return 1;
-      if (bp < 0) return -1;
-      return ap - bp;
+  // ---------------------------------------------------------------- workspace helpers (D116)
+
+  /** 标签页 / 左栏组的顺序：workspaces 的数组序，「未分组」虚拟且永远末位。 */
+  private wsOrder(): string[] {
+    return [...this.manage.workspaces.map((w) => w.id), UNGROUPED];
+  }
+
+  private wsSpace(id: string): Workspace | null {
+    return this.manage.workspaces.find((w) => w.id === id) ?? null;
+  }
+
+  private wsName(id: string): string {
+    if (id === UNGROUPED) return tr("未分组");
+    return this.wsSpace(id)?.name?.trim() || tr("未命名工作区");
+  }
+
+  private wsAccent(id: string): string {
+    const key = id === UNGROUPED ? "" : (this.wsSpace(id)?.color ?? "");
+    return ACCENTS[key]?.accent ?? "";
+  }
+
+  /** 会话属于哪个工作区：唯一真相是 `manage.members` 的桶。 */
+  private wsOf(sessionId: string): string {
+    for (const [key, list] of Object.entries(this.manage.members)) if (list.includes(sessionId)) return key;
+    return UNGROUPED;
+  }
+
+  /**
+   * 组内显示顺序 = `members` 里的先后；没进 `members` 的是新会话，排最前、按时间倒序
+   * （跟桥侧 `Manage.compare` 一致，否则刷新前合看得到的位置会变）。
+   */
+  private orderOf(ws: string, list: SessionState[]): SessionState[] {
+    const rank = new Map((this.manage.members[ws] ?? []).map((id, at) => [id, at]));
+    const stamp = (s: SessionState) => Date.parse(s.startedAt ?? "") || s.updatedAt;
+    return [...list].sort((a, b) => {
+      const x = rank.get(a.id);
+      const y = rank.get(b.id);
+      if (x == null && y == null) return stamp(b) - stamp(a);
+      if (x == null) return -1;
+      if (y == null) return 1;
+      return x - y;
+    });
+  }
+
+  /** 某个工作区里该显示的会话：未归档 + 过掉筛选 + 排好序。 */
+  private groupSessions(ws: string): SessionState[] {
+    return this.orderOf(ws, this.sessions.filter((s) => this.wsOf(s.id) === ws && !this.manage.archived.includes(s.id) && this.matchesFilter(s)));
+  }
+
+  private currentWsId(): string {
+    if (this.wsOrder().includes(this.curWs)) return this.curWs;
+    return this.manage.workspaces[0]?.id ?? UNGROUPED;
+  }
+
+  /** 切标签页 = 切会话：点到哪个区，就打开那个区最靠前的一个；空区就只切区。 */
+  private setWorkspace(id: string): void {
+    if (id !== this.curWs) {
+      this.curWs = id;
+      saveStr("pi.ws", id);
     }
-    const ao = this.manage.order.indexOf(a.id);
-    const bo = this.manage.order.indexOf(b.id);
-    if (ao >= 0 && bo >= 0) return ao - bo;
-    if (ao < 0 && bo < 0) return (Date.parse(b.startedAt ?? "") || b.updatedAt) - (Date.parse(a.startedAt ?? "") || a.updatedAt);
-    return ao < 0 ? -1 : 1;
+    const next = this.groupSessions(id)[0];
+    if (next && next.id !== this.currentId) {
+      this.openFromList(next.id);
+      return;
+    }
+    this.renderWorkspaceTabs();
+    this.renderSessions();
+  }
+
+  private sendWs(msg: Record<string, unknown>): void {
+    this.act(() => this.socket.send({ type: "manage", action: "workspace", ...msg }));
+  }
+
+  /** 新建工作区：颜色取一个还没人用的，建完切过去（id 得等桥的回声，客户端造不出同一个）。 */
+  private newWorkspace(): void {
+    const used = new Set(this.manage.workspaces.map((w) => w.color));
+    const color = Object.keys(ACCENTS).find((k) => !used.has(k)) ?? "ice";
+    this.wsPendingNew = new Set(this.manage.workspaces.map((w) => w.id));
+    this.sendWs({ op: "new", name: tr("新工作区"), color });
+  }
+
+  /** 回声到了之后，把刚刚新建的那个选中。 */
+  private adoptNewWorkspace(): void {
+    if (!this.wsPendingNew) return;
+    const fresh = this.manage.workspaces.find((w) => !this.wsPendingNew!.has(w.id));
+    this.wsPendingNew = null;
+    if (fresh) this.setWorkspace(fresh.id);
+  }
+
+  /** 双击就地改名（标签页和左栏组头共用）。 */
+  private renameWorkspaceInline(host: HTMLElement, id: string): void {
+    const input = el("input", "ws-rename") as HTMLInputElement;
+    input.value = this.wsName(id);
+    const back = host.textContent;
+    host.replaceChildren(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      const name = input.value.trim();
+      if (ok && name && name !== back) this.sendWs({ op: "patch", id, name });
+      else {
+        this.renderWorkspaceTabs();
+        this.renderSessions();
+      }
+    };
+    input.onkeydown = (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") finish(true);
+      if (ev.key === "Escape") finish(false);
+    };
+    input.onblur = () => finish(true);
+  }
+
+  /** 工作区的一切设置（名字 / 图标 / 颜色 / 删除）都用这一张表，不做右键菜单。 */
+  private openWorkspaceSheet(id: string): void {
+    this.closeSheet();
+    this.sheetKind = "display";
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet ws-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("工作区")));
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+
+    const body = el("div", "ws-body");
+    const name = el("input", "ns-input") as HTMLInputElement;
+    name.value = this.wsName(id);
+    name.maxLength = 40;
+    const nameRow = el("label", "ws-row");
+    nameRow.append(el("span", "ws-key", tr("名字")), name);
+    const icon = el("input", "ns-input ws-icon-input") as HTMLInputElement;
+    icon.value = this.wsSpace(id)?.icon ?? "";
+    icon.maxLength = 4;
+    const iconRow = el("label", "ws-row");
+    iconRow.append(el("span", "ws-key", tr("图标")), icon);
+
+    const swatches = el("div", "ws-swatches");
+    let color = this.wsSpace(id)?.color ?? "";
+    const paint = () => {
+      swatches.replaceChildren();
+      for (const [key, def] of Object.entries(ACCENTS)) {
+        const sw = el("button", "ws-swatch" + (key === color ? " on" : "")) as HTMLButtonElement;
+        sw.type = "button";
+        sw.style.background = def.accent;
+        sw.title = ACCENT_LABELS.find(([k]) => k === key)?.[1] ?? key;
+        sw.onclick = () => {
+          color = key;
+          paint();
+        };
+        swatches.append(sw);
+      }
+      const none = el("button", "ws-swatch ws-swatch-none" + (color === "" ? " on" : "")) as HTMLButtonElement;
+      none.type = "button";
+      none.title = tr("不上色");
+      none.onclick = () => {
+        color = "";
+        paint();
+      };
+      swatches.append(none);
+    };
+    paint();
+    const colorRow = el("div", "ws-row");
+    colorRow.append(el("span", "ws-key", tr("颜色")), swatches);
+    body.append(nameRow, iconRow, colorRow);
+
+    const foot = el("div", "ws-foot");
+    const inside = this.sessions.filter((s) => this.wsOf(s.id) === id).length;
+    const del = el("button", "btn danger", tr("删除工作区")) as HTMLButtonElement;
+    let armed = false;
+    del.onclick = () => {
+      if (!armed) {
+        armed = true;
+        del.textContent = inside
+          ? tr("确认删除？里面 {p1} 个会话会退到「未分组」", { p1: inside })
+          : tr("确认删除？");
+        return;
+      }
+      this.sendWs({ op: "remove", id });
+      this.closeSheet();
+    };
+    const save = el("button", "btn primary", tr("保存"));
+    save.onclick = () => {
+      this.sendWs({ op: "patch", id, name: name.value.trim(), color, icon: icon.value.trim() });
+      this.closeSheet();
+    };
+    foot.append(del, el("span", "ws-foot-gap"), save);
+    sheet.append(head, body, foot);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    queueMicrotask(() => name.focus());
+  }
+
+  /** 批量改归属（管理弹层的「移动到…」和以后的手动入口共用）。 */
+  private assignSessions(ids: string[], ws: string): void {
+    if (!ids.length) return;
+    this.act(() => this.socket.send({ type: "manage", action: "workspace", op: "assign", ids, ws }));
   }
 
   private matchesFilter(s: SessionState): boolean {
@@ -3378,46 +3668,35 @@ export class App {
     return this.els.sessList.querySelector<HTMLElement>(`.session-card[data-id="${id}"]`);
   }
 
-  /** Read pin/order straight off the DOM after a drop: the DOM is what the user just arranged. */
+  /** 落点后只读 DOM：每个 `[data-ws]` 分组容器就是一个桶，卡片顺序就是组内顺序。 */
   private commitArrangement(): void {
-    const pin: string[] = [];
-    const order: string[] = [];
-    for (const sec of this.els.sessList.querySelectorAll<HTMLElement>(".session-sec")) {
-      const kind = sec.dataset.sec;
-      if (kind === "archived") continue;
-      for (const card of sec.querySelectorAll<HTMLElement>(".session-card")) {
-        const id = card.dataset.id;
-        if (!id) continue;
-        if (kind === "pin") pin.push(id);
-        else order.push(id);
-      }
+    const groups: Record<string, string[]> = {};
+    for (const sec of this.els.sessList.querySelectorAll<HTMLElement>(".session-sec[data-ws]")) {
+      const ws = sec.dataset.ws;
+      if (ws == null) continue;
+      groups[ws] = [...sec.querySelectorAll<HTMLElement>(".session-card[data-id]")]
+        .map((card) => card.dataset.id)
+        .filter((id): id is string => Boolean(id));
     }
-    // The DOM cannot say where the cards the filter hides belong; keep their slots behind the rest.
-    for (const s of this.sessions) {
-      if (this.manage.archived.includes(s.id) || !this.matchesFilter(s)) continue;
-      if (pin.includes(s.id) || order.includes(s.id)) continue;
-      if (this.manage.pin.includes(s.id)) pin.push(s.id);
-      else order.push(s.id);
-    }
-    this.sendArrangement(pin, order);
+    // 被筛选藏起来的会话不用在这里补：桥侧 `arrangeGroups` 会把它们按旧归属缀回组尾。
+    this.sendArrangement(groups);
   }
 
-  private sendArrangement(pin: string[], order: string[]): void {
-    this.manage = { ...this.manage, pin, order };
+  private sendArrangement(groups: Record<string, string[]>, pin?: string[]): void {
+    this.manage = { ...this.manage, members: groups, ...(pin ? { pin } : {}) };
     this.renderSessions();
-    this.act(() => this.socket.send({ type: "manage", action: "arrange", pin, order }));
+    this.renderWorkspaceTabs();
+    this.act(() => this.socket.send({ type: "manage", action: "arrange", groups, ...(pin ? { pin } : {}) }));
   }
 
+  /** ★ 现在是「提到本组最前」：置顶就把它的 members 槽位挪到组首，取消就只摘星。 */
   private togglePin(id: string): void {
-    const pin = [...this.manage.pin];
-    const order = this.manage.order.filter((x) => x !== id);
-    const at = pin.indexOf(id);
-    if (at >= 0) pin.splice(at, 1);
-    else {
-      pin.unshift(id);
-      order.unshift(id);
-    }
-    this.sendArrangement(pin, order);
+    const on = !this.manage.pin.includes(id);
+    const ws = this.wsOf(id);
+    const order = this.orderOf(ws, this.sessions.filter((s) => this.wsOf(s.id) === ws)).map((s) => s.id).filter((x) => x !== id);
+    if (on) order.unshift(id);
+    const pin = on ? [...this.manage.pin.filter((x) => x !== id), id] : this.manage.pin.filter((x) => x !== id);
+    this.sendArrangement({ ...this.manage.members, [ws]: order }, pin);
   }
 
   // ---------------------------------------------------------------- file preview
@@ -4512,14 +4791,26 @@ export class App {
   private openFromList(id: string): void {
     this.go("chat", true);
     location.hash = `#/s/${id}`;
+    // 打开任何入口过来的会话，标签页都跟着跳过去（D116）。
+    const ws = this.wsOf(id);
+    if (ws !== this.curWs) {
+      this.curWs = ws;
+      saveStr("pi.ws", ws);
+    }
     this.openSession(id);
   }
 
   private pinIds(ids: string[], on: boolean): void {
     if (!ids.length) return;
-    const pin = on ? [...ids, ...this.manage.pin.filter((id) => !ids.includes(id))] : this.manage.pin.filter((id) => !ids.includes(id));
-    const order = on ? this.manage.order.filter((id) => !ids.includes(id)) : [...ids, ...this.manage.order.filter((id) => !ids.includes(id))];
-    this.sendArrangement(pin, order);
+    const pin = on ? [...this.manage.pin.filter((id) => !ids.includes(id)), ...ids] : this.manage.pin.filter((id) => !ids.includes(id));
+    // 置顶的那几个提到各自组的组首（跟顶部 ★ 一个语义），其余顺序不动。
+    const groups: Record<string, string[]> = {};
+    for (const ws of this.wsOrder()) {
+      const all = this.orderOf(ws, this.sessions.filter((s) => this.wsOf(s.id) === ws)).map((s) => s.id);
+      const lifted = on ? all.filter((id) => ids.includes(id)) : [];
+      groups[ws] = [...lifted, ...all.filter((id) => !lifted.includes(id))];
+    }
+    this.sendArrangement(groups, pin);
   }
 
   private archiveIds(ids: string[], on: boolean): void {
@@ -8418,9 +8709,9 @@ export class App {
       host.hidden = true;
       return;
     }
-    const pins = this.manage.pin
-      .map((id) => this.sessions.find((s) => s.id === id))
-      .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
+    const ws = this.currentWsId();
+    // D116: 这条现在画当前工作区的**全部未归档会话**（不是只有 ★ 的那几颗），★ 只决定组内靠前。
+    const pins = this.groupSessions(ws);
     // Q-022: the strip is rebuilt on every session/manage echo, and those echoes land right after the
     // ★ click — remember which button held focus so the rebuild does not drop it on <body>.
     const active = document.activeElement instanceof HTMLElement && host.contains(document.activeElement) ? document.activeElement : null;
@@ -8428,13 +8719,17 @@ export class App {
     host.replaceChildren();
     host.hidden = false;
     const pending = pins.filter((s) => sessionBadge(s, this.currentId)?.pending).length;
-    const label = el("span", "pin-strip-label", pending ? tr("置顶 · {p1} 个待处理", { p1: pending }) : pins.length ? tr("置顶") : tr("左栏已收"));
-    if (pending) label.classList.add("has-pending");
+    const label = el("span", "pin-strip-label");
+    label.append(el("span", "pin-strip-ws", this.wsName(ws)));
+    label.append(document.createTextNode(" · "));
+    const count = el("span", pending ? "has-pending" : "", pending ? tr("{p1} 个待处理", { p1: pending }) : tr("{p1} 个会话", { p1: pins.length }));
+    label.append(count);
     host.append(label);
     for (const s of pins) {
       const badge = sessionBadge(s, this.currentId);
+      const pinned = this.manage.pin.includes(s.id);
       // Q-022: a button cannot nest a button, so the chip is a container with two hit areas —
-      // ★ = 取消置顶, the rest = 打开会话.
+      // ★ = 置顶/取消置顶, the rest = 打开会话.
       const chip = el("div", "pin-chip");
       if (badge) chip.classList.add(badge.cls);
       // 当前会话：整颗胶囊填色（aria-current 给读屏器，title 里也补一句），
@@ -8443,11 +8738,12 @@ export class App {
         chip.classList.add("cur");
         chip.setAttribute("aria-current", "true");
       }
+      if (!pinned) chip.classList.add("unpinned");
       const star = el("button", "pin-star", "★") as HTMLButtonElement;
       star.type = "button";
       star.dataset.pinKey = `${s.id}:star`;
-      star.title = tr("取消置顶 {p1}", { p1: s.name || s.id });
-      star.setAttribute("aria-label", tr("取消置顶 {p1}", { p1: s.name || s.id }));
+      star.title = pinned ? tr("取消置顶 {p1}", { p1: s.name || s.id }) : tr("置顶到本组最前 {p1}", { p1: s.name || s.id });
+      star.setAttribute("aria-label", star.title);
       star.onclick = () => {
         this.pinFocus = Math.max(pins.indexOf(s), 0);
         this.togglePin(s.id);
@@ -8464,11 +8760,11 @@ export class App {
       this.wirePinHover(chip, s);
       host.append(chip);
     }
-    if (!pins.length) host.append(el("span", "pin-empty", tr("在这里 ☆ 置顶一个会话，收起左栏也能点到。")));
+    if (!pins.length) host.append(el("span", "pin-empty", tr("这个工作区还没有会话。点 ＋ 开一个，它们就归到这里。")));
     // Q-013: with the left pane hidden this is the only visible way to start a session.
-    // Q-022: 从这颗 ＋ 建的会话自动置顶，否则建完在这条里根本看不见。
+    // D116: 新建的会话直接归当前工作区（不再靠自动 ★ 才看得见）。
     const add = el("button", "pin-chip pin-new", tr("＋"));
-    add.title = tr("开新会话（自动置顶到这条里）");
+    add.title = tr("开新会话（归到当前工作区）");
     add.dataset.act = "new";
     add.dataset.pinKey = "new";
     add.onclick = () => this.openNewSessionSheet(true);
@@ -9118,6 +9414,43 @@ const SIZES: [number, string][] = [
   [1.12, tr("大")],
   [1.25, tr("特大")],
 ];
+
+/** D116: 「未分组」是个虚拟工作区，id 用空串 —— 桥侧 `manage.ts` 里同名常量意义一致。 */
+const UNGROUPED = "";
+
+function loadStr(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveStr(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* private mode */
+  }
+}
+
+/** 折叠态这类纯视图开关存在这里；归属本身一律走桥的 manage.json。 */
+function loadStrList(key: string): string[] {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
+    return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveStrList(key: string, list: string[]): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(list));
+  } catch {
+    /* private mode */
+  }
+}
 
 /**
  * Accent pairs: the bright tint plus the dark wash used for filled states. Keys are stable ids —

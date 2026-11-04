@@ -119,10 +119,23 @@ export interface TrashItem {
   size: number;
 }
 
-/** The part of the sidebar the user owns: pin, manual order, archive (D46). */
+/**
+ * The part of the sidebar the user owns: workspaces, membership, ★, archive (D46 + D116).
+ * `members` 的顺序就是显示顺序（DOM 即真相），`pin` 只是一个集合，`未分组` 用空串当 id。
+ */
+export interface Workspace {
+  id: string;
+  name: string;
+  /** `ACCENTS` 稳定 id，不是字面颜色。 */
+  color: string;
+  /** 可选 emoji。 */
+  icon: string;
+}
+
 export interface ManageState {
+  workspaces: Workspace[];
+  members: Record<string, string[]>;
   pin: string[];
-  order: string[];
   archived: string[];
 }
 
