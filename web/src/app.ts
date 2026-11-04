@@ -613,6 +613,7 @@ export class App {
     dock: HTMLElement,
     kind: "move" | "size" | "grip",
     step: (box: TermBox, dx: number, dy: number, view: { vw: number; vh: number }) => void,
+    onDone?: (dock: HTMLElement) => void,
   ): void {
     handle.onpointerdown = (ev) => {
       if (ev.button !== 0) return;
@@ -636,7 +637,7 @@ export class App {
         handle.removeEventListener("pointercancel", done);
         handle.classList.remove("dragging");
         document.body.classList.remove(cls);
-        this.saveTermGeom(dock);
+        (onDone ?? ((el) => this.saveTermGeom(el)))(dock);
       };
       handle.addEventListener("pointermove", move);
       handle.addEventListener("pointerup", done);
@@ -3514,6 +3515,8 @@ export class App {
     }
     if (this.viewer !== v || v.path !== path) return;
     v.path = v.info.abs;
+    // D117: 表格开成浮窗（可拖可缩），别的还是侧栏。
+    this.setViewerDock(v, v.info.kind === "sheet");
     // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
     if (!replace) this.retargetTop(path, v.info.abs, sessionId);
     await this.loadViewerText();
@@ -3581,6 +3584,13 @@ export class App {
     };
     this.overlay(root);
     this.raiseWindow(root);
+    // 浮窗落回屏幕里：拖到右下角再缩小窗口时，别让它整扇跑到外面去。
+    window.addEventListener("resize", () => {
+      const v = this.viewer;
+      if (!v || v.root !== root || !root.classList.contains("dock")) return;
+      this.applySheetGeom(v);
+      v.sheet?.schedule();
+    });
     this.viewer = {
       root,
       head,
@@ -3615,6 +3625,133 @@ export class App {
     // SAFETY: only the bridge's own /raw/… path reaches window.open, never an arbitrary URL.
     if (!url.startsWith("/raw/")) return;
     openSameOrigin(url);
+  }
+
+  // ------------------------------------------------ 表格浮窗（D117）
+  private sheetGeom: TermGeom | null = null;
+
+  private loadSheetGeom(): TermGeom {
+    if (this.sheetGeom) return this.sheetGeom;
+    const geom: TermGeom = {};
+    try {
+      const raw = JSON.parse(localStorage.getItem("pi.sheetGeom") ?? "null") as Record<string, unknown> | null;
+      if (raw && typeof raw === "object") {
+        for (const k of ["l", "t", "w", "h"] as const) if (Number.isFinite(Number(raw[k]))) geom[k] = Number(raw[k]);
+      }
+    } catch {
+      // 存坏了就当没存过
+    }
+    this.sheetGeom = geom;
+    return geom;
+  }
+
+  private saveSheetGeom(it: HTMLElement): void {
+    const s = this.termScale();
+    const r = it.getBoundingClientRect();
+    const geom: TermGeom = { l: Math.round(r.left / s), t: Math.round(r.top / s), w: Math.round(r.width / s), h: Math.round(r.height / s) };
+    this.sheetGeom = geom;
+    try {
+      localStorage.setItem("pi.sheetGeom", JSON.stringify(geom));
+    } catch {
+      // 存不下也不影响这次访问
+    }
+  }
+
+  /** 第一次打开多大：80% 屏（窄屏上留 12px 边）。 */
+  private sheetDefaults(): { w: number; h: number } {
+    const s = this.termScale();
+    const vw = window.innerWidth / s;
+    const vh = window.innerHeight / s;
+    return { w: Math.max(360, Math.min(vw - 24, Math.round(vw * 0.8))), h: Math.max(240, Math.min(vh - 24, Math.round(vh * 0.8))) };
+  }
+
+  /** 把宽高 + 位置铺到浮窗上；没存过位置就居中。 */
+  private applySheetGeom(v: Viewer): void {
+    const s = this.termScale();
+    const base = this.sheetDefaults();
+    const geom = this.loadSheetGeom();
+    const vw = window.innerWidth / s;
+    const vh = window.innerHeight / s;
+    const w = clampNum(geom.w ?? base.w, Math.min(360, vw), vw);
+    const h = clampNum(geom.h ?? base.h, Math.min(240, vh), vh);
+    v.root.style.width = `${w}px`;
+    v.root.style.height = `${h}px`;
+    const l = geom.l ?? Math.round((vw - w) / 2);
+    const t = geom.t ?? Math.round((vh - h) / 2);
+    this.pinTerm(v.root, { l, t, w, h });
+  }
+
+  private resetSheetGeom(v: Viewer): void {
+    this.sheetGeom = {};
+    try {
+      localStorage.removeItem("pi.sheetGeom");
+    } catch {
+      // 忘不掉也还能用这一次
+    }
+    v.root.classList.remove("pinned");
+    v.root.style.width = "";
+    v.root.style.height = "";
+    this.applySheetGeom(v);
+    v.sheet?.schedule();
+  }
+
+  /**
+   * 表格进出「浮窗」模式。只有表格进来：md / html / 图片在侧栏读得动，
+   * 而一张表塞进 760px 的侧栏会只剩一条竖缝（这就是做这个改动的原因）。
+   */
+  private setViewerDock(v: Viewer, on: boolean): void {
+    const docked = v.root.classList.contains("dock");
+    if (on && docked) {
+      this.applySheetGeom(v);
+      return;
+    }
+    if (!on && !docked) return;
+    v.root.classList.toggle("dock", on);
+    if (!on) {
+      v.root.classList.remove("pinned");
+      for (const k of ["left", "top", "right", "bottom", "width", "height", "transform"] as const) v.root.style.removeProperty(k);
+      return;
+    }
+    v.full = false;
+    v.root.classList.remove("full");
+    this.wireSheetWindow(v);
+    this.applySheetGeom(v);
+    v.sheet?.schedule();
+  }
+
+  private wireSheetWindow(v: Viewer): void {
+    if (v.root.dataset.wired === "1") return;
+    v.root.dataset.wired = "1";
+    // 标题栏拖走整扇窗；双击空白处回到 80% 居中。
+    this.dragTerm(
+      v.head,
+      v.root,
+      "move",
+      (box, dx, dy, view) => {
+        v.root.style.left = `${clampNum(box.l + dx, 0, Math.max(0, view.vw - box.w))}px`;
+        v.root.style.top = `${clampNum(box.t + dy, 0, Math.max(0, view.vh - box.h))}px`;
+      },
+      (it) => this.saveSheetGeom(it),
+    );
+    v.head.ondblclick = (ev) => {
+      if ((ev.target as HTMLElement).closest("button, input")) return;
+      this.resetSheetGeom(v);
+    };
+    const resize = el("div", "viewer-resize");
+    resize.title = tr("拖动调整窗口大小（双击复原）");
+    resize.onpointerdown = null;
+    this.dragTerm(
+      resize,
+      v.root,
+      "size",
+      (box, dx, dy, view) => {
+        v.root.style.width = `${clampNum(box.w + dx, 420, Math.max(420, view.vw - box.l))}px`;
+        v.root.style.height = `${clampNum(box.h + dy, 260, Math.max(260, view.vh - box.t))}px`;
+      },
+      (it) => this.saveSheetGeom(it),
+    );
+    resize.ondblclick = () => this.resetSheetGeom(v);
+    v.root.append(resize);
   }
 
   private closeViewer(): void {
@@ -3880,11 +4017,13 @@ export class App {
       copy.classList.add("wide-only");
       tbtn("📎", tr("把这个路径引用到输入框"), () => this.insertPaths([info.abs]));
     }
-    tbtn(v.full ? "🗗" : "⛶", v.full ? tr("退出全屏") : tr("全屏"), () => {
-      v.full = !v.full;
-      localStorage.setItem("pi.viewerFull", v.full ? "1" : "0");
-      this.paintViewer();
-    }, v.full);
+    if (!v.root.classList.contains("dock")) {
+      tbtn(v.full ? "🗗" : "⛶", v.full ? tr("退出全屏") : tr("全屏"), () => {
+        v.full = !v.full;
+        localStorage.setItem("pi.viewerFull", v.full ? "1" : "0");
+        this.paintViewer();
+      }, v.full);
+    }
     tbtn("✕", tr("关闭（Esc）"), () => this.closeViewer());
     head.append(nav, left, tools);
 
@@ -4322,7 +4461,7 @@ export class App {
     const info = v.info;
     if (!info) return;
     const body = v.body;
-    body.className = "viewer-body sheet";
+    body.className = "viewer-body gridsheet";
     if (v.sheet && v.sheetPath === info.abs) {
       if (body.firstChild !== v.sheet.root) body.replaceChildren(v.sheet.root);
       v.sheet.setEditable(v.pane === "edit");

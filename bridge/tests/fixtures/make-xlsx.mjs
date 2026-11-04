@@ -69,7 +69,7 @@ async function plain(file) {
   });
 
   // 30 行填充：只为了「滚得动」，冻结窗格才有东西可验。
-  for (let r = 9; r <= 38; r++) {
+  for (let r = 9; r <= 60; r++) {
     ws.getCell(`A${r}`).value = new Date(2025, 0, (r % 28) + 1);
     ws.getCell(`A${r}`).numFmt = "yyyy/m/d";
     ws.getCell(`C${r}`).value = `行${r}`;

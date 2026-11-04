@@ -213,11 +213,15 @@ export class SheetView {
     };
     this.view.addEventListener("pointerdown", (ev) => this.onPointerDown(ev));
     window.addEventListener("resize", this.onResize);
+    // 浮窗被拖动改大小时 window 不 trigger resize，得盯着自己的盒子（D117）。
+    this.boxWatcher = new ResizeObserver(() => this.schedule());
+    this.boxWatcher.observe(this.root);
     this.buildSheet();
     this.syncFx();
   }
 
   private zoomLabel!: HTMLElement;
+  private boxWatcher: ResizeObserver | null = null;
   private onResize = (): void => this.schedule();
 
   // ---------------------------------------------------------------- 布局
@@ -1063,6 +1067,8 @@ export class SheetView {
 
   destroy(): void {
     window.removeEventListener("resize", this.onResize);
+    this.boxWatcher?.disconnect();
+    this.boxWatcher = null;
     this.cellsLayer.replaceChildren();
   }
 }

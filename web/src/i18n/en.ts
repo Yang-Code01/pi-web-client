@@ -1074,4 +1074,5 @@ export const en: Dict = {
   "重载磁盘上的版本": "Reload from disk",
   "饼图": "pie",
   "{p1} 的 {p2}": "{p1} → {p2}",
+  "拖动调整窗口大小（双击复原）": "Drag to resize the window (double-click to reset)",
 };

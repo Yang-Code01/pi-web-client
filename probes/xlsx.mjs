@@ -131,22 +131,44 @@ try {
   await page.locator(".session-card").first().click();
   await page.locator(".topbar .icon-btn", { hasText: "文件" }).waitFor({ timeout: 10000 });
 
+  // 顶栏「📁 文件管理器」在 viewer 里开浏览态，起点就是会话 cwd（= WORK）。
   const openFile = async (name) => {
-    // 打开第二个文件时 viewer 已经在屏幕上：用它的「浏览」回到文件列表，比点顶栏稳。
-    const browse = page.locator(".viewer-head .pane-seg button", { hasText: "浏览" });
-    if (await browse.count()) await browse.first().evaluate((el) => el.click());
-    else await page.locator(".topbar .icon-btn", { hasText: "文件" }).first().evaluate((el) => el.click());
-    await page.locator(".viewer-browse .dirpicker").waitFor({ timeout: 10000 });
-    await until(async () => (await page.locator(`.dirpicker .file-row:has-text("${name}")`).count()) >= 1, 15000, `files include ${name}`);
-    // 文件行有时被 viewer 自己的头部盖住一点，直接派发 click 更稳。
-    await page.locator(`.dirpicker .file-row:has-text("${name}")`).first().evaluate((el) => el.click());
-    await page.locator(".sh, .viewer-msg").first().waitFor({ timeout: 20000 });
-    await page.locator(".sh").first().waitFor({ timeout: 20000 });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await page.locator(".topbar .icon-btn", { hasText: "文件管理器" }).first().evaluate((el) => el.click());
+      await page.locator(".viewer-browse .dirpicker").first().waitFor({ timeout: 15000 });
+      const row = page.locator(`.dirpicker .file-row:has-text("${name}")`).first();
+      if (await row.count()) {
+        await row.evaluate((el) => el.click());
+        await page.locator(".sh, .md-doc, .viewer-msg").first().waitFor({ timeout: 20000 });
+        return;
+      }
+      await sleep(500);
+    }
+    const seen = await page.$$eval(".dirpicker .file-row", (els) => els.map((e) => e.textContent).slice(0, 20));
+    assert(false, `文件列表里没有 ${name}（看到：${seen.join(" / ")}）`);
   };
 
   // ---------------------------------------------------------------- xlsx
   await openFile("plain.xlsx");
   await page.locator(".sh-cell").first().waitFor({ timeout: 15000 });
+
+  // D117: 表格开在浮窗里，不是 760px 的侧栏
+  await page.locator(".viewer.dock").waitFor({ timeout: 10000 });
+  const vw = await page.evaluate(() => window.innerWidth);
+  const dockBox = await page.locator(".viewer.dock").boundingBox();
+  assert(dockBox.width > vw * 0.7, `浮窗宽度接近 80% 屏（got ${dockBox.width} / ${vw}）`);
+  assert(dockBox.height > 500, `浮窗高度按 80% 屏算（got ${dockBox.height}）`);
+  if (process.env.XLSX_DEBUG) {
+    log("layout:", await page.evaluate(() => {
+      const q = (sel) => [...document.querySelectorAll(sel)].map((e) => `${e.className}:${Math.round(e.getBoundingClientRect().width)}x${Math.round(e.getBoundingClientRect().height)}`);
+      const v = document.querySelector(".viewer");
+      const b = document.querySelector(".viewer-body");
+      const cs = (e) => { const c = getComputedStyle(e); return `${c.display}/${c.width}/cols=${c.gridTemplateColumns}/flex=${c.flex}/justify=${c.justifyItems}`; };
+      return JSON.stringify({ viewers: q(".viewer"), bodies: q(".viewer-body"), shs: q(".sh"), views: q(".sh-view"), heads: q(".viewer-head"), vcs: cs(v), bcs: cs(b), shcs: cs(document.querySelector(".sh")) });
+    }));
+  }
+  const gridW = await page.locator(".sh-view").evaluate((e) => e.clientWidth);
+  assert(gridW > 800, `网格可用宽度远大于侧栏时代（got ${gridW}px）`);
 
   const cols = await page.$$eval(".sh-colcell", (els) => els.map((e) => e.textContent).slice(0, 8));
   assert(cols[0] === "A" && cols[1] === "B", `列头是 A/B/C（got ${cols.join(",")}）`);
@@ -198,7 +220,7 @@ try {
   });
   await sleep(300);
   const beforeTop = (await title.boundingBox()).y;
-  const headerBefore = (await page.locator(".sh-cell", { hasText: "行30" }).boundingBox())?.y ?? 0;
+  const headerBefore = (await page.locator(".sh-cell", { hasText: "行20" }).boundingBox())?.y ?? 0;
   await page.locator(".sh-view").evaluate((e) => {
     e.scrollTop = 160;
   });
@@ -218,13 +240,36 @@ try {
     log("after scroll:", await page.locator(".sh-cell", { hasText: "◆変更履歴" }).first().evaluate((e) => `top=${e.style.top} class=${e.className} viewScroll=${e.closest(".sh-view").scrollTop} tag=${e.textContent}`));
   }
   const afterTop = (await title.boundingBox()).y;
-  const headerAfter = (await page.locator(".sh-cell", { hasText: "行30" }).boundingBox())?.y ?? 0;
+  const headerAfter = (await page.locator(".sh-cell", { hasText: "行20" }).boundingBox())?.y ?? 0;
   assert(Math.abs(afterTop - beforeTop) < 2, `冻结的前 3 行不随滚动移动（${beforeTop} → ${afterTop}）`);
   assert(Math.abs(headerAfter - headerBefore) > 100, `普通行确实滚走了（${headerBefore} → ${headerAfter}）`);
   await page.locator(".sh-view").evaluate((e) => {
     e.scrollTop = 0;
   });
   await sleep(200);
+
+  // 浮窗可自己拉大小：拖右下角 −260/−140（缩小方向，不会撞到屏幕边被 clamp）
+  const before = await page.locator(".viewer.dock").boundingBox();
+  const gridBefore = await page.locator(".sh-view").evaluate((e) => e.clientWidth);
+  const grip = await page.locator(".viewer-resize").boundingBox();
+  await page.mouse.move(grip.x + 8, grip.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(grip.x + 8 - 260, grip.y + 8 - 140, { steps: 10 });
+  await page.mouse.up();
+  await sleep(400);
+  const after = await page.locator(".viewer.dock").boundingBox();
+  const gridAfter = await page.locator(".sh-view").evaluate((e) => e.clientWidth);
+  assert(after.width < before.width - 200 && after.height < before.height - 100, `拖右下角能改大小（${before.width}×${before.height} → ${after.width}×${after.height}）`);
+  assert(gridAfter < gridBefore, `网格跟着窗口一起缩（${gridBefore} → ${gridAfter}）`);
+  const geom = await page.evaluate(() => localStorage.getItem("pi.sheetGeom"));
+  assert(/\{"l":/.test(geom) && /"w":/.test(geom), `几何存进 pi.sheetGeom（got ${geom}）`);
+  await page.locator(".sh-view").evaluate((e) => {
+    e.scrollLeft = 0;
+  });
+  await page.locator(".viewer-title").dblclick();
+  await sleep(400);
+  const reset = await page.locator(".viewer.dock").boundingBox();
+  assert(Math.abs(reset.width - 1152) < 30, `双击标题栏复原到 80% 屏（got ${reset.width}）`);
 
   // 引用给 pi：选区写成「文件 的 sheet!A1:C5」插进输入框（让 agent 改表的那条路）
   await page.locator(".sh-quote").click();
@@ -233,9 +278,17 @@ try {
   await page.locator(".composer-input textarea").fill("");
   await page.screenshot({ path: path.join(OUT, "xlsx-preview.png") });
 
+  // md 不走浮窗（侧栏读得动），顺便验「两种宿主各自归位」
+  // 用数组 join 拼 markdown，避免在字符串里塞真换行
+  fs.writeFileSync(path.join(WORK, "notes.md"), ["# 标题", "", "正文一行。", ""].join(String.fromCharCode(10)), "utf8");
+  await openFile("notes.md");
+  await page.locator(".md-doc").first().waitFor({ timeout: 15000 });
+  assert((await page.locator(".viewer.dock").count()) === 0, "md 还是开在侧栏里，没被表格的浮窗带走");
+
   // ---------------------------------------------------------------- 图表占位
   await openFile("chart.xlsx");
   await page.locator(".sh-chart").first().waitFor({ timeout: 15000 });
+  assert((await page.locator(".viewer.dock").count()) === 1, "图表页同样是浮窗");
   const chartLabel = await page.locator(".sh-chart-t").first().textContent();
   assert(/柱形图/.test(chartLabel), `图表占位写的是柱形图（got ${chartLabel}）`);
   await page.screenshot({ path: path.join(OUT, "xlsx-chart.png") });
