@@ -2260,3 +2260,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .notes-side { border-right: 0; border-bottom: 1px solid var(--line-soft); }
   .notes-editor { padding: 10px; }
 }
+
+/* ---------------------------------------------------------------- D116 按目录建组（迁移入口） */
+.ws-hint { padding: 2px; }
+.ws-hint-btn { width: 100%; font-size: 12px; color: var(--dim); border-style: dashed; }
+.ws-plan-hint { color: var(--faint); font-size: 12.5px; }
+.ws-plan-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.ws-plan-name { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-plan-n { margin-left: auto; color: var(--faint); font: 11.5px var(--mono); }
+.ws-plan-cwd { color: var(--faint); font: 11px var(--mono); margin: -4px 0 2px 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mgr-move { font-size: 12px; padding: 4px 6px; }

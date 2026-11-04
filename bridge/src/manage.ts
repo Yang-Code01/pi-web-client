@@ -166,12 +166,13 @@ export class Manage {
 
   /** File one session into a workspace, at the end. Used by 「移动到…」 and by drag fallbacks. */
   assign(list: string[], wsId: string, at?: number): void {
+    const moving = ids(list);
+    if (!moving.length) return;
+    // 先全部摘出来，再建目标桶：`detach` 会删空桶，先建桶会被它当垃圾删掉（写进孤儿数组）。
+    for (const id of moving) this.detach(id);
     const dest = (this.data.members[wsId] ??= []);
-    for (const id of list) {
-      this.detach(id);
-      const where = at == null ? dest.length : Math.max(0, Math.min(at, dest.length));
-      dest.splice(where, 0, id);
-    }
+    const where = at == null ? dest.length : Math.max(0, Math.min(at, dest.length));
+    dest.splice(where, 0, ...moving);
     this.save();
   }
 
@@ -221,6 +222,24 @@ export class Manage {
     const byId = new Map(this.data.workspaces.map((w) => [w.id, w]));
     this.data.workspaces = [...want.map((id) => byId.get(id)!), ...rest];
     this.save();
+  }
+
+  /**
+   * 「按目录建组」：把计划的几批会话一次性落成工作区。名字由前端算好（包括撞名后的后缀），
+   * 桥只负责建组 + 归位，不猜目录、也不自动合并同名已有组。
+   */
+  groupByDirs(plans: unknown): void {
+    if (!Array.isArray(plans)) return;
+    for (const raw of plans) {
+      if (!raw || typeof raw !== "object") continue;
+      const row = raw as Record<string, unknown>;
+      const list = ids(row.ids);
+      if (!list.length) continue;
+      const name = typeof row.name === "string" ? row.name.trim() : "";
+      const color = typeof row.color === "string" ? row.color : "";
+      const space = this.addWorkspace(name, color);
+      this.assign(list, space.id);
+    }
   }
 
   /**

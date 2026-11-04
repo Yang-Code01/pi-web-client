@@ -18,7 +18,8 @@
     "test": "node bridge/tests/e2e.mjs",
     "test:rpc": "node bridge/tests/write-after-end.mjs",
     "test:ask": "node --experimental-transform-types bridge/tests/ask-unit.mjs && node bridge/tests/ask-e2e.mjs",
-    "test:ask:ui": "node bridge/tests/ask-ui.mjs"
+    "test:ask:ui": "node bridge/tests/ask-ui.mjs",
+    "test:ws": "node --experimental-strip-types bridge/tests/workspace-unit.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

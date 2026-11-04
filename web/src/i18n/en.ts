@@ -1049,4 +1049,11 @@ export const en: Dict = {
   "这个工作区还没有会话。点 ＋ 开一个，它们就归到这里。": "Nothing here yet. Press ＋ and new sessions land in this workspace.",
   "重命名 / 改色 / 删除这个工作区": "Rename / recolour / delete this workspace",
 
+  "只处理「未分组」里的会话，已经在工作区里的不动。": "Only sessions in Ungrouped are touched; anything already in a workspace stays put.",
+  "建这 {p1} 个工作区": "Create these {p1} workspaces",
+  "按工作区": "By workspace",
+  "按目录建组": "Group by directory",
+  "按目录建组（{p1} 个目录）": "Group by directory ({p1} folders)",
+  "移动到…": "Move to…",
+
 };

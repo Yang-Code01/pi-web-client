@@ -1594,6 +1594,8 @@ async function main(): Promise<void> {
                 sessions.manage.removeWorkspace(id);
               } else if (op === "assign") {
                 sessions.manage.assign(Array.isArray(msg.ids) ? msg.ids.map(String) : [], String(msg.ws ?? ""));
+              } else if (op === "group") {
+                sessions.manage.groupByDirs(msg.groups);
               } else {
                 return;
               }

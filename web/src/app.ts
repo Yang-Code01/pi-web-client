@@ -3192,6 +3192,15 @@ export class App {
     if (!this.sessions.length) host.append(el("div", "empty", tr("还没有会话。上面开一个，或在终端里 pi 一下。")));
     else if (!shown) host.append(el("div", "empty", this.filter ? tr("没有匹配的会话。") : tr("都归档了，展开下面的「已归档」看看。")));
     if (archived.length) host.append(this.archiveSection(archived));
+    // 迁移入口：未分组里还有东西就给一条「按目录建组」（预览→确认，不自动猜）。
+    const plan = this.dirGroupsPlan();
+    if (plan.length) {
+      const hint = el("div", "ws-hint");
+      const go = el("button", "btn ghost ws-hint-btn", tr("按目录建组（{p1} 个目录）", { p1: plan.length }));
+      go.onclick = () => this.openDirGroupsSheet(plan);
+      hint.append(go);
+      host.append(hint);
+    }
     this.renameFocus = false;
   }
 
@@ -3653,6 +3662,75 @@ export class App {
   private assignSessions(ids: string[], ws: string): void {
     if (!ids.length) return;
     this.act(() => this.socket.send({ type: "manage", action: "workspace", op: "assign", ids, ws }));
+  }
+
+  /** 一个路径的末段（Windows 反斜杠和 POSIX 斜杠都要吃）。 */
+  private static tail(p: string): string {
+    return p.split(/[\\/]/).filter(Boolean).pop() ?? "";
+  }
+
+  /**
+   * 「按目录建组」的计划：只算未分组里未归档的会话，按 cwd 分组，组名取目录末段；
+   * 末段撞名（两个不同路径都叫 src）就用「父目录/末段」，还被占就加 ·2。
+   * 这是**预览**用的纯函数，确认前什么也不发。
+   */
+  private dirGroupsPlan(): { name: string; color: string; ids: string[]; cwd: string }[] {
+    const pool = this.sessions.filter((s) => this.wsOf(s.id) === UNGROUPED && !this.manage.archived.includes(s.id) && s.cwd);
+    const byCwd = new Map<string, string[]>();
+    for (const s of pool) byCwd.set(s.cwd, [...(byCwd.get(s.cwd) ?? []), s.id]);
+    const taken = new Set(this.manage.workspaces.map((w) => w.name));
+    const palette = Object.keys(ACCENTS);
+    const plan: { name: string; color: string; ids: string[]; cwd: string }[] = [];
+    let at = 0;
+    // 会话多的目录先建：一眼就能把最大的那坨收进去
+    for (const [cwd, ids] of [...byCwd.entries()].sort((a, b) => b[1].length - a[1].length)) {
+      const tail = App.tail(cwd);
+      const parent = App.tail(cwd.slice(0, Math.max(0, cwd.length - (cwd.match(/[\\/][^\\/]+[\\/]?$/)?.[0].length ?? 0))));
+      let name = tail || cwd;
+      if (taken.has(name)) name = parent ? `${parent}/${tail}` : name;
+      while (taken.has(name)) name = `${name}·2`;
+      taken.add(name);
+      plan.push({ name, color: palette[at++ % palette.length], ids, cwd });
+    }
+    return plan;
+  }
+
+  /** 预览表：先看要建什么，确认后才发一条 `group` 消息（桥一次建完、一次广播）。 */
+  private openDirGroupsSheet(plan: { name: string; color: string; ids: string[]; cwd: string }[]): void {
+    this.closeSheet();
+    this.sheetKind = "display";
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet ws-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("按目录建组")));
+    const close = el("button", "btn ghost", tr("取消"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const body = el("div", "ws-body");
+    body.append(el("div", "ws-plan-hint", tr("只处理「未分组」里的会话，已经在工作区里的不动。")));
+    for (const row of plan) {
+      const line = el("div", "ws-plan-row");
+      const dot = el("span", "ws-dot");
+      dot.style.background = ACCENTS[row.color]?.accent ?? "";
+      line.append(dot, el("span", "ws-plan-name", row.name), el("span", "ws-plan-n", tr("{p1} 个会话", { p1: row.ids.length })));
+      const cwd = el("div", "ws-plan-cwd", row.cwd);
+      body.append(line, cwd);
+    }
+    const foot = el("div", "ws-foot");
+    const gap = el("span", "ws-foot-gap");
+    const ok = el("button", "btn primary", tr("建这 {p1} 个工作区", { p1: plan.length }));
+    ok.onclick = () => {
+      this.sendWs({ op: "group", groups: plan.map(({ name, color, ids }) => ({ name, color, ids })) });
+      this.closeSheet();
+    };
+    foot.append(gap, ok);
+    sheet.append(head, body, foot);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
   }
 
   private matchesFilter(s: SessionState): boolean {
@@ -4859,6 +4937,7 @@ export class App {
     if (v.status === "active" && archived) return false;
     if (v.time !== "all" && timeBucket(s.updatedAt) !== v.time) return false;
     if (v.cwd && s.cwd !== v.cwd) return false;
+    if (v.ws !== "all" && this.wsOf(s.id) !== v.ws) return false;
     const words = v.q.toLowerCase().split(/\s+/).filter(Boolean);
     if (words.length) {
       const hay = `${s.name}\n${s.cwd}\n${s.preview ?? ""}`.toLowerCase();
@@ -4898,6 +4977,7 @@ export class App {
         if (this.manage.archived.includes(s.id)) return ["status:archived", tr("已归档")];
         return this.manage.pin.includes(s.id) ? ["status:pin", tr("置顶")] : ["status:normal", tr("普通")];
       }
+      if (g === "ws") return [`ws:${this.wsOf(s.id)}`, this.wsName(this.wsOf(s.id))];
       const t = timeBucket(s.updatedAt);
       return [`time:${t}`, t === "today" ? tr("今天") : t === "week" ? tr("本周") : tr("更早")];
     };
@@ -4910,7 +4990,10 @@ export class App {
     }
     const fixed = ["status:pin", "status:normal", "status:archived", "time:today", "time:week", "time:older", "origin:web", "origin:cli"];
     const groups = [...map.values()];
-    if (g === "cwd") {
+    if (g === "ws") {
+      const rank = new Map(this.wsOrder().map((id, at) => [`ws:${id}`, at]));
+      groups.sort((a, b) => (rank.get(a.key) ?? 99) - (rank.get(b.key) ?? 99));
+    } else if (g === "cwd") {
       const latest = (x: { items: SessionState[] }) => Math.max(...x.items.map((s) => s.updatedAt));
       groups.sort((a, b) => latest(b) - latest(a));
     } else groups.sort((a, b) => fixed.indexOf(a.key) - fixed.indexOf(b.key));
@@ -5029,9 +5112,10 @@ export class App {
     };
     const origin = select("origin", tr("来源"), [["all", tr("全部")], ["web", tr("网页")], ["cli", "CLI"]]);
     const status = select("status", tr("状态"), [["all", tr("全部")], ["active", tr("未归档")], ["pin", tr("置顶")], ["normal", tr("普通")], ["archived", tr("已归档")]]);
+    const ws = select("ws", tr("工作区"), [["all", tr("全部")], ...this.manage.workspaces.map((w) => [w.id, w.name] as [string, string]), [UNGROUPED, tr("未分组")]]);
     const time = select("time", tr("更新"), [["all", tr("全部")], ["today", tr("今天")], ["week", tr("本周")], ["older", tr("更早")]]);
     const cwd = select("cwd", tr("目录"), [["", tr("全部")]]);
-    const group = select("group", tr("分组"), [["none", tr("不分组")], ["cwd", tr("按目录")], ["origin", tr("按来源")], ["status", tr("按状态")], ["time", tr("按时间")]]);
+    const group = select("group", tr("分组"), [["none", tr("不分组")], ["ws", tr("按工作区")], ["cwd", tr("按目录")], ["origin", tr("按来源")], ["status", tr("按状态")], ["time", tr("按时间")]]);
     const sort = select("sort", tr("排序"), [["updated", tr("最近更新")], ["created", tr("创建时间")], ["name", tr("名称")], ["cwd", tr("工作目录")]]);
     const dir = el("button", "btn ghost mgr-dir") as HTMLButtonElement;
     const syncDir = () => {
@@ -5049,7 +5133,7 @@ export class App {
       this.mgr = defaultMgrView();
       this.saveMgr();
       q.value = "";
-      for (const [k, x] of [["origin", origin], ["status", status], ["time", time], ["cwd", cwd], ["group", group], ["sort", sort]] as const) {
+      for (const [k, x] of [["origin", origin], ["status", status], ["ws", ws], ["time", time], ["cwd", cwd], ["group", group], ["sort", sort]] as const) {
         x.s.value = String(this.mgr[k]);
       }
       syncDir();
@@ -5311,10 +5395,28 @@ export class App {
       del.disabled = !deletable.length;
       if (deletable.length < ids.length) del.title = tr("运行中 / 网页接管中 / 待确认的会话不能删，先停止运行");
       const spacer = el("span", "spacer");
+      // 「移动到…」：选中即执行，然后把选择器复位（它不是一种状态，是一次动作）。
+      const move = el("select", "btn ghost mgr-move") as HTMLSelectElement;
+      const none = el("option", "", tr("移动到…"));
+      none.value = "all";
+      move.append(none);
+      for (const wsId of this.wsOrder()) {
+        const opt = el("option", "", this.wsName(wsId));
+        opt.value = `ws:${wsId}`;
+        move.append(opt);
+      }
+      move.onchange = () => {
+        const pick = move.value;
+        move.value = "all";
+        if (!pick.startsWith("ws:")) return;
+        this.assignSessions(ids, pick.slice(3));
+        paint();
+      };
       foot.append(
         allLabel,
         info,
         spacer,
+        move,
         btn(tr("置顶"), () => this.pinIds(ids, true)),
         btn(tr("取消置顶"), () => this.pinIds(ids, false)),
         btn(tr("归档"), () => this.archiveIds(ids, true)),
@@ -9726,13 +9828,15 @@ interface MgrView {
   status: "all" | "active" | "pin" | "normal" | "archived";
   time: "all" | TimeBucket;
   cwd: string;
-  group: "none" | "cwd" | "origin" | "status" | "time";
+  /** 按工作区筛；"all" = 不筛，空串 = 未分组（跟 manage.members 的桶 id 一致）。 */
+  ws: string;
+  group: "none" | "cwd" | "origin" | "status" | "ws" | "time";
   sort: "updated" | "created" | "name" | "cwd";
   desc: boolean;
 }
 
 function defaultMgrView(): MgrView {
-  return { q: "", origin: "all", status: "all", time: "all", cwd: "", group: "none", sort: "updated", desc: true };
+  return { q: "", origin: "all", status: "all", time: "all", cwd: "", ws: "all", group: "none", sort: "updated", desc: true };
 }
 
 function loadMgrView(): MgrView {
