@@ -13,7 +13,7 @@ import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
 import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
 import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
-import { lifecycle, gcTickMs, type Lifecycle } from "./lifecycle.ts";
+import { lifecycle, gcTickMs, capProtectMs, type Lifecycle } from "./lifecycle.ts";
 import { sampleMemory } from "./runtime.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
@@ -732,6 +732,9 @@ export class Session extends EventEmitter {
   // ---------------------------------------------------------------- live (RPC)
   async startLive(opts: { resume: boolean; cwd?: string; name?: string }): Promise<void> {
     if (this.live) return;
+    // A pi we are just spawning counts as activity on this session's clock: the watermark's
+    // protection window (#79) starts here, whether or not pi has said anything yet.
+    this.touch();
     this.stopTail();
     const id = this.state.id || crypto.randomUUID();
     this.state.id = id;
@@ -1840,6 +1843,8 @@ export class Session extends EventEmitter {
 
   sleep(): void {
     if (this.state.running) return;
+    // Not re-entrant: the exit takes a while, and a second pass must not emit a second notice.
+    if (this.closing) return;
     void this.close({ quiet: true }).then(() => {
       this.emitWs({ type: "notice", sessionId: this.state.id, text: "会话已休眠（消息仍在，下次发消息会自动唤醒）", level: "info" });
       this.emitWs({ type: "session.state", session: this.state });
@@ -2441,11 +2446,6 @@ export class SessionManager extends EventEmitter {
     return { running: sessions.length, totalBytes, unavailable: sample.failure !== null, sessions };
   }
 
-  /** Push the runtime numbers on every GC tick, so the panel is live without a timer of its own. */
-  private async publishRuntimeStats(): Promise<void> {
-    this.emit("runtime", await this.runtimeStats());
-  }
-
   /**
    * `isWatched` says whether some client is looking at a session right now. Read-only sessions
    * nobody watches are dropped after a while: each one holds its transcript and a 400ms file poll.
@@ -2455,7 +2455,7 @@ export class SessionManager extends EventEmitter {
     this.sweepLocks();
     this.gcTimer = setInterval(() => {
       this.sweepLocks();
-      this.lifecycleTick();
+      void this.lifecycleTick();
       for (const [id, s] of this.sessions) {
         if (s.live || s.state.running || s.state.done) continue;
         if (s.approvals.size || s.asks.size) continue;
@@ -2466,7 +2466,6 @@ export class SessionManager extends EventEmitter {
         s.removeAllListeners();
         this.sessions.delete(id);
       }
-      void this.publishRuntimeStats();
     }, gcTickMs());
     this.gcTimer.unref?.();
   }
@@ -2475,12 +2474,17 @@ export class SessionManager extends EventEmitter {
    * One pass of the process-lifecycle rules, always in the same order (D120): a stuck run first, so
    * the memory cap can never be what ends a session the watchdog was about to abort; idle reaping
    * before the cap, so the cheap reason wins and the cap only sees what is left.
+   *
+   * Async for the cap's one look at the process table (#79). That reading is also what the panel is
+   * pushed with (#77), so a tick samples once, pushes once, and no timer exists for either.
    */
-  private lifecycleTick(): void {
+  private async lifecycleTick(): Promise<void> {
     const cfg = lifecycle();
     this.endStuckRuns(cfg);
     this.sleepIdleSessions(cfg);
-    this.sleepOverCap(cfg);
+    const stats = await this.runtimeStats();
+    this.sleepOverCap(cfg, stats);
+    this.emit("runtime", stats);
   }
 
   /** Watchdog for a `running` turn that stopped sending events — #81. */
@@ -2501,8 +2505,42 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  /** Memory cap: sleep the longest-idle sessions until the total is back under it — #79. */
-  private sleepOverCap(_cfg: Lifecycle): void {}
+  /**
+   * Memory cap (#79): with every live pi together above `cfg.maxBytes`, the sessions that have been
+   * silent longest sleep until the total is back under it — the same `sleep()`, and so the same
+   * notice, as the idle rule. Three of them are never candidates: a session mid-turn, one still
+   * inside the wake-up protection window, and one holding an approval or a question (a person's
+   * decision, not a memory figure).
+   *
+   * `stats` is the tick's reading, and a reading that cannot be trusted reaps nobody (D120 §6):
+   * the panel may say 「不可用」, the two rules next to this one do not need the numbers and still run.
+   * One live pi always stays, so the bridge cannot reap its way to zero.
+   */
+  private sleepOverCap(cfg: Lifecycle, stats: RuntimeStats): void {
+    // One live pi is always left standing, so with one (or none) this level may not touch anything.
+    if (stats.running <= 1) return;
+    if (stats.unavailable || stats.totalBytes === null) {
+      // D120 §6: a number we cannot trust is not a reason to guess. Say it and reap nobody.
+      console.error("[lifecycle] 内存采样不可用：这一轮不按水位收会话");
+      return;
+    }
+    if (stats.totalBytes <= cfg.maxBytes) return;
+    const protectMs = capProtectMs();
+    let total = stats.totalBytes;
+    let left = stats.running;
+    // `stats.sessions` is longest-idle first, which is exactly the order to reap in.
+    for (const row of stats.sessions) {
+      if (total <= cfg.maxBytes || left <= 1) return;
+      const session = this.sessions.get(row.id);
+      // No bytes means the table did not list this pid: reaping it would not move the total.
+      if (!session?.live || row.bytes === undefined) continue;
+      if (row.running || session.approvals.size || session.asks.size) continue;
+      if (row.idleMs < protectMs) continue;
+      session.sleep();
+      total -= row.bytes;
+      left -= 1;
+    }
+  }
 
   async shutdown(): Promise<void> {
     if (this.gcTimer) clearInterval(this.gcTimer);
