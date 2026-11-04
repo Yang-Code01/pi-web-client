@@ -2319,3 +2319,15 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* 空工作区的对话区：一句说明 + 一颗新会话 */
 .ws-empty { display: grid; gap: 10px; justify-items: center; padding: 28px 12px; }
 .ws-empty-new { font-size: 13px; }
+
+/* 顶栏两行的横向拖拽：落点用一条竖线表示「插到这颗前面 / 后面」 */
+.wstab, .pin-chip { position: relative; }
+.wstab.over-l::before, .pin-chip.over-l::before,
+.wstab.over-r::after, .pin-chip.over-r::after {
+  content: ""; position: absolute; top: 4px; bottom: 4px; width: 2px; border-radius: 2px; background: var(--accent);
+}
+.wstab.over-l::before, .pin-chip.over-l::before { left: -3px; }
+.wstab.over-r::after, .pin-chip.over-r::after { right: -3px; }
+.wstab.dragging, .pin-chip.dragging { opacity: 0.45; }
+.wstab[draggable="true"], .pin-chip[draggable="true"] { cursor: grab; }
+.wstab.dragging, .pin-chip.dragging { cursor: grabbing; }

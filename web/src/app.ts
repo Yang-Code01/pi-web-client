@@ -291,6 +291,10 @@ export class App {
   private wsPendingNew: Set<string> | null = null;
   /** 「还有 N 个」的下拉（顶栏上唯一能钉未置顶工作区的地方）。 */
   private spacePicker: HTMLElement | null = null;
+  /** 顶栏第 1 行正在拖的工作区 id（横向排序用；跟会话的 dragId 互不干扰）。 */
+  private dragWs: string | null = null;
+  /** 顶栏第 2 行正在拖的会话 id。 */
+  private pinDrag: string | null = null;
   private spacePickerAway: ((ev: Event) => void) | null = null;
 
   constructor(me: Me) {
@@ -3110,6 +3114,7 @@ export class App {
       tab.title = pending ? tr("{p1} · {p2} 个会话，{p3} 个待处理", { p1: this.wsName(id), p2: list.length, p3: pending }) : tr("{p1} · {p2} 个会话", { p1: this.wsName(id), p2: list.length });
       tab.onclick = () => this.setWorkspace(id);
       if (id !== UNGROUPED) tab.ondblclick = () => this.renameWorkspaceInline(tab, id);
+      this.wireTabDrag(tab, id);
       host.append(tab);
     }
     // 没置顶的标签不画，但得让人知道还有多少个 —— 给一颗能展开的计数按钮。
@@ -3136,6 +3141,112 @@ export class App {
     }
     // 溢出提示：不量就不知道最后几个标签被切掉了。
     host.classList.toggle("fade", host.scrollWidth > host.clientWidth + 1);
+  }
+
+  /** 顶栏标签的横向拖拽：只重排置顶的那几个，其余工作区的相对顺序不动。 */
+  private wireTabDrag(tab: HTMLElement, id: string): void {
+    tab.draggable = true;
+    tab.dataset.ws = id;
+    tab.ondragstart = (ev) => {
+      this.dragWs = id;
+      tab.classList.add("dragging");
+      ev.dataTransfer?.setData("text/plain", `ws:${id}`);
+      if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+    };
+    tab.ondragend = () => {
+      this.dragWs = null;
+      tab.classList.remove("dragging");
+      for (const n of this.els.wstabs.querySelectorAll(".over-l,.over-r")) n.classList.remove("over-l", "over-r");
+    };
+    tab.ondragover = (ev) => {
+      if (!this.dragWs || this.dragWs === id) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const r = tab.getBoundingClientRect();
+      const after = ev.clientX > r.left + r.width / 2;
+      tab.classList.toggle("over-l", !after);
+      tab.classList.toggle("over-r", after);
+    };
+    tab.ondragleave = () => tab.classList.remove("over-l", "over-r");
+    tab.ondrop = (ev) => {
+      const src = this.dragWs;
+      if (!src || src === id) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const after = tab.classList.contains("over-r");
+      tab.classList.remove("over-l", "over-r");
+      const from = this.els.wstabs.querySelector<HTMLElement>(`.wstab[data-ws="${src}"]`);
+      if (!from) return;
+      if (after) tab.after(from);
+      else tab.before(from);
+      this.commitTabOrder();
+      this.dragWs = null;
+    };
+  }
+
+  /** 落点后照着顶栏的 DOM 重排 workspaces；没画在顶栏里的接在后面（顺序不变）。 */
+  private commitTabOrder(): void {
+    const shown = [...this.els.wstabs.querySelectorAll<HTMLElement>(".wstab[data-ws]")]
+      .map((n) => n.dataset.ws)
+      .filter((id): id is string => Boolean(id));
+    const rest = this.manage.workspaces.map((w) => w.id).filter((id) => !shown.includes(id));
+    const order = [...shown, ...rest];
+    const byId = new Map(this.manage.workspaces.map((w) => [w.id, w]));
+    this.manage = { ...this.manage, workspaces: order.map((id) => byId.get(id)).filter((w): w is Workspace => Boolean(w)) };
+    this.renderWorkspaceTabs();
+    this.renderSessions();
+    this.sendWs({ op: "reorder", order });
+  }
+
+  /** 第 2 行胶囊的横向拖拽：只重排本条上画出来的那些（其余会话由桥按旧顺序缀在后面）。 */
+  private wireChipDrag(chip: HTMLElement, id: string): void {
+    chip.draggable = true;
+    chip.dataset.pinId = id;
+    chip.ondragstart = (ev) => {
+      this.pinDrag = id;
+      chip.classList.add("dragging");
+      ev.dataTransfer?.setData("text/plain", id);
+      if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+    };
+    chip.ondragend = () => {
+      this.pinDrag = null;
+      chip.classList.remove("dragging");
+      for (const n of this.els.pinStrip.querySelectorAll(".over-l,.over-r")) n.classList.remove("over-l", "over-r");
+    };
+    chip.ondragover = (ev) => {
+      if (!this.pinDrag || this.pinDrag === id) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const r = chip.getBoundingClientRect();
+      const after = ev.clientX > r.left + r.width / 2;
+      chip.classList.toggle("over-l", !after);
+      chip.classList.toggle("over-r", after);
+    };
+    chip.ondragleave = () => chip.classList.remove("over-l", "over-r");
+    chip.ondrop = (ev) => {
+      const src = this.pinDrag;
+      if (!src || src === id) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const after = chip.classList.contains("over-r");
+      chip.classList.remove("over-l", "over-r");
+      const from = this.els.pinStrip.querySelector<HTMLElement>(`.pin-chip[data-pin-id="${src}"]`);
+      if (!from) return;
+      if (after) chip.after(from);
+      else chip.before(from);
+      this.commitChipOrder();
+      this.pinDrag = null;
+    };
+  }
+
+  /** 第 2 行的顺序 = 该工作区的 members 顺序；桥上会把没画出来的按旧顺序缀回去。 */
+  private commitChipOrder(): void {
+    const ws = this.currentWsId();
+    const order = [...this.els.pinStrip.querySelectorAll<HTMLElement>(".pin-chip[data-pin-id]")]
+      .map((n) => n.dataset.pinId)
+      .filter((id): id is string => Boolean(id));
+    if (!order.length) return;
+    this.sendArrangement({ ...this.manage.members, [ws]: order });
   }
 
   /**
@@ -9014,6 +9125,7 @@ export class App {
         .join(" · ");
       open.onclick = () => this.openFromList(s.id);
       chip.append(star, open);
+      this.wireChipDrag(chip, s.id);
       this.wirePinHover(chip, s);
       host.append(chip);
     }

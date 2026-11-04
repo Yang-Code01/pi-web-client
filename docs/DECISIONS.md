@@ -1481,3 +1481,9 @@
 - **左栏分组折不起来**：折叠用的是 `cards.hidden = true`，而 `.session-cards { display: grid }` 会盖掉 UA 的 `[hidden] { display: none }`，卡片压根没藏。改成 `.closed` 类 + `.session-cards.closed { display: none }`；折叠控件从 12px 宽的 `<span>` 换成 22px 命中区的 `<button>`（带 `aria-expanded`）。
 - **开新工作区还显示上一个会话**：`setWorkspace` 只处理了「目标区有会话」那一支，空区就直接渲染，于是对话区留着旧会话的正文。现在空区先 `closeCurrent()`（清 `currentId`/草稿/`chat.reset`、抹掉 `#/s/<id>` 地址），对话区换成「这个工作区还没有会话 + ＋ 新会话」面板。
 - **从「还有 N 个」里选一个 = 自动钉上**：不钉的话选完它仍然不在顶栏，等于白选一次；钉上后它同时排到顶栏最前（`pinned` 只决定「进不进顶栏 + 左栏排最前」，不动手工顺序）。
+
+**顶栏两行的横向拖拽（实测反馈）：**
+
+- **工作区标签**：`draggable`，落点按 `clientX` 判左右半区、画一条竖插线；放手后照着顶栏 DOM 重排 `workspaces`，发 `workspace.op = reorder`。没画在顶栏里的（未置顶）接在后面，相对顺序不动。
+- **会话胶囊**：同样一套，但提交的是 `arrange(groups)` —— 第 2 行的顺序就是该工作区 `members` 的顺序，桥上会把没画出来的会话按旧顺序缀回去。
+- 两套拖拽用不同字段（`dragWs` / `pinDrag`），互不抢；落点线是 `.over-l` / `.over-r` 的 `::before` / `::after`。
