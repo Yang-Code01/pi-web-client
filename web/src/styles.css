@@ -2351,3 +2351,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 
 /* D119 标签飞进/飞出「还有 N 个」时的飞行体：脱离文档流，只负责画那一段 */
 .ws-flyer { position: fixed; z-index: 950; pointer-events: none; margin: 0; box-sizing: border-box; }
+
+/* 触屏长按的「移动到…」菜单 */
+.ws-move-menu { max-height: 46vh; }
+.ws-move-head { font-size: 11px; letter-spacing: 0.06em; color: var(--faint); padding: 5px 8px 3px; }
+.ws-move-menu .ws-menu-go { border-radius: 8px; }
+/* 「未分组」那行没有 ★（虚拟工作区钉不上），用等宽占位保持缩进对齐 */
+.ws-pin-off { display: inline-block; width: 18px; flex: none; }

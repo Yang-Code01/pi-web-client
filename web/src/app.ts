@@ -304,6 +304,9 @@ export class App {
   /** 刚钉上的工作区：等回声重渲染之后还要在这个新节点上重放一次「从托盘长出来」。 */
   private wsFlyIn: { id: string; tray: { x: number; y: number }; at: number } | null = null;
   private spacePickerAway: ((ev: Event) => void) | null = null;
+  /** 触屏长按会话卡片弹出的「移动到…」（HTML5 拖拽在触屏上不工作，这是移动端唯一的归类入口）。 */
+  private moveMenu: HTMLElement | null = null;
+  private moveMenuAway: ((ev: Event) => void) | null = null;
 
   constructor(me: Me) {
     this.me = me;
@@ -3117,7 +3120,7 @@ export class App {
     host.replaceChildren();
     const cur = this.currentWsId();
     // 只画置顶的工作区；一个都没钉时至少把「当前区」画出来（淡色、可钉），否则收起左栏就没导航了。
-    const order = this.wsOrder().filter((id) => id !== UNGROUPED || this.isSpacePinned(UNGROUPED) || id === cur);
+    const order = this.wsOrder().filter((id) => id !== UNGROUPED || id === cur);
     const shown = order.filter((id) => this.isSpacePinned(id));
     if (!shown.includes(cur)) shown.push(cur);
     for (const id of shown) {
@@ -3188,6 +3191,74 @@ export class App {
     host.classList.toggle("fade", host.scrollWidth > host.clientWidth + 1);
     // 回声重渲染会换掉节点，刚启动的「从托盘长出来」得在新节点上重放一次。
     this.playFlyIn();
+  }
+
+  /**
+   * 触屏长按卡片 → 「移动到…」。鼠标不用长按（有 HTML5 拖拽），触屏上拖不动，
+   * 所以这条是移动端唯一的换工作区入口。手指一移动就取消，别跟列表滚动抢。
+   */
+  private wireCardLongPress(card: HTMLElement, s: SessionState): void {
+    let timer = 0;
+    let from: { x: number; y: number } | null = null;
+    const cancel = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = 0;
+      from = null;
+    };
+    card.addEventListener("pointerdown", (ev) => {
+      if (ev.pointerType === "mouse" || ev.button !== 0) return;
+      from = { x: ev.clientX, y: ev.clientY };
+      timer = window.setTimeout(() => {
+        timer = 0;
+        if (card.isConnected) this.openMoveMenu(s, card);
+        from = null;
+      }, 420);
+    });
+    card.addEventListener("pointermove", (ev) => {
+      if (!from) return;
+      if (Math.abs(ev.clientX - from.x) > 8 || Math.abs(ev.clientY - from.y) > 8) cancel();
+    });
+    card.addEventListener("pointerup", cancel);
+    card.addEventListener("pointercancel", cancel);
+  }
+
+  private openMoveMenu(s: SessionState, anchor: HTMLElement): void {
+    this.closeMoveMenu();
+    const menu = el("div", "ws-menu ws-move-menu");
+    const r = anchor.getBoundingClientRect();
+    menu.style.left = `${Math.round(Math.min(r.left + 8, window.innerWidth - 230))}px`;
+    menu.style.top = `${Math.round(Math.max(8, Math.min(r.top + 20, window.innerHeight - 220)))}px`;
+    menu.append(el("div", "ws-move-head", tr("移动到…")));
+    const here = this.wsOf(s.id);
+    for (const id of this.wsOrder()) {
+      if (id === here) continue;
+      const row = el("button", "ws-menu-go") as HTMLButtonElement;
+      row.type = "button";
+      const dot = el("span", "ws-dot");
+      const accent = this.wsAccent(id);
+      if (accent) dot.style.background = accent;
+      else dot.classList.add("bare");
+      row.append(dot, el("span", "ws-menu-name", this.wsName(id)), el("span", "ws-n", String(this.groupSessions(id).length)));
+      row.onclick = () => {
+        this.closeMoveMenu();
+        this.assignSessions([s.id], id);
+      };
+      menu.append(row);
+    }
+    document.body.append(menu);
+    this.moveMenu = menu;
+    const away = (ev: Event) => {
+      if (!menu.contains(ev.target as Node)) this.closeMoveMenu();
+    };
+    this.moveMenuAway = away;
+    queueMicrotask(() => document.addEventListener("pointerdown", away, true));
+  }
+
+  private closeMoveMenu(): void {
+    if (this.moveMenu) this.moveMenu.remove();
+    this.moveMenu = null;
+    if (this.moveMenuAway) document.removeEventListener("pointerdown", this.moveMenuAway, true);
+    this.moveMenuAway = null;
   }
 
   /** 顶栏标签的横向拖拽：只重排置顶的那几个，其余工作区的相对顺序不动。 */
@@ -3338,6 +3409,8 @@ export class App {
         // 取消置顶时 flyIntoTrayList 会重新展开下拉（它要飞进那一行），所以这里只管「钉上」。
         if (pinned) window.setTimeout(() => this.closeSpacePicker(), 140);
       };
+      // 「未分组」是虚拟工作区（id 空串），桥侧 setSpacePinned 第一行就 return —— 给它画星等于给一个按不动的按钮。
+      const canPin = id !== UNGROUPED;
       const dot = el("span", "ws-dot");
       const accent = this.wsAccent(id);
       if (accent) dot.style.background = accent;
@@ -3355,7 +3428,7 @@ export class App {
         // 让"泡"先离开起点，再把下拉收起来
         window.setTimeout(() => this.closeSpacePicker(), pinned ? 0 : 140);
       };
-      row.append(star, go);
+      row.append(canPin ? star : el("span", "ws-pin-off"), go);
       menu.append(row);
     }
     document.body.append(menu);
@@ -3589,6 +3662,7 @@ export class App {
     if (archived) cls.push("archived");
     const card = el("div", cls.join(" "));
     card.dataset.id = s.id;
+    this.wireCardLongPress(card, s);
     // A button cannot host a text field, so the card is a div acting as one.
     card.setAttribute("role", "button");
     card.tabIndex = 0;
@@ -4114,7 +4188,7 @@ export class App {
         const sw = el("button", "ws-swatch" + (key === color ? " on" : "")) as HTMLButtonElement;
         sw.type = "button";
         sw.style.background = def.accent;
-        sw.title = ACCENT_LABELS.find(([k]) => k === key)?.[1] ?? key;
+        sw.title = tr(ACCENT_LABELS.find(([k]) => k === key)?.[1] ?? key);
         sw.onclick = () => {
           color = key;
           paint();
@@ -5651,7 +5725,7 @@ export class App {
     const filters = el("div", "mgr-filters");
     const binHint = el("span", "mgr-bin-hint", tr("删掉的会话在这里，可以还原或彻底删除"));
     binHint.hidden = true;
-    filters.append(origin.wrap, status.wrap, time.wrap, cwd.wrap, group.wrap, sort.wrap, dir, reset, binHint, bin);
+    filters.append(origin.wrap, status.wrap, ws.wrap, time.wrap, cwd.wrap, group.wrap, sort.wrap, dir, reset, binHint, bin);
     tools.append(q, filters);
 
     const body = el("div", "mgr-body");
@@ -10099,12 +10173,12 @@ const ACCENTS: Record<string, { accent: string; dim: string }> = {
 
 /** 色块的显示名（中文原文，交给 tr() 翻）：顺序就是面板里色块的顺序。 */
 const ACCENT_LABELS: [string, string][] = [
-  ["ice", tr("冰蓝")],
-  ["teal", tr("青绿")],
-  ["violet", tr("紫")],
-  ["amber", tr("琥珀")],
-  ["rose", tr("玫瑰")],
-  ["slate", tr("银灰")],
+  ["ice", "冰蓝"],
+  ["teal", "青绿"],
+  ["violet", "紫"],
+  ["amber", "琥珀"],
+  ["rose", "玫瑰"],
+  ["slate", "银灰"],
 ];
 
 /** D110 之前 `pi.prefs.accent` 存的是中文色名，读到就换成新 id。 */
