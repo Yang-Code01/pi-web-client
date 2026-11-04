@@ -9,13 +9,13 @@
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
+import { REPO } from "../../tools/paths.mjs";
+import { loadPlaywright } from "../../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+const { chromium } = await loadPlaywright();
 
-const ROOT = "F:/pi-web-client";
+const ROOT = REPO;
 const DIST = path.join(ROOT, "bridge", "dist", "index.js");
 const PORT = Number(process.env.ASK_UI_PORT ?? 7892);
 const STATE = path.join(ROOT, ".scratch", "ask-ui-state");

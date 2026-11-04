@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import path from "node:path";
-const CLI = "C:/Users/GG_Bond/AppData/Local/nvm/v23.11.1/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js";
+import { piCli } from "../tools/pi.mjs";
+const CLI = process.env.PI_CLI ?? (await piCli());
 const sess = process.argv[2];
 const child = spawn(process.execPath, [CLI, "--mode","rpc","--no-extensions","--session",sess,"--no-skills","--no-prompt-templates","--no-mcp"], {stdio:["pipe","pipe","pipe"]});
 const pending=new Map(); let buf="",n=0;

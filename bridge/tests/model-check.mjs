@@ -1,13 +1,14 @@
 /** Verifies the model sheet: catalog arrives, switching changes the chip, thinking chips work. */
+import path from "node:path";
 import fs from "node:fs";
-import { pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
+import { REPO } from "../../tools/paths.mjs";
+import { loadPlaywright } from "../../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const STATE = process.env.PI_WEB_STATE ?? "F:/pi-web-client/.scratch/test-state";
+const { chromium } = await loadPlaywright();
+const STATE = process.env.PI_WEB_STATE ?? path.join(REPO, ".scratch/test-state");
 const BASE = process.env.PI_WEB_BASE ?? "http://127.0.0.1:7867";
-const OUT = "F:/pi-web-client/.scratch/shots";
+const OUT = path.join(REPO, ".scratch/shots");
 const pass = fs.readFileSync(`${STATE}/passphrase.txt`, "utf8").trim();
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
@@ -15,7 +16,7 @@ const r = await fetch(`${BASE}/api/login`, { method: "POST", headers: { "content
 const cookie = (r.headers.get("set-cookie") ?? "").split(";")[0];
 const sid = await new Promise((resolve, reject) => {
   const ws = new WebSocket(`${BASE.replace("http", "ws")}/ws`, { headers: { cookie } });
-  ws.on("open", () => ws.send(JSON.stringify({ type: "create", cwd: "F:/pi-web-client", name: "模型测试" })));
+  ws.on("open", () => ws.send(JSON.stringify({ type: "create", cwd: REPO, name: "模型测试" })));
   ws.on("message", (b) => {
     const m = JSON.parse(b.toString());
     const st = m.type === "session.state" ? m.session : m.type === "session" ? m.state : null;

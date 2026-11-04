@@ -13,8 +13,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import WebSocket from "file:///F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { wsWrapper } from "../tools/paths.mjs";
+const { default: WebSocket } = await import(pathToFileURL(wsWrapper()).href);
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE = path.join(REPO, "bridge", "dist", "index.js");

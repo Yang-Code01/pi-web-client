@@ -1,8 +1,10 @@
 // 只读检查：某个会话当前是不是 owned（用来验证 close 之后确实让回了）
 import fs from "node:fs";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
-import WebSocket from "file:///F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs";
+import { wsWrapper } from "../tools/paths.mjs";
+const { default: WebSocket } = await import(pathToFileURL(wsWrapper()).href);
 const STATE = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), ".local/share"), "pi-web-client");
 const PASS = fs.readFileSync(path.join(STATE, "passphrase.txt"), "utf8").trim();
 const id = process.argv[2];

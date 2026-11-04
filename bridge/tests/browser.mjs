@@ -1,14 +1,15 @@
 /** Browser smoke test: create a fresh session over WS, then drive the real UI in Chromium. */
+import path from "node:path";
 import fs from "node:fs";
-import { pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
+import { REPO } from "../../tools/paths.mjs";
+import { loadPlaywright } from "../../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+const { chromium } = await loadPlaywright();
 
-const STATE = process.env.PI_WEB_STATE ?? "F:/pi-web-client/.scratch/test-state";
+const STATE = process.env.PI_WEB_STATE ?? path.join(REPO, ".scratch/test-state");
 const BASE = process.env.PI_WEB_BASE ?? "http://127.0.0.1:7867";
-const OUT = "F:/pi-web-client/.scratch/shots";
+const OUT = path.join(REPO, ".scratch/shots");
 fs.mkdirSync(OUT, { recursive: true });
 const pass = fs.readFileSync(`${STATE}/passphrase.txt`, "utf8").trim();
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -22,7 +23,7 @@ const login = await fetch(`${BASE}/api/login`, {
 const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
 const sessionId = await new Promise((resolve, reject) => {
   const ws = new WebSocket(`${BASE.replace("http", "ws")}/ws`, { headers: { cookie } });
-  ws.on("open", () => ws.send(JSON.stringify({ type: "create", cwd: "F:/pi-web-client", name: "ui 测试" })));
+  ws.on("open", () => ws.send(JSON.stringify({ type: "create", cwd: REPO, name: "ui 测试" })));
   ws.on("message", (b) => {
     const m = JSON.parse(b.toString());
     if (m.type === "session.state" && m.session?.name === "ui 测试") {
@@ -81,7 +82,7 @@ await page.waitForFunction(
 );
 await page.screenshot({ path: `${OUT}/ui-mobile-chat.png` });
 
-await ta.fill("用 bash 工具执行：rm -rf F:/pi-web-client/.scratch/ui-nonexistent");
+await ta.fill(`用 bash 工具执行：rm -rf ${REPO}/.scratch/ui-nonexistent`);
 await ta.press("Enter");
 await page.waitForSelector(".approval", { timeout: 120000 });
 log("mobile: approval card:", (await page.locator(".approval .t").first().innerText()).slice(0, 50));

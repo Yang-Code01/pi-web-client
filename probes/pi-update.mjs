@@ -18,17 +18,17 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const wsMod = await import(pathToFileURL("F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs").href);
+const { chromium } = await loadPlaywright();
+const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
 
-const PORT = 7923;
-const DIST = "F:/pi-web-client/web/dist";
-const OUT = "F:/pi-web-client/.scratch/pi-update/shots";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7923);
+const OUT = path.join(REPO, ".scratch/pi-update/shots");
 const BASE = `http://127.0.0.1:${PORT}`;
-const CWD = "F:/pi-web-client";
+const CWD = REPO;
 fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 
@@ -190,7 +190,7 @@ const openExt = async (page) => {
 let browser;
 try {
   browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "zh-CN" });
   const page = await context.newPage();
   page.on("pageerror", (e) => log("page error:", e.message));
   await page.goto(BASE, { waitUntil: "networkidle" });

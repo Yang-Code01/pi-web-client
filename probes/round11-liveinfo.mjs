@@ -11,15 +11,15 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const wsMod = await import(pathToFileURL("F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs").href);
+const { chromium } = await loadPlaywright();
+const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
 
-const PORT = 7908;
-const DIST = "F:/pi-web-client/web/dist";
-const OUT = "F:/pi-web-client/.scratch/round11-liveinfo/shots";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7908);
+const OUT = path.join(REPO, ".scratch/round11-liveinfo/shots");
 const BASE = `http://127.0.0.1:${PORT}`;
 fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
@@ -43,7 +43,7 @@ const until = async (fn, ms, what) => {
 };
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
-const SESSION = { id: "probe-live", name: "悬停探针", cwd: "F:/pi-web-client", file: null, owned: false, origin: "disk", running: true, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "跑测试" };
+const SESSION = { id: "probe-live", name: "悬停探针", cwd: REPO, file: null, owned: false, origin: "disk", running: true, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "跑测试" };
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "probe", pi: "probe", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "probe" };
 const ITEMS = [
@@ -115,7 +115,7 @@ try {
 
   // The run in progress: thinking first, then a tool that keeps printing.
   send({ type: "delta", sessionId: SESSION.id, id: "a1", field: "thinking", text: "先把测试脚本读一遍，确认没有环境依赖，再跑 npm test。" });
-  send({ type: "tool", sessionId: SESSION.id, phase: "start", toolCallId: "t1", name: "bash", args: { command: "npm test -- --reporter=dot", cwd: "F:/pi-web-client" }, summary: "cd F:/pi-web-client && npm test" });
+  send({ type: "tool", sessionId: SESSION.id, phase: "start", toolCallId: "t1", name: "bash", args: { command: "npm test -- --reporter=dot", cwd: REPO }, summary: `cd ${REPO} && npm test` });
   const lines = [
     "> pi-web-client@0.1.0 test",
     "> node bridge/tests/e2e.mjs",
@@ -156,7 +156,7 @@ try {
   // which this probe just proved carries them — so pasting them into the line is pure noise.
   const line = (await hint.locator(".act-text").innerText()).trim();
   assert(line === "正在执行 bash", `the busy line names the tool only (got ${JSON.stringify(line)})`);
-  assert(!line.includes("npm test") && !line.includes("F:/pi-web-client"), `no command in the line (got ${JSON.stringify(line)})`);
+  assert(!line.includes("npm test") && !line.includes(REPO), `no command in the line (got ${JSON.stringify(line)})`);
   log("busy line:", line);
 
   // Q-024 moved the step counter into the tool branch: two starts of the same tool must still count

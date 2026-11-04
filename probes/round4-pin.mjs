@@ -10,19 +10,19 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { REPO } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+const { chromium } = await loadPlaywright();
 
-const PORT = 7895;
-const ROOT = "F:/pi-web-client/.scratch/round4-pin";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7895);
+const ROOT = path.join(REPO, ".scratch/round4-pin");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const SESSIONS = path.join(AGENT, "sessions");
 const OUT = path.join(ROOT, "shots");
 const BASE = `http://127.0.0.1:${PORT}`;
-const CWD = "F:/pi-web-client";
+const CWD = REPO;
 
 fs.rmSync(ROOT, { recursive: true, force: true });
 for (const d of [STATE, SESSIONS, OUT]) fs.mkdirSync(d, { recursive: true });

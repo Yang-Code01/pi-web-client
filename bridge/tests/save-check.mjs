@@ -11,9 +11,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { REPO } from "../../tools/paths.mjs";
 
-const PORT = 7879;
-const ROOT = "F:/pi-web-client/.scratch/save-check";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7879);
+const ROOT = path.join(REPO, ".scratch/save-check");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const SESSIONS = path.join(AGENT, "sessions");
@@ -66,7 +67,7 @@ let bridge = null;
 const bridgeOut = [];
 const start = () => {
   bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
-    cwd: "F:/pi-web-client",
+    cwd: REPO,
     env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_STATE: STATE, PI_WEB_TUNNEL: "0", PI_AGENT_DIR: AGENT },
     stdio: ["ignore", "pipe", "pipe"],
   });

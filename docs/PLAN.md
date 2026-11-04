@@ -21,7 +21,7 @@
 ## 2. 目录结构
 
 ```
-F:/pi-web-client/
+<repo>/
   package.json            # workspaces: bridge, web
   bridge/
     src/index.ts          # http + ws 入口、登录、静态资源
@@ -39,6 +39,7 @@ F:/pi-web-client/
     src/store.ts          # 事件归约成视图状态（卡片、队列、连接态）
     src/views/*           # 卡片流、队列、控制条、输入框、登录页
     src/proto.css 派生    # 从 prototype/d-mix.html 的 token 与卡片规则提取
+  tools/                 # 测试与探针的公共件：仓库根 / 产物目录 / 找 playwright / 找 pi CLI（D114）
   docs/ # 本计划、事实报告、样张（不进产物）
 ```
 

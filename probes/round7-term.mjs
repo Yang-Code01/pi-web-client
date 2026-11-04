@@ -11,12 +11,13 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+const { chromium } = await loadPlaywright();
 
-const PORT = 7898;
-const ROOT = "F:/pi-web-client/.scratch/round7-term";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7898);
+const ROOT = path.join(REPO, ".scratch/round7-term");
 const STATE = path.join(ROOT, "state");
 const OUT = path.join(ROOT, "shots");
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -43,7 +44,7 @@ const assert = (cond, msg) => {
 
 const env = { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_STATE: STATE, PI_WEB_TUNNEL: "0", PI_WEB_HOST: "127.0.0.1" };
 for (const key of ["PI_WEB_TUNNEL"]) env[key] = env[key];
-const bridge = spawn("C:/nvm4w/nodejs/node.exe", ["bridge/dist/index.js"], { cwd: "F:/pi-web-client", env, stdio: ["ignore", "pipe", "pipe"] });
+const bridge = spawn(process.execPath, ["bridge/dist/index.js"], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
 bridge.stdout.on("data", (d) => process.stdout.write(`[bridge] ${d}`));
 bridge.stderr.on("data", (d) => process.stdout.write(`[bridge!] ${d}`));
 
@@ -122,7 +123,7 @@ try {
 `, "utf8");
   const cookies = await context.cookies();
   const cookie = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-  const wsMod = await import(pathToFileURL("F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs").href);
+  const wsMod = await import(pathToFileURL(wsWrapper()).href);
   const sock = new wsMod.default(`${BASE.replace("http", "ws")}/ws`, { headers: { cookie } });
   await new Promise((resolve, reject) => {
     sock.once("open", resolve);

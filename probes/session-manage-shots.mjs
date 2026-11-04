@@ -5,12 +5,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+const { chromium } = await loadPlaywright();
 
-const DIR = "F:/pi-web-client/.scratch/session-manage/prototype";
-const OUT = "F:/pi-web-client/.scratch/session-manage/shots";
+const DIR = path.join(REPO, ".scratch/session-manage/prototype");
+const OUT = path.join(REPO, ".scratch/session-manage/shots");
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 

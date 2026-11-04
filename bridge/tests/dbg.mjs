@@ -1,13 +1,15 @@
+import path from "node:path";
 import fs from "node:fs";
 import { WebSocket } from "ws";
-const STATE = "F:/pi-web-client/.scratch/test-state";
+import { REPO } from "../../tools/paths.mjs";
+const STATE = path.join(REPO, ".scratch/test-state");
 const pass = fs.readFileSync(`${STATE}/passphrase.txt`, "utf8").trim();
 const r = await fetch("http://127.0.0.1:7867/api/login", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({passphrase:pass})});
 const cookie = (r.headers.get("set-cookie") ?? "").split(";")[0];
 const ws = new WebSocket("ws://127.0.0.1:7867/ws", { headers: { cookie } });
 ws.on("open", () => {
   console.log("open");
-  ws.send(JSON.stringify({ type: "create", cwd: "F:/pi-web-client", name: "dbg" }));
+  ws.send(JSON.stringify({ type: "create", cwd: REPO, name: "dbg" }));
 });
 ws.on("message", (b) => {
   const m = JSON.parse(b.toString());

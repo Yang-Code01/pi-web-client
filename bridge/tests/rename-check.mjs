@@ -13,14 +13,15 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
+import { REPO } from "../../tools/paths.mjs";
 
 const PORT = Number(process.env.PI_WEB_PORT ?? 7871);
-const ROOT = path.join("F:/pi-web-client/.scratch", "rename-probe");
+const ROOT = path.join(REPO, ".scratch", "rename-probe");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(os.homedir(), ".pi", "agent");
 const SESSIONS = path.join(AGENT, "sessions");
 const FAKE_DIR = path.join(SESSIONS, "--zz-rename-probe--");
-const CWD = "F:/pi-web-client";
+const CWD = REPO;
 
 fs.rmSync(ROOT, { recursive: true, force: true });
 fs.rmSync(FAKE_DIR, { recursive: true, force: true });

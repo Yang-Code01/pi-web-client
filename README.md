@@ -154,7 +154,7 @@ PI_WEB_HOST=0.0.0.0 npm start
 
 ```bash
 # 起一个隔离的桥（假状态目录，7867），e2e 会真发 prompt、真点审批
-PI_WEB_PORT=7867 PI_WEB_STATE=F:/pi-web-client/.scratch/test-state npm start &
+PI_WEB_PORT=7867 PI_WEB_STATE="$PWD/.scratch/test-state" npm start &
 npm test                                                                # WS 协议 + 审批 + 中断
 npm run test:rpc                                                        # 回归：子进程 stdin 关闭后应答 ui_request 不能崩桥
 node bridge/tests/browser.mjs                                           # 真 Chromium，手机/桌面截图
@@ -190,6 +190,8 @@ node probes/peer-multicast.mjs                                        # 组播�
 ```
 
 `npm run typecheck` 分别跑 bridge、peer 和 web 的 `tsc --noEmit`。
+
+测试与探针不再写死盘符或用户目录（D114）：仓库根从脚本自己的 `import.meta.url` 反推（`tools/paths.mjs`），playwright 自己找（`PW_PATH` → 仓库 `node_modules` → npx 缓存，且必须真启动一次才算找到），pi CLI 复用桥的 `resolvePi()`。每个探针的端口都能用 `PI_WEB_PORT=` 覆盖（默认值就是上面写的那些），所以两份可以并行跑。
 
 ## 测试环境（隔离实例）
 

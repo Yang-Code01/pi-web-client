@@ -10,15 +10,15 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const wsMod = await import(pathToFileURL("F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs").href);
+const { chromium } = await loadPlaywright();
+const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
 
-const PORT = 7911;
-const DIST = "F:/pi-web-client/web/dist";
-const OUT = "F:/pi-web-client/.scratch/round17-home/shots";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7911);
+const OUT = path.join(REPO, ".scratch/round17-home/shots");
 const BASE = `http://127.0.0.1:${PORT}`;
 fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
@@ -42,7 +42,7 @@ const until = async (fn, ms, what) => {
 };
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
-const A = { id: "probe-home", name: "有工作目录的会话", cwd: "F:/pi-web-client", file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "定位探针" };
+const A = { id: "probe-home", name: "有工作目录的会话", cwd: REPO, file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "定位探针" };
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "probe", pi: "probe", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "probe" };
 
@@ -69,9 +69,9 @@ const server = http.createServer((req, res) => {
     // Two folders deep, so the probe can walk away from the cwd and then come back with ⌂.
     return json(200, {
       path: dir,
-      parent: dir === "F:/pi-web-client" ? "F:" : "F:/pi-web-client",
+      parent: dir === REPO ? "F:" : REPO,
       // A name that is not a substring of the cwd — "web" would match "pi-web-client" by accident.
-      dirs: dir === "F:/pi-web-client" ? ["subfolder", "bridge"] : [],
+      dirs: dir === REPO ? ["subfolder", "bridge"] : [],
       files: files ? ["package.json"] : [],
       error: "",
     });

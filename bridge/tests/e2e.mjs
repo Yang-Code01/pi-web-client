@@ -2,13 +2,15 @@
  * End-to-end check for M1: login → sessions → create → prompt → stream → approval → abort.
  * Run against a live bridge: PI_WEB_PORT=7867 PI_WEB_STATE=... node tests/e2e.mjs
  */
+import path from "node:path";
 import fs from "node:fs";
 import { WebSocket } from "ws";
+import { REPO } from "../../tools/paths.mjs";
 
 const PORT = Number(process.env.PI_WEB_PORT ?? 7867);
-const STATE = process.env.PI_WEB_STATE ?? "F:/pi-web-client/.scratch/test-state";
+const STATE = process.env.PI_WEB_STATE ?? path.join(REPO, ".scratch/test-state");
 const BASE = `http://127.0.0.1:${PORT}`;
-const CWD = process.env.PI_WEB_TEST_CWD ?? "F:/pi-web-client";
+const CWD = process.env.PI_WEB_TEST_CWD ?? REPO;
 
 const pass = fs.readFileSync(`${STATE}/passphrase.txt`, "utf8").trim();
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -69,7 +71,7 @@ const text = slice.filter((m) => m.type === "delta" && m.field === "text").map((
 log(`prompt#1 → deltas=${slice.filter((m) => m.type === "delta").length} reply="${text.slice(0, 40)}"`);
 
 // 3. approval path: a destructive bash command must go through the gate extension
-ws.send(JSON.stringify({ type: "prompt", sessionId, text: "用 bash 工具执行：rm -rf F:/pi-web-client/.scratch/e2e-nonexistent" }));
+ws.send(JSON.stringify({ type: "prompt", sessionId, text: `用 bash 工具执行：rm -rf ${REPO}/.scratch/e2e-nonexistent` }));
 const approval = await waitFor((m) => m.type === "approval.add" && m.sessionId === sessionId, 120000, "approval.add");
 log("approval.add:", approval.approval?.title, "|", approval.approval?.message);
 ws.send(JSON.stringify({ type: "approve", sessionId, approvalId: approval.approval.id, decision: "reject" }));

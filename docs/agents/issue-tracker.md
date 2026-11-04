@@ -4,12 +4,27 @@ Issues and specs for this repo live as GitHub issues in `Yang-Code01/pi-web-clie
 
 ## Running `gh` in this repo
 
-GitHub is **not reachable directly** from this machine; every network call has to go through the local HTTP proxy.
+**先直连**：`gh api repos/Yang-Code01/pi-web-client --jq .full_name`。能返回名字就直接用，不要加代理。
 
-- **Every** `gh` command needs the proxy inline: `HTTPS_PROXY=http://127.0.0.1:18791 gh issue list …`. `gh` has no config file to read, so there is nothing to set once.
-- Check the proxy is alive before blaming the repo: `curl -s -m 5 -x http://127.0.0.1:18791 -o /dev/null -w "%{http_code}\n" https://api.github.com` — `200` means up, `000` means the proxy is down.
-- `git` has no global proxy configured on purpose (it would leak onto other hosts). Pass it per command: `git -c http.https://github.com/.proxy=http://127.0.0.1:18791 push`.
-- Authenticated as `Yang-Code01` (token scopes: `gist`, `read:org`, `repo`). Verified `gh` 2.100.0 — sub-issues and native issue dependencies are both available, so the fallbacks below are not needed here.
+直连失败（超时 / 403）时才把本机代理挂在命令上：
+
+- `HTTPS_PROXY=http://127.0.0.1:18791 gh issue list …` —— `gh` 没有配置文件可读，只能逐条给。
+- `git` **故意**没有全局代理（会漏到别的 host），逐条给：`git -c http.https://github.com/.proxy=http://127.0.0.1:18791 push`。
+
+两个坑（都真碰过）：
+
+1. **curl 判不准**：`curl https://api.github.com` 可能回 403（WAF / UA），而 `gh` 打同一个域名完全正常。判网络用 `gh`，不用 curl。
+2. **403 往往是账号，不是网络**：`gh auth status` 可以同时登好几个账号，`git push` 用的是 **active** 那个；账号不在仓库里就 403。不改全局状态的做法：
+
+   ```bash
+   TOKEN=$(gh auth token --user Yang-Code01)
+   git push https://x-access-token:"$TOKEN"@github.com/Yang-Code01/pi-web-client.git <branch>
+   GH_TOKEN="$TOKEN" gh pr create …
+   ```
+
+   想长期正式切过去再 `gh auth switch --user Yang-Code01`（这会改全局 active 账号）。
+
+已验证：`gh` 2.100.0，token scopes `gist` / `read:org` / `repo` / `workflow` —— sub-issue 与原生 issue 依赖都可用，下面的回退方案用不上。
 
 ## Conventions
 

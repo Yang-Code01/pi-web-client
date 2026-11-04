@@ -9,15 +9,15 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const wsMod = await import(pathToFileURL("F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs").href);
+const { chromium } = await loadPlaywright();
+const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
 
-const PORT = 7915;
-const DIST = "F:/pi-web-client/web/dist";
-const OUT = "F:/pi-web-client/.scratch/round21-cwd-line/shots";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7915);
+const OUT = path.join(REPO, ".scratch/round21-cwd-line/shots");
 const BASE = `http://127.0.0.1:${PORT}`;
 fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
@@ -50,8 +50,8 @@ const items = (n) => {
   return out;
 };
 
-const CWD_A = "F:/probe-work/alpha";
-const CWD_B = "F:/probe-work/beta";
+const CWD_A = path.join(REPO, ".scratch/probe-work/alpha");
+const CWD_B = path.join(REPO, ".scratch/probe-work/beta");
 const base = (id, name, cwd, n) => ({
   id, name, cwd, file: null, owned: true, origin: "web", running: false, done: false,
   updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "", items: items(n),
@@ -76,7 +76,7 @@ const server = http.createServer((req, res) => {
     return res.end('{"ok":true}');
   }
   if (url.pathname === "/api/me") return json(200, ME);
-  if (url.pathname === "/api/git") return json(200, { repo: "F:/probe-work/alpha", branch: "main", detached: false, empty: false, dirty: 3 });
+  if (url.pathname === "/api/git") return json(200, { repo: path.join(REPO, ".scratch/probe-work/alpha"), branch: "main", detached: false, empty: false, dirty: 3 });
   if (url.pathname === "/api/dirs") return json(200, { path: url.searchParams.get("path") ?? "", parent: "F:", dirs: [], files: [], error: "" });
   const rel = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\//, "");
   const file = path.join(DIST, rel);

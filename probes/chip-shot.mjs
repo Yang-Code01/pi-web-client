@@ -2,8 +2,13 @@
 // 用法：node probes/chip-shot.mjs [sessionId]
 import fs from "node:fs";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
-import { Browser, sleep } from "file:///C:/Users/GG_Bond/.pi/agent/bin/lib/cdp.mjs";
+if (!process.env.CDP_LIB) {
+  console.error("这条探针要 CDP_LIB 指向 cdp.mjs（作者本机的私有工具，不在仓库里）");
+  process.exit(1);
+}
+const { Browser, sleep } = await import(pathToFileURL(process.env.CDP_LIB).href);
 
 const BASE = "http://127.0.0.1:7864";
 const STATE = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), ".local/share"), "pi-web-client");

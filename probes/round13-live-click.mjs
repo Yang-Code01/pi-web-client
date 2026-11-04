@@ -6,13 +6,13 @@
  *
  * 不改代码、不重启，只读。
  */
+import path from "node:path";
 import fs from "node:fs";
-import { pathToFileURL } from "node:url";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+const { chromium } = await loadPlaywright();
 
-const STATE = "C:/Users/GG_Bond/AppData/Local/pi-web-client";
+const STATE = path.join(process.env.LOCALAPPDATA ?? "", "pi-web-client");
 const pass = fs.readFileSync(STATE + "/passphrase.txt", "utf8").trim();
 const HOST = "http://127.0.0.1:7864";
 const NAME = process.env.SESSION_NAME || "追加开发";

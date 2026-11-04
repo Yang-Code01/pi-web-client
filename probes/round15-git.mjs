@@ -11,15 +11,15 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const wsMod = await import(pathToFileURL("F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs").href);
+const { chromium } = await loadPlaywright();
+const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
 
-const PORT = 7909;
-const DIST = "F:/pi-web-client/web/dist";
-const OUT = "F:/pi-web-client/.scratch/round15-git/shots";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7909);
+const OUT = path.join(REPO, ".scratch/round15-git/shots");
 const BASE = `http://127.0.0.1:${PORT}`;
 fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
@@ -43,9 +43,9 @@ const until = async (fn, ms, what) => {
 };
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
-const REPO = { repo: "F:/pi-web-client", branch: "main", detached: false, empty: false, dirty: 3 };
-const A = { id: "probe-git", name: "仓库里的会话", cwd: "F:/pi-web-client", file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "分支探针" };
-const B = { id: "probe-plain", name: "不在仓库里的会话", cwd: "F:/yqm/pi-cli-web-test", file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now() - 60_000, approvals: 0, asks: 0, locked: false, preview: "普通目录" };
+const REPO_INFO = { repo: REPO, branch: "main", detached: false, empty: false, dirty: 3 };
+const A = { id: "probe-git", name: "仓库里的会话", cwd: REPO, file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "分支探针" };
+const B = { id: "probe-plain", name: "不在仓库里的会话", cwd: path.join(REPO, ".scratch/not-a-repo"), file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now() - 60_000, approvals: 0, asks: 0, locked: false, preview: "普通目录" };
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "probe", pi: "probe", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "probe" };
 
@@ -70,7 +70,7 @@ const server = http.createServer((req, res) => {
     const dir = url.searchParams.get("dir") ?? "";
     const fresh = url.searchParams.get("fresh") === "1";
     gitCalls.push({ dir, fresh });
-    return json(200, dir.replace(/\\/g, "/").startsWith("F:/pi-web-client") ? REPO : { repo: null });
+    return json(200, dir.replace(/\\/g, "/").startsWith(REPO.replace(/\\/g, "/")) ? REPO_INFO : { repo: null });
   }
   if (url.pathname === "/api/dirs") {
     const dir = url.searchParams.get("path") ?? "";
@@ -140,7 +140,7 @@ try {
   log("title:", String(title).replace(/\s+/g, " | "));
   assert(String(title).includes("Enter 发送"), "the hint text moved into the tooltip");
   assert(String(title).includes("粘贴截图"), "the paste hint moved too");
-  assert(String(title).includes("F:/pi-web-client"), "the tooltip names the repo root");
+  assert(String(title).includes(REPO), "the tooltip names the repo root");
   assert(String(title).includes("点一下复制分支名"), "the tooltip explains the click");
   await page.screenshot({ path: path.join(OUT, "1-repo.png") });
 
@@ -155,7 +155,7 @@ try {
   send({ type: "session.state", session: { ...A, running: true, updatedAt: Date.now() } });
   await until(async () => (await page.locator(".hint-status.busy").count()) >= 1, 5000, "busy line");
   const busy = page.locator(".hint-status.busy").first();
-  send({ type: "tool", sessionId: A.id, phase: "start", toolCallId: "t1", name: "bash", args: { command: "npm test" }, summary: "cd F:/pi-web-client && npm test" });
+  send({ type: "tool", sessionId: A.id, phase: "start", toolCallId: "t1", name: "bash", args: { command: "npm test" }, summary: `cd ${REPO} && npm test` });
   await until(async () => (await busy.locator(".git-chip.flat").count()) >= 1, 5000, "flat branch tail");
   // `.act-pop` (the hover card) hangs off the same box and carries the command on purpose — read the
   // two visible pieces, not the whole box.

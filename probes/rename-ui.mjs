@@ -7,13 +7,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { REPO } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+const { chromium } = await loadPlaywright();
 
-const PORT = 7873;
-const ROOT = path.join("F:/pi-web-client/.scratch", "rename-ui");
+const PORT = Number(process.env.PI_WEB_PORT ?? 7873);
+const ROOT = path.join(REPO, ".scratch", "rename-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const SESSIONS = path.join(AGENT, "sessions");
@@ -38,7 +38,7 @@ const names = ["磁盘里的老会话", null];
 ids.forEach((id, i) => {
   const file = path.join(SESSIONS, `--zz-ui-probe--`, `2025-03-0${i + 1}T00-00-00-000Z_${id}.jsonl`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const header = { type: "session", version: 3, id, timestamp: "2025-03-01T00:00:00.000Z", cwd: "F:/pi-web-client" };
+  const header = { type: "session", version: 3, id, timestamp: "2025-03-01T00:00:00.000Z", cwd: REPO };
   const lines = [JSON.stringify(header)];
   if (names[i]) lines.push(JSON.stringify({ type: "session_info", id: "s1", parentId: null, timestamp: "2025-03-01T00:00:00.500Z", name: names[i] }));
   lines.push(
@@ -49,7 +49,7 @@ ids.forEach((id, i) => {
 });
 
 const bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
-  cwd: "F:/pi-web-client",
+  cwd: REPO,
   env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_STATE: STATE, PI_AGENT_DIR: AGENT, PI_WEB_TUNNEL: "0" },
   stdio: ["ignore", "pipe", "pipe"],
 });

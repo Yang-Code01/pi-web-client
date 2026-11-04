@@ -1,8 +1,10 @@
 // 探针：网页端「接管会话」链路 —— stepup → claim → owned/模型目录可用 → close 让回
 import fs from "node:fs";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
-import WebSocket from "file:///F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs";
+import { wsWrapper } from "../tools/paths.mjs";
+const { default: WebSocket } = await import(pathToFileURL(wsWrapper()).href);
 
 const BASE = "http://127.0.0.1:7864";
 const STATE = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), ".local/share"), "pi-web-client");

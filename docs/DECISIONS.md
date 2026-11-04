@@ -1339,3 +1339,46 @@
 - `node bridge/tests/ext-manager.mjs`（真 pi CLI，fixture 目录）：库存分 3 段推、首段就带包且 `mcpReady:false`、末段两个布尔都为真；`reqId` 原样回执；**两个启停同时发**（builtin + 用户扩展，同一个 `settings.json`）**两条都落盘**（没加锁时这一步必挂，实测丢过一条）；`createWriteLock` 的同 key 串行 / 异 key 并行 / 失败不堵队列；其余 D81 断言不变。
 - `node probes/ext-manager-stages.mjs`（桩桥 + 真 Chromium，`npm --prefix web run build` 之后跑）：冷启动先「读取已安装的包和扩展…」+ ⟳；本地段一到就出行、MCP 区写「连接 MCP 服务器中…」、包行「检查中…」；版本段到达后变「可更新到 2.0.0」、⟳ 消失、顶部「检查于 …」；关掉再开行立刻在且 ⟳ 在转；点「更新」→「排队中…」→「更新中…」，**别的包的更新、扩展的停用都可点**（同一行的卸载禁用）；两个包同时点 → 两个不同 `reqId`，结束 A 不影响 B；失败原因进控制台且行放开；`ext.op` 的启停同样「排队中 → 停用中 → 可点」。截图 `.scratch/ext-manager-stages/shots/`。
 - `npm run typecheck`（bridge + peer + web，含 `i18n-check`）干净。
+
+## D114 测试与探针里不再写死「这台机器」；代理是环境事实，不是仓库事实
+
+**问题**（用户点的）：`bridge/tests/e2e.mjs` 第一句就读 `F:\pi-web-client\.scratch\test-state\passphrase.txt`，在这台机器上直接 `ENOENT`。扫下来同一类写死共 **357 处 / 72 个文件**：
+
+- 仓库根：`F:/pi-web-client/…`（tests 12 个文件 + probes ≈44 个）；
+- playwright：`C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs` —— 连 npx 缓存目录的哈希都写死了，重装一次就失效；
+- pi CLI：`C:/Users/GG_Bond/AppData/Local/nvm/v23.11.1/…/bundle/cli.js`；node：`C:/nvm4w/nodejs/node.exe`；
+- 产品里的诊断文案：`连接失败（本机直连 GitHub 是断的，要走 127.0.0.1:18791 代理）`；
+- 文档：README 的测试示例 `PI_WEB_STATE=F:/…`、`docs/PLAN.md` 的目录树、技能的 `C:\Program Files (x86)\…\msedge.exe`；
+- 约定文档：`AGENTS.md` / `docs/agents/issue-tracker.md` 的「GitHub 不可直连，每条命令都要 `HTTPS_PROXY=…:18791`」。
+
+同名后果：任何别的克隆上，测试与探针**第一步就挂**；而那条代理断言在能直连的机器上是假的（这次的 PR 就是因为照它去等代理才卡住，实际 `gh api` 直连就通）。
+
+**决定：**
+
+1. **路径只有一个来源：`tools/paths.mjs`**（`REPO` 用 `import.meta.url` 反推、`DIST`、`scratch(…part)`、`wsWrapper()`）。tests 与 probes 都 `import` 它，不再出现盘符。
+2. **playwright 自己找**（`tools/playwright.mjs`）：`PW_PATH` → `<repo>/node_modules` → `%LOCALAPPDATA%/npm-cache/_npx/*`。**「导入成功」不算找到** —— npx 缓存里经常躺着没下载浏览器的半价货，只会在 `chromium.launch()` 时才炸；所以候选必须真 `launch()` 一次（关掉）才算可用。
+3. **pi CLI 复用桥的解析**（`tools/pi.mjs` → `bridge/dist/pi.js` 的 `resolvePi()`：`PI_BIN` → PATH 上的启动器 → nvm → `npm root -g`），`process.execPath` 代替写死的 `node.exe`。
+4. **端口不再钉死**：`const PORT = Number(process.env.PI_WEB_PORT ?? <原值>)` —— 默认值不变（文档里那些端口号仍然有效），但两份实例要并行时给个环境变量就行。
+5. **探针里的假路径**（`F:/probe-work/alpha`、`F:/yqm/pi-cli-web-test` 之类只出现在桩数据里）也换成 `<repo>/.scratch/probe-work/…`：它们不碰盘，但留着就是在教下一次「写死盘符没关系」。
+6. **产品文案不写死代理**：`/diagnose` 的网络失败改成「先确认这台机器能直连（`curl -I https://github.com`）；确实要走代理时，填 pi 的 `httpProxy` 或 `HTTPS_PROXY`」+「换网络或代理：`git -c …proxy=<你的代理> push`」。中文原文就是 i18n 的键，`en.ts` / `ja.ts` 同步换。
+7. **约定文档改成先试直连**：`AGENTS.md` 一句话 + `issue-tracker.md` 一节，写清两件事：① `curl https://api.github.com` 可能 403 而 `gh` 正常，判网络用 `gh` 不用 curl；② push / `gh pr create` 的 403 往往是 **active 账号**没权限，不是网络 —— 不改全局状态的推法：`TOKEN=$(gh auth token --user <owner>)` + `git push https://x-access-token:$TOKEN@…` + `GH_TOKEN=$TOKEN gh pr create`。
+8. **技能的 Edge 路径**交给 App Paths：`Start-Process msedge -ArgumentList '--new-window',…`（64 位的 Edge 在 `Program Files`，写死 `Program Files (x86)` 会白跑一次）。
+
+**为什么：**
+
+- 一个文件知道自己在哪（`import.meta.url`），这是唯一在所有机器上都为真的路径；盘符和用户名不是。
+- 代理是**环境事实**：开发那台机器要 18791，这台不用。仓库文档把它写成普遍事实，代价就是这次这样 —— 照着等一个不存在的代理。同理，产品里的诊断文案一旦写死某台机器的网络拓扑，就只对那台机器诚实。
+- 「探针在作者机器上能跑」不等于「探针可移植」：他的浏览器语言是 zh-CN（所以 `newContext()` 不带 `locale` 也能过），`round24-pinactions.mjs` 在别的机器上会读到英文界面然后断言中文 —— 这次顺带补了 `locale: "zh-CN"`（AGENTS.md 里本来就写着这条规矩）。
+
+**代价 / 可改：**
+
+- `loadPlaywright()` 会多起一次无头 chromium（约 0.5 s）来验证候选；想要更快就 `PW_PATH` 钉死一份。
+- 探针仍各自固定默认端口（文档里的数字不变），并行跑要自己给 `PI_WEB_PORT`。
+- 历史记录**不动**：`docs/DECISIONS.md`、`docs/probes/*.md`、`docs/pi-integration-facts.md` 里的 `F:` / `GG_Bond` 是「当时怎么验的」的现场记录，改了等于伪造证据。
+
+**验证：**
+
+- 62 个文件改写后 `node --check` 全过；`rg 'F:/pi-web-client|GG_Bond|nvm4w|v23\.11\.1' bridge/tests probes tools` 无代码残留（只剩 `tools/*.mjs` 注释里「以前写死成什么样」的引用）。
+- 之前跑不起来的现在真跑：`bridge/tests/e2e.mjs` 不再 `ENOENT`（它会连 7867 上的隔离桥，本机没有就报连接失败而不是文件不存在）；`probes/round{8,10,15,16,19,20,21,22,24}` 等一批桩桥探针全部 `ALL OK`（含这次新修的两处：`round22-dirsize` 的 `F:\probe-work` 转义写法、`round24-pinactions` 缺 `locale`）。
+- `probes/chip-shot.mjs` 依赖仓库外的私有 `cdp.mjs`：改成读 `CDP_LIB`，没有就一句人话退出，不再抛 `ERR_MODULE_NOT_FOUND`。
+- 回归：`npm run typecheck`（含 i18n 1001 键 × 3 语言）干净；`bridge/tests/ext-manager.mjs`、`bridge/tests/pi-cli.mjs` 仍 PASS。
