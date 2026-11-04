@@ -32,8 +32,18 @@ let steering = [];
 let followUp = [];
 let settleWaiters = [];
 let bashAborted = false;
-// What the bridge started us with (launch options, #28).
-note({ t: "argv", argv: process.argv.slice(2), cwd: process.cwd() });
+// What the bridge started us with (launch options, #28), plus the PI_WEB_* vars it let through:
+// the bridge strips its own settings, and a test can assert one did not reach pi (#76).
+note({ t: "argv", pid: process.pid, argv: process.argv.slice(2), cwd: process.cwd(), piWeb: Object.keys(process.env).filter((k) => k.startsWith("PI_WEB_")) });
+// One line per process that went away, so "it really exited" is provable from the log (#76).
+let exited = false;
+const noteExit = () => {
+  if (exited) return;
+  exited = true;
+  note({ t: "exit", pid: process.pid });
+};
+process.on("exit", noteExit);
+process.on("SIGTERM", () => process.exit(0));
 
 const queueUpdate = () => out({ type: "queue_update", steering: [...steering], followUp: [...followUp] });
 const assistant = (text, extra = {}) => ({
@@ -232,4 +242,4 @@ process.stdin.on("data", (chunk) => {
     void handle(cmd);
   }
 });
-process.stdin.on("end", () => process.exit(0));
+process.stdin.on("end", () => process.exit(0)); // runs the "exit" note above
