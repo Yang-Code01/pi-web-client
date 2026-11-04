@@ -133,19 +133,31 @@ try {
 
   // 顶栏「📁 文件管理器」在 viewer 里开浏览态，起点就是会话 cwd（= WORK）。
   const openFile = async (name) => {
+    await page.locator(".topbar .icon-btn", { hasText: "文件管理器" }).first().evaluate((el) => el.click());
+    await page.locator(".viewer-browse .dirpicker").first().waitFor({ timeout: 15000 });
+    const row = page.locator(".dirpicker .file-row").filter({ hasText: name }).first();
+    await until(async () => (await row.count()) > 0, 20000, `文件列表里的 ${name}`);
+    // 点行之后可能被「文件管理器」的异步收尾画回浏览态（openFiles 比预览晚一拍），
+    // 所以这里允许再点两次；用户手速不会这么快，真实使用碰不到。
     for (let attempt = 0; attempt < 3; attempt++) {
-      await page.locator(".topbar .icon-btn", { hasText: "文件管理器" }).first().evaluate((el) => el.click());
-      await page.locator(".viewer-browse .dirpicker").first().waitFor({ timeout: 15000 });
-      const row = page.locator(`.dirpicker .file-row:has-text("${name}")`).first();
-      if (await row.count()) {
-        await row.evaluate((el) => el.click());
-        await page.locator(".sh, .md-doc, .viewer-msg").first().waitFor({ timeout: 20000 });
-        return;
-      }
-      await sleep(500);
+      await page.locator(".dirpicker .file-row").filter({ hasText: name }).first().evaluate((el) => el.click());
+      const ok = await page
+        .locator(".sh, .md-doc")
+        .first()
+        .waitFor({ timeout: 4000 })
+        .then(() => true)
+        .catch(() => false);
+      if (ok) return;
     }
-    const seen = await page.$$eval(".dirpicker .file-row", (els) => els.map((e) => e.textContent).slice(0, 20));
-    assert(false, `文件列表里没有 ${name}（看到：${seen.join(" / ")}）`);
+    await page.screenshot({ path: path.join(OUT, `fail-${name}.png`) });
+    const info = await page.evaluate(() => ({
+      body: document.querySelector(".viewer-body")?.className,
+      head: document.querySelector(".viewer-name")?.textContent,
+      choose: document.querySelector(".choose-title")?.textContent,
+      panes: [...document.querySelectorAll(".viewer-head .pane-seg button")].map((b) => `${b.textContent}${b.classList.contains("on") ? "*" : ""}${b.disabled ? "(x)" : ""}`).join(","),
+      rows: document.querySelectorAll(".dirpicker .file-row").length,
+    }));
+    assert(false, `打开 ${name} 失败：${JSON.stringify(info)}`);
   };
 
   // ---------------------------------------------------------------- xlsx
@@ -219,30 +231,94 @@ try {
     e.scrollLeft = 0;
   });
   await sleep(300);
-  const beforeTop = (await title.boundingBox()).y;
-  const headerBefore = (await page.locator(".sh-cell", { hasText: "行20" }).boundingBox())?.y ?? 0;
+  // 注意：locator.boundingBox() 会先把元素滚进视口，量「冻结有没有冻住」必须用
+  // getBoundingClientRect（它只报告，不滚动），否则测的是 Playwright 干的事。
+  const rectOf = (sel, text) =>
+    page.evaluate(([q, t]) => {
+      const els = [...document.querySelectorAll(q)];
+      const e = t ? els.find((x) => x.textContent.includes(t)) : els[0];
+      if (!e) return null;
+      const r = e.getBoundingClientRect();
+      return { x: Math.round(r.left), y: Math.round(r.top) };
+    }, [sel, text]);
+  const headColBefore = await rectOf(".sh-colhead");
+  const labelABefore = await rectOf(".sh-colhead .sh-colcell", "A");
+  const rowNumBefore = await rectOf(".sh-rowhead .sh-rowcell", "3");
+  const titleBefore = await rectOf(".sh-cell.frozen", "◆変更履歴");
+  const bodyRowBefore = await rectOf(".sh-cell", "行20");
   await page.locator(".sh-view").evaluate((e) => {
     e.scrollTop = 160;
   });
   await sleep(400);
-  if (process.env.XLSX_DEBUG) {
-    const probe = await page.evaluate(() => {
-      const v = document.querySelector(".sh-view");
-      const cells = [...document.querySelectorAll(".sh-cell.frozen")];
-      const before = cells[0]?.style.top;
-      v.scrollTop = 90;
-      v.dispatchEvent(new Event("scroll"));
-      return { hasOnscroll: typeof v.onscroll, views: document.querySelectorAll(".sh-view").length, cells: cells.length, before, scrollTop: v.scrollTop };
-    });
-    log("probe:", JSON.stringify(probe));
-    await sleep(300);
-    log("after dispatch:", await page.locator(".sh-cell", { hasText: "◆変更履歴" }).first().evaluate((e) => `top=${e.style.top}`));
-    log("after scroll:", await page.locator(".sh-cell", { hasText: "◆変更履歴" }).first().evaluate((e) => `top=${e.style.top} class=${e.className} viewScroll=${e.closest(".sh-view").scrollTop} tag=${e.textContent}`));
+  const headColAfter = await rectOf(".sh-colhead");
+  const labelAAfter = await rectOf(".sh-colhead .sh-colcell", "A");
+  const rowNumAfter = await rectOf(".sh-rowhead .sh-rowcell", "3");
+  const titleAfter = await rectOf(".sh-cell.frozen", "◆変更履歴");
+  const bodyRowAfter = await rectOf(".sh-cell", "行20");
+  if (process.env.XLSX_DEBUG) log("freeze:", JSON.stringify({ headColBefore, headColAfter, labelABefore, labelAAfter, rowNumBefore, rowNumAfter, titleBefore, titleAfter, bodyRowBefore, bodyRowAfter }));
+  // 列头（A/B/C 那一行）钉住不动
+  assert(Math.abs(headColAfter.y - headColBefore.y) <= 1, `列头不随竖向滚动移动（${headColBefore.y} → ${headColAfter.y}）`);
+  assert(Math.abs(labelAAfter.y - labelABefore.y) <= 1, `列头里的字母也不动（${labelABefore.y} → ${labelAAfter.y}）`);
+  // 冻结的前 3 行钉住，普通行滚走
+  assert(Math.abs(titleAfter.y - titleBefore.y) <= 1, `冻结的标题行钉住（${titleBefore.y} → ${titleAfter.y}）`);
+  assert(bodyRowAfter.y < bodyRowBefore.y - 100, `普通行确实滚走了（${bodyRowBefore.y} → ${bodyRowAfter.y}）`);
+  // 行号跟着内容走：3 行号的位移和冻结区一致（不随滚动），第 20 行的行号应该和它那行一样滚走
+  assert(Math.abs(rowNumAfter.y - rowNumBefore.y) <= 1, `行号 3 与冻结行一起钉住（${rowNumBefore.y} → ${rowNumAfter.y}）`);
+  // 再用真滚轮滚一次（用户是这么滚的）：set scrollTop 和滚轮走的不是同一条路
+  const gridBox = await page.locator(".sh-view").boundingBox();
+  await page.mouse.move(gridBox.x + gridBox.width / 2, gridBox.y + gridBox.height / 2);
+  await page.mouse.wheel(0, 240);
+  await sleep(500);
+  const wheelHead = await rectOf(".sh-colhead");
+  const wheelTitle = await rectOf(".sh-cell.frozen", "◆変更履歴");
+  const wheelBody = await rectOf(".sh-cell", "行20");
+  const wheelScroll = await page.locator(".sh-view").evaluate((e) => Math.round(e.scrollTop));
+  if (process.env.XLSX_DEBUG) log("wheel:", JSON.stringify({ wheelScroll, wheelHead, wheelTitle, wheelBody }));
+  assert(wheelScroll > 0, `滚轮真的滚了（scrollTop=${wheelScroll}）`);
+  assert(Math.abs(wheelHead.y - headColBefore.y) <= 1, `滚轮滚完列头还在原处（${headColBefore.y} → ${wheelHead.y}）`);
+  assert(Math.abs(wheelTitle.y - titleBefore.y) <= 1, `滚轮滚完冻结行还在原处（${titleBefore.y} → ${wheelTitle.y}）`);
+  assert(wheelBody.y < bodyRowBefore.y - 100, `滚轮把普通行滚上去了（${bodyRowBefore.y} → ${wheelBody.y}）`);
+
+  // 滚轮落在「行号条」上时会不会去滚页面（行号条自己 overflow:hidden，不可滚）
+  const rh = await page.locator(".sh-rowhead").boundingBox();
+  await page.mouse.move(rh.x + rh.width / 2, rh.y + 120);
+  await page.mouse.wheel(0, 300);
+  await sleep(400);
+  const overRowhead = await page.evaluate(() => ({
+    pageY: Math.round(window.scrollY),
+    viewTop: Math.round(document.querySelector(".sh-view").scrollTop),
+    dockTop: Math.round(document.querySelector(".viewer.dock").getBoundingClientRect().top),
+  }));
+  if (process.env.XLSX_DEBUG) log("wheel@rowhead:", JSON.stringify(overRowhead));
+
+  // 快速滚动的每一帧里，冻结行的屏幕位置有没有偏离（跟随滞后）
+  await page.evaluate(() => {
+    window.__frames = [];
+    const v = document.querySelector(".sh-view");
+    const find = () => [...document.querySelectorAll(".sh-cell.frozen")].find((e) => e.textContent.includes("◆変更履歴"));
+    const tick = () => {
+      const c = find();
+      if (c) {
+        const r = c.getBoundingClientRect();
+        window.__frames.push([Math.round(v.scrollTop), Math.round(r.top)]);
+      }
+      if (window.__frames.length < 60) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  const vb = await page.locator(".sh-view").boundingBox();
+  await page.mouse.move(vb.x + vb.width / 2, vb.y + vb.height / 2);
+  for (let i = 0; i < 8; i++) {
+    await page.mouse.wheel(0, 120);
+    await sleep(30);
   }
-  const afterTop = (await title.boundingBox()).y;
-  const headerAfter = (await page.locator(".sh-cell", { hasText: "行20" }).boundingBox())?.y ?? 0;
-  assert(Math.abs(afterTop - beforeTop) < 2, `冻结的前 3 行不随滚动移动（${beforeTop} → ${afterTop}）`);
-  assert(Math.abs(headerAfter - headerBefore) > 100, `普通行确实滚走了（${headerBefore} → ${headerAfter}）`);
+  await sleep(600);
+  const frames = await page.evaluate(() => window.__frames);
+  const tops = frames.map((f) => f[1]);
+  const spread = Math.max(...tops) - Math.min(...tops);
+  if (process.env.XLSX_DEBUG) log("frames:", JSON.stringify({ n: frames.length, spread, min: Math.min(...tops), max: Math.max(...tops), tail: frames.slice(-6) }));
+  assert(spread <= 3, `快速滚动时冻结行不该抖/滞后（屏幕 y 波动 ${spread}px）`);
+
   await page.locator(".sh-view").evaluate((e) => {
     e.scrollTop = 0;
   });
@@ -284,6 +360,97 @@ try {
   await openFile("notes.md");
   await page.locator(".md-doc").first().waitFor({ timeout: 15000 });
   assert((await page.locator(".viewer.dock").count()) === 0, "md 还是开在侧栏里，没被表格的浮窗带走");
+
+  // ---------------------------------------------------------------- 冻结行 + 冻结列
+  await openFile("frozen.xlsx");
+  await page.locator(".sh-cell").first().waitFor({ timeout: 15000 });
+  const panes = await page.evaluate(() => {
+    const box = (sel) => {
+      const e = document.querySelector(sel);
+      if (!e) return null;
+      const r = e.getBoundingClientRect();
+      return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
+    };
+    return { top: box(".sh-pane.pt"), left: box(".sh-pane.pl"), corner: box(".sh-pane.pc") };
+  });
+  if (process.env.XLSX_DEBUG) {
+    log("panes:", JSON.stringify(panes));
+    log("rowHeights:", await page.evaluate(() => {
+      const cells = [...document.querySelectorAll(".sh-pane .sh-cell")].slice(0, 6).map((e) => `${e.textContent}@${Math.round(e.getBoundingClientRect().top)}`);
+      const pt = document.querySelector(".sh-pane.pt");
+      return { paneTopH: pt ? Math.round(pt.getBoundingClientRect().height) : null, cells };
+    }));
+  }
+  if (process.env.XLSX_DEBUG) {
+    log("colhead:", JSON.stringify(await page.evaluate(() => {
+      const v = document.querySelector(".sh-view").getBoundingClientRect();
+      return [...document.querySelectorAll(".sh-colcell")].map((e) => {
+        const r = e.getBoundingClientRect();
+        return `${e.textContent}@${Math.round(r.left - v.left)}+${Math.round(r.width)}`;
+      });
+    })));
+  }
+  assert(panes.top && panes.left && panes.corner, `冻结的三块浮层都在（${JSON.stringify(panes)}）`);
+  assert(panes.left[2] > 50 && panes.corner[2] > 50, `冻结列有实际宽度（left=${panes.left?.[2]}, corner=${panes.corner?.[2]}）`);
+
+  const cellXY = (t) =>
+    page.evaluate((needle) => {
+      const e = [...document.querySelectorAll(".sh-cell")].find((x) => x.textContent.includes(needle));
+      if (!e) return null;
+      const r = e.getBoundingClientRect();
+      return { x: Math.round(r.left), y: Math.round(r.top) };
+    }, t);
+  const a1Before = await cellXY("担当");
+  const c1Before = await cellXY("金額");
+  const a20Before = await cellXY("担当20");
+  await page.locator(".sh-view").evaluate((e) => {
+    e.scrollLeft = 260;
+    e.scrollTop = 200;
+  });
+  await sleep(400);
+  const a1After = await cellXY("担当");
+  const c1After = await cellXY("金額");
+  const a20After = await cellXY("担当20");
+  assert(a1Before && a1After && Math.abs(a1After.x - a1Before.x) <= 1, `冻结列不随横向滚动移动（${a1Before?.x} → ${a1After?.x}）`);
+  assert(c1Before && c1After && c1After.x < c1Before.x - 100, `普通列跟着横向滚（${c1Before?.x} → ${c1After?.x}）`);
+  // 列头别和冻结带叠字：除了 A 以外，任何列标都不该落进冻结带的宽度里
+  const headOverlap = await page.evaluate(() => {
+    const view = document.querySelector(".sh-view").getBoundingClientRect();
+    const fzW = document.querySelector(".sh-pane.pl")?.getBoundingClientRect().width ?? 0;
+    return [...document.querySelectorAll(".sh-colcell")].map((e) => {
+      const r = e.getBoundingClientRect();
+      return { t: e.textContent, l: Math.round(r.left - view.left + (view.left - view.left)) };
+    }).filter((x) => x.l < Math.round(fzW) - 1).map((x) => `${x.t}@${x.l}`);
+  });
+  if (process.env.XLSX_DEBUG) log("headOverlap:", JSON.stringify(headOverlap));
+  assert(headOverlap.length <= 1 && (headOverlap[0]?.startsWith("A") ?? true), `列头没有压进冻结带（${JSON.stringify(headOverlap)}）`);
+  assert(a20Before && a20After && Math.abs(a20After.y - a20Before.y) > 100, `普通行跟着纵向滚（${a20Before?.y} → ${a20After?.y}）`);
+
+  // 冻结区里也能点开编辑
+  await page.locator(".viewer-head .pane-seg button", { hasText: "编辑" }).click();
+  // 注意 hasText 是子串匹配：`担当1` 会先撞上「担当10」。这里要的是第 2 行的「担当2」。
+  const frozenCell = page.locator(".sh-pane .sh-cell").filter({ hasText: /^担当2$/ }).first();
+  await frozenCell.click();
+  const hitName = await page.locator(".sh-name").textContent();
+  assert(hitName === "A2", `点冻结区里的 A2 落在 A2（got ${hitName}）`);
+  await page.locator(".sh-fxinput").fill("担当ZZ");
+  await page.locator(".sh-fxinput").press("Enter");
+  await sleep(200);
+  assert((await page.locator(".sh-cell.dirty").count()) >= 1, "冻结行里的格子也能改（标了脏）");
+  const dirtyName = await page.locator(".sh-name").textContent();
+  assert(dirtyName === "A2", `改的也是 A2（got ${dirtyName}）`);
+  // 冻结带里的表头行要画全：前两行在滚动区里的每一列都得有格子
+  const band = await page.evaluate(() => {
+    const texts = [...document.querySelectorAll(".sh-pane.pt .sh-cell")].map((e) => e.textContent);
+    return { n: texts.length, sample: texts.slice(0, 14) };
+  });
+  if (process.env.XLSX_DEBUG) log("band:", JSON.stringify(band));
+  assert(band.n >= 10, `冻结带上画出了足够多的格子（${JSON.stringify(band)}）`);
+  await page.screenshot({ path: path.join(OUT, "xlsx-frozen.png") });
+  // 离开编辑态会问「未保存的改动」（D50 那条一样的语义）：演一遍「放弃改动」
+  await page.locator(".viewer-head .pane-seg button", { hasText: "预览" }).click();
+  await page.locator(".choose-row .btn", { hasText: "放弃改动" }).click();
+  await until(async () => (await page.locator(".sh-cell.dirty").count()) === 0, 10000, "放弃改动后回到干净状态");
 
   // ---------------------------------------------------------------- 图表占位
   await openFile("chart.xlsx");

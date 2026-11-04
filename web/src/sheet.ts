@@ -62,6 +62,10 @@ export class SheetView {
   private space: HTMLElement;
   private cellsLayer: HTMLElement;
   private chartLayer: HTMLElement;
+  private frozenLayer!: HTMLElement;
+  private paneTop!: HTMLElement;
+  private paneLeft!: HTMLElement;
+  private paneCorner!: HTMLElement;
   private selBox: HTMLElement;
   private fx: HTMLInputElement;
   private nameBox: HTMLElement;
@@ -166,9 +170,32 @@ export class SheetView {
     this.chartLayer.className = "sh-charts";
     this.selBox = document.createElement("div");
     this.selBox.className = "sh-sel";
-    this.space.append(this.cellsLayer, this.chartLayer, this.selBox);
+    this.space.append(this.cellsLayer, this.chartLayer);
     this.view.append(this.space);
-    mid.append(corner, this.colhead, this.rowhead, this.view);
+    // 冻结区画在滚动容器**外面**（D118）：放在里面靠每帧 JS 补 top 会滞后 ——
+    // 合成器先滚、scroll 事件后到，实测快速滚动时表头抖 120px。
+    this.frozenLayer = document.createElement("div");
+    this.frozenLayer.className = "sh-frozen";
+    this.paneTop = document.createElement("div");
+    this.paneTop.className = "sh-pane pt";
+    this.paneLeft = document.createElement("div");
+    this.paneLeft.className = "sh-pane pl";
+    this.paneCorner = document.createElement("div");
+    this.paneCorner.className = "sh-pane pc";
+    for (const pane of [this.paneTop, this.paneLeft, this.paneCorner]) {
+      pane.addEventListener("pointerdown", (ev) => this.onPointerDown(ev));
+      pane.addEventListener(
+        "wheel",
+        (ev) => {
+          ev.preventDefault();
+          this.view.scrollTop += ev.deltaY;
+          this.view.scrollLeft += ev.shiftKey && !ev.deltaX ? ev.deltaY : ev.deltaX;
+        },
+        { passive: false },
+      );
+    }
+    this.frozenLayer.append(this.paneTop, this.paneLeft, this.paneCorner, this.selBox);
+    mid.append(corner, this.colhead, this.rowhead, this.view, this.frozenLayer);
 
     // ---- 底部：sheet 标签 + 状态 + 缩放
     const foot = document.createElement("div");
@@ -316,6 +343,9 @@ export class SheetView {
       d.className = `sh-colcell${this.inSelCol(c) ? " on" : ""}`;
       d.textContent = colName(c);
       const x = this.colX(c) + (this.freezeCols && c < this.freezeCols ? this.view.scrollLeft : 0);
+      // 冻结列盖住的那一段不再画：否则滚过来的 C 会压在钉住的 A 上，看起来像 "AC"。
+      // 判据要用「屏幕位置」（x 减去横向滚动量），不是内容位置。
+      if (fzW > 0 && c >= this.freezeCols && x - this.view.scrollLeft < fzW - 1) continue;
       d.style.left = `${x}px`;
       d.style.width = `${this.spanW(c)}px`;
       if (this.meta.cols[c]?.hidden) d.style.display = "none";
@@ -334,6 +364,8 @@ export class SheetView {
       d.className = `sh-rowcell${this.inSelRow(r) ? " on" : ""}`;
       d.textContent = String(r + 1);
       const y = this.rowY(r) + (this.freezeRows && r < this.freezeRows ? this.view.scrollTop : 0);
+      // 同上：冻结行遮住的行号不画，免得「1」和滚上来的「11」叠在一起。
+      if (fzH > 0 && r >= this.freezeRows && y - this.view.scrollTop < fzH - 1) continue;
       d.style.top = `${y}px`;
       d.style.height = `${this.spanH(r)}px`;
       d.style.display = this.meta.rows[String(r)] === 0 ? "none" : "";
@@ -423,114 +455,140 @@ export class SheetView {
 
   paint(): void {
     const vis = this.visible();
-    void this.ensure({ r0: Math.max(0, vis.r0 - 2), r1: Math.min(vis.r1 + 2, this.rowOff.length - 2), c0: Math.max(0, vis.c0 - 1), c1: Math.min(vis.c1 + 1, this.colOff.length - 2) });
+    void this.ensure({
+      r0: Math.max(0, vis.r0 - 2),
+      r1: Math.min(vis.r1 + 2, this.rowOff.length - 2),
+      c0: Math.max(0, vis.c0 - 1),
+      c1: Math.min(vis.c1 + 1, this.colOff.length - 2),
+    });
     this.paintHeads();
-    const z = this.zoom;
     const fzR = this.freezeRows;
     const fzC = this.freezeCols;
+    this.layoutFrozen(fzR, fzC);
     const seen = new Set<string>();
-
-    const draw = (r: number, c: number): void => {
-      const key = `${r}:${c}`;
-      const cover = this.covers.get(key);
-      if (cover && cover[1] < 0) return; // 被合并盖住
-      const cell = this.cells.get(key);
-      if (!cell) return;
-      seen.add(key);
-      let el = this.els.get(key);
-      if (!el) {
-        el = document.createElement("div");
-        el.className = "sh-cell";
-        this.cellsLayer.append(el);
-        this.els.set(key, el);
-        el.addEventListener("dblclick", (ev) => {
-          ev.stopPropagation();
-          this.startEdit();
-        });
-      }
-      const r2 = cover ? cover[2] : r;
-      const c2 = cover ? cover[3] : c;
-      const frozen = (fzR > 0 && r < fzR) || (fzC > 0 && c < fzC);
-      const x = this.colX(c) + (fzC > 0 && c < fzC ? this.view.scrollLeft : 0);
-      const y = this.rowY(r) + (fzR > 0 && r < fzR ? this.view.scrollTop : 0);
-      const w = this.spanW(c, c2) - (cover ? 0 : 1);
-      const h = this.spanH(r, r2) - (cover ? 0 : 1);
-      const sig = `${x}|${y}|${w}|${h}|${cell.t}|${cell.s}|${cell.cf}|${cell.bar}|${cell.icon}|${frozen}`;
-      if (el.dataset.sig === sig) return;
-      el.dataset.sig = sig;
-      el.style.cssText = "";
-      el.style.left = `${x}px`;
-      el.style.top = `${y}px`;
-      el.style.width = `${Math.max(0, w)}px`;
-      el.style.height = `${Math.max(0, h)}px`;
-      if (frozen) el.classList.add("frozen");
-      else el.classList.remove("frozen");
-      const style = cell.s >= 0 ? this.styles[cell.s] : undefined;
-      const cf = cell.cf != null ? this.cfs[cell.cf] : undefined;
-      const bg = cf?.fill ?? style?.fill;
-      el.style.background = bg ?? "#fff";
-      if (cell.bar != null && !cf?.fill) {
-        const color = "rgba(99,142,198,0.35)";
-        el.style.background = `linear-gradient(90deg, ${color} ${(cell.bar * 100).toFixed(1)}%, #fff ${(cell.bar * 100).toFixed(1)}%)`;
-      }
-      if (style?.size) el.style.fontSize = `${style.size * z}px`;
-      if (style?.family) el.style.fontFamily = `"${style.family}", var(--ui-font, sans-serif)`;
-      const color = cf?.color ?? style?.color ?? "#1f2328";
-      el.style.color = color;
-      const bold = cf?.bold ?? style?.bold;
-      el.style.fontWeight = bold ? "600" : "400";
-      el.style.fontStyle = (cf?.italic ?? style?.italic) ? "italic" : "normal";
-      const deco = [style?.underline ? "underline" : "", style?.strike ? "line-through" : ""].filter(Boolean).join(" ");
-      el.style.textDecoration = deco || "none";
-      const hAlign = style?.h === "c" ? "center" : style?.h === "r" ? "right" : "left";
-      el.style.textAlign = hAlign;
-      el.style.justifyContent = hAlign === "center" ? "center" : hAlign === "right" ? "flex-end" : "flex-start";
-      el.style.alignItems = style?.v === "t" ? "flex-start" : style?.v === "m" ? "center" : style?.v === "b" ? "flex-end" : "flex-start";
-      el.style.whiteSpace = style?.wrap ? "pre-wrap" : "nowrap";
-      if (style?.border) {
-        el.style.borderTop = style.border.t ?? "";
-        el.style.borderRight = style.border.r ?? "";
-        el.style.borderBottom = style.border.b ?? "";
-        el.style.borderLeft = style.border.l ?? "";
-      } else {
-        el.style.borderRight = "1px solid #EDEDF0";
-        el.style.borderBottom = "1px solid #EDEDF0";
-      }
-      el.textContent = `${cell.icon ? `${cell.icon} ` : ""}${cell.t}`;
-      el.classList.toggle("link", Boolean(cell.href));
-      el.classList.toggle("err", cell.k === "e");
-      el.title = cell.href ? `${cell.href}` : style?.fmt ? `${style.fmt}` : cell.f ? `=${cell.f}` : "";
-      if (cell.href) {
-        el.dataset.href = cell.href;
-        el.onclick = (ev) => {
-          if (ev.ctrlKey || ev.metaKey) window.open(cell.href, "_blank", "noreferrer");
-        };
-      } else {
-        el.onclick = null;
-        delete el.dataset.href;
-      }
-      el.classList.toggle("dirty", this.pending.get(this.meta.name)?.has(key) === true);
-    };
-
-    // 冻结区先画（在上层），普通区只画可见范围。
-    const rStart = vis.r0;
-    for (let r = rStart; r <= vis.r1; r++) {
-      for (let c = vis.c0; c <= vis.c1; c++) draw(r, c);
-    }
-    for (let r = 0; r < fzR && r < vis.r1 + 1; r++) for (let c = vis.c0; c <= vis.c1; c++) draw(r, c);
-    for (let c = 0; c < fzC && c < vis.c1 + 1; c++) for (let r = rStart; r <= vis.r1; r++) draw(r, c);
-    for (let r = 0; r < fzR; r++) for (let c = 0; c < fzC; c++) draw(r, c);
-
+    for (let r = vis.r0; r <= vis.r1; r++) for (let c = vis.c0; c <= vis.c1; c++) this.paintCell(r, c, seen);
+    if (fzR) for (let r = 0; r < fzR; r++) for (let c = Math.max(vis.c0, fzC); c <= vis.c1; c++) this.paintCell(r, c, seen);
+    if (fzC) for (let c = 0; c < fzC; c++) for (let r = Math.max(vis.r0, fzR); r <= vis.r1; r++) this.paintCell(r, c, seen);
+    if (fzR && fzC) for (let r = 0; r < fzR; r++) for (let c = 0; c < fzC; c++) this.paintCell(r, c, seen);
     // 滚出窗口的格子直接回收：留着不会错，但滚一圈回来就堆了几千个没人看的 DOM。
     for (const [key, el] of this.els) {
       if (seen.has(key)) continue;
       el.remove();
       this.els.delete(key);
     }
-
     this.paintSelection();
+    this.placeInput();
     this.paintCharts();
     this.paintStatus();
+  }
+
+  /** 三块冻结浮层的几何（视口 px）：上带 / 左带 / 左上角。 */
+  private layoutFrozen(fzR: number, fzC: number): void {
+    const w = fzC ? this.colX(fzC) : 0;
+    const h = fzR ? this.rowY(fzR) : 0;
+    this.frozenLayer.style.display = fzR || fzC ? "" : "none";
+    this.paneTop.style.cssText = `left:${w}px;top:0;right:0;height:${h}px`;
+    this.paneLeft.style.cssText = `left:0;top:${h}px;width:${w}px;bottom:0`;
+    this.paneCorner.style.cssText = `left:0;top:0;width:${w}px;height:${h}px`;
+  }
+
+  /**
+   * 画一格。四种宿主各有坐标系：滚动区用内容坐标；冻结区用视口坐标（另一边减掉滚动量）。
+   * 冻结区因此是「真的钉住」的，不靠 JS 追帧。
+   */
+  private paintCell(r: number, c: number, seen: Set<string>): void {
+    const key = `${r}:${c}`;
+    const cover = this.covers.get(key);
+    if (cover && cover[1] < 0) return;
+    const cell = this.cells.get(key);
+    if (!cell) return;
+    const rowFrozen = this.freezeRows > 0 && r < this.freezeRows;
+    const colFrozen = this.freezeCols > 0 && c < this.freezeCols;
+    const mode = rowFrozen ? (colFrozen ? "pc" : "pt") : colFrozen ? "pl" : "main";
+    seen.add(key);
+    const layer = mode === "main" ? this.cellsLayer : mode === "pt" ? this.paneTop : mode === "pl" ? this.paneLeft : this.paneCorner;
+    const dx = mode === "pt" ? this.view.scrollLeft : 0;
+    const dy = mode === "pl" ? this.view.scrollTop : 0;
+    const r2 = cover ? cover[2] : r;
+    const c2 = cover ? cover[3] : c;
+    const x = this.colX(c) - dx;
+    const y = this.rowY(r) - dy;
+    const w = Math.max(0, this.spanW(c, c2) - (cover ? 0 : 1));
+    const h = Math.max(0, this.spanH(r, r2) - (cover ? 0 : 1));
+    let el = this.els.get(key);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "sh-cell";
+      this.els.set(key, el);
+      el.addEventListener("dblclick", (ev) => {
+        ev.stopPropagation();
+        this.startEdit();
+      });
+    }
+    if (el.parentElement !== layer) layer.append(el);
+    el.classList.toggle("frozen", mode !== "main");
+    const sig = `${mode}|${x}|${y}|${w}|${h}|${cell.t}|${cell.s}|${cell.cf}|${cell.bar}|${cell.icon}`;
+    if (el.dataset.sig === sig) return;
+    el.dataset.sig = sig;
+    el.style.cssText = "";
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    el.style.width = `${w}px`;
+    el.style.height = `${h}px`;
+    const style = cell.s >= 0 ? this.styles[cell.s] : undefined;
+    const cf = cell.cf != null ? this.cfs[cell.cf] : undefined;
+    const bg = cf?.fill ?? style?.fill;
+    el.style.background = bg ?? "#fff";
+    if (cell.bar != null && !cf?.fill) {
+      const color = "rgba(99,142,198,0.35)";
+      el.style.background = `linear-gradient(90deg, ${color} ${(cell.bar * 100).toFixed(1)}%, #fff ${(cell.bar * 100).toFixed(1)}%)`;
+    }
+    if (style?.size) el.style.fontSize = `${style.size}px`;
+    if (style?.family) el.style.fontFamily = `"${style.family}", var(--ui-font, sans-serif)`;
+    el.style.color = cf?.color ?? style?.color ?? "#1f2328";
+    el.style.fontWeight = (cf?.bold ?? style?.bold) ? "600" : "400";
+    el.style.fontStyle = (cf?.italic ?? style?.italic) ? "italic" : "normal";
+    const deco = [style?.underline ? "underline" : "", style?.strike ? "line-through" : ""].filter(Boolean).join(" ");
+    el.style.textDecoration = deco || "none";
+    const hAlign = style?.h === "c" ? "center" : style?.h === "r" ? "right" : "left";
+    el.style.textAlign = hAlign;
+    el.style.justifyContent = hAlign === "center" ? "center" : hAlign === "right" ? "flex-end" : "flex-start";
+    el.style.alignItems = style?.v === "t" ? "flex-start" : style?.v === "m" ? "center" : style?.v === "b" ? "flex-end" : "flex-start";
+    el.style.whiteSpace = style?.wrap ? "pre-wrap" : "nowrap";
+    if (style?.border) {
+      el.style.borderTop = style.border.t ?? "";
+      el.style.borderRight = style.border.r ?? "";
+      el.style.borderBottom = style.border.b ?? "";
+      el.style.borderLeft = style.border.l ?? "";
+    } else {
+      el.style.borderRight = "1px solid #EDEDF0";
+      el.style.borderBottom = "1px solid #EDEDF0";
+    }
+    const glyph = cell.icon ? `${cell.icon} ` : "";
+    el.textContent = `${glyph}${cell.t}`;
+    el.classList.toggle("link", Boolean(cell.href));
+    el.classList.toggle("err", cell.k === "e");
+    el.title = cell.href ? `${cell.href}` : style?.fmt ? `${style.fmt}` : cell.f ? `=${cell.f}` : "";
+    el.onclick = cell.href
+      ? (ev) => {
+          if (ev.ctrlKey || ev.metaKey) window.open(cell.href, "_blank", "noreferrer");
+        }
+      : null;
+    el.classList.toggle("dirty", this.pending.get(this.meta.name)?.has(key) === true);
+  }
+
+  /** 编辑框跟着格子走：滚动 / 拖窗口时重算位置（它挂在冻结浮层上，用视口坐标）。 */
+  private placeInput(): void {
+    const input = this.input;
+    if (!input) return;
+    const { r, c } = this.anchor;
+    const cover = this.covers.get(`${r}:${c}`);
+    const r2 = cover ? cover[2] : r;
+    const c2 = cover ? cover[3] : c;
+    input.style.left = `${this.colX(c) - this.view.scrollLeft}px`;
+    input.style.top = `${this.rowY(r) - this.view.scrollTop}px`;
+    input.style.width = `${Math.max(40, this.spanW(c, c2))}px`;
+    input.style.height = `${Math.max(18, this.spanH(r, r2))}px`;
   }
 
   private paintSelection(): void {
@@ -539,8 +597,8 @@ export class SheetView {
     const left = Math.min(c1, c2);
     const bottom = Math.max(r1, r2);
     const right = Math.max(c1, c2);
-    const x = this.colX(left);
-    const y = this.rowY(top);
+    const x = this.colX(left) - this.view.scrollLeft;
+    const y = this.rowY(top) - this.view.scrollTop;
     this.selBox.style.left = `${x}px`;
     this.selBox.style.top = `${y}px`;
     this.selBox.style.width = `${this.spanW(left, right)}px`;
@@ -614,13 +672,22 @@ export class SheetView {
 
   // ---------------------------------------------------------------- 选区与键盘
 
+  /**
+   * 指针落在哪一格。滚动区和冻结浮层共用一个换算：冻结格在视口里的位置就是
+   * 「内容坐标 − 滚动量」，所以「视口坐标 + 滚动量 = 内容坐标」两边都对得上。
+   */
   private cellAt(ev: PointerEvent): { r: number; c: number } | null {
-    const rect = this.space.getBoundingClientRect();
-    const x = (ev.clientX - rect.left) / this.zoom;
-    const y = (ev.clientY - rect.top) / this.zoom;
-    const r = this.indexAt(this.rowOff, y * this.zoom, this.zoom);
-    const c = this.indexAt(this.colOff, x * this.zoom, this.zoom);
-    return { r, c };
+    const rect = this.view.getBoundingClientRect();
+    if (ev.clientX < rect.left || ev.clientY < rect.top || ev.clientX > rect.right || ev.clientY > rect.bottom) return null;
+    const vx = ev.clientX - rect.left;
+    const vy = ev.clientY - rect.top;
+    const fzW = this.freezeCols ? this.colX(this.freezeCols) : 0;
+    const fzH = this.freezeRows ? this.rowY(this.freezeRows) : 0;
+    // 冻结区里的格子是钉住的：它到视口左/上边缘的距离就是内容坐标本身；只有落在可滚动的
+    // 那一侧才要加回滚动量。之前一律加 scrollTop/Left，点冻结行会落到下面几十行去。
+    const cx = vx < fzW ? vx : vx + this.view.scrollLeft;
+    const cy = vy < fzH ? vy : vy + this.view.scrollTop;
+    return { r: this.indexAt(this.rowOff, cy, this.zoom), c: this.indexAt(this.colOff, cx, this.zoom) };
   }
 
   private onPointerDown(ev: PointerEvent): void {
@@ -766,18 +833,10 @@ export class SheetView {
     input.spellcheck = false;
     input.value = seed ?? this.rawText(cell);
     if (seed) input.setSelectionRange(seed.length, seed.length);
-    const cover = this.covers.get(key);
-    const r2 = cover ? cover[2] : r;
-    const c2 = cover ? cover[3] : c;
-    input.style.left = `${this.colX(c)}px`;
-    input.style.top = `${this.rowY(r)}px`;
-    input.style.width = `${Math.max(40, this.spanW(c, c2))}px`;
-    input.style.height = `${Math.max(18, this.spanH(r, r2))}px`;
-    input.style.fontSize = `${
-      (cell && cell.s >= 0 ? this.styles[cell.s]?.size ?? 13 : 13) * this.zoom
-    }px`;
-    this.cellsLayer.append(input);
+    input.style.fontSize = `${(cell && cell.s >= 0 ? this.styles[cell.s]?.size ?? 13 : 13) * this.zoom}px`;
+    this.frozenLayer.append(input);
     this.input = input;
+    this.placeInput();
     input.focus();
     input.select();
     input.onkeydown = (ev) => {
@@ -1025,6 +1084,17 @@ export class SheetView {
     this.paint();
   }
 
+  /** 把所有已渲染的格子丢掉：换 sheet / 重新读盘的时候用（冻结浮层里也有格子，别漏）。 */
+  private clearRendered(): void {
+    this.els.clear();
+    this.cellsLayer.replaceChildren();
+    this.paneTop.replaceChildren();
+    this.paneLeft.replaceChildren();
+    this.paneCorner.replaceChildren();
+    this.chartEls = [];
+    this.chartLayer.replaceChildren();
+  }
+
   async selectSheet(name: string): Promise<void> {
     if (name === this.meta.name) return;
     const next = this.doc.sheets.find((s) => s.name === name);
@@ -1034,8 +1104,7 @@ export class SheetView {
     this.styles = [];
     this.cfs = [];
     this.fetched = [];
-    this.els.clear();
-    this.cellsLayer.replaceChildren();
+    this.clearRendered();
     this.anchor = { r: 0, c: 0 };
     this.sel = { r1: 0, c1: 0, r2: 0, c2: 0 };
     this.view.scrollTop = 0;
@@ -1056,8 +1125,7 @@ export class SheetView {
     this.styles = [];
     this.cfs = [];
     this.fetched = [];
-    this.els.clear();
-    this.cellsLayer.replaceChildren();
+    this.clearRendered();
     this.buildSheet();
     this.view.scrollTop = top;
     this.view.scrollLeft = left;
@@ -1069,7 +1137,7 @@ export class SheetView {
     window.removeEventListener("resize", this.onResize);
     this.boxWatcher?.disconnect();
     this.boxWatcher = null;
-    this.cellsLayer.replaceChildren();
+    this.clearRendered();
   }
 }
 

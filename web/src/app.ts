@@ -4420,6 +4420,8 @@ export class App {
       ]);
       if (choice === "save") return this.saveSheetViewer(v);
       if (choice === "drop") {
+        // 放弃 = 本地改动一起丢掉（否则下一次保存会把它们又带出去）。
+        v.sheet.clearChanges();
         await this.reloadSheet(v);
         return true;
       }

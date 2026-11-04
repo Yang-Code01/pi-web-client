@@ -116,6 +116,23 @@ async function plain(file) {
   await wb.xlsx.writeFile(file);
 }
 
+/** 冻结窗格：行 2 + 列 1 都冻住，专门验「上带 / 左带 / 角块」三块浮层。 */
+async function frozen(file) {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("売上", { views: [{ state: "frozen", xSplit: 1, ySplit: 2 }] });
+  // 12 列：内容要比浮窗宽，横向滚动才真的滚得动（否则 scrollLeft 被夹成 0）
+  ws.columns = Array.from({ length: 12 }, (_, i) => ({ width: i === 0 ? 14 : 20 }));
+  ws.getRow(1).values = ["担当", "案件", "金額", "日付", "備考", "メモ1", "メモ2", "メモ3", "メモ4", "メモ5", "メモ6", "メモ7"];
+  for (let r = 2; r <= 40; r++) {
+    const row = [`担当${r}`, `案件${r}`, 1000 * r, new Date(2026, 0, (r % 28) + 1), `備考${r}`];
+    for (let c = 6; c <= 12; c++) row.push(`memo${c}-${r}`);
+    ws.getRow(r).values = row;
+    ws.getCell(`D${r}`).numFmt = "yyyy/m/d";
+    ws.getCell(`C${r}`).numFmt = "#,##0";
+  }
+  await wb.xlsx.writeFile(file);
+}
+
 /** exceljs 写不出图表，所以这份 zip 是手拼的：够 exceljs（和 Excel）认出「这有一张柱形图」。 */
 function chart(file) {
   const enc = (s) => new TextEncoder().encode(s);
@@ -182,11 +199,13 @@ export async function makeFixtures() {
   if (!fs.existsSync(want)) {
     await plain(want);
     chart(path.join(outDir, "chart.xlsx"));
+    await frozen(path.join(outDir, "frozen.xlsx"));
     await big(path.join(outDir, "big.xlsx"));
     csv(path.join(outDir, "data.csv"));
   }
   return {
     plain: want,
+    frozen: path.join(outDir, "frozen.xlsx"),
     chart: path.join(outDir, "chart.xlsx"),
     big: path.join(outDir, "big.xlsx"),
     csv: path.join(outDir, "data.csv"),

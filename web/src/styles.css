@@ -2256,12 +2256,18 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sh-view { grid-area: view; position: relative; overflow: auto; background: #fff; }
 .sh-space { position: relative; }
 .sh-cells { position: absolute; inset: 0; }
+/* 冻结区：三块浮层盖在滚动容器同一条网格区域上（D118）。
+   它们不滚动，所以钉住的格子不需要每帧补位，也就不会在快速滚动时抖。 */
+.sh-frozen { grid-area: view; position: relative; overflow: hidden; z-index: 4; pointer-events: none; }
+.sh-pane { position: absolute; overflow: hidden; pointer-events: auto; }
+.sh-frozen .sh-sel { z-index: 6; }
+.sh-frozen .sh-input { z-index: 7; }
 .sh-cell {
   position: absolute; box-sizing: border-box; display: flex; padding: 0 4px;
   font-size: 13px; overflow: hidden; user-select: none; cursor: cell;
   background: #fff; color: #1f2328; z-index: 1;
 }
-.sh-cell.frozen { z-index: 2; box-shadow: 0 1px 0 #D9D9DF, 1px 0 0 #D9D9DF; }
+.sh-cell.frozen { box-shadow: 0 1px 0 #D9D9DF, 1px 0 0 #D9D9DF; }
 .sh-cell.link { color: #0563C1; text-decoration: underline; cursor: pointer; }
 .sh-cell.err { color: #C0392B; }
 .sh-cell.dirty::after {
