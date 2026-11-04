@@ -1411,3 +1411,49 @@
 
 - `node probes/skill-palette.mjs`（桩桥 + 真 Chromium，16 条断言，`npm --prefix web run build` 之后跑）：默认六个按次数（alpha…zeta）；点对话区关闭、点面板内部不关、技能按钮仍是切换、Esc 仍能关；直接在输入框敲 `/skill:theta` 发送 → `skillUsed` 恰好一次且带会话 id；从面板挑 alpha 但不发 → 0 次，发出去 → 1 次；再打开顺序变成 alpha / beta / gamma / theta / delta / epsilon（theta 进前六、alpha 回到第一）；`use /skill:eta now` 不计数。截图 `.scratch/skill-palette/shots/`。
 - `npm --prefix web run typecheck`（含 i18n 1001 键 × 3 语言）干净。
+
+## D116 表格预览：xlsx/xlsm/csv/tsv 当表打开（网格 + 单元格编辑 + patch 写回）
+
+**问题**（wiki 待处理，2026-11-04）：文件预览只有 markdown / html / image / text / binary 五种，`.xlsx`、`.xlsm` 落到 binary，界面上只有「用 Excel 打开」。想要的是 Excel Online 那种预览（行列头、合并、底色边框、公式栏、底部 sheet 标签、冻结窗格），并且**能不能顺手改一格**——改完不能把表里的图表、透视表弄没。
+
+**决定：**
+
+1. **新增第六种 kind `sheet`**：`xlsx / xlsm / csv / tsv` 不再走 `/raw` 的字节流，改走 `/api/sheet/*` —— `open` 换一个 token，`window` 按可视窗口取格子，`find` 表内查找，`stat` 只 stat 不解析，`save` 写回。`/raw` 只留给下载和图片。
+2. **解析在桥端的 worker_threads 里**（`bridge/src/sheet-worker.ts`，exceljs）：读样式、合并、行高列宽、冻结窗格、条件格式；一个工作簿一支 worker，空闲 5 分钟或超过 3 支就收掉。上限按**单元格数**：≤30 万完整渲染；30–100 万退成「只读轻量」（`xlsx-values.ts`，自己解 `sheet xml` + `sharedStrings`，只取值）；>100 万不给预览。实测（本机 ExcelJS 整本读）：2 万格 147 ms / 134 MB、40 万格 935 ms / 733 MB、100 万格 2.6 s / 1.48 GB。
+3. **图表按锚点画占位**：exceljs 根本不读图表，所以自己从 zip 里解 `xl/drawings/*.xml` + `xl/charts/*.xml`，把 `twoCellAnchor` 换成格子坐标，在网格里画一个虚线框（类型 + 「这里不画图表，用 Excel 打开看」）。**不自己画图表**：图表类型是长尾，条件格式规则引擎是无底洞，先把「看一眼、改一格」这条主链路做对。
+4. **写回是外科手术式 patch**（`xlsx-write.ts`）：只重写被改单元格所在的 `<c>`（数字 `<v>` / 文本 `inlineStr` / 公式 `<f>`，保留原来的 `s` 样式引用），删掉 `calcChain.xml` 并从 `[Content_Types].xml`、`workbook.xml.rels` 里摘干净，workbook 上打 `fullCalcOnLoad="1"`；**其余 zip part 的压缩字节原样搬运**（自己写的重打包器；认不出这份 zip 就退回 fflate 整包重压）。一次 patch 实测 103 ms。
+5. **公式不重算**：改哪格只显哪格，别的公式格保留文件里的缓存值；保存时打 `fullCalcOnLoad`，准数在 Excel 打开时算出来。不做超链接公式/跨表引用的迷你求值器 —— 静默算错比不重算更糟。
+6. **编辑边界**：值、公式文本、区域 Delete、Ctrl+Z（会话内 200 步）、右键复制（值 / 公式 / TSV）、Ctrl+F 表内查找、右下角缩放、拖列宽。**不做**样式与行列结构：patch 能安全表达的就只有「某一格的值/公式」。
+7. **UI 沿用 D50 的两态**：`preview` 只读（可选中、可复制、可把选区引用给 pi），点「编辑」才进可改态（网格里直接改）。保存弹一次「覆盖原件 / 另存为副本」，记住上次选择；含图表的表多一行提醒。
+8. **跟随外部修改**：页面每 1.5 秒问 `/api/sheet/stat`（只 stat，不解析）。没在编辑 → 自动重载（token 会换）；正在编辑 → 冲突条「重载磁盘上的版本 / 另存副本 / 继续编辑」。保存带 mtime+size 乐观锁，撞了 409 也是那条冲突条；写操作走 D113 的写锁（key 是这次打开的 token）。
+9. **csv / tsv 共用网格**：探测编码（BOM / UTF-8 / GBK）、分隔符（`,` `;` `\t` `|`）、EOL，写回按原样（GBK 得有编码器，所以加了 `iconv-lite`），只在真改了格子时才重排文本。
+10. **降级**：`.xls` / `.ods` 仍是 binary；密码保护的 xlsx（OLE 复合文档头）直接说「用 Excel 打开」；`.xlsm` 正常可改（patch 不碰 `vbaProject.bin`）；超上限见第 2 条。
+11. **网格永远白底**，不跟随深色主题 —— 反色出来就不是「Excel 的样子」；手机上只读（软键盘 + 虚拟滚动容易出事）。
+12. **依赖**：bridge 加 `exceljs`（读）+ `fflate`（zip patch / 只读轻量解析）+ `iconv-lite`（GBK 写回）；web 零新依赖。记在这里是因为 D55 那条线（bridge 依赖只留 ws）是被明确放宽的。
+
+**为什么：**
+
+- **为什么不用 exceljs 写回**：它读进来再吐出去会把图表、透视表丢掉（exceljs#2607 / #261，多次被复现）。用户的表是拿来交差的，丢一张图就是事故；patch 保住的正是那些 exceljs 不认识的 part。
+- **为什么解析放桥端**：exceljs 在浏览器里要 polyfill `Buffer` / `stream`；桥端放 worker 里，读崩了只是这条线断，ws / RPC 不受影响（1 秒的解析放在主线程会把所有会话卡住）。
+- **为什么按单元格数不按文件大小**：实测 2 KB 一格的表能吃 700 MB —— 「20 MB 以内」这种按文件大小的门槛完全看错地方。
+- **为什么条件格式在桥端算**：前端只吃「这一格最后长什么样」，规则表和统计都不用发过去；前端也就不用背一个规则引擎。
+- **为什么「跟随」用轮询不用 fs.watch**：网络盘上 `fs.watch` 经常不响，还得为它写一套兜底；1.5 秒一次的 `statSync` 便宜（微型系统调用），行为在所有盘上一致。
+- **为什么改值只 patch 不整本重写**：整本重写等于「用我们的理解重建这张表」，凡是 exceljs 没建模的东西都会掉。
+- **为什么公式不重算**：见第 5 条。
+
+**代价 / 可改：**
+
+- 图表只有占位、不重绘；编辑后图表区域不会随输入变化。
+- 条件格式只覆盖：色阶、数据条、图标集、`cellIs`、`top10`、重复值/唯一值，以及**认得出**的表达式（`COUNTIF(范围,单元格) > n` 这类重复值判定、`ISBLANK`、`ISERROR`、`LEN()`、单格比较）；其余表达式整条跳过 —— 宁可少画一层底色，也不画一张假表。
+- 写完 Excel 里图表/透视表的缓存值不会自动刷新，要 Excel 打开重算；这是 OOXML 的固有行为，不是 bug。
+- 「只读轻量」没有样式、没有合并单元格、没有图表占位，只有值和表头。
+- 拖列宽只活在内存里（不写 `styles.xml`），刷新回原样。
+- 富文本、单元格内换行编辑、不连续多选区、插入/删除行列、改样式写回，都没做（v1.1 再说）。
+- 只认 `.xlsx / .xlsm / .csv / .tsv`。
+- 保存的写锁 key 是 token 而不是文件路径：同一份文件被两个会话同时打开时，靠 mtime+size 兜底（后写的那个 409）。**可改**：按路径加锁更严。
+
+**验证：**
+
+- `node --experimental-strip-types bridge/tests/sheet-unit.mjs`（fixture 现场合成，不进 git）：合并单元格 / 冻结 3 行 / 隐藏 sheet；表头底色 `#44546A` 白字加粗带边框；日期 `2026/8/27`（exceljs 的 `cell.text` 给的是 `Thu Aug 27 2026 …`，所以自己写了 `xlsx-format.ts`）；`0.0` 显示 `2.0`；色阶/数据条/图标集/cellIs/重复值都命中；表内查找；写回后 `zip 条目数不变`、`xl/theme/theme1.xml` 与 `docProps/core.xml` **一个字节没动**、样式与合并都还在；`chart.xlsx` 写回后 `xl/charts/chart1.xml` 内容与写前相同；GBK + 分号 csv 写回后无 BOM、仍 CRLF、仍分号；32 万格降级成 values 且能取格子。
+- `node probes/xlsx.mjs`（真 Chromium + 临时桥 + 临时工作目录，`locale: zh-CN`）：列头 A/B、行头 1/2；合并标题跨 968 px；表头 `rgb(68, 84, 106)` 白字 1px 边框；日期 `2026/8/27`；`2.0`；sheet 标签只有可见的两张；色阶上了底色；**冻结的前 3 行不随滚动移动、普通行确实滚走**；图表占位写的是「图表：柱形图」；编辑态改一格写成公式 → 保存「覆盖原件」→ 用 exceljs 回读：公式在、表头样式在、合并还在；csv 改一格写回 GBK 原样；`big.xlsx` 20000 行渲染出值。截图 `.scratch/xlsx/shots/`。
+- `npm run typecheck`（bridge + peer + web，含 i18n 1041 键 × 3 语言）、`npm --prefix web run build` 干净。

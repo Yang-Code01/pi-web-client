@@ -14,7 +14,7 @@ import path from "node:path";
  * previewed page cannot read the bridge's cookies or call its API.
  */
 
-export type PreviewKind = "markdown" | "html" | "image" | "text" | "binary";
+export type PreviewKind = "markdown" | "html" | "image" | "text" | "binary" | "sheet";
 
 export interface PreviewInfo {
   token: string;
@@ -33,6 +33,14 @@ const TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_TOKENS = 500;
 const tokens = new Map<string, { root: string; at: number }>();
 
+/** 表格：不走 /raw 的字节，走 /api/sheet/* 的窗口读取（D116）。 */
+const SHEET = new Set([".xlsx", ".xlsm", ".csv", ".tsv"]);
+const SHEET_MIME: Record<string, string> = {
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+  ".csv": "text/csv; charset=utf-8",
+  ".tsv": "text/tab-separated-values; charset=utf-8",
+};
 const MD = new Set([".md", ".markdown", ".mdx"]);
 const HTML = new Set([".html", ".htm", ".xhtml"]);
 const IMAGE: Record<string, string> = {
@@ -113,6 +121,7 @@ export function readAttachableImage(rawPath: string): { mime: string; data: Buff
 
 export function kindOf(file: string): PreviewKind {
   const ext = path.extname(file).toLowerCase();
+  if (SHEET.has(ext)) return "sheet";
   if (MD.has(ext)) return "markdown";
   if (HTML.has(ext)) return "html";
   if (IMAGE[ext]) return "image";
@@ -121,6 +130,7 @@ export function kindOf(file: string): PreviewKind {
 
 function mimeOf(file: string): string {
   const ext = path.extname(file).toLowerCase();
+  if (SHEET_MIME[ext]) return SHEET_MIME[ext];
   if (HTML.has(ext)) return "text/html; charset=utf-8";
   if (IMAGE[ext]) return IMAGE[ext];
   if (OTHER_MIME[ext]) return OTHER_MIME[ext];

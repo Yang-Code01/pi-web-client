@@ -23,7 +23,7 @@ export interface MdOptions {
 
 /** Extensions worth linking when the text names a file that has a directory part. */
 const CODE_EXT =
-  "md|markdown|html?|png|jpe?g|gif|svg|webp|bmp|ico|txt|csv|tsv|log|json|jsonl|ya?ml|toml|ini|xml|pdf|tsx?|jsx?|mjs|cjs|vue|svelte|css|scss|less|py|rb|go|rs|java|kt|cs|cpp|cc|c|h|hpp|sh|ps1|bat|cmd|sql|lua|php|swift|dart|r|gradle|properties|env|lock|conf|cfg";
+  "md|markdown|html?|png|jpe?g|gif|svg|webp|bmp|ico|txt|csv|tsv|xlsx|xlsm|log|json|jsonl|ya?ml|toml|ini|xml|pdf|tsx?|jsx?|mjs|cjs|vue|svelte|css|scss|less|py|rb|go|rs|java|kt|cs|cpp|cc|c|h|hpp|sh|ps1|bat|cmd|sql|lua|php|swift|dart|r|gradle|properties|env|lock|conf|cfg";
 // Name characters: no whitespace, quotes, brackets or CJK punctuation.
 const NAME = "[^\\s`'\"<>|*?:()\\[\\]{}，。；：！？、（）【】「」『』《》\\\\/]";
 const WIN_ABS = `[A-Za-z]:[\\\\/](?:${NAME}+[\\\\/])*${NAME}+\\.[A-Za-z0-9]{1,10}`;

@@ -1,4 +1,4 @@
-import type { GitInfo, Me, PreviewInfo, SessionState, TunnelState } from "./types.ts";
+import type { GitInfo, Me, PreviewInfo, SessionState, SheetDoc, SheetEdit, SheetWindow, TunnelState } from "./types.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -74,6 +74,29 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sessionId, ...body }),
     }),
+  /** 表格（D116）：打开拿 token，之后按窗口要格子。 */
+  sheetOpen: (sessionId: string, path: string) =>
+    req<SheetDoc>("/api/sheet/open", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId, path }) }),
+  sheetWindow: (token: string, sheet: string, r0: number, r1: number, c0: number, c1: number) =>
+    req<SheetWindow>("/api/sheet/window", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, sheet, r0, r1, c0, c1 }),
+    }),
+  sheetFind: (token: string, sheet: string, q: string, row: number, col: number) =>
+    req<{ hits: { r: number; c: number }[]; more: boolean }>("/api/sheet/find", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, sheet, q, row, col }),
+    }),
+  /** 写回：`copy: true` 另存成 xxx.copy.xlsx，不覆盖原件。409 = 文件在这期间被别人改过。 */
+  sheetSave: (token: string, groups: { sheet: string; edits: SheetEdit[] }[], mtime: number, size: number, copy: boolean) =>
+    req<{ path: string; mtime: number; size: number; mode?: string }>("/api/sheet/save", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, groups, mtime, size, copy }),
+    }),
+  sheetStat: (token: string) => req<{ mtime: number; size: number }>("/api/sheet/stat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }),
   /** D69: open the folder holding this file in the desktop's own file manager (local / LAN only). */
   reveal: (path: string) =>
     req<{ ok: boolean; message: string }>("/api/reveal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) }),

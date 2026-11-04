@@ -55,6 +55,7 @@ import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { piLatest } from "./piupdate.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
+import { openSheet, saveSheet, sheetFileOf, sheetFind, sheetStat, sheetWindow } from "./sheet.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
 
 interface Config {
@@ -613,6 +614,76 @@ async function main(): Promise<void> {
       } catch (err: any) {
         const status = Number(err?.status) || 400;
         return json(res, status, { error: String(err?.message ?? err) });
+      }
+    }
+
+    // 表格（xlsx / xlsm / csv / tsv）：打开一次拿 token，之后按窗口取格子（D116）。
+    if (url.pathname === "/api/sheet/open" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const sessionId = String(body.sessionId ?? "");
+      const where = sessions.locate(sessionId);
+      if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
+      try {
+        const info = openPreview(where, String(body.path ?? ""));
+        const st = fs.statSync(info.abs);
+        const doc = await openSheet(info.abs, st);
+        return json(res, 200, doc);
+      } catch (err: any) {
+        return json(res, Number(err?.status) || 400, { error: String(err?.message ?? err) });
+      }
+    }
+
+    if (url.pathname === "/api/sheet/window" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const out = await sheetWindow(String(body.token ?? ""), String(body.sheet ?? ""), Number(body.r0 ?? 0), Number(body.r1 ?? 0), Number(body.c0 ?? 0), Number(body.c1 ?? 0));
+        return json(res, 200, out);
+      } catch (err: any) {
+        return json(res, Number(err?.status) || 400, { error: String(err?.message ?? err) });
+      }
+    }
+
+    if (url.pathname === "/api/sheet/find" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const out = await sheetFind(String(body.token ?? ""), String(body.sheet ?? ""), String(body.q ?? ""), Number(body.row ?? 0), Number(body.col ?? 0));
+        return json(res, 200, out);
+      } catch (err: any) {
+        return json(res, Number(err?.status) || 400, { error: String(err?.message ?? err) });
+      }
+    }
+
+    // 存盘：只有这次打开会话的 token 能写它自己那份文件；写之前比 mtime + size。
+    if (url.pathname === "/api/sheet/save" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const out = await writeLock(`sheet:${String(body.token ?? "")}`, async () =>
+          saveSheet({
+            token: String(body.token ?? ""),
+            groups: Array.isArray(body.groups) ? body.groups : [],
+            copy: body.copy === true,
+            mtime: Number(body.mtime ?? 0),
+            size: Number(body.size ?? 0),
+          }),
+        );
+        log(`sheet save ${out.path} (${out.size} bytes, ${out.mode || "csv"})`);
+        return json(res, 200, out);
+      } catch (err: any) {
+        return json(res, Number(err?.status) || 400, { error: String(err?.message ?? err) });
+      }
+    }
+
+    // 文件被 Excel / pi 改过没有：页面开着表时每 1.5 秒问一次（便宜，不解析）。
+    if (url.pathname === "/api/sheet/stat" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const file = sheetFileOf(String(body.token ?? ""));
+        if (!file) return fail(res, 404, "no_sheet", "这张表已经关了");
+        const st = sheetStat(file);
+        if (!st) return fail(res, 404, "gone", "文件不见了");
+        return json(res, 200, st);
+      } catch (err: any) {
+        return json(res, Number(err?.status) || 400, { error: String(err?.message ?? err) });
       }
     }
 

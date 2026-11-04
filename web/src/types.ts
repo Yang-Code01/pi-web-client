@@ -208,6 +208,98 @@ export interface SkillInfo {
   lastUsed: number;
 }
 
+/** 表格预览（D116）：桥端按可视窗口发格子，前端只画。字段名短，一次响应可能几千格。 */
+export interface SheetBorder {
+  t?: string;
+  r?: string;
+  b?: string;
+  l?: string;
+}
+
+export interface SheetStyle {
+  fill?: string;
+  color?: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strike?: boolean;
+  size?: number;
+  family?: string;
+  h?: "l" | "c" | "r";
+  v?: "t" | "m" | "b";
+  wrap?: boolean;
+  border?: SheetBorder;
+  fmt?: string;
+}
+
+export interface SheetCell {
+  r: number;
+  c: number;
+  k: "n" | "s" | "b" | "d" | "e" | "f";
+  v: string | number | boolean | null;
+  t: string;
+  s: number;
+  cf?: number;
+  bar?: number;
+  icon?: string;
+  f?: string;
+  href?: string;
+}
+
+export interface SheetChart {
+  r1: number;
+  c1: number;
+  r2: number;
+  c2: number;
+  kind: string;
+}
+
+export interface SheetMeta {
+  name: string;
+  index: number;
+  hidden: boolean;
+  tabColor?: string;
+  rowCount: number;
+  colCount: number;
+  defColW: number;
+  defRowH: number;
+  cols: { w: number; hidden?: boolean }[];
+  rows: Record<string, number>;
+  merges: [number, number, number, number][];
+  freeze: { rows: number; cols: number };
+  charts: SheetChart[];
+  cfRanges: number;
+}
+
+export type SheetMode = "full" | "values" | "too-big";
+
+export interface SheetDoc {
+  token?: string;
+  path: string;
+  name: string;
+  mtime: number;
+  size: number;
+  mode: SheetMode;
+  note?: string;
+  cells: number;
+  sheets: SheetMeta[];
+  csv?: { encoding: string; delimiter: string; bom: boolean; eol: string };
+}
+
+export interface SheetWindow {
+  cells: SheetCell[];
+  styles: SheetStyle[];
+  cfs: SheetStyle[];
+}
+
+/** 一次保存里的一条格子改动，桥端按 t 决定写成什么 xml。 */
+export interface SheetEdit {
+  r: number;
+  c: number;
+  t: "n" | "s" | "b" | "f" | "clear";
+  v?: string | number | boolean | null;
+}
+
 export interface PreviewInfo {
   token: string;
   rel: string;
@@ -217,7 +309,7 @@ export interface PreviewInfo {
   root: string;
   size: number;
   mtime: number;
-  kind: "markdown" | "html" | "image" | "text" | "binary";
+  kind: "markdown" | "html" | "image" | "text" | "binary" | "sheet";
 }
 
 /** Tool permission mode the bridge's approval gate enforces per session. */

@@ -2197,3 +2197,116 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .notes-side { border-right: 0; border-bottom: 1px solid var(--line-soft); }
   .notes-editor { padding: 10px; }
 }
+
+/* ---------------------------------------------------------------- 表格（D116）
+   网格永远是白的：这是 Excel 的样子，跟着深色主题反色就不是「全保真」了。
+   外层的 header / footer 仍然是暗的，和面板其它部分一致。 */
+.viewer-body.sheet { display: flex; flex-direction: column; overflow: hidden; background: #fff; }
+.sh {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  background: #fff; color: #1f2328; font: 13px/1.35 var(--sans); outline: none;
+}
+.sh.readonly .sh-cell { cursor: default; }
+.sh-fx {
+  display: flex; align-items: center; gap: 6px; padding: 4px 6px;
+  border-bottom: 1px solid #E3E3E8; background: #F7F7F9; flex: none;
+}
+.sh-name {
+  min-width: 62px; padding: 2px 6px; border: 1px solid #D9D9DF; border-radius: 3px;
+  font: 12px/1.4 var(--mono); background: #fff; text-align: center; color: #3C4149;
+}
+.sh-fxlabel { color: #8A8A93; font-style: italic; font-size: 12px; user-select: none; }
+.sh-fxinput {
+  flex: 1; min-width: 0; border: 1px solid #D9D9DF; border-radius: 3px; padding: 3px 6px;
+  font: 12.5px/1.4 var(--mono); background: #fff; color: #1f2328; outline: none;
+}
+.sh-fxinput:focus { border-color: #1A73E8; }
+.sh-findbox { display: none; align-items: center; gap: 4px; }
+.sh-findbox.on { display: flex; }
+.sh-findinput {
+  width: 140px; border: 1px solid #D9D9DF; border-radius: 3px; padding: 2px 6px;
+  font: 12px/1.4 var(--sans); background: #fff; color: #1f2328; outline: none;
+}
+.sh-mid {
+  flex: 1; min-height: 0; display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  grid-template-rows: 22px minmax(0, 1fr);
+  grid-template-areas: "corner colhead" "rowhead view";
+}
+.sh-corner { grid-area: corner; background: #F1F1F4; border-right: 1px solid #D9D9DF; border-bottom: 1px solid #D9D9DF; }
+.sh-colhead {
+  grid-area: colhead; position: relative; overflow: hidden;
+  background: #F1F1F4; border-bottom: 1px solid #D9D9DF;
+}
+.sh-rowhead {
+  grid-area: rowhead; position: relative; overflow: hidden;
+  background: #F1F1F4; border-right: 1px solid #D9D9DF;
+}
+.sh-headin { position: relative; height: 100%; width: 100%; }
+.sh-rowhead .sh-headin { height: auto; }
+.sh-colcell, .sh-rowcell {
+  position: absolute; box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+  font-size: 11.5px; color: #5C5C66; user-select: none; overflow: hidden;
+}
+.sh-colcell { top: 0; height: 100%; border-right: 1px solid #E1E1E6; }
+.sh-rowcell { left: 0; width: 100%; border-bottom: 1px solid #E1E1E6; }
+.sh-colcell.on, .sh-rowcell.on { background: #DCE8F8; color: #1F4E79; font-weight: 600; }
+.sh-view { grid-area: view; position: relative; overflow: auto; background: #fff; }
+.sh-space { position: relative; }
+.sh-cells { position: absolute; inset: 0; }
+.sh-cell {
+  position: absolute; box-sizing: border-box; display: flex; padding: 0 4px;
+  font-size: 13px; overflow: hidden; user-select: none; cursor: cell;
+  background: #fff; color: #1f2328; z-index: 1;
+}
+.sh-cell.frozen { z-index: 2; box-shadow: 0 1px 0 #D9D9DF, 1px 0 0 #D9D9DF; }
+.sh-cell.link { color: #0563C1; text-decoration: underline; cursor: pointer; }
+.sh-cell.err { color: #C0392B; }
+.sh-cell.dirty::after {
+  content: ""; position: absolute; right: 0; top: 0; width: 0; height: 0;
+  border-style: solid; border-width: 0 6px 6px 0; border-color: transparent #E4572E transparent transparent;
+}
+.sh-sel {
+  position: absolute; z-index: 3; pointer-events: none; box-sizing: border-box;
+  border: 2px solid #1A73E8; background: rgba(26, 115, 232, 0.05);
+}
+.sh-input {
+  position: absolute; z-index: 5; box-sizing: border-box; padding: 0 3px;
+  border: 2px solid #1A73E8; background: #fff; color: #111; outline: none;
+  font: 13px var(--sans);
+}
+.sh-charts { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.sh-chart {
+  position: absolute; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; border: 1px dashed #B9BEC8; background: rgba(247, 248, 250, 0.92);
+  color: #6B7280; font-size: 12px; text-align: center; padding: 6px; box-sizing: border-box;
+  overflow: hidden; white-space: nowrap;
+}
+.sh-chart-t { font-weight: 600; color: #4B5563; }
+.sh-chart-s { font-size: 11px; }
+.sh-foot {
+  display: flex; align-items: center; gap: 6px; padding: 3px 6px; flex: none;
+  border-top: 1px solid #E3E3E8; background: #F7F7F9; font-size: 12px; color: #5C5C66;
+}
+.sh-tabs { display: flex; gap: 2px; overflow-x: auto; max-width: 46%; }
+.sh-tab {
+  border: 1px solid transparent; background: #ECECF0; border-radius: 4px 4px 0 0;
+  padding: 2px 10px; font-size: 12px; color: #3C4149; cursor: pointer; white-space: nowrap;
+}
+.sh-tab.on { background: #fff; border-color: #C9C9D1; font-weight: 600; }
+.sh-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-mini {
+  width: 20px; height: 20px; border: 1px solid #D9D9DF; background: #fff; border-radius: 3px;
+  cursor: pointer; font-size: 12px; line-height: 1; color: #3C4149; padding: 0;
+}
+.sh-mini:hover { background: #EEF3FB; }
+.sh-zoomlabel { min-width: 38px; text-align: center; font-variant-numeric: tabular-nums; }
+.sh-quote {
+  border: 1px solid #D9D9DF; background: #fff; border-radius: 4px; padding: 2px 8px;
+  font-size: 12px; cursor: pointer; color: #1F4E79;
+}
+.sh-quote:hover { background: #EEF3FB; }
+.sh-conflict {
+  display: grid; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); flex: none;
+  background: #241a12; color: #f3c893; font-size: 12.5px;
+}

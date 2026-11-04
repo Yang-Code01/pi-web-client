@@ -15,6 +15,9 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
+    "exceljs": "^4.4.0",
+    "fflate": "^0.8.3",
+    "iconv-lite": "^0.7.3",
     "node-pty": "^1.1.0",
     "web-push": "^3.6.7",
     "ws": "^8.18.3"
