@@ -65,8 +65,9 @@ export const api = {
     const blob = await res.blob();
     return new File([blob], path.split(/[\\/]/).pop() ?? "image", { type: blob.type });
   },
-  preview: (sessionId: string, path: string) =>
-    req<PreviewInfo>("/api/preview", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId, path }) }),
+  /** `base`: the document a link was clicked in, so a drive-less `/x` resolves from its repo (D113). */
+  preview: (sessionId: string, path: string, base?: string | null) =>
+    req<PreviewInfo>("/api/preview", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId, path, ...(base ? { base } : {}) }) }),
   /** Write an edited text file back. 409 means the file changed on disk while it was open. */
   save: (sessionId: string, body: { path: string; text: string; mtime: number; size: number; copy?: boolean }) =>
     req<{ path: string; mtime: number; size: number }>("/api/save", {
