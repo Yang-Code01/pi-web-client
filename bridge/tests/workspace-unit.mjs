@@ -121,5 +121,25 @@ ok("F: 工作区顺序可重排，删掉的工作区桶不会留下孤儿", () =
   assert.deepEqual(m.snapshot().workspaces.map((w) => w.id), [b.id]);
 });
 
+ok("G: 工作区 ★ 是独立集合；删组时一并清掉，不会留下指向已删组的星", () => {
+  write({ pin: [], order: [], archived: [] });
+  const m = new Manage();
+  const a = m.addWorkspace("a", "ice");
+  const b = m.addWorkspace("b", "teal");
+  m.setSpacePinned(a.id, true);
+  m.setSpacePinned(b.id, true);
+  assert.deepEqual(m.snapshot().pinned, [a.id, b.id]);
+  m.setSpacePinned(a.id, false);
+  assert.deepEqual(m.snapshot().pinned, [b.id]);
+  m.removeWorkspace(b.id);
+  assert.deepEqual(m.snapshot().pinned, []);
+});
+
+ok("H: 老文件没有 pinned 字段时默认空集（顶栏退回只显示当前区）", () => {
+  write({ pin: ["a"], order: [], archived: [] });
+  const m = new Manage();
+  assert.deepEqual(m.snapshot().pinned, []);
+});
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`\nworkspace-unit: ${checks} 组断言 ALL OK`);

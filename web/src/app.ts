@@ -227,7 +227,7 @@ export class App {
   private renameFocus = false;
   private renameCaret: number | null = null;
   /** Sidebar arrangement owned by the user: workspaces / membership / ★ / archive (D46 + D116). */
-  private manage: ManageState = { workspaces: [], members: {}, pin: [], archived: [] };
+  private manage: ManageState = { workspaces: [], members: {}, pin: [], pinned: [], archived: [] };
   private archivedOpen = false;
   private filter = "";
   /** Delete is two-step: the last click arms it, the next one within 4s sends it. */
@@ -289,6 +289,9 @@ export class App {
   private wsClosed = new Set<string>(loadStrList("pi.wsCollapsed"));
   /** 刚发出一条 workspace.new，等回声到了才知道新 id —— 记下旧的一批，好识别哪个是新的。 */
   private wsPendingNew: Set<string> | null = null;
+  /** 「还有 N 个」的下拉（顶栏上唯一能钉未置顶工作区的地方）。 */
+  private spacePicker: HTMLElement | null = null;
+  private spacePickerAway: ((ev: Event) => void) | null = null;
 
   constructor(me: Me) {
     this.me = me;
@@ -3064,15 +3067,41 @@ export class App {
     const focused = document.activeElement instanceof HTMLInputElement && host.contains(document.activeElement) ? document.activeElement.value : null;
     host.replaceChildren();
     const cur = this.currentWsId();
-    for (const id of this.wsOrder()) {
-      const tab = el("button", `wstab${id === cur ? " on" : ""}`) as HTMLButtonElement;
-      tab.type = "button";
+    // 只画置顶的工作区；一个都没钉时至少把「当前区」画出来（淡色、可钉），否则收起左栏就没导航了。
+    const order = this.wsOrder().filter((id) => id !== UNGROUPED || this.isSpacePinned(UNGROUPED) || id === cur);
+    const shown = order.filter((id) => this.isSpacePinned(id));
+    if (!shown.includes(cur)) shown.push(cur);
+    for (const id of shown) {
+      const pinned = this.isSpacePinned(id);
+      // 标签内部还要放一颗 ★，而 button 不能套 button（Q-022）——所以标签本身是 div 扮的按钮。
+      const tab = el("div", `wstab${id === cur ? " on" : ""}${pinned ? "" : " loose"}`);
       tab.dataset.ws = id;
+      tab.setAttribute("role", "button");
+      tab.tabIndex = 0;
+      tab.onkeydown = (ev) => {
+        if (ev.target !== tab) return;
+        if (ev.key === "Enter" || ev.key === " ") {
+          ev.preventDefault();
+          this.setWorkspace(id);
+        }
+      };
+      // ★：钉上就进顶栏、并在左栏提到最前（未钉的标签也带星，不然钉不上去）。
+      const star = el("button", `ws-pin${pinned ? "" : " off"}`, "★") as HTMLButtonElement;
+      star.type = "button";
+      star.dataset.pin = id;
+      star.title = pinned ? tr("取消置顶工作区 {p1}", { p1: this.wsName(id) }) : tr("置顶工作区 {p1}（钉到顶栏最前）", { p1: this.wsName(id) });
+      star.setAttribute("aria-label", star.title);
+      star.setAttribute("aria-pressed", pinned ? "true" : "false");
+      star.onclick = (ev) => {
+        ev.stopPropagation();
+        this.toggleSpacePin(id, !pinned);
+      };
       const space = this.wsSpace(id);
       const accent = this.wsAccent(id);
       const dot = el("span", "ws-dot");
       if (accent) dot.style.background = accent;
       else dot.classList.add("bare");
+      tab.append(star);
       if (space?.icon) tab.append(el("span", "ws-icon", space.icon));
       tab.append(dot, el("span", "ws-name", this.wsName(id)));
       const list = this.groupSessions(id);
@@ -3082,6 +3111,18 @@ export class App {
       tab.onclick = () => this.setWorkspace(id);
       if (id !== UNGROUPED) tab.ondblclick = () => this.renameWorkspaceInline(tab, id);
       host.append(tab);
+    }
+    // 没置顶的标签不画，但得让人知道还有多少个 —— 给一颗能展开的计数按钮。
+    const hidden = this.wsOrder().filter((id) => id !== UNGROUPED && !this.isSpacePinned(id) && id !== cur);
+    if (hidden.length) {
+      const more = el("button", "wstab more", tr("还有 {p1} 个", { p1: hidden.length })) as HTMLButtonElement;
+      more.type = "button";
+      more.title = tr("没置顶的工作区：这里钉，或者展开左栏");
+      more.onclick = (ev) => {
+        ev.stopPropagation();
+        this.openSpacePicker(more);
+      };
+      host.append(more);
     }
     const add = el("button", "wstab add") as HTMLButtonElement;
     add.type = "button";
@@ -3095,6 +3136,59 @@ export class App {
     }
     // 溢出提示：不量就不知道最后几个标签被切掉了。
     host.classList.toggle("fade", host.scrollWidth > host.clientWidth + 1);
+  }
+
+  /**
+   * 「还有 N 个」的下拉：顶栏只画置顶的工作区，所以没置顶的必须有个地方能钉上，
+   * 否则「只有置顶的才显示」和「点了才置顶」互为前提，永远钉不上去。
+   */
+  private openSpacePicker(anchor: HTMLElement): void {
+    this.closeSpacePicker();
+    const menu = el("div", "ws-menu");
+    const rect = anchor.getBoundingClientRect();
+    menu.style.left = `${Math.round(Math.min(rect.left, window.innerWidth - 260))}px`;
+    menu.style.top = `${Math.round(rect.bottom + 6)}px`;
+    for (const id of this.wsOrder()) {
+      const pinned = this.isSpacePinned(id);
+      const row = el("div", "ws-menu-row");
+      const star = el("button", `ws-pin${pinned ? "" : " off"}`, "★") as HTMLButtonElement;
+      star.type = "button";
+      star.title = pinned ? tr("取消置顶工作区 {p1}", { p1: this.wsName(id) }) : tr("置顶工作区 {p1}（钉到顶栏最前）", { p1: this.wsName(id) });
+      star.onclick = (ev) => {
+        ev.stopPropagation();
+        this.toggleSpacePin(id, !pinned);
+        this.closeSpacePicker();
+      };
+      const dot = el("span", "ws-dot");
+      const accent = this.wsAccent(id);
+      if (accent) dot.style.background = accent;
+      else dot.classList.add("bare");
+      const go = el("button", "ws-menu-go") as HTMLButtonElement;
+      go.type = "button";
+      go.append(dot, el("span", "ws-menu-name", this.wsName(id)), el("span", "ws-n", String(this.groupSessions(id).length)));
+      if (id === this.currentWsId()) go.classList.add("on");
+      go.onclick = () => {
+        this.closeSpacePicker();
+        this.setWorkspace(id);
+      };
+      row.append(star, go);
+      menu.append(row);
+    }
+    document.body.append(menu);
+    this.spacePicker = menu;
+    const away = (ev: Event) => {
+      if (!menu.contains(ev.target as Node)) this.closeSpacePicker();
+    };
+    this.spacePickerAway = away;
+    // 捕获阶段：点哪儿都先判一次，跟技能面板同一套做法。
+    queueMicrotask(() => document.addEventListener("pointerdown", away, true));
+  }
+
+  private closeSpacePicker(): void {
+    if (this.spacePicker) this.spacePicker.remove();
+    this.spacePicker = null;
+    if (this.spacePickerAway) document.removeEventListener("pointerdown", this.spacePickerAway, true);
+    this.spacePickerAway = null;
   }
 
   private renderTop(): void {
@@ -3460,9 +3554,25 @@ export class App {
   /** Mirrors bridge/src/manage.ts: pinned by hand, then manual order, then new ones newest first. */
   // ---------------------------------------------------------------- workspace helpers (D116)
 
-  /** 标签页 / 左栏组的顺序：workspaces 的数组序，「未分组」虚拟且永远末位。 */
+  /**
+   * 标签页 / 左栏组的顺序：先置顶的（按手工顺序），再其余（按手工顺序），未分组永远末位。
+   * 置顶只是「提到前面 + 进顶栏」，不改变 workspaces 数组本身的手工顺序。
+   */
   private wsOrder(): string[] {
-    return [...this.manage.workspaces.map((w) => w.id), UNGROUPED];
+    const all = this.manage.workspaces.map((w) => w.id);
+    const starred = all.filter((id) => this.manage.pinned.includes(id));
+    return [...starred, ...all.filter((id) => !starred.includes(id)), UNGROUPED];
+  }
+
+  private isSpacePinned(id: string): boolean {
+    return this.manage.pinned.includes(id);
+  }
+
+  private toggleSpacePin(id: string, on: boolean): void {
+    this.manage = { ...this.manage, pinned: on ? [...this.manage.pinned.filter((x) => x !== id), id] : this.manage.pinned.filter((x) => x !== id) };
+    this.renderWorkspaceTabs();
+    this.renderSessions();
+    this.sendWs({ op: "pin", id, on });
   }
 
   private wsSpace(id: string): Workspace | null {
@@ -8812,19 +8922,23 @@ export class App {
       return;
     }
     const ws = this.currentWsId();
-    // D116: 这条现在画当前工作区的**全部未归档会话**（不是只有 ★ 的那几颗），★ 只决定组内靠前。
-    const pins = this.groupSessions(ws);
+    // 这条只画 ★ 的会话（回到旧 pin-strip 的语义），但当前正在聊的那个即使没 ★ 也破例留在最前：
+    // 否则左栏一收，屏幕上就没有任何地方写着「我在跟哪个会话说话」。
+    const all = this.groupSessions(ws);
+    const here = all.find((s) => s.id === this.currentId) ?? null;
+    const starred = all.filter((s) => this.manage.pin.includes(s.id));
+    const pins = here && !starred.includes(here) ? [here, ...starred] : starred;
     // Q-022: the strip is rebuilt on every session/manage echo, and those echoes land right after the
     // ★ click — remember which button held focus so the rebuild does not drop it on <body>.
     const active = document.activeElement instanceof HTMLElement && host.contains(document.activeElement) ? document.activeElement : null;
     const heldKey = active?.dataset.pinKey ?? null;
     host.replaceChildren();
     host.hidden = false;
-    const pending = pins.filter((s) => sessionBadge(s, this.currentId)?.pending).length;
+    const pending = starred.filter((s) => sessionBadge(s, this.currentId)?.pending).length;
     const label = el("span", "pin-strip-label");
     label.append(el("span", "pin-strip-ws", this.wsName(ws)));
     label.append(document.createTextNode(" · "));
-    const count = el("span", pending ? "has-pending" : "", pending ? tr("{p1} 个待处理", { p1: pending }) : tr("{p1} 个会话", { p1: pins.length }));
+    const count = el("span", pending ? "has-pending" : "", pending ? tr("★ {p1} 个 · {p2} 个待处理", { p1: starred.length, p2: pending }) : tr("★ {p1} 个会话", { p1: starred.length }));
     label.append(count);
     host.append(label);
     for (const s of pins) {
@@ -8841,6 +8955,7 @@ export class App {
         chip.setAttribute("aria-current", "true");
       }
       if (!pinned) chip.classList.add("unpinned");
+      if (s === here && !pinned) chip.classList.add("loose");
       const star = el("button", "pin-star", "★") as HTMLButtonElement;
       star.type = "button";
       star.dataset.pinKey = `${s.id}:star`;
@@ -8862,7 +8977,7 @@ export class App {
       this.wirePinHover(chip, s);
       host.append(chip);
     }
-    if (!pins.length) host.append(el("span", "pin-empty", tr("这个工作区还没有会话。点 ＋ 开一个，它们就归到这里。")));
+    if (!pins.length) host.append(el("span", "pin-empty", tr("这个工作区还没有 ★ 的会话。在左栏点会话卡片上的 ☆ 钉上来。")));
     // Q-013: with the left pane hidden this is the only visible way to start a session.
     // D116: 新建的会话直接归当前工作区（不再靠自动 ★ 才看得见）。
     const add = el("button", "pin-chip pin-new", tr("＋"));

@@ -38,6 +38,11 @@ export interface ManageState {
    * comes from `members`, never from this array.
    */
   pin: string[];
+  /**
+   * ★ on **workspaces**: only these reach the top strip, and they come first in the left column.
+   * An empty list is legal — the strip then falls back to showing just the workspace you are in.
+   */
+  pinned: string[];
   /** Archived ids: out of the groups, still openable under 已归档. Their `members` slot is kept. */
   archived: string[];
 }
@@ -88,7 +93,7 @@ function time(s: { startedAt?: string; updatedAt: number }): number {
 type RawState = Partial<ManageState> & { order?: unknown };
 
 export class Manage {
-  private data: ManageState = { workspaces: [], members: {}, pin: [], archived: [] };
+  private data: ManageState = { workspaces: [], members: {}, pin: [], pinned: [], archived: [] };
   private readonly file = statePath("manage.json");
 
   constructor() {
@@ -106,7 +111,7 @@ export class Manage {
       const legacy = [...pin, ...ids(raw.order)];
       if (legacy.length) members[UNGROUPED] = legacy;
     }
-    this.data = { workspaces: spaces(raw.workspaces), members, pin, archived };
+    this.data = { workspaces: spaces(raw.workspaces), members, pin, pinned: ids(raw.pinned), archived };
     // A bucket for a workspace that no longer exists would keep its sessions invisible.
     const live = new Set(Object.keys(members));
     for (const key of live) {
@@ -133,6 +138,7 @@ export class Manage {
       workspaces: this.data.workspaces.map((w) => ({ ...w })),
       members,
       pin: [...this.data.pin],
+      pinned: [...this.data.pinned],
       archived: [...this.data.archived],
     };
   }
@@ -215,6 +221,15 @@ export class Manage {
     this.save();
   }
 
+  /** ★ on a workspace: only pinned ones reach the top strip (an empty set is legal). */
+  setSpacePinned(id: string, on: boolean): void {
+    if (!id || !this.data.workspaces.some((w) => w.id === id)) return;
+    const has = this.data.pinned.includes(id);
+    if (on === has) return;
+    this.data.pinned = on ? [...this.data.pinned, id] : this.data.pinned.filter((x) => x !== id);
+    this.save();
+  }
+
   /** Reorder the tabs; ids missing from `order` keep their relative place at the end. */
   orderWorkspaces(order: unknown): void {
     const want = ids(order).filter((id) => this.data.workspaces.some((w) => w.id === id));
@@ -251,6 +266,7 @@ export class Manage {
     if (at < 0) return;
     const orphaned = this.data.members[id] ?? [];
     this.data.workspaces.splice(at, 1);
+    this.data.pinned = this.data.pinned.filter((x) => x !== id);
     delete this.data.members[id];
     if (orphaned.length) this.data.members[UNGROUPED] = [...(this.data.members[UNGROUPED] ?? []), ...orphaned];
     this.save();

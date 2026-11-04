@@ -1581,7 +1581,11 @@ async function main(): Promise<void> {
               const op = String(msg.op ?? "");
               const id = String(msg.id ?? "");
               if (op === "new") {
-                sessions.manage.addWorkspace(String(msg.name ?? ""), String(msg.color ?? ""), String(msg.icon ?? ""));
+                // 新建的自动钉上顶栏，否则点完 ＋ 它只出现在左栏，顶栏看起来"什么都没发生"（同 Q-022）。
+                const space = sessions.manage.addWorkspace(String(msg.name ?? ""), String(msg.color ?? ""), String(msg.icon ?? ""));
+                sessions.manage.setSpacePinned(space.id, true);
+              } else if (op === "pin") {
+                sessions.manage.setSpacePinned(id, msg.on !== false);
               } else if (op === "patch") {
                 const patch: { name?: string; color?: string; icon?: string } = {};
                 if (msg.name != null) patch.name = String(msg.name);

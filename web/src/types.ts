@@ -135,7 +135,10 @@ export interface Workspace {
 export interface ManageState {
   workspaces: Workspace[];
   members: Record<string, string[]>;
+  /** ★ 在会话上：只决定"提到本组最前"。 */
   pin: string[];
+  /** ★ 在工作区上：只有这些进顶栏第一行，且在左栏排最前。空集合法。 */
+  pinned: string[];
   archived: string[];
 }
 

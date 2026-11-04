@@ -2270,3 +2270,38 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .ws-plan-n { margin-left: auto; color: var(--faint); font: 11.5px var(--mono); }
 .ws-plan-cwd { color: var(--faint); font: 11px var(--mono); margin: -4px 0 2px 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mgr-move { font-size: 12px; padding: 4px 6px; }
+
+/* ---------------------------------------------------------------- D117 工作区 ★（钉到顶栏） */
+.wstab { position: relative; padding-left: 6px; }
+.wstab.loose { color: var(--faint); }
+.wstab.loose .ws-name { font-weight: 400; }
+.ws-pin {
+  flex: none; border: 0; background: none; cursor: pointer; padding: 0 1px 0 0;
+  color: var(--accent); font-size: 10.5px; line-height: 1; opacity: 0; transition: opacity 0.12s;
+}
+.wstab:hover .ws-pin, .ws-pin:focus-visible, .wstab.on .ws-pin { opacity: 1; }
+.ws-pin.off { color: #3d475a; }
+.wstab.loose .ws-pin, .ws-pin.off { opacity: 1; }
+.ws-pin:hover { text-shadow: 0 0 6px rgba(124, 196, 255, 0.55); }
+.wstab.more { color: var(--faint); font-size: 12px; padding: 5px 8px 4px; }
+@media (hover: none) { .ws-pin { opacity: 1; } }
+/* 第 2 行里「当前会话但没 ★」的那颗：破例留着，用虚线圈出来，别和真置顶的混为一谈 */
+.pin-chip.loose { border-style: dashed; border-color: var(--line); background: transparent; }
+.pin-chip.loose .pin-star { color: #3d475a; }
+
+/* 「还有 N 个」下拉：顶栏只画置顶的工作区，没置顶的在这里钉 */
+.ws-menu {
+  position: fixed; z-index: 900; min-width: 240px; max-height: 60vh; overflow-y: auto;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 4px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+}
+.ws-menu-row { display: flex; align-items: center; gap: 2px; border-radius: 8px; }
+.ws-menu-row:hover { background: #1f2430; }
+.ws-menu-row .ws-pin { opacity: 1; padding: 6px 4px 6px 8px; }
+.ws-menu-go {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; border: 0; background: none;
+  padding: 6px 8px 6px 2px; border-radius: 8px; cursor: pointer; color: var(--text); font-size: 13px; text-align: left;
+}
+.ws-menu-go.on .ws-menu-name { font-weight: 600; }
+.ws-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-menu-n, .ws-menu-go .ws-n { color: var(--faint); font: 11px var(--mono); }

@@ -1032,7 +1032,6 @@ export const en: Dict = {
   "{p1} · {p2} 个会话": "{p1} · {p2} sessions",
   "{p1} · {p2} 个会话，{p3} 个待处理": "{p1} · {p2} sessions, {p3} waiting",
   "{p1} 个会话": "{p1} sessions",
-  "{p1} 个待处理": "{p1} waiting",
   "不上色": "No colour",
   "删除工作区": "Delete workspace",
   "名字": "Name",
@@ -1046,7 +1045,6 @@ export const en: Dict = {
   "未命名工作区": "Untitled workspace",
   "确认删除？里面 {p1} 个会话会退到「未分组」": "Delete it? Its {p1} sessions move to Ungrouped.",
   "置顶到本组最前 {p1}": "Pin {p1} to the top of this workspace",
-  "这个工作区还没有会话。点 ＋ 开一个，它们就归到这里。": "Nothing here yet. Press ＋ and new sessions land in this workspace.",
   "重命名 / 改色 / 删除这个工作区": "Rename / recolour / delete this workspace",
 
   "只处理「未分组」里的会话，已经在工作区里的不动。": "Only sessions in Ungrouped are touched; anything already in a workspace stays put.",
@@ -1055,5 +1053,13 @@ export const en: Dict = {
   "按目录建组": "Group by directory",
   "按目录建组（{p1} 个目录）": "Group by directory ({p1} folders)",
   "移动到…": "Move to…",
+
+  "★ {p1} 个 · {p2} 个待处理": "★ {p1} · {p2} waiting",
+  "★ {p1} 个会话": "★ {p1}",
+  "取消置顶工作区 {p1}": "Unpin workspace {p1}",
+  "置顶工作区 {p1}（钉到顶栏最前）": "Pin {p1} to the top strip",
+  "还有 {p1} 个": "+{p1} more",
+  "这个工作区还没有 ★ 的会话。在左栏点会话卡片上的 ☆ 钉上来。": "No ★ sessions here yet. Pin one with the ☆ on its card in the sidebar.",
+  "这些工作区没置顶，在左栏里（点开左栏就能看到）": "The other workspaces are not pinned — open the sidebar to see them.",
 
 };
