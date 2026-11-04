@@ -1322,6 +1322,7 @@
    - 失败的 `picli.done` 带 `error` 时写进控制台并放开这一行；`ext.op done` 同样放开。
    - 「全部更新（N）」一次把 N 个都排进去，只在它们全都在忙时禁用它自己。
    - 控制台在 `runId` 还没来（排队中）时写「已排队 …（桥按资源一个接一个跑）」，不再谎报「正在运行」。
+   - **`done` 不带 `reqId` 时也要把对应行放开**（按 `op` 名关一条）：老桥、或在别的标签页起的操作都会这样回来。宁可多放一个，也不要让按钮永远停在「排队中…」（`probes/pi-update.mjs` 的桩桥就是这种不及时回执的桥，实测曾把「pi 本体」那一行卡死）。
 6. **一次只发一个库存请求**：`extCheckLoading` 期间再要就记 `extReloadPending`，等这一段结束再补一次（否则装完一个包会同时跑两遍 `pi mcp list`）。
 
 **为什么：**
@@ -1382,3 +1383,4 @@
 - 之前跑不起来的现在真跑：`bridge/tests/e2e.mjs` 不再 `ENOENT`（它会连 7867 上的隔离桥，本机没有就报连接失败而不是文件不存在）；`probes/round{8,10,15,16,19,20,21,22,24}` 等一批桩桥探针全部 `ALL OK`（含这次新修的两处：`round22-dirsize` 的 `F:\probe-work` 转义写法、`round24-pinactions` 缺 `locale`）。
 - `probes/chip-shot.mjs` 依赖仓库外的私有 `cdp.mjs`：改成读 `CDP_LIB`，没有就一句人话退出，不再抛 `ERR_MODULE_NOT_FOUND`。
 - 回归：`npm run typecheck`（含 i18n 1001 键 × 3 语言）干净；`bridge/tests/ext-manager.mjs`、`bridge/tests/pi-cli.mjs` 仍 PASS。
+- 能跑之后暴露的旧账（单独的 commit）：`round6-keys` 快捷键表已经是 12 条（旧期望 11）；`round15-git` 的 cwd 比较改成两边都 `path.resolve`；`ext-manager-stages` 要等 start 到了再让操作失败。还剩下三个与路径无关的 UI 旧账，本次没动：`round14-admin` / `round18-term` 断言的是 D92 之前的终端 dock（`.term-title`、开终端就折叠右栏），`readme-shots` 要第二个终端标签页。
