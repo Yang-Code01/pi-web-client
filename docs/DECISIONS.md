@@ -1474,3 +1474,10 @@
 
 - `npm run test:ws` → 11 组断言（新增 G：工作区 ★ 是独立集合、删组一并清掉；H：老文件没 `pinned` 时默认空集）。
 - 真浏览器（隔离实例）：置空前顶栏 = `★ 未分组 1 · 还有 21 个 · ＋`；在「还有 N 个」下拉里钉 `api`、`pi-web-client` 后 = `★ api 224 · ★ pi-web-client 12 · ★ 未分组 1 · 还有 19 个`，左栏顺序同步变成 api → pi-web-client → 其余；收起左栏后第 2 行 = `api · ★ 0` + 一颗虚线框的当前会话。
+
+**实测反馈后补的三条（同一个 PR）：**
+
+- **会话 ★ 点不动**：前端 `sendArrangement(groups, pin)` 一直把 `pin` 发出去，但桥的 `arrange` 只读了 `groups`，`pin` 从来没落盘——回声一回就把星退回原样。现在 `arrange` 收 `(groups, pin?)`：传了才覆盖、不传就保持（拖拽不该顺手清星），归档的一律不准带星。
+- **左栏分组折不起来**：折叠用的是 `cards.hidden = true`，而 `.session-cards { display: grid }` 会盖掉 UA 的 `[hidden] { display: none }`，卡片压根没藏。改成 `.closed` 类 + `.session-cards.closed { display: none }`；折叠控件从 12px 宽的 `<span>` 换成 22px 命中区的 `<button>`（带 `aria-expanded`）。
+- **开新工作区还显示上一个会话**：`setWorkspace` 只处理了「目标区有会话」那一支，空区就直接渲染，于是对话区留着旧会话的正文。现在空区先 `closeCurrent()`（清 `currentId`/草稿/`chat.reset`、抹掉 `#/s/<id>` 地址），对话区换成「这个工作区还没有会话 + ＋ 新会话」面板。
+- **从「还有 N 个」里选一个 = 自动钉上**：不钉的话选完它仍然不在顶栏，等于白选一次；钉上后它同时排到顶栏最前（`pinned` 只决定「进不进顶栏 + 左栏排最前」，不动手工顺序）。

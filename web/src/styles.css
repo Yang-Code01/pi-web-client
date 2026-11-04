@@ -2305,3 +2305,17 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .ws-menu-go.on .ws-menu-name { font-weight: 600; }
 .ws-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-menu-n, .ws-menu-go .ws-n { color: var(--faint); font: 11px var(--mono); }
+
+/* ---------------------------------------------------------------- 分组折叠 */
+.session-cards.closed { display: none; }
+.ws-caret {
+  flex: none; width: 22px; height: 22px; margin: -4px -2px -4px -6px; padding: 0;
+  display: grid; place-items: center; border: 0; border-radius: 6px; background: none;
+  color: var(--faint); font: 11px/1 var(--mono); cursor: pointer;
+}
+.ws-caret:hover { color: var(--text); background: var(--panel-2); }
+.ws-caret:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: -1px; }
+
+/* 空工作区的对话区：一句说明 + 一颗新会话 */
+.ws-empty { display: grid; gap: 10px; justify-items: center; padding: 28px 12px; }
+.ws-empty-new { font-size: 13px; }

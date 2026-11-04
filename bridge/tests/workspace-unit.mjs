@@ -141,5 +141,21 @@ ok("H: 老文件没有 pinned 字段时默认空集（顶栏退回只显示当�
   assert.deepEqual(m.snapshot().pinned, []);
 });
 
+ok("I: 点★走的是 arrange(groups, pin) 这一条 —— pin 必须真的落盘（归档的不准带星）", () => {
+  write({ pin: [], order: ["a", "b"], archived: ["b"] });
+  const m = new Manage();
+  const ws = m.addWorkspace("w", "ice");
+  // 前端点 ★：同一条消息里既带 groups 又带 pin
+  m.arrangeGroups({ [ws.id]: ["a", "b"] }, ["a", "b"]);
+  assert.deepEqual(m.snapshot().pin, ["a"], "★ 落盘了，且归档的 b 被滤掉");
+  // 再点一次取消：pin 传空数组 = 清空
+  m.arrangeGroups({ [ws.id]: ["a", "b"] }, []);
+  assert.deepEqual(m.snapshot().pin, []);
+  // 不传 pin 时保持原样（拖拽不带星信息）
+  m.arrangeGroups({ [ws.id]: ["a"] }, ["a"]);
+  m.arrangeGroups({ [ws.id]: ["a"] });
+  assert.deepEqual(m.snapshot().pin, ["a"], "拖拽不该顺手把星清掉");
+});
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`\nworkspace-unit: ${checks} 组断言 ALL OK`);

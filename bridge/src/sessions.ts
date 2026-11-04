@@ -2089,9 +2089,9 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
-  /** The sidebar arrangement as a whole; the frontend sends `{wsId: [ids in display order]}`. */
-  arrange(groups: unknown): void {
-    this.manage.arrangeGroups(groups);
+  /** The sidebar arrangement as a whole; the frontend sends `{wsId: [ids in display order]}` (+ ★). */
+  arrange(groups: unknown, pin?: unknown): void {
+    this.manage.arrangeGroups(groups, pin);
   }
 
   /** Q-022: 置顶横条的 ＋ 建出来的会话，落到 pin 列表末尾。 */

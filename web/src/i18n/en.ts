@@ -1060,6 +1060,12 @@ export const en: Dict = {
   "置顶工作区 {p1}（钉到顶栏最前）": "Pin {p1} to the top strip",
   "还有 {p1} 个": "+{p1} more",
   "这个工作区还没有 ★ 的会话。在左栏点会话卡片上的 ☆ 钉上来。": "No ★ sessions here yet. Pin one with the ☆ on its card in the sidebar.",
-  "这些工作区没置顶，在左栏里（点开左栏就能看到）": "The other workspaces are not pinned — open the sidebar to see them.",
+
+  "折叠 {p1}": "Collapse {p1}",
+  "展开 {p1}": "Expand {p1}",
+  "没置顶的工作区：这里钉，或者展开左栏": "Workspaces without a star live here — pin one, or open the sidebar.",
+
+  "「{p1}」还没有会话。": "“{p1}” has no sessions yet.",
+  "＋ 新会话": "＋ New session",
 
 };

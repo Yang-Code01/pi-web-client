@@ -3169,6 +3169,8 @@ export class App {
       if (id === this.currentWsId()) go.classList.add("on");
       go.onclick = () => {
         this.closeSpacePicker();
+        // 从「还有 N 个」里选一个 = 你想用它，那就顺手钉上；不钉的话它选完仍然不在顶栏，白选一次。
+        if (!pinned) this.toggleSpacePin(id, true);
         this.setWorkspace(id);
       };
       row.append(star, go);
@@ -3305,7 +3307,11 @@ export class App {
     if (ws === this.currentWsId()) sec.classList.add("cur-ws");
     const head = el("div", "sess-head");
     const closed = this.wsClosed.has(ws);
-    const caret = el("span", "chev", closed ? "▸" : "▾");
+    // 折叠按钮是真按钮（22px 命中区）：原来是个 12px 宽的 <span>，又小又难点。
+    const caret = el("button", "ws-caret", closed ? "▸" : "▾") as HTMLButtonElement;
+    caret.type = "button";
+    caret.setAttribute("aria-expanded", closed ? "false" : "true");
+    caret.title = closed ? tr("展开 {p1}", { p1: this.wsName(ws) }) : tr("折叠 {p1}", { p1: this.wsName(ws) });
     const dot = el("span", "ws-dot");
     const accent = this.wsAccent(ws);
     if (accent) dot.style.background = accent;
@@ -3343,7 +3349,9 @@ export class App {
     sec.append(head);
 
     const cards = el("div", "session-cards");
-    if (closed) cards.hidden = true;
+    // 用 class 而不是 [hidden]：`.session-cards { display: grid }` 会盖掉 UA 的 [hidden]{display:none}，
+    // 结果点了箭头卡片根本不藏（这就是"无法折叠"的真因）。
+    if (closed) cards.classList.add("closed");
     for (const s of list) cards.append(this.sessionCard(s));
     // 整个分组都是落点：拖到组头、或拖进空组 = 归到这个工作区。
     sec.ondragover = (ev) => {
@@ -3622,6 +3630,27 @@ export class App {
     return this.manage.workspaces[0]?.id ?? UNGROUPED;
   }
 
+  /**
+   * 把当前会话关掉（不删）：对话区清空、草稿收好。切到空工作区、或当前会话不在这个区时用。
+   * D116：空工作区应该是「新会话面板」，而不是「上一个会话的正文」。
+   */
+  private closeCurrent(): void {
+    if (!this.currentId) return;
+    this.currentId = null;
+    this.session = null;
+    this.composerText = "";
+    this.images = [];
+    this.pastes = [];
+    this.approvals = [];
+    this.asks = [];
+    this.chat.reset([]);
+    try {
+      history.replaceState(null, "", location.pathname + location.search);
+    } catch {
+      /* file:// 之类拿不到 history 就算了，只是地址栏不干净 */
+    }
+  }
+
   /** 切标签页 = 切会话：点到哪个区，就打开那个区最靠前的一个；空区就只切区。 */
   private setWorkspace(id: string): void {
     if (id !== this.curWs) {
@@ -3631,6 +3660,12 @@ export class App {
     const next = this.groupSessions(id)[0];
     if (next && next.id !== this.currentId) {
       this.openFromList(next.id);
+      return;
+    }
+    // 目标区是空的（或当前会话不属于它）：把旧会话关掉，别让它留在对话区。
+    if (!next && this.currentId && this.wsOf(this.currentId) !== id) {
+      this.closeCurrent();
+      this.renderAll();
       return;
     }
     this.renderWorkspaceTabs();
@@ -5741,8 +5776,13 @@ export class App {
     this.closeSkillPalette();
     this.imageBadge = null;
     if (!this.currentId) {
-      const hint = el("div", "empty", tr("左边选一个会话，或开一个新的。"));
-      host.append(hint);
+      const empty = this.groupSessions(this.currentWsId()).length;
+      const box = el("div", "empty ws-empty");
+      box.append(el("div", "", empty ? tr("左边选一个会话，或开一个新的。") : tr("「{p1}」还没有会话。", { p1: this.wsName(this.currentWsId()) })));
+      const fresh = el("button", "btn primary ws-empty-new", tr("＋ 新会话"));
+      fresh.onclick = () => this.openNewSessionSheet();
+      box.append(fresh);
+      host.append(box);
       return;
     }
     const s = this.session;

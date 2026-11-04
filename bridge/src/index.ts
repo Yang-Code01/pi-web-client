@@ -1566,7 +1566,7 @@ async function main(): Promise<void> {
             if (!(await requireStepUp())) return;
             const action = String(msg.action ?? "");
             if (action === "arrange") {
-              sessions.arrange(msg.groups);
+              sessions.arrange(msg.groups, msg.pin);
               broadcast({ type: "manage", manage: sessions.manage.snapshot() });
               return;
             }

@@ -185,8 +185,11 @@ export class Manage {
   /**
    * The whole arrangement after a drop: `{wsId: [ids in display order]}`. Replacing `members`
    * wholesale keeps one ordering source of truth — the DOM the user just arranged.
+   *
+   * `pin` 是会话的 ★ 集合，跟同一条消息一起到（前端拖拽和点星都走这一个出口）。
+   * 传了才覆盖、不传就保持原样；归档的那些一律不准带星。
    */
-  arrangeGroups(groups: unknown): void {
+  arrangeGroups(groups: unknown, pin?: unknown): void {
     const before = new Map<string, string>();
     for (const [key, list] of Object.entries(this.data.members)) for (const id of list) before.set(id, key);
     const next = buckets(groups);
@@ -199,6 +202,10 @@ export class Manage {
       next[key].push(id);
     }
     this.data.members = next;
+    if (pin !== undefined) {
+      const hidden = new Set(this.data.archived);
+      this.data.pin = ids(pin).filter((id) => !hidden.has(id));
+    }
     this.save();
   }
 
