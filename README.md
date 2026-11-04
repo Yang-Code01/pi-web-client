@@ -179,7 +179,7 @@ node bridge/tests/settings-trust.mjs                                  # 设置�
 node bridge/tests/gate-modes.mjs                                      # 权限模式：只读白名单、逐个确认覆盖 MCP / 扩展工具（D78）
 node bridge/tests/login-flow.mjs                                      # /login /logout：API key、取消、OAuth 授权链接转达、登出（D79，不联网）
 node bridge/tests/session-lock.mjs                                    # 终端会话锁扩展 + bridge 拒绝接管 + 安装 / 移除（D79）
-node bridge/tests/session-lifecycle.mjs                               # 会话生命周期：完成 + 空闲阈值到点就休眠，消息还在、下一条消息唤醒，在跑的一轮不动（D120，假 pi，整圈要等真 tick，约 3 分钟）
+node bridge/tests/session-lifecycle.mjs                               # 会话生命周期：完成 + 空闲阈值到点就休眠，消息还在、下一条消息唤醒，在跑的一轮不动（D120，假 pi，tick 与阈值都注入成秒级，约 15 秒）
 node bridge/tests/pi-cli.mjs                                          # pi install / list / remove 与 pi mcp add / list / remove（D79，真 pi CLI，fixture 目录）
 node bridge/tests/share-bug.mjs                                       # /share（假 gh）与 /bug（zip / 离线拒绝上传）（D80，不联网）
 node bridge/tests/ext-manager.mjs                                     # 扩展管理：清单与版本、启停、MCP 改版本、商店→pi mcp add、按钮开关、公网只读（D81）

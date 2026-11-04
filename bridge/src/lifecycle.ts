@@ -12,7 +12,7 @@ import { readJson, statePath } from "./paths.ts";
 export interface Lifecycle {
   /** A settled session that has seen no pi event for this long sleeps (#76). */
   idleMs: number;
-  /** After the watchdog's abort, how long pi gets to settle before the process is ended (#77). */
+  /** After the watchdog's abort, how long pi gets to settle before the process is ended (#81). */
   abortGraceMs: number;
 }
 
@@ -23,6 +23,15 @@ export const DEFAULT_ABORT_GRACE_MS = 60 * 1000;
 function positive(raw: unknown): number | null {
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
+}
+
+/**
+ * How often the lifecycle rules get to look, i.e. the bridge's long-standing 60 s GC tick (D120: no
+ * second timer). Injectable for the same reason as `idleMs`: a test that sits out three real ticks
+ * spends three minutes proving something about seconds.
+ */
+export function gcTickMs(): number {
+  return positive(process.env.PI_WEB_GC_TICK_MS) ?? 60_000;
 }
 
 export function lifecycle(): Lifecycle {

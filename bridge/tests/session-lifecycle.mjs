@@ -7,8 +7,9 @@
  * (bridge/tests/fixtures/fake-pi.mjs), so "the process really went away" is provable — a wake-up
  * shows up as a *second* launch line for the same session id, plus an exit line for the first.
  *
- * The rules ride the existing 60 s GC tick (no second timer, D120), so each phase waits for a real
- * tick: `npm --prefix bridge run build && node bridge/tests/session-lifecycle.mjs` (~3 min).
+ * The rules ride the bridge's existing GC tick (no second timer, D120). The tick interval is
+ * squeezed for the same reason as the threshold, so the whole file runs in ~20 s:
+ * `npm --prefix bridge run build && node bridge/tests/session-lifecycle.mjs`.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -19,8 +20,9 @@ import { WebSocket } from "ws";
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ROOT = path.join(REPO, ".scratch", "session-lifecycle");
 const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
-/** One GC tick is 60 s; a phase may sit out a whole one before its rule runs. */
-const TICK_WAIT = 75_000;
+/** The GC tick the tests inject: a real one is 60 s, and a phase may sit out a whole one. */
+const TICK_MS = 1000;
+const TICK_WAIT = TICK_MS * 4;
 /** The idle threshold the tests inject: 30 minutes would take 30 minutes. */
 const IDLE_MS = 2000;
 
@@ -67,6 +69,7 @@ async function startBridge({ name, port, env = {}, lifecycle }) {
       PI_AGENT_DIR: agent,
       PI_BIN: FAKE_PI,
       FAKE_PI_LOG: piLog,
+      PI_WEB_GC_TICK_MS: String(TICK_MS),
       ...env,
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -211,7 +214,9 @@ async function idleReaping() {
     const inherited = argvLines.flatMap((e) => e.piWeb ?? []);
     check(argvLines.every((e) => Array.isArray(e.piWeb)), "the stub records which PI_WEB_* vars it was given");
     check(
-      !inherited.includes("PI_WEB_IDLE_MS") && !inherited.includes("PI_WEB_ABORT_GRACE_MS"),
+      !inherited.includes("PI_WEB_IDLE_MS") &&
+        !inherited.includes("PI_WEB_ABORT_GRACE_MS") &&
+        !inherited.includes("PI_WEB_GC_TICK_MS"),
       `the test's thresholds did not reach pi (saw ${JSON.stringify([...new Set(inherited)])})`,
     );
 
@@ -257,7 +262,7 @@ async function thresholdFile() {
       "sleep notice from the file's threshold",
     );
     check(Boolean(slept), "the threshold in lifecycle.json took effect (the 30-minute default did not)");
-    // The bridge reads the file; it does not own it yet (runtime.set comes with #77).
+    // The bridge reads the file; it does not own it yet (runtime.set comes with #78).
     const onDisk = JSON.parse(fs.readFileSync(path.join(ROOT, "file", "state", "lifecycle.json"), "utf8"));
     check(onDisk.idleMs === IDLE_MS, `the file is untouched (${JSON.stringify(onDisk)})`);
   } finally {

@@ -13,7 +13,7 @@ import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
 import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
 import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
-import { lifecycle, type Lifecycle } from "./lifecycle.ts";
+import { lifecycle, gcTickMs, type Lifecycle } from "./lifecycle.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -2299,7 +2299,7 @@ export class SessionManager extends EventEmitter {
         s.removeAllListeners();
         this.sessions.delete(id);
       }
-    }, 60_000);
+    }, gcTickMs());
     this.gcTimer.unref?.();
   }
 
@@ -2315,13 +2315,13 @@ export class SessionManager extends EventEmitter {
     this.sleepOverCap(cfg);
   }
 
-  /** Watchdog for a `running` turn that stopped sending events — #77. */
+  /** Watchdog for a `running` turn that stopped sending events — #81. */
   private endStuckRuns(_cfg: Lifecycle): void {}
 
   /**
    * A finished run with no pi event for `idleMs` sleeps: the process goes, messages and session file
    * stay, and the next message wakes it (D120). Nobody watching counts as activity — a tab left open
-   * unattended is exactly what this reaps. Approvals and asks still pin a session here; #78 gives
+   * unattended is exactly what this reaps. Approvals and asks still pin a session here; #82 gives
    * them an expiry of their own.
    */
   private sleepIdleSessions(cfg: Lifecycle): void {
@@ -2331,7 +2331,7 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  /** Memory cap: sleep the longest-idle sessions until the total is back under it — #77. */
+  /** Memory cap: sleep the longest-idle sessions until the total is back under it — #79. */
   private sleepOverCap(_cfg: Lifecycle): void {}
 
   async shutdown(): Promise<void> {
