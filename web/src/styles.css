@@ -139,6 +139,9 @@ a { color: var(--accent); text-decoration: none; }
 .wstabs::-webkit-scrollbar { height: 0; }
 .wstabs.fade { mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
 .wstab {
+  /* 盒高写死：折叠按钮和标签必须在同一个高度上，否则一折一展顶栏会变高变矮，
+     下面整片（左栏 + 对话区）跟着上下抖（实测 49 ↔ 53.9）。 */
+  height: 33px;
   flex: none; display: inline-flex; align-items: center; gap: 7px; min-width: 0;
   border: 1px solid transparent; border-bottom: 2px solid transparent; background: none;
   color: var(--dim); padding: 5px 10px 4px; cursor: pointer; font-size: 13.5px; white-space: nowrap;
@@ -2337,6 +2340,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* ---------------------------------------------------------------- D118 顶栏工作区条可折叠 */
 .wstabs.collapsed { display: none; }
 .ws-toggle {
+  /* 跟 .wstab 同一个盒高，两态才一样高（见上） */
+  height: 33px; display: inline-flex; align-items: center; box-sizing: border-box;
   flex: none; border: 1px solid transparent; background: none; cursor: pointer;
   color: var(--dim); border-radius: 8px; padding: 3px 7px; font: 12.5px var(--sans);
   white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
