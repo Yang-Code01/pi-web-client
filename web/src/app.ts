@@ -3327,6 +3327,7 @@ export class App {
     for (const id of this.wsOrder()) {
       const pinned = this.isSpacePinned(id);
       const row = el("div", "ws-menu-row");
+      row.dataset.wsRow = id;
       const star = el("button", `ws-pin${pinned ? "" : " off"}`, "★") as HTMLButtonElement;
       star.type = "button";
       star.title = pinned ? tr("取消置顶工作区 {p1}", { p1: this.wsName(id) }) : tr("置顶工作区 {p1}（钉到顶栏最前）", { p1: this.wsName(id) });
@@ -3763,7 +3764,7 @@ export class App {
     // 两个方向要的托盘坐标不一样：
     //   飞出去 → 渲染**后**的位置（渲染前那儿还是这颗标签自己占着，飞过去等于飞进空白）
     //   长出来 → 渲染**前**的位置（新标签会把托盘往右挤，起点得是挤之前的地方）
-    const trayBefore = this.trayPoint();
+    const trayBefore = on ? (this.spaceRowPoint(id) ?? this.trayPoint()) : this.trayPoint();
     const tab = this.els.wstabs.querySelector<HTMLElement>(`.wstab[data-ws="${id}"]`);
     const from = tab?.getBoundingClientRect() ?? null;
     // 当前工作区的标签取消 ★ 也不会消失（D117 的破例），所以它不需要飞走。
@@ -3776,9 +3777,10 @@ export class App {
 
     if (this.calm()) {
       leaving?.remove();
+      if (on) this.closeSpacePicker();
       return;
     }
-    if (leaving && from) this.flyToTray(leaving, from, this.trayPoint());
+    if (leaving && from) this.flyIntoTrayList(leaving, from, id);
     if (on) this.flyFromTray(id, trayBefore);
     this.flipTabs(before);
   }
@@ -3791,6 +3793,49 @@ export class App {
       if (key != null) map.set(key, n.getBoundingClientRect());
     }
     return map;
+  }
+
+  /** 下拉里某个工作区那一行（飞行落点）；下拉没开时返回 null。 */
+  private spaceRow(id: string): HTMLElement | null {
+    return this.spacePicker?.querySelector<HTMLElement>(`.ws-menu-row[data-ws-row="${id}"]`) ?? null;
+  }
+
+  /** 那一行左侧色点附近的中点（标签缩进去的落点）。 */
+  private spaceRowPoint(id: string): { x: number; y: number } | null {
+    const row = this.spaceRow(id);
+    if (!row) return null;
+    row.scrollIntoView({ block: "nearest" });
+    const r = row.getBoundingClientRect();
+    return { x: r.left + 26, y: r.top + r.height / 2 };
+  }
+
+  /**
+   * 取消置顶：自动展开「还有 N 个」，标签缩着飞进里面那一行，落下后再把下拉关掉（D119）。
+   * 飞向的是**展开后**那一行的位置——原来飞向折叠按钮，等于飞到一个看不见的点上。
+   */
+  private flyIntoTrayList(clone: HTMLElement, from: DOMRect, id: string): void {
+    const anchor = this.els.wstabs.querySelector<HTMLElement>(".wstab.more") ?? this.els.wstabs;
+    this.openSpacePicker(anchor);
+    const to = this.spaceRowPoint(id);
+    const cx = from.left + from.width / 2;
+    const cy = from.top + from.height / 2;
+    const tx = to?.x ?? cx;
+    const ty = to?.y ?? cy;
+    clone
+      .animate(
+        [
+          { transform: "none", opacity: 1 },
+          { transform: `translate(${tx - cx}px, ${ty - cy}px) scale(0.3)`, opacity: 0.2 },
+        ],
+        { duration: 300, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" },
+      )
+      .onfinish = () => {
+        clone.remove();
+        const landed = this.spaceRow(id);
+        // 落点闪一下，表示"它到这里了"
+        landed?.animate([{ background: "rgba(125, 211, 252, 0.28)" }, { background: "transparent" }], { duration: 420, easing: "ease-out" });
+        window.setTimeout(() => this.closeSpacePicker(), 240);
+      };
   }
 
   /** 「还有 N 个」那一点的坐标；它不在时退到标签条右端。 */
