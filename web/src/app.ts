@@ -3333,8 +3333,10 @@ export class App {
       star.title = pinned ? tr("取消置顶工作区 {p1}", { p1: this.wsName(id) }) : tr("置顶工作区 {p1}（钉到顶栏最前）", { p1: this.wsName(id) });
       star.onclick = (ev) => {
         ev.stopPropagation();
-        this.toggleSpacePin(id, !pinned);
-        this.closeSpacePicker();
+        const origin = this.spaceRowPoint(id);
+        this.toggleSpacePin(id, !pinned, origin ?? undefined);
+        // 取消置顶时 flyIntoTrayList 会重新展开下拉（它要飞进那一行），所以这里只管「钉上」。
+        if (pinned) window.setTimeout(() => this.closeSpacePicker(), 140);
       };
       const dot = el("span", "ws-dot");
       const accent = this.wsAccent(id);
@@ -3345,10 +3347,13 @@ export class App {
       go.append(dot, el("span", "ws-menu-name", this.wsName(id)), el("span", "ws-n", String(this.groupSessions(id).length)));
       if (id === this.currentWsId()) go.classList.add("on");
       go.onclick = () => {
-        this.closeSpacePicker();
+        // 先量到这一行的位置再动手：关掉下拉之后这一行就没了，动画只能从按钮冒出来（看着僵硬）。
+        const origin = this.spaceRowPoint(id);
         // 从「还有 N 个」里选一个 = 你想用它，那就顺手钉上；不钉的话它选完仍然不在顶栏，白选一次。
-        if (!pinned) this.toggleSpacePin(id, true);
+        if (!pinned) this.toggleSpacePin(id, true, origin ?? undefined);
         this.setWorkspace(id);
+        // 让"泡"先离开起点，再把下拉收起来
+        window.setTimeout(() => this.closeSpacePicker(), pinned ? 0 : 140);
       };
       row.append(star, go);
       menu.append(row);
@@ -3759,12 +3764,12 @@ export class App {
    * 钉 / 取消钉一颗工作区。取消时那颗标签飞进「还有 N 个」，钉上时从那里长出来；
    * 旁边的标签按前后位置差平移过去（FLIP），别让整条瞬移（D119）。
    */
-  private toggleSpacePin(id: string, on: boolean): void {
+  private toggleSpacePin(id: string, on: boolean, origin?: { x: number; y: number }): void {
     const before = this.wsSnapshot();
     // 两个方向要的托盘坐标不一样：
     //   飞出去 → 渲染**后**的位置（渲染前那儿还是这颗标签自己占着，飞过去等于飞进空白）
     //   长出来 → 渲染**前**的位置（新标签会把托盘往右挤，起点得是挤之前的地方）
-    const trayBefore = on ? (this.spaceRowPoint(id) ?? this.trayPoint()) : this.trayPoint();
+    const trayBefore = on ? (origin ?? this.spaceRowPoint(id) ?? this.trayPoint()) : this.trayPoint();
     const tab = this.els.wstabs.querySelector<HTMLElement>(`.wstab[data-ws="${id}"]`);
     const from = tab?.getBoundingClientRect() ?? null;
     // 当前工作区的标签取消 ★ 也不会消失（D117 的破例），所以它不需要飞走。
@@ -3824,17 +3829,19 @@ export class App {
     clone
       .animate(
         [
-          { transform: "none", opacity: 1 },
-          { transform: `translate(${tx - cx}px, ${ty - cy}px) scale(0.3)`, opacity: 0.2 },
+          { transform: "none", opacity: 1, filter: "blur(0px)" },
+          { transform: "translate(0px, -2px) scale(1.04)", opacity: 1, offset: 0.18 },
+          { transform: `translate(${(tx - cx) * 0.6}px, ${(ty - cy) * 0.6}px) scale(0.62)`, opacity: 0.95, offset: 0.62 },
+          { transform: `translate(${tx - cx}px, ${ty - cy}px) scale(0.28)`, opacity: 0, filter: "blur(2px)" },
         ],
-        { duration: 300, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" },
+        { duration: 380, easing: "cubic-bezier(.38,.02,.3,1)", fill: "forwards" },
       )
       .onfinish = () => {
         clone.remove();
         const landed = this.spaceRow(id);
         // 落点闪一下，表示"它到这里了"
         landed?.animate([{ background: "rgba(125, 211, 252, 0.28)" }, { background: "transparent" }], { duration: 420, easing: "ease-out" });
-        window.setTimeout(() => this.closeSpacePicker(), 240);
+        window.setTimeout(() => this.closeSpacePicker(), 180);
       };
   }
 
@@ -3898,12 +3905,15 @@ export class App {
     const r = tab.getBoundingClientRect();
     const dx = tray.x - (r.left + r.width / 2);
     const dy = tray.y - (r.top + r.height / 2);
+    // 起泡：从起点放大、过冲一点点再落回原位，中途带一点模糊，像是从那一行"鼓"出来。
     tab.animate(
       [
-        { transform: `translate(${dx}px, ${dy}px) scale(0.24)`, opacity: 0 },
+        { transform: `translate(${dx}px, ${dy}px) scale(0.3)`, opacity: 0, filter: "blur(2px)" },
+        { transform: `translate(${dx * 0.42}px, ${dy * 0.42}px) scale(0.84)`, opacity: 1, filter: "blur(0px)", offset: 0.55 },
+        { transform: "translate(0px, 0px) scale(1.06)", opacity: 1, filter: "blur(0px)", offset: 0.85 },
         { transform: "none", opacity: 1 },
       ],
-      { duration: 260, easing: "cubic-bezier(.2,.7,.2,1)" },
+      { duration: 430, easing: "cubic-bezier(.22,1.12,.36,1)" },
     );
     this.pulseTray();
   }
