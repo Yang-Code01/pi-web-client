@@ -1057,4 +1057,10 @@ export const en: Dict = {
   "空闲阈值下一个 tick 就生效；内存水位等下一次采样（60 秒一次）。两个值都写进桥的状态目录，重启桥也还在。": "The idle threshold applies from the next tick; the watermark waits for the next sample (once a minute). Both are written into the bridge's state directory, so restarting the bridge keeps them.",
   "已保存：空闲阈值下一个 tick 就生效，不用重启桥。": "Saved: the idle threshold applies from the next tick — no bridge restart needed.",
   "没有保存：阈值必须是大于 0 的数。": "Not saved: a threshold has to be a number greater than 0.",
+  "全部休眠": "Sleep all",
+  "把所有空闲的会话休眠掉：消息都在，下一条消息唤醒；正在跑的一轮不动。": "Put every idle session to sleep: messages stay, the next message wakes it. A run in flight is left alone.",
+  "没有可以休眠的会话：本来就都是空的。": "Nothing to put to sleep: there was nothing running.",
+  "已休眠 {p1} 个会话。": "Put {p1} session(s) to sleep.",
+  "一个都没睡：{p1} 还在跑，没有动。": "Nothing went to sleep: {p1} is still running, left untouched.",
+  "已休眠 {p1} 个会话；{p2} 还在跑，没有动。": "Put {p1} session(s) to sleep; {p2} is still running and was left untouched.",
 };

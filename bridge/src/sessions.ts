@@ -128,6 +128,13 @@ export interface RuntimeStats {
   lifecycle: Lifecycle;
 }
 
+/** A session 「全部休眠」 had to leave alone (#80 / D120). `why` is a fixed id, not a sentence. */
+export interface SleepSkipped {
+  id: string;
+  name: string;
+  why: "running";
+}
+
 export interface SessionState {
   id: string;
   name: string;
@@ -1850,9 +1857,13 @@ export class Session extends EventEmitter {
     rpc.kill();
   }
 
-  sleep(): void {
-    if (this.state.running) return;
-    this.sleepNow();
+  /**
+   * The one sleep path for every reason (idle, memory cap, 「全部休眠」). Resolves once the process is
+   * gone, which is what 「全部休眠」 needs: its receipt is followed by numbers that have already dropped.
+   */
+  sleep(): Promise<void> {
+    if (this.state.running) return Promise.resolve();
+    return this.sleepNow();
   }
 
   /**
@@ -1874,12 +1885,12 @@ export class Session extends EventEmitter {
       this.cancelAsk(ask.id, "没有人看，已过期");
       this.notice("这个提问没有人看，已过期；这次提问已丢弃。", "info", { code: "ask_expired" });
     }
-    this.sleepNow();
+    void this.sleepNow();
   }
 
   /** The process goes, messages and session file stay, the next message wakes it (D120). */
-  private sleepNow(): void {
-    void this.close({ quiet: true }).then(() => {
+  private sleepNow(): Promise<void> {
+    return this.close({ quiet: true }).then(() => {
       this.notice("会话已休眠（消息仍在，下次发消息会自动唤醒）");
       this.emitWs({ type: "session.state", session: this.state });
     });
@@ -2486,6 +2497,29 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * 「全部休眠」(#80): sleep every live session that is not mid-run, and name the ones that were
+   * skipped so the page can say who is still working. A running turn is never touched — that is the
+   * whole point of the button (no silent interruption of work), and it is also why nothing else here
+   * overrides `sleep()`'s own guard. Resolves when the sleeping ones have really let go of their pi.
+   */
+  async sleepAll(): Promise<{ slept: string[]; skipped: SleepSkipped[] }> {
+    const slept: string[] = [];
+    const skipped: SleepSkipped[] = [];
+    const pending: Promise<void>[] = [];
+    for (const s of this.sessions.values()) {
+      if (!s.live) continue;
+      if (s.state.running) {
+        skipped.push({ id: s.state.id, name: s.state.name, why: "running" });
+        continue;
+      }
+      slept.push(s.state.id);
+      pending.push(s.sleep());
+    }
+    await Promise.all(pending);
+    return { slept, skipped };
+  }
+
+  /**
    * `isWatched` says whether some client is looking at a session right now. Read-only sessions
    * nobody watches are dropped after a while: each one holds its transcript and a 400ms file poll.
    */
@@ -2546,7 +2580,7 @@ export class SessionManager extends EventEmitter {
         continue;
       }
       if (s.state.running) continue;
-      if (s.idleFor() > cfg.idleMs) s.sleep();
+      if (s.idleFor() > cfg.idleMs) void s.sleep();
     }
   }
 
