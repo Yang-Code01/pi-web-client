@@ -14,6 +14,7 @@ import { Manage } from "./manage.ts";
 import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
 import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
 import { lifecycle, gcTickMs, type Lifecycle } from "./lifecycle.ts";
+import { sampleMemory } from "./runtime.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -90,6 +91,29 @@ interface OpenQuestionnaire {
   taken: Set<string>;
   /** Dialogs that arrived before the answers did. */
   waiting: { uiId: string; req: any; question: QuestionnaireQuestion }[];
+}
+
+/** One running pi, as the runtime panel lists it (D120 / #77). */
+export interface RuntimeSession {
+  id: string;
+  name: string;
+  running: boolean;
+  /** Since the last pi event — the same clock `sleepIdleSessions` reads, in milliseconds. */
+  idleMs: number;
+  /** Resident bytes, only when the sample was trustworthy and the table listed this pid. */
+  bytes?: number;
+}
+
+/**
+ * `runtime.stats`: who is running, what they cost, and whether that number is real. `totalBytes`
+ * is `null` whenever nothing was measured (no running pi) or the reading failed (`unavailable`).
+ */
+export interface RuntimeStats {
+  running: number;
+  totalBytes: number | null;
+  unavailable: boolean;
+  /** Idle longest first. */
+  sessions: RuntimeSession[];
 }
 
 export interface SessionState {
@@ -585,6 +609,11 @@ export class Session extends EventEmitter {
 
   get live(): boolean {
     return Boolean(this.rpc?.alive);
+  }
+
+  /** The pi child's pid while it is alive — what the runtime panel samples memory for (D120 §2). */
+  get pid(): number | null {
+    return this.rpc?.pid ?? null;
   }
 
   /** The user opened this session: whatever finished before now has been seen. */
@@ -2280,6 +2309,42 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Who is running and what the bridge's own pi children cost (D120 / #77). The pid set comes from
+   * the `RpcChild` handles this manager holds and from nothing else, so no line of the process
+   * table but ours can be counted. A reading that cannot be trusted is `null` + `unavailable`,
+   * never an estimate: #79 will reap sessions with these numbers.
+   *
+   * Reusable rather than panel-specific: the watermark rule (#79) asks the same question on the
+   * same tick. With no live pi it spawns nothing.
+   */
+  async runtimeStats(): Promise<RuntimeStats> {
+    const live = [...this.sessions.values()].filter((s) => s.live);
+    const pids: number[] = [];
+    for (const s of live) if (s.pid !== null) pids.push(s.pid);
+    const sample = await sampleMemory(pids);
+    const sessions = live
+      .map((s): RuntimeSession => {
+        const pid = s.pid;
+        const bytes = sample.failure === null && pid !== null ? sample.bytes.get(pid) : undefined;
+        return {
+          id: s.state.id,
+          name: s.state.name,
+          running: s.state.running,
+          idleMs: s.idleFor(),
+          ...(bytes === undefined ? {} : { bytes }),
+        };
+      })
+      .sort((a, b) => b.idleMs - a.idleMs);
+    const totalBytes = sample.failure === null && sessions.length ? [...sample.bytes.values()].reduce((sum, n) => sum + n, 0) : null;
+    return { running: sessions.length, totalBytes, unavailable: sample.failure !== null, sessions };
+  }
+
+  /** Push the runtime numbers on every GC tick, so the panel is live without a timer of its own. */
+  private async publishRuntimeStats(): Promise<void> {
+    this.emit("ws", { type: "runtime.stats", ...(await this.runtimeStats()) });
+  }
+
+  /**
    * `isWatched` says whether some client is looking at a session right now. Read-only sessions
    * nobody watches are dropped after a while: each one holds its transcript and a 400ms file poll.
    */
@@ -2299,6 +2364,7 @@ export class SessionManager extends EventEmitter {
         s.removeAllListeners();
         this.sessions.delete(id);
       }
+      void this.publishRuntimeStats();
     }, gcTickMs());
     this.gcTimer.unref?.();
   }
