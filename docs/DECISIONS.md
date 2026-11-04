@@ -920,6 +920,7 @@
    - 内置扩展和单独的扩展文件（`<agentDir>/extensions`、`<cwd>/.pi/extensions`、settings 里列出的路径）；
    - MCP 服务器及其工具（`pi mcp list --json`）。
 3. **更新检查**：打开弹窗就联网检查。
+   - **D113 改了这一条**：不再等联网结果才出行。打开弹窗先显示上次的清单，桥再分三段推（本机已装的 → MCP 服务器状态 → 联网查到的版本），⟳ 只挂在版本那一栏上。
    - npm 包：本地版本对比 npm 的 `latest`。
    - 没有固定 ref 的 git 包：`git ls-remote HEAD` 对比本地 HEAD。
    - 固定了版本的 npx / uvx MCP 服务器：对比 npm / PyPI 上的最新版。
@@ -1298,3 +1299,43 @@
 **可改：** 缓存时长（`bridge/src/piupdate.ts` 的 `TTL`）、来源顺序与文案、确认框里的话、`--force` 是不是直接给 —— 都在 `paintPiUpdate()` / `confirmPiUpdate()` 与 `piupdate.ts` 顶部。
 
 **验证：** `probes/pi-update.mjs`（桩桥 + 真 Chromium）：行里显示 `pi 1.4.0` / `最新 1.5.0（npm …）`，懒检查只发一次且不带 `force`；确认框写着「全局安装的 pi（1.4.0 → 1.5.0）」且 z-index 62 > 弹层 60、屏幕中心的点击真的落在框上；确认后桥收到 `{op: pkg.update, target: self}`（无 `force`）；安装成功后行变 `pi 1.5.0` +「已是最新」+「已更新到 1.5.0」+ 重启/日志按钮，控制台里是 `Updated pi from 1.4.0 to 1.5.0`；`看更新日志` 切页并读到内容；失败时出现「强制重装（--force）」，点它确认后桥收到 `force: true`；查不到最新版时显示两条失败原因而按钮仍在；`重新检查` 的请求带 `force: true`；公网时按钮禁用且有只读提示。真实网络另跑过两次 `piLatest(true)`：正常拿到 `{"latest":"1.5.0","source":"npm 源 registry.npmmirror.com"}`，把 registry 指到死端口后回落到 `{"latest":"1.5.0","source":"pi.dev"}`。回归：`probes/window-front.mjs`、`probes/round12-preview-links.mjs`、`probes/term-dialog.mjs` 全绿，`npm run typecheck` 干净。截图 `.scratch/pi-update/shots/`。
+
+## D113 扩展弹窗：清单分三段推（本机先出，联网后补 ⟳），写操作按资源排队、按钮不再全灰
+
+**问题**（用户报的，2026-11-04）：① 打开弹窗一直卡在「联网检查版本中…」，列表空着——因为打开时先 `extInv = null`，再发一次 `check:true` 的库存请求，要等 `pi mcp list`（挨个连服务器）+ 每个包问 npm/git（每次 20 秒超时）全部回来才画出第一行；② 点了某一个扩展的「更新」，其他所有行的更新 / 卸载 / 启停也一起变灰——因为界面只有一颗全局忙标志 `extBusy()`（= 「有一条 pi 命令在跑」），而 `cliRun` 一次只能记住一条命令。
+
+**决定：**
+1. **库存分三段推**（`bridge/src/extmgr.ts` 的 `inventory()` 收一个 `emit` 回调，`ext.inventory` 每段发一条完整快照）：
+   - `local`：`pi list` + 扩展目录，纯本机，约 1–5 秒；`mcpReady:false`、`versionsChecked:false`。
+   - `mcp`：`pi mcp list --json`（真连一遍服务器，可能几十秒）之后补上 MCP 行；这阶段**不联网**，固定版本号从 `mcp.json` 的命令行里读。
+   - `versions`：npm / PyPI / `git ls-remote` 的答案，只有 `check:true` 才有。
+   - 每段都带 `mcpReady` / `versionsChecked` 两个布尔，页面据此决定「连接中…」「检查中…」「⟳ 还在不在」。两段谁先回来都行，**每条快照都是「到目前为止的全集」**。
+2. **页面不再清空缓存**：`openExtManager()` 不清 `extInv`，先画上次的清单，同时发一个新请求。新快照到达时 `mergeInventory()` 只在「版本号没变」时保留上一份的 `latest/update`，所以重开时「更新」按钮不会先消失再冒出来。
+3. **⟳ 只管版本**：顶部 hint 在 `extCheckLoading` 时是 `⟳ 联网检查版本中…`，否则 `检查于 …`；包行在检查跑着时写「检查中…」而不是「最新」（那时它还不知道）。MCP 区在 `mcpReady:false` 时写「连接 MCP 服务器中…」，不写「没有配置」。
+4. **写操作按资源排队**（`bridge/src/writelock.ts` 的 `createWriteLock()`，key 就是被写的资源）：
+   - `npm`：`pkg.install/remove/update`、`mcp.add/remove/login/logout`——它们共用 `~/.pi/agent/npm` 这一个 npm 工程，而且 `pi install/remove` 是「先读 settings 再写整份 packages 列表」。
+   - `settings:global` / `settings:project`：启停扩展（内置扩展也落在 global，所以 key 按**文件**算，不按 scope 名）。
+   - `mcp:<mcp.json 绝对路径>`：MCP 的开关与改版本。
+   - 失败不堵队列（前一个 reject 也照跑下一个）。
+5. **界面不再全局置灰**：`piCli(req, key)` / `extWrite(req, key)` 给每次写操作带一个页面生成的 `reqId` 和它所属的**行 key**（`pkg:<source>`、`ext:<id>`、`mcp:<source>:<name>`、`mcpadd:<name>`、`install:<name>`、`pi`）。桥把 `reqId` 原样回执到 `picli.start/out/done` 与 `ext.op`（`state: running|done`）。页面用 `cliOps: Map<reqId, {key, state}>`：
+   - 该行的主按钮写「排队中…」→「更新中…」；**同一行的次要按钮**（卸载 / 停用 / 删除 / OAuth）保持原名但禁用，因为这一行确实在忙；**其他行一律可点**，点了就是排队。
+   - 失败的 `picli.done` 带 `error` 时写进控制台并放开这一行；`ext.op done` 同样放开。
+   - 「全部更新（N）」一次把 N 个都排进去，只在它们全都在忙时禁用它自己。
+   - 控制台在 `runId` 还没来（排队中）时写「已排队 …（桥按资源一个接一个跑）」，不再谎报「正在运行」。
+6. **一次只发一个库存请求**：`extCheckLoading` 期间再要就记 `extReloadPending`，等这一段结束再补一次（否则装完一个包会同时跑两遍 `pi mcp list`）。
+
+**为什么：**
+- 「联网慢」和「你没事可做」是两件事。已装的清单是本机事实，没必要等网络；版本号才是网络事实，等它就该只转它自己那颗 ⟳。用户的原话是「不会因为网络原因，一直卡在联网界面」。
+- 「同时不能点」不是安全需要，是**实现偷懒**（一个 `cliRun` 变量）。但真并行确实有代价：`~/.pi/agent/npm` 是同一个 npm 工程，两个 `npm install --prefix` 同时跑会坏 `package-lock` / 留下半装目录；`pi install/remove` 与 `ext.toggle` 都是「先读后写整份列表」，并发会丢改动。所以答案是**按资源排队**：不同资源真并行，同一资源排队，界面永远可点。
+- 排队位置放在**桥**而不是页面：页面可能开好几个标签，真正的互斥只在桥里成立。
+
+**代价 / 可改：**
+- 冷启动第一屏仍要等 `pi list`（本机约 1–5 秒），它没法更快（要 pi 自己解析 path）。
+- 排队是 FIFO、没有取消：点错了只能等它跑完。
+- 「按资源」是人工分类的（三把锁）。新增写操作时要记得给它选 key，选错就等于没锁。**可改**
+- MCP 那一行在 `versions` 之后才可能显示「可更新」，所以 `pi mcp list` 慢的时候版本要更晚才出现。
+
+**验证：**
+- `node bridge/tests/ext-manager.mjs`（真 pi CLI，fixture 目录）：库存分 3 段推、首段就带包且 `mcpReady:false`、末段两个布尔都为真；`reqId` 原样回执；**两个启停同时发**（builtin + 用户扩展，同一个 `settings.json`）**两条都落盘**（没加锁时这一步必挂，实测丢过一条）；`createWriteLock` 的同 key 串行 / 异 key 并行 / 失败不堵队列；其余 D81 断言不变。
+- `node probes/ext-manager-stages.mjs`（桩桥 + 真 Chromium，`npm --prefix web run build` 之后跑）：冷启动先「读取已安装的包和扩展…」+ ⟳；本地段一到就出行、MCP 区写「连接 MCP 服务器中…」、包行「检查中…」；版本段到达后变「可更新到 2.0.0」、⟳ 消失、顶部「检查于 …」；关掉再开行立刻在且 ⟳ 在转；点「更新」→「排队中…」→「更新中…」，**别的包的更新、扩展的停用都可点**（同一行的卸载禁用）；两个包同时点 → 两个不同 `reqId`，结束 A 不影响 B；失败原因进控制台且行放开；`ext.op` 的启停同样「排队中 → 停用中 → 可点」。截图 `.scratch/ext-manager-stages/shots/`。
+- `npm run typecheck`（bridge + peer + web，含 `i18n-check`）干净。

@@ -2041,6 +2041,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .ext-badge { position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--warn); color: #111; font: 600 10.5px/16px var(--mono); text-align: center; }
 .ext-sheet { width: min(860px, 96vw); }
 .ext-host { display: grid; gap: 8px; min-width: 0; }
+/* D113: the stages of the inventory load, and one spinner per busy row. */
+.ext-host .act-spin, .ext-pi .act-spin {
+  display: inline-block; vertical-align: -1px; flex: none; width: 11px; height: 11px; margin-right: 6px;
+  border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent;
+  animation: act-spin 0.8s linear infinite;
+}
 .ext-host .ext-tabs { padding: 0; }
 .ext-host .login-status.warn { color: var(--warn); }
 .ext-host .ext-rank { display: inline-block; min-width: 1.6em; color: var(--faint); font: 11px var(--mono); }

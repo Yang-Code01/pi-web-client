@@ -133,7 +133,8 @@ wss.on("connection", (ws) => {
       return;
     }
     if (msg.type === "ext.inventory") {
-      send({ type: "ext.inventory", cwd: msg.cwd ?? CWD, packages: [], extensions: [], mcp: [], mcpError: null, updates: 0, checkedAt: Date.now() });
+      // D113: a real bridge pushes this in stages; this probe only needs the final shape.
+      send({ type: "ext.inventory", cwd: msg.cwd ?? CWD, packages: [], extensions: [], mcp: [], mcpError: null, updates: 0, checkedAt: Date.now(), mcpReady: true, versionsChecked: true });
       return;
     }
     if (msg.type === "pi.update.check") {
