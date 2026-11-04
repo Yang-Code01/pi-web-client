@@ -8,7 +8,7 @@ export interface SkillInfo {
   name: string;
   description: string;
   source: "user" | "project" | "other";
-  /** How often this skill was picked from the web palette (drives the "common" list). */
+  /** How often `/skill:<name>` was actually sent from the web client (drives the "common" list). */
   uses: number;
   lastUsed: number;
 }
