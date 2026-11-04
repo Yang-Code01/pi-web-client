@@ -1,0 +1,905 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>原型 · 工作区（一次性的，扔掉即可）</title>
+    <!--
+      原型，不是产品代码。单文件、无依赖、数据全在内存，关掉就没了。
+
+      问题：工作区定下来之后（会话恰好属于一个工作区、★ 降为组内排序、
+      左栏按工作区分组、未分组在末位、归档独立）。剩下没定的只有一处 —— 到底长什么样。
+
+      三个变体，?variant=A|B|C 切换（或点底部那条浮条的箭头 / 按 ← →）：
+        A 两行制   ：第 1 行工作区标签页（常驻），第 2 行当前区的会话胶囊（左栏收起时才有）
+        B 一行制   ：整条顶栏只有 44px，工作区是一个下拉芯片，当前区会话胶囊跟在后面
+        C 多簇制   ：第 1 行横向排开所有工作区，每簇自带自己的会话胶囊，不切区也能全看见
+
+      每个变体的侧栏也结构不同（A 折叠树 / B 粘性标题平铺 / C 两级分栏），
+      因为侧栏和工作区是同一个设计问题的两半。
+
+      跑：`npm --prefix web run dev` → http://localhost:5173/prototype-workspace.html
+      也可以直接双击本文件（没有 import，file:// 就能跑）。
+    -->
+    <style>
+      :root {
+        --bg: #0b0d10;
+        --panel: #12151a;
+        --panel-2: #171b22;
+        --line: #232833;
+        --line-soft: #1b2028;
+        --text: #e7eaf0;
+        --dim: #9aa2b1;
+        --faint: #6b7280;
+        --accent: #7dd3fc;
+        --accent-dim: #0e3a4d;
+        --ok: #4ade80;
+        --warn: #fbbf24;
+        --danger: #fb7185;
+        --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+        --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color-scheme: dark;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body { background: var(--bg); color: var(--text); font: 15px/1.55 var(--sans); overscroll-behavior: none; }
+      button, input { font: inherit; color: inherit; }
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-button { display: none; }
+      ::-webkit-scrollbar-thumb { background: #3a4658; border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
+      ::-webkit-scrollbar-thumb:hover { background: #55657c; }
+
+      #app { height: 100%; padding-bottom: 0; }
+      .shell { height: 100%; display: grid; grid-template-rows: auto auto 1fr auto; }
+
+      /* ---------- 顶栏（三个变体共用这些零件，但拼法不同 ---------- */
+      .topbar {
+        grid-row: 1;
+        display: flex; align-items: center; gap: 10px;
+        padding: 8px 12px; border-bottom: 1px solid var(--line-soft);
+        background: rgba(11, 13, 16, 0.92); min-width: 0;
+      }
+      .icon-btn {
+        flex: none; width: 28px; height: 28px; padding: 0; display: grid; place-items: center;
+        border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
+        color: var(--dim); font: 13px/1 var(--mono); cursor: pointer;
+      }
+      .icon-btn:hover { color: var(--text); border-color: #2f3746; background: var(--panel-2); }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+      .dot.live { background: var(--ok); box-shadow: 0 0 0 4px rgba(74, 222, 128, 0.12); }
+      .tools { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; }
+      .tool {
+        border: 1px solid var(--line-soft); background: var(--panel); color: var(--dim);
+        border-radius: 9px; padding: 3px 9px; font-size: 12px; cursor: pointer; white-space: nowrap;
+      }
+      .tool:hover { color: var(--text); border-color: var(--line); }
+      .tool.sq { width: 28px; padding: 0; height: 26px; }
+
+      /* ---------- 变体 A：工作区标签页 ---------- */
+      .wstabs { display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; flex: 1; scrollbar-width: none; }
+      .wstabs::-webkit-scrollbar { height: 0; }
+      .wstab {
+        flex: none; display: inline-flex; align-items: center; gap: 7px;
+        border: 1px solid transparent; border-radius: 9px 9px 0 0;
+        background: none; color: var(--dim); padding: 5px 10px 6px; cursor: pointer;
+        border-bottom: 2px solid transparent; font-size: 13.5px; white-space: nowrap;
+      }
+      .wstab:hover { color: var(--text); background: var(--panel); }
+      .wstab.on { color: var(--text); background: var(--panel); border-bottom-color: var(--accent); }
+      .wstab .n { font-size: 11px; color: var(--faint); font-family: var(--mono); }
+      .wstab.on .n { color: var(--accent); }
+      .wstab .pend { color: var(--warn); font-size: 10.5px; }
+      .wstab.ghost { color: var(--faint); }
+      .wstab input { width: 110px; background: var(--bg); border: 1px solid var(--accent-dim); border-radius: 6px; padding: 1px 5px; font-size: 13px; }
+
+      /* ---------- 变体 B：下拉芯片 ---------- */
+      .wsdrop {
+        flex: none; display: inline-flex; align-items: center; gap: 7px; position: relative;
+        border: 1px solid var(--line); background: var(--panel); border-radius: 999px;
+        padding: 3px 10px 3px 9px; font-size: 13px; cursor: pointer;
+      }
+      .wsdrop:hover { border-color: #2f3746; background: var(--panel-2); }
+      .wsdrop .car { color: var(--faint); font-size: 9px; }
+      .wsmenu {
+        position: absolute; top: calc(100% + 6px); left: 0; z-index: 60; min-width: 210px;
+        background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+        padding: 4px; box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+      }
+      .wsmenu button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+        border: 0; background: none; border-radius: 7px; padding: 6px 8px; font-size: 13px; cursor: pointer; }
+      .wsmenu button:hover { background: #1f2430; }
+      .wsmenu .n { margin-left: auto; color: var(--faint); font: 11px var(--mono); }
+
+      /* ---------- 变体 C：多簇横排 ---------- */
+      .clusters { display: flex; align-items: center; gap: 0; min-width: 0; overflow-x: auto; flex: 1; padding-bottom: 1px; }
+      .clusters::-webkit-scrollbar { height: 0; }
+      /* 溢出了才给一道右侧渐隐，否则最后一组会被默默切掉、看不出还能滚 */
+      .clusters.fade, .wstabs.fade, .chipstrip.fade {
+        mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+      }
+      /* 簇里的胶囊条不能允许收缩：一收缩就会把最后一簇的胶囊压成 0 宽，而不是触发外层横向滚动 */
+      .cluster .chipstrip { flex: none; overflow: visible; }
+      .cluster { display: flex; align-items: center; gap: 6px; padding: 0 10px; border-left: 1px solid var(--line-soft); flex: none; }
+      .cluster:first-child { border-left: 0; padding-left: 0; }
+      .clu-head { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; padding: 3px 4px; cursor: pointer;
+        border-radius: 7px; color: var(--dim); font-size: 13px; white-space: nowrap; }
+      .clu-head:hover { color: var(--text); background: var(--panel); }
+      .cluster.on .clu-head { color: var(--text); font-weight: 600; }
+      .cluster.on { background: linear-gradient(180deg, rgba(125, 211, 252, 0.05), transparent); }
+      .cluster .n { font-size: 10.5px; color: var(--faint); font-family: var(--mono); }
+
+      /* ---------- 会话胶囊（A 的第 2 行 / B 的行内 / C 的簇内） ---------- */
+      .pinrow {
+        grid-row: 2; display: flex; align-items: center; gap: 6px;
+        padding: 6px 12px; border-bottom: 1px solid var(--line-soft);
+        overflow-x: auto; min-width: 0;
+      }
+      .pinrow[hidden] { display: none; }
+      .pinrow .label { flex: none; font-size: 11px; letter-spacing: 0.06em; color: var(--faint); margin-right: 2px; }
+      .pinrow .label .pend { color: var(--warn); }
+      .chipstrip { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; overflow-x: auto; }
+      .chipstrip::-webkit-scrollbar { height: 0; }
+      .chip {
+        flex: none; display: inline-flex; align-items: center; gap: 0; cursor: grab;
+        border: 1px solid var(--line-soft); background: var(--panel); border-radius: 999px; font-size: 12.5px;
+      }
+      .chip:hover { border-color: var(--line); background: var(--panel-2); }
+      .chip.cur { background: rgba(125, 211, 252, 0.16); border-color: var(--accent); }
+      .chip.cur .nm { font-weight: 600; }
+      .chip.cur .st { color: #bfe6f7; }
+      .chip .star { border: 0; background: none; color: var(--accent); font-size: 10.5px; line-height: 1;
+        padding: 4px 3px 4px 9px; border-radius: 999px 0 0 999px; cursor: pointer; }
+      .chip .star.off { color: #3d475a; }
+      .chip .open { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; color: inherit;
+        padding: 3px 11px 3px 3px; border-radius: 0 999px 999px 0; cursor: pointer; font-size: 12.5px; }
+      .chip .nm { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .chip .st { color: var(--faint); font-size: 11px; font-family: var(--mono); }
+      .chip .st.run { color: var(--ok); }
+      .chip .st.ask { color: var(--warn); }
+      .chip.dragging, .card.dragging { opacity: 0.4; }
+      .chip.over::before, .card.over::before { content: ""; position: absolute; background: var(--accent); border-radius: 2px; }
+      .chip { position: relative; }
+      .chip.over::before { left: -4px; top: 4px; bottom: 4px; width: 2px; }
+      .chip.over-b::before { left: auto; right: -4px; }
+      .pin-new { flex: none; border: 1px solid var(--line-soft); background: var(--panel); color: var(--dim);
+        border-radius: 999px; padding: 3px 9px; cursor: pointer; font-size: 12.5px; }
+      .pin-new:hover { color: var(--text); border-color: var(--line); }
+      .pin-expand { margin-left: auto; flex: none; }
+
+      /* ---------- 主区 ---------- */
+      .main { grid-row: 3; display: grid; grid-template-columns: minmax(0, 1fr); overflow: hidden; position: relative; }
+      .main.wide { grid-template-columns: 288px minmax(0, 1fr); }
+      .main.rail { grid-template-columns: 168px 232px minmax(0, 1fr); }
+      .pane { overflow-y: auto; overflow-x: hidden; min-height: 0; border-right: 1px solid var(--line-soft); background: var(--panel); }
+      .pane:last-child { border-right: 0; background: var(--bg); }
+
+      /* 侧栏 A：折叠树 */
+      .grp { padding: 2px 8px 6px; }
+      .grp-head { display: flex; align-items: center; gap: 7px; padding: 5px 4px; border-radius: 7px; cursor: pointer; user-select: none; }
+      .grp-head:hover { background: var(--panel-2); }
+      .grp-head .chev { color: var(--faint); font-size: 10px; width: 10px; }
+      .grp-head .nm { font-size: 12.5px; color: var(--dim); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .grp.on .grp-head .nm { color: var(--text); }
+      .grp-head .n { margin-left: auto; font: 11px var(--mono); color: var(--faint); }
+      .grp-head input { width: 120px; background: var(--bg); border: 1px solid var(--accent-dim); border-radius: 6px; padding: 0 4px; font-size: 12.5px; }
+      .cards { display: grid; gap: 6px; padding: 2px 0 4px 0; min-height: 6px; }
+      .cards.drop-on { outline: 1px dashed var(--accent-dim); outline-offset: 3px; border-radius: 8px; }
+
+      /* 卡片 */
+      .card {
+        position: relative;
+        border: 1px solid var(--line-soft); background: var(--panel-2); border-radius: 10px;
+        padding: 6px 8px; cursor: grab; display: grid; gap: 2px;
+      }
+      .card:hover { border-color: #2b3341; }
+      .card.active { border-color: var(--accent); background: #101a20; }
+      .card .row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      .card .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 13.5px; }
+      .card .cwd { color: var(--faint); font: 11px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .card .badge { flex: none; font-size: 10px; border-radius: 4px; padding: 1px 4px; border: 1px solid var(--line); color: var(--faint); }
+      .card .badge.run { color: var(--ok); border-color: #1d3b2a; }
+      .card .badge.ask { color: var(--warn); border-color: #3a2f14; }
+      .card .over::before { left: 4px; right: 4px; top: -4px; height: 2px; }
+      .card.over::before { content: ""; position: absolute; background: var(--accent); border-radius: 2px; left: 4px; right: 4px; top: -4px; height: 2px; }
+      .card.over-b::before { top: auto; bottom: -4px; }
+
+      /* 侧栏 B：粘性标题 */
+      .shead {
+        position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 7px;
+        padding: 6px 12px; background: rgba(18, 21, 26, 0.96); backdrop-filter: blur(6px);
+        border-bottom: 1px solid var(--line-soft); font-size: 12px; color: var(--dim);
+      }
+      .shead .n { margin-left: auto; font: 11px var(--mono); color: var(--faint); }
+      .flat { padding: 8px 10px; display: grid; gap: 6px; }
+
+      /* 侧栏 C：两级分栏 */
+      .rail { padding: 8px; display: grid; gap: 3px; align-content: start; }
+      .railitem { display: flex; align-items: center; gap: 7px; border: 0; background: none; border-radius: 8px;
+        padding: 6px 7px; cursor: pointer; text-align: left; color: var(--dim); font-size: 13px; }
+      .railitem:hover { background: var(--panel-2); color: var(--text); }
+      .railitem.on { background: #1b2430; color: var(--text); }
+      .railitem .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .railitem .n { font: 11px var(--mono); color: var(--faint); }
+
+      /* 对话区 */
+      .chatpane { display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+      .transcript { overflow-y: auto; padding: 18px 22px; display: grid; gap: 14px; align-content: start; }
+      .msg { max-width: 760px; }
+      .msg .who { font-size: 11.5px; color: var(--faint); margin-bottom: 3px; }
+      .msg .body { background: var(--panel); border: 1px solid var(--line-soft); border-radius: 10px; padding: 9px 12px; font-size: 13.5px; line-height: 1.6; }
+      .msg.me .body { background: #10161c; }
+      .composer { padding: 10px 14px 14px; }
+      .composer .box { border: 1px solid var(--line); background: var(--panel); border-radius: 12px; padding: 10px 12px; color: var(--faint); font-size: 13.5px; }
+      .newpanel { height: 100%; display: grid; place-content: center; gap: 10px; text-align: center; padding: 30px; }
+      .newpanel h2 { margin: 0; font-size: 16px; }
+      .newpanel p { margin: 0; color: var(--faint); font-size: 13px; }
+      .newpanel .cta { border: 1px solid var(--accent-dim); background: #0b1c24; color: var(--accent); border-radius: 9px; padding: 7px 14px; cursor: pointer; justify-self: center; }
+
+      .bottomtabs { grid-row: 4; display: flex; gap: 6px; padding: 6px 12px; border-top: 1px solid var(--line-soft); background: var(--panel); }
+      .bottomtabs .t { border: 1px solid transparent; background: none; color: var(--faint); border-radius: 8px; padding: 3px 10px; font-size: 12.5px; cursor: pointer; }
+      .bottomtabs .t.on { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+
+      /* ---------- 底部浮动条（原型自己的，不属于设计） ---------- */
+      #switchbar {
+        position: fixed; left: 50%; bottom: 46px; transform: translateX(-50%); z-index: 999;
+        display: flex; align-items: center; gap: 4px; padding: 5px 6px;
+        background: #f5f7fa; color: #0b0d10; border-radius: 999px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6); font: 12.5px/1 var(--sans);
+      }
+      #switchbar button { border: 0; background: none; color: inherit; cursor: pointer; border-radius: 999px; padding: 5px 8px; font: inherit; }
+      #switchbar button:hover { background: rgba(0, 0, 0, 0.08); }
+      #switchbar .lab { font-weight: 600; padding: 0 6px; white-space: nowrap; }
+      #switchbar .sep { width: 1px; height: 16px; background: rgba(0, 0, 0, 0.15); margin: 0 2px; }
+      #switchbar .minor { font-weight: 400; opacity: 0.7; }
+      #statedump {
+        position: fixed; left: 12px; bottom: 12px; z-index: 999; max-width: 340px; max-height: 40vh; overflow: auto;
+        background: #f5f7fa; color: #0b0d10; border-radius: 10px; padding: 8px 10px;
+        font: 11px/1.5 var(--mono); white-space: pre; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+      }
+      #statedump[hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="switchbar"></div>
+    <pre id="statedump" hidden></pre>
+
+    <script>
+      // ---------------------------------------------------------------- 数据（照截图里那 6 个会话编的）
+      const COLORS = { ice: "#7dd3fc", teal: "#5eead4", violet: "#c4b5fd", amber: "#fcd34d", rose: "#fda4af", slate: "#cbd5e1" };
+      const UNGROUPED = "w0";
+      const ARCHIVED = "arch";
+
+      const state = {
+        variant: (new URLSearchParams(location.search).get("variant") || "A").toUpperCase(),
+        // 左栏展开；A 的第 2 行只在收起时出现（跟产品现状一致）。加 #collapsed 可以直接看收起后的样子。
+        sidebar: !location.hash.includes("collapsed"),
+        currentWs: "w1",
+        current: "s1",
+        renameWs: null,
+        menuOpen: false,
+        workspaces: [
+          { id: "w1", name: "pi-web-client", color: "ice", icon: "" },
+          { id: "w2", name: "bugs", color: "rose", icon: "" },
+          { id: UNGROUPED, name: "未分组", color: "slate", icon: "" },
+        ],
+        sessions: [
+          { id: "s1", name: "技能按钮修改", ws: "w1", cwd: "E:\\yqm\\pi-web-client", st: "run", stText: "运行中 47秒", pin: true },
+          { id: "s2", name: "excel 支持", ws: "w1", cwd: "E:\\yqm\\pi-web-client\\bridge", st: "ask", stText: "待回答", pin: true },
+          { id: "s3", name: "postman 测试 API", ws: "w1", cwd: "E:\\yqm\\pi-web-client", st: "", stText: "14小时前", pin: false },
+          { id: "s4", name: "bug 记录的改修", ws: "w2", cwd: "E:\\yqm\\pi-web-client", st: "", stText: "28分钟前", pin: true },
+          { id: "s5", name: "wiki", ws: UNGROUPED, cwd: "E:\\yqm\\wiki", st: "", stText: "13分钟前", pin: false },
+          { id: "s6", name: "pi mcp login atlassian", ws: UNGROUPED, cwd: "C:\\Users\\yangqm", st: "", stText: "3小时前", pin: false },
+        ],
+        archived: [{ id: "s7", name: "旧探针试验", ws: "w1", cwd: "E:\\yqm\\pi-web-client", stText: "3天前" }],
+      };
+
+      const ws = (id) => state.workspaces.find((w) => w.id === id);
+      const color = (id) => COLORS[ws(id)?.color] || COLORS.slate;
+      const sess = (id) => state.sessions.find((s) => s.id === id) || state.archived.find((s) => s.id === id);
+
+      /** 某个工作区里要显示的会话：★ 先，其余按数组顺序（= 手动顺序）。 */
+      function groupOf(id) {
+        const list = state.sessions.filter((s) => s.ws === id);
+        return [...list.filter((s) => s.pin), ...list.filter((s) => !s.pin)];
+      }
+      const pendingOf = (id) => groupOf(id).filter((s) => s.st === "ask").length;
+      const wsOrder = () => state.workspaces.map((w) => w.id);
+      function mostRecent(id) {
+        const list = groupOf(id);
+        return list[0]?.id || null;
+      }
+
+      // ---------------------------------------------------------------- 小工具
+      function el(tag, cls, text) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text != null) n.textContent = text;
+        return n;
+      }
+      function clear(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+      function dot(id, size) {
+        const d = el("span", "dot");
+        d.style.background = color(id);
+        if (size) {
+          d.style.width = size + "px";
+          d.style.height = size + "px";
+        }
+        return d;
+      }
+
+      function setWs(id, opts) {
+        state.currentWs = id;
+        const next = mostRecent(id);
+        if (opts && opts.open !== false) state.current = next = next || null;
+        render();
+      }
+
+      function openSession(id) {
+        const s = sess(id);
+        if (!s) return;
+        state.current = id;
+        state.currentWs = s.ws; // 标签页跟随（已定的语义）
+        render();
+      }
+
+      function togglePin(id) {
+        const s = sess(id);
+        if (!s) return;
+        s.pin = !s.pin;
+        render();
+      }
+
+      function newSession() {
+        const id = "n" + Date.now().toString(36);
+        state.sessions.unshift({ id, name: "新会话", ws: state.currentWs, cwd: "E:\\yqm\\pi-web-client", st: "", stText: "现在", pin: false });
+        state.current = id;
+        render();
+      }
+
+      // ---------------------------------------------------------------- 拖拽（HTML5，跟产品里现成那套一致）
+      function dragChip(node, id) {
+        node.draggable = true;
+        node.dataset.sess = id;
+        node.addEventListener("dragstart", (ev) => {
+          ev.dataTransfer.setData("text/plain", id);
+          ev.dataTransfer.effectAllowed = "move";
+          node.classList.add("dragging");
+        });
+        node.addEventListener("dragend", () => {
+          node.classList.remove("dragging");
+          document.querySelectorAll(".over,.over-b,.drop-on").forEach((n) => n.classList.remove("over", "over-b", "drop-on"));
+        });
+        node.addEventListener("dragover", (ev) => {
+          const src = document.querySelector(".dragging");
+          if (!src || src === node) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          const horizontal = node.classList.contains("chip");
+          const r = node.getBoundingClientRect();
+          const after = horizontal ? ev.clientX > r.left + r.width / 2 : ev.clientY > r.top + r.height / 2;
+          node.classList.toggle("over", !after);
+          node.classList.toggle("over-b", after);
+        });
+        node.addEventListener("dragleave", () => node.classList.remove("over", "over-b"));
+        node.addEventListener("drop", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const src = document.querySelector(".dragging");
+          if (!src || src === node) return;
+          const srcId = src.dataset.sess;
+          const before = node.classList.contains("over");
+          node.classList.remove("over", "over-b");
+          // 落点在目标节点的前/后，然后由 DOM 顺序重算归属与顺序
+          if (before) node.before(src);
+          else node.after(src);
+          commitFromDom(srcId);
+        });
+      }
+
+      function dropZone(node, wsId) {
+        node.dataset.drop = wsId;
+        node.addEventListener("dragover", (ev) => {
+          if (!document.querySelector(".dragging")) return;
+          ev.preventDefault();
+          node.classList.add("drop-on");
+        });
+        node.addEventListener("dragleave", () => node.classList.remove("drop-on"));
+        node.addEventListener("drop", (ev) => {
+          const src = document.querySelector(".dragging");
+          node.classList.remove("drop-on");
+          if (!src) return;
+          ev.preventDefault();
+          node.append(src);
+          commitFromDom(src.dataset.sess);
+        });
+      }
+
+      /** 拖完之后照着 DOM 重算一遍：组顺序 = 容器在 DOM 里的顺序，组内顺序 = 卡片顺序。 */
+      function commitFromDom(movedId) {
+        const containers = [...document.querySelectorAll("[data-drop]")];
+        const seen = new Set();
+        const next = [];
+        for (const c of containers) {
+          const wsId = c.dataset.drop;
+          for (const n of c.querySelectorAll("[data-sess]")) {
+            const s = sess(n.dataset.sess);
+            if (!s || seen.has(s.id)) continue;
+            s.ws = wsId;
+            seen.add(s.id);
+            next.push(s);
+          }
+        }
+        // 归档的、或者当前变体没画出来的会话，保持原顺序缀在后面
+        for (const s of state.sessions) if (!seen.has(s.id)) next.push(s);
+        state.sessions = next.filter((s) => !state.archived.includes(s));
+        const moved = sess(movedId);
+        if (moved) {
+          state.current = moved.id;
+          state.currentWs = moved.ws;
+        }
+        render();
+      }
+
+      /** 双击就地改名（标签页 / 下拉芯片 / 侧栏组头 / 分组栏）。 */
+      function renameOnDbl(node, current, commit) {
+        node.addEventListener("dblclick", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const input = el("input");
+          input.value = current;
+          clear(node);
+          node.append(input);
+          input.focus();
+          input.select();
+          let done = false;
+          const finish = (ok) => {
+            if (done) return;
+            done = true;
+            if (ok && input.value.trim()) commit(input.value.trim());
+            render();
+          };
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") finish(true);
+            if (e.key === "Escape") finish(false);
+            e.stopPropagation();
+          });
+          input.addEventListener("blur", () => finish(true));
+        });
+      }
+
+      // ---------------------------------------------------------------- 共用零件
+      function chip(s, opts) {
+        const c = el("div", "chip");
+        c.dataset.sess = s.id;
+        if (s.id === state.current) c.classList.add("cur");
+        if (opts && opts.draggable !== false) dragChip(c, s.id);
+        const star = el("button", "star" + (s.pin ? "" : " off"), "★");
+        star.title = s.pin ? "取消置顶" : "置顶（组内排前）";
+        star.onclick = (ev) => {
+          ev.stopPropagation();
+          togglePin(s.id);
+        };
+        const open = el("button", "open");
+        open.append(el("span", "nm", s.name));
+        const st = el("span", "st" + (s.st === "run" ? " run" : s.st === "ask" ? " ask" : ""), s.stText);
+        open.append(st);
+        open.onclick = () => openSession(s.id);
+        c.append(star, open);
+        return c;
+      }
+
+      function card(s) {
+        const c = el("div", "card");
+        c.dataset.sess = s.id;
+        if (s.id === state.current) c.classList.add("active");
+        dragChip(c, s.id);
+        const row = el("div", "row");
+        row.append(el("span", "name", s.name));
+        if (s.st) row.append(el("span", "badge" + (s.st === "run" ? " run" : " ask"), s.stText));
+        c.append(row, el("div", "cwd", s.cwd));
+        c.onclick = () => openSession(s.id);
+        return c;
+      }
+
+      function chatPane() {
+        const cur = sess(state.current);
+        const box = el("div", "pane chatpane");
+        const hide = !cur || cur.ws !== state.currentWs;
+        if (hide) {
+          const panel = el("div", "newpanel");
+          panel.append(
+            el("h2", "", state.currentWs === UNGROUPED ? "「未分组」里还没有会话" : `${ws(state.currentWs).name} 里还没有会话`),
+            el("p", "", "从这里新建的会话直接归到这个工作区，不用再拖。"),
+          );
+          const cta = el("button", "cta", "＋ 新会话");
+          cta.onclick = () => newSession();
+          panel.append(cta);
+          box.append(panel);
+        } else {
+          const tr = el("div", "transcript");
+          const m1 = el("div", "msg");
+          m1.append(el("div", "who", "你 · 13:16"), el("div", "body", "merge 吧"));
+          const m2 = el("div", "msg me");
+          m2.append(
+            el("div", "who", "pi · deepseek-v4.1-flash"),
+            el("div", "body", "PR #70 已合并。下一步是把工作区功能落成 issue，还是直接开 worktree 开工？"),
+          );
+          tr.append(m1, m2);
+          const comp = el("div", "composer");
+          comp.append(el("div", "box", "跑着呢：Enter 引导当前任务 · Alt+Enter 等这轮做完再处理"));
+          box.append(tr, comp);
+        }
+        return box;
+      }
+
+      function toolsRow() {
+        const wrap = el("div", "tools");
+        for (const label of ["📂 产物", ">_ 终端", "📁 文件管理器", "🌐 内网通"]) {
+          const b = el("button", "tool", label);
+          wrap.append(b);
+        }
+        const live = el("span", "dot live");
+        live.style.marginLeft = "4px";
+        wrap.append(live, el("button", "tool sq", "Aa"));
+        return wrap;
+      }
+
+      function bottomTabs() {
+        const bar = el("div", "bottomtabs");
+        for (const [i, label] of ["会话", "对话", "需要你"].entries()) {
+          const t = el("button", "t" + (i === 1 ? " on" : ""), label);
+          bar.append(t);
+        }
+        return bar;
+      }
+
+      // ---------------------------------------------------------------- 变体 A：两行制
+      function renderA(root) {
+        const shell = el("div", "shell");
+        const top = el("header", "topbar");
+        const collapse = el("button", "icon-btn", "«");
+        collapse.title = state.sidebar ? "收起左栏" : "展开左栏";
+        collapse.onclick = () => {
+          state.sidebar = !state.sidebar;
+          render();
+        };
+        top.append(collapse, el("span", "dot live"));
+
+        const tabs = el("nav", "wstabs");
+        for (const id of wsOrder()) {
+          const w = ws(id);
+          const tab = el("button", "wstab" + (id === state.currentWs ? " on" : ""));
+          tab.append(dot(id, 7), el("span", "", w.name));
+          const n = groupOf(id).length;
+          const pend = pendingOf(id);
+          if (pend) tab.append(el("span", "pend", "待" + pend));
+          else tab.append(el("span", "n", String(n)));
+          tab.onclick = () => setWs(id);
+          if (id !== UNGROUPED) renameOnDbl(tab, w.name, (v) => ((w.name = v), (state.renameWs = null)));
+          tabs.append(tab);
+        }
+        const add = el("button", "wstab ghost", "＋");
+        add.title = "新建工作区";
+        add.onclick = () => {
+          const id = "w" + Date.now().toString(36);
+          state.workspaces.splice(state.workspaces.length - 1, 0, { id, name: "新工作区", color: ["teal", "violet", "amber"][state.workspaces.length % 3], icon: "" });
+          setWs(id, { open: false });
+        };
+        tabs.append(add);
+        top.append(tabs, toolsRow());
+
+        const row2 = el("div", "pinrow");
+        row2.hidden = state.sidebar; // 已定：第 2 行只在左栏收起时出现
+        if (!row2.hidden) {
+          const pend = pendingOf(state.currentWs);
+          const label = el("span", "label");
+          label.append(document.createTextNode(ws(state.currentWs).name + " · "));
+          label.append(el("span", pend ? "pend" : "", pend ? `${pend} 个待处理` : `${groupOf(state.currentWs).length} 个会话`));
+          row2.append(label);
+          const strip = el("div", "chipstrip");
+          dropZone(strip, state.currentWs);
+          for (const s of groupOf(state.currentWs)) strip.append(chip(s));
+          row2.append(strip);
+          const addS = el("button", "pin-new", "＋");
+          addS.onclick = () => newSession();
+          row2.append(addS);
+          const expand = el("button", "pin-new pin-expand", "展开左栏 ▸");
+          expand.onclick = () => {
+            state.sidebar = true;
+            render();
+          };
+          row2.append(expand);
+        }
+
+        const main = el("div", "main" + (state.sidebar ? " wide" : ""));
+        if (state.sidebar) main.append(sidebarTree());
+        main.append(chatPane());
+
+        shell.append(top, row2, main, bottomTabs());
+        root.append(shell);
+      }
+
+      function sidebarTree() {
+        const pane = el("aside", "pane");
+        for (const id of wsOrder()) {
+          const grp = el("div", "grp" + (id === state.currentWs ? " on" : ""));
+          const head = el("div", "grp-head");
+          const collapsed = state["collapsed_" + id] === true;
+          head.append(el("span", "chev", collapsed ? "▸" : "▾"), dot(id, 8), el("span", "nm", ws(id).name), el("span", "n", String(groupOf(id).length)));
+          head.onclick = () => {
+            state["collapsed_" + id] = !collapsed;
+            state.currentWs = id;
+            render();
+          };
+          if (id !== UNGROUPED) renameOnDbl(head, ws(id).name, (v) => (ws(id).name = v));
+          grp.append(head);
+          if (!collapsed) {
+            const cards = el("div", "cards");
+            dropZone(cards, id);
+            for (const s of groupOf(id)) cards.append(card(s));
+            grp.append(cards);
+          }
+          pane.append(grp);
+        }
+        const arch = el("div", "grp");
+        const ah = el("div", "grp-head");
+        ah.append(el("span", "chev", state.archOpen ? "▾" : "▸"), el("span", "nm", "已归档"), el("span", "n", String(state.archived.length)));
+        ah.onclick = () => {
+          state.archOpen = !state.archOpen;
+          render();
+        };
+        arch.append(ah);
+        if (state.archOpen) {
+          const cards = el("div", "cards");
+          for (const s of state.archived) {
+            const c = card(s);
+            c.style.opacity = "0.65";
+            cards.append(c);
+          }
+          arch.append(cards);
+        }
+        pane.append(arch);
+        return pane;
+      }
+
+      // ---------------------------------------------------------------- 变体 B：一行制
+      function renderB(root) {
+        const shell = el("div", "shell");
+        const top = el("header", "topbar");
+        const collapse = el("button", "icon-btn", state.sidebar ? "«" : "»");
+        collapse.onclick = () => {
+          state.sidebar = !state.sidebar;
+          render();
+        };
+        top.append(collapse, el("span", "dot live"));
+
+        const drop = el("div", "wsdrop");
+        drop.append(dot(state.currentWs, 8), el("span", "", ws(state.currentWs).name), el("span", "car", "▾"));
+        drop.onclick = (ev) => {
+          ev.stopPropagation();
+          state.menuOpen = !state.menuOpen;
+          render();
+        };
+        if (state.menuOpen) {
+          const menu = el("div", "wsmenu");
+          for (const id of wsOrder()) {
+            const b = el("button");
+            b.append(dot(id, 8), el("span", "", ws(id).name), el("span", "n", String(groupOf(id).length)));
+            b.onclick = (ev) => {
+              ev.stopPropagation();
+              state.menuOpen = false;
+              setWs(id);
+            };
+            menu.append(b);
+          }
+          drop.append(menu);
+        }
+        top.append(drop);
+        const bar = el("span", "label", "│");
+        bar.style.cssText = "color:#232833;margin:0 2px";
+        top.append(bar);
+
+        const strip = el("div", "chipstrip");
+        dropZone(strip, state.currentWs);
+        for (const s of groupOf(state.currentWs)) strip.append(chip(s));
+        top.append(strip);
+        const addS = el("button", "pin-new", "＋");
+        addS.onclick = () => newSession();
+        top.append(addS);
+        top.append(toolsRow());
+
+        const main = el("div", "main" + (state.sidebar ? " wide" : ""));
+        if (state.sidebar) main.append(sidebarSticky());
+        main.append(chatPane());
+        shell.append(top, main, bottomTabs());
+        root.append(shell);
+      }
+
+      function sidebarSticky() {
+        const pane = el("aside", "pane");
+        for (const id of wsOrder()) {
+          const head = el("div", "shead");
+          head.append(dot(id, 8), el("span", "", ws(id).name), el("span", "n", String(groupOf(id).length)));
+          head.onclick = () => setWs(id, { open: false });
+          head.style.cursor = "pointer";
+          pane.append(head);
+          const flat = el("div", "flat");
+          dropZone(flat, id);
+          for (const s of groupOf(id)) flat.append(card(s));
+          pane.append(flat);
+        }
+        const head = el("div", "shead");
+        head.append(el("span", "", "已归档"), el("span", "n", String(state.archived.length)));
+        pane.append(head);
+        const flat = el("div", "flat");
+        for (const s of state.archived) {
+          const c = card(s);
+          c.style.opacity = "0.65";
+          flat.append(c);
+        }
+        pane.append(flat);
+        return pane;
+      }
+
+      // ---------------------------------------------------------------- 变体 C：多簇制
+      function renderC(root) {
+        const shell = el("div", "shell");
+        const top = el("header", "topbar");
+        const collapse = el("button", "icon-btn", state.sidebar ? "«" : "»");
+        collapse.onclick = () => {
+          state.sidebar = !state.sidebar;
+          render();
+        };
+        top.append(collapse, el("span", "dot live"));
+
+        const clusters = el("div", "clusters");
+        for (const id of wsOrder()) {
+          const clu = el("div", "cluster" + (id === state.currentWs ? " on" : ""));
+          const head = el("button", "clu-head");
+          head.append(dot(id, 8), el("span", "", ws(id).name), el("span", "n", String(groupOf(id).length)));
+          head.onclick = () => setWs(id);
+          clu.append(head);
+          const strip = el("div", "chipstrip");
+          dropZone(strip, id);
+          for (const s of groupOf(id)) strip.append(chip(s));
+          clu.append(strip);
+          clusters.append(clu);
+        }
+        const add = el("button", "wstab ghost", "＋");
+        add.title = "新建工作区";
+        add.style.flex = "none";
+        add.style.padding = "3px 9px";
+        add.onclick = () => {
+          const id = "w" + Date.now().toString(36);
+          state.workspaces.splice(state.workspaces.length - 1, 0, { id, name: "新工作区", color: ["teal", "violet", "amber"][state.workspaces.length % 3], icon: "" });
+          setWs(id, { open: false });
+        };
+        clusters.append(add);
+        top.append(clusters, toolsRow());
+
+        const main = el("div", "main" + (state.sidebar ? " rail" : ""));
+        if (state.sidebar) {
+          const rail = el("aside", "pane rail");
+          for (const id of wsOrder()) {
+            const b = el("button", "railitem" + (id === state.currentWs ? " on" : ""));
+            b.append(dot(id, 8), el("span", "nm", ws(id).name), el("span", "n", String(groupOf(id).length)));
+            b.onclick = () => setWs(id);
+            rail.append(b);
+          }
+          main.append(rail);
+
+          const list = el("aside", "pane");
+          const head = el("div", "shead");
+          head.append(el("span", "", "会话"), el("span", "n", String(groupOf(state.currentWs).length)));
+          list.append(head);
+          const cards = el("div", "flat");
+          dropZone(cards, state.currentWs);
+          for (const s of groupOf(state.currentWs)) cards.append(card(s));
+          list.append(cards);
+          main.append(list);
+        }
+        main.append(chatPane());
+        shell.append(top, main, bottomTabs());
+        root.append(shell);
+      }
+
+      // ---------------------------------------------------------------- 渲染 + 底部浮条
+      const NAMES = { A: "两行制（标签页 + 该区胶囊）", B: "一行制（下拉芯片 + 行内胶囊）", C: "多簇制（所有工作区横排）" };
+
+      function render() {
+        const app = document.getElementById("app");
+        clear(app);
+        if (state.variant === "B") renderB(app);
+        else if (state.variant === "C") renderC(app);
+        else renderA(app);
+        renderSwitchbar();
+        renderDump();
+        // 横向溢出提示：量一下再决定要不要上渐隐
+        for (const n of document.querySelectorAll(".clusters,.wstabs,.chipstrip")) {
+          if (n.scrollWidth > n.clientWidth + 1) n.classList.add("fade");
+        }
+      }
+
+      function renderSwitchbar() {
+        const bar = document.getElementById("switchbar");
+        clear(bar);
+        const order = ["A", "B", "C"];
+        const prev = el("button", "", "◀");
+        prev.title = "上一个变体（←）";
+        prev.onclick = () => step(-1);
+        const lab = el("span", "lab");
+        lab.append(document.createTextNode(state.variant + " · "));
+        lab.append(el("span", "minor", NAMES[state.variant]));
+        const next = el("button", "", "▶");
+        next.title = "下一个变体（→）";
+        next.onclick = () => step(1);
+        const sep = el("span", "sep");
+        const side = el("button", "", state.sidebar ? "左栏：展开" : "左栏：收起");
+        side.title = "切换左栏，看两种状态下的顶栏";
+        side.onclick = () => {
+          state.sidebar = !state.sidebar;
+          render();
+        };
+        const dump = el("button", "", "状态");
+        dump.onclick = () => {
+          const d = document.getElementById("statedump");
+          d.hidden = !d.hidden;
+        };
+        bar.append(prev, lab, next, sep, side, dump);
+      }
+
+      function step(dir) {
+        const order = ["A", "B", "C"];
+        const i = order.indexOf(state.variant);
+        const v = order[(i + dir + order.length) % order.length];
+        const u = new URL(location.href);
+        u.searchParams.set("variant", v);
+        history.replaceState(null, "", u);
+        state.variant = v;
+        state.renameWs = null;
+        state.menuOpen = false;
+        render();
+      }
+
+      function renderDump() {
+        const d = document.getElementById("statedump");
+        if (d.hidden) return;
+        d.textContent = JSON.stringify(
+          {
+            variant: state.variant,
+            sidebar: state.sidebar,
+            currentWs: state.currentWs,
+            current: state.current,
+            workspaces: state.workspaces.map((w) => ({ id: w.id, name: w.name, color: w.color })),
+            sessions: state.sessions.map((s) => ({ id: s.id, ws: s.ws, pin: s.pin })),
+            archived: state.archived.map((s) => s.id),
+          },
+          null,
+          2,
+        );
+      }
+
+      // 键盘 ← → 换变体；输入框里不抢
+      window.addEventListener("keydown", (ev) => {
+        const t = ev.target;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+        if (ev.key === "ArrowLeft") step(-1);
+        if (ev.key === "ArrowRight") step(1);
+        if (ev.key === "Escape") {
+          state.menuOpen = false;
+          render();
+        }
+      });
+      document.addEventListener("click", () => {
+        if (!state.menuOpen) return;
+        state.menuOpen = false;
+        render();
+      });
+
+      render();
+    </script>
+  </body>
+</html>
