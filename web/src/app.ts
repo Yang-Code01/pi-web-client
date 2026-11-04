@@ -286,7 +286,13 @@ export class App {
   /** D116: 当前工作区（标签页高亮那个）。切区顺带切到该区的第一个会话。 */
   private curWs = loadStr("pi.ws") || UNGROUPED;
   /** 左栏分组折叠态：纯视图开关，跟归属不同权，所以存 localStorage 而不是 manage.json。 */
-  private wsClosed = new Set<string>(loadStrList("pi.wsCollapsed"));
+  /**
+   * 展开着的分组（D118）：默认**全部折叠**，只有搜索命中、或用户打开了某个工作区才展开。
+   * 存「打开的那些」而不是「关上的那些」，这样新出现的工作区自然也是折叠的。
+   */
+  private wsOpen = new Set<string>(loadStrList("pi.wsOpen"));
+  /** 顶栏工作区条：auto = 左栏可见时自动收起；shown / hidden = 用户手动钉住（会记住）。 */
+  private wsStrip: StripMode = loadStripMode();
   /** 刚发出一条 workspace.new，等回声到了才知道新 id —— 记下旧的一批，好识别哪个是新的。 */
   private wsPendingNew: Set<string> | null = null;
   /** 「还有 N 个」的下拉（顶栏上唯一能钉未置顶工作区的地方）。 */
@@ -331,6 +337,8 @@ export class App {
     collapseLeft.onclick = () => this.togglePane("sessions");
     const dot = el("span", "dot");
     // D116: 标题位现在是工作区标签条（会话名不再占这里 —— 当前会话由第 2 行高亮的胶囊与左栏选中态表达）。
+    const wsToggle = el("button", "ws-toggle") as HTMLButtonElement;
+    wsToggle.type = "button";
     const wstabs = el("nav", "wstabs");
     const sub = el("div", "sub", "");
     const collapseRight = el("button", "icon-btn side-toggle");
@@ -371,7 +379,7 @@ export class App {
     peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     peer.dataset.act = "peer";
     peer.onclick = () => this.openPeerSheet();
-    topbar.append(collapseLeft, dot, wstabs, sub, files, term, fs, notes, peer, look, collapseRight);
+    topbar.append(collapseLeft, dot, wsToggle, wstabs, sub, files, term, fs, notes, peer, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -443,7 +451,7 @@ export class App {
     shell.append(topbar, pinStrip, main, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, wstabs, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, wsToggle, wstabs, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.binBtn = binBtn;
     // 顶栏这批按钮只构造一次，语言一切换就得靠 paintChrome() 重写文字（renderAll 碰不到它们）。
     this.paintChrome();
@@ -869,6 +877,12 @@ export class App {
     this.switchDraft(id);
     this.currentId = id;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
+    // 打开会话也算「用了这个工作区」→ 它的分组展开并记住（D118，含刷新后按 hash 直接进来的那条路）。
+    const home = this.wsOf(id);
+    if (!this.wsOpen.has(home)) {
+      this.wsOpen.add(home);
+      saveStrList("pi.wsOpen", [...this.wsOpen]);
+    }
     if (this.session?.done) this.session.done = false;
     this.approvals = [];
     this.asks = [];
@@ -3065,9 +3079,34 @@ export class App {
   /**
    * D116: 第 1 行就是工作区标签条（取代原来的会话名）。双击改名、⋯ 开设置表、溢出横向滚动。
    */
+  /** 左栏把工作区都画出来了，顶栏那条就该让位（D118）：auto 模式下跟着左栏显隐。 */
+  private stripHidden(): boolean {
+    const sideVisible = !this.collapsed.sessions && window.matchMedia("(min-width: 900px)").matches;
+    if (this.wsStrip === "hidden") return true;
+    if (this.wsStrip === "shown") return false;
+    return sideVisible;
+  }
+
+  private renderWsToggle(hidden: boolean): void {
+    const toggle = this.els.wsToggle;
+    if (!toggle) return;
+    toggle.textContent = hidden ? `▸ ${this.wsName(this.currentWsId())}` : "▾";
+    toggle.title = hidden ? tr("展开工作区标签（左栏也能切）") : tr("收起工作区标签（左栏里已经有了）");
+    toggle.setAttribute("aria-expanded", hidden ? "false" : "true");
+    toggle.onclick = () => {
+      this.wsStrip = hidden ? "shown" : "hidden";
+      saveStr("pi.wsStrip", this.wsStrip);
+      this.renderWorkspaceTabs();
+    };
+  }
+
   private renderWorkspaceTabs(): void {
     const host = this.els.wstabs;
     if (!host) return;
+    const stripOff = this.stripHidden();
+    this.renderWsToggle(stripOff);
+    // 用 class 而不是 [hidden]：`.wstabs { display: flex }` 会盖掉 UA 的 [hidden]。
+    host.classList.toggle("collapsed", stripOff);
     const focused = document.activeElement instanceof HTMLInputElement && host.contains(document.activeElement) ? document.activeElement.value : null;
     host.replaceChildren();
     const cur = this.currentWsId();
@@ -3435,7 +3474,9 @@ export class App {
     if (ws === UNGROUPED) sec.classList.add("ungrouped");
     if (ws === this.currentWsId()) sec.classList.add("cur-ws");
     const head = el("div", "sess-head");
-    const closed = this.wsClosed.has(ws);
+    // 搜索时强制展开：不然搜出来的东西都被折叠藏起来了，等于搜索失灵。
+    const open = this.wsOpen.has(ws) || Boolean(this.filter);
+    const closed = !open;
     // 折叠按钮是真按钮（22px 命中区）：原来是个 12px 宽的 <span>，又小又难点。
     const caret = el("button", "ws-caret", closed ? "▸" : "▾") as HTMLButtonElement;
     caret.type = "button";
@@ -3456,9 +3497,9 @@ export class App {
     };
     const toggle = (ev: Event) => {
       ev.stopPropagation();
-      if (closed) this.wsClosed.delete(ws);
-      else this.wsClosed.add(ws);
-      saveStrList("pi.wsCollapsed", [...this.wsClosed]);
+      if (closed) this.wsOpen.add(ws);
+      else this.wsOpen.delete(ws);
+      saveStrList("pi.wsOpen", [...this.wsOpen]);
       this.renderSessions();
     };
     caret.onclick = toggle;
@@ -3785,6 +3826,11 @@ export class App {
     if (id !== this.curWs) {
       this.curWs = id;
       saveStr("pi.ws", id);
+    }
+    // 「打开了某个工作区」→ 它自己展开，并记住。
+    if (!this.wsOpen.has(id)) {
+      this.wsOpen.add(id);
+      saveStrList("pi.wsOpen", [...this.wsOpen]);
     }
     const next = this.groupSessions(id)[0];
     if (next && next.id !== this.currentId) {
@@ -5148,6 +5194,10 @@ export class App {
     if (ws !== this.curWs) {
       this.curWs = ws;
       saveStr("pi.ws", ws);
+    }
+    if (!this.wsOpen.has(ws)) {
+      this.wsOpen.add(ws);
+      saveStrList("pi.wsOpen", [...this.wsOpen]);
     }
     this.openSession(id);
   }
@@ -9804,6 +9854,14 @@ const SIZES: [number, string][] = [
 
 /** D116: 「未分组」是个虚拟工作区，id 用空串 —— 桥侧 `manage.ts` 里同名常量意义一致。 */
 const UNGROUPED = "";
+
+/** 顶栏工作区条的三种状态：auto 跟着左栏走，shown/hidden 是用户手动钉住的。 */
+type StripMode = "auto" | "shown" | "hidden";
+
+function loadStripMode(): StripMode {
+  const raw = loadStr("pi.wsStrip");
+  return raw === "shown" || raw === "hidden" ? raw : "auto";
+}
 
 function loadStr(key: string): string {
   try {

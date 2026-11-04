@@ -2331,3 +2331,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .wstab.dragging, .pin-chip.dragging { opacity: 0.45; }
 /* 光标跟会话卡片/胶囊一致：普通 pointer。不自己发明 grab 手势（实测反馈）。 */
 .wstab.drop-ws { background: rgba(125, 211, 252, 0.18); border-bottom-color: var(--accent); color: var(--text); }
+
+/* ---------------------------------------------------------------- D118 顶栏工作区条可折叠 */
+.wstabs.collapsed { display: none; }
+.ws-toggle {
+  flex: none; border: 1px solid transparent; background: none; cursor: pointer;
+  color: var(--dim); border-radius: 8px; padding: 3px 7px; font: 12.5px var(--sans);
+  white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+}
+.ws-toggle:hover { color: var(--text); background: var(--panel); border-color: var(--line-soft); }
+.ws-toggle:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }

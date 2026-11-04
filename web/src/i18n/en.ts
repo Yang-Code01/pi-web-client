@@ -1068,4 +1068,7 @@ export const en: Dict = {
   "「{p1}」还没有会话。": "“{p1}” has no sessions yet.",
   "＋ 新会话": "＋ New session",
 
+  "展开工作区标签（左栏也能切）": "Show workspace tabs (the sidebar works too)",
+  "收起工作区标签（左栏里已经有了）": "Hide workspace tabs (the sidebar already lists them)",
+
 };
