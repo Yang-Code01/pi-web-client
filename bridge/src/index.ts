@@ -1155,6 +1155,11 @@ async function main(): Promise<void> {
             if (done.length) send({ type: "notice", sessionId: msg.sessionId, text: `已应用到当前会话：${done.join("、")}`, level: "info" });
             return;
           }
+          // D120 / #77: read-only numbers for the runtime panel. Nothing here changes a session.
+          case "runtime.stats": {
+            send({ type: "runtime.stats", ...(await sessions.runtimeStats()) });
+            return;
+          }
           case "reload": {
             if (!(await requireStepUp())) return;
             const session = await sessions.reload(String(msg.sessionId ?? ""));

@@ -46,6 +46,14 @@ export class RpcChild extends EventEmitter {
     return this._alive;
   }
 
+  /**
+   * The child's own pid, while it is alive. The runtime panel samples memory with these and only
+   * these numbers (D120 §2) — matching a parent process or a process name guesses at who we mean.
+   */
+  get pid(): number | null {
+    return this._alive ? (this.child?.pid ?? null) : null;
+  }
+
   start(): void {
     ensureDir(path.dirname(this.opts.logPath));
     this.log = fs.createWriteStream(this.opts.logPath, { flags: "a" });

@@ -9,9 +9,9 @@ import { renderMarkdown } from "./md.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
-import { applyLang, detectLang, errText, fmtDate, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
+import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
 
@@ -159,6 +159,8 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /** D120 / #77：`runtime.stats` 的最后一帧；null = 还没问过（「读取中…」）。 */
+  private runtimeStats: RuntimeStats | null = null;
   /** #27 the 登录 tab: providers as pi sees them, a filter, and the login running right now. */
   private authProviders: AuthProvider[] | null = null;
   /** #30: is the terminal session-lock extension in pi's global extensions? */
@@ -1092,6 +1094,16 @@ export class App {
       case "notify":
         this.me = { ...this.me, notify: msg.on !== false };
         if (this.sheetKind === "settings" && this.settingsTab === "notify") this.paintSettings();
+        break;
+      case "runtime.stats":
+        // D120 / #77：桥在每次 GC tick 上广播一次，所以面板不用自己轮询。
+        this.runtimeStats = {
+          running: Number(msg.running ?? 0),
+          totalBytes: typeof msg.totalBytes === "number" ? msg.totalBytes : null,
+          unavailable: msg.unavailable === true,
+          sessions: Array.isArray(msg.sessions) ? (msg.sessions as RuntimeStats["sessions"]) : [],
+        };
+        if (this.sheetKind === "settings" && this.settingsTab === "runtime") this.paintSettings();
         break;
       case "lockext":
         this.lockExt = { installed: Boolean(msg.installed), path: String(msg.path ?? "") };
@@ -5512,6 +5524,7 @@ export class App {
     this.sheetKind = "settings";
     this.settingsTab = tab;
     if (tab === "login") this.authProviders = null; // re-read: someone may have logged in from the terminal
+    if (tab === "runtime") this.socket.send({ type: "runtime.stats" });
     const back = el("div", "sheet-back");
     back.onclick = (ev) => {
       if (ev.target === back) this.closeSheet();
@@ -5562,6 +5575,7 @@ export class App {
       ["login", tr("登录 / 凭据")],
       ["ext", tr("扩展与 MCP")],
       ["notify", tr("通知")],
+      ["runtime", tr("运行时")],
       ["changelog", tr("更新日志")],
     ];
     for (const [id, label] of tabDefs) {
@@ -5570,6 +5584,7 @@ export class App {
       b.onclick = () => {
         this.settingsTab = id;
         this.flashSettings("");
+        if (id === "runtime") this.socket.send({ type: "runtime.stats" });
         this.paintSettings();
       };
       tabs.append(b);
@@ -5579,6 +5594,7 @@ export class App {
     if (this.settingsTab === "login") return this.paintLogin(body);
     if (this.settingsTab === "ext") return this.paintExtSettings(body);
     if (this.settingsTab === "notify") return this.paintNotify(body);
+    if (this.settingsTab === "runtime") return this.paintRuntime(body);
     if (this.settingsTab === "changelog") return this.paintChangelog(body);
     const scope = this.settingsTab;
     const view = this.settingsView[scope];
@@ -5624,6 +5640,48 @@ export class App {
     tools.append(push, test);
     body.append(tools);
     body.append(el("div", "hint", tr("Web Push 已订阅 {p1} 台设备。测试通知不受开关影响，页面在前也会弹。", { p1: this.me.pushCount })));
+  }
+
+  /**
+   * D120 / #77：谁在吃内存。数字来自桥自己拉起的那些 pi 子进程（`tasklist` / `ps`），
+   * 读不到就写「不可用」—— 不留空、不写 0，不猜。这里只看得见，不提供任何操作。
+   */
+  private paintRuntime(body: HTMLElement): void {
+    const stats = this.runtimeStats;
+    if (!stats) {
+      body.append(el("div", "empty", tr("读取中…")));
+      return;
+    }
+    const cost = stats.unavailable ? tr("不可用") : stats.totalBytes === null ? "" : fmtSize(stats.totalBytes);
+    body.append(
+      el(
+        "div",
+        "runtime-summary",
+        cost ? tr("运行中 pi：{p1} 个 · {p2}", { p1: stats.running, p2: cost }) : tr("运行中 pi：{p1} 个", { p1: stats.running }),
+      ),
+    );
+    body.append(
+      el(
+        "div",
+        "hint",
+        tr("内存数字来自桥自己拉起的那些 pi 子进程（Windows 用 tasklist，macOS / Linux 用 ps），不按进程名过滤。读不到就写「不可用」，不猜、不留空。"),
+      ),
+    );
+    if (!stats.sessions.length) {
+      body.append(el("div", "empty", tr("现在没有在运行的 pi：发一条消息才会拉起一个。")));
+      return;
+    }
+    const list = el("div", "runtime-list");
+    for (const s of stats.sessions) {
+      const row = el("div", "runtime-row");
+      row.append(el("span", "runtime-name", s.name || s.id));
+      row.append(el("span", "runtime-idle", tr("闲了 {p1}", { p1: idleLabel(s.idleMs) })));
+      if (s.running) row.append(el("span", "runtime-tag", tr("在跑")));
+      const bytes = typeof s.bytes === "number" ? fmtSize(s.bytes) : tr("不可用");
+      row.append(el("span", `runtime-bytes${typeof s.bytes === "number" ? "" : " bad"}`, bytes));
+      list.append(row);
+    }
+    body.append(list);
   }
 
   private paintSettingsForm(body: HTMLElement, view: SettingsView): void {
@@ -8771,7 +8829,7 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["logout", tr("登出某个 provider")],
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "ext" | "notify" | "changelog";
+type SettingsTab = "global" | "project" | "trust" | "login" | "ext" | "notify" | "runtime" | "changelog";
 
 interface ExtPackage {
   scope: "user" | "project";
@@ -9376,7 +9434,15 @@ const shortDir = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() ?
 function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+/** 运行时面板里的一行「闲了多久」（D120 / #77）：秒 / 分 / 时三个粒度就够，单位走词典。 */
+function idleLabel(ms: number): string {
+  if (ms < 60_000) return tr("{p1} 秒", { p1: fmtNum(Math.max(0, Math.round(ms / 1000))) });
+  if (ms < 3_600_000) return tr("{p1} 分钟", { p1: fmtNum(Math.round(ms / 60_000)) });
+  return tr("{p1} 小时", { p1: fmtNum(Math.round(ms / 3_600_000)) });
 }
 
 function viewerLoading(text: string): HTMLElement {
