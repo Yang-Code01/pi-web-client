@@ -115,6 +115,8 @@ export class App {
   private skills: SkillInfo[] = [];
   private skillsAt = 0;
   private skillPop: HTMLElement | null = null;
+  /** Document-level "clicked outside" listener while the palette is open (removed on close). */
+  private skillAway: ((ev: Event) => void) | null = null;
   private skillQuery = "";
   private skillSel = 0;
   /** Desktop only: hide the session column / the queue column to give the chat more room. */
@@ -1608,6 +1610,11 @@ export class App {
     if (!text && !this.images.length) return;
     if (typed && !pasted.length && !this.images.length && this.answerFromComposer(typed)) return;
     if (typed && !pasted.length && !this.images.length && this.runBuiltinCommand(typed)) return;
+    // `/skill:<name>` at the head of what pi receives is exactly what pi expands (agent-session
+    // `_expandSkillCommand`), no matter which entry point produced it: the palette, the `/` menu,
+    // or typing it out. Counted here rather than at pick time — a command that never got sent is
+    // not a use, and the palette has to rank the ones that were.
+    const skill = /^\/skill:([^\s]+)/.exec(text)?.[1];
     // The bubble below is optimistic; the bridge echoes `clientId` back so this page adopts its own
     // broadcast instead of drawing the message twice (#19).
     const clientId = `local:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
@@ -1624,9 +1631,23 @@ export class App {
       }
       if (payload.sessionId) this.drafts.delete(payload.sessionId);
       this.persistDrafts();
+      if (skill && payload.sessionId) this.countSkillUse(skill, payload.sessionId);
       this.socket.send(payload);
     });
     if (navigator.storage?.persist) void navigator.storage.persist();
+  }
+
+  /**
+   * Usage drives the palette's order (bridge `skill-usage.json`, plus the local copy so the next
+   * open is already re-ranked). Every explicit `/skill:<name>` send counts, whichever input made it.
+   */
+  private countSkillUse(name: string, sessionId: string): void {
+    const known = this.skills.find((s) => s.name === name);
+    if (known) {
+      known.uses += 1;
+      known.lastUsed = Date.now();
+    }
+    this.socket.send({ type: "skillUsed", sessionId, name });
   }
 
   /**
@@ -2502,6 +2523,10 @@ export class App {
   private closeSkillPalette(): void {
     this.skillPop?.remove();
     this.skillPop = null;
+    if (this.skillAway) {
+      document.removeEventListener("pointerdown", this.skillAway, true);
+      this.skillAway = null;
+    }
   }
 
   /**
@@ -2578,11 +2603,21 @@ export class App {
         this.textarea?.focus();
       }
     };
+    // D115: like every other dialog, a click outside closes it. The 技能 button itself is skipped:
+    // its own click already toggles, and closing on pointerdown would make it reopen on the spot.
+    const away = (ev: Event): void => {
+      const target = ev.target as Node | null;
+      if (!target || pop.contains(target)) return;
+      if (target instanceof Element && target.closest('[data-act="skills"]')) return;
+      this.closeSkillPalette();
+    };
+    this.skillAway = away;
+    document.addEventListener("pointerdown", away, true);
   }
 
+  /** Always ranked locally, so a use counted a moment ago reorders the list without a bridge trip. */
   private filteredSkills(): SkillInfo[] {
     const query = this.skillQuery.trim().toLowerCase();
-    if (!query) return this.skills.slice(0, 6);
     const terms = query.split(/\s+/).filter(Boolean);
     const scored: { skill: SkillInfo; score: number }[] = [];
     for (const skill of this.skills) {
@@ -2602,8 +2637,14 @@ export class App {
       if (hit) scored.push({ skill, score });
     }
     return scored
-      .sort((a, b) => b.score - a.score || b.skill.uses - a.skill.uses || a.skill.name.localeCompare(b.skill.name))
-      .slice(0, 12)
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          b.skill.uses - a.skill.uses ||
+          b.skill.lastUsed - a.skill.lastUsed ||
+          a.skill.name.localeCompare(b.skill.name),
+      )
+      .slice(0, query ? 12 : 6)
       .map((x) => x.skill);
   }
 
@@ -2645,10 +2686,8 @@ export class App {
     rows.forEach((row, index) => row.classList.toggle("on", index === this.skillSel));
   }
 
-  /** Drop `/skill:<name> ` where the caret is and count the pick as usage. */
+  /** Drop `/skill:<name> ` where the caret is. A pick is not a use yet: `sendPrompt()` counts it. */
   private pickSkill(skill: SkillInfo): void {
-    skill.uses += 1;
-    if (this.currentId) this.socket.send({ type: "skillUsed", sessionId: this.currentId, name: skill.name });
     this.closeSkillPalette();
 
     const command = `/skill:${skill.name} `;
@@ -5196,7 +5235,7 @@ export class App {
     this.cwdChip = null;
     this.modelChip = null;
     this.textarea = null;
-    this.skillPop = null;
+    this.closeSkillPalette();
     this.imageBadge = null;
     if (!this.currentId) {
       const hint = el("div", "empty", tr("左边选一个会话，或开一个新的。"));

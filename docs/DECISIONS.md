@@ -1384,3 +1384,30 @@
 - `probes/chip-shot.mjs` 依赖仓库外的私有 `cdp.mjs`：改成读 `CDP_LIB`，没有就一句人话退出，不再抛 `ERR_MODULE_NOT_FOUND`。
 - 回归：`npm run typecheck`（含 i18n 1001 键 × 3 语言）干净；`bridge/tests/ext-manager.mjs`、`bridge/tests/pi-cli.mjs` 仍 PASS。
 - 能跑之后暴露的旧账（单独的 commit）：`round6-keys` 快捷键表已经是 12 条（旧期望 11）；`round15-git` 的 cwd 比较改成两边都 `path.resolve`；`ext-manager-stages` 要等 start 到了再让操作失败。还剩下三个与路径无关的 UI 旧账，本次没动：`round14-admin` / `round18-term` 断言的是 D92 之前的终端 dock（`.term-title`、开终端就折叠右栏），`readme-shots` 要第二个终端标签页。
+
+## D115 技能面板：点外面就关；使用次数按真正发出去的 `/skill:` 算
+
+**问题**（wiki 待处理，2026-11-04）：技能按钮打开的面板只能再点一次按钮或按键关，点面板以外的地方没反应；而「用了几次」只在面板里挑选时 +1，从 `/` 补全选中或者直接在输入框里敲 `/skill:name` 都不记，常用技能挤不进默认的六个。
+
+**决定：**
+
+1. **点面板以外的地方关闭**：打开时在 document 上挂一个捕获阶段的 `pointerdown`，落点不在面板里就关；关闭 = 移除面板 + 移除监听。技能按钮本身排除在外——它自己的 click 已经是开/关切换，`pointerdown` 先关会让它立刻又打开，等于永远关不掉。`renderChat()` 重建输入框时走同一个关闭函数，避免监听器留在 document 上。
+2. **计数的时机从「pickSkill」移到 `sendPrompt()`**：真正发出去、并且文本以 `/skill:<name>` 开头（pi 的 `_expandSkillCommand` 只认开头）才发 `skillUsed`；同时本地把 `uses` / `lastUsed` +1，面板下一次打开时本地排序立刻生效。桥照旧落 `skill-usage.json` 并丢掉这个会话的技能缓存。
+3. **本地排序对空查询也生效**：次数 → 最近使用 → 名字，和桥的 `rankSkills()` 一致；以前空查询是直接取桥给的前六个，现在本地 +1 能马上改变顺序。
+
+**为什么：**
+
+- 「使用」= 真的发出了一次技能调用，不是「点了面板里的一行」。只挑不发不算；在消息中间提到 `/skill:`（pi 不会展开）也不算。
+- 外部点击用 document 监听，而不是加一层全屏遮罩：这是贴着输入框的补全式弹层，点左栏会话 / 对话区时应该**既关掉面板，也让那一下点击照常生效**；遮罩会把点击吃掉，变成真正的模态。
+- 计数留在页面而不是桥里：页面知道最终发出去的文本（粘贴块、`/` 补全、面板插入都汇到同一个 `text`），而桥的 `prompt` 只是转手；`skillUsed` 这条消息本来就有，落盘仍在桥里。
+
+**代价 / 可改：**
+
+- 只认 `/skill:` 在开头：和 pi 一致。先粘一大段文本再敲技能命令，pi 也不会展开，所以不计数——这是跟着 pi 的语义，不是漏记。
+- 计数发生在「点发送」时：排队后被 stop 的 `queue.restore` 拿回来也算过一次。要精确就得让 pi 在展开时回报，RPC 没有这个事件。**可改**
+- 页面 60 秒内不重新拉技能列表，靠本地那份 +1 排序；下一次拉取后以桥的 `skill-usage.json` 为准。如果以后别的客户端也开始发 `skillUsed`，两边的口径要一起改。
+
+**验证：**
+
+- `node probes/skill-palette.mjs`（桩桥 + 真 Chromium，16 条断言，`npm --prefix web run build` 之后跑）：默认六个按次数（alpha…zeta）；点对话区关闭、点面板内部不关、技能按钮仍是切换、Esc 仍能关；直接在输入框敲 `/skill:theta` 发送 → `skillUsed` 恰好一次且带会话 id；从面板挑 alpha 但不发 → 0 次，发出去 → 1 次；再打开顺序变成 alpha / beta / gamma / theta / delta / epsilon（theta 进前六、alpha 回到第一）；`use /skill:eta now` 不计数。截图 `.scratch/skill-palette/shots/`。
+- `npm --prefix web run typecheck`（含 i18n 1001 键 × 3 语言）干净。
