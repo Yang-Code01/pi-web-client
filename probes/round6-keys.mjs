@@ -153,7 +153,7 @@ try {
   const sheet = page.locator(".keys-sheet");
   await until(async () => sheet.isVisible(), 4000, "keys sheet");
   const rows = sheet.locator(".keys-row");
-  assert((await rows.count()) === 11, `eleven actions are listed (got ${await rows.count()})`);
+  assert((await rows.count()) === 12, `twelve actions are listed (got ${await rows.count()})`);
   log("sheet lists actions:", await rows.count());
 
   // Bind 开新会话 → Ctrl+Shift+Y.

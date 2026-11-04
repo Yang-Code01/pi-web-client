@@ -298,6 +298,7 @@ try {
   const failIdx = world.picli.length;
   await btnIn(page, "pkg-a", "更新").click();
   await until(async () => world.picli.length === failIdx + 1, 3000, "failing request");
+  await until(async () => (await rowOf(page, "pkg-a").innerText()).includes("更新中"), 3000, "failing op started");
   world.picli[failIdx].finish(1, "npm ERR! network");
   await until(async () => (await rowOf(page, "pkg-a").getByRole("button", { name: "更新", exact: true }).count()) === 1, 5000, "row a after failure");
   check((await page.locator(".ext-host").innerText()).includes("npm ERR! network"), `失败原因写到控制台（拿到 ${(await page.locator(".ext-host .login-result").first().innerText()).replace(/\s+/g, " ")}）`);

@@ -45,7 +45,7 @@ const until = async (fn, ms, what) => {
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
 const REPO_INFO = { repo: REPO, branch: "main", detached: false, empty: false, dirty: 3 };
 const A = { id: "probe-git", name: "仓库里的会话", cwd: REPO, file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "分支探针" };
-const B = { id: "probe-plain", name: "不在仓库里的会话", cwd: path.join(REPO, ".scratch/not-a-repo"), file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now() - 60_000, approvals: 0, asks: 0, locked: false, preview: "普通目录" };
+const B = { id: "probe-plain", name: "不在仓库里的会话", cwd: path.resolve(REPO, "..", "not-a-repo"), file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now() - 60_000, approvals: 0, asks: 0, locked: false, preview: "普通目录" };
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "probe", pi: "probe", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "probe" };
 
@@ -181,7 +181,8 @@ try {
   await page.screenshot({ path: path.join(OUT, "3-non-repo.png") });
 
   // Switching sessions asks the bridge again (fresh=1), so a checkout in the terminal shows up.
-  assert(gitCalls.filter((c) => c.fresh && c.dir.replace(/\\/g, "/") === B.cwd).length >= 1, "switching to a session refetches with fresh=1");
+  // 两边都过 path.resolve：分隔符和大小写写法不该决定成败。
+  assert(gitCalls.some((c) => c.fresh && path.resolve(c.dir) === path.resolve(B.cwd)), "switching to a session refetches with fresh=1");
   log("fresh refetch on session switch ✓");
   log("ALL OK");
 } finally {
