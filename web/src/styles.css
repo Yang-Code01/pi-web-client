@@ -2208,7 +2208,6 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   flex: 1; min-height: 0; display: flex; flex-direction: column;
   background: #fff; color: #1f2328; font: 13px/1.35 var(--sans); outline: none;
 }
-.sh.readonly .sh-cell { cursor: default; }
 .sh-fx {
   display: flex; align-items: center; gap: 6px; padding: 4px 6px;
   border-bottom: 1px solid #E3E3E8; background: #F7F7F9; flex: none;
@@ -2261,7 +2260,6 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sh-frozen { grid-area: view; position: relative; overflow: hidden; z-index: 4; pointer-events: none; }
 .sh-pane { position: absolute; overflow: hidden; pointer-events: auto; }
 .sh-frozen .sh-sel { z-index: 6; }
-.sh-frozen .sh-input { z-index: 7; }
 .sh-cell {
   position: absolute; box-sizing: border-box; display: flex; padding: 0 4px;
   font-size: 13px; overflow: hidden; user-select: none; cursor: cell;
@@ -2270,18 +2268,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sh-cell.frozen { box-shadow: 0 1px 0 #D9D9DF, 1px 0 0 #D9D9DF; }
 .sh-cell.link { color: #0563C1; text-decoration: underline; cursor: pointer; }
 .sh-cell.err { color: #C0392B; }
-.sh-cell.dirty::after {
-  content: ""; position: absolute; right: 0; top: 0; width: 0; height: 0;
-  border-style: solid; border-width: 0 6px 6px 0; border-color: transparent #E4572E transparent transparent;
-}
 .sh-sel {
   position: absolute; z-index: 3; pointer-events: none; box-sizing: border-box;
   border: 2px solid #1A73E8; background: rgba(26, 115, 232, 0.05);
-}
-.sh-input {
-  position: absolute; z-index: 5; box-sizing: border-box; padding: 0 3px;
-  border: 2px solid #1A73E8; background: #fff; color: #111; outline: none;
-  font: 13px var(--sans);
 }
 .sh-charts { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
 .sh-chart {

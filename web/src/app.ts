@@ -3502,7 +3502,6 @@ export class App {
     v.sheet?.destroy();
     v.sheet = null;
     v.sheetPath = "";
-    v.sheetConflict = "";
     this.stopSheetWatch(v);
     this.paintViewer();
     try {
@@ -3615,7 +3614,6 @@ export class App {
       sheet: null,
       sheetPath: "",
       sheetTimer: 0,
-      sheetConflict: "",
     };
     return this.viewer;
   }
@@ -3757,12 +3755,6 @@ export class App {
   private closeViewer(): void {
     const v = this.viewer;
     if (!v) return;
-    if (v.sheet?.hasChanges()) {
-      void this.leaveEditor(v).then((ok) => {
-        if (ok) this.closeViewer();
-      });
-      return;
-    }
     v.sheet?.destroy();
     v.sheet = null;
     this.stopSheetWatch(v);
@@ -4009,7 +4001,6 @@ export class App {
       tools.append(seg);
     }
     tbtn("⟳", tr("刷新（重新读取文件）"), () => void this.openPreview(v.path, v.sessionId, true));
-    if (info?.kind === "sheet" && v.sheet) tbtn("💾", tr("保存（Ctrl+S）"), () => void this.saveSheetViewer(v));
     if (info) {
       const open = tbtn("↗", tr("在新标签页打开"), () => this.openRawTab(rawUrl(info)));
       open.classList.add("wide-only");
@@ -4171,8 +4162,8 @@ export class App {
   private editable(v: Viewer): boolean {
     const info = v.info;
     if (!info) return false;
-    // 表格的「编辑」不是文本框，是网格里改格子（D116）：只要桥端给得出网格就允许。
-    if (info.kind === "sheet") return Boolean(v.sheet && v.sheet.doc.mode !== "too-big");
+    // 表格只读（D119）：改表走「引用选区给 pi」，网格里没有编辑态。
+    if (info.kind === "sheet") return false;
     if (info.kind !== "markdown" && info.kind !== "text") return false;
     return info.size <= MAX_EDIT_BYTES;
   }
@@ -4411,22 +4402,6 @@ export class App {
 
   /** 离开编辑态前问一句：保存 / 放弃 / 取消。true = 可以走。 */
   private async leaveEditor(v: Viewer): Promise<boolean> {
-    if (v.sheet) {
-      if (!v.sheet.hasChanges()) return true;
-      const choice = await this.choose(tr("「{p1}」还有没保存的改动", { p1: v.info?.name ?? tr("表格") }), [
-        { id: "save", label: tr("保存"), primary: true },
-        { id: "drop", label: tr("放弃改动") },
-        { id: "cancel", label: tr("取消") },
-      ]);
-      if (choice === "save") return this.saveSheetViewer(v);
-      if (choice === "drop") {
-        // 放弃 = 本地改动一起丢掉（否则下一次保存会把它们又带出去）。
-        v.sheet.clearChanges();
-        await this.reloadSheet(v);
-        return true;
-      }
-      return false;
-    }
     if (v.pane !== "edit" || !v.dirty) return true;
     const ta = v.body.querySelector<HTMLTextAreaElement>(".ed-ta");
     if (ta) v.draft = ta.value;
@@ -4451,7 +4426,6 @@ export class App {
     return {
       insertText: (text) => this.insertPaths([text]),
       warn: (text) => this.warn(text),
-      save: () => void this.saveSheetViewer(v),
     };
   }
 
@@ -4466,7 +4440,6 @@ export class App {
     body.className = "viewer-body gridsheet";
     if (v.sheet && v.sheetPath === info.abs) {
       if (body.firstChild !== v.sheet.root) body.replaceChildren(v.sheet.root);
-      v.sheet.setEditable(v.pane === "edit");
       v.sheet.schedule();
       return;
     }
@@ -4498,14 +4471,12 @@ export class App {
     v.sheetPath = info.abs;
     v.info = { ...info, mtime: doc.mtime, size: doc.size };
     body.replaceChildren(view.root);
-    view.setEditable(v.pane === "edit");
     this.startSheetWatch(v);
     view.schedule();
     if (doc.note) this.warn(doc.note);
     // 头部是在网格挂上之前画的：那时还不知道这张表能不能改，「编辑 / 💾」要重画一次。
     // 重进这里会走上面的 v.sheet 短路分支，不会递归。
     this.paintViewer();
-    if (v.sheetConflict) this.paintSheetConflict(v);
   }
 
   /** 重新拉一份网格（token 会换）：外部改了文件、或者保存成功之后。 */
@@ -4524,7 +4495,6 @@ export class App {
       }
       view.doc = doc;
       v.info = { ...info, mtime: doc.mtime, size: doc.size };
-      v.sheetConflict = "";
       v.body.querySelector(".sh-conflict")?.remove();
       await view.reload(doc);
     } catch (err: any) {
@@ -4545,13 +4515,6 @@ export class App {
         .then((st) => {
           const cur = view.doc;
           if (Math.abs(st.mtime - cur.mtime) < 0.5 && st.size === cur.size) return;
-          if (view.hasChanges()) {
-            if (!v.sheetConflict) {
-              v.sheetConflict = tr("磁盘上的文件被改过了（可能是 pi 或 Excel 写的）");
-              this.paintSheetConflict(v);
-            }
-            return;
-          }
           void this.reloadSheet(v);
         })
         .catch(() => {
@@ -4563,85 +4526,6 @@ export class App {
   private stopSheetWatch(v: Viewer): void {
     if (v.sheetTimer) window.clearInterval(v.sheetTimer);
     v.sheetTimer = 0;
-  }
-
-  /** 表格的冲突条：和文本编辑那条同一套三个选择，只是文案讲的是「桌面上那份被谁改了」。 */
-  private paintSheetConflict(v: Viewer): void {
-    v.body.querySelector(".sh-conflict")?.remove();
-    const bar = el("div", "sh-conflict");
-    const txt = el("div", "ed-conflict-txt", v.sheetConflict);
-    const row = el("div", "ed-conflict-row");
-    const reload = el("button", "btn ghost", tr("重载磁盘上的版本"));
-    reload.onclick = () => {
-      v.sheet?.clearChanges();
-      v.sheetConflict = "";
-      void this.reloadSheet(v);
-    };
-    const copy = el("button", "btn ghost", tr("另存副本"));
-    copy.onclick = () => {
-      v.sheetConflict = "";
-      void this.saveSheetViewer(v, true);
-    };
-    const keep = el("button", "btn ghost", tr("继续编辑（保存时会再撞一次）"));
-    keep.onclick = () => {
-      v.sheetConflict = "";
-      bar.remove();
-    };
-    row.append(reload, copy, keep);
-    bar.append(txt, row);
-    v.body.append(bar);
-  }
-
-  /**
-   * 保存表格：先问一次「覆盖原件 / 另存副本」（记住上次的选择），再按 sheet 分组发过去。
-   * 409 = 我们读到的那份已经不是磁盘上那份了 → 冲突条，而不是硬写。
-   */
-  private async saveSheetViewer(v: Viewer, forceCopy = false): Promise<boolean> {
-    const view = v.sheet;
-    const info = v.info;
-    if (!view || !info) return false;
-    const groups = view.editsBySheet();
-    if (!groups.length) return true;
-    if (!view.doc.token) return false;
-    let copy = forceCopy;
-    if (!copy) {
-      const remembered = localStorage.getItem("pi.sheetSave") === "copy" ? "copy" : "cover";
-      const hasCharts = view.doc.sheets.some((s) => s.charts.length > 0);
-      const title = hasCharts
-        ? tr("保存「{p1}」？这份表里有图表：改单元格不会动图表，但别的工具整本重写会。", { p1: info.name })
-        : tr("保存「{p1}」", { p1: info.name });
-      const choice = await this.choose(title, [
-        { id: "cover", label: tr("覆盖原件"), primary: remembered === "cover" },
-        { id: "copy", label: tr("另存为副本"), primary: remembered === "copy" },
-        { id: "cancel", label: tr("取消") },
-      ]);
-      if (choice === "cancel") return false;
-      copy = choice === "copy";
-      localStorage.setItem("pi.sheetSave", copy ? "copy" : "cover");
-    }
-    try {
-      const out = await api.sheetSave(view.doc.token, groups, view.doc.mtime, view.doc.size, copy);
-      view.markSaved({ mtime: out.mtime, size: out.size, path: out.path });
-      v.sheetConflict = "";
-      v.body.querySelector(".sh-conflict")?.remove();
-      if (copy) {
-        this.warn(tr("已另存为 {p1}", { p1: out.path }));
-        await this.openPreview(out.path, v.sessionId);
-        return true;
-      }
-      this.warn(tr("已保存 · {p1}", { p1: fmtTime() }));
-      await this.reloadSheet(v);
-      return true;
-    } catch (err: any) {
-      const status = Number((err as any)?.status ?? 0);
-      if (status === 409) {
-        v.sheetConflict = tr("这个文件在你编辑期间被改过了（可能是 pi 写的），你的改动还在，选一个：");
-        this.paintSheetConflict(v);
-        return false;
-      }
-      this.warn(errText(err));
-      return false;
-    }
   }
 
   private mountEditor(v: Viewer): void {
@@ -9643,8 +9527,6 @@ interface Viewer {
   sheetPath: string;
   /** 外部修改轮询（Excel 存盘 / pi 改完），1.5 秒一次 stat。 */
   sheetTimer: number;
-  /** 表格编辑中撞车时的说明，有值就显示冲突条。 */
-  sheetConflict: string;
 }
 
 /** 预览历史里的一步（D63）。`path` 为空表示「外链 / 越界」这种应用里打不开的地方。 */

@@ -1,12 +1,15 @@
 import { api } from "./api.ts";
 import { tr } from "./i18n/index.ts";
-import type { SheetCell, SheetChart, SheetDoc, SheetEdit, SheetMeta, SheetStyle } from "./types.ts";
+import type { SheetCell, SheetChart, SheetDoc, SheetMeta, SheetStyle } from "./types.ts";
 
 /**
  * 表格网格（D116）：虚拟滚动 + 冻结窗格 + 单元格编辑。
  *
  * 分工：桥端按窗口发格子（值 / 样式 / 条件格式结果都已经算好），这里只负责「画在哪儿」。
  * 所以这个文件里没有公式、没有条件格式规则、也没有 numFmt —— 那些都在桥端做完了。
+ *
+ * **只读（D119）**：格子内编辑已经砍掉 —— 改表走「引用选区给 pi」或直接跟 pi 说。
+ * 这样这一层就只剩「画 + 选区 + 滚动」，不再有输入框 / 撤销栈 / 待保存改动 / 保存写回。
  *
  * 几何一律用「布局 px」算（列宽行高、缩放前的值）；落 DOM 时乘 `zoom`。冻结窗格不是另开层，
  * 而是给冻结区的格子加上「滚动量」当偏移，于是它们在滚动的容器里看起来是钉住的。
@@ -16,8 +19,6 @@ export interface SheetHost {
   /** 把「データ!A1:C5」这类选区引用插进输入框（让 agent 改表的那条路）。 */
   insertText: (text: string) => void;
   warn: (text: string) => void;
-  /** Ctrl+S：交给 app 决定覆盖还是另存（D116）。 */
-  save?: () => void;
 }
 
 type Sel = {
@@ -50,7 +51,6 @@ const colName = (c: number): string => {
 export class SheetView {
   readonly root: HTMLElement;
   doc: SheetDoc;
-  editable = false;
 
   private host: SheetHost;
   private meta: SheetMeta;
@@ -73,7 +73,6 @@ export class SheetView {
   private status: HTMLElement;
   private findBox: HTMLElement;
   private findInput: HTMLInputElement;
-  private input: HTMLInputElement | null = null;
 
   private zoom = 1;
   /** 布局 px 的行列边界：colOff[c] 是第 c 列的左边缘。 */
@@ -90,10 +89,6 @@ export class SheetView {
   private anchor = { r: 0, c: 0 };
   private covers = new Map<string, [number, number, number, number]>();
   private frame = 0;
-  /** 待保存的改动：sheet → "r:c" → edit。撤销栈只记最近 200 步。 */
-  private pending = new Map<string, Map<string, SheetEdit>>();
-  private undo: { sheet: string; key: string; before: SheetCell | null; after: SheetEdit }[] = [];
-  private saved = true;
 
   constructor(doc: SheetDoc, host: SheetHost) {
     this.doc = doc;
@@ -115,6 +110,8 @@ export class SheetView {
     this.fx = document.createElement("input");
     this.fx.className = "sh-fxinput";
     this.fx.spellcheck = false;
+    this.fx.readOnly = true;
+    this.fx.title = tr("只读：要改这张表，选中区域后点「引用给 pi」让它改");
     this.findBox = document.createElement("div");
     this.findBox.className = "sh-findbox";
     this.findInput = document.createElement("input");
@@ -227,12 +224,8 @@ export class SheetView {
     this.view.onscroll = () => this.schedule();
     this.root.addEventListener("keydown", (ev) => this.onKey(ev));
     this.fx.onkeydown = (ev) => {
-      if (ev.key === "Enter") {
+      if (ev.key === "Enter" || ev.key === "Escape") {
         ev.preventDefault();
-        this.commitActive(this.fx.value);
-        this.root.focus();
-      }
-      if (ev.key === "Escape") {
         ev.stopPropagation();
         this.syncFx();
         this.root.focus();
@@ -477,7 +470,6 @@ export class SheetView {
       this.els.delete(key);
     }
     this.paintSelection();
-    this.placeInput();
     this.paintCharts();
     this.paintStatus();
   }
@@ -520,10 +512,6 @@ export class SheetView {
       el = document.createElement("div");
       el.className = "sh-cell";
       this.els.set(key, el);
-      el.addEventListener("dblclick", (ev) => {
-        ev.stopPropagation();
-        this.startEdit();
-      });
     }
     if (el.parentElement !== layer) layer.append(el);
     el.classList.toggle("frozen", mode !== "main");
@@ -574,21 +562,6 @@ export class SheetView {
           if (ev.ctrlKey || ev.metaKey) window.open(cell.href, "_blank", "noreferrer");
         }
       : null;
-    el.classList.toggle("dirty", this.pending.get(this.meta.name)?.has(key) === true);
-  }
-
-  /** 编辑框跟着格子走：滚动 / 拖窗口时重算位置（它挂在冻结浮层上，用视口坐标）。 */
-  private placeInput(): void {
-    const input = this.input;
-    if (!input) return;
-    const { r, c } = this.anchor;
-    const cover = this.covers.get(`${r}:${c}`);
-    const r2 = cover ? cover[2] : r;
-    const c2 = cover ? cover[3] : c;
-    input.style.left = `${this.colX(c) - this.view.scrollLeft}px`;
-    input.style.top = `${this.rowY(r) - this.view.scrollTop}px`;
-    input.style.width = `${Math.max(40, this.spanW(c, c2))}px`;
-    input.style.height = `${Math.max(18, this.spanH(r, r2))}px`;
   }
 
   private paintSelection(): void {
@@ -656,10 +629,8 @@ export class SheetView {
         if (Number.isFinite(n) && cell.k !== "s") sum += n;
       }
     }
-    const dirty = this.pendingCount();
     const bits = [`${this.meta.name} · ${this.meta.rowCount} × ${this.meta.colCount}`];
     if (count > 1) bits.push(tr("选区 {p1} 格，合计 {p2}", { p1: count, p2: Math.round(sum * 100) / 100 }));
-    if (dirty) bits.push(tr("{p1} 处改动未保存", { p1: dirty }));
     this.status.textContent = bits.join(" · ");
     this.zoomLabel.textContent = `${Math.round(this.zoom * 100)}%`;
   }
@@ -721,32 +692,11 @@ export class SheetView {
   }
 
   private onKey(ev: KeyboardEvent): void {
-    if (this.input) return;
     const meta = ev.ctrlKey || ev.metaKey;
     if (meta && ev.key.toLowerCase() === "f") {
       ev.preventDefault();
       this.findBox.classList.add("on");
       this.findInput.focus();
-      return;
-    }
-    if (meta && ev.key.toLowerCase() === "s") {
-      ev.preventDefault();
-      this.host.save?.();
-      return;
-    }
-    if (meta && ev.key.toLowerCase() === "z") {
-      ev.preventDefault();
-      this.undoLast();
-      return;
-    }
-    if (ev.key === "F2" || ev.key === "Enter") {
-      ev.preventDefault();
-      this.startEdit();
-      return;
-    }
-    if (ev.key === "Delete" || ev.key === "Backspace") {
-      ev.preventDefault();
-      this.fillSelection(ev.key === "Delete" ? "clear" : "clear");
       return;
     }
     const moves: Record<string, [number, number]> = {
@@ -768,15 +718,6 @@ export class SheetView {
       this.paint();
       return;
     }
-    if (ev.key === " ") {
-      ev.preventDefault();
-      if (!this.editable) return;
-      this.startEdit(" ");
-      return;
-    }
-    if (ev.key.length === 1 && !meta && !ev.altKey) {
-      this.startEdit(ev.key);
-    }
   }
 
   private scrollIntoView(r: number, c: number): void {
@@ -791,8 +732,6 @@ export class SheetView {
     if (y < this.view.scrollTop + fzH) this.view.scrollTop = Math.max(0, y - fzH);
     if (y + h > this.view.scrollTop + this.view.clientHeight) this.view.scrollTop = y + h - this.view.clientHeight;
   }
-
-  // ---------------------------------------------------------------- 编辑
 
   private rawText(cell: SheetCell | undefined): string {
     if (!cell) return "";
@@ -814,178 +753,6 @@ export class SheetView {
     const bottom = Math.max(this.sel.r1, this.sel.r2);
     const right = Math.max(this.sel.c1, this.sel.c2);
     return top === bottom && left === right ? `${colName(left)}${top + 1}` : `${colName(left)}${top + 1}:${colName(right)}${bottom + 1}`;
-  }
-
-  setEditable(on: boolean): void {
-    this.editable = on;
-    this.root.classList.toggle("readonly", !on);
-    this.paint();
-  }
-
-  private startEdit(seed?: string): void {
-    if (!this.editable) return;
-    const { r, c } = this.anchor;
-    const key = `${r}:${c}`;
-    const cell = this.cells.get(key);
-    this.finishEdit();
-    const input = document.createElement("input");
-    input.className = "sh-input";
-    input.spellcheck = false;
-    input.value = seed ?? this.rawText(cell);
-    if (seed) input.setSelectionRange(seed.length, seed.length);
-    input.style.fontSize = `${(cell && cell.s >= 0 ? this.styles[cell.s]?.size ?? 13 : 13) * this.zoom}px`;
-    this.frozenLayer.append(input);
-    this.input = input;
-    this.placeInput();
-    input.focus();
-    input.select();
-    input.onkeydown = (ev) => {
-      if (ev.key === "Enter" && !ev.shiftKey) {
-        ev.preventDefault();
-        this.commitActive(input.value);
-        this.moveActive(1, 0);
-        this.startEdit();
-      } else if (ev.key === "Tab") {
-        ev.preventDefault();
-        this.commitActive(input.value);
-        this.moveActive(0, ev.shiftKey ? -1 : 1);
-        this.startEdit();
-      } else if (ev.key === "Escape") {
-        ev.preventDefault();
-        ev.stopPropagation();
-        this.finishEdit();
-        this.root.focus();
-      }
-    };
-    input.onblur = () => {
-      if (this.input === input) {
-        this.commitActive(input.value);
-        this.finishEdit();
-      }
-    };
-  }
-
-  private finishEdit(): void {
-    const input = this.input;
-    if (!input) return;
-    this.input = null;
-    input.remove();
-    this.syncFx();
-    this.paint();
-  }
-
-  private moveActive(dr: number, dc: number): void {
-    this.anchor = { r: clamp(this.anchor.r + dr, 0, this.rowOff.length - 2), c: clamp(this.anchor.c + dc, 0, this.colOff.length - 2) };
-    this.sel = { r1: this.anchor.r, c1: this.anchor.c, r2: this.anchor.r, c2: this.anchor.c };
-    this.scrollIntoView(this.anchor.r, this.anchor.c);
-  }
-
-  /** 一格新输入 → 一条 CellEdit（并顺手更新本地显示，不用等桥端）。 */
-  private editFor(cell: SheetCell | undefined, text: string): SheetEdit {
-    const { r, c } = this.anchor;
-    const base = { r, c };
-    if (text === "") return { ...base, t: "clear" };
-    if (text.startsWith("=")) return { ...base, t: "f", v: text.slice(1) };
-    const numeric = /^-?\d+(?:\.\d+)?$/.test(text.trim());
-    if (numeric) return { ...base, t: "n", v: Number(text) };
-    if (cell?.k === "d") {
-      const serial = dateToSerial(text);
-      if (serial != null) return { ...base, t: "n", v: serial };
-    }
-    if (/^(true|false)$/i.test(text)) return { ...base, t: "b", v: text.toLowerCase() === "true" };
-    return { ...base, t: "s", v: text };
-  }
-
-  private record(sheet: string, edit: SheetEdit, before: SheetCell | null): void {
-    let map = this.pending.get(sheet);
-    if (!map) {
-      map = new Map();
-      this.pending.set(sheet, map);
-    }
-    map.set(`${edit.r}:${edit.c}`, edit);
-    this.undo.push({ sheet, key: `${edit.r}:${edit.c}`, before, after: edit });
-    if (this.undo.length > 200) this.undo.shift();
-    this.saved = false;
-  }
-
-  private commitActive(text: string): void {
-    if (!this.editable) return;
-    const { r, c } = this.anchor;
-    const key = `${r}:${c}`;
-    const before = this.cells.get(key) ?? null;
-    const edit = this.editFor(before ?? undefined, text);
-    this.applyLocal(r, c, edit);
-    this.record(this.meta.name, edit, before);
-    this.syncFx();
-    this.paint();
-  }
-
-  private applyLocal(r: number, c: number, edit: SheetEdit): void {
-    const key = `${r}:${c}`;
-    if (edit.t === "clear") {
-      this.cells.delete(key);
-      return;
-    }
-    const prev = this.cells.get(key);
-    const s = prev?.s ?? -1;
-    const isNum = edit.t === "n";
-    const text = edit.t === "f" ? "" : String(edit.v ?? "");
-    this.cells.set(key, {
-      r,
-      c,
-      k: edit.t === "n" ? "n" : edit.t === "b" ? "b" : edit.t === "f" ? "f" : "s",
-      v: edit.v ?? null,
-      t: text,
-      s,
-      ...(edit.t === "f" ? { f: String(edit.v ?? "") } : {}),
-    });
-    if (isNum) {
-      const cell = this.cells.get(key);
-      if (cell) cell.t = String(edit.v);
-    }
-  }
-
-  private undoLast(): void {
-    const step = this.undo.pop();
-    if (!step || !this.editable) return;
-    const key = step.key;
-    if (step.before) {
-      this.cells.set(key, step.before);
-      const map = this.pending.get(step.sheet);
-      map?.delete(key);
-    } else {
-      this.cells.delete(key);
-      this.pending.get(step.sheet)?.delete(key);
-    }
-    this.saved = this.pendingCount() === 0;
-    this.paint();
-  }
-
-  /** Delete / Backspace：把选区里已加载的格子清掉。 */
-  private fillSelection(kind: "clear"): void {
-    if (!this.editable) return;
-    const top = Math.min(this.sel.r1, this.sel.r2);
-    const bottom = Math.max(this.sel.r1, this.sel.r2);
-    const left = Math.min(this.sel.c1, this.sel.c2);
-    const right = Math.max(this.sel.c1, this.sel.c2);
-    for (let r = top; r <= bottom; r++) {
-      for (let c = left; c <= right; c++) {
-        const key = `${r}:${c}`;
-        if (!this.cells.has(key)) continue;
-        if (top === bottom && left === right) {
-          const before = this.cells.get(key) ?? null;
-          const edit: SheetEdit = { r, c, t: kind };
-          this.applyLocal(r, c, edit);
-          this.record(this.meta.name, edit, before);
-        } else {
-          const before = this.cells.get(key) ?? null;
-          const edit: SheetEdit = { r, c, t: kind };
-          this.applyLocal(r, c, edit);
-          this.record(this.meta.name, edit, before);
-        }
-      }
-    }
-    this.paint();
   }
 
   // ---------------------------------------------------------------- 查找
@@ -1021,67 +788,6 @@ export class SheetView {
     const range = top === bottom && left === right ? `${colName(left)}${top + 1}` : `${colName(left)}${top + 1}:${colName(right)}${bottom + 1}`;
     const where = `${this.meta.name}!${range}`;
     return withFile || !this.doc.path ? where : tr("{p1} 的 {p2}", { p1: this.doc.path, p2: where });
-  }
-
-  /** 复制成 TSV / 值 / 公式，右键菜单用。 */
-  copySelection(kind: "value" | "formula" | "tsv"): void {
-    const top = Math.min(this.sel.r1, this.sel.r2);
-    const bottom = Math.max(this.sel.r1, this.sel.r2);
-    const left = Math.min(this.sel.c1, this.sel.c2);
-    const right = Math.max(this.sel.c1, this.sel.c2);
-    const lines: string[] = [];
-    for (let r = top; r <= bottom; r++) {
-      const cols: string[] = [];
-      for (let c = left; c <= right; c++) {
-        const cell = this.cells.get(`${r}:${c}`);
-        cols.push(kind === "formula" ? (cell?.f ? `=${cell.f}` : (cell?.t ?? "")) : (cell?.t ?? ""));
-      }
-      lines.push(cols.join("\t"));
-    }
-    const text = lines.join("\n");
-    void navigator.clipboard?.writeText(text);
-    this.host.warn(tr("已复制 {p1} 格", { p1: `${bottom - top + 1}×${right - left + 1}` }));
-  }
-
-  get active(): { r: number; c: number } {
-    return { ...this.anchor };
-  }
-
-  get sheetName(): string {
-    return this.meta.name;
-  }
-
-  hasChanges(): boolean {
-    return !this.saved && this.pendingCount() > 0;
-  }
-
-  private pendingCount(): number {
-    let n = 0;
-    for (const map of this.pending.values()) n += map.size;
-    return n;
-  }
-
-  /** 收集所有 sheet 的改动；保存时一张表一次（同一份文件里可能改了两张）。 */
-  editsBySheet(): { sheet: string; edits: SheetEdit[] }[] {
-    const out: { sheet: string; edits: SheetEdit[] }[] = [];
-    for (const [sheet, map] of this.pending) if (map.size) out.push({ sheet, edits: [...map.values()] });
-    return out;
-  }
-
-  /** 冲突时选「重载磁盘上的版本」：丢掉本地的改动（不弹二次确认，条上已经说清楚了）。 */
-  clearChanges(): void {
-    this.pending.clear();
-    this.undo = [];
-    this.saved = true;
-  }
-
-  markSaved(res: { mtime: number; size: number; path: string }): void {
-    this.pending.clear();
-    this.saved = true;
-    // 保存会把桥端那支 worker 作废（它的工作簿已经过期）：token 一起丢掉，等 reload 换新的。
-    this.doc = { ...this.doc, mtime: res.mtime, size: res.size, path: res.path, token: undefined };
-    this.fetched = [];
-    this.paint();
   }
 
   /** 把所有已渲染的格子丢掉：换 sheet / 重新读盘的时候用（冻结浮层里也有格子，别漏）。 */
@@ -1158,15 +864,4 @@ function chartKindName(kind: string): string {
   return map[kind] ?? tr("图表");
 }
 
-/** 日期文本 → Excel 序列号（1900 日期系统）。认不出来返回 null。 */
-function dateToSerial(text: string): number | null {
-  const m = /^(\d{4})[-/年.](\d{1,2})[-/月.](\d{1,2})日?$/.exec(text.trim());
-  if (!m) return null;
-  const y = Number(m[1]);
-  const mo = Number(m[2]);
-  const d = Number(m[3]);
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
-  const utc = Date.UTC(y, mo - 1, d);
-  return utc / 86400000 + 25569;
-}
 

@@ -55,7 +55,7 @@ import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { piLatest } from "./piupdate.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
-import { openSheet, saveSheet, sheetFileOf, sheetFind, sheetStat, sheetWindow } from "./sheet.ts";
+import { openSheet, sheetFileOf, sheetFind, sheetStat, sheetWindow } from "./sheet.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
 
 interface Config {
@@ -647,26 +647,6 @@ async function main(): Promise<void> {
       const body = await readBody(req).catch(() => ({}));
       try {
         const out = await sheetFind(String(body.token ?? ""), String(body.sheet ?? ""), String(body.q ?? ""), Number(body.row ?? 0), Number(body.col ?? 0));
-        return json(res, 200, out);
-      } catch (err: any) {
-        return json(res, Number(err?.status) || 400, { error: String(err?.message ?? err) });
-      }
-    }
-
-    // 存盘：只有这次打开会话的 token 能写它自己那份文件；写之前比 mtime + size。
-    if (url.pathname === "/api/sheet/save" && req.method === "POST") {
-      const body = await readBody(req).catch(() => ({}));
-      try {
-        const out = await writeLock(`sheet:${String(body.token ?? "")}`, async () =>
-          saveSheet({
-            token: String(body.token ?? ""),
-            groups: Array.isArray(body.groups) ? body.groups : [],
-            copy: body.copy === true,
-            mtime: Number(body.mtime ?? 0),
-            size: Number(body.size ?? 0),
-          }),
-        );
-        log(`sheet save ${out.path} (${out.size} bytes, ${out.mode || "csv"})`);
         return json(res, 200, out);
       } catch (err: any) {
         return json(res, Number(err?.status) || 400, { error: String(err?.message ?? err) });

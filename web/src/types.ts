@@ -292,14 +292,6 @@ export interface SheetWindow {
   cfs: SheetStyle[];
 }
 
-/** 一次保存里的一条格子改动，桥端按 t 决定写成什么 xml。 */
-export interface SheetEdit {
-  r: number;
-  c: number;
-  t: "n" | "s" | "b" | "f" | "clear";
-  v?: string | number | boolean | null;
-}
-
 export interface PreviewInfo {
   token: string;
   rel: string;
