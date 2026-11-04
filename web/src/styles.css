@@ -2025,6 +2025,14 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .settings-sheet .runtime-tag { flex: none; font-size: 10.5px; color: var(--accent); border: 1px solid var(--accent-dim); border-radius: 999px; padding: 0 6px; }
 .settings-sheet .runtime-bytes { flex: none; font: 12px var(--mono); color: var(--muted); }
 .settings-sheet .runtime-bytes.bad { color: var(--warn, #d29922); }
+.settings-sheet .runtime-thresholds { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line-soft); border-radius: 10px; }
+.settings-sheet .runtime-threshold { display: flex; gap: 8px; align-items: center; font-size: 12.5px; }
+.settings-sheet .runtime-threshold > .settings-label { flex: none; width: 132px; }
+.settings-sheet .runtime-threshold .ns-input { flex: none; width: 84px; }
+.settings-sheet .runtime-unit { flex: none; font-size: 12px; color: var(--faint); }
+.settings-sheet .runtime-thresholds-foot { display: flex; gap: 8px; align-items: center; padding-top: 2px; }
+.settings-sheet .runtime-thresholds-foot .hint { flex: 1; min-width: 0; }
+.settings-sheet .runtime-thresholds-foot .btn { flex: none; }
 .settings-sheet .cli-out { margin: 0; max-height: 240px; overflow: auto; padding: 8px 10px; background: #0a0f14; border: 1px solid var(--line); border-radius: 8px; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-all; }
 .settings-sheet .ns-advanced { border: 1px solid var(--line-soft); border-radius: 10px; }
 .settings-sheet .ns-advanced > summary { cursor: pointer; padding: 8px 12px; font-size: 13px; color: var(--faint); }

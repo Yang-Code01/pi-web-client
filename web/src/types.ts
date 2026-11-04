@@ -197,6 +197,8 @@ export interface RuntimeStats {
   unavailable: boolean;
   /** 按空闲时长降序。 */
   sessions: RuntimeSessionRow[];
+  /** D120 / #78：此刻生效的两个阈值；面板上也能改（`runtime.settings`）。 */
+  lifecycle: { idleMs: number; watermarkBytes: number };
 }
 
 export interface RuntimeSessionRow {
