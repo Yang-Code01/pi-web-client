@@ -67,6 +67,9 @@ export class PeerHost {
     const child = fork(entry, [], {
       env: { ...process.env, PI_PEER_PORT: String(this.opts.port) },
       stdio: ["ignore", "pipe", "pipe", "ipc"],
+      // fork 的 windowsHide 默认 false：bridge 自己没有控制台时（服务 / 计划任务 / detached 启动器），
+      // Windows 会给 peer 新分配一个全黑的空控制台窗口。peer 的输出走 pipe，不需要那个窗口。
+      windowsHide: true,
     });
     this.child = child;
     const relay = (buf: Buffer) => {
