@@ -13,6 +13,7 @@ import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
 import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
 import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
+import { lifecycle, type Lifecycle } from "./lifecycle.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -237,7 +238,6 @@ function publicAsk(ask: PendingAsk): AskRequest {
   };
 }
 
-const IDLE_GC_MS = 2 * 60 * 60 * 1000;
 const IDLE_EVICT_MS = 10 * 60 * 1000;
 
 function lockPath(id: string): string {
@@ -2288,13 +2288,7 @@ export class SessionManager extends EventEmitter {
     this.sweepLocks();
     this.gcTimer = setInterval(() => {
       this.sweepLocks();
-      for (const s of this.sessions.values()) {
-        if (!s.live) continue;
-        if (s.state.running) continue;
-        if (s.approvals.size) continue;
-        if (s.asks.size) continue;
-        if (s.idleFor() > IDLE_GC_MS) s.sleep();
-      }
+      this.lifecycleTick();
       for (const [id, s] of this.sessions) {
         if (s.live || s.state.running || s.state.done) continue;
         if (s.approvals.size || s.asks.size) continue;
@@ -2308,6 +2302,37 @@ export class SessionManager extends EventEmitter {
     }, 60_000);
     this.gcTimer.unref?.();
   }
+
+  /**
+   * One pass of the process-lifecycle rules, always in the same order (D120): a stuck run first, so
+   * the memory cap can never be what ends a session the watchdog was about to abort; idle reaping
+   * before the cap, so the cheap reason wins and the cap only sees what is left.
+   */
+  private lifecycleTick(): void {
+    const cfg = lifecycle();
+    this.endStuckRuns(cfg);
+    this.sleepIdleSessions(cfg);
+    this.sleepOverCap(cfg);
+  }
+
+  /** Watchdog for a `running` turn that stopped sending events — #77. */
+  private endStuckRuns(_cfg: Lifecycle): void {}
+
+  /**
+   * A finished run with no pi event for `idleMs` sleeps: the process goes, messages and session file
+   * stay, and the next message wakes it (D120). Nobody watching counts as activity — a tab left open
+   * unattended is exactly what this reaps. Approvals and asks still pin a session here; #78 gives
+   * them an expiry of their own.
+   */
+  private sleepIdleSessions(cfg: Lifecycle): void {
+    for (const s of this.sessions.values()) {
+      if (!s.live || s.state.running || s.approvals.size || s.asks.size) continue;
+      if (s.idleFor() > cfg.idleMs) s.sleep();
+    }
+  }
+
+  /** Memory cap: sleep the longest-idle sessions until the total is back under it — #77. */
+  private sleepOverCap(_cfg: Lifecycle): void {}
 
   async shutdown(): Promise<void> {
     if (this.gcTimer) clearInterval(this.gcTimer);

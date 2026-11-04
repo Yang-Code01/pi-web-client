@@ -7,6 +7,7 @@
  * two listings are parsed so the page can show rows instead of text.
  */
 import { spawn } from "node:child_process";
+import { piChildEnv } from "./paths.ts";
 
 export type PiCliOp =
   | { op: "pkg.list"; cwd?: string }
@@ -127,8 +128,7 @@ export function runPiCli(
 ): { done: Promise<{ code: number | null; data: unknown; output: string }>; kill: () => void } {
   const { args, timeoutMs, parse } = buildArgs(req);
   const cwd = typeof req.cwd === "string" && req.cwd ? req.cwd : process.cwd();
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("PI_WEB_")) env[k] = v;
+  const env = piChildEnv();
   const child = spawn(process.execPath, [cli, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   let stdout = "";
   let all = "";

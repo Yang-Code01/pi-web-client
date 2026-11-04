@@ -10,6 +10,20 @@ export function stateDir(): string {
   return base;
 }
 
+/**
+ * The environment a pi child gets: `process.env` minus the bridge's own `PI_WEB_*` settings, which
+ * configure the bridge and are none of pi's business. A spawn site adds on top only what pi has to
+ * know (the gate's allow-file, the ask URL/token). This is also what keeps a test's injected
+ * thresholds out of pi (D120).
+ */
+export function piChildEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && !key.startsWith("PI_WEB_")) env[key] = value;
+  }
+  return env;
+}
+
 /** `~` / `~/x` / `~\x` → home, the way pi's normalizePath does it (utils/paths.js). */
 export function expandTilde(p: string): string {
   if (p === "~") return os.homedir();
