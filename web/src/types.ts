@@ -189,6 +189,25 @@ export interface Me {
 
 export type Decision = "approve" | "reject" | "cancel" | "always";
 
+/** Mirrors bridge/src/sessions.ts RuntimeStats: `runtime.stats` 的载荷（D120 / #77）。 */
+export interface RuntimeStats {
+  running: number;
+  /** 采样到的总字节数；没采样（没有在跑的 pi）或采样失败时为 null。 */
+  totalBytes: number | null;
+  unavailable: boolean;
+  /** 按空闲时长降序。 */
+  sessions: RuntimeSessionRow[];
+}
+
+export interface RuntimeSessionRow {
+  id: string;
+  name: string;
+  running: boolean;
+  idleMs: number;
+  /** 只有读数可信、而且进程表里确实有这个 pid 时才有。 */
+  bytes?: number;
+}
+
 /** Mirrors bridge/src/pi.ts ModelInfo. */
 export interface ModelInfo {
   id: string;

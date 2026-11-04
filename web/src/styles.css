@@ -2016,6 +2016,15 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .settings-sheet .login-result { font-size: 13px; color: var(--ok); }
 .settings-sheet .login-result.bad { color: var(--danger); }
 .settings-sheet .settings-lockext { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 10px; }
+/* D120 / #77 运行时：一行摘要 + 每个运行中的 pi 一行（名字 / 闲了多久 / 占多少） */
+.settings-sheet .runtime-summary { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.settings-sheet .runtime-list { display: grid; gap: 4px; }
+.settings-sheet .runtime-row { display: flex; gap: 10px; align-items: baseline; padding: 7px 10px; border: 1px solid var(--line-soft); border-radius: 8px; font-size: 12.5px; }
+.settings-sheet .runtime-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-sheet .runtime-idle { flex: none; font-size: 12px; color: var(--faint); }
+.settings-sheet .runtime-tag { flex: none; font-size: 10.5px; color: var(--accent); border: 1px solid var(--accent-dim); border-radius: 999px; padding: 0 6px; }
+.settings-sheet .runtime-bytes { flex: none; font: 12px var(--mono); color: var(--muted); }
+.settings-sheet .runtime-bytes.bad { color: var(--warn, #d29922); }
 .settings-sheet .cli-out { margin: 0; max-height: 240px; overflow: auto; padding: 8px 10px; background: #0a0f14; border: 1px solid var(--line); border-radius: 8px; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-all; }
 .settings-sheet .ns-advanced { border: 1px solid var(--line-soft); border-radius: 10px; }
 .settings-sheet .ns-advanced > summary { cursor: pointer; padding: 8px 12px; font-size: 13px; color: var(--faint); }

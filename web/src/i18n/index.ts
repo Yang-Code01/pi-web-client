@@ -130,8 +130,9 @@ export function fmtRelative(ts: number, now: number = Date.now()): string {
 }
 
 /**
- * 后端错误的显示文案：bridge 现在回 `{ error: 中文兜底, code, params }`（WS notice 是 `{ text, code,
- * params }`），认得出的码走词典（`bridge.err.<code>`），认不出就用它自己那句话。
+ * 后端错误的显示文案：bridge 现在回 `{ error: 中文兜底, code, params }`，认得出的码走词典
+ * （`bridge.err.<code>`），认不出就用它自己那句话。通知（notice 的 `{ text, code, params }`）也走这里
+ * —— 中文就是 bridge 带过来的那句，`text` 跟 `error` 一样是兼底。
  */
 export function errText(err: unknown): string {
   // 两种命名都在用：HTTP 响应走 `{code, params}`（bridge 的 fail()），WS 事件 / 隧道状态走

@@ -15,6 +15,7 @@ import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
 import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
 import { lifecycle, gcTickMs, type Lifecycle } from "./lifecycle.ts";
 import { absentFor } from "./presence.ts";
+import { sampleMemory } from "./runtime.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -97,6 +98,29 @@ interface OpenQuestionnaire {
   taken: Set<string>;
   /** Dialogs that arrived before the answers did. */
   waiting: { uiId: string; req: any; question: QuestionnaireQuestion }[];
+}
+
+/** One running pi, as the runtime panel lists it (D120 / #77). */
+export interface RuntimeSession {
+  id: string;
+  name: string;
+  running: boolean;
+  /** Since the last pi event — the same clock `sleepIdleSessions` reads, in milliseconds. */
+  idleMs: number;
+  /** Resident bytes, only when the sample was trustworthy and the table listed this pid. */
+  bytes?: number;
+}
+
+/**
+ * `runtime.stats`: who is running, what they cost, and whether that number is real. `totalBytes`
+ * is `null` whenever nothing was measured (no running pi) or the reading failed (`unavailable`).
+ */
+export interface RuntimeStats {
+  running: number;
+  totalBytes: number | null;
+  unavailable: boolean;
+  /** Idle longest first. */
+  sessions: RuntimeSession[];
 }
 
 export interface SessionState {
@@ -246,6 +270,10 @@ function publicAsk(ask: PendingAsk): AskRequest {
 }
 
 const IDLE_EVICT_MS = 10 * 60 * 1000;
+
+/** Rounded-up whole units for the watchdog's notices: 30 minutes and 60 seconds read like D120. */
+const minutes = (ms: number): number => Math.max(1, Math.round(ms / 60_000));
+const seconds = (ms: number): number => Math.max(1, Math.round(ms / 1000));
 
 function lockPath(id: string): string {
   return statePath("locks", `${id}.lock`);
@@ -529,6 +557,13 @@ export class Session extends EventEmitter {
   private skillsCache: { at: number; list: SkillInfo[] } | null = null;
 
   private lastActivity = Date.now();
+  /**
+   * #81: when the watchdog aborted this run. Set once the abort is out, so the following ticks only
+   * wait out `abortGraceMs` before ending the process; null while no abort is pending.
+   */
+  private stuckAbortedAt: number | null = null;
+  /** One notice per silent run: the tick fires every minute, and none of them would be news. */
+  private stuckNoticed = false;
   private tailTimer: NodeJS.Timeout | null = null;
   private tailSig = "";
   private draftCounter = 0;
@@ -592,6 +627,11 @@ export class Session extends EventEmitter {
 
   get live(): boolean {
     return Boolean(this.rpc?.alive);
+  }
+
+  /** The pi child's pid while it is alive — what the runtime panel samples memory for (D120 §2). */
+  get pid(): number | null {
+    return this.rpc?.pid ?? null;
   }
 
   /** The user opened this session: whatever finished before now has been seen. */
@@ -826,6 +866,9 @@ export class Session extends EventEmitter {
       case "agent_start":
         this.setState({ running: true, done: false });
         this.autoCompactUsed = false;
+        // A new run is a new verdict: a previous abort's grace clock must not carry over (#81).
+        this.stuckAbortedAt = null;
+        this.stuckNoticed = false;
         this.emitWs({ type: "pi.status", sessionId: this.state.id, running: true });
         break;
       case "agent_end":
@@ -837,6 +880,9 @@ export class Session extends EventEmitter {
         // Whatever was queued has been delivered or cleared by now.
         this.queuedUser = [];
         this.setQueue([], []);
+        // The run answered its abort (or ended on its own): nothing left for the watchdog to end (#81).
+        this.stuckAbortedAt = null;
+        this.stuckNoticed = false;
         this.setState({ running: false, done: true });
         this.emitWs({ type: "pi.status", sessionId: this.state.id, running: false });
         void this.refreshStats();
@@ -1714,6 +1760,91 @@ export class Session extends EventEmitter {
     this.setState({ running: false });
   }
 
+  /**
+   * #81 (D120): one watchdog step, called from the lifecycle tick. A `running` turn that has seen no
+   * pi event for `cfg.idleMs` is stuck — unless something is in flight (`busy()`), in which case the
+   * silence is expected and the run only gets one notice; a pending approval or question is a
+   * person's call, not a hang. A stuck run is aborted first, so the turn still lands on disk, and the
+   * process is ended only if it has not settled `cfg.abortGraceMs` later.
+   */
+  checkStuckRun(cfg: Lifecycle): void {
+    if (!this.live || this.closing || !this.state.running) {
+      // The run ended or the process went away on its own: whatever was pending is moot.
+      this.stuckAbortedAt = null;
+      this.stuckNoticed = false;
+      return;
+    }
+    if (this.idleFor() <= cfg.idleMs) {
+      // Still talking: a later silence gets its own verdict, and its own notice.
+      if (this.stuckAbortedAt === null) this.stuckNoticed = false;
+      return;
+    }
+    // A compaction is long and silent by nature ("minutes on a big context"): not a hang either.
+    if (this.compaction) return;
+    if (this.busy()) {
+      // A tool or a `!cmd` in flight explains the silence; the decision to stop stays with the user.
+      if (this.stuckNoticed) return;
+      this.stuckNoticed = true;
+      this.emitWs({
+        type: "notice",
+        sessionId: this.state.id,
+        code: "stuck_run_busy",
+        text: `这个会话好像卡住了：${minutes(cfg.idleMs)} 分钟没有任何事件，但还有工具或命令在跑。没有中止它 —— 要不要停由你定。`,
+        params: { p1: minutes(cfg.idleMs) },
+        level: "warn",
+      });
+      return;
+    }
+    if (this.approvals.size || this.asks.size) return;
+    if (this.stuckAbortedAt !== null) {
+      if (Date.now() - this.stuckAbortedAt < cfg.abortGraceMs) return;
+      this.stuckAbortedAt = null;
+      this.emitWs({
+        type: "notice",
+        sessionId: this.state.id,
+        code: "stuck_run_ended",
+        text: "中止了但一直没有回音，已关掉这个会话的 pi 进程。消息都在，发一条消息会重新启动它。",
+        level: "warn",
+      });
+      this.endStuckProcess();
+      return;
+    }
+    this.stuckAbortedAt = Date.now();
+    this.stuckNoticed = true;
+    this.emitWs({
+      type: "notice",
+      sessionId: this.state.id,
+      code: "stuck_run_aborted",
+      text: `这一轮 ${minutes(cfg.idleMs)} 分钟没有任何事件，也没有工具在跑，判定为卡住：已请求中止，${seconds(cfg.abortGraceMs)} 秒内还不结束就关掉进程。`,
+      params: { p1: minutes(cfg.idleMs), p2: seconds(cfg.abortGraceMs) },
+      level: "warn",
+    });
+    // The stop button's abort, minus the queue dance: give the turn its chance to land on disk.
+    this.abort();
+  }
+
+  /** Is something actually working? A tool pi has not finished, or a `!cmd` still running (#81). */
+  private busy(): boolean {
+    return Boolean(this.bashRun) || this.items.some((it) => it.kind === "tool" && it.status === "running");
+  }
+
+  /**
+   * #81: end a run that ignored its abort. `close()`'s bookkeeping, without the abort-and-wait: that
+   * happened a grace period ago, and another five seconds of waiting buys nothing.
+   */
+  private endStuckProcess(): void {
+    const rpc = this.rpc;
+    if (!rpc?.alive) return;
+    this.closing = true;
+    this.closeQuietly = true;
+    // The exit handler below already does the rest (running:false, lock, tail); this only keeps the
+    // dead child from making the next close() wait for an exit that has already happened.
+    rpc.once("exit", () => {
+      if (this.rpc === rpc) this.rpc = null;
+    });
+    rpc.kill();
+  }
+
   sleep(): void {
     if (this.state.running) return;
     this.sleepNow();
@@ -2314,6 +2445,42 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Who is running and what the bridge's own pi children cost (D120 / #77). The pid set comes from
+   * the `RpcChild` handles this manager holds and from nothing else, so no line of the process
+   * table but ours can be counted. A reading that cannot be trusted is `null` + `unavailable`,
+   * never an estimate: #79 will reap sessions with these numbers.
+   *
+   * Reusable rather than panel-specific: the watermark rule (#79) asks the same question on the
+   * same tick. With no live pi it spawns nothing.
+   */
+  async runtimeStats(): Promise<RuntimeStats> {
+    const live = [...this.sessions.values()].filter((s) => s.live);
+    const pids: number[] = [];
+    for (const s of live) if (s.pid !== null) pids.push(s.pid);
+    const sample = await sampleMemory(pids);
+    const sessions = live
+      .map((s): RuntimeSession => {
+        const pid = s.pid;
+        const bytes = sample.failure === null && pid !== null ? sample.bytes.get(pid) : undefined;
+        return {
+          id: s.state.id,
+          name: s.state.name,
+          running: s.state.running,
+          idleMs: s.idleFor(),
+          ...(bytes === undefined ? {} : { bytes }),
+        };
+      })
+      .sort((a, b) => b.idleMs - a.idleMs);
+    const totalBytes = sample.failure === null && sessions.length ? [...sample.bytes.values()].reduce((sum, n) => sum + n, 0) : null;
+    return { running: sessions.length, totalBytes, unavailable: sample.failure !== null, sessions };
+  }
+
+  /** Push the runtime numbers on every GC tick, so the panel is live without a timer of its own. */
+  private async publishRuntimeStats(): Promise<void> {
+    this.emit("runtime", await this.runtimeStats());
+  }
+
+  /**
    * `isWatched` says whether some client is looking at a session right now. Read-only sessions
    * nobody watches are dropped after a while: each one holds its transcript and a 400ms file poll.
    */
@@ -2333,6 +2500,7 @@ export class SessionManager extends EventEmitter {
         s.removeAllListeners();
         this.sessions.delete(id);
       }
+      void this.publishRuntimeStats();
     }, gcTickMs());
     this.gcTimer.unref?.();
   }
@@ -2350,7 +2518,9 @@ export class SessionManager extends EventEmitter {
   }
 
   /** Watchdog for a `running` turn that stopped sending events — #81. */
-  private endStuckRuns(_cfg: Lifecycle): void {}
+  private endStuckRuns(cfg: Lifecycle): void {
+    for (const s of this.sessions.values()) s.checkStuckRun(cfg);
+  }
 
   /**
    * A finished run with no pi event for `idleMs` sleeps: the process goes, messages and session file
