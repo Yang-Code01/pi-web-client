@@ -88,6 +88,38 @@ try {
 }
 check(bad, "only mcp.json files can be edited");
 
+// D113: the write lock — same resource serialized, different resources concurrent, a failure not fatal.
+const { createWriteLock } = await import("../dist/writelock.js");
+const W = createWriteLock();
+const order = [];
+await Promise.all([
+  W("npm", async () => {
+    order.push("a-start");
+    await sleep(80);
+    order.push("a-end");
+  }),
+  W("npm", async () => {
+    order.push("b-start");
+    await sleep(10);
+    order.push("b-end");
+  }),
+  W("mcp:other.json", async () => {
+    order.push("c-start");
+  }),
+]);
+check(order.indexOf("a-end") < order.indexOf("b-start"), `one writer per key (${order.join(" ")})`);
+check(order.indexOf("c-start") < order.indexOf("a-end"), "a different key is not blocked by a running write");
+let afterFail = false;
+await Promise.all([
+  W("k", async () => {
+    throw new Error("boom");
+  }).catch(() => {}),
+  W("k", async () => {
+    afterFail = true;
+  }),
+]);
+check(afterFail, "a failed write does not stall the queue");
+
 // ------------------------------------------------------------------ B. bridge
 log("B. bridge");
 delete process.env.PI_BIN;
@@ -140,8 +172,15 @@ async function page(cookie, headers = {}) {
     ws.send(JSON.stringify(m));
     return waitFor(pred, ms, what, mark);
   };
+  /** Send one request and return every message it produced up to (and including) `done`. */
+  const collect = async (m, done, what, ms = 120000) => {
+    const mark = seen.length;
+    ws.send(JSON.stringify(m));
+    const hit = await waitFor(done, ms, what, mark);
+    return seen.slice(mark, seen.indexOf(hit, mark) + 1);
+  };
   pages.push(ws);
-  return { ws, seen, waitFor, ask };
+  return { ws, seen, waitFor, ask, collect };
 }
 try {
   await until(() => fs.existsSync(path.join(STATE, "passphrase.txt")), 20000, "passphrase");
@@ -153,9 +192,19 @@ try {
   const hello = await a.waitFor((m) => m.type === "hello", 5000, "hello");
   check(hello.ui?.showExtButton === true, "hello carries the button preference (on by default)");
 
-  const inst = await a.ask({ type: "picli", op: "pkg.install", source: PKG }, (m) => m.type === "picli.done" && m.op === "pkg.install", "install");
-  check(inst.code === 0, "local package installed through pi");
-  let inv = await a.ask({ type: "ext.inventory", check: true }, (m) => m.type === "ext.inventory", "inventory");
+  const inst = await a.collect({ type: "picli", reqId: "probe1", op: "pkg.install", source: PKG }, (m) => m.type === "picli.done" && m.op === "pkg.install", "install");
+  const instDone = inst[inst.length - 1];
+  check(instDone.code === 0, "local package installed through pi");
+  check(inst.some((m) => m.type === "picli.start" && m.reqId === "probe1") && instDone.reqId === "probe1", "the bridge echoes the page's reqId so a queued command can be told apart");
+  // D113: the inventory arrives in stages — installed rows first, then MCP, then versions (the late
+  // two can land in either order; every snapshot carries everything that has answered so far).
+  const stages = (
+    await a.collect({ type: "ext.inventory", check: true }, (m) => m.type === "ext.inventory" && m.mcpReady && m.versionsChecked, "inventory stages")
+  ).filter((m) => m.type === "ext.inventory");
+  check(stages.length >= 2, `inventory pushed in ${stages.length} stages`);
+  check(stages[0].mcpReady === false && stages[0].versionsChecked === false && stages[0].packages?.length === 1, "first stage: the installed packages, without waiting for MCP or the registries");
+  let inv = stages[stages.length - 1];
+  check(inv.mcpReady === true && inv.versionsChecked === true, "the last stage has both the MCP rows and the versions");
   const pkg = inv.packages?.find((p) => p.name === "demo-pkg");
   check(pkg && pkg.version === "1.2.3" && pkg.origin === "local" && !pkg.update, `package with its version, local → not checked (${JSON.stringify(pkg)})`);
   const loose = inv.extensions?.find((x) => x.label === "loose.ts");
@@ -167,15 +216,17 @@ try {
   else log("  (npm not reachable: update check skipped)");
   check(typeof inv.updates === "number", `update count ${inv.updates}`);
 
-  // disable / enable a built-in and the loose extension
-  await a.ask({ type: "ext.toggle", id: "builtin:codemode", scope: "builtin", how: "builtin", enable: false }, (m) => m.type === "ext.changed", "toggle builtin");
+  // disable / enable a built-in and the loose extension — D113: fired together, the lock keeps both.
+  const off1 = a.ask({ type: "ext.toggle", id: "builtin:codemode", scope: "builtin", how: "builtin", enable: false }, (m) => m.type === "ext.changed" && m.id === "builtin:codemode", "toggle builtin");
+  const off2 = a.ask({ type: "ext.toggle", id: loose.id, scope: "user", how: "discovered", enable: false }, (m) => m.type === "ext.changed" && m.id === loose.id, "toggle loose");
+  await Promise.all([off1, off2]);
   const s1 = JSON.parse(fs.readFileSync(path.join(AGENT, "settings.json"), "utf8"));
-  check(s1.extensions.includes("-builtin:codemode"), "built-in disabled as -builtin:codemode");
-  await a.ask({ type: "ext.toggle", id: loose.id, scope: "user", how: "discovered", enable: false }, (m) => m.type === "ext.changed", "toggle loose");
-  inv = await a.ask({ type: "ext.inventory", check: false }, (m) => m.type === "ext.inventory", "inventory 2");
+  check(s1.extensions.includes("-builtin:codemode") && s1.extensions.includes(`-${loose.id}`), `two toggles at once both landed (${JSON.stringify(s1.extensions)})`);
+  inv = await a.ask({ type: "ext.inventory", check: false }, (m) => m.type === "ext.inventory" && m.mcpReady, "inventory 2");
   check(inv.extensions.find((x) => x.id === "builtin:codemode")?.enabled === false && inv.extensions.find((x) => x.label === "loose.ts")?.enabled === false, "both show as disabled");
-  await a.ask({ type: "ext.toggle", id: "builtin:codemode", scope: "builtin", how: "builtin", enable: true }, (m) => m.type === "ext.changed", "re-enable");
-  await a.ask({ type: "ext.toggle", id: loose.id, scope: "user", how: "discovered", enable: true }, (m) => m.type === "ext.changed", "re-enable loose");
+  check(inv.versionsChecked === false, "check: false does not promise version answers");
+  await a.ask({ type: "ext.toggle", id: "builtin:codemode", scope: "builtin", how: "builtin", enable: true }, (m) => m.type === "ext.changed" && m.id === "builtin:codemode", "re-enable");
+  await a.ask({ type: "ext.toggle", id: loose.id, scope: "user", how: "discovered", enable: true }, (m) => m.type === "ext.changed" && m.id === loose.id, "re-enable loose");
   const s2 = JSON.parse(fs.readFileSync(path.join(AGENT, "settings.json"), "utf8"));
   check(!s2.extensions && Array.isArray(s2.packages), `exclusions removed again, packages untouched (${JSON.stringify(s2)})`);
 

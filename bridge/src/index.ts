@@ -27,7 +27,7 @@ import { bumpSkillUsage } from "./skills.ts";
 import { Notifier } from "./notify.ts";
 import { Tunnel, findCloudflared } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
-import { APP_NAME, VERSION, ensureStateDirs, readJson, statePath, sessionsRootInfo } from "./paths.ts";
+import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, statePath, sessionsRootInfo } from "./paths.ts";
 import { clipboardFiles, listDirs, makeDir, statFiles } from "./dirs.ts";
 import { gitInfo } from "./git.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
@@ -51,6 +51,7 @@ import {
 } from "./notes.ts";
 import { mcpAddRequest, newer, searchMcp, searchPackages, type McpInstallOption } from "./market.ts";
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
+import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { piLatest } from "./piupdate.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
@@ -258,6 +259,14 @@ async function main(): Promise<void> {
     }
   };
   const sessions = new SessionManager(pi.cli, `http://127.0.0.1:${cfg.port}/api/ask`);
+  /** D113: one writer per shared resource (`npm` root, each settings scope, each mcp.json). */
+  const writeLock = createWriteLock();
+  /**
+   * The mcp.json `pi mcp add/remove` writes: the global one, or the project's with `--local`. The
+   * toggles take `mcp:<file>` as their lock, so an add has to take it too — otherwise it can land on
+   * top of a toggle that read the same file a moment earlier.
+   */
+  const mcpFileLock = (local: boolean, cwd: string | null) => `mcp:${path.join(local && cwd ? path.join(cwd, ".pi") : agentDir(), "mcp.json")}`;
   const notifier = new Notifier();
   const tunnelBin = findCloudflared();
   const tunnel = new Tunnel(cfg.port, tunnelBin ?? "");
@@ -1157,24 +1166,42 @@ async function main(): Promise<void> {
           case "picli": {
             // #33: pi install / remove / update / list, pi mcp list / add / remove / login / logout.
             const op = String(msg.op ?? "");
+            // D113: the page correlates every event with the button that started it, so several
+            // operations can be in flight (queued) at once.
+            const reqId = typeof msg.reqId === "string" ? msg.reqId.slice(0, 60) : null;
             // D81: from the public tunnel the extension manager is read-only.
             if (isWriteOp(op) && (ws as any).publicReq) {
-              send({ type: "picli.done", runId: null, op, code: -1, error: "通过公网访问时扩展与 MCP 只能查看，安装 / 卸载 / 更新请在本机或局域网操作", errCode: "picli_public" });
+              send({ type: "picli.done", reqId, runId: null, op, code: -1, error: "通过公网访问时扩展与 MCP 只能查看，安装 / 卸载 / 更新请在本机或局域网操作", errCode: "picli_public" });
               return;
             }
-            if (isWriteOp(op) && !(await requireStepUp())) return;
+            if (isWriteOp(op) && !(await requireStepUp())) {
+              send({ type: "picli.done", reqId, runId: null, op, code: -1, error: "要重新输入口令才能改扩展", errCode: "stepup_required" });
+              return;
+            }
             const runId = `cli_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-            let run: ReturnType<typeof runPiCli>;
-            try {
-              run = runPiCli(pi.cli, msg, (chunk) => send({ type: "picli.out", runId, text: chunk }));
-            } catch (err: any) {
-              send({ type: "picli.done", runId, op, code: -1, error: String(err?.message ?? err) });
+            const exec = async (): Promise<{ code: number | null; data?: unknown; error?: string }> => {
+              let run: ReturnType<typeof runPiCli>;
+              try {
+                run = runPiCli(pi.cli, msg, (chunk) => send({ type: "picli.out", runId, text: chunk }));
+              } catch (err: any) {
+                return { code: -1, error: String(err?.message ?? err) };
+              }
+              // Sent here, not before the queue: the page shows 「排队中」 until its own command starts.
+              send({ type: "picli.start", reqId, runId, op });
+              const out = await run.done;
+              return { code: out.code, data: out.data };
+            };
+            if (isWriteOp(op)) log(`pi ${op} ${JSON.stringify({ ...msg, type: undefined, reqId: undefined }).slice(0, 200)}`);
+            // D113: installs / removals / updates share one npm prefix and each rewrites the whole
+            // package list, so they take the `npm` lock and run one at a time; the page stays clickable.
+            // `pi mcp add/remove` also rewrite an mcp.json, which the toggle buttons edit too.
+            const fileKey = op === "mcp.add" || op === "mcp.remove" ? mcpFileLock(msg.local === true, typeof msg.cwd === "string" ? msg.cwd : null) : null;
+            const out = isWriteOp(op) ? await writeLock("npm", () => (fileKey ? writeLock(fileKey, exec) : exec())) : await exec();
+            if (out.error) {
+              send({ type: "picli.done", reqId, runId, op, code: out.code, error: out.error });
               return;
             }
-            send({ type: "picli.start", runId, op });
-            if (isWriteOp(op)) log(`pi ${op} ${JSON.stringify({ ...msg, type: undefined }).slice(0, 200)}`);
-            const out = await run.done;
-            send({ type: "picli.done", runId, op, code: out.code, data: out.data });
+            send({ type: "picli.done", reqId, runId, op, code: out.code, data: out.data });
             // #49: a successful self-update replaced the package under us; re-read its version so the
             // page's 「pi x.y.z」 stops lying without a bridge restart (running sessions keep the old code).
             if (out.code === 0 && op === "pkg.update") {
@@ -1209,8 +1236,9 @@ async function main(): Promise<void> {
           case "ext.inventory": {
             const cwd = msg.cwd ? String(msg.cwd) : null;
             try {
-              const inv = await inventory(pi.cli, cwd, msg.check !== false);
-              send({ type: "ext.inventory", cwd, ...inv });
+              // D113: pushed in stages (`local` → `mcp` → `versions`), so the page can paint the
+              // installed rows before the slow MCP connections and the registry lookups finish.
+              const inv = await inventory(pi.cli, cwd, msg.check !== false, (partial) => send({ type: "ext.inventory", cwd, ...partial }));
               broadcast({ type: "ext.updates", count: inv.updates });
             } catch (err: any) {
               send({ type: "ext.inventory", cwd, error: String(err?.message ?? err) });
@@ -1244,20 +1272,42 @@ async function main(): Promise<void> {
           case "mcp.toggle":
           case "mcp.bump":
           case "mcp.install": {
+            const op = String(msg.type ?? "");
+            // D113: each write reports queued / running / done for *its own* button, and takes the lock
+            // of the resource it touches, so the rest of the manager stays clickable.
+            const reqId = typeof msg.reqId === "string" ? msg.reqId.slice(0, 60) : null;
+            const fail = (err: unknown) => {
+              const text = String((err as any)?.message ?? err);
+              send({ type: "notice", text, level: "error" });
+              send({ type: "ext.error", message: text });
+              send({ type: "ext.op", reqId, op, state: "done", code: -1, error: text });
+            };
             if ((ws as any).publicReq) {
               send({ type: "notice", text: "通过公网访问时扩展与 MCP 只能查看", level: "warn" });
+              send({ type: "ext.op", reqId, op, state: "done", code: -1, error: "公网只读", errCode: "picli_public" });
               return;
             }
-            if (!(await requireStepUp())) return;
+            if (!(await requireStepUp())) {
+              send({ type: "ext.op", reqId, op, state: "done", code: -1, error: "要重新输入口令才能改扩展", errCode: "stepup_required" });
+              return;
+            }
+            if (msg.type !== "mcp.install") send({ type: "ext.op", reqId, op, state: "running" });
             try {
               if (msg.type === "ext.toggle") {
-                await toggleExtension(pi.cli, { id: String(msg.id ?? ""), scope: msg.scope === "project" ? "project" : msg.scope === "builtin" ? "builtin" : "user", how: String(msg.how ?? "") }, msg.enable === true, msg.cwd ? String(msg.cwd) : null);
+                const scope = msg.scope === "project" ? "project" : msg.scope === "builtin" ? "builtin" : "user";
+                // Built-ins live in the *global* settings.json, exactly like user extensions
+                // (toggleExtension maps them there), so the lock is named after the file, not the scope.
+                await writeLock(`settings:${scope === "project" ? "project" : "global"}`, () =>
+                  toggleExtension(pi.cli, { id: String(msg.id ?? ""), scope, how: String(msg.how ?? "") }, msg.enable === true, msg.cwd ? String(msg.cwd) : null),
+                );
                 send({ type: "ext.changed", what: "extension", id: msg.id });
               } else if (msg.type === "mcp.toggle") {
-                toggleMcp(String(msg.file ?? ""), String(msg.name ?? ""), msg.enable === true);
+                const file = String(msg.file ?? "");
+                await writeLock(`mcp:${file}`, async () => toggleMcp(file, String(msg.name ?? ""), msg.enable === true));
                 send({ type: "ext.changed", what: "mcp", id: msg.name });
               } else if (msg.type === "mcp.bump") {
-                bumpMcp(String(msg.file ?? ""), String(msg.name ?? ""), String(msg.version ?? ""));
+                const file = String(msg.file ?? "");
+                await writeLock(`mcp:${file}`, async () => bumpMcp(file, String(msg.name ?? ""), String(msg.version ?? "")));
                 send({ type: "ext.changed", what: "mcp", id: msg.name });
               } else {
                 const { req, vars } = mcpAddRequest(msg.option as McpInstallOption, {
@@ -1268,14 +1318,19 @@ async function main(): Promise<void> {
                   description: typeof msg.description === "string" ? msg.description : undefined,
                 });
                 const runId = `cli_${Date.now().toString(36)}`;
-                send({ type: "picli.start", runId, op: "mcp.add" });
-                const out = await runPiCli(pi.cli, { ...req, cwd: msg.cwd ? String(msg.cwd) : undefined }, (chunk) => send({ type: "picli.out", runId, text: chunk })).done;
-                send({ type: "picli.done", runId, op: "mcp.add", code: out.code, vars });
+                const out = await writeLock("npm", () =>
+                  writeLock(mcpFileLock(msg.local === true, typeof msg.cwd === "string" ? msg.cwd : null), async () => {
+                    send({ type: "picli.start", reqId, runId, op: "mcp.add" });
+                    return runPiCli(pi.cli, { ...req, cwd: msg.cwd ? String(msg.cwd) : undefined }, (chunk) => send({ type: "picli.out", runId, text: chunk })).done;
+                  }),
+                );
+                send({ type: "picli.done", reqId, runId, op: "mcp.add", code: out.code, vars });
                 if (out.code === 0) send({ type: "ext.changed", what: "mcp", id: msg.name, vars });
+                return;
               }
+              send({ type: "ext.op", reqId, op, state: "done", code: 0 });
             } catch (err: any) {
-              send({ type: "notice", text: String(err?.message ?? err), level: "error" });
-              send({ type: "ext.error", message: String(err?.message ?? err) });
+              fail(err);
             }
             return;
           }

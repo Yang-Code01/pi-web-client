@@ -30,6 +30,10 @@ export interface Inventory {
   mcpError: string | null;
   updates: number;
   checkedAt: number;
+  /** `pi mcp list` has answered, so `mcp` below is the real list (not just “still running”). */
+  mcpReady: boolean;
+  /** npm / PyPI / git answered for every row: `latest` and `update` are final, not “not asked yet”. */
+  versionsChecked: boolean;
 }
 
 async function cli(cliPath: string, req: Record<string, unknown>): Promise<{ code: number | null; data: unknown; output: string }> {
@@ -51,15 +55,33 @@ export function assertMcpFile(file: string): string {
   return abs;
 }
 
-/** Everything installed, with versions; `check` asks npm / PyPI / git for newer ones. */
-export async function inventory(cliPath: string, cwd: string | null, check: boolean): Promise<Inventory> {
-  const [list, mcpList] = await Promise.all([cli(cliPath, { op: "pkg.list", cwd: cwd ?? undefined }), cli(cliPath, { op: "mcp.list", cwd: cwd ?? undefined })]);
+/**
+ * Everything installed, pushed in stages so the page can paint while the slow parts run (D81
+ * follow-up): `pi list` + the extensions folders first (local, a few seconds), then `pi mcp list`
+ * (it connects every enabled server), then the versions (npm / PyPI / `git ls-remote`, which over a
+ * dead network take up to the 20 s request timeout each). `emit` gets a complete snapshot after
+ * every stage; `check` asks the registries for newer versions at all.
+ */
+export async function inventory(cliPath: string, cwd: string | null, check: boolean, emit?: (inv: Inventory) => void): Promise<Inventory> {
+  const checkedAt = Date.now();
+  const list = await cli(cliPath, { op: "pkg.list", cwd: cwd ?? undefined });
   const rows = Array.isArray(list.data) ? (list.data as { scope: "user" | "project"; source: string; path: string | null }[]) : [];
-  const packages = await inspectPackages(rows, check);
-  const servers = Array.isArray((mcpList.data as any)?.servers) ? ((mcpList.data as any).servers as any[]) : [];
-  const mcp: InstalledMcp[] = await Promise.all(
-    servers.map(async (s) => {
+  const inv: Inventory = { packages: await inspectPackages(rows, false), extensions: looseExtensions(cwd), mcp: [], mcpError: null, updates: 0, checkedAt, mcpReady: false, versionsChecked: false };
+  const countUpdates = () => inv.packages.filter((p) => p.update).length + inv.mcp.filter((m) => m.version.update).length;
+  const snapshot = () => {
+    inv.updates = countUpdates();
+    emit?.(structuredClone(inv));
+  };
+  snapshot();
+
+  // What each server runs, kept for the version stage (the mcp stage itself stays off the network).
+  const commands = new Map<string, { command?: string; args?: string[] }>();
+  const mcpStage = (async () => {
+    const mcpList = await cli(cliPath, { op: "mcp.list", cwd: cwd ?? undefined });
+    const servers = Array.isArray((mcpList.data as any)?.servers) ? ((mcpList.data as any).servers as any[]) : [];
+    inv.mcp = servers.map((s) => {
       const entry = s.source ? mcpEntry(String(s.source), String(s.name)) : null;
+      commands.set(String(s.name), { command: entry?.command as string | undefined, args: entry?.args as string[] | undefined });
       return {
         name: String(s.name),
         scope: String(s.scope ?? ""),
@@ -70,13 +92,36 @@ export async function inventory(cliPath: string, cwd: string | null, check: bool
         state: s.state ?? null,
         tools: Array.isArray(s.tools) ? s.tools.map(String) : [],
         error: s.error ? String(s.error) : null,
-        version: await mcpVersion(entry?.command as string | undefined, entry?.args as string[] | undefined, check),
-      };
-    }),
-  );
-  const updates = packages.filter((p) => p.update).length + mcp.filter((m) => m.version.update).length;
-  const inv: Inventory = { packages, extensions: looseExtensions(cwd), mcp, mcpError: mcpList.data ? null : mcpList.output.trim().slice(-500) || null, updates, checkedAt: Date.now() };
-  if (check) writeJson(statePath("market", "updates.json"), { at: inv.checkedAt, count: updates, cwd });
+        // A pinned version is known without asking npm / PyPI; the version stage fills in `latest`.
+        version: { ...mcpPackageOf(entry?.command as string | undefined, entry?.args as string[] | undefined), latest: null, update: false },
+      } satisfies InstalledMcp;
+    });
+    inv.mcpError = mcpList.data ? null : mcpList.output.trim().slice(-500) || null;
+    inv.mcpReady = true;
+    snapshot();
+  })().catch((err: any) => {
+    inv.mcpError = String(err?.message ?? err);
+    inv.mcpReady = true;
+    snapshot();
+  });
+
+  const versionStage = (async () => {
+    if (!check) return;
+    inv.packages = await inspectPackages(rows, true).catch(() => inv.packages);
+    const bumped = await Promise.all(
+      inv.mcp.map(async (m) => {
+        const c = commands.get(m.name);
+        return { ...m, version: await mcpVersion(c?.command, c?.args, true) };
+      }),
+    );
+    inv.mcp = bumped;
+    inv.versionsChecked = true;
+    snapshot();
+  })();
+
+  await Promise.allSettled([mcpStage, versionStage]);
+  inv.updates = countUpdates();
+  if (check) writeJson(statePath("market", "updates.json"), { at: inv.checkedAt, count: inv.updates, cwd });
   return inv;
 }
 
