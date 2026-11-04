@@ -13,16 +13,16 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const wsMod = await import(pathToFileURL("F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs").href);
+const { chromium } = await loadPlaywright();
+const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
-const previewMod = await import(pathToFileURL("F:/pi-web-client/bridge/dist/preview.js").href);
+const previewMod = await import(pathToFileURL(path.join(REPO, "bridge/dist/preview.js")).href);
 
-const PORT = 7917;
-const DIST = "F:/pi-web-client/web/dist";
-const SCRATCH = "F:/pi-web-client/.scratch/round23-nav";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7917);
+const SCRATCH = path.join(REPO, ".scratch/round23-nav");
 const OUT = `${SCRATCH}/shots`;
 const WORK = `${SCRATCH}/work`;
 const OTHER = `${SCRATCH}/other`;

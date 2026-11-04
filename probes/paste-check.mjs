@@ -2,16 +2,17 @@
  * 粘贴图片的浏览器验证：截图粘贴（Ctrl+V / ⌘V）应当落到待发图片里。
  * 用真实的 Chromium + 真实 paste 事件（DataTransfer 带 File），不是 mock。
  *
- * 需要：隔离桥在 7867（PI_WEB_STATE=F:/pi-web-client/.scratch/test-state）
+ * 需要：隔离桥在 7867（PI_WEB_STATE=<repo>/.scratch/test-state）
  * 跑：node probes/paste-check.mjs
  */
+import path from "node:path";
 import fs from "node:fs";
-import { pathToFileURL } from "node:url";
+import { REPO } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+const { chromium } = await loadPlaywright();
 
-const STATE = process.env.PI_WEB_STATE ?? "F:/pi-web-client/.scratch/test-state";
+const STATE = process.env.PI_WEB_STATE ?? path.join(REPO, ".scratch/test-state");
 const BASE = process.env.PI_WEB_BASE ?? "http://127.0.0.1:7867";
 const pass = fs.readFileSync(`${STATE}/passphrase.txt`, "utf8").trim();
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -103,7 +104,7 @@ const open = async (tag, userAgent) => {
   check("图文混合：不拦默认行为", r4.prevented === false, `prevented=${r4.prevented}`);
   check("图文混合：图片再加一张", (await badge(page)) === "+4 图", await badge(page));
 
-  await page.screenshot({ path: "F:/pi-web-client/.scratch/shots/paste-desktop.png" });
+  await page.screenshot({ path: path.join(REPO, ".scratch/shots/paste-desktop.png") });
   await ctx.close();
 }
 

@@ -14,8 +14,9 @@ import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { WebSocket } from "ws";
+import { REPO } from "../../tools/paths.mjs";
 
-const ROOT = "F:/pi-web-client";
+const ROOT = REPO;
 const DIST = path.join(ROOT, "bridge", "dist", "index.js");
 const PORT = Number(process.env.ASK_E2E_PORT ?? 7891);
 const STATE = process.env.ASK_E2E_STATE ?? path.join(ROOT, ".scratch", "ask-e2e-state");

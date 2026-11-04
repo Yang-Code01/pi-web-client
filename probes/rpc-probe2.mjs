@@ -2,8 +2,9 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { piCli } from "../tools/pi.mjs";
 
-const CLI = "C:/Users/GG_Bond/AppData/Local/nvm/v23.11.1/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js";
+const CLI = process.env.PI_CLI ?? (await piCli());
 const OUT = path.resolve("probes/out");
 fs.mkdirSync(OUT, { recursive: true });
 const log = (...a) => console.error("##", ...a);

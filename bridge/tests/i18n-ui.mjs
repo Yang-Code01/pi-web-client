@@ -12,16 +12,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { loadPlaywright } from "../../tools/playwright.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const PORT = 7905;
+const PORT = Number(process.env.PI_WEB_PORT ?? 7905);
 const ROOT = path.join(REPO, ".scratch", "i18n-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const SHOTS = path.join(REPO, ".scratch", "i18n-shots");
 const BASE = `http://127.0.0.1:${PORT}`;
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 let failed = false;
@@ -72,7 +72,7 @@ const bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
 bridge.stdout.on("data", () => {});
 bridge.stderr.on("data", (b) => console.error("bridge:", b.toString().trim()));
 
-const { chromium } = await import(pathToFileURL(PW).href);
+const { chromium } = await loadPlaywright();
 let browser;
 try {
   await until(() => fs.existsSync(path.join(STATE, "passphrase.txt")), 20000, "passphrase");

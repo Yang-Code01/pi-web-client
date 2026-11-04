@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
-import WebSocket from "file:///F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs";
+import { wsWrapper } from "../tools/paths.mjs";
+const { default: WebSocket } = await import(pathToFileURL(wsWrapper()).href);
 const BASE = "http://127.0.0.1:7864";
 const STATE = path.join(process.env.LOCALAPPDATA, "pi-web-client");
 const pass = fs.readFileSync(path.join(STATE, "passphrase.txt"), "utf8").trim();

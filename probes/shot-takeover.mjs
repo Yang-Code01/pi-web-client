@@ -2,12 +2,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+import { REPO } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
+const { chromium } = await loadPlaywright();
 const STATE = path.join(process.env.LOCALAPPDATA || "", "pi-web-client");
 const pass = fs.readFileSync(path.join(STATE, "passphrase.txt"), "utf8").trim();
-const OUT = "F:/pi-web-client/.scratch/shots";
+const OUT = path.join(REPO, ".scratch/shots");
 fs.mkdirSync(OUT, { recursive: true });
 const id = process.argv[2];
 

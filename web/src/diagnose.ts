@@ -182,8 +182,10 @@ export function diagnose(input: FailureInput): Diagnosis {
       ...base,
       level: "fail",
       title: tr("网络不通，没连上对方"),
-      cause: tr("连接失败（本机直连 GitHub 是断的，要走 127.0.0.1:18791 代理）"),
-      next: tr("带代理重试：git -c http.https://github.com/.proxy=http://127.0.0.1:18791 push；或先 curl 验证代理在不在"),
+      // D114: 不再断言「本机直连是断的、要走 18791」——那只是作者那台机器的情况，
+      // 在能直连的机器上这句会把人引到一个根本不存在的代理上。
+      cause: tr("连接失败：先确认这台机器能直连对方（curl -I https://github.com）；确实要走代理时，填到 pi 的 httpProxy 设置或 HTTPS_PROXY 环境变量"),
+      next: tr("重试一次；仍然不通就换网络或代理：git -c http.https://github.com/.proxy=<你的代理> push"),
     };
   }
 

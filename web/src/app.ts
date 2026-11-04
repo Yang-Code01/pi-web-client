@@ -1165,7 +1165,13 @@ export class App {
         const op = String(msg.op ?? "");
         if (op === "pkg.list" || op === "mcp.list") break;
         // D113: a fleet of queued buttons finishes one at a time; each one clears its own row.
+        // 没有 reqId 的 done（老桥 / 另一个标签页起的）也要把对应行放开，否则那颗按钮永远停在
+        // 「排队中…」——宁可多放一个，也不要卡死一行。
         if (msg.reqId) this.cliOps.delete(String(msg.reqId));
+        else for (const [id, entry] of this.cliOps) if (entry.op === op) {
+          this.cliOps.delete(id);
+          break;
+        }
         if (this.cliRun && (this.cliRun.runId === msg.runId || !this.cliRun.runId)) {
           this.cliRun.code = typeof msg.code === "number" ? msg.code : null;
           if (msg.error) this.cliRun.error = errText(msg);
@@ -1188,11 +1194,17 @@ export class App {
       }
       case "ext.op": {
         // D113: the file-edit operations (启用 / 停用 / MCP 改版本) report start and end separately.
+        const opName = String(msg.op ?? "");
         if (msg.reqId) {
           if (msg.state === "done") this.cliOps.delete(String(msg.reqId));
           else {
             const mine = this.cliOps.get(String(msg.reqId));
             if (mine) mine.state = "running";
+          }
+        } else if (msg.state === "done") {
+          for (const [id, entry] of this.cliOps) if (entry.op === opName) {
+            this.cliOps.delete(id);
+            break;
           }
         }
         if (msg.state === "done" && msg.error) this.flashSettings(String(msg.error), true);
@@ -6220,68 +6232,12 @@ export class App {
     host.append(el("div", "settings-label", tr("pi 包")));
     const pkgs = el("div", "login-list");
     if (!inv.packages.length) pkgs.append(el("div", "empty", tr("还没有装任何包，去「扩展商店」看看")));
-    for (const p of inv.packages) {
-      const row = el("div", "login-row");
-      const key = `pkg:${p.source}`;
-      const name = el("div", "login-name");
-      name.append(el("span", "", p.name ?? p.source), el("span", "settings-hint", tr(" {p1}{p2}", { p1: p.version ? `v${p.version}` : "", p2: p.pinned && p.origin !== "local" ? tr(" · 固定版本") : "" })));
-      name.title = `${p.source}${p.path ? `\n${p.path}` : ""}`;
-      // While the registries are being asked, an unchanged row is 「检查中」 — not 「最新」, which it
-      // only knows after the answer comes back.
-      const tag = p.update
-        ? tr("可更新到 {p1}", { p1: p.latest ?? "" })
-        : p.origin === "local"
-          ? tr("本地")
-          : p.checkError
-            ? tr("没查到最新版")
-            : p.pinned
-              ? ""
-              : this.extCheckLoading
-                ? tr("检查中…")
-                : tr("最新");
-      row.append(name, el("span", `login-status${p.update ? " warn" : p.origin !== "local" && !p.checkError && !p.pinned && !this.extCheckLoading ? " ok" : ""}`, tr("{p1}{p2}", { p1: p.scope === "project" ? tr("项目 · ") : "", p2: tag })));
-      const acts = el("div", "login-acts");
-      if (p.update) {
-        const label = this.opLabel(key, tr("更新中…"));
-        const up = el("button", "btn primary", label ?? tr("更新")) as HTMLButtonElement;
-        up.disabled = ro || Boolean(label);
-        up.onclick = () => this.piCli({ op: "pkg.update", target: this.pkgRef(p) }, key);
-        acts.append(up);
-      }
-      const armed = this.extArm?.key === key;
-      // While this row's own operation runs, its other buttons wait too — but they keep their own
-      // label (a 卸载 button saying 「更新中…」 would be a lie), and no other row is affected.
-      const rowBusy = ro || Boolean(this.opFor(key));
-      const rm = el("button", `btn ghost${armed ? " danger" : ""}`, armed ? tr("确认卸载？") : tr("卸载")) as HTMLButtonElement;
-      rm.disabled = rowBusy;
-      rm.onclick = () => {
-        if (this.extArmed(key)) this.piCli({ op: "pkg.remove", source: this.pkgRef(p), local: p.scope === "project" }, key);
-        this.paintExtIfOpen();
-      };
-      acts.append(rm);
-      row.append(acts);
-      pkgs.append(row);
-    }
+    for (const p of inv.packages) pkgs.append(this.pkgRow(p, ro));
     host.append(pkgs);
 
     host.append(el("div", "settings-label", tr("扩展（内置 / 单独的文件）")));
     const exts = el("div", "login-list");
-    for (const x of inv.extensions) {
-      const row = el("div", `login-row${x.enabled ? " on" : ""}`);
-      const key = `ext:${x.id}`;
-      const name = el("div", "login-name");
-      name.append(el("span", "", x.label), el("span", "settings-hint", tr(" {p1}{p2}", { p1: x.scope === "builtin" ? tr("内置") : x.scope === "project" ? tr("项目") : tr("全局"), p2: x.how === "listed" ? tr(" · settings 里列出") : x.how === "discovered" ? tr(" · extensions 目录") : "" })));
-      name.title = x.id;
-      row.append(name, el("span", `login-status${x.enabled ? " ok" : ""}`, x.enabled ? tr("启用") : tr("已停用")));
-      const acts = el("div", "login-acts");
-      const label = this.opLabel(key, x.enabled ? tr("停用中…") : tr("启用中…"));
-      const t = el("button", "btn", label ?? (x.enabled ? tr("停用") : tr("启用"))) as HTMLButtonElement;
-      t.disabled = ro || Boolean(label);
-      t.onclick = () => this.extWrite({ type: "ext.toggle", id: x.id, scope: x.scope, how: x.how, enable: !x.enabled, ...(cwd ? { cwd } : {}) }, key);
-      acts.append(t);
-      row.append(acts);
-      exts.append(row);
-    }
+    for (const x of inv.extensions) exts.append(this.extRow(x, ro, cwd));
     host.append(exts);
 
     host.append(el("div", "settings-label", tr("MCP 服务器")));
@@ -6295,79 +6251,148 @@ export class App {
       if (inv.mcpError) mcp.append(el("div", "settings-hint", tr("pi mcp list 出错：{p1}", { p1: inv.mcpError })));
       if (!inv.mcp.length) mcp.append(el("div", "empty", tr("没有配置 MCP 服务器，去「MCP 商店」看看")));
     }
-    for (const m of inv.mcp) {
-      const row = el("div", `login-row${m.state === "connected" ? " on" : ""}`);
-      const key = `mcp:${m.source}:${m.name}`;
-      const name = el("div", "login-name");
-      const v = m.version;
-      name.append(el("span", "", m.name), el("span", "settings-hint", tr(" {p1}{p2}{p3}", { p1: m.scope, p2: v.version ? ` · v${v.version}` : v.identifier ? tr(" · 始终用最新") : "", p3: m.exposure ? ` · ${m.exposure}` : "" })));
-      if (m.transport) name.title = m.transport;
-      const state = !m.enabled ? tr("已停用") : m.state === "connected" ? tr("已连接 · {p1} 个工具", { p1: m.tools.length }) : (m.state ?? tr("未知"));
-      row.append(name, el("span", `login-status${v.update ? " warn" : m.state === "connected" ? " ok" : ""}`, v.update ? tr("可更新到 {p1} · {p2}", { p1: v.latest ?? "", p2: state }) : state));
-      const acts = el("div", "login-acts");
-      if (m.error) acts.append(el("span", "settings-hint", m.error.slice(0, 200)));
-      if (m.tools.length) {
-        const tools = el("details", "ext-tools");
-        tools.append(el("summary", "", tr("工具（{p1}）", { p1: m.tools.length })), el("div", "settings-hint", m.tools.join(" · ")));
-        acts.append(tools);
-      }
-      if (v.update && v.latest) {
-        const label = this.opLabel(key, tr("更新中…"));
-        const up = el("button", "btn primary", label ?? tr("更新")) as HTMLButtonElement;
-        up.disabled = ro || Boolean(label);
-        up.onclick = () => this.extWrite({ type: "mcp.bump", file: m.source, name: m.name, version: v.latest }, key);
-        acts.append(up);
-      }
-      const t = el("button", "btn", m.enabled ? tr("停用") : tr("启用")) as HTMLButtonElement;
-      t.disabled = ro || Boolean(this.opFor(key));
-      t.onclick = () => this.extWrite({ type: "mcp.toggle", file: m.source, name: m.name, enable: !m.enabled }, key);
-      const login = el("button", "btn ghost", tr("OAuth 登录")) as HTMLButtonElement;
-      login.title = tr("pi mcp login：在这台电脑上打开浏览器完成授权");
-      login.disabled = ro || Boolean(this.opFor(key));
-      login.onclick = () => this.piCli({ op: "mcp.login", name: m.name }, key);
-      const armed = this.extArm?.key === key;
-      const rm = el("button", `btn ghost${armed ? " danger" : ""}`, armed ? tr("确认删除？") : tr("删除")) as HTMLButtonElement;
-      rm.disabled = ro || Boolean(this.opFor(key));
-      rm.onclick = () => {
-        if (this.extArmed(key)) this.piCli({ op: "mcp.remove", name: m.name, local: m.scope === "project" }, key);
-        this.paintExtIfOpen();
-      };
-      acts.append(t, login, rm);
-      row.append(acts);
-      mcp.append(row);
-    }
+    for (const m of inv.mcp) mcp.append(this.mcpRow(m, ro));
     host.append(mcp);
 
-    // install by source (git / local paths the store does not have)
-    const more = el("details", "ns-advanced");
-    more.append(el("summary", "", tr("按来源安装包 / 手动添加 MCP 服务器")));
-    const grid = el("div", "ns-adv-grid");
-    const src = el("input", "ns-input mono") as HTMLInputElement;
-    src.placeholder = "npm:@scope/pkg · git:github.com/user/repo · ./local/path";
-    const go = el("button", "btn", tr("安装包")) as HTMLButtonElement;
-    go.disabled = ro;
-    go.onclick = () => {
-      if (src.value.trim()) this.piCli({ op: "pkg.install", source: src.value.trim(), local: this.extScope === "project" }, `install:${src.value.trim()}`);
+    this.paintExtAddBySource(host, ro);
+  }
+
+  /** One pkg row: name, status, and the buttons that only wait for this row. */
+  private pkgRow(p: ExtPackage, ro: boolean): HTMLElement {
+    const row = el("div", "login-row");
+    const key = `pkg:${p.source}`;
+    const name = el("div", "login-name");
+    name.append(el("span", "", p.name ?? p.source), el("span", "settings-hint", tr(" {p1}{p2}", { p1: p.version ? `v${p.version}` : "", p2: p.pinned && p.origin !== "local" ? tr(" · 固定版本") : "" })));
+    name.title = `${p.source}${p.path ? `\n${p.path}` : ""}`;
+    // While the registries are being asked, an unchanged row is 「检查中」 — not 「最新」, which it
+    // only knows after the answer comes back.
+    const tag = p.update
+      ? tr("可更新到 {p1}", { p1: p.latest ?? "" })
+      : p.origin === "local"
+        ? tr("本地")
+        : p.checkError
+          ? tr("没查到最新版")
+          : p.pinned
+            ? ""
+            : this.extCheckLoading
+              ? tr("检查中…")
+              : tr("最新");
+    row.append(name, el("span", `login-status${p.update ? " warn" : p.origin !== "local" && !p.checkError && !p.pinned && !this.extCheckLoading ? " ok" : ""}`, tr("{p1}{p2}", { p1: p.scope === "project" ? tr("项目 · ") : "", p2: tag })));
+    const acts = el("div", "login-acts");
+    if (p.update) {
+      const label = this.opLabel(key, tr("更新中…"));
+      const up = el("button", "btn primary", label ?? tr("更新")) as HTMLButtonElement;
+      up.disabled = ro || Boolean(label);
+      up.onclick = () => this.piCli({ op: "pkg.update", target: this.pkgRef(p) }, key);
+      acts.append(up);
+    }
+    const armed = this.extArm?.key === key;
+    // While this row's own operation runs, its other buttons wait too — but they keep their own
+    // label (a 卸载 button saying 「更新中…」 would be a lie), and no other row is affected.
+    const rowBusy = ro || Boolean(this.opFor(key));
+    const rm = el("button", `btn ghost${armed ? " danger" : ""}`, armed ? tr("确认卸载？") : tr("卸载")) as HTMLButtonElement;
+    rm.disabled = rowBusy;
+    rm.onclick = () => {
+      if (this.extArmed(key)) this.piCli({ op: "pkg.remove", source: this.pkgRef(p), local: p.scope === "project" }, key);
+      this.paintExtIfOpen();
     };
-    const r1 = el("div", "info-compact");
-    r1.append(src, go);
-    grid.append(r1);
-    const mName = el("input", "ns-input mono") as HTMLInputElement;
-    mName.placeholder = tr("MCP 服务名，例如 github");
-    const mUrl = el("input", "ns-input mono") as HTMLInputElement;
-    mUrl.placeholder = tr("HTTP 服务器 URL（stdio 服务器留空，填下面的命令）");
-    const mCmd = el("input", "ns-input mono") as HTMLInputElement;
-    mCmd.placeholder = tr("启动命令 + 参数（空格分隔），例如 npx -y @modelcontextprotocol/server-everything");
-    const mGo = el("button", "btn", tr("添加 MCP")) as HTMLButtonElement;
-    mGo.disabled = ro;
-    mGo.onclick = () => {
-      const parts = mCmd.value.trim().split(/\s+/).filter(Boolean);
-      const name = mName.value.trim();
-      this.piCli({ op: "mcp.add", name, url: mUrl.value.trim() || undefined, command: parts[0], args: parts.slice(1), local: this.extScope === "project" }, `mcpadd:${name}`);
+    acts.append(rm);
+    row.append(acts);
+    return row;
+  }
+
+  /** One ext row: name, status, and the buttons that only wait for this row. */
+  private extRow(x: ExtLoose, ro: boolean, cwd: string | undefined): HTMLElement {
+    const row = el("div", `login-row${x.enabled ? " on" : ""}`);
+    const key = `ext:${x.id}`;
+    const name = el("div", "login-name");
+    name.append(el("span", "", x.label), el("span", "settings-hint", tr(" {p1}{p2}", { p1: x.scope === "builtin" ? tr("内置") : x.scope === "project" ? tr("项目") : tr("全局"), p2: x.how === "listed" ? tr(" · settings 里列出") : x.how === "discovered" ? tr(" · extensions 目录") : "" })));
+    name.title = x.id;
+    row.append(name, el("span", `login-status${x.enabled ? " ok" : ""}`, x.enabled ? tr("启用") : tr("已停用")));
+    const acts = el("div", "login-acts");
+    const label = this.opLabel(key, x.enabled ? tr("停用中…") : tr("启用中…"));
+    const t = el("button", "btn", label ?? (x.enabled ? tr("停用") : tr("启用"))) as HTMLButtonElement;
+    t.disabled = ro || Boolean(label);
+    t.onclick = () => this.extWrite({ type: "ext.toggle", id: x.id, scope: x.scope, how: x.how, enable: !x.enabled, ...(cwd ? { cwd } : {}) }, key);
+    acts.append(t);
+    row.append(acts);
+    return row;
+  }
+
+  /** One mcp row: name, status, and the buttons that only wait for this row. */
+  private mcpRow(m: ExtMcp, ro: boolean): HTMLElement {
+    const row = el("div", `login-row${m.state === "connected" ? " on" : ""}`);
+    const key = `mcp:${m.source}:${m.name}`;
+    const name = el("div", "login-name");
+    const v = m.version;
+    name.append(el("span", "", m.name), el("span", "settings-hint", tr(" {p1}{p2}{p3}", { p1: m.scope, p2: v.version ? ` · v${v.version}` : v.identifier ? tr(" · 始终用最新") : "", p3: m.exposure ? ` · ${m.exposure}` : "" })));
+    if (m.transport) name.title = m.transport;
+    const state = !m.enabled ? tr("已停用") : m.state === "connected" ? tr("已连接 · {p1} 个工具", { p1: m.tools.length }) : (m.state ?? tr("未知"));
+    row.append(name, el("span", `login-status${v.update ? " warn" : m.state === "connected" ? " ok" : ""}`, v.update ? tr("可更新到 {p1} · {p2}", { p1: v.latest ?? "", p2: state }) : state));
+    const acts = el("div", "login-acts");
+    if (m.error) acts.append(el("span", "settings-hint", m.error.slice(0, 200)));
+    if (m.tools.length) {
+      const tools = el("details", "ext-tools");
+      tools.append(el("summary", "", tr("工具（{p1}）", { p1: m.tools.length })), el("div", "settings-hint", m.tools.join(" · ")));
+      acts.append(tools);
+    }
+    if (v.update && v.latest) {
+      const label = this.opLabel(key, tr("更新中…"));
+      const up = el("button", "btn primary", label ?? tr("更新")) as HTMLButtonElement;
+      up.disabled = ro || Boolean(label);
+      up.onclick = () => this.extWrite({ type: "mcp.bump", file: m.source, name: m.name, version: v.latest }, key);
+      acts.append(up);
+    }
+    const t = el("button", "btn", m.enabled ? tr("停用") : tr("启用")) as HTMLButtonElement;
+    t.disabled = ro || Boolean(this.opFor(key));
+    t.onclick = () => this.extWrite({ type: "mcp.toggle", file: m.source, name: m.name, enable: !m.enabled }, key);
+    const login = el("button", "btn ghost", tr("OAuth 登录")) as HTMLButtonElement;
+    login.title = tr("pi mcp login：在这台电脑上打开浏览器完成授权");
+    login.disabled = ro || Boolean(this.opFor(key));
+    login.onclick = () => this.piCli({ op: "mcp.login", name: m.name }, key);
+    const armed = this.extArm?.key === key;
+    const rm = el("button", `btn ghost${armed ? " danger" : ""}`, armed ? tr("确认删除？") : tr("删除")) as HTMLButtonElement;
+    rm.disabled = ro || Boolean(this.opFor(key));
+    rm.onclick = () => {
+      if (this.extArmed(key)) this.piCli({ op: "mcp.remove", name: m.name, local: m.scope === "project" }, key);
+      this.paintExtIfOpen();
     };
-    grid.append(mName, mUrl, mCmd, mGo);
-    more.append(grid);
-    host.append(more);
+    acts.append(t, login, rm);
+    row.append(acts);
+    return row;
+  }
+
+  /** 按来源安装 / 手动添加：商店里没有的 git、本地路径、手写 MCP 命令。 */
+  private paintExtAddBySource(host: HTMLElement, ro: boolean): void {
+  const more = el("details", "ns-advanced");
+  more.append(el("summary", "", tr("按来源安装包 / 手动添加 MCP 服务器")));
+  const grid = el("div", "ns-adv-grid");
+  const src = el("input", "ns-input mono") as HTMLInputElement;
+  src.placeholder = "npm:@scope/pkg · git:github.com/user/repo · ./local/path";
+  const go = el("button", "btn", tr("安装包")) as HTMLButtonElement;
+  go.disabled = ro;
+  go.onclick = () => {
+    if (src.value.trim()) this.piCli({ op: "pkg.install", source: src.value.trim(), local: this.extScope === "project" }, `install:${src.value.trim()}`);
+  };
+  const r1 = el("div", "info-compact");
+  r1.append(src, go);
+  grid.append(r1);
+  const mName = el("input", "ns-input mono") as HTMLInputElement;
+  mName.placeholder = tr("MCP 服务名，例如 github");
+  const mUrl = el("input", "ns-input mono") as HTMLInputElement;
+  mUrl.placeholder = tr("HTTP 服务器 URL（stdio 服务器留空，填下面的命令）");
+  const mCmd = el("input", "ns-input mono") as HTMLInputElement;
+  mCmd.placeholder = tr("启动命令 + 参数（空格分隔），例如 npx -y @modelcontextprotocol/server-everything");
+  const mGo = el("button", "btn", tr("添加 MCP")) as HTMLButtonElement;
+  mGo.disabled = ro;
+  mGo.onclick = () => {
+    const parts = mCmd.value.trim().split(/\s+/).filter(Boolean);
+    const name = mName.value.trim();
+    this.piCli({ op: "mcp.add", name, url: mUrl.value.trim() || undefined, command: parts[0], args: parts.slice(1), local: this.extScope === "project" }, `mcpadd:${name}`);
+  };
+  grid.append(mName, mUrl, mCmd, mGo);
+  more.append(grid);
+  host.append(more);
   }
 
   /** A local package is stored relative to its settings file: hand pi the resolved path. */

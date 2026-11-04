@@ -16,15 +16,15 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const wsMod = await import(pathToFileURL("F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs").href);
+const { chromium } = await loadPlaywright();
+const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
 
-const PORT = 7901;
-const DIST = "F:/pi-web-client/web/dist";
-const OUT = "F:/pi-web-client/.scratch/round8-menu/shots";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7901);
+const OUT = path.join(REPO, ".scratch/round8-menu/shots");
 const BASE = `http://127.0.0.1:${PORT}`;
 fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
@@ -48,7 +48,7 @@ const until = async (fn, ms, what) => {
 };
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
-const SESSION = { id: "probe-sess", name: "脚本探针", cwd: "F:/pi-web-client/.scratch/round8-fs", file: null, owned: false, origin: "disk", running: true, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "问两个问题" };
+const SESSION = { id: "probe-sess", name: "脚本探针", cwd: path.join(REPO, ".scratch/round8-fs"), file: null, owned: false, origin: "disk", running: true, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "问两个问题" };
 const ASK = {
   id: "ask_probe1",
   sessionId: SESSION.id,
@@ -75,7 +75,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/api/dirs") {
     const dir = url.searchParams.get("path") ?? "";
     res.writeHead(200, { "content-type": "application/json" });
-    return res.end(JSON.stringify({ path: dir || "F:/pi-web-client/.scratch/round8-fs", parent: null, dirs: [], files: ["hello.ps1", "readme.txt"] }));
+    return res.end(JSON.stringify({ path: dir || path.join(REPO, ".scratch/round8-fs"), parent: null, dirs: [], files: ["hello.ps1", "readme.txt"] }));
   }
   if (url.pathname === "/api/me") {
     res.writeHead(200, { "content-type": "application/json" });

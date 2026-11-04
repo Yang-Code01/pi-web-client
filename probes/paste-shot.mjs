@@ -1,13 +1,14 @@
 /** 粘图后的样子：桌面与手机各截一张（真 Chromium，真 paste 事件）。 */
+import path from "node:path";
 import fs from "node:fs";
-import { pathToFileURL } from "node:url";
+import { REPO } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+const { chromium } = await loadPlaywright();
 
-const STATE = "F:/pi-web-client/.scratch/test-state";
+const STATE = path.join(REPO, ".scratch/test-state");
 const BASE = process.env.PI_WEB_BASE ?? "http://127.0.0.1:7867";
-const OUT = "F:/pi-web-client/.scratch/shots";
+const OUT = path.join(REPO, ".scratch/shots");
 fs.mkdirSync(OUT, { recursive: true });
 const pass = fs.readFileSync(`${STATE}/passphrase.txt`, "utf8").trim();
 

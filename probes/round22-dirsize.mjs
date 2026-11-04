@@ -13,15 +13,15 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const wsMod = await import(pathToFileURL("F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs").href);
+const { chromium } = await loadPlaywright();
+const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
 
-const PORT = 7916;
-const DIST = "F:/pi-web-client/web/dist";
-const OUT = "F:/pi-web-client/.scratch/round22-dirsize/shots";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7916);
+const OUT = path.join(REPO, ".scratch/round22-dirsize/shots");
 const BASE = `http://127.0.0.1:${PORT}`;
 fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
@@ -44,8 +44,8 @@ const until = async (fn, ms, what) => {
   throw new Error(`timeout waiting for ${what}`);
 };
 
-const CWD = "F:\\probe-work\\exam";
-const SRC = "F:\\probe-work\\exam\\src";
+const CWD = path.join(REPO, ".scratch/probe-work/exam");
+const SRC = path.join(REPO, ".scratch/probe-work/exam/src");
 const LONG = "一个很长很长很长的中文文件名示例用来测试截断行为.ts";
 const FILES = ["index.ts", "sessions.ts", "installer.exe", LONG];
 const GB = 1024 ** 3;
@@ -82,7 +82,7 @@ const items = [
   { id: "a0", kind: "assistant", text: ANSWER, thinking: "", model: "probe", ts: new Date().toISOString() },
 ];
 const A = {
-  id: "probe-a", name: "会话 A", cwd: "F:/probe-work/exam", file: null, owned: true, origin: "web", running: false, done: false,
+  id: "probe-a", name: "会话 A", cwd: path.join(REPO, ".scratch/probe-work/exam"), file: null, owned: true, origin: "web", running: false, done: false,
   updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "", items,
 };
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
@@ -115,7 +115,7 @@ const server = http.createServer(async (req, res) => {
       return json(200, { files: [] });
     }
     if (!dir) return json(200, { path: "", parent: null, dirs: VOLUMES.map((v) => v.root), files: [], volumes: VOLUMES });
-    if (dir === CWD) return json(200, { path: CWD, parent: "F:\\probe-work", dirs: ["src"], files: FILES });
+    if (dir === CWD) return json(200, { path: CWD, parent: path.join(REPO, ".scratch/probe-work"), dirs: ["src"], files: FILES });
     if (dir === SRC) return json(200, { path: SRC, parent: CWD, dirs: [], files: ["app.ts"] });
     if (dir === "D:\\") return json(200, { path: "D:\\", parent: "", dirs: [], files: [] });
     return json(200, { path: dir, parent: "", dirs: [], files: [], error: "" });

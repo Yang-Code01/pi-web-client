@@ -57,8 +57,11 @@ curl -s -m 3 http://127.0.0.1:<peer>/status                             # 期望
 按 AGENTS.md：产物能开就直接开。用 `question` 问「要现在打开吗」，选打开就按平台来：
 
 ```bash
-# Windows（本机实测过）
-powershell -NoProfile -Command "Start-Process 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' -ArgumentList '--new-window','http://127.0.0.1:<bridge>/'"
+# Windows（本机实测过）。msedge 由 App Paths 解析，不要写死 Program Files (x86)：
+# 64 位 Edge 在 Program Files 下，硬编码会白跑一次。
+powershell -NoProfile -Command "Start-Process msedge -ArgumentList '--new-window','http://127.0.0.1:<bridge>/'"
+# 没装 Edge 时交回默认浏览器：
+#   powershell -NoProfile -Command "Start-Process 'http://127.0.0.1:<bridge>/'"
 
 # macOS（未实测）
 open -n -a "Microsoft Edge" "http://127.0.0.1:<bridge>/"

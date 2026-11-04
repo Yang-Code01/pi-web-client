@@ -10,13 +10,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync, spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { REPO } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+const { chromium } = await loadPlaywright();
 
-const PORT = 7881;
-const ROOT = "F:/pi-web-client/.scratch/fs-ui";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7881);
+const ROOT = path.join(REPO, ".scratch/fs-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const SESSIONS = path.join(AGENT, "sessions");
@@ -75,7 +75,7 @@ function killPort(port) {
 killPort(PORT);
 
 const bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
-  cwd: "F:/pi-web-client",
+  cwd: REPO,
   env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_STATE: STATE, PI_WEB_TUNNEL: "0", PI_AGENT_DIR: AGENT },
   stdio: ["ignore", "pipe", "pipe"],
 });

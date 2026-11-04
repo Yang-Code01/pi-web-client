@@ -6,7 +6,7 @@ pi 的网页客户端：`bridge/`（Node，WS 桥 + RPC 子进程 + 隧道）与
 
 ### Issue tracker
 
-Issues and specs live as GitHub issues in `Yang-Code01/pi-web-client`, driven with the `gh` CLI (every command needs `HTTPS_PROXY=http://127.0.0.1:18791`). See `docs/agents/issue-tracker.md`.
+Issues and specs live as GitHub issues in `Yang-Code01/pi-web-client`, driven with the `gh` CLI. 先直连（多数机器直连可用）；只有直连失败才加 `HTTPS_PROXY=http://127.0.0.1:18791`。push / `gh pr create` 报 403 时**先查账号**：`gh auth status` 里的 active 账号可能不是仓库主人（git 用 active 那个），不是网络问题。See `docs/agents/issue-tracker.md`.
 
 ### 界面文案（i18n）
 

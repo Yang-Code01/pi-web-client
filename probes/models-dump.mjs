@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-const CLI = "C:/Users/GG_Bond/AppData/Local/nvm/v23.11.1/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js";
+import { piCli } from "../tools/pi.mjs";
+const CLI = process.env.PI_CLI ?? (await piCli());
 const child = spawn(process.execPath, [CLI, "--mode", "rpc"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 let buf = "";
 child.stdout.on("data", (d) => {

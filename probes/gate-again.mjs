@@ -1,9 +1,12 @@
 /** Does the approval gate fire with and without -ne? Prints raw RPC lines. */
+import path from "node:path";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
+import { REPO } from "../tools/paths.mjs";
+import { piCli } from "../tools/pi.mjs";
 
-const CLI = "C:/Users/GG_Bond/AppData/Local/nvm/v23.11.1/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js";
-const GATE = "F:/pi-web-client/bridge/ext/approval-gate.ts";
+const CLI = process.env.PI_CLI ?? (await piCli());
+const GATE = path.join(REPO, "bridge/ext/approval-gate.ts");
 const mode = process.argv[2] ?? "with-ne";
 const withNe = mode === "with-ne";
 
@@ -13,9 +16,9 @@ args.push("-e", GATE);
 args.push("--session-id", crypto.randomUUID());
 
 const child = spawn(process.execPath, [CLI, ...args], {
-  cwd: "F:/pi-web-client",
+  cwd: REPO,
   stdio: ["pipe", "pipe", "pipe"],
-  env: { ...process.env, PI_WEB_ALLOW_FILE: "F:/pi-web-client/.scratch/allow-test.json" },
+  env: { ...process.env, PI_WEB_ALLOW_FILE: path.join(REPO, ".scratch/allow-test.json") },
 });
 child.stderr.on("data", (d) => console.log("[stderr]", d.toString().trim().slice(0, 300)));
 
@@ -57,7 +60,7 @@ child.stdin.write(
   JSON.stringify({
     type: "prompt",
     id: "p1",
-    message: process.argv[3] ?? "用 bash 工具执行：rm -rf F:/pi-web-client/.scratch/gate-probe-nonexistent",
+    message: process.argv[3] ?? `用 bash 工具执行：rm -rf ${REPO}/.scratch/gate-probe-nonexistent`,
   }) + "\n",
 );
 setTimeout(() => {

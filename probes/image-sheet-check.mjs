@@ -2,21 +2,21 @@
  * 待发图片弹窗的浏览器验证：点「+N 图」看缩略图、单张 × 删掉、全部清空。
  * 真 Chromium + 真 paste 事件；三张图用不同颜色生成，删掉哪张靠采样像素确认。
  *
- * 需要：隔离桥在 7867（PI_WEB_STATE=F:/pi-web-client/.scratch/test-state）
+ * 需要：隔离桥在 7867（PI_WEB_STATE=<repo>/.scratch/test-state）
  * 跑：node probes/image-sheet-check.mjs
  */
+import path from "node:path";
 import fs from "node:fs";
-import { pathToFileURL } from "node:url";
+import { REPO } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+const { chromium } = await loadPlaywright();
 
-const STATE = process.env.PI_WEB_STATE ?? "F:/pi-web-client/.scratch/test-state";
+const STATE = process.env.PI_WEB_STATE ?? path.join(REPO, ".scratch/test-state");
 const BASE = process.env.PI_WEB_BASE ?? "http://127.0.0.1:7867";
-const OUT = "F:/pi-web-client/.scratch/shots";
+const OUT = path.join(REPO, ".scratch/shots");
 fs.mkdirSync(OUT, { recursive: true });
 const pass = fs.readFileSync(`${STATE}/passphrase.txt`, "utf8").trim();
-const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
 let failures = 0;
 const check = (name, ok, detail = "") => {

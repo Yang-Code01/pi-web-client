@@ -11,15 +11,15 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const wsMod = await import(pathToFileURL("F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs").href);
+const { chromium } = await loadPlaywright();
+const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
 
-const PORT = 7910;
-const DIST = "F:/pi-web-client/web/dist";
-const OUT = "F:/pi-web-client/.scratch/round16-pin/shots";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7910);
+const OUT = path.join(REPO, ".scratch/round16-pin/shots");
 const BASE = `http://127.0.0.1:${PORT}`;
 fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
@@ -44,8 +44,8 @@ const until = async (fn, ms, what) => {
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
 const base = (id, name, cwd, extra = {}) => ({ id, name, cwd, file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "", ...extra });
-const A = base("probe-a", "一置顶着的会话", "F:/pi-web-client");
-const NEW = base("probe-new", "", "F:/pi-web-client/sub", { preview: "刚建的" });
+const A = base("probe-a", "一置顶着的会话", REPO);
+const NEW = base("probe-new", "", path.join(REPO, "sub"), { preview: "刚建的" });
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "probe", pi: "probe", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "probe" };
 
@@ -143,7 +143,7 @@ try {
   // The sheet's 浏览 pane lists the start directory on mount and writes the result back into the
   // field — let that settle before typing, or the listing overwrites the typed path.
   await sleep(700);
-  await page.locator(".sheet.new-sheet .ns-row .ns-input.mono").first().fill("F:/pi-web-client");
+  await page.locator(".sheet.new-sheet .ns-row .ns-input.mono").first().fill(REPO);
   await page.locator(".sheet.new-sheet .dir-foot .btn.primary").click();
   await until(async () => creates.length >= 1, 5000, "create frame");
   assert(!("pin" in creates[0]), `the sidebar button does not pin (got ${JSON.stringify(creates[0])})`);
@@ -184,13 +184,13 @@ try {
   await page.locator(".pin-strip .pin-new").click();
   await until(async () => page.locator(".sheet.new-sheet").isVisible(), 5000, "new-session sheet from ＋");
   await sleep(700);
-  await page.locator(".sheet.new-sheet .ns-row .ns-input.mono").first().fill("F:/pi-web-client/sub");
+  await page.locator(".sheet.new-sheet .ns-row .ns-input.mono").first().fill(path.join(REPO, "sub"));
   await page.locator(".sheet.new-sheet .dir-foot .btn.primary").click();
   await until(async () => creates.length >= 2, 5000, "create frame from ＋");
   const second = creates[1];
   log("strip create:", JSON.stringify({ cwd: second.cwd, pin: second.pin }));
   assert(second.pin === true, `the strip's ＋ asks for a pin (got ${JSON.stringify(second.pin)})`);
-  assert(second.cwd === "F:/pi-web-client/sub", `the cwd is the one typed (got ${JSON.stringify(second.cwd)})`);
+  assert(second.cwd === path.join(REPO, "sub"), `the cwd is the one typed (got ${JSON.stringify(second.cwd)})`);
 
   // 5) The bridge echoes the arrangement → the new session sits at the end of the strip, next to ＋.
   await until(async () => (await page.locator(".pin-strip .pin-open").count()) === 1, 5000, "the new chip arrives");

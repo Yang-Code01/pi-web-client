@@ -15,15 +15,15 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const wsMod = await import(pathToFileURL("F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs").href);
+const { chromium } = await loadPlaywright();
+const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
 
-const PORT = 7918;
-const DIST = "F:/pi-web-client/web/dist";
-const OUT = "F:/pi-web-client/.scratch/round24-pinactions/shots";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7918);
+const OUT = path.join(REPO, ".scratch/round24-pinactions/shots");
 const BASE = `http://127.0.0.1:${PORT}`;
 fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
@@ -56,7 +56,7 @@ const items = (n) => {
   return out;
 };
 
-const CWD = "F:/probe-work/alpha";
+const CWD = path.join(REPO, ".scratch/probe-work/alpha");
 const base = (id, name, n) => ({
   id, name, cwd: CWD, file: null, owned: true, origin: "web", running: false, done: false,
   updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "", items: items(n),
@@ -160,7 +160,7 @@ const count = (page, sel) => page.evaluate((s) => document.querySelectorAll(s).l
 const chipAt = (page, i) => page.locator(`.pin-chip:not(.pin-new):not(.pin-expand)`).nth(i);
 
 const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1, locale: "zh-CN" });
 page.on("pageerror", (e) => log("PAGEERROR", e.message));
 page.on("console", (m) => {
   if (m.type() === "error") log("CONSOLE", m.text());

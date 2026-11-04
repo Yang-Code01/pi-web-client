@@ -11,14 +11,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
+import { REPO } from "../../tools/paths.mjs";
 
-const PORT = 7876;
-const ROOT = "F:/pi-web-client/.scratch/manage-check";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7876);
+const ROOT = path.join(REPO, ".scratch/manage-check");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const SESSIONS = path.join(AGENT, "sessions");
 const BASE = `http://127.0.0.1:${PORT}`;
-const CWD = "F:/pi-web-client";
+const CWD = REPO;
 
 fs.rmSync(ROOT, { recursive: true, force: true });
 fs.mkdirSync(STATE, { recursive: true });
@@ -58,7 +59,7 @@ let bridge = null;
 const bridgeOut = [];
 function startBridge() {
   bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
-    cwd: "F:/pi-web-client",
+    cwd: REPO,
     env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_STATE: STATE, PI_WEB_TUNNEL: "0", PI_AGENT_DIR: AGENT },
     stdio: ["ignore", "pipe", "pipe"],
   });

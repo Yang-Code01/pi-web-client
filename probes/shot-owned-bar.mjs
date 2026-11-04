@@ -2,14 +2,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import WebSocket from "file:///F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs";
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
+import { REPO, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
+const { default: WebSocket } = await import(pathToFileURL(wsWrapper()).href);
+const { chromium } = await loadPlaywright();
 
-const PORT = 7867;
+const PORT = Number(process.env.PI_WEB_PORT ?? 7867);
 const BASE = `http://127.0.0.1:${PORT}`;
-const STATE = "F:/pi-web-client/.scratch/test-state";
-const OUT = "F:/pi-web-client/.scratch/shots";
+const STATE = path.join(REPO, ".scratch/test-state");
+const OUT = path.join(REPO, ".scratch/shots");
 const pass = fs.readFileSync(path.join(STATE, "passphrase.txt"), "utf8").trim();
 
 const login = await fetch(`${BASE}/api/login`, {
@@ -25,7 +26,7 @@ ws.on("message", (buf) => {
   if (msg.type === "session") waiters.get("session")?.(msg.sessionId);
 });
 await new Promise((r) => ws.on("open", r));
-ws.send(JSON.stringify({ type: "create", cwd: "F:/pi-web-client", name: "网页新建的会话" }));
+ws.send(JSON.stringify({ type: "create", cwd: REPO, name: "网页新建的会话" }));
 const webId = await new Promise((resolve, reject) => {
   waiters.set("session", resolve);
   setTimeout(() => reject(new Error("create timeout")), 15000);

@@ -1,12 +1,12 @@
+import path from "node:path";
 import fs from "node:fs";
-import { pathToFileURL } from "node:url";
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const STATE = "F:/pi-web-client/.scratch/test-state";
+import { REPO } from "../../tools/paths.mjs";
+import { loadPlaywright } from "../../tools/playwright.mjs";
+const { chromium } = await loadPlaywright();
+const STATE = path.join(REPO, ".scratch/test-state");
 const BASE = "http://127.0.0.1:7867";
 const pass = fs.readFileSync(`${STATE}/passphrase.txt`, "utf8").trim();
-const login = await fetch(`${BASE}/api/login`, {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({passphrase:pass})});
-const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
+// 登录由页面自己的口令框完成；这里不再预先发一次没人接的 /api/login。
 const sid = process.argv[2];
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport:{width:390,height:844}, locale: "zh-CN" });

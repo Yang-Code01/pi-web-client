@@ -11,15 +11,15 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const PW = "C:/Users/GG_Bond/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs";
-const { chromium } = await import(pathToFileURL(PW).href);
-const wsMod = await import(pathToFileURL("F:/pi-web-client/bridge/node_modules/ws/wrapper.mjs").href);
+const { chromium } = await loadPlaywright();
+const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
 
-const PORT = 7913;
-const DIST = "F:/pi-web-client/web/dist";
-const OUT = "F:/pi-web-client/.scratch/round19-default-cwd/shots";
+const PORT = Number(process.env.PI_WEB_PORT ?? 7913);
+const OUT = path.join(REPO, ".scratch/round19-default-cwd/shots");
 const BASE = `http://127.0.0.1:${PORT}`;
 fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
@@ -44,9 +44,9 @@ const until = async (fn, ms, what) => {
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json", ".webmanifest": "application/manifest+json" };
 const base = (id, name, cwd, extra = {}) => ({ id, name, cwd, file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "", ...extra });
-const A = base("probe-a", "A 会话", "F:/probe-work/alpha", { updatedAt: Date.now() - 120000 });
-const B = base("probe-b", "B 会话", "F:/probe-work/beta", { updatedAt: Date.now() - 60000 });
-const STALE = "F:/probe-work/stale-last-created";
+const A = base("probe-a", "A 会话", path.join(REPO, ".scratch/probe-work/alpha"), { updatedAt: Date.now() - 120000 });
+const B = base("probe-b", "B 会话", path.join(REPO, ".scratch/probe-work/beta"), { updatedAt: Date.now() - 60000 });
+const STALE = path.join(REPO, ".scratch/probe-work/stale-last-created");
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "probe", pi: "probe", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "probe" };
 const manage = { pin: [], order: [], archived: [] };
