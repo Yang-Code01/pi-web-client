@@ -64,6 +64,8 @@ export const ja: Dict = {
   "bridge.err.tunnel_lost": "トンネルが切れました（530）。新しいアドレスに切り替えています。",
   "bridge.err.dirs_missing": "ディレクトリが存在しません。",
   "bridge.err.dirs_unreadable": "このディレクトリを読めませんでした。",
+  "bridge.err.approval_expired": "「{p1}」の承認は、誰も画面を見ていないまま期限切れになりました。そのツール呼び出しは破棄済みです。必要ならもう一度送ってください。",
+  "bridge.err.ask_expired": "質問は、誰も画面を見ていないまま期限切れになりました。その質問は破棄済みです。",
   "\r\n[进程已退出，exit {p1}]\r\n": "\r\n[プロセスが終了しました。exit {p1}]\r\n",
   " · {p1} 失败": " · {p1} 件失敗",
   " · 占 {p1}": " · {p1} 使用",

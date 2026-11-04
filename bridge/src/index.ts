@@ -25,6 +25,7 @@ import { Terminals, openConsole, revealInFileManager } from "./terminal.ts";
 import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { Notifier } from "./notify.ts";
+import { anyPresent, dropClient, reportPresence } from "./presence.ts";
 import { Tunnel, findCloudflared } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
 import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, statePath, sessionsRootInfo } from "./paths.ts";
@@ -790,10 +791,7 @@ async function main(): Promise<void> {
     if (uiLang === "ja") return kind === "approval" ? `承認が必要です · ${name}` : `回答が必要です${count > 1 ? `（${count} 問）` : ""} · ${name}`;
     return kind === "approval" ? `需要你批准 · ${name}` : `需要你回答${count > 1 ? `（${count} 题）` : ""} · ${name}`;
   };
-  const shouldNotify = (): boolean => {
-    if (!notifier.enabled) return false;
-    return ![...wss.clients].some((c) => c.readyState === WebSocket.OPEN && (c as any).present === true);
-  };
+  const shouldNotify = (): boolean => notifier.enabled && !anyPresent();
   sessions.on("approval", (approval) => {
     if (!shouldNotify()) return;
     const session = sessions.get(approval.sessionId);
@@ -851,6 +849,7 @@ async function main(): Promise<void> {
 
     // A login waiting on this page's answers (or an OAuth callback server) must not outlive it.
     ws.on("close", () => {
+      dropClient(ws);
       for (const id of ((ws as any).logins ?? []) as string[]) cancelLogin(id);
     });
 
@@ -864,7 +863,7 @@ async function main(): Promise<void> {
       try {
         switch (msg.type) {
           case "presence": {
-            (ws as any).present = msg.active === true;
+            reportPresence(ws, msg.active === true);
             return;
           }
           case "lang": {

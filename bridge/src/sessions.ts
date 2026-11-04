@@ -14,6 +14,7 @@ import { Manage } from "./manage.ts";
 import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
 import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
 import { lifecycle, gcTickMs, type Lifecycle } from "./lifecycle.ts";
+import { absentFor } from "./presence.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -27,6 +28,12 @@ export interface ApprovalRequest {
   message: string;
   createdAt: number;
   deadline?: number;
+}
+
+/** What an approval was about, short enough to name it in a notice: the command it asked for. */
+function summarizeApproval(approval: ApprovalRequest): string {
+  const text = approval.message.replace(/\s+/g, " ").trim() || approval.title.trim();
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
 }
 
 // ---------------------------------------------------------------- ask-user
@@ -1059,9 +1066,9 @@ export class Session extends EventEmitter {
     this.rpc?.uiRespond({ id, cancelled: true });
   }
 
-  /** Q-032: 把「为什么没发生」写进用户正在看的那段聊天，而不是默默失败。 */
-  notice(text: string, level: "info" | "warn" | "error" = "info"): void {
-    this.emitWs({ type: "notice", sessionId: this.state.id, text, level });
+  /** Q-032: 把「为什么没发生」写进用户正在看的那段聊天，而不是默默失败。`code` 让界面按语言重写。 */
+  notice(text: string, level: "info" | "warn" | "error" = "info", i18n?: { code: string; params?: Record<string, string> }): void {
+    this.emitWs({ type: "notice", sessionId: this.state.id, text, level, ...i18n });
   }
 
   private logUiTimeout(method: string, timeout: unknown): void {
@@ -1709,8 +1716,35 @@ export class Session extends EventEmitter {
 
   sleep(): void {
     if (this.state.running) return;
+    this.sleepNow();
+  }
+
+  /**
+   * #82/D120: nobody has had a page in front for the whole threshold, so the approval or the
+   * questionnaire on screen is waiting on nobody. Drop them with a line in the timeline saying which
+   * one died, then sleep like an idle session would — `close()` aborts first, so the interrupted
+   * turn still lands on disk.
+   */
+  expireUnattended(): void {
+    for (const approval of [...this.approvals.values()]) {
+      const which = summarizeApproval(approval);
+      this.answerApproval(approval.id, "cancel");
+      this.notice(`「${which}」这条审批没有人看，已过期；那次工具调用已丢弃，需要的话重新发一次。`, "info", {
+        code: "approval_expired",
+        params: { p1: which },
+      });
+    }
+    for (const ask of [...this.asks.values()]) {
+      this.cancelAsk(ask.id, "没有人看，已过期");
+      this.notice("这个提问没有人看，已过期；这次提问已丢弃。", "info", { code: "ask_expired" });
+    }
+    this.sleepNow();
+  }
+
+  /** The process goes, messages and session file stay, the next message wakes it (D120). */
+  private sleepNow(): void {
     void this.close({ quiet: true }).then(() => {
-      this.emitWs({ type: "notice", sessionId: this.state.id, text: "会话已休眠（消息仍在，下次发消息会自动唤醒）", level: "info" });
+      this.notice("会话已休眠（消息仍在，下次发消息会自动唤醒）");
       this.emitWs({ type: "session.state", session: this.state });
     });
   }
@@ -2321,12 +2355,22 @@ export class SessionManager extends EventEmitter {
   /**
    * A finished run with no pi event for `idleMs` sleeps: the process goes, messages and session file
    * stay, and the next message wakes it (D120). Nobody watching counts as activity — a tab left open
-   * unattended is exactly what this reaps. Approvals and asks still pin a session here; #82 gives
-   * them an expiry of their own.
+   * unattended is exactly what this reaps. A pending approval or ask is the one thing that can hold
+   * a session longer, and only as long as somebody is in front of a page (#82).
    */
   private sleepIdleSessions(cfg: Lifecycle): void {
+    // Whether a pending approval is still worth keeping is a fact about the person, not the session:
+    // as long as some page is in front, nothing expires (#82).
+    const unattended = absentFor();
     for (const s of this.sessions.values()) {
-      if (!s.live || s.state.running || s.approvals.size || s.asks.size) continue;
+      if (!s.live) continue;
+      if (s.approvals.size || s.asks.size) {
+        // A pending approval means its turn is in flight, so this branch has to sit before the
+        // `running` guard: that turn is exactly what sits there waiting on nobody (#82).
+        if (unattended > cfg.idleMs) s.expireUnattended();
+        continue;
+      }
+      if (s.state.running) continue;
       if (s.idleFor() > cfg.idleMs) s.sleep();
     }
   }
