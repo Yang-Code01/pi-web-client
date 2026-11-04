@@ -777,6 +777,17 @@ async function main(): Promise<void> {
 
   sessions.on("ws", broadcast);
   /**
+   * D120: the panel stays live without a timer of its own, but only pages that actually asked for
+   * the numbers get the tick's broadcast — a 60 s push to every idle tab is nobody's feature.
+   */
+  const broadcastRuntime = (stats: object) => {
+    const data = JSON.stringify({ type: "runtime.stats", ...stats });
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN && (client as any).wantsRuntime) client.send(data);
+    }
+  };
+  sessions.on("runtime", broadcastRuntime);
+  /**
    * D91: no Windows / WeChat ping while somebody is looking at a page (visible tab in a focused
    * window); the page reports that over its socket. The service worker checks again on arrival.
    */
@@ -1157,6 +1168,7 @@ async function main(): Promise<void> {
           }
           // D120 / #77: read-only numbers for the runtime panel. Nothing here changes a session.
           case "runtime.stats": {
+            (ws as any).wantsRuntime = true;
             send({ type: "runtime.stats", ...(await sessions.runtimeStats()) });
             return;
           }

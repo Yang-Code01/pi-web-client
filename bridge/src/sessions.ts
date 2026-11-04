@@ -2341,7 +2341,7 @@ export class SessionManager extends EventEmitter {
 
   /** Push the runtime numbers on every GC tick, so the panel is live without a timer of its own. */
   private async publishRuntimeStats(): Promise<void> {
-    this.emit("ws", { type: "runtime.stats", ...(await this.runtimeStats()) });
+    this.emit("runtime", await this.runtimeStats());
   }
 
   /**
