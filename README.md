@@ -180,6 +180,7 @@ node bridge/tests/gate-modes.mjs                                      # 权限�
 node bridge/tests/login-flow.mjs                                      # /login /logout：API key、取消、OAuth 授权链接转达、登出（D79，不联网）
 node bridge/tests/session-lock.mjs                                    # 终端会话锁扩展 + bridge 拒绝接管 + 安装 / 移除（D79）
 node bridge/tests/session-lifecycle.mjs                               # 会话生命周期：完成 + 空闲阈值到点就休眠，消息还在、下一条消息唤醒，在跑的一轮不动（D120，假 pi，tick 与阈值都注入成秒级，约 15 秒）
+node bridge/tests/approval-expiry.mjs                                 # 审批 / 问卷过期：没有任何页面 present 满阈值就丢弃 + 休眠 + notice，有一个 present 就永不过期（#82，假 pi，约 15 秒）
 node bridge/tests/runtime-panel.mjs                                   # 运行时面板：tasklist / ps 解析、runtime.stats 的总额与排序、采样坏掉时「不可用」且不影响空闲回收（D120，假 pi + 桩进程表，约 20 秒）
 node bridge/tests/pi-cli.mjs                                          # pi install / list / remove 与 pi mcp add / list / remove（D79，真 pi CLI，fixture 目录）
 node bridge/tests/share-bug.mjs                                       # /share（假 gh）与 /bug（zip / 离线拒绝上传）（D80，不联网）

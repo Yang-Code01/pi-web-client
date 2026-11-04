@@ -257,6 +257,9 @@ async function bashInFlightOnlyNotices(bridge, page) {
 // ------------------------------------------------- D. somebody has to answer first
 async function pendingApprovalIsNotStuck(bridge, page) {
   log("D. pending approval + silence → no abort");
+  // #82：审批只在「没有任何页面 present」满阈值后才过期，所以「等人点」这个场景要有人在看页面。
+  // 没人 present 的审批到期会被 #82 丢弃并休眠（那是过期规则，不是 watchdog）。
+  page.send({ type: "presence", active: true });
   const sid = await startRun(bridge, page, "approval", "SILENT ask please");
   const pid = lastLaunch(bridge.records(), sid).pid;
   const approval = await page.waitFor((m) => m.type === "approval.add" && m.sessionId === sid, 10000, "approval");
