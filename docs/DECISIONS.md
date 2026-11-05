@@ -1550,3 +1550,63 @@ if (s.idleFor() > IDLE_GC_MS) s.sleep();   // 2 小时
 - `memory-cap.mjs` 最后一个用例原来用 7884 端口，这台机器上被 Trend Micro（`TmListen.exe`）占着，换成了 7906。挑测试端口时别用 788x。
 - 用户 `mcp.json` 里两个坏件与本结论无关，但记一笔：`browser-use`（`uvx browser-use==0.13.11`）60 秒都没回 `initialize`；`atlassian` 回 401（未授权）。`rea` / `context-mode` 正常（后者 1.8 秒）。
 - 未核实：`bridge/src/paths.ts` 的 `agentDir()` 同时认 `PI_AGENT_DIR` 与 `PI_CODING_AGENT_DIR`，但用 `PI_AGENT_DIR` 指到空目录时 pi 的行为没有可观察的变化 —— 疑似 pi 只认后者。这条实验被「空目录缺 auth 导致挂起」污染，没能证伪。
+
+## D123 字号放大后「全屏」会切掉左边：`vw` 在 `#app` 的 zoom 里被乘了两次
+
+**问题**（用户报的，附截图）：把字号调到「大 / 特大」之后，文件面板点 ⛶ 全屏 —— 面板左边一整条不见了：标题「浏览本机文件」、路径、后退/前进、面包屑、每一行的目录名全被切到屏幕外，只剩右对齐的那排工具按钮和行尾的大小 / 日期，看起来像布局全乱。
+
+**根因**：`#app { zoom: var(--ui-scale) }`，而 `.viewer` 是 `position: fixed; right: 0`，全屏靠 `.viewer.full { width: 100vw }`。在 zoom 过的子树里 **`vw` 是「布局长度」，渲染时会被再乘一次缩放**：1440px 的视口在 1.25 下 `100vw` = 1800px 宽，而 `right: 0` 又把右缘钉在视口上 —— 多出来的 360px 全往**左边**溢出，被切掉的正是左对齐的所有内容。实测（`probes/viewer-full-zoom.mjs`）：1.12 档面板 1613px / 左缘 −173，1.25 档 1800px / 左缘 −360；字号 1 时一切正常，所以之前没人发现。
+
+同源的两处一起修：
+
+- 窄屏 `@media (max-width: 760px) { .viewer { width: 100vw } }` —— 手机上开大字同样会左边出血。
+- 拖分隔条：`--viewer-w` 写的是**布局 px**，但 `clientX` / `innerWidth` 是**视觉 px**，没除系数时 1.25 档拖出来的面板比鼠标宽 25%，分隔条永远跑在指针前面。
+
+**决定：**
+
+1. **全屏用 `left` / `right` 撑满，不写宽度**：`.viewer.full { left: 0; right: 0; width: auto }`（窄屏那条同样改成 `left: 0; width: auto`）。
+2. **拖拽宽度按 `uiScale()` 折算**：`(innerWidth − clientX) / s`，最大宽度 `(innerWidth − 120) / s`；320px 下限仍是布局 px（D121 §3 的下限不动）。
+3. **`termScale()` 改名 `uiScale()`**：它不再是终端专用 —— 预览面板的拖拽也走同一个换算，名字留在「terminal geometry」那段会误导下一个改这里的人。
+
+**为什么：**
+
+- `inset` 解析的是 zoom 折算过的包含块 —— 修前 `right: 0` 就已经正确贴住视口右缘，这就是证据。所以「左右都钉住」比「算一个宽度」稳：窗口 resize、改字号都不用重算，也没有 JS 参与。写死 px 得在 resize / `applyPrefs` 里各补一次。
+- 拖拽必须除系数而不是「把面板宽度四舍五入」：错误随缩放线性放大（1.25 档 800px 处偏 200px），用户看到的是「分隔条不跟手」，而不是「差一点」。
+
+**代价 / 可改：**
+
+- `pi.viewerW` / `pi.termGeom` 里存的都是布局 px，之后的 **改字号会让同一个数字的视觉宽度变大**（特大档存 760 会画成 950）。和终端几何一致，这次没动 —— 真要统一，就在这里存视觉 px、读的时候乘系数。
+- `--viewer-w` 的默认值 `min(760px, 55vw)` 里的 `55vw` 也没改：特大档下它等于视口的 68.75%。看起来就是「字大了面板也大」，不算坏，所以先留着；要严格 55% 就得写成 `calc(55vw / var(--ui-scale))`。
+- 同一个坑还在别处：`@media (max-width: 760px)` 里 `.sheet.mgr-sheet` / `.sheet.peer-sheet` 的 `width: 100vw` 与 `100dvh`，以及 `.context-menu` 的 `calc(100vw - 16px)` —— 它们只会「宽出去一点、两边均匀溢出」，不像 `.viewer` 那样一边对齐一边出血，所以没在这次一并改。
+
+**验证：** `npm --prefix web run build && node probes/viewer-full-zoom.mjs`（真桥 + 真 Chromium，三档字号 1 / 1.12 / 1.25，每档点全屏再拖一次）。修前三档里 1.12 / 1.25 红：面板 1613 / 1800 宽、左缘 −173 / −360，头部 `viewer-nav` / `viewer-titles` 与目录名全部越界；修后每档面板都正好 1440 宽、左缘 0，`viewer-head` 三块和目录名都在视口内，拖到 x=640 时面板左缘 = 640（±3px）。回归 `probes/viewer-split.mjs`（D121 全部用例仍绿）、`probes/window-front.mjs`、`probes/round12-preview-links.mjs` 全绿。
+
+## D124 随手问：一个不进列表的会话，清空用同进程 `new_session`（`#86`）
+
+**决定：** 顶栏加 `💭 随手问`，打开一个 dialog；它背后是普通 pi 会话，但被一条 `scratch` 标记当成另类处理：
+
+- **不进任何列表**：app 启动时带 `--session-dir` 指到 `state/scratch/sessions`，那个目录不在 pi 的会话根里，扫不到；`list()` 再滤一次（广播的 `session.state` 也不会把它塞回侧栏）。
+- **懒建**：第一次点开才 spawn，`scratch.open` 幂等（没有就建、睡过就唤醒、有就复用）。
+- **清空 = 同进程 `new_session`**：pi 的 RPC 有这个命令，进程不重启，上下文和 token 归零，旧文件当场删掉。桥侧 id 不变（页面所有东西都以它为键），只把 `state.file` 换成 pi 报的新路径。
+- **只读**：`--tools read,grep,find,ls,web_search,fetch_content,source_check,get_search_content`（联网那几个由 `pi-web-access` 扩展提供；实测 pi 对 `--tools` 里不存在的名字只当没写，不会起不来，所以没装扩展时也能降级），并把审批闸的 `/allow` 模式写成 `readonly`（闸那边 `readonly` 是白名单，不是「什么都放行」；联网这组要显式加进白名单）。cwd 是中性空目录。
+- **三条豁免**：休眠用自己的一小时（`lifecycle.json` 的 `scratchIdleMs` / `PI_WEB_SCRATCH_IDLE_MS`）；水位永不收它；`maybeAutoCompact` 跳过它，只发提醒。
+- **提醒线不是固定百分比**：pi 在 `contextTokens > contextWindow - reserveTokens`（默认 16384）处自动压缩，200k 窗口是 92%、32k 只有 50%。所以提醒按 `(contextWindow - reserveTokens)` 的 75% / 92% 算。
+- **落地范围**：`state/scratch/` 整个目录由桥启动时（`ensureStateDirs()` 之后、任何 spawn 之前）无条件清空重建，退出时再清一次；`PI_WEB_STATE` 已经把多开的第二份桥隔开，所以不需要实例 id 或 pid 文件。
+
+**为什么：**
+
+- 「不留下记录」最可靠的做法是**根本不写到会被扫的地方**，而不是写完再过滤。一个 `--session-dir` 就把「列表里看不见」变成结构性事实。
+- 「清空要等 1–3 秒」是**本仓库的实现**（新建 = spawn 新进程），不是 pi 的限制：`new_session` 在同一个进程里换会话。既然用户要的是「随手问一句」，重启进程纯属浪费。
+- 三条豁免必须集中在一个标记上：全桥只有它会同时命中「不该休眠 / 不该被水位收 / 不该被压缩」，散成三处 `if` 迟早漏一处。
+- 只给读工具就没必要处理审批：没有写、没有 shell，审批闸不会弹，随手问才可能「不打断人」。
+
+**代价 / 可改：**
+
+- 第一次点开仍要付 1–3 秒冷启（懒建换来的：不常驻一个 pi）。
+- 它读得到整台机器（pi 没有内置沙箱，工具不按 cwd 限制），只是不能写；cwd 的中性空目录只管相对路径。
+- 加了联网查之后，多了一条「把从本机读到的内容当搜索词发出去」的通道。这是联网本身的含义，不是漏洞 —— 但要知道它在。
+- 豁免水位意味着内存紧张时被收的是**别的**会话。
+- `scratchIdleMs` 只走 `lifecycle.json` / 环境变量，运行面板里还没有它。
+- `fork` / `/tree` 都不能用来「回到最顶部」：前者要求会话已写盘且产出新会话 id，后者在桥里只有只读的读文件画树。
+
+**验证：** `npm run build && npm run test:scratch`（桩 pi：懒建 / `--session-dir` / `--tools` / 不进列表 / 同进程清空 + 旧文件删除 / 休眠与水位豁免 / 重启清空，共 26 项）、`npm run test:scratch:ui`（真 Chromium：顶栏入口、说明文案、发一句能回、清空后变空、关掉再开还在）。

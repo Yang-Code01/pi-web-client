@@ -30,7 +30,7 @@ import { Notifier } from "./notify.ts";
 import { anyPresent, dropClient, reportPresence } from "./presence.ts";
 import { Tunnel, findCloudflared } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
-import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, statePath, sessionsRootInfo } from "./paths.ts";
+import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, resetScratchDir, statePath, sessionsRootInfo } from "./paths.ts";
 import { clipboardFiles, listDirs, makeDir, statFiles } from "./dirs.ts";
 import { gitInfo } from "./git.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
@@ -246,6 +246,9 @@ function handlePassphraseFlag(argv: string[]): boolean {
 async function main(): Promise<void> {
   if (handlePassphraseFlag(process.argv.slice(2))) return;
   ensureStateDirs();
+  // 随手问 (#86): nothing can be live at this point (it is created lazily), so wiping its dir is
+  // unconditional — that is what makes 「桥重启 = 清空」 true, crashes included.
+  resetScratchDir();
   const cfg = loadConfig();
   const fresh = ensurePassphrase();
   const pi = resolvePi();
@@ -1056,6 +1059,22 @@ async function main(): Promise<void> {
             await sessions.get(msg.sessionId)?.withdrawQueue();
             return;
           }
+          case "scratch.open": {
+            // #86: idempotent — creates on first use, wakes it after a sleep, otherwise reuses.
+            // No step-up: it creates nothing the page can steer (cwd, tools and session dir are all
+            // the bridge's own choice), and `prompt` is not gated either.
+            const session = await sessions.scratchSession();
+            (ws as any).watching = session.state.id;
+            send({ type: "scratch", sessionId: session.state.id, ...session.snapshot(), trust: null });
+            return;
+          }
+          case "scratch.clear": {
+            // Same process, fresh session: no cold start, and the token count starts over.
+            const session = await sessions.clearScratch();
+            (ws as any).watching = session.state.id;
+            send({ type: "scratch", sessionId: session.state.id, ...session.snapshot(), trust: null });
+            return;
+          }
           case "create": {
             if (!(await requireStepUp())) return;
             const name = typeof msg.name === "string" && msg.name.trim() ? msg.name.trim().slice(0, 120) : undefined;
@@ -1707,6 +1726,8 @@ async function main(): Promise<void> {
     terminals.closeAll();
     tunnel.stop();
     await sessions.shutdown();
+    // Closing the bridge is closing 随手问: a clean exit leaves nothing to resume.
+    resetScratchDir();
     server.close();
     process.exit(0);
   };

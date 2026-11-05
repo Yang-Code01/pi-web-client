@@ -19,7 +19,14 @@ import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 
-const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+// 相对路径都从这里展开；拿不到就退回 cwd（这个脚本永远跑在仓库里，退化不影响检查结果）。
+const here = (() => {
+  try {
+    return path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+  } catch {
+    return process.cwd();
+  }
+})();
 const SRC = path.join(here, "src");
 const DICT = path.join(SRC, "i18n");
 
@@ -153,14 +160,35 @@ function dictKeys(lang) {
 }
 
 const out = { keys: new Set(), bare: [], context: new Map() };
-for (const entry of fs.readdirSync(SRC, { withFileTypes: true })) {
-  if (entry.isDirectory()) continue;
-  if (!/\.tsx?$/.test(entry.name)) continue;
-  walk(path.join(SRC, entry.name), out);
+/** 递归：`src/peer/` 这种子目录也是界面代码（内网通是独立页面），不能漏。 */
+function walkDir(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "i18n") continue; // 词典自己单独处理
+      walkDir(full);
+    } else if (/\.tsx?$/.test(entry.name)) {
+      walk(full, out);
+    }
+  }
 }
+walkDir(SRC);
 // i18n 自己的兜底文案（errText 的「出错了」、fmtRelative 的「刚刚」）也是键，别当成多余键。
 // en.ts / ja.ts 是词典，不扫。
 walk(path.join(DICT, "index.ts"), out);
+
+/**
+ * `peer.html` 是静态标记，文案挂在 `data-i18n*` 属性上（启动时由 `paintStatic()` 换一遍）。
+ * 那些值同样是键 —— 不扫的话，词典里会被判成「代码里没有」的废键。
+ */
+function walkHtml(file, out) {
+  if (!fs.existsSync(file)) return;
+  const src = fs.readFileSync(file, "utf8");
+  for (const m of src.matchAll(/data-i18n(?:-title|-aria|-placeholder)?="([^"]+)"/gu)) {
+    if (CJK.test(m[1])) out.keys.add(m[1]);
+  }
+}
+walkHtml(path.join(here, "peer.html"), out);
 
 // 后端错误码走 `bridge.err.<code>`，键是拼出来的，不在代码里出现。
 const zhKeys = [...out.keys].filter((k) => !k.startsWith("bridge.err.")).sort();
@@ -220,8 +248,8 @@ for (const [lang, dict] of [["en", en], ["ja", ja]]) {
 
 if (problems.length) {
   console.error(`i18n-check: ${problems.length} 个问题\n`);
-  for (const p of problems.slice(0, 80)) console.error("  " + p);
-  if (problems.length > 80) console.error(`  … 还有 ${problems.length - 80} 条`);
+  for (const p of problems.slice(0, 400)) console.error("  " + p);
+  if (problems.length > 400) console.error(`  … 还有 ${problems.length - 400} 条`);
   bad = 1;
 } else {
   console.log(`i18n-check: ok — ${zhKeys.length} keys × 3 langs`);

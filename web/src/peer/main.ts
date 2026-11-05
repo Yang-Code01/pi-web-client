@@ -1,11 +1,28 @@
 
-import { applyLang, getLang, tr } from "../i18n/index.ts";
+import { applyLang, bootLang, tr } from "../i18n/index.ts";
 
 /** `peer.html` 的脚本：只跟 bridge 说话（cookie + `/api/peer*`），从不直接连 7865。 */
 
 // 内网通是独立页面（`peer.html`），跟主界面共用同一份 `pi.prefs.lang`：
 // 日文字体栈挂在 `html:lang(ja)` 上，这行不写就没有。
-applyLang(getLang());
+// 以前这里是 `getLang()` —— 那是模块默认值（zh-Hans），这个文档从来没读过 prefs，
+// 所以切了语言之后它一直是中文。
+applyLang(bootLang());
+
+/**
+ * `peer.html` 里的静态文案（标题、tab、文件选择器、空态…）是写死在 HTML 里的，挂 `data-i18n*`
+ * 在启动时统一换一遍；页面运行中自己写的文字各自走 `tr()`。
+ */
+function paintStatic(): void {
+  document.title = tr("内网通 · pi");
+  for (const node of document.querySelectorAll<HTMLElement>("[data-i18n]")) node.textContent = tr(node.dataset.i18n ?? "");
+  for (const node of document.querySelectorAll<HTMLElement>("[data-i18n-title]")) node.title = tr(node.dataset.i18nTitle ?? "");
+  for (const node of document.querySelectorAll<HTMLElement>("[data-i18n-aria]")) node.setAttribute("aria-label", tr(node.dataset.i18nAria ?? ""));
+  for (const node of document.querySelectorAll<HTMLElement>("[data-i18n-placeholder]")) {
+    (node as HTMLInputElement).placeholder = tr(node.dataset.i18nPlaceholder ?? "");
+  }
+}
+paintStatic();
 
 interface OnlinePeer {
   nodeId: string;
@@ -384,7 +401,7 @@ function renderMessages(entries: Entry[]): void {
     if (mine) {
       const ack = acks.get(entry.id);
       if (entry.kind === "text") {
-        meta.textContent = tr("{p1} · {p2}", { p1: clock(entry.at), p2: ack === "failed" ? "没送到" : ack === "delivered" ? "已送达" : "发送中…" });
+        meta.textContent = tr("{p1} · {p2}", { p1: clock(entry.at), p2: ack === "failed" ? tr("没送到") : ack === "delivered" ? tr("已送达") : tr("发送中…") });
         if (ack === "failed") bubble.classList.add("is-bad");
       } else {
         meta.textContent = tr("{p1} · 已发出", { p1: clock(entry.at) });
@@ -412,7 +429,7 @@ async function loadMessages(): Promise<void> {
 async function openThread(nodeId: string): Promise<void> {
   active = nodeId;
   const meta = threadMeta(nodeId);
-  threadHead.textContent = meta ? tr("{p1}{p2}", { p1: meta.nickname, p2: meta.online ? " · 在线" : " · 离线" }) : nodeId.slice(0, 8);
+  threadHead.textContent = meta ? tr("{p1}{p2}", { p1: meta.nickname, p2: meta.online ? tr(" · 在线") : tr(" · 离线") }) : nodeId.slice(0, 8);
   threadBox.hidden = false;
   threadEmpty.hidden = true;
   sendError.hidden = true;
@@ -431,7 +448,7 @@ async function loadThreads(): Promise<void> {
     if (!active && threads.length) await openThread(threads[0].nodeId);
     else if (active) {
       const meta = threadMeta(active);
-      if (meta) threadHead.textContent = tr("{p1}{p2}", { p1: meta.nickname, p2: meta.online ? " · 在线" : " · 离线" });
+      if (meta) threadHead.textContent = tr("{p1}{p2}", { p1: meta.nickname, p2: meta.online ? tr(" · 在线") : tr(" · 离线") });
     }
   } catch {
     /* 下一轮再试 */
@@ -587,14 +604,14 @@ async function sendPath(path: string, name?: string): Promise<void> {
     if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
     textInput.focus();
   } catch (err) {
-    showSendError(`发文件失败：${(err as Error).message}`);
+    showSendError(tr("发文件失败：{p1}", { p1: (err as Error).message }));
   }
 }
 
 /** 拖进来 / 粘贴的图没有磁盘路径，只能把字节递过去（上限 64 MB）。 */
 async function uploadBlob(name: string, blob: Blob): Promise<void> {
   if (!active) return;
-  if (blob.size > 64 * 1024 * 1024) return showSendError(`「${name}」太大（上限 64 MB），用「📎」从磁盘选`);
+  if (blob.size > 64 * 1024 * 1024) return showSendError(tr("「{p1}」太大（上限 64 MB），用「📎」从磁盘选", { p1: name }));
   try {
     const res = await fetch(`/api/peer/upload?peer=${encodeURIComponent(active)}&name=${encodeURIComponent(name)}`, {
       method: "POST",
@@ -604,7 +621,7 @@ async function uploadBlob(name: string, blob: Blob): Promise<void> {
     const body = (await res.json()) as { error?: string };
     if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
   } catch (err) {
-    showSendError(`发文件失败：${(err as Error).message}`);
+    showSendError(tr("发文件失败：{p1}", { p1: (err as Error).message }));
   }
 }
 
@@ -635,7 +652,7 @@ async function loadTransfers(): Promise<void> {
       const item = el("li", `transfer${transfer.status === "failed" ? " is-bad" : ""}`);
       const percent = transfer.size ? Math.min(100, Math.round((transfer.bytes / transfer.size) * 100)) : 0;
       item.append(
-        el("span", "transfer-name", tr("{p1} {p2}", { p1: transfer.direction === "out" ? "发出" : "接收", p2: transfer.name })),
+        el("span", "transfer-name", tr("{p1} {p2}", { p1: transfer.direction === "out" ? tr("发出") : tr("接收"), p2: transfer.name })),
         el("span", "transfer-bar"),
         el("small", "transfer-info", transfer.status === "failed" ? (transfer.error ?? tr("失败")) : `${percent}% · ${sizeOf(transfer.bytes)} / ${sizeOf(transfer.size)}`),
       );

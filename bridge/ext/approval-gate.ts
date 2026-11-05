@@ -42,7 +42,13 @@ type Mode = "readonly" | "strict" | "ask" | "auto";
  * (pi passes them as nested tool calls with `parentToolCallId`, agent-session.js), so a write
  * inside a script is still stopped.
  */
-const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", "tool_search", "codemode", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "peer_find", "peer_history"]);
+const READ_ONLY_TOOLS = new Set([
+  "read", "grep", "find", "ls", "tool_search", "codemode",
+  "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "peer_find", "peer_history",
+  // #86：随手问要能查天气/查文档。这几个只往网上看，不碰本地磁盘；代价是它们会把参数
+  // （可能是从本机文件里读到的内容）发给外部服务 —— 这是「联网」本身的含义，不是漏洞。
+  "web_search", "fetch_content", "source_check", "get_search_content",
+]);
 /**
  * 给内网通里的人发文字（#45 第 5 片，决定 33）：它不写本地磁盘，所以严格模式下放行，
  * 但只读模式下仍然拦——「只读」的意思是别往外说话，不只是别改文件。

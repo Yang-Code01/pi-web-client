@@ -17,6 +17,7 @@
  * Env: FAKE_PI_LOG (jsonl of what the stub saw), FAKE_COMPACT_MS (manual compaction length).
  */
 import fs from "node:fs";
+import path from "node:path";
 
 const LOG = process.env.FAKE_PI_LOG || "";
 const COMPACT_MS = Number(process.env.FAKE_COMPACT_MS || 1000);
@@ -27,6 +28,36 @@ const note = (obj) => {
 };
 const ok = (id, command, data) => out({ type: "response", command, success: true, id, ...(data === undefined ? {} : { data }) });
 const fail = (id, command, error) => out({ type: "response", command, success: false, id, error });
+
+/** #86: this stub owns a pretend session file when --session-dir is passed, so a test can watch
+ * `new_session` move it and the bridge delete the old one. */
+const ARGV = process.argv.slice(2);
+const argOf = (name) => {
+  const i = ARGV.indexOf(name);
+  return i >= 0 ? ARGV[i + 1] ?? "" : "";
+};
+const SESSION_DIR = argOf("--session-dir");
+let sessionId = argOf("--session-id") || `fake-${process.pid}`;
+let sessionFile = SESSION_DIR ? path.join(SESSION_DIR, `${sessionId}.jsonl`) : "";
+const touchSessionFile = () => {
+  if (!sessionFile) return;
+  try {
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+    if (!fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: sessionId, cwd: process.cwd() })}
+`);
+  } catch {
+    /* the test asserts on paths it saw in the log, not on this file surviving */
+  }
+};
+touchSessionFile();
+
+/** #86: the stub keeps the model / thinking level it was told, so get_state can report them back. */
+const FAKE_MODELS = [
+  { id: "fake-model", name: "Fake Model", provider: "stub" },
+  { id: "fake-model-2", name: "Fake Model 2", provider: "stub" },
+];
+let currentModel = FAKE_MODELS[0];
+let thinkingLevel = "off";
 
 let running = false;
 let compacting = false;
@@ -156,6 +187,22 @@ async function turn(text) {
     out({ type: "auto_retry_end", success: false, attempt: 2, finalError: "401 invalid api key" });
     return;
   }
+  // #86：pi 每调一次工具都会先发一条「文字为空、只有工具调用」的 assistant 消息。
+  // 页面上不能因此多出一堆「随手问 / …」。
+  if (/^TOOLS/.test(text)) {
+    const calls = ["web_search", "fetch_content", "fetch_content"];
+    for (const name of calls) {
+      const id = `call-${name}-${Math.random().toString(36).slice(2, 7)}`;
+      out({ type: "message_start", message: assistant("") });
+      out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id, name, arguments: { q: text } }], stopReason: "toolUse" }) });
+      out({ type: "tool_execution_start", toolCallId: id, toolName: name, args: { q: text } });
+      out({ type: "tool_execution_end", toolCallId: id, isError: false, result: "ok" });
+    }
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("查到了：晴。") });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   out({ type: "message_start", message: assistant("") });
   out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `echo: ${text}` } });
   out({ type: "message_end", message: assistant(`echo: ${text}`) });
@@ -202,12 +249,35 @@ async function handle(cmd) {
     await sleep(BOOT_MS);
   }
   switch (type) {
+    case "new_session": {
+      // #86: the real pi starts a fresh session inside the same process. Same pid on purpose —
+      // that is exactly what the test proves the bridge did instead of respawning.
+      const before = sessionFile;
+      sessionId = `fake-${Date.now().toString(36)}`;
+      sessionFile = SESSION_DIR ? path.join(SESSION_DIR, `${sessionId}.jsonl`) : "";
+      touchSessionFile();
+      note({ t: "new_session", pid: process.pid, before, file: sessionFile, sessionId });
+      return ok(id, type, { cancelled: false });
+    }
     case "get_state":
-      return ok(id, type, { model: { id: "fake-model", name: "Fake Model", provider: "stub" }, thinkingLevel: "off", cwd: process.cwd() });
+      return ok(id, type, { model: currentModel, thinkingLevel, cwd: process.cwd(), sessionId, sessionFile });
+    case "set_model": {
+      const provider = String(cmd.provider ?? "stub");
+      const modelId = String(cmd.modelId ?? cmd.model ?? "");
+      const known = FAKE_MODELS.find((m) => m.id === modelId);
+      currentModel = { id: modelId, name: known?.name ?? `Fake ${modelId}`, provider };
+      note({ t: "set_model", pid: process.pid, provider, modelId });
+      return ok(id, type, currentModel);
+    }
+    case "set_thinking_level":
+      thinkingLevel = String(cmd.level ?? "off");
+      note({ t: "set_thinking_level", pid: process.pid, level: thinkingLevel });
+      return ok(id, type);
     case "get_session_stats":
       return ok(id, type, { tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cost: 0.01, contextUsage: { tokens: 1000, contextWindow: 200000, percent: 0.5 } });
     case "get_available_models":
-      return ok(id, type, { models: [{ id: "fake-model", name: "Fake Model", provider: "stub", reasoning: false, input: ["text"], contextWindow: 200000 }] });
+      const LEVEL_MAP = { off: "off", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
+      return ok(id, type, { models: FAKE_MODELS.map((m) => ({ ...m, reasoning: true, thinkingLevelMap: LEVEL_MAP, input: ["text"], contextWindow: 200000 })) });
     case "get_commands":
       return ok(id, type, { commands: [] });
     case "set_steering_mode":

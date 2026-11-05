@@ -2,23 +2,11 @@ import "./styles.css";
 import { api } from "./api.ts";
 import { App } from "./app.ts";
 import type { Me } from "./types.ts";
-import { applyLang, detectLang, errText, isLang, tr, type Lang } from "./i18n/index.ts";
+import { applyLang, bootLang, errText, tr } from "./i18n/index.ts";
 
-/**
- * 登录页在 App 之前就画出来了，所以语言得在这时先定下来（D110）：读 `pi.prefs.lang`,
- * 没存过/非法就问浏览器。App 的构造函数会再 apply 一遍，两边同源，不会打架。
- */
-function bootLang(): Lang {
-  let lang: Lang = detectLang();
-  try {
-    const p = JSON.parse(localStorage.getItem("pi.prefs") ?? "null");
-    if (isLang(p?.lang)) lang = p.lang;
-  } catch {
-    // 坏掉的 prefs 就当没存过。
-  }
-  applyLang(lang);
-  return lang;
-}
+// 登录页在 App 之前就画出来了，所以语言得在这时先定下来（D110）：`pi.prefs.lang`
+// 优先，没存过/非法就问浏览器。这份 `bootLang()` 与「内网通」（peer.html）共用。
+applyLang(bootLang());
 
 function loginScreen(onSuccess: (me: Me) => void): void {
   const app = document.getElementById("app")!;
@@ -61,7 +49,6 @@ function loginScreen(onSuccess: (me: Me) => void): void {
 }
 
 async function boot(): Promise<void> {
-  bootLang();
   let me: Me | null = null;
   try {
     me = await api.me();

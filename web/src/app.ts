@@ -9,6 +9,7 @@ import { renderMarkdown } from "./md.ts";
 import { setKnownPlugins } from "./diagnose.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
+import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
@@ -103,6 +104,8 @@ export class App {
   private imageSheetPaint: (() => void) | null = null;
 
   private els: Record<string, HTMLElement> = {};
+  /** #86：随手问。它的帧不走当前会话那条路，自己认领；模型目录也是现成的。 */
+  private readonly scratch = new ScratchChat({ send: (msg) => this.socket.send(msg), models: () => this.models });
   private models: ModelInfo[] = [];
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
@@ -370,7 +373,15 @@ export class App {
     peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     peer.dataset.act = "peer";
     peer.onclick = () => this.openPeerSheet();
-    topbar.append(collapseLeft, dot, title, sub, files, term, fs, notes, peer, look, collapseRight);
+    // 之前没登记进 els，`paintChrome()` 里那段 `if (peer)` 一直是死代码：切语言时这颗不动。
+    this.els.peer = peer;
+    // #86：随手问也不跟会话绑定（它不进列表），所以跟终端 / 记录一样常显。
+    const scratch = el("button", "icon-btn wide", tr("💭 随手问"));
+    scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
+    scratch.dataset.act = "scratch";
+    scratch.onclick = () => this.scratch.open();
+    this.els.scratch = scratch;
+    topbar.append(collapseLeft, dot, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -511,14 +522,19 @@ export class App {
   }
 
   // ---------------------------------------------------------------- terminal geometry (D92 · D93)
-  /** 拖拽量到的是视觉尺寸，而 style 里的 px 是 `#app` 被 zoom 缩过的布局尺寸：两者差一个缩放。 */
-  private termScale(): number {
+  /**
+   * 视觉尺寸 ↔ 布局 px 的换算系数。`#app` 上挂着 `zoom: var(--ui-scale)`，所以在它里面写进 style 的
+   * px（以及 CSS 里的 vw / vh）都是**布局 px**，渲染时会被再乘一次缩放；`clientX` / `getBoundingClientRect`
+   * 拿到的才是视觉 px。终端 dialog 的几何、预览面板的拖拽都走这个换算（`100vw` 在 1.25 字号下是 1800px
+   * 而不是 1440px —— 这就是「全屏」铺不满视口、左边被切掉的根因，见 D123）。
+   */
+  private uiScale(): number {
     return this.prefs.scale || 1;
   }
 
   /** 没存过几何时 dialog 的多大：底部居中，宽高跟着窗口（布局 px，已按缩放折算）。 */
   private termDefaults(): { w: number; h: number } {
-    const s = this.termScale();
+    const s = this.uiScale();
     const vw = window.innerWidth / s;
     const vh = window.innerHeight / s;
     const narrow = window.matchMedia("(max-width: 899px)").matches;
@@ -551,7 +567,7 @@ export class App {
   }
 
   private saveTermGeom(dock: HTMLElement): void {
-    const s = this.termScale();
+    const s = this.uiScale();
     const r = dock.getBoundingClientRect();
     const geom: TermGeom = { l: Math.round(r.left / s), t: Math.round(r.top / s), w: Math.round(r.width / s), h: Math.round(r.height / s) };
     this.termGeom = geom;
@@ -568,7 +584,7 @@ export class App {
    * 默认值 —— CSS 里的 `vh`/`vw` 在 `#app` 的 zoom 下会被再乘一次，铺满会溢出屏幕）。
    */
   private applyTermGeom(dock: HTMLElement): void {
-    const s = this.termScale();
+    const s = this.uiScale();
     const base = this.termDefaults();
     const geom = this.loadTermGeom();
     const vw = window.innerWidth / s;
@@ -583,7 +599,7 @@ export class App {
 
   /** 把 dialog 从「CSS 居中」改成 left/top 钉住：传了 box 就用它，否则量当前位置。 */
   private pinTerm(dock: HTMLElement, box?: TermBox): TermBox {
-    const s = this.termScale();
+    const s = this.uiScale();
     const at = box ?? (() => {
       const r = dock.getBoundingClientRect();
       return { l: r.left / s, t: r.top / s, w: r.width / s, h: r.height / s };
@@ -631,7 +647,7 @@ export class App {
       // 标题栏里的标签 / ＋ / 按钮要能点，只有空白处才是「拖走」。
       if (kind === "move" && (ev.target as HTMLElement).closest("button")) return;
       ev.preventDefault();
-      const s = this.termScale();
+      const s = this.uiScale();
       const box = this.pinTerm(dock);
       const x0 = ev.clientX;
       const y0 = ev.clientY;
@@ -884,6 +900,8 @@ export class App {
 
   // ---------------------------------------------------------------- ws
   private onMessage(msg: any): void {
+    // #86：随手问的帧先给它自己认领。它的 sessionId 永远不是当前会话，下面那些 case 本来也会忽略它。
+    if (this.scratch.handle(msg)) return;
     switch (msg.type) {
       case "catalog":
         this.models = (msg.models ?? []) as ModelInfo[];
@@ -912,6 +930,8 @@ export class App {
           this.loadExtInventory();
         }
         if (Array.isArray(msg.notes)) this.setNotes(msg.notes as Note[]);
+        // #86：断线重连时桥可能重启过，随手问的对话可能已经没了——重新问一次桥，它说什么就是什么。
+        this.scratch.reconnect();
         // Badge: whether anything installed has an update (bridge caches this for 6 hours).
         this.socket.send({ type: "ext.updates", ...(this.session?.cwd ? { cwd: this.session.cwd } : {}) });
         // A new socket starts unverified on the bridge side.
@@ -1598,6 +1618,9 @@ export class App {
 
   private mergeSession(state: SessionState | undefined): void {
     if (!state) return;
+    // #86：随手问不在会话列表里。桥已经把它从 list() 里滤掉了，这里是第二道（
+    // session.state 是广播的，任何一条都不能把它塞回侧栏）。
+    if (state.scratch) return;
     // Set before renderChat below, which runs when `owned` flips.
     if (state.owned && state.id === this.claiming) this.claiming = null;
     const idx = this.sessions.findIndex((s) => s.id === state.id);
@@ -2342,6 +2365,8 @@ export class App {
     this.socket.send({ type: "lang", lang: next });
     this.paintChrome();
     this.renderAll();
+    // #86：随手问是独立 dialog，不在 renderAll 的覆盖范围里。
+    this.scratch.refreshLang();
     if (this.sheetKind === "display") this.openDisplaySheet();
   }
 
@@ -2351,7 +2376,7 @@ export class App {
    * the session list, `renderSessions()` the chips — neither touches these.
    */
   private paintChrome(): void {
-    const { look, files, term, fs, notes, peer, manageBtn, binBtn, tabs } = this.els;
+    const { look, files, term, fs, notes, peer, scratch, manageBtn, binBtn, tabs } = this.els;
     const newBtn = this.els.newBtn as HTMLButtonElement;
     const sessFilter = this.els.sessFilter as HTMLInputElement;
     look.title = tr("外观与语言");
@@ -2369,6 +2394,10 @@ export class App {
     if (peer) {
       peer.textContent = tr("🌐 内网通");
       peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
+    }
+    if (scratch) {
+      scratch.textContent = tr("💭 随手问");
+      scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     }
     newBtn.textContent = tr("开新会话");
     sessFilter.placeholder = tr("过滤名字 / 目录");
@@ -3653,8 +3682,11 @@ export class App {
           this.viewerFull(true, false); // 拖出来的全屏不持久化：下一个预览不该一打开就满屏
           return;
         }
-        const w = Math.max(320, Math.min(window.innerWidth - 120, window.innerWidth - e.clientX));
-        root.style.setProperty("--viewer-w", `${w}px`);
+        // `clientX` / `innerWidth` 是**视觉** px，写进 `--viewer-w` 的是**布局** px（#app 的 zoom）——
+        // 不除这个系数，1.25 字号下拖出来的面板会比鼠标宽 25%，分隔条永远跑在指针前面。
+        const s = this.uiScale();
+        const w = Math.max(320, Math.min((window.innerWidth - 120) / s, (window.innerWidth - e.clientX) / s));
+        root.style.setProperty("--viewer-w", `${Math.round(w)}px`);
       };
       const up = () => {
         finish();

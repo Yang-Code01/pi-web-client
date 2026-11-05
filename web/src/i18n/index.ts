@@ -49,6 +49,23 @@ export function isLang(value: unknown): value is Lang {
   return value === "zh-Hans" || value === "en" || value === "ja";
 }
 
+/**
+ * 启动时的界面语言：`pi.prefs.lang` 优先，没存过/非法就跟浏览器。
+ *
+ * 主页面和「内网通」（`peer.html`）是两个文档，两边都得走这一条 —— 内网通以前直接
+ * `applyLang(getLang())`，而 `getLang()` 在它自己的文档里永远是模块默认的 zh-Hans，
+ * 所以那份页面从来没跟过用户选的语言。
+ */
+export function bootLang(): Lang {
+  try {
+    const p = JSON.parse(localStorage.getItem("pi.prefs") ?? "null");
+    if (isLang(p?.lang)) return p.lang;
+  } catch {
+    /* 坏掉的 prefs 就当没存过 */
+  }
+  return detectLang();
+}
+
 export function getLang(): Lang {
   return lang;
 }
