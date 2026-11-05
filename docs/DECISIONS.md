@@ -1771,3 +1771,36 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 另外两个是渐变 mask 的 `#000` 与 iframe 底的 `#fff`；`npm run typecheck`（i18n 1264 键 ×3）；`web/tests/{nowchip,pillbar}-unit.mjs`；
 `probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿。截图用隔离实例（`pi-web-client-test-dev`，端口
 17868，口令 test）出，`.scratch/unslop/{e-list,f-chat,g-chat,g-mobile}.png`。
+
+## D131 窄屏顶栏收成图标、右栏按组分段
+
+**背景（实测 390×844，开着一个会话）：** `.topbar` 的 `scrollWidth` 400 > `clientWidth` 390 —— 九样东西
+（工作区 chip、会话名、六颗按钮、字号）挤在一条线上，最后那颗「Aa」被切在半路，而左右两侧的折叠按钮
+在手机布局里本来就 `display:none`，没有第二条路进得去。桌面端右栏则相反：`通道 / 快捷键 / 关于` 三组
+只靠 `.queue` 的 8px gap 排着，组标题 12px、`.hint` 没有规则落回 body 的 **15px**（比标题还大），
+按钮 33px 各自浮着，看着像「三坨东西一起挤在顶上」。
+
+**决定：**
+- 顶栏那六颗「图标 + 文字」按钮由 `App.wideBtn()` / `setWideLabel()` 拆成 `<span class="ic">` 与
+  `<span class="lb">`；`@media (max-width: 560px)` 只把 `.lb` 收掉，按钮回成 28px 方块。
+  **切分用的是 `tr()` 之后的文案**（形如「📂 产物」，第一个空格前是图标），所以英文 / 日文不用另立 key，
+  也不必为窄屏写第二套 i18n。文字仍在 `title` 与 `aria-label` 里。
+- 同一段 media 里：`.topbar` 缝 8→6、两侧 padding 16→12；`.now-chip .now-ws` 收掉（工作区名 70px，
+  而这一排真正要读的是会话名，收掉后标题那格从 0px 回到 ~124px）；`.icon-btn[data-act="files"]` 隐藏 ——
+  「📂 产物」与「📁 文件管理器」收成图标之后是两颗并排的文件夹，窄屏上无法区分，留产物、盘符浏览回桌面端。
+- 右栏：`.queue` 的 gap 归零，改由 `.queue h2` 自带节奏（上边 14px + 1px 发丝线、下边 8px，`:first-child`
+  去掉线），三组因此读成「一组说明 + 一组控件」；`.queue .empty`（「没有等你的事。」）从居中的空卡片改成
+  一行 12px 左对齐的状态字；`.queue .hint` 补上规则（12px faint，`关于` 那行才用等宽）。
+- 顺手把 `renderQueue()` 里写死的 `style.display/gap/flexWrap` 换成 `.queue-tools` 类。
+
+**为什么不是收进「⋯」菜单：** 这几颗都是 dialog（终端 / 内网通 / 随手问 / 记录），在手机上是主要入口，
+收进二级菜单等于多点一次；图标 + `title` 的代价更小，而且桌面端不受影响。
+
+**代价 / 可改：** 手机上图标没有文字，`>_` 与 emoji 靠记忆（用户已定 emoji 图标保留）；`文件管理器` 在
+≤560px 不可达。断点 560 是量出来的：560 以下收文字，561–899 恢复文字后最坏情况（产物 + 文件管理器同现）
+仍不溢出（实测 561px 时 `scrollWidth == clientWidth == 561`）。
+
+**验证：** 390px 开会话：`scrollWidth == clientWidth == 390`，顶栏内容 chip 26 + 标题 124 + 6×28；
+390 / 620 / 900 / 1440 四档 `documentElement.scrollWidth` 都等于视口；`npm run typecheck`（i18n 1264 键 ×3）、
+`web/tests/{nowchip,pillbar}-unit.mjs`、`probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿。
+截图 `.scratch/unslop/{y390-top,q2-right,m-queue,d-chat}.png`。

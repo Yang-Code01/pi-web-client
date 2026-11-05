@@ -328,6 +328,25 @@ export class App {
     this.routeFromHash();
   }
 
+  /**
+   * 顶栏那几颗「图标 + 文字」的按钮。窄屏上六个宽按钮写不下（「📁 文件管理器」一颗就 90px，
+   * 390px 的手机加上「产物」就溢出），所以图标与文字分开包：`@media (max-width: 620px)` 只把
+   * `.lb` 收掉，按钮回成 28px 方块，文字还在 title / aria-label 里。
+   * 切分用的是 `tr()` 之后的文案（形如「📂 产物」，第一个空格前是图标），所以不必再为窄屏添一套 key。
+   */
+  private wideBtn(label: string, extra = ""): HTMLButtonElement {
+    const b = el("button", `icon-btn wide ${extra}`.trim()) as HTMLButtonElement;
+    this.setWideLabel(b, label);
+    return b;
+  }
+
+  /** 同一颗宽按钮的字会换（终端跑起来之后是「>_ 终端 2」），所以拆开这件事得能重做一遍。 */
+  private setWideLabel(btn: HTMLElement, label: string): void {
+    const cut = label.indexOf(" ");
+    btn.replaceChildren(el("span", "ic", cut > 0 ? label.slice(0, cut) : label));
+    if (cut > 0) btn.append(el("span", "lb", label.slice(cut + 1)));
+  }
+
   // ---------------------------------------------------------------- layout
   private build(): void {
     const app = document.getElementById("app")!;
@@ -350,40 +369,40 @@ export class App {
     look.title = tr("字号与颜色");
     look.dataset.act = "look";
     look.onclick = () => this.openDisplaySheet();
-    const files = el("button", "icon-btn wide", tr("📂 产物"));
+    const files = this.wideBtn(tr("📂 产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
     files.dataset.act = "artifacts";
     files.onclick = () => this.openArtifactsSheet();
     files.hidden = true;
     // D92: the shell sits next to 产物 now — it is a dialog over the page, and this button is both
     // its opener and the place it minimizes back to. Not session-scoped, so it never hides.
-    const term = el("button", "icon-btn wide", tr(">_ 终端"));
+    const term = this.wideBtn(tr(">_ 终端"));
     term.dataset.act = "terminal";
     term.setAttribute("aria-label", tr("终端"));
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
     term.onclick = () => this.openTerminal();
     this.els.term = term;
-    const fs = el("button", "icon-btn wide", tr("📁 文件管理器"));
+    const fs = this.wideBtn(tr("📁 文件管理器"));
     fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
     fs.dataset.act = "files";
     fs.onclick = () => this.openFiles();
     fs.hidden = true;
     this.els.fs = fs;
     // D108：记录不跟会话绑定，所以它跟终端一样常显；计数只在 title 里。
-    const notes = el("button", "icon-btn wide notes-btn", "🐞 bug");
+    const notes = this.wideBtn("🐞 bug", "notes-btn");
     notes.title = tr("记录 bug / 变更 / 想法 / 杂事");
     notes.dataset.act = "notes";
     notes.onclick = () => this.openNotes();
     this.els.notes = notes;
     // #45: the peer is a dialog over the page, not a separate tab — same as 终端.
-    const peer = el("button", "icon-btn wide", tr("🌐 内网通"));
+    const peer = this.wideBtn(tr("🌐 内网通"));
     peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     peer.dataset.act = "peer";
     peer.onclick = () => this.openPeerSheet();
     // 之前没登记进 els，`paintChrome()` 里那段 `if (peer)` 一直是死代码：切语言时这颗不动。
     this.els.peer = peer;
     // #86：随手问也不跟会话绑定（它不进列表），所以跟终端 / 记录一样常显。
-    const scratch = el("button", "icon-btn wide", tr("💭 随手问"));
+    const scratch = this.wideBtn(tr("💭 随手问"));
     scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     scratch.dataset.act = "scratch";
     scratch.onclick = () => this.scratch.open();
@@ -2453,22 +2472,22 @@ export class App {
     const sessFilter = this.els.sessFilter as HTMLInputElement;
     look.title = tr("外观与语言");
     look.setAttribute("aria-label", tr("外观与语言"));
-    files.textContent = tr("📂 产物");
+    this.setWideLabel(files, tr("📂 产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
-    term.textContent = tr(">_ 终端");
+    this.setWideLabel(term, tr(">_ 终端"));
     term.setAttribute("aria-label", tr("终端"));
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
-    fs.textContent = tr("📁 文件管理器");
+    this.setWideLabel(fs, tr("📁 文件管理器"));
     fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
     // 记录与内网通是顶栏常显的两颗（#45 / D108），标题也要跟着换；
     // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写。
     if (notes) this.paintNotesBadge();
     if (peer) {
-      peer.textContent = tr("🌐 内网通");
+      this.setWideLabel(peer, tr("🌐 内网通"));
       peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     }
     if (scratch) {
-      scratch.textContent = tr("💭 随手问");
+      this.setWideLabel(scratch, tr("💭 随手问"));
       scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     }
     newBtn.textContent = tr("开新会话");
@@ -6029,10 +6048,7 @@ export class App {
         tr("等你批准或回答时，推送到 Windows 通知（Web Push）和微信。正看着这个页面时不发：只有切到别的标签页、最小化浏览器或切到别的程序时才发。一份问卷只发一条。"),
       ),
     );
-    const tools = el("div", "actions");
-    tools.style.display = "flex";
-    tools.style.gap = "8px";
-    tools.style.flexWrap = "wrap";
+    const tools = el("div", "queue-tools");
     const push = el("button", "btn", tr("在这台设备开启 Web Push"));
     push.onclick = () => void this.enablePush();
     const test = el("button", "btn", tr("发测试通知"));
@@ -8417,7 +8433,7 @@ export class App {
       host.append(link);
     }
     if (this.tunnel.error) host.append(el("div", "notice warn", errText(this.tunnel)));
-    const keysTools = el("div", "tools");
+    const keysTools = el("div", "queue-tools");
     const keysBtn = el("button", "btn", Object.keys(this.keys).length ? tr("快捷键（已设 {p1} 个）", { p1: Object.keys(this.keys).length }) : tr("设置快捷键"));
     keysBtn.onclick = () => this.openKeysSheet();
     const piSettings = el("button", "btn", tr("pi 设置")) as HTMLButtonElement;
@@ -8427,7 +8443,7 @@ export class App {
     host.append(el("h2", "", tr("快捷键")));
     host.append(keysTools);
     host.append(el("h2", "", tr("关于")));
-    host.append(el("div", "hint", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
+    host.append(el("div", "hint about", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
   }
 
   // ---------------------------------------------------------------- terminal (Q-007 · D70 · D92)
@@ -8481,7 +8497,7 @@ export class App {
     const btn = this.els.term;
     if (!btn) return;
     const n = this.termTabs.size;
-    btn.textContent = n > 1 ? tr(">_ 终端 {p1}", { p1: n }) : tr(">_ 终端");
+    this.setWideLabel(btn, n > 1 ? tr(">_ 终端 {p1}", { p1: n }) : tr(">_ 终端"));
     btn.classList.toggle("term-live", n > 0);
   }
 
