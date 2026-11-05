@@ -388,6 +388,8 @@ export interface SheetMeta {
   rows: number;
   cols: number;
   sheets: SheetInfo[];
+  /** 包里有图表部件（#112）：页面视图值得自动转一次。 */
+  charts?: boolean;
 }
 
 export interface SheetWindow {

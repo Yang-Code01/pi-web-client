@@ -38,6 +38,34 @@ const check = (name, ok, detail = "") => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** 页面视图要 LibreOffice；没有就明说 SKIP，不静默通过。 */
+function findSoffice() {
+  const env = (process.env.PI_SOFFICE ?? "").trim();
+  if (env) return fs.existsSync(env) ? env : null;
+  const candidates =
+    process.platform === "win32"
+      ? [
+          "C:/Program Files/LibreOffice/program/soffice.com",
+          "C:/Program Files (x86)/LibreOffice/program/soffice.com",
+          "C:/Program Files/LibreOffice/program/soffice.exe",
+        ]
+      : [];
+  for (const c of candidates) if (fs.existsSync(c)) return c;
+  try {
+    const out = execSync(process.platform === "win32" ? "where soffice" : "which soffice", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out.split(/\r?\n/).map((x) => x.trim()).find(Boolean) ?? null;
+  } catch {
+    return null;
+  }
+}
+const SKIP_PDF = findSoffice() === null;
+if (SKIP_PDF) {
+  console.log("SKIP 页面视图：本机没有 LibreOffice（soffice），#112 的 PDF 断言跳过（不是静默通过）");
+}
+
 // 假会话：只为了让首页有一张卡、文件管理器从 WORK 起步。不跑模型。
 const dir = path.join(SESSIONS, `--${SID}--`);
 fs.mkdirSync(dir, { recursive: true });
@@ -132,6 +160,25 @@ try {
   page.on("pageerror", (e) => {
     pageErrors.push(e.message);
     log("page error:", e.message);
+  });
+  const pdfResponses = [];
+  page.on("response", async (r) => {
+    if (!r.url().includes("/api/sheet/pdf")) return;
+    const headers = r.headers();
+    let head = "";
+    try {
+      head = Buffer.from(await r.body()).subarray(0, 5).toString("latin1");
+    } catch {
+      /* fetch 预检把 body 取消了，字节走 iframe 那一趟 */
+    }
+    pdfResponses.push({
+      status: r.status(),
+      type: headers["content-type"] ?? "",
+      csp: headers["content-security-policy"] ?? null,
+      cache: headers["x-sheet-pdf"] ?? "",
+      kind: r.request().resourceType(),
+      head,
+    });
   });
   const windowRequests = [];
   page.on("request", (r) => {
@@ -759,6 +806,15 @@ try {
       fs.rmSync(tmp, { force: true });
     } catch {}
   }
+  // ---------------------------------------------------------------- 页面视图（#112）
+  const previewOf = async (file) => (await api("/api/preview", { sessionId: SID, path: file })).data;
+  const chartPreview = await previewOf(made.chart);
+  check("带图表的文件仍按网格预览", chartPreview?.kind === "sheet", JSON.stringify(chartPreview));
+  const chartMeta = (await api("/api/sheet/meta", { token: chartPreview?.token })).data;
+  check("meta 标出文件里有图表", chartMeta?.charts === true, JSON.stringify(chartMeta));
+  const plainMeta = (await api("/api/sheet/meta", { token: (await previewOf(made.plain))?.token })).data;
+  check("无图表不虚构 charts", plainMeta?.charts === false, JSON.stringify(plainMeta));
+
   // ---------------------------------------------------------------- CSV / TSV（#113）
   // 先把 xlsx 那扇关掉：文件管理器是在 viewer 里，浮窗留着会与下面的断言撞车。
   const closeSheet = async () => {
@@ -769,6 +825,150 @@ try {
   await closeSheet();
   // 浮窗几何已被上面改过，先清掉记忆回到默认尺寸。
   await page.evaluate(() => localStorage.removeItem("pi.sheetGeom"));
+  // ---------------------------------------------------------------- 页面视图（#112）
+if (SKIP_PDF) {
+  // 没有 LibreOffice：转换必然失败，但「失败只影响页面视图」仍然可验。
+  await openSheet("chart.xlsx");
+  await page.locator(".sd-pg-error").waitFor({ timeout: 20000 });
+  const reason = await page.locator(".sd-pg-error").innerText();
+  check("没有 LibreOffice 时页面视图说原因", reason.includes("LibreOffice"), reason);
+  check("没有 LibreOffice 时网格仍可用", (await cellText(0, 0)) === "地区", String(await cellText(0, 0)));
+  check("失败后给出重试按钮", (await page.locator(".sd-pg-error .sd-act").count()) === 1);
+  await closeSheet();
+  console.log("SKIP #112：自动转换 / 缓存命中 / PDF 字节 / 两档布局的断言（无 LibreOffice）");
+} else {
+  const splitState = () =>
+    page.evaluate(() => {
+      const grid = document.querySelector(".sd-gridpane");
+      const paper = document.querySelector(".sd-pg");
+      const divider = document.querySelector(".sd-split");
+      const tabs = document.querySelector(".sd-viewtabs");
+      const gb = grid?.getBoundingClientRect();
+      const pb = paper?.getBoundingClientRect();
+      const tb = tabs?.getBoundingClientRect();
+      return {
+        grid: gb ? { w: Math.round(gb.width), l: Math.round(gb.left) } : null,
+        paper: pb ? { w: Math.round(pb.width), l: Math.round(pb.left) } : null,
+        gridShown: !!gb && grid.offsetParent !== null && getComputedStyle(grid).display !== "none",
+        paperShown: !!pb && paper.offsetParent !== null && getComputedStyle(paper).display !== "none",
+        divider: !!divider && getComputedStyle(divider).display !== "none",
+        tabs: !!tb && getComputedStyle(tabs).display !== "none" && tb.width > 0,
+      };
+    });
+  const splitRatio = async () => {
+    const st = await splitState();
+    return st.grid && st.paper ? st.grid.w / (st.grid.w + st.paper.w) : 0;
+  };
+
+  const missBefore = pdfResponses.filter((r) => r.cache === "miss").length;
+  await openSheet("chart.xlsx");
+  check("图表文件自动转页面视图", (await page.locator(".sd-pg").count()) === 1);
+  check("转换中显示「正在生成页面视图」", ((await page.locator(".sd-pg").innerText()) ?? "").includes("正在生成页面视图"));
+  check("宽窗两栏都在", (await splitState()).gridShown && (await splitState()).paperShown, JSON.stringify(await splitState()));
+  await page.locator(".sd-pg-frame").waitFor({ timeout: 90000 });
+  await page.waitForTimeout(2500);
+  const frameSrc = await page.locator(".sd-pg-frame").getAttribute("src");
+  const framePath = (() => {
+    try {
+      return new URL(String(frameSrc), page.url()).pathname;
+    } catch {
+      return "";
+    }
+  })();
+  check("iframe 指向页面视图端点", framePath === "/api/sheet/pdf" && String(frameSrc).includes("token="), String(frameSrc));
+  const firstMiss = pdfResponses.find((r) => r.cache === "miss");
+  check("第一次打开触发一次转换", pdfResponses.filter((r) => r.cache === "miss").length === missBefore + 1, JSON.stringify(pdfResponses.map((r) => r.cache)));
+  check("PDF 响应是 application/pdf", firstMiss?.type.includes("application/pdf") === true, JSON.stringify(firstMiss));
+  check("PDF 端点不带 CSP sandbox", firstMiss?.csp === null, String(firstMiss?.csp));
+  const direct = await page.request.get(String(frameSrc));
+  const bytes = await direct.body();
+  check("PDF 端点返回 %PDF 字节", direct.status() === 200 && bytes.subarray(0, 5).toString("latin1") === "%PDF-", `${direct.status()} ${bytes.subarray(0, 5).toString("latin1")}`);
+  await page.screenshot({ path: path.join(OUT, "08-page-view.png") });
+
+  // 分界线拖动：左栏变窄，比例记进 localStorage。
+  const wide0 = await splitRatio();
+  await drag(".sd-split", -160, 0);
+  const wide1 = await splitRatio();
+  const storedSplit = await page.evaluate(() => Number(localStorage.getItem("pi.sheetSplit")));
+  check("拖分界线改变左右比例", wide1 < wide0 - 0.1, `${wide0.toFixed(2)} → ${wide1.toFixed(2)}`);
+  check("比例写进 localStorage", Math.abs(storedSplit - wide1) < 0.03, `${storedSplit} vs ${wide1}`);
+  check("分界线仍在两栏之间", (await page.evaluate(() => {
+    const g = document.querySelector(".sd-gridpane").getBoundingClientRect();
+    const p = document.querySelector(".sd-pg").getBoundingClientRect();
+    const d = document.querySelector(".sd-split").getBoundingClientRect();
+    return d.left >= g.right - 1 && d.right <= p.left + 1;
+  })));
+
+  // 同一文件第二次打开：不再发起转换，纸面直接出来。
+  await closeSheet();
+  const tOpen0 = Date.now();
+  await openSheet("chart.xlsx");
+  await page.locator(".sd-pg-frame").waitFor({ timeout: 15000 });
+  const reopenMs = Date.now() - tOpen0;
+  check("第二次打开直接出来", reopenMs < 6000, `${reopenMs}ms`);
+  check("第二次没有重新转换", pdfResponses.filter((r) => r.cache === "miss").length === missBefore + 1, JSON.stringify(pdfResponses.map((r) => r.cache)));
+  const reopenedRatio = await splitRatio();
+  check("重开后分界比例还在", Math.abs(reopenedRatio - wide1) < 0.03, `${reopenedRatio.toFixed(2)} vs ${wide1.toFixed(2)}`);
+
+  // 缩到 900 以下：两栏退成两个标签页，只有一个面可见。
+  await drag(".sd-resize", -400, 0);
+  let st = await splitState();
+  check("窄窗出现两个标签页", st.tabs, JSON.stringify(st));
+  check("窄窗分界线消失", !st.divider);
+  check("窄窗只显示一个面", st.gridShown !== st.paperShown, JSON.stringify(st));
+  await page.locator('.sd-viewtab[data-view="page"]').click();
+  st = await splitState();
+  check("切到页面视图标签", !st.gridShown && st.paperShown && (await page.locator(".sd-pg-frame").count()) === 1, JSON.stringify(st));
+  await page.screenshot({ path: path.join(OUT, "09-page-view-narrow.png") });
+  await page.locator('.sd-viewtab[data-view="grid"]').click();
+  st = await splitState();
+  check("切回网格标签", st.gridShown && !st.paperShown, JSON.stringify(st));
+
+  await drag(".sd-resize", 400, 0);
+  st = await splitState();
+  check("拉宽后回到整幅网格", st.gridShown && !st.paperShown && !st.divider && st.grid.w > 1000, JSON.stringify(st));
+  await page.locator('.sd-viewtab[data-view="page"]').click();
+  st = await splitState();
+  check("宽窗切页面视图回到并排", st.gridShown && st.paperShown && st.divider, JSON.stringify(st));
+  check("拉宽后比例仍是记住的那份", Math.abs((await splitRatio()) - wide1) < 0.03);
+  await page.locator('.sd-viewtab[data-view="grid"]').click();
+  st = await splitState();
+  check("宽窗切回网格收起纸面", st.gridShown && !st.paperShown, JSON.stringify(st));
+  await closeSheet();
+
+  // 没有图表的文件不自动转，手动也能看版式。
+  const missBeforeManual = pdfResponses.filter((r) => r.cache === "miss").length;
+  await openSheet("report.xlsx");
+  check("无图表默认整幅网格", (await splitState()).grid.w > 1000 && !(await splitState()).paperShown, JSON.stringify(await splitState()));
+  check("无图表文件不自动转", pdfResponses.filter((r) => r.cache === "miss").length === missBeforeManual);
+  check("宽窗也有页面视图标签", (await splitState()).tabs);
+  await page.locator('.sd-viewtab[data-view="page"]').click();
+  check("无图表给出「生成页面视图」按钮", (await page.locator(".sd-pg-idle .sd-act").count()) === 1);
+  await page.locator(".sd-pg-idle .sd-act").click();
+  await page.locator(".sd-pg-frame").waitFor({ timeout: 90000 });
+  await page.waitForTimeout(1500);
+  check("手动也能看页面视图", (await page.locator(".sd-pg-frame").count()) === 1);
+  await page.screenshot({ path: path.join(OUT, "10-page-view-manual.png") });
+  await closeSheet();
+
+  // 转换失败只影响页面视图：桥端回 JSON 错误，界面说原因，网格照常能滚。
+  await page.route("**/api/sheet/pdf**", (route) =>
+    route.fulfill({
+      status: 502,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "probe 模拟：LibreOffice 不在", code: "sheet_pdf_failed" }),
+    }),
+  );
+  await openSheet("chart.xlsx");
+  await page.locator(".sd-pg-error").waitFor({ timeout: 20000 });
+  const failText = await page.locator(".sd-pg-error").innerText();
+  check("转换失败显示原因", failText.includes("LibreOffice 不在"), failText);
+  check("转换失败时网格仍可用", (await cellText(0, 0)) === "地区", String(await cellText(0, 0)));
+  check("转换失败后有重试", (await page.locator(".sd-pg-error .sd-act").count()) === 1);
+  await page.unroute("**/api/sheet/pdf**");
+  await closeSheet();
+}
+
   const tab = (name) => page.locator(`.sd-tab[data-tab="${name}"]`).first();
   const srcText = async () => page.locator(".sd-src").first().inputValue();
 

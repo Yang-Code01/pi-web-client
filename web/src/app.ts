@@ -5415,6 +5415,8 @@ export class App {
       scale: () => this.uiScale(),
       loadMeta: () => api.sheetMeta(info.token),
       fetchWindow: (sheet, r0, r1, c0, c1) => api.sheetWindow(info.token, sheet, r0, r1, c0, c1),
+      // #112：有图表的文件自动转一次 PDF；没有的也能手动切过去看打印版式。
+      page: { url: api.sheetPdf(info.token) },
       onOpen: () => this.openInApp(info.token),
       onReveal: () => this.reveal(info.abs),
       // 文件被改过：要新的 token，所以整扇重开一趟（旧的那扇由 openSheet 拆）。
