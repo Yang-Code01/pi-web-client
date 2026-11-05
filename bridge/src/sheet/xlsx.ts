@@ -5,6 +5,7 @@
  * 现在每次请求重新解包，但不缓存解压后的整表 XML，也不把整表发给前端。
  */
 import { unzipSync } from "fflate";
+import { formatCode, formatValue } from "./numfmt.js";
 
 export type CellKind = "n" | "s" | "b" | "e";
 
@@ -12,8 +13,10 @@ export interface WireCell {
   r: number;
   c: number;
   k: CellKind;
-  /** 显示串：数字就是文件里的原样文本，不转日期、不丢小数。 */
+  /** 显示串：有数字格式的数按格式显示（日期、货币…），没有格式的就是文件里的原样文本。 */
   t: string;
+  /** 文件里指定的对齐（合并格标题居中这类）；没写就不带。 */
+  a?: "l" | "c" | "r";
 }
 
 export interface WireRow {
@@ -21,10 +24,32 @@ export interface WireRow {
   cells: WireCell[];
 }
 
+/** 一个合并区（含左上角那格本身），0 基、闭区间。 */
+export interface MergedRange {
+  r0: number;
+  c0: number;
+  r1: number;
+  c1: number;
+}
+
+export interface FreezePane {
+  /** 冻结在顶上的行数。 */
+  rows: number;
+  /** 冻结在左边的列数。 */
+  cols: number;
+}
+
 export interface SheetInfo {
   name: string;
   rows: number;
   cols: number;
+  /** 文件里藏起来的表：不列在底部，只在状态条上提示。 */
+  hidden?: boolean;
+  /** 合并区，左上角优先。 */
+  merges?: MergedRange[];
+  /** 每列宽度（px），长度等于 cols；文件没写就是默认宽度。 */
+  colWidths?: number[];
+  freeze?: FreezePane | null;
 }
 
 export interface WorkbookMeta {
@@ -47,6 +72,8 @@ export interface SheetWindow {
 export interface Book {
   meta: WorkbookMeta;
   parts: Map<string, string>;
+  /** 1904 日期系统（老 Mac 文件）。 */
+  date1904: boolean;
 }
 
 const dec = new TextDecoder("utf-8");
@@ -112,6 +139,79 @@ function dimension(xml: string): { rows: number; cols: number } {
   return { rows: Math.max(0, last.r + 1), cols: Math.max(0, last.c + 1) };
 }
 
+/** 一个单元格样式（按 cellXfs 下标）：数字格式代码 + 对齐。 */
+interface Xf {
+  code: string | null;
+  align: "l" | "c" | "r" | null;
+}
+
+function readStyles(entries: Record<string, Uint8Array>): Xf[] {
+  const xml = zipPart(entries, "xl/styles.xml");
+  if (!xml) return [];
+  const custom = new Map<number, string>();
+  for (const m of xml.matchAll(/<numFmt\b[^>]*>/g)) {
+    const id = Number(attr(m[0], "numFmtId"));
+    const code = attr(m[0], "formatCode");
+    if (Number.isFinite(id) && code) custom.set(id, code);
+  }
+  const block = /<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/.exec(xml)?.[1] ?? "";
+  const xfs: Xf[] = [];
+  for (const m of block.matchAll(/<xf\b([^>]*?)(?:\/>|>([\s\S]*?)<\/xf>)/g)) {
+    const attrs = m[1] ?? "";
+    const inner = m[2] ?? "";
+    const id = Number(attr(attrs, "numFmtId") ?? "0");
+    const horiz = /<alignment\b[^>]*>/.exec(inner)?.[0];
+    const h = horiz ? attr(horiz, "horizontal") : null;
+    const align = h === "left" || h === "center" || h === "right" ? (h[0] as "l" | "c" | "r") : null;
+    xfs.push({ code: Number.isFinite(id) ? formatCode(id, custom) : null, align });
+  }
+  return xfs;
+}
+
+/** 字符宽度 → 像素：Excel 的默认字宽 7px + 5px 边距。 */
+function widthPx(chars: number): number {
+  return Math.max(24, Math.min(600, Math.round(chars * 7) + 5));
+}
+
+/** 表级结构：合并区、列宽、冻结窗格。 */
+function sheetExtras(xml: string): { merges: MergedRange[]; widths: Map<number, number>; defaultW: number; freeze: FreezePane | null } {
+  const merges: MergedRange[] = [];
+  for (const m of xml.matchAll(/<mergeCell\b[^>]*\bref\s*=\s*"([^"]*)"/g)) {
+    const [a, b] = (m[1] ?? "").split(":");
+    const first = refOf(a ?? "");
+    const last = refOf(b ?? a ?? "");
+    if (!first || !last) continue;
+    merges.push({
+      r0: Math.min(first.r, last.r),
+      c0: Math.min(first.c, last.c),
+      r1: Math.max(first.r, last.r),
+      c1: Math.max(first.c, last.c),
+    });
+  }
+
+  const def = Number(attr(/<sheetFormatPr\b[^>]*>/.exec(xml)?.[0] ?? "", "defaultColWidth") ?? "8.43");
+  const defaultW = widthPx(Number.isFinite(def) && def > 0 ? def : 8.43);
+  const colWidths = new Map<number, number>();
+  for (const m of xml.matchAll(/<col\b[^>]*>/g)) {
+    const min = Number(attr(m[0], "min") ?? "0");
+    const max = Number(attr(m[0], "max") ?? "0");
+    const w = Number(attr(m[0], "width") ?? attr(m[0], "customWidth") ?? "");
+    if (!Number.isFinite(min) || !Number.isFinite(max) || min < 1 || max < min) continue;
+    const px = Number.isFinite(w) && w > 0 ? widthPx(w) : defaultW;
+    for (let c = min - 1; c <= Math.min(max - 1, 999); c++) colWidths.set(c, px);
+  }
+
+  const pane = /<pane\b[^>]*>/.exec(xml)?.[0];
+  let freeze: FreezePane | null = null;
+  if (pane && /\bstate\s*=\s*"frozen/.test(pane)) {
+    const rows = Number(attr(pane, "ySplit") ?? "0");
+    const cols = Number(attr(pane, "xSplit") ?? "0");
+    if (rows > 0 || cols > 0) freeze = { rows: Math.max(0, rows), cols: Math.max(0, cols) };
+  }
+
+  return { merges, widths: colWidths, defaultW, freeze };
+}
+
 /** Reject a package we cannot show, with a code the page can turn into its own sentence. */
 function unsupported(what: string): never {
   throw Object.assign(new Error(what), { code: "sheet_unsupported" });
@@ -147,12 +247,27 @@ export function readBook(buf: Uint8Array): Book {
     if (!part) continue;
     const xml = zipPart(entries, part) ?? "";
     const size = dimension(xml);
-    sheets.push({ name, rows: size.rows, cols: size.cols });
+    const extras = sheetExtras(xml);
+    const state = attr(m[0], "state");
+    sheets.push({
+      name,
+      rows: size.rows,
+      cols: size.cols,
+      ...(state === "hidden" || state === "veryHidden" ? { hidden: true } : {}),
+      ...(extras.merges.length ? { merges: extras.merges } : {}),
+      ...(extras.widths.size
+        ? { colWidths: Array.from({ length: Math.max(size.cols, ...[...extras.widths.keys()].map((c) => c + 1)) }, (_, c) => extras.widths.get(c) ?? extras.defaultW) }
+        : {}),
+      ...(extras.freeze ? { freeze: extras.freeze } : {}),
+    });
     parts.set(name, part);
   }
   if (!sheets.length) throw new Error("这个工作簿里没有工作表");
   const first = sheets[0];
-  return { meta: { name: first.name, rows: first.rows, cols: first.cols, sheets }, parts };
+  const pr = /<workbookPr\b[^>]*>/.exec(workbook)?.[0] ?? "";
+  const date1904 = /^(1|true)$/i.test(attr(pr, "date1904") ?? "");
+  return { meta: { name: first.name, rows: first.rows, cols: first.cols, sheets }, parts, date1904 };
+
 }
 
 function sharedStrings(entries: Record<string, Uint8Array>): string[] {
@@ -166,7 +281,7 @@ function sharedStrings(entries: Record<string, Uint8Array>): string[] {
   return out;
 }
 
-function cellsOfRow(xml: string, rowIndex: number, c0: number, c1: number, strings: string[]): WireCell[] {
+function cellsOfRow(xml: string, rowIndex: number, c0: number, c1: number, strings: string[], xfs: Xf[], date1904: boolean): WireCell[] {
   const cells: WireCell[] = [];
   for (const m of xml.matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
     const attrs = m[1] ?? "";
@@ -175,6 +290,9 @@ function cellsOfRow(xml: string, rowIndex: number, c0: number, c1: number, strin
     if (!pos || pos.r !== rowIndex || pos.c < c0 || pos.c > c1) continue;
     const kind = attr(attrs, "t") ?? "n";
     const v = /<v\b[^>]*>([\s\S]*?)<\/v>/.exec(inner)?.[1] ?? "";
+    const sIdx = Number(attr(attrs, "s") ?? "");
+    const xf = Number.isFinite(sIdx) ? xfs[sIdx] : undefined;
+    const align = xf?.align ?? undefined;
     let cell: WireCell | null = null;
     if (kind === "s") {
       const text = strings[Number(v)];
@@ -191,9 +309,14 @@ function cellsOfRow(xml: string, rowIndex: number, c0: number, c1: number, strin
     } else if (kind === "d") {
       cell = { r: pos.r, c: pos.c, k: "s", t: unescapeXml(v) };
     } else if (v.trim() !== "") {
-      // 数字原样：45292 就是 45292，不猜日期；3.14159 不四舍五入。
-      cell = { r: pos.r, c: pos.c, k: "n", t: unescapeXml(v.trim()) };
+      // 有格式就按格式显示（日期/货币/百分比…），没有格式才是文件里的原样数字。
+      const raw = unescapeXml(v.trim());
+      const num = Number(raw);
+      let shown = raw;
+      if (xf?.code && Number.isFinite(num)) shown = formatValue(num, xf.code, date1904);
+      cell = { r: pos.r, c: pos.c, k: "n", t: shown };
     }
+    if (cell && align) cell.a = align;
     if (cell) cells.push(cell);
   }
   return cells;
@@ -207,6 +330,7 @@ export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: numbe
   const xml = zipPart(entries, part);
   if (!xml) throw new Error("这个工作表是空的");
   const strings = sharedStrings(entries);
+  const xfs = readStyles(entries);
   const rows: WireRow[] = [];
   for (const m of xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>|<row\b([^>]*)\/>/g)) {
     const attrs = m[1] ?? m[3] ?? "";
@@ -214,7 +338,7 @@ export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: numbe
     if (!Number.isFinite(num)) continue;
     const index = num - 1;
     if (index < r0 || index > r1) continue;
-    const cells = cellsOfRow(m[2] ?? "", index, c0, c1, strings);
+    const cells = cellsOfRow(m[2] ?? "", index, c0, c1, strings, xfs, book.date1904);
     if (cells.length) rows.push({ r: index, cells });
   }
   return { sheet, r0, r1, c0, c1, rows };

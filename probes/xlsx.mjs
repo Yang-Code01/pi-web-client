@@ -356,6 +356,105 @@ try {
   check("刷新后位置还在", Math.abs(b9.l - kept.l) <= 2 && Math.abs(b9.t - kept.t) <= 2, `${JSON.stringify(kept)} → ${JSON.stringify(b9)}`);
   check("刷新后大小还在", b9.w === kept.w && b9.h === kept.h, `${kept.w}x${kept.h} → ${b9.w}x${b9.h}`);
 
+  // ---------------------------------------------------------------- 结构保真（#108）
+  // 同一份表要长得像在 Excel 里：合并标题、文件里的列宽、数字/日期格式、冻结、多表。
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+  await openSheet("report.xlsx");
+
+  const cellBox = (r, c) =>
+    page.evaluate(
+      ([rr, cc]) => {
+        const el = document.querySelector(`.sd-cell[data-r="${rr}"][data-c="${cc}"]`);
+        if (!el) return null;
+        const b = el.getBoundingClientRect();
+        return { l: Math.round(b.left), t: Math.round(b.top), w: Math.round(b.width), h: Math.round(b.height) };
+      },
+      [r, c],
+    );
+
+  // 合并标题：A1:H1 一个块，跨过 8 列，字居中；被并掉的格子不单独出现。
+  const mergedTitle = await cellText(0, 0);
+  check("合并标题在 A1", mergedTitle === "2024 年度销售汇总", String(mergedTitle));
+  const tb = await cellBox(0, 0);
+  const a1 = await cellBox(1, 0);
+  check("合并区横跨多列", tb !== null && a1 !== null && tb.w > a1.w * 8, JSON.stringify({ merged: tb, oneCol: a1 }));
+  check("合并区里没有空格子", (await page.locator('.sd-cell[data-r="0"][data-c="1"]').count()) === 0);
+  check("合并格标题居中", (await page.evaluate(() => getComputedStyle(document.querySelector('.sd-cell[data-r="0"][data-c="0"]')).justifyContent)) === "center");
+
+  // 列宽取文件值：A 列 width=18 → 131px，H 列 width=5 → 40px；窄列长文本被裁，不撑破布局。
+  const wa = (await cellBox(1, 0))?.w ?? 0;
+  const wh = (await cellBox(1, 7))?.w ?? 0;
+  check("A 列用文件宽度", Math.abs(wa - 131) <= 3, String(wa));
+  check("H 列是窄列", Math.abs(wh - 40) <= 3, String(wh));
+  const narrow = await page.evaluate(() => {
+    const el = document.querySelector('.sd-cell[data-r="2"][data-c="7"]');
+    if (!el) return null;
+    return { w: Math.round(el.getBoundingClientRect().width), clip: el.scrollWidth > el.clientWidth, nowrap: getComputedStyle(el).whiteSpace };
+  });
+  check("窄列内容被裁不撑破", narrow?.clip === true && narrow?.nowrap === "nowrap", JSON.stringify(narrow));
+
+  // 数字 / 货币 / 百分比 / 日期 / 时刻：格式取自文件，45678 必须是日期。
+  check("货币格式", (await cellText(2, 2)) === "¥1,234.50", String(await cellText(2, 2)));
+  check("千分位整数", (await cellText(2, 3)) === "1,234,568", String(await cellText(2, 3)));
+  check("百分比", (await cellText(2, 4)) === "12.3%", String(await cellText(2, 4)));
+  check("45678 按日期格式显示", (await cellText(2, 5)) === "2025-01-21", String(await cellText(2, 5)));
+  check("时刻格式", (await cellText(2, 6)) === "18:00", String(await cellText(2, 6)));
+  check("没写格式的格保持原样", (await cellText(1, 7)) === "备注", String(await cellText(1, 7)));
+  await page.screenshot({ path: path.join(OUT, "05-structure.png") });
+
+  // 冻结首行首列：滚远之后标题行与第一列仍贴在左边/上边。
+  const viewBox = await page.evaluate(() => {
+    const v = document.querySelector(".sd-view");
+    const b = v.getBoundingClientRect();
+    return { l: Math.round(b.left), t: Math.round(b.top), w: Math.round(b.width), h: Math.round(b.height) };
+  });
+  await page.evaluate(() => {
+    const v = document.querySelector(".sd-view");
+    v.scrollTop = 420;
+    v.scrollLeft = 260;
+    v.dispatchEvent(new Event("scroll"));
+  });
+  await page.waitForTimeout(250);
+  const scrolled = await page.evaluate(() => Math.round(document.querySelector(".sd-view").scrollLeft));
+  check("表比窗口宽，能横向滚动", scrolled > 100, String(scrolled));
+  const frozenTitle = await cellBox(0, 0);
+  const frozenCol = await cellBox(20, 0);
+  check("滚动后冻结行还贴在顶上", !!frozenTitle && Math.abs(frozenTitle.t - viewBox.t) <= 2, JSON.stringify({ frozenTitle, viewBox }));
+  check("滚动后冻结列还贴在左边", !!frozenCol && Math.abs(frozenCol.l - viewBox.l) <= 2, JSON.stringify({ frozenCol, viewBox }));
+  check("冻结分界线可见", await page.evaluate(() => {
+    const v = document.querySelector(".sd-frz-v");
+    const h = document.querySelector(".sd-frz-h");
+    const vb = (el) => (el ? el.getBoundingClientRect() : null);
+    const a = vb(v);
+    const b = vb(h);
+    return !!a && !!b && a.height > 100 && b.width > 100;
+  }));
+  await page.screenshot({ path: path.join(OUT, "06-frozen.png") });
+
+  // 底部工作表：只列可见的两张，切换后内容变、滚动位置归零，当前表有选中态。
+  const tabs = await page.locator(".sd-wstab").allTextContents();
+  check("底部只列可见工作表", tabs.length === 2 && tabs.join("/") === "报表/明细", JSON.stringify(tabs));
+  const hint = (await page.locator(".sd-wshint").innerText()) ?? "";
+  check("隐藏工作表有提示", /1\s*个隐藏工作表/.test(hint), hint);
+  await page.locator(".sd-wstab", { hasText: "明细" }).first().click();
+  await until(async () => (await cellText(0, 0)) === "明细表头", 5000, "sheet switched");
+  check("切换后内容变了", (await cellText(0, 0)) === "明细表头", String(await cellText(0, 0)));
+  check("切换后滚动位置归零", (await page.evaluate(() => document.querySelector(".sd-view").scrollTop)) === 0);
+  check("当前表有选中态", await page.evaluate(() => {
+    const on = [...document.querySelectorAll(".sd-wstab")].filter((b) => b.getAttribute("aria-selected") === "true");
+    return on.length === 1 && on[0].textContent?.trim() === "明细";
+  }));
+  await page.screenshot({ path: path.join(OUT, "07-sheet-switch.png") });
+  await page.locator(".sd-wstab", { hasText: "报表" }).first().click();
+  await until(async () => (await cellText(0, 0)) === "2024 年度销售汇总", 5000, "sheet switched back");
+  check("切回来还是合并标题", (await cellText(0, 0)) === "2024 年度销售汇总", String(await cellText(0, 0)));
+
+  // 后面几段（#106 出口 / #113 CSV）测的是原来那份 plain.xlsx，换回去再往下走。
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+  await openSheet("plain.xlsx");
+
   // ---------------------------------------------------------------- #106 出口
   const foot = await page.evaluate(() => {
     const bar = document.querySelector(".sd-foot");
@@ -534,7 +633,7 @@ try {
   if (browser) await browser.close();
   bridge.kill();
   try {
-    execSync(`taskkill /PID ${bridge.pid} /T /F`, { stdio: "ignore" });
+    execSync(`taskkill //PID ${bridge.pid} //T //F`, { stdio: "ignore" });
   } catch {}
 }
 
