@@ -1530,6 +1530,8 @@ export const en: Dict = {
   "拖动改高度（双击复原）": "Drag to change height (double-click to reset)",
   "拖动改大小（双击复原）": "Drag to resize (double-click to reset)",
   "读不了这张表：{p1}": "Can't open this sheet: {p1}",
+  "工作表": "Sheets",
+  "{p1} 个隐藏工作表": "{p1} hidden sheet(s)",
   "这张表是空的": "This sheet is empty",
   "用 Excel 打开": "Open in Excel",
   "交给这台电脑上的 Excel 打开原文件": "Hand the original file to Excel on this computer",

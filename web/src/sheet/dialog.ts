@@ -5,7 +5,7 @@
  * 拖标题栏移动、拖右下角改宽高、拖顶边只改高、双击复原、打开时 clamp 回可视区。
  */
 import { tr, errText, fmtTime } from "../i18n/index.ts";
-import type { SheetMeta, SheetWindow } from "../types.ts";
+import type { SheetInfo, SheetMeta, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
 import { SheetGrid } from "./grid.ts";
 
@@ -58,6 +58,9 @@ export class SheetDialog {
   private readonly body: HTMLElement;
   private readonly pane: HTMLElement;
   private readonly footBar: HTMLElement;
+  /** #108：底部的工作表标签与「N 个隐藏工作表」提示（`.sd-tab` 是 CSV 的表格/源码，别混）。 */
+  private readonly wsTabs: HTMLElement;
+  private readonly wsHint: HTMLElement;
   private readonly tabs: HTMLElement[] = [];
   private src: HTMLTextAreaElement | null = null;
   private saveMsg: HTMLElement | null = null;
@@ -92,7 +95,14 @@ export class SheetDialog {
     const resize = el("div", "sd-resize");
     resize.title = tr("拖动改大小（双击复原）");
 
+    this.wsTabs = el("nav", "sd-wstabs");
+    this.wsTabs.setAttribute("role", "tablist");
+    this.wsTabs.setAttribute("aria-label", tr("工作表"));
+    this.wsHint = el("span", "sd-wshint");
+    this.wsHint.hidden = true;
+
     this.footBar = this.foot(opts);
+    this.footBar.prepend(this.wsTabs, this.wsHint);
     this.root.append(grip, this.head, this.body, this.footBar, resize);
     if (opts.source) this.buildSource(opts.source);
     this.wire(grip, resize);
@@ -192,6 +202,31 @@ export class SheetDialog {
     }
   }
 
+  /** #108：底部只列可见的工作表；藏起来的只报个数，不给出入口。 */
+  private renderTabs(sheets: SheetInfo[], active: string): void {
+    this.wsTabs.replaceChildren();
+    for (const info of sheets) {
+      if (info.hidden) continue;
+      const btn = el("button", "sd-wstab", info.name);
+      btn.type = "button";
+      btn.setAttribute("role", "tab");
+      btn.setAttribute("aria-selected", info.name === active ? "true" : "false");
+      btn.onclick = () => void this.pickSheet(info.name);
+      this.wsTabs.append(btn);
+    }
+    const hidden = sheets.filter((s) => s.hidden).length;
+    this.wsHint.textContent = hidden ? tr("{p1} 个隐藏工作表", { p1: hidden }) : "";
+    this.wsHint.hidden = !hidden;
+  }
+
+  private async pickSheet(name: string): Promise<void> {
+    if (!this.grid || this.grid.activeSheet === name) return;
+    for (const btn of this.wsTabs.children) {
+      btn.setAttribute("aria-selected", btn.textContent === name ? "true" : "false");
+    }
+    await this.grid.setSheet(name);
+  }
+
   /** 源码改过并保存之后换一份数据：行列数都可能变，网格整个重建。 */
   async setData(meta: SheetMeta, fetchWindow: SheetDialogOpts["fetchWindow"]): Promise<void> {
     this.opts.fetchWindow = fetchWindow;
@@ -226,9 +261,12 @@ export class SheetDialog {
     try {
       const meta = await this.opts.loadMeta();
       if (this.closed) return;
+      // 打开时落在第一张看得见的表上（文件名那格传给 meta.name 的不一定是它）。
+      const first = meta.sheets.find((s) => !s.hidden)?.name ?? meta.name;
+      this.renderTabs(meta.sheets, first);
       this.grid = new SheetGrid({
         meta,
-        sheet: meta.name,
+        sheet: first,
         fetchWindow: this.opts.fetchWindow,
         // 文件在预览之后被改过：停下，说清楚，别拿旧数据装作没事（#106）。
         onStale: () => this.stale(),

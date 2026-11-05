@@ -332,7 +332,7 @@ export interface PreviewInfo {
   kind: "markdown" | "html" | "image" | "text" | "sheet" | "binary";
 }
 
-/** D127 表格预览：格子只带显示串，数字就是文件里的原样文本。 */
+/** D127 表格预览：格子只带显示串，有数字格式的按格式显示。 */
 export type SheetCellKind = "n" | "s" | "b" | "e";
 
 export interface SheetCell {
@@ -340,12 +340,28 @@ export interface SheetCell {
   c: number;
   k: SheetCellKind;
   t: string;
+  /** 文件里指定的对齐（合并标题居中这类）。 */
+  a?: "l" | "c" | "r";
+}
+
+/** 合并区，0 基闭区间。 */
+export interface SheetMerge {
+  r0: number;
+  c0: number;
+  r1: number;
+  c1: number;
 }
 
 export interface SheetInfo {
   name: string;
   rows: number;
   cols: number;
+  /** 藏起来的表：不出现在底部，只在状态条上提示个数。 */
+  hidden?: boolean;
+  merges?: SheetMerge[];
+  /** 每列宽度（px），长度等于 cols。 */
+  colWidths?: number[];
+  freeze?: { rows: number; cols: number } | null;
 }
 
 export interface SheetMeta {
