@@ -151,10 +151,18 @@ try {
     clear: document.querySelector(".scratch-sheet .scratch-clear")?.textContent,
     send: document.querySelector(".scratch-sheet .btn.primary")?.textContent,
     hint: document.querySelector(".scratch-hint")?.textContent,
+    // 顶栏这两颗以前不跟语言：内网通的按钮从没登记进 els（paintChrome 那段是死代码），
+    // 随手问压根没写进 paintChrome。
+    peerBtn: document.querySelector('[data-act="peer"]')?.textContent,
+    scratchBtn: document.querySelector('[data-act="scratch"]')?.textContent,
+    termBtn: document.querySelector('[data-act="terminal"]')?.textContent,
   }));
   check("切语言后标题跟着变", jaTexts.title === "ちょい聞き", jaTexts.title ?? "");
   check("切语言后按钮跟着变", jaTexts.clear === "クリア" && jaTexts.send === "送信", `${jaTexts.clear} / ${jaTexts.send}`);
   check("切语言后说明行跟着变", /セッション一覧に出ない/.test(jaTexts.hint ?? ""), jaTexts.hint ?? "");
+  check("切语言后内网通的按钮跟着变", jaTexts.peerBtn === "🌐 LAN", jaTexts.peerBtn ?? "");
+  check("切语言后随手问的按钮跟着变", jaTexts.scratchBtn === "💭 ちょい聞き", jaTexts.scratchBtn ?? "");
+  check("旁边的按钮仍在跟着变（回归基线）", jaTexts.termBtn === ">_ ターミナル", jaTexts.termBtn ?? "");
 } catch (err) {
   failed += 1;
   console.error("FAIL", err?.message ?? err);

@@ -373,6 +373,8 @@ export class App {
     peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     peer.dataset.act = "peer";
     peer.onclick = () => this.openPeerSheet();
+    // 之前没登记进 els，`paintChrome()` 里那段 `if (peer)` 一直是死代码：切语言时这颗不动。
+    this.els.peer = peer;
     // #86：随手问也不跟会话绑定（它不进列表），所以跟终端 / 记录一样常显。
     const scratch = el("button", "icon-btn wide", tr("💭 随手问"));
     scratch.title = tr("随手问：不进会话列表、不带上下文、只能读的一个 dialog");
@@ -2374,7 +2376,7 @@ export class App {
    * the session list, `renderSessions()` the chips — neither touches these.
    */
   private paintChrome(): void {
-    const { look, files, term, fs, notes, peer, manageBtn, binBtn, tabs } = this.els;
+    const { look, files, term, fs, notes, peer, scratch, manageBtn, binBtn, tabs } = this.els;
     const newBtn = this.els.newBtn as HTMLButtonElement;
     const sessFilter = this.els.sessFilter as HTMLInputElement;
     look.title = tr("外观与语言");
@@ -2392,6 +2394,10 @@ export class App {
     if (peer) {
       peer.textContent = tr("🌐 内网通");
       peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
+    }
+    if (scratch) {
+      scratch.textContent = tr("💭 随手问");
+      scratch.title = tr("随手问：不进会话列表、不带上下文、只能读的一个 dialog");
     }
     newBtn.textContent = tr("开新会话");
     sessFilter.placeholder = tr("过滤名字 / 目录");
