@@ -9,41 +9,41 @@
   <body>
     <header class="bar">
       <div class="who">
-        <span id="dot" class="dot" title="peer 状态"></span>
-        <strong>内网通</strong>
-        <span id="me" class="muted">连接中…</span>
+        <span id="dot" class="dot" title="peer 状态" data-i18n-title="peer 状态"></span>
+        <strong data-i18n="内网通">内网通</strong>
+        <span id="me" class="muted" data-i18n="连接中…">连接中…</span>
       </div>
-      <a class="back" href="/" title="回到 pi 主页面">‹ 回 pi</a>
+      <a class="back" href="/" title="回到 pi 主页面" data-i18n-title="回到 pi 主页面" data-i18n="‹ 回 pi">‹ 回 pi</a>
       <nav class="tabs">
-        <button data-view="chat" class="tab">对话</button>
-        <button data-view="contacts" class="tab">通讯录</button>
-        <button data-view="online" class="tab is-on">在线</button>
+        <button data-view="chat" class="tab" data-i18n="对话">对话</button>
+        <button data-view="contacts" class="tab" data-i18n="通讯录">通讯录</button>
+        <button data-view="online" class="tab is-on" data-i18n="在线">在线</button>
       </nav>
     </header>
 
     <!-- 文件选择器：照资源管理器的样子做（面包屑 + 左侧常用位置 + 盘符 + 列表），
          用户点名要「参考文件管理器」。只在本机 loopback 上列目录。 -->
     <div id="picker" class="picker" hidden>
-      <div class="picker-box" role="dialog" aria-label="选择要发送的文件">
+      <div class="picker-box" role="dialog" aria-label="选择要发送的文件" data-i18n-aria="选择要发送的文件">
         <header class="picker-head">
-          <strong id="picker-title">选择文件</strong>
-          <span id="picker-hint" class="muted">点一下文件名选中，双击文件夹进入</span>
-          <button type="button" id="picker-close" class="ghost" title="关掉">✕</button>
+          <strong id="picker-title" data-i18n="选择文件">选择文件</strong>
+          <span id="picker-hint" class="muted" data-i18n="点一下文件名选中，双击文件夹进入">点一下文件名选中，双击文件夹进入</span>
+          <button type="button" id="picker-close" class="ghost" title="关掉" data-i18n-title="关掉">✕</button>
         </header>
         <nav id="crumbs" class="crumbs"></nav>
         <div class="picker-body">
           <aside class="picker-side">
-            <p class="side-title">常用</p>
+            <p class="side-title" data-i18n="常用">常用</p>
             <ul id="places"></ul>
-            <p class="side-title">这台电脑</p>
+            <p class="side-title" data-i18n="这台电脑">这台电脑</p>
             <ul id="roots"></ul>
           </aside>
           <ul id="files" class="file-list"></ul>
         </div>
         <footer class="picker-foot">
-          <span id="picker-sel" class="muted">还没选文件</span>
-          <button type="button" id="picker-up" class="ghost">上一层</button>
-          <button type="button" id="picker-send" disabled>发送</button>
+          <span id="picker-sel" class="muted" data-i18n="还没选文件">还没选文件</span>
+          <button type="button" id="picker-up" class="ghost" data-i18n="上一层">上一层</button>
+          <button type="button" id="picker-send" disabled data-i18n="发送">发送</button>
         </footer>
       </div>
     </div>
@@ -53,19 +53,19 @@
         <div class="chat">
           <aside class="threads">
             <ul id="threads"></ul>
-            <p id="threads-empty" class="empty">还没有对话。从「在线」里选一个人，点「发消息」。</p>
+            <p id="threads-empty" class="empty" data-i18n="还没有对话。从「在线」里选一个人，点「发消息」。">还没有对话。从「在线」里选一个人，点「发消息」。</p>
           </aside>
           <div class="thread">
-            <p id="thread-empty" class="empty">左边还没有人。打开「在线」，点一个人的「发消息」。</p>
+            <p id="thread-empty" class="empty" data-i18n="左边还没有人。打开「在线」，点一个人的「发消息」。">左边还没有人。打开「在线」，点一个人的「发消息」。</p>
             <div id="thread-box" hidden>
               <header id="thread-head" class="thread-head"></header>
               <ul id="messages" class="messages"></ul>
               <p id="send-error" class="error" hidden></p>
               <ul id="transfers" class="transfers" hidden></ul>
               <form id="compose" class="compose">
-                <button type="button" id="attach" class="attach" title="发文件（也可以直接拖进来，或 Ctrl+V 粘贴截图）">📎</button>
-                <textarea id="text" rows="2" placeholder="说点什么。Enter 发送，Shift+Enter 换行；拖文件 / 粘贴截图直接发" autocomplete="off"></textarea>
-                <button type="submit">发送</button>
+                <button type="button" id="attach" class="attach" title="发文件（也可以直接拖进来，或 Ctrl+V 粘贴截图）" data-i18n-title="发文件（也可以直接拖进来，或 Ctrl+V 粘贴截图）">📎</button>
+                <textarea id="text" rows="2" placeholder="说点什么。Enter 发送，Shift+Enter 换行；拖文件 / 粘贴截图直接发" data-i18n-placeholder="说点什么。Enter 发送，Shift+Enter 换行；拖文件 / 粘贴截图直接发" autocomplete="off"></textarea>
+                <button type="submit" data-i18n="发送">发送</button>
               </form>
             </div>
           </div>
@@ -75,24 +75,24 @@
       <section id="view-contacts" class="view" hidden>
         <div class="contacts">
           <section id="requests-box" class="requests" hidden>
-            <h2>等着你处理</h2>
+            <h2 data-i18n="等着你处理">等着你处理</h2>
             <ul id="requests"></ul>
           </section>
           <p id="contacts-error" class="error" hidden></p>
           <ul id="contacts"></ul>
-          <p id="contacts-empty" class="empty">通讯录还是空的。到「在线」里选一个人，点「加好友」——对方接受后就会出现在这里。文件只给好友发。</p>
+          <p id="contacts-empty" class="empty" data-i18n="通讯录还是空的。到「在线」里选一个人，点「加好友」——对方接受后就会出现在这里。文件只给好友发。">通讯录还是空的。到「在线」里选一个人，点「加好友」——对方接受后就会出现在这里。文件只给好友发。</p>
         </div>
       </section>
 
       <section id="view-online" class="view">
         <form id="add" class="add">
-          <input id="addr" placeholder="手动地址，例如 192.168.1.7:7865" autocomplete="off" />
-          <button type="submit">添加</button>
-          <button type="button" id="refresh">重新广播</button>
+          <input id="addr" placeholder="手动地址，例如 192.168.1.7:7865" data-i18n-placeholder="手动地址，例如 192.168.1.7:7865" autocomplete="off" />
+          <button type="submit" data-i18n="添加">添加</button>
+          <button type="button" id="refresh" data-i18n="重新广播">重新广播</button>
         </form>
         <p id="add-error" class="error" hidden></p>
         <ul id="peers" class="peers"></ul>
-        <p id="online-empty" class="empty">在线列表为空。同一个内网里的人打开 pi 后会自动出现在这里。</p>
+        <p id="online-empty" class="empty" data-i18n="在线列表为空。同一个内网里的人打开 pi 后会自动出现在这里。">在线列表为空。同一个内网里的人打开 pi 后会自动出现在这里。</p>
       </section>
     </main>
 

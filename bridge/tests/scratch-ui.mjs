@@ -163,6 +163,16 @@ try {
   check("切语言后内网通的按钮跟着变", jaTexts.peerBtn === "🌐 LAN", jaTexts.peerBtn ?? "");
   check("切语言后随手问的按钮跟着变", jaTexts.scratchBtn === "💭 ちょい聞き", jaTexts.scratchBtn ?? "");
   check("旁边的按钮仍在跟着变（回归基线）", jaTexts.termBtn === ">_ ターミナル", jaTexts.termBtn ?? "");
+
+  // 内网通是独立页面（peer.html）：它以前用 getLang()（那个文档里永远是 zh-Hans），
+  // 加上 HTML 里的静态文案从来没走过 tr() —— 切了语言它还是中文。
+  await page.locator(".scratch-close").click();
+  await page.locator('[data-act="peer"]').click();
+  const frame = page.frameLocator(".peer-frame");
+  await frame.locator(".tabs .tab").first().waitFor({ timeout: 20000 });
+  const backText = await frame.locator("a.back").innerText();
+  const chatTab = await frame.locator('.tab[data-view="chat"]').innerText();
+  check("内网通页面跟着切到日文", /pi に戻る/.test(backText) && chatTab === "チャット", `${backText} / ${chatTab}`);
 } catch (err) {
   failed += 1;
   console.error("FAIL", err?.message ?? err);
