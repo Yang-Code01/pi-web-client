@@ -7,7 +7,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { zipSync, strToU8 } from "fflate";
+import { zipSync, strToU8, Zip, ZipDeflate } from "fflate";
 
 const HEADER = ["地区", "产品", "单价", "数量", "金额", "备注", "编号", "错误"];
 
@@ -592,6 +592,130 @@ export function makeUnsupportedFixtures(outDir) {
       ),
     ),
   };
+}
+
+/* ------------------------------------------------------------------------ *
+ * #110 压测表：五档（2 万 / 10 万 / 40 万 / 100 万 / 300 万格），统一 100 列。
+ * 只用来量阈值，不进 git（.scratch 下现场生成）。全表一个 colorScale：
+ * full 档要真的把 CF 统计量算一遍，light 档则完全不碰它。
+ * ------------------------------------------------------------------------ */
+
+export const STRESS_TIERS = [
+  { name: "stress-2w.xlsx", rows: 200, cols: 100, cells: 20_000, tier: "full" },
+  { name: "stress-10w.xlsx", rows: 1_000, cols: 100, cells: 100_000, tier: "full" },
+  { name: "stress-40w.xlsx", rows: 4_000, cols: 100, cells: 400_000, tier: "light" },
+  { name: "stress-100w.xlsx", rows: 10_000, cols: 100, cells: 1_000_000, tier: "light" },
+  { name: "stress-300w.xlsx", rows: 30_000, cols: 100, cells: 3_000_000, tier: "none" },
+];
+
+const STRESS_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/></styleSheet>`;
+
+function stressSheet(rows, cols, emit) {
+  const width = colName(cols - 1);
+  emit(
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${width}${rows}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/><sheetData>`,
+  );
+  const refs = Array.from({ length: cols }, (_, c) => colName(c));
+  const head = refs.map((ref, c) => `<c r="${ref}1" t="inlineStr"><is><t>${c === 0 ? "行" : `列${c}`}</t></is></c>`).join("");
+  emit(`<row r="1">${head}</row>`);
+  let buf = "";
+  for (let r = 1; r < rows; r++) {
+    buf += `<row r="${r + 1}">`;
+    for (let c = 0; c < cols; c++) {
+      const v = c === 0 ? r + 1 : r * 1000 + c;
+      buf += `<c r="${refs[c]}${r + 1}"><v>${v}</v></c>`;
+    }
+    buf += "</row>";
+    // 3M 格的 XML 不能一口气拼完：按 ~512KB 一段推给 deflate。
+    if (buf.length >= 512 * 1024) {
+      emit(buf);
+      buf = "";
+    }
+  }
+  if (buf) emit(buf);
+  emit(
+    `</sheetData><conditionalFormatting sqref="A2:${width}${rows}"><cfRule type="colorScale" priority="1"><colorScale><cfvo type="min"/><cfvo type="percentile" val="50"/><cfvo type="max"/><color rgb="FFF8696B"/><color rgb="FFFFEB84"/><color rgb="FF63BE7B"/></colorScale></cfRule></conditionalFormatting><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`,
+  );
+}
+
+/** 流式写 zip：3M 格的 XML 只按段过 deflate，压缩后的字节才留在内存里。 */
+function writeZipStream(file, parts) {
+  return new Promise((resolve, reject) => {
+    const out = [];
+    const zip = new Zip((err, chunk, final) => {
+      if (err) return reject(err);
+      out.push(chunk);
+      if (!final) return;
+      try {
+        fs.writeFileSync(file, Buffer.concat(out));
+        resolve(file);
+      } catch (e) {
+        reject(e);
+      }
+    });
+    try {
+      for (const part of parts) {
+        const entry = new ZipDeflate(part.name, { level: 1 });
+        zip.add(entry);
+        part.write((text) => entry.push(strToU8(text), false));
+        entry.push(new Uint8Array(0), true);
+      }
+      zip.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+/** 造一张 rows×cols 的压测表（首列行号，其余 r*1000+c），带一个覆盖全表的色阶。 */
+export async function buildStressXlsx(file, { rows, cols }) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const sheetName = `大表${rows}`;
+  const files = [
+    {
+      name: "[Content_Types].xml",
+      write: (push) =>
+        push(
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`,
+        ),
+    },
+    {
+      name: "_rels/.rels",
+      write: (push) =>
+        push(
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+        ),
+    },
+    {
+      name: "xl/workbook.xml",
+      write: (push) =>
+        push(
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${sheetName}" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+        ),
+    },
+    {
+      name: "xl/_rels/workbook.xml.rels",
+      write: (push) =>
+        push(
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+        ),
+    },
+    { name: "xl/styles.xml", write: (push) => push(STRESS_STYLES) },
+    { name: "xl/worksheets/sheet1.xml", write: (push) => stressSheet(rows, cols, push) },
+  ];
+  await writeZipStream(file, files);
+  return file;
+}
+
+export async function makeStressFixtures(outDir) {
+  fs.mkdirSync(outDir, { recursive: true });
+  const made = [];
+  for (const tier of STRESS_TIERS) {
+    const file = path.join(outDir, tier.name);
+    await buildStressXlsx(file, { rows: tier.rows, cols: tier.cols });
+    made.push({ ...tier, file });
+  }
+  return made;
 }
 
 if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, "/")}`) {

@@ -1,10 +1,10 @@
 /**
- * xlsx 解包与取值（D127）：fflate 解 zip，自写的最小 XML 扫描。
+ * xlsx 解包与取值（D127/#110）：手写 zip 目录 + 流式扫行，自写的最小 XML 扫描。
  *
- * 这一票只做「元数据 + 一个可视行区间」；流式 zip 与常驻 worker 留给大表那条票（#110），
- * 现在每次请求重新解包，但不缓存解压后的整表 XML，也不把整表发给前端。
+ * 元数据只读 workbook 与每张表的前缀（`<dimension>`）；取窗口时按行增量解压，
+ * 扫过 r1 就停——不把整张表 XML 解出来，更不把整表发给前端。
  */
-import { unzipSync } from "fflate";
+import { entryBytes, entryStream, zipIndex, type ZipEntry } from "./zip.ts";
 import { formatCode, formatValue } from "./numfmt.js";
 import { buildCf, countCfUnsupported, readDxfs, type CellFx, type SheetCf } from "./cf.js";
 
@@ -50,6 +50,10 @@ export interface SheetInfo {
   name: string;
   rows: number;
   cols: number;
+  /** 这张表的格子数（rows × cols）。三档阈值按它分（#110）。 */
+  cells?: number;
+  /** #110 显示档：full 全量；light 只值（不涂条件格式）；none 不给（只给清单 + 尺寸）。 */
+  tier?: SheetTier;
   /** 文件里藏起来的表：不列在底部，只在状态条上提示。 */
   hidden?: boolean;
   /** 合并区，左上角优先。 */
@@ -79,16 +83,43 @@ export interface SheetWindow {
   c0: number;
   c1: number;
   rows: WireRow[];
+  /** #110：这次实际解压/扫过的表 XML 字节数（扫够就停，所以通常小于 partBytes）。 */
+  bytes?: number;
+  /** 这张表 XML 的未压缩总字节数。 */
+  partBytes?: number;
 }
 
-/** 只缓存元数据（D127）：sheet 名 → zip 内路径；共享字符串与表 XML 不驻留。 */
+/** #110 三档：全量 / 只值轻量 / 不给。 */
+export type SheetTier = "full" | "light" | "none";
+
+/**
+ * 三档阈值（格数）。数字来自 2026-11 在五档 fixture 上的实测，见 D127 补记：
+ * 峰值 RSS / 首屏 / 解压字节。
+ */
+export const FULL_MAX_CELLS = 100_000;
+export const LIGHT_MAX_CELLS = 1_000_000;
+
+export function tierOf(cells: number): SheetTier {
+  if (cells <= FULL_MAX_CELLS) return "full";
+  if (cells <= LIGHT_MAX_CELLS) return "light";
+  return "none";
+}
+
+/** 只缓存元数据与结构（D127）：sheet 名 → zip 内路径；表 XML 不驻留。 */
 export interface Book {
   meta: WorkbookMeta;
   parts: Map<string, string>;
+  /** zip 中央目录：取窗口时按偏移解单张表，不用再解整包。 */
+  dir: Map<string, ZipEntry>;
   /** 1904 日期系统（老 Mac 文件）。 */
   date1904: boolean;
   /** #109 每张表的条件格式求值结果（含统计量），随文件版本缓存。 */
   cf: Map<string, SheetCf | null>;
+  /** #110 每张表的档位；none 的表没有 cf / 结构，只有尺寸。 */
+  tiers: Map<string, SheetTier>;
+  /** 共享字符串与样式按需加载（只有取窗口 / 建 CF 时才需要）。 */
+  strings?: string[];
+  xfs?: Xf[];
 }
 
 const dec = new TextDecoder("utf-8");
@@ -140,9 +171,9 @@ function normalizePart(target: string): string {
   return clean.startsWith("xl/") ? clean : `xl/${clean}`;
 }
 
-function zipPart(entries: Record<string, Uint8Array>, name: string): string | null {
-  const hit = entries[name];
-  return hit ? dec.decode(hit) : null;
+function partText(buf: Uint8Array, dir: Map<string, ZipEntry>, name: string): string | null {
+  const entry = dir.get(name);
+  return entry ? dec.decode(entryBytes(buf, entry)) : null;
 }
 
 function dimension(xml: string): { rows: number; cols: number } {
@@ -154,14 +185,41 @@ function dimension(xml: string): { rows: number; cols: number } {
   return { rows: Math.max(0, last.r + 1), cols: Math.max(0, last.c + 1) };
 }
 
+/** 没有 `<dimension>`（或写坏了）时，退回扫一遍格子引用求最大行列。 */
+function extentOf(xml: string): { rows: number; cols: number } {
+  let rows = 0;
+  let cols = 0;
+  for (const m of xml.matchAll(/<c\b[^>]*\br="([A-Za-z]{1,3}\d+)"/g)) {
+    const p = refOf(m[1] ?? "");
+    if (!p) continue;
+    rows = Math.max(rows, p.r + 1);
+    cols = Math.max(cols, p.c + 1);
+  }
+  for (const m of xml.matchAll(/<row\b[^>]*\br="(\d+)"/g)) rows = Math.max(rows, Number(m[1]));
+  return { rows, cols };
+}
+
+/** 表 XML 的前缀：够读到 `<dimension>` 就行，不为一格元数据解完整张表。 */
+function sheetPrefix(buf: Uint8Array, entry: ZipEntry, limit = 256 * 1024): string {
+  let out = "";
+  let bytes = 0;
+  const decoder = new TextDecoder("utf-8");
+  entryStream(buf, entry, (chunk) => {
+    bytes += chunk.byteLength;
+    out += decoder.decode(chunk, { stream: true });
+    return !(/<dimension\b[^>]*\/?>/.test(out) || bytes >= limit);
+  });
+  return out;
+}
+
 /** 一个单元格样式（按 cellXfs 下标）：数字格式代码 + 对齐。 */
 interface Xf {
   code: string | null;
   align: "l" | "c" | "r" | null;
 }
 
-function readStyles(entries: Record<string, Uint8Array>): Xf[] {
-  const xml = zipPart(entries, "xl/styles.xml");
+function readStyles(buf: Uint8Array, dir: Map<string, ZipEntry>): Xf[] {
+  const xml = partText(buf, dir, "xl/styles.xml");
   if (!xml) return [];
   const custom = new Map<number, string>();
   for (const m of xml.matchAll(/<numFmt\b[^>]*>/g)) {
@@ -232,19 +290,15 @@ function unsupported(what: string): never {
   throw Object.assign(new Error(what), { code: "sheet_unsupported" });
 }
 
-/** 读 workbook：sheet 清单 + 尺寸，不碰单元格。 */
+/** 读 workbook：sheet 清单 + 尺寸 + 档位。none 的表不读正文，light 不建条件格式。 */
 export function readBook(buf: Uint8Array): Book {
   // 加密的包（CFB）和改名的旧格式都不是 zip：先认出来，别把解压错误当「表格坏了」端出去。
   if (!(buf[0] === 0x50 && buf[1] === 0x4b)) unsupported("这个格式这里不支持，用 Excel 打开");
-  let entries: Record<string, Uint8Array>;
-  try {
-    entries = unzipSync(buf);
-  } catch {
-    unsupported("这个格式这里不支持，用 Excel 打开");
-  }
-  const workbook = zipPart(entries, "xl/workbook.xml");
+  const dir = zipIndex(buf);
+  if (!dir) unsupported("这个格式这里不支持，用 Excel 打开");
+  const workbook = partText(buf, dir, "xl/workbook.xml");
   if (!workbook) unsupported("这个格式这里不支持，用 Excel 打开");
-  const relsXml = zipPart(entries, "xl/_rels/workbook.xml.rels") ?? "";
+  const relsXml = partText(buf, dir, "xl/_rels/workbook.xml.rels") ?? "";
   const rels = new Map<string, string>();
   for (const m of relsXml.matchAll(/<Relationship\b[^>]*>/g)) {
     const tag = m[0];
@@ -254,22 +308,46 @@ export function readBook(buf: Uint8Array): Book {
   }
   const sheets: SheetInfo[] = [];
   const parts = new Map<string, string>();
+  const tiers = new Map<string, SheetTier>();
+  const book = { cf: new Map<string, SheetCf | null>() } as Book;
   for (const m of workbook.matchAll(/<sheet\b[^>]*>/g)) {
     const name = attr(m[0], "name");
     const rid = attr(m[0], "r:id") ?? attr(m[0], "id");
     if (!name || !rid) continue;
     const part = rels.get(rid);
     if (!part) continue;
-    const xml = zipPart(entries, part) ?? "";
-    const size = dimension(xml);
-    const extras = sheetExtras(xml);
-    const cfUnsupported = countCfUnsupported(xml);
-    const noCache = countNoCache(xml);
+    const entry = dir.get(part);
+    if (!entry) continue;
+    // 尺寸从表前缀里的 <dimension> 拿；没有才解整张表退而求其次。
+    let size = dimension(sheetPrefix(buf, entry));
+    if (!size.rows && !size.cols) size = extentOf(partText(buf, dir, part) ?? "");
+    const cells = Math.max(0, size.rows) * Math.max(0, size.cols);
+    const tier = tierOf(cells);
+    tiers.set(name, tier);
+    let extras: ReturnType<typeof sheetExtras> = { merges: [], widths: new Map(), defaultW: 96, freeze: null };
+    let cfUnsupported = 0;
+    let noCache = 0;
+    if (tier !== "none") {
+      const xml = partText(buf, dir, part) ?? "";
+      extras = sheetExtras(xml);
+      noCache = countNoCache(xml);
+      if (tier === "full") {
+        cfUnsupported = countCfUnsupported(xml);
+        book.strings ??= sharedStrings(buf, dir);
+        const dxfs = readDxfs(partText(buf, dir, "xl/styles.xml"));
+        book.cf.set(name, /<conditionalFormatting\b/.test(xml) ? buildCf(xml, book.strings, dxfs) : null);
+      } else {
+        // 只值轻量：不建条件格式（统计量要把整表数值塞进 Map，正是大表最贵的一步）。
+        book.cf.set(name, null);
+      }
+    }
     const state = attr(m[0], "state");
     sheets.push({
       name,
       rows: size.rows,
       cols: size.cols,
+      cells,
+      tier,
       ...(state === "hidden" || state === "veryHidden" ? { hidden: true } : {}),
       ...(extras.merges.length ? { merges: extras.merges } : {}),
       ...(extras.widths.size
@@ -285,22 +363,22 @@ export function readBook(buf: Uint8Array): Book {
   const first = sheets[0];
   const pr = /<workbookPr\b[^>]*>/.exec(workbook)?.[0] ?? "";
   const date1904 = /^(1|true)$/i.test(attr(pr, "date1904") ?? "");
-  return { meta: { name: first.name, rows: first.rows, cols: first.cols, sheets, charts: hasChartParts(buf) }, parts, date1904, cf: new Map() };
-
+  book.meta = { name: first.name, rows: first.rows, cols: first.cols, sheets, charts: hasChartParts(dir) };
+  book.parts = parts;
+  book.dir = dir;
+  book.tiers = tiers;
+  book.date1904 = date1904;
+  return book;
 }
 
 /** 只看 zip 目录里有没有图表部件，不解压表 XML（页面视图的开关，D127）。 */
-function hasChartParts(buf: Uint8Array): boolean {
-  try {
-    const found = unzipSync(buf, { filter: (f) => /^xl\/charts\/chart\d+\.xml$/i.test(f.name) });
-    return Object.keys(found).length > 0;
-  } catch {
-    return false;
-  }
+function hasChartParts(dir: Map<string, ZipEntry>): boolean {
+  for (const name of dir.keys()) if (/^xl\/charts\/chart\d+\.xml$/i.test(name)) return true;
+  return false;
 }
 
-function sharedStrings(entries: Record<string, Uint8Array>): string[] {
-  const xml = zipPart(entries, "xl/sharedStrings.xml");
+function sharedStrings(buf: Uint8Array, dir: Map<string, ZipEntry>): string[] {
+  const xml = partText(buf, dir, "xl/sharedStrings.xml");
   if (!xml) return [];
   const out: string[] = [];
   for (const m of xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)) {
@@ -395,34 +473,98 @@ function cellsOfRow(
   return cells;
 }
 
-/** 每张表的条件格式只算一次，挂在 Book 上（同一文件版本内复用）。 */
-function cfOf(book: Book, sheet: string, xml: string, strings: string[], entries: Record<string, Uint8Array>): SheetCf | null {
-  const hit = book.cf.get(sheet);
-  if (hit !== undefined) return hit;
-  const plan = /<conditionalFormatting\b/.test(xml) ? buildCf(xml, strings, readDxfs(zipPart(entries, "xl/styles.xml"))) : null;
-  book.cf.set(sheet, plan);
-  return plan;
-}
-
-/** 取一个窗口：只解析落在 [r0,r1] 里的 row，其它行连 XML 都不进前端。 */
+/**
+ * 取一个窗口：边解压边扫 `<row>`，过 r1 立即停。
+ *
+ * 只解析 [r0,r1] 的行；深表也不用先把整张表 XML 解成字符串。`bytes` 是这次
+ * 实际解出来的表 XML 字节，用来验收「解压字节远小于整表」。
+ */
 export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: number, r1: number, c0: number, c1: number): SheetWindow {
+  const info = book.meta.sheets.find((s) => s.name === sheet);
+  const tier = info?.tier ?? book.tiers.get(sheet) ?? "full";
+  if (tier === "none") throw Object.assign(new Error("这张表太大，不在这里滚"), { code: "sheet_too_big" });
   const part = book.parts.get(sheet) ?? book.parts.get(book.meta.name);
   if (!part) throw new Error("找不到这个工作表");
-  const entries = unzipSync(buf);
-  const xml = zipPart(entries, part);
-  if (!xml) throw new Error("这个工作表是空的");
-  const strings = sharedStrings(entries);
-  const xfs = readStyles(entries);
-  const cf = cfOf(book, sheet, xml, strings, entries);
+  const entry = book.dir.get(part);
+  if (!entry) throw new Error("这个工作表是空的");
+  const strings = (book.strings ??= sharedStrings(buf, book.dir));
+  const xfs = (book.xfs ??= readStyles(buf, book.dir));
+  const cf = tier === "full" ? book.cf.get(sheet) ?? null : null;
+  const { rows, bytes } = scanRows(buf, entry, r0, r1, c0, c1, strings, xfs, book.date1904, cf);
+  return { sheet, r0, r1, c0, c1, rows, bytes, partBytes: entry.size };
+}
+
+/** 扫表 XML：按 `<row>` 切块，只解析落在 [r0,r1] 的行；看到更大的行号就停。 */
+function scanRows(
+  buf: Uint8Array,
+  entry: ZipEntry,
+  r0: number,
+  r1: number,
+  c0: number,
+  c1: number,
+  strings: string[],
+  xfs: Xf[],
+  date1904: boolean,
+  cf: SheetCf | null,
+): { rows: WireRow[]; bytes: number } {
   const rows: WireRow[] = [];
-  for (const m of xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>|<row\b([^>]*)\/>/g)) {
-    const attrs = m[1] ?? m[3] ?? "";
-    const num = Number(attr(attrs, "r"));
-    if (!Number.isFinite(num)) continue;
-    const index = num - 1;
-    if (index < r0 || index > r1) continue;
-    const cells = cellsOfRow(m[2] ?? "", index, c0, c1, strings, xfs, book.date1904, cf);
-    if (cells.length) rows.push({ r: index, cells });
+  const decoder = new TextDecoder("utf-8");
+  let pending = "";
+  let bytes = 0;
+  let stop = false;
+
+  const eat = (text: string): void => {
+    pending += text;
+    while (!stop) {
+      const start = pending.indexOf("<row");
+      if (start < 0) {
+        // 留一点尾巴：`<row` 可能被切在下一个 chunk 的边界上。
+        if (pending.length > 16) {
+          bytes += Buffer.byteLength(pending.slice(0, -16));
+          pending = pending.slice(-16);
+        }
+        return;
+      }
+      if (start > 0) {
+        bytes += Buffer.byteLength(pending.slice(0, start));
+        pending = pending.slice(start);
+      }
+      const gt = pending.indexOf(">");
+      if (gt < 0) return;
+      const head = pending.slice(0, gt + 1);
+      const selfClose = head.endsWith("/>");
+      let end = gt + 1;
+      let body = "";
+      if (!selfClose) {
+        const close = pending.indexOf("</row>", gt);
+        if (close < 0) return;
+        body = pending.slice(gt + 1, close);
+        end = close + 6;
+      }
+      const attrs = head.slice(4, selfClose ? -2 : -1);
+      const num = Number(attr(attrs, "r"));
+      // 过 r1 立即停：这一行不算进「解压字节」，也不解析。
+      if (Number.isFinite(num) && num - 1 > r1) {
+        stop = true;
+        return;
+      }
+      bytes += Buffer.byteLength(pending.slice(0, end));
+      pending = pending.slice(end);
+      if (!Number.isFinite(num)) continue;
+      const index = num - 1;
+      if (index < r0) continue;
+      const cells = cellsOfRow(body, index, c0, c1, strings, xfs, date1904, cf);
+      if (cells.length) rows.push({ r: index, cells });
+    }
+  };
+
+  entryStream(buf, entry, (chunk) => {
+    eat(decoder.decode(chunk, { stream: true }));
+    return !stop;
+  });
+  if (!stop) {
+    eat(decoder.decode());
+    bytes += Buffer.byteLength(pending);
   }
-  return { sheet, r0, r1, c0, c1, rows };
+  return { rows, bytes };
 }

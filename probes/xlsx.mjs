@@ -77,10 +77,11 @@ const rows = [
 ];
 fs.writeFileSync(path.join(dir, `${SID}.jsonl`), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
 
-const { makeFixtures, makeUnsupportedFixtures, buildXlsx } = await import(modp(path.join(REPO, "bridge/tests/fixtures/make-xlsx.mjs")));
+const { makeFixtures, makeUnsupportedFixtures, buildXlsx, makeStressFixtures } = await import(modp(path.join(REPO, "bridge/tests/fixtures/make-xlsx.mjs")));
 const made = makeFixtures(WORK);
 const odd = makeUnsupportedFixtures(WORK);
-log("fixture:", made.plain);
+const stresses = await makeStressFixtures(WORK);
+log("fixture:", made.plain, `stress: ${stresses.length} 档`);
 
 function killPort(port) {
   try {
@@ -118,7 +119,7 @@ function listening(port) {
 }
 killPort(PORT);
 
-const bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
+let bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
   cwd: REPO,
   env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_STATE: STATE, PI_WEB_TUNNEL: "0", PI_AGENT_DIR: AGENT },
   stdio: ["ignore", "pipe", "pipe"],
@@ -308,7 +309,9 @@ try {
   await page.screenshot({ path: path.join(OUT, "02-scrolled.png") });
 
   check("每次窗口请求都带行区间", windowRequests.length > 0 && windowRequests.every((b) => Number.isFinite(b.r0) && Number.isFinite(b.r1)), JSON.stringify(windowRequests.slice(-3)));
-  check("请求不是整表", windowRequests.every((b) => b.r1 - b.r0 <= 60), JSON.stringify(windowRequests.map((b) => [b.r0, b.r1])));
+  // 小表（151 行）预取 3 屏时可能刚好覆盖全表，这不算错；只要求窗口有上限、字段形状对。
+  check("窗口请求不超过 400 行", windowRequests.every((b) => b.r1 - b.r0 + 1 <= 400), JSON.stringify(windowRequests.map((b) => [b.r0, b.r1])));
+  check("滚动后请求覆盖第 61 行", windowRequests.some((b) => b.r0 <= 60 && b.r1 >= 60), JSON.stringify(windowRequests.map((b) => [b.r0, b.r1])));
   check("请求没有整表字段", windowRequests.every((b) => !("all" in b) && !("rows" in b)));
 
   // 回到顶部，后面量几何。
@@ -815,13 +818,195 @@ try {
   const plainMeta = (await api("/api/sheet/meta", { token: (await previewOf(made.plain))?.token })).data;
   check("无图表不虚构 charts", plainMeta?.charts === false, JSON.stringify(plainMeta));
 
-  // ---------------------------------------------------------------- CSV / TSV（#113）
+  // ---------------------------------------------------------------- #110 大表三档
   // 先把 xlsx 那扇关掉：文件管理器是在 viewer 里，浮窗留着会与下面的断言撞车。
   const closeSheet = async () => {
     const close = page.locator(".sd-close").first();
     if (await close.count()) await close.click();
     await until(async () => (await page.locator(".sd").count()) === 0, 5000, "sd closed");
   };
+  await closeSheet();
+
+  /** 点开一张表，量「点文件行 → 第一格出现」；none 档等的是 .sd-block。 */
+  const openStress = async (name) => {
+    await page.locator(".topbar .icon-btn", { hasText: "文件管理器" }).first().evaluate((el) => el.click());
+    const row = page.locator(".file-row", { hasText: name }).first();
+    await row.waitFor({ timeout: 20000 });
+    const t0 = performance.now();
+    await row.evaluate((el) => el.click());
+    await page.locator(".sd").first().waitFor({ timeout: 30000 });
+    await page.locator(".sd-cell, .sd-block").first().waitFor({ timeout: 30000 });
+    const ms = performance.now() - t0;
+    await page.waitForTimeout(120);
+    return Math.round(ms);
+  };
+
+  /** 每一档都从冷桥开始量：上一档的 Book / CF 计划不能算进下一档的峰值。 */
+  const restartBridge = async () => {
+    try {
+      execSync(`taskkill /PID ${bridge.pid} /T /F`, { stdio: "ignore" });
+    } catch {}
+    bridge.kill();
+    await until(() => !listening(PORT), 8000, "bridge down");
+    bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
+      cwd: REPO,
+      env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_STATE: STATE, PI_WEB_TUNNEL: "0", PI_AGENT_DIR: AGENT },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    bridge.stdout.on("data", (b) => bridgeOut.push(b.toString()));
+    bridge.stderr.on("data", (b) => bridgeOut.push(b.toString()));
+    await until(async () => (await fetch(`${BASE}/healthz`)).ok, 20000, "bridge up again");
+    // cookie 用持久 secret 签名，重启后仍有效；页面重走一遍登录态即可。
+    await openSession();
+  };
+
+  let rssSeq = 0;
+  /** 边跑边采桥进程 WorkingSet64（PowerShell 在另一个进程里采，不挡首屏计时）。 */
+  const withRss = async (fn) => {
+    const file = path.join(OUT, `rss-${process.pid}-${rssSeq}.txt`);
+    const stop = `${file}.stop`;
+    rssSeq++;
+    fs.rmSync(file, { force: true });
+    fs.rmSync(stop, { force: true });
+    const q = (p) => p.replace(/'/g, "''");
+    const script = `$p=${bridge.pid};$o='${q(file)}';$s='${q(stop)}';while(-not (Test-Path $s)){$v=(Get-Process -Id $p -ErrorAction SilentlyContinue).WorkingSet64;if($v){Add-Content -Path $o -Value $v};Start-Sleep -Milliseconds 100}`;
+    const ps = spawn("powershell.exe", ["-NoProfile", "-Command", script], { stdio: "ignore" });
+    for (let i = 0; i < 40; i++) {
+      if (fs.existsSync(file) && fs.readFileSync(file, "utf8").trim()) break;
+      await sleep(100);
+    }
+    const result = await fn();
+    fs.writeFileSync(stop, "1");
+    await Promise.race([new Promise((res) => ps.on("exit", res)), sleep(4000)]);
+    try {
+      ps.kill();
+    } catch {}
+    const vals = fs.existsSync(file)
+      ? fs.readFileSync(file, "utf8").trim().split(/\s+/).map(Number).filter((n) => n > 0)
+      : [];
+    fs.rmSync(file, { force: true });
+    fs.rmSync(stop, { force: true });
+    return { ...result, baseRss: vals[0] ?? 0, peakRss: vals.length ? Math.max(...vals) : 0 };
+  };
+
+  const num = (n) => new Intl.NumberFormat("zh-CN").format(n);
+  const tierWord = { full: "全量显示", light: "只值轻量（不涂条件格式）", none: "不给全表" };
+  const stressNumbers = [];
+
+  // 同一区间请求两次：不串行、不漂移（直接打桥端接口，同一 token / 同一区间）。
+  const samePrev = await api("/api/preview", { sessionId: SID, path: stresses[2].file });
+  const sameToken = samePrev.data?.token;
+  const sameMeta = await api("/api/sheet/meta", { token: sameToken });
+  const sameSheet = sameMeta.data?.sheets?.[0]?.name;
+  const sameA = await api("/api/sheet/window", { token: sameToken, sheet: sameSheet, r0: 1200, r1: 1400, c0: 0, c1: 99 });
+  const sameB = await api("/api/sheet/window", { token: sameToken, sheet: sameSheet, r0: 1200, r1: 1400, c0: 0, c1: 99 });
+  check("同一区间两次结果一致", sameA.status === 200 && JSON.stringify(sameA.data) === JSON.stringify(sameB.data), `${sameA.status}/${sameB.status}`);
+
+  for (const s of stresses) {
+    await restartBridge();
+    const winStart = windowRequests.length;
+    const got = await withRss(async () => {
+      const first = await openStress(s.name);
+      const tierText = (await page.locator(".sd-tier").first().textContent()) ?? "";
+      check(`${s.name} 落在 ${s.tier} 档`, tierText.includes(num(s.cells)) && tierText.includes(tierWord[s.tier]), tierText);
+
+      const reqs = windowRequests.slice(winStart);
+      const top = reqs[0];
+      const vis = await page.evaluate(() => Math.ceil((document.querySelector(".sd-view")?.clientHeight ?? 0) / 28));
+      let bytesTop = 0;
+      let partBytes = 0;
+      if (s.tier !== "none") {
+        check(`${s.name} 只取窗口不是整表`, reqs.length > 0 && reqs.every((b) => b.r1 - b.r0 + 1 < s.rows), JSON.stringify(reqs.slice(0, 2)));
+        // 顶部没有「上方」可预取：可见段 + 下方 3 屏 ≈ 4 屏；滚到中间时才是 7 屏。
+        check(`${s.name} 预取 3 屏`, !!top && top.r1 - top.r0 + 1 >= vis * 3 && top.r1 - top.r0 + 1 <= 400, `可见 ${vis} 行，请求 ${top ? top.r1 - top.r0 + 1 : 0} 行`);
+        const bg = await page.evaluate(() => {
+          const el = document.querySelector('.sd-cell[data-r="5"][data-c="1"]');
+          return el ? getComputedStyle(el).backgroundColor : null;
+        });
+        if (s.tier === "full") {
+          check(`${s.name} 涂了条件格式`, !!bg && bg !== "rgb(255, 255, 255)" && bg !== "rgba(0, 0, 0, 0)", String(bg));
+        } else {
+          check(`${s.name} 不涂条件格式`, bg === "rgb(255, 255, 255)" || bg === "rgba(0, 0, 0, 0)", String(bg));
+          check(`${s.name} 没有色条 / 图标`, (await page.locator(".sd-bar, .sd-icon").count()) === 0);
+        }
+        check(`${s.name} 格子照常可读`, (await cellText(5, 0)) === "6", String(await cellText(5, 0)));
+
+        const prev = await api("/api/preview", { sessionId: SID, path: s.file });
+        const token = prev.data?.token;
+        const sheet = prev.data?.name && (await api("/api/sheet/meta", { token })).data?.sheets?.[0]?.name;
+        const w = await api("/api/sheet/window", { token, sheet, r0: 0, r1: 20, c0: 0, c1: 99 });
+        bytesTop = w.data?.bytes ?? 0;
+        partBytes = w.data?.partBytes ?? 0;
+        check(`${s.name} 顶部只解一小段`, bytesTop > 0 && bytesTop < partBytes / 2, `${bytesTop} / ${partBytes}`);
+      } else {
+        const block = (await page.locator(".sd-block").first().textContent()) ?? "";
+        check("不给档只给清单 + 尺寸", block.includes(`${num(s.rows)} 行 × ${num(s.cols)} 列`), block.replace(/\s+/g, " ").slice(0, 160));
+        check("不给档有「用本机程序打开」", (await page.locator(".sd-block button", { hasText: "用本机程序打开" }).count()) === 1);
+        check("不给档没有网格", (await page.locator(".sd-cell").count()) === 0);
+        check("不给档不取窗口", reqs.length === 0, JSON.stringify(reqs));
+      }
+
+      await page.screenshot({ path: path.join(OUT, `09-stress-${s.rows}.png`) });
+      return { first, top: top ? { r0: top.r0, r1: top.r1 } : null, bytesTop, partBytes };
+    });
+
+    // 快速拖动：直接甩到底，量「有字」的时间；滚回顶部再对一次同一格。
+    let deepMs = null;
+    if (s.tier !== "none") {
+      const before = await cellText(1, 0);
+      deepMs = await page.evaluate(async (last) => {
+        const view = document.querySelector(".sd-view");
+        if (!view) return -1;
+        const t0 = performance.now();
+        view.scrollTop = view.scrollHeight;
+        view.dispatchEvent(new Event("scroll"));
+        return await new Promise((res) => {
+          const tick = () => {
+            const cell = document.querySelector(`.sd-cell[data-r="${last}"][data-c="0"]`);
+            if (cell && cell.textContent) return res(performance.now() - t0);
+            if (performance.now() - t0 > 5000) return res(-1);
+            requestAnimationFrame(tick);
+          };
+          tick();
+        });
+      }, s.rows - 1);
+      check(`${s.name} 快速拖到底不长时间空白`, deepMs >= 0 && deepMs < 2000, `${Math.round(deepMs)}ms`);
+      check(`${s.name} 拖到底就是最后一行`, (await cellText(s.rows - 1, 0)) === String(s.rows), String(await cellText(s.rows - 1, 0)));
+      await page.evaluate(() => {
+        const view = document.querySelector(".sd-view");
+        if (view) {
+          view.scrollTop = 0;
+          view.dispatchEvent(new Event("scroll"));
+        }
+      });
+      await until(async () => (await cellText(1, 0)) === before, 6000, "scroll back to top");
+      check(`${s.name} 滚远再滚回内容一致`, (await cellText(1, 0)) === before, `${before} → ${await cellText(1, 0)}`);
+    }
+
+    const rec = {
+      tier: s.tier,
+      cells: s.cells,
+      rows: s.rows,
+      cols: s.cols,
+      fileBytes: fs.statSync(s.file).size,
+      firstScreenMs: got.first,
+      baseRss: got.baseRss,
+      peakRss: got.peakRss,
+      topRange: got.top,
+      bytesTop: got.bytesTop,
+      partBytes: got.partBytes,
+      deepMs: deepMs === null ? null : Math.round(deepMs),
+    };
+    stressNumbers.push(rec);
+    log(`#110 ${s.name}: 首屏 ${rec.firstScreenMs}ms，峰值 RSS ${(rec.peakRss / 1048576).toFixed(0)}MB，顶部解压 ${rec.bytesTop}B / ${rec.partBytes}B，拖到底 ${rec.deepMs}ms`);
+    await closeSheet();
+  }
+  const numbersPath = path.join(OUT, "stress-numbers.json");
+  fs.writeFileSync(numbersPath, `${JSON.stringify(stressNumbers, null, 1)}\n`);
+  log("stress numbers →", numbersPath);
+
+  // ---------------------------------------------------------------- CSV / TSV（#113）
+  // 先把 xlsx 那扇关掉：文件管理器是在 viewer 里，浮窗留着会与下面的断言撞车。
   await closeSheet();
   // 浮窗几何已被上面改过，先清掉记忆回到默认尺寸。
   await page.evaluate(() => localStorage.removeItem("pi.sheetGeom"));
