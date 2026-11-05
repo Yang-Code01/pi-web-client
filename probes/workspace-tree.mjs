@@ -9,7 +9,8 @@
  *   4. 过滤框打组名 → 整组留下（一组不剩别的组），打会话名才拆组；
  *   5. 归档是末尾的全局分区，不在任何工作区组里。
  *
- * 桩桥只实现页面真正会发的那些消息（hello / manage.opened / ws.rename 等留给别的票）。
+ * 桩桥只实现页面真正会发的那些消息（hello / subscribe）。`opened` 在 D128 之后只是「回一份快照」，
+ * 页面也不再发它；`ws.rename` 之类留给别的票。
  *
  * Run: npm run build:web && node probes/workspace-tree.mjs
  */
@@ -135,11 +136,8 @@ server.on("upgrade", (req, socket, head) => {
       if (msg.type === "subscribe" && s) {
         ws.send(JSON.stringify({ type: "session", sessionId: s.id, state: s, items: [], approvals: [], asks: [], budget: null }));
       }
-      if (msg.type === "manage" && msg.action === "opened") {
-        MANAGE.archived = MANAGE.archived.filter((x) => x !== msg.id);
-        MANAGE.pin = [String(msg.id), ...MANAGE.pin.filter((x) => x !== msg.id)];
-        cast({ type: "manage", manage: MANAGE, workspace: WORKSPACE });
-      }
+      // D128：打开不改排列。旧页面还会发这条消息，桥只回快照；这里照样实现，免得哪天改回去没覆盖。
+      if (msg.type === "manage" && msg.action === "opened") cast({ type: "manage", manage: MANAGE, workspace: WORKSPACE });
     });
     ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS, manage: MANAGE, workspace: WORKSPACE, trash: [], tunnel: TUNNEL }));
   });

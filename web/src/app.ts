@@ -14,7 +14,7 @@ import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
-import { buildTree, type TreeGroup } from "./tree.ts";
+import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
@@ -134,7 +134,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "peer" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "peer" | "intro" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
@@ -287,6 +287,8 @@ export class App {
   private pillBar!: PillBar<SessionState>;
   /** #94 工作区快照：桥是唯一的推导者，前端只读。 */
   private workspaces: WorkspaceState = { groups: [], overrides: {}, keys: {} };
+  /** #101 迁移预览：这张页面已经弹过 / 关过一次就不再弹（取消 = 下次打开还弹，确认才写 prefs）。 */
+  private wsIntroShown = false;
   /** #96 顶栏那颗「当前在哪」：组件只认挂载点，换布局时换位置而不是换组件。 */
   private nowChip!: NowChip;
   /** Q-035: the hover bubble on a pin chip (归档 / 重命名 / 删除), only ever one at a time. */
@@ -932,28 +934,7 @@ export class App {
     this.activity = "";
     this.runSince = null;
     this.socket.send({ type: "subscribe", sessionId: id });
-    this.markOpened(id);
     this.renderAll();
-  }
-
-  /**
-   * D125「打开即置顶」：不管是左栏卡片、置顶胶囊、会话管理、分叉/导入、`#/s/<id>` 深链还是新建，
-   * 只要一个会话变成了当前会话，它就置顶 —— 左栏收起后那条横条是唯一的会话入口，不在里面
-   * 就根本看不出自己在跟哪个会话说话。已经在置顶区的不再往返一次（每次点击都写 manage.json 没意义）。
-   * 公网访问下管理类写入要 step-up（D15），这里不弹口令框：静默跳过，等用户自己验过（9 分钟内免重复）。
-   */
-  private markOpened(id: string): void {
-    if (!id) return;
-    if (this.manage.pin.includes(id) && !this.manage.archived.includes(id)) return;
-    if (this.me.public && Date.now() >= this.stepUntil) return;
-    this.manage = {
-      ...this.manage,
-      pin: this.manage.pin.includes(id) ? this.manage.pin : [id, ...this.manage.pin],
-      archived: this.manage.archived.filter((x) => x !== id),
-    };
-    this.renderSessions();
-    // 桥侧同一个动作：注册表里没这个 id 时它什么也不写，但会回一份快照把上面这份乐观状态纠正回来。
-    this.socket.send({ type: "manage", action: "opened", id });
   }
 
   // ---------------------------------------------------------------- ws
@@ -1013,8 +994,6 @@ export class App {
           // A freshly created session arrives here without openSession(): give it its own (empty) draft.
           if (String(msg.sessionId) !== this.currentId) this.switchDraft(String(msg.sessionId));
           this.currentId = String(msg.sessionId);
-          // D125: 新建会话也走「打开」这条线（左栏「开新会话」、/new、快捷键），一样置顶。
-          this.markOpened(this.currentId);
         }
         this.usage = { contextTokens: null, contextWindow: null };
         this.rate = 0;
@@ -2409,8 +2388,8 @@ export class App {
     const foot = el("div", "sheet-foot");
     const reset = el("button", "btn ghost", tr("恢复默认"));
     reset.onclick = () => {
-      // 恢复默认只恢复字号/颜色/亮度：语言是「我是谁」，不该被配色重置带走。
-      this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang };
+      // 恢复默认只恢复字号/颜色/亮度：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍。
+      this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang, wsIntroSeen: this.prefs.wsIntroSeen };
       savePrefs(this.prefs);
       this.applyPrefs();
       this.openDisplaySheet();
@@ -3363,6 +3342,77 @@ export class App {
     }
     if (tree.archived.length) host.append(this.sessionSection("archived", tr("已归档"), this.archivedOpen ? tree.archived : []));
     this.renameFocus = false;
+    this.maybeWorkspaceIntro(tree);
+  }
+
+  /**
+   * #101 迁移预览：分组第一次出现之前，先把「会建哪些工作区、各几个会话、其中几个是你拖过的」
+   * 摆出来让用户确认一次。数字直接来自 `buildTree()`（左栏画的就是它），不另算一套。
+   *
+   * 确认才写 `pi.prefs.wsIntroSeen`；取消什么都不写，所以下次打开还会弹。同一张页面里只弹一次
+   * （`wsIntroShown`），否则每次 renderSessions 都会把它重新推上来。
+   */
+  private maybeWorkspaceIntro(tree: Tree<SessionState>): void {
+    if (this.prefs.wsIntroSeen || this.wsIntroShown || this.sheetKind) return;
+    // 没有 workspace 快照（旧桥 / 桩桥）就没有「要建的组」可预览 —— 分组本来就还没发生。
+    if (!this.workspaces.groups.length || !tree.groups.length) return;
+    // 自动化（Playwright / DevTools 带 navigator.webdriver）不弹：探针每次都跑在全新 profile 里，
+    // 等于每次都「第一次打开」，这张模态会把别的探针全挡在下面（见 D129 的验证段）。
+    if (navigator.webdriver) return;
+    this.wsIntroShown = true;
+
+    const back = el("div", "sheet-back center");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet ws-intro-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("工作区")));
+    const close = el("button", "btn ghost", tr("稍后"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    sheet.append(head);
+
+    const body = el("div", "ws-intro");
+    body.append(el("p", "ws-intro-lead", tr("左栏要按工作区分组了：同一个工程根下的会话归到一组，组里 ★ 排前，归档的另放最后一区。下面是你会看到的样子。")));
+
+    // 数字全部数自同一棵树：组 = 左栏那一排组头，会话 = 组里的卡片，「拖过的」= 桥记下的 override。
+    const overrides = this.workspaces.overrides ?? {};
+    const total = tree.groups.reduce((n, g) => n + g.sessions.length, 0);
+    const moved = tree.groups.reduce((n, g) => n + g.sessions.filter((s) => overrides[s.id] === g.id).length, 0);
+    body.append(
+      el("div", "ws-intro-sum", moved ? tr("会建 {p1} 个工作区、{p2} 个会话，其中 {p3} 个是你拖过的", { p1: tree.groups.length, p2: total, p3: moved }) : tr("会建 {p1} 个工作区、{p2} 个会话", { p1: tree.groups.length, p2: total })),
+    );
+
+    const rows = el("div", "ws-intro-rows");
+    for (const group of tree.groups) {
+      const row = el("div", "ws-intro-row");
+      row.dataset.ws = group.id;
+      const dot = el("span", "ws-dot");
+      dot.style.background = group.color;
+      row.append(dot, el("span", "ws-intro-name", group.name), el("span", "ws-intro-n", tr("{p1} 个会话", { p1: group.sessions.length })));
+      const own = group.sessions.filter((s) => overrides[s.id] === group.id).length;
+      if (own) row.append(el("span", "ws-intro-moved", tr("其中 {p1} 个是你拖过的", { p1: own })));
+      rows.append(row);
+    }
+    body.append(rows);
+
+    const foot = el("div", "sheet-foot");
+    const later = el("button", "btn ghost", tr("以后再说"));
+    later.onclick = () => this.closeSheet();
+    const go = el("button", "btn primary", tr("就这样开始"));
+    go.onclick = () => {
+      this.prefs = { ...this.prefs, wsIntroSeen: true };
+      savePrefs(this.prefs);
+      this.closeSheet();
+    };
+    foot.append(later, go);
+    sheet.append(body, foot);
+
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    this.sheetKind = "intro";
   }
 
   /** 一个工作区的组头 + 组内卡片。组头可收起，收起状态记在 `pi.prefs.wsCollapsed` 里。 */
@@ -9212,6 +9262,8 @@ type Prefs = {
   lang: Lang;
   /** 收起的工作区（#95）：组 id 列表，跟 accent 一起存在 `pi.prefs` 里，不另开 storage key。 */
   wsCollapsed: string[];
+  /** #101 迁移预览只弹一次：用户点了「就这样开始」才写这个标记（取消不写，下次还弹）。 */
+  wsIntroSeen: boolean;
 };
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
@@ -9220,7 +9272,7 @@ const PEEK_DELAY_MS = 3000;
 /** Grace after the pointer leaves, so crossing the 8px gap into the card isn't a "leave". */
 const PEEK_GAP_MS = 200;
 
-const DEFAULT_PREFS: Prefs = { scale: 1, accent: "ice", text: "normal", lang: "zh-Hans", wsCollapsed: [] };
+const DEFAULT_PREFS: Prefs = { scale: 1, accent: "ice", text: "normal", lang: "zh-Hans", wsCollapsed: [], wsIntroSeen: false };
 
 /** Context-budget presets in the model sheet; null = no ceiling (use the window). */
 const BUDGETS: (number | null)[] = [null, 100_000, 200_000, 500_000, 1_000_000];
@@ -9661,6 +9713,7 @@ function readPrefs(): Prefs {
       // 没存过语言（第一次打开、或老版本升上来）就跟着浏览器走。
       lang: isLang(p?.lang) ? p.lang : detectLang(),
       wsCollapsed: Array.isArray(p?.wsCollapsed) ? p.wsCollapsed.filter((x: unknown): x is string => typeof x === "string") : [],
+      wsIntroSeen: p?.wsIntroSeen === true,
     };
   } catch {
     return { ...DEFAULT_PREFS, lang: detectLang() };

@@ -1,19 +1,20 @@
 /**
- * Probe: 打开即置顶 + 置顶条折叠（D125）。
+ * Probe: 打开会话不再置顶（D128 废止 D125）+ 置顶条折叠。
  *
- * 起因（用户的报障）：会话管理里打开一个会话，它不一定在置顶区，收起左栏后那条横栏里什么标记
- * 都没有 —— 用户根本不知道自己在跟哪个会话说话。D125 的规则是「从任何入口打开会话，它就得在
- * 置顶区里」，并且置顶一多就把横栏折成一颗「＋N」，点开是一张全量列表。
+ * D125 曾经规定「从任何入口打开会话，它就得在置顶区里」，理由是左栏收起后那条横栏是唯一的会话
+ * 入口。左栏变成工作区两级树之后，★ 只剩「组内排前」的意思：跨组自动重排会打乱用户手工拖出来的
+ * 顺序。D128 因此废掉这条 —— 打开 ≠ 置顶 ≠ 解归档，横栏只显示真正 ☆ 过的会话，当前在哪个会话
+ * 由顶栏那颗 NowChip（#96）负责说。
  *
  * 断言六件事：
- *   1. 深链 `#/s/<id>` 首屏落地（openSession 的入口之一）→ 会话置顶，横栏里带 `.cur`；
- *   2. 左栏卡片点开一个从没置顶过的会话 → 桥收到 `opened`，它排到 `pin[0]`；
- *   3. 从「已归档」点开归档会话 → 自动解除归档 + 置顶（不再是归档态）；
+ *   1. 深链 `#/s/<id>` 打开一个没置顶过的会话 → pin / order 一个都不动（会话确实打开了）；
+ *   2. 左栏点开另一个没置顶的会话 → 同样不动，而且前端不再发 `opened` 这条消息；
+ *   3. 从「已归档」点开归档会话 → 会话能打开，但它仍然留在归档里；
  *   4. 置顶多到装不下一行 → 出现「＋N」，N 等于被藏起来的胶囊数，一颗胶囊都没横向溢出；
  *   5. 当前会话排在置顶区最后（比如别的标签页把它拖到最后）也不会被折进去；
- *   6. 点「＋N」→ 列表列出全部置顶会话，点其中被藏起来的那颗能直接打开它。
+ *   6. 点「＋N」→ 列表列出全部置顶会话，点其中被藏起来的那颗能直接打开它（排列不动）。
  *
- * 桩桥（照真桥的 `opened` 语义实现），不碰真 pi。
+ * 桩桥照真桥的 D128 语义：`opened` 什么也不写，只回一份快照。
  *
  * Run: npm run build:web && node probes/pin-auto-open.mjs
  */
@@ -111,13 +112,9 @@ const wss = new WebSocketServer({ noServer: true });
 const cast = (msg) => {
   for (const client of wss.clients) if (client.readyState === 1) client.send(JSON.stringify(msg));
 };
-/** 桩桥照真桥（D125）的语义实现：打开 = 解除归档 + 插到 pin 最前 + 广播新排列。 */
-const opened = (id) => {
-  if (!byId(id)) return;
-  MANAGE.archived = MANAGE.archived.filter((x) => x !== id);
-  if (!MANAGE.pin.includes(id)) MANAGE.pin = [id, ...MANAGE.pin];
-  MANAGE.order = MANAGE.order.filter((x) => x !== id);
-};
+/** 桥侧照 D128：打开不改任何排列。留一个计数，用来断言前端根本不再发这条消息。 */
+let openedSent = 0;
+const INIT = JSON.stringify(MANAGE);
 server.on("upgrade", (req, socket, head) => {
   if (!(req.url ?? "").startsWith("/ws")) return socket.destroy();
   wss.handleUpgrade(req, socket, head, (ws) => {
@@ -133,7 +130,7 @@ server.on("upgrade", (req, socket, head) => {
         ws.send(JSON.stringify({ type: "session", sessionId: s.id, state: s, items: [], approvals: [], asks: [], budget: null }));
       }
       if (msg.type === "manage" && msg.action === "opened") {
-        opened(String(msg.id ?? ""));
+        openedSent += 1; // 旧页面才会发；这里什么也不写，只回快照
         cast({ type: "manage", manage: MANAGE });
       }
     });
@@ -170,34 +167,45 @@ if (await page.locator('input[type="password"]').count()) {
 }
 await page.waitForSelector(".session-card", { timeout: 15000 });
 await sleep(800);
-ok(MANAGE.pin[0] === DEEP, `深链打开的会话进了 pin[0]（pin[0] = ${MANAGE.pin[0]}）`);
-ok(MANAGE.archived.includes(ARCH), "别的会话被打开，归档集合不受影响");
+ok(JSON.stringify(MANAGE) === INIT, `深链打开会话后排列一个字节都没变（pin[0] = ${MANAGE.pin[0]}）`);
+ok(MANAGE.archived.includes(ARCH), "归档集合也不受影响");
+ok(
+  (await page.evaluate(() => location.hash.slice(4))) === DEEP,
+  "但会话确实被打开了（hash 指到它）",
+);
 
-// 收起左栏，横栏才是唯一入口 —— 也就是报障现场
+// 收起左栏：横栏只列真正 ☆ 过的会话 —— 刚打开的深链会话不在里面，这是 D128 之后的样子
 await page.locator('.side-toggle[data-side="left"]').click();
 await sleep(600);
 let box = await strip();
-const deep = box.chips.find((c) => c.name.includes("深链"));
-ok(deep?.cur === true, "深链会话的胶囊带 .cur");
+ok(!box.chips.some((c) => c.name.includes("深链")), "没置顶过的会话不会自己出现在横栏里");
 ok(Boolean(box.more), `置顶多到装不下一行时折成「${box.more}」`);
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-folded.png`), clip: { x: 0, y: 0, width: 1000, height: 110 } });
 
-// 2) 左栏卡片打开一个从没置顶过的会话
+// 2) 左栏卡片打开一个从没置顶过的会话 → 排列不动，前端也不再发 opened
 await page.locator('.side-toggle[data-side="left"]').click();
 await sleep(400);
 await page.locator('.session-card[data-id="st-click"]').click();
 await sleep(700);
-ok(MANAGE.pin[0] === "st-click", `左栏点开的会话也进了 pin[0]（pin[0] = ${MANAGE.pin[0]}）`);
+ok(JSON.stringify(MANAGE) === INIT, "左栏点开一个没置顶的会话，pin / order 都没动");
+ok(await page.locator('.session-card[data-id="st-click"].active').count() === 1, "……而它确实是当前会话（左栏卡片 .active）");
+ok(openedSent === 0, `前端不再发 manage action:"opened"（收到 ${openedSent} 条）`);
 
-// 3) 从「已归档」点开 → 解除归档 + 置顶
+// 3) 从「已归档」点开 → 会话能打开，但归档就是归档，不自动解除
 await page.locator('.session-sec[data-sec="archived"] .label').click();
 await sleep(300);
 await page.locator(`.session-card[data-id="${ARCH}"]`).click();
 await sleep(700);
-ok(!MANAGE.archived.includes(ARCH), "打开归档会话后它离开了归档");
-ok(MANAGE.pin[0] === ARCH, `并且进了 pin[0]（pin[0] = ${MANAGE.pin[0]}）`);
+ok(
+  (await page.evaluate(() => location.hash.slice(4))) === ARCH,
+  "归档会话点开就打开了（不是「打不开」，只是不再改状态）",
+);
+ok(MANAGE.archived.includes(ARCH), "它仍然在归档里");
+ok(!MANAGE.pin.includes(ARCH), "也不会因此被置顶");
 
-// 4) 折叠：一条横栏装不下 → ＋N 顶上，且没有横向溢出（不需要横向滚动）
+// 4) 折叠：换一个「置顶且排最后」的会话当当前会话，横栏一条装不下 → ＋N 顶上，且没有横向溢出
+await page.locator('.session-card[data-id="st-10"]').click();
+await sleep(500);
 await page.locator('.side-toggle[data-side="left"]').click();
 await sleep(600);
 box = await strip();
@@ -208,8 +216,8 @@ ok(box.overflow === false, "折起来之后横栏没有再横向溢出");
 ok(box.chips.some((c) => c.cur && !c.hidden), "当前会话那颗没被折断");
 
 // 5) 当前会话被排到置顶区最后（比如另一个标签页把它拖到了末尾）也不能藏
-const others = SESSIONS.filter((s) => MANAGE.pin.includes(s.id) && s.id !== ARCH).map((s) => s.id);
-cast({ type: "manage", manage: { ...MANAGE, pin: [...others, ARCH] } });
+const others = SESSIONS.filter((s) => MANAGE.pin.includes(s.id) && s.id !== "st-10").map((s) => s.id);
+cast({ type: "manage", manage: { ...MANAGE, pin: [...others, "st-10"] } });
 await sleep(600);
 box = await strip();
 const last = box.chips[box.chips.length - 1];
@@ -217,20 +225,22 @@ ok(last?.cur === true, "排到最后的当前会话仍在条里");
 ok(last?.hidden === false, "……而且没有被折叠藏起来");
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-cur-last.png`), clip: { x: 0, y: 0, width: 1000, height: 110 } });
 
-// 6) 点「＋N」→ 全量列表；挑一颗被藏起来的打开
+// 6) 点「＋N」→ 全量列表；挑一颗被藏起来的打开 —— 打开也不改排列（D128）
 const hiddenName = box.chips.find((c) => c.hidden)?.name ?? "";
+const before = JSON.stringify(MANAGE);
 await page.locator(".pin-more").click();
 await sleep(400);
 const rows = await page.evaluate(() => [...document.querySelectorAll(".pin-list .pm-item")].map((b) => b.querySelector(".pm-text")?.textContent ?? ""));
 ok(rows.length === MANAGE.pin.length, `列表里有全部 ${MANAGE.pin.length} 颗置顶会话（实际 ${rows.length}）`);
 ok(rows.some((n) => n && hiddenName.startsWith(n.slice(0, 4))), `被折起来的那颗（${hiddenName.slice(0, 6)}）在列表里`);
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-list.png`), clip: { x: 0, y: 0, width: 1000, height: 420 } });
-const wantId = MANAGE.pin.find((id) => id !== ARCH && byId(id)?.name === hiddenName) ?? MANAGE.pin[0];
+const wantId = MANAGE.pin.find((id) => byId(id)?.name === hiddenName) ?? MANAGE.pin[0];
 await page.locator(`.pin-list .pm-item[data-session-id="${wantId}"]`).click();
 await sleep(700);
 const now = await page.evaluate(() => location.hash.slice(4));
 ok(now === wantId, `点列表里的一行就打开了它（hash = ${now}）`);
 ok((await page.locator(".pin-list").count()) === 0, "选完之后列表收掉了");
+ok(JSON.stringify(MANAGE) === before, "从横栏列表里打开也不改排列");
 
 await browser.close();
 await new Promise((r) => server.close(r));
