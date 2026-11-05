@@ -2414,6 +2414,49 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-tab.on { background: #fff; color: #1f2430; box-shadow: inset 0 -2px 0 #4b7ea8; }
 .sd-pane { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; position: relative; }
 .sd-pane[hidden] { display: none; }
+/* #112 页面视图：≥900 并排（左网格右 PDF 纸面），<900 收成两个标签页。
+   分界线的比例是 --sd-split，拖动时只改这一个变量。 */
+.sd-viewtabs {
+  flex: none; display: flex; gap: 2px; padding: 6px 8px 0;
+  background: #fafbfc; border-bottom: 1px solid #e8ebef;
+}
+.sd-viewtab {
+  border: 0; padding: 5px 10px; border-radius: 7px 7px 0 0; background: transparent;
+  font: 12.5px/1 var(--sans); color: #6b7686; cursor: pointer;
+}
+.sd-viewtab:hover { background: #eef1f5; color: #1f2430; }
+.sd-viewtab.on { background: #fff; color: #1f2430; box-shadow: inset 0 -2px 0 #4b7ea8; }
+.sd-panes { --sd-split: 50%; flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; }
+.sd-gridpane { flex: 1 1 auto; }
+.sd-panes.sd-showpage .sd-gridpane { flex: 0 0 var(--sd-split); }
+.sd-split {
+  flex: 0 0 9px; position: relative; display: none; align-items: center; justify-content: center;
+  cursor: col-resize; touch-action: none; background: #fafbfc;
+  border-left: 1px solid #e8ebef; border-right: 1px solid #e8ebef;
+}
+.sd-split::after { content: ""; width: 1px; height: 100%; background: #dfe4ea; }
+.sd-panes.sd-showpage .sd-split { display: flex; }
+.sd-split:hover::after, .sd-split.drag::after { width: 2px; background: #4b7ea8; }
+.sd-narrow .sd-split { display: none; }
+.sd-narrow .sd-panes.sd-showpage .sd-gridpane { flex: 1 1 auto; }
+.sd-pg { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; position: relative; background: #e9edf2; }
+.sd-pg[hidden] { display: none; }
+.sd-pg-frame { flex: 1 1 auto; width: 100%; height: 100%; border: 0; background: #fff; }
+.sd-pg-msg {
+  position: absolute; inset: 0; z-index: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  padding: 20px; text-align: center; background: rgba(255, 255, 255, 0.92);
+  color: #5c6676; font-size: 13px;
+}
+.sd-pg-wait { background: rgba(255, 255, 255, 0.78); }
+.sd-pg-idle, .sd-pg-error {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  padding: 20px; text-align: center; color: #5c6676; font-size: 13px;
+}
+.sd-pg-error { color: #a04949; }
+.sd-pg-line { max-width: 360px; line-height: 1.6; }
+.sd-pg-idle .sd-act, .sd-pg-error .sd-act { margin-top: 4px; }
 /* #111：选中格的公式栏：左边 A1 坐标，右边公式原文 / 显示值。 */
 .sd-fx {
   flex: none; display: flex; align-items: center; gap: 8px;

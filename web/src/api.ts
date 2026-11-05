@@ -70,6 +70,8 @@ export const api = {
   /** D127: sheet metadata and one visible row window, both keyed by the /api/preview grant token. */
   sheetMeta: (token: string) =>
     req<SheetMeta>("/api/sheet/meta", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }),
+  /** #112: the PDF page view of a workbook (converted once per path+mtime by the bridge). */
+  sheetPdf: (token: string) => `/api/sheet/pdf?token=${encodeURIComponent(token)}`,
   sheetWindow: (token: string, sheet: string, r0: number, r1: number, c0: number, c1: number) =>
     req<SheetWindow>("/api/sheet/window", {
       method: "POST",

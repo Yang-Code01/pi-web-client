@@ -72,6 +72,8 @@ export interface WorkbookMeta {
   rows: number;
   cols: number;
   sheets: SheetInfo[];
+  /** 包里有图表部件（xl/charts/chartN.xml）：页面视图能把它一起印到纸上。 */
+  charts: boolean;
 }
 
 export interface SheetWindow {
@@ -361,12 +363,18 @@ export function readBook(buf: Uint8Array): Book {
   const first = sheets[0];
   const pr = /<workbookPr\b[^>]*>/.exec(workbook)?.[0] ?? "";
   const date1904 = /^(1|true)$/i.test(attr(pr, "date1904") ?? "");
-  book.meta = { name: first.name, rows: first.rows, cols: first.cols, sheets };
+  book.meta = { name: first.name, rows: first.rows, cols: first.cols, sheets, charts: hasChartParts(dir) };
   book.parts = parts;
   book.dir = dir;
   book.tiers = tiers;
   book.date1904 = date1904;
   return book;
+}
+
+/** 只看 zip 目录里有没有图表部件，不解压表 XML（页面视图的开关，D127）。 */
+function hasChartParts(dir: Map<string, ZipEntry>): boolean {
+  for (const name of dir.keys()) if (/^xl\/charts\/chart\d+\.xml$/i.test(name)) return true;
+  return false;
 }
 
 function sharedStrings(buf: Uint8Array, dir: Map<string, ZipEntry>): string[] {
