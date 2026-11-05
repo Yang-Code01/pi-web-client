@@ -1828,3 +1828,36 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 **验证：** `npm run typecheck`（i18n 1264 键 ×3）、`web/tests/{nowchip,pillbar}-unit.mjs`、
 `probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿；截图 `.scratch/unslop/look4.png`（外观与语言）、
 `settings.png`（pi 设置，确认标题改动在别的抽屉上也立得住）。
+
+## D133 抽屉表单只留两档字号；聚焦态回到一条规则
+
+**背景（逐个抽屉量出来的）：** 同一个「新建会话」里输入框有 12 / 13 / 14 三种字号、textarea 12、
+select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 11、`.note-title` 14、
+`.note-body` 13）。这些是各功能各写各的 `font-size` 留下的，不是刻意分档。聚焦态更散：新建会话的
+会话名输入框吃浏览器默认的**白 outline**（3px `--text`，比信号色环还响），模型抽屉吃 3px，
+笔记编辑器是青 border + `color-mix` 外圈 —— 同一个抽屉系统里三套语言。
+
+**决定：**
+- `.sheet :where(input:not([type=checkbox]):not([type=radio]), textarea, select)` 统一 13px；
+  **用 `:where()` 把优先级压到 0**，各控件自己的 `.mono` / `.note-meta-input` 等更具体的规则照旧生效
+  （等宽路径那类保持 12px），只有「什么都没写」的控件才吃这个默认值。
+- 同样用 `:where()` 给 `:focus` 兜底：表单控件 `outline:none` + `border-color: var(--accent-dim)`，
+  button / a / checkbox / radio 的 `:focus-visible` 给 2px 淡青环。控件自己写了 `:focus` 的
+  （`.notes-search`、`.note-title`、`.composer textarea` 等）依旧走自己的。
+- 删掉 `.new-sheet .ns-input` 的 14px、`.ns-adv-grid textarea` 的 12px、`.note-title` 的 14px、
+  `.note-body` 的 13px（都回落到 13）；`.note-meta-input` 11→12；`.session-info-head` 与
+  `.notes-tabs` 这两个「忘了写字号、继承 body 15px」的容器补成 13 / 12。
+- 抽屉标题与色点上一条见 D132；这一轮不改信息架构，也不碰 `.chip.on` 的填色选中态（全站共用）。
+
+**为什么不是逐抽屉列一张字号表：** 这些抽屉不是各自的产品，是同一个「设置 / 新建」壳层。它们标点点的
+控件不该各带一套刻度；一处默认 + 少数有理由的例外（等宽路径 12px）比 14 条分散规则好维护。
+
+**代价 / 可改：** 新建会话的会话名输入框从 14px 掉到 13px，笔记标题也从 14 掉到 13（仍保留 500 字重），
+在「特大」字号偏好下都跟着 `--ui-scale` 一起放大。想让「新建会话」的名字更像标题，可以单独给
+`.new-sheet .ns-input:first-of-type` 加一档，但那会让这一轮的规则重新破例。
+
+**验证：** `fs-sheet.mjs` 逐抽屉统计控件字号：`new` 从 12/13/14 收到 13（外加 5 个 checkbox 12）、
+`notes` 从 11/12/13/14 收到 12/13、`model` / `keys` / `artifacts` 无刻度外值。
+`npm run typecheck`（i18n 1264 键 ×3）、`web/tests/{nowchip,pillbar}-unit.mjs`、
+`probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿；截图 `.scratch/unslop/s-{new,model,notes,peer}-1440.png`
+与 `new-focus.png`（聚焦框现在是淡青边，不是白环）。
