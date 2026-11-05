@@ -13,6 +13,9 @@ import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
 import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
 import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
+import { lifecycle, gcTickMs, capProtectMs, type Lifecycle, type LifecycleThresholds } from "./lifecycle.ts";
+import { absentFor } from "./presence.ts";
+import { sampleMemory } from "./runtime.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -26,6 +29,12 @@ export interface ApprovalRequest {
   message: string;
   createdAt: number;
   deadline?: number;
+}
+
+/** What an approval was about, short enough to name it in a notice: the command it asked for. */
+function summarizeApproval(approval: ApprovalRequest): string {
+  const text = approval.message.replace(/\s+/g, " ").trim() || approval.title.trim();
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
 }
 
 // ---------------------------------------------------------------- ask-user
@@ -89,6 +98,42 @@ interface OpenQuestionnaire {
   taken: Set<string>;
   /** Dialogs that arrived before the answers did. */
   waiting: { uiId: string; req: any; question: QuestionnaireQuestion }[];
+}
+
+/** One running pi, as the runtime panel lists it (D120 / #77). */
+export interface RuntimeSession {
+  id: string;
+  name: string;
+  running: boolean;
+  /** Since the last pi event — the same clock `sleepIdleSessions` reads, in milliseconds. */
+  idleMs: number;
+  /** Resident bytes, only when the sample was trustworthy and the table listed this pid. */
+  bytes?: number;
+}
+
+/**
+ * `runtime.stats`: who is running, what they cost, and whether that number is real. `totalBytes`
+ * is `null` whenever nothing was measured (no running pi) or the reading failed (`unavailable`).
+ */
+export interface RuntimeStats {
+  running: number;
+  totalBytes: number | null;
+  unavailable: boolean;
+  /** Idle longest first. */
+  sessions: RuntimeSession[];
+  /**
+   * The two thresholds in force, so the panel can show them and prove a change took (#78). Read on
+   * every call, which is the same read the GC tick does — nothing is cached between ticks.
+   * `abortGraceMs` stays inside: it is a test seam, not a number for the page.
+   */
+  lifecycle: LifecycleThresholds;
+}
+
+/** A session 「全部休眠」 had to leave alone (#80 / D120). `why` is a fixed id, not a sentence. */
+export interface SleepSkipped {
+  id: string;
+  name: string;
+  why: "running";
 }
 
 export interface SessionState {
@@ -237,8 +282,11 @@ function publicAsk(ask: PendingAsk): AskRequest {
   };
 }
 
-const IDLE_GC_MS = 2 * 60 * 60 * 1000;
 const IDLE_EVICT_MS = 10 * 60 * 1000;
+
+/** Rounded-up whole units for the watchdog's notices: 30 minutes and 60 seconds read like D120. */
+const minutes = (ms: number): number => Math.max(1, Math.round(ms / 60_000));
+const seconds = (ms: number): number => Math.max(1, Math.round(ms / 1000));
 
 function lockPath(id: string): string {
   return statePath("locks", `${id}.lock`);
@@ -522,6 +570,13 @@ export class Session extends EventEmitter {
   private skillsCache: { at: number; list: SkillInfo[] } | null = null;
 
   private lastActivity = Date.now();
+  /**
+   * #81: when the watchdog aborted this run. Set once the abort is out, so the following ticks only
+   * wait out `abortGraceMs` before ending the process; null while no abort is pending.
+   */
+  private stuckAbortedAt: number | null = null;
+  /** One notice per silent run: the tick fires every minute, and none of them would be news. */
+  private stuckNoticed = false;
   private tailTimer: NodeJS.Timeout | null = null;
   private tailSig = "";
   private draftCounter = 0;
@@ -585,6 +640,11 @@ export class Session extends EventEmitter {
 
   get live(): boolean {
     return Boolean(this.rpc?.alive);
+  }
+
+  /** The pi child's pid while it is alive — what the runtime panel samples memory for (D120 §2). */
+  get pid(): number | null {
+    return this.rpc?.pid ?? null;
   }
 
   /** The user opened this session: whatever finished before now has been seen. */
@@ -692,6 +752,9 @@ export class Session extends EventEmitter {
   // ---------------------------------------------------------------- live (RPC)
   async startLive(opts: { resume: boolean; cwd?: string; name?: string }): Promise<void> {
     if (this.live) return;
+    // A pi we are just spawning counts as activity on this session's clock: the watermark's
+    // protection window (#79) starts here, whether or not pi has said anything yet.
+    this.touch();
     this.stopTail();
     const id = this.state.id || crypto.randomUUID();
     this.state.id = id;
@@ -819,6 +882,9 @@ export class Session extends EventEmitter {
       case "agent_start":
         this.setState({ running: true, done: false });
         this.autoCompactUsed = false;
+        // A new run is a new verdict: a previous abort's grace clock must not carry over (#81).
+        this.stuckAbortedAt = null;
+        this.stuckNoticed = false;
         this.emitWs({ type: "pi.status", sessionId: this.state.id, running: true });
         break;
       case "agent_end":
@@ -830,6 +896,9 @@ export class Session extends EventEmitter {
         // Whatever was queued has been delivered or cleared by now.
         this.queuedUser = [];
         this.setQueue([], []);
+        // The run answered its abort (or ended on its own): nothing left for the watchdog to end (#81).
+        this.stuckAbortedAt = null;
+        this.stuckNoticed = false;
         this.setState({ running: false, done: true });
         this.emitWs({ type: "pi.status", sessionId: this.state.id, running: false });
         void this.refreshStats();
@@ -1059,9 +1128,9 @@ export class Session extends EventEmitter {
     this.rpc?.uiRespond({ id, cancelled: true });
   }
 
-  /** Q-032: 把「为什么没发生」写进用户正在看的那段聊天，而不是默默失败。 */
-  notice(text: string, level: "info" | "warn" | "error" = "info"): void {
-    this.emitWs({ type: "notice", sessionId: this.state.id, text, level });
+  /** Q-032: 把「为什么没发生」写进用户正在看的那段聊天，而不是默默失败。`code` 让界面按语言重写。 */
+  notice(text: string, level: "info" | "warn" | "error" = "info", i18n?: { code: string; params?: Record<string, string> }): void {
+    this.emitWs({ type: "notice", sessionId: this.state.id, text, level, ...i18n });
   }
 
   private logUiTimeout(method: string, timeout: unknown): void {
@@ -1707,10 +1776,139 @@ export class Session extends EventEmitter {
     this.setState({ running: false });
   }
 
-  sleep(): void {
-    if (this.state.running) return;
-    void this.close({ quiet: true }).then(() => {
-      this.emitWs({ type: "notice", sessionId: this.state.id, text: "会话已休眠（消息仍在，下次发消息会自动唤醒）", level: "info" });
+  /**
+   * #81 (D120): one watchdog step, called from the lifecycle tick. A `running` turn that has seen no
+   * pi event for `cfg.idleMs` is stuck — unless something is in flight (`busy()`), in which case the
+   * silence is expected and the run only gets one notice; a pending approval or question is a
+   * person's call, not a hang. A stuck run is aborted first, so the turn still lands on disk, and the
+   * process is ended only if it has not settled `cfg.abortGraceMs` later.
+   */
+  checkStuckRun(cfg: Lifecycle): void {
+    if (!this.live || this.closing || !this.state.running) {
+      // The run ended or the process went away on its own: whatever was pending is moot.
+      this.stuckAbortedAt = null;
+      this.stuckNoticed = false;
+      return;
+    }
+    if (this.idleFor() <= cfg.idleMs) {
+      // Still talking: a later silence gets its own verdict, and its own notice.
+      if (this.stuckAbortedAt === null) this.stuckNoticed = false;
+      return;
+    }
+    // A compaction is long and silent by nature ("minutes on a big context"): not a hang either.
+    if (this.compaction) return;
+    if (this.busy()) {
+      // A tool or a `!cmd` in flight explains the silence; the decision to stop stays with the user.
+      if (this.stuckNoticed) return;
+      this.stuckNoticed = true;
+      this.emitWs({
+        type: "notice",
+        sessionId: this.state.id,
+        code: "stuck_run_busy",
+        text: `这个会话好像卡住了：${minutes(cfg.idleMs)} 分钟没有任何事件，但还有工具或命令在跑。没有中止它 —— 要不要停由你定。`,
+        params: { p1: minutes(cfg.idleMs) },
+        level: "warn",
+      });
+      return;
+    }
+    if (this.approvals.size || this.asks.size) return;
+    if (this.stuckAbortedAt !== null) {
+      if (Date.now() - this.stuckAbortedAt < cfg.abortGraceMs) return;
+      this.stuckAbortedAt = null;
+      this.emitWs({
+        type: "notice",
+        sessionId: this.state.id,
+        code: "stuck_run_ended",
+        text: "中止了但一直没有回音，已关掉这个会话的 pi 进程。消息都在，发一条消息会重新启动它。",
+        level: "warn",
+      });
+      this.endStuckProcess();
+      return;
+    }
+    this.stuckAbortedAt = Date.now();
+    this.stuckNoticed = true;
+    this.emitWs({
+      type: "notice",
+      sessionId: this.state.id,
+      code: "stuck_run_aborted",
+      text: `这一轮 ${minutes(cfg.idleMs)} 分钟没有任何事件，也没有工具在跑，判定为卡住：已请求中止，${seconds(cfg.abortGraceMs)} 秒内还不结束就关掉进程。`,
+      params: { p1: minutes(cfg.idleMs), p2: seconds(cfg.abortGraceMs) },
+      level: "warn",
+    });
+    // The stop button's abort, minus the queue dance: give the turn its chance to land on disk.
+    this.abort();
+  }
+
+  /** Is something actually working? A tool pi has not finished, or a `!cmd` still running (#81). */
+  private busy(): boolean {
+    return Boolean(this.bashRun) || this.items.some((it) => it.kind === "tool" && it.status === "running");
+  }
+
+  /**
+   * #81: end a run that ignored its abort. `close()`'s bookkeeping, without the abort-and-wait: that
+   * happened a grace period ago, and another five seconds of waiting buys nothing.
+   */
+  private endStuckProcess(): void {
+    const rpc = this.rpc;
+    if (!rpc?.alive) return;
+    this.closing = true;
+    this.closeQuietly = true;
+    // The exit handler below already does the rest (running:false, lock, tail); this only keeps the
+    // dead child from making the next close() wait for an exit that has already happened.
+    rpc.once("exit", () => {
+      if (this.rpc === rpc) this.rpc = null;
+    });
+    rpc.kill();
+  }
+
+  /**
+   * The one sleep path for every reason (idle, memory cap, 「全部休眠」). Resolves once the process is
+   * gone, which is what 「全部休眠」 needs: its receipt is followed by numbers that have already dropped.
+   */
+  sleep(): Promise<void> {
+    if (this.state.running) return Promise.resolve();
+    return this.sleepNow();
+  }
+
+  /**
+   * #82/D120: the approval or the questionnaire on screen is waiting on nobody. Two clocks have to
+   * agree before it is dropped — nobody has had a page in front for the whole threshold, *and* this
+   * card has been hanging for the whole threshold itself. Without the second clock a card that pops
+   * up 30 minutes after you left would be thrown away on the very next tick, before you could even
+   * come back. Expired ones get a line in the timeline saying which died; the session sleeps only
+   * when nothing is left pending, and `close()` aborts first, so the interrupted turn still lands on
+   * disk.
+   */
+  expireUnattended(cfg: Lifecycle): void {
+    const now = Date.now();
+    const hanging = (since: number) => now - since >= cfg.idleMs;
+    for (const approval of [...this.approvals.values()]) {
+      if (!hanging(approval.createdAt)) continue;
+      const which = summarizeApproval(approval);
+      this.answerApproval(approval.id, "cancel");
+      this.notice(`「${which}」这条审批没有人看，已过期；那次工具调用已丢弃，需要的话重新发一次。`, "info", {
+        code: "approval_expired",
+        params: { p1: which },
+      });
+    }
+    for (const ask of [...this.asks.values()]) {
+      if (!hanging(ask.createdAt)) continue;
+      this.cancelAsk(ask.id, "没有人看，已过期");
+      this.notice("这个提问没有人看，已过期；这次提问已丢弃。", "info", { code: "ask_expired" });
+    }
+    // A card too young to expire is still somebody's to answer: taking the process down would drop
+    // exactly the thing this rule exists to keep alive.
+    if (this.approvals.size || this.asks.size) return;
+    void this.sleepNow();
+  }
+
+  /** The process goes, messages and session file stay, the next message wakes it (D120). */
+  private sleepNow(): Promise<void> {
+    // Not re-entrant: the exit takes a while, and a second pass must not emit a second notice
+    // (#79: the cap and 「全部休眠」 walk the same list the idle rule does).
+    if (this.closing) return Promise.resolve();
+    return this.close({ quiet: true }).then(() => {
+      this.notice("会话已休眠（消息仍在，下次发消息会自动唤醒）", "info", { code: "session_slept" });
       this.emitWs({ type: "session.state", session: this.state });
     });
   }
@@ -2280,6 +2478,69 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Who is running and what the bridge's own pi children cost (D120 / #77). The pid set comes from
+   * the `RpcChild` handles this manager holds and from nothing else, so no line of the process
+   * table but ours can be counted. A reading that cannot be trusted is `null` + `unavailable`,
+   * never an estimate: #79 will reap sessions with these numbers.
+   *
+   * Reusable rather than panel-specific: the watermark rule (#79) asks the same question on the
+   * same tick. With no live pi it spawns nothing.
+   */
+  async runtimeStats(): Promise<RuntimeStats> {
+    const live = [...this.sessions.values()].filter((s) => s.live);
+    const pids: number[] = [];
+    for (const s of live) if (s.pid !== null) pids.push(s.pid);
+    const sample = await sampleMemory(pids);
+    const sessions = live
+      .map((s): RuntimeSession => {
+        const pid = s.pid;
+        const bytes = sample.failure === null && pid !== null ? sample.bytes.get(pid) : undefined;
+        return {
+          id: s.state.id,
+          name: s.state.name,
+          running: s.state.running,
+          idleMs: s.idleFor(),
+          ...(bytes === undefined ? {} : { bytes }),
+        };
+      })
+      .sort((a, b) => b.idleMs - a.idleMs);
+    const totalBytes = sample.failure === null && sessions.length ? [...sample.bytes.values()].reduce((sum, n) => sum + n, 0) : null;
+    const cfg = lifecycle();
+    return {
+      running: sessions.length,
+      totalBytes,
+      unavailable: sample.failure !== null,
+      sessions,
+      // Only what the panel shows and may edit. The full `Lifecycle` also carries `abortGraceMs`,
+      // which is a test seam (D120 §3): it is not sent to the page.
+      lifecycle: { idleMs: cfg.idleMs, watermarkBytes: cfg.watermarkBytes },
+    };
+  }
+
+  /**
+   * 「全部休眠」(#80): sleep every live session that is not mid-run, and name the ones that were
+   * skipped so the page can say who is still working. A running turn is never touched — that is the
+   * whole point of the button (no silent interruption of work), and it is also why nothing else here
+   * overrides `sleep()`'s own guard. Resolves when the sleeping ones have really let go of their pi.
+   */
+  async sleepAll(): Promise<{ slept: string[]; skipped: SleepSkipped[] }> {
+    const slept: string[] = [];
+    const skipped: SleepSkipped[] = [];
+    const pending: Promise<void>[] = [];
+    for (const s of this.sessions.values()) {
+      if (!s.live) continue;
+      if (s.state.running) {
+        skipped.push({ id: s.state.id, name: s.state.name, why: "running" });
+        continue;
+      }
+      slept.push(s.state.id);
+      pending.push(s.sleep());
+    }
+    await Promise.all(pending);
+    return { slept, skipped };
+  }
+
+  /**
    * `isWatched` says whether some client is looking at a session right now. Read-only sessions
    * nobody watches are dropped after a while: each one holds its transcript and a 400ms file poll.
    */
@@ -2288,13 +2549,7 @@ export class SessionManager extends EventEmitter {
     this.sweepLocks();
     this.gcTimer = setInterval(() => {
       this.sweepLocks();
-      for (const s of this.sessions.values()) {
-        if (!s.live) continue;
-        if (s.state.running) continue;
-        if (s.approvals.size) continue;
-        if (s.asks.size) continue;
-        if (s.idleFor() > IDLE_GC_MS) s.sleep();
-      }
+      void this.lifecycleTick();
       for (const [id, s] of this.sessions) {
         if (s.live || s.state.running || s.state.done) continue;
         if (s.approvals.size || s.asks.size) continue;
@@ -2305,8 +2560,91 @@ export class SessionManager extends EventEmitter {
         s.removeAllListeners();
         this.sessions.delete(id);
       }
-    }, 60_000);
+    }, gcTickMs());
     this.gcTimer.unref?.();
+  }
+
+  /**
+   * One pass of the process-lifecycle rules, always in the same order (D120): a stuck run first, so
+   * the memory cap can never be what ends a session the watchdog was about to abort; idle reaping
+   * before the cap, so the cheap reason wins and the cap only sees what is left.
+   *
+   * Async for the cap's one look at the process table (#79). That reading is also what the panel is
+   * pushed with (#77), so a tick samples once, pushes once, and no timer exists for either.
+   */
+  private async lifecycleTick(): Promise<void> {
+    const cfg = lifecycle();
+    this.endStuckRuns(cfg);
+    this.sleepIdleSessions(cfg);
+    const stats = await this.runtimeStats();
+    this.sleepOverCap(cfg, stats);
+    this.emit("runtime", stats);
+  }
+
+  /** Watchdog for a `running` turn that stopped sending events — #81. */
+  private endStuckRuns(cfg: Lifecycle): void {
+    for (const s of this.sessions.values()) s.checkStuckRun(cfg);
+  }
+
+  /**
+   * A finished run with no pi event for `idleMs` sleeps: the process goes, messages and session file
+   * stay, and the next message wakes it (D120). Nobody watching counts as activity — a tab left open
+   * unattended is exactly what this reaps. A pending approval or ask is the one thing that can hold
+   * a session longer, and only while nobody is in front of a page *and* the card is itself that old
+   * (#82) — a card cannot be expired by an absence that started before it existed.
+   */
+  private sleepIdleSessions(cfg: Lifecycle): void {
+    // Whether a pending approval is still worth keeping is a fact about the person, not the session:
+    // as long as some page is in front, nothing expires (#82).
+    const unattended = absentFor();
+    for (const s of this.sessions.values()) {
+      if (!s.live) continue;
+      if (s.approvals.size || s.asks.size) {
+        // A pending approval means its turn is in flight, so this branch has to sit before the
+        // `running` guard: that turn is exactly what sits there waiting on nobody (#82).
+        if (unattended > cfg.idleMs) s.expireUnattended(cfg);
+        continue;
+      }
+      if (s.state.running) continue;
+      if (s.idleFor() > cfg.idleMs) void s.sleep();
+    }
+  }
+
+  /**
+   * Memory cap (#79): with every live pi together above `cfg.watermarkBytes`, the sessions that have been
+   * silent longest sleep until the total is back under it — the same `sleep()`, and so the same
+   * notice, as the idle rule. Three of them are never candidates: a session mid-turn, one still
+   * inside the wake-up protection window, and one holding an approval or a question (a person's
+   * decision, not a memory figure).
+   *
+   * `stats` is the tick's reading, and a reading that cannot be trusted reaps nobody (D120 §6):
+   * the panel may say 「不可用」, the two rules next to this one do not need the numbers and still run.
+   * One live pi always stays, so the bridge cannot reap its way to zero.
+   */
+  private sleepOverCap(cfg: Lifecycle, stats: RuntimeStats): void {
+    // One live pi is always left standing, so with one (or none) this level may not touch anything.
+    if (stats.running <= 1) return;
+    if (stats.unavailable || stats.totalBytes === null) {
+      // D120 §6: a number we cannot trust is not a reason to guess. Say it and reap nobody.
+      console.error("[lifecycle] 内存采样不可用：这一轮不按水位收会话");
+      return;
+    }
+    if (stats.totalBytes <= cfg.watermarkBytes) return;
+    const protectMs = capProtectMs();
+    let total = stats.totalBytes;
+    let left = stats.running;
+    // `stats.sessions` is longest-idle first, which is exactly the order to reap in.
+    for (const row of stats.sessions) {
+      if (total <= cfg.watermarkBytes || left <= 1) return;
+      const session = this.sessions.get(row.id);
+      // No bytes means the table did not list this pid: reaping it would not move the total.
+      if (!session?.live || row.bytes === undefined) continue;
+      if (row.running || session.approvals.size || session.asks.size) continue;
+      if (row.idleMs < protectMs) continue;
+      session.sleep();
+      total -= row.bytes;
+      left -= 1;
+    }
   }
 
   async shutdown(): Promise<void> {

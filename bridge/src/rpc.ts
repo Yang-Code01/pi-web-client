@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
-import { ensureDir } from "./paths.ts";
+import { ensureDir, piChildEnv } from "./paths.ts";
 
 export interface RpcSpawnOptions {
   cli: string;
@@ -46,6 +46,14 @@ export class RpcChild extends EventEmitter {
     return this._alive;
   }
 
+  /**
+   * The child's own pid, while it is alive. The runtime panel samples memory with these and only
+   * these numbers (D120 §2) — matching a parent process or a process name guesses at who we mean.
+   */
+  get pid(): number | null {
+    return this._alive ? (this.child?.pid ?? null) : null;
+  }
+
   start(): void {
     ensureDir(path.dirname(this.opts.logPath));
     this.log = fs.createWriteStream(this.opts.logPath, { flags: "a" });
@@ -54,7 +62,7 @@ export class RpcChild extends EventEmitter {
     const child = spawn(process.execPath, [this.opts.cli, ...this.opts.args], {
       cwd: this.opts.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, ...this.opts.env },
+      env: { ...piChildEnv(), ...this.opts.env },
       windowsHide: true,
     });
     this.child = child;

@@ -9,7 +9,10 @@
  *  - `agent_end` is not the end: a retry continues the run until `agent_settled`.
  *
  * Scenarios are picked by the prompt text: "SLOW…" streams until aborted, "RETRY…" fails, retries
- * once and fails for good, anything else is echoed back.
+      // `pid`: several sessions share this log, so a test can tell whose abort this was (#81).
+      note({ t: "abort", pid: process.pid, queued: steering.length + followUp.length });
+      // The turn cannot settle while it waits on a dialog, so abort answers it (pi does this too).
+      pendingConfirm?.("aborted");
  *
  * Env: FAKE_PI_LOG (jsonl of what the stub saw), FAKE_COMPACT_MS (manual compaction length).
  */
@@ -32,8 +35,22 @@ let steering = [];
 let followUp = [];
 let settleWaiters = [];
 let bashAborted = false;
-// What the bridge started us with (launch options, #28).
-note({ t: "argv", argv: process.argv.slice(2), cwd: process.cwd() });
+/** Resolver of the turn's pending confirm (#82): answered by `extension_ui_response` or `abort`. */
+let pendingConfirm = null;
+/** The command the stub claims it is about to run, so the approval card has something to show. */
+const CONFIRM_MESSAGE = "rm -rf build/";
+// What the bridge started us with (launch options, #28), plus the PI_WEB_* vars it let through:
+// the bridge strips its own settings, and a test can assert one did not reach pi (#76).
+note({ t: "argv", pid: process.pid, argv: process.argv.slice(2), cwd: process.cwd(), piWeb: Object.keys(process.env).filter((k) => k.startsWith("PI_WEB_")) });
+// One line per process that went away, so "it really exited" is provable from the log (#76).
+let exited = false;
+const noteExit = () => {
+  if (exited) return;
+  exited = true;
+  note({ t: "exit", pid: process.pid });
+};
+process.on("exit", noteExit);
+process.on("SIGTERM", () => process.exit(0));
 
 const queueUpdate = () => out({ type: "queue_update", steering: [...steering], followUp: [...followUp] });
 const assistant = (text, extra = {}) => ({
@@ -59,6 +76,29 @@ async function turn(text) {
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
+  if (text.startsWith("SILENT")) {
+    // 完全静默（#81）：`agent_start` 之后一个事件都不发。默认连 abort 都不理 —— 真卡死的样子，
+    // 只有结束进程才能收场；"soft" 那一份收到 abort 就正常收尾（宽限期内的正常结束）；"ask" 那一份
+    // 先挂一个审批再静默（等人点的会话不是卡死）。
+    if (/ask/i.test(text)) out({ type: "extension_ui_request", id: `ui-confirm-${Date.now()}`, method: "confirm", title: "运行命令", message: "npm run build" });
+    if (/soft/i.test(text)) {
+      while (!abortRequested) await sleep(100);
+      out({ type: "message_end", message: assistant("", { stopReason: "aborted" }) });
+      out({ type: "agent_end", messages: [], willRetry: false });
+      return;
+    }
+    await new Promise(() => {}); // never settles: the process must be ended from outside
+  }
+  if (text.startsWith("TOOLHANG")) {
+    // 工具在途后静默（#81）：工具开始了，之后一个事件都没有 —— 一个 40 分钟的构建就是这个样子。
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: "call-hang", name: "bash", arguments: { command: "npm install" } }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: "call-hang", toolName: "bash", args: { command: "npm install" } });
+    while (!abortRequested) await sleep(100);
+    out({ type: "tool_execution_end", toolCallId: "call-hang", isError: false, result: "ok" });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   if (text.startsWith("EXT")) {
     // Fire-and-forget extension UI (rpc-mode.js): none of these may be answered.
     const ui = (method, fields) => out({ type: "extension_ui_request", id: `ui-${method}-${Date.now()}`, method, ...fields });
@@ -70,6 +110,38 @@ async function turn(text) {
     ui("setWidget", { widgetKey: "foot", widgetLines: ["below line"], widgetPlacement: "belowEditor" });
     ui("setTitle", { title: "pi — fake title" });
     ui("set_editor_text", { text: "prefilled by extension" });
+  }
+  if (text.startsWith("APPROVAL")) {
+    // One approval on screen until somebody answers it: what the bridge's expiry rule is about (#82).
+    out({ type: "message_start", message: assistant("") });
+    const id = `ui-confirm-${Date.now()}`;
+    note({ t: "confirm-asked", id, message: CONFIRM_MESSAGE });
+    const reply = await new Promise((resolve) => {
+      pendingConfirm = resolve;
+      out({ type: "extension_ui_request", id, method: "confirm", title: "需要确认", message: CONFIRM_MESSAGE });
+    });
+    pendingConfirm = null;
+    note({ t: "confirm-reply", id, reply });
+    out({ type: "message_end", message: assistant(`confirm: ${reply}`, { stopReason: reply === "aborted" ? "aborted" : "stop" }) });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
+  if (text.startsWith("ASK")) {
+    // What the `question` extension really does in rpc mode: post to the bridge and wait for the
+    // browser (#82). The bridge holds this request open exactly as long as the ask is pending.
+    out({ type: "message_start", message: assistant("") });
+    const question = { id: "q1", label: "Q1", prompt: "选哪个", options: [{ value: "a", label: "A" }], allowOther: true };
+    const answer = await fetch(process.env.PI_WEB_ASK, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: process.env.PI_WEB_ASK_TOKEN, tool: "question", questions: [question] }),
+    })
+      .then((r) => r.json())
+      .catch(() => ({ cancelled: true }));
+    note({ t: "ask-reply", cancelled: Boolean(answer.cancelled), answers: answer.answers ?? null });
+    out({ type: "message_end", message: assistant(`ask: ${answer.cancelled ? "cancelled" : "answered"}`, { stopReason: answer.cancelled ? "aborted" : "stop" }) });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
   }
   if (text.startsWith("RETRY")) {
     out({ type: "message_start", message: assistant("") });
@@ -165,7 +237,10 @@ async function handle(cmd) {
       return ok(id, type, data);
     }
     case "abort": {
-      note({ t: "abort", queued: steering.length + followUp.length });
+      // `pid`: several sessions share this log, so a test can tell whose abort this was (#81).
+      note({ t: "abort", pid: process.pid, queued: steering.length + followUp.length });
+      // The turn cannot settle while it waits on a dialog, so abort answers it (pi does this too).
+      pendingConfirm?.("aborted");
       if (!running) return ok(id, type);
       abortRequested = true;
       await new Promise((r) => settleWaiters.push(r));
@@ -182,10 +257,16 @@ async function handle(cmd) {
       return ok(id, type, { summary: "…" });
     }
     case "bash": {
-      // `!cmd`: "sleep…" streams until abort_bash (5 s max), "fail…" exits 2, anything else echoes.
+      // `!cmd`: "sleep…" streams until abort_bash (5 s max), "quiet…" stays silent for the same kind
+      // of while, "fail…" exits 2, anything else echoes.
       const command = String(cmd.command ?? "");
       note({ t: "bash", command, exclude: cmd.excludeFromContext ?? false });
       bashAborted = false;
+      if (command.startsWith("quiet")) {
+        // 静默的 `!` 命令（#81）：一个字也不输出，只是耗着 —— 命令在途就不算卡死。
+        for (let i = 0; i < 100 && !bashAborted; i++) await sleep(100);
+        return ok(id, type, { output: "", exitCode: bashAborted ? undefined : 0, cancelled: bashAborted, truncated: false });
+      }
       if (command.startsWith("sleep")) {
         let output = "";
         for (let i = 0; i < 50 && !bashAborted; i++) {
@@ -226,10 +307,11 @@ process.stdin.on("data", (chunk) => {
       continue;
     }
     if (cmd.type === "extension_ui_response") {
-      note({ t: "ui-response", id: cmd.id });
+      note({ t: "ui-response", id: cmd.id, confirmed: cmd.confirmed, cancelled: cmd.cancelled });
+      pendingConfirm?.(cmd.cancelled ? "cancelled" : cmd.confirmed === true ? "approved" : "rejected");
       continue;
     }
     void handle(cmd);
   }
 });
-process.stdin.on("end", () => process.exit(0));
+process.stdin.on("end", () => process.exit(0)); // runs the "exit" note above

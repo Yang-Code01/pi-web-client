@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { piChildEnv } from "./paths.ts";
 
 const PKG = path.join(
   "node_modules",
@@ -127,7 +128,7 @@ function levelsOf(model: any): string[] {
  */
 export async function fetchModels(cli: string): Promise<ModelInfo[]> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cli, "--mode", "rpc"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(process.execPath, [cli, "--mode", "rpc"], { env: piChildEnv(), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     let buf = "";
     const done = (err: Error | null, list?: ModelInfo[]) => {
       clearTimeout(timer);

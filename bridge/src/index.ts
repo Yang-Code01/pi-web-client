@@ -21,10 +21,12 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
+import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, revealInFileManager } from "./terminal.ts";
 import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { Notifier } from "./notify.ts";
+import { anyPresent, dropClient, reportPresence } from "./presence.ts";
 import { Tunnel, findCloudflared } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
 import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, statePath, sessionsRootInfo } from "./paths.ts";
@@ -777,6 +779,17 @@ async function main(): Promise<void> {
 
   sessions.on("ws", broadcast);
   /**
+   * D120: the panel stays live without a timer of its own, but only pages that actually asked for
+   * the numbers get the tick's broadcast — a 60 s push to every idle tab is nobody's feature.
+   */
+  const broadcastRuntime = (stats: object) => {
+    const data = JSON.stringify({ type: "runtime.stats", ...stats });
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN && (client as any).wantsRuntime) client.send(data);
+    }
+  };
+  sessions.on("runtime", broadcastRuntime);
+  /**
    * D91: no Windows / WeChat ping while somebody is looking at a page (visible tab in a focused
    * window); the page reports that over its socket. The service worker checks again on arrival.
    */
@@ -790,10 +803,7 @@ async function main(): Promise<void> {
     if (uiLang === "ja") return kind === "approval" ? `承認が必要です · ${name}` : `回答が必要です${count > 1 ? `（${count} 問）` : ""} · ${name}`;
     return kind === "approval" ? `需要你批准 · ${name}` : `需要你回答${count > 1 ? `（${count} 题）` : ""} · ${name}`;
   };
-  const shouldNotify = (): boolean => {
-    if (!notifier.enabled) return false;
-    return ![...wss.clients].some((c) => c.readyState === WebSocket.OPEN && (c as any).present === true);
-  };
+  const shouldNotify = (): boolean => notifier.enabled && !anyPresent();
   sessions.on("approval", (approval) => {
     if (!shouldNotify()) return;
     const session = sessions.get(approval.sessionId);
@@ -851,6 +861,7 @@ async function main(): Promise<void> {
 
     // A login waiting on this page's answers (or an OAuth callback server) must not outlive it.
     ws.on("close", () => {
+      dropClient(ws);
       for (const id of ((ws as any).logins ?? []) as string[]) cancelLogin(id);
     });
 
@@ -864,7 +875,7 @@ async function main(): Promise<void> {
       try {
         switch (msg.type) {
           case "presence": {
-            (ws as any).present = msg.active === true;
+            reportPresence(ws, msg.active === true);
             return;
           }
           case "lang": {
@@ -1153,6 +1164,34 @@ async function main(): Promise<void> {
             const session = sessions.get(String(msg.sessionId ?? ""));
             const done = session ? await session.applyRuntime(msg) : [];
             if (done.length) send({ type: "notice", sessionId: msg.sessionId, text: `已应用到当前会话：${done.join("、")}`, level: "info" });
+            return;
+          }
+          // D120 / #77: read-only numbers for the runtime panel. Nothing here changes a session.
+          case "runtime.stats": {
+            (ws as any).wantsRuntime = true;
+            send({ type: "runtime.stats", ...(await sessions.runtimeStats()) });
+            return;
+          }
+          // D120 / #78: the one write the runtime panel has — the two thresholds, into
+          // `lifecycle.json` so a restarted bridge keeps them. The answer is a fresh stats frame,
+          // and `saved: false` says the value was refused (a 0 or a non-number would be worse than
+          // the old one).
+          case "runtime.settings": {
+            if (!(await requireStepUp())) return;
+            const saved = writeLifecycle({ idleMs: msg.idleMs, watermarkBytes: msg.watermarkBytes });
+            send({ type: "runtime.stats", ...(await sessions.runtimeStats()), saved: saved !== null });
+            return;
+          }
+          // D120 / #80: the manual way out when memory is needed now. Only idle sessions sleep; a run
+          // in flight is named in the receipt instead of being interrupted. It ends processes, so it
+          // sits on the same step-up shelf as every other write: a public page must not be able to do
+          // this with nothing but a socket message.
+          case "runtime.sleepAll": {
+            if (!(await requireStepUp())) return;
+            const receipt = await sessions.sleepAll();
+            send({ type: "runtime.sleepAll", ...receipt });
+            // The page must see the number drop now, not on the next 60 s tick.
+            broadcastRuntime(await sessions.runtimeStats());
             return;
           }
           case "reload": {

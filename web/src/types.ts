@@ -189,6 +189,38 @@ export interface Me {
 
 export type Decision = "approve" | "reject" | "cancel" | "always";
 
+/** Mirrors bridge/src/sessions.ts RuntimeStats: `runtime.stats` 的载荷（D120 / #77）。 */
+export interface RuntimeStats {
+  running: number;
+  /** 采样到的总字节数；没采样（没有在跑的 pi）或采样失败时为 null。 */
+  totalBytes: number | null;
+  unavailable: boolean;
+  /** 按空闲时长降序。 */
+  sessions: RuntimeSessionRow[];
+  /**
+   * D120 / #78：此刻生效的两个阈值；面板上也能改（`runtime.settings`）。桥只发这两项 ——
+   * `abortGraceMs` 是测试注入点，不对外暴露。
+   */
+  lifecycle: { idleMs: number; watermarkBytes: number };
+}
+
+/** Mirrors bridge/src/sessions.ts RuntimeStats 的兄弟：`runtime.sleepAll` 的回执（D120 / #80）。 */
+export interface SleepAllReceipt {
+  /** 已经请去睡觉的会话 id。 */
+  slept: string[];
+  /** 因为在跑而没动的会话，`why` 是固定 id，不是句子。 */
+  skipped: { id: string; name: string; why: "running" }[];
+}
+
+export interface RuntimeSessionRow {
+  id: string;
+  name: string;
+  running: boolean;
+  idleMs: number;
+  /** 只有读数可信、而且进程表里确实有这个 pid 时才有。 */
+  bytes?: number;
+}
+
 /** Mirrors bridge/src/pi.ts ModelInfo. */
 export interface ModelInfo {
   id: string;

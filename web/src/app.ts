@@ -9,9 +9,9 @@ import { renderMarkdown } from "./md.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PermissionMode, PreviewInfo, SessionState, SkillInfo, TrashItem, TunnelState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
-import { applyLang, detectLang, errText, fmtDate, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
+import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
 
@@ -159,6 +159,10 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /** D120 / #77：`runtime.stats` 的最后一帧；null = 还没问过（「读取中…」）。 */
+  private runtimeStats: RuntimeStats | null = null;
+  /** D120 / #80：「全部休眠」的最后一次回执（null = 这次打开面板还没按过）。 */
+  private sleepAllReceipt: SleepAllReceipt | null = null;
   /** #27 the 登录 tab: providers as pi sees them, a filter, and the login running right now. */
   private authProviders: AuthProvider[] | null = null;
   /** #30: is the terminal session-lock extension in pi's global extensions? */
@@ -1093,6 +1097,33 @@ export class App {
         this.me = { ...this.me, notify: msg.on !== false };
         if (this.sheetKind === "settings" && this.settingsTab === "notify") this.paintSettings();
         break;
+      case "runtime.stats":
+        // D120 / #77：桥在每次 GC tick 上广播一次，所以面板不用自己轮询。
+        this.runtimeStats = {
+          running: Number(msg.running ?? 0),
+          totalBytes: typeof msg.totalBytes === "number" ? msg.totalBytes : null,
+          unavailable: msg.unavailable === true,
+          sessions: Array.isArray(msg.sessions) ? (msg.sessions as RuntimeStats["sessions"]) : [],
+          lifecycle: {
+            idleMs: Number(msg.lifecycle?.idleMs ?? 0),
+            watermarkBytes: Number(msg.lifecycle?.watermarkBytes ?? 0),
+          },
+        };
+        // D120 / #78：`saved` 只在回答一次阈值写入时出现。
+        if (msg.saved === true) this.flashSettings(tr("已保存：空闲阈值下一个 tick 就生效，不用重启桥。"));
+        if (msg.saved === false) this.flashSettings(tr("没有保存：阈值必须是大于 0 的数。"), true);
+        // 回答自己的写入一定要重画；每分钟一次的广播则不能把正在输入的阈值抢掉（换 DOM 就是丢光标、丢草稿）。
+        if (this.sheetKind === "settings" && this.settingsTab === "runtime" && (msg.saved !== undefined || !runtimeThresholdFocused())) this.paintSettings();
+        break;
+      case "runtime.sleepAll": {
+        // D120 / #80：回执点名没睡的那几个，比一个「完成」有用得多。
+        this.sleepAllReceipt = {
+          slept: Array.isArray(msg.slept) ? (msg.slept as string[]).map(String) : [],
+          skipped: Array.isArray(msg.skipped) ? (msg.skipped as SleepAllReceipt["skipped"]) : [],
+        };
+        if (this.sheetKind === "settings" && this.settingsTab === "runtime") this.paintSettings();
+        break;
+      }
       case "lockext":
         this.lockExt = { installed: Boolean(msg.installed), path: String(msg.path ?? "") };
         if (msg.saved) this.flashSettings(msg.installed ? tr("已装进 pi 的全局扩展：之后启动的终端 pi 会登记自己开着的会话") : tr("已从 pi 的全局扩展里移除"));
@@ -5512,6 +5543,11 @@ export class App {
     this.sheetKind = "settings";
     this.settingsTab = tab;
     if (tab === "login") this.authProviders = null; // re-read: someone may have logged in from the terminal
+    if (tab === "runtime") {
+      // 上一次按按钮的回执已经过期了：打开面板时重新问数字，也从一张白纸开始。
+      this.sleepAllReceipt = null;
+      this.socket.send({ type: "runtime.stats" });
+    }
     const back = el("div", "sheet-back");
     back.onclick = (ev) => {
       if (ev.target === back) this.closeSheet();
@@ -5562,6 +5598,7 @@ export class App {
       ["login", tr("登录 / 凭据")],
       ["ext", tr("扩展与 MCP")],
       ["notify", tr("通知")],
+      ["runtime", tr("运行时")],
       ["changelog", tr("更新日志")],
     ];
     for (const [id, label] of tabDefs) {
@@ -5570,6 +5607,7 @@ export class App {
       b.onclick = () => {
         this.settingsTab = id;
         this.flashSettings("");
+        if (id === "runtime") this.socket.send({ type: "runtime.stats" });
         this.paintSettings();
       };
       tabs.append(b);
@@ -5579,6 +5617,7 @@ export class App {
     if (this.settingsTab === "login") return this.paintLogin(body);
     if (this.settingsTab === "ext") return this.paintExtSettings(body);
     if (this.settingsTab === "notify") return this.paintNotify(body);
+    if (this.settingsTab === "runtime") return this.paintRuntime(body);
     if (this.settingsTab === "changelog") return this.paintChangelog(body);
     const scope = this.settingsTab;
     const view = this.settingsView[scope];
@@ -5624,6 +5663,107 @@ export class App {
     tools.append(push, test);
     body.append(tools);
     body.append(el("div", "hint", tr("Web Push 已订阅 {p1} 台设备。测试通知不受开关影响，页面在前也会弹。", { p1: this.me.pushCount })));
+  }
+
+  /**
+   * D120 / #77：谁在吃内存。数字来自桥自己拉起的那些 pi 子进程（`tasklist` / `ps`），
+   * 读不到就写「不可用」—— 不留空、不写 0，不猜。
+   * D120 / #78：下面多了一个阈值区 —— 这一页上唯一能改的东西，改的就是回收判据本身。
+   *
+   * D120 / #80：临时要腾内存时的出口是这里那个「全部休眠」。它只收空闲的，正在跑的一轮
+   * 一定不动，也一定不会出现在「已休眠」里（回执点名跳过的是谁）。
+   */
+  private paintRuntime(body: HTMLElement): void {
+    const stats = this.runtimeStats;
+    if (!stats) {
+      body.append(el("div", "empty", tr("读取中…")));
+      return;
+    }
+    const cost = stats.unavailable ? tr("不可用") : stats.totalBytes === null ? "" : fmtSize(stats.totalBytes);
+    body.append(
+      el(
+        "div",
+        "runtime-summary",
+        cost ? tr("运行中 pi：{p1} 个 · {p2}", { p1: stats.running, p2: cost }) : tr("运行中 pi：{p1} 个", { p1: stats.running }),
+      ),
+    );
+    // 一个 pi 都没起的时候按钮灰着：按下去也没东西可睡，不值得试一次才知道。
+    const sleepAll = el("button", "btn ghost", tr("全部休眠")) as HTMLButtonElement;
+    sleepAll.title = tr("把所有空闲的会话休眠掉：消息都在，下一条消息唤醒；正在跑的一轮不动。");
+    sleepAll.disabled = stats.running === 0;
+    sleepAll.onclick = () => {
+      this.sleepAllReceipt = null;
+      this.socket.send({ type: "runtime.sleepAll" });
+      this.paintSettings();
+    };
+    const actions = el("div", "runtime-actions");
+    actions.append(sleepAll);
+    body.append(actions);
+    if (this.sleepAllReceipt) body.append(el("div", "runtime-sleep-all", sleepAllText(this.sleepAllReceipt)));
+    body.append(
+      el(
+        "div",
+        "hint",
+        tr("内存数字来自桥自己拉起的那些 pi 子进程（Windows 用 tasklist，macOS / Linux 用 ps），不按进程名过滤。读不到就写「不可用」，不猜、不留空。"),
+      ),
+    );
+    if (!stats.sessions.length) {
+      body.append(el("div", "empty", tr("现在没有在运行的 pi：发一条消息才会拉起一个。")));
+    } else {
+      const list = el("div", "runtime-list");
+      for (const s of stats.sessions) {
+        const row = el("div", "runtime-row");
+        row.append(el("span", "runtime-name", s.name || s.id));
+        row.append(el("span", "runtime-idle", tr("闲了 {p1}", { p1: idleLabel(s.idleMs) })));
+        if (s.running) row.append(el("span", "runtime-tag", tr("在跑")));
+        const bytes = typeof s.bytes === "number" ? fmtSize(s.bytes) : tr("不可用");
+        row.append(el("span", `runtime-bytes${typeof s.bytes === "number" ? "" : " bad"}`, bytes));
+        list.append(row);
+      }
+      body.append(list);
+    }
+    body.append(this.runtimeThresholds(stats));
+  }
+
+  /**
+   * D120 / #78：两个阈值就地可改。写了就落 `<state>/lifecycle.json`（重启桥也还在），空闲那个
+   * 下一个 tick 就按新值判定，水位等下一次采样。输入框里的值只在非注焦时才被重写成桥报的值，
+   * 否则一次 tick 广播就能把输入草稿抹掉。
+   */
+  private runtimeThresholds(stats: RuntimeStats): HTMLElement {
+    const box = el("div", "runtime-thresholds");
+    const row = (cls: string, label: string, unit: string, value: number): HTMLInputElement => {
+      const line = el("label", `runtime-threshold ${cls}`);
+      line.append(el("span", "settings-label", label));
+      const input = el("input", "ns-input mono") as HTMLInputElement;
+      // 文本而不是 number：0 / 负数 / 非数字 要能被看见并被我们自己的校验拒掉（“abc”在 number 里直接变空）。
+      input.type = "text";
+      input.inputMode = "decimal";
+      input.value = plainNumber(value);
+      line.append(input, el("span", "runtime-unit", unit));
+      box.append(line);
+      return input;
+    };
+    const idle = row("idle", tr("空闲多久休眠"), tr("分钟"), stats.lifecycle.idleMs / MINUTE_MS);
+    const limit = row("watermark", tr("内存水位"), "GB", stats.lifecycle.watermarkBytes / GB);
+    const foot = el("div", "runtime-thresholds-foot");
+    foot.append(el("div", "hint", tr("空闲阈值下一个 tick 就生效；内存水位等下一次采样（60 秒一次）。两个值都写进桥的状态目录，重启桥也还在。")));
+    const save = el("button", "btn primary", tr("保存阈值")) as HTMLButtonElement;
+    save.onclick = () => {
+      const idleMs = thresholdOf(idle.value, MINUTE_MS);
+      const watermarkBytes = thresholdOf(limit.value, GB);
+      if (idleMs === null || watermarkBytes === null) {
+        // 旧值就是桥报的那个：拒绝之后屏幕上也不能留一个假的「已生效」。
+        this.flashSettings(tr("没有保存：阈值必须是大于 0 的数。"), true);
+        idle.value = plainNumber(stats.lifecycle.idleMs / MINUTE_MS);
+        limit.value = plainNumber(stats.lifecycle.watermarkBytes / GB);
+        return;
+      }
+      this.act(() => this.socket.send({ type: "runtime.settings", idleMs, watermarkBytes }));
+    };
+    foot.append(save);
+    box.append(foot);
+    return box;
   }
 
   private paintSettingsForm(body: HTMLElement, view: SettingsView): void {
@@ -8771,7 +8911,7 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["logout", tr("登出某个 provider")],
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "ext" | "notify" | "changelog";
+type SettingsTab = "global" | "project" | "trust" | "login" | "ext" | "notify" | "runtime" | "changelog";
 
 interface ExtPackage {
   scope: "user" | "project";
@@ -9376,7 +9516,53 @@ const shortDir = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() ?
 function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+/** 运行时面板里的一行「闲了多久」（D120 / #77）：秒 / 分 / 时三个粒度就够，单位走词典。 */
+function idleLabel(ms: number): string {
+  if (ms < 60_000) return tr("{p1} 秒", { p1: fmtNum(Math.max(0, Math.round(ms / 1000))) });
+  if (ms < 3_600_000) return tr("{p1} 分钟", { p1: fmtNum(Math.round(ms / 60_000)) });
+  return tr("{p1} 小时", { p1: fmtNum(Math.round(ms / 3_600_000)) });
+}
+
+/** D120 / #78：运行时阈值的两个单位。GB 与 `fmtSize` 同一套（1024 进制）。 */
+const MINUTE_MS = 60_000;
+const GB = 1024 ** 3;
+
+/**
+ * 面板上的一个阈值输入（单位 → 毫秒 / 字节）。空、非数字、0、负数都不算数：它们会把阈值变成
+ * 「立刻回收」，比旧值糟糕得多。
+ */
+function thresholdOf(text: string, unit: number): number | null {
+  const raw = text.trim();
+  const value = Number(raw);
+  return raw !== "" && Number.isFinite(value) && value > 0 ? Math.round(value * unit) : null;
+}
+
+/** 输入框里显示的当前值：没有必要的小数就不写（30 / 2.5，而不是 30.00）。 */
+function plainNumber(n: number): string {
+  return String(Number(n.toFixed(2)));
+}
+
+/** 阈值输入框正在被输入时，别让 tick 广播把面板重画掉（换掉 DOM 就是丢光标、丢草稿）。 */
+function runtimeThresholdFocused(): boolean {
+  const active = document.activeElement;
+  return active instanceof HTMLElement && Boolean(active.closest(".runtime-threshold"));
+}
+
+/**
+ * 「全部休眠」的回执说人话（D120 / #80）：睡了几个，以及**点名**哪几个还在跑 —— 用户得能确认
+ * 自己没有把任务弄丢，而不是看到一个「完成」。
+ */
+function sleepAllText(receipt: SleepAllReceipt): string {
+  const names = receipt.skipped.map((s) => s.name || s.id).join(tr("、"));
+  const slept = receipt.slept.length;
+  if (!slept && !names) return tr("没有可以休眠的会话：本来就都是空的。");
+  if (!names) return tr("已休眠 {p1} 个会话。", { p1: slept });
+  if (!slept) return tr("一个都没睡：{p1} 还在跑，没有动。", { p1: names });
+  return tr("已休眠 {p1} 个会话；{p2} 还在跑，没有动。", { p1: slept, p2: names });
 }
 
 function viewerLoading(text: string): HTMLElement {
