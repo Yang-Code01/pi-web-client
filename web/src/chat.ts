@@ -107,6 +107,11 @@ export class ChatView {
   /** Failures also get a card right after the module, keyed by toolCallId. */
   private failCards = new Map<string, HTMLElement>();
   private failAnchor: HTMLElement | null = null;
+  /**
+   * 本轮已经出过失败的卡片（toolCallId → 输入）。同一轮里后续只要有工具跑通，就给对应卡片补一句
+   * 「后来它怎么绕过去的」——人关心的是任务最终有没有成，不是那一步本身亮不亮红。
+   */
+  private turnFails: Array<{ key: string; input: FailureInput }> = [];
   /** Following the stream: new content scrolls the view to the bottom. Cleared the moment the user says "I want to read up there". */
   private following = true;
   /** One pending frame at most — a burst of updates must cost one scroll, not one per update. */
@@ -124,6 +129,12 @@ export class ChatView {
   onFork: ((item: { id: string; text: string }, index: number) => void) | null = null;
   /** Live view of the running tool call — nothing here is rendered in the transcript. */
   private live: LiveInfo = {};
+  /**
+   * 每条 assistant 条目自己的文本（id → 文本）。卡片上的「它当时在做」按**这条工具调用所属的消息**取，
+   * 而不是「上一条」：模型一句话不说、直接再调一个工具时，上一条的独白是别的动作，拿来会误导。
+   * tool item 的 id 是 `${entry.id}:${callId}`（items.ts:180），所以前缀就是它那条消息。
+   */
+  private assistantTexts = new Map<string, string>();
   /** Which tool call the live output belongs to; a stale update must not overwrite a newer tool. */
   private liveKey = "";
   /** This turn's written files, as chips under the ops module. */
@@ -348,10 +359,12 @@ export class ChatView {
     this.opsBox = null;
     this.failCards.clear();
     this.failAnchor = null;
+    this.turnFails = [];
     this.written.clear();
     this.opsFiles = null;
     this.live = {};
     this.liveKey = "";
+    this.assistantTexts.clear();
     this.turns = [];
     this.turnRail.clear();
     this.flashTurn(null);
@@ -385,7 +398,14 @@ export class ChatView {
 
   add(item: Item): void {
     // a user message opens a new turn: its tool calls get their own module
-    if (item.kind === "user") this.closeOps();
+    if (item.kind === "user") {
+      this.closeOps();
+      this.clearTurnFails();
+    }
+    if (item.kind === "assistant") {
+      this.assistantTexts.set(item.id, item.text ?? "");
+      if ((item.text ?? "").trim()) this.noteAnswered();
+    }
     if (item.kind === "tool") {
       const existing = this.toolCards.get(item.toolCallId);
       if (existing && this.isAskTool(item.name)) {
@@ -414,6 +434,7 @@ export class ChatView {
         this.noteWrite(item.name, item.args);
       }
       if (!this.isAskTool(item.name) && (item.isError || item.status === "error")) this.failFromItem(item);
+      this.noteAfter(item);
     } else {
       this.push(node);
       if (item.kind === "user") this.noteTurn(item, node);
@@ -434,6 +455,12 @@ export class ChatView {
     this.cards.delete(localId);
     this.cards.set(item.id, node);
     if (this.collapsed.delete(localId)) this.collapsed.add(item.id);
+    // 乐观渲染过的用户消息回填时走这里（不经过 add），这里只补 assistant 原话。
+    if (item.kind === "user") this.clearTurnFails();
+    if (item.kind === "assistant") {
+      this.assistantTexts.set(item.id, item.text ?? "");
+      if ((item.text ?? "").trim()) this.noteAnswered();
+    }
   }
 
   replace(id: string, item: Item): void {
@@ -455,6 +482,7 @@ export class ChatView {
       this.toolCards.set(item.toolCallId, rebuilt);
       this.refreshOps();
       if (!this.isAskTool(item.name) && (item.isError || item.status === "error")) this.failFromItem(item);
+      this.noteAfter(item);
     }
     this.scrollToEnd();
   }
@@ -476,6 +504,13 @@ export class ChatView {
         node.append(stream);
       }
       stream.textContent = buf.text;
+      // 实时会话里 assistant 条目到达时 `text` 还是空的，内容靠 delta 长出来；按 id 记下来，卡片才拿得到。
+      // `_raw` 一起写，/copy 在实时会话里才拿得到东西。
+      if (buf.text.trim()) {
+        this.assistantTexts.set(id, buf.text);
+        this.noteAnswered();
+      }
+      (node as HTMLElement & { _raw?: string })._raw = buf.text;
     }
     // reasoning is buffered but never painted: the transcript shows prose and tool calls only
     this.scrollToEnd();
@@ -559,6 +594,17 @@ export class ChatView {
         const name = card.querySelector(".name")?.textContent?.trim() || String(data.name ?? "tool");
         const cmd = card.querySelector(".cmd")?.textContent?.trim() || "";
         this.failureCard(key, { tool: name, cmd, out: String(data.result ?? "") }, Number(data.durationMs ?? 0));
+      } else {
+        this.noteAfter({
+          id: `live-tool:${key}`,
+          kind: "tool",
+          toolCallId: key,
+          name: String(data.name ?? "tool"),
+          args: data.args,
+          status: "ok",
+          isError: false,
+          result: String(data.result ?? ""),
+        });
       }
       this.refreshOps();
     }
@@ -589,11 +635,50 @@ export class ChatView {
   }
 
   private failFromItem(item: ToolItem): void {
-    this.failureCard(
-      item.toolCallId,
-      { tool: item.name, cmd: toolSummary(item), out: String(item.result ?? item.partialResult ?? "") },
-      item.durationMs,
-    );
+    // 按这条工具调用所属的 assistant 消息取原话（平行调用共享同一条消息，不会串到上一次）。
+    const said = (this.assistantTexts.get(item.id.split(":")[0]) ?? "").trim();
+    const input: FailureInput = {
+      tool: item.name,
+      cmd: toolSummary(item),
+      out: String(item.result ?? item.partialResult ?? ""),
+      // 模型这句话是它自己的意图；什么都没说时留空，交给 diagnose 按命令推——绝不拿用户的话冒充。
+      intent: said,
+    };
+    const at = this.turnFails.findIndex((f) => f.key === item.toolCallId);
+    if (at >= 0) this.turnFails[at].input = input;
+    else this.turnFails.push({ key: item.toolCallId, input });
+    this.failureCard(item.toolCallId, input, item.durationMs);
+  }
+
+  /**
+   * 同一轮里后续有工具跑通时，给前面那些失败卡补一句事实：「后来它改用 X 拿了结果」。
+   * 只补第一次跑通的那一步（再往后的过程对读者是噪声），并且对同一张卡只补一次。
+   */
+  private noteAfter(item: ToolItem): void {
+    if (item.isError || item.status === "error" || item.status === "running") return;
+    for (const fail of this.turnFails) {
+      if (fail.input.after) continue;
+      fail.input.after =
+        fail.input.tool === item.name
+          ? tr("后来它把同一条重做了一遍，这次跑通了")
+          : tr("随后它改用 {p1}，拿到了结果", { p1: item.name });
+      this.failureCard(fail.key, fail.input);
+    }
+  }
+
+  /** 新一轮开始时把本轮登记清掉（后续是给「这一轮」看的）。 */
+  private clearTurnFails(): void {
+    this.turnFails = [];
+  }
+
+  /** 模型这一轮开口了（正文开始出现）：已经补过后续的卡片可以再说一句「最后给出了回答」。 */
+  private noteAnswered(): void {
+    const tail = tr("，并在这一轮给出了回答");
+    for (const fail of this.turnFails) {
+      if (!fail.input.after || fail.input.after.endsWith(tail)) continue;
+      fail.input.after += tail;
+      this.failureCard(fail.key, fail.input);
+    }
   }
 
   /**
@@ -1009,10 +1094,16 @@ function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
     el("span", "sum-cmd", input.cmd ? `${input.tool} · ${input.cmd}` : input.tool),
   );
   const grid = el("div", "grid");
-  grid.append(
-    el("span", "k", tr("为什么")), el("span", "v", d.cause || "—"),
-    el("span", "k", tr("下一步")), el("span", "v", d.next || "—"),
-  );
+  grid.append(el("span", "k", tr("为什么没成")), el("span", "v", d.cause || "—"));
+  // 「AI 想做什么」放中间：它是背景，不是一个要人处理的条目；
+  // 但读者最先问的恰恰是「它为什么去调这一条」，所以不能省。
+  grid.append(el("span", "k", tr("AI 想做什么")), el("span", "v", d.intent || "—"));
+  // 后续：这一轮它后来怎么绕过去的（chat.ts 在同一轮后续工具跑通时回填）；没后续就没有这一行。
+  if (input.after) grid.append(el("span", "k", tr("后续")), el("span", "v", input.after));
+  // 影响与改进合一行：先回答「这次动了什么」，再回答「下次怎么不再犯」。
+  const impact = [d.effect, d.improve].filter(Boolean).join(tr("；"));
+  grid.append(el("span", "k", tr("影响 / 改进")), el("span", "v", impact || "—"));
+  if (d.needsYou) grid.append(el("span", "k", tr("要你做")), el("span", "v", d.needsYou));
   const cmdbar = el("div", "cmdbar");
   cmdbar.append(el("span", "dot", "▪"), el("span", "c", input.cmd ? `${input.tool} · ${input.cmd}` : input.tool));
   card.append(top, grid, cmdbar);
