@@ -108,6 +108,119 @@ const GIT_CAUSE: Array<[RegExp, string, string]> = [
   [/did not match any file/i, tr("路径 / 分支名写错了"), tr("核对名字，或 git ls-files 看一眼")],
 ];
 
+/**
+ * pi-lens 的编辑守卫：`🔄 RETRYABLE — <抬头>` / `⛔ RE-READ REQUIRED` / `✅ ALREADY APPLIED`。
+ *
+ * 这些都不是环境坏了，而是「工具没动手，按规矩重来」——所以一律算 `benign`（灰卡片）。
+ * 抬头有十来种，原文是英文夹着文件路径，直接摊给用户等于没翻译，这里一句一种说法。
+ * 注意 emoji 前缀不可省：`RETRYABLE` 这个词在同一份输出里也用来描述 HTTP 重试。
+ */
+const GUARD_HEAD = /(?:⛔|🔄|✅)\s*(RETRYABLE|RE-READ REQUIRED|ALREADY APPLIED)\s*—\s*([^\n]*)/;
+const GUARD_DUPLICATE = /appears (\d+) times/;
+
+function guardDiagnosis(out: string, base: { exit: number | null; body: string }): Diagnosis | null {
+  const head = GUARD_HEAD.exec(out);
+  if (!head) return null;
+  const kind = head[1];
+  const headText = head[2].trim();
+  const say = (title: string, cause: string, next: string): Diagnosis => ({ ...base, level: "benign", title, cause, next });
+
+  if (kind === "ALREADY APPLIED")
+    return say(
+      tr("这处改动其实已经生效过，不用再提交"),
+      tr("相同的 oldText 之前就应用过，重复提交会被拒"),
+      tr("跳过这一步，接着做后面的"),
+    );
+  if (kind === "RE-READ REQUIRED")
+    return say(
+      tr("这段原文你已经试过一次，还是对不上"),
+      tr("同样的 oldText 提交过还是没匹配上，说明凭记忆写的版本是错的"),
+      tr("重读文件，照磁盘上的内容重建 oldText；别再原样重试"),
+    );
+
+  if (headText.startsWith("Edit target not found")) {
+    const dup = GUARD_DUPLICATE.exec(out);
+    if (dup)
+      return say(
+        tr("要替换的原文在文件里有 {p1} 处一模一样", { p1: dup[1] }),
+        tr("工具不敢猜你要改哪一处，只能先拒掉"),
+        tr("oldText 上下多带一行做唯一匹配（消息里已给出冲突行号）"),
+      );
+    if (/could not be mapped to one raw file span/.test(out))
+      return say(
+        tr("这段原文能对上，但定位不到唯一的行"),
+        tr("匹配到的内容跨在行尾、空白这类没法精确框定的地方"),
+        tr("把 oldText 收成一段完整、连续的行再发"),
+      );
+    if (/was not found in the current file content/.test(out))
+      return say(
+        tr("要替换的原文在文件里找不到"),
+        tr("oldText 要逐字节匹配：文件可能已被改过，或被空白、引号、全角半角绊住"),
+        tr("重读目标那几行，照着磁盘上的原文重写 oldText"),
+      );
+    return say(tr("要替换的原文没对上"), tr("工具在文件里定位不到这段 oldText"), tr("重读目标那几行，再照着原文写 oldText"));
+  }
+
+  if (headText.startsWith("Edit without read")) {
+    if (/you have not read/.test(headText))
+      return say(
+        tr("没读过这个文件，工具不让改"),
+        tr("规矩是先 read 再 edit；用 bash 的 cat / sed / grep 看过的不算读过"),
+        tr("先 read 要改的那几行，再原样重发这次 edit（消息里给了现成命令）"),
+      );
+    if (/only covered part of/.test(headText))
+      return say(
+        tr("只改过这个文件的一部分，盖不住这次要改的位置"),
+        tr("上一次写只覆盖了其中几行，缺的正好是这次要改的地方"),
+        tr("先 read 这次要改的那段，再重发 edit"),
+      );
+    if (/write record .*expired/.test(headText))
+      return say(
+        tr("之前写过它，但写记录过期了，得重新读"),
+        tr("写记录会按闲置时间过期（默认 30 分钟），过期后要重新读一次"),
+        tr("重新 read 这个文件，再改"),
+      );
+    return say(tr("没读过这个文件，工具不让改"), tr("工具的 read 守卫先拦住了这次编辑"), tr("先 read 要改的那几行，再原样重发这次 edit"));
+  }
+
+  if (headText.startsWith("File modified since your write"))
+    return say(
+      tr("你写之后文件又被改过，内容对不上了"),
+      tr("会话写下的内容和磁盘上现在的不一致——别人或别的工具改过"),
+      tr("重新 read 现状，再改"),
+    );
+  if (headText.startsWith("File modified since read"))
+    return say(
+      tr("文件在你上次读过之后变了"),
+      tr("磁盘内容和上次 read 到的不一致，手里的版本已经过期"),
+      tr("重新 read 现状，再改"),
+    );
+  if (headText.startsWith("Edit outside read range"))
+    return say(
+      tr("你要改的行不在读过的范围里"),
+      tr("只 read 了文件的一段，这次要改的行落在外面"),
+      tr("read 目标行附近再改（消息里给了 offset / limit）"),
+    );
+  if (headText.startsWith("Edit range changed since read"))
+    return say(
+      tr("读过之后，这几行的内容变了"),
+      tr("要改的行和读到的内容对不上，可能被改过或整体挪了位置"),
+      tr("重新 read 目标行，再按现在的内容改"),
+    );
+  if (headText.startsWith("Overlapping edit spans"))
+    return say(
+      tr("同一批修改的行范围互相重叠"),
+      tr("两处修改落在同一片行上，工具不知道先改哪个"),
+      tr("合并成一次修改再发"),
+    );
+
+  return say(
+    tr("工具拦住了一次编辑"),
+    headText.slice(0, 160) || tr("插件没说明原因"),
+    tr("按消息里的提示改完再重试（这类拦截可以重试）"),
+  );
+}
+
 export function diagnose(input: FailureInput): Diagnosis {
   const out = normalize(input.out);
   const exit = exitCodeOf(out);
@@ -140,6 +253,9 @@ export function diagnose(input: FailureInput): Diagnosis {
       next: tr("补上这些字段再调一次 —— 这是调用方的问题，不是你的环境坏了"),
     };
   }
+
+  const guard = guardDiagnosis(out, base);
+  if (guard) return guard;
 
   if (/Could not find (?:the exact text|edits\[\d+\])/.test(out)) {
     const target = /(?:text in|edits\[\d+\] in) (.+?)\. The old text/.exec(out);
@@ -243,13 +359,18 @@ export function diagnose(input: FailureInput): Diagnosis {
     ...base,
     level: "fail",
     title: exit === null ? tr("工具报错") : tr("命令失败（exit {p1}）", { p1: exit }),
-    cause: firstBad ? firstBad.slice(0, 160) : tr("输出里没有明显错误行，可能失败原因在上一段里"),
-    next: tr("看下面完整输出；说不清就问 pi"),
+    cause: firstBad ? firstBad.slice(0, 160) : tr("这段输出里没认出错误关键词，原文在最下面"),
+    next: tr("先展开完整输出；还看不懂就把这段贴给 pi"),
   };
 }
 
 const HIT =
-  /\b(?:error|failed|fatal|cannot|no such|denied|refused|timed out|exception|must have)\b|Could not find|Validation failed|E[A-Z]{3,}\b|✗|×/i;
+  /\b(?:error|failed|fatal|cannot|no such|denied|refused|timed out|exception|must have)\b|Could not find|Validation failed|✗|×/i;
+/**
+ * errno（ENOENT / EACCES…）单独一条、**大小写敏感**：并进上面那条带 /i 的分支会命中普通标识符，
+ * `edits`（E-dit-s）和 `assertThat` 里的 `ertThat` 都被当「关键行」标红过。
+ */
+const ERRNO_LINE = /\bE[A-Z]{3,}\b/;
 
 /**
  * Key lines only: a traceback collapses to its tail, everything else to the lines that fired the
@@ -258,7 +379,7 @@ const HIT =
  */
 export function excerpt(out: unknown): Excerpt {
   const lines = normalize(out).split("\n");
-  const isHit = (i: number) => HIT.test(lines[i]) && !TRAILER.test(lines[i]);
+  const isHit = (i: number) => (HIT.test(lines[i]) || ERRNO_LINE.test(lines[i])) && !TRAILER.test(lines[i]);
   const keep = new Map<number, boolean>();
 
   const add = (i: number, hit: boolean) => {
@@ -267,6 +388,34 @@ export function excerpt(out: unknown): Excerpt {
     if (lines[i].trim() === "") return;
     keep.set(i, keep.get(i) === true || hit);
   };
+
+  // 编辑守卫的多行报错（`Edit target not found` 的冲突位置图）：它的线索是 header + 「appears N
+  // times」+ `• Line 180:` + 带 ← match 的那几行，而不是别的行里有没有 error 字样。
+  const guardHead = lines.findIndex((l) => GUARD_HEAD.test(l));
+  if (guardHead >= 0) {
+    const DETAIL = /^edits\[\d+\]\.oldText|\bappears \d+ times\b|was not found in the current file content|could not be mapped to one raw file span/;
+    const OCCURRENCE = /^\s*• Line \d+:/;
+    const MATCH_MARK = /← match/;
+    const ROW = /^\s*\d+ │ /;
+    const WHY = /^\s*You (?:last read|read|are editing)\b|^Read the relevant section|^Re-read the/;
+    /** 守卫自带的那行 `read path=… offset=… limit=…`：能直接拷贝执行的，值得给。 */
+    const STEP = /^\s*(?:\d+\.\s+)?`?read path=/;
+    add(guardHead, true);
+    lines.forEach((line, i) => {
+      if (i === guardHead) return;
+      if (DETAIL.test(line.trim()) || OCCURRENCE.test(line)) add(i, true);
+      else if (MATCH_MARK.test(line)) {
+        add(i, true);
+        for (const j of [i - 1, i + 1]) {
+          if (j < 0 || j >= lines.length || !ROW.test(lines[j])) continue;
+          if (/… \(\d+ more line\)/.test(lines[j])) continue;
+          if (/^\s*\d+ │ \s*$/.test(lines[j])) continue;
+          add(j, false);
+        }
+      } else if (WHY.test(line) || STEP.test(line)) add(i, false);
+    });
+    return { lines, keep: [...keep.entries()].sort((a, b) => a[0] - b[0]) };
+  }
 
   if (lines.some((l) => /Traceback \(most recent call last\)/.test(l))) {
     let start = lines.length - 1;
