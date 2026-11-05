@@ -50,7 +50,7 @@ function mkSession(id, text, hoursAgo) {
   return file;
 }
 
-const fileB = mkSession("zz-manage-b", "第二个会话", 3);
+const _fileB = mkSession("zz-manage-b", "第二个会话", 3);
 const fileC = mkSession("zz-manage-c", "第三个会话", 2);
 const fileA = mkSession("zz-manage-a", "第一个会话", 1);
 const ids = { b: "zz-manage-b", c: "zz-manage-c", a: "zz-manage-a" };
@@ -159,6 +159,24 @@ try {
   send({ type: "manage", action: "archive", ids: [ids.a], on: false });
   await waitFor("manage", (m) => !m.manage?.archived?.includes(ids.a));
   log("archive / restore ok");
+
+  // 2b. D125 打开即置顶：打开哪条哪条进置顶区，归档的顺带解除归档；已经在里的不重排。
+  send({ type: "manage", action: "archive", ids: [ids.a], on: true });
+  await waitFor("manage", (m) => m.manage?.archived?.includes(ids.a));
+  send({ type: "manage", action: "opened", id: ids.a });
+  const opened = await waitFor("manage", (m) => m.manage?.pin?.[0] === ids.a);
+  assert(opened, "opened 把会话放进置顶区");
+  assert(!opened.manage.archived.includes(ids.a), "打开归档会话 = 解除归档");
+  send({ type: "manage", action: "opened", id: ids.b });
+  const again = await waitFor("manage", (m) => m.manage?.pin?.[0] === ids.a && m.manage.pin.length === 2);
+  assert(again, `已在置顶区的不重排（pin = ${again?.manage?.pin?.map((x) => x.slice(-1)).join("")}）`);
+  assert(!again.manage.pin.includes(ids.c), "没打开的会话不会凭空置顶");
+  const afterOpen = await order();
+  assert(afterOpen[0] === ids.a && afterOpen[1] === ids.b, `置顶排在列表最前（got ${afterOpen.map((x) => x.slice(-1)).join("")}）`);
+  send({ type: "manage", action: "opened", id: "zz-does-not-exist" });
+  const bogus = await waitFor("manage", (m) => m.manage?.pin?.length === 2 && !m.manage.pin.includes("zz-does-not-exist"));
+  assert(bogus, "不存在的 id 不会被写进 manage.json");
+  log("opened 把会话置顶、解除归档、不认陌生 id");
 
   // 3. A name override must be forgotten together with the file.
   send({ type: "rename", sessionId: ids.a, name: "临时名字" });

@@ -79,6 +79,26 @@ export class Manage {
     this.save();
   }
 
+  /**
+   * D125「打开即置顶」：从任何入口打开一个会话，它就得在置顶区里 —— 左栏收起后那条横栏是唯一的
+   * 会话入口，不在里面就分不出自己在跟哪个会话说话。已经在置顶区的保持原位（手动拖出来的顺序
+   * 不该被每一次点击重排），新来的一律插到最前，这样刚打开的那颗永远在第一行看得见。
+   * 归档的会话被打开 = 要接着用它，归档让位（archived 里摘掉）。返回是否有改动。
+   */
+  opened(id: string): boolean {
+    if (!id) return false;
+    const archived = this.data.archived.includes(id);
+    const pinned = this.data.pin.includes(id);
+    if (pinned && !archived) return false;
+    if (archived) this.data.archived = this.data.archived.filter((x) => x !== id);
+    if (!pinned) {
+      this.data.pin = [id, ...this.data.pin.filter((x) => x !== id)];
+      this.data.order = this.data.order.filter((x) => x !== id);
+    }
+    this.save();
+    return true;
+  }
+
   setArchived(idsIn: string[], on: boolean): void {
     const keep = new Set(this.data.archived);
     for (const id of idsIn) {

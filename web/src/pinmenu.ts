@@ -144,3 +144,92 @@ export function openPinMenu(anchor: HTMLElement, opts: PinMenuOpts): PinMenuHand
     close,
   };
 }
+
+export interface PinListItem {
+  id: string;
+  name: string;
+  /** 右侧那行小字：状态徽标优先，没有就相对时间。 */
+  sub: string;
+  current: boolean;
+}
+
+export interface PinListHandle {
+  close(): void;
+}
+
+/**
+ * D125：置顶条装不下一行时折成一颗「＋N」，这就是点开它的那张「全部置顶会话」列表。
+ *
+ * 外壳跟 Q-035 的悬停气泡共用（`.pin-menu` / `.pm-item`），挂在 `body` 上的理由也一样：
+ * `.pin-strip` 是 `overflow-x: auto` 且贴着窗口顶，条里的弹出层会被裁掉。
+ * 与气泡的区别：这是一个**选择器**，点一行就打开那个会话，所以不留编辑态、不接指针停留，
+ * 并且永远把当前会话滚进视野 —— 它往往就落在被折起来的那几颗里。
+ */
+export function openPinList(anchor: HTMLElement, items: PinListItem[], onPick: (id: string) => void, onClosed: () => void): PinListHandle {
+  let closed = false;
+
+  const node = el("div", "pin-menu pin-list");
+  node.setAttribute("role", "menu");
+  node.setAttribute("aria-label", tr("全部置顶会话"));
+  node.append(el("div", "pm-head", tr("置顶会话 · {p1} 个", { p1: items.length })));
+
+  for (const it of items) {
+    const btn = el("button", `pm-item${it.current ? " cur" : ""}`) as HTMLButtonElement;
+    btn.type = "button";
+    btn.setAttribute("role", "menuitem");
+    btn.dataset.sessionId = it.id;
+    if (it.current) btn.setAttribute("aria-current", "true");
+    btn.append(el("span", "pm-ico", it.current ? "●" : ""), el("span", "pm-text", it.name), el("small", "pm-sub", it.sub));
+    btn.title = it.name;
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      close();
+      onPick(it.id);
+    };
+    node.append(btn);
+  }
+
+  const onDoc = (ev: Event): void => {
+    const t = ev.target as Node | null;
+    if (t && (node.contains(t) || anchor === t || anchor.contains(t))) return;
+    if (ev instanceof KeyboardEvent && ev.key === "Escape") return;
+    close();
+  };
+  const onKey = (ev: KeyboardEvent): void => {
+    if (ev.key !== "Escape") return;
+    ev.preventDefault();
+    close();
+  };
+
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener("pointerdown", onDoc, true);
+    document.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("resize", place);
+    node.remove();
+    onClosed();
+  };
+
+  /** 贴胶囊下方 6px，左右夹在窗口里；高度按下面剩下的空间封顶，别顶出屏幕。 */
+  function place(): void {
+    const r = anchor.getBoundingClientRect();
+    const w = node.offsetWidth;
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
+    node.style.left = `${Math.round(left)}px`;
+    node.style.top = `${Math.round(r.bottom + GAP)}px`;
+    node.style.maxHeight = `${Math.max(180, window.innerHeight - r.bottom - GAP - 10)}px`;
+  }
+
+  document.body.append(node);
+  place();
+  const cur = node.querySelector<HTMLElement>(".pm-item.cur");
+  // 当前会话可能排在折叠后的末尾：列表自己滚过去，别让人以为它不在里面。
+  if (cur) node.scrollTop = Math.max(0, cur.offsetTop - 8);
+  (cur ?? node.querySelector<HTMLElement>(".pm-item"))?.focus();
+  document.addEventListener("pointerdown", onDoc, true);
+  document.addEventListener("keydown", onKey, true);
+  window.addEventListener("resize", place);
+
+  return { close };
+}

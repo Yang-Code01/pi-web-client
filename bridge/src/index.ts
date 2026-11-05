@@ -1664,6 +1664,13 @@ async function main(): Promise<void> {
               broadcast({ type: "manage", manage: sessions.manage.snapshot() });
               return;
             }
+            if (action === "opened") {
+              // D125: 打开即置顶。没改动也回一份快照 —— 前端乐观改过自己的 manage，
+              // 否则一个不存在的 id 会一直挂在它的置顶条上。
+              sessions.opened(String(msg.id ?? ""));
+              broadcast({ type: "manage", manage: sessions.manage.snapshot() });
+              return;
+            }
             if (action === "trash" || action === "delete") {
               const report = await sessions.trash(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
               if (report.removed.length) broadcast({ type: "session.gone", ids: report.removed });

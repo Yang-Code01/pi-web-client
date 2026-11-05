@@ -800,6 +800,23 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .pin-chip .pin-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pin-chip small { color: var(--faint); font-size: 11px; }
 .pin-empty { flex: 0 0 auto; color: var(--faint); font-size: 12px; }
+/* D125：折叠态那颗「＋N」。故意不带 `.pin-chip` —— 它不是会话胶囊，探针和别处数胶囊时
+   不该把它数进去。`hidden` 也得自己写一条：`.pin-more` 本身是 display:inline-flex。 */
+.pin-more {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line-soft);
+  background: var(--panel);
+  color: var(--dim);
+  border-radius: 999px;
+  padding: 3px 11px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.pin-more:hover { border-color: var(--line); background: var(--panel-2); color: var(--accent); }
+.pin-more[hidden] { display: none; }
+.pin-chip[hidden] { display: none; }
 .pin-expand { margin-left: auto; color: var(--faint); padding: 3px 11px; }
 .pin-expand:hover { color: var(--accent); }
 
@@ -1784,6 +1801,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .pm-item:hover, .pm-item:focus-visible { background: var(--panel-2); color: var(--text); outline: none; }
 .pm-item.danger { color: #e9a0ab; }
 .pm-item.danger:hover, .pm-item.danger:focus-visible { background: rgba(251, 113, 133, 0.12); color: var(--danger); }
+/* D125：折叠态点开的那张「全部置顶会话」——同一个外壳，多一个可以滚的高度上限和当前项标记。 */
+.pin-menu.pin-list { overflow-y: auto; max-width: min(320px, calc(100vw - 16px)); }
+.pm-item.cur { color: var(--text); background: rgba(125, 211, 252, 0.12); }
+.pm-item.cur:hover, .pm-item.cur:focus-visible { background: rgba(125, 211, 252, 0.18); color: var(--text); }
+.pm-sub { flex: 0 0 auto; color: var(--faint); font-size: 11px; }
+.pm-item.cur .pm-ico { color: var(--accent); }
 .pm-ico { flex: 0 0 15px; text-align: center; font-size: 12px; line-height: 1; color: var(--faint); }
 .pm-item:hover .pm-ico, .pm-item:focus-visible .pm-ico { color: inherit; }
 .pm-item.danger .pm-ico { color: inherit; }
