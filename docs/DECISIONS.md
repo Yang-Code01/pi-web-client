@@ -1650,3 +1650,20 @@ if (s.idleFor() > IDLE_GC_MS) s.sleep();   // 2 小时
 `node probes/pin-current.mjs`（D76 的「当前会话标记」跟着 D125 改写第 3 步）、
 `node probes/round4-pin.mjs`、`node probes/round16-pin.mjs`、`node probes/round24-pinactions.mjs`（Q-011 /
 Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落到末尾、悬停气泡照旧）。
+
+## D126 工作区：组 id 就是工程根，读路径不跑 git，临时组补完就清掉
+
+决定（桥侧，`bridge/src/workspaces.ts` + `bridge/src/git.ts` 的 `gitRoot()`）：
+
+- 组 id = 归一化工程根的小写形式（反斜杠转正斜杠、折叠重复斜杠、去尾斜杠、盘符根保留 `F:/`，再小写）；手动组是 `manual:<随机>`。工程根本身保留原样大小写，只用于显示。
+- 工程根推导只用 `git rev-parse --git-common-dir`：结果以 `.git` 结尾就取父目录 —— 普通克隆与它所有 worktree 的 common dir 都指向同一个 `<主仓>/.git`，五份 worktree 因此并成一组；否则用 common dir 本身（`separate-git-dir` / bare 的退化）。跑不通（非 git、目录已不存在、没装 git）就用 cwd 本身，不抛错。
+- `Sessions.list()` 只查状态文件里的 `keys` 缓存，同步、绝不跑 git；缓存缺失时先拿 cwd 当工程根（新会话立刻有组可站），`resolve()` 异步补缓存，补完把「按 cwd 建出来的临时组」清掉。缓存落盘，重启不重算。
+- 拖动写 `overrides`（sessionId → 组 id），优先于 cwd；「放回工程」= 删这一条；删除会话时一并清掉，不留悬空指向。
+- 只允许删空的手动组：派生组删了下次还会回来，那是假动作。
+- `ws.*` 五个动作与其他管理动作一样先过 `requireStepUp()`；`session.list` 与 `manage` 广播都顺带带上工作区快照，每条会话多一个 `ws` 字段。
+
+为什么：会话列表每次广播都要重算一遍归属，14 个 cwd × 30–80ms 的 git 子进程会让左栏发卡；而 worktree 合并只能靠 `--git-common-dir`（`--show-toplevel` 给的是 worktree 自己，五份就是五个组）。临时组不清掉，worktree 会在补齐后同时留下「按 cwd 那个组」和「主仓那个组」，等于合并失败；但被 override 指着的组不清 —— 用户拖进去的东西不能因为一次探测消失。
+
+代价 / 可改：没缓存过的 cwd 第一次显示时可能先落在以自己为根的组里，几百毫秒后换成真工程根（并触发一次广播）；`keys` 只增不删，目录改名会留下旧条目（无害，没人再指向）。
+
+验证：`node --experimental-transform-types bridge/tests/workspace-unit.mjs`（临时目录里真 `git init` + `git worktree add`：worktree 与主仓同组、非 git 各自成组、盘符根与不存在的目录不炸、override 优先与放回、缓存命中与重启都不再跑 git、只删空的手动组、forget 清 override）。
