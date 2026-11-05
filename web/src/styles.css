@@ -138,6 +138,40 @@ a { color: var(--accent); text-decoration: none; }
 .dot.bad { background: var(--danger); }
 @keyframes pulse { 50% { opacity: 0.35; } }
 
+/* #96 顶栏那颗「当前在哪」：工作区色点 + 工作区名 + 会话名 + 在线点 + 待处理角标。
+   挂载点用 display:contents，换布局时只换 slot 的位置，不用改组件。 */
+.now-chip-slot { display: contents; }
+.now-chip {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: min(46vw, 460px);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 999px;
+  border: 1px solid #2a4a5c;
+  background: var(--panel-2);
+  font-size: 12.5px;
+  line-height: 1.2;
+}
+.now-chip[hidden] { display: none; }
+.now-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.1); }
+.now-dot[hidden] { display: none; }
+.now-ws { flex: 0 1 auto; min-width: 0; max-width: 11em; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.now-sep { flex: none; color: var(--faint); }
+.now-name { flex: 0 1 auto; min-width: 0; max-width: 16em; color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.now-live { width: 6px; height: 6px; border-radius: 50%; flex: none; background: #3f4652; }
+.now-live.live { background: var(--ok); }
+.now-live.busy { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.now-live.bad { background: var(--danger); }
+.now-live[hidden] { display: none; }
+.now-chip .badge { flex: none; font-size: 10.5px; padding: 1px 6px; }
+.now-chip .badge[hidden] { display: none; }
+@media (max-width: 620px) {
+  .now-chip { max-width: 54vw; gap: 5px; padding: 3px 8px 3px 7px; font-size: 12px; }
+}
+
 /* minmax(0,1fr), not 1fr: a grid track sized by min-content lets long monospace
    paths push the pane wider than the phone viewport (cards then clip at the edge). */
 .main { grid-area: main; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr); position: relative; }
