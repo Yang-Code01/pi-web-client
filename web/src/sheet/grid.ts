@@ -26,6 +26,8 @@ export interface SheetGridHost {
   fetchWindow: (sheet: string, r0: number, r1: number, c0: number, c1: number) => Promise<SheetWindow>;
   /** #106：文件在预览之后被改过，桥端不认旧凭据了。 */
   onStale?: () => void;
+  /** #111：选中格变了（公式栏跟着走）：`ref` 是 A1 式坐标，`text` 是公式原文或显示值。 */
+  onSelect?: (sel: { ref: string; text: string } | null) => void;
 }
 
 /** 四个绘制层：主体、冻结行、冻结列、冻结角。 */
@@ -81,6 +83,8 @@ export class SheetGrid {
   private frame = 0;
   private error = "";
   private stale = false;
+  /** #111：当前选中的格子（0 基）。打开时落在 A1，跟 Excel 一样。 */
+  private selected: { r: number; c: number } | null = { r: 0, c: 0 };
 
   constructor(host: SheetGridHost) {
     this.host = host;
@@ -123,6 +127,7 @@ export class SheetGrid {
     this.root.append(colhead, rowhead, wrap);
     this.measure();
     this.view.addEventListener("scroll", this.onScroll, { passive: true });
+    this.view.addEventListener("click", this.onClick);
   }
 
   /** 首次取数；解析失败把话显示在网格中央。 */
@@ -143,12 +148,14 @@ export class SheetGrid {
     this.cellsByKey.clear();
     this.loaded = null;
     this.error = "";
+    this.selected = { r: 0, c: 0 };
     this.view.scrollTop = 0;
     this.view.scrollLeft = 0;
     this.measure();
     this.show("");
     this.syncHeads();
     this.render();
+    this.notify();
     void this.ensure();
   }
 
@@ -160,6 +167,7 @@ export class SheetGrid {
     this.destroyed = true;
     if (this.frame) cancelAnimationFrame(this.frame);
     this.view.removeEventListener("scroll", this.onScroll);
+    this.view.removeEventListener("click", this.onClick);
     this.root.remove();
   }
 
@@ -168,6 +176,7 @@ export class SheetGrid {
     if (this.destroyed || this.stale) return;
     this.syncHeads();
     this.render();
+    this.notify();
     void this.ensure();
   }
 
@@ -247,6 +256,42 @@ export class SheetGrid {
     });
   };
 
+  /** #111：点一下选一格（合并区选它的左上角）。只改选中，不给格子加输入框。 */
+  private onClick = (ev: MouseEvent): void => {
+    const pos = this.pointCell(ev.clientX, ev.clientY);
+    if (!pos) return;
+    const span = this.spans.get(`${pos.r}:${pos.c}`);
+    this.selected = { r: span ? span.r0 : pos.r, c: span ? span.c0 : pos.c };
+    this.render();
+    this.notify();
+  };
+
+  /** 屏幕坐标落在哪一格：冻结带里的格子滚动时不动，其余按滚动偏移加回去。 */
+  private pointCell(clientX: number, clientY: number): { r: number; c: number } | null {
+    const info = this.info();
+    if (!info.rows || !info.cols) return null;
+    const rect = this.view.getBoundingClientRect();
+    if (clientX < rect.left || clientY < rect.top || clientX > rect.right || clientY > rect.bottom) return null;
+    const f = this.freeze();
+    let x = clientX - rect.left;
+    let y = clientY - rect.top;
+    if (x >= this.leftOf(f.cols)) x += this.view.scrollLeft;
+    if (y >= f.rows * ROW_H) y += this.view.scrollTop;
+    const r = Math.floor(y / ROW_H);
+    const c = this.colAt(Math.max(0, x));
+    if (r < 0 || r >= info.rows || c < 0 || c >= info.cols) return null;
+    return { r, c };
+  }
+
+  /** 把选中格报给外面：公式给原文（带 `=`），普通格给显示值。 */
+  private notify(): void {
+    if (this.destroyed) return;
+    const sel = this.selected;
+    const cell = sel ? this.cellsByKey.get(`${sel.r}:${sel.c}`) : undefined;
+    const text = cell?.f ? `=${cell.f}` : cell?.t ?? "";
+    this.host.onSelect?.(sel ? { ref: `${colName(sel.c)}${sel.r + 1}`, text } : null);
+  }
+
   private visible(): Range | null {
     const info = this.info();
     const rows = info.rows || 0;
@@ -315,6 +360,7 @@ export class SheetGrid {
       this.loading = false;
       if (this.destroyed) return;
       this.render();
+      this.notify();
       if (this.again) {
         this.again = false;
         void this.ensure();
@@ -414,6 +460,12 @@ export class SheetGrid {
         node.style.width = `${this.leftOf(c1 + 1) - this.leftOf(c0)}px`;
         node.style.height = `${(r1 - r0 + 1) * ROW_H}px`;
         if (cell?.k === "n") node.classList.add("is-n");
+        // #111：只有公式、没存结果的格子：显空 + 红虚线；原文和「去 Excel 重算」放在悬停里。
+        if (cell?.noCache) {
+          node.classList.add("is-nc");
+          node.title = [cell.f ? `=${cell.f}` : "", tr("需在 Excel 打开重算")].filter(Boolean).join("\n");
+        }
+        if (this.selected && this.selected.r === r0 && this.selected.c === c0) node.classList.add("sel");
         if (cell?.a) {
           node.style.justifyContent = cell.a === "c" ? "center" : cell.a === "r" ? "flex-end" : "flex-start";
           if (cell.a !== "r") node.classList.remove("is-n");

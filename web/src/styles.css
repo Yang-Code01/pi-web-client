@@ -2414,6 +2414,21 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-tab.on { background: #fff; color: #1f2430; box-shadow: inset 0 -2px 0 #4b7ea8; }
 .sd-pane { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; position: relative; }
 .sd-pane[hidden] { display: none; }
+/* #111：选中格的公式栏：左边 A1 坐标，右边公式原文 / 显示值。 */
+.sd-fx {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px; background: #fafbfc; border-bottom: 1px solid #e8ebef;
+  font: 12px/1.5 var(--mono); color: #1f2430;
+}
+.sd-fx[hidden] { display: none; }
+.sd-fx-ref {
+  flex: none; min-width: 42px; padding: 0 4px; border-radius: 4px; background: #eef1f5;
+  color: #5b6472; font: 600 11.5px/1.6 var(--sans); text-align: center;
+}
+.sd-fx-body {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  user-select: text;
+}
 .sd-src {
   flex: 1 1 auto; min-width: 0; min-height: 0; width: 100%; box-sizing: border-box; resize: none;
   border: 0; outline: none; padding: 10px 12px; background: #fff; color: #1f2430;
@@ -2427,6 +2442,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .sd-note { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sd-note[hidden] { display: none; }
+/* #111：这张表里有多少格子只有公式、没存结果。 */
+.sd-status { flex: none; color: #b42318; white-space: nowrap; }
+.sd-status[hidden] { display: none; }
 .sd-save-msg { flex: none; }
 .sd-save-msg.ok { color: #1a7f37; }
 .sd-save-msg.err { color: #b42318; }
@@ -2508,6 +2526,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-cell.is-n { justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .sd-cell[data-span] { z-index: 1; }
 .sd-cell.k-e { color: #b42318; }
+/* #111：选中的格子（不抢焦点、不加输入框）与「只有公式、没存结果」的格子（显空 + 红虚线）。 */
+.sd-cell.sel { outline: 2px solid #4b7ea8; outline-offset: -2px; z-index: 2; }
+.sd-cell.is-nc { border: 1px dashed #d92d20; }
 
 /* 冻结窗格：行/列各画一层贴在边上，滚动时不动（#108）。 */
 .sd-colhead-frz {
