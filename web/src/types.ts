@@ -326,6 +326,10 @@ export interface SheetInfo {
   name: string;
   rows: number;
   cols: number;
+  /** #110：格子数（rows × cols）；三档阈值按它分。 */
+  cells?: number;
+  /** #110 显示档：full 全量；light 只值（不涂条件格式）；none 不给（只给清单 + 尺寸）。 */
+  tier?: "full" | "light" | "none";
   /** 藏起来的表：不出现在底部，只在状态条上提示个数。 */
   hidden?: boolean;
   merges?: SheetMerge[];
@@ -336,12 +340,10 @@ export interface SheetInfo {
   cfUnsupported?: number;
   /** #111：这张表里「只有公式、没存结果」的格子数。 */
   noCache?: number;
-  /** #107：拿数档位。服务端不说就是「全量」，所以这里是可选。 */
-  tier?: SheetTier;
 }
 
-/** #107：按窗口拿数的三档，状态条只显示、不改行为（#110 才真正裁）。 */
-export type SheetTier = "full" | "values" | "none";
+/** #110 显示档：full 全量；light 只值（不涂条件格式）；none 不给（只给清单 + 尺寸）。 */
+export type SheetTier = "full" | "light" | "none";
 
 /** #107：查找命中的格子（只回坐标，不回值）。 */
 export interface SheetMatches {
@@ -356,6 +358,8 @@ export interface SheetMeta {
   rows: number;
   cols: number;
   sheets: SheetInfo[];
+  /** 包里有图表部件（#112）：页面视图值得自动转一次。 */
+  charts?: boolean;
 }
 
 export interface SheetWindow {
@@ -365,6 +369,10 @@ export interface SheetWindow {
   c0: number;
   c1: number;
   rows: { r: number; cells: SheetCell[] }[];
+  /** #110：这次实际解压/扫过的表 XML 字节；扫够就停，所以通常远小于整表。 */
+  bytes?: number;
+  /** 这张表 XML 的未压缩总字节数。 */
+  partBytes?: number;
 }
 
 /** Tool permission mode the bridge's approval gate enforces per session. */

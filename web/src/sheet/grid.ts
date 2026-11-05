@@ -21,6 +21,11 @@ export const ZOOM_MIN = 0.5;
 export const ZOOM_MAX = 2;
 export const ZOOM_STEP = 0.1;
 
+/** #110：每次取数在可见范围上下各预取几屏。 */
+const PREFETCH_SCREENS = 3;
+/** 桥端单次窗口上限（与 bridge/src/sheet/index.ts 的 400 行一致）。 */
+const MAX_WINDOW_ROWS = 400;
+
 interface Range {
   r0: number;
   r1: number;
@@ -87,7 +92,10 @@ export class SheetGrid {
   /** 缩放之后的列宽（px）。 */
   private widths: number[] = [];
   private sheet: string;
-  private loaded: Range | null = null;
+  /** #110：已经拿到的窗口段（可能有多段，滚动时逐段补）。 */
+  private chunks: Range[] = [];
+  /** #110：换表/销毁时 +1，旧请求回来就对不上号，不再往新表里写。 */
+  private epoch = 0;
   private loading = false;
   private again = false;
   private destroyed = false;
@@ -179,8 +187,9 @@ export class SheetGrid {
     if (name === this.sheet) return;
     this.sheet = name;
     this.host.sheet = name;
+    this.epoch++;
     this.cellsByKey.clear();
-    this.loaded = null;
+    this.chunks = [];
     this.error = "";
     this.hits = [];
     this.hitAt = -1;
@@ -202,6 +211,7 @@ export class SheetGrid {
 
   destroy(): void {
     this.destroyed = true;
+    this.epoch++;
     if (this.frame) cancelAnimationFrame(this.frame);
     this.view.removeEventListener("scroll", this.onScroll);
     this.view.removeEventListener("pointerdown", this.onPointerDown);
@@ -637,28 +647,84 @@ export class SheetGrid {
     return { r0, r1, c0, c1 };
   }
 
-  /** 要取的范围：冻结的行列永远带上，否则滚远了冻结带就没有格子可画。 */
-  private fetchRange(want: Range): Range {
+  /** 要取的范围：可见行上下各 3 屏（#110），列只要可见的那一段（冻结列带动从 0 起）。 */
+  private wantRange(visible: Range): Range {
+    const info = this.info();
+    const rows = info.rows || 0;
     const f = this.freeze();
-    return {
-      r0: f.rows > 0 ? 0 : want.r0,
-      r1: want.r1,
-      c0: f.cols > 0 ? 0 : want.c0,
-      c1: want.c1,
-    };
+    const screen = Math.max(1, Math.ceil(this.view.clientHeight / ROW_H));
+    const pad = screen * PREFETCH_SCREENS;
+    let r0 = Math.max(0, visible.r0 - pad);
+    let r1 = Math.min(rows - 1, visible.r1 + pad);
+    // 桥端单次最多 400 行：保可见段，超了就把预取往前缩。
+    if (r1 - r0 > MAX_WINDOW_ROWS - 1) {
+      r0 = Math.max(0, visible.r1 - (MAX_WINDOW_ROWS - 1));
+      if (visible.r0 < r0) r0 = Math.max(0, visible.r0 - (MAX_WINDOW_ROWS - 1 - (visible.r1 - visible.r0)));
+      r1 = Math.min(rows - 1, r0 + MAX_WINDOW_ROWS - 1);
+    }
+    return { r0, r1, c0: f.cols > 0 ? 0 : visible.c0, c1: visible.c1 };
+  }
+
+  /** 冻结带单独要一小段：主窗口从当前滚动位置开始，不必每次都从第 0 行解起。 */
+  private frozenRange(visible: Range): Range | null {
+    const f = this.freeze();
+    if (f.rows <= 0) return null;
+    return { r0: 0, r1: Math.max(0, f.rows - 1), c0: 0, c1: Math.max(visible.c1, f.cols - 1) };
   }
 
   private covers(want: Range): boolean {
-    const got = this.loaded;
-    return !!got && got.r0 <= want.r0 && got.r1 >= want.r1 && got.c0 <= want.c0 && got.c1 >= want.c1;
+    return this.chunks.some((got) => got.r0 <= want.r0 && got.r1 >= want.r1 && got.c0 <= want.c0 && got.c1 >= want.c1);
+  }
+
+  /** 收下一段数据；被它完全盖住的旧段合并掉，离当前视口太远的段清出去。 */
+  private addChunk(range: Range): void {
+    for (let i = this.chunks.length - 1; i >= 0; i--) {
+      const ch = this.chunks[i];
+      if (ch.r0 >= range.r0 && ch.r1 <= range.r1 && ch.c0 >= range.c0 && ch.c1 <= range.c1) this.chunks.splice(i, 1);
+    }
+    this.chunks.push(range);
+    this.prune();
+  }
+
+  /** 只留当前视口上下 12 屏内的段（外加冻结行）：拖很远也不让格子缓存无限长。 */
+  private prune(): void {
+    const visible = this.visible();
+    if (!visible) return;
+    const screen = Math.max(1, Math.ceil(this.view.clientHeight / ROW_H));
+    const lo = Math.max(0, visible.r0 - 12 * screen);
+    const hi = visible.r1 + 12 * screen;
+    const f = this.freeze();
+    const kept: Range[] = [];
+    const dropped: Range[] = [];
+    for (const ch of this.chunks) {
+      const frozen = f.rows > 0 && ch.r0 === 0 && ch.r1 < f.rows;
+      (frozen || (ch.r1 >= lo && ch.r0 <= hi) ? kept : dropped).push(ch);
+    }
+    this.chunks = kept;
+    if (!dropped.length) return;
+    for (const ch of dropped) {
+      for (let r = ch.r0; r <= ch.r1; r++) {
+        for (let c = ch.c0; c <= ch.c1; c++) {
+          if (kept.some((k) => k.r0 <= r && k.r1 >= r && k.c0 <= c && k.c1 >= c)) continue;
+          this.cellsByKey.delete(`${r}:${c}`);
+        }
+      }
+    }
   }
 
   private async ensure(): Promise<void> {
     if (this.stale) return;
     const visible = this.visible();
-    // 冻结的行/列永远带上，否则滚远了冻结带就没有格子可画。
-    const want = visible ? this.fetchRange(visible) : null;
-    if (!want || this.covers(want)) {
+    if (!visible) {
+      this.render();
+      return;
+    }
+    const wants: Range[] = [];
+    const main = this.wantRange(visible);
+    if (!this.covers(main)) wants.push(main);
+    const frozen = this.frozenRange(visible);
+    if (frozen && !this.covers(frozen)) wants.push(frozen);
+    if (!wants.length) {
       this.render();
       return;
     }
@@ -667,18 +733,24 @@ export class SheetGrid {
       return;
     }
     this.loading = true;
+    const epoch = this.epoch;
     if (!this.cellsByKey.size) this.show(tr("正在读取…"));
     try {
-      const win = await this.host.fetchWindow(this.sheet, want.r0, want.r1, want.c0, want.c1);
-      if (this.destroyed) return;
-      for (const row of win.rows) {
-        for (const cell of row.cells) this.cellsByKey.set(`${row.r}:${cell.c}`, cell);
+      for (const want of wants) {
+        if (this.destroyed || epoch !== this.epoch) return;
+        if (this.covers(want)) continue;
+        const win = await this.host.fetchWindow(this.sheet, want.r0, want.r1, want.c0, want.c1);
+        if (this.destroyed || epoch !== this.epoch) return;
+        for (const row of win.rows) {
+          for (const cell of row.cells) this.cellsByKey.set(`${row.r}:${cell.c}`, cell);
+        }
+        // 用桥端实际返回的范围记账（可能被 400 行/100 列上限夹过），不是请求范围。
+        this.addChunk({ r0: win.r0, r1: win.r1, c0: win.c0, c1: win.c1 });
+        this.error = "";
+        this.show("");
       }
-      this.loaded = want;
-      this.error = "";
-      this.show("");
     } catch (err) {
-      if (this.destroyed) return;
+      if (this.destroyed || epoch !== this.epoch) return;
       // 文件被改过（Excel 另存、脚本重写）：停下来交给浮窗说清楚，不继续摆旧数据（#106）。
       if ((err as { code?: string } | null)?.code === "sheet_stale") {
         this.stale = true;
@@ -690,6 +762,10 @@ export class SheetGrid {
     } finally {
       this.loading = false;
       if (this.destroyed) return;
+      if (epoch !== this.epoch) {
+        void this.ensure();
+        return;
+      }
       this.render();
       this.notify();
       if (this.again) {

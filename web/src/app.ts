@@ -3829,6 +3829,8 @@ export class App {
       // #107：整表查找在桥端扫（前端只拿着一个可视窗口）。
       findSheet: (sheet, q) => api.sheetFind(info.token, sheet, q),
       onQuote: (text) => this.quoteInto(text),
+      // #112：有图表的文件自动转一次 PDF；没有的也能手动切过去看打印版式。
+      page: { url: api.sheetPdf(info.token) },
       onOpen: () => this.openInApp(info.token),
       onReveal: () => this.reveal(info.abs),
       // 文件被改过：要新的 token，所以整扇重开一趟（旧的那扇由 openSheet 拆）。

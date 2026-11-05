@@ -4,12 +4,14 @@
  * 几何按界面缩放归一（布局 px）后记在 localStorage 的 `pi.sheetGeom`；
  * 拖标题栏移动、拖右下角改宽高、拖顶边只改高、双击复原、打开时 clamp 回可视区。
  */
-import { tr, errText, fmtTime } from "../i18n/index.ts";
-import type { SheetInfo, SheetMatches, SheetMeta, SheetTier, SheetWindow } from "../types.ts";
+import { tr, errText, fmtTime, fmtNum } from "../i18n/index.ts";
+import type { SheetInfo, SheetMatches, SheetMeta, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
 import { SheetGrid, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP } from "./grid.ts";
+import { SheetPage } from "./page.ts";
 
 const KEY = "pi.sheetGeom";
+const SPLIT_KEY = "pi.sheetSplit";
 const MIN_W = 420;
 const MIN_H = 260;
 
@@ -39,6 +41,8 @@ export interface SheetDialogOpts {
   findSheet?: (sheet: string, q: string) => Promise<SheetMatches>;
   /** #107：把「文件路径 + A1:C9」交给对话框（只插入，不发送）。 */
   onQuote?: (text: string) => void;
+  /** #112：页面视图端点；xlsx 都有，CSV 没有。有它才出并排 / 两个标签页。 */
+  page?: { url: string };
   /** #106 出口：交给这台电脑上的默认程序打开原文件。 */
   onOpen: () => Promise<void>;
   onReveal: () => Promise<void>;
@@ -55,19 +59,17 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return node;
 }
 
-/** #107：拿数档位的中文标签（`tr` 在使用处，别把译文交给这里的表）。 */
-function tierLabel(tier: SheetTier | undefined): string {
-  if (tier === "values") return tr("只读值");
-  if (tier === "none") return tr("仅清单");
-  return tr("全量");
-}
-
 export class SheetDialog {
   readonly root: HTMLElement;
   private readonly opts: SheetDialogOpts;
   private readonly head: HTMLElement;
   private readonly body: HTMLElement;
   private readonly pane: HTMLElement;
+  private readonly panes: HTMLElement | null = null;
+  private readonly split: HTMLElement | null = null;
+  private readonly viewTabs: HTMLElement | null = null;
+  private readonly viewTabBtns: HTMLButtonElement[] = [];
+  private page: SheetPage | null = null;
   private readonly footBar: HTMLElement;
   /** #108：底部的工作表标签与「N 个隐藏工作表」提示（`.sd-tab` 是 CSV 的表格/源码，别混）。 */
   private readonly wsTabs: HTMLElement;
@@ -84,9 +86,10 @@ export class SheetDialog {
   private readonly findIn: HTMLInputElement;
   private readonly findAt: HTMLElement;
   private readonly findBtn: HTMLButtonElement;
-  /** #107：底栏的定位信息（只读 / 行列数 / 档位）与缩放。 */
-  private readonly ro: HTMLElement;
+  /** #107：底栏的定位信息（只读 / 行列数）与缩放。 */
+  private readonly roChip: HTMLElement;
   private readonly dims: HTMLElement;
+  /** #110：这张表落在哪一档（全量 / 只值轻量 / 不给）。 */
   private readonly tier: HTMLElement;
   /** 缩放百分比：点它就是回 100%（数据驱动，不在 foot() 里重建）。 */
   private readonly zoomPct: HTMLButtonElement = el("button", "sd-zoom-pct", "100%");
@@ -100,12 +103,16 @@ export class SheetDialog {
   private readonly status: HTMLElement;
   private tab: Tab = "grid";
   private sheets: SheetInfo[] = [];
+  private meta: SheetMeta | null = null;
   private readonly tabs: HTMLElement[] = [];
   private src: HTMLTextAreaElement | null = null;
   private saveMsg: HTMLElement | null = null;
   private saveBtn: HTMLButtonElement | null = null;
   private grid: SheetGrid | null = null;
   private closed = false;
+  private narrow = false;
+  private activeView: "grid" | "page" = "grid";
+  private ro: ResizeObserver | null = null;
 
   constructor(opts: SheetDialogOpts) {
     this.opts = opts;
@@ -129,8 +136,36 @@ export class SheetDialog {
     this.head.append(close);
 
     this.body = el("div", "sd-body");
-    this.pane = el("div", "sd-pane");
-    this.body.append(this.pane);
+    this.pane = el("div", opts.page ? "sd-pane sd-gridpane" : "sd-pane");
+    if (opts.page) {
+      // #112：宽了并排（左网格右纸面），窄了同两个标签页切换；分界线的比例记在 localStorage。
+      this.panes = el("div", "sd-panes");
+      this.split = el("div", "sd-split");
+      this.split.title = tr("拖动调整左右比例（双击复原）");
+      this.split.setAttribute("role", "separator");
+      this.split.setAttribute("aria-orientation", "vertical");
+      this.page = new SheetPage(opts.page.url);
+      this.viewTabs = el("nav", "sd-viewtabs");
+      this.viewTabs.setAttribute("role", "tablist");
+      this.viewTabs.setAttribute("aria-label", tr("页面视图"));
+      for (const [id, label] of [
+        ["grid", tr("网格")],
+        ["page", tr("页面视图")],
+      ] as const) {
+        const btn = el("button", "sd-viewtab", label);
+        btn.type = "button";
+        btn.dataset.view = id;
+        btn.setAttribute("role", "tab");
+        btn.onclick = () => this.showView(id);
+        this.viewTabBtns.push(btn);
+        this.viewTabs.append(btn);
+      }
+      this.panes.append(this.pane, this.split, this.page.root);
+      this.body.append(this.viewTabs, this.panes);
+      this.wirePage();
+    } else {
+      this.body.append(this.pane);
+    }
     const resize = el("div", "sd-resize");
     resize.title = tr("拖动改大小（双击复原）");
 
@@ -149,9 +184,10 @@ export class SheetDialog {
     this.fx.append(this.fxRef, this.fxBody);
     this.status = el("span", "sd-status");
     this.status.hidden = true;
-    this.ro = el("span", "sd-ro", tr("只读"));
+    this.roChip = el("span", "sd-ro", tr("只读"));
     this.dims = el("span", "sd-dims");
     this.tier = el("span", "sd-tier");
+    this.tier.hidden = true;
 
     // #107：查找 / 引用那条工具条（盖在公式栏上面，只在表格面显示）。
     this.tools = el("div", "sd-tools");
@@ -199,12 +235,16 @@ export class SheetDialog {
     if (!opts.onQuote) quote.hidden = true;
 
     this.footBar = this.foot(opts);
-    this.footBar.prepend(this.wsTabs, this.status, this.wsHint, this.cfHint);
-    this.body.insertBefore(this.tools, this.pane);
+    this.footBar.prepend(this.wsTabs, this.tier, this.status, this.wsHint, this.cfHint);
+    // 有页面视图时格子挂在 .sd-panes 里，工具条要插在那一层之前。
+    const anchor = this.panes && this.panes.parentElement === this.body ? this.panes : this.pane;
+    this.body.insertBefore(this.tools, anchor);
     this.root.append(grip, this.head, this.body, this.footBar, resize);
     this.root.addEventListener("keydown", this.onKeyDown);
     if (opts.source) this.buildSource(opts.source);
     this.wire(grip, resize);
+    // fx 在上面才建出来（#111），switch 视图要等它存在。
+    if (opts.page) this.showView("grid");
   }
 
   /** Ctrl/Cmd+F 开查找（跟浏览器不抢），Esc 收起。 */
@@ -302,7 +342,7 @@ export class SheetDialog {
   private foot(opts: SheetDialogOpts): HTMLElement {
     const bar = el("footer", "sd-foot");
     const meta = el("span", "sd-meta");
-    meta.append(this.ro, this.dims, this.tier);
+    meta.append(this.roChip, this.dims);
 
     const zoom = el("span", "sd-zoom");
     const out = el("button", "sd-zbtn", "−");
@@ -352,11 +392,10 @@ export class SheetDialog {
     this.zoomPct.textContent = `${Math.round(grid.zoom * 100)}%`;
   }
 
-  /** #107：底栏那排「这张表长什么样」：行列数、拿数档位。 */
+  /** #107：底栏那排「这张表多大」；档位那项由 #110 的 paintTier 负责。 */
   private paintMeta(sheets: SheetInfo[], sheet: string): void {
     const info = sheets.find((s) => s.name === sheet);
     this.dims.textContent = info ? tr("{p1} 行 × {p2} 列", { p1: info.rows, p2: info.cols }) : "";
-    this.tier.textContent = tierLabel(info?.tier);
   }
 
   /** 源码面：两个 tab + 可编辑的 textarea；说明与保存结果并进底栏那条。 */
@@ -419,7 +458,14 @@ export class SheetDialog {
     this.fxRef.textContent = sel.ref;
     this.fxBody.textContent = sel.text;
     this.fxBody.title = sel.text;
-    this.fx.hidden = this.tab !== "grid";
+    this.syncFx();
+  }
+
+  /** #112：窄窗切到纸面时，网格连同公式栏一起让位；宽窗并排时公式栏还在网格上方。 */
+  private syncFx(): void {
+    // wirePage() 建完就会量一次宽度，这时 #111 的公式栏还没建出来；它默认就是 hidden。
+    if (!this.fx) return;
+    this.fx.hidden = this.tab !== "grid" || (this.narrow && this.activeView === "page");
   }
 
   /** #111：#107：底栏那些「这张表是什么样」（只读 / 行列数 / 档位 / 无缓存值）。 */
@@ -478,14 +524,93 @@ export class SheetDialog {
     this.cfHint.hidden = !n;
   }
 
+  /** #110：底栏说清楚这张表落在哪一档；CSV 没有档位，就不占位置。 */
+  private paintTier(info: SheetInfo | undefined): void {
+    if (!info?.tier) {
+      this.tier.textContent = "";
+      this.tier.hidden = true;
+      return;
+    }
+    const cells = info.cells ?? info.rows * info.cols;
+    const p1 = fmtNum(cells);
+    let label = tr("{p1} 格 · 全量显示", { p1 });
+    if (info.tier === "light") label = tr("{p1} 格 · 只值轻量（不涂条件格式）", { p1 });
+    else if (info.tier === "none") label = tr("{p1} 格 · 不给全表", { p1 });
+    this.tier.textContent = label;
+    this.tier.dataset.tier = info.tier;
+    this.tier.hidden = false;
+  }
+
   private async pickSheet(name: string): Promise<void> {
-    if (!this.grid || this.grid.activeSheet === name) return;
+    const info = this.sheets.find((s) => s.name === name);
+    if (!info || this.grid?.activeSheet === name) return;
     for (const btn of this.wsTabs.children) {
       btn.setAttribute("aria-selected", btn.textContent === name ? "true" : "false");
     }
-    await this.grid.setSheet(name);
-    this.renderCfHint(name);
     this.paintStatus(this.sheets, name);
+    this.paintTier(info);
+    this.renderCfHint(name);
+    if (info.tier === "none") {
+      this.showTooBig(name);
+      return;
+    }
+    if (!this.grid) {
+      await this.mountGrid(name);
+      return;
+    }
+    await this.grid.setSheet(name);
+  }
+
+  /** #110：这一档只给清单和尺寸，不建网格、不取窗口。 */
+  private showTooBig(sheet: string): void {
+    this.grid?.destroy();
+    this.grid = null;
+    this.fx.hidden = true;
+    const info = this.sheets.find((s) => s.name === sheet);
+    const cells = info?.cells ?? (info ? info.rows * info.cols : 0);
+    const box = el("div", "sd-block");
+    box.append(
+      el(
+        "div",
+        "sd-block-text",
+        tr("这张表有 {p1} 格，太大，不在这里滚。只给清单和尺寸；要看内容，用本机程序打开。", { p1: fmtNum(cells) }),
+      ),
+    );
+    const list = el("div", "sd-block-list");
+    for (const s of this.sheets) {
+      if (s.hidden) continue;
+      const row = el("div", "sd-block-sheet");
+      row.append(
+        el("span", "sd-block-name", s.name),
+        el("span", "sd-block-size", tr("{p1} 行 × {p2} 列", { p1: fmtNum(s.rows), p2: fmtNum(s.cols) })),
+      );
+      list.append(row);
+    }
+    const acts = el("div", "sd-block-acts");
+    const open = el("button", "sd-act", tr("用本机程序打开"));
+    open.type = "button";
+    open.title = tr("交给这台电脑上的默认程序打开原文件");
+    open.onclick = () => void this.opts.onOpen();
+    acts.append(open);
+    box.append(list, acts);
+    this.pane.replaceChildren(box);
+  }
+
+  /** 从「不给」/「只值轻量」切回可滚的表时，按需重建网格。 */
+  private async mountGrid(sheet: string): Promise<void> {
+    const meta = this.meta;
+    if (!meta) return;
+    this.fx.hidden = true;
+    const grid = new SheetGrid({
+      meta,
+      sheet,
+      fetchWindow: this.opts.fetchWindow,
+      onSelect: (sel) => this.showFormula(sel),
+      onStale: () => this.stale(),
+    });
+    this.grid = grid;
+    this.pane.replaceChildren(grid.root);
+    await grid.start();
   }
 
   /** 源码改过并保存之后换一份数据：行列数都可能变，网格整个重建。 */
@@ -513,8 +638,115 @@ export class SheetDialog {
   destroy(): void {
     this.grid?.destroy();
     this.grid = null;
+    this.ro?.disconnect();
+    this.ro = null;
+    this.page?.destroy();
+    this.page = null;
     window.removeEventListener("resize", this.onResize);
     this.root.remove();
+  }
+
+  /** #112：并排 / 标签页的切换、分界线拖动、比例记忆。 */
+  private wirePage(): void {
+    const panes = this.panes;
+    const split = this.split;
+    const page = this.page;
+    if (!panes || !split || !page) return;
+    panes.style.setProperty("--sd-split", `${this.readSplit() * 100}%`);
+
+    split.addEventListener("pointerdown", (ev) => {
+      if (this.narrow) return;
+      ev.preventDefault();
+      const box = panes.getBoundingClientRect();
+      const total = Math.max(1, box.width - split.offsetWidth);
+      split.setPointerCapture(ev.pointerId);
+      split.classList.add("drag");
+      const move = (e: PointerEvent) => this.setSplit(clampNum((e.clientX - box.left) / total, 0.2, 0.8));
+      const up = () => {
+        split.classList.remove("drag");
+        split.removeEventListener("pointermove", move);
+        split.removeEventListener("pointerup", up);
+        split.removeEventListener("pointercancel", up);
+        this.saveSplit();
+      };
+      split.addEventListener("pointermove", move);
+      split.addEventListener("pointerup", up);
+      split.addEventListener("pointercancel", up);
+    });
+    split.addEventListener("dblclick", () => {
+      this.setSplit(0.5);
+      this.saveSplit();
+    });
+
+    this.ro = new ResizeObserver(() => this.layoutMode());
+    this.ro.observe(this.root);
+    this.layoutMode();
+  }
+
+  private readSplit(): number {
+    try {
+      const value = Number(localStorage.getItem(SPLIT_KEY));
+      if (Number.isFinite(value) && value >= 0.2 && value <= 0.8) return value;
+    } catch {
+      /* 读不到就用默认 */
+    }
+    return 0.5;
+  }
+
+  private setSplit(ratio: number): void {
+    this.panes?.style.setProperty("--sd-split", `${(ratio * 100).toFixed(2)}%`);
+    requestAnimationFrame(() => this.grid?.refresh());
+  }
+
+  private saveSplit(): void {
+    if (!this.panes) return;
+    const raw = this.panes.style.getPropertyValue("--sd-split");
+    try {
+      localStorage.setItem(SPLIT_KEY, String(Number.parseFloat(raw) / 100));
+    } catch {
+      /* 存不下也还能用这一次 */
+    }
+  }
+
+  private showView(view: "grid" | "page"): void {
+    this.activeView = view;
+    for (const btn of this.viewTabBtns) {
+      const on = btn.dataset.view === view;
+      btn.classList.toggle("on", on);
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+    }
+    this.applyView();
+    if (view === "page") this.page?.reveal();
+    else this.grid?.refresh();
+  }
+
+  /** 网格是主视图：默认整幅；切到页面视图后宽窗并排、窄窗只留纸面。 */
+  private applyView(): void {
+    if (!this.page || !this.panes) return;
+    const pageOn = this.activeView === "page";
+    if (this.narrow) {
+      this.panes.classList.remove("sd-showpage");
+      this.pane.hidden = pageOn;
+      this.page.root.hidden = !pageOn;
+      this.syncFx();
+      return;
+    }
+    this.pane.hidden = false;
+    this.page.root.hidden = !pageOn;
+    this.panes.classList.toggle("sd-showpage", pageOn);
+    this.syncFx();
+  }
+
+  /** 900 布局 px 是分界：再窄并排两栏都看不清。 */
+  private layoutMode(): void {
+    if (!this.page) return;
+    const width = this.root.getBoundingClientRect().width / this.opts.scale();
+    const narrow = width < 900;
+    if (narrow === this.narrow) return;
+    this.narrow = narrow;
+    this.root.classList.toggle("sd-narrow", narrow);
+    this.applyView();
+    requestAnimationFrame(() => this.grid?.refresh());
   }
 
   private async load(): Promise<void> {
@@ -522,24 +754,27 @@ export class SheetDialog {
     try {
       const meta = await this.opts.loadMeta();
       if (this.closed) return;
+      this.meta = meta;
       // 打开时落在第一张看得见的表上（文件名那格传给 meta.name 的不一定是它）。
       const first = meta.sheets.find((s) => !s.hidden)?.name ?? meta.name;
       this.sheets = meta.sheets;
       // 公式栏插在网格上面；标签页（CSV 的）在它上面。
-      if (this.pane.parentElement === this.body) this.body.insertBefore(this.fx, this.pane);
+      const top = this.panes ?? this.pane;
+      if (top.parentElement === this.body) this.body.insertBefore(this.fx, top);
       this.renderTabs(meta.sheets, first);
       this.paintStatus(meta.sheets, first);
-      this.grid = new SheetGrid({
-        meta,
-        sheet: first,
-        fetchWindow: this.opts.fetchWindow,
-        // #111：选中格变了，公式栏跟着换。
-        onSelect: (sel) => this.showFormula(sel),
-        // 文件在预览之后被改过：停下，说清楚，别拿旧数据装作没事（#106）。
-        onStale: () => this.stale(),
-      });
-      this.pane.replaceChildren(this.grid.root);
-      await this.grid.start();
+      this.paintTier(meta.sheets.find((s) => s.name === first));
+      // #110：这一档不建网格，只把清单和尺寸摆出来。
+      if (meta.sheets.find((s) => s.name === first)?.tier === "none") {
+        this.showTooBig(first);
+        return;
+      }
+      await this.mountGrid(first);
+      // #112：只有包里有图表部件才自动转并切到页面视图；没图表的先看整幅网格，想看了再点标签。
+      if (meta.charts) {
+        this.page?.auto();
+        this.showView("page");
+      }
     } catch (err) {
       if (this.closed) return;
       const code = (err as { code?: string } | null)?.code;

@@ -43,7 +43,7 @@ export function grantIsStale(grant: Grant, mtimeMs: number): boolean {
   return Math.abs(mtimeMs - grant.mtime) > 1;
 }
 
-// 只缓存元数据（sheet 清单 / 尺寸 / zip 内路径），不缓存共享字符串或表 XML（D127）。
+// 只缓存元数据、结构与条件格式计划（sheet 清单 / 尺寸 / zip 内路径），不缓存表 XML（D127/#110）。
 const books = new Map<string, Book>();
 const MAX_BOOKS = 8;
 
