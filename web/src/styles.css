@@ -329,7 +329,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .tool-btn:hover { color: var(--text); border-color: #2f3746; }
 .tool-btn.on { color: var(--accent); border-color: var(--accent-dim); background: #0b1f28; }
-.session-cards { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); min-height: 0; }
+.session-cards { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); min-height: 0; position: relative; }
 .session-sec { display: grid; gap: 6px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
 .sess-head { display: flex; align-items: center; gap: 6px; padding: 2px 4px; color: var(--faint); font-size: 11px; }
 .sess-head .label { color: var(--faint); }
@@ -364,8 +364,21 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .session-card:hover .grip, .session-card.active .grip { opacity: 0.65; }
 .session-card.dragging { opacity: 0.45; border-style: dashed; }
-.session-card.over-top { box-shadow: 0 -2px 0 var(--accent); }
-.session-card.over-bottom { box-shadow: 0 2px 0 var(--accent); }
+/* 拖拽整理（#99）：落点就一条 2px 线 —— 粗细、位置、目标组都写在 style/dataset 上，探针直接读。 */
+.drop-line {
+  position: absolute; left: 4px; right: 4px; height: 2px; margin-top: -1px; border-radius: 2px;
+  background: var(--accent); box-shadow: 0 0 0 2px rgb(0 0 0 / 0.28);
+  pointer-events: none; z-index: 3;
+}
+.drop-line[data-pool="true"] { background: var(--warn); }
+/* 「放回工程」只在拖动期间出现：拖到它上面 = 删 override，回到 cwd 推导。 */
+.ws-pool {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px dashed var(--line);
+  border-radius: 9px; color: var(--faint); font-size: 11px;
+}
+.ws-pool .label { flex: none; color: var(--dim); font-weight: 550; font-size: 12px; }
+.ws-pool .sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-pool.over { border-color: var(--warn); color: var(--text); }
 .session-card .pin-btn {
   flex: none; width: 24px; height: 24px; margin: -2px 0; padding: 0; display: grid; place-items: center;
   border: 1px solid transparent; border-radius: 7px; background: none; color: var(--faint);
