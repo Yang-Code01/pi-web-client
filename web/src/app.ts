@@ -769,6 +769,10 @@ export class App {
         node.textContent = this.leftText(Number(node.dataset.deadline));
       }
       if (this.session?.running) this.fillHintStatus();
+      // 刻度尺也养在这个闹钟里：只改 DOM 的格子数，不重画整个列表。
+      for (const node of document.querySelectorAll<HTMLElement>(".sc-ruler[data-since]")) {
+        drawRuler(node, Number(node.dataset.since));
+      }
     }, 1000);
   }
 
@@ -3558,6 +3562,14 @@ export class App {
     }
     meta.append(tail);
     card.append(meta);
+    // D128 的记号：跑着的会话在卡底留一把刻度尺，攒的格子就是时长。
+    if (s.running) {
+      const since = Date.parse(s.startedAt ?? "") || s.updatedAt;
+      const ruler = el("div", "sc-ruler");
+      ruler.dataset.since = String(since);
+      drawRuler(ruler, since);
+      card.append(ruler);
+    }
     return card;
   }
 
@@ -5503,8 +5515,12 @@ export class App {
     this.closeSkillPalette();
     this.imageBadge = null;
     if (!this.currentId) {
-      const hint = el("div", "empty", tr("左边选一个会话，或开一个新的。"));
-      host.append(hint);
+      // 没开会话时的空状态：整块居中（styles.css 用 `:has(> .composer > .chat-empty)` 把
+      // 中栏从「滚动区 + 贴底输入框」改成一块空白），别让提示贴着底边像界面坏了。
+      const box = el("div", "chat-empty");
+      box.append(el("div", "chat-empty-title", tr("还没有打开会话")));
+      box.append(el("div", "chat-empty-hint", tr("左边选一个，或者开一个新的")));
+      host.append(box);
       return;
     }
     const s = this.session;
@@ -9935,6 +9951,36 @@ function tailText(text: string, maxLines: number, maxChars: number): string {
 /** 会话列表的时间戳：一分钟内「刚刚」，其余交给 Intl（D110）。 */
 function relativeTime(ts: number): string {
   return fmtRelative(ts);
+}
+
+/** 刻度尺的步长（分钟）：挑一个让格子数落在 2–11 之间的，再长就上台阶。 */
+const RULER_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 240];
+
+/** 跑了多久，写成 m:ss（过一小时是 h:mm:ss）—— 只进刻度尺的 tooltip，不占版面。 */
+function clockText(totalSecs: number): string {
+  const s = totalSecs % 60;
+  const m = Math.floor(totalSecs / 60) % 60;
+  const h = Math.floor(totalSecs / 3600);
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  return h ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+}
+
+/**
+ * 一把刻度尺：一条 1px 竖线是一格，格子攒得越多说明跑得越久，最右那条是「现在」。
+ * 位置等距铺满卡片宽度、不按时间比例画 —— 那会变成一根永远不满的进度条，而进度条会被读成
+ * 「快完成了」，agent 跑多久并没有完成度可言。密度本身就是读数，具体时长留在 tooltip。
+ */
+function drawRuler(node: HTMLElement, since: number): void {
+  const secs = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  const mins = secs / 60;
+  const step = RULER_STEPS.find((x) => mins / x <= 11) ?? 240;
+  const marks = Math.floor(mins / step);
+  node.title = tr("已经跑了 {p1}", { p1: clockText(secs) });
+  const key = `${step}/${marks}`;
+  if (node.dataset.key === key) return;
+  node.dataset.key = key;
+  node.replaceChildren(...Array.from({ length: marks + 1 }, (_, i) => el("i", i === marks ? "now" : "")));
 }
 
 function urlBase64ToUint8Array(base64: string): Uint8Array {

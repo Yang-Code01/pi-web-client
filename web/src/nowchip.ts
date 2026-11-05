@@ -1,5 +1,7 @@
 /**
- * 「当前在哪」那颗（#96）：工作区色点 + 工作区名 + 会话名 + 在线点 + 待处理角标。
+ * 「当前在哪」那颗（#96）：工作区色点 + 工作区名 + 在线点 + 待处理角标。
+ * 会话名不在这颗里画 —— 顶栏自己的标题已经写着它，并排两个同样的名字只是重复；
+ * 名字仍留在 `label` / `title` 上，读屏和悬停照样拿得到。
  *
  * 它是四套布局（#97 / #98）共用的那一颗，所以组件只吃挂载点、不读全局状态 —— 数据映射在
  * 纯函数里（`nowChipView`），DOM 类只负责把一份 view 抹到自己的节点上。切会话、改工作区名、
@@ -138,8 +140,6 @@ export class NowChip {
   readonly el: HTMLElement;
   private readonly dot: HTMLSpanElement;
   private readonly ws: HTMLSpanElement;
-  private readonly sep: HTMLSpanElement;
-  private readonly name: HTMLSpanElement;
   private readonly live: HTMLSpanElement;
   private readonly badge: HTMLSpanElement;
 
@@ -151,16 +151,11 @@ export class NowChip {
     this.dot.className = "now-dot";
     this.ws = document.createElement("span");
     this.ws.className = "now-ws";
-    this.sep = document.createElement("span");
-    this.sep.className = "now-sep";
-    this.sep.textContent = "·";
-    this.name = document.createElement("span");
-    this.name.className = "now-name";
     this.live = document.createElement("span");
     this.live.className = "now-live";
     this.badge = document.createElement("span");
     this.badge.className = "badge wait";
-    this.el.append(this.dot, this.ws, this.sep, this.name, this.live, this.badge);
+    this.el.append(this.dot, this.ws, this.live, this.badge);
     host.append(this.el);
   }
 
@@ -170,7 +165,6 @@ export class NowChip {
     this.dot.hidden = view.accent === null;
     if (view.accent) this.dot.style.background = ACCENTS[view.accent].accent;
     this.ws.textContent = view.workspace;
-    this.name.textContent = view.name;
     this.live.hidden = !view.live;
     this.live.className = view.live ? `now-live ${view.live}` : "now-live";
     this.badge.hidden = view.badge === null;
