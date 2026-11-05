@@ -1330,4 +1330,13 @@ export const en: Dict = {
   "未命名工作区": "Untitled workspace",
   "{p1}，{p2}，当前会话": "{p1}, {p2}, current session",
   "{p2}，当前会话": "{p2}, current session",
+  "工作区": "Workspaces",
+  "稍后": "Later",
+  "以后再说": "Not now",
+  "就这样开始": "Start like this",
+  "左栏要按工作区分组了：同一个工程根下的会话归到一组，组里 ★ 排前，归档的另放最后一区。下面是你会看到的样子。": "The left column is about to group sessions by workspace: everything under one project root lands in one group, ★ sorts to the top inside a group, and archived sessions keep their own section at the end. Here is what you will get.",
+  "{p1} 个会话": "{p1} sessions",
+  "其中 {p1} 个是你拖过的": "{p1} of them you moved by hand",
+  "会建 {p1} 个工作区、{p2} 个会话": "Creates {p1} workspaces with {p2} sessions",
+  "会建 {p1} 个工作区、{p2} 个会话，其中 {p3} 个是你拖过的": "Creates {p1} workspaces with {p2} sessions, {p3} of them moved by hand",
 };

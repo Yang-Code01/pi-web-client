@@ -151,7 +151,8 @@ try {
 
   // 2. Archive keeps the row (the client decides to hide it).
   send({ type: "manage", action: "archive", ids: [ids.a], on: true });
-  await waitFor("manage", (m) => m.manage?.archived?.includes(ids.a));
+  const archivedEcho = await waitFor("manage", (m) => m.manage?.archived?.includes(ids.a));
+  const beforeOrder = archivedEcho.manage.order.slice();
   rows = await list();
   assert(rows.length === 3, "archived session still listed for the API");
   assert(rows.find((s) => s.id === ids.a).archived === true, "archived flag on the row");
@@ -160,23 +161,31 @@ try {
   await waitFor("manage", (m) => !m.manage?.archived?.includes(ids.a));
   log("archive / restore ok");
 
-  // 2b. D125 打开即置顶：打开哪条哪条进置顶区，归档的顺带解除归档；已经在里的不重排。
+  // 2b. D130 废止了 D125：打开会话不改排列 —— 不置顶、不解归档、manage.json 一个字节都不动。
+  // 旧页面仍会发这条消息，桥要照常回一份快照（它乐观改过自己的 manage，得被纠正回来）。
   send({ type: "manage", action: "archive", ids: [ids.a], on: true });
   await waitFor("manage", (m) => m.manage?.archived?.includes(ids.a));
+  const manageFile = path.join(STATE, "manage.json");
+  const beforeOpen = fs.readFileSync(manageFile, "utf8");
+
   send({ type: "manage", action: "opened", id: ids.a });
-  const opened = await waitFor("manage", (m) => m.manage?.pin?.[0] === ids.a);
-  assert(opened, "opened 把会话放进置顶区");
-  assert(!opened.manage.archived.includes(ids.a), "打开归档会话 = 解除归档");
-  send({ type: "manage", action: "opened", id: ids.b });
-  const again = await waitFor("manage", (m) => m.manage?.pin?.[0] === ids.a && m.manage.pin.length === 2);
-  assert(again, `已在置顶区的不重排（pin = ${again?.manage?.pin?.map((x) => x.slice(-1)).join("")}）`);
-  assert(!again.manage.pin.includes(ids.c), "没打开的会话不会凭空置顶");
-  const afterOpen = await order();
-  assert(afterOpen[0] === ids.a && afterOpen[1] === ids.b, `置顶排在列表最前（got ${afterOpen.map((x) => x.slice(-1)).join("")}）`);
+  const echo = await waitFor("manage", (m) => Array.isArray(m.manage?.pin));
+  assert(echo, "opened 会回一份快照（旧页面靠它纠正乐观状态）");
+  assert(echo.manage.archived.includes(ids.a), "打开归档会话不再解除归档");
+  assert(!echo.manage.pin.includes(ids.a), "打开归档会话也不再置顶");
+
+  send({ type: "manage", action: "opened", id: ids.c });
+  const echo2 = await waitFor("manage", (m) => Array.isArray(m.manage?.order));
+  assert(echo2.manage.pin.length === 1 && echo2.manage.pin[0] === ids.b, `打开没置顶的会话不动 pin（pin = ${echo2.manage.pin.map((x) => x.slice(-1)).join("")}）`);
+  assert(echo2.manage.order.join() === beforeOrder.join(), `order 也不动（${echo2.manage.order.map((x) => x.slice(-1)).join("")}）`);
+  assert(fs.readFileSync(manageFile, "utf8") === beforeOpen, "manage.json 没被 opened 改写");
+
   send({ type: "manage", action: "opened", id: "zz-does-not-exist" });
-  const bogus = await waitFor("manage", (m) => m.manage?.pin?.length === 2 && !m.manage.pin.includes("zz-does-not-exist"));
-  assert(bogus, "不存在的 id 不会被写进 manage.json");
-  log("opened 把会话置顶、解除归档、不认陌生 id");
+  const bogus = await waitFor("manage", (m) => Array.isArray(m.manage?.pin));
+  assert(bogus && !bogus.manage.pin.includes("zz-does-not-exist"), "陌生 id 也不会被写进 manage.json");
+  log("opened 成了纯读操作：不置顶、不解归档、不动 manage.json");
+  send({ type: "manage", action: "archive", ids: [ids.a], on: false });
+  await waitFor("manage", (m) => !m.manage?.archived?.includes(ids.a));
 
   // 3. A name override must be forgotten together with the file.
   send({ type: "rename", sessionId: ids.a, name: "临时名字" });
