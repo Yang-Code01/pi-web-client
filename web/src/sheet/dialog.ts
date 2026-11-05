@@ -4,7 +4,7 @@
  * 几何按界面缩放归一（布局 px）后记在 localStorage 的 `pi.sheetGeom`；
  * 拖标题栏移动、拖右下角改宽高、拖顶边只改高、双击复原、打开时 clamp 回可视区。
  */
-import { tr, errText } from "../i18n/index.ts";
+import { tr, errText, fmtTime } from "../i18n/index.ts";
 import type { SheetMeta, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
 import { SheetGrid } from "./grid.ts";
@@ -12,6 +12,17 @@ import { SheetGrid } from "./grid.ts";
 const KEY = "pi.sheetGeom";
 const MIN_W = 420;
 const MIN_H = 260;
+
+type Tab = "grid" | "source";
+
+/** CSV 的源码面：改完交给外面保存（#113）。有它才出「表格 / 源码」两个 tab。 */
+export interface SheetSource {
+  text: string;
+  /** 截断 / 超大时的说明，放在底栏。 */
+  note?: string;
+  /** 没有就不给保存（截断的文件只读）。 */
+  onSave?: (text: string) => Promise<void>;
+}
 
 export interface SheetDialogOpts {
   token: string;
@@ -22,6 +33,8 @@ export interface SheetDialogOpts {
   scale: () => number;
   loadMeta: () => Promise<SheetMeta>;
   fetchWindow: (sheet: string, r0: number, r1: number, c0: number, c1: number) => Promise<SheetWindow>;
+  /** #113：CSV 的源码面（有它才出「表格 / 源码」两个 tab）。 */
+  source?: SheetSource;
   /** #106 出口：交给这台电脑上的 Excel 打开原文件。 */
   onOpen: () => Promise<void>;
   onReveal: () => Promise<void>;
@@ -43,6 +56,12 @@ export class SheetDialog {
   private readonly opts: SheetDialogOpts;
   private readonly head: HTMLElement;
   private readonly body: HTMLElement;
+  private readonly pane: HTMLElement;
+  private readonly footBar: HTMLElement;
+  private readonly tabs: HTMLElement[] = [];
+  private src: HTMLTextAreaElement | null = null;
+  private saveMsg: HTMLElement | null = null;
+  private saveBtn: HTMLButtonElement | null = null;
   private grid: SheetGrid | null = null;
   private closed = false;
 
@@ -68,14 +87,18 @@ export class SheetDialog {
     this.head.append(close);
 
     this.body = el("div", "sd-body");
+    this.pane = el("div", "sd-pane");
+    this.body.append(this.pane);
     const resize = el("div", "sd-resize");
     resize.title = tr("拖动改大小（双击复原）");
 
-    this.root.append(grip, this.head, this.body, this.foot(opts), resize);
+    this.footBar = this.foot(opts);
+    this.root.append(grip, this.head, this.body, this.footBar, resize);
+    if (opts.source) this.buildSource(opts.source);
     this.wire(grip, resize);
   }
 
-  /** 看完之后能回到真文件：Excel / 文件夹 / 下载。都是本地动作，公网那边由桥端拒（#106）。 */
+  /** 底部一条：左边是 CSV 的截断说明 / 保存结果（#113），右边是回到真文件的三个出口（#106）。 */
   private foot(opts: SheetDialogOpts): HTMLElement {
     const bar = el("footer", "sd-foot");
     const open = el("button", "sd-act", tr("用 Excel 打开"));
@@ -98,6 +121,84 @@ export class SheetDialog {
     dl.title = tr("把原文件下载下来");
     bar.append(open, reveal, dl);
     return bar;
+  }
+
+  /** 源码面：两个 tab + 可编辑的 textarea；说明与保存结果并进底栏那条。 */
+  private buildSource(source: SheetSource): void {
+    const bar = el("div", "sd-tabs");
+    for (const [id, label] of [
+      ["grid", tr("表格")],
+      ["source", tr("源码")],
+    ] as const) {
+      const btn = el("button", "sd-tab", label);
+      btn.type = "button";
+      btn.dataset.tab = id;
+      btn.onclick = () => this.showTab(id);
+      this.tabs.push(btn);
+      bar.append(btn);
+    }
+
+    this.src = el("textarea", "sd-src");
+    this.src.value = source.text;
+    this.src.spellcheck = false;
+    this.src.hidden = true;
+    this.src.setAttribute("aria-label", tr("源码"));
+    this.src.addEventListener("focusin", () => this.opts.onRaise());
+
+    const note = el("span", "sd-note", source.note ?? "");
+    note.hidden = !source.note;
+    this.saveMsg = el("span", "sd-save-msg");
+    this.footBar.prepend(note, this.saveMsg);
+
+    if (source.onSave) {
+      const save = el("button", "sd-btn sd-save", tr("保存"));
+      save.type = "button";
+      save.title = tr("保存（按原编码写回）");
+      save.onclick = () => void this.save(source);
+      this.saveBtn = save;
+      this.head.insertBefore(save, this.head.lastElementChild);
+    }
+
+    this.body.insertBefore(bar, this.pane);
+    this.body.append(this.src);
+    this.showTab("grid");
+  }
+
+  private showTab(which: Tab): void {
+    this.pane.hidden = which === "source";
+    if (this.src) this.src.hidden = which !== "source";
+    for (const btn of this.tabs) btn.classList.toggle("on", btn.dataset.tab === which);
+    if (which === "grid") this.grid?.refresh();
+  }
+
+  private async save(source: SheetSource): Promise<void> {
+    const btn = this.saveBtn;
+    const msg = this.saveMsg;
+    if (!btn || !msg || !this.src || !source.onSave) return;
+    btn.disabled = true;
+    msg.textContent = tr("保存中…");
+    msg.className = "sd-save-msg";
+    try {
+      await source.onSave(this.src.value);
+      if (this.closed) return;
+      msg.textContent = tr("已保存 · {p1}", { p1: fmtTime() });
+      msg.className = "sd-save-msg ok";
+    } catch (err) {
+      if (this.closed) return;
+      msg.textContent = errText(err);
+      msg.className = "sd-save-msg err";
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  /** 源码改过并保存之后换一份数据：行列数都可能变，网格整个重建。 */
+  async setData(meta: SheetMeta, fetchWindow: SheetDialogOpts["fetchWindow"]): Promise<void> {
+    this.opts.fetchWindow = fetchWindow;
+    this.opts.loadMeta = async () => meta;
+    this.grid?.destroy();
+    this.grid = null;
+    await this.load();
   }
 
   /** 挂上去之后调用：先按记忆摆好，再取元数据。 */
@@ -132,7 +233,7 @@ export class SheetDialog {
         // 文件在预览之后被改过：停下，说清楚，别拿旧数据装作没事（#106）。
         onStale: () => this.stale(),
       });
-      this.body.replaceChildren(this.grid.root);
+      this.pane.replaceChildren(this.grid.root);
       await this.grid.start();
     } catch (err) {
       if (this.closed) return;
@@ -175,7 +276,7 @@ export class SheetDialog {
   }
 
   private showMessage(text: string): void {
-    this.body.replaceChildren(el("div", "sd-msg", text));
+    this.pane.replaceChildren(el("div", "sd-msg", text));
   }
 
   private wire(grip: HTMLElement, resize: HTMLElement): void {

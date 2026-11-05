@@ -75,13 +75,16 @@ export function fixtureRows({ firstArea = "华东" } = {}) {
     ["东北", "铆钉", 0.125, 8, 1, { inline: "内联字符串" }, "005", { bool: false }],
   ];
   for (const [area, product, price, qty, total, note, code, extra] of fixed) {
+    let noteCell = null;
+    if (typeof note === "string") noteCell = { str: si(note) };
+    else if (note) noteCell = { inline: note.inline };
     const cells = [
       { str: si(area) },
       { str: si(product) },
       { num: price },
       { num: qty },
       { num: total },
-      note === null ? null : typeof note === "string" ? { str: si(note) } : { inline: note.inline },
+      noteCell,
       { str: si(code) },
       extra ?? null,
     ];
@@ -128,12 +131,82 @@ export function buildXlsx({ firstArea } = {}) {
   return zipSync(files, { level: 6 });
 }
 
+/**
+ * GBK 编码：Node 只有解码器（`TextDecoder("gbk")`），没有编码器。
+ * 反转一次全表（12000 对左右的常用字，实测 ~21 ms），同一进程里只建一次。
+ */
+let gbkMap = null;
+function gbkTable() {
+  if (gbkMap) return gbkMap;
+  const dec = new TextDecoder("gbk");
+  gbkMap = new Map();
+  for (let lead = 0x81; lead <= 0xfe; lead++) {
+    for (let trail = 0x40; trail <= 0xfe; trail++) {
+      if (trail === 0x7f) continue;
+      const ch = dec.decode(new Uint8Array([lead, trail]));
+      if (ch.length === 1 && ch !== "\ufffd" && !gbkMap.has(ch)) gbkMap.set(ch, (lead << 8) | trail);
+    }
+  }
+  return gbkMap;
+}
+
+export function gbkBytes(text) {
+  const table = gbkTable();
+  const out = [];
+  for (const ch of String(text)) {
+    const code = ch.codePointAt(0);
+    if (code < 0x80) out.push(code);
+    else {
+      const pair = table.get(ch);
+      if (pair) out.push(pair >> 8, pair & 0xff);
+      else out.push(0x3f); // 编不出来的字写成 "?"：fixture 里不会出现
+    }
+  }
+  return Buffer.from(out);
+}
+
+const UTF8_CSV = [
+  "地区;产品;单价;备注",
+  '华东;"螺丝;M4";12.5;中文备注',
+  '华南;扳手;3.14159;"他说 ""好"""',
+  "华北;螺母;45292;第三行",
+].join("\r\n");
+
+const BOM_CSV = ["地区,产品,数量,备注", "华东,螺丝,3,带 BOM 的 CSV", "华南,扳手,10,第二行"].join("\r\n");
+
+const GBK_CSV = ["地区;产品;单价;备注", "华东;螺丝;12.5;中文备注", "华南;扳手;3.14;第二行", "华北;螺母;45292;第三行"].join(
+  "\r\n",
+);
+
+/** 超上限用：5 万行以上、但字节数仍在 2 MB 以内。 */
+export function bigCsv() {
+  const lines = ["行号,数值,备注"];
+  for (let i = 1; i <= 50100; i++) lines.push(`${i},v${i},备注${i}`);
+  return lines.join("\n");
+}
+
+/** 三份编码的 CSV + 一份超行数上限的。 */
+export function makeCsvFixtures(outDir) {
+  fs.mkdirSync(outDir, { recursive: true });
+  const write = (name, buf) => {
+    const file = path.join(outDir, name);
+    fs.writeFileSync(file, buf);
+    return file;
+  };
+  const utf8 = write("utf8.csv", Buffer.from(UTF8_CSV, "utf8"));
+  const bom = write("bom.csv", Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(BOM_CSV, "utf8")]));
+  const gbk = write("gbk.csv", gbkBytes(GBK_CSV));
+  const big = write("big.csv", Buffer.from(bigCsv(), "utf8"));
+  return { utf8, bom, gbk, big, files: [utf8, bom, gbk, big] };
+}
+
 /** 写到 outDir/plain.xlsx，返回绝对路径。 */
 export function makeFixtures(outDir) {
   fs.mkdirSync(outDir, { recursive: true });
   const file = path.join(outDir, "plain.xlsx");
   fs.writeFileSync(file, buildXlsx());
-  return { plain: file, files: [file] };
+  const csv = makeCsvFixtures(outDir);
+  return { plain: file, csv, files: [file, ...csv.files] };
 }
 
 /** OLE2 复合文档头：老式 .xls，以及加密过的 OOXML 包（CFB 包着加密流）都以它开头。 */
@@ -193,4 +266,5 @@ if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, "/")}`) {
   const out = process.argv[2] ?? path.join(process.cwd(), "fixtures-out");
   const made = makeFixtures(out);
   console.log(made.plain);
+  for (const f of made.csv.files) console.log(f);
 }
