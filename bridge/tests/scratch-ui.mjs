@@ -125,6 +125,10 @@ try {
   }));
   check("同一条回答只出现一次", shape.assistant === 1, JSON.stringify(shape));
 
+  // 每段回答的标题上要能看到「真正答这段话的模型」——chip 只是「当前选的」，模型自述不算数。
+  const whoText = (await page.locator(".scratch-list .sc-assistant .sc-who").first().textContent()) ?? "";
+  check("回答标了实际模型", /fake-model/.test(whoText), whoText.trim());
+
   // 模型：dialog 里要能切，不然它就成了「只能问、不能挑」。
   const chip = page.locator(".scratch-model-chip");
   check("dialog 里有模型入口", (await chip.count()) === 1);

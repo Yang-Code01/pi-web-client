@@ -58,7 +58,12 @@ function row(item: Item): HTMLElement {
     // pi 每调一次工具都会冒一条「文字为空、只有工具调用」的 assistant 消息：这类行不在
     // 正文里占一行，但**要留在 DOM 里**——它决定了后面工具行和正文的先后顺序。
     if (!text.trim()) wrap.classList.add("sc-step");
-    wrap.append(el("div", "sc-who", tr("随手问")));
+    const who = el("div", "sc-who", tr("随手问"));
+    // 真正答这段话的模型（pi 记在这条消息上）。chip 显示的是「当前选的」，模型自己说的话
+    // 不算数 —— 它只会去读 settings.json 的默认值。这里把它钉在每段开头。
+    const model = (item as { model?: string }).model;
+    if (model) who.append(el("span", "sc-model", ` · ${model}`));
+    wrap.append(who);
     const body = el("div", "sc-text md");
     if (text.trim()) body.append(renderMarkdown(text));
     wrap.append(body);

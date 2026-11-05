@@ -2301,3 +2301,4 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .scratch-levels .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 /* pi 的工具调用步骤（文字为空）：留在 DOM 里守住顺序，但别画出来。 */
 .sc-row.sc-step[hidden], .sc-who[hidden] { display: none; }
+.sc-model { font: 10px/1 var(--mono); letter-spacing: 0.04em; color: var(--faint); text-transform: none; }
