@@ -100,7 +100,7 @@ export interface SessionState {
   /** Sidebar arrangement from the bridge (state/manage.json). */
   pinned?: boolean;
   archived?: boolean;
-  /** #94: 这个会话站在哪个工作区（组 id，见 WorkspaceState.groups）。 */
+  /** #94: 这个会话站在哪个工作区（组 id，见 WorkspaceState.groups；worktree 已并回主仓）。 */
   ws?: string;
   /** Another process (the pi terminal) holds the lock: read-only, and the bridge refuses to delete it. */
   locked?: boolean;
