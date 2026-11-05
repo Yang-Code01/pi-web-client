@@ -1804,3 +1804,27 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 390 / 620 / 900 / 1440 四档 `documentElement.scrollWidth` 都等于视口；`npm run typecheck`（i18n 1264 键 ×3）、
 `web/tests/{nowchip,pillbar}-unit.mjs`、`probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿。
 截图 `.scratch/unslop/{y390-top,q2-right,m-queue,d-chat}.png`。
+
+## D132 抽屉标题升一档；色点选中态改成「缝 + 环」
+
+**背景（实测 `外观与语言`）：** `.sheet-title` 是 13px `--dim`，而它下面的组标题 `.levels-label` 是
+12px `--dim` —— 一页的名字和「语言 / 字号 / 颜色」几乎一样重。色点的选中态是 `border-color: var(--text)`
+的 2px 白环，压在最浅的那颗（`ice #7dd3fc`）上边界发糊；未选的有 `inset` 黑边、选中的又多一道白环，
+两种描边语言混在一排 26px 的点上。悬停还 `transform: scale(1.08)`，一排小点会跟着抖一下。
+
+**决定：**
+- `.sheet-title` → 14px / `500` / `--text`（去掉对中文空转的 `letter-spacing: .05em`）。所有抽屉共用，
+  这一处改动让「这一页叫什么」重新比组标题重一档。
+- 色点：`border: 0`，选中态用 `box-shadow: inset 黑边, 0 0 0 2px var(--panel), 0 0 0 3px var(--text)` ——
+  环画在外面、中间垫一道面板色留缝，六颗点尺寸不变，浅色点上也能一眼看出选了哪颗；悬停改成 2px
+  `--line-strong` 的环，不再缩放。
+- 「外观与语言」里的 chip 换成 `var(--sans)`：那几颗写的是语言名 / 字号名，不是 id 也不是数字。
+  **只在这一页**（`.display-sheet .chip`）—— 别处 `200K` / `high` / `gpt-5.2` 那些 chip 保持等宽。
+
+**代价 / 可改：** chip 的选择语言仍是「填色 + 深字」，色点是「缝 + 环」，两者依旧不同 —— 因为色点
+本身就是颜色，填色无从表达「已选」。真要统一得把全站 chip 的选中态一起改（`model-sheet`、`settings-sheet`
+都有），不属于这一轮。
+
+**验证：** `npm run typecheck`（i18n 1264 键 ×3）、`web/tests/{nowchip,pillbar}-unit.mjs`、
+`probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿；截图 `.scratch/unslop/look4.png`（外观与语言）、
+`settings.png`（pi 设置，确认标题改动在别的抽屉上也立得住）。
