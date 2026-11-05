@@ -1504,3 +1504,49 @@ if (s.idleFor() > IDLE_GC_MS) s.sleep();   // 2 小时
 - 自动全屏只看水平方向：面板本来就占满视口高度，所以没有「盖住全部」以外的第二种情况。
 
 **验证：** `npm --prefix web run build && node probes/viewer-split.mjs`（桩桥 + 真 Chromium，约 10 秒）：拖到最窄时头部每个可见按钮都在视口内且 `elementFromPoint` 命中它自己（修前 7 个越界）；拖到覆盖聊天区 → `.viewer.full` 且宽度 = 视口宽；点「退出全屏」→ 回到 `min(760px, 55vw)` 且 `pi.viewerW` 已被清掉。回归 `probes/window-front.mjs`（浮窗叠放）与 `probes/round12-preview-links.mjs`（预览链接）都仍全绿。
+
+## D122 新建会话不等 pi 启动：`create` 立刻回，界面把「正在启动」说出来
+
+**问题**（用户报的）：新建会话时界面卡在「新会话创建」上，要等十几秒才进去。
+
+查下来是一条链：前端点「创建」→ WS `create` → 桥 `sessions.create()` → `startLive()` 里 `await rpc.request("get_state", {}, 30000)` —— **卡片就卡在这句上**，pi 回话了桥才回 `{type:"session"}`，对话框才关掉。
+
+而 pi 回这第一句话之前要先把扩展加载完。实测（真实 agent 目录，各 3 次交错取最小）：
+
+| 配置 | spawn → `get_state` |
+| --- | --- |
+| `-ne`（不加载任何扩展） | **971 ms**（988 / 995 / 971） |
+| 桥的真实参数（12 个 npm 扩展 + 5 个本地扩展） | **8176 ms**（8769 / 8301 / 8176） |
+
+机器忙的时候（测的过程中 CPU 一度 70%、11 个 node 进程）同一个配置飙到 **12–15 秒**，最坏 15.5 秒。而且 pi 的**第一个字节**就要 7–8.8 秒，`session_start` 甚至不作为事件出现 —— 这 7 秒全在 pi 进程内部，桥这边拿不到更早的信号，所以「等第一个事件再返回」救不了。
+
+顺手排除的两个嫌疑：**MCP 不是瓶颈**（`mcp.json` 全量 / 去掉 browser-use / 全空，三种都是 7.7 秒，pi 连 MCP 不在启动关键路径上）；`trustFor()` 也不慢（`piModule()` 是同进程 import，不是 spawn）。
+
+**决定：**
+
+1. **`create`（以及 `openLive`）不再等 `get_state`**：spawn 完立刻返回，会话马上出现在界面上。`get_state` 照旧发、回来补 `model` / `file`，只是不再拦住调用方。
+2. **`state.starting`**：spawn 时置 true，`get_state` 落地就翻 false（进程退出、close 也会清）。这是页面唯一需要知道的事。
+3. **界面把这几秒说出来**：`starting` 为真时，状态行写「pi 正在启动（加载扩展，通常几秒）…」而不是「Enter 发送」的快捷键提示；输入框置灰、placeholder 换成「pi 正在启动…」；`sendPrompt` 里再兜一次（键盘路径也要拦）。
+4. **启动耗时可观测**：`get_state` 落地时往桥日志写一行 `[boot] <sessionId> pi 启动完成 <ms>`。这是「新会话为什么慢」唯一的可观测出口 —— 以后要判断是不是扩展又长胖了，看这一行。
+
+**为什么：**
+
+- 对话框的职责是「确认工作目录和选项」，不是「等 pi 就绪」。把两件事串成一件，等于让一个纯前端交互去背 pi 的启动成本。
+- 那 7 秒的根因在**用户自己的扩展集**（12 个 npm 包 + 5 个本地 .ts），不在桥里。桥能做的只有两件事：不把它变成对话框的等待，以及让它可见（第 4 条）。真要让启动变快，得减扩展，那是配置问题不是代码问题。
+- 不选「等第一个字节就返回」：第一个字节本来就在 7–8.8 秒，省不下什么。
+
+**代价 / 可改：**
+
+- 新会话会出现**先看到空聊天框、pi 还在起**的那两三秒（机器忙时更久）。这就是第 3 条存在的理由：这段时间界面明确说「正在启动」，并且不让人打字。
+- 头几秒 `state.file` / `state.model` 是空的，靠事件和 `get_state` 补齐。要读这两个字段的调用方（比如刚创建就 `/export`）要能容忍 null。
+- 想让创建更快只剩三条路：减扩展（治本）、把 `pi` 进程池化（pi 的 RPC 一进程一会话，D6，代价很大）、或者预启动（在用户打开对话框时就猜一个进程起来）—— 后者还没做，是这次明确留下的口子。
+
+**验证：** `node bridge/tests/create-fast.mjs`（桩 pi 用 `FAKE_PI_BOOT_MS=4000` 假装启动很慢）：`create` 的应答 **47 ms** 就到（预算 1.5 秒），刚创建时 `state.starting === true`，4 秒后翻成 false，桥日志里有真实的 `[boot] … 4177 ms`。`node probes/session-starting.mjs`（桩桥 + 真 Chromium）：状态行写「pi 正在启动（加载扩展，通常几秒）…」、输入框禁用且 placeholder 同步、`starting` 翻 false 后恢复可用且回车真能把消息发出去。
+
+回归：`session-lifecycle` / `runtime-panel`（顺带修了它和 `memory-cap` 里「create 一返回就读桩 pi 日志」的竞态）/ `stuck-run` / `approval-expiry` / `runtime-settings` / `sleep-all` / `memory-cap` / `composer-actions` / `run-lifecycle` / `session-sync` 全绿；`probes/window-front.mjs` 仍 ALL OK。
+
+**另记：**
+
+- `memory-cap.mjs` 最后一个用例原来用 7884 端口，这台机器上被 Trend Micro（`TmListen.exe`）占着，换成了 7906。挑测试端口时别用 788x。
+- 用户 `mcp.json` 里两个坏件与本结论无关，但记一笔：`browser-use`（`uvx browser-use==0.13.11`）60 秒都没回 `initialize`；`atlassian` 回 401（未授权）。`rea` / `context-mode` 正常（后者 1.8 秒）。
+- 未核实：`bridge/src/paths.ts` 的 `agentDir()` 同时认 `PI_AGENT_DIR` 与 `PI_CODING_AGENT_DIR`，但用 `PI_AGENT_DIR` 指到空目录时 pi 的行为没有可观察的变化 —— 疑似 pi 只认后者。这条实验被「空目录缺 auth 导致挂起」污染，没能证伪。

@@ -186,8 +186,21 @@ async function run(first) {
   }
 }
 
+/**
+ * `FAKE_PI_BOOT_MS`: hold the first command back for that long, so a test can pretend the real pi is
+ * spending seconds loading extensions before it answers `get_state` (D122). The bridge must not make
+ * the caller wait for that.
+ */
+const BOOT_MS = Number(process.env.FAKE_PI_BOOT_MS || 0);
+let booted = !BOOT_MS;
+
 async function handle(cmd) {
   const { id, type } = cmd;
+  if (!booted) {
+    booted = true;
+    note({ t: "boot-slow", ms: BOOT_MS });
+    await sleep(BOOT_MS);
+  }
   switch (type) {
     case "get_state":
       return ok(id, type, { model: { id: "fake-model", name: "Fake Model", provider: "stub" }, thinkingLevel: "off", cwd: process.cwd() });

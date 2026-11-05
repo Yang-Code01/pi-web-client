@@ -350,6 +350,8 @@ export const ja: Dict = {
   "名称": "名前",
   "后退（Alt+←）": "戻る（Alt+←）",
   "启动中…": "起動中…",
+  "pi 正在启动（加载扩展，通常几秒）…": "pi を起動しています（拡張の読み込み、通常数秒）…",
+  "pi 正在启动…": "pi を起動しています…",
   "启动参数": "起動引数",
   "启动命令 + 参数（空格分隔），例如 npx -y @modelcontextprotocol/server-everything": "起動コマンド + 引数（スペース区切り）。例：npx -y @modelcontextprotocol/server-everything",
   "启动失败": "起動に失敗しました",

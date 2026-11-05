@@ -143,6 +143,8 @@ export interface SessionState {
   file: string | null;
   owned: boolean; // this bridge is the writer
   origin?: "web" | "disk"; // "web" = this bridge created it; "disk" = came from a pi session file
+  /** True while the pi child is still booting (extensions load there: ~8 s with a big set, D122). */
+  starting?: boolean;
   running: boolean;
   /** A turn finished after the user last looked at this session (cleared on subscribe/prompt). */
   done: boolean;
@@ -804,7 +806,8 @@ export class Session extends EventEmitter {
       this.closeQuietly = false;
       this.ownExitAt = Date.now();
       this.state.owned = false;
-      this.setState({ running: false });
+      // A pi that died while still booting must not leave the page on 「正在启动…」 forever.
+      this.setState({ running: false, starting: false });
       releaseLock(id);
       this.clearApprovals();
       this.clearAsks();
@@ -823,12 +826,22 @@ export class Session extends EventEmitter {
 
     this.rpc.start();
 
-    try {
-      const st = await this.rpc.request<any>("get_state", {}, 30000);
-      this.absorbState(st);
-    } catch {
-      /* get_state is best effort; events still work */
-    }
+    // 不把调用方（新建会话对话框）卡在 pi 的启动上：带着一整套扩展冷启实测要 8 秒（本机 12 个 npm
+    // 扩展 + 5 个本地扩展；机器忙时 15 秒），而那几秒里页面唯一能做的就是盯着「启动中…」。
+    // get_state 照旧发，回来之后补上 model / file；`starting` 只是让页面知道「还没好」。
+    this.setState({ starting: true }, { touch: false });
+    const bootAt = Date.now();
+    void this.rpc
+      .request<any>("get_state", {}, 30000)
+      .then((st) => this.absorbState(st))
+      .catch(() => {
+        /* best effort: events still work */
+      })
+      .finally(() => {
+        // 这一行是「新会话为什么慢」的唯一可观测出口：桥日志里能直接看到每次冷启花了多久。
+        console.log(`[boot] ${id} pi 启动完成 ${Date.now() - bootAt} ms`);
+        this.setState({ starting: false }, { touch: false });
+      });
     // A resumed session starts with the transcript pi already wrote to disk.
     if (opts.resume) this.loadFromFile();
     this.emitWs({ type: "items", sessionId: id, items: this.items });
@@ -1773,7 +1786,7 @@ export class Session extends EventEmitter {
     }
     if (this.state.owned) releaseLock(this.state.id);
     this.state.owned = false;
-    this.setState({ running: false });
+    this.setState({ running: false, starting: false });
   }
 
   /**
