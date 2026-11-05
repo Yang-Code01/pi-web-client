@@ -646,6 +646,7 @@ async function main(): Promise<void> {
     // D127: spreadsheet reads. The page only ever sends the grant token from /api/preview; the
     // bridge resolves the path itself, refuses a file whose mtime moved, and returns one row window.
     if (url.pathname === "/api/sheet/meta" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
       const body = await readBody(req).catch(() => ({}));
       const grant = fileGrant(String(body.token ?? ""));
       if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
@@ -659,6 +660,7 @@ async function main(): Promise<void> {
     }
 
     if (url.pathname === "/api/sheet/window" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
       const body = await readBody(req).catch(() => ({}));
       const grant = fileGrant(String(body.token ?? ""));
       if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
@@ -681,6 +683,7 @@ async function main(): Promise<void> {
 
     // #107：查找走服务端。前端只拿着一个可视窗口，整表搜不了；这里也只回坐标。
     if (url.pathname === "/api/sheet/find" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
       const body = await readBody(req).catch(() => ({}));
       const grant = fileGrant(String(body.token ?? ""));
       if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
@@ -699,6 +702,7 @@ async function main(): Promise<void> {
     // sandboxed browser PDF viewer renders a blank page. No sandbox here — the bytes are a PDF, and
     // only the same-origin page reads this route with the grant token.
     if (url.pathname === "/api/sheet/pdf" && req.method === "GET") {
+      if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
       const grant = fileGrant(url.searchParams.get("token") ?? "");
       if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
       let st: fs.Stats;
@@ -770,7 +774,7 @@ async function main(): Promise<void> {
       }
       const out = openWithApp(grant.abs);
       log(`open ${grant.abs} → ${out.ok ? "ok" : out.message}`);
-      return out.ok ? json(res, 200, out) : json(res, 400, { error: out.message });
+      return out.ok ? json(res, 204, null) : json(res, 400, { error: out.message });
     }
 
     if (url.pathname === "/api/sessions") {

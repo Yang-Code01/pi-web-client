@@ -770,11 +770,9 @@ export class SheetDialog {
         return;
       }
       await this.mountGrid(first);
-      // #112：只有包里有图表部件才自动转并切到页面视图；没图表的先看整幅网格，想看了再点标签。
-      if (meta.charts) {
-        this.page?.auto();
-        this.showView("page");
-      }
+      // #112：包里有图表就在后台把转换跑起来，但先出格子（spec：先出格子，页面视图入口显示「生成中」）；
+      // 用户想看了再点「页面视图」标签，不自动切过去（否则窄窗下会落在 6-12s 的空转上）。
+      if (meta.charts) this.page?.auto();
     } catch (err) {
       if (this.closed) return;
       const code = (err as { code?: string } | null)?.code;

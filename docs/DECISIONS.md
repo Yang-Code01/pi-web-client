@@ -2432,10 +2432,9 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - **解析用 fflate + 自写的流式 XML**，不引 exceljs（整本读的实测内存 733 MB / 1.48 GB 不可接受，
   且它的写是整本重写，与「保住图表」天然冲突）。
 - **取数**：常驻一个 worker，每个可视窗口从 zip 里流式扫到目标行；只缓存元数据（共享字符串 / 样式 /
-  合并 / 条件格式 / 列宽，按 `path+mtime+sheet` LRU），前端预取 3 屏。不缓存解压后的整表 XML，也不把
-  整表发给前端。
-- **阈值先实测再定数字**，但保留三档形态：全量 / 只值轻量 / 不给（fixture 五档：2 万、10 万、40 万、
-  100 万、300 万格，量峰值 RSS、首屏、解压字节）。
+  合并 / 条件格式 / 列宽），整本按 `path+mtime+size` 缓存、LRU 限字节（默认 128 MB），前端预取 3 屏。
+  不缓存解压后的整表 XML，也不把整表发给前端。
+- **阈值（见下方 #110 实测补记）**：全量 ≤10 万格 / 只值轻量 ≤100 万格 / >100 万格不给。
 - **公式只用缓存值**：缺缓存的格子显空 + hover 给公式原文 + 工具条「N 格无缓存值，需在 Excel 打开重算」；
   不引重算引擎，也不整表借 LibreOffice 的值（那会把「文件里的数」和「算出来的数」混在一起）。
 - **条件格式五类全做**（色阶 / 数据条 / 图标集 / cellIs / 表达式），在桥端对可视窗口求值；求值器不认识
@@ -2469,7 +2468,12 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
   工具条上仍可手动切。
 - 纸面是近似：LibreOffice 的默认打印区域 / 页边距 / 缩放与用户 Excel 的设置不一定一致。
 - 浮窗默认 1180×780、断点 900 是我照样张 Q1 定的，可改。
-- 阈值三档的数字、大表 soffice 的耗时与页数、iframe 内建 PDF 查看器在 Edge / Chrome 的表现，都还没实测。
+- iframe 内建 PDF 查看器在 Edge / Chrome 的表现还没实测（阈值与 PDF 耗时已实测回填，见下方补记）。
+
+**实现备注（code-review 后）：** 出口与降级把 `.xlsb` 与 `.xls` / `.ods` 一并走二进制分支（`/api/open` 可开）；
+读端点（meta / window / find / pdf）都补了 `publicReq` 拒绝，`open` 成功返 204。已知技术债（本次不修）：
+`el()` 在 `grid.ts` / `dialog.ts` 重复；浮窗 split 拖拽（`dialog.ts`）未复用 `floatwin.ts` 的 `dragFloat`；
+`Range {r0,r1,c0,c1}` 在 grid / csv / dialog / api 四处各写一遍。
 
 **验证：** `bridge/tests/fixtures/make-xlsx.mjs` 造全部 fixture（多 sheet、合并、五类条件格式、柱形图、
 日期与数字格式、中日混排、五档压测表、GBK + 分号 csv），不把客户文件进 git；`probes/xlsx.mjs` 出截图；
