@@ -130,8 +130,6 @@ export class ChatView {
    * tool item 的 id 是 `${entry.id}:${callId}`（items.ts:180），所以前缀就是它那条消息。
    */
   private assistantTexts = new Map<string, string>();
-  /** 本轮的用戶原话：模型直接调工具、一句话不说时，「它当时在做」用它——那确实就是它动手的理由。 */
-  private lastUserSaid = "";
   /** Which tool call the live output belongs to; a stale update must not overwrite a newer tool. */
   private liveKey = "";
   /** This turn's written files, as chips under the ops module. */
@@ -361,7 +359,6 @@ export class ChatView {
     this.live = {};
     this.liveKey = "";
     this.assistantTexts.clear();
-    this.lastUserSaid = "";
     this.turns = [];
     this.turnRail.clear();
     this.flashTurn(null);
@@ -395,10 +392,7 @@ export class ChatView {
 
   add(item: Item): void {
     // a user message opens a new turn: its tool calls get their own module
-    if (item.kind === "user") {
-      this.closeOps();
-      this.lastUserSaid = item.text ?? "";
-    }
+    if (item.kind === "user") this.closeOps();
     if (item.kind === "assistant") this.assistantTexts.set(item.id, item.text ?? "");
     if (item.kind === "tool") {
       const existing = this.toolCards.get(item.toolCallId);
@@ -448,10 +442,7 @@ export class ChatView {
     this.cards.delete(localId);
     this.cards.set(item.id, node);
     if (this.collapsed.delete(localId)) this.collapsed.add(item.id);
-    // 乐观渲染过的用户消息回填时走这里（不经过 add），原话也得记下来，否则卡片只能靠命令猜。
-    if (item.kind === "user") {
-      this.lastUserSaid = item.text ?? "";
-    }
+    // 乐观渲染过的用户消息回填时走这里（不经过 add），这里只补 assistant 原话。
     if (item.kind === "assistant") this.assistantTexts.set(item.id, item.text ?? "");
   }
 
@@ -620,8 +611,8 @@ export class ChatView {
         tool: item.name,
         cmd: toolSummary(item),
         out: String(item.result ?? item.partialResult ?? ""),
-        // 优先级：这条消息的原话 → 你这一轮让它做的事 → 按命令猜（diagnose 里兵底）。
-        intent: said || (this.lastUserSaid ? tr("照你的要求：{p1}", { p1: this.lastUserSaid }) : ""),
+        // 模型这句话是它自己的意图；什么都没说时留空，交给 diagnose 按命令推——绝不拿用户的话冒充。
+        intent: said,
       },
       item.durationMs,
     );
@@ -1041,9 +1032,9 @@ function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
   );
   const grid = el("div", "grid");
   grid.append(el("span", "k", tr("为什么没成")), el("span", "v", d.cause || "—"));
-  // 「它当时在做」放中间：它是背景，不是一个要人处理的条目；
+  // 「AI 想做什么」放中间：它是背景，不是一个要人处理的条目；
   // 但读者最先问的恰恰是「它为什么去调这一条」，所以不能省。
-  grid.append(el("span", "k", tr("它当时在做")), el("span", "v", d.intent || "—"));
+  grid.append(el("span", "k", tr("AI 想做什么")), el("span", "v", d.intent || "—"));
   // 影响与改进合一行：先回答「这次动了什么」，再回答「下次怎么不再犯」。
   const impact = [d.effect, d.improve].filter(Boolean).join(tr("；"));
   grid.append(el("span", "k", tr("影响 / 改进")), el("span", "v", impact || "—"));

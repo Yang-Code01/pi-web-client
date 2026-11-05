@@ -36,7 +36,7 @@ export interface Diagnosis {
   level: Level;
   /** 一句人话：这次发生了什么（卡片标题）。 */
   title: string;
-  /** 它当时在做：模型的原话（截断），没有原话时是规则推断。 */
+  /** AI 想做什么：模型的原话（截断），没说话时是规则推断——不用用户的话冒充。 */
   intent: string;
   /** 为什么没成——不是复述错误码，而是它踩到了什么。 */
   cause: string;
@@ -96,7 +96,7 @@ function clip(text: string, max = 120): string {
 }
 
 /**
- * 没有模型原话时的意图推断：只看工具名 + 参数 + 输出。粗糙是对的——它只是「它当时在做」那一行的
+ * 没有模型原话时的意图推断：只看工具名 + 参数 + 输出。粗糙是对的——它只是「AI 想做什么」那一行的
  * 兜底，有原话时永远用原话。
  */
 function inferIntent(tool: string, cmd: string, out: string): string {
@@ -342,16 +342,23 @@ export function diagnose(input: FailureInput): Diagnosis {
   if (guard) return guard;
 
   // 插件把一条命令拦下来时，返回的往往是它自己的提示语（不是命令的报错）：context-mode 就要求
-  // curl 走 MCP / 静默写文件，否则刷爆上下文。这种要看懂它的意思，不能当成「原因没认出来」。
-  if (/MCP tools?|floods the context window|instead of inline HTTP clients/i.test(out) && /curl|wget|https?:\/\//i.test(input.cmd))
+  // curl 走 MCP / 静默写文件，否则刷爆上下文。这种要看懂它的意思，不能当成「原因没认出来」；
+  // 还要把是哪个插件写出来——「插件」两个字对排查没用。
+  if (/MCP tools?|floods the context window|instead of inline HTTP clients/i.test(out) && /curl|wget|https?:\/\//i.test(input.cmd)) {
+    const pluginName = /Use ([A-Za-z][\w.-]{1,30}) MCP tools/i.exec(out)?.[1] ?? /\b(context-mode|context_mode)\b/i.exec(out)?.[0];
     return say(
       "fail",
       tr("插件拦下了这条命令"),
-      tr("它直接用 curl 抓网页，插件要求走 MCP 抓取或静默写文件（避免刷爆上下文）"),
+      pluginName
+        ? tr("它直接用 curl 抓网页，被 {p1} 插件拦下了：要求走 MCP 抓取或静默写文件（避免刷爆上下文）", { p1: pluginName })
+        : tr("它直接用 curl 抓网页，插件要求走 MCP 抓取或静默写文件（避免刷爆上下文）"),
       tr("命令没执行，什么都没抓到"),
       undefined,
-      tr("curl 用 `-s -o 文件` 静默写文件，或用插件的抓取工具"),
+      pluginName
+        ? tr("curl 用 `-s -o 文件` 静默写文件，或用 {p1} 的抓取工具", { p1: pluginName })
+        : tr("curl 用 `-s -o 文件` 静默写文件，或用插件的抓取工具"),
     );
+  }
 
   // 抓网页被拒：403 最常见，其次是 401（要登录）和 429（限速）。
   const http = /HTTP (\d{3})/.exec(out);
