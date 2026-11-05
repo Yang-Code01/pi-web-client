@@ -114,8 +114,8 @@ a { color: var(--accent); text-decoration: none; }
      min-content, so two wide topbar buttons (📂 产物 / 📁 文件管理器) plus a long session name
      pushed the whole shell to 730px on a 390px phone and every card got clipped at the right edge. */
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto 1fr auto;
-  grid-template-areas: "top" "pins" "main" "tabs";
+  grid-template-rows: auto auto auto 1fr auto;
+  grid-template-areas: "top" "wstabs" "pins" "main" "tabs";
 }
 .topbar {
   grid-area: top;
@@ -329,12 +329,69 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .tool-btn:hover { color: var(--text); border-color: #2f3746; }
 .tool-btn.on { color: var(--accent); border-color: var(--accent-dim); background: #0b1f28; }
-.session-cards { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); min-height: 0; }
+.session-cards { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); min-height: 0; position: relative; }
 .session-sec { display: grid; gap: 6px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
 .sess-head { display: flex; align-items: center; gap: 6px; padding: 2px 4px; color: var(--faint); font-size: 11px; }
 .sess-head .label { color: var(--faint); }
 .sess-head .n { margin-left: auto; font-family: var(--mono); color: var(--faint); opacity: 0.85; }
 .sess-head .chev { width: 12px; cursor: pointer; }
+/* 工作区组头（#95）：能点、能收起，色点 + 名字 + 待办角标 + 数量（贴样张 a-two-row 的手感）。 */
+.ws-head { padding: 5px 6px; gap: 7px; border-radius: 7px; cursor: pointer; color: var(--dim); }
+.ws-head:hover, .ws-head:focus-visible { background: var(--panel-2); color: var(--text); outline: none; }
+.ws-head .chev { color: var(--faint); font-size: 10px; width: 10px; cursor: inherit; }
+.ws-head .ws-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; background: var(--slate); }
+.ws-head .label {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--dim); font-weight: 550; font-size: 12px;
+}
+.ws-head:hover .label, .ws-head:focus-visible .label { color: var(--text); }
+.ws-head .todo {
+  flex: none; font: 10px/1 var(--mono); color: var(--bg); background: var(--warn);
+  padding: 2px 4px; border-radius: 4px;
+}
+.ws-head .n { margin-left: auto; font: 11px/1 var(--mono); color: var(--faint); }
+.ws-head.folded { color: var(--faint); }
+.ws-head.folded .label { color: var(--faint); font-weight: 500; }
+/* #100：组头就地改名 + 那颗 ⋯。⋯ 跟会话卡片的 card-act 一个脾气：指着组头才出来，别的时候把位置让给名字。 */
+.ws-head .ws-rename-input { flex: 1; min-width: 0; padding: 2px 6px; font-size: 12px; font-weight: 550; border-radius: 6px; }
+.ws-head .ws-more {
+  flex: none; display: grid; place-items: center; width: 20px; height: 18px; padding: 0;
+  border: 1px solid transparent; border-radius: 6px; background: none; color: var(--faint);
+  font: 12px/1 var(--sans); cursor: pointer;
+}
+.ws-head .ws-more:hover, .ws-head .ws-more:focus-visible {
+  color: var(--text); background: var(--bg); border-color: var(--line); outline: none;
+}
+.ws-head:not(:hover):not(:focus-within) .ws-more { visibility: hidden; }
+@media (hover: none) { .ws-head .ws-more { visibility: visible; } }
+/* 树底那一行：新建工作区（虚线框，看起来就是「还能放东西的地方」）。 */
+.ws-new { padding: 2px 4px 0; }
+.ws-new-btn {
+  width: 100%; padding: 6px 8px; text-align: left;
+  border: 1px dashed var(--line); border-radius: 8px; background: none;
+  color: var(--faint); font: 11.5px/1.3 var(--sans); cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.ws-new-btn:hover, .ws-new-btn:focus-visible {
+  color: var(--text); border-color: var(--accent-dim); background: var(--panel-2); outline: none;
+}
+/* 组头 ⋯ 的菜单：外壳是置顶胶囊那张卡（.pin-menu），这里只补「为什么删不了」那行灰字。 */
+.ws-menu .pm-why { padding: 6px 12px 8px; max-width: 240px; font-size: 11px; line-height: 1.4; color: var(--faint); }
+.ws-menu .pm-item.blocked { opacity: 0.55; cursor: not-allowed; }
+.ws-menu .pm-item.blocked:hover { background: none; color: #e9a0ab; }
+.ws-empty { padding: 2px 6px 4px 23px; font-size: 11px; }
+.ws-sec.folded .session-cards { display: none; }
+/* 迁移预览（#101）：跟左栏组头同一套手感 —— 色点 + 名字 + 数量，拖过的另起一颗小字。 */
+.ws-intro-sheet { width: min(520px, 100%); }
+.ws-intro { padding: 14px 16px 6px; display: grid; gap: 10px; max-height: 60vh; overflow-y: auto; }
+.ws-intro-lead { margin: 0; font-size: 12.5px; line-height: 1.65; color: var(--dim); }
+.ws-intro-sum { font: 11.5px/1.4 var(--mono); color: var(--faint); }
+.ws-intro-rows { display: grid; gap: 4px; }
+.ws-intro-row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--line-soft); border-radius: 9px; background: var(--panel-2); }
+.ws-intro-row .ws-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; }
+.ws-intro-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--text); }
+.ws-intro-n { flex: none; font: 11px/1 var(--mono); color: var(--dim); }
+.ws-intro-moved { flex: none; font: 10.5px/1 var(--mono); color: var(--accent); }
 .session-sec[data-sec="archived"] .sess-head .label { cursor: pointer; }
 .session-card.archived { border-style: dashed; opacity: 0.72; }
 .session-card.archived .name { color: var(--dim); }
@@ -345,8 +402,21 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .session-card:hover .grip, .session-card.active .grip { opacity: 0.65; }
 .session-card.dragging { opacity: 0.45; border-style: dashed; }
-.session-card.over-top { box-shadow: 0 -2px 0 var(--accent); }
-.session-card.over-bottom { box-shadow: 0 2px 0 var(--accent); }
+/* 拖拽整理（#99）：落点就一条 2px 线 —— 粗细、位置、目标组都写在 style/dataset 上，探针直接读。 */
+.drop-line {
+  position: absolute; left: 4px; right: 4px; height: 2px; margin-top: -1px; border-radius: 2px;
+  background: var(--accent); box-shadow: 0 0 0 2px rgb(0 0 0 / 0.28);
+  pointer-events: none; z-index: 3;
+}
+.drop-line[data-pool="true"] { background: var(--warn); }
+/* 「放回工程」只在拖动期间出现：拖到它上面 = 删 override，回到 cwd 推导。 */
+.ws-pool {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px dashed var(--line);
+  border-radius: 9px; color: var(--faint); font-size: 11px;
+}
+.ws-pool .label { flex: none; color: var(--dim); font-weight: 550; font-size: 12px; }
+.ws-pool .sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-pool.over { border-color: var(--warn); color: var(--text); }
 .session-card .pin-btn {
   flex: none; width: 24px; height: 24px; margin: -2px 0; padding: 0; display: grid; place-items: center;
   border: 1px solid transparent; border-radius: 7px; background: none; color: var(--faint);
@@ -767,17 +837,221 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ask-lost-sub { font-size: 12.5px; color: var(--dim); }
 .ask-lost-actions { display: flex; gap: 8px; margin-top: 2px; }
 
-/* ---------------------------------------------------------------- pinned strip (shown when the left column is collapsed) */
+/* ---------------------------------------------------------------- workspace rows (#97 壳 A)
+   顶栏下两行：行 1 工作区标签页，行 2 当前会话那颗 + 本区会话胶囊 + ＋。
+   原先「收起左栏才出现」的置顶横栏被行 2 取代，所以这里没有另一条横栏的位置。 */
+.ws-tabs-row {
+  grid-area: wstabs;
+  display: flex;
+  min-width: 0;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(11, 13, 16, 0.92);
+}
+.ws-tabs-row[hidden] { display: none; }
+.ws-tabs { display: flex; flex: 1; min-width: 0; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+/* 溢出不出横滚条：深色顶栏下面一条细滚动条像条裂缝，而且点标签不该先摸滚动条。 */
+.ws-tabs::-webkit-scrollbar { height: 0; display: none; }
+.ws-tabs.fade {
+  mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
+}
+.ws-tab {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+  padding: 5px 9px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 7px 7px 0 0;
+  background: none;
+  color: var(--dim);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ws-tab:hover { color: var(--text); background: var(--panel-2); }
+.ws-tab.on {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  background: linear-gradient(to top, rgba(125, 211, 252, 0.1), transparent);
+}
+.ws-tab-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; }
+.ws-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-tab-todo { flex: none; width: 6px; height: 6px; border-radius: 999px; background: var(--warn); box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.14); }
+.ws-session-row { grid-area: pins; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); }
+/* #98：B/C/D 里这一行整行不占地方（display:flex 会盖掉 UA 的 [hidden]）。 */
+.ws-session-row[hidden] { display: none; }
+
+/* ---------------------------------------------------------------- 四套壳（#98）
+   A 就是上面那两块横栏；B / C / D 只换「外壳怎么拼」，里面那份渲染逻辑（PillBar / NowChip /
+   buildTree / 拖拽）四套共用。壳与壳的区别写在 `shells.ts`，这里只负责那几种外壳的皮。 */
+
+/* 竖列（C，常驻 48px）与色点条（D，左栏收起时 52px）挂在 `main` 外面的这条 flex 上 ——
+   `.main` 自己的三列网格（含 no-left / no-right 四种组合）一格都不动。 */
+.main-wrap { grid-area: main; display: flex; min-width: 0; min-height: 0; overflow: hidden; }
+.main-wrap > .main { flex: 1 1 auto; min-width: 0; }
+.ws-rail, .ws-strip {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 0 calc(8px + env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  border-right: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+.ws-rail::-webkit-scrollbar, .ws-strip::-webkit-scrollbar { width: 0; display: none; }
+.ws-rail[hidden], .ws-strip[hidden] { display: none; }
+.ws-rail { width: 48px; }
+.ws-strip { width: 52px; background: var(--panel-2); }
+@media (max-width: 899px) {
+  /* 窄屏四套统一退化：会话是一页 tab，竖列 / 色点条都不留。 */
+  .ws-rail, .ws-strip { display: none; }
+}
+.ws-axis-item {
+  position: relative;
+  flex: none;
+  width: 40px;
+  min-height: 46px;
+  padding: 6px 0 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+}
+.ws-axis-item:hover { color: var(--text); background: var(--panel-2); }
+.ws-axis-item.on { color: var(--text); border-color: #2a4a5c; background: rgba(125, 211, 252, 0.1); }
+.ws-axis-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; }
+.ws-axis-label { font-size: 10.5px; line-height: 1.1; letter-spacing: 0.02em; white-space: nowrap; }
+.ws-axis-todo {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: #241a02;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 13px;
+  text-align: center;
+}
+.ws-axis-foot { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 4px; padding-top: 8px; }
+.ws-axis-ghost {
+  width: 34px;
+  height: 30px;
+  padding: 0;
+  border: 1px dashed var(--line);
+  border-radius: 9px;
+  background: none;
+  color: var(--dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ws-axis-ghost:hover { color: var(--text); border-color: #2f3746; }
+/* D 的色点条：只剩色点（两字头在 52px 里读不出来），当前那颗靠底色与描边亮着。 */
+.ws-strip .ws-axis-item { width: 36px; min-height: 34px; padding: 6px 0; }
+.ws-strip .ws-axis-label { display: none; }
+
+/* 顶栏那颗现在是个按钮（B/C/D 点开工作区浮层）：包一层而不是给 NowChip 加第二副身份。 */
+.now-btn {
+  flex: 0 0 auto;
+  min-width: 0;
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.now-btn:hover .now-chip { border-color: #33607a; }
+.now-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 999px; }
+.now-btn[data-open="0"] { cursor: default; }
+.now-btn[data-open="0"]:hover .now-chip { border-color: #2a4a5c; }
+/* 非 A 布局：那颗已经在顶栏里挨着色点，标题再念一遍「pi」就重复了，把空间让给 cwd。 */
+html:not([data-layout="a"]) .topbar .title { display: none; }
+html:not([data-layout="a"]) .topbar .sub { margin-left: auto; }
+
+/* B / C / D 的工作区浮层：贴着顶栏那颗，按工作区分段列会话（段头切组、行开会话、行可拖）。 */
+.ws-pop {
+  position: fixed;
+  z-index: 60;
+  width: min(380px, calc(100vw - 16px));
+  max-height: min(70vh, 540px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.ws-pop-body { position: relative; overflow-y: auto; padding: 6px; }
+.ws-pop-sec + .ws-pop-sec { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line-soft); }
+.ws-pop-sec-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--dim);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.ws-pop-sec-head:hover { background: var(--panel-2); color: var(--text); }
+.ws-pop-sec-head.on { color: var(--text); font-weight: 550; }
+.ws-pop-sec-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-pop-sec-head .n { flex: none; color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.ws-pop-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px 5px 23px;
+  border-radius: 8px;
+  color: var(--dim);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ws-pop-item:hover { background: var(--panel-2); color: var(--text); }
+.ws-pop-item.on { color: var(--text); background: rgba(125, 211, 252, 0.09); }
+.ws-pop-item.dragging { opacity: 0.45; }
+.ws-pop-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-pop-item .badge { flex: none; font-size: 10px; padding: 0 5px; }
+.ws-pop-empty { padding: 18px 10px; color: var(--faint); font-size: 12.5px; text-align: center; }
+.ws-pop-foot { flex: none; padding: 6px; border-top: 1px solid var(--line-soft); }
+.ws-pop-add { width: 100%; justify-content: center; }
+
+/* ---------------------------------------------------------------- session row (#97 壳 A)
+   行 2 里的胶囊容器沿用 .pin-strip 这套样式与探针选择器，但它不再是「置顶横栏」：
+   外面由 .ws-session-row 提供给它与 now-chip 共处的一行。 */
 .pin-strip {
-  grid-area: pins;
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--line-soft);
-  overflow-x: auto;
+  overflow: hidden;
 }
 .pin-strip[hidden] { display: none; }
+/* 行 1/2 里不再摆「置顶」那颗字：最左端就是当前会话，不需要标题。 */
+.pin-strip-label:empty { display: none; }
 .pin-strip-label { flex: 0 0 auto; font-size: 11px; letter-spacing: 0.06em; color: var(--faint); margin-right: 2px; }
 .pin-chip {
   flex: 0 0 auto;
@@ -892,7 +1166,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* ---------------------------------------------------------------- desktop */
 @media (min-width: 900px) {
-  .app { grid-template-rows: auto auto 1fr; grid-template-areas: "top" "pins" "main"; }
+  .app { grid-template-rows: auto auto auto 1fr; grid-template-areas: "top" "wstabs" "pins" "main"; }
   .tabs { display: none; }
   .main { --sessions-w: 280px; --queue-w: 300px; grid-template-columns: var(--sessions-w) minmax(0, 1fr) var(--queue-w); }
   .main.no-left { grid-template-columns: minmax(0, 1fr) var(--queue-w); }
@@ -918,6 +1192,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 @media (max-width: 899px) {
   .pane[hidden] { display: none; }
+  /* 窄屏一套退化：标签行与胶囊行先收起来，只留「当前在哪」那颗（#96 的常驻颗）。 */
+  .ws-tabs-row, .ws-session-row .pin-strip { display: none; }
   .main .pane { height: 100%; }
 }
 
@@ -998,6 +1274,31 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .chip.on { border-color: var(--accent); color: #04202b; background: var(--accent); font-weight: 600; }
 .chip:hover { border-color: #2f3746; }
+
+/* #97：布局 chip 是「图 + 字」两行，图是纯 CSS 画的；未实现的壳置灰但悬停仍给说明。 */
+.layout-chips { gap: 8px; }
+.layout-chip { display: grid; gap: 6px; justify-items: center; padding: 8px 10px; border-radius: 12px; font-family: var(--sans); }
+.layout-chip-label { font-size: 11.5px; line-height: 1; }
+.layout-chip.off { opacity: 0.42; cursor: not-allowed; }
+.layout-chip.off:hover { border-color: var(--line); }
+.layout-demo { position: relative; display: block; width: 46px; height: 30px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.layout-demo > span { position: absolute; display: block; border-radius: 2px; }
+.layout-demo .ld-top { left: 4px; right: 4px; top: 4px; height: 3px; background: #39434f; }
+.layout-demo .ld-body { left: 4px; right: 4px; bottom: 4px; height: 7px; background: #1b2028; }
+.layout-demo .ld-body-wide { left: 4px; right: 4px; bottom: 4px; height: 7px; background: #1b2028; }
+.layout-demo .ld-row { left: 4px; right: 4px; display: flex; gap: 2px; height: 4px; }
+.layout-demo .ld-cell { flex: 1; background: #4a5a70; border-radius: 2px; }
+.layout-a .ld-row-tabs { top: 11px; }
+.layout-a .ld-row-chips { top: 17px; }
+.layout-b .ld-row-one { top: 12px; height: 6px; }
+.layout-c .ld-rail { left: 4px; top: 11px; bottom: 4px; width: 10px; display: flex; flex-direction: column; gap: 2px; }
+.layout-c .ld-body-wide { left: 18px; right: 4px; top: 11px; bottom: 4px; height: auto; }
+.layout-d .ld-icons { left: 4px; top: 11px; bottom: 4px; width: 6px; display: flex; flex-direction: column; gap: 2px; }
+.layout-d .ld-line { left: 13px; width: 11px; height: 2px; background: #4a5a70; }
+.layout-d .ld-line:nth-child(3) { top: 12px; }
+.layout-d .ld-line:nth-child(4) { top: 16px; }
+.layout-d .ld-line:nth-child(5) { top: 20px; }
+.layout-d .ld-body-wide { left: 27px; right: 4px; top: 11px; bottom: 4px; height: auto; }
 
 @media (min-width: 760px) {
   .sheet-back { align-items: center; justify-items: center; padding: 24px; }
@@ -2155,6 +2456,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .ext-host .ext-reload { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
 .ext-host .login-row a { color: var(--accent); text-decoration: none; }
 .ext-switch { display: flex; gap: 8px; align-items: center; font-size: 13px; cursor: pointer; }
+/* D126 技能商店 */
+.skill-foot { display: flex; align-items: center; gap: 10px; }
+.skill-foot .skill-foot-hint { flex: 1; min-width: 0; }
+.skill-foot .skill-store-open { flex: none; padding: 2px 10px; font-size: 11.5px; }
+.skill-host .skill-path { font: 11px/1.4 var(--mono); color: var(--faint); flex: 1 1 100%; word-break: break-all; }
+.skill-host .skill-scope { flex-wrap: wrap; padding-top: 0; }
+.skill-host .skill-scope .settings-hint { flex: none; }
 /* #49: the pi CLI itself, above the inventory — the program every row below runs in. */
 .settings-sheet .ext-pi { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
 .settings-sheet .ext-pi .settings-foot { padding-top: 0; flex-wrap: wrap; }

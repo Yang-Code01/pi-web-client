@@ -115,7 +115,7 @@ PI_WEB_HOST=0.0.0.0 npm start
 
 - **一个窗口，几乎所有事**：会话、对话、审批、终端、文件、产物、记录、内网通、设置、登录、扩展、升级 pi——顶栏一排入口，都开在当前页之上，关掉就回到原来那句话上。
 - **会话列表**：磁盘上 190+ 个 pi 会话按**创建时间**倒序固定排列（回答完不会跳到最前），卡片右下角只提示 `待确认` / `完成` / `运行中`，点开即读（只读预览）；想接着聊就点 composer 上方的「接管会话」，写者换成网页，模型/思考/中断都能用。已接管时同一颗按钮分两种文案：从磁盘接管的显示「让回终端」（释放写者，回终端接着聊），网页新建的显示「停止运行」（关掉那个 pi 子进程，历史留在磁盘，随时再接管）。
-- **整理会话**：卡片 hover 出现 ⣿ 手柄，直接拖拽换位置（拖进「置顶」段就是置顶，拖回来就取消）；☆ 一键置顶/取消。点「管理」进入多选：置顶 / 取消置顶 / 归档 / 恢复 / 删除，删除要 4 秒内点第二次，运行中或待确认的会话删不掉。顶部的过滤框按名字和目录筛。排好的顺序与归档存在 bridge 的 `state/manage.json`，重启桥也还在；归档只是收进折叠段，pi 的会话文件一个字节都不动。**打开任何会话都会自动置顶**（归档的顺带解除归档）——左栏一收起，顶上那条横栏就是唯一的会话入口，不在里面就分不出自己在跟哪个会话说话；置顶多到装不下一行时，横栏把尾部的折进一颗「＋N」，点开是全量列表，当前会话永不被折（D125）。
+- **整理会话**：卡片 hover 出现 ⣿ 手柄，直接拖拽换位置（拖进「置顶」段就是置顶，拖回来就取消）；☆ 一键置顶/取消。点「管理」进入多选：置顶 / 取消置顶 / 归档 / 恢复 / 删除，删除要 4 秒内点第二次，运行中或待确认的会话删不掉。顶部的过滤框按名字和目录筛。排好的顺序与归档存在 bridge 的 `state/manage.json`，重启桥也还在；归档只是收进折叠段，pi 的会话文件一个字节都不动。**打开会话不改排序**（D130 废止 D125）——★ 现在只是「组内排前」，打开一个没 ☆ 过的会话不会替你把它插进 ★，也不会把归档的会话捞出来；左栏收起时当前会话由顶栏那颗胶囊指认。置顶多到装不下一行时，横栏把尾部的折进一颗「＋N」，点开是全量列表，当前会话在条里时永不被折。
 - **改名**：卡片 hover 时右上角出现 ✎，点开就地输入，Enter 保存、Esc 取消、点到别处也保存。已接管的会话走 pi 的 `set_session_name`，名字同时写进会话文件、终端那边也看得到；只读会话只存 bridge 的 `state/names.json`（bridge 从不写 pi 的 jsonl），pi 侧后来改了名（`/name`）会按时间戳夺回显示。
 - **发消息**：流式文本 + 思考过程可折叠 + 工具卡片（命令、耗时、输出、失败标红），失败还会被诊断成一句「发生了什么 / 为什么 / 下一步」（规则表离线跑，不额外调模型）。
 - **审批**：危险模式（`rm`、`git push`、写 cwd 外、`sudo`…）由扩展 `bridge/ext/approval-gate.ts` 拦住，网页上拒绝单击、批准二次确认；「本会话允许这类」同样要二次确认，记住的规则只对当前会话生效（存在 `state/allow/<会话id>.json`），只按命令开头的程序名（+ 子命令）匹配，带 `;` `&&` `|` 重定向等的复合命令永远单独询问；5 分钟不理等于拒绝。
@@ -124,6 +124,7 @@ PI_WEB_HOST=0.0.0.0 npm start
 - `!命令` / `!!命令`：在 pi 里执行，输出成卡片，`!` 的输出随下一条消息进上下文，`!!` 不进；模型面板的「会话」一节有累计 token、费用、会话文件，以及带指令的「立即压缩」（`/session`、`/compact <指令>` 也能到这里）。
 - **分支与导出**（D77）：`/tree` 打开会话树（缩进=分支，● = pi 会接着走的那条），任何一条用户消息都能 ⑂ 分叉成新会话（消息放回输入框），`/clone` 复制当前分支，`/import <路径>` 导入别处的会话文件；`/export` 用 pi 自带的 HTML 导出在新标签页打开（`/export jsonl` 下载原文件），`/copy` 或消息右上角 ⧉ 复制原文。
 - **输入补全**（D77）：输入框开头打 `/` 列出内建命令 + 扩展命令 + 提示词模板 + 技能；任意位置打 `@` 模糊搜索工作目录里的文件。终端 `＋` 可以选 shell（PowerShell / Git Bash / cmd，macOS / Linux 用 `$SHELL`）。
+- **技能商店**（D126）：技能面板底部右侧的「商店」打开一个 dialog——「商店」标签搜 skills.sh（社区技能目录，按安装量排，说明读自各仓库的 `SKILL.md`），装到全局 `<agentDir>/skills` 或当前项目 `.pi/skills`；「按地址安装」支持 `owner/repo`、GitHub 链接（可带 `/tree/<ref>/<path>`）和本机目录；「已安装」列出 pi 会加载的全部技能并分组（用户 / 项目），用户技能可以卸载（4 秒内再点一次，junction 只断链），项目技能只读。改完弹窗顶部给一颗「重新加载当前会话」，公网隧道下只读。
 - **pi 设置与项目信任**（D78）：右栏「pi 设置」（或 `/settings`）改全局 / 项目 `settings.json`——常用项是表单，其余「编辑 JSON」，写入走 pi 自己的文件锁、只动改过的字段；`/trust` 决定是否加载项目的 `.pi` 配置（写 `trust.json`，和终端同一份；网页里 pi 不能弹信任提示，所以没决定过的项目会在输入框上方提示）；`/reload` 重启这个会话的 pi 读最新设置；`/changelog` 看 pi 更新日志。新建会话的「高级」里可以给这个会话定 `--model` `--thinking` `--tools` `-e` `--skill` `--append-system-prompt` `-ne` `-nc` `--no-mcp` `--offline`，之后再接管也沿用。
 - **登录、扩展与终端联动**（D79）：「pi 设置 → 登录 / 凭据」就是 `/login` `/logout`——pi 自己跑登录流程（API key 或 OAuth），网页只转达它的提问、授权链接和设备码，凭据由 pi 写进 `auth.json`；「扩展与 MCP」跑 pi 的 `install / remove / update` 和 `mcp add / list / remove / login / logout`；「全局」页底部可以把「会话锁」扩展装进 pi 的全局扩展，之后终端里的 pi 会登记自己开着的会话，网页不会去接管它（显示「终端占用」），终端打开网页正在写的会话前也会先提醒。
 - **升级 pi 本体**（D112）：「扩展与 MCP」页顶部一行「pi 本体」：当前版本、最新版本（带来源）、`重新检查`、`更新 pi`。检查是懒的、按来源缓存 30 分钟（先问 npm 安装源，失败再问 pi.dev），点更新先弹确认框（要联网、可能几分钟、会替换全局安装的 pi、失败没有自动回滚），装完桥自己重读磁盘上的版本并广播，页面上的版本号立刻变、不用重启桥；已开着的会话仍是旧代码，给一颗「重启当前会话」。
@@ -161,7 +162,8 @@ node bridge/tests/browser.mjs                                           # 真 Ch
 node probes/rename-ui.mjs                                              # 改名：Enter/Esc/失焦/刷新后仍在
 node bridge/tests/manage-check.mjs                                     # 会话管理：置顶/排序/归档/删除/拒删 live/重启后仍在（隔离桥 7876）
 node probes/manage-ui.mjs                                              # 会话管理 UI：☆/拖拽/多选归档/两步删除/过滤（真 Chromium，7877）
-node probes/pin-auto-open.mjs                                          # 打开即置顶 + 置顶横栏折成「＋N」（D125，桩桥 + 真 Chromium）
+node probes/pin-auto-open.mjs                                          # 打开不置顶（D130）+ 置顶横栏折成「＋N」（桩桥 + 真 Chromium）
+node probes/workspace-migrate.mjs                                      # 迁移预览：首次弹、数字与左栏一致、确认后不再弹（桩桥 + 真 Chromium，7907）
 npm run test:ask                                                      # 提问通道：HTTP 三道闸 + 真模型作答/取消（自带隔离桥 7891）
 npm run test:ask:ui                                                   # 提问抽屉：真 Chromium，刷新补发/多题/自己写/停止运行（7892）
 node probes/readme-shots.mjs                                          # 重拍 README 那六张图（临时桥 + fixture 会话，不碰 ~/.pi/agent）
@@ -190,8 +192,12 @@ node bridge/tests/memory-cap.mjs                                      # 内存�
 node bridge/tests/pi-cli.mjs                                          # pi install / list / remove 与 pi mcp add / list / remove（D79，真 pi CLI，fixture 目录）
 node bridge/tests/share-bug.mjs                                       # /share（假 gh）与 /bug（zip / 离线拒绝上传）（D80，不联网）
 node bridge/tests/ext-manager.mjs                                     # 扩展管理：清单与版本、启停、MCP 改版本、商店→pi mcp add、按钮开关、公网只读（D81）
+node bridge/tests/skill-store.mjs                                     # 技能商店：地址解析、仓库树→目录、说明、安装/重装/防覆盖、已安装清单、卸载与链接（D126，不联网）
+node bridge/tests/skill-store-ws.mjs                                  # 技能商店的 WS 层：真 bridge，清单/按地址/公网只读/装与卸真动磁盘（D126）
+node probes/skill-store.mjs                                           # 技能商店 UI：面板入口、两段式搜索、装/卸、按地址安装（D126，桩桥 + 真 Chromium）
 node probes/bug-notes.mjs                                             # 记录：桥端整条链路（隔离桥 7899、真 WS、落盘断言，不花模型调用）（D108）
 node probes/bug-notes-ui.mjs                                          # 记录 UI：真 Chromium，归档/垃圾箱/贴图/复制 Markdown/交给 agent（D108）
+node probes/notes-handoff.mjs                                         # 「交给 agent」到底填进哪个会话：预填/新开会话/取消后不串会话（D127）
 node bridge/tests/i18n-ui.mjs                                         # 三语：en-US 语境自动英文 → 切日文 → 切回中文 → 刷新后仍在（D110）
 node bridge/tests/peer-e2e.mjs                                        # 内网通：两实例互见、组播不可达时手动地址、消息/回执/补投、好友、文件哈希、agent 工具（D96–D107，先 build:peer）
 node probes/peer-multicast.mjs                                        # 组播快检：这台机器的网络栈放不放行 239.255.42.99（通过 ≠ 穿过交换机也通）

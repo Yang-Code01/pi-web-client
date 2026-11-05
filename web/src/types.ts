@@ -100,7 +100,7 @@ export interface SessionState {
   /** Sidebar arrangement from the bridge (state/manage.json). */
   pinned?: boolean;
   archived?: boolean;
-  /** #94: 这个会话站在哪个工作区（组 id，见 WorkspaceState.groups）。 */
+  /** #94: 这个会话站在哪个工作区（组 id，见 WorkspaceState.groups；worktree 已并回主仓）。 */
   ws?: string;
   /** Another process (the pi terminal) holds the lock: read-only, and the bridge refuses to delete it. */
   locked?: boolean;
@@ -273,6 +273,44 @@ export interface SkillInfo {
   source: "user" | "project" | "other";
   uses: number;
   lastUsed: number;
+}
+
+/** 技能商店 (D126): one row of skills.sh's search results. */
+export interface SkillStoreItem {
+  /** `owner/repo/skill-name`, as skills.sh names it. */
+  id: string;
+  name: string;
+  source: string;
+  installs: number;
+  description: string;
+  /** Repo-relative folder, once the bridge resolved it; null when the repo has no match. */
+  dir: string | null;
+  /** The bridge has finished checking this row against its repo (second stage of the search). */
+  resolved?: boolean;
+  note?: string;
+}
+
+/** A skill pi would load right now, with the folder the 已安装 tab may delete. */
+export interface InstalledSkill extends SkillInfo {
+  /** Absolute path of the directory holding SKILL.md. */
+  path: string;
+  /** The discovery root (`<agentDir>/skills`, `~/.agents/skills`, `<cwd>/.pi/skills`, …). */
+  root: string;
+  /** A junction / symlink: uninstalling unlinks it and leaves the target alone. */
+  link: boolean;
+  /** User roots only — project skills belong to their repository. */
+  removable: boolean;
+  /** `owner/repo` or a local path, when the store wrote it. */
+  from: string | null;
+  installedAt: number | null;
+}
+
+/** One skill inside a repo or a local directory (按地址安装). */
+export interface SkillSourceItem {
+  path: string;
+  name: string;
+  description: string;
+  local: boolean;
 }
 
 export interface PreviewInfo {

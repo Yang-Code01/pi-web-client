@@ -9,14 +9,20 @@ import { renderMarkdown } from "./md.ts";
 import { setKnownPlugins } from "./diagnose.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar } from "./pillbar.ts";
-import { NowChip, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
+import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
+import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
+import { railModel, shellParts, type RailItem } from "./shells.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SheetMeta, SheetWindow, SkillInfo, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
+import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
+import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
+import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
+import { hitTest, moveTo, planDrop, type DropHit } from "./drag.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
@@ -115,7 +121,9 @@ export class App {
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
   private notes: Note[] = [];
-  /** 新会话建好后要填进输入框的文字（「交给 agent → 新开会话」，不自动发送）。 */
+  /** 新会话建好后要填进输入框的文字（「交给 agent → 新开会话」，不自动发送）。
+   *  它只属于「我自己刚建的那个会话」：面板一关（取消 / 点背景）或建会话失败就丢掉，
+   *  否则下一次打开的任何会话都会莫名其妙带上上一个会话的笔记。 */
   private prefillNext: string | null = null;
   private sheet: HTMLElement | null = null;
   private modelChip: HTMLButtonElement | null = null;
@@ -135,7 +143,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "peer" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
@@ -209,6 +217,17 @@ export class App {
    * names the row it belongs to, so only that row's buttons wait — clicks on other rows queue up.
    */
   private cliOps = new Map<string, { key: string; op: string; state: "queued" | "running" }>();
+  /** D126 技能商店: the search tab, the 已安装 list, the 「按地址」 box, and the ops in flight. */
+  private skillTab: "store" | "installed" = "store";
+  private skillStore: { query: string; limit: number; items: SkillStoreItem[] | null; error?: string; note?: string } = { query: "", limit: 20, items: null };
+  private skillInv: InstalledSkill[] | null = null;
+  private skillInvError: string | null = null;
+  private skillScope: "global" | "project" = "global";
+  private skillSource: { input: string; label: string; kind: "repo" | "local" | null; items: SkillSourceItem[] | null; loading: boolean; open: boolean; error?: string } = { input: "", label: "", kind: null, items: null, loading: false, open: false };
+  private skillOps = new Map<string, { key: string; running: string }>();
+  private skillArm: { key: string; until: number } | null = null;
+  private skillDirty = false;
+  private skillNote: { text: string; bad: boolean } | null = null;
   /** #49 pi 本体：the version check's answer, the last self-update's outcome, and whether a check is in flight. */
   private piUpd: { latest: string | null; source?: string; checkedAt: number; update: boolean; error?: string } | null = null;
   private piChecking = false;
@@ -247,6 +266,15 @@ export class App {
   private renameDraft = "";
   private renameFocus = false;
   private renameCaret: number | null = null;
+  /** #100 组头就地改名：跟会话卡片的 rename 同一套手感（同一支输入框、同一个提交时机）。 */
+  private wsRenameId: string | null = null;
+  private wsRenameDraft = "";
+  private wsRenameFocus = false;
+  private wsRenameCaret: number | null = null;
+  /** 组头的 ⋯ 菜单最多一张；树重画前先关掉它（锚点要被换掉）。 */
+  private wsMenu: WsMenuHandle | null = null;
+  /** 点了「新建工作区」：等桥把新组广播回来，就立刻进改名态（组的 id 只有桥知道）。 */
+  private wsCreatePending = false;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
   private manage: ManageState = { pin: [], order: [], archived: [] };
   private archivedOpen = false;
@@ -290,8 +318,26 @@ export class App {
   private pillBar!: PillBar<SessionState>;
   /** #94 工作区快照：桥是唯一的推导者，前端只读。 */
   private workspaces: WorkspaceState = { groups: [], overrides: {}, keys: {} };
+  /** #101 迁移预览：这张页面已经弹过 / 关过一次就不再弹（取消 = 下次打开还弹，确认才写 prefs）。 */
+  private wsIntroShown = false;
   /** #96 顶栏那颗「当前在哪」：组件只认挂载点，换布局时换位置而不是换组件。 */
   private nowChip!: NowChip;
+  /** #98 那颗的挂载点：A 在行 2，B/C/D 在顶栏。包一层按钮，只有后三套拿它当入口。 */
+  private nowSlotRow: HTMLElement | null = null;
+  private nowSlotTop: HTMLElement | null = null;
+  private nowBtn: HTMLButtonElement | null = null;
+  /** #98 C 的竖列 / D 收起时的色点条（两块同一份 `railModel()`，只是尺寸不同）。 */
+  private rail: HTMLElement | null = null;
+  private strip: HTMLElement | null = null;
+  /** #98 B 的工作区浮层：一次只开一张，关掉时连监听一起摘。 */
+  private wsPop: HTMLElement | null = null;
+  private wsPopBody: HTMLElement | null = null;
+  private wsPopCleanup: (() => void) | null = null;
+  /**
+   * #99 / #98：拖拽的落点容器。默认是左栏那棵树；工作区浮层开着时换成浮层 —— 落点判定
+   * (`hitTest`) 与落点线是同一份，换的只是「量哪一块 DOM」。
+   */
+  private dragScope: { el: HTMLElement; group: string; head: string; item: string } | null = null;
   /** Q-035: the hover bubble on a pin chip (归档 / 重命名 / 删除), only ever one at a time. */
   private pinMenu: { handle: PinMenuHandle; chip: HTMLElement; id: string } | null = null;
   /** Both the 180ms open delay and the 220ms close delay ride on this one timer. */
@@ -310,6 +356,10 @@ export class App {
   private vhist = new Map<string, { steps: VStep[]; at: number }>();
   private cardDelArm: { id: string; at: number } | null = null;
   private dragId: string | null = null;
+  /** #99：那条 2px 落点线 + 拖动时才出现的「放回工程」落点，以及拖动期间挂上的 Esc / blur 监听。 */
+  private dropLine: HTMLElement | null = null;
+  private dragPool: HTMLElement | null = null;
+  private dragCleanup: (() => void) | null = null;
 
   constructor(me: Me) {
     this.me = me;
@@ -344,6 +394,8 @@ export class App {
     collapseLeft.dataset.act = "sessions";
     collapseLeft.onclick = () => this.togglePane("sessions");
     const dot = el("span", "dot");
+    // #98：当前会话那颗在 B/C/D 里挂在顶栏（brand 之后）。空槽 `display: contents`，A 里等于不存在。
+    const nowSlotTop = el("div", "now-chip-slot now-chip-top");
     const title = el("div", "title", "pi");
     const sub = el("div", "sub", "");
     const collapseRight = el("button", "icon-btn side-toggle");
@@ -393,9 +445,8 @@ export class App {
     scratch.onclick = () => this.scratch.open();
     this.els.scratch = scratch;
     // #96：「当前在哪」那颗自己是一个挂载点，不绑死在 topbar 的结构里（#97 / #98 换布局时
-    // 只要把它挪到别处）。现在它放在折叠按钮与状态点之间，也就是左栏边缘。
-    const nowChipSlot = el("div", "now-chip-slot");
-    topbar.append(collapseLeft, nowChipSlot, dot, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
+    // 只要把它挪到别处）。A 里它在行 2 的最左，B/C/D 里挪进顶栏（见 `paintShell()`）。
+    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -447,9 +498,26 @@ export class App {
 
     main.append(sessionsPane, chatPane, queuePane, gripL, gripR);
 
-    // Collapsing the left column takes the pinned sessions with it. This strip keeps them in reach.
+    // #97 壳 A 两行制。行 1：工作区标签页（点一下切到那一组）；行 2：当前会话那颗（nowchip，
+    // 固定最左）+ 本区会话胶囊（★ 优先）+ ＋。原先「收起左栏才出现」的置顶横栏被行 2 取代 ——
+    // 不再另挂一条，两套横栏同时出现只会让人不知道该点哪一条。
+    const wsTabsRow = el("div", "ws-tabs-row");
+    const wsTabs = el("div", "ws-tabs");
+    wsTabsRow.append(wsTabs);
+    wsTabsRow.hidden = true;
+    const sessionRow = el("div", "ws-session-row");
+    const nowSlotRow = el("div", "now-chip-slot");
     const pinStrip = el("div", "pin-strip");
-    pinStrip.hidden = true;
+    sessionRow.append(nowSlotRow, pinStrip);
+
+    // #98：竖列（C）与收起时的色点条（D）挂在 `main` 外面这条 flex 上 —— `main` 自己的三列网格
+    // （连 no-left / no-right 四种组合）一格都不动，两套壳只是在这条 flex 里多一列。
+    const mainWrap = el("div", "main-wrap");
+    const rail = el("div", "ws-rail");
+    rail.hidden = true;
+    const strip = el("div", "ws-strip");
+    strip.hidden = true;
+    mainWrap.append(rail, strip, main);
 
     const tabs = el("nav", "tabs");
     const tabDefs: [Tab, string][] = [
@@ -464,18 +532,19 @@ export class App {
       tabs.append(btn);
     }
 
-    shell.append(topbar, pinStrip, main, tabs);
+    shell.append(topbar, wsTabsRow, sessionRow, mainWrap, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, wsTabsRow, wsTabs, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.binBtn = binBtn;
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
     this.pillBar = new PillBar<SessionState>(pinStrip, {
       badge: (s, cur) => sessionBadge(s, cur),
       time: relativeTime,
-      heading: (pending, total) => (pending ? tr("置顶 · {p1} 个待处理", { p1: pending }) : total ? tr("置顶") : tr("左栏已收")),
-      empty: tr("在这里 ☆ 置顶一个会话，收起左栏也能点到。"),
+      // #97：第二行不再是「置顶区」，条头那颗字也就没有意义了 —— 最左边那颗就是当前会话。
+      // 空字符串仍然会留一个空 span，CSS 里 `.pin-strip-label:empty` 把它收掉。
+      heading: () => "",
       onOpen: (id) => this.openFromList(id),
       onStar: (id) => this.togglePin(id),
       tail: () => {
@@ -494,7 +563,25 @@ export class App {
       },
       decorate: (chip, s) => this.wirePinHover(chip, s),
     });
-    this.nowChip = new NowChip(nowChipSlot);
+    this.nowChip = new NowChip(nowSlotRow);
+    // #98：那颗在 B/C/D 里是按钮（点开工作区浮层）。包一层 `<button>` 而不是给组件加第二副身份 ——
+    // `NowChip` 的 aria-label / title 原样留着，读屏听到的还是「哪个工作区里的哪个会话」。
+    const nowBtn = el("button", "now-btn") as HTMLButtonElement;
+    nowBtn.type = "button";
+    nowBtn.dataset.act = "where";
+    nowBtn.onclick = () => this.onWhereClick();
+    nowBtn.append(this.nowChip.el);
+    nowSlotRow.append(nowBtn);
+    this.nowSlotRow = nowSlotRow;
+    this.nowSlotTop = nowSlotTop;
+    this.nowBtn = nowBtn;
+    this.rail = rail;
+    this.strip = strip;
+    this.els.rail = rail;
+    this.els.strip = strip;
+    // 设置面板可能在 build 之前就问过布局（applyPrefs 在构造里先跑一次），这里再画一次 DOM 标记，
+    // 保证首屏 `data-layout` 与真实渲染一致。
+    this.paintLayout();
     // 顶栏这批按钮只构造一次，语言一切换就得靠 paintChrome() 重写文字（renderAll 碰不到它们）。
     this.paintChrome();
     this.chat = new ChatView(scroll);
@@ -935,28 +1022,7 @@ export class App {
     this.activity = "";
     this.runSince = null;
     this.socket.send({ type: "subscribe", sessionId: id });
-    this.markOpened(id);
     this.renderAll();
-  }
-
-  /**
-   * D125「打开即置顶」：不管是左栏卡片、置顶胶囊、会话管理、分叉/导入、`#/s/<id>` 深链还是新建，
-   * 只要一个会话变成了当前会话，它就置顶 —— 左栏收起后那条横条是唯一的会话入口，不在里面
-   * 就根本看不出自己在跟哪个会话说话。已经在置顶区的不再往返一次（每次点击都写 manage.json 没意义）。
-   * 公网访问下管理类写入要 step-up（D15），这里不弹口令框：静默跳过，等用户自己验过（9 分钟内免重复）。
-   */
-  private markOpened(id: string): void {
-    if (!id) return;
-    if (this.manage.pin.includes(id) && !this.manage.archived.includes(id)) return;
-    if (this.me.public && Date.now() >= this.stepUntil) return;
-    this.manage = {
-      ...this.manage,
-      pin: this.manage.pin.includes(id) ? this.manage.pin : [id, ...this.manage.pin],
-      archived: this.manage.archived.filter((x) => x !== id),
-    };
-    this.renderSessions();
-    // 桥侧同一个动作：注册表里没这个 id 时它什么也不写，但会回一份快照把上面这份乐观状态纠正回来。
-    this.socket.send({ type: "manage", action: "opened", id });
   }
 
   // ---------------------------------------------------------------- ws
@@ -980,7 +1046,71 @@ export class App {
         this.skillsAt = Date.now();
         if (this.skillPop) this.renderSkillList();
         break;
+      // ------------------------------------------------ 技能商店 (D126)
+      case "skill.store":
+        // A stale answer (the box moved on while this search was in flight) would flash the old list back.
+        if (String(msg.query ?? "") !== this.skillStore.query) break;
+        this.skillStore.items = Array.isArray(msg.items) ? (msg.items as SkillStoreItem[]) : [];
+        this.skillStore.error = msg.error ? errText(msg) : undefined;
+        this.skillStore.note = msg.note ? String(msg.note) : undefined;
+        this.paintSkillIfOpen();
+        break;
+      case "skill.store.meta": {
+        // Second stage of the same search (D126): dirs and descriptions, merged by id.
+        if (String(msg.query ?? "") !== this.skillStore.query || !this.skillStore.items) break;
+        const more = new Map((Array.isArray(msg.items) ? (msg.items as SkillStoreItem[]) : []).map((i) => [i.id, i]));
+        this.skillStore.items = this.skillStore.items.map((item) => more.get(item.id) ?? item);
+        this.skillStore.note = msg.note ? String(msg.note) : this.skillStore.note;
+        this.paintSkillIfOpen();
+        break;
+      }
+      case "skill.installed":
+        this.skillInv = Array.isArray(msg.items) ? (msg.items as InstalledSkill[]) : [];
+        this.skillInvError = msg.error ? errText(msg) : null;
+        this.paintSkillIfOpen();
+        break;
+      case "skill.source": {
+        const src = this.skillSource;
+        src.loading = false;
+        src.kind = msg.kind === "local" ? "local" : "repo";
+        src.label = String(msg.source ?? "");
+        src.items = Array.isArray(msg.items) ? (msg.items as SkillSourceItem[]) : [];
+        src.error = msg.error ? errText(msg) : undefined;
+        this.paintSkillIfOpen();
+        break;
+      }
+      case "skill.install.done": {
+        const reqId = String(msg.reqId ?? "");
+        const mine = this.skillOps.get(reqId);
+        if (mine) this.skillOps.delete(reqId);
+        if (msg.ok) {
+          // A new folder only shows up in the next pi process: say so, and refresh both lists now.
+          this.skillDirty = true;
+          this.skillNote = { text: tr("已装好 {p1}", { p1: String(msg.name ?? "") }), bad: false };
+          this.loadSkillInventory();
+          this.socket.send({ type: "skills", sessionId: this.currentId });
+        } else {
+          this.skillNote = { text: tr("没有装上：{p1}", { p1: errText(msg) }), bad: true };
+        }
+        this.paintSkillIfOpen();
+        break;
+      }
+      case "skill.remove.done": {
+        const reqId = String(msg.reqId ?? "");
+        const mine = this.skillOps.get(reqId);
+        if (mine) this.skillOps.delete(reqId);
+        if (msg.ok) {
+          this.skillDirty = true;
+          this.skillNote = { text: tr("已卸载 {p1}", { p1: String(msg.name ?? "") }), bad: false };
+          this.loadSkillInventory();
+        } else {
+          this.skillNote = { text: tr("没有卸载：{p1}", { p1: errText(msg) }), bad: true };
+        }
+        this.paintSkillIfOpen();
+        break;
+      }
       case "hello":
+        if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
         // D113: a dropped socket mid-stream would leave the ⟳ spinning forever (the flags gate the
         // next request), so a fresh connection forgets them and asks again.
@@ -1008,15 +1138,16 @@ export class App {
         void this.refreshGit(true);
         if (this.currentId) this.socket.send({ type: "subscribe", sessionId: this.currentId });
         break;
-      case "session":
+      case "session": {
+        // 「交给 agent → 新开会话」那段文字，只有「这条快照是我刚建的那个会话」才认领：
+        // 先取出来再 finish()，后面 closeSheet() 会把它丢掉。
+        const handoff = this.creating ? this.prefillNext : null;
         this.creating?.finish();
         // bridge sends the snapshot as {sessionId, state, items, approvals, budget}
         if (msg.sessionId) {
           // A freshly created session arrives here without openSession(): give it its own (empty) draft.
           if (String(msg.sessionId) !== this.currentId) this.switchDraft(String(msg.sessionId));
           this.currentId = String(msg.sessionId);
-          // D125: 新建会话也走「打开」这条线（左栏「开新会话」、/new、快捷键），一样置顶。
-          this.markOpened(this.currentId);
         }
         this.usage = { contextTokens: null, contextWindow: null };
         this.rate = 0;
@@ -1038,12 +1169,11 @@ export class App {
         this.asks = (msg.asks ?? []) as AskRequest[];
         this.renderAll();
         // 「交给 agent → 新开会话」：会话建好之后才把文字填进去。此刻 textarea 已经指向新会话。
-        if (this.prefillNext && this.currentId) {
-          const text = this.prefillNext;
+        if (handoff) {
           this.prefillNext = null;
-          this.composerText = text;
+          this.composerText = handoff;
           if (this.textarea) {
-            this.textarea.value = text;
+            this.textarea.value = handoff;
             this.fitComposer();
             this.textarea.focus();
           }
@@ -1054,6 +1184,7 @@ export class App {
         // A takeover from the model sheet unlocks it; reopen so the list is usable right away.
         if (this.sheetKind === "model" && this.session?.owned) this.openModelSheet();
         break;
+      }
       case "items":
         if (msg.sessionId !== this.currentId) break;
         this.chat.reset((msg.items ?? []) as Item[]);
@@ -1407,6 +1538,8 @@ export class App {
         // D113: the bridge pushes this in stages (local rows → MCP servers → versions). Keep the
         // version columns from the previous answer for rows whose version did not change, so a
         // re-check does not blank out the 更新 buttons it is about to confirm.
+        // SAFETY: 桥端扩展清单的字段由 `bridge/src/extensions.ts` 序列化，
+        // `Inventory` 与这里的 `ExtInventory` 是同一份契约，RPC 只是丢了类型。
         this.extInv = mergeInventory(this.extInv, msg as unknown as ExtInventory);
         // 失败卡片要靠「装了什么」给插件点名：pi 的 RPC 不提供 extensionId，只有文本可用。
         setKnownPlugins([
@@ -1534,12 +1667,26 @@ export class App {
         if (msg.manage) this.manage = msg.manage as ManageState;
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         this.renderSessions();
-        break;
-      // #94：桥侧每次改名 / 拖动 / 建组都会广播一份完整快照。同名快照可能重复到，但重画很便宜。
-      case "workspaces":
-        this.workspaces = (msg.workspace as WorkspaceState) ?? { groups: [], overrides: {}, keys: {} };
         this.renderNowChip();
         break;
+      // #94：桥侧每次改名 / 拖动 / 建组都会广播一份完整快照。同名快照可能重复到，但重画很便宜。
+      case "workspaces": {
+        const before = new Set(this.workspaces.groups.map((g) => g.id));
+        this.workspaces = (msg.workspace as WorkspaceState) ?? { groups: [], overrides: {}, keys: {} };
+        // #100：刚点的「新建工作区」回来了 —— 空组已经进树，接着让人给它起个名字。
+        if (this.wsCreatePending) {
+          const born = this.workspaces.groups.find((g) => g.manual && !before.has(g.id));
+          if (born) {
+            this.wsCreatePending = false;
+            this.wsRenameId = born.id;
+            this.wsRenameDraft = "";
+            this.wsRenameFocus = true;
+          }
+        }
+        this.renderNowChip();
+        this.renderSessions();
+        break;
+      }
       case "session.gone": {
         const gone = new Set<string>((msg.ids ?? []) as string[]);
         this.sessions = this.sessions.filter((s) => !gone.has(s.id));
@@ -2322,8 +2469,44 @@ export class App {
     root.setProperty("--text", text.text);
     root.setProperty("--dim", text.dim);
     root.setProperty("--faint", text.faint);
+    // #97：布局也是外观偏好，但「哪一种壳」影响的是行与列的摆法，#98 还要在自己的 CSS 里挑壳。
+    // 存的值原样留在 prefs 里，这里只标出这一版真正画出来的那一种（见 layout.ts 的 activeLayout）。
+    this.paintLayout();
     // D93: 终端 dialog 的几何按缩放换算，改了字号 / 缩放后得重新夹一次（不然 pinned 的那块会溢出）。
     if (this.termDock) this.applyTermGeom(this.termDock);
+  }
+
+  /** 布局 id 落到 `<html data-layout>`：渲染 CSS 与探针都从这里读，不用去翻 prefs。 */
+  private paintLayout(): void {
+    document.documentElement.dataset.layout = activeLayout(this.prefs);
+    this.paintShell();
+  }
+
+  /**
+   * #98：四套壳共用同一套交互内核，壳与壳之间只有「哪几块拼在一起」不同（`shellParts()`）。
+   * 这里只做换壳时那几件与数据无关的动作：那颗换个挂载点、浮层关掉、重摆行与列。
+   * build() 之前调用（构造里先跑一次 applyPrefs）只有 `<html data-layout>` 有意义。
+   */
+  private paintShell(): void {
+    // 换壳 = 锚点换位置：那张浮层留着只会飘在旧地方。
+    this.closeWsPop();
+    this.placeNowChip();
+    // 构造里 `applyPrefs()` 先跑一次（那时 DOM 还没搭）：只落 `<html data-layout>`，别去碰 els。
+    if (!this.nowBtn) return;
+    this.renderPanes();
+  }
+
+  /**
+   * 「当前在哪」那颗停在哪：A 桌面版在行 2 的左端，B/C/D 在顶栏；**窄屏一律进顶栏** ——
+   * 窄屏下四套都没有第二行（会话是一页 tab），那颗不进顶栏就等于消失了。
+   */
+  private placeNowChip(): void {
+    const parts = shellParts(activeLayout(this.prefs));
+    const narrow = !window.matchMedia("(min-width: 900px)").matches;
+    const slot = parts.chipTop || narrow ? this.nowSlotTop : this.nowSlotRow;
+    if (!this.nowBtn || !slot) return;
+    if (this.nowBtn.parentElement !== slot) slot.append(this.nowBtn);
+    this.nowBtn.dataset.open = parts.chipOpensOverlay && !narrow ? "1" : "0";
   }
 
   private openDisplaySheet(): void {
@@ -2406,11 +2589,44 @@ export class App {
     textBox.append(textChips);
     sheet.append(textBox);
 
+    // #97：工作区布局。四颗 chip 各带一张 CSS 画的小示意图（不引图片：设置面板要能离线打开，
+    // 一张 png 就得多一条资源路径）。这一票只点亮 A，其余三颗置灰 + 悬停说明「下一步补上」——
+    // 画不出来的壳让人点进去只会看到「什么都没变」，那比置灰更让人困惑。
+    const layoutBox = el("div", "levels");
+    layoutBox.append(el("div", "levels-label", tr("工作区布局")));
+    const layoutChips = el("div", "chips layout-chips");
+    const shown = activeLayout(this.prefs);
+    for (const { id, label } of LAYOUTS) {
+      const supported = layoutSupported(id);
+      const chip = el("button", `chip layout-chip${shown === id ? " on" : ""}${supported ? "" : " off"}`);
+      chip.dataset.layout = id;
+      chip.append(layoutDemo(id), el("span", "layout-chip-label", tr(label)));
+      if (supported) {
+        chip.title = tr(label);
+        chip.onclick = () => {
+          this.prefs = { ...this.prefs, layout: id };
+          savePrefs(this.prefs);
+          // #98：applyPrefs → paintLayout → paintShell，浮层 / 竖列 / 色点条 / 横栏一次全摆好。
+          this.applyPrefs();
+          for (const other of layoutChips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
+        };
+      } else {
+        // 真 disabled（不只是 aria-disabled）：键盘也进不去、点了不冒事件，省得在半成品上留个洞。
+        chip.disabled = true;
+        chip.title = tr("{p1}：下一步补上", { p1: tr(label) });
+        chip.setAttribute("aria-label", chip.title);
+      }
+      layoutChips.append(chip);
+    }
+    layoutBox.append(layoutChips);
+    sheet.append(layoutBox);
+
     const foot = el("div", "sheet-foot");
     const reset = el("button", "btn ghost", tr("恢复默认"));
     reset.onclick = () => {
-      // 恢复默认只恢复字号/颜色/亮度：语言是「我是谁」，不该被配色重置带走。
-      this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang };
+      // 恢复默认只恢复字号/颜色/亮度/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍。
+      // 布局回到 A（DEFAULT_PREFS.layout），与「新装用户看到的就是两行制」对齐。
+      this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang, wsIntroSeen: this.prefs.wsIntroSeen };
       savePrefs(this.prefs);
       this.applyPrefs();
       this.openDisplaySheet();
@@ -2527,6 +2743,9 @@ export class App {
 
   // ---------------------------------------------------------------- model sheet
   private closeSheet(): void {
+    // 开新会话的面板被关掉（取消 / 点背景）= 放弃「交给 agent → 新开会话」那段待填的文字：
+    // 留着它，下一次开的会话会莫名其妙带着别的会话的笔记（见 prefillNext）。
+    if (this.sheetKind === "new") this.prefillNext = null;
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
     this.sheet?.remove();
     this.sheet = null;
@@ -2730,7 +2949,16 @@ export class App {
     search.placeholder = tr("搜索技能：名字或描述…");
     search.spellcheck = false;
     const list = el("div", "skill-list");
-    const foot = el("div", "skill-foot", tr("1–9 直接选 · ↑↓ 选 · Enter 确认 · Esc 关闭"));
+    // D126: the footer carries the way into the 商店 — the palette itself stays a pure picker.
+    const foot = el("div", "skill-foot");
+    foot.append(el("span", "skill-foot-hint", tr("1–9 直接选 · ↑↓ 选 · Enter 确认 · Esc 关闭")));
+    const storeOpen = el("button", "btn ghost skill-store-open", tr("商店")) as HTMLButtonElement;
+    storeOpen.title = tr("安装 / 卸载技能");
+    storeOpen.onclick = () => {
+      this.closeSkillPalette();
+      this.openSkillStore("store");
+    };
+    foot.append(storeOpen);
     panel.append(search, list, foot);
     pop.append(panel);
     this.els.composerHost.append(pop);
@@ -2890,6 +3118,365 @@ export class App {
     field.focus();
     field.setSelectionRange(caret, caret);
     this.fitComposer();
+  }
+
+  // ---------------------------------------------------------------- 技能商店 (D126)
+
+  /**
+   * The store dialog: skills.sh search, the skills installed on this machine, and install from an
+   * address (`owner/repo`, a GitHub link, a local directory). Writes go through the bridge, which
+   * asks for the passphrase again and refuses the public tunnel (same shelf as the 扩展 manager).
+   */
+  private openSkillStore(tab: "store" | "installed" = "store"): void {
+    this.closeSkillPalette();
+    this.closeSheet();
+    this.sheetKind = "skillstore";
+    this.skillTab = tab;
+    this.skillNote = null;
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet settings-sheet ext-sheet skill-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("技能商店")));
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const body = el("div", "settings-body");
+    const host = el("div", "ext-host skill-host");
+    body.append(host);
+    sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    // The installed list is a local disk scan; the store waits for a query (its API needs 2 chars).
+    this.loadSkillInventory();
+    this.paintSkillSheet(host);
+  }
+
+  /** Repaint in place, keeping the scroll position and the focused box (as `paintExtIfOpen` does). */
+  private paintSkillIfOpen(): void {
+    if (this.sheetKind !== "skillstore") return;
+    const host = this.sheet?.querySelector<HTMLElement>(".skill-host");
+    if (!host) return;
+    const body = host.parentElement;
+    const top = body?.scrollTop ?? 0;
+    const focused = document.activeElement instanceof HTMLInputElement && host.contains(document.activeElement) ? document.activeElement.placeholder : null;
+    const caret = focused ? (document.activeElement as HTMLInputElement).selectionStart : null;
+    this.paintSkillSheet(host);
+    if (body) body.scrollTop = top;
+    if (focused) {
+      const again = [...host.querySelectorAll<HTMLInputElement>("input")].find((i) => i.placeholder === focused);
+      again?.focus();
+      if (again && caret !== null) again.setSelectionRange(caret, caret);
+    }
+  }
+
+  private loadSkillInventory(): void {
+    this.skillInvError = null;
+    this.socket.send({ type: "skill.installed", ...(this.session?.cwd ? { cwd: this.session.cwd } : {}) });
+  }
+
+  /** What a row's button says while its own install / uninstall is in flight (null = clickable). */
+  private skillOpLabel(key: string): string | null {
+    for (const op of this.skillOps.values()) if (op.key === key) return op.running;
+    return null;
+  }
+
+  private skillInstall(req: Record<string, unknown>, key: string): void {
+    const reqId = `sk_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    this.skillOps.set(reqId, { key, running: tr("安装中…") });
+    this.act(() => {
+      this.socket.send({ type: "skill.install", reqId, scope: this.skillScope === "project" ? "project" : "user", ...(this.session?.cwd ? { cwd: this.session.cwd } : {}), ...req });
+      this.paintSkillIfOpen();
+    });
+  }
+
+  /** Four seconds to change your mind, like the 扩展 manager's 卸载 (D81). */
+  private skillArmed(key: string): boolean {
+    if (this.skillArm && this.skillArm.key === key && Date.now() < this.skillArm.until) {
+      this.skillArm = null;
+      return true;
+    }
+    this.skillArm = { key, until: Date.now() + 4000 };
+    setTimeout(() => {
+      if (this.skillArm?.key === key && Date.now() >= this.skillArm.until) {
+        this.skillArm = null;
+        this.paintSkillIfOpen();
+      }
+    }, 4100);
+    return false;
+  }
+
+  private skillRemove(entry: InstalledSkill): void {
+    const key = `remove:${entry.path}`;
+    if (!this.skillArmed(key)) {
+      this.paintSkillIfOpen();
+      return;
+    }
+    const reqId = `sk_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    this.skillOps.set(reqId, { key, running: tr("卸载中…") });
+    this.act(() => {
+      this.socket.send({ type: "skill.remove", reqId, path: entry.path });
+      this.paintSkillIfOpen();
+    });
+  }
+
+  private paintSkillSheet(host: HTMLElement): void {
+    host.replaceChildren();
+    const tabs = el("div", "settings-tabs ext-tabs");
+    const def: ["store" | "installed", string][] = [
+      ["store", tr("商店")],
+      ["installed", this.skillInv ? tr("已安装（{p1}）", { p1: this.skillInv.length }) : tr("已安装")],
+    ];
+    for (const [id, label] of def) {
+      const b = el("button", `chip${this.skillTab === id ? " on" : ""}`, label) as HTMLButtonElement;
+      b.onclick = () => {
+        this.skillTab = id;
+        this.skillNote = null;
+        if (id === "installed") this.loadSkillInventory();
+        this.paintSkillIfOpen();
+      };
+      tabs.append(b);
+    }
+    host.append(tabs);
+    if (this.me.public) host.append(el("div", "takeover warn", tr("通过公网访问：这里只能查看，安装 / 卸载 / 更新 / 启停请在本机或局域网操作。")));
+    if (this.skillDirty) {
+      const bar = el("div", "takeover ext-reload");
+      bar.append(el("span", "", tr("改动要「重新加载」后，正在运行的会话才看得到（新开的会话直接生效）。")));
+      if (this.session?.owned) {
+        const b = el("button", "btn", tr("重新加载当前会话")) as HTMLButtonElement;
+        b.disabled = Boolean(this.session.running);
+        b.title = this.session.running ? tr("这一轮结束后再重新加载") : "/reload";
+        b.onclick = () => {
+          const sessionId = this.currentId;
+          if (!sessionId) return;
+          this.act(() => this.socket.send({ type: "reload", sessionId }));
+          this.skillDirty = false;
+          this.paintSkillIfOpen();
+        };
+        bar.append(b);
+      }
+      host.append(bar);
+    }
+    if (this.skillNote) host.append(el("div", `login-result${this.skillNote.bad ? " bad" : ""}`, this.skillNote.text));
+    if (this.skillTab === "store") this.paintSkillStore(host);
+    else this.paintSkillInstalled(host);
+  }
+
+  /** 商店 tab: skills.sh search + 按地址安装; the scope picker decides where a click writes. */
+  private paintSkillStore(host: HTMLElement): void {
+    const store = this.skillStore;
+    const run = (): void => {
+      if (store.query.trim().length < 2) return;
+      store.items = null;
+      store.error = undefined;
+      this.socket.send({ type: "skill.store", query: store.query, limit: store.limit });
+      this.paintSkillIfOpen();
+    };
+    const bar = el("div", "info-compact");
+    const q = el("input", "ns-input") as HTMLInputElement;
+    q.placeholder = tr("搜索技能（skills.sh，至少 2 个字）");
+    q.value = store.query;
+    q.spellcheck = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    q.oninput = () => {
+      store.query = q.value.trim();
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(run, 350);
+    };
+    q.onkeydown = (ev) => {
+      if (ev.key === "Enter" && store.query.trim().length >= 2) run();
+    };
+    bar.append(q);
+    host.append(bar);
+    host.append(this.skillScopeRow());
+    const chips = el("div", "settings-trust-opts");
+    chips.append(el("span", "settings-hint", store.query ? tr("搜索结果，按安装量排：") : tr("热度前")));
+    for (const n of [10, 20, 50]) {
+      const b = el("button", `chip${store.limit === n ? " on" : ""}`, String(n)) as HTMLButtonElement;
+      b.onclick = () => {
+        store.limit = n;
+        run();
+      };
+      chips.append(b);
+    }
+    host.append(chips);
+    host.append(el("div", "settings-hint", tr("来源是 skills.sh（社区技能目录，按安装次数排序）；每条技能的说明读自它仓库里的 SKILL.md。装进来的技能落在上面选的位置，pi 启动时自动发现。")));
+    if (store.note) host.append(el("div", "settings-hint", store.note));
+    if (!store.query) host.append(el("div", "empty", tr("输入至少 2 个字再搜。")));
+    else if (store.error) host.append(el("div", "empty", store.error));
+    else if (!store.items) host.append(el("div", "empty", tr("查询中…")));
+    else if (!store.items.length) host.append(el("div", "empty", tr("没有找到")));
+
+    const installedNames = new Set((this.skillInv ?? []).map((s) => s.name));
+    const ro = Boolean(this.me.public);
+    const list = el("div", "login-list");
+    (store.items ?? []).forEach((item, i) => {
+      const row = el("div", "login-row");
+      const name = el("div", "login-name");
+      name.append(el("span", "ext-rank", `${i + 1}`), el("span", "", item.name), el("span", "settings-hint", ` ${item.source}`));
+      name.title = item.id;
+      row.append(name, el("span", "login-status", item.installs ? tr("{p1} 次安装", { p1: fmtNum(item.installs) }) : ""));
+      const acts = el("div", "login-acts");
+      if (item.description) acts.append(el("span", "settings-hint ext-desc", item.description));
+      else if (item.note) acts.append(el("span", "settings-hint", tr("说明没查到：{p1}", { p1: item.note })));
+      if (installedNames.has(item.name)) acts.append(el("span", "login-status ok", tr("已安装")));
+      else if (!item.resolved) {
+        // Stage one has the rank already; where it lives in the repo is still being worked out.
+        acts.append(el("span", "settings-hint", tr("正在确认目录和说明…")));
+        const wait = el("button", "btn", this.skillInstallLabel()) as HTMLButtonElement;
+        wait.disabled = true;
+        acts.append(wait);
+      } else if (!item.dir) acts.append(el("span", "login-status warn", tr("仓库里没找到这个技能的目录")));
+      else {
+        const key = `install:${item.id}`;
+        const label = this.skillOpLabel(key);
+        const b = el("button", "btn primary", label ?? this.skillInstallLabel()) as HTMLButtonElement;
+        b.disabled = ro || Boolean(label);
+        b.onclick = () => this.skillInstall({ source: item.source, dir: item.dir, skillId: item.name, name: item.name }, key);
+        acts.append(b);
+      }
+      row.append(acts);
+      list.append(row);
+    });
+    host.append(list);
+    host.append(this.skillAddBySource(ro));
+  }
+
+  /** 「安装到全局 / 安装到当前项目」 — the label has to name where the click lands. */
+  private skillInstallLabel(): string {
+    return tr("安装到{p1}", { p1: this.skillScope === "project" ? tr("当前项目") : tr("全局") });
+  }
+
+  /** The scope picker: where a click in this tab writes. */
+  private skillScopeRow(): HTMLElement {
+    const box = el("div", "settings-foot skill-scope");
+    box.append(el("span", "settings-hint", tr("装到：")));
+    const scope = el("select", "ns-input") as HTMLSelectElement;
+    scope.append(new Option(tr("全局（用户技能目录）"), "global"), new Option(tr("当前项目（.pi/skills）"), "project"));
+    scope.value = this.skillScope;
+    scope.style.width = "auto";
+    scope.disabled = !this.session?.cwd;
+    scope.title = this.session?.cwd ? "" : tr("没打开会话，不知道项目目录：只能装到全局");
+    scope.onchange = () => {
+      this.skillScope = scope.value === "project" ? "project" : "global";
+      this.paintSkillIfOpen();
+    };
+    box.append(scope);
+    return box;
+  }
+
+  /** 按地址安装: paste `owner/repo`, a GitHub link, or a folder on this machine → pick a skill. */
+  private skillAddBySource(ro: boolean): HTMLElement {
+    const more = el("details", "ns-advanced");
+    // Repaints replace this subtree, so whether it is unfolded has to live in state, not in the DOM.
+    more.open = this.skillSource.open;
+    more.ontoggle = () => (this.skillSource.open = more.open);
+    more.append(el("summary", "", tr("按地址安装（GitHub 仓库或本机目录）")));
+    const grid = el("div", "ns-adv-grid");
+    const src = el("input", "ns-input mono") as HTMLInputElement;
+    src.placeholder = tr("owner/repo · https://github.com/… · 或本机目录");
+    src.value = this.skillSource.input;
+    src.oninput = () => (this.skillSource.input = src.value);
+    const go = el("button", "btn", this.skillSource.loading ? tr("列出中…") : tr("列出技能")) as HTMLButtonElement;
+    go.disabled = ro || this.skillSource.loading;
+    go.onclick = () => {
+      const input = src.value.trim();
+      if (!input) return;
+      this.skillSource = { input, label: "", kind: null, items: null, loading: true, open: true };
+      this.socket.send({ type: "skill.source", source: input });
+      this.paintSkillIfOpen();
+    };
+    const row = el("div", "info-compact");
+    row.append(src, go);
+    grid.append(row);
+    if (this.skillSource.error) grid.append(el("div", "login-result bad", this.skillSource.error));
+    const items = this.skillSource.items ?? [];
+    if (items.length) {
+      grid.append(el("div", "settings-hint", tr("来自 {p1}（{p2} 个技能）：", { p1: this.skillSource.label, p2: items.length })));
+      const list = el("div", "login-list");
+      for (const item of items) {
+        const line = el("div", "login-row");
+        line.append(el("div", "login-name", item.name));
+        const acts = el("div", "login-acts");
+        acts.append(el("span", "skill-path", item.path));
+        if (item.description) acts.append(el("span", "settings-hint ext-desc", item.description));
+        const key = `install:${item.local ? item.path : `${this.skillSource.label}#${item.path}`}`;
+        const label = this.skillOpLabel(key);
+        const b = el("button", "btn primary", label ?? this.skillInstallLabel()) as HTMLButtonElement;
+        b.disabled = ro || Boolean(label);
+        b.onclick = () =>
+          this.skillInstall(item.local ? { local: item.path } : { source: this.skillSource.label, dir: item.path, name: item.name }, key);
+        acts.append(b);
+        line.append(acts);
+        list.append(line);
+      }
+      grid.append(list);
+    }
+    more.append(grid);
+    return more;
+  }
+
+  private paintSkillInstalled(host: HTMLElement): void {
+    const top = el("div", "settings-foot");
+    top.append(el("span", "settings-hint", tr("扫描的是本机技能目录（和 pi 启动时读的是同一批）。用户技能可以卸载，项目技能跟着仓库走。")));
+    top.append(el("span", "spacer"));
+    const refresh = el("button", "btn ghost", tr("刷新")) as HTMLButtonElement;
+    refresh.onclick = () => {
+      this.loadSkillInventory();
+      this.paintSkillIfOpen();
+    };
+    top.append(refresh);
+    host.append(top);
+    if (this.skillInvError) {
+      host.append(el("div", "empty", this.skillInvError));
+      return;
+    }
+    if (!this.skillInv) {
+      host.append(el("div", "empty", tr("读取本机技能目录…")));
+      return;
+    }
+    if (!this.skillInv.length) {
+      host.append(el("div", "empty", tr("本机还没有装任何技能，去「商店」看看。")));
+      return;
+    }
+    const ro = Boolean(this.me.public);
+    const groups: [string, InstalledSkill[]][] = [
+      [tr("用户技能（可以卸载）"), this.skillInv.filter((s) => s.removable)],
+      [tr("项目技能（只读，跟着仓库走）"), this.skillInv.filter((s) => !s.removable)],
+    ];
+    for (const [label, entries] of groups) {
+      if (!entries.length) continue;
+      host.append(el("div", "settings-label", label));
+      const list = el("div", "login-list");
+      for (const entry of entries) {
+        const row = el("div", "login-row");
+        const name = el("div", "login-name");
+        name.append(el("span", "", entry.name));
+        if (entry.link) name.append(el("span", "ext-kind", tr("链接")));
+        row.append(name);
+        const acts = el("div", "login-acts");
+        acts.append(el("span", "skill-path", entry.path));
+        if (entry.description) acts.append(el("span", "settings-hint ext-desc", entry.description));
+        if (entry.from) acts.append(el("span", "settings-hint", tr("来自 {p1}", { p1: entry.from })));
+        if (entry.removable) {
+          const key = `remove:${entry.path}`;
+          const label = this.skillOpLabel(key);
+          const armed = this.skillArm?.key === key && Date.now() < this.skillArm.until;
+          const b = el("button", `btn${armed ? " danger" : ""}`, label ?? (armed ? tr("确认卸载？") : tr("卸载"))) as HTMLButtonElement;
+          b.disabled = ro || Boolean(label);
+          b.onclick = () => this.skillRemove(entry);
+          acts.append(b);
+        } else {
+          acts.append(el("span", "settings-hint", tr("只读：项目技能跟着仓库走，要删就直接删这个目录")));
+        }
+        row.append(acts);
+        list.append(row);
+      }
+      host.append(list);
+    }
   }
 
   /**
@@ -3329,44 +3916,314 @@ export class App {
       .join(" · ");
   }
 
-  /** Pinned / plain / archived sections. Every drag and every star click ends up in one arrange message. */
+  /**
+   * 左栏两级树（#95）：工作区 → 会话。分组、组内/组间顺序、过滤后的去留全在 `buildTree()` 里算，
+   * 这里只负责画。「置顶」不再是一个分区 —— ★ 只剩组内排序的意思，归档仍是末尾的全局分区。
+   * 每次拖动、每次点 ★ 最后都落到一条 arrange 消息上。
+   */
   private renderSessions(): void {
-    this.renderPinStrip();
+    this.renderSessionRow();
+    this.renderWorkspaceTabs();
     this.renderNowChip();
+    // #98：工作区浮层开着时列表一变就得跟着重画（B 里拖完一颗，段里的位置立刻换）。
+    if (this.wsPop) this.renderWsPop();
     this.renderBinCount();
     const host = this.els.sessList;
+    // 重画会换掉所有子节点：旧的落点线 / 「放回工程」都是孤儿了，引用先清掉（拖动中会再挂上）。
+    this.dropLine = null;
+    this.dragPool = null;
     // A re-render mid-edit must not eat the caret: remember where it was before the DOM swap.
     const active = document.activeElement as HTMLElement | null;
-    const typing = this.renameId != null && active?.classList.contains("rename-input") === true;
+    const wsTyping = this.wsRenameId != null && active?.classList.contains("ws-rename-input") === true;
+    this.wsRenameCaret = wsTyping ? (active as HTMLInputElement).selectionStart : null;
+    const typing = this.renameId != null && !wsTyping && active?.classList.contains("rename-input") === true;
     this.renameCaret = typing ? (active as HTMLInputElement).selectionStart : null;
+    // 组头的 ⋯ 菜单钉在一个马上要被替换掉的节点上，先收掉。
+    this.wsMenu?.close();
+    this.wsMenu = null;
     host.replaceChildren();
 
-    const ordered = [...this.sessions].sort((a, b) => this.arrangeCompare(a, b));
-    if (this.renameId && !ordered.some((s) => s.id === this.renameId)) this.renameId = null;
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+    if (this.renameId && !this.sessions.some((s) => s.id === this.renameId)) this.renameId = null;
+    if (this.wsRenameId && !this.workspaces.groups.some((g) => g.id === this.wsRenameId)) this.wsRenameId = null;
     // A deleted or now-hidden session must not stay "picked".
-
-    const visible = ordered.filter((s) => !this.manage.archived.includes(s.id) && this.matchesFilter(s));
-    const archived = ordered.filter((s) => this.manage.archived.includes(s.id) && this.matchesFilter(s));
-    const pinned = visible.filter((s) => this.manage.pin.includes(s.id));
-    const rest = visible.filter((s) => !this.manage.pin.includes(s.id));
     if (this.sheetKind === "manage") this.mgrRefresh?.();
 
-    if (!ordered.length) {
+    if (!this.sessions.length) {
       host.append(el("div", "empty", tr("还没有会话。上面开一个，或在终端里 pi 一下。")));
+      host.append(this.wsCreateRow());
       return;
     }
-    if (pinned.length) host.append(this.sessionSection("pin", tr("置顶"), pinned));
-    host.append(this.sessionSection("rest", this.manage.pin.length ? tr("会话") : tr("会话 · 按创建时间"), rest));
-    if (!visible.length) host.append(el("div", "empty", this.filter ? tr("没有匹配的会话。") : tr("都归档了，展开下面的「已归档」看看。")));
-    if (archived.length) host.append(this.sessionSection("archived", tr("已归档"), this.archivedOpen ? archived : []));
+    for (const group of tree.groups) host.append(this.wsSection(group));
+    if (!tree.groups.length) {
+      // 有归档就提示去哪儿看；什么都没命中就直说没命中。
+      let text = tr("没有匹配的会话。");
+      if (!this.filter && tree.archived.length) text = tr("都归档了，展开下面的「已归档」看看。");
+      host.append(el("div", "empty", text));
+    }
+    // #100：树底部一行「新建工作区」—— 手建的空组也能有会话被拖进来（落点见 wsSection 的 .session-cards）。
+    host.append(this.wsCreateRow());
+    if (tree.archived.length) host.append(this.sessionSection("archived", tr("已归档"), this.archivedOpen ? tree.archived : []));
+    // 「放回工程」只在拖动时出现；socket 推送顺手重画一次也不会把它弄丢。
+    if (this.dragId) this.showPool(this.dragId);
+    this.wireTreeDrops(host);
     this.renameFocus = false;
+    this.wsRenameFocus = false;
+    this.maybeWorkspaceIntro(tree);
   }
 
-  private sessionSection(kind: "pin" | "rest" | "archived", title: string, list: SessionState[]): HTMLElement {
+  /**
+   * #101 迁移预览：分组第一次出现之前，先把「会建哪些工作区、各几个会话、其中几个是你拖过的」
+   * 摆出来让用户确认一次。数字直接来自 `buildTree()`（左栏画的就是它），不另算一套。
+   *
+   * 确认才写 `pi.prefs.wsIntroSeen`；取消什么都不写，所以下次打开还会弹。同一张页面里只弹一次
+   * （`wsIntroShown`），否则每次 renderSessions 都会把它重新推上来。
+   */
+  private maybeWorkspaceIntro(tree: Tree<SessionState>): void {
+    if (this.prefs.wsIntroSeen || this.wsIntroShown || this.sheetKind) return;
+    // 没有 workspace 快照（旧桥 / 桩桥）就没有「要建的组」可预览 —— 分组本来就还没发生。
+    if (!this.workspaces.groups.length || !tree.groups.length) return;
+    // 自动化（Playwright / DevTools 带 navigator.webdriver）不弹：探针每次都跑在全新 profile 里，
+    // 等于每次都「第一次打开」，这张模态会把别的探针全挡在下面（见 D131 的验证段）。
+    if (navigator.webdriver) return;
+    this.wsIntroShown = true;
+
+    const back = el("div", "sheet-back center");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet ws-intro-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("工作区")));
+    const close = el("button", "btn ghost", tr("稍后"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    sheet.append(head);
+
+    const body = el("div", "ws-intro");
+    body.append(el("p", "ws-intro-lead", tr("左栏要按工作区分组了：同一个工程根下的会话归到一组，组里 ★ 排前，归档的另放最后一区。下面是你会看到的样子。")));
+
+    // 数字全部数自同一棵树：组 = 左栏那一排组头，会话 = 组里的卡片，「拖过的」= 桥记下的 override。
+    const overrides = this.workspaces.overrides ?? {};
+    const total = tree.groups.reduce((n, g) => n + g.sessions.length, 0);
+    const moved = tree.groups.reduce((n, g) => n + g.sessions.filter((s) => overrides[s.id] === g.id).length, 0);
+    body.append(
+      el("div", "ws-intro-sum", moved ? tr("会建 {p1} 个工作区、{p2} 个会话，其中 {p3} 个是你拖过的", { p1: tree.groups.length, p2: total, p3: moved }) : tr("会建 {p1} 个工作区、{p2} 个会话", { p1: tree.groups.length, p2: total })),
+    );
+
+    const rows = el("div", "ws-intro-rows");
+    for (const group of tree.groups) {
+      const row = el("div", "ws-intro-row");
+      row.dataset.ws = group.id;
+      const dot = el("span", "ws-dot");
+      dot.style.background = group.color;
+      row.append(dot, el("span", "ws-intro-name", group.name), el("span", "ws-intro-n", tr("{p1} 个会话", { p1: group.sessions.length })));
+      const own = group.sessions.filter((s) => overrides[s.id] === group.id).length;
+      if (own) row.append(el("span", "ws-intro-moved", tr("其中 {p1} 个是你拖过的", { p1: own })));
+      rows.append(row);
+    }
+    body.append(rows);
+
+    const foot = el("div", "sheet-foot");
+    const later = el("button", "btn ghost", tr("以后再说"));
+    later.onclick = () => this.closeSheet();
+    const go = el("button", "btn primary", tr("就这样开始"));
+    go.onclick = () => {
+      this.prefs = { ...this.prefs, wsIntroSeen: true };
+      savePrefs(this.prefs);
+      this.closeSheet();
+    };
+    foot.append(later, go);
+    sheet.append(body, foot);
+
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    this.sheetKind = "intro";
+  }
+
+  /** 树底部的「新建工作区」：点一下让桥造一个空的手动组，广播回来就进改名态。 */
+  private wsCreateRow(): HTMLElement {
+    const row = el("div", "ws-new");
+    const btn = el("button", "ws-new-btn") as HTMLButtonElement;
+    btn.type = "button";
+    btn.dataset.act = "ws-create";
+    btn.textContent = tr("＋ 新建工作区");
+    btn.title = tr("先建一个空组，再把会话拖进去");
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      this.createWs();
+    };
+    row.append(btn);
+    return row;
+  }
+
+  /** 一个工作区的组头 + 组内卡片。组头可收起，收起状态记在 `pi.prefs.wsCollapsed` 里。 */
+  private wsSection(group: TreeGroup<SessionState>): HTMLElement {
+    const sec = el("div", "session-sec ws-sec");
+    // 仍是「会话区」：既有探针按 data-sec 取卡片，归档另有一段。
+    sec.dataset.sec = "rest";
+    sec.dataset.ws = group.id;
+    const collapsed = this.prefs.wsCollapsed.includes(group.id);
+    if (collapsed) sec.classList.add("folded");
+
+    const head = el("div", `sess-head ws-head${collapsed ? " folded" : ""}`);
+    head.setAttribute("role", "button");
+    head.tabIndex = 0;
+    head.setAttribute("aria-expanded", String(!collapsed));
+    head.title = collapsed ? tr("展开这个工作区") : tr("收起这个工作区");
+    head.setAttribute("aria-label", tr("{p1}，{p2} 个会话，{p3}", { p1: group.name, p2: group.sessions.length, p3: collapsed ? tr("已收起") : tr("已展开") }));
+    head.append(el("span", "chev", collapsed ? "▸" : "▾"));
+    const dot = el("span", "ws-dot");
+    dot.style.background = group.color;
+    head.append(dot);
+    const editing = this.wsRenameId === group.id;
+    if (editing) {
+      // 组头就地改名：同一支 .rename-input，Enter 提交、Esc 取消、失焦也提交（跟会话卡片一致）。
+      const field = el("input", "rename-input ws-rename-input") as HTMLInputElement;
+      field.value = this.wsRenameDraft;
+      field.placeholder = group.name;
+      field.spellcheck = false;
+      field.maxLength = WS_NAME_MAX;
+      field.dataset.act = "ws-rename-input";
+      field.setAttribute("aria-label", tr("工作区名（留空就恢复成目录名）"));
+      field.onclick = (ev) => ev.stopPropagation();
+      field.oninput = () => {
+        this.wsRenameDraft = field.value;
+      };
+      field.onkeydown = (ev) => {
+        ev.stopPropagation();
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          this.commitWsRename();
+        } else if (ev.key === "Escape") {
+          ev.preventDefault();
+          this.cancelWsRename();
+        }
+      };
+      field.onblur = () => {
+        if (this.wsRenameId === group.id) this.commitWsRename();
+      };
+      if (this.wsRenameFocus || this.wsRenameCaret != null) {
+        const at = this.wsRenameFocus ? null : this.wsRenameCaret;
+        queueMicrotask(() => {
+          field.focus();
+          if (at == null) field.select();
+          else field.setSelectionRange(at, at);
+        });
+      }
+      head.append(field);
+    } else {
+      head.append(el("span", "label", group.name));
+    }
+    if (group.pending) {
+      const todo = el("span", "todo", tr("待 {p1}", { p1: group.pending }));
+      todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
+      head.append(todo);
+    }
+    head.append(el("span", "n", String(group.sessions.length)));
+    if (!editing) {
+      const more = el("button", "ws-more", "⋯") as HTMLButtonElement;
+      more.type = "button";
+      more.dataset.act = "ws-more";
+      more.title = tr("改名 / 删除这个工作区");
+      more.setAttribute("aria-label", tr("{p1} 的工作区菜单", { p1: group.name }));
+      more.onclick = (ev) => {
+        ev.stopPropagation();
+        this.openWsMore(group, more);
+      };
+      more.onkeydown = (ev) => ev.stopPropagation();
+      head.append(more);
+    }
+    const toggle = () => this.toggleWs(group.id);
+    head.onclick = toggle;
+    head.onkeydown = (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        toggle();
+      }
+    };
+    sec.append(head);
+
+    const cards = el("div", "session-cards");
+    for (const s of group.sessions) cards.append(this.sessionCard(s));
+    // 手建的空组：显示空态，不显示一个没有内容的组头（后端派生的组不可能为空，过滤态下整组会消失）。
+    if (!group.sessions.length) cards.append(el("div", "empty ws-empty", tr("这个工作区里还没有会话。")));
+    sec.append(cards);
+    return sec;
+  }
+
+  private toggleWs(id: string): void {
+    const has = this.prefs.wsCollapsed.includes(id);
+    const wsCollapsed = has ? this.prefs.wsCollapsed.filter((x) => x !== id) : [...this.prefs.wsCollapsed, id];
+    this.prefs = { ...this.prefs, wsCollapsed };
+    savePrefs(this.prefs);
+    this.renderSessions();
+  }
+
+  /** 组头的 ⋯：改名 / 删除。删不了就置灰并在菜单里写明原因，而不是把这个选择藏起来。 */
+  private openWsMore(group: TreeGroup<SessionState>, anchor: HTMLElement): void {
+    this.wsMenu?.close();
+    const info = this.workspaces.groups.find((g) => g.id === group.id);
+    this.wsMenu = openWsMenu(anchor, {
+      name: group.name,
+      sub: info && !info.manual ? info.key : tr("手建的工作区"),
+      blocker: dropBlocker(info, group.sessions.length),
+      onRename: () => this.startWsRename(group.id),
+      onDrop: () => this.dropWs(group.id),
+    });
+  }
+
+  private startWsRename(id: string): void {
+    this.wsRenameId = id;
+    this.wsRenameDraft = this.workspaces.groups.find((g) => g.id === id)?.name ?? "";
+    this.wsRenameFocus = true;
+    // 收起的组里改不了名：先展开再画输入框。
+    if (this.prefs.wsCollapsed.includes(id)) {
+      const wsCollapsed = this.prefs.wsCollapsed.filter((x) => x !== id);
+      this.prefs = { ...this.prefs, wsCollapsed };
+      savePrefs(this.prefs);
+    }
+    this.renderSessions();
+  }
+
+  private cancelWsRename(): void {
+    this.wsRenameId = null;
+    this.wsRenameDraft = "";
+    this.renderSessions();
+  }
+
+  /** 提交组名：空串 = 恢复成目录名（桥那边存空，显示时由 buildTree 回落）。名字没变就一个字都不发。 */
+  private commitWsRename(): void {
+    const id = this.wsRenameId;
+    if (!id) return;
+    const current = this.workspaces.groups.find((g) => g.id === id)?.name ?? "";
+    const next = renameIntent(current, this.wsRenameDraft);
+    this.wsRenameId = null;
+    this.wsRenameDraft = "";
+    this.renderSessions();
+    if (next == null) return;
+    this.act(() => this.socket.send({ type: "manage", action: "ws.rename", id, name: next }));
+  }
+
+  private dropWs(id: string): void {
+    this.act(() => this.socket.send({ type: "manage", action: "ws.drop", id }));
+  }
+
+  private createWs(): void {
+    // 组的 id 由桥生成，页面猜不出来：先要一个空组，等广播回来再进改名态。
+    this.wsCreatePending = true;
+    window.setTimeout(() => {
+      this.wsCreatePending = false;
+    }, 5000);
+    this.act(() => this.socket.send({ type: "manage", action: "ws.create", name: "" }));
+  }
+
+  private sessionSection(kind: "archived", title: string, list: SessionState[]): HTMLElement {
     const sec = el("div", "session-sec");
     sec.dataset.sec = kind;
     const head = el("div", "sess-head");
-    if (kind === "archived") {
+    {
       const toggle = () => {
         this.archivedOpen = !this.archivedOpen;
         this.renderSessions();
@@ -3376,28 +4233,12 @@ export class App {
       const label = el("span", "label", title);
       label.onclick = toggle;
       head.append(chev, label);
-    } else {
-      head.append(el("span", "label", title));
     }
-    head.append(el("span", "n", String(kind === "archived" ? this.archivedTotal() : list.length)));
+    head.append(el("span", "n", String(this.archivedTotal())));
     sec.append(head);
 
     const cards = el("div", "session-cards");
     for (const s of list) cards.append(this.sessionCard(s));
-    if (kind !== "archived") {
-      cards.ondragover = (ev) => {
-        if (!this.dragId) return;
-        ev.preventDefault();
-      };
-      cards.ondrop = (ev) => {
-        if (!this.dragId) return;
-        ev.preventDefault();
-        const node = this.dragNode(this.dragId);
-        if (node) cards.append(node);
-        this.commitArrangement();
-        this.dragId = null;
-      };
-    }
     sec.append(cards);
     return sec;
   }
@@ -3425,40 +4266,16 @@ export class App {
         card.click();
       }
     };
-    if (!this.filter) {
+    // 拖拽只在树里（#99）：归档是全局分区，拖进任何工作区都说不清语义，干脆不让拖。
+    if (!this.filter && !archived) {
       card.draggable = true;
       card.ondragstart = (ev) => {
-        this.dragId = s.id;
+        this.beginDrag(s.id);
         card.classList.add("dragging");
         ev.dataTransfer?.setData("text/plain", s.id);
         if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
       };
-      card.ondragend = () => {
-        this.dragId = null;
-        card.classList.remove("dragging");
-        for (const n of this.els.sessList.querySelectorAll(".over-top,.over-bottom")) n.classList.remove("over-top", "over-bottom");
-      };
-      card.ondragover = (ev) => {
-        if (!this.dragId || this.dragId === s.id) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        const r = card.getBoundingClientRect();
-        const after = ev.clientY > r.top + r.height / 2;
-        card.classList.toggle("over-top", !after);
-        card.classList.toggle("over-bottom", after);
-      };
-      card.ondragleave = () => card.classList.remove("over-top", "over-bottom");
-      card.ondrop = (ev) => {
-        if (!this.dragId || this.dragId === s.id) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        const from = this.dragNode(this.dragId);
-        if (!from) return;
-        card.after(from);
-        for (const n of this.els.sessList.querySelectorAll(".over-top,.over-bottom")) n.classList.remove("over-top", "over-bottom");
-        this.commitArrangement();
-        this.dragId = null;
-      };
+      card.ondragend = () => this.endDrag();
     }
 
     const row = el("div", "row");
@@ -3565,25 +4382,6 @@ export class App {
     return card;
   }
 
-  /** Mirrors bridge/src/manage.ts: pinned by hand, then manual order, then new ones newest first. */
-  private arrangeCompare(a: SessionState, b: SessionState): number {
-    const aa = this.manage.archived.includes(a.id);
-    const ba = this.manage.archived.includes(b.id);
-    if (aa !== ba) return aa ? 1 : -1;
-    const ap = this.manage.pin.indexOf(a.id);
-    const bp = this.manage.pin.indexOf(b.id);
-    if (ap >= 0 || bp >= 0) {
-      if (ap < 0) return 1;
-      if (bp < 0) return -1;
-      return ap - bp;
-    }
-    const ao = this.manage.order.indexOf(a.id);
-    const bo = this.manage.order.indexOf(b.id);
-    if (ao >= 0 && bo >= 0) return ao - bo;
-    if (ao < 0 && bo < 0) return (Date.parse(b.startedAt ?? "") || b.updatedAt) - (Date.parse(a.startedAt ?? "") || a.updatedAt);
-    return ao < 0 ? -1 : 1;
-  }
-
   private matchesFilter(s: SessionState): boolean {
     const q = this.filter.toLowerCase();
     return !q || `${s.name} ${s.cwd}`.toLowerCase().includes(q);
@@ -3597,19 +4395,182 @@ export class App {
     return this.els.sessList.querySelector<HTMLElement>(`.session-card[data-id="${id}"]`);
   }
 
+  /** #99：拖动开始 —— 挂上「放回工程」落点 + Esc / 窗口失焦的清理。 */
+  private beginDrag(id: string): void {
+    this.dragId = id;
+    this.showPool(id);
+    this.dragCleanup?.();
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") this.endDrag();
+    };
+    const onBlur = () => this.endDrag();
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("blur", onBlur);
+    this.dragCleanup = () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", onBlur);
+      this.dragCleanup = null;
+    };
+  }
+
+  /** 拖完 / 取消 / 失焦：高亮、落点、监听全清掉；dragId 归零后松手不再动作。 */
+  private endDrag(): void {
+    this.dragId = null;
+    this.clearDropLine();
+    this.dragPool?.remove();
+    this.dragPool = null;
+    this.dragCleanup?.();
+    for (const node of (this.dragScope?.el ?? this.els.sessList).querySelectorAll(".dragging")) node.classList.remove("dragging");
+  }
+
+  /** 「放回工程」：只在拖动时出现 —— 拖到它上面 = 删掉 override，回到 cwd 推导。 */
+  private showPool(id: string): void {
+    if (this.dragPool) return;
+    const session = this.sessions.find((s) => s.id === id);
+    if (!session) return;
+    const pool = el("div", "ws-pool");
+    pool.append(el("span", "label", tr("放回工程")));
+    const name = this.projectNameOf(session);
+    pool.append(el("span", "sub", name ? tr("按 cwd 回到「{p1}」", { p1: name }) : tr("按 cwd 回到推导出来的组")));
+    const host = this.dropScope().el;
+    const archived = host.querySelector<HTMLElement>('.session-sec[data-sec="archived"]');
+    if (archived) host.insertBefore(pool, archived);
+    else host.append(pool);
+    this.dragPool = pool;
+  }
+
+  /** 会话的 cwd 本来会落在哪个组（忽略 override）：给「放回工程」落点写目标名。 */
+  private projectNameOf(session: SessionState): string {
+    const cwd = normalizeWsPath(session.cwd ?? "");
+    if (!cwd) return "";
+    const root = normalizeWsPath(this.workspaces.keys?.[cwd.toLowerCase()] ?? cwd);
+    const id = root.toLowerCase();
+    return (this.workspaces.groups ?? []).find((g) => g.id === id)?.name || "";
+  }
+
+  /**
+   * #98：拖动落点的「量尺」。默认是左栏那棵树；B 那张浮层开着时换成浮层 —— 组 / 段头 / 行的
+   * 类名不同，但量出来的 `DropHit` 与真正的落点判定（`hitTest()`）是同一份。
+   */
+  private dropScope(): { el: HTMLElement; group: string; head: string; item: string } {
+    return this.dragScope ?? { el: this.els.sessList, group: ".ws-sec", head: ".ws-head", item: ".session-card" };
+  }
+
+  /** 一整块树（或浮层）接管 dragover / drop：落点判定交给 `hitTest()`（纯函数，单测在 `web/tests/drag-unit.mjs`）。 */
+  private wireTreeDrops(host: HTMLElement): void {
+    host.ondragover = (ev) => {
+      if (!this.dragId) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+      this.paintDrop(this.hitAt(ev.clientY, host), host);
+    };
+    host.ondragleave = (ev) => {
+      if (!this.dragId) return;
+      // 在组与卡片之间移动也会冒 dragleave：只有真的离开树才清高亮。
+      const to = ev.relatedTarget as Node | null;
+      if (to && host.contains(to)) return;
+      this.clearDropLine();
+    };
+    host.ondrop = (ev) => this.onTreeDrop(ev, host);
+  }
+
+  private onTreeDrop(ev: DragEvent, host: HTMLElement): void {
+    const id = this.dragId;
+    if (!id) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const hit = this.hitAt(ev.clientY, host);
+    const fromWs = this.cardWs(id);
+    this.endDrag();
+    if (!hit) return;
+    const plan = planDrop(id, fromWs, hit);
+    if (plan.action === "move" || plan.action === "restore") {
+      // 跨组 / 放回工程都只发 ws.move：不重写 order，别的组的顺序一根手指都不碰。
+      this.act(() => this.socket.send({ type: "manage", action: "ws.move", ids: plan.ids, wsId: plan.wsId }));
+      return;
+    }
+    const node = this.dragNode(id);
+    const cards = node?.parentElement;
+    if (!node || !cards) return;
+    const nodes = new Map([...cards.querySelectorAll<HTMLElement>(".session-card")].map((n) => [n.dataset.id ?? "", n]));
+    // 组内重排：按落点插进去，再把这一组的新顺序读出来交给 arrange。
+    for (const otherId of moveTo([...nodes.keys()], id, plan.index)) {
+      const other = nodes.get(otherId);
+      if (other) cards.append(other);
+    }
+    this.commitArrangement();
+  }
+
+  private paintDrop(hit: DropHit | null, host: HTMLElement = this.els.sessList): void {
+    if (!hit) {
+      this.clearDropLine();
+      return;
+    }
+    // 落点线挂在「用户正在拖的那块」里：树的线不能画到浮层上（坐标是两套）。
+    if (this.dropLine && this.dropLine.parentElement !== host) this.clearDropLine();
+    let line = this.dropLine;
+    if (!line) {
+      line = el("div", "drop-line");
+      host.append(line);
+      this.dropLine = line;
+    }
+    line.style.top = `${Math.round(hit.line - host.getBoundingClientRect().top)}px`;
+    line.dataset.ws = hit.wsId;
+    line.dataset.index = String(hit.index);
+    line.dataset.pool = String(hit.pool);
+    line.title = hit.pool ? tr("放回工程") : "";
+    this.dragPool?.classList.toggle("over", hit.pool);
+  }
+
+  private clearDropLine(): void {
+    this.dropLine?.remove();
+    this.dropLine = null;
+    this.dragPool?.classList.remove("over");
+  }
+
+  /** 量一遍树：组、组里可见卡片（剔除拖动源自己）、「放回工程」。 */
+  private hitAt(clientY: number, host: HTMLElement = this.dropScope().el): DropHit | null {
+    const scope = this.dropScope();
+    const groups = [...host.querySelectorAll<HTMLElement>(scope.group)].map((sec) => {
+      const box = sec.getBoundingClientRect();
+      const head = sec.querySelector<HTMLElement>(scope.head);
+      const items = [...sec.querySelectorAll<HTMLElement>(scope.item)]
+        .filter((card) => card.dataset.id !== this.dragId)
+        .map((card) => {
+          const r = card.getBoundingClientRect();
+          return { id: card.dataset.id ?? "", top: r.top, bottom: r.bottom };
+        })
+        .filter((item) => item.bottom > item.top); // 收起的组：卡片量出来是 0 高，不算落点
+      return {
+        wsId: sec.dataset.ws ?? "",
+        top: box.top,
+        bottom: box.bottom,
+        contentTop: head ? head.getBoundingClientRect().bottom : box.top,
+        items,
+      };
+    });
+    const poolEl = host.querySelector<HTMLElement>(".ws-pool");
+    const pool = poolEl ? poolEl.getBoundingClientRect() : null;
+    return hitTest(clientY, groups, pool ? { top: pool.top, bottom: pool.bottom } : null);
+  }
+
+  private cardWs(id: string): string {
+    // 拖的可能是浮层里那一行：树里同名卡片与它同属一个组，先找树，再退回浮层。
+    const node = this.dragNode(id) ?? this.wsPopBody?.querySelector<HTMLElement>(`.ws-pop-item[data-id="${id}"]`) ?? null;
+    return node?.closest<HTMLElement>(this.dropScope().group)?.dataset.ws ?? "";
+  }
+
   /** Read pin/order straight off the DOM after a drop: the DOM is what the user just arranged. */
   private commitArrangement(): void {
     const pin: string[] = [];
     const order: string[] = [];
-    for (const sec of this.els.sessList.querySelectorAll<HTMLElement>(".session-sec")) {
-      const kind = sec.dataset.sec;
-      if (kind === "archived") continue;
-      for (const card of sec.querySelectorAll<HTMLElement>(".session-card")) {
-        const id = card.dataset.id;
-        if (!id) continue;
-        if (kind === "pin") pin.push(id);
-        else order.push(id);
-      }
+    // 卡片的顺序是树里的顺序；★ 位置决定它进 pin 还是 order（★ 只在组内生效）。
+    for (const card of this.els.sessList.querySelectorAll<HTMLElement>('.session-sec:not([data-sec="archived"]) .session-card')) {
+      const id = card.dataset.id;
+      if (!id) continue;
+      if (this.manage.pin.includes(id)) pin.push(id);
+      else order.push(id);
     }
     // The DOM cannot say where the cards the filter hides belong; keep their slots behind the rest.
     for (const s of this.sessions) {
@@ -6313,8 +7274,11 @@ export class App {
       body.append(el("div", "takeover warn", tr("这个项目没有被信任：pi 不会读它的 .pi/settings.json，也拒绝写它。先到「项目信任」里信任它。")));
     }
     if (view.error) body.append(el("div", "takeover warn", tr("{p1}。下面的表单不可用，用「编辑 JSON」修好文件。", { p1: view.error })));
-    const data = (view.json ?? {}) as Record<string, unknown>;
-    const get = (key: string): unknown => key.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), data);
+    // SAFETY: settings.json 就是 JSON，六种叶子 + 嵌套，和 `SettingsCell` 一一对应；
+    // 桥那边解析失败时会带 `view.error`，表单本来也不可用。
+    const data = (view.json ?? {}) as SettingsCellOf;
+    const get = (key: string): SettingsCell =>
+      key.split(".").reduce<SettingsCell>((o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined), data);
     const patch: Record<string, unknown> = {};
     const form = el("div", "settings-form");
     const save = el("button", "btn primary", tr("保存")) as HTMLButtonElement;
@@ -9045,13 +10009,19 @@ export class App {
   private renderPanes(): void {
     const { sessionsPane, chatPane, queuePane, main } = this.els;
     const desktop = window.matchMedia("(min-width: 900px)").matches;
+    // 两行制跟着断点与 currentId 走，窗口一拖也得重摆（renderPanes 在 resize 的 rAF 里跑）。
+    // #98：C 的竖列 / D 的色点条也一样 —— 断点、收起状态、当前会话任一变了都得重画。
+    // 那颗的落点也跟断点走（窄屏进顶栏），所以这里顺手再摆一次（只在真的跨断点时才动 DOM）。
+    this.placeNowChip();
+    this.renderShellAxes();
+    this.renderSessionRow();
+    this.renderWorkspaceTabs();
     if (desktop) {
       sessionsPane.hidden = this.collapsed.sessions;
       chatPane.hidden = false;
       queuePane.hidden = this.collapsed.queue;
       main.classList.toggle("no-left", this.collapsed.sessions);
       main.classList.toggle("no-right", this.collapsed.queue);
-      this.renderPinStrip();
       this.syncCwdChip();
       return;
     }
@@ -9059,8 +10029,83 @@ export class App {
     sessionsPane.hidden = this.tab !== "sessions";
     chatPane.hidden = this.tab !== "chat";
     queuePane.hidden = this.tab !== "queue";
-    this.renderPinStrip();
     this.syncCwdChip();
+  }
+
+  /**
+   * #98：C 的竖列（常驻，48px）与 D 的色点条（只在左栏收起时出现，52px）。
+   * 两套用的是同一份 `railModel()` —— 一行就是「一个工作区」，只有尺寸不同，不复制一份数据逻辑。
+   * 窄屏四套统一退化（一根竖列也不留），所以这里先看断点。
+   */
+  private renderShellAxes(): void {
+    const parts = shellParts(activeLayout(this.prefs));
+    const desktop = window.matchMedia("(min-width: 900px)").matches;
+    if (this.rail) {
+      this.rail.hidden = !(parts.rail && desktop);
+      if (!this.rail.hidden) this.paintAxis(this.rail, "rail");
+    }
+    if (this.strip) {
+      this.strip.hidden = !(parts.strip && desktop && this.collapsed.sessions);
+      if (!this.strip.hidden) this.paintAxis(this.strip, "strip");
+    }
+  }
+
+  /** 竖列 / 色点条的一格：色点（与树同一个 `wsColor()`）+ 两字头 + 待处理角标。 */
+  private paintAxis(host: HTMLElement, kind: "rail" | "strip"): void {
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+    const cur = this.currentWsId();
+    const now = this.session;
+    host.replaceChildren();
+    host.dataset.kind = kind;
+    for (const item of railModel(tree.groups, cur)) {
+      host.append(this.axisItem(item, now?.name ?? ""));
+    }
+    // 竖列/色点条只负责切组，不做拖排序（#98 票面）：落到它上面的拖动一律不接。
+    const foot = el("div", "ws-axis-foot");
+    const add = el("button", "ws-axis-ghost", tr("＋")) as HTMLButtonElement;
+    add.type = "button";
+    add.dataset.act = "new";
+    add.title = tr("开新会话");
+    add.setAttribute("aria-label", tr("开新会话"));
+    add.onclick = () => this.openNewSessionSheet(true);
+    foot.append(add);
+    // 色点条只在左栏收起时出现 —— 它就是那颗「展开回去」的按钮。竖列旁边有顶栏那颗，不用重复。
+    if (kind === "strip") {
+      // 箭头不是文案，不进词典（`i18n-check` 只认 CJK 键）。
+      const expand = el("button", "ws-axis-ghost", "▸") as HTMLButtonElement;
+      expand.type = "button";
+      expand.dataset.act = "expand";
+      expand.title = tr("展开左侧会话栏");
+      expand.setAttribute("aria-label", tr("展开左侧会话栏"));
+      expand.onclick = () => this.togglePane("sessions");
+      foot.append(expand);
+    }
+    host.append(foot);
+  }
+
+  private axisItem(item: RailItem, sessionName: string): HTMLElement {
+    const btn = el("button", `ws-axis-item${item.current ? " on" : ""}`) as HTMLButtonElement;
+    btn.type = "button";
+    btn.dataset.ws = item.id;
+    btn.title = item.current && sessionName
+      ? tr("{p1} · {p2}（当前）", { p1: item.name, p2: sessionName })
+      : tr("{p1}，{p2} 个会话", { p1: item.name, p2: item.count });
+    btn.setAttribute("aria-label", tr("{p1}，{p2} 个会话", { p1: item.name, p2: item.count }));
+    if (item.current) btn.setAttribute("aria-current", "true");
+    const dot = el("span", "ws-axis-dot");
+    dot.style.background = item.color;
+    btn.append(dot, el("span", "ws-axis-label", item.label));
+    if (item.pending) {
+      const todo = el("span", "ws-axis-todo", String(item.pending));
+      todo.title = tr("{p1} 个会话在等你", { p1: item.pending });
+      btn.append(todo);
+    }
+    btn.onclick = () => {
+      const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+      const group = tree.groups.find((g) => g.id === item.id);
+      if (group) this.gotoGroup(group);
+    };
+    return btn;
   }
 
   /**
@@ -9077,7 +10122,8 @@ export class App {
     const btn = el("button", "cwd-chip") as HTMLButtonElement;
     const path = el("span", "cwd-path", cwd);
     btn.append(path);
-    btn.title = tr("{p1}\n点一下复制路径", { p1: cwd });
+    // 键里的 \n 会让 i18n 键扫描把 `{p1}` 当成键本身（既有误报），换行拼在键外。
+    btn.title = cwd + "\n" + tr("点一下复制路径");
     btn.onclick = () => {
       // 和 git chip 一样：`navigator.clipboard` 在局域网 http 下不存在，可选链要包住调用不是属性。
       const copy = navigator.clipboard?.writeText(cwd);
@@ -9099,20 +10145,275 @@ export class App {
    * With the left column collapsed there is nowhere to click a pinned session. A row of chips under
    * the topbar keeps them one click away — same order as the list's 置顶 section, newest name first.
    */
-  private renderPinStrip(): void {
-    const host = this.els.pinStrip;
-    const seen = this.collapsed.sessions && window.matchMedia("(min-width: 900px)").matches;
-    // 条要整个重建（锚点那颗胶囊跟着消失），折起来的那张列表不能留在屏幕上。
-    this.pillBar.closeMore();
-    if (!seen) {
-      host.hidden = true;
+  /**
+   * #97 壳 A 行 1：工作区标签页。横向一条、装不下就右端渐隐（不出横滚条 —— 深色顶栏下面
+   * 一条细滚动条像条裂缝）；当前工作区高亮，有会话卡在用户身上时带一颗待处理点。
+   * 点一下 = 切到那一组：打开组里排最上面的那颗会话（★ 优先，跟左栏同一份顺序）。
+   */
+  private renderWorkspaceTabs(): void {
+    const { wsTabsRow, wsTabs } = this.els;
+    if (!wsTabsRow || !wsTabs) return;
+    const desktop = window.matchMedia("(min-width: 900px)").matches;
+    // #98：标签行只属于 A；B/C/D 的切组入口分别是浮层 / 竖列 / 色点条 + 树。
+    const parts = shellParts(activeLayout(this.prefs));
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+    const cur = this.currentWsId();
+    wsTabs.replaceChildren();
+    wsTabsRow.hidden = !desktop || !parts.tabsRow || !tree.groups.length;
+    if (wsTabsRow.hidden) return;
+    for (const group of tree.groups) {
+      const tab = el("button", `ws-tab${group.id === cur ? " on" : ""}`);
+      tab.dataset.ws = group.id;
+      tab.title = tr("切到这个工作区");
+      tab.setAttribute("aria-label", tr("{p1}，{p2} 个会话", { p1: group.name, p2: group.sessions.length }));
+      if (group.id === cur) tab.setAttribute("aria-current", "true");
+      const dot = el("span", "ws-tab-dot");
+      dot.style.background = group.color;
+      tab.append(dot, el("span", "ws-tab-name", group.name));
+      if (group.pending) {
+        const todo = el("span", "ws-tab-todo");
+        todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
+        tab.append(todo);
+      }
+      tab.onclick = () => this.gotoGroup(group);
+      wsTabs.append(tab);
+    }
+    // 量宽要等布局落地：hidden 刚摘掉的那一帧 clientWidth 还是 0。
+    requestAnimationFrame(() => this.paintWsTabFade());
+  }
+
+  private paintWsTabFade(): void {
+    const box = this.els.wsTabs;
+    if (!box) return;
+    box.classList.toggle("fade", box.scrollWidth > box.clientWidth + 1);
+  }
+
+  /** 当前会话所在的工作区 id；没当前会话 / 旧桥没有分组时是 null。 */
+  private currentWsId(): string | null {
+    const s = this.session;
+    if (!s || !this.workspaces?.groups?.length) return null;
+    const listed = this.sessions.find((x) => x.id === s.id);
+    return wsOf(s, this.workspaces, listed?.ws)?.id ?? null;
+  }
+
+  /** 标签页点击：切到那一组 = 打开它排在最上面的那颗；手建的空组没有会话可开，就把左栏展开。 */
+  private gotoGroup(group: TreeGroup<SessionState>): void {
+    const first = group.sessions[0];
+    if (first) {
+      this.openFromList(first.id);
       return;
     }
-    host.hidden = false;
+    if (this.collapsed.sessions) this.togglePane("sessions");
+    if (this.prefs.wsCollapsed.includes(group.id)) this.toggleWs(group.id);
+  }
+
+  /* ------------------------------------------------- 壳 B / C / D（#98） */
+
+  /**
+   * 顶栏那颗的点击：窄屏四套统一退化 —— 点一下就是打开左栏（会话是一页 tab，没有浮层也没有竖列）；
+   * 桌面只有 B/C/D 接（A 里那颗仍是指示，摆在行 2 上）。
+   */
+  private onWhereClick(): void {
+    if (!window.matchMedia("(min-width: 900px)").matches) {
+      this.go("sessions");
+      return;
+    }
+    if (!shellParts(activeLayout(this.prefs)).chipOpensOverlay || !this.nowBtn) return;
+    this.toggleWsPop(this.nowBtn);
+  }
+
+  /**
+   * #98 B 那层浮层（C/D 里点那颗也开同一张）：按工作区分段列会话 —— 段头点一下切组、会话行点
+   * 一下开会话、会话行可以拖（票面要求；落点判定与左栏共用 `hitTest()`，不是第二套实现）。
+   * 一次只开一张，关掉时监听一起摘。
+   */
+  private toggleWsPop(anchor: HTMLElement): void {
+    if (this.wsPop) {
+      this.closeWsPop();
+      return;
+    }
+    this.openWsPop(anchor);
+  }
+
+  private openWsPop(anchor: HTMLElement): void {
+    this.closeWsPop();
+    const pop = el("div", "ws-pop");
+    pop.setAttribute("role", "dialog");
+    pop.setAttribute("aria-label", tr("工作区与会话"));
+    const body = el("div", "ws-pop-body");
+    const foot = el("div", "ws-pop-foot");
+    const add = el("button", "btn ghost ws-pop-add", tr("＋ 新会话")) as HTMLButtonElement;
+    add.type = "button";
+    add.dataset.act = "new";
+    add.onclick = () => {
+      this.closeWsPop();
+      this.openNewSessionSheet(true);
+    };
+    foot.append(add);
+    pop.append(body, foot);
+    document.body.append(pop);
+    this.wsPop = pop;
+    this.wsPopBody = body;
+    // 拖动落在这张浮层里：落点线 / 落点判定还是那一份，只是换成量浮层这块 DOM。
+    this.dragScope = { el: body, group: ".ws-pop-sec", head: ".ws-pop-sec-head", item: ".ws-pop-item" };
+    this.renderWsPop();
+    anchor.setAttribute("aria-expanded", "true");
+    // 贴着那颗：右缘不出屏，下缘不出屏就往上翻。
+    const r = anchor.getBoundingClientRect();
+    const w = pop.offsetWidth;
+    const h = pop.offsetHeight;
+    pop.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - w - 8)))}px`;
+    const top = r.bottom + 6 + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 6) : r.bottom + 6;
+    pop.style.top = `${Math.round(top)}px`;
+    const onDown = (ev: PointerEvent) => {
+      const t = ev.target as Node | null;
+      if (t && (pop.contains(t) || anchor.contains(t))) return;
+      this.closeWsPop();
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.closeWsPop();
+      anchor.focus();
+    };
+    const onAway = () => this.closeWsPop();
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", onAway);
+    window.addEventListener("hashchange", onAway);
+    this.wsPopCleanup = () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", onAway);
+      window.removeEventListener("hashchange", onAway);
+    };
+  }
+
+  private closeWsPop(): void {
+    this.wsPopCleanup?.();
+    this.wsPopCleanup = null;
+    this.wsPop?.remove();
+    this.wsPop = null;
+    this.wsPopBody = null;
+    this.dragScope = null;
+    this.dropLine?.remove();
+    this.dropLine = null;
+    this.nowBtn?.setAttribute("aria-expanded", "false");
+  }
+
+  /** 内容每次开 / 会话列表一变就重画：段序、计数、当前那颗的高亮都跟着 `buildTree()` 走。 */
+  private renderWsPop(): void {
+    const body = this.wsPopBody;
+    if (!body) return;
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+    const curWs = this.currentWsId();
+    const curId = this.currentId;
+    body.replaceChildren();
+    if (!tree.groups.length) {
+      body.append(el("div", "ws-pop-empty", tr("还没有工作区。")));
+      return;
+    }
+    for (const group of tree.groups) {
+      const sec = el("section", "ws-pop-sec");
+      sec.dataset.ws = group.id;
+      const head = el("button", `ws-pop-sec-head${group.id === curWs ? " on" : ""}`) as HTMLButtonElement;
+      head.type = "button";
+      head.dataset.ws = group.id;
+      const dot = el("span", "ws-tab-dot");
+      dot.style.background = group.color;
+      const name = el("span", "ws-pop-sec-name", group.name);
+      head.append(dot, name);
+      if (group.pending) {
+        const todo = el("span", "ws-tab-todo");
+        todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
+        head.append(todo);
+      }
+      head.append(el("span", "n", String(group.sessions.length)));
+      head.title = tr("切到这个工作区");
+      head.setAttribute("aria-label", tr("{p1}，{p2} 个会话", { p1: group.name, p2: group.sessions.length }));
+      if (group.id === curWs) head.setAttribute("aria-current", "true");
+      head.onclick = () => {
+        this.closeWsPop();
+        this.gotoGroup(group);
+      };
+      sec.append(head);
+      for (const s of group.sessions) sec.append(this.wsPopItem(s, curId));
+      body.append(sec);
+    }
+    this.wireTreeDrops(body);
+  }
+
+  /** 浮层里的一行：与树里同一套视觉语言（在线点 / 待处理角标 / 当前高亮）。 */
+  private wsPopItem(s: SessionState, curId: string | null): HTMLElement {
+    const item = el("div", `ws-pop-item${s.id === curId ? " on" : ""}`);
+    item.dataset.id = s.id;
+    item.setAttribute("role", "button");
+    item.tabIndex = 0;
+    if (s.id === curId) item.setAttribute("aria-current", "true");
+    const dot = el("span", `dot ${s.running ? "busy" : s.owned ? "live" : ""}`);
+    dot.title = s.running ? tr("运行中") : s.owned ? tr("网页已接管（pi 进程在本服务里）") : tr("未接管（只读历史；发消息会自动接管）");
+    item.append(dot, el("span", "ws-pop-item-name", s.name || s.id.slice(0, 8)));
+    const badge = sessionBadge(s, curId);
+    if (badge) {
+      const chip = el("span", `badge ${badge.cls}`, badge.text);
+      if (badge.title) chip.title = badge.title;
+      item.append(chip);
+    }
+    item.onclick = () => {
+      this.closeWsPop();
+      this.openFromList(s.id);
+    };
+    item.onkeydown = (ev) => {
+      if (ev.target !== item) return;
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        item.click();
+      }
+    };
+    // 浮层里也能拖（票面要求）；归档的会话不在任何组里，自然进不来。
+    item.draggable = !this.filter;
+    item.ondragstart = (ev) => {
+      this.beginDrag(s.id);
+      item.classList.add("dragging");
+      ev.dataTransfer?.setData("text/plain", s.id);
+      if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+    };
+    item.ondragend = () => this.endDrag();
+    return item;
+  }
+
+  /**
+   * #97 壳 A 行 2：当前会话那颗（`NowChip`，固定最左）+ 本区会话胶囊（★ 优先）+ ＋。
+   * 胶囊直接取 `buildTree()` 的结果 —— 跟左栏同一份顺序，不另算一遍，也不会跟左栏打架。
+   * 没有工作区快照（旧桥 / 桩桥）时退回置顶列表：不知道「本区」时，置顶区至少是用户自己
+   * 挑过的那批。有本区数据时当前会话不再重复出现在胶囊里 —— 最左那颗就是它。
+   */
+  private renderSessionRow(): void {
+    const host = this.els.pinStrip;
+    if (!host) return;
+    // 条要整个重建（锚点那颗胶囊跟着消失），折起来的那张列表不能留在屏幕上。
+    this.pillBar.closeMore();
+    const desktop = window.matchMedia("(min-width: 900px)").matches;
+    // #98：行 2（当前那颗 + 本区胶囊）只属于 A。B/C/D 里那颗已经搬进顶栏，整行不占地方。
+    const parts = shellParts(activeLayout(this.prefs));
+    const visible = desktop && parts.sessionRow;
+    host.hidden = !visible;
+    this.els.sessionRow.hidden = !visible;
+    if (!visible) return;
     const pins = this.manage.pin
       .map((id) => this.sessions.find((s) => s.id === id))
       .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
-    this.pillBar.render(pins, this.currentId);
+    const cur = this.session;
+    if (!cur || !this.workspaces?.groups?.length) {
+      this.pillBar.render(pins, this.currentId);
+      return;
+    }
+    const listed = this.sessions.find((x) => x.id === cur.id);
+    const group = wsOf(cur, this.workspaces, listed?.ws);
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+    const mine = group ? tree.groups.find((g) => g.id === group.id) : undefined;
+    this.pillBar.render(mine ? mine.sessions.filter((s) => s.id !== cur.id) : pins, this.currentId);
   }
 
   /* ------------------------------------------------------------------ Q-035 */
@@ -9346,7 +10647,18 @@ function writeFlag(key: string, value: boolean): void {
   }
 }
 
-type Prefs = { scale: number; accent: string; text: "soft" | "normal" | "bright"; lang: Lang };
+type Prefs = {
+  scale: number;
+  accent: string;
+  text: "soft" | "normal" | "bright";
+  lang: Lang;
+  /** 收起的工作区（#95）：组 id 列表，跟 accent 一起存在 `pi.prefs` 里，不另开 storage key。 */
+  wsCollapsed: string[];
+  /** 工作区布局（#97）：稳定 id（a/b/c/d），标签过 `tr()`；读口在 `layout.ts`。 */
+  layout: LayoutId;
+  /** #101 迁移预览只弹一次：用户点了「就这样开始」才写这个标记（取消不写，下次还弹）。 */
+  wsIntroSeen: boolean;
+};
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
 /** How long the peek card must stay before it stops following the pointer (Q-029). */
@@ -9354,7 +10666,15 @@ const PEEK_DELAY_MS = 3000;
 /** Grace after the pointer leaves, so crossing the 8px gap into the card isn't a "leave". */
 const PEEK_GAP_MS = 200;
 
-const DEFAULT_PREFS: Prefs = { scale: 1, accent: "ice", text: "normal", lang: "zh-Hans" };
+const DEFAULT_PREFS: Prefs = {
+  scale: 1,
+  accent: "ice",
+  text: "normal",
+  lang: "zh-Hans",
+  wsCollapsed: [],
+  layout: "a",
+  wsIntroSeen: false,
+};
 
 /** Context-budget presets in the model sheet; null = no ceiling (use the window). */
 const BUDGETS: (number | null)[] = [null, 100_000, 200_000, 500_000, 1_000_000];
@@ -9532,6 +10852,10 @@ interface SettingsView {
   error: string | null;
   writable: boolean;
 }
+
+/** 设置文件里的一格（JSON 的形状）：叶子 + 嵌套对象 / 数组，读不出来就是 undefined。 */
+type SettingsCell = string | number | boolean | null | undefined | SettingsCell[] | SettingsCellOf;
+type SettingsCellOf = { [key: string]: SettingsCell };
 
 interface TrustState {
   cwd: string;
@@ -9742,6 +11066,38 @@ const SIZES: [number, string][] = [
 ];
 
 /**
+ * 设置里每颗布局 chip 的那张小示意图（46×30，纯 CSS 画的块）。不引图片：设置面板要能离线
+ * 打开，也不想为四张缩略图多一条资源路径。画的是「行 / 列怎么摆」，不追求像素级复刻。
+ */
+function layoutDemo(id: LayoutId): HTMLElement {
+  const box = el("span", `layout-demo layout-${id}`);
+  box.setAttribute("aria-hidden", "true");
+  const bar = (cls: string, cells = 0): HTMLElement => {
+    const node = el("span", cls);
+    for (let i = 0; i < cells; i += 1) node.append(el("span", "ld-cell"));
+    box.append(node);
+    return node;
+  };
+  bar("ld-top");
+  if (id === "a") {
+    bar("ld-row ld-row-tabs", 3);
+    bar("ld-row ld-row-chips", 4);
+    bar("ld-body");
+  } else if (id === "b") {
+    bar("ld-row ld-row-one", 4);
+    bar("ld-body");
+  } else if (id === "c") {
+    bar("ld-rail", 3);
+    bar("ld-body-wide");
+  } else {
+    bar("ld-icons", 4);
+    for (let i = 0; i < 3; i += 1) box.append(el("span", "ld-line"));
+    bar("ld-body-wide");
+  }
+  return box;
+}
+
+/**
  * Accent pairs live in `palette.ts` because the workspace colour dot (#96) picks from the same six.
  * Keys are stable ids — they are persisted in `pi.prefs`, so they must not be translated; the
  * tooltip goes through `ACCENT_LABELS` + `tr()`. Older builds stored the Chinese colour names:
@@ -9794,6 +11150,10 @@ function readPrefs(): Prefs {
       text: TEXT_STEPS.some(([k]) => k === p?.text) ? (p.text as Prefs["text"]) : DEFAULT_PREFS.text,
       // 没存过语言（第一次打开、或老版本升上来）就跟着浏览器走。
       lang: isLang(p?.lang) ? p.lang : detectLang(),
+      wsCollapsed: Array.isArray(p?.wsCollapsed) ? p.wsCollapsed.filter((x: unknown): x is string => typeof x === "string") : [],
+      // #97：布局走 layout.ts 的读口（它自己处理乱值 / 大小写），这里不再写一遍白名单。
+      layout: layoutPref(p),
+      wsIntroSeen: p?.wsIntroSeen === true,
     };
   } catch {
     return { ...DEFAULT_PREFS, lang: detectLang() };

@@ -26,6 +26,7 @@ import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
 import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
 import { bumpSkillUsage } from "./skills.ts";
+import { describeStoreSkills, installSkill, installedSkills, previewSource, removeSkill, searchSkillStore } from "./skillstore.ts";
 import { Notifier } from "./notify.ts";
 import { anyPresent, dropClient, reportPresence } from "./presence.ts";
 import { Tunnel, findCloudflared } from "./tunnel.ts";
@@ -1287,6 +1288,90 @@ async function main(): Promise<void> {
             send({ type: "skills", sessionId: msg.sessionId ?? null, commands: list });
             return;
           }
+          // ------------------------------------------------ 技能商店 (D126)
+          case "skill.store": {
+            // Read-only (a search), so the tunnel may ask too: nothing is written and the bridge
+            // only forwards the public directory's own answer. Two stages, like the 扩展 manager
+            // (D113): the ranked list goes out immediately, the descriptions when they land.
+            const limit = Math.min(50, Math.max(1, Number(msg.limit) || 20));
+            const query = String(msg.query ?? "");
+            try {
+              const ranked = await searchSkillStore(query, limit);
+              send({ type: "skill.store", query, ...ranked });
+              void describeStoreSkills(ranked.items)
+                .then((more) => send({ type: "skill.store.meta", query, ...more }))
+                .catch(() => {});
+            } catch (err: any) {
+              send({ type: "skill.store", query, items: [], error: String(err?.message ?? err), errCode: "skill_store_failed" });
+            }
+            return;
+          }
+          case "skill.installed": {
+            const cwd = msg.cwd ? String(msg.cwd) : null;
+            try {
+              send({ type: "skill.installed", cwd, items: installedSkills(cwd) });
+            } catch (err: any) {
+              send({ type: "skill.installed", cwd, items: [], error: String(err?.message ?? err), errCode: "skill_scan_failed" });
+            }
+            return;
+          }
+          case "skill.source": {
+            // 按地址安装: list the skills inside a repo or a local directory (no writes).
+            const source = String(msg.source ?? "");
+            try {
+              const preview = await previewSource(source);
+              send({ type: "skill.source", ...preview, query: source });
+            } catch (err: any) {
+              send({ type: "skill.source", source, items: [], error: String(err?.message ?? err), errCode: "skill_source_failed" });
+            }
+            return;
+          }
+          case "skill.install": {
+            const reqId = typeof msg.reqId === "string" ? msg.reqId.slice(0, 60) : null;
+            if ((ws as any).publicReq) {
+              send({ type: "skill.install.done", reqId, ok: false, error: "通过公网访问时只能查看，安装 / 卸载技能请在本机或局域网操作", errCode: "skill_public" });
+              return;
+            }
+            if (!(await requireStepUp())) return;
+            const scope: "user" | "project" = msg.scope === "project" ? "project" : "user";
+            const cwd = msg.cwd ? String(msg.cwd) : null;
+            const req = {
+              source: msg.source ? String(msg.source) : undefined,
+              dir: typeof msg.dir === "string" ? msg.dir : undefined,
+              skillId: msg.skillId ? String(msg.skillId) : undefined,
+              local: msg.local ? String(msg.local) : undefined,
+              name: msg.name ? String(msg.name) : undefined,
+              scope,
+              cwd,
+            };
+            log(`skill install ${JSON.stringify({ ...req, reqId: undefined })}`);
+            // One writer at a time: two installs into the same skill root must not interleave, and
+            // neither must an install and an uninstall of the same folder.
+            try {
+              const out = await writeLock("skills", () => installSkill(req));
+              send({ type: "skill.install.done", reqId, ok: true, ...out });
+            } catch (err: any) {
+              send({ type: "skill.install.done", reqId, ok: false, error: String(err?.message ?? err), errCode: "skill_install_failed" });
+            }
+            return;
+          }
+          case "skill.remove": {
+            const reqId = typeof msg.reqId === "string" ? msg.reqId.slice(0, 60) : null;
+            if ((ws as any).publicReq) {
+              send({ type: "skill.remove.done", reqId, ok: false, error: "通过公网访问时只能查看，安装 / 卸载技能请在本机或局域网操作", errCode: "skill_public" });
+              return;
+            }
+            if (!(await requireStepUp())) return;
+            const target = String(msg.path ?? "");
+            log(`skill remove ${target}`);
+            try {
+              const out = await writeLock("skills", async () => removeSkill(target));
+              send({ type: "skill.remove.done", reqId, ok: true, ...out });
+            } catch (err: any) {
+              send({ type: "skill.remove.done", reqId, ok: false, path: target, error: String(err?.message ?? err), errCode: "skill_remove_failed" });
+            }
+            return;
+          }
           // ------------------------------------------------ settings / trust / reload (#26 #21)
           case "settings.get": {
             const scope = msg.scope === "project" ? "project" : "global";
@@ -1796,9 +1881,8 @@ async function main(): Promise<void> {
               return;
             }
             if (action === "opened") {
-              // D125: 打开即置顶。没改动也回一份快照 —— 前端乐观改过自己的 manage，
-              // 否则一个不存在的 id 会一直挂在它的置顶条上。
-              sessions.opened(String(msg.id ?? ""));
+              // D130 废止了 D125：打开会话不改排列，所以这里什么也不写。仍然回一份快照，是因为
+              // 旧页面（缓存里的 bundle）还会先乐观置顶再发这一条 —— 快照把它的 manage 纠正回来。
               broadcast({ type: "manage", ...manageSnapshot() });
               return;
             }
