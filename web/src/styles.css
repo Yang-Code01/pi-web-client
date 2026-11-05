@@ -2504,3 +2504,66 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* pi 的工具调用步骤（文字为空）：留在 DOM 里守住顺序，但别画出来。 */
 .sc-row.sc-step[hidden], .sc-who[hidden] { display: none; }
 .sc-model { font: 10px/1 var(--mono); letter-spacing: 0.04em; color: var(--faint); text-transform: none; }
+
+/* --------------------------------------------------- background sub-agent runs (D133)
+   These hang off the transcript's tail, not off a turn: the ops module of a turn is closed by the
+   next one, and a runner started three messages ago is still working when that happens. */
+.runs { display: grid; gap: 8px; margin: 10px 0 4px; }
+.runs:empty { display: none; }
+.run-card {
+  border: 1px solid var(--line-soft);
+  border-left: 2px solid var(--accent-dim);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #10161b, #0e1216);
+  padding: 9px 12px 9px 11px;
+  display: grid;
+  gap: 6px;
+}
+.run-card[data-state="done"] { border-left-color: #1d3a2a; }
+.run-card[data-state="failed"] { border-left-color: #40222a; }
+.run-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.run-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+.run-card[data-state="running"] .run-dot,
+.run-card[data-state="queued"] .run-dot { animation: run-breathe 2.4s ease-out infinite; }
+.run-dot.idle { background: var(--warn); animation: none; }
+.run-card[data-state="done"] .run-dot { background: var(--ok); animation: none; }
+.run-card[data-state="failed"] .run-dot { background: var(--danger); animation: none; }
+.run-agent { font: 12px/1.4 var(--mono); color: var(--accent); flex: 0 0 auto; }
+.run-card[data-state="done"] .run-agent { color: var(--ok); }
+.run-task { font-size: 13px; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-task.muted { color: var(--dim); }
+.run-time { margin-left: auto; font: 11px/1 var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+.run-line {
+  font: 11.5px/1.5 var(--mono);
+  color: var(--dim);
+  border-left: 1px solid var(--line-soft);
+  padding-left: 8px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-tool { color: var(--dim); }
+.run-steps, .run-dim { color: var(--faint); }
+.run-ok { color: var(--ok); }
+.run-bad { color: var(--danger); }
+.run-acts { display: flex; gap: 6px; }
+.run-acts[hidden] { display: none; }
+.run-act {
+  font: 11px/1 var(--mono);
+  color: var(--faint);
+  background: none;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.run-act:hover { color: var(--text); border-color: #2f3746; }
+@keyframes run-breathe {
+  0% { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(125, 211, 252, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-card .run-dot { animation: none; }
+}

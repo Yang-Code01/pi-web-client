@@ -2,7 +2,8 @@ import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./
 import { highlightFragment } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
-import type { BashItem, Item, ToolItem, UserItem } from "./types.ts";
+import type { BashItem, BgRun, Item, ToolItem, UserItem } from "./types.ts";
+import { BgRunsView } from "./bgruns.ts";
 import { fmtTime, tr } from "./i18n/index.ts";
 
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
@@ -139,6 +140,8 @@ export class ChatView {
   private liveKey = "";
   /** This turn's written files, as chips under the ops module. */
   private opsFiles: HTMLElement | null = null;
+  /** Background sub-agent runs: a strip at the foot of the transcript, outside any turn's ops module. */
+  private bgView: BgRunsView | null = null;
   /** The user turns, in order — one tick on the rail each. `reset()` refills it through `add()`. */
   private turns: { node: HTMLElement; label: string }[] = [];
   /** 右缘的轮次缩略图（Q-028）。它挂在滚动视口外面，所以不会随之滚走。 */
@@ -342,6 +345,22 @@ export class ChatView {
   /** Everything the transcript appends goes in *before* the jump button, which must stay the last child. */
   private push(node: HTMLElement): void {
     this.root.insertBefore(node, this.jump);
+    // The run strip is the tail by definition: it must stay below whatever just arrived.
+    if (this.bgView?.el.isConnected) this.root.insertBefore(this.bgView.el, this.jump);
+  }
+
+  /**
+   * Background sub-agent runs, as the bridge sees them. Not an item: a run outlives the turn that
+   * started it, and items belong to turns — an item would be buried the moment the user speaks
+   * again. See D133.
+   */
+  setBgRuns(runs: BgRun[]): void {
+    if (!this.bgView) {
+      this.bgView = new BgRunsView((path) => openPreview(path));
+      this.root.insertBefore(this.bgView.el, this.jump);
+    }
+    this.bgView.set(runs);
+    this.scrollToEnd();
   }
 
   /** Keeps the tail marker and the jump button children of the scroller no matter how it is rebuilt. */
@@ -371,6 +390,8 @@ export class ChatView {
     // Chrome first: `push()` inserts before the jump button, so it has to be in the DOM already.
     this.mountChrome();
     for (const item of items) this.add(item);
+    // `reset()` drops every child; the run strip survives the switch and goes back to the tail.
+    if (this.bgView) this.root.insertBefore(this.bgView.el, this.jump);
     this.follow();
   }
 

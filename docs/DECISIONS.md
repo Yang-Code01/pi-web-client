@@ -1791,3 +1791,29 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 - 「拖过的」按 override 计：手动把会话拖回它 cwd 本来所属的组时 override 仍存在，仍算一次「拖过」。无害，可改。
 
 验证：`node probes/workspace-migrate.mjs`（桩桥 + 真 Chromium：首次打开弹、行数=组数、每行名字与会话数与左栏逐项一致、归档不计入、拖过数=2、确认后 `pi.prefs.wsIntroSeen` 落盘且刷新不再弹、取消不写标记且刷新仍弹、关掉后左栏交互不再把它推上来）、`node probes/workspace-tree.mjs`（有 webdriver 标记时不弹，左栏交互不受影响）。
+## D133 后台子代理：卡片挂在时间线尾部，状态从 runner 自己的痕迹里读
+
+**问题：** 会话派出去的后台子代理跑完之前，界面上什么都没有。用户看到的是一条普通 `acp_delegate` 工具卡（一眨眼就「ok」了），此后再无痕迹 —— 直到几分钟后凭空冒出一条「[acp_delegate completed]」的注入消息，或者干脆什么都不冒（进程被 kill 时连那条都没有）。截图里的原话是「子agent 后台跑任务，没有提示」（#该条记录）。
+
+**决定：**
+
+- **谁负责**：桥。`bridge/src/bgruns.ts` 的 `BgRuns`，每个 `Session` 一个实例，只在真的派过任务后才起一个 1.2s 的 `unref` 定时器，全跑完 10 分钟（`KEEP_DONE_MS`）后自己停。前端只负责画。
+- **入口只有一个**：`tool_execution_end` 的 `ev.result.details`。`acp_delegate` 给 `{kind:"delegate", agent, runId, task}`，pi-subagents 给 `{runId, asyncDir}`。这是 pi 唯一一次告诉我们「有这么个 runner 存在」；`ToolItem` 里那份 `details` 照旧不进模型上下文。
+- **状态不从会话文件读**：会话 jsonl 里那条 toolResult 的 `details.status` **永远是 `running`**，收尾时不回写。所以终态只能看 runner 自己的东西：
+  - `acp_delegate`：`%TEMP%\acp-delegate\<runId>.activity` 的 mtime + 尾部一行（`[tool] bash sleep 150` → 卡片上那行 `bash · sleep 150`），完成信号是 `~/.pi/acp.log` 的 `event=done runId=… code=…`（单调 cursor 增量读，128 KB 起步，只读新字节）。`<runId>.out` **一 spawn 就存在**、运行中还滞后，不能当完成信号。
+  - `subagent`：`<asyncDir>\status.json` 直读 `state` / `steps[0].recentTools` / `lastUpdate` / `pid`；`running` 但 pid 已死就判失败（不依赖 pi-subagents 自己的读时修复）。
+  - 甲侧被 kill 的 run 永远等不到 `event=done`：静默 60 分钟（`ACP_SILENT_DEAD_MS`）就从表里删掉，不留僵尸卡片。
+- **卡片不进 turn**：它是 `.runs` 容器挂在转录尾部（`ChatView.setBgRuns()`，`push()` 每次把它挪回 `jump` 之前），不是 `Item`。因为 `closeOps()` 在每个新 turn 开头清空 ops 模块 —— 做成 item 的话，用户一开口，正在跑的任务卡就消失了，恰好是最需要看见它的时候。跑完原地变绿（`完成 · 41秒 · 最后一行`），10 分钟后消失，注入的那条通知就落在它下面。
+- **会话卡上多一档徽标**：`sessionBadge()` 在 `running` 之后、`done` 之前加 `bg`（文案「后台 N」）。会话本身 `running=false`、有后台任务在跑，以前的徽标是空的。
+- 文案全走 `tr()`（`后台任务` / `排队中` / `看过程` / `结束（失败）` 等 8 条）。
+
+为什么不用 hook / 不自己在桥里接 runner：两种实现都不是桥起的进程（pi 子进程 fork 出去的），桥能看到的只有 pi 转述的 `details` 和磁盘上的痕迹；hook pi 的插件属于另一个仓库，改它管不到 `subagent`。
+
+代价 / 可改：
+
+- **桥重启就丢**：`BgRuns` 是内存态，重启后正在跑的 run 不再显示（会话文件里查不到可靠状态）。要补只能扫 `pi-subagents-*` 全目录 + `acp.log` 反推，代价不小，先不做。
+- **没有「停止」按钮**：原型里那个按钮是假的（桥没有 cancel 的入口；`acp_delegate_cancel` 是 pi 的工具，不是 HTTP/WS 动作）。只保留「看过程」（走 `pi-preview` 打开 `.activity` / `events.jsonl`）。
+- **甲侧 `steps` 只在文件小于 8 KB 时准**：数 `^\[tool\]` 行要读全文件，尾部窗口内数出来的是下限 —— 所以窗口满时干脆不显示步数。
+- **终态口径三处不一致**（pi-subagents 自己的 `async-retention.js:32` / `chain-root-attachment.js:5` / `async-job-tracker.js:29`）：本仓库按 `complete|partial → done`、`failed|stopped|rejected|paused → failed` 映射，活跃判定只认 `queued|running`。
+
+验证：测试实例（`node .pi/skills/pi-web-client-test-dev/bin/env.mjs start --dir F:/pi-web-client-wt/bg-runs --name bg`）里真跑 `acp_delegate`：`.runs` 有 1 张卡、`data-state` 从 `running` 变 `done`、会话卡出现「后台 1」徽标、`bgRuns` 进 `session` 快照（重开页面还在）；数据层 `node .scratch/bgtest.mjs`（历史 `status.json` 与已完成 run 的 `.activity` 都能解析出 agent/state/steps/line）。

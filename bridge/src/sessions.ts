@@ -17,6 +17,7 @@ import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion }
 import { lifecycle, gcTickMs, capProtectMs, type Lifecycle, type LifecycleThresholds } from "./lifecycle.ts";
 import { absentFor } from "./presence.ts";
 import { sampleMemory } from "./runtime.ts";
+import { BgRuns, type BgRun } from "./bgruns.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -603,6 +604,8 @@ export class Session extends EventEmitter {
   /** One notice per silent run: the tick fires every minute, and none of them would be news. */
   private stuckNoticed = false;
   private tailTimer: NodeJS.Timeout | null = null;
+  /** Background sub-agent runs this session started; the runners live outside our process (D133). */
+  private readonly bgRuns = new BgRuns((runs) => this.emitWs({ type: "bgruns", sessionId: this.state.id, runs }));
   private tailSig = "";
   private draftCounter = 0;
   /** Set while close() is taking pi down on purpose: its exit and shutdown noise are expected. */
@@ -1043,6 +1046,10 @@ export class Session extends EventEmitter {
       }
       case "tool_execution_end": {
         this.closeQuestionnaire(String(ev.toolCallId ?? ""));
+        // A background sub-agent announces itself here and nowhere else: `details` is the only
+        // handle on a runner pi has already let go of, and it is dropped from the item below on
+        // purpose (it is not model context).
+        this.bgRuns.note((ev.result as any)?.details);
         {
           const at = this.items.findIndex((it) => it.kind === "tool" && it.toolCallId === String(ev.toolCallId));
           if (at >= 0) {
@@ -1799,6 +1806,7 @@ export class Session extends EventEmitter {
     budget: number | null;
     ext: ExtUiState;
     queue: { steering: string[]; followUp: string[] };
+    bgRuns: BgRun[];
   } {
     return {
       state: this.state,
@@ -1808,6 +1816,7 @@ export class Session extends EventEmitter {
       budget: this.contextBudget,
       ext: this.extUi(),
       queue: this.queue,
+      bgRuns: this.bgRuns.list(),
     };
   }
 
@@ -1819,6 +1828,7 @@ export class Session extends EventEmitter {
     this.clearApprovals();
     this.clearAsks();
     this.stopTail();
+    this.bgRuns.stop();
     if (this.rpc) {
       const rpc = this.rpc;
       this.closing = true;

@@ -71,6 +71,23 @@ export interface ApprovalRequest {
   deadline?: number;
 }
 
+/** A background sub-agent run, tracked by the bridge from the runner's own artifacts (D133). */
+export interface BgRun {
+  id: string;
+  source: "acp" | "subagents";
+  agent: string;
+  task: string;
+  state: "queued" | "running" | "done" | "failed";
+  startedAt: number;
+  endedAt?: number;
+  /** Last sign of life; a long gap while running means the runner is stuck or gone. */
+  lastAt: number;
+  line?: string;
+  steps?: number;
+  /** Absolute path of the run's own trail; the card's 「看过程」 previews it. */
+  logPath?: string;
+}
+
 export interface SessionState {
   id: string;
   name: string;

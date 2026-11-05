@@ -19,14 +19,14 @@ import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
 import { hitTest, moveTo, planDrop, type DropHit } from "./drag.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, BgRun, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
 
 /** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
-type BadgeKind = "ask" | "approve" | "locked" | "run" | "done";
+type BadgeKind = "ask" | "approve" | "locked" | "run" | "bg" | "done";
 
 interface SessionBadge {
   kind: BadgeKind;
@@ -43,7 +43,7 @@ interface SessionBadge {
  * report a session stuck on the user as busy. Current session keeps its own done() treatment, same
  * as the left pane always did.
  */
-function sessionBadge(s: SessionState, currentId: string | null): SessionBadge | null {
+function sessionBadge(s: SessionState, currentId: string | null, bg = 0): SessionBadge | null {
   if (s.asks && s.asks > 0) {
     return {
       kind: "ask",
@@ -66,6 +66,17 @@ function sessionBadge(s: SessionState, currentId: string | null): SessionBadge |
     return { kind: "locked", text: tr("终端占用"), cls: "lock", title: tr("pi CLI 在终端里正用着这个会话，网页这边只能看"), pending: false };
   }
   if (s.running) return { kind: "run", text: tr("运行中"), cls: "run", title: tr("agent 正在推进"), pending: false };
+  // A background sub-agent outlives the turn that started it: the session is idle while the runner
+  // is not, and before this badge the card said nothing at all (D133).
+  if (bg > 0) {
+    return {
+      kind: "bg",
+      text: tr("后台 {p1}", { p1: bg }),
+      cls: "run",
+      title: tr("有 {p1} 个后台子任务还在跑：会话本身已经空闲，子代理还在干活", { p1: bg }),
+      pending: false,
+    };
+  }
   if (s.done && s.id !== currentId) return { kind: "done", text: tr("完成"), cls: "done", title: "", pending: false };
   return null;
 }
@@ -74,6 +85,8 @@ export class App {
   private socket = new Socket();
   private me: Me;
   private sessions: SessionState[] = [];
+  /** Background sub-agent runs per session, straight from the bridge (see D133). */
+  private bgRuns = new Map<string, BgRun[]>();
   private tunnel: TunnelState;
   private currentId: string | null = null;
   private session: SessionState | null = null;
@@ -496,7 +509,7 @@ export class App {
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
     this.pillBar = new PillBar<SessionState>(pinStrip, {
-      badge: (s, cur) => sessionBadge(s, cur),
+      badge: (s, cur) => sessionBadge(s, cur, this.bgCount(s.id)),
       time: relativeTime,
       // #97：第二行不再是「置顶区」，条头那颗字也就没有意义了 —— 最左边那颗就是当前会话。
       // 空字符串仍然会留一个空 span，CSS 里 `.pin-strip-label:empty` 把它收掉。
@@ -1035,7 +1048,9 @@ export class App {
         if ("trust" in msg) this.trust = (msg.trust as TrustState | null) ?? null;
         this.queue = msg.queue ? { steering: msg.queue.steering ?? [], followUp: msg.queue.followUp ?? [] } : { steering: [], followUp: [] };
         this.stats = { tokens: null, cost: null };
+        this.bgRuns.set(String(msg.sessionId), (msg.bgRuns ?? []) as BgRun[]);
         this.chat.reset((msg.items ?? []) as Item[]);
+        this.chat.setBgRuns((msg.bgRuns ?? []) as BgRun[]);
         if (this.afterOpen && this.afterOpen.id === msg.sessionId) {
           this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: this.afterOpen.text, level: "info" });
           this.afterOpen = null;
@@ -1519,6 +1534,12 @@ export class App {
         if (texts.length) this.putInComposer(texts.join("\n\n"));
         break;
       }
+      case "bgruns":
+        // Broadcast for every session, not just the open one: the sidebar badge needs the rest.
+        this.bgRuns.set(String(msg.sessionId), (msg.runs ?? []) as BgRun[]);
+        if (msg.sessionId === this.currentId) this.chat.setBgRuns((msg.runs ?? []) as BgRun[]);
+        this.renderSessions();
+        break;
       case "pi.status":
         if (this.session && this.session.id === msg.sessionId) this.session = { ...this.session, running: msg.running };
         if (msg.sessionId === this.currentId) {
@@ -3339,11 +3360,19 @@ export class App {
     );
   }
 
+  /** How many background sub-agent runs of this session are still working (D133). */
+  private bgCount(id: string): number {
+    const runs = this.bgRuns.get(id);
+    if (!runs?.length) return 0;
+    return runs.filter((r) => r.state === "running" || r.state === "queued").length;
+  }
+
   /** 待回答 / 待确认那两档；当前会话以本地队列为准（它比列表里的计数新）。 */
   private nowPending(s: SessionState): NowChipPending | null {
     const badge = sessionBadge(
       s.id === this.currentId ? { ...s, approvals: this.approvals.length, asks: this.asks.length } : s,
       this.currentId,
+      this.bgCount(s.id),
     );
     return badge?.pending ? { text: badge.text, title: badge.title } : null;
   }
@@ -3844,7 +3873,7 @@ export class App {
     const tail = el("span", "meta-tail");
     if (bottomActs.childElementCount) tail.append(bottomActs);
     // Bottom-right corner: the one thing worth interrupting for, worst first.
-    const badge = sessionBadge(s, this.currentId);
+    const badge = sessionBadge(s, this.currentId, this.bgCount(s.id));
     if (badge) {
       const chipEl = el("span", `badge ${badge.cls}`, badge.text);
       if (badge.title) chipEl.title = badge.title;
@@ -5791,7 +5820,7 @@ export class App {
     if (pinned && !archived) tag("pin", tr("置顶"));
     if (archived) tag("arch", tr("已归档"));
     tag(s.origin === "web" ? "web" : "cli", s.origin === "web" ? tr("网页") : "CLI", s.origin === "web" ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话"));
-    const badge = sessionBadge(s, this.currentId);
+    const badge = sessionBadge(s, this.currentId, this.bgCount(s.id));
     if (badge) tag(badge.cls, badge.text, badge.title);
     else if (s.owned) tag("live", tr("已接管"), tr("这个会话由网页接管着"));
     main.append(line);
