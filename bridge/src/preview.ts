@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import type http from "node:http";
 import path from "node:path";
+import { registerSheetGrant } from "./sheet/index.ts";
 
 /**
  * File preview for session artifacts (md / html / images / text).
@@ -14,7 +15,7 @@ import path from "node:path";
  * previewed page cannot read the bridge's cookies or call its API.
  */
 
-export type PreviewKind = "markdown" | "html" | "image" | "text" | "binary";
+export type PreviewKind = "markdown" | "html" | "image" | "text" | "sheet" | "binary";
 
 export interface PreviewInfo {
   token: string;
@@ -35,6 +36,8 @@ const tokens = new Map<string, { root: string; at: number }>();
 
 const MD = new Set([".md", ".markdown", ".mdx"]);
 const HTML = new Set([".html", ".htm", ".xhtml"]);
+// D127: .xlsx/.xlsm get their own dialog. .csv/.tsv stay text; .xls/.ods stay binary for now.
+const SHEET = new Set([".xlsx", ".xlsm"]);
 const IMAGE: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -116,6 +119,7 @@ export function kindOf(file: string): PreviewKind {
   if (MD.has(ext)) return "markdown";
   if (HTML.has(ext)) return "html";
   if (IMAGE[ext]) return "image";
+  if (SHEET.has(ext)) return "sheet";
   return looksText(file) ? "text" : "binary";
 }
 
@@ -161,7 +165,11 @@ export function openPreview(session: { cwd: string; file: string | null }, rawPa
   // Root = cwd when possible so `../assets/x.css` from a nested page still resolves.
   const root = inCwd ? path.resolve(session.cwd) : path.dirname(abs);
   const rel = path.relative(root, abs).split(path.sep).map(encodeURIComponent).join("/");
-  return { token: issue(root), rel, root, name: path.basename(abs), abs, size: st.size, mtime: st.mtimeMs, kind: kindOf(abs) };
+  const kind = kindOf(abs);
+  const token = issue(root);
+  // The sheet endpoints never take a path from the page: this grant (path + mtime) is the only key.
+  if (kind === "sheet") registerSheetGrant(token, abs, st.mtimeMs);
+  return { token, rel, root, name: path.basename(abs), abs, size: st.size, mtime: st.mtimeMs, kind };
 }
 
 /**

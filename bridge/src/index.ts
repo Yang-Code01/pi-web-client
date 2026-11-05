@@ -62,6 +62,7 @@ import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { piLatest } from "./piupdate.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
+import { grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow, sheetGrant } from "./sheet/index.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
 
 interface Config {
@@ -636,6 +637,42 @@ async function main(): Promise<void> {
         // Text files opened here become writable for this session (D50).
         rememberEditable(sessionId, info);
         return json(res, 200, info);
+      } catch (err: any) {
+        return json(res, 400, { error: String(err?.message ?? err) });
+      }
+    }
+
+    // D127: spreadsheet reads. The page only ever sends the grant token from /api/preview; the
+    // bridge resolves the path itself, refuses a file whose mtime moved, and returns one row window.
+    if (url.pathname === "/api/sheet/meta" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const grant = sheetGrant(String(body.token ?? ""));
+      if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
+      try {
+        const st = await fs.promises.stat(grant.abs);
+        if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
+        return json(res, 200, await readSheetMeta(grant.abs));
+      } catch (err: any) {
+        return json(res, 400, { error: String(err?.message ?? err) });
+      }
+    }
+
+    if (url.pathname === "/api/sheet/window" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const grant = sheetGrant(String(body.token ?? ""));
+      if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
+      const num = (v: unknown): number | null => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : null);
+      const r0 = num(body.r0);
+      const r1 = num(body.r1);
+      const c0 = num(body.c0);
+      const c1 = num(body.c1);
+      if (r0 === null || r1 === null || c0 === null || c1 === null) {
+        return fail(res, 400, "sheet_range", "缺少行区间");
+      }
+      try {
+        const st = await fs.promises.stat(grant.abs);
+        if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
+        return json(res, 200, await readSheetWindow(grant.abs, String(body.sheet ?? ""), r0, r1, c0, c1));
       } catch (err: any) {
         return json(res, 400, { error: String(err?.message ?? err) });
       }

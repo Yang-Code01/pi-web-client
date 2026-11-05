@@ -18,6 +18,7 @@ import { railModel, shellParts, type RailItem } from "./shells.ts";
 import { continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
+import { SheetDialog } from "./sheet/dialog.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
@@ -345,6 +346,8 @@ export class App {
   private capturing: string | null = null;
   /** D70: one shell per tab, all inside one dock; the bridge owns the processes (max 4). */
   private termDock: HTMLElement | null = null;
+  /** D127: 表格浮窗与终端并列，不进 viewer 面板；同一时间只开一扇。 */
+  private sheetDock: SheetDialog | null = null;
   private termTabStrip: HTMLElement | null = null;
   private termBodies: HTMLElement | null = null;
   private termTabs = new Map<string, TermTab>();
@@ -5316,7 +5319,37 @@ export class App {
     v.path = v.info.abs;
     // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
     if (!replace) this.retargetTop(path, v.info.abs, sessionId);
+    // D127: spreadsheet files leave the binary branch and open in their own dialog, not the viewer.
+    if (v.info.kind === "sheet") {
+      const info = v.info;
+      this.closeViewer();
+      this.openSheet(info);
+      return;
+    }
     await this.loadViewerText();
+  }
+
+  /** D127: 表格浮窗（无遮罩、不抢焦点）。关掉旧的那扇再开新的。 */
+  private openSheet(info: PreviewInfo): void {
+    this.sheetDock?.destroy();
+    this.sheetDock = null;
+    const dialog = new SheetDialog({
+      token: info.token,
+      name: info.name,
+      path: info.abs,
+      scale: () => this.uiScale(),
+      loadMeta: () => api.sheetMeta(info.token),
+      fetchWindow: (sheet, r0, r1, c0, c1) => api.sheetWindow(info.token, sheet, r0, r1, c0, c1),
+      onClose: () => {
+        if (this.winFront === dialog.root) this.winFront = null;
+        if (this.sheetDock === dialog) this.sheetDock = null;
+      },
+      onRaise: () => this.raiseWindow(dialog.root),
+    });
+    this.sheetDock = dialog;
+    this.overlay(dialog.root);
+    this.raiseWindow(dialog.root);
+    dialog.open();
   }
 
   /** md / text / html-source need the bytes; html and images load by url. */
