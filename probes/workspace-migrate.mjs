@@ -10,7 +10,7 @@
  *   5. 点「以后再说」→ 什么都没写，刷新仍然弹；
  *   6. 同一张页面里只弹一次（关掉之后左栏交互不会把它重新推上来）。
  *
- * 桩桥照真桥：`opened` 只回快照（D130），页面也不再发它。
+ * 桩桥照真桥：`opened` 只回快照（D131），页面也不再发它。
  *
  * Run: npm run build:web && node probes/workspace-migrate.mjs
  */

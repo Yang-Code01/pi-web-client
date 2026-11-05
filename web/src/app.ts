@@ -17,6 +17,7 @@ import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
+import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
@@ -356,9 +357,10 @@ export class App {
   private dropLine: HTMLElement | null = null;
   private dragPool: HTMLElement | null = null;
   private dragCleanup: (() => void) | null = null;
-  /** #102 键盘等价的焦点跟随：Alt+方向键 / 折叠组之后，重画完把焦点还给那张卡 / 那个组头。 */
-  private pendingCardFocus: string | null = null;
-  private pendingWsFocus: string | null = null;
+  /** #102 键盘等价的焦点跟随：Alt+方向键 / 折叠组之后，重画完把焦点还给那张卡 / 那个组头。
+   *  pending 带消费预算（见 `focusfollow.ts`）：一次键盘动作连来的几条重画各还一次，预算见底即清，
+   *  之后的普通重画（改名、收推送…）不再抢焦点。 */
+  private pendingFocus: PendingFocusState = { card: null, ws: null };
 
   constructor(me: Me) {
     this.me = me;
@@ -3973,33 +3975,17 @@ export class App {
     this.maybeWorkspaceIntro(tree);
   }
 
-  /** 重画后焦点归还：卡片优先（移动 / 重排后），组头次之（折叠 / 展开后）。都在树里才认。 */
+  /** 重画后焦点归还：卡片优先（移动 / 重排后），组头次之（折叠 / 展开后）。状态机在 `focusfollow.ts`。 */
   private consumePendingFocus(): void {
-    const cardId = this.pendingCardFocus;
-    const wsId = this.pendingWsFocus;
-    if (cardId) {
-      const card = this.els.sessList.querySelector<HTMLElement>(`.session-card[data-id="${CSS.escape(cardId)}"]`);
-      if (card) {
-        // 卡还在：这次重画里的焦点任务完成。但 **不清** —— 一次键盘动作会连来两条回执
-        // （workspaces + sessions.list），第二条回执的重画会换掉整个 DOM 把焦点甩回 body；
-        // 留着它，等下一次重画再把焦点接回去。卡真没了（会话删除 / 收进归档）才落空清掉。
-        card.focus({ preventScroll: true });
-        card.scrollIntoView({ block: "nearest" });
-        return;
-      }
-      this.pendingCardFocus = null;
-      // 卡不在了但组头请求还压着，往下走把焦点还给组头。
-      if (!wsId) return;
-    } else {
-      this.pendingCardFocus = null;
-    }
-    if (wsId) {
-      const head = this.els.sessList.querySelector<HTMLElement>(`.ws-sec[data-ws="${CSS.escape(wsId)}"] > .ws-head`);
-      if (head) head.focus({ preventScroll: true });
-      else this.pendingWsFocus = null;
-    } else {
-      this.pendingWsFocus = null;
-    }
+    const outcome = consumeFocus(this.pendingFocus, (kind, id) =>
+      kind === "card"
+        ? this.els.sessList.querySelector<HTMLElement>(`.session-card[data-id="${CSS.escape(id)}"]`)
+        : this.els.sessList.querySelector<HTMLElement>(`.ws-sec[data-ws="${CSS.escape(id)}"] > .ws-head`),
+    );
+    this.pendingFocus = outcome.next;
+    if (!outcome.focus) return;
+    outcome.focus.focus({ preventScroll: true });
+    if (outcome.focus.classList.contains("session-card")) outcome.focus.scrollIntoView({ block: "nearest" });
   }
 
   /**
@@ -4189,8 +4175,8 @@ export class App {
     this.prefs = { ...this.prefs, wsCollapsed };
     savePrefs(this.prefs);
     // 折叠 / 展开都从组头上的 Enter（或点击）发起：重画把组头换成了新节点，焦点得跟回去，
-    // 否则键盘用户按一下 Enter 就掉到 body，Tab 又得从头数。
-    this.pendingWsFocus = id;
+    // 否则键盘用户按一下 Enter 就掉到 body，Tab 又得从头数。折叠只有本地一次重画，预算 1。
+    this.pendingFocus = armFocus("ws", id);
     this.renderSessions();
   }
 
@@ -4516,7 +4502,7 @@ export class App {
     if (sideways) {
       const plan = keyMovePlan(id, this.cardWs(id), wsIds, dir as -1 | 1);
       if (!plan) return;
-      this.pendingCardFocus = id;
+      this.pendingFocus = armFocus("card", id);
       this.act(() => this.socket.send({ type: "manage", action: "ws.move", ids: plan.ids, wsId: plan.wsId }));
       return;
     }
@@ -4534,7 +4520,7 @@ export class App {
       const other = Array.from(cards).find((n) => n.dataset.id === otherId);
       if (other) section.querySelector(".session-cards")?.append(other);
     }
-    this.pendingCardFocus = id;
+    this.pendingFocus = armFocus("card", id);
     this.commitArrangement();
   }
 
@@ -10329,7 +10315,8 @@ export class App {
   /* ------------------------------------------------------------------ Q-035 */
 
   /** 180ms 后才弹（鼠标扫过不算），离开 220ms 才收（从胶囊挪进气泡也不算）。 */
-  private wirePinHover(chip: HTMLElement, s: SessionState): void {    chip.addEventListener("pointerenter", () => this.openPinMenuSoon(chip, s));
+  private wirePinHover(chip: HTMLElement, s: SessionState): void {
+    chip.addEventListener("pointerenter", () => this.openPinMenuSoon(chip, s));
     chip.addEventListener("pointerleave", () => this.closePinMenuSoon());
   }
 

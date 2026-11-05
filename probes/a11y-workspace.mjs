@@ -380,6 +380,24 @@ for (const layout of ["a", "b", "c", "d"]) {
   const orderBack = await page.evaluate(() => [...document.querySelectorAll('.ws-sec[data-ws="f:/proj-02"] .session-card')].map((n) => n.dataset.id));
   ok(orderBack.join("|") === "s-02-1|s-02-2", `${layout}：↑ 排回去（${orderBack.join(" ")}）`);
 
+  // —— #102 回归：键盘挪卡（双回执消费干净）之后，改【另一张】卡的名字，rename 输入框
+  //    必须真的拿到焦点 —— 旧 bug：pendingCardFocus 不清，startRename 的重画把焦点抢回刚挪的卡。
+  await page.locator('.session-card[data-id="s-02-1"]').focus();
+  await sleep(100);
+  const markR = msgs.length;
+  await page.keyboard.press("Alt+ArrowRight");
+  await sleep(500);
+  await page.keyboard.press("Alt+ArrowLeft");
+  await sleep(500);
+  ok(msgs.slice(markR).filter((m) => m.action === "ws.move").length === 2, `${layout}：摄出搬回各发一条 ws.move`);
+  await page.locator('.session-card[data-id="s-01-1"]').hover();
+  await page.locator('.session-card[data-id="s-01-1"] .rename-btn').click();
+  await sleep(300);
+  f = await focused(page);
+  ok(f?.cls.includes("rename-input"), `${layout}：键盘挪卡后改名，焦点在 rename 输入框（${f?.cls}）`);
+  await page.keyboard.press("Escape");
+  await sleep(200);
+
   // —— 边界：proj-01 的第一张卡 Alt+↑ 不动（组顶）
   await page.locator('.session-card[data-id="s-01-1"]').focus();
   const mark4 = msgs.length;

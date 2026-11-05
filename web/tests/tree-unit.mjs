@@ -9,6 +9,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildTree, wsColor, WS_COLORS } from "../src/tree.ts";
+import { wsAccent } from "../src/nowchip.ts";
+import { ACCENTS } from "../src/palette.ts";
 
 const ws = (id, name, key, manual = false) => ({ id, name, key, manual });
 const LIB = ws("c:/ai/library/performance/library", "", "C:/ai/library/performance/library");
@@ -94,6 +96,13 @@ test("组色按 id 稳定，取自既有调色板", () => {
   assert.ok(WS_COLORS.includes(wsColor(LIB.id)));
   assert.ok(WS_COLORS.includes(wsColor(PWC.id)));
   assert.equal(new Set([...Array(12).keys()].map((i) => wsColor(`g:${i}`))).size, WS_COLORS.length);
+});
+
+test("#102：树组色与顶栏 accent 同源（同一 FNV-1a 桶），不是两套哈希", () => {
+  const ids = [LIB.id, PWC.id, "manual:demo", ...[...Array(24).keys()].map((i) => `g:${i}`)];
+  for (const id of ids) {
+    assert.equal(wsColor(id), ACCENTS[wsAccent(id)].accent, id);
+  }
 });
 
 // ---------------------------------------------------------------- 组内顺序
