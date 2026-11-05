@@ -2464,12 +2464,57 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .sd-msg[hidden] { display: none; }
 
-/* 出口（#106）：看完之后回到真文件——Excel、浏览器存盘、文件管理器。 */
+/* 出口（#106）：看完之后回到真文件——默认程序、浏览器存盘、文件管理器。#107 把定位信息
+   （只读 / 行列数 / 档位 / 缩放）也并回这一条；窗再窄也只换行，不把任何一项顶出去。 */
 .sd-foot {
-  flex: none; display: flex; align-items: center; gap: 6px;
+  flex: none; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; row-gap: 6px;
   padding: 7px 22px 7px 10px; border-top: 1px solid #e8ebef; background: #fbfcfd;
   border-radius: 0 0 13px 13px;
 }
+.sd-meta { flex: none; display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.sd-ro {
+  flex: none; padding: 0 6px; border-radius: 4px; background: #eef1f5; color: #5b6472;
+  font: 600 10.5px/1.6 var(--sans);
+}
+.sd-dims, .sd-tier { flex: none; color: #8a94a3; white-space: nowrap; }
+.sd-dims:empty, .sd-tier:empty { display: none; }
+.sd-zoom { flex: none; display: inline-flex; align-items: center; gap: 2px; }
+.sd-zbtn {
+  width: 20px; height: 20px; padding: 0; border: 1px solid #dfe4ea; border-radius: 5px;
+  background: #fff; color: #3d4757; font: 13px/1 var(--sans); cursor: pointer;
+}
+.sd-zbtn:hover { background: #f0f4f8; }
+.sd-zoom-pct {
+  min-width: 44px; height: 20px; padding: 0 4px; border: 1px solid transparent; border-radius: 5px;
+  background: transparent; color: #5b6472; font: 11.5px/1.4 var(--sans); cursor: pointer;
+}
+.sd-zoom-pct:hover { background: #f0f4f8; }
+
+/* #107：查找 + 引用那条工具条（盖在滚动区外面，窄窗换行）。 */
+.sd-tools {
+  flex: none; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; row-gap: 6px;
+  padding: 5px 10px; background: #fbfcfd; border-bottom: 1px solid #e8ebef;
+}
+.sd-tools[hidden] { display: none; }
+.sd-spacer { flex: 1 1 auto; min-width: 0; }
+.sd-find-btn {
+  flex: none; height: 24px; padding: 0 9px; border: 1px solid #dfe4ea; border-radius: 6px;
+  background: #fff; color: #3d4757; font: 12px/1 var(--sans); cursor: pointer; white-space: nowrap;
+}
+.sd-find-btn:hover { background: #f0f4f8; }
+.sd-find {
+  flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 4px;
+}
+.sd-find[hidden] { display: none; }
+.sd-find-in {
+  flex: 1 1 120px; min-width: 80px; max-width: 200px; height: 24px; box-sizing: border-box;
+  padding: 0 8px; border: 1px solid #dfe4ea; border-radius: 6px; background: #fff;
+  color: #1f2430; font: 12px/1.4 var(--sans);
+}
+.sd-find-in:focus { outline: none; border-color: #8fb4cd; }
+.sd-find-count { flex: none; min-width: 34px; color: #8a94a3; font: 11.5px/1.4 var(--sans); text-align: center; }
+.sd-quote { height: 26px; }
+.sd-quote[hidden] { display: none; }
 .sd-act {
   flex: none; display: inline-flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 10px; border: 1px solid #dfe4ea; border-radius: 7px;
@@ -2502,17 +2547,20 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-colhead-in, .sd-rowhead-in { position: absolute; left: 0; right: 0; top: 0; will-change: transform; }
 .sd-col {
   position: absolute; top: 0; height: 28px; display: flex; align-items: center; justify-content: center;
-  color: #5b6472; font-size: 11.5px; font-weight: 500;
+  color: #5b6472; font-size: calc(11.5px * var(--sd-z, 1)); font-weight: 500;
   border-right: 1px solid #e3e6ea; box-sizing: border-box;
 }
 .sd-rowno {
   position: absolute; left: 0; right: 0; display: flex; align-items: center; justify-content: flex-end;
   padding-right: 8px; box-sizing: border-box;
-  color: #98a2b3; font-size: 11.5px;
+  color: #98a2b3; font-size: calc(11.5px * var(--sd-z, 1));
   border-bottom: 1px solid #e8ebef;
 }
 .sd-viewwrap { position: relative; min-width: 0; min-height: 0; }
 .sd-view { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
+/* #107：网格自己吃键盘；焦点环不画在滚动容器上（格子里的描边已经说明在哪）。 */
+.sd-view:focus { outline: none; }
+.sd-view:focus-visible { outline: 1px solid #c3d5e4; outline-offset: -1px; }
 /* 网格线由每个格子自己的边框画：列宽取文件值，固定 110px 的底纹会错位。 */
 .sd-space { position: relative; background: #fff; }
 .sd-cells { position: absolute; left: 0; top: 0; }
@@ -2522,6 +2570,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   padding: 0 8px; overflow: hidden; white-space: nowrap; text-overflow: clip;
   background: #fff; border-right: 1px solid #e8ebef; border-bottom: 1px solid #e8ebef;
   color: #1f2430; cursor: default; user-select: none;
+  /* #107：缩放把字和内边距一起缩，行高/列宽由 grid.ts 量好。 */
+  font-size: calc(13px * var(--sd-z, 1));
+  padding-left: calc(8px * var(--sd-z, 1)); padding-right: calc(8px * var(--sd-z, 1));
 }
 .sd-cell.is-n { justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .sd-cell[data-span] { z-index: 1; }
@@ -2532,6 +2583,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-cell .sd-icon { position: relative; z-index: 1; flex: none; margin-right: 4px; font-size: 12px; line-height: 1; }
 /* #111：选中的格子（不抢焦点、不加输入框）与「只有公式、没存结果」的格子（显空 + 红虚线）。 */
 .sd-cell.sel { outline: 2px solid #4b7ea8; outline-offset: -2px; z-index: 2; }
+/* #107：一块选区（用垫色而不是边框，条件格式的背景还在）+ 查找命中。 */
+.sd-cell.in-sel { background-image: linear-gradient(rgba(75, 126, 168, 0.14), rgba(75, 126, 168, 0.14)); }
+.sd-cell.hit { background-image: linear-gradient(rgba(214, 158, 0, 0.22), rgba(214, 158, 0, 0.22)); }
+.sd-cell.hit-on { background-image: linear-gradient(rgba(214, 158, 0, 0.34), rgba(214, 158, 0, 0.34)); outline: 2px solid #c99700; outline-offset: -2px; z-index: 3; }
 .sd-cell.is-nc { border: 1px dashed #d92d20; }
 
 /* 冻结窗格：行/列各画一层贴在边上，滚动时不动（#108）。 */

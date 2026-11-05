@@ -79,6 +79,14 @@ export interface SheetWindow {
   rows: WireRow[];
 }
 
+/** #107：查找命中。只回坐标——高亮和跳转用不上值，别顺手把整表内容带出去。 */
+export interface SheetMatches {
+  sheet: string;
+  matches: { r: number; c: number }[];
+  /** 超过上限只回前 N 条。 */
+  truncated?: boolean;
+}
+
 /** 只缓存元数据（D127）：sheet 名 → zip 内路径；共享字符串与表 XML 不驻留。 */
 export interface Book {
   meta: WorkbookMeta;
@@ -390,6 +398,36 @@ function cfOf(book: Book, sheet: string, xml: string, strings: string[], entries
   const plan = /<conditionalFormatting\b/.test(xml) ? buildCf(xml, strings, readDxfs(zipPart(entries, "xl/styles.xml"))) : null;
   book.cf.set(sheet, plan);
   return plan;
+}
+
+/**
+ * #107：在一张表里找字，大小写不敏感，按「显示串」比对（看到什么就能搜什么）。
+ * 前端手里只有可视窗口，所以整表扫描只能在服务端做；结果截到 `limit` 条，不把表带走。
+ */
+export function findInSheet(buf: Uint8Array, book: Book, sheet: string, query: string, limit = 1000): SheetMatches {
+  const info = book.meta.sheets.find((s) => s.name === sheet);
+  const part = book.parts.get(sheet) ?? book.parts.get(book.meta.name);
+  if (!info || !part) throw new Error("找不到这个工作表");
+  const matches: { r: number; c: number }[] = [];
+  const q = query.trim().toLowerCase();
+  if (!q) return { sheet, matches, truncated: false };
+  const entries = unzipSync(buf);
+  const xml = zipPart(entries, part);
+  if (!xml) return { sheet, matches, truncated: false };
+  const strings = sharedStrings(entries);
+  const xfs = readStyles(entries);
+  const last = Math.max(0, info.cols - 1);
+  for (const m of xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>|<row\b([^>]*)\/>/g)) {
+    const num = Number(attr(m[1] ?? m[3] ?? "", "r"));
+    if (!Number.isFinite(num)) continue;
+    const index = num - 1;
+    for (const cell of cellsOfRow(m[2] ?? "", index, 0, last, strings, xfs, book.date1904, null)) {
+      if (!cell.t || !cell.t.toLowerCase().includes(q)) continue;
+      matches.push({ r: cell.r, c: cell.c });
+      if (matches.length >= limit) return { sheet, matches, truncated: true };
+    }
+  }
+  return { sheet, matches, truncated: false };
 }
 
 /** 取一个窗口：只解析落在 [r0,r1] 里的 row，其它行连 XML 都不进前端。 */

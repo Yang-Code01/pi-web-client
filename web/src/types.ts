@@ -336,6 +336,19 @@ export interface SheetInfo {
   cfUnsupported?: number;
   /** #111：这张表里「只有公式、没存结果」的格子数。 */
   noCache?: number;
+  /** #107：拿数档位。服务端不说就是「全量」，所以这里是可选。 */
+  tier?: SheetTier;
+}
+
+/** #107：按窗口拿数的三档，状态条只显示、不改行为（#110 才真正裁）。 */
+export type SheetTier = "full" | "values" | "none";
+
+/** #107：查找命中的格子（只回坐标，不回值）。 */
+export interface SheetMatches {
+  sheet: string;
+  matches: { r: number; c: number }[];
+  /** 超过上限只回前 N 条。 */
+  truncated?: boolean;
 }
 
 export interface SheetMeta {

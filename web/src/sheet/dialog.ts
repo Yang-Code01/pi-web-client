@@ -5,9 +5,9 @@
  * 拖标题栏移动、拖右下角改宽高、拖顶边只改高、双击复原、打开时 clamp 回可视区。
  */
 import { tr, errText, fmtTime } from "../i18n/index.ts";
-import type { SheetInfo, SheetMeta, SheetWindow } from "../types.ts";
+import type { SheetInfo, SheetMatches, SheetMeta, SheetTier, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
-import { SheetGrid } from "./grid.ts";
+import { SheetGrid, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP } from "./grid.ts";
 
 const KEY = "pi.sheetGeom";
 const MIN_W = 420;
@@ -35,7 +35,11 @@ export interface SheetDialogOpts {
   fetchWindow: (sheet: string, r0: number, r1: number, c0: number, c1: number) => Promise<SheetWindow>;
   /** #113：CSV 的源码面（有它才出「表格 / 源码」两个 tab）。 */
   source?: SheetSource;
-  /** #106 出口：交给这台电脑上的 Excel 打开原文件。 */
+  /** #107：整表查找。前端手里只有可视窗口，所以整表扫描只能落在桥端；不给就不出查找入口。 */
+  findSheet?: (sheet: string, q: string) => Promise<SheetMatches>;
+  /** #107：把「文件路径 + A1:C9」交给对话框（只插入，不发送）。 */
+  onQuote?: (text: string) => void;
+  /** #106 出口：交给这台电脑上的默认程序打开原文件。 */
   onOpen: () => Promise<void>;
   onReveal: () => Promise<void>;
   /** 文件被改过之后重新开一趟（要新的凭据，所以由 app 重走 /api/preview）。 */
@@ -49,6 +53,13 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   if (cls) node.className = cls;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+/** #107：拿数档位的中文标签（`tr` 在使用处，别把译文交给这里的表）。 */
+function tierLabel(tier: SheetTier | undefined): string {
+  if (tier === "values") return tr("只读值");
+  if (tier === "none") return tr("仅清单");
+  return tr("全量");
 }
 
 export class SheetDialog {
@@ -67,6 +78,24 @@ export class SheetDialog {
   private readonly fx: HTMLElement;
   private readonly fxRef: HTMLElement;
   private readonly fxBody: HTMLElement;
+  /** #107：工具条（查找 / 引用给 pi），只在表格面显示。 */
+  private readonly tools: HTMLElement;
+  private readonly findBar: HTMLElement;
+  private readonly findIn: HTMLInputElement;
+  private readonly findAt: HTMLElement;
+  private readonly findBtn: HTMLButtonElement;
+  /** #107：底栏的定位信息（只读 / 行列数 / 档位）与缩放。 */
+  private readonly ro: HTMLElement;
+  private readonly dims: HTMLElement;
+  private readonly tier: HTMLElement;
+  /** 缩放百分比：点它就是回 100%（数据驱动，不在 foot() 里重建）。 */
+  private readonly zoomPct: HTMLButtonElement = el("button", "sd-zoom-pct", "100%");
+  /** #107：查找状态：命中坐标、当前那一处、请求序号（防止旧结果盖新结果）。 */
+  private hits: { r: number; c: number }[] = [];
+  private hitAt = 0;
+  private findSeq = 0;
+  private findTimer = 0;
+  private truncated = false;
   /** #111：底栏那条「N 格无缓存值」。 */
   private readonly status: HTMLElement;
   private tab: Tab = "grid";
@@ -120,20 +149,181 @@ export class SheetDialog {
     this.fx.append(this.fxRef, this.fxBody);
     this.status = el("span", "sd-status");
     this.status.hidden = true;
+    this.ro = el("span", "sd-ro", tr("只读"));
+    this.dims = el("span", "sd-dims");
+    this.tier = el("span", "sd-tier");
+
+    // #107：查找 / 引用那条工具条（盖在公式栏上面，只在表格面显示）。
+    this.tools = el("div", "sd-tools");
+    this.findBtn = el("button", "sd-find-btn", tr("查找"));
+    this.findBtn.type = "button";
+    this.findBtn.title = tr("查找（Ctrl+F）");
+    this.findBtn.onclick = () => this.openFind();
+    this.findBar = el("div", "sd-find");
+    this.findBar.hidden = true;
+    this.findIn = el("input", "sd-find-in");
+    this.findIn.type = "search";
+    this.findIn.placeholder = tr("查找");
+    this.findIn.setAttribute("aria-label", tr("查找"));
+    this.findIn.addEventListener("input", () => {
+      window.clearTimeout(this.findTimer);
+      this.findTimer = window.setTimeout(() => void this.runFind(this.findIn.value), 200);
+    });
+    this.findIn.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      this.step(ev.shiftKey ? -1 : 1);
+    });
+    this.findAt = el("span", "sd-find-count", "0/0");
+    const prev = el("button", "sd-find-btn", "‹");
+    prev.type = "button";
+    prev.title = tr("上一个");
+    prev.onclick = () => this.step(-1);
+    const next = el("button", "sd-find-btn", "›");
+    next.type = "button";
+    next.title = tr("下一个");
+    next.onclick = () => this.step(1);
+    this.findBar.append(this.findIn, this.findAt, prev, next);
+
+    const spacer = el("span", "sd-spacer");
+    const quote = el("button", "sd-act sd-quote", tr("引用给 pi"));
+    quote.type = "button";
+    quote.title = tr("把选区（文件路径 + A1:C9）插进对话框，不发送");
+    quote.onclick = () => this.quote();
+    this.tools.append(this.findBtn, this.findBar, spacer, quote);
+    // CSV 没有源码面以外的查找（本地内存里已经有全文，但本票只做 .xlsx）。
+    if (!opts.findSheet) {
+      this.findBtn.hidden = true;
+      this.findBar.hidden = true;
+    }
+    if (!opts.onQuote) quote.hidden = true;
 
     this.footBar = this.foot(opts);
     this.footBar.prepend(this.wsTabs, this.status, this.wsHint, this.cfHint);
+    this.body.insertBefore(this.tools, this.pane);
     this.root.append(grip, this.head, this.body, this.footBar, resize);
+    this.root.addEventListener("keydown", this.onKeyDown);
     if (opts.source) this.buildSource(opts.source);
     this.wire(grip, resize);
   }
 
-  /** 底部一条：左边是 CSV 的截断说明 / 保存结果（#113），右边是回到真文件的三个出口（#106）。 */
+  /** Ctrl/Cmd+F 开查找（跟浏览器不抢），Esc 收起。 */
+  private onKeyDown = (ev: KeyboardEvent): void => {
+    const mod = ev.ctrlKey || ev.metaKey;
+    if (mod && (ev.key === "f" || ev.key === "F") && this.opts.findSheet) {
+      ev.preventDefault();
+      this.openFind();
+      return;
+    }
+    if (ev.key === "Escape" && !this.findBar.hidden) {
+      ev.preventDefault();
+      this.closeFind();
+    }
+  };
+
+  private openFind(): void {
+    if (this.closed || !this.grid || !this.opts.findSheet) return;
+    this.findBar.hidden = false;
+    this.findIn.focus();
+    this.findIn.select();
+    if (this.findIn.value.trim()) void this.runFind(this.findIn.value);
+  }
+
+  private closeFind(): void {
+    this.findBar.hidden = true;
+    this.hits = [];
+    this.hitAt = 0;
+    this.truncated = false;
+    this.grid?.setHits([], -1);
+    this.grid?.focusView();
+    this.paintFind();
+  }
+
+  /** #107：让桥端扫整表。请求可能跑一会儿，`findSeq` 保证只认最后那次。 */
+  private async runFind(query: string): Promise<void> {
+    const grid = this.grid;
+    const find = this.opts.findSheet;
+    if (!grid || !find || this.closed) return;
+    const seq = ++this.findSeq;
+    const q = query.trim();
+    if (!q) {
+      this.hits = [];
+      this.hitAt = 0;
+      this.truncated = false;
+      grid.setHits([], -1);
+      this.paintFind();
+      return;
+    }
+    try {
+      const res = await find(grid.activeSheet, q);
+      if (seq !== this.findSeq || this.closed || !this.grid) return;
+      this.hits = res.matches ?? [];
+      this.truncated = !!res.truncated;
+      this.hitAt = 0;
+      this.grid.setHits(this.hits, 0);
+      this.paintFind();
+    } catch (err) {
+      if (seq !== this.findSeq || this.closed) return;
+      this.hits = [];
+      this.hitAt = 0;
+      this.truncated = false;
+      this.grid?.setHits([], -1);
+      this.findAt.textContent = "0/0";
+      this.findAt.title = errText(err);
+    }
+  }
+
+  /** 上一处 / 下一处（数字超界会绕回来）。 */
+  private step(delta: number): void {
+    const grid = this.grid;
+    if (!grid || !this.hits.length) return;
+    this.hitAt = ((this.hitAt + delta) % this.hits.length + this.hits.length) % this.hits.length;
+    grid.setHitAt(this.hitAt);
+    this.paintFind();
+  }
+
+  private paintFind(): void {
+    const n = this.hits.length;
+    this.findAt.textContent = `${n ? this.hitAt + 1 : 0}/${n}`;
+    this.findAt.title = this.truncated ? tr("命中太多，只显示前 {p1} 处", { p1: n }) : "";
+  }
+
+  /** #107：引用 = 文件路径 + 选区坐标（A2:C4）。只插进对话框，不发送。 */
+  private quote(): void {
+    const grid = this.grid;
+    if (!grid || !this.opts.onQuote) return;
+    this.opts.onQuote(`${this.opts.path} ${grid.selectionRef}`);
+  }
+
+  /**
+   * 底部一条（#107 整合）：工作表标签 + 只读 / 行列数 / 档位 / 无缓存值 / 条件格式 / 缩放，
+   * 右边是回到真文件的三个出口（#106）。宽度不够时换行，不把任何一项顶出可视区。
+   */
   private foot(opts: SheetDialogOpts): HTMLElement {
     const bar = el("footer", "sd-foot");
-    const open = el("button", "sd-act", tr("用 Excel 打开"));
+    const meta = el("span", "sd-meta");
+    meta.append(this.ro, this.dims, this.tier);
+
+    const zoom = el("span", "sd-zoom");
+    const out = el("button", "sd-zbtn", "−");
+    out.type = "button";
+    out.dataset.k = "zout";
+    out.title = tr("缩小");
+    out.onclick = () => this.zoomTo(-1);
+    this.zoomPct.type = "button";
+    this.zoomPct.dataset.k = "z100";
+    this.zoomPct.title = tr("复原 100%");
+    this.zoomPct.onclick = () => this.zoomTo(0, true);
+    const into = el("button", "sd-zbtn", "+");
+    into.type = "button";
+    into.dataset.k = "zin";
+    into.title = tr("放大");
+    into.onclick = () => this.zoomTo(1);
+    zoom.append(out, this.zoomPct, into);
+
+    const open = el("button", "sd-act", tr("用默认程序打开"));
     open.type = "button";
-    open.title = tr("交给这台电脑上的 Excel 打开原文件");
+    open.title = tr("交给这台电脑上的默认程序打开原文件");
     open.onclick = () => {
       open.disabled = true;
       void opts.onOpen().finally(() => {
@@ -149,8 +339,24 @@ export class SheetDialog {
     dl.href = opts.raw;
     dl.download = opts.name;
     dl.title = tr("把原文件下载下来");
-    bar.append(open, reveal, dl);
+    bar.append(meta, zoom, open, reveal, dl);
     return bar;
+  }
+
+  /** #107：缩放 ±10%；`reset` 直接回 100%。标签跟着网格的真实值走。 */
+  private zoomTo(delta: number, reset = false): void {
+    const grid = this.grid;
+    if (!grid) return;
+    if (reset) grid.setZoom(1);
+    else grid.setZoom(clampNum(grid.zoom + delta * ZOOM_STEP, ZOOM_MIN, ZOOM_MAX));
+    this.zoomPct.textContent = `${Math.round(grid.zoom * 100)}%`;
+  }
+
+  /** #107：底栏那排「这张表长什么样」：行列数、拿数档位。 */
+  private paintMeta(sheets: SheetInfo[], sheet: string): void {
+    const info = sheets.find((s) => s.name === sheet);
+    this.dims.textContent = info ? tr("{p1} 行 × {p2} 列", { p1: info.rows, p2: info.cols }) : "";
+    this.tier.textContent = tierLabel(info?.tier);
   }
 
   /** 源码面：两个 tab + 可编辑的 textarea；说明与保存结果并进底栏那条。 */
@@ -197,6 +403,7 @@ export class SheetDialog {
   private showTab(which: Tab): void {
     this.tab = which;
     this.pane.hidden = which === "source";
+    this.tools.hidden = which !== "grid";
     if (this.src) this.src.hidden = which !== "source";
     this.fx.hidden = which !== "grid" || !this.fxRef.textContent;
     for (const btn of this.tabs) btn.classList.toggle("on", btn.dataset.tab === which);
@@ -215,11 +422,12 @@ export class SheetDialog {
     this.fx.hidden = this.tab !== "grid";
   }
 
-  /** #111：这张表里有多少格子只有公式、没存结果；0 就不占位置。 */
+  /** #111：#107：底栏那些「这张表是什么样」（只读 / 行列数 / 档位 / 无缓存值）。 */
   private paintStatus(sheets: SheetInfo[], sheet: string): void {
+    this.paintMeta(sheets, sheet);
     const n = sheets.find((s) => s.name === sheet)?.noCache ?? 0;
     this.status.textContent = n ? tr("{p1} 格无缓存值", { p1: n }) : "";
-    this.status.title = n ? tr("需在 Excel 打开重算") : "";
+    this.status.title = n ? tr("需用表格软件重算") : "";
     this.status.hidden = !n;
   }
 
@@ -340,7 +548,7 @@ export class SheetDialog {
         return;
       }
       if (code === "sheet_unsupported") {
-        this.blocked(tr("这个格式这里不支持，用 Excel 打开"), [{ label: tr("用 Excel 打开"), run: () => void this.opts.onOpen() }]);
+        this.blocked(tr("这个格式这里不支持，用本机程序打开"), [{ label: tr("用默认程序打开"), run: () => void this.opts.onOpen() }]);
         return;
       }
       this.showMessage(tr("读不了这张表：{p1}", { p1: errText(err) }));

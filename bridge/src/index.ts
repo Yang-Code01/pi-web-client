@@ -58,7 +58,7 @@ import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { piLatest } from "./piupdate.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
-import { fileGrant, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
+import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
 
 interface Config {
@@ -639,6 +639,20 @@ async function main(): Promise<void> {
         const st = await fs.promises.stat(grant.abs);
         if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
         return json(res, 200, await readSheetWindow(grant.abs, String(body.sheet ?? ""), r0, r1, c0, c1));
+      } catch (err: any) {
+        return fail(res, 400, String(err?.code ?? ""), String(err?.message ?? err));
+      }
+    }
+
+    // #107：查找走服务端。前端只拿着一个可视窗口，整表搜不了；这里也只回坐标。
+    if (url.pathname === "/api/sheet/find" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const grant = fileGrant(String(body.token ?? ""));
+      if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
+      try {
+        const st = await fs.promises.stat(grant.abs);
+        if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
+        return json(res, 200, await findSheet(grant.abs, String(body.sheet ?? ""), String(body.q ?? "")));
       } catch (err: any) {
         return fail(res, 400, String(err?.code ?? ""), String(err?.message ?? err));
       }

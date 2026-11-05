@@ -5,7 +5,7 @@
  * 表格端点不接受前端给的任意路径；mtime 变了就是文件被改过，让用户重新打开。
  */
 import fs from "node:fs";
-import { readBook, readWindow as readWindowFrom, type Book, type SheetWindow, type WorkbookMeta } from "./xlsx.ts";
+import { readBook, findInSheet, readWindow as readWindowFrom, type Book, type SheetMatches, type SheetWindow, type WorkbookMeta } from "./xlsx.ts";
 
 interface Grant {
   abs: string;
@@ -94,4 +94,11 @@ export async function readWindow(
   if (info.rows === 0 || info.cols === 0) return { sheet, r0: 0, r1: 0, c0: 0, c1: 0, rows: [] };
   const buf = await fs.promises.readFile(abs);
   return readWindowFrom(buf, book, sheet, rr0, rr1, cc0, cc1);
+}
+
+/** #107：查找。整表扫描，只回坐标；文件版本仍按 loadBook 的缓存来。 */
+export async function findSheet(abs: string, sheet: string, query: string): Promise<SheetMatches> {
+  const book = await loadBook(abs);
+  const buf = await fs.promises.readFile(abs);
+  return findInSheet(buf, book, sheet, query);
 }
