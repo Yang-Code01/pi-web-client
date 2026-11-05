@@ -169,6 +169,7 @@ node probes/reveal-check.mjs                                          # 在文�
 node probes/terminal-multi.mjs                                        # 终端多开：标签切换 + 两条独立 pty 流不串（真桥 + 真 PowerShell）
 node probes/term-dialog.mjs                                           # 终端浮窗：拖动 / 缩放 / 最小化 / 刷新后几何仍在（桩桥 + 真 Chromium）
 node probes/dir-copy.mjs                                              # ⧉ 复制路径：切目录后剪贴板是当前目录，此电脑上禁用
+node probes/viewer-split.mjs                                         # 预览面板宽度：拖到最窄关闭/全屏仍在屏内、拖到盖住聊天区自动全屏、退出全屏回默认宽度（D121）
 node bridge/tests/run-lifecycle.mjs                                   # 一轮的边界：重试期间不算空闲、停止清队列、长压缩不超时（假 pi，不花模型调用，需先 build:bridge）
 node bridge/tests/session-dirs.mjs                                    # 会话目录解析顺序与列表不截断（D73）
 node bridge/tests/session-sync.mjs                                    # 分支只显示当前一支、用户消息多端同步、扩展状态/小部件、/compact 指令（D74，假 pi）

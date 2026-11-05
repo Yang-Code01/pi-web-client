@@ -1171,6 +1171,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--bg, #0b0d10);
   border-left: 1px solid var(--line); box-shadow: -18px 0 50px rgba(0, 0, 0, 0.45);
   animation: viewer-in 160ms ease-out; outline: none;
+  /* 头部要按「面板自己的宽度」收缩，不是按窗口宽度（`.wide-only` 原来挂的是 @media）。 */
+  container-type: inline-size;
 }
 /* D111: 与终端同一条层带 —— 谁最后被点 / 聚焦谁拿 47，另一扇回落到自己的底值（预览 46 / 终端 45）。
    两扇窗都压不过口令 modal 50 与底部 sheet 60。 */
@@ -1185,17 +1187,25 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .viewer-head {
   display: flex; align-items: center; gap: 10px; padding: 10px 12px calc(10px + env(safe-area-inset-top, 0px));
   border-bottom: 1px solid var(--line-soft); background: var(--panel); min-width: 0;
+  /* 面板被拖窄时把工具列整体换到下一行，而不是把它顶出屏幕（#79 的教训：右对齐 + overflow 可见
+     等于把关闭按钮扔到视口外面，那就再也关不掉了）。 */
+  flex-wrap: wrap;
 }
 .viewer-titles { flex: 1; min-width: 0; }
 .viewer-title { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 14px; min-width: 0; }
 .viewer-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .viewer-path { font: 11px/1.4 var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
-.viewer-tools { display: flex; align-items: center; gap: 4px; flex: none; }
+.viewer-tools { display: flex; align-items: center; gap: 4px; flex: 1 1 auto; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
 .viewer-btn {
   width: 28px; height: 28px; padding: 0; border-radius: 8px; border: 1px solid var(--line);
   background: transparent; color: var(--dim); font-size: 13px; cursor: pointer;
 }
 .viewer-btn:hover, .viewer-btn.on { color: var(--text); background: var(--panel-2); }
+/* 面板窄到放不下整排工具时：先收起两个次要按钮（新标签页 / 复制路径），把关闭与全屏留住。
+   用容器查询而不是 @media：要看的是**面板**多宽，不是窗口多宽 —— 宽屏上把面板拖窄时 @media 不会触发。 */
+@container (max-width: 620px) {
+  .viewer-btn.wide-only { display: none; }
+}
 /* 预览的返回 / 前进（D63）：紧贴文件名左边，没历史就置灰。 */
 .viewer-nav { display: flex; align-items: center; gap: 2px; flex: none; }
 .viewer-btn[disabled] { opacity: 0.32; cursor: default; }

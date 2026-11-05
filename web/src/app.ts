@@ -3580,18 +3580,40 @@ export class App {
       ev.preventDefault();
       grip.setPointerCapture(ev.pointerId);
       root.classList.add("resizing");
+      // 自动全屏之后这次拖拽就结束了：别再把那个巨大宽度写进记忆（否则退出全屏前先关面板会留脏值）。
+      let autoFull = false;
+      const finish = () => {
+        grip.removeEventListener("pointermove", move);
+        grip.removeEventListener("pointerup", up);
+        grip.removeEventListener("pointercancel", up);
+        root.classList.remove("resizing");
+        try {
+          if (grip.hasPointerCapture(ev.pointerId)) grip.releasePointerCapture(ev.pointerId);
+        } catch {
+          /* already gone */
+        }
+      };
       const move = (e: PointerEvent) => {
+        // 一直往左拖到把聊天区盖满，就不再是「调宽度」而是一整屏：直接进全屏，拖拽随之结束。
+        // 判据是聊天区自己的左缘（而不是百分比），所以侧栏宽窄、窗口大小都不影响。
+        if (this.viewerCoversChat(e.clientX)) {
+          autoFull = true;
+          finish();
+          this.viewerFull(true, false); // 拖出来的全屏不持久化：下一个预览不该一打开就满屏
+          return;
+        }
         const w = Math.max(320, Math.min(window.innerWidth - 120, window.innerWidth - e.clientX));
         root.style.setProperty("--viewer-w", `${w}px`);
       };
       const up = () => {
-        grip.removeEventListener("pointermove", move);
-        root.classList.remove("resizing");
+        finish();
+        if (autoFull) return;
         const w = parseInt(root.style.getPropertyValue("--viewer-w"), 10);
         if (w) localStorage.setItem("pi.viewerW", String(w));
       };
       grip.addEventListener("pointermove", move);
       grip.addEventListener("pointerup", up, { once: true });
+      grip.addEventListener("pointercancel", up, { once: true });
     };
     const head = el("div", "viewer-head");
     const body = el("div", "viewer-body");
@@ -3651,6 +3673,35 @@ export class App {
     if (this.winFront === v.root) this.winFront = null;
     v.root.remove();
     this.viewer = null;
+  }
+
+  /**
+   * 拖到把聊天区整个盖住时，这条分隔条就没有「调宽度」的意义了，该是一整屏。
+   * 判据用聊天区自己的左缘，所以侧栏宽窄、窗口大小都不影响；`clientX` 是拖的那条分隔条（= 面板左缘）。
+   */
+  private viewerCoversChat(clientX: number): boolean {
+    const chat = this.els.chatPane;
+    // 聊天区被收成 0 宽时没有「覆盖」可言（那时它本来就不在画面上）。
+    if (!chat || !chat.offsetWidth) return false;
+    return clientX <= chat.getBoundingClientRect().left + 1;
+  }
+
+  /**
+   * 全屏只是状态，宽度记忆不跟着它走：退出全屏一律回到默认宽度（CSS 里的 `--viewer-w`，
+   * `min(760px, 55vw)`）并忘掉上次拖出来的宽度，这样“退出全屏”之后每次都是同一块地方。
+   * `persist: false` 是拖拽触发的自动全屏 —— 它不该让**下一个**预览也一打开就满屏。
+   */
+  private viewerFull(on: boolean, persist = true): void {
+    const v = this.viewer;
+    if (!v || v.full === on) return;
+    v.full = on;
+    if (persist) localStorage.setItem("pi.viewerFull", on ? "1" : "0");
+    if (!on) {
+      // 回到默认宽度：去掉拖拽写上的内联值，也清掉记忆（下次从默认值开始）。
+      localStorage.removeItem("pi.viewerW");
+      v.root.style.removeProperty("--viewer-w");
+    }
+    this.paintViewer();
   }
 
   /**
@@ -3889,11 +3940,7 @@ export class App {
       copy.classList.add("wide-only");
       tbtn("📎", tr("把这个路径引用到输入框"), () => this.insertPaths([info.abs]));
     }
-    tbtn(v.full ? "🗗" : "⛶", v.full ? tr("退出全屏") : tr("全屏"), () => {
-      v.full = !v.full;
-      localStorage.setItem("pi.viewerFull", v.full ? "1" : "0");
-      this.paintViewer();
-    }, v.full);
+    tbtn(v.full ? "🗗" : "⛶", v.full ? tr("退出全屏") : tr("全屏"), () => this.viewerFull(!v.full), v.full);
     tbtn("✕", tr("关闭（Esc）"), () => this.closeViewer());
     head.append(nav, left, tools);
 
