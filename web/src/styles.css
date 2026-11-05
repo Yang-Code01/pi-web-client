@@ -2278,3 +2278,20 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .sc-input:focus { outline: none; border-color: var(--accent-dim); }
 .sc-hint { font-size: 11.5px; color: #fca5a5; width: 100%; }
+.scratch-model-chip { padding: 3px 8px; font-size: 11.5px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scratch-models {
+  max-height: 42vh; overflow-y: auto; margin: 8px 14px 0; padding: 6px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2);
+  display: grid; gap: 2px;
+}
+.scratch-models[hidden] { display: none; }
+.scratch-model {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center;
+  text-align: left; padding: 7px 9px; border-radius: 9px; border: 1px solid transparent;
+  background: transparent; color: var(--text); font-size: 12.5px;
+}
+.scratch-model:hover { background: var(--panel); }
+.scratch-model.on { border-color: #1f3a4a; background: #101c24; }
+.scratch-model .m-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scratch-model .m-prov { font: 10.5px/1 var(--mono); color: var(--faint); }
+.scratch-model.none { color: var(--faint); font-size: 12px; }

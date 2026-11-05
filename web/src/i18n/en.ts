@@ -1216,4 +1216,6 @@ export const en: Dict = {
   "知道了": "Got it",
   "上下文已用到 {p1}%，离 pi 自动压缩不远了": "Context is at {p1}%, pi's auto-compaction is getting close",
   "上下文快满了（离 pi 自动压缩只剩一点），建议清空": "Context is nearly full (pi's auto-compaction is near) — clearing it is recommended",
+  "切模型": "Switch model",
+  "模型列表还没加载完": "The model list has not loaded yet",
 };

@@ -104,8 +104,8 @@ export class App {
   private imageSheetPaint: (() => void) | null = null;
 
   private els: Record<string, HTMLElement> = {};
-  /** #86：随手问。它的帧不走当前会话那条路，自己认领。 */
-  private readonly scratch = new ScratchChat({ send: (msg) => this.socket.send(msg) });
+  /** #86：随手问。它的帧不走当前会话那条路，自己认领；模型目录也是现成的。 */
+  private readonly scratch = new ScratchChat({ send: (msg) => this.socket.send(msg), models: () => this.models });
   private models: ModelInfo[] = [];
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
@@ -2363,6 +2363,8 @@ export class App {
     this.socket.send({ type: "lang", lang: next });
     this.paintChrome();
     this.renderAll();
+    // #86：随手问是独立 dialog，不在 renderAll 的覆盖范围里。
+    this.scratch.refreshLang();
     if (this.sheetKind === "display") this.openDisplaySheet();
   }
 

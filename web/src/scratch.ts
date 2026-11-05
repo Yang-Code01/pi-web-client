@@ -13,10 +13,12 @@
 import { createEl as el } from "./chat.ts";
 import { renderMarkdown } from "./md.ts";
 import { tr } from "./i18n/index.ts";
-import type { Item, SessionState } from "./types.ts";
+import type { Item, ModelInfo, SessionState } from "./types.ts";
 
 export interface ScratchHost {
   send(msg: unknown): void;
+  /** 可切的模型（App 手上的目录），空数组表示还没加载完。 */
+  models(): ModelInfo[];
 }
 
 /** pi 在 `contextTokens > contextWindow - reserveTokens` 处自动压缩；reserve 默认 16384。 */
@@ -41,7 +43,7 @@ function row(item: Item): HTMLElement {
     wrap.append(el("div", "sc-who", tr("随手问")));
     const body = el("div", "sc-text md");
     if (textOf(item).trim()) body.append(renderMarkdown(textOf(item)));
-    else body.append(el("span", "sc-dim", tr("…")));
+    else body.append(el("span", "sc-dim", "…"));
     wrap.append(body);
     return wrap;
   }
@@ -63,11 +65,17 @@ export class ScratchChat {
   private inputEl!: HTMLTextAreaElement;
   private hintEl!: HTMLElement;
   private stateEl!: HTMLElement;
+  private staticHintEl!: HTMLElement;
+  private titleEl!: HTMLElement;
+  private modelEl!: HTMLButtonElement;
+  private modelMenu!: HTMLElement;
   private remindEl!: HTMLElement;
   private sendBtn!: HTMLButtonElement;
   private clearBtn!: HTMLButtonElement;
+  private closeBtn!: HTMLButtonElement;
 
   private id: string | null = null;
+  private state: SessionState | null = null;
   private items: Item[] = [];
   private rows = new Map<string, HTMLElement>();
   private running = false;
@@ -139,6 +147,7 @@ export class ScratchChat {
         this.starting = false;
         this.error = "";
         const state = msg.state as SessionState | undefined;
+        this.state = state ?? null;
         this.running = Boolean(state?.running);
         this.items = Array.isArray(msg.items) ? (msg.items as Item[]) : [];
         this.repaint();
@@ -157,6 +166,9 @@ export class ScratchChat {
         return true;
       case "item.replace":
         if (!mine) return false;
+        // 桥的语义是「旧的 id 换成这个 item」：新 item 自己的 id 与 msg.id 不同（draft:N → live:N）。
+        // 按 msg.id 删旧的，再加上新的，否则同一条回答会出现两遍。
+        this.drop(String(msg.id ?? ""));
         this.upsert(msg.item as Item);
         return true;
       case "item.remove":
@@ -175,6 +187,7 @@ export class ScratchChat {
         return true;
       case "session.state":
         if (!mine) return false;
+        if (msg.session) this.state = { ...(this.state ?? ({} as SessionState)), ...(msg.session as SessionState) };
         if (msg.session?.running !== undefined) this.running = Boolean(msg.session.running);
         if (msg.session?.starting !== undefined) this.starting = Boolean(msg.session.starting);
         this.paintState();
@@ -206,25 +219,39 @@ export class ScratchChat {
     };
     const sheet = el("div", "sheet scratch-sheet");
     sheet.onkeydown = (ev) => {
-      if (ev.key === "Escape") this.close();
+      if (ev.key !== "Escape") return;
+      // 模型菜单开着时，Esc 先关菜单（不然一下关掉整个 dialog 很意外）。
+      if (this.modelMenu && !this.modelMenu.hidden) this.modelMenu.hidden = true;
+      else this.close();
     };
 
     const head = el("div", "sheet-head scratch-head");
-    head.append(el("div", "sheet-title", tr("随手问")));
+    this.titleEl = el("div", "sheet-title", tr("随手问"));
     this.stateEl = el("span", "scratch-state", "");
-    head.append(this.stateEl, el("div", "grow"));
+    // 模型是会话的属性：dialog 里不给切换，就变成「只能问、不能挑」。
+    this.modelEl = el("button", "btn ghost scratch-model-chip", "") as HTMLButtonElement;
+    this.modelEl.title = tr("切模型");
+    this.modelEl.onclick = (ev) => {
+      ev.stopPropagation();
+      this.toggleModels();
+    };
+    head.append(this.titleEl, this.stateEl, el("div", "grow"), this.modelEl);
     this.clearBtn = el("button", "btn ghost scratch-clear", tr("清空")) as HTMLButtonElement;
     this.clearBtn.title = tr("在同一个进程里换一条新会话：上下文和 token 归零，不等重启");
     this.clearBtn.onclick = () => this.clear();
-    const close = el("button", "btn ghost scratch-close", "×") as HTMLButtonElement;
-    close.title = tr("关闭");
-    close.onclick = () => this.close();
-    head.append(this.clearBtn, close);
+    this.closeBtn = el("button", "btn ghost scratch-close", "×") as HTMLButtonElement;
+    this.closeBtn.title = tr("关闭");
+    this.closeBtn.onclick = () => this.close();
+    head.append(this.clearBtn, this.closeBtn);
     sheet.append(head);
 
+    this.modelMenu = el("div", "scratch-models");
+    this.modelMenu.hidden = true;
+    sheet.append(this.modelMenu);
+
     // 它是干什么的、不是什么，写在最上面：不然它看起来就像一个普通会话。
-    const hint = el("div", "scratch-hint", tr("不进会话列表 · 不带上下文 · 只能读（read / grep / find / ls）"));
-    sheet.append(hint);
+    this.staticHintEl = el("div", "scratch-hint", tr("不进会话列表 · 不带上下文 · 只能读（read / grep / find / ls）"));
+    sheet.append(this.staticHintEl);
 
     this.remindEl = el("div", "scratch-remind");
     this.remindEl.hidden = true;
@@ -252,7 +279,53 @@ export class ScratchChat {
     back.append(sheet);
     document.body.append(back);
     this.root = back;
+    this.refreshLang();
+  }
+
+  /**
+   * 语言切了：静态文案重写、消息行重绘（它们本来每次渲染都调 tr）。
+   *
+   * 由 App 在 `setPrefLang` 里显式调用 —— 那个方法用的是 `applyLang`（只改状态、不通知），
+   * `onLang` 的订阅者在这种切换下收不到消息。dialog 不在 `renderAll()` 的覆盖范围里，
+   * 所以必须点名画它一次。
+   */
+  refreshLang(): void {
+    if (!this.root) return;
+    this.titleEl.textContent = tr("随手问");
+    this.staticHintEl.textContent = tr("不进会话列表 · 不带上下文 · 只能读（read / grep / find / ls）");
+    this.clearBtn.textContent = tr("清空");
+    this.clearBtn.title = tr("在同一个进程里换一条新会话：上下文和 token 归零，不等重启");
+    this.closeBtn.title = tr("关闭");
+    this.modelEl.title = tr("切模型");
+    this.sendBtn.textContent = tr("发送");
+    this.inputEl.placeholder = tr("想到什么就问什么（Enter 发送，Shift+Enter 换行）");
     this.paintState();
+    this.repaint();
+  }
+
+  private toggleModels(): void {
+    this.modelMenu.hidden = !this.modelMenu.hidden;
+    if (!this.modelMenu.hidden) this.fillModels();
+  }
+
+  private fillModels(): void {
+    this.modelMenu.textContent = "";
+    if (!this.id) return;
+    const list = this.host.models();
+    if (!list.length) {
+      this.modelMenu.append(el("div", "scratch-model none", tr("模型列表还没加载完")));
+      return;
+    }
+    const current = this.state?.model;
+    for (const m of list) {
+      const row = el("button", `scratch-model${m.id === current ? " on" : ""}`);
+      row.append(el("span", "m-name", m.name || m.id), el("span", "m-prov", m.provider));
+      row.onclick = () => {
+        this.modelMenu.hidden = true;
+        this.host.send({ type: "setModel", sessionId: this.id, provider: m.provider, modelId: m.id });
+      };
+      this.modelMenu.append(row);
+    }
   }
 
   private submit(): void {
@@ -320,13 +393,24 @@ export class ScratchChat {
     this.listEl.scrollTop = this.listEl.scrollHeight;
   }
 
+  /** 状态行：启动中 / 回答中 / 就绪 / 还没打开时不写。 */
+  private stateLabel(): string {
+    if (this.starting) return tr("pi 正在启动…");
+    if (this.running) return tr("正在回答…");
+    return this.id ? tr("就绪") : "";
+  }
+
   private paintState(): void {
     if (!this.root) return;
     const busy = this.running || this.starting;
     this.sendBtn.disabled = busy || !this.id;
     this.clearBtn.disabled = !this.id || this.running;
     this.inputEl.disabled = this.starting;
-    this.stateEl.textContent = this.starting ? tr("pi 正在启动…") : this.running ? tr("正在回答…") : this.id ? tr("就绪") : "";
+    this.stateEl.textContent = this.stateLabel();
+    // 模板串里带中文会被 i18n 检查器当成「没走 tr()」：先算好名字再拼。
+    const modelName = this.state?.modelName || this.state?.model || tr("模型");
+    this.modelEl.textContent = `${modelName} ▾`;
+    this.modelEl.disabled = !this.id;
     this.hintEl.textContent = this.error;
     this.hintEl.hidden = !this.error;
     this.paintReminder();

@@ -109,6 +109,19 @@ try {
   check("发一句能得到回答", true);
   check("提问没有把它塞进会话列表", (await listCount()) === before, `列表 ${await listCount()} 条`);
 
+  // 桥的 item.replace 是「旧 id → 新 item」：按新 id 插入会让草稿行留下来，同一条回答出现两遍。
+  const shape = await page.evaluate(() => ({
+    user: document.querySelectorAll(".scratch-list .sc-user").length,
+    assistant: document.querySelectorAll(".scratch-list .sc-assistant").length,
+  }));
+  check("同一条回答只出现一次", shape.assistant === 1, JSON.stringify(shape));
+
+  // 模型：dialog 里要能切，不然它就成了「只能问、不能挑」。
+  check("dialog 里有模型入口", (await page.locator(".scratch-model-chip").count()) === 1);
+  await page.locator(".scratch-model-chip").click();
+  check("点开有模型菜单", await page.locator(".scratch-models").isVisible());
+  await page.locator(".scratch-model-chip").click();
+
   await page.screenshot({ path: path.join(OUT, "scratch-chat.png") });
 
   // 清空：界面立刻回到空态（桥在同一个进程里换了一条新会话）。
@@ -118,11 +131,30 @@ try {
   check("清空后还能接着输入", await page.locator(".sc-input").isEnabled());
 
   // 关掉再开：进程还在，视图收起而已。
-  await page.keyboard.press("Escape");
+  await page.locator(".scratch-close").click();
   await page.waitForSelector(".scratch-sheet", { state: "hidden", timeout: 10000 });
   await btn.click();
   await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 10000 });
   check("关掉再打开还是那个 dialog", true);
+
+  // 语言：dialog 是独立实例，不在 renderAll 的覆盖范围里 —— 切语言后静态文案必须一起变。
+  await page.locator(".scratch-close").click();
+  await page.waitForSelector(".scratch-sheet", { state: "hidden", timeout: 10000 });
+  await page.locator('[data-act="look"]').click();
+  await page.locator('.chip[lang="ja"]').click();
+  await page.mouse.click(5, 5); // 点 backdrop 收起「外观与语言」
+  await page.waitForSelector(".sheet-back", { state: "hidden", timeout: 10000 }).catch(() => {});
+  await btn.click();
+  await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 10000 });
+  const jaTexts = await page.evaluate(() => ({
+    title: document.querySelector(".scratch-sheet .sheet-title")?.textContent,
+    clear: document.querySelector(".scratch-sheet .scratch-clear")?.textContent,
+    send: document.querySelector(".scratch-sheet .btn.primary")?.textContent,
+    hint: document.querySelector(".scratch-hint")?.textContent,
+  }));
+  check("切语言后标题跟着变", jaTexts.title === "ちょい聞き", jaTexts.title ?? "");
+  check("切语言后按钮跟着变", jaTexts.clear === "クリア" && jaTexts.send === "送信", `${jaTexts.clear} / ${jaTexts.send}`);
+  check("切语言后说明行跟着变", /セッション一覧に出ない/.test(jaTexts.hint ?? ""), jaTexts.hint ?? "");
 } catch (err) {
   failed += 1;
   console.error("FAIL", err?.message ?? err);
