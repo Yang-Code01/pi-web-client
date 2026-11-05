@@ -559,7 +559,13 @@ const DEFAULT_NAME = "新会话";
 /** 随手问 (#86): what it is called, and the only tools it ever gets. Not user-settable — the point
  * of the fixed list is that a write tool cannot be talked into existing. */
 const SCRATCH_NAME = "随手问";
-const SCRATCH_TOOLS = "read,grep,find,ls";
+/**
+ * 读本机文件 + 联网查，仍然不写、不改、不跑命令。
+ *
+ * 联网那几个由 `pi-web-access` 扩展提供；没装的时候写在这里也无害 —— 实测 pi 对 `--tools`
+ * 里不存在的名字只当没写，不会起不来（.scratch/tool-name-probe.mjs 验过）。
+ */
+const SCRATCH_TOOLS = "read,grep,find,ls,web_search,fetch_content,source_check,get_search_content";
 /** 随手问的问题通常一句两句就说完：默认关思考，省 token 也快（按模型能力由 pi 自行 clamp）。 */
 const SCRATCH_THINKING = "off";
 

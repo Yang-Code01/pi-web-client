@@ -256,7 +256,7 @@ export class ScratchChat {
     sheet.append(this.modelMenu);
 
     // 它是干什么的、不是什么，写在最上面：不然它看起来就像一个普通会话。
-    this.staticHintEl = el("div", "scratch-hint", tr("不进会话列表 · 不带上下文 · 只能读（read / grep / find / ls）"));
+    this.staticHintEl = el("div", "scratch-hint", tr("不进会话列表 · 不带上下文 · 不改本机（能读文件、能联网查）"));
     sheet.append(this.staticHintEl);
 
     this.remindEl = el("div", "scratch-remind");
@@ -298,7 +298,7 @@ export class ScratchChat {
   refreshLang(): void {
     if (!this.root) return;
     this.titleEl.textContent = tr("随手问");
-    this.staticHintEl.textContent = tr("不进会话列表 · 不带上下文 · 只能读（read / grep / find / ls）");
+    this.staticHintEl.textContent = tr("不进会话列表 · 不带上下文 · 不改本机（能读文件、能联网查）");
     this.clearBtn.textContent = tr("清空");
     this.clearBtn.title = tr("在同一个进程里换一条新会话：上下文和 token 归零，不等重启");
     this.closeBtn.title = tr("关闭");

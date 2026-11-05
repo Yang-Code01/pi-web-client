@@ -163,7 +163,7 @@ try {
   };
   const dirArg = argOf("--session-dir");
   check(Boolean(dirArg) && path.resolve(dirArg) === path.resolve(path.join(SCRATCH, "sessions")), `pi 被指到临时会话目录（--session-dir ${dirArg}）`);
-  check(argOf("--tools") === "read,grep,find,ls", `只给读工具（--tools ${argOf("--tools")}）`);
+  check(argOf("--tools") === "read,grep,find,ls,web_search,fetch_content,source_check,get_search_content", `只给读类工具 + 联网查（--tools ${argOf("--tools")}）`);
   check(path.resolve(argvNote?.cwd ?? "") === path.resolve(path.join(SCRATCH, "cwd")), `pi 跑在中性空目录（cwd ${argvNote?.cwd}）`);
 
   send({ type: "prompt", sessionId: sid, text: "问一句" });

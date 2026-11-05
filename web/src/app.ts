@@ -377,7 +377,7 @@ export class App {
     this.els.peer = peer;
     // #86：随手问也不跟会话绑定（它不进列表），所以跟终端 / 记录一样常显。
     const scratch = el("button", "icon-btn wide", tr("💭 随手问"));
-    scratch.title = tr("随手问：不进会话列表、不带上下文、只能读的一个 dialog");
+    scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     scratch.dataset.act = "scratch";
     scratch.onclick = () => this.scratch.open();
     this.els.scratch = scratch;
@@ -2397,7 +2397,7 @@ export class App {
     }
     if (scratch) {
       scratch.textContent = tr("💭 随手问");
-      scratch.title = tr("随手问：不进会话列表、不带上下文、只能读的一个 dialog");
+      scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     }
     newBtn.textContent = tr("开新会话");
     sessFilter.placeholder = tr("过滤名字 / 目录");

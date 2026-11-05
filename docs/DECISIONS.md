@@ -1588,7 +1588,7 @@ if (s.idleFor() > IDLE_GC_MS) s.sleep();   // 2 小时
 - **不进任何列表**：app 启动时带 `--session-dir` 指到 `state/scratch/sessions`，那个目录不在 pi 的会话根里，扫不到；`list()` 再滤一次（广播的 `session.state` 也不会把它塞回侧栏）。
 - **懒建**：第一次点开才 spawn，`scratch.open` 幂等（没有就建、睡过就唤醒、有就复用）。
 - **清空 = 同进程 `new_session`**：pi 的 RPC 有这个命令，进程不重启，上下文和 token 归零，旧文件当场删掉。桥侧 id 不变（页面所有东西都以它为键），只把 `state.file` 换成 pi 报的新路径。
-- **只读**：`--tools read,grep,find,ls`，并把审批闸的 `/allow` 模式写成 `readonly`（闸那边 `readonly` 是白名单，不是「什么都放行」）。cwd 是中性空目录。
+- **只读**：`--tools read,grep,find,ls,web_search,fetch_content,source_check,get_search_content`（联网那几个由 `pi-web-access` 扩展提供；实测 pi 对 `--tools` 里不存在的名字只当没写，不会起不来，所以没装扩展时也能降级），并把审批闸的 `/allow` 模式写成 `readonly`（闸那边 `readonly` 是白名单，不是「什么都放行」；联网这组要显式加进白名单）。cwd 是中性空目录。
 - **三条豁免**：休眠用自己的一小时（`lifecycle.json` 的 `scratchIdleMs` / `PI_WEB_SCRATCH_IDLE_MS`）；水位永不收它；`maybeAutoCompact` 跳过它，只发提醒。
 - **提醒线不是固定百分比**：pi 在 `contextTokens > contextWindow - reserveTokens`（默认 16384）处自动压缩，200k 窗口是 92%、32k 只有 50%。所以提醒按 `(contextWindow - reserveTokens)` 的 75% / 92% 算。
 - **落地范围**：`state/scratch/` 整个目录由桥启动时（`ensureStateDirs()` 之后、任何 spawn 之前）无条件清空重建，退出时再清一次；`PI_WEB_STATE` 已经把多开的第二份桥隔开，所以不需要实例 id 或 pid 文件。
@@ -1604,6 +1604,7 @@ if (s.idleFor() > IDLE_GC_MS) s.sleep();   // 2 小时
 
 - 第一次点开仍要付 1–3 秒冷启（懒建换来的：不常驻一个 pi）。
 - 它读得到整台机器（pi 没有内置沙箱，工具不按 cwd 限制），只是不能写；cwd 的中性空目录只管相对路径。
+- 加了联网查之后，多了一条「把从本机读到的内容当搜索词发出去」的通道。这是联网本身的含义，不是漏洞 —— 但要知道它在。
 - 豁免水位意味着内存紧张时被收的是**别的**会话。
 - `scratchIdleMs` 只走 `lifecycle.json` / 环境变量，运行面板里还没有它。
 - `fork` / `/tree` 都不能用来「回到最顶部」：前者要求会话已写盘且产出新会话 id，后者在桥里只有只读的读文件画树。

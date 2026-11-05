@@ -96,7 +96,7 @@ try {
   check("点开是一个 dialog", await page.locator(".scratch-sheet").isVisible());
 
   const hint = await page.locator(".scratch-hint").innerText();
-  check("写明它不进列表 / 只能读", /不进会话列表/.test(hint) && /只能读/.test(hint), hint);
+  check("写明它不进列表 / 不改本机", /不进会话列表/.test(hint) && /不改本机/.test(hint), hint);
 
   // 空态：先有一句「问一句就行」。
   await page.waitForSelector(".sc-empty", { timeout: 10000 }).catch(() => {});
