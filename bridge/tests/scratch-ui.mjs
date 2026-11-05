@@ -102,6 +102,15 @@ try {
   await page.waitForSelector(".sc-empty", { timeout: 10000 }).catch(() => {});
   check("空对话时有一段说明", (await page.locator(".sc-empty").count()) >= 0);
 
+  // 提醒条默认 hidden。它是 `display: flex`，不给 [hidden] 补一条就会画成一条空黄条。
+  const remind = await page.evaluate(() => {
+    const el = document.querySelector(".scratch-remind");
+    if (!el) return { ok: true, why: "没有元素" };
+    return { ok: el.hidden ? getComputedStyle(el).display === "none" : true, why: `hidden=${el.hidden} display=${getComputedStyle(el).display}` };
+  });
+  check("没有提醒时不占位置", remind.ok, remind.why);
+  await page.screenshot({ path: path.join(OUT, "scratch-chat-empty.png") });
+
   // 发一句：桩 pi 会回 `echo: …`。
   await page.locator(".sc-input").fill("你好");
   await page.locator(".sc-input").press("Enter");
