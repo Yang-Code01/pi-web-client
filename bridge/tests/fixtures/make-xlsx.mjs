@@ -36,6 +36,14 @@ function sheetXml(rows, extra = {}) {
           if (cell.str !== undefined) return `<c r="${ref}"${s} t="s"><v>${cell.str}</v></c>`;
           if (cell.bool !== undefined) return `<c r="${ref}"${s} t="b"><v>${cell.bool ? 1 : 0}</v></c>`;
           if (cell.err !== undefined) return `<c r="${ref}"${s} t="e"><v>${esc(cell.err)}</v></c>`;
+          if (cell.formula !== undefined) {
+            // #111：公式 + 文件里存的上次结果。`cached` / `v` 都没给 = Excel 没存结果，
+            // 这种格子只有 `<f>`，读的时候必须显空，不能猜 0。
+            const cached = cell.cached ?? cell.v;
+            const type = cell.type ? ` t="${cell.type}"` : "";
+            const value = cached === undefined ? "" : `<v>${esc(cached)}</v>`;
+            return `<c r="${ref}"${s}${type}><f>${esc(cell.formula)}</f>${value}</c>`;
+          }
           return `<c r="${ref}"${s}><v>${esc(cell.num)}</v></c>`;
         })
         .join("");
@@ -50,8 +58,9 @@ function sheetXml(rows, extra = {}) {
   const pane = extra.pane
     ? `<pane${extra.pane.xSplit ? ` xSplit="${extra.pane.xSplit}"` : ""}${extra.pane.ySplit ? ` ySplit="${extra.pane.ySplit}"` : ""} topLeftCell="${extra.pane.topLeftCell}" activePane="bottomRight" state="frozen"/>`
     : "";
+  const cf = extra.cf ?? "";
   const dim = extra.dimension ?? `A1:H${rows.length}`;
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"${extra.drawing ? ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"' : ""}><dimension ref="${dim}"/><sheetViews><sheetView workbookViewId="0">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>${cols}<sheetData>${body}</sheetData>${merges}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>${drawings}</worksheet>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"${extra.drawing ? ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"' : ""}><dimension ref="${dim}"/><sheetViews><sheetView workbookViewId="0">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>${cols}<sheetData>${body}</sheetData>${merges}${cf}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>${drawings}</worksheet>`;
 }
 
 export function colName(c) {
@@ -261,6 +270,148 @@ export function buildReportXlsx() {
 }
 
 /**
+ * 条件格式 fixture（#109）：五类各占一列，外加一条故意不支持的规则。
+ *
+ *  - B 得分：三色色阶（min / 50% / max），10 → 红、55 → 黄、100 → 绿。
+ *  - C 销量：数据条，0..1000 按值画长度（100 / 500 / 1000 = 10% / 50% / 100%）。
+ *  - D 评级：三档图标集（1..10，阈值 4 / 7）。
+ *  - E 差额：cellIs 小于 0（红字）/ 大于 0（绿字加粗）/ 等于 0（黄底）。
+ *  - F 区间：cellIs 介于 10..20（浅绿底）。
+ *  - G 隔行：公式规则 MOD(ROW(),2)=0（浅灰底）。
+ *  - H 备注：containsText —— 求值器不支持，不涂色，只计数。
+ */
+const CF_HEADER = ["项目", "得分", "销量", "评级", "差额", "区间", "隔行", "备注"];
+
+const CF_DATA = [
+  ["项目1", 10, 100, 1, -30, 5, 10, "重点A"],
+  ["项目2", 20, 200, 2, -10, 15, 20, "普通"],
+  ["项目3", 30, 300, 3, 0, 25, 30, "重点B"],
+  ["项目4", 40, 400, 4, 10, 5, 40, "普通"],
+  ["项目5", 50, 500, 5, 30, 15, 50, "普通"],
+  ["项目6", 60, 600, 6, -5, 25, 60, "普通"],
+  ["项目7", 70, 700, 7, 5, 5, 70, "普通"],
+  ["项目8", 80, 800, 8, 0, 15, 80, "普通"],
+  ["项目9", 90, 900, 9, 20, 25, 90, "普通"],
+  ["项目10", 100, 1000, 10, -20, 5, 100, "普通"],
+  ["项目11", 55, 550, 5, 15, 15, 110, "普通"],
+];
+
+const CF_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="5"><dxf><font><color rgb="FF9C0006"/></font></dxf><dxf><font><b/><color rgb="FF006100"/></font></dxf><dxf><fill><patternFill patternType="solid"><bgColor rgb="FFFFF2CC"/></patternFill></fill></dxf><dxf><fill><patternFill patternType="solid"><bgColor rgb="FFE2EFDA"/></patternFill></fill></dxf><dxf><fill><patternFill patternType="solid"><bgColor rgb="FFF2F2F2"/></patternFill></fill></dxf></dxfs></styleSheet>`;
+
+const CF_RULES = `
+<conditionalFormatting sqref="B2:B12"><cfRule type="colorScale" priority="1"><colorScale><cfvo type="min"/><cfvo type="percentile" val="50"/><cfvo type="max"/><color rgb="FFF8696B"/><color rgb="FFFFEB84"/><color rgb="FF63BE7B"/></colorScale></cfRule></conditionalFormatting>
+<conditionalFormatting sqref="C2:C12"><cfRule type="dataBar" priority="2"><dataBar><cfvo type="num" val="0"/><cfvo type="num" val="1000"/><color rgb="FF638EC6"/></dataBar></cfRule></conditionalFormatting>
+<conditionalFormatting sqref="D2:D12"><cfRule type="iconSet" priority="3"><iconSet iconSet="3TrafficLights1"><cfvo type="num" val="0"/><cfvo type="num" val="4"/><cfvo type="num" val="7"/></iconSet></cfRule></conditionalFormatting>
+<conditionalFormatting sqref="E2:E12"><cfRule type="cellIs" dxfId="0" priority="4" operator="lessThan"><formula>0</formula></cfRule><cfRule type="cellIs" dxfId="1" priority="5" operator="greaterThan"><formula>0</formula></cfRule><cfRule type="cellIs" dxfId="2" priority="6" operator="equal"><formula>0</formula></cfRule></conditionalFormatting>
+<conditionalFormatting sqref="F2:F12"><cfRule type="cellIs" dxfId="3" priority="7" operator="between"><formula>10</formula><formula>20</formula></cfRule></conditionalFormatting>
+<conditionalFormatting sqref="G2:G12"><cfRule type="expression" dxfId="4" priority="8"><formula>MOD(ROW(),2)=0</formula></cfRule></conditionalFormatting>
+<conditionalFormatting sqref="H2:H12"><cfRule type="containsText" dxfId="2" priority="9" operator="containsText" text="重点"><formula>NOT(ISERROR(SEARCH("重点",H2)))</formula></cfRule></conditionalFormatting>`;
+
+export function buildConditionalXlsx() {
+  const strings = [];
+  const si = (text) => {
+    let i = strings.indexOf(text);
+    if (i < 0) {
+      strings.push(text);
+      i = strings.length - 1;
+    }
+    return i;
+  };
+  const rows = [CF_HEADER.map((t) => ({ str: si(t), s: 0 }))];
+  for (const row of CF_DATA) {
+    rows.push([
+      { str: si(row[0]) },
+      { num: row[1] },
+      { num: row[2] },
+      { num: row[3] },
+      { num: row[4] },
+      { num: row[5] },
+      { num: row[6] },
+      { str: si(row[7]) },
+    ]);
+  }
+  const files = {
+    "[Content_Types].xml": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    ),
+    "xl/workbook.xml": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="条件格式" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+    ),
+    "xl/_rels/workbook.xml.rels": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+    ),
+    "xl/styles.xml": strToU8(CF_STYLES),
+    "xl/sharedStrings.xml": strToU8(sharedStrings(strings)),
+    "xl/worksheets/sheet1.xml": strToU8(sheetXml(rows, { dimension: "A1:H12", cf: CF_RULES })),
+  };
+  return zipSync(files, { level: 6 });
+}
+
+
+/**
+ * 公式 fixture（#111）：一格「公式 + 文件存的结果」、一格「只有公式」、一格「空 <v>`」、
+ * 一格带 `<f>` 的文本公式，外加一张没有公式的表（切过去计数要消失）。
+ * 缺缓存值的格子固定 3 个（D3 / D4 / D5），probe 按这个数断言状态条。
+ */
+const FORMULA_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+
+function formulaRows(si) {
+  const rows = [
+    ["项目", "数量", "单价", "金额", "备注"].map((t) => ({ str: si(t) })),
+    [
+      { str: si("螺丝") },
+      { num: 3 },
+      { num: 12.5 },
+      { formula: "B2*C2", v: 37.5 },
+      { formula: 'B2&"×"&C2', type: "str", cached: "3×12.5" },
+    ],
+    [{ str: si("扳手") }, { num: 10 }, { num: 3.5 }, { formula: "B3*C3" }, { inline: "没有 <v>" }],
+    [{ str: si("螺母") }, { num: 5 }, { num: 2 }, { formula: "B4*C4", v: "" }, { inline: "空 <v>" }],
+    [{ str: si("垫片") }, { num: 2 }, { num: 7.25 }, { formula: "SUM(D2:D4)" }, { inline: "没有 <v>" }],
+    [{ str: si("合计") }, { num: 20 }, null, { formula: "SUM(D2:D5)", v: 37.5 }, { inline: "有缓存" }],
+  ];
+  return rows;
+}
+
+export function buildFormulaXlsx() {
+  const strings = [];
+  const si = (text) => {
+    let i = strings.indexOf(text);
+    if (i < 0) {
+      strings.push(text);
+      i = strings.length - 1;
+    }
+    return i;
+  };
+  const s1 = sheetXml(formulaRows(si), { dimension: "A1:E6" });
+  const s2 = sheetXml([[{ inline: "说明" }], [{ inline: "这张表没有公式，计数只算当前这张表" }]], { dimension: "A1:A2" });
+  const files = {
+    "[Content_Types].xml": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${[1, 2]
+        .map((i) => `<Override PartName="/xl/worksheets/sheet${i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
+        .join("")}<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    ),
+    "xl/workbook.xml": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="销量" sheetId="1" r:id="rId1"/><sheet name="说明" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+    ),
+    "xl/_rels/workbook.xml.rels": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+    ),
+    "xl/styles.xml": strToU8(FORMULA_STYLES),
+    "xl/sharedStrings.xml": strToU8(sharedStrings(strings)),
+    "xl/worksheets/sheet1.xml": strToU8(s1),
+    "xl/worksheets/sheet2.xml": strToU8(s2),
+  };
+  return zipSync(files, { level: 6 });
+}
+
+/**
  * 页面视图 fixture（#112）：在 plain.xlsx 上加一个真的图表部件（手写 DrawingML chart）。
  *
  * 只为了证明「zip 里有 xl/charts/chartN.xml」这条判据：LibreOffice 转 PDF 时能把
@@ -382,8 +533,12 @@ export function makeFixtures(outDir) {
   fs.writeFileSync(report, buildReportXlsx());
   const chart = path.join(outDir, "chart.xlsx");
   fs.writeFileSync(chart, buildChartXlsx());
+  const cf = path.join(outDir, "cf.xlsx");
+  fs.writeFileSync(cf, buildConditionalXlsx());
+  const formula = path.join(outDir, "formula.xlsx");
+  fs.writeFileSync(formula, buildFormulaXlsx());
   const csv = makeCsvFixtures(outDir);
-  return { plain: file, report, chart, csv, files: [file, report, chart, ...csv.files] };
+  return { plain: file, report, chart, cf, formula, csv, files: [file, report, chart, cf, formula, ...csv.files] };
 }
 
 /** OLE2 复合文档头：老式 .xls，以及加密过的 OOXML 包（CFB 包着加密流）都以它开头。 */

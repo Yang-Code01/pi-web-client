@@ -70,6 +70,16 @@ export class SheetDialog {
   /** #108：底部的工作表标签与「N 个隐藏工作表」提示（`.sd-tab` 是 CSV 的表格/源码，别混）。 */
   private readonly wsTabs: HTMLElement;
   private readonly wsHint: HTMLElement;
+  /** #109：认不出的条件格式规则计数。 */
+  private readonly cfHint: HTMLElement;
+  /** #111：选中格的公式栏（Excel 顶上那条），只在表格面显示。 */
+  private readonly fx: HTMLElement;
+  private readonly fxRef: HTMLElement;
+  private readonly fxBody: HTMLElement;
+  /** #111：底栏那条「N 格无缓存值」。 */
+  private readonly status: HTMLElement;
+  private tab: Tab = "grid";
+  private sheets: SheetInfo[] = [];
   private readonly tabs: HTMLElement[] = [];
   private src: HTMLTextAreaElement | null = null;
   private saveMsg: HTMLElement | null = null;
@@ -129,7 +139,6 @@ export class SheetDialog {
       this.panes.append(this.pane, this.split, this.page.root);
       this.body.append(this.viewTabs, this.panes);
       this.wirePage();
-      this.showView("grid");
     } else {
       this.body.append(this.pane);
     }
@@ -141,12 +150,24 @@ export class SheetDialog {
     this.wsTabs.setAttribute("aria-label", tr("工作表"));
     this.wsHint = el("span", "sd-wshint");
     this.wsHint.hidden = true;
+    this.cfHint = el("span", "sd-cfhint");
+    this.cfHint.hidden = true;
+
+    this.fx = el("div", "sd-fx");
+    this.fx.hidden = true;
+    this.fxRef = el("span", "sd-fx-ref");
+    this.fxBody = el("span", "sd-fx-body");
+    this.fx.append(this.fxRef, this.fxBody);
+    this.status = el("span", "sd-status");
+    this.status.hidden = true;
 
     this.footBar = this.foot(opts);
-    this.footBar.prepend(this.wsTabs, this.wsHint);
+    this.footBar.prepend(this.wsTabs, this.status, this.wsHint, this.cfHint);
     this.root.append(grip, this.head, this.body, this.footBar, resize);
     if (opts.source) this.buildSource(opts.source);
     this.wire(grip, resize);
+    // fx 在上面才建出来（#111），switch 视图要等它存在。
+    if (opts.page) this.showView("grid");
   }
 
   /** 底部一条：左边是 CSV 的截断说明 / 保存结果（#113），右边是回到真文件的三个出口（#106）。 */
@@ -216,10 +237,39 @@ export class SheetDialog {
   }
 
   private showTab(which: Tab): void {
+    this.tab = which;
     this.pane.hidden = which === "source";
     if (this.src) this.src.hidden = which !== "source";
+    this.fx.hidden = which !== "grid" || !this.fxRef.textContent;
     for (const btn of this.tabs) btn.classList.toggle("on", btn.dataset.tab === which);
     if (which === "grid") this.grid?.refresh();
+  }
+
+  /** #111：选中格的原文（公式带 `=`）/ 值；空表里的格子就是空串。 */
+  private showFormula(sel: { ref: string; text: string } | null): void {
+    if (!sel) {
+      this.fx.hidden = true;
+      return;
+    }
+    this.fxRef.textContent = sel.ref;
+    this.fxBody.textContent = sel.text;
+    this.fxBody.title = sel.text;
+    this.syncFx();
+  }
+
+  /** #112：窄窗切到纸面时，网格连同公式栏一起让位；宽窗并排时公式栏还在网格上方。 */
+  private syncFx(): void {
+    // wirePage() 建完就会量一次宽度，这时 #111 的公式栏还没建出来；它默认就是 hidden。
+    if (!this.fx) return;
+    this.fx.hidden = this.tab !== "grid" || (this.narrow && this.activeView === "page");
+  }
+
+  /** #111：这张表里有多少格子只有公式、没存结果；0 就不占位置。 */
+  private paintStatus(sheets: SheetInfo[], sheet: string): void {
+    const n = sheets.find((s) => s.name === sheet)?.noCache ?? 0;
+    this.status.textContent = n ? tr("{p1} 格无缓存值", { p1: n }) : "";
+    this.status.title = n ? tr("需在 Excel 打开重算") : "";
+    this.status.hidden = !n;
   }
 
   private async save(source: SheetSource): Promise<void> {
@@ -245,6 +295,7 @@ export class SheetDialog {
 
   /** #108：底部只列可见的工作表；藏起来的只报个数，不给出入口。 */
   private renderTabs(sheets: SheetInfo[], active: string): void {
+    this.sheets = sheets;
     this.wsTabs.replaceChildren();
     for (const info of sheets) {
       if (info.hidden) continue;
@@ -258,6 +309,14 @@ export class SheetDialog {
     const hidden = sheets.filter((s) => s.hidden).length;
     this.wsHint.textContent = hidden ? tr("{p1} 个隐藏工作表", { p1: hidden }) : "";
     this.wsHint.hidden = !hidden;
+    this.renderCfHint(active);
+  }
+
+  /** #109：当前表里认不出的条件格式规则，只报个数，不阻止查看。 */
+  private renderCfHint(active: string): void {
+    const n = this.sheets.find((s) => s.name === active)?.cfUnsupported ?? 0;
+    this.cfHint.textContent = n ? tr("{p1} 条条件格式暂不支持", { p1: n }) : "";
+    this.cfHint.hidden = !n;
   }
 
   private async pickSheet(name: string): Promise<void> {
@@ -266,6 +325,8 @@ export class SheetDialog {
       btn.setAttribute("aria-selected", btn.textContent === name ? "true" : "false");
     }
     await this.grid.setSheet(name);
+    this.renderCfHint(name);
+    this.paintStatus(this.sheets, name);
   }
 
   /** 源码改过并保存之后换一份数据：行列数都可能变，网格整个重建。 */
@@ -383,11 +444,13 @@ export class SheetDialog {
       this.panes.classList.remove("sd-showpage");
       this.pane.hidden = pageOn;
       this.page.root.hidden = !pageOn;
+      this.syncFx();
       return;
     }
     this.pane.hidden = false;
     this.page.root.hidden = !pageOn;
     this.panes.classList.toggle("sd-showpage", pageOn);
+    this.syncFx();
   }
 
   /** 900 布局 px 是分界：再窄并排两栏都看不清。 */
@@ -409,11 +472,18 @@ export class SheetDialog {
       if (this.closed) return;
       // 打开时落在第一张看得见的表上（文件名那格传给 meta.name 的不一定是它）。
       const first = meta.sheets.find((s) => !s.hidden)?.name ?? meta.name;
+      this.sheets = meta.sheets;
+      // 公式栏插在网格上面；标签页（CSV 的）在它上面。
+      const top = this.panes ?? this.pane;
+      if (top.parentElement === this.body) this.body.insertBefore(this.fx, top);
       this.renderTabs(meta.sheets, first);
+      this.paintStatus(meta.sheets, first);
       this.grid = new SheetGrid({
         meta,
         sheet: first,
         fetchWindow: this.opts.fetchWindow,
+        // #111：选中格变了，公式栏跟着换。
+        onSelect: (sel) => this.showFormula(sel),
         // 文件在预览之后被改过：停下，说清楚，别拿旧数据装作没事（#106）。
         onStale: () => this.stale(),
       });
