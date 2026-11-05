@@ -44,6 +44,8 @@ export interface Diagnosis {
   effect: string;
   /** 只有真需要人动手时才有（代理、登录、批准…）；没有就是纯 A 能自理的失败。 */
   needsYou?: string;
+  /** 可复用的修法（人机通用一句话）：下次怎么不再犯；没有就不显示。 */
+  improve?: string;
   /** Exit code parsed out of the trailer, or null when there is none. */
   exit: number | null;
   /** Output with ANSI stripped and the trailer removed. */
@@ -100,11 +102,17 @@ function clip(text: string, max = 120): string {
 function inferIntent(tool: string, cmd: string, out: string): string {
   const c = cmd ?? "";
   if (tool === "bash" || tool === "bash_run") {
+    // 网络优先：`for u in …; do curl … | head -c 400; done` 里的 head 是管道，不是「找东西」。
+    const urls = c.match(/https?:\/\//g)?.length ?? 0;
+    if (/\b(curl|wget|Invoke-WebRequest|nc)\b/i.test(c) || urls > 0) {
+      return urls > 1 ? tr("它想挨个抓这几个网页") : tr("它想抓这个网页的内容");
+    }
     if (/\bdate\b|\btime\b/i.test(c)) return tr("它想拿当前日期 / 时间");
     if (/\bgit\b/.test(c)) return tr("它想看仓库状态 / 改了哪些文件");
-    if (/\b(npm|pnpm|yarn|mvn|gradle|cargo|go|make|dotnet)\b/.test(c)) return tr("它想跑构建或测试");
-    if (/\b(rg|grep|ag|find|ls|sed|cat|head|tail|awk|dir)\b/.test(c)) return tr("它想在文件里找东西 / 看内容");
-    if (/\b(curl|wget|Invoke-WebRequest)\b/i.test(c)) return tr("它想用命令行抓网络内容");
+    if (/\b(npm|pnpm|yarn|mvn|gradle|cargo|go|make|dotnet|python|node|javac)\b/.test(c)) return tr("它想跑构建、测试或脚本");
+    // 只认「找东西」的主干命令：head / tail / cat / sed 常常只是管道的一部分。
+    if (/\b(rg|grep|ag|ack|fd|find)\b/.test(c)) return tr("它想在文件里搜东西");
+    if (/^\s*(ls|dir|tree|stat|wc)\b/.test(c)) return tr("它想看一眼目录里有什么");
     return tr("它想跑一条命令");
   }
   if (tool === "read") return tr("它想读这个文件");
@@ -135,21 +143,28 @@ const PY_CAUSE: Record<string, string> = {
   KeyError: tr("字典里没这个键，输入结构跟预期不符"),
 };
 
-/** [match, 一句人话, 为什么没成, 影响] — errno families worth naming. */
-const ERRNO: Array<[RegExp, string, string, string]> = [
-  [/ENOENT|No such file or directory/, tr("找不到文件 / 目录"), tr("这个路径不存在"), tr("命令没跑起来，文件一个没动")],
-  [/EACCES|Permission denied/, tr("没有权限读写"), tr("权限不足，被系统挡住了"), tr("没读到 / 没写进去")],
-  [/EADDRINUSE|address already in use/i, tr("端口被占用"), tr("要绑的端口已经有人在用了"), tr("新服务没起来，旧的可能还占着端口")],
-  [/ECONNREFUSED|Connection refused/, tr("对方端口没开"), tr("连得到主机，但那个端口没服务在听"), tr("没连上，没拿到结果")],
-  [/ETIMEDOUT|timed out/i, tr("等到超时"), tr("等太久没有响应，多半是卡住了"), tr("没拿到结果")],
+const PY_FIX: Record<string, string> = {
+  UnicodeDecodeError: tr("读文件时显式写 encoding='utf-8'，别用系统默认代码页"),
+  UnicodeEncodeError: tr("print 中文前设 PYTHONIOENCODING=utf-8（或 python -X utf8）"),
+  ModuleNotFoundError: tr("用项目的 venv，或先把依赖装上"),
+  FileNotFoundError: tr("用绝对路径，或先 cd 到项目根"),
+};
+
+/** [match, 一句人话, 为什么没成, 影响, 可复用修法] — errno families worth naming. */
+const ERRNO: Array<[RegExp, string, string, string, string]> = [
+  [/ENOENT|No such file or directory/, tr("找不到文件 / 目录"), tr("这个路径不存在"), tr("命令没跑起来，文件一个没动"), tr("用绝对路径，或先确认 cwd")],
+  [/EACCES|Permission denied/, tr("没有权限读写"), tr("权限不足，被系统挡住了"), tr("没读到 / 没写进去"), tr("换可写目录，或改文件权限")],
+  [/EADDRINUSE|address already in use/i, tr("端口被占用"), tr("要绑的端口已经有人在用了"), tr("新服务没起来，旧的可能还占着端口"), tr("先停掉占端口的进程，或换个端口")],
+  [/ECONNREFUSED|Connection refused/, tr("对方端口没开"), tr("连得到主机，但那个端口没服务在听"), tr("没连上，没拿到结果"), tr("确认服务起来了、端口对不对")],
+  [/ETIMEDOUT|timed out/i, tr("等到超时"), tr("等太久没有响应，多半是卡住了"), tr("没拿到结果"), tr("拆小重试，或给它加超时")],
 ];
 
-/** [match, 为什么没成, 影响] */
-const GIT_CAUSE: Array<[RegExp, string, string]> = [
-  [/not a git repository/i, tr("当前目录不在 git 仓库里（cwd 不对）"), tr("仓库没变")],
-  [/would be overwritten by merge/i, tr("工作区有未提交的改动挡着"), tr("工作区没动")],
-  [/has no upstream branch/i, tr("分支还没有上游"), tr("本地提交没推出去")],
-  [/did not match any file/i, tr("路径 / 分支名写错了"), tr("仓库没变")],
+/** [match, 为什么没成, 影响, 可复用修法] */
+const GIT_CAUSE: Array<[RegExp, string, string, string]> = [
+  [/not a git repository/i, tr("当前目录不在 git 仓库里（cwd 不对）"), tr("仓库没变"), tr("cd 到仓库根目录再跑")],
+  [/would be overwritten by merge/i, tr("工作区有未提交的改动挡着"), tr("工作区没动"), tr("先 commit 或 stash，再 pull")],
+  [/has no upstream branch/i, tr("分支还没有上游"), tr("本地提交没推出去"), tr("git push -u origin <分支名>")],
+  [/did not match any file/i, tr("路径 / 分支名写错了"), tr("仓库没变"), tr("核对名字，或 git ls-files 看一眼")],
 ];
 
 /**
@@ -167,19 +182,21 @@ function guardDiagnosis(out: string, base: { exit: number | null; body: string; 
   if (!head) return null;
   const kind = head[1];
   const headText = head[2].trim();
-  const say = (title: string, cause: string, effect: string): Diagnosis => ({ ...base, level: "benign", title, cause, effect });
+  const say = (title: string, cause: string, effect: string, improve?: string): Diagnosis => ({ ...base, level: "benign", title, cause, effect, ...(improve ? { improve } : {}) });
 
   if (kind === "ALREADY APPLIED")
     return say(
       tr("这处改动其实已经生效过，不用再提交"),
       tr("相同的 oldText 之前就应用过，重复提交会被拒"),
       tr("改动早就在文件里了，这次没有重复写"),
+      tr("先确认这一处是否已改过，别重复提交"),
     );
   if (kind === "RE-READ REQUIRED")
     return say(
       tr("这段原文你已经试过一次，还是对不上"),
       tr("同样的 oldText 提交过还是没匹配上，说明凭记忆写的版本是错的"),
       tr("文件一个字节没动"),
+      tr("同一段 oldText 别再原样重试，先重读文件"),
     );
 
   if (headText.startsWith("Edit target not found")) {
@@ -189,20 +206,23 @@ function guardDiagnosis(out: string, base: { exit: number | null; body: string; 
         tr("要替换的原文在文件里有 {p1} 处一模一样", { p1: dup[1] }),
         tr("工具不敢猜你要改哪一处，只能先拒掉"),
         tr("文件一个字节没动"),
+        tr("oldText 带上下一行做唯一匹配"),
       );
     if (/could not be mapped to one raw file span/.test(out))
       return say(
         tr("这段原文能对上，但定位不到唯一的行"),
         tr("匹配到的内容跨在行尾、空白这类没法精确框定的地方"),
         tr("文件一个字节没动"),
+        tr("oldText 只取连续完整的行"),
       );
     if (/was not found in the current file content/.test(out))
       return say(
         tr("要替换的原文在文件里找不到"),
         tr("oldText 要逐字节匹配：文件可能已被改过，或被空白、引号、全角半角绊住"),
         tr("文件一个字节没动"),
+        tr("oldText 从刚 read 到的原文复制"),
       );
-    return say(tr("要替换的原文没对上"), tr("工具在文件里定位不到这段 oldText"), tr("文件一个字节没动"));
+    return say(tr("要替换的原文没对上"), tr("工具在文件里定位不到这段 oldText"), tr("文件一个字节没动"), tr("oldText 从刚 read 到的原文复制"));
   }
 
   if (headText.startsWith("Edit without read")) {
@@ -211,20 +231,23 @@ function guardDiagnosis(out: string, base: { exit: number | null; body: string; 
         tr("没读过这个文件，工具不让改"),
         tr("规矩是先 read 再 edit；用 bash 的 cat / sed / grep 看过的不算读过"),
         tr("文件一个字节没动"),
+        tr("改文件前先 read 一遍；bash 里 cat / sed 看过的不算"),
       );
     if (/only covered part of/.test(headText))
       return say(
         tr("只改过这个文件的一部分，盖不住这次要改的位置"),
         tr("上一次写只覆盖了其中几行，缺的正好是这次要改的地方"),
         tr("文件一个字节没动"),
+        tr("read 的范围要盖住要改的那几行"),
       );
     if (/write record .*expired/.test(headText))
       return say(
         tr("之前写过它，但写记录过期了，得重新读"),
         tr("写记录会按闲置时间过期（默认 30 分钟），过期后要重新读一次"),
         tr("文件一个字节没动"),
+        tr("长时间空闲后先 read 再改"),
       );
-    return say(tr("没读过这个文件，工具不让改"), tr("工具的 read 守卫先拦住了这次编辑"), tr("文件一个字节没动"));
+    return say(tr("没读过这个文件，工具不让改"), tr("工具的 read 守卫先拦住了这次编辑"), tr("文件一个字节没动"), tr("改文件前先 read 一遍"));
   }
 
   if (headText.startsWith("File modified since your write"))
@@ -232,30 +255,35 @@ function guardDiagnosis(out: string, base: { exit: number | null; body: string; 
       tr("你写之后文件又被改过，内容对不上了"),
       tr("会话写下的内容和磁盘上现在的不一致——别人或别的工具改过"),
       tr("这次编辑没有落盘"),
+      tr("编辑前先 read 确认磁盘上的现状"),
     );
   if (headText.startsWith("File modified since read"))
     return say(
       tr("文件在你上次读过之后变了"),
       tr("磁盘内容和上次 read 到的不一致，手里的版本已经过期"),
       tr("这次编辑没有落盘"),
+      tr("编辑前先 read 确认磁盘上的现状"),
     );
   if (headText.startsWith("Edit outside read range"))
     return say(
       tr("你要改的行不在读过的范围里"),
       tr("只 read 了文件的一段，这次要改的行落在外面"),
       tr("文件一个字节没动"),
+      tr("read 覆盖到要改的行再 edit"),
     );
   if (headText.startsWith("Edit range changed since read"))
     return say(
       tr("读过之后，这几行的内容变了"),
       tr("要改的行和读到的内容对不上，可能被改过或整体挪了位置"),
       tr("文件一个字节没动"),
+      tr("改之前重新 read 一遍"),
     );
   if (headText.startsWith("Overlapping edit spans"))
     return say(
       tr("同一批修改的行范围互相重叠"),
       tr("两处修改落在同一片行上，工具不知道先改哪个"),
       tr("文件一个字节没动"),
+      tr("同一批编辑别落在重叠的行上"),
     );
 
   return say(
@@ -271,13 +299,14 @@ export function diagnose(input: FailureInput): Diagnosis {
   const body = out.replace(TRAILER_TAIL, "").trim();
   const intent = input.intent?.trim() ? clip(input.intent) : inferIntent(input.tool, input.cmd, out);
   const base = { exit, body, intent };
-  const say = (level: Level, title: string, cause: string, effect: string, needsYou?: string): Diagnosis => ({
+  const say = (level: Level, title: string, cause: string, effect: string, needsYou?: string, improve?: string): Diagnosis => ({
     ...base,
     level,
     title,
     cause,
     effect,
     ...(needsYou ? { needsYou } : {}),
+    ...(improve ? { improve } : {}),
   });
 
   if (/Command aborted/.test(out)) {
@@ -287,6 +316,8 @@ export function diagnose(input: FailureInput): Diagnosis {
       tr("命令被中断，没有跑完"),
       tr("手动停止 / 会话被打断 / 超时 —— 不是命令自己报错{p1}", { p1: lines ? tr("（中断前已有 {p1} 行输出）", { p1: lines }) : "" }),
       tr("可能留下写到一半的状态，重跑前先看一眼"),
+      undefined,
+      tr("长命令拆成几步跑，或给它加超时"),
     );
   }
 
@@ -302,11 +333,25 @@ export function diagnose(input: FailureInput): Diagnosis {
       tr("参数不合格，{p1} 没执行（{p2} 处）", { p1: validation[1], p2: items.length }),
       first + (items.length > 3 ? " …" : ""),
       tr("工具没执行，什么都没改"),
+      undefined,
+      tr("按工具 schema 补齐字段——这是调用方要修的，不是环境"),
     );
   }
 
   const guard = guardDiagnosis(out, base);
   if (guard) return guard;
+
+  // 插件把一条命令拦下来时，返回的往往是它自己的提示语（不是命令的报错）：context-mode 就要求
+  // curl 走 MCP / 静默写文件，否则刷爆上下文。这种要看懂它的意思，不能当成「原因没认出来」。
+  if (/MCP tools?|floods the context window|instead of inline HTTP clients/i.test(out) && /curl|wget|https?:\/\//i.test(input.cmd))
+    return say(
+      "fail",
+      tr("插件拦下了这条命令"),
+      tr("它直接用 curl 抓网页，插件要求走 MCP 抓取或静默写文件（避免刷爆上下文）"),
+      tr("命令没执行，什么都没抓到"),
+      undefined,
+      tr("curl 用 `-s -o 文件` 静默写文件，或用插件的抓取工具"),
+    );
 
   // 抓网页被拒：403 最常见，其次是 401（要登录）和 429（限速）。
   const http = /HTTP (\d{3})/.exec(out);
@@ -326,6 +371,13 @@ export function diagnose(input: FailureInput): Diagnosis {
       cause,
       tr("这个页面没拿到，上下文里缺一块"),
       code === "401" ? tr("这个站点需要登录凭据") : undefined,
+      code === "401"
+        ? tr("给这个站点配凭据，或换成能登录的抓取方式")
+        : code === "403"
+          ? tr("挡爬虫的站点别直抓：改用 web_search，或加浏览器 UA")
+          : code === "429"
+            ? tr("放慢请求节奏，或换个来源")
+            : tr("换个来源或稍后重试"),
     );
   }
 
@@ -337,6 +389,7 @@ export function diagnose(input: FailureInput): Diagnosis {
       tr("DNS 解析失败、被墙、证书不对、代理没生效——这几种在 fetch 里都报同一句"),
       tr("这个页面没拿到，上下文里缺一块"),
       tr("确认这台机器能直连这个域名；要走代理就配到 pi 的 httpProxy / HTTPS_PROXY"),
+      tr("先 curl -I 试直连；确认要走代理再配 httpProxy / HTTPS_PROXY"),
     );
   }
 
@@ -349,6 +402,8 @@ export function diagnose(input: FailureInput): Diagnosis {
       tr("按 Windows CMD 的写法跑在了 bash 里"),
       tr("`/t` 这类开关是 CMD 的语法：bash 把它当成要执行的路径，于是报「找不到」"),
       tr("命令没跑起来，文件一个没动"),
+      undefined,
+      tr("bash 里用 `date +%F`；CMD 的 /t 在这里不通用"),
     );
 
   if (/Could not find (?:the exact text|edits\[\d+\])/.test(out)) {
@@ -358,6 +413,8 @@ export function diagnose(input: FailureInput): Diagnosis {
       tr("没找到要替换的原文，文件没被改"),
       tr("oldText 必须逐字节匹配（含空白、换行、CRLF）{p1}", { p1: target ? tr("。目标：{p1}", { p1: target[1] }) : "" }),
       tr("文件一个字节没动"),
+      undefined,
+      tr("oldText 用刚 read 到的原文，别凭记忆"),
     );
   }
 
@@ -369,6 +426,8 @@ export function diagnose(input: FailureInput): Diagnosis {
       tr("Python 脚本报错：{p1}", { p1: kind }),
       PY_CAUSE[kind] ?? tr("程序抛了异常，栈顶在 Traceback 里"),
       tr("脚本中途退出，它前面几步可能已经写过文件"),
+      undefined,
+      PY_FIX[kind] ?? tr("看 Traceback 最后三行定位到文件:行再改"),
     );
   }
 
@@ -380,7 +439,7 @@ export function diagnose(input: FailureInput): Diagnosis {
       .split("\n")
       .map((l) => l.trim())
       .find((l) => errno[0].test(l));
-    return say("fail", errno[1], where ? tr("{p1}：{p2}", { p1: errno[2], p2: where.slice(0, 120) }) : errno[2], errno[3]);
+    return say("fail", errno[1], where ? tr("{p1}：{p2}", { p1: errno[2], p2: where.slice(0, 120) }) : errno[2], errno[3], undefined, errno[4]);
   }
 
   if (/Failed to connect|Could not resolve host|unable to access|SSL_ERROR|Proxy CONNECT aborted/i.test(out)) {
@@ -392,13 +451,14 @@ export function diagnose(input: FailureInput): Diagnosis {
       tr("连接失败：先确认这台机器能直连对方（curl -I https://github.com）"),
       tr("这条请求没拿到结果"),
       tr("确实要走代理时，填到 pi 的 httpProxy 设置或 HTTPS_PROXY 环境变量"),
+      tr("先 curl -I 验证直连；要走代理就配 httpProxy / HTTPS_PROXY"),
     );
   }
 
   const gitFatal = lastMatch(/^fatal: /, out);
   if (gitFatal) {
     const known = GIT_CAUSE.find(([re]) => re.test(gitFatal));
-    return say("fail", tr("git 拒绝了这条命令"), known ? known[1] : gitFatal, known ? known[2] : tr("仓库没变"));
+    return say("fail", tr("git 拒绝了这条命令"), known ? known[1] : gitFatal, known ? known[2] : tr("仓库没变"), undefined, known ? known[3] : undefined);
   }
 
   const crossLine = lastMatch(/^✗ /, out);
@@ -409,6 +469,8 @@ export function diagnose(input: FailureInput): Diagnosis {
       crossLine.replace(/^✗\s*/, "").slice(0, 90),
       problems ? tr("自检脚本报了 {p1} 个问题（第一个在上面）", { p1: problems[1] }) : tr("自检脚本判定不一致"),
       tr("自检只说问题，没写文件"),
+      undefined,
+      tr("按自检提示修；全量清单展开原始输出看"),
     );
   }
 
@@ -451,6 +513,8 @@ export function diagnose(input: FailureInput): Diagnosis {
       : neverStarted
         ? tr("命令没跑起来，文件一个没动")
         : tr("命令中途失败，可能留下改了一半的状态"),
+    undefined,
+    neverStarted ? tr("确认命令存在，且 shell 是对的（bash / cmd）") : undefined,
   );
 }
 

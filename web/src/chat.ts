@@ -125,11 +125,11 @@ export class ChatView {
   /** Live view of the running tool call — nothing here is rendered in the transcript. */
   private live: LiveInfo = {};
   /**
-   * 模型最近一条 assistant 文本。卡片上的「它当时在做」用它的原话，比按命令猜准得多——
-   * `items.ts:174-190` 把 assistant 文本排在它的 toolCall 之前，所以失败到达时上一条就是它。
-   * 新一轮用户输入时清空，绝不跨轮借用。
+   * 每条 assistant 条目自己的文本（id → 文本）。卡片上的「它当时在做」按**这条工具调用所属的消息**取，
+   * 而不是「上一条」：模型一句话不说、直接再调一个工具时，上一条的独白是别的动作，拿来会误导。
+   * tool item 的 id 是 `${entry.id}:${callId}`（items.ts:180），所以前缀就是它那条消息。
    */
-  private lastAssistantSaid = "";
+  private assistantTexts = new Map<string, string>();
   /** 本轮的用戶原话：模型直接调工具、一句话不说时，「它当时在做」用它——那确实就是它动手的理由。 */
   private lastUserSaid = "";
   /** Which tool call the live output belongs to; a stale update must not overwrite a newer tool. */
@@ -360,7 +360,7 @@ export class ChatView {
     this.opsFiles = null;
     this.live = {};
     this.liveKey = "";
-    this.lastAssistantSaid = "";
+    this.assistantTexts.clear();
     this.lastUserSaid = "";
     this.turns = [];
     this.turnRail.clear();
@@ -397,11 +397,9 @@ export class ChatView {
     // a user message opens a new turn: its tool calls get their own module
     if (item.kind === "user") {
       this.closeOps();
-      this.lastAssistantSaid = "";
       this.lastUserSaid = item.text ?? "";
     }
-    // 卡片上的「它当时在做」读的是模型自己的话：调工具前那句就在上一条。
-    if (item.kind === "assistant") this.lastAssistantSaid = item.text ?? "";
+    if (item.kind === "assistant") this.assistantTexts.set(item.id, item.text ?? "");
     if (item.kind === "tool") {
       const existing = this.toolCards.get(item.toolCallId);
       if (existing && this.isAskTool(item.name)) {
@@ -450,6 +448,11 @@ export class ChatView {
     this.cards.delete(localId);
     this.cards.set(item.id, node);
     if (this.collapsed.delete(localId)) this.collapsed.add(item.id);
+    // 乐观渲染过的用户消息回填时走这里（不经过 add），原话也得记下来，否则卡片只能靠命令猜。
+    if (item.kind === "user") {
+      this.lastUserSaid = item.text ?? "";
+    }
+    if (item.kind === "assistant") this.assistantTexts.set(item.id, item.text ?? "");
   }
 
   replace(id: string, item: Item): void {
@@ -492,6 +495,10 @@ export class ChatView {
         node.append(stream);
       }
       stream.textContent = buf.text;
+      // 实时会话里 assistant 条目到达时 `text` 还是空的，内容靠 delta 长出来；按 id 记下来，卡片才拿得到。
+      // `_raw` 一起写，/copy 在实时会话里才拿得到东西。
+      if (buf.text.trim()) this.assistantTexts.set(id, buf.text);
+      (node as HTMLElement & { _raw?: string })._raw = buf.text;
     }
     // reasoning is buffered but never painted: the transcript shows prose and tool calls only
     this.scrollToEnd();
@@ -605,14 +612,16 @@ export class ChatView {
   }
 
   private failFromItem(item: ToolItem): void {
+    // 按这条工具调用所属的 assistant 消息取原话（平行调用共享同一条消息，不会串到上一次）。
+    const said = (this.assistantTexts.get(item.id.split(":")[0]) ?? "").trim();
     this.failureCard(
       item.toolCallId,
       {
         tool: item.name,
         cmd: toolSummary(item),
         out: String(item.result ?? item.partialResult ?? ""),
-        // 优先级：模型自己的话 → 你这一轮让它做的事 → 按命令猜（diagnose 里兵底）。
-        intent: this.lastAssistantSaid || (this.lastUserSaid ? tr("照你的要求：{p1}", { p1: this.lastUserSaid }) : ""),
+        // 优先级：这条消息的原话 → 你这一轮让它做的事 → 按命令猜（diagnose 里兵底）。
+        intent: said || (this.lastUserSaid ? tr("照你的要求：{p1}", { p1: this.lastUserSaid }) : ""),
       },
       item.durationMs,
     );
@@ -1032,10 +1041,12 @@ function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
   );
   const grid = el("div", "grid");
   grid.append(el("span", "k", tr("为什么没成")), el("span", "v", d.cause || "—"));
-  // 「它当时在做」放最后一行、用淡一点的样式：它是背景，不是一个要人处理的条目；
+  // 「它当时在做」放中间：它是背景，不是一个要人处理的条目；
   // 但读者最先问的恰恰是「它为什么去调这一条」，所以不能省。
   grid.append(el("span", "k", tr("它当时在做")), el("span", "v", d.intent || "—"));
-  grid.append(el("span", "k", tr("影响")), el("span", "v", d.effect || "—"));
+  // 影响与改进合一行：先回答「这次动了什么」，再回答「下次怎么不再犯」。
+  const impact = [d.effect, d.improve].filter(Boolean).join(tr("；"));
+  grid.append(el("span", "k", tr("影响 / 改进")), el("span", "v", impact || "—"));
   if (d.needsYou) grid.append(el("span", "k", tr("要你做")), el("span", "v", d.needsYou));
   const cmdbar = el("div", "cmdbar");
   cmdbar.append(el("span", "dot", "▪"), el("span", "c", input.cmd ? `${input.tool} · ${input.cmd}` : input.tool));
