@@ -117,10 +117,37 @@ try {
   check("同一条回答只出现一次", shape.assistant === 1, JSON.stringify(shape));
 
   // 模型：dialog 里要能切，不然它就成了「只能问、不能挑」。
-  check("dialog 里有模型入口", (await page.locator(".scratch-model-chip").count()) === 1);
-  await page.locator(".scratch-model-chip").click();
+  const chip = page.locator(".scratch-model-chip");
+  check("dialog 里有模型入口", (await chip.count()) === 1);
+  const chip0 = (await chip.textContent()) ?? "";
+  // #86：随手问问的都是零碎问题，默认就该是最低档（off），不用用户每次手动降。
+  check("默认最低思考档", /·\s*off/.test(chip0), chip0.trim());
+
+  await chip.click();
   check("点开有模型菜单", await page.locator(".scratch-models").isVisible());
-  await page.locator(".scratch-model-chip").click();
+  const levelChips = page.locator(".scratch-levels .chip");
+  check("菜单里有思考档位", (await levelChips.count()) >= 2, `${await levelChips.count()} 档`);
+
+  await levelChips.filter({ hasText: /^low$/ }).first().click();
+  await page
+    .waitForFunction(() => /·\s*low/.test(document.querySelector(".scratch-model-chip")?.textContent ?? ""), null, { timeout: 15000 })
+    .catch(() => {});
+  const chip1 = (await chip.textContent()) ?? "";
+  // session.state 帧没有 sessionId（只有 session.id）：按 sessionId 比就永远收不到，chip 不会变。
+  check("改档位会生效", /·\s*low/.test(chip1), chip1.trim());
+
+  await chip.click();
+  const modelRows = page.locator(".scratch-model");
+  const modelCount = await modelRows.count();
+  check("菜单里有模型可选", modelCount >= 2, `${modelCount} 个`);
+  // 挑一个**不是当前**的模型，才证得动「切了会生效」。
+  const other = modelRows.filter({ hasText: "Fake Model 2" }).first();
+  await other.click();
+  await page
+    .waitForFunction(() => /Fake Model 2/.test(document.querySelector(".scratch-model-chip")?.textContent ?? ""), null, { timeout: 15000 })
+    .catch(() => {});
+  const chip2 = (await chip.textContent()) ?? "";
+  check("切模型会生效", /Fake Model 2/.test(chip2), chip2.trim());
 
   await page.screenshot({ path: path.join(OUT, "scratch-chat.png") });
 

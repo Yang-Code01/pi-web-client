@@ -23,6 +23,8 @@ export interface ScratchHost {
 
 /** pi 在 `contextTokens > contextWindow - reserveTokens` 处自动压缩；reserve 默认 16384。 */
 const RESERVE_TOKENS = 16384;
+/** 模型目录还没到时的兜底档位（与 pi 的 /thinking 全集一致）。 */
+const DEFAULT_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 /** 弱提醒 / 强提醒：占「离自动压缩还剩多少」的比例。 */
 const WARN_AT = 0.75;
 const STRONG_AT = 0.92;
@@ -185,13 +187,17 @@ export class ScratchChat {
         this.window = typeof msg.context?.contextWindow === "number" ? msg.context.contextWindow : this.window;
         this.paintState();
         return true;
-      case "session.state":
-        if (!mine) return false;
-        if (msg.session) this.state = { ...(this.state ?? ({} as SessionState)), ...(msg.session as SessionState) };
-        if (msg.session?.running !== undefined) this.running = Boolean(msg.session.running);
-        if (msg.session?.starting !== undefined) this.starting = Boolean(msg.session.starting);
+      case "session.state": {
+        // 这一帧没有 sessionId，只有 session.id —— 按 sessionId 比就永远匹配不上，
+        // 结果切了模型名字不变、状态行也不动。
+        const st = msg.session as SessionState | undefined;
+        if (!st || st.id !== this.id) return false;
+        this.state = { ...(this.state ?? ({} as SessionState)), ...st };
+        if (st.running !== undefined) this.running = Boolean(st.running);
+        if (st.starting !== undefined) this.starting = Boolean(st.starting);
         this.paintState();
         return true;
+      }
       case "notice":
         if (!mine) return false;
         this.upsert({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: String(msg.text ?? "") } as Item);
@@ -308,9 +314,30 @@ export class ScratchChat {
     if (!this.modelMenu.hidden) this.fillModels();
   }
 
+  /** 当前模型支持的思考档位；模型目录还没到时给 pi 的全集。 */
+  private levels(): string[] {
+    const model = this.host.models().find((m) => m.id === this.state?.model);
+    return model?.levels?.length ? model.levels : DEFAULT_LEVELS;
+  }
+
   private fillModels(): void {
     this.modelMenu.textContent = "";
     if (!this.id) return;
+    // 档位放在模型前面：换完模型档位可能被 pi clamp，先调档位再换模型更符合直觉。
+    const levelBox = el("div", "scratch-levels");
+    levelBox.append(el("div", "levels-label", tr("思考档位")));
+    const chips = el("div", "chips");
+    for (const lv of this.levels()) {
+      const chip = el("button", `chip${lv === this.state?.thinkingLevel ? " on" : ""}`, lv);
+      chip.onclick = () => {
+        this.modelMenu.hidden = true;
+        this.host.send({ type: "setThinking", sessionId: this.id, level: lv });
+      };
+      chips.append(chip);
+    }
+    levelBox.append(chips);
+    this.modelMenu.append(levelBox);
+
     const list = this.host.models();
     if (!list.length) {
       this.modelMenu.append(el("div", "scratch-model none", tr("模型列表还没加载完")));
@@ -409,7 +436,8 @@ export class ScratchChat {
     this.stateEl.textContent = this.stateLabel();
     // 模板串里带中文会被 i18n 检查器当成「没走 tr()」：先算好名字再拼。
     const modelName = this.state?.modelName || this.state?.model || tr("模型");
-    this.modelEl.textContent = `${modelName} ▾`;
+    const level = this.state?.thinkingLevel;
+    this.modelEl.textContent = level ? `${modelName} · ${level} ▾` : `${modelName} ▾`;
     this.modelEl.disabled = !this.id;
     this.hintEl.textContent = this.error;
     this.hintEl.hidden = !this.error;

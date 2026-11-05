@@ -51,6 +51,14 @@ const touchSessionFile = () => {
 };
 touchSessionFile();
 
+/** #86: the stub keeps the model / thinking level it was told, so get_state can report them back. */
+const FAKE_MODELS = [
+  { id: "fake-model", name: "Fake Model", provider: "stub" },
+  { id: "fake-model-2", name: "Fake Model 2", provider: "stub" },
+];
+let currentModel = FAKE_MODELS[0];
+let thinkingLevel = "off";
+
 let running = false;
 let compacting = false;
 let abortRequested = false;
@@ -236,11 +244,24 @@ async function handle(cmd) {
       return ok(id, type, { cancelled: false });
     }
     case "get_state":
-      return ok(id, type, { model: { id: "fake-model", name: "Fake Model", provider: "stub" }, thinkingLevel: "off", cwd: process.cwd(), sessionId, sessionFile });
+      return ok(id, type, { model: currentModel, thinkingLevel, cwd: process.cwd(), sessionId, sessionFile });
+    case "set_model": {
+      const provider = String(cmd.provider ?? "stub");
+      const modelId = String(cmd.modelId ?? cmd.model ?? "");
+      const known = FAKE_MODELS.find((m) => m.id === modelId);
+      currentModel = { id: modelId, name: known?.name ?? `Fake ${modelId}`, provider };
+      note({ t: "set_model", pid: process.pid, provider, modelId });
+      return ok(id, type, currentModel);
+    }
+    case "set_thinking_level":
+      thinkingLevel = String(cmd.level ?? "off");
+      note({ t: "set_thinking_level", pid: process.pid, level: thinkingLevel });
+      return ok(id, type);
     case "get_session_stats":
       return ok(id, type, { tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cost: 0.01, contextUsage: { tokens: 1000, contextWindow: 200000, percent: 0.5 } });
     case "get_available_models":
-      return ok(id, type, { models: [{ id: "fake-model", name: "Fake Model", provider: "stub", reasoning: false, input: ["text"], contextWindow: 200000 }] });
+      const LEVEL_MAP = { off: "off", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
+      return ok(id, type, { models: FAKE_MODELS.map((m) => ({ ...m, reasoning: true, thinkingLevelMap: LEVEL_MAP, input: ["text"], contextWindow: 200000 })) });
     case "get_commands":
       return ok(id, type, { commands: [] });
     case "set_steering_mode":

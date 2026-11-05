@@ -560,6 +560,8 @@ const DEFAULT_NAME = "新会话";
  * of the fixed list is that a write tool cannot be talked into existing. */
 const SCRATCH_NAME = "随手问";
 const SCRATCH_TOOLS = "read,grep,find,ls";
+/** 随手问的问题通常一句两句就说完：默认关思考，省 token 也快（按模型能力由 pi 自行 clamp）。 */
+const SCRATCH_THINKING = "off";
 
 export class Session extends EventEmitter {
   readonly state: SessionState;
@@ -2181,7 +2183,7 @@ export class SessionManager extends EventEmitter {
     }
     ensureDir(scratchCwd());
     ensureDir(scratchSessionsDir());
-    const session = await this.create(scratchCwd(), SCRATCH_NAME, { tools: SCRATCH_TOOLS }, { scratch: true });
+    const session = await this.create(scratchCwd(), SCRATCH_NAME, { tools: SCRATCH_TOOLS, thinking: SCRATCH_THINKING }, { scratch: true });
     this.scratchId = session.state.id;
     return session;
   }

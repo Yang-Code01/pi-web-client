@@ -2295,3 +2295,5 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .scratch-model .m-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scratch-model .m-prov { font: 10.5px/1 var(--mono); color: var(--faint); }
 .scratch-model.none { color: var(--faint); font-size: 12px; }
+.scratch-levels { display: grid; gap: 6px; padding: 2px 2px 8px; border-bottom: 1px solid var(--line-soft); margin-bottom: 6px; }
+.scratch-levels .chips { display: flex; flex-wrap: wrap; gap: 6px; }
