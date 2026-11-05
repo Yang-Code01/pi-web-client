@@ -1668,7 +1668,7 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 
 验证：`node --experimental-transform-types bridge/tests/workspace-unit.mjs`（临时目录里真 `git init` + `git worktree add`：worktree 与主仓同组、非 git 各自成组、盘符根与不存在的目录不炸、override 优先与放回、缓存命中与重启都不再跑 git、只删空的手动组、forget 清 override）。
 
-## D128 一轮 unslop：字号 6 档、圆角 4/6/8/12/16、间距回到 4px 网格（emoji 图标保留）
+## D136 一轮 unslop：字号 6 档、圆角 4/6/8/12/16、间距回到 4px 网格（emoji 图标保留）
 
 审计是量出来的，不是看出来的：改之前 `web/src/styles.css` 里有 **15 种字号**（10 / 10.5 / 11 / 11.5 /
 11.8 / 12 / 12.3 / 12.5 / 12.8 / 13 / 13.5 / 14 / 14.5 / 15 / 20）、**15 种圆角**（1,2,3,4,5,6,7,8,9,10,
@@ -1712,34 +1712,7 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 `probes/round10-scroll.mjs`、`probes/round11-liveinfo.mjs` 全绿；改前/改后截图在 `.scratch/unslop/`（desktop 空态、
 对话、左栏特写、390px 列表与对话）。
 
-## D129 「交给 agent」的正文不写记录时的会话名；待填文字只属于「我自己刚建的那个会话」
-
-**问题（用户报的 bug）：** 在会话「bug 反馈」里记一条，点「交给 agent → 新开一个会话」，新会话的输入框里出现
-`## 111111` / `待处理 · 2026-11-06 00:41 · bug 反馈` —— 那行「bug 反馈」是**上一个会话**的名字，落进新会话
-就读成「别的会话的记录混进来了」。同一处还有一个真泄漏：点「新开一个会话」后按「取消」（或建失败），
-`prefillNext` 留在字段里，此后打开**任何**会话（`openSession` 回包也走 `case "session"`）都会把那段笔记灌进
-那个会话的输入框，并写进它的草稿（复现：取消面板 → 点会话 A → A 的输入框变成某条笔记的 markdown）。
-
-**决定：**
-- `web/src/notesheet.ts:58` `noteMarkdown()` 的头部去掉会话名，只剩 `状态 · 时间`（`## 标题` 单独一行）。
-  复制 Markdown / 导出全部同一条函数，一起变。记录里的 `sessionName` 字段保留：面板里「这条记在哪个会话」
-  （`notesheet.ts:647`）和列表行仍在用。
-- `web/src/app.ts` `case "session"`：先取 `const handoff = this.creating ? this.prefillNext : null;` 再
-  `this.creating?.finish()`，只认领「这条快照是我刚建的那个会话」的回包。
-- `closeSheet()`：`sheetKind === "new"` 时清掉 `prefillNext` —— 关掉面板（取消 / 点背景）= 放弃这段待填文字。
-
-**为什么：** 交接的落点本来就是另一个会话（D95 的「交给 agent」是跨会话的动作），正文里带来源会话名等于把
-读者的注意力从「要修什么」拉到「这是谁的记录」；泄漏那一半不是审美问题，是「待填文字没有归属」——
-它只能属于发起它的那次创建，创建没发生就该过期。`finish()` 在前、填字在后的顺序不能倒（`switchDraft()`
-会把 `composerText` 清空），所以文字必须在 `finish()` 之前取出来，`closeSheet()` 才能在成功路径上也放心清。
-
-**可改：** 想让来源还看得见，可以把它写进行尾的 `> 来自「X」` 引用块（用户这次选了「去掉」，别默认加回来）。
-
-**验证：** `node probes/notes-handoff.mjs`（隔离桥 + 真 Chromium，6 条断言）：正文 `待处理 · 2026-11-06 00:44`
-不含会话名、交到 B 的文字没漏进 A、取消新开会话后再切会话输入框为空、之后新开的 C 为空、真建出来的新会话 D
-拿到那段文字。`npm --prefix web run typecheck`（含 i18n 1263 键 ×3）、`npm --prefix web run build`。
-
-## D130 颜色收进 token：4 档表面、4 档线、信号色 4 档；按钮字号回 13
+## D137 颜色收进 token：4 档表面、4 档线、信号色 4 档；按钮字号回 13
 
 **背景（实测）：** 上一轮只收了字号与圆角，颜色还是散着写。`web/src/styles.css` 里 205 处硬编码 hex、
 131 个不同值，99 个只用过一次；光「深色面板」这一个角色就有 36 个不同明度（`#0f141a` / `#10141a` /
@@ -1772,7 +1745,7 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 `probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿。截图用隔离实例（`pi-web-client-test-dev`，端口
 17868，口令 test）出，`.scratch/unslop/{e-list,f-chat,g-chat,g-mobile}.png`。
 
-## D131 窄屏顶栏收成图标、右栏按组分段
+## D138 窄屏顶栏收成图标、右栏按组分段
 
 **背景（实测 390×844，开着一个会话）：** `.topbar` 的 `scrollWidth` 400 > `clientWidth` 390 —— 九样东西
 （工作区 chip、会话名、六颗按钮、字号）挤在一条线上，最后那颗「Aa」被切在半路，而左右两侧的折叠按钮
@@ -1805,7 +1778,7 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 `web/tests/{nowchip,pillbar}-unit.mjs`、`probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿。
 截图 `.scratch/unslop/{y390-top,q2-right,m-queue,d-chat}.png`。
 
-## D132 抽屉标题升一档；色点选中态改成「缝 + 环」
+## D139 抽屉标题升一档；色点选中态改成「缝 + 环」
 
 **背景（实测 `外观与语言`）：** `.sheet-title` 是 13px `--dim`，而它下面的组标题 `.levels-label` 是
 12px `--dim` —— 一页的名字和「语言 / 字号 / 颜色」几乎一样重。色点的选中态是 `border-color: var(--text)`
@@ -1829,7 +1802,7 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 `probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿；截图 `.scratch/unslop/look4.png`（外观与语言）、
 `settings.png`（pi 设置，确认标题改动在别的抽屉上也立得住）。
 
-## D133 抽屉表单只留两档字号；聚焦态回到一条规则
+## D140 抽屉表单只留两档字号；聚焦态回到一条规则
 
 **背景（逐个抽屉量出来的）：** 同一个「新建会话」里输入框有 12 / 13 / 14 三种字号、textarea 12、
 select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 11、`.note-title` 14、
@@ -1847,7 +1820,7 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - 删掉 `.new-sheet .ns-input` 的 14px、`.ns-adv-grid textarea` 的 12px、`.note-title` 的 14px、
   `.note-body` 的 13px（都回落到 13）；`.note-meta-input` 11→12；`.session-info-head` 与
   `.notes-tabs` 这两个「忘了写字号、继承 body 15px」的容器补成 13 / 12。
-- 抽屉标题与色点上一条见 D132；这一轮不改信息架构，也不碰 `.chip.on` 的填色选中态（全站共用）。
+- 抽屉标题与色点上一条见 D139；这一轮不改信息架构，也不碰 `.chip.on` 的填色选中态（全站共用）。
 
 **为什么不是逐抽屉列一张字号表：** 这些抽屉不是各自的产品，是同一个「设置 / 新建」壳层。它们标点点的
 控件不该各带一套刻度；一处默认 + 少数有理由的例外（等宽路径 12px）比 14 条分散规则好维护。

@@ -3581,7 +3581,7 @@ export class App {
     }
     meta.append(tail);
     card.append(meta);
-    // D128 的记号：跑着的会话在卡底留一把刻度尺，攒的格子就是时长。
+    // D136 的记号：跑着的会话在卡底留一把刻度尺，攒的格子就是时长。
     if (s.running) {
       const since = Date.parse(s.startedAt ?? "") || s.updatedAt;
       const ruler = el("div", "sc-ruler");

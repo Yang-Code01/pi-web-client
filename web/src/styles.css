@@ -289,7 +289,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .session-card .card-acts.bottom { gap: 2px; margin: -3px -4px -3px 0; }
 .session-card .card-acts.bottom .card-act { height: 22px; min-width: 22px; margin: 0; }
 .session-card .meta-tail { display: flex; align-items: center; gap: 4px; margin-left: auto; }
-/* D128 的记号：跑着的会话有刻度尺，一条 1px 竖线是一格，最右那条（更高、信号色）是「现在」。 */
+/* D136 的记号：跑着的会话有刻度尺，一条 1px 竖线是一格，最右那条（更高、信号色）是「现在」。 */
 .sc-ruler { display: flex; align-items: flex-end; justify-content: space-between; height: 8px; margin-top: 2px; }
 .sc-ruler i { width: 1px; height: 4px; background: var(--line-strong); }
 .sc-ruler i.now { height: 8px; background: var(--accent); }
