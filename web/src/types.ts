@@ -308,6 +308,10 @@ export interface SheetCell {
   a?: "l" | "c" | "r";
   /** #109 条件格式：底色 / 字色 / 加粗 / 数据条 / 图标。 */
   fx?: SheetFx;
+  /** #111：公式原文（不带 `=`）。 */
+  f?: string;
+  /** #111：只有公式、文件里没存结果——显示为空，不猜 0。 */
+  noCache?: boolean;
 }
 
 /** 合并区，0 基闭区间。 */
@@ -330,6 +334,8 @@ export interface SheetInfo {
   freeze?: { rows: number; cols: number } | null;
   /** #109：认不出的条件格式规则条数（状态条提示「N 条暂不支持」）。 */
   cfUnsupported?: number;
+  /** #111：这张表里「只有公式、没存结果」的格子数。 */
+  noCache?: number;
 }
 
 export interface SheetMeta {

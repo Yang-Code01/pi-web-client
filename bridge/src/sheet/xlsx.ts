@@ -20,6 +20,10 @@ export interface WireCell {
   a?: "l" | "c" | "r";
   /** #109 条件格式算出来的样式：底色 / 字色 / 加粗 / 数据条 / 图标。 */
   fx?: CellFx;
+  /** 公式原文（不带 `=`）。共享公式的子格只有 `si` 下标、没有正文，就不带这个。 */
+  f?: string;
+  /** #111：只有公式、文件里没存上次的结果。这种格子显示为空，绝不猜 0。 */
+  noCache?: boolean;
 }
 
 export interface WireRow {
@@ -55,6 +59,8 @@ export interface SheetInfo {
   freeze?: FreezePane | null;
   /** #109：认不出的条件格式规则条数（状态条据此提示）。 */
   cfUnsupported?: number;
+  /** #111：这张表里「只有公式、没存结果」的格子数；没这种格子就不带。 */
+  noCache?: number;
 }
 
 export interface WorkbookMeta {
@@ -256,6 +262,7 @@ export function readBook(buf: Uint8Array): Book {
     const size = dimension(xml);
     const extras = sheetExtras(xml);
     const cfUnsupported = countCfUnsupported(xml);
+    const noCache = countNoCache(xml);
     const state = attr(m[0], "state");
     sheets.push({
       name,
@@ -268,6 +275,7 @@ export function readBook(buf: Uint8Array): Book {
         : {}),
       ...(extras.freeze ? { freeze: extras.freeze } : {}),
       ...(cfUnsupported > 0 ? { cfUnsupported } : {}),
+      ...(noCache ? { noCache } : {}),
     });
     parts.set(name, part);
   }
@@ -290,6 +298,30 @@ function sharedStrings(entries: Record<string, Uint8Array>): string[] {
   return out;
 }
 
+/**
+ * 格子里 `<f>` 的正文。共享公式只有第一个格子存正文，子格只有 `si` 下标（
+ * `<f t="shared" si="0"/>`），那张表里退化成只显结果，不猜引用。
+ */
+function formulaOf(inner: string): string {
+  const f = /<f\b[^>]*>([\s\S]*?)<\/f>|<f\b[^>]*\/>/.exec(inner);
+  return unescapeXml(f?.[1] ?? "").trim();
+}
+
+/**
+ * 整张表的「只有公式、没存结果」格子数（#111），状态条上的「N 格无缓存值」。
+ * 读元数据时顺带扫一遍：这里不建共享字符串、不查样式，只数 `<c>` 里有没有 `<f>`。
+ */
+function countNoCache(xml: string): number {
+  let n = 0;
+  for (const m of xml.matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+    const inner = m[2] ?? "";
+    if (!/<f\b/.test(inner)) continue;
+    const v = /<v\b[^>]*>([\s\S]*?)<\/v>/.exec(inner)?.[1] ?? "";
+    if (v.trim() === "") n++;
+  }
+  return n;
+}
+
 function cellsOfRow(
   xml: string,
   rowIndex: number,
@@ -308,11 +340,13 @@ function cellsOfRow(
     if (!pos || pos.r !== rowIndex || pos.c < c0 || pos.c > c1) continue;
     const kind = attr(attrs, "t") ?? "n";
     const v = /<v\b[^>]*>([\s\S]*?)<\/v>/.exec(inner)?.[1] ?? "";
+    const cached = v.trim() !== "";
+    const formula = formulaOf(inner);
     const sIdx = Number(attr(attrs, "s") ?? "");
     const xf = Number.isFinite(sIdx) ? xfs[sIdx] : undefined;
     const align = xf?.align ?? undefined;
     let cell: WireCell | null = null;
-    if (kind === "s") {
+    if (kind === "s" && cached) {
       const text = strings[Number(v)];
       if (text !== undefined) cell = { r: pos.r, c: pos.c, k: "s", t: text };
     } else if (kind === "inlineStr") {
@@ -334,6 +368,11 @@ function cellsOfRow(
       if (xf?.code && Number.isFinite(num)) shown = formatValue(num, xf.code, date1904);
       cell = { r: pos.r, c: pos.c, k: "n", t: shown };
     }
+    // 公式格可以带着上次算出的值（就是上面那个 cell），也可以什么都没有（#111）。
+    if (formula && !cell) cell = { r: pos.r, c: pos.c, k: "n", t: "" };
+    if (cell && formula) cell.f = formula;
+    // 只有 `<f>`、没 `<v>`（或 `<v></v>`）：Excel 没存结果。显空，等用户去 Excel 重算。
+    if (cell && formula && !cached) cell.noCache = true;
     if (cell && align) cell.a = align;
     if (cell) {
       const fx = cf?.at(pos.r, pos.c);

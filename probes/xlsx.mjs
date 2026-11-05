@@ -547,7 +547,115 @@ try {
   const cfHint = await page.evaluate(() => document.querySelector(".sd-cfhint")?.textContent ?? "");
   check("状态条报一条暂不支持", /1\s*条条件格式暂不支持/.test(cfHint), cfHint.trim());
   await page.screenshot({ path: path.join(OUT, "10-cf-bars-icons.png") });
+  // ---------------------------------------------------------------- 公式与缺缓存值（#111）
+  // 公式只用文件里存的结果；没存结果的格子显空（不猜 0），公式原文留给公式栏 / 悬停 / 状态条。
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+  await openSheet("formula.xlsx");
 
+  const fxBar = () =>
+    page.evaluate(() => {
+      const bar = document.querySelector(".sd-fx");
+      const body = document.querySelector(".sd-fx-body");
+      const ref = document.querySelector(".sd-fx-ref");
+      if (!bar || !body) return null;
+      return {
+        text: (body.textContent ?? "").trim(),
+        ref: (ref?.textContent ?? "").trim(),
+        hidden: bar.hidden || getComputedStyle(bar).display === "none",
+        above: Math.round(bar.getBoundingClientRect().bottom) <= Math.round(document.querySelector(".sd-view").getBoundingClientRect().top) + 1,
+        h: Math.round(bar.getBoundingClientRect().height),
+      };
+    });
+  const status = () =>
+    page.evaluate(() => {
+      const el = document.querySelector(".sd-status");
+      if (!el) return null;
+      return {
+        text: (el.textContent ?? "").trim(),
+        hidden: el.hidden || getComputedStyle(el).display === "none",
+        inFoot: !!el.closest(".sd-foot"),
+        title: el.getAttribute("title") ?? "",
+      };
+    });
+  const clickCell = async (r, c) => {
+    const b = await cellBox(r, c);
+    if (!b) throw new Error(`no cell ${r}:${c}`);
+    await page.mouse.click(b.l + b.w / 2, b.t + b.h / 2);
+    await page.waitForTimeout(150);
+  };
+  const red = (s) => {
+    const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(s ?? "");
+    return !!m && Number(m[1]) > 150 && Number(m[2]) < 90 && Number(m[3]) < 90;
+  };
+
+  const fx0 = await fxBar();
+  check("公式栏在网格上方", fx0 !== null && !fx0.hidden && fx0.above && fx0.h >= 20, JSON.stringify(fx0));
+  check("公式栏默认跟着 A1", fx0?.ref === "A1" && fx0?.text === "项目", JSON.stringify(fx0));
+  check("状态条在底栏里", (await status())?.inFoot === true, JSON.stringify(await status()));
+
+  // 有缓存值的公式：格子显文件里的结果，选中后公式栏给原文（带 =）。
+  check("公式格显缓存结果", (await cellText(1, 3)) === "37.5", String(await cellText(1, 3)));
+  await clickCell(1, 3);
+  const fx1 = await fxBar();
+  check("选中公式格显示公式原文", fx1?.text === "=B2*C2", JSON.stringify(fx1));
+  check("公式栏坐标跟着选中格", fx1?.ref === "D2", JSON.stringify(fx1));
+
+  await clickCell(1, 4);
+  check("文本公式原样", (await fxBar())?.text === '=B2&"×"&C2', (await fxBar())?.text);
+  check("文本公式格显缓存文本", (await cellText(1, 4)) === "3×12.5", String(await cellText(1, 4)));
+
+  await clickCell(1, 1);
+  check("普通格公式栏显示值", (await fxBar())?.text === "3", (await fxBar())?.text);
+  check("普通格没有多余前缀", (await fxBar())?.ref === "B2", (await fxBar())?.ref);
+
+  // 缺缓存值：显空（不是 0）、红虚线、悬停给公式与解释。
+  const ncInfo = () =>
+    page.evaluate(() => {
+      const el = document.querySelector('.sd-cell[data-r="2"][data-c="3"]');
+      if (!el) return null;
+      const cs = getComputedStyle(el);
+      return {
+        text: el.textContent,
+        style: cs.borderTopStyle,
+        width: cs.borderTopWidth,
+        color: cs.borderTopColor,
+        title: el.getAttribute("title") ?? "",
+        outline: cs.outlineStyle,
+      };
+    });
+  const nc = await ncInfo();
+  check("缺缓存值格显空", nc?.text === "" && (await cellText(2, 3)) !== "0", JSON.stringify(nc?.text));
+  check("缺缓存值格是红虚线", nc?.style === "dashed" && parseFloat(nc.width) >= 1 && red(nc.color), JSON.stringify({ style: nc?.style, width: nc?.width, color: nc?.color }));
+  check("缺缓存值格悬停给公式和解释", /B3\*C3/.test(nc?.title ?? "") && /需在 Excel 打开重算/.test(nc?.title ?? ""), nc?.title);
+
+  await clickCell(2, 3);
+  const ncSel = await ncInfo();
+  check("选中缺缓存值格显示公式", (await fxBar())?.text === "=B3*C3", (await fxBar())?.text);
+  check("选中格有可见边框", ncSel?.outline === "solid", JSON.stringify({ outline: ncSel?.outline }));
+  const selRing = await page.evaluate(() => {
+    const el = document.querySelector('.sd-cell[data-r="2"][data-c="3"]');
+    const cs = getComputedStyle(el);
+    return { style: cs.outlineStyle, width: cs.outlineWidth, color: cs.outlineColor };
+  });
+  check("选中格边框画出来了", selRing.style === "solid" && parseFloat(selRing.width) >= 1, JSON.stringify(selRing));
+  check("缺缓存值格还是空的", (await cellText(2, 3)) === "", String(await cellText(2, 3)));
+
+  const st1 = await status();
+  check("状态条累计无缓存值格数", !st1?.hidden && st1?.text.includes("3 格无缓存值"), JSON.stringify(st1));
+  check("状态条解释了要重算", /Excel/.test(st1?.title ?? ""), st1?.title);
+  await page.screenshot({ path: path.join(OUT, "09-formula.png") });
+
+  // 换到没有公式的表：计数与红虚线都不该跟过去。
+  await page.locator(".sd-wstab", { hasText: "说明" }).first().click();
+  await until(async () => (await cellText(0, 0)) === "说明", 5000, "formula sheet 2");
+  const st2 = await status();
+  check("换到没公式的表计数消失", !st2 || st2.hidden || st2.text === "", JSON.stringify(st2));
+  check("换表后公式栏回到该表 A1", (await fxBar())?.text === "说明", (await fxBar())?.text);
+  await page.locator(".sd-wstab", { hasText: "销量" }).first().click();
+  await until(async () => (await cellText(0, 0)) === "项目", 5000, "formula sheet 1");
+  await until(async () => !(await status())?.hidden, 5000, "status back");
+  check("切回来计数还在", (await status())?.text.includes("3 格无缓存值"), (await status())?.text);
   // 后面几段（#106 出口 / #113 CSV）测的是原来那份 plain.xlsx，换回去再往下走。
   await page.locator(".sd-close").first().click();
   await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");

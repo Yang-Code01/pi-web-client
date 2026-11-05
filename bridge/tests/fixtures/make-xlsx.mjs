@@ -36,6 +36,14 @@ function sheetXml(rows, extra = {}) {
           if (cell.str !== undefined) return `<c r="${ref}"${s} t="s"><v>${cell.str}</v></c>`;
           if (cell.bool !== undefined) return `<c r="${ref}"${s} t="b"><v>${cell.bool ? 1 : 0}</v></c>`;
           if (cell.err !== undefined) return `<c r="${ref}"${s} t="e"><v>${esc(cell.err)}</v></c>`;
+          if (cell.formula !== undefined) {
+            // #111：公式 + 文件里存的上次结果。`cached` / `v` 都没给 = Excel 没存结果，
+            // 这种格子只有 `<f>`，读的时候必须显空，不能猜 0。
+            const cached = cell.cached ?? cell.v;
+            const type = cell.type ? ` t="${cell.type}"` : "";
+            const value = cached === undefined ? "" : `<v>${esc(cached)}</v>`;
+            return `<c r="${ref}"${s}${type}><f>${esc(cell.formula)}</f>${value}</c>`;
+          }
           return `<c r="${ref}"${s}><v>${esc(cell.num)}</v></c>`;
         })
         .join("");
@@ -341,6 +349,67 @@ export function buildConditionalXlsx() {
   return zipSync(files, { level: 6 });
 }
 
+
+/**
+ * 公式 fixture（#111）：一格「公式 + 文件存的结果」、一格「只有公式」、一格「空 <v>`」、
+ * 一格带 `<f>` 的文本公式，外加一张没有公式的表（切过去计数要消失）。
+ * 缺缓存值的格子固定 3 个（D3 / D4 / D5），probe 按这个数断言状态条。
+ */
+const FORMULA_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+
+function formulaRows(si) {
+  const rows = [
+    ["项目", "数量", "单价", "金额", "备注"].map((t) => ({ str: si(t) })),
+    [
+      { str: si("螺丝") },
+      { num: 3 },
+      { num: 12.5 },
+      { formula: "B2*C2", v: 37.5 },
+      { formula: 'B2&"×"&C2', type: "str", cached: "3×12.5" },
+    ],
+    [{ str: si("扳手") }, { num: 10 }, { num: 3.5 }, { formula: "B3*C3" }, { inline: "没有 <v>" }],
+    [{ str: si("螺母") }, { num: 5 }, { num: 2 }, { formula: "B4*C4", v: "" }, { inline: "空 <v>" }],
+    [{ str: si("垫片") }, { num: 2 }, { num: 7.25 }, { formula: "SUM(D2:D4)" }, { inline: "没有 <v>" }],
+    [{ str: si("合计") }, { num: 20 }, null, { formula: "SUM(D2:D5)", v: 37.5 }, { inline: "有缓存" }],
+  ];
+  return rows;
+}
+
+export function buildFormulaXlsx() {
+  const strings = [];
+  const si = (text) => {
+    let i = strings.indexOf(text);
+    if (i < 0) {
+      strings.push(text);
+      i = strings.length - 1;
+    }
+    return i;
+  };
+  const s1 = sheetXml(formulaRows(si), { dimension: "A1:E6" });
+  const s2 = sheetXml([[{ inline: "说明" }], [{ inline: "这张表没有公式，计数只算当前这张表" }]], { dimension: "A1:A2" });
+  const files = {
+    "[Content_Types].xml": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${[1, 2]
+        .map((i) => `<Override PartName="/xl/worksheets/sheet${i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
+        .join("")}<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    ),
+    "xl/workbook.xml": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="销量" sheetId="1" r:id="rId1"/><sheet name="说明" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+    ),
+    "xl/_rels/workbook.xml.rels": strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+    ),
+    "xl/styles.xml": strToU8(FORMULA_STYLES),
+    "xl/sharedStrings.xml": strToU8(sharedStrings(strings)),
+    "xl/worksheets/sheet1.xml": strToU8(s1),
+    "xl/worksheets/sheet2.xml": strToU8(s2),
+  };
+  return zipSync(files, { level: 6 });
+}
+
 /** 写到 outDir/plain.xlsx 与 outDir/report.xlsx，返回绝对路径。 */
 
 /*
@@ -420,8 +489,10 @@ export function makeFixtures(outDir) {
   fs.writeFileSync(report, buildReportXlsx());
   const cf = path.join(outDir, "cf.xlsx");
   fs.writeFileSync(cf, buildConditionalXlsx());
+  const formula = path.join(outDir, "formula.xlsx");
+  fs.writeFileSync(formula, buildFormulaXlsx());
   const csv = makeCsvFixtures(outDir);
-  return { plain: file, report, cf, csv, files: [file, report, cf, ...csv.files] };
+  return { plain: file, report, cf, formula, csv, files: [file, report, cf, formula, ...csv.files] };
 }
 
 /** OLE2 复合文档头：老式 .xls，以及加密过的 OOXML 包（CFB 包着加密流）都以它开头。 */
