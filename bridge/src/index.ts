@@ -1687,7 +1687,7 @@ async function main(): Promise<void> {
               return;
             }
             if (action === "opened") {
-              // D128 废止了 D125：打开会话不改排列，所以这里什么也不写。仍然回一份快照，是因为
+              // D130 废止了 D125：打开会话不改排列，所以这里什么也不写。仍然回一份快照，是因为
               // 旧页面（缓存里的 bundle）还会先乐观置顶再发这一条 —— 快照把它的 manage 纠正回来。
               broadcast({ type: "manage", ...manageSnapshot() });
               return;

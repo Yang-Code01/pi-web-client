@@ -161,7 +161,7 @@ try {
   await waitFor("manage", (m) => !m.manage?.archived?.includes(ids.a));
   log("archive / restore ok");
 
-  // 2b. D128 废止了 D125：打开会话不改排列 —— 不置顶、不解归档、manage.json 一个字节都不动。
+  // 2b. D130 废止了 D125：打开会话不改排列 —— 不置顶、不解归档、manage.json 一个字节都不动。
   // 旧页面仍会发这条消息，桥要照常回一份快照（它乐观改过自己的 manage，得被纠正回来）。
   send({ type: "manage", action: "archive", ids: [ids.a], on: true });
   await waitFor("manage", (m) => m.manage?.archived?.includes(ids.a));

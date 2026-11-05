@@ -22,7 +22,8 @@
     "test:scratch": "node bridge/tests/scratch-dirs.mjs && node bridge/tests/scratch-chat.mjs",
     "test:scratch:ui": "node bridge/tests/scratch-ui.mjs",
     "test:pillbar": "node --experimental-transform-types web/tests/pillbar-unit.mjs",
-    "test:nowchip": "node --experimental-transform-types web/tests/nowchip-unit.mjs"
+    "test:nowchip": "node --experimental-transform-types web/tests/nowchip-unit.mjs",
+    "test:wsmanage": "node --experimental-transform-types web/tests/wsmanage-unit.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
