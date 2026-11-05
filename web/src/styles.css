@@ -114,8 +114,8 @@ a { color: var(--accent); text-decoration: none; }
      min-content, so two wide topbar buttons (📂 产物 / 📁 文件管理器) plus a long session name
      pushed the whole shell to 730px on a 390px phone and every card got clipped at the right edge. */
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto 1fr auto;
-  grid-template-areas: "top" "pins" "main" "tabs";
+  grid-template-rows: auto auto auto 1fr auto;
+  grid-template-areas: "top" "wstabs" "pins" "main" "tabs";
 }
 .topbar {
   grid-area: top;
@@ -826,17 +826,65 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ask-lost-sub { font-size: 12.5px; color: var(--dim); }
 .ask-lost-actions { display: flex; gap: 8px; margin-top: 2px; }
 
-/* ---------------------------------------------------------------- pinned strip (shown when the left column is collapsed) */
+/* ---------------------------------------------------------------- workspace rows (#97 壳 A)
+   顶栏下两行：行 1 工作区标签页，行 2 当前会话那颗 + 本区会话胶囊 + ＋。
+   原先「收起左栏才出现」的置顶横栏被行 2 取代，所以这里没有另一条横栏的位置。 */
+.ws-tabs-row {
+  grid-area: wstabs;
+  display: flex;
+  min-width: 0;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(11, 13, 16, 0.92);
+}
+.ws-tabs-row[hidden] { display: none; }
+.ws-tabs { display: flex; flex: 1; min-width: 0; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+/* 溢出不出横滚条：深色顶栏下面一条细滚动条像条裂缝，而且点标签不该先摸滚动条。 */
+.ws-tabs::-webkit-scrollbar { height: 0; display: none; }
+.ws-tabs.fade {
+  mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
+}
+.ws-tab {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+  padding: 5px 9px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 7px 7px 0 0;
+  background: none;
+  color: var(--dim);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ws-tab:hover { color: var(--text); background: var(--panel-2); }
+.ws-tab.on {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  background: linear-gradient(to top, rgba(125, 211, 252, 0.1), transparent);
+}
+.ws-tab-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; }
+.ws-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-tab-todo { flex: none; width: 6px; height: 6px; border-radius: 999px; background: var(--warn); box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.14); }
+.ws-session-row { grid-area: pins; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); }
+
+/* ---------------------------------------------------------------- session row (#97 壳 A)
+   行 2 里的胶囊容器沿用 .pin-strip 这套样式与探针选择器，但它不再是「置顶横栏」：
+   外面由 .ws-session-row 提供给它与 now-chip 共处的一行。 */
 .pin-strip {
-  grid-area: pins;
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--line-soft);
-  overflow-x: auto;
+  overflow: hidden;
 }
 .pin-strip[hidden] { display: none; }
+/* 行 1/2 里不再摆「置顶」那颗字：最左端就是当前会话，不需要标题。 */
+.pin-strip-label:empty { display: none; }
 .pin-strip-label { flex: 0 0 auto; font-size: 11px; letter-spacing: 0.06em; color: var(--faint); margin-right: 2px; }
 .pin-chip {
   flex: 0 0 auto;
@@ -951,7 +999,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* ---------------------------------------------------------------- desktop */
 @media (min-width: 900px) {
-  .app { grid-template-rows: auto auto 1fr; grid-template-areas: "top" "pins" "main"; }
+  .app { grid-template-rows: auto auto auto 1fr; grid-template-areas: "top" "wstabs" "pins" "main"; }
   .tabs { display: none; }
   .main { --sessions-w: 280px; --queue-w: 300px; grid-template-columns: var(--sessions-w) minmax(0, 1fr) var(--queue-w); }
   .main.no-left { grid-template-columns: minmax(0, 1fr) var(--queue-w); }
@@ -977,6 +1025,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 @media (max-width: 899px) {
   .pane[hidden] { display: none; }
+  /* 窄屏一套退化：标签行与胶囊行先收起来，只留「当前在哪」那颗（#96 的常驻颗）。 */
+  .ws-tabs-row, .ws-session-row .pin-strip { display: none; }
   .main .pane { height: 100%; }
 }
 
@@ -1057,6 +1107,31 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .chip.on { border-color: var(--accent); color: #04202b; background: var(--accent); font-weight: 600; }
 .chip:hover { border-color: #2f3746; }
+
+/* #97：布局 chip 是「图 + 字」两行，图是纯 CSS 画的；未实现的壳置灰但悬停仍给说明。 */
+.layout-chips { gap: 8px; }
+.layout-chip { display: grid; gap: 6px; justify-items: center; padding: 8px 10px; border-radius: 12px; font-family: var(--sans); }
+.layout-chip-label { font-size: 11.5px; line-height: 1; }
+.layout-chip.off { opacity: 0.42; cursor: not-allowed; }
+.layout-chip.off:hover { border-color: var(--line); }
+.layout-demo { position: relative; display: block; width: 46px; height: 30px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.layout-demo > span { position: absolute; display: block; border-radius: 2px; }
+.layout-demo .ld-top { left: 4px; right: 4px; top: 4px; height: 3px; background: #39434f; }
+.layout-demo .ld-body { left: 4px; right: 4px; bottom: 4px; height: 7px; background: #1b2028; }
+.layout-demo .ld-body-wide { left: 4px; right: 4px; bottom: 4px; height: 7px; background: #1b2028; }
+.layout-demo .ld-row { left: 4px; right: 4px; display: flex; gap: 2px; height: 4px; }
+.layout-demo .ld-cell { flex: 1; background: #4a5a70; border-radius: 2px; }
+.layout-a .ld-row-tabs { top: 11px; }
+.layout-a .ld-row-chips { top: 17px; }
+.layout-b .ld-row-one { top: 12px; height: 6px; }
+.layout-c .ld-rail { left: 4px; top: 11px; bottom: 4px; width: 10px; display: flex; flex-direction: column; gap: 2px; }
+.layout-c .ld-body-wide { left: 18px; right: 4px; top: 11px; bottom: 4px; height: auto; }
+.layout-d .ld-icons { left: 4px; top: 11px; bottom: 4px; width: 6px; display: flex; flex-direction: column; gap: 2px; }
+.layout-d .ld-line { left: 13px; width: 11px; height: 2px; background: #4a5a70; }
+.layout-d .ld-line:nth-child(3) { top: 12px; }
+.layout-d .ld-line:nth-child(4) { top: 16px; }
+.layout-d .ld-line:nth-child(5) { top: 20px; }
+.layout-d .ld-body-wide { left: 27px; right: 4px; top: 11px; bottom: 4px; height: auto; }
 
 @media (min-width: 760px) {
   .sheet-back { align-items: center; justify-items: center; padding: 24px; }
