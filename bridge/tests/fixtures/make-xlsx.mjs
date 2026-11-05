@@ -65,7 +65,7 @@ export function colName(c) {
 }
 
 /** 行数据：第 0 行表头，其余是数据行（共 150 行）。 */
-export function fixtureRows() {
+export function fixtureRows({ firstArea = "华东" } = {}) {
   const values = [...HEADER];
   const si = (text) => {
     let i = values.indexOf(text);
@@ -77,20 +77,23 @@ export function fixtureRows() {
   };
   const rows = [HEADER.map((t) => ({ str: si(t) }))];
   const fixed = [
-    ["华东", "螺丝", 12.5, 3, 37.5, "中文备注", "001", null],
+    [firstArea, "螺丝", 12.5, 3, 37.5, "中文备注", "001", null],
     ["华南", "扳手", 3.14159, 10, 31.4159, "日本語テスト", "002", { err: "#DIV/0!" }],
     ["华北", "螺母", 45292, 1, 45292, "华东 & 华南 <测试>", "003", null],
     ["西南", "垫片", 1234567.89, 250, 308641972.5, null, "004", { bool: true }],
     ["东北", "铆钉", 0.125, 8, 1, { inline: "内联字符串" }, "005", { bool: false }],
   ];
   for (const [area, product, price, qty, total, note, code, extra] of fixed) {
+    let noteCell = null;
+    if (typeof note === "string") noteCell = { str: si(note) };
+    else if (note) noteCell = { inline: note.inline };
     const cells = [
       { str: si(area) },
       { str: si(product) },
       { num: price },
       { num: qty },
       { num: total },
-      note === null ? null : typeof note === "string" ? { str: si(note) } : { inline: note.inline },
+      noteCell,
       { str: si(code) },
       extra ?? null,
     ];
@@ -113,8 +116,8 @@ export function fixtureRows() {
   return { rows, strings: values };
 }
 
-export function buildXlsx() {
-  const { rows, strings } = fixtureRows();
+export function buildXlsx({ firstArea } = {}) {
+  const { rows, strings } = fixtureRows({ firstArea });
   const files = {
     "[Content_Types].xml": strToU8(
       `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`,
@@ -257,17 +260,142 @@ export function buildReportXlsx() {
 }
 
 /** 写到 outDir/plain.xlsx 与 outDir/report.xlsx，返回绝对路径。 */
+
+/*
+ * GBK 编码：Node 只有解码器（`TextDecoder("gbk")`），没有编码器。
+ * 反转一次全表（12000 对左右的常用字，实测 ~21 ms），同一进程里只建一次。
+ */
+let gbkMap = null;
+function gbkTable() {
+  if (gbkMap) return gbkMap;
+  const dec = new TextDecoder("gbk");
+  gbkMap = new Map();
+  for (let lead = 0x81; lead <= 0xfe; lead++) {
+    for (let trail = 0x40; trail <= 0xfe; trail++) {
+      if (trail === 0x7f) continue;
+      const ch = dec.decode(new Uint8Array([lead, trail]));
+      if (ch.length === 1 && ch !== "\ufffd" && !gbkMap.has(ch)) gbkMap.set(ch, (lead << 8) | trail);
+    }
+  }
+  return gbkMap;
+}
+
+export function gbkBytes(text) {
+  const table = gbkTable();
+  const out = [];
+  for (const ch of String(text)) {
+    const code = ch.codePointAt(0);
+    if (code < 0x80) out.push(code);
+    else {
+      const pair = table.get(ch);
+      if (pair) out.push(pair >> 8, pair & 0xff);
+      else out.push(0x3f); // 编不出来的字写成 "?"：fixture 里不会出现
+    }
+  }
+  return Buffer.from(out);
+}
+
+const UTF8_CSV = [
+  "地区;产品;单价;备注",
+  '华东;"螺丝;M4";12.5;中文备注',
+  '华南;扳手;3.14159;"他说 ""好"""',
+  "华北;螺母;45292;第三行",
+].join("\r\n");
+
+const BOM_CSV = ["地区,产品,数量,备注", "华东,螺丝,3,带 BOM 的 CSV", "华南,扳手,10,第二行"].join("\r\n");
+
+const GBK_CSV = ["地区;产品;单价;备注", "华东;螺丝;12.5;中文备注", "华南;扳手;3.14;第二行", "华北;螺母;45292;第三行"].join(
+  "\r\n",
+);
+
+/** 超上限用：5 万行以上、但字节数仍在 2 MB 以内。 */
+export function bigCsv() {
+  const lines = ["行号,数值,备注"];
+  for (let i = 1; i <= 50100; i++) lines.push(`${i},v${i},备注${i}`);
+  return lines.join("\n");
+}
+
+/** 三份编码的 CSV + 一份超行数上限的。 */
+export function makeCsvFixtures(outDir) {
+  fs.mkdirSync(outDir, { recursive: true });
+  const write = (name, buf) => {
+    const file = path.join(outDir, name);
+    fs.writeFileSync(file, buf);
+    return file;
+  };
+  const utf8 = write("utf8.csv", Buffer.from(UTF8_CSV, "utf8"));
+  const bom = write("bom.csv", Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(BOM_CSV, "utf8")]));
+  const gbk = write("gbk.csv", gbkBytes(GBK_CSV));
+  const big = write("big.csv", Buffer.from(bigCsv(), "utf8"));
+  return { utf8, bom, gbk, big, files: [utf8, bom, gbk, big] };
+}
+
 export function makeFixtures(outDir) {
   fs.mkdirSync(outDir, { recursive: true });
   const file = path.join(outDir, "plain.xlsx");
   fs.writeFileSync(file, buildXlsx());
   const report = path.join(outDir, "report.xlsx");
   fs.writeFileSync(report, buildReportXlsx());
-  return { plain: file, report, files: [file, report] };
+  const csv = makeCsvFixtures(outDir);
+  return { plain: file, report, csv, files: [file, report, ...csv.files] };
+}
+
+/** OLE2 复合文档头：老式 .xls，以及加密过的 OOXML 包（CFB 包着加密流）都以它开头。 */
+const CFB = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+
+function cfbDoc(label) {
+  const pad = Buffer.alloc(512, 0);
+  pad.write(label, 0, "utf8");
+  return Buffer.concat([CFB, pad]);
+}
+
+/**
+ * #106 的降级 fixture：这里打不开、只能交给 Excel 的那些格式。
+ *  - legacy.xls 老式复合文档
+ *  - secret.xlsx 加密过的包（扩展名是 xlsx，内容却是 CFB）
+ *  - table.ods 开放文档格式（是个 zip，但不是 xlsx 的零件）
+ *  - fake.xlsx 改了扩展名的 docx（是 zip，但没有 xl/workbook.xml）
+ */
+export function makeUnsupportedFixtures(outDir) {
+  fs.mkdirSync(outDir, { recursive: true });
+  const write = (name, bytes) => {
+    const file = path.join(outDir, name);
+    fs.writeFileSync(file, bytes);
+    return file;
+  };
+  return {
+    legacy: write("legacy.xls", cfbDoc("legacy xls")),
+    secret: write("secret.xlsx", cfbDoc("encrypted ooxml")),
+    ods: write(
+      "table.ods",
+      Buffer.from(
+        zipSync({
+          mimetype: strToU8("application/vnd.oasis.opendocument.spreadsheet"),
+          "content.xml": strToU8(
+            `<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:spreadsheet><table:table table:name="Sheet1"><table:table-row><table:table-cell><text:p>ODS</text:p></table:table-cell></table:table-row></table:table></office:spreadsheet></office:body></office:document-content>`,
+          ),
+        }),
+      ),
+    ),
+    fake: write(
+      "fake.xlsx",
+      Buffer.from(
+        zipSync({
+          "[Content_Types].xml": strToU8(
+            `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+          ),
+          "word/document.xml": strToU8(
+            `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>`,
+          ),
+        }),
+      ),
+    ),
+  };
 }
 
 if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, "/")}`) {
   const out = process.argv[2] ?? path.join(process.cwd(), "fixtures-out");
   const made = makeFixtures(out);
   console.log(made.plain);
+  for (const f of made.csv.files) console.log(f);
 }

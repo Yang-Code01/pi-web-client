@@ -280,3 +280,34 @@ export function revealInFileManager(file: string): { ok: boolean; message: strin
   }
   return { ok: true, message: `已在这台电脑的文件管理器里打开 ${path.dirname(abs)}` };
 }
+
+/**
+ * D127「出口」: the command that hands a file to whatever this desktop opens it with. Unlike
+ * `revealCommand` this launches the owning app (Excel for a workbook), so the file itself is the
+ * argument — no `/select,` verb.
+ */
+export function openCommand(file: string, platform: NodeJS.Platform = process.platform): { cmd: string; args: string[] } {
+  if (platform === "win32") return { cmd: "explorer.exe", args: [file] };
+  if (platform === "darwin") return { cmd: "open", args: [file] };
+  return { cmd: "xdg-open", args: [file] };
+}
+
+/**
+ * Hand `file` to the desktop's own program for it. The bridge never parses or rewrites the file — it
+ * only launches the shell association, which is exactly the escape hatch for formats we refuse.
+ */
+export function openWithApp(file: string): { ok: boolean; message: string } {
+  const abs = path.resolve(file.trim());
+  try {
+    if (!fs.statSync(abs).isFile()) return { ok: false, message: `不是文件：${abs}` };
+  } catch {
+    return { ok: false, message: `文件不存在：${abs}` };
+  }
+  const { cmd, args } = openCommand(abs);
+  try {
+    spawn(cmd, args, { stdio: "ignore", windowsHide: false }).unref();
+  } catch (err) {
+    return { ok: false, message: `打不开文件：${(err as Error).message}` };
+  }
+  return { ok: true, message: `已交给这台电脑打开 ${abs} 的程序` };
+}

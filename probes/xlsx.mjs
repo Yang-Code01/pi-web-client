@@ -49,8 +49,9 @@ const rows = [
 ];
 fs.writeFileSync(path.join(dir, `${SID}.jsonl`), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
 
-const { makeFixtures } = await import(modp(path.join(REPO, "bridge/tests/fixtures/make-xlsx.mjs")));
+const { makeFixtures, makeUnsupportedFixtures, buildXlsx } = await import(modp(path.join(REPO, "bridge/tests/fixtures/make-xlsx.mjs")));
 const made = makeFixtures(WORK);
+const odd = makeUnsupportedFixtures(WORK);
 log("fixture:", made.plain);
 
 function killPort(port) {
@@ -63,14 +64,29 @@ function killPort(port) {
     }
     for (const pid of pids) {
       try {
-        execSync(`taskkill /PID ${pid} /F`, { stdio: "ignore" });
+        // /T：桥会给每个会话拉 `pi --mode rpc` 子进程，子进程会继承监听 socket，只杀父进程端口仍被占。
+        execSync(`taskkill /PID ${pid} /T /F`, { stdio: "ignore" });
       } catch {}
     }
     if (pids.size) log(`cleared stale bridge on :${port}`);
+    // 杀完等端口真的释放：不等的话紧接着 spawn 会 EADDRINUSE，登录落到上一轮的桥上就成假失败。
+    for (let i = 0; i < 20; i++) {
+      if (!listening(port)) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
     return pids.size;
   } catch {
     return 0;
   }
+}
+
+function listening(port) {
+  const out = execSync("netstat -ano", { encoding: "utf8" });
+  for (const line of out.split(/\r?\n/)) {
+    const m = line.trim().match(/^TCP\s+\S+:(\d+)\s+(\S+)\s+\S+\s+(\d+)$/);
+    if (m && Number(m[1]) === port && /:0$/.test(m[2])) return true;
+  }
+  return false;
 }
 killPort(PORT);
 
@@ -143,6 +159,31 @@ try {
     await page.locator(".sd-cell").first().waitFor({ timeout: 20000 });
     await page.waitForTimeout(250);
   };
+
+  /** 从文件管理器点开一个文件，不管它落在哪条分支（浮窗 / 二进制面板）。 */
+  const openFile = async (name) => {
+    await page.locator(".topbar .icon-btn", { hasText: "文件管理器" }).first().evaluate((el) => el.click());
+    const row = page.locator(".file-row", { hasText: name }).first();
+    await row.waitFor({ timeout: 20000 });
+    await row.evaluate((el) => el.click());
+    await page.waitForTimeout(700);
+  };
+
+  /** 桥端接口直呼：公网 / 伪造凭据这些分支，浏览器里点不出来，只能直接发。 */
+  const api = async (p, body, extra = {}) => {
+    const r = await fetch(`${BASE}${p}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie, ...extra },
+      body: JSON.stringify(body),
+    });
+    let data = null;
+    try {
+      data = await r.json();
+    } catch {}
+    return { status: r.status, data };
+  };
+  // 桥端把「隧道来客」认作公网（cloudflared 注入的头）。Host 头谁都能编，不算数。
+  const AS_TUNNEL = { "cf-connecting-ip": "203.0.113.9" };
 
   const box = () =>
     page.evaluate(() => {
@@ -392,21 +433,195 @@ try {
   await page.screenshot({ path: path.join(OUT, "06-frozen.png") });
 
   // 底部工作表：只列可见的两张，切换后内容变、滚动位置归零，当前表有选中态。
-  const tabs = await page.locator(".sd-tab").allTextContents();
+  const tabs = await page.locator(".sd-wstab").allTextContents();
   check("底部只列可见工作表", tabs.length === 2 && tabs.join("/") === "报表/明细", JSON.stringify(tabs));
-  check("隐藏工作表有提示", /1\s*个隐藏工作表/.test((await page.locator(".sd-foot").innerText()) ?? ""), (await page.locator(".sd-foot").innerText()) ?? "");
-  await page.locator(".sd-tab", { hasText: "明细" }).first().click();
+  const hint = (await page.locator(".sd-wshint").innerText()) ?? "";
+  check("隐藏工作表有提示", /1\s*个隐藏工作表/.test(hint), hint);
+  await page.locator(".sd-wstab", { hasText: "明细" }).first().click();
   await until(async () => (await cellText(0, 0)) === "明细表头", 5000, "sheet switched");
   check("切换后内容变了", (await cellText(0, 0)) === "明细表头", String(await cellText(0, 0)));
   check("切换后滚动位置归零", (await page.evaluate(() => document.querySelector(".sd-view").scrollTop)) === 0);
   check("当前表有选中态", await page.evaluate(() => {
-    const on = [...document.querySelectorAll(".sd-tab")].filter((b) => b.getAttribute("aria-selected") === "true");
+    const on = [...document.querySelectorAll(".sd-wstab")].filter((b) => b.getAttribute("aria-selected") === "true");
     return on.length === 1 && on[0].textContent?.trim() === "明细";
   }));
   await page.screenshot({ path: path.join(OUT, "07-sheet-switch.png") });
-  await page.locator(".sd-tab", { hasText: "报表" }).first().click();
+  await page.locator(".sd-wstab", { hasText: "报表" }).first().click();
   await until(async () => (await cellText(0, 0)) === "2024 年度销售汇总", 5000, "sheet switched back");
   check("切回来还是合并标题", (await cellText(0, 0)) === "2024 年度销售汇总", String(await cellText(0, 0)));
+
+  // 后面几段（#106 出口 / #113 CSV）测的是原来那份 plain.xlsx，换回去再往下走。
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+  await openSheet("plain.xlsx");
+
+  // ---------------------------------------------------------------- #106 出口
+  const foot = await page.evaluate(() => {
+    const bar = document.querySelector(".sd-foot");
+    if (!bar) return null;
+    const buttons = [...bar.querySelectorAll("button")].map((b) => b.textContent.trim());
+    const a = bar.querySelector("a.sd-dl");
+    return { buttons, href: a?.getAttribute("href") ?? null, text: a?.textContent.trim() ?? null, dl: a ? a.hasAttribute("download") : false };
+  });
+  check("底栏有「用 Excel 打开」", foot?.buttons.includes("用 Excel 打开") === true, JSON.stringify(foot?.buttons));
+  check("底栏有「在文件夹中显示」", foot?.buttons.some((b) => b.includes("在文件夹中显示")) === true, JSON.stringify(foot?.buttons));
+  check("下载仍是裸地址", /^\/raw\/[^/]+\/plain\.xlsx$/.test(String(foot?.href)), String(foot?.href));
+  check("下载是 <a download>，不看桥的脸色", foot?.dl === true && foot?.text === "下载", JSON.stringify(foot));
+  const token = String(foot?.href ?? "").split("/")[2] ?? "";
+
+  // 公网来客：桌面上的动作一律不开
+  const pubOpen = await api("/api/open", { token }, AS_TUNNEL);
+  check("公网点「用 Excel 打开」被拒", pubOpen.status === 403, JSON.stringify(pubOpen));
+  check("公网拒绝说了原因", pubOpen.data?.code === "open_public" && /本机/.test(String(pubOpen.data?.error)), JSON.stringify(pubOpen.data));
+  const pubReveal = await api("/api/reveal", { path: made.plain }, AS_TUNNEL);
+  check("公网点「在文件夹中显示」仍被拒", pubReveal.status === 403, JSON.stringify(pubReveal));
+
+  // 凭据：没有 token / 伪造 token，路径塞在 body 里也不算数
+  const noTok = await api("/api/open", { path: "C:\\\\Windows\\\\win.ini" });
+  check("没凭据不开文件", noTok.status === 403 && noTok.data?.code === "sheet_grant", JSON.stringify(noTok));
+  const forged = await api("/api/open", { token: "forged-token-000", path: odd.legacy });
+  check("伪造凭据不开文件", forged.status === 403 && forged.data?.code === "sheet_grant", JSON.stringify(forged));
+  const forgedMeta = await api("/api/sheet/meta", { token: "forged-token-000", path: made.plain });
+  check("伪造凭据读不了表", forgedMeta.status === 403 && forgedMeta.data?.code === "sheet_grant", JSON.stringify(forgedMeta));
+
+  // 表格端点只认发放时记下的那份文件：body 里再带一个 path 也不看
+  const metaPath = await api("/api/sheet/meta", { token, path: odd.legacy });
+  check("表端点忽略请求里的 path", metaPath.status === 200 && metaPath.data?.sheets?.[0]?.name === "销量", JSON.stringify(metaPath.data).slice(0, 200));
+  const winPath = await api("/api/sheet/window", { token, path: odd.legacy, sheet: "销量", r0: 0, r1: 3, c0: 0, c1: 2 });
+  check("取数也忽略请求里的 path", winPath.status === 200 && winPath.data?.rows?.[1]?.cells?.[0]?.t === "华东", JSON.stringify(winPath.data).slice(0, 200));
+
+  // ---------------------------------------------------------------- #106 文件被改
+  await sleep(60);
+  fs.writeFileSync(made.plain, buildXlsx({ firstArea: "更换后" }));
+  await page.evaluate(() => {
+    const view = document.querySelector(".sd-view");
+    if (view) {
+      view.scrollTop = 60 * 28;
+      view.dispatchEvent(new Event("scroll"));
+    }
+  });
+  await page.locator(".sd-block").first().waitFor({ timeout: 10000 });
+  const staleText = (await page.locator(".sd-block").first().textContent()) ?? "";
+  check("文件被改后有提示", staleText.includes("文件已改变"), staleText);
+  check("被改后不再展示旧格子", (await page.locator(".sd-cell").count()) === 0);
+  await page.screenshot({ path: path.join(OUT, "05-stale.png") });
+
+  const staleOpen = await api("/api/open", { token });
+  check("过期凭据不开文件", staleOpen.status === 400 && staleOpen.data?.code === "sheet_stale", JSON.stringify(staleOpen));
+
+  await page.locator(".sd-block button", { hasText: "重新打开" }).first().click();
+  await until(async () => (await cellText(1, 0)) === "更换后", 10000, "重新打开后的新内容");
+  check("重新打开读到新内容", (await cellText(1, 0)) === "更换后", String(await cellText(1, 0)));
+  await page.screenshot({ path: path.join(OUT, "06-reopened-new.png") });
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+
+  // ---------------------------------------------------------------- #106 降级
+  const legacyPrev = await api("/api/preview", { sessionId: SID, path: odd.legacy });
+  check(".xls 归到二进制分支", legacyPrev.data?.kind === "binary", JSON.stringify(legacyPrev.data)?.slice(0, 160));
+  const legacyMeta = await api("/api/sheet/meta", { token: legacyPrev.data?.token });
+  check(".xls 不给读表", legacyMeta.status === 400 && legacyMeta.data?.code === "sheet_unsupported", JSON.stringify(legacyMeta));
+
+  for (const name of ["legacy.xls", "secret.xlsx", "table.ods"]) {
+    await openFile(name);
+    const msg = (await page.locator(".viewer-msg").first().textContent()) ?? "";
+    check(`${name} 说清这个格式不支持`, msg.includes("这个格式这里不支持"), msg.trim().slice(0, 120));
+    const hasOpen = await page.locator(".viewer-msg button", { hasText: "用 Excel 打开" }).count();
+    check(`${name} 给了「用 Excel 打开」`, hasOpen === 1, String(hasOpen));
+  }
+  await page.screenshot({ path: path.join(OUT, "07-downgrade.png") });
+
+  await openFile("fake.xlsx");
+  await page.locator(".sd-block").first().waitFor({ timeout: 20000 });
+  const fakeText = (await page.locator(".sd-block").first().textContent()) ?? "";
+  check("改了扩展名的 zip 也说清不支持", fakeText.includes("这个格式这里不支持"), fakeText.trim().slice(0, 120));
+  await page.screenshot({ path: path.join(OUT, "08-not-xlsx.png") });
+  await page.locator(".sd-close").first().click();
+
+  // 真把文件交给 Excel：默认不跑（会在桌面开窗、锁住文件），SHEET_OPEN=1 时跑一次。
+  if (process.env.SHEET_OPEN) {
+    const tmp = path.join(process.env.TEMP ?? process.env.TMP ?? "/tmp", `pi-xlsx-open-${process.pid}.xlsx`);
+    fs.writeFileSync(tmp, buildXlsx());
+    const prev = await api("/api/preview", { sessionId: SID, path: tmp });
+    const before = bridgeOut.join("");
+    const out = await api("/api/open", { token: prev.data?.token, path: "C:\\\\Windows\\\\win.ini" });
+    check("本机开文件成功", out.status === 200 && out.data?.ok === true, JSON.stringify(out));
+    const said = bridgeOut.join("").slice(before.length);
+    check("开的是发放过的那份，不是 body 里的 path", said.includes(path.basename(tmp)) && !said.includes("win.ini"), said.trim().slice(-200));
+    await sleep(1500);
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {}
+  }
+  // ---------------------------------------------------------------- CSV / TSV（#113）
+  // 先把 xlsx 那扇关掉：文件管理器是在 viewer 里，浮窗留着会与下面的断言撞车。
+  const closeSheet = async () => {
+    const close = page.locator(".sd-close").first();
+    if (await close.count()) await close.click();
+    await until(async () => (await page.locator(".sd").count()) === 0, 5000, "sd closed");
+  };
+  await closeSheet();
+  // 浮窗几何已被上面改过，先清掉记忆回到默认尺寸。
+  await page.evaluate(() => localStorage.removeItem("pi.sheetGeom"));
+  const tab = (name) => page.locator(`.sd-tab[data-tab="${name}"]`).first();
+  const srcText = async () => page.locator(".sd-src").first().inputValue();
+
+  await openSheet("utf8.csv");
+  check("CSV 开在表格浮窗里", (await page.locator(".sd").count()) === 1);
+  check("CSV 有表格 / 源码两个标签页", (await page.locator(".sd-tab").count()) === 2, String(await page.locator(".sd-tab").count()));
+  check("CSV 中文表头", (await cellText(0, 0)) === "地区", String(await cellText(0, 0)));
+  check("CSV 列数正确", (await page.locator(".sd-col").count()) === 4, String(await page.locator(".sd-col").count()));
+  check("CSV 引号里的分号不断列", (await cellText(1, 1)) === "螺丝;M4", String(await cellText(1, 1)));
+  check("CSV 转义引号已还原", (await cellText(2, 3)) === '他说 "好"', String(await cellText(2, 3)));
+  await page.screenshot({ path: path.join(OUT, "05-csv-grid.png") });
+
+  await tab("source").click();
+  const u8src = await srcText();
+  check("源码是解码后的原文", u8src.includes('地区;产品;单价;备注') && u8src.includes('华东;"螺丝;M4";12.5'), u8src.slice(0, 60));
+  await page.screenshot({ path: path.join(OUT, "06-csv-source.png") });
+  await tab("grid").click();
+  check("切回表格仍有格子", (await cellText(0, 0)) === "地区");
+  await closeSheet();
+
+  await openSheet("bom.csv");
+  const bomCell = await cellText(0, 0);
+  const bomAll = await page.locator(".sd-cells").textContent();
+  check("BOM 不残留在第一格", bomCell === "地区", JSON.stringify(bomCell));
+  check("BOM 不残留在整片格子", !(bomAll ?? "").includes("\ufeff"));
+  await tab("source").click();
+  const bomSrc = await srcText();
+  check("BOM 源码开头没有 BOM 字符", !bomSrc.startsWith("\ufeff") && bomSrc.startsWith("地区,产品"), JSON.stringify(bomSrc.slice(0, 12)));
+  await closeSheet();
+
+  await openSheet("gbk.csv");
+  check("GBK 中文正确", (await cellText(1, 0)) === "华东" && (await cellText(1, 1)) === "螺丝", `${await cellText(1, 0)}/${await cellText(1, 1)}`);
+  await tab("source").click();
+  const gbkSrc = await srcText();
+  check("GBK 源码已解码", gbkSrc.includes("华东;螺丝;12.5;中文备注"), gbkSrc.slice(0, 40));
+  await page.locator(".sd-src").first().fill(gbkSrc.replace("螺丝;12.5", "螺丝钉;12.5"));
+  await page.locator(".sd-save").first().click();
+  await until(async () => ((await page.locator(".sd-save-msg").first().textContent()) ?? "").includes("已保存"), 8000, "csv saved");
+  const gbkAfter = fs.readFileSync(made.csv.gbk);
+  const gbkText = new TextDecoder("gbk").decode(gbkAfter);
+  check("GBK 保存后内容已写入", gbkText.includes("华东;螺丝钉;12.5;中文备注"), gbkText.split("\r\n")[1]);
+  check("GBK 保存后仍是 GBK", (() => {
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(gbkAfter);
+      return false;
+    } catch {
+      return true;
+    }
+  })(), `${gbkAfter.length} bytes`);
+  check("GBK 保存后分隔符不变", gbkText.split(";").length === 13 && !gbkText.includes("\t"), `${gbkText.split(";").length} 段`);
+  await closeSheet();
+
+  await openSheet("big.csv");
+  const footText = (await page.locator(".sd-foot").first().textContent()) ?? "";
+  check("超 5 万行截断并有提示", /只显示前/.test(footText), footText);
+  check("截断后仍能看格子", (await cellText(0, 0)) === "行号", String(await cellText(0, 0)));
+  check("截断的文件不提供保存", (await page.locator(".sd-save").count()) === 0);
+  await page.screenshot({ path: path.join(OUT, "07-csv-truncated.png") });
+  await closeSheet();
 
   check("没有页面异常", pageErrors.length === 0, pageErrors.join(" | "));
   log(`窗口请求 ${windowRequests.length} 次，示例 ${JSON.stringify(windowRequests.slice(0, 3))}`);

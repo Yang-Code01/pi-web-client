@@ -24,6 +24,8 @@ export interface SheetGridHost {
   meta: SheetMeta;
   sheet: string;
   fetchWindow: (sheet: string, r0: number, r1: number, c0: number, c1: number) => Promise<SheetWindow>;
+  /** #106：文件在预览之后被改过，桥端不认旧凭据了。 */
+  onStale?: () => void;
 }
 
 /** 四个绘制层：主体、冻结行、冻结列、冻结角。 */
@@ -78,6 +80,7 @@ export class SheetGrid {
   private destroyed = false;
   private frame = 0;
   private error = "";
+  private stale = false;
 
   constructor(host: SheetGridHost) {
     this.host = host;
@@ -162,7 +165,7 @@ export class SheetGrid {
 
   /** 浮窗宽度/高度变了：重算可视范围，必要时补一次窗口取数。 */
   refresh(): void {
-    if (this.destroyed) return;
+    if (this.destroyed || this.stale) return;
     this.syncHeads();
     this.render();
     void this.ensure();
@@ -275,7 +278,9 @@ export class SheetGrid {
   }
 
   private async ensure(): Promise<void> {
+    if (this.stale) return;
     const visible = this.visible();
+    // 冻结的行/列永远带上，否则滚远了冻结带就没有格子可画。
     const want = visible ? this.fetchRange(visible) : null;
     if (!want || this.covers(want)) {
       this.render();
@@ -298,6 +303,12 @@ export class SheetGrid {
       this.show("");
     } catch (err) {
       if (this.destroyed) return;
+      // 文件被改过（Excel 另存、脚本重写）：停下来交给浮窗说清楚，不继续摆旧数据（#106）。
+      if ((err as { code?: string } | null)?.code === "sheet_stale") {
+        this.stale = true;
+        this.host.onStale?.();
+        return;
+      }
       this.error = errText(err);
       if (!this.cellsByKey.size) this.show(tr("读不了这张表：{p1}", { p1: this.error }));
     } finally {

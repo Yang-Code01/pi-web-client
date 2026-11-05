@@ -17,8 +17,8 @@ const TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_GRANTS = 500;
 const grants = new Map<string, Grant>();
 
-/** 预览一个 .xlsx/.xlsm 时登记；只读端点凭这个 token 找文件。 */
-export function registerSheetGrant(token: string, abs: string, mtime: number): void {
+/** 预览一个 .xlsx/.xlsm（或任何要交给 Excel 的表格）时登记；只读端点凭这个 token 找文件。 */
+export function registerFileGrant(token: string, abs: string, mtime: number): void {
   const now = Date.now();
   for (const [key, grant] of grants) if (now - grant.at > TTL_MS) grants.delete(key);
   if (grants.size >= MAX_GRANTS) {
@@ -28,7 +28,7 @@ export function registerSheetGrant(token: string, abs: string, mtime: number): v
   grants.set(token, { abs, mtime, at: now });
 }
 
-export function sheetGrant(token: string): Grant | null {
+export function fileGrant(token: string): Grant | null {
   const grant = grants.get(token);
   if (!grant) return null;
   if (Date.now() - grant.at > TTL_MS) {

@@ -212,11 +212,23 @@ function sheetExtras(xml: string): { merges: MergedRange[]; widths: Map<number, 
   return { merges, widths: colWidths, defaultW, freeze };
 }
 
+/** Reject a package we cannot show, with a code the page can turn into its own sentence. */
+function unsupported(what: string): never {
+  throw Object.assign(new Error(what), { code: "sheet_unsupported" });
+}
+
 /** 读 workbook：sheet 清单 + 尺寸，不碰单元格。 */
 export function readBook(buf: Uint8Array): Book {
-  const entries = unzipSync(buf);
+  // 加密的包（CFB）和改名的旧格式都不是 zip：先认出来，别把解压错误当「表格坏了」端出去。
+  if (!(buf[0] === 0x50 && buf[1] === 0x4b)) unsupported("这个格式这里不支持，用 Excel 打开");
+  let entries: Record<string, Uint8Array>;
+  try {
+    entries = unzipSync(buf);
+  } catch {
+    unsupported("这个格式这里不支持，用 Excel 打开");
+  }
   const workbook = zipPart(entries, "xl/workbook.xml");
-  if (!workbook) throw new Error("不是有效的 xlsx：缺少 xl/workbook.xml");
+  if (!workbook) unsupported("这个格式这里不支持，用 Excel 打开");
   const relsXml = zipPart(entries, "xl/_rels/workbook.xml.rels") ?? "";
   const rels = new Map<string, string>();
   for (const m of relsXml.matchAll(/<Relationship\b[^>]*>/g)) {
