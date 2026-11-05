@@ -206,7 +206,9 @@ ok(list.filter((x) => x.cur).length === 1, "整条里只有一个当前会话");
 
 // 4) 展开左栏 → 横栏藏起来
 await toggleLeft();
-ok(await page.locator(".pin-strip").isHidden(), "展开左栏后，置顶条重新隐藏（交还给左栏的 .active）");
+// #97 壳 A：行 2 不随左栏收起/展开消失 —— 置顶条仍要在屏上（isHidden 会跟着 [hidden] 走）。
+ok(await page.locator(".pin-strip").isVisible(), "展开左栏后，行 2 仍在（壳 A 两行制）");
+ok(await page.locator(".pin-strip").evaluate((n) => n.getClientRects().length > 0), "行 2 真的在屏上");
 
 await page.locator('.side-toggle[data-side="left"]').click(); // 收起来再拍一张：D125 之后当前会话一定在条里
 await sleep(500);

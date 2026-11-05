@@ -11,6 +11,7 @@ import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar } from "./pillbar.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
+import { railModel, shellParts, type RailItem } from "./shells.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
@@ -302,6 +303,22 @@ export class App {
   private workspaces: WorkspaceState = { groups: [], overrides: {}, keys: {} };
   /** #96 顶栏那颗「当前在哪」：组件只认挂载点，换布局时换位置而不是换组件。 */
   private nowChip!: NowChip;
+  /** #98 那颗的挂载点：A 在行 2，B/C/D 在顶栏。包一层按钮，只有后三套拿它当入口。 */
+  private nowSlotRow: HTMLElement | null = null;
+  private nowSlotTop: HTMLElement | null = null;
+  private nowBtn: HTMLButtonElement | null = null;
+  /** #98 C 的竖列 / D 收起时的色点条（两块同一份 `railModel()`，只是尺寸不同）。 */
+  private rail: HTMLElement | null = null;
+  private strip: HTMLElement | null = null;
+  /** #98 B 的工作区浮层：一次只开一张，关掉时连监听一起摘。 */
+  private wsPop: HTMLElement | null = null;
+  private wsPopBody: HTMLElement | null = null;
+  private wsPopCleanup: (() => void) | null = null;
+  /**
+   * #99 / #98：拖拽的落点容器。默认是左栏那棵树；工作区浮层开着时换成浮层 —— 落点判定
+   * (`hitTest`) 与落点线是同一份，换的只是「量哪一块 DOM」。
+   */
+  private dragScope: { el: HTMLElement; group: string; head: string; item: string } | null = null;
   /** Q-035: the hover bubble on a pin chip (归档 / 重命名 / 删除), only ever one at a time. */
   private pinMenu: { handle: PinMenuHandle; chip: HTMLElement; id: string } | null = null;
   /** Both the 180ms open delay and the 220ms close delay ride on this one timer. */
@@ -358,6 +375,8 @@ export class App {
     collapseLeft.dataset.act = "sessions";
     collapseLeft.onclick = () => this.togglePane("sessions");
     const dot = el("span", "dot");
+    // #98：当前会话那颗在 B/C/D 里挂在顶栏（brand 之后）。空槽 `display: contents`，A 里等于不存在。
+    const nowSlotTop = el("div", "now-chip-slot now-chip-top");
     const title = el("div", "title", "pi");
     const sub = el("div", "sub", "");
     const collapseRight = el("button", "icon-btn side-toggle");
@@ -407,10 +426,8 @@ export class App {
     scratch.onclick = () => this.scratch.open();
     this.els.scratch = scratch;
     // #96：「当前在哪」那颗自己是一个挂载点，不绑死在 topbar 的结构里（#97 / #98 换布局时
-    // 只要把它挪到别处）。#97 壳 A：它挪进第二行的最左端 —— 那一行问的就是「现在这个工作区里
-    // 有哪几个会话」，当前那颗得先站在那儿。
-    const nowChipSlot = el("div", "now-chip-slot");
-    topbar.append(collapseLeft, dot, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
+    // 只要把它挪到别处）。A 里它在行 2 的最左，B/C/D 里挪进顶栏（见 `paintShell()`）。
+    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -470,8 +487,18 @@ export class App {
     wsTabsRow.append(wsTabs);
     wsTabsRow.hidden = true;
     const sessionRow = el("div", "ws-session-row");
+    const nowSlotRow = el("div", "now-chip-slot");
     const pinStrip = el("div", "pin-strip");
-    sessionRow.append(nowChipSlot, pinStrip);
+    sessionRow.append(nowSlotRow, pinStrip);
+
+    // #98：竖列（C）与收起时的色点条（D）挂在 `main` 外面这条 flex 上 —— `main` 自己的三列网格
+    // （连 no-left / no-right 四种组合）一格都不动，两套壳只是在这条 flex 里多一列。
+    const mainWrap = el("div", "main-wrap");
+    const rail = el("div", "ws-rail");
+    rail.hidden = true;
+    const strip = el("div", "ws-strip");
+    strip.hidden = true;
+    mainWrap.append(rail, strip, main);
 
     const tabs = el("nav", "tabs");
     const tabDefs: [Tab, string][] = [
@@ -486,7 +513,7 @@ export class App {
       tabs.append(btn);
     }
 
-    shell.append(topbar, wsTabsRow, sessionRow, main, tabs);
+    shell.append(topbar, wsTabsRow, sessionRow, mainWrap, tabs);
     app.append(shell);
 
     Object.assign(this.els, { topbar, wsTabsRow, wsTabs, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
@@ -517,7 +544,22 @@ export class App {
       },
       decorate: (chip, s) => this.wirePinHover(chip, s),
     });
-    this.nowChip = new NowChip(nowChipSlot);
+    this.nowChip = new NowChip(nowSlotRow);
+    // #98：那颗在 B/C/D 里是按钮（点开工作区浮层）。包一层 `<button>` 而不是给组件加第二副身份 ——
+    // `NowChip` 的 aria-label / title 原样留着，读屏听到的还是「哪个工作区里的哪个会话」。
+    const nowBtn = el("button", "now-btn") as HTMLButtonElement;
+    nowBtn.type = "button";
+    nowBtn.dataset.act = "where";
+    nowBtn.onclick = () => this.onWhereClick();
+    nowBtn.append(this.nowChip.el);
+    nowSlotRow.append(nowBtn);
+    this.nowSlotRow = nowSlotRow;
+    this.nowSlotTop = nowSlotTop;
+    this.nowBtn = nowBtn;
+    this.rail = rail;
+    this.strip = strip;
+    this.els.rail = rail;
+    this.els.strip = strip;
     // 设置面板可能在 build 之前就问过布局（applyPrefs 在构造里先跑一次），这里再画一次 DOM 标记，
     // 保证首屏 `data-layout` 与真实渲染一致。
     this.paintLayout();
@@ -1434,6 +1476,8 @@ export class App {
         // D113: the bridge pushes this in stages (local rows → MCP servers → versions). Keep the
         // version columns from the previous answer for rows whose version did not change, so a
         // re-check does not blank out the 更新 buttons it is about to confirm.
+        // SAFETY: 桥端扩展清单的字段由 `bridge/src/extensions.ts` 序列化，
+        // `Inventory` 与这里的 `ExtInventory` 是同一份契约，RPC 只是丢了类型。
         this.extInv = mergeInventory(this.extInv, msg as unknown as ExtInventory);
         // 失败卡片要靠「装了什么」给插件点名：pi 的 RPC 不提供 extensionId，只有文本可用。
         setKnownPlugins([
@@ -2373,6 +2417,34 @@ export class App {
   /** 布局 id 落到 `<html data-layout>`：渲染 CSS 与探针都从这里读，不用去翻 prefs。 */
   private paintLayout(): void {
     document.documentElement.dataset.layout = activeLayout(this.prefs);
+    this.paintShell();
+  }
+
+  /**
+   * #98：四套壳共用同一套交互内核，壳与壳之间只有「哪几块拼在一起」不同（`shellParts()`）。
+   * 这里只做换壳时那几件与数据无关的动作：那颗换个挂载点、浮层关掉、重摆行与列。
+   * build() 之前调用（构造里先跑一次 applyPrefs）只有 `<html data-layout>` 有意义。
+   */
+  private paintShell(): void {
+    // 换壳 = 锚点换位置：那张浮层留着只会飘在旧地方。
+    this.closeWsPop();
+    this.placeNowChip();
+    // 构造里 `applyPrefs()` 先跑一次（那时 DOM 还没搭）：只落 `<html data-layout>`，别去碰 els。
+    if (!this.nowBtn) return;
+    this.renderPanes();
+  }
+
+  /**
+   * 「当前在哪」那颗停在哪：A 桌面版在行 2 的左端，B/C/D 在顶栏；**窄屏一律进顶栏** ——
+   * 窄屏下四套都没有第二行（会话是一页 tab），那颗不进顶栏就等于消失了。
+   */
+  private placeNowChip(): void {
+    const parts = shellParts(activeLayout(this.prefs));
+    const narrow = !window.matchMedia("(min-width: 900px)").matches;
+    const slot = parts.chipTop || narrow ? this.nowSlotTop : this.nowSlotRow;
+    if (!this.nowBtn || !slot) return;
+    if (this.nowBtn.parentElement !== slot) slot.append(this.nowBtn);
+    this.nowBtn.dataset.open = parts.chipOpensOverlay && !narrow ? "1" : "0";
   }
 
   private openDisplaySheet(): void {
@@ -2472,9 +2544,8 @@ export class App {
         chip.onclick = () => {
           this.prefs = { ...this.prefs, layout: id };
           savePrefs(this.prefs);
+          // #98：applyPrefs → paintLayout → paintShell，浮层 / 竖列 / 色点条 / 横栏一次全摆好。
           this.applyPrefs();
-          this.renderWorkspaceTabs();
-          this.renderSessionRow();
           for (const other of layoutChips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
         };
       } else {
@@ -3421,6 +3492,8 @@ export class App {
     this.renderSessionRow();
     this.renderWorkspaceTabs();
     this.renderNowChip();
+    // #98：工作区浮层开着时列表一变就得跟着重画（B 里拖完一颗，段里的位置立刻换）。
+    if (this.wsPop) this.renderWsPop();
     this.renderBinCount();
     const host = this.els.sessList;
     // 重画会换掉所有子节点：旧的落点线 / 「放回工程」都是孤儿了，引用先清掉（拖动中会再挂上）。
@@ -3843,7 +3916,7 @@ export class App {
     this.dragPool?.remove();
     this.dragPool = null;
     this.dragCleanup?.();
-    for (const node of this.els.sessList.querySelectorAll(".dragging")) node.classList.remove("dragging");
+    for (const node of (this.dragScope?.el ?? this.els.sessList).querySelectorAll(".dragging")) node.classList.remove("dragging");
   }
 
   /** 「放回工程」：只在拖动时出现 —— 拖到它上面 = 删掉 override，回到 cwd 推导。 */
@@ -3855,9 +3928,10 @@ export class App {
     pool.append(el("span", "label", tr("放回工程")));
     const name = this.projectNameOf(session);
     pool.append(el("span", "sub", name ? tr("按 cwd 回到「{p1}」", { p1: name }) : tr("按 cwd 回到推导出来的组")));
-    const archived = this.els.sessList.querySelector<HTMLElement>('.session-sec[data-sec="archived"]');
-    if (archived) this.els.sessList.insertBefore(pool, archived);
-    else this.els.sessList.append(pool);
+    const host = this.dropScope().el;
+    const archived = host.querySelector<HTMLElement>('.session-sec[data-sec="archived"]');
+    if (archived) host.insertBefore(pool, archived);
+    else host.append(pool);
     this.dragPool = pool;
   }
 
@@ -3870,14 +3944,22 @@ export class App {
     return (this.workspaces.groups ?? []).find((g) => g.id === id)?.name || "";
   }
 
-  /** 整块树接管 dragover / drop：落点判定交给 `hitTest()`（纯函数，单测在 `web/tests/drag-unit.mjs`）。 */
+  /**
+   * #98：拖动落点的「量尺」。默认是左栏那棵树；B 那张浮层开着时换成浮层 —— 组 / 段头 / 行的
+   * 类名不同，但量出来的 `DropHit` 与真正的落点判定（`hitTest()`）是同一份。
+   */
+  private dropScope(): { el: HTMLElement; group: string; head: string; item: string } {
+    return this.dragScope ?? { el: this.els.sessList, group: ".ws-sec", head: ".ws-head", item: ".session-card" };
+  }
+
+  /** 一整块树（或浮层）接管 dragover / drop：落点判定交给 `hitTest()`（纯函数，单测在 `web/tests/drag-unit.mjs`）。 */
   private wireTreeDrops(host: HTMLElement): void {
     host.ondragover = (ev) => {
       if (!this.dragId) return;
       ev.preventDefault();
       ev.stopPropagation();
       if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
-      this.paintDrop(this.hitAt(ev.clientY));
+      this.paintDrop(this.hitAt(ev.clientY, host), host);
     };
     host.ondragleave = (ev) => {
       if (!this.dragId) return;
@@ -3886,15 +3968,15 @@ export class App {
       if (to && host.contains(to)) return;
       this.clearDropLine();
     };
-    host.ondrop = (ev) => this.onTreeDrop(ev);
+    host.ondrop = (ev) => this.onTreeDrop(ev, host);
   }
 
-  private onTreeDrop(ev: DragEvent): void {
+  private onTreeDrop(ev: DragEvent, host: HTMLElement): void {
     const id = this.dragId;
     if (!id) return;
     ev.preventDefault();
     ev.stopPropagation();
-    const hit = this.hitAt(ev.clientY);
+    const hit = this.hitAt(ev.clientY, host);
     const fromWs = this.cardWs(id);
     this.endDrag();
     if (!hit) return;
@@ -3916,12 +3998,13 @@ export class App {
     this.commitArrangement();
   }
 
-  private paintDrop(hit: DropHit | null): void {
+  private paintDrop(hit: DropHit | null, host: HTMLElement = this.els.sessList): void {
     if (!hit) {
       this.clearDropLine();
       return;
     }
-    const host = this.els.sessList;
+    // 落点线挂在「用户正在拖的那块」里：树的线不能画到浮层上（坐标是两套）。
+    if (this.dropLine && this.dropLine.parentElement !== host) this.clearDropLine();
     let line = this.dropLine;
     if (!line) {
       line = el("div", "drop-line");
@@ -3943,12 +4026,12 @@ export class App {
   }
 
   /** 量一遍树：组、组里可见卡片（剔除拖动源自己）、「放回工程」。 */
-  private hitAt(clientY: number): DropHit | null {
-    const host = this.els.sessList;
-    const groups = [...host.querySelectorAll<HTMLElement>(".ws-sec")].map((sec) => {
+  private hitAt(clientY: number, host: HTMLElement = this.dropScope().el): DropHit | null {
+    const scope = this.dropScope();
+    const groups = [...host.querySelectorAll<HTMLElement>(scope.group)].map((sec) => {
       const box = sec.getBoundingClientRect();
-      const head = sec.querySelector<HTMLElement>(".ws-head");
-      const items = [...sec.querySelectorAll<HTMLElement>(".session-card")]
+      const head = sec.querySelector<HTMLElement>(scope.head);
+      const items = [...sec.querySelectorAll<HTMLElement>(scope.item)]
         .filter((card) => card.dataset.id !== this.dragId)
         .map((card) => {
           const r = card.getBoundingClientRect();
@@ -3969,7 +4052,9 @@ export class App {
   }
 
   private cardWs(id: string): string {
-    return this.dragNode(id)?.closest<HTMLElement>(".ws-sec")?.dataset.ws ?? "";
+    // 拖的可能是浮层里那一行：树里同名卡片与它同属一个组，先找树，再退回浮层。
+    const node = this.dragNode(id) ?? this.wsPopBody?.querySelector<HTMLElement>(`.ws-pop-item[data-id="${id}"]`) ?? null;
+    return node?.closest<HTMLElement>(this.dropScope().group)?.dataset.ws ?? "";
   }
 
   /** Read pin/order straight off the DOM after a drop: the DOM is what the user just arranged. */
@@ -6513,8 +6598,11 @@ export class App {
       body.append(el("div", "takeover warn", tr("这个项目没有被信任：pi 不会读它的 .pi/settings.json，也拒绝写它。先到「项目信任」里信任它。")));
     }
     if (view.error) body.append(el("div", "takeover warn", tr("{p1}。下面的表单不可用，用「编辑 JSON」修好文件。", { p1: view.error })));
-    const data = (view.json ?? {}) as Record<string, unknown>;
-    const get = (key: string): unknown => key.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), data);
+    // SAFETY: settings.json 就是 JSON，六种叶子 + 嵌套，和 `SettingsCell` 一一对应；
+    // 桥那边解析失败时会带 `view.error`，表单本来也不可用。
+    const data = (view.json ?? {}) as SettingsCellOf;
+    const get = (key: string): SettingsCell =>
+      key.split(".").reduce<SettingsCell>((o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined), data);
     const patch: Record<string, unknown> = {};
     const form = el("div", "settings-form");
     const save = el("button", "btn primary", tr("保存")) as HTMLButtonElement;
@@ -9246,6 +9334,10 @@ export class App {
     const { sessionsPane, chatPane, queuePane, main } = this.els;
     const desktop = window.matchMedia("(min-width: 900px)").matches;
     // 两行制跟着断点与 currentId 走，窗口一拖也得重摆（renderPanes 在 resize 的 rAF 里跑）。
+    // #98：C 的竖列 / D 的色点条也一样 —— 断点、收起状态、当前会话任一变了都得重画。
+    // 那颗的落点也跟断点走（窄屏进顶栏），所以这里顺手再摆一次（只在真的跨断点时才动 DOM）。
+    this.placeNowChip();
+    this.renderShellAxes();
     this.renderSessionRow();
     this.renderWorkspaceTabs();
     if (desktop) {
@@ -9262,6 +9354,82 @@ export class App {
     chatPane.hidden = this.tab !== "chat";
     queuePane.hidden = this.tab !== "queue";
     this.syncCwdChip();
+  }
+
+  /**
+   * #98：C 的竖列（常驻，48px）与 D 的色点条（只在左栏收起时出现，52px）。
+   * 两套用的是同一份 `railModel()` —— 一行就是「一个工作区」，只有尺寸不同，不复制一份数据逻辑。
+   * 窄屏四套统一退化（一根竖列也不留），所以这里先看断点。
+   */
+  private renderShellAxes(): void {
+    const parts = shellParts(activeLayout(this.prefs));
+    const desktop = window.matchMedia("(min-width: 900px)").matches;
+    if (this.rail) {
+      this.rail.hidden = !(parts.rail && desktop);
+      if (!this.rail.hidden) this.paintAxis(this.rail, "rail");
+    }
+    if (this.strip) {
+      this.strip.hidden = !(parts.strip && desktop && this.collapsed.sessions);
+      if (!this.strip.hidden) this.paintAxis(this.strip, "strip");
+    }
+  }
+
+  /** 竖列 / 色点条的一格：色点（与树同一个 `wsColor()`）+ 两字头 + 待处理角标。 */
+  private paintAxis(host: HTMLElement, kind: "rail" | "strip"): void {
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+    const cur = this.currentWsId();
+    const now = this.session;
+    host.replaceChildren();
+    host.dataset.kind = kind;
+    for (const item of railModel(tree.groups, cur)) {
+      host.append(this.axisItem(item, now?.name ?? ""));
+    }
+    // 竖列/色点条只负责切组，不做拖排序（#98 票面）：落到它上面的拖动一律不接。
+    const foot = el("div", "ws-axis-foot");
+    const add = el("button", "ws-axis-ghost", tr("＋")) as HTMLButtonElement;
+    add.type = "button";
+    add.dataset.act = "new";
+    add.title = tr("开新会话");
+    add.setAttribute("aria-label", tr("开新会话"));
+    add.onclick = () => this.openNewSessionSheet(true);
+    foot.append(add);
+    // 色点条只在左栏收起时出现 —— 它就是那颗「展开回去」的按钮。竖列旁边有顶栏那颗，不用重复。
+    if (kind === "strip") {
+      // 箭头不是文案，不进词典（`i18n-check` 只认 CJK 键）。
+      const expand = el("button", "ws-axis-ghost", "▸") as HTMLButtonElement;
+      expand.type = "button";
+      expand.dataset.act = "expand";
+      expand.title = tr("展开左侧会话栏");
+      expand.setAttribute("aria-label", tr("展开左侧会话栏"));
+      expand.onclick = () => this.togglePane("sessions");
+      foot.append(expand);
+    }
+    host.append(foot);
+  }
+
+  private axisItem(item: RailItem, sessionName: string): HTMLElement {
+    const btn = el("button", `ws-axis-item${item.current ? " on" : ""}`) as HTMLButtonElement;
+    btn.type = "button";
+    btn.dataset.ws = item.id;
+    btn.title = item.current && sessionName
+      ? tr("{p1} · {p2}（当前）", { p1: item.name, p2: sessionName })
+      : tr("{p1}，{p2} 个会话", { p1: item.name, p2: item.count });
+    btn.setAttribute("aria-label", tr("{p1}，{p2} 个会话", { p1: item.name, p2: item.count }));
+    if (item.current) btn.setAttribute("aria-current", "true");
+    const dot = el("span", "ws-axis-dot");
+    dot.style.background = item.color;
+    btn.append(dot, el("span", "ws-axis-label", item.label));
+    if (item.pending) {
+      const todo = el("span", "ws-axis-todo", String(item.pending));
+      todo.title = tr("{p1} 个会话在等你", { p1: item.pending });
+      btn.append(todo);
+    }
+    btn.onclick = () => {
+      const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+      const group = tree.groups.find((g) => g.id === item.id);
+      if (group) this.gotoGroup(group);
+    };
+    return btn;
   }
 
   /**
@@ -9309,10 +9477,12 @@ export class App {
     const { wsTabsRow, wsTabs } = this.els;
     if (!wsTabsRow || !wsTabs) return;
     const desktop = window.matchMedia("(min-width: 900px)").matches;
+    // #98：标签行只属于 A；B/C/D 的切组入口分别是浮层 / 竖列 / 色点条 + 树。
+    const parts = shellParts(activeLayout(this.prefs));
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     const cur = this.currentWsId();
     wsTabs.replaceChildren();
-    wsTabsRow.hidden = !desktop || !tree.groups.length;
+    wsTabsRow.hidden = !desktop || !parts.tabsRow || !tree.groups.length;
     if (wsTabsRow.hidden) return;
     for (const group of tree.groups) {
       const tab = el("button", `ws-tab${group.id === cur ? " on" : ""}`);
@@ -9360,6 +9530,182 @@ export class App {
     if (this.prefs.wsCollapsed.includes(group.id)) this.toggleWs(group.id);
   }
 
+  /* ------------------------------------------------- 壳 B / C / D（#98） */
+
+  /**
+   * 顶栏那颗的点击：窄屏四套统一退化 —— 点一下就是打开左栏（会话是一页 tab，没有浮层也没有竖列）；
+   * 桌面只有 B/C/D 接（A 里那颗仍是指示，摆在行 2 上）。
+   */
+  private onWhereClick(): void {
+    if (!window.matchMedia("(min-width: 900px)").matches) {
+      this.go("sessions");
+      return;
+    }
+    if (!shellParts(activeLayout(this.prefs)).chipOpensOverlay || !this.nowBtn) return;
+    this.toggleWsPop(this.nowBtn);
+  }
+
+  /**
+   * #98 B 那层浮层（C/D 里点那颗也开同一张）：按工作区分段列会话 —— 段头点一下切组、会话行点
+   * 一下开会话、会话行可以拖（票面要求；落点判定与左栏共用 `hitTest()`，不是第二套实现）。
+   * 一次只开一张，关掉时监听一起摘。
+   */
+  private toggleWsPop(anchor: HTMLElement): void {
+    if (this.wsPop) {
+      this.closeWsPop();
+      return;
+    }
+    this.openWsPop(anchor);
+  }
+
+  private openWsPop(anchor: HTMLElement): void {
+    this.closeWsPop();
+    const pop = el("div", "ws-pop");
+    pop.setAttribute("role", "dialog");
+    pop.setAttribute("aria-label", tr("工作区与会话"));
+    const body = el("div", "ws-pop-body");
+    const foot = el("div", "ws-pop-foot");
+    const add = el("button", "btn ghost ws-pop-add", tr("＋ 新会话")) as HTMLButtonElement;
+    add.type = "button";
+    add.dataset.act = "new";
+    add.onclick = () => {
+      this.closeWsPop();
+      this.openNewSessionSheet(true);
+    };
+    foot.append(add);
+    pop.append(body, foot);
+    document.body.append(pop);
+    this.wsPop = pop;
+    this.wsPopBody = body;
+    // 拖动落在这张浮层里：落点线 / 落点判定还是那一份，只是换成量浮层这块 DOM。
+    this.dragScope = { el: body, group: ".ws-pop-sec", head: ".ws-pop-sec-head", item: ".ws-pop-item" };
+    this.renderWsPop();
+    anchor.setAttribute("aria-expanded", "true");
+    // 贴着那颗：右缘不出屏，下缘不出屏就往上翻。
+    const r = anchor.getBoundingClientRect();
+    const w = pop.offsetWidth;
+    const h = pop.offsetHeight;
+    pop.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - w - 8)))}px`;
+    const top = r.bottom + 6 + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 6) : r.bottom + 6;
+    pop.style.top = `${Math.round(top)}px`;
+    const onDown = (ev: PointerEvent) => {
+      const t = ev.target as Node | null;
+      if (t && (pop.contains(t) || anchor.contains(t))) return;
+      this.closeWsPop();
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.closeWsPop();
+      anchor.focus();
+    };
+    const onAway = () => this.closeWsPop();
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", onAway);
+    window.addEventListener("hashchange", onAway);
+    this.wsPopCleanup = () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", onAway);
+      window.removeEventListener("hashchange", onAway);
+    };
+  }
+
+  private closeWsPop(): void {
+    this.wsPopCleanup?.();
+    this.wsPopCleanup = null;
+    this.wsPop?.remove();
+    this.wsPop = null;
+    this.wsPopBody = null;
+    this.dragScope = null;
+    this.dropLine?.remove();
+    this.dropLine = null;
+    this.nowBtn?.setAttribute("aria-expanded", "false");
+  }
+
+  /** 内容每次开 / 会话列表一变就重画：段序、计数、当前那颗的高亮都跟着 `buildTree()` 走。 */
+  private renderWsPop(): void {
+    const body = this.wsPopBody;
+    if (!body) return;
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+    const curWs = this.currentWsId();
+    const curId = this.currentId;
+    body.replaceChildren();
+    if (!tree.groups.length) {
+      body.append(el("div", "ws-pop-empty", tr("还没有工作区。")));
+      return;
+    }
+    for (const group of tree.groups) {
+      const sec = el("section", "ws-pop-sec");
+      sec.dataset.ws = group.id;
+      const head = el("button", `ws-pop-sec-head${group.id === curWs ? " on" : ""}`) as HTMLButtonElement;
+      head.type = "button";
+      head.dataset.ws = group.id;
+      const dot = el("span", "ws-tab-dot");
+      dot.style.background = group.color;
+      const name = el("span", "ws-pop-sec-name", group.name);
+      head.append(dot, name);
+      if (group.pending) {
+        const todo = el("span", "ws-tab-todo");
+        todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
+        head.append(todo);
+      }
+      head.append(el("span", "n", String(group.sessions.length)));
+      head.title = tr("切到这个工作区");
+      head.setAttribute("aria-label", tr("{p1}，{p2} 个会话", { p1: group.name, p2: group.sessions.length }));
+      if (group.id === curWs) head.setAttribute("aria-current", "true");
+      head.onclick = () => {
+        this.closeWsPop();
+        this.gotoGroup(group);
+      };
+      sec.append(head);
+      for (const s of group.sessions) sec.append(this.wsPopItem(s, curId));
+      body.append(sec);
+    }
+    this.wireTreeDrops(body);
+  }
+
+  /** 浮层里的一行：与树里同一套视觉语言（在线点 / 待处理角标 / 当前高亮）。 */
+  private wsPopItem(s: SessionState, curId: string | null): HTMLElement {
+    const item = el("div", `ws-pop-item${s.id === curId ? " on" : ""}`);
+    item.dataset.id = s.id;
+    item.setAttribute("role", "button");
+    item.tabIndex = 0;
+    if (s.id === curId) item.setAttribute("aria-current", "true");
+    const dot = el("span", `dot ${s.running ? "busy" : s.owned ? "live" : ""}`);
+    dot.title = s.running ? tr("运行中") : s.owned ? tr("网页已接管（pi 进程在本服务里）") : tr("未接管（只读历史；发消息会自动接管）");
+    item.append(dot, el("span", "ws-pop-item-name", s.name || s.id.slice(0, 8)));
+    const badge = sessionBadge(s, curId);
+    if (badge) {
+      const chip = el("span", `badge ${badge.cls}`, badge.text);
+      if (badge.title) chip.title = badge.title;
+      item.append(chip);
+    }
+    item.onclick = () => {
+      this.closeWsPop();
+      this.openFromList(s.id);
+    };
+    item.onkeydown = (ev) => {
+      if (ev.target !== item) return;
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        item.click();
+      }
+    };
+    // 浮层里也能拖（票面要求）；归档的会话不在任何组里，自然进不来。
+    item.draggable = !this.filter;
+    item.ondragstart = (ev) => {
+      this.beginDrag(s.id);
+      item.classList.add("dragging");
+      ev.dataTransfer?.setData("text/plain", s.id);
+      if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+    };
+    item.ondragend = () => this.endDrag();
+    return item;
+  }
+
   /**
    * #97 壳 A 行 2：当前会话那颗（`NowChip`，固定最左）+ 本区会话胶囊（★ 优先）+ ＋。
    * 胶囊直接取 `buildTree()` 的结果 —— 跟左栏同一份顺序，不另算一遍，也不会跟左栏打架。
@@ -9372,8 +9718,12 @@ export class App {
     // 条要整个重建（锚点那颗胶囊跟着消失），折起来的那张列表不能留在屏幕上。
     this.pillBar.closeMore();
     const desktop = window.matchMedia("(min-width: 900px)").matches;
-    host.hidden = !desktop;
-    if (!desktop) return;
+    // #98：行 2（当前那颗 + 本区胶囊）只属于 A。B/C/D 里那颗已经搬进顶栏，整行不占地方。
+    const parts = shellParts(activeLayout(this.prefs));
+    const visible = desktop && parts.sessionRow;
+    host.hidden = !visible;
+    this.els.sessionRow.hidden = !visible;
+    if (!visible) return;
     const pins = this.manage.pin
       .map((id) => this.sessions.find((s) => s.id === id))
       .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
@@ -9815,6 +10165,10 @@ interface SettingsView {
   error: string | null;
   writable: boolean;
 }
+
+/** 设置文件里的一格（JSON 的形状）：叶子 + 嵌套对象 / 数组，读不出来就是 undefined。 */
+type SettingsCell = string | number | boolean | null | undefined | SettingsCell[] | SettingsCellOf;
+type SettingsCellOf = { [key: string]: SettingsCell };
 
 interface TrustState {
   cwd: string;

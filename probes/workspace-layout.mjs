@@ -117,9 +117,6 @@ const server = http.createServer((req, res) => {
 
 const { WebSocketServer } = await import(pathToFileURL(path.join(REPO, "bridge/node_modules/ws/wrapper.mjs")).href);
 const wss = new WebSocketServer({ noServer: true });
-const cast = (msg) => {
-  for (const client of wss.clients) if (client.readyState === 1) client.send(JSON.stringify(msg));
-};
 server.on("upgrade", (req, socket, head) => {
   if (!(req.url ?? "").startsWith("/ws")) return socket.destroy();
   wss.handleUpgrade(req, socket, head, (ws) => {
@@ -250,7 +247,7 @@ await sleep(700);
 r = await rowState();
 ok(r.chips[0] === "工程 02 · 会话 1" && r.chips[1] === "工程 02 · 会话 2", `置顶的排在前面（${r.chips.join(" / ")}）`);
 
-// 5) 设置里的四颗布局 chip：只点亮 A
+// 5) 设置里的四颗布局 chip：#98 起四颗都点得动，没有置灰的
 await page.locator('.icon-btn[data-act="look"]').click();
 await sleep(400);
 let s = await sheetState();
@@ -258,25 +255,33 @@ ok(s.open, "点 Aa 打开了「外观与语言」");
 ok(s.count === 4 && s.demos === 4, `四颗布局 chip，各带一张示意图（${s.count} / ${s.demos}）`);
 ok(s.ids.join(",") === "a,b,c,d", `顺序是 a,b,c,d（${s.ids.join(",")}）`);
 ok(s.on.join(",") === "a", `当前布局那一下是亮的（${s.on.join(",")}）`);
-ok(s.disabled.join(",") === "b,c,d" && s.off.join(",") === "b,c,d", `其余三颗是禁用态（${s.disabled.join(",")}）`);
-ok(s.tips.slice(1).every((x) => x.includes("下一步补上")), `悬停说明写着「下一步补上」（${s.tips[1]}）`);
+ok(s.disabled.length === 0 && s.off.length === 0, `四颗都能点（禁用 ${s.disabled.length} 颗 / 置灰 ${s.off.length} 颗）`);
+ok(!s.tips.slice(1).some((x) => x.includes("下一步补上")), "没有「下一步补上」的提示了");
 
-// 6) 点不动的三颗：真点了也不该改任何东西
-await page.locator('.layout-chip[data-layout="c"]').click({ force: true }).catch(() => {});
-await sleep(300);
-s = await sheetState();
-ok(s.on.join(",") === "a" && (await htmlLayout()) === "a", "点置灰的那颗不生效（仍是 A）");
-await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-sheet.png`) });
-
-// 7) 点 A：写进 pi.prefs（立刻生效，不需要刷新）
-await page.locator('.layout-chip[data-layout="a"]').click();
-await sleep(300);
-ok((await prefs()).layout === "a", `布局写进既有 pi.prefs（layout = ${(await prefs()).layout}）`);
-ok((await htmlLayout()) === "a", "html[data-layout=a]，样式立刻跟上");
-await page.keyboard.press("Escape");
+// 6) 点 B：写进 pi.prefs、立刻换壳（两行横栏收起）
+await page.locator('.layout-chip[data-layout="b"]').click();
+await sleep(400);
+ok((await prefs()).layout === "b", `布局写进既有 pi.prefs（layout = ${(await prefs()).layout}）`);
+ok((await htmlLayout()) === "b", "html[data-layout=b]，样式立刻跟上");
+t = await tabState();
+r = await rowState();
+ok(!t.rowVisible, "B：工作区标签行收起");
+ok(!r.visible && r.stripHidden, "B：行 2（那颗 + 胶囊）也收起");
+ok(r.topbarChip === 1, `B：顶栏里那颗在（${r.topbarChip} 颗）`);
+const curName = await page.evaluate(() => document.querySelector(".session-card.active .name")?.textContent ?? "");
+ok(r.nowName !== "" && r.nowName === curName, `B：那颗仍写着当前会话（${r.nowName} / 左栏当前 ${curName}）`);
+await page.locator(".display-sheet .btn:has-text(\"关闭\")").click();
 await sleep(200);
 
-// 8) 刷新保留；存着还没实现的壳也不影响渲染（#98 点亮即可，不用迁数据）
+// 7) 刷新保留（B 存下来就还是 B）
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(700);
+ok((await prefs()).layout === "b", "刷新后偏好仍是 b");
+ok((await htmlLayout()) === "b", "刷新后仍是 B 的外壳");
+ok((await rowState()).topbarChip === 1, "刷新后顶栏那颗还在");
+
+// 8) 手写进去的 layout 值直接生效（#98：四套都实现了，不用迁数据）
 await page.evaluate(() => {
   try {
     const p = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
@@ -289,16 +294,22 @@ await page.evaluate(() => {
 await page.reload({ waitUntil: "networkidle" });
 await page.waitForSelector(".session-card", { timeout: 15000 });
 await sleep(700);
-ok((await prefs()).layout === "c", "手写进去的 layout 值原样留着（不丢、不迁）");
-ok((await htmlLayout()) === "a", "没实现的壳不生效，渲染仍落到 A");
+ok((await prefs()).layout === "c", "手写进去的 layout 值原样留着");
+ok((await htmlLayout()) === "c", "手写的 c 直接按 C 画（不再是「没实现」退回 A）");
 await page.locator('.icon-btn[data-act="look"]').click();
 await sleep(400);
 s = await sheetState();
-ok(s.on.join(",") === "a", "面板亮着的仍是 A（activeLayout 的口径）");
+ok(s.on.join(",") === "c", "面板亮着的是 c");
+await page.locator(".display-sheet .btn:has-text(\"关闭\")").click();
+await sleep(200);
 
 // 9) 再点 A：把偏好改回来，并且刷新后保留
+await page.locator('.icon-btn[data-act="look"]').click();
+await sleep(400);
 await page.locator('.layout-chip[data-layout="a"]').click();
 await sleep(300);
+await page.locator(".display-sheet .btn:has-text(\"关闭\")").click();
+await sleep(200);
 await page.reload({ waitUntil: "networkidle" });
 await page.waitForSelector(".session-card", { timeout: 15000 });
 await sleep(600);
@@ -325,16 +336,24 @@ await page.locator('.display-sheet .btn:has-text("恢复默认")').click();
 await sleep(400);
 ok((await prefs()).layout === "a", `恢复默认把布局带回 A（layout = ${(await prefs()).layout}）`);
 ok((await sheetState()).on.join(",") === "a", "恢复默认后面板上亮着的也是 A");
+await page.locator(".display-sheet .btn:has-text(\"关闭\")").click().catch(() => {});
+await sleep(200);
 
-// 11) 窄屏：标签行收起，那颗仍在（窄屏的四套留给 #102）
+// 11) 窄屏：标签行收起，那颗仍在；点它打开左栏那一页（窄屏四套统一退化）
 await page.setViewportSize({ width: 800, height: 820 });
 await sleep(500);
 ok((await tabState()).rowVisible === false, "800px 下标签行收起");
 r = await rowState();
 ok(r.stripHidden, "800px 下胶囊条也收起");
 ok((await page.locator(".now-chip").count()) === 1, "800px 下「当前在哪」那颗仍只有一颗");
+await page.locator(".now-btn").click();
+await sleep(400);
+ok(await page.evaluate(() => document.querySelector('button[data-tab="sessions"]')?.classList.contains("on") ?? false), "窄屏点那颗打开左栏（会话）那一页");
+ok((await page.locator(".ws-pop").count()) === 0, "窄屏不开浮层");
 
 await browser.close();
 await new Promise((r) => server.close(r));
-console.log(bad ? `\n${bad} FAILURE(S)` : "\nall checks passed");
+console.log(bad ? `
+${bad} FAILURE(S)` : `
+all checks passed`);
 process.exitCode = bad ? 1 : 0;
