@@ -381,6 +381,17 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ws-menu .pm-item.blocked:hover { background: none; color: #e9a0ab; }
 .ws-empty { padding: 2px 6px 4px 23px; font-size: 11px; }
 .ws-sec.folded .session-cards { display: none; }
+/* 迁移预览（#101）：跟左栏组头同一套手感 —— 色点 + 名字 + 数量，拖过的另起一颗小字。 */
+.ws-intro-sheet { width: min(520px, 100%); }
+.ws-intro { padding: 14px 16px 6px; display: grid; gap: 10px; max-height: 60vh; overflow-y: auto; }
+.ws-intro-lead { margin: 0; font-size: 12.5px; line-height: 1.65; color: var(--dim); }
+.ws-intro-sum { font: 11.5px/1.4 var(--mono); color: var(--faint); }
+.ws-intro-rows { display: grid; gap: 4px; }
+.ws-intro-row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--line-soft); border-radius: 9px; background: var(--panel-2); }
+.ws-intro-row .ws-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; }
+.ws-intro-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--text); }
+.ws-intro-n { flex: none; font: 11px/1 var(--mono); color: var(--dim); }
+.ws-intro-moved { flex: none; font: 10.5px/1 var(--mono); color: var(--accent); }
 .session-sec[data-sec="archived"] .sess-head .label { cursor: pointer; }
 .session-card.archived { border-style: dashed; opacity: 0.72; }
 .session-card.archived .name { color: var(--dim); }
