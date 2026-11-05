@@ -360,7 +360,9 @@ export class ChatView {
       this.root.insertBefore(this.bgView.el, this.jump);
     }
     this.bgView.set(runs);
-    this.scrollToEnd();
+    // The strip grows as steps/lines arrive. Stay pinned only while the reader is already following;
+    // scrollToEnd() would also flip `unread` on every 1.2s tick for someone reading up (D133).
+    if (this.following) this.scheduleScroll();
   }
 
   /** Keeps the tail marker and the jump button children of the scroller no matter how it is rebuilt. */

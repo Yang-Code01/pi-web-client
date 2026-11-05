@@ -1341,10 +1341,10 @@ export const en: Dict = {
   "会建 {p1} 个工作区、{p2} 个会话，其中 {p3} 个是你拖过的": "Creates {p1} workspaces with {p2} sessions, {p3} of them moved by hand",
   " · {p1} 次调用": " · {p1} calls",
   "刚启动": "starting up",
-  "后台任务": "background task",
+  "后台任务": "background run",
   "排队中": "queued",
   "看过程": "watch",
   "结束（失败）": "ended (failed)",
   "后台 {p1}": "{p1} in background",
-  "有 {p1} 个后台子任务还在跑：会话本身已经空闲，子代理还在干活": "{p1} background sub-agent runs are still working — the session itself is idle",
+  "有 {p1} 个后台任务还在跑：会话本身已经空闲，子代理还在干活": "{p1} background runs are still working — the session itself is idle",
 };

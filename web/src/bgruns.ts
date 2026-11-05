@@ -1,5 +1,5 @@
 /**
- * The background sub-agent strip at the foot of the transcript.
+ * The background run strip at the foot of the transcript.
  *
  * Why it is not a tool card: these runs outlive the turn that started them. A tool card belongs to
  * the ops module of one turn and is closed by the next one (`closeOps`), while a delegate started
@@ -8,7 +8,7 @@
  * finished run stays there for a few minutes: the notification pi injects lands underneath, and the
  * card next to it is what makes that notification legible (D133).
  */
-import { fmtTime, tr } from "./i18n/index.ts";
+import { fmtNum, tr } from "./i18n/index.ts";
 import type { BgRun } from "./types.ts";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -19,9 +19,10 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 }
 
 function elapsed(ms: number): string {
-  const secs = Math.max(0, Math.round(ms / 1000));
-  if (secs < 60) return tr("{p1}秒", { p1: secs });
-  return tr("{p1}分{p2}秒", { p1: Math.floor(secs / 60), p2: String(secs % 60).padStart(2, "0") });
+  // Floor it: a 1.6s tool call is 「1秒」, not 「2秒」 — the same clock the hint status uses.
+  const secs = Math.max(0, Math.floor(ms / 1000));
+  if (secs < 60) return tr("{p1}秒", { p1: fmtNum(secs) });
+  return tr("{p1}分{p2}秒", { p1: fmtNum(Math.floor(secs / 60)), p2: String(secs % 60).padStart(2, "0") });
 }
 
 interface Card {
@@ -32,6 +33,8 @@ interface Card {
   line: HTMLElement | null;
   acts: HTMLElement;
   run: BgRun;
+  sig: string;
+  path?: string;
 }
 
 export class BgRunsView {
@@ -43,7 +46,7 @@ export class BgRunsView {
     this.el = el("div", "runs");
   }
 
-  /** Cheap enough to call on every tick: only touched nodes are rewritten. */
+  /** The bridge pushes on change; a repaint only rewrites the text of active cards. */
   set(runs: BgRun[]): void {
     const seen = new Set<string>();
     for (const run of runs) {
@@ -93,7 +96,7 @@ export class BgRunsView {
     const acts = el("div", "run-acts");
     node.append(head, line, acts);
     this.el.append(node);
-    const card: Card = { node, dot, task, time, line, acts, run };
+    const card: Card = { node, dot, task, time, line, acts, run, sig: "" };
     this.cards.set(run.id, card);
     return card;
   }
@@ -105,28 +108,39 @@ export class BgRunsView {
     card.task.textContent = run.task || tr("后台任务");
     card.task.classList.toggle("muted", !run.task);
 
-    const line = card.line;
-    if (line) {
-      line.replaceChildren();
-      if (run.state === "running" || run.state === "queued") {
-        line.append(el("span", "run-tool", run.line ?? (run.state === "queued" ? tr("排队中") : tr("刚启动"))));
-        if (run.steps) line.append(el("span", "run-steps", tr(" · {p1} 次调用", { p1: run.steps })));
-      } else if (run.state === "done") {
-        const took = run.endedAt ? elapsed(run.endedAt - run.startedAt) : "";
-        line.append(el("span", "run-ok", tr("完成")), el("span", "run-dim", took ? ` · ${took}` : ""));
-        if (run.line) line.append(el("span", "run-dim", ` · ${run.line}`));
-      } else {
-        line.append(el("span", "run-bad", tr("结束（失败）")));
-        if (run.line) line.append(el("span", "run-dim", ` · ${run.line}`));
+    // Rebuilding a button on every tick steals focus from a keyboard user who just tabbed to it.
+    const sig = JSON.stringify([run.state, run.task, run.line, run.steps, run.endedAt]);
+    if (card.sig !== sig) {
+      card.sig = sig;
+      const line = card.line;
+      if (line) {
+        line.replaceChildren();
+        if (run.state === "running" || run.state === "queued") {
+          line.append(el("span", "run-tool", run.line ?? (run.state === "queued" ? tr("排队中") : tr("刚启动"))));
+          if (run.steps) line.append(el("span", "run-steps", tr(" · {p1} 次调用", { p1: fmtNum(run.steps) })));
+        } else if (run.state === "done") {
+          const took = run.endedAt ? elapsed(run.endedAt - run.startedAt) : "";
+          // " · " is a language-neutral separator and both values are already localized:
+          // elapsed() goes through fmtNum, run.line is the runner's raw tool text. A tr() key must
+          // contain CJK for i18n-check to discover it, so these two stay plain concatenations.
+          line.append(el("span", "run-ok", tr("完成")), el("span", "run-dim", took ? ` · ${took}` : ""));
+          if (run.line) line.append(el("span", "run-dim", ` · ${run.line}`));
+        } else {
+          line.append(el("span", "run-bad", tr("结束（失败）")));
+          if (run.line) line.append(el("span", "run-dim", ` · ${run.line}`));
+        }
       }
     }
 
-    card.acts.replaceChildren();
-    if (run.logPath) {
-      const open = el("button", "run-act", tr("看过程"));
-      open.type = "button";
-      open.onclick = () => this.onOpen(String(run.logPath));
-      card.acts.append(open);
+    if (card.path !== run.logPath) {
+      card.path = run.logPath;
+      card.acts.replaceChildren();
+      if (run.logPath) {
+        const open = el("button", "run-act", tr("看过程"));
+        open.type = "button";
+        open.onclick = () => this.onOpen(String(run.logPath));
+        card.acts.append(open);
+      }
     }
     card.acts.hidden = !card.acts.childElementCount;
     this.paintTime(card);
@@ -134,11 +148,11 @@ export class BgRunsView {
 
   private paintTime(card: Card): void {
     const { run } = card;
-    if (run.state === "done" || run.state === "failed") {
-      card.time.textContent = run.endedAt ? fmtTime(run.endedAt) : "";
-      return;
-    }
-    card.time.textContent = elapsed(Date.now() - run.startedAt);
-    card.dot.classList.toggle("idle", Date.now() - run.lastAt > 3 * 60 * 1000);
+    // One column, one meaning: elapsed time. A run that took 41s says 「41秒」 forever,
+    // not a wall-clock time that changes what the reader has to compute.
+    const end = run.state === "done" || run.state === "failed" ? run.endedAt ?? Date.now() : Date.now();
+    card.time.textContent = elapsed(end - run.startedAt);
+    // Deliberately no `idle` state here: the bridge alone owns the silence verdict
+    // (ACP_SILENT_DEAD_MS, D133), so a healthy long `sleep` must not look stalled after 3 minutes.
   }
 }

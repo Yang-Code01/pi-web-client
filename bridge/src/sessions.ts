@@ -604,7 +604,7 @@ export class Session extends EventEmitter {
   /** One notice per silent run: the tick fires every minute, and none of them would be news. */
   private stuckNoticed = false;
   private tailTimer: NodeJS.Timeout | null = null;
-  /** Background sub-agent runs this session started; the runners live outside our process (D133). */
+  /** Background runs this session started; the runners live outside our process (D133). */
   private readonly bgRuns = new BgRuns((runs) => this.emitWs({ type: "bgruns", sessionId: this.state.id, runs }));
   private tailSig = "";
   private draftCounter = 0;
@@ -1046,7 +1046,7 @@ export class Session extends EventEmitter {
       }
       case "tool_execution_end": {
         this.closeQuestionnaire(String(ev.toolCallId ?? ""));
-        // A background sub-agent announces itself here and nowhere else: `details` is the only
+        // A background run announces itself here and nowhere else: `details` is the only
         // handle on a runner pi has already let go of, and it is dropped from the item below on
         // purpose (it is not model context).
         this.bgRuns.note((ev.result as any)?.details);
@@ -1820,6 +1820,11 @@ export class Session extends EventEmitter {
     };
   }
 
+  /** Full-frame handshakes and list pushes read this directly; the delta frame above is per-session. */
+  bgRunList(): BgRun[] {
+    return this.bgRuns.list();
+  }
+
   idleFor(): number {
     return Date.now() - this.lastActivity;
   }
@@ -2067,6 +2072,17 @@ export class SessionManager extends EventEmitter {
     return this.metas().filter((m) => !readLock(m.id));
   }
 
+  /** Background runs by session id, for hello / sessions.list frames: the sidebar badges need
+   * every session, not just the one the page has open (D133). */
+  bgRunList(): Record<string, BgRun[]> {
+    const out: Record<string, BgRun[]> = {};
+    for (const s of this.sessions.values()) {
+      const runs = s.bgRunList();
+      if (runs.length) out[s.state.id] = runs;
+    }
+    return out;
+  }
+
   list(): SessionState[] {
     const seen = new Set<string>();
     const out: SessionState[] = [];
@@ -2309,7 +2325,7 @@ export class SessionManager extends EventEmitter {
       if (file && fs.existsSync(file)) {
         this.cache = null;
         const meta = readMeta(file);
-        this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
+        this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot(), bgRuns: this.bgRunList() });
         return { sessionId: meta?.id ?? "", text };
       }
     }
@@ -2350,7 +2366,7 @@ export class SessionManager extends EventEmitter {
     for (let n = 1; fs.existsSync(dest); n++) dest = path.join(dir, `${name}-${n}${ext}`);
     fs.copyFileSync(src, dest, fs.constants.COPYFILE_EXCL);
     this.cache = null;
-    this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
+    this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot(), bgRuns: this.bgRunList() });
     return { sessionId: meta.id };
   }
 

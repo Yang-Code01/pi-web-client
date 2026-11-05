@@ -71,7 +71,7 @@ export interface ApprovalRequest {
   deadline?: number;
 }
 
-/** A background sub-agent run, tracked by the bridge from the runner's own artifacts (D133). */
+/** A background run, tracked by the bridge from the runner's own artifacts (D133). */
 export interface BgRun {
   id: string;
   source: "acp" | "subagents";

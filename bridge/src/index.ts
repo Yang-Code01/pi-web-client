@@ -843,6 +843,7 @@ async function main(): Promise<void> {
       version: VERSION,
       pi: piVersion,
       sessions: sessions.list(),
+      bgRuns: sessions.bgRunList(),
       manage: sessions.manage.snapshot(),
       workspace: sessions.workspaces.snapshot(),
       trash: sessions.trashList(),
@@ -878,7 +879,7 @@ async function main(): Promise<void> {
       try {
         if (!(await sessions.resolveWorkspaces())) return;
         broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
-        broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
+        broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot(), bgRuns: sessions.bgRunList() });
       } catch {
         /* 补缓存失败只影响分组精度，不影响会话本身 */
       }
@@ -1709,7 +1710,7 @@ async function main(): Promise<void> {
               const report = sessions.restore(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
               if (report.restored.length) broadcast({ type: "manage", ...manageSnapshot() });
               broadcast({ type: "trash", items: sessions.trashList() });
-              if (report.restored.length) send({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
+              if (report.restored.length) send({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot(), bgRuns: sessions.bgRunList() });
               send({ type: "restore.result", ...report });
               return;
             }
@@ -1748,7 +1749,7 @@ async function main(): Promise<void> {
               sessions.workspaces.move(ids, wsId);
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
               // 会话的 ws 字段跟着变了，一起广播，免得卡片停在旧组里。
-              broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
+              broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot(), bgRuns: sessions.bgRunList() });
               return;
             }
             if (action === "ws.drop") {

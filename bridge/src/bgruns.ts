@@ -1,5 +1,5 @@
 /**
- * Background sub-agent runs, as seen from outside the pi child.
+ * Background runs, as seen from outside the pi child.
  *
  * pi itself starts these runners and then lets go of them: the child keeps running, but the bridge
  * only learns that *a* run exists from the tool result's `details` — `{kind:"delegate", runId}` for
@@ -13,9 +13,9 @@
  * Why not derive it from the session file instead: a toolResult records `status:"running"` and never
  * rewrites it, so the file cannot say whether a run is still alive. See D133.
  */
-import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 
 export type BgRunState = "queued" | "running" | "done" | "failed";
 
@@ -80,7 +80,12 @@ function pollAcpLog(): void {
     if (fd !== null) closeSync(fd);
   }
   acpCursor.offset = size;
-  for (const line of buf.toString("utf8").split("\n")) {
+  const text = buf.toString("utf8");
+  // Rewind to the last complete line: a writer can split `event=done` across two ticks, and the
+  // half we just consumed would never be read again (the run would then only die of silence).
+  const cut = text.lastIndexOf("\n");
+  if (cut >= 0) acpCursor.offset = size - Buffer.byteLength(text.slice(cut + 1), "utf8");
+  for (const line of text.slice(0, cut < 0 ? 0 : cut).split("\n")) {
     if (!line.includes("event=done") || !line.includes("runId=")) continue;
     const id = /runId=(\S+)/.exec(line)?.[1];
     if (!id) continue;
@@ -117,7 +122,7 @@ function tailText(file: string, bytes = TAIL_BYTES): string | null {
 }
 
 /** `[tool] bash npm test` → `bash · npm test`; everything else is the runner's prose, trimmed. */
-function readAcpLine(file: string): { line?: string; lastAt: number; steps: number } | null {
+function readAcpLine(file: string): { line?: string; lastAt: number } | null {
   let mtime: number;
   try {
     mtime = statSync(file).mtimeMs;
@@ -127,7 +132,6 @@ function readAcpLine(file: string): { line?: string; lastAt: number; steps: numb
   const text = tailText(file);
   if (text === null) return null;
   const lines = text.split("\n").filter((l) => l.trim());
-  let steps = 0;
   let line: string | undefined;
   // Prefer a tool line: a run's last prose line is as likely to be a stray number as anything useful.
   for (let i = lines.length - 1; i >= 0 && line === undefined; i -= 1) {
@@ -139,9 +143,52 @@ function readAcpLine(file: string): { line?: string; lastAt: number; steps: numb
     if (one.startsWith("[tool]") || one.startsWith("[done]")) continue;
     line = one.trim().slice(0, 90);
   }
-  // Counting `[tool]` lines means reading the whole file; only the visible tail is worth it.
-  if (text.length < TAIL_BYTES - 1) steps = (text.match(/^\[tool\] /gm) ?? []).length;
-  return { line, lastAt: Math.round(mtime), steps };
+  return { line, lastAt: Math.round(mtime) };
+}
+
+/**
+ * Tool count, read forward once and then only over the new bytes. The `.activity` file has no
+ * structure to seek by, so the only honest count is every `[tool]` line from the start — which is
+ * cheap as long as we never re-read what we already scanned.
+ */
+interface StepScan {
+  offset: number;
+  steps: number;
+  partial: string;
+}
+
+function countSteps(file: string, scan: StepScan): void {
+  let size: number;
+  try {
+    size = statSync(file).size;
+  } catch {
+    return;
+  }
+  if (size < scan.offset) {
+    // Truncated or replaced: start over rather than report a count nobody can trust.
+    scan.offset = 0;
+    scan.steps = 0;
+    scan.partial = "";
+  }
+  if (size === scan.offset) return;
+  const len = size - scan.offset;
+  const buf = Buffer.allocUnsafe(len);
+  let fd: number | null = null;
+  try {
+    fd = openSync(file, "r");
+    readSync(fd, buf, 0, len, scan.offset);
+  } catch {
+    return;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+  scan.offset = size;
+  const text = scan.partial + buf.toString("utf8");
+  const cut = text.lastIndexOf("\n");
+  scan.partial = cut < 0 ? text : text.slice(cut + 1);
+  for (const line of text.slice(0, cut < 0 ? 0 : cut).split("\n")) {
+    if (line.startsWith("[tool] ")) scan.steps += 1;
+  }
 }
 
 interface SubStatus {
@@ -211,7 +258,7 @@ const SUB_STATE: Record<string, BgRunState> = {
 
 /** Per-session registry. Owns one timer and only while something is actually on screen. */
 export class BgRuns {
-  private readonly runs = new Map<string, { run: BgRun; dir?: string }>();
+  private readonly runs = new Map<string, { run: BgRun; dir?: string; scan?: StepScan }>();
   private timer: NodeJS.Timeout | null = null;
   private last = "";
 
@@ -232,7 +279,7 @@ export class BgRuns {
         state: "running",
         startedAt: Date.now(),
         lastAt: Date.now(),
-        logPath: join(tmpdir(), "acp-delegate", `${details.runId}.activity`),
+        logPath: acpActivityPath(details.runId),
       });
       return;
     }
@@ -246,7 +293,9 @@ export class BgRuns {
           state: "running",
           startedAt: Date.now(),
           lastAt: Date.now(),
-          logPath: join(details.asyncDir, "events.jsonl"),
+          // 看过程 must not offer a file that may not exist: pi-subagents only writes events.jsonl
+          // while the run is tracked, and older runs are pruned after 30 days.
+          logPath: existsSync(join(details.asyncDir, "events.jsonl")) ? join(details.asyncDir, "events.jsonl") : undefined,
         },
         details.asyncDir,
       );
@@ -282,8 +331,10 @@ export class BgRuns {
   }
 
   private tick(): void {
-    pollAcpLog();
     const now = Date.now();
+    const busy = [...this.runs.values()].some((e) => e.run.state === "running" || e.run.state === "queued");
+    // Nothing left to watch but finished cards waiting out KEEP_DONE_MS: no disk reads at all.
+    if (busy && [...this.runs.values()].some((e) => e.run.source === "acp" && e.run.state !== "done" && e.run.state !== "failed")) pollAcpLog();
     for (const [id, entry] of [...this.runs]) {
       const run = entry.run;
       if (run.state !== "running" && run.state !== "queued") {
@@ -292,12 +343,15 @@ export class BgRuns {
         continue;
       }
       if (run.source === "acp") {
-        const seen = readAcpLine(join(tmpdir(), "acp-delegate", `${id}.activity`));
+        const file = acpActivityPath(id);
+        const seen = readAcpLine(file);
         if (seen) {
           if (seen.line) run.line = seen.line;
-          if (seen.steps) run.steps = seen.steps;
           run.lastAt = Math.max(run.lastAt, seen.lastAt);
         }
+        if (!entry.scan) entry.scan = { offset: 0, steps: 0, partial: "" };
+        countSteps(file, entry.scan);
+        if (entry.scan.steps) run.steps = entry.scan.steps;
         const code = acpDone.get(id);
         if (code !== undefined) {
           run.state = code === 0 ? "done" : "failed";
@@ -338,11 +392,7 @@ export class BgRuns {
   }
 }
 
-/** `<runId>.activity` of a finished run, used by the card's "看过程" button. */
-export function acpActivityPath(runId: string): string {
-  return join(tmpdir(), "acp-delegate", basename(`${runId}.activity`));
-}
-
-export function acpOutPath(runId: string): string {
-  return join(tmpdir(), "acp-delegate", basename(`${runId}.out`));
+/** `<runId>.activity` — the live tail the card shows, and the "看过程" target. */
+function acpActivityPath(runId: string): string {
+  return join(tmpdir(), "acp-delegate", `${runId}.activity`);
 }

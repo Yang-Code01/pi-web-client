@@ -66,14 +66,14 @@ function sessionBadge(s: SessionState, currentId: string | null, bg = 0): Sessio
     return { kind: "locked", text: tr("终端占用"), cls: "lock", title: tr("pi CLI 在终端里正用着这个会话，网页这边只能看"), pending: false };
   }
   if (s.running) return { kind: "run", text: tr("运行中"), cls: "run", title: tr("agent 正在推进"), pending: false };
-  // A background sub-agent outlives the turn that started it: the session is idle while the runner
+  // A background run outlives the turn that started it: the session is idle while the runner
   // is not, and before this badge the card said nothing at all (D133).
   if (bg > 0) {
     return {
       kind: "bg",
       text: tr("后台 {p1}", { p1: bg }),
       cls: "run",
-      title: tr("有 {p1} 个后台子任务还在跑：会话本身已经空闲，子代理还在干活", { p1: bg }),
+      title: tr("有 {p1} 个后台任务还在跑：会话本身已经空闲，子代理还在干活", { p1: bg }),
       pending: false,
     };
   }
@@ -85,7 +85,7 @@ export class App {
   private socket = new Socket();
   private me: Me;
   private sessions: SessionState[] = [];
-  /** Background sub-agent runs per session, straight from the bridge (see D133). */
+  /** Background runs per session, straight from the bridge (see D133). */
   private bgRuns = new Map<string, BgRun[]>();
   private tunnel: TunnelState;
   private currentId: string | null = null;
@@ -1019,6 +1019,9 @@ export class App {
         // A new socket starts unverified on the bridge side.
         this.stepUntil = 0;
         this.sessions = msg.sessions ?? [];
+        // Full frame: every session's background runs, so badges on *other* cards survive a reload
+        // without opening those sessions (D133). Older bridges omit the field; keep the local map.
+        if (msg.bgRuns && typeof msg.bgRuns === "object") this.bgRuns = new Map(Object.entries(msg.bgRuns) as [string, BgRun[]][]);
         if (Array.isArray(msg.trash)) this.trash = msg.trash as TrashItem[];
         if (msg.manage) this.manage = msg.manage as ManageState;
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
@@ -1534,12 +1537,17 @@ export class App {
         if (texts.length) this.putInComposer(texts.join("\n\n"));
         break;
       }
-      case "bgruns":
+      case "bgruns": {
         // Broadcast for every session, not just the open one: the sidebar badge needs the rest.
-        this.bgRuns.set(String(msg.sessionId), (msg.runs ?? []) as BgRun[]);
-        if (msg.sessionId === this.currentId) this.chat.setBgRuns((msg.runs ?? []) as BgRun[]);
-        this.renderSessions();
+        const id = String(msg.sessionId);
+        const before = this.bgCount(id);
+        this.bgRuns.set(id, (msg.runs ?? []) as BgRun[]);
+        if (id === this.currentId) this.chat.setBgRuns((msg.runs ?? []) as BgRun[]);
+        // Only "how many are still working" changes a badge. Repainting the whole sidebar on
+        // every 1.2s tick would eat keyboard focus and drag targets for no visible change.
+        if (before !== this.bgCount(id)) this.renderSessions();
         break;
+      }
       case "pi.status":
         if (this.session && this.session.id === msg.sessionId) this.session = { ...this.session, running: msg.running };
         if (msg.sessionId === this.currentId) {
@@ -1643,6 +1651,7 @@ export class App {
       }
       case "sessions.list": {
         this.sessions = Array.isArray(msg.sessions) ? msg.sessions : this.sessions;
+        if (msg.bgRuns && typeof msg.bgRuns === "object") this.bgRuns = new Map(Object.entries(msg.bgRuns) as [string, BgRun[]][]);
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         this.renderSessions();
         this.mgrRefresh?.();
@@ -3360,7 +3369,7 @@ export class App {
     );
   }
 
-  /** How many background sub-agent runs of this session are still working (D133). */
+  /** How many background runs of this session are still working (D133). */
   private bgCount(id: string): number {
     const runs = this.bgRuns.get(id);
     if (!runs?.length) return 0;

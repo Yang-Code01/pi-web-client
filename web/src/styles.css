@@ -2505,7 +2505,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sc-row.sc-step[hidden], .sc-who[hidden] { display: none; }
 .sc-model { font: 10px/1 var(--mono); letter-spacing: 0.04em; color: var(--faint); text-transform: none; }
 
-/* --------------------------------------------------- background sub-agent runs (D133)
+/* --------------------------------------------------- background runs (D133)
    These hang off the transcript's tail, not off a turn: the ops module of a turn is closed by the
    next one, and a runner started three messages ago is still working when that happens. */
 .runs { display: grid; gap: 8px; margin: 10px 0 4px; }
@@ -2525,7 +2525,6 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .run-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
 .run-card[data-state="running"] .run-dot,
 .run-card[data-state="queued"] .run-dot { animation: run-breathe 2.4s ease-out infinite; }
-.run-dot.idle { background: var(--warn); animation: none; }
 .run-card[data-state="done"] .run-dot { background: var(--ok); animation: none; }
 .run-card[data-state="failed"] .run-dot { background: var(--danger); animation: none; }
 .run-agent { font: 12px/1.4 var(--mono); color: var(--accent); flex: 0 0 auto; }
