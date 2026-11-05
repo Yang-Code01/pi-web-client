@@ -5,7 +5,7 @@
  * 拖标题栏移动、拖右下角改宽高、拖顶边只改高、双击复原、打开时 clamp 回可视区。
  */
 import { tr, errText } from "../i18n/index.ts";
-import type { SheetMeta, SheetWindow } from "../types.ts";
+import type { SheetInfo, SheetMeta, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
 import { SheetGrid } from "./grid.ts";
 
@@ -36,6 +36,9 @@ export class SheetDialog {
   private readonly opts: SheetDialogOpts;
   private readonly head: HTMLElement;
   private readonly body: HTMLElement;
+  private readonly bar: HTMLElement;
+  private readonly tabs: HTMLElement;
+  private readonly foot: HTMLElement;
   private grid: SheetGrid | null = null;
   private closed = false;
 
@@ -61,10 +64,15 @@ export class SheetDialog {
     this.head.append(close);
 
     this.body = el("div", "sd-body");
+    this.bar = el("div", "sd-bar");
+    this.tabs = el("nav", "sd-tabs");
+    this.tabs.setAttribute("role", "tablist");
+    this.foot = el("span", "sd-foot");
+    this.bar.append(this.tabs, this.foot);
     const resize = el("div", "sd-resize");
     resize.title = tr("拖动改大小（双击复原）");
 
-    this.root.append(grip, this.head, this.body, resize);
+    this.root.append(grip, this.head, this.body, this.bar, resize);
     this.wire(grip, resize);
   }
 
@@ -93,12 +101,16 @@ export class SheetDialog {
     try {
       const meta = await this.opts.loadMeta();
       if (this.closed) return;
+      // 文件里的第一张表也可能被藏了，打开时落在第一张看得见的表上。
+      const shown = meta.sheets.filter((s) => !s.hidden);
+      const active = shown.some((s) => s.name === meta.name) ? meta.name : (shown[0]?.name ?? meta.name);
       this.grid = new SheetGrid({
         meta,
-        sheet: meta.name,
+        sheet: active,
         fetchWindow: this.opts.fetchWindow,
       });
       this.body.replaceChildren(this.grid.root);
+      this.buildTabs(meta.sheets, active);
       await this.grid.start();
     } catch (err) {
       if (this.closed) return;
@@ -108,6 +120,35 @@ export class SheetDialog {
 
   private showMessage(text: string): void {
     this.body.replaceChildren(el("div", "sd-msg", text));
+  }
+
+  /** 底部工作表：藏起来的不列，只在状态条上提一句个数。 */
+  private buildTabs(sheets: SheetInfo[], active: string): void {
+    const shown = sheets.filter((s) => !s.hidden);
+    const hidden = sheets.length - shown.length;
+    const tabs: HTMLElement[] = [];
+    for (const sheet of shown) {
+      const tab = el("button", "sd-tab", sheet.name);
+      tab.type = "button";
+      tab.dataset.sheet = sheet.name;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", sheet.name === active ? "true" : "false");
+      tab.onclick = () => this.pickSheet(sheet.name);
+      tabs.push(tab);
+    }
+    this.tabs.replaceChildren(...tabs);
+    this.tabs.hidden = shown.length < 2;
+    this.foot.textContent = hidden ? tr("{p1} 个隐藏工作表", { p1: String(hidden) }) : "";
+    this.foot.hidden = !hidden;
+    this.bar.hidden = !hidden && shown.length < 2;
+  }
+
+  private pickSheet(name: string): void {
+    if (!this.grid || this.grid.activeSheet === name) return;
+    this.grid.setSheet(name);
+    for (const tab of this.tabs.querySelectorAll<HTMLElement>(".sd-tab")) {
+      tab.setAttribute("aria-selected", tab.dataset.sheet === name ? "true" : "false");
+    }
   }
 
   private wire(grip: HTMLElement, resize: HTMLElement): void {

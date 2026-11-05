@@ -2438,13 +2438,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .sd-viewwrap { position: relative; min-width: 0; min-height: 0; }
 .sd-view { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
-.sd-space {
-  position: relative;
-  background-image:
-    linear-gradient(to right, #edf0f3 1px, transparent 1px),
-    linear-gradient(to bottom, #edf0f3 1px, transparent 1px);
-  background-size: 110px 28px;
-}
+/* 网格线由每个格子自己的边框画：列宽取文件值，固定 110px 的底纹会错位。 */
+.sd-space { position: relative; background: #fff; }
 .sd-cells { position: absolute; left: 0; top: 0; }
 .sd-cell {
   position: absolute; box-sizing: border-box;
@@ -2454,4 +2449,44 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   color: #1f2430; cursor: default; user-select: none;
 }
 .sd-cell.is-n { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.sd-cell[data-span] { z-index: 1; }
 .sd-cell.k-e { color: #b42318; }
+
+/* 冻结窗格：行/列各画一层贴在边上，滚动时不动（#108）。 */
+.sd-colhead-frz {
+  position: absolute; left: 0; top: 0; bottom: 0; overflow: hidden; z-index: 2;
+  background: #f4f6f8; border-right: 1px solid #cfd6df; box-sizing: border-box;
+}
+.sd-rowhead-frz {
+  position: absolute; left: 0; right: 0; top: 0; overflow: hidden; z-index: 2;
+  background: #f8f9fb; border-bottom: 1px solid #cfd6df; box-sizing: border-box;
+}
+.sd-colhead-frz[hidden], .sd-rowhead-frz[hidden] { display: none; }
+.sd-frz { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.sd-frz-t, .sd-frz-l { position: absolute; overflow: hidden; }
+.sd-frz-t { top: 0; left: 0; right: 0; z-index: 2; }
+.sd-frz-l { left: 0; top: 0; bottom: 0; z-index: 1; }
+.sd-frz-t[hidden], .sd-frz-l[hidden] { display: none; }
+.sd-frz-in { position: absolute; left: 0; top: 0; will-change: transform; }
+.sd-frz-v { position: absolute; top: 0; bottom: 0; width: 1px; background: #cfd6df; }
+.sd-frz-h { position: absolute; left: 0; right: 0; height: 1px; background: #cfd6df; }
+.sd-frz-v[hidden], .sd-frz-h[hidden] { display: none; }
+
+/* 底部工作表（#108）：藏起来的表不列，只在状态条上提示个数。 */
+.sd-bar {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px; border-top: 1px solid #e8ebef; background: #fafbfc;
+  overflow-x: auto; overflow-y: hidden;
+}
+.sd-bar[hidden] { display: none; }
+.sd-tabs { display: flex; gap: 2px; }
+.sd-tabs[hidden] { display: none; }
+.sd-tab {
+  flex: none; padding: 3px 10px; border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: #5b6472; font: 12px/1.3 var(--sans); cursor: pointer;
+  white-space: nowrap;
+}
+.sd-tab:hover { background: #eef1f5; }
+.sd-tab[aria-selected="true"] { background: #fff; border-color: #d8dde4; color: #1f2430; font-weight: 600; }
+.sd-foot { margin-left: auto; color: #8a94a3; font-size: 11.5px; white-space: nowrap; }
+.sd-foot[hidden] { display: none; }

@@ -1304,5 +1304,6 @@ export const en: Dict = {
   "拖动改高度（双击复原）": "Drag to change height (double-click to reset)",
   "拖动改大小（双击复原）": "Drag to resize (double-click to reset)",
   "读不了这张表：{p1}": "Can't open this sheet: {p1}",
+  "{p1} 个隐藏工作表": "{p1} hidden sheet(s)",
   "这张表是空的": "This sheet is empty",
 };
