@@ -452,6 +452,28 @@ export class SheetGrid {
         if (this.layerOf(r1, c1) !== layer) continue;
         // 空格子也画一层底：不然整列空着会露出底下的白，网格线断成一段一段。
         const node = el("div", cell ? `sd-cell k-${cell.k}` : "sd-cell is-void", cell?.t);
+        // #109 条件格式：只能贴服务端算好的结果，不在前端重算规则。
+        if (cell?.fx) {
+          const fx = cell.fx;
+          if (fx.bg) node.style.backgroundColor = fx.bg;
+          if (fx.fg) node.style.color = fx.fg;
+          if (fx.b) node.style.fontWeight = "600";
+          if (fx.bar) {
+            node.textContent = "";
+            const bar = el("span", "sd-bar");
+            bar.style.width = `${Math.round(fx.bar[0] * 1000) / 10}%`;
+            bar.style.backgroundColor = fx.bar[1];
+            node.append(bar, el("span", "sd-txt", cell.t));
+          } else if (fx.icon) {
+            node.textContent = "";
+            const icon = el("span", "sd-icon", fx.icon.g);
+            icon.dataset.set = fx.icon.s;
+            icon.dataset.level = String(fx.icon.l);
+            icon.style.color = fx.icon.c;
+            node.style.justifyContent = "flex-start";
+            node.append(icon, el("span", "sd-txt", cell.t));
+          }
+        }
         node.dataset.r = String(r0);
         node.dataset.c = String(c0);
         if (c1 > c0) node.dataset.span = `${c0}-${c1}`;

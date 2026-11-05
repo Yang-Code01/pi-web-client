@@ -6,6 +6,7 @@
  */
 import { unzipSync } from "fflate";
 import { formatCode, formatValue } from "./numfmt.js";
+import { buildCf, countCfUnsupported, readDxfs, type CellFx, type SheetCf } from "./cf.js";
 
 export type CellKind = "n" | "s" | "b" | "e";
 
@@ -17,6 +18,8 @@ export interface WireCell {
   t: string;
   /** 文件里指定的对齐（合并格标题居中这类）；没写就不带。 */
   a?: "l" | "c" | "r";
+  /** #109 条件格式算出来的样式：底色 / 字色 / 加粗 / 数据条 / 图标。 */
+  fx?: CellFx;
   /** 公式原文（不带 `=`）。共享公式的子格只有 `si` 下标、没有正文，就不带这个。 */
   f?: string;
   /** #111：只有公式、文件里没存上次的结果。这种格子显示为空，绝不猜 0。 */
@@ -54,6 +57,8 @@ export interface SheetInfo {
   /** 每列宽度（px），长度等于 cols；文件没写就是默认宽度。 */
   colWidths?: number[];
   freeze?: FreezePane | null;
+  /** #109：认不出的条件格式规则条数（状态条据此提示）。 */
+  cfUnsupported?: number;
   /** #111：这张表里「只有公式、没存结果」的格子数；没这种格子就不带。 */
   noCache?: number;
 }
@@ -80,6 +85,8 @@ export interface Book {
   parts: Map<string, string>;
   /** 1904 日期系统（老 Mac 文件）。 */
   date1904: boolean;
+  /** #109 每张表的条件格式求值结果（含统计量），随文件版本缓存。 */
+  cf: Map<string, SheetCf | null>;
 }
 
 const dec = new TextDecoder("utf-8");
@@ -254,6 +261,7 @@ export function readBook(buf: Uint8Array): Book {
     const xml = zipPart(entries, part) ?? "";
     const size = dimension(xml);
     const extras = sheetExtras(xml);
+    const cfUnsupported = countCfUnsupported(xml);
     const noCache = countNoCache(xml);
     const state = attr(m[0], "state");
     sheets.push({
@@ -266,6 +274,7 @@ export function readBook(buf: Uint8Array): Book {
         ? { colWidths: Array.from({ length: Math.max(size.cols, ...[...extras.widths.keys()].map((c) => c + 1)) }, (_, c) => extras.widths.get(c) ?? extras.defaultW) }
         : {}),
       ...(extras.freeze ? { freeze: extras.freeze } : {}),
+      ...(cfUnsupported > 0 ? { cfUnsupported } : {}),
       ...(noCache ? { noCache } : {}),
     });
     parts.set(name, part);
@@ -274,7 +283,7 @@ export function readBook(buf: Uint8Array): Book {
   const first = sheets[0];
   const pr = /<workbookPr\b[^>]*>/.exec(workbook)?.[0] ?? "";
   const date1904 = /^(1|true)$/i.test(attr(pr, "date1904") ?? "");
-  return { meta: { name: first.name, rows: first.rows, cols: first.cols, sheets }, parts, date1904 };
+  return { meta: { name: first.name, rows: first.rows, cols: first.cols, sheets }, parts, date1904, cf: new Map() };
 
 }
 
@@ -313,7 +322,16 @@ function countNoCache(xml: string): number {
   return n;
 }
 
-function cellsOfRow(xml: string, rowIndex: number, c0: number, c1: number, strings: string[], xfs: Xf[], date1904: boolean): WireCell[] {
+function cellsOfRow(
+  xml: string,
+  rowIndex: number,
+  c0: number,
+  c1: number,
+  strings: string[],
+  xfs: Xf[],
+  date1904: boolean,
+  cf: SheetCf | null,
+): WireCell[] {
   const cells: WireCell[] = [];
   for (const m of xml.matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
     const attrs = m[1] ?? "";
@@ -356,9 +374,22 @@ function cellsOfRow(xml: string, rowIndex: number, c0: number, c1: number, strin
     // 只有 `<f>`、没 `<v>`（或 `<v></v>`）：Excel 没存结果。显空，等用户去 Excel 重算。
     if (cell && formula && !cached) cell.noCache = true;
     if (cell && align) cell.a = align;
-    if (cell) cells.push(cell);
+    if (cell) {
+      const fx = cf?.at(pos.r, pos.c);
+      if (fx) cell.fx = fx;
+      cells.push(cell);
+    }
   }
   return cells;
+}
+
+/** 每张表的条件格式只算一次，挂在 Book 上（同一文件版本内复用）。 */
+function cfOf(book: Book, sheet: string, xml: string, strings: string[], entries: Record<string, Uint8Array>): SheetCf | null {
+  const hit = book.cf.get(sheet);
+  if (hit !== undefined) return hit;
+  const plan = /<conditionalFormatting\b/.test(xml) ? buildCf(xml, strings, readDxfs(zipPart(entries, "xl/styles.xml"))) : null;
+  book.cf.set(sheet, plan);
+  return plan;
 }
 
 /** 取一个窗口：只解析落在 [r0,r1] 里的 row，其它行连 XML 都不进前端。 */
@@ -370,6 +401,7 @@ export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: numbe
   if (!xml) throw new Error("这个工作表是空的");
   const strings = sharedStrings(entries);
   const xfs = readStyles(entries);
+  const cf = cfOf(book, sheet, xml, strings, entries);
   const rows: WireRow[] = [];
   for (const m of xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>|<row\b([^>]*)\/>/g)) {
     const attrs = m[1] ?? m[3] ?? "";
@@ -377,7 +409,7 @@ export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: numbe
     if (!Number.isFinite(num)) continue;
     const index = num - 1;
     if (index < r0 || index > r1) continue;
-    const cells = cellsOfRow(m[2] ?? "", index, c0, c1, strings, xfs, book.date1904);
+    const cells = cellsOfRow(m[2] ?? "", index, c0, c1, strings, xfs, book.date1904, cf);
     if (cells.length) rows.push({ r: index, cells });
   }
   return { sheet, r0, r1, c0, c1, rows };

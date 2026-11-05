@@ -3168,6 +3168,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-cell.is-n { justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .sd-cell[data-span] { z-index: 1; }
 .sd-cell.k-e { color: #b42318; }
+/* #109 条件格式：数据条垫在文字下面，图标和文字同一行，宽度由服务端算好的比例给。 */
+.sd-cell .sd-bar { position: absolute; left: 0; top: 1px; bottom: 1px; border-radius: 2px; opacity: 0.55; pointer-events: none; }
+.sd-cell .sd-txt { position: relative; z-index: 1; }
+.sd-cell .sd-icon { position: relative; z-index: 1; flex: none; margin-right: 4px; font-size: 12px; line-height: 1; }
 /* #111：选中的格子（不抢焦点、不加输入框）与「只有公式、没存结果」的格子（显空 + 红虚线）。 */
 .sd-cell.sel { outline: 2px solid #4b7ea8; outline-offset: -2px; z-index: 2; }
 .sd-cell.is-nc { border: 1px dashed #d92d20; }
@@ -3204,3 +3208,5 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-wstab[aria-selected="true"] { background: #fff; border-color: #d8dde4; color: #1f2430; font-weight: 600; }
 .sd-wshint { flex: none; margin-left: auto; color: #8a94a3; font-size: 11.5px; white-space: nowrap; }
 .sd-wshint[hidden] { display: none; }
+.sd-cfhint { flex: none; margin-left: 8px; color: #9a6b00; font-size: 11.5px; white-space: nowrap; }
+.sd-cfhint[hidden] { display: none; }

@@ -1532,6 +1532,7 @@ export const en: Dict = {
   "读不了这张表：{p1}": "Can't open this sheet: {p1}",
   "工作表": "Sheets",
   "{p1} 个隐藏工作表": "{p1} hidden sheet(s)",
+  "{p1} 条条件格式暂不支持": "{p1} conditional formatting rule(s) not supported",
   "{p1} 格无缓存值": "{p1} cell(s) with no cached value",
   "需在 Excel 打开重算": "Open in Excel and recalculate to see the value",
   "这张表是空的": "This sheet is empty",
