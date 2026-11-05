@@ -182,6 +182,25 @@ const GIT_CAUSE: Array<[RegExp, string, string, string]> = [
 const GUARD_HEAD = /(?:⛔|🔄|✅)\s*(RETRYABLE|RE-READ REQUIRED|ALREADY APPLIED)\s*—\s*([^\n]*)/;
 const GUARD_DUPLICATE = /appears (\d+) times/;
 
+/**
+ * 已安装的扩展名（`app.ts` 收到 `ext.inventory` 时灌进来）。失败文本里出现这些名字才敢点名：
+ * pi 的 RPC 不提供 extensionId，只能从文本里认，先拿「装了什么」当白名单降温误判。
+ */
+let knownPlugins: string[] = [];
+export function setKnownPlugins(names: string[]): void {
+  knownPlugins = names.map((n) => n.trim()).filter((n) => n.length >= 3);
+}
+
+/** 已知扩展的工具前缀 → 扩展名；不认识的宁可不标，也别乱认。 */
+const TOOL_OWNER: Array<[RegExp, string]> = [
+  [/^ctx_/, "context-mode"],
+  [/^lens_/, "pi-lens"],
+];
+
+function toolOwner(tool: string): string {
+  return TOOL_OWNER.find(([re]) => re.test(tool))?.[1] ?? "";
+}
+
 function guardDiagnosis(out: string, base: { exit: number | null; body: string; intent: string }): Diagnosis | null {
   const head = GUARD_HEAD.exec(out);
   if (!head) return null;
@@ -299,6 +318,14 @@ function guardDiagnosis(out: string, base: { exit: number | null; body: string; 
 }
 
 export function diagnose(input: FailureInput): Diagnosis {
+  const d = diagnoseInner(input);
+  // 插件自己提供的工具（ctx_execute / lens_* …）失败时，标题里标出它属于哪个插件——
+  // 工具名对不熟的人等于没信息。
+  const owner = toolOwner(input.tool);
+  return owner ? { ...d, title: tr("{p1} 插件：{p2}", { p1: owner, p2: d.title }) } : d;
+}
+
+function diagnoseInner(input: FailureInput): Diagnosis {
   const out = normalize(input.out);
   const exit = exitCodeOf(out);
   const body = out.replace(TRAILER_TAIL, "").trim();
@@ -362,6 +389,25 @@ export function diagnose(input: FailureInput): Diagnosis {
       pluginName
         ? tr("curl 用 `-s -o 文件` 静默写文件，或用 {p1} 的抓取工具", { p1: pluginName })
         : tr("curl 用 `-s -o 文件` 静默写文件，或用插件的抓取工具"),
+    );
+  }
+
+  // 其他插件拦下工具时的通用形态：返回的是「你该用 X 而不是 Y」这类要求，而工具本身没跑，
+  // 也没有 exit 码 / errno / Traceback。点名靠两处：文本里自报的名字，或已装扩展名。
+  if (
+    exit === null &&
+    !/Traceback|ENOENT|EACCES|Error: HTTP|Command exited with code/i.test(out) &&
+    /\b(blocked|not allowed|instead of\b|floods the context|escape hatch|use .{0,40}\btools?\b)/i.test(out)
+  ) {
+    const named = knownPlugins.find((n) => out.toLowerCase().includes(n.toLowerCase())) ?? "";
+    const first = out.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+    return say(
+      "fail",
+      named ? tr("{p1} 插件拦下了这条调用", { p1: named }) : tr("某个插件拦下了这条调用"),
+      tr("返回的是插件的要求，不是工具本身的报错：{p1}", { p1: clip(first, 120) }),
+      tr("这次调用没生效"),
+      undefined,
+      tr("照插件的要求换用法（提示第一行就是它要什么）"),
     );
   }
 

@@ -6,6 +6,7 @@ import { ChatView, createEl as el } from "./chat.ts";
 import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
+import { setKnownPlugins } from "./diagnose.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { Socket } from "./ws.ts";
@@ -1286,6 +1287,11 @@ export class App {
         // version columns from the previous answer for rows whose version did not change, so a
         // re-check does not blank out the 更新 buttons it is about to confirm.
         this.extInv = mergeInventory(this.extInv, msg as unknown as ExtInventory);
+        // 失败卡片要靠「装了什么」给插件点名：pi 的 RPC 不提供 extensionId，只有文本可用。
+        setKnownPlugins([
+          ...this.extInv.packages.map((p) => p.name ?? ""),
+          ...this.extInv.extensions.flatMap((e) => [e.id, e.label]),
+        ].map((n) => n.split(/[\\/]/).pop() ?? n).map((n) => n.replace(/\.(ts|js|mjs|cjs)$/i, "")));
         if (this.extInv.mcpReady) this.extInvLoading = false;
         if (this.extInv.versionsChecked) {
           this.extCheckLoading = false;
