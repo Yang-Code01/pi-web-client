@@ -329,7 +329,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .tool-btn:hover { color: var(--text); border-color: #2f3746; }
 .tool-btn.on { color: var(--accent); border-color: var(--accent-dim); background: #0b1f28; }
-.session-cards { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); min-height: 0; }
+.session-cards { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); min-height: 0; position: relative; }
 .session-sec { display: grid; gap: 6px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
 .sess-head { display: flex; align-items: center; gap: 6px; padding: 2px 4px; color: var(--faint); font-size: 11px; }
 .sess-head .label { color: var(--faint); }
@@ -352,6 +352,33 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ws-head .n { margin-left: auto; font: 11px/1 var(--mono); color: var(--faint); }
 .ws-head.folded { color: var(--faint); }
 .ws-head.folded .label { color: var(--faint); font-weight: 500; }
+/* #100：组头就地改名 + 那颗 ⋯。⋯ 跟会话卡片的 card-act 一个脾气：指着组头才出来，别的时候把位置让给名字。 */
+.ws-head .ws-rename-input { flex: 1; min-width: 0; padding: 2px 6px; font-size: 12px; font-weight: 550; border-radius: 6px; }
+.ws-head .ws-more {
+  flex: none; display: grid; place-items: center; width: 20px; height: 18px; padding: 0;
+  border: 1px solid transparent; border-radius: 6px; background: none; color: var(--faint);
+  font: 12px/1 var(--sans); cursor: pointer;
+}
+.ws-head .ws-more:hover, .ws-head .ws-more:focus-visible {
+  color: var(--text); background: var(--bg); border-color: var(--line); outline: none;
+}
+.ws-head:not(:hover):not(:focus-within) .ws-more { visibility: hidden; }
+@media (hover: none) { .ws-head .ws-more { visibility: visible; } }
+/* 树底那一行：新建工作区（虚线框，看起来就是「还能放东西的地方」）。 */
+.ws-new { padding: 2px 4px 0; }
+.ws-new-btn {
+  width: 100%; padding: 6px 8px; text-align: left;
+  border: 1px dashed var(--line); border-radius: 8px; background: none;
+  color: var(--faint); font: 11.5px/1.3 var(--sans); cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.ws-new-btn:hover, .ws-new-btn:focus-visible {
+  color: var(--text); border-color: var(--accent-dim); background: var(--panel-2); outline: none;
+}
+/* 组头 ⋯ 的菜单：外壳是置顶胶囊那张卡（.pin-menu），这里只补「为什么删不了」那行灰字。 */
+.ws-menu .pm-why { padding: 6px 12px 8px; max-width: 240px; font-size: 11px; line-height: 1.4; color: var(--faint); }
+.ws-menu .pm-item.blocked { opacity: 0.55; cursor: not-allowed; }
+.ws-menu .pm-item.blocked:hover { background: none; color: #e9a0ab; }
 .ws-empty { padding: 2px 6px 4px 23px; font-size: 11px; }
 .ws-sec.folded .session-cards { display: none; }
 .session-sec[data-sec="archived"] .sess-head .label { cursor: pointer; }
@@ -364,8 +391,21 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .session-card:hover .grip, .session-card.active .grip { opacity: 0.65; }
 .session-card.dragging { opacity: 0.45; border-style: dashed; }
-.session-card.over-top { box-shadow: 0 -2px 0 var(--accent); }
-.session-card.over-bottom { box-shadow: 0 2px 0 var(--accent); }
+/* 拖拽整理（#99）：落点就一条 2px 线 —— 粗细、位置、目标组都写在 style/dataset 上，探针直接读。 */
+.drop-line {
+  position: absolute; left: 4px; right: 4px; height: 2px; margin-top: -1px; border-radius: 2px;
+  background: var(--accent); box-shadow: 0 0 0 2px rgb(0 0 0 / 0.28);
+  pointer-events: none; z-index: 3;
+}
+.drop-line[data-pool="true"] { background: var(--warn); }
+/* 「放回工程」只在拖动期间出现：拖到它上面 = 删 override，回到 cwd 推导。 */
+.ws-pool {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px dashed var(--line);
+  border-radius: 9px; color: var(--faint); font-size: 11px;
+}
+.ws-pool .label { flex: none; color: var(--dim); font-weight: 550; font-size: 12px; }
+.ws-pool .sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-pool.over { border-color: var(--warn); color: var(--text); }
 .session-card .pin-btn {
   flex: none; width: 24px; height: 24px; margin: -2px 0; padding: 0; display: grid; place-items: center;
   border: 1px solid transparent; border-radius: 7px; background: none; color: var(--faint);

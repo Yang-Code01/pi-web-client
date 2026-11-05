@@ -9,13 +9,16 @@ import { renderMarkdown } from "./md.ts";
 import { setKnownPlugins } from "./diagnose.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar } from "./pillbar.ts";
-import { NowChip, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
+import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type TreeGroup } from "./tree.ts";
+import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
+import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
+import { hitTest, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
@@ -247,6 +250,15 @@ export class App {
   private renameDraft = "";
   private renameFocus = false;
   private renameCaret: number | null = null;
+  /** #100 组头就地改名：跟会话卡片的 rename 同一套手感（同一支输入框、同一个提交时机）。 */
+  private wsRenameId: string | null = null;
+  private wsRenameDraft = "";
+  private wsRenameFocus = false;
+  private wsRenameCaret: number | null = null;
+  /** 组头的 ⋯ 菜单最多一张；树重画前先关掉它（锚点要被换掉）。 */
+  private wsMenu: WsMenuHandle | null = null;
+  /** 点了「新建工作区」：等桥把新组广播回来，就立刻进改名态（组的 id 只有桥知道）。 */
+  private wsCreatePending = false;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
   private manage: ManageState = { pin: [], order: [], archived: [] };
   private archivedOpen = false;
@@ -308,6 +320,10 @@ export class App {
   private vhist = new Map<string, { steps: VStep[]; at: number }>();
   private cardDelArm: { id: string; at: number } | null = null;
   private dragId: string | null = null;
+  /** #99：那条 2px 落点线 + 拖动时才出现的「放回工程」落点，以及拖动期间挂上的 Esc / blur 监听。 */
+  private dropLine: HTMLElement | null = null;
+  private dragPool: HTMLElement | null = null;
+  private dragCleanup: (() => void) | null = null;
 
   constructor(me: Me) {
     this.me = me;
@@ -1548,11 +1564,23 @@ export class App {
         this.renderNowChip();
         break;
       // #94：桥侧每次改名 / 拖动 / 建组都会广播一份完整快照。同名快照可能重复到，但重画很便宜。
-      case "workspaces":
+      case "workspaces": {
+        const before = new Set(this.workspaces.groups.map((g) => g.id));
         this.workspaces = (msg.workspace as WorkspaceState) ?? { groups: [], overrides: {}, keys: {} };
+        // #100：刚点的「新建工作区」回来了 —— 空组已经进树，接着让人给它起个名字。
+        if (this.wsCreatePending) {
+          const born = this.workspaces.groups.find((g) => g.manual && !before.has(g.id));
+          if (born) {
+            this.wsCreatePending = false;
+            this.wsRenameId = born.id;
+            this.wsRenameDraft = "";
+            this.wsRenameFocus = true;
+          }
+        }
         this.renderNowChip();
         this.renderSessions();
         break;
+      }
       case "session.gone": {
         const gone = new Set<string>((msg.ids ?? []) as string[]);
         this.sessions = this.sessions.filter((s) => !gone.has(s.id));
@@ -3395,19 +3423,29 @@ export class App {
     this.renderNowChip();
     this.renderBinCount();
     const host = this.els.sessList;
+    // 重画会换掉所有子节点：旧的落点线 / 「放回工程」都是孤儿了，引用先清掉（拖动中会再挂上）。
+    this.dropLine = null;
+    this.dragPool = null;
     // A re-render mid-edit must not eat the caret: remember where it was before the DOM swap.
     const active = document.activeElement as HTMLElement | null;
-    const typing = this.renameId != null && active?.classList.contains("rename-input") === true;
+    const wsTyping = this.wsRenameId != null && active?.classList.contains("ws-rename-input") === true;
+    this.wsRenameCaret = wsTyping ? (active as HTMLInputElement).selectionStart : null;
+    const typing = this.renameId != null && !wsTyping && active?.classList.contains("rename-input") === true;
     this.renameCaret = typing ? (active as HTMLInputElement).selectionStart : null;
+    // 组头的 ⋯ 菜单钉在一个马上要被替换掉的节点上，先收掉。
+    this.wsMenu?.close();
+    this.wsMenu = null;
     host.replaceChildren();
 
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     if (this.renameId && !this.sessions.some((s) => s.id === this.renameId)) this.renameId = null;
+    if (this.wsRenameId && !this.workspaces.groups.some((g) => g.id === this.wsRenameId)) this.wsRenameId = null;
     // A deleted or now-hidden session must not stay "picked".
     if (this.sheetKind === "manage") this.mgrRefresh?.();
 
     if (!this.sessions.length) {
       host.append(el("div", "empty", tr("还没有会话。上面开一个，或在终端里 pi 一下。")));
+      host.append(this.wsCreateRow());
       return;
     }
     for (const group of tree.groups) host.append(this.wsSection(group));
@@ -3417,8 +3455,30 @@ export class App {
       if (!this.filter && tree.archived.length) text = tr("都归档了，展开下面的「已归档」看看。");
       host.append(el("div", "empty", text));
     }
+    // #100：树底部一行「新建工作区」—— 手建的空组也能有会话被拖进来（落点见 wsSection 的 .session-cards）。
+    host.append(this.wsCreateRow());
     if (tree.archived.length) host.append(this.sessionSection("archived", tr("已归档"), this.archivedOpen ? tree.archived : []));
+    // 「放回工程」只在拖动时出现；socket 推送顺手重画一次也不会把它弄丢。
+    if (this.dragId) this.showPool(this.dragId);
+    this.wireTreeDrops(host);
     this.renameFocus = false;
+    this.wsRenameFocus = false;
+  }
+
+  /** 树底部的「新建工作区」：点一下让桥造一个空的手动组，广播回来就进改名态。 */
+  private wsCreateRow(): HTMLElement {
+    const row = el("div", "ws-new");
+    const btn = el("button", "ws-new-btn") as HTMLButtonElement;
+    btn.type = "button";
+    btn.dataset.act = "ws-create";
+    btn.textContent = tr("＋ 新建工作区");
+    btn.title = tr("先建一个空组，再把会话拖进去");
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      this.createWs();
+    };
+    row.append(btn);
+    return row;
   }
 
   /** 一个工作区的组头 + 组内卡片。组头可收起，收起状态记在 `pi.prefs.wsCollapsed` 里。 */
@@ -3439,13 +3499,65 @@ export class App {
     head.append(el("span", "chev", collapsed ? "▸" : "▾"));
     const dot = el("span", "ws-dot");
     dot.style.background = group.color;
-    head.append(dot, el("span", "label", group.name));
+    head.append(dot);
+    const editing = this.wsRenameId === group.id;
+    if (editing) {
+      // 组头就地改名：同一支 .rename-input，Enter 提交、Esc 取消、失焦也提交（跟会话卡片一致）。
+      const field = el("input", "rename-input ws-rename-input") as HTMLInputElement;
+      field.value = this.wsRenameDraft;
+      field.placeholder = group.name;
+      field.spellcheck = false;
+      field.maxLength = WS_NAME_MAX;
+      field.dataset.act = "ws-rename-input";
+      field.setAttribute("aria-label", tr("工作区名（留空就恢复成目录名）"));
+      field.onclick = (ev) => ev.stopPropagation();
+      field.oninput = () => {
+        this.wsRenameDraft = field.value;
+      };
+      field.onkeydown = (ev) => {
+        ev.stopPropagation();
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          this.commitWsRename();
+        } else if (ev.key === "Escape") {
+          ev.preventDefault();
+          this.cancelWsRename();
+        }
+      };
+      field.onblur = () => {
+        if (this.wsRenameId === group.id) this.commitWsRename();
+      };
+      if (this.wsRenameFocus || this.wsRenameCaret != null) {
+        const at = this.wsRenameFocus ? null : this.wsRenameCaret;
+        queueMicrotask(() => {
+          field.focus();
+          if (at == null) field.select();
+          else field.setSelectionRange(at, at);
+        });
+      }
+      head.append(field);
+    } else {
+      head.append(el("span", "label", group.name));
+    }
     if (group.pending) {
       const todo = el("span", "todo", tr("待 {p1}", { p1: group.pending }));
       todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
       head.append(todo);
     }
     head.append(el("span", "n", String(group.sessions.length)));
+    if (!editing) {
+      const more = el("button", "ws-more", "⋯") as HTMLButtonElement;
+      more.type = "button";
+      more.dataset.act = "ws-more";
+      more.title = tr("改名 / 删除这个工作区");
+      more.setAttribute("aria-label", tr("{p1} 的工作区菜单", { p1: group.name }));
+      more.onclick = (ev) => {
+        ev.stopPropagation();
+        this.openWsMore(group, more);
+      };
+      more.onkeydown = (ev) => ev.stopPropagation();
+      head.append(more);
+    }
     const toggle = () => this.toggleWs(group.id);
     head.onclick = toggle;
     head.onkeydown = (ev) => {
@@ -3460,21 +3572,6 @@ export class App {
     for (const s of group.sessions) cards.append(this.sessionCard(s));
     // 手建的空组：显示空态，不显示一个没有内容的组头（后端派生的组不可能为空，过滤态下整组会消失）。
     if (!group.sessions.length) cards.append(el("div", "empty ws-empty", tr("这个工作区里还没有会话。")));
-    cards.ondragover = (ev) => {
-      if (!this.dragId) return;
-      ev.preventDefault();
-    };
-    cards.ondrop = (ev) => {
-      if (!this.dragId) return;
-      ev.preventDefault();
-      // 跨组拖是 #99 的事（要发 ws.move）；在它做出来之前，落进别的组的拖拽就当没发生。
-      const from = this.dragNode(this.dragId)?.closest<HTMLElement>(".ws-sec");
-      if (from && from.dataset.ws !== group.id) return;
-      const node = this.dragNode(this.dragId);
-      if (node) cards.append(node);
-      this.commitArrangement();
-      this.dragId = null;
-    };
     sec.append(cards);
     return sec;
   }
@@ -3485,6 +3582,64 @@ export class App {
     this.prefs = { ...this.prefs, wsCollapsed };
     savePrefs(this.prefs);
     this.renderSessions();
+  }
+
+  /** 组头的 ⋯：改名 / 删除。删不了就置灰并在菜单里写明原因，而不是把这个选择藏起来。 */
+  private openWsMore(group: TreeGroup<SessionState>, anchor: HTMLElement): void {
+    this.wsMenu?.close();
+    const info = this.workspaces.groups.find((g) => g.id === group.id);
+    this.wsMenu = openWsMenu(anchor, {
+      name: group.name,
+      sub: info && !info.manual ? info.key : tr("手建的工作区"),
+      blocker: dropBlocker(info, group.sessions.length),
+      onRename: () => this.startWsRename(group.id),
+      onDrop: () => this.dropWs(group.id),
+    });
+  }
+
+  private startWsRename(id: string): void {
+    this.wsRenameId = id;
+    this.wsRenameDraft = this.workspaces.groups.find((g) => g.id === id)?.name ?? "";
+    this.wsRenameFocus = true;
+    // 收起的组里改不了名：先展开再画输入框。
+    if (this.prefs.wsCollapsed.includes(id)) {
+      const wsCollapsed = this.prefs.wsCollapsed.filter((x) => x !== id);
+      this.prefs = { ...this.prefs, wsCollapsed };
+      savePrefs(this.prefs);
+    }
+    this.renderSessions();
+  }
+
+  private cancelWsRename(): void {
+    this.wsRenameId = null;
+    this.wsRenameDraft = "";
+    this.renderSessions();
+  }
+
+  /** 提交组名：空串 = 恢复成目录名（桥那边存空，显示时由 buildTree 回落）。名字没变就一个字都不发。 */
+  private commitWsRename(): void {
+    const id = this.wsRenameId;
+    if (!id) return;
+    const current = this.workspaces.groups.find((g) => g.id === id)?.name ?? "";
+    const next = renameIntent(current, this.wsRenameDraft);
+    this.wsRenameId = null;
+    this.wsRenameDraft = "";
+    this.renderSessions();
+    if (next == null) return;
+    this.act(() => this.socket.send({ type: "manage", action: "ws.rename", id, name: next }));
+  }
+
+  private dropWs(id: string): void {
+    this.act(() => this.socket.send({ type: "manage", action: "ws.drop", id }));
+  }
+
+  private createWs(): void {
+    // 组的 id 由桥生成，页面猜不出来：先要一个空组，等广播回来再进改名态。
+    this.wsCreatePending = true;
+    window.setTimeout(() => {
+      this.wsCreatePending = false;
+    }, 5000);
+    this.act(() => this.socket.send({ type: "manage", action: "ws.create", name: "" }));
   }
 
   private sessionSection(kind: "archived", title: string, list: SessionState[]): HTMLElement {
@@ -3534,40 +3689,16 @@ export class App {
         card.click();
       }
     };
-    if (!this.filter) {
+    // 拖拽只在树里（#99）：归档是全局分区，拖进任何工作区都说不清语义，干脆不让拖。
+    if (!this.filter && !archived) {
       card.draggable = true;
       card.ondragstart = (ev) => {
-        this.dragId = s.id;
+        this.beginDrag(s.id);
         card.classList.add("dragging");
         ev.dataTransfer?.setData("text/plain", s.id);
         if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
       };
-      card.ondragend = () => {
-        this.dragId = null;
-        card.classList.remove("dragging");
-        for (const n of this.els.sessList.querySelectorAll(".over-top,.over-bottom")) n.classList.remove("over-top", "over-bottom");
-      };
-      card.ondragover = (ev) => {
-        if (!this.dragId || this.dragId === s.id) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        const r = card.getBoundingClientRect();
-        const after = ev.clientY > r.top + r.height / 2;
-        card.classList.toggle("over-top", !after);
-        card.classList.toggle("over-bottom", after);
-      };
-      card.ondragleave = () => card.classList.remove("over-top", "over-bottom");
-      card.ondrop = (ev) => {
-        if (!this.dragId || this.dragId === s.id) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        const from = this.dragNode(this.dragId);
-        if (!from) return;
-        card.after(from);
-        for (const n of this.els.sessList.querySelectorAll(".over-top,.over-bottom")) n.classList.remove("over-top", "over-bottom");
-        this.commitArrangement();
-        this.dragId = null;
-      };
+      card.ondragend = () => this.endDrag();
     }
 
     const row = el("div", "row");
@@ -3685,6 +3816,160 @@ export class App {
 
   private dragNode(id: string): HTMLElement | null {
     return this.els.sessList.querySelector<HTMLElement>(`.session-card[data-id="${id}"]`);
+  }
+
+  /** #99：拖动开始 —— 挂上「放回工程」落点 + Esc / 窗口失焦的清理。 */
+  private beginDrag(id: string): void {
+    this.dragId = id;
+    this.showPool(id);
+    this.dragCleanup?.();
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") this.endDrag();
+    };
+    const onBlur = () => this.endDrag();
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("blur", onBlur);
+    this.dragCleanup = () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", onBlur);
+      this.dragCleanup = null;
+    };
+  }
+
+  /** 拖完 / 取消 / 失焦：高亮、落点、监听全清掉；dragId 归零后松手不再动作。 */
+  private endDrag(): void {
+    this.dragId = null;
+    this.clearDropLine();
+    this.dragPool?.remove();
+    this.dragPool = null;
+    this.dragCleanup?.();
+    for (const node of this.els.sessList.querySelectorAll(".dragging")) node.classList.remove("dragging");
+  }
+
+  /** 「放回工程」：只在拖动时出现 —— 拖到它上面 = 删掉 override，回到 cwd 推导。 */
+  private showPool(id: string): void {
+    if (this.dragPool) return;
+    const session = this.sessions.find((s) => s.id === id);
+    if (!session) return;
+    const pool = el("div", "ws-pool");
+    pool.append(el("span", "label", tr("放回工程")));
+    const name = this.projectNameOf(session);
+    pool.append(el("span", "sub", name ? tr("按 cwd 回到「{p1}」", { p1: name }) : tr("按 cwd 回到推导出来的组")));
+    const archived = this.els.sessList.querySelector<HTMLElement>('.session-sec[data-sec="archived"]');
+    if (archived) this.els.sessList.insertBefore(pool, archived);
+    else this.els.sessList.append(pool);
+    this.dragPool = pool;
+  }
+
+  /** 会话的 cwd 本来会落在哪个组（忽略 override）：给「放回工程」落点写目标名。 */
+  private projectNameOf(session: SessionState): string {
+    const cwd = normalizeWsPath(session.cwd ?? "");
+    if (!cwd) return "";
+    const root = normalizeWsPath(this.workspaces.keys?.[cwd.toLowerCase()] ?? cwd);
+    const id = root.toLowerCase();
+    return (this.workspaces.groups ?? []).find((g) => g.id === id)?.name || "";
+  }
+
+  /** 整块树接管 dragover / drop：落点判定交给 `hitTest()`（纯函数，单测在 `web/tests/drag-unit.mjs`）。 */
+  private wireTreeDrops(host: HTMLElement): void {
+    host.ondragover = (ev) => {
+      if (!this.dragId) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+      this.paintDrop(this.hitAt(ev.clientY));
+    };
+    host.ondragleave = (ev) => {
+      if (!this.dragId) return;
+      // 在组与卡片之间移动也会冒 dragleave：只有真的离开树才清高亮。
+      const to = ev.relatedTarget as Node | null;
+      if (to && host.contains(to)) return;
+      this.clearDropLine();
+    };
+    host.ondrop = (ev) => this.onTreeDrop(ev);
+  }
+
+  private onTreeDrop(ev: DragEvent): void {
+    const id = this.dragId;
+    if (!id) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const hit = this.hitAt(ev.clientY);
+    const fromWs = this.cardWs(id);
+    this.endDrag();
+    if (!hit) return;
+    const plan = planDrop(id, fromWs, hit);
+    if (plan.action === "move" || plan.action === "restore") {
+      // 跨组 / 放回工程都只发 ws.move：不重写 order，别的组的顺序一根手指都不碰。
+      this.act(() => this.socket.send({ type: "manage", action: "ws.move", ids: plan.ids, wsId: plan.wsId }));
+      return;
+    }
+    const node = this.dragNode(id);
+    const cards = node?.parentElement;
+    if (!node || !cards) return;
+    const nodes = new Map([...cards.querySelectorAll<HTMLElement>(".session-card")].map((n) => [n.dataset.id ?? "", n]));
+    // 组内重排：按落点插进去，再把这一组的新顺序读出来交给 arrange。
+    for (const otherId of moveTo([...nodes.keys()], id, plan.index)) {
+      const other = nodes.get(otherId);
+      if (other) cards.append(other);
+    }
+    this.commitArrangement();
+  }
+
+  private paintDrop(hit: DropHit | null): void {
+    if (!hit) {
+      this.clearDropLine();
+      return;
+    }
+    const host = this.els.sessList;
+    let line = this.dropLine;
+    if (!line) {
+      line = el("div", "drop-line");
+      host.append(line);
+      this.dropLine = line;
+    }
+    line.style.top = `${Math.round(hit.line - host.getBoundingClientRect().top)}px`;
+    line.dataset.ws = hit.wsId;
+    line.dataset.index = String(hit.index);
+    line.dataset.pool = String(hit.pool);
+    line.title = hit.pool ? tr("放回工程") : "";
+    this.dragPool?.classList.toggle("over", hit.pool);
+  }
+
+  private clearDropLine(): void {
+    this.dropLine?.remove();
+    this.dropLine = null;
+    this.dragPool?.classList.remove("over");
+  }
+
+  /** 量一遍树：组、组里可见卡片（剔除拖动源自己）、「放回工程」。 */
+  private hitAt(clientY: number): DropHit | null {
+    const host = this.els.sessList;
+    const groups = [...host.querySelectorAll<HTMLElement>(".ws-sec")].map((sec) => {
+      const box = sec.getBoundingClientRect();
+      const head = sec.querySelector<HTMLElement>(".ws-head");
+      const items = [...sec.querySelectorAll<HTMLElement>(".session-card")]
+        .filter((card) => card.dataset.id !== this.dragId)
+        .map((card) => {
+          const r = card.getBoundingClientRect();
+          return { id: card.dataset.id ?? "", top: r.top, bottom: r.bottom };
+        })
+        .filter((item) => item.bottom > item.top); // 收起的组：卡片量出来是 0 高，不算落点
+      return {
+        wsId: sec.dataset.ws ?? "",
+        top: box.top,
+        bottom: box.bottom,
+        contentTop: head ? head.getBoundingClientRect().bottom : box.top,
+        items,
+      };
+    });
+    const poolEl = host.querySelector<HTMLElement>(".ws-pool");
+    const pool = poolEl ? poolEl.getBoundingClientRect() : null;
+    return hitTest(clientY, groups, pool ? { top: pool.top, bottom: pool.bottom } : null);
+  }
+
+  private cardWs(id: string): string {
+    return this.dragNode(id)?.closest<HTMLElement>(".ws-sec")?.dataset.ws ?? "";
   }
 
   /** Read pin/order straight off the DOM after a drop: the DOM is what the user just arranged. */
