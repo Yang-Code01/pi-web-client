@@ -7,7 +7,7 @@
  * 断言四件事：
  *   1. 打开 A 再收起左栏 → A 的胶囊带 `.cur`、带 `aria-current`，而且**真的算出了填充色**；
  *   2. 点胶囊打开 B → `.cur` 搬过去，A 恢复普通底色；
- *   3. 切到未置顶的 C → 这条里没有任何 `.cur`（不硬凑一个假标记）；
+ *   3. 切到未置顶的 C → D125 之后 C 会被自动置顶，`.cur` 必须已经搬过去（不再是「一个都不亮」）；
  *   4. 展开左栏 → 整条横栏藏起来（回到左栏自己的 `.session-card.active`）。
  *
  * 桩桥，不碰真 pi；一秒级、可重复。
@@ -118,6 +118,12 @@ server.on("upgrade", (req, socket, head) => {
       if (msg.type === "subscribe" && s) {
         ws.send(JSON.stringify({ type: "session", sessionId: s.id, state: s, items: [], approvals: [], asks: [], budget: null }));
       }
+      // D125：打开即置顶。桩桥照真桥的语义实现这一条，否则界面上的置顶条不会动。
+      if (msg.type === "manage" && msg.action === "opened" && SESSIONS.some((x) => x.id === msg.id)) {
+        MANAGE.archived = MANAGE.archived.filter((id) => id !== msg.id);
+        if (!MANAGE.pin.includes(msg.id)) MANAGE.pin = [msg.id, ...MANAGE.pin];
+        for (const client of wss.clients) if (client.readyState === 1) client.send(JSON.stringify({ type: "manage", manage: MANAGE }));
+      }
     });
     ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS, manage: MANAGE, trash: [], tunnel: TUNNEL }));
   });
@@ -186,20 +192,23 @@ const b2 = pick(list, "会话 B");
 ok(b2?.cur === true && a2?.cur === false, "点了 B 的胶囊后，.cur 只在 B 上");
 ok(b2.bg !== a2.bg && b2.border !== a2.border && b2.weight === "600", "外观跟着搬过去，A 恢复普通底色与字重");
 
-// 3) 当前会话没被置顶 → 一个 .cur 都不该有
+// 3) 打开未置顶的 C → D125：C 自己进置顶条，标记跟着搬过去
 await toggleLeft(); // 展开左栏
 await page.locator('.session-card[data-id="stub-c"]').click();
-await sleep(500);
+await sleep(700);
 await toggleLeft(); // 再收起
 await page.waitForSelector(".pin-chip", { timeout: 10000 });
 list = await chips();
-ok(list.every((c) => !c.cur), "当前会话（C）未置顶时，置顶条里没有任何 .cur");
+const c = pick(list, "会话 C");
+ok(Boolean(c), "打开过的 C 自动出现在置顶条里");
+ok(c?.cur === true, "C 的胶囊带 .cur");
+ok(list.filter((x) => x.cur).length === 1, "整条里只有一个当前会话");
 
 // 4) 展开左栏 → 横栏藏起来
 await toggleLeft();
 ok(await page.locator(".pin-strip").isHidden(), "展开左栏后，置顶条重新隐藏（交还给左栏的 .active）");
 
-await page.locator('.side-toggle[data-side="left"]').click(); // 收起来再拍一张：当前会话未置顶 → 一个都不亮
+await page.locator('.side-toggle[data-side="left"]').click(); // 收起来再拍一张：D125 之后当前会话一定在条里
 await sleep(500);
 await page.screenshot({ path: path.join(REPO, ".scratch/pin-current-off.png"), clip: { x: 0, y: 0, width: 1440, height: 120 } });
 

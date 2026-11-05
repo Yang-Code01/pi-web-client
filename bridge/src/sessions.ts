@@ -2416,6 +2416,12 @@ export class SessionManager extends EventEmitter {
     this.manage.pinLast(id);
   }
 
+  /** D125: 打开过就进置顶区（归档的顺带解除归档）。不在本桥列表里的 id 不认。 */
+  opened(id: string): boolean {
+    if (!this.known(id)) return false;
+    return this.manage.opened(id);
+  }
+
   setArchived(ids: string[], on: boolean): void {
     this.manage.setArchived(ids, on);
   }
