@@ -1694,3 +1694,30 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 - `node probes/skill-palette.mjs`（D115 的 16 条断言仍绿——底部多了一颗按钮，键盘 / 点击外部 / Esc 都没变）。
 - 真网络抽查（本机，非仓库内）：`searchSkillStore("pdf", 5)` / `("excel", 20)` 解析 18–19/20 条，`anthropics/skills` 的 `skills/pdf` 装出 12 个文件、卸载干净；`vercel-labs/agent-skills` 列出 9 个技能。
 - `npm --prefix web run typecheck`（含 i18n 1291 键 × 3 语言）干净。
+
+## D127 「交给 agent」的正文不写记录时的会话名；待填文字只属于「我自己刚建的那个会话」
+
+**问题（用户报的 bug）：** 在会话「bug 反馈」里记一条，点「交给 agent → 新开一个会话」，新会话的输入框里出现
+`## 111111` / `待处理 · 2026-11-06 00:41 · bug 反馈` —— 那行「bug 反馈」是**上一个会话**的名字，落进新会话
+就读成「别的会话的记录混进来了」。同一处还有一个真泄漏：点「新开一个会话」后按「取消」（或建失败），
+`prefillNext` 留在字段里，此后打开**任何**会话（`openSession` 回包也走 `case "session"`）都会把那段笔记灌进
+那个会话的输入框，并写进它的草稿（复现：取消面板 → 点会话 A → A 的输入框变成某条笔记的 markdown）。
+
+**决定：**
+- `web/src/notesheet.ts:58` `noteMarkdown()` 的头部去掉会话名，只剩 `状态 · 时间`（`## 标题` 单独一行）。
+  复制 Markdown / 导出全部同一条函数，一起变。记录里的 `sessionName` 字段保留：面板里「这条记在哪个会话」
+  （`notesheet.ts:647`）和列表行仍在用。
+- `web/src/app.ts` `case "session"`：先取 `const handoff = this.creating ? this.prefillNext : null;` 再
+  `this.creating?.finish()`，只认领「这条快照是我刚建的那个会话」的回包。
+- `closeSheet()`：`sheetKind === "new"` 时清掉 `prefillNext` —— 关掉面板（取消 / 点背景）= 放弃这段待填文字。
+
+**为什么：** 交接的落点本来就是另一个会话（D95 的「交给 agent」是跨会话的动作），正文里带来源会话名等于把
+读者的注意力从「要修什么」拉到「这是谁的记录」；泄漏那一半不是审美问题，是「待填文字没有归属」——
+它只能属于发起它的那次创建，创建没发生就该过期。`finish()` 在前、填字在后的顺序不能倒（`switchDraft()`
+会把 `composerText` 清空），所以文字必须在 `finish()` 之前取出来，`closeSheet()` 才能在成功路径上也放心清。
+
+**可改：** 想让来源还看得见，可以把它写进行尾的 `> 来自「X」` 引用块（用户这次选了「去掉」，别默认加回来）。
+
+**验证：** `node probes/notes-handoff.mjs`（隔离桥 + 真 Chromium）：正文 `待处理 · 2026-11-06 00:44`
+不含会话名、交到 B 的文字没漏进 A、取消新开会话后再切会话输入框为空、之后新开的 C 为空、真建出来的新会话 D
+拿到那段文字。`node probes/bug-notes-ui.mjs`（37 条断言）仍全绿；`npm --prefix web run typecheck` 与 `build`。

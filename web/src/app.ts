@@ -110,7 +110,9 @@ export class App {
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
   private notes: Note[] = [];
-  /** 新会话建好后要填进输入框的文字（「交给 agent → 新开会话」，不自动发送）。 */
+  /** 新会话建好后要填进输入框的文字（「交给 agent → 新开会话」，不自动发送）。
+   *  它只属于「我自己刚建的那个会话」：面板一关（取消 / 点背景）或建会话失败就丢掉，
+   *  否则下一次打开的任何会话都会莫名其妙带上上一个会话的笔记。 */
   private prefillNext: string | null = null;
   private sheet: HTMLElement | null = null;
   private modelChip: HTMLButtonElement | null = null;
@@ -1043,7 +1045,10 @@ export class App {
         void this.refreshGit(true);
         if (this.currentId) this.socket.send({ type: "subscribe", sessionId: this.currentId });
         break;
-      case "session":
+      case "session": {
+        // 「交给 agent → 新开会话」那段文字，只有「这条快照是我刚建的那个会话」才认领：
+        // 先取出来再 finish()，后面 closeSheet() 会把它丢掉。
+        const handoff = this.creating ? this.prefillNext : null;
         this.creating?.finish();
         // bridge sends the snapshot as {sessionId, state, items, approvals, budget}
         if (msg.sessionId) {
@@ -1073,12 +1078,11 @@ export class App {
         this.asks = (msg.asks ?? []) as AskRequest[];
         this.renderAll();
         // 「交给 agent → 新开会话」：会话建好之后才把文字填进去。此刻 textarea 已经指向新会话。
-        if (this.prefillNext && this.currentId) {
-          const text = this.prefillNext;
+        if (handoff) {
           this.prefillNext = null;
-          this.composerText = text;
+          this.composerText = handoff;
           if (this.textarea) {
-            this.textarea.value = text;
+            this.textarea.value = handoff;
             this.fitComposer();
             this.textarea.focus();
           }
@@ -1089,6 +1093,7 @@ export class App {
         // A takeover from the model sheet unlocks it; reopen so the list is usable right away.
         if (this.sheetKind === "model" && this.session?.owned) this.openModelSheet();
         break;
+      }
       case "items":
         if (msg.sessionId !== this.currentId) break;
         this.chat.reset((msg.items ?? []) as Item[]);
@@ -2554,6 +2559,9 @@ export class App {
 
   // ---------------------------------------------------------------- model sheet
   private closeSheet(): void {
+    // 开新会话的面板被关掉（取消 / 点背景）= 放弃「交给 agent → 新开会话」那段待填的文字：
+    // 留着它，下一次开的会话会莫名其妙带着别的会话的笔记（见 prefillNext）。
+    if (this.sheetKind === "new") this.prefillNext = null;
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
     this.sheet?.remove();
     this.sheet = null;

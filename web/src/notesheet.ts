@@ -53,9 +53,10 @@ function shortTime(at: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** 交给 agent 的正文：标题、原话、截图绝对路径。不解释「这是什么功能」，那是页面自己的事。 */
+/** 交给 agent 的正文：标题、原话、截图绝对路径。不解释「这是什么功能」，那是页面自己的事。
+ *  正文里不写记录时的会话名：交接的落点是另一个会话，写上它那段字看着就像别人的记录混进来了。 */
 export function noteMarkdown(note: Note): string {
-  const head = `${STATUS_LABEL[note.status]} · ${stamp(note.createdAt)}${note.sessionName ? ` · ${note.sessionName}` : ""}`;
+  const head = `${STATUS_LABEL[note.status]} · ${stamp(note.createdAt)}`;
   const lines = [`## ${note.title}`, head, "", note.body];
   if (note.shots.length) lines.push("", ...note.shots.map((s) => `![](${s})`));
   if (note.issue) lines.push("", `issue: ${note.issue}`);
