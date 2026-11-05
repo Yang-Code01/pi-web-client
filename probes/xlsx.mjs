@@ -1015,10 +1015,11 @@ try {
 if (SKIP_PDF) {
   // 没有 LibreOffice：转换必然失败，但「失败只影响页面视图」仍然可验。
   await openSheet("chart.xlsx");
+  check("没有 LibreOffice 时网格仍可用", (await cellText(0, 0)) === "地区", String(await cellText(0, 0)));
+  await page.locator('.sd-viewtab[data-view="page"]').click();
   await page.locator(".sd-pg-error").waitFor({ timeout: 20000 });
   const reason = await page.locator(".sd-pg-error").innerText();
   check("没有 LibreOffice 时页面视图说原因", reason.includes("LibreOffice"), reason);
-  check("没有 LibreOffice 时网格仍可用", (await cellText(0, 0)) === "地区", String(await cellText(0, 0)));
   check("失败后给出重试按钮", (await page.locator(".sd-pg-error .sd-act").count()) === 1);
   await closeSheet();
   console.log("SKIP #112：自动转换 / 缓存命中 / PDF 字节 / 两档布局的断言（无 LibreOffice）");
@@ -1048,10 +1049,11 @@ if (SKIP_PDF) {
 
   const missBefore = pdfResponses.filter((r) => r.cache === "miss").length;
   await openSheet("chart.xlsx");
-  check("图表文件自动转页面视图", (await page.locator(".sd-pg").count()) === 1);
-  check("转换中显示「正在生成页面视图」", ((await page.locator(".sd-pg").innerText()) ?? "").includes("正在生成页面视图"));
-  check("宽窗两栏都在", (await splitState()).gridShown && (await splitState()).paperShown, JSON.stringify(await splitState()));
+  check("图表文件打开先出格子", (await splitState()).gridShown && !(await splitState()).paperShown, JSON.stringify(await splitState()));
+  // 后台已把转换跑起来（#112：先出格子，页面视图在后台生成）；点「页面视图」标签切过去，等 iframe 出来。
+  await page.locator('.sd-viewtab[data-view="page"]').click();
   await page.locator(".sd-pg-frame").waitFor({ timeout: 90000 });
+  check("宽窗两栏都在", (await splitState()).gridShown && (await splitState()).paperShown, JSON.stringify(await splitState()));
   await page.waitForTimeout(2500);
   const frameSrc = await page.locator(".sd-pg-frame").getAttribute("src");
   const framePath = (() => {
@@ -1089,6 +1091,7 @@ if (SKIP_PDF) {
   await closeSheet();
   const tOpen0 = Date.now();
   await openSheet("chart.xlsx");
+  await page.locator('.sd-viewtab[data-view="page"]').click();
   await page.locator(".sd-pg-frame").waitFor({ timeout: 15000 });
   const reopenMs = Date.now() - tOpen0;
   check("第二次打开直接出来", reopenMs < 6000, `${reopenMs}ms`);
@@ -1146,10 +1149,12 @@ if (SKIP_PDF) {
     }),
   );
   await openSheet("chart.xlsx");
+  // 先出格子，失败只影响页面视图：网格照常能滚。
+  check("转换失败时网格仍可用", (await cellText(0, 0)) === "地区", String(await cellText(0, 0)));
+  await page.locator('.sd-viewtab[data-view="page"]').click();
   await page.locator(".sd-pg-error").waitFor({ timeout: 20000 });
   const failText = await page.locator(".sd-pg-error").innerText();
   check("转换失败显示原因", failText.includes("LibreOffice 不在"), failText);
-  check("转换失败时网格仍可用", (await cellText(0, 0)) === "地区", String(await cellText(0, 0)));
   check("转换失败后有重试", (await page.locator(".sd-pg-error .sd-act").count()) === 1);
   await page.unroute("**/api/sheet/pdf**");
   await closeSheet();
