@@ -28,10 +28,18 @@ export interface SheetDialogOpts {
   token: string;
   name: string;
   path: string;
+  /** 原文件的裸地址（`/raw/<token>/<rel>`）：下载不经过任何接口。 */
+  raw: string;
   scale: () => number;
   loadMeta: () => Promise<SheetMeta>;
   fetchWindow: (sheet: string, r0: number, r1: number, c0: number, c1: number) => Promise<SheetWindow>;
+  /** #113：CSV 的源码面（有它才出「表格 / 源码」两个 tab）。 */
   source?: SheetSource;
+  /** #106 出口：交给这台电脑上的 Excel 打开原文件。 */
+  onOpen: () => Promise<void>;
+  onReveal: () => Promise<void>;
+  /** 文件被改过之后重新开一趟（要新的凭据，所以由 app 重走 /api/preview）。 */
+  onReopen: () => void;
   onClose: () => void;
   onRaise: () => void;
 }
@@ -49,11 +57,11 @@ export class SheetDialog {
   private readonly head: HTMLElement;
   private readonly body: HTMLElement;
   private readonly pane: HTMLElement;
+  private readonly footBar: HTMLElement;
   private readonly tabs: HTMLElement[] = [];
   private src: HTMLTextAreaElement | null = null;
   private saveMsg: HTMLElement | null = null;
   private saveBtn: HTMLButtonElement | null = null;
-  private tab: Tab = "grid";
   private grid: SheetGrid | null = null;
   private closed = false;
 
@@ -84,12 +92,38 @@ export class SheetDialog {
     const resize = el("div", "sd-resize");
     resize.title = tr("拖动改大小（双击复原）");
 
-    this.root.append(grip, this.head, this.body, resize);
+    this.footBar = this.foot(opts);
+    this.root.append(grip, this.head, this.body, this.footBar, resize);
     if (opts.source) this.buildSource(opts.source);
     this.wire(grip, resize);
   }
 
-  /** 源码面：两个 tab + 可编辑的 textarea + 底栏（截断说明 / 保存结果）。 */
+  /** 底部一条：左边是 CSV 的截断说明 / 保存结果（#113），右边是回到真文件的三个出口（#106）。 */
+  private foot(opts: SheetDialogOpts): HTMLElement {
+    const bar = el("footer", "sd-foot");
+    const open = el("button", "sd-act", tr("用 Excel 打开"));
+    open.type = "button";
+    open.title = tr("交给这台电脑上的 Excel 打开原文件");
+    open.onclick = () => {
+      open.disabled = true;
+      void opts.onOpen().finally(() => {
+        open.disabled = false;
+      });
+    };
+    const reveal = el("button", "sd-act", tr("📂 在文件夹中显示"));
+    reveal.type = "button";
+    reveal.title = tr("在文件管理器里定位这个文件");
+    reveal.onclick = () => void opts.onReveal();
+    // 下载不靠桥：跟预览同一份原字节，浏览器直接存。
+    const dl = el("a", "sd-act sd-dl", tr("下载"));
+    dl.href = opts.raw;
+    dl.download = opts.name;
+    dl.title = tr("把原文件下载下来");
+    bar.append(open, reveal, dl);
+    return bar;
+  }
+
+  /** 源码面：两个 tab + 可编辑的 textarea；说明与保存结果并进底栏那条。 */
   private buildSource(source: SheetSource): void {
     const bar = el("div", "sd-tabs");
     for (const [id, label] of [
@@ -111,11 +145,10 @@ export class SheetDialog {
     this.src.setAttribute("aria-label", tr("源码"));
     this.src.addEventListener("focusin", () => this.opts.onRaise());
 
-    const foot = el("div", "sd-foot");
     const note = el("span", "sd-note", source.note ?? "");
     note.hidden = !source.note;
     this.saveMsg = el("span", "sd-save-msg");
-    foot.append(note, this.saveMsg);
+    this.footBar.prepend(note, this.saveMsg);
 
     if (source.onSave) {
       const save = el("button", "sd-btn sd-save", tr("保存"));
@@ -127,12 +160,11 @@ export class SheetDialog {
     }
 
     this.body.insertBefore(bar, this.pane);
-    this.body.append(this.src, foot);
+    this.body.append(this.src);
     this.showTab("grid");
   }
 
   private showTab(which: Tab): void {
-    this.tab = which;
     this.pane.hidden = which === "source";
     if (this.src) this.src.hidden = which !== "source";
     for (const btn of this.tabs) btn.classList.toggle("on", btn.dataset.tab === which);
@@ -198,13 +230,49 @@ export class SheetDialog {
         meta,
         sheet: meta.name,
         fetchWindow: this.opts.fetchWindow,
+        // 文件在预览之后被改过：停下，说清楚，别拿旧数据装作没事（#106）。
+        onStale: () => this.stale(),
       });
       this.pane.replaceChildren(this.grid.root);
       await this.grid.start();
     } catch (err) {
       if (this.closed) return;
+      const code = (err as { code?: string } | null)?.code;
+      if (code === "sheet_stale") {
+        this.stale();
+        return;
+      }
+      if (code === "sheet_unsupported") {
+        this.blocked(tr("这个格式这里不支持，用 Excel 打开"), [{ label: tr("用 Excel 打开"), run: () => void this.opts.onOpen() }]);
+        return;
+      }
       this.showMessage(tr("读不了这张表：{p1}", { p1: errText(err) }));
     }
+  }
+
+  /** 文件在这扇窗打开之后被改过：旧凭据已失效，只剩「重新打开」这一条路。 */
+  private stale(): void {
+    if (this.closed) return;
+    this.blocked(tr("文件已改变，重新打开"), [{ label: tr("重新打开"), run: () => this.opts.onReopen() }]);
+  }
+
+  /** 盖住网格：说清楚发生了什么，外加能继续走下去的按钮。 */
+  private blocked(text: string, actions: { label: string; run: () => void }[]): void {
+    this.grid?.destroy();
+    this.grid = null;
+    const box = el("div", "sd-block");
+    box.append(el("div", "sd-block-text", text));
+    if (actions.length) {
+      const row = el("div", "sd-block-acts");
+      for (const action of actions) {
+        const b = el("button", "sd-act", action.label);
+        b.type = "button";
+        b.onclick = () => action.run();
+        row.append(b);
+      }
+      box.append(row);
+    }
+    this.body.replaceChildren(box);
   }
 
   private showMessage(text: string): void {

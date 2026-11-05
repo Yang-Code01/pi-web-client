@@ -3773,9 +3773,13 @@ export class App {
       token: info.token,
       name: info.name,
       path: info.abs,
+      raw: rawUrl(info),
       scale: () => this.uiScale(),
       loadMeta: async () => metaOf(data),
       fetchWindow: windowOf,
+      onOpen: () => this.openInApp(info.token),
+      onReveal: () => this.reveal(info.abs),
+      onReopen: () => void this.openPreview(info.abs, this.currentId, true),
       source: {
         text: data.text,
         note: data.truncated
@@ -3816,9 +3820,14 @@ export class App {
       token: info.token,
       name: info.name,
       path: info.abs,
+      raw: rawUrl(info),
       scale: () => this.uiScale(),
       loadMeta: () => api.sheetMeta(info.token),
       fetchWindow: (sheet, r0, r1, c0, c1) => api.sheetWindow(info.token, sheet, r0, r1, c0, c1),
+      onOpen: () => this.openInApp(info.token),
+      onReveal: () => this.reveal(info.abs),
+      // 文件被改过：要新的 token，所以整扇重开一趟（旧的那扇由 openSheet 拆）。
+      onReopen: () => void this.openPreview(info.abs, this.currentId, true),
       onClose: () => {
         if (this.winFront === dialog.root) this.winFront = null;
         if (this.sheetDock === dialog) this.sheetDock = null;
@@ -4013,6 +4022,23 @@ export class App {
         });
     };
     return btn;
+  }
+
+  /** #106 出口：把预览过的那份文件交给这台电脑上的 Excel。路径由桥端从凭据里解，页只递 token。 */
+  private async openInApp(token: string): Promise<void> {
+    try {
+      this.warn((await api.openFile(token)).message);
+    } catch (err: any) {
+      this.warn(tr("打不开文件：{p1}", { p1: errText(err) }));
+    }
+  }
+
+  private async reveal(abs: string): Promise<void> {
+    try {
+      this.warn((await api.reveal(abs)).message);
+    } catch (err: any) {
+      this.warn(tr("打不开文件管理器：{p1}", { p1: errText(err) }));
+    }
   }
 
   // ------------------------------------------------------- 预览历史（D63）
@@ -4317,12 +4343,30 @@ export class App {
       return;
     }
     if (info.kind === "binary") {
-      const box = el("div", "viewer-msg");
-      box.append(el("div", "", tr("二进制文件（{p1}），这里不直接显示。", { p1: fmtSize(info.size) })));
-      const open = el("button", "btn", tr("新标签页打开 / 下载"));
-      open.onclick = () => openSameOrigin(url);
+      // #106: .xls / .ods / 加密包 / 改了扩展名的 zip — 这里不看，交给这台电脑上的 Excel。
+      const workbook = WORKBOOK.test(info.name);
+      const box = el("div", workbook ? "viewer-msg workbook" : "viewer-msg");
+      box.append(
+        el(
+          "div",
+          "",
+          workbook ? tr("这个格式这里不支持，用 Excel 打开") : tr("二进制文件（{p1}），这里不直接显示。", { p1: fmtSize(info.size) }),
+        ),
+      );
+      if (workbook) {
+        const open = el("button", "btn", tr("用 Excel 打开"));
+        open.onclick = () => {
+          open.disabled = true;
+          void this.openInApp(info.token).finally(() => {
+            open.disabled = false;
+          });
+        };
+        box.append(open);
+      }
+      const dl = el("button", "btn", tr("新标签页打开 / 下载"));
+      dl.onclick = () => openSameOrigin(url);
       // D69: the useful move for an xlsm / pdf / docx is the machine's own file manager, not a download.
-      box.append(open, this.revealButton(info.abs));
+      box.append(dl, this.revealButton(info.abs));
       body.append(box);
       return;
     }
@@ -10077,6 +10121,9 @@ function splitImages(files: File[]): { images: File[]; others: File[] } {
 
 /** Picked files with these extensions get attached like a pasted image instead of inserted as a path. */
 const ATTACH_IMAGE = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
+
+/** #106: 表格类文件即使读不了（.xls/.ods/加密包），也用「这个格式这里不支持」而不是通用二进制文案。 */
+const WORKBOOK = /\.(xlsx|xlsm|xlsb|xls|ods)$/i;
 
 /** SVG has no pixels: render it through an <img> (scripts never run there) onto a canvas. */
 async function rasterizeSvg(file: File): Promise<ImageBitmap | null> {

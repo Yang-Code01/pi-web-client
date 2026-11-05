@@ -56,7 +56,7 @@ export function colName(c) {
 }
 
 /** 行数据：第 0 行表头，其余是数据行（共 150 行）。 */
-export function fixtureRows() {
+export function fixtureRows({ firstArea = "华东" } = {}) {
   const values = [...HEADER];
   const si = (text) => {
     let i = values.indexOf(text);
@@ -68,7 +68,7 @@ export function fixtureRows() {
   };
   const rows = [HEADER.map((t) => ({ str: si(t) }))];
   const fixed = [
-    ["华东", "螺丝", 12.5, 3, 37.5, "中文备注", "001", null],
+    [firstArea, "螺丝", 12.5, 3, 37.5, "中文备注", "001", null],
     ["华南", "扳手", 3.14159, 10, 31.4159, "日本語テスト", "002", { err: "#DIV/0!" }],
     ["华北", "螺母", 45292, 1, 45292, "华东 & 华南 <测试>", "003", null],
     ["西南", "垫片", 1234567.89, 250, 308641972.5, null, "004", { bool: true }],
@@ -107,8 +107,8 @@ export function fixtureRows() {
   return { rows, strings: values };
 }
 
-export function buildXlsx() {
-  const { rows, strings } = fixtureRows();
+export function buildXlsx({ firstArea } = {}) {
+  const { rows, strings } = fixtureRows({ firstArea });
   const files = {
     "[Content_Types].xml": strToU8(
       `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`,
@@ -207,6 +207,59 @@ export function makeFixtures(outDir) {
   fs.writeFileSync(file, buildXlsx());
   const csv = makeCsvFixtures(outDir);
   return { plain: file, csv, files: [file, ...csv.files] };
+}
+
+/** OLE2 复合文档头：老式 .xls，以及加密过的 OOXML 包（CFB 包着加密流）都以它开头。 */
+const CFB = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+
+function cfbDoc(label) {
+  const pad = Buffer.alloc(512, 0);
+  pad.write(label, 0, "utf8");
+  return Buffer.concat([CFB, pad]);
+}
+
+/**
+ * #106 的降级 fixture：这里打不开、只能交给 Excel 的那些格式。
+ *  - legacy.xls 老式复合文档
+ *  - secret.xlsx 加密过的包（扩展名是 xlsx，内容却是 CFB）
+ *  - table.ods 开放文档格式（是个 zip，但不是 xlsx 的零件）
+ *  - fake.xlsx 改了扩展名的 docx（是 zip，但没有 xl/workbook.xml）
+ */
+export function makeUnsupportedFixtures(outDir) {
+  fs.mkdirSync(outDir, { recursive: true });
+  const write = (name, bytes) => {
+    const file = path.join(outDir, name);
+    fs.writeFileSync(file, bytes);
+    return file;
+  };
+  return {
+    legacy: write("legacy.xls", cfbDoc("legacy xls")),
+    secret: write("secret.xlsx", cfbDoc("encrypted ooxml")),
+    ods: write(
+      "table.ods",
+      Buffer.from(
+        zipSync({
+          mimetype: strToU8("application/vnd.oasis.opendocument.spreadsheet"),
+          "content.xml": strToU8(
+            `<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:spreadsheet><table:table table:name="Sheet1"><table:table-row><table:table-cell><text:p>ODS</text:p></table:table-cell></table:table-row></table:table></office:spreadsheet></office:body></office:document-content>`,
+          ),
+        }),
+      ),
+    ),
+    fake: write(
+      "fake.xlsx",
+      Buffer.from(
+        zipSync({
+          "[Content_Types].xml": strToU8(
+            `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+          ),
+          "word/document.xml": strToU8(
+            `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>`,
+          ),
+        }),
+      ),
+    ),
+  };
 }
 
 if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, "/")}`) {
