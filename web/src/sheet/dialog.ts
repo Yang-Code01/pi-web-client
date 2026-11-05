@@ -4,7 +4,7 @@
  * 几何按界面缩放归一（布局 px）后记在 localStorage 的 `pi.sheetGeom`；
  * 拖标题栏移动、拖右下角改宽高、拖顶边只改高、双击复原、打开时 clamp 回可视区。
  */
-import { tr, errText, fmtTime } from "../i18n/index.ts";
+import { tr, errText, fmtTime, fmtNum } from "../i18n/index.ts";
 import type { SheetInfo, SheetMeta, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
 import { SheetGrid } from "./grid.ts";
@@ -69,8 +69,11 @@ export class SheetDialog {
   private readonly fxBody: HTMLElement;
   /** #111：底栏那条「N 格无缓存值」。 */
   private readonly status: HTMLElement;
+  /** #110：这张表落在哪一档（全量 / 只值轻量 / 不给）。 */
+  private readonly tier: HTMLElement;
   private tab: Tab = "grid";
   private sheets: SheetInfo[] = [];
+  private meta: SheetMeta | null = null;
   private readonly tabs: HTMLElement[] = [];
   private src: HTMLTextAreaElement | null = null;
   private saveMsg: HTMLElement | null = null;
@@ -120,9 +123,11 @@ export class SheetDialog {
     this.fx.append(this.fxRef, this.fxBody);
     this.status = el("span", "sd-status");
     this.status.hidden = true;
+    this.tier = el("span", "sd-tier");
+    this.tier.hidden = true;
 
     this.footBar = this.foot(opts);
-    this.footBar.prepend(this.wsTabs, this.status, this.wsHint, this.cfHint);
+    this.footBar.prepend(this.wsTabs, this.tier, this.status, this.wsHint, this.cfHint);
     this.root.append(grip, this.head, this.body, this.footBar, resize);
     if (opts.source) this.buildSource(opts.source);
     this.wire(grip, resize);
@@ -270,14 +275,93 @@ export class SheetDialog {
     this.cfHint.hidden = !n;
   }
 
+  /** #110：底栏说清楚这张表落在哪一档；CSV 没有档位，就不占位置。 */
+  private paintTier(info: SheetInfo | undefined): void {
+    if (!info?.tier) {
+      this.tier.textContent = "";
+      this.tier.hidden = true;
+      return;
+    }
+    const cells = info.cells ?? info.rows * info.cols;
+    const p1 = fmtNum(cells);
+    let label = tr("{p1} 格 · 全量显示", { p1 });
+    if (info.tier === "light") label = tr("{p1} 格 · 只值轻量（不涂条件格式）", { p1 });
+    else if (info.tier === "none") label = tr("{p1} 格 · 不给全表", { p1 });
+    this.tier.textContent = label;
+    this.tier.dataset.tier = info.tier;
+    this.tier.hidden = false;
+  }
+
   private async pickSheet(name: string): Promise<void> {
-    if (!this.grid || this.grid.activeSheet === name) return;
+    const info = this.sheets.find((s) => s.name === name);
+    if (!info || this.grid?.activeSheet === name) return;
     for (const btn of this.wsTabs.children) {
       btn.setAttribute("aria-selected", btn.textContent === name ? "true" : "false");
     }
-    await this.grid.setSheet(name);
-    this.renderCfHint(name);
     this.paintStatus(this.sheets, name);
+    this.paintTier(info);
+    this.renderCfHint(name);
+    if (info.tier === "none") {
+      this.showTooBig(name);
+      return;
+    }
+    if (!this.grid) {
+      await this.mountGrid(name);
+      return;
+    }
+    await this.grid.setSheet(name);
+  }
+
+  /** #110：这一档只给清单和尺寸，不建网格、不取窗口。 */
+  private showTooBig(sheet: string): void {
+    this.grid?.destroy();
+    this.grid = null;
+    this.fx.hidden = true;
+    const info = this.sheets.find((s) => s.name === sheet);
+    const cells = info?.cells ?? (info ? info.rows * info.cols : 0);
+    const box = el("div", "sd-block");
+    box.append(
+      el(
+        "div",
+        "sd-block-text",
+        tr("这张表有 {p1} 格，太大，不在这里滚。只给清单和尺寸；要看内容，用本机程序打开。", { p1: fmtNum(cells) }),
+      ),
+    );
+    const list = el("div", "sd-block-list");
+    for (const s of this.sheets) {
+      if (s.hidden) continue;
+      const row = el("div", "sd-block-sheet");
+      row.append(
+        el("span", "sd-block-name", s.name),
+        el("span", "sd-block-size", tr("{p1} 行 × {p2} 列", { p1: fmtNum(s.rows), p2: fmtNum(s.cols) })),
+      );
+      list.append(row);
+    }
+    const acts = el("div", "sd-block-acts");
+    const open = el("button", "sd-act", tr("用本机程序打开"));
+    open.type = "button";
+    open.title = tr("交给这台电脑上的 Excel 打开原文件");
+    open.onclick = () => void this.opts.onOpen();
+    acts.append(open);
+    box.append(list, acts);
+    this.pane.replaceChildren(box);
+  }
+
+  /** 从「不给」/「只值轻量」切回可滚的表时，按需重建网格。 */
+  private async mountGrid(sheet: string): Promise<void> {
+    const meta = this.meta;
+    if (!meta) return;
+    this.fx.hidden = true;
+    const grid = new SheetGrid({
+      meta,
+      sheet,
+      fetchWindow: this.opts.fetchWindow,
+      onSelect: (sel) => this.showFormula(sel),
+      onStale: () => this.stale(),
+    });
+    this.grid = grid;
+    this.pane.replaceChildren(grid.root);
+    await grid.start();
   }
 
   /** 源码改过并保存之后换一份数据：行列数都可能变，网格整个重建。 */
@@ -314,6 +398,7 @@ export class SheetDialog {
     try {
       const meta = await this.opts.loadMeta();
       if (this.closed) return;
+      this.meta = meta;
       // 打开时落在第一张看得见的表上（文件名那格传给 meta.name 的不一定是它）。
       const first = meta.sheets.find((s) => !s.hidden)?.name ?? meta.name;
       this.sheets = meta.sheets;
@@ -321,17 +406,13 @@ export class SheetDialog {
       if (this.pane.parentElement === this.body) this.body.insertBefore(this.fx, this.pane);
       this.renderTabs(meta.sheets, first);
       this.paintStatus(meta.sheets, first);
-      this.grid = new SheetGrid({
-        meta,
-        sheet: first,
-        fetchWindow: this.opts.fetchWindow,
-        // #111：选中格变了，公式栏跟着换。
-        onSelect: (sel) => this.showFormula(sel),
-        // 文件在预览之后被改过：停下，说清楚，别拿旧数据装作没事（#106）。
-        onStale: () => this.stale(),
-      });
-      this.pane.replaceChildren(this.grid.root);
-      await this.grid.start();
+      this.paintTier(meta.sheets.find((s) => s.name === first));
+      // #110：这一档不建网格，只把清单和尺寸摆出来。
+      if (meta.sheets.find((s) => s.name === first)?.tier === "none") {
+        this.showTooBig(first);
+        return;
+      }
+      await this.mountGrid(first);
     } catch (err) {
       if (this.closed) return;
       const code = (err as { code?: string } | null)?.code;
