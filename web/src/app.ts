@@ -7,8 +7,8 @@ import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { setKnownPlugins } from "./diagnose.ts";
-import { openPinList, openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
-import { NotesSheet, type NotesHost } from "./notesheet.ts";
+import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
+import { PillBar } from "./pillbar.ts";import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState } from "./types.ts";
@@ -279,14 +279,12 @@ export class App {
   private mgrNote = "";
   /** Tool calls seen in the current turn, for the activity popover. */
   private stepCount = 0;
-  /** Q-022: which pin chip to focus once the strip repaints (the unpinned one is gone). */
-  private pinFocus: number | null = null;
+  /** #93: 横栏里那三样（胶囊 / 「＋N」 / 浮层）是共用组件，这里只留外壳 —— 它自己管焦点。 */
+  private pillBar!: PillBar<SessionState>;
   /** Q-035: the hover bubble on a pin chip (归档 / 重命名 / 删除), only ever one at a time. */
   private pinMenu: { handle: PinMenuHandle; chip: HTMLElement; id: string } | null = null;
   /** Both the 180ms open delay and the 220ms close delay ride on this one timer. */
   private pinMenuTimer = 0;
-  /** D125: 置顶条撑成一行装不下时折起来，那颗「＋N」的列表挂在 body 上，只有一张。 */
-  private pinMore: { close: () => void } | null = null;
   /** Id of the chip currently animating out — the strip must not repaint underneath it. */
   private pinAnim: string | null = null;
   /** Q-035: the pin chip's delete flight lands here — the same bin the manager sheet toggles. */
@@ -457,6 +455,31 @@ export class App {
 
     Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.binBtn = binBtn;
+    // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
+    // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
+    this.pillBar = new PillBar<SessionState>(pinStrip, {
+      badge: (s, cur) => sessionBadge(s, cur),
+      time: relativeTime,
+      heading: (pending, total) => (pending ? tr("置顶 · {p1} 个待处理", { p1: pending }) : total ? tr("置顶") : tr("左栏已收")),
+      empty: tr("在这里 ☆ 置顶一个会话，收起左栏也能点到。"),
+      onOpen: (id) => this.openFromList(id),
+      onStar: (id) => this.togglePin(id),
+      tail: () => {
+        // Q-013: with the left pane hidden this is the only visible way to start a session.
+        // Q-022: 从这颗 ＋ 建的会话自动置顶，否则建完在这条里根本看不见。
+        const add = el("button", "pin-chip pin-new", tr("＋"));
+        add.title = tr("开新会话（自动置顶到这条里）");
+        add.dataset.act = "new";
+        add.dataset.pinKey = "new";
+        add.onclick = () => this.openNewSessionSheet(true);
+        const expand = el("button", "pin-chip pin-expand", tr("展开左栏 ▸"));
+        expand.title = tr("展开左侧会话栏（也可以双击分隔条位置的边）");
+        expand.dataset.pinKey = "expand";
+        expand.onclick = () => this.togglePane("sessions");
+        return [add, expand];
+      },
+      decorate: (chip, s) => this.wirePinHover(chip, s),
+    });
     // 顶栏这批按钮只构造一次，语言一切换就得靠 paintChrome() 重写文字（renderAll 碰不到它们）。
     this.paintChrome();
     this.chat = new ChatView(scroll);
@@ -8848,165 +8871,22 @@ export class App {
     const host = this.els.pinStrip;
     const seen = this.collapsed.sessions && window.matchMedia("(min-width: 900px)").matches;
     // 条要整个重建（锚点那颗胶囊跟着消失），折起来的那张列表不能留在屏幕上。
-    this.closePinMore();
+    this.pillBar.closeMore();
     if (!seen) {
       host.hidden = true;
       return;
     }
-    const pins = this.manage.pin
-      .map((id) => this.sessions.find((s) => s.id === id))
-      .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
-    // Q-022: the strip is rebuilt on every session/manage echo, and those echoes land right after the
-    // ★ click — remember which button held focus so the rebuild does not drop it on <body>.
-    const active = document.activeElement instanceof HTMLElement && host.contains(document.activeElement) ? document.activeElement : null;
-    const heldKey = active?.dataset.pinKey ?? null;
-    host.replaceChildren();
     host.hidden = false;
-    const pending = pins.filter((s) => sessionBadge(s, this.currentId)?.pending).length;
-    const label = el("span", "pin-strip-label", pending ? tr("置顶 · {p1} 个待处理", { p1: pending }) : pins.length ? tr("置顶") : tr("左栏已收"));
-    if (pending) label.classList.add("has-pending");
-    host.append(label);
-    const chipNodes: HTMLElement[] = [];
-    for (const s of pins) {
-      const badge = sessionBadge(s, this.currentId);
-      // Q-022: a button cannot nest a button, so the chip is a container with two hit areas —
-      // ★ = 取消置顶, the rest = 打开会话.
-      const chip = el("div", "pin-chip");
-      if (badge) chip.classList.add(badge.cls);
-      // 当前会话：整颗胶囊填色（aria-current 给读屏器，title 里也补一句），
-      // 否则收起左栏后这一排胶囊长得一模一样，分不出自己正在跟哪个会话说话。
-      if (s.id === this.currentId) {
-        chip.classList.add("cur");
-        chip.setAttribute("aria-current", "true");
-      }
-      const star = el("button", "pin-star", "★") as HTMLButtonElement;
-      star.type = "button";
-      star.dataset.pinKey = `${s.id}:star`;
-      star.title = tr("取消置顶 {p1}", { p1: s.name || s.id });
-      star.setAttribute("aria-label", tr("取消置顶 {p1}", { p1: s.name || s.id }));
-      star.onclick = () => {
-        this.pinFocus = Math.max(pins.indexOf(s), 0);
-        this.togglePin(s.id);
-      };
-      const open = el("button", "pin-open") as HTMLButtonElement;
-      open.type = "button";
-      open.dataset.pinKey = `${s.id}:open`;
-      open.append(el("span", "pin-name", s.name || s.id), el("small", "", badge ? badge.text : relativeTime(s.updatedAt)));
-      open.title = [s.name || s.id, s.cwd ?? "", badge?.title ?? "", s.id === this.currentId ? tr("（当前会话）") : ""]
-        .filter(Boolean)
-        .join(" · ");
-      open.onclick = () => this.openFromList(s.id);
-      chip.append(star, open);
-      this.wirePinHover(chip, s);
-      chipNodes.push(chip);
-      host.append(chip);
-    }
-    if (!pins.length) host.append(el("span", "pin-empty", tr("在这里 ☆ 置顶一个会话，收起左栏也能点到。")));
-    // D125: 置顶一多就装不下一行，超出的折进这颗（点开是一张全部置顶会话的列表）。
-    // 先摆上去再量：宽度要用真实布局算，折叠态自己也要占位置。
-    const more = el("button", "pin-more") as HTMLButtonElement;
-    more.type = "button";
-    more.dataset.pinKey = "more";
-    more.hidden = true;
-    more.onclick = () => this.openPinMore(more);
-    host.append(more);
-    // Q-013: with the left pane hidden this is the only visible way to start a session.
-    // Q-022: 从这颗 ＋ 建的会话自动置顶，否则建完在这条里根本看不见。
-    const add = el("button", "pin-chip pin-new", tr("＋"));
-    add.title = tr("开新会话（自动置顶到这条里）");
-    add.dataset.act = "new";
-    add.dataset.pinKey = "new";
-    add.onclick = () => this.openNewSessionSheet(true);
-    host.append(add);
-    const expand = el("button", "pin-chip pin-expand", tr("展开左栏 ▸"));
-    expand.title = tr("展开左侧会话栏（也可以双击分隔条位置的边）");
-    expand.dataset.pinKey = "expand";
-    expand.onclick = () => this.togglePane("sessions");
-    host.append(expand);
-    this.foldPinStrip(host, chipNodes, more);
-    // Q-022: the ★ that was just clicked no longer exists — hand focus to the next chip, else ＋.
-    const focusStar = (target: HTMLElement): void => (target.querySelector<HTMLElement>(".pin-star") ?? target).focus();
-    if (this.pinFocus !== null) {
-      const want = this.pinFocus;
-      this.pinFocus = null;
-      // D125：折起来的那几颗也是真节点，只是藏着 —— 焦点交给看不见的东西等于交给 <body>。
-      const live = Array.from(host.querySelectorAll<HTMLElement>(".pin-chip:not(.pin-new):not(.pin-expand):not(.pin-more)")).filter((n) => !n.hidden);
-      focusStar(live[Math.min(want, live.length - 1)] ?? add);
-    } else if (heldKey) {
-      const same = Array.from(host.querySelectorAll<HTMLElement>("[data-pin-key]")).find((n) => !n.hidden && n.dataset.pinKey === heldKey);
-      if (same) same.focus();
-      else focusStar(add);
-    }
-  }
-
-  /* ------------------------------------------------------------------ D125 */
-
-  /**
-   * 置顶条只许占一行：胶囊多到装不下时从尾部往前收，收掉几颗就在「＋N」里报几颗。
-   * 当前会话那颗不藏 —— 藏了等于回到「不知道自己在跟哪个会话说话」，而那正是 D125 要治的病。
-   * 量的是布局本身（scrollWidth vs clientWidth），建完就在同一次同步流程里定下来，不会先闪一帧。
-   */
-  private foldPinStrip(host: HTMLElement, chipNodes: HTMLElement[], more: HTMLElement): void {
-    // 先收着量一次：**不摆折叠钮**就装得下，就根本不需要它 —— 摆上去再量会把「刚好装满」挤成溢出。
-    // 文字先按最多的颗数占位，轮到它出场时宽度不会再变。
-    more.textContent = tr("＋{p1}", { p1: chipNodes.length });
-    more.hidden = true;
-    if (!chipNodes.length || host.scrollWidth <= host.clientWidth) return;
-    more.hidden = false;
-    let folded = 0;
-    for (let i = chipNodes.length - 1; i >= 0; i--) {
-      if (host.scrollWidth <= host.clientWidth) break;
-      const chip = chipNodes[i];
-      if (chip.classList.contains("cur")) continue;
-      chip.hidden = true;
-      folded += 1;
-    }
-    if (!folded) {
-      more.hidden = true;
-      return;
-    }
-    const why = tr("还有 {p1} 个置顶会话", { p1: folded });
-    more.textContent = tr("＋{p1}", { p1: folded });
-    more.title = why;
-    more.setAttribute("aria-label", why);
-  }
-
-  /** 折起来的那几颗：点「＋N」列出全部置顶会话，挑一个直接打开。 */
-  private openPinMore(anchor: HTMLElement): void {
-    if (this.pinMore) {
-      this.closePinMore();
-      return;
-    }
     const pins = this.manage.pin
       .map((id) => this.sessions.find((s) => s.id === id))
       .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
-    this.pinMore = openPinList(
-      anchor,
-      pins.map((s) => {
-        const badge = sessionBadge(s, this.currentId);
-        return { id: s.id, name: s.name || s.id, sub: badge ? badge.text : relativeTime(s.updatedAt), current: s.id === this.currentId };
-      }),
-      (id) => {
-        this.closePinMore();
-        this.openFromList(id);
-      },
-      () => {
-        this.pinMore = null;
-      },
-    );
-  }
-
-  private closePinMore(): void {
-    const cur = this.pinMore;
-    this.pinMore = null;
-    cur?.close();
+    this.pillBar.render(pins, this.currentId);
   }
 
   /* ------------------------------------------------------------------ Q-035 */
 
   /** 180ms 后才弹（鼠标扫过不算），离开 220ms 才收（从胶囊挪进气泡也不算）。 */
-  private wirePinHover(chip: HTMLElement, s: SessionState): void {
-    chip.addEventListener("pointerenter", () => this.openPinMenuSoon(chip, s));
+  private wirePinHover(chip: HTMLElement, s: SessionState): void {    chip.addEventListener("pointerenter", () => this.openPinMenuSoon(chip, s));
     chip.addEventListener("pointerleave", () => this.closePinMenuSoon());
   }
 
