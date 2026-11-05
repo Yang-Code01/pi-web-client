@@ -2299,3 +2299,5 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .scratch-model.none { color: var(--faint); font-size: 12px; }
 .scratch-levels { display: grid; gap: 6px; padding: 2px 2px 8px; border-bottom: 1px solid var(--line-soft); margin-bottom: 6px; }
 .scratch-levels .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+/* pi 的工具调用步骤（文字为空）：留在 DOM 里守住顺序，但别画出来。 */
+.sc-row.sc-step[hidden], .sc-who[hidden] { display: none; }

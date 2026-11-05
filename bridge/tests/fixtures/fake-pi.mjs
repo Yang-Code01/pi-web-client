@@ -187,6 +187,22 @@ async function turn(text) {
     out({ type: "auto_retry_end", success: false, attempt: 2, finalError: "401 invalid api key" });
     return;
   }
+  // #86：pi 每调一次工具都会先发一条「文字为空、只有工具调用」的 assistant 消息。
+  // 页面上不能因此多出一堆「随手问 / …」。
+  if (/^TOOLS/.test(text)) {
+    const calls = ["web_search", "fetch_content", "fetch_content"];
+    for (const name of calls) {
+      const id = `call-${name}-${Math.random().toString(36).slice(2, 7)}`;
+      out({ type: "message_start", message: assistant("") });
+      out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id, name, arguments: { q: text } }], stopReason: "toolUse" }) });
+      out({ type: "tool_execution_start", toolCallId: id, toolName: name, args: { q: text } });
+      out({ type: "tool_execution_end", toolCallId: id, isError: false, result: "ok" });
+    }
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("查到了：晴。") });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   out({ type: "message_start", message: assistant("") });
   out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `echo: ${text}` } });
   out({ type: "message_end", message: assistant(`echo: ${text}`) });

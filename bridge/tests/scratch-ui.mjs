@@ -158,6 +158,24 @@ try {
   const chip2 = (await chip.textContent()) ?? "";
   check("切模型会生效", /Fake Model 2/.test(chip2), chip2.trim());
 
+  // 多步工具调用：每条「只有工具调用」的 assistant 消息都不该再冒一个标签/省略号，
+  // 连续的工具调用要收成一行。
+  await page.locator(".sc-input").fill("TOOLS 试一下");
+  await page.locator(".sc-input").press("Enter");
+  await page.waitForFunction(() => /查到了：晴。/.test(document.querySelector(".scratch-list")?.textContent ?? ""), null, { timeout: 30000 });
+  const grouped = await page.evaluate(() => {
+    const vis = (sel) => [...document.querySelectorAll(sel)].filter((e) => !e.hidden && !e.closest(".sc-row")?.hidden);
+    return {
+      labels: vis(".scratch-list .sc-assistant .sc-who").map((e) => e.textContent),
+      toolRows: vis(".scratch-list .sc-tool").map((e) => (e.textContent ?? "").trim()),
+      steps: document.querySelectorAll(".scratch-list .sc-row.sc-step").length,
+    };
+  });
+  // 全场只该有第一个回合那一个「随手问」：工具调用那几步不再各冒一个。
+  check("工具步骤不再冒标签", grouped.labels.length === 1, JSON.stringify(grouped.labels));
+  check("连续工具调用收成一行", grouped.toolRows.length === 1 && /web_search · fetch_content ×2/.test(grouped.toolRows[0] ?? ""), JSON.stringify(grouped.toolRows));
+  check("文字为空的步骤被藏掉", grouped.steps >= 3, `${grouped.steps} 个`);
+
   await page.screenshot({ path: path.join(OUT, "scratch-chat.png") });
 
   // 清空：界面立刻回到空态（桥在同一个进程里换了一条新会话）。

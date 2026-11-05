@@ -29,6 +29,18 @@ const DEFAULT_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max
 const WARN_AT = 0.75;
 const STRONG_AT = 0.92;
 
+/** `["a","b","b","c"]` → `"a · b ×2 · c"`：连续同名折叠，不同名按顺序留着。 */
+function summarizeTools(names: string[]): string {
+  const parts: string[] = [];
+  for (let i = 0; i < names.length; ) {
+    let n = 1;
+    while (i + n < names.length && names[i + n] === names[i]) n += 1;
+    parts.push(n > 1 ? `${names[i]} ×${n}` : names[i]);
+    i += n;
+  }
+  return parts.join(" · ");
+}
+
 function textOf(item: Item): string {
   if (item.kind === "user" || item.kind === "assistant") return item.text ?? "";
   return "";
@@ -42,14 +54,18 @@ function row(item: Item): HTMLElement {
     return wrap;
   }
   if (item.kind === "assistant") {
+    const text = textOf(item);
+    // pi 每调一次工具都会冒一条「文字为空、只有工具调用」的 assistant 消息：这类行不在
+    // 正文里占一行，但**要留在 DOM 里**——它决定了后面工具行和正文的先后顺序。
+    if (!text.trim()) wrap.classList.add("sc-step");
     wrap.append(el("div", "sc-who", tr("随手问")));
     const body = el("div", "sc-text md");
-    if (textOf(item).trim()) body.append(renderMarkdown(textOf(item)));
-    else body.append(el("span", "sc-dim", "…"));
+    if (text.trim()) body.append(renderMarkdown(text));
     wrap.append(body);
     return wrap;
   }
   if (item.kind === "tool") {
+    wrap.dataset.tool = item.name;
     wrap.append(el("div", "sc-twoline", `🔧 ${item.name}`));
     return wrap;
   }
@@ -375,6 +391,47 @@ export class ScratchChat {
     this.host.send({ type: "scratch.clear" });
   }
 
+  /**
+   * 标签与空步骤的收尾：一轮里 pi 会发好几条 assistant 消息（工具调用之间各一条），
+   * 每条都打「随手问」就成了刷屏。规则是——标签只在一段的开头出现（上一行是用户或没有），
+   * 文字为空的步骤整行不显示。
+   */
+  private paintLabels(): void {
+    const nodes = Array.from(this.listEl.children).filter((n): n is HTMLElement => n instanceof HTMLElement);
+    let prev = "";
+    for (let i = 0; i < nodes.length; ) {
+      const node = nodes[i];
+      if (node.classList.contains("sc-step")) {
+        node.hidden = true;
+        i += 1;
+        continue;
+      }
+      node.hidden = false;
+      if (node.classList.contains("sc-tool")) {
+        // 连续的工具调用收成一行（空步骤夹在中间也算同一段）：`web_search · fetch_content ×2`
+        const run: string[] = [];
+        let j = i;
+        while (j < nodes.length && (nodes[j].classList.contains("sc-tool") || nodes[j].classList.contains("sc-step"))) {
+          if (nodes[j].classList.contains("sc-step")) nodes[j].hidden = true;
+          else {
+            run.push(nodes[j].dataset.tool ?? "tool");
+            if (j !== i) nodes[j].hidden = true;
+          }
+          j += 1;
+        }
+        const line = node.querySelector(".sc-twoline");
+        if (line) line.textContent = `🔧 ${summarizeTools(run)}`;
+        prev = "tool";
+        i = j;
+        continue;
+      }
+      const who = node.querySelector<HTMLElement>(".sc-who");
+      if (who && node.classList.contains("sc-assistant")) who.hidden = !(prev === "" || prev === "user");
+      prev = node.classList.contains("sc-assistant") ? "assistant" : node.classList.contains("sc-user") ? "user" : "other";
+      i += 1;
+    }
+  }
+
   private upsert(item: Item): void {
     if (!item?.id) return;
     const at = this.items.findIndex((it) => it.id === item.id);
@@ -384,6 +441,7 @@ export class ScratchChat {
     const node = row(item);
     this.rows.set(item.id, node);
     this.listEl.append(node);
+    this.paintLabels();
   }
 
   private drop(id: string): void {
@@ -402,8 +460,13 @@ export class ScratchChat {
       const body = node.querySelector(".sc-text");
       if (body) {
         body.textContent = "";
-        if ((item as { text?: string }).text?.trim()) body.append(renderMarkdown((item as { text: string }).text));
+        if ((item as { text?: string }).text?.trim()) {
+          // 之前是「空步骤」（只有工具调用）：有文字了就不再是空步骤。
+          node.classList.remove("sc-step");
+          body.append(renderMarkdown((item as { text: string }).text));
+        }
       }
+      this.paintLabels();
     }
     this.scroll();
   }
@@ -421,6 +484,7 @@ export class ScratchChat {
       this.rows.set(item.id, node);
       this.listEl.append(node);
     }
+    this.paintLabels();
     this.scroll();
   }
 
