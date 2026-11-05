@@ -78,6 +78,8 @@ export interface SessionState {
   file: string | null;
   owned: boolean;
   origin?: "web" | "disk";
+  /** pi 子进程还在启动（扩展在它内部加载：本机实测约 8 秒）。此时 composer 不许发。 */
+  starting?: boolean;
   running: boolean;
   /** A turn finished since you last opened it (the card shows 完成 in its corner). */
   done: boolean;

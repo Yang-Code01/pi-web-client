@@ -350,6 +350,8 @@ export const en: Dict = {
   "名称": "Name",
   "后退（Alt+←）": "Back (Alt+←)",
   "启动中…": "Starting…",
+  "pi 正在启动（加载扩展，通常几秒）…": "pi is starting up (loading extensions — usually a few seconds)…",
+  "pi 正在启动…": "pi is starting…",
   "启动参数": "Launch arguments",
   "启动命令 + 参数（空格分隔），例如 npx -y @modelcontextprotocol/server-everything": "Launch command + arguments (space separated), e.g. npx -y @modelcontextprotocol/server-everything",
   "启动失败": "Failed to start",

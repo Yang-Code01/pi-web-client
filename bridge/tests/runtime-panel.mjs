@@ -201,7 +201,19 @@ async function client(bridge) {
 }
 
 /** The launch line of the pi that owns this session id (`--session-id <id>`). */
-const lastPid = (records, sid) => records.filter((e) => e.t === "argv" && e.argv.includes(sid)).at(-1)?.pid ?? null;
+/**
+ * 桩 pi 的启动记录（含 pid）是它自己进程起来之后才写盘的，而 `create` 现在已经不等 pi 启动（D122），
+ * 所以「刚创建完就读日志」会读空 —— 等它一会儿，别把好行为当成失败。传桥对象本身，
+ * 每次重新读一份（`pi()` 返回快照）。
+ */
+const lastPid = async (bridge, sid) => {
+  for (let i = 0; i < 120; i += 1) {
+    const hit = bridge.pi().filter((e) => e.t === "argv" && e.argv.includes(sid)).at(-1)?.pid ?? null;
+    if (hit !== null) return hit;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return null;
+};
 
 async function newSession(page, name) {
   const mark = page.seen.length;
@@ -226,11 +238,11 @@ async function sampling() {
   try {
     const page = await client(bridge);
     const first = await newSession(page, "跑着的 A");
-    const firstPid = lastPid(bridge.pi(), first);
+    const firstPid = await lastPid(bridge, first);
     await runOneTurn(page, first, "hello");
     await sleep(1200); // A must end up the one idle longest, so the order is not accidental
     const second = await newSession(page, "跑着的 B");
-    const secondPid = lastPid(bridge.pi(), second);
+    const secondPid = await lastPid(bridge, second);
     await runOneTurn(page, second, "hello");
     check(firstPid !== null && secondPid !== null && firstPid !== secondPid, `两个 pi 是两个进程（${firstPid} / ${secondPid}）`);
 

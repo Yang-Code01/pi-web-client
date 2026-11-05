@@ -1396,7 +1396,7 @@ export class App {
             this.stepCount = 0;
           } else this.activity = "";
           this.fillHintStatus();
-          if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
+          if (this.textarea) this.textarea.placeholder = this.composerHintText();
         }
         if (!msg.running) this.turnAt = null;
         this.renderTop();
@@ -1568,7 +1568,7 @@ export class App {
       // Q-021: 一轮结束正是模型可能刚跑完 `git checkout` 的时刻。
       if (prev?.running && !state.running) void this.refreshGit(true);
       // The writer bar (接管 / 停止运行) and the status line both hang off these two flags.
-      if (prev?.owned !== state.owned || prev?.origin !== state.origin) this.renderChat();
+      if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starting !== state.starting) this.renderChat();
       else this.fillHintStatus();
     }
     this.renderTop();
@@ -1635,6 +1635,8 @@ export class App {
   // ---------------------------------------------------------------- actions
   private sendPrompt(behavior: "steer" | "followUp" = "steer"): void {
     if (!this.currentId) return;
+    // 启动中的 pi 收不了 prompt：与其发出去石沉大海，不如什么都不做（输入框本来就是禁用的）。
+    if (this.session?.starting) return;
     const typed = this.composerText.trim();
     const pasted = this.pastes.map((p) => p.text.trim()).filter(Boolean);
     const text = [...pasted, typed].filter(Boolean).join("\n\n");
@@ -2072,6 +2074,13 @@ export class App {
   private paintHintStatus(): void {
     const box = this.hintStatus;
     if (!box) return;
+    // pi 还在启动（扩展在它内部加载，本机实测约 8 秒）：这比「按 Enter 发送」有用得多，
+    // 也是「新会话为什么慢」在界面上的那一半答案。
+    if (this.session?.starting) {
+      box.className = "hint-status starting";
+      box.replaceChildren(el("span", "act-spin"), el("span", "", tr("pi 正在启动（加载扩展，通常几秒）…")));
+      return;
+    }
     const running = Boolean(this.session?.running);
     const git = this.gitCwd === (this.session?.cwd ?? "").trim() ? this.git : null;
     if (!running) {
@@ -5343,7 +5352,8 @@ export class App {
     const row = el("div", "row");
     const box = el("div", "composer-input");
     const input = el("textarea");
-    input.placeholder = this.composerPlaceholder();
+    input.placeholder = this.composerHintText();
+    if (s?.starting) input.disabled = true;
     this.textarea = input;
     input.value = this.composerText;
     const pasteHost = el("div", "paste-list");
@@ -7704,6 +7714,14 @@ export class App {
    * typing in the textarea answers it, and the user can wander off to other sessions and come
    * back (the bridge re-sends pending asks on subscribe). Nothing pops up on its own.
    */
+  /**
+   * 输入框的占位文案：pi 还在启动的时候，「Enter 发送」是错的提示 —— 那时发送会被拦下来。
+   * 所有写 placeholder 的地方都走这里，别再直接调 composerPlaceholder()。
+   */
+  private composerHintText(): string {
+    return this.session?.starting ? tr("pi 正在启动…") : this.composerPlaceholder();
+  }
+
   private composerPlaceholder(): string {
     if (this.asks.length) return ASK_PLACEHOLDER;
     return this.session?.running ? RUNNING_PLACEHOLDER : IDLE_PLACEHOLDER;
@@ -7713,7 +7731,7 @@ export class App {
     const host = this.els.composerHost;
     host.querySelector(".ask-slot")?.remove();
     this.fillHintStatus();
-    if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
+    if (this.textarea) this.textarea.placeholder = this.composerHintText();
     if (this.askLost && !this.asks.length) {
       const lost = this.askLostBlock();
       const row = host.querySelector(".row");

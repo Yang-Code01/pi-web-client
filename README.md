@@ -170,6 +170,7 @@ node probes/terminal-multi.mjs                                        # 终端�
 node probes/term-dialog.mjs                                           # 终端浮窗：拖动 / 缩放 / 最小化 / 刷新后几何仍在（桩桥 + 真 Chromium）
 node probes/dir-copy.mjs                                              # ⧉ 复制路径：切目录后剪贴板是当前目录，此电脑上禁用
 node probes/viewer-split.mjs                                         # 预览面板宽度：拖到最窄关闭/全屏仍在屏内、拖到盖住聊天区自动全屏、退出全屏回默认宽度（D121）
+node probes/session-starting.mjs                                     # pi 正在启动：状态行说清楚、输入框禁用、起来后恢复（D122，桩桥 + 真 Chromium）
 node bridge/tests/run-lifecycle.mjs                                   # 一轮的边界：重试期间不算空闲、停止清队列、长压缩不超时（假 pi，不花模型调用，需先 build:bridge）
 node bridge/tests/session-dirs.mjs                                    # 会话目录解析顺序与列表不截断（D73）
 node bridge/tests/session-sync.mjs                                    # 分支只显示当前一支、用户消息多端同步、扩展状态/小部件、/compact 指令（D74，假 pi）
@@ -181,6 +182,7 @@ node bridge/tests/gate-modes.mjs                                      # 权限�
 node bridge/tests/login-flow.mjs                                      # /login /logout：API key、取消、OAuth 授权链接转达、登出（D79，不联网）
 node bridge/tests/session-lock.mjs                                    # 终端会话锁扩展 + bridge 拒绝接管 + 安装 / 移除（D79）
 node bridge/tests/session-lifecycle.mjs                               # 会话生命周期：完成 + 空闲阈值到点就休眠，消息还在、下一条消息唤醒，在跑的一轮不动（D120，假 pi，tick 与阈值都注入成秒级，约 15 秒）
+node bridge/tests/create-fast.mjs                                    # 新建会话不等 pi 启动：桩 pi「启动」4 秒，create 应答仍要 1.5 秒内到、starting 之后翻回 false（D122）
 node bridge/tests/approval-expiry.mjs                                 # 审批 / 问卷过期：没有任何页面 present 满阈值就丢弃 + 休眠 + notice，有一个 present 就永不过期（#82，假 pi，约 15 秒）
 node bridge/tests/runtime-panel.mjs                                   # 运行时面板：tasklist / ps 解析、runtime.stats 的总额与排序、采样坏掉时「不可用」且不影响空闲回收（D120，假 pi + 桩进程表，约 20 秒）
 node bridge/tests/memory-cap.mjs                                      # 内存水位兜底：超 2.5 GB 按空闲降序收、在跑 / 保护期内 / 最后一个都不收、读不到数就一个都不收（D120，假 pi + 桩进程表，约 45 秒）

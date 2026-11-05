@@ -34,7 +34,8 @@ const FAKE_TABLE = path.join(REPO, "bridge", "tests", "fixtures", "fake-tasklist
  * starts five bridges should not depend on that; 7903 is the port this ticket was handed, the rest
  * are free ones next to it.
  */
-const PORTS = { order: 7903, keepOne: 7880, protect: 7882, blindCap: 7883, blindIdle: 7884 };
+// 7884 在同一台机器上被 Trend Micro（TmListen.exe）占着，挑端口要避开这种常驻服务。
+const PORTS = { order: 7903, keepOne: 7880, protect: 7882, blindCap: 7883, blindIdle: 7906 };
 const TICK_MS = 1000;
 const TICK_WAIT = TICK_MS * 4;
 const MB = 1024 * 1024;
@@ -218,7 +219,19 @@ async function openClient(bridge, cookie) {
 }
 
 /** The launch line of the pi that owns this session id (`--session-id <id>`). */
-const lastPid = (records, sid) => records.filter((e) => e.t === "argv" && e.argv.includes(sid)).at(-1)?.pid ?? null;
+/**
+ * 桩 pi 的启动记录（含 pid）是它自己进程起来之后才写盘的，而 `create` 现在已经不等 pi 启动（D122），
+ * 所以「刚创建完就读日志」会读空 —— 等它一会儿，别把好行为当成失败。传桥对象本身，
+ * 每次重新读一份（`pi()` 返回快照）。
+ */
+const lastPid = async (bridge, sid) => {
+  for (let i = 0; i < 120; i += 1) {
+    const hit = bridge.pi().filter((e) => e.t === "argv" && e.argv.includes(sid)).at(-1)?.pid ?? null;
+    if (hit !== null) return hit;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return null;
+};
 const exited = (records, pid) => records.some((e) => e.t === "exit" && e.pid === pid);
 const sleptNotice = (page, sid) => page.notices(sid).find((n) => /休眠/.test(n.text)) ?? null;
 
@@ -253,11 +266,11 @@ async function orderedReaping() {
     const page = await client(bridge);
     const older = await newSession(page, "最老的那个");
     await runOneTurn(page, older, "hello");
-    const olderPid = lastPid(bridge.pi(), older);
+    const olderPid = await lastPid(bridge, older);
     await sleep(2000); // long enough for the older one to be out of the protection window
     const newer = await newSession(page, "第二老");
     await runOneTurn(page, newer, "hello");
-    const newerPid = lastPid(bridge.pi(), newer);
+    const newerPid = await lastPid(bridge, newer);
     check(olderPid !== null && newerPid !== null && olderPid !== newerPid, `两个 pi 是两个进程（${olderPid} / ${newerPid}）`);
 
     // 400 MB each = 800 MB over a 500 MB cap: one reap is enough, and there is a decoy 3 GB row
@@ -311,11 +324,11 @@ async function keepsOne() {
     const page = await client(bridge);
     const older = await newSession(page, "要被收的");
     await runOneTurn(page, older, "hello");
-    const olderPid = lastPid(bridge.pi(), older);
+    const olderPid = await lastPid(bridge, older);
     await sleep(2000);
     const survivor = await newSession(page, "必须留下的");
     await runOneTurn(page, survivor, "hello");
-    const survivorPid = lastPid(bridge.pi(), survivor);
+    const survivorPid = await lastPid(bridge, survivor);
     bridge.setTable({ [olderPid]: 409_600, [survivorPid]: 409_600 });
 
     const slept = await page.waitFor(
@@ -347,11 +360,11 @@ async function protectionWindow() {
     const busy = await newSession(page, "一直在跑的那个");
     page.send({ type: "prompt", sessionId: busy, text: "SLOW forever" });
     await page.waitFor((m) => m.type === "pi.status" && m.sessionId === busy && m.running === true, 20000, "running");
-    const busyPid = lastPid(bridge.pi(), busy);
+    const busyPid = await lastPid(bridge, busy);
 
     const sid = await newSession(page, "刚跑完一轮");
     await runOneTurn(page, sid, "hello");
-    const pid = lastPid(bridge.pi(), sid);
+    const pid = await lastPid(bridge, sid);
     bridge.setTable({ [pid]: 409_600, [busyPid]: 409_600 });
 
     // Two ticks inside the window: the cap cannot touch it, however small it is.
@@ -394,7 +407,7 @@ async function brokenTable() {
     const page = await client(cap);
     const sid = await newSession(page, "读不到数时的会话");
     await runOneTurn(page, sid, "hello");
-    const pid = lastPid(cap.pi(), sid);
+    const pid = await lastPid(cap, sid);
 
     // Past the protection window with a 1 MB cap: only the missing reading can be holding this back.
     await sleep(1800 + TICK_MS * 3);
