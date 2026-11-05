@@ -25,7 +25,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = process.env.PIN_DIST ? path.resolve(process.env.PIN_DIST) : path.join(REPO, "web/dist");
 const SHOT = process.env.PIN_SHOT ?? "pin-auto-open";
-const PORT = 7899;
+// 本机 7899 可能被别的程序占着（这台机器上是 VPN 客户端），照仓库里其它探针的惯例允许换端口。
+const PORT = Number(process.env.PI_WEB_PORT ?? 7899);
 const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
