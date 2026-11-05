@@ -3042,7 +3042,39 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   background: transparent; color: #6b7686; font-size: 13px; cursor: pointer;
 }
 .sd-head .sd-btn:hover { background: #eef1f5; color: #1f2430; }
-.sd-body { flex: 1 1 auto; min-height: 0; display: flex; position: relative; }
+.sd-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative; }
+/* #113：CSV 的两个 tab 与源码面。 */
+.sd-tabs {
+  flex: none; display: flex; gap: 2px; padding: 6px 8px 0;
+  background: #fafbfc; border-bottom: 1px solid #e8ebef;
+}
+.sd-tab {
+  border: 0; padding: 5px 10px; border-radius: 7px 7px 0 0; background: transparent;
+  font: 12.5px/1 var(--sans); color: #6b7686; cursor: pointer;
+}
+.sd-tab:hover { background: #eef1f5; color: #1f2430; }
+.sd-tab.on { background: #fff; color: #1f2430; box-shadow: inset 0 -2px 0 #4b7ea8; }
+.sd-pane { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; position: relative; }
+.sd-pane[hidden] { display: none; }
+.sd-src {
+  flex: 1 1 auto; min-width: 0; min-height: 0; width: 100%; box-sizing: border-box; resize: none;
+  border: 0; outline: none; padding: 10px 12px; background: #fff; color: #1f2430;
+  font: 12.5px/1.6 var(--mono); white-space: pre; overflow: auto; user-select: text; tab-size: 4;
+}
+.sd-src[hidden] { display: none; }
+.sd-foot {
+  flex: none; display: flex; gap: 10px; align-items: center;
+  padding: 5px 10px; background: #fafbfc; border-top: 1px solid #e8ebef;
+  font: 11.5px/1.5 var(--sans); color: #8a94a3;
+}
+.sd-note { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sd-note[hidden] { display: none; }
+.sd-save-msg { flex: none; }
+.sd-save-msg.ok { color: #1a7f37; }
+.sd-save-msg.err { color: #b42318; }
+.sd-head .sd-btn.sd-save { width: auto; height: 24px; padding: 0 10px; font-size: 12px; color: #33566f; background: #eef4f9; }
+.sd-head .sd-btn.sd-save:hover { background: #e0ecf6; color: #1f2430; }
+.sd-head .sd-btn.sd-save:disabled { opacity: 0.55; cursor: default; }
 .sd-resize { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none; z-index: 3; }
 .sd-resize::after {
   content: ""; position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px;

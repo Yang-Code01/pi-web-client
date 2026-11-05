@@ -64,14 +64,29 @@ function killPort(port) {
     }
     for (const pid of pids) {
       try {
-        execSync(`taskkill /PID ${pid} /F`, { stdio: "ignore" });
+        // /T：桥会给每个会话拉 `pi --mode rpc` 子进程，子进程会继承监听 socket，只杀父进程端口仍被占。
+        execSync(`taskkill /PID ${pid} /T /F`, { stdio: "ignore" });
       } catch {}
     }
     if (pids.size) log(`cleared stale bridge on :${port}`);
+    // 杀完等端口真的释放：不等的话紧接着 spawn 会 EADDRINUSE，登录落到上一轮的桥上就成假失败。
+    for (let i = 0; i < 20; i++) {
+      if (!listening(port)) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
     return pids.size;
   } catch {
     return 0;
   }
+}
+
+function listening(port) {
+  const out = execSync("netstat -ano", { encoding: "utf8" });
+  for (const line of out.split(/\r?\n/)) {
+    const m = line.trim().match(/^TCP\s+\S+:(\d+)\s+(\S+)\s+\S+\s+(\d+)$/);
+    if (m && Number(m[1]) === port && /:0$/.test(m[2])) return true;
+  }
+  return false;
 }
 killPort(PORT);
 
@@ -439,6 +454,75 @@ try {
       fs.rmSync(tmp, { force: true });
     } catch {}
   }
+  // ---------------------------------------------------------------- CSV / TSV（#113）
+  // 先把 xlsx 那扇关掉：文件管理器是在 viewer 里，浮窗留着会与下面的断言撞车。
+  const closeSheet = async () => {
+    const close = page.locator(".sd-close").first();
+    if (await close.count()) await close.click();
+    await until(async () => (await page.locator(".sd").count()) === 0, 5000, "sd closed");
+  };
+  await closeSheet();
+  // 浮窗几何已被上面改过，先清掉记忆回到默认尺寸。
+  await page.evaluate(() => localStorage.removeItem("pi.sheetGeom"));
+  const tab = (name) => page.locator(`.sd-tab[data-tab="${name}"]`).first();
+  const srcText = async () => page.locator(".sd-src").first().inputValue();
+
+  await openSheet("utf8.csv");
+  check("CSV 开在表格浮窗里", (await page.locator(".sd").count()) === 1);
+  check("CSV 有表格 / 源码两个标签页", (await page.locator(".sd-tab").count()) === 2, String(await page.locator(".sd-tab").count()));
+  check("CSV 中文表头", (await cellText(0, 0)) === "地区", String(await cellText(0, 0)));
+  check("CSV 列数正确", (await page.locator(".sd-col").count()) === 4, String(await page.locator(".sd-col").count()));
+  check("CSV 引号里的分号不断列", (await cellText(1, 1)) === "螺丝;M4", String(await cellText(1, 1)));
+  check("CSV 转义引号已还原", (await cellText(2, 3)) === '他说 "好"', String(await cellText(2, 3)));
+  await page.screenshot({ path: path.join(OUT, "05-csv-grid.png") });
+
+  await tab("source").click();
+  const u8src = await srcText();
+  check("源码是解码后的原文", u8src.includes('地区;产品;单价;备注') && u8src.includes('华东;"螺丝;M4";12.5'), u8src.slice(0, 60));
+  await page.screenshot({ path: path.join(OUT, "06-csv-source.png") });
+  await tab("grid").click();
+  check("切回表格仍有格子", (await cellText(0, 0)) === "地区");
+  await closeSheet();
+
+  await openSheet("bom.csv");
+  const bomCell = await cellText(0, 0);
+  const bomAll = await page.locator(".sd-cells").textContent();
+  check("BOM 不残留在第一格", bomCell === "地区", JSON.stringify(bomCell));
+  check("BOM 不残留在整片格子", !(bomAll ?? "").includes("\ufeff"));
+  await tab("source").click();
+  const bomSrc = await srcText();
+  check("BOM 源码开头没有 BOM 字符", !bomSrc.startsWith("\ufeff") && bomSrc.startsWith("地区,产品"), JSON.stringify(bomSrc.slice(0, 12)));
+  await closeSheet();
+
+  await openSheet("gbk.csv");
+  check("GBK 中文正确", (await cellText(1, 0)) === "华东" && (await cellText(1, 1)) === "螺丝", `${await cellText(1, 0)}/${await cellText(1, 1)}`);
+  await tab("source").click();
+  const gbkSrc = await srcText();
+  check("GBK 源码已解码", gbkSrc.includes("华东;螺丝;12.5;中文备注"), gbkSrc.slice(0, 40));
+  await page.locator(".sd-src").first().fill(gbkSrc.replace("螺丝;12.5", "螺丝钉;12.5"));
+  await page.locator(".sd-save").first().click();
+  await until(async () => ((await page.locator(".sd-save-msg").first().textContent()) ?? "").includes("已保存"), 8000, "csv saved");
+  const gbkAfter = fs.readFileSync(made.csv.gbk);
+  const gbkText = new TextDecoder("gbk").decode(gbkAfter);
+  check("GBK 保存后内容已写入", gbkText.includes("华东;螺丝钉;12.5;中文备注"), gbkText.split("\r\n")[1]);
+  check("GBK 保存后仍是 GBK", (() => {
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(gbkAfter);
+      return false;
+    } catch {
+      return true;
+    }
+  })(), `${gbkAfter.length} bytes`);
+  check("GBK 保存后分隔符不变", gbkText.split(";").length === 13 && !gbkText.includes("\t"), `${gbkText.split(";").length} 段`);
+  await closeSheet();
+
+  await openSheet("big.csv");
+  const footText = (await page.locator(".sd-foot").first().textContent()) ?? "";
+  check("超 5 万行截断并有提示", /只显示前/.test(footText), footText);
+  check("截断后仍能看格子", (await cellText(0, 0)) === "行号", String(await cellText(0, 0)));
+  check("截断的文件不提供保存", (await page.locator(".sd-save").count()) === 0);
+  await page.screenshot({ path: path.join(OUT, "07-csv-truncated.png") });
+  await closeSheet();
 
   check("没有页面异常", pageErrors.length === 0, pageErrors.join(" | "));
   log(`窗口请求 ${windowRequests.length} 次，示例 ${JSON.stringify(windowRequests.slice(0, 3))}`);
