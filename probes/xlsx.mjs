@@ -49,8 +49,9 @@ const rows = [
 ];
 fs.writeFileSync(path.join(dir, `${SID}.jsonl`), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
 
-const { makeFixtures } = await import(modp(path.join(REPO, "bridge/tests/fixtures/make-xlsx.mjs")));
+const { makeFixtures, makeUnsupportedFixtures, buildXlsx } = await import(modp(path.join(REPO, "bridge/tests/fixtures/make-xlsx.mjs")));
 const made = makeFixtures(WORK);
+const odd = makeUnsupportedFixtures(WORK);
 log("fixture:", made.plain);
 
 function killPort(port) {
@@ -143,6 +144,31 @@ try {
     await page.locator(".sd-cell").first().waitFor({ timeout: 20000 });
     await page.waitForTimeout(250);
   };
+
+  /** 从文件管理器点开一个文件，不管它落在哪条分支（浮窗 / 二进制面板）。 */
+  const openFile = async (name) => {
+    await page.locator(".topbar .icon-btn", { hasText: "文件管理器" }).first().evaluate((el) => el.click());
+    const row = page.locator(".file-row", { hasText: name }).first();
+    await row.waitFor({ timeout: 20000 });
+    await row.evaluate((el) => el.click());
+    await page.waitForTimeout(700);
+  };
+
+  /** 桥端接口直呼：公网 / 伪造凭据这些分支，浏览器里点不出来，只能直接发。 */
+  const api = async (p, body, extra = {}) => {
+    const r = await fetch(`${BASE}${p}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie, ...extra },
+      body: JSON.stringify(body),
+    });
+    let data = null;
+    try {
+      data = await r.json();
+    } catch {}
+    return { status: r.status, data };
+  };
+  // 桥端把「隧道来客」认作公网（cloudflared 注入的头）。Host 头谁都能编，不算数。
+  const AS_TUNNEL = { "cf-connecting-ip": "203.0.113.9" };
 
   const box = () =>
     page.evaluate(() => {
@@ -314,6 +340,105 @@ try {
   const b9 = await box();
   check("刷新后位置还在", Math.abs(b9.l - kept.l) <= 2 && Math.abs(b9.t - kept.t) <= 2, `${JSON.stringify(kept)} → ${JSON.stringify(b9)}`);
   check("刷新后大小还在", b9.w === kept.w && b9.h === kept.h, `${kept.w}x${kept.h} → ${b9.w}x${b9.h}`);
+
+  // ---------------------------------------------------------------- #106 出口
+  const foot = await page.evaluate(() => {
+    const bar = document.querySelector(".sd-foot");
+    if (!bar) return null;
+    const buttons = [...bar.querySelectorAll("button")].map((b) => b.textContent.trim());
+    const a = bar.querySelector("a.sd-dl");
+    return { buttons, href: a?.getAttribute("href") ?? null, text: a?.textContent.trim() ?? null, dl: a ? a.hasAttribute("download") : false };
+  });
+  check("底栏有「用 Excel 打开」", foot?.buttons.includes("用 Excel 打开") === true, JSON.stringify(foot?.buttons));
+  check("底栏有「在文件夹中显示」", foot?.buttons.some((b) => b.includes("在文件夹中显示")) === true, JSON.stringify(foot?.buttons));
+  check("下载仍是裸地址", /^\/raw\/[^/]+\/plain\.xlsx$/.test(String(foot?.href)), String(foot?.href));
+  check("下载是 <a download>，不看桥的脸色", foot?.dl === true && foot?.text === "下载", JSON.stringify(foot));
+  const token = String(foot?.href ?? "").split("/")[2] ?? "";
+
+  // 公网来客：桌面上的动作一律不开
+  const pubOpen = await api("/api/open", { token }, AS_TUNNEL);
+  check("公网点「用 Excel 打开」被拒", pubOpen.status === 403, JSON.stringify(pubOpen));
+  check("公网拒绝说了原因", pubOpen.data?.code === "open_public" && /本机/.test(String(pubOpen.data?.error)), JSON.stringify(pubOpen.data));
+  const pubReveal = await api("/api/reveal", { path: made.plain }, AS_TUNNEL);
+  check("公网点「在文件夹中显示」仍被拒", pubReveal.status === 403, JSON.stringify(pubReveal));
+
+  // 凭据：没有 token / 伪造 token，路径塞在 body 里也不算数
+  const noTok = await api("/api/open", { path: "C:\\\\Windows\\\\win.ini" });
+  check("没凭据不开文件", noTok.status === 403 && noTok.data?.code === "sheet_grant", JSON.stringify(noTok));
+  const forged = await api("/api/open", { token: "forged-token-000", path: odd.legacy });
+  check("伪造凭据不开文件", forged.status === 403 && forged.data?.code === "sheet_grant", JSON.stringify(forged));
+  const forgedMeta = await api("/api/sheet/meta", { token: "forged-token-000", path: made.plain });
+  check("伪造凭据读不了表", forgedMeta.status === 403 && forgedMeta.data?.code === "sheet_grant", JSON.stringify(forgedMeta));
+
+  // 表格端点只认发放时记下的那份文件：body 里再带一个 path 也不看
+  const metaPath = await api("/api/sheet/meta", { token, path: odd.legacy });
+  check("表端点忽略请求里的 path", metaPath.status === 200 && metaPath.data?.sheets?.[0]?.name === "销量", JSON.stringify(metaPath.data).slice(0, 200));
+  const winPath = await api("/api/sheet/window", { token, path: odd.legacy, sheet: "销量", r0: 0, r1: 3, c0: 0, c1: 2 });
+  check("取数也忽略请求里的 path", winPath.status === 200 && winPath.data?.rows?.[1]?.cells?.[0]?.t === "华东", JSON.stringify(winPath.data).slice(0, 200));
+
+  // ---------------------------------------------------------------- #106 文件被改
+  await sleep(60);
+  fs.writeFileSync(made.plain, buildXlsx({ firstArea: "更换后" }));
+  await page.evaluate(() => {
+    const view = document.querySelector(".sd-view");
+    if (view) {
+      view.scrollTop = 60 * 28;
+      view.dispatchEvent(new Event("scroll"));
+    }
+  });
+  await page.locator(".sd-block").first().waitFor({ timeout: 10000 });
+  const staleText = (await page.locator(".sd-block").first().textContent()) ?? "";
+  check("文件被改后有提示", staleText.includes("文件已改变"), staleText);
+  check("被改后不再展示旧格子", (await page.locator(".sd-cell").count()) === 0);
+  await page.screenshot({ path: path.join(OUT, "05-stale.png") });
+
+  const staleOpen = await api("/api/open", { token });
+  check("过期凭据不开文件", staleOpen.status === 400 && staleOpen.data?.code === "sheet_stale", JSON.stringify(staleOpen));
+
+  await page.locator(".sd-block button", { hasText: "重新打开" }).first().click();
+  await until(async () => (await cellText(1, 0)) === "更换后", 10000, "重新打开后的新内容");
+  check("重新打开读到新内容", (await cellText(1, 0)) === "更换后", String(await cellText(1, 0)));
+  await page.screenshot({ path: path.join(OUT, "06-reopened-new.png") });
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+
+  // ---------------------------------------------------------------- #106 降级
+  const legacyPrev = await api("/api/preview", { sessionId: SID, path: odd.legacy });
+  check(".xls 归到二进制分支", legacyPrev.data?.kind === "binary", JSON.stringify(legacyPrev.data)?.slice(0, 160));
+  const legacyMeta = await api("/api/sheet/meta", { token: legacyPrev.data?.token });
+  check(".xls 不给读表", legacyMeta.status === 400 && legacyMeta.data?.code === "sheet_unsupported", JSON.stringify(legacyMeta));
+
+  for (const name of ["legacy.xls", "secret.xlsx", "table.ods"]) {
+    await openFile(name);
+    const msg = (await page.locator(".viewer-msg").first().textContent()) ?? "";
+    check(`${name} 说清这个格式不支持`, msg.includes("这个格式这里不支持"), msg.trim().slice(0, 120));
+    const hasOpen = await page.locator(".viewer-msg button", { hasText: "用 Excel 打开" }).count();
+    check(`${name} 给了「用 Excel 打开」`, hasOpen === 1, String(hasOpen));
+  }
+  await page.screenshot({ path: path.join(OUT, "07-downgrade.png") });
+
+  await openFile("fake.xlsx");
+  await page.locator(".sd-block").first().waitFor({ timeout: 20000 });
+  const fakeText = (await page.locator(".sd-block").first().textContent()) ?? "";
+  check("改了扩展名的 zip 也说清不支持", fakeText.includes("这个格式这里不支持"), fakeText.trim().slice(0, 120));
+  await page.screenshot({ path: path.join(OUT, "08-not-xlsx.png") });
+  await page.locator(".sd-close").first().click();
+
+  // 真把文件交给 Excel：默认不跑（会在桌面开窗、锁住文件），SHEET_OPEN=1 时跑一次。
+  if (process.env.SHEET_OPEN) {
+    const tmp = path.join(process.env.TEMP ?? process.env.TMP ?? "/tmp", `pi-xlsx-open-${process.pid}.xlsx`);
+    fs.writeFileSync(tmp, buildXlsx());
+    const prev = await api("/api/preview", { sessionId: SID, path: tmp });
+    const before = bridgeOut.join("");
+    const out = await api("/api/open", { token: prev.data?.token, path: "C:\\\\Windows\\\\win.ini" });
+    check("本机开文件成功", out.status === 200 && out.data?.ok === true, JSON.stringify(out));
+    const said = bridgeOut.join("").slice(before.length);
+    check("开的是发放过的那份，不是 body 里的 path", said.includes(path.basename(tmp)) && !said.includes("win.ini"), said.trim().slice(-200));
+    await sleep(1500);
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {}
+  }
 
   check("没有页面异常", pageErrors.length === 0, pageErrors.join(" | "));
   log(`窗口请求 ${windowRequests.length} 次，示例 ${JSON.stringify(windowRequests.slice(0, 3))}`);

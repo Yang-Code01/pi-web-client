@@ -23,7 +23,7 @@ import {
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
 import { writeLifecycle } from "./lifecycle.ts";
-import { Terminals, openConsole, revealInFileManager } from "./terminal.ts";
+import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
 import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { Notifier } from "./notify.ts";
@@ -58,7 +58,7 @@ import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { piLatest } from "./piupdate.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
-import { grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow, sheetGrant } from "./sheet/index.ts";
+import { fileGrant, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
 
 interface Config {
@@ -612,20 +612,20 @@ async function main(): Promise<void> {
     // bridge resolves the path itself, refuses a file whose mtime moved, and returns one row window.
     if (url.pathname === "/api/sheet/meta" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
-      const grant = sheetGrant(String(body.token ?? ""));
+      const grant = fileGrant(String(body.token ?? ""));
       if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
       try {
         const st = await fs.promises.stat(grant.abs);
         if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
         return json(res, 200, await readSheetMeta(grant.abs));
       } catch (err: any) {
-        return json(res, 400, { error: String(err?.message ?? err) });
+        return fail(res, 400, String(err?.code ?? ""), String(err?.message ?? err));
       }
     }
 
     if (url.pathname === "/api/sheet/window" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
-      const grant = sheetGrant(String(body.token ?? ""));
+      const grant = fileGrant(String(body.token ?? ""));
       if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
       const num = (v: unknown): number | null => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : null);
       const r0 = num(body.r0);
@@ -640,7 +640,7 @@ async function main(): Promise<void> {
         if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
         return json(res, 200, await readSheetWindow(grant.abs, String(body.sheet ?? ""), r0, r1, c0, c1));
       } catch (err: any) {
-        return json(res, 400, { error: String(err?.message ?? err) });
+        return fail(res, 400, String(err?.code ?? ""), String(err?.message ?? err));
       }
     }
 
@@ -668,6 +668,25 @@ async function main(): Promise<void> {
       const out = revealInFileManager(String(body.path ?? ""));
       log(`reveal ${String(body.path ?? "")} → ${out.ok ? "ok" : out.message}`);
       // Errors carry `{error}` like every other route — api.ts's error path reads that field.
+      return out.ok ? json(res, 200, out) : json(res, 400, { error: out.message });
+    }
+
+    // D127/#106 出口: hand the previewed workbook to this desktop's own program (Excel). The action
+    // happens on the desktop, not in the browser, so a tunnel visitor is refused outright. The path is
+    // taken from the grant alone — a page that already read the file still cannot open anything else.
+    if (url.pathname === "/api/open" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "open_public", "通过公网访问时不会在你电脑上打开文件，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      const grant = fileGrant(String(body.token ?? ""));
+      if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
+      try {
+        const st = await fs.promises.stat(grant.abs);
+        if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
+      } catch {
+        return fail(res, 404, "sheet_gone", "文件不在了", undefined, { abs: grant.abs });
+      }
+      const out = openWithApp(grant.abs);
+      log(`open ${grant.abs} → ${out.ok ? "ok" : out.message}`);
       return out.ok ? json(res, 200, out) : json(res, 400, { error: out.message });
     }
 

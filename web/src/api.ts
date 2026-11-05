@@ -76,6 +76,9 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token, sheet, r0, r1, c0, c1 }),
     }),
+  /** D127/#106 出口: hand the previewed workbook to this desktop's own program (Excel). */
+  openFile: (token: string) =>
+    req<{ ok: boolean; message: string }>("/api/open", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }),
   /** Write an edited text file back. 409 means the file changed on disk while it was open. */
   save: (sessionId: string, body: { path: string; text: string; mtime: number; size: number; copy?: boolean }) =>
     req<{ path: string; mtime: number; size: number }>("/api/save", {
