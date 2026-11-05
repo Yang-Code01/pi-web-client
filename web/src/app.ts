@@ -10,7 +10,7 @@ import { setKnownPlugins } from "./diagnose.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
@@ -160,6 +160,14 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /** `#89` 口令页：桥报的那一份快照（null = 还没读到，或刚被别的页面改掉而作废）。 */
+  private passphraseView: PassphraseView | null = null;
+  /** 明文只写在 `••••••••` 和真值之间切，拷走值仍要过 `passphrase.get` 那道门。 */
+  private passphraseShown = false;
+  /** 输入框里的草稿；重画（回执、广播）不能把它抹掉。 */
+  private passphraseDraft = "";
+  /** 「随机生成一个」刚给的候选值（同一个字符串也在草稿里），用来让人先看清再保存。 */
+  private passphraseFresh: string | null = null;
   /** D120 / #77：`runtime.stats` 的最后一帧；null = 还没问过（「读取中…」）。 */
   private runtimeStats: RuntimeStats | null = null;
   /** D120 / #80：「全部休眠」的最后一次回执（null = 这次打开面板还没按过）。 */
@@ -1094,6 +1102,34 @@ export class App {
         if (this.sheetKind === "settings") this.paintSettings();
         break;
       }
+      // ---------------------------------------------------------------- 口令（#89）
+      case "passphrase":
+        this.passphraseView = { value: typeof msg.value === "string" ? msg.value : null, dir: String(msg.dir ?? "") };
+        this.passphraseShown = false;
+        if (msg.saved === true) {
+          this.passphraseDraft = "";
+          this.passphraseFresh = null;
+          // 已登录的设备不会被踢：cookie 用另一把 secret 签名，改口令只让旧口令进不来。
+          this.flashSettings(tr("已保存：旧口令立刻失效，已经登录的浏览器不用重新登录。"));
+        }
+        if (this.sheetKind === "settings" && this.settingsTab === "passphrase") this.paintSettings();
+        break;
+      case "passphrase.suggest":
+        this.passphraseFresh = String(msg.value ?? "");
+        this.passphraseDraft = this.passphraseFresh;
+        if (this.sheetKind === "settings" && this.settingsTab === "passphrase") this.paintSettings();
+        break;
+      case "passphrase.changed":
+        // 只收到「变了」：明文得按各自的 step-up 门槛重新取，不能从广播里白拿。
+        this.passphraseView = null;
+        if (this.sheetKind === "settings" && this.settingsTab === "passphrase") {
+          this.askPassphrase();
+          this.paintSettings();
+        }
+        break;
+      case "passphrase.error":
+        this.flashSettings(String(msg.message ?? tr("保存失败")), true);
+        break;
       case "notify":
         this.me = { ...this.me, notify: msg.on !== false };
         if (this.sheetKind === "settings" && this.settingsTab === "notify") this.paintSettings();
@@ -5611,6 +5647,7 @@ export class App {
       this.sleepAllReceipt = null;
       this.socket.send({ type: "runtime.stats" });
     }
+    if (tab === "passphrase") this.askPassphrase();
     const back = el("div", "sheet-back");
     back.onclick = (ev) => {
       if (ev.target === back) this.closeSheet();
@@ -5659,6 +5696,7 @@ export class App {
       ["project", cwd ? tr("项目（{p1}）", { p1: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd }) : tr("项目")],
       ["trust", tr("项目信任")],
       ["login", tr("登录 / 凭据")],
+      ["passphrase", tr("口令")],
       ["ext", tr("扩展与 MCP")],
       ["notify", tr("通知")],
       ["runtime", tr("运行时")],
@@ -5671,6 +5709,7 @@ export class App {
         this.settingsTab = id;
         this.flashSettings("");
         if (id === "runtime") this.socket.send({ type: "runtime.stats" });
+        if (id === "passphrase") this.askPassphrase();
         this.paintSettings();
       };
       tabs.append(b);
@@ -5678,6 +5717,7 @@ export class App {
     body.replaceChildren();
     if (this.settingsTab === "trust") return this.paintTrust(body);
     if (this.settingsTab === "login") return this.paintLogin(body);
+    if (this.settingsTab === "passphrase") return this.paintPassphrase(body);
     if (this.settingsTab === "ext") return this.paintExtSettings(body);
     if (this.settingsTab === "notify") return this.paintNotify(body);
     if (this.settingsTab === "runtime") return this.paintRuntime(body);
@@ -5689,6 +5729,131 @@ export class App {
       return;
     }
     this.paintSettingsForm(body, view);
+  }
+
+  /**
+   * `#89`：读明文和写明文都过 `act()`（前端对公网的 step-up 门，D15）—— 公网只读会话能把
+   * 整个聊天看完，但不该看一眼就知道门锁的钥匙。本机 / 局域网 `act()` 直接跑，零摩擦。
+   */
+  private askPassphrase(): void {
+    this.act(() => this.socket.send({ type: "passphrase.get" }));
+  }
+
+  /**
+   * `#89` 口令页：看当前口令（默认遮住）+ 换一个。页上没有任何一条消息是「打开就自己发出去」
+   * 的，全部由打开 tab / 按按钮发起 —— 所以「读取中…」只是一帧，不是等一个永远不会回来的回答。
+   */
+  private paintPassphrase(body: HTMLElement): void {
+    const view = this.passphraseView;
+    if (!view) {
+      // 公网且窗口已过：写「读取中…」就是撒谎，给一颗按钮让人自己开门。
+      if (this.me.public && Date.now() >= this.stepUntil) {
+        body.append(el("div", "hint", tr("公网访问下，看口令明文要先验一次口令。")));
+        const open = el("button", "btn", tr("再验一次口令")) as HTMLButtonElement;
+        open.onclick = () => this.askPassphrase();
+        const wrap = el("div", "passphrase-actions");
+        wrap.append(open);
+        body.append(wrap);
+      } else {
+        body.append(el("div", "empty", tr("读取中…")));
+      }
+      return;
+    }
+
+    const value = view.value;
+    const row = el("div", "settings-row");
+    row.append(el("span", "settings-label", tr("当前口令")));
+    const holder = el("div", "passphrase-now");
+    const shown = el("code", "passphrase-value mono", value === null ? tr("读不到 passphrase.txt") : this.passphraseShown ? value : "••••••••");
+    holder.append(shown);
+    // 读不到 passphrase.txt（比如手删了）时只给「换一个新的」这条路：没有值可显、也没有值可拷。
+    if (value !== null) {
+      const tools = el("div", "passphrase-tools");
+      const toggle = el("button", "btn ghost", this.passphraseShown ? tr("隐藏") : tr("显示")) as HTMLButtonElement;
+      toggle.onclick = () => {
+        this.passphraseShown = !this.passphraseShown;
+        this.paintSettings();
+      };
+      const copy = el("button", "btn ghost", tr("复制")) as HTMLButtonElement;
+      copy.onclick = () => this.copyPassphrase(value, shown);
+      tools.append(toggle, copy);
+      holder.append(tools);
+    }
+    row.append(holder);
+    body.append(row);
+
+    const edit = el("label", "settings-row");
+    edit.append(el("span", "settings-label", tr("新口令")));
+    const input = el("input", "ns-input mono") as HTMLInputElement;
+    input.type = "password";
+    input.autocomplete = "new-password";
+    input.placeholder = tr("至少 4 个字符");
+    input.value = this.passphraseDraft;
+    input.oninput = () => (this.passphraseDraft = input.value);
+    edit.append(input);
+    body.append(edit);
+
+    // 随机出来的值在输入框里是遮住的；这行让人先看清再决定保不保存。
+    if (this.passphraseFresh) {
+      const fresh = el("div", "settings-row");
+      fresh.append(el("span", "settings-label", tr("刚生成的")));
+      const box = el("div", "passphrase-now");
+      const code = el("code", "passphrase-value mono", this.passphraseFresh);
+      const copy = el("button", "btn ghost", tr("复制")) as HTMLButtonElement;
+      copy.onclick = () => this.copyPassphrase(this.passphraseFresh ?? "", code);
+      const tools = el("div", "passphrase-tools");
+      tools.append(copy);
+      box.append(code, tools);
+      fresh.append(box);
+      body.append(fresh);
+    }
+
+    const actions = el("div", "passphrase-actions");
+    const rnd = el("button", "btn ghost", tr("随机生成一个")) as HTMLButtonElement;
+    rnd.title = tr("只填进输入框：点保存才真的换掉口令。");
+    rnd.onclick = () => this.socket.send({ type: "passphrase.suggest" });
+    const save = el("button", "btn primary", tr("保存")) as HTMLButtonElement;
+    save.onclick = () => {
+      const next = this.passphraseDraft.trim();
+      // 与 `--passphrase` 同一个门槛（≥ 4），前端先卡一道，免得白跑一趟桥。
+      if (next.length < 4) {
+        this.flashSettings(tr("口令至少 4 个字符"), true);
+        input.focus();
+        return;
+      }
+      this.act(() => this.socket.send({ type: "passphrase.set", value: next }));
+    };
+    actions.append(rnd, save);
+    body.append(actions);
+
+    body.append(
+      el(
+        "div",
+        "hint",
+        tr("忘了口令：在终端里跑 {p1} --passphrase <新口令>。口令写在 {p2} 的 passphrase.txt。", {
+          p1: "node bridge/dist/index.js",
+          p2: view.dir,
+        }),
+      ),
+    );
+  }
+
+  /**
+   * `navigator.clipboard` 在局域网 http 地址下**不存在**，所以可选链要包住调用而不是属性；
+   * 拿不到剪贴板就退化成「选中让用户自己按 Ctrl+C」，绝不假报一句「已复制」。
+   */
+  private copyPassphrase(text: string, node: HTMLElement): void {
+    const done = navigator.clipboard?.writeText(text);
+    if (!done) {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      this.flashSettings(tr("这台机器是 http 打开的，浏览器不给复制：已选中，按 Ctrl+C 拿走"));
+      return;
+    }
+    void done.then(() => this.flashSettings(tr("已复制"))).catch(() => this.flashSettings(tr("复制失败：手动选中它复制"), true));
   }
 
   /** D91: one switch for both channels; the page in front never gets pinged anyway. */
@@ -8982,7 +9147,7 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["logout", tr("登出某个 provider")],
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "ext" | "notify" | "runtime" | "changelog";
+type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "notify" | "runtime" | "changelog";
 
 interface ExtPackage {
   scope: "user" | "project";

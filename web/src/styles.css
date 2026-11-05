@@ -2005,6 +2005,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .settings-sheet .settings-json { width: 100%; box-sizing: border-box; min-height: 340px; font: 12.5px/1.5 var(--mono); background: #0a0f14; color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 10px; resize: vertical; }
 .settings-sheet .settings-trust-opts { display: flex; flex-wrap: wrap; gap: 8px; }
 .settings-sheet .settings-changelog { font-size: 13px; }
+/* #89 设置 → 口令：当前值 + 遮/显 + 复制，下面一个输入框和两颗按钮 */
+.settings-sheet .passphrase-now { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.settings-sheet .passphrase-value { font: 12.5px var(--mono); letter-spacing: 0.02em; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; word-break: break-all; min-width: 0; }
+.settings-sheet .passphrase-tools { display: flex; gap: 6px; flex: none; }
+.settings-sheet .passphrase-tools .btn { padding: 4px 11px; font-size: 12.5px; }
+.settings-sheet .passphrase-actions { display: flex; gap: 8px; align-items: center; }
+.settings-sheet .passphrase-actions .btn { padding: 6px 14px; font-size: 13px; }
 @media (max-width: 640px) { .settings-sheet .settings-row { grid-template-columns: minmax(0, 1fr); } .settings-sheet .settings-row .settings-hint { grid-column: 1; } }
 .trust-bar { display: flex; gap: 10px; align-items: center; }
 

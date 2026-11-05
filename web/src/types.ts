@@ -191,6 +191,15 @@ export interface Me {
 
 export type Decision = "approve" | "reject" | "cancel" | "always";
 
+/**
+ * `#89` 设置 → 口令：桥报的那一份快照。`value` 只有在 step-up 通过后才会有值（没通过直接
+ * 不会收到这条消息）；`dir` 用来在页面上写出逃生门（忘了口令时去哪改）。
+ */
+export interface PassphraseView {
+  value: string | null;
+  dir: string;
+}
+
 /** Mirrors bridge/src/sessions.ts RuntimeStats: `runtime.stats` 的载荷（D120 / #77）。 */
 export interface RuntimeStats {
   running: number;

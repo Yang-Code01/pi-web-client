@@ -12,6 +12,7 @@ import {
   clientIp,
   currentPassphrase,
   ensurePassphrase,
+  generatePassphrase,
   isTunnelRequest,
   issueSessionToken,
   loginAllowed,
@@ -1157,6 +1158,36 @@ async function main(): Promise<void> {
             } catch (err: any) {
               send({ type: "settings.error", scope, message: String(err?.message ?? err) });
             }
+            return;
+          }
+          // ---------------------------------------------------------------- 口令（#89）
+          // 明文回显也坐在 step-up 上：D15 里公网连接「能看能读」，而口令明文读一次就等于
+          // 拿到全部控制权 —— 读它不能比改它便宜。本机 / 局域网没有这道负担（stepUntil 一开
+          // 就是 MAX_SAFE_INTEGER，requireStepUp 直接放行）。
+          case "passphrase.get": {
+            if (!(await requireStepUp())) return;
+            send({ type: "passphrase", value: currentPassphrase(), dir: stateDir() });
+            return;
+          }
+          // 「随机生成一个」只把候选值递给页面，不落盘：误触不该把门锁换了，保存才是写入。
+          // 词表与首次启动打印的那串同源（auth.ts 的 generatePassphrase），不在这里再抄一遍。
+          case "passphrase.suggest": {
+            send({ type: "passphrase.suggest", value: generatePassphrase() });
+            return;
+          }
+          case "passphrase.set": {
+            if (!(await requireStepUp())) return;
+            const value = String(msg.value ?? "").trim();
+            // 与 `--passphrase` 同一个门槛，不出现「命令行收、网页不收」这种两套规矩。
+            if (value.length < 4) {
+              send({ type: "passphrase.error", message: "口令至少 4 个字符" });
+              return;
+            }
+            setPassphrase(value);
+            log(`passphrase changed from ${clientIp(req.headers, req.socket.remoteAddress)}`);
+            // 只广播「变了」，不广播明文：否则公网只读连接可以绕过上面那道 step-up。
+            broadcast({ type: "passphrase.changed" });
+            send({ type: "passphrase", value, dir: stateDir(), saved: true });
             return;
           }
           case "runtime": {
