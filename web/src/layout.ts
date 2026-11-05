@@ -21,8 +21,8 @@ export const LAYOUTS: readonly { id: LayoutId; label: string }[] = [
   { id: "d", label: "树 + 图标条" },
 ];
 
-/** 这一版真正画得出来的壳。#98 补齐 B/C/D 后往这里加。 */
-const IMPLEMENTED: readonly LayoutId[] = ["a"];
+/** 这一版真正画得出来的壳。#98 起四套都在，这里只是「万一某套临时拿掉」的开关。 */
+const IMPLEMENTED: readonly LayoutId[] = ["a", "b", "c", "d"];
 
 export function layoutSupported(id: LayoutId): boolean {
   return IMPLEMENTED.includes(id);

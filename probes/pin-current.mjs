@@ -201,7 +201,9 @@ ok(list.filter((x) => x.cur).length === 0, "于是整条里没有一颗「当前
 
 // 4) 展开左栏 → 行 2 仍在（#97 壳 A：置顶条成了第二行的一部分，不再随左栏收起/展开消失）
 await toggleLeft();
+// #97 壳 A：行 2 不随左栏收起/展开消失 —— 置顶条仍要在屏上（isHidden 会跟着 [hidden] 走）。
 ok(await page.locator(".pin-strip").isVisible(), "展开左栏后，行 2 仍在（壳 A 两行制）");
+ok(await page.locator(".pin-strip").evaluate((n) => n.getClientRects().length > 0), "行 2 真的在屏上");
 ok((await page.locator(".ws-session-row .pin-strip").count()) === 1, "置顶条挂在第二行里，不是另一条独立的横栏");
 
 await page.locator('.side-toggle[data-side="left"]').click(); // 收起来再拍一张：当前会话未置顶时这条里空着

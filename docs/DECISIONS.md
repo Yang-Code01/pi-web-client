@@ -1791,3 +1791,24 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 - 「拖过的」按 override 计：手动把会话拖回它 cwd 本来所属的组时 override 仍存在，仍算一次「拖过」。无害，可改。
 
 验证：`node probes/workspace-migrate.mjs`（桩桥 + 真 Chromium：首次打开弹、行数=组数、每行名字与会话数与左栏逐项一致、归档不计入、拖过数=2、确认后 `pi.prefs.wsIntroSeen` 落盘且刷新不再弹、取消不写标记且刷新仍弹、关掉后左栏交互不再把它推上来）、`node probes/workspace-tree.mjs`（有 webdriver 标记时不弹，左栏交互不受影响）。
+
+## D133 四套壳共用一个交互内核：`shells.ts` 说「哪几块拼在一起」，`app.ts` 只换装配（`#98`）
+
+决定（前端：新文件 `web/src/shells.ts` + `web/src/app.ts` 的 `paintShell()` / `placeNowChip()` / `renderShellAxes()` / `renderWsPop()`）：
+
+- 壳与壳的区别被压成一张表：`shellParts(id)` 返回 `{ tabsRow, sessionRow, chipTop, chipOpensOverlay, rail, strip }`。A 是两行横栏（标签行 + 「当前那颗 + 胶囊」行）；B 只剩顶栏那颗（点它开工作区浮层）；C 加一根常驻 48px 竖列（色点 + 两字头 + 待处理角标）；D 只在左栏收起时缩成 52px 色点条。标签行 / 竖列 / 色点条**都不接拖拽**，可拖的只有左栏树和 B 的浮层 —— 入口多一份，落点规则就多一份分叉，不值得。
+- 「当前在哪」那颗（`NowChip`）只有一个实例，套一层 `<button data-act="where">`，挂载点随壳换：A 桌面在行 2 左端，B/C/D 在顶栏；**窄屏四套统一进顶栏**（窄屏下 A 也没有行 2，那颗不进顶栏就消失了），窄屏点它 = 打开「会话」那一页。`renderPanes()` 每次都重摆（断点跨越时落点会变）。
+- B/C/D 点顶栏那颗开的是**同一张**工作区浮层（`role=dialog`，按组分段、段头切组、会话行可拖）：浮层里的落点判定就是 `hitAt()` / `planDrop()`，只是把量测范围从左栏 DOM 换成浮层 DOM（`dropScope()` 一个返回值的事），松手照旧只发 `ws.move` / `arrange`。浮层没有第二套拖拽实现。
+- 竖列（C）与色点条（D）同吃一份 `railModel(tree.groups, currentWsId())` 纯函数（`railLabel()` 取前两字，emoji 代理对不劈开），高亮 = `aria-current` + 描边；D 的色点条还兼任「展开左栏」的按钮（▸）。
+- `IMPLEMENTED` 现在是四套全量（D130 的「未实现回退 A」逻辑保留但成为死代码保险）：`activeLayout()` 不认识的值仍回 A 且不改写存储。
+- 换壳时 `paintShell()` 只做装配级动作：浮层关掉、那颗挪窝、`renderPanes()` 重摆 —— 数据、树、拖拽纯函数一行不动。
+
+为什么：票面要求「不要复制粘贴四份渲染逻辑」。四套壳真正的差异只有「哪些块在场、那颗停在哪」，把它们压成一张表之后，新增壳 = 加一行表；而会话归属、顺序、拖拽语义全部只有一份实现，「来回切不丢当前会话」就不再是四个 if 各自保证一遍，而是根本不随壳走（`currentId` / `prefs` 都在壳外）。
+
+代价 / 可改：
+
+- C 的竖列 / D 的色点条只有切组一个动作，组内会话要开左栏或浮层 —— 48px 里塞会话列表不现实，入口交给那颗。
+- 浮层窄屏不提供（窄屏点那颗直接去会话页）：手机宽度里再叠一层浮层是套娃。
+- `chipOpensOverlay` 在 A 里恒 false，那颗在 A 桌面是指示器不是按钮 —— 语义由 `data-open` 表达，探针据此断言。
+
+验证：`web/tests/shells-unit.mjs`（8 例：四套拼法互异 / A 两横栏 / B 全收 + chipTop + overlay / C 竖列 / D 色点条 / 未知 id 回 A / railLabel 代理对 / railModel 计数与高亮）、`web/tests/layout-unit.mjs`（改为「四套都实现：存什么按什么画」）、`node probes/workspace-shells.mjs`（新探针：对 a/b/c/d 各跑一遍 —— chip 点得动且刷新保留、收起态看得到当前会话（A 行 2 / B·C·D 顶栏）、C 竖列高亮 / D 色点条高亮、各壳切组、B 浮层拖拽真发一条 `ws.move` 且重画后归位、各壳新会话面板开得出来、切会话后刷新仍记得）、`probes/workspace-layout.mjs`（第 5–11 段改为四颗都能点、无「下一步补上」、手写 layout=c 直接按 C 画），以及 workspace-tree / workspace-manage / workspace-drag / pin-auto-open / nowchip / pin-current 全绿。
