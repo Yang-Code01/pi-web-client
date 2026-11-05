@@ -11,7 +11,8 @@ import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar } from "./pillbar.ts";import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState } from "./types.ts";
+import { buildTree, type TreeGroup } from "./tree.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
@@ -244,6 +245,8 @@ export class App {
   private renameCaret: number | null = null;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
   private manage: ManageState = { pin: [], order: [], archived: [] };
+  /** 工作区快照（#94 由桥算）：hello / sessions.list / manage 广播 / workspaces 广播都带着它。 */
+  private workspace: WorkspaceState = { groups: [], overrides: {}, keys: {} };
   private archivedOpen = false;
   private filter = "";
   /** Delete is two-step: the last click arms it, the next one within 4s sends it. */
@@ -966,6 +969,7 @@ export class App {
         if (this.skillPop) this.renderSkillList();
         break;
       case "hello":
+        if (msg.workspace) this.workspace = msg.workspace as WorkspaceState;
         if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
         // D113: a dropped socket mid-stream would leave the ⟳ spinning forever (the flags gate the
         // next request), so a fresh connection forgets them and asks again.
@@ -1515,6 +1519,11 @@ export class App {
         break;
       case "manage":
         if (msg.manage) this.manage = msg.manage as ManageState;
+        if (msg.workspace) this.workspace = msg.workspace as WorkspaceState;
+        this.renderSessions();
+        break;
+      case "workspaces":
+        if (msg.workspace) this.workspace = msg.workspace as WorkspaceState;
         this.renderSessions();
         break;
       case "session.gone": {
@@ -1579,6 +1588,7 @@ export class App {
       }
       case "sessions.list": {
         this.sessions = Array.isArray(msg.sessions) ? msg.sessions : this.sessions;
+        if (msg.workspace) this.workspace = msg.workspace as WorkspaceState;
         this.renderSessions();
         this.mgrRefresh?.();
         break;
@@ -3270,7 +3280,11 @@ export class App {
       .join(" · ");
   }
 
-  /** Pinned / plain / archived sections. Every drag and every star click ends up in one arrange message. */
+  /**
+   * 左栏两级树（#95）：工作区 → 会话。分组、组内/组间顺序、过滤后的去留全在 `buildTree()` 里算，
+   * 这里只负责画。「置顶」不再是一个分区 —— ★ 只剩组内排序的意思，归档仍是末尾的全局分区。
+   * 每次拖动、每次点 ★ 最后都落到一条 arrange 消息上。
+   */
   private renderSessions(): void {
     this.renderPinStrip();
     this.renderBinCount();
@@ -3281,32 +3295,97 @@ export class App {
     this.renameCaret = typing ? (active as HTMLInputElement).selectionStart : null;
     host.replaceChildren();
 
-    const ordered = [...this.sessions].sort((a, b) => this.arrangeCompare(a, b));
-    if (this.renameId && !ordered.some((s) => s.id === this.renameId)) this.renameId = null;
+    const tree = buildTree(this.sessions, this.manage, this.workspace, this.filter);
+    if (this.renameId && !this.sessions.some((s) => s.id === this.renameId)) this.renameId = null;
     // A deleted or now-hidden session must not stay "picked".
-
-    const visible = ordered.filter((s) => !this.manage.archived.includes(s.id) && this.matchesFilter(s));
-    const archived = ordered.filter((s) => this.manage.archived.includes(s.id) && this.matchesFilter(s));
-    const pinned = visible.filter((s) => this.manage.pin.includes(s.id));
-    const rest = visible.filter((s) => !this.manage.pin.includes(s.id));
     if (this.sheetKind === "manage") this.mgrRefresh?.();
 
-    if (!ordered.length) {
+    if (!this.sessions.length) {
       host.append(el("div", "empty", tr("还没有会话。上面开一个，或在终端里 pi 一下。")));
       return;
     }
-    if (pinned.length) host.append(this.sessionSection("pin", tr("置顶"), pinned));
-    host.append(this.sessionSection("rest", this.manage.pin.length ? tr("会话") : tr("会话 · 按创建时间"), rest));
-    if (!visible.length) host.append(el("div", "empty", this.filter ? tr("没有匹配的会话。") : tr("都归档了，展开下面的「已归档」看看。")));
-    if (archived.length) host.append(this.sessionSection("archived", tr("已归档"), this.archivedOpen ? archived : []));
+    for (const group of tree.groups) host.append(this.wsSection(group));
+    if (!tree.groups.length) {
+      // 有归档就提示去哪儿看；什么都没命中就直说没命中。
+      let text = tr("没有匹配的会话。");
+      if (!this.filter && tree.archived.length) text = tr("都归档了，展开下面的「已归档」看看。");
+      host.append(el("div", "empty", text));
+    }
+    if (tree.archived.length) host.append(this.sessionSection("archived", tr("已归档"), this.archivedOpen ? tree.archived : []));
     this.renameFocus = false;
   }
 
-  private sessionSection(kind: "pin" | "rest" | "archived", title: string, list: SessionState[]): HTMLElement {
+  /** 一个工作区的组头 + 组内卡片。组头可收起，收起状态记在 `pi.prefs.wsCollapsed` 里。 */
+  private wsSection(group: TreeGroup<SessionState>): HTMLElement {
+    const sec = el("div", "session-sec ws-sec");
+    // 仍是「会话区」：既有探针按 data-sec 取卡片，归档另有一段。
+    sec.dataset.sec = "rest";
+    sec.dataset.ws = group.id;
+    const collapsed = this.prefs.wsCollapsed.includes(group.id);
+    if (collapsed) sec.classList.add("folded");
+
+    const head = el("div", `sess-head ws-head${collapsed ? " folded" : ""}`);
+    head.setAttribute("role", "button");
+    head.tabIndex = 0;
+    head.setAttribute("aria-expanded", String(!collapsed));
+    head.title = collapsed ? tr("展开这个工作区") : tr("收起这个工作区");
+    head.setAttribute("aria-label", tr("{p1}，{p2} 个会话，{p3}", { p1: group.name, p2: group.sessions.length, p3: collapsed ? tr("已收起") : tr("已展开") }));
+    head.append(el("span", "chev", collapsed ? "▸" : "▾"));
+    const dot = el("span", "ws-dot");
+    dot.style.background = group.color;
+    head.append(dot, el("span", "label", group.name));
+    if (group.pending) {
+      const todo = el("span", "todo", tr("待 {p1}", { p1: group.pending }));
+      todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
+      head.append(todo);
+    }
+    head.append(el("span", "n", String(group.sessions.length)));
+    const toggle = () => this.toggleWs(group.id);
+    head.onclick = toggle;
+    head.onkeydown = (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        toggle();
+      }
+    };
+    sec.append(head);
+
+    const cards = el("div", "session-cards");
+    for (const s of group.sessions) cards.append(this.sessionCard(s));
+    // 手建的空组：显示空态，不显示一个没有内容的组头（后端派生的组不可能为空，过滤态下整组会消失）。
+    if (!group.sessions.length) cards.append(el("div", "empty ws-empty", tr("这个工作区里还没有会话。")));
+    cards.ondragover = (ev) => {
+      if (!this.dragId) return;
+      ev.preventDefault();
+    };
+    cards.ondrop = (ev) => {
+      if (!this.dragId) return;
+      ev.preventDefault();
+      // 跨组拖是 #99 的事（要发 ws.move）；在它做出来之前，落进别的组的拖拽就当没发生。
+      const from = this.dragNode(this.dragId)?.closest<HTMLElement>(".ws-sec");
+      if (from && from.dataset.ws !== group.id) return;
+      const node = this.dragNode(this.dragId);
+      if (node) cards.append(node);
+      this.commitArrangement();
+      this.dragId = null;
+    };
+    sec.append(cards);
+    return sec;
+  }
+
+  private toggleWs(id: string): void {
+    const has = this.prefs.wsCollapsed.includes(id);
+    const wsCollapsed = has ? this.prefs.wsCollapsed.filter((x) => x !== id) : [...this.prefs.wsCollapsed, id];
+    this.prefs = { ...this.prefs, wsCollapsed };
+    savePrefs(this.prefs);
+    this.renderSessions();
+  }
+
+  private sessionSection(kind: "archived", title: string, list: SessionState[]): HTMLElement {
     const sec = el("div", "session-sec");
     sec.dataset.sec = kind;
     const head = el("div", "sess-head");
-    if (kind === "archived") {
+    {
       const toggle = () => {
         this.archivedOpen = !this.archivedOpen;
         this.renderSessions();
@@ -3316,28 +3395,12 @@ export class App {
       const label = el("span", "label", title);
       label.onclick = toggle;
       head.append(chev, label);
-    } else {
-      head.append(el("span", "label", title));
     }
-    head.append(el("span", "n", String(kind === "archived" ? this.archivedTotal() : list.length)));
+    head.append(el("span", "n", String(this.archivedTotal())));
     sec.append(head);
 
     const cards = el("div", "session-cards");
     for (const s of list) cards.append(this.sessionCard(s));
-    if (kind !== "archived") {
-      cards.ondragover = (ev) => {
-        if (!this.dragId) return;
-        ev.preventDefault();
-      };
-      cards.ondrop = (ev) => {
-        if (!this.dragId) return;
-        ev.preventDefault();
-        const node = this.dragNode(this.dragId);
-        if (node) cards.append(node);
-        this.commitArrangement();
-        this.dragId = null;
-      };
-    }
     sec.append(cards);
     return sec;
   }
@@ -3505,25 +3568,6 @@ export class App {
     return card;
   }
 
-  /** Mirrors bridge/src/manage.ts: pinned by hand, then manual order, then new ones newest first. */
-  private arrangeCompare(a: SessionState, b: SessionState): number {
-    const aa = this.manage.archived.includes(a.id);
-    const ba = this.manage.archived.includes(b.id);
-    if (aa !== ba) return aa ? 1 : -1;
-    const ap = this.manage.pin.indexOf(a.id);
-    const bp = this.manage.pin.indexOf(b.id);
-    if (ap >= 0 || bp >= 0) {
-      if (ap < 0) return 1;
-      if (bp < 0) return -1;
-      return ap - bp;
-    }
-    const ao = this.manage.order.indexOf(a.id);
-    const bo = this.manage.order.indexOf(b.id);
-    if (ao >= 0 && bo >= 0) return ao - bo;
-    if (ao < 0 && bo < 0) return (Date.parse(b.startedAt ?? "") || b.updatedAt) - (Date.parse(a.startedAt ?? "") || a.updatedAt);
-    return ao < 0 ? -1 : 1;
-  }
-
   private matchesFilter(s: SessionState): boolean {
     const q = this.filter.toLowerCase();
     return !q || `${s.name} ${s.cwd}`.toLowerCase().includes(q);
@@ -3541,15 +3585,12 @@ export class App {
   private commitArrangement(): void {
     const pin: string[] = [];
     const order: string[] = [];
-    for (const sec of this.els.sessList.querySelectorAll<HTMLElement>(".session-sec")) {
-      const kind = sec.dataset.sec;
-      if (kind === "archived") continue;
-      for (const card of sec.querySelectorAll<HTMLElement>(".session-card")) {
-        const id = card.dataset.id;
-        if (!id) continue;
-        if (kind === "pin") pin.push(id);
-        else order.push(id);
-      }
+    // 卡片的顺序是树里的顺序；★ 位置决定它进 pin 还是 order（★ 只在组内生效）。
+    for (const card of this.els.sessList.querySelectorAll<HTMLElement>('.session-sec:not([data-sec="archived"]) .session-card')) {
+      const id = card.dataset.id;
+      if (!id) continue;
+      if (this.manage.pin.includes(id)) pin.push(id);
+      else order.push(id);
     }
     // The DOM cannot say where the cards the filter hides belong; keep their slots behind the rest.
     for (const s of this.sessions) {
@@ -9114,7 +9155,14 @@ function writeFlag(key: string, value: boolean): void {
   }
 }
 
-type Prefs = { scale: number; accent: string; text: "soft" | "normal" | "bright"; lang: Lang };
+type Prefs = {
+  scale: number;
+  accent: string;
+  text: "soft" | "normal" | "bright";
+  lang: Lang;
+  /** 收起的工作区（#95）：组 id 列表，跟 accent 一起存在 `pi.prefs` 里，不另开 storage key。 */
+  wsCollapsed: string[];
+};
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
 /** How long the peek card must stay before it stops following the pointer (Q-029). */
@@ -9122,7 +9170,7 @@ const PEEK_DELAY_MS = 3000;
 /** Grace after the pointer leaves, so crossing the 8px gap into the card isn't a "leave". */
 const PEEK_GAP_MS = 200;
 
-const DEFAULT_PREFS: Prefs = { scale: 1, accent: "ice", text: "normal", lang: "zh-Hans" };
+const DEFAULT_PREFS: Prefs = { scale: 1, accent: "ice", text: "normal", lang: "zh-Hans", wsCollapsed: [] };
 
 /** Context-budget presets in the model sheet; null = no ceiling (use the window). */
 const BUDGETS: (number | null)[] = [null, 100_000, 200_000, 500_000, 1_000_000];
@@ -9569,6 +9617,7 @@ function readPrefs(): Prefs {
       text: TEXT_STEPS.some(([k]) => k === p?.text) ? (p.text as Prefs["text"]) : DEFAULT_PREFS.text,
       // 没存过语言（第一次打开、或老版本升上来）就跟着浏览器走。
       lang: isLang(p?.lang) ? p.lang : detectLang(),
+      wsCollapsed: Array.isArray(p?.wsCollapsed) ? p.wsCollapsed.filter((x: unknown): x is string => typeof x === "string") : [],
     };
   } catch {
     return { ...DEFAULT_PREFS, lang: detectLang() };

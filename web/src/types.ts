@@ -100,6 +100,8 @@ export interface SessionState {
   /** Sidebar arrangement from the bridge (state/manage.json). */
   pinned?: boolean;
   archived?: boolean;
+  /** 会话所在工作区的 id（#94 由桥按 cwd 推导，worktree 已并回主仓）；空串 = 脏会话没有 cwd。 */
+  ws?: string;
   /** Another process (the pi terminal) holds the lock: read-only, and the bridge refuses to delete it. */
   locked?: boolean;
   /** Launch options chosen at creation (#28), one line. */
@@ -128,6 +130,22 @@ export interface ManageState {
   pin: string[];
   order: string[];
   archived: string[];
+}
+
+/** 一级分组 = 工作区 = 工程（#72 / #94）。桥算归属，页面只读。 */
+export interface WsGroupInfo {
+  id: string;
+  name: string;
+  key: string;
+  manual: boolean;
+}
+
+export interface WorkspaceState {
+  groups: WsGroupInfo[];
+  /** sessionId → groupId：拖过的会话钉死在某个工作区里。 */
+  overrides: Record<string, string>;
+  /** 归一化 cwd（小写）→ 工程根。 */
+  keys: Record<string, string>;
 }
 
 // ---------------------------------------------------------------- ask-user
