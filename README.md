@@ -196,6 +196,7 @@ node bridge/tests/skill-store-ws.mjs                                  # 技能�
 node probes/skill-store.mjs                                           # 技能商店 UI：面板入口、两段式搜索、装/卸、按地址安装（D126，桩桥 + 真 Chromium）
 node probes/bug-notes.mjs                                             # 记录：桥端整条链路（隔离桥 7899、真 WS、落盘断言，不花模型调用）（D108）
 node probes/bug-notes-ui.mjs                                          # 记录 UI：真 Chromium，归档/垃圾箱/贴图/复制 Markdown/交给 agent（D108）
+node probes/notes-handoff.mjs                                         # 「交给 agent」到底填进哪个会话：预填/新开会话/取消后不串会话（D127）
 node bridge/tests/i18n-ui.mjs                                         # 三语：en-US 语境自动英文 → 切日文 → 切回中文 → 刷新后仍在（D110）
 node bridge/tests/peer-e2e.mjs                                        # 内网通：两实例互见、组播不可达时手动地址、消息/回执/补投、好友、文件哈希、agent 工具（D96–D107，先 build:peer）
 node probes/peer-multicast.mjs                                        # 组播快检：这台机器的网络栈放不放行 239.255.42.99（通过 ≠ 穿过交换机也通）
