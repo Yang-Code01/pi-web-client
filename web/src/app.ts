@@ -15,6 +15,8 @@ import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type TreeGroup } from "./tree.ts";
+import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
+import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
 import { hitTest, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
@@ -247,6 +249,15 @@ export class App {
   private renameDraft = "";
   private renameFocus = false;
   private renameCaret: number | null = null;
+  /** #100 组头就地改名：跟会话卡片的 rename 同一套手感（同一支输入框、同一个提交时机）。 */
+  private wsRenameId: string | null = null;
+  private wsRenameDraft = "";
+  private wsRenameFocus = false;
+  private wsRenameCaret: number | null = null;
+  /** 组头的 ⋯ 菜单最多一张；树重画前先关掉它（锚点要被换掉）。 */
+  private wsMenu: WsMenuHandle | null = null;
+  /** 点了「新建工作区」：等桥把新组广播回来，就立刻进改名态（组的 id 只有桥知道）。 */
+  private wsCreatePending = false;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
   private manage: ManageState = { pin: [], order: [], archived: [] };
   private archivedOpen = false;
@@ -1540,11 +1551,23 @@ export class App {
         this.renderNowChip();
         break;
       // #94：桥侧每次改名 / 拖动 / 建组都会广播一份完整快照。同名快照可能重复到，但重画很便宜。
-      case "workspaces":
+      case "workspaces": {
+        const before = new Set(this.workspaces.groups.map((g) => g.id));
         this.workspaces = (msg.workspace as WorkspaceState) ?? { groups: [], overrides: {}, keys: {} };
+        // #100：刚点的「新建工作区」回来了 —— 空组已经进树，接着让人给它起个名字。
+        if (this.wsCreatePending) {
+          const born = this.workspaces.groups.find((g) => g.manual && !before.has(g.id));
+          if (born) {
+            this.wsCreatePending = false;
+            this.wsRenameId = born.id;
+            this.wsRenameDraft = "";
+            this.wsRenameFocus = true;
+          }
+        }
         this.renderNowChip();
         this.renderSessions();
         break;
+      }
       case "session.gone": {
         const gone = new Set<string>((msg.ids ?? []) as string[]);
         this.sessions = this.sessions.filter((s) => !gone.has(s.id));
@@ -3349,17 +3372,24 @@ export class App {
     this.dragPool = null;
     // A re-render mid-edit must not eat the caret: remember where it was before the DOM swap.
     const active = document.activeElement as HTMLElement | null;
-    const typing = this.renameId != null && active?.classList.contains("rename-input") === true;
+    const wsTyping = this.wsRenameId != null && active?.classList.contains("ws-rename-input") === true;
+    this.wsRenameCaret = wsTyping ? (active as HTMLInputElement).selectionStart : null;
+    const typing = this.renameId != null && !wsTyping && active?.classList.contains("rename-input") === true;
     this.renameCaret = typing ? (active as HTMLInputElement).selectionStart : null;
+    // 组头的 ⋯ 菜单钉在一个马上要被替换掉的节点上，先收掉。
+    this.wsMenu?.close();
+    this.wsMenu = null;
     host.replaceChildren();
 
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     if (this.renameId && !this.sessions.some((s) => s.id === this.renameId)) this.renameId = null;
+    if (this.wsRenameId && !this.workspaces.groups.some((g) => g.id === this.wsRenameId)) this.wsRenameId = null;
     // A deleted or now-hidden session must not stay "picked".
     if (this.sheetKind === "manage") this.mgrRefresh?.();
 
     if (!this.sessions.length) {
       host.append(el("div", "empty", tr("还没有会话。上面开一个，或在终端里 pi 一下。")));
+      host.append(this.wsCreateRow());
       return;
     }
     for (const group of tree.groups) host.append(this.wsSection(group));
@@ -3369,11 +3399,30 @@ export class App {
       if (!this.filter && tree.archived.length) text = tr("都归档了，展开下面的「已归档」看看。");
       host.append(el("div", "empty", text));
     }
+    // #100：树底部一行「新建工作区」—— 手建的空组也能有会话被拖进来（落点见 wsSection 的 .session-cards）。
+    host.append(this.wsCreateRow());
     if (tree.archived.length) host.append(this.sessionSection("archived", tr("已归档"), this.archivedOpen ? tree.archived : []));
     // 「放回工程」只在拖动时出现；socket 推送顺手重画一次也不会把它弄丢。
     if (this.dragId) this.showPool(this.dragId);
     this.wireTreeDrops(host);
     this.renameFocus = false;
+    this.wsRenameFocus = false;
+  }
+
+  /** 树底部的「新建工作区」：点一下让桥造一个空的手动组，广播回来就进改名态。 */
+  private wsCreateRow(): HTMLElement {
+    const row = el("div", "ws-new");
+    const btn = el("button", "ws-new-btn") as HTMLButtonElement;
+    btn.type = "button";
+    btn.dataset.act = "ws-create";
+    btn.textContent = tr("＋ 新建工作区");
+    btn.title = tr("先建一个空组，再把会话拖进去");
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      this.createWs();
+    };
+    row.append(btn);
+    return row;
   }
 
   /** 一个工作区的组头 + 组内卡片。组头可收起，收起状态记在 `pi.prefs.wsCollapsed` 里。 */
@@ -3394,13 +3443,65 @@ export class App {
     head.append(el("span", "chev", collapsed ? "▸" : "▾"));
     const dot = el("span", "ws-dot");
     dot.style.background = group.color;
-    head.append(dot, el("span", "label", group.name));
+    head.append(dot);
+    const editing = this.wsRenameId === group.id;
+    if (editing) {
+      // 组头就地改名：同一支 .rename-input，Enter 提交、Esc 取消、失焦也提交（跟会话卡片一致）。
+      const field = el("input", "rename-input ws-rename-input") as HTMLInputElement;
+      field.value = this.wsRenameDraft;
+      field.placeholder = group.name;
+      field.spellcheck = false;
+      field.maxLength = WS_NAME_MAX;
+      field.dataset.act = "ws-rename-input";
+      field.setAttribute("aria-label", tr("工作区名（留空就恢复成目录名）"));
+      field.onclick = (ev) => ev.stopPropagation();
+      field.oninput = () => {
+        this.wsRenameDraft = field.value;
+      };
+      field.onkeydown = (ev) => {
+        ev.stopPropagation();
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          this.commitWsRename();
+        } else if (ev.key === "Escape") {
+          ev.preventDefault();
+          this.cancelWsRename();
+        }
+      };
+      field.onblur = () => {
+        if (this.wsRenameId === group.id) this.commitWsRename();
+      };
+      if (this.wsRenameFocus || this.wsRenameCaret != null) {
+        const at = this.wsRenameFocus ? null : this.wsRenameCaret;
+        queueMicrotask(() => {
+          field.focus();
+          if (at == null) field.select();
+          else field.setSelectionRange(at, at);
+        });
+      }
+      head.append(field);
+    } else {
+      head.append(el("span", "label", group.name));
+    }
     if (group.pending) {
       const todo = el("span", "todo", tr("待 {p1}", { p1: group.pending }));
       todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
       head.append(todo);
     }
     head.append(el("span", "n", String(group.sessions.length)));
+    if (!editing) {
+      const more = el("button", "ws-more", "⋯") as HTMLButtonElement;
+      more.type = "button";
+      more.dataset.act = "ws-more";
+      more.title = tr("改名 / 删除这个工作区");
+      more.setAttribute("aria-label", tr("{p1} 的工作区菜单", { p1: group.name }));
+      more.onclick = (ev) => {
+        ev.stopPropagation();
+        this.openWsMore(group, more);
+      };
+      more.onkeydown = (ev) => ev.stopPropagation();
+      head.append(more);
+    }
     const toggle = () => this.toggleWs(group.id);
     head.onclick = toggle;
     head.onkeydown = (ev) => {
@@ -3425,6 +3526,64 @@ export class App {
     this.prefs = { ...this.prefs, wsCollapsed };
     savePrefs(this.prefs);
     this.renderSessions();
+  }
+
+  /** 组头的 ⋯：改名 / 删除。删不了就置灰并在菜单里写明原因，而不是把这个选择藏起来。 */
+  private openWsMore(group: TreeGroup<SessionState>, anchor: HTMLElement): void {
+    this.wsMenu?.close();
+    const info = this.workspaces.groups.find((g) => g.id === group.id);
+    this.wsMenu = openWsMenu(anchor, {
+      name: group.name,
+      sub: info && !info.manual ? info.key : tr("手建的工作区"),
+      blocker: dropBlocker(info, group.sessions.length),
+      onRename: () => this.startWsRename(group.id),
+      onDrop: () => this.dropWs(group.id),
+    });
+  }
+
+  private startWsRename(id: string): void {
+    this.wsRenameId = id;
+    this.wsRenameDraft = this.workspaces.groups.find((g) => g.id === id)?.name ?? "";
+    this.wsRenameFocus = true;
+    // 收起的组里改不了名：先展开再画输入框。
+    if (this.prefs.wsCollapsed.includes(id)) {
+      const wsCollapsed = this.prefs.wsCollapsed.filter((x) => x !== id);
+      this.prefs = { ...this.prefs, wsCollapsed };
+      savePrefs(this.prefs);
+    }
+    this.renderSessions();
+  }
+
+  private cancelWsRename(): void {
+    this.wsRenameId = null;
+    this.wsRenameDraft = "";
+    this.renderSessions();
+  }
+
+  /** 提交组名：空串 = 恢复成目录名（桥那边存空，显示时由 buildTree 回落）。名字没变就一个字都不发。 */
+  private commitWsRename(): void {
+    const id = this.wsRenameId;
+    if (!id) return;
+    const current = this.workspaces.groups.find((g) => g.id === id)?.name ?? "";
+    const next = renameIntent(current, this.wsRenameDraft);
+    this.wsRenameId = null;
+    this.wsRenameDraft = "";
+    this.renderSessions();
+    if (next == null) return;
+    this.act(() => this.socket.send({ type: "manage", action: "ws.rename", id, name: next }));
+  }
+
+  private dropWs(id: string): void {
+    this.act(() => this.socket.send({ type: "manage", action: "ws.drop", id }));
+  }
+
+  private createWs(): void {
+    // 组的 id 由桥生成，页面猜不出来：先要一个空组，等广播回来再进改名态。
+    this.wsCreatePending = true;
+    window.setTimeout(() => {
+      this.wsCreatePending = false;
+    }, 5000);
+    this.act(() => this.socket.send({ type: "manage", action: "ws.create", name: "" }));
   }
 
   private sessionSection(kind: "archived", title: string, list: SessionState[]): HTMLElement {
