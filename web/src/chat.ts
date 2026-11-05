@@ -124,6 +124,14 @@ export class ChatView {
   onFork: ((item: { id: string; text: string }, index: number) => void) | null = null;
   /** Live view of the running tool call — nothing here is rendered in the transcript. */
   private live: LiveInfo = {};
+  /**
+   * 模型最近一条 assistant 文本。卡片上的「它当时在做」用它的原话，比按命令猜准得多——
+   * `items.ts:174-190` 把 assistant 文本排在它的 toolCall 之前，所以失败到达时上一条就是它。
+   * 新一轮用户输入时清空，绝不跨轮借用。
+   */
+  private lastAssistantSaid = "";
+  /** 本轮的用戶原话：模型直接调工具、一句话不说时，「它当时在做」用它——那确实就是它动手的理由。 */
+  private lastUserSaid = "";
   /** Which tool call the live output belongs to; a stale update must not overwrite a newer tool. */
   private liveKey = "";
   /** This turn's written files, as chips under the ops module. */
@@ -352,6 +360,8 @@ export class ChatView {
     this.opsFiles = null;
     this.live = {};
     this.liveKey = "";
+    this.lastAssistantSaid = "";
+    this.lastUserSaid = "";
     this.turns = [];
     this.turnRail.clear();
     this.flashTurn(null);
@@ -385,7 +395,13 @@ export class ChatView {
 
   add(item: Item): void {
     // a user message opens a new turn: its tool calls get their own module
-    if (item.kind === "user") this.closeOps();
+    if (item.kind === "user") {
+      this.closeOps();
+      this.lastAssistantSaid = "";
+      this.lastUserSaid = item.text ?? "";
+    }
+    // 卡片上的「它当时在做」读的是模型自己的话：调工具前那句就在上一条。
+    if (item.kind === "assistant") this.lastAssistantSaid = item.text ?? "";
     if (item.kind === "tool") {
       const existing = this.toolCards.get(item.toolCallId);
       if (existing && this.isAskTool(item.name)) {
@@ -591,7 +607,13 @@ export class ChatView {
   private failFromItem(item: ToolItem): void {
     this.failureCard(
       item.toolCallId,
-      { tool: item.name, cmd: toolSummary(item), out: String(item.result ?? item.partialResult ?? "") },
+      {
+        tool: item.name,
+        cmd: toolSummary(item),
+        out: String(item.result ?? item.partialResult ?? ""),
+        // 优先级：模型自己的话 → 你这一轮让它做的事 → 按命令猜（diagnose 里兵底）。
+        intent: this.lastAssistantSaid || (this.lastUserSaid ? tr("照你的要求：{p1}", { p1: this.lastUserSaid }) : ""),
+      },
       item.durationMs,
     );
   }
@@ -1009,10 +1031,12 @@ function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
     el("span", "sum-cmd", input.cmd ? `${input.tool} · ${input.cmd}` : input.tool),
   );
   const grid = el("div", "grid");
-  grid.append(
-    el("span", "k", tr("为什么")), el("span", "v", d.cause || "—"),
-    el("span", "k", tr("下一步")), el("span", "v", d.next || "—"),
-  );
+  grid.append(el("span", "k", tr("为什么没成")), el("span", "v", d.cause || "—"));
+  // 「它当时在做」放最后一行、用淡一点的样式：它是背景，不是一个要人处理的条目；
+  // 但读者最先问的恰恰是「它为什么去调这一条」，所以不能省。
+  grid.append(el("span", "k", tr("它当时在做")), el("span", "v", d.intent || "—"));
+  grid.append(el("span", "k", tr("影响")), el("span", "v", d.effect || "—"));
+  if (d.needsYou) grid.append(el("span", "k", tr("要你做")), el("span", "v", d.needsYou));
   const cmdbar = el("div", "cmdbar");
   cmdbar.append(el("span", "dot", "▪"), el("span", "c", input.cmd ? `${input.tool} · ${input.cmd}` : input.tool));
   card.append(top, grid, cmdbar);
