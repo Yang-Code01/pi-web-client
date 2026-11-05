@@ -30,6 +30,11 @@ export interface FailureInput {
    * 由 `inferIntent` 按工具名和参数粗推断——宁可粗一点，也别让「为什么」那一行空着。
    */
   intent?: string;
+  /**
+   * 这一轮里它后来怎么绕过去的（`chat.ts` 在同一轮后续工具跑通时填）：只写事实，不猜结果。
+   * 例：「随后它改用 web_search，拿到了结果」。没有后续就不出现。
+   */
+  after?: string;
 }
 
 export interface Diagnosis {
