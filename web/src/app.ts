@@ -20,7 +20,7 @@ import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
 import { hitTest, moveTo, planDrop, type DropHit } from "./drag.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
@@ -119,7 +119,9 @@ export class App {
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
   private notes: Note[] = [];
-  /** 新会话建好后要填进输入框的文字（「交给 agent → 新开会话」，不自动发送）。 */
+  /** 新会话建好后要填进输入框的文字（「交给 agent → 新开会话」，不自动发送）。
+   *  它只属于「我自己刚建的那个会话」：面板一关（取消 / 点背景）或建会话失败就丢掉，
+   *  否则下一次打开的任何会话都会莫名其妙带上上一个会话的笔记。 */
   private prefillNext: string | null = null;
   private sheet: HTMLElement | null = null;
   private modelChip: HTMLButtonElement | null = null;
@@ -139,7 +141,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "peer" | "intro" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
@@ -213,6 +215,17 @@ export class App {
    * names the row it belongs to, so only that row's buttons wait — clicks on other rows queue up.
    */
   private cliOps = new Map<string, { key: string; op: string; state: "queued" | "running" }>();
+  /** D126 技能商店: the search tab, the 已安装 list, the 「按地址」 box, and the ops in flight. */
+  private skillTab: "store" | "installed" = "store";
+  private skillStore: { query: string; limit: number; items: SkillStoreItem[] | null; error?: string; note?: string } = { query: "", limit: 20, items: null };
+  private skillInv: InstalledSkill[] | null = null;
+  private skillInvError: string | null = null;
+  private skillScope: "global" | "project" = "global";
+  private skillSource: { input: string; label: string; kind: "repo" | "local" | null; items: SkillSourceItem[] | null; loading: boolean; open: boolean; error?: string } = { input: "", label: "", kind: null, items: null, loading: false, open: false };
+  private skillOps = new Map<string, { key: string; running: string }>();
+  private skillArm: { key: string; until: number } | null = null;
+  private skillDirty = false;
+  private skillNote: { text: string; bad: boolean } | null = null;
   /** #49 pi 本体：the version check's answer, the last self-update's outcome, and whether a check is in flight. */
   private piUpd: { latest: string | null; source?: string; checkedAt: number; update: boolean; error?: string } | null = null;
   private piChecking = false;
@@ -1029,6 +1042,69 @@ export class App {
         this.skillsAt = Date.now();
         if (this.skillPop) this.renderSkillList();
         break;
+      // ------------------------------------------------ 技能商店 (D126)
+      case "skill.store":
+        // A stale answer (the box moved on while this search was in flight) would flash the old list back.
+        if (String(msg.query ?? "") !== this.skillStore.query) break;
+        this.skillStore.items = Array.isArray(msg.items) ? (msg.items as SkillStoreItem[]) : [];
+        this.skillStore.error = msg.error ? errText(msg) : undefined;
+        this.skillStore.note = msg.note ? String(msg.note) : undefined;
+        this.paintSkillIfOpen();
+        break;
+      case "skill.store.meta": {
+        // Second stage of the same search (D126): dirs and descriptions, merged by id.
+        if (String(msg.query ?? "") !== this.skillStore.query || !this.skillStore.items) break;
+        const more = new Map((Array.isArray(msg.items) ? (msg.items as SkillStoreItem[]) : []).map((i) => [i.id, i]));
+        this.skillStore.items = this.skillStore.items.map((item) => more.get(item.id) ?? item);
+        this.skillStore.note = msg.note ? String(msg.note) : this.skillStore.note;
+        this.paintSkillIfOpen();
+        break;
+      }
+      case "skill.installed":
+        this.skillInv = Array.isArray(msg.items) ? (msg.items as InstalledSkill[]) : [];
+        this.skillInvError = msg.error ? errText(msg) : null;
+        this.paintSkillIfOpen();
+        break;
+      case "skill.source": {
+        const src = this.skillSource;
+        src.loading = false;
+        src.kind = msg.kind === "local" ? "local" : "repo";
+        src.label = String(msg.source ?? "");
+        src.items = Array.isArray(msg.items) ? (msg.items as SkillSourceItem[]) : [];
+        src.error = msg.error ? errText(msg) : undefined;
+        this.paintSkillIfOpen();
+        break;
+      }
+      case "skill.install.done": {
+        const reqId = String(msg.reqId ?? "");
+        const mine = this.skillOps.get(reqId);
+        if (mine) this.skillOps.delete(reqId);
+        if (msg.ok) {
+          // A new folder only shows up in the next pi process: say so, and refresh both lists now.
+          this.skillDirty = true;
+          this.skillNote = { text: tr("已装好 {p1}", { p1: String(msg.name ?? "") }), bad: false };
+          this.loadSkillInventory();
+          this.socket.send({ type: "skills", sessionId: this.currentId });
+        } else {
+          this.skillNote = { text: tr("没有装上：{p1}", { p1: errText(msg) }), bad: true };
+        }
+        this.paintSkillIfOpen();
+        break;
+      }
+      case "skill.remove.done": {
+        const reqId = String(msg.reqId ?? "");
+        const mine = this.skillOps.get(reqId);
+        if (mine) this.skillOps.delete(reqId);
+        if (msg.ok) {
+          this.skillDirty = true;
+          this.skillNote = { text: tr("已卸载 {p1}", { p1: String(msg.name ?? "") }), bad: false };
+          this.loadSkillInventory();
+        } else {
+          this.skillNote = { text: tr("没有卸载：{p1}", { p1: errText(msg) }), bad: true };
+        }
+        this.paintSkillIfOpen();
+        break;
+      }
       case "hello":
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
@@ -1058,7 +1134,10 @@ export class App {
         void this.refreshGit(true);
         if (this.currentId) this.socket.send({ type: "subscribe", sessionId: this.currentId });
         break;
-      case "session":
+      case "session": {
+        // 「交给 agent → 新开会话」那段文字，只有「这条快照是我刚建的那个会话」才认领：
+        // 先取出来再 finish()，后面 closeSheet() 会把它丢掉。
+        const handoff = this.creating ? this.prefillNext : null;
         this.creating?.finish();
         // bridge sends the snapshot as {sessionId, state, items, approvals, budget}
         if (msg.sessionId) {
@@ -1086,12 +1165,11 @@ export class App {
         this.asks = (msg.asks ?? []) as AskRequest[];
         this.renderAll();
         // 「交给 agent → 新开会话」：会话建好之后才把文字填进去。此刻 textarea 已经指向新会话。
-        if (this.prefillNext && this.currentId) {
-          const text = this.prefillNext;
+        if (handoff) {
           this.prefillNext = null;
-          this.composerText = text;
+          this.composerText = handoff;
           if (this.textarea) {
-            this.textarea.value = text;
+            this.textarea.value = handoff;
             this.fitComposer();
             this.textarea.focus();
           }
@@ -1102,6 +1180,7 @@ export class App {
         // A takeover from the model sheet unlocks it; reopen so the list is usable right away.
         if (this.sheetKind === "model" && this.session?.owned) this.openModelSheet();
         break;
+      }
       case "items":
         if (msg.sessionId !== this.currentId) break;
         this.chat.reset((msg.items ?? []) as Item[]);
@@ -2660,6 +2739,9 @@ export class App {
 
   // ---------------------------------------------------------------- model sheet
   private closeSheet(): void {
+    // 开新会话的面板被关掉（取消 / 点背景）= 放弃「交给 agent → 新开会话」那段待填的文字：
+    // 留着它，下一次开的会话会莫名其妙带着别的会话的笔记（见 prefillNext）。
+    if (this.sheetKind === "new") this.prefillNext = null;
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
     this.sheet?.remove();
     this.sheet = null;
@@ -2863,7 +2945,16 @@ export class App {
     search.placeholder = tr("搜索技能：名字或描述…");
     search.spellcheck = false;
     const list = el("div", "skill-list");
-    const foot = el("div", "skill-foot", tr("1–9 直接选 · ↑↓ 选 · Enter 确认 · Esc 关闭"));
+    // D126: the footer carries the way into the 商店 — the palette itself stays a pure picker.
+    const foot = el("div", "skill-foot");
+    foot.append(el("span", "skill-foot-hint", tr("1–9 直接选 · ↑↓ 选 · Enter 确认 · Esc 关闭")));
+    const storeOpen = el("button", "btn ghost skill-store-open", tr("商店")) as HTMLButtonElement;
+    storeOpen.title = tr("安装 / 卸载技能");
+    storeOpen.onclick = () => {
+      this.closeSkillPalette();
+      this.openSkillStore("store");
+    };
+    foot.append(storeOpen);
     panel.append(search, list, foot);
     pop.append(panel);
     this.els.composerHost.append(pop);
@@ -3023,6 +3114,365 @@ export class App {
     field.focus();
     field.setSelectionRange(caret, caret);
     this.fitComposer();
+  }
+
+  // ---------------------------------------------------------------- 技能商店 (D126)
+
+  /**
+   * The store dialog: skills.sh search, the skills installed on this machine, and install from an
+   * address (`owner/repo`, a GitHub link, a local directory). Writes go through the bridge, which
+   * asks for the passphrase again and refuses the public tunnel (same shelf as the 扩展 manager).
+   */
+  private openSkillStore(tab: "store" | "installed" = "store"): void {
+    this.closeSkillPalette();
+    this.closeSheet();
+    this.sheetKind = "skillstore";
+    this.skillTab = tab;
+    this.skillNote = null;
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet settings-sheet ext-sheet skill-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("技能商店")));
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const body = el("div", "settings-body");
+    const host = el("div", "ext-host skill-host");
+    body.append(host);
+    sheet.append(head, el("div", "settings-tabs"), el("div", "settings-note"), body);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    // The installed list is a local disk scan; the store waits for a query (its API needs 2 chars).
+    this.loadSkillInventory();
+    this.paintSkillSheet(host);
+  }
+
+  /** Repaint in place, keeping the scroll position and the focused box (as `paintExtIfOpen` does). */
+  private paintSkillIfOpen(): void {
+    if (this.sheetKind !== "skillstore") return;
+    const host = this.sheet?.querySelector<HTMLElement>(".skill-host");
+    if (!host) return;
+    const body = host.parentElement;
+    const top = body?.scrollTop ?? 0;
+    const focused = document.activeElement instanceof HTMLInputElement && host.contains(document.activeElement) ? document.activeElement.placeholder : null;
+    const caret = focused ? (document.activeElement as HTMLInputElement).selectionStart : null;
+    this.paintSkillSheet(host);
+    if (body) body.scrollTop = top;
+    if (focused) {
+      const again = [...host.querySelectorAll<HTMLInputElement>("input")].find((i) => i.placeholder === focused);
+      again?.focus();
+      if (again && caret !== null) again.setSelectionRange(caret, caret);
+    }
+  }
+
+  private loadSkillInventory(): void {
+    this.skillInvError = null;
+    this.socket.send({ type: "skill.installed", ...(this.session?.cwd ? { cwd: this.session.cwd } : {}) });
+  }
+
+  /** What a row's button says while its own install / uninstall is in flight (null = clickable). */
+  private skillOpLabel(key: string): string | null {
+    for (const op of this.skillOps.values()) if (op.key === key) return op.running;
+    return null;
+  }
+
+  private skillInstall(req: Record<string, unknown>, key: string): void {
+    const reqId = `sk_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    this.skillOps.set(reqId, { key, running: tr("安装中…") });
+    this.act(() => {
+      this.socket.send({ type: "skill.install", reqId, scope: this.skillScope === "project" ? "project" : "user", ...(this.session?.cwd ? { cwd: this.session.cwd } : {}), ...req });
+      this.paintSkillIfOpen();
+    });
+  }
+
+  /** Four seconds to change your mind, like the 扩展 manager's 卸载 (D81). */
+  private skillArmed(key: string): boolean {
+    if (this.skillArm && this.skillArm.key === key && Date.now() < this.skillArm.until) {
+      this.skillArm = null;
+      return true;
+    }
+    this.skillArm = { key, until: Date.now() + 4000 };
+    setTimeout(() => {
+      if (this.skillArm?.key === key && Date.now() >= this.skillArm.until) {
+        this.skillArm = null;
+        this.paintSkillIfOpen();
+      }
+    }, 4100);
+    return false;
+  }
+
+  private skillRemove(entry: InstalledSkill): void {
+    const key = `remove:${entry.path}`;
+    if (!this.skillArmed(key)) {
+      this.paintSkillIfOpen();
+      return;
+    }
+    const reqId = `sk_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    this.skillOps.set(reqId, { key, running: tr("卸载中…") });
+    this.act(() => {
+      this.socket.send({ type: "skill.remove", reqId, path: entry.path });
+      this.paintSkillIfOpen();
+    });
+  }
+
+  private paintSkillSheet(host: HTMLElement): void {
+    host.replaceChildren();
+    const tabs = el("div", "settings-tabs ext-tabs");
+    const def: ["store" | "installed", string][] = [
+      ["store", tr("商店")],
+      ["installed", this.skillInv ? tr("已安装（{p1}）", { p1: this.skillInv.length }) : tr("已安装")],
+    ];
+    for (const [id, label] of def) {
+      const b = el("button", `chip${this.skillTab === id ? " on" : ""}`, label) as HTMLButtonElement;
+      b.onclick = () => {
+        this.skillTab = id;
+        this.skillNote = null;
+        if (id === "installed") this.loadSkillInventory();
+        this.paintSkillIfOpen();
+      };
+      tabs.append(b);
+    }
+    host.append(tabs);
+    if (this.me.public) host.append(el("div", "takeover warn", tr("通过公网访问：这里只能查看，安装 / 卸载 / 更新 / 启停请在本机或局域网操作。")));
+    if (this.skillDirty) {
+      const bar = el("div", "takeover ext-reload");
+      bar.append(el("span", "", tr("改动要「重新加载」后，正在运行的会话才看得到（新开的会话直接生效）。")));
+      if (this.session?.owned) {
+        const b = el("button", "btn", tr("重新加载当前会话")) as HTMLButtonElement;
+        b.disabled = Boolean(this.session.running);
+        b.title = this.session.running ? tr("这一轮结束后再重新加载") : "/reload";
+        b.onclick = () => {
+          const sessionId = this.currentId;
+          if (!sessionId) return;
+          this.act(() => this.socket.send({ type: "reload", sessionId }));
+          this.skillDirty = false;
+          this.paintSkillIfOpen();
+        };
+        bar.append(b);
+      }
+      host.append(bar);
+    }
+    if (this.skillNote) host.append(el("div", `login-result${this.skillNote.bad ? " bad" : ""}`, this.skillNote.text));
+    if (this.skillTab === "store") this.paintSkillStore(host);
+    else this.paintSkillInstalled(host);
+  }
+
+  /** 商店 tab: skills.sh search + 按地址安装; the scope picker decides where a click writes. */
+  private paintSkillStore(host: HTMLElement): void {
+    const store = this.skillStore;
+    const run = (): void => {
+      if (store.query.trim().length < 2) return;
+      store.items = null;
+      store.error = undefined;
+      this.socket.send({ type: "skill.store", query: store.query, limit: store.limit });
+      this.paintSkillIfOpen();
+    };
+    const bar = el("div", "info-compact");
+    const q = el("input", "ns-input") as HTMLInputElement;
+    q.placeholder = tr("搜索技能（skills.sh，至少 2 个字）");
+    q.value = store.query;
+    q.spellcheck = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    q.oninput = () => {
+      store.query = q.value.trim();
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(run, 350);
+    };
+    q.onkeydown = (ev) => {
+      if (ev.key === "Enter" && store.query.trim().length >= 2) run();
+    };
+    bar.append(q);
+    host.append(bar);
+    host.append(this.skillScopeRow());
+    const chips = el("div", "settings-trust-opts");
+    chips.append(el("span", "settings-hint", store.query ? tr("搜索结果，按安装量排：") : tr("热度前")));
+    for (const n of [10, 20, 50]) {
+      const b = el("button", `chip${store.limit === n ? " on" : ""}`, String(n)) as HTMLButtonElement;
+      b.onclick = () => {
+        store.limit = n;
+        run();
+      };
+      chips.append(b);
+    }
+    host.append(chips);
+    host.append(el("div", "settings-hint", tr("来源是 skills.sh（社区技能目录，按安装次数排序）；每条技能的说明读自它仓库里的 SKILL.md。装进来的技能落在上面选的位置，pi 启动时自动发现。")));
+    if (store.note) host.append(el("div", "settings-hint", store.note));
+    if (!store.query) host.append(el("div", "empty", tr("输入至少 2 个字再搜。")));
+    else if (store.error) host.append(el("div", "empty", store.error));
+    else if (!store.items) host.append(el("div", "empty", tr("查询中…")));
+    else if (!store.items.length) host.append(el("div", "empty", tr("没有找到")));
+
+    const installedNames = new Set((this.skillInv ?? []).map((s) => s.name));
+    const ro = Boolean(this.me.public);
+    const list = el("div", "login-list");
+    (store.items ?? []).forEach((item, i) => {
+      const row = el("div", "login-row");
+      const name = el("div", "login-name");
+      name.append(el("span", "ext-rank", `${i + 1}`), el("span", "", item.name), el("span", "settings-hint", ` ${item.source}`));
+      name.title = item.id;
+      row.append(name, el("span", "login-status", item.installs ? tr("{p1} 次安装", { p1: fmtNum(item.installs) }) : ""));
+      const acts = el("div", "login-acts");
+      if (item.description) acts.append(el("span", "settings-hint ext-desc", item.description));
+      else if (item.note) acts.append(el("span", "settings-hint", tr("说明没查到：{p1}", { p1: item.note })));
+      if (installedNames.has(item.name)) acts.append(el("span", "login-status ok", tr("已安装")));
+      else if (!item.resolved) {
+        // Stage one has the rank already; where it lives in the repo is still being worked out.
+        acts.append(el("span", "settings-hint", tr("正在确认目录和说明…")));
+        const wait = el("button", "btn", this.skillInstallLabel()) as HTMLButtonElement;
+        wait.disabled = true;
+        acts.append(wait);
+      } else if (!item.dir) acts.append(el("span", "login-status warn", tr("仓库里没找到这个技能的目录")));
+      else {
+        const key = `install:${item.id}`;
+        const label = this.skillOpLabel(key);
+        const b = el("button", "btn primary", label ?? this.skillInstallLabel()) as HTMLButtonElement;
+        b.disabled = ro || Boolean(label);
+        b.onclick = () => this.skillInstall({ source: item.source, dir: item.dir, skillId: item.name, name: item.name }, key);
+        acts.append(b);
+      }
+      row.append(acts);
+      list.append(row);
+    });
+    host.append(list);
+    host.append(this.skillAddBySource(ro));
+  }
+
+  /** 「安装到全局 / 安装到当前项目」 — the label has to name where the click lands. */
+  private skillInstallLabel(): string {
+    return tr("安装到{p1}", { p1: this.skillScope === "project" ? tr("当前项目") : tr("全局") });
+  }
+
+  /** The scope picker: where a click in this tab writes. */
+  private skillScopeRow(): HTMLElement {
+    const box = el("div", "settings-foot skill-scope");
+    box.append(el("span", "settings-hint", tr("装到：")));
+    const scope = el("select", "ns-input") as HTMLSelectElement;
+    scope.append(new Option(tr("全局（用户技能目录）"), "global"), new Option(tr("当前项目（.pi/skills）"), "project"));
+    scope.value = this.skillScope;
+    scope.style.width = "auto";
+    scope.disabled = !this.session?.cwd;
+    scope.title = this.session?.cwd ? "" : tr("没打开会话，不知道项目目录：只能装到全局");
+    scope.onchange = () => {
+      this.skillScope = scope.value === "project" ? "project" : "global";
+      this.paintSkillIfOpen();
+    };
+    box.append(scope);
+    return box;
+  }
+
+  /** 按地址安装: paste `owner/repo`, a GitHub link, or a folder on this machine → pick a skill. */
+  private skillAddBySource(ro: boolean): HTMLElement {
+    const more = el("details", "ns-advanced");
+    // Repaints replace this subtree, so whether it is unfolded has to live in state, not in the DOM.
+    more.open = this.skillSource.open;
+    more.ontoggle = () => (this.skillSource.open = more.open);
+    more.append(el("summary", "", tr("按地址安装（GitHub 仓库或本机目录）")));
+    const grid = el("div", "ns-adv-grid");
+    const src = el("input", "ns-input mono") as HTMLInputElement;
+    src.placeholder = tr("owner/repo · https://github.com/… · 或本机目录");
+    src.value = this.skillSource.input;
+    src.oninput = () => (this.skillSource.input = src.value);
+    const go = el("button", "btn", this.skillSource.loading ? tr("列出中…") : tr("列出技能")) as HTMLButtonElement;
+    go.disabled = ro || this.skillSource.loading;
+    go.onclick = () => {
+      const input = src.value.trim();
+      if (!input) return;
+      this.skillSource = { input, label: "", kind: null, items: null, loading: true, open: true };
+      this.socket.send({ type: "skill.source", source: input });
+      this.paintSkillIfOpen();
+    };
+    const row = el("div", "info-compact");
+    row.append(src, go);
+    grid.append(row);
+    if (this.skillSource.error) grid.append(el("div", "login-result bad", this.skillSource.error));
+    const items = this.skillSource.items ?? [];
+    if (items.length) {
+      grid.append(el("div", "settings-hint", tr("来自 {p1}（{p2} 个技能）：", { p1: this.skillSource.label, p2: items.length })));
+      const list = el("div", "login-list");
+      for (const item of items) {
+        const line = el("div", "login-row");
+        line.append(el("div", "login-name", item.name));
+        const acts = el("div", "login-acts");
+        acts.append(el("span", "skill-path", item.path));
+        if (item.description) acts.append(el("span", "settings-hint ext-desc", item.description));
+        const key = `install:${item.local ? item.path : `${this.skillSource.label}#${item.path}`}`;
+        const label = this.skillOpLabel(key);
+        const b = el("button", "btn primary", label ?? this.skillInstallLabel()) as HTMLButtonElement;
+        b.disabled = ro || Boolean(label);
+        b.onclick = () =>
+          this.skillInstall(item.local ? { local: item.path } : { source: this.skillSource.label, dir: item.path, name: item.name }, key);
+        acts.append(b);
+        line.append(acts);
+        list.append(line);
+      }
+      grid.append(list);
+    }
+    more.append(grid);
+    return more;
+  }
+
+  private paintSkillInstalled(host: HTMLElement): void {
+    const top = el("div", "settings-foot");
+    top.append(el("span", "settings-hint", tr("扫描的是本机技能目录（和 pi 启动时读的是同一批）。用户技能可以卸载，项目技能跟着仓库走。")));
+    top.append(el("span", "spacer"));
+    const refresh = el("button", "btn ghost", tr("刷新")) as HTMLButtonElement;
+    refresh.onclick = () => {
+      this.loadSkillInventory();
+      this.paintSkillIfOpen();
+    };
+    top.append(refresh);
+    host.append(top);
+    if (this.skillInvError) {
+      host.append(el("div", "empty", this.skillInvError));
+      return;
+    }
+    if (!this.skillInv) {
+      host.append(el("div", "empty", tr("读取本机技能目录…")));
+      return;
+    }
+    if (!this.skillInv.length) {
+      host.append(el("div", "empty", tr("本机还没有装任何技能，去「商店」看看。")));
+      return;
+    }
+    const ro = Boolean(this.me.public);
+    const groups: [string, InstalledSkill[]][] = [
+      [tr("用户技能（可以卸载）"), this.skillInv.filter((s) => s.removable)],
+      [tr("项目技能（只读，跟着仓库走）"), this.skillInv.filter((s) => !s.removable)],
+    ];
+    for (const [label, entries] of groups) {
+      if (!entries.length) continue;
+      host.append(el("div", "settings-label", label));
+      const list = el("div", "login-list");
+      for (const entry of entries) {
+        const row = el("div", "login-row");
+        const name = el("div", "login-name");
+        name.append(el("span", "", entry.name));
+        if (entry.link) name.append(el("span", "ext-kind", tr("链接")));
+        row.append(name);
+        const acts = el("div", "login-acts");
+        acts.append(el("span", "skill-path", entry.path));
+        if (entry.description) acts.append(el("span", "settings-hint ext-desc", entry.description));
+        if (entry.from) acts.append(el("span", "settings-hint", tr("来自 {p1}", { p1: entry.from })));
+        if (entry.removable) {
+          const key = `remove:${entry.path}`;
+          const label = this.skillOpLabel(key);
+          const armed = this.skillArm?.key === key && Date.now() < this.skillArm.until;
+          const b = el("button", `btn${armed ? " danger" : ""}`, label ?? (armed ? tr("确认卸载？") : tr("卸载"))) as HTMLButtonElement;
+          b.disabled = ro || Boolean(label);
+          b.onclick = () => this.skillRemove(entry);
+          acts.append(b);
+        } else {
+          acts.append(el("span", "settings-hint", tr("只读：项目技能跟着仓库走，要删就直接删这个目录")));
+        }
+        row.append(acts);
+        list.append(row);
+      }
+      host.append(list);
+    }
   }
 
   /**

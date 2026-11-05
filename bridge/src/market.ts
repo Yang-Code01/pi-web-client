@@ -27,7 +27,7 @@ function proxyUrl(): URL | null {
 }
 
 /** One HTTPS request, tunnelled through the proxy with CONNECT when there is one. */
-export function request(url: string, opts: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = {}): Promise<{ status: number; text: string }> {
+export function requestRaw(url: string, opts: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = {}): Promise<{ status: number; body: Buffer }> {
   const target = new URL(url);
   const proxy = proxyUrl();
   const timeoutMs = opts.timeoutMs ?? 20_000;
@@ -40,7 +40,7 @@ export function request(url: string, opts: { method?: string; headers?: Record<s
       res.on("data", (c: Buffer) => chunks.push(c));
       res.on("end", () => {
         clearTimeout(timer);
-        resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf8") });
+        resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) });
       });
       res.on("error", (e) => {
         clearTimeout(timer);
@@ -72,10 +72,21 @@ export function request(url: string, opts: { method?: string; headers?: Record<s
   });
 }
 
+/** The same request, as text (JSON, markdown, SKILL.md …). */
+export async function request(url: string, opts: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = {}): Promise<{ status: number; text: string }> {
+  const res = await requestRaw(url, opts);
+  return { status: res.status, text: res.body.toString("utf8") };
+}
+
 async function getJson<T = any>(url: string, headers?: Record<string, string>): Promise<T> {
   const res = await request(url, { headers });
   if (res.status < 200 || res.status >= 300) throw new Error(`${new URL(url).host} 返回 ${res.status}`);
   return JSON.parse(res.text) as T;
+}
+
+/** A JSON GET for other modules (the 技能商店 resolves repos the same proxy-aware way). */
+export async function fetchJson<T = any>(url: string, headers?: Record<string, string>): Promise<T> {
+  return getJson<T>(url, headers);
 }
 
 // ------------------------------------------------------------------ small caches
@@ -517,7 +528,8 @@ async function buildIndex(): Promise<{ at: number; items: StoreMcp[]; starsCompl
   return { at: Date.now(), items: list, starsComplete };
 }
 
-function ghToken(): string | null {
+/** A GitHub token when the machine has one (env or `gh auth token`); null = anonymous (60/h). */
+export function ghToken(): string | null {
   if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) return (process.env.GH_TOKEN || process.env.GITHUB_TOKEN)!;
   try {
     const r = spawnSync("gh", ["auth", "token"], { encoding: "utf8", windowsHide: true, timeout: 10_000 });
