@@ -59,6 +59,7 @@ import { answer as answerLogin, cancel as cancelLogin, listProviders, login as s
 import { piLatest } from "./piupdate.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
 import { fileGrant, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
+import { sheetPdf } from "./sheet/pdf.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
 
 interface Config {
@@ -641,6 +642,39 @@ async function main(): Promise<void> {
         return json(res, 200, await readSheetWindow(grant.abs, String(body.sheet ?? ""), r0, r1, c0, c1));
       } catch (err: any) {
         return fail(res, 400, String(err?.code ?? ""), String(err?.message ?? err));
+      }
+    }
+
+    // #112: the page view is a PDF LibreOffice laid out once per path+mtime. It deliberately does
+    // NOT reuse /raw: that route stamps `content-security-policy: sandbox` on every response, and a
+    // sandboxed browser PDF viewer renders a blank page. No sandbox here — the bytes are a PDF, and
+    // only the same-origin page reads this route with the grant token.
+    if (url.pathname === "/api/sheet/pdf" && req.method === "GET") {
+      const grant = fileGrant(url.searchParams.get("token") ?? "");
+      if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
+      let st: fs.Stats;
+      try {
+        st = await fs.promises.stat(grant.abs);
+      } catch {
+        return fail(res, 404, "sheet_gone", "文件已不在原处");
+      }
+      if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
+      try {
+        const pdf = await sheetPdf(grant.abs, st.mtimeMs);
+        const size = (await fs.promises.stat(pdf.file)).size;
+        res.writeHead(200, {
+          "content-type": "application/pdf",
+          "content-length": String(size),
+          "content-disposition": 'inline; filename="page-view.pdf"',
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+          "x-sheet-pdf": pdf.cached ? "hit" : "miss",
+        });
+        fs.createReadStream(pdf.file).pipe(res);
+        return;
+      } catch (err: any) {
+        const code = String(err?.code ?? "") === "sheet_pdf_soffice" ? "sheet_pdf_soffice" : "sheet_pdf_failed";
+        return fail(res, code === "sheet_pdf_soffice" ? 503 : 502, code, String(err?.message ?? err));
       }
     }
 
