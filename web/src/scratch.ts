@@ -349,7 +349,15 @@ export class ScratchChat {
       row.append(el("span", "m-name", m.name || m.id), el("span", "m-prov", m.provider));
       row.onclick = () => {
         this.modelMenu.hidden = true;
-        this.host.send({ type: "setModel", sessionId: this.id, provider: m.provider, modelId: m.id });
+        // 档位跟着一起发：pi 换模型时会把它 clamp 到新模型的默认档（实测 off → max），
+        // 不带 level 的话，用户刚调好的档位会被悄悄改掉。
+        this.host.send({
+          type: "setModel",
+          sessionId: this.id,
+          provider: m.provider,
+          modelId: m.id,
+          level: this.state?.thinkingLevel || undefined,
+        });
       };
       this.modelMenu.append(row);
     }
