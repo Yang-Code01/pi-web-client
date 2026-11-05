@@ -8,7 +8,7 @@ import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, summarizeT
 import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
 import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions } from "./launch.ts";
-import { ensureDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
+import { ensureDir, resetScratchDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
 import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
@@ -143,6 +143,13 @@ export interface SessionState {
   file: string | null;
   owned: boolean; // this bridge is the writer
   origin?: "web" | "disk"; // "web" = this bridge created it; "disk" = came from a pi session file
+  /**
+   * 随手问 (#86): not a session in the user's sense at all — it is hidden from every list, exempt
+   * from the idle rule (it has its own longer one), exempt from the memory watermark and exempt from
+   * auto-compaction. Its pi writes to its own session dir, so nothing ever scans it in. One flag,
+   * read by all four rules, so they cannot drift apart.
+   */
+  scratch?: boolean;
   /** True while the pi child is still booting (extensions load there: ~8 s with a big set, D122). */
   starting?: boolean;
   running: boolean;
@@ -549,6 +556,11 @@ function originOf(id: string): "web" | "disk" {
 
 const DEFAULT_NAME = "新会话";
 
+/** 随手问 (#86): what it is called, and the only tools it ever gets. Not user-settable — the point
+ * of the fixed list is that a write tool cannot be talked into existing. */
+const SCRATCH_NAME = "随手问";
+const SCRATCH_TOOLS = "read,grep,find,ls";
+
 export class Session extends EventEmitter {
   readonly state: SessionState;
   items: Item[] = [];
@@ -780,6 +792,9 @@ export class Session extends EventEmitter {
     this.state.launch = describeLaunch(launch) || undefined;
     if (opts.resume && this.state.file) args.push("--session", this.state.file);
     else args.push("--session-id", id);
+    // 随手问 (#86): pi writes into its own throwaway session dir, outside the root that every
+    // listing scans — that is what makes "no record" a fact rather than a filtered display.
+    if (this.state.scratch) args.push("--session-dir", scratchSessionsDir());
     if (opts.name && !opts.resume) args.push("--name", opts.name);
 
     const cwd = opts.cwd || this.state.cwd || process.cwd();
@@ -1512,6 +1527,44 @@ export class Session extends EventEmitter {
     void this.refreshStats();
   }
 
+  /**
+   * 「清空」 for 随手问 (#86): pi starts a fresh session **inside the same process** — no cold start,
+   * and the context and token count go back to zero. The old file is deleted, so 「不落盘」 stays
+   * true after the first clear as well; the page replaces its own timeline with an empty one.
+   *
+   * The bridge-side id deliberately stays put: everything the page holds is keyed by it, and pi's
+   * new id is internal. Only `state.file` follows pi, because that is what a later wake-up resumes.
+   */
+  async scratchClear(): Promise<void> {
+    if (!this.state.scratch) throw new Error("这个会话不是随手问");
+    const rpc = this.rpc;
+    if (!rpc?.alive) throw new Error("随手问没有在运行");
+    const before = this.state.file;
+    const res = await rpc.request<any>("new_session", {}, 60_000);
+    if (res?.cancelled) throw new Error("pi 取消了新会话");
+    let file: string | null = null;
+    try {
+      const st = await rpc.request<any>("get_state", {}, 15_000);
+      if (typeof st?.sessionFile === "string") file = st.sessionFile;
+      else if (typeof st?.sessionPath === "string") file = st.sessionPath;
+    } catch {
+      /* the next wake-up just starts a new file again */
+    }
+    this.items = [];
+    this.autoCompactUsed = false;
+    this.setState({ file, truncated: false }, { touch: false });
+    this.emitWs({ type: "items", sessionId: this.state.id, items: [] });
+    this.touch();
+    if (before && before !== file) {
+      try {
+        fs.rmSync(before, { force: true });
+      } catch {
+        /* a leftover file only costs disk; the next startup wipes the whole dir anyway */
+      }
+    }
+    void this.refreshStats();
+  }
+
   private beginCompaction(): void {
     if (this.compaction) return;
     let resolve = () => {};
@@ -1588,6 +1641,9 @@ export class Session extends EventEmitter {
 
   /** Compact once per turn when the last measured context blew the budget. */
   private async maybeAutoCompact(): Promise<void> {
+    // 随手问 (#86) is never compacted behind the user's back: the summary would be exactly the
+    // 上下文干扰 it exists to avoid. It gets a reminder instead, and 「清空」 is the only reset.
+    if (this.state.scratch) return;
     const budget = this.contextBudget;
     const used = this.lastContextTokens;
     if (!budget || !used) return;
@@ -1995,6 +2051,9 @@ export class SessionManager extends EventEmitter {
     const flag = (id: string) => ({ pinned: manage.pin.includes(id), archived: manage.archived.includes(id) });
     for (const s of this.sessions.values()) {
       seen.add(s.state.id);
+      // 随手问 is not one of the user's sessions (#86): it has no place in any listing, not even
+      // for a moment. Defence in depth — its files already sit outside the scanned root.
+      if (s.state.scratch) continue;
       const lock = readLock(s.state.id);
       // Copy: these flags must not leak into the live state a session broadcasts.
       out.push({ ...s.state, ...flag(s.state.id), locked: Boolean((lock && lock.pid !== process.pid) || (!s.live && readTtyLock(s.state.id))) });
@@ -2076,7 +2135,7 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
-  async create(cwd: string, name?: string, launch: LaunchOptions = {}): Promise<Session> {
+  async create(cwd: string, name?: string, launch: LaunchOptions = {}, opts: { scratch?: boolean } = {}): Promise<Session> {
     let isDir = false;
     try {
       isDir = fs.statSync(cwd).isDirectory();
@@ -2088,10 +2147,49 @@ export class SessionManager extends EventEmitter {
     writeLaunch(id, launch);
     const session = new Session(this.cli, null, { id, name });
     session.state.cwd = cwd;
+    // Before startLive: the spawn reads these (--session-dir, and the gate's allow file).
+    if (opts.scratch) {
+      session.state.scratch = true;
+      session.state.permission = "readonly";
+      writePermission(id, "readonly");
+    }
     this.wire(session);
     this.sessions.set(id, session);
     await session.startLive({ resume: false, cwd, name });
     this.emit("ws", { type: "session.state", session: session.state });
+    return session;
+  }
+
+  // ------------------------------------------------------------ 随手问 (#86)
+
+  /** The one live 随手问. Bridge-side only: nothing is persisted, so a restart forgets it. */
+  private scratchId: string | null = null;
+
+  /**
+   * 随手问 (#86): a session that is on no list, has its own longer idle rule and is never reaped by
+   * the watermark. Opened lazily — the first click pays the cold start, nothing after it does — and
+   * woken the ordinary way (resume) when it has slept.
+   */
+  async scratchSession(): Promise<Session> {
+    if (this.scratchId) {
+      const existing = this.sessions.get(this.scratchId);
+      if (existing) {
+        if (!existing.live) await this.openLive(this.scratchId);
+        return existing;
+      }
+      this.scratchId = null;
+    }
+    ensureDir(scratchCwd());
+    ensureDir(scratchSessionsDir());
+    const session = await this.create(scratchCwd(), SCRATCH_NAME, { tools: SCRATCH_TOOLS }, { scratch: true });
+    this.scratchId = session.state.id;
+    return session;
+  }
+
+  /** 「清空」: a fresh session inside the same pi process (#86), no cold start. */
+  async clearScratch(): Promise<Session> {
+    const session = await this.scratchSession();
+    await session.scratchClear();
     return session;
   }
 
@@ -2619,7 +2717,8 @@ export class SessionManager extends EventEmitter {
         continue;
       }
       if (s.state.running) continue;
-      if (s.idleFor() > cfg.idleMs) void s.sleep();
+      // 随手问 gets its own, longer rule (#86): being still there later is the whole point of it.
+      if (s.idleFor() > (s.state.scratch ? cfg.scratchIdleMs : cfg.idleMs)) void s.sleep();
     }
   }
 
@@ -2653,6 +2752,8 @@ export class SessionManager extends EventEmitter {
       // No bytes means the table did not list this pid: reaping it would not move the total.
       if (!session?.live || row.bytes === undefined) continue;
       if (row.running || session.approvals.size || session.asks.size) continue;
+      // Never a candidate (#86): the memory figure does not get to decide this one's fate.
+      if (session.state.scratch) continue;
       if (row.idleMs < protectMs) continue;
       session.sleep();
       total -= row.bytes;

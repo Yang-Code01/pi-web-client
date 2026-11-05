@@ -12,6 +12,13 @@ import { readJson, statePath, writeJson } from "./paths.ts";
 export interface Lifecycle {
   /** A settled session that has seen no pi event for this long sleeps (#76). */
   idleMs: number;
+  /**
+   * The same rule for 随手问 (#86): it is the longest-lived thing in the bridge on purpose — the
+   * whole point of it is to still be warm when a thought strikes, so it must outlast an ordinary
+   * session. Not in the panel (yet): D120's two 「可改」 thresholds keep their meaning, and this one
+   * is set through `lifecycle.json` or the env seam.
+   */
+  scratchIdleMs: number;
   /** After the watchdog's abort, how long pi gets to settle before the process is ended (#81). */
   abortGraceMs: number;
   /** Total resident bytes of all our pi processes before the longest-idle ones sleep (#79). */
@@ -20,6 +27,8 @@ export interface Lifecycle {
 
 /** Defaults from D120; all are "可改". */
 export const DEFAULT_IDLE_MS = 30 * 60 * 1000;
+/** 随手问 (#86): longer than an ordinary session on purpose — it exists to still be warm later. */
+export const DEFAULT_SCRATCH_IDLE_MS = 60 * 60 * 1000;
 export const DEFAULT_ABORT_GRACE_MS = 60 * 1000;
 export const DEFAULT_WATERMARK_BYTES = 2.5 * 1024 ** 3;
 
@@ -59,10 +68,11 @@ export function gcTickMs(): number {
 }
 
 export function lifecycle(): Lifecycle {
-  const file = readJson<{ idleMs?: unknown; watermarkBytes?: unknown }>(statePath("lifecycle.json"), {});
+  const file = readJson<{ idleMs?: unknown; scratchIdleMs?: unknown; watermarkBytes?: unknown }>(statePath("lifecycle.json"), {});
   return {
     // Environment first: a test must win over whatever the state dir happens to hold.
     idleMs: positive(process.env.PI_WEB_IDLE_MS) ?? positive(file?.idleMs) ?? DEFAULT_IDLE_MS,
+    scratchIdleMs: positive(process.env.PI_WEB_SCRATCH_IDLE_MS) ?? positive(file?.scratchIdleMs) ?? DEFAULT_SCRATCH_IDLE_MS,
     abortGraceMs: positive(process.env.PI_WEB_ABORT_GRACE_MS) ?? DEFAULT_ABORT_GRACE_MS,
     watermarkBytes: positive(process.env.PI_WEB_WATERMARK_BYTES) ?? positive(file?.watermarkBytes) ?? DEFAULT_WATERMARK_BYTES,
   };

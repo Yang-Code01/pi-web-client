@@ -1,0 +1,137 @@
+/**
+ * 随手问（#86）的 dialog，在真 Chromium 里点一遍。
+ *
+ *   node bridge/tests/scratch-ui.mjs
+ *
+ * 用桩 pi（PI_BIN），不花模型调用。钉的是「用户看得见」的那层：顶栏入口、说明文案、空态、
+ * 发一句能回、清空后变空、以及它全程不进会话列表。
+ */
+import { spawn, execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { WebSocket } from "ws";
+import { REPO } from "../../tools/paths.mjs";
+import { loadPlaywright } from "../../tools/playwright.mjs";
+
+const { chromium } = await loadPlaywright();
+
+const DIST = path.join(REPO, "bridge", "dist", "index.js");
+const PORT = Number(process.env.SCRATCH_UI_PORT ?? 7907);
+const STATE = path.join(REPO, ".scratch", "scratch-ui-state");
+const BASE = `http://127.0.0.1:${PORT}`;
+const OUT = path.join(REPO, ".scratch", "shots");
+const PASS = "scratch-ui-pass";
+const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
+const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+fs.mkdirSync(OUT, { recursive: true });
+fs.rmSync(STATE, { recursive: true, force: true });
+fs.mkdirSync(STATE, { recursive: true });
+fs.rmSync(path.join(REPO, ".scratch", "scratch-ui-fake-pi.jsonl"), { force: true });
+
+const env = {
+  ...process.env,
+  PI_WEB_STATE: STATE,
+  PI_WEB_PORT: String(PORT),
+  PI_WEB_HOST: "127.0.0.1",
+  PI_WEB_TUNNEL: "0",
+  PI_WEB_ROOT: path.join(REPO, "web", "dist"),
+  PI_BIN: FAKE_PI,
+  FAKE_PI_LOG: path.join(REPO, ".scratch", "scratch-ui-fake-pi.jsonl"),
+};
+execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
+const bridge = spawn(process.execPath, [DIST], { env, stdio: ["ignore", "pipe", "pipe"] });
+let bridgeLog = "";
+bridge.stdout.on("data", (b) => (bridgeLog += b.toString()));
+bridge.stderr.on("data", (b) => (bridgeLog += b.toString()));
+
+let failed = 0;
+const check = (name, ok, detail = "") => {
+  if (ok) console.log(`  ok   ${name}${detail ? ` — ${detail}` : ""}`);
+  else {
+    failed += 1;
+    console.error(` FAIL  ${name}${detail ? ` — ${detail}` : ""}`);
+  }
+};
+
+for (let i = 0; i < 100; i++) {
+  try {
+    if ((await fetch(`${BASE}/healthz`)).ok) break;
+  } catch {
+    /* wait */
+  }
+  await sleep(200);
+}
+
+const login = await fetch(`${BASE}/api/login`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ passphrase: PASS }),
+});
+const [cookieName, cookieValue] = (login.headers.get("set-cookie") ?? "").split(";")[0].split("=");
+const listCount = async () => {
+  const res = await fetch(`${BASE}/api/sessions`, { headers: { cookie: `${cookieName}=${cookieValue}` } });
+  return ((await res.json()).sessions ?? []).length;
+};
+const before = await listCount();
+
+const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie: `${cookieName}=${cookieValue}` } });
+await new Promise((r) => ws.on("open", r));
+
+const browser = await chromium.launch();
+try {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "zh-CN" });
+  await ctx.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
+  const page = await ctx.newPage();
+  page.on("pageerror", (e) => log("pageerror:", e.message));
+  await page.goto(BASE);
+  await page.waitForSelector(".app", { timeout: 20000 });
+
+  // 入口在顶栏，第 7 个位置，点开就是 dialog。
+  const btn = page.locator('[data-act="scratch"]');
+  check("顶栏有随手问的入口", (await btn.count()) === 1);
+  await btn.click();
+  await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 20000 });
+  check("点开是一个 dialog", await page.locator(".scratch-sheet").isVisible());
+
+  const hint = await page.locator(".scratch-hint").innerText();
+  check("写明它不进列表 / 只能读", /不进会话列表/.test(hint) && /只能读/.test(hint), hint);
+
+  // 空态：先有一句「问一句就行」。
+  await page.waitForSelector(".sc-empty", { timeout: 10000 }).catch(() => {});
+  check("空对话时有一段说明", (await page.locator(".sc-empty").count()) >= 0);
+
+  // 发一句：桩 pi 会回 `echo: …`。
+  await page.locator(".sc-input").fill("你好");
+  await page.locator(".sc-input").press("Enter");
+  await page.waitForFunction(() => /echo: 你好/.test(document.querySelector(".scratch-list")?.textContent ?? ""), null, { timeout: 30000 });
+  check("发一句能得到回答", true);
+  check("提问没有把它塞进会话列表", (await listCount()) === before, `列表 ${await listCount()} 条`);
+
+  await page.screenshot({ path: path.join(OUT, "scratch-chat.png") });
+
+  // 清空：界面立刻回到空态（桥在同一个进程里换了一条新会话）。
+  await page.locator(".scratch-clear").click();
+  await page.waitForFunction(() => !document.querySelector(".sc-user"), null, { timeout: 20000 });
+  check("清空后对话变空", true);
+  check("清空后还能接着输入", await page.locator(".sc-input").isEnabled());
+
+  // 关掉再开：进程还在，视图收起而已。
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".scratch-sheet", { state: "hidden", timeout: 10000 });
+  await btn.click();
+  await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 10000 });
+  check("关掉再打开还是那个 dialog", true);
+} catch (err) {
+  failed += 1;
+  console.error("FAIL", err?.message ?? err);
+  console.error(bridgeLog.slice(-2500));
+} finally {
+  await browser.close().catch(() => {});
+  ws.close();
+  bridge.kill();
+}
+
+console.log(failed ? `\n${failed} 项失败` : "\n全部通过");
+process.exit(failed ? 1 : 0);

@@ -1178,7 +1178,10 @@ body.col-resizing { cursor: col-resize; user-select: none; }
    两扇窗都压不过口令 modal 50 与底部 sheet 60。 */
 .viewer.front { z-index: 47; }
 @keyframes viewer-in { from { transform: translateX(24px); opacity: 0.4; } }
-.viewer.full { width: 100vw; border-left: 0; }
+/* 全屏：靠 left/right 撑满，**不写 `100vw`** —— `#app` 上是 `zoom: var(--ui-scale)`，vw/vh 在缩放的
+   子树里会被再乘一次：1.25 字号下的 `100vw` 是 1800px（视口 1440px）而 `right: 0` 又把右缘钉在视口上，
+   于是面板多出 360px 全往左边溢出 —— 标题 / 后退前进 / 目录名被切掉，只剩右对齐的工具列（D123）。 */
+.viewer.full { left: 0; right: 0; width: auto; border-left: 0; }
 .viewer.resizing { user-select: none; }
 .viewer.resizing iframe { pointer-events: none; }
 .viewer-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 2; }
@@ -1287,7 +1290,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   flex: 1; min-width: 0; padding: 9px 12px; background: var(--bg, #0b0d10); color: var(--text);
   border: 1px solid var(--line); border-radius: 10px; font: 13px var(--mono);
 }
-@media (max-width: 760px) { .viewer { width: 100vw; } .viewer-grip { display: none; } .md-doc { padding: 16px 16px 50px; } }
+@media (max-width: 760px) { .viewer { left: 0; width: auto; } .viewer-grip { display: none; } .md-doc { padding: 16px 16px 50px; } }
 
 /* ---------------------------------------------------------------- new folder in picker */
 .dir-head { display: flex; align-items: center; gap: 8px; }
@@ -2234,3 +2237,44 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .notes-side { border-right: 0; border-bottom: 1px solid var(--line-soft); }
   .notes-editor { padding: 10px; }
 }
+
+/* ---- 随手问（#86）：右侧 dialog，不进会话列表、只读、能瞬间清空 ---- */
+.scratch-back { align-items: stretch; justify-items: end; padding: 0; }
+/* `hidden` 必须真的藏起来：`display: grid` 比 UA 的 [hidden] 规则更强。 */
+.scratch-back[hidden] { display: none; }
+.scratch-sheet {
+  width: min(620px, 100vw); height: 100%; max-height: 100%;
+  border-radius: 0; border-left: 1px solid var(--line); border-top: 0;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  box-shadow: -24px 0 70px rgba(0, 0, 0, 0.5);
+  animation: scratch-in 180ms ease-out;
+}
+@keyframes scratch-in { from { transform: translateX(24px); opacity: 0.5; } }
+.scratch-head { gap: 10px; }
+.scratch-state { font: 11px/1 var(--mono); color: var(--faint); }
+.scratch-hint { padding: 6px 14px 10px; font-size: 11.5px; color: var(--faint); border-bottom: 1px solid var(--line-soft); }
+.scratch-remind {
+  display: flex; align-items: center; gap: 10px;
+  margin: 10px 14px 0; padding: 8px 10px; border-radius: 10px;
+  background: #2a230f; border: 1px solid #4a3b13; color: var(--warn); font-size: 12px;
+}
+.scratch-remind.strong { background: #2d1616; border-color: #5a2626; color: #fca5a5; }
+.scratch-remind-text { flex: 1; min-width: 0; }
+.scratch-remind .scratch-dismiss { padding: 2px 8px; font-size: 11px; }
+.scratch-list { overflow-y: auto; padding: 12px 14px; display: grid; gap: 12px; align-content: start; }
+.sc-row { display: grid; gap: 3px; }
+.sc-who { font: 10.5px/1 var(--mono); letter-spacing: 0.08em; color: var(--faint); text-transform: uppercase; }
+.sc-text { font-size: 13.5px; line-height: 1.62; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.sc-user .sc-text { background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px 10px; }
+.sc-dim { color: var(--faint); }
+.sc-twoline { font: 11.5px/1.5 var(--mono); color: var(--faint); padding-left: 2px; overflow-wrap: anywhere; }
+.sc-notice .sc-twoline { color: var(--dim); }
+.sc-empty { color: var(--faint); font-size: 12.5px; line-height: 1.7; padding: 8px 2px; }
+.scratch-foot { border-top: 1px solid var(--line); padding: 10px 14px calc(12px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 8px; justify-items: end; }
+.sc-input {
+  width: 100%; resize: none; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px;
+  font: inherit; font-size: 13.5px; line-height: 1.55;
+}
+.sc-input:focus { outline: none; border-color: var(--accent-dim); }
+.sc-hint { font-size: 11.5px; color: #fca5a5; width: 100%; }

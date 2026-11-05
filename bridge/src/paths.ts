@@ -95,6 +95,43 @@ export function statePath(...parts: string[]): string {
   return path.join(stateDir(), ...parts);
 }
 
+// ---------------------------------------------------------------- 随手问 (scratch chat, #86)
+
+/**
+ * 随手问's whole world: a throwaway session directory plus the neutral cwd its pi runs in. It lives
+ * under the bridge's own state dir, which `PI_WEB_STATE` already scopes per instance — a second
+ * bridge on the same machine wipes its own copy and cannot touch this one.
+ */
+export function scratchRoot(): string {
+  return statePath("scratch");
+}
+
+/** The `--session-dir` handed to 随手问's pi: outside pi's session root, so no scan ever lists it. */
+export function scratchSessionsDir(): string {
+  return path.join(scratchRoot(), "sessions");
+}
+
+/** The neutral cwd: it belongs to no project, so relative paths cannot land in one. */
+export function scratchCwd(): string {
+  return path.join(scratchRoot(), "cwd");
+}
+
+/**
+ * Wipe 随手问's directory and put the two empty directories back. Called at startup (before anything
+ * is spawned, when nothing can exist there yet) and on shutdown, so "no record" survives a crash as
+ * well as a clean exit. Idempotent and never throws: a leftover we cannot delete is not worth a
+ * failed boot.
+ */
+export function resetScratchDir(): void {
+  try {
+    fs.rmSync(scratchRoot(), { recursive: true, force: true });
+  } catch {
+    /* an undeletable leftover only costs disk, the same as an unwritable state dir */
+  }
+  ensureDir(scratchSessionsDir());
+  ensureDir(scratchCwd());
+}
+
 export function readJson<T>(file: string, fallback: T): T {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8")) as T;

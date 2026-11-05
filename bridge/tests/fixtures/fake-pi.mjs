@@ -17,6 +17,7 @@
  * Env: FAKE_PI_LOG (jsonl of what the stub saw), FAKE_COMPACT_MS (manual compaction length).
  */
 import fs from "node:fs";
+import path from "node:path";
 
 const LOG = process.env.FAKE_PI_LOG || "";
 const COMPACT_MS = Number(process.env.FAKE_COMPACT_MS || 1000);
@@ -27,6 +28,28 @@ const note = (obj) => {
 };
 const ok = (id, command, data) => out({ type: "response", command, success: true, id, ...(data === undefined ? {} : { data }) });
 const fail = (id, command, error) => out({ type: "response", command, success: false, id, error });
+
+/** #86: this stub owns a pretend session file when --session-dir is passed, so a test can watch
+ * `new_session` move it and the bridge delete the old one. */
+const ARGV = process.argv.slice(2);
+const argOf = (name) => {
+  const i = ARGV.indexOf(name);
+  return i >= 0 ? ARGV[i + 1] ?? "" : "";
+};
+const SESSION_DIR = argOf("--session-dir");
+let sessionId = argOf("--session-id") || `fake-${process.pid}`;
+let sessionFile = SESSION_DIR ? path.join(SESSION_DIR, `${sessionId}.jsonl`) : "";
+const touchSessionFile = () => {
+  if (!sessionFile) return;
+  try {
+    fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+    if (!fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: sessionId, cwd: process.cwd() })}
+`);
+  } catch {
+    /* the test asserts on paths it saw in the log, not on this file surviving */
+  }
+};
+touchSessionFile();
 
 let running = false;
 let compacting = false;
@@ -202,8 +225,18 @@ async function handle(cmd) {
     await sleep(BOOT_MS);
   }
   switch (type) {
+    case "new_session": {
+      // #86: the real pi starts a fresh session inside the same process. Same pid on purpose —
+      // that is exactly what the test proves the bridge did instead of respawning.
+      const before = sessionFile;
+      sessionId = `fake-${Date.now().toString(36)}`;
+      sessionFile = SESSION_DIR ? path.join(SESSION_DIR, `${sessionId}.jsonl`) : "";
+      touchSessionFile();
+      note({ t: "new_session", pid: process.pid, before, file: sessionFile, sessionId });
+      return ok(id, type, { cancelled: false });
+    }
     case "get_state":
-      return ok(id, type, { model: { id: "fake-model", name: "Fake Model", provider: "stub" }, thinkingLevel: "off", cwd: process.cwd() });
+      return ok(id, type, { model: { id: "fake-model", name: "Fake Model", provider: "stub" }, thinkingLevel: "off", cwd: process.cwd(), sessionId, sessionFile });
     case "get_session_stats":
       return ok(id, type, { tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cost: 0.01, contextUsage: { tokens: 1000, contextWindow: 200000, percent: 0.5 } });
     case "get_available_models":
