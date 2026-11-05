@@ -2359,3 +2359,99 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* pi 的工具调用步骤（文字为空）：留在 DOM 里守住顺序，但别画出来。 */
 .sc-row.sc-step[hidden], .sc-who[hidden] { display: none; }
 .sc-model { font: 10px/1 var(--mono); letter-spacing: 0.04em; color: var(--faint); text-transform: none; }
+
+/* 表格浮窗（D127 · #105）：和终端并列的一扇窗，不是 viewer 面板，也没有遮罩。
+   纸张永远是浅色（像 Excel 的一张纸），不跟暗色主题走。 */
+.sd {
+  position: fixed; z-index: 46;
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  border: 1px solid #d8dde4; border-radius: 14px;
+  background: #fff; color: #1f2430;
+  box-shadow: 0 26px 60px rgba(0, 0, 0, 0.55);
+  animation: sd-pop 140ms ease-out;
+  user-select: none;
+}
+@keyframes sd-pop { from { transform: translateY(8px); opacity: 0.4; } }
+.sd.pinned { animation: none; }
+/* D111：点 / 聚焦哪扇窗，哪扇拿 47。 */
+.sd.front { z-index: 47; }
+.sd-grip {
+  position: absolute; left: 0; right: 18px; top: 0; height: 7px;
+  cursor: ns-resize; touch-action: none; z-index: 3;
+}
+.sd-grip:hover, .sd-grip.dragging {
+  background: linear-gradient(180deg, transparent 2px, #9db4c8 2px, #9db4c8 4px, transparent 4px);
+}
+.sd-head {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 8px 10px; border-bottom: 1px solid #e8ebef;
+  cursor: grab;
+}
+.sd-ico { flex: none; font-size: 15px; line-height: 1; }
+.sd-who { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.sd-name { font-size: 13px; font-weight: 600; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-path {
+  font: 11px/1.3 var(--mono); color: #8a94a3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  direction: rtl; text-align: left; max-width: 420px;
+}
+.sd-head .sd-btn {
+  flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 7px;
+  background: transparent; color: #6b7686; font-size: 13px; cursor: pointer;
+}
+.sd-head .sd-btn:hover { background: #eef1f5; color: #1f2430; }
+.sd-body { flex: 1 1 auto; min-height: 0; display: flex; position: relative; }
+.sd-resize { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none; z-index: 3; }
+.sd-resize::after {
+  content: ""; position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px;
+  border-right: 2px solid #a9b3c1; border-bottom: 2px solid #a9b3c1; border-radius: 0 0 3px 0;
+}
+.sd-resize:hover::after, .sd-resize.dragging::after { border-color: #4b7ea8; }
+.sd-msg {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 18px; text-align: center; color: #6b7686; font-size: 12.5px; line-height: 1.6;
+  background: rgba(255, 255, 255, 0.88); pointer-events: none;
+}
+.sd-msg[hidden] { display: none; }
+
+/* 网格：行列头各占一条，正文自己滚。 */
+.sd-grid {
+  flex: 1 1 auto; min-width: 0; min-height: 0;
+  display: grid; grid-template-columns: 44px minmax(0, 1fr); grid-template-rows: 28px minmax(0, 1fr);
+  background: #fff;
+  font: 13px/1.4 var(--sans);
+}
+.sd-corner { background: #f4f6f8; border-right: 1px solid #e3e6ea; border-bottom: 1px solid #e3e6ea; }
+.sd-colhead { position: relative; overflow: hidden; background: #f4f6f8; border-bottom: 1px solid #e3e6ea; }
+.sd-rowhead { position: relative; overflow: hidden; background: #f8f9fb; border-right: 1px solid #e3e6ea; }
+.sd-colhead-in, .sd-rowhead-in { position: absolute; left: 0; right: 0; top: 0; will-change: transform; }
+.sd-col {
+  position: absolute; top: 0; height: 28px; display: flex; align-items: center; justify-content: center;
+  color: #5b6472; font-size: 11.5px; font-weight: 500;
+  border-right: 1px solid #e3e6ea; box-sizing: border-box;
+}
+.sd-rowno {
+  position: absolute; left: 0; right: 0; display: flex; align-items: center; justify-content: flex-end;
+  padding-right: 8px; box-sizing: border-box;
+  color: #98a2b3; font-size: 11.5px;
+  border-bottom: 1px solid #e8ebef;
+}
+.sd-viewwrap { position: relative; min-width: 0; min-height: 0; }
+.sd-view { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
+.sd-space {
+  position: relative;
+  background-image:
+    linear-gradient(to right, #edf0f3 1px, transparent 1px),
+    linear-gradient(to bottom, #edf0f3 1px, transparent 1px);
+  background-size: 110px 28px;
+}
+.sd-cells { position: absolute; left: 0; top: 0; }
+.sd-cell {
+  position: absolute; box-sizing: border-box;
+  display: flex; align-items: center;
+  padding: 0 8px; overflow: hidden; white-space: nowrap; text-overflow: clip;
+  background: #fff; border-right: 1px solid #e8ebef; border-bottom: 1px solid #e8ebef;
+  color: #1f2430; cursor: default; user-select: none;
+}
+.sd-cell.is-n { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.sd-cell.k-e { color: #b42318; }

@@ -284,7 +284,39 @@ export interface PreviewInfo {
   root: string;
   size: number;
   mtime: number;
-  kind: "markdown" | "html" | "image" | "text" | "binary";
+  kind: "markdown" | "html" | "image" | "text" | "sheet" | "binary";
+}
+
+/** D127 表格预览：格子只带显示串，数字就是文件里的原样文本。 */
+export type SheetCellKind = "n" | "s" | "b" | "e";
+
+export interface SheetCell {
+  r: number;
+  c: number;
+  k: SheetCellKind;
+  t: string;
+}
+
+export interface SheetInfo {
+  name: string;
+  rows: number;
+  cols: number;
+}
+
+export interface SheetMeta {
+  name: string;
+  rows: number;
+  cols: number;
+  sheets: SheetInfo[];
+}
+
+export interface SheetWindow {
+  sheet: string;
+  r0: number;
+  r1: number;
+  c0: number;
+  c1: number;
+  rows: { r: number; cells: SheetCell[] }[];
 }
 
 /** Tool permission mode the bridge's approval gate enforces per session. */

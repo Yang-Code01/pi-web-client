@@ -1,4 +1,4 @@
-import type { GitInfo, Me, PreviewInfo, SessionState, TunnelState } from "./types.ts";
+import type { GitInfo, Me, PreviewInfo, SessionState, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -67,6 +67,15 @@ export const api = {
   },
   preview: (sessionId: string, path: string) =>
     req<PreviewInfo>("/api/preview", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId, path }) }),
+  /** D127: sheet metadata and one visible row window, both keyed by the /api/preview grant token. */
+  sheetMeta: (token: string) =>
+    req<SheetMeta>("/api/sheet/meta", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }),
+  sheetWindow: (token: string, sheet: string, r0: number, r1: number, c0: number, c1: number) =>
+    req<SheetWindow>("/api/sheet/window", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, sheet, r0, r1, c0, c1 }),
+    }),
   /** Write an edited text file back. 409 means the file changed on disk while it was open. */
   save: (sessionId: string, body: { path: string; text: string; mtime: number; size: number; copy?: boolean }) =>
     req<{ path: string; mtime: number; size: number }>("/api/save", {

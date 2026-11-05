@@ -1301,4 +1301,8 @@ export const en: Dict = {
   "未命名工作区": "Untitled workspace",
   "{p1}，{p2}，当前会话": "{p1}, {p2}, current session",
   "{p2}，当前会话": "{p2}, current session",
+  "拖动改高度（双击复原）": "Drag to change height (double-click to reset)",
+  "拖动改大小（双击复原）": "Drag to resize (double-click to reset)",
+  "读不了这张表：{p1}": "Can't open this sheet: {p1}",
+  "这张表是空的": "This sheet is empty",
 };
