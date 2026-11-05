@@ -342,6 +342,10 @@ export interface SheetCell {
   t: string;
   /** 文件里指定的对齐（合并标题居中这类）。 */
   a?: "l" | "c" | "r";
+  /** #111：公式原文（不带 `=`）。 */
+  f?: string;
+  /** #111：只有公式、文件里没存结果——显示为空，不猜 0。 */
+  noCache?: boolean;
 }
 
 /** 合并区，0 基闭区间。 */
@@ -362,6 +366,8 @@ export interface SheetInfo {
   /** 每列宽度（px），长度等于 cols。 */
   colWidths?: number[];
   freeze?: { rows: number; cols: number } | null;
+  /** #111：这张表里「只有公式、没存结果」的格子数。 */
+  noCache?: number;
 }
 
 export interface SheetMeta {
