@@ -75,6 +75,24 @@ async function probe(dir: string): Promise<GitInfo | null> {
 }
 
 /**
+ * Project root of whatever repository contains `dir`, with worktrees folded onto the main repo (#72/#94).
+ *
+ * `--git-common-dir` is `<root>/.git` for an ordinary clone *and* for every worktree of it, so taking
+ * its parent turns 主仓 + 五份 worktree into one 工作区 — that is the whole point. `separate-git-dir`
+ * and bare repos have no `<root>/.git` shape, so the common dir itself is the best answer there.
+ *
+ * `null` when `dir` is not inside a repository, does not exist, or git is not installed: the caller
+ * falls back to the directory itself, which is exactly what a non-git project deserves.
+ */
+export async function gitRoot(dir: string): Promise<string | null> {
+  if (!dir) return null;
+  const common = await git(dir, ["rev-parse", "--git-common-dir"]);
+  if (!common) return null;
+  const abs = path.resolve(dir, common);
+  return (path.basename(abs) === ".git" ? path.dirname(abs) : abs).replace(/\\/g, "/");
+}
+
+/**
  * Branch (or detached SHA) of the repository containing `dir`, or `null` when it is not in one.
  * Cached for TTL_MS per absolute path; `fresh` bypasses the cache (window focus, 一轮结束).
  */

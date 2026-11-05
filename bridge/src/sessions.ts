@@ -11,6 +11,7 @@ import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions
 import { ensureDir, resetScratchDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
+import { Workspaces } from "./workspaces.ts";
 import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
 import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
 import { lifecycle, gcTickMs, capProtectMs, type Lifecycle, type LifecycleThresholds } from "./lifecycle.ts";
@@ -168,6 +169,8 @@ export interface SessionState {
   /** Sidebar arrangement (bridge-side state/manage.json), only filled in by list(). */
   pinned?: boolean;
   archived?: boolean;
+  /** 工作区（一级分组 = 工程）的组 id，只有 list() 填（#72/#94）。空串 = 没有 cwd，不属于任何工作区。 */
+  ws?: string;
   /** Tool permission mode the approval gate enforces (state/allow/<id>.json `mode`). */
   permission?: PermissionMode;
   /** Another process (the pi terminal) holds the lock, so this one is read-only and undeletable. */
@@ -1998,6 +2001,8 @@ export class SessionManager extends EventEmitter {
   private modelCache: { at: number; list: ModelInfo[] } | null = null;
   /** Pin / manual order / archive — the part of the sidebar the user owns (D46). */
   readonly manage = new Manage();
+  /** 工作区 = 工程（一级分组），由 cwd 推导、拖过的用 override 钉死（#94）。 */
+  readonly workspaces = new Workspaces();
 
   constructor(
     private cli: string,
@@ -2056,7 +2061,8 @@ export class SessionManager extends EventEmitter {
     const seen = new Set<string>();
     const out: SessionState[] = [];
     const manage = this.manage.snapshot();
-    const flag = (id: string) => ({ pinned: manage.pin.includes(id), archived: manage.archived.includes(id) });
+    // 工作区：override 优先，否则跟 cwd 的工程根走（只查缓存，不跑 git）。
+    const flag = (id: string, cwd?: string) => ({ pinned: manage.pin.includes(id), archived: manage.archived.includes(id), ws: this.workspaces.groupFor(id, cwd ?? "") });
     for (const s of this.sessions.values()) {
       seen.add(s.state.id);
       // 随手问 is not one of the user's sessions (#86): it has no place in any listing, not even
@@ -2064,7 +2070,7 @@ export class SessionManager extends EventEmitter {
       if (s.state.scratch) continue;
       const lock = readLock(s.state.id);
       // Copy: these flags must not leak into the live state a session broadcasts.
-      out.push({ ...s.state, ...flag(s.state.id), locked: Boolean((lock && lock.pid !== process.pid) || (!s.live && readTtyLock(s.state.id))) });
+      out.push({ ...s.state, ...flag(s.state.id, s.state.cwd), locked: Boolean((lock && lock.pid !== process.pid) || (!s.live && readTtyLock(s.state.id))) });
     }
     for (const meta of this.discover()) {
       if (seen.has(meta.id)) continue;
@@ -2083,7 +2089,7 @@ export class SessionManager extends EventEmitter {
         origin: originOf(meta.id),
         permission: readPermission(meta.id),
         ...(meta.firstUserText ? { preview: meta.firstUserText } : {}),
-        ...flag(meta.id),
+        ...flag(meta.id, meta.cwd),
         ...(readTtyLock(meta.id) ? { locked: true } : {}),
       });
     }
@@ -2293,7 +2299,7 @@ export class SessionManager extends EventEmitter {
       if (file && fs.existsSync(file)) {
         this.cache = null;
         const meta = readMeta(file);
-        this.emit("ws", { type: "sessions.list", sessions: this.list() });
+        this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
         return { sessionId: meta?.id ?? "", text };
       }
     }
@@ -2334,7 +2340,7 @@ export class SessionManager extends EventEmitter {
     for (let n = 1; fs.existsSync(dest); n++) dest = path.join(dir, `${name}-${n}${ext}`);
     fs.copyFileSync(src, dest, fs.constants.COPYFILE_EXCL);
     this.cache = null;
-    this.emit("ws", { type: "sessions.list", sessions: this.list() });
+    this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
     return { sessionId: meta.id };
   }
 
@@ -2409,6 +2415,18 @@ export class SessionManager extends EventEmitter {
   /** The sidebar arrangement as a whole; the frontend sends what the DOM looks like after a drop. */
   arrange(pin: unknown, order: unknown): void {
     this.manage.arrange(pin, order);
+  }
+
+  /**
+   * 工作区分组的地基（#94）：给缓存里还没有的 cwd 补一次工程根，worktree 在这就并回主仓。
+   * 有改动返回 true —— 调用方必须广播 `sessions.list` / `workspaces`，否则页面还停在按 cwd
+   * 分的临时组上。读路径（`list()`）永远只查缓存，不等这里的子进程。
+   */
+  async resolveWorkspaces(): Promise<boolean> {
+    const cwds: string[] = [];
+    for (const s of this.sessions.values()) if (!s.state.scratch) cwds.push(s.state.cwd);
+    for (const m of this.metas()) cwds.push(m.cwd);
+    return this.workspaces.resolve(cwds);
   }
 
   /** Q-022: 置顶横条的 ＋ 建出来的会话，落到 pin 列表末尾。 */
@@ -2487,6 +2505,8 @@ export class SessionManager extends EventEmitter {
       forgetName(t.id);
       forgetOrigin(t.id);
       this.manage.forget(t.id);
+      // 会话没了，它被拖进某个工作区的那条 override 也要跟着走，否则留下悬空指向（#94）。
+      this.workspaces.forget(t.id);
     }
     if (binned.length) {
       const gone = new Set(binned.map((b) => b.id));
