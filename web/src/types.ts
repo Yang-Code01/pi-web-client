@@ -387,6 +387,17 @@ export interface SheetInfo {
   noCache?: number;
 }
 
+/** #110 显示档：full 全量；light 只值（不涂条件格式）；none 不给（只给清单 + 尺寸）。 */
+export type SheetTier = "full" | "light" | "none";
+
+/** #107：查找命中的格子（只回坐标，不回值）。 */
+export interface SheetMatches {
+  sheet: string;
+  matches: { r: number; c: number }[];
+  /** 超过上限只回前 N 条。 */
+  truncated?: boolean;
+}
+
 export interface SheetMeta {
   name: string;
   rows: number;

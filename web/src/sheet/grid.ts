@@ -1,17 +1,25 @@
 /**
- * 只读网格（#105 骨架 + #108 结构保真）：行号列 + 列头 + 可视范围的格子。
+ * 只读网格（#105 骨架 + #108 结构保真 + #107 交互）：行号列 + 列头 + 可视范围的格子。
  *
  * 取数只按可视窗口（window fetch）：滚动时带上 r0/r1/c0/c1 向桥端要这一片，
  * 不把整表拉下来。列宽、合并区、冻结窗格都取文件里的值；冻结的行列画在独立的
  * 覆盖层里，滚动时位置不动，所以标题行不会跟着内容跑掉。
+ *
+ * #107 的交互都在这一层：选区是个矩形（anchor + focus），方向键/Shift/拖选/双击改它；
+ * Ctrl+C 出去的是 TSV 纯文本；缩放把行高与列宽同乘一个系数；查找的命中只存坐标。
  */
 import { tr, errText } from "../i18n/index.ts";
+import { clampNum } from "../floatwin.ts";
 import type { SheetCell, SheetInfo, SheetMerge, SheetMeta, SheetWindow } from "../types.ts";
 
 export const ROW_H = 28;
 export const COL_W = 110;
 export const HEAD_W = 44;
 export const HEAD_H = 28;
+/** #107：缩放的上下限与步长（从 100% 起，一次 ±10%）。 */
+export const ZOOM_MIN = 0.5;
+export const ZOOM_MAX = 2;
+export const ZOOM_STEP = 0.1;
 
 /** #110：每次取数在可见范围上下各预取几屏。 */
 const PREFETCH_SCREENS = 3;
@@ -79,6 +87,9 @@ export class SheetGrid {
   private spans = new Map<string, SheetMerge>();
   /** 每列的左边界（px），长度 cols+1。 */
   private offsets: number[] = [0];
+  /** 文件里的列宽（未缩放）。 */
+  private base: number[] = [];
+  /** 缩放之后的列宽（px）。 */
   private widths: number[] = [];
   private sheet: string;
   /** #110：已经拿到的窗口段（可能有多段，滚动时逐段补）。 */
@@ -91,8 +102,21 @@ export class SheetGrid {
   private frame = 0;
   private error = "";
   private stale = false;
-  /** #111：当前选中的格子（0 基）。打开时落在 A1，跟 Excel 一样。 */
-  private selected: { r: number; c: number } | null = { r: 0, c: 0 };
+  /**
+   * #111/#107：选区是个矩形。`anchor` 是起点（按 Shift 时它不动），`focus` 是活动格
+   * （公式栏显示它，复制不用它——复制拿整个矩形）。打开时落在 A1，跟 Excel 一样。
+   */
+  private anchor: { r: number; c: number } = { r: 0, c: 0 };
+  private focus: { r: number; c: number } = { r: 0, c: 0 };
+  /** #107：缩放系数（1 = 100%）。行高与列宽同乘它，字体大小靠 CSS 变量 `--sd-z`。 */
+  private zoomLevel = 1;
+  /** #107：正在拖选（pointerdown 之后、pointerup 之前）。 */
+  private dragging = false;
+  /** #107：查找命中（只存坐标）与当前那一处；-1 表示只高亮不指。 */
+  private hits: { r: number; c: number }[] = [];
+  private hitAt = -1;
+  /** 上一次按下的格子（毫秒），用来自己认双击。 */
+  private lastTap = { t: 0, r: -1, c: -1 };
 
   constructor(host: SheetGridHost) {
     this.host = host;
@@ -134,8 +158,18 @@ export class SheetGrid {
 
     this.root.append(colhead, rowhead, wrap);
     this.measure();
+    this.root.style.setProperty("--sd-z", "1");
     this.view.addEventListener("scroll", this.onScroll, { passive: true });
-    this.view.addEventListener("click", this.onClick);
+    // #107：网格自己能接键盘，所以点一下就能用方向键，不用先找输入框。
+    this.view.tabIndex = 0;
+    this.view.setAttribute("role", "grid");
+    this.view.setAttribute("aria-label", tr("表格"));
+    this.view.addEventListener("pointerdown", this.onPointerDown);
+    this.view.addEventListener("pointermove", this.onPointerMove);
+    this.view.addEventListener("pointerup", this.onPointerUp);
+    this.view.addEventListener("pointercancel", this.onPointerUp);
+    this.view.addEventListener("keydown", this.onKeyDown);
+    this.view.addEventListener("copy", this.onCopy);
   }
 
   /** 首次取数；解析失败把话显示在网格中央。 */
@@ -157,7 +191,10 @@ export class SheetGrid {
     this.cellsByKey.clear();
     this.chunks = [];
     this.error = "";
-    this.selected = { r: 0, c: 0 };
+    this.hits = [];
+    this.hitAt = -1;
+    this.anchor = { r: 0, c: 0 };
+    this.focus = { r: 0, c: 0 };
     this.view.scrollTop = 0;
     this.view.scrollLeft = 0;
     this.measure();
@@ -177,7 +214,12 @@ export class SheetGrid {
     this.epoch++;
     if (this.frame) cancelAnimationFrame(this.frame);
     this.view.removeEventListener("scroll", this.onScroll);
-    this.view.removeEventListener("click", this.onClick);
+    this.view.removeEventListener("pointerdown", this.onPointerDown);
+    this.view.removeEventListener("pointermove", this.onPointerMove);
+    this.view.removeEventListener("pointerup", this.onPointerUp);
+    this.view.removeEventListener("pointercancel", this.onPointerUp);
+    this.view.removeEventListener("keydown", this.onKeyDown);
+    this.view.removeEventListener("copy", this.onCopy);
     this.root.remove();
   }
 
@@ -198,17 +240,23 @@ export class SheetGrid {
     };
   }
 
-  /** 列宽 / 合并区 / 冻结窗格按当前表重算。 */
+  /** 列宽 / 合并区 / 冻结窗格按当前表重算。列宽先取文件值，再乘缩放。 */
   private measure(): void {
     const info = this.info();
     const cols = Math.max(0, info.cols);
     const fileWidths = info.colWidths ?? [];
-    this.widths = Array.from({ length: cols }, (_, c) => fileWidths[c] ?? COL_W);
+    this.base = Array.from({ length: cols }, (_, c) => fileWidths[c] ?? COL_W);
     const offsets = [0];
-    for (let c = 0; c < cols; c++) offsets.push(offsets[c] + this.widths[c]);
+    this.widths = [];
+    for (let c = 0; c < cols; c++) {
+      // 缩放之后仍留得住格子：再窄也要放得下一两个字符。
+      const w = Math.max(28, Math.round(this.base[c] * this.zoomLevel));
+      this.widths.push(w);
+      offsets.push(offsets[c] + w);
+    }
     this.offsets = offsets;
     this.space.style.width = `${offsets[cols] ?? 0}px`;
-    this.space.style.height = `${(info.rows || 0) * ROW_H}px`;
+    this.space.style.height = `${(info.rows || 0) * this.rowH()}px`;
 
     this.spans = new Map();
     for (const m of info.merges ?? []) {
@@ -266,40 +314,322 @@ export class SheetGrid {
     });
   };
 
-  /** #111：点一下选一格（合并区选它的左上角）。只改选中，不给格子加输入框。 */
-  private onClick = (ev: MouseEvent): void => {
-    const pos = this.pointCell(ev.clientX, ev.clientY);
-    if (!pos) return;
-    const span = this.spans.get(`${pos.r}:${pos.c}`);
-    this.selected = { r: span ? span.r0 : pos.r, c: span ? span.c0 : pos.c };
+  /** 行高（px）：缩放之后格子、行号、冻结带都用这个。 */
+  private rowH(): number {
+    return Math.max(16, Math.round(ROW_H * this.zoomLevel));
+  }
+
+  /** #107：缩放系数（1 = 100%）。 */
+  get zoom(): number {
+    return this.zoomLevel;
+  }
+
+  /**
+   * #107：缩放。行高与列宽同乘一个系数，滚动位置按同样比例挪——
+   * 看着是「同一个格子留在原地变大」，不是跳回左上角。
+   */
+  setZoom(z: number): void {
+    const next = Math.round(clampNum(z, ZOOM_MIN, ZOOM_MAX) * 100) / 100;
+    if (next === this.zoomLevel) return;
+    const v = this.view;
+    const cx = v.scrollLeft + v.clientWidth / 2;
+    const cy = v.scrollTop + v.clientHeight / 2;
+    const k = next / this.zoomLevel;
+    this.zoomLevel = next;
+    this.root.style.setProperty("--sd-z", String(next));
+    this.measure();
+    v.scrollLeft = Math.max(0, cx * k - v.clientWidth / 2);
+    v.scrollTop = Math.max(0, cy * k - v.clientHeight / 2);
+    this.syncHeads();
     this.render();
     this.notify();
+    void this.ensure();
+  }
+
+  /** #107：选区矩形（0 基闭区间）。 */
+  private rect(): Range {
+    return {
+      r0: Math.min(this.anchor.r, this.focus.r),
+      r1: Math.max(this.anchor.r, this.focus.r),
+      c0: Math.min(this.anchor.c, this.focus.c),
+      c1: Math.max(this.anchor.c, this.focus.c),
+    };
+  }
+
+  /** 合并区归到左上角那一格：选它就等于选整块。 */
+  private snap(pos: { r: number; c: number }): { r: number; c: number } {
+    const span = this.spans.get(`${pos.r}:${pos.c}`);
+    return span ? { r: span.r0, c: span.c0 } : pos;
+  }
+
+  /** #107：选区写成 A1 或 A2:C4——「引用给 pi」就是把这段插进对话框。 */
+  get selectionRef(): string {
+    const s = this.rect();
+    const a = `${colName(s.c0)}${s.r0 + 1}`;
+    const b = `${colName(s.c1)}${s.r1 + 1}`;
+    return a === b ? a : `${a}:${b}`;
+  }
+
+  /** #107：选区的纯文本：制表符分列、换行分行，空格子留空位（行列才对得上）。 */
+  get selectionText(): string {
+    const s = this.rect();
+    const lines: string[] = [];
+    for (let r = s.r0; r <= s.r1; r++) {
+      const row: string[] = [];
+      for (let c = s.c0; c <= s.c1; c++) row.push(this.cellsByKey.get(`${r}:${c}`)?.t ?? "");
+      lines.push(row.join("\t"));
+    }
+    return lines.join("\n");
+  }
+
+  /** 把键盘焦点给网格（查找框收起之后回到格子上）。 */
+  focusView(): void {
+    this.view.focus({ preventScroll: true });
+  }
+
+  /** #107：鼠标按下定起点；拖动改活动格，Shift 时保留原起点。双击（400ms 内再按同一格）选一片连续区。 */
+  private onPointerDown = (ev: PointerEvent): void => {
+    if (ev.button !== 0) return;
+    const pos = this.pointCell(ev.clientX, ev.clientY);
+    if (!pos) return;
+    const anchor = this.snap(pos);
+    const now = Date.now();
+    // 自己认双击：pointer capture 下浏览器不派 dblclick（踩过）。
+    const again = now - this.lastTap.t < 400 && this.lastTap.r === pos.r && this.lastTap.c === pos.c;
+    this.lastTap = { t: again ? 0 : now, r: pos.r, c: pos.c };
+    if (again) {
+      this.dragging = false;
+      this.selectBlock(pos);
+      this.focusView();
+      this.afterSelect();
+      return;
+    }
+    if (ev.shiftKey) this.focus = pos;
+    else {
+      this.anchor = anchor;
+      this.focus = pos;
+    }
+    this.dragging = true;
+    try {
+      this.view.setPointerCapture(ev.pointerId);
+    } catch {
+      /* 不支持的浏览器就靠抬起事件自己收尾 */
+    }
+    this.focusView();
+    this.afterSelect(false);
   };
+
+  private onPointerMove = (ev: PointerEvent): void => {
+    if (!this.dragging) return;
+    const pos = this.pointCell(ev.clientX, ev.clientY);
+    if (!pos || (pos.r === this.focus.r && pos.c === this.focus.c)) return;
+    this.focus = pos;
+    this.afterSelect(false);
+  };
+
+  private onPointerUp = (ev: PointerEvent): void => {
+    if (!this.dragging) return;
+    this.dragging = false;
+    try {
+      this.view.releasePointerCapture(ev.pointerId);
+    } catch {
+      /* 已经松开 */
+    }
+  };
+
+  /**
+   * 选区改完的统一尾巴：重画、告诉公式栏、补数据。
+   * 只改选中态时用 `paintSelection`，不重建格子——否则第二次点击会落到新节点上，
+   * 浏览器就凑不出 `dblclick`（踩过的坑）。
+   */
+  private afterSelect(repaint = true): void {
+    this.hitAt = -1;
+    if (repaint) this.render();
+    else this.paintSelection();
+    this.notify();
+    void this.ensure();
+  }
+
+  /** 就地换 `.sel` / `.in-sel`，不动 DOM 结构。 */
+  private paintSelection(): void {
+    const sel = this.rect();
+    for (const node of this.root.querySelectorAll<HTMLElement>(".sd-cell[data-r]")) {
+      const r = Number(node.dataset.r);
+      const c = Number(node.dataset.c);
+      const cur = r === this.focus.r && c === this.focus.c;
+      const inside = !cur && r >= sel.r0 && r <= sel.r1 && c >= sel.c0 && c <= sel.c1;
+      node.classList.toggle("sel", cur);
+      node.classList.toggle("in-sel", inside);
+    }
+  }
+
+  /** #107：从一格往四个方向扩一块连续区（碰空格就停，和 Excel 一个意思）。 */
+  private selectBlock(at: { r: number; c: number }): void {
+    const info = this.info();
+    const filled = (r: number, c: number): boolean => this.cellsByKey.has(`${r}:${c}`);
+    let { r0, r1, c0, c1 } = { r0: at.r, r1: at.r, c0: at.c, c1: at.c };
+    if (filled(at.r, at.c)) {
+      while (r0 > 0 && filled(r0 - 1, at.c)) r0--;
+      while (r1 < info.rows - 1 && filled(r1 + 1, at.c)) r1++;
+      while (c0 > 0 && filled(at.r, c0 - 1)) c0--;
+      while (c1 < info.cols - 1 && filled(at.r, c1 + 1)) c1++;
+    }
+    this.anchor = { r: r0, c: c0 };
+    this.focus = { r: r1, c: c1 };
+  }
+
+  /** #107：方向键 / Home / End / PageUp / PageDown；按住 Shift 是扩，不按是换格。 */
+  private onKeyDown = (ev: KeyboardEvent): void => {
+    if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
+    const info = this.info();
+    if (!info.rows || !info.cols) return;
+    const page = Math.max(1, Math.floor(this.view.clientHeight / this.rowH()) - 1);
+    let r = this.focus.r;
+    let c = this.focus.c;
+    switch (ev.key) {
+      case "ArrowUp":
+        r -= 1;
+        break;
+      case "ArrowDown":
+        r += 1;
+        break;
+      case "ArrowLeft":
+        c -= 1;
+        break;
+      case "ArrowRight":
+        c += 1;
+        break;
+      case "Home":
+        c = 0;
+        break;
+      case "End":
+        c = info.cols - 1;
+        break;
+      case "PageUp":
+        r -= page;
+        break;
+      case "PageDown":
+        r += page;
+        break;
+      default:
+        return;
+    }
+    ev.preventDefault();
+    const next = { r: clampNum(r, 0, info.rows - 1), c: clampNum(c, 0, info.cols - 1) };
+    if (ev.shiftKey) this.focus = next;
+    else {
+      this.anchor = next;
+      this.focus = next;
+    }
+    this.reveal(next.r, next.c);
+    this.hitAt = -1;
+    this.syncHeads();
+    this.render();
+    this.notify();
+    void this.ensure();
+  };
+
+  /** #107：Ctrl/Cmd+C 出去的是纯文本 TSV（只有选区里的显示值）。 */
+  private onCopy = (ev: ClipboardEvent): void => {
+    const text = this.selectionText;
+    if (!text) return;
+    ev.clipboardData?.setData("text/plain", text);
+    ev.preventDefault();
+  };
+
+  /** 把某格挪进可视区（冻结带让出的位置算进去）；键盘走位和查找跳转都用它。 */
+  private reveal(r: number, c: number): void {
+    const v = this.view;
+    const f = this.freeze();
+    const h = this.rowH();
+    const top = r * h;
+    const frzH = f.rows * h;
+    if (r >= f.rows) {
+      if (top < v.scrollTop + frzH) v.scrollTop = Math.max(0, top - frzH);
+      else if (top + h > v.scrollTop + v.clientHeight) v.scrollTop = top + h - v.clientHeight;
+    }
+    const left = this.leftOf(c);
+    const frzW = this.leftOf(f.cols);
+    if (c >= f.cols) {
+      if (left < v.scrollLeft + frzW) v.scrollLeft = Math.max(0, left - frzW);
+      else if (left + this.widthOf(c) > v.scrollLeft + v.clientWidth) v.scrollLeft = left + this.widthOf(c) - v.clientWidth;
+    }
+  }
+
+  /** 让命中格落在可视区中间，跳转时眼睛不用自己找。 */
+  private centre(r: number, c: number): void {
+    const v = this.view;
+    const f = this.freeze();
+    const h = this.rowH();
+    const frzH = f.rows * h;
+    const frzW = this.leftOf(f.cols);
+    const viewH = Math.max(1, v.clientHeight - frzH);
+    const viewW = Math.max(1, v.clientWidth - frzW);
+    if (r >= f.rows) v.scrollTop = Math.max(0, r * h - frzH - viewH / 2 + h / 2);
+    if (c >= f.cols) v.scrollLeft = Math.max(0, this.leftOf(c) - frzW - viewW / 2 + this.widthOf(c) / 2);
+  }
+
+  /** #107：把查找的命中交给网格；`at` 是当前那一处（-1 表示只高亮、不挪选区）。 */
+  setHits(hits: { r: number; c: number }[], at = 0): void {
+    this.hits = hits;
+    this.hitAt = hits.length ? Math.max(0, Math.min(hits.length - 1, at)) : -1;
+    if (this.hitAt >= 0) {
+      const hit = this.hits[this.hitAt];
+      this.anchor = hit;
+      this.focus = hit;
+      this.centre(hit.r, hit.c);
+    }
+    this.syncHeads();
+    this.render();
+    this.notify();
+    void this.ensure();
+  }
+
+  /** 跳到第 `at` 处命中（超界会绕回来，跟查找框的 ‹ › 一个意思）。 */
+  setHitAt(at: number): void {
+    const n = this.hits.length;
+    if (!n) {
+      this.hitAt = -1;
+      return;
+    }
+    this.hitAt = ((at % n) + n) % n;
+    const hit = this.hits[this.hitAt];
+    this.anchor = hit;
+    this.focus = hit;
+    this.centre(hit.r, hit.c);
+    this.syncHeads();
+    this.render();
+    this.notify();
+    void this.ensure();
+  }
 
   /** 屏幕坐标落在哪一格：冻结带里的格子滚动时不动，其余按滚动偏移加回去。 */
   private pointCell(clientX: number, clientY: number): { r: number; c: number } | null {
     const info = this.info();
     if (!info.rows || !info.cols) return null;
     const rect = this.view.getBoundingClientRect();
-    if (clientX < rect.left || clientY < rect.top || clientX > rect.right || clientY > rect.bottom) return null;
+    // 用 clientWidth/Height 判界：滚动条那条缝不该被当成格子。
+    const left = rect.left + this.view.clientLeft;
+    const top = rect.top + this.view.clientTop;
+    if (clientX < left || clientY < top || clientX > left + this.view.clientWidth || clientY > top + this.view.clientHeight) return null;
     const f = this.freeze();
-    let x = clientX - rect.left;
-    let y = clientY - rect.top;
+    let x = clientX - left;
+    let y = clientY - top;
     if (x >= this.leftOf(f.cols)) x += this.view.scrollLeft;
-    if (y >= f.rows * ROW_H) y += this.view.scrollTop;
-    const r = Math.floor(y / ROW_H);
+    if (y >= f.rows * this.rowH()) y += this.view.scrollTop;
+    const r = Math.floor(y / this.rowH());
     const c = this.colAt(Math.max(0, x));
     if (r < 0 || r >= info.rows || c < 0 || c >= info.cols) return null;
     return { r, c };
   }
 
-  /** 把选中格报给外面：公式给原文（带 `=`），普通格给显示值。 */
+  /** 把选中格报给外面：公式给原文（带 `=`），普通格给显示值；坐标是选区（`A2:C4`）。 */
   private notify(): void {
     if (this.destroyed) return;
-    const sel = this.selected;
-    const cell = sel ? this.cellsByKey.get(`${sel.r}:${sel.c}`) : undefined;
+    const sel = this.focus;
+    const cell = this.cellsByKey.get(`${sel.r}:${sel.c}`);
     const text = cell?.f ? `=${cell.f}` : cell?.t ?? "";
-    this.host.onSelect?.(sel ? { ref: `${colName(sel.c)}${sel.r + 1}`, text } : null);
+    this.host.onSelect?.({ ref: this.selectionRef, text });
   }
 
   private visible(): Range | null {
@@ -309,8 +639,9 @@ export class SheetGrid {
     if (!rows || !cols) return null;
     const top = this.view.scrollTop;
     const left = this.view.scrollLeft;
-    const r0 = Math.max(0, Math.min(rows - 1, Math.floor(top / ROW_H)));
-    const r1 = Math.max(r0, Math.min(rows - 1, Math.ceil((top + this.view.clientHeight) / ROW_H) - 1));
+    const h = this.rowH();
+    const r0 = Math.max(0, Math.min(rows - 1, Math.floor(top / h)));
+    const r1 = Math.max(r0, Math.min(rows - 1, Math.ceil((top + this.view.clientHeight) / h) - 1));
     const c0 = Math.max(0, Math.min(cols - 1, this.colAt(left)));
     const c1 = Math.max(c0, Math.min(cols - 1, this.colAt(left + this.view.clientWidth)));
     return { r0, r1, c0, c1 };
@@ -465,7 +796,8 @@ export class SheetGrid {
     this.syncHeads();
     const f = this.freeze();
     const frzW = this.leftOf(f.cols);
-    const frzH = f.rows * ROW_H;
+    const rowH = this.rowH();
+    const frzH = f.rows * rowH;
 
     const cols: HTMLElement[] = [];
     const frzCols: HTMLElement[] = [];
@@ -486,8 +818,8 @@ export class SheetGrid {
     for (let r = want.r0; r <= want.r1; r++) {
       const node = el("div", "sd-rowno", String(r + 1));
       node.dataset.r = String(r);
-      node.style.top = `${r * ROW_H}px`;
-      node.style.height = `${ROW_H}px`;
+      node.style.top = `${r * rowH}px`;
+      node.style.height = `${rowH}px`;
       (r < f.rows ? frzRows : rowheads).push(node);
     }
     this.rowheadIn.replaceChildren(...rowheads);
@@ -516,6 +848,11 @@ export class SheetGrid {
   /** 往某一层里画格子：被合并区盖住的格子不单独画，合并区只画左上角那一个。 */
   private paint(target: HTMLElement, layer: number, want: Range): void {
     const nodes: HTMLElement[] = [];
+    // #107：选区是高亮垫在字下面；查找命中另用一种颜色，当前那一处再加一圈描边。
+    const sel = this.rect();
+    const hitKeys = new Set(this.hits.map((h) => `${h.r}:${h.c}`));
+    const curKey = this.hitAt >= 0 ? `${this.hits[this.hitAt].r}:${this.hits[this.hitAt].c}` : "";
+    const rowH = this.rowH();
     for (let r = want.r0; r <= want.r1; r++) {
       for (let c = want.c0; c <= want.c1; c++) {
         const cell = this.cellsByKey.get(`${r}:${c}`);
@@ -554,16 +891,23 @@ export class SheetGrid {
         node.dataset.c = String(c0);
         if (c1 > c0) node.dataset.span = `${c0}-${c1}`;
         node.style.left = `${this.leftOf(c0)}px`;
-        node.style.top = `${r0 * ROW_H}px`;
+        node.style.top = `${r0 * rowH}px`;
         node.style.width = `${this.leftOf(c1 + 1) - this.leftOf(c0)}px`;
-        node.style.height = `${(r1 - r0 + 1) * ROW_H}px`;
+        node.style.height = `${(r1 - r0 + 1) * rowH}px`;
         if (cell?.k === "n") node.classList.add("is-n");
         // #111：只有公式、没存结果的格子：显空 + 红虚线；原文和「去 Excel 重算」放在悬停里。
         if (cell?.noCache) {
           node.classList.add("is-nc");
-          node.title = [cell.f ? `=${cell.f}` : "", tr("需在 Excel 打开重算")].filter(Boolean).join("\n");
+          node.title = [cell.f ? `=${cell.f}` : "", tr("需用表格软件重算")].filter(Boolean).join("\n");
         }
-        if (this.selected && this.selected.r === r0 && this.selected.c === c0) node.classList.add("sel");
+        if (this.focus.r === r0 && this.focus.c === c0) node.classList.add("sel");
+        // 合并区按左上角算：选到块里任何一格，整块都该亮。
+        if (r0 >= sel.r0 && r0 <= sel.r1 && c0 >= sel.c0 && c0 <= sel.c1) node.classList.add("in-sel");
+        const key = `${r0}:${c0}`;
+        if (hitKeys.has(key)) {
+          node.classList.add("hit");
+          if (key === curKey) node.classList.add("hit-on");
+        }
         if (cell?.a) {
           node.style.justifyContent = cell.a === "c" ? "center" : cell.a === "r" ? "flex-end" : "flex-start";
           if (cell.a !== "r") node.classList.remove("is-n");

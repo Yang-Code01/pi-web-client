@@ -5368,6 +5368,8 @@ export class App {
       scale: () => this.uiScale(),
       loadMeta: async () => metaOf(data),
       fetchWindow: windowOf,
+      // #107：CSV 的全文已经在前端内存里，但查找入口只给 .xlsx（本票范围）。
+      onQuote: (text) => this.quoteInto(text),
       onOpen: () => this.openInApp(info.token),
       onReveal: () => this.reveal(info.abs),
       onReopen: () => void this.openPreview(info.abs, this.currentId, true),
@@ -5415,6 +5417,9 @@ export class App {
       scale: () => this.uiScale(),
       loadMeta: () => api.sheetMeta(info.token),
       fetchWindow: (sheet, r0, r1, c0, c1) => api.sheetWindow(info.token, sheet, r0, r1, c0, c1),
+      // #107：整表查找在桥端扫（前端只拿着一个可视窗口）。
+      findSheet: (sheet, q) => api.sheetFind(info.token, sheet, q),
+      onQuote: (text) => this.quoteInto(text),
       // #112：有图表的文件自动转一次 PDF；没有的也能手动切过去看打印版式。
       page: { url: api.sheetPdf(info.token) },
       onOpen: () => this.openInApp(info.token),
@@ -5936,18 +5941,18 @@ export class App {
       return;
     }
     if (info.kind === "binary") {
-      // #106: .xls / .ods / 加密包 / 改了扩展名的 zip — 这里不看，交给这台电脑上的 Excel。
+      // #106: .xls / .ods / 加密包 / 改了扩展名的 zip — 这里不看，交给这台电脑上的默认程序。
       const workbook = WORKBOOK.test(info.name);
       const box = el("div", workbook ? "viewer-msg workbook" : "viewer-msg");
       box.append(
         el(
           "div",
           "",
-          workbook ? tr("这个格式这里不支持，用 Excel 打开") : tr("二进制文件（{p1}），这里不直接显示。", { p1: fmtSize(info.size) }),
+          workbook ? tr("这个格式这里不支持，用本机程序打开") : tr("二进制文件（{p1}），这里不直接显示。", { p1: fmtSize(info.size) }),
         ),
       );
       if (workbook) {
-        const open = el("button", "btn", tr("用 Excel 打开"));
+        const open = el("button", "btn", tr("用默认程序打开"));
         open.onclick = () => {
           open.disabled = true;
           void this.openInApp(info.token).finally(() => {
@@ -6065,6 +6070,28 @@ export class App {
     this.fitComposer();
     this.textarea.focus();
     this.textarea.setSelectionRange(text.length, text.length);
+  }
+
+  /**
+   * #107：表格里「引用给 pi」——把「文件路径 + A2:C4」插到对话框光标处。
+   * 只插入、不发送，也不盖掉已经写了一半的草稿。
+   */
+  private quoteInto(text: string): void {
+    const field = this.textarea;
+    if (!field || !this.currentId) return;
+    const base = field.value;
+    const start = field.selectionStart ?? base.length;
+    const end = field.selectionEnd ?? start;
+    const lead = start > 0 && !/\s/.test(base[start - 1]) ? " " : "";
+    const ins = `${lead}${text}`;
+    const next = `${base.slice(0, start)}${ins}${base.slice(end)}`;
+    this.composerText = next;
+    this.noteDraft();
+    field.value = next;
+    const caret = start + ins.length;
+    field.focus();
+    field.setSelectionRange(caret, caret);
+    this.fitComposer();
   }
 
   /** 「交给 agent → 新开会话」：会话建好之后才填（见 case "session"）。 */
