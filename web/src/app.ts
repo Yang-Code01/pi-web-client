@@ -13,9 +13,10 @@ import { NowChip, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
+import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SheetMeta, SheetWindow, SkillInfo, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
@@ -3735,7 +3736,76 @@ export class App {
       this.openSheet(info);
       return;
     }
+    // #113: CSV / TSV 也在浮窗里，但没有 xlsx 那种元数据——字节由页面自己解码、切格。
+    if (/\.(csv|tsv)$/i.test(v.info.name)) {
+      const info = v.info;
+      this.closeViewer();
+      void this.openCsvSheet(info, sessionId);
+      return;
+    }
     await this.loadViewerText();
+  }
+
+  /** #113：CSV / TSV 的浮窗——表格 / 源码两个 tab，编码嗅探在前端（D127），保存仍走文本通道。 */
+  private async openCsvSheet(info: PreviewInfo, sessionId: string): Promise<void> {
+    let data: CsvData;
+    try {
+      const res = await fetch(rawUrl(info));
+      if (!res.ok) throw new Error(await res.text());
+      data = readCsv(new Uint8Array(await res.arrayBuffer()));
+    } catch (err: any) {
+      this.warn(tr("读不了这个表格：{p1}", { p1: errText(err) }));
+      return;
+    }
+    const metaOf = (d: CsvData): SheetMeta => ({
+      name: info.name,
+      rows: d.rows.length,
+      cols: d.cols,
+      sheets: [{ name: info.name, rows: d.rows.length, cols: d.cols }],
+    });
+    const windowOf = async (sheet: string, r0: number, r1: number, c0: number, c1: number): Promise<SheetWindow> =>
+      csvWindow(data, sheet, r0, r1, c0, c1);
+    // 只给完整的文件留保存：截断的只看到一部分，2 MB 以上桥端也不收。
+    const saveable = !data.truncated && info.size <= CSV_MAX_BYTES;
+    this.sheetDock?.destroy();
+    this.sheetDock = null;
+    const dialog = new SheetDialog({
+      token: info.token,
+      name: info.name,
+      path: info.abs,
+      scale: () => this.uiScale(),
+      loadMeta: async () => metaOf(data),
+      fetchWindow: windowOf,
+      source: {
+        text: data.text,
+        note: data.truncated
+          ? tr("只显示前 {p1} 行（共 {p2} 行），这么大的文件不能在浏览器里改", {
+              p1: fmtNum(data.rows.length),
+              p2: fmtNum(data.total),
+            })
+          : saveable
+            ? undefined
+            : tr("文件超过 {p1} MB，不能在浏览器里改", { p1: (info.size / 1024 / 1024).toFixed(1) }),
+        onSave: saveable
+          ? async (text) => {
+              const res = await api.save(sessionId, { path: info.abs, text, mtime: info.mtime, size: info.size });
+              info.mtime = res.mtime;
+              info.size = res.size;
+              data = reparseCsv(data, text);
+              await dialog.setData(metaOf(data), windowOf);
+            }
+          : undefined,
+      },
+      onClose: () => {
+        if (this.winFront === dialog.root) this.winFront = null;
+        if (this.sheetDock === dialog) this.sheetDock = null;
+      },
+      onRaise: () => this.raiseWindow(dialog.root),
+    });
+    this.sheetDock = dialog;
+    this.overlay(dialog.root);
+    this.raiseWindow(dialog.root);
+    dialog.open();
   }
 
   /** D127: 表格浮窗（无遮罩、不抢焦点）。关掉旧的那扇再开新的。 */
