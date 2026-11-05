@@ -10,6 +10,7 @@ import { setKnownPlugins } from "./diagnose.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar } from "./pillbar.ts";
 import { NowChip, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
+import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
@@ -390,9 +391,10 @@ export class App {
     scratch.onclick = () => this.scratch.open();
     this.els.scratch = scratch;
     // #96：「当前在哪」那颗自己是一个挂载点，不绑死在 topbar 的结构里（#97 / #98 换布局时
-    // 只要把它挪到别处）。现在它放在折叠按钮与状态点之间，也就是左栏边缘。
+    // 只要把它挪到别处）。#97 壳 A：它挪进第二行的最左端 —— 那一行问的就是「现在这个工作区里
+    // 有哪几个会话」，当前那颗得先站在那儿。
     const nowChipSlot = el("div", "now-chip-slot");
-    topbar.append(collapseLeft, nowChipSlot, dot, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
+    topbar.append(collapseLeft, dot, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -444,9 +446,16 @@ export class App {
 
     main.append(sessionsPane, chatPane, queuePane, gripL, gripR);
 
-    // Collapsing the left column takes the pinned sessions with it. This strip keeps them in reach.
+    // #97 壳 A 两行制。行 1：工作区标签页（点一下切到那一组）；行 2：当前会话那颗（nowchip，
+    // 固定最左）+ 本区会话胶囊（★ 优先）+ ＋。原先「收起左栏才出现」的置顶横栏被行 2 取代 ——
+    // 不再另挂一条，两套横栏同时出现只会让人不知道该点哪一条。
+    const wsTabsRow = el("div", "ws-tabs-row");
+    const wsTabs = el("div", "ws-tabs");
+    wsTabsRow.append(wsTabs);
+    wsTabsRow.hidden = true;
+    const sessionRow = el("div", "ws-session-row");
     const pinStrip = el("div", "pin-strip");
-    pinStrip.hidden = true;
+    sessionRow.append(nowChipSlot, pinStrip);
 
     const tabs = el("nav", "tabs");
     const tabDefs: [Tab, string][] = [
@@ -461,18 +470,19 @@ export class App {
       tabs.append(btn);
     }
 
-    shell.append(topbar, pinStrip, main, tabs);
+    shell.append(topbar, wsTabsRow, sessionRow, main, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, wsTabsRow, wsTabs, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.binBtn = binBtn;
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
     this.pillBar = new PillBar<SessionState>(pinStrip, {
       badge: (s, cur) => sessionBadge(s, cur),
       time: relativeTime,
-      heading: (pending, total) => (pending ? tr("置顶 · {p1} 个待处理", { p1: pending }) : total ? tr("置顶") : tr("左栏已收")),
-      empty: tr("在这里 ☆ 置顶一个会话，收起左栏也能点到。"),
+      // #97：第二行不再是「置顶区」，条头那颗字也就没有意义了 —— 最左边那颗就是当前会话。
+      // 空字符串仍然会留一个空 span，CSS 里 `.pin-strip-label:empty` 把它收掉。
+      heading: () => "",
       onOpen: (id) => this.openFromList(id),
       onStar: (id) => this.togglePin(id),
       tail: () => {
@@ -492,6 +502,9 @@ export class App {
       decorate: (chip, s) => this.wirePinHover(chip, s),
     });
     this.nowChip = new NowChip(nowChipSlot);
+    // 设置面板可能在 build 之前就问过布局（applyPrefs 在构造里先跑一次），这里再画一次 DOM 标记，
+    // 保证首屏 `data-layout` 与真实渲染一致。
+    this.paintLayout();
     // 顶栏这批按钮只构造一次，语言一切换就得靠 paintChrome() 重写文字（renderAll 碰不到它们）。
     this.paintChrome();
     this.chat = new ChatView(scroll);
@@ -2322,8 +2335,16 @@ export class App {
     root.setProperty("--text", text.text);
     root.setProperty("--dim", text.dim);
     root.setProperty("--faint", text.faint);
+    // #97：布局也是外观偏好，但「哪一种壳」影响的是行与列的摆法，#98 还要在自己的 CSS 里挑壳。
+    // 存的值原样留在 prefs 里，这里只标出这一版真正画出来的那一种（见 layout.ts 的 activeLayout）。
+    this.paintLayout();
     // D93: 终端 dialog 的几何按缩放换算，改了字号 / 缩放后得重新夹一次（不然 pinned 的那块会溢出）。
     if (this.termDock) this.applyTermGeom(this.termDock);
+  }
+
+  /** 布局 id 落到 `<html data-layout>`：渲染 CSS 与探针都从这里读，不用去翻 prefs。 */
+  private paintLayout(): void {
+    document.documentElement.dataset.layout = activeLayout(this.prefs);
   }
 
   private openDisplaySheet(): void {
@@ -2406,10 +2427,44 @@ export class App {
     textBox.append(textChips);
     sheet.append(textBox);
 
+    // #97：工作区布局。四颗 chip 各带一张 CSS 画的小示意图（不引图片：设置面板要能离线打开，
+    // 一张 png 就得多一条资源路径）。这一票只点亮 A，其余三颗置灰 + 悬停说明「下一步补上」——
+    // 画不出来的壳让人点进去只会看到「什么都没变」，那比置灰更让人困惑。
+    const layoutBox = el("div", "levels");
+    layoutBox.append(el("div", "levels-label", tr("工作区布局")));
+    const layoutChips = el("div", "chips layout-chips");
+    const shown = activeLayout(this.prefs);
+    for (const { id, label } of LAYOUTS) {
+      const supported = layoutSupported(id);
+      const chip = el("button", `chip layout-chip${shown === id ? " on" : ""}${supported ? "" : " off"}`);
+      chip.dataset.layout = id;
+      chip.append(layoutDemo(id), el("span", "layout-chip-label", tr(label)));
+      if (supported) {
+        chip.title = tr(label);
+        chip.onclick = () => {
+          this.prefs = { ...this.prefs, layout: id };
+          savePrefs(this.prefs);
+          this.applyPrefs();
+          this.renderWorkspaceTabs();
+          this.renderSessionRow();
+          for (const other of layoutChips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
+        };
+      } else {
+        // 真 disabled（不只是 aria-disabled）：键盘也进不去、点了不冒事件，省得在半成品上留个洞。
+        chip.disabled = true;
+        chip.title = tr("{p1}：下一步补上", { p1: tr(label) });
+        chip.setAttribute("aria-label", chip.title);
+      }
+      layoutChips.append(chip);
+    }
+    layoutBox.append(layoutChips);
+    sheet.append(layoutBox);
+
     const foot = el("div", "sheet-foot");
     const reset = el("button", "btn ghost", tr("恢复默认"));
     reset.onclick = () => {
-      // 恢复默认只恢复字号/颜色/亮度：语言是「我是谁」，不该被配色重置带走。
+      // 恢复默认只恢复字号/颜色/亮度/布局：语言是「我是谁」，不该被配色重置带走。
+      // 布局回到 A（DEFAULT_PREFS.layout），与「新装用户看到的就是两行制」对齐。
       this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang };
       savePrefs(this.prefs);
       this.applyPrefs();
@@ -3335,7 +3390,8 @@ export class App {
    * 每次拖动、每次点 ★ 最后都落到一条 arrange 消息上。
    */
   private renderSessions(): void {
-    this.renderPinStrip();
+    this.renderSessionRow();
+    this.renderWorkspaceTabs();
     this.renderNowChip();
     this.renderBinCount();
     const host = this.els.sessList;
@@ -8904,13 +8960,15 @@ export class App {
   private renderPanes(): void {
     const { sessionsPane, chatPane, queuePane, main } = this.els;
     const desktop = window.matchMedia("(min-width: 900px)").matches;
+    // 两行制跟着断点与 currentId 走，窗口一拖也得重摆（renderPanes 在 resize 的 rAF 里跑）。
+    this.renderSessionRow();
+    this.renderWorkspaceTabs();
     if (desktop) {
       sessionsPane.hidden = this.collapsed.sessions;
       chatPane.hidden = false;
       queuePane.hidden = this.collapsed.queue;
       main.classList.toggle("no-left", this.collapsed.sessions);
       main.classList.toggle("no-right", this.collapsed.queue);
-      this.renderPinStrip();
       this.syncCwdChip();
       return;
     }
@@ -8918,7 +8976,6 @@ export class App {
     sessionsPane.hidden = this.tab !== "sessions";
     chatPane.hidden = this.tab !== "chat";
     queuePane.hidden = this.tab !== "queue";
-    this.renderPinStrip();
     this.syncCwdChip();
   }
 
@@ -8958,20 +9015,93 @@ export class App {
    * With the left column collapsed there is nowhere to click a pinned session. A row of chips under
    * the topbar keeps them one click away — same order as the list's 置顶 section, newest name first.
    */
-  private renderPinStrip(): void {
-    const host = this.els.pinStrip;
-    const seen = this.collapsed.sessions && window.matchMedia("(min-width: 900px)").matches;
-    // 条要整个重建（锚点那颗胶囊跟着消失），折起来的那张列表不能留在屏幕上。
-    this.pillBar.closeMore();
-    if (!seen) {
-      host.hidden = true;
+  /**
+   * #97 壳 A 行 1：工作区标签页。横向一条、装不下就右端渐隐（不出横滚条 —— 深色顶栏下面
+   * 一条细滚动条像条裂缝）；当前工作区高亮，有会话卡在用户身上时带一颗待处理点。
+   * 点一下 = 切到那一组：打开组里排最上面的那颗会话（★ 优先，跟左栏同一份顺序）。
+   */
+  private renderWorkspaceTabs(): void {
+    const { wsTabsRow, wsTabs } = this.els;
+    if (!wsTabsRow || !wsTabs) return;
+    const desktop = window.matchMedia("(min-width: 900px)").matches;
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+    const cur = this.currentWsId();
+    wsTabs.replaceChildren();
+    wsTabsRow.hidden = !desktop || !tree.groups.length;
+    if (wsTabsRow.hidden) return;
+    for (const group of tree.groups) {
+      const tab = el("button", `ws-tab${group.id === cur ? " on" : ""}`);
+      tab.dataset.ws = group.id;
+      tab.title = tr("切到这个工作区");
+      tab.setAttribute("aria-label", tr("{p1}，{p2} 个会话", { p1: group.name, p2: group.sessions.length }));
+      if (group.id === cur) tab.setAttribute("aria-current", "true");
+      const dot = el("span", "ws-tab-dot");
+      dot.style.background = group.color;
+      tab.append(dot, el("span", "ws-tab-name", group.name));
+      if (group.pending) {
+        const todo = el("span", "ws-tab-todo");
+        todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
+        tab.append(todo);
+      }
+      tab.onclick = () => this.gotoGroup(group);
+      wsTabs.append(tab);
+    }
+    // 量宽要等布局落地：hidden 刚摘掉的那一帧 clientWidth 还是 0。
+    requestAnimationFrame(() => this.paintWsTabFade());
+  }
+
+  private paintWsTabFade(): void {
+    const box = this.els.wsTabs;
+    if (!box) return;
+    box.classList.toggle("fade", box.scrollWidth > box.clientWidth + 1);
+  }
+
+  /** 当前会话所在的工作区 id；没当前会话 / 旧桥没有分组时是 null。 */
+  private currentWsId(): string | null {
+    const s = this.session;
+    if (!s || !this.workspaces?.groups?.length) return null;
+    const listed = this.sessions.find((x) => x.id === s.id);
+    return wsOf(s, this.workspaces, listed?.ws)?.id ?? null;
+  }
+
+  /** 标签页点击：切到那一组 = 打开它排在最上面的那颗；手建的空组没有会话可开，就把左栏展开。 */
+  private gotoGroup(group: TreeGroup<SessionState>): void {
+    const first = group.sessions[0];
+    if (first) {
+      this.openFromList(first.id);
       return;
     }
-    host.hidden = false;
+    if (this.collapsed.sessions) this.togglePane("sessions");
+    if (this.prefs.wsCollapsed.includes(group.id)) this.toggleWs(group.id);
+  }
+
+  /**
+   * #97 壳 A 行 2：当前会话那颗（`NowChip`，固定最左）+ 本区会话胶囊（★ 优先）+ ＋。
+   * 胶囊直接取 `buildTree()` 的结果 —— 跟左栏同一份顺序，不另算一遍，也不会跟左栏打架。
+   * 没有工作区快照（旧桥 / 桩桥）时退回置顶列表：不知道「本区」时，置顶区至少是用户自己
+   * 挑过的那批。有本区数据时当前会话不再重复出现在胶囊里 —— 最左那颗就是它。
+   */
+  private renderSessionRow(): void {
+    const host = this.els.pinStrip;
+    if (!host) return;
+    // 条要整个重建（锚点那颗胶囊跟着消失），折起来的那张列表不能留在屏幕上。
+    this.pillBar.closeMore();
+    const desktop = window.matchMedia("(min-width: 900px)").matches;
+    host.hidden = !desktop;
+    if (!desktop) return;
     const pins = this.manage.pin
       .map((id) => this.sessions.find((s) => s.id === id))
       .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
-    this.pillBar.render(pins, this.currentId);
+    const cur = this.session;
+    if (!cur || !this.workspaces?.groups?.length) {
+      this.pillBar.render(pins, this.currentId);
+      return;
+    }
+    const listed = this.sessions.find((x) => x.id === cur.id);
+    const group = wsOf(cur, this.workspaces, listed?.ws);
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+    const mine = group ? tree.groups.find((g) => g.id === group.id) : undefined;
+    this.pillBar.render(mine ? mine.sessions.filter((s) => s.id !== cur.id) : pins, this.currentId);
   }
 
   /* ------------------------------------------------------------------ Q-035 */
@@ -9212,6 +9342,8 @@ type Prefs = {
   lang: Lang;
   /** 收起的工作区（#95）：组 id 列表，跟 accent 一起存在 `pi.prefs` 里，不另开 storage key。 */
   wsCollapsed: string[];
+  /** 工作区布局（#97）：稳定 id（a/b/c/d），标签过 `tr()`；读口在 `layout.ts`。 */
+  layout: LayoutId;
 };
 
 /** Q-029: how long the pointer has to rest on the activity line before the detail card opens. */
@@ -9220,7 +9352,7 @@ const PEEK_DELAY_MS = 3000;
 /** Grace after the pointer leaves, so crossing the 8px gap into the card isn't a "leave". */
 const PEEK_GAP_MS = 200;
 
-const DEFAULT_PREFS: Prefs = { scale: 1, accent: "ice", text: "normal", lang: "zh-Hans", wsCollapsed: [] };
+const DEFAULT_PREFS: Prefs = { scale: 1, accent: "ice", text: "normal", lang: "zh-Hans", wsCollapsed: [], layout: "a" };
 
 /** Context-budget presets in the model sheet; null = no ceiling (use the window). */
 const BUDGETS: (number | null)[] = [null, 100_000, 200_000, 500_000, 1_000_000];
@@ -9608,6 +9740,38 @@ const SIZES: [number, string][] = [
 ];
 
 /**
+ * 设置里每颗布局 chip 的那张小示意图（46×30，纯 CSS 画的块）。不引图片：设置面板要能离线
+ * 打开，也不想为四张缩略图多一条资源路径。画的是「行 / 列怎么摆」，不追求像素级复刻。
+ */
+function layoutDemo(id: LayoutId): HTMLElement {
+  const box = el("span", `layout-demo layout-${id}`);
+  box.setAttribute("aria-hidden", "true");
+  const bar = (cls: string, cells = 0): HTMLElement => {
+    const node = el("span", cls);
+    for (let i = 0; i < cells; i += 1) node.append(el("span", "ld-cell"));
+    box.append(node);
+    return node;
+  };
+  bar("ld-top");
+  if (id === "a") {
+    bar("ld-row ld-row-tabs", 3);
+    bar("ld-row ld-row-chips", 4);
+    bar("ld-body");
+  } else if (id === "b") {
+    bar("ld-row ld-row-one", 4);
+    bar("ld-body");
+  } else if (id === "c") {
+    bar("ld-rail", 3);
+    bar("ld-body-wide");
+  } else {
+    bar("ld-icons", 4);
+    for (let i = 0; i < 3; i += 1) box.append(el("span", "ld-line"));
+    bar("ld-body-wide");
+  }
+  return box;
+}
+
+/**
  * Accent pairs live in `palette.ts` because the workspace colour dot (#96) picks from the same six.
  * Keys are stable ids — they are persisted in `pi.prefs`, so they must not be translated; the
  * tooltip goes through `ACCENT_LABELS` + `tr()`. Older builds stored the Chinese colour names:
@@ -9661,6 +9825,8 @@ function readPrefs(): Prefs {
       // 没存过语言（第一次打开、或老版本升上来）就跟着浏览器走。
       lang: isLang(p?.lang) ? p.lang : detectLang(),
       wsCollapsed: Array.isArray(p?.wsCollapsed) ? p.wsCollapsed.filter((x: unknown): x is string => typeof x === "string") : [],
+      // #97：布局走 layout.ts 的读口（它自己处理乱值 / 大小写），这里不再写一遍白名单。
+      layout: layoutPref(p),
     };
   } catch {
     return { ...DEFAULT_PREFS, lang: detectLang() };

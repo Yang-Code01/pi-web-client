@@ -1688,3 +1688,24 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 - `buildTree()` 每次渲染重算（O(n log n)），几十个会话无所谓；真到几百个再说。
 
 验证：`node --experimental-transform-types --test web/tests/tree-unit.mjs`（19 例：分组 / worktree 并组 / 手建组空态 / 未分组兜底 / 组间与组内排序 / ★ 不跨组 / 过滤打组名整组留与打会话名拆组 / 归档隔离）、`node probes/workspace-tree.mjs`（桩桥 + 真 Chromium：多个组、worktree 并组、收起后刷新记忆、过滤整组、归档不在组内）、`node probes/pin-auto-open.mjs`（横栏与 D125 的行为不受影响）。
+
+## D128 壳 A 两行制的两条横栏；布局偏好只存 id、未实现的壳回退 A
+
+决定（前端：`web/src/layout.ts` + `web/src/app.ts` 的 `renderWorkspaceTabs()` / `renderSessionRow()` / `openDisplaySheet()`）：
+
+- 顶栏下固定两行：行 1 是工作区标签页（横向一条、当前组高亮 + 底部 accent 边、有待处理的组带一颗点、点标签 = 打开那组排最上面的一颗 —— ★ 优先，跟左栏同一份 `buildTree()` 顺序；手建的空组没有会话可开，点它展开左栏）；行 2 是「当前会话那颗（`NowChip`，固定最左）+ 本区会话胶囊 + ＋」。原先「收起左栏才出现」的置顶横栏被行 2 取代，不留第二条横栏。
+- 行 2 里不再摆条头、空态文案（最左端就是当前会话，不需要标题），`PillBar` 的折叠能力原样保留：装不下仍折「＋N」。
+- 行 2 的胶囊在本区未知（旧桥 / 桩桥不发 `workspace` 快照）时**回退到 `manage.pin`**：不知道「本区」时，置顶区至少是用户自己挑过的那批。有快照时显示当前会话所属组的会话（★ 优先），并排除当前那颗 —— 它已经在最左端了。
+- 标签页溢出（`scrollWidth > clientWidth + 1`）时给容器加 `.fade` 做右端渐隐（`mask-image`），并把滚动条藏掉：深色顶栏下面一条细滚动条像条裂缝，点标签前先摸滚动条也不对。左栏还在，少一个入口不会丢东西。
+- 设置 → 外观与语言新增「工作区布局」四颗 chip（每颗一张纯 CSS 示意图）。偏好写进既有的 `pi.prefs.layout`（稳定 id `a`/`b`/`c`/`d`，标签过 `tr()`，不存译文），默认 `"a"`；读口是 `layout.ts` 的 `layoutPref()`，渲染走 `activeLayout()`。这一票只把 A 加进 `IMPLEMENTED`，其余三颗 `disabled` + 悬停「下一步补上」；「恢复默认」把布局带回 A。
+- 存着的壳还没实现时（例如用户手改或 #98 分批上线）渲染回退 A，但**不**改写存着的值：`activeLayout()` 只降级渲染，`layoutPref()` 照原样读回。
+
+为什么：壳 A 是「布局先定下来」的那一版，行 1 回答「有哪些工程」、行 2 回答「这个工程里有哪些会话、我现在在哪」。行 2 的会话胶囊必须与左栏同一份顺序，否则收起左栏和展开左栏会给出两种排序；两行共用 `buildTree()` 之后，「本区」只剩一个定义。标签页点一下开组首而不是只展开组，是因为横栏的高度预算换来的应该是「直接进入」，否则两行比左栏还慢。
+
+代价 / 可改：
+
+- 行 2 常显会在 900–1100px 宽时吃掉一点纵向空间（顶栏 + 标签 + 胶囊约 90px）。
+- 没有 `workspace` 快照时行 2 回到置顶列表，与有快照时看到的集合不同 —— 这是给旧桥留的退路，桥升级后自然统一。
+- 标签点击只开组内第一颗：想开到别的会话仍要开左栏；标签上也不显示会话数（待处理点已经占了右侧的位置）。
+
+验证：`node --experimental-transform-types web/tests/layout-unit.mjs`（6 例：默认 A / 四种 id 与顺序 / 大小写与空白 / 乱值回 A / 只实现 A 时回退 / label 不是 id）、`node probes/workspace-layout.mjs`（桩桥 + 真 Chromium：两行都在且顶栏不再挂那颗、标签溢出渐隐无横滚条、点标签切组、胶囊 ★ 优先、设置四颗 chip 只亮 A / 其余 disabled、偏好写进 `pi.prefs` 且刷新保留、没实现的壳回退 A 但值不丢、恢复默认回 A、800px 收起两行），以及 `probes/pin-auto-open.mjs` / `probes/nowchip.mjs` / `probes/workspace-tree.mjs` 全绿。
