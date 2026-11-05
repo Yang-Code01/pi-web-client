@@ -124,6 +124,7 @@ PI_WEB_HOST=0.0.0.0 npm start
 - `!命令` / `!!命令`：在 pi 里执行，输出成卡片，`!` 的输出随下一条消息进上下文，`!!` 不进；模型面板的「会话」一节有累计 token、费用、会话文件，以及带指令的「立即压缩」（`/session`、`/compact <指令>` 也能到这里）。
 - **分支与导出**（D77）：`/tree` 打开会话树（缩进=分支，● = pi 会接着走的那条），任何一条用户消息都能 ⑂ 分叉成新会话（消息放回输入框），`/clone` 复制当前分支，`/import <路径>` 导入别处的会话文件；`/export` 用 pi 自带的 HTML 导出在新标签页打开（`/export jsonl` 下载原文件），`/copy` 或消息右上角 ⧉ 复制原文。
 - **输入补全**（D77）：输入框开头打 `/` 列出内建命令 + 扩展命令 + 提示词模板 + 技能；任意位置打 `@` 模糊搜索工作目录里的文件。终端 `＋` 可以选 shell（PowerShell / Git Bash / cmd，macOS / Linux 用 `$SHELL`）。
+- **技能商店**（D126）：技能面板底部右侧的「商店」打开一个 dialog——「商店」标签搜 skills.sh（社区技能目录，按安装量排，说明读自各仓库的 `SKILL.md`），装到全局 `<agentDir>/skills` 或当前项目 `.pi/skills`；「按地址安装」支持 `owner/repo`、GitHub 链接（可带 `/tree/<ref>/<path>`）和本机目录；「已安装」列出 pi 会加载的全部技能并分组（用户 / 项目），用户技能可以卸载（4 秒内再点一次，junction 只断链），项目技能只读。改完弹窗顶部给一颗「重新加载当前会话」，公网隧道下只读。
 - **pi 设置与项目信任**（D78）：右栏「pi 设置」（或 `/settings`）改全局 / 项目 `settings.json`——常用项是表单，其余「编辑 JSON」，写入走 pi 自己的文件锁、只动改过的字段；`/trust` 决定是否加载项目的 `.pi` 配置（写 `trust.json`，和终端同一份；网页里 pi 不能弹信任提示，所以没决定过的项目会在输入框上方提示）；`/reload` 重启这个会话的 pi 读最新设置；`/changelog` 看 pi 更新日志。新建会话的「高级」里可以给这个会话定 `--model` `--thinking` `--tools` `-e` `--skill` `--append-system-prompt` `-ne` `-nc` `--no-mcp` `--offline`，之后再接管也沿用。
 - **登录、扩展与终端联动**（D79）：「pi 设置 → 登录 / 凭据」就是 `/login` `/logout`——pi 自己跑登录流程（API key 或 OAuth），网页只转达它的提问、授权链接和设备码，凭据由 pi 写进 `auth.json`；「扩展与 MCP」跑 pi 的 `install / remove / update` 和 `mcp add / list / remove / login / logout`；「全局」页底部可以把「会话锁」扩展装进 pi 的全局扩展，之后终端里的 pi 会登记自己开着的会话，网页不会去接管它（显示「终端占用」），终端打开网页正在写的会话前也会先提醒。
 - **升级 pi 本体**（D112）：「扩展与 MCP」页顶部一行「pi 本体」：当前版本、最新版本（带来源）、`重新检查`、`更新 pi`。检查是懒的、按来源缓存 30 分钟（先问 npm 安装源，失败再问 pi.dev），点更新先弹确认框（要联网、可能几分钟、会替换全局安装的 pi、失败没有自动回滚），装完桥自己重读磁盘上的版本并广播，页面上的版本号立刻变、不用重启桥；已开着的会话仍是旧代码，给一颗「重启当前会话」。
@@ -190,6 +191,9 @@ node bridge/tests/memory-cap.mjs                                      # 内存�
 node bridge/tests/pi-cli.mjs                                          # pi install / list / remove 与 pi mcp add / list / remove（D79，真 pi CLI，fixture 目录）
 node bridge/tests/share-bug.mjs                                       # /share（假 gh）与 /bug（zip / 离线拒绝上传）（D80，不联网）
 node bridge/tests/ext-manager.mjs                                     # 扩展管理：清单与版本、启停、MCP 改版本、商店→pi mcp add、按钮开关、公网只读（D81）
+node bridge/tests/skill-store.mjs                                     # 技能商店：地址解析、仓库树→目录、说明、安装/重装/防覆盖、已安装清单、卸载与链接（D126，不联网）
+node bridge/tests/skill-store-ws.mjs                                  # 技能商店的 WS 层：真 bridge，清单/按地址/公网只读/装与卸真动磁盘（D126）
+node probes/skill-store.mjs                                           # 技能商店 UI：面板入口、两段式搜索、装/卸、按地址安装（D126，桩桥 + 真 Chromium）
 node probes/bug-notes.mjs                                             # 记录：桥端整条链路（隔离桥 7899、真 WS、落盘断言，不花模型调用）（D108）
 node probes/bug-notes-ui.mjs                                          # 记录 UI：真 Chromium，归档/垃圾箱/贴图/复制 Markdown/交给 agent（D108）
 node bridge/tests/i18n-ui.mjs                                         # 三语：en-US 语境自动英文 → 切日文 → 切回中文 → 刷新后仍在（D110）
