@@ -265,7 +265,8 @@ try {
     if (!root || !cell) return null;
     const cs = getComputedStyle(cell);
     return {
-      fields: root.querySelectorAll("input, textarea, select, [contenteditable='true']").length,
+      // #107：查找框在工具条上，网格本身（.sd-view）里仍然一个输入控件都没有。
+      fields: root.querySelectorAll(".sd-view input, .sd-view textarea, .sd-view select, .sd-view [contenteditable='true']").length,
       cursor: cs.cursor,
       select: cs.userSelect,
       editable: cell.isContentEditable,
@@ -677,7 +678,7 @@ try {
   const nc = await ncInfo();
   check("缺缓存值格显空", nc?.text === "" && (await cellText(2, 3)) !== "0", JSON.stringify(nc?.text));
   check("缺缓存值格是红虚线", nc?.style === "dashed" && parseFloat(nc.width) >= 1 && red(nc.color), JSON.stringify({ style: nc?.style, width: nc?.width, color: nc?.color }));
-  check("缺缓存值格悬停给公式和解释", /B3\*C3/.test(nc?.title ?? "") && /需在 Excel 打开重算/.test(nc?.title ?? ""), nc?.title);
+  check("缺缓存值格悬停给公式和解释", /B3\*C3/.test(nc?.title ?? "") && /需用表格软件重算/.test(nc?.title ?? ""), nc?.title);
 
   await clickCell(2, 3);
   const ncSel = await ncInfo();
@@ -693,7 +694,7 @@ try {
 
   const st1 = await status();
   check("状态条累计无缓存值格数", !st1?.hidden && st1?.text.includes("3 格无缓存值"), JSON.stringify(st1));
-  check("状态条解释了要重算", /Excel/.test(st1?.title ?? ""), st1?.title);
+  check("状态条解释了要重算", /重算/.test(st1?.title ?? ""), st1?.title);
   await page.screenshot({ path: path.join(OUT, "09-formula.png") });
 
   // 换到没有公式的表：计数与红虚线都不该跟过去。
@@ -719,7 +720,7 @@ try {
     const a = bar.querySelector("a.sd-dl");
     return { buttons, href: a?.getAttribute("href") ?? null, text: a?.textContent.trim() ?? null, dl: a ? a.hasAttribute("download") : false };
   });
-  check("底栏有「用 Excel 打开」", foot?.buttons.includes("用 Excel 打开") === true, JSON.stringify(foot?.buttons));
+  check("底栏有「用默认程序打开」", foot?.buttons.includes("用默认程序打开") === true, JSON.stringify(foot?.buttons));
   check("底栏有「在文件夹中显示」", foot?.buttons.some((b) => b.includes("在文件夹中显示")) === true, JSON.stringify(foot?.buttons));
   check("下载仍是裸地址", /^\/raw\/[^/]+\/plain\.xlsx$/.test(String(foot?.href)), String(foot?.href));
   check("下载是 <a download>，不看桥的脸色", foot?.dl === true && foot?.text === "下载", JSON.stringify(foot));
@@ -727,7 +728,7 @@ try {
 
   // 公网来客：桌面上的动作一律不开
   const pubOpen = await api("/api/open", { token }, AS_TUNNEL);
-  check("公网点「用 Excel 打开」被拒", pubOpen.status === 403, JSON.stringify(pubOpen));
+  check("公网点「用默认程序打开」被拒", pubOpen.status === 403, JSON.stringify(pubOpen));
   check("公网拒绝说了原因", pubOpen.data?.code === "open_public" && /本机/.test(String(pubOpen.data?.error)), JSON.stringify(pubOpen.data));
   const pubReveal = await api("/api/reveal", { path: made.plain }, AS_TUNNEL);
   check("公网点「在文件夹中显示」仍被拒", pubReveal.status === 403, JSON.stringify(pubReveal));
@@ -782,8 +783,8 @@ try {
     await openFile(name);
     const msg = (await page.locator(".viewer-msg").first().textContent()) ?? "";
     check(`${name} 说清这个格式不支持`, msg.includes("这个格式这里不支持"), msg.trim().slice(0, 120));
-    const hasOpen = await page.locator(".viewer-msg button", { hasText: "用 Excel 打开" }).count();
-    check(`${name} 给了「用 Excel 打开」`, hasOpen === 1, String(hasOpen));
+    const hasOpen = await page.locator(".viewer-msg button", { hasText: "用默认程序打开" }).count();
+    check(`${name} 给了「用默认程序打开」`, hasOpen === 1, String(hasOpen));
   }
   await page.screenshot({ path: path.join(OUT, "07-downgrade.png") });
 
@@ -794,7 +795,7 @@ try {
   await page.screenshot({ path: path.join(OUT, "08-not-xlsx.png") });
   await page.locator(".sd-close").first().click();
 
-  // 真把文件交给 Excel：默认不跑（会在桌面开窗、锁住文件），SHEET_OPEN=1 时跑一次。
+  // 真把文件交给本机默认程序：默认不跑（会在桌面开窗、锁住文件），SHEET_OPEN=1 时跑一次。
   if (process.env.SHEET_OPEN) {
     const tmp = path.join(process.env.TEMP ?? process.env.TMP ?? "/tmp", `pi-xlsx-open-${process.pid}.xlsx`);
     fs.writeFileSync(tmp, buildXlsx());
@@ -1213,6 +1214,231 @@ if (SKIP_PDF) {
   check("截断的文件不提供保存", (await page.locator(".sd-save").count()) === 0);
   await page.screenshot({ path: path.join(OUT, "07-csv-truncated.png") });
   await closeSheet();
+
+  // ------------------------------------------------ 交互（#107）：选区 / 复制 / 查找 / 缩放 / 引用
+  // 前面几段把浮窗几何、scroll 都改过，这里清掉记忆从默认尺寸重开。
+  await closeSheet();
+  await page.evaluate(() => localStorage.removeItem("pi.sheetGeom"));
+  await openSheet("plain.xlsx");
+
+  const selState = () =>
+    page.evaluate(() => {
+      const cur = document.querySelector(".sd-cell.sel");
+      const ids = [...document.querySelectorAll(".sd-cell.in-sel")].map((e) => `${e.dataset.r}:${e.dataset.c}`);
+      return {
+        r: cur ? Number(cur.dataset.r) : null,
+        c: cur ? Number(cur.dataset.c) : null,
+        ref: (document.querySelector(".sd-fx-ref")?.textContent ?? "").trim(),
+        count: ids.length,
+        ids: ids.sort(),
+      };
+    });
+
+  // 状态条（#107 整合）：只读 / 行列数 / 档位 / 缩放 都在底栏一行里。
+  const bar107 = await page.evaluate(() => {
+    const t = (s) => (document.querySelector(s)?.textContent ?? "").trim();
+    const inFoot = (s) => !!document.querySelector(s)?.closest(".sd-foot");
+    return {
+      ro: t(".sd-ro"),
+      dims: t(".sd-dims"),
+      tier: t(".sd-tier"),
+      zoom: t(".sd-zoom-pct"),
+      foot: [".sd-ro", ".sd-dims", ".sd-tier", ".sd-zoom-pct"].every(inFoot),
+    };
+  });
+  check(
+    "状态条有只读 / 行列数 / 档位 / 缩放",
+    bar107.ro === "只读" &&
+      bar107.dims === "151 行 × 8 列" &&
+      /全量显示$/.test(bar107.tier) &&
+      bar107.zoom === "100%" &&
+      bar107.foot,
+    JSON.stringify(bar107),
+  );
+
+  // 方向键移动、Shift 扩展成一个矩形。
+  await clickCell(0, 0);
+  const at0 = await selState();
+  check("点一下选中一格", at0.ref === "A1" && at0.count === 1, JSON.stringify(at0));
+  const focusable = await page.evaluate(() => {
+    const v = document.querySelector(".sd-view");
+    return v?.getAttribute("tabindex") === "0" && v.contains(document.activeElement);
+  });
+  check("网格能接键盘（不用先点输入框）", focusable === true, String(focusable));
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowDown");
+  const moved = await selState();
+  check("方向键移动选中格", moved.ref === "B2" && moved.count === 1, JSON.stringify(moved));
+  await page.keyboard.press("Shift+ArrowDown");
+  await page.keyboard.press("Shift+ArrowRight");
+  const grown = await selState();
+  check("Shift 扩展选区", grown.ref === "B2:C3" && grown.count === 4, JSON.stringify(grown));
+  check("扩展出来的是矩形", grown.ids.join(",") === "1:1,1:2,2:1,2:2", grown.ids.join(","));
+
+  // 拖选 A2:C4，复制出来是 TSV 纯文本（行列对齐、空值留空）。
+  await page.evaluate(() => {
+    window.__copied = null;
+    document.addEventListener(
+      "copy",
+      (ev) => {
+        window.__copied = ev.clipboardData?.getData("text/plain") ?? null;
+      },
+      { once: true },
+    );
+  });
+  const a2 = await cellBox(1, 0);
+  const c4 = await cellBox(3, 2);
+  check("A2 与 C4 都在可视区", !!a2 && !!c4, JSON.stringify({ a2, c4 }));
+  await page.mouse.move(a2.l + 8, a2.t + a2.h / 2);
+  await page.mouse.down();
+  await page.mouse.move(c4.l + c4.w - 8, c4.t + c4.h / 2, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(150);
+  const dragged = await selState();
+  check("拖选出一块矩形", dragged.ref === "A2:C4" && dragged.count === 9, JSON.stringify(dragged));
+  // 前面「文件被改」那段把 A2 换成了「更换后」，所以期望值从网格里现取，不写死。
+  const tsvWant = [];
+  for (const r of [1, 2, 3]) {
+    const row = [];
+    for (const c of [0, 1, 2]) row.push(await cellText(r, c));
+    tsvWant.push(row.join("\t"));
+  }
+  await page.keyboard.press("Control+c");
+  await page.waitForTimeout(150);
+  const copied = await page.evaluate(() => window.__copied);
+  check(
+    "复制出的是 TSV 纯文本",
+    copied === tsvWant.join("\n") && copied.split("\n").every((l) => l.split("\t").length === 3),
+    JSON.stringify({ got: copied, want: tsvWant.join("\n") }),
+  );
+  await page.screenshot({ path: path.join(OUT, "11-selection.png") });
+
+  // 双击一片连续区（填充过的数据块）。
+  await page.locator('.sd-cell[data-r="1"][data-c="0"]').first().dblclick();
+  await page.waitForTimeout(150);
+  const region = await selState();
+  check("双击选一片连续区", region.count > 10 && region.ids.includes("1:0"), JSON.stringify({ count: region.count }));
+
+  // 查找：Ctrl+F 打开、命中高亮、计数与跳转。
+  await page.keyboard.press("Control+f");
+  const opened = await page.evaluate(() => {
+    const box = document.querySelector(".sd-find");
+    const inp = document.querySelector(".sd-find-in");
+    return box ? { hidden: box.hidden, focused: document.activeElement === inp } : null;
+  });
+  check("Ctrl+F 打开查找框并聚焦", opened?.hidden === false && opened?.focused === true, JSON.stringify(opened));
+  await page.locator(".sd-find-in").first().fill("华东");
+  // 命中数取决于 fixture 里填充行的地区列，不写死总数：只要 ≥2 就够验「跳下一处」。
+  await until(
+    async () => {
+      const m = /^1\/(\d+)$/.exec(((await page.locator(".sd-find-count").first().textContent()) ?? "").trim());
+      return !!m && Number(m[1]) >= 2;
+    },
+    8000,
+    "find 1/N",
+  );
+  const found = await page.evaluate(() => {
+    const on = document.querySelector(".sd-cell.hit-on");
+    return {
+      hits: [...document.querySelectorAll(".sd-cell.hit")].map((e) => `${e.dataset.r}:${e.dataset.c}`).sort(),
+      on: on ? `${on.dataset.r}:${on.dataset.c}` : null,
+      count: (document.querySelector(".sd-find-count")?.textContent ?? "").trim(),
+    };
+  });
+  check("命中格高亮", found.hits.length >= 2, found.hits.join(","));
+  // 扫表是按行从上往下，第一处就是「华东 & 华南 <测试>」所在的 F4，第二处是第 9 行的填充区。
+  check("计数与当前项", /^1\/\d+$/.test(found.count) && found.on === "3:5", JSON.stringify(found));
+  await page.screenshot({ path: path.join(OUT, "12-find.png") });
+  await page.keyboard.press("Enter");
+  const found2 = await (async () => {
+    for (let i = 0; i < 60; i++) {
+      const st = await page.evaluate(() => {
+        const on = document.querySelector(".sd-cell.hit-on");
+        return {
+          on: on ? `${on.dataset.r}:${on.dataset.c}` : null,
+          count: (document.querySelector(".sd-find-count")?.textContent ?? "").trim(),
+        };
+      });
+      if (/^2\/\d+$/.test(st.count) && st.on === "9:0") return st;
+      await page.waitForTimeout(100);
+    }
+    return { on: null, count: "" };
+  })();
+  check("Enter 跳到下一处（滚过去并高亮）", /^2\/\d+$/.test(found2.count) && found2.on === "9:0", JSON.stringify(found2));
+  await page.locator(".sd-find-in").first().fill("不存在的东西");
+  await until(async () => ((await page.locator(".sd-find-count").first().textContent()) ?? "").trim() === "0/0", 8000, "find 0/0");
+  check("找不到就没有高亮", (await page.locator(".sd-cell.hit").count()) === 0);
+  await page.keyboard.press("Escape");
+  check("Esc 收起查找框", await page.evaluate(() => document.querySelector(".sd-find")?.hidden === true));
+
+  // 缩放：格子与列宽一起变，百分比可复原。
+  const z0 = await cellBox(1, 0);
+  await page.locator('[data-k="zin"]').first().click();
+  await page.locator('[data-k="zin"]').first().click();
+  await page.waitForTimeout(200);
+  const z1 = await cellBox(1, 0);
+  const pct1 = await page.evaluate(() => (document.querySelector(".sd-zoom-pct")?.textContent ?? "").trim());
+  check("缩放百分比", pct1 === "120%", pct1);
+  check("格子高度跟着缩放", Math.abs(z1.h / z0.h - 1.2) <= 0.05, `${z0.h} → ${z1.h}`);
+  check("列宽同步缩放", Math.abs(z1.w / z0.w - 1.2) <= 0.05, `${z0.w} → ${z1.w}`);
+  await page.screenshot({ path: path.join(OUT, "13-zoom.png") });
+  await page.locator('[data-k="z100"]').first().click();
+  await page.waitForTimeout(200);
+  const z2 = await cellBox(1, 0);
+  check("点百分比复原 100%", z2.h === z0.h && z2.w === z0.w, JSON.stringify({ z0, z2 }));
+
+  // 引用给 pi：路径 + A1:C9 进对话框，但不发。
+  const countMsgs = () => {
+    const raw = fs.readFileSync(path.join(dir, `${SID}.jsonl`), "utf8").trim();
+    return raw ? raw.split("\n").filter((l) => l.includes('"type":"message"')).length : 0;
+  };
+  const msgsBefore = countMsgs();
+  const a2b = await cellBox(1, 0);
+  const c4b = await cellBox(3, 2);
+  await page.mouse.move(a2b.l + 8, a2b.t + a2b.h / 2);
+  await page.mouse.down();
+  await page.mouse.move(c4b.l + c4b.w - 8, c4b.t + c4b.h / 2, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(120);
+  await page.locator(".sd-quote").first().click();
+  await page.waitForTimeout(800);
+  const compose = await page.evaluate(() => document.querySelector(".composer-input textarea")?.value ?? null);
+  check(
+    "引用把「路径 + A2:C4」插进对话框",
+    typeof compose === "string" && compose.includes("plain.xlsx") && compose.includes("A2:C4"),
+    String(compose).slice(0, 160),
+  );
+  check("引用没有自动发送", countMsgs() === msgsBefore, `${msgsBefore} → ${countMsgs()}`);
+  await page.screenshot({ path: path.join(OUT, "14-quote.png") });
+
+  // 拖到最窄：关闭键留在浮窗里，工具条换行而不被顶出去。
+  await drag(".sd-resize", -1000, 0);
+  const narrowBox = await box();
+  check("最窄停在 420", narrowBox.w === 420, JSON.stringify(narrowBox));
+  const fit = await page.evaluate(() => {
+    const sd = document.querySelector(".sd");
+    const sdb = sd.getBoundingClientRect();
+    const closeBtn = document.querySelector(".sd-close");
+    const cb = closeBtn.getBoundingClientRect();
+    const hit = document.elementFromPoint(cb.left + cb.width / 2, cb.top + cb.height / 2);
+    const inside = (r) => r.left >= sdb.left - 1 && r.right <= sdb.right + 1 && r.top >= sdb.top - 1 && r.bottom <= sdb.bottom + 1;
+    const tools = document.querySelector(".sd-tools");
+    const foot = document.querySelector(".sd-foot");
+    const acts = [...document.querySelectorAll(".sd-foot .sd-act")];
+    return {
+      closeInside: inside(cb),
+      closeClickable: hit === closeBtn || closeBtn.contains(hit),
+      toolsFit: !tools || (tools.scrollWidth <= tools.clientWidth + 1 && inside(tools.getBoundingClientRect())),
+      footFit: foot.scrollWidth <= foot.clientWidth + 1 && inside(foot.getBoundingClientRect()),
+      actsInside: acts.length > 0 && acts.every((a) => inside(a.getBoundingClientRect())),
+      quoteInside: inside(document.querySelector(".sd-quote").getBoundingClientRect()),
+      gridW: document.querySelector(".sd-grid").getBoundingClientRect().width,
+    };
+  });
+  check("最窄时关闭键还在浮窗里且点得到", fit.closeInside && fit.closeClickable, JSON.stringify(fit));
+  check("最窄时底栏与工具条不溢出", fit.footFit && fit.toolsFit && fit.actsInside, JSON.stringify(fit));
+  check("最窄时「引用给 pi」没被顶出去", fit.quoteInside === true, JSON.stringify(fit));
+  await page.screenshot({ path: path.join(OUT, "15-narrow.png") });
 
   check("没有页面异常", pageErrors.length === 0, pageErrors.join(" | "));
   log(`窗口请求 ${windowRequests.length} 次，示例 ${JSON.stringify(windowRequests.slice(0, 3))}`);

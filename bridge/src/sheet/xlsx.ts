@@ -89,6 +89,14 @@ export interface SheetWindow {
   partBytes?: number;
 }
 
+/** #107：查找命中。只回坐标——高亮和跳转用不上值，别顺手把整表内容带出去。 */
+export interface SheetMatches {
+  sheet: string;
+  matches: { r: number; c: number }[];
+  /** 超过上限只回前 N 条。 */
+  truncated?: boolean;
+}
+
 /** #110 三档：全量 / 只值轻量 / 不给。 */
 export type SheetTier = "full" | "light" | "none";
 
@@ -293,11 +301,11 @@ function unsupported(what: string): never {
 /** 读 workbook：sheet 清单 + 尺寸 + 档位。none 的表不读正文，light 不建条件格式。 */
 export function readBook(buf: Uint8Array): Book {
   // 加密的包（CFB）和改名的旧格式都不是 zip：先认出来，别把解压错误当「表格坏了」端出去。
-  if (!(buf[0] === 0x50 && buf[1] === 0x4b)) unsupported("这个格式这里不支持，用 Excel 打开");
+  if (!(buf[0] === 0x50 && buf[1] === 0x4b)) unsupported("这个格式这里不支持，用本机程序打开");
   const dir = zipIndex(buf);
-  if (!dir) unsupported("这个格式这里不支持，用 Excel 打开");
+  if (!dir) unsupported("这个格式这里不支持，用本机程序打开");
   const workbook = partText(buf, dir, "xl/workbook.xml");
-  if (!workbook) unsupported("这个格式这里不支持，用 Excel 打开");
+  if (!workbook) unsupported("这个格式这里不支持，用本机程序打开");
   const relsXml = partText(buf, dir, "xl/_rels/workbook.xml.rels") ?? "";
   const rels = new Map<string, string>();
   for (const m of relsXml.matchAll(/<Relationship\b[^>]*>/g)) {
@@ -567,4 +575,72 @@ function scanRows(
     bytes += Buffer.byteLength(pending);
   }
   return { rows, bytes };
+}
+
+/**
+ * #107：在一张表里找字，大小写不敏感，按「显示串」比对（看到什么就能搜什么）。
+ * 前端手里只有可视窗口，所以整表扫描只能在服务端做；只回坐标，命中到 `limit` 就停。
+ */
+export function findInSheet(buf: Uint8Array, book: Book, sheet: string, query: string, limit = 1000): SheetMatches {
+  const info = book.meta.sheets.find((s) => s.name === sheet);
+  const tier = info?.tier ?? book.tiers.get(sheet) ?? "full";
+  if (tier === "none") throw Object.assign(new Error("这张表太大，不在这里搜"), { code: "sheet_too_big" });
+  if (!info) throw new Error("找不到这个工作表");
+  const part = book.parts.get(sheet) ?? book.parts.get(book.meta.name);
+  if (!part) throw new Error("找不到这个工作表");
+  const entry = book.dir.get(part);
+  if (!entry) throw new Error("这个工作表是空的");
+  const matches: { r: number; c: number }[] = [];
+  const q = query.trim().toLowerCase();
+  if (!q) return { sheet, matches, truncated: false };
+  const strings = (book.strings ??= sharedStrings(buf, book.dir));
+  const xfs = (book.xfs ??= readStyles(buf, book.dir));
+  const decoder = new TextDecoder("utf-8");
+  let pending = "";
+  let stop = false;
+
+  const eat = (text: string): void => {
+    pending += text;
+    while (!stop) {
+      const start = pending.indexOf("<row");
+      if (start < 0) {
+        // 留一点尾巴：`<row` 可能被切在下一个 chunk 的边界上。
+        if (pending.length > 16) pending = pending.slice(-16);
+        return;
+      }
+      if (start > 0) pending = pending.slice(start);
+      const gt = pending.indexOf(">");
+      if (gt < 0) return;
+      const head = pending.slice(0, gt + 1);
+      const selfClose = head.endsWith("/>");
+      let end = gt + 1;
+      let body = "";
+      if (!selfClose) {
+        const close = pending.indexOf("</row>", gt);
+        if (close < 0) return;
+        body = pending.slice(gt + 1, close);
+        end = close + 6;
+      }
+      const attrs = head.slice(4, selfClose ? -2 : -1);
+      const num = Number(attr(attrs, "r"));
+      pending = pending.slice(end);
+      if (!Number.isFinite(num)) continue;
+      const index = num - 1;
+      for (const cell of cellsOfRow(body, index, 0, info.cols - 1, strings, xfs, book.date1904, null)) {
+        if (!cell.t || !cell.t.toLowerCase().includes(q)) continue;
+        matches.push({ r: cell.r, c: cell.c });
+        if (matches.length >= limit) {
+          stop = true;
+          return;
+        }
+      }
+    }
+  };
+
+  entryStream(buf, entry, (chunk) => {
+    eat(decoder.decode(chunk, { stream: true }));
+    return !stop;
+  });
+  if (!stop) eat(decoder.decode());
+  return { sheet, matches, truncated: stop && matches.length >= limit };
 }
