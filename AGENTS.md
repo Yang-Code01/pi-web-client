@@ -8,6 +8,16 @@ pi 的网页客户端：`bridge/`（Node，WS 桥 + RPC 子进程 + 隧道）与
 
 Issues and specs live as GitHub issues in `Yang-Code01/pi-web-client`, driven with the `gh` CLI. 先直连（多数机器直连可用）；只有直连失败才加 `HTTPS_PROXY=http://127.0.0.1:18791`。push / `gh pr create` 报 403 时**先查账号**：`gh auth status` 里的 active 账号可能不是仓库主人（git 用 active 那个），不是网络问题。See `docs/agents/issue-tracker.md`.
 
+#### 账号：本仓库只认 `Yang-Code01`
+
+`Yang-Code01` 的权限只用于**本仓库**的 `gh` 与 `git`，不要让它影响别的项目和全局默认账号。
+
+- 全局 active 账号平时保持 `xyang-qingmin`，别改它；
+- 在本仓库动 `gh` / `git push` 时二选一：
+  - 逐条带鉴权：`GH_TOKEN=$(gh auth token --user Yang-Code01) gh …`，push 用 `https://x-access-token:$TOKEN@github.com/Yang-Code01/pi-web-client.git`（写法见 `docs/agents/issue-tracker.md`）；
+  - 或者临时 `gh auth switch --user Yang-Code01`，**任务一做完立刻 `gh auth switch --user xyang-qingmin` 切回去**，别留着。
+- 症状：`gh issue edit … --add-label` 报 `does not have the correct permissions to execute AddLabelsToLabelable` —— 这就是 active 账号不是 `Yang-Code01`，不是标签本身的问题。
+
 ### 界面文案（i18n）
 
 界面文案一律走 `web/src/i18n/` 的 `tr("中文原文")`：中文原文就是键，英文/日文在 `en.ts` / `ja.ts`。
