@@ -143,7 +143,8 @@ export const en: Dict = {
   "pi 设置": "pi settings",
   "pi 设置（全局 / 项目）": "pi settings (global / project)",
   "shell 路径": "Shell path",
-  "{p1}\n点一下复制路径": "{p1}\nClick to copy the path",
+  // pi-lens-ignore: no-dupe-keys -- 键里有转义换行，ast-grep 误判重复（i18n-check 已确认唯一）
+  "{p1}\u000a点一下复制路径": "{p1}\nClick to copy the path",
   "{p1} 个可以更新": "{p1} updates available",
   "{p1} 个操作 · {p2}": "{p1} operations · {p2}",
   "{p1} 个没删：{p2}{p3}": "{p1} not deleted: {p2}{p3}",
@@ -1326,4 +1327,18 @@ export const en: Dict = {
   "bridge.err.sheet_stale": "The file changed, please reopen",
   "bridge.err.sheet_unsupported": "This format isn't supported here — open it in Excel instead",
   "bridge.err.sheet_gone": "The file is gone",
+  "bridge.err.sheet_pdf_soffice": "LibreOffice (soffice) isn't installed on this computer — the page view needs it",
+  "bridge.err.sheet_pdf_failed": "LibreOffice couldn't turn this workbook into a PDF: {p1}",
+  "网格": "Grid",
+  "页面视图": "Page view",
+  "正在生成页面视图": "Building the page view",
+  "正在打开页面视图…": "Opening the page view…",
+  "第一次要等 LibreOffice 排一次版，之后会记住。": "The first time waits for LibreOffice to lay it out; later opens are remembered.",
+  "页面视图没生成出来：{p1}": "Couldn't build the page view: {p1}",
+  "这个文件没有图表": "This file has no charts",
+  "页面视图是 LibreOffice 排出来的打印版式，表格、图表都在纸上。":
+    "The page view is the print layout LibreOffice renders: sheets and charts, on paper.",
+  "生成页面视图": "Build the page view",
+  "重试": "Retry",
+  "拖动调整左右比例（双击复原）": "Drag to adjust the split (double-click to reset)",
 };

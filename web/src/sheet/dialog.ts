@@ -8,8 +8,10 @@ import { tr, errText, fmtTime } from "../i18n/index.ts";
 import type { SheetInfo, SheetMeta, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
 import { SheetGrid } from "./grid.ts";
+import { SheetPage } from "./page.ts";
 
 const KEY = "pi.sheetGeom";
+const SPLIT_KEY = "pi.sheetSplit";
 const MIN_W = 420;
 const MIN_H = 260;
 
@@ -35,6 +37,8 @@ export interface SheetDialogOpts {
   fetchWindow: (sheet: string, r0: number, r1: number, c0: number, c1: number) => Promise<SheetWindow>;
   /** #113：CSV 的源码面（有它才出「表格 / 源码」两个 tab）。 */
   source?: SheetSource;
+  /** #112：页面视图端点；xlsx 都有，CSV 没有。有它才出并排 / 两个标签页。 */
+  page?: { url: string };
   /** #106 出口：交给这台电脑上的 Excel 打开原文件。 */
   onOpen: () => Promise<void>;
   onReveal: () => Promise<void>;
@@ -57,6 +61,11 @@ export class SheetDialog {
   private readonly head: HTMLElement;
   private readonly body: HTMLElement;
   private readonly pane: HTMLElement;
+  private readonly panes: HTMLElement | null = null;
+  private readonly split: HTMLElement | null = null;
+  private readonly viewTabs: HTMLElement | null = null;
+  private readonly viewTabBtns: HTMLButtonElement[] = [];
+  private page: SheetPage | null = null;
   private readonly footBar: HTMLElement;
   /** #108：底部的工作表标签与「N 个隐藏工作表」提示（`.sd-tab` 是 CSV 的表格/源码，别混）。 */
   private readonly wsTabs: HTMLElement;
@@ -67,6 +76,9 @@ export class SheetDialog {
   private saveBtn: HTMLButtonElement | null = null;
   private grid: SheetGrid | null = null;
   private closed = false;
+  private narrow = false;
+  private activeView: "grid" | "page" = "grid";
+  private ro: ResizeObserver | null = null;
 
   constructor(opts: SheetDialogOpts) {
     this.opts = opts;
@@ -90,8 +102,37 @@ export class SheetDialog {
     this.head.append(close);
 
     this.body = el("div", "sd-body");
-    this.pane = el("div", "sd-pane");
-    this.body.append(this.pane);
+    this.pane = el("div", opts.page ? "sd-pane sd-gridpane" : "sd-pane");
+    if (opts.page) {
+      // #112：宽了并排（左网格右纸面），窄了同两个标签页切换；分界线的比例记在 localStorage。
+      this.panes = el("div", "sd-panes");
+      this.split = el("div", "sd-split");
+      this.split.title = tr("拖动调整左右比例（双击复原）");
+      this.split.setAttribute("role", "separator");
+      this.split.setAttribute("aria-orientation", "vertical");
+      this.page = new SheetPage(opts.page.url);
+      this.viewTabs = el("nav", "sd-viewtabs");
+      this.viewTabs.setAttribute("role", "tablist");
+      this.viewTabs.setAttribute("aria-label", tr("页面视图"));
+      for (const [id, label] of [
+        ["grid", tr("网格")],
+        ["page", tr("页面视图")],
+      ] as const) {
+        const btn = el("button", "sd-viewtab", label);
+        btn.type = "button";
+        btn.dataset.view = id;
+        btn.setAttribute("role", "tab");
+        btn.onclick = () => this.showView(id);
+        this.viewTabBtns.push(btn);
+        this.viewTabs.append(btn);
+      }
+      this.panes.append(this.pane, this.split, this.page.root);
+      this.body.append(this.viewTabs, this.panes);
+      this.wirePage();
+      this.showView("grid");
+    } else {
+      this.body.append(this.pane);
+    }
     const resize = el("div", "sd-resize");
     resize.title = tr("拖动改大小（双击复原）");
 
@@ -252,8 +293,113 @@ export class SheetDialog {
   destroy(): void {
     this.grid?.destroy();
     this.grid = null;
+    this.ro?.disconnect();
+    this.ro = null;
+    this.page?.destroy();
+    this.page = null;
     window.removeEventListener("resize", this.onResize);
     this.root.remove();
+  }
+
+  /** #112：并排 / 标签页的切换、分界线拖动、比例记忆。 */
+  private wirePage(): void {
+    const panes = this.panes;
+    const split = this.split;
+    const page = this.page;
+    if (!panes || !split || !page) return;
+    panes.style.setProperty("--sd-split", `${this.readSplit() * 100}%`);
+
+    split.addEventListener("pointerdown", (ev) => {
+      if (this.narrow) return;
+      ev.preventDefault();
+      const box = panes.getBoundingClientRect();
+      const total = Math.max(1, box.width - split.offsetWidth);
+      split.setPointerCapture(ev.pointerId);
+      split.classList.add("drag");
+      const move = (e: PointerEvent) => this.setSplit(clampNum((e.clientX - box.left) / total, 0.2, 0.8));
+      const up = () => {
+        split.classList.remove("drag");
+        split.removeEventListener("pointermove", move);
+        split.removeEventListener("pointerup", up);
+        split.removeEventListener("pointercancel", up);
+        this.saveSplit();
+      };
+      split.addEventListener("pointermove", move);
+      split.addEventListener("pointerup", up);
+      split.addEventListener("pointercancel", up);
+    });
+    split.addEventListener("dblclick", () => {
+      this.setSplit(0.5);
+      this.saveSplit();
+    });
+
+    this.ro = new ResizeObserver(() => this.layoutMode());
+    this.ro.observe(this.root);
+    this.layoutMode();
+  }
+
+  private readSplit(): number {
+    try {
+      const value = Number(localStorage.getItem(SPLIT_KEY));
+      if (Number.isFinite(value) && value >= 0.2 && value <= 0.8) return value;
+    } catch {
+      /* 读不到就用默认 */
+    }
+    return 0.5;
+  }
+
+  private setSplit(ratio: number): void {
+    this.panes?.style.setProperty("--sd-split", `${(ratio * 100).toFixed(2)}%`);
+    requestAnimationFrame(() => this.grid?.refresh());
+  }
+
+  private saveSplit(): void {
+    if (!this.panes) return;
+    const raw = this.panes.style.getPropertyValue("--sd-split");
+    try {
+      localStorage.setItem(SPLIT_KEY, String(Number.parseFloat(raw) / 100));
+    } catch {
+      /* 存不下也还能用这一次 */
+    }
+  }
+
+  private showView(view: "grid" | "page"): void {
+    this.activeView = view;
+    for (const btn of this.viewTabBtns) {
+      const on = btn.dataset.view === view;
+      btn.classList.toggle("on", on);
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+    }
+    this.applyView();
+    if (view === "page") this.page?.reveal();
+    else this.grid?.refresh();
+  }
+
+  /** 网格是主视图：默认整幅；切到页面视图后宽窗并排、窄窗只留纸面。 */
+  private applyView(): void {
+    if (!this.page || !this.panes) return;
+    const pageOn = this.activeView === "page";
+    if (this.narrow) {
+      this.panes.classList.remove("sd-showpage");
+      this.pane.hidden = pageOn;
+      this.page.root.hidden = !pageOn;
+      return;
+    }
+    this.pane.hidden = false;
+    this.page.root.hidden = !pageOn;
+    this.panes.classList.toggle("sd-showpage", pageOn);
+  }
+
+  /** 900 布局 px 是分界：再窄并排两栏都看不清。 */
+  private layoutMode(): void {
+    if (!this.page) return;
+    const width = this.root.getBoundingClientRect().width / this.opts.scale();
+    const narrow = width < 900;
+    if (narrow === this.narrow) return;
+    this.narrow = narrow;
+    this.root.classList.toggle("sd-narrow", narrow);
+    this.applyView();
+    requestAnimationFrame(() => this.grid?.refresh());
   }
 
   private async load(): Promise<void> {
@@ -273,6 +419,11 @@ export class SheetDialog {
       });
       this.pane.replaceChildren(this.grid.root);
       await this.grid.start();
+      // #112：只有包里有图表部件才自动转并切到页面视图；没图表的先看整幅网格，想看了再点标签。
+      if (meta.charts) {
+        this.page?.auto();
+        this.showView("page");
+      }
     } catch (err) {
       if (this.closed) return;
       const code = (err as { code?: string } | null)?.code;
