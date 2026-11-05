@@ -151,7 +151,7 @@ export const en: Dict = {
   "pi 设置": "pi settings",
   "pi 设置（全局 / 项目）": "pi settings (global / project)",
   "shell 路径": "Shell path",
-  "{p1}\n点一下复制路径": "{p1}\nClick to copy the path",
+  "点一下复制路径": "Click to copy the path",
   "{p1} 个可以更新": "{p1} updates available",
   "{p1} 个操作 · {p2}": "{p1} operations · {p2}",
   "{p1} 个没删：{p2}{p3}": "{p1} not deleted: {p2}{p3}",

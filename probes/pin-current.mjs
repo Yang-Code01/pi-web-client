@@ -199,9 +199,10 @@ const c = pick(list, "会话 C");
 ok(c === undefined, "没置顶的 C 不会出现在置顶条里（D130 废止了打开即置顶）");
 ok(list.filter((x) => x.cur).length === 0, "于是整条里没有一颗「当前」（当前会话由顶栏那颗说明）");
 
-// 4) 展开左栏 → 横栏藏起来
+// 4) 展开左栏 → 行 2 仍在（#97 壳 A：置顶条成了第二行的一部分，不再随左栏收起/展开消失）
 await toggleLeft();
-ok(await page.locator(".pin-strip").isHidden(), "展开左栏后，置顶条重新隐藏（交还给左栏的 .active）");
+ok(await page.locator(".pin-strip").isVisible(), "展开左栏后，行 2 仍在（壳 A 两行制）");
+ok((await page.locator(".ws-session-row .pin-strip").count()) === 1, "置顶条挂在第二行里，不是另一条独立的横栏");
 
 await page.locator('.side-toggle[data-side="left"]').click(); // 收起来再拍一张：当前会话未置顶时这条里空着
 await sleep(500);

@@ -9328,7 +9328,8 @@ export class App {
     const btn = el("button", "cwd-chip") as HTMLButtonElement;
     const path = el("span", "cwd-path", cwd);
     btn.append(path);
-    btn.title = tr("{p1}\n点一下复制路径", { p1: cwd });
+    // 键里的 \n 会让 i18n 键扫描把 `{p1}` 当成键本身（既有误报），换行拼在键外。
+    btn.title = cwd + "\n" + tr("点一下复制路径");
     btn.onclick = () => {
       // 和 git chip 一样：`navigator.clipboard` 在局域网 http 下不存在，可选链要包住调用不是属性。
       const copy = navigator.clipboard?.writeText(cwd);
