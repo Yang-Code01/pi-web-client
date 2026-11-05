@@ -9,7 +9,7 @@ import { renderMarkdown } from "./md.ts";
 import { setKnownPlugins } from "./diagnose.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar } from "./pillbar.ts";
-import { NowChip, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
+import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
@@ -17,6 +17,7 @@ import { Socket } from "./ws.ts";
 import { buildTree, type TreeGroup } from "./tree.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
+import { hitTest, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
@@ -318,6 +319,10 @@ export class App {
   private vhist = new Map<string, { steps: VStep[]; at: number }>();
   private cardDelArm: { id: string; at: number } | null = null;
   private dragId: string | null = null;
+  /** #99：那条 2px 落点线 + 拖动时才出现的「放回工程」落点，以及拖动期间挂上的 Esc / blur 监听。 */
+  private dropLine: HTMLElement | null = null;
+  private dragPool: HTMLElement | null = null;
+  private dragCleanup: (() => void) | null = null;
 
   constructor(me: Me) {
     this.me = me;
@@ -3362,6 +3367,9 @@ export class App {
     this.renderNowChip();
     this.renderBinCount();
     const host = this.els.sessList;
+    // 重画会换掉所有子节点：旧的落点线 / 「放回工程」都是孤儿了，引用先清掉（拖动中会再挂上）。
+    this.dropLine = null;
+    this.dragPool = null;
     // A re-render mid-edit must not eat the caret: remember where it was before the DOM swap.
     const active = document.activeElement as HTMLElement | null;
     const wsTyping = this.wsRenameId != null && active?.classList.contains("ws-rename-input") === true;
@@ -3385,15 +3393,18 @@ export class App {
       return;
     }
     for (const group of tree.groups) host.append(this.wsSection(group));
-    // #100：树底部一行「新建工作区」—— 手建的空组也能有会话被拖进来（落点见 wsSection 的 .session-cards）。
-    host.append(this.wsCreateRow());
     if (!tree.groups.length) {
       // 有归档就提示去哪儿看；什么都没命中就直说没命中。
       let text = tr("没有匹配的会话。");
       if (!this.filter && tree.archived.length) text = tr("都归档了，展开下面的「已归档」看看。");
       host.append(el("div", "empty", text));
     }
+    // #100：树底部一行「新建工作区」—— 手建的空组也能有会话被拖进来（落点见 wsSection 的 .session-cards）。
+    host.append(this.wsCreateRow());
     if (tree.archived.length) host.append(this.sessionSection("archived", tr("已归档"), this.archivedOpen ? tree.archived : []));
+    // 「放回工程」只在拖动时出现；socket 推送顺手重画一次也不会把它弄丢。
+    if (this.dragId) this.showPool(this.dragId);
+    this.wireTreeDrops(host);
     this.renameFocus = false;
     this.wsRenameFocus = false;
   }
@@ -3505,21 +3516,6 @@ export class App {
     for (const s of group.sessions) cards.append(this.sessionCard(s));
     // 手建的空组：显示空态，不显示一个没有内容的组头（后端派生的组不可能为空，过滤态下整组会消失）。
     if (!group.sessions.length) cards.append(el("div", "empty ws-empty", tr("这个工作区里还没有会话。")));
-    cards.ondragover = (ev) => {
-      if (!this.dragId) return;
-      ev.preventDefault();
-    };
-    cards.ondrop = (ev) => {
-      if (!this.dragId) return;
-      ev.preventDefault();
-      // 跨组拖是 #99 的事（要发 ws.move）；在它做出来之前，落进别的组的拖拽就当没发生。
-      const from = this.dragNode(this.dragId)?.closest<HTMLElement>(".ws-sec");
-      if (from && from.dataset.ws !== group.id) return;
-      const node = this.dragNode(this.dragId);
-      if (node) cards.append(node);
-      this.commitArrangement();
-      this.dragId = null;
-    };
     sec.append(cards);
     return sec;
   }
@@ -3637,40 +3633,16 @@ export class App {
         card.click();
       }
     };
-    if (!this.filter) {
+    // 拖拽只在树里（#99）：归档是全局分区，拖进任何工作区都说不清语义，干脆不让拖。
+    if (!this.filter && !archived) {
       card.draggable = true;
       card.ondragstart = (ev) => {
-        this.dragId = s.id;
+        this.beginDrag(s.id);
         card.classList.add("dragging");
         ev.dataTransfer?.setData("text/plain", s.id);
         if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
       };
-      card.ondragend = () => {
-        this.dragId = null;
-        card.classList.remove("dragging");
-        for (const n of this.els.sessList.querySelectorAll(".over-top,.over-bottom")) n.classList.remove("over-top", "over-bottom");
-      };
-      card.ondragover = (ev) => {
-        if (!this.dragId || this.dragId === s.id) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        const r = card.getBoundingClientRect();
-        const after = ev.clientY > r.top + r.height / 2;
-        card.classList.toggle("over-top", !after);
-        card.classList.toggle("over-bottom", after);
-      };
-      card.ondragleave = () => card.classList.remove("over-top", "over-bottom");
-      card.ondrop = (ev) => {
-        if (!this.dragId || this.dragId === s.id) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        const from = this.dragNode(this.dragId);
-        if (!from) return;
-        card.after(from);
-        for (const n of this.els.sessList.querySelectorAll(".over-top,.over-bottom")) n.classList.remove("over-top", "over-bottom");
-        this.commitArrangement();
-        this.dragId = null;
-      };
+      card.ondragend = () => this.endDrag();
     }
 
     const row = el("div", "row");
@@ -3788,6 +3760,160 @@ export class App {
 
   private dragNode(id: string): HTMLElement | null {
     return this.els.sessList.querySelector<HTMLElement>(`.session-card[data-id="${id}"]`);
+  }
+
+  /** #99：拖动开始 —— 挂上「放回工程」落点 + Esc / 窗口失焦的清理。 */
+  private beginDrag(id: string): void {
+    this.dragId = id;
+    this.showPool(id);
+    this.dragCleanup?.();
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") this.endDrag();
+    };
+    const onBlur = () => this.endDrag();
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("blur", onBlur);
+    this.dragCleanup = () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", onBlur);
+      this.dragCleanup = null;
+    };
+  }
+
+  /** 拖完 / 取消 / 失焦：高亮、落点、监听全清掉；dragId 归零后松手不再动作。 */
+  private endDrag(): void {
+    this.dragId = null;
+    this.clearDropLine();
+    this.dragPool?.remove();
+    this.dragPool = null;
+    this.dragCleanup?.();
+    for (const node of this.els.sessList.querySelectorAll(".dragging")) node.classList.remove("dragging");
+  }
+
+  /** 「放回工程」：只在拖动时出现 —— 拖到它上面 = 删掉 override，回到 cwd 推导。 */
+  private showPool(id: string): void {
+    if (this.dragPool) return;
+    const session = this.sessions.find((s) => s.id === id);
+    if (!session) return;
+    const pool = el("div", "ws-pool");
+    pool.append(el("span", "label", tr("放回工程")));
+    const name = this.projectNameOf(session);
+    pool.append(el("span", "sub", name ? tr("按 cwd 回到「{p1}」", { p1: name }) : tr("按 cwd 回到推导出来的组")));
+    const archived = this.els.sessList.querySelector<HTMLElement>('.session-sec[data-sec="archived"]');
+    if (archived) this.els.sessList.insertBefore(pool, archived);
+    else this.els.sessList.append(pool);
+    this.dragPool = pool;
+  }
+
+  /** 会话的 cwd 本来会落在哪个组（忽略 override）：给「放回工程」落点写目标名。 */
+  private projectNameOf(session: SessionState): string {
+    const cwd = normalizeWsPath(session.cwd ?? "");
+    if (!cwd) return "";
+    const root = normalizeWsPath(this.workspaces.keys?.[cwd.toLowerCase()] ?? cwd);
+    const id = root.toLowerCase();
+    return (this.workspaces.groups ?? []).find((g) => g.id === id)?.name || "";
+  }
+
+  /** 整块树接管 dragover / drop：落点判定交给 `hitTest()`（纯函数，单测在 `web/tests/drag-unit.mjs`）。 */
+  private wireTreeDrops(host: HTMLElement): void {
+    host.ondragover = (ev) => {
+      if (!this.dragId) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+      this.paintDrop(this.hitAt(ev.clientY));
+    };
+    host.ondragleave = (ev) => {
+      if (!this.dragId) return;
+      // 在组与卡片之间移动也会冒 dragleave：只有真的离开树才清高亮。
+      const to = ev.relatedTarget as Node | null;
+      if (to && host.contains(to)) return;
+      this.clearDropLine();
+    };
+    host.ondrop = (ev) => this.onTreeDrop(ev);
+  }
+
+  private onTreeDrop(ev: DragEvent): void {
+    const id = this.dragId;
+    if (!id) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const hit = this.hitAt(ev.clientY);
+    const fromWs = this.cardWs(id);
+    this.endDrag();
+    if (!hit) return;
+    const plan = planDrop(id, fromWs, hit);
+    if (plan.action === "move" || plan.action === "restore") {
+      // 跨组 / 放回工程都只发 ws.move：不重写 order，别的组的顺序一根手指都不碰。
+      this.act(() => this.socket.send({ type: "manage", action: "ws.move", ids: plan.ids, wsId: plan.wsId }));
+      return;
+    }
+    const node = this.dragNode(id);
+    const cards = node?.parentElement;
+    if (!node || !cards) return;
+    const nodes = new Map([...cards.querySelectorAll<HTMLElement>(".session-card")].map((n) => [n.dataset.id ?? "", n]));
+    // 组内重排：按落点插进去，再把这一组的新顺序读出来交给 arrange。
+    for (const otherId of moveTo([...nodes.keys()], id, plan.index)) {
+      const other = nodes.get(otherId);
+      if (other) cards.append(other);
+    }
+    this.commitArrangement();
+  }
+
+  private paintDrop(hit: DropHit | null): void {
+    if (!hit) {
+      this.clearDropLine();
+      return;
+    }
+    const host = this.els.sessList;
+    let line = this.dropLine;
+    if (!line) {
+      line = el("div", "drop-line");
+      host.append(line);
+      this.dropLine = line;
+    }
+    line.style.top = `${Math.round(hit.line - host.getBoundingClientRect().top)}px`;
+    line.dataset.ws = hit.wsId;
+    line.dataset.index = String(hit.index);
+    line.dataset.pool = String(hit.pool);
+    line.title = hit.pool ? tr("放回工程") : "";
+    this.dragPool?.classList.toggle("over", hit.pool);
+  }
+
+  private clearDropLine(): void {
+    this.dropLine?.remove();
+    this.dropLine = null;
+    this.dragPool?.classList.remove("over");
+  }
+
+  /** 量一遍树：组、组里可见卡片（剔除拖动源自己）、「放回工程」。 */
+  private hitAt(clientY: number): DropHit | null {
+    const host = this.els.sessList;
+    const groups = [...host.querySelectorAll<HTMLElement>(".ws-sec")].map((sec) => {
+      const box = sec.getBoundingClientRect();
+      const head = sec.querySelector<HTMLElement>(".ws-head");
+      const items = [...sec.querySelectorAll<HTMLElement>(".session-card")]
+        .filter((card) => card.dataset.id !== this.dragId)
+        .map((card) => {
+          const r = card.getBoundingClientRect();
+          return { id: card.dataset.id ?? "", top: r.top, bottom: r.bottom };
+        })
+        .filter((item) => item.bottom > item.top); // 收起的组：卡片量出来是 0 高，不算落点
+      return {
+        wsId: sec.dataset.ws ?? "",
+        top: box.top,
+        bottom: box.bottom,
+        contentTop: head ? head.getBoundingClientRect().bottom : box.top,
+        items,
+      };
+    });
+    const poolEl = host.querySelector<HTMLElement>(".ws-pool");
+    const pool = poolEl ? poolEl.getBoundingClientRect() : null;
+    return hitTest(clientY, groups, pool ? { top: pool.top, bottom: pool.bottom } : null);
+  }
+
+  private cardWs(id: string): string {
+    return this.dragNode(id)?.closest<HTMLElement>(".ws-sec")?.dataset.ws ?? "";
   }
 
   /** Read pin/order straight off the DOM after a drop: the DOM is what the user just arranged. */

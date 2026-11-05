@@ -1689,7 +1689,25 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 
 验证：`node --experimental-transform-types --test web/tests/tree-unit.mjs`（19 例：分组 / worktree 并组 / 手建组空态 / 未分组兜底 / 组间与组内排序 / ★ 不跨组 / 过滤打组名整组留与打会话名拆组 / 归档隔离）、`node probes/workspace-tree.mjs`（桩桥 + 真 Chromium：多个组、worktree 并组、收起后刷新记忆、过滤整组、归档不在组内）、`node probes/pin-auto-open.mjs`（横栏与 D125 的行为不受影响）。
 
-## D128 工作区改名 / 删除 / 新建：复用会话卡片的手感，能删不能删先说清楚
+## D128 拖拽整理：落点判定是纯函数，跨组只发 `ws.move`（`#99`）
+
+- 把「指针 y → 目标组 + 插入位置 + 那条 2px 线画在哪」抽成 `web/src/drag.ts` 的纯函数：`hitTest()` 吃一组矩形（组、组内可见卡片、可选的「放回工程」），返回 `{wsId, index, line, pool}`；`planDrop()` 把落点换算成三种动作。渲染层只负责量矩形（`getBoundingClientRect()`）和画线，壳 B 的浮层将来复用同一份判定。
+- 三种动作：同组 → `arrange`（沿用 `commitArrangement()` 读 DOM 的既有路径）；跨组 → 一条 `{type:"manage", action:"ws.move", ids:[id], wsId:<目标组>}`；拖到「放回工程」→ `ws.move` 且 `wsId: ""`（桥那边 = 删掉 override，回到 cwd 推导）。
+- 跨组**不重写 order 数组**：`ws.move` 只写归属，别的组的顺序一根手指都不碰（D127 里「拖进别的工作区会被忽略」到此作废）。
+- 「放回工程」这条落点只在拖动期间出现在树尾；归档会话不给拖（归档是全局分区，拖进任何工作区都说不清语义）。
+- 高亮就一条 2px 线（`position: absolute` 贴在树容器里），拖离树 / Esc / 窗口失焦都清掉并让松手变成空操作。
+
+为什么：落点判定全是几何边界条件（组间几像素的空隙、空组、末张卡下沿），靠浏览器探针猜像素既慢又脆 —— 抽成纯函数后单测能一口气列出 12 种；而 `ws.move` 与 `arrange` 的分工是桥既有协议定的，前端不该为了「顺手」把整个 order 重写一遍（那等于把所有组的排序都塞进一次拖动里）。
+
+代价 / 可改：
+
+- 「放回工程」用 `workspaces.keys` 把 cwd 折到工程根来猜目标组名；桥没给 keys 时退化成 cwd 本身，所以文案可能只说「按 cwd 回到推导出来的组」。可改。
+- 收起的组也是落点（线画在组头下面），但不会自动展开：拖进去之后还得自己点开。
+- 组内重排仍按 D127 的规则重算整份 `order`（既有行为），跨组那一路才刻意不碰。
+
+验证：`node --experimental-transform-types web/tests/drag-unit.mjs`（12 例：上半/下半、末张下沿、空组、组间空隙、拖太远、`放回工程` 优先、`planDrop` 三种动作、`moveTo`）、`probes/workspace-drag.mjs`（桩桥 + `page.mouse` 真拖：跨组发 `ws.move` 且刷新仍在、组内发 `arrange`、放回工程 `wsId:""`、空组落点、Esc / 失焦 / 拖离清高亮且不发光、树外无可拖元素）。
+
+## D129 工作区改名 / 删除 / 新建：复用会话卡片的手感，能删不能删先说清楚
 
 决定（前端：新文件 `web/src/wsmanage.ts`（纯逻辑）+ `web/src/wsmenu.ts`（菜单外壳），以及 `web/src/app.ts` 的 `wsSection()` / `openWsMore()` / `startWsRename()` / `commitWsRename()` / `createWs()`）：
 
