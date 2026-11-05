@@ -225,7 +225,6 @@ export const en: Dict = {
   "会话": "Sessions",
   "会话 ID": "Session ID",
   "新工作区": "New workspace",
-  "未分组": "Ungrouped",
   "这个工作区里还没有会话。": "No sessions in this workspace yet.",
   "已展开": "expanded",
   "已收起": "collapsed",
@@ -1306,4 +1305,8 @@ export const en: Dict = {
   "（已送达）": "(delivered)",
   "（没送到）": "(not delivered)",
   "🤖 agent 代发": "🤖 sent by an agent",
+  "未分组": "Ungrouped",
+  "未命名工作区": "Untitled workspace",
+  "{p1}，{p2}，当前会话": "{p1}, {p2}, current session",
+  "{p2}，当前会话": "{p2}, current session",
 };

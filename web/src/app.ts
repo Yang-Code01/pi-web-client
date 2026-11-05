@@ -8,7 +8,10 @@ import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { setKnownPlugins } from "./diagnose.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
-import { PillBar } from "./pillbar.ts";import { NotesSheet, type NotesHost } from "./notesheet.ts";
+import { PillBar } from "./pillbar.ts";
+import { NowChip, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
+import { ACCENTS } from "./palette.ts";
+import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type TreeGroup } from "./tree.ts";
@@ -245,8 +248,6 @@ export class App {
   private renameCaret: number | null = null;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
   private manage: ManageState = { pin: [], order: [], archived: [] };
-  /** 工作区快照（#94 由桥算）：hello / sessions.list / manage 广播 / workspaces 广播都带着它。 */
-  private workspace: WorkspaceState = { groups: [], overrides: {}, keys: {} };
   private archivedOpen = false;
   private filter = "";
   /** Delete is two-step: the last click arms it, the next one within 4s sends it. */
@@ -284,6 +285,10 @@ export class App {
   private stepCount = 0;
   /** #93: 横栏里那三样（胶囊 / 「＋N」 / 浮层）是共用组件，这里只留外壳 —— 它自己管焦点。 */
   private pillBar!: PillBar<SessionState>;
+  /** #94 工作区快照：桥是唯一的推导者，前端只读。 */
+  private workspaces: WorkspaceState = { groups: [], overrides: {}, keys: {} };
+  /** #96 顶栏那颗「当前在哪」：组件只认挂载点，换布局时换位置而不是换组件。 */
+  private nowChip!: NowChip;
   /** Q-035: the hover bubble on a pin chip (归档 / 重命名 / 删除), only ever one at a time. */
   private pinMenu: { handle: PinMenuHandle; chip: HTMLElement; id: string } | null = null;
   /** Both the 180ms open delay and the 220ms close delay ride on this one timer. */
@@ -384,7 +389,10 @@ export class App {
     scratch.dataset.act = "scratch";
     scratch.onclick = () => this.scratch.open();
     this.els.scratch = scratch;
-    topbar.append(collapseLeft, dot, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
+    // #96：「当前在哪」那颗自己是一个挂载点，不绑死在 topbar 的结构里（#97 / #98 换布局时
+    // 只要把它挪到别处）。现在它放在折叠按钮与状态点之间，也就是左栏边缘。
+    const nowChipSlot = el("div", "now-chip-slot");
+    topbar.append(collapseLeft, nowChipSlot, dot, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -483,6 +491,7 @@ export class App {
       },
       decorate: (chip, s) => this.wirePinHover(chip, s),
     });
+    this.nowChip = new NowChip(nowChipSlot);
     // 顶栏这批按钮只构造一次，语言一切换就得靠 paintChrome() 重写文字（renderAll 碰不到它们）。
     this.paintChrome();
     this.chat = new ChatView(scroll);
@@ -969,7 +978,7 @@ export class App {
         if (this.skillPop) this.renderSkillList();
         break;
       case "hello":
-        if (msg.workspace) this.workspace = msg.workspace as WorkspaceState;
+        if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
         // D113: a dropped socket mid-stream would leave the ⟳ spinning forever (the flags gate the
         // next request), so a fresh connection forgets them and asks again.
@@ -989,6 +998,7 @@ export class App {
         this.sessions = msg.sessions ?? [];
         if (Array.isArray(msg.trash)) this.trash = msg.trash as TrashItem[];
         if (msg.manage) this.manage = msg.manage as ManageState;
+        if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         if (this.currentId && !this.session) this.session = this.sessions.find((x) => x.id === this.currentId) ?? null;
         this.tunnel = msg.tunnel ?? this.tunnel;
         this.renderAll();
@@ -1111,6 +1121,7 @@ export class App {
         this.renderQueue();
         this.renderTabs();
         this.fillHintStatus();
+        this.renderNowChip();
         break;
       case "approval.remove":
         this.approvals = this.approvals.filter((a) => a.id !== msg.id);
@@ -1519,11 +1530,14 @@ export class App {
         break;
       case "manage":
         if (msg.manage) this.manage = msg.manage as ManageState;
-        if (msg.workspace) this.workspace = msg.workspace as WorkspaceState;
+        if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         this.renderSessions();
+        this.renderNowChip();
         break;
+      // #94：桥侧每次改名 / 拖动 / 建组都会广播一份完整快照。同名快照可能重复到，但重画很便宜。
       case "workspaces":
-        if (msg.workspace) this.workspace = msg.workspace as WorkspaceState;
+        this.workspaces = (msg.workspace as WorkspaceState) ?? { groups: [], overrides: {}, keys: {} };
+        this.renderNowChip();
         this.renderSessions();
         break;
       case "session.gone": {
@@ -1588,7 +1602,7 @@ export class App {
       }
       case "sessions.list": {
         this.sessions = Array.isArray(msg.sessions) ? msg.sessions : this.sessions;
-        if (msg.workspace) this.workspace = msg.workspace as WorkspaceState;
+        if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         this.renderSessions();
         this.mgrRefresh?.();
         break;
@@ -3235,6 +3249,41 @@ export class App {
     setToggle(collapseRight, this.collapsed.queue, tr("待办队列"));
     collapseRight.classList.toggle("alert", this.collapsed.queue && (this.approvals.length > 0 || this.asks.length > 0));
     this.fillModelChip();
+    this.renderNowChip();
+  }
+
+  /**
+   * #96：顶栏那颗「当前在哪」。切会话、改工作区名、待处理数变化都从这一处重画 ——
+   * 组件只吃一份 view，读的是 `session` / 工作区快照 / 本地队列，不碰别的东西。
+   */
+  private renderNowChip(): void {
+    if (!this.nowChip) return;
+    const s = this.session;
+    if (!s) {
+      this.nowChip.render({ hidden: true, workspace: "", name: "", accent: null, live: "", badge: null, label: "", title: "" });
+      return;
+    }
+    const listed = this.sessions.find((x) => x.id === s.id);
+    const group = wsOf(s, this.workspaces, listed?.ws);
+    this.nowChip.render(
+      nowChipView({
+        session: s,
+        group,
+        connected: this.connected,
+        running: Boolean(s.running),
+        owned: Boolean(s.owned),
+        pending: this.nowPending(s),
+      }),
+    );
+  }
+
+  /** 待回答 / 待确认那两档；当前会话以本地队列为准（它比列表里的计数新）。 */
+  private nowPending(s: SessionState): NowChipPending | null {
+    const badge = sessionBadge(
+      s.id === this.currentId ? { ...s, approvals: this.approvals.length, asks: this.asks.length } : s,
+      this.currentId,
+    );
+    return badge?.pending ? { text: badge.text, title: badge.title } : null;
   }
 
   /**
@@ -3287,6 +3336,7 @@ export class App {
    */
   private renderSessions(): void {
     this.renderPinStrip();
+    this.renderNowChip();
     this.renderBinCount();
     const host = this.els.sessList;
     // A re-render mid-edit must not eat the caret: remember where it was before the DOM swap.
@@ -3295,7 +3345,7 @@ export class App {
     this.renameCaret = typing ? (active as HTMLInputElement).selectionStart : null;
     host.replaceChildren();
 
-    const tree = buildTree(this.sessions, this.manage, this.workspace, this.filter);
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     if (this.renameId && !this.sessions.some((s) => s.id === this.renameId)) this.renameId = null;
     // A deleted or now-hidden session must not stay "picked".
     if (this.sheetKind === "manage") this.mgrRefresh?.();
@@ -9558,19 +9608,12 @@ const SIZES: [number, string][] = [
 ];
 
 /**
- * Accent pairs: the bright tint plus the dark wash used for filled states. Keys are stable ids —
- * they are persisted in `pi.prefs`, so they must not be translated; the tooltip goes through
- * `ACCENT_LABELS` + `tr()`. Older builds stored the Chinese colour names: `LEGACY_ACCENTS` is the
- * migration `readPrefs` uses, and deleting it would silently reset everyone's colour.
+ * Accent pairs live in `palette.ts` because the workspace colour dot (#96) picks from the same six.
+ * Keys are stable ids — they are persisted in `pi.prefs`, so they must not be translated; the
+ * tooltip goes through `ACCENT_LABELS` + `tr()`. Older builds stored the Chinese colour names:
+ * `LEGACY_ACCENTS` is the migration `readPrefs` uses, and deleting it would silently reset
+ * everyone's colour.
  */
-const ACCENTS: Record<string, { accent: string; dim: string }> = {
-  ice: { accent: "#7dd3fc", dim: "#0e3a4d" },
-  teal: { accent: "#5eead4", dim: "#0d3b36" },
-  violet: { accent: "#c4b5fd", dim: "#2a2148" },
-  amber: { accent: "#fcd34d", dim: "#3d2e0b" },
-  rose: { accent: "#fda4af", dim: "#3d1a22" },
-  slate: { accent: "#cbd5e1", dim: "#252b36" },
-};
 
 /** 色块的显示名（中文原文，交给 tr() 翻）：顺序就是面板里色块的顺序。 */
 const ACCENT_LABELS: [string, string][] = [
