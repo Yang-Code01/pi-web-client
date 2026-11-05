@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import type http from "node:http";
 import path from "node:path";
-import { registerSheetGrant } from "./sheet/index.ts";
+import { registerFileGrant } from "./sheet/index.ts";
 
 /**
  * File preview for session artifacts (md / html / images / text).
@@ -36,8 +36,11 @@ const tokens = new Map<string, { root: string; at: number }>();
 
 const MD = new Set([".md", ".markdown", ".mdx"]);
 const HTML = new Set([".html", ".htm", ".xhtml"]);
-// D127: .xlsx/.xlsm get their own dialog. .csv/.tsv stay text; .xls/.ods stay binary for now.
+// D127: .xlsx/.xlsm get their own dialog. .csv/.tsv stay text; .xls/.ods/.xlsb stay binary and are
+// only handed to the desktop app (#106).
 const SHEET = new Set([".xlsx", ".xlsm"]);
+// #106: workbooks we refuse to parse but can still open in Excel (the grant is what /api/open takes).
+const OPENABLE = new Set([".xlsx", ".xlsm", ".xlsb", ".xls", ".ods"]);
 const IMAGE: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -114,12 +117,31 @@ export function readAttachableImage(rawPath: string): { mime: string; data: Buff
   return { mime: IMAGE[ext], data: fs.readFileSync(abs) };
 }
 
+/**
+ * Is this a zip (OOXML) package, or something wearing an .xlsx name? An encrypted workbook is a
+ * CFB (OLE2) container even though it is still called .xlsx, so the extension alone lies.
+ */
+function isZipPackage(file: string): boolean {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const b = Buffer.alloc(4);
+    if (fs.readSync(fd, b, 0, 4, 0) !== 4) return false;
+    return b[0] === 0x50 && b[1] === 0x4b && (b[2] === 0x03 || b[2] === 0x05 || b[2] === 0x07);
+  } catch {
+    return false;
+  } finally {
+    if (fd != null) fs.closeSync(fd);
+  }
+}
+
 export function kindOf(file: string): PreviewKind {
   const ext = path.extname(file).toLowerCase();
   if (MD.has(ext)) return "markdown";
   if (HTML.has(ext)) return "html";
   if (IMAGE[ext]) return "image";
-  if (SHEET.has(ext)) return "sheet";
+  // Not a zip inside: .xls renamed to .xlsx, or an encrypted package. Say so, don't half-parse it.
+  if (SHEET.has(ext)) return isZipPackage(file) ? "sheet" : "binary";
   return looksText(file) ? "text" : "binary";
 }
 
@@ -168,7 +190,9 @@ export function openPreview(session: { cwd: string; file: string | null }, rawPa
   const kind = kindOf(abs);
   const token = issue(root);
   // The sheet endpoints never take a path from the page: this grant (path + mtime) is the only key.
-  if (kind === "sheet") registerSheetGrant(token, abs, st.mtimeMs);
+  // #106: the same grant is what /api/open accepts, so a file we refuse to parse can still be opened.
+  const ext = path.extname(abs).toLowerCase();
+  if (kind === "sheet" || OPENABLE.has(ext)) registerFileGrant(token, abs, st.mtimeMs);
   return { token, rel, root, name: path.basename(abs), abs, size: st.size, mtime: st.mtimeMs, kind };
 }
 
