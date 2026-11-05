@@ -61,6 +61,8 @@ export class SheetDialog {
   /** #108：底部的工作表标签与「N 个隐藏工作表」提示（`.sd-tab` 是 CSV 的表格/源码，别混）。 */
   private readonly wsTabs: HTMLElement;
   private readonly wsHint: HTMLElement;
+  /** #109：认不出的条件格式规则计数。 */
+  private readonly cfHint: HTMLElement;
   /** #111：选中格的公式栏（Excel 顶上那条），只在表格面显示。 */
   private readonly fx: HTMLElement;
   private readonly fxRef: HTMLElement;
@@ -108,6 +110,8 @@ export class SheetDialog {
     this.wsTabs.setAttribute("aria-label", tr("工作表"));
     this.wsHint = el("span", "sd-wshint");
     this.wsHint.hidden = true;
+    this.cfHint = el("span", "sd-cfhint");
+    this.cfHint.hidden = true;
 
     this.fx = el("div", "sd-fx");
     this.fx.hidden = true;
@@ -118,7 +122,7 @@ export class SheetDialog {
     this.status.hidden = true;
 
     this.footBar = this.foot(opts);
-    this.footBar.prepend(this.wsTabs, this.status, this.wsHint);
+    this.footBar.prepend(this.wsTabs, this.status, this.wsHint, this.cfHint);
     this.root.append(grip, this.head, this.body, this.footBar, resize);
     if (opts.source) this.buildSource(opts.source);
     this.wire(grip, resize);
@@ -242,6 +246,7 @@ export class SheetDialog {
 
   /** #108：底部只列可见的工作表；藏起来的只报个数，不给出入口。 */
   private renderTabs(sheets: SheetInfo[], active: string): void {
+    this.sheets = sheets;
     this.wsTabs.replaceChildren();
     for (const info of sheets) {
       if (info.hidden) continue;
@@ -255,6 +260,14 @@ export class SheetDialog {
     const hidden = sheets.filter((s) => s.hidden).length;
     this.wsHint.textContent = hidden ? tr("{p1} 个隐藏工作表", { p1: hidden }) : "";
     this.wsHint.hidden = !hidden;
+    this.renderCfHint(active);
+  }
+
+  /** #109：当前表里认不出的条件格式规则，只报个数，不阻止查看。 */
+  private renderCfHint(active: string): void {
+    const n = this.sheets.find((s) => s.name === active)?.cfUnsupported ?? 0;
+    this.cfHint.textContent = n ? tr("{p1} 条条件格式暂不支持", { p1: n }) : "";
+    this.cfHint.hidden = !n;
   }
 
   private async pickSheet(name: string): Promise<void> {
@@ -263,6 +276,7 @@ export class SheetDialog {
       btn.setAttribute("aria-selected", btn.textContent === name ? "true" : "false");
     }
     await this.grid.setSheet(name);
+    this.renderCfHint(name);
     this.paintStatus(this.sheets, name);
   }
 

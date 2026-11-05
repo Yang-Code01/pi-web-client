@@ -450,6 +450,103 @@ try {
   await until(async () => (await cellText(0, 0)) === "2024 年度销售汇总", 5000, "sheet switched back");
   check("切回来还是合并标题", (await cellText(0, 0)) === "2024 年度销售汇总", String(await cellText(0, 0)));
 
+  // ---------------------------------------------------------------- 条件格式（#109）
+  // 五类规则都在桥端求值，前端只吃结果：底色、字色、加粗、数据条宽度、图标等级。
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+  await openSheet("cf.xlsx");
+
+  const fxOf = (r, c) =>
+    page.evaluate(
+      ([rr, cc]) => {
+        const el = document.querySelector(`.sd-cell[data-r="${rr}"][data-c="${cc}"]`);
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        const bar = el.querySelector(".sd-bar");
+        const icon = el.querySelector(".sd-icon");
+        const rect = el.getBoundingClientRect();
+        return {
+          text: el.textContent ?? "",
+          bg: cs.backgroundColor,
+          color: cs.color,
+          weight: Number(cs.fontWeight) || 400,
+          w: Math.round(rect.width),
+          bar: bar
+            ? {
+                w: bar.getBoundingClientRect().width,
+                cw: rect.width,
+                bg: getComputedStyle(bar).backgroundColor,
+              }
+            : null,
+          icon: icon
+            ? { level: icon.dataset.level, set: icon.dataset.set, glyph: icon.textContent ?? "", color: getComputedStyle(icon).color }
+            : null,
+        };
+      },
+      [r, c],
+    );
+  const rgb = (css) => (String(css).match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
+  const near = (css, [r, g, b], tol = 6) => {
+    const [rr, gg, bb] = rgb(css);
+    return Math.abs(rr - r) <= tol && Math.abs(gg - g) <= tol && Math.abs(bb - b) <= tol;
+  };
+  const white = (css) => near(css, [255, 255, 255], 1);
+
+  // 色阶：10 → 红、55（50 分位）→ 黄、100 → 绿；相邻格深浅有序，不是一片同色。
+  const csMin = await fxOf(1, 1);
+  const csMid = await fxOf(11, 1);
+  const csMax = await fxOf(10, 1);
+  check("色阶最小值偏红", rgb(csMin?.bg)[0] > rgb(csMin?.bg)[1] + 60, String(csMin?.bg));
+  check("色阶中点偏黄", rgb(csMid?.bg)[0] > 200 && rgb(csMid?.bg)[1] > 180 && rgb(csMid?.bg)[2] < 180, String(csMid?.bg));
+  check("色阶最大值偏绿", rgb(csMax?.bg)[1] > rgb(csMax?.bg)[0] + 30, String(csMax?.bg));
+  check("色阶三档颜色各不相同", new Set([csMin?.bg, csMid?.bg, csMax?.bg]).size === 3);
+  await page.screenshot({ path: path.join(OUT, "09-cf.png") });
+
+  // 数据条：100 / 500 / 1000 对应 10% / 50% / 100% 的格宽，文字还在。
+  const barSmall = await fxOf(1, 2);
+  const barMid = await fxOf(5, 2);
+  const barBig = await fxOf(10, 2);
+  const frac = (x) => (x?.bar ? x.bar.w / x.bar.cw : NaN);
+  check("数据条存在", !!barSmall?.bar && !!barMid?.bar && !!barBig?.bar, JSON.stringify({ barSmall, barMid, barBig }).slice(0, 200));
+  check("数据条 100 → 10% 格宽", Math.abs(frac(barSmall) - 0.1) <= 0.02, String(frac(barSmall)));
+  check("数据条 500 → 50% 格宽", Math.abs(frac(barMid) - 0.5) <= 0.03, String(frac(barMid)));
+  check("数据条 1000 → 满格", frac(barBig) >= 0.94, String(frac(barBig)));
+  check("数据条长度随值成比例", frac(barBig) / frac(barSmall) > 8.5 && frac(barMid) / frac(barSmall) > 4.2, `${frac(barBig) / frac(barSmall)} / ${frac(barMid) / frac(barSmall)}`);
+  check("数据条边上文字仍可读", barMid?.text.includes("500") && rgb(barMid?.color).reduce((a, b) => a + b, 0) < 400, `${barMid?.text} / ${barMid?.color}`);
+
+  // 图标集：1 / 4 / 8 落在三个等级，每个格子都有图标且不撑破列宽。
+  const iconCount = await page.locator(".sd-cell .sd-icon").count();
+  check("图标集每格一个图标", iconCount === 11, String(iconCount));
+  const iconLow = await fxOf(1, 3);
+  const iconMid = await fxOf(4, 3);
+  const iconHigh = await fxOf(8, 3);
+  check("图标集有三个等级", new Set([iconLow?.icon?.level, iconMid?.icon?.level, iconHigh?.icon?.level]).size === 3, JSON.stringify([iconLow?.icon, iconMid?.icon, iconHigh?.icon]));
+  check("图标等级随值上升", Number(iconLow?.icon?.level) < Number(iconMid?.icon?.level) && Number(iconMid?.icon?.level) < Number(iconHigh?.icon?.level));
+  check("图标不撑破列宽", iconLow?.w === barSmall?.w, `${iconLow?.w} vs ${barSmall?.w}`);
+
+  // 单元格值规则：小于 0 红字、大于 0 绿字加粗、等于 0 黄底、介于 10..20 浅绿底。
+  const less = await fxOf(1, 4);
+  const greater = await fxOf(4, 4);
+  const equal = await fxOf(3, 4);
+  check("小于 0 是红字", rgb(less?.color)[0] > 120 && rgb(less?.color)[1] < 60, String(less?.color));
+  check("大于 0 是绿字", rgb(greater?.color)[1] > 80 && rgb(greater?.color)[0] < 80, String(greater?.color));
+  check("大于 0 是加粗", Number(greater?.weight) >= 600, String(greater?.weight));
+  check("等于 0 有黄底", near(equal?.bg, [255, 242, 204]), String(equal?.bg));
+  const inRange = await fxOf(2, 5);
+  const outRange = await fxOf(1, 5);
+  check("介于 10..20 有浅绿底", near(inRange?.bg, [226, 239, 218]), String(inRange?.bg));
+  check("范围外不涂色", white(outRange?.bg), String(outRange?.bg));
+
+  // 公式规则 + 不支持的规则：前者隔行上色，后者不涂色但计数。
+  const evenRow = await fxOf(1, 6);
+  const oddRow = await fxOf(2, 6);
+  check("公式规则命中偶数行", near(evenRow?.bg, [242, 242, 242]), String(evenRow?.bg));
+  check("公式规则不碰奇数行", white(oddRow?.bg), String(oddRow?.bg));
+  const unsupported = await fxOf(1, 7);
+  check("不支持的规则不涂色", white(unsupported?.bg), String(unsupported?.bg));
+  const cfHint = await page.evaluate(() => document.querySelector(".sd-cfhint")?.textContent ?? "");
+  check("状态条报一条暂不支持", /1\s*条条件格式暂不支持/.test(cfHint), cfHint.trim());
+  await page.screenshot({ path: path.join(OUT, "10-cf-bars-icons.png") });
   // ---------------------------------------------------------------- 公式与缺缓存值（#111）
   // 公式只用文件里存的结果；没存结果的格子显空（不猜 0），公式原文留给公式栏 / 悬停 / 状态条。
   await page.locator(".sd-close").first().click();
@@ -559,7 +656,6 @@ try {
   await until(async () => (await cellText(0, 0)) === "项目", 5000, "formula sheet 1");
   await until(async () => !(await status())?.hidden, 5000, "status back");
   check("切回来计数还在", (await status())?.text.includes("3 格无缓存值"), (await status())?.text);
-
   // 后面几段（#106 出口 / #113 CSV）测的是原来那份 plain.xlsx，换回去再往下走。
   await page.locator(".sd-close").first().click();
   await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
