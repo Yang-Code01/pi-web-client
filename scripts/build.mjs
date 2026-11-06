@@ -15,9 +15,12 @@ import path from "node:path";
 const root = path.resolve(import.meta.dirname, "..");
 
 function npm(args, env) {
-  const file = process.platform === "win32" ? "npm.cmd" : "npm";
-  // Node 在 Windows 上不允许直接 spawn .cmd（EINVAL，CVE-2024-27980 之后），只能过 shell。
-  const r = spawnSync(file, args, { cwd: root, stdio: "inherit", env, shell: process.platform === "win32" });
+  // Node 在 Windows 上不允许直接 spawn .cmd（EINVAL，CVE-2024-27980 之后），只能过 shell；
+  // 整条命令当一个字符串传，避免 DEP0190 的「args 不转义」。
+  const win = process.platform === "win32";
+  const r = win
+    ? spawnSync(`npm ${args.join(" ")}`, { cwd: root, stdio: "inherit", env, shell: true })
+    : spawnSync("npm", args, { cwd: root, stdio: "inherit", env });
   if (r.error) {
     console.error(r.error.message);
     return 1;

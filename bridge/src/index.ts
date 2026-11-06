@@ -33,6 +33,7 @@ import { Tunnel, findCloudflared } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
 import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, resetScratchDir, statePath, sessionsRootInfo } from "./paths.ts";
 import { BUILD_ID } from "./build-id.ts";
+import { removePidFile, writePidFile } from "./pidfile.ts";
 import { clipboardFiles, listDirs, makeDir, statFiles, statPath } from "./dirs.ts";
 import { gitInfo } from "./git.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
@@ -1947,9 +1948,14 @@ async function main(): Promise<void> {
 
   sessions.startGc((id) => [...wss.clients].some((client) => (client as any).watching === id));
 
-  process.on("exit", () => peer.stop());
+  process.on("exit", () => {
+    peer.stop();
+    removePidFile(cfg.port);
+  });
 
   server.listen(cfg.port, cfg.host, () => {
+    // pid 文件：更新器靠它找到并重启「这一个」进程（见 pidfile.ts 的注释）。
+    writePidFile(cfg.port);
     log(`listening on http://${cfg.host}:${cfg.port}`);
     console.log(`\n  pi-web-client 已启动：http://127.0.0.1:${cfg.port}`);
     if (fresh) console.log(`  口令（首次生成，只显示这一次）：${fresh}\n`);

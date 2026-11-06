@@ -12,6 +12,7 @@
  * 状态落在 `<repo>/.scratch/bridge-update/`：update.log、last-run.json、restart.lock、pending.md。
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
@@ -93,7 +94,37 @@ function distBuildId() {
   return info && typeof info.id === "string" ? info.id : "";
 }
 
+function looksLikeBridge(pid) {
+  if (!pid || !alive(pid)) return false;
+  if (WIN) {
+    const r = sh("powershell", [
+      "-NoProfile",
+      "-Command",
+      `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction SilentlyContinue).CommandLine`,
+    ]);
+    return /bridge[\/]dist[\/]index\.js/.test(String(r.stdout || ""));
+  }
+  const r = sh("bash", ["-lc", `ps -p ${pid} -o command= 2>/dev/null || true`]);
+  return /bridge\/dist\/index\.js/.test(String(r.stdout || ""));
+}
+
+/** bridge 自己在监听到端口时写的 pid 文件（`bridge/src/pidfile.ts`）。 */
+function pidFromFile(port) {
+  try {
+    const n = Number(fs.readFileSync(path.join(os.tmpdir(), `pi-web-bridge-${port}.pid`), "utf8").trim());
+    return Number.isInteger(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 找「谁在服务这个端口」。先信 pid 文件：沙箱、容器、本地代理后面，
+ * netstat / Get-NetTCPConnection 看不到真正持有 socket 的进程，只会答空 pid。
+ */
 function portPid(port) {
+  const declared = pidFromFile(port);
+  if (looksLikeBridge(declared)) return declared;
   if (WIN) {
     const r = sh("powershell", [
       "-NoProfile",
@@ -262,7 +293,9 @@ function mergeRepo() {
   fromSha = (git(["rev-parse", "HEAD"]).stdout || "").trim();
   toSha = (git(["rev-parse", "origin/main"]).stdout || "").trim();
   expectedId = distBuildId();
-  const stale = distSha() !== fromSha;
+  // build-id.json 里存的是 `git rev-parse --short HEAD`（7 位），HEAD 是全长，只能前缀比。
+  const builtSha = distSha();
+  const stale = !builtSha || !fromSha.startsWith(builtSha);
   log(`HEAD ${fromSha} origin/main ${toSha} dist ${distSha() || "(none)"}${stale ? " (stale)" : ""}`);
 
   if (CHECK) {
@@ -290,12 +323,10 @@ async function main() {
   // 先 build，后杀进程：编译失败时 7864 上还是旧代码在服务，窗口期为零。
   log("npm run build …");
   const out = fs.openSync(LOG, "a");
-  const built = spawnSync(WIN ? "npm.cmd" : "npm", ["run", "build"], {
-    cwd: REPO,
-    shell: WIN, // Windows 上直接 spawn .cmd 会 EINVAL
-    stdio: ["ignore", out, out],
-    env: process.env,
-  });
+  // Windows 上 .cmd 只能过 shell（否则 EINVAL）；整条命令当一个字符串传，避开 DEP0190。
+  const built = WIN
+    ? spawnSync("npm run build", { cwd: REPO, shell: true, stdio: ["ignore", out, out], env: process.env })
+    : spawnSync("npm", ["run", "build"], { cwd: REPO, stdio: ["ignore", out, out], env: process.env });
   fs.closeSync(out);
   if ((built.status ?? 1) !== 0) {
     finish("build-failed", { error: `npm run build 退出码 ${built.status ?? "?"}；旧进程未动，7864 仍在服务旧代码。` });
@@ -333,7 +364,7 @@ async function main() {
   const h = await waitHealthy(45_000);
   if (!h) finish("start-failed", { error: "45 秒内 /healthz 没有起来；看 bridge-live.log。" });
   if (h.buildId && expectedId && h.buildId !== expectedId) {
-    finish("start-failed", { error: `7864 上跑的还是旧 build（健康检查 ${h.buildId} ≠ 期望 ${expectedId}）` });
+    finish("start-failed", { error: `${PORT} 上跑的还是旧 build（健康检查 ${h.buildId} ≠ 期望 ${expectedId}）` });
   }
   if (WIN) {
     const again = portPid(PORT);
