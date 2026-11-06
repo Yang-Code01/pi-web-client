@@ -189,6 +189,12 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /**
+   * D157: 设置面板底部那块「把现有会话也改掉」。`permDefaultsFor` 是已经问过桥的 cwd key
+   * （空串 = 全局页），这样重绘不会一直重问同一个问题。
+   */
+  private permDefaults: { cwd: string | null; mode: string; source: string; total: number } | null = null;
+  private permDefaultsFor: string | null = null;
   /** `#89` 口令页：桥报的那一份快照（null = 还没读到，或刚被别的页面改掉而作废）。 */
   private passphraseView: PassphraseView | null = null;
   /** 明文只写在 `••••••••` 和真值之间切，拷走值仍要过 `passphrase.get` 那道门。 */
@@ -1390,6 +1396,24 @@ export class App {
         const view = msg as SettingsView;
         this.settingsView[view.scope] = view;
         if (msg.saved) this.flashSettings(tr("已保存到 {p1}", { p1: view.path }));
+        if (this.sheetKind === "settings") this.paintSettings();
+        break;
+      }
+      // ------------------------------------------------------- 默认权限（D157）
+      case "permission.defaults": {
+        this.permDefaults = {
+          cwd: typeof msg.cwd === "string" ? msg.cwd : null,
+          mode: String(msg.mode ?? "ask"),
+          source: String(msg.source ?? "fallback"),
+          total: Number(msg.total) || 0,
+        };
+        if (this.sheetKind === "settings") this.paintSettings();
+        break;
+      }
+      case "permission.applied": {
+        const n = Number(msg.applied) || 0;
+        this.flashSettings(tr("已经把这 {p1} 个会话的权限改成默认值", { p1: String(n) }));
+        this.permDefaultsFor = null;
         if (this.sheetKind === "settings") this.paintSettings();
         break;
       }
@@ -7591,6 +7615,32 @@ export class App {
     goJson.onclick = () => this.paintSettingsJson(body, view);
     jsonOnly.append(goJson);
     body.append(jsonOnly);
+    // D157: 默认权限只对「新会话」生效，所以这里给还停在默认上的会话一个出口。
+    const permKey = scope === "project" ? (view.cwd ?? "") : "";
+    if (this.permDefaultsFor !== permKey) {
+      this.permDefaultsFor = permKey;
+      this.permDefaults = null;
+      this.socket.send({ type: "permission.defaults", ...(scope === "project" && view.cwd ? { cwd: view.cwd } : {}) });
+    } else if (this.permDefaults && this.permDefaults.total > 0) {
+      const permMode = PERM_MODES.find((m) => m.id === this.permDefaults!.mode) ?? PERM_MODES[2];
+      const box = el("div", "settings-perm-apply");
+      box.append(el("div", "settings-label", tr("还在用默认权限的会话")));
+      box.append(
+        el(
+          "div",
+          "settings-hint",
+          tr("{p1} 个会话是在各自创建时钉下的默认权限，不是你手动选的。要不要把它们也改成现在的默认值（{p2}）？每个会话按自己项目里的设置算。", {
+            p1: String(this.permDefaults.total),
+            p2: permMode.label,
+          }),
+        ),
+      );
+      const btn = el("button", "btn ghost", tr("把这 {p1} 个会话改成「{p2}」", { p1: String(this.permDefaults.total), p2: permMode.label })) as HTMLButtonElement;
+      btn.onclick = () =>
+        this.act(() => this.socket.send({ type: "permission.applyDefault", ...(scope === "project" && view.cwd ? { cwd: view.cwd } : {}) }));
+      box.append(btn);
+      body.append(box);
+    }
     const foot = el("div", "settings-foot");
     const json = el("button", "btn ghost", tr("编辑 JSON")) as HTMLButtonElement;
     json.onclick = () => this.paintSettingsJson(body, view);
@@ -7600,6 +7650,8 @@ export class App {
       const sessionId = this.currentId;
       const changed = { ...patch };
       this.act(() => {
+        // 改完默认值，「还在用默认」的那份清单要重新算一遍。
+        if ("web.defaultPermission" in changed) this.permDefaultsFor = null;
         this.socket.send({ type: "settings.set", scope, ...(scope === "project" ? { cwd: view.cwd } : {}), patch: changed });
         // The four a running pi takes without a restart: apply them to the open session now.
         const runtime: Record<string, unknown> = {};
@@ -8528,7 +8580,8 @@ export class App {
     const adv = el("details", "ns-advanced");
     adv.append(el("summary", "", tr("高级")));
     const exp = el("select", "ns-input") as HTMLSelectElement;
-    exp.append(new Option(tr("codemode（默认）"), ""), new Option("deferred", "deferred"), new Option("direct", "direct"), new Option("hidden", "hidden"));
+    // D157: 「codemode」跟 pi 的 codemode.mode 撞名，这里其实是 MCP 的暴露方式。
+    exp.append(new Option(tr("默认（deferred：模型用 searchTools 找）"), ""), new Option("deferred", "deferred"), new Option("direct", "direct"), new Option("hidden", "hidden"));
     exp.value = f.exposure;
     exp.onchange = () => (f.exposure = exp.value);
     const desc = el("input", "ns-input") as HTMLInputElement;
@@ -8536,7 +8589,7 @@ export class App {
     desc.value = f.description;
     desc.oninput = () => (f.description = desc.value);
     const advGrid = el("div", "ns-adv-grid");
-    advGrid.append(this.formRow("exposure", exp), this.formRow(tr("描述"), desc));
+    advGrid.append(this.formRow(tr("MCP 暴露方式"), exp), this.formRow(tr("描述"), desc));
     adv.append(advGrid);
     box.append(adv);
     const foot = el("div", "settings-foot");
@@ -11497,6 +11550,21 @@ const SETTING_FIELDS: {
   { key: "images.blockImages", label: tr("不给模型发图片"), kind: "bool", hint: tr("整张图换成一段说明文字，省 token 但模型看不见图") },
   { key: "enableSkillCommands", label: tr("技能注册成 /skill:名字"), kind: "bool" },
 
+  // D157: 桥自有键（web. 命名空间），存在 pi 的 settings.json 里，读写和别的设置同一条路。
+  {
+    key: "web.defaultPermission",
+    label: tr("新会话的默认权限"),
+    kind: "select",
+    group: tr("工具与脚本"),
+    choices: [
+      { value: "readonly", label: tr("只读") },
+      { value: "strict", label: tr("逐个确认") },
+      { value: "ask", label: tr("危险时确认") },
+      { value: "auto", label: tr("全自动") },
+    ],
+    defaultText: tr("危险时确认"),
+    hint: tr("新会话第一次打开时用它，之后在这里改也不影响老会话；手动改过权限的会话永远不动"),
+  },
   { key: "defaultTools", label: tr("默认工具"), kind: "list", group: tr("工具与脚本"), hint: tr("逗号分隔；普通名字＝只用这些，+x / -x＝在默认基础上增减"), placeholder: tr("例如 read, bash, +codemode") },
   { key: "codemode.mode", label: tr("codemode 工具模式"), kind: "select", options: ["on", "only"], hint: tr("on = 已声明的工具照常直接调；only = 只留 codemode，所有工具都从脚本里调") },
   { key: "codemode.inlineBudget", label: tr("codemode 工具清单预算"), kind: "number", hint: tr("最多花多少 token（字符数 ÷ 4）列工具；挤不下的靠 searchTools 找，0 = 只列命名空间") },

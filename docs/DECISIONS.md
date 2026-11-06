@@ -2238,3 +2238,23 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 **代价 / 可改：** `defaults` 让 `settings.get` 的响应多出几十个键（一次性解析后缓存，面板每次重绘只是查表）。schema 结构若大改（默认值不再在 `properties.*.default`），标签会退回兜底表的样子而不是报错。分组名与哪些行进「高级」是口味问题，全都可改。
 
 **验证：** `node --experimental-transform-types bridge/tests/settings-defaults.mjs`（7 条：拍平、无 default 不算、包缺失不抛、schema 覆盖兜底、缓存）；`node bridge/tests/settings-trust.mjs` 17 条仍全过（`settings.get` 多一个字段不影响既有断言）；`npm run typecheck` + `npm run build`；测试实例（`pi-web-client-test-dev`，口令 test，17874）截图核对全局页 36 行都写出了默认值、项目页出现「（默认：max，继承全局）」。
+
+## D157 默认权限是 pi 设置里的一个桥自有键，在会话被第一次看见时钉死（无票，用户口头要求）
+
+**问题：** 权限模式只存在于 `state/allow/<id>.json`，没这个文件时 `readPermission` 一律返回 `ask`——「默认是什么」这件事既看不见也改不了，每个新会话都得手动点一次 chip。用户要求：设置里加「默认权限」，并且要能按项目设。
+
+**决定：**
+
+- 键是 **`web.defaultPermission`**，值就是 `readonly | strict | ask | auto`。存在 **pi 自己的 settings.json 里**（`~/.pi/agent/settings.json` 与 `<cwd>/.pi/settings.json`），读写走既有的 `bridge/src/pisettings.ts`（D78：pi 的配置由 pi 的模块管，不另起一份）。`web.` 命名空间是桥的约定，pi 对未知键宽容（schema 顶层 `additionalProperties: true`），所以 pi 会原样保留、不会拒绝。
+- 解析顺序 **项目 → 全局 → `"ask"`**，与 pi 其它设置同语义。项目级那一层**必须先过信任门**：`readSettings()` 给出 `writable`（= `trustInfo().effective`），未信任项目的 `.pi/settings.json` pi 本来就不加载，桥若照读，会得到一个 pi 自己都不认的值。
+- 生效时机是 **会话被第一次看见时钉住（pin）**，不是每次工具调用都解析：`Session.pinPermission()` 在没有 allow 文件时写入 `{ mode: 解析值, from: "default" }`，三处调用——`create()`、`openLive()`（都在 `startLive` 之前，因为 gate 在 spawn 那一刻就读这个文件）、以及启动后的一次扫描 `pinAll()`（覆盖 bridge 从没见过的磁盘会话）。
+  - 老会话因此**不会**被后来的默认值改动波及；反过来，手动改过的会话（`setPermission`）会**删掉 `from` 标记**，永远不再被「应用默认值」碰到。
+  - `from` 是唯一用来区分「这个 ask 是默认来的还是人选的」的东西 —— 只看 mode 分不出来，而「应用到现有会话」必须只覆盖默认来的那些。
+- 「应用到现有 N 个会话」是**显式动作**：`permission.defaults` 回 `{mode, source, path, total, ids}`（cwd 可省 = 全部），前端在设置面板底部显示按钮；`permission.applyDefault` **要 step-up**（它会批量放松/收紧权限），对每个会话用它**自己的 cwd** 重新解析（项目值不同），保留 `from:"default"` 以便下次还能被更新。
+- 面板里 MCP 安装表单的「codemode」下拉框改名「**MCP 暴露方式**」（它管的是 MCP 工具的 exposure: deferred/direct/hidden），pi 的 `codemode.mode` 才叫「**codemode 工具模式**」——两个同名控件并排是会误点的。
+
+**为什么：** 默认值要么写进每次工具调用前的解析（成本、且老会话会突变），要么钉一次（可解释、可回滚）。选钉一次，是因为用户对权限的心智是「我会话开始时是什么就是什么」，中途因为谁改了全局设置而变严/变松是惊吓。项目级要求过信任门，是为了不在「pi 根本没读这个文件」的情况下假装它生效。
+
+**代价 / 可改：** allow 文件多一个 `from` 字段（旧的没有，照样能读）。`web.*` 键 pi 不认识，面板的「编辑 JSON」里会看见它——这是有意的，它就该出现在那个文件里。启动扫描每次读 N 个 allow 文件与每个 cwd 的 settings.json；会话上千时可以把 `pinAll` 放到首批 `list()` 之后后台跑（现在就是这么做的：不阻塞监听）。
+
+**验证：** `node bridge/tests/default-permission.mjs`（A 无设置→ask 并带 `from`；B 全局 strict 只影响新会话；C 项目值未信任时被忽略、信任后覆盖全局；D 手动切换清掉 `from`；E `permission.defaults` 把 manual 排除在外、`applyDefault` 只改默认会话且各自用自己的项目值；F 重启桥后启动扫描给磁盘上没见过的会话补钉、手动选择跨重启保留）；`node bridge/tests/settings-trust.mjs` 仍全过；`npm run typecheck`（i18n 三边对齐）+ `npm run build`。
