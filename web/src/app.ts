@@ -8,7 +8,8 @@ import { filterCommands, type CommandItem } from "./commands.ts";
 import { hasPathToken, mountDirPicker, type DirPicker } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
-import { setKnownPlugins } from "./diagnose.ts";
+import { diagnose, setKnownPlugins } from "./diagnose.ts";
+import { toCommit, type FailLedger, type SeenFail } from "./failures.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
@@ -156,6 +157,14 @@ export class App {
   private modelsAsked = 0;
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
+  /** D164：AI 出错记录的账本（按工作区），以及这个会话里见过的失败（按 toolCallId 去重）。 */
+  private failLedger: FailLedger | null = null;
+  private failWs = "";
+  private sessionFails = new Map<string, SeenFail>();
+  /** 右下角那颗「⚡ 总结本轮错误」；每轮结束按 pending 亮灭。 */
+  private failCta: HTMLButtonElement | null = null;
+  private failToast: HTMLElement | null = null;
+  private failToastTimer = 0;
   private notes: Note[] = [];
   /** 新会话建好后要填进输入框的文字（「交给 agent → 新开会话」，不自动发送）。
    *  它只属于「我自己刚建的那个会话」：面板一关（取消 / 点背景）或建会话失败就丢掉，
@@ -680,6 +689,8 @@ export class App {
     this.chat = new ChatView(scroll);
     this.chat.onBashStop = () => this.act(() => this.socket.send({ type: "abortBash", sessionId: this.currentId }));
     this.chat.onFork = (item, index) => this.forkAt({ entryId: item.id, index, text: item.text });
+    // 账本要的是「这次会话里所有失败」，聊天区只画本轮的红卡：两边各收各的，按 toolCallId 去重。
+    this.chat.onFail = (f) => this.recordFail(f);
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
   }
@@ -1300,7 +1311,11 @@ export class App {
         if ("trust" in msg) this.trust = (msg.trust as TrustState | null) ?? null;
         this.queue = msg.queue ? { steering: msg.queue.steering ?? [], followUp: msg.queue.followUp ?? [] } : { steering: [], followUp: [] };
         this.stats = { tokens: null, cost: null };
+        // 换了会话：上一份「见过的失败」不能带过来，否则按钮会按别人的失败亮着。
+        this.sessionFails.clear();
+        this.failLedger = this.failWs && this.failWs === (this.session?.ws ?? "") ? this.failLedger : null;
         this.chat.reset((msg.items ?? []) as Item[]);
+        if (this.currentWs()) this.socket.send({ type: "failures.get", ws: this.currentWs() });
         if (this.afterOpen && this.afterOpen.id === msg.sessionId) {
           this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: this.afterOpen.text, level: "info" });
           this.afterOpen = null;
@@ -1330,7 +1345,9 @@ export class App {
       }
       case "items":
         if (msg.sessionId !== this.currentId) break;
+        this.sessionFails.clear();
         this.chat.reset((msg.items ?? []) as Item[]);
+        // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
         this.syncContinueButton();
         break;
@@ -1578,6 +1595,14 @@ export class App {
         break;
       case "notes.shot":
         this.notesSheet?.shot(msg);
+        break;
+      case "failures":
+        // 别的标签页在别的工作区入账时，广播会带着那本账过来；不能顶掉当前这本。
+        if (msg.ledger && (!this.currentWs() || (msg.ledger as FailLedger).ws === this.currentWs())) this.setFailLedger(msg.ledger as FailLedger);
+        break;
+      case "failures.saved":
+        if (msg.ws && this.currentWs() && msg.ws !== this.currentWs()) break;
+        this.failSaved(msg);
         break;
       case "bug.done": {
         if (msg.error) {
@@ -1830,6 +1855,8 @@ export class App {
           this.fillHintStatus();
           // 跑着 ↔ 空闲是「继续」按钮亮/灰的翻转点（D159）。
           this.syncContinueButton();
+          // 任务结束才问「要不要把这一轮的错误记下来」（D164）。
+          this.syncFailCta();
           if (this.textarea) this.textarea.placeholder = this.composerHintText();
         }
         if (!msg.running) this.turnAt = null;
@@ -5868,6 +5895,150 @@ export class App {
 
   /** 📁 文件：viewer 直接停在浏览态，接着上次的目录。 */
   // ---------------------------------------------------------------- 记录（D108）
+  // ---------------------------------------------------------------- AI 出错记录（D164）
+
+  /**
+   * 账本挂在工作区上（worktree 由桥并回主仓）。判据与顶部「当前工作区」chip 同一份（`wsOf`）：
+   * override → 列表 ws → 快照 ws → cwd 反查。分组还没到的极早期退回 cwd 本身，
+   * 免得这一次入账丢在空 id 上；下一次 `failures.get` 会用桥的真 id 读回同一本。
+   */
+  private currentWs(): string {
+    const hit = this.currentWsId();
+    if (hit) return hit;
+    const cwd = String(this.session?.cwd ?? "");
+    return cwd.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  }
+
+  private wsName(ws: string): string {
+    const named = this.workspaces.groups.find((g) => g.id === ws)?.name?.trim();
+    if (named) return named;
+    const cwd = String(this.session?.cwd ?? "").replace(/[\\/]+$/, "");
+    return cwd.split(/[\\/]/).pop() || ws;
+  }
+
+  /** 聊天区报来一次失败。按 toolCallId 去重：同一张卡会被 live 事件、item.replace、重放各建一次。 */
+  private recordFail(f: { id: string; tool: string; cmd: string; out: string; at?: string }): void {
+    if (!this.currentId || !f.id || this.sessionFails.has(f.id)) return;
+    this.sessionFails.set(f.id, { callId: f.id, tool: f.tool, cmd: f.cmd, out: f.out, at: f.at || new Date().toISOString() });
+    this.syncFailCta();
+  }
+
+  /** 这个会话还有几次失败没进账本：见过的条数 - 上次入账时的条数（点完按钮、账本回包后归零）。 */
+  private uncommittedFails(): number {
+    const ws = this.currentWs();
+    const sid = this.currentId ?? "";
+    if (!ws || !sid || this.failWs !== ws) return 0;
+    const done = this.failLedger?.sessions[sid]?.n ?? 0;
+    return Math.max(0, this.sessionFails.size - done);
+  }
+
+  /** 只在「任务结束、还有没入账的失败」时亮；跑着的时候不打扰。 */
+  private syncFailCta(): void {
+    const btn = this.failCta;
+    if (!btn) return;
+    const n = this.uncommittedFails();
+    const s = this.session;
+    const show = Boolean(s) && !s?.running && !s?.starting && n > 0;
+    btn.hidden = !show;
+    if (!show) return;
+    btn.replaceChildren(el("span", "fail-cta-glyph", "⚡"), el("span", "fail-cta-text", tr("总结本轮错误")), el("span", "fail-cta-n", String(n)));
+    btn.title = tr("把这次会话里的 {p1} 次失败归并进「⚡ AI 出错记录」：同类只加次数", { p1: n });
+  }
+
+  private failButton(): HTMLButtonElement {
+    const btn = el("button", "fail-cta") as HTMLButtonElement;
+    btn.type = "button";
+    btn.hidden = true;
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      this.commitFails();
+    };
+    return btn;
+  }
+
+  /** 点一下：每一条失败跑一遍 diagnose（拿「为什么没成」和修法），整批交给桥去归并。 */
+  private commitFails(): void {
+    const ws = this.currentWs();
+    const sid = this.currentId;
+    if (!ws || !sid || !this.sessionFails.size) return;
+    // 只送还没入账的那一段：账本按 key 累加，重发旧条目会把次数翻倍（审查发现）。
+    const done = this.failLedger?.sessions?.[sid]?.n ?? 0;
+    const fresh = [...this.sessionFails.values()].slice(Math.min(done, this.sessionFails.size));
+    const items = [];
+    for (const f of fresh) {
+      let why = "";
+      let fix = "";
+      try {
+        const d = diagnose({ tool: f.tool, cmd: f.cmd, out: f.out });
+        if (d.level === "fail" || d.level === "warn") why = d.cause ?? "";
+        fix = d.improve || d.needsYou || "";
+      } catch {
+        /* 诊断只是锦上添花：判不出来也要入账 */
+      }
+      items.push(toCommit(f, why, fix));
+    }
+    if (!items.length) return;
+    if (this.failCta) this.failCta.hidden = true;
+    this.socket.send({
+      type: "failures.commit",
+      ws,
+      label: this.wsName(ws),
+      sid,
+      sname: this.session?.name ?? "",
+      at: new Date().toISOString(),
+      entries: items,
+    });
+  }
+
+  private setFailLedger(ledger: FailLedger): void {
+    this.failLedger = ledger;
+    this.failWs = ledger.ws;
+    this.notesSheet?.setFailures(ledger);
+    this.syncFailCta();
+  }
+
+  private failSaved(msg: any): void {
+    if (msg.error) {
+      this.flashFailToast(tr("没记进账本：{p1}", { p1: String(msg.error) }), true, 6000);
+      return;
+    }
+    if (msg.ledger) this.setFailLedger(msg.ledger as FailLedger);
+    if (msg.undone) {
+      this.flashFailToast(tr("已撤销这次入账"), false, 2600);
+      return;
+    }
+    // 标已修复 / 忽略 / 删除的回包也走这条路：账本刷新就够了，别弹「没有新的失败」。
+    if (!msg.token) return;
+    const n = Number(msg.added ?? 0);
+    if (!n) {
+      this.flashFailToast(tr("这次没有新的失败"), false, 2600);
+      return;
+    }
+    this.flashFailToast(tr("已记进账本 · {p1} 次 · 可撤销", { p1: n }), false, 10000, String(msg.token ?? ""));
+  }
+
+  /** 入账后的那条小提示：10 秒内能撤回（误点、或者这一轮其实只是探路）。 */
+  private flashFailToast(text: string, bad: boolean, ms: number, token = ""): void {
+    this.failToast?.remove();
+    window.clearTimeout(this.failToastTimer);
+    const box = el("div", `fail-toast${bad ? " bad" : ""}`);
+    box.append(el("span", "", text));
+    if (token) {
+      const undo = el("button", "fail-toast-undo", tr("撤销"));
+      undo.onclick = () => {
+        box.remove();
+        this.socket.send({ type: "failures.undo", token });
+      };
+      box.append(undo);
+    }
+    document.body.append(box);
+    this.failToast = box;
+    this.failToastTimer = window.setTimeout(() => {
+      box.remove();
+      if (this.failToast === box) this.failToast = null;
+    }, ms);
+  }
+
   /** 顶栏 🐞：本地随手记，不跟会话走，所以没有 currentId 也能开。 */
   private openNotes(): void {
     if (!this.notesSheet) {
@@ -5884,7 +6055,9 @@ export class App {
       };
       sheet.mount(document.getElementById("app") ?? document.body);
       this.notesSheet = sheet;
+      sheet.setFailures(this.failLedger);
       this.act(() => this.socket.send({ type: "notes.list" }));
+      if (this.currentWs()) this.socket.send({ type: "failures.get", ws: this.currentWs() });
     }
     this.notesSheet.focusComposer();
   }
@@ -7244,7 +7417,7 @@ export class App {
     // so the whole button costs the transcript ~3.5px instead of a row.
     const side = el("div", "composer-side");
     side.append(this.continueButton(), this.permissionButton());
-    row.append(box, side);
+    row.append(box, side, (this.failCta = this.failButton()));
     if (this.images.length) {
       const badge = this.pendingImagesBadge();
       row.append(badge);

@@ -216,7 +216,7 @@ try {
   // `if (!this.rpc?.alive) throw`（bridge/src/sessions.ts:1516）就抛了，**不会**走到
   // `item.add` → `adopt()` 那条重建路径 —— 所以下面两条只证明「乐观气泡当场就是对的」。
   // 真起一个 stub pi 能覆盖 adopt，但它得先把 get_state / get_session_stats / get_commands
-  // 的应答形状也仿对，风险（改写整个 transcript）大于收益；这条留给 D164「代价」那节记着。
+  // 的应答形状也仿对，风险（改写整个 transcript）大于收益；这条留给 D165「代价」那节记着。
   const before = await page.locator(".msg.user").count();
   await page.locator(".composer textarea").click();
   await page.locator(".composer textarea").fill("/skill:grill-me 再说一句");

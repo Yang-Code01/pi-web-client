@@ -8,6 +8,8 @@
  * - **状态不改正文**：pending → done → dropped 只是字段，编辑器和列表都跟着重画，不锁输入框。
  */
 import { createEl as el } from "./chat.ts";
+import { FailPanel } from "./failpanel.ts";
+import { ripeEntries, type FailLedger } from "./failures.ts";
 import type { Note, NoteKind, NoteMode, NoteStatus } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 
@@ -21,8 +23,8 @@ export const NOTE_KINDS: { id: NoteKind; label: string; glyph: string }[] = [
 const STATUS_LABEL: Record<NoteStatus, string> = { pending: tr("待处理"), done: tr("已处理"), dropped: tr("已忽略") };
 const NEXT_STATUS: Record<NoteStatus, NoteStatus> = { pending: "done", done: "dropped", dropped: "pending" };
 const MODE_LABEL: Record<NoteMode, string> = { quick: tr("随手记"), form: tr("表单"), long: tr("长文本") };
-/** 左栏在看哪一堆：在列表里 / 归档 / 垃圾箱。 */
-type View = "active" | "archived" | "trash";
+/** 左栏在看哪一堆：在列表里 / 归档 / 垃圾箱 / AI 出错记录（只读，不算笔记）。 */
+type View = "active" | "archived" | "trash" | "failures";
 
 /** 面板跟页面之间只有这几个口子：发送、当前笔记列表、当前会话、两个「交给 agent」的落点。 */
 export interface NotesHost {
@@ -74,6 +76,11 @@ export class NotesSheet {
 
   private kind: NoteKind = "bug";
   private view: View = "active";
+  /** AI 出错记录那份账本（D164）：跟笔记不是一回事，但共用一个面板。 */
+  private ledger: FailLedger | null = null;
+  private failPanel!: FailPanel;
+  private failEl!: HTMLElement;
+  private bodyEl!: HTMLElement;
   private showDone = false;
   private doneWrap!: HTMLElement;
   private clearTrash!: HTMLButtonElement;
@@ -124,7 +131,20 @@ export class NotesSheet {
     this.searchEl = search;
     left.append(newBtn, search, (this.listEl = el("div", "notes-items")));
     body.append(left, (this.editorEl = el("div", "notes-editor")));
-    sheet.append(body);
+    this.bodyEl = body;
+    // 出错记录是第五个 tab，长得像笔记列表但内容只读：它整块换掉 body，不跟编辑器抢位置。
+    this.failEl = el("div", "fail-wrap") as HTMLElement;
+    this.failEl.hidden = true;
+    this.failPanel = new FailPanel({
+      send: (msg) => this.host.send(msg),
+      handoff: (anchor, text) => this.handoffMenu(anchor, text),
+      say: (text, bad = false) => this.say(text, bad),
+    });
+    this.failPanel.mount(this.failEl);
+    // 笔记两栏和只读账本互斥，包一层 `notes-main` 好让 sheet 的三行网格（头 / 身 / 脚）不变。
+    const main = el("div", "notes-main");
+    main.append(body, this.failEl);
+    sheet.append(main);
 
     const foot = el("div", "sheet-foot notes-foot");
     this.hintEl = el("span", "notes-hint", "");
@@ -177,6 +197,21 @@ export class NotesSheet {
     this.paintEditor();
   }
 
+  /** 换到出错记录：收起笔记的两栏，把只读面板亮出来；回来时反过来。 */
+  setFailures(ledger: FailLedger | null): void {
+    this.ledger = ledger;
+    this.paintTabs();
+    this.failPanel.setLedger(ledger);
+  }
+
+  private paintMode(): void {
+    const fail = this.view === "failures";
+    this.bodyEl.hidden = fail;
+    this.failEl.hidden = !fail;
+    // 脚注里的「导出全部 / 清空垃圾箱」是笔记的，账本有自己的导出：整条藏掉。
+    (this.root?.firstElementChild as HTMLElement | null)?.classList.toggle("in-failures", fail);
+  }
+
   /** 头部那些会变的（计数、当前在哪一堆、清空按钮只在垃圾箱出现）。 */
   private paintHead(): void {
     const trashed = this.host.notes().filter((n) => n.deletedAt).length;
@@ -184,6 +219,7 @@ export class NotesSheet {
     this.newBtn.hidden = this.view !== "active";
     this.clearTrash.hidden = this.view !== "trash";
     this.clearTrash.textContent = trashed ? tr("清空垃圾箱（{p1}）", { p1: trashed }) : tr("清空垃圾箱");
+    this.paintMode();
   }
 
   private doneSwitch(): HTMLElement {
@@ -219,6 +255,10 @@ export class NotesSheet {
 
   /** 打开面板就把光标放进「记一条」的那一格。 */
   focusComposer(): void {
+    if (this.view === "failures") {
+      this.failPanel.focus();
+      return;
+    }
     if (!this.editing) this.newNote();
     (this.editorEl.querySelector(".note-body") as HTMLTextAreaElement | null)?.focus();
   }
@@ -271,6 +311,13 @@ export class NotesSheet {
       return btn;
     });
     tabs.push(el("span", "notes-tabs-sep"));
+    // ⚡ 第五个 tab：只读账本（D164）。计数 = 还在烧的类数，不是条目总数。
+    const ripe = ripeEntries(this.ledger).length;
+    const fbtn = el("button", `notes-tab notes-viewtab fail-tab${this.view === "failures" ? " on" : ""}`, "⚡ " + tr("AI 出错记录"));
+    if (ripe) fbtn.append(el("span", "n", String(ripe)));
+    fbtn.title = tr("每次任务结束时点右下角「⚡ 总结本轮错误」，同类只加次数");
+    fbtn.onclick = () => this.setView(this.view === "failures" ? "active" : "failures");
+    tabs.push(fbtn);
     const view = (id: "archived" | "trash", glyph: string, label: string, count: number) => {
       const on = this.view === id;
       const btn = el("button", `notes-tab notes-viewtab${on ? " on" : ""}`, `${glyph} ${label}`);
@@ -691,7 +738,7 @@ export class NotesSheet {
     return row;
   }
 
-  private handoffMenu(anchor: HTMLElement, text: string): void {
+  handoffMenu(anchor: HTMLElement, text: string): void {
     document.querySelector(".note-handoff")?.remove();
     const r = anchor.getBoundingClientRect();
     const pop = el("div", "note-handoff");
