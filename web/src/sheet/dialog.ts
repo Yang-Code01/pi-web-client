@@ -41,8 +41,8 @@ export interface SheetDialogOpts {
   findSheet?: (sheet: string, q: string) => Promise<SheetMatches>;
   /** #107：把「文件路径 + A1:C9」交给对话框（只插入，不发送）。 */
   onQuote?: (text: string) => void;
-  /** #112：页面视图端点；xlsx 都有，CSV 没有。有它才出并排 / 两个标签页。 */
-  page?: { url: string };
+  /** #112：页面视图；xlsx 都有，CSV 没有。有它才出并排 / 两个标签页。 */
+  page?: { token: string };
   /** #106 出口：交给这台电脑上的默认程序打开原文件。 */
   onOpen: () => Promise<void>;
   onReveal: () => Promise<void>;
@@ -144,7 +144,7 @@ export class SheetDialog {
       this.split.title = tr("拖动调整左右比例（双击复原）");
       this.split.setAttribute("role", "separator");
       this.split.setAttribute("aria-orientation", "vertical");
-      this.page = new SheetPage(opts.page.url);
+      this.page = new SheetPage(opts.page.token);
       this.viewTabs = el("nav", "sd-viewtabs");
       this.viewTabs.setAttribute("role", "tablist");
       this.viewTabs.setAttribute("aria-label", tr("页面视图"));

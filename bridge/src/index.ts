@@ -63,7 +63,7 @@ import { answer as answerLogin, cancel as cancelLogin, listProviders, login as s
 import { piLatest } from "./piupdate.ts";
 import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
-import { sheetPdf } from "./sheet/pdf.ts";
+import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
 
 interface Config {
@@ -194,6 +194,29 @@ function fail(
   extra: Record<string, unknown> = {},
 ): void {
   json(res, status, { ...extra, error, code, ...(params ? { params } : {}) });
+}
+
+/**
+ * 表格端点共同前置（D127/#106）：拿凭据 → stat → 判 mtime 未变。任一失败已经写好响应并返回 null；
+ * 调用方 `if (!g) return;`。返回的 mtimeMs 是 stat 后的实际值（pdf 缓存键要用）。
+ */
+async function resolveSheetGrant(res: http.ServerResponse, token: string): Promise<{ abs: string; mtimeMs: number } | null> {
+  const grant = fileGrant(token);
+  if (!grant) {
+    fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
+    return null;
+  }
+  try {
+    const st = await fs.promises.stat(grant.abs);
+    if (grantIsStale(grant, st.mtimeMs)) {
+      fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
+      return null;
+    }
+    return { abs: grant.abs, mtimeMs: st.mtimeMs };
+  } catch {
+    fail(res, 404, "sheet_gone", "文件已不在原处");
+    return null;
+  }
 }
 
 /**
@@ -635,6 +658,11 @@ async function main(): Promise<void> {
       if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
       try {
         const info = openPreview(where, String(body.path ?? ""));
+        // 公网不读表内容（US 46）：xlsx 与 csv/tsv 的字节都不给；.xls/.ods 走二进制分支本就只给「用默认程序打开」，open 已另拒。
+        const ext = path.extname(info.abs).toLowerCase();
+        if (publicReq && (info.kind === "sheet" || ext === ".csv" || ext === ".tsv")) {
+          return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
+        }
         // Text files opened here become writable for this session (D50).
         rememberEditable(sessionId, info);
         return json(res, 200, info);
@@ -648,11 +676,9 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/sheet/meta" && req.method === "POST") {
       if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
       const body = await readBody(req).catch(() => ({}));
-      const grant = fileGrant(String(body.token ?? ""));
-      if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
+      const grant = await resolveSheetGrant(res, String(body.token ?? ""));
+      if (!grant) return;
       try {
-        const st = await fs.promises.stat(grant.abs);
-        if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
         return json(res, 200, await readSheetMeta(grant.abs));
       } catch (err: any) {
         return fail(res, 400, String(err?.code ?? ""), String(err?.message ?? err));
@@ -662,8 +688,6 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/sheet/window" && req.method === "POST") {
       if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
       const body = await readBody(req).catch(() => ({}));
-      const grant = fileGrant(String(body.token ?? ""));
-      if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
       const num = (v: unknown): number | null => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : null);
       const r0 = num(body.r0);
       const r1 = num(body.r1);
@@ -672,9 +696,9 @@ async function main(): Promise<void> {
       if (r0 === null || r1 === null || c0 === null || c1 === null) {
         return fail(res, 400, "sheet_range", "缺少行区间");
       }
+      const grant = await resolveSheetGrant(res, String(body.token ?? ""));
+      if (!grant) return;
       try {
-        const st = await fs.promises.stat(grant.abs);
-        if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
         return json(res, 200, await readSheetWindow(grant.abs, String(body.sheet ?? ""), r0, r1, c0, c1));
       } catch (err: any) {
         return fail(res, 400, String(err?.code ?? ""), String(err?.message ?? err));
@@ -685,11 +709,9 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/sheet/find" && req.method === "POST") {
       if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
       const body = await readBody(req).catch(() => ({}));
-      const grant = fileGrant(String(body.token ?? ""));
-      if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
+      const grant = await resolveSheetGrant(res, String(body.token ?? ""));
+      if (!grant) return;
       try {
-        const st = await fs.promises.stat(grant.abs);
-        if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
         return json(res, 200, await findSheet(grant.abs, String(body.sheet ?? ""), String(body.q ?? "")));
       } catch (err: any) {
         return fail(res, 400, String(err?.code ?? ""), String(err?.message ?? err));
@@ -697,23 +719,38 @@ async function main(): Promise<void> {
     }
 
 
-    // #112: the page view is a PDF LibreOffice laid out once per path+mtime. It deliberately does
-    // NOT reuse /raw: that route stamps `content-security-policy: sandbox` on every response, and a
-    // sandboxed browser PDF viewer renders a blank page. No sandbox here — the bytes are a PDF, and
-    // only the same-origin page reads this route with the grant token.
+    // #112: the page view is a PDF LibreOffice lays out once per path+mtime. Two-stage contract
+    // (spec): POST returns a `ready` | `pending` id and kicks conversion off in the background; GET
+    // streams the finished bytes. Deliberately NOT /raw — that route stamps `content-security-policy:
+    // sandbox`, which blanks the browser PDF viewer. No sandbox here.
+    if (url.pathname === "/api/sheet/pdf" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      const grant = await resolveSheetGrant(res, String(body.token ?? ""));
+      if (!grant) return;
+      try {
+        return json(res, 200, await sheetPdfStatus(grant.abs, grant.mtimeMs, body.retry === true));
+      } catch (err: any) {
+        const code = String(err?.code ?? "") === "sheet_pdf_soffice" ? "sheet_pdf_soffice" : "sheet_pdf_failed";
+        return fail(res, code === "sheet_pdf_soffice" ? 503 : 502, code, String(err?.message ?? err));
+      }
+    }
+
     if (url.pathname === "/api/sheet/pdf" && req.method === "GET") {
       if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
-      const grant = fileGrant(url.searchParams.get("token") ?? "");
-      if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
-      let st: fs.Stats;
+      const grant = await resolveSheetGrant(res, url.searchParams.get("token") ?? "");
+      if (!grant) return;
+      const id = url.searchParams.get("id") ?? "";
+      // 只有这张凭据能换出这个 id 对应的 PDF，别人拿不到。
+      if (id !== sheetPdfKey(grant.abs, grant.mtimeMs)) return fail(res, 404, "sheet_pdf_gone", "页面视图已失效，请重新生成");
       try {
-        st = await fs.promises.stat(grant.abs);
-      } catch {
-        return fail(res, 404, "sheet_gone", "文件已不在原处");
-      }
-      if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
-      try {
-        const pdf = await sheetPdf(grant.abs, st.mtimeMs);
+        const pdf = await sheetPdfFile(id);
+        if (!pdf) {
+          // 还在转：让前端继续轮询状态端点，别把这条请求吊 180 秒。
+          res.writeHead(202, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+          res.end("页面视图还在生成");
+          return;
+        }
         const size = (await fs.promises.stat(pdf.file)).size;
         res.writeHead(200, {
           "content-type": "application/pdf",
@@ -721,7 +758,6 @@ async function main(): Promise<void> {
           "content-disposition": 'inline; filename="page-view.pdf"',
           "cache-control": "no-store",
           "x-content-type-options": "nosniff",
-          "x-sheet-pdf": pdf.cached ? "hit" : "miss",
         });
         fs.createReadStream(pdf.file).pipe(res);
         return;
@@ -764,17 +800,11 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/open" && req.method === "POST") {
       if (publicReq) return fail(res, 403, "open_public", "通过公网访问时不会在你电脑上打开文件，回本机操作");
       const body = await readBody(req).catch(() => ({}));
-      const grant = fileGrant(String(body.token ?? ""));
-      if (!grant) return fail(res, 403, "sheet_grant", "预览凭据无效或已过期，请重新打开文件");
-      try {
-        const st = await fs.promises.stat(grant.abs);
-        if (grantIsStale(grant, st.mtimeMs)) return fail(res, 400, "sheet_stale", "文件已改变，请重新打开");
-      } catch {
-        return fail(res, 404, "sheet_gone", "文件不在了", undefined, { abs: grant.abs });
-      }
+      const grant = await resolveSheetGrant(res, String(body.token ?? ""));
+      if (!grant) return;
       const out = openWithApp(grant.abs);
       log(`open ${grant.abs} → ${out.ok ? "ok" : out.message}`);
-      return out.ok ? json(res, 204, null) : json(res, 400, { error: out.message });
+      return out.ok ? json(res, 200, out) : json(res, 400, { error: out.message });
     }
 
     if (url.pathname === "/api/sessions") {

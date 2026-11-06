@@ -1,24 +1,27 @@
 /**
  * 页面视图（#112）：iframe 里放 LibreOffice 排出来的 PDF 纸面。
  *
- * 端点 `/api/sheet/pdf` 是专用的（不带 CSP sandbox，`/raw` 带，PDF 在 sandbox 里会白屏）。
- * 第一次要等 LibreOffice 转换，先把「正在生成页面视图」显示出来；转换中再点不会重复发请求。
+ * 两阶段契约：先 POST 问状态（ready / pending / failed），pending 时按节奏轮询；
+ * ready 后 iframe 指向 GET 字节端点。转换在桥端后台跑，不占住这条请求。
  */
 import { tr, errText } from "../i18n/index.ts";
+import { api } from "../api.ts";
+
+const POLL_MS = 1500;
+const POLL_DEADLINE_MS = 190_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export class SheetPage {
   readonly root: HTMLElement;
-  private readonly url: string;
+  private readonly token: string;
   private state: "idle" | "loading" | "ready" | "error" = "idle";
   private loadTimer = 0;
 
-  constructor(url: string) {
-    // 只认桥自己的页面视图端点：这个地址永远由 api.sheetPdf() 用 token 拼出来。
-    const target = new URL(url, location.origin);
-    if (target.origin !== location.origin || !target.pathname.startsWith("/api/sheet/pdf")) {
-      throw new Error("bad sheet page url");
-    }
-    this.url = target.href;
+  constructor(token: string) {
+    this.token = token;
     this.root = document.createElement("div");
     this.root.className = "sd-pg";
     this.renderIdle();
@@ -73,40 +76,43 @@ export class SheetPage {
     retry.type = "button";
     retry.className = "sd-act";
     retry.textContent = tr("重试");
-    retry.onclick = () => void this.request();
+    retry.onclick = () => void this.request(true);
     box.append(retry);
     this.root.replaceChildren(box);
   }
 
-  private async request(): Promise<void> {
+  private async request(retry = false): Promise<void> {
     if (this.state === "loading") return;
     this.renderLoading();
     try {
-      // 先确认转换成功再让 iframe 去取字节：失败时端点是 JSON，iframe 里只会显示一团原文。
-      const res = await fetch(this.url, { credentials: "same-origin" });
-      if (!res.ok) {
-        let body: unknown = null;
-        try {
-          body = await res.json();
-        } catch {
-          /* 不是 JSON 就按 HTTP 状态说 */
-        }
-        const data = (body ?? {}) as { error?: string; code?: string; params?: Record<string, string | number> };
-        throw { ...data, message: data.error ?? `HTTP ${res.status}` };
+      const first = await api.sheetPdf(this.token, retry);
+      if (first.status === "failed") throw pdfError(first);
+      if (first.status === "ready") {
+        this.renderFrame(api.sheetPdfUrl(first.id, this.token));
+        return;
       }
-      // 只要头：转换已经完成，真正的字节让 iframe 去取（同一个缓存）。
-      await res.body?.cancel().catch(() => undefined);
-      this.renderFrame();
+      // pending：转换在后台跑，按节奏轮询直到 ready / failed / 超时。
+      const deadline = Date.now() + POLL_DEADLINE_MS;
+      for (;;) {
+        await sleep(POLL_MS);
+        const again = await api.sheetPdf(this.token, false);
+        if (again.status === "failed") throw pdfError(again);
+        if (again.status === "ready") {
+          this.renderFrame(api.sheetPdfUrl(again.id, this.token));
+          return;
+        }
+        if (Date.now() > deadline) throw { message: tr("页面视图转换超时") };
+      }
     } catch (err) {
       this.renderError(err);
     }
   }
 
-  private renderFrame(): void {
+  private renderFrame(src: string): void {
     const frame = document.createElement("iframe");
     frame.className = "sd-pg-frame";
     frame.title = tr("页面视图");
-    frame.src = this.url;
+    frame.src = src;
     const note = document.createElement("div");
     note.className = "sd-pg-msg sd-pg-wait";
     note.append(dim(tr("正在打开页面视图…")));
@@ -126,6 +132,10 @@ export class SheetPage {
       note.remove();
     }, 4000);
   }
+}
+
+function pdfError(s: { status?: string; error?: string; code?: string }): { code: string; message: string } {
+  return { code: s.code ?? "sheet_pdf_failed", message: s.error ?? tr("页面视图转换失败") };
 }
 
 function dim(text: string): HTMLElement {

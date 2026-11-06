@@ -174,9 +174,9 @@ try {
     }
     pdfResponses.push({
       status: r.status(),
+      method: r.request().method(),
       type: headers["content-type"] ?? "",
       csp: headers["content-security-policy"] ?? null,
-      cache: headers["x-sheet-pdf"] ?? "",
       kind: r.request().resourceType(),
       head,
     });
@@ -1047,7 +1047,7 @@ if (SKIP_PDF) {
     return st.grid && st.paper ? st.grid.w / (st.grid.w + st.paper.w) : 0;
   };
 
-  const missBefore = pdfResponses.filter((r) => r.cache === "miss").length;
+  const getBefore = pdfResponses.filter((r) => r.method === "GET").length;
   await openSheet("chart.xlsx");
   check("图表文件打开先出格子", (await splitState()).gridShown && !(await splitState()).paperShown, JSON.stringify(await splitState()));
   // 后台已把转换跑起来（#112：先出格子，页面视图在后台生成）；点「页面视图」标签切过去，等 iframe 出来。
@@ -1064,11 +1064,11 @@ if (SKIP_PDF) {
     }
   })();
   check("iframe 指向页面视图端点", framePath === "/api/sheet/pdf" && String(frameSrc).includes("token="), String(frameSrc));
-  const firstMiss = pdfResponses.find((r) => r.cache === "miss");
-  check("第一次打开触发一次转换", pdfResponses.filter((r) => r.cache === "miss").length === missBefore + 1, JSON.stringify(pdfResponses.map((r) => r.cache)));
-  check("PDF 响应是 application/pdf", firstMiss?.type.includes("application/pdf") === true, JSON.stringify(firstMiss));
-  check("PDF 端点不带 CSP sandbox", firstMiss?.csp === null, String(firstMiss?.csp));
-  const direct = await page.request.get(String(frameSrc));
+  const firstGet = pdfResponses.find((r) => r.method === "GET");
+  check("第一次打开触发一次转换", pdfResponses.filter((r) => r.method === "GET").length === getBefore + 1, JSON.stringify(pdfResponses.map((r) => r.method)));
+  check("PDF 响应是 application/pdf", firstGet?.type.includes("application/pdf") === true, JSON.stringify(firstGet));
+  check("PDF 端点不带 CSP sandbox", firstGet?.csp === null, String(firstGet?.csp));
+  const direct = await page.request.get(new URL(String(frameSrc), page.url()).href);
   const bytes = await direct.body();
   check("PDF 端点返回 %PDF 字节", direct.status() === 200 && bytes.subarray(0, 5).toString("latin1") === "%PDF-", `${direct.status()} ${bytes.subarray(0, 5).toString("latin1")}`);
   await page.screenshot({ path: path.join(OUT, "08-page-view.png") });
@@ -1089,13 +1089,14 @@ if (SKIP_PDF) {
 
   // 同一文件第二次打开：不再发起转换，纸面直接出来。
   await closeSheet();
+  const getBeforeReopen = pdfResponses.filter((r) => r.method === "GET").length;
   const tOpen0 = Date.now();
   await openSheet("chart.xlsx");
   await page.locator('.sd-viewtab[data-view="page"]').click();
   await page.locator(".sd-pg-frame").waitFor({ timeout: 15000 });
   const reopenMs = Date.now() - tOpen0;
   check("第二次打开直接出来", reopenMs < 6000, `${reopenMs}ms`);
-  check("第二次没有重新转换", pdfResponses.filter((r) => r.cache === "miss").length === missBefore + 1, JSON.stringify(pdfResponses.map((r) => r.cache)));
+  check("第二次没有重新转换", pdfResponses.filter((r) => r.method === "GET").length === getBeforeReopen + 1, JSON.stringify(pdfResponses.map((r) => r.method)));
   const reopenedRatio = await splitRatio();
   check("重开后分界比例还在", Math.abs(reopenedRatio - wide1) < 0.03, `${reopenedRatio.toFixed(2)} vs ${wide1.toFixed(2)}`);
 
@@ -1126,10 +1127,10 @@ if (SKIP_PDF) {
   await closeSheet();
 
   // 没有图表的文件不自动转，手动也能看版式。
-  const missBeforeManual = pdfResponses.filter((r) => r.cache === "miss").length;
+  const getBeforeManual = pdfResponses.filter((r) => r.method === "GET").length;
   await openSheet("report.xlsx");
   check("无图表默认整幅网格", (await splitState()).grid.w > 1000 && !(await splitState()).paperShown, JSON.stringify(await splitState()));
-  check("无图表文件不自动转", pdfResponses.filter((r) => r.cache === "miss").length === missBeforeManual);
+  check("无图表文件不自动转", pdfResponses.filter((r) => r.method === "GET").length === getBeforeManual);
   check("宽窗也有页面视图标签", (await splitState()).tabs);
   await page.locator('.sd-viewtab[data-view="page"]').click();
   check("无图表给出「生成页面视图」按钮", (await page.locator(".sd-pg-idle .sd-act").count()) === 1);
