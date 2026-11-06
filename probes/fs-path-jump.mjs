@@ -197,7 +197,7 @@ try {
   await until(async () => (await page.locator(".dir-path").textContent()).includes("C:"), 10000, "bare drive opened C:\\");
   log("8b bare drive ok");
 
-  // ---- 9. 只给文件管理器：新会话 / 附件的 picker 里不该多出这一行
+  // ---- 9. 新会话 picker 没有这行；「文件」按钮（附件）有，而且能直接跳到文件
   await page.locator(".viewer-head .viewer-btn", { hasText: "✕" }).click();
   await page.locator(".new-session .btn.primary").click();
   await page.locator(".sheet .btn.ghost", { hasText: "浏览" }).click();
@@ -206,8 +206,13 @@ try {
   await page.locator(".new-sheet .sheet-head .btn.ghost", { hasText: "取消" }).click();
   await page.locator(".hint-tools .btn.ghost", { hasText: "文件" }).click();
   await page.locator(".file-picker-body .dirpicker .file-row").first().waitFor({ timeout: 10000 });
-  assert((await page.locator(".file-picker-body .dir-jump").count()) === 0, "attachment picker has no jump box");
-  log("9 scoped to the file manager ok");
+  assert((await page.locator(".file-picker-body .dir-jump").count()) === 1, "attachment picker has the jump box");
+  const pickerJump = page.locator(".file-picker-body .dir-jump-input");
+  await pickerJump.fill(path.join(WORK, "笔记.md"));
+  await pickerJump.press("Enter");
+  await until(async () => (await page.locator(".file-picker-body .file-row.hit").count()) === 1, 8000, "picker marks the jumped file");
+  assert((await page.locator(".file-picker-body .file-row.hit .nm").textContent()) === "笔记.md", "picker marks the right row");
+  log("9 scoped to the file manager + the 文件 picker ok");
 
   log("ALL PASS · shots in", OUT);
 } catch (err) {

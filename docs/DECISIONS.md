@@ -2132,7 +2132,7 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 
 **决定：**
 
-- **输入框是 opt-in**（`mountDirPicker` 的 `pathBox: true`），只有 `mountBrowser` 传了它。新会话弹层和附件 picker 共用同一份 `dirpicker.ts`，但那边一打开焦点就该落在「工作目录」或筛选框里，多一行抢 Tab 序没有收益 —— 它们要的是**选**一个新目录，不是**回到**一个已知路径。
+- **输入框是 opt-in**（`mountDirPicker` 的 `pathBox: true`）：文件管理器的浏览页和「文件」按钮（附件）都传了。附件也常已经在手上（终端里复制的路径），跳过去标出来、回车附加，比一层层点回去快。新会话弹层的 picker 不传：那里一打开焦点就该落在「工作目录」上，多一行只会抢 Tab 序，而它要的是**选**一个新目录，不是**回到**一个已知路径。
 - **文件夹 = 进去；文件 = 进父目录 + 标出那一行，不打开**。跳到文件时 `.file-row.hit` 给静态高亮（accent 底 + 左侧 inset 竖线）并把焦点移过去，`pane` 仍是「浏览」：一次跳转是「找到它」，不是「看它」。真要打开，回车就在手边。
 - **新桥端 `GET /api/stat`**（`bridge/src/dirs.ts` 的 `statPath()`，异步），返回 `{ path, kind: "dir" | "file" | "missing" | "denied", parent }`。不复用 `/api/dirs`：它对文件答 ENOTDIR，在界面上长得像「这个文件夹坏了」。`missing` 也带 `parent` 与绝对路径 —— 报错文案要显示桥端实际解析到哪儿（相对路径、`~` 之类会暴露差异）；`EACCES`/`EPERM` 单独答 `denied`，「不让你看」不该说成「没有这个路径」。用 `fs.promises.stat` 而不是 `statSync`：一个睡着的网络盘上 stat 能卡几秒，同步版会把整个 bridge 一起卡住。
 - **相对路径在前端拼**（`resolveTyped()`）：桥端会把相对路径解析到**它自己的 cwd**，那不是用户眼前这个目录。顺带认三种常见写法：Explorer 复制出来的成对引号、只敲盘符 `C:`（补成 `C:\`）、`./x` 与 `.\x`。
@@ -2150,4 +2150,4 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - 只在 Windows 上验过。POSIX 上文件在根目录（`/x`）时 `parent` 是 `null`，会 `navigate("")` 回到盘符页 —— 也就是 `/` 的列举，不算错，但和 Windows 的盘符根不完全对称。
 - 跳转不写 `v.lastDir` 之外的状态：不进历史、不记住上次跳到哪。刷新页面回到会话 cwd。
 
-**验证：** `npm --prefix web run typecheck`（`tsc --noEmit` + `i18n-check.mjs`，1411 键 × 3 语言）；`npm run test:dirpath`（11 例：引号/空白、三种绝对路径、`joinPath` 分隔符、`fileNameOf` 尾斜杠、相对拼接、`./` 归一、`\Users\me` 落当前盘、只敲盘符（含盘符页 `C:` 归一成 `C:\`）、盘符页不拼相对）；`npm run test:stat`（6 例：dir/file/missing + parent、空串、trim、盘符根 parent 为空串）；浏览器探针 `node probes/fs-path-jump.mjs`（10 段：框在、文件夹进入且清空输入、文件回父目录并高亮且焦点落到行上、带引号路径、相对路径、miss 报错且列表不动并清旧高亮、Esc 两级（第二下关面板）、盘符页相对路径报错、盘符页裸盘符 `C:` 归一、新会话与附件 picker 里没有这行），截图在 `.scratch/fs-jump/shots/`。
+**验证：** `npm --prefix web run typecheck`（`tsc --noEmit` + `i18n-check.mjs`，1411 键 × 3 语言）；`npm run test:dirpath`（11 例：引号/空白、三种绝对路径、`joinPath` 分隔符、`fileNameOf` 尾斜杠、相对拼接、`./` 归一、`\Users\me` 落当前盘、只敲盘符（含盘符页 `C:` 归一成 `C:\`）、盘符页不拼相对）；`npm run test:stat`（6 例：dir/file/missing + parent、空串、trim、盘符根 parent 为空串）；浏览器探针 `node probes/fs-path-jump.mjs`（10 段：框在、文件夹进入且清空输入、文件回父目录并高亮且焦点落到行上、带引号路径、相对路径、miss 报错且列表不动并清旧高亮、Esc 两级（第二下关面板）、盘符页相对路径报错、盘符页裸盘符 `C:` 归一、新会话 picker 没这行而附件 picker 有且能跳到文件并标出那一行），截图在 `.scratch/fs-jump/shots/`。
