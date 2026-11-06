@@ -956,6 +956,24 @@ html[data-layout="a"] .topbar > .dot { display: none; }
 .ws-tab-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; }
 .ws-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-tab-todo { flex: none; width: 6px; height: 6px; border-radius: 999px; background: var(--warn); box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.14); }
+/* #121：标签行只画 N 个，超出的收进这颗。它和标签槽是兄弟 —— `.ws-tabs` 是 overflow-x: auto，
+   摆进槽里会跟着横滚跑掉；挂在槽外就永远点得到。尺寸跟胶囊条那颗 `.pin-more` 同一档。 */
+.ws-tabs-more {
+  flex: none;
+  align-self: center;
+  margin-left: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.ws-tabs-more:hover { border-color: var(--line); background: var(--panel-2); color: var(--accent); }
+.ws-tabs-more[hidden] { display: none; }
+/* #121：`＋N` 的下拉 —— 外壳沿用 `.pin-menu` / `.pm-item`（同一张卡，用户不用学第二套）。 */
+.ws-tabs-menu { overflow-y: auto; max-width: min(320px, calc(100vw - 16px)); }
 .ws-session-row { grid-area: pins; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); }
 /* #98：B/C/D 里这一行整行不占地方（display:flex 会盖掉 UA 的 [hidden]）。 */
 .ws-session-row[hidden] { display: none; }

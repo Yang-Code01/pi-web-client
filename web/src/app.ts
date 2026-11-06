@@ -17,6 +17,7 @@ import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
+import { TAB_SLOTS, tabModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
@@ -331,6 +332,11 @@ export class App {
   private wsPopBody: HTMLElement | null = null;
   private wsPopCleanup: (() => void) | null = null;
   /**
+   * #121 标签行 `＋N` 的下拉。浮层的开关归自己管（不借胶囊条那颗 `＋N` 的 `closeMore()`）：
+   * 两处都能数「还有几个」，各开各的，关一个不该顺手关掉另一个。
+   */
+  private tabsMore: { close(): void } | null = null;
+  /**
    * #99 / #98：拖拽的落点容器。默认是左栏那棵树；工作区浮层开着时换成浮层 —— 落点判定
    * (`hitTest`) 与落点线是同一份，换的只是「量哪一块 DOM」。
    */
@@ -523,7 +529,11 @@ export class App {
     // 被行 2 取代 —— 不再另挂一条，两套横栏同时出现只会让人不知道该点哪一条。
     const wsTabsRow = el("div", "ws-tabs-row");
     const wsTabs = el("div", "ws-tabs");
-    wsTabsRow.append(wsTabs);
+    // #121：`＋N` 挂在标签槽**外面** —— 槽自己是 `overflow-x: auto`，摆进去会跟着横滚跑掉。
+    const wsTabsMore = el("button", "ws-tabs-more") as HTMLButtonElement;
+    wsTabsMore.type = "button";
+    wsTabsMore.hidden = true;
+    wsTabsRow.append(wsTabs, wsTabsMore);
     wsTabsRow.hidden = true;
     const sessionRow = el("div", "ws-session-row");
     const nowSlotRow = el("div", "now-chip-slot");
@@ -555,7 +565,7 @@ export class App {
     shell.append(topbar, wsTabsRow, sessionRow, mainWrap, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, wsTabsRow, wsTabs, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, wsTabsRow, wsTabs, wsTabsMore, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.binBtn = binBtn;
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
@@ -10091,22 +10101,33 @@ export class App {
    * the topbar keeps them one click away — same order as the list's 置顶 section, newest name first.
    */
   /**
-   * #97 壳 A 行 1：工作区标签页。横向一条、装不下就右端渐隐（不出横滚条 —— 深色顶栏下面
-   * 一条细滚动条像条裂缝）；当前工作区高亮，有会话卡在用户身上时带一颗待处理点。
-   * 点一下 = 切到那一组：打开组里排最上面的那颗会话（★ 优先，跟左栏同一份顺序）。
+   * #97 壳 A 行 1：工作区标签页。横向一条；#121 起只画 `TAB_SLOTS` 颗（按左栏组序的前 N 个），
+   * 剩下的收进槽外那颗 `＋N`。当前工作区永远在圈内（不在就挤掉最后一个补位组），有会话卡在
+   * 用户身上时带一颗待处理点。点一下 = 切到那一组：打开组里排最上面的那颗会话（★ 优先，跟左栏
+   * 同一份顺序）。
    */
   private renderWorkspaceTabs(): void {
-    const { wsTabsRow, wsTabs } = this.els;
-    if (!wsTabsRow || !wsTabs) return;
+    const { wsTabsRow, wsTabs, wsTabsMore } = this.els;
+    if (!wsTabsRow || !wsTabs || !wsTabsMore) return;
     // #98：标签行只属于 A；B/C/D 的切组入口分别是浮层 / 竖列 / 色点条 + 树。
     // #119：窄屏也照画 —— 它现在就在 A 的顶栏那一行里，收起它就等于 A 的顶栏没标签了。
     const parts = shellParts(activeLayout(this.prefs));
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     const cur = this.currentWsId();
+    // 锚点那颗不重建，但它列的是「被折叠的组」—— 组序跟着活动时间换人，开着的那张先收掉。
+    this.closeTabsMore();
     wsTabs.replaceChildren();
+    wsTabsMore.hidden = true;
     wsTabsRow.hidden = !parts.tabsRow || !tree.groups.length;
     if (wsTabsRow.hidden) return;
-    for (const group of tree.groups) {
+    const byId = new Map(tree.groups.map((group) => [group.id, group]));
+    const order = tree.groups.map((group) => group.id);
+    // #121：名额与固定组先硬编码 —— 圈内 = 组序前 N 个，`pinned` 传空。固定与补位的区分、
+    // 名额由桥端下发，都是 #122 的事。
+    const model = tabModel({ order, pinned: [], max: TAB_SLOTS, current: cur ?? undefined });
+    for (const id of model.visible) {
+      const group = byId.get(id);
+      if (!group) continue;
       const tab = el("button", `ws-tab${group.id === cur ? " on" : ""}`);
       tab.dataset.ws = group.id;
       tab.title = tr("切到这个工作区");
@@ -10123,6 +10144,18 @@ export class App {
       tab.onclick = () => this.gotoGroup(group);
       wsTabs.append(tab);
     }
+    // #121：超出的组收进这颗。它在槽外面（见 createShell），槽横滚时位置不动。
+    if (model.more.length) {
+      const why = tr("还有 {p1} 个工作区", { p1: model.more.length });
+      const folded = model.more.map((id) => byId.get(id)).filter((group): group is TreeGroup<SessionState> => Boolean(group));
+      wsTabsMore.hidden = false;
+      wsTabsMore.textContent = tr("＋{p1}", { p1: folded.length });
+      wsTabsMore.title = why;
+      wsTabsMore.setAttribute("aria-label", why);
+      wsTabsMore.onclick = () => this.toggleTabsMore(folded);
+    } else {
+      wsTabsMore.onclick = null;
+    }
     // 量宽要等布局落地：hidden 刚摘掉的那一帧 clientWidth 还是 0。
     requestAnimationFrame(() => this.paintWsTabFade());
   }
@@ -10131,6 +10164,81 @@ export class App {
     const box = this.els.wsTabs;
     if (!box) return;
     box.classList.toggle("fade", box.scrollWidth > box.clientWidth + 1);
+  }
+
+  /** #121：`＋N` 点开 = 只列被折叠的组；点一行切过去并把下拉关掉。 */
+  private toggleTabsMore(groups: TreeGroup<SessionState>[]): void {
+    if (this.tabsMore) {
+      this.closeTabsMore();
+      return;
+    }
+    const anchor = this.els.wsTabsMore;
+    if (!anchor) return;
+    // 外壳复用置顶胶囊那张卡（`.pin-menu` / `.pm-item`）：同一个下拉，只是列的是工作区。
+    const pop = el("div", "pin-menu ws-tabs-menu");
+    pop.setAttribute("role", "menu");
+    pop.setAttribute("aria-label", tr("被折叠的工作区"));
+    pop.append(el("div", "pm-head", tr("还有 {p1} 个工作区", { p1: groups.length })));
+    for (const group of groups) {
+      const row = el("button", "pm-item") as HTMLButtonElement;
+      row.type = "button";
+      row.setAttribute("role", "menuitem");
+      row.dataset.ws = group.id;
+      const dot = el("span", "pm-ico", "●");
+      dot.style.color = group.color;
+      row.append(dot, el("span", "pm-text", group.name));
+      row.title = group.name;
+      row.onclick = (ev) => {
+        ev.stopPropagation();
+        this.closeTabsMore();
+        this.gotoGroup(group);
+      };
+      pop.append(row);
+    }
+    // 贴着那颗、右缘不出屏；高度按下面剩下的空间封顶，别顶出屏幕。
+    const place = (): void => {
+      const r = anchor.getBoundingClientRect();
+      pop.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8)))}px`;
+      pop.style.top = `${Math.round(r.bottom + 6)}px`;
+      pop.style.maxHeight = `${Math.max(180, window.innerHeight - r.bottom - 6 - 10)}px`;
+    };
+    const onDown = (ev: PointerEvent) => {
+      const t = ev.target as Node | null;
+      if (t && (pop.contains(t) || anchor.contains(t))) return;
+      this.closeTabsMore();
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.closeTabsMore();
+      anchor.focus();
+    };
+    const remove = (): void => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", place);
+      pop.remove();
+    };
+    document.body.append(pop);
+    place();
+    (pop.querySelector<HTMLElement>(".pm-item") ?? pop).focus();
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", place);
+    anchor.setAttribute("aria-expanded", "true");
+    this.tabsMore = {
+      close: () => {
+        anchor.setAttribute("aria-expanded", "false");
+        remove();
+      },
+    };
+  }
+
+  private closeTabsMore(): void {
+    const cur = this.tabsMore;
+    this.tabsMore = null;
+    cur?.close();
   }
 
   /** 当前会话所在的工作区 id；没当前会话 / 旧桥没有分组时是 null。 */

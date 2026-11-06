@@ -1,17 +1,16 @@
 /**
- * Probe: #119 壳 A 顶栏并两行 —— 标签接管第一行，会话名让位。
+ * Probe: #121 标签行只画 N 个 + `＋N` —— 超出的组收进槽外那颗折叠菜单。
  *
- * 票面要的是：A 壳下顶栏只剩一行，最左是折叠左栏的 `◧`、紧接着工作区标签、再往右是原来那排
- * 工具按钮；会话名 / 顶栏那串小字 / 连接状态点在这一行都不再出现（会话名在行 2 那颗上）。
- * B/C/D 三套壳的顶栏原样不动，标签行仍然只属于 A。800px 窄屏下 A 这一行不破版，标签可以横向
- * 滚动且不占滚动条的位置。
+ * 票面要的是：标签行只画 3 颗（本轮名额硬编码，`pinned` 也还是空数组），剩下的组数报在槽外的
+ * `＋N` 上；点 `＋N` 只列被折叠的组，点一行切过去并关掉下拉；当前组排在组序很后面时它仍然在
+ * 圈内（挤掉最后一个补位组 —— N+1 留给 #122 的固定组）。
  *
- * 这一票只动布局：标签行仍然画**全部**工作区组（只画 N 个 + ＋N 是 #121 的事），所以这里按组数
- * 断言标签数量。行 2 的胶囊归 #120，这里不碰。
+ * 上一票（#119）的断言留着：A 壳顶栏只有一行、标签紧跟在 ◧ 后面、B/C/D 不画标签、800px 不破版。
  *
- * 桩桥照 #94 的协议发 `workspace` 快照；造 9 个长名组 —— 装不下才看得出横向滚动与渐隐。
+ * 桩桥照 #94 的协议发 `workspace` 快照；造 9 个长名组，用显式 `updatedAt` 把组序钉成 01→09
+ * （组序 = 待处理 → 最近活动倒序 → 名字），否则同一毫秒里建出来的 9 个组谁在前全凭运气。
  *
- * Run: npm run build:web && PI_WEB_PORT=7913 node probes/workspace-tabs.mjs
+ * Run: npm run build:web && PI_WEB_PORT=7931 node probes/workspace-tabs.mjs
  */
 import fs from "node:fs";
 import http from "node:http";
@@ -73,7 +72,11 @@ const GROUPS = Array.from({ length: 9 }, (_, i) => {
   const n = String(i + 1).padStart(2, "0");
   return { id: `f:/proj-${n}`, name: `客户 ${n} 号的后台系统`, key: `F:/proj-${n}`, manual: false };
 });
-const SESSIONS = GROUPS.map((g, i) => state(`s-${g.id.slice(-2)}-1`, `工程 ${g.id.slice(-2)} · 会话 1`, g.key, g.id));
+const SESSIONS = GROUPS.map((g, i) => ({
+  ...state(`s-${g.id.slice(-2)}-1`, `工程 ${g.id.slice(-2)} · 会话 1`, g.key, g.id),
+  // 组序「最近活动倒序」：01 最新 → 01→09，和名字顺序一致，`＋N` 里点哪一行都能预判。
+  updatedAt: Date.UTC(2026, 0, 1) - i * 1000,
+}));
 const byId = (id) => SESSIONS.find((s) => s.id === id);
 
 const workspace = () => ({
@@ -174,6 +177,20 @@ const barState = () =>
       })(),
       count: document.querySelectorAll(".ws-tab").length,
       onWs: document.querySelector(".ws-tab.on")?.dataset.ws ?? "",
+      moreText: document.querySelector(".ws-tabs-more")?.textContent ?? "",
+      moreShown: (() => {
+        const n = document.querySelector(".ws-tabs-more");
+        return Boolean(n && !n.hidden);
+      })(),
+      // `＋N` 是标签槽的兄弟、不在槽里：槽横滚时它才不跟着跑。
+      moreOutside: (() => {
+        const m = document.querySelector(".ws-tabs-more");
+        const tabs = document.querySelector(".ws-tabs");
+        return Boolean(m && tabs && m.parentElement === tabs.parentElement && !tabs.contains(m));
+      })(),
+      menuRows: document.querySelectorAll(".ws-tabs-menu .pm-item").length,
+      visibleIds: [...document.querySelectorAll(".ws-tab")].map((n) => n.dataset.ws ?? ""),
+      foldedIds: [...document.querySelectorAll(".ws-tabs-menu .pm-item")].map((n) => n.dataset.ws ?? ""),
       tabsOverflow: tabs ? tabs.scrollWidth > tabs.clientWidth + 1 : false,
       tabsScrollbar: tabs ? tabs.offsetHeight - tabs.clientHeight : -1,
       tabsScrollLeft: tabs ? tabs.scrollLeft : -1,
@@ -181,11 +198,11 @@ const barState = () =>
     };
   });
 
-async function open(layout) {
+async function open(layout, session = "s-01-1") {
   // 布局偏好直接写进 localStorage 再刷新：这里要验的是「按壳摆哪儿」，不是设置面板（#97 验过）。
   const page = await (await browser.newContext({ viewport: { width: 1000, height: 820 }, locale: "zh-CN" })).newPage();
   page.on("pageerror", (e) => console.log("pageerror:", e.message));
-  await page.goto(`${BASE}/#/s/s-01-1`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/#/s/${session}`, { waitUntil: "networkidle" });
   if (await page.locator('input[type="password"]').count()) {
     await page.fill('input[type="password"]', "probe");
     await page.click('button:has-text("进入")');
@@ -221,10 +238,51 @@ ok(Boolean(s.bar && s.bar.h <= 60), `A：顶栏只有一行高（${s.bar?.h}px�
 // 2) A：会话名 / 顶栏那串小字 / 连接状态点都不再出现在这一行
 ok(!s.title && !s.sub && !s.dot, `A：会话名 / 小字 / 状态点都藏了（title ${s.title} · sub ${s.sub} · dot ${s.dot}）`);
 
-// 3) 这一票只换挂载点，标签仍画全部组
-ok(s.count === 9, `A：标签行仍画全部组（${s.count} 个）`);
+// 3) #121：只画前 3 组，剩下的收进槽外那颗 ＋N
+ok(s.count === 3, `A：标签行只画 3 颗（${s.count} 个）`);
+ok(s.moreShown && s.moreText === "＋6", `A：＋N 报剩下的 6 组（${s.moreText || "没出现"}）`);
+ok(s.moreOutside, "A：＋N 挂在标签槽外面（槽横滚时它不跟着跑）");
 ok(s.onWs === "f:/proj-01", `A：当前组仍然高亮（${s.onWs}）`);
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-a.png`), clip: { x: 0, y: 0, width: 1000, height: 140 } });
+
+// 4) #121：点 ＋N 只列被折叠的组，点一行切过去并关掉下拉
+await page.click(".ws-tabs-more");
+await sleep(200);
+s = await barState();
+ok(s.menuRows === 6, `＋N 展开只列被折叠的 6 组（${s.menuRows} 行）`);
+ok(s.foldedIds.every((id) => !s.visibleIds.includes(id)), "菜单里没有已经在标签行上的组");
+ok(new Set(s.foldedIds).size === 6, "菜单里的组不重复、不多不少");
+// 两种关法：Esc 与点外面（和胶囊的 more 各关各的，不互相牵连）。
+await page.keyboard.press("Escape");
+await sleep(150);
+s = await barState();
+ok(s.menuRows === 0, `Esc 关掉下拉（还剩 ${s.menuRows} 行）`);
+ok(s.moreShown, "Esc 只关下拉、＋N 还在");
+await page.click(".ws-tabs-more");
+await sleep(150);
+await page.click(".session-card", { position: { x: 5, y: 5 } });
+await sleep(150);
+s = await barState();
+ok(s.menuRows === 0, `点外面关掉下拉（还剩 ${s.menuRows} 行）`);
+await page.click(".ws-tabs-more");
+await sleep(150);
+s = await barState();
+ok(s.menuRows === 6, `再点开还是 6 行（${s.menuRows}）`);
+const pick = s.foldedIds[0];
+await page.locator(".ws-tabs-menu .pm-item").first().click();
+await sleep(600);
+s = await barState();
+ok(s.onWs === pick, `点折叠组切过去（期望 ${pick}，实际 ${s.onWs}）`);
+ok(s.count === 3, `切过去之后标签行仍是 3 颗（${s.count} 个）`);
+ok(s.menuRows === 0, `切完下拉关掉（还剩 ${s.menuRows} 行）`);
+await page.close();
+
+// 5) #121：当前组排在组序很后面时，它挤掉最后一个补位组进圈（N+1 是 #122 固定组的事）
+page = await open(null, "s-09-1");
+s = await barState();
+ok(s.onWs === "f:/proj-09", `A：组序第 9 的当前组也在标签行上（${s.onWs}）`);
+ok(s.count === 3, `A：它挤掉了一个补位组，没多画（${s.count} 颗）`);
+ok(s.moreShown && s.moreText === "＋6", `A：被挤掉的那组回到 ＋N（${s.moreText}）`);
 await page.close();
 
 // 4) B/C/D：标签行不进顶栏，顶栏那三样照旧
@@ -243,7 +301,7 @@ for (const id of ["b", "c", "d"]) {
   await page.close();
 }
 
-// 5) 800px 窄屏：A 这一行不破版，标签横向滚得动、又不占滚动条的位置
+// 6) 800px 窄屏：A 这一行不破版，标签横向滚得动、又不占滚动条的位置，`＋N` 不跟着跑
 page = await open(null);
 await page.setViewportSize({ width: 800, height: 820 });
 await sleep(600);
@@ -252,14 +310,24 @@ ok(s.inTopbar && s.secondIsRow, "800px：标签仍在顶栏里、仍紧跟在 �
 ok(Boolean(s.bar && s.bar.h <= 60), `800px：顶栏还是一行（${s.bar?.h}px）`);
 ok(Boolean(s.tool && s.row && Math.abs(s.tool.cy - s.row.cy) < 14), "800px：标签和工具按钮仍在同一行");
 ok(!s.docOverflow, "800px：整页没有横向溢出（没破版）");
-ok(s.tabsOverflow, "800px：9 个长名装不下，标签槽真的溢出");
+ok(s.tabsOverflow, "800px：3 颗长名 + ＋N 还是装不下，标签槽真的溢出");
 ok(s.tabsScrollbar === 0, `800px：没有横向滚动条占位（offsetHeight - clientHeight = ${s.tabsScrollbar}）`);
+const before = await page.evaluate(() => {
+  const box = document.querySelector(".ws-tabs");
+  const more = document.querySelector(".ws-tabs-more");
+  return { left: more.getBoundingClientRect().left, scroll: box.scrollLeft };
+});
 const scrolled = await page.evaluate(() => {
   const box = document.querySelector(".ws-tabs");
   box.scrollLeft = 9999;
   return { left: box.scrollLeft, max: box.scrollWidth - box.clientWidth };
 });
 ok(scrolled.left > 0 && Math.abs(scrolled.left - scrolled.max) <= 1, `800px：标签能横向滚到底（${scrolled.left} / ${scrolled.max}）`);
+const after = await page.evaluate(() => {
+  const more = document.querySelector(".ws-tabs-more");
+  return { left: more.getBoundingClientRect().left };
+});
+ok(scrolled.left > before.scroll && Math.abs(after.left - before.left) < 1, `800px：槽横滚了 ${scrolled.left}px，＋N 位置一动不动（${before.left} → ${after.left}）`);
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-800.png`), clip: { x: 0, y: 0, width: 800, height: 140 } });
 await page.close();
 

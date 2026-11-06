@@ -38,6 +38,8 @@ export const en: Dict = {
   "{p1}：下一步补上": "{p1}: coming next",
   "{p1}，{p2} 个会话": "{p1}, {p2} sessions",
   "切到这个工作区": "Switch to this workspace",
+  "还有 {p1} 个工作区": "{p1} more workspaces",
+  "被折叠的工作区": "Folded workspaces",
   "{p1} · {p2}（当前）": "{p1} · {p2} (current)",
   "语言": "Language",
   "小": "Small",
