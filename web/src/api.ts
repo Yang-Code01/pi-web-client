@@ -1,4 +1,4 @@
-import type { GitInfo, Me, PreviewInfo, SessionState, TunnelState } from "./types.ts";
+import type { GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -67,6 +67,30 @@ export const api = {
   },
   preview: (sessionId: string, path: string) =>
     req<PreviewInfo>("/api/preview", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId, path }) }),
+  /** D127: sheet metadata and one visible row window, both keyed by the /api/preview grant token. */
+  sheetMeta: (token: string) =>
+    req<SheetMeta>("/api/sheet/meta", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }),
+  /** #112: ask the bridge to lay out the page view (or report it already done); returns a ready|pending|failed id. */
+  sheetPdf: (token: string, retry = false) =>
+    req<{ id: string; status: "ready" | "pending" | "failed"; error?: string; code?: string }>("/api/sheet/pdf", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token, retry }) }),
+  /** #112: the byte endpoint the iframe points at once the page view is ready. */
+  sheetPdfUrl: (id: string, token: string) => `/api/sheet/pdf?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`,
+  sheetWindow: (token: string, sheet: string, r0: number, r1: number, c0: number, c1: number) =>
+    req<SheetWindow>("/api/sheet/window", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, sheet, r0, r1, c0, c1 }),
+    }),
+  /** #107: whole-sheet search, server side — the page only ever holds one visible window. */
+  sheetFind: (token: string, sheet: string, q: string) =>
+    req<SheetMatches>("/api/sheet/find", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, sheet, q }),
+    }),
+  /** D127/#106 出口: hand the previewed workbook to this desktop's own program (Excel). */
+  openFile: (token: string) =>
+    req<{ ok: boolean; message: string }>("/api/open", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }),
   /** Write an edited text file back. 409 means the file changed on disk while it was open. */
   save: (sessionId: string, body: { path: string; text: string; mtime: number; size: number; copy?: boolean }) =>
     req<{ path: string; mtime: number; size: number }>("/api/save", {

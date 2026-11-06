@@ -2759,3 +2759,328 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* pi 的工具调用步骤（文字为空）：留在 DOM 里守住顺序，但别画出来。 */
 .sc-row.sc-step[hidden], .sc-who[hidden] { display: none; }
 .sc-model { font: 11px/1 var(--mono); letter-spacing: 0.04em; color: var(--faint); text-transform: none; }
+
+/* 表格浮窗（D149 · #105）：和终端并列的一扇窗，不是 viewer 面板，也没有遮罩。
+   纸张永远是浅色（像 Excel 的一张纸），不跟暗色主题走。 */
+.sd {
+  position: fixed; z-index: 46;
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  border: 1px solid #d8dde4; border-radius: 14px;
+  background: #fff; color: #1f2430;
+  box-shadow: 0 26px 60px rgba(0, 0, 0, 0.55);
+  animation: sd-pop 140ms ease-out;
+  user-select: none;
+}
+@keyframes sd-pop { from { transform: translateY(8px); opacity: 0.4; } }
+.sd.pinned { animation: none; }
+/* D111：点 / 聚焦哪扇窗，哪扇拿 47。 */
+.sd.front { z-index: 47; }
+.sd-grip {
+  position: absolute; left: 0; right: 18px; top: 0; height: 7px;
+  cursor: ns-resize; touch-action: none; z-index: 3;
+}
+.sd-grip:hover, .sd-grip.dragging {
+  background: linear-gradient(180deg, transparent 2px, #9db4c8 2px, #9db4c8 4px, transparent 4px);
+}
+.sd-head {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 8px 10px; border-bottom: 1px solid #e8ebef;
+  cursor: grab;
+}
+.sd-ico { flex: none; font-size: 15px; line-height: 1; }
+.sd-who { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.sd-name { font-size: 13px; font-weight: 600; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-path {
+  font: 11px/1.3 var(--mono); color: #8a94a3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  direction: rtl; text-align: left; max-width: 420px;
+}
+.sd-head .sd-btn {
+  flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 7px;
+  background: transparent; color: #6b7686; font-size: 13px; cursor: pointer;
+}
+.sd-head .sd-btn:hover { background: #eef1f5; color: #1f2430; }
+.sd-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative; }
+/* #113：CSV 的两个 tab 与源码面。 */
+.sd-tabs {
+  flex: none; display: flex; gap: 2px; padding: 6px 8px 0;
+  background: #fafbfc; border-bottom: 1px solid #e8ebef;
+}
+.sd-tab {
+  border: 0; padding: 5px 10px; border-radius: 7px 7px 0 0; background: transparent;
+  font: 12.5px/1 var(--sans); color: #6b7686; cursor: pointer;
+}
+.sd-tab:hover { background: #eef1f5; color: #1f2430; }
+.sd-tab.on { background: #fff; color: #1f2430; box-shadow: inset 0 -2px 0 #4b7ea8; }
+.sd-pane { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; position: relative; }
+.sd-pane[hidden] { display: none; }
+/* #112 页面视图：≥900 并排（左网格右 PDF 纸面），<900 收成两个标签页。
+   分界线的比例是 --sd-split，拖动时只改这一个变量。 */
+.sd-viewtabs {
+  flex: none; display: flex; gap: 2px; padding: 6px 8px 0;
+  background: #fafbfc; border-bottom: 1px solid #e8ebef;
+}
+.sd-viewtab {
+  border: 0; padding: 5px 10px; border-radius: 7px 7px 0 0; background: transparent;
+  font: 12.5px/1 var(--sans); color: #6b7686; cursor: pointer;
+}
+.sd-viewtab:hover { background: #eef1f5; color: #1f2430; }
+.sd-viewtab.on { background: #fff; color: #1f2430; box-shadow: inset 0 -2px 0 #4b7ea8; }
+.sd-panes { --sd-split: 50%; flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; }
+.sd-gridpane { flex: 1 1 auto; }
+.sd-panes.sd-showpage .sd-gridpane { flex: 0 0 var(--sd-split); }
+.sd-split {
+  flex: 0 0 9px; position: relative; display: none; align-items: center; justify-content: center;
+  cursor: col-resize; touch-action: none; background: #fafbfc;
+  border-left: 1px solid #e8ebef; border-right: 1px solid #e8ebef;
+}
+.sd-split::after { content: ""; width: 1px; height: 100%; background: #dfe4ea; }
+.sd-panes.sd-showpage .sd-split { display: flex; }
+.sd-split:hover::after, .sd-split.drag::after { width: 2px; background: #4b7ea8; }
+.sd-narrow .sd-split { display: none; }
+.sd-narrow .sd-panes.sd-showpage .sd-gridpane { flex: 1 1 auto; }
+.sd-pg { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; position: relative; background: #e9edf2; }
+.sd-pg[hidden] { display: none; }
+.sd-pg-frame { flex: 1 1 auto; width: 100%; height: 100%; border: 0; background: #fff; }
+.sd-pg-msg {
+  position: absolute; inset: 0; z-index: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  padding: 20px; text-align: center; background: rgba(255, 255, 255, 0.92);
+  color: #5c6676; font-size: 13px;
+}
+.sd-pg-wait { background: rgba(255, 255, 255, 0.78); }
+.sd-pg-idle, .sd-pg-error {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  padding: 20px; text-align: center; color: #5c6676; font-size: 13px;
+}
+.sd-pg-error { color: #a04949; }
+.sd-pg-line { max-width: 360px; line-height: 1.6; }
+.sd-pg-idle .sd-act, .sd-pg-error .sd-act { margin-top: 4px; }
+/* #111：选中格的公式栏：左边 A1 坐标，右边公式原文 / 显示值。 */
+.sd-fx {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px; background: #fafbfc; border-bottom: 1px solid #e8ebef;
+  font: 12px/1.5 var(--mono); color: #1f2430;
+}
+.sd-fx[hidden] { display: none; }
+.sd-fx-ref {
+  flex: none; min-width: 42px; padding: 0 4px; border-radius: 4px; background: #eef1f5;
+  color: #5b6472; font: 600 11.5px/1.6 var(--sans); text-align: center;
+}
+.sd-fx-body {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  user-select: text;
+}
+.sd-src {
+  flex: 1 1 auto; min-width: 0; min-height: 0; width: 100%; box-sizing: border-box; resize: none;
+  border: 0; outline: none; padding: 10px 12px; background: #fff; color: #1f2430;
+  font: 12.5px/1.6 var(--mono); white-space: pre; overflow: auto; user-select: text; tab-size: 4;
+}
+.sd-src[hidden] { display: none; }
+.sd-foot {
+  flex: none; display: flex; gap: 10px; align-items: center;
+  padding: 5px 10px; background: #fafbfc; border-top: 1px solid #e8ebef;
+  font: 11.5px/1.5 var(--sans); color: #8a94a3;
+}
+.sd-note { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sd-note[hidden] { display: none; }
+/* #111：这张表里有多少格子只有公式、没存结果。 */
+.sd-status { flex: none; color: #b42318; white-space: nowrap; }
+.sd-status[hidden] { display: none; }
+/* #110：这张表落在哪一档（全量 / 只值轻量 / 不给）。 */
+.sd-tier { flex: none; color: #6b7686; font-size: 11.5px; white-space: nowrap; }
+.sd-tier[data-tier="light"] { color: #9a6b00; }
+.sd-tier[data-tier="none"] { color: #b42318; }
+.sd-tier[hidden] { display: none; }
+.sd-save-msg { flex: none; }
+.sd-save-msg.ok { color: #1a7f37; }
+.sd-save-msg.err { color: #b42318; }
+.sd-head .sd-btn.sd-save { width: auto; height: 24px; padding: 0 10px; font-size: 12px; color: #33566f; background: #eef4f9; }
+.sd-head .sd-btn.sd-save:hover { background: #e0ecf6; color: #1f2430; }
+.sd-head .sd-btn.sd-save:disabled { opacity: 0.55; cursor: default; }
+.sd-resize { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none; z-index: 3; }
+.sd-resize::after {
+  content: ""; position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px;
+  border-right: 2px solid #a9b3c1; border-bottom: 2px solid #a9b3c1; border-radius: 0 0 3px 0;
+}
+.sd-resize:hover::after, .sd-resize.dragging::after { border-color: #4b7ea8; }
+.sd-msg {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 18px; text-align: center; color: #6b7686; font-size: 12.5px; line-height: 1.6;
+  background: rgba(255, 255, 255, 0.88); pointer-events: none;
+}
+.sd-msg[hidden] { display: none; }
+
+/* 出口（#106）：看完之后回到真文件——默认程序、浏览器存盘、文件管理器。#107 把定位信息
+   （只读 / 行列数 / 档位 / 缩放）也并回这一条；窗再窄也只换行，不把任何一项顶出去。 */
+.sd-foot {
+  flex: none; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; row-gap: 6px;
+  padding: 7px 22px 7px 10px; border-top: 1px solid #e8ebef; background: #fbfcfd;
+  border-radius: 0 0 13px 13px;
+}
+.sd-meta { flex: none; display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.sd-ro {
+  flex: none; padding: 0 6px; border-radius: 4px; background: #eef1f5; color: #5b6472;
+  font: 600 10.5px/1.6 var(--sans);
+}
+.sd-dims, .sd-tier { flex: none; color: #8a94a3; white-space: nowrap; }
+.sd-dims:empty, .sd-tier:empty { display: none; }
+.sd-zoom { flex: none; display: inline-flex; align-items: center; gap: 2px; }
+.sd-zbtn {
+  width: 20px; height: 20px; padding: 0; border: 1px solid #dfe4ea; border-radius: 5px;
+  background: #fff; color: #3d4757; font: 13px/1 var(--sans); cursor: pointer;
+}
+.sd-zbtn:hover { background: #f0f4f8; }
+.sd-zoom-pct {
+  min-width: 44px; height: 20px; padding: 0 4px; border: 1px solid transparent; border-radius: 5px;
+  background: transparent; color: #5b6472; font: 11.5px/1.4 var(--sans); cursor: pointer;
+}
+.sd-zoom-pct:hover { background: #f0f4f8; }
+
+/* #107：查找 + 引用那条工具条（盖在滚动区外面，窄窗换行）。 */
+.sd-tools {
+  flex: none; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; row-gap: 6px;
+  padding: 5px 10px; background: #fbfcfd; border-bottom: 1px solid #e8ebef;
+}
+.sd-tools[hidden] { display: none; }
+.sd-spacer { flex: 1 1 auto; min-width: 0; }
+.sd-find-btn {
+  flex: none; height: 24px; padding: 0 9px; border: 1px solid #dfe4ea; border-radius: 6px;
+  background: #fff; color: #3d4757; font: 12px/1 var(--sans); cursor: pointer; white-space: nowrap;
+}
+.sd-find-btn:hover { background: #f0f4f8; }
+.sd-find {
+  flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 4px;
+}
+.sd-find[hidden] { display: none; }
+.sd-find-in {
+  flex: 1 1 120px; min-width: 80px; max-width: 200px; height: 24px; box-sizing: border-box;
+  padding: 0 8px; border: 1px solid #dfe4ea; border-radius: 6px; background: #fff;
+  color: #1f2430; font: 12px/1.4 var(--sans);
+}
+.sd-find-in:focus { outline: none; border-color: #8fb4cd; }
+.sd-find-count { flex: none; min-width: 34px; color: #8a94a3; font: 11.5px/1.4 var(--sans); text-align: center; }
+.sd-quote { height: 26px; }
+.sd-quote[hidden] { display: none; }
+.sd-act {
+  flex: none; display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 10px; border: 1px solid #dfe4ea; border-radius: 7px;
+  background: #fff; color: #3d4757; font: 12px/1 var(--sans);
+  text-decoration: none; white-space: nowrap; cursor: pointer;
+}
+.sd-act:hover { background: #eef1f5; color: #1f2430; }
+.sd-act:disabled { opacity: 0.5; cursor: default; }
+.sd-dl { margin-left: auto; }
+
+/* 盖住网格说话：文件被改过 / 这个格式不支持。 */
+.sd-block {
+  flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 24px; text-align: center;
+}
+.sd-block-text { color: #4a5464; font-size: 13px; line-height: 1.7; max-width: 46ch; }
+.sd-block-acts { display: flex; align-items: center; gap: 8px; }
+.sd-block-acts .sd-act { height: 28px; padding: 0 14px; border-color: #c9d4e0; }
+/* #110：「不给」档只给清单和尺寸。 */
+.sd-block-list {
+  display: flex; flex-direction: column; gap: 4px; width: min(420px, 100%); max-height: 42vh;
+  overflow: auto; text-align: left;
+}
+.sd-block-sheet {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+  padding: 5px 9px; border: 1px solid #e3e7ec; border-radius: 7px; background: #fff;
+  font-size: 12.5px; line-height: 1.5;
+}
+.sd-block-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #3d4757; }
+.sd-block-size { flex: none; color: #8a94a3; font-size: 11.5px; white-space: nowrap; }
+
+/* 网格：行列头各占一条，正文自己滚。 */
+.sd-grid {
+  flex: 1 1 auto; min-width: 0; min-height: 0;
+  display: grid; grid-template-columns: 44px minmax(0, 1fr); grid-template-rows: 28px minmax(0, 1fr);
+  background: #fff;
+  font: 13px/1.4 var(--sans);
+}
+.sd-corner { background: #f4f6f8; border-right: 1px solid #e3e6ea; border-bottom: 1px solid #e3e6ea; }
+.sd-colhead { position: relative; overflow: hidden; background: #f4f6f8; border-bottom: 1px solid #e3e6ea; }
+.sd-rowhead { position: relative; overflow: hidden; background: #f8f9fb; border-right: 1px solid #e3e6ea; }
+.sd-colhead-in, .sd-rowhead-in { position: absolute; left: 0; right: 0; top: 0; will-change: transform; }
+.sd-col {
+  position: absolute; top: 0; height: 28px; display: flex; align-items: center; justify-content: center;
+  color: #5b6472; font-size: calc(11.5px * var(--sd-z, 1)); font-weight: 500;
+  border-right: 1px solid #e3e6ea; box-sizing: border-box;
+}
+.sd-rowno {
+  position: absolute; left: 0; right: 0; display: flex; align-items: center; justify-content: flex-end;
+  padding-right: 8px; box-sizing: border-box;
+  color: #98a2b3; font-size: calc(11.5px * var(--sd-z, 1));
+  border-bottom: 1px solid #e8ebef;
+}
+.sd-viewwrap { position: relative; min-width: 0; min-height: 0; }
+.sd-view { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
+/* #107：网格自己吃键盘；焦点环不画在滚动容器上（格子里的描边已经说明在哪）。 */
+.sd-view:focus { outline: none; }
+.sd-view:focus-visible { outline: 1px solid #c3d5e4; outline-offset: -1px; }
+/* 网格线由每个格子自己的边框画：列宽取文件值，固定 110px 的底纹会错位。 */
+.sd-space { position: relative; background: #fff; }
+.sd-cells { position: absolute; left: 0; top: 0; }
+.sd-cell {
+  position: absolute; box-sizing: border-box;
+  display: flex; align-items: center;
+  padding: 0 8px; overflow: hidden; white-space: nowrap; text-overflow: clip;
+  background: #fff; border-right: 1px solid #e8ebef; border-bottom: 1px solid #e8ebef;
+  color: #1f2430; cursor: default; user-select: none;
+  /* #107：缩放把字和内边距一起缩，行高/列宽由 grid.ts 量好。 */
+  font-size: calc(13px * var(--sd-z, 1));
+  padding-left: calc(8px * var(--sd-z, 1)); padding-right: calc(8px * var(--sd-z, 1));
+}
+.sd-cell.is-n { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.sd-cell[data-span] { z-index: 1; }
+.sd-cell.k-e { color: #b42318; }
+/* #109 条件格式：数据条垫在文字下面，图标和文字同一行，宽度由服务端算好的比例给。 */
+.sd-cell .sd-bar { position: absolute; left: 0; top: 1px; bottom: 1px; border-radius: 2px; opacity: 0.55; pointer-events: none; }
+.sd-cell .sd-txt { position: relative; z-index: 1; }
+.sd-cell .sd-icon { position: relative; z-index: 1; flex: none; margin-right: 4px; font-size: 12px; line-height: 1; }
+/* #111：选中的格子（不抢焦点、不加输入框）与「只有公式、没存结果」的格子（显空 + 红虚线）。 */
+.sd-cell.sel { outline: 2px solid #4b7ea8; outline-offset: -2px; z-index: 2; }
+/* #107：一块选区（用垫色而不是边框，条件格式的背景还在）+ 查找命中。 */
+.sd-cell.in-sel { background-image: linear-gradient(rgba(75, 126, 168, 0.14), rgba(75, 126, 168, 0.14)); }
+.sd-cell.hit { background-image: linear-gradient(rgba(214, 158, 0, 0.22), rgba(214, 158, 0, 0.22)); }
+.sd-cell.hit-on { background-image: linear-gradient(rgba(214, 158, 0, 0.34), rgba(214, 158, 0, 0.34)); outline: 2px solid #c99700; outline-offset: -2px; z-index: 3; }
+.sd-cell.is-nc { border: 1px dashed #d92d20; }
+
+/* 冻结窗格：行/列各画一层贴在边上，滚动时不动（#108）。 */
+.sd-colhead-frz {
+  position: absolute; left: 0; top: 0; bottom: 0; overflow: hidden; z-index: 2;
+  background: #f4f6f8; border-right: 1px solid #cfd6df; box-sizing: border-box;
+}
+.sd-rowhead-frz {
+  position: absolute; left: 0; right: 0; top: 0; overflow: hidden; z-index: 2;
+  background: #f8f9fb; border-bottom: 1px solid #cfd6df; box-sizing: border-box;
+}
+.sd-colhead-frz[hidden], .sd-rowhead-frz[hidden] { display: none; }
+.sd-frz { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.sd-frz-t, .sd-frz-l { position: absolute; overflow: hidden; }
+.sd-frz-t { top: 0; left: 0; right: 0; z-index: 2; }
+.sd-frz-l { left: 0; top: 0; bottom: 0; z-index: 1; }
+.sd-frz-t[hidden], .sd-frz-l[hidden] { display: none; }
+.sd-frz-in { position: absolute; left: 0; top: 0; will-change: transform; }
+.sd-frz-v { position: absolute; top: 0; bottom: 0; width: 1px; background: #cfd6df; }
+.sd-frz-h { position: absolute; left: 0; right: 0; height: 1px; background: #cfd6df; }
+.sd-frz-v[hidden], .sd-frz-h[hidden] { display: none; }
+
+/* 底栏里的工作表标签（#108）：藏起来的表不列，只报个数（`.sd-tab` 是 CSV 的表格/源码）。 */
+.sd-wstabs { display: flex; gap: 2px; flex: 0 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; }
+.sd-wstabs:empty { display: none; }
+.sd-wstab {
+  flex: none; padding: 3px 10px; border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: #5b6472; font: 12px/1.3 var(--sans); cursor: pointer;
+  white-space: nowrap;
+}
+.sd-wstab:hover { background: #eef1f5; }
+.sd-wstab[aria-selected="true"] { background: #fff; border-color: #d8dde4; color: #1f2430; font-weight: 600; }
+.sd-wshint { flex: none; margin-left: auto; color: #8a94a3; font-size: 11.5px; white-space: nowrap; }
+.sd-wshint[hidden] { display: none; }
+.sd-cfhint { flex: none; margin-left: 8px; color: #9a6b00; font-size: 11.5px; white-space: nowrap; }
+.sd-cfhint[hidden] { display: none; }
+

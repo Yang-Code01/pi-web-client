@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import type http from "node:http";
 import path from "node:path";
+import { registerFileGrant } from "./sheet/index.ts";
+import { gbkEncode, utf8Bytes } from "./sheet/gbk.ts";
 
 /**
  * File preview for session artifacts (md / html / images / text).
@@ -14,7 +16,7 @@ import path from "node:path";
  * previewed page cannot read the bridge's cookies or call its API.
  */
 
-export type PreviewKind = "markdown" | "html" | "image" | "text" | "binary";
+export type PreviewKind = "markdown" | "html" | "image" | "text" | "sheet" | "binary";
 
 export interface PreviewInfo {
   token: string;
@@ -35,6 +37,11 @@ const tokens = new Map<string, { root: string; at: number }>();
 
 const MD = new Set([".md", ".markdown", ".mdx"]);
 const HTML = new Set([".html", ".htm", ".xhtml"]);
+// D127: .xlsx/.xlsm get their own dialog. .csv/.tsv stay text; .xls/.ods/.xlsb stay binary and are
+// only handed to the desktop app (#106).
+const SHEET = new Set([".xlsx", ".xlsm"]);
+// #106: workbooks we refuse to parse but can still open in Excel (the grant is what /api/open takes).
+const OPENABLE = new Set([".xlsx", ".xlsm", ".xlsb", ".xls", ".ods"]);
 const IMAGE: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -111,11 +118,31 @@ export function readAttachableImage(rawPath: string): { mime: string; data: Buff
   return { mime: IMAGE[ext], data: fs.readFileSync(abs) };
 }
 
+/**
+ * Is this a zip (OOXML) package, or something wearing an .xlsx name? An encrypted workbook is a
+ * CFB (OLE2) container even though it is still called .xlsx, so the extension alone lies.
+ */
+function isZipPackage(file: string): boolean {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const b = Buffer.alloc(4);
+    if (fs.readSync(fd, b, 0, 4, 0) !== 4) return false;
+    return b[0] === 0x50 && b[1] === 0x4b && (b[2] === 0x03 || b[2] === 0x05 || b[2] === 0x07);
+  } catch {
+    return false;
+  } finally {
+    if (fd != null) fs.closeSync(fd);
+  }
+}
+
 export function kindOf(file: string): PreviewKind {
   const ext = path.extname(file).toLowerCase();
   if (MD.has(ext)) return "markdown";
   if (HTML.has(ext)) return "html";
   if (IMAGE[ext]) return "image";
+  // Not a zip inside: .xls renamed to .xlsx, or an encrypted package. Say so, don't half-parse it.
+  if (SHEET.has(ext)) return isZipPackage(file) ? "sheet" : "binary";
   return looksText(file) ? "text" : "binary";
 }
 
@@ -161,7 +188,13 @@ export function openPreview(session: { cwd: string; file: string | null }, rawPa
   // Root = cwd when possible so `../assets/x.css` from a nested page still resolves.
   const root = inCwd ? path.resolve(session.cwd) : path.dirname(abs);
   const rel = path.relative(root, abs).split(path.sep).map(encodeURIComponent).join("/");
-  return { token: issue(root), rel, root, name: path.basename(abs), abs, size: st.size, mtime: st.mtimeMs, kind: kindOf(abs) };
+  const kind = kindOf(abs);
+  const token = issue(root);
+  // The sheet endpoints never take a path from the page: this grant (path + mtime) is the only key.
+  // #106: the same grant is what /api/open accepts, so a file we refuse to parse can still be opened.
+  const ext = path.extname(abs).toLowerCase();
+  if (kind === "sheet" || OPENABLE.has(ext)) registerFileGrant(token, abs, st.mtimeMs);
+  return { token, rel, root, name: path.basename(abs), abs, size: st.size, mtime: st.mtimeMs, kind };
 }
 
 /**
@@ -175,6 +208,8 @@ interface EditGrant {
   size: number;
   mtime: number;
   bom: boolean;
+  /** 存回去时用的编码：打开时存的字节决定，别让 GBK 的表被改成 UTF-8（#113）。 */
+  enc: "utf8" | "gbk";
 }
 const editable = new Map<string, Map<string, EditGrant>>();
 
@@ -192,6 +227,15 @@ function hasBom(file: string): boolean {
   }
 }
 
+/** 合法 UTF-8 就是 UTF-8，否则按 GBK 看（本机实测 `new TextDecoder("gbk")` 可用）。 */
+function sniffEncoding(file: string): "utf8" | "gbk" {
+  try {
+    return utf8Bytes(fs.readFileSync(file)) ? "utf8" : "gbk";
+  } catch {
+    return "utf8";
+  }
+}
+
 const canEdit = (info: PreviewInfo): boolean => (info.kind === "markdown" || info.kind === "text") && info.size <= MAX_EDIT_BYTES;
 
 /** Remember a file as writable for this session, so `/api/save` has something to check against. */
@@ -203,7 +247,13 @@ export function rememberEditable(sessionId: string, info: PreviewInfo): void {
     editable.set(sessionId, m);
   }
   if (m.size >= 200) m.clear();
-  m.set(norm(info.abs), { real: info.abs, size: info.size, mtime: info.mtime, bom: hasBom(info.abs) });
+  m.set(norm(info.abs), {
+    real: info.abs,
+    size: info.size,
+    mtime: info.mtime,
+    bom: hasBom(info.abs),
+    enc: sniffEncoding(info.abs),
+  });
 }
 
 export interface SaveResult {
@@ -261,9 +311,15 @@ export function savePreviewFile(
       fail(409, "文件在你编辑期间被改过了");
     }
   }
-  const payload = (grant.bom ? "\ufeff" : "") + text;
+  // 编码与分隔符都保持原样：GBK 的表按 GBK 写回，BOM 只配 UTF-8（#113）。
+  const encoded = grant.enc === "gbk" ? gbkEncode(text) : { buf: Buffer.from(text, "utf8"), lost: [] };
+  if (encoded.lost.length) {
+    fail(400, `这个文件是 GBK 编码，这些字存不进去：${encoded.lost.slice(0, 8).join(" ")}`);
+  }
+  const payload =
+    grant.bom && grant.enc === "utf8" ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), encoded.buf]) : encoded.buf;
   const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmp, payload, "utf8");
+  fs.writeFileSync(tmp, payload);
   try {
     fs.renameSync(tmp, target);
   } catch (err) {
@@ -275,7 +331,13 @@ export function savePreviewFile(
     throw err;
   }
   const after = fs.statSync(target);
-  editable.get(sessionId)!.set(norm(target), { real: target, size: after.size, mtime: after.mtimeMs, bom: grant.bom });
+  editable.get(sessionId)!.set(norm(target), {
+    real: target,
+    size: after.size,
+    mtime: after.mtimeMs,
+    bom: grant.bom,
+    enc: grant.enc,
+  });
   return { path: target, mtime: after.mtimeMs, size: after.size };
 }
 
