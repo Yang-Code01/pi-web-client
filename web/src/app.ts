@@ -3385,20 +3385,35 @@ export class App {
     this.paintSkillSheet(host);
   }
 
-  /** Repaint in place, keeping the scroll position and the focused box (as `paintExtIfOpen` does). */
+  /** 用户关掉过提示的那个 build id（D154：关了就不再弹，换 build 才弹）。 */
+  private dismissedBuild = "";
+
   /** D154：只提示、不自动刷新 —— 页面里可能正有没发出去的输入。 */
   private checkBuild(buildId: string): void {
-    if (BUILD_ID === "dev" || buildId === BUILD_ID || document.querySelector(".update-bar")) return;
+    // 只比短 SHA：同一个提交的两次 build（比如只重编了 web）产物代码没变，不该弹提示。
+    const shaOf = (id: string) => id.split("-")[0] ?? id;
+    if (
+      BUILD_ID === "dev" ||
+      shaOf(buildId) === shaOf(BUILD_ID) ||
+      buildId === this.dismissedBuild ||
+      document.querySelector(".update-bar")
+    )
+      return;
     const bar = el("div", "update-bar");
     const btn = el("button", "btn primary", tr("刷新"));
     btn.onclick = () => location.reload();
     const close = el("button", "update-bar-x", "×");
     close.title = tr("知道了");
-    close.onclick = () => bar.remove();
+    close.onclick = () => {
+      // 关掉就是「我知道了这个 build」：重连再见到同一个 id 不再弹，换了 build 才重新提示。
+      this.dismissedBuild = buildId;
+      bar.remove();
+    };
     bar.append(el("span", "update-bar-text", tr("服务已更新，刷新后生效")), btn, close);
     document.body.append(bar);
   }
 
+  /** Repaint in place, keeping the scroll position and the focused box (as `paintExtIfOpen` does). */
   private paintSkillIfOpen(): void {
     if (this.sheetKind !== "skillstore") return;
     const host = this.sheet?.querySelector<HTMLElement>(".skill-host");

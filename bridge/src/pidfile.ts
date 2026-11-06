@@ -21,8 +21,13 @@ export function writePidFile(port: number): void {
   }
 }
 
+/**
+ * 只删「还是自己」的那份：`taskkill /F` 不走 exit 钩子，文件会残留在盘上；而手工双启时
+ * 旧进程退出时若无条件 unlink，删掉的是**新**进程刚写的那份。
+ */
 export function removePidFile(port: number): void {
   try {
+    if (readPidFile(port) !== process.pid) return;
     fs.unlinkSync(pidFile(port));
   } catch {
     /* 已经不在了 */

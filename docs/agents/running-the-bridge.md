@@ -17,10 +17,10 @@ What it does, in order — the order is the point:
 - `git fetch` + `git merge --ff-only origin/main` in the main checkout (the one sanctioned exception to "never write on main"). Dirty or diverged → `merge-failed`: **no stash, no rebase, no reset**.
 - `npm run build`. **Only if that succeeds** does it touch the running process — a broken build leaves 7864 serving the old code, so the outage is just the 1–3 s handover.
 - `taskkill /PID <bridge>` (never `/T`), then kill the bridge's own `pi` children by pid; orphans keep holding session locks and show up as “terminal in use”.
-- `Start-Process powershell -WindowStyle Hidden -File <start-bridge.ps1>` running `npm run start:nobuild`, teeing to `.scratch/bridge-update/bridge-live.log`. Closing that window stops the bridge, same as before.
+- `Start-Process powershell -File <start-bridge.ps1>` opens a **visible** terminal window running `npm run start:nobuild`, teeing to `.scratch/bridge-update/bridge-live.log`. Closing that window stops the bridge, same as before.
 - Poll `/healthz` for 45 s and check the reported `buildId` matches the fresh build; write `.scratch/bridge-update/last-run.json`.
 
-`npm start` still works by hand (`build:bridge && build:peer && build:web && node bridge/dist/index.js`, ~10 s). Session transcripts live in `~/.pi/agent/sessions/`, so a mid-turn chat is cut, not lost — that is what `pending.md` and the `pendingUnread` startup check in AGENTS.md are for.
+`npm start` still works by hand (`node scripts/build.mjs && node bridge/dist/index.js`, ~10 s; `build:bridge` / `build:web` are the same script with `--only`). Session transcripts live in `~/.pi/agent/sessions/`, so a mid-turn chat is cut, not lost — that is what `pending.md` and the `pendingUnread` startup check in AGENTS.md are for.
 
 If your own transport might be the thing you're restarting, hand the kill+start to the detached helper and reply; whether or not you are a child of the bridge stops mattering.
 

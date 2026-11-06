@@ -7,12 +7,32 @@
  *
  * 三个包分开构建时没人能保证它们拿到同一个 id，所以 id 在这里生成、通过 `PI_BUILD_ID`
  * 传给 web（vite define），并在 bridge 编译完写进 `bridge/dist/build-id.json`。
+ *
+ *   node scripts/build.mjs                 # 三个包，共用一个 id
+ *   node scripts/build.mjs --only bridge   # 只编一个（`npm run build:bridge` 走这里）
+ *
+ * 单编 bridge 也刷新 build-id.json：`bridge/tests/*` 和 probes 都只跑 `build:bridge`，
+ * 否则 `/healthz` 会一直报上一份产物的 id。
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
+const PACKAGES = ["bridge", "peer", "web"];
+
+function argOf(name) {
+  const i = process.argv.indexOf(name);
+  const v = i >= 0 ? process.argv[i + 1] : undefined;
+  return v && !v.startsWith("--") ? v : undefined;
+}
+
+const only = argOf("--only");
+if (only && !PACKAGES.includes(only)) {
+  console.error(`--only 只认 ${PACKAGES.join(" / ")}，收到 ${only}`);
+  process.exit(2);
+}
+const targets = only ? [only] : PACKAGES;
 
 function npm(args, env) {
   // Node 在 Windows 上不允许直接 spawn .cmd（EINVAL，CVE-2024-27980 之后），只能过 shell；
@@ -40,17 +60,19 @@ const sha = shortSha();
 const id = `${sha}-${Date.now().toString(36)}`;
 const env = { ...process.env, PI_BUILD_ID: id };
 
-let code = npm(["--prefix", "bridge", "run", "build"], env);
-if (code) process.exit(code);
-
-// 写在 tsc 之后：tsc 不清理 dist，但 build-id 必须描述这次产物。
-fs.writeFileSync(
-  path.join(root, "bridge", "dist", "build-id.json"),
-  JSON.stringify({ id, sha, at: new Date().toISOString() }, null, 2) + "\n",
-);
-
-code = npm(["--prefix", "peer", "run", "build"], env);
-if (code) process.exit(code);
-
-code = npm(["--prefix", "web", "run", "build"], env);
-process.exit(code);
+for (const pkg of targets) {
+  const code = npm(["--prefix", pkg, "run", "build"], env);
+  if (code) process.exit(code);
+  // 写在 tsc 之后：tsc 不清理 dist，但 build-id 必须描述这次产物。
+  if (pkg === "bridge") {
+    try {
+      fs.writeFileSync(
+        path.join(root, "bridge", "dist", "build-id.json"),
+        JSON.stringify({ id, sha, at: new Date().toISOString() }, null, 2) + "\n",
+      );
+    } catch (e) {
+      console.error(`写 bridge/dist/build-id.json 失败：${e.message}`);
+      process.exit(1);
+    }
+  }
+}
