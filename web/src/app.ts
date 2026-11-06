@@ -5720,6 +5720,7 @@ export class App {
       start: v.lastDir || this.session?.cwd || "",
       files: true,
       fallback: true,
+      pathBox: true,
       head: [home.node, copy.node],
       onState: (s) => {
         copy.bind();
@@ -9160,6 +9161,8 @@ export class App {
       start: this.session?.cwd ?? "",
       files: true,
       fallback: true,
+      // 和文件管理器同一套「输入路径就跳」：附件也常常已经在手上了（终端里复制来的）。
+      pathBox: true,
       head: [home.node],
       onPick: (abs, name, row) => {
         // 图片直接附加成待发图片；其他文件只把路径插进输入框（pi 自己去读）。

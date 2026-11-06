@@ -2147,3 +2147,28 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - `/kill` 这类查询不再「命中所有技能」，但尾巴里真有 `kill` 的仍会中（`find-skills` 的 `skills`），名字一个都没中就落到描述兜底或「没有匹配的命令」——比以前更安静。**可改**
 
 **验证：** `npm run test:commands`（13 例：`/hand` 只剩 handoff 那一族且顺序是 handoff → claude-handoff；`/skill:hand` 等价；`/skill`、`/skill:` 列全部且顺序不变；`/kill` 不因 `skill:` 前缀全中、尾巴真含 `kill` 才中；切词认 `-` `_` `.` 空白；`mcp:tool:read` 敲 `/tool` 命中；描述只兜底、两个字符不翻描述、且兜底剥命名空间；整名排最前；同档保持原序；空输入与名字命中都截到 40；大小写）；测试实例（`pi-web-client-test-dev start --dir <本 worktree> --build`，端口 17874）上 `node probes/slash-filter.mjs` 用真 Chromium 逐条断言：`/hand` → 恰好 `skill:handoff` + `skill:claude-handoff`（顺序也查），`/skill:hand` 同，`/kill` → 只列尾巴含 kill 的，`/zzzqqq` → 「没有匹配的命令」，`/claude` → 只剩 claude 那一族，`/skill:` → 全部技能；任一不对退出码非 0。截图 `.scratch/hand-filter/hand.png`。
+## D153 文件管理器与「文件」附件 picker 加「跳到路径」：文件 = 标出不打开、桥端多一条 `/api/stat`（无票，用户口头要求）
+
+**问题：** 文件管理器只能靠面包屑一层层点。路径往往已经在手上（从终端、从 Explorer 的「复制为路径」、从另一台机器贴过来），用户要做的却是在树里找到它。更贵的场景是深目录：`work/a/b/c` 里改了 `d.md`，从 cwd 点进去要四次，还容易点错同级目录。
+
+**决定：**
+
+- **输入框是 opt-in**（`mountDirPicker` 的 `pathBox: true`）：文件管理器的浏览页和「文件」按钮（附件）都传了。附件也常已经在手上（终端里复制的路径），跳过去标出来、回车附加，比一层层点回去快。新会话弹层的 picker 不传：那里一打开焦点就该落在「工作目录」上，多一行只会抢 Tab 序，而它要的是**选**一个新目录，不是**回到**一个已知路径。
+- **文件夹 = 进去；文件 = 进父目录 + 标出那一行，不打开**。跳到文件时 `.file-row.hit` 给静态高亮（accent 底 + 左侧 inset 竖线）并把焦点移过去，`pane` 仍是「浏览」：一次跳转是「找到它」，不是「看它」。真要打开，回车就在手边。
+- **新桥端 `GET /api/stat`**（`bridge/src/dirs.ts` 的 `statPath()`，异步），返回 `{ path, kind: "dir" | "file" | "missing" | "denied", parent }`。不复用 `/api/dirs`：它对文件答 ENOTDIR，在界面上长得像「这个文件夹坏了」。除空输入外 `missing` 也带 `parent` 与绝对路径 —— 报错文案要显示桥端实际解析到哪儿（相对路径、`~` 之类会暴露差异；空串没有问过任何路径，直接答 `{path:"", parent:null}`，不拿它当「不存在」的证据）；`EACCES`/`EPERM` 单独答 `denied`，「不让你看」不该说成「没有这个路径」。用 `fs.promises.stat` 而不是 `statSync`：一个睡着的网络盘上 stat 能卡几秒，同步版会把整个 bridge 一起卡住。
+- **相对路径在前端拼**（`resolveTyped()`）：桥端会把相对路径解析到**它自己的 cwd**，那不是用户眼前这个目录。顺带认三种常见写法：Explorer 复制出来的成对引号、只敲盘符 `C:`（补成 `C:\`）、`./x` 与 `.\x`。
+- **盘符页拒收相对路径**：那里没有「当前目录」，落到 bridge 的 cwd 只会让人困惑；直接说「在盘符列表里要写完整路径，例如 D:\work」。
+- **miss 不动列表**：错误写在输入框下面（`role=status`、红字、自动换行），列表与滚动位置原样（只摘掉 `.hit`，不重画列表），输入保留着等人改；同时清掉上一次跳转留下的高亮 —— 否则「没有这个路径」旁边亮着一行，看起来像是它选中了那个。
+- **Esc 只归这一格**：有字就清字；空着再按一次不再 `blur()`，而是让 Escape 继续冒泡给面板（viewer 根节点的 `root.onkeydown` 本来就用它关面板）—— 早先版本 blur 之后焦点落在 body，那个监听收不到按键，面板就再也关不掉了。`preventDefault + stopPropagation` 只用在「清字」这一支（`isComposing` 时只拦不处理），因为输入法正在组字时按 Esc 是取消候选，不该顺手清框或关面板。
+
+**为什么：** 三个 picker 共用一个组件，所以「加不加这行」必须是一个显式选项而不是全局长出来；而跳转的语义要跟「点文件」区分开 —— 点文件是在挑要读的东西，跳转是在从一大片里定位一个已知的东西，顺手把它打开会覆盖掉正在编辑的稿子（还要过未保存拦截）。`/api/stat` 单独一条是因为 `kind` 是这次的核心判断，让前端去猜「ENOTDIR 是不是文件」既脆又读不懂错误。
+
+**代价 / 可改：**
+
+- 没有路径补全 / 历史下拉：要一个词一个词敲完，敲错只能看错误再改。**可改**（列表里每一行都有绝对路径，做一个 `<datalist>` 成本不高，但会跟「输入即跳转」的 Enter 语义打架）
+- 高亮先按原样比文件名，找不到才忽略大小写（Linux 上 `A.md` 与 `a.md` 并存时不会亮错那颗）。但父目录若超过 `/api/dirs` 的截断上限（1000 目录 / 2000 文件），`stat` 已确认的文件仍可能不在列表里，此时文案说的是「列表里没有 X（目录过大时只列出一部分）」，不是断言它不存在。
+- `/api/stat` 和 `/api/dirs` 一样对隧道访客开放：浏览页本来就能列目录，这里只多一个存在性判断。要收紧得两条路由一起收（`/api/git`、`/api/clipboard-files` 那种 403 口径），否则远程打开文件管理器会变成「列表能看、跳转报错」的半残状态。
+- 只在 Windows 上验过。POSIX 上文件在根目录（`/x`）时 `parent` 是 `null`，会 `navigate("")` 回到盘符页 —— 也就是 `/` 的列举，不算错，但和 Windows 的盘符根不完全对称。
+- 跳转不写 `v.lastDir` 之外的状态：不进历史、不记住上次跳到哪。刷新页面回到会话 cwd。
+
+**验证：** `npm --prefix web run typecheck`（`tsc --noEmit` + `i18n-check.mjs`，1411 键 × 3 语言）；`npm run test:dirpath`（11 例：引号/空白、三种绝对路径、`joinPath` 分隔符、`fileNameOf` 尾斜杠、相对拼接、`./` 归一、`\Users\me` 落当前盘、只敲盘符（含盘符页 `C:` 归一成 `C:\`）、盘符页不拼相对）；`npm run test:stat`（6 例：dir/file/missing + parent、空串、trim、盘符根 parent 为空串）；浏览器探针 `node probes/fs-path-jump.mjs`（10 段：框在、文件夹进入且清空输入、文件回父目录并高亮且焦点落到行上、带引号路径、相对路径、miss 报错且列表不动并清旧高亮、Esc 两级（第二下关面板）、盘符页相对路径报错、盘符页裸盘符 `C:` 归一、新会话 picker 没这行而附件 picker 有且能跳到文件并标出那一行），截图在 `.scratch/fs-jump/shots/`。
