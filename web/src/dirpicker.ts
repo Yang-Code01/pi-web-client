@@ -40,6 +40,44 @@ export function formatTime(ms: number): string {
 /** Below this the picker is a popover (the attachment sheet), not a pane: the percentage goes. */
 const NARROW_PX = 460;
 
+/** Explorer 的「复制为路径」会带上一对引号；手输时也常把整条路径括起来。 */
+export function cleanPath(raw: string): string {
+  let s = raw.trim();
+  if (s.length >= 2 && ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'")))) s = s.slice(1, -1).trim();
+  return s;
+}
+
+/** 盘符、UNC、POSIX 根都算绝对路径；Windows 的「无盘符根路径」另算，见 resolveTyped。 */
+export function isAbsolutePath(p: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(p) || /^[\\/]{2}[^\\/]/.test(p) || p.startsWith("/");
+}
+
+export function joinPath(base: string, name: string): string {
+  if (!base) return name;
+  const sep = base.includes("/") && !base.includes("\\") ? "/" : "\\";
+  return `${base.replace(/[\\/]+$/, "")}${sep}${name}`;
+}
+
+export function fileNameOf(p: string): string {
+  return p.split(/[\\/]+/).filter(Boolean).pop() ?? p;
+}
+
+/**
+ * 桥端会把相对路径解析到**它自己的 cwd**，那不是正在浏览的目录，所以相对路径先在这里拼好。
+ * `\Users\me`（有根无盘符）落在当前盘上。
+ */
+export function resolveTyped(raw: string, base: string): string {
+  const typed = cleanPath(raw);
+  if (!typed || !base) return typed;
+  if (/^[\\/]/.test(typed) && !/^[\\/]{2}/.test(typed) && /^[A-Za-z]:/.test(base)) return `${base.slice(0, 2)}${typed}`;
+  if (isAbsolutePath(typed)) return typed;
+  // `C:` 自己也常被敲（在盘符页跳盘）：没有 `\` 的盘符不是绝对路径，但意图就是那颗盘。
+  if (/^[A-Za-z]:$/.test(typed)) return `${typed}\\`;
+  // `./a.txt` 拼出来是 `base/./a.txt`：桥端能 resolve，但报错里很难看。
+  const rel = typed.replace(/^(\.[\\/])+/, "");
+  return rel ? joinPath(base, rel) : base;
+}
+
 export interface DirPickerState {
   path: string;
   parent: string | null;
@@ -65,6 +103,11 @@ export interface DirPickerOpts {
   autoStart?: boolean;
   /** Extra buttons on the path row (e.g. 新建文件夹). */
   head?: HTMLElement[];
+  /**
+   * 路径输入框：粘贴绝对路径（或相对当前目录的路径）回车跳转 —— 文件夹进去，文件跳到它所在的
+   * 文件夹并把那一行标出来。文件管理器（D50 的浏览页）用这一项。
+   */
+  pathBox?: boolean;
   /** Extra nodes between the path row and the list (e.g. the mkdir row). */
   beforeList?: HTMLElement[];
   /** Called after every successful listing, and on entering a directory. */
@@ -116,23 +159,35 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
   const filter = el("input", "ns-input dir-filter") as HTMLInputElement;
   filter.placeholder = tr("筛选当前目录…");
   const list = el("div", "model-list dir-list");
-  if (showFilter) root.append(dirHead, filter, ...(opts.beforeList ?? []), list);
-  else root.append(dirHead, ...(opts.beforeList ?? []), list);
+  /** 输入路径就跳（pathBox）：文件夹进去、文件跳到父目录并高亮那一行。 */
+  const jump = opts.pathBox === true ? el("div", "dir-jump") : null;
+  const jumpInput = el("input", "dir-jump-input") as HTMLInputElement;
+  const jumpErr = el("div", "dir-jump-err");
+  if (jump) {
+    jumpInput.type = "text";
+    jumpInput.spellcheck = false;
+    jumpInput.placeholder = tr("输入路径，回车定位到文件夹或文件");
+    jumpInput.title = tr("粘贴绝对路径跳过去（相对路径按当前目录算）：文件夹直接进入，文件跳到它所在的文件夹并标出那一行");
+    jumpInput.setAttribute("aria-label", tr("跳到路径"));
+    jumpErr.setAttribute("role", "status");
+    jump.append(jumpInput, jumpErr);
+  }
+  root.append(dirHead, ...(jump ? [jump] : []));
+  if (showFilter) root.append(filter);
+  root.append(...(opts.beforeList ?? []), list);
   host.append(root);
 
   let current = "";
   let res: Awaited<ReturnType<typeof api.dirs>> | null = null;
+  /** 上一跳要高亮的文件（小写名）；普通导航会把它清掉。 */
+  let reveal = "";
   /** D62: file sizes land in a second request; keyed by name so a repaint (筛选) keeps them. */
   let stats = new Map<string, FileStat>();
   /** Guards against a slow answer for the folder we already left. */
   let statToken = 0;
   const fileRows = new Map<string, { size: HTMLElement; time: HTMLElement }>();
   /** Drive letters have no drive to letter, so join with the separator the path already uses. */
-  const join = (name: string): string => {
-    if (!current) return name;
-    const sep = current.includes("/") && !current.includes("\\") ? "/" : "\\";
-    return `${current.replace(/[\\/]+$/, "")}${sep}${name}`;
-  };
+  const join = (name: string): string => joinPath(current, name);
 
   /** D62: a drive row carries its own fill bar, since a bare `C:\` says nothing about "够不够用". */
   const volumeRow = (vol: Volume, label: string): HTMLElement => {
@@ -202,6 +257,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     }
     for (const name of files) {
       const row = el("button", "model-row dir-row file-row");
+      if (reveal && name.toLowerCase() === reveal) row.classList.add("hit");
       const size = el("span", "size");
       const time = el("span", "mtime");
       const st = stats.get(name);
@@ -226,7 +282,13 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     }
   };
 
-  const go = async (target: string): Promise<void> => {
+  /**
+   * List a directory. `revealName` is the file the jump box wants highlighted; `allowFallback` is off
+   * for the jump box, because a typo has already been answered as 「没有这个路径」and an unreadable
+   * folder should say why in place rather than silently bouncing to 此电脑.
+   */
+  const navigate = async (target: string, revealName = "", allowFallback = true): Promise<Awaited<ReturnType<typeof api.dirs>> | null> => {
+    reveal = revealName.toLowerCase();
     list.replaceChildren(el("div", "empty", tr("读取中…")));
     // Leaving the folder: drop its sizes and any answer still in flight for it.
     stats = new Map();
@@ -236,11 +298,11 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       next = await api.dirs(target, listFiles);
     } catch (ex: any) {
       if (root.isConnected) list.replaceChildren(el("div", "empty", tr("读取失败：{p1}", { p1: ex?.message ?? ex })));
-      return;
+      return null;
     }
-    if (!root.isConnected) return;
+    if (!root.isConnected) return null;
     // A path that does not exist (typed, or remembered from another machine): show drives instead.
-    if (next.error && target && opts.fallback) return go("");
+    if (next.error && target && opts.fallback && allowFallback) return navigate("", "", allowFallback);
     res = next;
     current = next.path;
     paintCrumbs();
@@ -249,7 +311,88 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     paint();
     list.scrollTop = 0;
     fillStats(current);
+    return next;
   };
+  const go = (target: string): Promise<void> => navigate(target).then(() => undefined);
+
+  /** 输入框里的路径：文件夹直接进；文件进父目录，列表出来后高亮那一行。 */
+  const showJump = (text: string): void => {
+    jumpErr.textContent = text;
+    jumpInput.classList.toggle("bad", text !== "");
+    if (text) jumpInput.setAttribute("aria-invalid", "true");
+    else jumpInput.removeAttribute("aria-invalid");
+  };
+  let locating = false;
+  const locate = async (): Promise<void> => {
+    if (locating) return;
+    const typed = cleanPath(jumpInput.value);
+    showJump("");
+    if (!typed) return;
+    // 盘符页没有「当前目录」可拼，相对路径交给桥端会落到 bridge 自己的 cwd —— 那不是用户看的地方。
+    if (!current && !isAbsolutePath(typed) && !/^[A-Za-z]:$/.test(typed)) {
+      showJump(tr("在盘符列表里要写完整路径，例如 D:\\work"));
+      return;
+    }
+    locating = true;
+    jumpInput.readOnly = true;
+    root.classList.add("locating");
+    try {
+      const info = await api.stat(resolveTyped(typed, current));
+      if (!root.isConnected) return;
+      if (info.kind === "missing") {
+        // 上一次跳转留下的高亮跟这次的错路径没有关系，留着会像是它选中了那一行。
+        reveal = "";
+        paint();
+        showJump(tr("没有这个路径：{p1}", { p1: info.path || typed }));
+        return;
+      }
+      if (info.kind === "dir") {
+        if (await navigate(info.path, "", false)) jumpInput.value = "";
+        return;
+      }
+      const name = fileNameOf(info.path);
+      // 父目录打不开就把它自己的错误留在列表里（allowFallback 关着），不要莫名其妙跳去盘符页。
+      if (!(await navigate(info.parent ?? "", name, false))) return;
+      const row = list.querySelector<HTMLButtonElement>(".file-row.hit");
+      if (!row) {
+        showJump(tr("这个目录里没有 {p1}", { p1: name }));
+        return;
+      }
+      jumpInput.value = "";
+      row.scrollIntoView({ block: "center" });
+      row.focus({ preventScroll: true });
+    } catch (ex: any) {
+      if (root.isConnected) showJump(tr("定位失败：{p1}", { p1: ex?.message ?? ex }));
+    } finally {
+      locating = false;
+      jumpInput.readOnly = false;
+      root.classList.remove("locating");
+    }
+  };
+
+  if (jump) {
+    jumpInput.oninput = () => showJump("");
+    jumpInput.onkeydown = (ev) => {
+      if (ev.key === "Enter") {
+        if (ev.isComposing) return;
+        ev.preventDefault();
+        void locate();
+      } else if (ev.key === "Escape") {
+        // 输入法里的 Esc 只取消组合，不该连带关掉整个浏览面板。
+        if (ev.isComposing) {
+          ev.stopPropagation();
+          return;
+        }
+        // 有字就只清这一格，别让 Esc 关掉面板；空格子再按才离开输入框。
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (jumpInput.value) {
+          jumpInput.value = "";
+          showJump("");
+        } else jumpInput.blur();
+      }
+    };
+  }
 
   // A narrow container (the attachment sheet) spares no room for a percentage: path and 剩余 stay.
   const narrow = new ResizeObserver(() => {

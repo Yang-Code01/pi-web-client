@@ -45,6 +45,12 @@ export const api = {
   /** D62: sizes/mtimes for one directory, asked for separately so the file rows can paint first. */
   fileStats: (path: string) =>
     req<{ files: { name: string; size: number; mtime: number }[] }>(`/api/dirs?path=${encodeURIComponent(path)}&stats=1`),
+  /**
+   * 输入路径跳转：先问这条路径是文件夹、文件还是没有。/api/dirs 对文件答 ENOTDIR，读起来像坏了的
+   * 文件夹，所以「进入 / 高亮父目录那一行 / 报错」这三条路要在请求列表之前先分清楚。
+   */
+  stat: (path: string) =>
+    req<{ path: string; kind: "dir" | "file" | "missing"; parent: string | null }>(`/api/stat?path=${encodeURIComponent(path)}`),
   clipboardFiles: () => req<{ paths: string[] }>("/api/clipboard-files"),
   /**
    * Q-021: branch of the repo containing `dir`, or null when it is not in one (or the bridge is

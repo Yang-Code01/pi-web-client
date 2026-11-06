@@ -22,7 +22,9 @@
     "test:scratch": "node bridge/tests/scratch-dirs.mjs && node bridge/tests/scratch-chat.mjs",
     "test:scratch:ui": "node bridge/tests/scratch-ui.mjs",
     "test:pillbar": "node --experimental-transform-types web/tests/pillbar-unit.mjs",
+    "test:dirpath": "node --experimental-transform-types web/tests/dirpath-unit.mjs",
     "test:models": "node bridge/tests/models-unit.mjs",
+    "test:stat": "node bridge/tests/stat-path.mjs",
     "test:nowchip": "node --experimental-transform-types web/tests/nowchip-unit.mjs",
     "test:wsmanage": "node --experimental-transform-types web/tests/wsmanage-unit.mjs"
   },

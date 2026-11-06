@@ -1956,6 +1956,21 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .dirpicker { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .dirpicker .dir-filter { margin: 8px 0; padding: 8px 12px; font-size: 13px; }
 .dirpicker .dir-list { flex: 1; min-height: 0; max-height: none; overflow: auto; }
+/* 输入路径就跳：一行 mono 输入 + 它自己的错误行。高亮那一行要等列表回来才出现。 */
+.dir-jump { margin-top: 6px; }
+.dir-jump-input {
+  width: 100%; padding: 7px 10px; background: var(--sunken); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; font: 12px var(--mono);
+}
+.dir-jump-input::placeholder { color: var(--faint); }
+.dir-jump-input:focus { outline: none; border-color: var(--accent-dim); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+.dir-jump-input.bad { border-color: var(--danger-dim); }
+.dir-jump-err { padding-top: 4px; font-size: 12px; color: var(--danger); line-height: 1.45; word-break: break-all; }
+.dir-jump-err:empty { display: none; }
+.dirpicker.locating .dir-jump-input { opacity: 0.6; }
+/* 跳到一个文件：只做静态高亮，不加呼吸动画 —— 目录里不该有东西自己跳。 */
+.file-row.hit { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+.file-row.hit .nm { color: var(--text); }
 
 /* 编辑态：行号 + textarea + 底栏（保存 / 状态），冲突条从底部再加一行 */
 .viewer-body.edit { display: flex; flex-direction: column; overflow: hidden; }

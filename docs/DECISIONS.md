@@ -2125,3 +2125,28 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - `saveConfig()` 写的是**生效中**的配置（含 env 覆盖出来的值），不是重新推导的 —— 如果哪天 env 覆盖项变多，「页面拨一下开关」会把 env 值固化进 config.json，届时要分清「用户改的」和「env 给的」。
 
 验证：`npm --prefix web run typecheck`（`tsc --noEmit` + `i18n-check.mjs`，1405 键 × 3 语言全绿）；测试实例（`pi-web-client-test-dev` 起的两份，端口 17870/17876）上按 1440 三栏、1000×780 弹框、700px 钻取、420px 手机四种宽度逐一截图核对；`POST /api/peer/config {hidden:true}` 后页头出现琥珀色「隐身中」提示条、`~/.pi-peer/state/*/config.json` 落盘。
+
+## D153 文件管理器加「跳到路径」：只在文件管理器里、文件 = 标出不打开、桥端多一条 `/api/stat`（无票，用户口头要求）
+
+**问题：** 文件管理器只能靠面包屑一层层点。路径往往已经在手上（从终端、从 Explorer 的「复制为路径」、从另一台机器贴过来），用户要做的却是在树里找到它。更贵的场景是深目录：`work/a/b/c` 里改了 `d.md`，从 cwd 点进去要四次，还容易点错同级目录。
+
+**决定：**
+
+- **输入框是 opt-in**（`mountDirPicker` 的 `pathBox: true`），只有 `mountBrowser` 传了它。新会话弹层和附件 picker 共用同一份 `dirpicker.ts`，但那边一打开焦点就该落在「工作目录」或筛选框里，多一行抢 Tab 序没有收益 —— 它们要的是**选**一个新目录，不是**回到**一个已知路径。
+- **文件夹 = 进去；文件 = 进父目录 + 标出那一行，不打开**。跳到文件时 `.file-row.hit` 给静态高亮（accent 底 + 左侧 inset 竖线）并把焦点移过去，`pane` 仍是「浏览」：一次跳转是「找到它」，不是「看它」。真要打开，回车就在手边。
+- **新桥端 `GET /api/stat`**（`bridge/src/dirs.ts` 的 `statPath()`），返回 `{ path, kind: "dir" | "file" | "missing", parent }`。不复用 `/api/dirs`：它对文件答 ENOTDIR，在界面上长得像「这个文件夹坏了」。`missing` 也带 `parent` 与绝对路径 —— 报错文案要显示桥端实际解析到哪儿（相对路径、`~` 之类会暴露差异）。
+- **相对路径在前端拼**（`resolveTyped()`）：桥端会把相对路径解析到**它自己的 cwd**，那不是用户眼前这个目录。顺带认三种常见写法：Explorer 复制出来的成对引号、只敲盘符 `C:`（补成 `C:\`）、`./x` 与 `.\x`。
+- **盘符页拒收相对路径**：那里没有「当前目录」，落到 bridge 的 cwd 只会让人困惑；直接说「在盘符列表里要写完整路径，例如 D:\work」。
+- **miss 不动列表**：错误写在输入框下面（`role=status`、红字、自动换行），列表与滚动位置原样，输入保留着等人改；同时清掉上一次跳转留下的高亮 —— 否则「没有这个路径」旁边亮着一行，看起来像是它选中了那个。
+- **Esc 只归这一格**：有字就清字，没字就离开输入框；`preventDefault + stopPropagation`（`isComposing` 时只拦不处理），因为 viewer 根节点上的 Escape 会关面板（`web/src/app.ts` 的 `root.onkeydown`）。输入法正在组字时按 Esc 是取消候选，不该顺手把面板关了。
+
+**为什么：** 三个 picker 共用一个组件，所以「加不加这行」必须是一个显式选项而不是全局长出来；而跳转的语义要跟「点文件」区分开 —— 点文件是在挑要读的东西，跳转是在从一大片里定位一个已知的东西，顺手把它打开会覆盖掉正在编辑的稿子（还要过未保存拦截）。`/api/stat` 单独一条是因为 `kind` 是这次的核心判断，让前端去猜「ENOTDIR 是不是文件」既脆又读不懂错误。
+
+**代价 / 可改：**
+
+- 没有路径补全 / 历史下拉：要一个词一个词敲完，敲错只能看错误再改。**可改**（列表里每一行都有绝对路径，做一个 `<datalist>` 成本不高，但会跟「输入即跳转」的 Enter 语义打架）
+- 高亮是按文件名（小写）匹配。大小写不敏感的文件系统上不会有歧义；Linux 上同目录同时存在 `A.md` 与 `a.md` 时两行都会亮。**可改**（改成整路径比较即可）
+- 只在 Windows 上验过。POSIX 上文件在根目录（`/x`）时 `parent` 是 `null`，会 `navigate("")` 回到盘符页 —— 也就是 `/` 的列举，不算错，但和 Windows 的盘符根不完全对称。
+- 跳转不写 `v.lastDir` 之外的状态：不进历史、不记住上次跳到哪。刷新页面回到会话 cwd。
+
+**验证：** `npm --prefix web run typecheck`（`tsc --noEmit` + `i18n-check.mjs`，1410 键 × 3 语言）；`npm run test:dirpath`（11 例：引号/空白、三种绝对路径、`joinPath` 分隔符、`fileNameOf` 尾斜杠、相对拼接、`./` 归一、`\Users\me` 落当前盘、只敲盘符、盘符页不拼相对）；`npm run test:stat`（6 例：dir/file/missing + parent、空串、trim、盘符根 parent 为空串）；浏览器探针 `node probes/fs-path-jump.mjs`（9 段：框在、文件夹进入且清空输入、文件回父目录并高亮且焦点落到行上、带引号路径、相对路径、miss 报错且列表不动并清旧高亮、Esc 两级、盘符页相对路径报错、新会话与附件 picker 里没有这行），截图在 `.scratch/fs-jump/shots/`。

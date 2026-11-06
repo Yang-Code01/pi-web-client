@@ -62,6 +62,27 @@ export function listDirs(raw: string, withFiles = false): Listing {
   }
 }
 
+export type PathInfo = { path: string; kind: "dir" | "file" | "missing"; parent: string | null };
+
+/**
+ * What a typed path points at. The file manager's jump box needs this *before* it navigates: asking
+ * `listDirs` about a file answers ENOTDIR, which reads like a broken folder, and the box has to tell
+ * 「进这个文件夹」from「高亮父目录里的这个文件」from「没有这个路径」.
+ */
+export function statPath(raw: string): PathInfo {
+  const target = raw.trim();
+  if (!target) return { path: "", kind: "missing", parent: null };
+  const abs = path.resolve(target);
+  const up = path.dirname(abs);
+  const parent = up !== abs ? up : process.platform === "win32" ? "" : null;
+  try {
+    const st = fs.statSync(abs);
+    return { path: abs, kind: st.isDirectory() ? "dir" : "file", parent };
+  } catch {
+    return { path: abs, kind: "missing", parent };
+  }
+}
+
 /**
  * Sizes and mtimes for the files directly inside `dir`. Deliberately a second request (D62): a
  * folder on a sleeping network drive answers `listDirs` in milliseconds but `stat` slowly, so the

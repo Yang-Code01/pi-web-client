@@ -5719,6 +5719,7 @@ export class App {
       start: v.lastDir || this.session?.cwd || "",
       files: true,
       fallback: true,
+      pathBox: true,
       head: [home.node, copy.node],
       onState: (s) => {
         copy.bind();

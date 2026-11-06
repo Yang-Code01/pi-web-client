@@ -32,7 +32,7 @@ import { anyPresent, dropClient, reportPresence } from "./presence.ts";
 import { Tunnel, findCloudflared } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
 import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, resetScratchDir, statePath, sessionsRootInfo } from "./paths.ts";
-import { clipboardFiles, listDirs, makeDir, statFiles } from "./dirs.ts";
+import { clipboardFiles, listDirs, makeDir, statFiles, statPath } from "./dirs.ts";
 import { gitInfo } from "./git.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
@@ -564,6 +564,11 @@ async function main(): Promise<void> {
       const dir = url.searchParams.get("path") ?? "";
       if (url.searchParams.get("stats") === "1") return json(res, 200, { files: statFiles(dir) });
       return json(res, 200, listDirs(dir, url.searchParams.get("files") === "1"));
+    }
+
+    // 文件管理器的「输入路径」：先问这条路径是文件夹、文件还是没有，再决定是进去还是高亮那一行。
+    if (url.pathname === "/api/stat" && req.method === "GET") {
+      return json(res, 200, statPath(url.searchParams.get("path") ?? ""));
     }
 
     // Q-021: the branch under the composer. A branch name is this machine's working state, so a
