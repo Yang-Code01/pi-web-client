@@ -30,6 +30,10 @@ export interface WorkspaceState {
   overrides: Record<string, string>;
   /** 归一化 cwd 的小写 → 工程根。缓存，只由 `resolve()` 写。 */
   keys: Record<string, string>;
+  /** #122 固定组 id，顺序即标签行顺序。存量文件没有这条 → 空列表。 */
+  pinned?: string[];
+  /** #122 固定名额，默认 3，读写都 clamp 到 1–5。存量文件没有这条 → 默认。 */
+  max?: number;
 }
 
 export interface WorkspacesOptions {
@@ -58,6 +62,31 @@ export function groupId(root: unknown): string {
   return normalizePath(root).toLowerCase();
 }
 
+/** #122 标签行的固定名额：默认 3，可调范围 1–5（#118 R8）。 */
+export const TABS_DEFAULT = 3;
+export const TABS_MIN = 1;
+export const TABS_MAX = 5;
+
+/**
+ * 名额：只认有限数，取整后 clamp 到 1–5；字符串 / null / NaN 之类返回 `null` = 非法。
+ * 越界算合法（clamp），不是数字才算非法（协议要能回一句 notice 而不是悄悄改）。
+ */
+function readMax(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.min(TABS_MAX, Math.max(TABS_MIN, Math.trunc(value)));
+}
+
+/** 固定组列表：只留非空字符串并去重。组还在不在由调用方过滤（快照 / 写入前各有一把）。 */
+function readPinned(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const raw of value) {
+    if (typeof raw !== "string" || !raw || out.includes(raw)) continue;
+    out.push(raw);
+  }
+  return out;
+}
+
 function readGroups(value: unknown): WsGroup[] {
   if (!Array.isArray(value)) return [];
   const out: WsGroup[] = [];
@@ -84,7 +113,7 @@ function readRecord(value: unknown, normalize: boolean): Record<string, string> 
 }
 
 export class Workspaces {
-  private data: WorkspaceState = { groups: [], overrides: {}, keys: {} };
+  private data: WorkspaceState = { groups: [], overrides: {}, keys: {}, pinned: [], max: TABS_DEFAULT };
   private readonly file = statePath("workspaces.json");
   private readonly root: (dir: string) => Promise<string | null>;
 
@@ -99,6 +128,9 @@ export class Workspaces {
       groups: readGroups(raw.groups),
       overrides: readRecord(raw.overrides, false),
       keys: readRecord(raw.keys, true),
+      // 存量文件没有这两个字段：缺失即空列表 / 默认名额，不迁移、不写回。
+      pinned: readPinned(raw.pinned),
+      max: readMax(raw.max) ?? TABS_DEFAULT,
     };
   }
 
@@ -111,10 +143,14 @@ export class Workspaces {
   }
 
   snapshot(): WorkspaceState {
+    const ids = new Set(this.data.groups.map((g) => g.id));
     return {
       groups: this.data.groups.map((g) => ({ ...g })),
       overrides: { ...this.data.overrides },
       keys: { ...this.data.keys },
+      // 坏文件里的悬空 id 不进画布：树 / 标签行只该看到还存在的组。
+      pinned: (this.data.pinned ?? []).filter((id) => ids.has(id)),
+      max: this.data.max ?? TABS_DEFAULT,
     };
   }
 
@@ -192,7 +228,18 @@ export class Workspaces {
       if (g.manual || used.has(g.id)) return true;
       return groupId(this.keyOf(g.id)) === g.id;
     });
-    if (keep.length !== this.data.groups.length) this.data.groups = keep;
+    if (keep.length !== this.data.groups.length) {
+      this.data.groups = keep;
+      this.prunePinned();
+    }
+  }
+
+  /** 组没了，固定列表里就不该还留着它的 id（#122）：悬空 id 会让标签行少一颗却不知道少了谁。 */
+  private prunePinned(): void {
+    if (!this.data.pinned) return;
+    const ids = new Set(this.data.groups.map((g) => g.id));
+    const next = this.data.pinned.filter((id) => ids.has(id));
+    if (next.length !== this.data.pinned.length) this.data.pinned = next;
   }
 
   /** 改名。空名 = 恢复目录名。返回是否有改动。 */
@@ -242,6 +289,36 @@ export class Workspaces {
     if (!group.manual) return { ok: false, reason: "这个工作区跟着目录走，不能删" };
     if (Object.values(this.data.overrides).includes(id)) return { ok: false, reason: "这个工作区里还有会话" };
     this.data.groups = this.data.groups.filter((g) => g.id !== id);
+    this.prunePinned();
+    this.save();
+    return { ok: true };
+  }
+
+  /**
+   * 固定组 + 名额（#122）：两个字段各自可缺省，缺省的那个一个字都不动；给了就**一次落盘**写两个 ——
+   * 名额调小与「截断超出的固定组」必须是同一次写，否则会出现「名额 3、固定还是 5 个」的中间态。
+   *
+   * 写前四件事：去重、剔掉已经不存在的组、名额 clamp 到 1–5、超过名额的截断保留前面的。
+   * 名额 / 列表本身不合法时返回原因且**什么都不改** —— 调用方据此回 notice。
+   */
+  setTabs(input: { pinned?: unknown; max?: unknown }): { ok: boolean; reason?: string } {
+    let max = this.data.max ?? TABS_DEFAULT;
+    if (input.max !== undefined) {
+      const next = readMax(input.max);
+      if (next == null) return { ok: false, reason: `固定名额要是 ${TABS_MIN}–${TABS_MAX} 之间的数字` };
+      max = next;
+    }
+    let pinned: string[];
+    if (input.pinned !== undefined) {
+      if (!Array.isArray(input.pinned)) return { ok: false, reason: "固定组要是一份组 id 列表" };
+      const known = new Set(this.data.groups.map((g) => g.id));
+      pinned = readPinned(input.pinned).filter((id) => known.has(id));
+    } else {
+      const known = new Set(this.data.groups.map((g) => g.id));
+      pinned = (this.data.pinned ?? []).filter((id) => known.has(id));
+    }
+    this.data.pinned = pinned.slice(0, max);
+    this.data.max = max;
     this.save();
     return { ok: true };
   }

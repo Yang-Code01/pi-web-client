@@ -13,7 +13,9 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ws-unit-"));
+// 展开 8.3 短名：`os.tmpdir()` 在长用户名的机器上会返回 `YANGQM~1.HYR` 这种短路径，而 git 回话
+// 用的是长名 —— 不展开的话 worktree 那两条用例会把同一组算成两个（与代码无关的环境差异）。
+const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "pi-ws-unit-")));
 // The state file must land in this test's own directory, not the real bridge state.
 process.env.PI_WEB_STATE = path.join(tmp, "state");
 fs.mkdirSync(process.env.PI_WEB_STATE, { recursive: true });
@@ -191,4 +193,118 @@ test("forget 清掉 override，不留悬空指向", async () => {
   ws.forget("s1");
   assert.equal(ws.snapshot().overrides.s1, undefined);
   assert.equal(ws.groupFor("s1", library.root), id(library.root));
+});
+
+// ---------------------------------------------------------------- #122 固定组与名额
+
+/** 直接把一份状态文件塞进目录里（模拟「存量文件 / 上一版桥写的文件」）。 */
+function seed(dir, value) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "workspaces.json"), JSON.stringify(value));
+}
+
+test("#122 旧状态文件（没有 pinned / max）直接读成空列表 + 3", () => {
+  const dir = path.join(tmp, "state-legacy");
+  seed(dir, {
+    groups: [{ id: id(plain), name: "", key: normalizePath(plain), manual: false }],
+    overrides: {},
+    keys: {},
+  });
+  const snap = fresh({}, dir).snapshot();
+  assert.deepEqual(snap.pinned, []);
+  assert.equal(snap.max, 3, "存量文件没有名额，按默认 3");
+});
+
+test("#122 固定一个组：写进去，重启后顺序不变", () => {
+  const dir = path.join(tmp, "state-pinned");
+  const ws = fresh({}, dir);
+  const a = ws.groupFor("s1", plain);
+  const b = ws.groupFor("s2", plain2);
+  assert.equal(ws.setTabs({ pinned: [b, a] }).ok, true);
+  assert.deepEqual(ws.snapshot().pinned, [b, a], "顺序就是标签行顺序，不按组序重排");
+
+  const restarted = fresh({}, dir);
+  assert.deepEqual(restarted.snapshot().pinned, [b, a], "重启后固定组与顺序都还在");
+  assert.equal(restarted.snapshot().max, 3);
+});
+
+test("#122 名额 clamp 到 1–5 并取整", () => {
+  const ws = fresh();
+  for (const [given, want] of [
+    [0, 1],
+    [99, 5],
+    [2.7, 2],
+    [-4, 1],
+  ]) {
+    assert.equal(ws.setTabs({ max: given }).ok, true, `max=${given} 该被接受（越界只 clamp）`);
+    assert.equal(ws.snapshot().max, want, `max=${given} 应落成 ${want}`);
+  }
+});
+
+test("#122 非法名额：回原因且状态一个字不变", () => {
+  const ws = fresh();
+  const a = ws.groupFor("s1", plain);
+  ws.setTabs({ pinned: [a], max: 4 });
+  const before = ws.snapshot();
+  for (const bad of ["3", null, Number.NaN, {}, [], true]) {
+    const result = ws.setTabs({ max: bad });
+    assert.equal(result.ok, false, `max=${JSON.stringify(bad)} 该被拒`);
+    assert.ok(result.reason, "拒绝要带一句原因（桥据此回 notice）");
+  }
+  assert.deepEqual(ws.snapshot(), before, "非法值不许改任何东西");
+});
+
+test("#122 一条消息写两个字段：去重 / 剔掉不存在的组 / 截断保留前面的", () => {
+  const ws = fresh();
+  const a = ws.groupFor("s1", plain);
+  const b = ws.groupFor("s2", plain2);
+  const c = ws.create("客户 A").id;
+  assert.equal(ws.setTabs({ pinned: [b, "nope", b, a, c, c], max: 2 }).ok, true);
+  const snap = ws.snapshot();
+  assert.deepEqual(snap.pinned, [b, a], "去重、剔脏、超过名额截断保留前 2 个");
+  assert.equal(snap.max, 2);
+});
+
+test("#122 只传 max：固定组在同一次落盘里截断", () => {
+  const ws = fresh();
+  const ids = [plain, plain2].map((dir, i) => ws.groupFor(`s${i}`, dir));
+  const manual = ws.create("客户 A").id;
+  ws.setTabs({ pinned: [...ids, manual], max: 5 });
+  assert.equal(ws.snapshot().pinned.length, 3);
+
+  ws.setTabs({ max: 2 });
+  const snap = ws.snapshot();
+  assert.equal(snap.max, 2);
+  assert.deepEqual(snap.pinned, ids, "名额调小连带截断，不留「名额 2、固定 3 个」");
+});
+
+test("#122 只传 pinned：名额不动", () => {
+  const ws = fresh();
+  const a = ws.groupFor("s1", plain);
+  ws.setTabs({ max: 5 });
+  ws.setTabs({ pinned: [a] });
+  const snap = ws.snapshot();
+  assert.deepEqual(snap.pinned, [a]);
+  assert.equal(snap.max, 5, "只动列表时名额保持原样");
+});
+
+test("#122 临时组被回收时，固定列表里不再有它", async () => {
+  const ws = fresh();
+  const tree = library.trees[1];
+  const provisional = ws.groupFor("s-tree", tree);
+  ws.setTabs({ pinned: [provisional] });
+  await ws.resolve([tree]);
+  const snap = ws.snapshot();
+  assert.ok(!snap.groups.some((g) => g.id === provisional), "临时组确实让位了");
+  assert.deepEqual(snap.pinned, [], "被回收的组不许留在固定列表里");
+});
+
+test("#122 删掉被固定的手动组之后，固定列表里不再有它", () => {
+  const ws = fresh();
+  const manual = ws.create("客户 A").id;
+  const other = ws.create("客户 B").id;
+  ws.setTabs({ pinned: [manual, other], max: 5 });
+  assert.equal(ws.drop(manual).ok, true);
+  const snap = ws.snapshot();
+  assert.deepEqual(snap.pinned, [other], "删掉的组从固定列表里消失，别的保持原顺序");
 });

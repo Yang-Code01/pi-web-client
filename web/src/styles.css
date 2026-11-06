@@ -390,6 +390,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   padding: 2px 4px; border-radius: 4px;
 }
 .ws-head .n { margin-left: auto; font: 11px/1 var(--mono); color: var(--faint); }
+/* #122：固定组的小标记（R11）。它跟在名字后面、在会话数前面，不抢名字的宽度。 */
+.ws-head .ws-fixed { flex: none; font-size: 10px; line-height: 1; opacity: 0.85; }
 .ws-head.folded { color: var(--faint); }
 .ws-head.folded .label { color: var(--faint); font-weight: 500; }
 /* #100：组头就地改名 + 那颗 ⋯。⋯ 跟会话卡片的 card-act 一个脾气：指着组头才出来，别的时候把位置让给名字。 */
@@ -696,7 +698,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   display: flex; gap: 8px; align-items: center; padding: 8px 12px; min-width: 0;
   cursor: pointer; list-style: none;
 }
-.fcard > summary.top: :-webkit-details-marker { display: none; }
+.fcard > summary.top::-webkit-details-marker { display: none; }
 .fcard[open] > summary.top { border-bottom: 1px solid var(--line-soft); }
 .fcard.calm[open] > summary.top { border-bottom-color: var(--line-soft); }
 .fcard .top .chev { flex: none; color: var(--faint); font-size: 11px; transition: transform 0.15s ease; }
@@ -895,7 +897,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ask-lost-actions { display: flex; gap: 8px; margin-top: 2px; }
 
 /* ---------------------------------------------------------------- workspace rows (#97 壳 A)
-   顶栏下两行：行 1 工作区标签页，行 2 当前会话那颗 + 本区会话胶囊 + ＋。
+   顶栏下两行：行 1 工作区标签页，行 2 当前会话那颗 + 本区会话胶囊 + ＋。#119 起行 1 并进顶栏
+   （见下面 `.topbar > .ws-tabs-row`），`.app` 里那一格空着 —— 这里仍是它在 B/C/D 的落点。
    原先「收起左栏才出现」的置顶横栏被行 2 取代，所以这里没有另一条横栏的位置。 */
 .ws-tabs-row {
   grid-area: wstabs;
@@ -906,7 +909,25 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   background: rgba(11, 13, 16, 0.92);
 }
 .ws-tabs-row[hidden] { display: none; }
-.ws-tabs { display: flex; flex: 1; min-width: 0; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+/* #119：A 壳顶栏并成一行 —— 标签行挂在顶栏里，`◧` 之后就是它，右边接着原来那排工具按钮。
+   它是这一行里唯一肯让位的一块（标题那条 `flex: 1` 在 A 里已经藏了），所以标签横向滚动发生
+   在自己槽里，顶栏不因此变高。给个下限：窄屏按钮排不下时宁可顶栏自己横滚，也别把标签挤没。 */
+.topbar > .ws-tabs-row {
+  flex: 1 1 180px;
+  min-width: 140px;
+  align-self: stretch;
+  padding: 0;
+  border-bottom: 0;
+  background: none;
+}
+/* 标签撑满这一行（不写死高度）：当前组那条下划线才贴着行底，而不是悬在行中间（#118 决策）。 */
+.topbar > .ws-tabs-row .ws-tabs { align-items: stretch; }
+.topbar > .ws-tabs-row .ws-tab { align-self: stretch; }
+/* A 的顶栏不再放会话名 / 那串小字 / 连接状态点：会话名在行 2 那颗上（#118），隧道信息在 B/C/D 有。 */
+html[data-layout="a"] .topbar > .title,
+html[data-layout="a"] .topbar > .sub,
+html[data-layout="a"] .topbar > .dot { display: none; }
+.ws-tabs { position: relative; display: flex; flex: 1; min-width: 0; gap: 2px; overflow-x: auto; scrollbar-width: none; }
 /* 溢出不出横滚条：深色顶栏下面一条细滚动条像条裂缝，而且点标签不该先摸滚动条。 */
 .ws-tabs::-webkit-scrollbar { height: 0; display: none; }
 .ws-tabs.fade {
@@ -937,6 +958,31 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ws-tab-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; }
 .ws-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-tab-todo { flex: none; width: 6px; height: 6px; border-radius: 999px; background: var(--warn); box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.14); }
+/* #124 固定组可以拖着换顺序：落点是一条 2px 竖线，挂在标签槽里（内容坐标），槽横滚时跟着标签走。
+   拖拽期间压掉选中与悬浮 —— 按钮里的字被刷蓝、鼠标每划过一颗都亮一下，就看不清线画面在哪了。 */
+.ws-tab-line { position: absolute; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--accent); pointer-events: none; }
+.ws-tab.drag { opacity: 0.45; }
+body.ws-tab-dragging { user-select: none; }
+body.ws-tab-dragging .ws-tab { cursor: grabbing; }
+body.ws-tab-dragging .ws-tab:hover:not(.on) { color: var(--dim); background: none; }
+/* #121：标签行只画 N 个，超出的收进这颗。它和标签槽是兄弟 —— `.ws-tabs` 是 overflow-x: auto，
+   摆进槽里会跟着横滚跑掉；挂在槽外就永远点得到。尺寸跟胶囊条那颗 `.pin-more` 同一档。 */
+.ws-tabs-more {
+  flex: none;
+  align-self: center;
+  margin-left: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.ws-tabs-more:hover { border-color: var(--line); background: var(--panel-2); color: var(--accent); }
+.ws-tabs-more[hidden] { display: none; }
+/* #121：`＋N` 的下拉 —— 外壳沿用 `.pin-menu` / `.pm-item`（同一张卡，用户不用学第二套）。 */
+.ws-tabs-menu { overflow-y: auto; max-width: min(320px, calc(100vw - 16px)); }
 .ws-session-row { grid-area: pins; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); }
 /* #98：B/C/D 里这一行整行不占地方（display:flex 会盖掉 UA 的 [hidden]）。 */
 .ws-session-row[hidden] { display: none; }
@@ -1260,8 +1306,9 @@ html:not([data-layout="a"]) .topbar .sub { margin-left: auto; }
 }
 @media (max-width: 899px) {
   .pane[hidden] { display: none; }
-  /* 窄屏一套退化：标签行与胶囊行先收起来，只留「当前在哪」那颗（#96 的常驻颗）。 */
-  .ws-tabs-row, .ws-session-row .pin-strip { display: none; }
+  /* 窄屏一套退化：胶囊行先收起来，只留「当前在哪」那颗（#96 的常驻颗）。
+     #119：标签行不在这里收 —— A 的顶栏那一行就是它待的地方，收掉等于顶栏少一块。 */
+  .ws-session-row .pin-strip { display: none; }
   .main .pane { height: 100%; }
 }
 
@@ -1377,6 +1424,37 @@ html:not([data-layout="a"]) .topbar .sub { margin-left: auto; }
 .layout-d .ld-line:nth-child(4) { top: 16px; }
 .layout-d .ld-line:nth-child(5) { top: 20px; }
 .layout-d .ld-body-wide { left: 27px; right: 4px; top: 11px; bottom: 4px; height: auto; }
+
+/* #123：设置里的「标签行」—— 名额步进器 + 固定组勾选。勾选行跟左栏组头同一套手感（色点 + 名字）。 */
+.ws-tabs-pane { display: grid; gap: 8px; }
+.ws-max-row { display: flex; align-items: center; gap: 6px; }
+.ws-max-label { font-size: 12px; color: var(--dim); margin-right: 2px; }
+.ws-max-btn {
+  width: 26px; height: 26px; padding: 0; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+  font: 13px/1 var(--sans); cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.ws-max-btn:hover:not(:disabled) { border-color: var(--line-strong); color: var(--accent); }
+.ws-max-btn:disabled { opacity: 0.38; cursor: not-allowed; }
+.ws-max-n { min-width: 18px; text-align: center; font: 13px/1 var(--mono); color: var(--text); }
+.ws-max-hint, .ws-fixed-blocker { font-size: 11px; line-height: 1.45; color: var(--faint); }
+.ws-fixed-label { font-size: 11.5px; color: var(--dim); }
+.ws-fixed-list { display: grid; gap: 2px; max-height: 200px; overflow-y: auto; }
+.ws-fixed-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 8px;
+  border: 1px solid transparent; border-radius: 8px; background: none; color: var(--text);
+  font: 12px/1.35 var(--sans); text-align: left; cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.ws-fixed-row:hover:not(:disabled) { background: var(--panel-2); border-color: var(--line); }
+.ws-fixed-row.on { border-color: var(--accent-dim); background: var(--panel-2); }
+.ws-fixed-row:disabled { opacity: 0.5; cursor: not-allowed; }
+.ws-fixed-dot { width: 8px; height: 8px; border-radius: 999px; flex: none; }
+.ws-fixed-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-fixed-check { flex: none; width: 10px; font-size: 11px; color: var(--accent); }
+/* 名额调小导致截断时的提示：跟「不能勾」的灰字分开 —— 这条是说「刚发生了什么」，不是规矩。 */
+.ws-fixed-note { font-size: 11px; line-height: 1.45; color: var(--accent); }
 
 @media (min-width: 760px) {
   .sheet-back { align-items: center; justify-items: center; padding: 24px; }

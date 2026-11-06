@@ -126,6 +126,10 @@ export interface WorkspaceState {
   groups: WsGroup[];
   overrides: Record<string, string>;
   keys: Record<string, string>;
+  /** #122 固定组 id，顺序即标签行顺序。旧桥没有这个字段。 */
+  pinned?: string[];
+  /** #122 标签行的固定名额（1–5）。旧桥没有这个字段。 */
+  max?: number;
 }
 
 /** What `manage/delete` did: partial success, so both halves matter (see Q-001). */

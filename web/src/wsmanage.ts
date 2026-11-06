@@ -1,4 +1,5 @@
 import { tr } from "./i18n/index.ts";
+import { clampMax, effectiveFixed } from "./wstabs.ts";
 
 /**
  * #100：工作区管理的纯逻辑 —— 改名输入怎么洗、这条 rename 要不要发、这个组能不能删。
@@ -40,6 +41,51 @@ export function cleanGroupName(raw: unknown): string {
 export function renameIntent(current: string, draft: unknown): string | null {
   const next = cleanGroupName(draft);
   return next === String(current ?? "").trim() ? null : next;
+}
+
+/**
+ * 「这个组能不能固定到标签行」：`null` = 能固定（或已经固定了，点一下就是取消）；否则是给人看的原因。
+ * 名额满了就拒绝并说清楚 —— 点一下没反应，用户只会以为菜单坏了。
+ */
+export function fixedBlocker(group: { id: string } | undefined, fixed: string[], max: number): string | null {
+  if (!group) return tr("这个工作区不在了");
+  if (fixed.includes(group.id)) return null;
+  if (fixed.length >= max) return tr("标签行只有 {p1} 个位置，先取消一个固定组", { p1: max });
+  return null;
+}
+
+/**
+ * 设置面板那一列勾选（#123）：一行一个组，顺序 = 传进来的组序（调用方给左栏序）。
+ * `blocker` 非空 = 那一行置灰并写明原因；已勾着的行永远可点（取消固定不受名额限制）。
+ */
+export interface FixedRow {
+  id: string;
+  checked: boolean;
+  blocker: string | null;
+}
+
+export function fixedRows(groups: { id: string }[], pinned: string[], max: number): FixedRow[] {
+  const known = new Set(groups.map((group) => group.id));
+  // 与桥 / 标签行同一把尺子（`effectiveFixed`）：面板看到的勾就是这个位置上的勾。
+  const effective = effectiveFixed(pinned, known, max);
+  const seen = new Set<string>();
+  const rows: FixedRow[] = [];
+  for (const group of groups) {
+    if (seen.has(group.id)) continue;
+    seen.add(group.id);
+    rows.push({ id: group.id, checked: effective.includes(group.id), blocker: fixedBlocker(group, effective, max) });
+  }
+  return rows;
+}
+
+/** 名额调小会挤掉几个固定组（桥在同一次写里截断，面板据此把话说清）。 */
+export function fixedDropped(pinned: string[], nextMax: number): number {
+  return Math.max(0, pinned.length - clampMax(nextMax));
+}
+
+/** 点一下「固定 / 取消固定」之后应该发给桥的列表：未固定 → 追加到末尾；已固定 → 原地去掉。 */
+export function toggleFixed(pinned: string[], id: string): string[] {
+  return pinned.includes(id) ? pinned.filter((x) => x !== id) : [...pinned, id];
 }
 
 /**
