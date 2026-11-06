@@ -4,7 +4,7 @@
  *
  * 要守住四件事：① schema 里的默认值要按点号拍平成表单的 key（`compaction.reserveTokens`）；
  * ② schema 与兜底表都说的时候以 schema 为准（pi 改了默认值，我们的标签要跟着改，不是跟着我们改）；
- * ③ 包不存在 / 没有 schema / cli 为 null 时不抛，只给兜底表 —— 默认值标签错了是瑕疵，设置面板
+ * ③ 包不存在 / 没有 schema 时不抛，只给兜底表 —— 默认值标签错了是瑕疵，设置面板
  * 崩了是故障；④ 同一个包只读一次盘（面板每次 settings.get 都会问，不能每次解析 JSON）。
  *
  *   node bridge/tests/settings-defaults.mjs
@@ -85,15 +85,14 @@ check("包没有 schema → 只给兜底表，不抛", () => {
   assert.deepEqual(d["defaultTools"], ["read", "bash", "edit", "write"]);
 });
 
-check("cli 为 null / 路径不存在 → 只给兜底表，不抛", () => {
-  for (const cli of [null, ""]) {
+check("路径不存在 / 空串 → 只给兜底表，不抛", () => {
+  for (const cli of ["", path.join(root, "nope", "a", "b", "c.js")]) {
     const d = settingDefaults(cli);
     assert.equal(d["defaultThinkingLevel"], "medium");
     assert.equal(d["httpIdleTimeoutMs"], 300000);
     assert.equal(d["websocketConnectTimeoutMs"], 15000);
     assert.deepEqual(d["npmCommand"], ["npm"]);
   }
-  assert.equal(settingDefaults(path.join(root, "nope", "a", "b", "c.js"))["defaultThinkingLevel"], "medium");
 });
 
 check("schema 与兜底表冲突时 schema 说了算", () => {

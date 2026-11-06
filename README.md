@@ -183,6 +183,7 @@ node bridge/tests/shells.mjs                                          # 终端�
 node bridge/tests/settings-trust.mjs                                  # 设置读写 / 项目信任 / 启动参数 / 运行时设置 / 重新加载（D78，假 pi + 真 pi 模块）
 node bridge/tests/gate-modes.mjs                                      # 权限模式：只读白名单、逐个确认覆盖 MCP / 扩展工具（D78）
 node --experimental-transform-types bridge/tests/settings-defaults.mjs  # 设置面板的默认值来自 pi 包的 schema（D160）
+node bridge/tests/default-permission.mjs  # 默认权限：项目→全局→ask，会话首次被看见时钉住（D161）
 node bridge/tests/login-flow.mjs                                      # /login /logout：API key、取消、OAuth 授权链接转达、登出（D79，不联网）
 node bridge/tests/session-lock.mjs                                    # 终端会话锁扩展 + bridge 拒绝接管 + 安装 / 移除（D79）
 node bridge/tests/session-lifecycle.mjs                               # 会话生命周期：完成 + 空闲阈值到点就休眠，消息还在、下一条消息唤醒，在跑的一轮不动（D120，假 pi，tick 与阈值都注入成秒级，约 15 秒）

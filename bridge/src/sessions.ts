@@ -17,6 +17,7 @@ import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion }
 import { lifecycle, gcTickMs, capProtectMs, type Lifecycle, type LifecycleThresholds } from "./lifecycle.ts";
 import { absentFor } from "./presence.ts";
 import { sampleMemory } from "./runtime.ts";
+import { defaultPermission } from "./permissiondefault.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -434,19 +435,44 @@ function allowFile(id: string): string {
   return statePath("allow", `${id}.json`);
 }
 
-/** The gate re-reads this file on every tool call, so a change applies to the very next call. */
-function readPermission(id: string): PermissionMode {
-  if (!id) return "ask";
-  const file = allowFile(id);
-  if (!fs.existsSync(file)) return "ask";
-  const mode = readJson<{ mode?: unknown }>(file, {})?.mode;
-  return isPermissionMode(mode) ? mode : "ask";
+/**
+ * D161: the file also says where its mode came from. `from: "default"` means nobody ever chose it
+ * by hand — that is the only kind of session 「应用到现有会话」 may rewrite later.
+ */
+interface PermissionFile {
+  mode: PermissionMode;
+  from: "default" | null;
 }
 
-function writePermission(id: string, mode: PermissionMode): void {
+function readPermissionFile(id: string): PermissionFile | null {
+  if (!id) return null;
+  const file = allowFile(id);
+  if (!fs.existsSync(file)) return null;
+  const data = readJson<{ mode?: unknown; from?: unknown }>(file, {});
+  const mode = data?.mode;
+  return { mode: isPermissionMode(mode) ? mode : "ask", from: data?.from === "default" ? "default" : null };
+}
+
+/** Cwds compare the way the platform does: case-insensitive on Windows, trailing separator ignored. */
+function normalizeDir(dir: string): string {
+  if (!dir) return "";
+  const abs = path.resolve(dir).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? abs.toLowerCase() : abs;
+}
+
+/** The gate re-reads this file on every tool call, so a change applies to the very next call. */
+function readPermission(id: string): PermissionMode {
+  return readPermissionFile(id)?.mode ?? "ask";
+}
+
+/** `from: "default"` marks a pinned default; a manual pick (no third argument) clears the marker. */
+function writePermission(id: string, mode: PermissionMode, from: "default" | null = null): void {
   const file = allowFile(id);
   const data = readJson<Record<string, unknown>>(file, {});
-  writeJson(file, { ...(data && typeof data === "object" ? data : {}), mode });
+  const next: Record<string, unknown> = { ...(data && typeof data === "object" ? data : {}), mode };
+  if (from) next.from = from;
+  else delete next.from;
+  writeJson(file, next);
 }
 
 /** Context budget is one global number: `{"value": 200000}` in the state dir. */
@@ -677,6 +703,33 @@ export class Session extends EventEmitter {
   /** The user opened this session: whatever finished before now has been seen. */
   markSeen(): void {
     if (this.state.done) this.setState({ done: false });
+  }
+
+  /**
+   * D161: pin the default permission the first time the bridge ever looks at this session.
+   *
+   * 「第一次看见」 is creation, opening, or the startup scan — first one wins, and an existing file
+   * is never touched again: a manual pick, or an earlier pin, is a decision already made. The
+   * resolved value (project → global → ask) is written with `from: "default"` so 「应用到现有会话」
+   * later knows which sessions are still nobody's choice.
+   */
+  async pinPermission(): Promise<void> {
+    const id = this.state.id;
+    if (!id) return;
+    if (fs.existsSync(allowFile(id))) {
+      // Already decided elsewhere: make sure a session built before the file existed agrees with it.
+      const file = readPermissionFile(id);
+      if (file && file.mode !== this.state.permission) this.applyPermission(file.mode);
+      return;
+    }
+    let mode: PermissionMode = "ask";
+    try {
+      mode = (await defaultPermission(this.cli, this.state.cwd)).mode;
+    } catch {
+      /* 读设置失败不该挡住开关会话：退回 ask，下一次开会话再试 */
+    }
+    writePermission(id, mode, "default");
+    this.applyPermission(mode);
   }
 
   applyPermission(mode: PermissionMode): void {
@@ -2199,6 +2252,8 @@ export class SessionManager extends EventEmitter {
       session.state.permission = "readonly";
       writePermission(id, "readonly");
     }
+    // D161: before startLive — the gate reads the allow file when pi spawns.
+    await session.pinPermission();
     this.wire(session);
     this.sessions.set(id, session);
     await session.startLive({ resume: false, cwd, name });
@@ -2400,6 +2455,82 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
+  /**
+   * D161: the startup scan. Every session on disk gets pinned on the run that first sees it, and
+   * never again (the file exists after that) — so this is a one-time cost per session, not per boot.
+   */
+  async pinAll(): Promise<number> {
+    let pinned = 0;
+    for (const meta of this.metas()) {
+      // The file is the whole point of the pin, and it is also the early exit: `ensure()` here would
+      // give every never-opened session on disk a Session object plus its 400 ms tail timer.
+      if (fs.existsSync(allowFile(meta.id))) continue;
+      try {
+        const mode = (await defaultPermission(this.cli, meta.cwd)).mode;
+        writePermission(meta.id, mode, "default");
+        // A session that happens to be live keeps its in-memory state in step; disk-only ones need
+        // nothing beyond the file — the gate reads it at spawn time.
+        this.sessions.get(meta.id)?.applyPermission(mode);
+        pinned++;
+      } catch (err) {
+        // One unwritable file must not stop the sweep, but it should be visible in the log.
+        console.error(`[permission] 钉不住 ${meta.id}：`, err);
+      }
+    }
+    return pinned;
+  }
+
+  /**
+   * Sessions still sitting on a pinned default (`from: "default"`, or no file at all). `cwd` limits
+   * it to one project — the settings sheet asks for the scope it is editing.
+   */
+  permissionDefaultSessions(cwd: string | null): { total: number } {
+    return { total: this.defaultPermissionSessions(cwd).length };
+  }
+
+  /** The sessions behind `permissionDefaultSessions`, with the cwd each one pins against. */
+  private defaultPermissionSessions(cwd: string | null): { id: string; cwd: string }[] {
+    // Live sessions may not have a file on disk yet (a fake pi never writes one), so walk both.
+    // 随手问 is not the user's session (#86) and its readonly mode is not a pinned default.
+    const where = new Map<string, string>();
+    for (const meta of this.metas()) where.set(meta.id, meta.cwd ?? "");
+    for (const s of this.sessions.values()) {
+      if (s.state.scratch) continue;
+      if (!where.has(s.state.id)) where.set(s.state.id, s.state.cwd ?? "");
+    }
+    const want = cwd ? normalizeDir(cwd) : "";
+    const out: { id: string; cwd: string }[] = [];
+    for (const [id, dir] of where) {
+      if (want && normalizeDir(dir) !== want) continue;
+      const file = readPermissionFile(id);
+      if (file && file.from !== "default") continue;
+      out.push({ id, cwd: dir });
+    }
+    return out;
+  }
+
+  /**
+   * 「应用到现有会话」: rewrite every pinned default to today's default, each session against its own
+   * cwd (project settings differ per project). Manual picks are never touched.
+   */
+  async applyDefaultPermission(cwd: string | null): Promise<number> {
+    let applied = 0;
+    for (const target of this.defaultPermissionSessions(cwd)) {
+      let mode: PermissionMode;
+      try {
+        mode = (await defaultPermission(this.cli, target.cwd || null)).mode;
+      } catch (err) {
+        console.error(`[permission] 解析不了 ${target.id} 的默认权限：`, err);
+        continue;
+      }
+      writePermission(target.id, mode, "default");
+      // Same as pinAll: only a live session has state to nudge, and `ensure()` would create one.
+      this.sessions.get(target.id)?.applyPermission(mode);
+      applied++;
+    }
+    return applied;
+  }
+
   /** Opens an existing session as the live writer (resumes it if pi already wrote it). */
   /** Explicit takeover: the web becomes the single writer for a session file. */
   async claim(id: string): Promise<Session> {
@@ -2430,6 +2561,7 @@ export class SessionManager extends EventEmitter {
         if (String(e?.message ?? "").includes("20 秒前")) throw e;
       }
     }
+    await session.pinPermission();
     await session.startLive({ resume: Boolean(session.state.file) });
     this.emit("ws", { type: "session.state", session: session.state });
     if (session.state.origin !== "web") {

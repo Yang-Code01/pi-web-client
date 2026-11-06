@@ -2660,6 +2660,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .settings-sheet .settings-jsononly { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .settings-sheet .settings-jsononly .settings-hint { flex: 1; min-width: 200px; }
 .settings-sheet .ns-input.bad { border-color: var(--danger); }
+/* D157 设置 → 默认权限：只对「还记得自己是默认」的会话下手 */
+.settings-sheet .settings-perm-apply { display: flex; flex-direction: column; gap: 6px; padding: 10px 0 2px; border-top: 1px solid var(--line-soft); }
+.settings-sheet .settings-perm-apply .btn { align-self: flex-start; }
 .settings-sheet .settings-foot { display: flex; gap: 8px; align-items: center; padding-top: 4px; }
 .settings-sheet .settings-foot .spacer { flex: 1; }
 .settings-sheet .settings-json { width: 100%; box-sizing: border-box; min-height: 340px; font: 12px/1.5 var(--mono); background: var(--sunken); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; }

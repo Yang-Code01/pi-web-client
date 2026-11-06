@@ -213,6 +213,12 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /**
+   * D161: 设置面板底部那块「把现有会话也改掉」。`permDefaultsFor` 是已经问过桥的 cwd key
+   * （空串 = 全局页），这样重绘不会一直重问同一个问题。
+   */
+  private permDefaults: { cwd: string | null; mode: string; source: string; path: string | null; total: number } | null = null;
+  private permDefaultsFor: string | null = null;
   /** `#89` 口令页：桥报的那一份快照（null = 还没读到，或刚被别的页面改掉而作废）。 */
   private passphraseView: PassphraseView | null = null;
   /** 明文只写在 `••••••••` 和真值之间切，拷走值仍要过 `passphrase.get` 那道门。 */
@@ -1454,6 +1460,30 @@ export class App {
         const view = msg as SettingsView;
         this.settingsView[view.scope] = view;
         if (msg.saved) this.flashSettings(tr("已保存到 {p1}", { p1: view.path }));
+        if (this.sheetKind === "settings") this.paintSettings();
+        break;
+      }
+      // ------------------------------------------------------- 默认权限（D161）
+      case "permission.defaults": {
+        // Only the answer to the question this sheet asked: a slow reply for another project must
+        // not repaint this one with somebody else's count.
+        const cwd = typeof msg.cwd === "string" ? msg.cwd : null;
+        const want = this.settingsTab === "project" ? (this.settingsView.project?.cwd ?? "") : "";
+        if ((cwd ?? "") !== want) break;
+        this.permDefaults = {
+          cwd,
+          mode: String(msg.mode ?? "ask"),
+          source: String(msg.source ?? "fallback"),
+          path: typeof msg.path === "string" ? msg.path : null,
+          total: Number(msg.total) || 0,
+        };
+        if (this.sheetKind === "settings") this.paintSettings();
+        break;
+      }
+      case "permission.applied": {
+        const n = Number(msg.applied) || 0;
+        this.flashSettings(tr("已经把这 {p1} 个会话的权限改成默认值", { p1: String(n) }));
+        this.permDefaultsFor = null;
         if (this.sheetKind === "settings") this.paintSettings();
         break;
       }
@@ -7706,27 +7736,31 @@ export class App {
     // SAFETY: settings.json 就是 JSON，六种叶子 + 嵌套，和 `SettingsCell` 一一对应；
     // 桥那边解析失败时会带 `view.error`，表单本来也不可用。
     const data = (view.json ?? {}) as SettingsCellOf;
-    const get = (key: string): SettingsCell =>
-      key.split(".").reduce<SettingsCell>((o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined), data);
+    // One reader for both files: the row asks the same question of scope and of the layer above.
+    const readPath = (source: SettingsCellOf | null, key: string): SettingsCell =>
+      key.split(".").reduce<SettingsCell>((o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined), source ?? undefined);
+    const get = (key: string): SettingsCell => readPath(data, key);
     const defaults = (view.defaults ?? {}) as Record<string, unknown>;
     // Project page: 「默认」 is what you actually get, so a global value wins over pi's factory one.
     const parentData = (scope === "project" ? (this.settingsView.global?.json ?? null) : null) as unknown as SettingsCellOf | null;
-    const parentGet = (key: string): unknown =>
-      parentData
-        ? key.split(".").reduce<SettingsCell>((o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined), parentData)
-        : undefined;
+    const parentGet = (key: string): SettingsCell => readPath(parentData, key);
     const fmtSetting = (v: unknown): string | null => {
       if (v === undefined || v === null || v === "") return null;
       if (typeof v === "boolean") return v ? tr("开") : tr("关");
       if (Array.isArray(v)) return v.map(String).join(", ");
       return String(v);
     };
-    /** 「（默认：medium）」 / 「（默认：auto，继承全局）」 / 「（默认）」 — what the empty choice means. */
-    const defaultLabel = (f: (typeof SETTING_FIELDS)[number]): string => {
+    /** 「（默认：medium）」 / 「（默认：auto，继承全局）」 / 「（默认：不设置）」 — what the empty choice means. */
+    const defaultLabel = (f: SettingField): string => {
       // Lists merge with the parent (+x / -x), so "inheriting the global value" would be a lie there.
-      const inherited = f.kind === "list" || f.kind === "model" ? null : fmtSetting(parentGet(f.key));
+      // Model is stored as a provider/id pair, so the inherited value is the pair or nothing.
+      const parentText = f.kind === "model"
+        ? fmtSetting([parentGet("defaultProvider"), parentGet("defaultModel")].filter(Boolean).join("/"))
+        : fmtSetting(parentGet(f.key));
+      const inherited = f.kind === "list" ? null : parentText;
       if (inherited) return tr("（默认：{p1}，继承全局）", { p1: inherited });
-      const own = f.defaultText ?? fmtSetting(defaults[f.key]);
+      // pi's schema is the source of truth (D156); `defaultText` only explains what pi decides later.
+      const own = fmtSetting(defaults[f.key]) ?? f.defaultText;
       // Last resort: say what "empty" means rather than leave a bare 「（默认）」 nobody can read.
       return own ? tr("（默认：{p1}）", { p1: own }) : tr("（默认：不设置）");
     };
@@ -7746,7 +7780,8 @@ export class App {
       save.disabled = !Object.keys(patch).length || Boolean(view.error) || (scope === "project" && !view.writable);
     };
     let group = "";
-    for (const f of SETTING_FIELDS) {
+    const fields = settingFields();
+    for (const f of fields) {
       if (f.globalOnly && scope !== "global") continue;
       const host = f.advanced ? advForm : form;
       if (!f.advanced && f.group && f.group !== group) {
@@ -7758,7 +7793,7 @@ export class App {
       const labelEl = el("span", "settings-label", f.label);
       // Rows whose input keeps its own placeholder (a pattern example, a URL) carry the default here.
       const inline = f.kind === "bool" || f.kind === "select" || f.kind === "model" || !f.placeholder;
-      if (!inline) labelEl.append(el("span", `settings-default${f.label.length + empty.length > 15 ? " wrap" : ""}`, empty));
+      if (!inline) labelEl.append(el("span", `settings-default${f.label.length + empty.length > DEFAULT_LABEL_WRAP_AT ? " wrap" : ""}`, empty));
       row.append(labelEl);
       const current = f.kind === "model" ? (get("defaultProvider") && get("defaultModel") ? `${get("defaultProvider")}/${get("defaultModel")}` : "") : get(f.key);
       let input: HTMLInputElement | HTMLSelectElement;
@@ -7788,11 +7823,8 @@ export class App {
         input = sel;
       } else {
         const inp = el("input", `ns-input${f.kind === "text" ? "" : " mono"}`) as HTMLInputElement;
-        // A timeout is a number or the word "disabled", so a number input would hide the second case.
-        if (f.kind === "number") {
-          if (f.allowDisabled) inp.inputMode = "numeric";
-          else inp.type = "number";
-        }
+        // A timeout is a number or the word "disabled", so a number field would hide the second case.
+        if (f.kind === "number" && !f.allowDisabled) inp.type = "number";
         inp.placeholder = f.placeholder ?? empty;
         inp.value = f.kind === "list" ? (Array.isArray(current) ? current.join(", ") : "") : current == null ? "" : String(current);
         inp.oninput = () => {
@@ -7802,8 +7834,13 @@ export class App {
             return mark(f.key, null);
           }
           if (f.kind === "number") {
+            // `disabled` is a real value in pi, not a typo: store the string, don't round it to NaN.
+            if (f.allowDisabled && v === "disabled") {
+              inp.classList.remove("bad");
+              return mark(f.key, "disabled");
+            }
             const n = Number(v);
-            const ok = Number.isFinite(n) || (f.allowDisabled && v === "disabled");
+            const ok = Number.isFinite(n);
             inp.classList.toggle("bad", !ok);
             if (!ok) return;
             return mark(f.key, Math.round(n));
@@ -7828,6 +7865,35 @@ export class App {
     goJson.onclick = () => this.paintSettingsJson(body, view);
     jsonOnly.append(goJson);
     body.append(jsonOnly);
+    // D161: 默认权限只对「新会话」生效，所以这里给还停在默认上的会话一个出口。
+    const permKey = scope === "project" ? (view.cwd ?? "") : "";
+    if (this.permDefaultsFor !== permKey) {
+      this.permDefaultsFor = permKey;
+      this.permDefaults = null;
+      this.socket.send({ type: "permission.defaults", ...(scope === "project" && view.cwd ? { cwd: view.cwd } : {}) });
+    } else if (this.permDefaults && this.permDefaults.total > 0) {
+      const pd = this.permDefaults;
+      // The backend resolves each session against its own cwd, so the copy must not promise one mode.
+      const box = el("div", "settings-perm-apply");
+      box.append(el("div", "settings-label", tr("还在用默认权限的会话")));
+      box.append(
+        el(
+          "div",
+          "settings-hint",
+          tr("{p1} 个会话是在各自创建时钉下的默认权限，不是你手动选的。要不要把它们也改成各自现在的默认值？每个会话按自己项目里的设置算。", { p1: String(pd.total) }),
+        ),
+      );
+      let layer = tr("pi 的出厂值");
+      if (pd.source === "global") layer = tr("全局设置");
+      else if (pd.source === "project") layer = tr("项目设置");
+      box.append(el("div", "settings-hint", tr("现在的默认值：{p1}（来自{p2}）", { p1: permMode(pd.mode).label, p2: layer })));
+      if (pd.path) box.append(el("div", "settings-hint", pd.path));
+      const btn = el("button", "btn ghost", tr("把这 {p1} 个会话改成各自的默认值", { p1: String(pd.total) })) as HTMLButtonElement;
+      btn.onclick = () =>
+        this.act(() => this.socket.send({ type: "permission.applyDefault", ...(scope === "project" && view.cwd ? { cwd: view.cwd } : {}) }));
+      box.append(btn);
+      body.append(box);
+    }
     const foot = el("div", "settings-foot");
     const json = el("button", "btn ghost", tr("编辑 JSON")) as HTMLButtonElement;
     json.onclick = () => this.paintSettingsJson(body, view);
@@ -7837,6 +7903,8 @@ export class App {
       const sessionId = this.currentId;
       const changed = { ...patch };
       this.act(() => {
+        // 改完默认值，「还在用默认」的那份清单要重新算一遍。
+        if ("web.defaultPermission" in changed) this.permDefaultsFor = null;
         this.socket.send({ type: "settings.set", scope, ...(scope === "project" ? { cwd: view.cwd } : {}), patch: changed });
         // The four a running pi takes without a restart: apply them to the open session now.
         const runtime: Record<string, unknown> = {};
@@ -8765,7 +8833,8 @@ export class App {
     const adv = el("details", "ns-advanced");
     adv.append(el("summary", "", tr("高级")));
     const exp = el("select", "ns-input") as HTMLSelectElement;
-    exp.append(new Option(tr("codemode（默认）"), ""), new Option("deferred", "deferred"), new Option("direct", "direct"), new Option("hidden", "hidden"));
+    // D161: 「codemode」跟 pi 的 codemode.mode 撞名，这里其实是 MCP 的暴露方式。
+    exp.append(new Option(tr("默认（deferred：模型用 searchTools 找）"), ""), new Option("deferred", "deferred"), new Option("direct", "direct"), new Option("hidden", "hidden"));
     exp.value = f.exposure;
     exp.onchange = () => (f.exposure = exp.value);
     const desc = el("input", "ns-input") as HTMLInputElement;
@@ -8773,7 +8842,7 @@ export class App {
     desc.value = f.description;
     desc.oninput = () => (f.description = desc.value);
     const advGrid = el("div", "ns-adv-grid");
-    advGrid.append(this.formRow("exposure", exp), this.formRow(tr("描述"), desc));
+    advGrid.append(this.formRow(tr("MCP 暴露方式"), exp), this.formRow(tr("描述"), desc));
     adv.append(advGrid);
     box.append(adv);
     const foot = el("div", "settings-foot");
@@ -9337,7 +9406,7 @@ export class App {
   // ---------------------------------------------------------------- permission mode
   private permissionButton(): HTMLElement {
     const mode = this.session?.permission ?? "ask";
-    const meta = PERM_MODES.find((m) => m.id === mode) ?? PERM_MODES[2];
+    const meta = permMode(mode);
     const btn = el("button", `perm-btn perm-${mode}`) as HTMLButtonElement;
     btn.append(el("span", "perm-ico", meta.icon), el("span", "perm-label", meta.label), el("span", "perm-caret", "▾"));
     btn.title = tr("权限模式：{p1}——{p2}", { p1: meta.label, p2: meta.desc });
@@ -11770,13 +11839,18 @@ interface TrustState {
 }
 
 /**
- * The settings.json fields the 设置 form edits (pi docs/settings.md); the rest via 编辑 JSON.
+ * Past this the inline 「（默认：…）」 under a label gets its own line instead of breaking mid-word.
+ */
+const DEFAULT_LABEL_WRAP_AT = 15;
+
+/**
+ * One row of the 设置 form (pi docs/settings.md); everything else via 编辑 JSON.
  *
  * `group` prints a section header above the first row of each run — the form is long enough now that
  * an ungrouped list reads as a wall. `advanced` rows go into a collapsed 「高级」 <details>, closed
  * until the user opens it (the state is remembered), because they are the ones nobody touches twice.
  */
-const SETTING_FIELDS: {
+type SettingField = {
   key: string;
   label: string;
   kind: "text" | "number" | "bool" | "select" | "list" | "model";
@@ -11792,18 +11866,42 @@ const SETTING_FIELDS: {
   defaultText?: string;
   /** pi's timeout settings take a number or "disabled". */
   allowDisabled?: boolean;
-}[] = [
+};
+
+/**
+ * Built per repaint instead of at module load: every label goes through `tr()`, and the language can
+ * change without a reload (D110) — a frozen module-level array would keep the old language's strings.
+ */
+function settingFields(): SettingField[] {
+  return [
   { key: "defaultModel", label: tr("默认模型"), kind: "model", group: tr("模型与思考"), defaultText: tr("自动，挑一个能用的"), hint: "defaultProvider + defaultModel" },
   { key: "defaultThinkingLevel", label: tr("默认思考档位"), kind: "select", options: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
   { key: "enabledModels", label: tr("循环切换的模型范围"), kind: "list", hint: tr("逗号分隔，支持通配（终端的 /scoped-models）"), placeholder: tr("例如 claude-*, gpt-5*"), defaultText: tr("全部可用") },
   { key: "cacheWarming", label: tr("缓存预热"), kind: "select", options: ["off", "streaming", "idle"], globalOnly: true, hint: tr("off 不预热；streaming 只在跑的时候续缓存；idle 连不跑的时候也续。省下的钱不到 $0.05 不会动手") },
 
-  { key: "sessionDir", label: tr("会话目录"), kind: "text", group: tr("会话"), defaultText: tr("pi 的会话目录"), hint: tr("会话文件放哪。只认绝对路径、只在全局设置里生效；改完要重启 bridge 才会按新目录列会话") },
+  { key: "sessionDir", label: tr("会话目录"), kind: "text", group: tr("会话"), defaultText: tr("pi 的会话目录"), hint: tr("会话文件放哪。相对路径从工作目录解析，项目设置会盖过全局；改完要重启 bridge 才会按新目录列会话") },
   { key: "sessionShareDestination", label: tr("/share 发到哪"), kind: "select", options: ["auto", "gist", "radius"], hint: tr("auto = 登录了 Radius 就发 Radius，否则建 GitHub gist") },
   { key: "images.autoResize", label: tr("图片自动缩"), kind: "bool", hint: tr("上传的图先压到模型能吃的大小") },
   { key: "images.blockImages", label: tr("不给模型发图片"), kind: "bool", hint: tr("整张图换成一段说明文字，省 token 但模型看不见图") },
   { key: "enableSkillCommands", label: tr("技能注册成 /skill:名字"), kind: "bool" },
 
+  // D161: 桥自有键（web. 命名空间），存在 pi 的 settings.json 里，读写和别的设置同一条路。
+  {
+    key: "web.defaultPermission",
+    label: tr("新会话的默认权限"),
+    kind: "select",
+    group: tr("工具与脚本"),
+    // Literal per repaint (not `PERM_MODES`): that table is module-level, so its labels freeze the
+    // first language — the same mode ids, translated now, when the language changes without a reload.
+    choices: [
+      { value: "readonly", label: tr("只读") },
+      { value: "strict", label: tr("逐个确认") },
+      { value: "ask", label: tr("危险时确认") },
+      { value: "auto", label: tr("全自动") },
+    ],
+    defaultText: tr("危险时确认"),
+    hint: tr("新会话第一次打开时用它，之后在这里改也不影响老会话；手动改过权限的会话永远不动"),
+  },
   { key: "defaultTools", label: tr("默认工具"), kind: "list", group: tr("工具与脚本"), hint: tr("逗号分隔；普通名字＝只用这些，+x / -x＝在默认基础上增减"), placeholder: tr("例如 read, bash, +codemode") },
   { key: "codemode.mode", label: tr("codemode 工具模式"), kind: "select", options: ["on", "only"], hint: tr("on = 已声明的工具照常直接调；only = 只留 codemode，所有工具都从脚本里调") },
   { key: "codemode.inlineBudget", label: tr("codemode 工具清单预算"), kind: "number", hint: tr("最多花多少 token（字符数 ÷ 4）列工具；挤不下的靠 searchTools 找，0 = 只列命名空间") },
@@ -11834,7 +11932,8 @@ const SETTING_FIELDS: {
   { key: "retry.provider.timeoutMs", label: tr("provider 单次超时"), kind: "number", advanced: true, defaultText: tr("跟随 HTTP 空闲超时"), hint: tr("毫秒") },
   { key: "retry.provider.maxRetries", label: tr("provider 级重试次数"), kind: "number", advanced: true, hint: tr("保持默认 0，除非 provider 明确要求：它会把配额/限流错误拖慢") },
   { key: "retry.provider.maxRetryDelayMs", label: tr("provider 请求的最长等待"), kind: "number", advanced: true, hint: tr("毫秒，0 = 不限制") },
-];
+  ];
+}
 
 /**
  * The composer's placeholder is its shortcut card: these are the only keys it has (Shift+Enter
@@ -12210,6 +12309,16 @@ const PERM_MODES: { id: PermissionMode; icon: string; label: string; desc: strin
   { id: "ask", icon: "🛡", label: tr("危险时确认"), desc: tr("只拦删除、push、装依赖、写项目外文件等危险操作（默认）") },
   { id: "auto", icon: "⚡", label: tr("全自动"), desc: tr("不拦截任何操作，风险自负") },
 ];
+
+type PermMode = (typeof PERM_MODES)[number];
+
+/** One mode by id; an id a stale file names falls back to pi's default (`ask`, D161). */
+function permMode(id: string): PermMode {
+  for (const m of PERM_MODES) if (m.id === id) return m;
+  for (const m of PERM_MODES) if (m.id === "ask") return m;
+  // Unreachable: the literal above always contains `ask`.
+  return { id: "ask", icon: "🛡", label: tr("危险时确认"), desc: "" };
+}
 
 type PendingImage = { data: string; mimeType: string };
 type PasteBlock = { text: string; open: boolean };
