@@ -28,10 +28,10 @@
     "test:stat": "node bridge/tests/stat-path.mjs",
     "test:nowchip": "node --experimental-transform-types web/tests/nowchip-unit.mjs",
     "test:wsmanage": "node --experimental-transform-types web/tests/wsmanage-unit.mjs",
+    "test:defaults": "node --experimental-transform-types bridge/tests/settings-defaults.mjs",
     "test:pending": "node --experimental-transform-types web/tests/pending-unit.mjs",
     "test:continue": "node --experimental-transform-types web/tests/continue-unit.mjs",
-    "test:continue:ui": "node bridge/tests/continue-ui.mjs"
-  },
+    "test:continue:ui": "node bridge/tests/continue-ui.mjs"  },
   "dependencies": {
     "ws": "^8.18.0"
   },

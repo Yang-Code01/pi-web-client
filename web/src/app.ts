@@ -7708,30 +7708,72 @@ export class App {
     const data = (view.json ?? {}) as SettingsCellOf;
     const get = (key: string): SettingsCell =>
       key.split(".").reduce<SettingsCell>((o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined), data);
+    const defaults = (view.defaults ?? {}) as Record<string, unknown>;
+    // Project page: 「默认」 is what you actually get, so a global value wins over pi's factory one.
+    const parentData = (scope === "project" ? (this.settingsView.global?.json ?? null) : null) as unknown as SettingsCellOf | null;
+    const parentGet = (key: string): unknown =>
+      parentData
+        ? key.split(".").reduce<SettingsCell>((o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined), parentData)
+        : undefined;
+    const fmtSetting = (v: unknown): string | null => {
+      if (v === undefined || v === null || v === "") return null;
+      if (typeof v === "boolean") return v ? tr("开") : tr("关");
+      if (Array.isArray(v)) return v.map(String).join(", ");
+      return String(v);
+    };
+    /** 「（默认：medium）」 / 「（默认：auto，继承全局）」 / 「（默认）」 — what the empty choice means. */
+    const defaultLabel = (f: (typeof SETTING_FIELDS)[number]): string => {
+      // Lists merge with the parent (+x / -x), so "inheriting the global value" would be a lie there.
+      const inherited = f.kind === "list" || f.kind === "model" ? null : fmtSetting(parentGet(f.key));
+      if (inherited) return tr("（默认：{p1}，继承全局）", { p1: inherited });
+      const own = f.defaultText ?? fmtSetting(defaults[f.key]);
+      // Last resort: say what "empty" means rather than leave a bare 「（默认）」 nobody can read.
+      return own ? tr("（默认：{p1}）", { p1: own }) : tr("（默认：不设置）");
+    };
     const patch: Record<string, unknown> = {};
     const form = el("div", "settings-form");
+    // Collapsed 「高级」: rows nobody touches twice. Expanded state is remembered per browser.
+    const adv = el("details", "settings-advanced") as HTMLDetailsElement;
+    adv.open = localStorage.getItem("pi.settings.advanced") === "1";
+    adv.addEventListener("toggle", () => localStorage.setItem("pi.settings.advanced", adv.open ? "1" : "0"));
+    adv.append(el("summary", "", tr("高级")));
+    const advForm = el("div", "settings-form");
+    adv.append(advForm);
     const save = el("button", "btn primary", tr("保存")) as HTMLButtonElement;
     save.disabled = true;
     const mark = (key: string, value: unknown) => {
       patch[key] = value;
       save.disabled = !Object.keys(patch).length || Boolean(view.error) || (scope === "project" && !view.writable);
     };
+    let group = "";
     for (const f of SETTING_FIELDS) {
       if (f.globalOnly && scope !== "global") continue;
+      const host = f.advanced ? advForm : form;
+      if (!f.advanced && f.group && f.group !== group) {
+        group = f.group;
+        form.append(el("div", "settings-group", f.group));
+      }
+      const empty = defaultLabel(f);
       const row = el("label", "settings-row");
-      row.append(el("span", "settings-label", f.label));
+      const labelEl = el("span", "settings-label", f.label);
+      // Rows whose input keeps its own placeholder (a pattern example, a URL) carry the default here.
+      const inline = f.kind === "bool" || f.kind === "select" || f.kind === "model" || !f.placeholder;
+      if (!inline) labelEl.append(el("span", `settings-default${f.label.length + empty.length > 15 ? " wrap" : ""}`, empty));
+      row.append(labelEl);
       const current = f.kind === "model" ? (get("defaultProvider") && get("defaultModel") ? `${get("defaultProvider")}/${get("defaultModel")}` : "") : get(f.key);
       let input: HTMLInputElement | HTMLSelectElement;
       if (f.kind === "bool") {
         const sel = el("select", "ns-input") as HTMLSelectElement;
-        sel.append(new Option(tr("（默认）"), ""), new Option(tr("开"), "true"), new Option(tr("关"), "false"));
+        sel.append(new Option(empty, ""), new Option(tr("开"), "true"), new Option(tr("关"), "false"));
         sel.value = typeof current === "boolean" ? String(current) : "";
         sel.onchange = () => mark(f.key, sel.value === "" ? null : sel.value === "true");
         input = sel;
       } else if (f.kind === "select" || f.kind === "model") {
         const sel = el("select", "ns-input") as HTMLSelectElement;
-        sel.append(new Option(tr("（默认）"), ""));
-        const opts = f.kind === "model" ? this.models.map((m) => [`${m.provider}/${m.id}`, `${shortModelName(m.name)} · ${m.provider}`]) : (f.options ?? []).map((o) => [o, o]);
+        sel.append(new Option(empty, ""));
+        const opts = f.kind === "model"
+          ? this.models.map((m) => [`${m.provider}/${m.id}`, `${shortModelName(m.name)} · ${m.provider}`])
+          : (f.choices ? f.choices.map((c) => [c.value, c.label]) : (f.options ?? []).map((o) => [o, o]));
         for (const [v, label] of opts) sel.append(new Option(label, v));
         const cur = typeof current === "string" ? current : "";
         if (cur && ![...sel.options].some((o) => o.value === cur)) sel.append(new Option(tr("{p1}（当前）", { p1: cur }), cur));
@@ -7746,13 +7788,26 @@ export class App {
         input = sel;
       } else {
         const inp = el("input", `ns-input${f.kind === "text" ? "" : " mono"}`) as HTMLInputElement;
-        if (f.kind === "number") inp.type = "number";
-        inp.placeholder = f.placeholder ?? tr("（默认）");
+        // A timeout is a number or the word "disabled", so a number input would hide the second case.
+        if (f.kind === "number") {
+          if (f.allowDisabled) inp.inputMode = "numeric";
+          else inp.type = "number";
+        }
+        inp.placeholder = f.placeholder ?? empty;
         inp.value = f.kind === "list" ? (Array.isArray(current) ? current.join(", ") : "") : current == null ? "" : String(current);
         inp.oninput = () => {
           const v = inp.value.trim();
-          if (!v) return mark(f.key, null);
-          if (f.kind === "number") return mark(f.key, Number(v));
+          if (!v) {
+            inp.classList.remove("bad");
+            return mark(f.key, null);
+          }
+          if (f.kind === "number") {
+            const n = Number(v);
+            const ok = Number.isFinite(n) || (f.allowDisabled && v === "disabled");
+            inp.classList.toggle("bad", !ok);
+            if (!ok) return;
+            return mark(f.key, Math.round(n));
+          }
           if (f.kind === "list") return mark(f.key, v.split(",").map((x) => x.trim()).filter(Boolean));
           mark(f.key, v);
         };
@@ -7761,10 +7816,18 @@ export class App {
       input.disabled = Boolean(view.error) || (scope === "project" && !view.writable);
       row.append(input);
       if (f.hint) row.append(el("span", "settings-hint", f.hint));
-      form.append(row);
+      host.append(row);
     }
+    if (advForm.childElementCount) form.append(adv);
     body.append(form);
     if (scope === "global") body.append(this.lockExtBox());
+    // Nested objects cannot be a row in this form, so name them here instead of hiding them.
+    const jsonOnly = el("div", "settings-jsononly");
+    jsonOnly.append(el("span", "settings-hint", tr("嵌套对象只能在 JSON 里改：modelThinkingLevels、thinkingBudgets、compaction.modelOverrides。")));
+    const goJson = el("button", "btn ghost", tr("去改 JSON")) as HTMLButtonElement;
+    goJson.onclick = () => this.paintSettingsJson(body, view);
+    jsonOnly.append(goJson);
+    body.append(jsonOnly);
     const foot = el("div", "settings-foot");
     const json = el("button", "btn ghost", tr("编辑 JSON")) as HTMLButtonElement;
     json.onclick = () => this.paintSettingsJson(body, view);
@@ -11689,6 +11752,8 @@ interface SettingsView {
   json: Record<string, unknown> | null;
   error: string | null;
   writable: boolean;
+  /** pi's own defaults, dotted keys — the bridge reads them from the installed pi package. */
+  defaults?: Record<string, unknown>;
 }
 
 /** 设置文件里的一格（JSON 的形状）：叶子 + 嵌套对象 / 数组，读不出来就是 undefined。 */
@@ -11704,32 +11769,71 @@ interface TrustState {
   options: { label: string; trusted: boolean }[];
 }
 
-/** The settings.json fields the 设置 form edits (pi docs/settings.md); the rest via 编辑 JSON. */
+/**
+ * The settings.json fields the 设置 form edits (pi docs/settings.md); the rest via 编辑 JSON.
+ *
+ * `group` prints a section header above the first row of each run — the form is long enough now that
+ * an ungrouped list reads as a wall. `advanced` rows go into a collapsed 「高级」 <details>, closed
+ * until the user opens it (the state is remembered), because they are the ones nobody touches twice.
+ */
 const SETTING_FIELDS: {
   key: string;
   label: string;
   kind: "text" | "number" | "bool" | "select" | "list" | "model";
   options?: string[];
+  /** Select labels when the stored value is not the label (permission modes, transport…). */
+  choices?: { value: string; label: string }[];
   hint?: string;
   placeholder?: string;
   globalOnly?: boolean;
+  group?: string;
+  advanced?: boolean;
+  /** pi decides this one at runtime (schema has no default) — what to print instead. */
+  defaultText?: string;
+  /** pi's timeout settings take a number or "disabled". */
+  allowDisabled?: boolean;
 }[] = [
-  { key: "defaultModel", label: tr("默认模型"), kind: "model", hint: "defaultProvider + defaultModel" },
+  { key: "defaultModel", label: tr("默认模型"), kind: "model", group: tr("模型与思考"), defaultText: tr("自动，挑一个能用的"), hint: "defaultProvider + defaultModel" },
   { key: "defaultThinkingLevel", label: tr("默认思考档位"), kind: "select", options: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
-  { key: "enabledModels", label: tr("循环切换的模型范围"), kind: "list", hint: tr("enabledModels，逗号分隔，支持通配（终端的 /scoped-models）"), placeholder: tr("例如 claude-*, gpt-5*") },
-  { key: "steeringMode", label: tr("引导消息处理方式"), kind: "select", options: ["one-at-a-time", "all"], hint: tr("一条一条交给模型，还是攒着一次给") },
-  { key: "followUpMode", label: tr("排到之后的消息处理方式"), kind: "select", options: ["one-at-a-time", "all"] },
-  { key: "defaultTools", label: tr("默认工具"), kind: "list", hint: tr("逗号分隔；普通名字＝只用这些，+x / -x＝在默认基础上增减"), placeholder: "read, bash, edit, write" },
-  { key: "compaction.enabled", label: tr("自动压缩"), kind: "bool" },
-  { key: "compaction.reserveTokens", label: tr("压缩：保留的空余 token"), kind: "number", placeholder: "16384" },
-  { key: "compaction.keepRecentTokens", label: tr("压缩：保留最近的 token"), kind: "number", placeholder: "20000" },
-  { key: "retry.enabled", label: tr("自动重试"), kind: "bool" },
-  { key: "retry.maxRetries", label: tr("最多重试次数"), kind: "number", placeholder: "3" },
-  { key: "images.blockImages", label: tr("不给模型发图片"), kind: "bool" },
+  { key: "enabledModels", label: tr("循环切换的模型范围"), kind: "list", hint: tr("逗号分隔，支持通配（终端的 /scoped-models）"), placeholder: tr("例如 claude-*, gpt-5*"), defaultText: tr("全部可用") },
+  { key: "cacheWarming", label: tr("缓存预热"), kind: "select", options: ["off", "streaming", "idle"], globalOnly: true, hint: tr("off 不预热；streaming 只在跑的时候续缓存；idle 连不跑的时候也续。省下的钱不到 $0.05 不会动手") },
+
+  { key: "sessionDir", label: tr("会话目录"), kind: "text", group: tr("会话"), defaultText: tr("pi 的会话目录"), hint: tr("会话文件放哪。只认绝对路径、只在全局设置里生效；改完要重启 bridge 才会按新目录列会话") },
+  { key: "sessionShareDestination", label: tr("/share 发到哪"), kind: "select", options: ["auto", "gist", "radius"], hint: tr("auto = 登录了 Radius 就发 Radius，否则建 GitHub gist") },
+  { key: "images.autoResize", label: tr("图片自动缩"), kind: "bool", hint: tr("上传的图先压到模型能吃的大小") },
+  { key: "images.blockImages", label: tr("不给模型发图片"), kind: "bool", hint: tr("整张图换成一段说明文字，省 token 但模型看不见图") },
   { key: "enableSkillCommands", label: tr("技能注册成 /skill:名字"), kind: "bool" },
-  { key: "shellPath", label: tr("shell 路径"), kind: "text", hint: tr("bash 工具用的 shell（Windows 默认找 Git Bash）") },
-  { key: "httpProxy", label: tr("HTTP 代理"), kind: "text", globalOnly: true, placeholder: "http://127.0.0.1:7890" },
+
+  { key: "defaultTools", label: tr("默认工具"), kind: "list", group: tr("工具与脚本"), hint: tr("逗号分隔；普通名字＝只用这些，+x / -x＝在默认基础上增减"), placeholder: tr("例如 read, bash, +codemode") },
+  { key: "codemode.mode", label: tr("codemode 工具模式"), kind: "select", options: ["on", "only"], hint: tr("on = 已声明的工具照常直接调；only = 只留 codemode，所有工具都从脚本里调") },
+  { key: "codemode.inlineBudget", label: tr("codemode 工具清单预算"), kind: "number", hint: tr("最多花多少 token（字符数 ÷ 4）列工具；挤不下的靠 searchTools 找，0 = 只列命名空间") },
+  { key: "shellPath", label: tr("shell 路径"), kind: "text", defaultText: tr("按平台自动找"), hint: tr("bash 工具用的 shell（Windows 默认找 Git Bash）") },
+
+  { key: "steeringMode", label: tr("引导消息处理方式"), kind: "select", group: tr("消息与压缩"), options: ["one-at-a-time", "all"], hint: tr("一条一条交给模型，还是攒着一次给") },
+  { key: "followUpMode", label: tr("排到之后的消息处理方式"), kind: "select", options: ["one-at-a-time", "all"] },
+  { key: "compaction.enabled", label: tr("自动压缩"), kind: "bool" },
+  { key: "compaction.reserveTokens", label: tr("压缩：保留的空余 token"), kind: "number" },
+  { key: "compaction.keepRecentTokens", label: tr("压缩：保留最近的 token"), kind: "number" },
+
+  { key: "transport", label: tr("流式通道"), kind: "select", group: tr("网络与重试"), options: ["auto", "sse", "websocket", "websocket-cached"], hint: tr("auto 让 pi 自己挑；provider 不支持就会退回 SSE") },
+  { key: "httpProxy", label: tr("HTTP 代理"), kind: "text", globalOnly: true, placeholder: "http://127.0.0.1:7890", defaultText: tr("直连") },
+  { key: "retry.enabled", label: tr("自动重试"), kind: "bool" },
+  { key: "retry.maxRetries", label: tr("最多重试次数"), kind: "number" },
+
+  { key: "enableInstallTelemetry", label: tr("安装/更新匿名上报"), kind: "bool", group: tr("隐私与信任"), hint: tr("不控制更新检查，只控制那条安装/更新记录") },
+  { key: "enableAnalytics", label: tr("分析数据共享"), kind: "bool", hint: tr("目前只有实验性的首次设置会用到") },
   { key: "defaultProjectTrust", label: tr("没有决定时的项目信任"), kind: "select", options: ["ask", "always", "never"], globalOnly: true, hint: tr("网页里 ask 等于 never（不能弹提示）") },
+
+  { key: "shellCommandPrefix", label: tr("命令前缀"), kind: "text", advanced: true, hint: tr("拼在每条 shell 命令前面，例如 source ~/.bashrc &&") },
+  { key: "npmCommand", label: tr("npm 命令"), kind: "list", advanced: true, hint: tr("装扩展/查包时用的命令与参数，逗号分隔") },
+  { key: "selfUpdateCommand", label: tr("自我更新命令"), kind: "list", globalOnly: true, advanced: true, hint: tr("「更新 pi」按钮跑的命令，逗号分隔，支持 {packageName} {version} {installSpec}；留空用 pi 自己的") },
+  { key: "httpIdleTimeoutMs", label: tr("HTTP 空闲超时"), kind: "number", advanced: true, allowDisabled: true, hint: tr("多久没收到字节就断开（毫秒），填 disabled 关掉") },
+  { key: "websocketConnectTimeoutMs", label: tr("WebSocket 连接超时"), kind: "number", advanced: true, allowDisabled: true, hint: tr("毫秒，填 disabled 关掉") },
+  { key: "retry.baseDelayMs", label: tr("重试起始等待"), kind: "number", advanced: true, hint: tr("毫秒，指数退避的起点") },
+  { key: "retry.maxAgentDelayMs", label: tr("重试最长等待"), kind: "number", advanced: true, hint: tr("毫秒，退避的上限") },
+  { key: "retry.provider.timeoutMs", label: tr("provider 单次超时"), kind: "number", advanced: true, defaultText: tr("跟随 HTTP 空闲超时"), hint: tr("毫秒") },
+  { key: "retry.provider.maxRetries", label: tr("provider 级重试次数"), kind: "number", advanced: true, hint: tr("保持默认 0，除非 provider 明确要求：它会把配额/限流错误拖慢") },
+  { key: "retry.provider.maxRetryDelayMs", label: tr("provider 请求的最长等待"), kind: "number", advanced: true, hint: tr("毫秒，0 = 不限制") },
 ];
 
 /**
