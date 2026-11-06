@@ -1,4 +1,4 @@
-import { applyLang, bootLang, tr } from "../i18n/index.ts";
+import { applyLang, bootLang, fmtDate, fmtRelative, fmtTime, tr } from "../i18n/index.ts";
 
 /**
  * `peer.html` 的脚本：只跟 bridge 说话（cookie + `/api/peer*`），从不直接连 7865。
@@ -126,13 +126,11 @@ const ICONS: Record<string, string[]> = {
   star: ["M12 4.2l2.3 4.9 5.2.7-3.8 3.6.9 5.3L12 16.2l-4.6 2.5.9-5.3L4.5 9.8l5.2-.7z"],
   file: ["M14 3.5H7.5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z", "M14 3.5V8h4.5"],
   folder: ["M3.5 8a2 2 0 0 1 2-2h3.8l2 2h7.2a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"],
-  download: ["M12 4v11", "M12 15l4-4", "M12 15l-4-4", "M5 19h14"],
   retry: ["M20 12a8 8 0 1 1-2.4-5.7", "M20 4v5h-5"],
   check: ["M5 13l4.5 4L19 7"],
   alert: ["M12 8.5v4.5", "M12 16.4h.01", "M12 3.6 21 20H3z"],
   eyeOff: ["M3 3l18 18", "M10.6 6.3A9.6 9.6 0 0 1 12 6.2c5 0 8 5.8 8 5.8a14 14 0 0 1-2.4 3.3", "M6.4 7.2C3.9 9 3 12 3 12s3 5.8 9 5.8c1.1 0 2.1-.2 3-.5"],
   bellOff: ["M6.2 8.5A6 6 0 0 1 18 10.5V14", "M6 14v3h12", "M4 20l16-16", "M10 20a2 2 0 0 0 4 0"],
-  pause: ["M9.5 5.5v13", "M14.5 5.5v13"],
   copy: ["M9 9h10v10H9z", "M15 5.5H5.5V15"],
   trash: ["M4.5 7h15", "M9.5 7V5h5v2", "M6.5 7l.9 13h9.2l.9-13"],
   userPlus: ["M10 4a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Z", "M3.5 20v-1.5A5.5 5.5 0 0 1 9 13h2", "M17.5 13.5v6", "M14.5 16.5h6"],
@@ -203,6 +201,9 @@ let pickerParent: string | null = null;
 let picked: BrowseEntry | null = null;
 let composeEl: HTMLElement | null = null;
 let composeFor = "";
+/** 消息列重画前的滚动位置：贴着底就继续贴底，翻历史就停在原处。 */
+let stickBottom = true;
+let prevScroll = 0;
 let textInput: HTMLTextAreaElement | null = null;
 let sendBtn: HTMLButtonElement | null = null;
 
@@ -210,17 +211,13 @@ let sendBtn: HTMLButtonElement | null = null;
 
 const byteLen = (text: string): number => new TextEncoder().encode(text).length;
 
+/** 时间/相对时间统一走 i18n 的 fmt*：手写 toLocale* 会脱离当前语言（docs/I18N.md）。 */
 function ago(ts: number): string {
-  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
-  if (s < 60) return tr("刚刚");
-  if (s < 3600) return tr("{p1} 分钟前", { p1: Math.round(s / 60) });
-  if (s < 86400) return tr("{p1} 小时前", { p1: Math.round(s / 3600) });
-  return new Date(ts).toLocaleDateString(undefined, { month: "numeric", day: "numeric" });
+  return fmtRelative(ts);
 }
 
 function clock(ts: number): string {
-  // 24 小时制固定下来：跟着浏览器走会让中文界面出现 08:40 PM（hour12 是随 locale 漂的）。
-  return new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+  return fmtTime(ts);
 }
 
 function dayLabel(ts: number): string {
@@ -231,7 +228,7 @@ function dayLabel(ts: number): string {
   const y = new Date(now);
   y.setDate(y.getDate() - 1);
   if (same(d, y)) return tr("昨天");
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+  return fmtDate(ts);
 }
 
 function sizeOf(bytes: number): string {
@@ -246,8 +243,29 @@ function sizeOf(bytes: number): string {
   return `${n >= 100 || i === 0 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
 }
 
+function percentOf(t: Transfer): number {
+  return t.size ? Math.min(100, Math.round((t.bytes / t.size) * 100)) : 100;
+}
+
 function speed(bytes: number): string {
   return `${sizeOf(bytes)}/s`;
+}
+
+/**
+ * 传输速率：`/transfers` 只给累计字节和状态，没有速率字段，所以自己采样求差。
+ * 每渲染一次更新一次样本（1.2 秒一轮），样本太旧（换了状态 / 停了很久）就报 `—`。
+ */
+const rateSamples = new Map<string, { bytes: number; at: number }>();
+
+function speedOf(t: Transfer): string {
+  const now = Date.now();
+  const running = t.status === "sending" || t.status === "receiving";
+  const prev = rateSamples.get(t.id);
+  rateSamples.set(t.id, { bytes: t.bytes, at: now });
+  if (!running) return "";
+  if (!prev || now - prev.at < 200 || now - prev.at > 10_000) return "—";
+  const perSec = Math.max(0, (t.bytes - prev.bytes) / ((now - prev.at) / 1000));
+  return perSec < 1 ? "—" : speed(perSec);
 }
 
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] {
@@ -345,6 +363,11 @@ async function loadContacts(): Promise<void> {
   }
 }
 
+/** 一串消息的指纹：id + 回执状态。轮询拿回来跟上次一样就不必重画。 */
+function msgSig(): string {
+  return S.msgs.map((m) => `${m.id}:${m.ack?.status ?? ""}`).join("|");
+}
+
 async function loadMessages(id = S.thread): Promise<void> {
   if (!id) return;
   const data = await getJson<{ entries: Entry[] }>(`/api/peer/messages?peer=${encodeURIComponent(id)}&limit=200`).catch(() => null);
@@ -412,7 +435,7 @@ function renderBar(): void {
   const brand = h("div", "brand");
   const dot = h("span", `dot ${up ? "up" : "down"}`);
   dot.title = up ? tr("内网通在运行") : S.view?.reason || tr("内网通没在运行");
-  brand.append(dot, h("span", "nm", tr("内网通")), pickerDot(st));
+  brand.append(dot, h("span", "nm", tr("内网通")));
 
   const meta = h("div", "meta");
   meta.textContent = st ? `${st.nickname} · ${st.nodeId.slice(0, 8)} · :${st.port}` : "";
@@ -438,14 +461,7 @@ function renderBar(): void {
   barEl.replaceChildren(frag);
 }
 
-/** 顶栏左侧的小圆点：状态点已经说明了 up/down，这里不再重复。 */
-function pickerDot(st: PeerStatus | null): HTMLElement {
-  const gap = h("span");
-  gap.style.width = "0px";
-  if (st) gap.title = `${st.hostname} · ${st.nodeId}`;
-  return gap;
-}
-
+/** 顶栏左侧的状态点已经说明了 up/down；这里不再重复第二个点。 */
 function renderHint(): void {
   const st = S.view?.status ?? null;
   const up = Boolean(S.view?.enabled && S.view?.running);
@@ -505,6 +521,7 @@ function searchBox(placeholder: string): HTMLElement {
   input.type = "search";
   input.placeholder = placeholder;
   input.value = S.query;
+  input.dataset.keep = "search";
   input.addEventListener("input", () => {
     S.query = input.value;
     renderList();
@@ -513,7 +530,38 @@ function searchBox(placeholder: string): HTMLElement {
   return box;
 }
 
+/**
+ * 整块重画会把正在输入的输入框一起换掉（焦点、光标、选区全没）。
+ * 重画前记住「哪个带 data-keep 的元素拿着焦点」，重画后把焦点与选区还回去。
+ */
+function rerender(rebuild: () => void): void {
+  const active = document.activeElement;
+  const keep = active instanceof HTMLElement ? active.dataset.keep : undefined;
+  const sel =
+    active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+      ? ([active.selectionStart, active.selectionEnd] as const)
+      : null;
+  rebuild();
+  if (!keep) return;
+  const next = document.querySelector<HTMLElement>(`[data-keep="${keep}"]`);
+  if (!next) return;
+  next.focus({ preventScroll: true });
+  if (sel && (next instanceof HTMLInputElement || next instanceof HTMLTextAreaElement)) {
+    const end = next.value.length;
+    const at = (n: number | null): number => Math.min(n ?? end, end);
+    try {
+      next.setSelectionRange(at(sel[0]), at(sel[1]));
+    } catch {
+      /* search/number 这类 input 不支持选区，焦点回来就够了 */
+    }
+  }
+}
+
 function renderList(): void {
+  rerender(paintList);
+}
+
+function paintList(): void {
   listEl.replaceChildren();
   // 我页没有列表：整块宽度让给右侧。光把 list 隐藏不够 —— 网格会自动补位，main 会被挤到第二列。
   const noList = S.page === "me";
@@ -609,8 +657,7 @@ function contactGroups(): Group[] {
 }
 
 function renderContactList(): void {
-  const bar = h("div");
-  bar.style.cssText = "display:flex;align-items:center;gap:6px;margin:10px 10px 0";
+  const bar = h("div", "listbar");
   bar.append(searchBox(tr("搜索联系人")));
   const add = iconBtn("plus", tr("添加联系人"), () => addModal());
   bar.append(add);
@@ -694,7 +741,7 @@ function transferRow(t: Transfer): HTMLElement {
   const box = h("div", "ic");
   box.append(ic(/^image\//.test(mimeOf(t.name)) ? "image" : "file"));
   const mid = h("div");
-  const pct = t.size ? Math.min(100, Math.round((t.bytes / t.size) * 100)) : 100;
+  const pct = percentOf(t);
   mid.append(
     h("div", "nm", t.name),
     h("div", "s", (t.direction === "out" ? tr("发出") : tr("接收")) + " · " + sizeOf(t.size)),
@@ -702,7 +749,7 @@ function transferRow(t: Transfer): HTMLElement {
   const right = h("div", "pct");
   if (t.status === "failed") right.append(h("span", "bad", tr("失败")));
   else if (t.status === "done") right.append(h("span", "ok", tr("完成")));
-  else right.append(h("b", "", `${pct}%`), h("span", "", speed(t.bytes / Math.max(1, (Date.now() - 0) / 1000))));
+  else right.append(h("b", "", `${pct}%`), h("span", "", speedOf(t)));
   row.append(box, mid, right);
   row.addEventListener("click", () => {
     S.transfer = t.id;
@@ -728,11 +775,30 @@ function emptyState(icon: string, title: string, sub: string): HTMLElement {
 // ---------------------------------------------------------------- 主区
 
 function renderMain(): void {
+  // 重新画聊天会把消息列清空重排，滚到哪儿要自己记住：翻历史的时侯别把人拽回底。
+  const prev = mainEl.querySelector<HTMLElement>(".stream");
+  if (prev) {
+    stickBottom = prev.scrollTop + prev.clientHeight >= prev.scrollHeight - 32;
+    prevScroll = prev.scrollTop;
+  }
+  rerender(paintMain);
+}
+
+function paintMain(): void {
   mainEl.replaceChildren();
-  if (S.page === "msg") return renderChat();
-  if (S.page === "contacts") return renderContactDetail();
-  if (S.page === "transfers") return renderTransferDetail();
-  return renderMe();
+  if (S.page === "msg") {
+    renderChat();
+    return;
+  }
+  if (S.page === "contacts") {
+    renderContactDetail();
+    return;
+  }
+  if (S.page === "transfers") {
+    renderTransferDetail();
+    return;
+  }
+  renderMe();
 }
 
 function backBtn(): HTMLButtonElement {
@@ -787,7 +853,7 @@ function renderChat(): void {
     stream.append(h("div", "empty", tr("还没有消息，说点什么吧")));
   }
   mainEl.append(stream);
-  stream.scrollTop = stream.scrollHeight;
+  stream.scrollTop = stickBottom ? stream.scrollHeight : prevScroll;
 
   const compose = composeBox(t);
   mainEl.append(compose);
@@ -817,7 +883,6 @@ function entryNode(e: Entry, t: Thread): HTMLElement {
       const bad = ic("alert", "bad");
       meta.append(bad, h("span", "bad", tr("发送失败")));
       const retry = h("button", "link", tr("重试"));
-      retry.style.cssText = "border:0;background:none;color:var(--accent);font:inherit;cursor:pointer;padding:0";
       retry.addEventListener("click", () => void resend(e));
       meta.append(retry);
     }
@@ -871,6 +936,7 @@ function composeBox(t: Thread): HTMLElement {
   const ta = h("textarea");
   ta.placeholder = tr("发给 {p1}", { p1: t.nickname });
   ta.rows = 2;
+  ta.dataset.keep = "compose";
   ta.autocomplete = "off";
   ta.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
@@ -1121,7 +1187,7 @@ function renderTransferDetail(): void {
     return;
   }
 
-  const pct = t.size ? Math.min(100, Math.round((t.bytes / t.size) * 100)) : 100;
+  const pct = percentOf(t);
   const hero = h("div", "hero");
   const box = h("div", "av");
   box.style.setProperty("--h", "265");
@@ -1146,7 +1212,8 @@ function renderTransferDetail(): void {
     fill.style.width = `${pct}%`;
     prog.append(fill);
     detail.append(prog);
-    detail.append(h("div", "note", `${pct}% · ${sizeOf(t.bytes)} / ${sizeOf(t.size)}`));
+    const rate = speedOf(t);
+    detail.append(h("div", "note", `${pct}% · ${sizeOf(t.bytes)} / ${sizeOf(t.size)}` + (rate && rate !== "—" ? ` · ${rate}` : "")));
   }
 
   const card = h("div", "card");
@@ -1407,7 +1474,12 @@ async function openPicker(peer: string, direct = false): Promise<void> {
     S.thread = peer;
     await loadMessages();
   }
-  if (direct) S.mview = "chat";
+  if (direct) {
+    S.page = "msg";
+    app.dataset.page = "msg";
+    S.mview = "chat";
+    app.dataset.mview = "chat";
+  }
   picker.hidden = false;
   await browse("");
 }
@@ -1467,7 +1539,7 @@ function fileItem(entry: BrowseEntry): HTMLLIElement {
 function renderCrumbs(): void {
   crumbsEl.replaceChildren();
   const root = iconBtn("monitor", tr("这台电脑"), () => void browse(""));
-  root.style.cssText = "width:24px;height:24px;border:0";
+  root.classList.add("crumb-root");
   crumbsEl.append(root);
   const parts = pickerDir.split(/[\\/]/).filter(Boolean);
   let acc = "";
@@ -1539,8 +1611,10 @@ window.setInterval(() => {
 
 window.setInterval(() => {
   if (S.page !== "msg" || !S.thread || document.hidden) return;
+  // 没有新消息就不重画：整块换 DOM 会把输入框、选区、滚动都拽一遍，2.5 秒一次太贵了。
+  const before = msgSig();
   void loadMessages().then(() => {
-    if (S.page === "msg") renderMain();
+    if (S.page === "msg" && msgSig() !== before) renderMain();
   });
 }, 2500);
 

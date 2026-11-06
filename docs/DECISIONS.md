@@ -2114,13 +2114,13 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - **按容器宽度切，不按视口**：`web/peer.html` 的 `body` 上 `container-type: inline-size`，`@container (max-width:900px)` 退成单栏钻取（列表 ↔ 内容，带返回箭头）、`(max-width:560px)` 再藏轨道换底部四项导航。原因写在这次改动的场景里：同一个页面既可能是全屏标签页，也可能是 `openPeerSheet()` 里那个 1000×780 的 iframe —— 视口宽度在 iframe 里是骗人的（1440px 的窗口里塞 1000px 的框，`@media` 判成宽的，页面就挤成两条）。
 - **后端只加一个写入口**：`peer/src/http.ts` 新增 `POST /config`（只收 `hidden/dnd/pauseFiles` 三个 boolean，写进运行中的 `cfg` 再 `saveConfig()` 落盘；`hidden` 变了立刻 `discovery.announce()`，不等 15 秒那一轮），`peer/src/config.ts` 配 `saveConfig()`，bridge 侧加 `PeerHost.setConfig()` 与 `POST /api/peer/config`。仍守 D97：页面只说 `/api/peer*`，从不直连 7865，`/config` 也只对回环开。
 - **不做什么**：会话的未读与置顶**不做** —— `/threads` 不带这两个字段，要做就得加索引和迁移，这次只做「界面兑现已有数据」。传输的暂停 / 取消**不做** —— peer 的 `POST /transfers/:id` 只有 `pause-all`，单条暂停没有后端。pi 代发**不做独立时间线**：那条时间线只存在于 pi 自己的会话里，页面拿不到，所以代发消息在气泡上打 `pi 代发` 标签、会话列表打 `pill`。
-- **旧的 picker 保留**：`#picker` 的 id 一个没改，只换了外观（面包屑 / 常用位置 / 这台电脑 / 列表 / 未选文件时「发送」禁用）。
+- **旧的 picker 保留**：`#picker` 一族的 id 原样留着（`#picker-close/#crumbs/#places/#roots/#files/#picker-sel/#picker-up/#picker-send`），只换了外观；原来那个只有静态 `data-i18n` 文案、TS 里没人引用的 `#picker-title` 删掉了，标题改由 TS 用 `tr()` 画。未选文件时「发送」禁用。
 
 **为什么：** 弹框和全屏是同一份页面，只有容器查询能同时伺候这两种尺寸；而「列表 + 详情」是这类工具最省心的形状 —— 用户在 1000px 的框里也能看到「左边谁在说话、右边说了什么」，不必来回切 TAB。写配置那条口子是这次唯一越过「只读视图」边界的地方，但它换来的是「隐身开关终于能点」：原来那行「隐身着」的文字是死的，用户只能去翻 `~/.pi-peer/config.json`。
 
 代价 / 可改：
 
-- 容器查询要 Chrome 105+ / Safari 16+；低于这个版本的浏览器会一直吃「宽屏三栏」，窄容器里会挤。
+- 容器查询要 Chrome 105+ / Safari 16+；但 `peer.css` 还用了 4 处 `color-mix()`，实际底线是 **Chrome 111+ / Safari 16.2+**，再低高亮底色会静默失效（布局不会坏）。
 - 未读、置顶、单条传输暂停都留了位置（控件样式在 `peer.css` 里），要做得先补 `/threads` 的字段与 peer 的传输接口。
 - `saveConfig()` 写的是**生效中**的配置（含 env 覆盖出来的值），不是重新推导的 —— 如果哪天 env 覆盖项变多，「页面拨一下开关」会把 env 值固化进 config.json，届时要分清「用户改的」和「env 给的」。
 

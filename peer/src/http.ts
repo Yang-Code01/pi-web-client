@@ -123,8 +123,10 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           if (typeof body[key] === "boolean") cfg[key] = body[key] as boolean;
         }
         saveConfig(cfg);
-        // 隐身刚变：立刻丢一份 announce / hello，别等下一轮定时（15 秒里对方还看得见）。
-        if (cfg.hidden !== wasHidden) discovery.announce();
+        // 隐身→可见：立刻丢一份 announce，别等下一轮定时（10 秒里对方还看不见）。
+        // 反过来（可见→隐身）什么都不发：`announce()` 本身不查 hidden（D99 只管「收到别人时不回」），
+        // 这时候主动发一包正好把自己的 nodeId 送上门，与隐身相反。
+        if (wasHidden && !cfg.hidden) discovery.announce();
         return json(res, 200, {
           ok: true,
           config: { hidden: cfg.hidden, pauseFiles: cfg.pauseFiles, dnd: cfg.dnd, inbox: cfg.inbox, manual: cfg.manual },
