@@ -180,6 +180,8 @@ try {
   }
   check("被打断之后又亮了 —— 这个按钮就是为这一刻准备的", !(await button.isDisabled()));
   await shot("interrupted", await composerClip());
+  // 一张整页的：PR / 文档用得上，看得到「已中断」那条回复和它下面的按钮。
+  await shot("interrupted-page");
 
   // -- C. what it actually sends, and what it leaves alone ---------------
   await page.locator(".composer textarea").fill("草稿别动");
