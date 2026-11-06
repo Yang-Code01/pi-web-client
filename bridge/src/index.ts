@@ -1772,9 +1772,8 @@ async function main(): Promise<void> {
               return;
             }
             if (action === "opened") {
-              // D125: 打开即置顶。没改动也回一份快照 —— 前端乐观改过自己的 manage，
-              // 否则一个不存在的 id 会一直挂在它的置顶条上。
-              sessions.opened(String(msg.id ?? ""));
+              // D146 废止了 D125：打开会话不改排列，所以这里什么也不写。仍然回一份快照，是因为
+              // 旧页面（缓存里的 bundle）还会先乐观置顶再发这一条 —— 快照把它的 manage 纠正回来。
               broadcast({ type: "manage", ...manageSnapshot() });
               return;
             }

@@ -7,7 +7,8 @@
  * 断言四件事：
  *   1. 打开 A 再收起左栏 → A 的胶囊带 `.cur`、带 `aria-current`，而且**真的算出了填充色**；
  *   2. 点胶囊打开 B → `.cur` 搬过去，A 恢复普通底色；
- *   3. 切到未置顶的 C → D125 之后 C 会被自动置顶，`.cur` 必须已经搬过去（不再是「一个都不亮」）；
+ *   3. 切到未置顶的 C（D146 之后不再自动置顶）→ 横栏里没有 C，也没有任何一颗带 `.cur` ——
+ *      当前会话不在横栏里这件事由顶栏那颗 NowChip（#96）负责说明；
  *   4. 展开左栏 → 整条横栏藏起来（回到左栏自己的 `.session-card.active`）。
  *
  * 桩桥，不碰真 pi；一秒级、可重复。
@@ -118,12 +119,7 @@ server.on("upgrade", (req, socket, head) => {
       if (msg.type === "subscribe" && s) {
         ws.send(JSON.stringify({ type: "session", sessionId: s.id, state: s, items: [], approvals: [], asks: [], budget: null }));
       }
-      // D125：打开即置顶。桩桥照真桥的语义实现这一条，否则界面上的置顶条不会动。
-      if (msg.type === "manage" && msg.action === "opened" && SESSIONS.some((x) => x.id === msg.id)) {
-        MANAGE.archived = MANAGE.archived.filter((id) => id !== msg.id);
-        if (!MANAGE.pin.includes(msg.id)) MANAGE.pin = [msg.id, ...MANAGE.pin];
-        for (const client of wss.clients) if (client.readyState === 1) client.send(JSON.stringify({ type: "manage", manage: MANAGE }));
-      }
+      // D146：打开不改排列。桩桥只回快照，不写 pin —— 真桥也是这么做的。
     });
     ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS, manage: MANAGE, trash: [], tunnel: TUNNEL }));
   });
@@ -192,7 +188,7 @@ const b2 = pick(list, "会话 B");
 ok(b2?.cur === true && a2?.cur === false, "点了 B 的胶囊后，.cur 只在 B 上");
 ok(b2.bg !== a2.bg && b2.border !== a2.border && b2.weight === "600", "外观跟着搬过去，A 恢复普通底色与字重");
 
-// 3) 打开未置顶的 C → D125：C 自己进置顶条，标记跟着搬过去
+// 3) 打开未置顶的 C → D146：它不会自己进横栏，横栏里也就不该有 .cur
 await toggleLeft(); // 展开左栏
 await page.locator('.session-card[data-id="stub-c"]').click();
 await sleep(700);
@@ -200,15 +196,17 @@ await toggleLeft(); // 再收起
 await page.waitForSelector(".pin-chip", { timeout: 10000 });
 list = await chips();
 const c = pick(list, "会话 C");
-ok(Boolean(c), "打开过的 C 自动出现在置顶条里");
-ok(c?.cur === true, "C 的胶囊带 .cur");
-ok(list.filter((x) => x.cur).length === 1, "整条里只有一个当前会话");
+ok(c === undefined, "没置顶的 C 不会出现在置顶条里（D146 废止了打开即置顶）");
+ok(list.filter((x) => x.cur).length === 0, "于是整条里没有一颗「当前」（当前会话由顶栏那颗说明）");
 
-// 4) 展开左栏 → 横栏藏起来
+// 4) 展开左栏 → 行 2 仍在（#97 壳 A：置顶条成了第二行的一部分，不再随左栏收起/展开消失）
 await toggleLeft();
-ok(await page.locator(".pin-strip").isHidden(), "展开左栏后，置顶条重新隐藏（交还给左栏的 .active）");
+// #97 壳 A：行 2 不随左栏收起/展开消失 —— 置顶条仍要在屏上（isHidden 会跟着 [hidden] 走）。
+ok(await page.locator(".pin-strip").isVisible(), "展开左栏后，行 2 仍在（壳 A 两行制）");
+ok(await page.locator(".pin-strip").evaluate((n) => n.getClientRects().length > 0), "行 2 真的在屏上");
+ok((await page.locator(".ws-session-row .pin-strip").count()) === 1, "置顶条挂在第二行里，不是另一条独立的横栏");
 
-await page.locator('.side-toggle[data-side="left"]').click(); // 收起来再拍一张：D125 之后当前会话一定在条里
+await page.locator('.side-toggle[data-side="left"]').click(); // 收起来再拍一张：当前会话未置顶时这条里空着
 await sleep(500);
 await page.screenshot({ path: path.join(REPO, ".scratch/pin-current-off.png"), clip: { x: 0, y: 0, width: 1440, height: 120 } });
 
