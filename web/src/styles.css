@@ -3002,7 +3002,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .update-bar-x:hover { color: var(--text); }
 
-/* 表格浮窗（D127 · #105）：和终端并列的一扇窗，不是 viewer 面板，也没有遮罩。
+/* 表格浮窗（D164 · #105）：和终端并列的一扇窗，不是 viewer 面板，也没有遮罩。
    纸张永远是浅色（像 Excel 的一张纸），不跟暗色主题走。 */
 .sd {
   position: fixed; z-index: 46;

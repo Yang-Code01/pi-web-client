@@ -1581,6 +1581,5 @@ export const en: Dict = {
   "页面视图是 LibreOffice 排出来的打印版式，表格、图表都在纸上。":
     "The page view is the print layout LibreOffice renders: sheets and charts, on paper.",
   "生成页面视图": "Build the page view",
-  "重试": "Retry",
   "拖动调整左右比例（双击复原）": "Drag to adjust the split (double-click to reset)",
 };

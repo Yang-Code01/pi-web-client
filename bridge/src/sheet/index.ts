@@ -1,5 +1,5 @@
 /**
- * 表格预览的只读凭据与取数入口（D127）。
+ * 表格预览的只读凭据与取数入口（D164）。
  *
  * 凭据只由 /api/preview 在预审文件时发放：token → 路径 + mtime。
  * 表格端点不接受前端给的任意路径；mtime 变了就是文件被改过，让用户重新打开。
@@ -43,7 +43,7 @@ export function grantIsStale(grant: Grant, mtimeMs: number): boolean {
   return Math.abs(mtimeMs - grant.mtime) > 1;
 }
 
-// 只缓存元数据、结构与条件格式计划（sheet 清单 / 尺寸 / zip 内路径），不缓存表 XML（D127/#110）。
+// 只缓存元数据、结构与条件格式计划（sheet 清单 / 尺寸 / zip 内路径），不缓存表 XML（D164/#110）。
 // 但 zip 原始字节也要留住：否则每次窗口请求都整文件重读（#110 审出来）。按总字节 LRU 限住驻留。
 interface CachedBook {
   book: Book;
@@ -100,7 +100,7 @@ export async function readWindow(
   const { book, buf } = await loadBook(abs);
   const info = book.meta.sheets.find((s) => s.name === sheet);
   if (!info) throw new Error("找不到这个工作表");
-  // 单次窗口设上限：前端再乱要，也不会一次拖走整张表（D127「永不整表发前端」）。
+  // 单次窗口设上限：前端再乱要，也不会一次拖走整张表（D164「永不整表发前端」）。
   const rr0 = Math.max(0, Math.min(info.rows - 1, Math.trunc(r0)));
   const rr1 = Math.max(rr0, Math.min(info.rows - 1, Math.trunc(r1), rr0 + 399));
   const cc0 = Math.max(0, Math.min(info.cols - 1, Math.trunc(c0)));

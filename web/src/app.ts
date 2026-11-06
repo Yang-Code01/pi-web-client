@@ -347,7 +347,7 @@ export class App {
   private capturing: string | null = null;
   /** D70: one shell per tab, all inside one dock; the bridge owns the processes (max 4). */
   private termDock: HTMLElement | null = null;
-  /** D127: 表格浮窗与终端并列，不进 viewer 面板；同一时间只开一扇。 */
+  /** D164: 表格浮窗与终端并列，不进 viewer 面板；同一时间只开一扇。 */
   private sheetDock: SheetDialog | null = null;
   private termTabStrip: HTMLElement | null = null;
   private termBodies: HTMLElement | null = null;
@@ -5320,7 +5320,7 @@ export class App {
     v.path = v.info.abs;
     // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
     if (!replace) this.retargetTop(path, v.info.abs, sessionId);
-    // D127: spreadsheet files leave the binary branch and open in their own dialog, not the viewer.
+    // D164: spreadsheet files leave the binary branch and open in their own dialog, not the viewer.
     if (v.info.kind === "sheet") {
       const info = v.info;
       this.closeViewer();
@@ -5337,7 +5337,7 @@ export class App {
     await this.loadViewerText();
   }
 
-  /** #113：CSV / TSV 的浮窗——表格 / 源码两个 tab，编码嗅探在前端（D127），保存仍走文本通道。 */
+  /** #113：CSV / TSV 的浮窗——表格 / 源码两个 tab，编码嗅探在前端（D164），保存仍走文本通道。 */
   private async openCsvSheet(info: PreviewInfo, sessionId: string): Promise<void> {
     let data: CsvData;
     try {
@@ -5405,7 +5405,7 @@ export class App {
     dialog.open();
   }
 
-  /** D127: 表格浮窗（无遮罩、不抢焦点）。关掉旧的那扇再开新的。 */
+  /** D164: 表格浮窗（无遮罩、不抢焦点）。关掉旧的那扇再开新的。 */
   private openSheet(info: PreviewInfo): void {
     this.sheetDock?.destroy();
     this.sheetDock = null;
