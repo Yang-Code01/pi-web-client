@@ -330,18 +330,33 @@ export interface SkillSearchResult {
   note?: string;
 }
 
-/** Small concurrency limiter: a dozen raw fetches at once is rude and gets throttled. */
+/**
+ * Small concurrency limiter: a dozen raw fetches at once is rude and gets throttled.
+ *
+ * A failure stops the queue without returning early: the workers already inside `fn` may still be
+ * writing files, and a failed install wipes the target folder right afterwards. Handing the error
+ * back first would let a late write land in the folder that was just emptied.
+ */
 async function mapLimit<T, R>(list: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(list.length);
   let cursor = 0;
-  const workers = Array.from({ length: Math.min(limit, list.length) }, async () => {
+  let failure: unknown = null;
+  const worker = async (): Promise<void> => {
     for (;;) {
+      if (failure !== null) return;
       const index = cursor++;
       if (index >= list.length) return;
-      out[index] = await fn(list[index], index);
+      try {
+        out[index] = await fn(list[index], index);
+      } catch (err) {
+        failure ??= err;
+        return;
+      }
     }
-  });
+  };
+  const workers = Array.from({ length: Math.min(limit, list.length) }, worker);
   await Promise.all(workers);
+  if (failure !== null) throw failure;
   return out;
 }
 
@@ -602,6 +617,18 @@ function targetRoot(req: InstallRequest): { root: string; scope: "user" | "proje
 }
 
 /**
+ * The files under `prefix`, checked against the store's caps. A self-heal swaps in a newer tree, so
+ * both passes go through here rather than trusting the sizes the first pass saw.
+ */
+function skillFiles(files: [string, number][], prefix: string): [string, number][] {
+  const picked = files.filter(([f]) => f.startsWith(prefix)).sort((a, b) => a[0].localeCompare(b[0]));
+  if (picked.length > MAX_FILES) throw new Error(`这个技能有 ${picked.length} 个文件，超过 ${MAX_FILES} 个上限，没装`);
+  const total = picked.reduce((sum, [, size]) => sum + size, 0);
+  if (total > MAX_TOTAL) throw new Error(`这个技能有 ${(total / 1048576).toFixed(1)} MB，超过 64 MB 上限，没装`);
+  return picked;
+}
+
+/**
  * Copy one skill into a skill root. A re-install from the same source replaces the folder the store
  * wrote earlier (its `.pi-store.json` matches); anything else with that name is left alone.
  */
@@ -643,10 +670,7 @@ export async function installSkill(req: InstallRequest, net: SkillNet = LIVE_NET
   prepareTarget(target, marker);
 
   const prefix = dir ? `${dir}/` : "";
-  const wanted = files.filter(([f]) => f.startsWith(prefix)).sort((a, b) => a[0].localeCompare(b[0]));
-  if (wanted.length > MAX_FILES) throw new Error(`这个技能有 ${wanted.length} 个文件，超过 ${MAX_FILES} 个上限，没装`);
-  const total = wanted.reduce((sum, [, size]) => sum + size, 0);
-  if (total > MAX_TOTAL) throw new Error(`这个技能有 ${(total / 1048576).toFixed(1)} MB，超过 64 MB 上限，没装`);
+  const wanted = skillFiles(files, prefix);
   let written = 0;
   // A skill folder is a handful of small files; four at a time keeps a cold install near one
   // round-trip instead of one request per file.
@@ -671,13 +695,14 @@ export async function installSkill(req: InstallRequest, net: SkillNet = LIVE_NET
       // `@HEAD` for hours). Ask GitHub for the live tree once and redo the copy from it.
       if ((err as { code?: string })?.code !== "HTTP_404") throw err;
       const fresh = await freshRepoFiles(parsed.repo, net).catch(() => null);
-      const again = fresh?.filter(([f]) => f.startsWith(prefix)) ?? [];
+      // The live tree can be bigger in every way the first pass sized, so the caps run again here.
+      const again = fresh ? skillFiles(fresh, prefix) : [];
       if (!again.some(([f]) => f === skillMd)) throw err;
-      if (again.length > MAX_FILES) throw new Error(`这个技能有 ${again.length} 个文件，超过 ${MAX_FILES} 个上限，没装`);
       // The first pass may have written files the new tree no longer has; start from an empty folder.
+      // `mapLimit` has waited for its workers by now, so nothing is still writing into the old one.
       fs.rmSync(target, { recursive: true, force: true });
       ensureDir(target);
-      await writeAll(again.sort((a, b) => a[0].localeCompare(b[0])));
+      await writeAll(again);
     }
     writeMarker(target, marker);
   } catch (err) {

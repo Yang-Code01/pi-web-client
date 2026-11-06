@@ -430,5 +430,64 @@ log("N. 树比仓库旧时自愈");
   check(seen.github === before, "新树进了缓存，第二次安装不再问 GitHub");
 }
 
+// ------------------------------------------------------------------ O. 自愈后的上限 / 失败不残留（D157）
+log("O. 自愈重算上限、失败后不残留");
+{
+  // 陈旧的树只有一个小文件；实时树种多了 70 MB，自愈后要按新树重算总大小（D126 的 64 MB 上限）。
+  const huge = {
+    json: async (url) => {
+      if (url.startsWith("https://data.jsdelivr.com/")) return { files: [{ name: "/skills/huge/SKILL.md", size: 40 }] };
+      if (url.startsWith("https://api.github.com/repos/acme/huge/git/trees/HEAD")) {
+        return {
+          tree: [
+            { path: "skills/huge/SKILL.md", size: 40, type: "blob" },
+            { path: "skills/huge/weights.bin", size: 70 * 1048576, type: "blob" },
+          ],
+        };
+      }
+      throw new Error(`意外的请求：${url}`);
+    },
+    file: async () => {
+      throw Object.assign(new Error("raw.githubusercontent.com 返回 404"), { code: "HTTP_404" });
+    },
+  };
+  let msg = "";
+  try {
+    await skillstore.installSkill({ source: "acme/huge", skillId: "huge", scope: "user" }, huge);
+  } catch (err) {
+    msg = err.message;
+  }
+  check(msg.includes("64 MB"), `自愈后按新树重算总大小：${msg}`);
+  check(!fs.existsSync(path.join(skillsDir, "huge")), "超上限的没留下半成品");
+
+  // 一个文件立刻失败、另一个还在写：要等还在飞的那个写完再清目录，否则它会把文件补写回来。
+  const race = {
+    json: async () => ({
+      files: [
+        { name: "/skills/race/SKILL.md", size: 20 },
+        { name: "/skills/race/slow.py", size: 20 },
+      ],
+    }),
+    file: async (url, opts) => {
+      if (String(opts?.label ?? url).endsWith("slow.py")) {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return Buffer.from("slow", "utf8");
+      }
+      throw Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    },
+  };
+  const t0 = Date.now();
+  msg = "";
+  try {
+    await skillstore.installSkill({ source: "acme/race", skillId: "race", scope: "user" }, race);
+  } catch (err) {
+    msg = err.message;
+  }
+  const elapsed = Date.now() - t0;
+  check(msg.includes("ECONNRESET"), `网络错误照旧报出来：${msg}`);
+  check(!fs.existsSync(path.join(skillsDir, "race")), "失败后目录清干净，晚到的写盘没补回来");
+  check(elapsed >= 60, `等到了还在飞的那个文件（${elapsed}ms）`);
+}
+
 console.log(failed ? "\nFAILED" : "\nALL OK");
 process.exit(failed ? 1 : 0);
