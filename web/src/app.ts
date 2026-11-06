@@ -68,10 +68,12 @@ interface SessionBadge {
 /**
  * `running` only means "the pi process is alive": it stays true while an approval or a question is
  * waiting for the user. Anything that says "正在跑" has to look at asks/approvals first, or it will
- * report a session stuck on the user as busy. Current session keeps its own done() treatment, same
- * as the left pane always did.
+ * report a session stuck on the user as busy.
+ *
+ * D162: 「完成」也显示在**当前打开的会话**上 —— 打开只是看，不再把完成抹掉。否则用户点开确认
+ * 一眼，卡片就从「完成」退回时间，再也没法从列表判断这一轮到底结束了没有。
  */
-function sessionBadge(s: SessionState, currentId: string | null): SessionBadge | null {
+function sessionBadge(s: SessionState): SessionBadge | null {
   if (s.asks && s.asks > 0) {
     return {
       kind: "ask",
@@ -94,7 +96,7 @@ function sessionBadge(s: SessionState, currentId: string | null): SessionBadge |
     return { kind: "locked", text: tr("终端占用"), cls: "lock", title: tr("pi CLI 在终端里正用着这个会话，网页这边只能看"), pending: false };
   }
   if (s.running) return { kind: "run", text: tr("运行中"), cls: "run", title: tr("agent 正在推进"), pending: false };
-  if (s.done && s.id !== currentId) return { kind: "done", text: tr("完成"), cls: "done", title: "", pending: false };
+  if (s.done) return { kind: "done", text: tr("完成"), cls: "done", title: "", pending: false };
   return null;
 }
 
@@ -1132,7 +1134,7 @@ export class App {
     this.switchDraft(id);
     this.currentId = id;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
-    if (this.session?.done) this.session.done = false;
+    // D162: 打开只是看 —— 不清完成；bridge 也一样（snapshot 不再 markSeen）。
     this.approvals = [];
     this.asks = [];
     this.pendingFresh = false;
@@ -2065,7 +2067,7 @@ export class App {
    */
   private badgeOf(s: SessionState): SessionBadge | null {
     const shown = this.pendingFresh ? badgeSession(s, this.currentId, this.localCounts()) : s;
-    return sessionBadge(shown, this.currentId);
+    return sessionBadge(shown);
   }
 
   // ---------------------------------------------------------------- step-up
@@ -6000,7 +6002,7 @@ export class App {
   }
 
   /**
-   * D162: 「引用当前文件夹」——把下面正在浏览的目录插进输入框。目录行点一下是「进去」、
+   * D163: 「引用当前文件夹」——把下面正在浏览的目录插进输入框。目录行点一下是「进去」、
    * 文件行才「引用」，所以「我想让 pi 看这个目录」原来没有出口。
    * 含空格才包引号：`C:\Program Files\x` 裸着会被读成两个路径；没空格的包上反而多两处要删。
    */
@@ -6039,7 +6041,7 @@ export class App {
     };
   }
 
-  /** D162: 附件弹层给每个会话记一份「上次打开的目录」；没有会话 id 就不读不写（宁可退回 cwd）。 */
+  /** D163: 附件弹层给每个会话记一份「上次打开的目录」；没有会话 id 就不读不写（宁可退回 cwd）。 */
   private attachDirKey(): string {
     const id = this.session?.id ?? "";
     return id ? `pi.attachDir:${id}` : "";
@@ -9700,7 +9702,7 @@ export class App {
     this.sheet = back;
 
     const home = this.dirHome(() => this.session?.cwd ?? "");
-    // D162: 这个弹层按会话记着上次浏览到哪儿；pick 走闭包，所以要等 picker 建好再接上。
+    // D163: 这个弹层按会话记着上次浏览到哪儿；pick 走闭包，所以要等 picker 建好再接上。
     let pickerPath = (): string => "";
     const ref = this.dirRef(() => pickerPath());
     // 第一次落到一个能读的目录才算数：之后再出错（目录被删、盘拔了）不再自动把人拽走。
@@ -12423,7 +12425,7 @@ type Draft = { text: string; images: PendingImage[]; pastes: PasteBlock[] };
 const PASTE_LINES = 6;
 const PASTE_CHARS = 400;
 
-/** D162: 附件弹层按会话记目录，最多留这么多条（删掉的会话不该一直占着键）。 */
+/** D163: 附件弹层按会话记目录，最多留这么多条（删掉的会话不该一直占着键）。 */
 const ATTACH_DIR_INDEX = "pi.attachDir.index";
 const ATTACH_DIR_KEEP = 30;
 

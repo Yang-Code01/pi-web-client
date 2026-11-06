@@ -3,7 +3,7 @@
  * navigate, plus the /api/dirs answer behind each click. Written to chase the reported "点 F 盘符会
  * 闪一下，但没进 F 盘" bug (root cause: the `F:` crumb targeted the bare drive letter).
  *
- * D162 regressions kept here:
+ * D163 regressions kept here:
  *   1. 📎 引用当前文件夹 inserts the browsed folder once, and answers 已在输入框 the second time.
  *   2. clicking the `F:` crumb from a subfolder lands on F:\ (not the bridge's cwd on F:).
  *   3. the picker reopens where that session last was, instead of falling back to cwd.
@@ -135,7 +135,7 @@ try {
     throw new Error(msg);
   };
 
-  // ---- D162: 引用当前文件夹 把正在浏览的目录插进输入框，重复点不插第二次
+  // ---- D163: 引用当前文件夹 把正在浏览的目录插进输入框，重复点不插第二次
   const opened = ((await page.locator(".sheet.file-picker .dir-path").textContent()) ?? "").trim();
   console.log(`OPEN: "${opened}"`);
   if (!opened.includes("work")) fail(`弹层没有从会话工作目录打开（"${opened}"）`);
@@ -164,7 +164,7 @@ try {
   if (!quoted.includes(`"${spaced}"`)) fail(`含空格目录没包引号（"${quoted}"）`);
   await ta.fill("");
 
-  // ---- D162: 面包屑里的盘符段必须跳到那颗盘的根
+  // ---- D163: 面包屑里的盘符段必须跳到那颗盘的根
   const drive = WORK.split(":")[0] + ":";
   const crumb = page.locator(".sheet.file-picker .dir-path .crumb", { hasText: new RegExp(`^${drive}$`) });
   if (!(await crumb.count())) fail(`面包屑里没有 ${drive} 那一段`);
@@ -179,7 +179,7 @@ try {
     fail(`${drive} 根目录里没有 pi-web-client，说明没落到盘根`);
   }
 
-  // ---- D162: 按会话记住上次浏览的目录
+  // ---- D163: 按会话记住上次浏览的目录
   await page.locator(".sheet.file-picker .sheet-head button", { hasText: /关闭/ }).click();
   await sleep(400);
   await page.locator(".hint-tools button", { hasText: "文件" }).click();

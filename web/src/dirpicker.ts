@@ -69,7 +69,7 @@ export function fileNameOf(p: string): string {
  * `\Users\me`（有根无盘符）落在当前盘上。
  */
 /**
- * D162: `text` 是否已经作为**一整个 token** 出现在 `hay` 里（左右只认空白、引号或字符串边缘）。
+ * D163: `text` 是否已经作为**一整个 token** 出现在 `hay` 里（左右只认空白、引号或字符串边缘）。
  * 边界别放宽到 `.` `,` `;` —— 输入框里写着 `F:\a.txt` 时，引用目录 `F:\a` 会被误判成「已在输入框」而
  * 插不进去，而插进去的那份带空格，本来就是空白隔开的。
  */
@@ -171,7 +171,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       const drive = part.endsWith(":");
       if (acc === "") acc = drive ? part : `${sep}${part}`;
       else acc = `${acc}${sep}${part}`;
-      // D162: 盘符那一段的目标得带上分隔符。`F:` 是**盘符相对路径**，桥端按它自己的 cwd 解析
+      // D163: 盘符那一段的目标得带上分隔符。`F:` 是**盘符相对路径**，桥端按它自己的 cwd 解析
       // （盘符正好是 cwd 那个盘时，点一下就落回仓库目录 —— 看着像没反应）。显示仍然只写 `F:`。
       where.append(el("span", "crumb-sep", sep), crumb(part, drive ? `${acc}${sep}` : acc, drive));
     }
@@ -315,7 +315,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
    * folder should say why in place rather than silently bouncing to 此电脑.
    */
   const navigate = async (rawTarget: string, revealName = "", allowFallback = true): Promise<{ ok: true } | { ok: false; error: string }> => {
-    // D162: 兜底一次，任何调用方传裸 `D:` 都当成那颗盘的根，而不是桥端 cwd 上的「D 盘相对路径」。
+    // D163: 兜底一次，任何调用方传裸 `D:` 都当成那颗盘的根，而不是桥端 cwd 上的「D 盘相对路径」。
     const target = BARE_DRIVE.test(rawTarget.trim()) ? `${rawTarget.trim()}\\` : rawTarget;
     list.replaceChildren(el("div", "empty", tr("读取中…")));
     // Leaving the folder: drop its sizes and any answer still in flight for it.

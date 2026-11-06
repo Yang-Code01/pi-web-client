@@ -1907,7 +1907,7 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .dir-head .dir-mk { flex: none; padding: 4px 8px; font-size: 12px; }
 .dir-head .dir-mk[hidden], .dir-mkrow[hidden] { display: none; }
 /* Q-019: 定位回会话工作目录 —— 三个 dir-picker 的路径行都有这一颗，没会话时置灰 */
-/* D162: 引用当前文件夹 —— 和 ⌂ 工作目录同一排、同一形状（宽度不跟着路径伸缩，长标签不换行）。 */
+/* D163: 引用当前文件夹 —— 和 ⌂ 工作目录同一排、同一形状（宽度不跟着路径伸缩，长标签不换行）。 */
 .dir-head .dir-home, .dir-head .dir-ref { flex: none; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
 .dir-head .dir-home:disabled, .dir-head .dir-ref:disabled { opacity: 0.45; cursor: default; }
 .dir-mkrow { padding: 2px 0 4px; }

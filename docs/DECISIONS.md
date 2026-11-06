@@ -233,6 +233,8 @@
 
 ## D45 会话列表按创建时间固定排序，卡片右下角只放「待确认 / 完成」
 
+> **D162 修订（2026-11）：** 「完成」不再随打开 / 订阅清除，也不再只对非当前会话显示 —— 它被持久化到 `state/finished.json`，桥重启、GC、换设备都保留，只有新一轮运行、发消息或终端续写会话文件才清。打开也不再刷新 `updatedAt`（取会话文件 mtime）。下文「不是当前打开的会话」与「清理由把快照交给客户端触发」两句已被 D162 取代；排序键、桥端算 `done` 的论证仍有效。
+
 **决定：** 列表顺序的唯一键是 `startedAt`（pi 会话文件 header 的 `timestamp`；网页新建的会话在构造时补一个 `new Date().toISOString()`，否则它永远排不上号），降序、不随 `updatedAt` 变化 —— 某个会话回答完、改名、改模型都不挪位置，只有新开会话落在最上面。排序在桥端 `SessionManager.list()` 和前端 `renderSessions()` 各做一次（两端都可能有会话在跑，前端收到 `session.state` 后要原地合并，不能指望顺序来自服务端）。卡片右下角（`meta` 行右侧，相对时间在左）只放一个状态徽标，优先级 `待确认 N`（`approvals > 0`，黄）> `完成`（`done` 且不是当前打开的会话，绿）> `运行中`（蓝）。名字行只留名字和 ✎；圆点仍表示运行/占用。
 
 **为什么徽标由桥端算 `done` 而不是前端记「刚从 running 变 idle」：** 前端只在页面开着时看得到变化，刷新一次、换手机看，完成状态就丢了；桥端在 `agent_start` 置 `done:false`、`agent_end`/`agent_settled` 置 `done:true`，状态跟着会话走。清理由「把快照交给客户端」触发（`Manager.snapshot()` → `Session.markSeen()`），也就是 `subscribe` 那一下；这同时意味着另一台设备点开卡片，这边的「完成」也会消 —— 完成是会话的属性，不是某页的未读。
@@ -2372,7 +2374,32 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 
 **验证：** `node bridge/tests/default-permission.mjs`（A 无设置→ask 并带 `from`；B 全局 strict 只影响新会话；C 项目值未信任时被忽略、信任后覆盖全局；D 手动切换清掉 `from`；E `permission.defaults` 把 manual 排除在外、`applyDefault` 只改默认会话且各自用自己的项目值；F 重启桥后启动扫描给磁盘上没见过的会话补钉、手动选择跨重启保留）；`node bridge/tests/settings-trust.mjs` 仍全过；`npm run typecheck`（i18n 三边对齐）+ `npm run build`。
 
-## D162 附件弹层能引用「当前文件夹」；面包屑的盘符段跳到盘根；弹层按会话记住上次的目录（无票，用户要求）
+## D162 「完成」是会话的持久状态：打开不清、重启不丢，时间不再被「打开」刷新（无票，用户口头报障）
+
+**现象：** 已完成的任务点开看一眼，卡片上的「完成」消失，时间从完成时刻变成「刚刚」—— 再也判断不出这一轮到底结束了没有（用户截图：`main 重启 25分钟前`、`excel 支持 39分钟前`、`继续按钮追加 刚刚`）。
+
+**根因（三条，都在桥端）：**
+
+1. `subscribe` → `Manager.snapshot()` → `Session.markSeen()`：把「快照交给客户端」当成已读，`setState({done:false})` 默认 `touch:true`，`touch()` 把 `updatedAt` 改成 `Date.now()`（`bridge/src/sessions.ts`）—— 一次打开同时抹掉徽标和完成时间。
+2. `Session` 构造把 `updatedAt` 写成 `Date.now()`，手里明明有 `meta.mtime` —— 桥重启后打开任何老会话都显示「刚刚」。
+3. `startTail()` → 首次 `refreshFromFile()`：`tailSig` 初值 `""`，第一次必 `touch()` —— 文件没动也算一次活动。
+
+**决定：**
+
+- 完成状态持久化到 `<state>/finished.json`（`{"<sessionId>": <finishedAt>}`），与 `names.json` 同口径：桥自己的状态，写失败只损失持久化。`Session` 构造时读回；`list()` 对磁盘上有、内存里还没 `ensure` 的会话也读同一个文件；删会话时 `forgetFinished()` 一起清。
+- 打开 / 订阅**不清**完成：删掉 `markSeen()` 与前端 `openSession()` 里的本地清除；`sessionBadge` 去掉「不是当前会话」条件 —— 当前打开的会话也显示「完成」。
+- 清除条件只剩三个：`agent_start`、网页 `prompt()`（消息一发出就清，不等 pi 起跑）、会话文件被终端 / 外部续写（`refreshFromFile` 检测到变化）。三条都同时写 `finished.json` 清除。停止 tail（sleep / 让回终端）再恢复不算「外部续写」：`stopTail()` 把 `tailSig` 复位，恢复后的第一次读盘按「第一次」处理，只取 mtime。
+- 「文件比完成标记新」的判据带 **1s 容差**（`FINISHED_SKEW_MS`）：文件系统 mtime 的精度与「settle 后我们自己再写一行」都落在这一秒内；超过 1s 才算停机期间的终端续写。构造、`list()` 与 `refreshFromFile` 三处共用 `finishedIsStale()`。
+- `agent_settled` 写 `done:true` + 时间戳。GC 回收不再拿 `done` 当免回收条件（回收后 `ensure()` 会从 `finished.json` 读回来）。
+- 时间显示：构造用 `meta.mtime`；`refreshFromFile` 首次读盘只取 `stat.mtimeMs`、不 `touch()`，之后文件真变了才 `touch()`。打开一个会话不再让它跳到「刚刚」，时间始终是「这个会话最后一次真正被写」。
+
+**为什么：** 完成是会话属性、不是某页未读 —— D45 当初已经这么论证（桥端算 `done`），但「清理」仍挂在快照上，实际把属性降级成了未读。用户要在重启、换设备、隔一会儿再看时都能判断「这一轮结束了没有」。持久化而不只是内存标志，是因为桥重启或会话被 GC 回收后 `ensure()` 会重建 Session，内存标志会丢；写盘一次几个字节，和 `names.json` 一样便宜。清在 `prompt()` 而不是等 `agent_start`，是因为消息发出到 pi 起跑有 1–3 秒冷启（D120），这期间卡片不能还挂着「完成」。终端续写要清，是因为只读会话的「这一轮结束」在桥这侧没有事件（D45 的解释仍成立），文件变长说明有人在终端里继续，之前的完成已经过期。时间取 mtime 而非打开时刻，是因为用户要看的是「任务什么时候结束 / 最后活动」，不是「我看它的时候」。
+
+**代价 / 可改：** 多了一个状态文件；会话删除必须同时清（已接进删除路径）。只读会话若终端刚写完、桥还没 tail 到，列表可能短暂显示「完成」再被文件变化清掉 —— 一次事件的事。当前会话显示「完成」是刻意改变；如果嫌和「运行中」来回闪，可以把完成改成左侧小勾或只在非当前会话上显示（**可改**）。
+
+**验证：** `bridge/tests/session-flags.mjs` 改为「点开后完成仍在 + `/api/sessions` 里 `done=true` + 下一条 prompt 清掉」；`npm run test:done`（9 条纯逻辑：读回、mtime、过期清盘、`stopTail()` 后恢复不清、停机期间续写判过期）；`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（含 `i18n-check`）、`npm run build:bridge`、`npm run build:web`。手测：跑完一轮 → 刷新页面 / 重启 bridge → 仍显示完成且时间是完成时刻；发消息后立即消失；终端 `pi -c` 续写后再看显示新时间。
+
+## D163 附件弹层能引用「当前文件夹」；面包屑的盘符段跳到盘根；弹层按会话记住上次的目录（无票，用户要求）
 
 **问题：** 三件事都出在「文件」弹层里：
 
@@ -2383,7 +2410,7 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 **决定：**
 
 - head 里 `⌂ 工作目录` 右边加 **`📎 引用当前文件夹`**（`dirRef()`，形状照抄 `dirCopy()`）：读 `picker.path()`，含空格才包一对引号（`C:\Program Files\x` 裸着会被读成两个路径；没空格的包上反而多两处要删），走 `insertPaths()` 按 caret 插入，按钮闪「已引用」1.2 秒，**弹层不关** —— 接着还能选文件。「此电脑」页没有目录，按钮 disabled（原因写在 `title`；灰按钮上浏览器常不出 tooltip，所以灰本身也是提示）。
-- 重复点只闪「已在输入框」不插第二遍。判定 `composerHasPath()` 看左右各一个字符：`F:\a` 不能把 `F:\ab` 认成同一条，同一目录下的另一个子目录仍算新路径。
+- 重复点只闪「已在输入框」不插第二遍。判定 `hasPathToken()`（`dirpicker.ts`）左右只认空白 / 引号 / 字符串边缘：`F:\a` 不能把 `F:\ab` 认成同一条，同一目录下的另一个子目录仍算新路径。
 - 面包屑盘符段的 target 补上分隔符（显示文字仍是 `F:`），并且 `navigate()` 入口再对裸盘符兜底一次，免得下一个调用方重踩。
 - 记忆**按会话**：`pi.attachDir:<sessionId>`，目录一变就写；打开时 记忆 → 会话 cwd → 盘符列表 依次退化，没有 session id 就既不读也不写。`pi.attachDir.index` 记着用过的键，超过 30 条删最旧的（删掉的会话不该一直占着键）。文件管理器不受影响，仍旧用它自己的 `pi.fsDir`。
 
