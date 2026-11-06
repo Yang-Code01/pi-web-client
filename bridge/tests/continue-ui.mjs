@@ -4,11 +4,14 @@
  *
  *   node bridge/tests/continue-ui.mjs
  *
- * 验的是三个只能看真 DOM 才知道的事：
+ * 验的是四个只能看真 DOM 才知道的事：
  *   A. 新会话（一条用户消息都没有）按钮在、是灰的；
  *   B. 跑完一轮变亮；跑着的时候是灰的；被打断之后又是亮的（这正是这个按钮的来由）；
  *   C. 点它发出去的是字面「继续」，**草稿留在输入框里**，而且它没有跟权限按钮打架 ——
- *      继续在下、权限在上、两颗粒子同宽，整块只比输入框高 3.5px（28 + 4 + 44 = 76 vs 72.5）。
+ *      继续在下、权限在上、两颗粒子同宽，整块只比输入框高 3.5px（28 + 4 + 44 = 76 vs 72.5）；
+ *   D. 英文界面：标签是 `Continue`，发出去的仍然是字面「继续」（模型读到的东西不跟界面语言变）。
+ *
+ * 端口默认 7888（其它探针已占 7891–7899），可用 CONTINUE_UI_PORT 改。
  *
  * 截图落在 .scratch/shots/continue-*.png。
  */
@@ -22,7 +25,7 @@ import { loadPlaywright } from "../../tools/playwright.mjs";
 const { chromium } = await loadPlaywright();
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.CONTINUE_UI_PORT ?? 7896);
+const PORT = Number(process.env.CONTINUE_UI_PORT ?? 7888);
 const ROOT = path.join(REPO, ".scratch", "continue-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
@@ -202,6 +205,32 @@ try {
     await sleep(100);
   }
   await shot("after", await composerClip());
+
+  // -- D. 英文界面：标签译了，发出去的仍然是字面「继续」 -----------------
+  // 两个 reviewer 都盯着这一点：模型读到的东西不该跟着界面语言变。
+  const en = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
+  await en.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
+  const enPage = await en.newPage();
+  await enPage.goto(`${BASE}/#/s/${sessionId}`);
+  await enPage.waitForSelector(".composer .continue-btn", { timeout: 20000 });
+  for (let i = 0; i < 100; i++) {
+    if (!(await enPage.locator(".continue-btn").isDisabled())) break;
+    await sleep(100);
+  }
+  const enLabel = (await enPage.locator(".continue-btn").innerText()).trim();
+  check("英文界面标签是 Continue", enLabel === "Continue", JSON.stringify(enLabel));
+  const beforeEn = piLog().length;
+  await enPage.locator(".composer textarea").fill("english draft");
+  await enPage.locator(".continue-btn").click();
+  let sentEn = null;
+  for (let i = 0; i < 100; i++) {
+    sentEn = piLog().slice(beforeEn).find((r) => r.t === "turn");
+    if (sentEn) break;
+    await sleep(100);
+  }
+  check("英文界面发出去的仍是字面「继续」", sentEn?.text === "继续", JSON.stringify(sentEn?.text));
+  check("英文界面草稿也在", (await enPage.locator(".composer textarea").inputValue()) === "english draft");
+  await en.close();
 } catch (err) {
   check(`没跑完：${String(err?.message ?? err).split("\n")[0]}`, false);
   if (bridgeLog) log("bridge:", bridgeLog.slice(-1500));

@@ -54,7 +54,8 @@ test("跑完一轮（running 落回 false）又亮起来：常驻，不只在被
   assert.equal(continueState({ ...owned, running: false }, true), "ready");
 });
 
-test("字段缺省按「不是」算：老桥不发 locked/starting 也不该把按钮锁死", () => {
+test("字段缺省按「不是」算：老桥不发 locked/starting/running 也不该把按钮锁死", () => {
   assert.equal(continueState({ owned: true }, true), "ready");
-  assert.equal(continueState({}, true), "hidden");
+  assert.equal(continueState({ owned: true, locked: undefined, starting: undefined, running: undefined }, true), "ready");
+  assert.equal(continueState({ owned: false }, true), "hidden");
 });

@@ -2251,13 +2251,15 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 
 - 位置：composer 右侧，权限按钮**正上方**，同一列。≤520px 的手机宽也一样（那时权限按钮只剩图标）。
 - 触发：**常驻** —— 会话空闲就亮，不是只在异常中断后出现。新会话（一条用户消息都没有）显示但置灰；跑着的时候（`pi.status.running`）也置灰；只读预览 / 终端里另一个 pi 持锁时**藏起来**（先点「接管会话」）。
-- 发出去的是**字面「继续」**（`tr("继续")`），作为一条普通 user 消息进历史、出现在对话里。
-- **不清草稿**：它不走 `sendPrompt()` 的清空路径，输入框里的东西原样留着 —— 这是「接着刚才那件事」，不是「把我写的发出去」。
-- 乐观气泡照 `sendPrompt()` 带 `clientId`（桥回灌时这一页认自己那条，#19）；1.5 秒连点保护：`pi.status(running)` 回来之前按钮还亮着，连点会排两条。
-- 判据抽成纯函数 `continueState(s, hasUserTurns)`（`web/src/continue-state.ts`），`app.ts` 只负责画和发。
+- 发出去的是**字面「继续」**（`CONTINUE_TEXT`），作为一条普通 user 消息进历史、出现在对话里。它**不跟界面语言变**：标签是 `tr("继续")`，发出去的字永远是这两个字。
+- **不清草稿**：它不走 `sendPrompt()` 的清空路径，输入框里的东西原样留着 —— 这是「接着刚才那件事」，不是「把我写的发出去」。重画会重建 textarea，所以光标位置与焦点在点击后收回去，手感也不变。
+- 乐观气泡照 `sendPrompt()` 带 `clientId`（桥回灌时这一页认自己那条，#19）；`CONTINUE_GUARD_MS`（1.5 秒）连点保护，**按会话记**：`pi.status(running)` 回来之前按钮还亮着，A 里点完立刻切到 B 再点不该被吞。
+- 判据抽成纯函数 `continueState(s, hasUserTurns)`（`web/src/continue-state.ts`），`app.ts` 只负责画和发；字段名直接 `Pick<SessionState, …>` 借过来，桥那边改名这边会编译不过。
+
+**为什么常驻、为什么发字面、为什么不清草稿：** 用户要的是「任务被打断之后能接回去」，而不是一个「异常报告」控件 —— 只在异常后出现的话，正常停下（想休息一会儿）时反而找不到它，而且「这一轮算不算异常」在页面这边永远只能猜（`stopReason` 有好几种，桥重启压根没有 item 事件）。「继续」本来就是一句话，把它做成命令/协议事件会让 pi 那边看到一个不存在的能力；发成普通消息则是同一条 `prompt` 路径，接管、排队、steer 全部照旧。不清草稿是因为点它的人多半正在写下一句，清掉就是把人家手上的东西弄没了。
 
 **为什么放在上面那块：** 本机 CDP 实测 `.composer .row` —— 输入框默认两行 **72.5px**，权限按钮 **44px 贴底**，所以它上方本来就空着 **28.5px**，1280/980/700/520/390 五个宽度都一样。28 + 4 间隙 + 44 = **76**，整行只比输入框高 **3.5px**。同一颗按钮塞在别处（新起一行 / 叠一颗 44px 的）分别要多 50 / 19.5px 的正文高度，而那块本来谁也放不进东西。
 
-**代价 / 可改：** 草稿越长，那一列离输入框顶越远 —— 但它始终贴着权限按钮，这正是「一列」的意思。`hidden` 属性打不过 `display:inline-flex`，样式里显式写了 `.continue-btn[hidden]{display:none}`。英文界面点下去发的是 `Continue`（键就是中文原文）；若想永远发中文，把 `tr("继续")` 换回字面量即可。**可改。**
+**代价 / 可改：** 草稿越长，那一列离输入框顶越远 —— 但它始终贴着权限按钮，这正是「一列」的意思。`hidden` 属性打不过 `display:inline-flex`，样式里显式写了 `.continue-btn[hidden]{display:none}`（`disabled` 先置，藏是第二道）。`locked` 目前只出现在桥 `list()` 的副本上（live 广播里没有），所以那一半是兜底，真正管用的仍是 `owned`。字面「继续」不翻译，`i18n-check` 靠模块级常量认出来（当它是「使用处才定语言的值」，不报漏翻）。**可改。**
 
-**验证：** `npm run test:continue`（10 条：藏 / 灰 / 亮三态的边界，含「藏优先于灰」与字段缺省）；`npm run test:continue:ui`（自带丢弃式 bridge + `bridge/tests/fixtures/fake-pi.mjs`，真 Chromium 11 条：新会话按钮在且是灰的 / 竖着叠在权限按钮上方且同宽 121.2px / `row 76.0 vs textarea 72.5` / 跑完一轮变亮 / SLOW 时是灰的 / **被打断之后又亮** / 点下去 fake-pi 收到字面「继续」/ 草稿仍在 / 对话里出现「继续」）。`npm --prefix web run typecheck`（tsc + i18n-check，1414 键 × 3 语言）、`npm run build:web`、`npm run build:bridge`。
+**验证：** `npm run test:continue`（10 条：藏 / 灰 / 亮三态的边界，含「藏优先于灰」与字段缺省）；`npm run test:continue:ui`（自带丢弃式 bridge + `bridge/tests/fixtures/fake-pi.mjs`，真 Chromium **14 条**：新会话按钮在且是灰的 / 竖着叠在权限按钮上方且同宽 121.2px / `row 76.0 vs textarea 72.5` / 跑完一轮变亮 / SLOW 时是灰的 / **被打断之后又亮** / 点下去 fake-pi 收到字面「继续」/ 草稿仍在 / 对话里出现「继续」/ 英文界面标签是 `Continue` 但**发出去的仍是「继续」** / 英文界面草稿也在）。截图见 `docs/shots/continue-button.png`（被打断的那一轮 + 亮着的按钮）。`npm --prefix web run typecheck`（tsc + i18n-check，1414 键 × 3 语言）、`npm run build:web`、`npm run build:bridge`。
