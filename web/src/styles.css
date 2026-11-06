@@ -2859,3 +2859,34 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* pi 的工具调用步骤（文字为空）：留在 DOM 里守住顺序，但别画出来。 */
 .sc-row.sc-step[hidden], .sc-who[hidden] { display: none; }
 .sc-model { font: 11px/1 var(--mono); letter-spacing: 0.04em; color: var(--faint); text-transform: none; }
+
+/* D154：桥换了 build、页面里还是旧 JS —— 顶部一条提示，点「刷新」才 reload。 */
+.update-bar {
+  position: fixed;
+  z-index: 80;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 20px);
+  padding: 8px 8px 8px 14px;
+  background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+  color: var(--text);
+}
+.update-bar-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.update-bar-x {
+  background: none;
+  border: 0;
+  color: var(--faint);
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+.update-bar-x:hover { color: var(--text); }

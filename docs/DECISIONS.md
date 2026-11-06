@@ -2172,3 +2172,34 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - 跳转不写 `v.lastDir` 之外的状态：不进历史、不记住上次跳到哪。刷新页面回到会话 cwd。
 
 **验证：** `npm --prefix web run typecheck`（`tsc --noEmit` + `i18n-check.mjs`，1411 键 × 3 语言）；`npm run test:dirpath`（11 例：引号/空白、三种绝对路径、`joinPath` 分隔符、`fileNameOf` 尾斜杠、相对拼接、`./` 归一、`\Users\me` 落当前盘、只敲盘符（含盘符页 `C:` 归一成 `C:\`）、盘符页不拼相对）；`npm run test:stat`（6 例：dir/file/missing + parent、空串、trim、盘符根 parent 为空串）；浏览器探针 `node probes/fs-path-jump.mjs`（10 段：框在、文件夹进入且清空输入、文件回父目录并高亮且焦点落到行上、带引号路径、相对路径、miss 报错且列表不动并清旧高亮、Esc 两级（第二下关面板）、盘符页相对路径报错、盘符页裸盘符 `C:` 归一、新会话 picker 没这行而附件 picker 有且能跳到文件并标出那一行），截图在 `.scratch/fs-jump/shots/`。
+
+## D154 更新与重启交给 skill：build 成功才换进程，前端比 build id 提示刷新，看门狗兜底（无票，用户口头要求）
+
+**问题：** 合完 PR 之后「让 7864 用上新代码」一直是手工活：找到那个终端窗口、Ctrl-C、`npm start`、等 10 秒编译、刷新页面。三步里每一步都能出错 —— 关错了窗口就把别的会话的 `pi` 子进程带走了；忘了刷新页面则是「代码合了但界面没变」的经典困惑；而 agent 自己在会话里跑这套的话，杀掉 bridge 的瞬间自己的 `pi` 子进程也一起没了，turn 直接断在原地，没人知道成没成。
+
+**决定：**
+
+- **固化成项目 skill**（`.pi/skills/bridge-update/`，`bin/restart.mjs` + `bin/watchdog.mjs`），不做常驻服务、不做镜像目录、不做零中断切换。入口是一条命令，人让 agent「更新一下」就够了。
+- **先 build、后杀进程**。`npm run build` 通过才 `taskkill /PID` 旧进程，编译失败时旧服务原样活着、7864 一秒都没断。窗口期只存在于 build 成功之后的那 1–3 秒。
+- **合并只做 `git merge --ff-only origin/main`**：这是 AGENTS.md「不在 main 上改」唯一被授权的例外，也仅限这一步。dirty / 分叉一律 `merge-failed` 退出，**不 stash、不 rebase、不 reset** —— 主检出里可能是别人的活。
+- **新进程开在自己的终端窗口里**（`Start-Process powershell -WindowStyle Hidden -File start-bridge.ps1` 跑 `npm run start:nobuild`，输出同时 `Tee-Object` 到 `.scratch/bridge-update/bridge-live.log`）。人还能看见编译和运行日志，关窗即停，和以前手工起的形态一致。
+- **只按 pid 杀，绝不 `taskkill /T`**：进程树里可能连着别的 bridge 实例的会话。桥死了之后逐个 `childrenOf(pid)` 补刀，否则孤儿 `pi` 进程攥着会话锁，界面永远显示「终端正在使用」。pid 的来源依次是：`/healthz` 自己报的（只对 loopback 回，`public` 访客拿不到）、`bridge/src/pidfile.ts` 在监听成功时写的 `%TEMP%/pi-web-bridge-<port>.pid`、最后才是枚举端口 —— 在沙箱/本地代理后面 `Get-NetTCPConnection -State Listen` 会答空 pid，只信它就会去起第二个实例撞 EADDRINUSE。
+- **一次 build 一个 id**（`scripts/build.mjs`）：`${shortSha}-${base36 时间戳}` 同时写进 `bridge/dist/build-id.json`、以 `PI_BUILD_ID` 传给 vite define。`/healthz` 与 WS `hello` 都带上它，前端把自己内联的那份一比：不一致才提示。拿 id 而不是 `VERSION`（`bridge/src/paths.ts:6` 写死 `0.1.0`）或文件 mtime（`npm run build` 每次都摸）。
+- **不自动 reload**：重连后发现 build 变了，只在顶部挂一条「服务已更新，刷新后生效」+ 刷新按钮。用户可能正在输入框里打字，抢刷新等于把他的字删了；桥端本来就带断线重连，旧 JS 继续用也不会坏。
+- **失败一律留证据**：每次跑完写 `.scratch/bridge-update/last-run.json`（`result` ∈ `ok|up-to-date|behind|dry-run|bad-repo|aborted|fetch-failed|merge-failed|build-failed|kill-failed|start-failed|stopped`，加 `fromSha`/`toSha`/`buildId`/`oldPid`/`newPid`），build 输出进 `update.log`。
+- **turn 被切断不等于任务丢了**：agent 在动手前把「接着要做什么」写进 `.scratch/bridge-update/pending.md`，AGENTS.md 规定下次会话见到 `pendingUnread: true` 先读它接着做、再置 false。
+- **看门狗是用户级计划任务**，每分钟探测 `/healthz`；`restart.lock` 新鲜（<5 分钟，正在更新）就跳过，`stopped.flag` 存在就跳过（`watchdog.mjs --stop` 是「我要它停着」的显式表达），5 分钟冷却避免崩循环刷进程。
+- `--check` 走前台：只 `fetch` + 比 SHA，不 build 不杀进程，秒回「已是最新」。只有确认落后才起 detached 进程 —— 这一步不能省，不然后台任务白跑一趟还留个过期的 `pending.md`。
+
+**为什么：** 这台机器上没有 pm2 / nssm，也没有容器；「谁来重启」本来就只有人。把它做成 skill 而不是常驻服务，是因为重启是**少数事件**，常驻进程本身又成了新的需要人看着的东西。顺序（build → kill）和合并方式（ff-only，不 stash）都是为了一个原则：**更新器出错时，线上必须还是能用的一套**。build id 走一次性生成而不是每包自己算，是因为三个包分开编译时没人能保证它们描述的是同一次产物。
+
+**代价 / 可改：**
+
+- **只在 Windows 上验过**：进程探测（`Get-NetTCPConnection`）、杀进程（`taskkill`）、看门狗（计划任务）三处都是 Windows 实现，POSIX 分支写了 `lsof`/`kill` 但没跑过。
+- **重启仍会断连** 1–3 秒，正在生成的 turn 会被切；前端靠既有重连回来，但正在流的回答只能重发。
+- **`--check` 依赖网络**：GitHub 直连不通时靠 `BILLION_CONTEXT_PROXY`，代理也没起就退化成「不知道有没有更新」，报 `fetch-failed` 而不是假装已最新。
+- **看门狗只认 `bridge/dist/index.js`**：还没 build 过就跳过，不替你编译。它也不会更新，只会在崩溃后拉起旧 build。
+- **build id 在开发模式下是 `"dev"`**（`npm run dev:web`），前端永不给刷新提示 —— 那是故意的，dev 下每次保存都变。
+- 新窗口是隐藏的（`-WindowStyle Hidden`），日志只在 `bridge-live.log` 里；想要看得见，改 `startBridge()` 那一行即可。**可改**。
+
+**验证：** `npm run typecheck`（bridge / peer / web 三份 + `i18n-check.mjs`，1412 键 × 3 语言）；`npm run build` 产出的 `bridge/dist/build-id.json` 里 `id` 与 `web/dist/assets/*.js` 内联的 `__BUILD_ID__` 一致（`21b55f3-mw54eo4n`）；在临时克隆（`F:/pi-web-client-wt/_upd-test`，测完已删）上用 `--port 7964` 跑了四条路径：`--check` 判定 `behind:true` → 全流程 `ok`（`oldPid 33836` 来自 pid 文件、`newPid 3032`、`/healthz` 的 `buildId` = 新 build）→ 故意写坏一个 TS 文件后 `build-failed` 且旧进程仍在服务（pid 与 `buildId` 都没变）→ 删掉 pid 文件再跑，仍能从 `/healthz` 的 `pid` 找到旧进程（`oldPid 13956`）；看门狗停掉后一次拉起回到 `/healthz` 正常，`--stop` 期间确实不拉、`--start` 恢复，5 分钟冷却生效。

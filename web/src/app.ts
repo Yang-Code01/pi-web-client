@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { api } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
+import { BUILD_ID } from "./build.ts";
 import { filterCommands, type CommandItem } from "./commands.ts";
 import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
@@ -1184,6 +1185,8 @@ export class App {
       case "hello":
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
+        // D154：桥上的 build 换了，页面里的 JS 还是旧的 —— 提示刷新，不自动 reload。
+        if (typeof msg.buildId === "string") this.checkBuild(msg.buildId);
         // D113: a dropped socket mid-stream would leave the ⟳ spinning forever (the flags gate the
         // next request), so a fresh connection forgets them and asks again.
         this.extInvLoading = false;
@@ -3383,6 +3386,19 @@ export class App {
   }
 
   /** Repaint in place, keeping the scroll position and the focused box (as `paintExtIfOpen` does). */
+  /** D154：只提示、不自动刷新 —— 页面里可能正有没发出去的输入。 */
+  private checkBuild(buildId: string): void {
+    if (BUILD_ID === "dev" || buildId === BUILD_ID || document.querySelector(".update-bar")) return;
+    const bar = el("div", "update-bar");
+    const btn = el("button", "btn primary", tr("刷新"));
+    btn.onclick = () => location.reload();
+    const close = el("button", "update-bar-x", "×");
+    close.title = tr("知道了");
+    close.onclick = () => bar.remove();
+    bar.append(el("span", "update-bar-text", tr("服务已更新，刷新后生效")), btn, close);
+    document.body.append(bar);
+  }
+
   private paintSkillIfOpen(): void {
     if (this.sheetKind !== "skillstore") return;
     const host = this.sheet?.querySelector<HTMLElement>(".skill-host");

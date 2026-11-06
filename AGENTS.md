@@ -43,6 +43,12 @@ Issues and specs live as GitHub issues in `Yang-Code01/pi-web-client`, driven wi
 
 The bridge (`http://127.0.0.1:7864`) is normally started by hand in a terminal; its `pi --mode rpc` children die with it. A restart is just stop + `npm start` — no verification wrapper beforehand. To tell whether you are a descendant of some pid, ask the human or print your own ancestor chain with `pwsh` (`Get-Process(...).Parent`). See `docs/agents/running-the-bridge.md`.
 
+### 更新 / 重启 bridge
+
+用 `.pi/skills/bridge-update/`（流程见 `SKILL.md`）：先 `node .pi/skills/bridge-update/bin/restart.mjs --check --dir <仓库根>` 判断是否落后（前台、安全，只 fetch 不杀进程）。落后了才把没做完的事写进 `.scratch/bridge-update/pending.md`，detached 起完整流程，然后**立刻结束回复**。不要在前台跑完整流程——杀 bridge 会切断自己的 turn。
+
+**每次会话开场**：读 `.scratch/bridge-update/last-run.json`；若 `pendingUnread: true`，先按 `pending.md` 把上次没做完的事做完，再把该字段改成 `false`。这是上一轮被重启切断后的续做入口。
+
 ### Domain docs
 
 Single-context: one `GLOSSARY.md` at the repo root and the decision log at `docs/DECISIONS.md` (`D1`…`Dn`, 决定 + 为什么). See `docs/agents/domain.md`.

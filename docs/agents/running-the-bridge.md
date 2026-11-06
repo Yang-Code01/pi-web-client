@@ -4,11 +4,25 @@ The bridge is the process behind `http://127.0.0.1:7864` — it serves `web/dist
 
 ## Restarting it
 
-`npm start` at the repo root = `build:bridge && build:peer && build:web && node bridge/dist/index.js`. A restart costs ~10s of building.
+**Use the skill** — `.pi/skills/bridge-update/` (see `SKILL.md`). Don't hand-roll the two-step.
 
-- **Restarting is a plain two-step**: stop the old `node bridge/dist/index.js`, start the new one. Don't build a verification wrapper (log files, retry loops, port polling) before doing the action; do the action, then check `http://127.0.0.1:7864/` once.
-- The `pi` child processes (`--mode rpc ... --session <file>`) die with the bridge. Session transcripts are already on disk in `~/.pi/agent/sessions/`, so nothing is lost — but a chat that was mid-turn will be cut.
-- If your own transport might be the thing you're restarting, **don't investigate first** — hand the kill+start to a detached helper that waits a few seconds (`Start-Process pwsh -ArgumentList '-File', <script>`), then reply. Whether or not you are a child of the bridge stops mattering.
+```bash
+node .pi/skills/bridge-update/bin/restart.mjs --check --dir .   # 只判断，不 build、不杀进程
+```
+
+If `behind: true`, write whatever is unfinished to `.scratch/bridge-update/pending.md`, start `restart.mjs` **detached** (`Start-Process node -WindowStyle Hidden -ArgumentList …`), then end your reply. Never run the full flow in the foreground: killing the bridge takes your own `pi` child with it, mid-turn.
+
+What it does, in order — the order is the point:
+
+- `git fetch` + `git merge --ff-only origin/main` in the main checkout (the one sanctioned exception to "never write on main"). Dirty or diverged → `merge-failed`: **no stash, no rebase, no reset**.
+- `npm run build`. **Only if that succeeds** does it touch the running process — a broken build leaves 7864 serving the old code, so the outage is just the 1–3 s handover.
+- `taskkill /PID <bridge>` (never `/T`), then kill the bridge's own `pi` children by pid; orphans keep holding session locks and show up as “terminal in use”.
+- `Start-Process powershell -WindowStyle Hidden -File <start-bridge.ps1>` running `npm run start:nobuild`, teeing to `.scratch/bridge-update/bridge-live.log`. Closing that window stops the bridge, same as before.
+- Poll `/healthz` for 45 s and check the reported `buildId` matches the fresh build; write `.scratch/bridge-update/last-run.json`.
+
+`npm start` still works by hand (`build:bridge && build:peer && build:web && node bridge/dist/index.js`, ~10 s). Session transcripts live in `~/.pi/agent/sessions/`, so a mid-turn chat is cut, not lost — that is what `pending.md` and the `pendingUnread` startup check in AGENTS.md are for.
+
+If your own transport might be the thing you're restarting, hand the kill+start to the detached helper and reply; whether or not you are a child of the bridge stops mattering.
 
 ## "Am I a child of that process?"
 
