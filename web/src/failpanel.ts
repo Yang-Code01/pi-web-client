@@ -131,7 +131,7 @@ export class FailPanel {
     const ignored = rows.filter((e) => entryState(e) === "ignored");
     const abort = rows.filter((e) => entryState(e) === "abort");
     const nodes: HTMLElement[] = [];
-    open.forEach((e, i) => nodes.push(this.row(e, i + 1)));
+    open.forEach((e) => nodes.push(this.card(e)));
     if (!open.length) nodes.push(el("div", "fail-empty", tr("没有待修的错误。")));
     const fold = (label: string, list: FailEntry[], kind: string) => {
       if (!list.length) return;
@@ -140,7 +140,7 @@ export class FailPanel {
       const n = el("span", "n", String(list.reduce((a, e) => a + e.count, 0)));
       sum.append(n);
       d.append(sum);
-      for (const e of list) d.append(this.row(e, 0));
+      for (const e of list) d.append(this.card(e));
       nodes.push(d);
     };
     fold(tr("已修复"), fixed, "fixed");
@@ -149,30 +149,31 @@ export class FailPanel {
     this.listEl.replaceChildren(...nodes);
   }
 
-  private row(e: FailEntry, rank: number): HTMLElement {
-    const row = el("div", `fail-row${e.key === this.sel ? " on" : ""}`);
-    row.tabIndex = 0;
-    row.setAttribute("role", "button");
-    const main = el("div", "fail-main");
-    main.append(el("div", "fail-title", entryTitle(e)));
-    const sub = el("div", "fail-sub");
-    sub.append(el("span", "", e.tool), el("span", "cmd", e.occ[0]?.cmd ?? ""), el("span", "when", clock(e.last)));
-    main.append(sub);
+  /** 一张卡 = 一类：标题、次数（大字在右）、工具与最近一次的命令。密度 B，一屏 4–5 张。 */
+  private card(e: FailEntry): HTMLElement {
+    const card = el("div", `fail-card${e.key === this.sel ? " on" : ""}`);
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    const top = el("div", "fail-card-top");
+    top.append(el("span", "fail-card-title", entryTitle(e)));
     const state = entryState(e);
-    row.append(el("span", "fail-rank", rank ? String(rank) : ""), main, el("span", `fail-count${state === "open" ? " hot" : ""}`, String(e.count)));
-    row.onclick = () => {
+    top.append(el("span", `fail-card-n${state === "open" ? " hot" : ""}`, String(e.count)));
+    const sub = el("div", "fail-card-sub");
+    sub.append(el("span", "", e.tool), el("span", "cmd", e.occ[0]?.cmd ?? ""), el("span", "when", clock(e.last)));
+    card.append(top, sub);
+    card.onclick = () => {
       this.sel = e.key;
       this.paintList();
       this.paintDetail();
     };
-    row.onkeydown = (ev) => {
-      if (ev.target !== row) return;
+    card.onkeydown = (ev) => {
+      if (ev.target !== card) return;
       if (ev.key === "Enter" || ev.key === " ") {
         ev.preventDefault();
-        row.click();
+        card.click();
       }
     };
-    return row;
+    return card;
   }
 
   private paintDetail(): void {
@@ -217,20 +218,22 @@ export class FailPanel {
     this.detailEl.replaceChildren(...parts);
   }
 
+  /** 每次发生一张证据卡：谁、什么时候、跑的命令、第一行输出、exit。表格排不下长命令。 */
   private occurrences(e: FailEntry, n: number): HTMLElement {
     const box = el("div", "fail-occ");
-    const head = el("div", "fail-occ-head");
-    head.append(el("span", "", tr("时间")), el("span", "", tr("会话")), el("span", "cmd", tr("命令")), el("span", "right", tr("结果")));
-    box.append(head);
     if (!e.occ.length) box.append(el("div", "fail-empty", tr("没有留下明细。")));
     for (const o of e.occ.slice(0, n)) {
-      const row = el("div", "fail-occ-row");
-      const t = el("span", "", clock(o.at));
+      const ev = el("div", "fail-ev");
+      const head = el("div", "fail-ev-head");
+      const t = el("span", "when", clock(o.at));
       t.title = new Date(o.at).toLocaleString();
-      row.append(t, el("span", "sess", o.name || o.sid.slice(0, 8)), el("span", "cmd", o.cmd || "—"));
-      row.append(el("span", `right ${o.exit === 0 ? "" : "bad"}`, o.exit != null ? `exit ${o.exit}` : "—"));
-      box.append(row);
-      if (o.out) box.append(el("div", "fail-occ-out", o.out));
+      head.append(t, el("span", "sess", o.name || o.sid.slice(0, 8)));
+      const exit = el("span", "exit", o.exit != null ? `exit ${o.exit}` : "—");
+      if (o.exit != null && o.exit !== 0) exit.classList.add("bad");
+      head.append(exit);
+      ev.append(head, el("div", "fail-ev-cmd", o.cmd || "—"));
+      if (o.out) ev.append(el("div", "fail-ev-out", o.out));
+      box.append(ev);
     }
     return box;
   }

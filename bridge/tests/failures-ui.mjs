@@ -188,8 +188,8 @@ try {
   check("tab 叫「⚡ AI 出错记录」", (await tab.innerText()).includes("AI 出错记录"), await tab.innerText());
   check("tab 上的计数 = 待修类数（3）", (await tab.innerText()).replace(/\s+/g, " ").includes("3"), await tab.innerText());
   await tab.click();
-  await page.waitForSelector(".fail-list .fail-row", { timeout: 10000 });
-  const rows = page.locator(".fail-list .fail-row");
+  await page.waitForSelector(".fail-list .fail-card", { timeout: 10000 });
+  const rows = page.locator(".fail-list .fail-card");
   check("左栏三类都列出来", (await rows.count()) === 3, String(await rows.count()));
   const first = (await rows.first().innerText()).replace(/\s+/g, " ").trim();
   check("第一行是次数最多的那类（2 次）", first.includes("2"), JSON.stringify(first));
@@ -200,7 +200,7 @@ try {
   await page.waitForSelector(".fail-detail", { timeout: 5000 });
   const detail = (await page.locator(".fail-detail").innerText()).replace(/\s+/g, " ");
   check("右边说清楚为什么没成", detail.includes("没成"), detail.slice(0, 80));
-  check("明细行显示两次发生", (await page.locator(".fail-occ-row").count()) >= 2, String(await page.locator(".fail-occ-row").count()));
+  check("明细行显示两次发生", (await page.locator(".fail-ev").count()) >= 2, String(await page.locator(".fail-ev").count()));
   check("动作里有标为已修复 / 忽略 / 删除", detail.includes("标为已修复") && detail.includes("忽略这类") && detail.includes("删除"));
   await shot("detail");
 
@@ -214,10 +214,10 @@ try {
   // 标为已修复：从待修里消失，tab 计数减一。
   await page.locator(".fail-actions .btn", { hasText: "标为已修复" }).click();
   for (let i = 0; i < 50; i++) {
-    if ((await page.locator(".fail-list > .fail-row").count()) === 2) break;
+    if ((await page.locator(".fail-list > .fail-card").count()) === 2) break;
     await sleep(100);
   }
-  check("标为已修复后离开待修列表", (await page.locator(".fail-list > .fail-row").count()) === 2, String(await page.locator(".fail-list > .fail-row").count()));
+  check("标为已修复后离开待修列表", (await page.locator(".fail-list > .fail-card").count()) === 2, String(await page.locator(".fail-list > .fail-card").count()));
   check("tab 计数跟着减", !(await tab.innerText()).replace(/\s+/g, " ").includes("3"), await tab.innerText());
   await shot("fixed");
   await page.locator(".notes-head .btn.ghost", { hasText: "关闭" }).click();

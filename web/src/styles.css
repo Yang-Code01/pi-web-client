@@ -2912,21 +2912,20 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .fail-list { overflow-y: auto; padding: 0 8px 8px; display: flex; flex-direction: column; gap: 3px; }
 .fail-empty { padding: 14px 10px; color: var(--faint); font-size: 12px; text-align: center; line-height: 1.6; }
 
-.fail-row {
-  display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; align-items: center;
-  padding: 7px 8px; border-radius: 8px; border: 1px solid transparent; cursor: pointer;
+.fail-card {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 9px 10px; border-radius: 10px; border: 1px solid transparent; cursor: pointer;
 }
-.fail-row:hover { background: var(--panel-2); }
-.fail-row.on { border-color: var(--accent-dim); background: var(--accent-bg); }
-.fail-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.fail-rank { font: 10px/1 var(--mono); color: var(--faint); text-align: right; }
-.fail-main { min-width: 0; }
-.fail-title { font-size: 12.5px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fail-sub { display: flex; gap: 8px; margin-top: 2px; font: 11px/1.35 var(--mono); color: var(--faint); }
-.fail-sub .cmd { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fail-sub .when { flex: none; margin-left: auto; }
-.fail-count { font: 12px/1 var(--mono); color: var(--dim); }
-.fail-count.hot { color: var(--warn); font-weight: 600; }
+.fail-card:hover { background: var(--panel-2); }
+.fail-card.on { border-color: var(--accent-dim); background: var(--accent-bg); }
+.fail-card:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.fail-card-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.fail-card-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fail-card-n { flex: none; font: 14px/1 var(--mono); color: var(--faint); }
+.fail-card-n.hot { color: var(--warn); font-weight: 600; }
+.fail-card-sub { display: flex; gap: 8px; font: 11px/1.35 var(--mono); color: var(--faint); }
+.fail-card-sub .cmd { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fail-card-sub .when { flex: none; margin-left: auto; }
 
 .fail-fold { border-top: 1px dashed var(--line-soft); margin-top: 4px; padding-top: 2px; }
 .fail-fold > summary {
@@ -2962,21 +2961,18 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .fail-actions .btn { padding: 6px 10px; font-size: 12px; }
 .fail-sechead { margin-top: 4px; font: 11px/1.4 var(--mono); color: var(--faint); }
 
-.fail-occ { border: 1px solid var(--line-soft); border-radius: 8px; overflow: hidden; }
-.fail-occ-head, .fail-occ-row {
-  display: grid; grid-template-columns: 58px 118px minmax(0, 1fr) 58px; gap: 8px;
-  padding: 6px 10px; align-items: baseline; font: 11px/1.5 var(--mono);
+.fail-occ { display: flex; flex-direction: column; gap: 6px; }
+.fail-ev {
+  display: flex; flex-direction: column; gap: 3px; padding: 8px 10px;
+  border: 1px solid var(--line-soft); border-radius: 8px; background: var(--sunken);
 }
-.fail-occ-head { color: var(--faint); border-bottom: 1px solid var(--line-soft); }
-.fail-occ-row { border-top: 1px solid var(--line-soft); }
-.fail-occ-row .sess { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent); }
-.fail-occ-row .cmd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
-.fail-occ-row .right { text-align: right; color: var(--faint); }
-.fail-occ-row .right.bad { color: var(--danger); }
-.fail-occ-out {
-  padding: 0 10px 8px; font: 11px/1.5 var(--mono); color: var(--faint);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.fail-ev-head { display: flex; gap: 8px; align-items: baseline; font: 11px/1.4 var(--mono); color: var(--faint); }
+.fail-ev-head .when { flex: none; }
+.fail-ev-head .sess { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent); }
+.fail-ev-head .exit { flex: none; margin-left: auto; }
+.fail-ev-head .exit.bad { color: var(--danger); }
+.fail-ev-cmd { font: 12px/1.5 var(--mono); color: var(--text); word-break: break-all; }
+.fail-ev-out { font: 11px/1.5 var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fail-more { align-self: flex-start; }
 
 .fail-foot { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line-soft); }
