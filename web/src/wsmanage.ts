@@ -43,6 +43,27 @@ export function renameIntent(current: string, draft: unknown): string | null {
 }
 
 /**
+ * 「这个组能不能固定到标签行」：`null` = 能固定（或已经固定了，点一下就是取消）；否则是给人看的原因。
+ * 名额满了就拒绝并说清楚 —— 点一下没反应，用户只会以为菜单坏了。
+ */
+export function pinBlocker(group: WsGroupLike | undefined, pinned: string[], max: number): string | null {
+  if (!group) return tr("这个工作区不在了");
+  if (isPinned(pinned, group.id)) return null;
+  if (pinned.length >= max) return tr("标签行只有 {p1} 个位置，先取消一个固定组", { p1: max });
+  return null;
+}
+
+/** 这个组是不是固定组（左栏标记 / 菜单两项互斥都看它）。 */
+export function isPinned(pinned: string[], id: string): boolean {
+  return pinned.includes(id);
+}
+
+/** 点一下「固定 / 取消固定」之后应该发给桥的列表：未固定 → 追加到末尾；已固定 → 原地去掉。 */
+export function togglePin(pinned: string[], id: string): string[] {
+  return pinned.includes(id) ? pinned.filter((x) => x !== id) : [...pinned, id];
+}
+
+/**
  * 「这个组能不能删」：`null` = 能删；否则是给人看的原因（菜单里那行灰字）。
  * 顺序有讲究：组不存在 → 派生组 → 有会话，先说的那个才是真正的理由。
  */

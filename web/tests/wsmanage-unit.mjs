@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanGroupName, dropBlocker, renameIntent } from "../src/wsmanage.ts";
+import { cleanGroupName, dropBlocker, pinBlocker, renameIntent, togglePin } from "../src/wsmanage.ts";
 
 const LIB = { id: "f:/pi-web-client", name: "", key: "F:/pi-web-client", manual: false };
 const MANUAL = { id: "manual:abc", name: "客户 A", key: "", manual: true };
@@ -72,4 +72,38 @@ test("组没了也删不掉（快照过期时的兜底）", () => {
 test("派生组即使空了也不给删 —— 拒绝先于「空不空」判断", () => {
   assert.ok(dropBlocker(LIB, 0));
   assert.equal(dropBlocker({ ...LIB, manual: true }, 0), null);
+});
+
+// ---------------------------------------------------------------- 能不能固定（#122）
+
+test("固定一个组：追加到末尾，已有的位置不动（顺序就是标签行顺序）", () => {
+  assert.deepEqual(togglePin(["g1"], "g2"), ["g1", "g2"]);
+  assert.deepEqual(togglePin([], "g1"), ["g1"]);
+});
+
+test("已固定的再点一次就是取消：别的位置不动", () => {
+  assert.deepEqual(togglePin(["g1", "g2", "g3"], "g2"), ["g1", "g3"]);
+});
+
+test("重复点不会把同一个组塞两次", () => {
+  assert.deepEqual(togglePin(["g1"], "g1"), []);
+  assert.deepEqual(togglePin([], "g1"), ["g1"]);
+});
+
+test("名额还有空位就能固定", () => {
+  assert.equal(pinBlocker(LIB, [], 3), null);
+  assert.equal(pinBlocker(LIB, ["a", "b"], 3), null);
+});
+
+test("名额满了再固定要拒绝，原因里带上名额数（不能静默失败）", () => {
+  const why = pinBlocker(LIB, ["a", "b", "c"], 3);
+  assert.ok(why && why.includes("3"), `拒绝原因要说清名额是几个：${why}`);
+});
+
+test("已经固定的组永远能取消 —— 名额满了也不拦", () => {
+  assert.equal(pinBlocker(LIB, ["f:/pi-web-client", "a", "b"], 3), null);
+});
+
+test("组没了就不给固定（快照过期时的兜底）", () => {
+  assert.ok(pinBlocker(undefined, [], 3));
 });

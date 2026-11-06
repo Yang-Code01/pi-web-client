@@ -17,10 +17,10 @@ import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
-import { TAB_SLOTS, tabModel } from "./wstabs.ts";
+import { TABS_DEFAULT, tabModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
-import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
+import { WS_NAME_MAX, dropBlocker, isPinned, pinBlocker, renameIntent, togglePin } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
@@ -4187,12 +4187,19 @@ export class App {
       todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
       head.append(todo);
     }
+    // #122 / R11：固定组在左栏也要能认出来 —— 标签行上它排前面，树里就得看得出是为什么。
+    if (isPinned(this.workspaces.pinned ?? [], group.id)) {
+      const tag = el("span", "ws-pin", "📌");
+      tag.title = tr("已固定到标签行");
+      tag.setAttribute("aria-label", tr("已固定"));
+      head.append(tag);
+    }
     head.append(el("span", "n", String(group.sessions.length)));
     if (!editing) {
       const more = el("button", "ws-more", "⋯") as HTMLButtonElement;
       more.type = "button";
       more.dataset.act = "ws-more";
-      more.title = tr("改名 / 删除这个工作区");
+      more.title = tr("改名 / 固定 / 删除这个工作区");
       more.setAttribute("aria-label", tr("{p1} 的工作区菜单", { p1: group.name }));
       more.onclick = (ev) => {
         ev.stopPropagation();
@@ -4230,17 +4237,39 @@ export class App {
     this.renderSessions();
   }
 
-  /** 组头的 ⋯：改名 / 删除。删不了就置灰并在菜单里写明原因，而不是把这个选择藏起来。 */
+  /** 组头的 ⋯：改名 / 固定 / 删除。删不了就置灰并在菜单里写明原因，而不是把这个选择藏起来。 */
   private openWsMore(group: TreeGroup<SessionState>, anchor: HTMLElement): void {
     this.wsMenu?.close();
     const info = this.workspaces.groups.find((g) => g.id === group.id);
+    const pinned = this.workspaces.pinned ?? [];
+    const max = this.workspaces.max ?? TABS_DEFAULT;
     this.wsMenu = openWsMenu(anchor, {
       name: group.name,
       sub: info && !info.manual ? info.key : tr("手建的工作区"),
+      pinned: isPinned(pinned, group.id),
+      pinBlocker: pinBlocker(info, pinned, max),
       blocker: dropBlocker(info, group.sessions.length),
       onRename: () => this.startWsRename(group.id),
+      onTogglePin: () => this.toggleWsPin(group),
       onDrop: () => this.dropWs(group.id),
     });
+  }
+
+  /**
+   * #122 固定 / 取消固定：发一整份新列表（桥那端去重 / 剔脏 / 截断，页面只负责把「点完该是什么样」说清）。
+   * 名额满了就当场拒绝并提示 —— 菜单里已经置灰一次，但快照过期（别处刚固定满）时这里再兜一层。
+   */
+  private toggleWsPin(group: TreeGroup<SessionState>): void {
+    const info = this.workspaces.groups.find((g) => g.id === group.id);
+    const pinned = this.workspaces.pinned ?? [];
+    const max = this.workspaces.max ?? TABS_DEFAULT;
+    const why = pinBlocker(info, pinned, max);
+    if (why) {
+      this.warn(why);
+      return;
+    }
+    const next = togglePin(pinned, group.id);
+    this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", pinned: next }));
   }
 
   private startWsRename(id: string): void {
@@ -10101,7 +10130,7 @@ export class App {
    * the topbar keeps them one click away — same order as the list's 置顶 section, newest name first.
    */
   /**
-   * #97 壳 A 行 1：工作区标签页。横向一条；#121 起只画 `TAB_SLOTS` 颗（按左栏组序的前 N 个），
+   * #97 壳 A 行 1：工作区标签页。横向一条；#121 起只画 N 颗（默认 3，桥端可调 1–5），
    * 剩下的收进槽外那颗 `＋N`。当前工作区永远在圈内（不在就挤掉最后一个补位组），有会话卡在
    * 用户身上时带一颗待处理点。点一下 = 切到那一组：打开组里排最上面的那颗会话（★ 优先，跟左栏
    * 同一份顺序）。
@@ -10122,9 +10151,14 @@ export class App {
     if (wsTabsRow.hidden) return;
     const byId = new Map(tree.groups.map((group) => [group.id, group]));
     const order = tree.groups.map((group) => group.id);
-    // #121：名额与固定组先硬编码 —— 圈内 = 组序前 N 个，`pinned` 传空。固定与补位的区分、
-    // 名额由桥端下发，都是 #122 的事。
-    const model = tabModel({ order, pinned: [], max: TAB_SLOTS, current: cur ?? undefined });
+    // #122：固定组与名额都由桥端下发（`pinned` 的顺序就是标签行顺序）；旧桥没这两个字段时
+    // 按「没有固定组 + 默认名额」画，与 #121 的样子一致。
+    const model = tabModel({
+      order,
+      pinned: this.workspaces.pinned ?? [],
+      max: this.workspaces.max ?? TABS_DEFAULT,
+      current: cur ?? undefined,
+    });
     for (const id of model.visible) {
       const group = byId.get(id);
       if (!group) continue;

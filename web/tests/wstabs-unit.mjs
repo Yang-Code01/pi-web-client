@@ -66,3 +66,25 @@ test("名额 0：只留当前组，并标成破例", () => {
   assert.deepEqual(m.more, ["g2", "g3", "g4", "g5"]);
   assert.equal(m.extra, true);
 });
+
+// ---------------------------------------------------------------- #122 固定组落到标签行
+
+test("固定组排在最前，顺序就是固定顺序（不按左栏组序重排）", () => {
+  const m = tabModel({ order: ORDER, pinned: ["g4", "g2"], max: 3, current: "g4" });
+  assert.deepEqual(m.visible, ["g4", "g2", "g1"]);
+  assert.deepEqual(m.more, ["g3", "g5"]);
+});
+
+test("固定组超出名额：截到名额，多出来的回到 ＋N（按组序）", () => {
+  const m = tabModel({ order: ORDER, pinned: ["g4", "g5", "g2", "g1"], max: 3, current: "g4" });
+  assert.deepEqual(m.visible, ["g4", "g5", "g2"]);
+  assert.deepEqual(m.more, ["g1", "g3"]);
+  assert.equal(m.extra, false);
+});
+
+test("当前组在圈外：挤掉最后一个补位组，固定组一个都不动", () => {
+  const m = tabModel({ order: ORDER, pinned: ["g3"], max: 3, current: "g5" });
+  assert.deepEqual(m.visible, ["g3", "g1", "g5"], "g3 是固定的，被挤掉的是补位的 g2");
+  assert.deepEqual(m.more, ["g2", "g4"]);
+  assert.equal(m.extra, false);
+});

@@ -6,8 +6,8 @@
  * 「我在哪一组」看得见。其余情况 `visible.length <= max`。
  */
 
-/** #121 本轮名额硬编码；#122 起换成桥端下发的 `max`（1–5，用户可调）。 */
-export const TAB_SLOTS = 3;
+/** 名额的兜底值：桥端没下发 `max`（旧桥 / 还没连上）时按 3 画。权威值在桥端 `Workspaces.max`。 */
+export const TABS_DEFAULT = 3;
 
 export interface TabModel {
   /** 标签行依次画哪几组（组 id，顺序即显示顺序）。 */

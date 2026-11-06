@@ -1,13 +1,15 @@
 /**
- * Probe: #121 标签行只画 N 个 + `＋N` —— 超出的组收进槽外那颗折叠菜单。
+ * Probe: #121 标签行只画 N 个 + `＋N`；#122 固定组落库 + 组头 ⋯ 固定项。
  *
- * 票面要的是：标签行只画 3 颗（本轮名额硬编码，`pinned` 也还是空数组），剩下的组数报在槽外的
- * `＋N` 上；点 `＋N` 只列被折叠的组，点一行切过去并关掉下拉；当前组排在组序很后面时它仍然在
- * 圈内（挤掉最后一个补位组 —— N+1 留给 #122 的固定组）。
+ * 票面要的是：标签行只画 N 颗（N 由桥端下发，默认 3），剩下的组数报在槽外的 `＋N` 上；点 `＋N` 只列
+ * 被折叠的组，点一行切过去并关掉下拉；当前组排在组序很后面时它仍然在圈内（挤掉最后一个补位组）。
+ * #122 接上：在组头 ⋯ 里固定一个组 → 它排到标签行最前、左栏组头出现「已固定」标记、刷新后还在；
+ * 名额满了再点固定 → 那一项置灰并写明原因，不会静默失败。
  *
  * 上一票（#119）的断言留着：A 壳顶栏只有一行、标签紧跟在 ◧ 后面、B/C/D 不画标签、800px 不破版。
  *
- * 桩桥照 #94 的协议发 `workspace` 快照；造 9 个长名组，用显式 `updatedAt` 把组序钉成 01→09
+ * 桩桥照 #94 的协议发 `workspace` 快照，并像真桥那样把 `ws.tabs` 落到内存里再广播 —— 刷新页面
+ * 拿到的就是「重启后的桥」，固定组与名额都在。造 9 个长名组，用显式 `updatedAt` 把组序钉成 01→09
  * （组序 = 待处理 → 最近活动倒序 → 名字），否则同一毫秒里建出来的 9 个组谁在前全凭运气。
  *
  * Run: npm run build:web && PI_WEB_PORT=7931 node probes/workspace-tabs.mjs
@@ -79,11 +81,17 @@ const SESSIONS = GROUPS.map((g, i) => ({
 }));
 const byId = (id) => SESSIONS.find((s) => s.id === id);
 
-const workspace = () => ({
+// #122：固定组与名额也持久化 —— 存在内存里，刷新页面就像重启后的桥一样把它们拿回来。
+const WS = {
   groups: GROUPS,
   overrides: {},
   keys: Object.fromEntries(SESSIONS.map((s) => [s.cwd.toLowerCase(), s.ws])),
-});
+  pinned: [],
+  max: 3,
+};
+const workspace = () => ({ ...WS, groups: WS.groups.map((g) => ({ ...g })), pinned: [...WS.pinned] });
+/** 桥收到过的 manage 动作（固定要能核对「发了几条 / 该不发的时候发了没有」）。 */
+const CALLS = [];
 const MANAGE = { pin: [], order: SESSIONS.map((s) => s.id), archived: [] };
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "stub", pi: "stub", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "stub" };
@@ -125,6 +133,21 @@ server.on("upgrade", (req, socket, head) => {
         // 真桥的 state 不带 ws（它只挂在 sessions.list 的条目上）。
         const { ws: _ws, ...plain } = s;
         ws.send(JSON.stringify({ type: "session", sessionId: s.id, state: plain, items: [], approvals: [], asks: [], budget: null }));
+      }
+      if (msg.type === "manage") {
+        CALLS.push(msg);
+        // 真桥的 `setTabs()`：名额 clamp 到 1–5，列表去重 / 剔脏 / 截到名额，最后一次落盘再广播。
+        if (msg.action === "ws.tabs") {
+          if (msg.max !== undefined) WS.max = Math.min(5, Math.max(1, Math.trunc(Number(msg.max))));
+          if (msg.pinned !== undefined) {
+            const known = new Set(WS.groups.map((g) => g.id));
+            WS.pinned = msg.pinned.filter((id, i, all) => typeof id === "string" && known.has(id) && all.indexOf(id) === i);
+          }
+          WS.pinned = WS.pinned.slice(0, WS.max);
+          for (const client of wss.clients) {
+            if (client.readyState === 1) client.send(JSON.stringify({ type: "workspaces", workspace: workspace() }));
+          }
+        }
       }
     });
     ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS, manage: MANAGE, trash: [], tunnel: TUNNEL, workspace: workspace() }));
@@ -329,6 +352,70 @@ const after = await page.evaluate(() => {
 });
 ok(scrolled.left > before.scroll && Math.abs(after.left - before.left) < 1, `800px：槽横滚了 ${scrolled.left}px，＋N 位置一动不动（${before.left} → ${after.left}）`);
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-800.png`), clip: { x: 0, y: 0, width: 800, height: 140 } });
+await page.close();
+
+// 7) #122 固定：组头 ⋯ →「固定到第一行」→ 它排到标签行最前，左栏组头带「已固定」标记
+const openWsMore = async (id) => {
+  await page.locator(`.ws-sec[data-ws="${id}"] .ws-head`).hover();
+  await page.locator(`.ws-sec[data-ws="${id}"] .ws-head .ws-more`).click();
+  await sleep(250);
+};
+const pinItem = () => page.locator(".ws-menu .pm-item[data-act='pin']");
+const pinText = async () => (await page.locator(".ws-menu .pm-item[data-act='pin'] .pm-text").textContent())?.trim() ?? "";
+const lastTabs = () => CALLS.filter((c) => c.action === "ws.tabs").at(-1) ?? null;
+const pinCount = (id) => page.locator(`.ws-sec[data-ws="${id}"] .ws-head .ws-pin`).count();
+const pinViaMenu = async (id) => {
+  await openWsMore(id);
+  await pinItem().click();
+  await sleep(450);
+};
+
+page = await open(null);
+await openWsMore("f:/proj-09");
+ok((await pinText()) === "固定到第一行", `未固定的组：菜单那行是「固定到第一行」（${await pinText()}）`);
+await pinItem().click();
+await sleep(500);
+ok(
+  JSON.stringify(lastTabs()?.pinned) === JSON.stringify(["f:/proj-09"]),
+  `点固定发出一条 ws.tabs，列表里只有它（${JSON.stringify(lastTabs()?.pinned)}）`,
+);
+s = await barState();
+ok(s.visibleIds[0] === "f:/proj-09", `固定后排到标签行最前（${s.visibleIds.join(" / ")}）`);
+ok(s.count === 3 && s.moreText === "＋6", `固定组不占额外位置：仍是 3 颗 + ＋N（${s.count} / ${s.moreText}）`);
+ok((await pinCount("f:/proj-09")) === 1, "左栏组头出现「已固定」标记");
+ok((await pinCount("f:/proj-01")) === 0, "没固定的组不打这个标记");
+
+// 8) 刷新后固定组与顺序还在（桥落库了 —— 桩桥在内存里持久化）
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(700);
+s = await barState();
+ok(s.visibleIds[0] === "f:/proj-09", `刷新后固定组还在最前（${s.visibleIds.join(" / ")}）`);
+ok((await pinCount("f:/proj-09")) === 1, "刷新后「已固定」标记也还在");
+
+// 9) 菜单两项互斥：已固定 →「取消固定」；取消后它排回组序的位置
+await openWsMore("f:/proj-09");
+ok((await pinText()) === "取消固定", `已固定的组：菜单那行换成「取消固定」（${await pinText()}）`);
+await pinItem().click();
+await sleep(450);
+s = await barState();
+ok(JSON.stringify(lastTabs()?.pinned) === "[]", `取消固定发的是空列表（${JSON.stringify(lastTabs()?.pinned)}）`);
+ok(s.visibleIds[0] === "f:/proj-01", `取消后排回组序（${s.visibleIds.join(" / ")}）`);
+ok((await pinCount("f:/proj-09")) === 0, "取消后组头标记消失");
+
+// 10) 名额满了再固定：那一项置灰并写明原因，点了也不发请求
+for (const id of ["f:/proj-09", "f:/proj-08", "f:/proj-07"]) await pinViaMenu(id);
+s = await barState();
+ok(s.count === 4 && s.visibleIds[3] === "f:/proj-01", `固定组占满名额：当前组多画一颗（${s.visibleIds.join(" / ")}）`);
+const tabsBefore = CALLS.filter((c) => c.action === "ws.tabs").length;
+await openWsMore("f:/proj-06");
+ok((await pinItem().isDisabled()) === true, "名额满了：第 4 个组的「固定」是灰的");
+const why = await page.locator(".ws-menu .pm-why").first().textContent();
+ok(/3/.test(why ?? ""), `灰掉的原因写清名额（${why?.trim()}）`);
+await pinItem().click({ force: true }).catch(() => {});
+await sleep(250);
+ok(CALLS.filter((c) => c.action === "ws.tabs").length === tabsBefore, "点灰掉的固定项：没有发 ws.tabs");
+await page.keyboard.press("Escape");
 await page.close();
 
 await browser.close();

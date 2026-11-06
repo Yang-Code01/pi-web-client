@@ -390,6 +390,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   padding: 2px 4px; border-radius: 4px;
 }
 .ws-head .n { margin-left: auto; font: 11px/1 var(--mono); color: var(--faint); }
+/* #122：固定组的小标记（R11）。它跟在名字后面、在会话数前面，不抢名字的宽度。 */
+.ws-head .ws-pin { flex: none; font-size: 10px; line-height: 1; opacity: 0.85; }
 .ws-head.folded { color: var(--faint); }
 .ws-head.folded .label { color: var(--faint); font-weight: 500; }
 /* #100：组头就地改名 + 那颗 ⋯。⋯ 跟会话卡片的 card-act 一个脾气：指着组头才出来，别的时候把位置让给名字。 */

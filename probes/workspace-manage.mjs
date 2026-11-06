@@ -3,7 +3,8 @@
  *
  * 桩桥照 `bridge/src/workspaces.ts` 的规矩回话（rename 存 trim+slice(0,80)、空名=回落目录名；
  * create 给一个新 id；drop 只肯删空的手动组；move 空 wsId = 删 override）。断言：
- *   1. 组头有 ⋯，菜单两行（重命名 / 删除工作区）；
+ *   1. 组头有 ⋯，菜单三行（重命名 / 固定到第一行 / 删除工作区）；#122 的固定项在这里只占位，
+ *      固定本身的探针在 `probes/workspace-tabs.mjs`；
  *   2. 派生组 + 有会话：删除项置灰，下面一行写明「还有 N 个会话」，点它不发 ws.drop；
  *   3. 改名：输入框进组头，Enter 提交的是洗过的名字（折叠空白），组头立刻变；
  *   4. 清空名字：发的是空串，组头回落到目录名；
@@ -246,7 +247,7 @@ await openMore(LIB.id);
 await sleep(200);
 t = await tree();
 ok(Boolean(t.menu), "点 ⋯ 弹出菜单");
-ok(t.menu?.items.map((i) => i.text).join(" / ") === "重命名 / 删除工作区", `菜单两行：${t.menu?.items.map((i) => i.text).join(" / ")}`);
+ok(t.menu?.items.map((i) => i.text).join(" / ") === "重命名 / 固定到第一行 / 删除工作区", `菜单三行：${t.menu?.items.map((i) => i.text).join(" / ")}`);
 const del = t.menu?.items.find((i) => i.act === "drop");
 ok(del?.disabled === true, "派生组的「删除工作区」是灰的");
 ok(/跟着目录走/.test(t.menu?.why ?? ""), `原因写明：${t.menu?.why}`);
