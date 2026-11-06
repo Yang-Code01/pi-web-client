@@ -11,9 +11,11 @@ import { renderMarkdown } from "./md.ts";
 import { setKnownPlugins } from "./diagnose.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, starredSessions } from "./pillbar.ts";
+import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, type RailItem } from "./shells.ts";
+import { continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
@@ -37,6 +39,19 @@ type Tab = "sessions" | "chat" | "queue";
  */
 const MODEL_REASK_MS = 15_000;
 const MODEL_WAIT_MS = 45_000;
+
+/**
+ * 点了「继续」之后多久内不再认第二次点击（D159）。`pi.status(running)` 回到页面之前按钮还亮着，
+ * 这期间连点会排上两条一模一样的消息。按会话记，不是按页面：切到别的会话再点不该被这边吞掉。
+ */
+const CONTINUE_GUARD_MS = 1500;
+
+/**
+ * 点「继续」时发给 pi 的**字面**文本（D159）：按钮标签走 `tr("继续")`，但这行字**不翻译** ——
+ * 英文界面发 `Continue` 会让模型读到的东西跟着界面语言变，而用户要的就是「继续」这两个字。
+ * （写成模块级常量也是告诉 `i18n-check`：这不是漏翻的界面文案。）
+ */
+const CONTINUE_TEXT = "继续";
 
 /** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
 type BadgeKind = "ask" | "approve" | "locked" | "run" | "done";
@@ -93,6 +108,11 @@ export class App {
   private approvals: ApprovalRequest[] = [];
   /** Questions from the model waiting for an answer (PLAN-ask.md). */
   private asks: AskRequest[] = [];
+  /**
+   * 本地队列是不是这一轮订阅的快照填的（D156）。`openSession` 先清空 `approvals` / `asks` 再
+   * subscribe，快照回来之前本地那两份是「过期的空」，徽标得退回列表里的计数。
+   */
+  private pendingFresh = false;
   /** Question ids this page has already put on screen, so a re-subscribe does not re-open them. */
   /** Per-ask progress in the composer panel (active tab + drafts), kept across re-renders. */
   private askDrafts = new Map<string, { active: number; drafts: Map<string, AskAnswer> }>();
@@ -141,6 +161,10 @@ export class App {
   private sheet: HTMLElement | null = null;
   private modelChip: HTMLButtonElement | null = null;
   private textarea: HTMLTextAreaElement | null = null;
+  /** 「继续」按钮（D159）：住在权限按钮正上方那 28.5px 里。每次重画 composer 都换一颗新的。 */
+  private continueBtn: HTMLButtonElement | null = null;
+  /** 上一次点「继续」的会话与时刻（D159）：`pi.status` 回来之前按钮还亮着，连点会排两条。 */
+  private continueAt: { id: string; at: number } = { id: "", at: 0 };
   /** Skill palette state (the popover above the composer). */
   private skills: SkillInfo[] = [];
   private skillsAt = 0;
@@ -594,7 +618,7 @@ export class App {
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
     this.pillBar = new PillBar<SessionState>(pinStrip, {
-      badge: (s, cur) => sessionBadge(s, cur),
+      badge: (s) => this.badgeOf(s),
       time: relativeTime,
       // #97：第二行不再是「置顶区」，条头那颗字也就没有意义了 —— 最左边那颗就是当前会话。
       // 空字符串仍然会留一个空 span，CSS 里 `.pin-strip-label:empty` 把它收掉。
@@ -719,18 +743,44 @@ export class App {
     return this.prefs.scale || 1;
   }
 
+  /**
+   * 有效宽度 < 900 就是窄版。媒体查询看的是**视口**宽度，而 `#app` 上有 zoom：2.0 字号下
+   * 1707px 的窗口只有 853 布局 px，`@media (max-width: 899px)` 却依然不触发（D158）。
+   * 所以窄版的判据在 JS 里算一次，既给 `data-compact` 用，也给这里的所有 if 用 —— 两边不许分叉。
+   */
+  private compact(): boolean {
+    return window.innerWidth / this.uiScale() < 900;
+  }
+
+  /**
+   * 把上面的判据落到 `<html data-compact>`：CSS 的 899 / 900 断点都改读这个属性。
+   * 返回「这次真的翻了」—— 调用方拿它决定要不要重排（拖动中跨过 900 时）。
+   */
+  private syncCompact(): boolean {
+    const compact = this.compact();
+    const root = document.documentElement;
+    // 跟 `String(compact)` 比，而不是跟 "true" 比：首次调用必须把 "false" 也写下去，
+    // 否则属性一直是 undefined，CSS 那边是在碰运气。
+    if (root.dataset.compact === String(compact)) return false;
+    root.dataset.compact = String(compact);
+    // 换壳跟窗口跨过 900px 是同一件事：那颗「当前在哪」和标签行都得挪位置（构造期还没搭 DOM）。
+    this.placeNowChip();
+    this.placeWsTabs();
+    return true;
+  }
+
   /** 没存过几何时 dialog 的多大：底部居中，宽高跟着窗口（布局 px，已按缩放折算）。 */
   private termDefaults(): { w: number; h: number } {
     const s = this.uiScale();
     const vw = window.innerWidth / s;
     const vh = window.innerHeight / s;
-    const narrow = window.matchMedia("(max-width: 899px)").matches;
+    const narrow = this.compact();
     return { w: narrow ? vw - 16 : Math.min(1080, vw - 32), h: narrow ? Math.min(vh * 0.42, 340) : Math.min(vh * 0.46, 420) };
   }
 
   /** 底边至少要留出的空：桌面上是 margin，窄屏上还要让开底部三标签（不 56px 与 CSS 里的 bottom 一致）。 */
   private termInset(): number {
-    return window.matchMedia("(max-width: 899px)").matches ? 56 : 14;
+    return this.compact() ? 56 : 14;
   }
 
   private loadTermGeom(): TermGeom {
@@ -997,7 +1047,7 @@ export class App {
         this.warn(tr("浏览器拖拽拿不到「{p1}」的完整路径。请在资源管理器里复制它再 {p2}，或用「文件」按钮选", { p1: others.map((f) => f.name).join(tr("、")), p2: PASTE_KEY }));
       }
     });
-    if (window.matchMedia("(min-width: 900px)").matches) this.tab = "sessions";
+    if (!this.compact()) this.tab = "sessions";
     // 跨过 900px 断点以前没人管：`renderPanes` 只在点按钮时跑，窗口一拖就停在旧状态 —— 收起状态的左栏
     // 在窄屏仍然是 hidden，反过来也一样。一帧一次的重排顺手把输入框下面那行工作目录对齐（D61）。
     let paneFrame = 0;
@@ -1005,6 +1055,7 @@ export class App {
       if (paneFrame) return;
       paneFrame = requestAnimationFrame(() => {
         paneFrame = 0;
+        this.syncCompact();
         this.renderPanes();
       });
     });
@@ -1078,6 +1129,7 @@ export class App {
     if (this.session?.done) this.session.done = false;
     this.approvals = [];
     this.asks = [];
+    this.pendingFresh = false;
     this.usage = { contextTokens: null, contextWindow: null };
     this.rate = 0;
     this.rateAt = 0;
@@ -1203,6 +1255,10 @@ export class App {
         // A new socket starts unverified on the bridge side.
         this.stepUntil = 0;
         this.sessions = msg.sessions ?? [];
+        // 重连后本地队列可能还是上一条连接的：清掉、等 subscribe 的快照回来，否则它盖着列表里的真值（D156）。
+        this.approvals = [];
+        this.asks = [];
+        this.pendingFresh = false;
         if (Array.isArray(msg.trash)) this.trash = msg.trash as TrashItem[];
         if (msg.manage) this.manage = msg.manage as ManageState;
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
@@ -1242,6 +1298,9 @@ export class App {
         }
         this.approvals = (msg.approvals ?? []) as ApprovalRequest[];
         this.asks = (msg.asks ?? []) as AskRequest[];
+        // 快照里的队列是权威值：顺手把列表里那条累加值对齐，曾经算歪的会话打开一次就回到真值（D156）。
+        syncPending(this.sessions, String(msg.sessionId ?? this.currentId ?? ""), this.localCounts());
+        this.pendingFresh = true;
         this.renderAll();
         // 「交给 agent → 新开会话」：会话建好之后才把文字填进去。此刻 textarea 已经指向新会话。
         if (handoff) {
@@ -1263,6 +1322,8 @@ export class App {
       case "items":
         if (msg.sessionId !== this.currentId) break;
         this.chat.reset((msg.items ?? []) as Item[]);
+        // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
+        this.syncContinueButton();
         break;
       case "item.add":
         if (msg.sessionId !== this.currentId) break;
@@ -1323,22 +1384,20 @@ export class App {
         } else if (msg.phase === "end") this.setActivity(tr("思考中"));
         break;
       case "approval.add":
+        // D156：当前会话也照加 —— 列表里的计数和本地队列是两份账，只给「不在看的会话」加会让
+        // 切过去再答的批准永远减不掉；卡片是否重画也跟着这条走。
+        this.countPending(msg.sessionId, "approvals", 1);
         if (msg.sessionId === this.currentId) this.approvals = [...this.approvals, msg.approval];
-        else this.notifyUnread(msg.sessionId);
         this.renderApprovals();
         this.renderQueue();
         this.renderTabs();
         this.fillHintStatus();
-        this.renderNowChip();
+        this.renderSessions();
         break;
       case "approval.remove":
         this.approvals = this.approvals.filter((a) => a.id !== msg.id);
-        // notifyUnread() bumped this counter when the approval arrived for another session; undo it
-        // here, otherwise a session reads as "等你批准" forever and the manager keeps it undeletable.
-        if (msg.sessionId !== this.currentId) {
-          const owner = this.sessions.find((x) => x.id === msg.sessionId);
-          if (owner && owner.approvals > 0) owner.approvals -= 1;
-        }
+        // 和 approval.add 对称：不管这条批准是不是当前会话的，都得减回去，否则卡片上永远「待确认」。
+        this.countPending(msg.sessionId, "approvals", -1);
         this.fillHintStatus();
         this.renderApprovals();
         this.renderQueue();
@@ -1348,8 +1407,10 @@ export class App {
       case "ask.add": {
         const ask = msg.ask as AskRequest;
         if (!ask) break;
+        // 提问记在 asks 上（不是 approvals），当前会话也记 —— 见 D156。
+        this.countPending(msg.sessionId, "asks", 1);
         if (msg.sessionId !== this.currentId) {
-          this.notifyUnread(msg.sessionId);
+          this.renderSessions();
           break;
         }
         this.asks = [...this.asks.filter((a) => a.id !== ask.id), ask];
@@ -1358,6 +1419,7 @@ export class App {
         this.renderQueue();
         this.renderTabs();
         this.renderSessions();
+        this.renderNowChip();
         break;
       }
       case "ask.remove": {
@@ -1366,6 +1428,8 @@ export class App {
         const gone = this.asks.find((a) => a.id === msg.id);
         const mine = msg.sessionId === this.currentId;
         this.asks = this.asks.filter((a) => a.id !== msg.id);
+        // 答完 / 被取消都走这条：计数必须跟着回落（D156）。
+        this.countPending(msg.sessionId, "asks", -1);
         if (gone && mine && gone.id !== this.lastAnsweredAsk) this.keepLostAsk(gone, String(msg.reason ?? tr("问卷已关闭")));
         if (gone && mine) this.lastAnsweredAsk = null;
         this.renderAsks();
@@ -1731,6 +1795,8 @@ export class App {
             this.stepCount = 0;
           } else this.activity = "";
           this.fillHintStatus();
+          // 跑着 ↔ 空闲是「继续」按钮亮/灰的翻转点（D159）。
+          this.syncContinueButton();
           if (this.textarea) this.textarea.placeholder = this.composerHintText();
         }
         if (!msg.running) this.turnAt = null;
@@ -1930,7 +1996,11 @@ export class App {
       if (prev?.running && !state.running) void this.refreshGit(true);
       // The writer bar (接管 / 停止运行) and the status line both hang off these two flags.
       if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starting !== state.starting) this.renderChat();
-      else this.fillHintStatus();
+      else {
+        this.fillHintStatus();
+        // 上面那条 else 走的就是「flags 变了但不用重画」：`starting` / 闲忙都可能在这里翻，「继续」跟着刷。
+        this.syncContinueButton();
+      }
     }
     this.renderTop();
     this.renderSessions();
@@ -1947,9 +2017,25 @@ export class App {
     }, 0);
   }
 
-  private notifyUnread(sessionId: string): void {
-    const s = this.sessions.find((x) => x.id === sessionId);
-    if (s) s.approvals = (s.approvals ?? 0) + 1;
+  /** D156：把一条待办事件记到列表里那行上（`onMessage` 的 `msg` 是 any，这里统一成字符串）。 */
+  private countPending(sessionId: unknown, kind: PendingKind, delta: number): void {
+    applyPending(this.sessions, String(sessionId ?? ""), kind, delta);
+  }
+
+  /** 当前会话自己的两份队列长度（`badgeSession` 用）。 */
+  private localCounts(): PendingCounts {
+    return { approvals: this.approvals.length, asks: this.asks.length };
+  }
+
+  /**
+   * 徽标唯一入口（D156）：当前会话的待处理数以本地队列为准（`badgeSession`），别的会话读列表里
+   * 那份事件累加值。左栏卡片、钉条胶囊、管理面板、顶栏那颗都走这里，省得哪一处又读到旧账。
+   * 刚 `openSession`、快照还没回来时本地队列是空的（`pendingFresh` 为 false），此时退回列表里
+   * 那份 —— 否则切到一个「正等着你」的会话，徽标会先闪没一拍。
+   */
+  private badgeOf(s: SessionState): SessionBadge | null {
+    const shown = this.pendingFresh ? badgeSession(s, this.currentId, this.localCounts()) : s;
+    return sessionBadge(shown, this.currentId);
   }
 
   // ---------------------------------------------------------------- step-up
@@ -2539,6 +2625,7 @@ export class App {
   private applyPrefs(): void {
     const root = document.documentElement.style;
     root.setProperty("--ui-scale", String(this.prefs.scale));
+    this.syncCompact();
     const accent = ACCENTS[this.prefs.accent] ?? ACCENTS[DEFAULT_PREFS.accent];
     root.setProperty("--accent", accent.accent);
     root.setProperty("--accent-dim", accent.dim);
@@ -2580,7 +2667,7 @@ export class App {
    */
   private placeNowChip(): void {
     const parts = shellParts(activeLayout(this.prefs));
-    const narrow = !window.matchMedia("(min-width: 900px)").matches;
+    const narrow = this.compact();
     const slot = parts.chipTop || narrow ? this.nowSlotTop : this.nowSlotRow;
     if (!this.nowBtn || !slot) return;
     if (this.nowBtn.parentElement !== slot) slot.append(this.nowBtn);
@@ -2633,20 +2720,168 @@ export class App {
     sheet.append(langBox);
 
     const sizeBox = el("div", "levels");
-    sizeBox.append(el("div", "levels-label", tr("字号")));
-    const sizeChips = el("div", "chips");
-    for (const [scale, label] of SIZES) {
-      const chip = el("button", `chip${Math.abs(this.prefs.scale - scale) < 0.005 ? " on" : ""}`, tr(label));
-      chip.onclick = () => {
-        this.prefs = { ...this.prefs, scale };
-        savePrefs(this.prefs);
-        this.applyPrefs();
-        for (const other of sizeChips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
-      };
-      sizeChips.append(chip);
+    const sizeRead = el("span", "size-read");
+    const sizeHead = el("div", "size-head");
+    sizeHead.append(el("div", "levels-label", tr("字号")), sizeRead);
+    sizeBox.append(sizeHead);
+
+    const rail = el("div", "size-rail");
+    const range = document.createElement("input");
+    range.type = "range";
+    range.min = String(SIZE_MIN);
+    range.max = String(SIZE_MAX);
+    range.step = String(SIZE_STEP);
+    range.value = String(this.prefs.scale);
+    range.setAttribute("aria-label", tr("字号"));
+
+    // 标尺：每 0.1 一格，每 0.2 一格长的（和下面带数字的那七条对齐）。
+    const ticks = el("div", "ticks");
+    for (let i = 0; i * 0.1 <= SIZE_MAX - SIZE_MIN + 1e-9; i++) {
+      const v = SIZE_MIN + i * 0.1;
+      const major = i % 2 === 0;
+      const tick = el("span", `tick${major ? " named" : " thin"}`);
+      tick.dataset.v = v.toFixed(2);
+      tick.style.left = `${sizePct(v) * 100}%`;
+      ticks.append(tick);
     }
-    sizeBox.append(sizeChips);
+    rail.append(range, ticks);
+
+    const marks = el("div", "size-marks");
+    const markAt: number[] = [];
+    for (let i = 0; i * 0.2 <= SIZE_MAX - SIZE_MIN + 1e-9; i++) markAt.push(SIZE_MIN + i * 0.2);
+    markAt.forEach((v, i) => {
+      const mark = el("button", `mark${i === 0 ? " first" : ""}${i === markAt.length - 1 ? " last" : ""}`, String(Math.round(v * 100)));
+      mark.dataset.v = v.toFixed(2);
+      mark.style.left = `${sizePct(v) * 100}%`;
+      mark.title = `${Math.round(v * 100)}%`;
+      mark.setAttribute("aria-label", `${Math.round(v * 100)}%`);
+      mark.onclick = () => setScale(v, true);
+      marks.append(mark);
+    });
+
+    const smallAa = el("span", "size-end s", "Aa");
+    const bigAa = el("span", "size-end b", "Aa");
+    smallAa.setAttribute("aria-hidden", "true");
+    bigAa.setAttribute("aria-hidden", "true");
+    const sizeCtl = el("div", "size-ctl");
+    sizeCtl.append(smallAa, rail, bigAa, marks);
+    sizeBox.append(sizeCtl);
     sheet.append(sizeBox);
+
+    /** 把值抹到控件上（轨道填充 / 读数 / 刻度的「已过」状态 / 刻度字的高亮）。 */
+    const paintSize = (v: number): void => {
+      range.value = String(v);
+      range.style.setProperty("--fill", `${sizePct(v) * 100}%`);
+      range.setAttribute("aria-valuetext", `${Math.round(v * 100)}%`);
+      sizeRead.textContent = `${Math.round(v * 100)}%`;
+      sizeRead.classList.toggle("moved", Math.abs(v - 1) > 0.001);
+      for (const t of ticks.children) {
+        t.classList.toggle("past", Number((t as HTMLElement).dataset.v) < v - 0.001);
+      }
+      for (const m of marks.children) {
+        m.classList.toggle("on", Math.abs(Number((m as HTMLElement).dataset.v) - v) < 0.001);
+      }
+    };
+
+    const setScale = (v: number, save: boolean): void => {
+      const next = clampScale(v);
+      this.prefs = { ...this.prefs, scale: next };
+      document.documentElement.style.setProperty("--ui-scale", String(next));
+      // 拖动中也要判窄版：不判的话预告是假的（1.0 拖到 2.0 的路上一直是三栏，松手才突然变一栏），
+      // 而抽屉的宽度不跟着窄版变（min(560px,100%)），所以冻住的轨道盒子不会在手指底下跑。
+      // 跨过 900 的那一刻三栏已经换成单列，但 pane 的 hidden 是 JS 状态，必须顺手重排，
+      // 否则松手前看到的是「三栏挤进一列」。
+      if (this.syncCompact()) this.renderPanes();
+      paintSize(next);
+      if (!save) return;
+      sizeDirty = false;
+      savePrefs(this.prefs);
+      // 整页换完再落一次（applyPrefs 顺带重夹终端几何、判窄版），只在松手/落档时跑。
+      this.applyPrefs();
+    };
+
+    // 一帧只抹一次：--ui-scale 一变就是整页 zoom，input 事件比帧还密。
+    let sizeFrame = 0;
+    let sizeNext = this.prefs.scale;
+    // 「有没有还没存盘的值」只能另记一笔：`setScale(..., false)` 自己就会把 prefs 改成新值，
+    // 拿 prefs 比等于永远相等，松手那次 savePrefs 就再也走不到。
+    let sizeDirty = false;
+    const queueSize = (v: number): void => {
+      sizeNext = v;
+      sizeDirty = true;
+      if (sizeFrame) return;
+      sizeFrame = requestAnimationFrame(() => {
+        sizeFrame = 0;
+        // 抽屉中途被关掉（Esc / 点背景）时这一帧还没跑：直接丢掉，别对着已摘掉的控件改 prefs。
+        if (!range.isConnected) return;
+        setScale(sizeNext, false);
+      });
+    };
+
+    /**
+     * 拖的时候不能交给浏览器算值。`#app` 上是整棵树的 zoom，页一放大轨道跟着变宽变位，
+     * 浏览器拿新几何重新除以指针坐标 —— 手指明明一直往右走，读数却越来越迟钝，2.0 拖不到。
+     * 所以按下那一刻把轨道盒子冻住，之后一律按冻住盒子的百分比算；松手才写盘。
+     */
+    let dragBox: { x: number; w: number } | null = null;
+    const valueAt = (clientX: number): number => {
+      if (!dragBox || dragBox.w <= 0) return Number(range.value);
+      const p = Math.min(1, Math.max(0, (clientX - dragBox.x) / dragBox.w));
+      return SIZE_MIN + p * (SIZE_MAX - SIZE_MIN);
+    };
+
+    rail.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      // 键盘要能接着用：preventDefault 会把焦点拦下来，鼠标拖完再按方向键就没反应了。
+      // 先自己把焦点给 range，再拦浏览器那套（它算的是放大后的坐标）。
+      range.focus({ preventScroll: true });
+      const r = range.getBoundingClientRect();
+      dragBox = { x: r.left, w: r.width };
+      rail.classList.add("dragging");
+      sizeRead.classList.add("dragging");
+      rail.setPointerCapture(ev.pointerId);
+      ev.preventDefault();
+      queueSize(snapSize(valueAt(ev.clientX)));
+    });
+    rail.addEventListener("pointermove", (ev) => {
+      if (!dragBox) return;
+      queueSize(snapSize(valueAt(ev.clientX)));
+    });
+
+    const commitSize = (): void => {
+      if (sizeFrame) {
+        cancelAnimationFrame(sizeFrame);
+        sizeFrame = 0;
+      }
+      // 先把还没抹的那一帧落实。值只能从 sizeNext 拿：range.value 要 paintSize 才写，
+      // 单击轨道时那一帧根本没跑，读它等于把刚才那一下丢掉（存进的是旧值）。
+      if (!sizeDirty) return;
+      setScale(sizeNext, false);
+      sizeDirty = false;
+      savePrefs(this.prefs);
+      this.applyPrefs();
+    };
+    const endDrag = (): void => {
+      if (!dragBox) return;
+      dragBox = null;
+      rail.classList.remove("dragging");
+      sizeRead.classList.remove("dragging");
+      commitSize();
+    };
+    rail.addEventListener("pointerup", endDrag);
+    rail.addEventListener("pointercancel", endDrag);
+
+    // 键盘：一下 1%，不吸附（吸附半径 1.2% 比步长大，吸上就再也出不来）。
+    range.oninput = () => {
+      if (dragBox) return;
+      queueSize(Number(range.value));
+    };
+    range.addEventListener("keyup", () => { if (!dragBox) commitSize(); });
+    range.addEventListener("blur", () => { if (!dragBox) commitSize(); });
+    // 双击轨道回 100%：轨上没有「标准」这颗字了，得留一条回到原点的路。
+    rail.addEventListener("dblclick", () => setScale(1, true));
+
+    paintSize(this.prefs.scale);
 
     const colorBox = el("div", "levels");
     colorBox.append(el("div", "levels-label", tr("颜色")));
@@ -4124,10 +4359,7 @@ export class App {
 
   /** 待回答 / 待确认那两档；当前会话以本地队列为准（它比列表里的计数新）。 */
   private nowPending(s: SessionState): NowChipPending | null {
-    const badge = sessionBadge(
-      s.id === this.currentId ? { ...s, approvals: this.approvals.length, asks: this.asks.length } : s,
-      this.currentId,
-    );
+    const badge = this.badgeOf(s);
     return badge?.pending ? { text: badge.text, title: badge.title } : null;
   }
 
@@ -4686,7 +4918,7 @@ export class App {
     const tail = el("span", "meta-tail");
     if (bottomActs.childElementCount) tail.append(bottomActs);
     // Bottom-right corner: the one thing worth interrupting for, worst first.
-    const badge = sessionBadge(s, this.currentId);
+    const badge = this.badgeOf(s);
     if (badge) {
       const chipEl = el("span", `badge ${badge.cls}`, badge.text);
       if (badge.title) chipEl.title = badge.title;
@@ -6693,7 +6925,7 @@ export class App {
     if (pinned && !archived) tag("pin", tr("置顶"));
     if (archived) tag("arch", tr("已归档"));
     tag(s.origin === "web" ? "web" : "cli", s.origin === "web" ? tr("网页") : "CLI", s.origin === "web" ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话"));
-    const badge = sessionBadge(s, this.currentId);
+    const badge = this.badgeOf(s);
     if (badge) tag(badge.cls, badge.text, badge.title);
     else if (s.owned) tag("live", tr("已接管"), tr("这个会话由网页接管着"));
     main.append(line);
@@ -6828,6 +7060,7 @@ export class App {
     this.cwdChip = null;
     this.modelChip = null;
     this.textarea = null;
+    this.continueBtn = null;
     this.closeSkillPalette();
     this.imageBadge = null;
     if (!this.currentId) {
@@ -6900,8 +7133,12 @@ export class App {
       }
     };
 
-    // Enter sends; the slot the send button used holds the tool-permission switch.
-    row.append(box, this.permissionButton());
+    // Enter sends; the slot the send button used holds the tool-permission switch. The empty strip
+    // above that switch is where 继续 goes (D159): 28 + 4 + 44 = 76 against the textarea's 72.5,
+    // so the whole button costs the transcript ~3.5px instead of a row.
+    const side = el("div", "composer-side");
+    side.append(this.continueButton(), this.permissionButton());
+    row.append(box, side);
     if (this.images.length) {
       const badge = this.pendingImagesBadge();
       row.append(badge);
@@ -9027,6 +9264,76 @@ export class App {
     }
   }
 
+  // ---------------------------------------------------------------- continue (D159)
+  /**
+   * 「继续」：把字面这两个字当成下一条用户消息发出去。pi 的 RPC 没有 continue 命令（`rpc-mode.js`
+   * 的 case 表里只有 prompt / steer / follow_up / abort / compact …），所以「接着干」在协议上
+   * 就是一句话。它坐在权限按钮正上方那 28.5px 里，代价是整行多 3.5px，而不是多一块。
+   */
+  private continueButton(): HTMLButtonElement {
+    const btn = el("button", "continue-btn") as HTMLButtonElement;
+    btn.type = "button";
+    btn.textContent = tr("继续");
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      this.sendContinue();
+    };
+    this.continueBtn = btn;
+    this.syncContinueButton();
+    return btn;
+  }
+
+  /** 藏 / 灰 / 亮全部走 `continueState()`（web/src/continue-state.ts），这里只写提示。 */
+  private syncContinueButton(): void {
+    const btn = this.continueBtn;
+    if (!btn) return;
+    const s = this.session;
+    const state = continueState(s, this.chat.hasUserTurns());
+    // 先置灰再藏：`hidden` 一旦失效（漏了 [hidden] 那条 display 规则），按钮至少还点不动。
+    btn.disabled = state !== "ready";
+    btn.hidden = state === "hidden";
+    if (state === "hidden") return;
+    const why =
+      state === "ready"
+        ? ""
+        : s?.starting
+          ? tr("pi 正在启动，起来之后再继续")
+          : s?.running
+            ? tr("pi 正在跑这一轮，停下之后再继续")
+            : tr("这条会话还没有说过话，没有可继续的");
+    btn.title = why || tr("把「继续」发给 pi —— 草稿留在输入框里，不会被动到");
+  }
+
+  /**
+   * 发「继续」。**不清草稿**：它跟 Enter 不同 —— 这是「接着刚才那件事」，不是「把我写的发出去」。
+   * 乐观气泡照 `sendPrompt()` 带 `clientId`，桥回灌时这一页认自己那条（#19）。
+   */
+  private sendContinue(): void {
+    const id = this.currentId;
+    if (!id || continueState(this.session, this.chat.hasUserTurns()) !== "ready") return;
+    // 连点保护：`pi.status(running)` 回来之前按钮还亮着，按会话只认第一次。
+    const now = Date.now();
+    if (this.continueAt.id === id && now - this.continueAt.at < CONTINUE_GUARD_MS) return;
+    this.continueAt = { id, at: now };
+    // 字面「继续」就发这两个字（用户定的），不做 i18n：模型读到的东西不该跟着界面语言变。
+    const text = CONTINUE_TEXT;
+    const clientId = `local:${now}:${Math.random().toString(36).slice(2, 8)}`;
+    // 重画会重建 textarea，草稿文字会从 `composerText` 填回去，但光标位置和焦点不会 —— 收回来。
+    const caret = this.textarea?.selectionStart ?? null;
+    this.act(() => {
+      if (this.currentId === id) {
+        this.chat.add({ id: clientId, kind: "user", text, images: [], ts: new Date().toISOString() });
+        this.renderChat();
+        const ta = this.textarea;
+        if (ta && caret != null) {
+          ta.focus();
+          ta.setSelectionRange(caret, caret);
+        }
+      }
+      this.socket.send({ type: "prompt", sessionId: id, text, images: [], clientId, behavior: "steer" });
+    });
+  }
+
   // ---------------------------------------------------------------- permission mode
   private permissionButton(): HTMLElement {
     const mode = this.session?.permission ?? "ask";
@@ -10258,7 +10565,7 @@ export class App {
 
   private renderPanes(): void {
     const { sessionsPane, chatPane, queuePane, main } = this.els;
-    const desktop = window.matchMedia("(min-width: 900px)").matches;
+    const desktop = !this.compact();
     // 两行制跟着断点与 currentId 走，窗口一拖也得重摆（renderPanes 在 resize 的 rAF 里跑）。
     // #98：C 的竖列 / D 的色点条也一样 —— 断点、收起状态、当前会话任一变了都得重画。
     // 那颗的落点也跟断点走（窄屏进顶栏），所以这里顺手再摆一次（只在真的跨断点时才动 DOM）。
@@ -10289,7 +10596,7 @@ export class App {
    */
   private renderShellAxes(): void {
     const parts = shellParts(activeLayout(this.prefs));
-    const desktop = window.matchMedia("(min-width: 900px)").matches;
+    const desktop = !this.compact();
     if (this.rail) {
       this.rail.hidden = !(parts.rail && desktop);
       if (!this.rail.hidden) this.paintAxis(this.rail, "rail");
@@ -10365,7 +10672,7 @@ export class App {
    */
   private syncCwdChip(): void {
     if (!this.cwdChip) return;
-    this.cwdChip.hidden = !(this.collapsed.sessions && window.matchMedia("(min-width: 900px)").matches);
+    this.cwdChip.hidden = !(this.collapsed.sessions && !this.compact());
   }
 
   private cwdChipNode(cwd: string): HTMLElement {
@@ -10672,7 +10979,7 @@ export class App {
    * 桌面只有 B/C/D 接（A 里那颗仍是指示，摆在行 2 上）。
    */
   private onWhereClick(): void {
-    if (!window.matchMedia("(min-width: 900px)").matches) {
+    if (this.compact()) {
       this.go("sessions");
       return;
     }
@@ -10766,7 +11073,6 @@ export class App {
     if (!body) return;
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     const curWs = this.currentWsId();
-    const curId = this.currentId;
     body.replaceChildren();
     if (!tree.groups.length) {
       body.append(el("div", "ws-pop-empty", tr("还没有工作区。")));
@@ -10796,14 +11102,15 @@ export class App {
         this.gotoGroup(group);
       };
       sec.append(head);
-      for (const s of group.sessions) sec.append(this.wsPopItem(s, curId));
+      for (const s of group.sessions) sec.append(this.wsPopItem(s));
       body.append(sec);
     }
     this.wireTreeDrops(body);
   }
 
   /** 浮层里的一行：与树里同一套视觉语言（在线点 / 待处理角标 / 当前高亮）。 */
-  private wsPopItem(s: SessionState, curId: string | null): HTMLElement {
+  private wsPopItem(s: SessionState): HTMLElement {
+    const curId = this.currentId;
     const item = el("div", `ws-pop-item${s.id === curId ? " on" : ""}`);
     item.dataset.id = s.id;
     item.setAttribute("role", "button");
@@ -10812,7 +11119,7 @@ export class App {
     const dot = el("span", `dot ${s.running ? "busy" : s.owned ? "live" : ""}`);
     dot.title = s.running ? tr("运行中") : s.owned ? tr("网页已接管（pi 进程在本服务里）") : tr("未接管（只读历史；发消息会自动接管）");
     item.append(dot, el("span", "ws-pop-item-name", s.name || s.id.slice(0, 8)));
-    const badge = sessionBadge(s, curId);
+    const badge = this.badgeOf(s);
     if (badge) {
       const chip = el("span", `badge ${badge.cls}`, badge.text);
       if (badge.title) chip.title = badge.title;
@@ -10855,7 +11162,7 @@ export class App {
     if (!host) return;
     // 条要整个重建（锚点那颗胶囊跟着消失），折起来的那张列表不能留在屏幕上。
     this.pillBar.closeMore();
-    const desktop = window.matchMedia("(min-width: 900px)").matches;
+    const desktop = !this.compact();
     // #98：行 2（本区胶囊 + ＋）只属于 A。B/C/D 里当前那颗已经搬进顶栏，整行不占地方。
     const parts = shellParts(activeLayout(this.prefs));
     const visible = desktop && parts.sessionRow;
@@ -11693,12 +12000,31 @@ function openSameOrigin(url: string): void {
   a.click();
 }
 
-const SIZES: [number, string][] = [
-  [0.9, tr("小")],
-  [1, tr("标准")],
-  [1.12, tr("大")],
-  [1.25, tr("特大")],
-];
+/**
+ * 字号：一根连续滑杆（0.8–2.0，步长 1%），不再是四颗 chip。
+ *
+ * 老的四档没消失，改行「轨上的刻度」：`SIZE_STOPS` 既是刻度字的位置，也是磁吸点 ——
+ * 指针拖到 ±1.2% 以内会吸上去，点刻度直接落档。键盘不吃磁吸（每按一下是 1%，吸了会永远卡在刻度上）。
+ * 取舍与样张见 `.scratch/font-slider/`，D 记录见 docs/DECISIONS.md。
+ */
+const SIZE_MIN = 0.8;
+const SIZE_MAX = 2;
+const SIZE_STEP = 0.01;
+const SIZE_STOPS = [0.9, 1, 1.12, 1.25];
+/** 磁吸半径：0.012 = 1.2%，在 480px 的轨上大约 5px。 */
+const SIZE_SNAP = 0.012;
+
+/** 值 → 轨道位置 0..1（两端夹住，浮点误差不会把填充画到轨外）。 */
+const sizePct = (v: number): number => Math.min(1, Math.max(0, (v - SIZE_MIN) / (SIZE_MAX - SIZE_MIN)));
+
+/** 拖到老档位附近就吸上去。只有指针拖动走这里（原因见 SIZE_STOPS 上面）。 */
+const snapSize = (v: number): number => {
+  for (const s of SIZE_STOPS) if (Math.abs(v - s) < SIZE_SNAP) return s;
+  return v;
+};
+
+/** 夹进 0.8–2.0 并取两位小数：prefs 里只存得下这种值（滑杆的 step 就是 1%）。 */
+const clampScale = (v: number): number => Math.round(Math.min(SIZE_MAX, Math.max(SIZE_MIN, v)) * 100) / 100;
 
 /**
  * 设置里每颗布局 chip 的那张小示意图（46×30，纯 CSS 画的块）。不引图片：设置面板要能离线
@@ -11780,7 +12106,8 @@ function readPrefs(): Prefs {
     const scale = Number(p?.scale);
     const accent = LEGACY_ACCENTS[String(p?.accent)] ?? String(p?.accent);
     return {
-      scale: SIZES.some(([s]) => Math.abs(s - scale) < 0.005) ? scale : DEFAULT_PREFS.scale,
+      // 滑杆是连续的：只夹范围、留两位小数（老的 0.9 / 1 / 1.12 / 1.25 原样还能读回来）。
+      scale: Number.isFinite(scale) && scale > 0 ? clampScale(scale) : DEFAULT_PREFS.scale,
       accent: ACCENTS[accent] ? accent : DEFAULT_PREFS.accent,
       text: TEXT_STEPS.some(([k]) => k === p?.text) ? (p.text as Prefs["text"]) : DEFAULT_PREFS.text,
       // 没存过语言（第一次打开、或老版本升上来）就跟着浏览器走。
