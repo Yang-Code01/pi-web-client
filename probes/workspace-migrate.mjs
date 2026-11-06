@@ -10,7 +10,7 @@
  *   5. 点「以后再说」→ 什么都没写，刷新仍然弹；
  *   6. 同一张页面里只弹一次（关掉之后左栏交互不会把它重新推上来）。
  *
- * 桩桥照真桥：`opened` 只回快照（D130），页面也不再发它。
+ * 桩桥照真桥：`opened` 只回快照（D146），页面也不再发它。
  *
  * Run: npm run build:web && node probes/workspace-migrate.mjs
  */
@@ -187,7 +187,7 @@ const snapshot = (page) =>
 
 const newPage = async () => {
   const context = await browser.newContext({ viewport: { width: 1180, height: 900 }, locale: "zh-CN" });
-  // 页面在 `navigator.webdriver` 为真时不弹预览（D131，避免把自动化全挡在模态下面）；
+  // 页面在 `navigator.webdriver` 为真时不弹预览（D146，避免把自动化全挡在模态下面）；
   // 这张探针要考的正是它，所以先把标记摘掉。
   await context.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => false, configurable: true });

@@ -1,4 +1,6 @@
 import { tr } from "./i18n/index.ts";
+import { ACCENTS, ACCENT_IDS } from "./palette.ts";
+import { wsAccent } from "./nowchip.ts";
 
 /**
  * #95：左栏的「工作区 → 会话」两级树。
@@ -69,15 +71,14 @@ export interface Tree<T extends TreeSession = TreeSession> {
 }
 
 /**
- * 组色：和 `ACCENTS` 同一套色值（`web/src/app.ts` 里的强调色板）。按 id 做稳定哈希，刷新、换机器
- * 都不会跳色。写死在此处而不是 import app.ts：那是页面模块，纯函数不该把它拖进来。
+ * 组色：从 `ACCENTS`（`web/src/palette.ts`）派生色值，哈希用 `wsAccent()` 那套 FNV-1a ——
+ * 与顶栏「当前在哪」那颗（`nowchip.ts`）同源，左栏树 / 标签行 / 竖列与它永远同桶。
+ * 保留这个导出是为了老调用方（`app.ts` 等）拿色值；新代码建议直接用 accent id。
  */
-export const WS_COLORS = ["#7dd3fc", "#5eead4", "#c4b5fd", "#fcd34d", "#fda4af", "#cbd5e1"];
+export const WS_COLORS = ACCENT_IDS.map((id) => ACCENTS[id].accent);
 
 export function wsColor(id: string): string {
-  let hash = 0;
-  for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
-  return WS_COLORS[hash % WS_COLORS.length];
+  return ACCENTS[wsAccent(id)].accent;
 }
 
 /** 归一化：反斜杠转正斜杠、折叠重复斜杠、去尾斜杠；显示用，保留大小写。 */

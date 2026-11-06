@@ -169,6 +169,9 @@ const chip = () =>
     };
   });
 
+/** 顶栏标题：会话名唯一显示的地方（这颗 chip 里不再重复一次）。 */
+const barTitle = () => page.evaluate(() => document.querySelector(".topbar .title")?.textContent ?? "");
+
 await page.goto(`${BASE}/#/s/${A1}`, { waitUntil: "networkidle" });
 if (await page.locator('input[type="password"]').count()) {
   await page.fill('input[type="password"]', "probe");
@@ -177,11 +180,13 @@ if (await page.locator('input[type="password"]').count()) {
 await page.waitForSelector(".session-card", { timeout: 15000 });
 await sleep(800);
 
-// 1) 左栏展开：这颗在，内容 = 工作区名 · 会话名，读屏念得全
+// 1) 左栏展开：这颗在，内容 = 工作区名（会话名归顶栏标题，不在这一颗里重复）
 let c = await chip();
 ok(c !== null, "左栏展开时这颗在顶栏");
 ok(c?.hidden === false && c?.count === 1, "只渲染一颗，且是可见的");
-ok(c?.ws === "pi-web-client" && c?.name === "追加开发", `展开态写着「${c?.ws} · ${c?.name}」`);
+ok(c?.ws === "pi-web-client", `展开态写着工作区「${c?.ws}」`);
+ok(c?.name === "", "会话名不在这一颗里（顶栏标题已经写着它，重复一次只是噪音）");
+ok((await barTitle()) === "追加开发", `会话名在顶栏标题上（${await barTitle()}）`);
 ok(c?.label === "pi-web-client，追加开发，当前会话", `aria-label = ${c?.label}`);
 ok(Boolean(c?.accent) && c?.accent !== "rgba(0, 0, 0, 0)", `工作区色点有颜色（${c?.accent}）`);
 ok((c?.live ?? "").includes("live"), "本地会话的在线点是绿的");
@@ -194,7 +199,7 @@ await page.locator('.side-toggle[data-side="left"]').click();
 await sleep(500);
 c = await chip();
 ok(c?.hidden === false && c?.count === 1, "左栏收起后这颗仍在");
-ok(c?.name === "追加开发", "收起后会话名没丢");
+ok((await barTitle()) === "追加开发", "收起后会话名没丢（还在顶栏标题上）");
 ok((await page.locator(".pin-strip").isVisible()) === true, "（对照）收起时横栏也在，但那是另一条东西");
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-collapsed.png`), clip: { x: 0, y: 0, width: 1000, height: 140 } });
 await page.locator('.side-toggle[data-side="left"]').click();
@@ -204,7 +209,7 @@ await sleep(400);
 await page.locator(`.session-card[data-id="${B1}"]`).click();
 await sleep(600);
 c = await chip();
-ok(c?.name === "客户甲的后台" && c?.ws === "客户甲", `切会话后写着「${c?.ws} · ${c?.name}」`);
+ok(c?.ws === "客户甲" && (await barTitle()) === "客户甲的后台", `切会话后工作区「${c?.ws}」+ 标题「${await barTitle()}」`);
 ok(c?.label === "客户甲，客户甲的后台，当前会话", `读屏跟着换（${c?.label}）`);
 ok(Boolean(c?.accent) && c?.accent !== a1Accent, `色点换成另一个工作区的颜色（${c?.accent} ≠ ${a1Accent}）`);
 const b1Accent = c?.accent;

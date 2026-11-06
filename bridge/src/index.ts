@@ -1881,7 +1881,7 @@ async function main(): Promise<void> {
               return;
             }
             if (action === "opened") {
-              // D130 废止了 D125：打开会话不改排列，所以这里什么也不写。仍然回一份快照，是因为
+              // D146 废止了 D125：打开会话不改排列，所以这里什么也不写。仍然回一份快照，是因为
               // 旧页面（缓存里的 bundle）还会先乐观置顶再发这一条 —— 快照把它的 manage 纠正回来。
               broadcast({ type: "manage", ...manageSnapshot() });
               return;
@@ -1914,7 +1914,7 @@ async function main(): Promise<void> {
               send({ type: "purge.result", ...report });
               return;
             }
-            // 工作区（一级分组 = 工程，#94 / D126）：动作都在 workspaces.ts 里，这里只做协议。
+            // 工作区（一级分组 = 工程，#94 / D141）：动作都在 workspaces.ts 里，这里只做协议。
             if (action === "ws.list") {
               // 只回缓存里的快照（快）；缓存里没有的 cwd 顺手补上，补齐后会再来一条广播。
               send({ type: "workspaces", workspace: sessions.workspaces.snapshot() });

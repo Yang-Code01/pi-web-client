@@ -19,9 +19,10 @@ import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./s
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
+import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
-import { hitTest, moveTo, planDrop, type DropHit } from "./drag.ts";
+import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
@@ -360,6 +361,10 @@ export class App {
   private dropLine: HTMLElement | null = null;
   private dragPool: HTMLElement | null = null;
   private dragCleanup: (() => void) | null = null;
+  /** #102 键盘等价的焦点跟随：Alt+方向键 / 折叠组之后，重画完把焦点还给那张卡 / 那个组头。
+   *  pending 带消费预算（见 `focusfollow.ts`）：一次键盘动作连来的几条重画各还一次，预算见底即清，
+   *  之后的普通重画（改名、收推送…）不再抢焦点。 */
+  private pendingFocus: PendingFocusState = { card: null, ws: null };
 
   constructor(me: Me) {
     this.me = me;
@@ -380,6 +385,25 @@ export class App {
     this.startClock();
     this.socket.connect();
     this.routeFromHash();
+  }
+
+  /**
+   * 顶栏那几颗「图标 + 文字」的按钮。窄屏上六个宽按钮写不下（「📁 文件管理器」一颗就 90px，
+   * 390px 的手机加上「产物」就溢出），所以图标与文字分开包：`@media (max-width: 620px)` 只把
+   * `.lb` 收掉，按钮回成 28px 方块，文字还在 title / aria-label 里。
+   * 切分用的是 `tr()` 之后的文案（形如「📂 产物」，第一个空格前是图标），所以不必再为窄屏添一套 key。
+   */
+  private wideBtn(label: string, extra = ""): HTMLButtonElement {
+    const b = el("button", `icon-btn wide ${extra}`.trim()) as HTMLButtonElement;
+    this.setWideLabel(b, label);
+    return b;
+  }
+
+  /** 同一颗宽按钮的字会换（终端跑起来之后是「>_ 终端 2」），所以拆开这件事得能重做一遍。 */
+  private setWideLabel(btn: HTMLElement, label: string): void {
+    const cut = label.indexOf(" ");
+    btn.replaceChildren(el("span", "ic", cut > 0 ? label.slice(0, cut) : label));
+    if (cut > 0) btn.append(el("span", "lb", label.slice(cut + 1)));
   }
 
   // ---------------------------------------------------------------- layout
@@ -406,40 +430,40 @@ export class App {
     look.title = tr("字号与颜色");
     look.dataset.act = "look";
     look.onclick = () => this.openDisplaySheet();
-    const files = el("button", "icon-btn wide", tr("📂 产物"));
+    const files = this.wideBtn(tr("📂 产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
     files.dataset.act = "artifacts";
     files.onclick = () => this.openArtifactsSheet();
     files.hidden = true;
     // D92: the shell sits next to 产物 now — it is a dialog over the page, and this button is both
     // its opener and the place it minimizes back to. Not session-scoped, so it never hides.
-    const term = el("button", "icon-btn wide", tr(">_ 终端"));
+    const term = this.wideBtn(tr(">_ 终端"));
     term.dataset.act = "terminal";
     term.setAttribute("aria-label", tr("终端"));
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
     term.onclick = () => this.openTerminal();
     this.els.term = term;
-    const fs = el("button", "icon-btn wide", tr("📁 文件管理器"));
+    const fs = this.wideBtn(tr("📁 文件管理器"));
     fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
     fs.dataset.act = "files";
     fs.onclick = () => this.openFiles();
     fs.hidden = true;
     this.els.fs = fs;
     // D108：记录不跟会话绑定，所以它跟终端一样常显；计数只在 title 里。
-    const notes = el("button", "icon-btn wide notes-btn", "🐞 bug");
+    const notes = this.wideBtn("🐞 bug", "notes-btn");
     notes.title = tr("记录 bug / 变更 / 想法 / 杂事");
     notes.dataset.act = "notes";
     notes.onclick = () => this.openNotes();
     this.els.notes = notes;
     // #45: the peer is a dialog over the page, not a separate tab — same as 终端.
-    const peer = el("button", "icon-btn wide", tr("🌐 内网通"));
+    const peer = this.wideBtn(tr("🌐 内网通"));
     peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     peer.dataset.act = "peer";
     peer.onclick = () => this.openPeerSheet();
     // 之前没登记进 els，`paintChrome()` 里那段 `if (peer)` 一直是死代码：切语言时这颗不动。
     this.els.peer = peer;
     // #86：随手问也不跟会话绑定（它不进列表），所以跟终端 / 记录一样常显。
-    const scratch = el("button", "icon-btn wide", tr("💭 随手问"));
+    const scratch = this.wideBtn(tr("💭 随手问"));
     scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     scratch.dataset.act = "scratch";
     scratch.onclick = () => this.scratch.open();
@@ -860,6 +884,10 @@ export class App {
         node.textContent = this.leftText(Number(node.dataset.deadline));
       }
       if (this.session?.running) this.fillHintStatus();
+      // 刻度尺也养在这个闹钟里：只改 DOM 的格子数，不重画整个列表。
+      for (const node of document.querySelectorAll<HTMLElement>(".sc-ruler[data-since]")) {
+        drawRuler(node, Number(node.dataset.since));
+      }
     }, 1000);
   }
 
@@ -2669,22 +2697,22 @@ export class App {
     const sessFilter = this.els.sessFilter as HTMLInputElement;
     look.title = tr("外观与语言");
     look.setAttribute("aria-label", tr("外观与语言"));
-    files.textContent = tr("📂 产物");
+    this.setWideLabel(files, tr("📂 产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
-    term.textContent = tr(">_ 终端");
+    this.setWideLabel(term, tr(">_ 终端"));
     term.setAttribute("aria-label", tr("终端"));
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
-    fs.textContent = tr("📁 文件管理器");
+    this.setWideLabel(fs, tr("📁 文件管理器"));
     fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
     // 记录与内网通是顶栏常显的两颗（#45 / D108），标题也要跟着换；
     // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写。
     if (notes) this.paintNotesBadge();
     if (peer) {
-      peer.textContent = tr("🌐 内网通");
+      this.setWideLabel(peer, tr("🌐 内网通"));
       peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     }
     if (scratch) {
-      scratch.textContent = tr("💭 随手问");
+      this.setWideLabel(scratch, tr("💭 随手问"));
       scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     }
     newBtn.textContent = tr("开新会话");
@@ -3969,7 +3997,22 @@ export class App {
     this.wireTreeDrops(host);
     this.renameFocus = false;
     this.wsRenameFocus = false;
+    // #102：键盘动作（Alt+方向键、折叠）换掉的 DOM 到此全部就位，把焦点还给该在的地方。
+    this.consumePendingFocus();
     this.maybeWorkspaceIntro(tree);
+  }
+
+  /** 重画后焦点归还：卡片优先（移动 / 重排后），组头次之（折叠 / 展开后）。状态机在 `focusfollow.ts`。 */
+  private consumePendingFocus(): void {
+    const outcome = consumeFocus(this.pendingFocus, (kind, id) =>
+      kind === "card"
+        ? this.els.sessList.querySelector<HTMLElement>(`.session-card[data-id="${CSS.escape(id)}"]`)
+        : this.els.sessList.querySelector<HTMLElement>(`.ws-sec[data-ws="${CSS.escape(id)}"] > .ws-head`),
+    );
+    this.pendingFocus = outcome.next;
+    if (!outcome.focus) return;
+    outcome.focus.focus({ preventScroll: true });
+    if (outcome.focus.classList.contains("session-card")) outcome.focus.scrollIntoView({ block: "nearest" });
   }
 
   /**
@@ -3984,7 +4027,7 @@ export class App {
     // 没有 workspace 快照（旧桥 / 桩桥）就没有「要建的组」可预览 —— 分组本来就还没发生。
     if (!this.workspaces.groups.length || !tree.groups.length) return;
     // 自动化（Playwright / DevTools 带 navigator.webdriver）不弹：探针每次都跑在全新 profile 里，
-    // 等于每次都「第一次打开」，这张模态会把别的探针全挡在下面（见 D131 的验证段）。
+    // 等于每次都「第一次打开」，这张模态会把别的探针全挡在下面（见 D146 的验证段）。
     if (navigator.webdriver) return;
     this.wsIntroShown = true;
 
@@ -4158,6 +4201,9 @@ export class App {
     const wsCollapsed = has ? this.prefs.wsCollapsed.filter((x) => x !== id) : [...this.prefs.wsCollapsed, id];
     this.prefs = { ...this.prefs, wsCollapsed };
     savePrefs(this.prefs);
+    // 折叠 / 展开都从组头上的 Enter（或点击）发起：重画把组头换成了新节点，焦点得跟回去，
+    // 否则键盘用户按一下 Enter 就掉到 body，Tab 又得从头数。折叠只有本地一次重画，预算 1。
+    this.pendingFocus = armFocus("ws", id);
     this.renderSessions();
   }
 
@@ -4261,6 +4307,16 @@ export class App {
     };
     card.onkeydown = (ev) => {
       if (ev.target !== card) return; // let the buttons and the input own their keys
+      // #102：拖拽的键盘等价 —— Alt+方向键在组间搬 / 组内换位；别的修饰键组合照旧还给浏览器。
+      if (ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
+        if (ev.key === "ArrowLeft" || ev.key === "ArrowRight" || ev.key === "ArrowUp" || ev.key === "ArrowDown") {
+          // 全局 Alt+←/→ 是预览的后退 / 前进（D63）：卡片上的组间搬运要拦在它前面。
+          ev.preventDefault();
+          ev.stopPropagation();
+          this.keyNudge(card, ev);
+          return;
+        }
+      }
       if (ev.key === "Enter" || ev.key === " ") {
         ev.preventDefault();
         card.click();
@@ -4379,6 +4435,14 @@ export class App {
     }
     meta.append(tail);
     card.append(meta);
+    // D136 的记号：跑着的会话在卡底留一把刻度尺，攒的格子就是时长。
+    if (s.running) {
+      const since = Date.parse(s.startedAt ?? "") || s.updatedAt;
+      const ruler = el("div", "sc-ruler");
+      ruler.dataset.since = String(since);
+      drawRuler(ruler, since);
+      card.append(ruler);
+    }
     return card;
   }
 
@@ -4454,6 +4518,45 @@ export class App {
    */
   private dropScope(): { el: HTMLElement; group: string; head: string; item: string } {
     return this.dragScope ?? { el: this.els.sessList, group: ".ws-sec", head: ".ws-head", item: ".session-card" };
+  }
+
+  /**
+   * #102：拖拽的键盘等价。卡片上 Alt+←/→ 搬到相邻组（发 `ws.move`，与指针跨组拖同一条路、
+   * 同一个 `planDrop()`），Alt+↑/↓ 组内换位（重排后发 `arrange`，与指针同组拖同一条路）。
+   * 到了边界（第一组的 ←、末组的 →、组顶 / 组底）就不动也不发；焦点由 renderSessions
+   * 末尾的 `consumePendingFocus()` 还给移动后的那张卡。
+   */
+  private keyNudge(card: HTMLElement, ev: KeyboardEvent): void {
+    const id = card.dataset.id ?? "";
+    if (!id) return;
+    const dir = ev.key === "ArrowRight" || ev.key === "ArrowDown" ? 1 : -1;
+    const sideways = ev.key === "ArrowLeft" || ev.key === "ArrowRight";
+    // 树序（buildTree 的输出序）就是组在左栏里的先后；现在开着浮层时卡片还没变，树还是那棵树。
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+    const wsIds = tree.groups.map((g) => g.id);
+    if (sideways) {
+      const plan = keyMovePlan(id, this.cardWs(id), wsIds, dir as -1 | 1);
+      if (!plan) return;
+      this.pendingFocus = armFocus("card", id);
+      this.act(() => this.socket.send({ type: "manage", action: "ws.move", ids: plan.ids, wsId: plan.wsId }));
+      return;
+    }
+    // 组内重排：先算出目标位，够不着（顶 / 底）就别折腾 DOM。
+    const section = card.closest<HTMLElement>(".ws-sec");
+    const cards = section?.querySelectorAll<HTMLElement>(".session-card");
+    if (!section || !cards) return;
+    const ids = [...cards].map((n) => n.dataset.id ?? "");
+    const at = ids.indexOf(id);
+    const to = keyShiftIndex(at, dir as -1 | 1, ids.length);
+    if (to == null) return;
+    // 与指针同组拖同一套：moveTo 重排（这段 DOM 直接摆），再 commitArrangement() 读 DOM 发 arrange。
+    const after = moveTo(ids, id, to);
+    for (const otherId of after) {
+      const other = Array.from(cards).find((n) => n.dataset.id === otherId);
+      if (other) section.querySelector(".session-cards")?.append(other);
+    }
+    this.pendingFocus = armFocus("card", id);
+    this.commitArrangement();
   }
 
   /** 一整块树（或浮层）接管 dragover / drop：落点判定交给 `hitTest()`（纯函数，单测在 `web/tests/drag-unit.mjs`）。 */
@@ -6337,7 +6440,7 @@ export class App {
     const paintTrash = () => {
       const items = [...this.trash].sort((a, b) => b.deletedAt - a.deletedAt);
       const live = new Set(items.map((it) => it.id));
-      for (const id of [...this.mgrTrashPick]) if (!live.has(id)) this.mgrTrashPick.delete(id);
+      for (const id of this.mgrTrashPick) if (!live.has(id)) this.mgrTrashPick.delete(id);
       const scrollTop = body.scrollTop;
       body.replaceChildren();
       if (!items.length) {
@@ -6640,8 +6743,12 @@ export class App {
     this.closeSkillPalette();
     this.imageBadge = null;
     if (!this.currentId) {
-      const hint = el("div", "empty", tr("左边选一个会话，或开一个新的。"));
-      host.append(hint);
+      // 没开会话时的空状态：整块居中（styles.css 用 `:has(> .composer > .chat-empty)` 把
+      // 中栏从「滚动区 + 贴底输入框」改成一块空白），别让提示贴着底边像界面坏了。
+      const box = el("div", "chat-empty");
+      box.append(el("div", "chat-empty-title", tr("还没有打开会话")));
+      box.append(el("div", "chat-empty-hint", tr("左边选一个，或者开一个新的")));
+      host.append(box);
       return;
     }
     const s = this.session;
@@ -7150,10 +7257,7 @@ export class App {
         tr("等你批准或回答时，推送到 Windows 通知（Web Push）和微信。正看着这个页面时不发：只有切到别的标签页、最小化浏览器或切到别的程序时才发。一份问卷只发一条。"),
       ),
     );
-    const tools = el("div", "actions");
-    tools.style.display = "flex";
-    tools.style.gap = "8px";
-    tools.style.flexWrap = "wrap";
+    const tools = el("div", "queue-tools");
     const push = el("button", "btn", tr("在这台设备开启 Web Push"));
     push.onclick = () => void this.enablePush();
     const test = el("button", "btn", tr("发测试通知"));
@@ -9541,7 +9645,7 @@ export class App {
       host.append(link);
     }
     if (this.tunnel.error) host.append(el("div", "notice warn", errText(this.tunnel)));
-    const keysTools = el("div", "tools");
+    const keysTools = el("div", "queue-tools");
     const keysBtn = el("button", "btn", Object.keys(this.keys).length ? tr("快捷键（已设 {p1} 个）", { p1: Object.keys(this.keys).length }) : tr("设置快捷键"));
     keysBtn.onclick = () => this.openKeysSheet();
     const piSettings = el("button", "btn", tr("pi 设置")) as HTMLButtonElement;
@@ -9551,7 +9655,7 @@ export class App {
     host.append(el("h2", "", tr("快捷键")));
     host.append(keysTools);
     host.append(el("h2", "", tr("关于")));
-    host.append(el("div", "hint", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
+    host.append(el("div", "hint about", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
   }
 
   // ---------------------------------------------------------------- terminal (Q-007 · D70 · D92)
@@ -9605,7 +9709,7 @@ export class App {
     const btn = this.els.term;
     if (!btn) return;
     const n = this.termTabs.size;
-    btn.textContent = n > 1 ? tr(">_ 终端 {p1}", { p1: n }) : tr(">_ 终端");
+    this.setWideLabel(btn, n > 1 ? tr(">_ 终端 {p1}", { p1: n }) : tr(">_ 终端"));
     btn.classList.toggle("term-live", n > 0);
   }
 
@@ -10419,7 +10523,8 @@ export class App {
   /* ------------------------------------------------------------------ Q-035 */
 
   /** 180ms 后才弹（鼠标扫过不算），离开 220ms 才收（从胶囊挪进气泡也不算）。 */
-  private wirePinHover(chip: HTMLElement, s: SessionState): void {    chip.addEventListener("pointerenter", () => this.openPinMenuSoon(chip, s));
+  private wirePinHover(chip: HTMLElement, s: SessionState): void {
+    chip.addEventListener("pointerenter", () => this.openPinMenuSoon(chip, s));
     chip.addEventListener("pointerleave", () => this.closePinMenuSoon());
   }
 
@@ -11471,6 +11576,36 @@ function tailText(text: string, maxLines: number, maxChars: number): string {
 /** 会话列表的时间戳：一分钟内「刚刚」，其余交给 Intl（D110）。 */
 function relativeTime(ts: number): string {
   return fmtRelative(ts);
+}
+
+/** 刻度尺的步长（分钟）：挑一个让格子数落在 2–11 之间的，再长就上台阶。 */
+const RULER_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 240];
+
+/** 跑了多久，写成 m:ss（过一小时是 h:mm:ss）—— 只进刻度尺的 tooltip，不占版面。 */
+function clockText(totalSecs: number): string {
+  const s = totalSecs % 60;
+  const m = Math.floor(totalSecs / 60) % 60;
+  const h = Math.floor(totalSecs / 3600);
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  return h ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+}
+
+/**
+ * 一把刻度尺：一条 1px 竖线是一格，格子攒得越多说明跑得越久，最右那条是「现在」。
+ * 位置等距铺满卡片宽度、不按时间比例画 —— 那会变成一根永远不满的进度条，而进度条会被读成
+ * 「快完成了」，agent 跑多久并没有完成度可言。密度本身就是读数，具体时长留在 tooltip。
+ */
+function drawRuler(node: HTMLElement, since: number): void {
+  const secs = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  const mins = secs / 60;
+  const step = RULER_STEPS.find((x) => mins / x <= 11) ?? 240;
+  const marks = Math.floor(mins / step);
+  node.title = tr("已经跑了 {p1}", { p1: clockText(secs) });
+  const key = `${step}/${marks}`;
+  if (node.dataset.key === key) return;
+  node.dataset.key = key;
+  node.replaceChildren(...Array.from({ length: marks + 1 }, (_, i) => el("i", i === marks ? "now" : "")));
 }
 
 function urlBase64ToUint8Array(base64: string): Uint8Array {

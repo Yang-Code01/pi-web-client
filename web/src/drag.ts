@@ -95,3 +95,35 @@ export function moveTo<T extends string>(list: readonly T[], id: T, index: numbe
   rest.splice(at, 0, id);
   return rest;
 }
+
+/**
+ * #102：拖拽的键盘等价。方向键选组、落点换算都走上面同一套，只是把「指针的 y」
+ * 换成「树序里相邻的那一组」。树序就是左栏里组的先后（buildTree 的输出序）。
+ */
+
+/** 树序里 `wsId` 相邻的组：`dir: 1` 是下一个，`-1` 是上一个；没有（边界 / 不在树里）是 null。 */
+export function neighborWs(wsId: string, wsIds: readonly string[], dir: -1 | 1): string | null {
+  const at = wsIds.indexOf(wsId);
+  if (at < 0) return null;
+  const to = at + dir;
+  return to >= 0 && to < wsIds.length ? (wsIds[to] ?? null) : null;
+}
+
+/**
+ * 卡片上 Alt+←/→ 的计划：搬到相邻组 = `planDrop()` 的 move（只写 override，不重排 order，
+ * 与指针拖拽跨组同一条路）；到头了返回 null（不动、不发消息）。
+ */
+export function keyMovePlan(id: string, fromWs: string, wsIds: readonly string[], dir: -1 | 1): DropPlan | null {
+  const to = neighborWs(fromWs, wsIds, dir);
+  if (!to) return null;
+  return planDrop(id, fromWs, { wsId: to, index: 0, line: 0, pool: false });
+}
+
+/**
+ * 卡片上 Alt+↑/↓ 的目标位：组内插到上一位 / 下一位；已在边上返回 null（不动、不发消息），
+ * 不能把 clamp 过的边界误当成「挪成功」。
+ */
+export function keyShiftIndex(index: number, dir: -1 | 1, count: number): number | null {
+  const to = index + dir;
+  return to >= 0 && to < count ? to : null;
+}
