@@ -2246,6 +2246,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .ext-host .ext-reload { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
 .ext-host .login-row a { color: var(--accent); text-decoration: none; }
 .ext-switch { display: flex; gap: 8px; align-items: center; font-size: 13px; cursor: pointer; }
+/* D126 技能商店 */
+.skill-foot { display: flex; align-items: center; gap: 8px; }
+.skill-foot .skill-foot-hint { flex: 1; min-width: 0; }
+.skill-foot .skill-store-open { flex: none; padding: 4px 8px; font-size: 12px; }
+.skill-host .skill-path { font: 11px/1.4 var(--mono); color: var(--faint); flex: 1 1 100%; word-break: break-all; }
+.skill-host .skill-scope { flex-wrap: wrap; padding-top: 0; }
+.skill-host .skill-scope .settings-hint { flex: none; }
 /* #49: the pi CLI itself, above the inventory — the program every row below runs in. */
 .settings-sheet .ext-pi { display: grid; gap: 4px; padding: 8px 8px; border: 1px solid var(--line); border-radius: 8px; }
 .settings-sheet .ext-pi .settings-foot { padding-top: 0; flex-wrap: wrap; }

@@ -1651,24 +1651,80 @@ if (s.idleFor() > IDLE_GC_MS) s.sleep();   // 2 小时
 `node probes/round4-pin.mjs`、`node probes/round16-pin.mjs`、`node probes/round24-pinactions.mjs`（Q-011 /
 Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落到末尾、悬停气泡照旧）。
 
-## D126 工作区：组 id 就是工程根，读路径不跑 git，临时组补完就清掉
+## D126 技能商店：面板底部的「商店」开一个 dialog；来源 skills.sh，装进技能目录，只有用户技能能卸
 
-决定（桥侧，`bridge/src/workspaces.ts` + `bridge/src/git.ts` 的 `gitRoot()`）：
+**问题**（用户要求）：技能面板只能「挑一个已有的」，看不到社区里有什么，也没法在网页上装 / 卸。扩展与 MCP 早就有商店（D81），技能这一层是空的。
 
-- 组 id = 归一化工程根的小写形式（反斜杠转正斜杠、折叠重复斜杠、去尾斜杠、盘符根保留 `F:/`，再小写）；手动组是 `manual:<随机>`。工程根本身保留原样大小写，只用于显示。
-- 工程根推导只用 `git rev-parse --git-common-dir`：结果以 `.git` 结尾就取父目录 —— 普通克隆与它所有 worktree 的 common dir 都指向同一个 `<主仓>/.git`，五份 worktree 因此并成一组；否则用 common dir 本身（`separate-git-dir` / bare 的退化）。跑不通（非 git、目录已不存在、没装 git）就用 cwd 本身，不抛错。
-- `Sessions.list()` 只查状态文件里的 `keys` 缓存，同步、绝不跑 git；缓存缺失时先拿 cwd 当工程根（新会话立刻有组可站），`resolve()` 异步补缓存，补完把「按 cwd 建出来的临时组」清掉。缓存落盘，重启不重算。
-- 拖动写 `overrides`（sessionId → 组 id），优先于 cwd；「放回工程」= 删这一条；删除会话时一并清掉，不留悬空指向。
-- 只允许删空的手动组：派生组删了下次还会回来，那是假动作。
-- `ws.*` 五个动作与其他管理动作一样先过 `requireStepUp()`；`session.list` 与 `manage` 广播都顺带带上工作区快照，每条会话多一个 `ws` 字段。
+**决定**（逐项问过用户）：
 
-为什么：会话列表每次广播都要重算一遍归属，14 个 cwd × 30–80ms 的 git 子进程会让左栏发卡；而 worktree 合并只能靠 `--git-common-dir`（`--show-toplevel` 给的是 worktree 自己，五份就是五个组）。临时组不清掉，worktree 会在补齐后同时留下「按 cwd 那个组」和「主仓那个组」，等于合并失败；但被 override 指着的组不清 —— 用户拖进去的东西不能因为一次探测消失。
+1. **入口**：技能面板（D115）底部右侧加一颗「商店」，点开是**独立 dialog**（不是面板内切页）——搜索框、结果、按地址安装、已安装列表都放得下。面板本身还是纯挑选器。
+2. **搜索来源是 skills.sh**（`GET /api/search?q=`，社区技能目录，按匿名安装次数排）。它只给名字 / 仓库 / 安装量，不给说明，所以说明来自每个技能仓库里的 `SKILL.md` 前言。
+3. **仓库树走 jsDelivr**（`data.jsdelivr.com/v1/packages/gh/<repo>@HEAD`）：不需要 GitHub 令牌，也没有 GitHub API 那个「匿名 60 次/小时」。jsDelivr 拒绝大仓库（403，`github/awesome-copilot` 之类）时退回 GitHub API（`/git/trees/HEAD?recursive=1`），有 gh 令牌就用，没有就吃那 60 次/小时。
+4. **分两段推**（照 D113 的做法）：先把排名（一次请求）发给页面并画出来，每条技能的目录 + 说明在第二段 `skill.store.meta` 里补上（每条一次 `raw.githubusercontent.com` 的 `SKILL.md`，并发 5，磁盘缓存 12 小时）。没解析出来之前，行上写「正在确认目录和说明…」，安装按钮先不点。
+5. **装到哪**：默认全局 `<agentDir>/skills`；下拉可切「当前项目」（`<cwd>/.pi/skills`）。没有打开的会话时只能装全局。
+6. **安装 = 下载那一个目录**：按仓库树挑出技能目录（同名 → 忽略大小写 / 非字母数字 → 「只有一个技能目录」三级匹配；`owner/repo/tree/<ref>/<dir>` 这种地址直接指定目录），把目录下每个文件下到目标文件夹，**二进制安全**（脚本、字体、模板不会被 UTF-8 弄坏），单文件 16 MB / 合计 64 MB / 400 个文件封顶。
+7. **按地址安装**：`owner/repo`、GitHub 链接（可带 `/tree/<ref>/<path>`）、本机目录都行。仓库照上面解析；本机目录递归找 `SKILL.md`（跳过 `node_modules` / `.git` / 隐藏目录），列出来再选一个装（`fs.cpSync`）。
+8. **同名保护**：目标文件夹已存在时，只有它也是本商店装的（有 `.pi-store.json` 且来源一致）才覆盖；用户手工放的技能一律拒绝，提示先卸载或换名字。技能名不许带路径分隔符 / `..`。
+9. **卸载**：只允许删**用户技能目录**里的（`<agentDir>/skills`、`~/.agents/skills`），项目技能只读（它们属于仓库，行上写明「要删就直接删这个目录」）；`SKILL.md` 是必备的检查关卡。**junction / symlink 只断链，不碰目标**（本机 `~/.agents/skills` 里大多是链接）。按钮 4 秒内再点一次才真删（同 D81）。
+10. **生效时机**：装 / 卸之后弹窗顶部出现「改动要『重新加载』后…」+「重新加载当前会话」（同扩展管理）：pi 只在启动时扫技能，运行中的会话要 `/reload` 才认；面板的技能列表同时重拉一次。
+11. **门槛**：写操作在本机 / 局域网直接放行，公网隧道只读（`skill_public`），并走桥的 `skills` 写锁（安装与卸载一个接一个）。搜索、已安装清单、按地址列目录都是只读的，隧道也能看。
 
-代价 / 可改：没缓存过的 cwd 第一次显示时可能先落在以自己为根的组里，几百毫秒后换成真工程根（并触发一次广播）；`keys` 只增不删，目录改名会留下旧条目（无害，没人再指向）。
+**为什么：**
 
-验证：`node --experimental-transform-types bridge/tests/workspace-unit.mjs`（临时目录里真 `git init` + `git worktree add`：worktree 与主仓同组、非 git 各自成组、盘符根与不存在的目录不炸、override 优先与放回、缓存命中与重启都不再跑 git、只删空的手动组、forget 清 override）。
+- **选 skills.sh 而不是自己精选仓库**：用户要的是「发现有啥可装」，安装量是唯一现成的真实热度信号；精选清单两周就过期。也不去装 `npx skills` 这个 CLI——它会替我们决定装到哪个 agent 目录，而这里只需要往 pi 的技能目录里放一个文件夹。
+- **不要 GitHub 令牌也能用**：jsDelivr 的 gh 树索引没有速率门槛，`raw.githubusercontent.com` 也是匿名可读；GitHub API 只当大仓库的备用通道，这样第一次用不需要先 `gh auth login`。
+- **两段推而不是等全部解析完**：一次搜索要碰十几个仓库，冷缓存时要 10 秒上下（主要花在 GitHub 备用通道上），一份「查询中…」转十秒是不可接受的；排名一秒内就该出来。
+- **目录 + 文件而不是整包 `pi install`**：技能是「一个文件夹 + SKILL.md」，装成 pi 包会连带 npm 依赖、版本、settings 里的一行来源，为了一个 Markdown 技能太重；而 pi 本来就会扫技能目录（`skillRoots()`，和面板同一套顺序）。
+- **只删用户技能**：项目技能是仓库里的文件，网页上的一个按钮不该去改别人的工作区；这也和 D109 把测试技能放进仓库 `.pi/skills/` 的选择一致。
+
+**代价 / 可改：**
+
+- 说明要一次请求一条（缓存 12 小时），大仓库的树是几 MB 的 JSON；新查询的第一次会慢，之后很快。**可改**：只解析可见的前 N 行。
+- 名称匹配是启发式的：仓库里的目录改名了（例如 `code-review` → `skills/in-progress/review`）就找不到，行上会明说「仓库里没找到这个技能的目录」，只能按地址装。**可改**：拿 `SKILL.md` 的 `name` 去比（要枚举仓库里所有目录，代价高）。
+- 不做「检查更新」：装过之后想更新就再点一次安装（同来源会覆盖）。**可改**：`.pi-store.json` 里已经有来源，加个 `git ls-remote` 比对即可。
+- 没登录 `gh` 时，大仓库的备用通道和扩展管理共用匿名额度（60 次/小时），偶尔会有几行只有名字没有说明。
+- 安装的是仓库 `HEAD`（jsDelivr / raw 的 `HEAD`），不锁 commit：上游改动会跟着变。**可改**：装完把 commit 记进 `.pi-store.json`。
+- 技能内容就是指令 + 脚本，装上等于之后会让模型读它、跑它带的东西——这是技能本身的语义，不是这次的漏洞。
+
+**验证：**
+
+- `node bridge/tests/skill-store.mjs`（假网：`parseSource` 四种地址；树 → 目录 + 三级匹配；skills.sh 排名与第二段的说明；jsDelivr 缓存第二次不再请求；仓库预览 / 本机目录预览；装一个带脚本和 references 的技能、不越出目录边界；手工同名不被覆盖、同来源可重装、`../escape` 被拒；项目范围与无 cwd 被拒；已安装清单的 removable / from；卸载的四种拒绝、链接只断链；`frontmatter()` 的块标量）。
+- `node bridge/tests/skill-store-ws.mjs`（真 bridge + WS：已安装清单只列盘上真有的、项目技能只读、本机目录当来源列出来、短查询本地报错、公网隧道装 / 卸被拒但能搜、装完磁盘上有文件、同名不覆盖、项目范围与无 cwd、卸载真删掉、junction 只断链）。
+- `node probes/skill-store.mjs`（桩桥 + 真 Chromium：面板底部的「商店」、标题与两个标签、打开就要一次已安装清单、用户 / 项目分组与「只读」、两段式搜索的合并、安装发的 `source + dir + scope + cwd`、按钮「安装中…」与「已装好」回执、已装标记、卸装的 4 秒二次确认、按地址安装、关闭）。
+- `node probes/skill-palette.mjs`（D115 的 16 条断言仍绿——底部多了一颗按钮，键盘 / 点击外部 / Esc 都没变）。
+- 真网络抽查（本机，非仓库内）：`searchSkillStore("pdf", 5)` / `("excel", 20)` 解析 18–19/20 条，`anthropics/skills` 的 `skills/pdf` 装出 12 个文件、卸载干净；`vercel-labs/agent-skills` 列出 9 个技能。
+- `npm --prefix web run typecheck`（含 i18n 1291 键 × 3 语言）干净。
+
+## D127 「交给 agent」的正文不写记录时的会话名；待填文字只属于「我自己刚建的那个会话」
+
+**问题（用户报的 bug）：** 在会话「bug 反馈」里记一条，点「交给 agent → 新开一个会话」，新会话的输入框里出现
+`## 111111` / `待处理 · 2026-11-06 00:41 · bug 反馈` —— 那行「bug 反馈」是**上一个会话**的名字，落进新会话
+就读成「别的会话的记录混进来了」。同一处还有一个真泄漏：点「新开一个会话」后按「取消」（或建失败），
+`prefillNext` 留在字段里，此后打开**任何**会话（`openSession` 回包也走 `case "session"`）都会把那段笔记灌进
+那个会话的输入框，并写进它的草稿（复现：取消面板 → 点会话 A → A 的输入框变成某条笔记的 markdown）。
+
+**决定：**
+- `web/src/notesheet.ts:58` `noteMarkdown()` 的头部去掉会话名，只剩 `状态 · 时间`（`## 标题` 单独一行）。
+  复制 Markdown / 导出全部同一条函数，一起变。记录里的 `sessionName` 字段保留：面板里「这条记在哪个会话」
+  （`notesheet.ts:647`）和列表行仍在用。
+- `web/src/app.ts` `case "session"`：先取 `const handoff = this.creating ? this.prefillNext : null;` 再
+  `this.creating?.finish()`，只认领「这条快照是我刚建的那个会话」的回包。
+- `closeSheet()`：`sheetKind === "new"` 时清掉 `prefillNext` —— 关掉面板（取消 / 点背景）= 放弃这段待填文字。
+
+**为什么：** 交接的落点本来就是另一个会话（D95 的「交给 agent」是跨会话的动作），正文里带来源会话名等于把
+读者的注意力从「要修什么」拉到「这是谁的记录」；泄漏那一半不是审美问题，是「待填文字没有归属」——
+它只能属于发起它的那次创建，创建没发生就该过期。`finish()` 在前、填字在后的顺序不能倒（`switchDraft()`
+会把 `composerText` 清空），所以文字必须在 `finish()` 之前取出来，`closeSheet()` 才能在成功路径上也放心清。
+
+**可改：** 想让来源还看得见，可以把它写进行尾的 `> 来自「X」` 引用块（用户这次选了「去掉」，别默认加回来）。
+
+**验证：** `node probes/notes-handoff.mjs`（隔离桥 + 真 Chromium）：正文 `待处理 · 2026-11-06 00:44`
+不含会话名、交到 B 的文字没漏进 A、取消新开会话后再切会话输入框为空、之后新开的 C 为空、真建出来的新会话 D
+拿到那段文字。`node probes/bug-notes-ui.mjs`（37 条断言）仍全绿；`npm --prefix web run typecheck` 与 `build`。
 
 ## D136 一轮 unslop：字号 6 档、圆角 4/6/8/12/16、间距回到 4px 网格（emoji 图标保留）
+
+> 编号说明：D128–D135 是并行分支（工作区 / 后台任务）占用的号段，这五条从 D136 起记以免撞车；合并到 `main` 时那两支尚未合入，号段暂留空。工作区那条原是 D126，见文末 D141。
 
 审计是量出来的，不是看出来的：改之前 `web/src/styles.css` 里有 **15 种字号**（10 / 10.5 / 11 / 11.5 /
 11.8 / 12 / 12.3 / 12.5 / 12.8 / 13 / 13.5 / 14 / 14.5 / 15 / 20）、**15 种圆角**（1,2,3,4,5,6,7,8,9,10,
@@ -1834,3 +1890,22 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 `npm run typecheck`（i18n 1264 键 ×3）、`web/tests/{nowchip,pillbar}-unit.mjs`、
 `probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿；截图 `.scratch/unslop/s-{new,model,notes,peer}-1440.png`
 与 `new-focus.png`（聚焦框现在是淡青边，不是白环）。
+
+## D141 工作区：组 id 就是工程根，读路径不跑 git，临时组补完就清掉
+
+> 编号说明：本条在工作区分支里原是 D126；合并 `main` 时 D126 已被「技能商店」占用，顺延到 D141。正文与它描述的代码没变。
+
+决定（桥侧，`bridge/src/workspaces.ts` + `bridge/src/git.ts` 的 `gitRoot()`）：
+
+- 组 id = 归一化工程根的小写形式（反斜杠转正斜杠、折叠重复斜杠、去尾斜杠、盘符根保留 `F:/`，再小写）；手动组是 `manual:<随机>`。工程根本身保留原样大小写，只用于显示。
+- 工程根推导只用 `git rev-parse --git-common-dir`：结果以 `.git` 结尾就取父目录 —— 普通克隆与它所有 worktree 的 common dir 都指向同一个 `<主仓>/.git`，五份 worktree 因此并成一组；否则用 common dir 本身（`separate-git-dir` / bare 的退化）。跑不通（非 git、目录已不存在、没装 git）就用 cwd 本身，不抛错。
+- `Sessions.list()` 只查状态文件里的 `keys` 缓存，同步、绝不跑 git；缓存缺失时先拿 cwd 当工程根（新会话立刻有组可站），`resolve()` 异步补缓存，补完把「按 cwd 建出来的临时组」清掉。缓存落盘，重启不重算。
+- 拖动写 `overrides`（sessionId → 组 id），优先于 cwd；「放回工程」= 删这一条；删除会话时一并清掉，不留悬空指向。
+- 只允许删空的手动组：派生组删了下次还会回来，那是假动作。
+- `ws.*` 五个动作与其他管理动作一样先过 `requireStepUp()`；`session.list` 与 `manage` 广播都顺带带上工作区快照，每条会话多一个 `ws` 字段。
+
+为什么：会话列表每次广播都要重算一遍归属，14 个 cwd × 30–80ms 的 git 子进程会让左栏发卡；而 worktree 合并只能靠 `--git-common-dir`（`--show-toplevel` 给的是 worktree 自己，五份就是五个组）。临时组不清掉，worktree 会在补齐后同时留下「按 cwd 那个组」和「主仓那个组」，等于合并失败；但被 override 指着的组不清 —— 用户拖进去的东西不能因为一次探测消失。
+
+代价 / 可改：没缓存过的 cwd 第一次显示时可能先落在以自己为根的组里，几百毫秒后换成真工程根（并触发一次广播）；`keys` 只增不删，目录改名会留下旧条目（无害，没人再指向）。
+
+验证：`node --experimental-transform-types bridge/tests/workspace-unit.mjs`（临时目录里真 `git init` + `git worktree add`：worktree 与主仓同组、非 git 各自成组、盘符根与不存在的目录不炸、override 优先与放回、缓存命中与重启都不再跑 git、只删空的手动组、forget 清 override）。
