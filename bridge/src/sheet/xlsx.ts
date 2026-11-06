@@ -6,7 +6,7 @@
  */
 import { entryBytes, entryStream, zipIndex, type ZipEntry } from "./zip.ts";
 import { formatCode, formatValue } from "./numfmt.js";
-import { buildCf, countCfUnsupported, readDxfs, type CellFx, type SheetCf } from "./cf.js";
+import { buildCf, readDxfs, type CellFx, type SheetCf } from "./cf.js";
 
 export type CellKind = "n" | "s" | "b" | "e";
 
@@ -292,7 +292,7 @@ export function readBook(buf: Uint8Array): Book {
     const cells = Math.max(0, size.rows) * Math.max(0, size.cols);
     const tier = tierOf(cells);
     tiers.set(name, tier);
-    let extras: ReturnType<typeof sheetExtras> = { merges: [], widths: new Map(), defaultW: 96, freeze: null };
+    let extras: ReturnType<typeof sheetExtras> = { merges: [], widths: new Map(), defaultW: widthPx(8.43), freeze: null };
     let cfUnsupported = 0;
     let noCache = 0;
     if (tier !== "none") {
@@ -300,10 +300,11 @@ export function readBook(buf: Uint8Array): Book {
       extras = sheetExtras(xml);
       noCache = countNoCache(xml);
       if (tier === "full") {
-        cfUnsupported = countCfUnsupported(xml);
         book.strings ??= sharedStrings(buf, dir);
         const dxfs = readDxfs(partText(buf, dir, "xl/styles.xml"));
-        book.cf.set(name, /<conditionalFormatting\b/.test(xml) ? buildCf(xml, book.strings, dxfs) : null);
+        const cf = /<conditionalFormatting\b/.test(xml) ? buildCf(xml, book.strings, dxfs) : null;
+        book.cf.set(name, cf);
+        cfUnsupported = cf?.unsupported ?? 0;
       } else {
         // 只值轻量：不建条件格式（统计量要把整表数值塞进 Map，正是大表最贵的一步）。
         book.cf.set(name, null);
@@ -318,9 +319,7 @@ export function readBook(buf: Uint8Array): Book {
       tier,
       ...(state === "hidden" || state === "veryHidden" ? { hidden: true } : {}),
       ...(extras.merges.length ? { merges: extras.merges } : {}),
-      ...(extras.widths.size
-        ? { colWidths: Array.from({ length: Math.max(size.cols, ...[...extras.widths.keys()].map((c) => c + 1)) }, (_, c) => extras.widths.get(c) ?? extras.defaultW) }
-        : {}),
+      colWidths: Array.from({ length: Math.max(size.cols, ...[...extras.widths.keys()].map((c) => c + 1)) }, (_, c) => extras.widths.get(c) ?? extras.defaultW),
       ...(extras.freeze ? { freeze: extras.freeze } : {}),
       ...(cfUnsupported > 0 ? { cfUnsupported } : {}),
       ...(noCache ? { noCache } : {}),
@@ -380,14 +379,18 @@ function countNoCache(xml: string): number {
   return n;
 }
 
+interface SheetCtx {
+  strings: string[];
+  xfs: Xf[];
+  date1904: boolean;
+}
+
 function cellsOfRow(
   xml: string,
   rowIndex: number,
   c0: number,
   c1: number,
-  strings: string[],
-  xfs: Xf[],
-  date1904: boolean,
+  ctx: SheetCtx,
   cf: SheetCf | null,
 ): WireCell[] {
   const cells: WireCell[] = [];
@@ -401,11 +404,11 @@ function cellsOfRow(
     const cached = v.trim() !== "";
     const formula = formulaOf(inner);
     const sIdx = Number(attr(attrs, "s") ?? "");
-    const xf = Number.isFinite(sIdx) ? xfs[sIdx] : undefined;
+    const xf = Number.isFinite(sIdx) ? ctx.xfs[sIdx] : undefined;
     const align = xf?.align ?? undefined;
     let cell: WireCell | null = null;
     if (kind === "s" && cached) {
-      const text = strings[Number(v)];
+      const text = ctx.strings[Number(v)];
       if (text !== undefined) cell = { r: pos.r, c: pos.c, k: "s", t: text };
     } else if (kind === "inlineStr") {
       const is = /<is\b[^>]*>([\s\S]*?)<\/is>/.exec(inner)?.[1] ?? "";
@@ -423,7 +426,7 @@ function cellsOfRow(
       const raw = unescapeXml(v.trim());
       const num = Number(raw);
       let shown = raw;
-      if (xf?.code && Number.isFinite(num)) shown = formatValue(num, xf.code, date1904);
+      if (xf?.code && Number.isFinite(num)) shown = formatValue(num, xf.code, ctx.date1904);
       cell = { r: pos.r, c: pos.c, k: "n", t: shown };
     }
     // 公式格可以带着上次算出的值（就是上面那个 cell），也可以什么都没有（#111）。
@@ -455,46 +458,45 @@ export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: numbe
   if (!part) throw new Error("找不到这个工作表");
   const entry = book.dir.get(part);
   if (!entry) throw new Error("这个工作表是空的");
-  const strings = (book.strings ??= sharedStrings(buf, book.dir));
-  const xfs = (book.xfs ??= readStyles(buf, book.dir));
+  const ctx: SheetCtx = {
+    strings: (book.strings ??= sharedStrings(buf, book.dir)),
+    xfs: (book.xfs ??= readStyles(buf, book.dir)),
+    date1904: book.date1904,
+  };
   const cf = tier === "full" ? book.cf.get(sheet) ?? null : null;
-  const { rows, bytes } = scanRows(buf, entry, r0, r1, c0, c1, strings, xfs, book.date1904, cf);
+  const { rows, bytes } = scanRows(buf, entry, r0, r1, c0, c1, ctx, cf);
   return { sheet, r0, r1, c0, c1, rows, bytes, partBytes: entry.size };
 }
 
-/** 扫表 XML：按 `<row>` 切块，只解析落在 [r0,r1] 的行；看到更大的行号就停。 */
-function scanRows(
-  buf: Uint8Array,
-  entry: ZipEntry,
-  r0: number,
-  r1: number,
-  c0: number,
-  c1: number,
-  strings: string[],
-  xfs: Xf[],
-  date1904: boolean,
-  cf: SheetCf | null,
-): { rows: WireRow[]; bytes: number } {
-  const rows: WireRow[] = [];
+interface RowSink {
+  /** 看到更大的行号就停（在解析该行之前，这一行不计字节）；返回 true 让流立即停。 */
+  stopAt?: (index: number) => boolean;
+  /** 处理一行（0 基）；返回 true 让流立即停（比如命中已满）。 */
+  onRow: (index: number, body: string) => boolean | void;
+  /** 可选：累计实际解出的表 XML 字节，用来验收「解压字节远小于整表」。 */
+  bytes?: (n: number) => void;
+}
+
+/** 流式扫表 XML：按 `<row>` 切块，边解压边喂给 sink；sink 说停就立刻停。 */
+function forEachRow(buf: Uint8Array, entry: ZipEntry, sink: RowSink): boolean {
   const decoder = new TextDecoder("utf-8");
   let pending = "";
-  let bytes = 0;
-  let stop = false;
+  let stopped = false;
 
   const eat = (text: string): void => {
     pending += text;
-    while (!stop) {
+    while (!stopped) {
       const start = pending.indexOf("<row");
       if (start < 0) {
         // 留一点尾巴：`<row` 可能被切在下一个 chunk 的边界上。
         if (pending.length > 16) {
-          bytes += Buffer.byteLength(pending.slice(0, -16));
+          sink.bytes?.(Buffer.byteLength(pending.slice(0, -16)));
           pending = pending.slice(-16);
         }
         return;
       }
       if (start > 0) {
-        bytes += Buffer.byteLength(pending.slice(0, start));
+        sink.bytes?.(Buffer.byteLength(pending.slice(0, start)));
         pending = pending.slice(start);
       }
       const gt = pending.indexOf(">");
@@ -511,29 +513,55 @@ function scanRows(
       }
       const attrs = head.slice(4, selfClose ? -2 : -1);
       const num = Number(attr(attrs, "r"));
-      // 过 r1 立即停：这一行不算进「解压字节」，也不解析。
-      if (Number.isFinite(num) && num - 1 > r1) {
-        stop = true;
+      if (Number.isFinite(num) && sink.stopAt?.(num - 1)) {
+        stopped = true;
         return;
       }
-      bytes += Buffer.byteLength(pending.slice(0, end));
+      sink.bytes?.(Buffer.byteLength(pending.slice(0, end)));
       pending = pending.slice(end);
       if (!Number.isFinite(num)) continue;
-      const index = num - 1;
-      if (index < r0) continue;
-      const cells = cellsOfRow(body, index, c0, c1, strings, xfs, date1904, cf);
-      if (cells.length) rows.push({ r: index, cells });
+      if (sink.onRow(num - 1, body) === true) {
+        stopped = true;
+        return;
+      }
     }
   };
 
   entryStream(buf, entry, (chunk) => {
     eat(decoder.decode(chunk, { stream: true }));
-    return !stop;
+    return !stopped;
   });
-  if (!stop) {
+  if (!stopped) {
     eat(decoder.decode());
-    bytes += Buffer.byteLength(pending);
+    sink.bytes?.(Buffer.byteLength(pending));
   }
+  return stopped;
+}
+
+/** 扫表 XML：按 `<row>` 切块，只解析落在 [r0,r1] 的行；看到更大的行号就停。 */
+function scanRows(
+  buf: Uint8Array,
+  entry: ZipEntry,
+  r0: number,
+  r1: number,
+  c0: number,
+  c1: number,
+  ctx: SheetCtx,
+  cf: SheetCf | null,
+): { rows: WireRow[]; bytes: number } {
+  const rows: WireRow[] = [];
+  let bytes = 0;
+  forEachRow(buf, entry, {
+    stopAt: (index) => index > r1,
+    onRow: (index, body) => {
+      if (index < r0) return;
+      const cells = cellsOfRow(body, index, c0, c1, ctx, cf);
+      if (cells.length) rows.push({ r: index, cells });
+    },
+    bytes: (n) => {
+      bytes += n;
+    },
+  });
   return { rows, bytes };
 }
 
@@ -553,54 +581,19 @@ export function findInSheet(buf: Uint8Array, book: Book, sheet: string, query: s
   const matches: { r: number; c: number }[] = [];
   const q = query.trim().toLowerCase();
   if (!q) return { sheet, matches, truncated: false };
-  const strings = (book.strings ??= sharedStrings(buf, book.dir));
-  const xfs = (book.xfs ??= readStyles(buf, book.dir));
-  const decoder = new TextDecoder("utf-8");
-  let pending = "";
-  let stop = false;
-
-  const eat = (text: string): void => {
-    pending += text;
-    while (!stop) {
-      const start = pending.indexOf("<row");
-      if (start < 0) {
-        // 留一点尾巴：`<row` 可能被切在下一个 chunk 的边界上。
-        if (pending.length > 16) pending = pending.slice(-16);
-        return;
-      }
-      if (start > 0) pending = pending.slice(start);
-      const gt = pending.indexOf(">");
-      if (gt < 0) return;
-      const head = pending.slice(0, gt + 1);
-      const selfClose = head.endsWith("/>");
-      let end = gt + 1;
-      let body = "";
-      if (!selfClose) {
-        const close = pending.indexOf("</row>", gt);
-        if (close < 0) return;
-        body = pending.slice(gt + 1, close);
-        end = close + 6;
-      }
-      const attrs = head.slice(4, selfClose ? -2 : -1);
-      const num = Number(attr(attrs, "r"));
-      pending = pending.slice(end);
-      if (!Number.isFinite(num)) continue;
-      const index = num - 1;
-      for (const cell of cellsOfRow(body, index, 0, info.cols - 1, strings, xfs, book.date1904, null)) {
+  const ctx: SheetCtx = {
+    strings: (book.strings ??= sharedStrings(buf, book.dir)),
+    xfs: (book.xfs ??= readStyles(buf, book.dir)),
+    date1904: book.date1904,
+  };
+  forEachRow(buf, entry, {
+    onRow: (index, body) => {
+      for (const cell of cellsOfRow(body, index, 0, info.cols - 1, ctx, null)) {
         if (!cell.t || !cell.t.toLowerCase().includes(q)) continue;
         matches.push({ r: cell.r, c: cell.c });
-        if (matches.length >= limit) {
-          stop = true;
-          return;
-        }
+        if (matches.length >= limit) return true;
       }
-    }
-  };
-
-  entryStream(buf, entry, (chunk) => {
-    eat(decoder.decode(chunk, { stream: true }));
-    return !stop;
+    },
   });
-  if (!stop) eat(decoder.decode());
-  return { sheet, matches, truncated: stop && matches.length >= limit };
+  return { sheet, matches, truncated: matches.length >= limit };
 }

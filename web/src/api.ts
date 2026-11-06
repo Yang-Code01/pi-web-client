@@ -70,8 +70,11 @@ export const api = {
   /** D127: sheet metadata and one visible row window, both keyed by the /api/preview grant token. */
   sheetMeta: (token: string) =>
     req<SheetMeta>("/api/sheet/meta", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }),
-  /** #112: the PDF page view of a workbook (converted once per path+mtime by the bridge). */
-  sheetPdf: (token: string) => `/api/sheet/pdf?token=${encodeURIComponent(token)}`,
+  /** #112: ask the bridge to lay out the page view (or report it already done); returns a ready|pending|failed id. */
+  sheetPdf: (token: string, retry = false) =>
+    req<{ id: string; status: "ready" | "pending" | "failed"; error?: string; code?: string }>("/api/sheet/pdf", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token, retry }) }),
+  /** #112: the byte endpoint the iframe points at once the page view is ready. */
+  sheetPdfUrl: (id: string, token: string) => `/api/sheet/pdf?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`,
   sheetWindow: (token: string, sheet: string, r0: number, r1: number, c0: number, c1: number) =>
     req<SheetWindow>("/api/sheet/window", {
       method: "POST",

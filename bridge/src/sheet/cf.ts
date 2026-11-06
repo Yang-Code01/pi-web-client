@@ -54,6 +54,8 @@ interface Rule {
   stop: boolean;
   rects: Rect[];
   kind: "scale" | "bar" | "icon" | "cell" | "expr";
+  /** 色阶 / 数据条 / 图标集的原始 cfvo（统计阶段要用 min/max/percentile）。 */
+  cfvos?: Cfvo[];
   /** 色阶：已解析的停靠点，按值升序。 */
   stops?: { v: number; rgb: string }[];
   /** 数据条：范围与颜色。 */
@@ -131,16 +133,6 @@ export function readDxfs(stylesXml: string | null): Dxf[] {
     out.push({ ...(bg ? { bg } : {}), ...(fg ? { fg } : {}), ...(bold ? { bold: true } : {}) });
   }
   return out;
-}
-
-/** 状态条上的「N 条暂不支持」：只数认不出的规则类型。 */
-export function countCfUnsupported(xml: string): number {
-  let n = 0;
-  for (const m of xml.matchAll(/<cfRule\b([^>]*?)\/?>/g)) {
-    const type = attr(m[1] ?? "", "type") ?? "";
-    if (!["colorScale", "dataBar", "iconSet", "cellIs", "expression"].includes(type)) n++;
-  }
-  return n;
 }
 
 // ---------------------------------------------------------------- 小公式求值器
@@ -589,13 +581,14 @@ export function buildCf(xml: string, strings: string[], dxfs: Dxf[]): SheetCf {
         const colors = [...body.matchAll(/<color\b[^>]*\/>/g)].map((m) => colorOf(m[0]));
         const defaults = cfvos.length === 2 ? SCALE_2 : SCALE_3;
         const fallback = cfvos.map((_, i) => colors[i] ?? defaults[i] ?? "#FFFFFF");
-        rules.push({ ...base, kind: "scale", stops: cfvos.map((_, i) => ({ v: 0, rgb: fallback[i] })) });
+        rules.push({ ...base, kind: "scale", cfvos, stops: cfvos.map((_, i) => ({ v: 0, rgb: fallback[i] })) });
       } else if (type === "dataBar") {
         const cfvos = cfvosOf(body);
         const rgb = colorOf(/<dataBar\b[\s\S]*?(<color\b[^>]*\/>)/.exec(body)?.[1]) ?? "#638EC6";
         rules.push({
           ...base,
           kind: "bar",
+          cfvos,
           bar: { min: cfvos[0]?.v ?? 0, max: cfvos[1]?.v ?? 1, rgb },
         });
       } else if (type === "iconSet") {
@@ -605,6 +598,7 @@ export function buildCf(xml: string, strings: string[], dxfs: Dxf[]): SheetCf {
         rules.push({
           ...base,
           kind: "icon",
+          cfvos,
           icon: {
             set,
             steps: cfvos.map((c) => c.v),
@@ -626,6 +620,7 @@ export function buildCf(xml: string, strings: string[], dxfs: Dxf[]): SheetCf {
         } catch (err) {
           // 认不出的公式就当这条规则不命中，不涂色；解析器自身的意外错误照常抛。
           if (!(err instanceof ParseError)) throw err;
+          unsupported++;
         }
       } else if (type === "expression" && dxf) {
         const formula = [...body.matchAll(/<formula\b[^>]*>([\s\S]*?)<\/formula>/g)].map((f) => unescapeXml(f[1] ?? ""))[0] ?? "";
@@ -634,6 +629,7 @@ export function buildCf(xml: string, strings: string[], dxfs: Dxf[]): SheetCf {
         } catch (err) {
           // 同上。
           if (!(err instanceof ParseError)) throw err;
+          unsupported++;
         }
       } else {
         unsupported++;
@@ -673,13 +669,12 @@ export function buildCf(xml: string, strings: string[], dxfs: Dxf[]): SheetCf {
     const min = nums.length ? nums[0] : 0;
     const max = nums.length ? nums[nums.length - 1] : 0;
     if (rule.kind === "scale") {
-      const cfvos = cfvosOf(/<colorScale\b[\s\S]*?<\/colorScale>/.exec(cfText(xml, rule))?.[0] ?? "");
+      const cfvos = rule.cfvos ?? [];
       const stops = (rule.stops ?? []).map((s, i) => ({ v: resolveCfvo(cfvos[i] ?? { t: "min", v: 0 }, nums, min, max), rgb: s.rgb }));
       stops.sort((a, b) => a.v - b.v);
       rule.stops = stops;
     } else if (rule.bar) {
-      const barXml = /<dataBar\b[\s\S]*?<\/dataBar>/.exec(cfText(xml, rule))?.[0] ?? "";
-      const cfvos = cfvosOf(barXml);
+      const cfvos = rule.cfvos ?? [];
       rule.bar.min = resolveCfvo(cfvos[0] ?? { t: "min", v: 0 }, nums, min, max);
       rule.bar.max = resolveCfvo(cfvos[1] ?? { t: "max", v: 0 }, nums, min, max);
     }
@@ -733,18 +728,6 @@ export function buildCf(xml: string, strings: string[], dxfs: Dxf[]): SheetCf {
   };
 
   return { unsupported, at };
-}
-
-/** 只为了再读一遍某条规则自己的 XML（统计量要用它自己的 cfvo）。 */
-function cfText(xml: string, rule: Rule): string {
-  const tag = rule.kind === "scale" ? "colorScale" : "dataBar";
-  let i = 0;
-  for (const m of xml.matchAll(/<cfRule\b([^>]*?)(?:\/>|>([\s\S]*?)<\/cfRule>)/g)) {
-    if (i++ !== rule.idx) continue;
-    const body = m[2] ?? "";
-    return new RegExp(`<${tag}\\b[\\s\\S]*?</${tag}>`).exec(body)?.[0] ?? "";
-  }
-  return "";
 }
 
 function scaleColor(stops: { v: number; rgb: string }[], value: number): string {
