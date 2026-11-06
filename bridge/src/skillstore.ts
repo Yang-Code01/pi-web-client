@@ -8,7 +8,8 @@
  *   It returns no description, so we read the skill's own `SKILL.md`.
  * - **Repo tree** — jsDelivr's `data.jsdelivr.com` tree for GitHub (`@HEAD`, no token). GitHub's own
  *   API answers 60 requests an hour anonymously; a search over a dozen repos would eat that.
- * - **Files** — `raw.githubusercontent.com/<repo>/HEAD/<path>`, binary-safe.
+ * - **Files** — `raw.githubusercontent.com/<repo>/HEAD/<path>`, binary-safe; when that host is
+ *   unreachable (reset, not 404) the same file comes from jsDelivr's GitHub mirrors (D157).
  * - **Install** — a plain directory under `skillRoots()`: `<agentDir>/skills` (global) or
  *   `<cwd>/.pi/skills` (project). Nothing is registered anywhere else; pi discovers it by scan.
  * - **Uninstall** — project skills belong to a repository and stay read-only here; user skills are
@@ -25,22 +26,91 @@ import { frontmatter, scanSkillEntries, userSkillRootOf, type SkillEntry } from 
 /** Everything this module asks the network for, behind one interface so tests stay offline. */
 export interface SkillNet {
   json: (url: string, headers?: Record<string, string>) => Promise<any>;
-  file: (url: string) => Promise<Buffer>;
+  /**
+   * One file, binary-safe. `alt` lists other origins serving the same bytes, tried in order when
+   * `url` is unreachable; `label` is how the error message names the file (repo-relative path).
+   */
+  file: (url: string, opts?: { alt?: string[]; label?: string }) => Promise<Buffer>;
+}
+
+/** Socket-level failures: "this host is unreachable from here", not "this file is gone". */
+const NET_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "EHOSTUNREACH", "ENETUNREACH", "ECONNABORTED"]);
+
+function unreachable(err: unknown): boolean {
+  const e = err as { code?: string; message?: string } | null;
+  if (NET_CODES.has(String(e?.code ?? ""))) return true;
+  return /socket hang up|ECONNRESET|EAI_AGAIN|请求超时/.test(String(e?.message ?? ""));
+}
+
+/** Files are binaries in general (scripts, fonts, images): never decode as UTF-8. */
+async function download(url: string): Promise<Buffer> {
+  const res = await requestRaw(url, { timeoutMs: 60_000, headers: { accept: "*/*" } });
+  if (res.status < 200 || res.status >= 300) throw Object.assign(new Error(`${hostOf(url)} 返回 ${res.status}`), { code: `HTTP_${res.status}` });
+  return res.body;
+}
+
+/** Everything here builds its own URLs; a malformed one is a bug, not a network condition. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+function pathOf(url: string): string {
+  try {
+    return decodeURIComponent(new URL(url).pathname);
+  } catch {
+    return url;
+  }
+}
+
+/** The last line of a failed download: what the user can actually do about it. */
+const FILE_HINT = "（直连 GitHub 被重置的话，在 pi 的设置里填 httpProxy，或给桥设 HTTPS_PROXY 后重启）";
+
+/**
+ * Download one file from the first origin that answers (D157).
+ *
+ * `raw.githubusercontent.com` is reset from some networks while jsDelivr's GitHub mirrors are not —
+ * and the store already trusts jsDelivr for the repo tree. A host that fails at the socket is
+ * remembered as down for ten minutes, so installing a twelve-file skill probes a blocked host once,
+ * not twelve times. A 404 is *not* a reason to try another origin: the file really is missing, and
+ * that message is the useful one. The thrown error keeps `code` (`HTTP_404`, `ECONNRESET`…), because
+ * `installSkill` tells a missing file from a dead network by it.
+ */
+export function fileFetcher(fetchOne: (url: string) => Promise<Buffer>, clock: () => number = Date.now): SkillNet["file"] {
+  const down = new Map<string, number>();
+  const HOST_TTL = 10 * 60_000;
+  return async (url, opts = {}) => {
+    const label = opts.label ?? pathOf(url);
+    const hosts = [url, ...(opts.alt ?? [])];
+    const live = hosts.filter((u) => (down.get(hostOf(u)) ?? 0) <= clock());
+    // Every host known dead: try them all anyway, the network may be back.
+    const failed: string[] = [];
+    const fail = (msg: string, code?: string): never => {
+      throw Object.assign(new Error(`下载 ${label} 失败：${msg}`), code ? { code } : {});
+    };
+    for (const u of live.length ? live : hosts) {
+      const host = hostOf(u);
+      try {
+        const buf = await fetchOne(u);
+        down.delete(host);
+        return buf;
+      } catch (err) {
+        const msg = (err as Error)?.message ?? String(err);
+        if (!unreachable(err)) return fail(msg, (err as { code?: string })?.code);
+        down.set(host, clock() + HOST_TTL);
+        failed.push(`${host} ${msg}`);
+      }
+    }
+    return fail(`${failed.join("；") || "没有可用的下载地址"}${FILE_HINT}`, "unreachable");
+  };
 }
 
 export const LIVE_NET: SkillNet = {
   json: (url, headers) => fetchJson(url, headers),
-  // Files are binaries in general (scripts, fonts, images): never decode as UTF-8. The status check
-  // lives in a try/catch so every failure names the file the install stumbled on.
-  file: async (url) => {
-    const res = await requestRaw(url, { timeoutMs: 60_000, headers: { accept: "*/*" } });
-    try {
-      if (res.status < 200 || res.status >= 300) throw new Error(`${new URL(url).host} 返回 ${res.status}`);
-      return res.body;
-    } catch (err) {
-      throw new Error(`下载 ${decodeURIComponent(new URL(url).pathname)} 失败：${(err as Error).message}`);
-    }
-  },
+  file: fileFetcher(download),
 };
 
 // ------------------------------------------------------------------ disk caches
@@ -95,28 +165,47 @@ export function repoFiles(repo: string, net: SkillNet = LIVE_NET): Promise<[stri
  * one it shares the anonymous 60/h that the rest of the bridge also uses.
  */
 async function treeOf(repo: string, net: SkillNet): Promise<[string, number][]> {
-  const shape = (files: any[]): [string, number][] =>
-    files
-      .filter((f) => typeof f?.name === "string" && !f.name.endsWith("/"))
-      .map((f) => [String(f.name).replace(/^\/+/, ""), Number(f.size) || 0] as [string, number]);
   try {
     const data = await net.json(`https://data.jsdelivr.com/v1/packages/gh/${repo}@HEAD?structure=flat`);
-    return shape(Array.isArray(data?.files) ? data.files : []);
+    const files = Array.isArray(data?.files) ? data.files : [];
+    return files
+      .filter((f: any) => typeof f?.name === "string" && !f.name.endsWith("/"))
+      .map((f: any) => [String(f.name).replace(/^\/+/, ""), Number(f.size) || 0] as [string, number]);
   } catch (err) {
-    const token = ghToken();
-    const headers: Record<string, string> = { accept: "application/vnd.github+json" };
-    if (token) headers.authorization = `Bearer ${token}`;
     try {
-      const data = await net.json(`https://api.github.com/repos/${repo}/git/trees/HEAD?recursive=1`, headers);
-      const blobs = (Array.isArray(data?.tree) ? data.tree : []).filter((e: any) => e?.type === "blob" && typeof e.path === "string");
-      if (!blobs.length) throw new Error("空仓库");
-      return blobs.map((e: any) => [String(e.path), Number(e.size) || 0] as [string, number]);
+      return await githubTree(repo, net);
     } catch (again) {
       // Report the first failure (the usual one) but say the fallback was tried too.
       const first = (err as Error)?.message ?? String(err);
       throw new Error(`${first}（GitHub API 备用通道也不行：${(again as Error)?.message ?? again}）`);
     }
   }
+}
+
+/** GitHub's own tree: the live one, and the only one that is not cached by jsDelivr for hours. */
+async function githubTree(repo: string, net: SkillNet): Promise<[string, number][]> {
+  const token = ghToken();
+  const headers: Record<string, string> = { accept: "application/vnd.github+json" };
+  if (token) headers.authorization = `Bearer ${token}`;
+  const data = await net.json(`https://api.github.com/repos/${repo}/git/trees/HEAD?recursive=1`, headers);
+  const blobs = (Array.isArray(data?.tree) ? data.tree : []).filter((e: any) => e?.type === "blob" && typeof e.path === "string");
+  if (!blobs.length) throw new Error("空仓库");
+  return blobs.map((e: any) => [String(e.path), Number(e.size) || 0] as [string, number]);
+}
+
+/**
+ * The tree as GitHub has it *now*, replacing the cached one.
+ *
+ * jsDelivr caches `@HEAD` for hours, so after an upstream reorganisation its tree can still list
+ * files that are gone — an install then 404s on a file the store was told existed. One GitHub request
+ * (and the next installs are right again) beats asking the user to clear a cache they cannot see.
+ */
+async function freshRepoFiles(repo: string, net: SkillNet): Promise<[string, number][]> {
+  const files = await githubTree(repo, net);
+  const cache = readJson<RepoCache>(repoCacheFile(), {});
+  cache[`repo:${repo}`] = { at: Date.now(), files };
+  writeCache(repoCacheFile(), cache);
+  return files;
 }
 
 /** Directories holding a `SKILL.md`, repo-relative (`""` when SKILL.md sits at the root). */
@@ -166,6 +255,27 @@ function fileUrl(repo: string, file: string, ref = "HEAD"): string {
   return `https://raw.githubusercontent.com/${repo}/${encodeURIComponent(ref)}/${encodePath(file)}`;
 }
 
+/** jsDelivr's GitHub mirrors, in the order a reset raw.githubusercontent.com falls back to. */
+const MIRROR_HOSTS = ["testingcf.jsdelivr.net", "fastly.jsdelivr.net", "gcore.jsdelivr.net"];
+
+/**
+ * The same file on jsDelivr's mirrors (D157). Byte-identical to the raw URL — jsDelivr serves the
+ * GitHub object it has cached, it does not rewrite anything.
+ *
+ * jsDelivr spells the ref as one `@<ref>` segment, so a ref carrying a slash (a branch like
+ * `feat/x`) has no unambiguous form there: no mirrors, the raw URL is the only candidate.
+ */
+export function mirrorUrls(repo: string, file: string, ref = "HEAD"): string[] {
+  if (ref.includes("/")) return [];
+  const path = encodePath(file);
+  return MIRROR_HOSTS.map((host) => `https://${host}/gh/${repo}@${encodeURIComponent(ref)}/${path}`);
+}
+
+/** The arguments every file download passes: the mirrors, and the file's own repo path as its name. */
+function fileFetch(repo: string, file: string, ref = "HEAD"): [string, { alt: string[]; label: string }] {
+  return [fileUrl(repo, file, ref), { alt: mirrorUrls(repo, file, ref), label: file }];
+}
+
 export interface SkillMeta {
   name: string;
   description: string;
@@ -179,7 +289,7 @@ export function skillMeta(repo: string, dir: string, net: SkillNet = LIVE_NET): 
   if (hit && Date.now() - hit.at < META_TTL) return Promise.resolve({ name: hit.name, description: hit.description });
   return shared(`meta:${key}`, async () => {
     const file = dir ? `${dir}/SKILL.md` : "SKILL.md";
-    const text = (await net.file(fileUrl(repo, file))).toString("utf8");
+    const text = (await net.file(...fileFetch(repo, file))).toString("utf8");
     const fm = frontmatter(text);
     const meta: SkillMeta = { name: fm.name || (dir ? (dir.split("/").pop() ?? dir) : repo) , description: fm.description ?? "" };
     const cache = readJson<MetaCache>(metaCacheFile(), {});
@@ -220,18 +330,33 @@ export interface SkillSearchResult {
   note?: string;
 }
 
-/** Small concurrency limiter: a dozen raw fetches at once is rude and gets throttled. */
+/**
+ * Small concurrency limiter: a dozen raw fetches at once is rude and gets throttled.
+ *
+ * A failure stops the queue without returning early: the workers already inside `fn` may still be
+ * writing files, and a failed install wipes the target folder right afterwards. Handing the error
+ * back first would let a late write land in the folder that was just emptied.
+ */
 async function mapLimit<T, R>(list: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(list.length);
   let cursor = 0;
-  const workers = Array.from({ length: Math.min(limit, list.length) }, async () => {
+  let failure: unknown = null;
+  const worker = async (): Promise<void> => {
     for (;;) {
+      if (failure !== null) return;
       const index = cursor++;
       if (index >= list.length) return;
-      out[index] = await fn(list[index], index);
+      try {
+        out[index] = await fn(list[index], index);
+      } catch (err) {
+        failure ??= err;
+        return;
+      }
     }
-  });
+  };
+  const workers = Array.from({ length: Math.min(limit, list.length) }, worker);
   await Promise.all(workers);
+  if (failure !== null) throw failure;
   return out;
 }
 
@@ -492,6 +617,18 @@ function targetRoot(req: InstallRequest): { root: string; scope: "user" | "proje
 }
 
 /**
+ * The files under `prefix`, checked against the store's caps. A self-heal swaps in a newer tree, so
+ * both passes go through here rather than trusting the sizes the first pass saw.
+ */
+function skillFiles(files: [string, number][], prefix: string): [string, number][] {
+  const picked = files.filter(([f]) => f.startsWith(prefix)).sort((a, b) => a[0].localeCompare(b[0]));
+  if (picked.length > MAX_FILES) throw new Error(`这个技能有 ${picked.length} 个文件，超过 ${MAX_FILES} 个上限，没装`);
+  const total = picked.reduce((sum, [, size]) => sum + size, 0);
+  if (total > MAX_TOTAL) throw new Error(`这个技能有 ${(total / 1048576).toFixed(1)} MB，超过 64 MB 上限，没装`);
+  return picked;
+}
+
+/**
  * Copy one skill into a skill root. A re-install from the same source replaces the folder the store
  * wrote earlier (its `.pi-store.json` matches); anything else with that name is left alone.
  */
@@ -533,24 +670,40 @@ export async function installSkill(req: InstallRequest, net: SkillNet = LIVE_NET
   prepareTarget(target, marker);
 
   const prefix = dir ? `${dir}/` : "";
-  const wanted = files.filter(([f]) => f.startsWith(prefix)).sort((a, b) => a[0].localeCompare(b[0]));
-  if (wanted.length > MAX_FILES) throw new Error(`这个技能有 ${wanted.length} 个文件，超过 ${MAX_FILES} 个上限，没装`);
-  const total = wanted.reduce((sum, [, size]) => sum + size, 0);
-  if (total > MAX_TOTAL) throw new Error(`这个技能有 ${(total / 1048576).toFixed(1)} MB，超过 64 MB 上限，没装`);
+  const wanted = skillFiles(files, prefix);
   let written = 0;
-  try {
-    // A skill folder is a handful of small files; four at a time keeps a cold install near one
-    // round-trip instead of one request per file.
-    await mapLimit(wanted, 4, async ([file, size]) => {
+  // A skill folder is a handful of small files; four at a time keeps a cold install near one
+  // round-trip instead of one request per file.
+  const writeAll = async (list: [string, number][]): Promise<void> => {
+    written = 0;
+    await mapLimit(list, 4, async ([file, size]) => {
       if (size > MAX_FILE) throw new Error(`${file} 大于 16 MB，没装`);
       const rel = file.slice(prefix.length);
       if (!rel || rel.split("/").some((seg) => seg === "..")) return;
-      const buf = await net.file(fileUrl(parsed.repo, file, parsed.ref ?? "HEAD"));
+      const buf = await net.file(...fileFetch(parsed.repo, file, parsed.ref ?? "HEAD"));
       const dest = path.join(target, ...rel.split("/"));
       ensureDir(path.dirname(dest));
       fs.writeFileSync(dest, buf);
       written++;
     });
+  };
+  try {
+    try {
+      await writeAll(wanted);
+    } catch (err) {
+      // A file the tree promised that 404s means the tree is older than the repo (jsDelivr caches
+      // `@HEAD` for hours). Ask GitHub for the live tree once and redo the copy from it.
+      if ((err as { code?: string })?.code !== "HTTP_404") throw err;
+      const fresh = await freshRepoFiles(parsed.repo, net).catch(() => null);
+      // The live tree can be bigger in every way the first pass sized, so the caps run again here.
+      const again = fresh ? skillFiles(fresh, prefix) : [];
+      if (!again.some(([f]) => f === skillMd)) throw err;
+      // The first pass may have written files the new tree no longer has; start from an empty folder.
+      // `mapLimit` has waited for its workers by now, so nothing is still writing into the old one.
+      fs.rmSync(target, { recursive: true, force: true });
+      ensureDir(target);
+      await writeAll(again);
+    }
     writeMarker(target, marker);
   } catch (err) {
     fs.rmSync(target, { recursive: true, force: true });
