@@ -719,18 +719,40 @@ export class App {
     return this.prefs.scale || 1;
   }
 
+  /**
+   * 有效宽度 < 900 就是窄版。媒体查询看的是**视口**宽度，而 `#app` 上有 zoom：2.0 字号下
+   * 1707px 的窗口只有 853 布局 px，`@media (max-width: 899px)` 却依然不触发（D 记录）。
+   * 所以窄版的判据在 JS 里算一次，既给 `data-compact` 用，也给这里的所有 if 用 —— 两边不许分叉。
+   */
+  private compact(): boolean {
+    return window.innerWidth / this.uiScale() < 900;
+  }
+
+  /** 把上面的判据落到 `<html data-compact>`：CSS 的 899 / 900 断点都改读这个属性。 */
+  private syncCompact(): void {
+    const compact = this.compact();
+    const root = document.documentElement;
+    // 跟 `String(compact)` 比，而不是跟 "true" 比：首次调用必须把 "false" 也写下去，
+    // 否则属性一直是 undefined，CSS 那边是在碰运气。
+    if (root.dataset.compact === String(compact)) return;
+    root.dataset.compact = String(compact);
+    // 换壳跟窗口跨过 900px 是同一件事：那颗「当前在哪」和标签行都得挪位置（构造期还没搭 DOM）。
+    this.placeNowChip();
+    this.placeWsTabs();
+  }
+
   /** 没存过几何时 dialog 的多大：底部居中，宽高跟着窗口（布局 px，已按缩放折算）。 */
   private termDefaults(): { w: number; h: number } {
     const s = this.uiScale();
     const vw = window.innerWidth / s;
     const vh = window.innerHeight / s;
-    const narrow = window.matchMedia("(max-width: 899px)").matches;
+    const narrow = this.compact();
     return { w: narrow ? vw - 16 : Math.min(1080, vw - 32), h: narrow ? Math.min(vh * 0.42, 340) : Math.min(vh * 0.46, 420) };
   }
 
   /** 底边至少要留出的空：桌面上是 margin，窄屏上还要让开底部三标签（不 56px 与 CSS 里的 bottom 一致）。 */
   private termInset(): number {
-    return window.matchMedia("(max-width: 899px)").matches ? 56 : 14;
+    return this.compact() ? 56 : 14;
   }
 
   private loadTermGeom(): TermGeom {
@@ -997,7 +1019,7 @@ export class App {
         this.warn(tr("浏览器拖拽拿不到「{p1}」的完整路径。请在资源管理器里复制它再 {p2}，或用「文件」按钮选", { p1: others.map((f) => f.name).join(tr("、")), p2: PASTE_KEY }));
       }
     });
-    if (window.matchMedia("(min-width: 900px)").matches) this.tab = "sessions";
+    if (!this.compact()) this.tab = "sessions";
     // 跨过 900px 断点以前没人管：`renderPanes` 只在点按钮时跑，窗口一拖就停在旧状态 —— 收起状态的左栏
     // 在窄屏仍然是 hidden，反过来也一样。一帧一次的重排顺手把输入框下面那行工作目录对齐（D61）。
     let paneFrame = 0;
@@ -1005,6 +1027,7 @@ export class App {
       if (paneFrame) return;
       paneFrame = requestAnimationFrame(() => {
         paneFrame = 0;
+        this.syncCompact();
         this.renderPanes();
       });
     });
@@ -2539,6 +2562,7 @@ export class App {
   private applyPrefs(): void {
     const root = document.documentElement.style;
     root.setProperty("--ui-scale", String(this.prefs.scale));
+    this.syncCompact();
     const accent = ACCENTS[this.prefs.accent] ?? ACCENTS[DEFAULT_PREFS.accent];
     root.setProperty("--accent", accent.accent);
     root.setProperty("--accent-dim", accent.dim);
@@ -2580,7 +2604,7 @@ export class App {
    */
   private placeNowChip(): void {
     const parts = shellParts(activeLayout(this.prefs));
-    const narrow = !window.matchMedia("(min-width: 900px)").matches;
+    const narrow = this.compact();
     const slot = parts.chipTop || narrow ? this.nowSlotTop : this.nowSlotRow;
     if (!this.nowBtn || !slot) return;
     if (this.nowBtn.parentElement !== slot) slot.append(this.nowBtn);
@@ -2633,20 +2657,156 @@ export class App {
     sheet.append(langBox);
 
     const sizeBox = el("div", "levels");
-    sizeBox.append(el("div", "levels-label", tr("字号")));
-    const sizeChips = el("div", "chips");
-    for (const [scale, label] of SIZES) {
-      const chip = el("button", `chip${Math.abs(this.prefs.scale - scale) < 0.005 ? " on" : ""}`, tr(label));
-      chip.onclick = () => {
-        this.prefs = { ...this.prefs, scale };
-        savePrefs(this.prefs);
-        this.applyPrefs();
-        for (const other of sizeChips.querySelectorAll(".chip")) other.classList.toggle("on", other === chip);
-      };
-      sizeChips.append(chip);
+    const sizeRead = el("span", "size-read");
+    const sizeHead = el("div", "size-head");
+    sizeHead.append(el("div", "levels-label", tr("字号")), sizeRead);
+    sizeBox.append(sizeHead);
+
+    const rail = el("div", "size-rail");
+    const range = document.createElement("input");
+    range.type = "range";
+    range.min = String(SIZE_MIN);
+    range.max = String(SIZE_MAX);
+    range.step = String(SIZE_STEP);
+    range.value = String(this.prefs.scale);
+    range.setAttribute("aria-label", tr("字号"));
+
+    // 标尺：每 0.1 一格，每 0.2 一格长的（和下面带数字的那七条对齐）。
+    const ticks = el("div", "ticks");
+    for (let i = 0; i * 0.1 <= SIZE_MAX - SIZE_MIN + 1e-9; i++) {
+      const v = SIZE_MIN + i * 0.1;
+      const major = i % 2 === 0;
+      const tick = el("span", `tick${major ? " named" : " thin"}`);
+      tick.dataset.v = v.toFixed(2);
+      tick.style.left = `${sizePct(v) * 100}%`;
+      tick.style.height = major ? "11px" : "7px";
+      tick.style.marginTop = major ? "-5.5px" : "-3.5px";
+      ticks.append(tick);
     }
-    sizeBox.append(sizeChips);
+    rail.append(range, ticks);
+
+    const marks = el("div", "size-marks");
+    const markAt: number[] = [];
+    for (let i = 0; i * 0.2 <= SIZE_MAX - SIZE_MIN + 1e-9; i++) markAt.push(SIZE_MIN + i * 0.2);
+    markAt.forEach((v, i) => {
+      const mark = el("button", `mark${i === 0 ? " first" : ""}${i === markAt.length - 1 ? " last" : ""}`, String(Math.round(v * 100)));
+      mark.dataset.v = v.toFixed(2);
+      mark.style.left = `${sizePct(v) * 100}%`;
+      mark.title = `${Math.round(v * 100)}%`;
+      mark.setAttribute("aria-label", `${Math.round(v * 100)}%`);
+      mark.onclick = () => setScale(v, true);
+      marks.append(mark);
+    });
+
+    const smallAa = el("span", "size-end s", "Aa");
+    const bigAa = el("span", "size-end b", "Aa");
+    smallAa.setAttribute("aria-hidden", "true");
+    bigAa.setAttribute("aria-hidden", "true");
+    const sizeCtl = el("div", "size-ctl");
+    sizeCtl.append(smallAa, rail, bigAa, marks);
+    sizeBox.append(sizeCtl);
     sheet.append(sizeBox);
+
+    /** 把值抹到控件上（轨道填充 / 读数 / 刻度的「已过」状态 / 刻度字的高亮）。 */
+    const paintSize = (v: number): void => {
+      range.value = String(v);
+      range.style.setProperty("--fill", `${sizePct(v) * 100}%`);
+      range.setAttribute("aria-valuetext", `${Math.round(v * 100)}%`);
+      sizeRead.textContent = `${Math.round(v * 100)}%`;
+      sizeRead.classList.toggle("moved", Math.abs(v - 1) > 0.001);
+      for (const t of ticks.children) {
+        t.classList.toggle("past", Number((t as HTMLElement).dataset.v) < v - 0.001);
+      }
+      for (const m of marks.children) {
+        m.classList.toggle("on", Math.abs(Number((m as HTMLElement).dataset.v) - v) < 0.001);
+      }
+    };
+
+    const setScale = (v: number, save: boolean): void => {
+      const next = Math.round(Math.min(SIZE_MAX, Math.max(SIZE_MIN, v)) * 100) / 100;
+      this.prefs = { ...this.prefs, scale: next };
+      document.documentElement.style.setProperty("--ui-scale", String(next));
+      // 拖动中也要判窄版：不判的话预告是假的（1.0 拖到 2.0 的路上一直是三栏，松手才突然变一栏），
+      // 而抽屉的宽度不跟着窄版变（min(560px,100%)），所以冻住的轨道盒子不会在手指底下跑。
+      this.syncCompact();
+      paintSize(next);
+      if (!save) return;
+      savePrefs(this.prefs);
+      // 整页换完再落一次（applyPrefs 顺带重夹终端几何、判窄版），只在松手/落档时跑。
+      this.applyPrefs();
+    };
+
+    // 一帧只抹一次：--ui-scale 一变就是整页 zoom，input 事件比帧还密。
+    let sizeFrame = 0;
+    let sizeNext = this.prefs.scale;
+    const queueSize = (v: number): void => {
+      sizeNext = v;
+      if (sizeFrame) return;
+      sizeFrame = requestAnimationFrame(() => {
+        sizeFrame = 0;
+        setScale(sizeNext, false);
+      });
+    };
+
+    /**
+     * 拖的时候不能交给浏览器算值。`#app` 上是整棵树的 zoom，页一放大轨道跟着变宽变位，
+     * 浏览器拿新几何重新除以指针坐标 —— 手指明明一直往右走，读数却越来越迟钝，2.0 拖不到。
+     * 所以按下那一刻把轨道盒子冻住，之后一律按冻住盒子的百分比算；松手才写盘。
+     */
+    let dragBox: { x: number; w: number } | null = null;
+    const valueAt = (clientX: number): number => {
+      if (!dragBox || dragBox.w <= 0) return Number(range.value);
+      const p = Math.min(1, Math.max(0, (clientX - dragBox.x) / dragBox.w));
+      return SIZE_MIN + p * (SIZE_MAX - SIZE_MIN);
+    };
+
+    rail.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      const r = range.getBoundingClientRect();
+      dragBox = { x: r.left, w: r.width };
+      rail.classList.add("dragging");
+      sizeRead.classList.add("dragging");
+      rail.setPointerCapture(ev.pointerId);
+      // 拦住浏览器自己的滑块拖拽（它算的是放大后的坐标），否则两边抢着写 range.value。
+      ev.preventDefault();
+      queueSize(snapSize(valueAt(ev.clientX)));
+    });
+    rail.addEventListener("pointermove", (ev) => {
+      if (!dragBox) return;
+      queueSize(snapSize(valueAt(ev.clientX)));
+    });
+
+    const commitSize = (): void => {
+      if (sizeFrame) {
+        cancelAnimationFrame(sizeFrame);
+        sizeFrame = 0;
+      }
+      // 先把还没抹的那一帧落实，否则最后一下可能被 cancel 掉、存进旧值。
+      setScale(Number(range.value), false);
+      savePrefs(this.prefs);
+      this.applyPrefs();
+    };
+    const endDrag = (): void => {
+      if (!dragBox) return;
+      dragBox = null;
+      rail.classList.remove("dragging");
+      sizeRead.classList.remove("dragging");
+      commitSize();
+    };
+    rail.addEventListener("pointerup", endDrag);
+    rail.addEventListener("pointercancel", endDrag);
+
+    // 键盘：一下 1%，不吸附（吸附半径 1.2% 比步长大，吸上就再也出不来）。
+    range.oninput = () => {
+      if (dragBox) return;
+      queueSize(Number(range.value));
+    };
+    range.addEventListener("keyup", () => { if (!dragBox) commitSize(); });
+    range.addEventListener("blur", () => { if (!dragBox) commitSize(); });
+    // 双击轨道回 100%：轨上没有「标准」这颗字了，得留一条回到原点的路。
+    rail.addEventListener("dblclick", () => setScale(1, true));
+
+    paintSize(this.prefs.scale);
 
     const colorBox = el("div", "levels");
     colorBox.append(el("div", "levels-label", tr("颜色")));
@@ -10195,7 +10355,7 @@ export class App {
 
   private renderPanes(): void {
     const { sessionsPane, chatPane, queuePane, main } = this.els;
-    const desktop = window.matchMedia("(min-width: 900px)").matches;
+    const desktop = !this.compact();
     // 两行制跟着断点与 currentId 走，窗口一拖也得重摆（renderPanes 在 resize 的 rAF 里跑）。
     // #98：C 的竖列 / D 的色点条也一样 —— 断点、收起状态、当前会话任一变了都得重画。
     // 那颗的落点也跟断点走（窄屏进顶栏），所以这里顺手再摆一次（只在真的跨断点时才动 DOM）。
@@ -10226,7 +10386,7 @@ export class App {
    */
   private renderShellAxes(): void {
     const parts = shellParts(activeLayout(this.prefs));
-    const desktop = window.matchMedia("(min-width: 900px)").matches;
+    const desktop = !this.compact();
     if (this.rail) {
       this.rail.hidden = !(parts.rail && desktop);
       if (!this.rail.hidden) this.paintAxis(this.rail, "rail");
@@ -10302,7 +10462,7 @@ export class App {
    */
   private syncCwdChip(): void {
     if (!this.cwdChip) return;
-    this.cwdChip.hidden = !(this.collapsed.sessions && window.matchMedia("(min-width: 900px)").matches);
+    this.cwdChip.hidden = !(this.collapsed.sessions && !this.compact());
   }
 
   private cwdChipNode(cwd: string): HTMLElement {
@@ -10609,7 +10769,7 @@ export class App {
    * 桌面只有 B/C/D 接（A 里那颗仍是指示，摆在行 2 上）。
    */
   private onWhereClick(): void {
-    if (!window.matchMedia("(min-width: 900px)").matches) {
+    if (this.compact()) {
       this.go("sessions");
       return;
     }
@@ -10792,7 +10952,7 @@ export class App {
     if (!host) return;
     // 条要整个重建（锚点那颗胶囊跟着消失），折起来的那张列表不能留在屏幕上。
     this.pillBar.closeMore();
-    const desktop = window.matchMedia("(min-width: 900px)").matches;
+    const desktop = !this.compact();
     // #98：行 2（本区胶囊 + ＋）只属于 A。B/C/D 里当前那颗已经搬进顶栏，整行不占地方。
     const parts = shellParts(activeLayout(this.prefs));
     const visible = desktop && parts.sessionRow;
@@ -11589,12 +11749,28 @@ function openSameOrigin(url: string): void {
   a.click();
 }
 
-const SIZES: [number, string][] = [
-  [0.9, tr("小")],
-  [1, tr("标准")],
-  [1.12, tr("大")],
-  [1.25, tr("特大")],
-];
+/**
+ * 字号：一根连续滑杆（0.8–2.0，步长 1%），不再是四颗 chip。
+ *
+ * 老的四档没消失，改行「轨上的刻度」：`SIZE_STOPS` 既是刻度字的位置，也是磁吸点 ——
+ * 指针拖到 ±1.2% 以内会吸上去，点刻度直接落档。键盘不吃磁吸（每按一下是 1%，吸了会永远卡在刻度上）。
+ * 取舍与样张见 `.scratch/font-slider/`，D 记录见 docs/DECISIONS.md。
+ */
+const SIZE_MIN = 0.8;
+const SIZE_MAX = 2;
+const SIZE_STEP = 0.01;
+const SIZE_STOPS = [0.9, 1, 1.12, 1.25];
+/** 磁吸半径：0.012 = 1.2%，在 480px 的轨上大约 5px。 */
+const SIZE_SNAP = 0.012;
+
+/** 值 → 轨道位置 0..1（两端夹住，浮点误差不会把填充画到轨外）。 */
+const sizePct = (v: number): number => Math.min(1, Math.max(0, (v - SIZE_MIN) / (SIZE_MAX - SIZE_MIN)));
+
+/** 拖到老档位附近就吸上去。只有指针拖动走这里（原因见 SIZE_STOPS 上面）。 */
+const snapSize = (v: number): number => {
+  for (const s of SIZE_STOPS) if (Math.abs(v - s) < SIZE_SNAP) return s;
+  return v;
+};
 
 /**
  * 设置里每颗布局 chip 的那张小示意图（46×30，纯 CSS 画的块）。不引图片：设置面板要能离线
@@ -11676,7 +11852,8 @@ function readPrefs(): Prefs {
     const scale = Number(p?.scale);
     const accent = LEGACY_ACCENTS[String(p?.accent)] ?? String(p?.accent);
     return {
-      scale: SIZES.some(([s]) => Math.abs(s - scale) < 0.005) ? scale : DEFAULT_PREFS.scale,
+      // 滑杆是连续的：只夹范围、留两位小数（老的 0.9 / 1 / 1.12 / 1.25 原样还能读回来）。
+      scale: Number.isFinite(scale) && scale > 0 ? Math.round(Math.min(SIZE_MAX, Math.max(SIZE_MIN, scale)) * 100) / 100 : DEFAULT_PREFS.scale,
       accent: ACCENTS[accent] ? accent : DEFAULT_PREFS.accent,
       text: TEXT_STEPS.some(([k]) => k === p?.text) ? (p.text as Prefs["text"]) : DEFAULT_PREFS.text,
       // 没存过语言（第一次打开、或老版本升上来）就跟着浏览器走。
