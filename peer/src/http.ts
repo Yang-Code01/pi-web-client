@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { statePath } from "./config.ts";
+import { saveConfig, statePath } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
@@ -108,6 +108,27 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           hostname: os.hostname(),
           port: cfg.port,
           online: discovery.online(),
+          config: { hidden: cfg.hidden, pauseFiles: cfg.pauseFiles, dnd: cfg.dnd, inbox: cfg.inbox, manual: cfg.manual },
+        });
+      }
+
+      if (url.pathname === "/config" && req.method === "POST") {
+        // 页面上的三个开关（隐身 / 免打扰 / 暂停收文件）走这里：改的是同一个 cfg 对象，
+        // discovery / files 下一次检查就生效，再落盘让重启后保持。
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = (await readBody(req).catch(() => null)) as Record<string, unknown> | null;
+        if (!body || typeof body !== "object") return json(res, 400, { error: "bad body" });
+        const wasHidden = cfg.hidden;
+        for (const key of ["hidden", "dnd", "pauseFiles"] as const) {
+          if (typeof body[key] === "boolean") cfg[key] = body[key] as boolean;
+        }
+        saveConfig(cfg);
+        // 隐身→可见：立刻丢一份 announce，别等下一轮定时（10 秒里对方还看不见）。
+        // 反过来（可见→隐身）什么都不发：`announce()` 本身不查 hidden（D99 只管「收到别人时不回」），
+        // 这时候主动发一包正好把自己的 nodeId 送上门，与隐身相反。
+        if (wasHidden && !cfg.hidden) discovery.announce();
+        return json(res, 200, {
+          ok: true,
           config: { hidden: cfg.hidden, pauseFiles: cfg.pauseFiles, dnd: cfg.dnd, inbox: cfg.inbox, manual: cfg.manual },
         });
       }

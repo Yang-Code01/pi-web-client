@@ -227,10 +227,11 @@ try {
   await page.locator(".scratch-close").click();
   await page.locator('[data-act="peer"]').click();
   const frame = page.frameLocator(".peer-frame");
-  await frame.locator(".tabs .tab").first().waitFor({ timeout: 20000 });
-  const backText = await frame.locator("a.back").innerText();
-  const chatTab = await frame.locator('.tab[data-view="chat"]').innerText();
-  check("内网通页面跟着切到日文", /pi に戻る/.test(backText) && chatTab === "チャット", `${backText} / ${chatTab}`);
+  // 新版内网通：左边是轨道按钮（文案在 span.tag 里），不再是 TAB。
+  // 「‹ 回 pi」在 iframe 里不渲染（外层弹框已经有标题），所以拿轨道标签当锚点。
+  await frame.locator(".rail button").first().waitFor({ timeout: 20000 });
+  const railLabels = await frame.locator(".rail button span.tag").allInnerTexts();
+  check("内网通页面跟着切到日文", railLabels[0] === "メッセージ" && railLabels.length === 4, railLabels.join(" / "));
 } catch (err) {
   failed += 1;
   console.error("FAIL", err?.message ?? err);
