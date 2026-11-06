@@ -1759,6 +1759,7 @@ async function main(): Promise<void> {
                 .slice(0, 500)
                 .map((e) => ({
                   key: String(e.key),
+                  at: String(e.at ?? msg.at ?? ""),
                   tool: String(e.tool ?? ""),
                   code: String(e.code ?? ""),
                   sig: String(e.sig ?? ""),

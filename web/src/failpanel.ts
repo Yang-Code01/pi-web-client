@@ -9,7 +9,7 @@
  */
 import { createEl as el } from "./chat.ts";
 import { clock, codeLabel, entryState, entryTitle, failureMarkdown, ledgerMarkdown, ripeEntries, stateLabel, type FailEntry, type FailLedger } from "./failures.ts";
-import { tr } from "./i18n/index.ts";
+import { tr, fmtDate, fmtTime } from "./i18n/index.ts";
 
 export interface FailHost {
   send(msg: unknown): void;
@@ -226,7 +226,8 @@ export class FailPanel {
       const ev = el("div", "fail-ev");
       const head = el("div", "fail-ev-head");
       const t = el("span", "when", clock(o.at));
-      t.title = new Date(o.at).toLocaleString();
+      const d = new Date(o.at);
+      t.title = Number.isNaN(d.getTime()) ? "" : `${fmtDate(d)} ${fmtTime(d)}`;
       head.append(t, el("span", "sess", o.name || o.sid.slice(0, 8)));
       const exit = el("span", "exit", o.exit != null ? `exit ${o.exit}` : "—");
       if (o.exit != null && o.exit !== 0) exit.classList.add("bad");
@@ -266,11 +267,10 @@ export class FailPanel {
     const blob = new Blob([ledgerMarkdown(ledger, this.label)], { type: "text/markdown;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = tr("AI出错记录") + "-" + new Date().toISOString().slice(0, 10) + ".md";
+    a.download = tr("AI 出错记录") + "-" + new Date().toISOString().slice(0, 10) + ".md";
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     this.host.say(tr("已导出 {p1} 类", { p1: ledger.entries.length }));
   }
 }
 
-export { ripeEntries, codeLabel };

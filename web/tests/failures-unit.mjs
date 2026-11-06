@@ -9,13 +9,13 @@ import assert from "node:assert/strict";
 import {
   classify,
   entryKey,
-  exitOf,
   firstLine,
   normalizeSig,
   ripeEntries,
   entryState,
   failureMarkdown,
 } from "../src/failures.ts";
+import { exitCodeOf } from "../src/diagnose.ts";
 
 // ---------------------------------------------------------------- 分类
 
@@ -42,7 +42,7 @@ test("上下文超限", () => {
 test("普通 exit → exit，并解析出码", () => {
   const out = "npm ERR! something broke\n\nCommand exited with code 2";
   assert.equal(classify("bash", out, 2), "exit");
-  assert.equal(exitOf(out), 2);
+  assert.equal(exitCodeOf(out), 2);
 });
 
 test("被中断单独成一类（不算待修）", () => {

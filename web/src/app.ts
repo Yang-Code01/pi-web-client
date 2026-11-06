@@ -1339,7 +1339,6 @@ export class App {
         this.sessionFails.clear();
         this.chat.reset((msg.items ?? []) as Item[]);
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
-        for (const it of (msg.items ?? []) as Item[]) this.replayFail(it);
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
         this.syncContinueButton();
         break;
@@ -5866,24 +5865,15 @@ export class App {
   // ---------------------------------------------------------------- AI 出错记录（D160）
 
   /**
-   * 账本挂在工作区上（worktree 由桥并回主仓）。`session.ws` 只在列表里带，会话快照不带，
-   * 所以这里按桥同一套规则自己推：override → `keys[cwd]`（工程根）→ 组的 key。
+   * 账本挂在工作区上（worktree 由桥并回主仓）。判据与顶部「当前工作区」chip 同一份（`wsOf`）：
+   * override → 列表 ws → 快照 ws → cwd 反查。分组还没到的极早期退回 cwd 本身，
+   * 免得这一次入账丢在空 id 上；下一次 `failures.get` 会用桥的真 id 读回同一本。
    */
   private currentWs(): string {
-    const s = this.session;
-    if (!s) return "";
-    if (s.ws) return s.ws;
-    const pinned = this.workspaces.overrides[s.id];
-    if (pinned && this.workspaces.groups.some((g) => g.id === pinned)) return pinned;
-    const norm = (p: string) =>
-      String(p ?? "")
-        .replace(/\\/g, "/")
-        .replace(/\/+$/, "")
-        .toLowerCase();
-    const cwd = norm(s.cwd);
-    if (!cwd) return "";
-    const key = norm(this.workspaces.keys[cwd] ?? cwd);
-    return this.workspaces.groups.find((g) => norm(g.key) === key)?.id ?? "";
+    const hit = this.currentWsId();
+    if (hit) return hit;
+    const cwd = String(this.session?.cwd ?? "");
+    return cwd.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
   }
 
   private wsName(ws: string): string {
@@ -5894,29 +5884,14 @@ export class App {
   }
 
   /** 聊天区报来一次失败。按 toolCallId 去重：同一张卡会被 live 事件、item.replace、重放各建一次。 */
-  /** 从快照里的条目恢复「这一轮失败过什么」：只认工具条目与模型报错，按 id 去重。 */
-  private replayFail(it: Item): void {
-    if (it.kind !== "tool") return;
-    if (!(it.isError || it.status === "error")) return;
-    const id = String(it.toolCallId ?? "");
-    if (!id || this.sessionFails.has(id)) return;
-    this.sessionFails.set(id, {
-      callId: id,
-      tool: String(it.name ?? "tool"),
-      cmd: String((it.args as any)?.command ?? it.name ?? ""),
-      out: String(it.result ?? it.partialResult ?? ""),
-      at: new Date().toISOString(),
-    });
-  }
-
-  private recordFail(f: { id: string; tool: string; cmd: string; out: string }): void {
+  private recordFail(f: { id: string; tool: string; cmd: string; out: string; at?: string }): void {
     if (!this.currentId || !f.id || this.sessionFails.has(f.id)) return;
-    this.sessionFails.set(f.id, { callId: f.id, tool: f.tool, cmd: f.cmd, out: f.out, at: new Date().toISOString() });
+    this.sessionFails.set(f.id, { callId: f.id, tool: f.tool, cmd: f.cmd, out: f.out, at: f.at || new Date().toISOString() });
     this.syncFailCta();
   }
 
-  /** 这个会话还有几次失败没进账本：见过的条数 - 上次入账时的条数。 */
-  private failPending(): number {
+  /** 这个会话还有几次失败没进账本：见过的条数 - 上次入账时的条数（点完按钮、账本回包后归零）。 */
+  private uncommittedFails(): number {
     const ws = this.currentWs();
     const sid = this.currentId ?? "";
     if (!ws || !sid || this.failWs !== ws) return 0;
@@ -5928,7 +5903,7 @@ export class App {
   private syncFailCta(): void {
     const btn = this.failCta;
     if (!btn) return;
-    const n = this.failPending();
+    const n = this.uncommittedFails();
     const s = this.session;
     const show = Boolean(s) && !s?.running && !s?.starting && n > 0;
     btn.hidden = !show;

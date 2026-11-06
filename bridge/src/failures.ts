@@ -10,8 +10,7 @@
  * 只读约束由调用方（面板）保证，这里只认「已修复 / 忽略 / 删除」三个动作：已修复的再犯会复活，
  * 忽略的只静默加次数 —— 这是用户定的「不用每次纠正我」。
  */
-import fs from "node:fs";
-import path from "node:path";
+import { createHash } from "node:crypto";
 import { readJson, statePath, writeJson } from "./paths.ts";
 
 export interface FailOcc {
@@ -69,6 +68,8 @@ const UNDO_MS = 60_000;
 
 export interface CommitItem {
   key: string;
+  /** 这次失败发生的 ISO 时刻；缺省用整批的 at。 */
+  at?: string;
   tool: string;
   code: string;
   sig: string;
@@ -87,10 +88,11 @@ function clean(s: unknown, max = MAX_TEXT): string {
     .slice(0, max);
 }
 
-/** 工作区 id 直接当文件名：它要么是 `manual:<随机>`，要么是小写路径的派生 id。 */
+/** 工作区 id 当文件名（可读），尾部再挂 8 位哈希：`F:/a b` 与 `F:/a_b` 不会落进同一本账。 */
 function fileFor(ws: string): string {
-  const safe = ws.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 120) || "none";
-  return statePath("failures", `${safe}.json`);
+  const safe = ws.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 100) || "none";
+  const tail = createHash("sha1").update(ws).digest("hex").slice(0, 8);
+  return statePath("failures", `${safe}-${tail}.json`);
 }
 
 export function emptyLedger(ws: string): FailLedger {
@@ -143,8 +145,6 @@ export interface MergeResult {
   ledger: FailLedger;
   token: string;
   added: number;
-  /** 本会话之前入过账没有（false = 这是第一次）。 */
-  firstForSession: boolean;
 }
 
 export function mergeFailures(input: {
@@ -174,7 +174,9 @@ export function mergeFailures(input: {
     const why = clean(item.why, 400);
     const fix = clean(item.fix, 400);
     const exit = typeof item.exit === "number" && Number.isFinite(item.exit) ? item.exit : null;
-    const occ: FailOcc = { sid: input.sid, name: clean(input.sname, 120), at, cmd, exit, out };
+    // 每条用自己的发生时刻：一批里可能横跨几分钟，全写成入账时刻的话证据卡就全一样了。
+    const when = typeof item.at === "string" && item.at ? item.at : at;
+    const occ: FailOcc = { sid: input.sid, name: clean(input.sname, 120), at: when, cmd, exit, out };
     const hit = idx.get(key);
     if (!hit) {
       const entry: FailEntry = {
@@ -183,8 +185,8 @@ export function mergeFailures(input: {
         code: clean(item.code, 40) || "other",
         sig: clean(item.sig, 80),
         count: 1,
-        first: at,
-        last: at,
+        first: when,
+        last: when,
         why,
         fix,
         fixedAt: null,
@@ -196,7 +198,7 @@ export function mergeFailures(input: {
       continue;
     }
     hit.count += 1;
-    if (hit.last < at) hit.last = at;
+    if (hit.last < when) hit.last = when;
     hit.occ = [occ, ...hit.occ].slice(0, MAX_OCC);
     // 诊断文案只补空，不覆盖：同一类错误第一次的「为什么」通常最完整。
     if (!hit.why && why) hit.why = why;
@@ -207,14 +209,13 @@ export function mergeFailures(input: {
     added += 1;
   }
 
-  const firstForSession = !prev.sessions[input.sid];
   const ledger = save({
     ...prev,
     label: input.label && !prev.label ? clean(input.label, 120) : prev.label,
     entries: [...idx.values()],
     sessions: { ...prev.sessions, [input.sid]: { at, n: (prev.sessions[input.sid]?.n ?? 0) + input.items.length } },
   });
-  return { ledger, token, added, firstForSession };
+  return { ledger, token, added };
 }
 
 export function actOnFailure(ws: string, key: string, action: FailAction): FailLedger {
@@ -252,28 +253,4 @@ export function undoFailures(token: string): FailLedger {
   }
   undoStack.delete(token);
   return save({ ...snap.ledger, entries: snap.ledger.entries });
-}
-
-/** 这个会话还有没有没入账的失败（用当前会话的失败条数与上次入账时的条数比）。 */
-export function pendingForSession(ws: string, sid: string, seen: number): number {
-  if (!ws) return seen;
-  const ledger = readLedger(ws);
-  const done = ledger.sessions[sid]?.n ?? 0;
-  return Math.max(0, seen - done);
-}
-
-export function failureFile(ws: string): string {
-  return fileFor(ws);
-}
-
-export function removeFailureFile(ws: string): void {
-  try {
-    fs.unlinkSync(fileFor(ws));
-  } catch {
-    /* 没有就算了 */
-  }
-}
-
-export function failuresDir(): string {
-  return path.join(statePath("failures"));
 }

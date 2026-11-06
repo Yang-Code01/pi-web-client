@@ -2896,7 +2896,6 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .notes-body[hidden], .fail-wrap[hidden] { display: none; }
 .notes-sheet.in-failures .notes-foot { display: none; }
 .fail-wrap { min-height: 0; overflow: hidden; display: grid; }
-.fail-wrap[hidden] { display: none; }
 .fail-body { display: grid; grid-template-columns: 320px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
 
 .fail-side { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line-soft); }
@@ -3009,12 +3008,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .fail-body { grid-template-columns: 1fr; grid-template-rows: minmax(130px, 38%) minmax(0, 1fr) auto; }
   .fail-side { border-right: 0; border-bottom: 1px solid var(--line-soft); }
   .fail-detail { padding: 10px; }
-  .fail-occ-head, .fail-occ-row { grid-template-columns: 46px 84px minmax(0, 1fr) 48px; }
 }
 
 /* ---- 随手问（#86）：右侧 dialog，不进会话列表、只读、能瞬间清空 ---- */
 .scratch-back { align-items: stretch; justify-items: end; padding: 0; }
-/* `hidden` 必须真的藏起来：`display: grid` 比 UA 的 [hidden] 规则更强。 */
 /* `hidden` 必须真的藏起来：里面几块自带 `display: flex/grid`，会盖掉 UA 的 [hidden] 规则。 */
 .scratch-back[hidden], .scratch-sheet [hidden] { display: none; }
 .scratch-sheet {

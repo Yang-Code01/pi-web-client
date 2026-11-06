@@ -10,7 +10,8 @@
  *   任何工具 | rate | …
  * 分类从输出文本里认，因为 pi 的 item 只给 `isError`，没有错误码；exit 只从 trailer 解析。
  */
-import { tr } from "./i18n/index.ts";
+import { tr, fmtDate, fmtTime } from "./i18n/index.ts";
+import { exitCodeOf } from "./diagnose.ts";
 
 export interface FailOcc {
   sid: string;
@@ -69,12 +70,6 @@ const CODE_LABEL: Record<FailCode, string> = {
 
 export function codeLabel(code: string): string {
   return tr(CODE_LABEL[(code as FailCode) in CODE_LABEL ? (code as FailCode) : "other"]);
-}
-
-/** pi 的 trailer：`Command exited with code 2` / `Exit code: 1`（diagnose.ts 同一口径）。 */
-export function exitOf(out: string): number | null {
-  const m = /(?:exited with code|exit code:?)\s*(-?\d+)/i.exec(out);
-  return m ? Number(m[1]) : null;
 }
 
 /** 一行输出：去掉 ANSI、去掉 trailer，留第一行有字的内容。 */
@@ -144,6 +139,8 @@ export function entryKey(tool: string, code: string, sig: string): string {
 /** 一条失败 → 交给桥的那一行（不含 diagnose 的「为什么」，由调用方补）。 */
 export interface CommitItem {
   key: string;
+  /** 这次失败发生的时刻（不是点「总结」的时刻）。 */
+  at: string;
   tool: string;
   code: string;
   sig: string;
@@ -156,11 +153,12 @@ export interface CommitItem {
 
 export function toCommit(fail: SeenFail, why = "", fix = ""): CommitItem {
   const out = String(fail.out ?? "");
-  const exit = exitOf(out);
+  const exit = exitCodeOf(out);
   const code = classify(fail.tool, out, exit);
   const sig = normalizeSig(fail.cmd, fail.tool);
   return {
     key: entryKey(fail.tool, code, sig),
+    at: fail.at,
     tool: fail.tool,
     code,
     sig,
@@ -199,9 +197,9 @@ export function entryTitle(e: FailEntry): string {
 export function clock(at: string): string {
   const d = new Date(at);
   if (Number.isNaN(d.getTime())) return "";
-  const p = (n: number) => String(n).padStart(2, "0");
   const now = new Date();
-  return d.toDateString() === now.toDateString() ? `${p(d.getHours())}:${p(d.getMinutes())}` : `${d.getMonth() + 1}-${p(d.getDate())}`;
+  const today = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return today ? fmtTime(d) : fmtDate(d);
 }
 
 /** 交给 agent 的正文：一类一条，带最近 3 次的原文。整类的次数说明这是「老毛病」还是「偶发」。 */

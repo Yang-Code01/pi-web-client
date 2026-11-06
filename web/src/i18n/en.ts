@@ -1452,7 +1452,6 @@ export const en: Dict = {
   "隐身中：别人看不到你，你也看不到新的人": "Hidden: others can't see you, and you won't see anyone new",
   "服务已更新，刷新后生效": "The server was updated — refresh to load the new version",
   "AI 出错记录": "AI failures",
-  "AI出错记录": "AI failures",
   "# AI 出错记录 · {p1}": "# AI failures · {p1}",
   "- 分类：{p1} · 形状：{p2}": "- Kind: {p1} · Shape: {p2}",
   "- 工作区：{p1}": "- Workspace: {p1}",
