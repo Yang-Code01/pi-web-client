@@ -2522,6 +2522,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .composer .complete-row { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 4px 8px; border: 0; border-radius: 6px; background: none; color: var(--text); text-align: left; cursor: pointer; font-size: 13px; min-width: 0; }
 .composer .complete-row.on, .composer .complete-row:hover { background: var(--accent-bg); }
 .composer .complete-label { font-family: var(--mono); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+/* 名字这一列不许为了给描述让位而收缩：描述天生比名字长一个数量级，flex-shrink 又按各自的基准宽度
+   分摊负空间 —— 两列都能缩时，`/skill:code-review` 只剩 38px 的省略号，而描述那半行还空着大半。
+   名字最多占 60%，剩下全交给描述去截。 */
+.composer .complete-row:has(.complete-desc) .complete-label { flex: none; }
 .composer .complete-tag { flex: none; font-size: 11px; color: var(--accent); border: 1px solid var(--line); border-radius: 6px; padding: 0 4px; }
 .composer .complete-desc { color: var(--faint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .composer .complete-empty { padding: 4px 8px; color: var(--faint); font-size: 12px; }
