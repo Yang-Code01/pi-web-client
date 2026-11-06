@@ -8,7 +8,7 @@ import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { setKnownPlugins } from "./diagnose.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
-import { PillBar } from "./pillbar.ts";
+import { PillBar, starredSessions } from "./pillbar.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, type RailItem } from "./shells.ts";
@@ -519,8 +519,8 @@ export class App {
     main.append(sessionsPane, chatPane, queuePane, gripL, gripR);
 
     // #97 壳 A 两行制。行 1：工作区标签页（点一下切到那一组）；行 2：当前会话那颗（nowchip，
-    // 固定最左）+ 本区会话胶囊（★ 优先）+ ＋。原先「收起左栏才出现」的置顶横栏被行 2 取代 ——
-    // 不再另挂一条，两套横栏同时出现只会让人不知道该点哪一条。
+    // 固定最左）+ 本区 ★ 会话胶囊（#120：只画点过 ★ 的）+ ＋。原先「收起左栏才出现」的置顶横栏
+    // 被行 2 取代 —— 不再另挂一条，两套横栏同时出现只会让人不知道该点哪一条。
     const wsTabsRow = el("div", "ws-tabs-row");
     const wsTabs = el("div", "ws-tabs");
     wsTabsRow.append(wsTabs);
@@ -6147,7 +6147,7 @@ export class App {
       const scrollTop = body.scrollTop;
       const shown = this.sessions.filter((s) => this.mgrMatches(s)).sort((a, b) => this.mgrCompare(a, b));
       const shownIds = new Set(shown.map((s) => s.id));
-      for (const id of [...this.mgrPicked]) if (!shownIds.has(id)) this.mgrPicked.delete(id);
+      for (const id of this.mgrPicked) if (!shownIds.has(id)) this.mgrPicked.delete(id);
       this.mgrPainting = true;
       body.replaceChildren();
       this.mgrPainting = false;
@@ -10329,8 +10329,9 @@ export class App {
   }
 
   /**
-   * #97 壳 A 行 2：当前会话那颗（`NowChip`，固定最左）+ 本区会话胶囊（★ 优先）+ ＋。
-   * 胶囊直接取 `buildTree()` 的结果 —— 跟左栏同一份顺序，不另算一遍，也不会跟左栏打架。
+   * #97 壳 A 行 2：当前会话那颗（`NowChip`，固定最左）+ 本区 ★ 会话胶囊 + ＋。
+   * #120：胶囊只取本区里点过 ★ 的那些（`manage.pin`），不再铺本区全部会话；顺序沿用 `buildTree()`
+   * 的结果 —— 跟左栏同一份，★ 已经排在前面，不另算一遍。
    * 没有工作区快照（旧桥 / 桩桥）时退回置顶列表：不知道「本区」时，置顶区至少是用户自己
    * 挑过的那批。有本区数据时当前会话不再重复出现在胶囊里 —— 最左那颗就是它。
    */
@@ -10358,7 +10359,7 @@ export class App {
     const group = wsOf(cur, this.workspaces, listed?.ws);
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     const mine = group ? tree.groups.find((g) => g.id === group.id) : undefined;
-    this.pillBar.render(mine ? mine.sessions.filter((s) => s.id !== cur.id) : pins, this.currentId);
+    this.pillBar.render(mine ? starredSessions(mine.sessions, this.manage.pin, cur.id) : pins, this.currentId);
   }
 
   /* ------------------------------------------------------------------ Q-035 */

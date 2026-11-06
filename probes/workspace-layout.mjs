@@ -2,12 +2,12 @@
  * Probe: 壳 A 两行制 + 设置里的「工作区布局」（#97）。
  *
  * 票面要的是：顶栏下第一行是工作区标签页（横向、溢出渐隐不出横滚条、当前组高亮、带待处理点、
- * 点一下切到那组），第二行是「当前会话那颗 + 本区会话胶囊 + ＋」；设置在「外观与语言」里有四颗
+ * 点一下切到那组），第二行是「当前会话那颗 + 本区 ★ 会话胶囊 + ＋」；设置在「外观与语言」里有四颗
  * 布局 chip，这一票只点亮 A，其余置灰且点不动；布局偏好写进既有 `pi.prefs`，刷新保留、恢复默认
  * 回 A。
  *
  * 桩桥照 #94 的协议发 `workspace` 快照；造 9 个组（够宽、必然溢出）+ 每组 3 颗会话，其中一组带
- * 待回答、一组有几颗置顶，用来验证标签的待处理点与胶囊的 ★ 顺序。
+ * 待回答、一组有几颗 ★（#120：行 2 只画本区里点过 ★ 的，别的组一颗星都不串过来）。
  *
  * Run: npm run build:web && PI_WEB_PORT=7912 node probes/workspace-layout.mjs
  */
@@ -90,8 +90,9 @@ const workspace = () => ({
   overrides: {},
   keys: Object.fromEntries(SESSIONS.map((s) => [s.cwd.toLowerCase(), s.ws])),
 });
-// 第 2 组里置顶两颗（且 ★ 顺序与「新到旧」不同）：切过去后胶囊按 ★ 排。
-const MANAGE = { pin: ["s-02-3", "s-02-1"], order: SESSIONS.map((s) => s.id), archived: [] };
+// 第 2 组里点过三颗 ★（#120 起行 2 只认 ★），顺序与「新到旧」不同：切过去后胶囊按 ★ 排。
+// 切组会打开该组排最上面那颗（★ 排在最前）= `s-02-3`，于是行 2 应该只剩另外两颗。
+const MANAGE = { pin: ["s-02-3", "s-02-2", "s-02-1"], order: SESSIONS.map((s) => s.id), archived: [] };
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "stub", pi: "stub", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "stub" };
 
@@ -186,7 +187,7 @@ const rowState = () =>
       hasStrip: Boolean(line?.querySelector(".pin-strip")),
       stripHidden: Boolean(strip?.hidden),
       topbarChip: document.querySelectorAll(".topbar .now-chip").length,
-      nowName: document.querySelector(".now-chip .now-name")?.textContent ?? "",
+      nowLabel: document.querySelector(".now-chip")?.getAttribute("aria-label") ?? "",
       chips: [...document.querySelectorAll(".pin-strip .pin-chip:not(.pin-new):not(.pin-expand):not(.pin-more)")].map(
         (c) => c.querySelector(".pin-name")?.textContent ?? "",
       ),
@@ -224,9 +225,19 @@ ok(r.topbarChip === 0, "顶栏里不再挂着那颗（它已经搬进第二行�
 ok(t.count === 9, `标签页按组数排开（${t.count}）`);
 ok(t.onWs === "f:/proj-01" && t.onName === "客户 01 号的后台系统", `当前工作区高亮（${t.onName}）`);
 ok(t.todo.length === 1 && t.todo[0] === "f:/proj-03", `有待处理的组带一颗点（${t.todo.join(",")}）`);
-ok(r.nowName === "工程 01 · 会话 1", `行 2 左端写着当前会话（${r.nowName}）`);
-ok(r.chips.length === 2 && !r.chips.includes("工程 01 · 会话 1"), `本区胶囊不含当前那颗（${r.chips.length} 颗）`);
+ok(r.nowLabel.includes("工程 01 · 会话 1"), `行 2 左端的 NowChip 报着当前会话（${r.nowLabel}）`);
+ok(r.chips.length === 0, `本组没点过 ★：行 2 一颗胶囊都没有（${r.chips.length} 颗）`);
+ok(!r.chips.some((n) => n.startsWith("工程 02")), "在别的组置顶过的会话没有串到本组的行 2");
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-rows.png`), clip: { x: 0, y: 0, width: 1000, height: 170 } });
+
+// 1b) 没有 ★ 的组：行 2 只剩 NowChip 和 ＋，那个 ＋ 仍然点得开「开新会话」
+ok((await page.locator(".pin-strip .pin-new").count()) === 1 && (await page.locator(".pin-strip .pin-new").isVisible()), "没 ★ 时行 2 仍留着那颗 ＋");
+ok((await page.locator(".ws-session-row .now-chip").count()) === 1, "空 ★ 的组里 NowChip 照旧在最左");
+await page.locator(".pin-strip .pin-new").click();
+await page.waitForSelector(".new-sheet", { timeout: 5000 }).catch(() => {});
+ok((await page.locator(".new-sheet").count()) === 1, "点 ＋ 打开「开新会话」面板");
+await page.locator('.new-sheet .btn:has-text("取消")').first().click();
+await sleep(200);
 
 // 2) 溢出：右端渐隐、但不出横滚条
 ok(t.overflow, "9 个长名的组在 1000px 下确实装不下（scrollWidth > clientWidth）");
@@ -240,14 +251,15 @@ t = await tabState();
 r = await rowState();
 ok((await page.evaluate(() => location.hash)) === "#/s/s-05-1", "点标签打开了那组排最上面的一颗（#/s/s-05-1）");
 ok(t.onWs === "f:/proj-05", "高亮跟着换到被点的那组");
-ok(r.nowName === "工程 05 · 会话 1", `行 2 左端换成新会话（${r.nowName}）`);
-ok(r.chips.length === 2 && r.chips.every((n) => n.startsWith("工程 05")), `胶囊整条换成本区的（${r.chips.join(" / ")}）`);
+ok(r.nowLabel.includes("工程 05 · 会话 1"), `行 2 左端换成新会话（${r.nowLabel}）`);
+ok(r.chips.length === 0, `切到另一个没 ★ 的组：胶囊整条清空，只剩 NowChip 和 ＋（${r.chips.length} 颗）`);
 
-// 4) 本区胶囊按 ★ 优先，不按新到旧
+// 4) 行 2 只放本区的 ★ 会话，按 ★ 顺序，且不重复画当前那颗
 await page.locator('.ws-tab[data-ws="f:/proj-02"]').click();
 await sleep(700);
 r = await rowState();
-ok(r.chips[0] === "工程 02 · 会话 1" && r.chips[1] === "工程 02 · 会话 2", `置顶的排在前面（${r.chips.join(" / ")}）`);
+ok(r.chips.join(" / ") === "工程 02 · 会话 2 / 工程 02 · 会话 1", `行 2 只放本区的 ★、按 ★ 顺序（${r.chips.join(" / ")}）`);
+ok(!r.chips.some((n) => r.nowLabel.includes(n)), `当前那颗（${r.nowLabel}）不重复出现在胶囊里`);
 
 // 5) 设置里的四颗布局 chip：#98 起四颗都点得动，没有置灰的
 await page.locator('.icon-btn[data-act="look"]').click();
@@ -271,7 +283,7 @@ ok(!t.rowVisible, "B：工作区标签行收起");
 ok(!r.visible && r.stripHidden, "B：行 2（那颗 + 胶囊）也收起");
 ok(r.topbarChip === 1, `B：顶栏里那颗在（${r.topbarChip} 颗）`);
 const curName = await page.evaluate(() => document.querySelector(".session-card.active .name")?.textContent ?? "");
-ok(r.nowName !== "" && r.nowName === curName, `B：那颗仍写着当前会话（${r.nowName} / 左栏当前 ${curName}）`);
+ok(curName !== "" && r.nowLabel.includes(curName), `B：那颗仍报着当前会话（${r.nowLabel} / 左栏当前 ${curName}）`);
 await page.locator(".display-sheet .btn:has-text(\"关闭\")").click();
 await sleep(200);
 

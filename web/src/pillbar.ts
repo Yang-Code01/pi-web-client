@@ -53,6 +53,20 @@ export function pillChip(s: PillSession, currentId: string | null, badge: PillBa
   };
 }
 
+/**
+ * #120 行 2 画哪些胶囊：本区里点过 ★ 的那些，当前那颗不重复画（最左的 NowChip 已经代表它）。
+ * `sessions` 是外壳给的「本区会话」，顺序就按左栏那一份（★ 已经排在前面），这里只做过滤 ——
+ * 于是别组的置顶不会串进本区，没 ★ 的组也就一颗都不剩。
+ */
+export function starredSessions<S extends PillSession>(
+  sessions: readonly S[],
+  stars: readonly string[],
+  currentId: string | null,
+): S[] {
+  const starred = new Set(stars);
+  return sessions.filter((s) => starred.has(s.id) && s.id !== currentId);
+}
+
 export interface PillBarOpts<S extends PillSession = PillSession> {
   /** 「什么状态」由外壳算（它才知道当前会话、锁、待办）。 */
   badge(s: S, currentId: string | null): PillBadge | null;
