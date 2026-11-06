@@ -2281,3 +2281,31 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - `node bridge/tests/skill-store.mjs`：A–L 是 D126 原有的断言（换成记录 `opts` 的假网后全绿，F 段还多断言了「安装把三个备用源和 `label` 交给网络层」）；新增 **M. `fileFetcher` / `mirrorUrls`**（3 个备用地址；带斜杠的 ref 不给备用；raw 被重置时走备用；十分钟内不再探死掉的主机；十分钟后又给 raw 一次机会；404 直接报且只发一个请求；全挂时消息含文件名 + 主机 + 代理提示）和 **N. 树比仓库旧时自愈**（某个文件 404 后只向 GitHub 要一次新树；按新树装完、旧树里的 `pack.py` 没留在盘上；文件数按新树算；新树进缓存后第二次安装不再问 GitHub）和 **O. 自愈后的上限与失败清理**（实时树 70 MB 时按新树重算、报 64 MB 上限且不留半成品；一个文件立刻报错、另一个还在写时，等它写完（实测 97ms）再把目录清干净，晚到的写盘没补回来）。全绿。
 - `npm --prefix bridge run typecheck` 干净。
 - 真网络（本机，不走代理）：`installSkill({ source: "anthropics/skills", skillId: "xlsx" })` 装出 **53 个文件、15.9 秒**，`find` 出来的文件名与 GitHub 树逐一相等（多出的只有 `.pi-store.json`）；`skillMeta()` 走镜像拿到 `canvas-design` 的说明。修之前同一条命令报 `read ECONNRESET`，修一半时报 `下载 skills/xlsx/scripts/office/pack.py 失败：返回 404`。
+
+## D158 字号从四档 chip 换成一根连续滑杆（0.8–2.0），放大后按「有效宽度」退窄版
+
+**问题：** 外观抽屉里的字号是四颗 chip：小 0.9 / 标准 1 / 大 1.12 / 特大 1.25。它是 D36 选 `zoom` 整页缩时顺手给的档位，上限 1.25 对 1707px 的宽屏明显不够 —— 26px 的正文字在 2K 屏幕上还是小。四个档位本身也不好用：想「比大再大一点」没有；1.12 和 1.25 差 11%，中间全是空的。而一旦把上限抬到 2.0，`zoom` 带来的第二个问题就露出来了：**媒体查询看不见缩放后的布局宽度**，1707px 的窗口在 2.0 下只剩 853 布局 px，`@media (max-width: 899px)` 却照旧不触发，三栏（280 + 1fr + 300）、抽屉的 `max-height: 78vh` 也还是按视口算 —— 抽屉会自己先比屏幕高。
+
+**决定：**
+
+- **滑杆取代 chip**（`web/src/app.ts` 的 `openDisplaySheet`）：`<input type="range">` 0.8–2.0、步长 1%，填充靠 `--fill` 驱动 `linear-gradient`，读数（`120%`）在右侧标题行。轨上 0.1 一格、0.2 一个字（`80 … 200`），**点刻度字精确落档**；指针拖到 ±1.2% 内会吸上去（`SIZE_SNAP`，吸的是 0.9 / 1 / 1.12 / 1.25 这四个老档位，它们**没有字** —— 选样张时定的是 V3，老档位只留隐形磁吸）；键盘不吃吸附（1% 的步长配上 1.2% 的吸附半径，方向键会永远弹回刻度）。双击轨道回 100%。四个 chip 与它们的 i18n 键（小 / 标准 / 大 / 特大 里的三个；「标准」在文字亮度里还在用）一起删掉。
+- **写盘只有一个值源**：拖动中 `sizeNext` 是唯一真值，`range.value` 只是被 `paintSize` 抹上去的显示。松手时 `commitSize()` 取 `sizeNext`（不是 `range.value`）—— 单击轨道时那一帧 rAF 根本没跑，读 `range.value` 等于把这一下丢掉。「还没存盘」另记一个 `sizeDirty` 标志：`setScale(…, false)` 自己就会把 `prefs` 改成新值，拿 `prefs` 比等于永远相等，松手那次 `savePrefs` 就再也走不到（这个坑第一版就踩了，键盘连按两下 → 界面 120% 而盘里是 119%）。有了标志，`keyup` + `blur` 挨着来也只会写一次盘、重排一次。
+- **拖的是「冻住的盒子」，不是浏览器的滑块**：`#app` 上是整棵树的 `zoom`，页一放大轨道就跟着变宽变位，浏览器拿新几何重新除指针坐标 —— 手指一直往右走、读数却越来越迟钝，2.0 拖不到（实测卡在 1.79）。所以 `pointerdown` 时把轨道的 `getBoundingClientRect()` 冻住，之后一律按 `(clientX - x) / w` 算值，并 `preventDefault()` 掉浏览器自己的拖拽（同时自己 `range.focus()`，否则焦点被拦下、鼠标拖完按方向键没反应）。轨道还要 `touch-action: none`：手机上从滑块上起手，浏览器会把这一串 `pointer` 当成滚动、发个 `pointercancel` 就收走。
+- **实时跟随、松手写盘**（沿用选样张时的口径）：`input` / `pointermove` 用 `requestAnimationFrame` 合并、只改 `--ui-scale`；`pointerup` / `keyup` / `blur` 才 `savePrefs` + `applyPrefs()`（顺带重夹终端几何）。
+- **窄版判据从媒体查询挪到 JS**：新增 `App.compact()` = `innerWidth / uiScale() < 900`，落成 `<html data-compact="true|false">`；CSS 里原来那 6 个 `899 / 900` 媒体查询改成 `:where(html[data-compact="true"])` / `:where(html:not([data-compact="true"]))` 作用域。`app.ts` 里 9 处同样含义的 `matchMedia` 一起换成 `this.compact()` —— 判据只能有一份，CSS 和 JS 不许分叉。`syncCompact()` 返回「这次真的翻了」，拖动中跨过 900 就顺手 `renderPanes()`：pane 的 `hidden` 是 JS 状态，不重排的话松手前看到的是「三栏挤进一列」。窗口 resize 和每次改字号都会重判。
+- **`zoom` 子树里的视口单位改走 `--vh1` / `--vw1`**：`:root` 加 `--vh1: calc(1vh / var(--ui-scale, 1))`（`--vw1` 同理），抽屉、弹层、浮层里所有「几成视口」都写成 `calc(var(--vh1) * N)`，乘上 `zoom` 之后刚好是 N% 视口。`.term-dock` / `.viewer` 的几何本来就是 JS 按布局 px 算的，不动。挂在 `document.body` 上的浮层（`.ws-pop`）在 `#app` 之外、不被 `zoom` 乘，继续用裸 `70vh` —— 在那里除一次缩放会把它压成半高。
+- **侧栏改 `clamp(176px, 26%, 280px)` / `clamp(190px, 26%, 300px)`**：窗口一窄先收侧栏，把宽度让给中间那栏；拖过分隔条之后 inline style 优先，宽度固定成用户选的那个数。
+
+**为什么：** 用户要的是「范围由我自己定」，不是再多两档 —— 连续滑杆配上老档位的刻度，既保留了「回到标准」「大一号」这种肌肉记忆，又不再限制上限。上限取 2.0 是因为 13px → 26px 已经到头：再大一行放不下十个汉字，聊天区会变成三行一句。窄版判据放在 JS 而不是用容器查询，是因为 `compact()` 本来就要给 `termDefaults` / `termInset` / `placeNowChip` / 默认 tab 用，放在一处只有一个答案，也省掉「CSS 认为窄、JS 认为宽」这类只在缩放边界上出现的鬼。视口单位走变量而不是每个地方写 `calc(78vh / var(--ui-scale))`，是因为 `zoom` 会乘一次、人却很容易忘，写成 `--vh1` 至少能把「这里除过缩放」写在名字里。
+
+**代价 / 可改：**
+
+- 滑杆的 DOM 比四颗 chip 重（轨 + 13 条刻度 + 7 个字 + 输入框），且 `-webkit-slider-thumb` 是 Chromium 专有伪元素 —— Firefox 上滑块会退化成系统样子（轨道与填充仍然对）。主端是 Edge/Chrome，先不管。
+- 吸附半径写死 1.2%（`SIZE_SNAP`），轨宽一变手感就变；换轨宽时要重看一眼。
+- 拖过之后侧栏宽度是具体 px，不再跟着窗口收 —— 这是 `wireGrip` 早就有的行为，只是现在和 clamp 混着用，读代码时要记得 inline style 优先。
+- 只剩 `620 / 720 / 760 / 860` 这些**子断点**还是媒体查询：它们管的是面板内部排版（`.sheet` 桌面宽度、`settings-row` 折行），放大后这些面板本来就窄，按视口判不会错得很离谱。真要统一，同样可以挂到别的 data 属性上。**可改**。
+- `@media (max-width: 720px)` 里那两条全屏 sheet 从 `100vw / 100dvh` 改成了 `100%`：它们本来就在 `.sheet-back` 里，`100%` 拿的是已经排好的那层，反而不会被 `zoom` 二次乘。代价是移动端从动态视口退回布局视口（地址栏收起时不再跟着变高）。
+- 框在 `zoom` 子树里的 px 上限（`.peer-sheet` 的 `780px`、`.sheet.file-picker` 的 `640px`）也会跟着乘：0.8 号字时 780px 只剩 624 视觉 px。它们的语义本来就是「别太宽」，先不拆。
+- 每拖一格都是整页 relayout（`--ui-scale` 就是 `zoom`），2.0 的下限机器上会掉帧；rAF 合并只保证一帧一次。
+
+**验证：** `npm --prefix web run typecheck`（tsc + `i18n-check.mjs`，1407 键 × 3 语言，删掉三个字号键后三边仍对齐）；隔离测试环境（`.pi/skills/pi-web-client-test-dev/`，口令 test）里在 1707×960 上实测：从 1.0 拖到最右得到 **2.0**（此前同样操作卡在 1.79 —— 这就是「冻住盒子」要修的那个 bug），拖到最左得到 **0.8**，拖到 1.125 吸到 **1.12**，方向键 3 下 1.12 → **1.15**（没有被吸附卡住），`Home` → **0.8**；拖动过程中 `--ui-scale` 实时变而 `pi.prefs.scale` 不变，松手才落盘；1.6 时仍是桌面三栏（`data-compact="false"`、侧栏 443 视觉 px），2.0 时自动退窄版（`data-compact="true"`、底部标签行出现、队列栏隐藏），窗口缩到 860 也退、拉回 1707 又回三栏；抽屉高度在 2.0 下是 787 / 960（82% × 960，`--vh1` 生效，此前会到 1400+）。
