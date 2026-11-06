@@ -558,6 +558,24 @@ s = await barState();
 ok(s.onWs === before15.onWs, `触屏那一下没切组（当前 ${s.onWs}）`);
 ok(tabsCalls() === calls4, `触屏那一下没发 ws.tabs（${tabsCalls() - calls4} 条）`);
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-drag.png`), clip: { x: 0, y: 0, width: 1000, height: 140 } });
+
+// 16) #126：切会话不改标签行的补位序 —— 组序按组名钉死，「最近活动」不再让它换人
+await page.goto(`${BASE}/#/s/s-01-1`, { waitUntil: "networkidle" });
+await sleep(700);
+const baseIds = (await barState()).visibleIds;
+ok(baseIds.length >= 3, `切会话前：标签行至少画满 N 颗（${baseIds.join(" / ")}）`);
+for (const id of ["s-05-1", "s-09-1", "s-01-1"]) {
+  await page.goto(`${BASE}/#/s/${id}`, { waitUntil: "networkidle" });
+  await sleep(700);
+  const now = (await barState()).visibleIds;
+  ok(now.slice(0, 2).join() === baseIds.slice(0, 2).join(), `切到 ${id}：前两颗原地不动（${now.join(" / ")}）`);
+  ok(now.length <= 4, `切到 ${id}：圈内最多 N+1 颗（${now.length}）`);
+}
+await page.goto(`${BASE}/#/s/s-01-1`, { waitUntil: "networkidle" });
+await sleep(700);
+const backIds = (await barState()).visibleIds;
+ok(backIds.join() === baseIds.join(), `切回第一组：标签行完全复原（${backIds.join(" / ")}）`);
+
 await page.close();
 
 await browser.close();

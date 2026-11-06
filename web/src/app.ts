@@ -345,6 +345,8 @@ export class App {
    * 当成一次点击，把组切到刚拖走的那颗上。
    */
   private tabDragMoved = false;
+  /** #126：行 2 胶囊刚被拖过 —— 紧跟着的 click 不能当成「打开会话」。 */
+  private pinDragMoved = false;
   /**
    * #99 / #98：拖拽的落点容器。默认是左栏那棵树；工作区浮层开着时换成浮层 —— 落点判定
    * (`hitTest`) 与落点线是同一份，换的只是「量哪一块 DOM」。
@@ -603,7 +605,10 @@ export class App {
         expand.onclick = () => this.togglePane("sessions");
         return [add, expand];
       },
-      decorate: (chip, s) => this.wirePinHover(chip, s),
+      decorate: (chip, s) => {
+        this.wirePinHover(chip, s);
+        this.wirePinDrag(chip, s.id);
+      },
     });
     this.nowChip = new NowChip(nowSlotRow);
     // #98：那颗在 B/C/D 里是按钮（点开工作区浮层）。包一层 `<button>` 而不是给组件加第二副身份 ——
@@ -10275,7 +10280,12 @@ export class App {
     wsTabsRow.hidden = !parts.tabsRow || !tree.groups.length;
     if (wsTabsRow.hidden) return;
     const byId = new Map(tree.groups.map((group) => [group.id, group]));
-    const order = tree.groups.map((group) => group.id);
+    // #126：标签行的补位序按组名固定，**不跟最近活动走**。树是按「待处理 > 最近活动 > 名字」排的，
+    // 切到哪组的会话那组就`latest` 最新、跳到 `order[0]` —— 标签行最左那颗会跟着来回跳。
+    // 左栏保持活动序，两者不要求一致：标签是「去哪」的入口，位置得稳定。
+    const order = [...tree.groups]
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id))
+      .map((group) => group.id);
     // #122：固定组与名额都由桥端下发（`pinned` 的顺序就是标签行顺序）；旧桥没这两个字段时
     // 按「没有固定组 + 默认名额」画，与 #121 的样子一致。
     const model = tabModel({
@@ -10696,11 +10706,13 @@ export class App {
   }
 
   /**
-   * #97 壳 A 行 2：当前会话那颗（`NowChip`，固定最左）+ 本区 ★ 会话胶囊 + ＋。
-   * #120：胶囊只取本区里点过 ★ 的那些（`manage.pin`），不再铺本区全部会话；顺序沿用 `buildTree()`
-   * 的结果 —— 跟左栏同一份，★ 已经排在前面，不另算一遍。
+   * #97 壳 A 行 2：本区 ★ 会话胶囊 + ＋；当前会话**没点 ★**时，最左再摆那颗 `NowChip`（#127）。
+   * #120：胶囊只取本区里点过 ★ 的那些（`manage.pin`），不再铺本区全部会话。
+   * #126：顺序按 `manage.pin` 定，切会话不重排；当前会话在 ★ 行里时带主题色填充。
+   * #127：既然填色已经能认出「我在哪」，当前会话点过 ★ 时最左那颗就是重复的 —— 它只在
+   * 「本区没给当前会话点 ★」时出场，兜住「名字在界面上总得看得到」这条。
    * 没有工作区快照（旧桥 / 桩桥）时退回置顶列表：不知道「本区」时，置顶区至少是用户自己
-   * 挑过的那批。有本区数据时当前会话不再重复出现在胶囊里 —— 最左那颗就是它。
+   * 挑过的那批。
    */
   private renderSessionRow(): void {
     const host = this.els.pinStrip;
@@ -10708,12 +10720,16 @@ export class App {
     // 条要整个重建（锚点那颗胶囊跟着消失），折起来的那张列表不能留在屏幕上。
     this.pillBar.closeMore();
     const desktop = window.matchMedia("(min-width: 900px)").matches;
-    // #98：行 2（当前那颗 + 本区胶囊）只属于 A。B/C/D 里那颗已经搬进顶栏，整行不占地方。
+    // #98：行 2（本区胶囊 + ＋）只属于 A。B/C/D 里当前那颗已经搬进顶栏，整行不占地方。
     const parts = shellParts(activeLayout(this.prefs));
     const visible = desktop && parts.sessionRow;
     host.hidden = !visible;
     this.els.sessionRow.hidden = !visible;
-    if (!visible) return;
+    if (!visible) {
+      // 没有 ★ 行的壳（B/C/D、窄屏）：那颗是唯一的会话指示，照旧留着。
+      this.setNowChipHidden(false);
+      return;
+    }
     const pins = this.manage.pin
       .map((id) => this.sessions.find((s) => s.id === id))
       .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
@@ -10726,7 +10742,135 @@ export class App {
     const group = wsOf(cur, this.workspaces, listed?.ws);
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     const mine = group ? tree.groups.find((g) => g.id === group.id) : undefined;
-    this.pillBar.render(mine ? starredSessions(mine.sessions, this.manage.pin, cur.id) : pins, this.currentId);
+    const shown = mine ? starredSessions(mine.sessions, this.manage.pin) : pins;
+    // #127：当前会话已经在 ★ 行里露脸（那颗带主题色填充），最左那颗就不再画。
+    this.setNowChipHidden(shown.some((s) => s.id === this.currentId));
+    this.pillBar.render(shown, this.currentId);
+  }
+
+  /** #127：那颗 `NowChip` 什么时候出场 —— 只在「当前会话没出现在 ★ 行里」时。 */
+  private setNowChipHidden(hidden: boolean): void {
+    if (!this.nowBtn) return;
+    this.nowBtn.hidden = hidden;
+    if (hidden) this.nowBtn.setAttribute("aria-hidden", "true");
+    else this.nowBtn.removeAttribute("aria-hidden");
+  }
+
+  /** #126：行 2 的 ★ 胶囊可左右拖、自己定顺序。只认鼠标左键（与标签行同一套，D149）。 */
+  private wirePinDrag(chip: HTMLElement, id: string): void {
+    chip.onpointerdown = (ev) => this.startPinDrag(ev, chip, id);
+    // 拖拽尾巴的 click 不能当成「打开会话」—— 捕获阶段拦掉，PillBar 里那两颗热区收不到。
+    chip.addEventListener(
+      "click",
+      (ev) => {
+        if (!this.pinDragMoved) return;
+        this.pinDragMoved = false;
+        ev.stopPropagation();
+        ev.preventDefault();
+      },
+      true,
+    );
+  }
+
+  private startPinDrag(ev: PointerEvent, chip: HTMLElement, id: string): void {
+    // 和标签行同一套（D149）：只认鼠标左键，触屏 / 笔不进 4px 起拖判定。
+    if (ev.button !== 0 || ev.pointerType !== "mouse") return;
+    const strip = this.els.pinStrip;
+    if (!strip) return;
+    const x0 = ev.clientX;
+    const y0 = ev.clientY;
+    let moved = false;
+    let hit: TabHit | null = null;
+    let line: HTMLElement | null = null;
+    this.pinDragMoved = false;
+
+    /** 这一条里按 DOM 序排的会话 id（拖完按它算新顺序）。 */
+    const local = (): string[] =>
+      [...strip.querySelectorAll<HTMLElement>(".pin-chip[data-pin-id]")].map((n) => n.dataset.pinId ?? "").filter(Boolean);
+
+    /** 其余胶囊的横向占位：拖动源自己剔掉，否则它永远吸住落点。 */
+    const rects = (): TabRect[] =>
+      [...strip.querySelectorAll<HTMLElement>(".pin-chip[data-pin-id]")]
+        .filter((n) => n.dataset.pinId && n.dataset.pinId !== id && !n.hidden)
+        .map((n) => {
+          const r = n.getBoundingClientRect();
+          return { id: n.dataset.pinId ?? "", left: r.left, right: r.right };
+        });
+
+    const move = (e: PointerEvent): void => {
+      if (!moved) {
+        if (Math.hypot(e.clientX - x0, e.clientY - y0) <= 4) return;
+        moved = true;
+        this.pinDragMoved = true;
+        document.getSelection()?.removeAllRanges();
+        document.body.classList.add("pin-dragging");
+        chip.classList.add("drag");
+      }
+      const box = rects();
+      hit = tabHitTest(e.clientX, box);
+      const at = hit ? box.find((r) => r.id === hit?.id) : undefined;
+      if (!hit || !at) {
+        line?.remove();
+        line = null;
+        return;
+      }
+      if (!line) {
+        line = el("div", "pin-line");
+        strip.append(line);
+      }
+      const base = strip.getBoundingClientRect();
+      line.style.left = `${Math.round((hit.side === "before" ? at.left : at.right) - base.left)}px`;
+    };
+
+    const cleanup = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      line?.remove();
+      line = null;
+      document.body.classList.remove("pin-dragging");
+      chip.classList.remove("drag");
+    };
+
+    const up = (): void => {
+      cleanup();
+      if (!moved) return;
+      window.setTimeout(() => {
+        this.pinDragMoved = false;
+      }, 0);
+      this.reorderPinned(id, local(), hit);
+    };
+
+    const cancel = (): void => cleanup();
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+  }
+
+  /**
+   * #126 行 2 的胶囊能左右拖、自己定顺序。`manage.pin` 是**全局**数组（别组的 ★ 也在里面），
+   * 所以只拿本区这几颗占的槽位原地重填 —— 别组的槽位一个不动，本区拖完再刷新也不会冲掉。
+   * 只重排、不增删，松在原处就一个字都不发。
+   */
+  private reorderPinned(id: string, localIds: string[], hit: TabHit | null): void {
+    if (!hit || hit.id === id || localIds.length < 2) return;
+    const from = localIds.indexOf(id);
+    const to = localIds.indexOf(hit.id);
+    if (from < 0 || to < 0) return;
+    const reordered = moveTo(localIds, id, (from < to ? to - 1 : to) + (hit.side === "after" ? 1 : 0));
+    const pin = this.manage.pin;
+    const slots: number[] = [];
+    pin.forEach((pid, i) => {
+      if (localIds.includes(pid)) slots.push(i);
+    });
+    if (slots.length !== reordered.length) return;
+    const next = [...pin];
+    slots.forEach((slot, k) => {
+      next[slot] = reordered[k];
+    });
+    if (next.every((x, i) => x === pin[i])) return;
+    this.act(() => this.socket.send({ type: "manage", action: "arrange", pin: next, order: this.manage.order }));
   }
 
   /* ------------------------------------------------------------------ Q-035 */

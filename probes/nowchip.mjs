@@ -157,7 +157,6 @@ const chip = () =>
     const badge = el.querySelector(".badge");
     return {
       hidden: el.hidden || getComputedStyle(el).display === "none",
-      ws: el.querySelector(".now-ws")?.textContent ?? "",
       name: el.querySelector(".now-name")?.textContent ?? "",
       label: el.getAttribute("aria-label"),
       accent: dot && !dot.hidden ? getComputedStyle(dot).backgroundColor : "",
@@ -169,7 +168,7 @@ const chip = () =>
     };
   });
 
-/** 顶栏标题：会话名唯一显示的地方（这颗 chip 里不再重复一次）。 */
+/** 那颗上写的是会话名（#126）：四套壳的顶栏标题都被 CSS 藏了，这名字只在这一颗上看得见。 */
 const barTitle = () => page.evaluate(() => document.querySelector(".topbar .title")?.textContent ?? "");
 
 await page.goto(`${BASE}/#/s/${A1}`, { waitUntil: "networkidle" });
@@ -180,13 +179,12 @@ if (await page.locator('input[type="password"]').count()) {
 await page.waitForSelector(".session-card", { timeout: 15000 });
 await sleep(800);
 
-// 1) 左栏展开：这颗在，内容 = 工作区名（会话名归顶栏标题，不在这一颗里重复）
+// 1) 左栏展开：这颗在，内容 = 会话名（工作区名只留在 aria-label 上）
 let c = await chip();
 ok(c !== null, "左栏展开时这颗在顶栏");
 ok(c?.hidden === false && c?.count === 1, "只渲染一颗，且是可见的");
-ok(c?.ws === "pi-web-client", `展开态写着工作区「${c?.ws}」`);
-ok(c?.name === "", "会话名不在这一颗里（顶栏标题已经写着它，重复一次只是噪音）");
-ok((await barTitle()) === "追加开发", `会话名在顶栏标题上（${await barTitle()}）`);
+ok(c?.name === "追加开发", `展开态写着会话「${c?.name}」`);
+ok((await barTitle()) === "追加开发", `顶栏标题那颗也在（${await barTitle()}）`);
 ok(c?.label === "pi-web-client，追加开发，当前会话", `aria-label = ${c?.label}`);
 ok(Boolean(c?.accent) && c?.accent !== "rgba(0, 0, 0, 0)", `工作区色点有颜色（${c?.accent}）`);
 ok((c?.live ?? "").includes("live"), "本地会话的在线点是绿的");
@@ -199,7 +197,7 @@ await page.locator('.side-toggle[data-side="left"]').click();
 await sleep(500);
 c = await chip();
 ok(c?.hidden === false && c?.count === 1, "左栏收起后这颗仍在");
-ok((await barTitle()) === "追加开发", "收起后会话名没丢（还在顶栏标题上）");
+ok((await barTitle()) === "追加开发", "收起后名字没丢（那颗上还在）");
 ok((await page.locator(".pin-strip").isVisible()) === true, "（对照）收起时横栏也在，但那是另一条东西");
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-collapsed.png`), clip: { x: 0, y: 0, width: 1000, height: 140 } });
 await page.locator('.side-toggle[data-side="left"]').click();
@@ -209,7 +207,7 @@ await sleep(400);
 await page.locator(`.session-card[data-id="${B1}"]`).click();
 await sleep(600);
 c = await chip();
-ok(c?.ws === "客户甲" && (await barTitle()) === "客户甲的后台", `切会话后工作区「${c?.ws}」+ 标题「${await barTitle()}」`);
+ok(c?.name === "客户甲的后台" && (await barTitle()) === "客户甲的后台", `切会话后这颗写着「${c?.name}」`);
 ok(c?.label === "客户甲，客户甲的后台，当前会话", `读屏跟着换（${c?.label}）`);
 ok(Boolean(c?.accent) && c?.accent !== a1Accent, `色点换成另一个工作区的颜色（${c?.accent} ≠ ${a1Accent}）`);
 const b1Accent = c?.accent;
@@ -248,7 +246,8 @@ renamed.groups[1].name = "客户甲 · 二期";
 cast({ type: "workspaces", workspace: renamed });
 await sleep(300);
 c = await chip();
-ok(c?.ws === "客户甲 · 二期", `改名后这颗立刻写着「${c?.ws}」`);
+ok(c?.name === "客户甲的后台", `改工作区名不动这颗（${c?.name}）`);
+ok((c?.label ?? "").includes("客户甲 · 二期"), `新名字进了读屏文案（${c?.label}）`);
 ok(c?.accent === b1Accent, `改名不动色点（${c?.accent}）`);
 
 // 6) 800px：只剩这一颗（窄屏不提前做 #102 的四套）

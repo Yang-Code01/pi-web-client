@@ -24,5 +24,8 @@
     "@types/web-push": "^3.6.4",
     "@types/ws": "^8.5.13",
     "typescript": "^5.7.2"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
   }
 }

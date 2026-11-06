@@ -193,6 +193,13 @@ const rowState = () =>
       chips: [...document.querySelectorAll(".pin-strip .pin-chip:not(.pin-new):not(.pin-more)")].map(
         (c) => c.querySelector(".pin-name")?.textContent ?? "",
       ),
+      cur: document.querySelector(".pin-strip .pin-chip.cur .pin-name")?.textContent ?? "",
+      // 看的是「画没画出来」而不是 `.hidden` 属性：`.now-btn` 是 inline-flex，属性本身不生效。
+      nowHidden: (() => {
+        const b = document.querySelector(".now-chip")?.closest("button");
+        return b ? b.getClientRects().length === 0 : null;
+      })(),
+      cls: [...document.querySelectorAll(".pin-strip .pin-chip")].map((c) => c.className),
     };
   });
 // #121 起标签行只画 N 颗，被折叠的组要从「＋N」的下拉里点。
@@ -266,12 +273,17 @@ ok((await page.evaluate(() => location.hash)) === "#/s/s-05-1", "点标签打开
 ok(t.onWs === "f:/proj-05", "高亮跟着换到被点的那组");
 ok(r.nowLabel.includes("工程 05 · 会话 1"), `行 2 左端换成新会话（${r.nowLabel}）`);
 ok(r.chips.length === 0, `切到另一个没 ★ 的组：胶囊整条清空，只剩 NowChip 和 ＋（${r.chips.length} 颗）`);
+ok(r.nowHidden === false, "当前会话没 ★：最左那颗 NowChip 出场兜底");
 
-// 4) 行 2 只放本区的 ★ 会话，按 ★ 顺序，且不重复画当前那颗
+// 4) 行 2 放本区点过 ★ 的会话（含当前那颗），顺序按 ★ 定，切会话不重排（#126）
 await gotoTab("f:/proj-02");
 r = await rowState();
-ok(r.chips.join(" / ") === "工程 02 · 会话 2 / 工程 02 · 会话 1", `行 2 只放本区的 ★、按 ★ 顺序（${r.chips.join(" / ")}）`);
-ok(!r.chips.some((n) => r.nowLabel.includes(n)), `当前那颗（${r.nowLabel}）不重复出现在胶囊里`);
+ok(
+  r.chips.join(" / ") === "工程 02 · 会话 3 / 工程 02 · 会话 2 / 工程 02 · 会话 1",
+  `行 2 的胶囊按 ★ 顺序（${r.chips.join(" / ")}）`,
+);
+ok(r.chips[0] && r.cur === r.chips[0], `当前那颗也在胶囊里、排 ★ 给它的位置（${r.cur || "无"} / ${r.cls.join(" | ")}）`);
+ok(r.nowHidden === true, "当前会话已在 ★ 行里（带填充），最左那颗 NowChip 收起来（#127）");
 
 // 5) 设置里的四颗布局 chip：#98 起四颗都点得动，没有置灰的
 await page.locator('.icon-btn[data-act="look"]').click();

@@ -185,14 +185,14 @@ a { color: var(--accent); text-decoration: none; }
   padding: 4px 8px 4px 8px;
   border-radius: 999px;
   border: 1px solid var(--accent);
-  background: var(--panel-2);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   font-size: 12px;
   line-height: 1.2;
 }
 .now-chip[hidden] { display: none; }
 .now-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .now-dot[hidden] { display: none; }
-.now-ws { flex: 0 1 auto; min-width: 0; max-width: 16em; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.now-name { flex: 0 1 auto; min-width: 0; max-width: 16em; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .now-live { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--line-lit); }
 .now-live.live { background: var(--ok); }
 .now-live.busy { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
@@ -1080,10 +1080,12 @@ body.ws-tab-dragging .ws-tab:hover:not(.on) { color: var(--dim); background: non
   color: inherit;
   cursor: pointer;
 }
-.now-btn:hover .now-chip { border-color: #33607a; }
+.now-btn:hover .now-chip { border-color: color-mix(in srgb, var(--accent) 65%, var(--line)); }
 .now-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 999px; }
 .now-btn[data-open="0"] { cursor: default; }
-.now-btn[data-open="0"]:hover .now-chip { border-color: #2a4a5c; }
+.now-btn[data-open="0"]:hover .now-chip { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+/* #127：`hidden` 属性对 `display: inline-flex` 不生效，得自己写一条。 */
+.now-btn[hidden] { display: none; }
 /* 非 A 布局：那颗已经在顶栏里挨着色点，标题再念一遍「pi」就重复了，把空间让给 cwd。 */
 html:not([data-layout="a"]) .topbar .title { display: none; }
 html:not([data-layout="a"]) .topbar .sub { margin-left: auto; }
@@ -1145,6 +1147,7 @@ html:not([data-layout="a"]) .topbar .sub { margin-left: auto; }
    行 2 里的胶囊容器沿用 .pin-strip 这套样式与探针选择器，但它不再是「置顶横栏」：
    外面由 .ws-session-row 提供给它与 now-chip 共处的一行。 */
 .pin-strip {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
@@ -1170,14 +1173,18 @@ html:not([data-layout="a"]) .topbar .sub { margin-left: auto; }
   cursor: pointer;
 }
 .pin-chip:hover { border-color: var(--line); background: var(--panel-2); }
+/* #126：胶囊可以左右拖、自己定顺序。起拖时半透明，插入位是一条 2px 竖线。 */
+.pin-chip.drag { opacity: 0.55; cursor: grabbing; }
+.pin-line { position: absolute; top: 4px; bottom: 4px; width: 2px; border-radius: 1px; background: var(--accent); pointer-events: none; }
+body.pin-dragging { cursor: grabbing; user-select: none; }
 /* 当前会话：整颗胶囊填色 + 描边，收起左栏后一眼能看出「我正在跟哪一个说话」。
    hover 规则在上面，所以这条放后面，鼠标扫过去也不会把当前会话的颜色盖掉。 */
 .pin-chip.cur {
-  background: rgba(125, 211, 252, 0.16);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   border-color: var(--accent);
   color: var(--text);
 }
-.pin-chip.cur:hover { background: rgba(125, 211, 252, 0.22); border-color: var(--accent); }
+.pin-chip.cur:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); border-color: var(--accent); }
 .pin-chip.cur .pin-name { font-weight: 500; }
 .pin-chip.cur small { color: var(--accent); }
 .pin-chip.cur .pin-star { color: var(--accent); }
@@ -1657,7 +1664,7 @@ html:not([data-layout="a"]) .topbar .sub { margin-left: auto; }
      缝收到 6、两侧 padding 收到 12，再把 chip 里的工作区名收掉（它 70px，而这一排真正要读的
      是会话名，标题那一格本来就只剩几十像素）。 */
   .topbar { gap: 6px; padding-left: 12px; padding-right: 12px; }
-  .now-chip .now-ws { display: none; }
+  .now-chip .now-name { display: none; }
   /* 「📂 产物」和「📁 文件管理器」收成图标之后并排两颗几乎一样的文件夹 —— 窄屏上只能留一个。
      留产物（这个会话写过的东西），盘符浏览回桌面端用。 */
   .topbar .icon-btn.wide[data-act="files"] { display: none !important; }

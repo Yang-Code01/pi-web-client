@@ -58,13 +58,22 @@ export function pillChip(s: PillSession, currentId: string | null, badge: PillBa
  * `sessions` 是外壳给的「本区会话」，顺序就按左栏那一份（★ 已经排在前面），这里只做过滤 ——
  * 于是别组的置顶不会串进本区，没 ★ 的组也就一颗都不剩。
  */
+/**
+ * 行 2 画的是「本区里点过 ★ 的会话」，顺序按 `stars`（= `manage.pin`）排 ——
+ * 不跟会话列表自己的「最近活动」序，也不跟切会话重排。当前会话也在里面，
+ * 靠 `.cur` 的主题色填充认出来（#126）。
+ */
 export function starredSessions<S extends PillSession>(
   sessions: readonly S[],
   stars: readonly string[],
-  currentId: string | null,
 ): S[] {
-  const starred = new Set(stars);
-  return sessions.filter((s) => starred.has(s.id) && s.id !== currentId);
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const out: S[] = [];
+  for (const id of stars) {
+    const s = byId.get(id);
+    if (s) out.push(s);
+  }
+  return out;
 }
 
 export interface PillBarOpts<S extends PillSession = PillSession> {
@@ -137,6 +146,8 @@ export class PillBar<S extends PillSession = PillSession> {
     chips.forEach((c, i) => {
       // Q-022: 一个 button 不能套 button，所以胶囊是个容器 + 两个热区 —— ★ = 取消置顶，其余 = 打开。
       const chip = el("div", "pin-chip");
+      // #126：拖动重排要认得出是哪一颗（`dataset.pinKey` 在里面的热区上，不在胶囊自己身上）。
+      chip.dataset.pinId = c.id;
       if (c.cls) chip.classList.add(c.cls);
       // 当前会话：整颗填色（aria-current 给读屏器，title 里也补一句），否则这一排长得一模一样。
       if (c.current) {
