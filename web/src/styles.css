@@ -1099,7 +1099,7 @@ html:not([data-layout="a"]) .topbar .sub { margin-left: auto; }
   position: fixed;
   z-index: 60;
   width: min(380px, calc(100vw - 16px));
-  max-height: min(calc(var(--vh1) * 70), 540px);
+  max-height: min(70vh, 540px);
   display: flex;
   flex-direction: column;
   background: var(--panel);
@@ -1419,9 +1419,10 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .chip.on { border-color: var(--accent); color: var(--accent-ink); background: var(--accent); font-weight: 500; }
 .chip:hover { border-color: var(--line-strong); }
 
-/* ---------------------------------------------------------------- 字号滑杆（D-见 docs/DECISIONS.md）
-   连续滑杆取代四颗 chip：0.8–2.0，步长 1%。四个老档位变成轨上的刻度 —— 0.1 一格、0.2 一个字，
-   点刻度字精确落档，指针拖到 ±1.2% 内会吸上去。填充色和滑块都跟着 --fill 走，不另画一条轨道。 */
+/* ---------------------------------------------------------------- 字号滑杆（D156）
+   连续滑杆取代四颗 chip：0.8–2.0，步长 1%。老档位不再有名字，只留四颗刻度上的磁吸 ——
+   轨上 0.1 一格、0.2 一个字，点字精确落档，指针拖到 ±1.2% 内会吸上去。
+   填充色和滑块都跟着 --fill 走，不另画一条轨道。 */
 .size-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .size-read {
   font: 500 12px/1 var(--mono); font-variant-numeric: tabular-nums;
@@ -1431,11 +1432,12 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .size-read.moved { color: var(--text); }
 .size-read.dragging { color: var(--accent); }
 
-.size-ctl { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; column-gap: 11px; }
+.size-ctl { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; column-gap: 12px; }
 .size-end { grid-row: 1; color: var(--faint); line-height: 1; user-select: none; }
 .size-end.s { font-size: 11px; }
-.size-end.b { font-size: 17px; }
-.size-rail { grid-column: 2; grid-row: 1; position: relative; height: 26px; display: grid; align-items: center; }
+.size-end.b { font-size: 15px; }
+/* touch-action:none：手机上从滑块上起手，浏览器会把这一串 pointer 当成滚动、发个 pointercancel 就收走。 */
+.size-rail { grid-column: 2; grid-row: 1; position: relative; height: 26px; display: grid; align-items: center; touch-action: none; }
 .size-rail input[type="range"] {
   -webkit-appearance: none; appearance: none;
   position: relative; z-index: 2; width: 100%; height: 26px; margin: 0;
@@ -1457,25 +1459,24 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .size-rail.dragging input[type="range"]::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--panel), 0 0 0 4px var(--accent); }
 /* 抽屉里那条「白 outline」的通用规则对 range 没意义：焦点环画在滑块上。 */
 .size-rail input[type="range"]:focus { border-color: transparent; }
-.size-rail input[type="range"]:focus-visible { outline: none; }
-.size-rail input[type="range"]:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 3px var(--panel), 0 0 0 4px var(--accent), 0 0 0 6px var(--accent-dim);
-}
+/* 焦点环跟别的控件同一套（.chip 那种 accent-dim 圆角框）：滑块上的环只有 WebKit 认，
+   Firefox 上就什么都看不见了。 */
+.size-rail input[type="range"]:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 2px; border-radius: 3px; }
 
 /* 刻度画在输入框上面、不接指针（接了会挡住拖拽）；落进已填充段的改成深色刻痕，
-   否则反白的 1px 线在亮条上只剩噪点。 */
+   否则反白的 1px 线在亮条上只剩噪点。高矮靠类，几何不往 JS 里写。 */
 .ticks { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
-.tick { position: absolute; top: 50%; width: 1px; border-radius: 1px; background: #57627a; }
-.tick.named { background: #6b7789; }
-.tick.thin { background: #4a5468; }
-.tick.past { background: rgba(4, 32, 43, 0.55); }
+.tick { position: absolute; top: 50%; transform: translateY(-50%); width: 1px; height: 7px; border-radius: 1px; background: var(--line-lit); }
+.tick.named { height: 11px; background: var(--faint); }
+.tick.thin { background: var(--line-strong); }
+.tick.past { background: var(--accent-ink); opacity: 0.55; }
 
 /* 刻度字和轨道共用第 2 列：分开排会跟刻度差十几像素。 */
 .size-marks { grid-column: 2; grid-row: 2; position: relative; height: 14px; margin-top: 4px; }
 .mark {
-  position: absolute; top: 0; transform: translateX(-50%);
-  border: 0; background: none; padding: 1px 4px; border-radius: 4px;
-  font: 10px/1 var(--mono); color: var(--faint); cursor: pointer; white-space: nowrap;
+  position: absolute; top: -3px; transform: translateX(-50%);
+  border: 0; background: none; padding: 4px 6px; border-radius: 4px;
+  font: 11px/1 var(--mono); color: var(--faint); cursor: pointer; white-space: nowrap;
 }
 .mark:hover { color: var(--text); background: var(--panel-2); }
 .mark.on { color: var(--accent); }
@@ -2217,10 +2218,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .term-body[hidden] { display: none; }
 .term-body .xterm { height: 100%; }
 .term-body .xterm-viewport { background: transparent !important; }
-/* 窄屏：dialog 贴两侧，底边让开底部三标签（tabs 只在窄屏存在）。 */
 /* 窄版：终端浮层贴着底部三标签（56px 与 CSS 里的 bottom 一致，也和 app.ts 的 termInset 一致）。 */
 :where(html[data-compact="true"]) .term-dock {
-  width: calc(100vw - 16px);
+  width: calc(calc(var(--vw1) * 100) - 16px);
   height: min(calc(var(--vh1) * 42), 340px);
   bottom: calc(56px + env(safe-area-inset-bottom, 0px));
 }

@@ -721,24 +721,28 @@ export class App {
 
   /**
    * 有效宽度 < 900 就是窄版。媒体查询看的是**视口**宽度，而 `#app` 上有 zoom：2.0 字号下
-   * 1707px 的窗口只有 853 布局 px，`@media (max-width: 899px)` 却依然不触发（D 记录）。
+   * 1707px 的窗口只有 853 布局 px，`@media (max-width: 899px)` 却依然不触发（D156）。
    * 所以窄版的判据在 JS 里算一次，既给 `data-compact` 用，也给这里的所有 if 用 —— 两边不许分叉。
    */
   private compact(): boolean {
     return window.innerWidth / this.uiScale() < 900;
   }
 
-  /** 把上面的判据落到 `<html data-compact>`：CSS 的 899 / 900 断点都改读这个属性。 */
-  private syncCompact(): void {
+  /**
+   * 把上面的判据落到 `<html data-compact>`：CSS 的 899 / 900 断点都改读这个属性。
+   * 返回「这次真的翻了」—— 调用方拿它决定要不要重排（拖动中跨过 900 时）。
+   */
+  private syncCompact(): boolean {
     const compact = this.compact();
     const root = document.documentElement;
     // 跟 `String(compact)` 比，而不是跟 "true" 比：首次调用必须把 "false" 也写下去，
     // 否则属性一直是 undefined，CSS 那边是在碰运气。
-    if (root.dataset.compact === String(compact)) return;
+    if (root.dataset.compact === String(compact)) return false;
     root.dataset.compact = String(compact);
     // 换壳跟窗口跨过 900px 是同一件事：那颗「当前在哪」和标签行都得挪位置（构造期还没搭 DOM）。
     this.placeNowChip();
     this.placeWsTabs();
+    return true;
   }
 
   /** 没存过几何时 dialog 的多大：底部居中，宽高跟着窗口（布局 px，已按缩放折算）。 */
@@ -2679,8 +2683,6 @@ export class App {
       const tick = el("span", `tick${major ? " named" : " thin"}`);
       tick.dataset.v = v.toFixed(2);
       tick.style.left = `${sizePct(v) * 100}%`;
-      tick.style.height = major ? "11px" : "7px";
-      tick.style.marginTop = major ? "-5.5px" : "-3.5px";
       ticks.append(tick);
     }
     rail.append(range, ticks);
@@ -2723,14 +2725,17 @@ export class App {
     };
 
     const setScale = (v: number, save: boolean): void => {
-      const next = Math.round(Math.min(SIZE_MAX, Math.max(SIZE_MIN, v)) * 100) / 100;
+      const next = clampScale(v);
       this.prefs = { ...this.prefs, scale: next };
       document.documentElement.style.setProperty("--ui-scale", String(next));
       // 拖动中也要判窄版：不判的话预告是假的（1.0 拖到 2.0 的路上一直是三栏，松手才突然变一栏），
       // 而抽屉的宽度不跟着窄版变（min(560px,100%)），所以冻住的轨道盒子不会在手指底下跑。
-      this.syncCompact();
+      // 跨过 900 的那一刻三栏已经换成单列，但 pane 的 hidden 是 JS 状态，必须顺手重排，
+      // 否则松手前看到的是「三栏挤进一列」。
+      if (this.syncCompact()) this.renderPanes();
       paintSize(next);
       if (!save) return;
+      sizeDirty = false;
       savePrefs(this.prefs);
       // 整页换完再落一次（applyPrefs 顺带重夹终端几何、判窄版），只在松手/落档时跑。
       this.applyPrefs();
@@ -2739,11 +2744,17 @@ export class App {
     // 一帧只抹一次：--ui-scale 一变就是整页 zoom，input 事件比帧还密。
     let sizeFrame = 0;
     let sizeNext = this.prefs.scale;
+    // 「有没有还没存盘的值」只能另记一笔：`setScale(..., false)` 自己就会把 prefs 改成新值，
+    // 拿 prefs 比等于永远相等，松手那次 savePrefs 就再也走不到。
+    let sizeDirty = false;
     const queueSize = (v: number): void => {
       sizeNext = v;
+      sizeDirty = true;
       if (sizeFrame) return;
       sizeFrame = requestAnimationFrame(() => {
         sizeFrame = 0;
+        // 抽屉中途被关掉（Esc / 点背景）时这一帧还没跑：直接丢掉，别对着已摘掉的控件改 prefs。
+        if (!range.isConnected) return;
         setScale(sizeNext, false);
       });
     };
@@ -2762,12 +2773,14 @@ export class App {
 
     rail.addEventListener("pointerdown", (ev) => {
       if (ev.button !== 0) return;
+      // 键盘要能接着用：preventDefault 会把焦点拦下来，鼠标拖完再按方向键就没反应了。
+      // 先自己把焦点给 range，再拦浏览器那套（它算的是放大后的坐标）。
+      range.focus({ preventScroll: true });
       const r = range.getBoundingClientRect();
       dragBox = { x: r.left, w: r.width };
       rail.classList.add("dragging");
       sizeRead.classList.add("dragging");
       rail.setPointerCapture(ev.pointerId);
-      // 拦住浏览器自己的滑块拖拽（它算的是放大后的坐标），否则两边抢着写 range.value。
       ev.preventDefault();
       queueSize(snapSize(valueAt(ev.clientX)));
     });
@@ -2781,8 +2794,11 @@ export class App {
         cancelAnimationFrame(sizeFrame);
         sizeFrame = 0;
       }
-      // 先把还没抹的那一帧落实，否则最后一下可能被 cancel 掉、存进旧值。
-      setScale(Number(range.value), false);
+      // 先把还没抹的那一帧落实。值只能从 sizeNext 拿：range.value 要 paintSize 才写，
+      // 单击轨道时那一帧根本没跑，读它等于把刚才那一下丢掉（存进的是旧值）。
+      if (!sizeDirty) return;
+      setScale(sizeNext, false);
+      sizeDirty = false;
       savePrefs(this.prefs);
       this.applyPrefs();
     };
@@ -11772,6 +11788,9 @@ const snapSize = (v: number): number => {
   return v;
 };
 
+/** 夹进 0.8–2.0 并取两位小数：prefs 里只存得下这种值（滑杆的 step 就是 1%）。 */
+const clampScale = (v: number): number => Math.round(Math.min(SIZE_MAX, Math.max(SIZE_MIN, v)) * 100) / 100;
+
 /**
  * 设置里每颗布局 chip 的那张小示意图（46×30，纯 CSS 画的块）。不引图片：设置面板要能离线
  * 打开，也不想为四张缩略图多一条资源路径。画的是「行 / 列怎么摆」，不追求像素级复刻。
@@ -11853,7 +11872,7 @@ function readPrefs(): Prefs {
     const accent = LEGACY_ACCENTS[String(p?.accent)] ?? String(p?.accent);
     return {
       // 滑杆是连续的：只夹范围、留两位小数（老的 0.9 / 1 / 1.12 / 1.25 原样还能读回来）。
-      scale: Number.isFinite(scale) && scale > 0 ? Math.round(Math.min(SIZE_MAX, Math.max(SIZE_MIN, scale)) * 100) / 100 : DEFAULT_PREFS.scale,
+      scale: Number.isFinite(scale) && scale > 0 ? clampScale(scale) : DEFAULT_PREFS.scale,
       accent: ACCENTS[accent] ? accent : DEFAULT_PREFS.accent,
       text: TEXT_STEPS.some(([k]) => k === p?.text) ? (p.text as Prefs["text"]) : DEFAULT_PREFS.text,
       // 没存过语言（第一次打开、或老版本升上来）就跟着浏览器走。
