@@ -204,17 +204,24 @@ try {
   await page.waitForSelector(".sheet-back", { state: "hidden", timeout: 10000 }).catch(() => {});
   await btn.click();
   await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 10000 });
-  const jaTexts = await page.evaluate(() => ({
-    title: document.querySelector(".scratch-sheet .sheet-title")?.textContent,
-    clear: document.querySelector(".scratch-sheet .scratch-clear")?.textContent,
-    send: document.querySelector(".scratch-sheet .btn.primary")?.textContent,
-    hint: document.querySelector(".scratch-hint")?.textContent,
-    // 顶栏这两颗以前不跟语言：内网通的按钮从没登记进 els（paintChrome 那段是死代码），
-    // 随手问压根没写进 paintChrome。
-    peerBtn: document.querySelector('[data-act="peer"]')?.textContent,
-    scratchBtn: document.querySelector('[data-act="scratch"]')?.textContent,
-    termBtn: document.querySelector('[data-act="terminal"]')?.textContent,
-  }));
+  const jaTexts = await page.evaluate(() => {
+    const wideText = (act) => {
+      const b = document.querySelector(`[data-act="${act}"]`);
+      return b ? `${b.querySelector(".ic")?.textContent ?? ""} ${b.querySelector(".lb")?.textContent ?? ""}` : null;
+    };
+    return {
+      title: document.querySelector(".scratch-sheet .sheet-title")?.textContent,
+      clear: document.querySelector(".scratch-sheet .scratch-clear")?.textContent,
+      send: document.querySelector(".scratch-sheet .btn.primary")?.textContent,
+      hint: document.querySelector(".scratch-hint")?.textContent,
+      // 顶栏这两颗以前不跟语言：内网通的按钮从没登记进 els（paintChrome 那段是死代码），
+      // 随手问压根没写进 paintChrome。D131 之后宽按钮拆成 `.ic` + `.lb` 两个 span，
+      // 两段之间没有空格 —— 拿整颗按钮的 textContent 比「🌐 LAN」永远不等，所以分开读。
+      peerBtn: wideText("peer"),
+      scratchBtn: wideText("scratch"),
+      termBtn: wideText("terminal"),
+    };
+  });
   check("切语言后标题跟着变", jaTexts.title === "ちょい聞き", jaTexts.title ?? "");
   check("切语言后按钮跟着变", jaTexts.clear === "クリア" && jaTexts.send === "送信", `${jaTexts.clear} / ${jaTexts.send}`);
   check("切语言后说明行跟着变", /セッション一覧に出ない/.test(jaTexts.hint ?? ""), jaTexts.hint ?? "");
@@ -232,6 +239,41 @@ try {
   await frame.locator(".rail button").first().waitFor({ timeout: 20000 });
   const railLabels = await frame.locator(".rail button span.tag").allInnerTexts();
   check("内网通页面跟着切到日文", railLabels[0] === "メッセージ" && railLabels.length === 4, railLabels.join(" / "));
+
+  // 外观「字号」= `#app { zoom: var(--ui-scale) }`：弹层必须挂在 #app 里才跟它一起缩
+  // （挂 body 上的抽屉实测不跟，D36）。量三件：贴住右缘、宽度、输入框高度。
+  await page.locator(".peer-sheet .sheet-head .btn").click();
+  await page.waitForSelector(".peer-sheet", { state: "detached", timeout: 10000 });
+  const geom = () =>
+    page.evaluate(() => {
+      const r = (sel) => document.querySelector(sel)?.getBoundingClientRect();
+      const sheet = r(".scratch-sheet");
+      const input = r(".sc-input");
+      if (!sheet || !input) return null;
+      return { w: Math.round(sheet.width), right: Math.round(sheet.right), inputH: Math.round(input.height), vw: window.innerWidth };
+    });
+  await btn.click();
+  await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 10000 });
+  // 入场动画（`scratch-in`）从 translateX(24px) 滑进来：等它落定再量，否则右缘多出 24/30px。
+  await page.waitForTimeout(300);
+  const one = await geom();
+  check("字号标准时 dialog 贴住视口右缘", Boolean(one) && one.right === one.vw, JSON.stringify(one));
+  await page.locator(".scratch-close").click();
+  await page.locator('[data-act="look"]').click();
+  // 第二组 .levels 就是字号（第一组是语言），最后一颗 = 特大。
+  await page.locator(".display-sheet .levels").nth(1).locator(".chip").last().click();
+  await page.locator(".display-sheet .sheet-head .btn").click();
+  await btn.click();
+  await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 10000 });
+  await page.waitForTimeout(300);
+  const big = await geom();
+  check(
+    "字号特大时 dialog 跟着放大",
+    Boolean(one && big) && Math.abs(big.w - Math.round(one.w * 1.25)) <= 2 && Math.abs(big.right - big.vw) <= 1,
+    JSON.stringify({ one, big }),
+  );
+  check("字号特大时输入框也变高", Boolean(one && big) && big.inputH === Math.round(one.inputH * 1.25), `${one?.inputH} → ${big?.inputH}`);
+  await page.screenshot({ path: path.join(OUT, "scratch-chat-big.png") });
 } catch (err) {
   failed += 1;
   console.error("FAIL", err?.message ?? err);
