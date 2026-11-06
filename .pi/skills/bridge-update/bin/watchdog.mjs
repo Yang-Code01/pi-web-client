@@ -10,37 +10,23 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { appendLog, argOf, lockFresh } from "./lib.mjs";
 
-const REPO = path.resolve(import.meta.dirname, "../../../..");
+const DEFAULT_REPO = path.resolve(import.meta.dirname, "../../../..");
+const REPO = path.resolve(argOf("--dir", DEFAULT_REPO));
+const PORT = Number(argOf("--port", process.env.PI_WEB_PORT || 7864));
+// 拉起来的进程必须落在「我们盯着的那一个」端口上：--port 与 PI_WEB_PORT 不一致时，
+// 子进程会去抢默认的 7864（EADDRINUSE），然后我们永远等不到自己那个端口。
+process.env.PI_WEB_PORT = String(PORT);
+
 const WORK = path.join(REPO, ".scratch", "bridge-update");
 const LOCK = path.join(WORK, "restart.lock");
 const FLAG = path.join(WORK, "stopped.flag");
 const LOG = path.join(WORK, "watchdog.log");
 const STAMP = path.join(WORK, "watchdog.last-start");
 
-function argOf(name, dflt) {
-  const i = process.argv.indexOf(name);
-  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : dflt;
-}
-
-const PORT = Number(argOf("--port", process.env.PI_WEB_PORT || 7864));
-// 拉起来的进程必须落在「我们盯着的那一个」端口上：--port 与 PI_WEB_PORT 不一致时，
-// 子进程会去抢默认的 7864（EADDRINUSE），然后我们永远等不到自己那个端口。
-process.env.PI_WEB_PORT = String(PORT);
-
 function log(...parts) {
-  try {
-    if (fs.existsSync(LOG) && fs.statSync(LOG).size > 1_000_000) fs.writeFileSync(LOG, "");
-    fs.appendFileSync(LOG, `${new Date().toISOString()} ${parts.join(" ")}\n`);
-  } catch {}
-}
-
-function readJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
+  appendLog(LOG, 1_000_000, ...parts);
 }
 
 function markStopped(stopped, why) {
@@ -60,11 +46,6 @@ async function healthy() {
   }
 }
 
-function lockFresh() {
-  const lock = readJson(LOCK);
-  return lock && typeof lock.at === "string" && Date.now() - Date.parse(lock.at) < 5 * 60 * 1000;
-}
-
 function cooledDown() {
   const raw = fs.existsSync(STAMP) ? Number(fs.readFileSync(STAMP, "utf8").trim()) : 0;
   return Number.isFinite(raw) && Date.now() - raw < 5 * 60 * 1000;
@@ -76,7 +57,7 @@ async function main() {
 
   fs.mkdirSync(WORK, { recursive: true });
   if (fs.existsSync(FLAG)) return;
-  if (lockFresh()) {
+  if (lockFresh(LOCK)) {
     log("skip: 正在更新（restart.lock 新鲜）");
     return;
   }
@@ -100,7 +81,7 @@ async function main() {
     env: process.env,
   });
   child.unref();
-  log(`healthz 不通，已拉起 pid ${child.pid ?? "?"}`);
+  log(`healthz 不通，已拉起 pid ${child.pid ?? "?"}（:${PORT}）`);
 }
 
 main().catch((e) => log("FATAL", e?.stack ?? e?.message ?? String(e)));

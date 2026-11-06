@@ -350,9 +350,11 @@ async function main(): Promise<void> {
 
     if (url.pathname === "/healthz") {
       // pid 只回给本机：更新器靠它确认「谁在服务这个端口」（沙箱/代理下 netstat 看不到监听者）。
-      // 隧道访客不需要知道，也不该拿到。
+      // 隧道访客不需要知道，也不该拿到 —— 注意 cloudflared 是本地起的（`--url 127.0.0.1`），
+      // 隧道流量的 remoteAddress 天然就是 loopback，只比地址会把 pid 漏给公网，必须连 publicReq 一起看。
       const remote = req.socket.remoteAddress;
-      const loopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+      const loopback =
+        (remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1") && !publicReq;
       return json(res, 200, {
         ok: true,
         version: VERSION,

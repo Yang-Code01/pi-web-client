@@ -14,6 +14,7 @@ pi 的网页客户端：`bridge/`（Node，WS 桥 + RPC 子进程 + 隧道）与
 - **sub-agent 改代码用隔离 worktree**（`subagent` 的 `worktree: true`），不要让它直接写主检出。
 - **这条规则也管 `AGENTS.md` 自己**：改规则文本一样开 worktree、提 PR、合回来，不在 main 上直接提交。
 - **唯一例外：用户当场明确要求在 main / 主检出上改**——照做，但在回复里点明绕过了这条规则。
+- **已登记的例外（D154）：** `.pi/skills/bridge-update/bin/restart.mjs` 可以在主检出上 `git fetch` + `git merge --ff-only origin/main`，只此一步，不 stash / 不 rebase / 不 reset；主检出 dirty 就停在 `merge-failed`。
 
 ## Agent skills
 
@@ -41,7 +42,7 @@ Issues and specs live as GitHub issues in `Yang-Code01/pi-web-client`, driven wi
 
 ### Running the bridge
 
-The bridge (`http://127.0.0.1:7864`) is normally started by hand in a terminal; its `pi --mode rpc` children die with it. A restart is just stop + `npm start` — no verification wrapper beforehand. To tell whether you are a descendant of some pid, ask the human or print your own ancestor chain with `pwsh` (`Get-Process(...).Parent`). See `docs/agents/running-the-bridge.md`.
+The bridge (`http://127.0.0.1:7864`) is normally started by hand in a terminal; its `pi --mode rpc` children die with it. A restart goes through the skill below (stop + `npm start` by hand still works, it just skips the build check). To tell whether you are a descendant of some pid, ask the human or print your own ancestor chain with `pwsh` (`Get-Process(...).Parent`). See `docs/agents/running-the-bridge.md`.
 
 ### 更新 / 重启 bridge
 

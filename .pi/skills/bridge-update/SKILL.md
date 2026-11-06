@@ -18,7 +18,7 @@ node .pi/skills/bridge-update/bin/restart.mjs --check --dir <仓库根>
 - `{"behind": false, ...}` → 已经是最新（含 dist 与 HEAD 一致），回用户一句「已是最新（`<fromSha>`）」就结束，别再往下走。
 - `{"behind": true, ...}` → 继续第 2 步。
 
-`--check` 会把 `git fetch` 的代理退路也走一遍（直连不通时自动带 `BILLION_CONTEXT_PROXY`）。
+`--check` 会把 `git fetch` 的代理退路也走一遍（直连不通时自动带 `BILLION_CONTEXT_PROXY`）。它是只读探针：不占 `restart.lock`、**不写** `last-run.json`，所以随手 check 一次不会把上一次的 `pendingUnread` 冲掉。
 
 ## 二、把没做完的事落盘（如果这轮任务还没完）
 
@@ -58,8 +58,14 @@ Start-Process node -WindowStyle Hidden -ArgumentList `
 | `build-failed` | 编译挂了 | 旧进程还在服务旧代码；把 `update.log` 尾部贴给用户 |
 | `kill-failed` | 旧进程杀不掉 | 服务仍在旧代码上；让用户手工关窗口 |
 | `start-failed` | 新进程 45s 内没起来 | 看 `.scratch/bridge-update/bridge-live.log` |
+| `fetch-failed` | 直连和代理都拉不到 origin | 这是「不知道有没有更新」，不是「已是最新」；把 `error` 给用户 |
+| `aborted` | 另一个更新正在跑（`restart.lock` 新鲜）或拿不到锁 | 等几分钟再看，别重复起 |
+| `bad-repo` | `--dir` 不是 pi-web-client（缺 `bridge/package.json`） | 把路径报给用户确认 |
+| `stopped` | 按 `--no-start` 只停没启 | 服务已停；要起就手工 `npm run start:nobuild`，或让看门狗拉 |
+| `dry-run` | 按 `--dry-run` 只 pull + build | 没换进程，线上还是旧代码 |
+| `crashed` | 脚本自己抛了异常 | 把 `update.log` 尾部给用户 |
 
-`pendingUnread: true` 且存在 `pending.md` → 先把里面的事做完，再把 `last-run.json` 里的 `pendingUnread` 改成 `false`。这是 AGENTS.md 启动检查约定的一半，别忘。
+`pendingUnread: true` 且存在 `pending.md` → 先把里面的事做完，再把 `last-run.json` 里的 `pendingUnread` 改成 `false`。只要旧进程真的被杀掉过（`ok` / `start-failed` / `stopped` 都可能），这一轮 turn 就已经断了，所以这几种都要接着做。这是 AGENTS.md 启动检查约定的一半，别忘。
 
 ## 五、看门狗（一次性安装）
 
@@ -68,6 +74,8 @@ Start-Process node -WindowStyle Hidden -ArgumentList `
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .pi\skills\bridge-update\bin\install-watchdog.ps1
 ```
+
+异构实例（别的端口、别的检出）：`-Dir <仓库根> -Port <端口>`，两个参数都会传进计划任务；看门狗脚本本身也认 `--dir` / `--port`。
 
 每 1 分钟探测 `/healthz`；不通且没在更新（`restart.lock` 新鲜）就 detached 拉起 `node bridge/dist/index.js`。5 分钟内只拉一次，避免崩循环刷进程。
 

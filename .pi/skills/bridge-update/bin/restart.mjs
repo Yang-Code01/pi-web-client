@@ -15,15 +15,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { appendLog, argOf, lockFresh, readJson } from "./lib.mjs";
 
 const WIN = process.platform === "win32";
 const DEFAULT_REPO = path.resolve(import.meta.dirname, "../../../..");
 
-function argOf(name, dflt) {
-  const i = process.argv.indexOf(name);
-  const v = i >= 0 ? process.argv[i + 1] : undefined;
-  return v && !v.startsWith("--") ? v : dflt;
-}
 
 const REPO = path.resolve(argOf("--dir", DEFAULT_REPO));
 const PORT = Number(argOf("--port", process.env.PI_WEB_PORT || 7864));
@@ -47,23 +43,14 @@ let toSha = "";
 let expectedId = "";
 let oldPid = null;
 let newPid = null;
+let lockOwned = false;
+let killedOld = false;
 
 function log(...parts) {
-  const line = `${new Date().toISOString()} ${parts.join(" ")}`;
-  try {
-    fs.appendFileSync(LOG, line + "\n");
-  } catch {}
+  const line = appendLog(LOG, 5 * 1024 * 1024, ...parts);
   try {
     console.log(line);
   } catch {}
-}
-
-function readJson(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
 }
 
 function sleep(ms) {
@@ -105,7 +92,9 @@ function looksLikeBridge(pid) {
       "-Command",
       `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction SilentlyContinue).CommandLine`,
     ]);
-    return /bridge[\/]dist[\/]index\.js/.test(String(r.stdout || ""));
+    // 命令行里的路径可能是反斜杠形式：归一成 / 再比（不在源码里写反斜杠字面量）。
+    const cmd = String(r.stdout || "").split(String.fromCharCode(92)).join("/");
+    return cmd.includes("bridge/dist/index.js");
   }
   const r = sh("bash", ["-lc", `ps -p ${pid} -o command= 2>/dev/null || true`]);
   return /bridge\/dist\/index\.js/.test(String(r.stdout || ""));
@@ -140,11 +129,11 @@ async function portPid(port) {
       `(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1).OwningProcess`,
     ]);
     const n = Number(String(r.stdout || "").trim());
-    return Number.isFinite(n) && n > 0 ? n : null;
+    return looksLikeBridge(n) ? n : null;
   }
   const r = sh("bash", ["-lc", `lsof -ti tcp:${port} -sTCP:LISTEN 2>/dev/null | head -1`]);
   const n = Number(String(r.stdout || "").trim());
-  return Number.isFinite(n) && n > 0 ? n : null;
+  return looksLikeBridge(n) ? n : null;
 }
 
 function childrenOf(pid) {
@@ -220,7 +209,8 @@ function startBridge() {
   fs.writeFileSync(
     launcher,
     [
-      "$host.ui.RawUI.WindowTitle = 'pi bridge'",
+      // PS 5.1 按 ANSI 读无 BOM 文件；窗口标题与路径都可能是中文，必须带 BOM。
+      "﻿$host.ui.RawUI.WindowTitle = 'pi bridge'",
       `Set-Location -LiteralPath ${psQuote(REPO)}`,
       `npm run start:nobuild 2>&1 | Tee-Object -FilePath ${psQuote(LIVE)} -Append`,
       "",
@@ -245,18 +235,25 @@ function startBridge() {
   newPid = child.pid ?? null;
 }
 
-function lockFresh() {
-  const raw = readJson(LOCK);
-  if (!raw || typeof raw.at !== "string") return false;
-  return Date.now() - Date.parse(raw.at) < 5 * 60 * 1000;
-}
-
-function writeLock() {
-  fs.writeFileSync(LOCK, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }, null, 2) + "\n");
+/**
+ * 先占锁，再 merge/build：整段更新期间都得占着，否则第二个 restart（或看门狗）会
+ * 并发 build、并发换进程。`wx` 是原子的 —— 两个进程同时创建，只有一个能成功。
+ */
+function takeLock() {
+  try {
+    const body = JSON.stringify({ pid: process.pid, at: new Date().toISOString() }, null, 2);
+    fs.writeFileSync(LOCK, body, { flag: "wx" });
+    lockOwned = true;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function finish(result, extra = {}) {
-  const pendingUnread = result === "ok" && fs.existsSync(PENDING);
+  // 旧 bridge 真的被杀掉过，这一轮 turn 就被切断了 —— 不管新进程有没有起来，
+  // 下一次会话都该去读 pending.md 接着做完（start-failed 同样会打断 turn）。
+  const pendingUnread = killedOld && fs.existsSync(PENDING);
   const payload = {
     at: startedAt,
     finishedAt: new Date().toISOString(),
@@ -278,7 +275,7 @@ function finish(result, extra = {}) {
   if (result === "ok") log(`=== ok === build ${expectedId}，pid ${oldPid ?? "-"} → ${newPid ?? "-"}`);
   else log(`=== ${result} ===`, extra.error ? String(extra.error).slice(0, 800) : "");
   try {
-    fs.rmSync(LOCK, { force: true });
+    if (lockOwned) fs.rmSync(LOCK, { force: true });
   } catch {}
   process.exit(result === "ok" || result === "up-to-date" || result === "behind" || result === "dry-run" ? 0 : 1);
 }
@@ -291,12 +288,26 @@ function mergeRepo() {
     finish("bad-repo", { error: `${REPO} 不像 pi-web-client（缺 bridge/package.json）` });
   }
   log(`=== update ${REPO} :${PORT} start ${startedAt} ===`);
-  if (lockFresh()) finish("aborted", { error: "另一个更新正在跑（restart.lock 还新鲜）" });
-  const dirty = (git(["status", "--porcelain"]).stdout || "").trim();
-  if (dirty) log("工作区有未提交改动，ff-only 合并失败时会原样退出：\n" + dirty.slice(0, 1500));
 
+  // --check 是只读探针：不占锁、不写 last-run.json（否则会把上一次的 pendingUnread 冲掉）。
+  if (!CHECK) {
+    if (lockFresh(LOCK)) finish("aborted", { error: "另一个更新正在跑（restart.lock 还新鲜）" });
+    if (!takeLock()) {
+      // 陈旧的锁（上次崩在 build 里）可以接管，活的不行。
+      try {
+        fs.rmSync(LOCK, { force: true });
+      } catch {}
+      if (!takeLock()) finish("aborted", { error: `拿不到 ${LOCK}，另一个更新可能正在起` });
+    }
+  }
   const fetched = fetchMain();
-  if (fetched.status !== 0) finish("fetch-failed", { error: (fetched.stderr || fetched.stdout || "").trim() });
+  if (fetched.status !== 0) {
+    if (CHECK) {
+      console.log(JSON.stringify({ behind: null, error: (fetched.stderr || fetched.stdout || "").trim(), repo: REPO }));
+      process.exit(1);
+    }
+    finish("fetch-failed", { error: (fetched.stderr || fetched.stdout || "").trim() });
+  }
 
   fromSha = (git(["rev-parse", "HEAD"]).stdout || "").trim();
   toSha = (git(["rev-parse", "origin/main"]).stdout || "").trim();
@@ -314,6 +325,18 @@ function mergeRepo() {
   }
 
   if (fromSha === toSha && !stale) finish("up-to-date");
+
+  // 工作区不干净就不合并：ff-only 通常照样成功（未提交的文件没被碰到），
+  // 然后 `npm run build` 会把这些没提交的改动编进产物 —— 服务就不再等于 main。
+  const dirty = (git(["status", "--porcelain"]).stdout || "").trim();
+  if (dirty) {
+    finish("merge-failed", {
+      error:
+        "主检出有未提交改动，不能保证构建产物等于 main；没有 stash，也没有杀进程。" +
+        String.fromCharCode(10) +
+        dirty.slice(0, 1500),
+    });
+  }
 
   const merged = git(["merge", "--ff-only", "origin/main"]);
   if (merged.status !== 0) {
@@ -344,7 +367,6 @@ async function main() {
 
   if (DRY) finish("dry-run", { note: "只 pull + build，没有换进程" });
 
-  writeLock();
   oldPid = await portPid(PORT);
   const kids = oldPid ? childrenOf(oldPid) : [];
   log(`old bridge pid ${oldPid ?? "(none)"}，子进程 ${kids.join(",") || "none"}`);
@@ -355,6 +377,7 @@ async function main() {
     if (alive(oldPid)) {
       finish("kill-failed", { error: `旧 bridge（pid ${oldPid}）没死；新旧进程都没有被改动。` });
     }
+    killedOld = true;
     log("旧 bridge 已退出");
   }
   // 桥死了但 pi 子进程可能还活着：它们占着会话锁，会让会话永远显示「终端正在使用」。
@@ -382,7 +405,7 @@ main().catch((e) => {
   log("FATAL", e?.stack ?? e?.message ?? String(e));
   try {
     fs.writeFileSync(LAST, JSON.stringify({ at: startedAt, result: "crashed", error: String(e?.message ?? e) }, null, 2) + "\n");
-    fs.rmSync(LOCK, { force: true });
+    if (lockOwned) fs.rmSync(LOCK, { force: true });
   } catch {}
   process.exit(1);
 });
