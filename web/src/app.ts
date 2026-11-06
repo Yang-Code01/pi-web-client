@@ -28,6 +28,14 @@ import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, 
 
 type Tab = "sessions" | "chat" | "queue";
 
+/**
+ * 面板等目录的两个时间窗（D150）：过了 REASK 就当「刚问的那次没结果」，自己再问一遍；
+ * 还没过 WAIT 就先说「正在读取」而不是「还没加载好」。两个数对着 bridge 那趟完整清单的预算
+ * （`bridge/src/pi.ts` 的 `fetchModels` 默认 45 s）写，改那边记得改这边。
+ */
+const MODEL_REASK_MS = 15_000;
+const MODEL_WAIT_MS = 45_000;
+
 /** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
 type BadgeKind = "ask" | "approve" | "locked" | "run" | "done";
 
@@ -2936,10 +2944,11 @@ export class App {
   /**
    * D150：目录不会自己更新到面板里（bridge 只在连接、装包、登录时推），所以面板缺列表就再问一次。
    * 两段式下第一批 1–2 s 就到，不必因为“刚才已经问过”就让它干等。
+   * 默认只吃 bridge 的缓存；`force` 只给「点这里重试」用，那时才值得再起两个 pi 子进程。
    */
-  private requestModels(): void {
+  private requestModels(force = false): void {
     this.modelsAsked = Date.now();
-    this.socket.send({ type: "models" });
+    this.socket.send({ type: "models", force });
   }
 
   // ---------------------------------------------------------------- model sheet
@@ -3062,8 +3071,8 @@ export class App {
 
     if (!this.models.length) {
       // 面板开得比目录早（bridge 只在连接时推一次，D150）：自己再问一次，别让这一格永远挂着「稍等」。
-      if (Date.now() - this.modelsAsked > 15000) this.requestModels();
-      const waiting = !this.modelsError && Date.now() - this.modelsAsked < 45000;
+      if (Date.now() - this.modelsAsked > MODEL_REASK_MS) this.requestModels();
+      const waiting = !this.modelsError && Date.now() - this.modelsAsked < MODEL_WAIT_MS;
       const empty = el(
         "div",
         "empty",
@@ -3075,7 +3084,7 @@ export class App {
       );
       empty.onclick = () => {
         this.modelsError = "";
-        this.requestModels();
+        this.requestModels(true);
         if (this.sheetKind === "model") this.openModelSheet();
       };
       sheet.append(empty);

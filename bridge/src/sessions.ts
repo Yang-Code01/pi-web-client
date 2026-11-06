@@ -295,6 +295,8 @@ function publicAsk(ask: PendingAsk): AskRequest {
 }
 
 const IDLE_EVICT_MS = 10 * 60 * 1000;
+/** 模型目录的缓存寿命：models.json / 装的扩展很少在一次运行中间变，两段各自记一份。 */
+const MODEL_TTL_MS = 10 * 60_000;
 
 /** Rounded-up whole units for the watchdog's notices: 30 minutes and 60 seconds read like D120. */
 const minutes = (ms: number): number => Math.max(1, Math.round(ms / 60_000));
@@ -2033,7 +2035,7 @@ export class SessionManager extends EventEmitter {
    * the full one when it lands, so a slow boot can no longer blank out the model sheet.
    */
   async modelsFast(force = false): Promise<ModelInfo[]> {
-    if (!force && this.fastCache && Date.now() - this.fastCache.at < 10 * 60_000) return this.fastCache.list;
+    if (!force && this.fastCache && Date.now() - this.fastCache.at < MODEL_TTL_MS) return this.fastCache.list;
     if (this.fastLoading) return this.fastLoading;
     this.fastLoading = fetchModels(this.cli, { fast: true })
       .then((list) => {
@@ -2047,7 +2049,7 @@ export class SessionManager extends EventEmitter {
   }
 
   async models(force = false): Promise<ModelInfo[]> {
-    if (!force && this.modelCache && Date.now() - this.modelCache.at < 10 * 60_000) return this.modelCache.list;
+    if (!force && this.modelCache && Date.now() - this.modelCache.at < MODEL_TTL_MS) return this.modelCache.list;
     if (this.fullLoading) return this.fullLoading;
     this.fullLoading = fetchModels(this.cli)
       .then((list) => {

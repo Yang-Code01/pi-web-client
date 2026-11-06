@@ -2086,10 +2086,10 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 **决定：**
 
 - **两段式**：`fetchModels(cli, { fast: true })` 跑 `--mode rpc -ne --no-session`，先到先发（`catalog` 带 `phase: "fast"`）；带扩展的完整清单落地后，**内容变了才补推**（`phase: "full"`）。同一份不重复发 —— 面板开着时用户可能已经在挑模型，重画会把挑了一半的选项退回去（签名怎么算见下一条）。
-- **去重按连接算，不按桥算**：`pushCatalog` 用 `WeakMap<send, 签名>` 记「已经发给这条连接的是哪一份」，而不是一个全局签名。踩过的坑：全局签名会让先连上来的那条（验收脚本里「建完会话就关掉的标签页」正是这种）把完整清单吃掉，后进来的页面就永远只剩 51 个（现场量到 `catalog: fast 51 / full 52` 打了三次、页面只收到两条 fast）。广播点（`pkg.*` / `auth.login` / `auth.logout`）改成 `refreshCatalog(true)` 逐条连接各算一遍。
+- **去重按连接算，不按桥算**：`pushCatalog(socket, …)` 用 `WeakMap<WebSocket, { sig, full }>` 记「这条连接已经拿到哪一份、拿到的是不是完整那份」，而不是一个全局签名。踩过的坑有两个：一是全局签名会让先连上来的那条（验收脚本里「建完会话就关掉的标签页」正是这种）把完整清单吃掉，后进来的页面就永远只剩 51 个（现场量到 `catalog: fast 51 / full 52` 打了三次、页面只收到两条 fast）；二是 WeakMap 的键不能是广播时现造的 send 闭包 —— 那样每条连接每次都是新键，去重等于没做（同一条连接再要一次会重发 `fast 51` 把面板降级，实测 2 帧）。另外「已拿到完整清单的连接」不再补发快清单。广播点（`pkg.*` / `auth.login` / `auth.logout`）改成 `refreshCatalog(true)` 逐条连接各算一遍。
 - **前端按内容去重**：`case "catalog"`（`web/src/app.ts`）比较 id+provider 序列，和手里那份一样且没有 error 就不重开面板，只更新数据与 chip。
-- **面板自己会问**：`openModelSheet()` 发现 `models` 为空且距上次请求超过 15 s 就发一条 `{type:"models"}`，并按「刚问过 / 已经等了很久 / 有错误」显示三种文案；不再只靠那行字被点到。
-- **失败要说话**：两条路都空时推 `catalog { models: [], error }`，前端显示「模型列表没读出来：<原因>。点这里重试。」；`fetchModels` 新增 `exit` 监听（子进程早退立刻失败，带上 stderr 尾巴）与可配 `timeoutMs`（默认仍 45 s，实测 12–15 s 有 3× 余量），失败原因与「这趟拿到了几份」一起写进 `bridge.log`（`catalog: fast 51 / full 52`）。原来「静默成空列表 + 白等满 25 s」是这次报障最贵的部分。
+- **面板自己会问**：`openModelSheet()` 发现 `models` 为空且距上次请求超过 15 s 就发一条 `{type:"models"}`（只吃缓存，不再起 pi 子进程），并按「刚问过 / 已经等了很久 / 有错误」显示三种文案；不再只靠那行字被点到。`force` 只有「点这里重试」才带，bridge 读 `msg.force` 决定要不要作废缓存。
+- **失败要说话**：两条路都空时推 `catalog { models: [], error }`（没有异常也要给个理由，否则又是那句「还没加载好」），前端显示「模型列表没读出来：<原因>。点这里重试。」；`fetchModels` 新增 `exit` 监听（子进程早退立刻失败，带上 stderr 尾巴）与可配 `timeoutMs`（快那趟 15 s、完整那趟 45 s，实测 1.3 s / 12–15 s 各有 10× / 3× 余量），失败原因与「这趟拿到了几份」一起写进 `bridge.log`（`catalog: fast 51 / full 52`）。原来「静默成空列表 + 白等满 25 s」是这次报障最贵的部分。`phase` 不是白带的：验收脚本按它断言「先 51 后 52」，日志也靠它区分两趟。
 - **`force` 真的强制**：面板里的「点这里重试」带 `force: true`，两段缓存一起失效（原来只让完整那份失效）。
 - **删掉 `bridge/src/models.ts`**：`normalizeModels` / `ModelCatalog` 只有自身引用，是 `RpcChild` 时代的死代码；它 `-ne` 的写法被 `fetchModels(fast)` 接了过来。
 
@@ -2099,7 +2099,7 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 
 - `-ne` 那份少扩展注册的模型（实测 1 个）；如果以后扩展开始大量注册模型，这个偏差会变大，届时可以改成「先发缓存、再发完整」而不是「先发 `-ne`」。
 - 两条路都是新起子进程，冷启动峰值会多一个 pi 子进程（1.3 s 那种，权重不大）。
-- `timeoutMs` 默认 45 s 是留余量而不是实测值；真机上扩展多了可能还要调。
+- `timeoutMs` 默认 45 s 是留余量而不是实测值；真机上扩展多了可能还要调。前端那两个窗口（15 s 再问、45 s 才说「还没加载好」）是照着这个预算写的常量，改一边要顺手改另一边。
 - 前端去重只比 `provider/id`：同一批模型只换了 `levels`（比如改了 thinking 配置）不会重画面板，要等下一次真变化或点重试。
 
 验证：`node bridge/tests/models-unit.mjs`（5 例：完整那趟 argv 不带 `-ne` 且映射出 levels/contextWindow/supportsImages、快那趟 argv 是 `--mode rpc -ne --no-session`、子进程早退立刻报「退出了（code 3）」并带 stderr、静默子进程按 `timeoutMs` 超时且不等到默认线）、`npm run typecheck`；测试桥上 `node bridge/tests/model-check.mjs`（顺带修好一条早就失效的断言：面板改成「草稿 + 确认」式之后，挑完一行并不会自己关掉）与浏览器实测（面板先出 51 行、十几秒后补上第 52 个 `qwen3.6-pool`）。
