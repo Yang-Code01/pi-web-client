@@ -1,6 +1,7 @@
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
 import { highlightFragment } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
+import { fillUserBody } from "./skill.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
 import type { BashItem, Item, ToolItem, UserItem } from "./types.ts";
 import { fmtTime, tr } from "./i18n/index.ts";
@@ -466,7 +467,13 @@ export class ChatView {
     this.cards.set(item.id, node);
     if (this.collapsed.delete(localId)) this.collapsed.add(item.id);
     // 乐观渲染过的用户消息回填时走这里（不经过 add），这里只补 assistant 原话。
-    if (item.kind === "user") this.clearTurnFails();
+    if (item.kind === "user") {
+      this.clearTurnFails();
+      // 桥那份才是准的：pi 可能把 `/skill:grilling` 记成别的名字，args 也可能被折得不一样。
+      // 只重建 body（节点留着 —— 刻度带指着它），按钮里的闭包拿的仍是乐观那条的文本。
+      const body = node.querySelector(".body");
+      if (body) body.replaceWith(this.buildUserBody(item));
+    }
     if (item.kind === "assistant") {
       this.assistantTexts.set(item.id, item.text ?? "");
       if ((item.text ?? "").trim()) this.noteAnswered();
@@ -919,8 +926,10 @@ export class ChatView {
     return box;
   }
 
-  private buildUserBody(item: UserItem): HTMLElement {    const body = el("div", "body");
-    body.textContent = item.text;
+  private buildUserBody(item: UserItem): HTMLElement {
+    const body = el("div", "body");
+    // 命令画成药丸、用户自己写的话原样跟在后面，规则在 skill.ts（与桥端的折叠规则成对）。
+    fillUserBody(body, item);
     if (item.images?.length) {
       const tag = el("div", "notice", tr("附 {p1} 张图片", { p1: item.images.length }));
       body.append(tag);

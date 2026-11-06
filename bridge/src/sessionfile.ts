@@ -159,14 +159,69 @@ export function extractText(content: unknown): string {
 }
 
 /**
- * A sidebar title from a user message: a `/skill:x` command reaches the file already expanded as
- * `<skill name="x" …>…</skill> args`, which would title the session with the skill's own prose.
+ * pi expands a `/skill:x` prompt before the model sees it *and* before it reaches the session file
+ * (`_expandSkillCommand` in agent-session): the stored user message is
+ * `<skill name="x" location="…">the whole SKILL.md</skill>` followed by whatever the user typed.
+ * Everything the web client shows should be what the human typed, so parse that back here.
+ * Display only — the file and the model's context keep the expansion.
  */
+export interface SkillExpansion {
+  name: string;
+  /** The SKILL.md path pi recorded in `location`; kept for the chip's tooltip only. */
+  location?: string;
+  /** What the user typed after the command, trimmed. */
+  args: string;
+  /** `/skill:<name>`, or `/skill:<name> <args>`. */
+  command: string;
+}
+
+/**
+ * The opening tag is matched loosely and its attributes read separately: pi owns that tag, and an
+ * added or reordered attribute must not put the whole SKILL.md back on screen. The body is greedy
+ * on purpose — a SKILL.md may quote `</skill>` itself, and only the last close ends the block.
+ */
+const SKILL_BLOCK = /^\s*<skill\b([^>]*)>([\s\S]*)<\/skill>([\s\S]*)$/;
+const NAME_ATTR = /\bname="([^"]*)"/;
+const LOCATION_ATTR = /\blocation="([^"]*)"/;
+
+export function skillExpansion(raw: string): SkillExpansion | null {
+  const block = SKILL_BLOCK.exec(raw);
+  if (!block) return null;
+  // A `<skill>` without a name is nothing we can fold back; leave it as the stored text.
+  const name = NAME_ATTR.exec(block[1])?.[1];
+  if (!name) return null;
+  const location = LOCATION_ATTR.exec(block[1])?.[1];
+  const args = block[3].trim();
+  return {
+    name,
+    args,
+    command: args ? `/skill:${name} ${args}` : `/skill:${name}`,
+    ...(location ? { location } : {}),
+  };
+}
+
+/** What a user message should read as: a skill call folds back to `/skill:<name> args`. */
+export function displayUserText(raw: string): string {
+  return skillExpansion(raw)?.command ?? raw;
+}
+
+/** The skill a *typed* prompt calls (`/skill:<name>`), before pi expands it — for the live bubble. */
+export function typedSkill(text: string): string | null {
+  const m = /^\s*\/skill:(\S+)/.exec(text);
+  return m ? m[1] : null;
+}
+
+/**
+ * Display text flattened for comparisons: `branchOff`'s fallback matches the web's folded command
+ * against the file's expanded block, and pi's queue hands back the expanded text too.
+ */
+export function normalizeUserText(raw: string): string {
+  return displayUserText(raw).replace(/\s+/g, " ").trim();
+}
+
+/** A sidebar title from a user message: the same text, flattened and cut to 120 chars. */
 export function titleFromUserText(raw: string): string | null {
-  let text = raw.trim();
-  const skill = /^<skill\s+name="([^"]+)"[^>]*>[\s\S]*?<\/skill>\s*([\s\S]*)$/.exec(text);
-  if (skill) text = `/skill:${skill[1]}${skill[2].trim() ? ` ${skill[2].trim()}` : ""}`;
-  text = text.replace(/\s+/g, " ").trim();
+  const text = normalizeUserText(raw);
   return text ? text.slice(0, 120) : null;
 }
 

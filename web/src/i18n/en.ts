@@ -1575,4 +1575,5 @@ export const en: Dict = {
   "已经把这 {p1} 个会话的权限改成默认值": "Set {p1} sessions to the default permission",
   "MCP 暴露方式": "MCP exposure",
   "默认（deferred：模型用 searchTools 找）": "Default (deferred: the model finds it with searchTools)",
+  "技能文件：{p1}": "Skill file: {p1}",
 };

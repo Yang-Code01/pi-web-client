@@ -35,7 +35,8 @@
     "test:failures": "node --experimental-transform-types web/tests/failures-unit.mjs",
     "test:continue:ui": "node bridge/tests/continue-ui.mjs",
     "test:attach:ui": "node bridge/tests/attach-picker.mjs",
-    "test:done": "node bridge/tests/done-persist.mjs"
+    "test:done": "node bridge/tests/done-persist.mjs",
+    "test:skillblock": "node bridge/tests/skill-block.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

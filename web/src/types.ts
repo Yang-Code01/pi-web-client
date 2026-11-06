@@ -4,7 +4,12 @@ export interface ItemBase {
 }
 export interface UserItem extends ItemBase {
   kind: "user";
+  /** Display text — a `/skill:<name> args` call is folded back from pi's expansion by the bridge. */
   text: string;
+  /** Set when the message was a `/skill:<name>` call: the command gets a chip, not the SKILL.md. */
+  skill?: string;
+  /** The SKILL.md path pi recorded (`location`), used as the chip's tooltip. */
+  skillPath?: string;
   images: { mimeType: string; size?: number }[];
 }
 export interface AssistantItem extends ItemBase {
