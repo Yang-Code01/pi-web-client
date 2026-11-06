@@ -68,10 +68,12 @@ interface SessionBadge {
 /**
  * `running` only means "the pi process is alive": it stays true while an approval or a question is
  * waiting for the user. Anything that says "正在跑" has to look at asks/approvals first, or it will
- * report a session stuck on the user as busy. Current session keeps its own done() treatment, same
- * as the left pane always did.
+ * report a session stuck on the user as busy.
+ *
+ * D162: 「完成」也显示在**当前打开的会话**上 —— 打开只是看，不再把完成抹掉。否则用户点开确认
+ * 一眼，卡片就从「完成」退回时间，再也没法从列表判断这一轮到底结束了没有。
  */
-function sessionBadge(s: SessionState, currentId: string | null): SessionBadge | null {
+function sessionBadge(s: SessionState): SessionBadge | null {
   if (s.asks && s.asks > 0) {
     return {
       kind: "ask",
@@ -94,7 +96,7 @@ function sessionBadge(s: SessionState, currentId: string | null): SessionBadge |
     return { kind: "locked", text: tr("终端占用"), cls: "lock", title: tr("pi CLI 在终端里正用着这个会话，网页这边只能看"), pending: false };
   }
   if (s.running) return { kind: "run", text: tr("运行中"), cls: "run", title: tr("agent 正在推进"), pending: false };
-  if (s.done && s.id !== currentId) return { kind: "done", text: tr("完成"), cls: "done", title: "", pending: false };
+  if (s.done) return { kind: "done", text: tr("完成"), cls: "done", title: "", pending: false };
   return null;
 }
 
@@ -1132,7 +1134,7 @@ export class App {
     this.switchDraft(id);
     this.currentId = id;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
-    if (this.session?.done) this.session.done = false;
+    // D162: 打开只是看 —— 不清完成；bridge 也一样（snapshot 不再 markSeen）。
     this.approvals = [];
     this.asks = [];
     this.pendingFresh = false;
@@ -2065,7 +2067,7 @@ export class App {
    */
   private badgeOf(s: SessionState): SessionBadge | null {
     const shown = this.pendingFresh ? badgeSession(s, this.currentId, this.localCounts()) : s;
-    return sessionBadge(shown, this.currentId);
+    return sessionBadge(shown);
   }
 
   // ---------------------------------------------------------------- step-up

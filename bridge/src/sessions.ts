@@ -155,7 +155,11 @@ export interface SessionState {
   /** True while the pi child is still booting (extensions load there: ~8 s with a big set, D122). */
   starting?: boolean;
   running: boolean;
-  /** A turn finished after the user last looked at this session (cleared on subscribe/prompt). */
+  /**
+   * D162: the last turn finished and nothing has started since. Unlike the old "unread" flag this
+   * survives opening the session, another device, a bridge restart and GC; agent_start, prompt(),
+   * or the terminal writing the session file again clears it.
+   */
   done: boolean;
   model?: string; // provider-scoped model id, e.g. "cn:deepseek-v4.1-flash"
   modelName?: string; // human name from pi, e.g. "Deepseek-V4.1-Flash · x0.11 · 1M"
@@ -210,6 +214,9 @@ function moveFile(src: string, dst: string): void {
   } catch (err: any) {
     if (err?.code !== "EXDEV") throw err;
     fs.copyFileSync(src, dst);
+    // A move must not look like a fresh write: D162 compares mtime with the finish mark.
+    const st = fs.statSync(src);
+    fs.utimesSync(dst, st.atime, st.mtime);
     fs.unlinkSync(src);
   }
 }
@@ -543,6 +550,65 @@ export function forgetName(id: string): void {
   }
 }
 
+/**
+ * D162: 「最后一轮已完成」是会话的状态，不是某个页面的未读 —— 打开、换设备、桥重启、GC 回收
+ * 都不该抹掉它；下一轮运行、网页发消息，或终端又把会话文件写长了才清。存成
+ * `{"<sessionId>": <finishedAt>}`，与 names.json 同一种「桥自己拥有、写失败只损失持久化」的口径。
+ * 存时间戳而不是布尔：以后要在卡片上写「完成于 …」时不用再改文件格式。
+ */
+function finishedFile(): string {
+  return statePath("finished.json");
+}
+
+let finishedAt: Record<string, number> | null = null;
+
+function readFinishedMap(): Record<string, number> {
+  if (finishedAt) return finishedAt;
+  const raw = readJson<Record<string, unknown>>(finishedFile(), {});
+  const out: Record<string, number> = {};
+  for (const [id, value] of Object.entries(raw ?? {})) {
+    const at = Number(value);
+    if (id && Number.isFinite(at) && at > 0) out[id] = at;
+  }
+  finishedAt = out;
+  return out;
+}
+
+function readFinishedAt(id: string): number | null {
+  if (!id) return null;
+  return readFinishedMap()[id] ?? null;
+}
+
+function writeFinishedAt(id: string, at: number | null): void {
+  if (!id) return;
+  const all = { ...readFinishedMap() };
+  if (at) {
+    all[id] = at;
+  } else {
+    if (!(id in all)) return;
+    delete all[id];
+  }
+  finishedAt = all;
+  try {
+    writeJson(finishedFile(), all);
+  } catch {
+    /* an unwritable state dir only costs persistence */
+  }
+}
+
+/** Drop a deleted session's completion mark so a future id cannot inherit it. */
+export function forgetFinished(id: string): void {
+  writeFinishedAt(id, null);
+}
+
+/** A file's mtime can lag the moment we recorded the finish (or the filesystem rounds it). */
+const FINISHED_SKEW_MS = 1000;
+
+/** D162: the session file was written after the finish was recorded — that 完成 is stale. */
+function finishedIsStale(finishedAt: number | null, mtime: number | undefined): boolean {
+  return Boolean(finishedAt && mtime && mtime > finishedAt + FINISHED_SKEW_MS);
+}
+
 /** Newest rename wins: a pi-side session_info newer than our override takes the card back. */
 function preferredName(id: string, name: string | null, nameAt: string | null): string | null {
   const override = readNameOverrides()[id];
@@ -669,6 +735,10 @@ export class Session extends EventEmitter {
     super();
     const id = opts.id ?? meta?.id ?? "";
     const onDiskName = preferredName(id, meta?.name ?? null, meta?.nameAt ?? null);
+    const finished = readFinishedAt(id);
+    // D162: 桥停机期间终端续写过这个会话（文件比完成标记新），旧的「完成」已经过期。
+    const finishedStale = finishedIsStale(finished, meta?.mtime);
+    if (finishedStale) writeFinishedAt(id, null);
     this.state = {
       id,
       name: opts.name ?? onDiskName ?? meta?.firstUserText?.slice(0, 40) ?? DEFAULT_NAME,
@@ -677,8 +747,10 @@ export class Session extends EventEmitter {
       owned: false,
       origin: id ? originOf(id) : "disk",
       running: false,
-      done: false,
-      updatedAt: Date.now(),
+      done: Boolean(finished) && !finishedStale,
+      // D162: 打开一个老会话不是新活动 —— 时间停在文件最后一次真正被写的时刻，
+      // 否则列表会在点开的一瞬间从「39分钟前」跳成「刚刚」。
+      updatedAt: Math.round(meta?.mtime ?? Date.now()),
       // Creation time is the sidebar's sort key, so a web-born session needs one too.
       startedAt: meta?.startedAt ?? new Date().toISOString(),
       approvals: 0,
@@ -698,11 +770,6 @@ export class Session extends EventEmitter {
   /** The pi child's pid while it is alive — what the runtime panel samples memory for (D120 §2). */
   get pid(): number | null {
     return this.rpc?.pid ?? null;
-  }
-
-  /** The user opened this session: whatever finished before now has been seen. */
-  markSeen(): void {
-    if (this.state.done) this.setState({ done: false });
   }
 
   /**
@@ -730,6 +797,12 @@ export class Session extends EventEmitter {
     }
     writePermission(id, mode, "default");
     this.applyPermission(mode);
+  }
+
+  /** D162: 完成过期 —— 新一轮开始，或会话文件被 tail 之外的东西续写。 */
+  private clearFinished(): void {
+    if (this.state.done) this.setState({ done: false }, { touch: false });
+    writeFinishedAt(this.state.id, null);
   }
 
   applyPermission(mode: PermissionMode): void {
@@ -771,10 +844,21 @@ export class Session extends EventEmitter {
       const stat = fs.statSync(this.state.file);
       const sig = `${stat.size}:${Math.round(stat.mtimeMs)}`;
       if (sig === this.tailSig) return;
+      // D162: 第一次读盘只是「打开」，不是一次活动 —— updatedAt 取文件自己的 mtime。
+      // 之后文件真变了才 touch；终端里继续写也意味着上一轮完成状态过期了。
+      const first = !this.tailSig;
       this.tailSig = sig;
       const before = this.items;
       this.loadFromFile();
-      this.touch();
+      if (first) {
+        this.state.updatedAt = Math.round(stat.mtimeMs);
+        // D162: a write while we were not tailing (terminal, or the bridge was stopped) expires
+        // an older 完成; a file at or before the mark is just the run we already recorded.
+        if (finishedIsStale(readFinishedAt(this.state.id), stat.mtimeMs)) this.clearFinished();
+      } else {
+        this.touch();
+        this.clearFinished();
+      }
       // Usually the file only grew, so the old transcript is a prefix of the new one. A branch
       // switch in the terminal (/tree, then a new message) replaces part of it: resend everything.
       const prefix = before.length <= this.items.length && before.every((it, i) => it.id === this.items[i].id);
@@ -802,6 +886,9 @@ export class Session extends EventEmitter {
   stopTail(): void {
     if (this.tailTimer) clearInterval(this.tailTimer);
     this.tailTimer = null;
+    // D162: a resumed tail is not new activity — without this the first read after stop/sleep
+    // looks like an external write and would drop 完成.
+    this.tailSig = "";
   }
 
   /** Name learned from the file (e.g. a terminal `/name`); it is not a local edit. */
@@ -975,6 +1062,7 @@ export class Session extends EventEmitter {
       }
       case "agent_start":
         this.setState({ running: true, done: false });
+        this.clearFinished();
         this.autoCompactUsed = false;
         // A new run is a new verdict: a previous abort's grace clock must not carry over (#81).
         this.stuckAbortedAt = null;
@@ -994,6 +1082,8 @@ export class Session extends EventEmitter {
         this.stuckAbortedAt = null;
         this.stuckNoticed = false;
         this.setState({ running: false, done: true });
+        // D162: 完成状态跟着会话走：桥重启、GC 回收、换设备都还能看到，直到下一次运行。
+        writeFinishedAt(this.state.id, Date.now());
         this.emitWs({ type: "pi.status", sessionId: this.state.id, running: false });
         void this.refreshStats();
         break;
@@ -1424,6 +1514,8 @@ export class Session extends EventEmitter {
     behavior: "steer" | "followUp" = "steer",
   ): Promise<void> {
     if (!this.rpc?.alive) throw new Error("会话没在运行");
+    // D162: 发消息就是开始下一轮 —— 完成徽标在消息发出的这一刻让位，不必等 pi 的 agent_start。
+    this.clearFinished();
     // pi throws on a prompt submitted mid-compaction: hold it until the compaction is over.
     if (this.compaction) {
       this.emitWs({ type: "notice", sessionId: this.state.id, text: "正在压缩上下文，这条消息会在压缩完成后发出。", level: "info" });
@@ -2159,6 +2251,7 @@ export class SessionManager extends EventEmitter {
     }
     for (const meta of this.discover()) {
       if (seen.has(meta.id)) continue;
+      const finished = readFinishedAt(meta.id);
       out.push({
         id: meta.id,
         name: preferredName(meta.id, meta.name, meta.nameAt) ?? meta.firstUserText?.slice(0, 40) ?? meta.id.slice(0, 8),
@@ -2166,8 +2259,9 @@ export class SessionManager extends EventEmitter {
         file: meta.file,
         owned: false,
         running: false,
-        done: false,
-        updatedAt: meta.mtime,
+        // D162: 桥停机期间终端续写过（文件比完成标记新）就不算完成 —— 与 Session 构造同一判据。
+        done: finished !== null && !finishedIsStale(finished, meta.mtime),
+        updatedAt: Math.round(meta.mtime),
         startedAt: meta.startedAt,
         approvals: 0,
         asks: 0,
@@ -2661,6 +2755,8 @@ export class SessionManager extends EventEmitter {
         this.sessions.delete(t.id);
       }
       forgetName(t.id);
+      // D162: 进垃圾箱不是删除 —— 完成标记留着，restore() 回来时还能显示「完成」。
+      // 只有 purge()（永久删）才清 finished.json。
       forgetOrigin(t.id);
       this.manage.forget(t.id);
       // 会话没了，它被拖进某个工作区的那条 override 也要跟着走，否则留下悬空指向（#94）。
@@ -2723,6 +2819,8 @@ export class SessionManager extends EventEmitter {
         /* already gone */
       }
       purged.push(it.id);
+      // D162: 永久删除才丢完成标记；trash() 有意保留，restore() 后「完成」还在。
+      forgetFinished(it.id);
     }
     if (purged.length) {
       const gone = new Set(purged);
@@ -2733,9 +2831,8 @@ export class SessionManager extends EventEmitter {
 
   snapshot(id: string) {
     if (!this.known(id)) throw new Error("找不到这个会话");
-    // Handing a snapshot to a client is "the user is looking at it now".
+    // D162: handing a snapshot to a client no longer clears 完成 —— 打开只是看，不是新的一轮。
     const session = this.ensure(id);
-    session.markSeen();
     return session.snapshot();
   }
 
@@ -2854,7 +2951,8 @@ export class SessionManager extends EventEmitter {
       this.sweepLocks();
       void this.lifecycleTick();
       for (const [id, s] of this.sessions) {
-        if (s.live || s.state.running || s.state.done) continue;
+        // D162: done 不再是「未读」，不能拿它当免死金牌 —— 回收后 ensure 会从 finished.json 读回来。
+        if (s.live || s.state.running) continue;
         if (s.approvals.size || s.asks.size) continue;
         // A web-born session with no file yet only exists in memory; evicting it would lose it.
         if (!s.state.file) continue;
