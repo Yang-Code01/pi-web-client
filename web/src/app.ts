@@ -1338,6 +1338,8 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.sessionFails.clear();
         this.chat.reset((msg.items ?? []) as Item[]);
+        // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
+        for (const it of (msg.items ?? []) as Item[]) this.replayFail(it);
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
         this.syncContinueButton();
         break;
@@ -5890,6 +5892,21 @@ export class App {
   }
 
   /** 聊天区报来一次失败。按 toolCallId 去重：同一张卡会被 live 事件、item.replace、重放各建一次。 */
+  /** 从快照里的条目恢复「这一轮失败过什么」：只认工具条目与模型报错，按 id 去重。 */
+  private replayFail(it: Item): void {
+    if (it.kind !== "tool") return;
+    if (!(it.isError || it.status === "error")) return;
+    const id = String(it.toolCallId ?? "");
+    if (!id || this.sessionFails.has(id)) return;
+    this.sessionFails.set(id, {
+      callId: id,
+      tool: String(it.name ?? "tool"),
+      cmd: String((it.args as any)?.command ?? it.name ?? ""),
+      out: String(it.result ?? it.partialResult ?? ""),
+      at: new Date().toISOString(),
+    });
+  }
+
   private recordFail(f: { id: string; tool: string; cmd: string; out: string }): void {
     if (!this.currentId || !f.id || this.sessionFails.has(f.id)) return;
     this.sessionFails.set(f.id, { callId: f.id, tool: f.tool, cmd: f.cmd, out: f.out, at: new Date().toISOString() });

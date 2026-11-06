@@ -147,6 +147,13 @@ try {
   check("数字是本轮的失败数（4 次，不是 4 类）", label.includes("4"), JSON.stringify(label));
   await shot("cta");
 
+  // 刷新一页：没入账的失败要从会话快照里回放出来，按钮不能就这么没了。
+  await page.reload();
+  await cta.waitFor({ state: "visible", timeout: 15000 });
+  await sleep(400);
+  const again = ((await cta.innerText()) || "").replace(/\s+/g, " ").trim();
+  check("刷新后按钮还在（快照里回放出这 4 次）", again.includes("4"), JSON.stringify(again));
+
   // -- B. 点一下：归并、落盘、可撤销 ------------------------------------
   await cta.click();
   await page.waitForSelector(".fail-toast", { timeout: 10000 });

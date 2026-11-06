@@ -2336,7 +2336,7 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 
 **决定：**
 
-- **入口**：一轮结束（`agent_settled` → `pi.status{running:false}`）时，如果这一轮有失败、而且这些失败还没入账，composer 右上角浮出一颗胶囊「⚡ 总结本轮错误 N」。N 是这一轮的**失败次数**（不是类数）。点一下入账，10 秒内能撤销；没有新增就不写文件。
+- **入口**：一轮结束（`agent_settled` → `pi.status{running:false}`）时，如果这一轮有失败、而且这些失败还没入账，composer 右上角浮出一颗胶囊「⚡ 总结本轮错误 N」。刷新页面时从会话快照里回放最后那些失败条目（按 `toolCallId` 去重），所以回来按钮还在；N 是这一轮的**失败次数**（不是类数）。点一下入账，10 秒内能撤销；没有新增就不写文件。
 - **账本按工作区**（`<state>/failures/<ws>.json`），不是按会话：同一个工程的不同会话共享累计。ws 用会话 cwd 归一化后的组 id —— `workspaces.groupFor` 本来就把 worktree 并回主仓，所以五个 worktree 的错误落到一本账上。
 - **归并键 = 工具 + 类型 + 归一化签名**：`cd <path>`、`grep :<n>` 这种。同键只 `count += 1`、刷新 `last`、明细插到最前留 20 条。类型由 `classify()` 判：路径 / 命令 / 权限 / 超时 / 限流 / 上下文 / exit / 中断 / 其他。
 - **内容只读**：不进编辑器，没有「编辑」动作。能标「已修复 / 忽略 / 删除」。同一类再犯时「已修复」自动复活；「已忽略」只加次数、不吵。
@@ -2359,4 +2359,4 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - 明细只留 20 条，更早的只剩次数；要看全部得回会话。
 - 账本不参与「清空垃圾箱」之类批量清理，删单类要一条条点。**可改。**
 
-**验证：** `npm run test:failures`（16 条纯函数：分类、归并、排序、状态、交接文本、ANSI 首行）；`node bridge/tests/failures-ui.mjs`（自带丢弃式 bridge + `fake-pi` 的 `FAILS` 场景，真 Chromium **27 条**：CTA 数字、点击入账、盘上文件、四颗失败归三类、tab 计数、排序、明细原文、标已修复、交接双落点、再犯累计、撤销回退）；`npm run test:continue:ui` 14 条不回归；`npm --prefix web run typecheck`（tsc + i18n-check，1468 键 × 3 语言）；`npm run build:web` / `build:bridge`。
+**验证：** `npm run test:failures`（16 条纯函数：分类、归并、排序、状态、交接文本、ANSI 首行）；`node bridge/tests/failures-ui.mjs`（自带丢弃式 bridge + `fake-pi` 的 `FAILS` 场景，真 Chromium **28 条**：CTA 数字、刷新后回放、点击入账、盘上文件、四颗失败归三类、tab 计数、排序、明细原文、标已修复、交接双落点、再犯累计、撤销回退）；`npm run test:continue:ui` 14 条不回归；`npm --prefix web run typecheck`（tsc + i18n-check，1468 键 × 3 语言）；`npm run build:web` / `build:bridge`。
