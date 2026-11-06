@@ -163,14 +163,23 @@ try {
 
   // ---- 6. 没有这个路径 → 原地报错，列表不动，输入留着等人改
   const before = await rows();
+  // 给一行盖上记号：列表要是被重画，节点就换了，滚动位置与焦点也跟着丢。
+  await page.evaluate(() => document.querySelector(".dirpicker .file-row")?.setAttribute("data-probe", "kept"));
   await jump(path.join(WORK, "nope.txt"));
   await until(async () => (await err.textContent()).includes("没有这个路径"), 8000, "missing-path error");
   assert((await rows()) === before, "list untouched on a miss");
+  assert((await page.locator(".dirpicker .file-row[data-probe=kept]").count()) === 1, "a miss must not repaint the list");
   assert((await page.locator(".dirpicker .file-row.hit").count()) === 0, "a miss clears the previous highlight");
   assert((await input.inputValue()).endsWith("nope.txt"), "input keeps the typo to fix");
   await page.screenshot({ path: path.join(OUT, "2-missing.png"), animations: "disabled" });
   await input.fill("");
   log("6 missing path ok:", await err.textContent());
+
+  // 跳错之后点进一个真文件夹：旧的红字不能跟着留在新目录上。
+  await page.locator(".dirpicker .dir-row", { hasText: "sub" }).first().click();
+  await until(async () => (await page.locator(".dir-path").textContent())?.includes("sub") === true, 8000, "entered sub");
+  assert((await err.textContent()) === "", "a real navigation clears the stale error");
+  log("6b stale error cleared ok");
 
   // ---- 7. Esc 只清这一格，不关面板；空格子再按一次交给面板（现有行为：关掉面板）
   await input.fill("C:\\");

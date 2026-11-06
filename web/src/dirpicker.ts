@@ -108,7 +108,8 @@ export interface DirPickerOpts {
   head?: HTMLElement[];
   /**
    * The jump box: type or paste a path and press Enter — a folder opens, a file jumps to its parent
-   * directory and marks that row. Only the file manager (D50's 浏览 pane) turns this on.
+   * directory and marks that row. The file manager (D50's 浏览 pane) and the 文件 attachment picker
+   * turn this on; the new-session sheet doesn't (there the first focus belongs on 工作目录).
    */
   pathBox?: boolean;
   /** Extra nodes between the path row and the list (e.g. the mkdir row). */
@@ -294,7 +295,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
    * for the jump box, because a typo has already been answered as 「没有这个路径」and an unreadable
    * folder should say why in place rather than silently bouncing to 此电脑.
    */
-  const navigate = async (target: string, revealName = "", allowFallback = true): Promise<Awaited<ReturnType<typeof api.dirs>> | null> => {
+  const navigate = async (target: string, revealName = "", allowFallback = true): Promise<{ ok: true } | { ok: false; error: string }> => {
     list.replaceChildren(el("div", "empty", tr("读取中…")));
     // Leaving the folder: drop its sizes and any answer still in flight for it.
     stats = new Map();
@@ -305,10 +306,11 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     } catch (ex: any) {
       // 请求根本没到：上一跳的高亮属于别的目录，别留着。
       reveal = "";
-      if (root.isConnected) list.replaceChildren(el("div", "empty", tr("读取失败：{p1}", { p1: ex?.message ?? ex })));
-      return null;
+      const said = tr("读取失败：{p1}", { p1: ex?.message ?? ex });
+      if (root.isConnected) list.replaceChildren(el("div", "empty", said));
+      return { ok: false, error: said };
     }
-    if (!root.isConnected) return null;
+    if (!root.isConnected) return { ok: false, error: "" };
     // A path that does not exist (typed, or remembered from another machine): show drives instead.
     if (next.error && target && opts.fallback && allowFallback) return navigate("", "", allowFallback);
     res = next;
@@ -321,10 +323,18 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     paint();
     list.scrollTop = 0;
     fillStats(current);
-    // null = 这一屏是错的（读不了 / 不存在）：调用方别再补一句自己的判断。
-    return next.error ? null : next;
+    // 换到哪儿是哪儿了：上一跳留下的错路径红字不能再指着这个新目录。
+    showJump("");
+    // 这一屏是错的（读不了 / 不存在）时把话带回去，调用方别再补一句自己的判断。
+    return next.error ? { ok: false, error: next.error } : { ok: true };
   };
   const go = (target: string): Promise<void> => navigate(target).then(() => undefined);
+
+  /** 摘掉跳转高亮而不重画列表：重画会换掉节点，滚动位置和焦点都会丢。 */
+  const clearReveal = (): void => {
+    reveal = "";
+    for (const row of list.querySelectorAll(".file-row.hit")) row.classList.remove("hit");
+  };
 
   /** 输入框里的路径：文件夹直接进；文件进父目录，列表出来后高亮那一行。 */
   const showJump = (text: string): void => {
@@ -357,18 +367,24 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       }
       if (info.kind === "missing") {
         // 上一次跳转留下的高亮跟这次的错路径没有关系，留着会像是它选中了那一行。
-        reveal = "";
-        paint();
+        clearReveal();
         showJump(tr("没有这个路径：{p1}", { p1: info.path || typed }));
         return;
       }
       if (info.kind === "dir") {
-        if (await navigate(info.path, "", false)) jumpInput.value = "";
+        const went = await navigate(info.path, "", false);
+        if (went.ok) jumpInput.value = "";
+        else showJump(went.error);
         return;
       }
       const name = fileNameOf(info.path);
-      // 父目录打不开就把它自己的错误留在列表里（allowFallback 关着），不要莫名其妙跳去盘符页。
-      if (!(await navigate(info.parent ?? "", name, false))) return;
+      // 父目录打不开就把它自己的错误留在列表里（allowFallback 关着），不要莫名其妙跳去盘符页；
+      // 输入框下面也补同一句，不然 stat 说「是文件夹」、readdir 却说不行时，界面上没有解释。
+      const went = await navigate(info.parent ?? "", name, false);
+      if (!went.ok) {
+        if (went.error) showJump(went.error);
+        return;
+      }
       const row = list.querySelector<HTMLButtonElement>(".file-row.hit");
       if (!row) {
         // 列表本身就被过滤与截断过（1000 目录 / 2000 文件），别断言「不存在」。
