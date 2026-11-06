@@ -68,6 +68,22 @@ export function fileNameOf(p: string): string {
  * 桥端会把相对路径解析到**它自己的 cwd**，那不是正在浏览的目录，所以相对路径先在这里拼好。
  * `\Users\me`（有根无盘符）落在当前盘上。
  */
+/**
+ * D163: `text` 是否已经作为**一整个 token** 出现在 `hay` 里（左右只认空白、引号或字符串边缘）。
+ * 边界别放宽到 `.` `,` `;` —— 输入框里写着 `F:\a.txt` 时，引用目录 `F:\a` 会被误判成「已在输入框」而
+ * 插不进去，而插进去的那份带空格，本来就是空白隔开的。
+ */
+export function hasPathToken(hay: string, text: string): boolean {
+  if (!hay || !text) return false;
+  const edge = (c: string): boolean => c === "" || /[\s"'`]/.test(c);
+  for (let at = hay.indexOf(text); at !== -1; at = hay.indexOf(text, at + 1)) {
+    const before = at > 0 ? hay[at - 1] : "";
+    const after = at + text.length < hay.length ? hay[at + text.length] : "";
+    if (edge(before) && edge(after)) return true;
+  }
+  return false;
+}
+
 export function resolveTyped(raw: string, base: string): string {
   const typed = cleanPath(raw);
   // `C:` 自己也常被敲（在盘符页跳盘）：没有 `\` 的盘符不是绝对路径，但意图就是那颗盘。先归一，
@@ -152,9 +168,12 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     const parts = current.split(sep).filter((part) => part !== "");
     let acc = "";
     for (const part of parts) {
-      if (acc === "") acc = part.endsWith(":") ? part : `${sep}${part}`;
+      const drive = part.endsWith(":");
+      if (acc === "") acc = drive ? part : `${sep}${part}`;
       else acc = `${acc}${sep}${part}`;
-      where.append(el("span", "crumb-sep", sep), crumb(part, acc, part.endsWith(":")));
+      // D163: 盘符那一段的目标得带上分隔符。`F:` 是**盘符相对路径**，桥端按它自己的 cwd 解析
+      // （盘符正好是 cwd 那个盘时，点一下就落回仓库目录 —— 看着像没反应）。显示仍然只写 `F:`。
+      where.append(el("span", "crumb-sep", sep), crumb(part, drive ? `${acc}${sep}` : acc, drive));
     }
   };
   const dirHead = el("div", "dir-head");
@@ -295,7 +314,9 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
    * for the jump box, because a typo has already been answered as 「没有这个路径」and an unreadable
    * folder should say why in place rather than silently bouncing to 此电脑.
    */
-  const navigate = async (target: string, revealName = "", allowFallback = true): Promise<{ ok: true } | { ok: false; error: string }> => {
+  const navigate = async (rawTarget: string, revealName = "", allowFallback = true): Promise<{ ok: true } | { ok: false; error: string }> => {
+    // D163: 兜底一次，任何调用方传裸 `D:` 都当成那颗盘的根，而不是桥端 cwd 上的「D 盘相对路径」。
+    const target = BARE_DRIVE.test(rawTarget.trim()) ? `${rawTarget.trim()}\\` : rawTarget;
     list.replaceChildren(el("div", "empty", tr("读取中…")));
     // Leaving the folder: drop its sizes and any answer still in flight for it.
     stats = new Map();

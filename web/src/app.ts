@@ -5,7 +5,7 @@ import { api } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { filterCommands, type CommandItem } from "./commands.ts";
-import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
+import { hasPathToken, mountDirPicker, type DirPicker } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { setKnownPlugins } from "./diagnose.ts";
@@ -6001,6 +6001,79 @@ export class App {
     };
   }
 
+  /**
+   * D163: 「引用当前文件夹」——把下面正在浏览的目录插进输入框。目录行点一下是「进去」、
+   * 文件行才「引用」，所以「我想让 pi 看这个目录」原来没有出口。
+   * 含空格才包引号：`C:\Program Files\x` 裸着会被读成两个路径；没空格的包上反而多两处要删。
+   */
+  private dirRef(getPath: () => string): { node: HTMLButtonElement; bind: () => void } {
+    const label = tr("📎 引用当前文件夹");
+    const node = el("button", "btn ghost dir-ref", label) as HTMLButtonElement;
+    node.dataset.act = "dir-ref";
+    const sync = (): void => {
+      const path = (getPath() || "").trim();
+      node.disabled = !path;
+      node.title = path ? tr("把目录 {p1} 引用到输入框", { p1: path }) : tr("盘符列表没有目录可引用，先点进一个文件夹");
+    };
+    const flash = (text: string): void => {
+      node.textContent = text;
+      setTimeout(() => {
+        if (node.isConnected) node.textContent = label;
+      }, 1200);
+    };
+    sync();
+    return {
+      node,
+      bind: () => {
+        sync();
+        node.onclick = () => {
+          const path = (getPath() || "").trim();
+          if (!path) return;
+          const text = /\s/.test(path) ? `"${path}"` : path;
+          if (hasPathToken(this.composerText, text)) {
+            flash(tr("已在输入框"));
+            return;
+          }
+          this.insertPaths([text]);
+          flash(tr("已引用"));
+        };
+      },
+    };
+  }
+
+  /** D163: 附件弹层给每个会话记一份「上次打开的目录」；没有会话 id 就不读不写（宁可退回 cwd）。 */
+  private attachDirKey(): string {
+    const id = this.session?.id ?? "";
+    return id ? `pi.attachDir:${id}` : "";
+  }
+
+  private attachStart(): string {
+    const key = this.attachDirKey();
+    // 隐私模式 / 关了本地存储时 getItem 会抛：记忆是锦上添花，不该把弹层带塌。
+    let remembered = "";
+    try {
+      remembered = key ? (localStorage.getItem(key) ?? "").trim() : "";
+    } catch {
+      remembered = "";
+    }
+    return remembered || this.session?.cwd || "";
+  }
+
+  /** 每换一个目录就写一次，顺手把超过 30 条的最旧会话清掉（删掉的会话不该一直占着键）。 */
+  private rememberAttachDir(path: string): void {
+    const key = this.attachDirKey();
+    if (!key || !path) return;
+    try {
+      localStorage.setItem(key, path);
+      const used = (localStorage.getItem(ATTACH_DIR_INDEX) ?? "").split("\n").filter(Boolean);
+      const next = [...used.filter((k) => k !== key), key];
+      while (next.length > ATTACH_DIR_KEEP) localStorage.removeItem(next.shift() as string);
+      localStorage.setItem(ATTACH_DIR_INDEX, next.join("\n"));
+    } catch {
+      /* 存不下就算了：下次打开退回 cwd。 */
+    }
+  }
+
   private mountBrowser(v: Viewer): void {
     const body = v.body;
     body.replaceChildren();
@@ -9629,13 +9702,33 @@ export class App {
     this.sheet = back;
 
     const home = this.dirHome(() => this.session?.cwd ?? "");
+    // D163: 这个弹层按会话记着上次浏览到哪儿；pick 走闭包，所以要等 picker 建好再接上。
+    let pickerPath = (): string => "";
+    const ref = this.dirRef(() => pickerPath());
+    // 第一次落到一个能读的目录才算数：之后再出错（目录被删、盘拔了）不再自动把人拽走。
+    let landed = false;
     const picker = mountDirPicker(host, {
-      start: this.session?.cwd ?? "",
+      start: this.attachStart(),
       files: true,
       fallback: true,
       // 和文件管理器同一套「输入路径就跳」：附件也常常已经在手上了（终端里复制来的）。
       pathBox: true,
-      head: [home.node],
+      head: [home.node, ref.node],
+      onState: (state) => {
+        ref.bind();
+        if (state.path) {
+          landed = true;
+          this.rememberAttachDir(state.path);
+          return;
+        }
+        // 盘符页：记忆的目录没了（worktree 被删、换了机器）就直接落到这里了，错过 cwd 那一级。
+        // 补一次 cwd 再任由用户挑盘；cwd 也读不了时 landed 已经立住，不会再绕。
+        const cwd = (this.session?.cwd ?? "").trim();
+        if (!landed && !state.error && cwd) {
+          landed = true;
+          void picker.go(cwd);
+        }
+      },
       onPick: (abs, name, row) => {
         // 图片直接附加成待发图片；其他文件只把路径插进输入框（pi 自己去读）。
         if (!ATTACH_IMAGE.test(name)) {
@@ -9658,7 +9751,9 @@ export class App {
           });
       },
     });
+    pickerPath = () => picker.path();
     home.bind(picker);
+    ref.bind();
     host.querySelector<HTMLInputElement>(".dir-filter")?.focus();
   }
 
@@ -12329,6 +12424,10 @@ type Draft = { text: string; images: PendingImage[]; pastes: PasteBlock[] };
 /** A paste this long (lines or characters) becomes its own foldable block. */
 const PASTE_LINES = 6;
 const PASTE_CHARS = 400;
+
+/** D163: 附件弹层按会话记目录，最多留这么多条（删掉的会话不该一直占着键）。 */
+const ATTACH_DIR_INDEX = "pi.attachDir.index";
+const ATTACH_DIR_KEEP = 30;
 
 /** 预览返回栈最多记多少步（D63）。超了就丢掉最早的一步，和浏览器一样。 */
 const HISTORY_MAX = 60;
