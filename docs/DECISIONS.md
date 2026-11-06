@@ -352,7 +352,7 @@
 
 ## D53 会话状态只在一处计算：`sessionBadge`
 
-**决定**：`web/src/app.ts` 的 `sessionBadge(s, currentId)` 是「这个会话现在处于什么状态」的唯一实现，顺序 `待回答 > 待确认 > 终端占用 > 运行中 > 完成`；左栏卡、管理弹窗行、置顶 chip 都调它。
+**决定**：`web/src/app.ts` 的 `sessionBadge(s, currentId)` 是「这个会话现在处于什么状态」的唯一实现，顺序 `待回答 > 待确认 > 终端占用 > 运行中 > 完成`；左栏卡、管理弹窗行、置顶 chip 都调它（D156 之后统一入口是 `App.badgeOf()`：先用 `shownSession()` 换掉当前会话那份计数，再调它）。
 
 **为什么**：`running` 只表示「pi 子进程还活着」——等批准、等答题时它照样是 `true`。于是同一个问题在三个渲染点各写了一遍判断，其中置顶条那处漏了 ask/approval，把「卡在等你」显示成「运行中」（Q-015）。规则抄一份就一定会漂移，索性只留一份。
 
@@ -2220,3 +2220,24 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 **代价 / 可改：** 手机上一指头滑过就可能批掉一条命令 —— D10 担心的场景回来了。真要防误触，按 D10 的**原设计**做卡内两段（按钮文字自己变 + 3 秒复原，不阻塞页面），不要再用 `window.confirm`。**可改**。
 
 **验证：** `npm --prefix web run typecheck`（tsc + `i18n-check.mjs`，去掉两个键后三边仍然对齐）；本地起 bridge 后危险命令弹卡，单击「批准」直接发 `{type:"approve", decision:"approve"}`、卡片消失、命令开始执行，中途不再出现任何浏览器弹窗。
+
+## D156 待办计数按事件对称地加减：答完的提问不再顶着「待确认」（无票，用户口头报障）
+
+**问题：** 用户截图（2026-11-07）：左侧「skill 商店安装报错」卡右下角一直挂着「待确认」，右边那条提问其实已经答完（选项后面带 ✓）。三处口径错误叠在一起 ——
+- 别的会话来**提问**（`ask.add`）时 `notifyUnread()` 把 `approvals` 加 1，`ask.remove` 又从来不减任何计数：答完的提问要么一直「待回答」，要么（`approvals` 已经 >0 时）显示成「待确认」。
+- 批准的 `approval.remove` 只给「当前不在看的会话」减数：先收到批准、再切过去批掉，列表里那条就永远留着 1。
+- 只有顶栏 NowChip 拿本地队列覆盖当前会话，卡片 / 钉条胶囊 / 管理行读的都是列表里那份旧账。
+
+**决定：**
+
+- 新增 `web/src/pending.ts`：`applyPending(sessions, id, "approvals"|"asks", ±1)`、`syncPending()`、`shownSession()` 三个纯函数。四个事件（`approval.add/remove`、`ask.add/remove`）都走它，**当前会话也照加照减**，结果夹在 ≥0。
+- `session` 快照到达时 `syncPending()` 把列表里那条换成快照里的队列长度（权威值），曾经算歪的会话打开一次就回到真值。
+- `App.badgeOf(s)` 成为徽标唯一入口：`sessionBadge(shownSession(s, currentId, 本地队列长度), currentId)`。左栏卡、钉条、管理面板、NowChip 全走它 —— D53 的「唯一实现」不变，只是多了一层「当前会话以本地为准」。
+- 四条事件都补一次 `renderSessions()`：别的会话来事时卡片立刻变（旧代码在 `ask.add` 上根本不重画）。
+- 删掉 `notifyUnread()` —— 它就是「提问记成批准」的源头。
+
+**为什么：** 桥只在计数变化时发这四条事件，不补 `session.state`（`bridge/src/sessions.ts` 的 `answerAsk` / `answerApproval` 直接 emit `ask.remove` / `approval.remove`，`setState` 只改自己那条字段），所以前端那份累加值就是列表唯一会变的账；对称加减 + 类型分开，账才不会漂。当前会话再叠一层「以本地队列为准」，是因为本地队列在订阅快照、作答、断线时都会重置，比累加值新（D53 的优先级规则照旧）。**没有**改成「桥每次变化都广播 `session.state`」：那等于把「哪条事件属于哪个字段」的语义也搬进桥，还多一次全量广播，而前端手里已经有事件，补一次对应的减法更小。
+
+**代价 / 可改：** 每条事件多一次 `renderSessions()`（列表几十条，可忽略）；`shownSession` 只在当前会话上分配一个新对象。真要桥端广播，删掉 `badgeOf` 里那层覆盖即可，计数本身仍然是对的。**可改。**
+
+**验证：** `node --experimental-transform-types web/tests/pending-unit.mjs`（6 条：类型分开 / 对称 / 缺字段按 0 / 未知会话 / 快照对齐 / 本地优先）；`probes/pending-badge.mjs`（假桥 + 真界面四步：看 A 时 B 来问题 → B 卡「待回答」而不是「待确认」；打开 B 点选项作答 → 徽标消失；看 B 时 A 来批准 → A 卡「待确认」；打开 A 点批准 → 徽标消失）。同一探针在**旧代码**上（`git stash` 回 `3a54f8c` 的 `web/src/app.ts`，控制实验）复现用户现场：问题到达时 B 卡显示「待确认」，作答后**仍是**「待确认」。`npm --prefix web run typecheck`（tsc + i18n-check，1410 键 × 3 语言）、`npm --prefix web run build`。
