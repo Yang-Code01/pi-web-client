@@ -2470,3 +2470,25 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 **代价 / 可改：** 用户真的把 `<skill name=…>…</skill>` 敲进输入框开头，也会被当成技能调用显示（形状相同，无从区分）；反过来，结构能认成开头但缺 `</skill>` 的残缺块**退回原文**（宁可露原文也不猜着折）；`/` 模板展开（pi 不写 XML 包裹）不处理；chip 的圆角/配色是口味，可改；`skillOf` 与 `skillExpansion` 是两份实现（web 与 bridge 是两次独立构建，不能互相 import），靠单测里 `assert.equal(skillOf(t), typedSkill(t))` 钉住，边界情况（别名的 `/skill:` 后到第一个空白为止）仍可能不同。**未覆盖：** `adopt()` 用桥端 item 重建 body 那条路径没有 e2e —— 探针不跑活的 pi，桥端 `prompt()` 在 `if (!this.rpc?.alive) throw` 就抛了，`item.add` 到不了页面；起 stub pi 得连 `get_state` / `get_session_stats` / `get_commands` 的应答形状一起仿，改写整个 transcript 的风险大于收益，只由代码走查 + 类型检查保证。
 
 **验证：** `npm run test:skillblock`（`bridge/tests/skill-block.mjs`，15 条：折叠、args、location 缺失时不写 `skillPath`、普通消息字节恒等（含无名 `<skill>`）、前导空白、正文里引用 `</skill>` 不截断、属性乱序、幂等、标题行为不变、`entriesToItems` 的字段、图片占位不进命令、`normalizeUserText` 空白等价、乐观标记、web `skillOf` 与桥 `typedSkill` 同答案）；`node probes/skill-block.mjs`（真实 Chromium + 临时 state + 手写会话文件，不起 pi 子进程；`PI_WEB_PORT` 覆盖但**拒绝 7864**，`dist` 比 `src` 旧就拒跑 —— 18 条全过：气泡读成命令、整页无 `<skill`、chip 与 tooltip、`innerText` 保留空格、普通消息不受影响、复制按钮给命令、刻度 tooltip 与悬停行都读命令、**真实发送阶段**的乐观气泡当场就有芯片且 1.5 秒后不重影，截图 `.scratch/skill-block/shot.png`）；`npm run typecheck`（含 i18n，1483 键 × 3 语）、`npm run build`。
+
+## D166 GitHub 凭据：用过滤器丢掉 `x-access-token` 账号，账号选择窗不再复发（无票，用户报的）
+
+**问题：** 开 PR 时弹 Windows 的「Select an account」（Git Credential Manager 的账号选择器），而 `gh auth status` 只有一个账号。根因是 token push 的写法 `https://x-access-token:$TOKEN@github.com/…`：git 会把 URL 里的用户名当成账号放进 `store` 事件，而 `store` 是**广播**给链上每一个 helper 的（不是只发给回答了 `get` 的那个），GCM 于是把 github.com 存成第二条账号；此后任何不带用户名的请求（`gh pr create` 发现分支没推时的自动 push、`git fetch origin`）都有两个候选，只能弹窗让人手点。带 `x-access-token@` 的 URL 反而不弹，所以平时不明显。上一次只在文档里收紧了写法（PR #153，`-c credential.helper=`），纪律挡不住手滑：复发那条命令带了代理的 `-c`、漏了 `credential.helper=`。
+
+**决定：**
+
+- 新增 `~/.pi/agent/bin/git-credential-gcm-filter.sh`：`store`/`approve` 且 stdin 含 `username=x-access-token` 时静默 `exit 0`，其余原样交给 GCM（`C:/Program Files/Git/mingw64/bin/git-credential-manager.exe`，不存在退回 PATH 上的 `git-credential-manager`）。
+- 系统级 `C:/Program Files/Git/etc/gitconfig` 的 `helper = manager` **没动**（那文件要管理员，`cp` 备份和覆盖都 `Permission denied`），改在用户级 `~/.gitconfig` 里压过它：`helper =`（空值把此前累积的 helper 列表清空，包括系统那条）+ 紧跟一行 `helper = !"C:/Program Files/Git/bin/bash.exe" "C:/Users/GG_Bond/.pi/agent/bin/git-credential-gcm-filter.sh"`。
+- 顺手删掉用户级里已失效的 PortableGit helper（`.workbuddy/binaries/PortableGit/versions/1.2.0/mingw64/bin/git-credential-manager.exe` 这个路径早没了，每次取凭据都在跑一条不存在的命令）。
+- 文档里 `-c credential.helper=` 的写法保留：它是第一道闸，过滤器是第二道，两道互不替代。
+
+**为什么：** 只挡 `x-access-token` 这一个名字，因为它是一次性账号 —— token 就在 URL 里，`gh auth token` 随时再给一个，没有任何值得缓存的东西；别的用户名（包括真人多账号、`gh` 自己的 `gh:github.com:Yang-Code01`）行为一个字不变，GCM 该存还存。过滤器**转发**而不是重写凭据流，GCM 的交互式登录、MFA、`erase` 全都不用管。
+
+**代价 / 可改：**
+
+- 这是**机器级**配置（所有仓库、所有用 GCM 的 IDE 共用），不在仓库里：换机器或换 Windows 用户要重放「脚本 + `~/.gitconfig` 两行」。备份 `~/.gitconfig.bak-20261107`（系统那份没用上，另存了 `~/gitconfig.sys.bak-20261107`）。
+- 只认 `x-access-token`；以后若改用 `oauth2@` 之类的账号名，得往 `case` 里加。`cmdkey` 里若已经躺了第二条账号，过滤器不会替人删，得 `cmdkey /delete:git:https://<user>@github.com`。
+- 每次凭据操作多一个进程 + 一次 GCM 调用，`git fetch` 无感。
+- 查凭据条目要 `MSYS_NO_PATHCONV=1 cmdkey /list`（裸写 `/list` 会被 MSYS 改成 `C:/…`，cmdkey 直接报「命令行参数不正确」）。
+
+**验证：** `git config --show-origin --get-all credential.helper` 三段（system `manager` → 用户级空值 → 过滤器）；对照组 `git credential approve` 用普通用户名仍落进 GCM，实验组用 `x-access-token` 一条不进；一次性分支 `__credtest` 用**不带** `credential.helper=` 的裸 token-URL 推成功、凭据未落盘、随后删掉远端分支；`printf 'protocol=https\nhost=github.com\n\n' | git credential fill` 直接返回 `Yang-Code01`（这种不带用户名的请求正是弹窗现场）。
