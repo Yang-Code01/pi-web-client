@@ -7,8 +7,12 @@
  *   1. 📎 引用当前文件夹 inserts the browsed folder once, and answers 已在输入框 the second time.
  *   2. clicking the `F:` crumb from a subfolder lands on F:\ (not the bridge's cwd on F:).
  *   3. the picker reopens where that session last was, instead of falling back to cwd.
+ *   4. a folder with a space in it goes in quoted, as one path.
+ *   5. the remembered-dir index keeps 30 entries, dropping the oldest.
  *
  * Runs a throwaway bridge on its own port with temp state, so the real one is never touched.
+ * Port comes from ATTACH_UI_PORT (7880/7882/7883 belong to memory-cap, 7888 to continue-ui);
+ * deliberately not PI_WEB_PORT, so an exported PI_WEB_PORT pointing at the real bridge can't be killed.
  *
  * Run: node bridge/tests/attach-picker.mjs
  */
@@ -20,7 +24,7 @@ import { loadPlaywright } from "../../tools/playwright.mjs";
 
 const { chromium } = await loadPlaywright();
 
-const PORT = Number(process.env.PI_WEB_PORT ?? 7883);
+const PORT = Number(process.env.ATTACH_UI_PORT ?? 7889);
 const ROOT = path.join(REPO, ".scratch/attach-picker");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
@@ -49,6 +53,7 @@ fs.writeFileSync(
     .join("\n") + "\n",
 );
 fs.mkdirSync(path.join(WORK, "sub"), { recursive: true });
+fs.mkdirSync(path.join(WORK, "has space"), { recursive: true });
 
 function killPort(port) {
   try {
@@ -146,6 +151,19 @@ try {
   console.log(`REF: ${WORK} → 输入框 ${filled.split(WORK).length - 1} 次，复点反馈「${said.trim()}」`);
   await ta.fill("");
 
+  // ---- 含空格的目录：插进去必须包一对引号，否则桥端读成两个路径
+  const spaced = path.join(WORK, "has space");
+  await page.locator(".sheet.file-picker .dirpicker .model-row", { hasText: "has space" }).first().click();
+  await sleep(700);
+  const inSpaced = ((await page.locator(".sheet.file-picker .dir-path").textContent()) ?? "").trim();
+  if (!inSpaced.endsWith("has space")) fail(`点 has space 没进去（"${inSpaced}"）`);
+  await page.locator(".sheet.file-picker .dir-head .dir-ref").click();
+  await sleep(250);
+  const quoted = await ta.inputValue();
+  console.log(`SPACE: "${quoted}"`);
+  if (!quoted.includes(`"${spaced}"`)) fail(`含空格目录没包引号（"${quoted}"）`);
+  await ta.fill("");
+
   // ---- D162: 面包屑里的盘符段必须跳到那颗盘的根
   const drive = WORK.split(":")[0] + ":";
   const crumb = page.locator(".sheet.file-picker .dir-path .crumb", { hasText: new RegExp(`^${drive}$`) });
@@ -171,6 +189,31 @@ try {
   console.log(`MEMORY: 重开弹层 → "${reopened}"`);
   if (!reopened.endsWith(drive)) fail(`重开弹层落在 "${reopened}"，期望上次的 ${drive}\\`);
 
+  // ---- 30 条上限：塞满假会话再换一次目录，最旧那条必须被清掉
+  await page.evaluate(() => {
+    const keys = Array.from({ length: 30 }, (_, i) => `pi.attachDir:fake-${i}`);
+    for (const k of keys) localStorage.setItem(k, "F:\\");
+    localStorage.setItem("pi.attachDir.index", keys.join("\n"));
+  });
+  await page.locator(".sheet.file-picker .dirpicker .model-row", { hasText: "pi-web-client" }).first().click();
+  await sleep(800);
+  const kept = await page.evaluate(() => (localStorage.getItem("pi.attachDir.index") ?? "").split("\n").filter(Boolean));
+  console.log(`LRU: 保留 ${kept.length} 条，最旧 ${kept[0]}`);
+  if (kept.length !== 30) fail(`LRU 应保留 30 条，实际 ${kept.length}`);
+  if (kept.includes("pi.attachDir:fake-0")) fail("最旧的一条没被清掉");
+  if (!kept.some((k) => k.startsWith("pi.attachDir:zz-drive-click"))) fail("当前会话没进索引");
+
+  // ---- 记忆的目录没了（worktree 被删、换了机器）：退回会话 cwd，别停在盘符页
+  await page.locator(".sheet.file-picker .sheet-head button", { hasText: /关闭/ }).click();
+  await sleep(400);
+  await page.evaluate(() => localStorage.setItem("pi.attachDir:zz-drive-click", "F:\\no-such-dir-xyz"));
+  await page.locator(".hint-tools button", { hasText: "文件" }).click();
+  await page.locator(".sheet.file-picker .dirpicker").waitFor({ timeout: 10000 });
+  await sleep(1500);
+  const stale = ((await page.locator(".sheet.file-picker .dir-path").textContent()) ?? "").trim();
+  console.log(`STALE: 记忆指向不存在的目录 → "${stale}"`);
+  if (!stale.includes("work")) fail(`记忆失效后落在 "${stale}"，期望退回会话 cwd（work）`);
+
   // ---- 此电脑：盘符列表
   await page.locator(".sheet.file-picker .dir-path .crumb.root", { hasText: "此电脑" }).click();
   await page.locator(".sheet.file-picker .vol-row").first().waitFor({ timeout: 8000 });
@@ -180,7 +223,8 @@ try {
   );
   console.log("DRIVE ROWS:", JSON.stringify(rows, null, 1));
 
-  // ---- click every drive letter listed, record where we ended up
+  // ---- click every drive letter listed; each one must land on its own root
+  const missed = [];
   for (const letter of "CDEFHI") {
     const row = page.locator(".sheet.file-picker .dirpicker .model-row", { hasText: new RegExp(`^${letter}:`) });
     if (!(await row.count())) {
@@ -198,10 +242,13 @@ try {
     const calls = seen.slice(before).map((s) => `${s.status} ${decodeURIComponent(s.url.split("?")[1] ?? "")} → ${s.body.replace(/\s+/g, " ").slice(0, 120)}`);
     console.log(`\n=== ${letter}: path="${crumbs.trim()}" rows=${n}`);
     for (const c of calls) console.log(`    ${c}`);
+    if (!crumbs.trim().endsWith(`${letter}:`)) missed.push(letter);
+    else if (!n) missed.push(`${letter}(空)`);
     // back to the drive list for the next letter
     await page.locator(".sheet.file-picker .dir-path .crumb.root", { hasText: "此电脑" }).click().catch(() => {});
     await sleep(500);
   }
+  if (missed.length) fail(`这些盘没落到盘根：${missed.join(" ")}`);
 } catch (err) {
   console.error("PROBE FAILED:", err?.message ?? err);
   process.exitCode = 1;

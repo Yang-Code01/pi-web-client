@@ -68,6 +68,22 @@ export function fileNameOf(p: string): string {
  * 桥端会把相对路径解析到**它自己的 cwd**，那不是正在浏览的目录，所以相对路径先在这里拼好。
  * `\Users\me`（有根无盘符）落在当前盘上。
  */
+/**
+ * D162: `text` 是否已经作为**一整个 token** 出现在 `hay` 里（左右只认空白、引号或字符串边缘）。
+ * 边界别放宽到 `.` `,` `;` —— 输入框里写着 `F:\a.txt` 时，引用目录 `F:\a` 会被误判成「已在输入框」而
+ * 插不进去，而插进去的那份带空格，本来就是空白隔开的。
+ */
+export function hasPathToken(hay: string, text: string): boolean {
+  if (!hay || !text) return false;
+  const edge = (c: string): boolean => c === "" || /[\s"'`]/.test(c);
+  for (let at = hay.indexOf(text); at !== -1; at = hay.indexOf(text, at + 1)) {
+    const before = at > 0 ? hay[at - 1] : "";
+    const after = at + text.length < hay.length ? hay[at + text.length] : "";
+    if (edge(before) && edge(after)) return true;
+  }
+  return false;
+}
+
 export function resolveTyped(raw: string, base: string): string {
   const typed = cleanPath(raw);
   // `C:` 自己也常被敲（在盘符页跳盘）：没有 `\` 的盘符不是绝对路径，但意图就是那颗盘。先归一，

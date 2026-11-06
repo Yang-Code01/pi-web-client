@@ -2382,7 +2382,7 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 
 **决定：**
 
-- head 里 `⌂ 工作目录` 右边加 **`📎 引用当前文件夹`**（`dirRef()`，形状照抄 `dirCopy()`）：读 `picker.path()`，含空格才包一对引号（`C:\Program Files\x` 裸着会被读成两个路径；没空格的包上反而多两处要删），走 `insertPaths()` 按 caret 插入，按钮闪「已引用」1.2 秒，**弹层不关** —— 接着还能选文件。「此电脑」页没有目录，按钮 disabled 并说明原因。
+- head 里 `⌂ 工作目录` 右边加 **`📎 引用当前文件夹`**（`dirRef()`，形状照抄 `dirCopy()`）：读 `picker.path()`，含空格才包一对引号（`C:\Program Files\x` 裸着会被读成两个路径；没空格的包上反而多两处要删），走 `insertPaths()` 按 caret 插入，按钮闪「已引用」1.2 秒，**弹层不关** —— 接着还能选文件。「此电脑」页没有目录，按钮 disabled（原因写在 `title`；灰按钮上浏览器常不出 tooltip，所以灰本身也是提示）。
 - 重复点只闪「已在输入框」不插第二遍。判定 `composerHasPath()` 看左右各一个字符：`F:\a` 不能把 `F:\ab` 认成同一条，同一目录下的另一个子目录仍算新路径。
 - 面包屑盘符段的 target 补上分隔符（显示文字仍是 `F:`），并且 `navigate()` 入口再对裸盘符兜底一次，免得下一个调用方重踩。
 - 记忆**按会话**：`pi.attachDir:<sessionId>`，目录一变就写；打开时 记忆 → 会话 cwd → 盘符列表 依次退化，没有 session id 就既不读也不写。`pi.attachDir.index` 记着用过的键，超过 30 条删最旧的（删掉的会话不该一直占着键）。文件管理器不受影响，仍旧用它自己的 `pi.fsDir`。
@@ -2391,4 +2391,4 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 
 **代价 / 可改：** 含空格的引用只是加引号，模型仍要靠它自己解析，跟粘贴路径的行为一致。记忆会留 30 个 localStorage 键（会话删了不会立刻清，靠 LRU 兜）。「此电脑」页按钮是灰的，不提供「引用某个盘」——用户明确说过不用。这几点都是口味，可改。
 
-**验证：** `npm run typecheck`（含 i18n 三边对齐）；`npm run test:attach:ui`（`bridge/tests/attach-picker.mjs`，独立端口 7883 + 临时 state 的桥：① 📎 插一次、复点只回「已在输入框」；② 在 `F:\…\work` 点 `F:` 面包屑 → `/api/dirs?path=F:\` 且落在 `此电脑\F:`，列表里有 `pi-web-client`；③ 关掉重开弹层回到 `此电脑\F:`；④ C/D/E/F/H/I 六个盘逐一点过，全部进到盘根）。修复前同一探针第 ② 步拿到 `path=F:`、落在 `F:\pi-web-client-wt\feat\attach-refine`。
+**验证：** `npm run typecheck`（含 i18n 三边对齐）；`npm run test:attach:ui`（`bridge/tests/attach-picker.mjs`，独立端口 `ATTACH_UI_PORT`（默认 7889，避开 memory-cap 的 7880/7882/7883 与 continue-ui 的 7888）+ 临时 state 的桥：① 📎 插一次、复点只回「已在输入框」；② 在 `F:\…\work` 点 `F:` 面包屑 → `/api/dirs?path=F:\` 且落在 `此电脑\F:`，列表里有 `pi-web-client`；③ 关掉重开弹层回到 `此电脑\F:`（记忆失效时先退 cwd 再退盘符页）；④ C/D/E/F/H/I 六个盘逐一点过，每条都断言落在 `<盘>:\` 且列表非空；⑤ 进到含空格的 `work\has space` 点 📎 → 插入的是带引号的整条；⑥ 塞满 30 条假会话再换一次目录 → 索引仍是 30 条、最旧那条被清掉；⑦ 把记忆改指不存在的目录再打开 → 退回会话 cwd，不停在盘符页）。修复前同一探针第 ② 步拿到 `path=F:`、落在 `F:\pi-web-client-wt\feat\attach-refine`。
