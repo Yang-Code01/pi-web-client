@@ -22,6 +22,7 @@ import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
+import { skillOf } from "./skill.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { PIN_MAX, PIN_MIN, TABS_DEFAULT, clampMax, tabHitTest, tabModel, tabReorder, type TabHit, type TabRect } from "./wstabs.ts";
@@ -356,7 +357,7 @@ export class App {
   private capturing: string | null = null;
   /** D70: one shell per tab, all inside one dock; the bridge owns the processes (max 4). */
   private termDock: HTMLElement | null = null;
-  /** D165: 表格浮窗与终端并列，不进 viewer 面板；同一时间只开一扇。 */
+  /** D166: 表格浮窗与终端并列，不进 viewer 面板；同一时间只开一扇。 */
   private sheetDock: SheetDialog | null = null;
   private termTabStrip: HTMLElement | null = null;
   private termBodies: HTMLElement | null = null;
@@ -2157,7 +2158,7 @@ export class App {
     // `_expandSkillCommand`), no matter which entry point produced it: the palette, the `/` menu,
     // or typing it out. Counted here rather than at pick time — a command that never got sent is
     // not a use, and the palette has to rank the ones that were.
-    const skill = /^\/skill:([^\s]+)/.exec(text)?.[1];
+    const skill = skillOf(text);
     // The bubble below is optimistic; the bridge echoes `clientId` back so this page adopts its own
     // broadcast instead of drawing the message twice (#19).
     const clientId = `local:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
@@ -2169,7 +2170,7 @@ export class App {
         this.composerText = "";
         this.images = [];
         this.pastes = [];
-        this.chat.add({ id: clientId, kind: "user", text: text || tr("（图片）"), images: [], ts: new Date().toISOString() });
+        this.chat.add({ id: clientId, kind: "user", text: text || tr("（图片）"), images: [], ...(skill ? { skill } : {}), ts: new Date().toISOString() });
         this.renderChat();
       }
       if (payload.sessionId) this.drafts.delete(payload.sessionId);
@@ -5347,7 +5348,7 @@ export class App {
     v.path = v.info.abs;
     // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
     if (!replace) this.retargetTop(path, v.info.abs, sessionId);
-    // D165: spreadsheet files leave the binary branch and open in their own dialog, not the viewer.
+    // D166: spreadsheet files leave the binary branch and open in their own dialog, not the viewer.
     if (v.info.kind === "sheet") {
       const info = v.info;
       this.closeViewer();
@@ -5364,7 +5365,7 @@ export class App {
     await this.loadViewerText();
   }
 
-  /** #113：CSV / TSV 的浮窗——表格 / 源码两个 tab，编码嗅探在前端（D165），保存仍走文本通道。 */
+  /** #113：CSV / TSV 的浮窗——表格 / 源码两个 tab，编码嗅探在前端（D166），保存仍走文本通道。 */
   private async openCsvSheet(info: PreviewInfo, sessionId: string): Promise<void> {
     let data: CsvData;
     try {
@@ -5432,7 +5433,7 @@ export class App {
     dialog.open();
   }
 
-  /** D165: 表格浮窗（无遮罩、不抢焦点）。关掉旧的那扇再开新的。 */
+  /** D166: 表格浮窗（无遮罩、不抢焦点）。关掉旧的那扇再开新的。 */
   private openSheet(info: PreviewInfo): void {
     this.sheetDock?.destroy();
     this.sheetDock = null;

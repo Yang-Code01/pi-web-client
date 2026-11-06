@@ -2450,10 +2450,28 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - 面板带检索与「导出这份账本」，以及单工作区 200 类的静默上限（防单个文件无限长）：前两者不在用户原话里，是让账本能被带走 / 找到的附带手段；超上限时最旧的那类会被丢掉，要更彻底得按类删。
 
 **验证：** `npm run test:failures`（16 条纯函数：分类、归并、排序、状态、交接文本、ANSI 首行）；`node bridge/tests/failures-ui.mjs`（自带丢弃式 bridge + `fake-pi` 的 `FAILS` 场景，真 Chromium **28 条**：CTA 数字、刷新后回放、点击入账、盘上文件、四颗失败归三类、tab 计数、排序、明细原文、标已修复、交接双落点、再犯累计、撤销回退）；`npm run test:continue:ui` 14 条不回归；`npm --prefix web run typecheck`（tsc + i18n-check，1464 键 × 3 语言）；`npm run build:web` / `build:bridge`。
+## D165 聊天记录把 `/skill:x` 的展开块折回命令，命令画成 chip（无票，用户报的）
 
-> 编号说明：Excel 预览这条原编号 D127；落到 `main` 时 D127 已被「交给 agent」占用，顺延为 D165（D164 已被「AI 出错记录」占去）。正文与它描述的代码没变。
+**问题：** 一条用户消息在气泡里显示成 `<skill name="grill-me" location="C:\…">整篇 SKILL.md</skill>`，右侧刻度带的悬停行同样。根因在 pi：发 prompt 前它把 `/skill:<name>` 展开（agent-session 的 `_expandSkillCommand`，`const skillBlock = \`<skill name="…" location="…">…</skill>\`` 再拼上 args），展开结果既进模型上下文，也原样写进会话 JSONL。桥 `entriesToItems` 把它当普通文本透传，前端 `buildUserBody` 只做 `textContent`，于是整篇 SKILL.md 成了气泡内容。侧栏标题早就用 `titleFromUserText` 单独修过（同一个正则），所以只有聊天区难看。同一根因还漏在别处：复制按钮复制整篇 SKILL.md、⑂ 分叉把整篇塞回输入框、分叉的兜底匹配拿原文比对（前端回传折回的命令会直接报「在会话文件里找不到这条消息」）、**队列**（pi 在 `_queueUserInput` 里同样是先展开再入队，`clear_queue` 回来的就是展开文本，撤回会把整篇塞回输入框、队列条显示整篇）、**随手问**只折了文本没折样式、带图消息的 `[图片]` 占位被当成 args。
 
-## D165 Excel 预览：只读的格子 + （要看图时）LibreOffice 转出来的纸面，装在一扇可拖拽的浮窗里（`#71`）
+**决定：**
+
+- 归一化放在桥的数据边界：`bridge/src/sessionfile.ts` 里 `skillExpansion()` 认出「开头是 `<skill …>…</skill>` 再加 args」的文本，`displayUserText()` 是它的一行封装，`normalizeUserText()`（折回 + 塌空白 + trim）是**一切跨端比对**用的那一个 —— `titleFromUserText`、`branchOff` 的兜底、`withdrawQueue` 的队列匹配全走它，不再各写一个 `norm`。开标签是宽松的（`<skill\b([^>]*)>` 认任意属性顺序/多余属性，`name` 用 `\bname="([^"]*)"` 单取），正文**贪婪**到最后一个 `</skill>` —— SKILL.md 自己会引用这个格式，非贪婪会把 args 一起吃掉。`location` 可选：没有就不写 `skillPath`，不用空串哨兵。**会话文件与模型上下文一个字节不动** —— 展开是 pi 的事，桥没有资格改历史。
+- `bridge/src/items.ts` 用折回文本当 `item.text`，并给 user item 打 `skill` / `skillPath`（后者只做 chip 的 tooltip）。解析只用**文本段**（`extractText(msg.content)`），`contentText` 给图片追加的 `[图片]` 不参与 —— 否则带图技能消息的命令后面会多出一个「[图片]」。
+- 队列同根因、同时修：pi 在 `_queueUserInput` 里先展开再入队，所以 `setQueue()` 落库前过 `displayUserText`（队列条读命令），`withdrawQueue()` 用 `normalizeUserText` 两侧比对并回填折回文本（撤回不再把整篇 SKILL.md 塞回输入框）。
+- 展示收进 `web/src/skill.ts`：`skillOf()` 认「输入框里敲的 `/skill:x`」（乐观气泡与技能计数用），`fillUserBody()` 是**药丸 + args** 那段 DOM 的唯一实现，聊天区（`chat.ts` 的 `buildUserBody`）与随手问转录（`scratch.ts`）共用；`adopt()` 也用它重建 body —— 桥那份比本地的更准（tooltip 的路径要等文件回来），只换 `.body`、不换节点，免得丢焦点/滚动。
+- 发送瞬间的乐观气泡由 `app.ts` 用 `skillOf()` 打上标记，否则 400ms 后文件一到，气泡会从纯文本跳成 chip。
+- 药丸的描边/底色走 `color-mix(in srgb, var(--accent) …)` 而不是硬编码的 `rgba(125,211,252,…)`：仓库有六个 accent（`web/src/palette.ts` 的 `ACCENTS`），写死一个颜色在别的主题下描边和文字会对不上。
+- 术语进 `GLOSSARY.md`：「折回」与「药丸 / 技能药丸」，免得下次又临时发明同义词。
+
+**为什么：** 展开块是 pi 回放给模型的真实输入，动它等于伪造历史；能改的是展示层，而把归一化放在桥（`item.text` 一次成型）比放在前端划算 —— 复制、分叉、随手问转录、刻度带全都读同一个字段，一处修好四处对。只认消息开头（与 pi 自己的 `startsWith("/skill:")` 一致），普通消息保持字节恒等，折回幂等（分叉路径会拿到已经折过的文本）。
+
+**代价 / 可改：** 用户真的把 `<skill name=…>…</skill>` 敲进输入框开头，也会被当成技能调用显示（形状相同，无从区分）；反过来，结构能认成开头但缺 `</skill>` 的残缺块**退回原文**（宁可露原文也不猜着折）；`/` 模板展开（pi 不写 XML 包裹）不处理；chip 的圆角/配色是口味，可改；`skillOf` 与 `skillExpansion` 是两份实现（web 与 bridge 是两次独立构建，不能互相 import），靠单测里 `assert.equal(skillOf(t), typedSkill(t))` 钉住，边界情况（别名的 `/skill:` 后到第一个空白为止）仍可能不同。**未覆盖：** `adopt()` 用桥端 item 重建 body 那条路径没有 e2e —— 探针不跑活的 pi，桥端 `prompt()` 在 `if (!this.rpc?.alive) throw` 就抛了，`item.add` 到不了页面；起 stub pi 得连 `get_state` / `get_session_stats` / `get_commands` 的应答形状一起仿，改写整个 transcript 的风险大于收益，只由代码走查 + 类型检查保证。
+
+**验证：** `npm run test:skillblock`（`bridge/tests/skill-block.mjs`，15 条：折叠、args、location 缺失时不写 `skillPath`、普通消息字节恒等（含无名 `<skill>`）、前导空白、正文里引用 `</skill>` 不截断、属性乱序、幂等、标题行为不变、`entriesToItems` 的字段、图片占位不进命令、`normalizeUserText` 空白等价、乐观标记、web `skillOf` 与桥 `typedSkill` 同答案）；`node probes/skill-block.mjs`（真实 Chromium + 临时 state + 手写会话文件，不起 pi 子进程；`PI_WEB_PORT` 覆盖但**拒绝 7864**，`dist` 比 `src` 旧就拒跑 —— 18 条全过：气泡读成命令、整页无 `<skill`、chip 与 tooltip、`innerText` 保留空格、普通消息不受影响、复制按钮给命令、刻度 tooltip 与悬停行都读命令、**真实发送阶段**的乐观气泡当场就有芯片且 1.5 秒后不重影，截图 `.scratch/skill-block/shot.png`）；`npm run typecheck`（含 i18n，1483 键 × 3 语）、`npm run build`。
+> 编号说明：Excel 预览这条原编号 D127；落到 `main` 时 D127 已被「交给 agent」占用，顺延为 D166（D164 被「AI 出错记录」、D165 被「技能调用折回」占去）。正文与它描述的代码没变。
+
+## D166 Excel 预览：只读的格子 + （要看图时）LibreOffice 转出来的纸面，装在一扇可拖拽的浮窗里（`#71`）
 
 **问题：** `#71` 原本是一份「读 + 外科手术式写回」的方案。开工前把范围收了一次：写回要 D113 写锁跨过
 人工编辑的时长、要 733 MB / 1.48 GB 内存的 exceljs、还要和 Excel 抢同一个文件；而用户真正缺的是

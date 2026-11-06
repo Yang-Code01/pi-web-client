@@ -75,7 +75,7 @@ export const api = {
   },
   preview: (sessionId: string, path: string) =>
     req<PreviewInfo>("/api/preview", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId, path }) }),
-  /** D165: sheet metadata and one visible row window, both keyed by the /api/preview grant token. */
+  /** D166: sheet metadata and one visible row window, both keyed by the /api/preview grant token. */
   sheetMeta: (token: string) =>
     req<SheetMeta>("/api/sheet/meta", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }),
   /** #112: ask the bridge to lay out the page view (or report it already done); returns a ready|pending|failed id. */
@@ -96,7 +96,7 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token, sheet, q }),
     }),
-  /** D165/#106 出口: hand the previewed workbook to this desktop's own program (Excel). */
+  /** D166/#106 出口: hand the previewed workbook to this desktop's own program (Excel). */
   openFile: (token: string) =>
     req<{ ok: boolean; message: string }>("/api/open", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }),
   /** Write an edited text file back. 409 means the file changed on disk while it was open. */

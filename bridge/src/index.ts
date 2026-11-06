@@ -198,7 +198,7 @@ function fail(
 }
 
 /**
- * 表格端点共同前置（D165/#106）：拿凭据 → stat → 判 mtime 未变。任一失败已经写好响应并返回 null；
+ * 表格端点共同前置（D166/#106）：拿凭据 → stat → 判 mtime 未变。任一失败已经写好响应并返回 null；
  * 调用方 `if (!g) return;`。返回的 mtimeMs 是 stat 后的实际值（pdf 缓存键要用）。
  */
 async function resolveSheetGrant(res: http.ServerResponse, token: string): Promise<{ abs: string; mtimeMs: number } | null> {
@@ -674,7 +674,7 @@ async function main(): Promise<void> {
       }
     }
 
-    // D165: spreadsheet reads. The page only ever sends the grant token from /api/preview; the
+    // D166: spreadsheet reads. The page only ever sends the grant token from /api/preview; the
     // bridge resolves the path itself, refuses a file whose mtime moved, and returns one row window.
     if (url.pathname === "/api/sheet/meta" && req.method === "POST") {
       if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
@@ -797,7 +797,7 @@ async function main(): Promise<void> {
       return out.ok ? json(res, 200, out) : json(res, 400, { error: out.message });
     }
 
-    // D165/#106 出口: hand the previewed workbook to this desktop's own program (Excel). The action
+    // D166/#106 出口: hand the previewed workbook to this desktop's own program (Excel). The action
     // happens on the desktop, not in the browser, so a tunnel visitor is refused outright. The path is
     // taken from the grant alone — a page that already read the file still cannot open anything else.
     if (url.pathname === "/api/open" && req.method === "POST") {

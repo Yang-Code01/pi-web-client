@@ -1580,6 +1580,7 @@ export const en: Dict = {
   "已经把这 {p1} 个会话的权限改成默认值": "Set {p1} sessions to the default permission",
   "MCP 暴露方式": "MCP exposure",
   "默认（deferred：模型用 searchTools 找）": "Default (deferred: the model finds it with searchTools)",
+
   "拖动改高度（双击复原）": "Drag to change height (double-click to reset)",
   "拖动改大小（双击复原）": "Drag to resize (double-click to reset)",
   "读不了这张表：{p1}": "Can't open this sheet: {p1}",
@@ -1640,4 +1641,5 @@ export const en: Dict = {
     "The page view is the print layout LibreOffice renders: sheets and charts, on paper.",
   "生成页面视图": "Build the page view",
   "拖动调整左右比例（双击复原）": "Drag to adjust the split (double-click to reset)",
+"技能文件：{p1}": "Skill file: {p1}",
 };

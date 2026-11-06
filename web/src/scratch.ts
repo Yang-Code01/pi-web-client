@@ -12,6 +12,7 @@
  */
 import { createEl as el } from "./chat.ts";
 import { renderMarkdown } from "./md.ts";
+import { fillUserBody } from "./skill.ts";
 import { tr } from "./i18n/index.ts";
 import type { Item, ModelInfo, SessionState } from "./types.ts";
 
@@ -50,7 +51,10 @@ function textOf(item: Item): string {
 function row(item: Item): HTMLElement {
   const wrap = el("div", `sc-row sc-${item.kind}`);
   if (item.kind === "user") {
-    wrap.append(el("div", "sc-who", tr("我")), el("div", "sc-text", item.text ?? ""));
+    // 与聊天区同一套画法：技能调用的命令是药丸，自己写的话跟在后面（skill.ts）。
+    const text = el("div", "sc-text");
+    fillUserBody(text, item);
+    wrap.append(el("div", "sc-who", tr("我")), text);
     return wrap;
   }
   if (item.kind === "assistant") {

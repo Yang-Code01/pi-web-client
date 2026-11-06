@@ -4,7 +4,12 @@ export interface ItemBase {
 }
 export interface UserItem extends ItemBase {
   kind: "user";
+  /** Display text — a `/skill:<name> args` call is folded back from pi's expansion by the bridge. */
   text: string;
+  /** Set when the message was a `/skill:<name>` call: the command gets a chip, not the SKILL.md. */
+  skill?: string;
+  /** The SKILL.md path pi recorded (`location`), used as the chip's tooltip. */
+  skillPath?: string;
   images: { mimeType: string; size?: number }[];
 }
 export interface AssistantItem extends ItemBase {
@@ -332,7 +337,7 @@ export interface PreviewInfo {
   kind: "markdown" | "html" | "image" | "text" | "sheet" | "binary";
 }
 
-/** D165 表格预览：格子只带显示串，有数字格式的按格式显示。 */
+/** D166 表格预览：格子只带显示串，有数字格式的按格式显示。 */
 export type SheetCellKind = "n" | "s" | "b" | "e";
 
 /** #109 条件格式算出来的样式（前端只贴样式，不理解规则）。 */

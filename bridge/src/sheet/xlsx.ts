@@ -1,5 +1,5 @@
 /**
- * xlsx 解包与取值（D165/#110）：手写 zip 目录 + 流式扫行，自写的最小 XML 扫描。
+ * xlsx 解包与取值（D166/#110）：手写 zip 目录 + 流式扫行，自写的最小 XML 扫描。
  *
  * 元数据只读 workbook 与每张表的前缀（`<dimension>`）；取窗口时按行增量解压，
  * 扫过 r1 就停——不把整张表 XML 解出来，更不把整表发给前端。
@@ -103,7 +103,7 @@ export interface SheetMatches {
 export type SheetTier = "full" | "light" | "none";
 
 /**
- * 三档阈值（格数）。数字来自 2026-11 在五档 fixture 上的实测，见 D165 补记：
+ * 三档阈值（格数）。数字来自 2026-11 在五档 fixture 上的实测，见 D166 补记：
  * 峰值 RSS / 首屏 / 解压字节。
  */
 export const FULL_MAX_CELLS = 100_000;
@@ -115,7 +115,7 @@ export function tierOf(cells: number): SheetTier {
   return "none";
 }
 
-/** 只缓存元数据与结构（D165）：sheet 名 → zip 内路径；表 XML 不驻留。 */
+/** 只缓存元数据与结构（D166）：sheet 名 → zip 内路径；表 XML 不驻留。 */
 export interface Book {
   meta: WorkbookMeta;
   parts: Map<string, string>;
@@ -340,7 +340,7 @@ export function readBook(buf: Uint8Array): Book {
   return book;
 }
 
-/** 只看 zip 目录里有没有图表部件，不解压表 XML（页面视图的开关，D165）。 */
+/** 只看 zip 目录里有没有图表部件，不解压表 XML（页面视图的开关，D166）。 */
 function hasChartParts(dir: Map<string, ZipEntry>): boolean {
   for (const name of dir.keys()) if (/^xl\/charts\/chart\d+\.xml$/i.test(name)) return true;
   return false;
