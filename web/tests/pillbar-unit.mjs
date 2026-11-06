@@ -42,15 +42,15 @@ test("title 串起名字、cwd、徽标说明，空的那些不留下多余分�
 });
 
 // #120 行 2 画的是「本区里点过 ★ 的会话」，不是本区全部会话。
-const rowIds = (ids, stars, cur = null) =>
-  starredSessions(ids.map((id) => ({ ...session, id })), stars, cur).map((s) => s.id);
+const rowIds = (ids, stars) =>
+  starredSessions(ids.map((id) => ({ ...session, id })), stars).map((s) => s.id);
 
-test("行 2 只留本区点过 ★ 的会话，顺序沿用传进来那一条", () => {
-  assert.deepEqual(rowIds(["a", "b", "c"], ["c", "a"]), ["a", "c"]);
+test("行 2 的胶囊按 ★ 的顺序排，与会话列表自己的顺序无关", () => {
+  assert.deepEqual(rowIds(["a", "b", "c"], ["c", "a"]), ["c", "a"]);
 });
 
-test("当前会话即便点过 ★ 也不重复画（最左那颗 NowChip 已经代表它）", () => {
-  assert.deepEqual(rowIds(["a", "b"], ["a", "b"], "a"), ["b"]);
+test("当前会话也在 ★ 里：切到它不挪位，靠主题色填充认出来", () => {
+  assert.deepEqual(rowIds(["a", "b"], ["b", "a"]), ["b", "a"]);
 });
 
 test("一组里没有 ★ 时行 2 一颗胶囊都没有（只剩 NowChip 和 ＋）", () => {
