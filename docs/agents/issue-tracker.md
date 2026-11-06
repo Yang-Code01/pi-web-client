@@ -18,9 +18,11 @@ Issues and specs for this repo live as GitHub issues in `Yang-Code01/pi-web-clie
 
    ```bash
    TOKEN=$(gh auth token --user Yang-Code01)
-   git push https://x-access-token:"$TOKEN"@github.com/Yang-Code01/pi-web-client.git <branch>
+   git -c credential.helper= push https://x-access-token:"$TOKEN"@github.com/Yang-Code01/pi-web-client.git <branch>
    GH_TOKEN="$TOKEN" gh pr create …
    ```
+
+   **`-c credential.helper=` 不能省**：Git Credential Manager 会把 URL 里的用户名 `x-access-token` 当成 github.com 下的第二个账号，连同 token 存进 Windows 凭据管理器（`git:https://x-access-token@github.com`）。之后任何**不带用户名**的 GitHub 请求 —— `gh pr create` 发现分支没推时的自动 `git push`、`git fetch origin` —— 都会因为有两个候选而弹「Select an account」对话框，等人手点。空的 helper 让 git 完全不调用凭据助手：不读缓存、也不写缓存，弹窗从根上不会出现。
 
    想长期正式切过去再 `gh auth switch --user Yang-Code01`（这会改全局 active 账号）。
 
