@@ -1,5 +1,5 @@
 /**
- * 「继续」按钮的三态（D157）。纯函数只有 `continueState()` 一个口 —— 界面上「什么时候灰、
+ * 「继续」按钮的三态（D159）。纯函数只有 `continueState()` 一个口 —— 界面上「什么时候灰、
  * 什么时候藏」全部由它决定，`app.ts` 不另写判断。
  *
  * Run: node --experimental-transform-types web/tests/continue-unit.mjs

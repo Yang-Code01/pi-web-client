@@ -1,5 +1,5 @@
 /**
- * 「继续」按钮（D157）在真界面里跑一遍 —— 自带一个丢弃式的 bridge + 脚本化 pi（`fixtures/fake-pi.mjs`），
+ * 「继续」按钮（D159）在真界面里跑一遍 —— 自带一个丢弃式的 bridge + 脚本化 pi（`fixtures/fake-pi.mjs`），
  * 不花模型 turn，也不碰 7864 上正在用的那份。
  *
  *   node bridge/tests/continue-ui.mjs

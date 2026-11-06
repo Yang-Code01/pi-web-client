@@ -318,7 +318,7 @@ export class ChatView {
     if (ms > 0) this.flashTimer = window.setTimeout(() => this.flashTurn(null), ms);
   }
 
-  /** 这条会话里有没有用户说过话：没有的话「继续」按钮没有可接的东西（D157）。 */
+  /** 这条会话里有没有用户说过话：没有的话「继续」按钮没有可接的东西（D159）。 */
   hasUserTurns(): boolean {
     return this.turns.length > 0;
   }
