@@ -32,6 +32,7 @@ import { anyPresent, dropClient, reportPresence } from "./presence.ts";
 import { Tunnel, findCloudflared } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
 import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, resetScratchDir, statePath, sessionsRootInfo } from "./paths.ts";
+import { BUILD_ID } from "./build-id.ts";
 import { clipboardFiles, listDirs, makeDir, statFiles, statPath } from "./dirs.ts";
 import { gitInfo } from "./git.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
@@ -347,7 +348,7 @@ async function main(): Promise<void> {
     const ok = authorized(cookieHeader);
 
     if (url.pathname === "/healthz") {
-      return json(res, 200, { ok: true, version: VERSION, pi: piVersion, public: publicReq });
+      return json(res, 200, { ok: true, version: VERSION, buildId: BUILD_ID, pi: piVersion, public: publicReq });
     }
 
     // Capability-token file serving for previews: no cookie needed (sandboxed iframes have none).
@@ -914,6 +915,7 @@ async function main(): Promise<void> {
     send({
       type: "hello",
       version: VERSION,
+      buildId: BUILD_ID,
       pi: piVersion,
       sessions: sessions.list(),
       manage: sessions.manage.snapshot(),

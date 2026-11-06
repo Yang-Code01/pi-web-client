@@ -1451,4 +1451,5 @@ export const en: Dict = {
   "重试": "Retry",
   "附近的人": "Nearby",
   "隐身中：别人看不到你，你也看不到新的人": "Hidden: others can't see you, and you won't see anyone new",
+  "服务已更新，刷新后生效": "The server was updated — refresh to load the new version",
 };
