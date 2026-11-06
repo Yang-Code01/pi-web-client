@@ -362,20 +362,20 @@ const openWsMore = async (id) => {
   await page.locator(`.ws-sec[data-ws="${id}"] .ws-head .ws-more`).click();
   await sleep(250);
 };
-const pinItem = () => page.locator(".ws-menu .pm-item[data-act='pin']");
-const pinText = async () => (await page.locator(".ws-menu .pm-item[data-act='pin'] .pm-text").textContent())?.trim() ?? "";
+const fixedItem = () => page.locator(".ws-menu .pm-item[data-act='fixed']");
+const fixedText = async () => (await page.locator(".ws-menu .pm-item[data-act='fixed'] .pm-text").textContent())?.trim() ?? "";
 const lastTabs = () => CALLS.filter((c) => c.action === "ws.tabs").at(-1) ?? null;
-const pinCount = (id) => page.locator(`.ws-sec[data-ws="${id}"] .ws-head .ws-pin`).count();
-const pinViaMenu = async (id) => {
+const fixedCount = (id) => page.locator(`.ws-sec[data-ws="${id}"] .ws-head .ws-fixed`).count();
+const fixedViaMenu = async (id) => {
   await openWsMore(id);
-  await pinItem().click();
+  await fixedItem().click();
   await sleep(450);
 };
 
 page = await open(null);
 await openWsMore("f:/proj-09");
-ok((await pinText()) === "固定到第一行", `未固定的组：菜单那行是「固定到第一行」（${await pinText()}）`);
-await pinItem().click();
+ok((await fixedText()) === "固定到第一行", `未固定的组：菜单那行是「固定到第一行」（${await fixedText()}）`);
+await fixedItem().click();
 await sleep(500);
 ok(
   JSON.stringify(lastTabs()?.pinned) === JSON.stringify(["f:/proj-09"]),
@@ -384,8 +384,8 @@ ok(
 s = await barState();
 ok(s.visibleIds[0] === "f:/proj-09", `固定后排到标签行最前（${s.visibleIds.join(" / ")}）`);
 ok(s.count === 3 && s.moreText === "＋6", `固定组不占额外位置：仍是 3 颗 + ＋N（${s.count} / ${s.moreText}）`);
-ok((await pinCount("f:/proj-09")) === 1, "左栏组头出现「已固定」标记");
-ok((await pinCount("f:/proj-01")) === 0, "没固定的组不打这个标记");
+ok((await fixedCount("f:/proj-09")) === 1, "左栏组头出现「已固定」标记");
+ok((await fixedCount("f:/proj-01")) === 0, "没固定的组不打这个标记");
 
 // 8) 刷新后固定组与顺序还在（桥落库了 —— 桩桥在内存里持久化）
 await page.reload({ waitUntil: "networkidle" });
@@ -393,28 +393,28 @@ await page.waitForSelector(".session-card", { timeout: 15000 });
 await sleep(700);
 s = await barState();
 ok(s.visibleIds[0] === "f:/proj-09", `刷新后固定组还在最前（${s.visibleIds.join(" / ")}）`);
-ok((await pinCount("f:/proj-09")) === 1, "刷新后「已固定」标记也还在");
+ok((await fixedCount("f:/proj-09")) === 1, "刷新后「已固定」标记也还在");
 
 // 9) 菜单两项互斥：已固定 →「取消固定」；取消后它排回组序的位置
 await openWsMore("f:/proj-09");
-ok((await pinText()) === "取消固定", `已固定的组：菜单那行换成「取消固定」（${await pinText()}）`);
-await pinItem().click();
+ok((await fixedText()) === "取消固定", `已固定的组：菜单那行换成「取消固定」（${await fixedText()}）`);
+await fixedItem().click();
 await sleep(450);
 s = await barState();
 ok(JSON.stringify(lastTabs()?.pinned) === "[]", `取消固定发的是空列表（${JSON.stringify(lastTabs()?.pinned)}）`);
 ok(s.visibleIds[0] === "f:/proj-01", `取消后排回组序（${s.visibleIds.join(" / ")}）`);
-ok((await pinCount("f:/proj-09")) === 0, "取消后组头标记消失");
+ok((await fixedCount("f:/proj-09")) === 0, "取消后组头标记消失");
 
 // 10) 名额满了再固定：那一项置灰并写明原因，点了也不发请求
-for (const id of ["f:/proj-09", "f:/proj-08", "f:/proj-07"]) await pinViaMenu(id);
+for (const id of ["f:/proj-09", "f:/proj-08", "f:/proj-07"]) await fixedViaMenu(id);
 s = await barState();
 ok(s.count === 4 && s.visibleIds[3] === "f:/proj-01", `固定组占满名额：当前组多画一颗（${s.visibleIds.join(" / ")}）`);
 const tabsBefore = CALLS.filter((c) => c.action === "ws.tabs").length;
 await openWsMore("f:/proj-06");
-ok((await pinItem().isDisabled()) === true, "名额满了：第 4 个组的「固定」是灰的");
+ok((await fixedItem().isDisabled()) === true, "名额满了：第 4 个组的「固定」是灰的");
 const why = await page.locator(".ws-menu .pm-why").first().textContent();
 ok(/3/.test(why ?? ""), `灰掉的原因写清名额（${why?.trim()}）`);
-await pinItem().click({ force: true }).catch(() => {});
+await fixedItem().click({ force: true }).catch(() => {});
 await sleep(250);
 ok(CALLS.filter((c) => c.action === "ws.tabs").length === tabsBefore, "点灰掉的固定项：没有发 ws.tabs");
 await page.keyboard.press("Escape");
@@ -524,6 +524,39 @@ await sleep(500);
 s = await barState();
 ok(s.onWs === "f:/proj-09", `位移 3px 没到阈值：当成普通点击切组（当前 ${s.onWs}）`);
 ok(tabsCalls() === calls3, "那次点击没发 ws.tabs（不是拖拽）");
+
+// 15) D149 只认鼠标：触屏 / 笔的 pointerdown 不进 4px 起拖判定（不画竖线、不发 ws.tabs、也不切组）
+const calls4 = tabsCalls();
+const before15 = await barState();
+const touchBox = await page.locator('.ws-tab[data-ws="f:/proj-08"]').boundingBox();
+const tx = Math.round(touchBox.x + touchBox.width / 2);
+const ty = Math.round(touchBox.y + touchBox.height / 2);
+const pointer = (type, target, x, y, pointerType) =>
+  page.evaluate(
+    ([type, target, x, y, pointerType]) => {
+      const node = target === "tab" ? document.querySelector('.ws-tab[data-ws="f:/proj-08"]') : window;
+      node.dispatchEvent(
+        new PointerEvent(type, {
+          pointerType,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+          clientX: x,
+          clientY: y,
+          bubbles: true,
+        }),
+      );
+    },
+    [type, target, x, y, pointerType],
+  );
+await pointer("pointerdown", "tab", tx, ty, "touch");
+await pointer("pointermove", "window", tx + 80, ty, "touch");
+const touch = await dragMark();
+ok(touch.lines === 0 && !touch.body && touch.dragging === 0, "触屏按住横拖：一条竖线都不画、不进拖拽态");
+await pointer("pointerup", "window", tx + 80, ty, "touch");
+await sleep(400);
+s = await barState();
+ok(s.onWs === before15.onWs, `触屏那一下没切组（当前 ${s.onWs}）`);
+ok(tabsCalls() === calls4, `触屏那一下没发 ws.tabs（${tabsCalls() - calls4} 条）`);
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-drag.png`), clip: { x: 0, y: 0, width: 1000, height: 140 } });
 await page.close();
 

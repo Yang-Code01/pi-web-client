@@ -2,15 +2,33 @@
  * #121 标签行只画 N 个 + `＋N`；#124 再加横向落点与固定组重排。这里只做几何与集合运算（组序 /
  * 固定组 / 名额 / 当前组 → 可见标签 + 被折叠的组 + 拖动落点），碰不到 DOM —— 边界（补位、替换、
  * N+1、左半 / 右半）脱离页面就能核对。
- *
- * `extra` 是 #118 R9 的唯一破例：可见集合已经全是固定组、当前组还在圈外时，多画一颗也要让
- * 「我在哪一组」看得见。其余情况 `visible.length <= max`。
  */
 
 import { moveTo } from "./drag.ts";
 
 /** 名额的兜底值：桥端没下发 `max`（旧桥 / 还没连上）时按 3 画。权威值在桥端 `Workspaces.max`。 */
 export const TABS_DEFAULT = 3;
+
+/** 名额的上下界，与桥 `setTabs()` 的 clamp 1–5 是同一对数（原型量过，D149）。 */
+export const PIN_MIN = 1;
+export const PIN_MAX = 5;
+
+/** 名额进页面先过这一道：步进器 / `ws.tabs` 都只认这个范围。 */
+export function clampMax(next: number): number {
+  return Math.min(PIN_MAX, Math.max(PIN_MIN, Math.trunc(next)));
+}
+
+/**
+ * 标签行与设置面板共用的那把尺子：只留左栏里真有的组、去重、截到名额。
+ * 桥端 `setTabs()` 是同一套规则（去重 / 剔脏 / 截断）；页面这边按同一把尺子画，「勾选的样子」和
+ * 「标签行的样子」才不会是两套说法。
+ */
+export function effectiveFixed(pinned: readonly string[], knownIds: ReadonlySet<string>, max: number): string[] {
+  const cap = Number.isFinite(max) ? Math.max(0, Math.trunc(max)) : 0;
+  const out: string[] = [];
+  for (const id of pinned) if (knownIds.has(id) && !out.includes(id) && out.length < cap) out.push(id);
+  return out;
+}
 
 export interface TabModel {
   /** 标签行依次画哪几组（组 id，顺序即显示顺序）。 */
@@ -19,19 +37,15 @@ export interface TabModel {
   fixed: string[];
   /** 收进 `＋N` 的组，仍是左栏组序。 */
   more: string[];
-  /** `visible.length === max + 1`：为当前组多画了一颗（#118 R9）。 */
-  extra: boolean;
 }
 
 export function tabModel(o: { order: string[]; pinned: string[]; max: number; current?: string }): TabModel {
   const max = Number.isFinite(o.max) ? Math.max(0, Math.trunc(o.max)) : 0;
   const inOrder = new Set(o.order);
-  // 坏文件里的脏 id / 重复 id 在这里就剔掉：渲染层只该看到存在的组。
-  const pinned: string[] = [];
-  for (const id of o.pinned) if (inOrder.has(id) && !pinned.includes(id)) pinned.push(id);
+  // 坏文件里的脏 id / 重复 id / 超出名额的那几颗在这里就剔掉：渲染层只该看到真会画出来的组。
+  const pinned = effectiveFixed(o.pinned, inOrder, max);
 
-  const head = pinned.slice(0, max);
-  const taken = new Set(head);
+  const taken = new Set(pinned);
   const visible = [...taken];
   // 按左栏组序补位到名额 —— 补位排在固定组后面，固定组的位置不会被活动时间挤走。
   for (const id of o.order) {
@@ -44,7 +58,6 @@ export function tabModel(o: { order: string[]; pinned: string[]; max: number; cu
   // 当前组必须看得见：挤掉最后一个**补位**组（固定组不动）；一个补位都没有就往后追一颗。
   const pinnedSet = new Set(pinned);
   const current = o.current && inOrder.has(o.current) ? o.current : null;
-  let extra = false;
   if (current && !taken.has(current)) {
     let at = -1;
     for (let i = visible.length - 1; i >= 0; i--) {
@@ -54,10 +67,7 @@ export function tabModel(o: { order: string[]; pinned: string[]; max: number; cu
       }
     }
     if (at >= 0) visible[at] = current;
-    else {
-      visible.push(current);
-      extra = true;
-    }
+    else visible.push(current);
   }
 
   const shown = new Set(visible);
@@ -68,7 +78,7 @@ export function tabModel(o: { order: string[]; pinned: string[]; max: number; cu
     more.push(id);
   }
   // 固定组永远占 visible 的前缀（补位只往后排、当前组只挤补位），所以拖动的那几颗就是这一段。
-  return { visible, fixed: head, more, extra };
+  return { visible, fixed: pinned, more };
 }
 
 /** #124 横向落点：`x` 落在哪一颗标签、插在它前面还是后面。 */

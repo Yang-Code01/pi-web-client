@@ -17,10 +17,10 @@ import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
-import { TABS_DEFAULT, tabHitTest, tabModel, tabReorder, type TabHit, type TabRect } from "./wstabs.ts";
+import { PIN_MAX, PIN_MIN, TABS_DEFAULT, clampMax, tabHitTest, tabModel, tabReorder, type TabHit, type TabRect } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
-import { PIN_MAX, PIN_MIN, WS_NAME_MAX, dropBlocker, isPinned, pinBlocker, pinRows, pinsDropped, renameIntent, togglePin } from "./wsmanage.ts";
+import { WS_NAME_MAX, dropBlocker, fixedBlocker, fixedDropped, fixedRows, renameIntent, toggleFixed } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
@@ -586,7 +586,7 @@ export class App {
       heading: () => "",
       onOpen: (id) => this.openFromList(id),
       onStar: (id) => this.togglePin(id),
-      tail: () => {
+      tail: (chips) => {
         // Q-013: with the left pane hidden this is the only visible way to start a session.
         // Q-022: 从这颗 ＋ 建的会话自动置顶，否则建完在这条里根本看不见。
         const add = el("button", "pin-chip pin-new", tr("＋"));
@@ -594,6 +594,9 @@ export class App {
         add.dataset.act = "new";
         add.dataset.pinKey = "new";
         add.onclick = () => this.openNewSessionSheet(true);
+        // #120：一颗 ★ 都没有、或左栏本来就没收起时，这一行只剩上面那颗 ＋ ——
+        // 「展开左栏」只在真能派上用场的地方出现（spec：此时行 2 就两样）。
+        if (!chips.length || !this.collapsed.sessions) return [add];
         const expand = el("button", "pin-chip pin-expand", tr("展开左栏 ▸"));
         expand.title = tr("展开左侧会话栏（也可以双击分隔条位置的边）");
         expand.dataset.pinKey = "expand";
@@ -2713,7 +2716,7 @@ export class App {
 
   /**
    * #123 设置面板的「标签行」：名额步进器 + 固定组勾选。组序与左栏同一份（`buildTree` 的组序，
-   * 不带搜索过滤），勾选状态与标签行看同一把尺子（`pinRows`）。桥的每份快照都重画这一块 ——
+   * 不带搜索过滤），勾选状态与标签行看同一把尺子（`fixedRows`）。桥的每份快照都重画这一块 ——
    * 页面不另存一份可能说错的副本，截断之后这里跟着变就是「桥真的这么记了」。
    */
   private paintWsTabsPane(): void {
@@ -2755,35 +2758,35 @@ export class App {
 
     const tree = buildTree(this.sessions, this.manage, this.workspaces, "");
     const byId = new Map(tree.groups.map((group) => [group.id, group]));
-    const rows = pinRows(tree.groups, pinned, max);
-    pane.append(el("div", "ws-pin-label", tr("固定组（顺序跟左栏一致）")));
-    const list = el("div", "ws-pin-list");
+    const rows = fixedRows(tree.groups, pinned, max);
+    pane.append(el("div", "ws-fixed-label", tr("固定组（顺序跟左栏一致）")));
+    const list = el("div", "ws-fixed-list");
     for (const entry of rows) {
       const group = byId.get(entry.id);
       const name = group?.name ?? entry.id;
-      const btn = el("button", `ws-pin-row${entry.checked ? " on" : ""}`) as HTMLButtonElement;
+      const btn = el("button", `ws-fixed-row${entry.checked ? " on" : ""}`) as HTMLButtonElement;
       btn.type = "button";
-      btn.dataset.act = "ws-pin-row";
+      btn.dataset.act = "ws-fixed-row";
       btn.dataset.ws = entry.id;
       btn.setAttribute("aria-pressed", String(entry.checked));
-      const dot = el("span", "ws-pin-dot");
+      const dot = el("span", "ws-fixed-dot");
       dot.style.background = group?.color ?? "var(--line)";
-      btn.append(dot, el("span", "ws-pin-name", name), el("span", "ws-pin-check", entry.checked ? "✓" : ""));
-      if (entry.why) {
+      btn.append(dot, el("span", "ws-fixed-name", name), el("span", "ws-fixed-check", entry.checked ? "✓" : ""));
+      if (entry.blocker) {
         // 勾满名额后其余行置灰并写明原因 —— 跟 ⋯ 菜单里那句 pm-why 用的是同一句话。
         btn.disabled = true;
-        btn.title = entry.why;
-        btn.setAttribute("aria-label", tr("{p1}：{p2}", { p1: name, p2: entry.why }));
+        btn.title = entry.blocker;
+        btn.setAttribute("aria-label", tr("{p1}：{p2}", { p1: name, p2: entry.blocker }));
       } else {
         btn.title = entry.checked ? tr("取消固定") : tr("固定到标签行");
-        btn.onclick = () => this.setWsPinnedId(entry.id);
+        btn.onclick = () => this.setWsFixed(entry.id);
       }
       list.append(keep(btn));
     }
     pane.append(list);
-    const why = rows.find((entry) => entry.why)?.why;
-    if (why) pane.append(el("div", "ws-pin-why", why));
-    if (this.wsTabsNote) pane.append(el("div", "ws-pin-note", this.wsTabsNote));
+    const blocker = rows.find((entry) => entry.blocker)?.blocker;
+    if (blocker) pane.append(el("div", "ws-fixed-blocker", blocker));
+    if (this.wsTabsNote) pane.append(el("div", "ws-fixed-note", this.wsTabsNote));
     if (key) focusable.get(key)?.focus();
   }
 
@@ -2793,21 +2796,21 @@ export class App {
    */
   private setTabsMax(next: number): void {
     const max = this.workspaces.max ?? TABS_DEFAULT;
-    const want = Math.min(PIN_MAX, Math.max(PIN_MIN, Math.trunc(next)));
+    const want = clampMax(next);
     if (want === max) return;
-    const dropped = pinsDropped(this.workspaces.pinned ?? [], want);
+    const dropped = fixedDropped(this.workspaces.pinned ?? [], want);
     this.wsTabsNote = dropped ? tr("名额缩到 {p1} 个：超出的 {p2} 个固定组已被取消", { p1: want, p2: dropped }) : "";
     this.paintWsTabsPane();
     this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", max: want }));
   }
 
   /** 设置面板里勾 / 取消一个固定组：与组头 ⋯ 菜单同一条动作、同一套名额判断。 */
-  private setWsPinnedId(id: string): void {
+  private setWsFixed(id: string): void {
     const pinned = this.workspaces.pinned ?? [];
     const max = this.workspaces.max ?? TABS_DEFAULT;
-    const why = pinBlocker(this.workspaces.groups.find((group) => group.id === id), pinned, max);
-    this.wsTabsNote = why ?? "";
-    if (!why) this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", pinned: togglePin(pinned, id) }));
+    const blocker = fixedBlocker(this.workspaces.groups.find((group) => group.id === id), pinned, max);
+    this.wsTabsNote = blocker ?? "";
+    if (!blocker) this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", pinned: toggleFixed(pinned, id) }));
     this.paintWsTabsPane();
   }
 
@@ -4310,8 +4313,8 @@ export class App {
       head.append(todo);
     }
     // #122 / R11：固定组在左栏也要能认出来 —— 标签行上它排前面，树里就得看得出是为什么。
-    if (isPinned(this.workspaces.pinned ?? [], group.id)) {
-      const tag = el("span", "ws-pin", "📌");
+    if ((this.workspaces.pinned ?? []).includes(group.id)) {
+      const tag = el("span", "ws-fixed", "📌");
       tag.title = tr("已固定到标签行");
       tag.setAttribute("aria-label", tr("已固定"));
       head.append(tag);
@@ -4368,11 +4371,11 @@ export class App {
     this.wsMenu = openWsMenu(anchor, {
       name: group.name,
       sub: info && !info.manual ? info.key : tr("手建的工作区"),
-      pinned: isPinned(pinned, group.id),
-      pinBlocker: pinBlocker(info, pinned, max),
-      blocker: dropBlocker(info, group.sessions.length),
+      fixed: pinned.includes(group.id),
+      fixedBlocker: fixedBlocker(info, pinned, max),
+      dropBlocker: dropBlocker(info, group.sessions.length),
       onRename: () => this.startWsRename(group.id),
-      onTogglePin: () => this.toggleWsPin(group),
+      onToggleFixed: () => this.toggleWsFixed(group),
       onDrop: () => this.dropWs(group.id),
     });
   }
@@ -4381,16 +4384,16 @@ export class App {
    * #122 固定 / 取消固定：发一整份新列表（桥那端去重 / 剔脏 / 截断，页面只负责把「点完该是什么样」说清）。
    * 名额满了就当场拒绝并提示 —— 菜单里已经置灰一次，但快照过期（别处刚固定满）时这里再兜一层。
    */
-  private toggleWsPin(group: TreeGroup<SessionState>): void {
+  private toggleWsFixed(group: TreeGroup<SessionState>): void {
     const info = this.workspaces.groups.find((g) => g.id === group.id);
     const pinned = this.workspaces.pinned ?? [];
     const max = this.workspaces.max ?? TABS_DEFAULT;
-    const why = pinBlocker(info, pinned, max);
-    if (why) {
-      this.warn(why);
+    const blocker = fixedBlocker(info, pinned, max);
+    if (blocker) {
+      this.warn(blocker);
       return;
     }
-    const next = togglePin(pinned, group.id);
+    const next = toggleFixed(pinned, group.id);
     this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", pinned: next }));
   }
 
@@ -6308,7 +6311,7 @@ export class App {
       const scrollTop = body.scrollTop;
       const shown = this.sessions.filter((s) => this.mgrMatches(s)).sort((a, b) => this.mgrCompare(a, b));
       const shownIds = new Set(shown.map((s) => s.id));
-      for (const id of this.mgrPicked) if (!shownIds.has(id)) this.mgrPicked.delete(id);
+      for (const id of [...this.mgrPicked]) if (!shownIds.has(id)) this.mgrPicked.delete(id);
       this.mgrPainting = true;
       body.replaceChildren();
       this.mgrPainting = false;
@@ -10337,7 +10340,8 @@ export class App {
    * 只重排、不增删（#118 R7），所以这里没有「拖出固定区」这条路。
    */
   private startTabDrag(ev: PointerEvent, id: string): void {
-    if (ev.button !== 0) return;
+    // D149：只认鼠标 —— 触屏 / 笔的 pointerdown 不能进 4px 起拖判定，否则一点就画线。
+    if (ev.button !== 0 || ev.pointerType !== "mouse") return;
     const tabs = this.els.wsTabs;
     const tab = ev.currentTarget as HTMLElement | null;
     if (!tabs || !tab) return;

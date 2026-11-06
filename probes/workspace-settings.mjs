@@ -156,10 +156,10 @@ const browser = await chromium.launch();
 /** 设置面板里「标签行」这一块 + 标签行本身的状况。 */
 const paneState = () =>
   page.evaluate(() => {
-    const rows = [...document.querySelectorAll(".ws-pin-row")];
+    const rows = [...document.querySelectorAll(".ws-fixed-row")];
     const hint = document.querySelector(".ws-max-hint");
-    const why = document.querySelector(".ws-pin-why");
-    const note = document.querySelector(".ws-pin-note");
+    const why = document.querySelector(".ws-fixed-blocker");
+    const note = document.querySelector(".ws-fixed-note");
     const btn = (act) => document.querySelector(`.ws-max-btn[data-act="${act}"]`);
     const sheet = document.querySelector(".display-sheet");
     return {
@@ -168,15 +168,15 @@ const paneState = () =>
       downOff: Boolean(btn("ws-max-down")?.disabled),
       upOff: Boolean(btn("ws-max-up")?.disabled),
       ids: rows.map((r) => r.dataset.ws ?? ""),
-      names: rows.map((r) => r.querySelector(".ws-pin-name")?.textContent ?? ""),
-      dots: rows.map((r) => getComputedStyle(r.querySelector(".ws-pin-dot")).backgroundColor),
+      names: rows.map((r) => r.querySelector(".ws-fixed-name")?.textContent ?? ""),
+      dots: rows.map((r) => getComputedStyle(r.querySelector(".ws-fixed-dot")).backgroundColor),
       checked: rows.filter((r) => r.getAttribute("aria-pressed") === "true").map((r) => r.dataset.ws ?? ""),
       disabled: rows.filter((r) => r.disabled).map((r) => r.dataset.ws ?? ""),
       hint: hint?.textContent ?? "",
       why: why?.textContent ?? "",
       note: note?.textContent ?? "",
       sheetText: sheet?.textContent ?? "",
-      label: document.querySelector(".ws-pin-label")?.textContent ?? "",
+      label: document.querySelector(".ws-fixed-label")?.textContent ?? "",
       // 左栏的组序（勾选列表要跟它一致）。
       leftOrder: [...document.querySelectorAll(".ws-sec[data-ws]")].map((n) => n.dataset.ws ?? ""),
       // 标签行：画了哪几颗、＋N 报多少。
@@ -201,7 +201,7 @@ async function open() {
 let page = await open();
 const openSheet = async () => {
   await page.locator('.icon-btn[data-act="look"]').click();
-  await page.waitForSelector(".display-sheet .ws-pin-row", { timeout: 5000 });
+  await page.waitForSelector(".display-sheet .ws-fixed-row", { timeout: 5000 });
   await sleep(250);
 };
 const lastTabs = () => CALLS.filter((c) => c.action === "ws.tabs").at(-1) ?? null;
@@ -212,7 +212,7 @@ const stepMax = async (dir, times = 1) => {
     await sleep(300);
   }
 };
-const pinRow = (id) => page.locator(`.ws-pin-row[data-ws="${id}"]`);
+const pinRow = (id) => page.locator(`.ws-fixed-row[data-ws="${id}"]`);
 
 // 1) 步进器：初值来自桥端（3），范围 1–5，边界那颗置灰
 await openSheet();

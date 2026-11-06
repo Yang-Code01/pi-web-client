@@ -18,13 +18,13 @@ export interface WsMenuOpts {
   /** 第二行小字：派生组是目录路径，手建组说明它不绑目录。 */
   sub: string;
   /** 这个组已经固定到标签行（#122）→ 菜单那行显示「取消固定」。 */
-  pinned: boolean;
-  /** `null` = 能固定；否则是拒绝原因（来自 `pinBlocker()`）。已固定的组永远是 `null`。 */
-  pinBlocker: string | null;
+  fixed: boolean;
+  /** `null` = 能固定；否则是拒绝原因（来自 `fixedBlocker()`）。已固定的组永远是 `null`。 */
+  fixedBlocker: string | null;
   /** `null` = 能删；否则是拒绝原因（来自 `dropBlocker()`）。 */
-  blocker: string | null;
+  dropBlocker: string | null;
   onRename(): void;
-  onTogglePin(): void;
+  onToggleFixed(): void;
   onDrop(): void;
 }
 
@@ -64,31 +64,31 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
   rename.title = tr("清空名字就恢复成目录名");
 
   // #122：固定 / 取消固定两项按当前状态互斥显示（永不同时出现），点了就切。
-  const pin = item("pin", "📌", opts.pinned ? tr("取消固定") : tr("固定到第一行"), () => opts.onTogglePin());
-  if (opts.pinned) {
-    pin.dataset.pinned = "true";
-    pin.title = tr("取消后它回到按组序排队的位置");
-  } else if (opts.pinBlocker) {
-    pin.disabled = true;
-    pin.classList.add("blocked");
-    pin.setAttribute("aria-disabled", "true");
-    pin.title = opts.pinBlocker;
+  const fix = item("fixed", "📌", opts.fixed ? tr("取消固定") : tr("固定到第一行"), () => opts.onToggleFixed());
+  if (opts.fixed) {
+    fix.dataset.fixed = "true";
+    fix.title = tr("取消后它回到按组序排队的位置");
+  } else if (opts.fixedBlocker) {
+    fix.disabled = true;
+    fix.classList.add("blocked");
+    fix.setAttribute("aria-disabled", "true");
+    fix.title = opts.fixedBlocker;
   } else {
-    pin.title = tr("固定在标签行最前面，不随活动时间换位");
+    fix.title = tr("固定在标签行最前面，不随活动时间换位");
   }
 
   const drop = item("drop", "🗑", tr("删除工作区"), () => opts.onDrop());
-  if (opts.blocker) {
+  if (opts.dropBlocker) {
     drop.disabled = true;
     drop.classList.add("blocked");
     drop.setAttribute("aria-disabled", "true");
-    drop.title = opts.blocker;
+    drop.title = opts.dropBlocker;
   } else {
     drop.title = tr("只删这个空组，组里的东西一概不动");
   }
 
-  node.append(rename, pin, drop);
-  for (const why of [opts.pinBlocker, opts.blocker]) if (why) node.append(el("div", "pm-why", why));
+  node.append(rename, fix, drop);
+  for (const blocker of [opts.fixedBlocker, opts.dropBlocker]) if (blocker) node.append(el("div", "pm-why", blocker));
 
   const onDoc = (ev: Event): void => {
     const t = ev.target as Node | null;

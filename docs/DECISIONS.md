@@ -2035,7 +2035,7 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 
 验证：`node probes/workspace-migrate.mjs`（桩桥 + 真 Chromium：首次打开弹、行数=组数、每行名字与会话数与左栏逐项一致、归档不计入、拖过数=2、确认后 `pi.prefs.wsIntroSeen` 落盘且刷新不再弹、取消不写标记且刷新仍弹、关掉后左栏交互不再把它推上来）、`node probes/workspace-tree.mjs`（有 webdriver 标记时不弹，左栏交互不受影响）。
 
-## D148 四套壳共用一个交互内核：`shells.ts` 说「哪几块拼在一起」，`app.ts` 只换装配（`#98`）
+## D148 四套壳共用一个交互内核：`shells.ts` 说「哪几块拼在一起」，`app.ts` 只换装配（`#98`；「标签行不接拖拽」已被 D149 推翻：固定组可鼠标拖拽重排，`#124`）
 
 决定（前端：新文件 `web/src/shells.ts` + `web/src/app.ts` 的 `paintShell()` / `placeNowChip()` / `renderShellAxes()` / `renderWsPop()`）：
 
