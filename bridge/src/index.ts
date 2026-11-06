@@ -776,6 +776,51 @@ async function main(): Promise<void> {
     }
   };
 
+  /**
+   * D150 · 两段式目录：先用 `-ne` 的快清单把面板填上（1–2 s），带扩展的完整清单落地后再补一次。
+   * 只发内容真变了的那一份（`catalogSig`），因为面板开着时用户可能已经在挑模型，拿同一份列表
+   * 重画会把挑了一半的选项退回去。失败不再静默成空列表：记日志，并且只有一份都没拿到时才告诉
+   * 前端 error（前端据此把「稍等一下」改成「没读出来，点这里重试」）。
+   */
+  const catalogSigOf = (list: { provider: string; id: string }[]) => list.map((m) => `${m.provider}/${m.id}`).join("\n");
+  /**
+   * 每条连接各记一份「已经发给它的目录签名」。用全局签名会踩一个坑：先连上来的那条（比如刚建完会话
+   * 就断开的标签页）把完整清单「吃掉」，之后进来的页面就永远只剩快清单（D150 现场踩到过）。
+   */
+  const sentCatalog = new WeakMap<object, string>();
+  const pushCatalog = async (target: (payload: any) => void, opts: { always?: boolean; force?: boolean } = {}): Promise<void> => {
+    const failed: string[] = [];
+    const take = (err: unknown) => {
+      const message = String((err as any)?.message ?? err);
+      failed.push(message);
+      log(`catalog: ${message}`);
+      return [] as Awaited<ReturnType<typeof sessions.models>>;
+    };
+    const seen = () => sentCatalog.get(target) ?? "";
+    const fast = await sessions.modelsFast(opts.force).catch(take);
+    if (fast.length && (opts.always || seen() !== catalogSigOf(fast))) {
+      sentCatalog.set(target, catalogSigOf(fast));
+      target({ type: "catalog", models: fast, phase: "fast" });
+    }
+    const full = await sessions.models(opts.force).catch(take);
+    if (full.length && seen() !== catalogSigOf(full)) {
+      sentCatalog.set(target, catalogSigOf(full));
+      target({ type: "catalog", models: full, phase: "full" });
+    }
+    if (!fast.length && !full.length) target({ type: "catalog", models: [], error: failed[0] ?? "" });
+    // 一行说清这趟拿到了什么：这次报障最贵的地方就是「界面空着、日志也空着」。
+    log(`catalog: fast ${fast.length} / full ${full.length}${failed.length ? ` / 失败 ${failed.join("；")}` : ""}`);
+  };
+  /** 广播一份新目录：逐条连接各自算「变了没」，否则一次广播只有第一条能收到。 */
+  const refreshCatalog = (force: boolean): void => {
+    for (const client of wss.clients) {
+      const socket = client as WebSocket;
+      void pushCatalog((payload) => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
+      }, { force });
+    }
+  };
+
   // Terminals live in the bridge, not in a connection: a page reload re-attaches and replays output.
   const terminals = new Terminals({
     onData: (id, data) => broadcast({ type: "term.data", id, data }),
@@ -852,11 +897,8 @@ async function main(): Promise<void> {
       ui: readUiPrefs(),
       notes: listNotes(),
     });
-    // The model catalog needs a throwaway pi child (~1s), so it follows the handshake.
-    void sessions
-      .models()
-      .then((models) => send({ type: "catalog", models }))
-      .catch(() => send({ type: "catalog", models: [] }));
+    // 先用 1–2 s 的快清单打招呼，带扩展的完整清单十几秒后自己补上（D150）。
+    void pushCatalog(send, { always: true });
     log(`ws connected from ${clientIp(req.headers, req.socket.remoteAddress)}${(ws as any).publicReq ? " (tunnel)" : ""}`);
 
     const requireStepUp = async (): Promise<boolean> => {
@@ -934,7 +976,8 @@ async function main(): Promise<void> {
             return;
           }
           case "models": {
-            send({ type: "catalog", models: await sessions.models(true).catch(() => []) });
+            // 面板里的「点这里重试」：两段都强制重取，别让 10 分钟缓存把刚改过的 models.json 挡住。
+            void pushCatalog(send, { always: true, force: true });
             return;
           }
           // ---------------------------------------------------------------- terminals (Q-007/Q-008)
@@ -1409,7 +1452,7 @@ async function main(): Promise<void> {
               }
             }
             // A new package can bring providers, skills or extensions: refresh what the page lists.
-            if (isWriteOp(op) && op.startsWith("pkg.")) broadcast({ type: "catalog", models: await sessions.models(true).catch(() => []) });
+            if (isWriteOp(op) && op.startsWith("pkg.")) refreshCatalog(true);
             return;
           }
           case "pi.update.check": {
@@ -1706,7 +1749,7 @@ async function main(): Promise<void> {
                   send({ type: "auth.done", loginId, provider, ok: true });
                   send({ type: "auth.providers", providers: await listProviders(pi.cli) });
                   // New credentials can make new models available: refresh everyone's catalog.
-                  broadcast({ type: "catalog", models: await sessions.models(true).catch(() => []) });
+                  refreshCatalog(true);
                 })
                 .catch((err: any) => {
                   const message = String(err?.message ?? err);
@@ -1733,7 +1776,7 @@ async function main(): Promise<void> {
             await logoutProvider(pi.cli, provider);
             log(`logout ${provider}`);
             send({ type: "auth.providers", providers: await listProviders(pi.cli) });
-            broadcast({ type: "catalog", models: await sessions.models(true).catch(() => []) });
+            refreshCatalog(true);
             return;
           }
           case "commands": {

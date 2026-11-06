@@ -8,7 +8,7 @@ import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, summarizeT
 import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
 import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions } from "./launch.ts";
-import { ensureDir, resetScratchDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
+import { ensureDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
 import { Workspaces } from "./workspaces.ts";
@@ -1999,6 +1999,10 @@ export class SessionManager extends EventEmitter {
   private gcTimer: NodeJS.Timeout | null = null;
   private cache: { at: number; metas: SessionFileMeta[] } | null = null;
   private modelCache: { at: number; list: ModelInfo[] } | null = null;
+  /** D150：`-ne` 的快速清单与带扩展的完整清单各自缓存、各自去重。 */
+  private fastCache: { at: number; list: ModelInfo[] } | null = null;
+  private fastLoading: Promise<ModelInfo[]> | null = null;
+  private fullLoading: Promise<ModelInfo[]> | null = null;
   /** Pin / manual order / archive — the part of the sidebar the user owns (D46). */
   readonly manage = new Manage();
   /** 工作区 = 工程（一级分组），由 cwd 推导、拖过的用 override 钉死（#94）。 */
@@ -2022,12 +2026,38 @@ export class SessionManager extends EventEmitter {
   /**
    * The model catalog belongs to the pi install, not to a session, so it is fetched with a
    * throwaway rpc child and cached — models.json rarely changes mid-run.
+   *
+   * Two passes (D150). `modelsFast()` is the `-ne` child: 1–2 s, but it only knows the models the
+   * pi install itself declares. `models()` is the full boot with extensions: 12–15 s here, and it
+   * adds whatever extensions register (`qwen-pool/…`). The UI is handed the fast list first and
+   * the full one when it lands, so a slow boot can no longer blank out the model sheet.
    */
+  async modelsFast(force = false): Promise<ModelInfo[]> {
+    if (!force && this.fastCache && Date.now() - this.fastCache.at < 10 * 60_000) return this.fastCache.list;
+    if (this.fastLoading) return this.fastLoading;
+    this.fastLoading = fetchModels(this.cli, { fast: true })
+      .then((list) => {
+        this.fastCache = { at: Date.now(), list };
+        return list;
+      })
+      .finally(() => {
+        this.fastLoading = null;
+      });
+    return this.fastLoading;
+  }
+
   async models(force = false): Promise<ModelInfo[]> {
     if (!force && this.modelCache && Date.now() - this.modelCache.at < 10 * 60_000) return this.modelCache.list;
-    const list = await fetchModels(this.cli);
-    this.modelCache = { at: Date.now(), list };
-    return list;
+    if (this.fullLoading) return this.fullLoading;
+    this.fullLoading = fetchModels(this.cli)
+      .then((list) => {
+        this.modelCache = { at: Date.now(), list };
+        return list;
+      })
+      .finally(() => {
+        this.fullLoading = null;
+      });
+    return this.fullLoading;
   }
 
   /** Session files on disk, cached briefly: reading 180+ headers on every message is wasteful. */

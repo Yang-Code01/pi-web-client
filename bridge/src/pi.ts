@@ -125,18 +125,32 @@ function levelsOf(model: any): string[] {
 /**
  * One throwaway `--mode rpc` child just to read the model catalog: the list belongs to the
  * pi install, not to a session, so it must be available before any session is opened.
+ *
+ * `fast` skips extension discovery (`-ne --no-session`): 1–2 s instead of the 12–15 s a full boot
+ * costs with a real extension set (D150). The price is the models an extension registers
+ * (`qwen-pool/…`), so the fast pass is only ever the first of two (see `pushCatalog` in index.ts).
  */
-export async function fetchModels(cli: string): Promise<ModelInfo[]> {
+export async function fetchModels(cli: string, opts: { fast?: boolean; timeoutMs?: number } = {}): Promise<ModelInfo[]> {
+  const args = opts.fast ? [cli, "--mode", "rpc", "-ne", "--no-session"] : [cli, "--mode", "rpc"];
+  // 完整那趟要跑用户装的全部扩展，25 s 在这台机器上已经不够用了；快的那趟没有扩展可等。
+  const timeoutMs = opts.timeoutMs ?? (opts.fast ? 15000 : 45000);
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cli, "--mode", "rpc"], { env: piChildEnv(), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(process.execPath, args, { env: piChildEnv(), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     let buf = "";
+    let stderr = "";
+    let settled = false;
     const done = (err: Error | null, list?: ModelInfo[]) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       try { child.stdin.end(); } catch { /* ignore */ }
       setTimeout(() => { try { child.kill(); } catch { /* ignore */ } }, 500);
       err ? reject(err) : resolve(list ?? []);
     };
-    const timer = setTimeout(() => done(new Error("get_available_models 超时")), 25000);
+    const why = () => (stderr.trim() ? `：${stderr.trim().split(/\r?\n/).slice(-3).join(" ")}` : "");
+    const timer = setTimeout(() => done(new Error(`get_available_models 超时（${Math.round(timeoutMs / 1000)}s）${why()}`)), timeoutMs);
+    // stderr 只留尾巴：pi 崩掉时真正的原因通常在最后几行，把它带进报错比干等 45 s 有用。
+    child.stderr.on("data", (d) => { stderr = (stderr + d.toString("utf8")).slice(-2000); });
     child.stdout.on("data", (d) => {
       buf += d.toString("utf8");
       let at: number;
@@ -161,6 +175,8 @@ export async function fetchModels(cli: string): Promise<ModelInfo[]> {
       }
     });
     child.on("error", (err) => done(err));
+    // pi 在回答之前就退出（扩展崩溃、`pi update` 正换文件）：以前这里没人接，界面就白等满超时。
+    child.on("exit", (code, signal) => done(new Error(`pi 还没回模型列表就退出了（code ${code ?? "-"}${signal ? ` / ${signal}` : ""}）${why()}`)));
     // Same race as RpcChild: the child can be gone before this write lands.
     child.stdin.on("error", (err: Error) => done(err));
     try {
