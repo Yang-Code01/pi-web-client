@@ -11,6 +11,7 @@ import { renderMarkdown } from "./md.ts";
 import { setKnownPlugins } from "./diagnose.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, starredSessions } from "./pillbar.ts";
+import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, type RailItem } from "./shells.ts";
@@ -93,6 +94,11 @@ export class App {
   private approvals: ApprovalRequest[] = [];
   /** Questions from the model waiting for an answer (PLAN-ask.md). */
   private asks: AskRequest[] = [];
+  /**
+   * 本地队列是不是这一轮订阅的快照填的（D156）。`openSession` 先清空 `approvals` / `asks` 再
+   * subscribe，快照回来之前本地那两份是「过期的空」，徽标得退回列表里的计数。
+   */
+  private pendingFresh = false;
   /** Question ids this page has already put on screen, so a re-subscribe does not re-open them. */
   /** Per-ask progress in the composer panel (active tab + drafts), kept across re-renders. */
   private askDrafts = new Map<string, { active: number; drafts: Map<string, AskAnswer> }>();
@@ -594,7 +600,7 @@ export class App {
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
     this.pillBar = new PillBar<SessionState>(pinStrip, {
-      badge: (s, cur) => sessionBadge(s, cur),
+      badge: (s) => this.badgeOf(s),
       time: relativeTime,
       // #97：第二行不再是「置顶区」，条头那颗字也就没有意义了 —— 最左边那颗就是当前会话。
       // 空字符串仍然会留一个空 span，CSS 里 `.pin-strip-label:empty` 把它收掉。
@@ -1078,6 +1084,7 @@ export class App {
     if (this.session?.done) this.session.done = false;
     this.approvals = [];
     this.asks = [];
+    this.pendingFresh = false;
     this.usage = { contextTokens: null, contextWindow: null };
     this.rate = 0;
     this.rateAt = 0;
@@ -1203,6 +1210,10 @@ export class App {
         // A new socket starts unverified on the bridge side.
         this.stepUntil = 0;
         this.sessions = msg.sessions ?? [];
+        // 重连后本地队列可能还是上一条连接的：清掉、等 subscribe 的快照回来，否则它盖着列表里的真值（D156）。
+        this.approvals = [];
+        this.asks = [];
+        this.pendingFresh = false;
         if (Array.isArray(msg.trash)) this.trash = msg.trash as TrashItem[];
         if (msg.manage) this.manage = msg.manage as ManageState;
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
@@ -1242,6 +1253,9 @@ export class App {
         }
         this.approvals = (msg.approvals ?? []) as ApprovalRequest[];
         this.asks = (msg.asks ?? []) as AskRequest[];
+        // 快照里的队列是权威值：顺手把列表里那条累加值对齐，曾经算歪的会话打开一次就回到真值（D156）。
+        syncPending(this.sessions, String(msg.sessionId ?? this.currentId ?? ""), this.localCounts());
+        this.pendingFresh = true;
         this.renderAll();
         // 「交给 agent → 新开会话」：会话建好之后才把文字填进去。此刻 textarea 已经指向新会话。
         if (handoff) {
@@ -1323,22 +1337,20 @@ export class App {
         } else if (msg.phase === "end") this.setActivity(tr("思考中"));
         break;
       case "approval.add":
+        // D156：当前会话也照加 —— 列表里的计数和本地队列是两份账，只给「不在看的会话」加会让
+        // 切过去再答的批准永远减不掉；卡片是否重画也跟着这条走。
+        this.countPending(msg.sessionId, "approvals", 1);
         if (msg.sessionId === this.currentId) this.approvals = [...this.approvals, msg.approval];
-        else this.notifyUnread(msg.sessionId);
         this.renderApprovals();
         this.renderQueue();
         this.renderTabs();
         this.fillHintStatus();
-        this.renderNowChip();
+        this.renderSessions();
         break;
       case "approval.remove":
         this.approvals = this.approvals.filter((a) => a.id !== msg.id);
-        // notifyUnread() bumped this counter when the approval arrived for another session; undo it
-        // here, otherwise a session reads as "等你批准" forever and the manager keeps it undeletable.
-        if (msg.sessionId !== this.currentId) {
-          const owner = this.sessions.find((x) => x.id === msg.sessionId);
-          if (owner && owner.approvals > 0) owner.approvals -= 1;
-        }
+        // 和 approval.add 对称：不管这条批准是不是当前会话的，都得减回去，否则卡片上永远「待确认」。
+        this.countPending(msg.sessionId, "approvals", -1);
         this.fillHintStatus();
         this.renderApprovals();
         this.renderQueue();
@@ -1348,8 +1360,10 @@ export class App {
       case "ask.add": {
         const ask = msg.ask as AskRequest;
         if (!ask) break;
+        // 提问记在 asks 上（不是 approvals），当前会话也记 —— 见 D156。
+        this.countPending(msg.sessionId, "asks", 1);
         if (msg.sessionId !== this.currentId) {
-          this.notifyUnread(msg.sessionId);
+          this.renderSessions();
           break;
         }
         this.asks = [...this.asks.filter((a) => a.id !== ask.id), ask];
@@ -1358,6 +1372,7 @@ export class App {
         this.renderQueue();
         this.renderTabs();
         this.renderSessions();
+        this.renderNowChip();
         break;
       }
       case "ask.remove": {
@@ -1366,6 +1381,8 @@ export class App {
         const gone = this.asks.find((a) => a.id === msg.id);
         const mine = msg.sessionId === this.currentId;
         this.asks = this.asks.filter((a) => a.id !== msg.id);
+        // 答完 / 被取消都走这条：计数必须跟着回落（D156）。
+        this.countPending(msg.sessionId, "asks", -1);
         if (gone && mine && gone.id !== this.lastAnsweredAsk) this.keepLostAsk(gone, String(msg.reason ?? tr("问卷已关闭")));
         if (gone && mine) this.lastAnsweredAsk = null;
         this.renderAsks();
@@ -1947,9 +1964,25 @@ export class App {
     }, 0);
   }
 
-  private notifyUnread(sessionId: string): void {
-    const s = this.sessions.find((x) => x.id === sessionId);
-    if (s) s.approvals = (s.approvals ?? 0) + 1;
+  /** D156：把一条待办事件记到列表里那行上（`onMessage` 的 `msg` 是 any，这里统一成字符串）。 */
+  private countPending(sessionId: unknown, kind: PendingKind, delta: number): void {
+    applyPending(this.sessions, String(sessionId ?? ""), kind, delta);
+  }
+
+  /** 当前会话自己的两份队列长度（`badgeSession` 用）。 */
+  private localCounts(): PendingCounts {
+    return { approvals: this.approvals.length, asks: this.asks.length };
+  }
+
+  /**
+   * 徽标唯一入口（D156）：当前会话的待处理数以本地队列为准（`badgeSession`），别的会话读列表里
+   * 那份事件累加值。左栏卡片、钉条胶囊、管理面板、顶栏那颗都走这里，省得哪一处又读到旧账。
+   * 刚 `openSession`、快照还没回来时本地队列是空的（`pendingFresh` 为 false），此时退回列表里
+   * 那份 —— 否则切到一个「正等着你」的会话，徽标会先闪没一拍。
+   */
+  private badgeOf(s: SessionState): SessionBadge | null {
+    const shown = this.pendingFresh ? badgeSession(s, this.currentId, this.localCounts()) : s;
+    return sessionBadge(shown, this.currentId);
   }
 
   // ---------------------------------------------------------------- step-up
@@ -4124,10 +4157,7 @@ export class App {
 
   /** 待回答 / 待确认那两档；当前会话以本地队列为准（它比列表里的计数新）。 */
   private nowPending(s: SessionState): NowChipPending | null {
-    const badge = sessionBadge(
-      s.id === this.currentId ? { ...s, approvals: this.approvals.length, asks: this.asks.length } : s,
-      this.currentId,
-    );
+    const badge = this.badgeOf(s);
     return badge?.pending ? { text: badge.text, title: badge.title } : null;
   }
 
@@ -4686,7 +4716,7 @@ export class App {
     const tail = el("span", "meta-tail");
     if (bottomActs.childElementCount) tail.append(bottomActs);
     // Bottom-right corner: the one thing worth interrupting for, worst first.
-    const badge = sessionBadge(s, this.currentId);
+    const badge = this.badgeOf(s);
     if (badge) {
       const chipEl = el("span", `badge ${badge.cls}`, badge.text);
       if (badge.title) chipEl.title = badge.title;
@@ -6693,7 +6723,7 @@ export class App {
     if (pinned && !archived) tag("pin", tr("置顶"));
     if (archived) tag("arch", tr("已归档"));
     tag(s.origin === "web" ? "web" : "cli", s.origin === "web" ? tr("网页") : "CLI", s.origin === "web" ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话"));
-    const badge = sessionBadge(s, this.currentId);
+    const badge = this.badgeOf(s);
     if (badge) tag(badge.cls, badge.text, badge.title);
     else if (s.owned) tag("live", tr("已接管"), tr("这个会话由网页接管着"));
     main.append(line);
@@ -10703,7 +10733,6 @@ export class App {
     if (!body) return;
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     const curWs = this.currentWsId();
-    const curId = this.currentId;
     body.replaceChildren();
     if (!tree.groups.length) {
       body.append(el("div", "ws-pop-empty", tr("还没有工作区。")));
@@ -10733,14 +10762,15 @@ export class App {
         this.gotoGroup(group);
       };
       sec.append(head);
-      for (const s of group.sessions) sec.append(this.wsPopItem(s, curId));
+      for (const s of group.sessions) sec.append(this.wsPopItem(s));
       body.append(sec);
     }
     this.wireTreeDrops(body);
   }
 
   /** 浮层里的一行：与树里同一套视觉语言（在线点 / 待处理角标 / 当前高亮）。 */
-  private wsPopItem(s: SessionState, curId: string | null): HTMLElement {
+  private wsPopItem(s: SessionState): HTMLElement {
+    const curId = this.currentId;
     const item = el("div", `ws-pop-item${s.id === curId ? " on" : ""}`);
     item.dataset.id = s.id;
     item.setAttribute("role", "button");
@@ -10749,7 +10779,7 @@ export class App {
     const dot = el("span", `dot ${s.running ? "busy" : s.owned ? "live" : ""}`);
     dot.title = s.running ? tr("运行中") : s.owned ? tr("网页已接管（pi 进程在本服务里）") : tr("未接管（只读历史；发消息会自动接管）");
     item.append(dot, el("span", "ws-pop-item-name", s.name || s.id.slice(0, 8)));
-    const badge = sessionBadge(s, curId);
+    const badge = this.badgeOf(s);
     if (badge) {
       const chip = el("span", `badge ${badge.cls}`, badge.text);
       if (badge.title) chip.title = badge.title;

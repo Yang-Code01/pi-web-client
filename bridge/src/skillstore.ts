@@ -9,7 +9,7 @@
  * - **Repo tree** — jsDelivr's `data.jsdelivr.com` tree for GitHub (`@HEAD`, no token). GitHub's own
  *   API answers 60 requests an hour anonymously; a search over a dozen repos would eat that.
  * - **Files** — `raw.githubusercontent.com/<repo>/HEAD/<path>`, binary-safe; when that host is
- *   unreachable (reset, not 404) the same file comes from jsDelivr's GitHub mirrors (D156).
+ *   unreachable (reset, not 404) the same file comes from jsDelivr's GitHub mirrors (D157).
  * - **Install** — a plain directory under `skillRoots()`: `<agentDir>/skills` (global) or
  *   `<cwd>/.pi/skills` (project). Nothing is registered anywhere else; pi discovers it by scan.
  * - **Uninstall** — project skills belong to a repository and stay read-only here; user skills are
@@ -70,7 +70,7 @@ function pathOf(url: string): string {
 const FILE_HINT = "（直连 GitHub 被重置的话，在 pi 的设置里填 httpProxy，或给桥设 HTTPS_PROXY 后重启）";
 
 /**
- * Download one file from the first origin that answers (D156).
+ * Download one file from the first origin that answers (D157).
  *
  * `raw.githubusercontent.com` is reset from some networks while jsDelivr's GitHub mirrors are not —
  * and the store already trusts jsDelivr for the repo tree. A host that fails at the socket is
@@ -259,7 +259,7 @@ function fileUrl(repo: string, file: string, ref = "HEAD"): string {
 const MIRROR_HOSTS = ["testingcf.jsdelivr.net", "fastly.jsdelivr.net", "gcore.jsdelivr.net"];
 
 /**
- * The same file on jsDelivr's mirrors (D156). Byte-identical to the raw URL — jsDelivr serves the
+ * The same file on jsDelivr's mirrors (D157). Byte-identical to the raw URL — jsDelivr serves the
  * GitHub object it has cached, it does not rewrite anything.
  *
  * jsDelivr spells the ref as one `@<ref>` segment, so a ref carrying a slash (a branch like

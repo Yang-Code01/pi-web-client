@@ -356,7 +356,7 @@ log("L. scanSkillEntries / scanSkills");
   check(Array.isArray(plain) && plain.every((s) => !("path" in s)), "scanSkills 仍是面板要的那几个字段");
 }
 
-// ------------------------------------------------------------------ M. 下载的备用源（D156）
+// ------------------------------------------------------------------ M. 下载的备用源（D157）
 log("M. fileFetcher / mirrorUrls");
 {
   const raw = "https://raw.githubusercontent.com/acme/skills/HEAD/skills/pdf/SKILL.md";
@@ -400,7 +400,7 @@ log("M. fileFetcher / mirrorUrls");
   check(threw.includes("HTTPS_PROXY") && threw.includes("httpProxy"), "报错末尾告诉用户能配代理");
 }
 
-// ------------------------------------------------------------------ N. 陈旧的树（D156）
+// ------------------------------------------------------------------ N. 陈旧的树（D157）
 log("N. 树比仓库旧时自愈");
 {
   const stale = [["skills/xlsx/SKILL.md", 40], ["skills/xlsx/scripts/office/pack.py", 20]];
