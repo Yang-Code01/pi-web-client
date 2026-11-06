@@ -20,7 +20,7 @@ import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, tabHitTest, tabModel, tabReorder, type TabHit, type TabRect } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
-import { WS_NAME_MAX, dropBlocker, isPinned, pinBlocker, renameIntent, togglePin } from "./wsmanage.ts";
+import { PIN_MAX, PIN_MIN, WS_NAME_MAX, dropBlocker, isPinned, pinBlocker, pinRows, pinsDropped, renameIntent, togglePin } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
@@ -275,6 +275,10 @@ export class App {
   private wsMenu: WsMenuHandle | null = null;
   /** 点了「新建工作区」：等桥把新组广播回来，就立刻进改名态（组的 id 只有桥知道）。 */
   private wsCreatePending = false;
+  /** #123 设置面板的「标签行」那块（步进器 + 勾选）；快照回来时只重画这一个小面。 */
+  private wsPane: HTMLElement | null = null;
+  /** 名额调小时那句「取消了几个固定组」——换别的动作就收回去，不停留成旧消息。 */
+  private wsTabsNote = "";
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
   private manage: ManageState = { pin: [], order: [], archived: [] };
   private archivedOpen = false;
@@ -1724,6 +1728,8 @@ export class App {
         }
         this.renderNowChip();
         this.renderSessions();
+        // #123：设置面板开着时，名额 / 固定组也跟着桥的快照对齐（截断发生在桥，页面只是镜子）。
+        if (this.sheetKind === "display") this.paintWsTabsPane();
         break;
       }
       case "session.gone": {
@@ -2677,6 +2683,16 @@ export class App {
     layoutBox.append(layoutChips);
     sheet.append(layoutBox);
 
+    // #123：标签行的固定名额 + 固定组勾选。名额存在桥端（`ws.tabs`），不进 `pi.prefs` ——
+    // 换浏览器打开还是同一个 N。两块都改完即发，不等「确定」。
+    const wsTabsBox = el("div", "levels");
+    wsTabsBox.append(el("div", "levels-label", tr("标签行")));
+    this.wsTabsNote = "";
+    this.wsPane = el("div", "ws-tabs-pane");
+    wsTabsBox.append(this.wsPane);
+    sheet.append(wsTabsBox);
+    this.paintWsTabsPane();
+
     const foot = el("div", "sheet-foot");
     const reset = el("button", "btn ghost", tr("恢复默认"));
     reset.onclick = () => {
@@ -2693,6 +2709,106 @@ export class App {
     back.append(sheet);
     this.overlay(back);
     this.sheet = back;
+  }
+
+  /**
+   * #123 设置面板的「标签行」：名额步进器 + 固定组勾选。组序与左栏同一份（`buildTree` 的组序，
+   * 不带搜索过滤），勾选状态与标签行看同一把尺子（`pinRows`）。桥的每份快照都重画这一块 ——
+   * 页面不另存一份可能说错的副本，截断之后这里跟着变就是「桥真的这么记了」。
+   */
+  private paintWsTabsPane(): void {
+    const pane = this.wsPane;
+    if (!pane) return;
+    // 重画会把刚按的那颗按钮换掉：按 data-act / data-ws 把焦点找回去，键盘用户不至于掉回 body。
+    const active = document.activeElement;
+    const key = active instanceof HTMLElement && pane.contains(active) ? `${active.dataset.act ?? ""}|${active.dataset.ws ?? ""}` : "";
+    const focusable = new Map<string, HTMLElement>();
+    const keep = (node: HTMLButtonElement) => {
+      focusable.set(`${node.dataset.act ?? ""}|${node.dataset.ws ?? ""}`, node);
+      return node;
+    };
+    pane.replaceChildren();
+    const max = this.workspaces.max ?? TABS_DEFAULT;
+    const pinned = this.workspaces.pinned ?? [];
+
+    const row = el("div", "ws-max-row");
+    row.append(el("span", "ws-max-label", tr("固定名额")));
+    const step = (act: string, text: string, title: string, delta: number, off: boolean) => {
+      const btn = el("button", "ws-max-btn", text) as HTMLButtonElement;
+      btn.type = "button";
+      btn.dataset.act = act;
+      btn.disabled = off;
+      btn.title = title;
+      btn.setAttribute("aria-label", title);
+      btn.onclick = () => this.setTabsMax(max + delta);
+      row.append(keep(btn));
+    };
+    // 到边界的那一颗真置灰（disabled）：点得动却没反应，比灰着更让人怀疑。
+    step("ws-max-down", tr("－"), tr("固定名额减一"), -1, max <= PIN_MIN);
+    const num = el("span", "ws-max-n", String(max));
+    num.dataset.act = "ws-max-n";
+    row.append(num);
+    step("ws-max-up", tr("＋"), tr("固定名额加一"), 1, max >= PIN_MAX);
+    pane.append(row);
+    // R9：不写「最多 N 个」这种绝对话术 —— 当前工作区在圈外时标签行会多画一颗。
+    pane.append(el("div", "ws-max-hint", tr("前 {p1} 个位置留给固定组；当前工作区不在其中时会多画一颗。", { p1: max })));
+
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, "");
+    const byId = new Map(tree.groups.map((group) => [group.id, group]));
+    const rows = pinRows(tree.groups, pinned, max);
+    pane.append(el("div", "ws-pin-label", tr("固定组（顺序跟左栏一致）")));
+    const list = el("div", "ws-pin-list");
+    for (const entry of rows) {
+      const group = byId.get(entry.id);
+      const name = group?.name ?? entry.id;
+      const btn = el("button", `ws-pin-row${entry.checked ? " on" : ""}`) as HTMLButtonElement;
+      btn.type = "button";
+      btn.dataset.act = "ws-pin-row";
+      btn.dataset.ws = entry.id;
+      btn.setAttribute("aria-pressed", String(entry.checked));
+      const dot = el("span", "ws-pin-dot");
+      dot.style.background = group?.color ?? "var(--line)";
+      btn.append(dot, el("span", "ws-pin-name", name), el("span", "ws-pin-check", entry.checked ? "✓" : ""));
+      if (entry.why) {
+        // 勾满名额后其余行置灰并写明原因 —— 跟 ⋯ 菜单里那句 pm-why 用的是同一句话。
+        btn.disabled = true;
+        btn.title = entry.why;
+        btn.setAttribute("aria-label", tr("{p1}：{p2}", { p1: name, p2: entry.why }));
+      } else {
+        btn.title = entry.checked ? tr("取消固定") : tr("固定到标签行");
+        btn.onclick = () => this.setWsPinnedId(entry.id);
+      }
+      list.append(keep(btn));
+    }
+    pane.append(list);
+    const why = rows.find((entry) => entry.why)?.why;
+    if (why) pane.append(el("div", "ws-pin-why", why));
+    if (this.wsTabsNote) pane.append(el("div", "ws-pin-note", this.wsTabsNote));
+    if (key) focusable.get(key)?.focus();
+  }
+
+  /**
+   * 名额增 / 减：桥在同一次写里把超出名额的固定组截掉（R5），这里把「被取消了几个」当场说出来，
+   * 别让人以为自己的选择被弄丢了。数字与勾选等桥的快照回来再对齐，中间不做乐观改动。
+   */
+  private setTabsMax(next: number): void {
+    const max = this.workspaces.max ?? TABS_DEFAULT;
+    const want = Math.min(PIN_MAX, Math.max(PIN_MIN, Math.trunc(next)));
+    if (want === max) return;
+    const dropped = pinsDropped(this.workspaces.pinned ?? [], want);
+    this.wsTabsNote = dropped ? tr("名额缩到 {p1} 个：超出的 {p2} 个固定组已被取消", { p1: want, p2: dropped }) : "";
+    this.paintWsTabsPane();
+    this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", max: want }));
+  }
+
+  /** 设置面板里勾 / 取消一个固定组：与组头 ⋯ 菜单同一条动作、同一套名额判断。 */
+  private setWsPinnedId(id: string): void {
+    const pinned = this.workspaces.pinned ?? [];
+    const max = this.workspaces.max ?? TABS_DEFAULT;
+    const why = pinBlocker(this.workspaces.groups.find((group) => group.id === id), pinned, max);
+    this.wsTabsNote = why ?? "";
+    if (!why) this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", pinned: togglePin(pinned, id) }));
+    this.paintWsTabsPane();
   }
 
   /**
@@ -2808,6 +2924,7 @@ export class App {
     this.sheetKind = null;
     this.mgrRefresh = null;
     this.imageSheetPaint = null;
+    this.wsPane = null;
   }
 
   /** The model sheet's 会话 section: folded unless asked for (/session). */
