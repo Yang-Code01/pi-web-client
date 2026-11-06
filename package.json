@@ -32,7 +32,8 @@
     "test:permission": "node bridge/tests/default-permission.mjs",
     "test:pending": "node --experimental-transform-types web/tests/pending-unit.mjs",
     "test:continue": "node --experimental-transform-types web/tests/continue-unit.mjs",
-    "test:continue:ui": "node bridge/tests/continue-ui.mjs"
+    "test:continue:ui": "node bridge/tests/continue-ui.mjs",
+    "test:done": "node bridge/tests/done-persist.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
