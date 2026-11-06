@@ -2103,3 +2103,25 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - 前端去重只比 `provider/id`：同一批模型只换了 `levels`（比如改了 thinking 配置）不会重画面板，要等下一次真变化或点重试。
 
 验证：`node bridge/tests/models-unit.mjs`（5 例：完整那趟 argv 不带 `-ne` 且映射出 levels/contextWindow/supportsImages、快那趟 argv 是 `--mode rpc -ne --no-session`、子进程早退立刻报「退出了（code 3）」并带 stderr、静默子进程按 `timeoutMs` 超时且不等到默认线）、`npm run typecheck`；测试桥上 `node bridge/tests/model-check.mjs`（顺带修好一条早就失效的断言：面板改成「草稿 + 确认」式之后，挑完一行并不会自己关掉）与浏览器实测（面板先出 51 行、十几秒后补上第 52 个 `qwen3.6-pool`）。
+
+## D151 内网通页面重做：三栏四页、按容器宽度切、后端只多一个写配置的口子（`#136`）
+
+**问题：** 内网通是 pi 里唯一还停在「第一版能用就行」的页面：`web/src/peer/peer.css` 只有 1 个 `@media`、`main{max-width:720px}` 一栏到底，三个 TAB（对话 / 通讯录 / 在线）把「在线的人、好友、待处理请求、加好友」四种东西切碎在三处，屏幕右半边长期空着；`hidden / dnd / pauseFiles` 三个开关在页面上只拼成一行文字，想改只能去手改 `~/.pi-peer/config.json`；同一刻的 `web/src/styles.css` 已经有 27 个 `@media`、6 套主题色和一套图标语言，两边根本不像一个产品。
+
+**决定：**
+
+- **三栏 + 四个平级页**：`轨道 60px / 列表 292px / 主区`；轨道四个图标是「消息 / 联系人 / 传输 / 我」，不再是 TAB。列表栏跟着页换内容（会话 / 分组联系人 / 传输 / 无），主区画选中项的详情。这一条把「在线」从一个 TAB 变成联系人页里的一个分组（好友·在线 / 好友·离线 / 附近的人），把「加好友」收进联系人页的头按钮，页面从「三个列表轮着看」变成「一个工作台」。
+- **按容器宽度切，不按视口**：`web/peer.html` 的 `body` 上 `container-type: inline-size`，`@container (max-width:900px)` 退成单栏钻取（列表 ↔ 内容，带返回箭头）、`(max-width:560px)` 再藏轨道换底部四项导航。原因写在这次改动的场景里：同一个页面既可能是全屏标签页，也可能是 `openPeerSheet()` 里那个 1000×780 的 iframe —— 视口宽度在 iframe 里是骗人的（1440px 的窗口里塞 1000px 的框，`@media` 判成宽的，页面就挤成两条）。
+- **后端只加一个写入口**：`peer/src/http.ts` 新增 `POST /config`（只收 `hidden/dnd/pauseFiles` 三个 boolean，写进运行中的 `cfg` 再 `saveConfig()` 落盘；`hidden` 变了立刻 `discovery.announce()`，不等 15 秒那一轮），`peer/src/config.ts` 配 `saveConfig()`，bridge 侧加 `PeerHost.setConfig()` 与 `POST /api/peer/config`。仍守 D97：页面只说 `/api/peer*`，从不直连 7865，`/config` 也只对回环开。
+- **不做什么**：会话的未读与置顶**不做** —— `/threads` 不带这两个字段，要做就得加索引和迁移，这次只做「界面兑现已有数据」。传输的暂停 / 取消**不做** —— peer 的 `POST /transfers/:id` 只有 `pause-all`，单条暂停没有后端。pi 代发**不做独立时间线**：那条时间线只存在于 pi 自己的会话里，页面拿不到，所以代发消息在气泡上打 `pi 代发` 标签、会话列表打 `pill`。
+- **旧的 picker 保留**：`#picker` 的 id 一个没改，只换了外观（面包屑 / 常用位置 / 这台电脑 / 列表 / 未选文件时「发送」禁用）。
+
+**为什么：** 弹框和全屏是同一份页面，只有容器查询能同时伺候这两种尺寸；而「列表 + 详情」是这类工具最省心的形状 —— 用户在 1000px 的框里也能看到「左边谁在说话、右边说了什么」，不必来回切 TAB。写配置那条口子是这次唯一越过「只读视图」边界的地方，但它换来的是「隐身开关终于能点」：原来那行「隐身着」的文字是死的，用户只能去翻 `~/.pi-peer/config.json`。
+
+代价 / 可改：
+
+- 容器查询要 Chrome 105+ / Safari 16+；低于这个版本的浏览器会一直吃「宽屏三栏」，窄容器里会挤。
+- 未读、置顶、单条传输暂停都留了位置（控件样式在 `peer.css` 里），要做得先补 `/threads` 的字段与 peer 的传输接口。
+- `saveConfig()` 写的是**生效中**的配置（含 env 覆盖出来的值），不是重新推导的 —— 如果哪天 env 覆盖项变多，「页面拨一下开关」会把 env 值固化进 config.json，届时要分清「用户改的」和「env 给的」。
+
+验证：`npm --prefix web run typecheck`（`tsc --noEmit` + `i18n-check.mjs`，1405 键 × 3 语言全绿）；测试实例（`pi-web-client-test-dev` 起的两份，端口 17870/17876）上按 1440 三栏、1000×780 弹框、700px 钻取、420px 手机四种宽度逐一截图核对；`POST /api/peer/config {hidden:true}` 后页头出现琥珀色「隐身中」提示条、`~/.pi-peer/state/*/config.json` 落盘。

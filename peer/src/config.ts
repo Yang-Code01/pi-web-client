@@ -82,6 +82,18 @@ export function loadConfig(): PeerConfig {
 }
 
 /**
+ * 把生效中的配置写回 `config.json`。
+ *
+ * 只给「运行中能改的开关」用（隐身 / 免打扰 / 暂停收文件）：这些值改完必须活过重启，
+ * 否则页面上拨了开关、下次开 pi 又弹回去。env 覆盖出来的值也照写——写的是用户此刻
+ * 看到的那份配置，不是重新推导的。
+ */
+export function saveConfig(cfg: PeerConfig): void {
+  fs.mkdirSync(stateDir(), { recursive: true });
+  writeJson(statePath("config.json"), cfg);
+}
+
+/**
  * nodeId：一台机器一个稳定 uuid（决定 6）。它只代表「这台机器的这份 state」——换机器、
  * 删掉 state 目录都是新身份，所以不能拿它当「人」用。
  */

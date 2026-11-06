@@ -160,6 +160,14 @@ export class PeerHost {
     return this.request("GET", "/threads");
   }
 
+  /** 隐身 / 免打扰 / 暂停收文件：改 peer 的 cfg 并落盘到 `~/.pi-peer/config.json`。 */
+  setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean }): Promise<{
+    ok: boolean;
+    config: { hidden: boolean; dnd: boolean; pauseFiles: boolean; inbox: string; manual: string[] };
+  }> {
+    return this.request("POST", "/config", patch);
+  }
+
   history(peer: string, limit = 200): Promise<{ entries: unknown[] }> {
     return this.request("GET", `/messages?peer=${encodeURIComponent(peer)}&limit=${limit}`);
   }

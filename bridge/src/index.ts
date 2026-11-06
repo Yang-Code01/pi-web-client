@@ -514,6 +514,18 @@ async function main(): Promise<void> {
         return json(res, 400, { error: (err as Error).message });
       }
     }
+    if (url.pathname === "/api/peer/config" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean } = {};
+      for (const key of ["hidden", "dnd", "pauseFiles"] as const) {
+        if (typeof body?.[key] === "boolean") patch[key] = body[key];
+      }
+      try {
+        return json(res, 200, await peer.setConfig(patch));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
     if (url.pathname === "/api/peer/refresh" && req.method === "POST") {
       try {
         return json(res, 200, await peer.refresh());
