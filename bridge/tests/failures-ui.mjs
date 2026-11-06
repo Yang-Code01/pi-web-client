@@ -236,7 +236,7 @@ try {
   }
   book = ledger();
   const grown = book?.entries?.find((e) => e.tool === "bash" && e.code === "path");
-  check("同类累计到 6 次（2 + 新的 4）", grown?.count === 6, String(grown?.count));
+  check("同类累计到 4 次（2 + 新的 2，且旧的没被重记）", grown?.count === 4, String(grown?.count));
   check("没有多出一行（还是三类）", book?.entries?.length === 3, String(book?.entries?.length));
   const undoBtn = page.locator(".fail-toast-undo");
   await undoBtn.waitFor({ state: "visible", timeout: 5000 });

@@ -201,8 +201,9 @@ export function mergeFailures(input: {
     // 诊断文案只补空，不覆盖：同一类错误第一次的「为什么」通常最完整。
     if (!hit.why && why) hit.why = why;
     if (!hit.fix && fix) hit.fix = fix;
-    // 再犯 = 修法没起作用：复活。忽略过的不吵醒用户，只加次数。
-    if (hit.fixedAt && !hit.ignoredAt) hit.fixedAt = null;
+    // 再犯 = 修法没起作用：无论当初是「已修复」还是「已修复后又忽略」，都退回未修。
+    // （只清 fixedAt：忽略状态保留，不吵醒用户，只加次数。）
+    hit.fixedAt = null;
     added += 1;
   }
 

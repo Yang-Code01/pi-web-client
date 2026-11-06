@@ -1565,9 +1565,11 @@ export class App {
         this.notesSheet?.shot(msg);
         break;
       case "failures":
-        if (msg.ledger) this.setFailLedger(msg.ledger as FailLedger);
+        // 别的标签页在别的工作区入账时，广播会带着那本账过来；不能顶掉当前这本。
+        if (msg.ledger && (!this.currentWs() || (msg.ledger as FailLedger).ws === this.currentWs())) this.setFailLedger(msg.ledger as FailLedger);
         break;
       case "failures.saved":
+        if (msg.ws && this.currentWs() && msg.ws !== this.currentWs()) break;
         this.failSaved(msg);
         break;
       case "bug.done": {
@@ -5951,8 +5953,11 @@ export class App {
     const ws = this.currentWs();
     const sid = this.currentId;
     if (!ws || !sid || !this.sessionFails.size) return;
+    // 只送还没入账的那一段：账本按 key 累加，重发旧条目会把次数翻倍（审查发现）。
+    const done = this.failLedger?.sessions?.[sid]?.n ?? 0;
+    const fresh = [...this.sessionFails.values()].slice(Math.min(done, this.sessionFails.size));
     const items = [];
-    for (const f of this.sessionFails.values()) {
+    for (const f of fresh) {
       let why = "";
       let fix = "";
       try {
