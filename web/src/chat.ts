@@ -908,8 +908,22 @@ export class ChatView {
     return box;
   }
 
-  private buildUserBody(item: UserItem): HTMLElement {    const body = el("div", "body");
-    body.textContent = item.text;
+  private buildUserBody(item: UserItem): HTMLElement {
+    const body = el("div", "body");
+    const cmd = item.skill ? `/skill:${item.skill}` : "";
+    if (cmd && item.text.startsWith(cmd)) {
+      // pi expands the command into `<skill …>the whole SKILL.md</skill>` before writing it down;
+      // the bridge folds it back and marks the item, so draw the command as a chip and let the
+      // user's own words follow it.
+      const chip = el("code", "msg-skill", cmd);
+      if (item.skillPath) chip.title = tr("技能文件：{p1}", { p1: item.skillPath });
+      body.append(chip);
+      // Keep the separator exactly as folded (`/skill:x args`): the bubble is `white-space: pre-wrap`.
+      const rest = item.text.slice(cmd.length);
+      if (rest.trim()) body.append(document.createTextNode(rest));
+    } else {
+      body.textContent = item.text;
+    }
     if (item.images?.length) {
       const tag = el("div", "notice", tr("附 {p1} 张图片", { p1: item.images.length }));
       body.append(tag);

@@ -2419,3 +2419,20 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 **代价 / 可改：** 含空格的引用只是加引号，模型仍要靠它自己解析，跟粘贴路径的行为一致。记忆会留 30 个 localStorage 键（会话删了不会立刻清，靠 LRU 兜）。「此电脑」页按钮是灰的，不提供「引用某个盘」——用户明确说过不用。这几点都是口味，可改。
 
 **验证：** `npm run typecheck`（含 i18n 三边对齐）；`npm run test:attach:ui`（`bridge/tests/attach-picker.mjs`，独立端口 `ATTACH_UI_PORT`（默认 7889，避开 memory-cap 的 7880/7882/7883 与 continue-ui 的 7888）+ 临时 state 的桥：① 📎 插一次、复点只回「已在输入框」；② 在 `F:\…\work` 点 `F:` 面包屑 → `/api/dirs?path=F:\` 且落在 `此电脑\F:`，列表里有 `pi-web-client`；③ 关掉重开弹层回到 `此电脑\F:`（记忆失效时先退 cwd 再退盘符页）；④ C/D/E/F/H/I 六个盘逐一点过，每条都断言落在 `<盘>:\` 且列表非空；⑤ 进到含空格的 `work\has space` 点 📎 → 插入的是带引号的整条；⑥ 塞满 30 条假会话再换一次目录 → 索引仍是 30 条、最旧那条被清掉；⑦ 把记忆改指不存在的目录再打开 → 退回会话 cwd，不停在盘符页）。修复前同一探针第 ② 步拿到 `path=F:`、落在 `F:\pi-web-client-wt\feat\attach-refine`。
+
+## D164 聊天记录把 `/skill:x` 的展开块折回命令，命令画成 chip（无票，用户报的）
+
+**问题：** 一条用户消息在气泡里显示成 `<skill name="grill-me" location="C:\…">整篇 SKILL.md</skill>`，右侧刻度带的悬停行同样。根因在 pi：发 prompt 前它把 `/skill:<name>` 展开（agent-session 的 `_expandSkillCommand`，`const skillBlock = \`<skill name="…" location="…">…</skill>\`` 再拼上 args），展开结果既进模型上下文，也原样写进会话 JSONL。桥 `entriesToItems` 把它当普通文本透传，前端 `buildUserBody` 只做 `textContent`，于是整篇 SKILL.md 成了气泡内容。侧栏标题早就用 `titleFromUserText` 单独修过（同一个正则），所以只有聊天区难看。连带三处同根因：复制按钮复制整篇 SKILL.md、⑂ 分叉把整篇塞回输入框、分叉的兜底匹配拿原文比对（前端回传折回的命令会直接报「在会话文件里找不到这条消息」）。
+
+**决定：**
+
+- 归一化放在桥的数据边界：`bridge/src/sessionfile.ts` 加 `skillExpansion()`（认出开头是 `<skill name="…" [location="…"]>…</skill> args` 的文本）与 `displayUserText()`，`titleFromUserText` 改成调它、删掉重复正则；`bridge/src/items.ts` 用折回文本当 `item.text`，并给 user item 打 `skill` / `skillPath`（后者只做 chip 的 tooltip）。**会话文件与模型上下文一个字节不动** —— 展开是 pi 的事，桥没有资格改历史。
+- `web/src/chat.ts` 的 `buildUserBody` 只在带 `skill` 的 item 上把命令画成 `code.msg-skill` 药丸，args 原样接在后面；普通消息走老路。折回文本仍以 `/skill:` 开头、args 前保留那个空格（气泡是 `white-space: pre-wrap`，不用 CSS 假装空格，否则复制出来的文本会和显示不一致）。
+- 发送瞬间的乐观气泡用 `typedSkill()` 也打上标记，否则 400ms 后文件一到，气泡会从纯文本跳成 chip。tooltip 里的路径要等文件读回来才有，可接受。
+- `branchOff` 的 text 兜底匹配两侧都过 `displayUserText`，返回给输入框的也是折回文本。
+
+**为什么：** 展开块是 pi 回放给模型的真实输入，动它等于伪造历史；能改的是展示层，而把归一化放在桥（`item.text` 一次成型）比放在前端划算 —— 复制、分叉、随手问转录、刻度带全都读同一个字段，一处修好四处对。只认消息开头（与 pi 自己的 `startsWith("/skill:")` 一致），普通消息保持字节恒等，折回幂等（分叉路径会拿到已经折过的文本）。
+
+**代价 / 可改：** 用户真的把 `<skill name=…>…</skill>` 敲进输入框开头，也会被当成技能调用显示（形状相同，无从区分）；`/` 模板展开（pi 不写 XML 包裹）不处理；chip 的圆角/配色是口味，可改。
+
+**验证：** `npm run test:skillblock`（`bridge/tests/skill-block.mjs`，10 条：折叠、args、location 可选、普通消息恒等、幂等、标题行为不变、`entriesToItems` 的字段、乐观标记、分叉归一化）；`node probes/skill-block.mjs`（独立端口 `SKILL_BLOCK_PORT` 默认 7890 + 临时 state + 手写会话文件，不起 pi 子进程：气泡读成命令、整页无 `<skill`、chip 与 tooltip、复制按钮给命令、刻度 tooltip 与悬停行都读命令，13 条全过，截图 `.scratch/skill-block/shot.png`）；`npm run typecheck`（含 i18n，1483 键 × 3 语）、`npm run build`。

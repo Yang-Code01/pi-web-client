@@ -159,14 +159,46 @@ export function extractText(content: unknown): string {
 }
 
 /**
- * A sidebar title from a user message: a `/skill:x` command reaches the file already expanded as
- * `<skill name="x" …>…</skill> args`, which would title the session with the skill's own prose.
+ * pi expands a `/skill:x` prompt before the model sees it *and* before it reaches the session file
+ * (`_expandSkillCommand` in agent-session): the stored user message is
+ * `<skill name="x" location="…">the whole SKILL.md</skill>` followed by whatever the user typed.
+ * Everything the web client shows should be what the human typed, so parse that back here.
+ * Display only — the file and the model's context keep the expansion.
  */
+export interface SkillExpansion {
+  name: string;
+  /** The SKILL.md path pi recorded in `location`; kept for the chip's tooltip only. */
+  location: string;
+  /** What the user typed after the command, trimmed. */
+  args: string;
+  /** `/skill:<name>`, or `/skill:<name> <args>`. */
+  command: string;
+}
+
+const SKILL_BLOCK = /^\s*<skill\s+name="([^"]+)"(?:\s+location="([^"]*)")?[^>]*>[\s\S]*?<\/skill>([\s\S]*)$/;
+
+export function skillExpansion(raw: string): SkillExpansion | null {
+  const m = SKILL_BLOCK.exec(raw);
+  if (!m) return null;
+  const args = (m[3] ?? "").trim();
+  const name = m[1];
+  return { name, location: m[2] ?? "", args, command: args ? `/skill:${name} ${args}` : `/skill:${name}` };
+}
+
+/** What a user message should read as: a skill call folds back to `/skill:<name> args`. */
+export function displayUserText(raw: string): string {
+  return skillExpansion(raw)?.command ?? raw;
+}
+
+/** The skill a *typed* prompt calls (`/skill:<name>`), before pi expands it — for the live bubble. */
+export function typedSkill(text: string): string | null {
+  const m = /^\s*\/skill:(\S+)/.exec(text);
+  return m ? m[1] : null;
+}
+
+/** A sidebar title from a user message: the same text, flattened and cut to 120 chars. */
 export function titleFromUserText(raw: string): string | null {
-  let text = raw.trim();
-  const skill = /^<skill\s+name="([^"]+)"[^>]*>[\s\S]*?<\/skill>\s*([\s\S]*)$/.exec(text);
-  if (skill) text = `/skill:${skill[1]}${skill[2].trim() ? ` ${skill[2].trim()}` : ""}`;
-  text = text.replace(/\s+/g, " ").trim();
+  const text = displayUserText(raw).replace(/\s+/g, " ").trim();
   return text ? text.slice(0, 120) : null;
 }
 

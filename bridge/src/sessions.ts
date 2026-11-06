@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { RpcChild } from "./rpc.ts";
-import { loadEntries, listSessionFiles, readMeta, titleFromUserText, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
+import { displayUserText, loadEntries, listSessionFiles, readMeta, titleFromUserText, typedSkill, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
 import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, summarizeToolArgs, type BashItem, type Item, type ToolItem } from "./items.ts";
 import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
@@ -1532,11 +1532,15 @@ export class Session extends EventEmitter {
     }
     const userId = `user:${++this.userCounter}`;
     if (message.streamingBehavior) this.queuedUser.push({ id: userId, text });
+    // A `/skill:x` send is marked right away so the bubble does not swap styles when pi's expanded
+    // copy lands in the file (~400 ms); the tooltip's path only comes with the file read.
+    const typed = typedSkill(text);
     const userItem: Item = {
       id: userId,
       kind: "user",
       text,
       images: (images ?? []).map((i) => ({ mimeType: i.mimeType })),
+      ...(typed ? { skill: typed } : {}),
       ts: new Date().toISOString(),
     };
     this.upsert(userItem);
@@ -2465,7 +2469,9 @@ export class SessionManager extends EventEmitter {
       let entry = how.entryId ? sm.getEntry(how.entryId) : undefined;
       if (!isUser(entry) && typeof how.index === "number") {
         // Live items carry bridge ids, not entry ids: find the message among the current branch's.
-        const norm = (t: string) => t.replace(/\s+/g, " ").trim();
+        // Both sides go through displayUserText: the file holds `/skill:x` expanded, the web sends
+        // the folded command back, so compare what a human would see, not the stored bytes.
+        const norm = (t: string) => displayUserText(t).replace(/\s+/g, " ").trim();
         const users = (sm.getBranch(sm.getLeafId()) as any[]).filter(isUser);
         const byIndex = users[how.index];
         if (byIndex && (!how.text || norm(contentText(byIndex.message.content)) === norm(how.text))) entry = byIndex;
@@ -2473,7 +2479,7 @@ export class SessionManager extends EventEmitter {
       }
       if (!isUser(entry)) throw new Error("在会话文件里找不到这条消息（可能还没写盘），刷新后再试");
       targetLeafId = entry.parentId ?? null;
-      text = contentText(entry.message.content);
+      text = displayUserText(contentText(entry.message.content));
     }
     if (targetLeafId) {
       const file = sm.createBranchedSession(targetLeafId);

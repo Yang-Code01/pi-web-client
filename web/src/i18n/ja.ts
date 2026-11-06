@@ -1522,4 +1522,5 @@ export const ja: Dict = {
   "已经把这 {p1} 个会话的权限改成默认值": "{p1} 件のセッションを既定権限に変更した",
   "MCP 暴露方式": "MCP の公開方法",
   "默认（deferred：模型用 searchTools 找）": "既定（deferred: モデルは searchTools で探す）",
+  "技能文件：{p1}": "スキルファイル：{p1}",
 };

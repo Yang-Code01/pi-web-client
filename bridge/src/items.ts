@@ -1,4 +1,4 @@
-import { extractText, type SessionEntry } from "./sessionfile.ts";
+import { extractText, skillExpansion, type SessionEntry } from "./sessionfile.ts";
 
 export interface ItemBase {
   id: string;
@@ -6,7 +6,12 @@ export interface ItemBase {
 }
 export interface UserItem extends ItemBase {
   kind: "user";
+  /** Display text: a `/skill:<name> args` call reaches the file expanded and is folded back here. */
   text: string;
+  /** Set when the message was a `/skill:<name>` call — the web client draws a chip for it. */
+  skill?: string;
+  /** The SKILL.md path pi wrote into the block (`location`), for the chip's tooltip. */
+  skillPath?: string;
   images: { mimeType: string; size?: number }[];
 }
 export interface AssistantItem extends ItemBase {
@@ -160,7 +165,16 @@ export function entriesToItems(entries: SessionEntry[]): Item[] {
             .filter((c) => c && c.type === "image")
             .map((c) => ({ mimeType: String(c.mimeType ?? "image/png"), size: undefined }))
         : [];
-      items.push({ id: entry.id, ts: entry.timestamp, kind: "user", text: contentText(msg.content), images });
+      const raw = contentText(msg.content);
+      const skill = skillExpansion(raw);
+      items.push({
+        id: entry.id,
+        ts: entry.timestamp,
+        kind: "user",
+        text: skill ? skill.command : raw,
+        images,
+        ...(skill ? { skill: skill.name, skillPath: skill.location } : {}),
+      });
     } else if (msg.role === "assistant") {
       let text = "";
       let thinking = "";
