@@ -152,9 +152,12 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     const parts = current.split(sep).filter((part) => part !== "");
     let acc = "";
     for (const part of parts) {
-      if (acc === "") acc = part.endsWith(":") ? part : `${sep}${part}`;
+      const drive = part.endsWith(":");
+      if (acc === "") acc = drive ? part : `${sep}${part}`;
       else acc = `${acc}${sep}${part}`;
-      where.append(el("span", "crumb-sep", sep), crumb(part, acc, part.endsWith(":")));
+      // D162: 盘符那一段的目标得带上分隔符。`F:` 是**盘符相对路径**，桥端按它自己的 cwd 解析
+      // （盘符正好是 cwd 那个盘时，点一下就落回仓库目录 —— 看着像没反应）。显示仍然只写 `F:`。
+      where.append(el("span", "crumb-sep", sep), crumb(part, drive ? `${acc}${sep}` : acc, drive));
     }
   };
   const dirHead = el("div", "dir-head");
@@ -295,7 +298,9 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
    * for the jump box, because a typo has already been answered as 「没有这个路径」and an unreadable
    * folder should say why in place rather than silently bouncing to 此电脑.
    */
-  const navigate = async (target: string, revealName = "", allowFallback = true): Promise<{ ok: true } | { ok: false; error: string }> => {
+  const navigate = async (rawTarget: string, revealName = "", allowFallback = true): Promise<{ ok: true } | { ok: false; error: string }> => {
+    // D162: 兜底一次，任何调用方传裸 `D:` 都当成那颗盘的根，而不是桥端 cwd 上的「D 盘相对路径」。
+    const target = BARE_DRIVE.test(rawTarget.trim()) ? `${rawTarget.trim()}\\` : rawTarget;
     list.replaceChildren(el("div", "empty", tr("读取中…")));
     // Leaving the folder: drop its sizes and any answer still in flight for it.
     stats = new Map();

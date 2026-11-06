@@ -5999,6 +5999,85 @@ export class App {
     };
   }
 
+  /**
+   * D162: 「引用当前文件夹」——把下面正在浏览的目录插进输入框。目录行点一下是「进去」、
+   * 文件行才「引用」，所以「我想让 pi 看这个目录」原来没有出口。
+   * 含空格才包引号：`C:\Program Files\x` 裸着会被读成两个路径；没空格的包上反而多两处要删。
+   */
+  private dirRef(getPath: () => string): { node: HTMLButtonElement; bind: () => void } {
+    const label = tr("📎 引用当前文件夹");
+    const node = el("button", "btn ghost dir-ref", label) as HTMLButtonElement;
+    node.dataset.act = "dir-ref";
+    const sync = (): void => {
+      const path = (getPath() || "").trim();
+      node.disabled = !path;
+      node.title = path ? tr("把目录 {p1} 引用到输入框", { p1: path }) : tr("盘符列表没有目录可引用，先点进一个文件夹");
+    };
+    const flash = (text: string): void => {
+      node.textContent = text;
+      setTimeout(() => {
+        if (node.isConnected) node.textContent = label;
+      }, 1200);
+    };
+    sync();
+    return {
+      node,
+      bind: () => {
+        sync();
+        node.onclick = () => {
+          const path = (getPath() || "").trim();
+          if (!path) return;
+          const text = /\s/.test(path) ? `"${path}"` : path;
+          if (this.composerHasPath(text)) {
+            flash(tr("已在输入框"));
+            return;
+          }
+          this.insertPaths([text]);
+          flash(tr("已引用"));
+        };
+      },
+    };
+  }
+
+  /**
+   * D162: 输入框里已经有这条路径了吗。左右各看一个字符再判定：`F:\a` 不能把 `F:\ab` 认成同一条
+   *（重复点「引用当前文件夹」不该插出第二次，同一目录下的另一个子目录仍然算新路径）。
+   */
+  private composerHasPath(text: string): boolean {
+    const hay = this.composerText;
+    if (!hay || !text) return false;
+    const glued = (s: string): boolean => s !== "" && !/[\s"'`，。、；：！？,.;!?()[\]{}<>]/.test(s);
+    for (let at = hay.indexOf(text); at !== -1; at = hay.indexOf(text, at + 1)) {
+      const before = at > 0 ? hay[at - 1] : "";
+      const after = hay[at + text.length] ?? "";
+      if (!glued(before) && !glued(after)) return true;
+    }
+    return false;
+  }
+
+  /** D162: 附件弹层给每个会话记一份「上次打开的目录」；没有会话 id 就不读不写（宁可退回 cwd）。 */
+  private attachDirKey(): string {
+    const id = this.session?.id ?? "";
+    return id ? `pi.attachDir:${id}` : "";
+  }
+
+  private attachStart(): string {
+    const key = this.attachDirKey();
+    const remembered = key ? (localStorage.getItem(key) ?? "").trim() : "";
+    return remembered || this.session?.cwd || "";
+  }
+
+  /** 每换一个目录就写一次，顺手把超过 30 条的最旧会话清掉（删掉的会话不该一直占着键）。 */
+  private rememberAttachDir(path: string): void {
+    const key = this.attachDirKey();
+    if (!key || !path) return;
+    localStorage.setItem(key, path);
+    const used = (localStorage.getItem(ATTACH_DIR_INDEX) ?? "").split("\n").filter(Boolean);
+    const next = [...used.filter((k) => k !== key), key];
+    while (next.length > ATTACH_DIR_KEEP) localStorage.removeItem(next.shift() as string);
+    localStorage.setItem(ATTACH_DIR_INDEX, next.join("\n"));
+  }
+
   private mountBrowser(v: Viewer): void {
     const body = v.body;
     body.replaceChildren();
@@ -9627,13 +9706,20 @@ export class App {
     this.sheet = back;
 
     const home = this.dirHome(() => this.session?.cwd ?? "");
+    // D162: 这个弹层按会话记着上次浏览到哪儿；pick 走闭包，所以要等 picker 建好再接上。
+    let pickerPath = (): string => "";
+    const ref = this.dirRef(() => pickerPath());
     const picker = mountDirPicker(host, {
-      start: this.session?.cwd ?? "",
+      start: this.attachStart(),
       files: true,
       fallback: true,
       // 和文件管理器同一套「输入路径就跳」：附件也常常已经在手上了（终端里复制来的）。
       pathBox: true,
-      head: [home.node],
+      head: [home.node, ref.node],
+      onState: (state) => {
+        ref.bind();
+        if (state.path) this.rememberAttachDir(state.path);
+      },
       onPick: (abs, name, row) => {
         // 图片直接附加成待发图片；其他文件只把路径插进输入框（pi 自己去读）。
         if (!ATTACH_IMAGE.test(name)) {
@@ -9656,7 +9742,9 @@ export class App {
           });
       },
     });
+    pickerPath = () => picker.path();
     home.bind(picker);
+    ref.bind();
     host.querySelector<HTMLInputElement>(".dir-filter")?.focus();
   }
 
@@ -12327,6 +12415,10 @@ type Draft = { text: string; images: PendingImage[]; pastes: PasteBlock[] };
 /** A paste this long (lines or characters) becomes its own foldable block. */
 const PASTE_LINES = 6;
 const PASTE_CHARS = 400;
+
+/** D162: 附件弹层按会话记目录，最多留这么多条（删掉的会话不该一直占着键）。 */
+const ATTACH_DIR_INDEX = "pi.attachDir.index";
+const ATTACH_DIR_KEEP = 30;
 
 /** 预览返回栈最多记多少步（D63）。超了就丢掉最早的一步，和浏览器一样。 */
 const HISTORY_MAX = 60;
