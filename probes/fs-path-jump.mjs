@@ -172,18 +172,19 @@ try {
   await input.fill("");
   log("6 missing path ok:", await err.textContent());
 
-  // ---- 7. Esc 只清这一格，不关面板；第二下离开输入框
+  // ---- 7. Esc 只清这一格，不关面板；空格子再按一次交给面板（现有行为：关掉面板）
   await input.fill("C:\\");
   await input.press("Escape");
   assert((await input.inputValue()) === "", "Esc clears the box");
-  assert((await page.locator(".viewer").count()) === 1, "Esc must not close the viewer");
+  assert((await page.locator(".viewer").count()) === 1, "Esc must not close the viewer while there is text");
   assert((await page.evaluate(() => document.activeElement?.className ?? "")).includes("dir-jump-input"), "first Esc keeps focus");
   await input.press("Escape");
-  assert(!(await page.evaluate(() => document.activeElement?.className ?? "")).includes("dir-jump-input"), "second Esc leaves the box");
-  assert((await page.locator(".viewer").count()) === 1, "viewer still open");
+  assert((await page.locator(".viewer").count()) === 0, "second Esc closes the panel instead of stranding focus on body");
   log("7 Esc ok");
 
   // ---- 8. 盘符页没有「当前目录」可拼：相对路径要说清楚，而不是落到 bridge 的 cwd
+  await page.locator(".topbar .icon-btn", { hasText: "文件" }).click();
+  await page.locator(".viewer-browse .dirpicker").waitFor({ timeout: 10000 });
   await page.locator(".dir-path .crumb", { hasText: "此电脑" }).click();
   await until(async () => (await page.locator(".vol-row").count()) >= 1, 8000, "drives listed");
   await jump("work");
@@ -191,6 +192,10 @@ try {
   assert((await page.locator(".vol-row").count()) >= 1, "still on the drive list");
   await input.fill("");
   log("8 drive page ok:", await err.textContent());
+  // 裸盘符在盘符页也要归一成 `C:\\`：不能交给桥端按它自己的 cwd 解析。
+  await jump("C:");
+  await until(async () => (await page.locator(".dir-path").textContent()).includes("C:"), 10000, "bare drive opened C:\\");
+  log("8b bare drive ok");
 
   // ---- 9. 只给文件管理器：新会话 / 附件的 picker 里不该多出这一行
   await page.locator(".viewer-head .viewer-btn", { hasText: "✕" }).click();

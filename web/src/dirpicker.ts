@@ -4,11 +4,13 @@ import { tr } from "./i18n/index.ts";
 
 /**
  * One directory browser, three call sites: the new-session sheet's 📁 浏览, the attachment picker,
- * and the viewer's 浏览 pane of the file explorer. It only reads `/api/dirs`, which the bridge
- * answers for any path on this machine.
+ * and the viewer's 浏览 pane of the file explorer. Listings come from `/api/dirs`; the file
+ * manager's jump box first asks `/api/stat` what a typed path actually is.
  */
 
 const IMAGE_FILES = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
+/** 只敲盘符（`C:`）—— 那颗盘的根，不是相对路径。 */
+const BARE_DRIVE = /^[A-Za-z]:$/;
 
 type Volume = { root: string; total: number; free: number };
 type FileStat = { name: string; size: number; mtime: number };
@@ -68,11 +70,12 @@ export function fileNameOf(p: string): string {
  */
 export function resolveTyped(raw: string, base: string): string {
   const typed = cleanPath(raw);
+  // `C:` 自己也常被敲（在盘符页跳盘）：没有 `\` 的盘符不是绝对路径，但意图就是那颗盘。先归一，
+  // 免得盘符页（base 为空）在下面的早返回里把它原样交给桥端，按 bridge 自己的 cwd 解析。
+  if (BARE_DRIVE.test(typed)) return `${typed}\\`;
   if (!typed || !base) return typed;
   if (/^[\\/]/.test(typed) && !/^[\\/]{2}/.test(typed) && /^[A-Za-z]:/.test(base)) return `${base.slice(0, 2)}${typed}`;
   if (isAbsolutePath(typed)) return typed;
-  // `C:` 自己也常被敲（在盘符页跳盘）：没有 `\` 的盘符不是绝对路径，但意图就是那颗盘。
-  if (/^[A-Za-z]:$/.test(typed)) return `${typed}\\`;
   // `./a.txt` 拼出来是 `base/./a.txt`：桥端能 resolve，但报错里很难看。
   const rel = typed.replace(/^(\.[\\/])+/, "");
   return rel ? joinPath(base, rel) : base;
@@ -104,8 +107,8 @@ export interface DirPickerOpts {
   /** Extra buttons on the path row (e.g. 新建文件夹). */
   head?: HTMLElement[];
   /**
-   * 路径输入框：粘贴绝对路径（或相对当前目录的路径）回车跳转 —— 文件夹进去，文件跳到它所在的
-   * 文件夹并把那一行标出来。文件管理器（D50 的浏览页）用这一项。
+   * The jump box: type or paste a path and press Enter — a folder opens, a file jumps to its parent
+   * directory and marks that row. Only the file manager (D50's 浏览 pane) turns this on.
    */
   pathBox?: boolean;
   /** Extra nodes between the path row and the list (e.g. the mkdir row). */
@@ -148,7 +151,8 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     const parts = current.split(sep).filter((part) => part !== "");
     let acc = "";
     for (const part of parts) {
-      acc = acc === "" ? (part.endsWith(":") ? part : `${sep}${part}`) : `${acc}${sep}${part}`;
+      if (acc === "") acc = part.endsWith(":") ? part : `${sep}${part}`;
+      else acc = `${acc}${sep}${part}`;
       where.append(el("span", "crumb-sep", sep), crumb(part, acc, part.endsWith(":")));
     }
   };
@@ -179,7 +183,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
 
   let current = "";
   let res: Awaited<ReturnType<typeof api.dirs>> | null = null;
-  /** 上一跳要高亮的文件（小写名）；普通导航会把它清掉。 */
+  /** 上一跳要标出来的文件名（保留原大小写）；普通导航会把它清掉。 */
   let reveal = "";
   /** D62: file sizes land in a second request; keyed by name so a repaint (筛选) keeps them. */
   let stats = new Map<string, FileStat>();
@@ -255,9 +259,12 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       row.onclick = () => void go(join(name));
       list.append(row);
     }
+    // 上一跳要标的文件：先按原样找（Linux 上 A.md 与 a.md 是两行），找不到再忽略大小写。
+    let marked = "";
+    if (reveal !== "") marked = files.includes(reveal) ? reveal : (files.find((n) => n.toLowerCase() === reveal.toLowerCase()) ?? "");
     for (const name of files) {
       const row = el("button", "model-row dir-row file-row");
-      if (reveal && name.toLowerCase() === reveal) row.classList.add("hit");
+      if (name === marked) row.classList.add("hit");
       const size = el("span", "size");
       const time = el("span", "mtime");
       const st = stats.get(name);
@@ -288,7 +295,6 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
    * folder should say why in place rather than silently bouncing to 此电脑.
    */
   const navigate = async (target: string, revealName = "", allowFallback = true): Promise<Awaited<ReturnType<typeof api.dirs>> | null> => {
-    reveal = revealName.toLowerCase();
     list.replaceChildren(el("div", "empty", tr("读取中…")));
     // Leaving the folder: drop its sizes and any answer still in flight for it.
     stats = new Map();
@@ -297,6 +303,8 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     try {
       next = await api.dirs(target, listFiles);
     } catch (ex: any) {
+      // 请求根本没到：上一跳的高亮属于别的目录，别留着。
+      reveal = "";
       if (root.isConnected) list.replaceChildren(el("div", "empty", tr("读取失败：{p1}", { p1: ex?.message ?? ex })));
       return null;
     }
@@ -305,13 +313,16 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     if (next.error && target && opts.fallback && allowFallback) return navigate("", "", allowFallback);
     res = next;
     current = next.path;
+    // 高亮跟着列表一起换：列表没换成，旧的「行 ↔ 高亮」配对就原样留着。
+    reveal = next.error ? "" : revealName;
     paintCrumbs();
     if (showFilter) filter.value = "";
     opts.onState?.({ path: current, parent: next.parent, error: next.error ?? "", dirs: next.dirs, files: next.files ?? [] });
     paint();
     list.scrollTop = 0;
     fillStats(current);
-    return next;
+    // null = 这一屏是错的（读不了 / 不存在）：调用方别再补一句自己的判断。
+    return next.error ? null : next;
   };
   const go = (target: string): Promise<void> => navigate(target).then(() => undefined);
 
@@ -329,7 +340,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     showJump("");
     if (!typed) return;
     // 盘符页没有「当前目录」可拼，相对路径交给桥端会落到 bridge 自己的 cwd —— 那不是用户看的地方。
-    if (!current && !isAbsolutePath(typed) && !/^[A-Za-z]:$/.test(typed)) {
+    if (!current && !isAbsolutePath(typed) && !BARE_DRIVE.test(typed)) {
       showJump(tr("在盘符列表里要写完整路径，例如 D:\\work"));
       return;
     }
@@ -337,8 +348,13 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     jumpInput.readOnly = true;
     root.classList.add("locating");
     try {
-      const info = await api.stat(resolveTyped(typed, current));
+      const info = await api.statPath(resolveTyped(typed, current));
       if (!root.isConnected) return;
+      if (info.kind === "denied") {
+        // 存在但进不去，和「没有这个路径」是两回事。
+        showJump(tr("读不了这个路径：{p1}", { p1: info.path || typed }));
+        return;
+      }
       if (info.kind === "missing") {
         // 上一次跳转留下的高亮跟这次的错路径没有关系，留着会像是它选中了那一行。
         reveal = "";
@@ -355,7 +371,8 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       if (!(await navigate(info.parent ?? "", name, false))) return;
       const row = list.querySelector<HTMLButtonElement>(".file-row.hit");
       if (!row) {
-        showJump(tr("这个目录里没有 {p1}", { p1: name }));
+        // 列表本身就被过滤与截断过（1000 目录 / 2000 文件），别断言「不存在」。
+        showJump(tr("列表里没有 {p1}（目录过大时只列出一部分）", { p1: name }));
         return;
       }
       jumpInput.value = "";
@@ -383,13 +400,14 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
           ev.stopPropagation();
           return;
         }
-        // 有字就只清这一格，别让 Esc 关掉面板；空格子再按才离开输入框。
-        ev.preventDefault();
-        ev.stopPropagation();
+        // 有字就只清这一格，别让 Esc 关掉面板；空着再按一次就把 Esc 交给面板（root 上那个监听
+        // 关面板，和第二下 blur 后再也关不掉相比，这样才收得住）。
         if (jumpInput.value) {
+          ev.preventDefault();
+          ev.stopPropagation();
           jumpInput.value = "";
           showJump("");
-        } else jumpInput.blur();
+        }
       }
     };
   }

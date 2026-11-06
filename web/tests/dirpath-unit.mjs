@@ -76,6 +76,9 @@ test("Windows 的有根无盘符路径落在当前盘上（\\Users\\me 不是相
 test("只敲盘符 `C:` 就是那颗盘，不是拼成 `C:\work\C:`", () => {
   assert.equal(resolveTyped("C:", "C:\\work"), "C:\\");
   assert.equal(resolveTyped("d:", "C:\\work"), "d:\\");
+  // 盘符页没有 base：早返回会把裸盘符原样交给桥端，按 bridge 自己的 cwd 解析。
+  assert.equal(resolveTyped("C:", ""), "C:\\");
+  assert.equal(resolveTyped("d:", ""), "d:\\");
 });
 
 test("空输入原样返回空，别拼出一个「当前目录」去 stat", () => {

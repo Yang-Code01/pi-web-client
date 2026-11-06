@@ -20,9 +20,23 @@ function volumeOf(root: string): Volume | null {
   }
 }
 
+/**
+ * A typed path as an absolute one, plus its parent. Shared by the listing and the jump box's kind
+ * check so the two can never disagree about where a path points or what its 「上一级」 is.
+ * An empty path means the drive list, which has neither.
+ */
+function resolveTarget(raw: string): { target: string; abs: string; parent: string | null } {
+  const target = raw.trim();
+  const abs = target ? path.resolve(target) : "";
+  const up = abs ? path.dirname(abs) : "";
+  // At a drive root the next step up is the drive list itself.
+  const parent = !abs ? null : up !== abs ? up : process.platform === "win32" ? "" : null;
+  return { target, abs, parent };
+}
+
 /** One level of folders (and files when asked); an empty path lists the roots (drive letters on Windows). */
 export function listDirs(raw: string, withFiles = false): Listing {
-  const target = raw.trim();
+  const { target, abs, parent } = resolveTarget(raw);
   if (!target) {
     if (process.platform !== "win32") return listDirs("/", withFiles);
     const drives: string[] = [];
@@ -37,10 +51,6 @@ export function listDirs(raw: string, withFiles = false): Listing {
     }
     return { path: "", parent: null, dirs: drives, volumes, ...(withFiles ? { files: [] } : {}) };
   }
-  const abs = path.resolve(target);
-  const up = path.dirname(abs);
-  // At a drive root the next step up is the drive list itself.
-  const parent = up !== abs ? up : process.platform === "win32" ? "" : null;
   const order = (a: string, b: string) => Number(a.startsWith(".")) - Number(b.startsWith(".")) || a.localeCompare(b, "zh-CN");
   try {
     const entries = fs.readdirSync(abs, { withFileTypes: true }).filter((d) => !/^(\$|System Volume Information$)/i.test(d.name));
@@ -62,24 +72,25 @@ export function listDirs(raw: string, withFiles = false): Listing {
   }
 }
 
-export type PathInfo = { path: string; kind: "dir" | "file" | "missing"; parent: string | null };
+export type PathInfo = { path: string; kind: "dir" | "file" | "missing" | "denied"; parent: string | null };
 
 /**
  * What a typed path points at. The file manager's jump box needs this *before* it navigates: asking
  * `listDirs` about a file answers ENOTDIR, which reads like a broken folder, and the box has to tell
  * 「进这个文件夹」from「高亮父目录里的这个文件」from「没有这个路径」.
+ *
+ * 异步：一个睡着的网络盘上 stat 能卡几秒，同步版会把整个 bridge 一起卡住。
  */
-export function statPath(raw: string): PathInfo {
-  const target = raw.trim();
+export async function statPath(raw: string): Promise<PathInfo> {
+  const { target, abs, parent } = resolveTarget(raw);
   if (!target) return { path: "", kind: "missing", parent: null };
-  const abs = path.resolve(target);
-  const up = path.dirname(abs);
-  const parent = up !== abs ? up : process.platform === "win32" ? "" : null;
   try {
-    const st = fs.statSync(abs);
+    const st = await fs.promises.stat(abs);
     return { path: abs, kind: st.isDirectory() ? "dir" : "file", parent };
-  } catch {
-    return { path: abs, kind: "missing", parent };
+  } catch (err: any) {
+    // 「不让你看」和「不存在」是两条不同的错：别把权限问题说成路径写错了。
+    const denied = err?.code === "EACCES" || err?.code === "EPERM";
+    return { path: abs, kind: denied ? "denied" : "missing", parent };
   }
 }
 
