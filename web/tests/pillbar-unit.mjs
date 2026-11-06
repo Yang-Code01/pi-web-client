@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { pillChip } from "../src/pillbar.ts";
+import { pillChip, starredSessions } from "../src/pillbar.ts";
 
 const time = (ts) => `t${ts}`;
 const session = { id: "st-1", name: "会话 01", cwd: "E:/demo", updatedAt: 7 };
@@ -39,4 +39,24 @@ test("title 串起名字、cwd、徽标说明，空的那些不留下多余分�
   const badge = { text: "待回答", cls: "wait", title: "在等你回答问卷", pending: true };
   assert.equal(pillChip(session, null, badge, time).title, "会话 01 · E:/demo · 在等你回答问卷");
   assert.equal(pillChip({ ...session, cwd: null }, null, null, time).title, "会话 01");
+});
+
+// #120 行 2 画的是「本区里点过 ★ 的会话」，不是本区全部会话。
+const rowIds = (ids, stars, cur = null) =>
+  starredSessions(ids.map((id) => ({ ...session, id })), stars, cur).map((s) => s.id);
+
+test("行 2 只留本区点过 ★ 的会话，顺序沿用传进来那一条", () => {
+  assert.deepEqual(rowIds(["a", "b", "c"], ["c", "a"]), ["a", "c"]);
+});
+
+test("当前会话即便点过 ★ 也不重复画（最左那颗 NowChip 已经代表它）", () => {
+  assert.deepEqual(rowIds(["a", "b"], ["a", "b"], "a"), ["b"]);
+});
+
+test("一组里没有 ★ 时行 2 一颗胶囊都没有（只剩 NowChip 和 ＋）", () => {
+  assert.deepEqual(rowIds(["a", "b"], []), []);
+});
+
+test("在别组置顶的会话不串进来：本区列表里没有的 ★ id 一律忽略", () => {
+  assert.deepEqual(rowIds(["a"], ["x", "y"]), []);
 });
