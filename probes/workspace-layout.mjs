@@ -175,6 +175,8 @@ const tabState = () =>
       overflow: box ? box.scrollWidth > box.clientWidth + 1 : false,
       fade: Boolean(box?.classList.contains("fade")),
       scrollbarHeight: box ? box.offsetHeight - box.clientHeight : -1,
+      // #121：超出的组收进这颗，文本是「＋N」。
+      more: Number((document.querySelector(".ws-tabs-more")?.textContent ?? "").replace(/\D/g, "")) || 0,
     };
   });
 const rowState = () =>
@@ -193,6 +195,16 @@ const rowState = () =>
       ),
     };
   });
+// #121 起标签行只画 N 颗，被折叠的组要从「＋N」的下拉里点。
+const gotoTab = async (ws) => {
+  const direct = page.locator(`.ws-tab[data-ws="${ws}"]`);
+  if ((await direct.count()) > 0) await direct.click();
+  else {
+    await page.locator(".ws-tabs-more").click();
+    await page.locator(`.ws-tabs-menu .pm-item[data-ws="${ws}"]`).click();
+  }
+  await sleep(700);
+};
 const sheetState = () =>
   page.evaluate(() => {
     const chips = [...document.querySelectorAll(".display-sheet .layout-chip")];
@@ -222,7 +234,8 @@ let r = await rowState();
 ok(t.rowVisible && t.inTopbar, "工作区标签页那一行在顶栏里（#119 起并与顶栏同一行）");
 ok(r.visible && r.hasChip && r.hasStrip, "第二行同时装着当前会话那颗和本区胶囊");
 ok(r.topbarChip === 0, "顶栏里不再挂着那颗（它已经搬进第二行）");
-ok(t.count === 9, `标签页按组数排开（${t.count}）`);
+ok(t.count === 3, `标签行只画 3 颗（${t.count}）`);
+ok(t.more === 6, `剩下的 6 组收进 ＋N（＋${t.more}）`);
 ok(t.onWs === "f:/proj-01" && t.onName === "客户 01 号的后台系统", `当前工作区高亮（${t.onName}）`);
 ok(t.todo.length === 1 && t.todo[0] === "f:/proj-03", `有待处理的组带一颗点（${t.todo.join(",")}）`);
 ok(r.nowLabel.includes("工程 01 · 会话 1"), `行 2 左端的 NowChip 报着当前会话（${r.nowLabel}）`);
@@ -239,14 +252,13 @@ ok((await page.locator(".new-sheet").count()) === 1, "点 ＋ 打开「开新会
 await page.locator('.new-sheet .btn:has-text("取消")').first().click();
 await sleep(200);
 
-// 2) 溢出：右端渐隐、但不出横滚条
-ok(t.overflow, "9 个长名的组在 1000px 下确实装不下（scrollWidth > clientWidth）");
+// 2) 3 颗长名标签在 1000px 下仍装不下：右端渐隐、但不出横滚条
+ok(t.overflow, "3 颗长名标签在 1000px 下确实装不下（scrollWidth > clientWidth）");
 ok(t.fade, "装不下时右端渐隐（.ws-tabs.fade）");
 ok(t.scrollbarHeight === 0, `没有横向滚动条占位（offsetHeight - clientHeight = ${t.scrollbarHeight}）`);
 
 // 3) 点标签切组：打开那组排最上面的一颗
-await page.locator('.ws-tab[data-ws="f:/proj-05"]').click();
-await sleep(700);
+await gotoTab("f:/proj-05");
 t = await tabState();
 r = await rowState();
 ok((await page.evaluate(() => location.hash)) === "#/s/s-05-1", "点标签打开了那组排最上面的一颗（#/s/s-05-1）");
@@ -255,8 +267,7 @@ ok(r.nowLabel.includes("工程 05 · 会话 1"), `行 2 左端换成新会话（
 ok(r.chips.length === 0, `切到另一个没 ★ 的组：胶囊整条清空，只剩 NowChip 和 ＋（${r.chips.length} 颗）`);
 
 // 4) 行 2 只放本区的 ★ 会话，按 ★ 顺序，且不重复画当前那颗
-await page.locator('.ws-tab[data-ws="f:/proj-02"]').click();
-await sleep(700);
+await gotoTab("f:/proj-02");
 r = await rowState();
 ok(r.chips.join(" / ") === "工程 02 · 会话 2 / 工程 02 · 会话 1", `行 2 只放本区的 ★、按 ★ 顺序（${r.chips.join(" / ")}）`);
 ok(!r.chips.some((n) => r.nowLabel.includes(n)), `当前那颗（${r.nowLabel}）不重复出现在胶囊里`);
