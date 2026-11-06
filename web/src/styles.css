@@ -1920,6 +1920,21 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .model-sheet .sheet-foot .btn.primary { min-width: 76px; }
 .model-row .m-cur { margin-left: 8px; padding: 1px 4px; border-radius: 6px; border: 1px solid var(--line); color: var(--faint); font: 11px/1.4 var(--sans); font-weight: 400; vertical-align: 1px; }
 
+/* ---------------------------------------------------------------- continue (D159) */
+/* 权限按钮 44px 贴底，输入框默认两行 72.5px —— 它上方那 28.5px 本来就是空的。
+   28 + 4 + 44 = 76，整行只多 3.5px。「竖着叠」= 继续在上、权限在下，一起贴底。 */
+.composer-side { flex: none; display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.continue-btn {
+  height: 28px; display: inline-flex; align-items: center; justify-content: center; padding: 0 10px;
+  border-radius: 10px; border: 1px solid var(--accent-dim); background: var(--accent-bg); color: var(--accent);
+  font-size: 12px; cursor: pointer; white-space: nowrap;
+  transition: border-color 0.15s, background 0.15s, color 0.15s, opacity 0.15s;
+}
+.continue-btn:hover:not(:disabled) { border-color: var(--accent); }
+.continue-btn:disabled { border-color: var(--line); background: var(--panel); color: var(--faint); cursor: default; }
+/* `hidden` 属性打不过 `display: inline-flex`：没这句，只读会话里按钮还会露在权限按钮上方。 */
+.continue-btn[hidden] { display: none; }
+
 /* ---------------------------------------------------------------- permission mode (composer) */
 .perm-btn {
   flex: none; height: 44px; display: inline-flex; align-items: center; gap: 4px; padding: 0 12px;

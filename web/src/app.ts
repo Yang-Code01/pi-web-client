@@ -15,6 +15,7 @@ import { applyPending, badgeSession, syncPending, type PendingCounts, type Pendi
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, type RailItem } from "./shells.ts";
+import { continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
@@ -38,6 +39,19 @@ type Tab = "sessions" | "chat" | "queue";
  */
 const MODEL_REASK_MS = 15_000;
 const MODEL_WAIT_MS = 45_000;
+
+/**
+ * 点了「继续」之后多久内不再认第二次点击（D159）。`pi.status(running)` 回到页面之前按钮还亮着，
+ * 这期间连点会排上两条一模一样的消息。按会话记，不是按页面：切到别的会话再点不该被这边吞掉。
+ */
+const CONTINUE_GUARD_MS = 1500;
+
+/**
+ * 点「继续」时发给 pi 的**字面**文本（D159）：按钮标签走 `tr("继续")`，但这行字**不翻译** ——
+ * 英文界面发 `Continue` 会让模型读到的东西跟着界面语言变，而用户要的就是「继续」这两个字。
+ * （写成模块级常量也是告诉 `i18n-check`：这不是漏翻的界面文案。）
+ */
+const CONTINUE_TEXT = "继续";
 
 /** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
 type BadgeKind = "ask" | "approve" | "locked" | "run" | "done";
@@ -147,6 +161,10 @@ export class App {
   private sheet: HTMLElement | null = null;
   private modelChip: HTMLButtonElement | null = null;
   private textarea: HTMLTextAreaElement | null = null;
+  /** 「继续」按钮（D159）：住在权限按钮正上方那 28.5px 里。每次重画 composer 都换一颗新的。 */
+  private continueBtn: HTMLButtonElement | null = null;
+  /** 上一次点「继续」的会话与时刻（D159）：`pi.status` 回来之前按钮还亮着，连点会排两条。 */
+  private continueAt: { id: string; at: number } = { id: "", at: 0 };
   /** Skill palette state (the popover above the composer). */
   private skills: SkillInfo[] = [];
   private skillsAt = 0;
@@ -1304,6 +1322,8 @@ export class App {
       case "items":
         if (msg.sessionId !== this.currentId) break;
         this.chat.reset((msg.items ?? []) as Item[]);
+        // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
+        this.syncContinueButton();
         break;
       case "item.add":
         if (msg.sessionId !== this.currentId) break;
@@ -1775,6 +1795,8 @@ export class App {
             this.stepCount = 0;
           } else this.activity = "";
           this.fillHintStatus();
+          // 跑着 ↔ 空闲是「继续」按钮亮/灰的翻转点（D159）。
+          this.syncContinueButton();
           if (this.textarea) this.textarea.placeholder = this.composerHintText();
         }
         if (!msg.running) this.turnAt = null;
@@ -1974,7 +1996,11 @@ export class App {
       if (prev?.running && !state.running) void this.refreshGit(true);
       // The writer bar (接管 / 停止运行) and the status line both hang off these two flags.
       if (prev?.owned !== state.owned || prev?.origin !== state.origin || prev?.starting !== state.starting) this.renderChat();
-      else this.fillHintStatus();
+      else {
+        this.fillHintStatus();
+        // 上面那条 else 走的就是「flags 变了但不用重画」：`starting` / 闲忙都可能在这里翻，「继续」跟着刷。
+        this.syncContinueButton();
+      }
     }
     this.renderTop();
     this.renderSessions();
@@ -7034,6 +7060,7 @@ export class App {
     this.cwdChip = null;
     this.modelChip = null;
     this.textarea = null;
+    this.continueBtn = null;
     this.closeSkillPalette();
     this.imageBadge = null;
     if (!this.currentId) {
@@ -7106,8 +7133,12 @@ export class App {
       }
     };
 
-    // Enter sends; the slot the send button used holds the tool-permission switch.
-    row.append(box, this.permissionButton());
+    // Enter sends; the slot the send button used holds the tool-permission switch. The empty strip
+    // above that switch is where 继续 goes (D159): 28 + 4 + 44 = 76 against the textarea's 72.5,
+    // so the whole button costs the transcript ~3.5px instead of a row.
+    const side = el("div", "composer-side");
+    side.append(this.continueButton(), this.permissionButton());
+    row.append(box, side);
     if (this.images.length) {
       const badge = this.pendingImagesBadge();
       row.append(badge);
@@ -9168,6 +9199,76 @@ export class App {
       }
       this.extBelow.replaceChildren(...nodes);
     }
+  }
+
+  // ---------------------------------------------------------------- continue (D159)
+  /**
+   * 「继续」：把字面这两个字当成下一条用户消息发出去。pi 的 RPC 没有 continue 命令（`rpc-mode.js`
+   * 的 case 表里只有 prompt / steer / follow_up / abort / compact …），所以「接着干」在协议上
+   * 就是一句话。它坐在权限按钮正上方那 28.5px 里，代价是整行多 3.5px，而不是多一块。
+   */
+  private continueButton(): HTMLButtonElement {
+    const btn = el("button", "continue-btn") as HTMLButtonElement;
+    btn.type = "button";
+    btn.textContent = tr("继续");
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      this.sendContinue();
+    };
+    this.continueBtn = btn;
+    this.syncContinueButton();
+    return btn;
+  }
+
+  /** 藏 / 灰 / 亮全部走 `continueState()`（web/src/continue-state.ts），这里只写提示。 */
+  private syncContinueButton(): void {
+    const btn = this.continueBtn;
+    if (!btn) return;
+    const s = this.session;
+    const state = continueState(s, this.chat.hasUserTurns());
+    // 先置灰再藏：`hidden` 一旦失效（漏了 [hidden] 那条 display 规则），按钮至少还点不动。
+    btn.disabled = state !== "ready";
+    btn.hidden = state === "hidden";
+    if (state === "hidden") return;
+    const why =
+      state === "ready"
+        ? ""
+        : s?.starting
+          ? tr("pi 正在启动，起来之后再继续")
+          : s?.running
+            ? tr("pi 正在跑这一轮，停下之后再继续")
+            : tr("这条会话还没有说过话，没有可继续的");
+    btn.title = why || tr("把「继续」发给 pi —— 草稿留在输入框里，不会被动到");
+  }
+
+  /**
+   * 发「继续」。**不清草稿**：它跟 Enter 不同 —— 这是「接着刚才那件事」，不是「把我写的发出去」。
+   * 乐观气泡照 `sendPrompt()` 带 `clientId`，桥回灌时这一页认自己那条（#19）。
+   */
+  private sendContinue(): void {
+    const id = this.currentId;
+    if (!id || continueState(this.session, this.chat.hasUserTurns()) !== "ready") return;
+    // 连点保护：`pi.status(running)` 回来之前按钮还亮着，按会话只认第一次。
+    const now = Date.now();
+    if (this.continueAt.id === id && now - this.continueAt.at < CONTINUE_GUARD_MS) return;
+    this.continueAt = { id, at: now };
+    // 字面「继续」就发这两个字（用户定的），不做 i18n：模型读到的东西不该跟着界面语言变。
+    const text = CONTINUE_TEXT;
+    const clientId = `local:${now}:${Math.random().toString(36).slice(2, 8)}`;
+    // 重画会重建 textarea，草稿文字会从 `composerText` 填回去，但光标位置和焦点不会 —— 收回来。
+    const caret = this.textarea?.selectionStart ?? null;
+    this.act(() => {
+      if (this.currentId === id) {
+        this.chat.add({ id: clientId, kind: "user", text, images: [], ts: new Date().toISOString() });
+        this.renderChat();
+        const ta = this.textarea;
+        if (ta && caret != null) {
+          ta.focus();
+          ta.setSelectionRange(caret, caret);
+        }
+      }
+      this.socket.send({ type: "prompt", sessionId: id, text, images: [], clientId, behavior: "steer" });
+    });
   }
 
   // ---------------------------------------------------------------- permission mode
