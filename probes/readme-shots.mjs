@@ -606,7 +606,7 @@ async function shootStub() {
     return { page, ctx };
   };
 
-  // 5) 手机：危险命令的审批卡（拒绝单击 / 批准二次确认），键盘收起后贴在输入框下方。
+  // 5) 手机：危险命令的审批卡（单击批准 / 单击拒绝，无弹窗），键盘收起后贴在输入框下方。
   {
     const { page, ctx } = await open("approval", 390, 844);
     await until(async () => (await page.locator(".approval").count()) > 0, 10000, "approval card");
