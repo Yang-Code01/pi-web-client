@@ -17,7 +17,7 @@ import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
-import { TABS_DEFAULT, tabModel } from "./wstabs.ts";
+import { TABS_DEFAULT, tabHitTest, tabModel, tabReorder, type TabHit, type TabRect } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { WS_NAME_MAX, dropBlocker, isPinned, pinBlocker, renameIntent, togglePin } from "./wsmanage.ts";
@@ -336,6 +336,11 @@ export class App {
    * 两处都能数「还有几个」，各开各的，关一个不该顺手关掉另一个。
    */
   private tabsMore: { close(): void } | null = null;
+  /**
+   * #124 刚才那一拖是否真的挪了位置。`click` 紧跟在 `pointerup` 后面，不给个标记的话松手会被
+   * 当成一次点击，把组切到刚拖走的那颗上。
+   */
+  private tabDragMoved = false;
   /**
    * #99 / #98：拖拽的落点容器。默认是左栏那棵树；工作区浮层开着时换成浮层 —— 落点判定
    * (`hitTest`) 与落点线是同一份，换的只是「量哪一块 DOM」。
@@ -10162,9 +10167,11 @@ export class App {
     for (const id of model.visible) {
       const group = byId.get(id);
       if (!group) continue;
+      const canDrag = model.fixed.includes(group.id);
       const tab = el("button", `ws-tab${group.id === cur ? " on" : ""}`);
       tab.dataset.ws = group.id;
-      tab.title = tr("切到这个工作区");
+      // 补位组长得跟固定组一模一样，只是拖不动（#118 R8）—— 那就把「为什么拖不动」写在悬停上。
+      tab.title = canDrag ? tr("切到这个工作区") : tr("切到这个工作区；自动补位的组拖不动，先在组头菜单里固定");
       tab.setAttribute("aria-label", tr("{p1}，{p2} 个会话", { p1: group.name, p2: group.sessions.length }));
       if (group.id === cur) tab.setAttribute("aria-current", "true");
       const dot = el("span", "ws-tab-dot");
@@ -10175,7 +10182,16 @@ export class App {
         todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
         tab.append(todo);
       }
-      tab.onclick = () => this.gotoGroup(group);
+      // #124：只有固定组能拖。补位组连 pointerdown 都不接，所以它既不会起拖也不会拖出半个指示线。
+      if (canDrag) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id);
+      tab.onclick = () => {
+        // 刚拖过一把：这次 click 是拖拽的尾巴，不能当成「切到这一组」。
+        if (this.tabDragMoved) {
+          this.tabDragMoved = false;
+          return;
+        }
+        this.gotoGroup(group);
+      };
       wsTabs.append(tab);
     }
     // #121：超出的组收进这颗。它在槽外面（见 createShell），槽横滚时位置不动。
@@ -10192,6 +10208,94 @@ export class App {
     }
     // 量宽要等布局落地：hidden 刚摘掉的那一帧 clientWidth 还是 0。
     requestAnimationFrame(() => this.paintWsTabFade());
+  }
+
+  /**
+   * #124 固定组拖拽重排。按下后移动超过 4px 才算起拖 —— 不超过就还是那次普通点击（切组），
+   * 所以 pointerdown 里不能 preventDefault、也不能抢 pointer capture。
+   *
+   * 落点由 `tabHitTest()` 定（拖动源自己从 rects 里剔掉），指示线是一条 2px 竖线贴在落点那一侧；
+   * 松手只发一条 `ws.tabs { pinned }`，由桥端落库再广播回来 —— 页面不自己改本地顺序。
+   * 拖回原位 / 标签行里只剩它一颗 → `tabReorder()` 返回 null，一个字都不发。
+   * 只重排、不增删（#118 R7），所以这里没有「拖出固定区」这条路。
+   */
+  private startTabDrag(ev: PointerEvent, id: string): void {
+    if (ev.button !== 0) return;
+    const tabs = this.els.wsTabs;
+    const tab = ev.currentTarget as HTMLElement | null;
+    if (!tabs || !tab) return;
+    const pinned = this.workspaces.pinned ?? [];
+    if (!pinned.includes(id)) return;
+    const x0 = ev.clientX;
+    const y0 = ev.clientY;
+    let moved = false;
+    let hit: TabHit | null = null;
+    let line: HTMLElement | null = null;
+    this.tabDragMoved = false;
+
+    /** 其余标签的横向占位：拖动源自己不在里面，否则它永远吸住落点。 */
+    const rects = (): TabRect[] =>
+      [...tabs.querySelectorAll<HTMLElement>(".ws-tab")]
+        .filter((n) => n.dataset.ws && n.dataset.ws !== id)
+        .map((n) => {
+          const r = n.getBoundingClientRect();
+          return { id: n.dataset.ws ?? "", left: r.left, right: r.right };
+        });
+
+    const move = (e: PointerEvent): void => {
+      if (!moved) {
+        if (Math.hypot(e.clientX - x0, e.clientY - y0) <= 4) return;
+        moved = true;
+        this.tabDragMoved = true;
+        // 过 4px 时按钮里的字可能已经被选了一半：清掉，再把选中和悬浮压住（不然看不出线画在哪）。
+        document.getSelection()?.removeAllRanges();
+        document.body.classList.add("ws-tab-dragging");
+        tab.classList.add("drag");
+      }
+      const box = rects();
+      hit = tabHitTest(e.clientX, box);
+      const at = hit ? box.find((r) => r.id === hit?.id) : undefined;
+      if (!hit || !at) {
+        line?.remove();
+        line = null;
+        return;
+      }
+      if (!line) {
+        line = el("div", "ws-tab-line");
+        tabs.append(line);
+      }
+      // 标签槽是 overflow-x: auto —— 竖线挂在**内容**坐标上（加 scrollLeft），槽横滚时它跟着标签走。
+      const base = tabs.getBoundingClientRect();
+      line.style.left = `${Math.round((hit.side === "before" ? at.left : at.right) - base.left + tabs.scrollLeft)}px`;
+    };
+
+    const cleanup = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      line?.remove();
+      line = null;
+      document.body.classList.remove("ws-tab-dragging");
+      tab.classList.remove("drag");
+    };
+
+    const up = (): void => {
+      cleanup();
+      if (!moved) return;
+      // click 紧跟在这一帧后面：留个标记让那颗标签的 onclick 认出「这是拖拽，不是切组」。
+      // 用定时器兜底 —— 拖到别的标签上松手时 click 落在 .ws-tabs 上，没有哪颗标签会来消费它。
+      window.setTimeout(() => {
+        this.tabDragMoved = false;
+      }, 0);
+      const next = tabReorder(pinned, id, hit);
+      if (next) this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", pinned: next }));
+    };
+
+    const cancel = (): void => cleanup();
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
   }
 
   private paintWsTabFade(): void {

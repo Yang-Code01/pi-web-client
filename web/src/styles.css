@@ -698,7 +698,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   display: flex; gap: 8px; align-items: center; padding: 8px 12px; min-width: 0;
   cursor: pointer; list-style: none;
 }
-.fcard > summary.top: :-webkit-details-marker { display: none; }
+.fcard > summary.top::-webkit-details-marker { display: none; }
 .fcard[open] > summary.top { border-bottom: 1px solid var(--line-soft); }
 .fcard.calm[open] > summary.top { border-bottom-color: var(--line-soft); }
 .fcard .top .chev { flex: none; color: var(--faint); font-size: 11px; transition: transform 0.15s ease; }
@@ -927,7 +927,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 html[data-layout="a"] .topbar > .title,
 html[data-layout="a"] .topbar > .sub,
 html[data-layout="a"] .topbar > .dot { display: none; }
-.ws-tabs { display: flex; flex: 1; min-width: 0; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+.ws-tabs { position: relative; display: flex; flex: 1; min-width: 0; gap: 2px; overflow-x: auto; scrollbar-width: none; }
 /* 溢出不出横滚条：深色顶栏下面一条细滚动条像条裂缝，而且点标签不该先摸滚动条。 */
 .ws-tabs::-webkit-scrollbar { height: 0; display: none; }
 .ws-tabs.fade {
@@ -958,6 +958,13 @@ html[data-layout="a"] .topbar > .dot { display: none; }
 .ws-tab-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; }
 .ws-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-tab-todo { flex: none; width: 6px; height: 6px; border-radius: 999px; background: var(--warn); box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.14); }
+/* #124 固定组可以拖着换顺序：落点是一条 2px 竖线，挂在标签槽里（内容坐标），槽横滚时跟着标签走。
+   拖拽期间压掉选中与悬浮 —— 按钮里的字被刷蓝、鼠标每划过一颗都亮一下，就看不清线画面在哪了。 */
+.ws-tab-line { position: absolute; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--accent); pointer-events: none; }
+.ws-tab.drag { opacity: 0.45; }
+body.ws-tab-dragging { user-select: none; }
+body.ws-tab-dragging .ws-tab { cursor: grabbing; }
+body.ws-tab-dragging .ws-tab:hover:not(.on) { color: var(--dim); background: none; }
 /* #121：标签行只画 N 个，超出的收进这颗。它和标签槽是兄弟 —— `.ws-tabs` 是 overflow-x: auto，
    摆进槽里会跟着横滚跑掉；挂在槽外就永远点得到。尺寸跟胶囊条那颗 `.pin-more` 同一档。 */
 .ws-tabs-more {

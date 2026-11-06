@@ -38,6 +38,7 @@ export const en: Dict = {
   "{p1}：下一步补上": "{p1}: coming next",
   "{p1}，{p2} 个会话": "{p1}, {p2} sessions",
   "切到这个工作区": "Switch to this workspace",
+  "切到这个工作区；自动补位的组拖不动，先在组头菜单里固定": "Switch to this workspace. Auto-filled groups can't be dragged — pin it from its header menu first.",
   "还有 {p1} 个工作区": "{p1} more workspaces",
   "被折叠的工作区": "Folded workspaces",
   "{p1} · {p2}（当前）": "{p1} · {p2} (current)",

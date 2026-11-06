@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { tabModel } from "../src/wstabs.ts";
+import { tabHitTest, tabModel, tabReorder } from "../src/wstabs.ts";
 
 /** 左栏组序（`buildTree()` 排好的那一份；#121 里还没有固定组）。 */
 const ORDER = ["g1", "g2", "g3", "g4", "g5"];
@@ -87,4 +87,65 @@ test("当前组在圈外：挤掉最后一个补位组，固定组一个都不�
   assert.deepEqual(m.visible, ["g3", "g1", "g5"], "g3 是固定的，被挤掉的是补位的 g2");
   assert.deepEqual(m.more, ["g2", "g4"]);
   assert.equal(m.extra, false);
+});
+
+// ---------------------------------------------------------------- #124 固定组拖拽重排
+
+/** 标签行里两颗标签的横向占位（左边界含、右边界含）。 */
+const RECTS = [
+  { id: "a", left: 0, right: 100 },
+  { id: "b", left: 104, right: 204 },
+];
+
+test("横向落点：左半 → before，右半 → after", () => {
+  assert.deepEqual(tabHitTest(20, RECTS), { id: "a", side: "before" });
+  assert.deepEqual(tabHitTest(80, RECTS), { id: "a", side: "after" });
+  assert.deepEqual(tabHitTest(120, RECTS), { id: "b", side: "before" });
+  assert.deepEqual(tabHitTest(190, RECTS), { id: "b", side: "after" });
+});
+
+test("横向落点：正中线算右半（差一像素就换边）", () => {
+  assert.deepEqual(tabHitTest(49, RECTS), { id: "a", side: "before" });
+  assert.deepEqual(tabHitTest(50, RECTS), { id: "a", side: "after" });
+  assert.deepEqual(tabHitTest(51, RECTS), { id: "a", side: "after" });
+});
+
+test("横向落点：第一颗之前贴它的 before，最后一颗之后贴它的 after", () => {
+  assert.deepEqual(tabHitTest(-30, RECTS), { id: "a", side: "before" });
+  assert.deepEqual(tabHitTest(400, RECTS), { id: "b", side: "after" });
+});
+
+test("横向落点：标签间的空隙归右边那颗的 before（与上一颗的 after 是同一个插入位）", () => {
+  assert.deepEqual(tabHitTest(102, RECTS), { id: "b", side: "before" });
+});
+
+test("横向落点：一颗标签都没有 → null", () => {
+  assert.equal(tabHitTest(10, []), null);
+});
+
+test("重排：拖到另一颗右半边 → 插到它后面（两颗对调）", () => {
+  assert.deepEqual(tabReorder(["a", "b"], "a", { id: "b", side: "after" }), ["b", "a"]);
+});
+
+test("重排：拖到另一颗左半边 → 插到它前面", () => {
+  assert.deepEqual(tabReorder(["a", "b", "c"], "c", { id: "a", side: "before" }), ["c", "a", "b"]);
+});
+
+test("重排：拖回原位 → null（一个字都不发）", () => {
+  assert.equal(tabReorder(["a", "b", "c"], "a", { id: "b", side: "before" }), null);
+  assert.equal(tabReorder(["a", "b", "c"], "c", { id: "b", side: "after" }), null);
+});
+
+test("重排：落点是自己 / 自己不在列表里 / 落点不在这几颗里 → null", () => {
+  assert.equal(tabReorder(["a", "b"], "a", { id: "a", side: "after" }), null);
+  assert.equal(tabReorder(["a", "b"], "x", { id: "b", side: "after" }), null);
+  assert.equal(tabReorder(["a", "b"], "a", { id: "nope", side: "after" }), null);
+  assert.equal(tabReorder(["a", "b"], "a", null), null);
+});
+
+test("哪些能拖：visible 前面的固定组才是 fixed，补位与当前挤进来的都不算", () => {
+  assert.deepEqual(tabModel({ order: ORDER, pinned: ["g4", "g2"], max: 3, current: "g4" }).fixed, ["g4", "g2"]);
+  assert.deepEqual(tabModel({ order: ORDER, pinned: ["g3"], max: 3, current: "g5" }).fixed, ["g3"]);
+  assert.deepEqual(tabModel({ order: ORDER, pinned: [], max: 3, current: "g1" }).fixed, []);
+  assert.deepEqual(tabModel({ order: ORDER, pinned: ["g1", "g2", "g3"], max: 3, current: "g5" }).fixed, ["g1", "g2", "g3"]);
 });
