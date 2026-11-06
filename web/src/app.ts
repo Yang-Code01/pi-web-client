@@ -9655,6 +9655,10 @@ export class App {
     return slot;
   }
 
+  /**
+   * 批准单击生效（D155 推翻 D10）：不再弹原生 confirm —— 那个弹窗阻塞整页（倒计时也跟着停）、
+   * 样式不由我们控制，而且「拒绝」单击、「批准」两下会让人以为两个按钮的份量不一样。
+   */
   private approvalCard(a: ApprovalRequest): HTMLElement {
     const card = el("div", "approval");
     const t = el("div", "t", a.title);
@@ -9662,15 +9666,9 @@ export class App {
     const actions = el("div", "actions");
 
     const approve = el("button", "btn primary", tr("批准"));
-    approve.onclick = () => {
-      if (!confirm(tr("确认批准这条命令？"))) return;
-      this.decide(a, "approve");
-    };
+    approve.onclick = () => this.decide(a, "approve");
     const always = el("button", "btn", tr("本会话允许这类"));
-    always.onclick = () => {
-      if (!confirm(tr("批准这条命令，并在本会话内不再询问同一类命令？"))) return;
-      this.decide(a, "always");
-    };
+    always.onclick = () => this.decide(a, "always");
     const reject = el("button", "btn danger", tr("拒绝"));
     reject.onclick = () => this.decide(a, "reject");
 
