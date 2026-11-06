@@ -334,7 +334,97 @@ export interface PreviewInfo {
   root: string;
   size: number;
   mtime: number;
-  kind: "markdown" | "html" | "image" | "text" | "binary";
+  kind: "markdown" | "html" | "image" | "text" | "sheet" | "binary";
+}
+
+/** D166 表格预览：格子只带显示串，有数字格式的按格式显示。 */
+export type SheetCellKind = "n" | "s" | "b" | "e";
+
+/** #109 条件格式算出来的样式（前端只贴样式，不理解规则）。 */
+export interface SheetFx {
+  bg?: string;
+  fg?: string;
+  b?: 1;
+  bar?: [number, string];
+  icon?: { s: string; g: string; c: string; l: number };
+}
+
+export interface SheetCell {
+  r: number;
+  c: number;
+  k: SheetCellKind;
+  t: string;
+  /** 数值原始值（无显示格式的原数）：数字格才有，复制粘贴用它。 */
+  v?: number;
+  /** 文件里指定的对齐（合并标题居中这类）。 */
+  a?: "l" | "c" | "r";
+  /** #109 条件格式：底色 / 字色 / 加粗 / 数据条 / 图标。 */
+  fx?: SheetFx;
+  /** #111：公式原文（不带 `=`）。 */
+  f?: string;
+  /** #111：只有公式、文件里没存结果——显示为空，不猜 0。 */
+  noCache?: boolean;
+}
+
+/** 合并区，0 基闭区间。 */
+export interface SheetMerge {
+  r0: number;
+  c0: number;
+  r1: number;
+  c1: number;
+}
+
+export interface SheetInfo {
+  name: string;
+  rows: number;
+  cols: number;
+  /** #110：格子数（rows × cols）；三档阈值按它分。 */
+  cells?: number;
+  /** #110 显示档：full 全量；light 只值（不涂条件格式）；none 不给（只给清单 + 尺寸）。 */
+  tier?: "full" | "light" | "none";
+  /** 藏起来的表：不出现在底部，只在状态条上提示个数。 */
+  hidden?: boolean;
+  merges?: SheetMerge[];
+  /** 每列宽度（px），长度等于 cols。 */
+  colWidths?: number[];
+  freeze?: { rows: number; cols: number } | null;
+  /** #109：认不出的条件格式规则条数（状态条提示「N 条暂不支持」）。 */
+  cfUnsupported?: number;
+  /** #111：这张表里「只有公式、没存结果」的格子数。 */
+  noCache?: number;
+}
+
+/** #110 显示档：full 全量；light 只值（不涂条件格式）；none 不给（只给清单 + 尺寸）。 */
+export type SheetTier = "full" | "light" | "none";
+
+/** #107：查找命中的格子（只回坐标，不回值）。 */
+export interface SheetMatches {
+  sheet: string;
+  matches: { r: number; c: number }[];
+  /** 超过上限只回前 N 条。 */
+  truncated?: boolean;
+}
+
+export interface SheetMeta {
+  name: string;
+  rows: number;
+  cols: number;
+  sheets: SheetInfo[];
+  /** 包里有图表部件（#112）：页面视图值得自动转一次。 */
+  charts?: boolean;
+}
+
+export interface SheetWindow {
+  sheet: string;
+  r0: number;
+  r1: number;
+  c0: number;
+  c1: number;
+  rows: { r: number; cells: SheetCell[] }[];
+  /** #110：这次实际解压/扫过的表 XML 字节；扫够就停，所以通常远小于整表。 */
+  bytes?: number;
+  /** 这张表 XML 的未压缩总字节数。 */
+  partBytes?: number;
 }
 
 /** Tool permission mode the bridge's approval gate enforces per session. */

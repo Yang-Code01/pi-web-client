@@ -19,6 +19,8 @@ import { railModel, shellParts, type RailItem } from "./shells.ts";
 import { continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
+import { SheetDialog } from "./sheet/dialog.ts";
+import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
 import { skillOf } from "./skill.ts";
 import { Socket } from "./ws.ts";
@@ -28,7 +30,7 @@ import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { WS_NAME_MAX, dropBlocker, fixedBlocker, fixedDropped, fixedRows, renameIntent, toggleFixed } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
@@ -355,6 +357,8 @@ export class App {
   private capturing: string | null = null;
   /** D70: one shell per tab, all inside one dock; the bridge owns the processes (max 4). */
   private termDock: HTMLElement | null = null;
+  /** D166: 表格浮窗与终端并列，不进 viewer 面板；同一时间只开一扇。 */
+  private sheetDock: SheetDialog | null = null;
   private termTabStrip: HTMLElement | null = null;
   private termBodies: HTMLElement | null = null;
   private termTabs = new Map<string, TermTab>();
@@ -5344,7 +5348,122 @@ export class App {
     v.path = v.info.abs;
     // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
     if (!replace) this.retargetTop(path, v.info.abs, sessionId);
+    // D166: spreadsheet files leave the binary branch and open in their own dialog, not the viewer.
+    if (v.info.kind === "sheet") {
+      const info = v.info;
+      this.closeViewer();
+      this.openSheet(info);
+      return;
+    }
+    // #113: CSV / TSV 也在浮窗里，但没有 xlsx 那种元数据——字节由页面自己解码、切格。
+    if (/\.(csv|tsv)$/i.test(v.info.name)) {
+      const info = v.info;
+      this.closeViewer();
+      void this.openCsvSheet(info, sessionId);
+      return;
+    }
     await this.loadViewerText();
+  }
+
+  /** #113：CSV / TSV 的浮窗——表格 / 源码两个 tab，编码嗅探在前端（D166），保存仍走文本通道。 */
+  private async openCsvSheet(info: PreviewInfo, sessionId: string): Promise<void> {
+    let data: CsvData;
+    try {
+      const res = await fetch(rawUrl(info));
+      if (!res.ok) throw new Error(await res.text());
+      data = readCsv(new Uint8Array(await res.arrayBuffer()));
+    } catch (err: any) {
+      this.warn(tr("读不了这个表格：{p1}", { p1: errText(err) }));
+      return;
+    }
+    const metaOf = (d: CsvData): SheetMeta => ({
+      name: info.name,
+      rows: d.rows.length,
+      cols: d.cols,
+      sheets: [{ name: info.name, rows: d.rows.length, cols: d.cols }],
+    });
+    const windowOf = async (sheet: string, r0: number, r1: number, c0: number, c1: number): Promise<SheetWindow> =>
+      csvWindow(data, sheet, r0, r1, c0, c1);
+    // 只给完整的文件留保存：截断的只看到一部分，2 MB 以上桥端也不收。
+    const saveable = !data.truncated && info.size <= CSV_MAX_BYTES;
+    this.sheetDock?.destroy();
+    this.sheetDock = null;
+    const dialog = new SheetDialog({
+      token: info.token,
+      name: info.name,
+      path: info.abs,
+      raw: rawUrl(info),
+      scale: () => this.uiScale(),
+      loadMeta: async () => metaOf(data),
+      fetchWindow: windowOf,
+      // #107：CSV 的全文已经在前端内存里，但查找入口只给 .xlsx（本票范围）。
+      onQuote: (text) => this.quoteInto(text),
+      onOpen: () => this.openInApp(info.token),
+      onReveal: () => this.reveal(info.abs),
+      onReopen: () => void this.openPreview(info.abs, this.currentId, true),
+      source: {
+        text: data.text,
+        note: data.truncated
+          ? tr("只显示前 {p1} 行（共 {p2} 行），这么大的文件不能在浏览器里改", {
+              p1: fmtNum(data.rows.length),
+              p2: fmtNum(data.total),
+            })
+          : saveable
+            ? undefined
+            : tr("文件超过 {p1} MB，不能在浏览器里改", { p1: (info.size / 1024 / 1024).toFixed(1) }),
+        onSave: saveable
+          ? async (text) => {
+              const res = await api.save(sessionId, { path: info.abs, text, mtime: info.mtime, size: info.size });
+              info.mtime = res.mtime;
+              info.size = res.size;
+              data = reparseCsv(data, text);
+              await dialog.setData(metaOf(data), windowOf);
+            }
+          : undefined,
+      },
+      onClose: () => {
+        if (this.winFront === dialog.root) this.winFront = null;
+        if (this.sheetDock === dialog) this.sheetDock = null;
+      },
+      onRaise: () => this.raiseWindow(dialog.root),
+    });
+    this.sheetDock = dialog;
+    this.overlay(dialog.root);
+    this.raiseWindow(dialog.root);
+    dialog.open();
+  }
+
+  /** D166: 表格浮窗（无遮罩、不抢焦点）。关掉旧的那扇再开新的。 */
+  private openSheet(info: PreviewInfo): void {
+    this.sheetDock?.destroy();
+    this.sheetDock = null;
+    const dialog = new SheetDialog({
+      token: info.token,
+      name: info.name,
+      path: info.abs,
+      raw: rawUrl(info),
+      scale: () => this.uiScale(),
+      loadMeta: () => api.sheetMeta(info.token),
+      fetchWindow: (sheet, r0, r1, c0, c1) => api.sheetWindow(info.token, sheet, r0, r1, c0, c1),
+      // #107：整表查找在桥端扫（前端只拿着一个可视窗口）。
+      findSheet: (sheet, q) => api.sheetFind(info.token, sheet, q),
+      onQuote: (text) => this.quoteInto(text),
+      // #112：有图表的文件自动转一次 PDF；没有的也能手动切过去看打印版式。
+      page: { token: info.token },
+      onOpen: () => this.openInApp(info.token),
+      onReveal: () => this.reveal(info.abs),
+      // 文件被改过：要新的 token，所以整扇重开一趟（旧的那扇由 openSheet 拆）。
+      onReopen: () => void this.openPreview(info.abs, this.currentId, true),
+      onClose: () => {
+        if (this.winFront === dialog.root) this.winFront = null;
+        if (this.sheetDock === dialog) this.sheetDock = null;
+      },
+      onRaise: () => this.raiseWindow(dialog.root),
+    });
+    this.sheetDock = dialog;
+    this.overlay(dialog.root);
+    this.raiseWindow(dialog.root);
+    dialog.open();
   }
 
   /** md / text / html-source need the bytes; html and images load by url. */
@@ -5529,6 +5648,23 @@ export class App {
         });
     };
     return btn;
+  }
+
+  /** #106 出口：把预览过的那份文件交给这台电脑上的 Excel。路径由桥端从凭据里解，页只递 token。 */
+  private async openInApp(token: string): Promise<void> {
+    try {
+      this.warn((await api.openFile(token)).message);
+    } catch (err: any) {
+      this.warn(tr("打不开文件：{p1}", { p1: errText(err) }));
+    }
+  }
+
+  private async reveal(abs: string): Promise<void> {
+    try {
+      this.warn((await api.reveal(abs)).message);
+    } catch (err: any) {
+      this.warn(tr("打不开文件管理器：{p1}", { p1: errText(err) }));
+    }
   }
 
   // ------------------------------------------------------- 预览历史（D63）
@@ -5833,12 +5969,32 @@ export class App {
       return;
     }
     if (info.kind === "binary") {
-      const box = el("div", "viewer-msg");
-      box.append(el("div", "", tr("二进制文件（{p1}），这里不直接显示。", { p1: fmtSize(info.size) })));
-      const open = el("button", "btn", tr("新标签页打开 / 下载"));
-      open.onclick = () => openSameOrigin(url);
+      // #106: .xls / .ods / 加密包 / 改了扩展名的 zip — 这里不看，交给这台电脑上的默认程序。
+      const workbook = WORKBOOK.test(info.name);
+      const box = el("div", workbook ? "viewer-msg workbook" : "viewer-msg");
+      box.append(
+        el(
+          "div",
+          "",
+          workbook ? tr("这个格式这里不支持，用本机程序打开") : tr("二进制文件（{p1}），这里不直接显示。", { p1: fmtSize(info.size) }),
+        ),
+      );
+      if (workbook) {
+        const open = el("button", "btn", tr("用默认程序打开"));
+        open.onclick = () => {
+          open.disabled = true;
+          void this.openInApp(info.token).finally(() => {
+            open.disabled = false;
+          });
+        };
+        box.append(open);
+      }
+      const dl = el("button", "btn", tr("新标签页打开 / 下载"));
+      dl.onclick = () => openSameOrigin(url);
       // D69: the useful move for an xlsm / pdf / docx is the machine's own file manager, not a download.
-      box.append(open, this.revealButton(info.abs));
+      // 公网不泄本机路径（US 46）：桥端已把 binary 的 abs 抹空，这里就不给「在文件夹中显示」。
+      box.append(dl);
+      if (info.abs) box.append(this.revealButton(info.abs));
       body.append(box);
       return;
     }
@@ -6090,6 +6246,28 @@ export class App {
     this.fitComposer();
     this.textarea.focus();
     this.textarea.setSelectionRange(text.length, text.length);
+  }
+
+  /**
+   * #107：表格里「引用给 pi」——把「文件路径 + A2:C4」插到对话框光标处。
+   * 只插入、不发送，也不盖掉已经写了一半的草稿。
+   */
+  private quoteInto(text: string): void {
+    const field = this.textarea;
+    if (!field || !this.currentId) return;
+    const base = field.value;
+    const start = field.selectionStart ?? base.length;
+    const end = field.selectionEnd ?? start;
+    const lead = start > 0 && !/\s/.test(base[start - 1]) ? " " : "";
+    const ins = `${lead}${text}`;
+    const next = `${base.slice(0, start)}${ins}${base.slice(end)}`;
+    this.composerText = next;
+    this.noteDraft();
+    field.value = next;
+    const caret = start + ins.length;
+    field.focus();
+    field.setSelectionRange(caret, caret);
+    this.fitComposer();
   }
 
   /** 「交给 agent → 新开会话」：会话建好之后才填（见 case "session"）。 */
@@ -12886,6 +13064,9 @@ function splitImages(files: File[]): { images: File[]; others: File[] } {
 
 /** Picked files with these extensions get attached like a pasted image instead of inserted as a path. */
 const ATTACH_IMAGE = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
+
+/** #106: 表格类文件即使读不了（.xls/.ods/加密包），也用「这个格式这里不支持」而不是通用二进制文案。 */
+const WORKBOOK = /\.(xlsx|xlsm|xlsb|xls|ods)$/i;
 
 /** SVG has no pixels: render it through an <img> (scripts never run there) onto a canvas. */
 async function rasterizeSvg(file: File): Promise<ImageBitmap | null> {
