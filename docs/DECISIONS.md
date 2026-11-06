@@ -2220,3 +2220,42 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 **代价 / 可改：** 手机上一指头滑过就可能批掉一条命令 —— D10 担心的场景回来了。真要防误触，按 D10 的**原设计**做卡内两段（按钮文字自己变 + 3 秒复原，不阻塞页面），不要再用 `window.confirm`。**可改**。
 
 **验证：** `npm --prefix web run typecheck`（tsc + `i18n-check.mjs`，去掉两个键后三边仍然对齐）；本地起 bridge 后危险命令弹卡，单击「批准」直接发 `{type:"approve", decision:"approve"}`、卡片消失、命令开始执行，中途不再出现任何浏览器弹窗。
+
+## D156 技能商店的下载不再只有一个源：raw 被重置时改走 jsDelivr 镜像；树比仓库旧时自愈（无票，用户口头报障）
+
+**问题**（用户截图）：技能商店点「安装到全局」失败，界面上只有一行 `没有装上：read ECONNRESET`。服务器条目也大多没有说明（同一行是「部分条目的说明没查到」）。
+
+查下来是同一件事：商店的**所有文件**都从 `raw.githubusercontent.com` 取（`fileUrl()`），而这个域名在用户的网络里直连被重置（curl `000`，Node 报 `read ECONNRESET`，连试三次都一样）。而商店本来就依赖的 `data.jsdelivr.com`（仓库树）和 `skills.sh` 都是通的 —— 也就是说，只有一个主机把整件事拖垮了。桥自己又没配代理（`settings.json` 里没有 `httpProxy`，进程环境也没有 `HTTPS_PROXY`），D114 明确禁止把本机代理写进产品，所以「让用户去配代理」不是默认答案。
+
+顺带还发现包装没生效：`LIVE_NET.file` 原先把 `await requestRaw(...)` 写在 `try` 之外，所以注释里说的「每次失败都说出是哪个文件」从未发生过，页面只能拿到裸的 `read ECONNRESET`。
+
+修好第一个问题之后又撞上第二个：`anthropics/skills` 的 `xlsx` 报到 `下载 skills/xlsx/scripts/office/pack.py 失败：返回 404`。`data.jsdelivr.com` 的 `@HEAD` 树对它自己缓存了几个小时，上游刚把 `scripts/office/*` 挪走，于是树里列着 raw 上已经不存在的文件 —— 这跟代理无关，`raw` 经代理也 404，旧代码今天同样装不上。
+
+**决定：**
+
+1. **文件有两个源，先后有序**（`MIRROR_HOSTS` / `mirrorUrls()` / `fileFetcher()`）：先 `raw.githubusercontent.com`，只在**socket 级失败**（`ECONNRESET` / `ETIMEDOUT` / `ENOTFOUND` / `EAI_AGAIN` / `socket hang up` 等）时改走 jsDelivr 的三个 GitHub 镜像域 `testingcf.jsdelivr.net`、`fastly.jsdelivr.net`、`gcore.jsdelivr.net`（`/gh/<repo>@<ref>/<path>`）。**404 之类的回答不换源** —— 文件是真的不在，换源只会把有用的那条消息换成不存在的那个。
+2. **死掉的主机记十分钟**：`fileFetcher` 里一张 `host → downUntil` 表，装一个十二个文件的技能只探一次被墙的主机，不是十二次；十分钟后再给它一次机会，网络恢复时不需要重启桥。
+3. **报错说出文件和主机**：失败一律 `下载 <path> 失败：<host> <原因>`，全都挂掉时末尾附「在 pi 的设置里填 httpProxy，或给桥设 HTTPS_PROXY 后重启」。这是页面上唯一能看到的那行字，比堆栈有用。错误对象保留 `code`（`HTTP_404`、`ECONNRESET`…），后面第 4 条要靠它区分。
+4. **树比仓库旧时自愈**（`freshRepoFiles()`）：安装中任何文件 404，就用 GitHub API（`/git/trees/HEAD?recursive=1`）取一次**实时**树、把目标目录清空、按新树重来一次；新树写回磁盘缓存，下一次安装不再问 GitHub。新树里连 `SKILL.md` 都没有才把 404 报出去（那说明目录真的没了）。
+5. 三个镜像域由代码写死，**不读 `BILLION_CONTEXT_PROXY` 之类的环境变量**，也不自动把本机代理塞给 `fetch` —— 那是 D114 的边界。
+
+**为什么：**
+
+- **镜像而不是代理**：`raw` 被重置、jsDelivr 通，是这台机器上实测出来的差别（`data.jsdelivr.com` 200、`cdn.jsdelivr.net` 000、`testingcf` / `fastly` / `gcore` 200；同一个 165848 字节的 ttf 从镜像取回后与经代理的 raw 逐字节一致）。镜像不要求用户认识代理、不需要重启、也不需要我们把本机端口写进产品。
+- **404 不试备用源**：试一遍也是 404，只会把「文件不存在」这条信息淹没在三条主机记录里。
+- **漂移自愈而不是让用户清缓存**：缓存目录（`state/market/skill-repos.json`）用户看不到也删不掉；一个安装按钮的结果不该取决于我们内部缓存的年龄。多花一次 GitHub 请求（有令牌还算宽裕）换「点了就能装」。
+- **改 `fileFetcher` 而不是在每个调用点 try 三次**：`skillMeta`、`installSkill`、预览都走 `net.file`，一处收口就都受益；也因此单测能直接喂一个假的 `fetchOne` 断言行顺序。
+
+**代价 / 可改：**
+
+- 镜像内容来自 jsDelivr 的缓存，上游刚 push 的提交可能还没进去（raw 是实时的）。真遇到「刚改完就想装」，raw 优先的顺序保证只要 raw 通拿到的就是最新的；镜像只在 raw 不通时用。
+- 被墙时每个**不同**的技能目录会多 3 次请求（一次 404 不重试、一次 socket 失败记十分钟），装十个技能最多多探十次，之后同一主机全部命中记仇表。**可改**：把 10 分钟调长或按进程生命周期记。
+- 漂移自愈会重下一次整个目录（第一次那半份白下了）。技能都是小文件，几十 KB 到几 MB，值。
+- 只写死三个镜像：另外几家（`raw.githack.com`、`cdn.statically.io`）实测 `000`，没写。**可改**：改 `MIRROR_HOSTS` 一行。
+- 仍然装的是 `HEAD`，不锁 commit（同 D126 的账）。
+
+**验证：**
+
+- `node bridge/tests/skill-store.mjs`：A–L 是 D126 原有的断言（换成记录 `opts` 的假网后全绿，F 段还多断言了「安装把三个备用源和 `label` 交给网络层」）；新增 **M. `fileFetcher` / `mirrorUrls`**（3 个备用地址；带斜杠的 ref 不给备用；raw 被重置时走备用；十分钟内不再探死掉的主机；十分钟后又给 raw 一次机会；404 直接报且只发一个请求；全挂时消息含文件名 + 主机 + 代理提示）和 **N. 树比仓库旧时自愈**（某个文件 404 后只向 GitHub 要一次新树；按新树装完、旧树里的 `pack.py` 没留在盘上；文件数按新树算；新树进缓存后第二次安装不再问 GitHub）。全绿。
+- `npm --prefix bridge run typecheck` 干净。
+- 真网络（本机，不走代理）：`installSkill({ source: "anthropics/skills", skillId: "xlsx" })` 装出 **53 个文件、15.9 秒**，`find` 出来的文件名与 GitHub 树逐一相等（多出的只有 `.pi-store.json`）；`skillMeta()` 走镜像拿到 `canvas-design` 的说明。修之前同一条命令报 `read ECONNRESET`，修一半时报 `下载 skills/xlsx/scripts/office/pack.py 失败：返回 404`。
