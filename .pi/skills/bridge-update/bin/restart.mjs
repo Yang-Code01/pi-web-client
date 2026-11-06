@@ -30,6 +30,9 @@ const PORT = Number(argOf("--port", process.env.PI_WEB_PORT || 7864));
 const CHECK = process.argv.includes("--check");
 const DRY = process.argv.includes("--dry-run");
 const NO_START = process.argv.includes("--no-start");
+// 拉起来的进程必须落在「我们盯着的那一个」端口上：--port 与 PI_WEB_PORT 不一致时，
+// 子进程会去抢默认的 7864（EADDRINUSE），然后我们永远等不到自己那个端口。
+process.env.PI_WEB_PORT = String(PORT);
 
 const WORK = path.join(REPO, ".scratch", "bridge-update");
 const LOG = path.join(WORK, "update.log");
@@ -122,9 +125,14 @@ function pidFromFile(port) {
  * 找「谁在服务这个端口」。先信 pid 文件：沙箱、容器、本地代理后面，
  * netstat / Get-NetTCPConnection 看不到真正持有 socket 的进程，只会答空 pid。
  */
-function portPid(port) {
+async function portPid(port) {
+  // 1) 服务自己报 pid（/healthz，仅本机可见）—— 最可靠，不依赖进程/端口枚举
+  const h = await health();
+  if (h && Number.isInteger(h.pid) && looksLikeBridge(h.pid)) return h.pid;
+  // 2) 它启动时写的 pid 文件
   const declared = pidFromFile(port);
   if (looksLikeBridge(declared)) return declared;
+  // 3) 最后才枚举端口（老版本 bridge 没有前两条;沙箱里可能什么都看不到）
   if (WIN) {
     const r = sh("powershell", [
       "-NoProfile",
@@ -337,7 +345,7 @@ async function main() {
   if (DRY) finish("dry-run", { note: "只 pull + build，没有换进程" });
 
   writeLock();
-  oldPid = portPid(PORT);
+  oldPid = await portPid(PORT);
   const kids = oldPid ? childrenOf(oldPid) : [];
   log(`old bridge pid ${oldPid ?? "(none)"}，子进程 ${kids.join(",") || "none"}`);
 
@@ -366,10 +374,7 @@ async function main() {
   if (h.buildId && expectedId && h.buildId !== expectedId) {
     finish("start-failed", { error: `${PORT} 上跑的还是旧 build（健康检查 ${h.buildId} ≠ 期望 ${expectedId}）` });
   }
-  if (WIN) {
-    const again = portPid(PORT);
-    newPid = again;
-  }
+  newPid = Number.isInteger(h.pid) ? h.pid : await portPid(PORT);
   finish("ok", { healthz: { version: h.version, buildId: h.buildId, pi: h.pi } });
 }
 

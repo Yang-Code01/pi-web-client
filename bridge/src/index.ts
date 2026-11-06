@@ -349,7 +349,18 @@ async function main(): Promise<void> {
     const ok = authorized(cookieHeader);
 
     if (url.pathname === "/healthz") {
-      return json(res, 200, { ok: true, version: VERSION, buildId: BUILD_ID, pi: piVersion, public: publicReq });
+      // pid 只回给本机：更新器靠它确认「谁在服务这个端口」（沙箱/代理下 netstat 看不到监听者）。
+      // 隧道访客不需要知道，也不该拿到。
+      const remote = req.socket.remoteAddress;
+      const loopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+      return json(res, 200, {
+        ok: true,
+        version: VERSION,
+        buildId: BUILD_ID,
+        pi: piVersion,
+        public: publicReq,
+        ...(loopback ? { pid: process.pid } : {}),
+      });
     }
 
     // Capability-token file serving for previews: no cookie needed (sandboxed iframes have none).

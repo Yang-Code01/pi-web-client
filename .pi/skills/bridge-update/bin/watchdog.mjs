@@ -24,6 +24,9 @@ function argOf(name, dflt) {
 }
 
 const PORT = Number(argOf("--port", process.env.PI_WEB_PORT || 7864));
+// 拉起来的进程必须落在「我们盯着的那一个」端口上：--port 与 PI_WEB_PORT 不一致时，
+// 子进程会去抢默认的 7864（EADDRINUSE），然后我们永远等不到自己那个端口。
+process.env.PI_WEB_PORT = String(PORT);
 
 function log(...parts) {
   try {

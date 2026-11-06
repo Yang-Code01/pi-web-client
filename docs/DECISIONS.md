@@ -2183,7 +2183,7 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - **先 build、后杀进程**。`npm run build` 通过才 `taskkill /PID` 旧进程，编译失败时旧服务原样活着、7864 一秒都没断。窗口期只存在于 build 成功之后的那 1–3 秒。
 - **合并只做 `git merge --ff-only origin/main`**：这是 AGENTS.md「不在 main 上改」唯一被授权的例外，也仅限这一步。dirty / 分叉一律 `merge-failed` 退出，**不 stash、不 rebase、不 reset** —— 主检出里可能是别人的活。
 - **新进程开在自己的终端窗口里**（`Start-Process powershell -WindowStyle Hidden -File start-bridge.ps1` 跑 `npm run start:nobuild`，输出同时 `Tee-Object` 到 `.scratch/bridge-update/bridge-live.log`）。人还能看见编译和运行日志，关窗即停，和以前手工起的形态一致。
-- **只按 pid 杀，绝不 `taskkill /T`**：进程树里可能连着别的 bridge 实例的会话。桥死了之后逐个 `childrenOf(pid)` 补刀，否则孤儿 `pi` 进程攥着会话锁，界面永远显示「终端正在使用」。
+- **只按 pid 杀，绝不 `taskkill /T`**：进程树里可能连着别的 bridge 实例的会话。桥死了之后逐个 `childrenOf(pid)` 补刀，否则孤儿 `pi` 进程攥着会话锁，界面永远显示「终端正在使用」。pid 的来源依次是：`/healthz` 自己报的（只对 loopback 回，`public` 访客拿不到）、`bridge/src/pidfile.ts` 在监听成功时写的 `%TEMP%/pi-web-bridge-<port>.pid`、最后才是枚举端口 —— 在沙箱/本地代理后面 `Get-NetTCPConnection -State Listen` 会答空 pid，只信它就会去起第二个实例撞 EADDRINUSE。
 - **一次 build 一个 id**（`scripts/build.mjs`）：`${shortSha}-${base36 时间戳}` 同时写进 `bridge/dist/build-id.json`、以 `PI_BUILD_ID` 传给 vite define。`/healthz` 与 WS `hello` 都带上它，前端把自己内联的那份一比：不一致才提示。拿 id 而不是 `VERSION`（`bridge/src/paths.ts:6` 写死 `0.1.0`）或文件 mtime（`npm run build` 每次都摸）。
 - **不自动 reload**：重连后发现 build 变了，只在顶部挂一条「服务已更新，刷新后生效」+ 刷新按钮。用户可能正在输入框里打字，抢刷新等于把他的字删了；桥端本来就带断线重连，旧 JS 继续用也不会坏。
 - **失败一律留证据**：每次跑完写 `.scratch/bridge-update/last-run.json`（`result` ∈ `ok|up-to-date|behind|dry-run|bad-repo|aborted|fetch-failed|merge-failed|build-failed|kill-failed|start-failed|stopped`，加 `fromSha`/`toSha`/`buildId`/`oldPid`/`newPid`），build 输出进 `update.log`。
@@ -2202,4 +2202,4 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - **build id 在开发模式下是 `"dev"`**（`npm run dev:web`），前端永不给刷新提示 —— 那是故意的，dev 下每次保存都变。
 - 新窗口是隐藏的（`-WindowStyle Hidden`），日志只在 `bridge-live.log` 里；想要看得见，改 `startBridge()` 那一行即可。**可改**。
 
-**验证：** `npm run typecheck`（bridge / peer / web 三份 + `i18n-check.mjs`，1412 键 × 3 语言）；`npm run build` 产出的 `bridge/dist/build-id.json` 里 `id` 与 `web/dist/assets/*.js` 内联的 `__BUILD_ID__` 一致；在隔离克隆上跑全流程（`--check` 判定 `behind` → build → 杀旧 pid → 起新进程 → `/healthz` 的 `buildId` 对上）与看门狗拉起（停掉后跑一次 `watchdog.mjs`，进程回来）。
+**验证：** `npm run typecheck`（bridge / peer / web 三份 + `i18n-check.mjs`，1412 键 × 3 语言）；`npm run build` 产出的 `bridge/dist/build-id.json` 里 `id` 与 `web/dist/assets/*.js` 内联的 `__BUILD_ID__` 一致（`21b55f3-mw54eo4n`）；在临时克隆（`F:/pi-web-client-wt/_upd-test`，测完已删）上用 `--port 7964` 跑了四条路径：`--check` 判定 `behind:true` → 全流程 `ok`（`oldPid 33836` 来自 pid 文件、`newPid 3032`、`/healthz` 的 `buildId` = 新 build）→ 故意写坏一个 TS 文件后 `build-failed` 且旧进程仍在服务（pid 与 `buildId` 都没变）→ 删掉 pid 文件再跑，仍能从 `/healthz` 的 `pid` 找到旧进程（`oldPid 13956`）；看门狗停掉后一次拉起回到 `/healthz` 正常，`--stop` 期间确实不拉、`--start` 恢复，5 分钟冷却生效。

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { VERSION } from "./paths.ts";
 
 /**
@@ -10,7 +11,7 @@ import { VERSION } from "./paths.ts";
  */
 export const BUILD_ID: string = (() => {
   try {
-    const raw = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "build-id.json"), "utf8"));
+    const raw = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "build-id.json"), "utf8"));
     return typeof raw.id === "string" && raw.id ? raw.id : VERSION;
   } catch {
     return VERSION;
