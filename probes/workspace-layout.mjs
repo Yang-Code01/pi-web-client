@@ -165,6 +165,8 @@ const tabState = () =>
     const on = document.querySelector(".ws-tab.on");
     return {
       rowVisible: Boolean(row) && !row.hidden && row.getClientRects().length > 0,
+      // #119：A 壳的标签行就挂在顶栏那一行里，不再独占一条网格行。
+      inTopbar: Boolean(row) && row.parentElement === document.querySelector(".topbar"),
       count: document.querySelectorAll(".ws-tab").length,
       onWs: on?.dataset.ws ?? "",
       onName: on?.querySelector(".ws-tab-name")?.textContent ?? "",
@@ -216,7 +218,7 @@ await sleep(900);
 // 1) 两行都在，且第二行的左端就是那颗「当前在哪」
 let t = await tabState();
 let r = await rowState();
-ok(t.rowVisible, "顶栏下有工作区标签页那一行");
+ok(t.rowVisible && t.inTopbar, "工作区标签页那一行在顶栏里（#119 起并与顶栏同一行）");
 ok(r.visible && r.hasChip && r.hasStrip, "第二行同时装着当前会话那颗和本区胶囊");
 ok(r.topbarChip === 0, "顶栏里不再挂着那颗（它已经搬进第二行）");
 ok(t.count === 9, `标签页按组数排开（${t.count}）`);
@@ -339,10 +341,11 @@ ok((await sheetState()).on.join(",") === "a", "恢复默认后面板上亮着的
 await page.locator(".display-sheet .btn:has-text(\"关闭\")").click().catch(() => {});
 await sleep(200);
 
-// 11) 窄屏：标签行收起，那颗仍在；点它打开左栏那一页（窄屏四套统一退化）
+// 11) 窄屏：标签留在顶栏那一行里（#119），胶囊条收起，那颗仍在；点它打开左栏那一页
 await page.setViewportSize({ width: 800, height: 820 });
 await sleep(500);
-ok((await tabState()).rowVisible === false, "800px 下标签行收起");
+t = await tabState();
+ok(t.rowVisible && t.inTopbar, "800px 下标签仍在顶栏那一行里（#119）");
 r = await rowState();
 ok(r.stripHidden, "800px 下胶囊条也收起");
 ok((await page.locator(".now-chip").count()) === 1, "800px 下「当前在哪」那颗仍只有一颗");

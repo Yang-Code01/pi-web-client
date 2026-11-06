@@ -2515,6 +2515,7 @@ export class App {
     // 换壳 = 锚点换位置：那张浮层留着只会飘在旧地方。
     this.closeWsPop();
     this.placeNowChip();
+    this.placeWsTabs();
     // 构造里 `applyPrefs()` 先跑一次（那时 DOM 还没搭）：只落 `<html data-layout>`，别去碰 els。
     if (!this.nowBtn) return;
     this.renderPanes();
@@ -2531,6 +2532,22 @@ export class App {
     if (!this.nowBtn || !slot) return;
     if (this.nowBtn.parentElement !== slot) slot.append(this.nowBtn);
     this.nowBtn.dataset.open = parts.chipOpensOverlay && !narrow ? "1" : "0";
+  }
+
+  /**
+   * 工作区标签行停在哪（#119）：A 的顶栏并成一行 —— 标签接管第一行，紧跟在折叠左栏的 `◧` 后面，
+   * 会话名 / 顶栏那串小字 / 连接状态点在这一行由 CSS 藏掉。B/C/D 顶栏原样，标签行回到它自己那条
+   * 网格行（`shellParts().tabsRow` 为假时它本来就不画）。和上面那颗同一个套路：换挂载点，不换组件。
+   */
+  private placeWsTabs(): void {
+    const { wsTabsRow, topbar, sessionRow, collapseLeft } = this.els;
+    if (!wsTabsRow || !topbar || !sessionRow) return;
+    if (shellParts(activeLayout(this.prefs)).tabsRow) {
+      if (wsTabsRow.parentElement !== topbar) topbar.insertBefore(wsTabsRow, collapseLeft?.nextSibling ?? topbar.firstChild);
+      return;
+    }
+    const shell = sessionRow.parentElement;
+    if (shell && wsTabsRow.parentElement !== shell) shell.insertBefore(wsTabsRow, sessionRow);
   }
 
   private openDisplaySheet(): void {
@@ -10081,13 +10098,13 @@ export class App {
   private renderWorkspaceTabs(): void {
     const { wsTabsRow, wsTabs } = this.els;
     if (!wsTabsRow || !wsTabs) return;
-    const desktop = window.matchMedia("(min-width: 900px)").matches;
     // #98：标签行只属于 A；B/C/D 的切组入口分别是浮层 / 竖列 / 色点条 + 树。
+    // #119：窄屏也照画 —— 它现在就在 A 的顶栏那一行里，收起它就等于 A 的顶栏没标签了。
     const parts = shellParts(activeLayout(this.prefs));
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     const cur = this.currentWsId();
     wsTabs.replaceChildren();
-    wsTabsRow.hidden = !desktop || !parts.tabsRow || !tree.groups.length;
+    wsTabsRow.hidden = !parts.tabsRow || !tree.groups.length;
     if (wsTabsRow.hidden) return;
     for (const group of tree.groups) {
       const tab = el("button", `ws-tab${group.id === cur ? " on" : ""}`);

@@ -895,7 +895,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ask-lost-actions { display: flex; gap: 8px; margin-top: 2px; }
 
 /* ---------------------------------------------------------------- workspace rows (#97 壳 A)
-   顶栏下两行：行 1 工作区标签页，行 2 当前会话那颗 + 本区会话胶囊 + ＋。
+   顶栏下两行：行 1 工作区标签页，行 2 当前会话那颗 + 本区会话胶囊 + ＋。#119 起行 1 并进顶栏
+   （见下面 `.topbar > .ws-tabs-row`），`.app` 里那一格空着 —— 这里仍是它在 B/C/D 的落点。
    原先「收起左栏才出现」的置顶横栏被行 2 取代，所以这里没有另一条横栏的位置。 */
 .ws-tabs-row {
   grid-area: wstabs;
@@ -906,6 +907,24 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   background: rgba(11, 13, 16, 0.92);
 }
 .ws-tabs-row[hidden] { display: none; }
+/* #119：A 壳顶栏并成一行 —— 标签行挂在顶栏里，`◧` 之后就是它，右边接着原来那排工具按钮。
+   它是这一行里唯一肯让位的一块（标题那条 `flex: 1` 在 A 里已经藏了），所以标签横向滚动发生
+   在自己槽里，顶栏不因此变高。给个下限：窄屏按钮排不下时宁可顶栏自己横滚，也别把标签挤没。 */
+.topbar > .ws-tabs-row {
+  flex: 1 1 180px;
+  min-width: 140px;
+  align-self: stretch;
+  padding: 0;
+  border-bottom: 0;
+  background: none;
+}
+/* 标签撑满这一行（不写死高度）：当前组那条下划线才贴着行底，而不是悬在行中间（#118 决策）。 */
+.topbar > .ws-tabs-row .ws-tabs { align-items: stretch; }
+.topbar > .ws-tabs-row .ws-tab { align-self: stretch; }
+/* A 的顶栏不再放会话名 / 那串小字 / 连接状态点：会话名在行 2 那颗上（#118），隧道信息在 B/C/D 有。 */
+html[data-layout="a"] .topbar > .title,
+html[data-layout="a"] .topbar > .sub,
+html[data-layout="a"] .topbar > .dot { display: none; }
 .ws-tabs { display: flex; flex: 1; min-width: 0; gap: 2px; overflow-x: auto; scrollbar-width: none; }
 /* 溢出不出横滚条：深色顶栏下面一条细滚动条像条裂缝，而且点标签不该先摸滚动条。 */
 .ws-tabs::-webkit-scrollbar { height: 0; display: none; }
@@ -1260,8 +1279,9 @@ html:not([data-layout="a"]) .topbar .sub { margin-left: auto; }
 }
 @media (max-width: 899px) {
   .pane[hidden] { display: none; }
-  /* 窄屏一套退化：标签行与胶囊行先收起来，只留「当前在哪」那颗（#96 的常驻颗）。 */
-  .ws-tabs-row, .ws-session-row .pin-strip { display: none; }
+  /* 窄屏一套退化：胶囊行先收起来，只留「当前在哪」那颗（#96 的常驻颗）。
+     #119：标签行不在这里收 —— A 的顶栏那一行就是它待的地方，收掉等于顶栏少一块。 */
+  .ws-session-row .pin-strip { display: none; }
   .main .pane { height: 100%; }
 }
 

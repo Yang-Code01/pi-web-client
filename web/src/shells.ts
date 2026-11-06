@@ -11,7 +11,7 @@ import type { LayoutId } from "./layout.ts";
 
 /** 一套壳由哪几块拼出来。 */
 export interface ShellParts {
-  /** 顶栏下第 1 行：工作区标签页（A）。 */
+  /** 工作区标签页（A）：#119 起挂在顶栏那一行里，而不是自己独占一条网格行。 */
   tabsRow: boolean;
   /** 顶栏下第 2 行：当前会话那颗 + 本区胶囊（A）。 */
   sessionRow: boolean;
