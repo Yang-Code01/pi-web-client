@@ -1721,3 +1721,191 @@ Q-022 / Q-035 的旧约定没被打破：★ 取消置顶、条 ＋ 建会话落
 **验证：** `node probes/notes-handoff.mjs`（隔离桥 + 真 Chromium）：正文 `待处理 · 2026-11-06 00:44`
 不含会话名、交到 B 的文字没漏进 A、取消新开会话后再切会话输入框为空、之后新开的 C 为空、真建出来的新会话 D
 拿到那段文字。`node probes/bug-notes-ui.mjs`（37 条断言）仍全绿；`npm --prefix web run typecheck` 与 `build`。
+
+## D136 一轮 unslop：字号 6 档、圆角 4/6/8/12/16、间距回到 4px 网格（emoji 图标保留）
+
+> 编号说明：D128–D135 是并行分支（工作区 / 后台任务）占用的号段，这五条从 D136 起记以免撞车；合并到 `main` 时那两支尚未合入，号段暂留空。工作区那条原是 D126，见文末 D141。
+
+审计是量出来的，不是看出来的：改之前 `web/src/styles.css` 里有 **15 种字号**（10 / 10.5 / 11 / 11.5 /
+11.8 / 12 / 12.3 / 12.5 / 12.8 / 13 / 13.5 / 14 / 14.5 / 15 / 20）、**15 种圆角**（1,2,3,4,5,6,7,8,9,10,
+12,14,16,18,999）、间距里 3px×33、5px×29、7px×32、9px×35、11px×15、13px×10 一堆不在 4px 网格，
+`font-weight: 600` 用了 30 次。色板本身是干净的（无渐变、无 blob、无渐变字），病在刻度系统。
+
+- **字号收到六档**：11 元信息 / 12 标签与等宽 / 13 次要正文 / 14 卡片名与控件 / 15 正文与顶栏标题 / 20 登录页。
+  正文**没有**往下压：15px 是这块界面阅读时长最长的地方，压到 13 省出来的那点密度不值。
+- **字重**：600 → 500（唯一保留 700 的是 tab 上那颗计数角标，它是数字不是标题）。
+- **圆角**：4 / 6 / 8 / 12 / 16，胶囊仍是 999（高度一半）。
+- **间距**：padding / margin / gap 的奇数值向最近的 4 的倍数靠（位移 ≤2px，负值不参与 —— 那是在抵消固定高度）。
+- **彩色光晕全删**：`.dot.live` 的绿环、`.now-dot` 的青环、用户气泡闪烁时的 `0 0 22px` 青色外发光。
+  状态由颜色本身说，不用辉光。
+- **当前会话从「整圈强调色边框」改成 1px 边框 + 左侧 2px 强调色竖条**：四边描边太吵，竖条留位置感。
+- **顶栏会话名去重**：`nowchip.ts` 那颗 chip 不再画会话名，只留工作区色点 + 工作区名 + live 点 + 待处理角标 ——
+  顶栏自己的标题已经写着同样的名字，并排两个是噪音。名字仍留在 `aria-label` / `title` 上，读屏不受影响。
+  `probes/nowchip.mjs` 里原来的「chip 里写着会话名」两条断言改成「chip 里没有名字 + 顶栏标题上有」。
+- **没开会话时中栏整块居中成一句**（原来那句提示挂在 `.composer` 里，贴在底边，上面整片空像界面坏了）。
+- **顺手修的真 bug（不是审美）**：`.chat-pane` / `.composer` / `.ops-body` 的网格列是隐式 `auto`，
+  按内容 max-content 定宽 —— 一条不换行的长命令行把中栏撑到 **28026px**，手机上整段对话被挤出屏幕，
+  文档横向滚动 596px。三处都改成显式 `grid-template-columns: minmax(0, 1fr)`，`.tool .cmd` 补 `min-width: 0`；
+  顶栏那一排按钮在手机上本来就排不下，改成自己横向滚 + 窄屏右缘渐隐，不再带着整页一起滚。
+
+**记号（新做）：跑着的会话，卡底一把刻度尺。**
+
+- 一条 1px 竖线是一格，最右那条更高（8px）且是信号色 —— 那是「现在」；格子攒得越多，跑得越久。
+- 步长从 1 / 2 / 5 / 10 / 15 / 30 / 60 / 120 / 240 分钟里挑，挑一个让格数落在 2–11 的：14 分钟就是
+  7 格（每格 2 分），1 小时 52 分是 7 格（每格 15 分）。格子始终等距铺满卡片宽度。
+- **不按时间比例画**：按比例就是一根永远填不满的进度条，而进度条会被读成「快完成了」—— agent 跑多久没有
+  完成度这回事。密度本身就是读数；具体时长放在 tooltip（`已经跑了 17:42`）。
+- 刷新走 `startClock()` 那个已有的 1 秒闹钟（只改格子数，不重画列表），静止的会话不占额外定时器。
+- **不用动 bridge**：`SessionState.startedAt` 早就在（`web/src/types.ts:92`；`bridge/src/sessions.ts:655`
+  给活会话、`:2086` 给扫出来的历史会话），之前只是没人用它 —— 我起初以为得加字段，查完发现白担心。
+
+**没做的一件：** 图标不换（用户指定）：emoji 与 `>_ 终端` 这种 ascii 混用在顶栏仍然存在，这套界面认它就留着。
+
+**代价 / 可改：** 正文与元信息的字号差被拉大到 4 档（15 vs 11），密集列表里看着更「仪器」也更小；
+`--ease` / `--dur-1` / `--dur-2` 三个 token 只接管了 6 处入场动画与弹层，其余 `transition` 仍是各自写的时长。
+
+**验证：** `npm run typecheck`（含 i18n 1263 键 ×3）；`web/tests/{nowchip,pillbar}-unit.mjs`；`probes/nowchip.mjs`、
+`probes/round10-scroll.mjs`、`probes/round11-liveinfo.mjs` 全绿；改前/改后截图在 `.scratch/unslop/`（desktop 空态、
+对话、左栏特写、390px 列表与对话）。
+
+## D137 颜色收进 token：4 档表面、4 档线、信号色 4 档；按钮字号回 13
+
+**背景（实测）：** 上一轮只收了字号与圆角，颜色还是散着写。`web/src/styles.css` 里 205 处硬编码 hex、
+131 个不同值，99 个只用过一次；光「深色面板」这一个角色就有 36 个不同明度（`#0f141a` / `#10141a` /
+`#0f1216` / `#11161b` …）。改一次主题色得改几十处，且相邻两块面板差 1 个明度根本看不出来，只让界面发脏。
+
+**决定：**
+- 表面 4 档：`--bg #0b0d10` / `--sunken #0a0e13`（代码块、内嵌槽）/ `--panel #12151a` /
+  `--panel-2 #171b22`（抬起、悬停行）/ `--panel-3 #1c2129`（浮层行）。
+- 线 4 档：`--line-soft #1b2028`（卡内分隔）/ `--line #232833`（卡片外框）/ `--line-strong #2f3a48`
+  （悬停、输入框）/ `--line-lit #3a4658`（滚动条、刻度、浮层上缘）。
+- 信号色四档一组：本色 / `-bg`（淡底）/ `-dim`（淡边）/ `-ink`（亮底上的深字），四族 accent / ok /
+  warn / danger 各一套；另加 `--accent-hover #9adcf9`。
+- 收尾：padding / margin / gap 里剩下的 6px→4、10px→8（就近 4 网格、平局向下，与上一轮 3→4、7→8、
+  13→12 同一条规则）；`.tabs .pip` 的 9.5px 角标 → 11；`.btn` 补 `font-size: 13px`（此前它继承 body 的
+  15px，于是每个按钮都比正文大一档，右栏那排「开启 Web Push / 发测试通知」在视觉上压过了它的标题）。
+- 顺手清掉 6 个从未定义过的 `var()`：`--muted`、`--fg`、`--fg-dim`、`--bg-2`（`--ui-scale` / `--sw`
+  是 app.ts 运行时写在 style 上的，保留）。这类声明是无效值，等于静默继承父色 —— 看着像「淡一点」，
+  实际跟着父元素跑。
+
+**为什么是分档而不是一套色阶：** 这套界面要的是「同一角色只有一个值」，不是「更多颜色」。表面 4 档够覆盖
+底 / 内嵌 / 卡 / 抬起 / 浮层五种位置（内嵌比底更暗，卡比底亮一档），再多一档就没人分得清也记不住。
+器质性收益在改：主题色、或「把整体提亮 2%」现在是一处改动，而改之前是 205 处 grep。
+
+**代价 / 可改：** 一批相邻的深色被并到同一档，个别地方（`.msg .body pre`、`.fcard` 行）会看得出 1–2 个
+明度的漂移；`.btn.danger` 的边框从 `#40222a` 收进 `--danger-dim`（同色），`.badge.done` 拿到了真正的
+绿底（`--ok-bg`），比原来更「有状态」一点。想更淡可以只动 `--ok-bg`。
+
+**验证：** `hex` 计数从 205 处 / 131 值降到 35 处 / 31 值 —— 35 处里 33 处就是 `:root` 里的定义本身，
+另外两个是渐变 mask 的 `#000` 与 iframe 底的 `#fff`；`npm run typecheck`（i18n 1264 键 ×3）；`web/tests/{nowchip,pillbar}-unit.mjs`；
+`probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿。截图用隔离实例（`pi-web-client-test-dev`，端口
+17868，口令 test）出，`.scratch/unslop/{e-list,f-chat,g-chat,g-mobile}.png`。
+
+## D138 窄屏顶栏收成图标、右栏按组分段
+
+**背景（实测 390×844，开着一个会话）：** `.topbar` 的 `scrollWidth` 400 > `clientWidth` 390 —— 九样东西
+（工作区 chip、会话名、六颗按钮、字号）挤在一条线上，最后那颗「Aa」被切在半路，而左右两侧的折叠按钮
+在手机布局里本来就 `display:none`，没有第二条路进得去。桌面端右栏则相反：`通道 / 快捷键 / 关于` 三组
+只靠 `.queue` 的 8px gap 排着，组标题 12px、`.hint` 没有规则落回 body 的 **15px**（比标题还大），
+按钮 33px 各自浮着，看着像「三坨东西一起挤在顶上」。
+
+**决定：**
+- 顶栏那六颗「图标 + 文字」按钮由 `App.wideBtn()` / `setWideLabel()` 拆成 `<span class="ic">` 与
+  `<span class="lb">`；`@media (max-width: 560px)` 只把 `.lb` 收掉，按钮回成 28px 方块。
+  **切分用的是 `tr()` 之后的文案**（形如「📂 产物」，第一个空格前是图标），所以英文 / 日文不用另立 key，
+  也不必为窄屏写第二套 i18n。文字仍在 `title` 与 `aria-label` 里。
+- 同一段 media 里：`.topbar` 缝 8→6、两侧 padding 16→12；`.now-chip .now-ws` 收掉（工作区名 70px，
+  而这一排真正要读的是会话名，收掉后标题那格从 0px 回到 ~124px）；`.icon-btn[data-act="files"]` 隐藏 ——
+  「📂 产物」与「📁 文件管理器」收成图标之后是两颗并排的文件夹，窄屏上无法区分，留产物、盘符浏览回桌面端。
+- 右栏：`.queue` 的 gap 归零，改由 `.queue h2` 自带节奏（上边 14px + 1px 发丝线、下边 8px，`:first-child`
+  去掉线），三组因此读成「一组说明 + 一组控件」；`.queue .empty`（「没有等你的事。」）从居中的空卡片改成
+  一行 12px 左对齐的状态字；`.queue .hint` 补上规则（12px faint，`关于` 那行才用等宽）。
+- 顺手把 `renderQueue()` 里写死的 `style.display/gap/flexWrap` 换成 `.queue-tools` 类。
+
+**为什么不是收进「⋯」菜单：** 这几颗都是 dialog（终端 / 内网通 / 随手问 / 记录），在手机上是主要入口，
+收进二级菜单等于多点一次；图标 + `title` 的代价更小，而且桌面端不受影响。
+
+**代价 / 可改：** 手机上图标没有文字，`>_` 与 emoji 靠记忆（用户已定 emoji 图标保留）；`文件管理器` 在
+≤560px 不可达。断点 560 是量出来的：560 以下收文字，561–899 恢复文字后最坏情况（产物 + 文件管理器同现）
+仍不溢出（实测 561px 时 `scrollWidth == clientWidth == 561`）。
+
+**验证：** 390px 开会话：`scrollWidth == clientWidth == 390`，顶栏内容 chip 26 + 标题 124 + 6×28；
+390 / 620 / 900 / 1440 四档 `documentElement.scrollWidth` 都等于视口；`npm run typecheck`（i18n 1264 键 ×3）、
+`web/tests/{nowchip,pillbar}-unit.mjs`、`probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿。
+截图 `.scratch/unslop/{y390-top,q2-right,m-queue,d-chat}.png`。
+
+## D139 抽屉标题升一档；色点选中态改成「缝 + 环」
+
+**背景（实测 `外观与语言`）：** `.sheet-title` 是 13px `--dim`，而它下面的组标题 `.levels-label` 是
+12px `--dim` —— 一页的名字和「语言 / 字号 / 颜色」几乎一样重。色点的选中态是 `border-color: var(--text)`
+的 2px 白环，压在最浅的那颗（`ice #7dd3fc`）上边界发糊；未选的有 `inset` 黑边、选中的又多一道白环，
+两种描边语言混在一排 26px 的点上。悬停还 `transform: scale(1.08)`，一排小点会跟着抖一下。
+
+**决定：**
+- `.sheet-title` → 14px / `500` / `--text`（去掉对中文空转的 `letter-spacing: .05em`）。所有抽屉共用，
+  这一处改动让「这一页叫什么」重新比组标题重一档。
+- 色点：`border: 0`，选中态用 `box-shadow: inset 黑边, 0 0 0 2px var(--panel), 0 0 0 3px var(--text)` ——
+  环画在外面、中间垫一道面板色留缝，六颗点尺寸不变，浅色点上也能一眼看出选了哪颗；悬停改成 2px
+  `--line-strong` 的环，不再缩放。
+- 「外观与语言」里的 chip 换成 `var(--sans)`：那几颗写的是语言名 / 字号名，不是 id 也不是数字。
+  **只在这一页**（`.display-sheet .chip`）—— 别处 `200K` / `high` / `gpt-5.2` 那些 chip 保持等宽。
+
+**代价 / 可改：** chip 的选择语言仍是「填色 + 深字」，色点是「缝 + 环」，两者依旧不同 —— 因为色点
+本身就是颜色，填色无从表达「已选」。真要统一得把全站 chip 的选中态一起改（`model-sheet`、`settings-sheet`
+都有），不属于这一轮。
+
+**验证：** `npm run typecheck`（i18n 1264 键 ×3）、`web/tests/{nowchip,pillbar}-unit.mjs`、
+`probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿；截图 `.scratch/unslop/look4.png`（外观与语言）、
+`settings.png`（pi 设置，确认标题改动在别的抽屉上也立得住）。
+
+## D140 抽屉表单只留两档字号；聚焦态回到一条规则
+
+**背景（逐个抽屉量出来的）：** 同一个「新建会话」里输入框有 12 / 13 / 14 三种字号、textarea 12、
+select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 11、`.note-title` 14、
+`.note-body` 13）。这些是各功能各写各的 `font-size` 留下的，不是刻意分档。聚焦态更散：新建会话的
+会话名输入框吃浏览器默认的**白 outline**（3px `--text`，比信号色环还响），模型抽屉吃 3px，
+笔记编辑器是青 border + `color-mix` 外圈 —— 同一个抽屉系统里三套语言。
+
+**决定：**
+- `.sheet :where(input:not([type=checkbox]):not([type=radio]), textarea, select)` 统一 13px；
+  **用 `:where()` 把优先级压到 0**，各控件自己的 `.mono` / `.note-meta-input` 等更具体的规则照旧生效
+  （等宽路径那类保持 12px），只有「什么都没写」的控件才吃这个默认值。
+- 同样用 `:where()` 给 `:focus` 兜底：表单控件 `outline:none` + `border-color: var(--accent-dim)`，
+  button / a / checkbox / radio 的 `:focus-visible` 给 2px 淡青环。控件自己写了 `:focus` 的
+  （`.notes-search`、`.note-title`、`.composer textarea` 等）依旧走自己的。
+- 删掉 `.new-sheet .ns-input` 的 14px、`.ns-adv-grid textarea` 的 12px、`.note-title` 的 14px、
+  `.note-body` 的 13px（都回落到 13）；`.note-meta-input` 11→12；`.session-info-head` 与
+  `.notes-tabs` 这两个「忘了写字号、继承 body 15px」的容器补成 13 / 12。
+- 抽屉标题与色点上一条见 D139；这一轮不改信息架构，也不碰 `.chip.on` 的填色选中态（全站共用）。
+
+**为什么不是逐抽屉列一张字号表：** 这些抽屉不是各自的产品，是同一个「设置 / 新建」壳层。它们标点点的
+控件不该各带一套刻度；一处默认 + 少数有理由的例外（等宽路径 12px）比 14 条分散规则好维护。
+
+**代价 / 可改：** 新建会话的会话名输入框从 14px 掉到 13px，笔记标题也从 14 掉到 13（仍保留 500 字重），
+在「特大」字号偏好下都跟着 `--ui-scale` 一起放大。想让「新建会话」的名字更像标题，可以单独给
+`.new-sheet .ns-input:first-of-type` 加一档，但那会让这一轮的规则重新破例。
+
+**验证：** `fs-sheet.mjs` 逐抽屉统计控件字号：`new` 从 12/13/14 收到 13（外加 5 个 checkbox 12）、
+`notes` 从 11/12/13/14 收到 12/13、`model` / `keys` / `artifacts` 无刻度外值。
+`npm run typecheck`（i18n 1264 键 ×3）、`web/tests/{nowchip,pillbar}-unit.mjs`、
+`probes/{nowchip,round10-scroll,round11-liveinfo}.mjs` 全绿；截图 `.scratch/unslop/s-{new,model,notes,peer}-1440.png`
+与 `new-focus.png`（聚焦框现在是淡青边，不是白环）。
+
+## D141 工作区：组 id 就是工程根，读路径不跑 git，临时组补完就清掉
+
+> 编号说明：本条在工作区分支里原是 D126；合并 `main` 时 D126 已被「技能商店」占用，顺延到 D141。正文与它描述的代码没变。
+
+决定（桥侧，`bridge/src/workspaces.ts` + `bridge/src/git.ts` 的 `gitRoot()`）：
+
+- 组 id = 归一化工程根的小写形式（反斜杠转正斜杠、折叠重复斜杠、去尾斜杠、盘符根保留 `F:/`，再小写）；手动组是 `manual:<随机>`。工程根本身保留原样大小写，只用于显示。
+- 工程根推导只用 `git rev-parse --git-common-dir`：结果以 `.git` 结尾就取父目录 —— 普通克隆与它所有 worktree 的 common dir 都指向同一个 `<主仓>/.git`，五份 worktree 因此并成一组；否则用 common dir 本身（`separate-git-dir` / bare 的退化）。跑不通（非 git、目录已不存在、没装 git）就用 cwd 本身，不抛错。
+- `Sessions.list()` 只查状态文件里的 `keys` 缓存，同步、绝不跑 git；缓存缺失时先拿 cwd 当工程根（新会话立刻有组可站），`resolve()` 异步补缓存，补完把「按 cwd 建出来的临时组」清掉。缓存落盘，重启不重算。
+- 拖动写 `overrides`（sessionId → 组 id），优先于 cwd；「放回工程」= 删这一条；删除会话时一并清掉，不留悬空指向。
+- 只允许删空的手动组：派生组删了下次还会回来，那是假动作。
+- `ws.*` 五个动作与其他管理动作一样先过 `requireStepUp()`；`session.list` 与 `manage` 广播都顺带带上工作区快照，每条会话多一个 `ws` 字段。
+
+为什么：会话列表每次广播都要重算一遍归属，14 个 cwd × 30–80ms 的 git 子进程会让左栏发卡；而 worktree 合并只能靠 `--git-common-dir`（`--show-toplevel` 给的是 worktree 自己，五份就是五个组）。临时组不清掉，worktree 会在补齐后同时留下「按 cwd 那个组」和「主仓那个组」，等于合并失败；但被 override 指着的组不清 —— 用户拖进去的东西不能因为一次探测消失。
+
+代价 / 可改：没缓存过的 cwd 第一次显示时可能先落在以自己为根的组里，几百毫秒后换成真工程根（并触发一次广播）；`keys` 只增不删，目录改名会留下旧条目（无害，没人再指向）。
+
+验证：`node --experimental-transform-types bridge/tests/workspace-unit.mjs`（临时目录里真 `git init` + `git worktree add`：worktree 与主仓同组、非 git 各自成组、盘符根与不存在的目录不炸、override 优先与放回、缓存命中与重启都不再跑 git、只删空的手动组、forget 清 override）。

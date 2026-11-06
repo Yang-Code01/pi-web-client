@@ -845,6 +845,7 @@ async function main(): Promise<void> {
       pi: piVersion,
       sessions: sessions.list(),
       manage: sessions.manage.snapshot(),
+      workspace: sessions.workspaces.snapshot(),
       trash: sessions.trashList(),
       tunnel: tunnel.state,
       public: (ws as any).publicReq,
@@ -863,6 +864,27 @@ async function main(): Promise<void> {
       send({ type: "need-stepup" });
       return false;
     };
+
+    /**
+     * manage 的广播一律带上工作区快照（#94）：前端拿到的会话、分组、置顶是同一时刻的一份状态，
+     * 否则一次拖排之后两个列表会互相打架。
+     */
+    const manageSnapshot = () => ({ manage: sessions.manage.snapshot(), workspace: sessions.workspaces.snapshot() });
+
+    /**
+     * 补一次工作区缓存（git 是子进程，慢），有改动才广播。页面进来时跑一次：worktree 在这时候
+     * 才并回主仓，于是分组从「按 cwd 暂时分的」变成真的。
+     */
+    const syncWorkspaces = async (): Promise<void> => {
+      try {
+        if (!(await sessions.resolveWorkspaces())) return;
+        broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+        broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
+      } catch {
+        /* 补缓存失败只影响分组精度，不影响会话本身 */
+      }
+    };
+    void syncWorkspaces();
 
     // A login waiting on this page's answers (or an OAuth callback server) must not outlive it.
     ws.on("close", () => {
@@ -1088,7 +1110,7 @@ async function main(): Promise<void> {
             (ws as any).watching = session.state.id;
             send({ type: "session", sessionId: session.state.id, ...session.snapshot(), trust: await trustFor(session.state.cwd) });
             broadcast({ type: "session.state", session: session.state });
-            if (msg.pin) broadcast({ type: "manage", manage: sessions.manage.snapshot() });
+            if (msg.pin) broadcast({ type: "manage", ...manageSnapshot() });
             return;
           }
           case "mkdir": {
@@ -1740,26 +1762,26 @@ async function main(): Promise<void> {
             const action = String(msg.action ?? "");
             if (action === "arrange") {
               sessions.arrange(msg.pin, msg.order);
-              broadcast({ type: "manage", manage: sessions.manage.snapshot() });
+              broadcast({ type: "manage", ...manageSnapshot() });
               return;
             }
             if (action === "archive") {
               const on = msg.on !== false;
               sessions.setArchived(Array.isArray(msg.ids) ? msg.ids.map(String) : [], on);
-              broadcast({ type: "manage", manage: sessions.manage.snapshot() });
+              broadcast({ type: "manage", ...manageSnapshot() });
               return;
             }
             if (action === "opened") {
               // D125: 打开即置顶。没改动也回一份快照 —— 前端乐观改过自己的 manage，
               // 否则一个不存在的 id 会一直挂在它的置顶条上。
               sessions.opened(String(msg.id ?? ""));
-              broadcast({ type: "manage", manage: sessions.manage.snapshot() });
+              broadcast({ type: "manage", ...manageSnapshot() });
               return;
             }
             if (action === "trash" || action === "delete") {
               const report = await sessions.trash(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
               if (report.removed.length) broadcast({ type: "session.gone", ids: report.removed });
-              broadcast({ type: "manage", manage: sessions.manage.snapshot() });
+              broadcast({ type: "manage", ...manageSnapshot() });
               broadcast({ type: "trash", items: sessions.trashList() });
               // The sheet sits above the transcript, so the outcome has to come back on its own channel.
               if (report.skipped.length || report.removed.length) send({ type: "delete.result", ...report });
@@ -1771,9 +1793,9 @@ async function main(): Promise<void> {
             }
             if (action === "restore") {
               const report = sessions.restore(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
-              if (report.restored.length) broadcast({ type: "manage", manage: sessions.manage.snapshot() });
+              if (report.restored.length) broadcast({ type: "manage", ...manageSnapshot() });
               broadcast({ type: "trash", items: sessions.trashList() });
-              if (report.restored.length) send({ type: "sessions.list", sessions: sessions.list() });
+              if (report.restored.length) send({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
               send({ type: "restore.result", ...report });
               return;
             }
@@ -1782,6 +1804,47 @@ async function main(): Promise<void> {
               const report = sessions.purge(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
               broadcast({ type: "trash", items: sessions.trashList() });
               send({ type: "purge.result", ...report });
+              return;
+            }
+            // 工作区（一级分组 = 工程，#94 / D141）：动作都在 workspaces.ts 里，这里只做协议。
+            if (action === "ws.list") {
+              // 只回缓存里的快照（快）；缓存里没有的 cwd 顺手补上，补齐后会再来一条广播。
+              send({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+              void syncWorkspaces();
+              return;
+            }
+            if (action === "ws.rename") {
+              sessions.workspaces.rename(String(msg.id ?? ""), String(msg.name ?? ""));
+              broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+              return;
+            }
+            if (action === "ws.create") {
+              sessions.workspaces.create(String(msg.name ?? ""));
+              broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+              return;
+            }
+            if (action === "ws.move") {
+              // wsId 为空 = 放回工程：删掉 override，让它重新跟着 cwd 走。
+              const ids = Array.isArray(msg.ids) ? msg.ids.map(String) : [];
+              const wsId = String(msg.wsId ?? "");
+              if (wsId && !sessions.workspaces.group(wsId)) {
+                send({ type: "notice", text: "这个工作区不在了", level: "warn" });
+                return;
+              }
+              sessions.workspaces.move(ids, wsId);
+              broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+              // 会话的 ws 字段跟着变了，一起广播，免得卡片停在旧组里。
+              broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
+              return;
+            }
+            if (action === "ws.drop") {
+              const id = String(msg.id ?? "");
+              const result = sessions.workspaces.drop(id);
+              if (!result.ok) {
+                send({ type: "notice", text: result.reason ?? "这个工作区不能删", level: "warn" });
+                return;
+              }
+              broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
               return;
             }
             send({ type: "notice", text: `未知的管理操作 ${action}`, level: "warn" });

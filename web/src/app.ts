@@ -7,12 +7,14 @@ import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { setKnownPlugins } from "./diagnose.ts";
-import { openPinList, openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
+import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
+import { PillBar } from "./pillbar.ts";
+import { NowChip, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
+import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
 import { Socket } from "./ws.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState } from "./types.ts";
-import { tr } from "./i18n/index.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
@@ -292,14 +294,16 @@ export class App {
   private mgrNote = "";
   /** Tool calls seen in the current turn, for the activity popover. */
   private stepCount = 0;
-  /** Q-022: which pin chip to focus once the strip repaints (the unpinned one is gone). */
-  private pinFocus: number | null = null;
+  /** #93: 横栏里那三样（胶囊 / 「＋N」 / 浮层）是共用组件，这里只留外壳 —— 它自己管焦点。 */
+  private pillBar!: PillBar<SessionState>;
+  /** #94 工作区快照：桥是唯一的推导者，前端只读。 */
+  private workspaces: WorkspaceState = { groups: [], overrides: {}, keys: {} };
+  /** #96 顶栏那颗「当前在哪」：组件只认挂载点，换布局时换位置而不是换组件。 */
+  private nowChip!: NowChip;
   /** Q-035: the hover bubble on a pin chip (归档 / 重命名 / 删除), only ever one at a time. */
   private pinMenu: { handle: PinMenuHandle; chip: HTMLElement; id: string } | null = null;
   /** Both the 180ms open delay and the 220ms close delay ride on this one timer. */
   private pinMenuTimer = 0;
-  /** D125: 置顶条撑成一行装不下时折起来，那颗「＋N」的列表挂在 body 上，只有一张。 */
-  private pinMore: { close: () => void } | null = null;
   /** Id of the chip currently animating out — the strip must not repaint underneath it. */
   private pinAnim: string | null = null;
   /** Q-035: the pin chip's delete flight lands here — the same bin the manager sheet toggles. */
@@ -336,6 +340,25 @@ export class App {
     this.routeFromHash();
   }
 
+  /**
+   * 顶栏那几颗「图标 + 文字」的按钮。窄屏上六个宽按钮写不下（「📁 文件管理器」一颗就 90px，
+   * 390px 的手机加上「产物」就溢出），所以图标与文字分开包：`@media (max-width: 620px)` 只把
+   * `.lb` 收掉，按钮回成 28px 方块，文字还在 title / aria-label 里。
+   * 切分用的是 `tr()` 之后的文案（形如「📂 产物」，第一个空格前是图标），所以不必再为窄屏添一套 key。
+   */
+  private wideBtn(label: string, extra = ""): HTMLButtonElement {
+    const b = el("button", `icon-btn wide ${extra}`.trim()) as HTMLButtonElement;
+    this.setWideLabel(b, label);
+    return b;
+  }
+
+  /** 同一颗宽按钮的字会换（终端跑起来之后是「>_ 终端 2」），所以拆开这件事得能重做一遍。 */
+  private setWideLabel(btn: HTMLElement, label: string): void {
+    const cut = label.indexOf(" ");
+    btn.replaceChildren(el("span", "ic", cut > 0 ? label.slice(0, cut) : label));
+    if (cut > 0) btn.append(el("span", "lb", label.slice(cut + 1)));
+  }
+
   // ---------------------------------------------------------------- layout
   private build(): void {
     const app = document.getElementById("app")!;
@@ -358,45 +381,48 @@ export class App {
     look.title = tr("字号与颜色");
     look.dataset.act = "look";
     look.onclick = () => this.openDisplaySheet();
-    const files = el("button", "icon-btn wide", tr("📂 产物"));
+    const files = this.wideBtn(tr("📂 产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
     files.dataset.act = "artifacts";
     files.onclick = () => this.openArtifactsSheet();
     files.hidden = true;
     // D92: the shell sits next to 产物 now — it is a dialog over the page, and this button is both
     // its opener and the place it minimizes back to. Not session-scoped, so it never hides.
-    const term = el("button", "icon-btn wide", tr(">_ 终端"));
+    const term = this.wideBtn(tr(">_ 终端"));
     term.dataset.act = "terminal";
     term.setAttribute("aria-label", tr("终端"));
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
     term.onclick = () => this.openTerminal();
     this.els.term = term;
-    const fs = el("button", "icon-btn wide", tr("📁 文件管理器"));
+    const fs = this.wideBtn(tr("📁 文件管理器"));
     fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
     fs.dataset.act = "files";
     fs.onclick = () => this.openFiles();
     fs.hidden = true;
     this.els.fs = fs;
     // D108：记录不跟会话绑定，所以它跟终端一样常显；计数只在 title 里。
-    const notes = el("button", "icon-btn wide notes-btn", "🐞 bug");
+    const notes = this.wideBtn("🐞 bug", "notes-btn");
     notes.title = tr("记录 bug / 变更 / 想法 / 杂事");
     notes.dataset.act = "notes";
     notes.onclick = () => this.openNotes();
     this.els.notes = notes;
     // #45: the peer is a dialog over the page, not a separate tab — same as 终端.
-    const peer = el("button", "icon-btn wide", tr("🌐 内网通"));
+    const peer = this.wideBtn(tr("🌐 内网通"));
     peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     peer.dataset.act = "peer";
     peer.onclick = () => this.openPeerSheet();
     // 之前没登记进 els，`paintChrome()` 里那段 `if (peer)` 一直是死代码：切语言时这颗不动。
     this.els.peer = peer;
     // #86：随手问也不跟会话绑定（它不进列表），所以跟终端 / 记录一样常显。
-    const scratch = el("button", "icon-btn wide", tr("💭 随手问"));
+    const scratch = this.wideBtn(tr("💭 随手问"));
     scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     scratch.dataset.act = "scratch";
     scratch.onclick = () => this.scratch.open();
     this.els.scratch = scratch;
-    topbar.append(collapseLeft, dot, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
+    // #96：「当前在哪」那颗自己是一个挂载点，不绑死在 topbar 的结构里（#97 / #98 换布局时
+    // 只要把它挪到别处）。现在它放在折叠按钮与状态点之间，也就是左栏边缘。
+    const nowChipSlot = el("div", "now-chip-slot");
+    topbar.append(collapseLeft, nowChipSlot, dot, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -470,6 +496,32 @@ export class App {
 
     Object.assign(this.els, { topbar, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.binBtn = binBtn;
+    // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
+    // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
+    this.pillBar = new PillBar<SessionState>(pinStrip, {
+      badge: (s, cur) => sessionBadge(s, cur),
+      time: relativeTime,
+      heading: (pending, total) => (pending ? tr("置顶 · {p1} 个待处理", { p1: pending }) : total ? tr("置顶") : tr("左栏已收")),
+      empty: tr("在这里 ☆ 置顶一个会话，收起左栏也能点到。"),
+      onOpen: (id) => this.openFromList(id),
+      onStar: (id) => this.togglePin(id),
+      tail: () => {
+        // Q-013: with the left pane hidden this is the only visible way to start a session.
+        // Q-022: 从这颗 ＋ 建的会话自动置顶，否则建完在这条里根本看不见。
+        const add = el("button", "pin-chip pin-new", tr("＋"));
+        add.title = tr("开新会话（自动置顶到这条里）");
+        add.dataset.act = "new";
+        add.dataset.pinKey = "new";
+        add.onclick = () => this.openNewSessionSheet(true);
+        const expand = el("button", "pin-chip pin-expand", tr("展开左栏 ▸"));
+        expand.title = tr("展开左侧会话栏（也可以双击分隔条位置的边）");
+        expand.dataset.pinKey = "expand";
+        expand.onclick = () => this.togglePane("sessions");
+        return [add, expand];
+      },
+      decorate: (chip, s) => this.wirePinHover(chip, s),
+    });
+    this.nowChip = new NowChip(nowChipSlot);
     // 顶栏这批按钮只构造一次，语言一切换就得靠 paintChrome() 重写文字（renderAll 碰不到它们）。
     this.paintChrome();
     this.chat = new ChatView(scroll);
@@ -748,6 +800,10 @@ export class App {
         node.textContent = this.leftText(Number(node.dataset.deadline));
       }
       if (this.session?.running) this.fillHintStatus();
+      // 刻度尺也养在这个闹钟里：只改 DOM 的格子数，不重画整个列表。
+      for (const node of document.querySelectorAll<HTMLElement>(".sc-ruler[data-since]")) {
+        drawRuler(node, Number(node.dataset.since));
+      }
     }, 1000);
   }
 
@@ -1038,6 +1094,7 @@ export class App {
         this.sessions = msg.sessions ?? [];
         if (Array.isArray(msg.trash)) this.trash = msg.trash as TrashItem[];
         if (msg.manage) this.manage = msg.manage as ManageState;
+        if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         if (this.currentId && !this.session) this.session = this.sessions.find((x) => x.id === this.currentId) ?? null;
         this.tunnel = msg.tunnel ?? this.tunnel;
         this.renderAll();
@@ -1163,6 +1220,7 @@ export class App {
         this.renderQueue();
         this.renderTabs();
         this.fillHintStatus();
+        this.renderNowChip();
         break;
       case "approval.remove":
         this.approvals = this.approvals.filter((a) => a.id !== msg.id);
@@ -1571,7 +1629,13 @@ export class App {
         break;
       case "manage":
         if (msg.manage) this.manage = msg.manage as ManageState;
+        if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         this.renderSessions();
+        break;
+      // #94：桥侧每次改名 / 拖动 / 建组都会广播一份完整快照。同名快照可能重复到，但重画很便宜。
+      case "workspaces":
+        this.workspaces = (msg.workspace as WorkspaceState) ?? { groups: [], overrides: {}, keys: {} };
+        this.renderNowChip();
         break;
       case "session.gone": {
         const gone = new Set<string>((msg.ids ?? []) as string[]);
@@ -1635,6 +1699,7 @@ export class App {
       }
       case "sessions.list": {
         this.sessions = Array.isArray(msg.sessions) ? msg.sessions : this.sessions;
+        if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         this.renderSessions();
         this.mgrRefresh?.();
         break;
@@ -2485,22 +2550,22 @@ export class App {
     const sessFilter = this.els.sessFilter as HTMLInputElement;
     look.title = tr("外观与语言");
     look.setAttribute("aria-label", tr("外观与语言"));
-    files.textContent = tr("📂 产物");
+    this.setWideLabel(files, tr("📂 产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
-    term.textContent = tr(">_ 终端");
+    this.setWideLabel(term, tr(">_ 终端"));
     term.setAttribute("aria-label", tr("终端"));
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
-    fs.textContent = tr("📁 文件管理器");
+    this.setWideLabel(fs, tr("📁 文件管理器"));
     fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
     // 记录与内网通是顶栏常显的两颗（#45 / D108），标题也要跟着换；
     // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写。
     if (notes) this.paintNotesBadge();
     if (peer) {
-      peer.textContent = tr("🌐 内网通");
+      this.setWideLabel(peer, tr("🌐 内网通"));
       peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     }
     if (scratch) {
-      scratch.textContent = tr("💭 随手问");
+      this.setWideLabel(scratch, tr("💭 随手问"));
       scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     }
     newBtn.textContent = tr("开新会话");
@@ -3652,6 +3717,41 @@ export class App {
     setToggle(collapseRight, this.collapsed.queue, tr("待办队列"));
     collapseRight.classList.toggle("alert", this.collapsed.queue && (this.approvals.length > 0 || this.asks.length > 0));
     this.fillModelChip();
+    this.renderNowChip();
+  }
+
+  /**
+   * #96：顶栏那颗「当前在哪」。切会话、改工作区名、待处理数变化都从这一处重画 ——
+   * 组件只吃一份 view，读的是 `session` / 工作区快照 / 本地队列，不碰别的东西。
+   */
+  private renderNowChip(): void {
+    if (!this.nowChip) return;
+    const s = this.session;
+    if (!s) {
+      this.nowChip.render({ hidden: true, workspace: "", name: "", accent: null, live: "", badge: null, label: "", title: "" });
+      return;
+    }
+    const listed = this.sessions.find((x) => x.id === s.id);
+    const group = wsOf(s, this.workspaces, listed?.ws);
+    this.nowChip.render(
+      nowChipView({
+        session: s,
+        group,
+        connected: this.connected,
+        running: Boolean(s.running),
+        owned: Boolean(s.owned),
+        pending: this.nowPending(s),
+      }),
+    );
+  }
+
+  /** 待回答 / 待确认那两档；当前会话以本地队列为准（它比列表里的计数新）。 */
+  private nowPending(s: SessionState): NowChipPending | null {
+    const badge = sessionBadge(
+      s.id === this.currentId ? { ...s, approvals: this.approvals.length, asks: this.asks.length } : s,
+      this.currentId,
+    );
+    return badge?.pending ? { text: badge.text, title: badge.title } : null;
   }
 
   /**
@@ -3700,6 +3800,7 @@ export class App {
   /** Pinned / plain / archived sections. Every drag and every star click ends up in one arrange message. */
   private renderSessions(): void {
     this.renderPinStrip();
+    this.renderNowChip();
     this.renderBinCount();
     const host = this.els.sessList;
     // A re-render mid-edit must not eat the caret: remember where it was before the DOM swap.
@@ -3929,6 +4030,14 @@ export class App {
     }
     meta.append(tail);
     card.append(meta);
+    // D136 的记号：跑着的会话在卡底留一把刻度尺，攒的格子就是时长。
+    if (s.running) {
+      const since = Date.parse(s.startedAt ?? "") || s.updatedAt;
+      const ruler = el("div", "sc-ruler");
+      ruler.dataset.since = String(since);
+      drawRuler(ruler, since);
+      card.append(ruler);
+    }
     return card;
   }
 
@@ -5874,8 +5983,12 @@ export class App {
     this.closeSkillPalette();
     this.imageBadge = null;
     if (!this.currentId) {
-      const hint = el("div", "empty", tr("左边选一个会话，或开一个新的。"));
-      host.append(hint);
+      // 没开会话时的空状态：整块居中（styles.css 用 `:has(> .composer > .chat-empty)` 把
+      // 中栏从「滚动区 + 贴底输入框」改成一块空白），别让提示贴着底边像界面坏了。
+      const box = el("div", "chat-empty");
+      box.append(el("div", "chat-empty-title", tr("还没有打开会话")));
+      box.append(el("div", "chat-empty-hint", tr("左边选一个，或者开一个新的")));
+      host.append(box);
       return;
     }
     const s = this.session;
@@ -6384,10 +6497,7 @@ export class App {
         tr("等你批准或回答时，推送到 Windows 通知（Web Push）和微信。正看着这个页面时不发：只有切到别的标签页、最小化浏览器或切到别的程序时才发。一份问卷只发一条。"),
       ),
     );
-    const tools = el("div", "actions");
-    tools.style.display = "flex";
-    tools.style.gap = "8px";
-    tools.style.flexWrap = "wrap";
+    const tools = el("div", "queue-tools");
     const push = el("button", "btn", tr("在这台设备开启 Web Push"));
     push.onclick = () => void this.enablePush();
     const test = el("button", "btn", tr("发测试通知"));
@@ -8772,7 +8882,7 @@ export class App {
       host.append(link);
     }
     if (this.tunnel.error) host.append(el("div", "notice warn", errText(this.tunnel)));
-    const keysTools = el("div", "tools");
+    const keysTools = el("div", "queue-tools");
     const keysBtn = el("button", "btn", Object.keys(this.keys).length ? tr("快捷键（已设 {p1} 个）", { p1: Object.keys(this.keys).length }) : tr("设置快捷键"));
     keysBtn.onclick = () => this.openKeysSheet();
     const piSettings = el("button", "btn", tr("pi 设置")) as HTMLButtonElement;
@@ -8782,7 +8892,7 @@ export class App {
     host.append(el("h2", "", tr("快捷键")));
     host.append(keysTools);
     host.append(el("h2", "", tr("关于")));
-    host.append(el("div", "hint", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
+    host.append(el("div", "hint about", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
   }
 
   // ---------------------------------------------------------------- terminal (Q-007 · D70 · D92)
@@ -8836,7 +8946,7 @@ export class App {
     const btn = this.els.term;
     if (!btn) return;
     const n = this.termTabs.size;
-    btn.textContent = n > 1 ? tr(">_ 终端 {p1}", { p1: n }) : tr(">_ 终端");
+    this.setWideLabel(btn, n > 1 ? tr(">_ 终端 {p1}", { p1: n }) : tr(">_ 终端"));
     btn.classList.toggle("term-live", n > 0);
   }
 
@@ -9298,165 +9408,22 @@ export class App {
     const host = this.els.pinStrip;
     const seen = this.collapsed.sessions && window.matchMedia("(min-width: 900px)").matches;
     // 条要整个重建（锚点那颗胶囊跟着消失），折起来的那张列表不能留在屏幕上。
-    this.closePinMore();
+    this.pillBar.closeMore();
     if (!seen) {
       host.hidden = true;
       return;
     }
-    const pins = this.manage.pin
-      .map((id) => this.sessions.find((s) => s.id === id))
-      .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
-    // Q-022: the strip is rebuilt on every session/manage echo, and those echoes land right after the
-    // ★ click — remember which button held focus so the rebuild does not drop it on <body>.
-    const active = document.activeElement instanceof HTMLElement && host.contains(document.activeElement) ? document.activeElement : null;
-    const heldKey = active?.dataset.pinKey ?? null;
-    host.replaceChildren();
     host.hidden = false;
-    const pending = pins.filter((s) => sessionBadge(s, this.currentId)?.pending).length;
-    const label = el("span", "pin-strip-label", pending ? tr("置顶 · {p1} 个待处理", { p1: pending }) : pins.length ? tr("置顶") : tr("左栏已收"));
-    if (pending) label.classList.add("has-pending");
-    host.append(label);
-    const chipNodes: HTMLElement[] = [];
-    for (const s of pins) {
-      const badge = sessionBadge(s, this.currentId);
-      // Q-022: a button cannot nest a button, so the chip is a container with two hit areas —
-      // ★ = 取消置顶, the rest = 打开会话.
-      const chip = el("div", "pin-chip");
-      if (badge) chip.classList.add(badge.cls);
-      // 当前会话：整颗胶囊填色（aria-current 给读屏器，title 里也补一句），
-      // 否则收起左栏后这一排胶囊长得一模一样，分不出自己正在跟哪个会话说话。
-      if (s.id === this.currentId) {
-        chip.classList.add("cur");
-        chip.setAttribute("aria-current", "true");
-      }
-      const star = el("button", "pin-star", "★") as HTMLButtonElement;
-      star.type = "button";
-      star.dataset.pinKey = `${s.id}:star`;
-      star.title = tr("取消置顶 {p1}", { p1: s.name || s.id });
-      star.setAttribute("aria-label", tr("取消置顶 {p1}", { p1: s.name || s.id }));
-      star.onclick = () => {
-        this.pinFocus = Math.max(pins.indexOf(s), 0);
-        this.togglePin(s.id);
-      };
-      const open = el("button", "pin-open") as HTMLButtonElement;
-      open.type = "button";
-      open.dataset.pinKey = `${s.id}:open`;
-      open.append(el("span", "pin-name", s.name || s.id), el("small", "", badge ? badge.text : relativeTime(s.updatedAt)));
-      open.title = [s.name || s.id, s.cwd ?? "", badge?.title ?? "", s.id === this.currentId ? tr("（当前会话）") : ""]
-        .filter(Boolean)
-        .join(" · ");
-      open.onclick = () => this.openFromList(s.id);
-      chip.append(star, open);
-      this.wirePinHover(chip, s);
-      chipNodes.push(chip);
-      host.append(chip);
-    }
-    if (!pins.length) host.append(el("span", "pin-empty", tr("在这里 ☆ 置顶一个会话，收起左栏也能点到。")));
-    // D125: 置顶一多就装不下一行，超出的折进这颗（点开是一张全部置顶会话的列表）。
-    // 先摆上去再量：宽度要用真实布局算，折叠态自己也要占位置。
-    const more = el("button", "pin-more") as HTMLButtonElement;
-    more.type = "button";
-    more.dataset.pinKey = "more";
-    more.hidden = true;
-    more.onclick = () => this.openPinMore(more);
-    host.append(more);
-    // Q-013: with the left pane hidden this is the only visible way to start a session.
-    // Q-022: 从这颗 ＋ 建的会话自动置顶，否则建完在这条里根本看不见。
-    const add = el("button", "pin-chip pin-new", tr("＋"));
-    add.title = tr("开新会话（自动置顶到这条里）");
-    add.dataset.act = "new";
-    add.dataset.pinKey = "new";
-    add.onclick = () => this.openNewSessionSheet(true);
-    host.append(add);
-    const expand = el("button", "pin-chip pin-expand", tr("展开左栏 ▸"));
-    expand.title = tr("展开左侧会话栏（也可以双击分隔条位置的边）");
-    expand.dataset.pinKey = "expand";
-    expand.onclick = () => this.togglePane("sessions");
-    host.append(expand);
-    this.foldPinStrip(host, chipNodes, more);
-    // Q-022: the ★ that was just clicked no longer exists — hand focus to the next chip, else ＋.
-    const focusStar = (target: HTMLElement): void => (target.querySelector<HTMLElement>(".pin-star") ?? target).focus();
-    if (this.pinFocus !== null) {
-      const want = this.pinFocus;
-      this.pinFocus = null;
-      // D125：折起来的那几颗也是真节点，只是藏着 —— 焦点交给看不见的东西等于交给 <body>。
-      const live = Array.from(host.querySelectorAll<HTMLElement>(".pin-chip:not(.pin-new):not(.pin-expand):not(.pin-more)")).filter((n) => !n.hidden);
-      focusStar(live[Math.min(want, live.length - 1)] ?? add);
-    } else if (heldKey) {
-      const same = Array.from(host.querySelectorAll<HTMLElement>("[data-pin-key]")).find((n) => !n.hidden && n.dataset.pinKey === heldKey);
-      if (same) same.focus();
-      else focusStar(add);
-    }
-  }
-
-  /* ------------------------------------------------------------------ D125 */
-
-  /**
-   * 置顶条只许占一行：胶囊多到装不下时从尾部往前收，收掉几颗就在「＋N」里报几颗。
-   * 当前会话那颗不藏 —— 藏了等于回到「不知道自己在跟哪个会话说话」，而那正是 D125 要治的病。
-   * 量的是布局本身（scrollWidth vs clientWidth），建完就在同一次同步流程里定下来，不会先闪一帧。
-   */
-  private foldPinStrip(host: HTMLElement, chipNodes: HTMLElement[], more: HTMLElement): void {
-    // 先收着量一次：**不摆折叠钮**就装得下，就根本不需要它 —— 摆上去再量会把「刚好装满」挤成溢出。
-    // 文字先按最多的颗数占位，轮到它出场时宽度不会再变。
-    more.textContent = tr("＋{p1}", { p1: chipNodes.length });
-    more.hidden = true;
-    if (!chipNodes.length || host.scrollWidth <= host.clientWidth) return;
-    more.hidden = false;
-    let folded = 0;
-    for (let i = chipNodes.length - 1; i >= 0; i--) {
-      if (host.scrollWidth <= host.clientWidth) break;
-      const chip = chipNodes[i];
-      if (chip.classList.contains("cur")) continue;
-      chip.hidden = true;
-      folded += 1;
-    }
-    if (!folded) {
-      more.hidden = true;
-      return;
-    }
-    const why = tr("还有 {p1} 个置顶会话", { p1: folded });
-    more.textContent = tr("＋{p1}", { p1: folded });
-    more.title = why;
-    more.setAttribute("aria-label", why);
-  }
-
-  /** 折起来的那几颗：点「＋N」列出全部置顶会话，挑一个直接打开。 */
-  private openPinMore(anchor: HTMLElement): void {
-    if (this.pinMore) {
-      this.closePinMore();
-      return;
-    }
     const pins = this.manage.pin
       .map((id) => this.sessions.find((s) => s.id === id))
       .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
-    this.pinMore = openPinList(
-      anchor,
-      pins.map((s) => {
-        const badge = sessionBadge(s, this.currentId);
-        return { id: s.id, name: s.name || s.id, sub: badge ? badge.text : relativeTime(s.updatedAt), current: s.id === this.currentId };
-      }),
-      (id) => {
-        this.closePinMore();
-        this.openFromList(id);
-      },
-      () => {
-        this.pinMore = null;
-      },
-    );
-  }
-
-  private closePinMore(): void {
-    const cur = this.pinMore;
-    this.pinMore = null;
-    cur?.close();
+    this.pillBar.render(pins, this.currentId);
   }
 
   /* ------------------------------------------------------------------ Q-035 */
 
   /** 180ms 后才弹（鼠标扫过不算），离开 220ms 才收（从胶囊挪进气泡也不算）。 */
-  private wirePinHover(chip: HTMLElement, s: SessionState): void {
-    chip.addEventListener("pointerenter", () => this.openPinMenuSoon(chip, s));
+  private wirePinHover(chip: HTMLElement, s: SessionState): void {    chip.addEventListener("pointerenter", () => this.openPinMenuSoon(chip, s));
     chip.addEventListener("pointerleave", () => this.closePinMenuSoon());
   }
 
@@ -10080,19 +10047,12 @@ const SIZES: [number, string][] = [
 ];
 
 /**
- * Accent pairs: the bright tint plus the dark wash used for filled states. Keys are stable ids —
- * they are persisted in `pi.prefs`, so they must not be translated; the tooltip goes through
- * `ACCENT_LABELS` + `tr()`. Older builds stored the Chinese colour names: `LEGACY_ACCENTS` is the
- * migration `readPrefs` uses, and deleting it would silently reset everyone's colour.
+ * Accent pairs live in `palette.ts` because the workspace colour dot (#96) picks from the same six.
+ * Keys are stable ids — they are persisted in `pi.prefs`, so they must not be translated; the
+ * tooltip goes through `ACCENT_LABELS` + `tr()`. Older builds stored the Chinese colour names:
+ * `LEGACY_ACCENTS` is the migration `readPrefs` uses, and deleting it would silently reset
+ * everyone's colour.
  */
-const ACCENTS: Record<string, { accent: string; dim: string }> = {
-  ice: { accent: "#7dd3fc", dim: "#0e3a4d" },
-  teal: { accent: "#5eead4", dim: "#0d3b36" },
-  violet: { accent: "#c4b5fd", dim: "#2a2148" },
-  amber: { accent: "#fcd34d", dim: "#3d2e0b" },
-  rose: { accent: "#fda4af", dim: "#3d1a22" },
-  slate: { accent: "#cbd5e1", dim: "#252b36" },
-};
 
 /** 色块的显示名（中文原文，交给 tr() 翻）：顺序就是面板里色块的顺序。 */
 const ACCENT_LABELS: [string, string][] = [
@@ -10456,6 +10416,36 @@ function tailText(text: string, maxLines: number, maxChars: number): string {
 /** 会话列表的时间戳：一分钟内「刚刚」，其余交给 Intl（D110）。 */
 function relativeTime(ts: number): string {
   return fmtRelative(ts);
+}
+
+/** 刻度尺的步长（分钟）：挑一个让格子数落在 2–11 之间的，再长就上台阶。 */
+const RULER_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 240];
+
+/** 跑了多久，写成 m:ss（过一小时是 h:mm:ss）—— 只进刻度尺的 tooltip，不占版面。 */
+function clockText(totalSecs: number): string {
+  const s = totalSecs % 60;
+  const m = Math.floor(totalSecs / 60) % 60;
+  const h = Math.floor(totalSecs / 3600);
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  return h ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+}
+
+/**
+ * 一把刻度尺：一条 1px 竖线是一格，格子攒得越多说明跑得越久，最右那条是「现在」。
+ * 位置等距铺满卡片宽度、不按时间比例画 —— 那会变成一根永远不满的进度条，而进度条会被读成
+ * 「快完成了」，agent 跑多久并没有完成度可言。密度本身就是读数，具体时长留在 tooltip。
+ */
+function drawRuler(node: HTMLElement, since: number): void {
+  const secs = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  const mins = secs / 60;
+  const step = RULER_STEPS.find((x) => mins / x <= 11) ?? 240;
+  const marks = Math.floor(mins / step);
+  node.title = tr("已经跑了 {p1}", { p1: clockText(secs) });
+  const key = `${step}/${marks}`;
+  if (node.dataset.key === key) return;
+  node.dataset.key = key;
+  node.replaceChildren(...Array.from({ length: marks + 1 }, (_, i) => el("i", i === marks ? "now" : "")));
 }
 
 function urlBase64ToUint8Array(base64: string): Uint8Array {

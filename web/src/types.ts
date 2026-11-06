@@ -100,10 +100,32 @@ export interface SessionState {
   /** Sidebar arrangement from the bridge (state/manage.json). */
   pinned?: boolean;
   archived?: boolean;
+  /** #94: 这个会话站在哪个工作区（组 id，见 WorkspaceState.groups）。 */
+  ws?: string;
   /** Another process (the pi terminal) holds the lock: read-only, and the bridge refuses to delete it. */
   locked?: boolean;
   /** Launch options chosen at creation (#28), one line. */
   launch?: string;
+}
+
+/** #94 工作区的一级分组；`id` 是稳定键（派生组 = 归一化工程根小写，手动组 = `manual:…`）。 */
+export interface WsGroup {
+  id: string;
+  /** 手起的名字；空串 = 跟着目录名走。 */
+  name: string;
+  /** 工程根（`manual` 组为空）。 */
+  key: string;
+  manual: boolean;
+}
+
+/**
+ * 桥广播的工作区快照（`{type:"workspaces", workspace}`），`sessions.list` / `manage` 的回包也带一份。
+ * 前端不再自己推分组：`groups` 是已建好的组，`overrides` 是拖进组的会话，`keys` 是 cwd → 工程根缓存。
+ */
+export interface WorkspaceState {
+  groups: WsGroup[];
+  overrides: Record<string, string>;
+  keys: Record<string, string>;
 }
 
 /** What `manage/delete` did: partial success, so both halves matter (see Q-001). */
