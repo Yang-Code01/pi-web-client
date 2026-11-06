@@ -2103,3 +2103,25 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - 前端去重只比 `provider/id`：同一批模型只换了 `levels`（比如改了 thinking 配置）不会重画面板，要等下一次真变化或点重试。
 
 验证：`node bridge/tests/models-unit.mjs`（5 例：完整那趟 argv 不带 `-ne` 且映射出 levels/contextWindow/supportsImages、快那趟 argv 是 `--mode rpc -ne --no-session`、子进程早退立刻报「退出了（code 3）」并带 stderr、静默子进程按 `timeoutMs` 超时且不等到默认线）、`npm run typecheck`；测试桥上 `node bridge/tests/model-check.mjs`（顺带修好一条早就失效的断言：面板改成「草稿 + 确认」式之后，挑完一行并不会自己关掉）与浏览器实测（面板先出 51 行、十几秒后补上第 52 个 `qwen3.6-pool`）。
+
+## D151 每个 pi 子进程都带一份 V8 编译缓存：`NODE_COMPILE_CACHE` 由 `piChildEnv()` 注入（无票，用户报「建会话慢」）
+
+**问题：** 桥是一个会话一个 `pi --mode rpc` 进程，而每次冷启都要重新把同一个 ~9.4 MB 的 bundle 解析一遍 —— 这份工作随进程消失，下次从零再来。本机实测（13 个扩展全量）三次冷启 **8.6 / 7.6 / 23.9 s**；RPC 探针进一步把成本拆成三段：进程启动（node + bundle + 扩展 module import）、`new_session`、`switch_session`，其中「进程启动」这一段是纯重复劳动，和用户要的会话内容无关。桥侧还有第二个出处：`models()` 每 10 分钟（`bridge/src/sessions.ts` 的 `MODEL_TTL_MS`）起一个完整扩展的 pi 只为列模型，同样付这笔钱。
+
+**决定：** `piChildEnv()`（`bridge/src/paths.ts`）在返回前补一条 `NODE_COMPILE_CACHE=<stateDir>/v8-cache`（目录顺手建出来）。
+
+- 只改这一处：`RpcChild`、`fetchModels`、`picli` 全都走 `piChildEnv()`，没有第二个 spawn 点需要各自记得加。
+- 调用方自己设了 `NODE_COMPILE_CACHE` 就不覆盖 —— 有人要放到别的盘或临时关掉，桥不抢这个决定。
+- 目录建不出来（只读 / 权限）只吞掉异常、不设变量：少省几秒，不能让 spawn 直接失败。
+- 缓存键由 node 自己按版本 + 编译参数算，pi 升级后旧条目失效但不会读错，所以不必自己管版本。
+
+**为什么：** 这是唯一一条「不动扩展集合、不动进程架构」就能拿到的收益。交替 A/B 实测：**8.6 / 7.6 / 23.9 s → 6.3 / 6.3 / 10.0 s**；换到真实的 `<stateDir>/v8-cache` 再测两轮，`16.9 → 11.1 s`、`9.8 → 8.4 s`。机器越忙省得越多（最差那一次省了 13.8 s），因为这省的正是 CPU + 页缓存压力。相比之下同期的其它候选都更贵：warm 进程池只能省「进程启动」这一段（带扩展时 `new_session` 本身还要 2.7–10.8 s），砍扩展会丢工具，`--no-mcp` / `-ns -np` / `PI_OFFLINE` / `UV_THREADPOOL_SIZE` 实测都没有显著差异。
+
+**代价 / 可改：**
+
+- 缓存目录会随 pi 版本累积，本机现在 9.5 MB；没有大小上限，也没有清理逻辑（node 自己的条目级淘汰不算）。真要管就在桥启动时按总量删一次。
+- 变量是**继承**下去的：pi 自己拉起的子进程（LSP、`tsserver`、bash 里的 node）也会往同一个目录写。正确性没问题（node 的缓存条目自带完整性校验），但 tsserver 那种几十 MB 的包会把目录撑大。
+- Windows 上多进程并发写同一缓存目录时 node 会**静默退化成不缓存**，不会报错也不会读错 —— 症状是「有时没变快」，不是「坏了」。
+- 这条只管进程启动。`new_session` 的 2.7–10.8 s 在扩展的 `session_start` 里，得扩展作者配合（`pi-subagents` 的 agent discovery 要扫 `~/.pi/agent/npm/node_modules` 下 584 个 `package.json`，实测冷 2.5 s / 热 0.9 s）。
+
+**验证：** `node bridge/tests/boot-cache.mjs`（四条契约：默认值是 `<stateDir>/v8-cache` 且目录已建、显式设置不被覆盖、`PI_WEB_*` 仍不外泄、状态目录不可写时不抛异常）、`npm --prefix bridge run typecheck`、`node bridge/tests/create-fast.mjs`（D122 的「建会话不等 pi 启动」没被这条改动带坏：应答 42 ms、桩 pi 4110 ms 才答话）、以及上面那组 A/B 冷启实测。
