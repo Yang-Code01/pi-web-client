@@ -28,7 +28,7 @@ Issues and specs live as GitHub issues in `Yang-Code01/pi-web-client`, driven wi
 
 - 全局 active 账号平时保持 `xyang-qingmin`，别改它；
 - 在本仓库动 `gh` / `git push` 时二选一：
-  - 逐条带鉴权：`GH_TOKEN=$(gh auth token --user Yang-Code01) gh …`，push 用 `https://x-access-token:$TOKEN@github.com/Yang-Code01/pi-web-client.git`（写法见 `docs/agents/issue-tracker.md`）；
+  - 逐条带鉴权：`GH_TOKEN=$(gh auth token --user Yang-Code01) gh …`，push 用 `git -c credential.helper= push https://x-access-token:$TOKEN@github.com/Yang-Code01/pi-web-client.git`（写法见 `docs/agents/issue-tracker.md`；`-c credential.helper=` 不能省，理由见该文档）；
   - 或者临时 `gh auth switch --user Yang-Code01`，**任务一做完立刻 `gh auth switch --user xyang-qingmin` 切回去**，别留着。
 - 症状：`gh issue edit … --add-label` 报 `does not have the correct permissions to execute AddLabelsToLabelable` —— 这就是 active 账号不是 `Yang-Code01`，不是标签本身的问题。
 
