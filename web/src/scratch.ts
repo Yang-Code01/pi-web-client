@@ -304,7 +304,9 @@ export class ScratchChat {
     sheet.append(foot);
 
     back.append(sheet);
-    document.body.append(back);
+    // 挂 `#app` 里，不挂 `document.body`：外观「字号」是 `#app { zoom: var(--ui-scale) }`，
+    // 挂在 body 上的弹层不跟它缩（D36 实测：抽屉还是 100%，与背景不同步）。
+    (document.getElementById("app") ?? document.body).append(back);
     this.root = back;
     this.refreshLang();
   }
