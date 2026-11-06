@@ -79,7 +79,7 @@ export class Manage {
     this.save();
   }
 
-  // D131 废止了 D125「打开即置顶」：打开一个会话不再改任何排列（pin / order / archived 都不动）。
+  // D146 废止了 D125「打开即置顶」：打开一个会话不再改任何排列（pin / order / archived 都不动）。
   // 置顶现在是组内排序，跨组自动重排会打乱用户手工拖出来的顺序，所以这里没有 opened() 这个方法 ——
   // 「打开」不是 manage 的动作，`bridge/src/index.ts` 收到旧页面发来的 opened 只回一份快照。
 

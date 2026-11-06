@@ -1,9 +1,9 @@
 /**
- * Probe: 打开会话不再置顶（D131 废止 D125）+ 置顶条折叠。
+ * Probe: 打开会话不再置顶（D146 废止 D125）+ 置顶条折叠。
  *
  * D125 曾经规定「从任何入口打开会话，它就得在置顶区里」，理由是左栏收起后那条横栏是唯一的会话
  * 入口。左栏变成工作区两级树之后，★ 只剩「组内排前」的意思：跨组自动重排会打乱用户手工拖出来的
- * 顺序。D131 因此废掉这条 —— 打开 ≠ 置顶 ≠ 解归档，横栏只显示真正 ☆ 过的会话，当前在哪个会话
+ * 顺序。D146 因此废掉这条 —— 打开 ≠ 置顶 ≠ 解归档，横栏只显示真正 ☆ 过的会话，当前在哪个会话
  * 由顶栏那颗 NowChip（#96）负责说。
  *
  * 断言六件事：
@@ -14,7 +14,7 @@
  *   5. 当前会话排在置顶区最后（比如别的标签页把它拖到最后）也不会被折进去；
  *   6. 点「＋N」→ 列表列出全部置顶会话，点其中被藏起来的那颗能直接打开它（排列不动）。
  *
- * 桩桥照真桥的 D131 语义：`opened` 什么也不写，只回一份快照。
+ * 桩桥照真桥的 D146 语义：`opened` 什么也不写，只回一份快照。
  *
  * Run: npm run build:web && node probes/pin-auto-open.mjs
  */
@@ -112,7 +112,7 @@ const wss = new WebSocketServer({ noServer: true });
 const cast = (msg) => {
   for (const client of wss.clients) if (client.readyState === 1) client.send(JSON.stringify(msg));
 };
-/** 桥侧照 D131：打开不改任何排列。留一个计数，用来断言前端根本不再发这条消息。 */
+/** 桥侧照 D146：打开不改任何排列。留一个计数，用来断言前端根本不再发这条消息。 */
 let openedSent = 0;
 const INIT = JSON.stringify(MANAGE);
 server.on("upgrade", (req, socket, head) => {
@@ -174,7 +174,7 @@ ok(
   "但会话确实被打开了（hash 指到它）",
 );
 
-// 收起左栏：横栏只列真正 ☆ 过的会话 —— 刚打开的深链会话不在里面，这是 D131 之后的样子
+// 收起左栏：横栏只列真正 ☆ 过的会话 —— 刚打开的深链会话不在里面，这是 D146 之后的样子
 await page.locator('.side-toggle[data-side="left"]').click();
 await sleep(600);
 let box = await strip();
@@ -225,7 +225,7 @@ ok(last?.cur === true, "排到最后的当前会话仍在条里");
 ok(last?.hidden === false, "……而且没有被折叠藏起来");
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-cur-last.png`), clip: { x: 0, y: 0, width: 1000, height: 110 } });
 
-// 6) 点「＋N」→ 全量列表；挑一颗被藏起来的打开 —— 打开也不改排列（D131）
+// 6) 点「＋N」→ 全量列表；挑一颗被藏起来的打开 —— 打开也不改排列（D146）
 const hiddenName = box.chips.find((c) => c.hidden)?.name ?? "";
 const before = JSON.stringify(MANAGE);
 await page.locator(".pin-more").click();

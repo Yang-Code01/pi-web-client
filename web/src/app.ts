@@ -383,6 +383,25 @@ export class App {
     this.routeFromHash();
   }
 
+  /**
+   * 顶栏那几颗「图标 + 文字」的按钮。窄屏上六个宽按钮写不下（「📁 文件管理器」一颗就 90px，
+   * 390px 的手机加上「产物」就溢出），所以图标与文字分开包：`@media (max-width: 620px)` 只把
+   * `.lb` 收掉，按钮回成 28px 方块，文字还在 title / aria-label 里。
+   * 切分用的是 `tr()` 之后的文案（形如「📂 产物」，第一个空格前是图标），所以不必再为窄屏添一套 key。
+   */
+  private wideBtn(label: string, extra = ""): HTMLButtonElement {
+    const b = el("button", `icon-btn wide ${extra}`.trim()) as HTMLButtonElement;
+    this.setWideLabel(b, label);
+    return b;
+  }
+
+  /** 同一颗宽按钮的字会换（终端跑起来之后是「>_ 终端 2」），所以拆开这件事得能重做一遍。 */
+  private setWideLabel(btn: HTMLElement, label: string): void {
+    const cut = label.indexOf(" ");
+    btn.replaceChildren(el("span", "ic", cut > 0 ? label.slice(0, cut) : label));
+    if (cut > 0) btn.append(el("span", "lb", label.slice(cut + 1)));
+  }
+
   // ---------------------------------------------------------------- layout
   private build(): void {
     const app = document.getElementById("app")!;
@@ -407,40 +426,40 @@ export class App {
     look.title = tr("字号与颜色");
     look.dataset.act = "look";
     look.onclick = () => this.openDisplaySheet();
-    const files = el("button", "icon-btn wide", tr("📂 产物"));
+    const files = this.wideBtn(tr("📂 产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
     files.dataset.act = "artifacts";
     files.onclick = () => this.openArtifactsSheet();
     files.hidden = true;
     // D92: the shell sits next to 产物 now — it is a dialog over the page, and this button is both
     // its opener and the place it minimizes back to. Not session-scoped, so it never hides.
-    const term = el("button", "icon-btn wide", tr(">_ 终端"));
+    const term = this.wideBtn(tr(">_ 终端"));
     term.dataset.act = "terminal";
     term.setAttribute("aria-label", tr("终端"));
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
     term.onclick = () => this.openTerminal();
     this.els.term = term;
-    const fs = el("button", "icon-btn wide", tr("📁 文件管理器"));
+    const fs = this.wideBtn(tr("📁 文件管理器"));
     fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
     fs.dataset.act = "files";
     fs.onclick = () => this.openFiles();
     fs.hidden = true;
     this.els.fs = fs;
     // D108：记录不跟会话绑定，所以它跟终端一样常显；计数只在 title 里。
-    const notes = el("button", "icon-btn wide notes-btn", "🐞 bug");
+    const notes = this.wideBtn("🐞 bug", "notes-btn");
     notes.title = tr("记录 bug / 变更 / 想法 / 杂事");
     notes.dataset.act = "notes";
     notes.onclick = () => this.openNotes();
     this.els.notes = notes;
     // #45: the peer is a dialog over the page, not a separate tab — same as 终端.
-    const peer = el("button", "icon-btn wide", tr("🌐 内网通"));
+    const peer = this.wideBtn(tr("🌐 内网通"));
     peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     peer.dataset.act = "peer";
     peer.onclick = () => this.openPeerSheet();
     // 之前没登记进 els，`paintChrome()` 里那段 `if (peer)` 一直是死代码：切语言时这颗不动。
     this.els.peer = peer;
     // #86：随手问也不跟会话绑定（它不进列表），所以跟终端 / 记录一样常显。
-    const scratch = el("button", "icon-btn wide", tr("💭 随手问"));
+    const scratch = this.wideBtn(tr("💭 随手问"));
     scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     scratch.dataset.act = "scratch";
     scratch.onclick = () => this.scratch.open();
@@ -861,6 +880,10 @@ export class App {
         node.textContent = this.leftText(Number(node.dataset.deadline));
       }
       if (this.session?.running) this.fillHintStatus();
+      // 刻度尺也养在这个闹钟里：只改 DOM 的格子数，不重画整个列表。
+      for (const node of document.querySelectorAll<HTMLElement>(".sc-ruler[data-since]")) {
+        drawRuler(node, Number(node.dataset.since));
+      }
     }, 1000);
   }
 
@@ -2670,22 +2693,22 @@ export class App {
     const sessFilter = this.els.sessFilter as HTMLInputElement;
     look.title = tr("外观与语言");
     look.setAttribute("aria-label", tr("外观与语言"));
-    files.textContent = tr("📂 产物");
+    this.setWideLabel(files, tr("📂 产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
-    term.textContent = tr(">_ 终端");
+    this.setWideLabel(term, tr(">_ 终端"));
     term.setAttribute("aria-label", tr("终端"));
     term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
-    fs.textContent = tr("📁 文件管理器");
+    this.setWideLabel(fs, tr("📁 文件管理器"));
     fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
     // 记录与内网通是顶栏常显的两颗（#45 / D108），标题也要跟着换；
     // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写。
     if (notes) this.paintNotesBadge();
     if (peer) {
-      peer.textContent = tr("🌐 内网通");
+      this.setWideLabel(peer, tr("🌐 内网通"));
       peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     }
     if (scratch) {
-      scratch.textContent = tr("💭 随手问");
+      this.setWideLabel(scratch, tr("💭 随手问"));
       scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
     }
     newBtn.textContent = tr("开新会话");
@@ -4000,7 +4023,7 @@ export class App {
     // 没有 workspace 快照（旧桥 / 桩桥）就没有「要建的组」可预览 —— 分组本来就还没发生。
     if (!this.workspaces.groups.length || !tree.groups.length) return;
     // 自动化（Playwright / DevTools 带 navigator.webdriver）不弹：探针每次都跑在全新 profile 里，
-    // 等于每次都「第一次打开」，这张模态会把别的探针全挡在下面（见 D131 的验证段）。
+    // 等于每次都「第一次打开」，这张模态会把别的探针全挡在下面（见 D146 的验证段）。
     if (navigator.webdriver) return;
     this.wsIntroShown = true;
 
@@ -4408,6 +4431,14 @@ export class App {
     }
     meta.append(tail);
     card.append(meta);
+    // D136 的记号：跑着的会话在卡底留一把刻度尺，攒的格子就是时长。
+    if (s.running) {
+      const since = Date.parse(s.startedAt ?? "") || s.updatedAt;
+      const ruler = el("div", "sc-ruler");
+      ruler.dataset.since = String(since);
+      drawRuler(ruler, since);
+      card.append(ruler);
+    }
     return card;
   }
 
@@ -6536,8 +6567,12 @@ export class App {
     this.closeSkillPalette();
     this.imageBadge = null;
     if (!this.currentId) {
-      const hint = el("div", "empty", tr("左边选一个会话，或开一个新的。"));
-      host.append(hint);
+      // 没开会话时的空状态：整块居中（styles.css 用 `:has(> .composer > .chat-empty)` 把
+      // 中栏从「滚动区 + 贴底输入框」改成一块空白），别让提示贴着底边像界面坏了。
+      const box = el("div", "chat-empty");
+      box.append(el("div", "chat-empty-title", tr("还没有打开会话")));
+      box.append(el("div", "chat-empty-hint", tr("左边选一个，或者开一个新的")));
+      host.append(box);
       return;
     }
     const s = this.session;
@@ -7046,10 +7081,7 @@ export class App {
         tr("等你批准或回答时，推送到 Windows 通知（Web Push）和微信。正看着这个页面时不发：只有切到别的标签页、最小化浏览器或切到别的程序时才发。一份问卷只发一条。"),
       ),
     );
-    const tools = el("div", "actions");
-    tools.style.display = "flex";
-    tools.style.gap = "8px";
-    tools.style.flexWrap = "wrap";
+    const tools = el("div", "queue-tools");
     const push = el("button", "btn", tr("在这台设备开启 Web Push"));
     push.onclick = () => void this.enablePush();
     const test = el("button", "btn", tr("发测试通知"));
@@ -9437,7 +9469,7 @@ export class App {
       host.append(link);
     }
     if (this.tunnel.error) host.append(el("div", "notice warn", errText(this.tunnel)));
-    const keysTools = el("div", "tools");
+    const keysTools = el("div", "queue-tools");
     const keysBtn = el("button", "btn", Object.keys(this.keys).length ? tr("快捷键（已设 {p1} 个）", { p1: Object.keys(this.keys).length }) : tr("设置快捷键"));
     keysBtn.onclick = () => this.openKeysSheet();
     const piSettings = el("button", "btn", tr("pi 设置")) as HTMLButtonElement;
@@ -9447,7 +9479,7 @@ export class App {
     host.append(el("h2", "", tr("快捷键")));
     host.append(keysTools);
     host.append(el("h2", "", tr("关于")));
-    host.append(el("div", "hint", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
+    host.append(el("div", "hint about", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
   }
 
   // ---------------------------------------------------------------- terminal (Q-007 · D70 · D92)
@@ -9501,7 +9533,7 @@ export class App {
     const btn = this.els.term;
     if (!btn) return;
     const n = this.termTabs.size;
-    btn.textContent = n > 1 ? tr(">_ 终端 {p1}", { p1: n }) : tr(">_ 终端");
+    this.setWideLabel(btn, n > 1 ? tr(">_ 终端 {p1}", { p1: n }) : tr(">_ 终端"));
     btn.classList.toggle("term-live", n > 0);
   }
 
@@ -11368,6 +11400,36 @@ function tailText(text: string, maxLines: number, maxChars: number): string {
 /** 会话列表的时间戳：一分钟内「刚刚」，其余交给 Intl（D110）。 */
 function relativeTime(ts: number): string {
   return fmtRelative(ts);
+}
+
+/** 刻度尺的步长（分钟）：挑一个让格子数落在 2–11 之间的，再长就上台阶。 */
+const RULER_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 240];
+
+/** 跑了多久，写成 m:ss（过一小时是 h:mm:ss）—— 只进刻度尺的 tooltip，不占版面。 */
+function clockText(totalSecs: number): string {
+  const s = totalSecs % 60;
+  const m = Math.floor(totalSecs / 60) % 60;
+  const h = Math.floor(totalSecs / 3600);
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  return h ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+}
+
+/**
+ * 一把刻度尺：一条 1px 竖线是一格，格子攒得越多说明跑得越久，最右那条是「现在」。
+ * 位置等距铺满卡片宽度、不按时间比例画 —— 那会变成一根永远不满的进度条，而进度条会被读成
+ * 「快完成了」，agent 跑多久并没有完成度可言。密度本身就是读数，具体时长留在 tooltip。
+ */
+function drawRuler(node: HTMLElement, since: number): void {
+  const secs = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  const mins = secs / 60;
+  const step = RULER_STEPS.find((x) => mins / x <= 11) ?? 240;
+  const marks = Math.floor(mins / step);
+  node.title = tr("已经跑了 {p1}", { p1: clockText(secs) });
+  const key = `${step}/${marks}`;
+  if (node.dataset.key === key) return;
+  node.dataset.key = key;
+  node.replaceChildren(...Array.from({ length: marks + 1 }, (_, i) => el("i", i === marks ? "now" : "")));
 }
 
 function urlBase64ToUint8Array(base64: string): Uint8Array {
