@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { RpcChild } from "./rpc.ts";
-import { displayUserText, loadEntries, listSessionFiles, readMeta, titleFromUserText, typedSkill, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
+import { displayUserText, loadEntries, listSessionFiles, normalizeUserText, readMeta, titleFromUserText, typedSkill, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
 import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, summarizeToolArgs, type BashItem, type Item, type ToolItem } from "./items.ts";
 import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
@@ -1597,7 +1597,11 @@ export class Session extends EventEmitter {
     } catch {
       return 0; // an old pi without clear_queue
     }
-    const texts = [...(data?.steering ?? []), ...(data?.followUp ?? [])].map(String).filter((t) => t.trim());
+    // pi expands the command before it queues it, so `clear_queue` hands back the whole SKILL.md;
+    // fold it back on the way to the editor, and compare the same way the bubbles were recorded.
+    const texts = [...(data?.steering ?? []), ...(data?.followUp ?? [])]
+      .map((t) => normalizeUserText(String(t)))
+      .filter((t) => t.trim());
     if (!texts.length) return 0;
     // Same as the terminal's Esc / Alt+Up: the queued text goes back to the editor.
     this.emitWs({ type: "queue.restore", sessionId: this.state.id, texts });
@@ -1605,7 +1609,7 @@ export class Session extends EventEmitter {
     const ids: string[] = [];
     const pool = [...queued];
     for (const text of texts) {
-      const at = pool.findIndex((q) => q.text === text);
+      const at = pool.findIndex((q) => normalizeUserText(q.text) === text);
       if (at >= 0) ids.push(pool.splice(at, 1)[0].id);
     }
     this.queuedUser = this.queuedUser.filter((q) => !ids.includes(q.id));
@@ -1614,7 +1618,8 @@ export class Session extends EventEmitter {
   }
 
   private setQueue(steering: unknown, followUp: unknown): void {
-    const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : []);
+    // pi queues prompts it has already expanded: the bar shows what the human typed.
+    const list = (v: unknown) => (Array.isArray(v) ? v.map((t) => displayUserText(String(t))) : []);
     const next = { steering: list(steering), followUp: list(followUp) };
     if (JSON.stringify(next) === JSON.stringify(this.queue)) return;
     this.queue = next;
@@ -2469,13 +2474,15 @@ export class SessionManager extends EventEmitter {
       let entry = how.entryId ? sm.getEntry(how.entryId) : undefined;
       if (!isUser(entry) && typeof how.index === "number") {
         // Live items carry bridge ids, not entry ids: find the message among the current branch's.
-        // Both sides go through displayUserText: the file holds `/skill:x` expanded, the web sends
+        // Both sides go through normalizeUserText: the file holds `/skill:x` expanded, the web sends
         // the folded command back, so compare what a human would see, not the stored bytes.
-        const norm = (t: string) => displayUserText(t).replace(/\s+/g, " ").trim();
         const users = (sm.getBranch(sm.getLeafId()) as any[]).filter(isUser);
         const byIndex = users[how.index];
-        if (byIndex && (!how.text || norm(contentText(byIndex.message.content)) === norm(how.text))) entry = byIndex;
-        else if (how.text) entry = [...users].reverse().find((u) => norm(contentText(u.message.content)) === norm(how.text!));
+        if (byIndex && (!how.text || normalizeUserText(contentText(byIndex.message.content)) === normalizeUserText(how.text))) entry = byIndex;
+        else if (how.text) {
+          const want = normalizeUserText(how.text);
+          entry = [...users].reverse().find((u) => normalizeUserText(contentText(u.message.content)) === want);
+        }
       }
       if (!isUser(entry)) throw new Error("在会话文件里找不到这条消息（可能还没写盘），刷新后再试");
       targetLeafId = entry.parentId ?? null;

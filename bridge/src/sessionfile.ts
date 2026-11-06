@@ -168,21 +168,36 @@ export function extractText(content: unknown): string {
 export interface SkillExpansion {
   name: string;
   /** The SKILL.md path pi recorded in `location`; kept for the chip's tooltip only. */
-  location: string;
+  location?: string;
   /** What the user typed after the command, trimmed. */
   args: string;
   /** `/skill:<name>`, or `/skill:<name> <args>`. */
   command: string;
 }
 
-const SKILL_BLOCK = /^\s*<skill\s+name="([^"]+)"(?:\s+location="([^"]*)")?[^>]*>[\s\S]*?<\/skill>([\s\S]*)$/;
+/**
+ * The opening tag is matched loosely and its attributes read separately: pi owns that tag, and an
+ * added or reordered attribute must not put the whole SKILL.md back on screen. The body is greedy
+ * on purpose — a SKILL.md may quote `</skill>` itself, and only the last close ends the block.
+ */
+const SKILL_BLOCK = /^\s*<skill\b([^>]*)>([\s\S]*)<\/skill>([\s\S]*)$/;
+const NAME_ATTR = /\bname="([^"]*)"/;
+const LOCATION_ATTR = /\blocation="([^"]*)"/;
 
 export function skillExpansion(raw: string): SkillExpansion | null {
-  const m = SKILL_BLOCK.exec(raw);
-  if (!m) return null;
-  const args = (m[3] ?? "").trim();
-  const name = m[1];
-  return { name, location: m[2] ?? "", args, command: args ? `/skill:${name} ${args}` : `/skill:${name}` };
+  const block = SKILL_BLOCK.exec(raw);
+  if (!block) return null;
+  // A `<skill>` without a name is nothing we can fold back; leave it as the stored text.
+  const name = NAME_ATTR.exec(block[1])?.[1];
+  if (!name) return null;
+  const location = LOCATION_ATTR.exec(block[1])?.[1];
+  const args = block[3].trim();
+  return {
+    name,
+    args,
+    command: args ? `/skill:${name} ${args}` : `/skill:${name}`,
+    ...(location ? { location } : {}),
+  };
 }
 
 /** What a user message should read as: a skill call folds back to `/skill:<name> args`. */
@@ -196,9 +211,17 @@ export function typedSkill(text: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * Display text flattened for comparisons: `branchOff`'s fallback matches the web's folded command
+ * against the file's expanded block, and pi's queue hands back the expanded text too.
+ */
+export function normalizeUserText(raw: string): string {
+  return displayUserText(raw).replace(/\s+/g, " ").trim();
+}
+
 /** A sidebar title from a user message: the same text, flattened and cut to 120 chars. */
 export function titleFromUserText(raw: string): string | null {
-  const text = displayUserText(raw).replace(/\s+/g, " ").trim();
+  const text = normalizeUserText(raw);
   return text ? text.slice(0, 120) : null;
 }
 

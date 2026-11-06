@@ -1,6 +1,7 @@
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
 import { highlightFragment } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
+import { fillUserBody } from "./skill.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
 import type { BashItem, Item, ToolItem, UserItem } from "./types.ts";
 import { fmtTime, tr } from "./i18n/index.ts";
@@ -461,7 +462,13 @@ export class ChatView {
     this.cards.set(item.id, node);
     if (this.collapsed.delete(localId)) this.collapsed.add(item.id);
     // 乐观渲染过的用户消息回填时走这里（不经过 add），这里只补 assistant 原话。
-    if (item.kind === "user") this.clearTurnFails();
+    if (item.kind === "user") {
+      this.clearTurnFails();
+      // 桥那份才是准的：pi 可能把 `/skill:grilling` 记成别的名字，args 也可能被折得不一样。
+      // 只重建 body（节点留着 —— 刻度带指着它），按钮里的闭包拿的仍是乐观那条的文本。
+      const body = node.querySelector(".body");
+      if (body) body.replaceWith(this.buildUserBody(item));
+    }
     if (item.kind === "assistant") {
       this.assistantTexts.set(item.id, item.text ?? "");
       if ((item.text ?? "").trim()) this.noteAnswered();
@@ -910,20 +917,8 @@ export class ChatView {
 
   private buildUserBody(item: UserItem): HTMLElement {
     const body = el("div", "body");
-    const cmd = item.skill ? `/skill:${item.skill}` : "";
-    if (cmd && item.text.startsWith(cmd)) {
-      // pi expands the command into `<skill …>the whole SKILL.md</skill>` before writing it down;
-      // the bridge folds it back and marks the item, so draw the command as a chip and let the
-      // user's own words follow it.
-      const chip = el("code", "msg-skill", cmd);
-      if (item.skillPath) chip.title = tr("技能文件：{p1}", { p1: item.skillPath });
-      body.append(chip);
-      // Keep the separator exactly as folded (`/skill:x args`): the bubble is `white-space: pre-wrap`.
-      const rest = item.text.slice(cmd.length);
-      if (rest.trim()) body.append(document.createTextNode(rest));
-    } else {
-      body.textContent = item.text;
-    }
+    // 命令画成药丸、用户自己写的话原样跟在后面，规则在 skill.ts（与桥端的折叠规则成对）。
+    fillUserBody(body, item);
     if (item.images?.length) {
       const tag = el("div", "notice", tr("附 {p1} 张图片", { p1: item.images.length }));
       body.append(tag);

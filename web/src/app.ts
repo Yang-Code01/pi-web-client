@@ -19,6 +19,7 @@ import { continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
+import { skillOf } from "./skill.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { PIN_MAX, PIN_MIN, TABS_DEFAULT, clampMax, tabHitTest, tabModel, tabReorder, type TabHit, type TabRect } from "./wstabs.ts";
@@ -2126,7 +2127,7 @@ export class App {
     // `_expandSkillCommand`), no matter which entry point produced it: the palette, the `/` menu,
     // or typing it out. Counted here rather than at pick time — a command that never got sent is
     // not a use, and the palette has to rank the ones that were.
-    const skill = /^\/skill:([^\s]+)/.exec(text)?.[1];
+    const skill = skillOf(text);
     // The bubble below is optimistic; the bridge echoes `clientId` back so this page adopts its own
     // broadcast instead of drawing the message twice (#19).
     const clientId = `local:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
@@ -2138,7 +2139,7 @@ export class App {
         this.composerText = "";
         this.images = [];
         this.pastes = [];
-        this.chat.add({ id: clientId, kind: "user", text: text || tr("（图片）"), images: [], ts: new Date().toISOString() });
+        this.chat.add({ id: clientId, kind: "user", text: text || tr("（图片）"), images: [], ...(skill ? { skill } : {}), ts: new Date().toISOString() });
         this.renderChat();
       }
       if (payload.sessionId) this.drafts.delete(payload.sessionId);

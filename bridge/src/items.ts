@@ -165,15 +165,18 @@ export function entriesToItems(entries: SessionEntry[]): Item[] {
             .filter((c) => c && c.type === "image")
             .map((c) => ({ mimeType: String(c.mimeType ?? "image/png"), size: undefined }))
         : [];
-      const raw = contentText(msg.content);
-      const skill = skillExpansion(raw);
+      const fullText = contentText(msg.content);
+      // Parse the text parts only: `contentText` appends `[图片]` per image, which is not user prose
+      // and would otherwise become the command's args (the image notice already says it).
+      const skill = skillExpansion(extractText(msg.content));
       items.push({
         id: entry.id,
         ts: entry.timestamp,
         kind: "user",
-        text: skill ? skill.command : raw,
+        text: skill?.command ?? fullText,
         images,
-        ...(skill ? { skill: skill.name, skillPath: skill.location } : {}),
+        ...(skill ? { skill: skill.name } : {}),
+        ...(skill?.location ? { skillPath: skill.location } : {}),
       });
     } else if (msg.role === "assistant") {
       let text = "";
