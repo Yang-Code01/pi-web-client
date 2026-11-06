@@ -209,7 +209,8 @@ function startBridge() {
   fs.writeFileSync(
     launcher,
     [
-      "$host.ui.RawUI.WindowTitle = 'pi bridge'",
+      // PS 5.1 按 ANSI 读无 BOM 文件；窗口标题与路径都可能是中文，必须带 BOM。
+      "﻿$host.ui.RawUI.WindowTitle = 'pi bridge'",
       `Set-Location -LiteralPath ${psQuote(REPO)}`,
       `npm run start:nobuild 2>&1 | Tee-Object -FilePath ${psQuote(LIVE)} -Append`,
       "",

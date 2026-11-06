@@ -1,4 +1,4 @@
-# D154：注册用户级计划任务，每分钟跑一次 watchdog.mjs。
+﻿# D154：注册用户级计划任务，每分钟跑一次 watchdog.mjs。
 # 不需要管理员权限；任务以「交互式登录」身份运行，登录后生效。
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File install-watchdog.ps1
