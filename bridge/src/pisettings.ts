@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentDir, ensureDir, readJson, statePath } from "./paths.ts";
 import { piModule, piPackageDir } from "./pimods.ts";
+import { settingDefaults, type SettingDefaults } from "./settingsdefaults.ts";
 
 export type SettingsScope = "global" | "project";
 
@@ -27,6 +28,8 @@ export interface SettingsView {
   error: string | null;
   /** Project scope: pi refuses to write project settings of an untrusted project. */
   writable: boolean;
+  /** pi's own defaults (dotted keys) — what the form shows in 「（默认：…）」. */
+  defaults: SettingDefaults;
 }
 
 function settingsPath(scope: SettingsScope, cwd: string | null): string {
@@ -64,7 +67,7 @@ export async function readSettings(cli: string, scope: SettingsScope, cwd: strin
     error = (err as Error).message;
   }
   const writable = scope === "global" || (cwd ? (await trustInfo(cli, cwd)).effective : false);
-  return { scope, cwd, path: file, exists, raw, json, error, writable };
+  return { scope, cwd, path: file, exists, raw, json, error, writable, defaults: settingDefaults(cli) };
 }
 
 /** `a.b` → nested; `null` deletes the key (and an emptied parent object). */
