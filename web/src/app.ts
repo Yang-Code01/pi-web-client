@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { api } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
+import { filterCommands, type CommandItem } from "./commands.ts";
 import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
@@ -173,7 +174,7 @@ export class App {
     start: number;
     end: number;
     query: string;
-    items: { insert: string; label: string; desc?: string; tag?: string }[];
+    items: CommandItem[];
     sel: number;
     node: HTMLElement;
   } | null = null;
@@ -8774,22 +8775,17 @@ export class App {
   }
 
   /** Built-in commands the page runs itself, then pi's own (extension / template / skill). */
-  private commandItems(query: string): { insert: string; label: string; desc?: string; tag?: string }[] {
-    const q = query.toLowerCase();
-    const all: { insert: string; label: string; desc?: string; tag?: string }[] = BUILTIN_COMMANDS.map(([name, desc]) => ({ insert: `/${name} `, label: `/${name}`, desc, tag: tr("内建") }));
+  private commandItems(query: string): CommandItem[] {
+    const all: CommandItem[] = BUILTIN_COMMANDS.map(([name, desc]) => ({ insert: `/${name} `, label: `/${name}`, desc, tag: tr("内建") }));
     const tagOf: Record<string, string> = { extension: tr("扩展"), prompt: tr("模板"), skill: tr("技能") };
     for (const c of this.piCommands?.list ?? []) {
       if (all.some((x) => x.label === `/${c.name}`)) continue;
       all.push({ insert: `/${c.name} `, label: `/${c.name}`, desc: c.description, tag: tagOf[c.source] ?? c.source });
     }
-    if (!q) return all.slice(0, 40);
-    const starts = all.filter((x) => x.label.slice(1).toLowerCase().startsWith(q));
-    // Descriptions only for longer queries: two letters match half the skill blurbs.
-    const contains = all.filter((x) => !starts.includes(x) && (x.label.toLowerCase().includes(q) || (q.length >= 3 && (x.desc ?? "").toLowerCase().includes(q))));
-    return [...starts, ...contains].slice(0, 40);
+    return filterCommands(all, query);
   }
 
-  private showComplete(mode: "cmd" | "file", start: number, end: number, query: string, items: { insert: string; label: string; desc?: string; tag?: string }[]): void {
+  private showComplete(mode: "cmd" | "file", start: number, end: number, query: string, items: CommandItem[]): void {
     let node = this.complete?.node;
     if (!node || !node.isConnected) {
       node = el("div", "complete-pop");

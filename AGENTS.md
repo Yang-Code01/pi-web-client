@@ -2,6 +2,19 @@
 
 pi 的网页客户端：`bridge/`（Node，WS 桥 + RPC 子进程 + 隧道）与 `web/`（Vite + 原生 TS 前端）。
 
+## Worktree 工作流（硬规则，优先于下文所有流程）
+
+**AI 不在 main 上改代码，也不在已检出的主工作区里编辑文件。每次变更都先开一个 worktree，在它自己的分支上改、提交，再合回来。**
+
+- **开：** 从主检出 `git worktree add ../pi-web-client-wt/<branch> -b <branch>`（本仓库 worktree 统一放 `F:/pi-web-client-wt/`），之后所有读写都在那个目录里做。`<branch>` 用 `feat/…`、`fix/…` 这类主题名。
+- **收：** 走本仓库 PR 流程（`gh pr create` → 合并）或本地 `git merge --no-ff <branch>`；之后 `git worktree remove <目录>` + `git branch -d <branch>`，别留僵尸 worktree，手工删过目录就跑 `git worktree prune`。
+- **只读不受限：** `git log` / `git diff` / 读 main 上的代码随便跑。禁止的是**写**：在 main 上 `git add` / `git commit`，或者 `git checkout main` 之后改文件。
+- **主检出里有未提交的改动时先问用户**（stash / 带走到新分支），不要为了腾地方就 `git checkout .` 或 `git stash` 掉别人的活。
+- **并行任务一个任务一个 worktree**，两个 agent 不要共用同一工作目录（会踩 build 产物和 `index.lock`）。
+- **sub-agent 改代码用隔离 worktree**（`subagent` 的 `worktree: true`），不要让它直接写主检出。
+- **这条规则也管 `AGENTS.md` 自己**：改规则文本一样开 worktree、提 PR、合回来，不在 main 上直接提交。
+- **唯一例外：用户当场明确要求在 main / 主检出上改**——照做，但在回复里点明绕过了这条规则。
+
 ## Agent skills
 
 ### Issue tracker
