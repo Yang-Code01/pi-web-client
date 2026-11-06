@@ -233,6 +233,8 @@
 
 ## D45 会话列表按创建时间固定排序，卡片右下角只放「待确认 / 完成」
 
+> **D162 修订（2026-11）：** 「完成」不再随打开 / 订阅清除，也不再只对非当前会话显示 —— 它被持久化到 `state/finished.json`，桥重启、GC、换设备都保留，只有新一轮运行、发消息或终端续写会话文件才清。打开也不再刷新 `updatedAt`（取会话文件 mtime）。下文「不是当前打开的会话」与「清理由把快照交给客户端触发」两句已被 D162 取代；排序键、桥端算 `done` 的论证仍有效。
+
 **决定：** 列表顺序的唯一键是 `startedAt`（pi 会话文件 header 的 `timestamp`；网页新建的会话在构造时补一个 `new Date().toISOString()`，否则它永远排不上号），降序、不随 `updatedAt` 变化 —— 某个会话回答完、改名、改模型都不挪位置，只有新开会话落在最上面。排序在桥端 `SessionManager.list()` 和前端 `renderSessions()` 各做一次（两端都可能有会话在跑，前端收到 `session.state` 后要原地合并，不能指望顺序来自服务端）。卡片右下角（`meta` 行右侧，相对时间在左）只放一个状态徽标，优先级 `待确认 N`（`approvals > 0`，黄）> `完成`（`done` 且不是当前打开的会话，绿）> `运行中`（蓝）。名字行只留名字和 ✎；圆点仍表示运行/占用。
 
 **为什么徽标由桥端算 `done` 而不是前端记「刚从 running 变 idle」：** 前端只在页面开着时看得到变化，刷新一次、换手机看，完成状态就丢了；桥端在 `agent_start` 置 `done:false`、`agent_end`/`agent_settled` 置 `done:true`，状态跟着会话走。清理由「把快照交给客户端」触发（`Manager.snapshot()` → `Session.markSeen()`），也就是 `subscribe` 那一下；这同时意味着另一台设备点开卡片，这边的「完成」也会消 —— 完成是会话的属性，不是某页的未读。
@@ -2330,7 +2332,95 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 
 **验证：** `npm run test:continue`（10 条：藏 / 灰 / 亮三态的边界，含「藏优先于灰」与字段缺省）；`npm run test:continue:ui`（自带丢弃式 bridge + `bridge/tests/fixtures/fake-pi.mjs`，真 Chromium **14 条**：新会话按钮在且是灰的 / 竖着叠在权限按钮上方且同宽 121.2px / `row 76.0 vs textarea 72.5` / 跑完一轮变亮 / SLOW 时是灰的 / **被打断之后又亮** / 点下去 fake-pi 收到字面「继续」/ 草稿仍在 / 对话里出现「继续」/ 英文界面标签是 `Continue` 但**发出去的仍是「继续」** / 英文界面草稿也在）。截图见 `docs/shots/continue-button.png`（被打断的那一轮 + 亮着的按钮）。`npm --prefix web run typecheck`（tsc + i18n-check，1414 键 × 3 语言）、`npm run build:web`、`npm run build:bridge`。
 
-## D160 「AI 出错记录」：右下角一键入账，按类去重，只读，能交回给 agent（无票，用户要求）
+## D160 设置面板的「（默认）」写成 `（默认：值）`：默认值从 pi 包里读，不由我们背（无票，用户口头要求）
+
+**问题：** 面板里 16 个控件的第一项全是 `（默认）`，看不出默认是 `one-at-a-time` 还是 `all`、是 `开` 还是 `关`；`defaultTools` 这种列表连「空 = 用哪几个工具」都说不出来。第二层问题更麻烦：想标就得知道值，而写死在我们的源码里必然与 pi 漂移 —— 本仓已经因为「自己重新实现 pi 的行为」吃过亏（D77/D78）。
+
+**决定：**
+
+- 默认值的唯一来源是 **pi 包自带的 `schemas/settings.schema.json`**（44 个叶子带 `default`），桥的新模块 `bridge/src/settingsdefaults.ts` 用 `piPackageDir(cli)` 找到包根、按点号拍平成 `{ "compaction.reserveTokens": 16384, … }`，随 `settings.get` 的响应以 `defaults` 字段下发；前端 `defaultLabel()` 只做查表与拼文案，**不硬编码任何默认值**。
+  - schema 没写、但 pi 文档有明确值的 6 个键（`defaultThinkingLevel`、`defaultTools`、`httpIdleTimeoutMs`、`websocketConnectTimeoutMs`、`npmCommand`、`retry.provider.maxRetries`）由该模块内的 `FALLBACK` 表补；两边都说时 **schema 赢**。
+  - 读不到包 / 没有 schema / `cli` 为 null 一律不抛，只给兜底表：默认值标签写错是瑕疵，`settings.get` 崩掉是故障。
+- 三种文案：全局页 `（默认：ask）`；项目页在全局设了值时 `（默认：auto，继承全局）`（项目页的「默认」就是实际生效值）；两者都说不出值时 `（默认：不设置）`。列表类（`defaultTools` / `enabledModels`）不显示「继承全局」—— 它们的 `+x / -x` 语法是**合并**而非覆盖，写「继承」是假话；模型行存的是 `defaultProvider` + `defaultModel` 一对，继承时显示 `/` 拼起来的整对。
+- 查表顺序是 **schema → `defaultText` → 「不设置」**：`defaultText` 只是给 pi 在运行时才决定的值（「自动，挑一个能用的」「跟随 HTTP 空闲超时」）一句说明，**不能盖住 schema 里的真值** —— 第一版把它放在了前面，等于在代码里硬编码默认值，与上一条自相矛盾。
+- 字段的 hint 必须与 pi 的事实对齐：`sessionDir` 写的是「相对路径从工作目录解析，项目设置会盖过全局」（pi 的 `getSessionDir()` 读的是 global + project 合并后的值），不是「只认绝对路径、只在全局生效」。
+- 顺手把面板补齐到网页上有意义的全部 pi 设置（16 → 36 行），并加分组小标题 + 一个默认收起的「高级」（展开态记 `pi.settings.advanced`；`globalOnly` 的行在项目页直接不渲染）。对象型设置（`modelThinkingLevels` / `thinkingBudgets` / `compaction.modelOverrides`）不进表单，底部点名 + 「去改 JSON」按钮。
+
+**为什么：** 用户的原话是「很多默认，其实并不知道默认是啥」。答案只能来自 pi 自己那份 schema —— 它是 pi 校验设置的同一份真相，改默认值时我们跟着变，不需要有人记得来改这里的字符串。把「读 schema」放在桥里而不是前端，是因为前端拿不到 pi 的安装路径，而桥已经用它加载 pi 模块（`bridge/src/pimods.ts`）。
+
+- 数字设置一律按整数存（pi 的超时/水位都是毫秒或 token 数），允许 `disabled` 的那几项例外。
+
+**代价 / 可改：** `defaults` 让 `settings.get` 的响应多出几十个键（一次性解析后缓存，面板每次重绘只是查表）。schema 结构若大改（默认值不再在 `properties.*.default`），标签会退回兜底表的样子而不是报错。分组名与哪些行进「高级」是口味问题，全都可改。
+
+**验证：** `node --experimental-transform-types bridge/tests/settings-defaults.mjs`（7 条：拍平、无 default 不算、包缺失不抛、schema 覆盖兜底、缓存）；`node bridge/tests/settings-trust.mjs` 17 条仍全过（`settings.get` 多一个字段不影响既有断言）；`npm run typecheck` + `npm run build`；测试实例（`pi-web-client-test-dev`，口令 test，17874）截图核对全局页 36 行都写出了默认值、项目页出现「（默认：max，继承全局）」。
+
+## D161 默认权限是 pi 设置里的一个桥自有键，在会话被第一次看见时钉死（无票，用户口头要求）
+
+**问题：** 权限模式只存在于 `state/allow/<id>.json`，没这个文件时 `readPermission` 一律返回 `ask`——「默认是什么」这件事既看不见也改不了，每个新会话都得手动点一次 chip。用户要求：设置里加「默认权限」，并且要能按项目设。
+
+**决定：**
+
+- 键是 **`web.defaultPermission`**，值就是 `readonly | strict | ask | auto`。存在 **pi 自己的 settings.json 里**（`~/.pi/agent/settings.json` 与 `<cwd>/.pi/settings.json`），读写走既有的 `bridge/src/pisettings.ts`（D78：pi 的配置由 pi 的模块管，不另起一份）。`web.` 命名空间是桥的约定，pi 对未知键宽容（schema 顶层 `additionalProperties: true`），所以 pi 会原样保留、不会拒绝。
+- 解析顺序 **项目 → 全局 → `"ask"`**，与 pi 其它设置同语义。项目级那一层**必须先过信任门**：`readSettings()` 给出 `writable`（= `trustInfo().effective`），未信任项目的 `.pi/settings.json` pi 本来就不加载，桥若照读，会得到一个 pi 自己都不认的值。
+- 生效时机是 **会话被第一次看见时钉住（pin）**，不是每次工具调用都解析：`Session.pinPermission()` 在没有 allow 文件时写入 `{ mode: 解析值, from: "default" }`，三处调用——`create()`、`openLive()`（都在 `startLive` 之前，因为 gate 在 spawn 那一刻就读这个文件）、以及启动后的一次扫描 `pinAll()`（覆盖 bridge 从没见过的磁盘会话）。
+  - 老会话因此**不会**被后来的默认值改动波及；反过来，手动改过的会话（`setPermission`）会**删掉 `from` 标记**，永远不再被「应用默认值」碰到。
+  - `from` 是唯一用来区分「这个 ask 是默认来的还是人选的」的东西 —— 只看 mode 分不出来，而「应用到现有会话」必须只覆盖默认来的那些。
+- 「应用到现有 N 个会话」是**显式动作**：`permission.defaults` 回 `{mode, source, path, total}`（cwd 可省 = 全部），前端在设置面板底部显示按钮并写明现在的默认值来自哪一层；`permission.applyDefault` **要 step-up**（它会批量放松/收紧权限），对每个会话用它**自己的 cwd** 重新解析（项目值不同），保留 `from:"default"` 以便下次还能被更新 —— 所以按钮文案是「改成各自的默认值」，不能写死某一个模式名。
+- 面板里 MCP 安装表单的「codemode」下拉框改名「**MCP 暴露方式**」（它管的是 MCP 工具的 exposure: deferred/direct/hidden），pi 的 `codemode.mode` 才叫「**codemode 工具模式**」——两个同名控件并排是会误点的。
+
+**为什么：** 默认值要么写进每次工具调用前的解析（成本、且老会话会突变），要么钉一次（可解释、可回滚）。选钉一次，是因为用户对权限的心智是「我会话开始时是什么就是什么」，中途因为谁改了全局设置而变严/变松是惊吓。项目级要求过信任门，是为了不在「pi 根本没读这个文件」的情况下假装它生效。
+
+**代价 / 可改：** allow 文件多一个 `from` 字段（旧的没有，照样能读）。`web.*` 键 pi 不认识，面板的「编辑 JSON」里会看见它——这是有意的，它就该出现在那个文件里。启动扫描只看 `metas()` 里每个会话的 allow 文件是否存在（存在就跳过，**不调 `ensure()`**，否则每个磁盘会话都会多一个 Session 对象和 400 ms 的 tail 定时器），不存在才读该会话 cwd 的 settings.json 并写一行 —— 是一次性的、不阻塞监听的薄扫描。
+
+**验证：** `node bridge/tests/default-permission.mjs`（A 无设置→ask 并带 `from`；B 全局 strict 只影响新会话；C 项目值未信任时被忽略、信任后覆盖全局；D 手动切换清掉 `from`；E `permission.defaults` 把 manual 排除在外、`applyDefault` 只改默认会话且各自用自己的项目值；F 重启桥后启动扫描给磁盘上没见过的会话补钉、手动选择跨重启保留）；`node bridge/tests/settings-trust.mjs` 仍全过；`npm run typecheck`（i18n 三边对齐）+ `npm run build`。
+
+## D162 「完成」是会话的持久状态：打开不清、重启不丢，时间不再被「打开」刷新（无票，用户口头报障）
+
+**现象：** 已完成的任务点开看一眼，卡片上的「完成」消失，时间从完成时刻变成「刚刚」—— 再也判断不出这一轮到底结束了没有（用户截图：`main 重启 25分钟前`、`excel 支持 39分钟前`、`继续按钮追加 刚刚`）。
+
+**根因（三条，都在桥端）：**
+
+1. `subscribe` → `Manager.snapshot()` → `Session.markSeen()`：把「快照交给客户端」当成已读，`setState({done:false})` 默认 `touch:true`，`touch()` 把 `updatedAt` 改成 `Date.now()`（`bridge/src/sessions.ts`）—— 一次打开同时抹掉徽标和完成时间。
+2. `Session` 构造把 `updatedAt` 写成 `Date.now()`，手里明明有 `meta.mtime` —— 桥重启后打开任何老会话都显示「刚刚」。
+3. `startTail()` → 首次 `refreshFromFile()`：`tailSig` 初值 `""`，第一次必 `touch()` —— 文件没动也算一次活动。
+
+**决定：**
+
+- 完成状态持久化到 `<state>/finished.json`（`{"<sessionId>": <finishedAt>}`），与 `names.json` 同口径：桥自己的状态，写失败只损失持久化。`Session` 构造时读回；`list()` 对磁盘上有、内存里还没 `ensure` 的会话也读同一个文件；删会话时 `forgetFinished()` 一起清。
+- 打开 / 订阅**不清**完成：删掉 `markSeen()` 与前端 `openSession()` 里的本地清除；`sessionBadge` 去掉「不是当前会话」条件 —— 当前打开的会话也显示「完成」。
+- 清除条件只剩三个：`agent_start`、网页 `prompt()`（消息一发出就清，不等 pi 起跑）、会话文件被终端 / 外部续写（`refreshFromFile` 检测到变化）。三条都同时写 `finished.json` 清除。停止 tail（sleep / 让回终端）再恢复不算「外部续写」：`stopTail()` 把 `tailSig` 复位，恢复后的第一次读盘按「第一次」处理，只取 mtime。
+- 「文件比完成标记新」的判据带 **1s 容差**（`FINISHED_SKEW_MS`）：文件系统 mtime 的精度与「settle 后我们自己再写一行」都落在这一秒内；超过 1s 才算停机期间的终端续写。构造、`list()` 与 `refreshFromFile` 三处共用 `finishedIsStale()`。
+- `agent_settled` 写 `done:true` + 时间戳。GC 回收不再拿 `done` 当免回收条件（回收后 `ensure()` 会从 `finished.json` 读回来）。
+- 时间显示：构造用 `meta.mtime`；`refreshFromFile` 首次读盘只取 `stat.mtimeMs`、不 `touch()`，之后文件真变了才 `touch()`。打开一个会话不再让它跳到「刚刚」，时间始终是「这个会话最后一次真正被写」。
+
+**为什么：** 完成是会话属性、不是某页未读 —— D45 当初已经这么论证（桥端算 `done`），但「清理」仍挂在快照上，实际把属性降级成了未读。用户要在重启、换设备、隔一会儿再看时都能判断「这一轮结束了没有」。持久化而不只是内存标志，是因为桥重启或会话被 GC 回收后 `ensure()` 会重建 Session，内存标志会丢；写盘一次几个字节，和 `names.json` 一样便宜。清在 `prompt()` 而不是等 `agent_start`，是因为消息发出到 pi 起跑有 1–3 秒冷启（D120），这期间卡片不能还挂着「完成」。终端续写要清，是因为只读会话的「这一轮结束」在桥这侧没有事件（D45 的解释仍成立），文件变长说明有人在终端里继续，之前的完成已经过期。时间取 mtime 而非打开时刻，是因为用户要看的是「任务什么时候结束 / 最后活动」，不是「我看它的时候」。
+
+**代价 / 可改：** 多了一个状态文件；会话删除必须同时清（已接进删除路径）。只读会话若终端刚写完、桥还没 tail 到，列表可能短暂显示「完成」再被文件变化清掉 —— 一次事件的事。当前会话显示「完成」是刻意改变；如果嫌和「运行中」来回闪，可以把完成改成左侧小勾或只在非当前会话上显示（**可改**）。
+
+**验证：** `bridge/tests/session-flags.mjs` 改为「点开后完成仍在 + `/api/sessions` 里 `done=true` + 下一条 prompt 清掉」；`npm run test:done`（9 条纯逻辑：读回、mtime、过期清盘、`stopTail()` 后恢复不清、停机期间续写判过期）；`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（含 `i18n-check`）、`npm run build:bridge`、`npm run build:web`。手测：跑完一轮 → 刷新页面 / 重启 bridge → 仍显示完成且时间是完成时刻；发消息后立即消失；终端 `pi -c` 续写后再看显示新时间。
+
+## D163 附件弹层能引用「当前文件夹」；面包屑的盘符段跳到盘根；弹层按会话记住上次的目录（无票，用户要求）
+
+**问题：** 三件事都出在「文件」弹层里：
+
+- 只有文件行会把路径插进输入框，目录行点一下是「进去」，于是「我想让 pi 看这个目录」没有出口 —— 只能去资源管理器复制路径再粘回来。
+- 点面包屑上的 `F:` 会闪一下又落回仓库目录（`F:\pi-web-client`）。根因不在盘符列表：`/api/dirs?path=F:` 里的 `F:` 是**盘符相对路径**，桥端按自己的 cwd 解析，而桥恰好就在 F: 上（`path=F:\` 才进盘根）。面包屑 `paintCrumbs()` 给盘符段的 target 是裸 `"F:"`；跳转输入框那侧早就有 `BARE_DRIVE` 兜底，只有面包屑漏了。
+- 每次打开都从会话 cwd 重新开始，在同一个目录里连着挑两次就得重新点进去。
+
+**决定：**
+
+- head 里 `⌂ 工作目录` 右边加 **`📎 引用当前文件夹`**（`dirRef()`，形状照抄 `dirCopy()`）：读 `picker.path()`，含空格才包一对引号（`C:\Program Files\x` 裸着会被读成两个路径；没空格的包上反而多两处要删），走 `insertPaths()` 按 caret 插入，按钮闪「已引用」1.2 秒，**弹层不关** —— 接着还能选文件。「此电脑」页没有目录，按钮 disabled（原因写在 `title`；灰按钮上浏览器常不出 tooltip，所以灰本身也是提示）。
+- 重复点只闪「已在输入框」不插第二遍。判定 `hasPathToken()`（`dirpicker.ts`）左右只认空白 / 引号 / 字符串边缘：`F:\a` 不能把 `F:\ab` 认成同一条，同一目录下的另一个子目录仍算新路径。
+- 面包屑盘符段的 target 补上分隔符（显示文字仍是 `F:`），并且 `navigate()` 入口再对裸盘符兜底一次，免得下一个调用方重踩。
+- 记忆**按会话**：`pi.attachDir:<sessionId>`，目录一变就写；打开时 记忆 → 会话 cwd → 盘符列表 依次退化，没有 session id 就既不读也不写。`pi.attachDir.index` 记着用过的键，超过 30 条删最旧的（删掉的会话不该一直占着键）。文件管理器不受影响，仍旧用它自己的 `pi.fsDir`。
+
+**为什么：** 「引用目录」要跟「进目录」分开 —— 把目录行改成双击进入既改了这个弹层的操作习惯，又要给单点另找一个动作。放在 head 上、点完不关，「挑几个文件 + 引用几个目录」能一口气做完。分号那段修在面包屑而不是只修 `F:` 这一个字符串，是因为它错在语义上：盘符单独出现就不是一个完整路径，任何调用方传裸盘符都会重演。记忆按会话是因为「上次在哪儿」是会话的属性；用一份全局记忆会在切会话时把人带到不相干的目录。
+
+**代价 / 可改：** 含空格的引用只是加引号，模型仍要靠它自己解析，跟粘贴路径的行为一致。记忆会留 30 个 localStorage 键（会话删了不会立刻清，靠 LRU 兜）。「此电脑」页按钮是灰的，不提供「引用某个盘」——用户明确说过不用。这几点都是口味，可改。
+
+**验证：** `npm run typecheck`（含 i18n 三边对齐）；`npm run test:attach:ui`（`bridge/tests/attach-picker.mjs`，独立端口 `ATTACH_UI_PORT`（默认 7889，避开 memory-cap 的 7880/7882/7883 与 continue-ui 的 7888）+ 临时 state 的桥：① 📎 插一次、复点只回「已在输入框」；② 在 `F:\…\work` 点 `F:` 面包屑 → `/api/dirs?path=F:\` 且落在 `此电脑\F:`，列表里有 `pi-web-client`；③ 关掉重开弹层回到 `此电脑\F:`（记忆失效时先退 cwd 再退盘符页）；④ C/D/E/F/H/I 六个盘逐一点过，每条都断言落在 `<盘>:\` 且列表非空；⑤ 进到含空格的 `work\has space` 点 📎 → 插入的是带引号的整条；⑥ 塞满 30 条假会话再换一次目录 → 索引仍是 30 条、最旧那条被清掉；⑦ 把记忆改指不存在的目录再打开 → 退回会话 cwd，不停在盘符页）。修复前同一探针第 ② 步拿到 `path=F:`、落在 `F:\pi-web-client-wt\feat\attach-refine`。
+
+## D164 「AI 出错记录」：右下角一键入账，按类去重，只读，能交回给 agent（无票，用户要求）
 
 **问题：** AI 干活时会走弯路 —— 路径拼错、命令没装、grep 没命中、改了一个不存在的文件。每一步都「能完成任务」，但中间的错误散在几千行工具输出里，用户不可能每次都去纠正。界面上只有一行「N 个操作 · … · M 失败」，一轮结束就散了，跨会话更无从知道「这个算不算老毛病」。
 

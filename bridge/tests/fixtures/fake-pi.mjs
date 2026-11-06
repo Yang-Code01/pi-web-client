@@ -203,7 +203,7 @@ async function turn(text) {
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
-  // 「⚡ 总结本轮错误」探针（D160）：一次 turn 里几颗会失败的工具，形状照真实会话抄。
+  // 「⚡ 总结本轮错误」探针（D164）：一次 turn 里几颗会失败的工具，形状照真实会话抄。
   if (/^FAILS/.test(text)) {
     const calls = [
       ["bash", "cd F:/pi-web-client-wt/feat-setti && git status", "bash: cd: F:/pi-web-client-wt/feat-setti: No such file or directory"],

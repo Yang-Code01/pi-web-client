@@ -140,9 +140,9 @@ try {
   assert(rows[ia].updatedAt > rows[ib].updatedAt, "A is the more recently updated session, yet stays below");
   log("order unchanged; A.updatedAt is newer, position is not");
 
-  // The browser card: bottom-right 完成, cleared when the card is opened.
+  // The browser card: bottom-right 完成, and D162 keeps it after the card is opened.
   browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1180, height: 780 }, deviceScaleFactor: 2 });
+  const page = await browser.newPage({ viewport: { width: 1180, height: 780 }, deviceScaleFactor: 2, locale: "zh-CN" });
   await page.goto(BASE);
   await page.fill(".login input", pass);
   await page.click(".login .btn");
@@ -152,6 +152,7 @@ try {
   const flag = await cardA.locator(".meta .badge").innerText();
   assert(flag === "完成", `card corner shows 完成 (got ${JSON.stringify(flag)})`);
   const before = await cardA.locator(".meta").innerText();
+  const beforeOpen = (await list()).find((s) => s.id === a).updatedAt;
   await page.screenshot({ path: path.join(OUT, "1-done.png") });
   await cardA.screenshot({ path: path.join(OUT, "2-card-done.png") });
   log("card corner:", before.replace(/\n/g, " | "));
@@ -159,12 +160,37 @@ try {
   await cardA.click();
   await page.waitForTimeout(1200);
   const left = await page.locator(`.session-card:has-text("顺序 A")`).first().locator(".meta").innerText();
-  assert(!left.includes("完成"), `opening the card cleared 完成 (got ${JSON.stringify(left)})`);
-  log("opened the card, 完成 cleared");
+  assert(left.includes("完成"), `opening the card kept 完成 (got ${JSON.stringify(left)})`);
+  log("opened the card, 完成 kept");
 
   const fresh = await list();
   for (const id of [a, b]) files.push(fresh.find((s) => s.id === id)?.file);
-  assert(fresh.find((s) => s.id === a).done === false, "bridge cleared done for everyone, not just this page");
+  assert(fresh.find((s) => s.id === a).done === true, "opening the card did not clear done on the bridge");
+  assert(
+    fresh.find((s) => s.id === a).updatedAt === beforeOpen,
+    `opening the card did not bump updatedAt (was ${beforeOpen}, now ${fresh.find((s) => s.id === a).updatedAt})`,
+  );
+  const persisted = JSON.parse(fs.readFileSync(path.join(STATE, "finished.json"), "utf8"));
+  assert(Number(persisted[a]) > 0, "finishedAt is persisted to state/finished.json");
+  log("updatedAt and finished.json both kept");
+
+  // Sending the next prompt is what clears it — immediately, before pi even starts the turn.
+  ws.send(JSON.stringify({ type: "prompt", sessionId: a, text: "再回两个字：好的" }));
+  const cleared = await new Promise((resolve) => {
+    const t = setInterval(() => {
+      const s = states.find((x) => x.id === a && x.done === false && x.running);
+      if (s) {
+        clearInterval(t);
+        resolve(s);
+      }
+    }, 100);
+    setTimeout(() => {
+      clearInterval(t);
+      resolve(null);
+    }, 30000);
+  });
+  assert(cleared, "a new prompt cleared done");
+  log("next prompt cleared 完成");
   log("ALL OK — shots in", OUT);
 } finally {
   await browser?.close();

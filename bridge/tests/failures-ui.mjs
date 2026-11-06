@@ -1,5 +1,5 @@
 /**
- * 「⚡ AI 出错记录」（D160）在真界面里跑一遍：自带丢弃式 bridge + 脚本化 pi（`FAILS` 场景故意做四颗失败），
+ * 「⚡ AI 出错记录」（D164）在真界面里跑一遍：自带丢弃式 bridge + 脚本化 pi（`FAILS` 场景故意做四颗失败），
  * 不花模型 turn，也不碰 7864 上正在用的那份。
  *
  *   node bridge/tests/failures-ui.mjs

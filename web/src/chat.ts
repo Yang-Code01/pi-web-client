@@ -113,7 +113,7 @@ export class ChatView {
    */
   private turnFails: Array<{ key: string; input: FailureInput }> = [];
   /**
-   * 会话级失败回传（D160）：除了一张红卡，账本还要一份它。按 id 去重是 app 的事 ——
+   * 会话级失败回传（D164）：除了一张红卡，账本还要一份它。按 id 去重是 app 的事 ——
    * 同一张卡会在 live 事件、item.replace、reset 重放里各建一次，聊天区只画一张，账本也只能算一次。
    */
   onFail: ((f: { id: string; tool: string; cmd: string; out: string; at?: string }) => void) | null = null;
@@ -796,7 +796,7 @@ export class ChatView {
         wrap.append(el("div", "msg-error", tr("模型调用出错：{p1}", { p1: item.errorMessage?.trim() || tr("pi 没有给出原因") })));
         this.onFail?.({ id: item.id, tool: "model", cmd: item.modelName ?? item.model ?? "", out: item.errorMessage ?? "", at: item.ts });
       } else if (item.stopReason === "aborted") {
-        // 用户按停止也算一次「没跑完」：进账本但折叠在「已中断」里，不计待修（D160）。
+        // 用户按停止也算一次「没跑完」：进账本但折叠在「已中断」里，不计待修（D164）。
         this.onFail?.({ id: item.id, tool: "model", cmd: item.modelName ?? item.model ?? "", out: "aborted", at: item.ts });
       }
     }

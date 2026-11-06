@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanPath, fileNameOf, isAbsolutePath, joinPath, resolveTyped } from "../src/dirpicker.ts";
+import { cleanPath, fileNameOf, hasPathToken, isAbsolutePath, joinPath, resolveTyped } from "../src/dirpicker.ts";
 
 // ---------------------------------------------------------------- 引号与空白
 
@@ -89,4 +89,20 @@ test("空输入原样返回空，别拼出一个「当前目录」去 stat", () 
 test("还没有当前目录（盘符页）时不做相对拼接", () => {
   assert.equal(resolveTyped("work", ""), "work");
   assert.equal(resolveTyped("\\Users\\me", ""), "\\Users\\me");
+});
+
+
+// ---------------------------------------------------------------- 路径是不是已经在输入框里
+
+test("按整个 token 判重：F:\\a 不会被 F:\\a.txt 或 F:\\ab 冒充", () => {
+  assert.equal(hasPathToken("看下 F:\\a.txt", "F:\\a"), false);
+  assert.equal(hasPathToken("看下 F:\\ab", "F:\\a"), false);
+  assert.equal(hasPathToken("看下 F:\\a 里的东西", "F:\\a"), true);
+  assert.equal(hasPathToken("F:\\a", "F:\\a"), true);
+});
+
+test("引号也算边界（含空格的路径是带着引号插进去的）", () => {
+  assert.equal(hasPathToken('"C:\\Program Files\\x"', "C:\\Program Files\\x"), true);
+  assert.equal(hasPathToken("看下C:\\Program Files\\x", "C:\\Program Files\\x"), false);
+  assert.equal(hasPathToken("", "F:\\a"), false);
 });

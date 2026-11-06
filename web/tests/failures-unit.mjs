@@ -1,5 +1,5 @@
 /**
- * 「⚡ AI 出错记录」的去重与分类（D160）。这一层的价值全在「同一类只加次数」——
+ * 「⚡ AI 出错记录」的去重与分类（D164）。这一层的价值全在「同一类只加次数」——
  * 归并键错了，账本会从 4 类膨胀成 40 类，功能就退化成又一个日志列表。
  *
  * Run: node --experimental-transform-types web/tests/failures-unit.mjs

@@ -5,7 +5,7 @@ import { api } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { filterCommands, type CommandItem } from "./commands.ts";
-import { mountDirPicker, type DirPicker } from "./dirpicker.ts";
+import { hasPathToken, mountDirPicker, type DirPicker } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { diagnose, setKnownPlugins } from "./diagnose.ts";
@@ -69,10 +69,12 @@ interface SessionBadge {
 /**
  * `running` only means "the pi process is alive": it stays true while an approval or a question is
  * waiting for the user. Anything that says "正在跑" has to look at asks/approvals first, or it will
- * report a session stuck on the user as busy. Current session keeps its own done() treatment, same
- * as the left pane always did.
+ * report a session stuck on the user as busy.
+ *
+ * D162: 「完成」也显示在**当前打开的会话**上 —— 打开只是看，不再把完成抹掉。否则用户点开确认
+ * 一眼，卡片就从「完成」退回时间，再也没法从列表判断这一轮到底结束了没有。
  */
-function sessionBadge(s: SessionState, currentId: string | null): SessionBadge | null {
+function sessionBadge(s: SessionState): SessionBadge | null {
   if (s.asks && s.asks > 0) {
     return {
       kind: "ask",
@@ -95,7 +97,7 @@ function sessionBadge(s: SessionState, currentId: string | null): SessionBadge |
     return { kind: "locked", text: tr("终端占用"), cls: "lock", title: tr("pi CLI 在终端里正用着这个会话，网页这边只能看"), pending: false };
   }
   if (s.running) return { kind: "run", text: tr("运行中"), cls: "run", title: tr("agent 正在推进"), pending: false };
-  if (s.done && s.id !== currentId) return { kind: "done", text: tr("完成"), cls: "done", title: "", pending: false };
+  if (s.done) return { kind: "done", text: tr("完成"), cls: "done", title: "", pending: false };
   return null;
 }
 
@@ -154,7 +156,7 @@ export class App {
   private modelsAsked = 0;
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
-  /** D160：AI 出错记录的账本（按工作区），以及这个会话里见过的失败（按 toolCallId 去重）。 */
+  /** D164：AI 出错记录的账本（按工作区），以及这个会话里见过的失败（按 toolCallId 去重）。 */
   private failLedger: FailLedger | null = null;
   private failWs = "";
   private sessionFails = new Map<string, SeenFail>();
@@ -222,6 +224,12 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /**
+   * D161: 设置面板底部那块「把现有会话也改掉」。`permDefaultsFor` 是已经问过桥的 cwd key
+   * （空串 = 全局页），这样重绘不会一直重问同一个问题。
+   */
+  private permDefaults: { cwd: string | null; mode: string; source: string; path: string | null; total: number } | null = null;
+  private permDefaultsFor: string | null = null;
   /** `#89` 口令页：桥报的那一份快照（null = 还没读到，或刚被别的页面改掉而作废）。 */
   private passphraseView: PassphraseView | null = null;
   /** 明文只写在 `••••••••` 和真值之间切，拷走值仍要过 `passphrase.get` 那道门。 */
@@ -1137,7 +1145,7 @@ export class App {
     this.switchDraft(id);
     this.currentId = id;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
-    if (this.session?.done) this.session.done = false;
+    // D162: 打开只是看 —— 不清完成；bridge 也一样（snapshot 不再 markSeen）。
     this.approvals = [];
     this.asks = [];
     this.pendingFresh = false;
@@ -1471,6 +1479,30 @@ export class App {
         const view = msg as SettingsView;
         this.settingsView[view.scope] = view;
         if (msg.saved) this.flashSettings(tr("已保存到 {p1}", { p1: view.path }));
+        if (this.sheetKind === "settings") this.paintSettings();
+        break;
+      }
+      // ------------------------------------------------------- 默认权限（D161）
+      case "permission.defaults": {
+        // Only the answer to the question this sheet asked: a slow reply for another project must
+        // not repaint this one with somebody else's count.
+        const cwd = typeof msg.cwd === "string" ? msg.cwd : null;
+        const want = this.settingsTab === "project" ? (this.settingsView.project?.cwd ?? "") : "";
+        if ((cwd ?? "") !== want) break;
+        this.permDefaults = {
+          cwd,
+          mode: String(msg.mode ?? "ask"),
+          source: String(msg.source ?? "fallback"),
+          path: typeof msg.path === "string" ? msg.path : null,
+          total: Number(msg.total) || 0,
+        };
+        if (this.sheetKind === "settings") this.paintSettings();
+        break;
+      }
+      case "permission.applied": {
+        const n = Number(msg.applied) || 0;
+        this.flashSettings(tr("已经把这 {p1} 个会话的权限改成默认值", { p1: String(n) }));
+        this.permDefaultsFor = null;
         if (this.sheetKind === "settings") this.paintSettings();
         break;
       }
@@ -1822,7 +1854,7 @@ export class App {
           this.fillHintStatus();
           // 跑着 ↔ 空闲是「继续」按钮亮/灰的翻转点（D159）。
           this.syncContinueButton();
-          // 任务结束才问「要不要把这一轮的错误记下来」（D160）。
+          // 任务结束才问「要不要把这一轮的错误记下来」（D164）。
           this.syncFailCta();
           if (this.textarea) this.textarea.placeholder = this.composerHintText();
         }
@@ -2062,7 +2094,7 @@ export class App {
    */
   private badgeOf(s: SessionState): SessionBadge | null {
     const shown = this.pendingFresh ? badgeSession(s, this.currentId, this.localCounts()) : s;
-    return sessionBadge(shown, this.currentId);
+    return sessionBadge(shown);
   }
 
   // ---------------------------------------------------------------- step-up
@@ -5862,7 +5894,7 @@ export class App {
 
   /** 📁 文件：viewer 直接停在浏览态，接着上次的目录。 */
   // ---------------------------------------------------------------- 记录（D108）
-  // ---------------------------------------------------------------- AI 出错记录（D160）
+  // ---------------------------------------------------------------- AI 出错记录（D164）
 
   /**
    * 账本挂在工作区上（worktree 由桥并回主仓）。判据与顶部「当前工作区」chip 同一份（`wsOf`）：
@@ -6140,6 +6172,79 @@ export class App {
         };
       },
     };
+  }
+
+  /**
+   * D163: 「引用当前文件夹」——把下面正在浏览的目录插进输入框。目录行点一下是「进去」、
+   * 文件行才「引用」，所以「我想让 pi 看这个目录」原来没有出口。
+   * 含空格才包引号：`C:\Program Files\x` 裸着会被读成两个路径；没空格的包上反而多两处要删。
+   */
+  private dirRef(getPath: () => string): { node: HTMLButtonElement; bind: () => void } {
+    const label = tr("📎 引用当前文件夹");
+    const node = el("button", "btn ghost dir-ref", label) as HTMLButtonElement;
+    node.dataset.act = "dir-ref";
+    const sync = (): void => {
+      const path = (getPath() || "").trim();
+      node.disabled = !path;
+      node.title = path ? tr("把目录 {p1} 引用到输入框", { p1: path }) : tr("盘符列表没有目录可引用，先点进一个文件夹");
+    };
+    const flash = (text: string): void => {
+      node.textContent = text;
+      setTimeout(() => {
+        if (node.isConnected) node.textContent = label;
+      }, 1200);
+    };
+    sync();
+    return {
+      node,
+      bind: () => {
+        sync();
+        node.onclick = () => {
+          const path = (getPath() || "").trim();
+          if (!path) return;
+          const text = /\s/.test(path) ? `"${path}"` : path;
+          if (hasPathToken(this.composerText, text)) {
+            flash(tr("已在输入框"));
+            return;
+          }
+          this.insertPaths([text]);
+          flash(tr("已引用"));
+        };
+      },
+    };
+  }
+
+  /** D163: 附件弹层给每个会话记一份「上次打开的目录」；没有会话 id 就不读不写（宁可退回 cwd）。 */
+  private attachDirKey(): string {
+    const id = this.session?.id ?? "";
+    return id ? `pi.attachDir:${id}` : "";
+  }
+
+  private attachStart(): string {
+    const key = this.attachDirKey();
+    // 隐私模式 / 关了本地存储时 getItem 会抛：记忆是锦上添花，不该把弹层带塌。
+    let remembered = "";
+    try {
+      remembered = key ? (localStorage.getItem(key) ?? "").trim() : "";
+    } catch {
+      remembered = "";
+    }
+    return remembered || this.session?.cwd || "";
+  }
+
+  /** 每换一个目录就写一次，顺手把超过 30 条的最旧会话清掉（删掉的会话不该一直占着键）。 */
+  private rememberAttachDir(path: string): void {
+    const key = this.attachDirKey();
+    if (!key || !path) return;
+    try {
+      localStorage.setItem(key, path);
+      const used = (localStorage.getItem(ATTACH_DIR_INDEX) ?? "").split("\n").filter(Boolean);
+      const next = [...used.filter((k) => k !== key), key];
+      while (next.length > ATTACH_DIR_KEEP) localStorage.removeItem(next.shift() as string);
+      localStorage.setItem(ATTACH_DIR_INDEX, next.join("\n"));
+    } catch {
+      /* 存不下就算了：下次打开退回 cwd。 */
+    }
   }
 
   private mountBrowser(v: Viewer): void {
@@ -7879,32 +7984,79 @@ export class App {
     // SAFETY: settings.json 就是 JSON，六种叶子 + 嵌套，和 `SettingsCell` 一一对应；
     // 桥那边解析失败时会带 `view.error`，表单本来也不可用。
     const data = (view.json ?? {}) as SettingsCellOf;
-    const get = (key: string): SettingsCell =>
-      key.split(".").reduce<SettingsCell>((o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined), data);
+    // One reader for both files: the row asks the same question of scope and of the layer above.
+    const readPath = (source: SettingsCellOf | null, key: string): SettingsCell =>
+      key.split(".").reduce<SettingsCell>((o, k) => (o && typeof o === "object" && !Array.isArray(o) ? o[k] : undefined), source ?? undefined);
+    const get = (key: string): SettingsCell => readPath(data, key);
+    const defaults = (view.defaults ?? {}) as Record<string, unknown>;
+    // Project page: 「默认」 is what you actually get, so a global value wins over pi's factory one.
+    const parentData = (scope === "project" ? (this.settingsView.global?.json ?? null) : null) as unknown as SettingsCellOf | null;
+    const parentGet = (key: string): SettingsCell => readPath(parentData, key);
+    const fmtSetting = (v: unknown): string | null => {
+      if (v === undefined || v === null || v === "") return null;
+      if (typeof v === "boolean") return v ? tr("开") : tr("关");
+      if (Array.isArray(v)) return v.map(String).join(", ");
+      return String(v);
+    };
+    /** 「（默认：medium）」 / 「（默认：auto，继承全局）」 / 「（默认：不设置）」 — what the empty choice means. */
+    const defaultLabel = (f: SettingField): string => {
+      // Lists merge with the parent (+x / -x), so "inheriting the global value" would be a lie there.
+      // Model is stored as a provider/id pair, so the inherited value is the pair or nothing.
+      const parentText = f.kind === "model"
+        ? fmtSetting([parentGet("defaultProvider"), parentGet("defaultModel")].filter(Boolean).join("/"))
+        : fmtSetting(parentGet(f.key));
+      const inherited = f.kind === "list" ? null : parentText;
+      if (inherited) return tr("（默认：{p1}，继承全局）", { p1: inherited });
+      // pi's schema is the source of truth (D156); `defaultText` only explains what pi decides later.
+      const own = fmtSetting(defaults[f.key]) ?? f.defaultText;
+      // Last resort: say what "empty" means rather than leave a bare 「（默认）」 nobody can read.
+      return own ? tr("（默认：{p1}）", { p1: own }) : tr("（默认：不设置）");
+    };
     const patch: Record<string, unknown> = {};
     const form = el("div", "settings-form");
+    // Collapsed 「高级」: rows nobody touches twice. Expanded state is remembered per browser.
+    const adv = el("details", "settings-advanced") as HTMLDetailsElement;
+    adv.open = localStorage.getItem("pi.settings.advanced") === "1";
+    adv.addEventListener("toggle", () => localStorage.setItem("pi.settings.advanced", adv.open ? "1" : "0"));
+    adv.append(el("summary", "", tr("高级")));
+    const advForm = el("div", "settings-form");
+    adv.append(advForm);
     const save = el("button", "btn primary", tr("保存")) as HTMLButtonElement;
     save.disabled = true;
     const mark = (key: string, value: unknown) => {
       patch[key] = value;
       save.disabled = !Object.keys(patch).length || Boolean(view.error) || (scope === "project" && !view.writable);
     };
-    for (const f of SETTING_FIELDS) {
+    let group = "";
+    const fields = settingFields();
+    for (const f of fields) {
       if (f.globalOnly && scope !== "global") continue;
+      const host = f.advanced ? advForm : form;
+      if (!f.advanced && f.group && f.group !== group) {
+        group = f.group;
+        form.append(el("div", "settings-group", f.group));
+      }
+      const empty = defaultLabel(f);
       const row = el("label", "settings-row");
-      row.append(el("span", "settings-label", f.label));
+      const labelEl = el("span", "settings-label", f.label);
+      // Rows whose input keeps its own placeholder (a pattern example, a URL) carry the default here.
+      const inline = f.kind === "bool" || f.kind === "select" || f.kind === "model" || !f.placeholder;
+      if (!inline) labelEl.append(el("span", `settings-default${f.label.length + empty.length > DEFAULT_LABEL_WRAP_AT ? " wrap" : ""}`, empty));
+      row.append(labelEl);
       const current = f.kind === "model" ? (get("defaultProvider") && get("defaultModel") ? `${get("defaultProvider")}/${get("defaultModel")}` : "") : get(f.key);
       let input: HTMLInputElement | HTMLSelectElement;
       if (f.kind === "bool") {
         const sel = el("select", "ns-input") as HTMLSelectElement;
-        sel.append(new Option(tr("（默认）"), ""), new Option(tr("开"), "true"), new Option(tr("关"), "false"));
+        sel.append(new Option(empty, ""), new Option(tr("开"), "true"), new Option(tr("关"), "false"));
         sel.value = typeof current === "boolean" ? String(current) : "";
         sel.onchange = () => mark(f.key, sel.value === "" ? null : sel.value === "true");
         input = sel;
       } else if (f.kind === "select" || f.kind === "model") {
         const sel = el("select", "ns-input") as HTMLSelectElement;
-        sel.append(new Option(tr("（默认）"), ""));
-        const opts = f.kind === "model" ? this.models.map((m) => [`${m.provider}/${m.id}`, `${shortModelName(m.name)} · ${m.provider}`]) : (f.options ?? []).map((o) => [o, o]);
+        sel.append(new Option(empty, ""));
+        const opts = f.kind === "model"
+          ? this.models.map((m) => [`${m.provider}/${m.id}`, `${shortModelName(m.name)} · ${m.provider}`])
+          : (f.choices ? f.choices.map((c) => [c.value, c.label]) : (f.options ?? []).map((o) => [o, o]));
         for (const [v, label] of opts) sel.append(new Option(label, v));
         const cur = typeof current === "string" ? current : "";
         if (cur && ![...sel.options].some((o) => o.value === cur)) sel.append(new Option(tr("{p1}（当前）", { p1: cur }), cur));
@@ -7919,13 +8071,28 @@ export class App {
         input = sel;
       } else {
         const inp = el("input", `ns-input${f.kind === "text" ? "" : " mono"}`) as HTMLInputElement;
-        if (f.kind === "number") inp.type = "number";
-        inp.placeholder = f.placeholder ?? tr("（默认）");
+        // A timeout is a number or the word "disabled", so a number field would hide the second case.
+        if (f.kind === "number" && !f.allowDisabled) inp.type = "number";
+        inp.placeholder = f.placeholder ?? empty;
         inp.value = f.kind === "list" ? (Array.isArray(current) ? current.join(", ") : "") : current == null ? "" : String(current);
         inp.oninput = () => {
           const v = inp.value.trim();
-          if (!v) return mark(f.key, null);
-          if (f.kind === "number") return mark(f.key, Number(v));
+          if (!v) {
+            inp.classList.remove("bad");
+            return mark(f.key, null);
+          }
+          if (f.kind === "number") {
+            // `disabled` is a real value in pi, not a typo: store the string, don't round it to NaN.
+            if (f.allowDisabled && v === "disabled") {
+              inp.classList.remove("bad");
+              return mark(f.key, "disabled");
+            }
+            const n = Number(v);
+            const ok = Number.isFinite(n);
+            inp.classList.toggle("bad", !ok);
+            if (!ok) return;
+            return mark(f.key, Math.round(n));
+          }
           if (f.kind === "list") return mark(f.key, v.split(",").map((x) => x.trim()).filter(Boolean));
           mark(f.key, v);
         };
@@ -7934,10 +8101,47 @@ export class App {
       input.disabled = Boolean(view.error) || (scope === "project" && !view.writable);
       row.append(input);
       if (f.hint) row.append(el("span", "settings-hint", f.hint));
-      form.append(row);
+      host.append(row);
     }
+    if (advForm.childElementCount) form.append(adv);
     body.append(form);
     if (scope === "global") body.append(this.lockExtBox());
+    // Nested objects cannot be a row in this form, so name them here instead of hiding them.
+    const jsonOnly = el("div", "settings-jsononly");
+    jsonOnly.append(el("span", "settings-hint", tr("嵌套对象只能在 JSON 里改：modelThinkingLevels、thinkingBudgets、compaction.modelOverrides。")));
+    const goJson = el("button", "btn ghost", tr("去改 JSON")) as HTMLButtonElement;
+    goJson.onclick = () => this.paintSettingsJson(body, view);
+    jsonOnly.append(goJson);
+    body.append(jsonOnly);
+    // D161: 默认权限只对「新会话」生效，所以这里给还停在默认上的会话一个出口。
+    const permKey = scope === "project" ? (view.cwd ?? "") : "";
+    if (this.permDefaultsFor !== permKey) {
+      this.permDefaultsFor = permKey;
+      this.permDefaults = null;
+      this.socket.send({ type: "permission.defaults", ...(scope === "project" && view.cwd ? { cwd: view.cwd } : {}) });
+    } else if (this.permDefaults && this.permDefaults.total > 0) {
+      const pd = this.permDefaults;
+      // The backend resolves each session against its own cwd, so the copy must not promise one mode.
+      const box = el("div", "settings-perm-apply");
+      box.append(el("div", "settings-label", tr("还在用默认权限的会话")));
+      box.append(
+        el(
+          "div",
+          "settings-hint",
+          tr("{p1} 个会话是在各自创建时钉下的默认权限，不是你手动选的。要不要把它们也改成各自现在的默认值？每个会话按自己项目里的设置算。", { p1: String(pd.total) }),
+        ),
+      );
+      let layer = tr("pi 的出厂值");
+      if (pd.source === "global") layer = tr("全局设置");
+      else if (pd.source === "project") layer = tr("项目设置");
+      box.append(el("div", "settings-hint", tr("现在的默认值：{p1}（来自{p2}）", { p1: permMode(pd.mode).label, p2: layer })));
+      if (pd.path) box.append(el("div", "settings-hint", pd.path));
+      const btn = el("button", "btn ghost", tr("把这 {p1} 个会话改成各自的默认值", { p1: String(pd.total) })) as HTMLButtonElement;
+      btn.onclick = () =>
+        this.act(() => this.socket.send({ type: "permission.applyDefault", ...(scope === "project" && view.cwd ? { cwd: view.cwd } : {}) }));
+      box.append(btn);
+      body.append(box);
+    }
     const foot = el("div", "settings-foot");
     const json = el("button", "btn ghost", tr("编辑 JSON")) as HTMLButtonElement;
     json.onclick = () => this.paintSettingsJson(body, view);
@@ -7947,6 +8151,8 @@ export class App {
       const sessionId = this.currentId;
       const changed = { ...patch };
       this.act(() => {
+        // 改完默认值，「还在用默认」的那份清单要重新算一遍。
+        if ("web.defaultPermission" in changed) this.permDefaultsFor = null;
         this.socket.send({ type: "settings.set", scope, ...(scope === "project" ? { cwd: view.cwd } : {}), patch: changed });
         // The four a running pi takes without a restart: apply them to the open session now.
         const runtime: Record<string, unknown> = {};
@@ -8875,7 +9081,8 @@ export class App {
     const adv = el("details", "ns-advanced");
     adv.append(el("summary", "", tr("高级")));
     const exp = el("select", "ns-input") as HTMLSelectElement;
-    exp.append(new Option(tr("codemode（默认）"), ""), new Option("deferred", "deferred"), new Option("direct", "direct"), new Option("hidden", "hidden"));
+    // D161: 「codemode」跟 pi 的 codemode.mode 撞名，这里其实是 MCP 的暴露方式。
+    exp.append(new Option(tr("默认（deferred：模型用 searchTools 找）"), ""), new Option("deferred", "deferred"), new Option("direct", "direct"), new Option("hidden", "hidden"));
     exp.value = f.exposure;
     exp.onchange = () => (f.exposure = exp.value);
     const desc = el("input", "ns-input") as HTMLInputElement;
@@ -8883,7 +9090,7 @@ export class App {
     desc.value = f.description;
     desc.oninput = () => (f.description = desc.value);
     const advGrid = el("div", "ns-adv-grid");
-    advGrid.append(this.formRow("exposure", exp), this.formRow(tr("描述"), desc));
+    advGrid.append(this.formRow(tr("MCP 暴露方式"), exp), this.formRow(tr("描述"), desc));
     adv.append(advGrid);
     box.append(adv);
     const foot = el("div", "settings-foot");
@@ -9447,7 +9654,7 @@ export class App {
   // ---------------------------------------------------------------- permission mode
   private permissionButton(): HTMLElement {
     const mode = this.session?.permission ?? "ask";
-    const meta = PERM_MODES.find((m) => m.id === mode) ?? PERM_MODES[2];
+    const meta = permMode(mode);
     const btn = el("button", `perm-btn perm-${mode}`) as HTMLButtonElement;
     btn.append(el("span", "perm-ico", meta.icon), el("span", "perm-label", meta.label), el("span", "perm-caret", "▾"));
     btn.title = tr("权限模式：{p1}——{p2}", { p1: meta.label, p2: meta.desc });
@@ -9668,13 +9875,33 @@ export class App {
     this.sheet = back;
 
     const home = this.dirHome(() => this.session?.cwd ?? "");
+    // D163: 这个弹层按会话记着上次浏览到哪儿；pick 走闭包，所以要等 picker 建好再接上。
+    let pickerPath = (): string => "";
+    const ref = this.dirRef(() => pickerPath());
+    // 第一次落到一个能读的目录才算数：之后再出错（目录被删、盘拔了）不再自动把人拽走。
+    let landed = false;
     const picker = mountDirPicker(host, {
-      start: this.session?.cwd ?? "",
+      start: this.attachStart(),
       files: true,
       fallback: true,
       // 和文件管理器同一套「输入路径就跳」：附件也常常已经在手上了（终端里复制来的）。
       pathBox: true,
-      head: [home.node],
+      head: [home.node, ref.node],
+      onState: (state) => {
+        ref.bind();
+        if (state.path) {
+          landed = true;
+          this.rememberAttachDir(state.path);
+          return;
+        }
+        // 盘符页：记忆的目录没了（worktree 被删、换了机器）就直接落到这里了，错过 cwd 那一级。
+        // 补一次 cwd 再任由用户挑盘；cwd 也读不了时 landed 已经立住，不会再绕。
+        const cwd = (this.session?.cwd ?? "").trim();
+        if (!landed && !state.error && cwd) {
+          landed = true;
+          void picker.go(cwd);
+        }
+      },
       onPick: (abs, name, row) => {
         // 图片直接附加成待发图片；其他文件只把路径插进输入框（pi 自己去读）。
         if (!ATTACH_IMAGE.test(name)) {
@@ -9697,7 +9924,9 @@ export class App {
           });
       },
     });
+    pickerPath = () => picker.path();
     home.bind(picker);
+    ref.bind();
     host.querySelector<HTMLInputElement>(".dir-filter")?.focus();
   }
 
@@ -11862,6 +12091,8 @@ interface SettingsView {
   json: Record<string, unknown> | null;
   error: string | null;
   writable: boolean;
+  /** pi's own defaults, dotted keys — the bridge reads them from the installed pi package. */
+  defaults?: Record<string, unknown>;
 }
 
 /** 设置文件里的一格（JSON 的形状）：叶子 + 嵌套对象 / 数组，读不出来就是 undefined。 */
@@ -11877,33 +12108,102 @@ interface TrustState {
   options: { label: string; trusted: boolean }[];
 }
 
-/** The settings.json fields the 设置 form edits (pi docs/settings.md); the rest via 编辑 JSON. */
-const SETTING_FIELDS: {
+/**
+ * Past this the inline 「（默认：…）」 under a label gets its own line instead of breaking mid-word.
+ */
+const DEFAULT_LABEL_WRAP_AT = 15;
+
+/**
+ * One row of the 设置 form (pi docs/settings.md); everything else via 编辑 JSON.
+ *
+ * `group` prints a section header above the first row of each run — the form is long enough now that
+ * an ungrouped list reads as a wall. `advanced` rows go into a collapsed 「高级」 <details>, closed
+ * until the user opens it (the state is remembered), because they are the ones nobody touches twice.
+ */
+type SettingField = {
   key: string;
   label: string;
   kind: "text" | "number" | "bool" | "select" | "list" | "model";
   options?: string[];
+  /** Select labels when the stored value is not the label (permission modes, transport…). */
+  choices?: { value: string; label: string }[];
   hint?: string;
   placeholder?: string;
   globalOnly?: boolean;
-}[] = [
-  { key: "defaultModel", label: tr("默认模型"), kind: "model", hint: "defaultProvider + defaultModel" },
+  group?: string;
+  advanced?: boolean;
+  /** pi decides this one at runtime (schema has no default) — what to print instead. */
+  defaultText?: string;
+  /** pi's timeout settings take a number or "disabled". */
+  allowDisabled?: boolean;
+};
+
+/**
+ * Built per repaint instead of at module load: every label goes through `tr()`, and the language can
+ * change without a reload (D110) — a frozen module-level array would keep the old language's strings.
+ */
+function settingFields(): SettingField[] {
+  return [
+  { key: "defaultModel", label: tr("默认模型"), kind: "model", group: tr("模型与思考"), defaultText: tr("自动，挑一个能用的"), hint: "defaultProvider + defaultModel" },
   { key: "defaultThinkingLevel", label: tr("默认思考档位"), kind: "select", options: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
-  { key: "enabledModels", label: tr("循环切换的模型范围"), kind: "list", hint: tr("enabledModels，逗号分隔，支持通配（终端的 /scoped-models）"), placeholder: tr("例如 claude-*, gpt-5*") },
-  { key: "steeringMode", label: tr("引导消息处理方式"), kind: "select", options: ["one-at-a-time", "all"], hint: tr("一条一条交给模型，还是攒着一次给") },
-  { key: "followUpMode", label: tr("排到之后的消息处理方式"), kind: "select", options: ["one-at-a-time", "all"] },
-  { key: "defaultTools", label: tr("默认工具"), kind: "list", hint: tr("逗号分隔；普通名字＝只用这些，+x / -x＝在默认基础上增减"), placeholder: "read, bash, edit, write" },
-  { key: "compaction.enabled", label: tr("自动压缩"), kind: "bool" },
-  { key: "compaction.reserveTokens", label: tr("压缩：保留的空余 token"), kind: "number", placeholder: "16384" },
-  { key: "compaction.keepRecentTokens", label: tr("压缩：保留最近的 token"), kind: "number", placeholder: "20000" },
-  { key: "retry.enabled", label: tr("自动重试"), kind: "bool" },
-  { key: "retry.maxRetries", label: tr("最多重试次数"), kind: "number", placeholder: "3" },
-  { key: "images.blockImages", label: tr("不给模型发图片"), kind: "bool" },
+  { key: "enabledModels", label: tr("循环切换的模型范围"), kind: "list", hint: tr("逗号分隔，支持通配（终端的 /scoped-models）"), placeholder: tr("例如 claude-*, gpt-5*"), defaultText: tr("全部可用") },
+  { key: "cacheWarming", label: tr("缓存预热"), kind: "select", options: ["off", "streaming", "idle"], globalOnly: true, hint: tr("off 不预热；streaming 只在跑的时候续缓存；idle 连不跑的时候也续。省下的钱不到 $0.05 不会动手") },
+
+  { key: "sessionDir", label: tr("会话目录"), kind: "text", group: tr("会话"), defaultText: tr("pi 的会话目录"), hint: tr("会话文件放哪。相对路径从工作目录解析，项目设置会盖过全局；改完要重启 bridge 才会按新目录列会话") },
+  { key: "sessionShareDestination", label: tr("/share 发到哪"), kind: "select", options: ["auto", "gist", "radius"], hint: tr("auto = 登录了 Radius 就发 Radius，否则建 GitHub gist") },
+  { key: "images.autoResize", label: tr("图片自动缩"), kind: "bool", hint: tr("上传的图先压到模型能吃的大小") },
+  { key: "images.blockImages", label: tr("不给模型发图片"), kind: "bool", hint: tr("整张图换成一段说明文字，省 token 但模型看不见图") },
   { key: "enableSkillCommands", label: tr("技能注册成 /skill:名字"), kind: "bool" },
-  { key: "shellPath", label: tr("shell 路径"), kind: "text", hint: tr("bash 工具用的 shell（Windows 默认找 Git Bash）") },
-  { key: "httpProxy", label: tr("HTTP 代理"), kind: "text", globalOnly: true, placeholder: "http://127.0.0.1:7890" },
+
+  // D161: 桥自有键（web. 命名空间），存在 pi 的 settings.json 里，读写和别的设置同一条路。
+  {
+    key: "web.defaultPermission",
+    label: tr("新会话的默认权限"),
+    kind: "select",
+    group: tr("工具与脚本"),
+    // Literal per repaint (not `PERM_MODES`): that table is module-level, so its labels freeze the
+    // first language — the same mode ids, translated now, when the language changes without a reload.
+    choices: [
+      { value: "readonly", label: tr("只读") },
+      { value: "strict", label: tr("逐个确认") },
+      { value: "ask", label: tr("危险时确认") },
+      { value: "auto", label: tr("全自动") },
+    ],
+    defaultText: tr("危险时确认"),
+    hint: tr("新会话第一次打开时用它，之后在这里改也不影响老会话；手动改过权限的会话永远不动"),
+  },
+  { key: "defaultTools", label: tr("默认工具"), kind: "list", group: tr("工具与脚本"), hint: tr("逗号分隔；普通名字＝只用这些，+x / -x＝在默认基础上增减"), placeholder: tr("例如 read, bash, +codemode") },
+  { key: "codemode.mode", label: tr("codemode 工具模式"), kind: "select", options: ["on", "only"], hint: tr("on = 已声明的工具照常直接调；only = 只留 codemode，所有工具都从脚本里调") },
+  { key: "codemode.inlineBudget", label: tr("codemode 工具清单预算"), kind: "number", hint: tr("最多花多少 token（字符数 ÷ 4）列工具；挤不下的靠 searchTools 找，0 = 只列命名空间") },
+  { key: "shellPath", label: tr("shell 路径"), kind: "text", defaultText: tr("按平台自动找"), hint: tr("bash 工具用的 shell（Windows 默认找 Git Bash）") },
+
+  { key: "steeringMode", label: tr("引导消息处理方式"), kind: "select", group: tr("消息与压缩"), options: ["one-at-a-time", "all"], hint: tr("一条一条交给模型，还是攒着一次给") },
+  { key: "followUpMode", label: tr("排到之后的消息处理方式"), kind: "select", options: ["one-at-a-time", "all"] },
+  { key: "compaction.enabled", label: tr("自动压缩"), kind: "bool" },
+  { key: "compaction.reserveTokens", label: tr("压缩：保留的空余 token"), kind: "number" },
+  { key: "compaction.keepRecentTokens", label: tr("压缩：保留最近的 token"), kind: "number" },
+
+  { key: "transport", label: tr("流式通道"), kind: "select", group: tr("网络与重试"), options: ["auto", "sse", "websocket", "websocket-cached"], hint: tr("auto 让 pi 自己挑；provider 不支持就会退回 SSE") },
+  { key: "httpProxy", label: tr("HTTP 代理"), kind: "text", globalOnly: true, placeholder: "http://127.0.0.1:7890", defaultText: tr("直连") },
+  { key: "retry.enabled", label: tr("自动重试"), kind: "bool" },
+  { key: "retry.maxRetries", label: tr("最多重试次数"), kind: "number" },
+
+  { key: "enableInstallTelemetry", label: tr("安装/更新匿名上报"), kind: "bool", group: tr("隐私与信任"), hint: tr("不控制更新检查，只控制那条安装/更新记录") },
+  { key: "enableAnalytics", label: tr("分析数据共享"), kind: "bool", hint: tr("目前只有实验性的首次设置会用到") },
   { key: "defaultProjectTrust", label: tr("没有决定时的项目信任"), kind: "select", options: ["ask", "always", "never"], globalOnly: true, hint: tr("网页里 ask 等于 never（不能弹提示）") },
-];
+
+  { key: "shellCommandPrefix", label: tr("命令前缀"), kind: "text", advanced: true, hint: tr("拼在每条 shell 命令前面，例如 source ~/.bashrc &&") },
+  { key: "npmCommand", label: tr("npm 命令"), kind: "list", advanced: true, hint: tr("装扩展/查包时用的命令与参数，逗号分隔") },
+  { key: "selfUpdateCommand", label: tr("自我更新命令"), kind: "list", globalOnly: true, advanced: true, hint: tr("「更新 pi」按钮跑的命令，逗号分隔，支持 {packageName} {version} {installSpec}；留空用 pi 自己的") },
+  { key: "httpIdleTimeoutMs", label: tr("HTTP 空闲超时"), kind: "number", advanced: true, allowDisabled: true, hint: tr("多久没收到字节就断开（毫秒），填 disabled 关掉") },
+  { key: "websocketConnectTimeoutMs", label: tr("WebSocket 连接超时"), kind: "number", advanced: true, allowDisabled: true, hint: tr("毫秒，填 disabled 关掉") },
+  { key: "retry.baseDelayMs", label: tr("重试起始等待"), kind: "number", advanced: true, hint: tr("毫秒，指数退避的起点") },
+  { key: "retry.maxAgentDelayMs", label: tr("重试最长等待"), kind: "number", advanced: true, hint: tr("毫秒，退避的上限") },
+  { key: "retry.provider.timeoutMs", label: tr("provider 单次超时"), kind: "number", advanced: true, defaultText: tr("跟随 HTTP 空闲超时"), hint: tr("毫秒") },
+  { key: "retry.provider.maxRetries", label: tr("provider 级重试次数"), kind: "number", advanced: true, hint: tr("保持默认 0，除非 provider 明确要求：它会把配额/限流错误拖慢") },
+  { key: "retry.provider.maxRetryDelayMs", label: tr("provider 请求的最长等待"), kind: "number", advanced: true, hint: tr("毫秒，0 = 不限制") },
+  ];
+}
 
 /**
  * The composer's placeholder is its shortcut card: these are the only keys it has (Shift+Enter
@@ -12280,6 +12580,16 @@ const PERM_MODES: { id: PermissionMode; icon: string; label: string; desc: strin
   { id: "auto", icon: "⚡", label: tr("全自动"), desc: tr("不拦截任何操作，风险自负") },
 ];
 
+type PermMode = (typeof PERM_MODES)[number];
+
+/** One mode by id; an id a stale file names falls back to pi's default (`ask`, D161). */
+function permMode(id: string): PermMode {
+  for (const m of PERM_MODES) if (m.id === id) return m;
+  for (const m of PERM_MODES) if (m.id === "ask") return m;
+  // Unreachable: the literal above always contains `ask`.
+  return { id: "ask", icon: "🛡", label: tr("危险时确认"), desc: "" };
+}
+
 type PendingImage = { data: string; mimeType: string };
 type PasteBlock = { text: string; open: boolean };
 type Draft = { text: string; images: PendingImage[]; pastes: PasteBlock[] };
@@ -12287,6 +12597,10 @@ type Draft = { text: string; images: PendingImage[]; pastes: PasteBlock[] };
 /** A paste this long (lines or characters) becomes its own foldable block. */
 const PASTE_LINES = 6;
 const PASTE_CHARS = 400;
+
+/** D163: 附件弹层按会话记目录，最多留这么多条（删掉的会话不该一直占着键）。 */
+const ATTACH_DIR_INDEX = "pi.attachDir.index";
+const ATTACH_DIR_KEEP = 30;
 
 /** 预览返回栈最多记多少步（D63）。超了就丢掉最早的一步，和浏览器一样。 */
 const HISTORY_MAX = 60;

@@ -1907,8 +1907,9 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .dir-head .dir-mk { flex: none; padding: 4px 8px; font-size: 12px; }
 .dir-head .dir-mk[hidden], .dir-mkrow[hidden] { display: none; }
 /* Q-019: 定位回会话工作目录 —— 三个 dir-picker 的路径行都有这一颗，没会话时置灰 */
-.dir-head .dir-home { flex: none; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
-.dir-head .dir-home:disabled { opacity: 0.45; cursor: default; }
+/* D163: 引用当前文件夹 —— 和 ⌂ 工作目录同一排、同一形状（宽度不跟着路径伸缩，长标签不换行）。 */
+.dir-head .dir-home, .dir-head .dir-ref { flex: none; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
+.dir-head .dir-home:disabled, .dir-head .dir-ref:disabled { opacity: 0.45; cursor: default; }
 .dir-mkrow { padding: 2px 0 4px; }
 .dir-mkrow .ns-input { padding: 8px 8px; }
 .dir-mkrow .dir-mkerr { padding-top: 4px; min-height: 0; }
@@ -2647,6 +2648,22 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .settings-sheet .settings-label { font-size: 12px; color: var(--text); }
 .settings-sheet .settings-row .settings-hint { grid-column: 2; }
 .settings-sheet .settings-hint { font-size: 11px; color: var(--faint); line-height: 1.5; }
+/* 分组小标题：长表单没人会从头读到尾，扫一眼就知道这一段是干什么的 */
+.settings-sheet .settings-group { font-size: 11px; letter-spacing: 0.06em; color: var(--faint); border-top: 1px solid var(--line-soft); padding-top: 10px; margin-top: 2px; }
+.settings-sheet .settings-form > .settings-group:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+/* 「（默认：X）」塞在行内输入框自己的 placeholder 里会挤掉示例，这种情况挂到标签后面 */
+.settings-sheet .settings-default { margin-left: 6px; font-size: 11px; color: var(--faint); }
+/* 值长得像个句子（「read, bash, edit, write」）时让它在标签下单独占一行，别把标签挤成两截 */
+.settings-sheet .settings-default.wrap { display: block; margin-left: 0; line-height: 1.4; }
+.settings-sheet .settings-advanced { border: 1px solid var(--line-soft); border-radius: 8px; padding: 8px 10px; }
+.settings-sheet .settings-advanced > summary { cursor: pointer; font-size: 12px; color: var(--faint); }
+.settings-sheet .settings-advanced[open] > summary { margin-bottom: 8px; }
+.settings-sheet .settings-jsononly { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.settings-sheet .settings-jsononly .settings-hint { flex: 1; min-width: 200px; }
+.settings-sheet .ns-input.bad { border-color: var(--danger); }
+/* D157 设置 → 默认权限：只对「还记得自己是默认」的会话下手 */
+.settings-sheet .settings-perm-apply { display: flex; flex-direction: column; gap: 6px; padding: 10px 0 2px; border-top: 1px solid var(--line-soft); }
+.settings-sheet .settings-perm-apply .btn { align-self: flex-start; }
 .settings-sheet .settings-foot { display: flex; gap: 8px; align-items: center; padding-top: 4px; }
 .settings-sheet .settings-foot .spacer { flex: 1; }
 .settings-sheet .settings-json { width: 100%; box-sizing: border-box; min-height: 340px; font: 12px/1.5 var(--mono); background: var(--sunken); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; }
@@ -2889,7 +2906,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .notes-editor { padding: 8px; }
 }
 
-/* ---------------------------------------------------------------- AI 出错记录（D160） */
+/* ---------------------------------------------------------------- AI 出错记录（D164） */
 /* 笔记的两栏和只读账本互斥：包一层好让 sheet 的「头 / 身 / 脚」三行网格不变。 */
 .notes-main { display: grid; min-height: 0; }
 /* hidden 会被上面的 display:grid 盖掉，这两个格子得显式关掉。 */

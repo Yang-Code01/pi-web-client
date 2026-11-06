@@ -76,7 +76,7 @@ export class NotesSheet {
 
   private kind: NoteKind = "bug";
   private view: View = "active";
-  /** AI 出错记录那份账本（D160）：跟笔记不是一回事，但共用一个面板。 */
+  /** AI 出错记录那份账本（D164）：跟笔记不是一回事，但共用一个面板。 */
   private ledger: FailLedger | null = null;
   private failPanel!: FailPanel;
   private failEl!: HTMLElement;
@@ -311,7 +311,7 @@ export class NotesSheet {
       return btn;
     });
     tabs.push(el("span", "notes-tabs-sep"));
-    // ⚡ 第五个 tab：只读账本（D160）。计数 = 还在烧的类数，不是条目总数。
+    // ⚡ 第五个 tab：只读账本（D164）。计数 = 还在烧的类数，不是条目总数。
     const ripe = ripeEntries(this.ledger).length;
     const fbtn = el("button", `notes-tab notes-viewtab fail-tab${this.view === "failures" ? " on" : ""}`, "⚡ " + tr("AI 出错记录"));
     if (ripe) fbtn.append(el("span", "n", String(ripe)));

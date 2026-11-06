@@ -25,6 +25,7 @@ import { stateDir } from "./paths.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, revealInFileManager } from "./terminal.ts";
 import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
+import { defaultPermission } from "./permissiondefault.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { describeStoreSkills, installSkill, installedSkills, previewSource, removeSkill, searchSkillStore } from "./skillstore.ts";
 import { Notifier } from "./notify.ts";
@@ -1255,6 +1256,32 @@ async function main(): Promise<void> {
             sessions.setPermission(String(msg.sessionId ?? ""), msg.mode);
             return;
           }
+          // ------------------------------------------------ 默认权限（D161）
+          case "permission.defaults": {
+            // A bad cwd or an unreadable settings file must not take the socket handler down.
+            try {
+              const cwd = msg.cwd ? String(msg.cwd) : null;
+              const d = await defaultPermission(pi.cli, cwd);
+              send({ type: "permission.defaults", cwd, mode: d.mode, source: d.source, path: d.path, ...sessions.permissionDefaultSessions(cwd) });
+            } catch (err) {
+              log(`permission.defaults failed: ${String(err)}`);
+              send({ type: "permission.defaults", cwd: msg.cwd ? String(msg.cwd) : null, mode: "ask", source: "fallback", path: null, total: 0 });
+            }
+            return;
+          }
+          case "permission.applyDefault": {
+            if (!(await requireStepUp())) return;
+            try {
+              const cwd = msg.cwd ? String(msg.cwd) : null;
+              const applied = await sessions.applyDefaultPermission(cwd);
+              log(`default permission applied to ${applied} session(s)`);
+              send({ type: "permission.applied", cwd, applied });
+            } catch (err) {
+              log(`permission.applyDefault failed: ${String(err)}`);
+              send({ type: "permission.applied", cwd: msg.cwd ? String(msg.cwd) : null, applied: 0 });
+            }
+            return;
+          }
           case "setBudget": {
             if (!(await requireStepUp())) return;
             const raw = Number(msg.budget);
@@ -1745,7 +1772,7 @@ async function main(): Promise<void> {
             }
             return;
           }
-          // ------------------------------------------------ AI 出错记录（D160）
+          // ------------------------------------------------ AI 出错记录（D164）
           // 账本按工作区走，条目只读：只认「已修复 / 忽略 / 删除」，正文由「总结本轮错误」写入。
           case "failures.get": {
             const ws = String(msg.ws ?? "");
@@ -2039,6 +2066,9 @@ async function main(): Promise<void> {
     if (fresh) console.log(`  口令（首次生成，只显示这一次）：${fresh}\n`);
     else console.log(`  口令在 ${statePath("passphrase.txt")}\n`);
     if (cfg.tunnelAuto && tunnelBin) tunnel.start();
+    // D161: pin 「the default permission as of now」 onto sessions the bridge has never looked at.
+    // Async and best-effort: a session list that is a second late costs nothing, a crash on boot costs all.
+    void sessions.pinAll().then((n) => n && log(`pinned default permission on ${n} session(s)`)).catch(() => {});
   });
 
   const shutdown = async () => {

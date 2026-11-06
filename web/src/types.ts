@@ -83,7 +83,10 @@ export interface SessionState {
   /** pi 子进程还在启动（扩展在它内部加载：本机实测约 8 秒）。此时 composer 不许发。 */
   starting?: boolean;
   running: boolean;
-  /** A turn finished since you last opened it (the card shows 完成 in its corner). */
+  /**
+   * D162: 最后一轮已完成。打开会话不再清它（卡片一直显示「完成」）；下一轮运行、发消息，或终端
+   * 继续写会话文件才清。桥把它持久化，所以重启 / 换设备后仍然可见。
+   */
   done: boolean;
   model?: string;
   modelName?: string;
