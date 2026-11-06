@@ -44,19 +44,21 @@ function walk(node: unknown, prefix: string, out: SettingDefaults): void {
   }
 }
 
-/** Dotted `key → default` for one pi install; cached because the package does not change under us. */
-export function settingDefaults(cli: string | null): SettingDefaults {
-  const pkg = cli ? piPackageDir(cli) : "";
+/**
+ * Dotted `key → default` for one pi install; cached because the package does not change under us.
+ * `cli` is the bridge's resolved pi binary (`resolvePi()` never returns null), and the package root is
+ * derived from it — no path of our own, so a user on an older pi just gets `FALLBACK`.
+ */
+export function settingDefaults(cli: string): SettingDefaults {
+  const pkg = piPackageDir(cli);
   const hit = cache.get(pkg);
   if (hit) return hit;
   const fromSchema: SettingDefaults = {};
-  if (pkg) {
-    try {
-      const file = path.join(pkg, "schemas", "settings.schema.json");
-      walk(JSON.parse(fs.readFileSync(file, "utf8")), "", fromSchema);
-    } catch {
-      /* older pi without the schema: FALLBACK still answers for every key the form asks about */
-    }
+  try {
+    const file = path.join(pkg, "schemas", "settings.schema.json");
+    walk(JSON.parse(fs.readFileSync(file, "utf8")), "", fromSchema);
+  } catch {
+    /* older pi without the schema: FALLBACK still answers for every key the form asks about */
   }
   // Schema wins where both speak: pi's own file is the authority, the table only fills gaps.
   const merged: SettingDefaults = { ...FALLBACK, ...fromSchema };

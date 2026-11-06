@@ -26,11 +26,14 @@ export interface PermissionDefault {
   path: string | null;
 }
 
+/** The value under `DEFAULT_PERMISSION_KEY`, or null when it is missing / not one of the four modes. */
 function pick(json: Record<string, unknown> | null): PermissionMode | null {
-  const web = json?.web;
-  if (!web || typeof web !== "object" || Array.isArray(web)) return null;
-  const mode = (web as Record<string, unknown>).defaultPermission;
-  return typeof mode === "string" && (MODES as string[]).includes(mode) ? (mode as PermissionMode) : null;
+  let node: unknown = json;
+  for (const part of DEFAULT_PERMISSION_KEY.split(".")) {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return null;
+    node = (node as Record<string, unknown>)[part];
+  }
+  return typeof node === "string" && (MODES as string[]).includes(node) ? (node as PermissionMode) : null;
 }
 
 export async function defaultPermission(cli: string, cwd: string | null): Promise<PermissionDefault> {
@@ -48,8 +51,10 @@ export async function defaultPermission(cli: string, cwd: string | null): Promis
         out = { mode, source: scope, path: view.path };
         break;
       }
-    } catch {
-      /* 读不到就当没设 */
+    } catch (err) {
+      // A broken file does not answer, but silence here is what makes 「为什么项目默认值不生效」
+      // undebuggable — the bridge log is the only place this can surface.
+      console.error(`[permission] 读不到 ${scope} 的默认权限：`, err);
     }
   }
   return out;

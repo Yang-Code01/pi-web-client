@@ -453,6 +453,13 @@ function readPermissionFile(id: string): PermissionFile | null {
   return { mode: isPermissionMode(mode) ? mode : "ask", from: data?.from === "default" ? "default" : null };
 }
 
+/** Cwds compare the way the platform does: case-insensitive on Windows, trailing separator ignored. */
+function normalizeDir(dir: string): string {
+  if (!dir) return "";
+  const abs = path.resolve(dir).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? abs.toLowerCase() : abs;
+}
+
 /** The gate re-reads this file on every tool call, so a change applies to the very next call. */
 function readPermission(id: string): PermissionMode {
   return readPermissionFile(id)?.mode ?? "ask";
@@ -2455,13 +2462,19 @@ export class SessionManager extends EventEmitter {
   async pinAll(): Promise<number> {
     let pinned = 0;
     for (const meta of this.metas()) {
+      // The file is the whole point of the pin, and it is also the early exit: `ensure()` here would
+      // give every never-opened session on disk a Session object plus its 400 ms tail timer.
+      if (fs.existsSync(allowFile(meta.id))) continue;
       try {
-        const session = this.ensure(meta.id);
-        if (fs.existsSync(allowFile(meta.id))) continue;
-        await session.pinPermission();
-        if (fs.existsSync(allowFile(meta.id))) pinned++;
-      } catch {
-        /* 一个会话写不进去不该挡住其余会话 */
+        const mode = (await defaultPermission(this.cli, meta.cwd)).mode;
+        writePermission(meta.id, mode, "default");
+        // A session that happens to be live keeps its in-memory state in step; disk-only ones need
+        // nothing beyond the file — the gate reads it at spawn time.
+        this.sessions.get(meta.id)?.applyPermission(mode);
+        pinned++;
+      } catch (err) {
+        // One unwritable file must not stop the sweep, but it should be visible in the log.
+        console.error(`[permission] 钉不住 ${meta.id}：`, err);
       }
     }
     return pinned;
@@ -2471,19 +2484,29 @@ export class SessionManager extends EventEmitter {
    * Sessions still sitting on a pinned default (`from: "default"`, or no file at all). `cwd` limits
    * it to one project — the settings sheet asks for the scope it is editing.
    */
-  permissionDefaultSessions(cwd: string | null): { total: number; ids: string[] } {
+  permissionDefaultSessions(cwd: string | null): { total: number } {
+    return { total: this.defaultPermissionSessions(cwd).length };
+  }
+
+  /** The sessions behind `permissionDefaultSessions`, with the cwd each one pins against. */
+  private defaultPermissionSessions(cwd: string | null): { id: string; cwd: string }[] {
     // Live sessions may not have a file on disk yet (a fake pi never writes one), so walk both.
+    // 随手问 is not the user's session (#86) and its readonly mode is not a pinned default.
     const where = new Map<string, string>();
-    for (const meta of this.metas()) where.set(meta.id, meta.cwd);
-    for (const s of this.sessions.values()) if (!where.has(s.state.id)) where.set(s.state.id, s.state.cwd);
-    const ids: string[] = [];
+    for (const meta of this.metas()) where.set(meta.id, meta.cwd ?? "");
+    for (const s of this.sessions.values()) {
+      if (s.state.scratch) continue;
+      if (!where.has(s.state.id)) where.set(s.state.id, s.state.cwd ?? "");
+    }
+    const want = cwd ? normalizeDir(cwd) : "";
+    const out: { id: string; cwd: string }[] = [];
     for (const [id, dir] of where) {
-      if (cwd && path.resolve(dir) !== path.resolve(cwd)) continue;
+      if (want && normalizeDir(dir) !== want) continue;
       const file = readPermissionFile(id);
       if (file && file.from !== "default") continue;
-      ids.push(id);
+      out.push({ id, cwd: dir });
     }
-    return { total: ids.length, ids };
+    return out;
   }
 
   /**
@@ -2492,16 +2515,17 @@ export class SessionManager extends EventEmitter {
    */
   async applyDefaultPermission(cwd: string | null): Promise<number> {
     let applied = 0;
-    for (const id of this.permissionDefaultSessions(cwd).ids) {
-      const session = this.ensure(id);
-      let mode: PermissionMode = "ask";
+    for (const target of this.defaultPermissionSessions(cwd)) {
+      let mode: PermissionMode;
       try {
-        mode = (await defaultPermission(this.cli, session.state.cwd)).mode;
-      } catch {
+        mode = (await defaultPermission(this.cli, target.cwd || null)).mode;
+      } catch (err) {
+        console.error(`[permission] 解析不了 ${target.id} 的默认权限：`, err);
         continue;
       }
-      writePermission(id, mode, "default");
-      session.applyPermission(mode);
+      writePermission(target.id, mode, "default");
+      // Same as pinAll: only a live session has state to nudge, and `ensure()` would create one.
+      this.sessions.get(target.id)?.applyPermission(mode);
       applied++;
     }
     return applied;

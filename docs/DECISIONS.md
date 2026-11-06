@@ -2230,10 +2230,14 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - 默认值的唯一来源是 **pi 包自带的 `schemas/settings.schema.json`**（44 个叶子带 `default`），桥的新模块 `bridge/src/settingsdefaults.ts` 用 `piPackageDir(cli)` 找到包根、按点号拍平成 `{ "compaction.reserveTokens": 16384, … }`，随 `settings.get` 的响应以 `defaults` 字段下发；前端 `defaultLabel()` 只做查表与拼文案，**不硬编码任何默认值**。
   - schema 没写、但 pi 文档有明确值的 6 个键（`defaultThinkingLevel`、`defaultTools`、`httpIdleTimeoutMs`、`websocketConnectTimeoutMs`、`npmCommand`、`retry.provider.maxRetries`）由该模块内的 `FALLBACK` 表补；两边都说时 **schema 赢**。
   - 读不到包 / 没有 schema / `cli` 为 null 一律不抛，只给兜底表：默认值标签写错是瑕疵，`settings.get` 崩掉是故障。
-- 三种文案：全局页 `（默认：ask）`；项目页在全局设了值时 `（默认：auto，继承全局）`（项目页的「默认」就是实际生效值）；两者都说不出值时 `（默认：不设置）`。列表类（`defaultTools` / `enabledModels`）不显示「继承全局」—— 它们的 `+x / -x` 语法是**合并**而非覆盖，写「继承」是假话。
+- 三种文案：全局页 `（默认：ask）`；项目页在全局设了值时 `（默认：auto，继承全局）`（项目页的「默认」就是实际生效值）；两者都说不出值时 `（默认：不设置）`。列表类（`defaultTools` / `enabledModels`）不显示「继承全局」—— 它们的 `+x / -x` 语法是**合并**而非覆盖，写「继承」是假话；模型行存的是 `defaultProvider` + `defaultModel` 一对，继承时显示 `/` 拼起来的整对。
+- 查表顺序是 **schema → `defaultText` → 「不设置」**：`defaultText` 只是给 pi 在运行时才决定的值（「自动，挑一个能用的」「跟随 HTTP 空闲超时」）一句说明，**不能盖住 schema 里的真值** —— 第一版把它放在了前面，等于在代码里硬编码默认值，与上一条自相矛盾。
+- 字段的 hint 必须与 pi 的事实对齐：`sessionDir` 写的是「相对路径从工作目录解析，项目设置会盖过全局」（pi 的 `getSessionDir()` 读的是 global + project 合并后的值），不是「只认绝对路径、只在全局生效」。
 - 顺手把面板补齐到网页上有意义的全部 pi 设置（16 → 36 行），并加分组小标题 + 一个默认收起的「高级」（展开态记 `pi.settings.advanced`；`globalOnly` 的行在项目页直接不渲染）。对象型设置（`modelThinkingLevels` / `thinkingBudgets` / `compaction.modelOverrides`）不进表单，底部点名 + 「去改 JSON」按钮。
 
 **为什么：** 用户的原话是「很多默认，其实并不知道默认是啥」。答案只能来自 pi 自己那份 schema —— 它是 pi 校验设置的同一份真相，改默认值时我们跟着变，不需要有人记得来改这里的字符串。把「读 schema」放在桥里而不是前端，是因为前端拿不到 pi 的安装路径，而桥已经用它加载 pi 模块（`bridge/src/pimods.ts`）。
+
+- 数字设置一律按整数存（pi 的超时/水位都是毫秒或 token 数），允许 `disabled` 的那几项例外。
 
 **代价 / 可改：** `defaults` 让 `settings.get` 的响应多出几十个键（一次性解析后缓存，面板每次重绘只是查表）。schema 结构若大改（默认值不再在 `properties.*.default`），标签会退回兜底表的样子而不是报错。分组名与哪些行进「高级」是口味问题，全都可改。
 
@@ -2250,11 +2254,11 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - 生效时机是 **会话被第一次看见时钉住（pin）**，不是每次工具调用都解析：`Session.pinPermission()` 在没有 allow 文件时写入 `{ mode: 解析值, from: "default" }`，三处调用——`create()`、`openLive()`（都在 `startLive` 之前，因为 gate 在 spawn 那一刻就读这个文件）、以及启动后的一次扫描 `pinAll()`（覆盖 bridge 从没见过的磁盘会话）。
   - 老会话因此**不会**被后来的默认值改动波及；反过来，手动改过的会话（`setPermission`）会**删掉 `from` 标记**，永远不再被「应用默认值」碰到。
   - `from` 是唯一用来区分「这个 ask 是默认来的还是人选的」的东西 —— 只看 mode 分不出来，而「应用到现有会话」必须只覆盖默认来的那些。
-- 「应用到现有 N 个会话」是**显式动作**：`permission.defaults` 回 `{mode, source, path, total, ids}`（cwd 可省 = 全部），前端在设置面板底部显示按钮；`permission.applyDefault` **要 step-up**（它会批量放松/收紧权限），对每个会话用它**自己的 cwd** 重新解析（项目值不同），保留 `from:"default"` 以便下次还能被更新。
+- 「应用到现有 N 个会话」是**显式动作**：`permission.defaults` 回 `{mode, source, path, total}`（cwd 可省 = 全部），前端在设置面板底部显示按钮并写明现在的默认值来自哪一层；`permission.applyDefault` **要 step-up**（它会批量放松/收紧权限），对每个会话用它**自己的 cwd** 重新解析（项目值不同），保留 `from:"default"` 以便下次还能被更新 —— 所以按钮文案是「改成各自的默认值」，不能写死某一个模式名。
 - 面板里 MCP 安装表单的「codemode」下拉框改名「**MCP 暴露方式**」（它管的是 MCP 工具的 exposure: deferred/direct/hidden），pi 的 `codemode.mode` 才叫「**codemode 工具模式**」——两个同名控件并排是会误点的。
 
 **为什么：** 默认值要么写进每次工具调用前的解析（成本、且老会话会突变），要么钉一次（可解释、可回滚）。选钉一次，是因为用户对权限的心智是「我会话开始时是什么就是什么」，中途因为谁改了全局设置而变严/变松是惊吓。项目级要求过信任门，是为了不在「pi 根本没读这个文件」的情况下假装它生效。
 
-**代价 / 可改：** allow 文件多一个 `from` 字段（旧的没有，照样能读）。`web.*` 键 pi 不认识，面板的「编辑 JSON」里会看见它——这是有意的，它就该出现在那个文件里。启动扫描每次读 N 个 allow 文件与每个 cwd 的 settings.json；会话上千时可以把 `pinAll` 放到首批 `list()` 之后后台跑（现在就是这么做的：不阻塞监听）。
+**代价 / 可改：** allow 文件多一个 `from` 字段（旧的没有，照样能读）。`web.*` 键 pi 不认识，面板的「编辑 JSON」里会看见它——这是有意的，它就该出现在那个文件里。启动扫描只看 `metas()` 里每个会话的 allow 文件是否存在（存在就跳过，**不调 `ensure()`**，否则每个磁盘会话都会多一个 Session 对象和 400 ms 的 tail 定时器），不存在才读该会话 cwd 的 settings.json 并写一行 —— 是一次性的、不阻塞监听的薄扫描。
 
 **验证：** `node bridge/tests/default-permission.mjs`（A 无设置→ask 并带 `from`；B 全局 strict 只影响新会话；C 项目值未信任时被忽略、信任后覆盖全局；D 手动切换清掉 `from`；E `permission.defaults` 把 manual 排除在外、`applyDefault` 只改默认会话且各自用自己的项目值；F 重启桥后启动扫描给磁盘上没见过的会话补钉、手动选择跨重启保留）；`node bridge/tests/settings-trust.mjs` 仍全过；`npm run typecheck`（i18n 三边对齐）+ `npm run build`。

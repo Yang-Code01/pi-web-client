@@ -162,7 +162,8 @@ try {
   let d = await ask({ type: "permission.defaults" }, (m) => m.type === "permission.defaults" && m.cwd === null, "defaults");
   check(d.mode === "readonly" && d.source === "global", `resolved to the new global value (${d.mode}/${d.source})`);
   // a (ask, pinned), b (manual readonly), c1 (strict, pinned), c2 (auto, pinned)
-  check(d.total === 3 && !d.ids.includes(b.sessionId), `three sessions still on defaults, the manual one excluded (${d.total})`);
+  // The reply carries a count, not the ids: the manual session is proven excluded by the apply below.
+  check(d.total === 3, `three sessions still on defaults, the manual one excluded (${d.total})`);
   const applied = await ask({ type: "permission.applyDefault" }, (m) => m.type === "permission.applied", "apply");
   check(applied.applied === 3, `applied to three (${applied.applied})`);
   // Each session resolves against its own cwd: PROJECT now has auto, OTHER falls back to global readonly.

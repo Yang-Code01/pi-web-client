@@ -1257,17 +1257,28 @@ async function main(): Promise<void> {
           }
           // ------------------------------------------------ 默认权限（D157）
           case "permission.defaults": {
-            const cwd = msg.cwd ? String(msg.cwd) : null;
-            const d = await defaultPermission(pi.cli, cwd);
-            send({ type: "permission.defaults", cwd, mode: d.mode, source: d.source, path: d.path, ...sessions.permissionDefaultSessions(cwd) });
+            // A bad cwd or an unreadable settings file must not take the socket handler down.
+            try {
+              const cwd = msg.cwd ? String(msg.cwd) : null;
+              const d = await defaultPermission(pi.cli, cwd);
+              send({ type: "permission.defaults", cwd, mode: d.mode, source: d.source, path: d.path, ...sessions.permissionDefaultSessions(cwd) });
+            } catch (err) {
+              log(`permission.defaults failed: ${String(err)}`);
+              send({ type: "permission.defaults", cwd: msg.cwd ? String(msg.cwd) : null, mode: "ask", source: "fallback", path: null, total: 0 });
+            }
             return;
           }
           case "permission.applyDefault": {
             if (!(await requireStepUp())) return;
-            const cwd = msg.cwd ? String(msg.cwd) : null;
-            const applied = await sessions.applyDefaultPermission(cwd);
-            log(`default permission applied to ${applied} session(s)`);
-            send({ type: "permission.applied", cwd, applied });
+            try {
+              const cwd = msg.cwd ? String(msg.cwd) : null;
+              const applied = await sessions.applyDefaultPermission(cwd);
+              log(`default permission applied to ${applied} session(s)`);
+              send({ type: "permission.applied", cwd, applied });
+            } catch (err) {
+              log(`permission.applyDefault failed: ${String(err)}`);
+              send({ type: "permission.applied", cwd: msg.cwd ? String(msg.cwd) : null, applied: 0 });
+            }
             return;
           }
           case "setBudget": {
