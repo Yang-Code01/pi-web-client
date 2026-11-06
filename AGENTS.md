@@ -7,7 +7,7 @@ pi 的网页客户端：`bridge/`（Node，WS 桥 + RPC 子进程 + 隧道）与
 **AI 不在 main 上改代码，也不在已检出的主工作区里编辑文件。每次变更都先开一个 worktree，在它自己的分支上改、提交，再合回来。**
 
 - **开：** 从主检出 `git worktree add ../pi-web-client-wt/<branch> -b <branch>`（本仓库 worktree 统一放 `F:/pi-web-client-wt/`），之后所有读写都在那个目录里做。`<branch>` 用 `feat/…`、`fix/…` 这类主题名。
-- **收：** 走本仓库 PR 流程（`gh pr create` → 合并）或本地 `git merge --no-ff <branch>`；之后 `git worktree remove <目录>` + `git branch -d <branch>`，别留僵尸 worktree，手工删过目录就跑 `git worktree prune`。
+- **收：** 提交、推送分支、开好 PR（`gh pr create`）之后**停下**，等用户明确说合并才合并（`gh pr merge` 或本地 `git merge --no-ff <branch>`）。**「改完了」不等于「可以合 main」。** 合并之后才 `git worktree remove <目录>` + `git branch -d <branch>`，别留僵尸 worktree，手工删过目录就跑 `git worktree prune`。
 - **只读不受限：** `git log` / `git diff` / 读 main 上的代码随便跑。禁止的是**写**：在 main 上 `git add` / `git commit`，或者 `git checkout main` 之后改文件。
 - **主检出里有未提交的改动时先问用户**（stash / 带走到新分支），不要为了腾地方就 `git checkout .` 或 `git stash` 掉别人的活。
 - **并行任务一个任务一个 worktree**，两个 agent 不要共用同一工作目录（会踩 build 产物和 `index.lock`）。
