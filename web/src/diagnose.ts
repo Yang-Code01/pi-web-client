@@ -81,8 +81,9 @@ export function normalize(out: unknown): string {
     .replace(/\r\n/g, "\n");
 }
 
-function exitCodeOf(out: string): number | null {
-  const m = /Command exited with code (\d+)/.exec(out);
+/** pi 的 trailer：`Command exited with code 2` / `Exit code: 1`。账本与诊断共用这一份。 */
+export function exitCodeOf(out: string): number | null {
+  const m = /(?:Command exited with code|Exit code:?)\s*(-?\d+)/i.exec(out);
   return m ? Number(m[1]) : null;
 }
 

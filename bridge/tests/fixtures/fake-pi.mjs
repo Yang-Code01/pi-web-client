@@ -203,6 +203,29 @@ async function turn(text) {
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
+  // 「⚡ 总结本轮错误」探针（D164）：一次 turn 里几颗会失败的工具，形状照真实会话抄。
+  if (/^FAILS/.test(text)) {
+    const calls = [
+      ["bash", "cd F:/pi-web-client-wt/feat-setti && git status", "bash: cd: F:/pi-web-client-wt/feat-setti: No such file or directory"],
+      ["bash", "cd F:/pi-web-client-wt/feat-setti && ls", "bash: cd: F:/pi-web-client-wt/feat-setti: No such file or directory"],
+      ["bash", "netstat -ano | grep :7864", "bash: netstat: command not found"],
+      ["edit", "web/src/notseheet.ts", "File not found: web/src/notseheet.ts"],
+    ];
+    for (const [name, argText, res] of calls) {
+      const id = `call-fail-${Math.random().toString(36).slice(2, 7)}`;
+      const args = name === "bash" ? { command: argText } : { path: argText };
+      out({ type: "message_start", message: assistant("") });
+      out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id, name, arguments: args }], stopReason: "toolUse" }) });
+      out({ type: "tool_execution_start", toolCallId: id, toolName: name, args });
+      out({ type: "tool_execution_end", toolCallId: id, toolName: name, isError: true, result: `${res}
+
+Command exited with code 1` });
+    }
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("改完了。") });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   out({ type: "message_start", message: assistant("") });
   out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `echo: ${text}` } });
   out({ type: "message_end", message: assistant(`echo: ${text}`) });
