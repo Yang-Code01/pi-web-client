@@ -2230,14 +2230,15 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 
 **决定：**
 
-- 新增 `web/src/pending.ts`：`applyPending(sessions, id, "approvals"|"asks", ±1)`、`syncPending()`、`shownSession()` 三个纯函数。四个事件（`approval.add/remove`、`ask.add/remove`）都走它，**当前会话也照加照减**，结果夹在 ≥0。
+- 新增 `web/src/pending.ts`：`applyPending(sessions, id, "approvals"|"asks", ±1)`、`syncPending()`、`badgeSession()` 三个纯函数。四个事件（`approval.add/remove`、`ask.add/remove`）都走它，**当前会话也照加照减**，结果夹在 ≥0。
 - `session` 快照到达时 `syncPending()` 把列表里那条换成快照里的队列长度（权威值），曾经算歪的会话打开一次就回到真值。
-- `App.badgeOf(s)` 成为徽标唯一入口：`sessionBadge(shownSession(s, currentId, 本地队列长度), currentId)`。左栏卡、钉条、管理面板、NowChip 全走它 —— D53 的「唯一实现」不变，只是多了一层「当前会话以本地为准」。
+- `App.badgeOf(s)` 成为徽标唯一入口：`sessionBadge(badgeSession(s, currentId, 本地队列长度), currentId)`。左栏卡、钉条、管理面板、NowChip、工作区浮层全走它 —— D53 的「唯一实现」不变，只是多了一层「当前会话以本地为准」。
+- `openSession` 清空本地队列、快照还没回来这一小段（`App.pendingFresh` 为 false）徽标退回列表里的计数 —— 否则每切到一个「正等着你」的会话，徽标都会先闪没一拍（评审 P1）。
 - 四条事件都补一次 `renderSessions()`：别的会话来事时卡片立刻变（旧代码在 `ask.add` 上根本不重画）。
 - 删掉 `notifyUnread()` —— 它就是「提问记成批准」的源头。
 
-**为什么：** 桥只在计数变化时发这四条事件，不补 `session.state`（`bridge/src/sessions.ts` 的 `answerAsk` / `answerApproval` 直接 emit `ask.remove` / `approval.remove`，`setState` 只改自己那条字段），所以前端那份累加值就是列表唯一会变的账；对称加减 + 类型分开，账才不会漂。当前会话再叠一层「以本地队列为准」，是因为本地队列在订阅快照、作答、断线时都会重置，比累加值新（D53 的优先级规则照旧）。**没有**改成「桥每次变化都广播 `session.state`」：那等于把「哪条事件属于哪个字段」的语义也搬进桥，还多一次全量广播，而前端手里已经有事件，补一次对应的减法更小。
+**为什么：** 桥只在计数变化时发这四条事件，不补 `session.state`（`bridge/src/sessions.ts` 的 `answerAsk` / `answerApproval` 直接 emit `ask.remove` / `approval.remove`，`setState` 只改自己那条字段），所以前端那份累加值就是列表唯一会变的账；对称加减 + 类型分开，账才不会漂。当前会话再叠一层「以本地队列为准」，是因为本地队列在订阅快照和作答时会重置，比累加值新（D53 的优先级规则照旧）。**没有**改成「桥每次变化都广播 `session.state`」：那等于把「哪条事件属于哪个字段」的语义也搬进桥，还多一次全量广播，而前端手里已经有事件，补一次对应的减法更小。
 
-**代价 / 可改：** 每条事件多一次 `renderSessions()`（列表几十条，可忽略）；`shownSession` 只在当前会话上分配一个新对象。真要桥端广播，删掉 `badgeOf` 里那层覆盖即可，计数本身仍然是对的。**可改。**
+**代价 / 可改：** 每条事件多一次 `renderSessions()`（列表几十条，可忽略）；`badgeSession` 只在当前会话上分配一个新对象。真要桥端广播，删掉 `badgeOf` 里那层覆盖即可，计数本身仍然是对的。**可改。**
 
-**验证：** `node --experimental-transform-types web/tests/pending-unit.mjs`（6 条：类型分开 / 对称 / 缺字段按 0 / 未知会话 / 快照对齐 / 本地优先）；`probes/pending-badge.mjs`（假桥 + 真界面四步：看 A 时 B 来问题 → B 卡「待回答」而不是「待确认」；打开 B 点选项作答 → 徽标消失；看 B 时 A 来批准 → A 卡「待确认」；打开 A 点批准 → 徽标消失）。同一探针在**旧代码**上（`git stash` 回 `3a54f8c` 的 `web/src/app.ts`，控制实验）复现用户现场：问题到达时 B 卡显示「待确认」，作答后**仍是**「待确认」。`npm --prefix web run typecheck`（tsc + i18n-check，1410 键 × 3 语言）、`npm --prefix web run build`。
+**验证：** `node --experimental-transform-types web/tests/pending-unit.mjs`（6 条：类型分开 / 对称 / 缺字段按 0 / 未知会话 / 快照对齐 / 本地优先）；`probes/pending-badge.mjs`（假桥 + 真界面五步：看 A 时 B 来问题 → B 卡「待回答」而不是「待确认」；打开 B 点选项作答 → 徽标消失；看 B 时 A 来批准 → A 卡「待确认」；打开 A 点批准 → 徽标消失；把 subscribe 延后 900ms 再点开一个待回答的会话 → 徽标全程在）。同一探针在**旧代码**上（`git stash` 回 `3a54f8c` 的 `web/src/app.ts`，控制实验）复现用户现场：问题到达时 B 卡显示「待确认」，作答后**仍是**「待确认」。`npm --prefix web run typecheck`（tsc + i18n-check，1410 键 × 3 语言）、`npm --prefix web run build`。

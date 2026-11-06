@@ -1,11 +1,11 @@
 /**
- * 会话卡「待确认」清不掉的那条账（D156）：`applyPending` / `shownSession` 的纯函数层。
+ * 会话卡「待确认」清不掉的那条账（D156）：`applyPending` / `badgeSession` 的纯函数层。
  *
  * Run: node --experimental-transform-types web/tests/pending-unit.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyPending, shownSession, syncPending } from "../src/pending.ts";
+import { applyPending, badgeSession, syncPending } from "../src/pending.ts";
 
 const s = (id, over = {}) => ({ id, name: id, cwd: "f:/x", file: null, owned: false, running: false, done: false, updatedAt: 0, approvals: 0, asks: 0, ...over });
 
@@ -50,9 +50,9 @@ test("订阅快照到了：列表里那条换成快照的长度（累加值只�
 
 test("画当前会话用本地队列，别的会话读列表里的累加值", () => {
   const row = s("a", { approvals: 1, asks: 0 });
-  assert.deepEqual(pick(shownSession(row, "a", { approvals: 0, asks: 2 })), { approvals: 0, asks: 2 });
-  assert.deepEqual(pick(shownSession(row, "b", { approvals: 0, asks: 2 })), { approvals: 1, asks: 0 });
-  assert.deepEqual(pick(shownSession(row, null, { approvals: 7, asks: 7 })), { approvals: 1, asks: 0 });
+  assert.deepEqual(pick(badgeSession(row, "a", { approvals: 0, asks: 2 })), { approvals: 0, asks: 2 });
+  assert.deepEqual(pick(badgeSession(row, "b", { approvals: 0, asks: 2 })), { approvals: 1, asks: 0 });
+  assert.deepEqual(pick(badgeSession(row, null, { approvals: 7, asks: 7 })), { approvals: 1, asks: 0 });
   assert.equal(row.approvals, 1, "原对象不许被就地改");
 });
 

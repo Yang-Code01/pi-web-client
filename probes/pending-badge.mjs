@@ -10,7 +10,8 @@
  *   1. 正在看 A 时 B 来一个问题 → B 卡是「待回答」，**不能**是「待确认」；
  *   2. 打开 B、点选项作答（桥回 `ask.remove`）→ B 卡不再有待处理徽标；
  *   3. 正在看 B 时 A 来一个批准 → A 卡「待确认」；
- *   4. 打开 A、点「批准」（桥回 `approval.remove`）→ A 卡不再有待处理徽标。
+ *   4. 打开 A、点「批准」（桥回 `approval.remove`）→ A 卡不再有待处理徽标；
+ *   5. 订阅快照回得慢时点开一个待回答的会话 → 徽标全程在（`pendingFresh`，评审 P1）。
  *
  * Run: npm run build:web && node probes/pending-badge.mjs
  */
@@ -68,6 +69,8 @@ const APPROVAL = { id: "appr_probe1", sessionId: "s-other", title: "需要确认
 /** 每条会话当前待着的队列 —— 假桥的「权威值」，subscribe 时原样发回去。 */
 const pending = { "s-other": { approvals: [], asks: [] }, "s-bug": { approvals: [], asks: [] } };
 let sock = null;
+/** 模拟隧道 / 慢网络：`subscribe` 的快照晚这么多毫秒才回。 */
+let snapshotDelay = 0;
 const send = (msg) => sock?.readyState === 1 && sock.send(JSON.stringify(msg));
 const snapshot = (id) => {
   const s = SESSIONS.find((x) => x.id === id);
@@ -117,7 +120,9 @@ wss.on("connection", (ws) => {
     }
     log("client →", msg.type, msg.sessionId ?? "", msg.askId ?? msg.approvalId ?? msg.decision ?? "");
     if (msg.type === "subscribe") {
-      send(snapshot(String(msg.sessionId)));
+      const reply = () => send(snapshot(String(msg.sessionId)));
+      if (snapshotDelay) setTimeout(reply, snapshotDelay);
+      else reply();
       return;
     }
     if (msg.type === "answer") {
@@ -190,6 +195,20 @@ try {
   await until(async () => !["待回答", "待确认"].includes(await badge("s-other")), 4000, "A badge cleared");
   log("4 OK 批准后 A 卡:", (await badge("s-other")) || "(无徽标)");
   await page.screenshot({ path: path.join(OUT, "4-approved.png") });
+
+  // 5. 切到一个正等着你的会话：本地队列刚被 openSession 清空，快照还没回来时徽标不许消失一拍。
+  pending["s-bug"].asks = [{ ...ASK, id: "ask_probe2" }];
+  send({ type: "ask.add", sessionId: "s-bug", ask: pending["s-bug"].asks[0], tool: "question", toolCallId: "t2" });
+  await until(async () => (await badge("s-bug")) === "待回答", 4000, "B waiting again");
+  snapshotDelay = 900;
+  await card("s-bug").click();
+  await until(async () => (await card("s-bug").getAttribute("class"))?.includes("active"), 4000, "B active (slow snapshot)");
+  await sleep(120);
+  assert((await badge("s-bug")) === "待回答", `切过去的瞬间徽标不许消失（got ${(await badge("s-bug")) || "(无徽标)"}）`);
+  await until(async () => (await badge("s-bug")) === "待回答", 4000, "B 待回答 after snapshot");
+  log("5 OK 慢快照切过去，徽标一直在:", await badge("s-bug"));
+  await page.screenshot({ path: path.join(OUT, "5-slow-snapshot.png") });
+  snapshotDelay = 0;
 
   log("ALL OK");
 } finally {
