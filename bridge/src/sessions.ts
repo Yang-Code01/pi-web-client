@@ -436,7 +436,7 @@ function allowFile(id: string): string {
 }
 
 /**
- * D157: the file also says where its mode came from. `from: "default"` means nobody ever chose it
+ * D161: the file also says where its mode came from. `from: "default"` means nobody ever chose it
  * by hand — that is the only kind of session 「应用到现有会话」 may rewrite later.
  */
 interface PermissionFile {
@@ -706,7 +706,7 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * D157: pin the default permission the first time the bridge ever looks at this session.
+   * D161: pin the default permission the first time the bridge ever looks at this session.
    *
    * 「第一次看见」 is creation, opening, or the startup scan — first one wins, and an existing file
    * is never touched again: a manual pick, or an earlier pin, is a decision already made. The
@@ -2252,7 +2252,7 @@ export class SessionManager extends EventEmitter {
       session.state.permission = "readonly";
       writePermission(id, "readonly");
     }
-    // D157: before startLive — the gate reads the allow file when pi spawns.
+    // D161: before startLive — the gate reads the allow file when pi spawns.
     await session.pinPermission();
     this.wire(session);
     this.sessions.set(id, session);
@@ -2456,7 +2456,7 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * D157: the startup scan. Every session on disk gets pinned on the run that first sees it, and
+   * D161: the startup scan. Every session on disk gets pinned on the run that first sees it, and
    * never again (the file exists after that) — so this is a one-time cost per session, not per boot.
    */
   async pinAll(): Promise<number> {

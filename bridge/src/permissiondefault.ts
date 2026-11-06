@@ -1,5 +1,5 @@
 /**
- * D157: 默认权限 —— 新会话第一次被桥看见时用哪一个工具权限模式。
+ * D161: 默认权限 —— 新会话第一次被桥看见时用哪一个工具权限模式。
  *
  * 存在 pi 自己的 settings.json 里，命名空间 `web.`（桥自有键，pi 的 schema 里没有它，
  * 但 pi 解析设置时对未知键 just passes them through —— 见 settings-schema.js 的

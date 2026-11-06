@@ -1,5 +1,5 @@
 /**
- * 默认权限（D157）: `web.defaultPermission` 写进 pi 的 settings.json，项目覆盖全局；会话第一次被
+ * 默认权限（D161）: `web.defaultPermission` 写进 pi 的 settings.json，项目覆盖全局；会话第一次被
  * 桥看见时钉进 `state/allow/<id>.json`（带 `from: "default"`），手动改过的会话从此不再被
  * 「应用到现有会话」碰到。
  *

@@ -190,7 +190,7 @@ export class App {
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
   /**
-   * D157: 设置面板底部那块「把现有会话也改掉」。`permDefaultsFor` 是已经问过桥的 cwd key
+   * D161: 设置面板底部那块「把现有会话也改掉」。`permDefaultsFor` 是已经问过桥的 cwd key
    * （空串 = 全局页），这样重绘不会一直重问同一个问题。
    */
   private permDefaults: { cwd: string | null; mode: string; source: string; path: string | null; total: number } | null = null;
@@ -1399,7 +1399,7 @@ export class App {
         if (this.sheetKind === "settings") this.paintSettings();
         break;
       }
-      // ------------------------------------------------------- 默认权限（D157）
+      // ------------------------------------------------------- 默认权限（D161）
       case "permission.defaults": {
         // Only the answer to the question this sheet asked: a slow reply for another project must
         // not repaint this one with somebody else's count.
@@ -7628,7 +7628,7 @@ export class App {
     goJson.onclick = () => this.paintSettingsJson(body, view);
     jsonOnly.append(goJson);
     body.append(jsonOnly);
-    // D157: 默认权限只对「新会话」生效，所以这里给还停在默认上的会话一个出口。
+    // D161: 默认权限只对「新会话」生效，所以这里给还停在默认上的会话一个出口。
     const permKey = scope === "project" ? (view.cwd ?? "") : "";
     if (this.permDefaultsFor !== permKey) {
       this.permDefaultsFor = permKey;
@@ -8596,7 +8596,7 @@ export class App {
     const adv = el("details", "ns-advanced");
     adv.append(el("summary", "", tr("高级")));
     const exp = el("select", "ns-input") as HTMLSelectElement;
-    // D157: 「codemode」跟 pi 的 codemode.mode 撞名，这里其实是 MCP 的暴露方式。
+    // D161: 「codemode」跟 pi 的 codemode.mode 撞名，这里其实是 MCP 的暴露方式。
     exp.append(new Option(tr("默认（deferred：模型用 searchTools 找）"), ""), new Option("deferred", "deferred"), new Option("direct", "direct"), new Option("hidden", "hidden"));
     exp.value = f.exposure;
     exp.onchange = () => (f.exposure = exp.value);
@@ -11578,7 +11578,7 @@ function settingFields(): SettingField[] {
   { key: "images.blockImages", label: tr("不给模型发图片"), kind: "bool", hint: tr("整张图换成一段说明文字，省 token 但模型看不见图") },
   { key: "enableSkillCommands", label: tr("技能注册成 /skill:名字"), kind: "bool" },
 
-  // D157: 桥自有键（web. 命名空间），存在 pi 的 settings.json 里，读写和别的设置同一条路。
+  // D161: 桥自有键（web. 命名空间），存在 pi 的 settings.json 里，读写和别的设置同一条路。
   {
     key: "web.defaultPermission",
     label: tr("新会话的默认权限"),
@@ -11985,7 +11985,7 @@ const PERM_MODES: { id: PermissionMode; icon: string; label: string; desc: strin
 
 type PermMode = (typeof PERM_MODES)[number];
 
-/** One mode by id; an id a stale file names falls back to pi's default (`ask`, D157). */
+/** One mode by id; an id a stale file names falls back to pi's default (`ask`, D161). */
 function permMode(id: string): PermMode {
   for (const m of PERM_MODES) if (m.id === id) return m;
   for (const m of PERM_MODES) if (m.id === "ask") return m;

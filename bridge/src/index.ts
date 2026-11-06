@@ -1255,7 +1255,7 @@ async function main(): Promise<void> {
             sessions.setPermission(String(msg.sessionId ?? ""), msg.mode);
             return;
           }
-          // ------------------------------------------------ 默认权限（D157）
+          // ------------------------------------------------ 默认权限（D161）
           case "permission.defaults": {
             // A bad cwd or an unreadable settings file must not take the socket handler down.
             try {
@@ -2001,7 +2001,7 @@ async function main(): Promise<void> {
     if (fresh) console.log(`  口令（首次生成，只显示这一次）：${fresh}\n`);
     else console.log(`  口令在 ${statePath("passphrase.txt")}\n`);
     if (cfg.tunnelAuto && tunnelBin) tunnel.start();
-    // D157: pin 「the default permission as of now」 onto sessions the bridge has never looked at.
+    // D161: pin 「the default permission as of now」 onto sessions the bridge has never looked at.
     // Async and best-effort: a session list that is a second late costs nothing, a crash on boot costs all.
     void sessions.pinAll().then((n) => n && log(`pinned default permission on ${n} session(s)`)).catch(() => {});
   });
