@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanGroupName, dropBlocker, pinBlocker, renameIntent, togglePin } from "../src/wsmanage.ts";
+import { cleanGroupName, dropBlocker, PIN_MAX, PIN_MIN, pinBlocker, pinRows, pinsDropped, renameIntent, togglePin } from "../src/wsmanage.ts";
 
 const LIB = { id: "f:/pi-web-client", name: "", key: "F:/pi-web-client", manual: false };
 const MANUAL = { id: "manual:abc", name: "客户 A", key: "", manual: true };
@@ -106,4 +106,62 @@ test("已经固定的组永远能取消 —— 名额满了也不拦", () => {
 
 test("组没了就不给固定（快照过期时的兜底）", () => {
   assert.ok(pinBlocker(undefined, [], 3));
+});
+
+// ---------------------------------------------------------------- 设置面板的勾选列表（#123）
+
+const A = { id: "a", name: "甲", key: "A", manual: false };
+const B = { id: "b", name: "乙", key: "B", manual: false };
+const C = { id: "c", name: "丙", key: "C", manual: false };
+const D = { id: "d", name: "丁", key: "D", manual: false };
+const GROUPS = [A, B, C, D];
+
+test("勾选列表的顺序就是传进来的组序（左栏序），不按固定顺序重排", () => {
+  const rows = pinRows(GROUPS, ["d", "b"], 3);
+  assert.deepEqual(rows.map((r) => r.id), ["a", "b", "c", "d"]);
+  assert.deepEqual(rows.filter((r) => r.checked).map((r) => r.id), ["b", "d"]);
+});
+
+test("固定的组勾着，且永远能取消（名额满了也不拦）", () => {
+  const rows = pinRows(GROUPS, ["a", "b", "c"], 3);
+  assert.equal(rows[0].checked, true);
+  assert.equal(rows[0].why, null);
+});
+
+test("名额满了：没勾的那几行给出不能勾的原因，并说清名额是几个", () => {
+  const rows = pinRows(GROUPS, ["a", "b", "c"], 3);
+  const d = rows.find((r) => r.id === "d");
+  assert.equal(d?.checked, false);
+  assert.ok(d?.why && d.why.includes("3"), `置灰原因要说清名额：${d?.why}`);
+});
+
+test("名额还有空位：没勾的行不给原因（能点就是能点）", () => {
+  const rows = pinRows(GROUPS, ["a"], 3);
+  assert.deepEqual(rows.map((r) => r.why), [null, null, null, null]);
+});
+
+test("列表里混进不存在的组 / 重复 id 不会多出一行，也不会多占名额", () => {
+  const rows = pinRows(GROUPS, ["b", "ghost", "b"], 3);
+  assert.deepEqual(rows.map((r) => r.id), ["a", "b", "c", "d"]);
+  assert.equal(rows.filter((r) => r.checked).length, 1);
+  assert.equal(rows.find((r) => r.id === "c")?.why, null);
+});
+
+test("快照里固定组比名额多（旧文件 / 别处刚写）时，只看得到前 N 个勾着", () => {
+  const rows = pinRows(GROUPS, ["a", "b", "c", "d"], 2);
+  assert.deepEqual(rows.filter((r) => r.checked).map((r) => r.id), ["a", "b"]);
+  assert.ok(rows.find((r) => r.id === "c")?.why);
+});
+
+test("名额调小：报出因此被取消的固定组数（提示用）", () => {
+  assert.equal(pinsDropped(["a", "b", "c"], 2), 1);
+  assert.equal(pinsDropped(["a", "b"], 5), 0);
+  assert.equal(pinsDropped([], 1), 0);
+});
+
+test("名额本身先按 1–5 夹住再算被取消几个", () => {
+  assert.equal(pinsDropped(["a", "b", "c", "d", "e", "f"], 9), 1);
+  assert.equal(pinsDropped(["a"], 0), 0);
+  assert.equal(PIN_MIN, 1);
+  assert.equal(PIN_MAX, 5);
 });
