@@ -174,7 +174,7 @@ export class App {
     start: number;
     end: number;
     query: string;
-    items: { insert: string; label: string; desc?: string; tag?: string }[];
+    items: CommandItem[];
     sel: number;
     node: HTMLElement;
   } | null = null;
@@ -8784,7 +8784,7 @@ export class App {
     return filterCommands(all, query);
   }
 
-  private showComplete(mode: "cmd" | "file", start: number, end: number, query: string, items: { insert: string; label: string; desc?: string; tag?: string }[]): void {
+  private showComplete(mode: "cmd" | "file", start: number, end: number, query: string, items: CommandItem[]): void {
     let node = this.complete?.node;
     if (!node || !node.isConnected) {
       node = el("div", "complete-pop");

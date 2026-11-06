@@ -2134,8 +2134,8 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 
 - 过滤挪进纯函数 `web/src/commands.ts` 的 `filterCommands()`，`commandItems()` 只负责把内建 + `get_commands` 拼成一份 `all`；单测 `web/tests/commands-unit.mjs`（`npm run test:commands`）。
 - 名字命中分档，小的靠前：整名 → 整名前缀 → 尾巴前缀 → 尾巴里某个词的前缀 → 尾巴包含。`skill:handoff` 的尾巴是 `handoff`；`claude-handoff` 按 `[:._\-\s]` 切出 `handoff` 这个词，所以 `/hand` 能命中它。用户自己敲了命名空间（`/skill:hand`）就先把 `skill:` 剥掉再比。
-- **命名空间不参与子串匹配**：否则 `/kill` 会命中每一个 `skill:`。只认「整段前缀」，所以 `/skill` / `/skill:` 照旧列出全部技能。
-- **名字一个都没命中才看描述**，门槛照旧 3 个字符（两个字符连描述也不看）。名字有命中时描述一条都不混进来 —— 这正是这次「看着没过滤」的根因。
+- **命名空间不参与子串匹配**：否则 `/kill` 会命中每一个 `skill:`。只认「整段前缀」，所以 `/skill` / `/skill:` 照旧列出全部技能。只看**第一个**冒号：`mcp:tool:read` 的尾巴是 `tool:read`，`/tool` 照旧命中。
+- **名字一个都没命中才看描述**，门槛照旧 3 个字符（两个字符连描述也不看）。名字有命中时描述一条都不混进来 —— 这正是这次「看着没过滤」的根因。查描述用的是剥掉命名空间后的那段：`/skill:document` 去描述里找 `document`，不是找 `skill:document`。
 - 空输入照旧前 40 条，排序在原顺序里稳定。
 
 **为什么：** 补全的价值在「缩小范围」，不在「多列几条」。人敲命令时先想到的是名字（技能名 / 扩展名 / 模板名），描述是解释、不是检索键；把描述当第二个检索面，一旦查询短（`hand`、`mod`、`run`）就必然把半个技能表点亮，而用户没有任何手法分辨哪些是真命中。命名空间那一半同理：`skill:` 是 pi 的编码方式，不是人敲的词。
@@ -2144,6 +2144,6 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 
 - 名字有命中时描述不再参与：`/compress` 不会带出 `/compact`（即便它的描述里写着「压缩上下文」），`/背诵包` 这种只出现在描述里的词仍能命中（名字零命中，三个字符起；「压缩」两个字符不翻描述）。要恢复可以给描述命中单开一档、排在所有名字命中之后。**可改**
 - 尾巴按 `[:._\-\s]` 切词，纯中文技能名整段算一个词，`/补全` 只能子串命中。**可改**
-- `/kill` 这类查询不再「命中所有技能」，但如果名字里真的没有，就会落到描述兜底或「没有匹配的命令」——比以前更安静。**可改**
+- `/kill` 这类查询不再「命中所有技能」，但尾巴里真有 `kill` 的仍会中（`find-skills` 的 `skills`），名字一个都没中就落到描述兜底或「没有匹配的命令」——比以前更安静。**可改**
 
-**验证：** `npm run test:commands`（7 例：`/hand` 只剩 handoff 那一族且顺序是 handoff → claude-handoff；`/skill:hand` 等价；`/claude` 命中 claude-handoff；描述只兜底且两个字符不翻描述；整名排最前；空输入 40 条；大小写与首尾空格）；测试实例（`pi-web-client-test-dev`，端口 17874）上 `node probes/slash-filter.mjs` 用真 Chromium 敲：`/hand` → `skill:handoff` + `skill:claude-handoff`，`/skill:hand` 同，`/claude` → claude-handoff + git-guardrails-claude-code，`/zzzqqq` → 「没有匹配的命令」；截图 `.scratch/hand-filter/hand.png`。
+**验证：** `npm run test:commands`（13 例：`/hand` 只剩 handoff 那一族且顺序是 handoff → claude-handoff；`/skill:hand` 等价；`/skill`、`/skill:` 列全部且顺序不变；`/kill` 不因 `skill:` 前缀全中、尾巴真含 `kill` 才中；切词认 `-` `_` `.` 空白；`mcp:tool:read` 敲 `/tool` 命中；描述只兜底、两个字符不翻描述、且兜底剥命名空间；整名排最前；同档保持原序；空输入与名字命中都截到 40；大小写）；测试实例（`pi-web-client-test-dev start --dir <本 worktree> --build`，端口 17874）上 `node probes/slash-filter.mjs` 用真 Chromium 逐条断言：`/hand` → 恰好 `skill:handoff` + `skill:claude-handoff`（顺序也查），`/skill:hand` 同，`/kill` → 只列尾巴含 kill 的，`/zzzqqq` → 「没有匹配的命令」，`/claude` → 只剩 claude 那一族，`/skill:` → 全部技能；任一不对退出码非 0。截图 `.scratch/hand-filter/hand.png`。
