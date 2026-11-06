@@ -1419,7 +1419,7 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .chip.on { border-color: var(--accent); color: var(--accent-ink); background: var(--accent); font-weight: 500; }
 .chip:hover { border-color: var(--line-strong); }
 
-/* ---------------------------------------------------------------- 字号滑杆（D156）
+/* ---------------------------------------------------------------- 字号滑杆（D158）
    连续滑杆取代四颗 chip：0.8–2.0，步长 1%。老档位不再有名字，只留四颗刻度上的磁吸 ——
    轨上 0.1 一格、0.2 一个字，点字精确落档，指针拖到 ±1.2% 内会吸上去。
    填充色和滑块都跟着 --fill 走，不另画一条轨道。 */

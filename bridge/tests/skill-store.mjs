@@ -68,7 +68,7 @@ const RAW = new Map([
   ["https://raw.githubusercontent.com/acme/plain/HEAD/notes.md", "notes"],
 ]);
 
-const calls = { search: 0, tree: [], file: [] };
+const calls = { search: 0, tree: [], file: [], fileOpts: [] };
 const net = {
   json: async (url) => {
     if (url.startsWith("https://skills.sh/api/search")) {
@@ -90,8 +90,9 @@ const net = {
     }
     throw new Error(`意外的请求：${url}`);
   },
-  file: async (url) => {
+  file: async (url, opts) => {
     calls.file.push(url);
+    calls.fileOpts.push(opts);
     const hit = RAW.get(url);
     if (hit === undefined) throw new Error(`404 ${url}`);
     return Buffer.from(hit, "utf8");
@@ -217,6 +218,9 @@ log("F. installSkill（仓库 → 全局）");
 
   const rootSkill = await skillstore.installSkill({ source: "acme/plain", dir: "", scope: "user" }, net);
   check(rootSkill.name === "plain" && fs.existsSync(path.join(skillsDir, "plain", "notes.md")), "仓库根目录的 SKILL.md 也能装");
+
+  const offered = calls.fileOpts.find((o) => o && o.label === "skills/pdf/SKILL.md");
+  check(Boolean(offered) && offered.alt.length === 3 && offered.alt[0].includes("/gh/acme/skills@HEAD/"), `安装把三个备用源一起交给网络层（${offered ? offered.alt.length : 0} 个）`);
 }
 
 // ------------------------------------------------------------------ G. 防覆盖 / 重装
@@ -350,6 +354,139 @@ log("L. scanSkillEntries / scanSkills");
   check(skillsMod.userSkillRootOf(path.join(PROJECT, ".pi", "skills", "alpha")) === null, "项目目录不是用户根");
   const plain = skillsMod.scanSkills(PROJECT);
   check(Array.isArray(plain) && plain.every((s) => !("path" in s)), "scanSkills 仍是面板要的那几个字段");
+}
+
+// ------------------------------------------------------------------ M. 下载的备用源（D157）
+log("M. fileFetcher / mirrorUrls");
+{
+  const raw = "https://raw.githubusercontent.com/acme/skills/HEAD/skills/pdf/SKILL.md";
+  const alts = skillstore.mirrorUrls("acme/skills", "skills/pdf/SKILL.md");
+  check(alts.length === 3 && alts.every((u) => u.includes("/gh/acme/skills@HEAD/skills/pdf/SKILL.md")), `三个 jsDelivr 备用地址：${alts.length}`);
+  check(skillstore.mirrorUrls("acme/skills", "notes.md", "feat/x").length === 0, "带斜杠的分支不给备用地址（jsDelivr 表达不了）");
+
+  const opts = { alt: alts, label: "skills/pdf/SKILL.md" };
+  const tried = [];
+  let now = 1_000_000;
+  const flaky = skillstore.fileFetcher(async (url) => {
+    tried.push(url);
+    if (url.startsWith("https://raw.githubusercontent.com/")) throw Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    return Buffer.from("body");
+  }, () => now);
+  const first = await flaky(raw, opts);
+  check(first.toString() === "body" && tried[1] === alts[0], `raw 被重置时走备用源（${tried[1]}）`);
+  tried.length = 0;
+  await flaky(raw, opts);
+  await flaky(raw, opts);
+  check(tried.length === 2 && tried.every((u) => !u.startsWith("https://raw.githubusercontent.com/")), `十分钟内不再探死掉的主机（两个文件共 ${tried.length} 次请求）`);
+  now += 11 * 60_000;
+  tried.length = 0;
+  await flaky(raw, opts);
+  check(tried.includes(raw), "十分钟后又给 raw 一次机会");
+
+  const notFound = [];
+  const gone = skillstore.fileFetcher(async (url) => {
+    notFound.push(url);
+    throw Object.assign(new Error("raw.githubusercontent.com 返回 404"), { code: "HTTP_404" });
+  });
+  let threw = "";
+  try { await gone(raw, opts); } catch (err) { threw = err.message; }
+  check(threw.startsWith("下载 skills/pdf/SKILL.md 失败") && threw.includes("404"), `404 直接报，不试备用源：${threw}`);
+  check(notFound.length === 1, "404 只发一个请求");
+
+  const dead = skillstore.fileFetcher(async () => { throw new Error("socket hang up"); });
+  threw = "";
+  try { await dead(raw, opts); } catch (err) { threw = err.message; }
+  check(threw.startsWith("下载 skills/pdf/SKILL.md 失败") && threw.includes("raw.githubusercontent.com"), `所有源都挂时报出文件和主机：${threw}`);
+  check(threw.includes("HTTPS_PROXY") && threw.includes("httpProxy"), "报错末尾告诉用户能配代理");
+}
+
+// ------------------------------------------------------------------ N. 陈旧的树（D157）
+log("N. 树比仓库旧时自愈");
+{
+  const stale = [["skills/xlsx/SKILL.md", 40], ["skills/xlsx/scripts/office/pack.py", 20]];
+  const live = [["skills/xlsx/SKILL.md", 40], ["skills/xlsx/scripts/office/unpack.py", 30]];
+  const seen = { github: 0, files: [] };
+  const drift = {
+    json: async (url) => {
+      if (url.startsWith("https://data.jsdelivr.com/")) return { files: stale.map(([name, size]) => ({ name: `/${name}`, size })) };
+      if (url.startsWith("https://api.github.com/repos/acme/xlsx/git/trees/HEAD")) {
+        seen.github++;
+        return { tree: live.map(([p, size]) => ({ path: p, size, type: "blob" })) };
+      }
+      throw new Error(`意外的请求：${url}`);
+    },
+    file: async (url, opts) => {
+      seen.files.push(opts?.label ?? url);
+      if (String(opts?.label) === "skills/xlsx/scripts/office/pack.py") throw Object.assign(new Error("raw.githubusercontent.com 返回 404"), { code: "HTTP_404" });
+      return Buffer.from("x", "utf8");
+    },
+  };
+  const out = await skillstore.installSkill({ source: "acme/xlsx", skillId: "xlsx", scope: "user" }, drift);
+  check(seen.github === 1, `某个文件 404 后向 GitHub 要了一次新树（${seen.github} 次）`);
+  check(fs.existsSync(path.join(out.dir, "scripts", "office", "unpack.py")) && !fs.existsSync(path.join(out.dir, "scripts", "office", "pack.py")), "按新树装完，旧树里的 pack.py 没留");
+  check(out.files === 2, `文件数按新树算：${out.files}`);
+  const before = seen.github;
+  await skillstore.installSkill({ source: "acme/xlsx", skillId: "xlsx", scope: "user" }, drift);
+  check(seen.github === before, "新树进了缓存，第二次安装不再问 GitHub");
+}
+
+// ------------------------------------------------------------------ O. 自愈后的上限 / 失败不残留（D157）
+log("O. 自愈重算上限、失败后不残留");
+{
+  // 陈旧的树只有一个小文件；实时树种多了 70 MB，自愈后要按新树重算总大小（D126 的 64 MB 上限）。
+  const huge = {
+    json: async (url) => {
+      if (url.startsWith("https://data.jsdelivr.com/")) return { files: [{ name: "/skills/huge/SKILL.md", size: 40 }] };
+      if (url.startsWith("https://api.github.com/repos/acme/huge/git/trees/HEAD")) {
+        return {
+          tree: [
+            { path: "skills/huge/SKILL.md", size: 40, type: "blob" },
+            { path: "skills/huge/weights.bin", size: 70 * 1048576, type: "blob" },
+          ],
+        };
+      }
+      throw new Error(`意外的请求：${url}`);
+    },
+    file: async () => {
+      throw Object.assign(new Error("raw.githubusercontent.com 返回 404"), { code: "HTTP_404" });
+    },
+  };
+  let msg = "";
+  try {
+    await skillstore.installSkill({ source: "acme/huge", skillId: "huge", scope: "user" }, huge);
+  } catch (err) {
+    msg = err.message;
+  }
+  check(msg.includes("64 MB"), `自愈后按新树重算总大小：${msg}`);
+  check(!fs.existsSync(path.join(skillsDir, "huge")), "超上限的没留下半成品");
+
+  // 一个文件立刻失败、另一个还在写：要等还在飞的那个写完再清目录，否则它会把文件补写回来。
+  const race = {
+    json: async () => ({
+      files: [
+        { name: "/skills/race/SKILL.md", size: 20 },
+        { name: "/skills/race/slow.py", size: 20 },
+      ],
+    }),
+    file: async (url, opts) => {
+      if (String(opts?.label ?? url).endsWith("slow.py")) {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return Buffer.from("slow", "utf8");
+      }
+      throw Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    },
+  };
+  const t0 = Date.now();
+  msg = "";
+  try {
+    await skillstore.installSkill({ source: "acme/race", skillId: "race", scope: "user" }, race);
+  } catch (err) {
+    msg = err.message;
+  }
+  const elapsed = Date.now() - t0;
+  check(msg.includes("ECONNRESET"), `网络错误照旧报出来：${msg}`);
+  check(!fs.existsSync(path.join(skillsDir, "race")), "失败后目录清干净，晚到的写盘没补回来");
+  check(elapsed >= 60, `等到了还在飞的那个文件（${elapsed}ms）`);
 }
 
 console.log(failed ? "\nFAILED" : "\nALL OK");

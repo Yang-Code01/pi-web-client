@@ -27,7 +27,8 @@
     "test:models": "node bridge/tests/models-unit.mjs",
     "test:stat": "node bridge/tests/stat-path.mjs",
     "test:nowchip": "node --experimental-transform-types web/tests/nowchip-unit.mjs",
-    "test:wsmanage": "node --experimental-transform-types web/tests/wsmanage-unit.mjs"
+    "test:wsmanage": "node --experimental-transform-types web/tests/wsmanage-unit.mjs",
+    "test:pending": "node --experimental-transform-types web/tests/pending-unit.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
