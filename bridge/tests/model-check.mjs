@@ -48,15 +48,31 @@ await page.screenshot({ path: `${OUT}/ui-model-sheet.png` });
 const second = page.locator(".model-row").nth(2);
 const picked = (await second.locator(".m-name").innerText()).trim();
 await second.click();
+// 面板是「草稿 + 确认」式：挑一行不会自己关掉，也不会立刻生效。
+await page.locator(".sheet .btn.primary").click();
+await page.waitForSelector(".sheet", { state: "detached", timeout: 10000 });
 await page.waitForTimeout(2500);
 log("picked:", picked, "| chip now:", await page.innerText(".model-chip"));
 
 await page.click(".model-chip");
 await page.waitForSelector(".sheet", { timeout: 10000 });
-log("thinking chips:", await page.locator(".levels .chip").allInnerTexts());
+// 最后一个 .levels 是「思考档位」；上面那个装的是上下文预算。
+const levelChips = page.locator(".sheet .levels").last().locator(".chip");
+log("thinking chips:", await levelChips.allInnerTexts());
 const before = await page.innerText(".model-chip");
-await page.locator(".levels .chip").last().click();
-await page.waitForTimeout(2000);
+// 只有选了「跟现在不一样」的档位，确认按钮才会亮；全一样就没什么可验的。
+let pick = -1;
+for (let i = 0; i < (await levelChips.count()); i++) {
+  if (!(await levelChips.nth(i).evaluate((e) => e.classList.contains("on")))) { pick = i; break; }
+}
+if (pick >= 0) {
+  await levelChips.nth(pick).click();
+  await page.locator(".sheet .btn.primary").click();
+  await page.waitForSelector(".sheet", { state: "detached", timeout: 10000 });
+  await page.waitForTimeout(2000);
+} else {
+  log("思考档位与当前一致，跳过这一步");
+}
 log("after thinking chip:", before, "->", await page.innerText(".model-chip"));
 await page.screenshot({ path: `${OUT}/ui-model-sheet-levels.png` });
 await browser.close();

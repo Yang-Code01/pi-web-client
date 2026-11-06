@@ -28,6 +28,14 @@ import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, 
 
 type Tab = "sessions" | "chat" | "queue";
 
+/**
+ * 面板等目录的两个时间窗（D150）：过了 REASK 就当「刚问的那次没结果」，自己再问一遍；
+ * 还没过 WAIT 就先说「正在读取」而不是「还没加载好」。两个数对着 bridge 那趟完整清单的预算
+ * （`bridge/src/pi.ts` 的 `fetchModels` 默认 45 s）写，改那边记得改这边。
+ */
+const MODEL_REASK_MS = 15_000;
+const MODEL_WAIT_MS = 45_000;
+
 /** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
 type BadgeKind = "ask" | "approve" | "locked" | "run" | "done";
 
@@ -118,6 +126,9 @@ export class App {
   /** #86：随手问。它的帧不走当前会话那条路，自己认领；模型目录也是现成的。 */
   private readonly scratch = new ScratchChat({ send: (msg) => this.socket.send(msg), models: () => this.models });
   private models: ModelInfo[] = [];
+  /** D150：目录是两段式（快的先到、带扩展的补上），所以记住最近一次失败原因与「什么时候问过」。 */
+  private modelsError = "";
+  private modelsAsked = 0;
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
   private notes: Note[] = [];
@@ -1081,12 +1092,21 @@ export class App {
     // #86：随手问的帧先给它自己认领。它的 sessionId 永远不是当前会话，下面那些 case 本来也会忽略它。
     if (this.scratch.handle(msg)) return;
     switch (msg.type) {
-      case "catalog":
-        this.models = (msg.models ?? []) as ModelInfo[];
-        // The sheet may have opened before the catalog landed; show the list now.
-        if (this.sheetKind === "model") this.openModelSheet();
+      case "catalog": {
+        const next = (msg.models ?? []) as ModelInfo[];
+        const error = typeof msg.error === "string" ? msg.error.trim() : "";
+        // 两段式目录：第二批往往就是同一份（没有扩展提供的模型），别为了它把已经展开的面板、
+        // 以及用户挑了一半的选项重画掉（D150）。
+        const same =
+          next.length > 0 &&
+          next.length === this.models.length &&
+          next.every((m, i) => m.id === this.models[i]?.id && m.provider === this.models[i]?.provider);
+        this.models = next;
+        this.modelsError = error;
+        if (this.sheetKind === "model" && !(same && !error)) this.openModelSheet();
         this.fillModelChip();
         break;
+      }
       case "commands":
         if (msg.sessionId !== this.currentId) break;
         this.piCommands = { sessionId: String(msg.sessionId), at: Date.now(), list: Array.isArray(msg.commands) ? msg.commands : [] };
@@ -2921,6 +2941,16 @@ export class App {
     this.sheet = back;
   }
 
+  /**
+   * D150：目录不会自己更新到面板里（bridge 只在连接、装包、登录时推），所以面板缺列表就再问一次。
+   * 两段式下第一批 1–2 s 就到，不必因为“刚才已经问过”就让它干等。
+   * 默认只吃 bridge 的缓存；`force` 只给「点这里重试」用，那时才值得再起两个 pi 子进程。
+   */
+  private requestModels(force = false): void {
+    this.modelsAsked = Date.now();
+    this.socket.send({ type: "models", force });
+  }
+
   // ---------------------------------------------------------------- model sheet
   private closeSheet(): void {
     // 开新会话的面板被关掉（取消 / 点背景）= 放弃「交给 agent → 新开会话」那段待填的文字：
@@ -3040,8 +3070,23 @@ export class App {
     }
 
     if (!this.models.length) {
-      const empty = el("div", "empty", tr("模型列表还没加载好，稍等一下，或者点这里重试。"));
-      empty.onclick = () => this.socket.send({ type: "models" });
+      // 面板开得比目录早（bridge 只在连接时推一次，D150）：自己再问一次，别让这一格永远挂着「稍等」。
+      if (Date.now() - this.modelsAsked > MODEL_REASK_MS) this.requestModels();
+      const waiting = !this.modelsError && Date.now() - this.modelsAsked < MODEL_WAIT_MS;
+      const empty = el(
+        "div",
+        "empty",
+        this.modelsError
+          ? tr("模型列表没读出来：{p1}。点这里重试。", { p1: this.modelsError })
+          : waiting
+            ? tr("正在读取模型列表…")
+            : tr("模型列表还没加载好，稍等一下，或者点这里重试。"),
+      );
+      empty.onclick = () => {
+        this.modelsError = "";
+        this.requestModels(true);
+        if (this.sheetKind === "model") this.openModelSheet();
+      };
       sheet.append(empty);
     }
 
