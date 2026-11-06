@@ -56,6 +56,7 @@ import {
   type NoteMode,
   type NoteStatus,
 } from "./notes.ts";
+import { actOnFailure, mergeFailures, readLedger, undoFailures, type CommitItem, type FailAction } from "./failures.ts";
 import { mcpAddRequest, newer, searchMcp, searchPackages, type McpInstallOption } from "./market.ts";
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { createWriteLock } from "./writelock.ts";
@@ -197,7 +198,7 @@ function fail(
 }
 
 /**
- * 表格端点共同前置（D164/#106）：拿凭据 → stat → 判 mtime 未变。任一失败已经写好响应并返回 null；
+ * 表格端点共同前置（D165/#106）：拿凭据 → stat → 判 mtime 未变。任一失败已经写好响应并返回 null；
  * 调用方 `if (!g) return;`。返回的 mtimeMs 是 stat 后的实际值（pdf 缓存键要用）。
  */
 async function resolveSheetGrant(res: http.ServerResponse, token: string): Promise<{ abs: string; mtimeMs: number } | null> {
@@ -673,7 +674,7 @@ async function main(): Promise<void> {
       }
     }
 
-    // D164: spreadsheet reads. The page only ever sends the grant token from /api/preview; the
+    // D165: spreadsheet reads. The page only ever sends the grant token from /api/preview; the
     // bridge resolves the path itself, refuses a file whose mtime moved, and returns one row window.
     if (url.pathname === "/api/sheet/meta" && req.method === "POST") {
       if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
@@ -796,7 +797,7 @@ async function main(): Promise<void> {
       return out.ok ? json(res, 200, out) : json(res, 400, { error: out.message });
     }
 
-    // D164/#106 出口: hand the previewed workbook to this desktop's own program (Excel). The action
+    // D165/#106 出口: hand the previewed workbook to this desktop's own program (Excel). The action
     // happens on the desktop, not in the browser, so a tunnel visitor is refused outright. The path is
     // taken from the grant alone — a page that already read the file still cannot open anything else.
     if (url.pathname === "/api/open" && req.method === "POST") {
@@ -1909,6 +1910,70 @@ async function main(): Promise<void> {
               broadcast({ type: "notes", notes: listNotes() });
             } catch (err: any) {
               send({ type: "notes.saved", error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          // ------------------------------------------------ AI 出错记录（D164）
+          // 账本按工作区走，条目只读：只认「已修复 / 忽略 / 删除」，正文由「总结本轮错误」写入。
+          case "failures.get": {
+            const ws = String(msg.ws ?? "");
+            send({ type: "failures", ws, ledger: readLedger(ws) });
+            return;
+          }
+          case "failures.commit": {
+            try {
+              const items = (Array.isArray(msg.entries) ? (msg.entries as CommitItem[]) : [])
+                .filter((e) => Boolean(e) && typeof e === "object" && typeof e.key === "string")
+                .slice(0, 500)
+                .map((e) => ({
+                  key: String(e.key),
+                  at: String(e.at ?? msg.at ?? ""),
+                  tool: String(e.tool ?? ""),
+                  code: String(e.code ?? ""),
+                  sig: String(e.sig ?? ""),
+                  exit: typeof e.exit === "number" ? e.exit : null,
+                  cmd: String(e.cmd ?? ""),
+                  out: String(e.out ?? ""),
+                  why: String(e.why ?? ""),
+                  fix: String(e.fix ?? ""),
+                }));
+              if (!items.length) {
+                send({ type: "failures.saved", ws: String(msg.ws ?? ""), added: 0, empty: true });
+                return;
+              }
+              const out = mergeFailures({
+                ws: String(msg.ws ?? ""),
+                label: typeof msg.label === "string" ? msg.label : undefined,
+                sid: String(msg.sid ?? ""),
+                sname: String(msg.sname ?? ""),
+                at: String(msg.at ?? new Date().toISOString()),
+                items,
+              });
+              log(`failures +${out.added} (${out.ledger.entries.length} 类) in ${out.ledger.ws}`);
+              broadcast({ type: "failures", ws: out.ledger.ws, ledger: out.ledger });
+              send({ type: "failures.saved", ws: out.ledger.ws, ledger: out.ledger, token: out.token, added: out.added });
+            } catch (err: any) {
+              send({ type: "failures.saved", error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "failures.act": {
+            try {
+              const ledger = actOnFailure(String(msg.ws ?? ""), String(msg.key ?? ""), String(msg.action ?? "") as FailAction);
+              broadcast({ type: "failures", ws: ledger.ws, ledger });
+              send({ type: "failures.saved", ws: ledger.ws, ledger });
+            } catch (err: any) {
+              send({ type: "failures.saved", error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "failures.undo": {
+            try {
+              const ledger = undoFailures(String(msg.token ?? ""));
+              broadcast({ type: "failures", ws: ledger.ws, ledger });
+              send({ type: "failures.saved", ws: ledger.ws, ledger, undone: true });
+            } catch (err: any) {
+              send({ type: "failures.saved", error: String(err?.message ?? err) });
             }
             return;
           }

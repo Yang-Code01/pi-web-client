@@ -332,7 +332,7 @@ export interface PreviewInfo {
   kind: "markdown" | "html" | "image" | "text" | "sheet" | "binary";
 }
 
-/** D164 表格预览：格子只带显示串，有数字格式的按格式显示。 */
+/** D165 表格预览：格子只带显示串，有数字格式的按格式显示。 */
 export type SheetCellKind = "n" | "s" | "b" | "e";
 
 /** #109 条件格式算出来的样式（前端只贴样式，不理解规则）。 */

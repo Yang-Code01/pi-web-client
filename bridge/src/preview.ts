@@ -37,7 +37,7 @@ const tokens = new Map<string, { root: string; at: number }>();
 
 const MD = new Set([".md", ".markdown", ".mdx"]);
 const HTML = new Set([".html", ".htm", ".xhtml"]);
-// D164: .xlsx/.xlsm get their own dialog. .csv/.tsv stay text; .xls/.ods/.xlsb stay binary and are
+// D165: .xlsx/.xlsm get their own dialog. .csv/.tsv stay text; .xls/.ods/.xlsb stay binary and are
 // only handed to the desktop app (#106).
 const SHEET = new Set([".xlsx", ".xlsm"]);
 // #106: workbooks we refuse to parse but can still open in Excel (the grant is what /api/open takes).

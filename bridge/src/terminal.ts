@@ -282,7 +282,7 @@ export function revealInFileManager(file: string): { ok: boolean; message: strin
 }
 
 /**
- * D164「出口」: the command that hands a file to whatever this desktop opens it with. Unlike
+ * D165「出口」: the command that hands a file to whatever this desktop opens it with. Unlike
  * `revealCommand` this launches the owning app (Excel for a workbook), so the file itself is the
  * argument — no `/select,` verb.
  */
