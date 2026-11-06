@@ -318,6 +318,11 @@ export class ChatView {
     if (ms > 0) this.flashTimer = window.setTimeout(() => this.flashTurn(null), ms);
   }
 
+  /** 这条会话里有没有用户说过话：没有的话「继续」按钮没有可接的东西（D157）。 */
+  hasUserTurns(): boolean {
+    return this.turns.length > 0;
+  }
+
   /** 一轮用户输入 = 缩略图上的一根刻度。`reset()` 也会经由 `add()` 走到这里。 */
   private noteTurn(item: UserItem, node: HTMLElement): void {
     const one = (item.text ?? "").replace(/\s+/g, " ").trim();

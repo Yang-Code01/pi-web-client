@@ -15,6 +15,7 @@ import { applyPending, badgeSession, syncPending, type PendingCounts, type Pendi
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, type RailItem } from "./shells.ts";
+import { continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { ScratchChat } from "./scratch.ts";
@@ -147,6 +148,10 @@ export class App {
   private sheet: HTMLElement | null = null;
   private modelChip: HTMLButtonElement | null = null;
   private textarea: HTMLTextAreaElement | null = null;
+  /** 「继续」按钮（D157）：住在权限按钮正上方那 28.5px 里。每次重画 composer 都换一颗新的。 */
+  private continueBtn: HTMLButtonElement | null = null;
+  /** 上一次点「继续」的时刻：`pi.status` 回来之前按钮还亮着，连点会排两条。 */
+  private continueAt = 0;
   /** Skill palette state (the popover above the composer). */
   private skills: SkillInfo[] = [];
   private skillsAt = 0;
@@ -2458,6 +2463,8 @@ export class App {
   }
 
   private fillHintStatus(): void {
+    // 状态行与「继续」按钮看的是同一份 `owned / starting / running`，跟着一起刷，省得到处接。
+    this.syncContinueButton();
     this.paintHintStatus();
     const box = this.hintStatus;
     if (!box || !this.cwdChip) return;
@@ -6858,6 +6865,7 @@ export class App {
     this.cwdChip = null;
     this.modelChip = null;
     this.textarea = null;
+    this.continueBtn = null;
     this.closeSkillPalette();
     this.imageBadge = null;
     if (!this.currentId) {
@@ -6930,8 +6938,12 @@ export class App {
       }
     };
 
-    // Enter sends; the slot the send button used holds the tool-permission switch.
-    row.append(box, this.permissionButton());
+    // Enter sends; the slot the send button used holds the tool-permission switch. The empty strip
+    // above that switch is where 继续 goes (D157): 28 + 4 + 44 = 76 against the textarea's 72.5,
+    // so the whole button costs the transcript ~3.5px instead of a row.
+    const side = el("div", "composer-side");
+    side.append(this.continueButton(), this.permissionButton());
+    row.append(box, side);
     if (this.images.length) {
       const badge = this.pendingImagesBadge();
       row.append(badge);
@@ -8992,6 +9004,67 @@ export class App {
       }
       this.extBelow.replaceChildren(...nodes);
     }
+  }
+
+  // ---------------------------------------------------------------- continue (D157)
+  /**
+   * 「继续」：把字面这两个字当成下一条用户消息发出去。pi 的 RPC 没有 continue 命令（`rpc-mode.js`
+   * 的 case 表里只有 prompt / steer / follow_up / abort / compact …），所以「接着干」在协议上
+   * 就是一句话。它坐在权限按钮正上方那 28.5px 里，代价是整行多 3.5px，而不是多一块。
+   */
+  private continueButton(): HTMLButtonElement {
+    const btn = el("button", "continue-btn") as HTMLButtonElement;
+    btn.type = "button";
+    btn.textContent = tr("继续");
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      this.sendContinue();
+    };
+    this.continueBtn = btn;
+    this.syncContinueButton();
+    return btn;
+  }
+
+  /** 藏 / 灰 / 亮全部走 `continueState()`（web/src/continue-state.ts），这里只写提示。 */
+  private syncContinueButton(): void {
+    const btn = this.continueBtn;
+    if (!btn) return;
+    const s = this.session;
+    const state = continueState(s, this.chat.hasUserTurns());
+    btn.hidden = state === "hidden";
+    if (state === "hidden") return;
+    const why =
+      state === "ready"
+        ? ""
+        : s?.starting
+          ? tr("pi 正在启动，起来之后再继续")
+          : s?.running
+            ? tr("pi 正在跑这一轮，停下之后再继续")
+            : tr("这条会话还没有说过话，没有可继续的");
+    btn.disabled = state !== "ready";
+    btn.title = why || tr("把「继续」发给 pi —— 草稿留在输入框里，不会被动到");
+  }
+
+  /**
+   * 发「继续」。**不清草稿**：它跟 Enter 不同 —— 这是「接着刚才那件事」，不是「把我写的发出去」。
+   * 乐观气泡照 `sendPrompt()` 带 `clientId`，桥回灌时这一页认自己那条（#19）。
+   */
+  private sendContinue(): void {
+    const id = this.currentId;
+    if (!id || continueState(this.session, this.chat.hasUserTurns()) !== "ready") return;
+    // 连点保护：`pi.status(running)` 回来之前按钮还亮着，1.5 秒内只认第一次。
+    const now = Date.now();
+    if (now - this.continueAt < 1500) return;
+    this.continueAt = now;
+    const text = tr("继续");
+    const clientId = `local:${now}:${Math.random().toString(36).slice(2, 8)}`;
+    this.act(() => {
+      if (this.currentId === id) {
+        this.chat.add({ id: clientId, kind: "user", text, images: [], ts: new Date().toISOString() });
+        this.renderChat();
+      }
+      this.socket.send({ type: "prompt", sessionId: id, text, images: [], clientId, behavior: "steer" });
+    });
   }
 
   // ---------------------------------------------------------------- permission mode

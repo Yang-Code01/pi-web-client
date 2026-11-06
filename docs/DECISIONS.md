@@ -2242,3 +2242,22 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 **代价 / 可改：** 每条事件多一次 `renderSessions()`（列表几十条，可忽略）；`badgeSession` 只在当前会话上分配一个新对象。真要桥端广播，删掉 `badgeOf` 里那层覆盖即可，计数本身仍然是对的。**可改。**
 
 **验证：** `node --experimental-transform-types web/tests/pending-unit.mjs`（6 条：类型分开 / 对称 / 缺字段按 0 / 未知会话 / 快照对齐 / 本地优先）；`probes/pending-badge.mjs`（假桥 + 真界面五步：看 A 时 B 来问题 → B 卡「待回答」而不是「待确认」；打开 B 点选项作答 → 徽标消失；看 B 时 A 来批准 → A 卡「待确认」；打开 A 点批准 → 徽标消失；把 subscribe 延后 900ms 再点开一个待回答的会话 → 徽标全程在）。同一探针在**旧代码**上（`git stash` 回 `3a54f8c` 的 `web/src/app.ts`，控制实验）复现用户现场：问题到达时 B 卡显示「待确认」，作答后**仍是**「待确认」。`npm --prefix web run typecheck`（tsc + i18n-check，1410 键 × 3 语言）、`npm --prefix web run build`。
+
+## D157 「继续」按钮：借权限按钮上方那 28.5px，把「这一轮断了」接回去（无票，用户要求）
+
+**问题：** 会话被打断（用户按「中断」、看门狗、模型报错、桥重启）之后，界面上没有任何「接着干」的入口 —— 只能自己再写一句话，而大多数时候那句话就是「继续」。pi 的 RPC 也没有 continue 命令（`rpc-mode.js` 的 case 表只有 prompt / steer / follow_up / abort / compact …），所以它只能是一条**普通的用户消息**。
+
+**决定：**
+
+- 位置：composer 右侧，权限按钮**正上方**，同一列。≤520px 的手机宽也一样（那时权限按钮只剩图标）。
+- 触发：**常驻** —— 会话空闲就亮，不是只在异常中断后出现。新会话（一条用户消息都没有）显示但置灰；跑着的时候（`pi.status.running`）也置灰；只读预览 / 终端里另一个 pi 持锁时**藏起来**（先点「接管会话」）。
+- 发出去的是**字面「继续」**（`tr("继续")`），作为一条普通 user 消息进历史、出现在对话里。
+- **不清草稿**：它不走 `sendPrompt()` 的清空路径，输入框里的东西原样留着 —— 这是「接着刚才那件事」，不是「把我写的发出去」。
+- 乐观气泡照 `sendPrompt()` 带 `clientId`（桥回灌时这一页认自己那条，#19）；1.5 秒连点保护：`pi.status(running)` 回来之前按钮还亮着，连点会排两条。
+- 判据抽成纯函数 `continueState(s, hasUserTurns)`（`web/src/continue-state.ts`），`app.ts` 只负责画和发。
+
+**为什么放在上面那块：** 本机 CDP 实测 `.composer .row` —— 输入框默认两行 **72.5px**，权限按钮 **44px 贴底**，所以它上方本来就空着 **28.5px**，1280/980/700/520/390 五个宽度都一样。28 + 4 间隙 + 44 = **76**，整行只比输入框高 **3.5px**。同一颗按钮塞在别处（新起一行 / 叠一颗 44px 的）分别要多 50 / 19.5px 的正文高度，而那块本来谁也放不进东西。
+
+**代价 / 可改：** 草稿越长，那一列离输入框顶越远 —— 但它始终贴着权限按钮，这正是「一列」的意思。`hidden` 属性打不过 `display:inline-flex`，样式里显式写了 `.continue-btn[hidden]{display:none}`。英文界面点下去发的是 `Continue`（键就是中文原文）；若想永远发中文，把 `tr("继续")` 换回字面量即可。**可改。**
+
+**验证：** `npm run test:continue`（10 条：藏 / 灰 / 亮三态的边界，含「藏优先于灰」与字段缺省）；`npm run test:continue:ui`（自带丢弃式 bridge + `bridge/tests/fixtures/fake-pi.mjs`，真 Chromium 11 条：新会话按钮在且是灰的 / 竖着叠在权限按钮上方且同宽 121.2px / `row 76.0 vs textarea 72.5` / 跑完一轮变亮 / SLOW 时是灰的 / **被打断之后又亮** / 点下去 fake-pi 收到字面「继续」/ 草稿仍在 / 对话里出现「继续」）。`npm --prefix web run typecheck`（tsc + i18n-check，1414 键 × 3 语言）、`npm run build:web`、`npm run build:bridge`。
