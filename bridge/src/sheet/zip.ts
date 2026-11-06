@@ -20,6 +20,11 @@ export interface ZipEntry {
 
 const utf8 = new TextDecoder("utf-8");
 
+/** zip 里某个 part 解不开（数据损坏 / 压缩方式不认识）：归成「解码失败」，别把裸 inflate 错误端出去。 */
+function decodeError(): Error {
+  return Object.assign(new Error("这个文件解不开，用本机程序打开"), { code: "sheet_decode" });
+}
+
 function u16(dv: DataView, at: number): number {
   return dv.getUint16(at, true);
 }
@@ -107,7 +112,11 @@ function dataStart(buf: Uint8Array, entry: ZipEntry): number {
 export function entryBytes(buf: Uint8Array, entry: ZipEntry): Uint8Array {
   const at = dataStart(buf, entry);
   const comp = buf.subarray(at, at + entry.compSize);
-  return entry.method === 0 ? comp : inflateSync(comp);
+  try {
+    return entry.method === 0 ? comp : inflateSync(comp);
+  } catch {
+    throw decodeError();
+  }
 }
 
 /**
@@ -121,14 +130,18 @@ export function entryStream(buf: Uint8Array, entry: ZipEntry, onChunk: (chunk: U
     onChunk(comp);
     return;
   }
-  if (entry.method !== 8) throw new Error("zip 压缩方式不支持");
+  if (entry.method !== 8) throw decodeError();
   let stop = false;
-  const inf = new Inflate((chunk) => {
-    if (stop) return;
-    if (onChunk(chunk) === false) stop = true;
-  });
-  const STEP = 64 * 1024;
-  for (let i = 0; i < comp.length && !stop; i += STEP) {
-    inf.push(comp.subarray(i, Math.min(comp.length, i + STEP)), i + STEP >= comp.length);
+  try {
+    const inf = new Inflate((chunk) => {
+      if (stop) return;
+      if (onChunk(chunk) === false) stop = true;
+    });
+    const STEP = 64 * 1024;
+    for (let i = 0; i < comp.length && !stop; i += STEP) {
+      inf.push(comp.subarray(i, Math.min(comp.length, i + STEP)), i + STEP >= comp.length);
+    }
+  } catch {
+    throw decodeError();
   }
 }

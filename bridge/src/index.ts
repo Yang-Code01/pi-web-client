@@ -663,6 +663,8 @@ async function main(): Promise<void> {
         if (publicReq && (info.kind === "sheet" || ext === ".csv" || ext === ".tsv")) {
           return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
         }
+        // 公网也不泄本机绝对路径（US 46 延伸）：binary 分支（.xls/.ods/加密包）内容与 open 都已拒，路径一并抹掉。
+        if (publicReq && info.kind === "binary") info.abs = "";
         // Text files opened here become writable for this session (D50).
         rememberEditable(sessionId, info);
         return json(res, 200, info);
@@ -731,7 +733,7 @@ async function main(): Promise<void> {
       try {
         return json(res, 200, await sheetPdfStatus(grant.abs, grant.mtimeMs, body.retry === true));
       } catch (err: any) {
-        const code = String(err?.code ?? "") === "sheet_pdf_soffice" ? "sheet_pdf_soffice" : "sheet_pdf_failed";
+        const code = String(err?.code ?? "") || "sheet_pdf_failed";
         return fail(res, code === "sheet_pdf_soffice" ? 503 : 502, code, String(err?.message ?? err));
       }
     }
@@ -762,7 +764,7 @@ async function main(): Promise<void> {
         fs.createReadStream(pdf.file).pipe(res);
         return;
       } catch (err: any) {
-        const code = String(err?.code ?? "") === "sheet_pdf_soffice" ? "sheet_pdf_soffice" : "sheet_pdf_failed";
+        const code = String(err?.code ?? "") || "sheet_pdf_failed";
         return fail(res, code === "sheet_pdf_soffice" ? 503 : 502, code, String(err?.message ?? err));
       }
     }

@@ -179,7 +179,7 @@ function runSoffice(args: string[]): Promise<void> {
     };
     timer = setTimeout(() => {
       child.kill();
-      done(new SheetPdfError("sheet_pdf_failed", `转换超时（${TIMEOUT_MS / 1000} 秒）`));
+      done(new SheetPdfError("sheet_pdf_timeout", `转换超时（${TIMEOUT_MS / 1000} 秒）`));
     }, TIMEOUT_MS);
     child.on("error", (err: NodeJS.ErrnoException) => {
       done(

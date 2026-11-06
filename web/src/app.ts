@@ -5964,7 +5964,9 @@ export class App {
       const dl = el("button", "btn", tr("新标签页打开 / 下载"));
       dl.onclick = () => openSameOrigin(url);
       // D69: the useful move for an xlsm / pdf / docx is the machine's own file manager, not a download.
-      box.append(dl, this.revealButton(info.abs));
+      // 公网不泄本机路径（US 46）：桥端已把 binary 的 abs 抹空，这里就不给「在文件夹中显示」。
+      box.append(dl);
+      if (info.abs) box.append(this.revealButton(info.abs));
       body.append(box);
       return;
     }

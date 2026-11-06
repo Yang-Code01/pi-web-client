@@ -2473,7 +2473,7 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - iframe 内建 PDF 查看器在 Edge / Chrome 的表现还没实测（阈值与 PDF 耗时已实测回填，见下方补记）。
 
 **实现备注（code-review 后）：** 出口与降级把 `.xlsb` 与 `.xls` / `.ods` 一并走二进制分支（`/api/open` 可开）；
-读端点（meta / window / find / pdf）都补了 `publicReq` 拒绝，`open` 成功返 204。已知技术债（本次不修）：
+读端点（meta / window / find / pdf）都补了 `publicReq` 拒绝，`open` 成功返 200（`{ok,message}`，不是 204 —— 前端 `req()` 统一 `res.json()`，空响应体会抛）。已知技术债（本次不修）：
 `el()` 在 `grid.ts` / `dialog.ts` 重复；浮窗 split 拖拽（`dialog.ts`）未复用 `floatwin.ts` 的 `dragFloat`；
 `Range {r0,r1,c0,c1}` 在 grid / csv / dialog / api 四处各写一遍。
 

@@ -376,7 +376,11 @@ export class SheetGrid {
     const lines: string[] = [];
     for (let r = s.r0; r <= s.r1; r++) {
       const row: string[] = [];
-      for (let c = s.c0; c <= s.c1; c++) row.push(this.cellsByKey.get(`${r}:${c}`)?.t ?? "");
+      for (let c = s.c0; c <= s.c1; c++) {
+        const cell = this.cellsByKey.get(`${r}:${c}`);
+        // 数字格复制原始值（粘回去还是数，不是「￥1,234」），其余复制显示串。
+        row.push(cell?.v != null ? String(cell.v) : cell?.t ?? "");
+      }
       lines.push(row.join("\t"));
     }
     return lines.join("\n");

@@ -16,6 +16,8 @@ export interface WireCell {
   k: CellKind;
   /** 显示串：有数字格式的数按格式显示（日期、货币…），没有格式的就是文件里的原样文本。 */
   t: string;
+  /** 数值原始值（无显示格式的原数）：数字格才有，复制粘贴用它，粘回去还是数而不是「￥1,234」。 */
+  v?: number;
   /** 文件里指定的对齐（合并格标题居中这类）；没写就不带。 */
   a?: "l" | "c" | "r";
   /** #109 条件格式算出来的样式：底色 / 字色 / 加粗 / 数据条 / 图标。 */
@@ -427,7 +429,7 @@ function cellsOfRow(
       const num = Number(raw);
       let shown = raw;
       if (xf?.code && Number.isFinite(num)) shown = formatValue(num, xf.code, ctx.date1904);
-      cell = { r: pos.r, c: pos.c, k: "n", t: shown };
+      cell = { r: pos.r, c: pos.c, k: "n", t: shown, v: Number.isFinite(num) ? num : undefined };
     }
     // 公式格可以带着上次算出的值（就是上面那个 cell），也可以什么都没有（#111）。
     if (formula && !cell) cell = { r: pos.r, c: pos.c, k: "n", t: "" };

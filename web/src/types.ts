@@ -349,6 +349,8 @@ export interface SheetCell {
   c: number;
   k: SheetCellKind;
   t: string;
+  /** 数值原始值（无显示格式的原数）：数字格才有，复制粘贴用它。 */
+  v?: number;
   /** 文件里指定的对齐（合并标题居中这类）。 */
   a?: "l" | "c" | "r";
   /** #109 条件格式：底色 / 字色 / 加粗 / 数据条 / 图标。 */
