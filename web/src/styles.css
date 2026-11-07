@@ -1285,8 +1285,6 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .pin-more:hover { border-color: var(--line); background: var(--panel-2); color: var(--accent); }
 .pin-more[hidden] { display: none; }
 .pin-chip[hidden] { display: none; }
-.pin-expand { margin-left: auto; color: var(--faint); padding: 4px 12px; }
-.pin-expand:hover { color: var(--accent); }
 
 /* ---------------------------------------------------------------- tabs (mobile) */
 .tabs {

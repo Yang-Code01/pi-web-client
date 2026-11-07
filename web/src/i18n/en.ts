@@ -481,8 +481,6 @@ export const en: Dict = {
   "展开{p1}": "Expand {p1}",
   "展开全文": "Show full text",
   "展开回答": "Expand answer",
-  "展开左侧会话栏（也可以双击分隔条位置的边）": "Expand the session sidebar (or double-click the edge at the divider)",
-  "展开左栏 ▸": "Show sidebar ▸",
   "展开查看 / 编辑": "Expand to view / edit",
   "展开：用量、费用、会话文件、导出、会话树、立即压缩": "Expand: usage, cost, session file, export, session tree, compact now",
   "工作区有未提交的改动挡着": "Uncommitted changes in the working tree are in the way",

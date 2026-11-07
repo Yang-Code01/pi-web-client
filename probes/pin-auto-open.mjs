@@ -151,7 +151,7 @@ const strip = () =>
     return {
       overflow: host ? host.scrollWidth > host.clientWidth + 1 : false,
       more: document.querySelector(".pin-more")?.hidden === false ? document.querySelector(".pin-more").textContent.trim() : null,
-      chips: [...document.querySelectorAll(".pin-strip .pin-chip:not(.pin-new):not(.pin-expand):not(.pin-more)")].map((c) => ({
+      chips: [...document.querySelectorAll(".pin-strip .pin-chip:not(.pin-new):not(.pin-more)")].map((c) => ({
         name: c.querySelector(".pin-name")?.textContent ?? "",
         cur: c.classList.contains("cur"),
         hidden: c.hidden,

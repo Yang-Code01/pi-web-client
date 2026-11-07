@@ -157,7 +157,7 @@ const rect = (page, sel) =>
     return { top: r.top, left: r.left, bottom: r.bottom, right: r.right, width: r.width, height: r.height };
   }, sel);
 const count = (page, sel) => page.evaluate((s) => document.querySelectorAll(s).length, sel);
-const chipAt = (page, i) => page.locator(`.pin-chip:not(.pin-new):not(.pin-expand)`).nth(i);
+const chipAt = (page, i) => page.locator(`.pin-chip:not(.pin-new)`).nth(i);
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1, locale: "zh-CN" });

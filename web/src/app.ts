@@ -704,7 +704,7 @@ export class App {
       heading: () => "",
       onOpen: (id) => this.openFromList(id),
       onStar: (id) => this.togglePin(id),
-      tail: (chips) => {
+      tail: () => {
         // Q-013: with the left pane hidden this is the only visible way to start a session.
         // Q-022: 从这颗 ＋ 建的会话自动置顶，否则建完在这条里根本看不见。
         const add = el("button", "pin-chip pin-new", tr("＋"));
@@ -712,14 +712,8 @@ export class App {
         add.dataset.act = "new";
         add.dataset.pinKey = "new";
         add.onclick = () => this.openNewSessionSheet(true);
-        // #120：一颗 ★ 都没有、或左栏本来就没收起时，这一行只剩上面那颗 ＋ ——
-        // 「展开左栏」只在真能派上用场的地方出现（spec：此时行 2 就两样）。
-        if (!chips.length || !this.collapsed.sessions) return [add];
-        const expand = el("button", "pin-chip pin-expand", tr("展开左栏 ▸"));
-        expand.title = tr("展开左侧会话栏（也可以双击分隔条位置的边）");
-        expand.dataset.pinKey = "expand";
-        expand.onclick = () => this.togglePane("sessions");
-        return [add, expand];
+        // 同一动作不要两颗按钮：顶栏左上角那颗就能展开左栏，行 2 右端不再摆第二颗。
+        return [add];
       },
       decorate: (chip, s) => {
         this.wirePinHover(chip, s);
