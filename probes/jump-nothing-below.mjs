@@ -1,48 +1,30 @@
 /**
- * Probe: 「↓ new」只在下面真还有东西的时候才出现。
+ * Probe: 「↓ new」只在下面真还有东西的时候才出现（D168）。
  *
  * 报障场景：一条短会话（转录整体装得下、下面空无一物），鼠标在转录上随便上滚一格，底部就长出
  * 「↓ new」——回头看什么都没有。根因是 `wheel` 上滚无条件 `stopFollowing()`，而「不跟流」这个
  * 状态本身就会画出那颗钮；随后流式输出的下一段内容又把 `unread` 点亮，于是连 new 小标也来了。
  *
- * 反过来也要成立：转录真的溢出时，上滚就该亮出那颗钮（新加的守卫不能把正常路径一起挡掉）。
+ * 八项检查，正反两面都覆盖：
+ *   短会话 / 24px 容差带内：滚轮与触摸都不该把钮弄出来，跟流也不该被关掉；
+ *   真的溢出：上滚照常出钮、掉队期间来内容亮 new、点一下回到底；
+ *   下面又没东西了（内容被折叠掉）：钮自己收起。
  *
- * 一切都在真实布局里量：`scrollHeight - clientHeight`、`.chat-jump` 的 hidden / has-new，
- * 以及「跟流没被关掉」的物证——再喂一段内容，视口仍钉在底部。
+ * 一切都在真实布局里量（`scrollHeight - clientHeight`、`.chat-jump` 的 hidden / has-new + 再喂
+ * 一段内容看视口是否仍钉底），不靠读内部状态——这些判据本来就是给布局写的。
  *
  * Run: npm run build:web && node probes/jump-nothing-below.mjs
  */
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const DIST = path.join(REPO, "web/dist");
-const PORT = Number(process.env.PI_WEB_PORT ?? 7897);
+const PORT = Number(process.env.PI_WEB_PORT ?? 7940);
 const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function launchPlaywright() {
-  const cache = path.join(process.env.LOCALAPPDATA ?? "", "npm-cache/_npx");
-  const candidates = [process.env.PW_PATH, path.join(REPO, "node_modules/playwright/index.mjs")].filter(Boolean);
-  try {
-    for (const dir of fs.readdirSync(cache)) candidates.push(path.join(cache, dir, "node_modules/playwright/index.mjs"));
-  } catch {
-    /* no npx cache */
-  }
-  for (const file of candidates) {
-    if (!file || !fs.existsSync(file)) continue;
-    try {
-      const mod = await import(pathToFileURL(file).href);
-      await mod.chromium.launch().then((b) => b.close());
-      return mod;
-    } catch {
-      /* half-installed playwright: try the next one */
-    }
-  }
-  throw new Error("找不到可用的 playwright（设 PW_PATH=<.../playwright/index.mjs>）");
-}
 
 // --- a transcript that fits on screen: one question, one short answer -----------------------------
 const state = {
@@ -68,6 +50,7 @@ const items = [
   { id: "a0", kind: "assistant", text: "收到。下面确实什么都没有。", thinking: "", model: "stub", ts: new Date(Date.now() - 59_000).toISOString() },
 ];
 const streamId = "a0";
+let streamText = "";
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "stub", pi: "stub", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: REPO };
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json", ".webmanifest": "application/manifest+json" };
@@ -95,7 +78,7 @@ const server = http.createServer((req, res) => {
   fs.createReadStream(file).pipe(res);
 });
 
-const { WebSocketServer } = await import(pathToFileURL(path.join(REPO, "bridge/node_modules/ws/wrapper.mjs")).href);
+const { WebSocketServer } = await import(pathToFileURL(wsWrapper()).href);
 const wss = new WebSocketServer({ noServer: true });
 const sockets = new Set();
 server.on("upgrade", (req, socket, head) => {
@@ -120,9 +103,10 @@ server.on("upgrade", (req, socket, head) => {
 
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
 
-const { chromium } = await launchPlaywright();
+const { chromium } = await loadPlaywright();
 const browser = await chromium.launch();
-const ctx = await browser.newContext({ viewport: { width: 900, height: 844 }, locale: "zh-CN" });
+// locale 必须有（docs/I18N.md）：默认 en-US 下界面是英文，按钮文案与断言都对不上。
+const ctx = await browser.newContext({ viewport: { width: 900, height: 844 }, hasTouch: true, locale: "zh-CN" });
 const page = await ctx.newPage();
 page.on("pageerror", (e) => console.log("pageerror:", e.message));
 await page.goto(BASE, { waitUntil: "domcontentloaded" });
@@ -164,21 +148,41 @@ const wheelUp = async (times = 3) => {
 };
 
 const push = (text) => {
+  streamText += text;
   for (const ws of sockets) ws.send(JSON.stringify({ type: "delta", sessionId: state.id, id: streamId, field: "text", text }));
 };
 
-// A: 短会话里空滚一格 —— 不该长出「↓ new」，跟流也不该被关掉
+// A. 短会话：滚轮上滚一格都不该弄出钮，跟流也不该被关掉
 const a0 = await geom();
-check("初始：转录装得下、没有「回到底部」", a0.room <= 24 && a0.jumpHidden === true, JSON.stringify(a0));
+check("短会话初始：装得下、没有「回到底部」", a0.room <= 24 && a0.jumpHidden === true, JSON.stringify(a0));
 await wheelUp(3);
 const a1 = await geom();
-check("短会话上滚 3 格后：钮仍然不出现", a1.jumpHidden === true, JSON.stringify(a1));
+check("短会话滚轮上滚 3 格：钮仍然不出现", a1.jumpHidden === true, JSON.stringify(a1));
 push("这一行是跟流有没有被关掉的物证。\n");
 await sleep(300);
 const a2 = await geom();
 check("短会话上滚后再来内容：视口仍钉在底部", a2.jumpHidden === true && a2.gap <= 24 && a2.hasNew === false, JSON.stringify(a2));
 
-// B: 同一个会话继续长，直到转录真的溢出（跟流期间一直被钉在底部）
+// A2. 同一个假话在触屏上：手指往下拖 120px，什么也没得翻
+{
+  const cdp = await ctx.newCDPSession(page);
+  let y = 300;
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 450, y }] });
+  for (let i = 0; i < 8; i += 1) {
+    y += 15;
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: 450, y }] });
+    await sleep(16);
+  }
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await sleep(400);
+  const t0 = await geom();
+  push("触摸之后再来的内容，视口也应该还在底部。\n");
+  await sleep(300);
+  const t1 = await geom();
+  check("短会话触摸下拖：钮不出现、跟流还活着", t0.jumpHidden === true && t1.jumpHidden === true && t1.gap <= 24 && t1.hasNew === false, `${JSON.stringify(t0)} → ${JSON.stringify(t1)}`);
+}
+
+// B. 同一个会话继续长，直到转录真的溢出（跟流期间一直被钉在底部）
 for (let i = 0; i < 40 && (await geom()).room <= 240; i += 1) {
   push(`第 ${i + 1} 行：把这条回复喂长，直到转录溢出视口，用来验证真的有事可看时那颗钮还出得来。\n`);
   await sleep(60);
@@ -187,30 +191,79 @@ await sleep(400);
 const b0 = await geom();
 check("溢出后跟流仍生效：停在底部、钮不出现", b0.room > 240 && b0.jumpHidden === true && b0.gap <= 24, JSON.stringify(b0));
 
-// C: 真的有东西在下面时，上滚就该亮出那颗钮（守卫不能把正常路径挡掉）
+// C. 真的有东西在下面时，上滚就该亮出那颗钮（守卫不能把正常路径挡掉）
 await wheelUp(3);
 const c0 = await geom();
 check("溢出后上滚：钮出现、还没点亮 new", c0.jumpHidden === false && c0.hasNew === false && c0.gap > 0, JSON.stringify(c0));
 
-// D: 掉队期间来内容 → new 小标
+// D. 掉队期间来内容 → new 小标
 push("掉队期间又来了新内容。\n");
 await sleep(300);
 const d0 = await geom();
 check("掉队期间来内容：亮出 new", d0.jumpHidden === false && d0.hasNew === true, JSON.stringify(d0));
 
-// E: 点一下回到底部，继续跟流
+// E. 点一下回到底部，继续跟流
 await page.locator(".chat-jump").click();
 await sleep(400);
 const e0 = await geom();
 check("点「回到底部」：钮收起、视口回到底", e0.jumpHidden === true && e0.gap <= 24, JSON.stringify(e0));
 
-// F: 不跟流时视口长高到装得下 —— 钮也跟着收起来（下面又没东西了）
-await wheelUp(3);
-const f0 = await geom();
-await page.setViewportSize({ width: 900, height: 1600 });
-await sleep(500);
-const f1 = await geom();
-check("不跟流时窗口变高到装得下：钮收起", f0.jumpHidden === false && f1.room <= 24 && f1.jumpHidden === true, `${JSON.stringify(f0)} → ${JSON.stringify(f1)}`);
+/**
+ * 把「视口底部与内容底之间还差多少」调到 `target` px：room 与视口高度 1:1 反向，
+ * 量一次、改一次、再量一次（字体与换行会让第一次的估计差几像素）。
+ */
+async function tuneRoom(target) {
+  let g = await geom();
+  await page.setViewportSize({ width: 900, height: 844 + (g.room - target) });
+  await sleep(400);
+  g = await geom();
+  if (Math.abs(g.room - target) > 6) {
+    const box = page.viewportSize();
+    await page.setViewportSize({ width: 900, height: box.height + (g.room - target) });
+    await sleep(400);
+  }
+  return geom();
+}
+
+// F. 容差带里（0 < room ≤ 24）：差这几像素不算「下面有东西」，上滚也不该出钮
+{
+  const f0 = await tuneRoom(10);
+  await wheelUp(3);
+  const f1 = await geom();
+  const inBand = f0.room > 0 && f0.room <= 24;
+  check(
+    "容差带内（0 < room ≤ 24）上滚：钮不出现",
+    inBand && f1.jumpHidden === true,
+    `room=${f0.room} → ${JSON.stringify(f1)}`,
+  );
+}
+
+// G. 刚过容差（room ≈ 60）：这里就真有东西可翻了，钮必须出得来
+{
+  const g0 = await tuneRoom(60);
+  await wheelUp(3);
+  const g1 = await geom();
+  const aboveBand = g0.room > 24;
+  check("刚过容差（room ≈ 60）上滚：钮出现", aboveBand && g1.jumpHidden === false && g1.hasNew === false, `room=${g0.room} → ${JSON.stringify(g1)}`);
+}
+
+// H. 不跟流时内容自己缩水（把长回答折起来）：下面又没东西了，钮要自己收起
+{
+  // 流式期间文字长在 `.stream` 里（折叠藏的是 `.body`），先把这条回复「落定」成一个普通条目，
+  // 才是用户看到的那种可折叠回答 —— `item.replace` 就是 app.ts 在真桥上接的那条路。
+  for (const ws of sockets) ws.send(JSON.stringify({ type: "item.replace", sessionId: state.id, id: streamId, item: { ...items[1], text: streamText } }));
+  await sleep(600);
+  const h0 = await geom();
+  const folds = await page.locator(".msg-fold").count();
+  if (folds) await page.locator(".msg-fold").first().click();
+  await sleep(600);
+  const h1 = await geom();
+  check(
+    "不跟流时长回答被折叠：下面空了，钮跟着收起",
+    folds > 0 && h0.jumpHidden === false && h1.room <= 24 && h1.jumpHidden === true,
+    `${JSON.stringify(h0)} → ${JSON.stringify(h1)}`,
+  );
+}
 
 await browser.close();
 await new Promise((r) => server.close(r));
