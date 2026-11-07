@@ -2925,3 +2925,25 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **与 D178 的失败重试共用同一只泵**：失败项 `unshift` 回队首，所以「重试」补发时仍按原顺序，也仍然享受上面的合并规则。
 
 **验证：** `node bridge/tests/boot-queue-merge.mjs`（桩 pi 慢启动 2500 ms）：A 段 —— 启动窗口里连发三条，窗口期桩 pi 一封 prompt 都没收到、三条气泡都在、右栏队列条空；就绪后第一条 `behavior=null`、第 2/3 条 `steer` 且落在同一轮（桩 pi 的 `run-start` 只有一行）；B 段 —— 队列条只列 pi 真收下的那两条，正在跑的第 1 条不算排队，这一轮结束队列条自己清空；C 段 —— 整条路没有一条被丢；D 段 —— 首条是 `HANDLED` 斜杠命令（就地处理、没起 run）时第二条 61 ms 内裸发（`behavior=null`），没有干等 10 秒上限，也没被 `Agent is already processing` 拒收。`node bridge/tests/boot-queue.mjs`（D178 的 A/B/C/D）、`node bridge/tests/create-fast.mjs`、`PI_WEB_PORT=7916 node probes/session-starting.mjs` 不回归。
+
+## D180 启动期的另外三个入口也走同一条待发队列：接管、只读自动接管、「继续」（`#201`；复用 D177 的落地与 D178 的补发，撤回沿用 #199）
+
+**问题：** D177 只让「启动窗口里发一条」不再干等 pi，但另外三个入口各有各的等待：① 接管一个已经结束的终端会话，用户得先点「接管会话」、等 pi 起来，输入框才真的能发；② 磁盘上的只读会话（`owned: false`）发第一句时，桥先 `await openLive()`（拉起 pi、钉权限、等 `get_state`）才落地气泡 —— 打出去的字要等整个握手才出现在屏幕上，这几秒最容易被当成「没发出去」再打一遍；③ 启动窗口里「继续」是灰的，理由和当年的「输入框置灰」一样（D177 已经推翻过那个理由）。
+
+**决定：**
+
+1. **先落地，再握手**：`prompt` 分两步 —— `sessions.acceptBeforeOpen()` 把气泡广播出去（`pending: "booting"`），然后才 `openLive()`。握手一步不少（tty 锁、20 秒 mtime 检查、`pinPermission`、resume），**也不新增任何 WS 帧**；只读会话的第一句因此和普通发送一样立刻可见。
+2. **消息进的是会话自己的待发队列**：`acceptBeforeBoot()` 复用 D177 的 `landUserPrompt()` 与 `bootQueue`，所以撤回（#199 的同帧清空）、失败（D178 的标红 + 重试）、连发（D179 的按序交出）三条路一条都不分叉。
+3. **接管没成也走 D178 的失败路**：`failBeforeBoot()` 把原件挪进 `bootFailed`、气泡标红，原因由 WS 那一层原来的 notice 说（不重复说两遍）；点「重试」发的还是现有的 `claim` 帧 —— 先拉起 pi，再按原顺序补发，不需要新协议。
+4. **`openLive()` 单飞**：接管与「接管后立刻打字」是两条独立的命令，都会看见 `!live`。`SessionManager.opening` 让后来的那条等那一次在飞的拉起，否则同一份会话文件会有两个 pi 写者。
+5. **读回磁盘历史时保住还没交出去的气泡**：`keepUnsentBubbles()` 把 `bootQueue` 与 `bootFailed` 里的 item 接回历史之后 —— 它们不在文件里，不接回来用户刚打的那句会凭空消失，重试时也没东西可标。
+6. **「继续」不看 `starting`**：`continueState()` 只在 `running`、后台子代理忙、没有用户消息时变灰；启动窗口里点下去就是把「继续」两个字放进同一条队列。界面上那句「pi 正在启动，起来之后再继续」随按钮一起删掉（en/ja 同步）。
+
+**代价 / 可改：**
+
+- **气泡会先出现、再标红**：自动接管失败（终端里的 pi 还开着、20 秒内还在写）时，用户先看到气泡、随后才看到「没发出去」—— 这是「不等握手」的必然代价；反过来（先等再判）就是原来那几秒的空白。
+- **只读会话上「继续」仍然不显示**：按钮的显示条件还是 `owned`（`hidden`），与「发消息自动接管」是两条路；要在只读会话上也点「继续」得先决定它算不算「没有写权就别提供快捷方式」，本票没改。
+- **队列仍在内存里**：与 D177/D178 一致，桥重启后待发的那几条只剩气泡。
+- **`acceptBeforeOpen()` 对 `live` 的会话返回 `null`**：那时气泡由 `prompt()` 自己落地，避免同一条消息落两枚。
+
+**验证：** `node bridge/tests/boot-queue.mjs`（桩 pi 慢启动 2500 ms）：6 段 —— 只读会话发一句，`item.add` 在「开始拉起 pi」（`starting: true`）**之前**到达（item#104 < starting#105，实测 <1000 ms）、气泡带 `booting`、就绪后 `behavior=null` 交出并 `sent`、`owned` 翻真、只起一支 pi 且走 `--session`；7 段 —— 接管与打字同时来，气泡 11 ms 落地、`claim` 与 `prompt` 只起一支 pi、只交出一次；8 段 —— 有 tty 锁时气泡标 `failed`、notice 说明原因、一支 pi 都没起；9 段 —— 删锁后点「重试」（`claim`）把同一枚气泡放回队列、补发成功变 `sent`、不重复画、仍只起一支 pi。`PI_WEB_PORT=7919 node probes/session-starting.mjs`：8 段 —— 启动期「继续」可见可点，点下去发的是「继续」、气泡立刻出现并带「正在启动 pi…」；9 段 —— 只读会话输入框可用、气泡立刻出现。`node --experimental-transform-types web/tests/continue-unit.mjs`（`starting` → `ready`）。`node bridge/tests/boot-queue-merge.mjs`、`node bridge/tests/create-fast.mjs`、`node bridge/tests/continue-ui.mjs`（40/40）不回归；两边 typecheck（i18n-check 1651 keys × 3 langs）与 build。

@@ -10310,7 +10310,7 @@ export class App {
     btn.disabled = state !== "ready";
     btn.hidden = state === "hidden";
     if (state === "hidden") return;
-    // #201 / D178：`starting` 不在其中 —— 启动窗口里点「继续」也会立刻发、进桥的待发队列。
+    // #201 / D180：`starting` 不在其中 —— 启动窗口里点「继续」也会立刻发、进桥的待发队列。
     const why =
       state === "ready"
         ? ""

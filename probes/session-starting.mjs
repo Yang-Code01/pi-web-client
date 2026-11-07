@@ -289,7 +289,7 @@ ${TEXT_B}`, 8000, "esc restore");
   const continueBtn = page.locator(".continue-btn");
   await until(async () => (await continueBtn.count()) >= 1, 8000, "continue button");
   check(await continueBtn.isVisible(), "启动期「继续」露着（不是藏起来）");
-  check(await continueBtn.isEnabled(), "启动期「继续」是亮的（D178：没理由比输入框更早解锁）");
+  check(await continueBtn.isEnabled(), "启动期「继续」是亮的（D180：没理由比输入框更早解锁）");
   const why = String(await continueBtn.getAttribute("title"));
   check(!why.includes("正在启动"), `悬停提示不再说「启动完再继续」（${JSON.stringify(why)}）`);
   const beforeContinue = prompts.length;
