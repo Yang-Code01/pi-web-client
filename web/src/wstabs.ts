@@ -11,7 +11,7 @@ import { moveTo } from "./drag.ts";
 /** 名额的兜底值：桥端没下发 `max`（旧桥 / 还没连上）时按 6 画。权威值在桥端 `Workspaces.max`。 */
 export const TABS_DEFAULT = 6;
 
-/** 名额的上下界，与桥 `setTabs()` 的 clamp 1–12 是同一对数（#176）。 */
+/** 名额的上下界，与桥 `setTabs()` 的接受范围 1–12 是同一对数（#176）。 */
 export const TABS_MIN = 1;
 export const TABS_MAX = 12;
 

@@ -153,7 +153,10 @@ server.on("upgrade", (req, socket, head) => {
         CALLS.push(msg);
         // 真桥的 `setTabs()`：名额 clamp 到 1–12（#176），order 去重 / 剔脏（不按名额截断），最后广播。
         if (msg.action === "ws.tabs") {
-          if (msg.max !== undefined) WS.max = Math.min(12, Math.max(1, Math.trunc(Number(msg.max))));
+          if (msg.max !== undefined) {
+            const m = Number(msg.max);
+            if (Number.isInteger(m) && m >= 1 && m <= 12) WS.max = m;
+          }
           if (msg.order !== undefined) {
             const known = new Set(WS.groups.map((g) => g.id));
             WS.order = msg.order.filter((id, i, all) => typeof id === "string" && known.has(id) && all.indexOf(id) === i);
@@ -811,6 +814,34 @@ ok(sixMax.moreHidden, "六步 6/6 设置改 max：装得下就不再出 ＋N");
 ok(lastTabs()?.max === 12, `六步 6/6 设置改 max：最后一条 ws.tabs 是 max 12（${lastTabs()?.max}）`);
 await page.locator('.display-sheet .btn:has-text("关闭")').click().catch(() => {});
 await sleep(200);
+
+// 过滤态：左栏搜索只画命中的组，拖出来的 order 会缺项 —— 此时标签不绑拖动，一个字都不发。
+await page.evaluate(() => {
+  const i = document.querySelector(".session-filter");
+  i.value = "proj-01";
+  i.dispatchEvent(new Event("input", { bubbles: true }));
+});
+await sleep(350);
+const one = await barState();
+ok(one.visibleIds.length === 1 && one.visibleIds[0] === "f:/proj-01", `过滤后只画命中的组（${one.visibleIds.join(" / ")}）`);
+const fb = await page.locator('.ws-tab[data-ws="f:/proj-01"]').boundingBox();
+const fcalls = tabsCalls();
+const fy = Math.round(fb.y + fb.height / 2);
+const fx = Math.round(fb.x + fb.width / 2);
+await page.mouse.move(fx, fy);
+await page.mouse.down();
+await page.mouse.move(fx + 24, fy, { steps: 5 });
+const fm = await dragMark();
+await page.mouse.up();
+await sleep(250);
+ok(!fm.body && fm.dragging === 0 && fm.lines === 0, "过滤态拖动：不起拖、不画竖线");
+ok(tabsCalls() === fcalls, `过滤态拖动不发 ws.tabs（${tabsCalls() - fcalls} 条）`);
+await page.evaluate(() => {
+  const i = document.querySelector(".session-filter");
+  i.value = "";
+  i.dispatchEvent(new Event("input", { bubbles: true }));
+});
+await sleep(300);
 
 await page.close();
 

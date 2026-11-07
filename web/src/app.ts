@@ -1982,7 +1982,7 @@ export class App {
         }
         this.renderNowChip();
         this.renderSessions();
-        // #123：设置面板开着时，名额也跟着桥的快照对齐（clamp 发生在桥，页面只是镜子）。
+        // #123：设置面板开着时，名额也跟着桥的快照对齐（校验发生在桥，页面只是镜子）。
         if (this.sheetKind === "display") this.paintWsTabsPane();
         break;
       }
@@ -11745,7 +11745,7 @@ export class App {
    * pointer capture。只认鼠标：触屏 / 笔 / 键盘的排量不在这一票里（#172 Out of Scope）。
    *
    * 落点由 `tabHitTest()` 定（拖动源自己从 rects 里剔掉），指示线是一条 2px 竖线贴在落点那一侧；
-   * 松手只发一条 `ws.tabs { order, max }`（整份 order 一次写回），由桥端落库再广播回来 —— 页面不自己
+   * 松手只发一条 `ws.tabs { order }`（整份 order 一次写回），由桥端落库再广播回来 —— 页面不自己
    * 改本地顺序。拖回原位 / 落点没变 → `tabReorder()` 返回 null，一个字都不发。`model` 是这一帧画
    * 出来的可见段 / 折叠段：重排只在可见段里算，折叠组既拖不动也不会被顺手拽进前几名。
    */
@@ -11822,7 +11822,10 @@ export class App {
       }
     };
 
-    const cancel = (): void => cleanup();
+    const cancel = (): void => {
+      this.tabDragMoved = false;
+      cleanup();
+    };
 
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);

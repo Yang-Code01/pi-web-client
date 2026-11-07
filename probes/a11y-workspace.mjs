@@ -255,7 +255,6 @@ for (const layout of ["a", "b", "c", "d"]) {
     pop: document.querySelectorAll(".ws-pop").length,
   }));
   ok(narrow.topChip || narrow.rowChip, `${layout}：800px 看得到当前会话那颗（${narrow.nowName}）`);
-  ok(narrow.count1 ?? true, "");
   const clean =
     !narrow.rail && !narrow.strip && !narrow.pillRow && narrow.tabsRow === (layout === "a");
   if (!clean) console.log(`  narrow(${layout})=`, JSON.stringify(narrow));

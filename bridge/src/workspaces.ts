@@ -338,7 +338,7 @@ export class Workspaces {
     let max = this.data.max ?? TABS_DEFAULT;
     if (input.max !== undefined) {
       const next = readMax(input.max);
-      if (next == null) return { ok: false, reason: `最多显示要是 ${TABS_MIN}–${TABS_MAX} 之间的数字` };
+      if (next == null) return { ok: false, reason: `最多显示要是 ${TABS_MIN}–${TABS_MAX} 之间的整数` };
       max = next;
     }
     let order = this.data.order ?? [];

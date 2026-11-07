@@ -133,7 +133,10 @@ server.on("upgrade", (req, socket, head) => {
         CALLS.push(msg);
         // 真桥的 `setTabs()`：名额 clamp 到 1–12，一次落盘再广播（#176）。
         if (msg.action === "ws.tabs") {
-          if (msg.max !== undefined) WS.max = Math.min(12, Math.max(1, Math.trunc(Number(msg.max))));
+          if (msg.max !== undefined) {
+            const m = Number(msg.max);
+            if (Number.isInteger(m) && m >= 1 && m <= 12) WS.max = m;
+          }
           for (const client of wss.clients) {
             if (client.readyState === 1) client.send(JSON.stringify({ type: "workspaces", workspace: workspace() }));
           }
