@@ -1,21 +1,25 @@
 /**
- * 后台子代理（D170）：会话自己已经 settle，派出去的 runner 还在跑。
+ * 后台子代理（D170 / D171）：会话自己已经 settle，派出去的 runner 还在跑。
  *
  * pi 只在 `tool_execution_end` 的 `details` 里承认一次「有这么个 run」：
  *
  *   acp_delegate   {kind:"delegate", runId, agent, task}
- *   subagent       {runId, asyncDir}
+ *   subagent       {mode, runId, asyncDir}       + args {agent, task}
  *
- * 之后唯一的完成信号是 runner 自己注入回会话的那条消息
- * （`[acp_delegate completed] … (runId `…`)`、`[acp_delegate FAILED ⚠️] …`），它既可能作为
- * steering 排进队列，也可能直接把空闲会话唤醒 —— 两头都从 `noteText()` 进来。
+ * **建卡要过三道闸**（D171 的教训：只靠结果文本判「刚开跑」会把读文档的 sed 当成派活）：
+ * 工具是这两者之一、有结构性开始信号（`kind:"delegate"` / `asyncDir`）、`runId` 像真的
+ * （`del_*` / `call_*` / UUID —— 文档里的示例值 `…` 不算）。agent/task 优先取 `details`，
+ * 其次取 `args`（模型写的那一份原话），最后才是 runner 文本里的固定写法。
  *
- * 为什么不拿盘上的东西判定成败：`AgentRun` 的 `details.status` 永远停在 `running`，`.activity`
- * 的 mtime 也区分不了「写完最后一行」与「卡住」，只有 runner 自己注入回来的那条通知算数。
- * 读盘只用于 D170 的看详情（`readLog()`），不参与状态机。
+ * 完成信号有两条：acp 是 runner 注入回会话的那条消息（`noteText()`，从 steering 或
+ * `message_start` 进来）；pi-subagents 读 `<asyncDir>/status.json` 的 `state`（`prune()` 里，
+ * 30 秒一次）。都没有的 run 在 `SILENT_DEAD_MS` 后判死。
+ *
+ * 读盘只碰白名单里的两处根（`%TEMP%` 下的 `acp-delegate` 与 `pi-subagents-*`），且只读尾巴
+ * （见 `tail()`）。
  */
 
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -23,6 +27,15 @@ import { join, resolve, sep } from "node:path";
 const ACP_DIR = join(tmpdir(), "acp-delegate");
 const TASK_LINE = /^Task:[ 	]*(.+)$/m;
 const LIVE_LOG = /Live activity is streaming to `([^`]+)`/;
+/** pi-subagents 的 async 目录：`<tmpdir>/pi-subagents-<scope>/async-subagent-runs/<id>/`。 */
+const SUBAGENTS_TMP = join(tmpdir(), "pi-subagents-");
+/**
+ * 只有这两个工具会「派一个后台任务」。别的工具结果里出现同样的句子（读文档、看日志、
+ * `grep` 到 D170 自己那段说明）不算 —— D171 的幽灵任务就是这么造出来的。
+ */
+const DISPATCH = new Set(["acp_delegate", "subagent"]);
+/** 真的 runId 长这样：`del_…`（acp）、UUID / `call_…`（pi-subagents）。`…` 这种示例值不算。 */
+const ID_OK = /^(del_[A-Za-z0-9_]+|call_[A-Za-z0-9_]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
 /** 一个还在跑（或刚跑完）的后台任务。 */
 export interface BgRun {
@@ -35,10 +48,13 @@ export interface BgRun {
   startedAt: number;
   state: "running" | "done" | "failed";
   endedAt?: number;
-  /** runner 自己的活动记录。只有落在 `%TEMP%\acp-delegate\` 里的才记（也只读那里，见 `readLog`）。 */
+  /** runner 自己的活动记录。只记落在 `%TEMP%\acp-delegate\` 或 `%TEMP%\pi-subagents-*\` 里的
+   * （也只读那里，见 `readLog`）。 */
   logPath?: string;
-  /** 跑完的最终答复（同目录的 `.out`）。 */
+  /** 跑完的最终答复（acp 是同目录的 `.out`，pi-subagents 是 `subagent-log-<id>.md`）。 */
   outPath?: string;
+  /** pi-subagents 的 async 目录：`status.json` 在它底下，判活/判死读它（不出桥）。 */
+  dir?: string;
 }
 
 /** 会话快照 / `SessionState.bg` 里那一小块：前端只画「N 个 · 谁 · 从什么时候」。 */
@@ -80,7 +96,12 @@ const SWEEP_MS = 30 * 1000;
 const ENDED = /\b(completed|FAILED|cancelled|canceled|finished)\b|\bexit \d+\b/i;
 const FAILED = /\bFAILED\b|\bfailed\b|cancelled|canceled/i;
 const RUN_ID = /runId\s*`([^`\s]+)`/g;
-const AGENT = /(?:\*\*([^*`\n]+)\*\*)|(?:Delegated to\s+([\w.-]+))/;
+/**
+ * 只认 runner 自己的两种写法：`Delegated to **worker** (runId …)`、`Async: researcher [id]`。
+ * 以前这里有「任意 `**加粗**` 就当人名」的分支，于是文档里的小标题 `**问题：**` 会被读成 agent
+ * （D171 现场：卡片头写着「问题：」）。猜错的代价比空着大 —— 空着前端写「子代理」。
+ */
+const AGENT = /Delegated to\s+(?:\*\*)?([\w.-]+)|Async:\s*([\w.-]+)\s*\[/;
 
 function firstRunId(text: string): string | null {
   RUN_ID.lastIndex = 0;
@@ -94,9 +115,33 @@ function firstRunId(text: string): string | null {
  * 只读尾巴：`.activity` 能长到几 MB，而详情页 1.5 秒轮询一次；整文件读会把单线程的桥（所有会话）
  * 一起卡住。字节上限按 UTF-8 最坏情况放宽到 `limit * 4`，再按行首对齐、按字截断。
  */
+function readable(abs: string): boolean {
+  return abs.startsWith(ACP_DIR + sep) || abs.startsWith(SUBAGENTS_TMP);
+}
+
+/** pi-subagents 的 `status.json` 里读一个字符串字段（文件小、只在开卡/滴答时读一次）。 */
+function statusField(dir: string, key: string): string | undefined {
+  const file = resolve(join(dir, "status.json"));
+  if (!file.startsWith(SUBAGENTS_TMP)) return undefined;
+  try {
+    const obj = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    const v = obj?.[key];
+    return typeof v === "string" ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 文件尾（最多 `limit` 字）。只允许 `ACP_DIR` 与 `%TEMP%\pi-subagents-*\` 底下 ——
+ * 路径是从工具结果里拾来的，读前再卡一次。
+ *
+ * 只读尾巴：`.activity` / `output-0.log` 都能长到几 MB，而详情页 1.5 秒轮询一次；整文件读会把
+ * 单线程的桥（所有会话）一起卡住。字节上限按 UTF-8 最坏情况放宽到 `limit * 4`，再按行首对齐、按字截断。
+ */
 function tail(file: string, limit: number): string | undefined {
   const abs = resolve(file);
-  if (!abs.startsWith(ACP_DIR + sep)) return undefined;
+  if (!readable(abs)) return undefined;
   let fd: number | null = null;
   try {
     fd = openSync(abs, "r");
@@ -139,8 +184,9 @@ export class BgRuns {
    * 工具结束。`details` 是 pi 转述的 runner 字段；老版本或别的工具可能没有，
    * 那时退回结果文本里的 `` runId `…` ``（`acp_delegate` 的结果一定会写一个）。
    */
-  noteToolEnd(tool: string, details: unknown, text: string): void {
+  noteToolEnd(tool: string, details: unknown, text: string, args?: unknown): void {
     const d = (details && typeof details === "object" ? details : {}) as Record<string, unknown>;
+    const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
     const id = typeof d.runId === "string" && d.runId ? d.runId : firstRunId(text);
     if (!id) return;
     // `acp_delegate_wait` / `_cancel` / 取消回执：同一个 runId 的结束信号，不是新任务。
@@ -148,20 +194,34 @@ export class BgRuns {
       if (ENDED.test(text) && !/Running in the background/.test(text)) this.end(id, FAILED.test(text) ? "failed" : "done");
       return;
     }
-    // 只认「这是刚开跑的那个工具」：别的工具结果里恰好带个 runId（比如把 wait 的调用示例抄进结果）
-    // 不该凭空造出一个任务。三种写法任一成立即为开始（见文件头的两种 runner）。
-    const looksStart = d.kind === "delegate" || typeof d.asyncDir === "string" || /Running in the background/i.test(text);
-    if (!looksStart) return;
+    // 只有派活的工具才可能开一条新任务：一次 `sed` 出来的文档里也有 `Running in the background`，
+    // 而那句文档正是 D170 写的示例 —— 文本特征不能当「刚开跑」的判据（D171）。
+    if (!DISPATCH.has(tool)) return;
+    const looksStart = d.kind === "delegate" || typeof d.asyncDir === "string";
+    if (!looksStart || !ID_OK.test(id)) return;
     const source: "acp" | "subagents" = d.kind === "delegate" || tool === "acp_delegate" ? "acp" : "subagents";
-    const agent = typeof d.agent === "string" ? d.agent : (AGENT.exec(text)?.[1] ?? AGENT.exec(text)?.[2] ?? "");
-    const task = typeof d.task === "string" ? d.task : (TASK_LINE.exec(text)?.[1] ?? "");
-    // 痕迹目录只认 acp_delegate 自己那个：路径要么是它，要么是它写进结果的同一路径（校验见 `readLog`）。
-    // pi-subagents 只给 asyncDir，目录布局没有公开约定 —— 它没有可读的过程记录，卡片上直说（`hasLog`）。
-    const live = LIVE_LOG.exec(text)?.[1];
-    const logPath = live ?? (source === "acp" ? join(ACP_DIR, `${id}.activity`) : undefined);
+    // agent / task 优先取结构化字段：details 是 runner 转述的，args 是模型写的那一份
+    // （pi-subagents 落盘时把任务原文打成 `[prompt redacted]`，只有 args 里还是原话）。
+    const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
+    const fromText = AGENT.exec(text);
+    const agent = str(d.agent) ?? str(a.agent) ?? fromText?.[1] ?? fromText?.[2] ?? "";
+    const task = str(d.task) ?? str(a.task) ?? (source === "acp" ? TASK_LINE.exec(text)?.[1] : undefined) ?? "";
     const run: BgRun = { id, source, agent: agent.trim(), task: task.trim(), startedAt: Date.now(), state: "running" };
-    if (logPath) run.logPath = logPath;
-    if (source === "acp") run.outPath = join(ACP_DIR, `${id}.out`);
+    const live = LIVE_LOG.exec(text)?.[1];
+    if (source === "acp") {
+      run.logPath = live ?? join(ACP_DIR, `${id}.activity`);
+      run.outPath = join(ACP_DIR, `${id}.out`);
+    } else {
+      // pi-subagents 的 asyncDir 布局是公开契约（docs/observability.md「Async run artifacts」）：
+      // `status.json` 的 `outputFile` 就是实时过程记录，`subagent-log-<id>.md` 是完成态摘要。
+      const dir = str(d.asyncDir);
+      if (dir) {
+        run.dir = dir;
+        const out = statusField(dir, "outputFile");
+        if (out) run.logPath = out;
+        run.outPath = join(dir, `subagent-log-${id}.md`);
+      }
+    }
     this.runs.set(id, run);
     this.arm();
     this.onChange();
@@ -279,6 +339,19 @@ export class BgRuns {
     let changed = false;
     for (const [id, run] of this.runs) {
       if (run.state === "running") {
+        // pi-subagents 有权威状态：`status.json.state`（running/completed/failed/stopped）。
+        // 它的完成通知写的是 `Async: researcher [id]`，桥的 `RUN_ID` 认不出来，所以读这一眼。
+        if (run.source === "subagents" && run.dir) {
+          const st = statusField(run.dir, "state");
+          if (st === "completed") {
+            this.end(id, "done");
+            continue;
+          }
+          if (st === "failed" || st === "stopped" || st === "cancelled" || st === "timeout") {
+            this.end(id, "failed");
+            continue;
+          }
+        }
         if (now - run.startedAt < SILENT_DEAD_MS) continue;
         run.state = "failed";
         run.endedAt = now;

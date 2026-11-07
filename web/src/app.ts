@@ -10214,7 +10214,7 @@ export class App {
         const root = el("div", "bg-run");
         const line = el("div", "bg-run-head");
         line.append(el("span", "bg-run-agent", r.agent || tr("子代理")), el("span", "bg-run-state"));
-        const task = el("div", "bg-run-task", r.task || tr("（没说任务）"));
+        const task = el("div", "bg-run-task", r.task || tr("（任务原文没传到桥）"));
         const id = el("div", "bg-run-id", r.id);
         const labLog = el("div", "bg-run-lab", tr("过程"));
         const logEl = el("pre", "bg-run-log");
@@ -10225,7 +10225,7 @@ export class App {
         root.append(line, task, id, labLog, logEl, labOut, outEl);
         sheet.body.append(root);
         node = { root, state: line.lastElementChild as HTMLElement, log: logEl, out: outEl, labOut, hasLog: Boolean(r.hasLog) };
-        if (!r.hasLog) logEl.textContent = tr("这个 runner 不写过程记录。");
+        if (!r.hasLog) logEl.textContent = tr("桥还没接上这个 runner 的过程记录。");
         sheet.runs.set(r.id, node);
       }
       const state = r.state === "running" ? tr("运行中") : r.state === "failed" ? tr("失败") : tr("已完成");
@@ -10245,7 +10245,7 @@ export class App {
     const text = typeof log === "string" ? log : "";
     if (node.log.textContent !== text) {
       const stick = node.log.scrollHeight - node.log.scrollTop - node.log.clientHeight < 24;
-      node.log.textContent = text || (node.hasLog ? tr("还没有活动记录。") : tr("这个 runner 不写过程记录。"));
+      node.log.textContent = text || (node.hasLog ? tr("还没有活动记录。") : tr("桥还没接上这个 runner 的过程记录。"));
       if (stick) node.log.scrollTop = node.log.scrollHeight;
     }
     const done = typeof out === "string" && out.length > 0;

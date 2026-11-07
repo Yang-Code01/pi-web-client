@@ -2675,3 +2675,30 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 **读尾不读全**：`tail()` 只读最后一段（`readSync` 从 `size - limit` 开始），不是 `readFileSync` 整份再截 —— 一个跑了几小时的 runner 的 `.activity` 可以很大，而桥是单线程的，1.5 秒轮一次不能拿来整文件读。
 
 `acp_delegate` 的结果文本里其实带着 `Live activity is streaming to \`…\``，**优先用它**（哪天目录换了也不用改代码），拿不到才退回按 runId 拼的默认路径。
+
+## D171 后台子代理：只认「派活的工具 + 真的 runId + 结构化字段」，文本特征一律不建卡（D170 的补丁，无票，用户报的）
+
+**问题：** 用户截了一张「后台子代理」的卡片：头一行写着 `问题：`、`运行中 · 已跑 4:34`，任务是「（没说任务）」，过程是「这个 runner 不写过程记录。」。整份源码、`web/dist`、线上 bundle 里都搜不到 `问题：`。
+
+**根因：一条幽灵任务。** 复现（按 `bgruns.ts` 的原逻辑跑当时的会话记录）只有一处命中：`2026-11-07T18:02:20`，会话 `a076a5ec` 里跑了一次
+`cd /f/pi-web-client-wt/store-bugs && sed -n '2631,2650p' docs/DECISIONS.md` —— 打印出来的正是 **D170 自己那段说明**。那 20 行里同时有：
+
+- `**问题：**` → 旧的 `AGENT` 正则「任意加粗就当人名」抓到 `问题：`；
+- `(runId \`…\`)` 这个书写示例 → `firstRunId()` 认下 id = `…`；
+- 正文里的 `` `Running in the background` `` → `looksStart` 的文本兜底成立。
+
+于是 `noteToolEnd("bash", {exitCode:0}, <那段文档>)` 记下了一条 `source: subagents` 的任务：没有 `logPath`（只有 acp 才拼默认路径）→ `hasLog: false`；`task` 要匹配英文 `Task:` 行 → 空；`state` 又是 `running`，只能等 `SILENT_DEAD_MS`（6 小时）。18:02:20 + 4:34 = 18:06:54，正是截图那一刻。
+
+第二重（不是这次的原因，但同一屏也错）：真 `pi-subagents` 的 async 结果只有 `{mode, runId, asyncDir}` + `Async: <agent> [id]` 文本，`details` 里没有 agent/task；而 `bgruns.ts` 的注释「asyncDir 布局没有公开约定」已经过期 —— `docs/observability.md` 公开了 `status.json` / `events.jsonl` / `output-<n>.log` 与字段表。
+
+**决定：**
+
+- **建卡三闸同时要求：** ①`tool ∈ {acp_delegate, subagent}`；②结构性开始信号（`details.kind === "delegate"` 或 `details.asyncDir`），**删掉 `/Running in the background/i` 文本兜底**；③`id` 像真 runId（`del_*` / `call_*` / UUID），`…` 这类示例值不认。
+- **`agent` / `task` 从 `args` 取**：`tool_execution_start` 早把 `ev.args` 存进 `ToolItem`，end 时按 `toolCallId` 取回（`SessionState.argsOf()`）传给 `noteToolEnd(tool, details, text, args)`。`AGENT` 正则收窄成 runner 自己的两种写法（`Delegated to **X**` / `Async: X [`），`Task:` 行只给 acp 兜底。
+- **接上 pi-subagents 的痕迹**：`logPath = <asyncDir>/status.json 的 outputFile`（`output-0.log`，实时过程记录），`outPath = <asyncDir>/subagent-log-<id>.md`。`tail()` 的白名单从 `%TEMP%\acp-delegate\` 扩到 `%TEMP%\pi-subagents-*\`，仍然 `resolve` 后前缀校验、只读尾巴。
+- **结束信号多一条权威来源**：`prune()`（30 s 一跳）对 subagents 的 run 读 `status.json.state`，`completed` → done、`failed/stopped/cancelled/timeout` → failed；`RUN_ID` 那套只留给 acp 的注入通知，6 小时兜底保留。
+- **文案不再甩锅 runner**：「这个 runner 不写过程记录。」→「桥还没接上这个 runner 的过程记录。」；「（没说任务）」→「（任务原文没传到桥）」（中/英/日三份）。
+
+**代价 / 可改：** 文本兜底删掉后，只有文本、没有 `details` 的「开始」不再建卡（老版本 runner 看不到卡片，比看错卡片好）；`status.json` 每 30 秒读一次（文件几 KB，只在有 subagents run 时）；`output-0.log` 每次 attempt 会被清空，所以过程记录只有当前 attempt 的尾巴。
+
+**验证：** `npm run test:bgruns`（新增 4 组：D170 文档文本不建卡、无 details 不建卡、`…`/`sub_1` 不建卡、subagents 的 args→agent/task 与 `status.json`→hasLog/done）；`npm run typecheck`（含 i18n-check 1624 键 × 3 语言）；`npm run test:continue` 13 项。
