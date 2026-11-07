@@ -1219,7 +1219,16 @@ export class App {
     this.switchDraft(id);
     this.currentId = id;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
-    // D162: 打开只是看 —— 不清完成；bridge 也一样（snapshot 不再 markSeen）。
+    this.resetSessionView();
+    this.socket.send({ type: "subscribe", sessionId: id });
+    this.renderAll();
+  }
+
+  /**
+   * 换会话 / 离开会话时清掉「上一颗的现场」：待批、待答、用量、速率、回合计时、活动行。
+   * D162: 打开只是看 —— 不清完成；bridge 也一样（snapshot 不再 markSeen）。
+   */
+  private resetSessionView(): void {
     this.approvals = [];
     this.asks = [];
     this.pendingFresh = false;
@@ -1230,8 +1239,6 @@ export class App {
     this.turnChars = { cjk: 0, other: 0 };
     this.activity = "";
     this.runSince = null;
-    this.socket.send({ type: "subscribe", sessionId: id });
-    this.renderAll();
   }
 
   // ---------------------------------------------------------------- ws
@@ -12218,16 +12225,7 @@ export class App {
     this.currentId = null;
     this.session = null;
     // 与 `openSession()` 换会话时清的是同一批：否则上一颗的待批 / 待答会挂进空态。
-    this.approvals = [];
-    this.asks = [];
-    this.pendingFresh = false;
-    this.usage = { contextTokens: null, contextWindow: null };
-    this.rate = 0;
-    this.rateAt = 0;
-    this.turnAt = null;
-    this.turnChars = { cjk: 0, other: 0 };
-    this.activity = "";
-    this.runSince = null;
+    this.resetSessionView();
     this.chat.reset([]);
     this.renderAll();
     // 地址栏回到无会话的形态：`go()` 里 currentId 为空就是 `#/`。

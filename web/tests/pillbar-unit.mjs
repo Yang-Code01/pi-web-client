@@ -81,10 +81,6 @@ test("左右都没有邻居（序列里只剩它一颗）→ 无动作（中栏�
   assert.equal(neighborAfterArchive(["only"], "only"), null);
 });
 
-test("序列里只有它 → 无动作（中栏空态）", () => {
-  assert.equal(neighborAfterArchive(["solo"], "solo"), null);
-});
-
 test("当前会话没 ★、自己占第 1 格时，右邻就是右边第一颗 ★", () => {
   assert.equal(neighborAfterArchive(["cur", ...row], "cur"), "a");
 });
