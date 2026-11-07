@@ -16,7 +16,7 @@ import {
   entryState,
   failureMarkdown,
 } from "../src/failures.ts";
-import { exitCodeOf } from "../src/diagnose.ts";
+import { exitCodeOf, diagnose } from "../src/diagnose.ts";
 
 // ---------------------------------------------------------------- 分类
 
@@ -52,6 +52,21 @@ test("被中断单独成一类（不算待修）", () => {
 
 test("认不出来 → other", () => {
   assert.equal(classify("mcp", "weird failure", null), "other");
+});
+
+test("模型流中途断了 → stream（不是 other）", () => {
+  assert.equal(classify("model", "terminated", null), "stream");
+  assert.equal(classify("model", "Stream ended without finish_reason", null), "stream");
+});
+
+test("单词里含 terminated 的长词不算断流", () => {
+  assert.equal(classify("bash", "ParseError: unterminated string", 1), "exit");
+});
+
+test("诊断把模型断流说成断流，不是「原因没认出来」", () => {
+  const d = diagnose({ tool: "model", cmd: "cn:deepseek-v4.1-flash", out: "Stream ended without finish_reason" });
+  assert.equal(d.level, "fail");
+  assert.equal(d.title, "模型响应流中断，这一轮没跑完");
 });
 
 // ---------------------------------------------------------------- 归并形状

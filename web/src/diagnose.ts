@@ -354,6 +354,19 @@ function diagnoseInner(input: FailureInput): Diagnosis {
     );
   }
 
+  // provider 的流中断（pi 报成 `terminated` / `Stream ended without finish_reason`）：不是本地命令失败，
+  // 也没有 exit 码。认出来才不会被诊断成「原因没认出来」。
+  if (/(stream ended without finish_reason|\bterminated\b|socket hang up|ECONNRESET|ECONNREFUSED|fetch failed|network error|connection reset|连接被重置|响应流中断)/i.test(out)) {
+    return say(
+      "fail",
+      tr("模型响应流中断，这一轮没跑完"),
+      tr("模型 / 网关的连接中途断了 —— 不是代码报错，也不是命令失败"),
+      tr("这一轮没有结果，上下文里可能只留下半截输出"),
+      undefined,
+      tr("原样重发这一轮；连着几次都断，就换模型或等网关恢复"),
+    );
+  }
+
   const validation = /Validation failed for tool "([^"]+)"/.exec(out);
   if (validation) {
     const items = out
