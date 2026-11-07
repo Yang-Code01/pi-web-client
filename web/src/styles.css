@@ -1906,15 +1906,25 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 @media (max-width: 760px) { .viewer { left: 0; width: auto; } .viewer-grip { display: none; } .md-doc { padding: 16px 16px 48px; } }
 
 /* ---------------------------------------------------------------- new folder in picker */
-.dir-head { display: flex; align-items: center; gap: 8px; }
-.dir-head .dir-path { flex: 1; min-width: 0; }
+/* D167: 附件弹层的路径行有四颗按钮（工作目录 / 引用 / ＋ 文件夹 / ＋ 文件），窄了就换行 —— 路径至少留 240px。 */
+.dir-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dir-head .dir-path { flex: 1 1 240px; min-width: 0; }
 .dir-head .dir-mk { flex: none; padding: 4px 8px; font-size: 12px; }
 .dir-head .dir-mk[hidden], .dir-mkrow[hidden] { display: none; }
 /* Q-019: 定位回会话工作目录 —— 三个 dir-picker 的路径行都有这一颗，没会话时置灰 */
 /* D163: 引用当前文件夹 —— 和 ⌂ 工作目录同一排、同一形状（宽度不跟着路径伸缩，长标签不换行）。 */
 .dir-head .dir-home, .dir-head .dir-ref { flex: none; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
 .dir-head .dir-home:disabled, .dir-head .dir-ref:disabled { opacity: 0.45; cursor: default; }
-.dir-mkrow { padding: 2px 0 4px; }
+.dir-mkrow { display: flex; flex-direction: column; gap: 6px; padding: 4px 0 6px; }
+.dir-mkrow .ns-row { display: flex; gap: 8px; }
+.dir-mkrow .ns-input {
+  flex: 1; min-width: 0; box-sizing: border-box; padding: 6px 10px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+}
+.dir-mkrow .ns-input.mono { font-family: var(--mono); font-size: 13px; }
+.dir-mkrow .ns-row .btn { flex: none; }
+.dir-mkrow .dir-mkerr { color: var(--danger); font-size: 12px; line-height: 1.4; }
+.dir-mkrow .dir-mkerr:empty { display: none; }
 .dir-mkrow .ns-input { padding: 8px 8px; }
 .dir-mkrow .dir-mkerr { padding-top: 4px; min-height: 0; }
 
@@ -2065,9 +2075,9 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .dir-jump-err { padding-top: 4px; font-size: 12px; color: var(--danger); line-height: 1.45; word-break: break-all; }
 .dir-jump-err:empty { display: none; }
 .dirpicker.locating .dir-jump-input { opacity: 0.6; }
-/* 跳到一个文件：只做静态高亮，不加呼吸动画 —— 目录里不该有东西自己跳。 */
-.file-row.hit { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
-.file-row.hit .nm { color: var(--text); }
+/* 跳到一个文件 / 新建出来的那一行：只做静态高亮，不加呼吸动画 —— 目录里不该有东西自己跳（下一次导航就清，D167）。 */
+.dir-row.hit { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+.dir-row.hit .nm { color: var(--text); }
 
 /* 编辑态：行号 + textarea + 底栏（保存 / 状态），冲突条从底部再加一行 */
 .viewer-body.edit { display: flex; flex-direction: column; overflow: hidden; }

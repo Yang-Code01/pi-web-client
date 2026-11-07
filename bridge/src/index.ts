@@ -35,7 +35,7 @@ import { resolvePi, readVersion } from "./pi.ts";
 import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, resetScratchDir, statePath, sessionsRootInfo } from "./paths.ts";
 import { BUILD_ID } from "./build-id.ts";
 import { removePidFile, writePidFile } from "./pidfile.ts";
-import { clipboardFiles, listDirs, makeDir, statFiles, statPath } from "./dirs.ts";
+import { clipboardFiles, listDirs, makeDir, makeFile, statFiles, statPath } from "./dirs.ts";
 import { gitInfo } from "./git.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
@@ -1343,7 +1343,7 @@ async function main(): Promise<void> {
             return;
           }
           case "mkdir": {
-            // New-session folder picker: one level, under a folder the user is browsing.
+            // New-session folder picker + 文件管理器 / 附件弹层: one level, under a folder the user is browsing.
             if (!(await requireStepUp())) return;
             const reqId = String(msg.reqId ?? "");
             try {
@@ -1352,6 +1352,19 @@ async function main(): Promise<void> {
               send({ type: "mkdir.result", reqId, path: created });
             } catch (err: any) {
               send({ type: "mkdir.result", reqId, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "mkfile": {
+            // D167: 新文件是**空文件**；覆盖永远不会发生（makeFile 用 `wx`），同名就报「已经存在」。
+            if (!(await requireStepUp())) return;
+            const reqId = String(msg.reqId ?? "");
+            try {
+              const created = makeFile(String(msg.parent ?? ""), String(msg.name ?? ""));
+              log(`mkfile ${created}`);
+              send({ type: "mkfile.result", reqId, path: created });
+            } catch (err: any) {
+              send({ type: "mkfile.result", reqId, error: String(err?.message ?? err) });
             }
             return;
           }

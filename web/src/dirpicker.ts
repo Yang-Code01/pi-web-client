@@ -148,6 +148,11 @@ export interface DirPicker {
   path(): string;
   /** Re-list the current directory. */
   refresh(): void;
+  /**
+   * D167: 把某一行（文件夹或文件）标成 `.hit` 并滚到可见处 —— 新建成功后「看得见结果」就是这一下。
+   * 调用方已经先 `go()` 刷新过列表，这里只在画好的节点上补标记（不换装、不重发）。
+   */
+  reveal(name: string): void;
 }
 
 export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicker {
@@ -203,8 +208,8 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
 
   let current = "";
   let res: Awaited<ReturnType<typeof api.dirs>> | null = null;
-  /** 上一跳要标出来的文件名（保留原大小写）；普通导航会把它清掉。 */
-  let reveal = "";
+  /** 待标出来的那一行（保留原大小写）。paint 用掉就清 —— 它是「这一次」的，不是持久状态。 */
+  let pendingReveal = "";
   /** D62: file sizes land in a second request; keyed by name so a repaint (筛选) keeps them. */
   let stats = new Map<string, FileStat>();
   /** Guards against a slow answer for the folder we already left. */
@@ -269,6 +274,15 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       list.append(el("div", "empty", res.error));
       return;
     }
+    // 上一跳要标的那个名字：先按原样找（Linux 上 A.md 与 a.md 是两行），找不到再忽略大小写。
+    // 文件夹与文件共用一套判定 —— 新建出来的可能是任一种（D167）。
+    const markedName = (names: string[]): string => {
+      if (pendingReveal === "") return "";
+      if (names.includes(pendingReveal)) return pendingReveal;
+      return names.find((n) => n.toLowerCase() === pendingReveal.toLowerCase()) ?? "";
+    };
+    const markedDir = markedName(dirs);
+    const markedFile = markedName(files);
     for (const name of dirs) {
       const vol = current === "" ? volumes.get(name) : undefined;
       if (vol) {
@@ -276,15 +290,13 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
         continue;
       }
       const row = el("button", "model-row dir-row", `📁 ${name}`);
+      if (name === markedDir) row.classList.add("hit");
       row.onclick = () => void go(join(name));
       list.append(row);
     }
-    // 上一跳要标的文件：先按原样找（Linux 上 A.md 与 a.md 是两行），找不到再忽略大小写。
-    let marked = "";
-    if (reveal !== "") marked = files.includes(reveal) ? reveal : (files.find((n) => n.toLowerCase() === reveal.toLowerCase()) ?? "");
     for (const name of files) {
       const row = el("button", "model-row dir-row file-row");
-      if (name === marked) row.classList.add("hit");
+      if (name === markedFile) row.classList.add("hit");
       const size = el("span", "size");
       const time = el("span", "mtime");
       const st = stats.get(name);
@@ -307,6 +319,8 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     if (!dirs.length && !files.length) {
       list.append(el("div", "empty", res.dirs.length || (res.files ?? []).length ? tr("没有匹配项") : tr("空目录")));
     }
+    // 标过了就算用掉：之后再画（在筛选框里打字）不该又亮一遍 —— 高亮只说明「刚跳/刚建的是这一行」。
+    pendingReveal = "";
   };
 
   /**
@@ -326,7 +340,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       next = await api.dirs(target, listFiles);
     } catch (ex: any) {
       // 请求根本没到：上一跳的高亮属于别的目录，别留着。
-      reveal = "";
+      pendingReveal = "";
       const said = tr("读取失败：{p1}", { p1: ex?.message ?? ex });
       if (root.isConnected) list.replaceChildren(el("div", "empty", said));
       return { ok: false, error: said };
@@ -337,7 +351,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     res = next;
     current = next.path;
     // 高亮跟着列表一起换：列表没换成，旧的「行 ↔ 高亮」配对就原样留着。
-    reveal = next.error ? "" : revealName;
+    pendingReveal = next.error ? "" : revealName;
     paintCrumbs();
     if (showFilter) filter.value = "";
     opts.onState?.({ path: current, parent: next.parent, error: next.error ?? "", dirs: next.dirs, files: next.files ?? [] });
@@ -353,8 +367,9 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
 
   /** 摘掉跳转高亮而不重画列表：重画会换掉节点，滚动位置和焦点都会丢。 */
   const clearReveal = (): void => {
-    reveal = "";
-    for (const row of list.querySelectorAll(".file-row.hit")) row.classList.remove("hit");
+    pendingReveal = "";
+    // 文件行也带 .dir-row（它多一个 file-row），一句选择器就盖住两种。
+    for (const row of list.querySelectorAll(".dir-row.hit")) row.classList.remove("hit");
   };
 
   /** 输入框里的路径：文件夹直接进；文件进父目录，列表出来后高亮那一行。 */
@@ -468,6 +483,11 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     go,
     path: () => current,
     refresh: () => void go(current),
+    reveal: (name) => {
+      pendingReveal = name;
+      paint();
+      list.querySelector<HTMLElement>(".dir-row.hit, .file-row.hit")?.scrollIntoView({ block: "nearest" });
+    },
   };
 }
 

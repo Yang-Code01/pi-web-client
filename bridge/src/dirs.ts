@@ -153,29 +153,66 @@ export function clipboardFiles(): Promise<string[]> {
   );
 }
 
-/** Creates one folder `name` directly inside `parent`; throws a user-facing (Chinese) message. */
-export function makeDir(parent: string, rawName: string): string {
+type EntryKind = "文件夹" | "文件";
+
+/**
+ * 名字校验：文件夹与文件共用一个 `kind`，只有报错里那个词不一样（「文件夹名…」/「文件名…」）。
+ * 规则：一层（不许分隔符）、名字原样（不补扩展名）、Windows 的保留名与结尾空格/点号一律拒绝。
+ */
+function checkEntryName(kind: EntryKind, rawName: string): string {
   const name = rawName.trim();
-  if (!name) throw new Error("文件夹名不能为空");
-  if (name === "." || name === "..") throw new Error("文件夹名不能是 . 或 ..");
-  if (name.length > 255) throw new Error("文件夹名太长");
-  if (/[\\/]/.test(name)) throw new Error("文件夹名里不能有 / 或 \\（一次只建一层）");
+  if (!name) throw new Error(`${kind}名不能为空`);
+  if (name === "." || name === "..") throw new Error(`${kind}名不能是 . 或 ..`);
+  if (name.length > 255) throw new Error(`${kind}名太长`);
+  if (/[\\/]/.test(name)) throw new Error(`${kind}名里不能有 / 或 \\（一次只建一层）`);
   // Control characters are rejected on every platform; the rest are invalid in Windows names.
-  if (/[\u0000-\u001f]/.test(name)) throw new Error("文件夹名里有不可见的控制字符");
+  if (/[\u0000-\u001f]/.test(name)) throw new Error(`${kind}名里有不可见的控制字符`);
   if (process.platform === "win32") {
-    if (/[<>:"|?*]/.test(name)) throw new Error('文件夹名不能包含 < > : " | ? *');
-    if (/[. ]$/.test(name)) throw new Error("Windows 下文件夹名不能以空格或 . 结尾");
+    if (/[<>:"|?*]/.test(name)) throw new Error(`${kind}名不能包含 < > : " | ? *`);
+    if (/[. ]$/.test(name)) throw new Error(`Windows 下${kind}名不能以空格或 . 结尾`);
     if (/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i.test(name)) throw new Error(`「${name}」是 Windows 保留名，换一个`);
   }
-  if (!parent.trim()) throw new Error("先进入一个目录再新建文件夹");
+  return name;
+}
+
+/** `parent` 必须是一个已经存在、读得到的目录；返回绝对化的它。 */
+function resolveParent(parent: string, kind: EntryKind): string {
+  if (!parent.trim()) throw new Error(`先进入一个目录再新建${kind}`);
   const base = path.resolve(parent);
   if (!isDir(base)) throw new Error(`上级目录不存在：${base}`);
+  return base;
+}
+
+/** Creates one folder `name` directly inside `parent`; throws a user-facing (Chinese) message. */
+export function makeDir(parent: string, rawName: string): string {
+  const name = checkEntryName("文件夹", rawName);
+  const base = resolveParent(parent, "文件夹");
   const target = path.join(base, name);
-  if (fs.existsSync(target)) throw new Error(`已经存在：${target}`);
   try {
+    // 不用先 existsSync：mkdir 自己就会对已存在的目标抛 EEXIST，一步到位也就没有「查完到建之间被人占了」的窗口。
     fs.mkdirSync(target);
   } catch (err: any) {
+    if (err?.code === "EEXIST") throw new Error(`已经存在：${target}`);
     throw new Error(err?.code === "EACCES" || err?.code === "EPERM" ? `没有权限在这里建文件夹：${base}` : `建不了：${err?.message ?? err}`);
+  }
+  return target;
+}
+
+/**
+ * Creates one **empty** file (0 bytes) directly inside `parent`. `wx` is what keeps it from ever
+ * clobbering an existing file — an `existsSync` check alone would leave a window where a同名 file
+ * created by someone else (an editor, a `touch` in the terminal) gets truncated instead of refused.
+ */
+export function makeFile(parent: string, rawName: string): string {
+  const name = checkEntryName("文件", rawName);
+  const base = resolveParent(parent, "文件");
+  const target = path.join(base, name);
+  try {
+    fs.writeFileSync(target, "", { flag: "wx" });
+  } catch (err: any) {
+    if (err?.code === "EEXIST") throw new Error(`已经存在：${target}`);
+    if (err?.code === "EACCES" || err?.code === "EPERM") throw new Error(`没有权限在这里建文件：${base}`);
+    throw new Error(`建不了：${err?.message ?? err}`);
   }
   return target;
 }

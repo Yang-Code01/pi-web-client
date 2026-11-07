@@ -26,6 +26,7 @@
     "test:commands": "node --experimental-transform-types web/tests/commands-unit.mjs",
     "test:models": "node bridge/tests/models-unit.mjs",
     "test:stat": "node bridge/tests/stat-path.mjs",
+    "test:mk": "node bridge/tests/mk-file.mjs",
     "test:nowchip": "node --experimental-transform-types web/tests/nowchip-unit.mjs",
     "test:wsmanage": "node --experimental-transform-types web/tests/wsmanage-unit.mjs",
     "test:defaults": "node --experimental-transform-types bridge/tests/settings-defaults.mjs",
