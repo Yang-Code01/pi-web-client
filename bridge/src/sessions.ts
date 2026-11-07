@@ -747,6 +747,12 @@ export class Session extends EventEmitter {
    * progress"), so prompt() waits on it instead of bouncing the user's message.
    */
   private compaction: { done: Promise<void>; resolve: () => void } | null = null;
+
+  /**
+   * 这一轮是「⚡ 自动复盘」开的（D164 延伸）：复盘本来就在谈失败，D169 的当场叫住再插一嘴就是噪音。
+   * 由 `failures.review` 置上、prompt 结束时落下；只影响 `failures.remind` 一个入口。
+   */
+  reviewing = false;
   /** User items sent while a run was active, i.e. sitting in pi's queue until delivered or cleared. */
   private queuedUser: { id: string; text: string }[] = [];
   /** pi's queue as of the last queue_update, so a page opened mid-run sees it too (#14). */

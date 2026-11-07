@@ -264,6 +264,28 @@ Command exited with code 1` });
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
+  // 「发到会话复盘」（D164 延伸）：回答末尾按提示词要求回写规矩。
+  // 形状照真模型来：标记包在粗体里、前面夹一段解释 —— 前端在正文里找标记，不认整行的格式。
+  if (text.startsWith("[pi-web:review]")) {
+    // 类行的形状是 `- bash|path|cd <path> · bash · cd <path> —— …`，键取第一个分隔符之前那一段，
+    // 这样回写的键和界面算出来的完全一样（否则规矩会挂到一个界面上不存在的键上）。
+    const sep = ` ${String.fromCharCode(183)} `;
+    const row = text.split("\n").find((l) => l.startsWith("- ") && l.includes("|")) ?? "";
+    const key = row ? row.slice(2).split(sep)[0] : "bash|path|cd <path>";
+    note({ t: "review", key, classes: (text.match(/^- [a-z]+\|/gm) ?? []).length });
+    const body = [
+      "## 这一轮栽在哪",
+      `主因在路径：\`${key}\` 那一类，两次都是仓库名手打错了。`,
+      "",
+      "## 规矩",
+      `- **[pi-web:rule] ${key} :: 先 test -d 再 cd，方向先验再动手**`,
+    ].join("\n");
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: body } });
+    out({ type: "message_end", message: assistant(body) });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   out({ type: "message_start", message: assistant("") });
   out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `echo: ${text}` } });
   out({ type: "message_end", message: assistant(`echo: ${text}`) });

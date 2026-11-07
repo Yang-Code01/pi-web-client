@@ -9,6 +9,7 @@
  */
 import { createEl as el } from "./chat.ts";
 import { causesOf, clock, entryState, entryTitle, failureMarkdown, ledgerMarkdown, stateLabel, type FailEntry, type FailLedger } from "./failures.ts";
+import { ruleFor, ruleLine, type RuleBook, type RuleRec } from "./rules.ts";
 import { tr, fmtDate, fmtTime } from "./i18n/index.ts";
 
 export interface FailHost {
@@ -28,6 +29,8 @@ export class FailPanel {
   private statEl!: HTMLElement;
 
   private ledger: FailLedger | null = null;
+  /** 账本边上的规矩（D164 延伸）：键与条目同一套，所以能并到同一张列表里看。 */
+  private book: RuleBook | null = null;
   private sel: string | null = null;
   private query = "";
   private allOcc = new Set<string>();
@@ -61,7 +64,7 @@ export class FailPanel {
     body.append(side, this.detailEl);
 
     const foot = el("div", "fail-foot");
-    foot.append(el("span", "fail-note", tr("只读 · 由「⚡ 总结本轮错误」写入，同一类再犯只加次数")));
+    foot.append(el("span", "fail-note", tr("只读 · 由「⚡ 总结本轮错误」写入；规矩由「发到会话复盘」写回")));
     const exp = el("button", "btn ghost", tr("导出这份账本"));
     exp.onclick = () => this.exportAll();
     foot.append(exp);
@@ -84,9 +87,19 @@ export class FailPanel {
     const old = this.ledger;
     this.ledger = ledger;
     // 同一份账本、只是多了次数：保持选中，别把人正在看的那类弹走。
-    if (this.sel && !ledger?.entries.some((e) => e.key === this.sel)) this.sel = null;
+    if (this.sel && !ledger?.entries.some((e) => e.key === this.sel) && !this.bookFor(this.sel)) this.sel = null;
     if (!this.sel && ledger?.entries.length && (!old || old.ws !== ledger.ws)) this.sel = ledger.entries[0].key;
     this.paintAll();
+  }
+
+  /** 规矩整本换：与账本同一时机（切工作区 / 桥回包）。 */
+  setRules(book: RuleBook | null): void {
+    this.book = book;
+    this.paintAll();
+  }
+
+  private bookFor(key: string | null): RuleRec | null {
+    return key ? ruleFor(this.book, key) : null;
   }
 
   private get label(): string {
@@ -119,11 +132,17 @@ export class FailPanel {
 
   private paintList(): void {
     const rows = this.rows();
+    const rules = this.ruleRows();
     if (!rows.length) {
       const empty = this.query
         ? tr("没有匹配的错误。")
-        : tr("这份账本还是空的。会话里出过错，结束时点右下角的「⚡ 总结本轮错误」。");
-      this.listEl.replaceChildren(el("div", "fail-empty", empty));
+        : rules.length
+          ? tr("账本里还没有记录。上面这些规矩是「发到会话复盘」带回来的。")
+          : tr("这份账本还是空的。会话里出过错，结束时点右下角的「⚡ 总结本轮错误」。");
+      // 规矩可以只来自「发到会话复盘」（人没选入账），所以账本空不等于这一页没东西。
+      const nodes: HTMLElement[] = [el("div", "fail-empty", empty)];
+      if (rules.length) nodes.unshift(this.rulesFold(rules));
+      this.listEl.replaceChildren(...nodes);
       return;
     }
     const open = rows.filter((e) => entryState(e) === "open");
@@ -131,6 +150,8 @@ export class FailPanel {
     const ignored = rows.filter((e) => entryState(e) === "ignored");
     const abort = rows.filter((e) => entryState(e) === "abort");
     const nodes: HTMLElement[] = [];
+    // 规矩单独一节放在列表最上面：它是这个页面上唯一「下次有用」的东西，次数只是历史。
+    if (rules.length) nodes.push(this.rulesFold(rules));
     open.forEach((e) => nodes.push(this.card(e)));
     if (!open.length) nodes.push(el("div", "fail-empty", tr("没有待修的错误。")));
     const fold = (label: string, list: FailEntry[], kind: string) => {
@@ -147,6 +168,43 @@ export class FailPanel {
     fold(tr("已忽略"), ignored, "ignored");
     fold(tr("已中断（不算待修）"), abort, "abort");
     this.listEl.replaceChildren(...nodes);
+  }
+
+  /** 左边那节「⚡ 规矩」：只显示有正文的；一行一条，点一下跳到它挂的那一类。 */
+  private ruleRows(): RuleRec[] {
+    const q = this.query;
+    const all = this.book?.rules ?? [];
+    if (!q) return all;
+    return all.filter((r) => [r.rule, r.key, r.sig, r.tool].join(" ").toLowerCase().includes(q));
+  }
+
+  private rulesFold(list: RuleRec[]): HTMLElement {
+    const d = el("details", "fail-fold rules") as HTMLDetailsElement;
+    d.open = true;
+    const sum = el("summary", "", tr("⚡ 规矩"));
+    sum.append(el("span", "n", String(list.length)));
+    d.append(sum);
+    for (const r of list) {
+      const row = el("div", `fail-rule-row${r.key === this.sel ? " on" : ""}`);
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
+      row.append(el("div", "fail-rule-k", r.sig || r.key), el("div", "fail-rule-t", r.rule));
+      row.title = r.key;
+      const pick = () => {
+        this.sel = r.key;
+        this.paintList();
+        this.paintDetail();
+      };
+      row.onclick = pick;
+      row.onkeydown = (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") {
+          ev.preventDefault();
+          pick();
+        }
+      };
+      d.append(row);
+    }
+    return d;
   }
 
   /** 一张卡 = 一类：标题、次数（大字在右）、工具与最近一次的命令。密度 B，一屏 4–5 张。 */
@@ -178,7 +236,17 @@ export class FailPanel {
 
   private paintDetail(): void {
     const e = this.ledger?.entries.find((x) => x.key === this.sel);
+    const rule = this.bookFor(this.sel);
     if (!e) {
+      // 账本里还没有这一类（复盘刚写下的新坑）：只把规矩摆出来，不扮出一张空条目。
+      if (rule) {
+        const head = el("div", "fail-dhead");
+        head.append(el("div", "fail-title-big", rule.sig || rule.key));
+        const meta = el("div", "fail-meta");
+        meta.append(el("span", "fail-pill open", tr("未入账")), el("span", "fail-metatext", tr("这一类还没进账本，规矩先记下了")));
+        this.detailEl.replaceChildren(head, meta, this.ruleBlock(rule));
+        return;
+      }
       this.detailEl.replaceChildren(el("div", "fail-empty", this.ledger?.entries.length ? tr("左边选一类，看它为什么没成。") : ""));
       return;
     }
@@ -213,6 +281,7 @@ export class FailPanel {
       parts.push(fix);
     }
     parts.push(this.actions(e));
+    if (rule) parts.push(this.ruleBlock(rule));
     parts.push(el("div", "fail-sechead", tr("发生过 {p1} 次 · 显示最近 {p2} 条", { p1: e.count, p2: Math.min(SHOW_OCC, e.occ.length) })));
     parts.push(this.occurrences(e, this.allOcc.has(e.key) ? e.occ.length : SHOW_OCC));
     if (e.occ.length > SHOW_OCC && !this.allOcc.has(e.key)) {
@@ -263,6 +332,46 @@ export class FailPanel {
     const hand = el("button", "btn primary fail-hand", tr("交给 agent") + " ▾");
     hand.onclick = () => this.host.handoff(hand, failureMarkdown(e, this.label));
     box.append(el("span", "grow"), hand);
+    return box;
+  }
+
+  /**
+   * 「这条规矩」：一类最多一句。它由复盘轮写回（见 `rules.ts`），人只能改字、删掉 ——
+   * 不能凭空新增一类规矩：没有对应失败的「规矩」只是口号，带进提示词只会占位置。
+   */
+  private ruleBlock(rule: RuleRec): HTMLElement {
+    const box = el("div", "fail-rule");
+    const head = el("div", "fail-rule-head");
+    const body = el("div", "fail-rule-text", rule.rule);
+    const edit = el("button", "btn ghost fail-rule-btn", tr("改")) as HTMLButtonElement;
+    edit.title = tr("改这句（同样的键直接覆盖）");
+    const del = el("button", "btn ghost fail-rule-btn", tr("删")) as HTMLButtonElement;
+    del.title = tr("删掉这条规矩（账本里的次数不受影响）");
+    del.onclick = () => this.host.send({ type: "rules.delete", ws: this.ledger?.ws ?? this.book?.ws ?? "", key: rule.key });
+    edit.onclick = () => {
+      const input = el("input", "fail-rule-input") as HTMLInputElement;
+      input.value = rule.rule;
+      const save = el("button", "btn primary fail-rule-btn", tr("保存")) as HTMLButtonElement;
+      const cancel = el("button", "btn ghost fail-rule-btn", tr("取消")) as HTMLButtonElement;
+      const send = () => {
+        const text = input.value.trim();
+        if (!text) return;
+        this.host.send({ type: "rules.set", ws: this.ledger?.ws ?? this.book?.ws ?? "", key: rule.key, rule: text, sig: rule.sig, tool: rule.tool, code: rule.code });
+      };
+      save.onclick = send;
+      cancel.onclick = () => this.paintDetail();
+      input.onkeydown = (ev) => {
+        if (ev.key === "Enter") send();
+        if (ev.key === "Escape") this.paintDetail();
+      };
+      body.replaceWith(input);
+      head.replaceChildren(el("span", "fail-rule-label", tr("这条规矩")), el("span", "grow"), save, cancel);
+      input.focus();
+      input.select();
+    };
+    head.append(el("span", "fail-rule-label", tr("这条规矩")), el("span", "grow"), edit, del);
+    box.append(head, body);
+    box.title = ruleLine(rule);
     return box;
   }
 

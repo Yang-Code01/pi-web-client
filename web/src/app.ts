@@ -9,7 +9,8 @@ import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPicke
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
-import { classify, entryKey, normalizeSig, sameFail, toCommit, type FailLedger, type SeenFail } from "./failures.ts";
+import { classify, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type FailLedger, type SeenFail } from "./failures.ts";
+import { parseRules, type RuleBook } from "./rules.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
@@ -211,6 +212,15 @@ export class App {
   private failRemindPending = new Set<string>();
   /** 右下角那颗「⚡ 总结本轮错误」；每轮结束按 pending 亮灭。 */
   private failCta: HTMLButtonElement | null = null;
+  /** 点开 CTA 的那张小卡（两个举动：记进账本 / 发到会话复盘）。 */
+  private failMenu: HTMLElement | null = null;
+  private failMenuAway: ((ev: Event) => void) | null = null;
+  private failMenuEsc: ((ev: KeyboardEvent) => void) | null = null;
+  /** 账本边上的「规矩」，与 `failLedger` 一起随 ws 走。 */
+  private failRules: RuleBook | null = null;
+  private failRulesWs = "";
+  /** 「发到会话复盘」在途：回包之前不能再点 —— 一下就是一轮 token。 */
+  private failReviewPending = false;
   private failToast: HTMLElement | null = null;
   private failToastTimer = 0;
   private notes: Note[] = [];
@@ -756,6 +766,8 @@ export class App {
     this.chat.onFork = (item, index) => this.forkAt({ entryId: item.id, index, text: item.text });
     // 账本要的是「这次会话里所有失败」，聊天区只画本轮的红卡：两边各收各的，按 toolCallId 去重。
     this.chat.onFail = (f) => this.recordFail(f);
+    // 复盘那一轮的回写（D164 延伸）：模型把规矩写在回答末尾，这里捡出来交给桥。
+    this.chat.onAnswer = (text) => this.takeRules(text);
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
   }
@@ -1383,9 +1395,14 @@ export class App {
         this.sessionFails.clear();
         this.failReminded.clear();
         this.failRemindPending.clear();
+        this.failReviewPending = false;
         this.failLedger = this.failWs && this.failWs === (this.session?.ws ?? "") ? this.failLedger : null;
+        this.failRules = this.failRulesWs && this.failRulesWs === (this.session?.ws ?? "") ? this.failRules : null;
         this.chat.reset((msg.items ?? []) as Item[]);
-        if (this.currentWs()) this.socket.send({ type: "failures.get", ws: this.currentWs() });
+        if (this.currentWs()) {
+          this.socket.send({ type: "failures.get", ws: this.currentWs() });
+          this.socket.send({ type: "rules.get", ws: this.currentWs() });
+        }
         if (this.afterOpen && this.afterOpen.id === msg.sessionId) {
           this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: this.afterOpen.text, level: "info" });
           this.afterOpen = null;
@@ -1686,6 +1703,29 @@ export class App {
         if (msg.ws && this.currentWs() && msg.ws !== this.currentWs()) break;
         this.failSaved(msg);
         break;
+      case "rules":
+        if (msg.book && (!this.currentWs() || (msg.book as RuleBook).ws === this.currentWs())) this.setFailRules(msg.book as RuleBook);
+        break;
+      case "rules.saved":
+        if (msg.error) this.flashToast(tr("规矩没存下：{p1}", { p1: String(msg.error) }), true, 6000);
+        else if (msg.book) this.setFailRules(msg.book as RuleBook);
+        break;
+      case "failures.reviewed": {
+        if (msg.sessionId && msg.sessionId !== this.currentId) break;
+        this.failReviewPending = false;
+        this.syncFailCta();
+        if (!msg.ok) {
+          this.flashToast(tr("没发出去：{p1}", { p1: this.reviewWhy(String(msg.reason ?? "")) }), true, 6000);
+          break;
+        }
+        const ws = this.currentWs();
+        const sid = this.currentId ?? "";
+        const n = Number(msg.n ?? 0);
+        // 发出去了才记「这个会话已复盘 N 条」：发失败要留着让人重试，不能先占位。
+        if (ws && sid && n > 0) this.socket.send({ type: "rules.reviewed", ws, sid, n });
+        this.flashToast(tr("已发到会话 · 复盘 {p1} 类失败", { p1: Number(msg.classes ?? 0) }), false, 4000);
+        break;
+      }
       case "failures.reminded":
         // 桥的回执：成不成都要收回「在途」标记；成了才记成「这一类已提醒过」。
         this.failRemindPending.delete(String(msg.key ?? ""));
@@ -6228,20 +6268,167 @@ export class App {
     const s = this.session;
     const show = Boolean(s) && !s?.running && !s?.starting && n > 0;
     btn.hidden = !show;
-    if (!show) return;
-    btn.replaceChildren(el("span", "fail-cta-glyph", "⚡"), el("span", "fail-cta-text", tr("总结本轮错误")), el("span", "fail-cta-n", String(n)));
+    btn.classList.toggle("busy", this.failReviewPending);
+    if (!show) {
+      this.closeFailMenu();
+      return;
+    }
+    if (this.failReviewPending) {
+      btn.replaceChildren(el("span", "fail-cta-glyph", "⚡"), el("span", "fail-cta-text", tr("复盘进行中…")), el("span", "fail-cta-n", String(n)));
+      btn.title = tr("正在把这一轮失败发给 pi 复盘");
+      return;
+    }
+    const reviewed = this.failReviewed();
+    btn.replaceChildren(
+      el("span", "fail-cta-glyph", "⚡"),
+      el("span", "fail-cta-text", tr("总结本轮错误")),
+      el("span", "fail-cta-n", String(n)),
+      el("span", "fail-cta-caret", "▾"),
+    );
+    btn.classList.toggle("done", reviewed >= n);
     btn.title = tr("把这次会话里的 {p1} 次失败归并进「⚡ AI 出错记录」：同类只加次数", { p1: n });
+    if (this.failMenu) this.paintFailMenu();
+  }
+
+  /** 这个会话已经复盘过几条（桥落盘的数，刷新 / 换设备都还在）。 */
+  private failReviewed(): number {
+    const sid = this.currentId ?? "";
+    if (!sid || this.failRulesWs !== (this.currentWs() ?? "")) return 0;
+    return this.failRules?.reviewed?.[sid]?.n ?? 0;
   }
 
   private failButton(): HTMLButtonElement {
     const btn = el("button", "fail-cta") as HTMLButtonElement;
     btn.type = "button";
     btn.hidden = true;
+    btn.setAttribute("aria-haspopup", "menu");
     btn.onclick = (ev) => {
       ev.stopPropagation();
-      this.commitFails();
+      if (this.failMenu) this.closeFailMenu();
+      else this.openFailMenu();
     };
     return btn;
+  }
+
+  /** 单击弹小卡：两个举动各自写清代价（记进账本花 0、复盘烧一轮 token）。 */
+  private openFailMenu(): void {
+    const btn = this.failCta;
+    const row = btn?.parentElement;
+    if (!btn || !row) return;
+    this.closeFailMenu();
+    const box = el("div", "fail-menu");
+    box.setAttribute("role", "menu");
+    row.append(box);
+    this.failMenu = box;
+    this.paintFailMenu();
+    const away = (ev: Event) => {
+      if (box.contains(ev.target as Node) || btn.contains(ev.target as Node)) return;
+      this.closeFailMenu();
+    };
+    const esc = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") this.closeFailMenu();
+    };
+    this.failMenuAway = away;
+    this.failMenuEsc = esc;
+    // 用 pointerdown 而不是 click：点在菜单外的地方时，菜单先收起，那一下才落地。
+    window.setTimeout(() => {
+      if (this.failMenu !== box) return;
+      document.addEventListener("pointerdown", away, true);
+      document.addEventListener("keydown", esc, true);
+    }, 0);
+  }
+
+  private closeFailMenu(): void {
+    this.failMenu?.remove();
+    this.failMenu = null;
+    if (this.failMenuAway) document.removeEventListener("pointerdown", this.failMenuAway, true);
+    if (this.failMenuEsc) document.removeEventListener("keydown", this.failMenuEsc, true);
+    this.failMenuAway = null;
+    this.failMenuEsc = null;
+  }
+
+  private paintFailMenu(): void {
+    const box = this.failMenu;
+    if (!box) return;
+    const n = this.uncommittedFails();
+    const classes = reviewClasses(this.sessionFails.values()).length;
+    const reviewed = this.failReviewed();
+    const head = el("div", "fail-menu-head");
+    head.append(el("span", "", tr("本轮 {p1} 次失败 · 归成 {p2} 类", { p1: n, p2: classes })));
+    if (reviewed > 0) head.append(el("span", `fail-menu-state${reviewed >= n ? " done" : ""}`, tr("已复盘 {p1}", { p1: reviewed })));
+
+    const item = (glyph: string, title: string, desc: string, act: () => void): HTMLButtonElement => {
+      const b = el("button", "fail-menu-item") as HTMLButtonElement;
+      b.type = "button";
+      b.setAttribute("role", "menuitem");
+      const t = el("div", "fail-menu-t");
+      t.append(el("span", "fail-menu-glyph", glyph), el("span", "", title));
+      b.append(t, el("div", "fail-menu-d", desc));
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        act();
+      };
+      return b;
+    };
+
+    const commit = item("🗂", tr("记进账本"), tr("同类只加次数，不花 token"), () => this.commitFails());
+    const review = item(
+      "⚡",
+      this.failReviewPending ? tr("正在复盘…") : tr("发到会话复盘"),
+      reviewed >= n && !this.failReviewPending
+        ? tr("这 {p1} 次已经复盘过；再发会再烧一轮 token", { p1: reviewed })
+        : tr("开一轮：{p1} 类账本视角 + 一句规矩", { p1: classes }),
+      () => this.reviewFails(),
+    );
+    if (this.failReviewPending) review.disabled = true;
+    box.replaceChildren(head, commit, review);
+  }
+
+  /**
+   * 「发到会话复盘」：把这个会话的失败归并成类交给桥，由桥把**账本视角**写成一段话发进来。
+   * 原文不用带:那几步就在同一个会话里，带一遍只是烧 token。
+   */
+  private reviewFails(): void {
+    const ws = this.currentWs();
+    const sid = this.currentId;
+    if (!ws || !sid || this.failReviewPending) return;
+    const classes = reviewClasses(this.sessionFails.values());
+    const n = this.sessionFails.size;
+    if (!classes.length || !n) {
+      this.flashToast(tr("这一轮没有可复盘的失败"), true, 2600);
+      return;
+    }
+    this.failReviewPending = true;
+    this.closeFailMenu();
+    this.syncFailCta();
+    this.socket.send({ type: "failures.review", ws, sid, n, classes: classes.slice(0, 20) });
+  }
+
+  /** 桥回不回得来都要告诉人一句：这一下动的是模型，不是账本。 */
+  private reviewWhy(reason: string): string {
+    if (reason === "offline") return tr("这个会话没在跑，先随便说一句话把它叫起来");
+    if (reason === "empty") return tr("这一轮没有可复盘的失败");
+    return reason || tr("桥那边没给理由");
+  }
+
+  /**
+   * 复盘回写的规矩：把 `[pi-web:rule]` 行交给桥（同键覆盖）。
+   * 已经存过的同键同文就跳过 —— 重放历史、刷新页面都会再撞`onAnswer` 一次，不能每次都写文件。
+   */
+  private takeRules(text: string): void {
+    const ws = this.currentWs();
+    if (!ws) return;
+    for (const r of parseRules(text)) {
+      if (this.failRules?.rules.some((o) => o.key === r.key && o.rule === r.rule)) continue;
+      this.socket.send({ type: "rules.set", ws, key: r.key, rule: r.rule });
+    }
+  }
+
+  private setFailRules(book: RuleBook | null): void {
+    this.failRules = book;
+    this.failRulesWs = book?.ws ?? "";
+    this.notesSheet?.setRules(book);
+    this.syncFailCta();
   }
 
   /** 点一下：每一条失败跑一遍 diagnose（拿「为什么没成」和修法），整批交给桥去归并。 */
@@ -6344,8 +6531,12 @@ export class App {
       sheet.mount(document.getElementById("app") ?? document.body);
       this.notesSheet = sheet;
       sheet.setFailures(this.failLedger);
+      sheet.setRules(this.failRules);
       this.act(() => this.socket.send({ type: "notes.list" }));
-      if (this.currentWs()) this.socket.send({ type: "failures.get", ws: this.currentWs() });
+      if (this.currentWs()) {
+        this.socket.send({ type: "failures.get", ws: this.currentWs() });
+        this.socket.send({ type: "rules.get", ws: this.currentWs() });
+      }
     }
     this.notesSheet.focusComposer();
   }
