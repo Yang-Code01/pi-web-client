@@ -259,13 +259,9 @@ try {
   await shot("bg", await composerClip());
 
   // -- F. 点开看详情（D169）：概览 + 活动记录尾 ---------------------------------
-  // 假 pi 不会真的写活动记录，这里替 runner 把那份文件放到桥会去读的地方（`%TEMP%cp-delegate`）。
-  const acpDir = path.join(os.tmpdir(), "acp-delegate");
-  fs.mkdirSync(acpDir, { recursive: true });
-  const actFile = path.join(acpDir, "del_fake.activity");
-  fs.writeFileSync(actFile, "[tool] bash rg -n continueState web/src\n[tool] read bridge/src/sessions.ts\n");
+  // 假 pi 自己会把那份活动记录写进 `%TEMP%\acp-delegate`（跟真 runner 一个地方），这里只验桥读到了。
   await bar.click();
-  const sheet = page.locator(".sheet.bg-sheet");
+  let sheet = page.locator(".sheet.bg-sheet");
   await sheet.waitFor({ timeout: 5000 }).catch(() => {});
   check("点横幅能开详情", (await sheet.count()) === 1);
   check("标题是「后台子代理」", /后台子代理/.test(await page.locator(".sheet.bg-sheet .sheet-title").innerText().catch(() => "")));
@@ -279,23 +275,57 @@ try {
   }
   const logText = await page.locator(".bg-run-log").innerText().catch(() => "");
   check("过程里能看到它在跑什么", /continueState/.test(logText), JSON.stringify(logText.slice(0, 120)));
+  check("还在跑的时候没有「最终输出」", (await page.locator(".bg-run-out").isVisible().catch(() => false)) === false);
   await shot("bg-sheet", { x: 0, y: 0, width: 900, height: 620 });
-  fs.rmSync(actFile, { force: true });
   await page.locator(".sheet.bg-sheet .sheet-head button").click();
   check("关掉之后详情不在了", (await page.locator(".sheet.bg-sheet").count()) === 0);
 
+  // 另一个入口：左栏那枚「后台」徽标。
+  const bgBadge = page.locator(".badge.clickable").first();
+  check("「后台」徽标可点", (await bgBadge.count()) === 1);
+  await bgBadge.click();
+  await page.locator(".sheet.bg-sheet").waitFor({ timeout: 5000 }).catch(() => {});
+  check("点徽标也能开详情", (await page.locator(".sheet.bg-sheet").count()) === 1);
+  await page.locator(".sheet.bg-sheet .sheet-head button").click();
+
+  // -- G. 刷新页面之后（D169）：提示条还在，因为它是会话状态而不是前端记忆 -------------
+  await page.reload();
+  const bar2 = page.locator(".bg-bar");
+  for (let i = 0; i < 150; i++) {
+    if (await bar2.count()) break;
+    await sleep(100);
+  }
+  check("刷新后提示条还在", (await bar2.count()) === 1);
+  check("刷新后「继续」还是灰的", await button.isDisabled());
+  await shot("bg-refresh", await composerClip());
+
+  // -- H. 跑完了（D169）：提示条翻成「看结果」，但「继续」不再被拦 -------------------
   await turn("BGDONE now");
   for (let i = 0; i < 100; i++) {
-    if (!(await bar.count())) break;
+    if (/已结束/.test(await page.locator(".bg-bar .bg-text").innerText().catch(() => ""))) break;
     await sleep(100);
   }
-  check("完成通知一到，提示条收掉", (await bar.count()) === 0);
-  for (let i = 0; i < 100; i++) {
-    if (!(await button.isDisabled())) break;
-    await sleep(100);
-  }
-  check("「继续」又亮了", !(await button.isDisabled()));
+  const idleText = await page.locator(".bg-bar .bg-text").innerText().catch(() => "");
+  check("完成通知一到，提示条翻成「已结束」", /子代理已结束/.test(idleText), JSON.stringify(idleText));
+  check("跑完了就不再拦「继续」", !(await button.isDisabled()));
+  check("跑完的样子不再闪", (await page.locator(".bg-bar.idle").count()) === 1);
   await shot("bg-done", await composerClip());
+
+  // 结果还能点开看：这是「最终输出」唯一的正常路径 —— 没人在跑的时候点那一下。
+  await bar2.click();
+  sheet = page.locator(".sheet.bg-sheet");
+  await sheet.waitFor({ timeout: 5000 }).catch(() => {});
+  check("跑完之后徽标/横幅还点得开", (await sheet.count()) === 1);
+  const doneText = await page.locator(".bg-run").innerText().catch(() => "");
+  check("卡片上写「已完成」", /已完成/.test(doneText), JSON.stringify(doneText.slice(0, 160)));
+  check("是总耗时不是「结束至今」", /用了/.test(doneText), JSON.stringify(doneText.slice(0, 160)));
+  check("最终输出出来了", /三条接口都已对齐/.test(await page.locator(".bg-run-out").innerText().catch(() => "")));
+  await shot("bg-done-sheet", { x: 0, y: 0, width: 900, height: 620 });
+  await page.locator(".sheet.bg-sheet .sheet-head button").click();
+
+  // 清理：给下一个人留干净的临时目录。
+  fs.rmSync(path.join(os.tmpdir(), "acp-delegate", "del_fake.activity"), { force: true });
+  fs.rmSync(path.join(os.tmpdir(), "acp-delegate", "del_fake.out"), { force: true });
 } catch (err) {
   check(`没跑完：${String(err?.message ?? err).split("\n")[0]}`, false);
   if (bridgeLog) log("bridge:", bridgeLog.slice(-1500));

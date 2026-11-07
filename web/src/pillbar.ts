@@ -25,6 +25,8 @@ export interface PillBadge {
   title: string;
   /** 卡在用户身上（待回答 / 待确认）—— 条头的「N 个待处理」数它。 */
   pending: boolean;
+  /** 这枚徽标能点开详情（D169）：外壳给了 `onBadge` 时，小字会多一个热区。 */
+  detail?: boolean;
 }
 
 /** 一颗胶囊最终显示成什么：纯函数，便于脱离 DOM 核对文案。 */
@@ -89,6 +91,8 @@ export interface PillBarOpts<S extends PillSession = PillSession> {
   starTitle?(name: string): string;
   onOpen(id: string): void;
   onStar(id: string): void;
+  /** 徽标自己也是一颗热区（`badge().detail` 为真时用）：打开「它在跑什么」，不切会话。 */
+  onBadge?(id: string): void;
   /** 条尾属于外壳自己的按钮：折叠时要跟胶囊一起占位置，所以由组件摆进去。`chips` 是这一次真画出来的胶囊（一颗 ★ 都没有时是空数组）。 */
   tail?(chips: readonly PillChip[]): HTMLElement[];
   /** 外壳自己的手势（例如悬停气泡）。 */
@@ -167,7 +171,20 @@ export class PillBar<S extends PillSession = PillSession> {
       const open = el("button", "pin-open") as HTMLButtonElement;
       open.type = "button";
       open.dataset.pinKey = `${c.id}:open`;
-      open.append(el("span", "pin-name", c.name), el("small", "", c.sub));
+      const sub = el("small", "", c.sub);
+      // detail：小字自己是个热区（点它看详情，不切会话）。`stopPropagation` 抢在外层那颗按钮前面。
+      if (badges[i]?.detail && this.opts.onBadge) {
+        const onBadge = this.opts.onBadge;
+        sub.classList.add("pin-sub-detail");
+        sub.setAttribute("role", "button");
+        sub.title = tr("点开看它跑了什么");
+        sub.onclick = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          onBadge(c.id);
+        };
+      }
+      open.append(el("span", "pin-name", c.name), sub);
       open.title = c.title;
       open.onclick = () => this.opts.onOpen(c.id);
       chip.append(star, open);

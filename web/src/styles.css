@@ -801,6 +801,9 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .bg-bar .bg-text { color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bg-bar .bg-sep { flex: none; color: var(--faint); }
 .bg-bar .bg-elapsed { flex: none; font: 11px/1 var(--mono); color: var(--faint); }
+/* 跑完了那一档：不再像活物一样闪，颜色也退一档（还能点，点是看结果）。 */
+.bg-bar.idle .bg-dot { animation: none; background: var(--faint); }
+.bg-bar.idle { border-color: var(--line); background: transparent; }
 
 /* ---------------------------------------------------------------- approvals */
 .approval {
@@ -3499,7 +3502,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   font: 11.5px/1.55 var(--mono); color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere;
   max-height: min(320px, calc(var(--vh1) * 38)); overflow: auto;
 }
-.bg-run-log:empty::before { content: "…"; color: var(--faint); }
 .badge.clickable { cursor: pointer; }
 .badge.clickable:hover { border-color: var(--accent); }
 .badge.clickable:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
+/* 钉条胶囊里那行小字：能点开详情的那几颗才挂这个类（D169）。 */
+.pin-open .pin-sub-detail { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }

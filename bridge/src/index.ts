@@ -1450,6 +1450,11 @@ async function main(): Promise<void> {
           // ------------------------------------------------ 后台子代理的详情 (D169)
           case "bg.list": {
             const sid = String(msg.sessionId ?? "");
+            // 和 `bg.log` 同一条底线：公网那只读历史的手不该看得到本机的 prompt（`task` 就是派活原话）。
+            if ((ws as any).publicReq) {
+              send({ type: "bg.list", sessionId: msg.sessionId ?? null, runs: [], error: "public" });
+              return;
+            }
             send({ type: "bg.list", sessionId: msg.sessionId ?? null, runs: sessions.get(sid)?.bgList() ?? [] });
             return;
           }
@@ -1458,7 +1463,7 @@ async function main(): Promise<void> {
             const sid = String(msg.sessionId ?? "");
             const runId = String(msg.runId ?? "").slice(0, 80);
             if ((ws as any).publicReq) {
-              send({ type: "bg.log", sessionId: msg.sessionId ?? null, runId, error: "公网访问时看不到后台任务的过程" });
+              send({ type: "bg.log", sessionId: msg.sessionId ?? null, runId });
               return;
             }
             const limit = Math.min(200_000, Math.max(1000, Number(msg.limit) || 8000));

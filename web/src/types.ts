@@ -69,12 +69,30 @@ export interface ExtUi {
 
 /**
  * D169: 后台子代理。会话自己的 `running` 已经落回 false，这是「派出去的 runner 还在跑」。
- * 只有摘要 —— 谁、几个、从什么时候开始；卡片和进度还没做。
+ *
+ * `n` 是在跑的；`recent` 是刚跑完、还留着一阵子能点开看结果的那几条 —— 它们**不算忙**，
+ * 「继续」不该被它们按住（`web/src/continue-state.ts` 的 `bgBusy`）。
  */
 export interface BgView {
   n: number;
   agent?: string;
-  since: number;
+  since?: number;
+  recent?: number;
+  finishedAt?: number;
+  lastMs?: number;
+}
+
+/** D169 详情的线上形状（桥 `bg.list` 的 `runs[]`）；路径不出桥，只说有没有可看的。 */
+export interface BgRunView {
+  id: string;
+  source: "acp" | "subagents";
+  agent: string;
+  task: string;
+  startedAt: number;
+  state: "running" | "done" | "failed";
+  endedAt?: number;
+  hasLog: boolean;
+  hasOut: boolean;
 }
 
 export interface ApprovalRequest {

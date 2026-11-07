@@ -15,7 +15,7 @@
  * 读盘只用于 D169 的看详情（`readLog()`），不参与状态机。
  */
 
-import { readFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -35,7 +35,7 @@ export interface BgRun {
   startedAt: number;
   state: "running" | "done" | "failed";
   endedAt?: number;
-  /** runner 自己的活动记录。只有落在 `%TEMP%cp-delegate\` 里的才记（也只读那里，见 `readLog`）。 */
+  /** runner 自己的活动记录。只有落在 `%TEMP%\acp-delegate\` 里的才记（也只读那里，见 `readLog`）。 */
   logPath?: string;
   /** 跑完的最终答复（同目录的 `.out`）。 */
   outPath?: string;
@@ -43,17 +43,37 @@ export interface BgRun {
 
 /** 会话快照 / `SessionState.bg` 里那一小块：前端只画「N 个 · 谁 · 从什么时候」。 */
 export interface BgView {
+  /** 还在跑的。0 = 只剩「刚跑完、还能点开看」的那几条。 */
   n: number;
   agent?: string;
-  since: number;
+  /** 最早那条还在跑的什么时候开始（`n > 0` 时给）。 */
+  since?: number;
+  /** 刚跑完、还没被扫掉、点开还能看最终输出的条数。 */
+  recent?: number;
+  /** 最近一条跑完的时刻，它一共跑了多久（`recent > 0` 时给）。 */
+  finishedAt?: number;
+  lastMs?: number;
+}
+
+/** 线上形状（`bg.list` 的 `runs[]`）：绝对路径不出桥，只告诉前端「有没有可看的」。 */
+export interface BgRunView {
+  id: string;
+  source: "acp" | "subagents";
+  agent: string;
+  task: string;
+  startedAt: number;
+  state: "running" | "done" | "failed";
+  endedAt?: number;
+  hasLog: boolean;
+  hasOut: boolean;
 }
 
 /** 一个从没报过完成、也没再被 `details` 提过的 run 判死的期限。给得很宽：真跑几小时的任务
  * 不该被界面判失败，而 kill 掉的 run 迟早会被会话关闭或桥重启带走。
  */
 const SILENT_DEAD_MS = 6 * 60 * 60 * 1000;
-/** 跑完的 run 留一小会儿，免得「完成」和「会话被唤醒」之间那一帧里提示条闪一下。 */
-const KEEP_DONE_MS = 2 * 60 * 1000;
+/** 跑完的 run 留一阵子：提示条要从「运行中」翻成「点开看结果」，用户也得有时间真的去点。 */
+const KEEP_DONE_MS = 10 * 60 * 1000;
 const SWEEP_MS = 30 * 1000;
 
 /** 结束类措辞。完成通知、`acp_delegate_wait` 回执、取消回执都落在这里面。 */
@@ -70,16 +90,38 @@ function firstRunId(text: string): string | null {
 
 /**
  * 文件尾（最多 `limit` 字）。只允许 `ACP_DIR` 底下 —— 路径是从工具结果里拾来的，读前再卡一次。
+ *
+ * 只读尾巴：`.activity` 能长到几 MB，而详情页 1.5 秒轮询一次；整文件读会把单线程的桥（所有会话）
+ * 一起卡住。字节上限按 UTF-8 最坏情况放宽到 `limit * 4`，再按行首对齐、按字截断。
  */
 function tail(file: string, limit: number): string | undefined {
   const abs = resolve(file);
   if (!abs.startsWith(ACP_DIR + sep)) return undefined;
+  let fd: number | null = null;
   try {
-    const text = readFileSync(abs, "utf8");
+    fd = openSync(abs, "r");
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - limit * 4);
+    const buf = Buffer.alloc(size - start);
+    if (buf.length) readSync(fd, buf, 0, buf.length, start);
+    let text = buf.toString("utf8");
+    if (start > 0) {
+      // 从半个字 / 半行开始：丢掉第一行残片，前面补一个省略号。
+      const nl = text.indexOf("\n");
+      text = `…\n${nl >= 0 ? text.slice(nl + 1) : ""}`;
+    }
     return text.length > limit ? `…\n${text.slice(-limit)}` : text;
   } catch {
     // 还没写出来 / 已经被删：详情里少一段，不当错误报。
     return undefined;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // 关不掉也只是少一段。
+      }
+    }
   }
 }
 
@@ -114,6 +156,7 @@ export class BgRuns {
     const agent = typeof d.agent === "string" ? d.agent : (AGENT.exec(text)?.[1] ?? AGENT.exec(text)?.[2] ?? "");
     const task = typeof d.task === "string" ? d.task : (TASK_LINE.exec(text)?.[1] ?? "");
     // 痕迹目录只认 acp_delegate 自己那个：路径要么是它，要么是它写进结果的同一路径（校验见 `readLog`）。
+    // pi-subagents 只给 asyncDir，目录布局没有公开约定 —— 它没有可读的过程记录，卡片上直说（`hasLog`）。
     const live = LIVE_LOG.exec(text)?.[1];
     const logPath = live ?? (source === "acp" ? join(ACP_DIR, `${id}.activity`) : undefined);
     const run: BgRun = { id, source, agent: agent.trim(), task: task.trim(), startedAt: Date.now(), state: "running" };
@@ -148,8 +191,20 @@ export class BgRuns {
   }
 
   /** 全部（含刚跑完的），给「看详情」的弹层用：按开始时间从早到晚。 */
-  list(): BgRun[] {
-    return [...this.runs.values()].sort((a, b) => a.startedAt - b.startedAt);
+  list(): BgRunView[] {
+    return [...this.runs.values()]
+      .sort((a, b) => a.startedAt - b.startedAt)
+      .map((r) => ({
+        id: r.id,
+        source: r.source,
+        agent: r.agent,
+        task: r.task,
+        startedAt: r.startedAt,
+        state: r.state,
+        ...(r.endedAt ? { endedAt: r.endedAt } : {}),
+        hasLog: Boolean(r.logPath),
+        hasOut: Boolean(r.outPath),
+      }));
   }
 
   get(id: string): BgRun | undefined {
@@ -172,10 +227,25 @@ export class BgRuns {
 
   view(): BgView | undefined {
     const act = this.active();
-    if (!act.length) return undefined;
-    // 提示条说「从什么时候开始」：取最早那条，免得后来的新手把钟拨回去。
-    const first = act.reduce((a, b) => (a.startedAt <= b.startedAt ? a : b));
-    return { n: act.length, ...(first.agent ? { agent: first.agent } : {}), since: first.startedAt };
+    const done = [...this.runs.values()].filter((r) => r.state !== "running");
+    if (!act.length && !done.length) return undefined;
+    const view: BgView = { n: act.length };
+    if (act.length) {
+      // 提示条说「从什么时候开始」：取最早那条，免得后来的新手把钟拨回去。
+      const first = act.reduce((a, b) => (a.startedAt <= b.startedAt ? a : b));
+      if (first.agent) view.agent = first.agent;
+      view.since = first.startedAt;
+    }
+    if (done.length) {
+      // 跑完就收掉提示条的话，「最终输出」只有弹层恰好开着才看得到（D169 评审）。留一档：
+      // 提示条翻成「已结束 · 点开看结果」，「继续」同时恢复正常。
+      const last = done.reduce((a, b) => ((a.endedAt ?? a.startedAt) >= (b.endedAt ?? b.startedAt) ? a : b));
+      const end = last.endedAt ?? last.startedAt;
+      view.recent = done.length;
+      view.finishedAt = end;
+      view.lastMs = Math.max(0, end - last.startedAt);
+    }
+    return view;
   }
 
   /** 会话关闭：表和定时器一起收掉，别让 30 秒一跳的滴答挂着已死的对象。 */

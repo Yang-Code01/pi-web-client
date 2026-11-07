@@ -18,7 +18,7 @@ import { lifecycle, gcTickMs, capProtectMs, type Lifecycle, type LifecycleThresh
 import { absentFor } from "./presence.ts";
 import { sampleMemory } from "./runtime.ts";
 import { defaultPermission } from "./permissiondefault.ts";
-import { BgRuns, type BgRun, type BgView } from "./bgruns.ts";
+import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -714,22 +714,22 @@ export class Session extends EventEmitter {
   private publishBg(): void {
     const next = this.bgRuns.view();
     const cur = this.state.bg;
-    if ((cur?.n ?? 0) === (next?.n ?? 0) && cur?.since === next?.since && (cur?.agent ?? "") === (next?.agent ?? "")) return;
+    // 字段会随「只剩刚跑完的」增减，逐个比不如比串形（见 `BgView`：n/since/recent/finishedAt/lastMs）。
+    if (JSON.stringify(cur ?? null) === JSON.stringify(next ?? null)) return;
     // touch:false —— 后台跑着不算「这个会话有新动静」，左栏的时间别跟着跳。
     // 显式 `null` 而不是 `undefined`：`undefined` 过 JSON 会被整条丢掉，页面就永远清不掉提示条。
     this.setState({ bg: next ?? null }, { touch: false });
   }
 
   /** D169 详情：这个会话的后台任务（含刚跑完的）。没接过手的会话返回空。 */
-  bgList(): BgRun[] {
+  bgList(): BgRunView[] {
     return this.bgRuns.list();
   }
 
   /** D169 详情：一个 run 的活动记录尾 + 最终答复（只读临时目录里的痕迹文件）。 */
   bgLog(runId: string, limit?: number): { run?: BgRun; log?: string; out?: string } {
     return this.bgRuns.readLog(runId, limit);
-  }
-  private draftCounter = 0;
+  }  private draftCounter = 0;
   /** Set while close() is taking pi down on purpose: its exit and shutdown noise are expected. */
   private closing = false;
   private closeQuietly = false;
@@ -1131,8 +1131,9 @@ export class Session extends EventEmitter {
             model: ev.message?.model,
           } as any;
           this.emitWs({ type: "item.add", sessionId: this.state.id, item });
-        } else if (ev.message?.role === "user") {
+        } else if (ev.message?.role === "user" || ev.message?.role === "custom") {
           // D169: runner 的完成通知也可能直接把空闲会话唤醒（不进队列）—— 这一条也要收。
+          // `custom` 是扩展 `pi.sendMessage()` 注进来的那条；不一起认，就只剩 queue_update 一条路。
           this.bgRuns.noteText(contentText(ev.message?.content));
         }
         break;

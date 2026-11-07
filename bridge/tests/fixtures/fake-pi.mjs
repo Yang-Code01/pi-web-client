@@ -17,6 +17,7 @@
  * Env: FAKE_PI_LOG (jsonl of what the stub saw), FAKE_COMPACT_MS (manual compaction length).
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const LOG = process.env.FAKE_PI_LOG || "";
@@ -132,6 +133,11 @@ async function turn(text) {
   }
   if (text.startsWith("BGSTART")) {
     // D169: 派一个后台子代理，这一轮正常收尾 —— 会话自己 settle 了，runner 还在跑。
+    // 形状照真 pi 来：`result` 是 `{ content, details }`（pi docs/json.md），活动路径在结果文本的
+    // 第二段里并且**带缩进** —— 只认行首的解析器在这里就会把提示条弄丢。
+    const activity = path.join(os.tmpdir(), "acp-delegate", "del_fake.activity");
+    fs.mkdirSync(path.dirname(activity), { recursive: true });
+    fs.writeFileSync(activity, "[tool] bash rg -n continueState web/src\n[tool] read bridge/src/sessions.ts\n");
     out({ type: "message_start", message: assistant("") });
     out({ type: "tool_execution_start", toolCallId: "call-bg", toolName: "acp_delegate", args: { agent: "researcher", task: "look at the files" } });
     out({
@@ -139,16 +145,21 @@ async function turn(text) {
       toolCallId: "call-bg",
       toolName: "acp_delegate",
       isError: false,
-      result: "Delegated to **researcher** (runId `del_fake`).\nTask: look at the files\nRunning in the background at `C:\\Temp`.",
-      details: { kind: "delegate", runId: "del_fake", agent: "researcher", task: "look at the files" },
+      result: {
+        content: [{ type: "text", text: "Delegated to **researcher** (runId `del_fake`).\nTask: look at the files\nRunning in the background at `" + path.join(os.tmpdir(), "acp-delegate") + "`.\n  Live activity is streaming to `" + activity + "`." }],
+        details: { kind: "delegate", runId: "del_fake", agent: "researcher", task: "look at the files" },
+      },
     });
     out({ type: "message_end", message: assistant("子代理已启动，我先合入别的分支。", { stopReason: "stop" }) });
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
   if (text.startsWith("BGDONE")) {
-    // runner 的完成通知：pi 把它当一条用户消息塞回会话（不走队列）。
-    out({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "[acp_delegate completed] **researcher** (runId `del_fake`, exit 0)\n全部通过。" }] } });
+    // runner 的完成通知。真 pi 走的是 `role: "custom"` 的注入消息（桥专门处理这一档），
+    // 不是普通用户发言 —— 结束判定只认 user 角色的话，提示条就永远收不掉。
+    const answer = path.join(os.tmpdir(), "acp-delegate", "del_fake.out");
+    fs.writeFileSync(answer, "## 结论\n三条接口都已对齐，没有破坏性变更。\n");
+    out({ type: "message_start", message: { role: "custom", content: [{ type: "text", text: "[acp_delegate completed] **researcher** (runId `del_fake`, exit 0)\n全部通过。" }] } });
     out({ type: "message_start", message: assistant("") });
     out({ type: "message_end", message: assistant("收到，继续收尾。", { stopReason: "stop" }) });
     out({ type: "agent_end", messages: [], willRetry: false });

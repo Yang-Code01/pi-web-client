@@ -16,7 +16,7 @@ import { applyPending, badgeSession, syncPending, type PendingCounts, type Pendi
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, type RailItem } from "./shells.ts";
-import { continueState } from "./continue-state.ts";
+import { bgBusy, continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
@@ -30,7 +30,7 @@ import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { WS_NAME_MAX, dropBlocker, fixedBlocker, fixedDropped, fixedRows, renameIntent, toggleFixed } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
@@ -77,17 +77,8 @@ interface SessionBadge {
  * D162: 「完成」也显示在**当前打开的会话**上 —— 打开只是看，不再把完成抹掉。否则用户点开确认
  * 一眼，卡片就从「完成」退回时间，再也没法从列表判断这一轮到底结束了没有。
  */
-/** D169 详情的线上形状（桥 `bg.list` 的 `runs[]`）。 */
-interface BgRunDto {
-  id: string;
-  agent: string;
-  task: string;
-  startedAt: number;
-  state: "running" | "done" | "failed";
-  endedAt?: number;
-  logPath?: string;
-  outPath?: string;
-}
+/** D169 详情的线上形状。见 `web/src/types.ts`（与左栏那份 `SessionState` 摆在一起）。 */
+type BgRunDto = BgRunView;
 
 /** 详情里的一屏：一卡片 + 它三块会变的字。 */
 interface BgRunNode {
@@ -96,6 +87,8 @@ interface BgRunNode {
   log: HTMLElement;
   out: HTMLElement;
   labOut: HTMLElement;
+  /** 这个 runner 有没有过程记录（pi-subagents 没有，卡片上直说，不装成「还没有」。） */
+  hasLog: boolean;
 }
 
 function sessionBadge(s: SessionState): SessionBadge | null {
@@ -122,12 +115,12 @@ function sessionBadge(s: SessionState): SessionBadge | null {
   }
   if (s.running) return { kind: "run", text: tr("运行中"), cls: "run", title: tr("agent 正在推进"), pending: false };
   // D169: 会话自己 settle 了，派出去的 runner 还在跑 —— 「完成」是假的，得先把这枚亮出来。
-  if (s.bg && s.bg.n > 0) {
+  if (bgBusy(s)) {
     return {
       kind: "bg",
-      text: s.bg.n > 1 ? tr("后台 {p1}", { p1: s.bg.n }) : tr("后台"),
+      text: s.bg?.n && s.bg.n > 1 ? tr("后台 {p1}", { p1: s.bg.n }) : tr("后台"),
       cls: "run",
-      title: s.bg.agent ? tr("子代理 {p1} 还在后台跑，pi 会在它回来时接着做", { p1: s.bg.agent }) : tr("子代理还在后台跑，pi 会在它回来时接着做"),
+      title: s.bg?.agent ? tr("子代理 {p1} 还在后台跑，pi 会在它回来时接着做", { p1: s.bg.agent }) : tr("子代理还在后台跑，pi 会在它回来时接着做"),
       pending: false,
     };
   }
@@ -135,13 +128,22 @@ function sessionBadge(s: SessionState): SessionBadge | null {
   return null;
 }
 
-function bgElapsedText(since: number): string {
-  const secs = Math.max(0, Math.round((Date.now() - since) / 1000));
+function bgElapsedText(since: number, until = Date.now()): string {
+  const secs = Math.max(0, Math.round((until - since) / 1000));
   const m = Math.floor(secs / 60);
   const s = String(secs % 60).padStart(2, "0");
   // 跑过一小时的子代理很少，但真跑到了也不能显示成 90:04。
   const clock = m < 60 ? `${m}:${s}` : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${s}`;
   return tr("已跑 {p1}", { p1: clock });
+}
+
+/** 跑完之后的同一个钟：报「一共跑了多久」，而不是「结束至今」（D169 评审）。 */
+function bgTookText(ms: number): string {
+  const secs = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(secs / 60);
+  const s = String(secs % 60).padStart(2, "0");
+  const clock = m < 60 ? `${m}:${s}` : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${s}`;
+  return tr("用了 {p1}", { p1: clock });
 }
 
 export class App {
@@ -686,7 +688,12 @@ export class App {
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
     this.pillBar = new PillBar<SessionState>(pinStrip, {
-      badge: (s) => this.badgeOf(s),
+      // D169：钉条胶囊里那行小字就是徽标本身；「后台」那枚也让它点得开（胶囊其余部分仍是打开会话）。
+      badge: (s) => {
+        const b = this.badgeOf(s);
+        return b ? { ...b, detail: b.kind === "bg" } : null;
+      },
+      onBadge: (id) => this.openBgSheet(id),
       time: relativeTime,
       // #97：第二行不再是「置顶区」，条头那颗字也就没有意义了 —— 最左边那颗就是当前会话。
       // 空字符串仍然会留一个空 span，CSS 里 `.pin-strip-label:empty` 把它收掉。
@@ -1419,7 +1426,9 @@ export class App {
         break;
       case "bg.list":
         if (!this.bgSheet || msg.sessionId !== this.bgSheet.sessionId) break;
-        this.paintBgSheet(Array.isArray(msg.runs) ? (msg.runs as BgRunDto[]) : []);
+        // 桥只发错误码（文案在这边翻了再显示），目前只有一种：公网那只手看不到后台任务。
+        const why = msg.error === "public" ? tr("公网访问时看不到后台任务") : "";
+        this.paintBgSheet(Array.isArray(msg.runs) ? (msg.runs as BgRunDto[]) : [], why);
         break;
       case "bg.log":
         if (msg.sessionId !== this.bgSheet?.sessionId) break;
@@ -2151,12 +2160,6 @@ export class App {
   }
 
   /**
-   * 徽标唯一入口（D156）：当前会话的待处理数以本地队列为准（`badgeSession`），别的会话读列表里
-   * 那份事件累加值。左栏卡片、钉条胶囊、管理面板、顶栏那颗都走这里，省得哪一处又读到旧账。
-   * 刚 `openSession`、快照还没回来时本地队列是空的（`pendingFresh` 为 false），此时退回列表里
-   * 那份 —— 否则切到一个「正等着你」的会话，徽标会先闪没一拍。
-   */
-  /**
    * 徽标唯一的一颗元素。D169：「后台」那枚能点开详情（其它徽标还是纯提示），
    * 点它不能顺带把卡片/胶囊自己的「打开这个会话」也触发，所以一律 stopPropagation。
    */
@@ -2183,6 +2186,12 @@ export class App {
     return chip;
   }
 
+  /**
+   * 徽标唯一入口（D156）：当前会话的待处理数以本地队列为准（`badgeSession`），别的会话读列表里
+   * 那份事件累加值。左栏卡片、钉条胶囊、管理面板、顶栏那颗都走这里，省得哪一处又读到旧账。
+   * 刚 `openSession`、快照还没回来时本地队列是空的（`pendingFresh` 为 false），此时退回列表里
+   * 那份 —— 否则切到一个「正等着你」的会话，徽标会先闪没一拍。
+   */
   private badgeOf(s: SessionState): SessionBadge | null {
     const shown = this.pendingFresh ? badgeSession(s, this.currentId, this.localCounts()) : s;
     return sessionBadge(shown);
@@ -7609,7 +7618,11 @@ export class App {
     if (archived) tag("arch", tr("已归档"));
     tag(s.origin === "web" ? "web" : "cli", s.origin === "web" ? tr("网页") : "CLI", s.origin === "web" ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话"));
     const badge = this.badgeOf(s);
-    if (badge) tag(badge.cls, badge.text, badge.title);
+    // D169：「后台」那一枚在管理面板里也要点得开，不然同一枚徽标在左栏能点、到这里突然不能。
+    if (badge?.kind === "bg") {
+      const chip = this.badgeChip(s);
+      if (chip) line.append(chip);
+    } else if (badge) tag(badge.cls, badge.text, badge.title);
     else if (s.owned) tag("live", tr("已接管"), tr("这个会话由网页接管着"));
     main.append(line);
     const sub = el("div", "mgr-sub");
@@ -10025,7 +10038,7 @@ export class App {
           ? tr("pi 正在启动，起来之后再继续")
           : s?.running
             ? tr("pi 正在跑这一轮，停下之后再继续")
-            : s?.bg && s.bg.n > 0
+            : bgBusy(s)
               ? tr("子代理还在后台跑，pi 会在它回来时接着做")
               : tr("这条会话还没有说过话，没有可继续的");
     btn.title = why || tr("把「继续」发给 pi —— 草稿留在输入框里，不会被动到");
@@ -10040,8 +10053,10 @@ export class App {
    */
   private syncBgBar(): void {
     const bg = this.session?.bg;
-    const live = bg && bg.n > 0 ? bg : null;
-    if (!live) {
+    const live = bgBusy(this.session) ? bg : null;
+    // 跑完的那一档还要留几分钟：不然「最终输出」只有在弹层恰好开着时才看得到（D169 评审）。
+    const done = !live && bg && (bg.recent ?? 0) > 0 ? bg : null;
+    if (!live && !done) {
       this.bgBar?.remove();
       this.bgBar = null;
       return;
@@ -10050,7 +10065,6 @@ export class App {
       const bar = el("div", "bg-bar");
       // 时间贴着文字走，不推到最右边：`总结本轮错误` 那颗浮动贴在输入框右上，推过去会被它压住。
       bar.append(el("span", "bg-dot"), el("span", "bg-text"), el("span", "bg-sep", "·"), el("span", "bg-elapsed"));
-      bar.title = tr("点开看它在干什么；pi 会在它回来时自己接着做，这时点「继续」等于插队多推一轮。");
       // D169：整条都能点开详情。用 role=button 而不是 <button>：里面已经有文字与计时，语义上是一个入口。
       bar.setAttribute("role", "button");
       bar.tabIndex = 0;
@@ -10065,25 +10079,32 @@ export class App {
       this.bgBar = bar;
     }
     const bar = this.bgBar;
+    bar.classList.toggle("idle", !live);
+    bar.title = live
+      ? tr("点开看它在干什么；pi 会在它回来时自己接着做，这时点「继续」等于插队多推一轮。")
+      : tr("点开看它的过程与结果；pi 已经接着做完了。");
     const text = bar.querySelector(".bg-text") as HTMLElement | null;
-    if (text) {
+    const since = bar.querySelector(".bg-elapsed") as HTMLElement | null;
+    if (live && text && since) {
       text.textContent =
         live.n > 1
           ? tr("{p1} 个子代理运行中", { p1: live.n })
           : live.agent
             ? tr("子代理运行中 · {p1}", { p1: live.agent })
             : tr("子代理运行中");
-    }
-    const since = bar.querySelector(".bg-elapsed") as HTMLElement | null;
-    if (since) {
-      since.dataset.bgSince = String(live.since);
-      since.textContent = bgElapsedText(live.since);
+      since.dataset.bgSince = String(live.since ?? Date.now());
+      since.textContent = bgElapsedText(live.since ?? Date.now());
+    } else if (done && text && since) {
+      text.textContent = done.agent ? tr("子代理已结束 · {p1}", { p1: done.agent }) : tr("子代理已结束");
+      // 不再滴答：秒数从「开始」到「结束」，由 `bgTookText` 一次性写死。
+      delete since.dataset.bgSince;
+      since.textContent = bgTookText(done.lastMs ?? 0);
     }
   }
 
   /**
    * D169 详情：这条提示条背后到底在跑什么。概览（agent / 任务 / 状态 / 用时）+ 过程（runner 自己
-   * 写的活动记录尾巴，1.5 秒一刷）+ 跑完之后的最终输出。桥只读 `%TEMP%cp-delegate\` 里的痕迹，
+   * 写的活动记录尾巴，1.5 秒一刷）+ 跑完之后的最终输出。桥只读 `%TEMP%\acp-delegate\` 里的痕迹，
    * 读不到（还没写、已被删、公网只读）就少一段，不当错误报。
    */
   private openBgSheet(sessionId?: string): void {
@@ -10116,7 +10137,7 @@ export class App {
   }
 
   /** `bg.list` 回来：按 runId 建/收卡片，再各自要一次日志尾（内容没变就不动 DOM）。 */
-  private paintBgSheet(runs: BgRunDto[]): void {
+  private paintBgSheet(runs: BgRunDto[], error = ""): void {
     const sheet = this.bgSheet;
     if (!sheet) return;
     const keep = new Set(runs.map((r) => r.id));
@@ -10127,7 +10148,8 @@ export class App {
     }
     sheet.body.querySelector(".bg-empty")?.remove();
     if (!runs.length) {
-      sheet.body.append(el("div", "bg-empty", tr("这个会话没有在跑的后台子代理。")));
+      // `error` 只会在公网那只手上出现（桥不把任务原话发出去）；本地就是真的没有。
+      sheet.body.append(el("div", "bg-empty", error || tr("这个会话没有在跑的后台子代理。")));
       return;
     }
     for (const r of runs) {
@@ -10146,12 +10168,16 @@ export class App {
         outEl.hidden = true;
         root.append(line, task, id, labLog, logEl, labOut, outEl);
         sheet.body.append(root);
-        node = { root, state: line.lastElementChild as HTMLElement, log: logEl, out: outEl, labOut };
+        node = { root, state: line.lastElementChild as HTMLElement, log: logEl, out: outEl, labOut, hasLog: Boolean(r.hasLog) };
+        if (!r.hasLog) logEl.textContent = tr("这个 runner 不写过程记录。");
         sheet.runs.set(r.id, node);
       }
       const state = r.state === "running" ? tr("运行中") : r.state === "failed" ? tr("失败") : tr("已完成");
-      // 跑完了就用结束时刻算总耗时；还在跑就按还差多少（两者都是「从开始起」的钟）。
-      node.state.textContent = `${state} · ${bgElapsedText(r.endedAt ?? r.startedAt)}`;
+      // 跑完了报总耗时（结束 − 开始）；还在跑就报「已跑多久」，两者都是「从开始起的钟」。
+      node.state.textContent =
+        r.state === "running"
+          ? `${state} · ${bgElapsedText(r.startedAt)}`
+          : `${state} · ${bgTookText(Math.max(0, (r.endedAt ?? Date.now()) - r.startedAt))}`;
       this.socket.send({ type: "bg.log", sessionId: sheet.sessionId, runId: r.id });
     }
   }
@@ -10163,7 +10189,7 @@ export class App {
     const text = typeof log === "string" ? log : "";
     if (node.log.textContent !== text) {
       const stick = node.log.scrollHeight - node.log.scrollTop - node.log.clientHeight < 24;
-      node.log.textContent = text || tr("还没有活动记录。");
+      node.log.textContent = text || (node.hasLog ? tr("还没有活动记录。") : tr("这个 runner 不写过程记录。"));
       if (stick) node.log.scrollTop = node.log.scrollHeight;
     }
     const done = typeof out === "string" && out.length > 0;
