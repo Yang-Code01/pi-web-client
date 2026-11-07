@@ -25,6 +25,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = path.join(REPO, "docs/shots");
@@ -47,30 +48,10 @@ const until = async (fn, ms, what) => {
   throw new Error(`timeout waiting for ${what}`);
 };
 
-// --- find a *working* playwright wherever npx left it -------------------------------------------------
-// npx keeps several installs around and some of them are half-broken (missing playwright-core), so a
-// candidate only counts once it has actually launched a browser.
+// --- playwright 统一走 tools/playwright.mjs（D114）--------------------------------------------
 async function launchBrowser() {
-  const cache = path.join(process.env.LOCALAPPDATA ?? "", "npm-cache/_npx");
-  const candidates = [process.env.PW_PATH, path.join(REPO, "node_modules/playwright/index.mjs")].filter(Boolean);
-  try {
-    for (const dir of fs.readdirSync(cache)) candidates.push(path.join(cache, dir, "node_modules/playwright/index.mjs"));
-  } catch {
-    /* no npx cache: fall through to the error below */
-  }
-  const seen = [];
-  for (const file of candidates) {
-    if (!file || !fs.existsSync(file)) continue;
-    try {
-      const { chromium } = await import(pathToFileURL(file).href);
-      const browser = await chromium.launch();
-      log("playwright:", file);
-      return browser;
-    } catch (ex) {
-      seen.push(`${file}: ${ex.message.split("\n")[0]}`);
-    }
-  }
-  throw new Error(`找不到可用的 playwright（设 PW_PATH=<.../playwright/index.mjs>）\n${seen.join("\n")}`);
+  const { chromium } = await loadPlaywright();
+  return chromium.launch();
 }
 
 /** pi's session dir naming: every `:` / `\` / `/` becomes `-`, wrapped in `--…--`. */

@@ -20,6 +20,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 7931;
@@ -45,28 +46,6 @@ const until = async (fn, ms, what) => {
   }
   throw new Error(`timeout waiting for ${what}`);
 };
-
-async function launchPlaywright() {
-  const cache = path.join(process.env.LOCALAPPDATA ?? "", "npm-cache/_npx");
-  const candidates = [process.env.PW_PATH, path.join(REPO, "node_modules/playwright/index.mjs")].filter(Boolean);
-  try {
-    for (const dir of fs.readdirSync(cache)) candidates.push(path.join(cache, dir, "node_modules/playwright/index.mjs"));
-  } catch {
-    /* no npx cache */
-  }
-  for (const file of candidates) {
-    if (!file || !fs.existsSync(file)) continue;
-    try {
-      const mod = await import(pathToFileURL(file).href);
-      const b = await mod.chromium.launch();
-      await b.close();
-      return mod;
-    } catch {
-      /* half-installed */
-    }
-  }
-  throw new Error("找不到可用的 playwright（装一个，或设 PW_PATH）");
-}
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
@@ -201,7 +180,7 @@ wss.on("connection", (ws) => {
   send({ type: "hello", me: ME, sessions: [SES], manage: { pin: [], order: [], archived: [] }, trash: [], tunnel: TUNNEL });
 });
 
-const { chromium } = await launchPlaywright();
+const { chromium } = await loadPlaywright();
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
 log("fake bridge on", BASE);
 

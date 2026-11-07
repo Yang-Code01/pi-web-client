@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = path.join(REPO, "web/dist");
@@ -30,27 +31,6 @@ const ok = (cond, what) => {
   console.log(`${cond ? "ok  " : "FAIL"} ${what}`);
   if (!cond) bad += 1;
 };
-
-async function launchPlaywright() {
-  const cache = path.join(process.env.LOCALAPPDATA ?? "", "npm-cache/_npx");
-  const candidates = [process.env.PW_PATH, path.join(REPO, "node_modules/playwright/index.mjs")].filter(Boolean);
-  try {
-    for (const dir of fs.readdirSync(cache)) candidates.push(path.join(cache, dir, "node_modules/playwright/index.mjs"));
-  } catch {
-    /* no npx cache */
-  }
-  for (const file of candidates) {
-    if (!file || !fs.existsSync(file)) continue;
-    try {
-      const mod = await import(pathToFileURL(file).href);
-      await mod.chromium.launch().then((b) => b.close());
-      return mod;
-    } catch {
-      /* half-installed */
-    }
-  }
-  throw new Error("找不到可用的 playwright");
-}
 
 // --- a real bridge (node-pty lives there) with its own state, so nothing of yours is touched ------
 fs.rmSync(ROOT, { recursive: true, force: true });
@@ -89,7 +69,7 @@ const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
 ok(Boolean(cookie), "logged in");
 
 // --- UI layer ------------------------------------------------------------------------------------
-const { chromium } = await launchPlaywright();
+const { chromium } = await loadPlaywright();
 const browser = await chromium.launch();
 const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "zh-CN" })).newPage();
 page.on("pageerror", (e) => log("pageerror:", e.message));

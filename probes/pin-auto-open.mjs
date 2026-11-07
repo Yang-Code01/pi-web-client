@@ -22,6 +22,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = process.env.PIN_DIST ? path.resolve(process.env.PIN_DIST) : path.join(REPO, "web/dist");
@@ -36,27 +37,6 @@ const ok = (cond, what) => {
   console.log(`${cond ? "ok  " : "FAIL"} ${what}`);
   if (!cond) bad += 1;
 };
-
-async function launchPlaywright() {
-  const cache = path.join(process.env.LOCALAPPDATA ?? "", "npm-cache/_npx");
-  const candidates = [process.env.PW_PATH, path.join(REPO, "node_modules/playwright/index.mjs")].filter(Boolean);
-  try {
-    for (const dir of fs.readdirSync(cache)) candidates.push(path.join(cache, dir, "node_modules/playwright/index.mjs"));
-  } catch {
-    /* no npx cache */
-  }
-  for (const file of candidates) {
-    if (!file || !fs.existsSync(file)) continue;
-    try {
-      const mod = await import(pathToFileURL(file).href);
-      await mod.chromium.launch().then((b) => b.close());
-      return mod;
-    } catch {
-      /* half-installed playwright: try the next one */
-    }
-  }
-  throw new Error("找不到可用的 playwright（设 PW_PATH=<.../playwright/index.mjs>）");
-}
 
 const state = (id, name) => ({
   id,
@@ -139,7 +119,7 @@ server.on("upgrade", (req, socket, head) => {
 });
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
 
-const { chromium } = await launchPlaywright();
+const { chromium } = await loadPlaywright();
 const browser = await chromium.launch();
 const page = await (await browser.newContext({ viewport: { width: 1000, height: 820 }, locale: "zh-CN" })).newPage();
 page.on("pageerror", (e) => console.log("pageerror:", e.message));

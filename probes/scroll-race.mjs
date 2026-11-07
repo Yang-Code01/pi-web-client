@@ -14,33 +14,13 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = path.join(REPO, "web/dist");
 const PORT = 7895;
 const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function launchPlaywright() {
-  const cache = path.join(process.env.LOCALAPPDATA ?? "", "npm-cache/_npx");
-  const candidates = [process.env.PW_PATH, path.join(REPO, "node_modules/playwright/index.mjs")].filter(Boolean);
-  try {
-    for (const dir of fs.readdirSync(cache)) candidates.push(path.join(cache, dir, "node_modules/playwright/index.mjs"));
-  } catch {
-    /* no npx cache */
-  }
-  for (const file of candidates) {
-    if (!file || !fs.existsSync(file)) continue;
-    try {
-      const mod = await import(pathToFileURL(file).href);
-      await mod.chromium.launch().then((b) => b.close());
-      return mod;
-    } catch {
-      /* half-installed playwright: try the next one */
-    }
-  }
-  throw new Error("找不到可用的 playwright（设 PW_PATH=<.../playwright/index.mjs>）");
-}
 
 // --- a transcript long enough to scroll, with one assistant message left open for the stream ------
 const N = 14;
@@ -141,7 +121,7 @@ server.on("upgrade", (req, socket, head) => {
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
 
 // --- drive it ------------------------------------------------------------------------------------
-const { chromium } = await launchPlaywright();
+const { chromium } = await loadPlaywright();
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2, locale: "zh-CN" });
 const page = await ctx.newPage();
