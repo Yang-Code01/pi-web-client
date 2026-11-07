@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clampMax, TABS_MAX, TABS_MIN, tabHitTest, tabModel, tabReorder } from "../src/wstabs.ts";
+import { clampMax, TABS_DEFAULT, TABS_MAX, TABS_MIN, tabHitTest, tabModel, tabReorder } from "../src/wstabs.ts";
 
 /** 桥下发的一份顺序（左栏与横条共用）。 */
 const ORDER = ["g1", "g2", "g3", "g4", "g5"];
@@ -48,12 +48,16 @@ test("名额 0：什么都不画，全部进 ＋N", () => {
   assert.deepEqual(m.more, ORDER);
 });
 
-test("名额进页面先按 1–5 夹住", () => {
+test("#176 名额进页面先按 1–12 夹住，默认 6", () => {
   assert.equal(clampMax(0), TABS_MIN);
+  assert.equal(clampMax(-4), TABS_MIN);
   assert.equal(clampMax(99), TABS_MAX);
   assert.equal(clampMax(2.7), 2);
+  assert.equal(clampMax(TABS_MIN), 1);
+  assert.equal(clampMax(TABS_MAX), 12);
+  assert.equal(TABS_DEFAULT, 6, "桥端没下发 max 时按 6 画");
   assert.equal(TABS_MIN, 1);
-  assert.equal(TABS_MAX, 5);
+  assert.equal(TABS_MAX, 12);
 });
 
 // ---------------------------------------------------------------- #124 横向落点（#173 沿用）

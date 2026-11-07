@@ -138,9 +138,9 @@ server.on("upgrade", (req, socket, head) => {
       }
       if (msg.type === "manage") {
         CALLS.push(msg);
-        // 真桥的 `setTabs()`：名额 clamp 到 1–5，列表去重 / 剔脏 / 截到名额，最后一次落盘再广播。
+        // 真桥的 `setTabs()`：名额 clamp 到 1–12，列表去重 / 剔脏 / 截到名额，最后一次落盘再广播。
         if (msg.action === "ws.tabs") {
-          if (msg.max !== undefined) WS.max = Math.min(5, Math.max(1, Math.trunc(Number(msg.max))));
+          if (msg.max !== undefined) WS.max = Math.min(12, Math.max(1, Math.trunc(Number(msg.max))));
           if (msg.pinned !== undefined) {
             const known = new Set(WS.groups.map((g) => g.id));
             WS.pinned = msg.pinned.filter((id, i, all) => typeof id === "string" && known.has(id) && all.indexOf(id) === i);

@@ -281,9 +281,9 @@ test("#173 只传 max：顺序一个字不动", () => {
   const a = ws.groupFor("s1", plain);
   const b = ws.groupFor("s2", plain2);
   ws.setTabs({ order: [b, a] });
-  assert.equal(ws.setTabs({ max: 5 }).ok, true);
+  assert.equal(ws.setTabs({ max: 8 }).ok, true);
   assert.deepEqual(ws.snapshot().order, [b, a]);
-  assert.equal(ws.snapshot().max, 5);
+  assert.equal(ws.snapshot().max, 8);
 });
 
 test("#173 旧页面只传 pinned：不报错，也不改顺序", () => {
@@ -316,11 +316,15 @@ test("#173 空数组是合法 order：组按显示名补到末尾", () => {
   assert.deepEqual(ws.snapshot().order, [b, a]);
 });
 
-test("#173 名额仍 clamp 到 1–5 并取整", () => {
+test("#176 名额 clamp 到 1–12 并取整", () => {
   const ws = fresh();
   for (const [given, want] of [
     [0, 1],
-    [99, 5],
+    [1, 1],
+    [8, 8],
+    [12, 12],
+    [13, 12],
+    [99, 12],
     [2.7, 2],
     [-4, 1],
   ]) {
@@ -329,10 +333,26 @@ test("#173 名额仍 clamp 到 1–5 并取整", () => {
   }
 });
 
+test("#176 旧状态没设过名额按 6；显式设过 3 的保留 3，越界值 clamp 到 1–12", () => {
+  const seed = (body) => {
+    const dir = path.join(tmp, `state-${++stateSeq}`);
+    process.env.PI_WEB_STATE = dir;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "workspaces.json"), JSON.stringify(body));
+    return new Workspaces();
+  };
+  const base = { groups: [], overrides: {}, keys: {}, order: [] };
+  assert.equal(seed(base).snapshot().max, 6, "从没设置过 → 默认 6");
+  assert.equal(seed({ ...base, max: 3 }).snapshot().max, 3, "显式设过 3 → 还是 3（不被悄悄改掉）");
+  assert.equal(seed({ ...base, max: 8 }).snapshot().max, 8, "范围内原样保留");
+  assert.equal(seed({ ...base, max: 99 }).snapshot().max, 12, "越界读入即 clamp");
+  assert.equal(seed({ ...base, max: 0 }).snapshot().max, 1, "越界读入即 clamp（下界）");
+});
+
 test("#173 非法名额：回原因且状态一个字不变", () => {
   const ws = fresh();
   const a = ws.groupFor("s1", plain);
-  ws.setTabs({ order: [a], max: 4 });
+  ws.setTabs({ order: [a], max: 9 });
   const before = ws.snapshot();
   for (const bad of ["3", null, Number.NaN, {}, [], true]) {
     const result = ws.setTabs({ max: bad });

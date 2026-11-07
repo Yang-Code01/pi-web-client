@@ -3037,8 +3037,9 @@ export class App {
   }
 
   /**
-   * #123 设置面板的「标签行」：只剩名额步进器（#173 起固定组退役，顺序由标签行 / 左栏共用
-   * 的一份 `order` 说了算）。桥的每份快照都重画这一块 —— 页面不另存一份可能说错的副本。
+   * #123 设置面板的「标签行」：只剩「最多显示」步进器（#173 起固定组退役，顺序由标签行 / 左栏
+   * 共用的一份 `order` 说了算；#176 起范围 1–12、默认 6）。桥的每份快照都重画这一块 —— 页面
+   * 不另存一份可能说错的副本。
    */
   private paintWsTabsPane(): void {
     const pane = this.wsPane;
@@ -3055,7 +3056,7 @@ export class App {
     const max = this.workspaces.max ?? TABS_DEFAULT;
 
     const row = el("div", "ws-max-row");
-    row.append(el("span", "ws-max-label", tr("固定名额")));
+    row.append(el("span", "ws-max-label", tr("最多显示")));
     const step = (act: string, text: string, title: string, delta: number, off: boolean) => {
       const btn = el("button", "ws-max-btn", text) as HTMLButtonElement;
       btn.type = "button";
@@ -3067,12 +3068,14 @@ export class App {
       row.append(keep(btn));
     };
     // 到边界的那一颗真置灰（disabled）：点得动却没反应，比灰着更让人怀疑。
-    step("ws-max-down", tr("－"), tr("固定名额减一"), -1, max <= TABS_MIN);
+    step("ws-max-down", tr("－"), tr("最多显示减一"), -1, max <= TABS_MIN);
     const num = el("span", "ws-max-n", String(max));
     num.dataset.act = "ws-max-n";
     row.append(num);
-    step("ws-max-up", tr("＋"), tr("固定名额加一"), 1, max >= TABS_MAX);
+    step("ws-max-up", tr("＋"), tr("最多显示加一"), 1, max >= TABS_MAX);
     pane.append(row);
+    // 旁注随当前值变：名额只决定画几颗，装不下的仍在 ＋N 里（#176）。
+    pane.append(el("div", "ws-max-hint", tr("横条最多放 {p1} 个，装不下的收进 ＋N", { p1: max })));
     if (key) focusable.get(key)?.focus();
   }
 
@@ -11285,7 +11288,7 @@ export class App {
    * the topbar keeps them one click away — same order as the list's 置顶 section, newest name first.
    */
   /**
-   * #97 壳 A 行 1：工作区标签页。横向一条；#121 起只画 N 颗（默认 3，桥端可调 1–5），
+   * #97 壳 A 行 1：工作区标签页。横向一条；#121 起只画 N 颗（默认 6，桥端可调 1–12），
    * 剩下的收进槽外那颗 `＋N`。当前工作区永远在圈内（不在就挤掉最后一个补位组），有会话卡在
    * 用户身上时带一颗待处理点。点一下 = 切到那一组：打开组里排最上面的那颗会话（★ 优先，跟左栏
    * 同一份顺序）。
