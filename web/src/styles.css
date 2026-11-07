@@ -440,7 +440,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ws-intro-n { flex: none; font: 11px/1 var(--mono); color: var(--dim); }
 .ws-intro-moved { flex: none; font: 10.5px/1 var(--mono); color: var(--accent); }
 .session-sec[data-sec="archived"] .sess-head .label { cursor: pointer; }
-.session-card.archived { border-style: dashed; opacity: 0.72; }
+.session-card.archived { border-style: dashed; opacity: 0.85; }
 .session-card.archived .name { color: var(--dim); }
 .session-card.archived:hover { opacity: 1; }
 .session-card .grip {
@@ -523,7 +523,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .mgr-row:hover { background: var(--panel-2); }
 .mgr-row.picked { border-color: var(--accent-dim); background: var(--accent-bg); }
 .mgr-row.current .mgr-name { color: var(--accent); }
-.mgr-row.archived { opacity: 0.7; }
+/* 归档靠边框和背景变淡，不靠压文字：0.7 会把 --faint 压到 2.5:1，AA 要 4.5:1，0.85 是下限。 */
+.mgr-row.archived { opacity: 0.85; }
 .mgr-row.archived:hover, .mgr-row.archived.picked { opacity: 1; }
 .mgr-main { min-width: 0; display: grid; gap: 4px; }
 .mgr-name-line { display: flex; align-items: center; gap: 4px; min-width: 0; }
