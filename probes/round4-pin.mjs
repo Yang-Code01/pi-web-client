@@ -1,9 +1,9 @@
 /**
  * Probe: Q-011 — pinned sessions stay reachable when the left column is collapsed.
  *
- * Seeds three sessions, pins two of them (in a deliberate order), then collapses the left column
- * and checks the strip: order matches the list's 置顶 order, clicking a chip opens that session,
- * and 展开左栏 brings the column back.
+ * Seeds three sessions, pins two of them (in a deliberate order), then checks row 2: order matches
+ * the list's 置顶 order, clicking a chip opens that session, the topbar toggle brings the column
+ * back, and row 2 never grows a second 「展开左栏」 of its own (the topbar toggle is the only one).
  *
  * Run: node probes/round4-pin.mjs   (needs `npm run build:web` first)
  */
@@ -99,12 +99,10 @@ try {
   await page.goto(BASE, { waitUntil: "networkidle" });
   await until(async () => (await page.locator(".session-card").count()) === 3, 10000, "3 cards");
 
-  // The list already groups 置顶 — assert the strip agrees with it after collapsing.
+  // 行 2 是常驻的（#97 壳 A 两行制）—— 左栏开着的时候它也在。
   const strip = page.locator(".pin-strip");
-  assert(await strip.isHidden(), "the strip stays out of the way while the column is open");
-  await page.locator(".icon-btn.side-toggle[data-side=left]").click();
-  await until(async () => strip.isVisible(), 4000, "strip visible");
-  const chips = strip.locator(".pin-chip:not(.pin-expand):not(.pin-new)");
+  assert(await strip.isVisible(), "row 2 is on screen while the column is open");
+  const chips = strip.locator(".pin-chip:not(.pin-new)");
   await until(async () => (await chips.count()) === 2, 4000, "2 pinned chips");
   const labels = await chips.allInnerTexts();
   assert(labels[0].includes("接口联调"), `pin order is respected (got ${JSON.stringify(labels)})`);
@@ -113,14 +111,20 @@ try {
   log("strip:", labels.map((l) => l.replace(/\s+/g, " ").trim()));
   await page.screenshot({ path: path.join(OUT, "1-strip.png") });
 
+  // 收起左栏：行 2 不再长出一颗「展开左栏」（顶栏左上角那颗就能展开）。
+  await page.locator(".icon-btn.side-toggle[data-side=left]").click();
+  await until(async () => !(await page.locator(".session-list").isVisible()), 4000, "column collapsed");
+  assert((await strip.locator("button", { hasText: "展开左栏" }).count()) === 0, "row 2 has no second 「展开左栏」");
+  await page.screenshot({ path: path.join(OUT, "1b-collapsed.png") });
+
   // A chip is a shortcut, not a decoration.
   await chips.first().click();
   await until(async () => (await page.locator(".topbar .title").innerText()).includes("接口联调"), 6000, "chip opens its session");
   log("chip opened the session");
 
-  // And the strip can put the column back.
-  await strip.locator(".pin-expand").click();
-  await until(async () => (await page.locator(".pane.sessions-pane, .pane").first().isVisible()) && (await strip.isHidden()), 4000, "column restored");
+  // And the topbar toggle puts the column back (the strip no longer carries its own copy).
+  await page.locator(".icon-btn.side-toggle[data-side=left]").click();
+  await until(async () => (await page.locator(".session-list").isVisible()) && (await strip.isVisible()), 4000, "column restored");
   assert(await page.locator(".session-card").first().isVisible(), "the session column is back");
   log("展开左栏 restores the column");
 

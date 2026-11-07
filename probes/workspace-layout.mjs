@@ -252,7 +252,7 @@ await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-rows.png`), clip
 
 // 1b) 没有 ★ 的组：行 2 只剩 NowChip 和 ＋，那个 ＋ 仍然点得开「开新会话」
 ok((await page.locator(".pin-strip .pin-new").count()) === 1 && (await page.locator(".pin-strip .pin-new").isVisible()), "没 ★ 时行 2 仍留着那颗 ＋");
-ok((await page.locator(".pin-strip .pin-expand").count()) === 0, "没 ★ 时行 2 不多摆一颗「展开左栏 ▸」");
+ok((await page.locator(".pin-strip button", { hasText: "展开左栏" }).count()) === 0, "没 ★ 时行 2 不多摆一颗「展开左栏 ▸」");
 ok((await page.locator(".ws-session-row .now-chip").count()) === 1, "空 ★ 的组里 NowChip 照旧在最左");
 await page.locator(".pin-strip .pin-new").click();
 await page.waitForSelector(".new-sheet", { timeout: 5000 }).catch(() => {});
