@@ -67,6 +67,34 @@ export interface ExtUi {
   title: string | null;
 }
 
+/**
+ * D170: 后台子代理。会话自己的 `running` 已经落回 false，这是「派出去的 runner 还在跑」。
+ *
+ * `n` 是在跑的；`recent` 是刚跑完、还留着一阵子能点开看结果的那几条 —— 它们**不算忙**，
+ * 「继续」不该被它们按住（`web/src/continue-state.ts` 的 `bgBusy`）。
+ */
+export interface BgView {
+  n: number;
+  agent?: string;
+  since?: number;
+  recent?: number;
+  finishedAt?: number;
+  lastMs?: number;
+}
+
+/** D170 详情的线上形状（桥 `bg.list` 的 `runs[]`）；路径不出桥，只说有没有可看的。 */
+export interface BgRunView {
+  id: string;
+  source: "acp" | "subagents";
+  agent: string;
+  task: string;
+  startedAt: number;
+  state: "running" | "done" | "failed";
+  endedAt?: number;
+  hasLog: boolean;
+  hasOut: boolean;
+}
+
 export interface ApprovalRequest {
   id: string;
   sessionId: string;
@@ -112,6 +140,11 @@ export interface SessionState {
   ws?: string;
   /** Another process (the pi terminal) holds the lock: read-only, and the bridge refuses to delete it. */
   locked?: boolean;
+  /**
+   * D170: 派出去的后台子代理还在跑（桥的内存态，桥重启就没了）。有这个字段时「继续」灰着，
+   * 并在输入框上方给一条「子代理运行中」的提示 —— pi 会在 runner 回来时自己唤醒继续。
+   */
+  bg?: BgView | null;
   /** Launch options chosen at creation (#28), one line. */
   launch?: string;
 }
