@@ -14,9 +14,16 @@
  *      两条补发，带 `pending: "sent"` 回到正常态；
  *   7. pi 起来了但拒收这一条（`disposition: "handled"` + `error`）也走同一条失败/重试路。
  *
+ * #201 把同一套队列接到另外两个入口上（同一个桩 pi、同一条 WS 连接）：
+ *   6. 磁盘上的只读会话直接发消息（自动接管）：气泡**先于**拉起 pi 的握手广播（这是本票最硬的一条）；
+ *   7. 点「接管」之后马上打字：接管还在拉 pi，消息照样立刻落地 —— 而且只起一支 pi（单飞）；
+ *   8. 自动接管没成（终端里的 pi 还开着）：气泡标成没发出去，并说明原因；
+ *   9. 挡路的东西没了再点「重试」：同一枚气泡回到待发、补发出去变「已交出」，不重复画、不重起 pi。
+ *
  * Run: npm --prefix bridge run build && node bridge/tests/boot-queue.mjs
  */
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -35,6 +42,34 @@ const BOOT_MS = 2500;
 fs.rmSync(ROOT, { recursive: true, force: true });
 fs.mkdirSync(STATE, { recursive: true });
 fs.mkdirSync(path.join(AGENT, "sessions"), { recursive: true });
+
+/**
+ * 磁盘上的一份会话文件（桥启动前就写好的）：只读会话、以及「终端里还开着」的那个。
+ * mtime 拨到一小时前 —— `openLive()` 会把 20 秒内被写过的文件当成「终端里的 pi 可能还开着」。
+ * 返回文件路径（桩 pi 的 argv 里要能认出它）。
+ */
+const writeDiskSession = (id, text) => {
+  const file = path.join(AGENT, "sessions", "--fixture--", `2026-01-01T00-00-00-000Z_${id}.jsonl`);
+  const at = new Date(Date.now() - 3600_000).toISOString();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(
+    file,
+    [
+      { type: "session", version: 3, id, timestamp: at, cwd: REPO },
+      { type: "message", id: "m1", parentId: null, timestamp: at, message: { role: "user", content: [{ type: "text", text }] } },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join("\n") + "\n",
+  );
+  fs.utimesSync(file, new Date(at), new Date(at));
+  return file;
+};
+const DISK_ID = "zz-boot-queue-readonly";
+const DISK_FILE = writeDiskSession(DISK_ID, "磁盘里的老会话");
+const CLAIM_ID = "zz-boot-queue-claim";
+const CLAIM_FILE = writeDiskSession(CLAIM_ID, "接管途中的那个");
+const LOCKED_ID = "zz-boot-queue-locked";
+const LOCKED_FILE = writeDiskSession(LOCKED_ID, "终端里还开着");
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 let failed = 0;
@@ -58,6 +93,25 @@ const until = async (fn, ms, what) => {
   }
   throw new Error(`timeout waiting for ${what}`);
 };
+
+/**
+ * 上一轮没退干净的桥要是还占着端口，新桥会 EADDRINUSE，而登录会拿新口令去问旧桥（401）——
+ * 两种症状都指向错误的方向。先等端口让出来，等不到就直说。
+ */
+const portBusy = () =>
+  new Promise((resolve) => {
+    const probe = net.connect({ port: PORT, host: "127.0.0.1" });
+    probe.once("connect", () => {
+      probe.destroy();
+      resolve(true);
+    });
+    probe.once("error", () => resolve(false));
+  });
+for (let i = 0; i < 40 && (await portBusy()); i++) await sleep(500);
+if (await portBusy()) {
+  console.error(`端口 ${PORT} 还被占着（上一次的桥没退干净？）`);
+  process.exit(1);
+}
 
 const bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
   cwd: REPO,
@@ -290,6 +344,124 @@ try {
     "补发成功后 item.replace sent",
   );
   check(sentBack.item?.pending === "sent", "重试之后这条也回到正常态");
+
+  // ---------------------------------------------------------------- 6. 只读磁盘会话发消息 = 自动接管，气泡先于握手
+  log("6. 只读会话（磁盘上、没在跑）直接发消息：气泡不能等拉起 pi 那几秒");
+  send({ type: "subscribe", sessionId: DISK_ID });
+  const preview = await waitFor((m) => m.type === "session" && m.sessionId === DISK_ID, 10000, "只读会话的 session 帧");
+  check(preview.state?.owned === false && !preview.state?.starting, "先从磁盘只读地看一眼：没有在跑");
+
+  const TEXTC = "只读会话里发的第一句";
+  const markC = seen.length;
+  const tC = Date.now();
+  send({ type: "prompt", sessionId: DISK_ID, text: TEXTC, clientId: "local:3" });
+  const addedC = await waitFor(
+    (m) => m.type === "item.add" && m.sessionId === DISK_ID && m.item?.text === TEXTC,
+    1500,
+    "只读会话的 item.add",
+  );
+  const tookC = Date.now() - tC;
+  check(tookC < 1000, `气泡在握手之前就落地了（${tookC} ms，桩 pi 还要 ${BOOT_MS} ms 才答话）`);
+  check(addedC.item?.pending === "booting", `带待发标记（pending=${JSON.stringify(addedC.item?.pending)}）`);
+  check(addedC.clientId === "local:3", "广播带回 clientId（那一页据此认领，不重复画）");
+  check(!records().some((r) => r.t === "prompt" && r.text === TEXTC), "窗口里没有硬塞给一个还没答话的 pi");
+  check(
+    !seen.some((m) => m.type === "notice" && m.sessionId === DISK_ID && m.level === "error"),
+    "自动接管没有报错",
+  );
+
+  await waitFor((m) => m.type === "session.state" && m.session?.id === DISK_ID && m.session?.starting === false, 20000, "只读会话 starting=false");
+  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXTC), 10000, "桩 pi 收到只读会话这条 prompt");
+  const deliveredC = records().find((r) => r.t === "prompt" && r.text === TEXTC);
+  check(deliveredC?.behavior === null, `就绪后开一轮（behavior=${JSON.stringify(deliveredC?.behavior ?? null)}）`);
+  const argvC = records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(DISK_FILE));
+  check(argvC.length === 1, `这个会话的 pi 只起了一次（argv 里带磁盘文件：${argvC.length} 次）`);
+  check(
+    argvC[0]?.argv?.includes("--session") ?? false,
+    "接管走的是 resume（--session <文件>），不是新会话",
+  );
+  const replacedC = await waitFor((m) => m.type === "item.replace" && m.sessionId === DISK_ID && m.id === addedC.item.id, 10000, "只读会话 item.replace sent");
+  check(replacedC.item?.pending === "sent", `同一枚气泡改成已交出（pending=${JSON.stringify(replacedC.item?.pending)}）`);
+  const ownedC = await waitFor((m) => m.type === "session.state" && m.session?.id === DISK_ID && m.session?.owned === true, 10000, "owned 翻转");
+  check(Boolean(ownedC), "发完之后这个会话已经是网页的了（自动接管）");
+  // 这一条要等整个握手过去再看：气泡的帧必须排在「开始拉起 pi」（starting:true）之前，
+  // 也就是用户打完字的那一刻就看见了它，而不是等拉起 pi + get_state 回来。
+  const addedCAt = seen.indexOf(addedC);
+  const startedC = seen.findIndex((m) => m.type === "session.state" && m.session?.id === DISK_ID && m.session?.starting === true);
+  check(
+    startedC > 0 && addedCAt < startedC,
+    `item.add 排在「开始拉起 pi」之前（item#${addedCAt} < starting#${startedC}）`,
+  );
+  check(seen.length > markC, "上面几帧都是这次发消息之后才来的");
+
+  // ---------------------------------------------------------------- 7. 接管途中打字：立刻落地，只起一支 pi
+  log("7. 点接管之后马上打字：接管还在拉 pi，消息也要立刻落地，而且不能因此把 pi 起两支");
+  send({ type: "subscribe", sessionId: CLAIM_ID });
+  const preview4 = await waitFor((m) => m.type === "session" && m.sessionId === CLAIM_ID, 10000, "第二个只读会话的 session 帧");
+  check(preview4.state?.owned === false, "第二个会话也是只读的");
+
+  // 两条消息连着发、中间不等：claim 才进入 openLive（它还卡在 pinPermission 上），prompt 就到了。
+  send({ type: "claim", sessionId: CLAIM_ID });
+  const TEXTCLAIM = "接管途中打的字";
+  const t4 = Date.now();
+  send({ type: "prompt", sessionId: CLAIM_ID, text: TEXTCLAIM, clientId: "local:4" });
+  const addedClaim = await waitFor(
+    (m) => m.type === "item.add" && m.sessionId === CLAIM_ID && m.item?.text === TEXTCLAIM,
+    1500,
+    "接管途中的 item.add",
+  );
+  const tookClaim = Date.now() - t4;
+  check(tookClaim < 1000, `接管途中发消息，气泡照样立刻出现（${tookClaim} ms）`);
+  check(addedClaim.item?.pending === "booting", `同样带着待发标记（pending=${JSON.stringify(addedClaim.item?.pending)}）`);
+
+  await waitFor((m) => m.type === "session.state" && m.session?.id === CLAIM_ID && m.session?.starting === false, 20000, "接管会话 starting=false");
+  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXTCLAIM), 10000, "桩 pi 收到接管途中那条");
+  const argvClaim = records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(CLAIM_FILE));
+  check(argvClaim.length === 1, `claim 和 prompt 同时来，pi 只起了一支（${argvClaim.length} 次）`);
+  check(records().filter((r) => r.t === "prompt" && r.text === TEXTCLAIM).length === 1, "这条消息只交出去一次");
+  const replacedClaim = await waitFor((m) => m.type === "item.replace" && m.sessionId === CLAIM_ID && m.id === addedClaim.item.id, 10000, "接管途中 item.replace sent");
+  check(replacedClaim.item?.pending === "sent", "气泡最后是已交出");
+
+  // ---------------------------------------------------------------- 8. 自动接管没成：气泡标红、说明原因
+  log("8. 终端里的 pi 还开着（有 tty 锁）：自动接管会被拒，气泡要标成没发出去");
+  fs.mkdirSync(path.join(STATE, "locks"), { recursive: true });
+  fs.writeFileSync(path.join(STATE, "locks", `${LOCKED_ID}.tty.json`), JSON.stringify({ pid: process.pid, at: Date.now() }));
+  send({ type: "subscribe", sessionId: LOCKED_ID });
+  await waitFor((m) => m.type === "session" && m.sessionId === LOCKED_ID, 10000, "被锁住的会话的 session 帧");
+  const TEXTI = "这条会被锁挡住";
+  send({ type: "prompt", sessionId: LOCKED_ID, text: TEXTI, clientId: "local:5" });
+  const addedI = await waitFor((m) => m.type === "item.add" && m.sessionId === LOCKED_ID && m.item?.text === TEXTI, 5000, "被锁会话的 item.add");
+  check(addedI.item?.pending === "booting", "气泡先落地（哪怕是注定发不出去的）");
+  const failed5 = await waitFor((m) => m.type === "item.replace" && m.sessionId === LOCKED_ID && m.id === addedI.item.id, 10000, "被锁会话的 item.replace failed");
+  check(failed5.item?.pending === "failed", `接管被拒时气泡标成没发出去（pending=${JSON.stringify(failed5.item?.pending)}）`);
+  check(failed5.item?.text === TEXTI, "气泡内容还在");
+  const why5 = await waitFor((m) => m.type === "notice" && m.level === "error" && /终端里的 pi/.test(String(m.text)), 10000, "被拒绝的原因");
+  check(Boolean(why5), `说清楚了原因（「${why5.text}」）`);
+  check(!records().some((r) => r.t === "argv" && (r.argv ?? []).includes(LOCKED_ID)), "没有去动那个会话（一支 pi 都没起）");
+
+  // ---------------------------------------------------------------- 9. 挡路的没了：点「重试」补发，不哑掉
+  log("9. 删掉 tty 锁、点「重试」（前端发的就是 claim 帧）：被拒过的那条要补发出去");
+  fs.rmSync(path.join(STATE, "locks", `${LOCKED_ID}.tty.json`), { force: true });
+  const markRetryI = seen.length;
+  send({ type: "claim", sessionId: LOCKED_ID });
+  await waitFor(
+    (m) => m.type === "item.replace" && m.sessionId === LOCKED_ID && m.id === addedI.item.id && m.item?.pending === "booting" && seen.indexOf(m) >= markRetryI,
+    20000,
+    "重试后气泡回到待发",
+  );
+  check(true, "重试把同一枚气泡放回队列（不是又画一条）");
+  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXTI), 20000, "桩 pi 收到被拒过的那条");
+  const delivered5 = records().find((r) => r.t === "prompt" && r.text === TEXTI);
+  check(delivered5?.behavior === null, `补发时是「开一轮」（behavior=${JSON.stringify(delivered5?.behavior ?? null)}）`);
+  await waitFor((m) => m.type === "item.replace" && m.sessionId === LOCKED_ID && m.id === addedI.item.id && m.item?.pending === "sent", 20000, "重试后气泡改成已交出");
+  check(true, "补发之后气泡不再是「没发出去」");
+  check(
+    !seen.some((m) => m.type === "item.add" && m.sessionId === LOCKED_ID && m.item?.text === TEXTI && seen.indexOf(m) >= markRetryI),
+    "没有重复画一条气泡",
+  );
+  const retryArgv = records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(LOCKED_FILE));
+  check(retryArgv.length === 1, `补发也只起了一支 pi（argv 里带磁盘文件：${retryArgv.length} 次）`);
+  check(retryArgv[0]?.argv?.includes("--session") ?? false, "补发同样是 resume（--session <文件>）");
 
   // ---------------------------------------------------------------- D. 启动期撤回：整批退回、气泡同帧清空、pi 不被打扰
   log("D. 建第四个会话，启动窗口里连发三条，然后撤回（clearQueue）");
