@@ -56,7 +56,8 @@ export interface BashItem extends ItemBase {
   fullOutputPath?: string;
   /** `!!`: kept in the session, never sent to the model. */
   excludeFromContext?: boolean;
-  status: "running" | "done";
+  /** `queued`: 启动窗口里敲下的，还在等 pi 起来（D182）。 */
+  status: "queued" | "running" | "done";
   error?: string;
 }
 /**

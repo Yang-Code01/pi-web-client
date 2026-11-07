@@ -153,6 +153,11 @@ export class ChatView {
    * 桥那边就绪后按原顺序补发 —— 不新增协议帧。
    */
   onRetry: (() => void) | null = null;
+  /**
+   * #202 / D182: 失败气泡上的第二条路 —— 不重试，把这批没发出去的消息退回输入框（`clearQueue`）。
+   * 「重试」是选择，不是唯一出路。
+   */
+  onWithdraw: (() => void) | null = null;
   /** Following the stream: new content scrolls the view to the bottom. Cleared the moment the user says "I want to read up there". */
   private following = true;
   /** One pending frame at most — a burst of updates must cost one scroll, not one per update. */
@@ -617,7 +622,11 @@ export class ChatView {
         retry.type = "button";
         retry.title = tr("先拉起 pi，再按原顺序补发没发出去的消息");
         retry.onclick = () => this.onRetry?.();
-        badge.replaceChildren(el("span", "", tr("没发出去")), retry);
+        const back = el("button", "msg-retry", tr("退回输入框")) as HTMLButtonElement;
+        back.type = "button";
+        back.title = tr("把这条没发出去的消息放回输入框");
+        back.onclick = () => this.onWithdraw?.();
+        badge.replaceChildren(el("span", "", tr("没发出去")), retry, back);
         continue;
       }
       const label = state === "booting" ? tr("正在启动 pi…") : tr("处理中…");
@@ -1126,7 +1135,8 @@ export class ChatView {
     head.append(tag);
     let state: string;
     let cls = "";
-    if (item.status === "running") state = tr("运行中…");
+    if (item.status === "queued") state = tr("等待 pi 启动…");
+    else if (item.status === "running") state = tr("运行中…");
     else if (item.error) {
       state = tr("失败");
       cls = " bad";
@@ -1138,14 +1148,17 @@ export class ChatView {
       state = item.exitCode == null ? tr("结束") : `exit ${item.exitCode}`;
       cls = item.exitCode == null ? "" : " bad";
     }
-    head.append(el("span", `bash-state${cls}`, state));
+    const stateEl = el("span", `bash-state${cls}`, state);
+    // #202 / D182: 排队的 `!` 和启动提示同一个语气：一枚小转环，不新造视觉。
+    if (item.status === "queued") stateEl.prepend(el("span", "act-spin"));
+    head.append(stateEl);
     if (item.status === "running") {
       const stop = el("button", "tool-btn bash-stop", tr("停止")) as HTMLButtonElement;
       stop.type = "button";
       stop.onclick = () => this.onBashStop?.(item.id);
       head.append(stop);
     }
-    const out = el("pre", "bash-out", item.output || (item.status === "running" ? "" : tr("（没有输出）")));
+    const out = el("pre", "bash-out", item.output || (item.status === "done" ? tr("（没有输出）") : ""));
     card.append(head, out);
     if (item.error) card.append(el("div", "bash-foot bad", item.error));
     if (item.truncated) card.append(el("div", "bash-foot", tr("输出太长，只显示末尾。完整内容：{p1}", { p1: item.fullOutputPath ?? tr("（pi 没给路径）") })));

@@ -775,6 +775,8 @@ export class App {
     this.chat.onAnswer = (text) => this.takeRules(text);
     // #200: 失败气泡旁的「重试」，动作就是接管 —— 桥那边会先拉起 pi，再按原顺序补发没发出去的那几条。
     this.chat.onRetry = () => this.startClaim();
+    // #202 / D182: 失败气泡上的第二条路 —— 不重试，把没发出去的那条放回输入框。
+    this.chat.onWithdraw = () => this.withdrawFailed();
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
   }
@@ -2408,14 +2410,8 @@ export class App {
       const exclude = typed.startsWith("!!");
       const command = typed.slice(exclude ? 2 : 1).trim();
       if (!command) return false;
-      // #202 / D181: 启动窗口里不接 `!`。它走的是 RPC 的 bash，而 `bootQueue` 排的是 prompt ——
-      // 两条通道没有共同的顺序语义，排进队列等于把「顺手敲一下」变成 pi 起来后突然执行的一条命令。
-      // 这里给一句话并**把草稿留在输入框里**（return true 但不清稿）：pi 起来后再按一次回车就行。
-      // 桥里另有一道同样的闸，`openLive()` 拉起 pi 之前的那些客户端也挡得住。
-      if (this.session?.starting) {
-        say(tr("pi 还在启动，`!` 命令等它起来再跑"), "warn");
-        return true;
-      }
+      // #202 / D182: 启动窗口里也照发 —— 桥把命令排进 `bootBash`，pi 就绪后按顺序跑，卡片先停在
+      // 「等待 pi 启动…」。草稿照常清空：命令已经交出去了。
       this.act(() => this.socket.send({ type: "bash", sessionId, command, excludeFromContext: exclude }));
       return done();
     }
@@ -2784,10 +2780,35 @@ export class App {
   /**
    * #199: 启动期撤回 —— 状态行那颗「撤回」和 Esc 都走这里。发的是 `clearQueue`（桥把 bootQueue 与
    * pi 的队列同一帧清掉、文本按序退回输入框），不是 `abort`：撤回不打断 pi 的启动。
+   * #202 / D182: 判据是「还有气泡在桥里等着」，不是 `starting` —— 首条已交出、剩下几条还在桥队列
+   * 等 `agent_start` 的那≤10 秒里，`starting` 已经是 false，但撤回仍然得可用（#199 AC）。
    */
   private withdrawBoot(): void {
-    if (!this.currentId || !this.session?.starting || this.chat.bootingCount() < 1) return;
+    if (!this.currentId || this.chat.bootingCount() < 1) return;
     this.act(() => this.socket.send({ type: "clearQueue", sessionId: this.currentId }));
+  }
+
+  /**
+   * #200 / D182: 失败气泡上的「退回输入框」。失败项早就不在 `bootQueue` 里（D178 挪进了
+   * `bootFailed`），所以不能走上面那道「还有气泡在桥里」的判据 —— 按钮本身就是「我要退这一批」。
+   */
+  private withdrawFailed(): void {
+    if (!this.currentId) return;
+    this.act(() => this.socket.send({ type: "clearQueue", sessionId: this.currentId }));
+  }
+
+  /** 状态行那颗「撤回」：还有气泡在桥里就出现，判据同上（不是 `starting`）。 */
+  private paintWithdraw(box: HTMLElement): void {
+    const existing = box.querySelector<HTMLElement>(".hint-withdraw");
+    if (this.chat.bootingCount() < 1) {
+      existing?.remove();
+      return;
+    }
+    if (existing) return;
+    const back = el("button", "btn ghost hint-withdraw", tr("撤回"));
+    back.title = tr("把还没交给 pi 的消息拿回输入框（Esc）");
+    back.onclick = () => this.withdrawBoot();
+    box.append(back);
   }
 
   private paintHintStatus(): void {
@@ -2799,12 +2820,7 @@ export class App {
       box.className = "hint-status starting";
       box.replaceChildren(el("span", "act-spin"), el("span", "", tr("pi 正在启动（加载扩展，通常几秒）…")));
       // #199: 桥把启动期收下的消息拿着 —— 人反悔了就在这里整批退回来（Esc 是同一个动作）。
-      if (this.chat.bootingCount() > 0) {
-        const back = el("button", "btn ghost", tr("撤回"));
-        back.title = tr("把还没交给 pi 的消息拿回输入框（Esc）");
-        back.onclick = () => this.withdrawBoot();
-        box.append(back);
-      }
+      this.paintWithdraw(box);
       return;
     }
     const running = Boolean(this.session?.running);
@@ -2822,9 +2838,11 @@ export class App {
       // Q-021: in a repository the branch replaces the key hints (they live in the chip's title).
       if (git) {
         box.replaceChildren(this.gitChip(git));
+        this.paintWithdraw(box);
         return;
       }
       box.replaceChildren(el("kbd", "", "Enter"), el("span", "", tr("发送 · Shift+Enter 换行 · ")), el("kbd", "", PASTE_KEY), el("span", "", tr(" 粘贴截图")));
+      this.paintWithdraw(box);
       return;
     }
     if (this.runSince == null) this.runSince = Date.now();
@@ -2888,6 +2906,7 @@ export class App {
     if (thinking) rows.push(row(tr("思考"), thinking, "think"));
     rows.push(el("div", "act-pop-meta", tr("已运行 {p1}{p2}", { p1: dur, p2: this.stepCount > 1 ? tr(" · 本轮第 {p1} 次工具调用", { p1: this.stepCount }) : "" })));
     pop.replaceChildren(...rows);
+    this.paintWithdraw(box);
   }
 
   /** usage.output is the whole message's output tokens, so this is the average over the turn. */
@@ -11613,9 +11632,10 @@ export class App {
     );
     // #199: 启动期按 Esc = 撤回。冒泡阶段监听，不去抢浮层/补全的 Esc（它们在 document 的 capture
     // 阶段 stopPropagation）；运行态的 Esc 仍然只走「中断」那条绑定，不在这里改语义。
+    // #202 / D182: 判据看气泡不看 `starting`（首条已交出时 `starting` 已 false）。
     window.addEventListener("keydown", (ev) => {
       if (ev.isComposing || ev.key !== "Escape") return;
-      if (!this.session?.starting || this.chat.bootingCount() < 1) return;
+      if (this.chat.bootingCount() < 1) return;
       ev.preventDefault();
       this.withdrawBoot();
     });

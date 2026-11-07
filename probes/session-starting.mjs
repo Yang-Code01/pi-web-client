@@ -19,7 +19,9 @@
  * #202 的边界输入（同一套队列，不分叉）：
  *  10. 启动期贴图：`.row` 上的「+N 图」与平时同一颗，发出去的那条 prompt 带着图、气泡说「附 N 张图片」；
  *  11. 启动期贴一段代码：气泡的折叠渲染与平常一致、交出去的文字与气泡一字不差（缩进/制表符/行尾空格都在）；
- *  12. 启动期 `!命令`：**不**排队、不静默丢 —— 给一句人话、草稿留在输入框，pi 起来后再按回车才真的发。
+ *  12. 启动期 `!命令`：不拒绝、不丢 —— 卡片先停在「等待 pi 启动…」，pi 起来后同一张卡片跑出输出；
+ *  13. 只读会话自动接管的那几秒里敲 `!`：同样先排队、就绪后跑出输出（命令与草稿都不会静默消失）。
+ *  14. 失败气泡的第二条路：点「退回输入框」→ `clearQueue`、文字回输入框、气泡消失（不是只能重试）。
  *
  * 桩桥照真桥的形状回 `item.add` / `item.replace`，不收 pi，所以这一秒钟级、可重复。
  *
@@ -122,6 +124,24 @@ let userSeq = 1;
 const cmds = [];
 /** 最近一次收下的那条，模拟桥把它交出去时补的那枚 `item.replace`（pending 翻 "sent"）。 */
 let lastUser = null;
+/** #202：启动窗口里收下的 `!` 命令（真桥放 `bootBash`），就绪时由 `flushBash` 补上 running → done。 */
+let bashSeq = 0;
+let pendingBash = [];
+const flushBash = (sessionId) => {
+  const due = pendingBash.filter((q) => q.sessionId === sessionId);
+  pendingBash = pendingBash.filter((q) => q.sessionId !== sessionId);
+  const arr = sessionId === readonly.id ? readonlyItems : items;
+  for (const { item } of due) {
+    const at = arr.findIndex((it) => it.id === item.id);
+    const running = { ...item, status: "running" };
+    if (at >= 0) arr[at] = running;
+    broadcast({ type: "item.replace", sessionId, id: item.id, item: running });
+    const done = { ...running, status: "done", output: `ran: ${item.command}
+`, exitCode: 0 };
+    if (at >= 0) arr[at] = done;
+    broadcast({ type: "item.replace", sessionId, id: item.id, item: done });
+  }
+};
 wss.on("connection", (ws) => {
   ws.on("message", (raw) => {
     let msg;
@@ -148,9 +168,27 @@ wss.on("connection", (ws) => {
       broadcast({ type: "item.add", sessionId: ro ? readonly.id : base.id, item, clientId: msg.clientId });
       return;
     }
+    if (msg.type === "bash") {
+      // #202 / D182：启动窗口里 `!` 不拒绝，桥先落一张 queued 卡片；就绪后再补 running / done。
+      const sid = ro ? readonly.id : base.id;
+      const item = {
+        id: `bash:${++bashSeq}`,
+        kind: "bash",
+        command: String(msg.command ?? ""),
+        output: "",
+        excludeFromContext: msg.excludeFromContext === true,
+        status: "queued",
+        ts: new Date().toISOString(),
+      };
+      (ro ? readonlyItems : items).push(item);
+      pendingBash.push({ sessionId: sid, item });
+      broadcast({ type: "item.add", sessionId: sid, item });
+      return;
+    }
     if (msg.type === "clearQueue") {
       // 真桥的撤回：启动期收下的整批消息按发出顺序退回输入框，气泡同一帧删掉（#199）。
-      const booting = items.filter((it) => it.pending === "booting");
+      // #200 / D182：失败项也能「退回输入框」，和还在桥里的那批一起退。
+      const booting = items.filter((it) => it.pending === "booting" || it.pending === "failed");
       if (!booting.length) return;
       items.splice(0, items.length, ...items.filter((it) => it.pending !== "booting"));
       broadcast({ type: "queue.restore", sessionId: base.id, texts: booting.map((it) => it.text) });
@@ -413,30 +451,31 @@ ${TEXT_B}`, 8000, "esc restore");
   check(String(bootFold).includes("has-fold"), `长气泡带折叠（${bootFold}）`);
   await page.screenshot({ path: path.join(OUT, "10-paste.png") });
 
-  // ---- 12. #202 启动期 `!命令`：不排队、给一句话，草稿留在输入框；就绪后同一条回车才真发
+  // ---- 12. #202 启动期 `!命令`：不拦、不丢 —— 卡片先进「等待 pi 启动…」，就绪后同一张卡片跑出输出
   broadcast({ type: "session.state", session: { ...base, starting: true, running: false } });
   await until(async () => (await page.locator(".hint-status").innerText().catch(() => "")).includes("正在启动"), 8000, "booting again");
-  const BOOT_CMD_INPUT = "!echo 启动期不该跑的命令";
+  const BOOT_CMD = "echo 启动期排队的命令";
   const beforeBash = cmds.length;
-  await box.fill(BOOT_CMD_INPUT);
+  await box.fill(`!${BOOT_CMD}`);
   await box.press("Enter");
-  await until(
-    async () => (await page.locator(".notice, .msg.notice").allInnerTexts()).some((t) => t.includes("还在启动")),
-    8000,
-    "bash refusal notice",
-  );
-  const refusal = (await page.locator(".notice, .msg.notice").allInnerTexts()).find((t) => t.includes("还在启动")) ?? "";
-  check(refusal.includes("`!` 命令等它起来再跑"), `给了一句人话（「${refusal.replace(/\s+/g, " ").trim()}」）`);
-  check(!cmds.slice(beforeBash).some((m) => m.type === "bash"), "没有把 `!` 发上去（排到启动后跑才是那个惊喜）");
-  check((await box.inputValue()) === BOOT_CMD_INPUT, "草稿还在输入框里，pi 起来后按一次回车就行");
-  await page.screenshot({ path: path.join(OUT, "11-bash-refused.png") });
+  await until(() => cmds.slice(beforeBash).some((m) => m.type === "bash"), 4000, "bash frame in boot window");
+  const bootBashFrame = cmds.slice(beforeBash).find((m) => m.type === "bash");
+  check(bootBashFrame?.command === BOOT_CMD && bootBashFrame?.excludeFromContext === false, "`!` 照发（`!` 仍进上下文），没有在页面上被拦下");
+  const bootBashCard = page.locator(".msg.bash", { hasText: BOOT_CMD });
+  await until(async () => (await bootBashCard.count()) >= 1, 8000, "queued bash card");
+  check((await bootBashCard.locator(".bash-state").innerText()).includes("等待 pi 启动"), `卡片说清在等谁（「${(await bootBashCard.locator(".bash-state").innerText()).trim()}」）`);
+  check((await bootBashCard.locator(".act-spin").count()) === 1, "排队的卡片带那枚小转环（复用启动提示的视觉）");
+  check((await box.inputValue()) === "", "命令已经被收下，草稿清空 —— 不是「清掉了却没跑」");
+  check(!(await page.locator(".notice, .msg.notice").allInnerTexts()).some((t) => t.includes("还在启动")), "没有「还在启动」之类的拒绝");
+  await page.screenshot({ path: path.join(OUT, "11-bash-queued.png") });
+
   broadcast({ type: "session.state", session: { ...base, starting: false, running: false } });
-  await until(async () => !(await page.locator(".hint-status").innerText().catch(() => "")).includes("正在启动"), 8000, "booted");
-  await box.press("Enter");
-  await until(() => cmds.slice(beforeBash).some((m) => m.type === "bash"), 8000, "bash after ready");
-  const sentBash = cmds.slice(beforeBash).find((m) => m.type === "bash");
-  check(sentBash?.command === "echo 启动期不该跑的命令" && sentBash?.excludeFromContext === false, "pi 就绪后同一条回车才真发出去（`!` 照旧进上下文）");
-  check((await box.inputValue()) === "", "发出去之后输入框才清空");
+  flushBash(base.id);
+  await until(async () => (await bootBashCard.locator(".bash-out").innerText()).includes(`ran: ${BOOT_CMD}`), 8000, "bash output after ready");
+  check((await page.locator(".msg.bash", { hasText: BOOT_CMD }).count()) === 1, "只画了一张卡片（就绪后没有补第二张）");
+  check(String(await bootBashCard.getAttribute("class")).includes("done"), "同一张卡片从 queued 走到 done");
+  check((await bootBashCard.locator(".act-spin").count()) === 0, "跑完之后转环没了");
+  await page.screenshot({ path: path.join(OUT, "11b-bash-done.png") });
 
   // 折叠渲染不分启动期/平时：同一段文字两边长成同一个样子（同一个 `foldable` 量高逻辑）。
   await box.fill(PASTE_TEXT);
@@ -450,6 +489,54 @@ ${TEXT_B}`, 8000, "esc restore");
   const bootFoldLabel = await pasteBubble.locator(".fold-label").first().innerText();
   const calmFoldLabel = await calmBubble.locator(".fold-label").first().innerText();
   check(bootFoldLabel === calmFoldLabel, `折叠按钮的说法也一样（「${calmFoldLabel}」）`);
+
+  // ---- 13. #202 只读会话启动期的 `!`：拉起 pi 的窗口里卡片排队，pi 起来后跑出输出（草稿不丢）
+  await page.locator(".session-card", { hasText: "只读的" }).first().click();
+  broadcast({ type: "session.state", session: { ...readonly, starting: true, running: false } });
+  await until(async () => (await page.locator(".hint-status").innerText().catch(() => "")).includes("正在启动"), 8000, "readonly booting");
+  const roBox2 = page.locator(".composer textarea");
+  const RO_CMD = "echo hi";
+  const beforeRoBash = cmds.length;
+  await roBox2.fill(`!${RO_CMD}`);
+  await roBox2.press("Enter");
+  await until(() => cmds.slice(beforeRoBash).some((m) => m.type === "bash" && m.sessionId === readonly.id), 4000, "readonly bash frame");
+  check(cmds.slice(beforeRoBash).find((m) => m.type === "bash")?.command === RO_CMD, "只读会话的第一条 `!` 也照发");
+  const roBashCard = page.locator(".msg.bash", { hasText: RO_CMD });
+  await until(async () => (await roBashCard.count()) >= 1, 8000, "readonly queued bash card");
+  check((await roBashCard.locator(".bash-state").innerText()).includes("等待 pi 启动"), "自动接管的窗口里卡片停在「等待 pi 启动…」");
+  check((await roBashCard.locator(".act-spin").count()) === 1, "同样带那枚小转环");
+  check((await roBox2.inputValue()) === "", "命令交出去了，草稿清空（不是被拒后丢掉）");
+  check(!(await page.locator(".notice, .msg.notice").allInnerTexts()).some((t) => t.includes("还在启动")), "没有拒绝通知");
+  await page.screenshot({ path: path.join(OUT, "12-readonly-bash-queued.png") });
+
+  broadcast({ type: "session.state", session: { ...readonly, starting: false, running: false } });
+  flushBash(readonly.id);
+  await until(async () => (await roBashCard.locator(".bash-out").innerText()).includes(`ran: ${RO_CMD}`), 8000, "readonly bash output");
+  check(true, "pi 起来之后只读会话的 `!` 也跑出了输出（没有丢草稿，也没有丢命令）");
+  await page.screenshot({ path: path.join(OUT, "12b-readonly-bash-done.png") });
+
+  // ---- 14. #200 / D182 失败气泡的第二条路：不重试，退回输入框
+  await page.locator(".session-card", { hasText: "启动中" }).first().click();
+  const FAILED_TEXT = "这条没发出去，要退回输入框";
+  const beforeFailed = prompts.length;
+  await box.fill(FAILED_TEXT);
+  await box.press("Enter");
+  await until(() => prompts.length > beforeFailed, 4000, "failed prompt landed");
+  const failedItem = items.find((it) => it.text === FAILED_TEXT);
+  broadcast({ type: "item.replace", sessionId: base.id, id: failedItem.id, item: { ...failedItem, pending: "failed" } });
+  const failedBubble = page.locator(".msg.user", { hasText: FAILED_TEXT });
+  await until(async () => (await failedBubble.locator(".msg-pending").innerText().catch(() => "")).includes("没发出去"), 8000, "failed badge");
+  const backBtn = failedBubble.locator("button.msg-retry", { hasText: "退回输入框" });
+  check((await backBtn.count()) === 1, "失败徽标旁有「退回输入框」这颗按钮");
+  const beforeBack = cmds.length;
+  await backBtn.click();
+  await until(() => cmds.slice(beforeBack).some((m) => m.type === "clearQueue" && m.sessionId === base.id), 4000, "clearQueue from failed bubble");
+  check(true, "点它发的是 clearQueue（和撤回同一条路，不是重试）");
+  await until(async () => (await failedBubble.count()) === 0, 8000, "failed bubble gone");
+  const backDraft = String(await box.inputValue());
+  check(backDraft.endsWith(FAILED_TEXT), "失败那条的文字按序并入输入框（接在原有草稿后面）");
+  check((await page.locator(".msg-pending").allInnerTexts()).every((t) => !t.includes("没发出去")), "失败徽标跟着气泡一起消失");
+  await page.screenshot({ path: path.join(OUT, "13-failed-withdrawn.png") });
 } catch (err) {
   failed += 1;
   console.error("ERROR", err?.message ?? err);

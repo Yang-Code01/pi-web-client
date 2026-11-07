@@ -53,7 +53,7 @@ export interface BashItem extends ItemBase {
   truncated?: boolean;
   fullOutputPath?: string;
   excludeFromContext?: boolean;
-  status: "running" | "done";
+  status: "queued" | "running" | "done";
   error?: string;
 }
 /** Compaction / branch summary / extension message (#31). */

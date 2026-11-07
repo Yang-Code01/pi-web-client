@@ -24,8 +24,11 @@
  *   F. 带图的那条：气泡上记着两张图，就绪后图片跟着**同一条** prompt 交给 pi（不是只交文本），
  *     后面的纯文本不会被顺带塞图，顺序也不变；
  *   G. 粘贴块（长文本）：气泡里的与交给 pi 的是同一份，缩进 / 制表符 / 行尾空格一个不动；
- *   H. `!` 命令：bash 走的是 RPC 的 bash，pi 没起来就没有这条通道 —— 不排队、不静默丢，
- *     明说一句「还在启动」；就绪之后同一条命令照常能跑。
+ *   H. `!` 命令：bash 走的是 RPC 的 bash，pi 没起来就没有这条通道 —— 启动窗口里先排进桥的
+ *      `bootBash`（卡片 `queued`），就绪后按顺序执行，不拦、不丢草稿（D182）。
+ *   I. 只读会话同理：第一条就是 `!` 也不报错，拉起 pi 的窗口里卡片排队，就绪后跑出输出。
+ *   J. 泵运行期间（`starting` 已 false、`bootQueue` 还剩两条）：撤回只退这两条，`!` 不受影响。
+ *   K. 失败气泡也能「退回输入框」：pi 进程死了（rpc 不通）仍能清 `bootFailed` 并退回文本。
  *
  * Run: npm --prefix bridge run build && node bridge/tests/boot-queue.mjs
  */
@@ -77,6 +80,9 @@ const CLAIM_ID = "zz-boot-queue-claim";
 const CLAIM_FILE = writeDiskSession(CLAIM_ID, "接管途中的那个");
 const LOCKED_ID = "zz-boot-queue-locked";
 const LOCKED_FILE = writeDiskSession(LOCKED_ID, "终端里还开着");
+/** #202 I：只读会话启动窗口里的 `!`（拉起 pi 的那几秒）。 */
+const RO_BASH_ID = "zz-boot-queue-bash-readonly";
+const RO_BASH_FILE = writeDiskSession(RO_BASH_ID, "只读会话里敲叹号");
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 let failed = 0;
@@ -657,8 +663,8 @@ try {
   );
   check(deliveredPaste?.text.endsWith(`\n\n${TYPED7}`), "打的字接在粘贴块后面，空行分隔");
 
-  // ---------------------------------------------------------------- H. #202 启动期的 `!` 命令：不排队，明说一句
-  log("H. 建第八个会话：启动窗口里敲 ! 命令 —— 不进 bootQueue、不静默丢，就绪后照常能跑");
+  // ---------------------------------------------------------------- H. #202 启动期的 `!` 命令：排队，就绪后执行
+  log("H. 建第八个会话：启动窗口里敲 ! 命令 —— 卡片先进 bootBash（queued），pi 就绪后照常跑");
   const mark8 = seen.length;
   send({ type: "create", cwd: REPO, name: "敲了叹号命令的那个" });
   const created8 = await waitFor(
@@ -668,43 +674,166 @@ try {
   );
   const sid8 = created8.sessionId ?? created8.state?.id;
   check(created8.state?.starting === true, "第八个会话也在启动窗口里");
-  const BOOT_CMD = "echo 启动期不该执行的命令";
+  const BOOT_CMD = "echo 启动期排队的命令";
   const fromBash = seen.length;
   send({ type: "bash", sessionId: sid8, command: BOOT_CMD, excludeFromContext: false });
-  const bashRefused = await waitFor(
-    (m) => m.type === "notice" && m.level === "error" && /还在启动/.test(String(m.text)) && seen.indexOf(m) >= fromBash,
-    5000,
-    "启动期 ! 命令的说明",
+  const bashQueued = await waitFor(
+    (m) => m.type === "item.add" && m.sessionId === sid8 && m.item?.kind === "bash" && m.item?.command === BOOT_CMD && seen.indexOf(m) >= fromBash,
+    1500,
+    "启动期的 bash 卡片",
   );
-  check(/!/.test(String(bashRefused.text)), `给了一句人话（「${bashRefused.text}」）`);
+  check(bashQueued.item?.status === "queued", `卡片立刻落地并标成排队（status=${JSON.stringify(bashQueued.item?.status)}）`);
   check(
-    !seen.some((m) => m.type === "item.add" && m.sessionId === sid8 && m.item?.kind === "bash"),
-    "没有画出 bash 卡片（这条命令根本没发出去）",
+    !seen.some((m) => m.type === "notice" && m.sessionId === sid8 && m.level === "error"),
+    "启动期敲 ! 不再报错（不是「还在启动」）",
   );
-  check(
-    !seen.some((m) => m.type === "item.add" && m.sessionId === sid8 && m.item?.kind === "user"),
-    "也没有被塞进 prompt 队列（气泡上不该出现这条命令）",
-  );
-  check(!records().some((r) => r.t === "bash" && r.command === BOOT_CMD), "桩 pi 也没收到 bash（没起来就没有这条通道）");
+  check(!records().some((r) => r.t === "bash" && r.command === BOOT_CMD), "窗口里桩 pi 没收到 bash（pi 还没答话）");
 
   await waitFor((m) => m.type === "session.state" && m.session?.id === sid8 && m.session?.starting === false, 20000, "第八个会话 starting=false");
-  send({ type: "bash", sessionId: sid8, command: BOOT_CMD, excludeFromContext: true });
-  const bashItem = await waitFor(
-    (m) => m.type === "item.add" && m.sessionId === sid8 && m.item?.kind === "bash" && m.item?.command === BOOT_CMD,
-    5000,
-    "就绪后的 bash 卡片",
+  const bashRunning = await waitFor(
+    (m) => m.type === "item.replace" && m.sessionId === sid8 && m.id === bashQueued.item.id && m.item?.status === "running",
+    10000,
+    "排队卡片改成运行中",
   );
-  check(bashItem.item?.excludeFromContext === true, "拦的只是启动窗口：就绪之后 !! 命令照常能跑");
-  await until(() => records().some((r) => r.t === "bash" && r.command === BOOT_CMD), 10000, "桩 pi 收到就绪后的 bash");
-  const bashDone = await waitFor((m) => m.type === "item.replace" && m.sessionId === sid8 && m.id === bashItem.item.id, 10000, "bash 结果");
+  check(bashRunning.item?.status === "running", "就绪后同一张卡片从 queued 翻成 running");
+  await until(() => records().some((r) => r.t === "bash" && r.command === BOOT_CMD), 10000, "桩 pi 收到启动期排下的 bash");
+  const bashDone = await waitFor(
+    (m) => m.type === "item.replace" && m.sessionId === sid8 && m.id === bashQueued.item.id && m.item?.status === "done",
+    10000,
+    "bash 结果",
+  );
   check(
     String(bashDone.item?.output ?? "").includes(`ran: ${BOOT_CMD}`),
     `输出照常回来（${JSON.stringify(bashDone.item?.output)}）`,
   );
   check(
-    !records().some((r) => r.t === "bash" && r.command === BOOT_CMD && r.exclude !== true),
-    "启动期那条始终没有在后台补跑",
+    seen.filter((m) => m.type === "item.add" && m.sessionId === sid8 && m.item?.kind === "bash").length === 1,
+    "只画了一张卡片（没有就绪后再补一张）",
   );
+  check(records().filter((r) => r.t === "bash" && r.command === BOOT_CMD).length === 1, "这条命令只跑一次");
+
+  // ---------------------------------------------------------------- I. #202 只读会话启动期的 `!`：也不拦
+  log("I. 只读会话里敲 !：拉起 pi 的窗口期内卡片排队，pi 就绪后跑出输出");
+  const RO_CMD = "echo hi";
+  const fromRo = seen.length;
+  send({ type: "bash", sessionId: RO_BASH_ID, command: RO_CMD, excludeFromContext: false });
+  const roQueued = await waitFor(
+    (m) => m.type === "item.add" && m.sessionId === RO_BASH_ID && m.item?.kind === "bash" && m.item?.command === RO_CMD && seen.indexOf(m) >= fromRo,
+    1500,
+    "只读会话的 bash 卡片",
+  );
+  check(roQueued.item?.status === "queued", `只读会话的第一条 ! 也先排队（status=${JSON.stringify(roQueued.item?.status)}）`);
+  check(
+    !seen.some((m) => m.type === "notice" && m.sessionId === RO_BASH_ID && m.level === "error"),
+    "自动接管的窗口期里敲 ! 不报错（草稿不会被清掉却没执行）",
+  );
+  check(!records().some((r) => r.t === "bash" && r.command === RO_CMD), "pi 还在启动，命令没跑");
+
+  await waitFor((m) => m.type === "session.state" && m.session?.id === RO_BASH_ID && m.session?.starting === false, 20000, "只读会话 starting=false");
+  const roRunning = await waitFor(
+    (m) => m.type === "item.replace" && m.sessionId === RO_BASH_ID && m.id === roQueued.item.id && m.item?.status === "running",
+    10000,
+    "只读会话排队卡片改成运行中",
+  );
+  check(roRunning.item?.status === "running", "就绪后卡片从 queued 翻成 running");
+  const roDone = await waitFor(
+    (m) => m.type === "item.replace" && m.sessionId === RO_BASH_ID && m.id === roQueued.item.id && m.item?.status === "done",
+    15000,
+    "只读会话的 bash 结果",
+  );
+  check(String(roDone.item?.output ?? "").includes(`ran: ${RO_CMD}`), `输出回来了（${JSON.stringify(roDone.item?.output)}）`);
+  const roArgv = records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(RO_BASH_FILE));
+  check(roArgv.length === 1 && (roArgv[0]?.argv?.includes("--session") ?? false), "只拉起一支 pi，走的是 resume");
+
+  // ---------------------------------------------------------------- J. #202 泵期间撤回：只退还在桥里的，`!` 不受影响
+  log("J. 建第九个会话：就绪瞬间只交出第一条 HOLD，其余两条还在桥队列时撤回");
+  const mark9 = seen.length;
+  send({ type: "create", cwd: REPO, name: "泵着时撤回的那个" });
+  const created9 = await waitFor(
+    (m) => m.type === "session" && m.state?.name === "泵着时撤回的那个" && seen.indexOf(m) >= mark9,
+    20000,
+    "第九个 session 帧",
+  );
+  const sid9 = created9.sessionId ?? created9.state?.id;
+  check(created9.state?.starting === true, "第九个会话在启动窗口里");
+  const TEXTS9 = ["HOLD 泵里在等回执的第一条", "HOLD 还排在桥里的第二条", "HOLD 还排在桥里的第三条"];
+  const added9 = [];
+  for (const [i, text] of TEXTS9.entries()) {
+    const from = seen.length;
+    send({ type: "prompt", sessionId: sid9, text, clientId: `local:9:${i}` });
+    added9.push(
+      await waitFor((m) => m.type === "item.add" && m.sessionId === sid9 && m.item?.text === text && seen.indexOf(m) >= from, 2000, `第九个会话的 item.add ${i}`),
+    );
+  }
+  const J_BASH = "echo 撤回不影响叹号";
+  const fromJ = seen.length;
+  send({ type: "bash", sessionId: sid9, command: J_BASH, excludeFromContext: false });
+  const jBash = await waitFor(
+    (m) => m.type === "item.add" && m.sessionId === sid9 && m.item?.kind === "bash" && m.item?.command === J_BASH && seen.indexOf(m) >= fromJ,
+    1500,
+    "第九个会话的 bash 卡片",
+  );
+  check(jBash.item?.status === "queued", "启动窗口里的 ! 也在排队");
+
+  await waitFor((m) => m.type === "session.state" && m.session?.id === sid9 && m.session?.starting === false, 20000, "第九个会话 starting=false");
+  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXTS9[0]), 10000, "泵交出第一条 HOLD");
+  check(
+    added9.slice(1).every((a) => seen.some((m) => m.type === "item.replace" && m.sessionId === sid9 && m.id === a.item.id && m.item?.pending === "sent") === false),
+    "此刻第二条、第三条还在桥里（没被交出去）",
+  );
+  const jFrom = seen.length;
+  send({ type: "clearQueue", sessionId: sid9 });
+  const jRestore = await waitFor((m) => m.type === "queue.restore" && m.sessionId === sid9 && seen.indexOf(m) >= jFrom, 8000, "泵期间的 queue.restore");
+  check(JSON.stringify(jRestore.texts) === JSON.stringify(TEXTS9.slice(1)), `只退回还在桥里的两条（${JSON.stringify(jRestore.texts)}）`);
+  const jRemoved = await waitFor((m) => m.type === "item.remove" && m.sessionId === sid9 && seen.indexOf(m) >= jFrom, 8000, "泵期间的 item.remove");
+  const jIds = Array.isArray(jRemoved.ids) ? jRemoved.ids : [];
+  check(added9.slice(1).every((a) => jIds.includes(a.item.id)), "两条气泡一起删掉");
+  check(!jIds.includes(added9[0].item.id), "已经交给 pi 的第一条留着");
+  check(!jIds.includes(jBash.item.id), "排队的 ! 卡片不是 prompt 队列的一部分，不被撤回删掉");
+  await until(() => records().some((r) => r.t === "bash" && r.command === J_BASH), 10000, "撤回之后 ! 仍然执行");
+  const jBashDone = await waitFor(
+    (m) => m.type === "item.replace" && m.sessionId === sid9 && m.id === jBash.item.id && m.item?.status === "done",
+    10000,
+    "第九个会话的 bash 结果",
+  );
+  check(String(jBashDone.item?.output ?? "").includes(`ran: ${J_BASH}`), "! 的输出照常回来");
+  await sleep(800);
+  check(!records().some((r) => r.t === "prompt" && TEXTS9.slice(1).includes(r.text)), "撤回的那两条终究没交给 pi");
+
+  // ---------------------------------------------------------------- K. #202 失败气泡也能退回输入框
+  log("K. 建第十个会话：启动期两条都失败，再撤回 —— pi 死了也要退回、删气泡");
+  const mark10 = seen.length;
+  send({ type: "create", cwd: REPO, name: "失败后撤回的那个" });
+  const created10 = await waitFor(
+    (m) => m.type === "session" && m.state?.name === "失败后撤回的那个" && seen.indexOf(m) >= mark10,
+    20000,
+    "第十个 session 帧",
+  );
+  const sid10 = created10.sessionId ?? created10.state?.id;
+  const TEXTS10 = ["失败后要退回的第一条", "失败后要退回的第二条"];
+  const added10 = [];
+  for (const [i, text] of TEXTS10.entries()) {
+    const from = seen.length;
+    send({ type: "prompt", sessionId: sid10, text, clientId: `local:10:${i}` });
+    added10.push(
+      await waitFor((m) => m.type === "item.add" && m.sessionId === sid10 && m.item?.text === text && seen.indexOf(m) >= from, 2000, `第十个会话的 item.add ${i}`),
+    );
+  }
+  const launches10 = () => records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(sid10));
+  await until(() => launches10().length > 0, 10000, "第十个桩 pi 的 argv 行");
+  process.kill(launches10().at(-1).pid);
+  for (const added of added10) {
+    await waitFor((m) => m.type === "item.replace" && m.sessionId === sid10 && m.id === added.item.id && m.item?.pending === "failed", 15000, "失败气泡");
+  }
+  check(!seen.some((m) => m.type === "notice" && m.sessionId === sid10 && /exit code|signal=/i.test(String(m.text))), "退出通知里没有 exit code / signal");
+
+  const kFrom = seen.length;
+  send({ type: "clearQueue", sessionId: sid10 });
+  const kRestore = await waitFor((m) => m.type === "queue.restore" && m.sessionId === sid10 && seen.indexOf(m) >= kFrom, 8000, "失败后的 queue.restore");
+  check(JSON.stringify(kRestore.texts) === JSON.stringify(TEXTS10), `失败的那批按原顺序退回（${JSON.stringify(kRestore.texts)}）`);
+  const kRemoved = await waitFor((m) => m.type === "item.remove" && m.sessionId === sid10 && seen.indexOf(m) >= kFrom, 8000, "失败后的 item.remove");
+  const kIds = Array.isArray(kRemoved.ids) ? kRemoved.ids : [];
+  check(added10.every((a) => kIds.includes(a.item.id)), "两条失败气泡一起删掉（不留在时间线上）");
 
   ws.close();
 } catch (err) {

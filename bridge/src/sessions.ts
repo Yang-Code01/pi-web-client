@@ -780,8 +780,15 @@ export class Session extends EventEmitter {
    * —— 它们在等一个人来点一下；点下去才回到队首（先拉起 pi，再按原顺序补发）。
    */
   private bootFailed: BootEntry[] = [];
+  /**
+   * #202 / D182: 启动窗口里敲下的 `!` 命令。bash 走 RPC，pi 没起来就没有通道，所以先排在这里，
+   * 就绪后由 `flushBootBash` 逐条跑。已经发出去的 `!` 不随撤回退回（见 D182 的取舍）。
+   */
+  private bootBash: { itemId: string; command: string; excludeFromContext: boolean }[] = [];
   /** 补发泵一次只跑一条：并发跑会把顺序搅乱，也会把「这一轮开始了吗」的判断搞坏。 */
   private flushingBoot = false;
+  /** 启动窗口里的 `!` 同理，一次只跑一条。 */
+  private flushingBash = false;
   /** #198：泵挂在等 `agent_start` 的时候放这里，`agent_start` / 进程退出时把它叫醒。 */
   private bootRunWait: { resolve: () => void; timer: NodeJS.Timeout } | null = null;
   /** pi's queue as of the last queue_update, so a page opened mid-run sees it too (#14). */
@@ -1100,10 +1107,16 @@ export class Session extends EventEmitter {
       this.resetExtUi();
       this.setQueue([], []);
       this.bashRun = null;
+      // #202 / D182: 排着还没跑的 `!` 也随这个进程作废，否则卡片会一直停在「等待 pi 启动」。
+      for (const b of this.bootBash.splice(0)) this.failBash(b.itemId, "pi 进程退出了，这条命令没有跑");
       // A stop the user asked for is not news; only an exit nobody asked for is worth the stderr tail.
       if (closing) {
         if (!quiet) this.emitWs({ type: "notice", sessionId: id, text: "已停止运行，历史留在磁盘，发消息会自动接管。", level: "info" });
-      } else this.emitWs({ type: "notice", sessionId: id, text: `pi 进程意外退出：${reason}`, level: "warn" });
+      } else {
+        // #200 AC6 / D182: 退出原因里的 exit code / signal 是给日志看的，界面只留人话。
+        console.log(`[exit] ${id} pi 进程退出：${reason}`);
+        this.emitWs({ type: "notice", sessionId: id, text: "pi 进程意外退出了（可能有别的终端占着这个会话）。历史留在磁盘，发消息会重新接管。", level: "warn" });
+      }
       // keep reading the file from now on so the transcript stays current
       this.startTail();
     });
@@ -1127,6 +1140,8 @@ export class Session extends EventEmitter {
         this.setState({ starting: false }, { touch: false });
         // #197 / D177: 启动窗口期收下的消息在这里交出去。
         this.flushBootQueue();
+        // #202 / D182: 启动窗口里敲的 `!` 同理，等通道通了再跑。
+        this.flushBootBash();
       });
     // A resumed session starts with the transcript pi already wrote to disk.
     if (opts.resume) this.loadFromFile();
@@ -1659,9 +1674,9 @@ export class Session extends EventEmitter {
       await this.compaction.done;
       if (!this.rpc?.alive) throw new Error("会话已经停止，这条消息没有发出");
     }
-    // #197 / D177: pi 还在加载扩展（`starting`）时也收：气泡和正常发送走同一条路，只多一枚
-    // `pending`；消息本身进 bootQueue，等 get_state 落地再交出去。
-    const booting = this.state.starting === true;
+    // #197 / D177 + #202 / D182: `starting` 或补发泵还没把队列清空时都收 —— 后者表示更早的消息
+    // 还在桥里等着交给 pi，新消息必须排到队尾，否则会插到它们前面。
+    const booting = this.state.starting === true || this.bootQueue.length > 0;
     const userId = this.landUserPrompt(text, images, clientId, booting);
     // #197 / D177: 启动窗口期到此为止。交给 pi 得等它把扩展加载完（get_state 回来），否则这一句会
     // 撞上一个还没准备好的进程；消息先进桥自己的队列，气泡已经落地（带 `pending: "booting"`）。
@@ -1913,15 +1928,23 @@ export class Session extends EventEmitter {
    * #199: the same frame also empties the bridge's own `bootQueue` — during the boot window (#197)
    * that IS the queue, and clearing only one of the two would either drop bubbles whose text comes
    * back (`half cleared`) or leave messages that get delivered after the human withdrew them.
+   * #200 / D182: `bootFailed`（没发出去、只在等「重试」的那批）同样退回 —— 「重试」是选择，不是唯一出路。
    */
   async withdrawQueue(): Promise<number> {
     const rpc = this.rpc;
-    if (!rpc?.alive) return 0;
     // Splice first, synchronously: flushBootQueue can only run between microtasks, so from here on
     // it cannot find these messages any more. The order kept here is the order they were typed in.
+    // 失败的那批发得更早（启动期整批失手或补发被拒），退回文本里排在 bootQueue 前面。
+    const failed = this.bootFailed.splice(0);
     const booted = this.bootQueue.splice(0);
-    const bootTexts = booted.map((q) => q.text);
-    const bootIds = booted.map((q) => q.id);
+    const bootTexts = [...failed, ...booted].map((q) => q.text);
+    const bootIds = [...failed, ...booted].map((q) => q.id);
+    // 进程已经没了：pi 那边没有队列可清，但桥自己记着的这两批仍然要还给人（#202 AC）。
+    if (!rpc?.alive) {
+      if (!bootTexts.length) return 0;
+      this.restoreWithdrawn(bootTexts, bootIds, []);
+      return bootTexts.length;
+    }
     const cleared = rpc.request<{ steering?: unknown[]; followUp?: unknown[] }>("clear_queue", {}, 10000);
     // Snapshot now: agent_settled may be processed before this response's promise callback runs.
     const queued = this.queuedUser.slice();
@@ -1938,21 +1961,25 @@ export class Session extends EventEmitter {
         data = await cleared;
       } catch {
         // an old pi without clear_queue: the boot-window part was never with pi, so still hand it back
-        if (!bootIds.length) return 0;
         data = {};
       }
     }
     // pi expands the command before it queues it, so `clear_queue` hands back the whole SKILL.md;
     // fold it back on the way to the editor, and compare the same way the bubbles were recorded.
-    const texts = [
-      ...bootTexts,
-      ...[...(data?.steering ?? []), ...(data?.followUp ?? [])].map((t) => normalizeUserText(String(t))).filter((t) => t.trim()),
-    ];
+    const piTexts = [...(data?.steering ?? []), ...(data?.followUp ?? [])].map((t) => normalizeUserText(String(t))).filter((t) => t.trim());
+    const texts = [...bootTexts, ...piTexts];
     if (!texts.length) return 0;
+    this.restoreWithdrawn(texts, bootIds, queued);
+    return texts.length;
+  }
+
+  /**
+   * #199 / #200: 把撤回的文本退给编辑器、删掉对应气泡。`bootIds` 是桥能按 id 认出的那批；
+   * pi 队列里的只带回文本，按文本匹配（`queued` 是发送时刻的快照）。
+   */
+  private restoreWithdrawn(texts: string[], bootIds: string[], queued: { id: string; text: string }[]): void {
     // Same as the terminal's Esc / Alt+Up: the queued text goes back to the editor.
     this.emitWs({ type: "queue.restore", sessionId: this.state.id, texts });
-    // Bubbles of boot-window messages are known by id; pi's queue only carries text, so those are
-    // matched by text (oldest first). `texts` starts with the boot ones — skip that many.
     const ids = [...bootIds];
     const pool = [...queued];
     for (const text of texts.slice(bootIds.length)) {
@@ -1961,7 +1988,6 @@ export class Session extends EventEmitter {
     }
     this.queuedUser = this.queuedUser.filter((q) => !ids.includes(q.id));
     this.applyWithdraw(ids, texts.length);
-    return texts.length;
   }
 
   private setQueue(steering: unknown, followUp: unknown): void {
@@ -1977,21 +2003,44 @@ export class Session extends EventEmitter {
   async bash(command: string, excludeFromContext: boolean): Promise<void> {
     const rpc = this.rpc;
     if (!rpc?.alive) throw new Error("会话没在运行");
-    // #202 / D181: 启动窗口里挡下 `!` 命令。bash 走的是 RPC，`bootQueue` 排的是 prompt ——
-    // 两条通道没有共同的顺序语义，硬塞进队列会把「顺手敲一下」变成启动后突然执行的一条命令。
-    if (this.state.starting) throw new Error("pi 还在启动，`!` 命令等它起来再跑");
+    // #202 / D182: 启动窗口里不再拒绝 —— 卡片先落地（queued），命令进 `bootBash`，就绪后按顺序跑。
+    // 票面 AC 要的是「不被拦下、pi 起来后执行」：晚几秒跑只改变时机，命令本身一个字不动。
+    if (this.state.starting) {
+      const item = this.landBash(command, excludeFromContext, "queued");
+      this.bootBash.push({ itemId: item.id, command, excludeFromContext });
+      return;
+    }
     if (this.bashRun) throw new Error("上一条 ! 命令还在跑，等它结束或先停掉它");
+    const item = this.landBash(command, excludeFromContext, "running");
+    await this.runBash(item, command, excludeFromContext);
+  }
+
+  /** 落地一枚 bash 卡片（upsert + 广播）；启动期先标 `queued`，跑起来时再换成 `running`。 */
+  private landBash(command: string, excludeFromContext: boolean, status: BashItem["status"]): BashItem {
     const item: BashItem = {
       id: `bash:${++this.bashCounter}`,
       kind: "bash",
       command,
       output: "",
       excludeFromContext,
-      status: "running",
+      status,
       ts: new Date().toISOString(),
     };
     this.upsert(item);
     this.emitWs({ type: "item.add", sessionId: this.state.id, item });
+    return item;
+  }
+
+  /** 通道检查之后的那一段：真跑一条 `!`，把输出流进卡片。`bash()` 与 `flushBootBash()` 共用。 */
+  private async runBash(item: BashItem, command: string, excludeFromContext: boolean): Promise<void> {
+    const rpc = this.rpc;
+    if (!rpc?.alive) throw new Error("会话没在运行");
+    if (this.bashRun) throw new Error("上一条 ! 命令还在跑，等它结束或先停掉它");
+    if (item.status !== "running") {
+      item = { ...item, status: "running" };
+      this.upsert(item, item.id);
+      this.emitWs({ type: "item.replace", sessionId: this.state.id, id: item.id, item });
+    }
     const run = { itemId: item.id, output: "" };
     this.bashRun = run;
     let done: BashItem;
@@ -2014,6 +2063,44 @@ export class Session extends EventEmitter {
     }
     this.upsert(done, item.id);
     this.emitWs({ type: "item.replace", sessionId: this.state.id, id: item.id, item: done });
+  }
+
+  /**
+   * #202 / D182: pi 就绪之后把启动窗口里排下的 `!` 按顺序跑完。一条接一条（bash 一次只能跑一条），
+   * 中途失败只作废那一条，后面的照跑。
+   */
+  private flushBootBash(): void {
+    if (this.flushingBash || !this.bootBash.length) return;
+    this.flushingBash = true;
+    void (async () => {
+      try {
+        while (this.bootBash.length) {
+          const next = this.bootBash.shift() as { itemId: string; command: string; excludeFromContext: boolean };
+          const item = this.items.find((it) => it.id === next.itemId);
+          if (!item || item.kind !== "bash") continue;
+          if (!this.rpc?.alive) {
+            this.failBash(next.itemId, "pi 没能起来，这条命令没有跑");
+            continue;
+          }
+          try {
+            await this.runBash(item, next.command, next.excludeFromContext);
+          } catch (err: any) {
+            this.failBash(next.itemId, String(err?.message ?? err));
+          }
+        }
+      } finally {
+        this.flushingBash = false;
+      }
+    })();
+  }
+
+  /** 一条 `!` 彻底没跑成：卡片停在「失败」，别让它一直挂着「等待 pi 启动」。 */
+  private failBash(itemId: string, message: string): void {
+    const item = this.items.find((it) => it.id === itemId);
+    if (!item || item.kind !== "bash") return;
+    const done: BashItem = { ...item, status: "done", error: message };
+    this.upsert(done, itemId);
+    this.emitWs({ type: "item.replace", sessionId: this.state.id, id: itemId, item: done });
   }
 
   abortBash(): void {

@@ -2614,6 +2614,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .msg.bash .bash-state { font: 11.5px var(--mono); color: var(--ok); }
 .msg.bash .bash-state.bad { color: var(--danger); }
 .msg.bash.running .bash-state { color: var(--warn); }
+/* #202 / D182: 启动窗口里排着的 `!` —— 与启动提示同一个转环和语气。 */
+.msg.bash.queued .bash-state { color: var(--warn); display: inline-flex; align-items: center; gap: 5px; }
+.msg.bash .bash-state .act-spin {
+  flex: none; width: 8px; height: 8px; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent;
+  animation: act-spin 0.8s linear infinite;
+}
 .msg.bash .bash-out { margin: 0; padding: 8px 8px; font: 12px/1.45 var(--mono); color: var(--accent); white-space: pre-wrap; word-break: break-word; max-height: 22em; overflow-y: auto; }
 .msg.bash .bash-out:empty { display: none; }
 .msg.bash .bash-foot { padding: 4px 8px; font-size: 12px; color: var(--faint); border-top: 1px solid var(--line-soft); word-break: break-all; }
