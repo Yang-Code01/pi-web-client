@@ -5,7 +5,7 @@ import { api } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { filterCommands, type CommandItem } from "./commands.ts";
-import { hasPathToken, mountDirPicker, type DirPicker } from "./dirpicker.ts";
+import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { diagnose, setKnownPlugins } from "./diagnose.ts";
@@ -197,7 +197,8 @@ export class App {
   private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
-  private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
+  /** 新建文件夹 / 新建文件共用一个等待表：两条结果的形状一样（`{ path }` / `{ error }`，D167）。 */
+  private mkWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
   /** Session whose claim is in flight: spawning pi takes a few seconds. */
   private claiming: string | null = null;
   private usage: { contextTokens: number | null; contextWindow: number | null } = { contextTokens: null, contextWindow: null };
@@ -2026,9 +2027,10 @@ export class App {
         if (this.stepResync && this.currentId) this.socket.send({ type: "subscribe", sessionId: this.currentId });
         this.stepResync = false;
         break;
-      case "mkdir.result": {
-        const done = this.mkdirWaits.get(String(msg.reqId ?? ""));
-        this.mkdirWaits.delete(String(msg.reqId ?? ""));
+      case "mkdir.result":
+      case "mkfile.result": {
+        const done = this.mkWaits.get(String(msg.reqId ?? ""));
+        this.mkWaits.delete(String(msg.reqId ?? ""));
         done?.({ path: msg.path, error: msg.error });
         break;
       }
@@ -4279,11 +4281,11 @@ export class App {
         setMkBusy(true);
         mkErr.textContent = "";
         const timer = setTimeout(() => {
-          if (!this.mkdirWaits.delete(reqId)) return;
+          if (!this.mkWaits.delete(reqId)) return;
           setMkBusy(false);
           mkErr.textContent = tr("服务端没有响应，稍后再试");
         }, 15000);
-        this.mkdirWaits.set(reqId, (res) => {
+        this.mkWaits.set(reqId, (res) => {
           clearTimeout(timer);
           if (this.sheet !== back) return;
           setMkBusy(false);
@@ -6426,6 +6428,139 @@ export class App {
     }
   }
 
+  /**
+   * D167: 「＋ 文件夹」/「＋ 文件」—— 文件管理器与附件弹层共用这一份。
+   * 路径行上两颗按钮，点开一行输入框（预填「新建文件夹」/「新建文件」并全选，回车就建）；
+   * 建完**停在当前目录**，由调用方刷新并高亮新行 —— 不进入目录、不打开文件、不替你选中它。
+   */
+  private mkControls(opts: { parent: () => string; made: (abs: string) => void }): {
+    dirBtn: HTMLButtonElement;
+    fileBtn: HTMLButtonElement;
+    row: HTMLElement;
+    sync: (state: DirPickerState) => void;
+  } {
+    const dirBtn = el("button", "btn ghost dir-mk dir-mk-dir", tr("＋ 文件夹")) as HTMLButtonElement;
+    dirBtn.title = tr("在当前目录下新建文件夹");
+    const fileBtn = el("button", "btn ghost dir-mk dir-mk-file", tr("＋ 文件")) as HTMLButtonElement;
+    fileBtn.title = tr("在当前目录下新建文件（0 字节；同名文件不会被覆盖）");
+
+    const row = el("div", "dir-mkrow");
+    row.hidden = true;
+    const input = el("input", "ns-input mono") as HTMLInputElement;
+    // 和桥端 makeFile/makeDir 的上限对齐：255 个字符。
+    input.maxLength = 255;
+    const ok = el("button", "btn primary", tr("创建")) as HTMLButtonElement;
+    const cancel = el("button", "btn ghost", tr("取消")) as HTMLButtonElement;
+    const err = el("div", "ns-error dir-mkerr");
+    const fields = el("div", "ns-row");
+    fields.append(input, ok, cancel);
+    row.append(fields, err);
+
+    let kind: "dir" | "file" = "dir";
+    let busy = false;
+    /** 上一次看到的目录：换了目录就把没提交的名字收掉，免得回车建到新目录里去。 */
+    let lastPath: string | null = null;
+    const setBusy = (on: boolean): void => {
+      busy = on;
+      input.disabled = on;
+      ok.disabled = on;
+      ok.textContent = on ? tr("创建中…") : tr("创建");
+    };
+    const close = (): void => {
+      row.hidden = true;
+      err.textContent = "";
+      input.value = "";
+      kind = "dir";
+    };
+    const open = (next: "dir" | "file"): void => {
+      if (busy || !opts.parent()) return;
+      kind = next;
+      row.hidden = false;
+      err.textContent = "";
+      input.placeholder = next === "dir" ? tr("新文件夹名") : tr("新文件名");
+      input.value = next === "dir" ? tr("新建文件夹") : tr("新建文件");
+      input.focus();
+      input.select();
+    };
+    dirBtn.onclick = () => open("dir");
+    fileBtn.onclick = () => open("file");
+    cancel.onclick = () => {
+      if (!busy) close();
+    };
+    const submit = (): void => {
+      const name = input.value.trim();
+      const parent = opts.parent();
+      if (!parent || busy) return;
+      if (!name) {
+        // 措辞跟桥端 `${kind}名不能为空` 对齐：空名字不值得为一句「不能为空」多跑一个来回。
+        err.textContent = kind === "dir" ? tr("文件夹名不能为空") : tr("文件名不能为空");
+        return;
+      }
+      if (/[\\/]/.test(name)) {
+        err.textContent = tr("名字里不能有 / 或 \\（一次只建一层）");
+        return;
+      }
+      this.act(() => {
+        const reqId = `mk:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+        const sent = kind;
+        setBusy(true);
+        err.textContent = "";
+        const timer = setTimeout(() => {
+          if (!this.mkWaits.delete(reqId)) return;
+          setBusy(false);
+          err.textContent = tr("服务端没有响应，稍后再试");
+        }, 15000);
+        this.mkWaits.set(reqId, (res) => {
+          clearTimeout(timer);
+          if (!row.isConnected) return;
+          setBusy(false);
+          if (res.error || !res.path) {
+            err.textContent = res.error ? errText(res) : tr("创建失败");
+            input.focus();
+            return;
+          }
+          // 关掉输入行再刷新：新行高亮由调用方在列表回来后补（dirpicker 的 navigate 会清高亮）。
+          close();
+          opts.made(res.path);
+        });
+        this.socket.send({ type: sent === "dir" ? "mkdir" : "mkfile", reqId, parent, name });
+      });
+    };
+    ok.onclick = submit;
+    input.onkeydown = (ev) => {
+      if (ev.isComposing) return;
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        submit();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!busy) close();
+      }
+    };
+
+    return {
+      dirBtn,
+      fileBtn,
+      row,
+      // 盘符页 / 读不了的目录：没有「当前目录」，两颗按钮先收起来；换了目录也把没提交的那行收掉。
+      sync: (state) => {
+        const usable = !!state.path && !state.error;
+        for (const btn of [dirBtn, fileBtn]) btn.hidden = !usable;
+        const moved = state.path !== lastPath;
+        lastPath = state.path;
+        if ((!usable || moved) && !busy) close();
+      },
+    };
+  }
+
+  /** D167: 建完停在原地 —— 重列当前目录，再把新行标成 `.hit`（navigate 会先清掉上一次的高亮）。 */
+  private revealMade(picker: DirPicker, abs: string): void {
+    const name = fileNameOf(abs);
+    const here = picker.path();
+    void picker.go(here).then(() => picker.reveal(name));
+  }
+
   private mountBrowser(v: Viewer): void {
     const body = v.body;
     body.replaceChildren();
@@ -6436,13 +6571,20 @@ export class App {
     // D71: the copy button reads the picker live, so it always copies the directory actually listed.
     let pickerPath = (): string => "";
     const copy = this.dirCopy(() => pickerPath());
+    // D167: 建完停在原地 —— 重新列一遍当前目录，再把新行标出来。
+    const mk = this.mkControls({
+      parent: () => pickerPath(),
+      made: (abs) => this.revealMade(picker, abs),
+    });
     const picker = mountDirPicker(host, {
       start: v.lastDir || this.session?.cwd || "",
       files: true,
       fallback: true,
       pathBox: true,
-      head: [home.node, copy.node],
+      head: [home.node, copy.node, mk.dirBtn, mk.fileBtn],
+      beforeList: [mk.row],
       onState: (s) => {
+        mk.sync(s);
         copy.bind();
         if (!s.path) return;
         v.lastDir = s.path;
@@ -10057,16 +10199,23 @@ export class App {
     // D163: 这个弹层按会话记着上次浏览到哪儿；pick 走闭包，所以要等 picker 建好再接上。
     let pickerPath = (): string => "";
     const ref = this.dirRef(() => pickerPath());
+    // D167: 附件弹层也能就地建 —— 建完停在原地、高亮新行，点它才算附加。
+    const mk = this.mkControls({
+      parent: () => pickerPath(),
+      made: (abs) => this.revealMade(picker, abs),
+    });
     // 第一次落到一个能读的目录才算数：之后再出错（目录被删、盘拔了）不再自动把人拽走。
     let landed = false;
     const picker = mountDirPicker(host, {
       start: this.attachStart(),
       files: true,
       fallback: true,
+      head: [home.node, ref.node, mk.dirBtn, mk.fileBtn],
+      beforeList: [mk.row],
       // 和文件管理器同一套「输入路径就跳」：附件也常常已经在手上了（终端里复制来的）。
       pathBox: true,
-      head: [home.node, ref.node],
       onState: (state) => {
+        mk.sync(state);
         ref.bind();
         if (state.path) {
           landed = true;

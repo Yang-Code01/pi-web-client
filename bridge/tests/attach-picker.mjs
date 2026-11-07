@@ -175,8 +175,11 @@ try {
   const asked = seen.slice(before).map((s) => `${s.status} ${decodeURIComponent(s.url.split("?")[1] ?? "")}`);
   console.log(`CRUMB: 点 ${drive} → "${where}"  ${asked.join(" | ")}`);
   if (!where.endsWith(drive)) fail(`点 ${drive} 面包屑后停在 "${where}"，期望以 ${drive} 结尾`);
-  if (!(await page.locator(".sheet.file-picker .dirpicker .model-row", { hasText: "pi-web-client" }).count())) {
-    fail(`${drive} 根目录里没有 pi-web-client，说明没落到盘根`);
+  // 盘根里至少得有我们这份检出所在的那一层（E:\yqm\… → 「yqm」），否则说明只换了面包屑没真列目录。
+  // 不写死仓库目录名：worktree 可能放在 pi-web-client-wt、也可能别处。
+  const topDir = path.relative(`${drive}\\`, WORK).split(/[\\/]/)[0];
+  if (!(await page.locator(".sheet.file-picker .dirpicker .model-row", { hasText: topDir }).count())) {
+    fail(`${drive} 根目录里没有 ${topDir}，说明没落到盘根`);
   }
 
   // ---- D163: 按会话记住上次浏览的目录
@@ -195,7 +198,7 @@ try {
     for (const k of keys) localStorage.setItem(k, "F:\\");
     localStorage.setItem("pi.attachDir.index", keys.join("\n"));
   });
-  await page.locator(".sheet.file-picker .dirpicker .model-row", { hasText: "pi-web-client" }).first().click();
+  await page.locator(".sheet.file-picker .dirpicker .model-row", { hasText: topDir }).first().click();
   await sleep(800);
   const kept = await page.evaluate(() => (localStorage.getItem("pi.attachDir.index") ?? "").split("\n").filter(Boolean));
   console.log(`LRU: 保留 ${kept.length} 条，最旧 ${kept[0]}`);
@@ -213,6 +216,75 @@ try {
   const stale = ((await page.locator(".sheet.file-picker .dir-path").textContent()) ?? "").trim();
   console.log(`STALE: 记忆指向不存在的目录 → "${stale}"`);
   if (!stale.includes("work")) fail(`记忆失效后落在 "${stale}"，期望退回会话 cwd（work）`);
+
+  // ---- D167: 新建文件夹 / 新建文件（附件弹层与文件管理器共用同一份控件）
+  // 只建一层、建完停在原地、新行是 .hit —— 不进入目录、不打开文件。
+  const pick = (sel) => page.locator(`.sheet.file-picker ${sel}`);
+  const mkFileBtn = pick(".dir-head .dir-mk-file");
+  const mkDirBtn = pick(".dir-head .dir-mk-dir");
+  if (!(await mkFileBtn.isVisible()) || !(await mkDirBtn.isVisible())) fail("附件弹层的 ＋ 文件夹 / ＋ 文件 没露出来");
+
+  await mkFileBtn.click();
+  await pick(".dir-mkrow").waitFor({ timeout: 5000 });
+  const prefilled = await pick(".dir-mkrow .ns-input").inputValue();
+  if (prefilled !== "新建文件") fail(`输入框预填了「${prefilled}」，期望「新建文件」`);
+  await pick(".dir-mkrow .ns-input").fill("zz-mk.txt");
+  await pick(".dir-mkrow .ns-input").press("Enter");
+  const madeRow = pick(".file-row.hit");
+  await madeRow.waitFor({ timeout: 8000 });
+  const madeText = ((await madeRow.textContent()) ?? "").trim();
+  if (!madeText.includes("zz-mk.txt")) fail(`高亮的行是「${madeText}」，不是刚建的那个`);
+  const onDisk = path.join(WORK, "zz-mk.txt");
+  if (!fs.existsSync(onDisk)) fail(`${onDisk} 没落盘`);
+  if (fs.statSync(onDisk).size !== 0) fail("新文件不是 0 字节");
+  if (!((await pick(".dir-mkrow").getAttribute("hidden")) !== null)) fail("建完输入行没收起来");
+  console.log(`MK: ＋ 文件 → ${madeText.slice(0, 40)}（0 字节，已高亮）`);
+
+  // 同名再建一次：报「已经存在」，原来那份别被清空（wx 而不是先删后写）。
+  fs.writeFileSync(onDisk, "keep");
+  await mkFileBtn.click();
+  await pick(".dir-mkrow .ns-input").fill("zz-mk.txt");
+  await pick(".dir-mkrow .ns-input").press("Enter");
+  await pick(".dir-mkrow .dir-mkerr").filter({ hasText: "已经存在" }).waitFor({ timeout: 8000 });
+  if (fs.readFileSync(onDisk, "utf8") !== "keep") fail("同名建文件把已有内容弄没了");
+  console.log("MK: 同名 → 「已经存在」，原文件没被动");
+  await pick(".dir-mkrow .ns-input").press("Escape");
+  await sleep(200);
+  if (!((await pick(".dir-mkrow").getAttribute("hidden")) !== null)) fail("Esc 没把输入行收起来");
+
+  // 文件夹：留在原地（不进去），新行高亮。
+  await mkDirBtn.click();
+  await pick(".dir-mkrow .ns-input").fill("zz-mk-dir");
+  await pick(".dir-mkrow .ns-input").press("Enter");
+  await pick(".dir-row.hit").filter({ hasText: "zz-mk-dir" }).waitFor({ timeout: 8000 });
+  const stillHere = ((await pick(".dir-path").textContent()) ?? "").trim();
+  if (!stillHere.includes("work")) fail(`建完文件夹被带走了（现在在「${stillHere}」）`);
+  const madeDir = path.join(WORK, "zz-mk-dir");
+  if (!fs.statSync(madeDir).isDirectory()) fail(`${madeDir} 不是目录`);
+  console.log(`MK: ＋ 文件夹 → zz-mk-dir（留在原地，已高亮）`);
+
+  // ---- 文件管理器那一侧：同一对按钮，建出来的文件落在它正在浏览的目录里
+  await page.locator(".sheet.file-picker .sheet-head button", { hasText: /关闭/ }).click();
+  await sleep(300);
+  await page.locator('[data-act="files"]').first().click();
+  await page.locator(".viewer-browse .dirpicker").waitFor({ timeout: 10000 });
+  await sleep(500);
+  if (!(await page.locator(".viewer-browse .dir-head .dir-mk").count() === 2)) fail("文件管理器路径行没有两颗新建按钮");
+  const fmPath = ((await page.locator(".viewer-browse .dir-path").textContent()) ?? "").trim();
+  if (!fmPath.includes("work")) fail(`文件管理器停在「${fmPath}」，不是会话 cwd`);
+  await page.locator(".viewer-browse .dir-head .dir-mk-dir").click();
+  await page.locator(".viewer-browse .dir-mkrow .ns-input").fill("zz-fm-dir");
+  await page.locator(".viewer-browse .dir-mkrow .ns-input").press("Enter");
+  await page.locator(".viewer-browse .dir-row.hit").filter({ hasText: "zz-fm-dir" }).waitFor({ timeout: 8000 });
+  if (!fs.statSync(path.join(WORK, "zz-fm-dir")).isDirectory()) fail("文件管理器建的文件夹没落盘");
+  console.log("MK: 文件管理器 → zz-fm-dir 也建出来了");
+
+  // 后面几段（盘符列表 / 逐个点盘）还在这张附件弹层上跑：先关掉文件管理器、再把弹层打开回来。
+  await page.locator(".viewer-head .viewer-btn[title^=\"关闭\"]").first().click();
+  await sleep(400);
+  await page.locator(".hint-tools button", { hasText: "文件" }).click();
+  await page.locator(".sheet.file-picker .dirpicker").waitFor({ timeout: 10000 });
+  await sleep(800);
 
   // ---- 此电脑：盘符列表
   await page.locator(".sheet.file-picker .dir-path .crumb.root", { hasText: "此电脑" }).click();
