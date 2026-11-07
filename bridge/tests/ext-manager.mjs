@@ -207,8 +207,9 @@ try {
   const instDone = inst[inst.length - 1];
   check(instDone.code === 0, "local package installed through pi");
   check(inst.some((m) => m.type === "picli.start" && m.reqId === "probe1") && instDone.reqId === "probe1", "the bridge echoes the page's reqId so a queued command can be told apart");
-  // D113: the inventory arrives in stages — installed rows first, then MCP, then versions (the late
-  // two can land in either order; every snapshot carries everything that has answered so far).
+  // D113: the inventory arrives in stages — installed rows first, then MCP, then versions. Since D171
+  // the version stage waits for the MCP rows (it reads their pinned versions), so the order of the late
+  // two is fixed; every snapshot carries everything that has answered so far.
   const stages = (
     await a.collect({ type: "ext.inventory", check: true }, (m) => m.type === "ext.inventory" && m.mcpReady && m.versionsChecked, "inventory stages")
   ).filter((m) => m.type === "ext.inventory");

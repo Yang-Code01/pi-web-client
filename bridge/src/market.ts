@@ -80,13 +80,16 @@ export async function request(url: string, opts: { method?: string; headers?: Re
 
 async function getJson<T = any>(url: string, headers?: Record<string, string>): Promise<T> {
   const res = await request(url, { headers });
-  if (res.status < 200 || res.status >= 300) throw new Error(`${new URL(url).host} 返回 ${res.status}`);
+  if (res.status < 200 || res.status >= 300) {
+    // The status rides on the error: getJsonRetry decides by it, not by re-reading this message.
+    throw Object.assign(new Error(`${new URL(url).host} 返回 ${res.status}`), { status: res.status });
+  }
   return JSON.parse(res.text) as T;
 }
 
 /**
- * A JSON GET that rides out a dropped connection: the registry walk below is 300 pages long and one
- * `ECONNRESET` (a proxy hiccup is enough) otherwise throws away every page fetched so far.
+ * A JSON GET that rides out a dropped connection: the registry walk below is hundreds of pages long
+ * and one `ECONNRESET` (a proxy hiccup is enough) otherwise throws away every page fetched so far.
  */
 async function getJsonRetry<T = any>(url: string, attempts = 3): Promise<T> {
   let last: unknown = null;
@@ -95,8 +98,11 @@ async function getJsonRetry<T = any>(url: string, attempts = 3): Promise<T> {
       return await getJson<T>(url);
     } catch (err) {
       last = err;
-      // A 4xx is the registry saying no: asking again changes nothing.
-      if (/\s返回\s4\d\d$/.test(String((err as Error)?.message ?? "")) || i === attempts - 1) break;
+      // Retry what can heal: no status at all means the socket died; 429 means come back later; 5xx
+      // is the server. Any other 4xx is the registry saying no, asking again changes nothing.
+      const status = Number((err as { status?: number })?.status ?? 0);
+      const retryable = !status || status === 429 || status >= 500;
+      if (!retryable || i === attempts - 1) break;
       await new Promise((r) => setTimeout(r, 500 * (i + 1)));
     }
   }

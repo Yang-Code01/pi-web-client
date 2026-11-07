@@ -113,11 +113,14 @@ export async function inventory(cliPath: string, cwd: string | null, check: bool
 
   const versionStage = (async () => {
     if (!check) return;
+    // Package versions do not depend on the MCP rows, and `pi mcp list` connects to every server
+    // (minutes, 180 s timeout): start the packages first so the wait below does not serialize them.
+    const pkgStage = inspectPackages(rows, true).catch(() => inv.packages);
     // The MCP rows carry the versions: without this wait they are read while `inv.mcp` is still [] on
     // any machine where `pi list` beats `pi mcp list` (a fresh agent dir: always), and the pin versions
     // are silently never checked. The stage itself never rejects (it catches into `mcpError`).
     await mcpStage;
-    inv.packages = await inspectPackages(rows, true).catch(() => inv.packages);
+    inv.packages = await pkgStage;
     const bumped = await Promise.all(
       inv.mcp.map(async (m) => {
         const c = commands.get(m.name);

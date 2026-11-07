@@ -1852,6 +1852,9 @@ export class App {
         // become the ranking without a retype. `paintMcpStore` sends `mcp.store` itself when `items` is null.
         this.mcpStore.items = null;
         this.mcpStore.building = false;
+        // A failed first search left `error` set; `paintMcpStore` only re-asks when there is no error, so
+        // keeping it would pin the page on 「没读出来」 forever and the index would never show up.
+        this.mcpStore.error = undefined;
         if (this.extTab === "mcp" && (this.sheetKind === "ext" || (this.sheetKind === "settings" && this.settingsTab === "ext"))) this.paintExtIfOpen();
         break;
       case "mcp.store":

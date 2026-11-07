@@ -2694,10 +2694,11 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 
 **决定：**
 
-- **`versionStage` 开头 `await mcpStage`**（它自己 catch 成 `mcpError`，不会抛）。三段推送的时序不变：MCP 行仍然先到，版本随后补齐。
-- **索引：** 上限 200 → **600 页**（实测 Registry 条目远多于 2 万，600 页够到 6 万条）；每页 `getJsonRetry(url, 3)`（只对非 4xx 重试，500 ms / 1000 ms 退避），**一次抖动不再废掉整次抓取**；失败记 `lastFailure`，**60 s 内不再重试**（否则每个搜索都要重新撞一遍墙）；`truncated` 落盘并透到页面。
-- **索引期间可读：** `mcpIndex()` 有盘上的旧索引就先回旧的（`building: true`），后台走完再回新的 —— 原来过期索引会让每个搜索都卡 5 分钟建完才回。建好后 `setIndexListener` 让桥广播 `{type:"mcp.index"}`，页面收到就重发一次 `mcp.store`，**不用重新输入**。
-- **`ghToken()` 改异步 `execFile` + 10 分钟缓存**（与 `runners()` 同一个 `cached()`），`runners()` 也从 `spawnSync` 改 `execFile`（`cached` 键拆成 `runner:npx|uvx|docker`）。
+- **`versionStage` 开头 `await mcpStage`**（它自己 catch 成 `mcpError`，不会抛）。**推送顺序不变，但版本段现在必然排在 MCP 段之后**（它要读 MCP 行的 pin 版本）。为了不让包版本被 `pi mcp list`（要连每台服务器，`picli.ts` 给 180 s）拖住，`inspectPackages(rows, true)` 在 `await` **之前**就启动，两者并行 —— 代价是包版本的落地时间从「与 mcp 同时」变成「不早于 mcp」。
+- **索引：** 上限 200 → **600 页**（实测 Registry 条目远多于 2 万，600 页够到 6 万条）；每页 `getJsonRetry(url, 3)`（没状态码的网络失败、429、5xx 各重试，500 ms / 1000 ms 退避；其它 4xx 不重试 —— 状态码挂在 error 上，不靠解析中文错误串），**一次抖动不再废掉整次抓取**；失败记 `lastFailure`，**60 s 内不再重试**（否则每个搜索都要重新撞一遍墙）；`truncated` 落盘并透到页面。
+- **索引去重改成「新的赢」**：以前 `items.set(name, …)` 是后写覆盖，而 `normalize()` 对缺 `_meta` 的条目不做 active / isLatest 过滤，一个缺 `_meta` 的旧版本能顶掉新版。现在同名保留 `newer()` 最大的那个。
+- **索引期间可读：** `mcpIndex()` 有盘上的旧索引就先回旧的（`building: true`），后台走完再回新的。旧代码其实**已经**先回旧索引 —— 真正的毛病是 `searchMcp` 把 `idx.building` 丢了（页面看不出还在建）而且建完没人通知，用户得重新输入才换成排行。现在建好就 `setIndexListener` 让桥广播 `{type:"mcp.index"}`，页面收到就重发一次 `mcp.store`，**不用重新输入**（顺手清了 `mcpStore.error`，否则首次搜索失败后 `items === null && !error` 不再成立，索引永远不落地）。
+- **`ghToken()` 改异步 `execFile` + 10 分钟缓存**（手写一个 `ghTokenCache`，没用 `cached()`：`cached()` 失败即驱逐，这里把一次超时的 `null` 也留 10 分钟，免得每停手一次搜索都重新 spawn 一个注定失败的 `gh`），`runners()` 也从 `spawnSync` 改 `execFile`（`cached` 键拆成 `runner:npx|uvx|docker`）。
 - **`newer()` 按 semver 比**：先比核心段（数值），核心相同后「没有预发布」的一方更新，都有预发布才逐 identifier 比（数字先于字母，短的更旧），`+build` 忽略。
 - **顺手把 pi 的自述透出来**（同一个类的问题，用户看不到就以为是桥丢了行）：`pi mcp list --json` 顶层有 `errors[]`（解析不了的条目，pi 从 `servers` 里剔掉）和 `note`（例如「这个项目未受信任，`.pi/mcp.json` 被忽略」）。`Inventory` 加 `mcpErrors` / `mcpNote` 原样带给页面，MCP 区块显示成提示行；`note` 命中 `/not trusted/i` 时换成本地化的解释 —— 否则「装到当前项目」的 MCP 装成功了却不在列表里，界面一声不响。
 
@@ -2707,14 +2708,17 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **`truncated` 只说明「没抓全」，不说是哪些**：长尾服务在排行里搜不到，但搜索框走的是同一份索引，所以**确实搜不到**（只有索引还没建好时才走 live registry）。这是规模的代价，不是 bug；真要全覆盖得把索引改成按需增量抓。
 - **`ghToken` 缓存 10 分钟**：中途 `gh auth login` / 换 token，最多 10 分钟才生效。`runners()` 同理（装了 uv 之后 10 分钟内仍显示「需要先安装 uv」）—— 和原来一样，只是键拆开了。
 - **`note` 的本地化靠正则匹配英文句子**：pi 改措辞就退回显示原文（仍是英文，但不丢信息）。
+- **`normalize()` 对缺 `_meta` 的条目仍不做 active / isLatest 过滤**（复审发现的另一半，这次没改：当前 registry 100/100 都带 `_meta`，属防御缺口，不是现在的 bug）。
+- **`gh` 的失败也会被缓存 10 分钟**：一次 10 s 超时之后的 10 分钟里 `hasToken` 都是 false（排行退回「只查到一部分 star」的提示），不会每次都重新撞。
 - **`mcp.index` 是广播**：多开窗口时每个都重发一次 `mcp.store`，多花一次搜索；索引本来就一天一建，不值得为它做去重。
 
 **验证：**
 
-- `node bridge/tests/ext-manager.mjs` —— **39 项全过**，其中三条是这次新加的：
-  - `version compare`：`2.0.0 > 2.0.0-beta.1`、`1.0.0 > 1.0.0-rc.1`、`1.0.0-alpha.1 > 1.0.0-alpha`、`1.0.0-alpha < 1.0.0-beta`、`2.2.1+build.7 == 2.2.1`；
-  - `MCP version check reached npm for the pinned server`（`0.0.1 → 2.2.1`）+ `newer release found on npm → update offered` —— 换成「拿不到 `latest` 就失败」，竞态再回来会当场红；
+- `node bridge/tests/ext-manager.mjs` —— **39 项全过**（基线 38 项，**净增 1 条**：原来那条会条件跳过的 MCP 检查拆成两条无条件断言；`version compare` 是原地补用例，不是新增）：
+  - `version compare`（改写）：`2.0.0 > 2.0.0-beta.1`、`1.0.0 > 1.0.0-rc.1`、`1.0.0-alpha.1 > 1.0.0-alpha`、`1.0.0-alpha < 1.0.0-beta`、`2.2.1+build.7 == 2.2.1`；
+  - `MCP version check reached npm for the pinned server`（新增，`0.0.1 → 2.2.1`）+ `newer release found on npm → update offered`（改写自原来那条 `if (latest) … else log("npm not reachable")`）—— 拿不到 `latest` 就失败，竞态再回来会当场红；
   - 同一次运行里 `update count 1`，与列表里的那条更新一致。
 - **竞态对照**（`PI_CODING_AGENT_DIR` 指到空 fixture + 一个 pin 住的 npx 服务器）：修复前 `FINAL {"version":"0.0.1","latest":null,"update":false}` 而 `updateCount() = 1`；修复后追加一段 `+1309ms packages=0 mcp=1 ready=true versions=true updates=1 … 0.0.1→2.2.1`，三段顺序变成「包 → MCP 行 → 版本」，角标与列表一致。
 - **索引路径**（盘上一份 30 小时前的索引 + 把代理指到死端口）：`searchMcp("")` 348 ms 返回按 star 降序的两条、`building: true`；第二次 1 ms（共用同一个 building promise，没有重新起走一遍）；后台那次抓取失败只记 `lastFailure`，没有把异常抛给搜索。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck` 通过（i18n **1627 键 × 3 语言**，新增 3 条、替换 1 条）。
+- **复审整改**（两轴评审，同一天）：`bridge/src/skillstore.ts` 的 `ghToken()` 调用点漏了 `await`（`headers.authorization` 会发成 `Bearer [object Promise]`，GitHub 树兜底通道必然 401，而 tsc 不报）；`getJsonRetry` 的 4xx 判定从中文错误串正则改成挂在 error 上的 `status`（429 现在会重试）；`mcp.index` 清 `error`。上面「时序 / 索引期间可读 / ghToken 复用 / 新增几条」四处措辞就是这次评审改出来的 —— 原文把自己没说准的旧行为写成了理由。
