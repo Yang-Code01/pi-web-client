@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { RpcChild } from "./rpc.ts";
 import { displayUserText, loadEntries, listSessionFiles, normalizeUserText, readMeta, titleFromUserText, typedSkill, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
-import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, summarizeToolArgs, type BashItem, type Item, type ToolItem } from "./items.ts";
+import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, summarizeToolArgs, type BashItem, type Item, type ToolItem, type UserItem } from "./items.ts";
 import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
 import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions } from "./launch.ts";
@@ -755,6 +755,12 @@ export class Session extends EventEmitter {
   reviewing = false;
   /** User items sent while a run was active, i.e. sitting in pi's queue until delivered or cleared. */
   private queuedUser: { id: string; text: string }[] = [];
+  /**
+   * #197 / D177: 启动窗口期（`starting` 为真）收到的消息。气泡已经落地并广播，消息本身留在这里等
+   * pi 起来 —— 只在桥内存里，桥重启就没了（代价见 D177）。就绪时按到达顺序交出去。
+   */
+  private bootQueue: { id: string; text: string; images?: { data: string; mimeType: string }[]; behavior: "steer" | "followUp" }[] =
+    [];
   /** pi's queue as of the last queue_update, so a page opened mid-run sees it too (#14). */
   private queue: { steering: string[]; followUp: string[] } = { steering: [], followUp: [] };
   /** The `!cmd` running right now; pi streams its output as bash_execution_update (#16). */
@@ -1040,6 +1046,9 @@ export class Session extends EventEmitter {
       this.state.owned = false;
       // A pi that died while still booting must not leave the page on 「正在启动…」 forever.
       this.setState({ running: false, starting: false });
+      // #197 / D177: 启动期收下的消息跟着这个进程一起没戏了 —— 气泡标红、给一句人话，不静默吞掉。
+      const booted = this.bootQueue.splice(0).map((q) => q.id);
+      if (booted.length) this.failBoot(booted, closing ? "已经停了" : `起不来了（${reason}）`);
       releaseLock(id);
       this.clearApprovals();
       this.clearAsks();
@@ -1073,6 +1082,8 @@ export class Session extends EventEmitter {
         // 这一行是「新会话为什么慢」的唯一可观测出口：桥日志里能直接看到每次冷启花了多久。
         console.log(`[boot] ${id} pi 启动完成 ${Date.now() - bootAt} ms`);
         this.setState({ starting: false }, { touch: false });
+        // #197 / D177: 启动窗口期收下的消息在这里交出去。
+        this.flushBootQueue();
       });
     // A resumed session starts with the transcript pi already wrote to disk.
     if (opts.resume) this.loadFromFile();
@@ -1609,12 +1620,16 @@ export class Session extends EventEmitter {
     // A `/skill:x` send is marked right away so the bubble does not swap styles when pi's expanded
     // copy lands in the file (~400 ms); the tooltip's path only comes with the file read.
     const typed = typedSkill(text);
+    // #197 / D177: pi 还在加载扩展（`starting`）时也收：气泡和正常发送走同一条路，只多一枚
+    // `pending`；消息本身进 bootQueue，等 get_state 落地再交出去。
+    const booting = this.state.starting;
     const userItem: Item = {
       id: userId,
       kind: "user",
       text,
       images: (images ?? []).map((i) => ({ mimeType: i.mimeType })),
       ...(typed ? { skill: typed } : {}),
+      ...(booting ? { pending: "booting" as const } : {}),
       ts: new Date().toISOString(),
     };
     this.upsert(userItem);
@@ -1631,9 +1646,61 @@ export class Session extends EventEmitter {
         this.setState(patch, { touch: false });
       }
     }
+    // #197 / D177: 启动窗口期到此为止。交给 pi 得等它把扩展加载完（get_state 回来），否则这一句会
+    // 撞上一个还没准备好的进程；消息先进桥自己的队列，气泡已经落地（带 `pending: "booting"`）。
+    if (booting) {
+      this.bootQueue.push({ id: userId, text, images, behavior });
+      return;
+    }
     const res = await this.rpc.request<any>("prompt", { ...message }, 60000);
     const disposition = res?.disposition;
     if (disposition === "handled" && res?.error) throw new Error(String(res.error));
+  }
+
+  /**
+   * #197: `starting` 翻假 = pi 的 get_state 回来了（扩展已经加载完），这时候才把启动期收下的
+   * 第一条交给它 —— 桥自己排队，所以这一段不必等页面重发。后面的几条在这一轮跑起来之后接着送
+   * （#198 负责合并成插话）。
+   */
+  private flushBootQueue(): void {
+    const next = this.bootQueue.shift();
+    if (!next) return;
+    const rpc = this.rpc;
+    if (!rpc?.alive) {
+      this.failBoot([next.id], "没起来");
+      return;
+    }
+    const message: any = { type: "prompt", message: next.text };
+    if (this.state.running) message.streamingBehavior = next.behavior === "followUp" ? "followUp" : "steer";
+    if (next.images?.length) message.images = next.images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType }));
+    if (message.streamingBehavior) this.queuedUser.push({ id: next.id, text: next.text });
+    this.markUserPending(next.id, "sent");
+    rpc.request<any>("prompt", { ...message }, 60000).then(
+      (res) => {
+        if (res?.disposition === "handled" && res?.error) this.failBoot([next.id], "拒收了这条消息");
+      },
+      // 交出去的那一刻 pi 死了：气泡不能一直转「正在启动」，标红让人重发（#200 在这上面做重试）。
+      () => this.failBoot([next.id], "没接住这条消息"),
+    );
+  }
+
+  /**
+   * #197: 启动期收下的消息没能交给 pi。气泡留着（不删），改成标红，再给一句人话 —— 失败的重试
+   * 是 #200 的活，这里只保证它不静默消失。
+   */
+  private failBoot(ids: string[], why: string): void {
+    if (!ids.length) return;
+    for (const id of ids) this.markUserPending(id, "failed");
+    this.emitWs({ type: "notice", sessionId: this.state.id, text: `pi ${why}，这条消息没有发出去；重新发一次就行。`, level: "error" });
+  }
+
+  /** 改气泡上的待发标记并发 `item.replace`：这是别的标签页唯一能看见它的途径。 */
+  private markUserPending(id: string, pending: "sent" | "failed"): void {
+    const at = this.items.findIndex((it) => it.id === id);
+    if (at < 0) return;
+    const item = { ...(this.items[at] as UserItem), pending };
+    this.items[at] = item;
+    this.emitWs({ type: "item.replace", sessionId: this.state.id, id, item });
   }
 
   abort(): void {

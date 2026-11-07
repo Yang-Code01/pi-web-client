@@ -1411,6 +1411,7 @@ export class App {
         this.failLedger = this.failWs && this.failWs === (this.session?.ws ?? "") ? this.failLedger : null;
         this.failRules = this.failRulesWs && this.failRulesWs === (this.session?.ws ?? "") ? this.failRules : null;
         this.chat.reset((msg.items ?? []) as Item[]);
+        this.chat.setRunning(this.session?.running === true);
         if (this.currentWs()) {
           this.socket.send({ type: "failures.get", ws: this.currentWs() });
           this.socket.send({ type: "rules.get", ws: this.currentWs() });
@@ -2007,7 +2008,7 @@ export class App {
           this.syncContinueButton();
           // 任务结束才问「要不要把这一轮的错误记下来」（D164）。
           this.syncFailCta();
-          if (this.textarea) this.textarea.placeholder = this.composerHintText();
+          if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
         }
         if (!msg.running) this.turnAt = null;
         this.renderTop();
@@ -2210,6 +2211,8 @@ export class App {
     if (this.currentId === state.id) {
       const prev = this.session;
       this.session = state;
+      // #197 / D177: 气泡上那枚「处理中…」是推出来的（运行态 + 最后一条用户消息），不新增协议字段。
+      this.chat.setRunning(state.running === true);
       // Q-021: 一轮结束正是模型可能刚跑完 `git checkout` 的时刻。
       if (prev?.running && !state.running) void this.refreshGit(true);
       // The writer bar (接管 / 停止运行) and the status line both hang off these two flags.
@@ -2328,8 +2331,6 @@ export class App {
   // ---------------------------------------------------------------- actions
   private sendPrompt(behavior: "steer" | "followUp" = "steer"): void {
     if (!this.currentId) return;
-    // 启动中的 pi 收不了 prompt：与其发出去石沉大海，不如什么都不做（输入框本来就是禁用的）。
-    if (this.session?.starting) return;
     const typed = this.composerText.trim();
     const pasted = this.pastes.map((p) => p.text.trim()).filter(Boolean);
     const text = [...pasted, typed].filter(Boolean).join("\n\n");
@@ -8037,8 +8038,7 @@ export class App {
     const row = el("div", "row");
     const box = el("div", "composer-input");
     const input = el("textarea");
-    input.placeholder = this.composerHintText();
-    if (s?.starting) input.disabled = true;
+    input.placeholder = this.composerPlaceholder();
     this.textarea = input;
     input.value = this.composerText;
     const pasteHost = el("div", "paste-list");
@@ -10901,13 +10901,9 @@ export class App {
    * back (the bridge re-sends pending asks on subscribe). Nothing pops up on its own.
    */
   /**
-   * 输入框的占位文案：pi 还在启动的时候，「Enter 发送」是错的提示 —— 那时发送会被拦下来。
-   * 所有写 placeholder 的地方都走这里，别再直接调 composerPlaceholder()。
+   * 输入框的占位文案。D177（推翻 D122 第 3 条）：pi 还在启动时输入框照常可用 —— 桥会把消息收下、
+   * 等 pi 起来再交出去，所以「Enter 发送」在启动期也是真的。所有写 placeholder 的地方都走这里。
    */
-  private composerHintText(): string {
-    return this.session?.starting ? tr("pi 正在启动…") : this.composerPlaceholder();
-  }
-
   private composerPlaceholder(): string {
     if (this.asks.length) return ASK_PLACEHOLDER;
     return this.session?.running ? RUNNING_PLACEHOLDER : IDLE_PLACEHOLDER;
@@ -10917,7 +10913,7 @@ export class App {
     const host = this.els.composerHost;
     host.querySelector(".ask-slot")?.remove();
     this.fillHintStatus();
-    if (this.textarea) this.textarea.placeholder = this.composerHintText();
+    if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
     if (this.askLost && !this.asks.length) {
       const lost = this.askLostBlock();
       const row = host.querySelector(".row");
