@@ -65,9 +65,9 @@ assert.equal(sub?.task, "查一下卡片为什么空", "任务原文从 args 拿
 assert.equal(sub?.hasLog, true, "pi-subagents 的过程记录 = status.json 的 outputFile");
 assert.equal(runs.readLog(SUB_B).log, "step 1\nstep 2\n", "读的就是那份 output-0.log");
 // 权威状态到了就算结束，不必等 6 小时的 SILENT_DEAD。
-writeFileSync(join(asyncDir, "status.json"), JSON.stringify({ state: "completed", outputFile: join(asyncDir, "output-0.log") }));
+writeFileSync(join(asyncDir, "status.json"), JSON.stringify({ state: "complete", outputFile: join(asyncDir, "output-0.log") }));
 runs.prune();
-assert.equal(runs.list().find((r) => r.id === SUB_B)?.state, "done", "status.json 说 completed 就收工");
+assert.equal(runs.list().find((r) => r.id === SUB_B)?.state, "done", "status.json 说 complete（真值，不是 completed）就收工");
 assert.equal(runs.view()?.n, 0);
 
 // D171 现场：读 D170 文档的 bash 结果里同时有 `**问题：**` / `runId `…`` / `Running in the background`。
@@ -134,6 +134,21 @@ const WIRE_ID = "00000000-1111-2222-3333-444444444444";
 wire.noteToolEnd("subagent", { runId: WIRE_ID, asyncDir: wireDir }, `Async: worker [${WIRE_ID}]`, { agent: "worker", task: "t" });
 const two = wire.list().find((r) => r.id === WIRE_ID);
 assert.equal(two.hasLog, true, "pi-subagents 的过程记录 = status.json 的 outputFile");
+
+
+// D171: 派活那一刻 status.json 可能还没落盘（实测晚 ~1.4 s）。过程记录要在 prune 里补回来，
+// 否则 hasLog 永久 false，卡片一直说「桥还没接上」。
+const late = mkdtempSync(join(tmpdir(), "pi-subagents-late-"));
+const LATE_ID = "99999999-8888-7777-6666-555555555555";
+const lateRuns = new BgRuns(() => {});
+lateRuns.noteToolEnd("subagent", { runId: LATE_ID, asyncDir: late }, `Async: worker [${LATE_ID}]`, { agent: "worker", task: "t" });
+assert.equal(lateRuns.list()[0]?.hasLog, false, "status.json 还没写出来：先如实说没有");
+writeFileSync(join(late, "status.json"), JSON.stringify({ state: "complete", outputFile: join(late, "output-0.log") }));
+writeFileSync(join(late, "output-0.log"), "late line\n");
+lateRuns.prune();
+assert.equal(lateRuns.list()[0]?.hasLog, true, "下一次滴答把 outputFile 补回来");
+assert.equal(lateRuns.list()[0]?.state, "done");
+assert.equal(lateRuns.readLog(LATE_ID).log, "late line\n");
 
 // ---------------------------------------------------------------- 读痕迹
 

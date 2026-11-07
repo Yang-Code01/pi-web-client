@@ -2689,16 +2689,16 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 
 于是 `noteToolEnd("bash", {exitCode:0}, <那段文档>)` 记下了一条 `source: subagents` 的任务：没有 `logPath`（只有 acp 才拼默认路径）→ `hasLog: false`；`task` 要匹配英文 `Task:` 行 → 空；`state` 又是 `running`，只能等 `SILENT_DEAD_MS`（6 小时）。18:02:20 + 4:34 = 18:06:54，正是截图那一刻。
 
-第二重（不是这次的原因，但同一屏也错）：真 `pi-subagents` 的 async 结果只有 `{mode, runId, asyncDir}` + `Async: <agent> [id]` 文本，`details` 里没有 agent/task；而 `bgruns.ts` 的注释「asyncDir 布局没有公开约定」已经过期 —— `docs/observability.md` 公开了 `status.json` / `events.jsonl` / `output-<n>.log` 与字段表。
+第二重（不是这次的原因，但同一屏也错）：真 `pi-subagents` 的 async 结果只有 `{mode, runId, asyncDir}` + `Async: <agent> [id]` 文本，`details` 里没有 agent/task；而 `bgruns.ts` 的注释「asyncDir 布局没有公开约定」已经过期 —— pi-subagents 包自己的 `docs/observability.md`（不在本仓库）公开了 `status.json` / `events.jsonl` / `output-<n>.log` 与字段表。
 
 **决定：**
 
 - **建卡三闸同时要求：** ①`tool ∈ {acp_delegate, subagent}`；②结构性开始信号（`details.kind === "delegate"` 或 `details.asyncDir`），**删掉 `/Running in the background/i` 文本兜底**；③`id` 像真 runId（`del_*` / `call_*` / UUID），`…` 这类示例值不认。
 - **`agent` / `task` 从 `args` 取**：`tool_execution_start` 早把 `ev.args` 存进 `ToolItem`，end 时按 `toolCallId` 取回（`SessionState.argsOf()`）传给 `noteToolEnd(tool, details, text, args)`。`AGENT` 正则收窄成 runner 自己的两种写法（`Delegated to **X**` / `Async: X [`），`Task:` 行只给 acp 兜底。
 - **接上 pi-subagents 的痕迹**：`logPath = <asyncDir>/status.json 的 outputFile`（`output-0.log`，实时过程记录），`outPath = <asyncDir>/subagent-log-<id>.md`。`tail()` 的白名单从 `%TEMP%\acp-delegate\` 扩到 `%TEMP%\pi-subagents-*\`，仍然 `resolve` 后前缀校验、只读尾巴。
-- **结束信号多一条权威来源**：`prune()`（30 s 一跳）对 subagents 的 run 读 `status.json.state`，`completed` → done、`failed/stopped/cancelled/timeout` → failed；`RUN_ID` 那套只留给 acp 的注入通知，6 小时兜底保留。
+- **结束信号多一条权威来源**：`prune()`（30 s 一跳）对 subagents 的 run 读 `status.json.state`：真值是 **`complete`**（实测 20 份产物全是它，文档里写的是 `completed`，两个都认）→ done，`failed/stopped/cancelled/canceled/timeout/error` → failed；同一跳里若 `logPath` 还空着就把 `outputFile` 补回来（派活那一刻 `status.json` 常还没落盘，实测晚 ~1.4 s，不补的话 `hasLog` 永久 false）。`RUN_ID` 那套只留给 acp 的注入通知，6 小时兜底保留。
 - **文案不再甩锅 runner**：「这个 runner 不写过程记录。」→「桥还没接上这个 runner 的过程记录。」；「（没说任务）」→「（任务原文没传到桥）」（中/英/日三份）。
 
-**代价 / 可改：** 文本兜底删掉后，只有文本、没有 `details` 的「开始」不再建卡（老版本 runner 看不到卡片，比看错卡片好）；`status.json` 每 30 秒读一次（文件几 KB，只在有 subagents run 时）；`output-0.log` 每次 attempt 会被清空，所以过程记录只有当前 attempt 的尾巴。
+**代价 / 可改：** 文本兜底删掉后，只有文本、没有 `details` 的「开始」不再建卡；`details` 有 `runId` 但既无 `kind:"delegate"` 也无 `asyncDir`（更老的 acp 写法）同理 —— 少一条可见，好过错一条；`status.json` 每 30 秒读一次（文件几 KB，只在有 subagents run 时）；`output-0.log` 每次 attempt 会被清空，所以过程记录只有当前 attempt 的尾巴。
 
 **验证：** `npm run test:bgruns`（新增 4 组：D170 文档文本不建卡、无 details 不建卡、`…`/`sub_1` 不建卡、subagents 的 args→agent/task 与 `status.json`→hasLog/done）；`npm run typecheck`（含 i18n-check 1624 键 × 3 语言）；`npm run test:continue` 13 项。

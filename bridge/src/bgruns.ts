@@ -109,20 +109,18 @@ function firstRunId(text: string): string | null {
   return m ? m[1] : null;
 }
 
-/**
- * 文件尾（最多 `limit` 字）。只允许 `ACP_DIR` 底下 —— 路径是从工具结果里拾来的，读前再卡一次。
- *
- * 只读尾巴：`.activity` 能长到几 MB，而详情页 1.5 秒轮询一次；整文件读会把单线程的桥（所有会话）
- * 一起卡住。字节上限按 UTF-8 最坏情况放宽到 `limit * 4`，再按行首对齐、按字截断。
- */
-function readable(abs: string): boolean {
-  return abs.startsWith(ACP_DIR + sep) || abs.startsWith(SUBAGENTS_TMP);
+/** 路径是不是在 `%TEMP%\pi-subagents-*\` 这个根下。`file` 为 true 时要求再深一层（不是根本身）。 */
+function underSubagents(abs: string, file = false): boolean {
+  if (!abs.startsWith(SUBAGENTS_TMP)) return false;
+  const rest = abs.slice(SUBAGENTS_TMP.length);
+  if (!rest || rest.startsWith("..")) return false;
+  return file ? rest.includes(sep) : true;
 }
 
 /** pi-subagents 的 `status.json` 里读一个字符串字段（文件小、只在开卡/滴答时读一次）。 */
 function statusField(dir: string, key: string): string | undefined {
   const file = resolve(join(dir, "status.json"));
-  if (!file.startsWith(SUBAGENTS_TMP)) return undefined;
+  if (!underSubagents(file, true)) return undefined;
   try {
     const obj = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
     const v = obj?.[key];
@@ -141,7 +139,7 @@ function statusField(dir: string, key: string): string | undefined {
  */
 function tail(file: string, limit: number): string | undefined {
   const abs = resolve(file);
-  if (!readable(abs)) return undefined;
+  if (!abs.startsWith(ACP_DIR + sep) && !underSubagents(abs, true)) return undefined;
   let fd: number | null = null;
   try {
     fd = openSync(abs, "r");
@@ -214,8 +212,8 @@ export class BgRuns {
     } else {
       // pi-subagents 的 asyncDir 布局是公开契约（docs/observability.md「Async run artifacts」）：
       // `status.json` 的 `outputFile` 就是实时过程记录，`subagent-log-<id>.md` 是完成态摘要。
-      const dir = str(d.asyncDir);
-      if (dir) {
+        const dir = str(d.asyncDir);
+      if (dir && underSubagents(resolve(dir))) {
         run.dir = dir;
         const out = statusField(dir, "outputFile");
         if (out) run.logPath = out;
@@ -339,15 +337,22 @@ export class BgRuns {
     let changed = false;
     for (const [id, run] of this.runs) {
       if (run.state === "running") {
-        // pi-subagents 有权威状态：`status.json.state`（running/completed/failed/stopped）。
+        // pi-subagents 有权威状态：`status.json.state`。真值是 `complete`/`failed`/`stopped`/
+        // `running`（实测 20 份产物全是 `complete`；文档里写的是 `completed`，两个都认）。
         // 它的完成通知写的是 `Async: researcher [id]`，桥的 `RUN_ID` 认不出来，所以读这一眼。
         if (run.source === "subagents" && run.dir) {
+          if (!run.logPath) {
+            // 派活那一刻 `status.json` 可能还没落盘（实测晚 ~1.4 s），过程记录要在这里补回来，
+            // 否则 `hasLog` 会永久钉成 false，卡片一直说「桥还没接上」。
+            const out = statusField(run.dir, "outputFile");
+            if (out) run.logPath = out;
+          }
           const st = statusField(run.dir, "state");
-          if (st === "completed") {
+          if (st === "complete" || st === "completed") {
             this.end(id, "done");
             continue;
           }
-          if (st === "failed" || st === "stopped" || st === "cancelled" || st === "timeout") {
+          if (st === "failed" || st === "stopped" || st === "cancelled" || st === "canceled" || st === "timeout" || st === "error") {
             this.end(id, "failed");
             continue;
           }

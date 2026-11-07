@@ -1230,11 +1230,12 @@ export class Session extends EventEmitter {
       }
       case "tool_execution_end": {
         this.closeQuestionnaire(String(ev.toolCallId ?? ""));
+        const at = this.items.findIndex((it) => it.kind === "tool" && it.toolCallId === String(ev.toolCallId));
+        const seen = at >= 0 ? (this.items[at] as ToolItem) : undefined;
         // D170: pi 只在结果里承认一次「有这么个 run」（`details.runId`）。
         // D171: `args` 里是模型写的那份原文（pi-subagents 落盘时把 task 打成 [prompt redacted]）。
-        this.bgRuns.noteToolEnd(String(ev.toolName ?? ""), (ev.result as any)?.details, contentText(ev.result), this.argsOf(String(ev.toolCallId ?? "")));
+        this.bgRuns.noteToolEnd(String(ev.toolName ?? ""), (ev.result as any)?.details, contentText(ev.result), seen?.args);
         {
-          const at = this.items.findIndex((it) => it.kind === "tool" && it.toolCallId === String(ev.toolCallId));
           if (at >= 0) {
             const prev = this.items[at] as ToolItem;
             const next: ToolItem = {
@@ -1367,19 +1368,6 @@ export class Session extends EventEmitter {
   private logUiTimeout(method: string, timeout: unknown): void {
     const ms = typeof timeout === "number" && timeout > 0 ? timeout : null;
     if (ms !== null) this.notice(`ui.${method} 请求带了 ${Math.round(ms / 1000)} 秒超时，已忽略（提问不设上限）`, "info");
-  }
-
-  /**
-   * D171: 工具开始时的 `args`。后台任务卡的 agent / 任务原文都取自它 —— 结果文本里的猜测
-   * （`**加粗**`、`Task:` 行）只当兜底，而 pi-subagents 的落盘副本把 task 打成了 `[prompt redacted]`。
-   */
-  private argsOf(toolCallId: string): unknown {
-    if (!toolCallId) return undefined;
-    for (let i = this.items.length - 1; i >= 0; i -= 1) {
-      const it = this.items[i];
-      if (it.kind === "tool" && it.toolCallId === toolCallId) return it.args;
-    }
-    return undefined;
   }
 
   /**

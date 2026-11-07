@@ -87,7 +87,7 @@ interface BgRunNode {
   log: HTMLElement;
   out: HTMLElement;
   labOut: HTMLElement;
-  /** 这个 runner 有没有过程记录（pi-subagents 没有，卡片上直说，不装成「还没有」。） */
+  /** 这个 run 有没有过程记录（桥还没接上的才 false；卡片上直说，不装成「还没有」。） */
   hasLog: boolean;
 }
 
