@@ -12,7 +12,7 @@ import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
 import { classify, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type FailLedger, type SeenFail } from "./failures.ts";
 import { parseRules, type RuleBook } from "./rules.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
-import { PillBar, starredSessions } from "./pillbar.ts";
+import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
@@ -441,6 +441,11 @@ export class App {
   private stepCount = 0;
   /** #93: 横栏里那三样（胶囊 / 「＋N」 / 浮层）是共用组件，这里只留外壳 —— 它自己管焦点。 */
   private pillBar!: PillBar<SessionState>;
+  /**
+   * #189：上一次画出来的 ★ 行（从左到右的 id）。manage 回声到达时那颗会话已经不在行里了，
+   * 「右邻」只能按归档前这一份算；窄屏与壳 B/C/D 不画这一行，顺序照样记。
+   */
+  private rowIds: string[] = [];
   /** #94 工作区快照：桥是唯一的推导者，前端只读。 */
   private workspaces: WorkspaceState = { groups: [], overrides: {}, keys: {} };
   /** #101 迁移预览：这张页面已经弹过 / 关过一次就不再弹（取消 = 下次打开还弹，确认才写 prefs）。 */
@@ -1226,7 +1231,16 @@ export class App {
     this.switchDraft(id);
     this.currentId = id;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
-    // D162: 打开只是看 —— 不清完成；bridge 也一样（snapshot 不再 markSeen）。
+    this.resetSessionView();
+    this.socket.send({ type: "subscribe", sessionId: id });
+    this.renderAll();
+  }
+
+  /**
+   * 换会话 / 离开会话时清掉「上一颗的现场」：待批、待答、用量、速率、回合计时、活动行。
+   * D162: 打开只是看 —— 不清完成；bridge 也一样（snapshot 不再 markSeen）。
+   */
+  private resetSessionView(): void {
     this.approvals = [];
     this.asks = [];
     this.pendingFresh = false;
@@ -1237,8 +1251,6 @@ export class App {
     this.turnChars = { cjk: 0, other: 0 };
     this.activity = "";
     this.runSince = null;
-    this.socket.send({ type: "subscribe", sessionId: id });
-    this.renderAll();
   }
 
   // ---------------------------------------------------------------- ws
@@ -2002,12 +2014,16 @@ export class App {
         this.renderSessions();
         this.fillModelChip();
         break;
-      case "manage":
+      case "manage": {
+        // #189：先留一份「回声之前的归档集合」—— 只有本次新变归档的那批才可能触发切邻居。
+        const wasArchived = new Set(this.manage.archived);
         if (msg.manage) this.manage = msg.manage as ManageState;
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
+        this.switchAfterArchive(wasArchived);
         this.renderSessions();
         this.renderNowChip();
         break;
+      }
       // #94：桥侧每次改名 / 拖动 / 建组都会广播一份完整快照。同名快照可能重复到，但重画很便宜。
       case "workspaces": {
         const before = new Set(this.workspaces.groups.map((g) => g.id));
@@ -5089,7 +5105,8 @@ export class App {
         archive.setAttribute("aria-label", archive.title);
         archive.onclick = (ev) => {
           ev.stopPropagation();
-          this.act(() => this.socket.send({ type: "manage", action: "archive", ids: [s.id], on: !archived }));
+          // #189：归档只走这一个收口（`archiveIds`）—— 「这一批里有没有当前会话」只在那里判一次。
+          this.archiveIds([s.id], !archived);
         };
         const armed = this.cardDelArm?.id === s.id;
         const busy = App.busy(s);
@@ -12325,6 +12342,9 @@ export class App {
     if (!host) return;
     // 条要整个重建（锚点那颗胶囊跟着消失），折起来的那张列表不能留在屏幕上。
     this.pillBar.closeMore();
+    // #189：画与不画都先算一遍 —— 回声里算「右邻」用的是归档前的这一份顺序。
+    const shown = this.starredRow();
+    this.rowIds = shown.map((s) => s.id);
     const desktop = !this.compact();
     // #98：行 2（本区胶囊 + ＋）只属于 A。B/C/D 里当前那颗已经搬进顶栏，整行不占地方。
     const parts = shellParts(activeLayout(this.prefs));
@@ -12336,22 +12356,71 @@ export class App {
       this.setNowChipHidden(false);
       return;
     }
+    // #127：当前会话已经在 ★ 行里露脸（那颗带主题色填充），最左那颗就不再画。
+    // #189：它已经归档时也不画 —— 一颗收进「已归档」的会话不该占着行首。
+    this.setNowChipHidden(shown.some((s) => s.id === this.currentId) || this.currentArchived());
+    this.pillBar.render(shown, this.currentId);
+  }
+
+  /** ★ 行从左到右的那一串（#120 / #127）：本区 ★ 按 `manage.pin`；不知道本区时退回置顶列表。 */
+  private starredRow(): SessionState[] {
     const pins = this.manage.pin
       .map((id) => this.sessions.find((s) => s.id === id))
       .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
     const cur = this.session;
-    if (!cur || !this.workspaces?.groups?.length) {
-      this.pillBar.render(pins, this.currentId);
-      return;
-    }
+    if (!cur || !this.workspaces?.groups?.length) return pins;
     const listed = this.sessions.find((x) => x.id === cur.id);
     const group = wsOf(cur, this.workspaces, listed?.ws);
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     const mine = group ? tree.groups.find((g) => g.id === group.id) : undefined;
-    const shown = mine ? starredSessions(mine.sessions, this.manage.pin) : pins;
-    // #127：当前会话已经在 ★ 行里露脸（那颗带主题色填充），最左那颗就不再画。
-    this.setNowChipHidden(shown.some((s) => s.id === this.currentId));
-    this.pillBar.render(shown, this.currentId);
+    return mine ? starredSessions(mine.sessions, this.manage.pin) : pins;
+  }
+
+  /** #189：当前打开的会话已经在「已归档」里。 */
+  private currentArchived(): boolean {
+    return this.currentId !== null && this.manage.archived.includes(this.currentId);
+  }
+
+  /**
+   * #189：归档当前会话 = 归档它并离开它。只看**本次回声里刚变归档**的那批，不看「它现在是不是归档」——
+   * 从「已归档」段主动点开一个归档会话是允许的状态，不能被自己这一眼踢走。
+   * 落点由 `neighborAfterArchive()` 一处决定（右邻 → 左邻 → 空态），切换走唯一的 `openSession()`。
+   * #191：批量归档时这一帧回声会同时带走好几颗 ★，邻居按归档之后的 ★ 行算（同批的邻居跳过）。
+   */
+  private switchAfterArchive(before: ReadonlySet<string>): void {
+    const id = this.currentId;
+    if (!id || this.session?.id !== id) return;
+    if (before.has(id) || !this.manage.archived.includes(id)) return;
+    // 本次回声新变归档的整批（含它自己）：批量里刚被一起收起来的那几颗不再是邻居。
+    const alsoArchived = this.manage.archived.filter((x) => !before.has(x));
+    // 当前会话没点 ★ 时它自己就是第 1 格（#188 的口径）：补上去，右邻不因这一格而变。
+    const next = neighborAfterArchive(this.rowIds.includes(id) ? this.rowIds : [id, ...this.rowIds], id, alsoArchived);
+    // #190：左右都没有邻居 → 中栏回到现成的空态，不再把一颗归档会话留在中栏。
+    if (!next) {
+      this.closeCurrentSession();
+      return;
+    }
+    this.openSession(next);
+    // 地址栏跟着走：不另立一套规则，直接问 `go()` —— 它按页签推 hash（会话页 → `#/s/<id>`）。
+    this.go(this.tab);
+  }
+
+  /**
+   * #190：★ 行里左右都没有邻居时，「归档它 = 离开它」的落点就是空态 —— `renderChat()` 里现成的
+   * 「还没有打开会话 / 左边选一个，或者开一个新的」，不加文案、不改样式。
+   * 草稿照存（`switchDraft(null)`），归档本身不动；之后从左侧点任意会话都能正常回去。
+   */
+  private closeCurrentSession(): void {
+    if (!this.currentId) return;
+    this.switchDraft(null);
+    this.currentId = null;
+    this.session = null;
+    // 与 `openSession()` 换会话时清的是同一批：否则上一颗的待批 / 待答会挂进空态。
+    this.resetSessionView();
+    this.chat.reset([]);
+    this.renderAll();
+    // 地址栏回到无会话的形态：`go()` 里 currentId 为空就是 `#/`。
+    this.go(this.tab);
   }
 
   /** #127：那颗 `NowChip` 什么时候出场 —— 只在「当前会话没出现在 ★ 行里」时。 */

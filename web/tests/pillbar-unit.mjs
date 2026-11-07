@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { pillChip, starredSessions } from "../src/pillbar.ts";
+import { neighborAfterArchive, pillChip, starredSessions } from "../src/pillbar.ts";
 
 const time = (ts) => `t${ts}`;
 const session = { id: "st-1", name: "会话 01", cwd: "E:/demo", updatedAt: 7 };
@@ -59,4 +59,45 @@ test("一组里没有 ★ 时行 2 一颗胶囊都没有（只剩 NowChip 和 �
 
 test("在别组置顶的会话不串进来：本区列表里没有的 ★ id 一律忽略", () => {
   assert.deepEqual(rowIds(["a"], ["x", "y"]), []);
+});
+
+// #188 / #189 / #190：归档当前会话之后该切到哪一颗 —— ★ 行从左到右的 id 序列 + 被归档的 id，
+// 规则只有这一个纯函数：右邻 → 左邻 → null（空态）。
+const row = ["a", "b", "c", "d"];
+
+test("归档当前会话：右邻存在就切右邻", () => {
+  assert.equal(neighborAfterArchive(row, "b"), "c");
+});
+
+test("归档的不是 ★ 行里的会话 → 不动作", () => {
+  assert.equal(neighborAfterArchive(row, "x"), null);
+});
+
+test("没有右邻就取左邻：归档最右那颗 → 落在它左边最近那一颗", () => {
+  assert.equal(neighborAfterArchive(row, "d"), "c");
+});
+
+test("左右都没有邻居（序列里只剩它一颗）→ 无动作（中栏空态）", () => {
+  assert.equal(neighborAfterArchive(["only"], "only"), null);
+});
+
+test("当前会话没 ★、自己占第 1 格时，右邻就是右边第一颗 ★", () => {
+  assert.equal(neighborAfterArchive(["cur", ...row], "cur"), "a");
+});
+
+// #191：批量归档 —— 一次回声同时带走好几颗 ★ 时，邻居按「归档之后」的 ★ 行算。
+test("批量：同批被带走的右邻跳过，落在归档后行里的下一个", () => {
+  assert.equal(neighborAfterArchive(row, "b", ["c"]), "d");
+});
+
+test("批量：同批带走整串右邻 → 落到左邻", () => {
+  assert.equal(neighborAfterArchive(row, "b", ["c", "d"]), "a");
+});
+
+test("批量：同批带走左边那几颗 → 右邻照旧", () => {
+  assert.equal(neighborAfterArchive(row, "b", ["a"]), "c");
+});
+
+test("批量：整批带走整行 → 无动作（中栏空态）", () => {
+  assert.equal(neighborAfterArchive(row, "b", ["a", "c", "d"]), null);
 });
