@@ -3449,3 +3449,16 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-wshint[hidden] { display: none; }
 .sd-cfhint { flex: none; margin-left: 8px; color: #9a6b00; font-size: 11.5px; white-space: nowrap; }
 .sd-cfhint[hidden] { display: none; }
+
+/* D167：Teams 页的状态字与「要发一条消息」确认框。其余全部复用 .settings-* / .sheet-*，
+   只有这两块是新的：状态要在一眼之内读出来（开着 / 要登录 / 出错），消息正文要能滚。 */
+.teams-state { font-size: 12px; color: var(--faint); }
+.teams-state.ready { color: var(--accent); }
+.teams-state.needs-login, .teams-state.error { color: var(--warn); }
+.teams-ask { max-width: 480px; width: min(480px, calc(100vw - 32px)); }
+.teams-ask-text {
+  margin: 4px 16px 12px; padding: 10px 12px; max-height: 240px; overflow: auto;
+  border: 1px solid var(--line-soft); border-radius: 10px; background: var(--panel-2);
+  font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
+.teams-ask .queue-tools { padding: 0 16px 14px; }

@@ -28,6 +28,10 @@ export class Notifier {
   private subs: PushSubscriptionRecord[] = [];
   /** 「pi 设置 → 通知」的总开关：关掉后需要你时不推 Web Push，也不发微信（测试通知不受影响）。 */
   private on = true;
+  /**
+   * D167：Teams 通道由桥注入 —— notifier 不自己养浏览器。`reason` 是「没到」的原因，写进测试回执。
+   */
+  private teams: ((text: string) => Promise<{ ok: boolean; reason?: string }>) | null = null;
 
   constructor() {
     ensureStateDirs();
@@ -153,10 +157,23 @@ export class Notifier {
     }
   }
 
+  /** The Teams channel, wired by the bridge (index.ts) once the Teams service exists. */
+  setTeamsSender(fn: ((text: string) => Promise<{ ok: boolean; reason?: string }>) | null): void {
+    this.teams = fn;
+  }
+
   /** Both channels; Web Push first (fast), WeChat as the reliable one. */
-  async notify(title: string, body: string, url: string, force = false): Promise<{ push: number; wechat: string }> {
+  async notify(title: string, body: string, url: string, force = false): Promise<{ push: number; wechat: string; teams?: string }> {
     const push = await this.push(title, body, url, force).catch(() => ({ sent: 0, failed: 0 }));
     const wx = await this.wechat(`${title}\n${body}\n${url}`).catch((e) => ({ ok: false, reason: String(e) }));
-    return { push: push.sent, wechat: wx.ok ? "ok" : wx.reason ?? "failed" };
+    // Teams last: it may have to start a browser, so it must not delay the other two.
+    const tm = this.teams
+      ? await this.teams(`${title}\n${body}\n${url}`).catch((e) => ({ ok: false, reason: String(e) }))
+      : null;
+    return {
+      push: push.sent,
+      wechat: wx.ok ? "ok" : wx.reason ?? "failed",
+      ...(tm ? { teams: tm.ok ? "ok" : tm.reason ?? "failed" } : {}),
+    };
   }
 }

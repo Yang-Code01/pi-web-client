@@ -24,6 +24,7 @@
     "test:pillbar": "node --experimental-transform-types web/tests/pillbar-unit.mjs",
     "test:dirpath": "node --experimental-transform-types web/tests/dirpath-unit.mjs",
     "test:commands": "node --experimental-transform-types web/tests/commands-unit.mjs",
+    "test:teams": "npm --prefix bridge run build && node bridge/tests/teams-unit.mjs",
     "test:models": "node bridge/tests/models-unit.mjs",
     "test:stat": "node bridge/tests/stat-path.mjs",
     "test:nowchip": "node --experimental-transform-types web/tests/nowchip-unit.mjs",
