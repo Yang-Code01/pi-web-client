@@ -517,6 +517,13 @@ ${TEXT_B}`, 8000, "esc restore");
 
   // ---- 14. #200 / D182 失败气泡的第二条路：不重试，退回输入框
   await page.locator(".session-card", { hasText: "启动中" }).first().click();
+  // 切会话是异步的：不等它切回来就 fill/Enter，键会落到刚刚那个只读会话里（探针偶发超时就是这么来的）。
+  // 判据用占位符 —— 还在启动的会话占位符写着「pi 正在启动…」，切回来了才是平时那句。
+  await until(
+    async () => !String((await box.getAttribute("placeholder")) ?? "").includes("正在启动"),
+    8000,
+    "back to the calm session",
+  );
   const FAILED_TEXT = "这条没发出去，要退回输入框";
   const beforeFailed = prompts.length;
   await box.fill(FAILED_TEXT);
