@@ -93,8 +93,8 @@ export interface PillBarOpts<S extends PillSession = PillSession> {
   onStar(id: string): void;
   /** 徽标自己也是一颗热区（`badge().detail` 为真时用）：打开「它在跑什么」，不切会话。 */
   onBadge?(id: string): void;
-  /** 条尾属于外壳自己的按钮：折叠时要跟胶囊一起占位置，所以由组件摆进去。`chips` 是这一次真画出来的胶囊（一颗 ★ 都没有时是空数组）。 */
-  tail?(chips: readonly PillChip[]): HTMLElement[];
+  /** 条尾属于外壳自己的按钮：折叠时要跟胶囊一起占位置，所以由组件摆进去。 */
+  tail?(): HTMLElement[];
   /** 外壳自己的手势（例如悬停气泡）。 */
   decorate?(chip: HTMLElement, s: S): void;
 }
@@ -203,7 +203,7 @@ export class PillBar<S extends PillSession = PillSession> {
     more.onclick = () => this.toggleMore(more);
     host.append(more);
 
-    const tail = this.opts.tail?.(chips) ?? [];
+    const tail = this.opts.tail?.() ?? [];
     for (const node of tail) host.append(node);
 
     this.fold(nodes, more);

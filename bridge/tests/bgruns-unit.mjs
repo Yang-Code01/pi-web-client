@@ -44,16 +44,51 @@ runs.noteText("[acp_delegate FAILED ⚠️] **worker** (runId `del_y`, exit 1)\n
 assert.equal(runs.view()?.n, 0, "失败也算结束：不能一直说「运行中」");
 assert.equal(runs.view()?.recent, 2, "失败的那条同样留着给人看，卡片上写「失败」");
 
-// ---------------------------------------------------------------- 两条路都认
+// ---------------------------------------------------------------- 两条路都认（只认派活工具 + 真 id）
 
-// 没有 details 时靠文本里的 runId（pi-subagents 走 key 名 `asyncDir`，但可能是老桥/别的工具）。
-runs.noteToolEnd("subagent", undefined, "Started async subagent (runId `sub_1`).\nRunning in the background at `/tmp/x`.");
-assert.equal(runs.view()?.n, 1);
-assert.equal(runs.view()?.agent, undefined, "没写 agent 就只有数量（字段干脆不出现）");
-runs.noteToolEnd("subagent", { runId: "sub_2", asyncDir: "/tmp/y" }, "Started (runId `sub_2`).\nRunning in the background at `/tmp/y`.");
-assert.equal(runs.view()?.n, 2, "asyncDir 那条也要认");
-runs.noteText("finished (runId `sub_2`)");
-assert.equal(runs.view()?.n, 1);
+const SUB_A = "11111111-2222-3333-4444-555555555555";
+const SUB_B = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+// D172: 光靠文本（没有 details）不再算「刚开跑」——一次 sed 出来的文档里也有这些句子。
+runs.noteToolEnd("subagent", undefined, `Started async subagent (runId \`${SUB_A}\`).\nRunning in the background at \`/tmp/x\`.`);
+assert.equal(runs.view()?.n, 0, "只有文本、没有 details：一律不当成开跑");
+
+// pi-subagents 的真实形状：details 给 runId + asyncDir，agent/task 在 args 里（落盘那份被 redact 了）。
+const asyncDir = mkdtempSync(join(tmpdir(), "pi-subagents-test-"));
+writeFileSync(join(asyncDir, "status.json"), JSON.stringify({ state: "running", outputFile: join(asyncDir, "output-0.log") }));
+writeFileSync(join(asyncDir, "output-0.log"), "step 1\nstep 2\n");
+runs.noteToolEnd("subagent", { mode: "single", runId: SUB_B, asyncDir }, `Run fan-out: 1/64 used, 63 remaining\nAsync: researcher [${SUB_B}]`, { agent: "researcher", task: "查一下卡片为什么空" });
+assert.equal(runs.view()?.n, 1, "asyncDir 那条要认");
+assert.equal(runs.view()?.agent, "researcher");
+const sub = runs.list().find((r) => r.id === SUB_B);
+assert.equal(sub?.task, "查一下卡片为什么空", "任务原文从 args 拿");
+assert.equal(sub?.hasLog, true, "pi-subagents 的过程记录 = status.json 的 outputFile");
+assert.equal(runs.readLog(SUB_B).log, "step 1\nstep 2\n", "读的就是那份 output-0.log");
+// 权威状态到了就算结束，不必等 6 小时的 SILENT_DEAD。
+writeFileSync(join(asyncDir, "status.json"), JSON.stringify({ state: "complete", outputFile: join(asyncDir, "output-0.log") }));
+runs.prune();
+assert.equal(runs.list().find((r) => r.id === SUB_B)?.state, "done", "status.json 说 complete（真值，不是 completed）就收工");
+assert.equal(runs.view()?.n, 0);
+
+// D172 现场：读 D170 文档的 bash 结果里同时有 `**问题：**` / `runId `…`` / `Running in the background`。
+const D170_TEXT = [
+  "## D170 后台子代理：会话 settle 了也要说明白（无票，用户报的）",
+  "",
+  "**问题：** 让 pi 派一个后台子代理之后，界面立刻变回「空闲」。",
+  "",
+  "**决定：** 只有「刚开跑」的结果才算开一条（有 `asyncDir` / 文本带 `Running in the background`）。",
+  "结束信号只有 `[acp_delegate completed] … (runId `…`)` 这一条。",
+].join("\n");
+const ghost = new BgRuns(() => {});
+ghost.noteToolEnd("bash", { exitCode: 0 }, D170_TEXT);
+assert.equal(ghost.view(), undefined, "读文档打印出这些句子不算派活（D172 的「问题：」卡片）");
+assert.equal(ghost.list().length, 0);
+
+// 示例值 `…`、`sub_1` 不是 runId：details 给了也不认。
+const bad = new BgRuns(() => {});
+bad.noteToolEnd("subagent", { runId: "…", asyncDir }, "x");
+bad.noteToolEnd("subagent", { runId: "sub_1", asyncDir }, "x");
+assert.equal(bad.view(), undefined, "id 不像 runId 就不开卡");
 
 // 不带 runId 的结束文本不该动到别人。
 const before = JSON.stringify(runs.view());
@@ -72,9 +107,9 @@ assert.equal(fresh.view(), undefined);
 // ---------------------------------------------------------------- 摘要
 
 const many = new BgRuns(() => {});
-many.noteToolEnd("acp_delegate", { kind: "delegate", runId: "a", agent: "planner" }, acpStart("a", "planner"));
+many.noteToolEnd("acp_delegate", { kind: "delegate", runId: "del_a", agent: "planner" }, acpStart("del_a", "planner"));
 const firstSince = many.view()?.since ?? 0;
-many.noteToolEnd("acp_delegate", { kind: "delegate", runId: "b", agent: "worker" }, acpStart("b", "worker"));
+many.noteToolEnd("acp_delegate", { kind: "delegate", runId: "del_b", agent: "worker" }, acpStart("del_b", "worker"));
 assert.equal(many.view()?.n, 2);
 assert.equal(many.view()?.since, firstSince, "since 取最早那条：后来的新手不能把钟拨回去");
 assert.equal(many.view()?.agent, "planner", "agent 跟着最早的走");
@@ -93,13 +128,31 @@ assert.equal(one.hasLog, true, "acp 的过程记录在 <runId>.activity");
 assert.equal(one.hasOut, true);
 assert.equal(one.task, "look at the files", "派活原话要能传到弹层");
 assert.equal("logPath" in one, false, "绝对路径不出桥");
-wire.noteToolEnd("subagent", { runId: "sub_w", asyncDir: "/tmp/z" }, "Started (runId `sub_w`).");
-const two = wire.list().find((r) => r.id === "sub_w");
-assert.equal(two.hasLog, false, "pi-subagents 没有可读的过程记录：卡片上直说，不装成「还没有」");
+const wireDir = mkdtempSync(join(tmpdir(), "pi-subagents-wire-"));
+writeFileSync(join(wireDir, "status.json"), JSON.stringify({ state: "running", outputFile: join(wireDir, "output-0.log") }));
+const WIRE_ID = "00000000-1111-2222-3333-444444444444";
+wire.noteToolEnd("subagent", { runId: WIRE_ID, asyncDir: wireDir }, `Async: worker [${WIRE_ID}]`, { agent: "worker", task: "t" });
+const two = wire.list().find((r) => r.id === WIRE_ID);
+assert.equal(two.hasLog, true, "pi-subagents 的过程记录 = status.json 的 outputFile");
+
+
+// D172: 派活那一刻 status.json 可能还没落盘（实测晚 ~1.4 s）。过程记录要在 prune 里补回来，
+// 否则 hasLog 永久 false，卡片一直说「桥还没接上」。
+const late = mkdtempSync(join(tmpdir(), "pi-subagents-late-"));
+const LATE_ID = "99999999-8888-7777-6666-555555555555";
+const lateRuns = new BgRuns(() => {});
+lateRuns.noteToolEnd("subagent", { runId: LATE_ID, asyncDir: late }, `Async: worker [${LATE_ID}]`, { agent: "worker", task: "t" });
+assert.equal(lateRuns.list()[0]?.hasLog, false, "status.json 还没写出来：先如实说没有");
+writeFileSync(join(late, "status.json"), JSON.stringify({ state: "complete", outputFile: join(late, "output-0.log") }));
+writeFileSync(join(late, "output-0.log"), "late line\n");
+lateRuns.prune();
+assert.equal(lateRuns.list()[0]?.hasLog, true, "下一次滴答把 outputFile 补回来");
+assert.equal(lateRuns.list()[0]?.state, "done");
+assert.equal(lateRuns.readLog(LATE_ID).log, "late line\n");
 
 // ---------------------------------------------------------------- 读痕迹
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 

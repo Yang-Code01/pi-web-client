@@ -10,10 +10,10 @@
   --line-soft: #1b2028;
   --line-strong: #2f3a48;
   --line-lit: #3a4658;
-  /* 字 */
+  /* 字：这里是「标准」档的默认值；柔和/明亮在下面按 [data-text] 覆盖（D158：只有这一份真源）。 */
   --text: #e7eaf0;
   --dim: #9aa2b1;
-  --faint: #6b7280;
+  --faint: #8b93a1;
   /* 信号色四档：本色 / 淡底 / 淡边 / 亮底上的深字 */
   --accent: #7dd3fc;
   --accent-hover: #9adcf9;
@@ -46,6 +46,13 @@
   --vw1: calc(1vw / var(--ui-scale, 1));
   color-scheme: dark;
 }
+
+/* D158：文字三档亮度的唯一真源。app.ts 只往 <html> 上写 data-text，不再把颜色抄进 TS ——
+   抄一份就会分叉：46e8c64 那次 CSS 改了、运行时仍是旧值，就是因为 TS 里还留着旧色。
+   每档 faint 都要在 --panel-3 上过 AA 4.5:1（列表行、sheet 底最深的那个面），
+   并且跟同档 dim 保留可见层级差（>=1.3:1），否则「弱化」和「次要」看起来一样灰。 */
+:root[data-text="soft"] { --text: #d2d7e1; --dim: #98a0af; --faint: #828a99; }
+:root[data-text="bright"] { --text: #fbfcff; --dim: #b9c1d0; --faint: #959ead; }
 
 /*
  * D110: 日文要自己的字体栈。Windows 上 "Segoe UI" 根本没有 CJK 字形，日文会一路落到 Microsoft YaHei，
@@ -115,6 +122,8 @@ a { color: var(--accent); text-decoration: none; }
   letter-spacing: 0.06em;
 }
 .login input:focus { outline: 2px solid var(--accent-dim); border-color: var(--accent); }
+/* 口令输入框（页面级 .login 与公网 step-up 的 .modal 两处）走同一个弱化色，不落浏览器默认灰。 */
+.login input::placeholder, .modal input::placeholder { color: var(--faint); }
 .login .err { color: var(--danger); font-size: 13px; min-height: 18px; }
 
 .btn {
@@ -378,7 +387,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .session-sec { display: grid; gap: 4px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
 .sess-head { display: flex; align-items: center; gap: 4px; padding: 2px 4px; color: var(--faint); font-size: 11px; }
 .sess-head .label { color: var(--faint); }
-.sess-head .n { margin-left: auto; font-family: var(--mono); color: var(--faint); opacity: 0.85; }
+.sess-head .n { margin-left: auto; font-family: var(--mono); color: var(--faint); }
 .sess-head .chev { width: 12px; cursor: pointer; }
 /* 工作区组头（#95）：能点、能收起，色点 + 名字 + 待办角标 + 数量（贴样张 a-two-row 的手感）。 */
 .ws-head { padding: 5px 6px; gap: 7px; border-radius: 7px; cursor: pointer; color: var(--dim); }
@@ -438,9 +447,9 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ws-intro-n { flex: none; font: 11px/1 var(--mono); color: var(--dim); }
 .ws-intro-moved { flex: none; font: 10.5px/1 var(--mono); color: var(--accent); }
 .session-sec[data-sec="archived"] .sess-head .label { cursor: pointer; }
-.session-card.archived { border-style: dashed; opacity: 0.72; }
+.session-card.archived { border-style: dashed; background: var(--sunken); }
 .session-card.archived .name { color: var(--dim); }
-.session-card.archived:hover { opacity: 1; }
+.session-card.archived:hover { background: var(--panel-2); }
 .session-card .grip {
   flex: none; color: var(--faint); font-size: 11px; letter-spacing: -2px; opacity: 0;
   cursor: grab; user-select: none; transition: opacity 0.12s;
@@ -496,6 +505,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--bg); color: var(--text); font-size: 13px;
 }
+.mgr-search::placeholder { color: var(--faint); }
 .mgr-search:focus { outline: none; border-color: var(--accent-dim); }
 .mgr-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .mgr-field { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--faint); min-width: 0; }
@@ -519,10 +529,12 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   padding: 8px 8px; border-radius: 8px; border: 1px solid transparent; cursor: pointer;
 }
 .mgr-row:hover { background: var(--panel-2); }
+/* 归档靠边框和背景变淡，不靠压文字：opacity 会把 --faint 压到 2.5:1（AA 要 4.5:1），
+   换成 0.85 也只是「对 --panel 恰好 4.60」—— --panel-3 上 4.41，柔和档 3.95。所以压的是底色。 */
+.mgr-row.archived { background: var(--sunken); }
+.mgr-row.archived:hover { background: var(--panel-2); }
 .mgr-row.picked { border-color: var(--accent-dim); background: var(--accent-bg); }
 .mgr-row.current .mgr-name { color: var(--accent); }
-.mgr-row.archived { opacity: 0.7; }
-.mgr-row.archived:hover, .mgr-row.archived.picked { opacity: 1; }
 .mgr-main { min-width: 0; display: grid; gap: 4px; }
 .mgr-name-line { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .mgr-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
@@ -762,6 +774,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   font: 12px/1.45 var(--mono); color: var(--accent); max-height: 220px; overflow: auto;
 }
 .notice { color: var(--faint); font-size: 12px; text-align: center; font-family: var(--mono); }
+/* 用户在 accent 气泡里的附注（「附 1 张图片」）：灰字压青底显脏，改用更高一档的 dim。 */
+.msg.user .notice { color: var(--dim); }
 .notice.error { color: var(--danger); }
 .notice.warn { color: var(--warn); }
 
@@ -841,6 +855,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   border-radius: 12px;
   font-size: 15px;
 }
+.composer textarea::placeholder { color: var(--faint); }
 .composer textarea:focus { outline: none; border-color: var(--accent); }
 .composer .hint { color: var(--faint); font-size: 11px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; row-gap: 4px; }
 .composer .hint kbd { font-family: var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 0 4px; }
@@ -1285,8 +1300,6 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .pin-more:hover { border-color: var(--line); background: var(--panel-2); color: var(--accent); }
 .pin-more[hidden] { display: none; }
 .pin-chip[hidden] { display: none; }
-.pin-expand { margin-left: auto; color: var(--faint); padding: 4px 12px; }
-.pin-expand:hover { color: var(--accent); }
 
 /* ---------------------------------------------------------------- tabs (mobile) */
 .tabs {
@@ -2887,6 +2900,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .note-modes { gap: 4px; }
 .note-title { width: 100%; padding: 8px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); font-weight: 500; }
 .note-body { width: 100%; padding: 8px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); resize: vertical; line-height: 1.6; }
+.note-body::placeholder { color: var(--faint); }
 .note-body.mono { font-family: var(--mono); font-size: 12px; }
 .note-title:focus, .note-body:focus, .note-meta-input:focus { outline: none; border-color: var(--accent-dim); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); }
 
@@ -2902,6 +2916,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .note-shots-hint { font-size: 11px; color: var(--faint); }
 .note-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font: 11px/1.4 var(--mono); color: var(--faint); }
 .note-meta-input { width: 96px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line-soft); background: transparent; font: 12px/1.4 var(--mono); }
+.note-meta-input::placeholder { color: var(--faint); }
 .note-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
 /* 四个动作同一副骨架：等高、同内距、同圆角，只靠颜色分主次（保存实心、删除红字）。 */
 .note-actions .btn { padding: 8px 12px; font-size: 13px; line-height: 18px; border-radius: 8px; }
@@ -3108,6 +3123,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 8px;
   font: inherit; font-size: 13px; line-height: 1.55;
 }
+.sc-input::placeholder { color: var(--faint); }
 .sc-input:focus { outline: none; border-color: var(--accent-dim); }
 .sc-hint { font-size: 11px; color: var(--danger); width: 100%; }
 .scratch-model-chip { padding: 4px 8px; font-size: 11px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

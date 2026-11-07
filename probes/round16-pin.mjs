@@ -194,7 +194,7 @@ try {
 
   // 5) The bridge echoes the arrangement → the new session sits at the end of the strip, next to ＋.
   await until(async () => (await page.locator(".pin-strip .pin-open").count()) === 1, 5000, "the new chip arrives");
-  const chips = page.locator(".pin-strip .pin-chip:not(.pin-new):not(.pin-expand)");
+  const chips = page.locator(".pin-strip .pin-chip:not(.pin-new)");
   assert((await chips.count()) === 1, `exactly one pinned chip (got ${await chips.count()})`);
   const last = await chips.last().innerText();
   log("new chip:", last.replace(/\s+/g, " "));

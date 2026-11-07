@@ -1,5 +1,6 @@
 import { gitRoot } from "./git.ts";
-import { readJson, statePath, writeJson } from "./paths.ts";
+import { statePath } from "./paths.ts";
+import { StateFile, type StateFailure } from "./statefile.ts";
 
 /**
  * 工作区（#72 / #94）= 工程 = 会话列表的一级分组。它不是 pi 的会话，也不是磁盘上某个目录的别名：
@@ -35,7 +36,7 @@ export interface WorkspaceState {
    * 迁移：旧 `pinned` 顺序打头，其余按显示名字母序；`pinned` 从此退役。
    */
   order?: string[];
-  /** 标签行最多画几颗，默认 6，读写都 clamp 到 1–12（#176）。 */
+  /** 标签行最多画几颗，默认 6，只接受 1–12 的整数（#176）。 */
   max?: number;
 }
 
@@ -138,54 +139,83 @@ function readRecord(value: unknown, normalize: boolean): Record<string, string> 
   return out;
 }
 
+function emptyState(): WorkspaceState {
+  return { groups: [], overrides: {}, keys: {}, order: [], max: TABS_DEFAULT };
+}
+
+/**
+ * 存量文件缺字段是常态：缺 `order` 时按旧 `pinned` + 显示名迁移，缺 `max` 按默认名额。
+ * 迁移只在读时做；下一次写盘才落新形状，平时不改写旧文件。
+ */
+function normalize(raw: unknown): WorkspaceState {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Partial<WorkspaceState> & { pinned?: unknown };
+  const groups = readGroups(r.groups);
+  const legacy = !Array.isArray(r.order);
+  return {
+    groups,
+    overrides: readRecord(r.overrides, false),
+    keys: readRecord(r.keys, true),
+    // #173 一份顺序接管：旧文件没有 order → 旧 pinned 打头、其余按显示名；此后 order 说了算。
+    order: readOrder(r.order, groups, legacy && Array.isArray(r.pinned) ? r.pinned : []),
+    max: readMax(r.max) ?? TABS_DEFAULT,
+  };
+}
+
+/** 组没了，order 里就不该还留着它的 id（#173）：悬空 id 会让顺序少一格却不知道少了谁。 */
+function pruneOrder(d: WorkspaceState): void {
+  const ids = new Set(d.groups.map((g) => g.id));
+  const next = (d.order ?? []).filter((id) => ids.has(id));
+  if (next.length !== (d.order ?? []).length) d.order = next;
+}
+
+/**
+ * 缓存缺失时按 cwd 建的组是临时的：真工程根一出现（worktree 并回主仓就是这种），它就没用了。
+ * 还被 override 指着的组留着（用户拖进去的东西不能因为一次探测就消失）。
+ */
+function prune(d: WorkspaceState): void {
+  const used = new Set(Object.values(d.overrides));
+  const keep = d.groups.filter((g) => {
+    if (g.manual || used.has(g.id)) return true;
+    const dir = normalizePath(g.id);
+    return groupId(d.keys[dir.toLowerCase()] ?? dir) === g.id;
+  });
+  if (keep.length !== d.groups.length) {
+    d.groups = keep;
+    pruneOrder(d);
+  }
+}
+
 export class Workspaces {
-  private data: WorkspaceState = { groups: [], overrides: {}, keys: {}, order: [], max: TABS_DEFAULT };
-  private readonly file = statePath("workspaces.json");
+  /** 读状态文件失败时叫人：由 `index.ts` 接到聊天区的通知（同一句错只报一次，见 StateFile）。 */
+  onUnreadable?: (failure: StateFailure) => void;
+
+  /**
+   * 同 `manage.json`：读-改-写，读不到就拒绝落盘并等文件恢复 —— 一次「没读到」不能变成整片工作区
+   * 配置被空状态覆盖，也不能让整个进程从此不再保存。
+   */
+  private readonly state = new StateFile<WorkspaceState>(statePath("workspaces.json"), emptyState(), normalize, (failure) =>
+    this.onUnreadable?.(failure),
+  );
   private readonly root: (dir: string) => Promise<string | null>;
 
   constructor(options: WorkspacesOptions = {}) {
     this.root = options.root ?? gitRoot;
-    this.load();
-  }
-
-  private load(): void {
-    // #178：旧文件可能还带着 #122 的 pinned。`pinned` 已从 WorkspaceState 退役，运行期不再写；
-    // 这里只从原始 JSON 读一次，作为首次迁移的 order 种子（见下方 readOrder），此后落盘只有 order。
-    const raw = readJson<Partial<WorkspaceState> & { pinned?: unknown }>(this.file, {});
-    const groups = readGroups(raw.groups);
-    const legacy = !Array.isArray(raw.order);
-    this.data = {
-      groups,
-      overrides: readRecord(raw.overrides, false),
-      keys: readRecord(raw.keys, true),
-      // #173 一份顺序接管：旧文件没有 order → 旧 pinned 打头、其余按显示名；此后 order 说了算。
-      // 与 max 一样，迁移只在内存里完成，等下一次写才落盘（不改写旧文件里的其他字段）。
-      order: readOrder(raw.order, groups, legacy && Array.isArray(raw.pinned) ? raw.pinned : []),
-      max: readMax(raw.max) ?? TABS_DEFAULT,
-    };
-  }
-
-  private save(): void {
-    try {
-      writeJson(this.file, this.data);
-    } catch {
-      /* an unwritable state dir only costs persistence, same call as manage.json */
-    }
   }
 
   snapshot(): WorkspaceState {
+    const d = this.state.value();
     return {
-      groups: this.data.groups.map((g) => ({ ...g })),
-      overrides: { ...this.data.overrides },
-      keys: { ...this.data.keys },
+      groups: d.groups.map((g) => ({ ...g })),
+      overrides: { ...d.overrides },
+      keys: { ...d.keys },
       // 坏文件里的悬空 / 重复 id 不进画布：树 / 标签行只该看到还存在的组，顺序永远完整。
-      order: readOrder(this.data.order, this.data.groups),
-      max: this.data.max ?? TABS_DEFAULT,
+      order: readOrder(d.order, d.groups),
+      max: d.max ?? TABS_DEFAULT,
     };
   }
 
   group(id: string): WsGroup | undefined {
-    return this.data.groups.find((g) => g.id === id);
+    return this.state.value().groups.find((g) => g.id === id);
   }
 
   /**
@@ -193,9 +223,10 @@ export class Workspaces {
    * 组可站，不用等一次异步补缓存。
    */
   keyOf(cwd: string): string {
+    const d = this.state.value();
     const dir = normalizePath(cwd);
     if (!dir) return "";
-    return normalizePath(this.data.keys[dir.toLowerCase()] ?? dir);
+    return normalizePath(d.keys[dir.toLowerCase()] ?? dir);
   }
 
   /**
@@ -203,7 +234,7 @@ export class Workspaces {
    * 找不到就建（名字留空，显示时取目录名）。空 cwd（脏会话文件）不属于任何工作区 → `""`。
    */
   groupFor(sessionId: string, cwd: string): string {
-    const override = this.data.overrides[sessionId];
+    const override = this.state.value().overrides[sessionId];
     if (override && this.group(override)) return override;
     const key = this.keyOf(cwd);
     if (!key) return "";
@@ -215,10 +246,11 @@ export class Workspaces {
     const existing = this.group(id);
     if (existing) return existing;
     const created: WsGroup = { id, name: "", key, manual: false };
-    this.data.groups.push(created);
-    // #173 新出现的组追加到末尾：ensure 是「补一个」，不能插队改用户顺序。
-    this.data.order = [...(this.data.order ?? []), id];
-    this.save();
+    this.state.update((d) => {
+      if (!d.groups.some((g) => g.id === id)) d.groups.push({ ...created });
+      // #173 新出现的组追加到末尾：ensure 是「补一个」，不能插队改用户顺序。
+      d.order = readOrder(d.order, d.groups);
+    });
     return created;
   }
 
@@ -227,50 +259,31 @@ export class Workspaces {
    * 返回是否有改动 —— 有改动调用方必须广播新快照，否则页面还停在按 cwd 分的临时组上。
    */
   async resolve(cwds: string[]): Promise<boolean> {
+    const known = this.state.value().keys;
     const pending = new Map<string, string>();
     for (const cwd of cwds) {
       const dir = normalizePath(cwd);
       if (!dir) continue;
       const key = dir.toLowerCase();
-      if (this.data.keys[key] || pending.has(key)) continue;
+      if (known[key] || pending.has(key)) continue;
       pending.set(key, dir);
     }
     if (!pending.size) return false;
+    const found = new Map<string, string>();
     for (const [key, dir] of pending) {
-      let found: string | null = null;
+      let root: string | null = null;
       try {
-        found = await this.root(dir);
+        root = await this.root(dir);
       } catch {
-        found = null;
+        root = null;
       }
-      this.data.keys[key] = normalizePath(found ?? dir);
+      found.set(key, normalizePath(root ?? dir));
     }
-    this.prune();
-    this.save();
-    return true;
-  }
-
-  /**
-   * 缓存缺失时按 cwd 建的组是临时的：真工程根一出现（worktree 并回主仓就是这种），它就没用了。
-   * 还被 override 指着的组留着（用户拖进去的东西不能因为一次探测就消失）。
-   */
-  private prune(): void {
-    const used = new Set(Object.values(this.data.overrides));
-    const keep = this.data.groups.filter((g) => {
-      if (g.manual || used.has(g.id)) return true;
-      return groupId(this.keyOf(g.id)) === g.id;
+    this.state.update((d) => {
+      for (const [key, value] of found) d.keys[key] = value;
+      prune(d);
     });
-    if (keep.length !== this.data.groups.length) {
-      this.data.groups = keep;
-      this.pruneOrder();
-    }
-  }
-
-  /** 组没了，order 里就不该还留着它的 id（#173）：悬空 id 会让顺序少一格却不知道少了谁。 */
-  private pruneOrder(): void {
-    const ids = new Set(this.data.groups.map((g) => g.id));
-    const next = (this.data.order ?? []).filter((id) => ids.has(id));
-    if (next.length !== (this.data.order ?? []).length) this.data.order = next;
+    return true;
   }
 
   /** 改名。空名 = 恢复目录名。返回是否有改动。 */
@@ -279,8 +292,10 @@ export class Workspaces {
     if (!group) return false;
     const next = String(name ?? "").trim().slice(0, 80);
     if (group.name === next) return false;
-    group.name = next;
-    this.save();
+    this.state.update((d) => {
+      const g = d.groups.find((x) => x.id === id);
+      if (g) g.name = next;
+    });
     return true;
   }
 
@@ -288,10 +303,11 @@ export class Workspaces {
   create(name: string): WsGroup {
     const id = `manual:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const group: WsGroup = { id, name: String(name ?? "").trim().slice(0, 80), key: "", manual: true };
-    this.data.groups.push(group);
-    // #173 新组排到末尾，不按显示名插队。
-    this.data.order = [...(this.data.order ?? []), id];
-    this.save();
+    this.state.update((d) => {
+      d.groups.push({ ...group });
+      // #173 新组排到末尾，不按显示名插队。
+      d.order = readOrder(d.order, d.groups);
+    });
     return { ...group };
   }
 
@@ -300,18 +316,19 @@ export class Workspaces {
     const target = String(wsId ?? "").trim();
     if (target && !this.group(target)) return false;
     let changed = false;
-    for (const id of sessionIds) {
-      if (!id) continue;
-      if (target) {
-        if (this.data.overrides[id] === target) continue;
-        this.data.overrides[id] = target;
-      } else {
-        if (!(id in this.data.overrides)) continue;
-        delete this.data.overrides[id];
+    this.state.update((d) => {
+      for (const id of sessionIds) {
+        if (!id) continue;
+        if (target) {
+          if (d.overrides[id] === target) continue;
+          d.overrides[id] = target;
+        } else {
+          if (!(id in d.overrides)) continue;
+          delete d.overrides[id];
+        }
+        changed = true;
       }
-      changed = true;
-    }
-    if (changed) this.save();
+    });
     return changed;
   }
 
@@ -320,10 +337,11 @@ export class Workspaces {
     const group = this.group(id);
     if (!group) return { ok: false, reason: "找不到这个工作区" };
     if (!group.manual) return { ok: false, reason: "这个工作区跟着目录走，不能删" };
-    if (Object.values(this.data.overrides).includes(id)) return { ok: false, reason: "这个工作区里还有会话" };
-    this.data.groups = this.data.groups.filter((g) => g.id !== id);
-    this.pruneOrder();
-    this.save();
+    if (Object.values(this.state.value().overrides).includes(id)) return { ok: false, reason: "这个工作区里还有会话" };
+    this.state.update((d) => {
+      d.groups = d.groups.filter((g) => g.id !== id);
+      pruneOrder(d);
+    });
     return { ok: true };
   }
 
@@ -335,27 +353,32 @@ export class Workspaces {
    * 非法时返回原因且**什么都不改** —— 调用方据此回 notice。旧页面发来的 `pinned` 不参与排序。
    */
   setTabs(input: { order?: unknown; max?: unknown }): { ok: boolean; reason?: string } {
-    let max = this.data.max ?? TABS_DEFAULT;
+    const d0 = this.state.value();
+    let max = d0.max ?? TABS_DEFAULT;
     if (input.max !== undefined) {
       const next = readMax(input.max);
       if (next == null) return { ok: false, reason: `最多显示要是 ${TABS_MIN}–${TABS_MAX} 之间的整数` };
       max = next;
     }
-    let order = this.data.order ?? [];
+    let order: string[];
     if (input.order !== undefined) {
       if (!Array.isArray(input.order)) return { ok: false, reason: "标签行顺序要是一份组 id 列表" };
-      order = readOrder(input.order, this.data.groups);
+      order = readOrder(input.order, d0.groups);
+    } else {
+      order = readOrder(d0.order, d0.groups);
     }
-    this.data.order = order;
-    this.data.max = max;
-    this.save();
+    this.state.update((d) => {
+      d.order = order;
+      d.max = max;
+    });
     return { ok: true };
   }
 
   /** 会话被删掉了：它的 override 跟着消失，不留悬空指向。 */
   forget(sessionId: string): void {
-    if (!(sessionId in this.data.overrides)) return;
-    delete this.data.overrides[sessionId];
-    this.save();
+    if (!(sessionId in this.state.value().overrides)) return;
+    this.state.update((d) => {
+      delete d.overrides[sessionId];
+    });
   }
 }

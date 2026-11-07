@@ -87,7 +87,7 @@ interface BgRunNode {
   log: HTMLElement;
   out: HTMLElement;
   labOut: HTMLElement;
-  /** 这个 runner 有没有过程记录（pi-subagents 没有，卡片上直说，不装成「还没有」。） */
+  /** 这个 run 有没有过程记录（桥还没接上的才 false；卡片上直说，不装成「还没有」。） */
   hasLog: boolean;
 }
 
@@ -313,7 +313,7 @@ export class App {
   /** An inventory was asked for while one was still streaming; re-ask when it lands. */
   private extReloadPending = false;
   private extStore: { query: string; limit: number; items: StorePkg[] | null; error?: string } = { query: "", limit: 20, items: null };
-  private mcpStore: { query: string; limit: number; items: StoreMcpItem[] | null; error?: string; building?: boolean; starsComplete?: boolean; hasToken?: boolean } = { query: "", limit: 20, items: null };
+  private mcpStore: { query: string; limit: number; items: StoreMcpItem[] | null; error?: string; building?: boolean; starsComplete?: boolean; hasToken?: boolean; truncated?: boolean } = { query: "", limit: 20, items: null };
   private extScope: "global" | "project" = "global";
   private extArm: { key: string; until: number } | null = null;
   private extDirty = false;
@@ -714,7 +714,7 @@ export class App {
       heading: () => "",
       onOpen: (id) => this.openFromList(id),
       onStar: (id) => this.togglePin(id),
-      tail: (chips) => {
+      tail: () => {
         // Q-013: with the left pane hidden this is the only visible way to start a session.
         // Q-022: 从这颗 ＋ 建的会话自动置顶，否则建完在这条里根本看不见。
         const add = el("button", "pin-chip pin-new", tr("＋"));
@@ -722,14 +722,8 @@ export class App {
         add.dataset.act = "new";
         add.dataset.pinKey = "new";
         add.onclick = () => this.openNewSessionSheet(true);
-        // #120：一颗 ★ 都没有、或左栏本来就没收起时，这一行只剩上面那颗 ＋ ——
-        // 「展开左栏」只在真能派上用场的地方出现（spec：此时行 2 就两样）。
-        if (!chips.length || !this.collapsed.sessions) return [add];
-        const expand = el("button", "pin-chip pin-expand", tr("展开左栏 ▸"));
-        expand.title = tr("展开左侧会话栏（也可以双击分隔条位置的边）");
-        expand.dataset.pinKey = "expand";
-        expand.onclick = () => this.togglePane("sessions");
-        return [add, expand];
+        // 同一动作不要两颗按钮：顶栏左上角那颗就能展开左栏，行 2 右端不再摆第二颗。
+        return [add];
       },
       decorate: (chip, s) => {
         this.wirePinHover(chip, s);
@@ -1856,9 +1850,20 @@ export class App {
         this.extStore.error = msg.error ? errText(msg) : msg.error;
         this.paintExtIfOpen();
         break;
+      case "mcp.index":
+        // D81/D171: the ranked index finished building in the background — forget what is on screen (and
+        // what the tab switch would show later) so the next paint re-asks. Unranked registry results
+        // become the ranking without a retype. `paintMcpStore` sends `mcp.store` itself when `items` is null.
+        this.mcpStore.items = null;
+        this.mcpStore.building = false;
+        // A failed first search left `error` set; `paintMcpStore` only re-asks when there is no error, so
+        // keeping it would pin the page on 「没读出来」 forever and the index would never show up.
+        this.mcpStore.error = undefined;
+        if (this.extTab === "mcp" && (this.sheetKind === "ext" || (this.sheetKind === "settings" && this.settingsTab === "ext"))) this.paintExtIfOpen();
+        break;
       case "mcp.store":
         if (String(msg.query ?? "") !== this.mcpStore.query) break;
-        this.mcpStore = { ...this.mcpStore, items: Array.isArray(msg.items) ? msg.items : [], error: msg.error ? errText(msg) : msg.error, building: Boolean(msg.building), starsComplete: Boolean(msg.starsComplete), hasToken: Boolean(msg.hasToken) };
+        this.mcpStore = { ...this.mcpStore, items: Array.isArray(msg.items) ? msg.items : [], error: msg.error ? errText(msg) : msg.error, building: Boolean(msg.building), starsComplete: Boolean(msg.starsComplete), hasToken: Boolean(msg.hasToken), truncated: Boolean(msg.truncated) };
         this.paintExtIfOpen();
         break;
       case "ext.changed":
@@ -2814,10 +2819,9 @@ export class App {
     const accent = ACCENTS[this.prefs.accent] ?? ACCENTS[DEFAULT_PREFS.accent];
     root.setProperty("--accent", accent.accent);
     root.setProperty("--accent-dim", accent.dim);
-    const text = TEXTS[this.prefs.text] ?? TEXTS.normal;
-    root.setProperty("--text", text.text);
-    root.setProperty("--dim", text.dim);
-    root.setProperty("--faint", text.faint);
+    // D158：三档文字颜色（--text/--dim/--faint）只有 styles.css 里 [data-text] 那一份，这里只标档位。
+    // 读回来时 readPrefs 已经按 TEXT_STEPS 校验过，不会给 CSS 一个没有对应规则的值。
+    document.documentElement.dataset.text = this.prefs.text;
     // #97：布局也是外观偏好，但「哪一种壳」影响的是行与列的摆法，#98 还要在自己的 CSS 里挑壳。
     // 存的值原样留在 prefs 里，这里只标出这一版真正画出来的那一种（见 layout.ts 的 activeLayout）。
     this.paintLayout();
@@ -9194,6 +9198,17 @@ export class App {
       mcp.append(wait);
     } else {
       if (inv.mcpError) mcp.append(el("div", "settings-hint", tr("pi mcp list 出错：{p1}", { p1: inv.mcpError })));
+      // pi drops entries it cannot parse from `servers` and lists them here; silence made them vanish.
+      for (const bad of inv.mcpErrors ?? []) mcp.append(el("div", "settings-hint", tr("pi 跳过了这个 MCP 条目：{p1}", { p1: bad })));
+      // The project's .pi/mcp.json only counts when pi trusts the project (D171).
+      if (inv.mcpNote)
+        mcp.append(
+          el(
+            "div",
+            "settings-hint",
+            /not trusted/i.test(inv.mcpNote) ? tr("项目未受信任：pi 不会读这里的 .pi/mcp.json，装在本项目的 MCP 不生效（在该项目里启动一次 pi 即可信任）。") : inv.mcpNote,
+          ),
+        );
       if (!inv.mcp.length) mcp.append(el("div", "empty", tr("没有配置 MCP 服务器，去「MCP 商店」看看")));
     }
     for (const m of inv.mcp) mcp.append(this.mcpRow(m, ro));
@@ -9436,7 +9451,8 @@ export class App {
     if (store.items === null && !store.error) this.socket.send({ type: "mcp.store", query: store.query, limit: store.limit });
     this.storeHeader(host, store, tr("搜索 MCP 服务（官方 MCP Registry）"), run);
     const notes: string[] = [tr("来源是官方 MCP Registry，按仓库的 GitHub star 排序。")];
-    if (store.building) notes.push(tr("排行数据正在后台建立（第一次约 2 分钟），现在显示的是 Registry 的直接搜索结果，没有 star。"));
+    if (store.building) notes.push(tr("排行数据正在后台建立（第一次要几分钟，取决于网络），现在显示的是 Registry 的直接搜索结果，没有 star；建好后这里会自动换成排行。"));
+    else if (store.truncated) notes.push(tr("Registry 条目太多，排行只统计了前面的一部分。"));
     else if (store.items && !store.starsComplete) notes.push(store.hasToken ? tr("部分仓库的 star 没查到。") : tr("没登录 GitHub CLI（gh），star 只查到一部分：运行 gh auth login 后排行更准。"));
     host.append(el("div", "settings-hint", notes.join("")));
     const list = el("div", "login-list");
@@ -10191,7 +10207,7 @@ export class App {
         const root = el("div", "bg-run");
         const line = el("div", "bg-run-head");
         line.append(el("span", "bg-run-agent", r.agent || tr("子代理")), el("span", "bg-run-state"));
-        const task = el("div", "bg-run-task", r.task || tr("（没说任务）"));
+        const task = el("div", "bg-run-task", r.task || tr("（任务原文没传到桥）"));
         const id = el("div", "bg-run-id", r.id);
         const labLog = el("div", "bg-run-lab", tr("过程"));
         const logEl = el("pre", "bg-run-log");
@@ -10202,7 +10218,7 @@ export class App {
         root.append(line, task, id, labLog, logEl, labOut, outEl);
         sheet.body.append(root);
         node = { root, state: line.lastElementChild as HTMLElement, log: logEl, out: outEl, labOut, hasLog: Boolean(r.hasLog) };
-        if (!r.hasLog) logEl.textContent = tr("这个 runner 不写过程记录。");
+        if (!r.hasLog) logEl.textContent = tr("桥还没接上这个 runner 的过程记录。");
         sheet.runs.set(r.id, node);
       }
       const state = r.state === "running" ? tr("运行中") : r.state === "failed" ? tr("失败") : tr("已完成");
@@ -10222,7 +10238,7 @@ export class App {
     const text = typeof log === "string" ? log : "";
     if (node.log.textContent !== text) {
       const stick = node.log.scrollHeight - node.log.scrollTop - node.log.clientHeight < 24;
-      node.log.textContent = text || (node.hasLog ? tr("还没有活动记录。") : tr("这个 runner 不写过程记录。"));
+      node.log.textContent = text || (node.hasLog ? tr("还没有活动记录。") : tr("桥还没接上这个 runner 的过程记录。"));
       if (stick) node.log.scrollTop = node.log.scrollHeight;
     }
     const done = typeof out === "string" && out.length > 0;
@@ -12608,6 +12624,10 @@ interface ExtInventory {
   extensions: ExtLoose[];
   mcp: ExtMcp[];
   mcpError: string | null;
+  /** Server entries pi could not parse: dropped from `mcp`, explained here. */
+  mcpErrors?: string[];
+  /** pi's note on the run, e.g. the project's .pi/mcp.json is ignored because the project is untrusted. */
+  mcpNote?: string | null;
   updates: number;
   checkedAt: number;
   /** D113: `pi mcp list` has answered (before that, `mcp` is empty because it is still connecting). */
@@ -13070,12 +13090,6 @@ const LEGACY_ACCENTS: Record<string, string> = {
   琥珀: "amber",
   玫瑰: "rose",
   银灰: "slate",
-};
-
-const TEXTS: Record<Prefs["text"], { text: string; dim: string; faint: string }> = {
-  soft: { text: "#d2d7e1", dim: "#8a92a0", faint: "#59606d" },
-  normal: { text: "#e7eaf0", dim: "#9aa2b1", faint: "#6b7280" },
-  bright: { text: "#fbfcff", dim: "#b9c1d0", faint: "#8a93a3" },
 };
 
 const TEXT_STEPS: [Prefs["text"], string][] = [

@@ -22,6 +22,7 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
+import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
 import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
@@ -58,7 +59,7 @@ import {
 } from "./notes.ts";
 import { actOnFailure, mergeFailures, readLedger, undoFailures, type CommitItem, type FailAction } from "./failures.ts";
 import { allowRemind, reminderText } from "./lessons.ts";
-import { mcpAddRequest, newer, searchMcp, searchPackages, type McpInstallOption } from "./market.ts";
+import { mcpAddRequest, newer, searchMcp, searchPackages, setIndexListener, type McpInstallOption } from "./market.ts";
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
@@ -952,6 +953,10 @@ async function main(): Promise<void> {
     }
   };
 
+  // D81/D171: the MCP store's ranked index is a walk over hundreds of registry pages. Tell the page
+  // when it lands, so the unranked registry results it was shown get replaced without a re-search.
+  setIndexListener((idx) => broadcast({ type: "mcp.index", at: idx.at, truncated: Boolean(idx.truncated) }));
+
   /**
    * D150 · 两段式目录：先用 `-ne` 的快清单把面板填上（1–2 s），带扩展的完整清单落地后再补一次。
    * 只发内容真变了的那一份（`catalogSig`），因为面板开着时用户可能已经在挑模型，拿同一份列表
@@ -1014,6 +1019,23 @@ async function main(): Promise<void> {
   });
 
   sessions.on("ws", broadcast);
+  /**
+   * 状态文件读不到：在聊天区说一句。读不到的这次改动不会落盘（见 statefile.ts），但界面上它已经生效了 ——
+   * 不吭声就是假成功：用户拖完置顶、重启一看全没了。同一句错只报一次（去重在 StateFile 里）。
+   */
+  const stateUnreadable = (failure: StateFailure) => {
+    const name = path.basename(failure.file);
+    log(`state: 读不到 ${failure.file}（${failure.error}）`);
+    broadcast({
+      type: "notice",
+      level: "error",
+      code: "state_file_unreadable",
+      text: `读不到状态文件 ${name}，这次的改动没有保存`,
+      params: { p1: name },
+    });
+  };
+  sessions.manage.onUnreadable = stateUnreadable;
+  sessions.workspaces.onUnreadable = stateUnreadable;
   /**
    * D120: the panel stays live without a timer of its own, but only pages that actually asked for
    * the numbers get the tick's broadcast — a 60 s push to every idle tab is nobody's feature.
