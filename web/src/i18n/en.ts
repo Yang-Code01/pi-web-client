@@ -1532,6 +1532,8 @@ export const en: Dict = {
   "开一轮：{p1} 类账本视角 + 一句规矩": "One round: ledger view of {p1} kinds + one rule",
   "⚡ 自动复盘 · {p1}": "⚡ Auto-review · {p1}",
   "这一类还没进账本，规矩先记下了": "Not in the ledger yet, but the rule is already recorded",
+  "未入账": "Not in ledger",
+  "账本里还没有记录。上面这些规矩是「发到会话复盘」带回来的。": "No ledger entries yet. The rules above came back from “Review in chat”.",
   "这条规矩": "This rule",
   "改": "Edit",
   "改这句（同样的键直接覆盖）": "Edit the sentence (same key overwrites)",

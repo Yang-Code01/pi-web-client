@@ -132,11 +132,17 @@ export class FailPanel {
 
   private paintList(): void {
     const rows = this.rows();
+    const rules = this.ruleRows();
     if (!rows.length) {
       const empty = this.query
         ? tr("没有匹配的错误。")
-        : tr("这份账本还是空的。会话里出过错，结束时点右下角的「⚡ 总结本轮错误」。");
-      this.listEl.replaceChildren(el("div", "fail-empty", empty));
+        : rules.length
+          ? tr("账本里还没有记录。上面这些规矩是「发到会话复盘」带回来的。")
+          : tr("这份账本还是空的。会话里出过错，结束时点右下角的「⚡ 总结本轮错误」。");
+      // 规矩可以只来自「发到会话复盘」（人没选入账），所以账本空不等于这一页没东西。
+      const nodes: HTMLElement[] = [el("div", "fail-empty", empty)];
+      if (rules.length) nodes.unshift(this.rulesFold(rules));
+      this.listEl.replaceChildren(...nodes);
       return;
     }
     const open = rows.filter((e) => entryState(e) === "open");
@@ -145,7 +151,6 @@ export class FailPanel {
     const abort = rows.filter((e) => entryState(e) === "abort");
     const nodes: HTMLElement[] = [];
     // 规矩单独一节放在列表最上面：它是这个页面上唯一「下次有用」的东西，次数只是历史。
-    const rules = this.ruleRows();
     if (rules.length) nodes.push(this.rulesFold(rules));
     open.forEach((e) => nodes.push(this.card(e)));
     if (!open.length) nodes.push(el("div", "fail-empty", tr("没有待修的错误。")));
@@ -238,7 +243,7 @@ export class FailPanel {
         const head = el("div", "fail-dhead");
         head.append(el("div", "fail-title-big", rule.sig || rule.key));
         const meta = el("div", "fail-meta");
-        meta.append(el("span", "fail-pill open", tr("待修")), el("span", "fail-metatext", tr("这一类还没进账本，规矩先记下了")));
+        meta.append(el("span", "fail-pill open", tr("未入账")), el("span", "fail-metatext", tr("这一类还没进账本，规矩先记下了")));
         this.detailEl.replaceChildren(head, meta, this.ruleBlock(rule));
         return;
       }
