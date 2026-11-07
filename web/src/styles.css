@@ -768,6 +768,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   font: 12px/1.45 var(--mono); color: var(--accent); max-height: 220px; overflow: auto;
 }
 .notice { color: var(--faint); font-size: 12px; text-align: center; font-family: var(--mono); }
+/* 用户在 accent 气泡里的附注（「附 1 张图片」）：灰字压青底显脏，改用更高一档的 dim。 */
+.msg.user .notice { color: var(--dim); }
 .notice.error { color: var(--danger); }
 .notice.warn { color: var(--warn); }
 
