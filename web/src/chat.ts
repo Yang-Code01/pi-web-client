@@ -193,7 +193,7 @@ export class ChatView {
       // arrives as dozens of 1–5px touchmove events, so a per-event 6px threshold never fires and the
       // stream keeps pinning the view to the bottom under the user's finger. Finger down = the content
       // is moving up = the user is reading history.
-      if (touchStartY !== null && y !== null && y - touchStartY > 6) this.stopFollowing();
+      if (touchStartY !== null && y !== null && y - touchStartY > 6 && this.canScroll()) this.stopFollowing();
     }, { passive: true });
     const endTouch = (): void => {
       touchStartY = null;
@@ -222,6 +222,8 @@ export class ChatView {
     // The composer grows and shrinks under the transcript; while following, that must not unstick us.
     new ResizeObserver(() => {
       if (this.following) this.scheduleScroll();
+      // 视口变高 / 变矮可能让「下面还有东西」这个前提变了，那颗钮要跟着重算（见 canScroll）。
+      else this.renderJump();
     }).observe(root);
   }
 
@@ -231,8 +233,19 @@ export class ChatView {
     return gap <= 24;
   }
 
+  /**
+   * 转录整体装得下：往上滚翻不出任何旧内容，往下也没有「回到底部」的去处（D168）。
+   * 门槛与 nearBottom 一致（24px）——差几像素不算「有东西在下面」。
+   */
+  private canScroll(): boolean {
+    return this.root.scrollHeight - this.root.clientHeight > 24;
+  }
+
   /** Wheel / key up: stop following and keep the follow closed while the smooth-scroll animation plays out. */
   private holdUp(): void {
+    // 短会话里上滚什么也翻不出来。以前照样关掉跟流，于是一格空滚就长出「↓ new」，
+    // 而下面其实空无一物——手势没有去处时，就当它没发生。
+    if (!this.canScroll()) return;
     this.holdFollow = Math.max(this.holdFollow, performance.now() + 300);
     this.stopFollowing();
   }
@@ -252,7 +265,8 @@ export class ChatView {
 
   private renderJump(): void {
     this.jump.classList.toggle("has-new", this.unread);
-    this.jump.hidden = this.following;
+    // 不跟流但下面没东西（内容缩水、窗口变高、或者本来就是空滚）：钮没有意义，别画。
+    this.jump.hidden = this.following || !this.canScroll();
     // The visible text is a glyph, so the meaning has to live somewhere readable.
     const label = this.unread ? tr("有新内容，回到底部") : tr("回到底部");
     this.jump.title = label;
