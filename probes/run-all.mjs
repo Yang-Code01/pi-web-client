@@ -4,9 +4,11 @@
  *
  * 串行跑一遍要 ~9 分钟：每个探针都自己起静态服务器 + 桩桥 + Chromium，单跑 40–60 秒。
  * 它们彼此独立（各自一个 PI_WEB_PORT、各自的桩桥），所以按 CPU 允许的并发跑即可。
+ * 本机实测：4 路 74s，8 路 58s，10 路 55s（更吃内存）。共享一个 Chromium 反而更慢
+ * （8 路 62–64s：单浏览器进程成了争用点），所以每个探针仍各起各的。
  *
- *   node probes/run-all.mjs                 # 默认 4 路
- *   node probes/run-all.mjs --jobs 6        # 再快一点（看机器）
+ *   node probes/run-all.mjs                 # 默认 8 路
+ *   node probes/run-all.mjs --jobs 6        # 机器吃紧时降并发
  *   node probes/run-all.mjs --only workspace-tabs,a11y-workspace
  *
  * 每个探针的完整输出写到 .scratch/probes/<name>.log；终端只留一行摘要 + 失败探针的尾巴。
@@ -37,7 +39,7 @@ const flag = (name, fallback) => {
   const i = argv.indexOf(name);
   return i >= 0 ? argv[i + 1] ?? fallback : fallback;
 };
-const jobs = Math.max(1, Number(flag("--jobs", 4)) || 4);
+const jobs = Math.max(1, Number(flag("--jobs", 8)) || 8);
 const timeoutMs = Math.max(10, Number(flag("--timeout", 300)) || 300) * 1000;
 const only = String(flag("--only", "")).split(",").map((s) => s.trim()).filter(Boolean);
 const names = only.length ? ALL.filter((n) => only.includes(n)) : ALL;
