@@ -3,7 +3,8 @@
  *
  * 票面要的是：标签行只画 N 颗（N 由桥端下发，默认 3），剩下的组数报在槽外的 `＋N` 上；点 `＋N` 只列
  * 被折叠的组，点一行切过去并关掉下拉；当前组排在组序很后面时它仍然在圈内（挤掉最后一个补位组）。
- * #173 接上：固定组退役 —— 组头 ⋯ 里只剩重命名 / 删除，左栏不再有「已固定」徽记，标签行与左栏
+ * #173 接上：固定组退役 —— 组头 ⋯ 里只剩重命名 / 移到最前 / 删除（#177 加的第二项），左栏不再有
+ * 「已固定」徽记，标签行与左栏
  * 共用一份 `order`。
  * #174 再接上：**每一颗看得见的标签**都能用鼠标拖着换顺序（不再只限固定组），落点竖线跟手，松手
  * 只发一条 `ws.tabs { order, max }` 把整份 order 写回，刷新后还记得；位移不到 4px 仍算一次点击，
@@ -385,7 +386,7 @@ ok(addBox.add > 0 && addBox.add < addBox.more, `800px：＋ 还在 ＋N 左边�
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-800.png`), clip: { x: 0, y: 0, width: 800, height: 140 } });
 await page.close();
 
-// 7) #173 固定组退役：组头 ⋯ 里只剩重命名 / 删除，左栏不再有「已固定」徽记
+// 7) #173 固定组退役：组头 ⋯ 里只剩重命名 / 移到最前 / 删除，左栏不再有「已固定」徽记
 page = await open(null);
 const openWsMore = async (id) => {
   await page.locator(`.ws-sec[data-ws="${id}"] .ws-head`).hover();
@@ -401,7 +402,7 @@ const menu = await page.evaluate(() => ({
   text: document.querySelector(".ws-menu")?.textContent ?? "",
   fixed: document.querySelectorAll(".ws-fixed").length,
 }));
-ok(JSON.stringify(menu.acts) === JSON.stringify(["rename", "drop"]), `组头 ⋯ 只剩重命名 / 删除（${menu.acts.join(" / ")}）`);
+ok(JSON.stringify(menu.acts) === JSON.stringify(["rename", "front", "drop"]), `组头 ⋯ 只剩重命名 / 移到最前 / 删除（${menu.acts.join(" / ")}）`);
 ok(!/固定/.test(menu.text), `菜单里没有固定入口（${menu.text.replace(/\s+/g, " ").trim()}）`);
 ok(menu.fixed === 0, `左栏没有「已固定」徽记（${menu.fixed} 个）`);
 await page.keyboard.press("Escape");
