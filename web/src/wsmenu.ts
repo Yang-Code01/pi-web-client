@@ -1,5 +1,6 @@
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
+import { stickMenu } from "./menuplace.ts";
 
 /**
  * #100：工作区组头那颗 ⋯ 的菜单（改名 / 移到最前 / 删除）。#173 起顺序统一由一份 `order` 管，固定项退役。
@@ -7,6 +8,10 @@ import { tr } from "./i18n/index.ts";
  * 外壳复用置顶胶囊的悬停气泡（`.pin-menu` / `.pm-item`，见 `pinmenu.ts`）：同一张圆角卡片、同一套
  * 行高与危险色，用户不用学第二套。挂在 `body` 上、`position: fixed` 贴组头下方 —— 左栏是
  * `overflow-y: auto`，组里弹出的东西会被裁掉。
+ *
+ * 落位见 `menuplace.ts`：组头可能就贴着窗口底（左栏能滚十几组），下方放不下就翻到组头上方，
+ * 再放不下就自己滚 —— 别让「删除工作区」只剩半行在窗口外面。左栏一滚组头就跑，所以滚动时重摆
+ * （`scroll` 不冒泡，得用捕获），组头彻底滚出窗口就把菜单关掉，别让它在边上飘一块。
  *
  * 做不了时不藏这一行：按钮置灰，下面盖一行灰字说明为什么（「还有 3 个会话」/「跟着目录走」/「已经
  * 是第一个」）。藏起来只会让人以为这个组忘了做删除。
@@ -29,8 +34,6 @@ export interface WsMenuOpts {
 export interface WsMenuHandle {
   close(): void;
 }
-
-const GAP = 4;
 
 export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle {
   let closed = false;
@@ -112,23 +115,33 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
     closed = true;
     document.removeEventListener("pointerdown", onDoc, true);
     document.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("scroll", onScroll, true);
     window.removeEventListener("resize", place);
     node.remove();
   };
 
-  /** 贴组头下方 4px，左右夹在窗口里；左栏窄，别让它戳出屏幕。 */
+  /** 贴组头下方 4px；下方放不下就翻到上方，上下左右都夹进窗口（组头可能滚到窗口最底下）。 */
   function place(): void {
-    const r = anchor.getBoundingClientRect();
-    const w = node.offsetWidth;
-    const left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
-    node.style.left = `${Math.round(left)}px`;
-    node.style.top = `${Math.round(r.bottom + GAP)}px`;
+    stickMenu(node, anchor.getBoundingClientRect());
   }
+
+  /** 左栏一滚组头就挪位置（`scroll` 不冒泡，所以监听挂了捕获）；组头彻底滚出窗口就把菜单收掉。 */
+  const onScroll = (ev: Event): void => {
+    // 菜单自己肚子里滚（封顶后就有滚动条）不该触发重排。
+    if (ev.target instanceof Node && node.contains(ev.target)) return;
+    const r = anchor.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > window.innerHeight) {
+      close();
+      return;
+    }
+    place();
+  };
 
   document.body.append(node);
   place();
   document.addEventListener("pointerdown", onDoc, true);
   document.addEventListener("keydown", onKey, true);
+  document.addEventListener("scroll", onScroll, true);
   window.addEventListener("resize", place);
 
   return { close };
