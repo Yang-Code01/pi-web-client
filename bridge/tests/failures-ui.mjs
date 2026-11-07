@@ -154,8 +154,14 @@ try {
   const again = ((await cta.innerText()) || "").replace(/\s+/g, " ").trim();
   check("刷新后按钮还在（快照里回放出这 4 次）", again.includes("4"), JSON.stringify(again));
 
-  // -- B. 点一下：归并、落盘、可撤销 ------------------------------------
+  // -- B. 点一下弹小卡，再选「记进账本」：归并、落盘、可撤销 ----------
   await cta.click();
+  await page.waitForSelector(".fail-menu", { timeout: 5000 });
+  const menuText = (await page.locator(".fail-menu").innerText()).replace(/\s+/g, " ").trim();
+  check("单击弹出小卡，两个举动都写着代价", menuText.includes("记进账本") && menuText.includes("发到会话复盘"), JSON.stringify(menuText));
+  check("小卡顶部报出这一轮几次、归成几类", /本轮 4 次失败/.test(menuText), JSON.stringify(menuText.slice(0, 60)));
+  await shot("menu");
+  await page.locator(".fail-menu-item", { hasText: "记进账本" }).click();
   await page.waitForSelector(".fail-toast", { timeout: 10000 });
   const toast = (await page.locator(".fail-toast").innerText()).replace(/\s+/g, " ").trim();
   check("toast 报出这次入账几次", toast.includes("4"), JSON.stringify(toast));
@@ -229,6 +235,8 @@ try {
   check("新一轮又亮了", await cta.isVisible());
   const before = ledger();
   await cta.click();
+  await page.waitForSelector(".fail-menu", { timeout: 5000 });
+  await page.locator(".fail-menu-item", { hasText: "记进账本" }).click();
   for (let i = 0; i < 60; i++) {
     const now = ledger();
     if (now && now.entries.find((e) => e.code === "path" && e.tool === "bash")?.count === 4) break;
@@ -250,6 +258,97 @@ try {
   book = ledger();
   check("撤销把次数退回 2", book?.entries?.find((e) => e.tool === "bash" && e.code === "path")?.count === 2, String(book?.entries?.find((e) => e.tool === "bash" && e.code === "path")?.count));
   await shot("after-undo");
+
+  // -- E. 第二个举动：发到会话复盘 ----------------------------------------
+  await turn("FAILS review");
+  await cta.waitFor({ state: "visible", timeout: 10000 });
+  await cta.click();
+  await page.waitForSelector(".fail-menu", { timeout: 5000 });
+  const reviewItem = page.locator(".fail-menu-item", { hasText: "发到会话复盘" });
+  const reviewLabel = (await reviewItem.innerText()).replace(/\s+/g, " ").trim();
+  check("小卡写明这一下会发出什么", reviewLabel.includes("账本视角"), JSON.stringify(reviewLabel));
+  await shot("menu-review");
+  await reviewItem.click();
+
+  await page.waitForSelector(".msg.review", { timeout: 20000 });
+  const bubble = (await page.locator(".msg.review").first().innerText()).replace(/\s+/g, " ").trim();
+  check("会话里出现「⚡ 自动复盘」那条", bubble.includes("自动复盘"), JSON.stringify(bubble.slice(0, 60)));
+  check("发出去的是账本视角，不是把报错原文再贴一遍", bubble.includes("账本视角"), JSON.stringify(bubble.slice(0, 120)));
+  check("它自己不会接着展开一堆解释（形状与提醒不同）", !bubble.includes("老毛病重犯"));
+  await shot("review");
+
+  const lastReview = piLog().filter((n) => n.t === "review").at(-1);
+  check("脚本化 pi 收到了复盘提示词，并认出三类行", Boolean(lastReview) && (lastReview.classes ?? 0) > 0, JSON.stringify(lastReview ?? null));
+
+  const ruleFile = () => {
+    const dir = path.join(STATE, "rules");
+    if (!fs.existsSync(dir)) return null;
+    const f = fs.readdirSync(dir).filter((n) => n.endsWith(".json"))[0];
+    return f ? path.join(dir, f) : null;
+  };
+  // 规矩是模型回答回来之后才写回的：等它落盘，而不是等文件出现（`readRules` 读一次就会建出空账）。
+  let rule = null;
+  for (let i = 0; i < 100 && !rule; i++) {
+    const f = ruleFile();
+    if (f) {
+      try {
+        rule = JSON.parse(fs.readFileSync(f, "utf8"))?.rules?.[0] ?? null;
+      } catch {
+        rule = null;
+      }
+    }
+    if (!rule) await sleep(100);
+  }
+  check("规矩落在 <state>/rules/，与账本同一个工作区一份", Boolean(rule), ruleFile() ?? "missing");
+  check("模型写在那行里的一句规矩被捡回来了", /先 test -d 再 cd/.test(rule?.rule ?? ""), JSON.stringify(rule?.rule ?? null));
+  check("规矩挂在同一套归并键上", rule?.key === "bash|path|cd <path>", JSON.stringify(rule?.key ?? null));
+
+  await page.locator(".notes-btn").click();
+  await page.waitForSelector(".notes-tab.fail-tab", { timeout: 10000 });
+  await page.locator(".notes-tab.fail-tab").click();
+  await page.waitForSelector(".fail-fold.rules", { timeout: 10000 });
+  const fold = (await page.locator(".fail-fold.rules").innerText()).replace(/\s+/g, " ").trim();
+  check("账本左栏多出「⚡ 规矩」一节，且写着那句话", fold.includes("规矩") && fold.includes("先 test -d"), JSON.stringify(fold.slice(0, 80)));
+  await page.locator(".fail-rule-row").first().click();
+  await page.waitForSelector(".fail-rule", { timeout: 5000 });
+  const ruleBlock = (await page.locator(".fail-rule").innerText()).replace(/\s+/g, " ").trim();
+  check("右边能把这条规矩看全", ruleBlock.includes("这条规矩") && ruleBlock.includes("先 test -d"), JSON.stringify(ruleBlock.slice(0, 80)));
+  check("规矩能改能删（人只动字，不凭空造类）", (await page.locator(".fail-rule .fail-rule-btn").count()) >= 2);
+  await shot("rules");
+  // 人改一句：同键覆盖，账本里的次数不动。
+  await page.locator(".fail-rule .fail-rule-btn", { hasText: "改" }).first().click();
+  const ruleInput = page.locator(".fail-rule-input");
+  await ruleInput.waitFor({ timeout: 5000 });
+  await ruleInput.fill("先 git rev-parse 拿路径，再 cd");
+  await ruleInput.press("Enter");
+  let edited = null;
+  for (let i = 0; i < 60 && !edited; i++) {
+    const f = ruleFile();
+    try {
+      const book = f ? JSON.parse(fs.readFileSync(f, "utf8")) : null;
+      if (book?.rules?.[0]?.rule === "先 git rev-parse 拿路径，再 cd") edited = book.rules[0];
+      else if (book?.rules?.length !== 1) edited = null;
+    } catch {
+      edited = null;
+    }
+    if (!edited) await sleep(100);
+  }
+  check("改完一句就覆盖同一条（不新开一类）", edited?.key === "bash|path|cd <path>", JSON.stringify(edited?.rule ?? null));
+  const ledgerAfter = JSON.parse(fs.readFileSync(ledgerFile(), "utf8"));
+  check("改规矩不动账本里的次数", ledgerAfter.entries.some((e) => e.key === "bash|path|cd <path>" && e.count >= 2));
+  await shot("rules-edited");
+  // 删掉之后，这一节连「空壳」都不留。
+  await page.locator(".fail-rule .fail-rule-btn", { hasText: "删" }).first().click();
+  for (let i = 0; i < 60 && fs.existsSync(ruleFile()); i++) {
+    const f = ruleFile();
+    const book = f ? JSON.parse(fs.readFileSync(f, "utf8")) : null;
+    if (!book?.rules?.length) break;
+    await sleep(100);
+  }
+  await sleep(300);
+  check("删掉那条之后左栏的「⚡ 规矩」也收了", (await page.locator(".fail-fold.rules").count()) === 0);
+  await page.locator(".notes-head .btn.ghost", { hasText: "关闭" }).click();
+  await sleep(300);
 } catch (err) {
   check(`没跑完：${String(err?.message ?? err).split("\n")[0]}`, false);
   if (bridgeLog) log("bridge:", bridgeLog.slice(-1500));

@@ -56,8 +56,9 @@ import {
   type NoteMode,
   type NoteStatus,
 } from "./notes.ts";
-import { actOnFailure, mergeFailures, readLedger, undoFailures, type CommitItem, type FailAction } from "./failures.ts";
-import { allowRemind, reminderText } from "./lessons.ts";
+import { actOnFailure, emptyLedger, mergeFailures, readLedger, undoFailures, type CommitItem, type FailAction } from "./failures.ts";
+import { allowRemind, reminderText, reviewPrompt } from "./lessons.ts";
+import { deleteRule, markReviewed, readRules, setRule } from "./rules.ts";
 import { mcpAddRequest, newer, searchMcp, searchPackages, type McpInstallOption } from "./market.ts";
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { createWriteLock } from "./writelock.ts";
@@ -1245,6 +1246,8 @@ async function main(): Promise<void> {
           case "prompt": {
             if (!(await requireStepUp())) return;
             const session = await sessions.openLive(msg.sessionId);
+            // 人开口了：上一轮「⚡ 复盘」到此结束，D169 的当场叫住重新生效。
+            session.reviewing = false;
             await session.prompt(
               String(msg.text ?? ""),
               msg.images,
@@ -2035,6 +2038,12 @@ async function main(): Promise<void> {
               send({ type: "failures.reminded", sessionId: sid, key, ok: false });
               return;
             }
+            // 正在跑复盘那一轮：它谈的就是这些失败，再插一句「你刚又栽了」只会打断它。
+            // 回 ok:false（不消费这次机会），下一轮还能再来。
+            if (sess.reviewing) {
+              send({ type: "failures.reminded", sessionId: sid, key, ok: false });
+              return;
+            }
             void sess.prompt(text, undefined, undefined, "followUp").then(
               () => send({ type: "failures.reminded", sessionId: sid, key, ok: true }),
               (err: any) => {
@@ -2043,6 +2052,99 @@ async function main(): Promise<void> {
               },
             );
             log(`failures.remind → ${sid} (${key})`);
+            return;
+          }
+          // ------------------------------------------------ 规矩（D164 延伸）
+          // 复盘写下的「下次怎么做」，旁挂在账本边上：键与账本同一套，账本正文只读、规矩可改可删。
+          case "rules.get": {
+            const ws = String(msg.ws ?? "");
+            send({ type: "rules", ws, book: readRules(ws) });
+            return;
+          }
+          case "rules.set": {
+            try {
+              const book = setRule({
+                ws: String(msg.ws ?? ""),
+                key: String(msg.key ?? ""),
+                rule: String(msg.rule ?? ""),
+                tool: msg.tool == null ? undefined : String(msg.tool),
+                code: msg.code == null ? undefined : String(msg.code),
+                sig: msg.sig == null ? undefined : String(msg.sig),
+              });
+              log(`rules.set ${book.rules.length} 条 in ${book.ws}`);
+              broadcast({ type: "rules", ws: book.ws, book });
+              send({ type: "rules.saved", ws: book.ws, book });
+            } catch (err: any) {
+              send({ type: "rules.saved", error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "rules.delete": {
+            try {
+              const book = deleteRule(String(msg.ws ?? ""), String(msg.key ?? ""));
+              broadcast({ type: "rules", ws: book.ws, book });
+              send({ type: "rules.saved", ws: book.ws, book });
+            } catch (err: any) {
+              send({ type: "rules.saved", error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          // 复盘发出去了才记「这个会话已复盘 N 条」：发失败还留着让它重试，不能先占位。
+          case "rules.reviewed": {
+            try {
+              const book = markReviewed(String(msg.ws ?? ""), String(msg.sid ?? ""), Number(msg.n) || 0);
+              broadcast({ type: "rules", ws: book.ws, book });
+            } catch (err: any) {
+              log(`rules.reviewed failed: ${err?.message ?? err}`);
+            }
+            return;
+          }
+          // 「发到会话复盘」：把账本视角 + 提示词发进当前会话（人当场看得见，可打断）。
+          // 规矩由模型按回写格式写在回答末尾，前端解析后 rules.set 落盘 —— 桥不解析模型的话。
+          case "failures.review": {
+            const sid = String(msg.sid ?? "");
+            const ws = String(msg.ws ?? "");
+            const classes = (Array.isArray(msg.classes) ? (msg.classes as any[]) : [])
+              .filter((c) => Boolean(c) && typeof c === "object" && typeof c.key === "string")
+              .slice(0, 50)
+              .map((c) => ({
+                key: String(c.key),
+                tool: String(c.tool ?? ""),
+                code: String(c.code ?? ""),
+                sig: String(c.sig ?? ""),
+                n: Math.max(1, Math.trunc(Number(c.n) || 1)),
+              }));
+            const failures = Math.max(1, Math.trunc(Number(msg.n) || 0));
+            const sess = sid ? sessions.get(sid) : undefined;
+            // 没在跑就不为一句复盘冷启 pi（和 remind 同一条理由）。
+            if (!sess || !sess.live || !classes.length) {
+              send({ type: "failures.reviewed", sessionId: sid, ok: false, reason: !sess || !sess.live ? "offline" : "empty" });
+              return;
+            }
+            let ledger = emptyLedger(ws);
+            try {
+              ledger = readLedger(ws);
+            } catch {
+              // 账本读坏了也照发：复盘里少一段累计次数，比发不出去强。
+            }
+            let book = null;
+            try {
+              book = readRules(ws);
+            } catch {
+              book = null;
+            }
+            const text = reviewPrompt({ ledger, book, classes, failures });
+            // 这一轮在谈失败本身，D169 再插一句「你刚又栽了」就是噪音。
+            sess.reviewing = true;
+            void sess.prompt(text, undefined, undefined, "followUp").then(
+              () => send({ type: "failures.reviewed", sessionId: sid, ok: true, n: failures, classes: classes.length }),
+              (err: any) => {
+                sess.reviewing = false;
+                log(`failures.review failed: ${err?.message ?? err}`);
+                send({ type: "failures.reviewed", sessionId: sid, ok: false, reason: String(err?.message ?? err) });
+              },
+            );
+            log(`failures.review → ${sid} (${classes.length} 类 / ${failures} 次)`);
             return;
           }
           case "lockext.get": {

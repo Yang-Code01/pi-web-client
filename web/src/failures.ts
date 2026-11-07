@@ -316,8 +316,52 @@ export function sameFail(a: SeenFail, key: string): boolean {
   }
 }
 
-export function toCommit(fail: SeenFail, why = "", fix = ""): CommitItem {
-  const out = String(fail.out ?? "");
+/**
+ * 桥注入的「复盘」那一轮的第一行（`bridge/src/lessons.ts` 的 `REVIEW_MARK`）。
+ * 和 D169 的提醒同一个意思：这不是人说的话，得用一个不随语言变的东西认出来。
+ */
+export const REVIEW_MARK = "[pi-web:review]";
+
+/** 复盘正文（去掉标记）；不是复盘就返回 null。 */
+export function reviewBody(text: string): string | null {
+  if (!text.startsWith(REVIEW_MARK)) return null;
+  return text.slice(REVIEW_MARK.length).replace(/^\s+/, "");
+}
+
+/** 一类失败的摘要，给「发到会话复盘」用：键要能对上账本，次数要真。 */
+export interface ReviewClass {
+  key: string;
+  tool: string;
+  code: string;
+  sig: string;
+  n: number;
+}
+
+/** 这个会话见过的失败按账本键归并 → 给复盘用的类列表（桥端再按账本补累计次数）。 */
+/** 提示词里的 `## 小节` 是写给模型的，屏幕上不该冒出井号。 */
+export function reviewDisplay(body: string): string {
+  return body.replace(/^#{1,6}[ 	]+/gm, "");
+}
+
+export function reviewClasses(fails: Iterable<SeenFail>): ReviewClass[] {
+  const map = new Map<string, ReviewClass>();
+  for (const f of fails) {
+    try {
+      const out = String(f.out ?? "");
+      const code = classify(f.tool, out, exitCodeOf(out));
+      const sig = normalizeSig(f.cmd, f.tool, out);
+      const key = entryKey(f.tool, code, sig);
+      const hit = map.get(key);
+      if (hit) hit.n += 1;
+      else map.set(key, { key, tool: f.tool || "tool", code, sig, n: 1 });
+    } catch {
+      /* 归不进类的那条就当没看见：复盘少一类，比整批发不出去强 */
+    }
+  }
+  return [...map.values()].sort((a, b) => b.n - a.n);
+}
+
+export function toCommit(fail: SeenFail, why = "", fix = ""): CommitItem {  const out = String(fail.out ?? "");
   const exit = exitCodeOf(out);
   const code = classify(fail.tool, out, exit);
   const sig = normalizeSig(fail.cmd, fail.tool, out);
