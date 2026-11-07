@@ -879,7 +879,7 @@ export class Session extends EventEmitter {
       // 同一句错只报一次：刷新是 400ms 一次，重试期间不能每 tick 刷一条通知。
       if (reason !== this.readError) {
         this.readError = reason;
-        this.notice(`读不到会话文件，界面停在上一次的内容：${reason}`, "error", {
+        this.notice(`读不到会话文件：${reason}；恢复后会自动重新加载`, "error", {
           code: "session_file_unreadable",
           params: { p1: reason },
         });
@@ -898,7 +898,7 @@ export class Session extends EventEmitter {
       // 之后文件真变了才 touch；终端里继续写也意味着上一轮完成状态过期了。
       const first = !this.tailSig;
       const before = this.items;
-      // 读失败就不推进 tailSig：下一 tick 签名变了还会再来一次，文件恢复的那一刻自己接上。
+      // 读失败就不推进 tailSig：下一 tick 拿同一个签名再比一次、再读一次，文件恢复的那一刻自己接上。
       if (!this.loadFromFile()) return;
       this.tailSig = sig;
       if (first) {

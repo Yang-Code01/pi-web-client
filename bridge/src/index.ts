@@ -22,6 +22,7 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
+import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
 import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
@@ -1014,6 +1015,23 @@ async function main(): Promise<void> {
   });
 
   sessions.on("ws", broadcast);
+  /**
+   * 状态文件读不到：在聊天区说一句。读不到的这次改动不会落盘（见 statefile.ts），但界面上它已经生效了 ——
+   * 不吭声就是假成功：用户拖完置顶、重启一看全没了。同一句错只报一次（去重在 StateFile 里）。
+   */
+  const stateUnreadable = (failure: StateFailure) => {
+    const name = path.basename(failure.file);
+    log(`state: 读不到 ${failure.file}（${failure.error}）`);
+    broadcast({
+      type: "notice",
+      level: "error",
+      code: "state_file_unreadable",
+      text: `读不到状态文件 ${name}，这次的改动没有保存`,
+      params: { p1: name },
+    });
+  };
+  sessions.manage.onUnreadable = stateUnreadable;
+  sessions.workspaces.onUnreadable = stateUnreadable;
   /**
    * D120: the panel stays live without a timer of its own, but only pages that actually asked for
    * the numbers get the tick's broadcast — a 60 s push to every idle tab is nobody's feature.

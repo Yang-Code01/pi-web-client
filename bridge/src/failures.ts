@@ -96,7 +96,7 @@ function clean(s: unknown, max = MAX_TEXT): string {
 }
 
 /** 工作区 id 当文件名（可读），尾部再挂 8 位哈希：`F:/a b` 与 `F:/a_b` 不会落进同一本账。 */
-function fileFor(ws: string): string {
+export function fileFor(ws: string): string {
   const safe = ws.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 100) || "none";
   const tail = createHash("sha1").update(ws).digest("hex").slice(0, 8);
   return statePath("failures", `${safe}-${tail}.json`);

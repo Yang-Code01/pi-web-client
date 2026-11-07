@@ -79,10 +79,9 @@ export function listNotes(): Note[] {
 
 function save(notes: Note[]): Note[] {
   // 读失败时写回，就是把整本记录换成「只看得见这一次编辑」的一页 —— 不可逆，所以宁可不存。
-  if (unreadable) {
-    console.error(`[notes] 读不到 ${notesFile()}（${unreadable}），这次不落盘；改动只留在内存里`);
-    return notes;
-  }
+  // 抛出去而不是静默 return：index.ts 的 notes.* 处理器会把 message 回给界面（notes.saved {error}），
+  // 用户看得见「这次没存上」；沉默的 return 会让界面显示已保存、重启后消失。
+  if (unreadable) throw new Error(`读不到 ${notesFile()}（${unreadable}），这次改动没有保存`);
   writeJson(notesFile(), { version: 1, notes } satisfies Store);
   return listNotes();
 }
@@ -245,7 +244,17 @@ export function addShot(id: string, dataUrl: string): { shots: string[]; path: s
   fs.writeFileSync(file, data);
   note.shots = [...note.shots, file];
   note.updatedAt = Date.now();
-  save(notes);
+  try {
+    save(notes);
+  } catch (err) {
+    // 索引没写成：图别留在盘上变成没人认领的孤儿（下一次 addShot 还会从 shot-1 重新数）。
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {
+      /* 删不掉也只是多一个文件 */
+    }
+    throw err;
+  }
   return { shots: note.shots, path: file };
 }
 
@@ -256,15 +265,17 @@ export function removeShot(id: string, file: string): string[] {
   if (!note) throw new Error("这条记录已经不在了");
   const abs = path.resolve(file);
   const dir = path.resolve(assetsDir(id));
-  if (abs.startsWith(dir + path.sep) && note.shots.includes(file)) {
+  const own = abs.startsWith(dir + path.sep) && note.shots.includes(file);
+  note.shots = note.shots.filter((s) => s !== file);
+  note.updatedAt = Date.now();
+  // 先写索引再删图：反过来一旦保存失败，索引还指着已经不存在的文件（坏缩略图）。
+  save(notes);
+  if (own) {
     try {
       fs.rmSync(abs, { force: true });
     } catch {
       /* 已经没了 */
     }
   }
-  note.shots = note.shots.filter((s) => s !== file);
-  note.updatedAt = Date.now();
-  save(notes);
   return note.shots;
 }

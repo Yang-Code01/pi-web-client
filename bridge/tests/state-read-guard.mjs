@@ -15,7 +15,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
 
 const STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-guard-"));
 process.env.PI_WEB_STATE = STATE;
@@ -24,7 +23,7 @@ const { readJsonChecked, statePath } = await import("../src/paths.ts");
 const { Manage } = await import("../src/manage.ts");
 const { Workspaces } = await import("../src/workspaces.ts");
 const { notesFile, listNotes, saveNote } = await import("../src/notes.ts");
-const { readLedger, mergeFailures } = await import("../src/failures.ts");
+const { fileFor, readLedger, mergeFailures } = await import("../src/failures.ts");
 
 let failures = 0;
 const check = (name, fn) => {
@@ -45,12 +44,8 @@ const put = (file, text) => {
   return file;
 };
 
-/** 与 failures.ts 的 fileFor 同构：改了那边要一起改。 */
-const ledgerFile = (ws) => {
-  const safe = ws.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 100) || "none";
-  const tail = createHash("sha1").update(ws).digest("hex").slice(0, 8);
-  return statePath("failures", `${safe}-${tail}.json`);
-};
+/** 直接问生产端要路径：复刻哈希算法等于给测试埋一条「生产改名就失效」的暗雷。 */
+const ledgerFile = fileFor;
 
 // 0. readJsonChecked 自己的语义 -------------------------------------------
 check("readJsonChecked：文件不存在 = 首次运行，不是错误", () => {
@@ -85,6 +80,18 @@ check("manage：没有文件（首次运行）照常写", () => {
   const saved = JSON.parse(read(statePath("manage.json")));
   assert.deepEqual(saved.pin, ["s1"]);
 });
+check("manage：文件修好后，排队的改动叠在盘上内容之上", () => {
+  const file = put(statePath("manage.json"), BAD);
+  const manage = new Manage();
+  manage.setArchived(["gone"], true);
+  assert.equal(read(file), BAD, "读不到就一直不落盘");
+  put(file, JSON.stringify({ pin: ["a"], order: ["a", "b"], archived: ["b"] }));
+  manage.pinLast("c");
+  const saved = JSON.parse(read(file));
+  assert.deepEqual(saved.archived, ["b", "gone"], "盘上的归档保留，排队的那次归档补上");
+  assert.deepEqual(saved.pin, ["a", "c"]);
+  assert.deepEqual(saved.order, ["a"], "归档胜出：排队的那次归档把 b 从 order 里也剔掉了");
+});
 
 // 2. workspaces.json ------------------------------------------------------
 check("workspaces：读失败时不回写", () => {
@@ -94,6 +101,31 @@ check("workspaces：读失败时不回写", () => {
   assert.equal(read(file), BAD);
   assert.equal(ws.snapshot().groups.length, 1);
 });
+check("workspaces：文件修好后，下一次写把排队的改动叠在盘上内容之上", () => {
+  const file = put(statePath("workspaces.json"), BAD);
+  const ws = new Workspaces();
+  ws.create("排队的组");
+  assert.equal(read(file), BAD);
+  put(
+    file,
+    JSON.stringify({
+      groups: [{ id: "g1", name: "旧组", key: "F:/old", manual: false }],
+      overrides: {},
+      keys: {},
+      pinned: ["g1"],
+      max: 2,
+    }),
+  );
+  ws.create("第二组");
+  const saved = JSON.parse(read(file));
+  assert.equal(saved.groups.length, 3, "旧组 + 排队的组 + 新组");
+  assert.deepEqual(
+    saved.groups.map((g) => g.name),
+    ["旧组", "排队的组", "第二组"],
+  );
+  assert.deepEqual(saved.pinned, ["g1"], "盘上的固定列表原样保留");
+  assert.equal(saved.max, 2, "盘上的名额原样保留");
+});
 check("workspaces：没有文件（首次运行）照常写", () => {
   fs.rmSync(statePath("workspaces.json"), { force: true });
   new Workspaces().create("客户 A");
@@ -102,10 +134,10 @@ check("workspaces：没有文件（首次运行）照常写", () => {
 });
 
 // 3. bug-notes.json -------------------------------------------------------
-check("notes：读失败时不回写", () => {
+check("notes：读失败时不回写，而且告诉调用方没存上", () => {
   const file = put(notesFile(), BAD);
   assert.deepEqual(listNotes(), []);
-  saveNote({ title: "一条新记录" });
+  assert.throws(() => saveNote({ title: "一条新记录" }), /这次改动没有保存/);
   assert.equal(read(file), BAD);
 });
 check("notes：没有文件（首次运行）照常写", () => {

@@ -95,6 +95,7 @@ export const ja: Dict = {
   "bridge.err.approval_expired": "「{p1}」の承認は、誰も画面を見ていないまま期限切れになりました。そのツール呼び出しは破棄済みです。必要ならもう一度送ってください。",
   "bridge.err.ask_expired": "質問は、誰も画面を見ていないまま期限切れになりました。その質問は破棄済みです。",
   "bridge.err.session_slept": "このセッションの pi プロセスは休止しました。メッセージは残っています。次のメッセージを送ると自動的に起きます。",
+  "bridge.err.state_file_unreadable": "状態ファイル {p1} を読めなかったため、この変更は保存されていません。",
   "bridge.err.session_file_unreadable": "セッションファイルを読めませんでした。表示は前回の内容のままです：{p1}",
   "\r\n[进程已退出，exit {p1}]\r\n": "\r\n[プロセスが終了しました。exit {p1}]\r\n",
   " · {p1} 失败": " · {p1} 件失敗",
