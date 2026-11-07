@@ -71,12 +71,13 @@ export const TABS_MIN = 1;
 export const TABS_MAX = 12;
 
 /**
- * 名额：只认有限数，取整后 clamp 到 1–12；字符串 / null / NaN 之类返回 `null` = 非法。
- * 越界算合法（clamp），不是数字才算非法（协议要能回一句 notice 而不是悄悄改）。
+ * 名额：只认 1–12 的整数；字符串 / null / NaN / 小数 / 越界一律返回 `null` = 非法。
+ * 非法值由调用方回 notice 且**什么都不改**，不在这里悄悄 clamp（#172 R27）。
  */
 function readMax(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  return Math.min(TABS_MAX, Math.max(TABS_MIN, Math.trunc(value)));
+  if (typeof value !== "number" || !Number.isInteger(value)) return null;
+  if (value < TABS_MIN || value > TABS_MAX) return null;
+  return value;
 }
 
 /** 组在界面上的名字：用户起的名字 → 目录名 → 「新工作区」（与左栏 `buildTree()` 的回落同一套）。 */
@@ -330,8 +331,8 @@ export class Workspaces {
    * 标签行的顺序 + 名额（#173）：两个字段各自可缺省，缺省的那个一个字都不动；给了就**一次落盘**。
    *
    * `order` 是全量顺序（含折叠组），不按名额截断 —— 名额只决定画几颗，不影响顺序本身。
-   * 写前洗一遍：去重、剔掉已经不存在的组、缺的组按创建序补到末尾。名额 clamp 到 1–12；
-   * 类型不合法时返回原因且**什么都不改** —— 调用方据此回 notice。旧页面发来的 `pinned` 不参与排序。
+   * 写前洗一遍：去重、剔掉已经不存在的组、缺的组按创建序补到末尾。名额只接受 1–12 的整数；
+   * 非法时返回原因且**什么都不改** —— 调用方据此回 notice。旧页面发来的 `pinned` 不参与排序。
    */
   setTabs(input: { order?: unknown; max?: unknown }): { ok: boolean; reason?: string } {
     let max = this.data.max ?? TABS_DEFAULT;

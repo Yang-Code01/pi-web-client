@@ -219,7 +219,7 @@ const tree = () =>
           disabled: b.disabled,
         })),
         whys: [...m.querySelectorAll(".pm-why")].map((n) => n.textContent?.trim() ?? ""),
-        dropWhy: m.querySelector(".pm-item[data-act='drop'] .pm-why")?.textContent?.trim() ?? null,
+        dropWhy: m.querySelector(".pm-why[data-for='drop']")?.textContent?.trim() ?? null,
       };
     })(),
     newRow: document.querySelector(".ws-new-btn")?.textContent?.trim() ?? null,

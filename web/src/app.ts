@@ -3066,10 +3066,10 @@ export class App {
     if (!pane) return;
     // 重画会把刚按的那颗按钮换掉：按 data-act 把焦点找回去，键盘用户不至于掉回 body。
     const active = document.activeElement;
-    const key = active instanceof HTMLElement && pane.contains(active) ? `${active.dataset.act ?? ""}|${active.dataset.ws ?? ""}` : "";
+    const key = active instanceof HTMLElement && pane.contains(active) ? active.dataset.act ?? "" : "";
     const focusable = new Map<string, HTMLElement>();
     const keep = (node: HTMLButtonElement) => {
-      focusable.set(`${node.dataset.act ?? ""}|${node.dataset.ws ?? ""}`, node);
+      focusable.set(node.dataset.act ?? "", node);
       return node;
     };
     pane.replaceChildren();
@@ -4712,7 +4712,7 @@ export class App {
       sub: info && !info.manual ? info.key : tr("手建的工作区"),
       // #177：已经是第一时就地置灰 + 说明，而不是藏掉这颗（跟删除同一个套路）。
       // #178：旧桥没有 `order`（也不认识 ws.tabs），别给一个点下去会报「未知操作」的入口。
-      frontBlocker: !Array.isArray(this.workspaces.order)
+      frontBlocker: !this.wsOrder()
         ? tr("旧版桥不支持调整顺序")
         : order[0] === group.id
           ? tr("它已经是第一个了")
@@ -4724,9 +4724,15 @@ export class App {
     });
   }
 
+  /** 桥下发的组序；旧桥没有这个字段（空数组也算新桥）。 */
+  private wsOrder(): string[] | null {
+    return Array.isArray(this.workspaces.order) ? this.workspaces.order : null;
+  }
+
   /** #177：页面上那份组序 —— 优先桥下发的 `order`；旧桥没下发时退回树的组序（与标签行同一份兜底）。 */
   private wsGroupOrder(): string[] {
-    if (this.workspaces.order?.length) return this.workspaces.order;
+    const order = this.wsOrder();
+    if (order?.length) return order;
     return buildTree(this.sessions, this.manage, this.workspaces, "").groups.map((group) => group.id);
   }
 
@@ -11337,10 +11343,6 @@ export class App {
   }
 
   /**
-   * With the left column collapsed there is nowhere to click a pinned session. A row of chips under
-   * the topbar keeps them one click away — same order as the list's 置顶 section, newest name first.
-   */
-  /**
    * #97 壳 A 行 1：工作区标签页。横向一条；#121 起只画 N 颗（默认 6，桥端可调 1–12），
    * 剩下的收进槽外那颗 `＋N`。当前工作区永远在圈内（不在就占最后一格），有会话卡在
    * 用户身上时带一颗待处理点。点一下 = 切到那一组：打开组里排最上面的那颗会话（★ 优先，跟左栏
@@ -11361,12 +11363,16 @@ export class App {
     // #175：那颗 ＋ 跟横条同进同出（B/C/D 没有横条，也就不画它）。
     wsTabsAdd.hidden = !tabsAddShown(parts);
     wsTabsRow.hidden = !parts.tabsRow || !tree.groups.length;
-    if (wsTabsRow.hidden) return;
+    if (wsTabsRow.hidden) {
+      // 横条不画时这句提示没有出口，别攒到下一次渲染。
+      this.wsNewNoteId = null;
+      return;
+    }
     const byId = new Map(tree.groups.map((group) => [group.id, group]));
     // #173：标签行与左栏用同一份 `order`（含折叠组），不再按名字或最近活动另排一套。
     // 旧桥没下发 order 时退回树的组序（此时树自己也是按名字排的）。
-    const bridgeOrder = Array.isArray(this.workspaces.order) && this.workspaces.order.length > 0 ? this.workspaces.order : null;
-    const order = (bridgeOrder ?? tree.groups.map((group) => group.id)).filter((id) => byId.has(id));
+    const bridgeOrder = this.wsOrder();
+    const order = (bridgeOrder?.length ? bridgeOrder : tree.groups.map((group) => group.id)).filter((id) => byId.has(id));
     const model = tabModel({ order, max: this.workspaces.max ?? TABS_DEFAULT, current: cur ?? undefined });
     // #175：刚在横条 ＋ 上建的组：`order` 末尾、名额已满时它直接进 ＋N —— 说一声，
     // 否则横条看起来没变，像是没建成（新组仍按 #173 的规则留在 order 末尾）。
@@ -11394,7 +11400,8 @@ export class App {
       }
       // #174：画出来的每一颗都能拖；拖完不误当点击。
       // #178 R34：旧桥没有 `order`，顺序只是页面按名字兜底，拖了也无处落库 —— 不绑拖动。
-      if (bridgeOrder) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id, model);
+      // 过滤态只画命中组：此时拖出来的 order 会缺项、被桥按创建序补到末尾 —— 搜索时不绑拖。
+      if (bridgeOrder?.length && !this.filter) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id, model);
       tab.onclick = () => {
         if (this.tabDragMoved) {
           this.tabDragMoved = false;
@@ -11498,8 +11505,8 @@ export class App {
       }, 0);
       const next = tabReorder(model, id, hit);
       if (next) {
-        const max = this.workspaces.max ?? TABS_DEFAULT;
-        this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", order: next, max }));
+        // 只交顺序：名额有自己的入口，拖一下不该顺带把上一帧的 max 回写。
+        this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", order: next }));
       }
     };
 

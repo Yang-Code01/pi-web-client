@@ -307,7 +307,7 @@ test("#173 非法 order：回原因且状态一个字不变", () => {
   assert.deepEqual(ws.snapshot(), before, "非法值不许改任何东西");
 });
 
-test("#173 空数组是合法 order：组按显示名补到末尾", () => {
+test("#173 空数组是合法 order：组按创建序补到末尾", () => {
   const ws = fresh();
   const b = ws.groupFor("s1", plain2);
   const a = ws.groupFor("s2", plain);
@@ -316,24 +316,22 @@ test("#173 空数组是合法 order：组按显示名补到末尾", () => {
   assert.deepEqual(ws.snapshot().order, [b, a]);
 });
 
-test("#176 名额 clamp 到 1–12 并取整", () => {
+test("#176 名额只接受 1–12 的整数，越界 / 小数 / 非数字都回原因且不改状态", () => {
   const ws = fresh();
-  for (const [given, want] of [
-    [0, 1],
-    [1, 1],
-    [8, 8],
-    [12, 12],
-    [13, 12],
-    [99, 12],
-    [2.7, 2],
-    [-4, 1],
-  ]) {
-    assert.equal(ws.setTabs({ max: given }).ok, true, `max=${given} 该被接受（越界只 clamp）`);
+  const before = ws.snapshot();
+  for (const bad of [0, 13, 99, 2.7, -4]) {
+    const result = ws.setTabs({ max: bad });
+    assert.equal(result.ok, false, `max=${bad} 该被拒`);
+    assert.ok(result.reason, "拒绝要带一句原因（桥据此回 notice）");
+  }
+  assert.deepEqual(ws.snapshot(), before, "非法值不许改任何东西");
+  for (const [given, want] of [[1, 1], [8, 8], [12, 12]]) {
+    assert.equal(ws.setTabs({ max: given }).ok, true, `max=${given} 该被接受`);
     assert.equal(ws.snapshot().max, want, `max=${given} 应落成 ${want}`);
   }
 });
 
-test("#176 旧状态没设过名额按 6；显式设过 3 的保留 3，越界值 clamp 到 1–12", () => {
+test("#176 旧状态没设过名额按 6；显式设过 3 的保留 3，非法值回默认 6", () => {
   const seed = (body) => {
     const dir = path.join(tmp, `state-${++stateSeq}`);
     process.env.PI_WEB_STATE = dir;
@@ -345,8 +343,9 @@ test("#176 旧状态没设过名额按 6；显式设过 3 的保留 3，越界�
   assert.equal(seed(base).snapshot().max, 6, "从没设置过 → 默认 6");
   assert.equal(seed({ ...base, max: 3 }).snapshot().max, 3, "显式设过 3 → 还是 3（不被悄悄改掉）");
   assert.equal(seed({ ...base, max: 8 }).snapshot().max, 8, "范围内原样保留");
-  assert.equal(seed({ ...base, max: 99 }).snapshot().max, 12, "越界读入即 clamp");
-  assert.equal(seed({ ...base, max: 0 }).snapshot().max, 1, "越界读入即 clamp（下界）");
+  assert.equal(seed({ ...base, max: 99 }).snapshot().max, 6, "非法读入回默认 6");
+  assert.equal(seed({ ...base, max: 0 }).snapshot().max, 6, "非法读入回默认 6（下界）");
+  assert.equal(seed({ ...base, max: 2.7 }).snapshot().max, 6, "小数也非法，回默认 6");
 });
 
 test("#173 非法名额：回原因且状态一个字不变", () => {

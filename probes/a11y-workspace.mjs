@@ -256,8 +256,11 @@ for (const layout of ["a", "b", "c", "d"]) {
   }));
   ok(narrow.topChip || narrow.rowChip, `${layout}：800px 看得到当前会话那颗（${narrow.nowName}）`);
   ok(narrow.count1 ?? true, "");
+  const clean =
+    !narrow.rail && !narrow.strip && !narrow.pillRow && narrow.tabsRow === (layout === "a");
+  if (!clean) console.log(`  narrow(${layout})=`, JSON.stringify(narrow));
   ok(
-    !narrow.rail && !narrow.strip && !narrow.pillRow && narrow.tabsRow === (layout === "a"),
+    clean,
     `${layout}：胶囊条/竖列/色点条收起；标签行只在 A 的顶栏里（${narrow.tabsRow ? "有" : "无"}）`,
   );
   ok(!narrow.overflow, `${layout}：不横向溢出`);
@@ -291,7 +294,7 @@ for (const layout of ["a", "b", "c", "d"]) {
   await sleep(100);
   const first = await focused(page);
   ok(
-    first?.act === "where" || first?.act === "new" || Boolean(first?.card) || (layout === "a" && (first?.cls ?? "").includes("ws-tab")),
+    first?.act === "where" || first?.act === "new" || Boolean(first?.card) || (layout === "a" && ["ws-tab", "ws-tabs-add"].some((c) => (first?.cls ?? "").split(/\s+/).includes(c))),
     `${layout}：第一个 Tab 停靠点是工作区入口/会话入口（${first?.act ?? first?.cls}）`,
   );
   await page.context().close();

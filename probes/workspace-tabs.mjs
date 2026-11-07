@@ -105,7 +105,7 @@ const cast = () => {
     if (client.readyState === 1) client.send(JSON.stringify({ type: "workspaces", workspace: workspace() }));
   }
 };
-/** 桥收到过的 manage 动作（固定要能核对「发了几条 / 该不发的时候发了没有」）。 */
+/** 桥收到过的 manage 动作（顺序要能核对「发了几条 / 该不发的时候发了没有」）。 */
 const CALLS = [];
 const MANAGE = { pin: [], order: SESSIONS.map((s) => s.id), archived: [] };
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
@@ -486,7 +486,7 @@ ok(s.count === 3 && s.moreText === "＋6", `拖完仍是 3 颗 + ＋N（${s.coun
 ok(tabsCalls() === calls0 + 1, `松手只发一条 ws.tabs（${tabsCalls() - calls0} 条）`);
 const ORDER1 = ["f:/proj-03", "f:/proj-01", "f:/proj-02", ...ORDER0.slice(3)];
 ok(JSON.stringify(lastTabs()?.order) === JSON.stringify(ORDER1), `写回的是整份 order（含折叠组，${lastTabs()?.order?.length} 个）`);
-ok(lastTabs()?.max === 3, `同一句里带上名额（max ${lastTabs()?.max}）`);
+ok(lastTabs()?.max === undefined, `拖拽只交顺序、不带上名额（max ${lastTabs()?.max}）`);
 ok(s.onWs === "f:/proj-01", `拖拽的尾巴没误触发切组（当前 ${s.onWs}）`);
 // 可聚焦元素没变多：标签仍是原来那几颗 button，另一颗是 ＋N，再加上 #175 的 ＋。
 const focus = await page.evaluate(() => ({

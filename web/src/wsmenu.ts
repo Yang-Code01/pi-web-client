@@ -84,8 +84,16 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
 
   node.append(rename, front, drop);
   // 每个做不了的选择都盖一行原因，顺序跟着菜单项（移到最前在前、删除在后）。
-  if (opts.frontBlocker) node.append(el("div", "pm-why", opts.frontBlocker));
-  if (opts.dropBlocker) node.append(el("div", "pm-why", opts.dropBlocker));
+  if (opts.frontBlocker) {
+    const why = el("div", "pm-why", opts.frontBlocker);
+    why.dataset.for = "front";
+    node.append(why);
+  }
+  if (opts.dropBlocker) {
+    const why = el("div", "pm-why", opts.dropBlocker);
+    why.dataset.for = "drop";
+    node.append(why);
+  }
 
   const onDoc = (ev: Event): void => {
     const t = ev.target as Node | null;
