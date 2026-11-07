@@ -202,6 +202,9 @@ try {
       lastExt.widgets.some((w) => w.key === "foot" && w.placement === "belowEditor"),
     "widgets keep lines and placement",
   );
+  // 哨兵载荷不进页面：pi-subagents 那一行 `PI_SUBAGENT_ASYNC_JSON:{…}` 是给客户端解析的，
+  // 原样铺出来只是一坨被截断的 JSON；「子代理在跑」另有 D170 的 .bg-bar。
+  check(!(lastExt?.widgets ?? []).some((w) => w.key === "subagent-async" || w.lines.join("").includes("PI_SUBAGENT_ASYNC_JSON")), "protocol-payload widget is dropped");
   check(lastExt?.title === "pi — fake title", "title");
   const editor = sliceC.find((m) => m.type === "editor.set" && m.sessionId === sid);
   check(editor?.text === "prefilled by extension", "set_editor_text → editor.set");

@@ -174,6 +174,9 @@ async function turn(text) {
     ui("setStatus", { statusKey: "gone", statusText: undefined });
     ui("setWidget", { widgetKey: "todo", widgetLines: ["TODO", "- a", "- b"], widgetPlacement: "aboveEditor" });
     ui("setWidget", { widgetKey: "foot", widgetLines: ["below line"], widgetPlacement: "belowEditor" });
+    // pi-subagents 在 RPC 模式下把状态快照当成 widget 推过来（一行哨兵 JSON）：桥应当认出来丢掉，
+    // 不然页面上就是输入框上方一坨被 400 字截断的原文（真事，用户截图报的）。
+    ui("setWidget", { widgetKey: "subagent-async", widgetLines: ['PI_SUBAGENT_ASYNC_JSON:{"kind":"pi-subagents.async-status-snapshot","version":1}'], widgetPlacement: "aboveEditor" });
     ui("setTitle", { title: "pi — fake title" });
     ui("set_editor_text", { text: "prefilled by extension" });
   }

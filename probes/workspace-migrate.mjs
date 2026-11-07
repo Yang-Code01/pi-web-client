@@ -8,9 +8,10 @@
  *   3. 归档会话不计入预览，但组内卡片数仍按左栏算；「拖过的」只数桥记了 override 的那些；
  *   4. 点「就这样开始」→ 标记落进 `pi.prefs.wsIntroSeen`（不另开 storage key），刷新不再弹；
  *   5. 点「以后再说」→ 什么都没写，刷新仍然弹；
- *   6. 同一张页面里只弹一次（关掉之后左栏交互不会把它重新推上来）。
+ *   6. 同一张页面里只弹一次（关掉之后左栏交互不会把它重新推上来）；
+ *   7. 旧桥兼容（#178）：快照没有 `order` → 标签按显示名字母序，且不绑拖动（拖了不发 ws.tabs）。
  *
- * 桩桥照真桥：`opened` 只回快照（D146），页面也不再发它。
+ * 桩桥照真桥：`opened` 只回快照（D146），页面也不再发它；`WORKSPACE` 故意不带 `order`，就是旧桥的形状。
  *
  * Run: npm run build:web && node probes/workspace-migrate.mjs
  */
@@ -92,6 +93,8 @@ const ARCH = state("s-arch", "归档里的旧会话", "F:/demo/blog", BLOG.id);
 SESSIONS.push(ARCH);
 
 const MANAGE = { pin: ["s-tools"], order: ["s-main"], archived: [ARCH.id] };
+/** 页面发来的 manage 指令（#178 旧桥兼容：拖标签不该发 ws.tabs）。 */
+const MSGS = [];
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "stub", pi: "stub", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "stub" };
 
@@ -127,6 +130,7 @@ server.on("upgrade", (req, socket, head) => {
       } catch {
         return;
       }
+      if (msg.type === "manage") MSGS.push(msg);
       const s = SESSIONS.find((x) => x.id === msg.sessionId);
       if (msg.type === "subscribe" && s) {
         ws.send(JSON.stringify({ type: "session", sessionId: s.id, state: s, items: [], approvals: [], asks: [], budget: null }));
@@ -260,6 +264,36 @@ await passGate(second.page);
 await sleep(1000);
 s = await snapshot(second.page);
 ok(Boolean(s.intro), "取消后刷新仍然弹预览");
+
+// 5) #178 旧桥兼容：快照没有 order → 标签按显示名字母序，且不绑拖动
+await first.page.reload({ waitUntil: "networkidle" });
+await passGate(first.page);
+await sleep(700);
+const legacy = await first.page.evaluate(() => ({
+  tree: [...document.querySelectorAll(".ws-sec")].map((n) => n.querySelector(".ws-head .label")?.textContent ?? ""),
+  tabs: [...document.querySelectorAll(".ws-tab")].map((n) => n.querySelector(".ws-tab-name")?.textContent ?? ""),
+}));
+const ALPHA = ["blog", "pi-web-client", "tools"];
+ok(JSON.stringify(legacy.tree) === JSON.stringify(ALPHA), `旧桥：左栏按显示名字母序（${legacy.tree.join(" / ")}）`);
+ok(JSON.stringify(legacy.tabs) === JSON.stringify(ALPHA), `旧桥：标签行也按显示名字母序（${legacy.tabs.join(" / ")}）`);
+const beforeDrag = MSGS.filter((m) => m.action === "ws.tabs").length;
+const boxA = await first.page.locator(".ws-tab").first().boundingBox();
+const boxB = await first.page.locator(".ws-tab").last().boundingBox();
+if (boxA && boxB) {
+  const y = Math.round(boxA.y + boxA.height / 2);
+  await first.page.mouse.move(Math.round(boxA.x + boxA.width / 2), y);
+  await first.page.mouse.down();
+  await first.page.mouse.move(Math.round(boxA.x + boxA.width / 2) + 12, y, { steps: 4 });
+  const line = await first.page.locator(".ws-tab-line").count();
+  await first.page.mouse.move(Math.round(boxB.x + boxB.width - 8), y, { steps: 8 });
+  await first.page.mouse.up();
+  await sleep(400);
+  ok(line === 0, "旧桥：按住标签横拖不画落点竖线（没绑拖动）");
+}
+ok(
+  MSGS.filter((m) => m.action === "ws.tabs").length === beforeDrag,
+  `旧桥：拖标签没发 ws.tabs（${MSGS.filter((m) => m.action === "ws.tabs").length - beforeDrag} 条）`,
+);
 
 await second.context.close();
 await first.context.close();

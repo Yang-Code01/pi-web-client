@@ -163,7 +163,7 @@ try {
   assert(label.includes("2 个待处理"), `header counts the two blocked sessions (got "${label}")`);
   log("header:", label);
 
-  const chips = strip.locator(".pin-chip:not(.pin-expand):not(.pin-new)");
+  const chips = strip.locator(".pin-chip:not(.pin-new)");
   await until(async () => (await chips.count()) === 6, 5000, "six chips");
   const rows = await chips.evaluateAll((nodes) =>
     nodes.map((n) => ({

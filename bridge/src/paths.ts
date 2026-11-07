@@ -132,6 +132,22 @@ export function resetScratchDir(): void {
   ensureDir(scratchCwd());
 }
 
+/**
+ * 读状态文件，顺便说清「到底读到了没有」。`readJson` 把「文件不存在」和「读失败 / 解析失败」
+ * 揉成同一个 fallback：对只读的调用方够用，但凡是**会回写**的存储都不能这么用 —— 一次瞬时
+ * 读失败（EBUSY、EACCES、写到一半被截断）会让它拿空状态覆盖盘上的真数据，且不可逆。
+ *
+ * 文件不存在 = 首次运行，不是错误（`ok: true`）；其它情况 `ok: false` 并带上原因。
+ */
+export function readJsonChecked<T>(file: string, fallback: T): { ok: boolean; value: T; error?: string } {
+  try {
+    return { ok: true, value: JSON.parse(fs.readFileSync(file, "utf8")) as T };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { ok: true, value: fallback };
+    return { ok: false, value: fallback, error: (err as Error)?.message ?? String(err) };
+  }
+}
+
 export function readJson<T>(file: string, fallback: T): T {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8")) as T;

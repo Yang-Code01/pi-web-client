@@ -3,8 +3,8 @@
  *
  * 桩桥照 `bridge/src/workspaces.ts` 的规矩回话（rename 存 trim+slice(0,80)、空名=回落目录名；
  * create 给一个新 id；drop 只肯删空的手动组；move 空 wsId = 删 override）。断言：
- *   1. 组头有 ⋯，菜单三行（重命名 / 固定到第一行 / 删除工作区）；#122 的固定项在这里只占位，
- *      固定本身的探针在 `probes/workspace-tabs.mjs`；
+ *   1. 组头有 ⋯，菜单三行（重命名 / 移到最前 / 删除工作区）；#177 的「移到最前」在这里只占位，
+ *      标签行本身的探针在 `probes/workspace-tabs.mjs`；
  *   2. 派生组 + 有会话：删除项置灰，下面一行写明「还有 N 个会话」，点它不发 ws.drop；
  *   3. 改名：输入框进组头，Enter 提交的是洗过的名字（折叠空白），组头立刻变；
  *   4. 清空名字：发的是空串，组头回落到目录名；
@@ -218,7 +218,8 @@ const tree = () =>
           text: b.querySelector(".pm-text")?.textContent?.trim() ?? b.textContent?.trim() ?? "",
           disabled: b.disabled,
         })),
-        why: m.querySelector(".pm-why")?.textContent?.trim() ?? null,
+        whys: [...m.querySelectorAll(".pm-why")].map((n) => n.textContent?.trim() ?? ""),
+        dropWhy: m.querySelector(".pm-why[data-for='drop']")?.textContent?.trim() ?? null,
       };
     })(),
     newRow: document.querySelector(".ws-new-btn")?.textContent?.trim() ?? null,
@@ -247,10 +248,10 @@ await openMore(LIB.id);
 await sleep(200);
 t = await tree();
 ok(Boolean(t.menu), "点 ⋯ 弹出菜单");
-ok(t.menu?.items.map((i) => i.text).join(" / ") === "重命名 / 固定到第一行 / 删除工作区", `菜单三行：${t.menu?.items.map((i) => i.text).join(" / ")}`);
+ok(t.menu?.items.map((i) => i.text).join(" / ") === "重命名 / 移到最前 / 删除工作区", `菜单三行：${t.menu?.items.map((i) => i.text).join(" / ")}`);
 const del = t.menu?.items.find((i) => i.act === "drop");
 ok(del?.disabled === true, "派生组的「删除工作区」是灰的");
-ok(/跟着目录走/.test(t.menu?.why ?? ""), `原因写明：${t.menu?.why}`);
+ok(t.menu?.whys.some((w) => /跟着目录走/.test(w)) === true, `原因写明：${t.menu?.whys.join(" / ")}`);
 await page.locator(".ws-menu .pm-item[data-act='drop']").click({ force: true }).catch(() => {});
 await sleep(200);
 ok(callOf("ws.drop") === null, "点灰掉的删除项：没有发 ws.drop");
@@ -328,7 +329,7 @@ await openMore(MANUAL.id);
 await sleep(200);
 t = await tree();
 ok(t.menu?.items.find((i) => i.act === "drop")?.disabled === true, "有会话的手动组：删除项也灰了");
-ok(/还有 1 个会话/.test(t.menu?.why ?? ""), `原因带上条数：${t.menu?.why}`);
+ok(t.menu?.whys.some((w) => /还有 1 个会话/.test(w)) === true, `原因带上条数：${t.menu?.whys.join(" / ")}`);
 await page.keyboard.press("Escape");
 await sleep(150);
 
@@ -345,7 +346,7 @@ await openMore(MANUAL.id);
 await sleep(200);
 t = await tree();
 ok(t.menu?.items.find((i) => i.act === "drop")?.disabled === false, "空的手动组可以删");
-ok(t.menu?.why == null, "能删的时候不显示原因行");
+ok(t.menu?.dropWhy === null, "能删的时候删除项不显示原因行");
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-drop.png`), clip: { x: 0, y: 0, width: 380, height: 820 } });
 await page.locator(".ws-menu .pm-item[data-act='drop']").click();
 await sleep(350);
