@@ -8,11 +8,10 @@
  *  - `abort` leaves the queue alone: queued follow-ups run once the aborted run has settled;
  *  - `agent_end` is not the end: a retry continues the run until `agent_settled`.
  *
- * Scenarios are picked by the prompt text: "SLOW…" streams until aborted, "RETRY…" fails, retries
-      // `pid`: several sessions share this log, so a test can tell whose abort this was (#81).
-      note({ t: "abort", pid: process.pid, queued: steering.length + followUp.length });
-      // The turn cannot settle while it waits on a dialog, so abort answers it (pi does this too).
-      pendingConfirm?.("aborted");
+ * Scenarios are picked by the prompt text: "SLOW…" streams until aborted, "STAY…" keeps the run
+ * open for ~800 ms (so steer messages can land in the same run, #198), "HANDLED…" is consumed
+ * without starting a run (`disposition: "handled"`), "RETRY…" fails and retries, and anything else
+ * echoes. Every run also leaves a `run-start` line, so a test can count runs rather than guess.
  *
  * Env: FAKE_PI_LOG (jsonl of what the stub saw), FAKE_COMPACT_MS (manual compaction length).
  */
@@ -95,7 +94,20 @@ const assistant = (text, extra = {}) => ({
 });
 
 async function turn(text) {
-  note({ t: "turn", text });
+  note({ t: "turn", pid: process.pid, text });
+  if (text.startsWith("STAY")) {
+    // #198：一轮要撑得够久，后面几条「插话」才有机会落进**同一轮**；否则 echo 快到来不及排队。
+    out({ type: "message_start", message: assistant("") });
+    let streamed = "";
+    for (let i = 0; i < 8; i++) {
+      streamed += "…";
+      out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "…" } });
+      await sleep(100);
+    }
+    out({ type: "message_end", message: assistant(streamed) });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   if (text.startsWith("SLOW")) {
     out({ type: "message_start", message: assistant("") });
     let streamed = "";
@@ -295,6 +307,8 @@ Command exited with code 1` });
 async function run(first) {
   running = true;
   abortRequested = false;
+  // 一轮一行（`turn` 只说明哪句话被处理，`run-start` 才说明它们是不是同一轮 —— #198）。
+  note({ t: "run-start", pid: process.pid, text: first });
   out({ type: "agent_start" });
   await turn(first);
   // Queued messages keep the same run going, unless it was aborted.
@@ -380,17 +394,23 @@ async function handle(cmd) {
         note({ t: "prompt-rejected", text, why: "compacting" });
         return fail(id, type, "Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.");
       }
+      // #198：RPC 的 `disposition: "handled"` —— pi 把这句话就地处理掉、一轮都没起（斜杠命令这类）。
+      // 桥据此知道「不会有 agent_start 来了」，后面那条不必干等 10 秒。
+      if (text.startsWith("HANDLED")) {
+        note({ t: "prompt", pid: process.pid, text, behavior: cmd.streamingBehavior ?? null });
+        return ok(id, type, { disposition: "handled" });
+      }
       if (running) {
         if (!cmd.streamingBehavior) {
           note({ t: "prompt-rejected", text, why: "busy" });
           return fail(id, type, "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.");
         }
         (cmd.streamingBehavior === "steer" ? steering : followUp).push(text);
-        note({ t: "prompt", text, behavior: cmd.streamingBehavior });
+        note({ t: "prompt", pid: process.pid, text, behavior: cmd.streamingBehavior });
         queueUpdate();
         return ok(id, type, { disposition: "queued" });
       }
-      note({ t: "prompt", text, behavior: cmd.streamingBehavior ?? null });
+      note({ t: "prompt", pid: process.pid, text, behavior: cmd.streamingBehavior ?? null });
       ok(id, type, { disposition: "started" });
       void run(text);
       return;
