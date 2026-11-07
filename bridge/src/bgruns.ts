@@ -10,10 +10,19 @@
  * （`[acp_delegate completed] … (runId `…`)`、`[acp_delegate FAILED ⚠️] …`），它既可能作为
  * steering 排进队列，也可能直接把空闲会话唤醒 —— 两头都从 `noteText()` 进来。
  *
- * 为什么不读盘（D133 那套 `.activity` / `status.json`）：这一版只要「还在不在跑、跑了多久」，
- * 卡片上的步数、最后一行、看过程都还没做。等那套搬过来时，`BgRun` 往外多带字段就行，
- * 判定「结束」仍以这里为准（它比 stat 更早、更省）。
+ * 为什么不拿盘上的东西判定成败：`AgentRun` 的 `details.status` 永远停在 `running`，`.activity`
+ * 的 mtime 也区分不了「写完最后一行」与「卡住」，只有 runner 自己注入回来的那条通知算数。
+ * 读盘只用于 D169 的看详情（`readLog()`），不参与状态机。
  */
+
+import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve, sep } from "node:path";
+
+/** runner 的痕迹目录（acp_delegate 把 `<runId>.activity` / `.out` / `.session.jsonl` 都写在这里）。 */
+const ACP_DIR = join(tmpdir(), "acp-delegate");
+const TASK_LINE = /^Task:[ 	]*(.+)$/m;
+const LIVE_LOG = /Live activity is streaming to `([^`]+)`/;
 
 /** 一个还在跑（或刚跑完）的后台任务。 */
 export interface BgRun {
@@ -21,9 +30,15 @@ export interface BgRun {
   /** 谁起的是两种实现：痕迹和完成通知都不一样。 */
   source: "acp" | "subagents";
   agent: string;
+  /** 派出去的原话（`details.task`；没有就从结果文本的 `Task:` 行取）。点开看详情时显示这一句。 */
+  task: string;
   startedAt: number;
   state: "running" | "done" | "failed";
   endedAt?: number;
+  /** runner 自己的活动记录。只有落在 `%TEMP%cp-delegate\` 里的才记（也只读那里，见 `readLog`）。 */
+  logPath?: string;
+  /** 跑完的最终答复（同目录的 `.out`）。 */
+  outPath?: string;
 }
 
 /** 会话快照 / `SessionState.bg` 里那一小块：前端只画「N 个 · 谁 · 从什么时候」。 */
@@ -33,8 +48,7 @@ export interface BgView {
   since: number;
 }
 
-/**
- * 一个从没报过完成、也没再被 `details` 提过的 run 判死的期限。给得很宽：真跑几小时的任务
+/** 一个从没报过完成、也没再被 `details` 提过的 run 判死的期限。给得很宽：真跑几小时的任务
  * 不该被界面判失败，而 kill 掉的 run 迟早会被会话关闭或桥重启带走。
  */
 const SILENT_DEAD_MS = 6 * 60 * 60 * 1000;
@@ -52,6 +66,21 @@ function firstRunId(text: string): string | null {
   RUN_ID.lastIndex = 0;
   const m = RUN_ID.exec(text);
   return m ? m[1] : null;
+}
+
+/**
+ * 文件尾（最多 `limit` 字）。只允许 `ACP_DIR` 底下 —— 路径是从工具结果里拾来的，读前再卡一次。
+ */
+function tail(file: string, limit: number): string | undefined {
+  const abs = resolve(file);
+  if (!abs.startsWith(ACP_DIR + sep)) return undefined;
+  try {
+    const text = readFileSync(abs, "utf8");
+    return text.length > limit ? `…\n${text.slice(-limit)}` : text;
+  } catch {
+    // 还没写出来 / 已经被删：详情里少一段，不当错误报。
+    return undefined;
+  }
 }
 
 /**
@@ -81,14 +110,16 @@ export class BgRuns {
     // 不该凭空造出一个任务。三种写法任一成立即为开始（见文件头的两种 runner）。
     const looksStart = d.kind === "delegate" || typeof d.asyncDir === "string" || /Running in the background/i.test(text);
     if (!looksStart) return;
+    const source: "acp" | "subagents" = d.kind === "delegate" || tool === "acp_delegate" ? "acp" : "subagents";
     const agent = typeof d.agent === "string" ? d.agent : (AGENT.exec(text)?.[1] ?? AGENT.exec(text)?.[2] ?? "");
-    this.runs.set(id, {
-      id,
-      source: d.kind === "delegate" || tool === "acp_delegate" ? "acp" : "subagents",
-      agent: agent.trim(),
-      startedAt: Date.now(),
-      state: "running",
-    });
+    const task = typeof d.task === "string" ? d.task : (TASK_LINE.exec(text)?.[1] ?? "");
+    // 痕迹目录只认 acp_delegate 自己那个：路径要么是它，要么是它写进结果的同一路径（校验见 `readLog`）。
+    const live = LIVE_LOG.exec(text)?.[1];
+    const logPath = live ?? (source === "acp" ? join(ACP_DIR, `${id}.activity`) : undefined);
+    const run: BgRun = { id, source, agent: agent.trim(), task: task.trim(), startedAt: Date.now(), state: "running" };
+    if (logPath) run.logPath = logPath;
+    if (source === "acp") run.outPath = join(ACP_DIR, `${id}.out`);
+    this.runs.set(id, run);
     this.arm();
     this.onChange();
   }
@@ -114,6 +145,29 @@ export class BgRuns {
   /** 还在跑的（判死的已经不在表里）。 */
   active(): BgRun[] {
     return [...this.runs.values()].filter((r) => r.state === "running");
+  }
+
+  /** 全部（含刚跑完的），给「看详情」的弹层用：按开始时间从早到晚。 */
+  list(): BgRun[] {
+    return [...this.runs.values()].sort((a, b) => a.startedAt - b.startedAt);
+  }
+
+  get(id: string): BgRun | undefined {
+    return this.runs.get(id);
+  }
+
+  /**
+   * 一个 run 的痕迹：活动记录尾 + 跑完的最终答复。只读 `%TEMP%\acp-delegate\` 里的文件 ——
+   * 路径是从 pi 的工具结果里拾来的（那也是一段可能被写邪的文本），所以读前再校验一次落点，
+   * 不让一次注入就变成任意文件读取。文件还没写出来、被删了、超过上限，都只是少一段内容。
+   */
+  readLog(id: string, limit = 8000): { run?: BgRun; log?: string; out?: string } {
+    const run = this.runs.get(id);
+    if (!run) return {};
+    const view: { run?: BgRun; log?: string; out?: string } = { run };
+    if (run.logPath) view.log = tail(run.logPath, limit);
+    if (run.outPath) view.out = tail(run.outPath, limit);
+    return view;
   }
 
   view(): BgView | undefined {

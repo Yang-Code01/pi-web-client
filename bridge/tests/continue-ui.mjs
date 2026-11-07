@@ -17,6 +17,7 @@
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
@@ -256,6 +257,32 @@ try {
   const badges = await page.locator(".badge").allInnerTexts().catch(() => []);
   check("左栏那枚是「后台」而不是「完成」", badges.includes("后台"), JSON.stringify(badges.slice(0, 8)));
   await shot("bg", await composerClip());
+
+  // -- F. 点开看详情（D169）：概览 + 活动记录尾 ---------------------------------
+  // 假 pi 不会真的写活动记录，这里替 runner 把那份文件放到桥会去读的地方（`%TEMP%cp-delegate`）。
+  const acpDir = path.join(os.tmpdir(), "acp-delegate");
+  fs.mkdirSync(acpDir, { recursive: true });
+  const actFile = path.join(acpDir, "del_fake.activity");
+  fs.writeFileSync(actFile, "[tool] bash rg -n continueState web/src\n[tool] read bridge/src/sessions.ts\n");
+  await bar.click();
+  const sheet = page.locator(".sheet.bg-sheet");
+  await sheet.waitFor({ timeout: 5000 }).catch(() => {});
+  check("点横幅能开详情", (await sheet.count()) === 1);
+  check("标题是「后台子代理」", /后台子代理/.test(await page.locator(".sheet.bg-sheet .sheet-title").innerText().catch(() => "")));
+  const cardText = await page.locator(".bg-run").innerText().catch(() => "");
+  check("详情里写着是谁", /researcher/.test(cardText), JSON.stringify(cardText.slice(0, 120)));
+  check("详情里写着派了什么活", /look at the files/.test(cardText), JSON.stringify(cardText.slice(0, 120)));
+  check("详情里带着 runId", /del_fake/.test(cardText));
+  for (let i = 0; i < 40; i++) {
+    if (/continueState/.test(await page.locator(".bg-run-log").innerText().catch(() => ""))) break;
+    await sleep(100);
+  }
+  const logText = await page.locator(".bg-run-log").innerText().catch(() => "");
+  check("过程里能看到它在跑什么", /continueState/.test(logText), JSON.stringify(logText.slice(0, 120)));
+  await shot("bg-sheet", { x: 0, y: 0, width: 900, height: 620 });
+  fs.rmSync(actFile, { force: true });
+  await page.locator(".sheet.bg-sheet .sheet-head button").click();
+  check("关掉之后详情不在了", (await page.locator(".sheet.bg-sheet").count()) === 0);
 
   await turn("BGDONE now");
   for (let i = 0; i < 100; i++) {

@@ -77,6 +77,27 @@ interface SessionBadge {
  * D162: 「完成」也显示在**当前打开的会话**上 —— 打开只是看，不再把完成抹掉。否则用户点开确认
  * 一眼，卡片就从「完成」退回时间，再也没法从列表判断这一轮到底结束了没有。
  */
+/** D169 详情的线上形状（桥 `bg.list` 的 `runs[]`）。 */
+interface BgRunDto {
+  id: string;
+  agent: string;
+  task: string;
+  startedAt: number;
+  state: "running" | "done" | "failed";
+  endedAt?: number;
+  logPath?: string;
+  outPath?: string;
+}
+
+/** 详情里的一屏：一卡片 + 它三块会变的字。 */
+interface BgRunNode {
+  root: HTMLElement;
+  state: HTMLElement;
+  log: HTMLElement;
+  out: HTMLElement;
+  labOut: HTMLElement;
+}
+
 function sessionBadge(s: SessionState): SessionBadge | null {
   if (s.asks && s.asks > 0) {
     return {
@@ -198,6 +219,9 @@ export class App {
   private continueBtn: HTMLButtonElement | null = null;
   /** D169: 输入框上方那条「子代理运行中」。`syncBgBar()` 造它，重画后要重新挂。 */
   private bgBar: HTMLElement | null = null;
+  /** D169 详情弹层：正在看的那一屏，和它 1.5 秒一次的轮询。关掉就 null。 */
+  private bgSheet: { sessionId: string; body: HTMLElement; runs: Map<string, BgRunNode> } | null = null;
+  private bgTimer: number | null = null;
   /** 上一次点「继续」的会话与时刻（D159）：`pi.status` 回来之前按钮还亮着，连点会排两条。 */
   private continueAt: { id: string; at: number } = { id: "", at: 0 };
   /** Skill palette state (the popover above the composer). */
@@ -215,7 +239,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   /** 新建文件夹 / 新建文件共用一个等待表：两条结果的形状一样（`{ path }` / `{ error }`，D167）。 */
@@ -1393,6 +1417,14 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.chat.bashDelta(String(msg.id ?? ""), String(msg.text ?? ""));
         break;
+      case "bg.list":
+        if (!this.bgSheet || msg.sessionId !== this.bgSheet.sessionId) break;
+        this.paintBgSheet(Array.isArray(msg.runs) ? (msg.runs as BgRunDto[]) : []);
+        break;
+      case "bg.log":
+        if (msg.sessionId !== this.bgSheet?.sessionId) break;
+        this.fillBgRun(String(msg.runId ?? ""), msg.log, msg.out);
+        break;
       case "queue":
         if (msg.sessionId !== this.currentId) break;
         this.queue = { steering: Array.isArray(msg.steering) ? msg.steering.map(String) : [], followUp: Array.isArray(msg.followUp) ? msg.followUp.map(String) : [] };
@@ -2124,6 +2156,33 @@ export class App {
    * 刚 `openSession`、快照还没回来时本地队列是空的（`pendingFresh` 为 false），此时退回列表里
    * 那份 —— 否则切到一个「正等着你」的会话，徽标会先闪没一拍。
    */
+  /**
+   * 徽标唯一的一颗元素。D169：「后台」那枚能点开详情（其它徽标还是纯提示），
+   * 点它不能顺带把卡片/胶囊自己的「打开这个会话」也触发，所以一律 stopPropagation。
+   */
+  private badgeChip(s: SessionState): HTMLElement | null {
+    const badge = this.badgeOf(s);
+    if (!badge) return null;
+    const chip = el("span", `badge ${badge.cls}`, badge.text);
+    if (badge.title) chip.title = badge.title;
+    if (badge.kind !== "bg") return chip;
+    chip.classList.add("clickable");
+    chip.setAttribute("role", "button");
+    chip.tabIndex = 0;
+    const open = (ev: Event) => {
+      ev.stopPropagation();
+      this.closeWsPop();
+      this.openBgSheet(s.id);
+    };
+    chip.onclick = open;
+    chip.onkeydown = (ev) => {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault();
+      open(ev);
+    };
+    return chip;
+  }
+
   private badgeOf(s: SessionState): SessionBadge | null {
     const shown = this.pendingFresh ? badgeSession(s, this.currentId, this.localCounts()) : s;
     return sessionBadge(shown);
@@ -3293,6 +3352,10 @@ export class App {
     this.mgrRefresh = null;
     this.imageSheetPaint = null;
     this.wsPane = null;
+    // D169: 详情弹层关掉就停轮询，别让一个看不见的弹层一直读盘。
+    if (this.bgTimer !== null) window.clearInterval(this.bgTimer);
+    this.bgTimer = null;
+    this.bgSheet = null;
   }
 
   /** The model sheet's 会话 section: folded unless asked for (/session). */
@@ -5009,12 +5072,8 @@ export class App {
     const tail = el("span", "meta-tail");
     if (bottomActs.childElementCount) tail.append(bottomActs);
     // Bottom-right corner: the one thing worth interrupting for, worst first.
-    const badge = this.badgeOf(s);
-    if (badge) {
-      const chipEl = el("span", `badge ${badge.cls}`, badge.text);
-      if (badge.title) chipEl.title = badge.title;
-      tail.append(chipEl);
-    }
+    const chipEl = this.badgeChip(s);
+    if (chipEl) tail.append(chipEl);
     meta.append(tail);
     card.append(meta);
     // D136 的记号：跑着的会话在卡底留一把刻度尺，攒的格子就是时长。
@@ -9991,7 +10050,16 @@ export class App {
       const bar = el("div", "bg-bar");
       // 时间贴着文字走，不推到最右边：`总结本轮错误` 那颗浮动贴在输入框右上，推过去会被它压住。
       bar.append(el("span", "bg-dot"), el("span", "bg-text"), el("span", "bg-sep", "·"), el("span", "bg-elapsed"));
-      bar.title = tr("pi 会在它回来时自己接着做；这时点「继续」等于插队多推一轮。");
+      bar.title = tr("点开看它在干什么；pi 会在它回来时自己接着做，这时点「继续」等于插队多推一轮。");
+      // D169：整条都能点开详情。用 role=button 而不是 <button>：里面已经有文字与计时，语义上是一个入口。
+      bar.setAttribute("role", "button");
+      bar.tabIndex = 0;
+      bar.onclick = () => this.openBgSheet();
+      bar.onkeydown = (ev) => {
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        ev.preventDefault();
+        this.openBgSheet();
+      };
       const row = this.els.composerHost.querySelector(".row");
       this.els.composerHost.insertBefore(bar, row);
       this.bgBar = bar;
@@ -10011,6 +10079,97 @@ export class App {
       since.dataset.bgSince = String(live.since);
       since.textContent = bgElapsedText(live.since);
     }
+  }
+
+  /**
+   * D169 详情：这条提示条背后到底在跑什么。概览（agent / 任务 / 状态 / 用时）+ 过程（runner 自己
+   * 写的活动记录尾巴，1.5 秒一刷）+ 跑完之后的最终输出。桥只读 `%TEMP%cp-delegate\` 里的痕迹，
+   * 读不到（还没写、已被删、公网只读）就少一段，不当错误报。
+   */
+  private openBgSheet(sessionId?: string): void {
+    const sid = sessionId ?? this.currentId;
+    if (!sid) return;
+    this.closeSheet();
+    this.sheetKind = "bg";
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet bg-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("后台子代理")));
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const body = el("div", "bg-sheet-body");
+    sheet.append(head, body);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    this.bgSheet = { sessionId: sid, body, runs: new Map() };
+    const tick = () => {
+      if (!this.bgSheet || this.bgSheet.sessionId !== sid) return;
+      this.socket.send({ type: "bg.list", sessionId: sid });
+    };
+    tick();
+    this.bgTimer = window.setInterval(tick, 1500);
+  }
+
+  /** `bg.list` 回来：按 runId 建/收卡片，再各自要一次日志尾（内容没变就不动 DOM）。 */
+  private paintBgSheet(runs: BgRunDto[]): void {
+    const sheet = this.bgSheet;
+    if (!sheet) return;
+    const keep = new Set(runs.map((r) => r.id));
+    for (const [id, node] of sheet.runs) {
+      if (keep.has(id)) continue;
+      node.root.remove();
+      sheet.runs.delete(id);
+    }
+    sheet.body.querySelector(".bg-empty")?.remove();
+    if (!runs.length) {
+      sheet.body.append(el("div", "bg-empty", tr("这个会话没有在跑的后台子代理。")));
+      return;
+    }
+    for (const r of runs) {
+      let node = sheet.runs.get(r.id);
+      if (!node) {
+        const root = el("div", "bg-run");
+        const line = el("div", "bg-run-head");
+        line.append(el("span", "bg-run-agent", r.agent || tr("子代理")), el("span", "bg-run-state"));
+        const task = el("div", "bg-run-task", r.task || tr("（没说任务）"));
+        const id = el("div", "bg-run-id", r.id);
+        const labLog = el("div", "bg-run-lab", tr("过程"));
+        const logEl = el("pre", "bg-run-log");
+        const labOut = el("div", "bg-run-lab", tr("最终输出"));
+        labOut.hidden = true;
+        const outEl = el("pre", "bg-run-out");
+        outEl.hidden = true;
+        root.append(line, task, id, labLog, logEl, labOut, outEl);
+        sheet.body.append(root);
+        node = { root, state: line.lastElementChild as HTMLElement, log: logEl, out: outEl, labOut };
+        sheet.runs.set(r.id, node);
+      }
+      const state = r.state === "running" ? tr("运行中") : r.state === "failed" ? tr("失败") : tr("已完成");
+      // 跑完了就用结束时刻算总耗时；还在跑就按还差多少（两者都是「从开始起」的钟）。
+      node.state.textContent = `${state} · ${bgElapsedText(r.endedAt ?? r.startedAt)}`;
+      this.socket.send({ type: "bg.log", sessionId: sheet.sessionId, runId: r.id });
+    }
+  }
+
+  /** `bg.log` 回来：只换文字，不回滚用户正在读的位置（贴底时才跟到底）。 */
+  private fillBgRun(runId: string, log: unknown, out: unknown): void {
+    const node = this.bgSheet?.runs.get(runId);
+    if (!node) return;
+    const text = typeof log === "string" ? log : "";
+    if (node.log.textContent !== text) {
+      const stick = node.log.scrollHeight - node.log.scrollTop - node.log.clientHeight < 24;
+      node.log.textContent = text || tr("还没有活动记录。");
+      if (stick) node.log.scrollTop = node.log.scrollHeight;
+    }
+    const done = typeof out === "string" && out.length > 0;
+    node.labOut.hidden = !done;
+    node.out.hidden = !done;
+    if (done && node.out.textContent !== out) node.out.textContent = out;
   }
 
   /**
@@ -11857,12 +12016,8 @@ export class App {
     const dot = el("span", `dot ${s.running ? "busy" : s.owned ? "live" : ""}`);
     dot.title = s.running ? tr("运行中") : s.owned ? tr("网页已接管（pi 进程在本服务里）") : tr("未接管（只读历史；发消息会自动接管）");
     item.append(dot, el("span", "ws-pop-item-name", s.name || s.id.slice(0, 8)));
-    const badge = this.badgeOf(s);
-    if (badge) {
-      const chip = el("span", `badge ${badge.cls}`, badge.text);
-      if (badge.title) chip.title = badge.title;
-      item.append(chip);
-    }
+    const chip = this.badgeChip(s);
+    if (chip) item.append(chip);
     item.onclick = () => {
       this.closeWsPop();
       this.openFromList(s.id);

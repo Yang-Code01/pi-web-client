@@ -2608,4 +2608,22 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **只覆盖会回报 `runId` 的两种派发**。别的「后台还在干活」形态（比如扩展自己起的定时任务）还没有口子。
 - **没有「点它看过程」**：提示条不可点，也没有取消按钮 —— 取消要走 `acp_delegate_cancel`，那是另一条链路。
 
-**验证：** `npm run test:bgruns`（12 项纯函数：acp/subagents 两条路、重复 runId 不重复记、完成/失败/取消都收、无 runId 不记账、误导性文本不造幽灵任务、`since` 取最早）；`npm run test:continue`（13 项，多出 3 项 bg 判据）；`node bridge/tests/continue-ui.mjs`（23 项，多出 9 项：假 pi 发一个 `acp_delegate` 结果后，提示条出现、写着 researcher、在输入框上方、计时在走、「继续」灰、左栏是「后台」；再发一条 user 角色的 completion 通知后，提示条收掉、「继续」又亮）。截图 `.scratch/shots/continue-bg*.png`。
+**验证：** `npm run test:bgruns`（12 项纯函数：acp/subagents 两条路、重复 runId 不重复记、完成/失败/取消都收、无 runId 不记账、误导性文本不造幽灵任务、`since` 取最早）；`npm run test:continue`（13 项，多出 3 项 bg 判据）；`node bridge/tests/continue-ui.mjs`（30 项，多出 9 + 7 项：假 pi 发一个 `acp_delegate` 结果后，提示条出现、写着 researcher、在输入框上方、计时在走、「继续」灰、左栏是「后台」；再发一条 user 角色的 completion 通知后，提示条收掉、「继续」又亮；点横幅开详情、写着 researcher 与任务原文、过程里能读到手写的活动记录尾、关掉就收）。截图 `.scratch/shots/continue-bg*.png`。
+
+**补：点开看详情（同一条 D169，用户问了「能点开看详细信息么」）**
+
+入口两个，开的是同一屏：输入框上方那条横幅（整条可点，`role="button"`，Enter/空格也行）、左栏「后台」徽标（`stopPropagation`，不然会顺带把卡片自己的「打开这个会话」也触发）。弹层用现成的 `.sheet`。
+
+里面一屏一张卡片，只有三块：
+
+- **概览**：agent、派出去的原话（`details.task`，没有就取结果里的 `Task:` 行）、runId、状态 + 耗时（跑完用 `endedAt` 算总时长）。
+- **过程**：runner 自己写的 `%TEMP%\acp-delegate\<runId>.activity` 尾巴（8000 字）。前端 1.5 秒轮询一次，内容没变就不动 DOM；贴着底看的时候自动跟到底，往上翻就不打扰。
+- **最终输出**：跑完之后同目录的 `.out`（那正是子代理最后那段答复）。
+
+桥加了两个只读口：`bg.list {sessionId}` → 这个会话的 run 列表，`bg.log {sessionId, runId, limit}` → `{log, out}`。
+
+**读盘处刻意收窄**：`tail()` 只允许读 `%TEMP%\acp-delegate\` 底下的路径（`resolve` 后前缀校验，挡住 `..`）。路径本身是从 pi 的工具结果文本里拾来的 —— 那是一段可能被写邪的东西，不能让它一次注入就变成任意文件读取。公网（`ws.publicReq`）一律拒绝：那只是看历史的手，不该看到本机的 prompt 与命令输出。文件还没写出来 / 已删 / 超上限，都只是少一段，不当错误报。
+
+**为什么轮询而不是推**：桥里没有「文件变了」的通知（D133 那套也是轮询 mtime），而这一屏只在打开时有人看 —— 关掉就 `clearInterval`，比常驻一个 fs.watch 便宜，也不会在没人看时读盘。
+
+`acp_delegate` 的结果文本里其实带着 `Live activity is streaming to \`…\``，**优先用它**（哪天目录换了也不用改代码），拿不到才退回按 runId 拼的默认路径。

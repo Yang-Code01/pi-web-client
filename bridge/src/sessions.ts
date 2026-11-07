@@ -18,7 +18,7 @@ import { lifecycle, gcTickMs, capProtectMs, type Lifecycle, type LifecycleThresh
 import { absentFor } from "./presence.ts";
 import { sampleMemory } from "./runtime.ts";
 import { defaultPermission } from "./permissiondefault.ts";
-import { BgRuns, type BgView } from "./bgruns.ts";
+import { BgRuns, type BgRun, type BgView } from "./bgruns.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -718,6 +718,16 @@ export class Session extends EventEmitter {
     // touch:false —— 后台跑着不算「这个会话有新动静」，左栏的时间别跟着跳。
     // 显式 `null` 而不是 `undefined`：`undefined` 过 JSON 会被整条丢掉，页面就永远清不掉提示条。
     this.setState({ bg: next ?? null }, { touch: false });
+  }
+
+  /** D169 详情：这个会话的后台任务（含刚跑完的）。没接过手的会话返回空。 */
+  bgList(): BgRun[] {
+    return this.bgRuns.list();
+  }
+
+  /** D169 详情：一个 run 的活动记录尾 + 最终答复（只读临时目录里的痕迹文件）。 */
+  bgLog(runId: string, limit?: number): { run?: BgRun; log?: string; out?: string } {
+    return this.bgRuns.readLog(runId, limit);
   }
   private draftCounter = 0;
   /** Set while close() is taking pi down on purpose: its exit and shutdown noise are expected. */

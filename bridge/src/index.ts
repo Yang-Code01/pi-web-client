@@ -1447,6 +1447,24 @@ async function main(): Promise<void> {
             send({ type: "skills", sessionId: msg.sessionId ?? null, commands: list });
             return;
           }
+          // ------------------------------------------------ 后台子代理的详情 (D169)
+          case "bg.list": {
+            const sid = String(msg.sessionId ?? "");
+            send({ type: "bg.list", sessionId: msg.sessionId ?? null, runs: sessions.get(sid)?.bgList() ?? [] });
+            return;
+          }
+          case "bg.log": {
+            // 读临时目录里的 runner 痕迹。公网那只读历史的手不该看得到本机的 prompt 与命令输出。
+            const sid = String(msg.sessionId ?? "");
+            const runId = String(msg.runId ?? "").slice(0, 80);
+            if ((ws as any).publicReq) {
+              send({ type: "bg.log", sessionId: msg.sessionId ?? null, runId, error: "公网访问时看不到后台任务的过程" });
+              return;
+            }
+            const limit = Math.min(200_000, Math.max(1000, Number(msg.limit) || 8000));
+            send({ type: "bg.log", sessionId: msg.sessionId ?? null, runId, ...(sessions.get(sid)?.bgLog(runId, limit) ?? {}) });
+            return;
+          }
           // ------------------------------------------------ 技能商店 (D126)
           case "skill.store": {
             // Read-only (a search), so the tunnel may ask too: nothing is written and the bridge
