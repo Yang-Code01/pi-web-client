@@ -327,7 +327,7 @@ export class TeamsService {
       // 从没在这份 profile 里登录过：起窗口只会停在登录页，所以宁可直接说「窗口没开」，
       // 让人去设置里点那一次。登录过一次之后再被关掉，工具可以自己把它拉回来。
       if (!this.settings.everReady) {
-        throw new TeamsError("TEAMS_OFF", "Teams 窗口没开：先到设置 → Teams 里点「打开窗口并登录」");
+        throw new TeamsError("TEAMS_OFF", "Teams 窗口没开：先点顶栏的 💬 Teams，再点「打开窗口并登录」");
       }
       await this.browser.ensure();
     }

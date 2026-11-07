@@ -194,7 +194,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "teams" | "intro" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
@@ -229,6 +229,8 @@ export class App {
   private settingsTab: SettingsTab = "global";
   /** D167：Teams 页的快照（null = 还没读到），以及「读取会话」给推送目标用的一页。 */
   private teams: TeamsStatus | null = null;
+  /** Teams 弹框的 body（关掉就置空：状态是桥当场算的，下次打开重问）。 */
+  private teamsBody: HTMLElement | null = null;
   private teamsChats: TeamsChatRow[] | null = null;
   /** 一个操作在跑（按钮禁用）：起浏览器要几秒，并且同一时刻只放一件事过去。 */
   private teamsBusy = false;
@@ -509,6 +511,12 @@ export class App {
     look.title = tr("字号与颜色");
     look.dataset.act = "look";
     look.onclick = () => this.openDisplaySheet();
+    // D167：网页版 Teams 是一个 dialog，不占版面、也不换页 —— 顶栏一颗按钮，点开就在当前画面上。
+    const teams = this.wideBtn("💬 Teams");
+    teams.title = tr("网页版 Teams：用你自己的登录态读会话、发消息（弹框打开，不换页）");
+    teams.dataset.act = "teams";
+    teams.onclick = () => this.openTeamsSheet();
+    this.els.teams = teams;
     const files = this.wideBtn(tr("📂 产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
     files.dataset.act = "artifacts";
@@ -549,7 +557,7 @@ export class App {
     this.els.scratch = scratch;
     // #96：「当前在哪」那颗自己是一个挂载点，不绑死在 topbar 的结构里（#97 / #98 换布局时
     // 只要把它挪到别处）。A 里它在行 2 的最左，B/C/D 里挪进顶栏（见 `paintShell()`）。
-    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
+    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, teams, files, term, fs, notes, peer, scratch, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -1552,7 +1560,7 @@ export class App {
         break;
       case "teams.status":
         this.teams = msg.status as TeamsStatus;
-        this.paintTeamsTab();
+        if (this.sheetKind === "teams") this.paintTeamsSheet();
         break;
       case "teams.confirm":
         // D167：pi 要往别人的会话里发东西。没有页面能点这一下，桥那边 120 秒后自己放弃。
@@ -3205,6 +3213,8 @@ export class App {
       this.setWideLabel(peer, tr("🌐 内网通"));
       peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     }
+    const teamsBtn = this.els.teams;
+    if (teamsBtn) teamsBtn.title = tr("网页版 Teams：用你自己的登录态读会话、发消息（弹框打开，不换页）");
     if (scratch) {
       this.setWideLabel(scratch, tr("💭 随手问"));
       scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
@@ -3285,6 +3295,7 @@ export class App {
     this.mgrRefresh = null;
     this.imageSheetPaint = null;
     this.wsPane = null;
+    this.teamsBody = null;
   }
 
   /** The model sheet's 会话 section: folded unless asked for (/session). */
@@ -7880,7 +7891,6 @@ export class App {
       ["passphrase", tr("口令")],
       ["ext", tr("扩展与 MCP")],
       ["notify", tr("通知")],
-      ["teams", tr("Teams")],
       ["runtime", tr("运行时")],
       ["changelog", tr("更新日志")],
     ];
@@ -7893,7 +7903,6 @@ export class App {
         if (id === "runtime") this.socket.send({ type: "runtime.stats" });
         if (id === "passphrase") this.askPassphrase();
         // Teams 一打开就重问一次：窗口活不活、登没登录是桥那边当场算的，本地缓存不可信。
-        if (id === "teams") this.teams = null;
         this.paintSettings();
       };
       tabs.append(b);
@@ -7904,7 +7913,6 @@ export class App {
     if (this.settingsTab === "passphrase") return this.paintPassphrase(body);
     if (this.settingsTab === "ext") return this.paintExtSettings(body);
     if (this.settingsTab === "notify") return this.paintNotify(body);
-    if (this.settingsTab === "teams") return this.paintTeams(body);
     if (this.settingsTab === "runtime") return this.paintRuntime(body);
     if (this.settingsTab === "changelog") return this.paintChangelog(body);
     const scope = this.settingsTab;
@@ -8078,8 +8086,38 @@ export class App {
   // ------------------------------------------------------------------ Teams（D167）
 
   /** 重画 Teams 页（只在它正开着的时候）。 */
-  private paintTeamsTab(): void {
-    if (this.sheetKind === "settings" && this.settingsTab === "teams") this.paintSettings();
+  /**
+   * D167：网页版 Teams 的 dialog。不换页 —— 顶栏那颗按钮直接把它盖在当前画面上，关掉就回到原处。
+   * 内容是「人能做的四件事」（登录 / 换浏览器 / 选推送目标 / 写 mcp.json）；聊天记录不在这里，
+   * 读和发都是 pi 用 `/mcp` 上的工具在干。
+   */
+  private openTeamsSheet(): void {
+    this.closeSheet();
+    this.sheetKind = "teams";
+    const back = el("div", "sheet-back center");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet teams-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("网页版 Teams")));
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const body = el("div", "teams-body");
+    sheet.append(head, body);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    this.teamsBody = body;
+    // 每次打开都重问：状态是桥当场算的（起窗口要几秒、登录态可能刚过期）。
+    this.teams = null;
+    this.paintTeamsSheet();
+  }
+
+  /** 弹框开着就重画它；没开就什么也不做（状态由下一次打开时重问）。 */
+  private paintTeamsSheet(): void {
+    if (this.teamsBody) this.paintTeams(this.teamsBody);
   }
 
   private teamsError(err: unknown): string {
@@ -8094,7 +8132,7 @@ export class App {
   private async teamsDo(fn: () => Promise<unknown>): Promise<void> {
     if (this.teamsBusy) return;
     this.teamsBusy = true;
-    this.paintTeamsTab();
+    this.paintTeamsSheet();
     try {
       await fn();
       this.teams = await api.teams();
@@ -8102,7 +8140,7 @@ export class App {
       this.flashSettings(tr("Teams：{p1}", { p1: this.teamsError(err) }), true);
     } finally {
       this.teamsBusy = false;
-      this.paintTeamsTab();
+      this.paintTeamsSheet();
     }
   }
 
@@ -8111,6 +8149,7 @@ export class App {
    * 界面只负责人才能做的事：登录、换浏览器、选「推给自己」的目标、把端点写进 pi 的配置。
    */
   private paintTeams(body: HTMLElement): void {
+    body.replaceChildren();
     const st = this.teams;
     if (!st) {
       body.append(el("div", "empty", tr("读取中…")));
@@ -8118,7 +8157,7 @@ export class App {
         .teams()
         .then((s) => {
           this.teams = s;
-          this.paintTeamsTab();
+          this.paintTeamsSheet();
         })
         .catch((err) => this.flashSettings(this.teamsError(err), true));
       return;
@@ -8195,13 +8234,14 @@ export class App {
       const id = targetSel.value;
       void this.teamsDo(() => api.teamsTarget(id, opts.get(id) ?? id));
     };
-    targetRow.append(targetSel);
     const read = el("button", "btn ghost", tr("读取会话")) as HTMLButtonElement;
+    const targetCtl = el("div", "teams-inline");
+    targetCtl.append(targetSel);
     read.disabled = busy;
     read.onclick = () => {
       if (this.teamsBusy) return;
       this.teamsBusy = true;
-      this.paintTeamsTab();
+      this.paintTeamsSheet();
       void api
         .teamsChats(40)
         .then((out) => {
@@ -8210,10 +8250,11 @@ export class App {
         .catch((err) => this.flashSettings(this.teamsError(err), true))
         .finally(() => {
           this.teamsBusy = false;
-          this.paintTeamsTab();
+          this.paintTeamsSheet();
         });
     };
-    targetRow.append(read);
+    targetCtl.append(read);
+    targetRow.append(targetCtl);
     body.append(targetRow);
     body.append(el("div", "hint", tr("「读取会话」只是把标题列出来给你选；推到自己的聊天最省事，也不会打扰别人。")));
 
@@ -12361,7 +12402,6 @@ type SettingsTab =
   | "passphrase"
   | "ext"
   | "notify"
-  | "teams"
   | "runtime"
   | "changelog";
 

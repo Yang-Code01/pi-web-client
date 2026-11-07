@@ -2562,7 +2562,7 @@ cookie、不存令牌**。
   这些是网页版自己的端点，不是公开接口：region 与 header 变体（`bearer` / `bearer+x-skypetoken` / `skypetoken`）
   靠**探测矩阵**定（`sea` / `emea` / `noam` / `apac` / `gcc`），命中缓存 10 分钟，所以 region 换了也只是重探一次。
 - **怎么交给 pi**：桥自己起一个 MCP 端点 `POST /mcp`（streamable HTTP 的子集：`initialize` / `tools/list` /
-  `tools/call` / `ping`），四个工具 `teams_chats` / `teams_read` / `teams_find` / `teams_send`。设置页一键把
+  `tools/call` / `ping`），四个工具 `teams_chats` / `teams_read` / `teams_find` / `teams_send`。顶栏 `💬 Teams` 弹框里一键把
   `{url, headers:{Authorization: "Bearer …"}}` 写进 `~/.pi/agent/mcp.json` 的 `mcpServers.teams`，其余条目原样保留。
   **不用 stdio 的 MCP 子进程**：那要多养一个进程、多一份日志，而桥本来就在；token 落在状态目录（0600），
   端点只认回环 + Bearer —— 局域网另一台机器、以及隧道（cloudflared 的 `remoteAddress` 也是 loopback，
@@ -2606,11 +2606,11 @@ cookie、不存令牌**。
   工具调用会挂住等 `/api/teams/confirm` 或 WS 回执，**最多 120 秒**：没有页面、超时、点取消，一律不发
   （`TEAMS_NOT_CONFIRMED`）。请求带一个桥生成的 id，回执必须原样带回，这样一次旧点击放行不了一条新消息。
   理由：`teams_send` 能替用户说话，而模型选错人并不难，一句「已发送」又撤不回来。
-- **推给自己是另一件事**：`notify` 走设置里选定的目标（默认自己的聊天），**不弹确认**——位置是人自己设的，
+- **推给自己是另一件事**：`notify` 走弹框里选定的目标（默认自己的聊天），**不弹确认**——位置是人自己设的，
   而且需要开着浏览器点一下才发得出去的「通知」不算通知。它挂在 pi 设置 → 通知的总开关下面，是个子开关。
 - **MCP 端点由桥自己提供**（`POST /mcp`，streamable HTTP 的 JSON 子集：`initialize` / `tools/list` /
   `tools/call` / `ping`，通知回 202）。两道门：**只认回环**（`remoteAddress` + `!publicReq`，隧道也挡），
-  以及 `Authorization: Bearer <token>`（token 落在 `<state>/mcp-token`，0600）。设置页「写入 mcp.json」把
+  以及 `Authorization: Bearer <token>`（token 落在 `<state>/mcp-token`，0600）。弹框里「写入 mcp.json」把
   `mcpServers.teams` 塞进 `~/.pi/agent/mcp.json`，其余字段原样保留；写之前不覆盖、写完提示 `/reload`。
 - **隧道只读**：公网访问时 `/api/teams` 的 POST（登录、换浏览器、改目标、发消息、写配置）一律 403；
   GET 的列表/消息/找人仍可用 —— 观众拿到一份可读的 Teams，拿不到你的发言权。

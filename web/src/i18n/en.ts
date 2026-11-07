@@ -1668,4 +1668,6 @@ export const en: Dict = {
   "公网访问只能看这一页：登录、发消息、改配置都会被拒；/mcp 只接受本机回环。": "Over the public tunnel this page is read-only: no sign-in, no sending. /mcp only accepts loopback.",
   "发给「{p1}」：不是你自己的聊天，发之前先问你一句。": "To “{p1}” — not your own chat, so it asks you first.",
   "「读取会话」只是把标题列出来给你选；推到自己的聊天最省事，也不会打扰别人。": "“Load chats” only lists titles so you can pick one; pushing to your own chat is the least intrusive.",
+  "网页版 Teams": "Web Teams",
+  "网页版 Teams：用你自己的登录态读会话、发消息（弹框打开，不换页）": "Web Teams: read and send with your own sign-in (opens as a dialog, no page change)",
 };
