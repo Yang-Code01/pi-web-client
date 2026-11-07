@@ -25,7 +25,7 @@ import { ScratchChat } from "./scratch.ts";
 import { skillOf } from "./skill.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
-import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, tabHitTest, tabModel, type TabHit, type TabRect } from "./wstabs.ts";
+import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, tabHitTest, tabModel, type TabHit, type TabRect } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
@@ -4641,7 +4641,7 @@ export class App {
       const more = el("button", "ws-more", "⋯") as HTMLButtonElement;
       more.type = "button";
       more.dataset.act = "ws-more";
-      more.title = tr("改名 / 删除这个工作区");
+      more.title = tr("改名 / 移到最前 / 删除这个工作区");
       more.setAttribute("aria-label", tr("{p1} 的工作区菜单", { p1: group.name }));
       more.onclick = (ev) => {
         ev.stopPropagation();
@@ -4679,17 +4679,34 @@ export class App {
     this.renderSessions();
   }
 
-  /** 组头的 ⋯：改名 / 删除。删不了就置灰并在菜单里写明原因，而不是把这个选择藏起来。 */
+  /** 组头的 ⋯：改名 / 移到最前 / 删除。做不了的置灰并在菜单里写明原因，不把这个选择藏起来。 */
   private openWsMore(group: TreeGroup<SessionState>, anchor: HTMLElement): void {
     this.wsMenu?.close();
     const info = this.workspaces.groups.find((g) => g.id === group.id);
+    const order = this.wsGroupOrder();
     this.wsMenu = openWsMenu(anchor, {
       name: group.name,
       sub: info && !info.manual ? info.key : tr("手建的工作区"),
+      // #177：已经是第一时就地置灰 + 说明，而不是藏掉这颗（跟删除同一个套路）。
+      frontBlocker: order[0] === group.id ? tr("它已经是第一个了") : null,
       dropBlocker: dropBlocker(info, group.sessions.length),
       onRename: () => this.startWsRename(group.id),
+      onFront: () => this.moveWsToFront(group.id),
       onDrop: () => this.dropWs(group.id),
     });
+  }
+
+  /** #177：页面上那份组序 —— 优先桥下发的 `order`；旧桥没下发时退回树的组序（与标签行同一份兜底）。 */
+  private wsGroupOrder(): string[] {
+    if (this.workspaces.order?.length) return this.workspaces.order;
+    return buildTree(this.sessions, this.manage, this.workspaces, "").groups.map((group) => group.id);
+  }
+
+  /** #177：组头「移到最前」—— 用既有的 `ws.tabs { order }` 写回，不新增桥动作。 */
+  private moveWsToFront(id: string): void {
+    const next = moveToFront(this.wsGroupOrder(), id);
+    if (!next) return;
+    this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", order: next }));
   }
 
   private startWsRename(id: string): void {

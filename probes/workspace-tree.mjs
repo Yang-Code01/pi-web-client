@@ -56,7 +56,17 @@ async function launchPlaywright() {
 const LIB = { id: "f:/pi-web-client", name: "pi-web-client", key: "F:/pi-web-client", manual: false };
 const BLOG = { id: "f:/demo/blog", name: "blog", key: "F:/demo/blog", manual: false };
 const TOOLS = { id: "f:/demo/tools", name: "tools", key: "F:/demo/tools", manual: false };
-const WORKSPACE = { groups: [LIB, BLOG, TOOLS], overrides: {}, keys: {} };
+const WORKSPACE = {
+  groups: [LIB, BLOG, TOOLS],
+  overrides: {},
+  keys: {},
+  // #173 一份组序（横条与左栏共用）。#177 起组头 ⋯ 能把它改写；初始顺序与旧探针的字母序一致。
+  order: [BLOG.id, LIB.id, TOOLS.id],
+  // 名额 2（旧桥默认 3）：tools 因此收在 ＋N 里，折叠组也能走「移到最前」。
+  max: 2,
+};
+/** 页面发过来的 manage 消息，用来断言「只发既有的 ws.tabs { order }」。 */
+const SENT = [];
 
 let n = 0;
 const state = (id, name, cwd, ws) => ({
@@ -132,12 +142,25 @@ server.on("upgrade", (req, socket, head) => {
       } catch {
         return;
       }
+      if (msg.type === "manage") SENT.push(msg);
       const s = SESSIONS.find((x) => x.id === msg.sessionId);
       if (msg.type === "subscribe" && s) {
         ws.send(JSON.stringify({ type: "session", sessionId: s.id, state: s, items: [], approvals: [], asks: [], budget: null }));
       }
       // D146：打开不改排列。旧页面还会发这条消息，桥只回快照；这里照样实现，免得哪天改回去没覆盖。
       if (msg.type === "manage" && msg.action === "opened") cast({ type: "manage", manage: MANAGE, workspace: WORKSPACE });
+      // #177：组头「移到最前」只发既有的 `ws.tabs { order }`。洗法与真桥 readOrder 一致：
+      // 去重、剔未知 id、缺的补到末尾；广播一份新快照（真桥也是 broadcast，发送方自己收到）。
+      if (msg.type === "manage" && msg.action === "ws.tabs") {
+        if (Array.isArray(msg.order)) {
+          const known = new Set(WORKSPACE.groups.map((g) => g.id));
+          const order = [...new Set(msg.order)].filter((id) => known.has(id));
+          for (const g of WORKSPACE.groups) if (!order.includes(g.id)) order.push(g.id);
+          WORKSPACE.order = order;
+        }
+        cast({ type: "workspaces", workspace: WORKSPACE });
+        return;
+      }
     });
     ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS, manage: MANAGE, workspace: WORKSPACE, trash: [], tunnel: TUNNEL }));
   });
@@ -184,6 +207,41 @@ const tree = () =>
       }
     })(),
   }));
+
+/** 横条现在画了哪几颗、＋N 收了几颗（#173 起横条与左栏共用同一份 order）。 */
+const tabs = () =>
+  page.evaluate(() => ({
+    visible: [...document.querySelectorAll(".ws-tabs .ws-tab")].map((t) => t.dataset.ws ?? ""),
+    more: document.querySelector(".ws-tabs-more")?.textContent?.trim() ?? "",
+    moreHidden: document.querySelector(".ws-tabs-more")?.hidden ?? null,
+  }));
+
+/** 组头 ⋯ 菜单里的每一项：动作、文字、是否置灰、置灰理由（title）+ 菜单底部的灰字理由行。 */
+const menu = () =>
+  page.evaluate(() => {
+    const box = document.querySelector(".ws-menu");
+    if (!box) return null;
+    return {
+      items: [...box.querySelectorAll(".pm-item")].map((btn) => ({
+        act: btn.dataset.act ?? "",
+        text: btn.textContent?.trim() ?? "",
+        disabled: btn.disabled,
+        title: btn.title,
+      })),
+      reasons: [...box.querySelectorAll(".pm-why")].map((n) => n.textContent?.trim() ?? ""),
+    };
+  });
+
+/** 点组头的 ⋯ 并把菜单内容读回来。`.ws-more` 默认 visibility:hidden，先把鼠标悬到组头上（真用户也是这么点的）。 */
+const openMenu = async (wsId) => {
+  await page.locator(`.ws-sec[data-ws="${wsId}"] .ws-head`).hover();
+  await page.locator(`.ws-sec[data-ws="${wsId}"] .ws-more`).click();
+  await sleep(150);
+  return menu();
+};
+
+/** 页面发过的 `ws.tabs` 消息（从第 `from` 条起）。 */
+const tabWrites = (from = 0) => SENT.filter((m) => m.type === "manage" && m.action === "ws.tabs").slice(from);
 
 await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
 await passGate();
@@ -252,6 +310,77 @@ await sleep(300);
 t = await tree();
 ok(t.groups.find((g) => g.name === "pi-web-client")?.cardsVisible.length === 6, "清空过滤并展开后 library 的 6 条都在");
 ok(t.prefs.wsCollapsed.length === 0, "再点一次把收起状态也清掉了");
+
+// 6) #177 组头 ⋯「移到最前」：折叠组（tools 在 ＋N 里）也能用，菜单顺序是改名 / 移到最前 / 删除。
+let tab = await tabs();
+ok(
+  tab.visible.join() === [BLOG.id, LIB.id].join() && tab.more === "＋1",
+  `横条按 order 前 2 颗、tools 收在 ＋1 里（${tab.visible.join(" / ")} ${tab.more}）`,
+);
+let m = await openMenu(TOOLS.id);
+ok(
+  m?.items.map((i) => i.act).join() === "rename,front,drop",
+  `菜单项依次是改名 / 移到最前 / 删除（${m?.items.map((i) => i.act).join(" / ")}）`,
+);
+ok(m?.items.find((i) => i.act === "front")?.disabled === false, "折叠组的「移到最前」可点（入口在左栏组头，不依赖横条 DOM）");
+ok(
+  m?.items.find((i) => i.act === "drop")?.disabled === true && (m?.reasons ?? []).some((r) => r.includes("跟着目录走")),
+  "删除仍按原规则置灰并写明原因（派生组）",
+);
+
+// 键盘：Tab 得到这颗菜单项（role=menuitem 的 button），Enter 触发。
+await page.locator('.ws-menu .pm-item[data-act="front"]').focus();
+await page.keyboard.press("Enter");
+await sleep(300);
+let writes = tabWrites();
+ok(
+  writes.length === 1 && writes[0].order.join() === [TOOLS.id, BLOG.id, LIB.id].join() && !("max" in writes[0]),
+  `键盘 Enter 只发一条既有的 ws.tabs { order }（${JSON.stringify(writes[0]?.order)}）`,
+);
+tab = await tabs();
+t = await tree();
+ok(tab.visible[0] === TOOLS.id, `横条立刻把 tools 排到第一（${tab.visible.join(" / ")}）`);
+ok(
+  t.groups.map((g) => g.id).join() === [TOOLS.id, BLOG.id, LIB.id].join(),
+  `左栏组序同步（${t.groups.map((g) => g.name).join(" / ")}）`,
+);
+
+// 7) 刷新 → 仍是 tools 第一（桩桥已经把 order 存下）；已是第一时置灰并写原因。
+await page.reload({ waitUntil: "networkidle" });
+await passGate();
+await sleep(500);
+tab = await tabs();
+t = await tree();
+ok(tab.visible[0] === TOOLS.id && t.groups[0]?.id === TOOLS.id, "刷新后 tools 仍在第一（横条与左栏一起）");
+m = await openMenu(TOOLS.id);
+ok(m?.items.find((i) => i.act === "front")?.disabled === true, "已经在最前：「移到最前」置灰");
+ok((m?.reasons ?? []).some((r) => r.includes("已经是第一个")), `置灰理由写在菜单里（${m?.reasons.join(" / ")}）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+ok((await menu()) === null, "Esc 关掉菜单");
+
+// 8) 鼠标点它也一样生效（blog 现在排第二）。
+m = await openMenu(BLOG.id);
+await page.locator('.ws-menu .pm-item[data-act="front"]').click();
+await sleep(300);
+writes = tabWrites(1);
+tab = await tabs();
+t = await tree();
+ok(
+  writes.length === 1 && writes[0].order.join() === [BLOG.id, TOOLS.id, LIB.id].join(),
+  `点击也只发一条 ws.tabs { order }（${JSON.stringify(writes[0]?.order)}）`,
+);
+ok(tab.visible.join() === [BLOG.id, TOOLS.id].join() && t.groups[0]?.id === BLOG.id, "点击「移到最前」也把 blog 排到第一");
+
+// 9) 改名项行为不变：点它仍是组头行内改名，Esc 退出。
+m = await openMenu(LIB.id);
+ok(m?.items.find((i) => i.act === "rename")?.disabled === false, "改名项仍可点");
+await page.locator('.ws-menu .pm-item[data-act="rename"]').click();
+await sleep(200);
+ok((await page.locator(`.ws-sec[data-ws="${LIB.id}"] .ws-rename-input`).count()) === 1, "点改名 → 组头变行内输入框（和以前一样）");
+await page.keyboard.press("Escape");
+await sleep(200);
+ok((await page.locator(".ws-rename-input").count()) === 0, "Esc 退出改名，组头恢复");
 
 await browser.close();
 await new Promise((r) => server.close(r));

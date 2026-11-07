@@ -44,6 +44,16 @@ export function tabModel(o: { order: readonly string[]; max: number; current?: s
   return { visible, more };
 }
 
+/**
+ * #177 组头「移到最前」：把 `id` 搬到 `order` 第一位，其余（含折叠组）相对位置不变。
+ * `null` = 已经是最前 / 不在这份 order 里，调用方一个字都不用发。
+ */
+export function moveToFront(order: readonly string[], id: string): string[] | null {
+  const at = order.indexOf(id);
+  if (at <= 0) return null;
+  return [id, ...order.slice(0, at), ...order.slice(at + 1)];
+}
+
 /** #124 横向落点：`x` 落在哪一颗标签、插在它前面还是后面。 */
 export interface TabHit {
   id: string;
