@@ -1,18 +1,19 @@
 /**
- * Probe: #121 标签行只画 N 个 + `＋N`；#122 固定组落库 + 组头 ⋯ 固定项。
+ * Probe: #121 标签行只画 N 个 + `＋N`；#173 一份 `order` 接管顺序；#174 横条上每一颗都能拖。
  *
  * 票面要的是：标签行只画 N 颗（N 由桥端下发，默认 3），剩下的组数报在槽外的 `＋N` 上；点 `＋N` 只列
  * 被折叠的组，点一行切过去并关掉下拉；当前组排在组序很后面时它仍然在圈内（挤掉最后一个补位组）。
- * #122 接上：在组头 ⋯ 里固定一个组 → 它排到标签行最前、左栏组头出现「已固定」标记、刷新后还在；
- * 名额满了再点固定 → 那一项置灰并写明原因，不会静默失败。
- * #124 再接上：固定组可以用鼠标拖着换顺序（落点竖线跟手，松手发一条 `ws.tabs`，刷新后还记得）；
- * 补位组拖不动、悬停会说清楚；位移不到 4px 仍算一次点击，拖回原位一个字都不发。
+ * #173 接上：固定组退役 —— 组头 ⋯ 里只剩重命名 / 删除，左栏不再有「已固定」徽记，标签行与左栏
+ * 共用一份 `order`。
+ * #174 再接上：**每一颗看得见的标签**都能用鼠标拖着换顺序（不再只限固定组），落点竖线跟手，松手
+ * 只发一条 `ws.tabs { order, max }` 把整份 order 写回，刷新后还记得；位移不到 4px 仍算一次点击，
+ * 拖回原位一个字都不发，拖完不误切组；`＋N` 里的折叠组没有 DOM，拖不起来。
  *
  * 上一票（#119）的断言留着：A 壳顶栏只有一行、标签紧跟在 ◧ 后面、B/C/D 不画标签、800px 不破版。
  *
  * 桩桥照 #94 的协议发 `workspace` 快照，并像真桥那样把 `ws.tabs` 落到内存里再广播 —— 刷新页面
- * 拿到的就是「重启后的桥」，固定组与名额都在。造 9 个长名组，用显式 `updatedAt` 把组序钉成 01→09
- * （组序 = 待处理 → 最近活动倒序 → 名字），否则同一毫秒里建出来的 9 个组谁在前全凭运气。
+ * 拿到的就是「重启后的桥」，整份 order 与名额都在。造 9 个长名组，用显式 `updatedAt` 把组序钉成
+ * 01→09（组序 = 待处理 → 最近活动倒序 → 名字），否则同一毫秒里建出来的 9 个组谁在前全凭运气。
  *
  * Run: npm run build:web && PI_WEB_PORT=7931 node probes/workspace-tabs.mjs
  */
@@ -83,15 +84,16 @@ const SESSIONS = GROUPS.map((g, i) => ({
 }));
 const byId = (id) => SESSIONS.find((s) => s.id === id);
 
-// #122：固定组与名额也持久化 —— 存在内存里，刷新页面就像重启后的桥一样把它们拿回来。
+// #173：一份 order 与名额也持久化 —— 存在内存里，刷新页面就像重启后的桥一样把它们拿回来。
+// 起点给空数组：客户端会退回组序（名字顺序 01→09），第一次拖动才把整份 order 写上来。
 const WS = {
   groups: GROUPS,
   overrides: {},
   keys: Object.fromEntries(SESSIONS.map((s) => [s.cwd.toLowerCase(), s.ws])),
-  pinned: [],
+  order: [],
   max: 3,
 };
-const workspace = () => ({ ...WS, groups: WS.groups.map((g) => ({ ...g })), pinned: [...WS.pinned] });
+const workspace = () => ({ ...WS, groups: WS.groups.map((g) => ({ ...g })), order: [...WS.order] });
 /** 桥收到过的 manage 动作（固定要能核对「发了几条 / 该不发的时候发了没有」）。 */
 const CALLS = [];
 const MANAGE = { pin: [], order: SESSIONS.map((s) => s.id), archived: [] };
@@ -138,14 +140,13 @@ server.on("upgrade", (req, socket, head) => {
       }
       if (msg.type === "manage") {
         CALLS.push(msg);
-        // 真桥的 `setTabs()`：名额 clamp 到 1–5，列表去重 / 剔脏 / 截到名额，最后一次落盘再广播。
+        // 真桥的 `setTabs()`：名额 clamp 到 1–5，order 去重 / 剔脏（不按名额截断），最后广播。
         if (msg.action === "ws.tabs") {
           if (msg.max !== undefined) WS.max = Math.min(5, Math.max(1, Math.trunc(Number(msg.max))));
-          if (msg.pinned !== undefined) {
+          if (msg.order !== undefined) {
             const known = new Set(WS.groups.map((g) => g.id));
-            WS.pinned = msg.pinned.filter((id, i, all) => typeof id === "string" && known.has(id) && all.indexOf(id) === i);
+            WS.order = msg.order.filter((id, i, all) => typeof id === "string" && known.has(id) && all.indexOf(id) === i);
           }
-          WS.pinned = WS.pinned.slice(0, WS.max);
           for (const client of wss.clients) {
             if (client.readyState === 1) client.send(JSON.stringify({ type: "workspaces", workspace: workspace() }));
           }
@@ -302,7 +303,7 @@ ok(s.count === 3, `切过去之后标签行仍是 3 颗（${s.count} 个）`);
 ok(s.menuRows === 0, `切完下拉关掉（还剩 ${s.menuRows} 行）`);
 await page.close();
 
-// 5) #121：当前组排在组序很后面时，它挤掉最后一个补位组进圈（N+1 是 #122 固定组的事）
+// 5) #121：当前组排在组序很后面时，它挤掉最后一个补位组进圈（#173 起是「当前组临时替最后一格」）
 page = await open(null, "s-09-1");
 s = await barState();
 ok(s.onWs === "f:/proj-09", `A：组序第 9 的当前组也在标签行上（${s.onWs}）`);
@@ -356,80 +357,28 @@ ok(scrolled.left > before.scroll && Math.abs(after.left - before.left) < 1, `800
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-800.png`), clip: { x: 0, y: 0, width: 800, height: 140 } });
 await page.close();
 
-// 7) #122 固定：组头 ⋯ →「固定到第一行」→ 它排到标签行最前，左栏组头带「已固定」标记
+// 7) #173 固定组退役：组头 ⋯ 里只剩重命名 / 删除，左栏不再有「已固定」徽记
+page = await open(null);
 const openWsMore = async (id) => {
   await page.locator(`.ws-sec[data-ws="${id}"] .ws-head`).hover();
   await page.locator(`.ws-sec[data-ws="${id}"] .ws-head .ws-more`).click();
   await sleep(250);
 };
-const fixedItem = () => page.locator(".ws-menu .pm-item[data-act='fixed']");
-const fixedText = async () => (await page.locator(".ws-menu .pm-item[data-act='fixed'] .pm-text").textContent())?.trim() ?? "";
 const lastTabs = () => CALLS.filter((c) => c.action === "ws.tabs").at(-1) ?? null;
-const fixedCount = (id) => page.locator(`.ws-sec[data-ws="${id}"] .ws-head .ws-fixed`).count();
-const fixedViaMenu = async (id) => {
-  await openWsMore(id);
-  await fixedItem().click();
-  await sleep(450);
-};
-
-page = await open(null);
-await openWsMore("f:/proj-09");
-ok((await fixedText()) === "固定到第一行", `未固定的组：菜单那行是「固定到第一行」（${await fixedText()}）`);
-await fixedItem().click();
-await sleep(500);
-ok(
-  JSON.stringify(lastTabs()?.pinned) === JSON.stringify(["f:/proj-09"]),
-  `点固定发出一条 ws.tabs，列表里只有它（${JSON.stringify(lastTabs()?.pinned)}）`,
-);
-s = await barState();
-ok(s.visibleIds[0] === "f:/proj-09", `固定后排到标签行最前（${s.visibleIds.join(" / ")}）`);
-ok(s.count === 3 && s.moreText === "＋6", `固定组不占额外位置：仍是 3 颗 + ＋N（${s.count} / ${s.moreText}）`);
-ok((await fixedCount("f:/proj-09")) === 1, "左栏组头出现「已固定」标记");
-ok((await fixedCount("f:/proj-01")) === 0, "没固定的组不打这个标记");
-
-// 8) 刷新后固定组与顺序还在（桥落库了 —— 桩桥在内存里持久化）
-await page.reload({ waitUntil: "networkidle" });
-await page.waitForSelector(".session-card", { timeout: 15000 });
-await sleep(700);
-s = await barState();
-ok(s.visibleIds[0] === "f:/proj-09", `刷新后固定组还在最前（${s.visibleIds.join(" / ")}）`);
-ok((await fixedCount("f:/proj-09")) === 1, "刷新后「已固定」标记也还在");
-
-// 9) 菜单两项互斥：已固定 →「取消固定」；取消后它排回组序的位置
-await openWsMore("f:/proj-09");
-ok((await fixedText()) === "取消固定", `已固定的组：菜单那行换成「取消固定」（${await fixedText()}）`);
-await fixedItem().click();
-await sleep(450);
-s = await barState();
-ok(JSON.stringify(lastTabs()?.pinned) === "[]", `取消固定发的是空列表（${JSON.stringify(lastTabs()?.pinned)}）`);
-ok(s.visibleIds[0] === "f:/proj-01", `取消后排回组序（${s.visibleIds.join(" / ")}）`);
-ok((await fixedCount("f:/proj-09")) === 0, "取消后组头标记消失");
-
-// 10) 名额满了再固定：那一项置灰并写明原因，点了也不发请求
-for (const id of ["f:/proj-09", "f:/proj-08", "f:/proj-07"]) await fixedViaMenu(id);
-s = await barState();
-ok(s.count === 4 && s.visibleIds[3] === "f:/proj-01", `固定组占满名额：当前组多画一颗（${s.visibleIds.join(" / ")}）`);
-const tabsBefore = CALLS.filter((c) => c.action === "ws.tabs").length;
-await openWsMore("f:/proj-06");
-ok((await fixedItem().isDisabled()) === true, "名额满了：第 4 个组的「固定」是灰的");
-const why = await page.locator(".ws-menu .pm-why").first().textContent();
-ok(/3/.test(why ?? ""), `灰掉的原因写清名额（${why?.trim()}）`);
-await fixedItem().click({ force: true }).catch(() => {});
-await sleep(250);
-ok(CALLS.filter((c) => c.action === "ws.tabs").length === tabsBefore, "点灰掉的固定项：没有发 ws.tabs");
-await page.keyboard.press("Escape");
-await page.close();
-
-// 11) #124 固定组拖拽重排：只有固定组能拖，竖线跟手，松手发一条 ws.tabs，刷新后顺序还在
-page = await open(null);
-s = await barState();
-ok(
-  JSON.stringify(s.visibleIds) === JSON.stringify(["f:/proj-09", "f:/proj-08", "f:/proj-07", "f:/proj-01"]),
-  `起点：3 个固定组 + 当前组多画一颗（${s.visibleIds.join(" / ")}）`,
-);
-const fillTitle = await page.locator('.ws-tab[data-ws="f:/proj-01"]').getAttribute("title");
-ok(/拖不动/.test(fillTitle ?? ""), `补位组：悬停写明拖不动（${fillTitle}）`);
 const tabsCalls = () => CALLS.filter((c) => c.action === "ws.tabs").length;
+await openWsMore("f:/proj-09");
+const menu = await page.evaluate(() => ({
+  acts: [...document.querySelectorAll(".ws-menu .pm-item")].map((n) => n.dataset.act ?? ""),
+  text: document.querySelector(".ws-menu")?.textContent ?? "",
+  fixed: document.querySelectorAll(".ws-fixed").length,
+}));
+ok(JSON.stringify(menu.acts) === JSON.stringify(["rename", "drop"]), `组头 ⋯ 只剩重命名 / 删除（${menu.acts.join(" / ")}）`);
+ok(!/固定/.test(menu.text), `菜单里没有固定入口（${menu.text.replace(/\s+/g, " ").trim()}）`);
+ok(menu.fixed === 0, `左栏没有「已固定」徽记（${menu.fixed} 个）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+
+// 8) #174 任意标签可拖：竖线跟手，松手发一条 ws.tabs（整份 order），拖完不误切组
 /** 拖拽期间的现场：竖线在不在、画在哪、body 上的类还在不在。 */
 const dragMark = () =>
   page.evaluate(() => {
@@ -446,13 +395,20 @@ const dragMark = () =>
       dragging: document.querySelectorAll(".ws-tab.drag").length,
     };
   });
-/** 按住 from 的中间横拖到 to 的某一侧：中途量一次、落点量一次、松手后再量一次。 */
+/**
+ * 按住 from 的中间横拖到 to 的某一侧：中途量一次、落点量一次、松手后再量一次。
+ * 坐标夹在标签槽的可见区里 —— 槽是 `overflow-x: auto`，#121 的名额只保证「画出来」不保证「整个露出来」，
+ * 靠后的标签有一截压在 `＋N` 底下（那里 elementFromPoint 摸到的是 ＋N）。人手也是抓露出来的那半截。
+ */
 const dragTab = async (fromId, toId, side) => {
+  const strip = await page.locator(".ws-tabs").boundingBox();
   const from = await page.locator(`.ws-tab[data-ws="${fromId}"]`).boundingBox();
   const to = await page.locator(`.ws-tab[data-ws="${toId}"]`).boundingBox();
+  const lo = strip.x + 6;
+  const hi = strip.x + strip.width - 6;
   const y = Math.round(from.y + from.height / 2);
-  const x0 = Math.round(from.x + from.width / 2);
-  const x1 = Math.round(side === "before" ? to.x + 8 : to.x + to.width - 8);
+  const x0 = Math.round(Math.max(lo, Math.min(hi - 16, from.x + from.width / 2)));
+  const x1 = Math.round(side === "before" ? Math.min(hi, Math.max(lo, to.x + 8)) : Math.min(hi, Math.max(lo, to.x + to.width - 8)));
   await page.mouse.move(x0, y);
   await page.mouse.down();
   await page.mouse.move(x0 + 12, y, { steps: 4 }); // 过 4px 阈值：起拖
@@ -464,77 +420,143 @@ const dragTab = async (fromId, toId, side) => {
   return { mid, during, after: await dragMark(), toLeft: Math.round(to.x), toRight: Math.round(to.x + to.width) };
 };
 
+const ORDER0 = [
+  "f:/proj-01",
+  "f:/proj-02",
+  "f:/proj-03",
+  "f:/proj-04",
+  "f:/proj-05",
+  "f:/proj-06",
+  "f:/proj-07",
+  "f:/proj-08",
+  "f:/proj-09",
+];
+s = await barState();
+ok(JSON.stringify(s.visibleIds) === JSON.stringify(ORDER0.slice(0, 3)), `起点：组序前三颗（${s.visibleIds.join(" / ")}）`);
 const calls0 = tabsCalls();
-const swap = await dragTab("f:/proj-09", "f:/proj-08", "after");
+// 拖的是第 3 颗 —— #174 起不再只限固定组：可见段里任意一颗。
+const swap = await dragTab("f:/proj-03", "f:/proj-01", "before");
 ok(swap.mid.lines === 1 && swap.during.lines === 1, "拖动时画一条落点竖线");
 ok(swap.during.width === 2, `竖线是 2px（${swap.during.width}px）`);
 ok(swap.during.height >= swap.during.tabHeight - 14, `竖线跟标签一样高（${swap.during.height}px / 标签 ${swap.during.tabHeight}px）`);
-ok(swap.during.left > swap.mid.left, `竖线跟着鼠标走（${swap.mid.left} → ${swap.during.left}）`);
-ok(
-  Math.abs(swap.during.left - swap.toRight) <= 2,
-  `拖到 proj-08 右半：竖线贴在它右缘（${swap.during.left} vs ${swap.toRight}）`,
-);
+ok(swap.during.left < swap.mid.left, `竖线跟着鼠标走（${swap.mid.left} → ${swap.during.left}）`);
+ok(Math.abs(swap.during.left - swap.toLeft) <= 2, `拖到 proj-01 左半：竖线贴在它左缘（${swap.during.left} vs ${swap.toLeft}）`);
 ok(swap.during.body && swap.during.dragging === 1, "拖拽期间 body 带 ws-tab-dragging、被拖那颗标成 .drag");
 ok(!swap.after.body && swap.after.dragging === 0 && swap.after.lines === 0, "松手后拖拽类与竖线都清掉");
 s = await barState();
-ok(
-  JSON.stringify(s.visibleIds.slice(0, 3)) === JSON.stringify(["f:/proj-08", "f:/proj-09", "f:/proj-07"]),
-  `拖到第二颗右边：两颗对调（${s.visibleIds.join(" / ")}）`,
-);
+ok(JSON.stringify(s.visibleIds) === JSON.stringify(["f:/proj-03", "f:/proj-01", "f:/proj-02"]), `拖到第一颗左边：它排到最前（${s.visibleIds.join(" / ")}）`);
+ok(s.count === 3 && s.moreText === "＋6", `拖完仍是 3 颗 + ＋N（${s.count} / ${s.moreText}）`);
 ok(tabsCalls() === calls0 + 1, `松手只发一条 ws.tabs（${tabsCalls() - calls0} 条）`);
-ok(JSON.stringify(lastTabs()?.pinned) === JSON.stringify(["f:/proj-08", "f:/proj-09", "f:/proj-07"]), `发出的是新顺序（${JSON.stringify(lastTabs()?.pinned)}）`);
+const ORDER1 = ["f:/proj-03", "f:/proj-01", "f:/proj-02", ...ORDER0.slice(3)];
+ok(JSON.stringify(lastTabs()?.order) === JSON.stringify(ORDER1), `写回的是整份 order（含折叠组，${lastTabs()?.order?.length} 个）`);
+ok(lastTabs()?.max === 3, `同一句里带上名额（max ${lastTabs()?.max}）`);
 ok(s.onWs === "f:/proj-01", `拖拽的尾巴没误触发切组（当前 ${s.onWs}）`);
+// 可聚焦元素没变多：标签仍是原来那颗 button，另一颗还是 ＋N。
+const focus = await page.evaluate(() => ({
+  buttons: [...document.querySelectorAll(".ws-tabs-row button")].map((n) => (n.className || "").trim()),
+  extra: document.querySelectorAll(".ws-tabs-row [tabindex]:not(button)").length,
+}));
+ok(
+  focus.buttons.length === 4 && focus.buttons.every((c) => c === "ws-tabs-more" || /^ws-tab(\s|$)/.test(c)),
+  `拖拽没有多出可聚焦元素（${focus.buttons.join(" / ")}，额外 ${focus.extra} 个）`,
+);
 
-// 12) 刷新后顺序还在（桥落库了）
+// 9) 刷新后顺序还在（桥落库了 —— 桩桥在内存里持久化整份 order）
 await page.reload({ waitUntil: "networkidle" });
 await page.waitForSelector(".session-card", { timeout: 15000 });
 await sleep(700);
 s = await barState();
-ok(
-  JSON.stringify(s.visibleIds.slice(0, 3)) === JSON.stringify(["f:/proj-08", "f:/proj-09", "f:/proj-07"]),
-  `刷新后顺序还在（${s.visibleIds.join(" / ")}）`,
-);
+ok(JSON.stringify(s.visibleIds) === JSON.stringify(["f:/proj-03", "f:/proj-01", "f:/proj-02"]), `刷新后顺序还在（${s.visibleIds.join(" / ")}）`);
+ok(s.moreText === "＋6", `刷新后 ＋N 也没变（${s.moreText}）`);
 
-// 13) 补位组拖不动：不画线、不进拖拽态、不发请求、顺序一动不动
+// 10) 拖回原位一个字都不发；位移不到 4px 还是一次点击；拖完点击照常切组
 const calls1 = tabsCalls();
-const fill = await dragTab("f:/proj-01", "f:/proj-08", "before");
-ok(fill.mid.lines === 0 && fill.during.lines === 0 && fill.after.lines === 0, "补位组按住拖动：一条竖线都不画");
-ok(!fill.during.body && fill.during.dragging === 0, "补位组不进拖拽态（body 无类、标签无 .drag）");
-s = await barState();
-ok(tabsCalls() === calls1, `补位组拖完：没有发 ws.tabs（${tabsCalls() - calls1} 条）`);
-ok(
-  JSON.stringify(s.visibleIds.slice(0, 3)) === JSON.stringify(["f:/proj-08", "f:/proj-09", "f:/proj-07"]),
-  `补位组拖完：顺序一动不动（${s.visibleIds.join(" / ")}）`,
-);
-
-// 14) 拖回原位不发；位移不到 4px 还是一次点击
-const calls2 = tabsCalls();
-const same = await dragTab("f:/proj-08", "f:/proj-09", "before");
+const same = await dragTab("f:/proj-01", "f:/proj-02", "before");
 ok(same.during.lines === 1, "拖回原位：竖线照画");
 s = await barState();
-ok(tabsCalls() === calls2, `拖回原位：顺序没变就不发 ws.tabs（${tabsCalls() - calls2} 条）`);
-ok(s.onWs === "f:/proj-01", `拖回原位也没误切组（当前 ${s.onWs}）`);
-const calls3 = tabsCalls();
-const box9 = await page.locator('.ws-tab[data-ws="f:/proj-09"]').boundingBox();
-await page.mouse.move(Math.round(box9.x + box9.width / 2), Math.round(box9.y + box9.height / 2));
+ok(tabsCalls() === calls1, `拖回原位：顺序没变就不发 ws.tabs（${tabsCalls() - calls1} 条）`);
+ok(JSON.stringify(s.visibleIds) === JSON.stringify(["f:/proj-03", "f:/proj-01", "f:/proj-02"]), `拖回原位：标签行一动不动（${s.visibleIds.join(" / ")}）`);
+const calls2 = tabsCalls();
+// 3px 那次点击打在完全露出来的第一颗上（靠后的标签有一截压在 ＋N 底下）。
+const box3 = await page.locator('.ws-tab[data-ws="f:/proj-03"]').boundingBox();
+await page.mouse.move(Math.round(box3.x + box3.width / 2), Math.round(box3.y + box3.height / 2));
 await page.mouse.down();
-await page.mouse.move(Math.round(box9.x + box9.width / 2) + 3, Math.round(box9.y + box9.height / 2));
+await page.mouse.move(Math.round(box3.x + box3.width / 2) + 3, Math.round(box3.y + box3.height / 2));
 await page.mouse.up();
-await sleep(500);
+await sleep(600);
 s = await barState();
-ok(s.onWs === "f:/proj-09", `位移 3px 没到阈值：当成普通点击切组（当前 ${s.onWs}）`);
-ok(tabsCalls() === calls3, "那次点击没发 ws.tabs（不是拖拽）");
+ok(s.onWs === "f:/proj-03", `位移 3px 没到阈值：当成普通点击切组（当前 ${s.onWs}）`);
+ok(tabsCalls() === calls2, "那次点击没发 ws.tabs（不是拖拽）");
+await page.locator('.ws-tab[data-ws="f:/proj-01"]').click();
+await sleep(600);
+s = await barState();
+ok(s.onWs === "f:/proj-01", `拖过之后再点标签，点击语义照常（当前 ${s.onWs}）`);
 
-// 15) D149 只认鼠标：触屏 / 笔的 pointerdown 不进 4px 起拖判定（不画竖线、不发 ws.tabs、也不切组）
+// 11) ＋N 里的折叠组没有 DOM：从那一行起拖也不发消息、不改顺序
+const calls3 = tabsCalls();
+const orderBefore = JSON.stringify((await barState()).visibleIds);
+const before13id = (await barState()).onWs;
+const folded = await page.evaluate(() => ({
+  rows: [...document.querySelectorAll(".ws-tabs-menu .pm-item")].map((n) => n.dataset.ws ?? ""),
+  inRow: document.querySelectorAll(".ws-tab-line").length,
+}));
+await page.click(".ws-tabs-more");
+await sleep(200);
+const rowBox = await page.locator(".ws-tabs-menu .pm-item").first().boundingBox();
+const tab1 = await page.locator(".ws-tab").first().boundingBox();
+await page.mouse.move(Math.round(rowBox.x + rowBox.width / 2), Math.round(rowBox.y + rowBox.height / 2));
+await page.mouse.down();
+await page.mouse.move(Math.round(tab1.x + 8), Math.round(tab1.y + tab1.height / 2), { steps: 8 });
+await page.mouse.up();
+await sleep(400);
+s = await barState();
+ok(tabsCalls() === calls3, `从 ＋N 那一行起拖：没发 ws.tabs（${tabsCalls() - calls3} 条）`);
+ok(JSON.stringify(s.visibleIds) === orderBefore, `顺序没动（${s.visibleIds.join(" / ")}）`);
+ok(folded.inRow === 0 && s.foldedIds.length === 6, "折叠组在横条上没有第二份 DOM（只有 ＋N 里那 6 行）");
+ok(s.menuRows === 6 && s.onWs === before13id, `下拉照开、也没顺手切组（剩 ${s.menuRows} 行 / 当前 ${s.onWs}）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+
+// 12) 当前组临时替最后一格：它也能拖，拖完就变成顺序里的一员，横条不涨颗
+// 窗口放宽到 1400：#121 只保证名额内的标签「画出来」，1000px 下第 3 颗有一截压在 ＋N 底下，
+// 想拖到「最右端」就得先把三颗整个露出来。
+await page.setViewportSize({ width: 1400, height: 820 });
+await sleep(300);
+await page.goto(`${BASE}/#/s/s-06-1`, { waitUntil: "networkidle" });
+await sleep(700);
+s = await barState();
+ok(JSON.stringify(s.visibleIds) === JSON.stringify(["f:/proj-03", "f:/proj-01", "f:/proj-06"]), `当前组（组序第 6）替最后一格（${s.visibleIds.join(" / ")}）`);
 const calls4 = tabsCalls();
-const before15 = await barState();
-const touchBox = await page.locator('.ws-tab[data-ws="f:/proj-08"]').boundingBox();
+const sub = await dragTab("f:/proj-06", "f:/proj-03", "before");
+ok(sub.during.lines === 1, "替位组拖起来也画线");
+s = await barState();
+ok(JSON.stringify(s.visibleIds) === JSON.stringify(["f:/proj-06", "f:/proj-03", "f:/proj-01"]), `替位组拖到最前：它成了第一颗（${s.visibleIds.join(" / ")}）`);
+ok(s.count === 3 && s.moreText === "＋6", `替位组拖完横条不涨颗（${s.count} / ${s.moreText}）`);
+const ORDER2 = ["f:/proj-06", "f:/proj-03", "f:/proj-01", "f:/proj-02", "f:/proj-04", "f:/proj-05", "f:/proj-07", "f:/proj-08", "f:/proj-09"];
+ok(JSON.stringify(lastTabs()?.order) === JSON.stringify(ORDER2), `替位组也写回整份 order（${lastTabs()?.order?.length} 个）`);
+ok(tabsCalls() === calls4 + 1, `替位组拖完只发一条 ws.tabs（${tabsCalls() - calls4} 条）`);
+// 拖到最右端 = 排在可见段最后（落点夹在画出来的标签里，折叠组不会被拽进来）
+const right = await dragTab("f:/proj-06", "f:/proj-01", "after");
+ok(right.during.lines === 1, "拖到最右端：竖线照画");
+s = await barState();
+ok(s.visibleIds[2] === "f:/proj-06", `拖到最右端：它排在可见段最后（${s.visibleIds.join(" / ")}）`);
+ok(s.count === 3 && s.moreText === "＋6", `拖到最右端也没把折叠组拽进前 3（${s.count} / ${s.moreText}）`);
+const calls5 = tabsCalls();
+const parked = await dragTab("f:/proj-06", "f:/proj-01", "after");
+ok(parked.during.lines === 1, "替位组拖回自己那一格：竖线照画");
+ok(tabsCalls() === calls5, `替位组原地松手也不发 ws.tabs（${tabsCalls() - calls5} 条）`);
+
+// 13) D149 只认鼠标：触屏 / 笔的 pointerdown 不进 4px 起拖判定（不画竖线、不发 ws.tabs、也不切组）
+const calls6 = tabsCalls();
+const before13 = await barState();
+const target = before13.visibleIds[1];
+const touchBox = await page.locator(`.ws-tab[data-ws="${target}"]`).boundingBox();
 const tx = Math.round(touchBox.x + touchBox.width / 2);
 const ty = Math.round(touchBox.y + touchBox.height / 2);
-const pointer = (type, target, x, y, pointerType) =>
+const pointer = (type, where, x, y, pointerType) =>
   page.evaluate(
-    ([type, target, x, y, pointerType]) => {
-      const node = target === "tab" ? document.querySelector('.ws-tab[data-ws="f:/proj-08"]') : window;
+    ([type, where, x, y, pointerType]) => {
+      const node = where === "tab" ? document.querySelector(".ws-tab") : window;
       node.dispatchEvent(
         new PointerEvent(type, {
           pointerType,
@@ -546,30 +568,32 @@ const pointer = (type, target, x, y, pointerType) =>
         }),
       );
     },
-    [type, target, x, y, pointerType],
+    [type, where, x, y, pointerType],
   );
-await pointer("pointerdown", "tab", tx, ty, "touch");
-await pointer("pointermove", "window", tx + 80, ty, "touch");
-const touch = await dragMark();
-ok(touch.lines === 0 && !touch.body && touch.dragging === 0, "触屏按住横拖：一条竖线都不画、不进拖拽态");
-await pointer("pointerup", "window", tx + 80, ty, "touch");
-await sleep(400);
+for (const kind of ["touch", "pen"]) {
+  await pointer("pointerdown", "tab", tx, ty, kind);
+  await pointer("pointermove", "window", tx + 80, ty, kind);
+  const st = await dragMark();
+  ok(st.lines === 0 && !st.body && st.dragging === 0, `${kind} 按住横拖：一条竖线都不画、不进拖拽态`);
+  await pointer("pointerup", "window", tx + 80, ty, kind);
+  await sleep(350);
+}
 s = await barState();
-ok(s.onWs === before15.onWs, `触屏那一下没切组（当前 ${s.onWs}）`);
-ok(tabsCalls() === calls4, `触屏那一下没发 ws.tabs（${tabsCalls() - calls4} 条）`);
+ok(s.onWs === before13.onWs, `触屏 / 笔那两下没切组（当前 ${s.onWs}）`);
+ok(tabsCalls() === calls6, `触屏 / 笔那两下没发 ws.tabs（${tabsCalls() - calls6} 条）`);
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-drag.png`), clip: { x: 0, y: 0, width: 1000, height: 140 } });
 
-// 16) #126：切会话不改标签行的补位序 —— 组序按组名钉死，「最近活动」不再让它换人
+// 14) #126 / #173：切会话不改标签行的顺序 —— 一份 order 说了算，「最近活动」不再让它换人
 await page.goto(`${BASE}/#/s/s-01-1`, { waitUntil: "networkidle" });
 await sleep(700);
 const baseIds = (await barState()).visibleIds;
-ok(baseIds.length >= 3, `切会话前：标签行至少画满 N 颗（${baseIds.join(" / ")}）`);
+ok(baseIds.length === 3, `切会话前：标签行画满 N 颗（${baseIds.join(" / ")}）`);
 for (const id of ["s-05-1", "s-09-1", "s-01-1"]) {
   await page.goto(`${BASE}/#/s/${id}`, { waitUntil: "networkidle" });
   await sleep(700);
   const now = (await barState()).visibleIds;
   ok(now.slice(0, 2).join() === baseIds.slice(0, 2).join(), `切到 ${id}：前两颗原地不动（${now.join(" / ")}）`);
-  ok(now.length <= 4, `切到 ${id}：圈内最多 N+1 颗（${now.length}）`);
+  ok(now.length === 3, `切到 ${id}：圈内仍是 N 颗（${now.length}）`);
 }
 await page.goto(`${BASE}/#/s/s-01-1`, { waitUntil: "networkidle" });
 await sleep(700);

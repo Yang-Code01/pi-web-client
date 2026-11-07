@@ -1,7 +1,8 @@
 /**
- * #121 标签行只画 N 个 + `＋N`；#124 加横向落点；#173 起顺序只有一份 `order`（左栏 / 标签行共用）。
- * 这里只做几何与集合运算（一份 order + 名额 + 当前组 → 可见标签 + 被折叠的组 + 拖动落点），
- * 碰不到 DOM —— 边界（当前组替最后一格、N+1、落点）脱离页面就能核对。
+ * #121 标签行只画 N 个 + `＋N`；#124 加横向落点；#173 起顺序只有一份 `order`（左栏 / 标签行共用）；
+ * #174 每一颗可见标签都能拖（不再只限固定组 —— 固定组本身已随 #173 退役）。
+ * 这里只做几何与集合运算（一份 order + 名额 + 当前组 → 可见标签 + 被折叠的组 + 拖动落点 + 松手后的
+ * 新 order），碰不到 DOM —— 边界（当前组替最后一格、落点、原位松手）脱离页面就能核对。
  */
 
 import { moveTo } from "./drag.ts";
@@ -76,14 +77,20 @@ export function tabHitTest(x: number, rects: TabRect[]): TabHit | null {
 }
 
 /**
- * #173 松手后的新 order；`null` = 松在原处（落点就是它的现位置），一个字都不用发。
- * 只搬 `id` 一颗，其余顺序不动（含没画出来的折叠组）—— 拖拽只重排、不增删（#118 R7）。
+ * #174 松手后的新 order；`null` = 松在原处（落点就是它的现位置），一个字都不用发。
+ *
+ * 只在**可见段**里搬 `id` 一颗：折叠组没有 DOM，谁也不该把它们拖进来（#172 R14 / R21）。落点是可见段里的
+ * 一颗（`tabHitTest()` 量的是画出来的标签，天然夹在 `[0, max-1]`），插位算完后把「重排过的可见段 +
+ * 原封不动的折叠段」整份交回去。所以拖到最右端 = 排在可见段最后；替位组也能拖，拖完它就从「临时占
+ * 最后一格」变成顺序里的一员，被它顶下去的那颗回 ＋N，横条不涨颗数（#172 R18）。拖拽只重排、不增删
+ * （#118 R7）。
  */
-export function tabReorder(order: readonly string[], id: string, hit: TabHit | null): string[] | null {
-  if (!hit || hit.id === id) return null;
-  const at = order.indexOf(id);
-  const target = order.indexOf(hit.id);
-  if (at < 0 || target < 0) return null;
-  const next = moveTo(order, id, (at < target ? target - 1 : target) + (hit.side === "after" ? 1 : 0));
-  return next.every((x, i) => x === order[i]) ? null : next;
+export function tabReorder(model: TabModel, id: string, hit: TabHit | null): string[] | null {
+  if (!hit) return null;
+  const at = model.visible.indexOf(id);
+  const target = model.visible.indexOf(hit.id);
+  if (at < 0 || target < 0 || target === at) return null;
+  const next = moveTo(model.visible, id, (at < target ? target - 1 : target) + (hit.side === "after" ? 1 : 0));
+  if (next.every((x, i) => x === model.visible[i])) return null;
+  return [...next, ...model.more];
 }
