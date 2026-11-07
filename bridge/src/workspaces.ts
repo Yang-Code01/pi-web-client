@@ -35,7 +35,7 @@ export interface WorkspaceState {
    * 迁移：旧 `pinned` 顺序打头，其余按显示名字母序；`pinned` 从此退役。
    */
   order?: string[];
-  /** 标签行最多画几颗，默认 3，读写都 clamp 到 1–5（#176 改成默认 6 / 1–12）。 */
+  /** 标签行最多画几颗，默认 6，读写都 clamp 到 1–12（#176）。 */
   max?: number;
 }
 
@@ -65,13 +65,13 @@ export function groupId(root: unknown): string {
   return normalizePath(root).toLowerCase();
 }
 
-/** 标签行名额：默认 3，可调范围 1–5（#173 沿用 #122 的范围；#176 改成默认 6 / 1–12）。 */
-export const TABS_DEFAULT = 3;
+/** 标签行名额：默认 6，可调范围 1–12（#176）。 */
+export const TABS_DEFAULT = 6;
 export const TABS_MIN = 1;
-export const TABS_MAX = 5;
+export const TABS_MAX = 12;
 
 /**
- * 名额：只认有限数，取整后 clamp 到 1–5；字符串 / null / NaN 之类返回 `null` = 非法。
+ * 名额：只认有限数，取整后 clamp 到 1–12；字符串 / null / NaN 之类返回 `null` = 非法。
  * 越界算合法（clamp），不是数字才算非法（协议要能回一句 notice 而不是悄悄改）。
  */
 function readMax(value: unknown): number | null {
@@ -329,14 +329,14 @@ export class Workspaces {
    * 标签行的顺序 + 名额（#173）：两个字段各自可缺省，缺省的那个一个字都不动；给了就**一次落盘**。
    *
    * `order` 是全量顺序（含折叠组），不按名额截断 —— 名额只决定画几颗，不影响顺序本身。
-   * 写前洗一遍：去重、剔掉已经不存在的组、缺的组按创建序补到末尾。名额 clamp 到 1–5；
+   * 写前洗一遍：去重、剔掉已经不存在的组、缺的组按创建序补到末尾。名额 clamp 到 1–12；
    * 类型不合法时返回原因且**什么都不改** —— 调用方据此回 notice。旧页面发来的 `pinned` 不参与排序。
    */
   setTabs(input: { order?: unknown; max?: unknown }): { ok: boolean; reason?: string } {
     let max = this.data.max ?? TABS_DEFAULT;
     if (input.max !== undefined) {
       const next = readMax(input.max);
-      if (next == null) return { ok: false, reason: `固定名额要是 ${TABS_MIN}–${TABS_MAX} 之间的数字` };
+      if (next == null) return { ok: false, reason: `最多显示要是 ${TABS_MIN}–${TABS_MAX} 之间的数字` };
       max = next;
     }
     let order = this.data.order ?? [];

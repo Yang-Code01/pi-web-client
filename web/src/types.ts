@@ -136,7 +136,7 @@ export interface WorkspaceState {
   keys: Record<string, string>;
   /** #173 一份组序（含折叠组）：左栏与标签行共用。旧桥没有这个字段。 */
   order?: string[];
-  /** 标签行名额（1–5）。旧桥没有这个字段。 */
+  /** 标签行名额（1–12）。旧桥没有这个字段。 */
   max?: number;
 }
 
