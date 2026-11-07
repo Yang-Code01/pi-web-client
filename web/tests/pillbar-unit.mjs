@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { pillChip, starredSessions } from "../src/pillbar.ts";
+import { neighborAfterArchive, pillChip, starredSessions } from "../src/pillbar.ts";
 
 const time = (ts) => `t${ts}`;
 const session = { id: "st-1", name: "会话 01", cwd: "E:/demo", updatedAt: 7 };
@@ -59,4 +59,27 @@ test("一组里没有 ★ 时行 2 一颗胶囊都没有（只剩 NowChip 和 �
 
 test("在别组置顶的会话不串进来：本区列表里没有的 ★ id 一律忽略", () => {
   assert.deepEqual(rowIds(["a"], ["x", "y"]), []);
+});
+
+// #189：归档当前会话之后该切到哪一颗 —— ★ 行从左到右的 id 序列 + 被归档的 id，规则只有这一个纯函数。
+const row = ["a", "b", "c", "d"];
+
+test("归档当前会话：右邻存在就切右邻", () => {
+  assert.equal(neighborAfterArchive(row, "b"), "c");
+});
+
+test("归档的不是 ★ 行里的会话 → 不动作", () => {
+  assert.equal(neighborAfterArchive(row, "x"), null);
+});
+
+test("序列里没有右邻 → #189 先不动作（左邻留给 #190）", () => {
+  assert.equal(neighborAfterArchive(row, "d"), null);
+});
+
+test("当前会话没 ★、自己占第 1 格时，右邻就是右边第一颗 ★", () => {
+  assert.equal(neighborAfterArchive(["cur", ...row], "cur"), "a");
+});
+
+test("★ 行里只剩它一颗 → 不动作（空态留给 #190）", () => {
+  assert.equal(neighborAfterArchive(["only"], "only"), null);
 });
