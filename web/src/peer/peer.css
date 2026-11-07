@@ -18,6 +18,8 @@
   --line-strong: #2f3a48;
   --text: #e7eaf0;
   --dim: #9aa2b1;
+  /* /peer 是另一份文档，不跑 app.ts 的 applyPrefs，所以这里自带一份默认值；
+     D158 管的是「同一份文档里同一判据只有一份」。 */
   --faint: #8b93a1;
   --accent: #7dd3fc;
   --accent-bg: #0e2a36;
