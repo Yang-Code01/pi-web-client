@@ -1,7 +1,7 @@
 /**
- * #121 标签行只画 N 个 + `＋N`；#124 再加横向落点与固定组重排。这里只做几何与集合运算（组序 /
- * 固定组 / 名额 / 当前组 → 可见标签 + 被折叠的组 + 拖动落点），碰不到 DOM —— 边界（补位、替换、
- * N+1、左半 / 右半）脱离页面就能核对。
+ * #121 标签行只画 N 个 + `＋N`；#124 加横向落点；#173 起顺序只有一份 `order`（左栏 / 标签行共用）。
+ * 这里只做几何与集合运算（一份 order + 名额 + 当前组 → 可见标签 + 被折叠的组 + 拖动落点），
+ * 碰不到 DOM —— 边界（当前组替最后一格、N+1、落点）脱离页面就能核对。
  */
 
 import { moveTo } from "./drag.ts";
@@ -9,76 +9,39 @@ import { moveTo } from "./drag.ts";
 /** 名额的兜底值：桥端没下发 `max`（旧桥 / 还没连上）时按 3 画。权威值在桥端 `Workspaces.max`。 */
 export const TABS_DEFAULT = 3;
 
-/** 名额的上下界，与桥 `setTabs()` 的 clamp 1–5 是同一对数（原型量过，D149）。 */
-export const PIN_MIN = 1;
-export const PIN_MAX = 5;
+/** 名额的上下界，与桥 `setTabs()` 的 clamp 1–5 是同一对数（#176 再改成 1–12）。 */
+export const TABS_MIN = 1;
+export const TABS_MAX = 5;
 
 /** 名额进页面先过这一道：步进器 / `ws.tabs` 都只认这个范围。 */
 export function clampMax(next: number): number {
-  return Math.min(PIN_MAX, Math.max(PIN_MIN, Math.trunc(next)));
-}
-
-/**
- * 标签行与设置面板共用的那把尺子：只留左栏里真有的组、去重、截到名额。
- * 桥端 `setTabs()` 是同一套规则（去重 / 剔脏 / 截断）；页面这边按同一把尺子画，「勾选的样子」和
- * 「标签行的样子」才不会是两套说法。
- */
-export function effectiveFixed(pinned: readonly string[], knownIds: ReadonlySet<string>, max: number): string[] {
-  const cap = Number.isFinite(max) ? Math.max(0, Math.trunc(max)) : 0;
-  const out: string[] = [];
-  for (const id of pinned) if (knownIds.has(id) && !out.includes(id) && out.length < cap) out.push(id);
-  return out;
+  return Math.min(TABS_MAX, Math.max(TABS_MIN, Math.trunc(next)));
 }
 
 export interface TabModel {
   /** 标签行依次画哪几组（组 id，顺序即显示顺序）。 */
   visible: string[];
-  /** `visible` 里属于固定组的那一段（前缀）；#124 只有这几颗能拖。 */
-  fixed: string[];
-  /** 收进 `＋N` 的组，仍是左栏组序。 */
+  /** 收进 `＋N` 的组，仍是 order 里的相对顺序。 */
   more: string[];
 }
 
-export function tabModel(o: { order: string[]; pinned: string[]; max: number; current?: string }): TabModel {
+/**
+ * 标签行画哪几颗（#173）：按 `order` 取前 `max` 颗；当前组不在其中时**占最后一格**，
+ * 原来第 `max` 颗退进 `more`，所以横条永远不超过名额。
+ */
+export function tabModel(o: { order: readonly string[]; max: number; current?: string }): TabModel {
   const max = Number.isFinite(o.max) ? Math.max(0, Math.trunc(o.max)) : 0;
-  const inOrder = new Set(o.order);
-  // 坏文件里的脏 id / 重复 id / 超出名额的那几颗在这里就剔掉：渲染层只该看到真会画出来的组。
-  const pinned = effectiveFixed(o.pinned, inOrder, max);
+  // 坏快照里的重复 id 只认第一次出现的那颗。
+  const order: string[] = [];
+  for (const id of o.order) if (!order.includes(id)) order.push(id);
 
-  const taken = new Set(pinned);
-  const visible = [...taken];
-  // 按左栏组序补位到名额 —— 补位排在固定组后面，固定组的位置不会被活动时间挤走。
-  for (const id of o.order) {
-    if (visible.length >= max) break;
-    if (taken.has(id)) continue;
-    taken.add(id);
-    visible.push(id);
-  }
-
-  // 当前组必须看得见：挤掉最后一个**补位**组（固定组不动）；一个补位都没有就往后追一颗。
-  const pinnedSet = new Set(pinned);
-  const current = o.current && inOrder.has(o.current) ? o.current : null;
-  if (current && !taken.has(current)) {
-    let at = -1;
-    for (let i = visible.length - 1; i >= 0; i--) {
-      if (!pinnedSet.has(visible[i])) {
-        at = i;
-        break;
-      }
-    }
-    if (at >= 0) visible[at] = current;
-    else visible.push(current);
-  }
+  const visible = order.slice(0, max);
+  const current = o.current && order.includes(o.current) ? o.current : null;
+  if (current && visible.length && !visible.includes(current)) visible[visible.length - 1] = current;
 
   const shown = new Set(visible);
-  const more: string[] = [];
-  for (const id of o.order) {
-    if (shown.has(id)) continue;
-    shown.add(id);
-    more.push(id);
-  }
-  // 固定组永远占 visible 的前缀（补位只往后排、当前组只挤补位），所以拖动的那几颗就是这一段。
-  return { visible, fixed: pinned, more };
+  const more = order.filter((id) => !shown.has(id));
+  return { visible, more };
 }
 
 /** #124 横向落点：`x` 落在哪一颗标签、插在它前面还是后面。 */
@@ -113,14 +76,14 @@ export function tabHitTest(x: number, rects: TabRect[]): TabHit | null {
 }
 
 /**
- * #124 松手后的固定组新顺序；`null` = 松在原处（落点就是它的现位置），一个字都不用发。
- * 只搬 `id` 一颗，其余顺序不动 —— 拖拽只重排、不增删（#118 R7）。
+ * #173 松手后的新 order；`null` = 松在原处（落点就是它的现位置），一个字都不用发。
+ * 只搬 `id` 一颗，其余顺序不动（含没画出来的折叠组）—— 拖拽只重排、不增删（#118 R7）。
  */
-export function tabReorder(pinned: readonly string[], id: string, hit: TabHit | null): string[] | null {
+export function tabReorder(order: readonly string[], id: string, hit: TabHit | null): string[] | null {
   if (!hit || hit.id === id) return null;
-  const at = pinned.indexOf(id);
-  const target = pinned.indexOf(hit.id);
+  const at = order.indexOf(id);
+  const target = order.indexOf(hit.id);
   if (at < 0 || target < 0) return null;
-  const next = moveTo(pinned, id, (at < target ? target - 1 : target) + (hit.side === "after" ? 1 : 0));
-  return next.every((x, i) => x === pinned[i]) ? null : next;
+  const next = moveTo(order, id, (at < target ? target - 1 : target) + (hit.side === "after" ? 1 : 0));
+  return next.every((x, i) => x === order[i]) ? null : next;
 }

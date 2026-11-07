@@ -30,9 +30,12 @@ export interface WorkspaceState {
   overrides: Record<string, string>;
   /** 归一化 cwd 的小写 → 工程根。缓存，只由 `resolve()` 写。 */
   keys: Record<string, string>;
-  /** #122 固定组 id，顺序即标签行顺序。存量文件没有这条 → 空列表。 */
-  pinned?: string[];
-  /** #122 固定名额，默认 3，读写都 clamp 到 1–5。存量文件没有这条 → 默认。 */
+  /**
+   * #173 一份顺序：全量组 id（含被折叠的），顺序即左栏 / 标签行顺序。存量文件没有这条 →
+   * 迁移：旧 `pinned` 顺序打头，其余按显示名字母序；`pinned` 从此退役。
+   */
+  order?: string[];
+  /** 标签行最多画几颗，默认 3，读写都 clamp 到 1–5（#176 改成默认 6 / 1–12）。 */
   max?: number;
 }
 
@@ -62,7 +65,7 @@ export function groupId(root: unknown): string {
   return normalizePath(root).toLowerCase();
 }
 
-/** #122 标签行的固定名额：默认 3，可调范围 1–5（#118 R8）。 */
+/** 标签行名额：默认 3，可调范围 1–5（#173 沿用 #122 的范围；#176 改成默认 6 / 1–12）。 */
 export const TABS_DEFAULT = 3;
 export const TABS_MIN = 1;
 export const TABS_MAX = 5;
@@ -76,14 +79,36 @@ function readMax(value: unknown): number | null {
   return Math.min(TABS_MAX, Math.max(TABS_MIN, Math.trunc(value)));
 }
 
-/** 固定组列表：只留非空字符串并去重。组还在不在由调用方过滤（快照 / 写入前各有一把）。 */
-function readPinned(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
+/** 组在界面上的名字：用户起的名字 → 目录名 → 「新工作区」（与左栏 `buildTree()` 的回落同一套）。 */
+function displayName(group: WsGroup): string {
+  const own = group.name.trim();
+  if (own) return own;
+  const parts = normalizePath(group.key).split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? "新工作区";
+}
+
+/** 显示名字母序，大小写不敏感；同名靠 id 稳定。 */
+function byDisplayName(a: WsGroup, b: WsGroup): number {
+  return displayName(a).localeCompare(displayName(b), undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id);
+}
+
+/**
+ * order 的唯一洗法（#173）：去重、剔掉已经不存在的组、把缺的组补到末尾。
+ * `seed` 只在旧文件没有 order 时用 —— 旧 `pinned` 的顺序原样打头（迁移）；迁移补齐按显示名，
+ * 之后的日常补齐按创建序（`groups` 数组序），不按名字插队。
+ */
+function readOrder(value: unknown, groups: WsGroup[], seed: readonly unknown[] = []): string[] {
+  const known = new Set(groups.map((g) => g.id));
   const out: string[] = [];
-  for (const raw of value) {
-    if (typeof raw !== "string" || !raw || out.includes(raw)) continue;
-    out.push(raw);
-  }
+  const add = (id: unknown): void => {
+    if (typeof id !== "string" || !id || !known.has(id) || out.includes(id)) return;
+    out.push(id);
+  };
+  if (Array.isArray(value)) for (const id of value) add(id);
+  else for (const id of seed) add(id);
+  const missing = groups.filter((g) => !out.includes(g.id));
+  if (!Array.isArray(value)) missing.sort(byDisplayName);
+  for (const group of missing) out.push(group.id);
   return out;
 }
 
@@ -113,7 +138,7 @@ function readRecord(value: unknown, normalize: boolean): Record<string, string> 
 }
 
 export class Workspaces {
-  private data: WorkspaceState = { groups: [], overrides: {}, keys: {}, pinned: [], max: TABS_DEFAULT };
+  private data: WorkspaceState = { groups: [], overrides: {}, keys: {}, order: [], max: TABS_DEFAULT };
   private readonly file = statePath("workspaces.json");
   private readonly root: (dir: string) => Promise<string | null>;
 
@@ -123,13 +148,17 @@ export class Workspaces {
   }
 
   private load(): void {
-    const raw = readJson<Partial<WorkspaceState>>(this.file, {});
+    // 旧文件可能还带着 #122 的 pinned：类型上已退役，迁移时从原始 JSON 里读一次。
+    const raw = readJson<Partial<WorkspaceState> & { pinned?: unknown }>(this.file, {});
+    const groups = readGroups(raw.groups);
+    const legacy = !Array.isArray(raw.order);
     this.data = {
-      groups: readGroups(raw.groups),
+      groups,
       overrides: readRecord(raw.overrides, false),
       keys: readRecord(raw.keys, true),
-      // 存量文件没有这两个字段：缺失即空列表 / 默认名额，不迁移、不写回。
-      pinned: readPinned(raw.pinned),
+      // #173 一份顺序接管：旧文件没有 order → 旧 pinned 打头、其余按显示名；此后 order 说了算。
+      // 与 max 一样，迁移只在内存里完成，等下一次写才落盘（不改写旧文件里的其他字段）。
+      order: readOrder(raw.order, groups, legacy && Array.isArray(raw.pinned) ? raw.pinned : []),
       max: readMax(raw.max) ?? TABS_DEFAULT,
     };
   }
@@ -143,13 +172,12 @@ export class Workspaces {
   }
 
   snapshot(): WorkspaceState {
-    const ids = new Set(this.data.groups.map((g) => g.id));
     return {
       groups: this.data.groups.map((g) => ({ ...g })),
       overrides: { ...this.data.overrides },
       keys: { ...this.data.keys },
-      // 坏文件里的悬空 id 不进画布：树 / 标签行只该看到还存在的组。
-      pinned: (this.data.pinned ?? []).filter((id) => ids.has(id)),
+      // 坏文件里的悬空 / 重复 id 不进画布：树 / 标签行只该看到还存在的组，顺序永远完整。
+      order: readOrder(this.data.order, this.data.groups),
       max: this.data.max ?? TABS_DEFAULT,
     };
   }
@@ -186,6 +214,8 @@ export class Workspaces {
     if (existing) return existing;
     const created: WsGroup = { id, name: "", key, manual: false };
     this.data.groups.push(created);
+    // #173 新出现的组追加到末尾：ensure 是「补一个」，不能插队改用户顺序。
+    this.data.order = [...(this.data.order ?? []), id];
     this.save();
     return created;
   }
@@ -230,16 +260,15 @@ export class Workspaces {
     });
     if (keep.length !== this.data.groups.length) {
       this.data.groups = keep;
-      this.prunePinned();
+      this.pruneOrder();
     }
   }
 
-  /** 组没了，固定列表里就不该还留着它的 id（#122）：悬空 id 会让标签行少一颗却不知道少了谁。 */
-  private prunePinned(): void {
-    if (!this.data.pinned) return;
+  /** 组没了，order 里就不该还留着它的 id（#173）：悬空 id 会让顺序少一格却不知道少了谁。 */
+  private pruneOrder(): void {
     const ids = new Set(this.data.groups.map((g) => g.id));
-    const next = this.data.pinned.filter((id) => ids.has(id));
-    if (next.length !== this.data.pinned.length) this.data.pinned = next;
+    const next = (this.data.order ?? []).filter((id) => ids.has(id));
+    if (next.length !== (this.data.order ?? []).length) this.data.order = next;
   }
 
   /** 改名。空名 = 恢复目录名。返回是否有改动。 */
@@ -258,6 +287,8 @@ export class Workspaces {
     const id = `manual:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const group: WsGroup = { id, name: String(name ?? "").trim().slice(0, 80), key: "", manual: true };
     this.data.groups.push(group);
+    // #173 新组排到末尾，不按显示名插队。
+    this.data.order = [...(this.data.order ?? []), id];
     this.save();
     return { ...group };
   }
@@ -289,35 +320,31 @@ export class Workspaces {
     if (!group.manual) return { ok: false, reason: "这个工作区跟着目录走，不能删" };
     if (Object.values(this.data.overrides).includes(id)) return { ok: false, reason: "这个工作区里还有会话" };
     this.data.groups = this.data.groups.filter((g) => g.id !== id);
-    this.prunePinned();
+    this.pruneOrder();
     this.save();
     return { ok: true };
   }
 
   /**
-   * 固定组 + 名额（#122）：两个字段各自可缺省，缺省的那个一个字都不动；给了就**一次落盘**写两个 ——
-   * 名额调小与「截断超出的固定组」必须是同一次写，否则会出现「名额 3、固定还是 5 个」的中间态。
+   * 标签行的顺序 + 名额（#173）：两个字段各自可缺省，缺省的那个一个字都不动；给了就**一次落盘**。
    *
-   * 写前四件事：去重、剔掉已经不存在的组、名额 clamp 到 1–5、超过名额的截断保留前面的。
-   * 名额 / 列表本身不合法时返回原因且**什么都不改** —— 调用方据此回 notice。
+   * `order` 是全量顺序（含折叠组），不按名额截断 —— 名额只决定画几颗，不影响顺序本身。
+   * 写前洗一遍：去重、剔掉已经不存在的组、缺的组按创建序补到末尾。名额 clamp 到 1–5；
+   * 类型不合法时返回原因且**什么都不改** —— 调用方据此回 notice。旧页面发来的 `pinned` 不参与排序。
    */
-  setTabs(input: { pinned?: unknown; max?: unknown }): { ok: boolean; reason?: string } {
+  setTabs(input: { order?: unknown; max?: unknown }): { ok: boolean; reason?: string } {
     let max = this.data.max ?? TABS_DEFAULT;
     if (input.max !== undefined) {
       const next = readMax(input.max);
       if (next == null) return { ok: false, reason: `固定名额要是 ${TABS_MIN}–${TABS_MAX} 之间的数字` };
       max = next;
     }
-    let pinned: string[];
-    if (input.pinned !== undefined) {
-      if (!Array.isArray(input.pinned)) return { ok: false, reason: "固定组要是一份组 id 列表" };
-      const known = new Set(this.data.groups.map((g) => g.id));
-      pinned = readPinned(input.pinned).filter((id) => known.has(id));
-    } else {
-      const known = new Set(this.data.groups.map((g) => g.id));
-      pinned = (this.data.pinned ?? []).filter((id) => known.has(id));
+    let order = this.data.order ?? [];
+    if (input.order !== undefined) {
+      if (!Array.isArray(input.order)) return { ok: false, reason: "标签行顺序要是一份组 id 列表" };
+      order = readOrder(input.order, this.data.groups);
     }
-    this.data.pinned = pinned.slice(0, max);
+    this.data.order = order;
     this.data.max = max;
     this.save();
     return { ok: true };

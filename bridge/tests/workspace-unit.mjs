@@ -195,7 +195,7 @@ test("forget 清掉 override，不留悬空指向", async () => {
   assert.equal(ws.groupFor("s1", library.root), id(library.root));
 });
 
-// ---------------------------------------------------------------- #122 固定组与名额
+// ---------------------------------------------------------------- #173 一份 order 接管顺序
 
 /** 直接把一份状态文件塞进目录里（模拟「存量文件 / 上一版桥写的文件」）。 */
 function seed(dir, value) {
@@ -203,32 +203,120 @@ function seed(dir, value) {
   fs.writeFileSync(path.join(dir, "workspaces.json"), JSON.stringify(value));
 }
 
-test("#122 旧状态文件（没有 pinned / max）直接读成空列表 + 3", () => {
-  const dir = path.join(tmp, "state-legacy");
+const ALPHA = id("A:/work/alpha");
+const BETA = id("B:/work/beta");
+const GAMMA = id("G:/work/gamma");
+
+/** 三组的存量文件：两组只有目录名，一组有名字（显示名 = 目录名 / 组名）。 */
+function legacy(dir, extra) {
   seed(dir, {
-    groups: [{ id: id(plain), name: "", key: normalizePath(plain), manual: false }],
+    groups: [
+      { id: BETA, name: "", key: normalizePath("B:/work/beta"), manual: false },
+      { id: ALPHA, name: "", key: normalizePath("A:/work/alpha"), manual: false },
+      { id: GAMMA, name: "Gamma", key: normalizePath("G:/work/gamma"), manual: false },
+    ],
     overrides: {},
     keys: {},
+    ...extra,
   });
+}
+
+test("#173 旧 pinned 升级：pinned 顺序打头，其余按显示名字母序", () => {
+  const dir = path.join(tmp, "state-173-pinned");
+  legacy(dir, { pinned: [GAMMA, "nope", GAMMA, ALPHA] });
   const snap = fresh({}, dir).snapshot();
-  assert.deepEqual(snap.pinned, []);
-  assert.equal(snap.max, 3, "存量文件没有名额，按默认 3");
+  // 显示名：Alpha / Beta / Gamma，大小写不敏感；pinned 的脏 id / 重复在这里洗掉。
+  assert.deepEqual(snap.order, [GAMMA, ALPHA, BETA]);
+  assert.equal("pinned" in snap, false, "快照里不再有 pinned");
 });
 
-test("#122 固定一个组：写进去，重启后顺序不变", () => {
-  const dir = path.join(tmp, "state-pinned");
+test("#173 旧文件没有 pinned：全部按显示名字母序", () => {
+  const dir = path.join(tmp, "state-173-legacy");
+  legacy(dir, {});
+  assert.deepEqual(fresh({}, dir).snapshot().order, [ALPHA, BETA, GAMMA]);
+});
+
+test("#173 迁移在第一次写入时落盘：文件里只有 order、没有 pinned", () => {
+  const dir = path.join(tmp, "state-173-save");
+  legacy(dir, { pinned: [GAMMA] });
   const ws = fresh({}, dir);
+  ws.rename(GAMMA, "Gamma 工程"); // 任意一次写
+  const onDisk = JSON.parse(fs.readFileSync(path.join(dir, "workspaces.json"), "utf8"));
+  assert.deepEqual(onDisk.order, [GAMMA, ALPHA, BETA]);
+  assert.ok(!("pinned" in onDisk), "落盘不再带 pinned");
+});
+
+test("#173 order 落盘之后 order 说了算，旧 pinned 不再参与", () => {
+  const dir = path.join(tmp, "state-173-order-wins");
+  legacy(dir, { order: [BETA, "nope", BETA, GAMMA], pinned: [ALPHA] });
+  assert.deepEqual(fresh({}, dir).snapshot().order, [BETA, GAMMA, ALPHA], "order 去重剔脏，缺的组补到末尾");
+});
+
+test("#173 新组追加到末尾（创建序），不按名字插队；删组从 order 里移除", () => {
+  const ws = fresh();
+  const b = ws.groupFor("s1", plain2); // plain-b
+  const a = ws.groupFor("s2", plain); // plain-a，字母序在前
+  assert.deepEqual(ws.snapshot().order, [b, a], "ensure 出来的新组排在末尾");
+  const manual = ws.create("客户 A").id;
+  assert.deepEqual(ws.snapshot().order, [b, a, manual], "create 也是追加");
+  assert.equal(ws.drop(manual).ok, true);
+  assert.deepEqual(ws.snapshot().order, [b, a], "drop 从 order 里移除");
+});
+
+test("#173 setTabs({ order })：去重、剔未知 id、缺的组按创建序补末尾，不按名额截断", () => {
+  const ws = fresh();
   const a = ws.groupFor("s1", plain);
   const b = ws.groupFor("s2", plain2);
-  assert.equal(ws.setTabs({ pinned: [b, a] }).ok, true);
-  assert.deepEqual(ws.snapshot().pinned, [b, a], "顺序就是标签行顺序，不按组序重排");
-
-  const restarted = fresh({}, dir);
-  assert.deepEqual(restarted.snapshot().pinned, [b, a], "重启后固定组与顺序都还在");
-  assert.equal(restarted.snapshot().max, 3);
+  const c = ws.create("CC").id;
+  const d = ws.create("DD").id;
+  assert.equal(ws.setTabs({ order: [d, "nope", d, a], max: 2 }).ok, true);
+  const snap = ws.snapshot();
+  assert.deepEqual(snap.order, [d, a, b, c], "缺的 b / c 按创建序补到末尾");
+  assert.equal(snap.max, 2);
+  assert.equal(snap.order.length, 4, "order 是全量顺序，名额只决定画几颗");
 });
 
-test("#122 名额 clamp 到 1–5 并取整", () => {
+test("#173 只传 max：顺序一个字不动", () => {
+  const ws = fresh();
+  const a = ws.groupFor("s1", plain);
+  const b = ws.groupFor("s2", plain2);
+  ws.setTabs({ order: [b, a] });
+  assert.equal(ws.setTabs({ max: 5 }).ok, true);
+  assert.deepEqual(ws.snapshot().order, [b, a]);
+  assert.equal(ws.snapshot().max, 5);
+});
+
+test("#173 旧页面只传 pinned：不报错，也不改顺序", () => {
+  const ws = fresh();
+  const a = ws.groupFor("s1", plain);
+  const b = ws.groupFor("s2", plain2);
+  ws.setTabs({ order: [b, a] });
+  assert.equal(ws.setTabs({ pinned: [a] }).ok, true);
+  assert.deepEqual(ws.snapshot().order, [b, a], "旧页面发来的 pinned 不参与排序");
+});
+
+test("#173 非法 order：回原因且状态一个字不变", () => {
+  const ws = fresh();
+  ws.groupFor("s1", plain);
+  const before = ws.snapshot();
+  for (const bad of ["g1", null, 3, {}, true]) {
+    const result = ws.setTabs({ order: bad });
+    assert.equal(result.ok, false, `order=${JSON.stringify(bad)} 该被拒（空数组是合法的，见下一条）`);
+    assert.ok(result.reason, "拒绝要带一句原因（桥据此回 notice）");
+  }
+  assert.deepEqual(ws.snapshot(), before, "非法值不许改任何东西");
+});
+
+test("#173 空数组是合法 order：组按显示名补到末尾", () => {
+  const ws = fresh();
+  const b = ws.groupFor("s1", plain2);
+  const a = ws.groupFor("s2", plain);
+  assert.equal(ws.setTabs({ order: [] }).ok, true);
+  // 自愈补齐按创建序（不是字母序）：先建的 b 在前。
+  assert.deepEqual(ws.snapshot().order, [b, a]);
+});
+
+test("#173 名额仍 clamp 到 1–5 并取整", () => {
   const ws = fresh();
   for (const [given, want] of [
     [0, 1],
@@ -241,10 +329,10 @@ test("#122 名额 clamp 到 1–5 并取整", () => {
   }
 });
 
-test("#122 非法名额：回原因且状态一个字不变", () => {
+test("#173 非法名额：回原因且状态一个字不变", () => {
   const ws = fresh();
   const a = ws.groupFor("s1", plain);
-  ws.setTabs({ pinned: [a], max: 4 });
+  ws.setTabs({ order: [a], max: 4 });
   const before = ws.snapshot();
   for (const bad of ["3", null, Number.NaN, {}, [], true]) {
     const result = ws.setTabs({ max: bad });
@@ -254,57 +342,15 @@ test("#122 非法名额：回原因且状态一个字不变", () => {
   assert.deepEqual(ws.snapshot(), before, "非法值不许改任何东西");
 });
 
-test("#122 一条消息写两个字段：去重 / 剔掉不存在的组 / 截断保留前面的", () => {
-  const ws = fresh();
-  const a = ws.groupFor("s1", plain);
-  const b = ws.groupFor("s2", plain2);
-  const c = ws.create("客户 A").id;
-  assert.equal(ws.setTabs({ pinned: [b, "nope", b, a, c, c], max: 2 }).ok, true);
-  const snap = ws.snapshot();
-  assert.deepEqual(snap.pinned, [b, a], "去重、剔脏、超过名额截断保留前 2 个");
-  assert.equal(snap.max, 2);
-});
-
-test("#122 只传 max：固定组在同一次落盘里截断", () => {
-  const ws = fresh();
-  const ids = [plain, plain2].map((dir, i) => ws.groupFor(`s${i}`, dir));
-  const manual = ws.create("客户 A").id;
-  ws.setTabs({ pinned: [...ids, manual], max: 5 });
-  assert.equal(ws.snapshot().pinned.length, 3);
-
-  ws.setTabs({ max: 2 });
-  const snap = ws.snapshot();
-  assert.equal(snap.max, 2);
-  assert.deepEqual(snap.pinned, ids, "名额调小连带截断，不留「名额 2、固定 3 个」");
-});
-
-test("#122 只传 pinned：名额不动", () => {
-  const ws = fresh();
-  const a = ws.groupFor("s1", plain);
-  ws.setTabs({ max: 5 });
-  ws.setTabs({ pinned: [a] });
-  const snap = ws.snapshot();
-  assert.deepEqual(snap.pinned, [a]);
-  assert.equal(snap.max, 5, "只动列表时名额保持原样");
-});
-
-test("#122 临时组被回收时，固定列表里不再有它", async () => {
+test("#173 临时组被回收时从 order 里消失，真工程根成为新组追加进来", async () => {
   const ws = fresh();
   const tree = library.trees[1];
   const provisional = ws.groupFor("s-tree", tree);
-  ws.setTabs({ pinned: [provisional] });
-  await ws.resolve([tree]);
-  const snap = ws.snapshot();
-  assert.ok(!snap.groups.some((g) => g.id === provisional), "临时组确实让位了");
-  assert.deepEqual(snap.pinned, [], "被回收的组不许留在固定列表里");
-});
+  assert.deepEqual(ws.snapshot().order, [provisional]);
 
-test("#122 删掉被固定的手动组之后，固定列表里不再有它", () => {
-  const ws = fresh();
-  const manual = ws.create("客户 A").id;
-  const other = ws.create("客户 B").id;
-  ws.setTabs({ pinned: [manual, other], max: 5 });
-  assert.equal(ws.drop(manual).ok, true);
-  const snap = ws.snapshot();
-  assert.deepEqual(snap.pinned, [other], "删掉的组从固定列表里消失，别的保持原顺序");
+  await ws.resolve([tree]);
+  assert.deepEqual(ws.snapshot().order, [], "被回收的组不许留在 order 里");
+
+  const real = ws.groupFor("s-tree", tree);
+  assert.deepEqual(ws.snapshot().order, [real], "真工程根成为新组，追加进 order");
 });

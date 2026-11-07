@@ -44,6 +44,8 @@ export interface TreeWorkspace {
   groups?: TreeGroupInfo[];
   overrides?: Record<string, string>;
   keys?: Record<string, string>;
+  /** #173 一份组序（含折叠组）：左栏与标签行共用；缺省 / 缺项的组按名字排到末尾。 */
+  order?: string[];
 }
 
 export interface TreeManage {
@@ -121,6 +123,8 @@ export function buildTree<T extends TreeSession>(
 ): Tree<T> {
   const pin = manage.pin ?? [];
   const order = manage.order ?? [];
+  // #173 工作区组序是另一份（`ws.order`）：会话的 manage.order 管的是组内会话，别混用。
+  const groupOrder = workspace?.order ?? [];
   const archived = new Set(manage.archived ?? []);
   const known = new Map((workspace?.groups ?? []).map((g) => [g.id, g]));
 
@@ -192,15 +196,16 @@ export function buildTree<T extends TreeSession>(
     });
   }
 
-  // 组之间：有待处理在前 → 最近活动倒序 → 名字（大小写不敏感，稳定靠 id）。
-  const latest = (g: TreeGroup<T>) => Math.max(0, ...g.sessions.map((x) => x.updatedAt ?? 0));
-  groups.sort(
-    (a, b) =>
-      Number(b.pending > 0) - Number(a.pending > 0) ||
-      latest(b) - latest(a) ||
-      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) ||
-      a.id.localeCompare(b.id),
-  );
+  // #173 组间顺序只认 `order` 这一份（缺的 / 新组按名字排到末尾，再靠 id 稳定）。
+  // 待处理角标照旧计算，但不再拿它 / 最近活动来插队。
+  const position = new Map(groupOrder.map((id, i) => [id, i] as const));
+  const at = (g: TreeGroup<T>): number => position.get(g.id) ?? Number.POSITIVE_INFINITY;
+  groups.sort((a, b) => {
+    const ia = at(a);
+    const ib = at(b);
+    if (ia !== ib) return ia < ib ? -1 : 1;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id);
+  });
 
   const archivedList = sessions.filter((x) => archived.has(x.id) && hit(x)).sort(compare);
 
