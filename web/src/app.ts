@@ -10288,16 +10288,15 @@ export class App {
     btn.disabled = state !== "ready";
     btn.hidden = state === "hidden";
     if (state === "hidden") return;
+    // #201 / D178：`starting` 不在其中 —— 启动窗口里点「继续」也会立刻发、进桥的待发队列。
     const why =
       state === "ready"
         ? ""
-        : s?.starting
-          ? tr("pi 正在启动，起来之后再继续")
-          : s?.running
-            ? tr("pi 正在跑这一轮，停下之后再继续")
-            : bgBusy(s)
-              ? tr("子代理还在后台跑，pi 会在它回来时接着做")
-              : tr("这条会话还没有说过话，没有可继续的");
+        : s?.running
+          ? tr("pi 正在跑这一轮，停下之后再继续")
+          : bgBusy(s)
+            ? tr("子代理还在后台跑，pi 会在它回来时接着做")
+            : tr("这条会话还没有说过话，没有可继续的");
     btn.title = why || tr("把「继续」发给 pi —— 草稿留在输入框里，不会被动到");
   }
 

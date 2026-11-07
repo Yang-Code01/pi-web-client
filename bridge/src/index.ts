@@ -1267,15 +1267,26 @@ async function main(): Promise<void> {
           }
           case "prompt": {
             if (!(await requireStepUp())) return;
-            const session = await sessions.openLive(msg.sessionId);
-            // 人开口了：上一轮「⚡ 复盘」到此结束，D169 的当场叫住重新生效。
-            session.reviewing = false;
-            await session.prompt(
-              String(msg.text ?? ""),
-              msg.images,
-              typeof msg.clientId === "string" ? msg.clientId.slice(0, 80) : undefined,
-              msg.behavior === "followUp" ? "followUp" : "steer",
-            );
+            const sessionId = String(msg.sessionId);
+            const text = String(msg.text ?? "");
+            const images = msg.images as { data: string; mimeType: string }[] | undefined;
+            const clientId = typeof msg.clientId === "string" ? msg.clientId.slice(0, 80) : undefined;
+            const behavior = msg.behavior === "followUp" ? "followUp" : "steer";
+            // #201: 只读会话发消息 = 自动接管，但气泡必须在 `openLive()`（拉起 pi、等 get_state）
+            // **之前**广播出去，否则一句刚打的字要等整个握手。消息进的是会话自己的待发队列 —— 与
+            // 启动窗口、接管后再打字是同一条，所以撤回/失败/连发都复用同一套。
+            const queued = sessions.acceptBeforeOpen(sessionId, text, images, clientId, behavior);
+            try {
+              const session = await sessions.openLive(sessionId);
+              // 人开口了：上一轮「⚡ 复盘」到此结束，D169 的当场叫住重新生效。
+              session.reviewing = false;
+              // 已经在队列里了（上面那一行），别再落一枚气泡。
+              if (queued === null) await session.prompt(text, images, clientId, behavior);
+            } catch (err) {
+              // 自动接管没成（终端里的 pi 还开着、会话起不来）：气泡标红，原因照旧由下面那句 notice 说。
+              if (queued !== null) sessions.get(sessionId)?.failBeforeBoot(queued);
+              throw err;
+            }
             return;
           }
           case "bash": {

@@ -883,7 +883,7 @@ export class Session extends EventEmitter {
     if (!this.state.file) return true;
     try {
       const res = loadEntries(this.state.file);
-      this.items = entriesToItems(res.entries);
+      this.items = this.keepBootBubbles(entriesToItems(res.entries));
       this.state.truncated = res.truncated;
       this.readError = null;
       return true;
@@ -945,6 +945,25 @@ export class Session extends EventEmitter {
     if (this.tailTimer) return;
     this.refreshFromFile();
     this.tailTimer = setInterval(() => this.refreshFromFile(), 400);
+  }
+
+  /**
+   * #201: 读回磁盘历史会把「还在队列里、pi 还没收到」的气泡冲掉 —— 它们本来就不在文件里。
+   * 接管一个只读会话时正是这种局面（先是气泡，然后才拉起 pi 重读文件）：不接回来，用户刚打的
+   * 那句会凭空消失，而消息其实还排在队列里，一会儿又交出去了。
+   *
+   * 顺序就是它们到达的顺序，接在历史后面 —— 那也正是它们被发出去的顺序。
+   */
+  private keepBootBubbles(items: Item[]): Item[] {
+    if (!this.bootQueue.length) return items;
+    const before = new Map(this.items.map((it) => [it.id, it]));
+    const have = new Set(items.map((it) => it.id));
+    const keep: Item[] = [];
+    for (const q of this.bootQueue) {
+      const bubble = before.get(q.id);
+      if (bubble && !have.has(bubble.id)) keep.push(bubble);
+    }
+    return keep.length ? [...items, ...keep] : items;
   }
 
   stopTail(): void {
@@ -1607,22 +1626,36 @@ export class Session extends EventEmitter {
       await this.compaction.done;
       if (!this.rpc?.alive) throw new Error("会话已经停止，这条消息没有发出");
     }
-    const message: any = { type: "prompt", message: text };
-    // pi rejects a bare prompt while a run is active; queue it instead. `running` spans
-    // agent_start … agent_settled, so retries and overflow recovery count as running too.
-    // Like the terminal: Enter steers the current task, Alt+Enter waits until it is done (#14).
-    if (this.state.running) message.streamingBehavior = behavior === "followUp" ? "followUp" : "steer";
-    if (images?.length) {
-      message.images = images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType }));
+    // #197 / D177: pi 还在加载扩展（`starting`）时也收：气泡和正常发送走同一条路，只多一枚
+    // `pending`；消息本身进 bootQueue，等 get_state 落地再交出去。
+    const booting = this.state.starting === true;
+    const userId = this.landUserPrompt(text, images, clientId, booting);
+    // #197 / D177: 启动窗口期到此为止。交给 pi 得等它把扩展加载完（get_state 回来），否则这一句会
+    // 撞上一个还没准备好的进程；消息先进桥自己的队列，气泡已经落地（带 `pending: "booting"`）。
+    if (booting) {
+      this.bootQueue.push({ id: userId, text, images, behavior });
+      return;
     }
+    const res = await this.handToPi(userId, text, images, behavior);
+    if (res?.disposition === "handled" && res?.error) throw new Error(String(res.error));
+  }
+
+  /**
+   * 把一枚用户消息落地：upsert + 广播 + 命名，返回它在 items 里的 id。
+   *
+   * #201: 广播这一步不能藏在 `prompt()` 里 —— 只读会话的第一句得**先于**拉着 pi 的握手出去，
+   * 所以「落地」与「交给 pi」拆成两件事。`booting` 决定气泡上带不带待发标记。
+   */
+  private landUserPrompt(
+    text: string,
+    images: { data: string; mimeType: string }[] | undefined,
+    clientId: string | undefined,
+    booting: boolean,
+  ): string {
     const userId = `user:${++this.userCounter}`;
-    if (message.streamingBehavior) this.queuedUser.push({ id: userId, text });
     // A `/skill:x` send is marked right away so the bubble does not swap styles when pi's expanded
     // copy lands in the file (~400 ms); the tooltip's path only comes with the file read.
     const typed = typedSkill(text);
-    // #197 / D177: pi 还在加载扩展（`starting`）时也收：气泡和正常发送走同一条路，只多一枚
-    // `pending`；消息本身进 bootQueue，等 get_state 落地再交出去。
-    const booting = this.state.starting;
     const userItem: Item = {
       id: userId,
       kind: "user",
@@ -1646,15 +1679,63 @@ export class Session extends EventEmitter {
         this.setState(patch, { touch: false });
       }
     }
-    // #197 / D177: 启动窗口期到此为止。交给 pi 得等它把扩展加载完（get_state 回来），否则这一句会
-    // 撞上一个还没准备好的进程；消息先进桥自己的队列，气泡已经落地（带 `pending: "booting"`）。
-    if (booting) {
-      this.bootQueue.push({ id: userId, text, images, behavior });
-      return;
+    return userId;
+  }
+
+  /**
+   * 真正把一条消息交给 pi。
+   *
+   * 不解释 `disposition: "handled"` 里的 error —— 两条路对它的处理不一样：即时发送把错误抛给 WS
+   * 那一层变成 notice，队列里交出去的则把气泡标红（#197）。
+   */
+  private async handToPi(
+    id: string,
+    text: string,
+    images: { data: string; mimeType: string }[] | undefined,
+    behavior: "steer" | "followUp",
+  ): Promise<any> {
+    const message: any = { type: "prompt", message: text };
+    // pi rejects a bare prompt while a run is active; queue it instead. `running` spans
+    // agent_start … agent_settled, so retries and overflow recovery count as running too.
+    // Like the terminal: Enter steers the current task, Alt+Enter waits until it is done (#14).
+    if (this.state.running) message.streamingBehavior = behavior === "followUp" ? "followUp" : "steer";
+    if (images?.length) {
+      message.images = images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType }));
     }
-    const res = await this.rpc.request<any>("prompt", { ...message }, 60000);
-    const disposition = res?.disposition;
-    if (disposition === "handled" && res?.error) throw new Error(String(res.error));
+    if (message.streamingBehavior) this.queuedUser.push({ id, text });
+    return this.rpc!.request<any>("prompt", { ...message }, 60000);
+  }
+
+  /**
+   * #201: 只读会话（磁盘上有、pi 没在跑）里发消息 = 自动接管。调用方接着去 `openLive()`，但气泡
+   * 必须**在那之前**就广播出去 —— 拉起 pi、等 get_state 是几秒的事，让刚打的字跟着一起等最难受。
+   *
+   * 返回气泡的 item id（接管没成时要靠它标红）；会话已经在跑就返回 null，那时调用方照常走
+   * `prompt()`（启动窗口由 `prompt()` 自己收）。
+   */
+  acceptBeforeBoot(
+    text: string,
+    images: { data: string; mimeType: string }[] | undefined,
+    clientId: string | undefined,
+    behavior: "steer" | "followUp",
+  ): string | null {
+    if (this.live) return null;
+    const userId = this.landUserPrompt(text, images, clientId, true);
+    this.bootQueue.push({ id: userId, text, images, behavior });
+    return userId;
+  }
+
+  /**
+   * #201: `acceptBeforeBoot` 收下的消息没等到 pi —— 接管被拒（终端里的 pi 还开着、会话 20 秒前还在
+   * 被写、进程起不来）。从队列里摘掉、把气泡标红。
+   *
+   * 不在这里补 notice：拒的原因本来就是 WS 那一层抛出来的错、它自己会说一句，这里再说一遍就是同一
+   * 件事说两遍。
+   */
+  failBeforeBoot(id: string): void {
+    const at = this.bootQueue.findIndex((q) => q.id === id);
+    if (at >= 0) this.bootQueue.splice(at, 1);
+    this.markUserPending(id, "failed");
   }
 
   /**
@@ -1665,17 +1746,12 @@ export class Session extends EventEmitter {
   private flushBootQueue(): void {
     const next = this.bootQueue.shift();
     if (!next) return;
-    const rpc = this.rpc;
-    if (!rpc?.alive) {
+    if (!this.rpc?.alive) {
       this.failBoot([next.id], "没起来");
       return;
     }
-    const message: any = { type: "prompt", message: next.text };
-    if (this.state.running) message.streamingBehavior = next.behavior === "followUp" ? "followUp" : "steer";
-    if (next.images?.length) message.images = next.images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType }));
-    if (message.streamingBehavior) this.queuedUser.push({ id: next.id, text: next.text });
     this.markUserPending(next.id, "sent");
-    rpc.request<any>("prompt", { ...message }, 60000).then(
+    this.handToPi(next.id, next.text, next.images, next.behavior).then(
       (res) => {
         if (res?.disposition === "handled" && res?.error) this.failBoot([next.id], "拒收了这条消息");
       },
@@ -2787,7 +2863,6 @@ export class SessionManager extends EventEmitter {
     return applied;
   }
 
-  /** Opens an existing session as the live writer (resumes it if pi already wrote it). */
   /** Explicit takeover: the web becomes the single writer for a session file. */
   async claim(id: string): Promise<Session> {
     const session = await this.openLive(id);
@@ -2795,7 +2870,44 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
-  async openLive(id: string): Promise<Session> {
+  /**
+   * #201: 一个会话同时只拉起一次 pi。接管与发消息是两条独立的 WS 命令，而 `openLiveNow()` 在
+   * `pinPermission()` 上要 await 一段 —— 用户点完「接管」接着打字时，后一条命令完全来得及看见
+   * `!live` 再起一支 pi，后一支会把前一支顶掉（同一份会话文件两个写者）。后来的调用直接等那一次
+   * 在飞的拉起，成为之后才删除自己的那一条。
+   */
+  private opening = new Map<string, Promise<Session>>();
+
+  openLive(id: string): Promise<Session> {
+    const inFlight = this.opening.get(id);
+    if (inFlight) return inFlight;
+    const opening: Promise<Session> = this.openLiveNow(id).finally(() => {
+      if (this.opening.get(id) === opening) this.opening.delete(id);
+    });
+    this.opening.set(id, opening);
+    return opening;
+  }
+
+  /**
+   * #201: 只读会话发消息 = 自动接管。先把消息收进那个会话的待发队列（气泡当场广播），**再**去
+   * `openLive()` —— 拉起 pi 再等 get_state 要几秒，不能让这句「刚打的字」跟着一起等。
+   *
+   * 返回气泡的 item id（接管没成时要靠它标红）；会话不认识就返回 null，让 `openLive()` 照常报
+   * 「找不到这个会话」。
+   */
+  acceptBeforeOpen(
+    id: string,
+    text: string,
+    images: { data: string; mimeType: string }[] | undefined,
+    clientId: string | undefined,
+    behavior: "steer" | "followUp",
+  ): string | null {
+    if (!this.known(id)) return null;
+    return this.ensure(id).acceptBeforeBoot(text, images, clientId, behavior);
+  }
+
+  /** Opens an existing session as the live writer (resumes it if pi already wrote it). */
+  private async openLiveNow(id: string): Promise<Session> {
     if (!this.known(id)) throw new Error("找不到这个会话");
     const session = this.ensure(id);
     if (session.live) return session;
