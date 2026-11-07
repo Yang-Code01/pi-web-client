@@ -1,12 +1,12 @@
 /**
- * 后台子代理（D170 / D171）：会话自己已经 settle，派出去的 runner 还在跑。
+ * 后台子代理（D170 / D172）：会话自己已经 settle，派出去的 runner 还在跑。
  *
  * pi 只在 `tool_execution_end` 的 `details` 里承认一次「有这么个 run」：
  *
  *   acp_delegate   {kind:"delegate", runId, agent, task}
  *   subagent       {mode, runId, asyncDir}       + args {agent, task}
  *
- * **建卡要过三道闸**（D171 的教训：只靠结果文本判「刚开跑」会把读文档的 sed 当成派活）：
+ * **建卡要过三道闸**（D172 的教训：只靠结果文本判「刚开跑」会把读文档的 sed 当成派活）：
  * 工具是这两者之一、有结构性开始信号（`kind:"delegate"` / `asyncDir`）、`runId` 像真的
  * （`del_*` / `call_*` / UUID —— 文档里的示例值 `…` 不算）。agent/task 优先取 `details`，
  * 其次取 `args`（模型写的那一份原话），最后才是 runner 文本里的固定写法。
@@ -31,7 +31,7 @@ const LIVE_LOG = /Live activity is streaming to `([^`]+)`/;
 const SUBAGENTS_TMP = join(tmpdir(), "pi-subagents-");
 /**
  * 只有这两个工具会「派一个后台任务」。别的工具结果里出现同样的句子（读文档、看日志、
- * `grep` 到 D170 自己那段说明）不算 —— D171 的幽灵任务就是这么造出来的。
+ * `grep` 到 D170 自己那段说明）不算 —— D172 的幽灵任务就是这么造出来的。
  */
 const DISPATCH = new Set(["acp_delegate", "subagent"]);
 /** 真的 runId 长这样：`del_…`（acp）、UUID / `call_…`（pi-subagents）。`…` 这种示例值不算。 */
@@ -99,7 +99,7 @@ const RUN_ID = /runId\s*`([^`\s]+)`/g;
 /**
  * 只认 runner 自己的两种写法：`Delegated to **worker** (runId …)`、`Async: researcher [id]`。
  * 以前这里有「任意 `**加粗**` 就当人名」的分支，于是文档里的小标题 `**问题：**` 会被读成 agent
- * （D171 现场：卡片头写着「问题：」）。猜错的代价比空着大 —— 空着前端写「子代理」。
+ * （D172 现场：卡片头写着「问题：」）。猜错的代价比空着大 —— 空着前端写「子代理」。
  */
 const AGENT = /Delegated to\s+(?:\*\*)?([\w.-]+)|Async:\s*([\w.-]+)\s*\[/;
 
@@ -193,7 +193,7 @@ export class BgRuns {
       return;
     }
     // 只有派活的工具才可能开一条新任务：一次 `sed` 出来的文档里也有 `Running in the background`，
-    // 而那句文档正是 D170 写的示例 —— 文本特征不能当「刚开跑」的判据（D171）。
+    // 而那句文档正是 D170 写的示例 —— 文本特征不能当「刚开跑」的判据（D172）。
     if (!DISPATCH.has(tool)) return;
     const looksStart = d.kind === "delegate" || typeof d.asyncDir === "string";
     if (!looksStart || !ID_OK.test(id)) return;

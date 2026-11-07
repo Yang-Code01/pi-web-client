@@ -49,7 +49,7 @@ assert.equal(runs.view()?.recent, 2, "失败的那条同样留着给人看，卡
 const SUB_A = "11111111-2222-3333-4444-555555555555";
 const SUB_B = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
-// D171: 光靠文本（没有 details）不再算「刚开跑」——一次 sed 出来的文档里也有这些句子。
+// D172: 光靠文本（没有 details）不再算「刚开跑」——一次 sed 出来的文档里也有这些句子。
 runs.noteToolEnd("subagent", undefined, `Started async subagent (runId \`${SUB_A}\`).\nRunning in the background at \`/tmp/x\`.`);
 assert.equal(runs.view()?.n, 0, "只有文本、没有 details：一律不当成开跑");
 
@@ -70,7 +70,7 @@ runs.prune();
 assert.equal(runs.list().find((r) => r.id === SUB_B)?.state, "done", "status.json 说 complete（真值，不是 completed）就收工");
 assert.equal(runs.view()?.n, 0);
 
-// D171 现场：读 D170 文档的 bash 结果里同时有 `**问题：**` / `runId `…`` / `Running in the background`。
+// D172 现场：读 D170 文档的 bash 结果里同时有 `**问题：**` / `runId `…`` / `Running in the background`。
 const D170_TEXT = [
   "## D170 后台子代理：会话 settle 了也要说明白（无票，用户报的）",
   "",
@@ -81,7 +81,7 @@ const D170_TEXT = [
 ].join("\n");
 const ghost = new BgRuns(() => {});
 ghost.noteToolEnd("bash", { exitCode: 0 }, D170_TEXT);
-assert.equal(ghost.view(), undefined, "读文档打印出这些句子不算派活（D171 的「问题：」卡片）");
+assert.equal(ghost.view(), undefined, "读文档打印出这些句子不算派活（D172 的「问题：」卡片）");
 assert.equal(ghost.list().length, 0);
 
 // 示例值 `…`、`sub_1` 不是 runId：details 给了也不认。
@@ -136,7 +136,7 @@ const two = wire.list().find((r) => r.id === WIRE_ID);
 assert.equal(two.hasLog, true, "pi-subagents 的过程记录 = status.json 的 outputFile");
 
 
-// D171: 派活那一刻 status.json 可能还没落盘（实测晚 ~1.4 s）。过程记录要在 prune 里补回来，
+// D172: 派活那一刻 status.json 可能还没落盘（实测晚 ~1.4 s）。过程记录要在 prune 里补回来，
 // 否则 hasLog 永久 false，卡片一直说「桥还没接上」。
 const late = mkdtempSync(join(tmpdir(), "pi-subagents-late-"));
 const LATE_ID = "99999999-8888-7777-6666-555555555555";

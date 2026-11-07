@@ -1233,7 +1233,7 @@ export class Session extends EventEmitter {
         const at = this.items.findIndex((it) => it.kind === "tool" && it.toolCallId === String(ev.toolCallId));
         const seen = at >= 0 ? (this.items[at] as ToolItem) : undefined;
         // D170: pi 只在结果里承认一次「有这么个 run」（`details.runId`）。
-        // D171: `args` 里是模型写的那份原文（pi-subagents 落盘时把 task 打成 [prompt redacted]）。
+        // D172: `args` 里是模型写的那份原文（pi-subagents 落盘时把 task 打成 [prompt redacted]）。
         this.bgRuns.noteToolEnd(String(ev.toolName ?? ""), (ev.result as any)?.details, contentText(ev.result), seen?.args);
         {
           if (at >= 0) {
