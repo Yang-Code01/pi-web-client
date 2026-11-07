@@ -1,5 +1,6 @@
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
+import { stickMenu } from "./menuplace.ts";
 
 /**
  * 置顶条每颗会话胶囊的悬停气泡（Q-035）：归档 / 重命名 / 删除。
@@ -123,13 +124,10 @@ export function openPinMenu(anchor: HTMLElement, opts: PinMenuOpts): PinMenuHand
     node.remove();
   };
 
-  /** 贴胶囊下方 6px，左右夹在窗口里；窗口太窄就让气泡左对齐窗口 8px。 */
+  /** 贴胶囊下方 6px；下方放不下就翻到上方，窄窗口里自己滚。不挂 scroll：滚动条一动鼠标就离开胶囊，
+   * 指针出去的 close 先到一步。 */
   function place(): void {
-    const r = anchor.getBoundingClientRect();
-    const w = node.offsetWidth;
-    const left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
-    node.style.left = `${Math.round(left)}px`;
-    node.style.top = `${Math.round(r.bottom + GAP)}px`;
+    stickMenu(node, anchor.getBoundingClientRect(), { gap: GAP });
   }
 
   document.body.append(node);
@@ -206,20 +204,28 @@ export function openPinList(anchor: HTMLElement, items: PinListItem[], onPick: (
     closed = true;
     document.removeEventListener("pointerdown", onDoc, true);
     document.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("scroll", onScroll, true);
     window.removeEventListener("resize", place);
     node.remove();
     onClosed();
   };
 
-  /** 贴胶囊下方 6px，左右夹在窗口里；高度按下面剩下的空间封顶，别顶出屏幕。 */
+  /** 贴胶囊下方 6px（下方放不下就翻上方）；装不下的行自己滚 —— 这颗「＋N」常常就贴在窗口底。 */
   function place(): void {
-    const r = anchor.getBoundingClientRect();
-    const w = node.offsetWidth;
-    const left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
-    node.style.left = `${Math.round(left)}px`;
-    node.style.top = `${Math.round(r.bottom + GAP)}px`;
-    node.style.maxHeight = `${Math.max(180, window.innerHeight - r.bottom - GAP - 10)}px`;
+    stickMenu(node, anchor.getBoundingClientRect(), { gap: GAP });
   }
+
+  /** 置顶条是 `overflow-x: auto`，一滚胶囊就挪位（`scroll` 不冒泡，监听挂捕获）。 */
+  const onScroll = (ev: Event): void => {
+    // 列表自己的滚动（封顶后可能出现）不算「锚点跑掉了」。
+    if (ev.target instanceof Node && node.contains(ev.target)) return;
+    const r = anchor.getBoundingClientRect();
+    if (r.right < 0 || r.left > window.innerWidth) {
+      close();
+      return;
+    }
+    place();
+  };
 
   document.body.append(node);
   place();
@@ -229,6 +235,7 @@ export function openPinList(anchor: HTMLElement, items: PinListItem[], onPick: (
   (cur ?? node.querySelector<HTMLElement>(".pm-item"))?.focus();
   document.addEventListener("pointerdown", onDoc, true);
   document.addEventListener("keydown", onKey, true);
+  document.addEventListener("scroll", onScroll, true);
   window.addEventListener("resize", place);
 
   return { close };

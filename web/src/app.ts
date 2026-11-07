@@ -29,6 +29,7 @@ import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
+import { stickMenu } from "./menuplace.ts";
 import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
@@ -12091,12 +12092,9 @@ export class App {
       };
       pop.append(row);
     }
-    // 贴着那颗、右缘不出屏；高度按下面剩下的空间封顶，别顶出屏幕。
+    // 贴着那颗；下方放不下就翻上去，装不下的行自己滚（这条常常贴着窗口底）。
     const place = (): void => {
-      const r = anchor.getBoundingClientRect();
-      pop.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8)))}px`;
-      pop.style.top = `${Math.round(r.bottom + 6)}px`;
-      pop.style.maxHeight = `${Math.max(180, window.innerHeight - r.bottom - 6 - 10)}px`;
+      stickMenu(pop, anchor.getBoundingClientRect(), { gap: 6 });
     };
     const onDown = (ev: PointerEvent) => {
       const t = ev.target as Node | null;
@@ -12207,13 +12205,8 @@ export class App {
     this.dragScope = { el: body, group: ".ws-pop-sec", head: ".ws-pop-sec-head", item: ".ws-pop-item" };
     this.renderWsPop();
     anchor.setAttribute("aria-expanded", "true");
-    // 贴着那颗：右缘不出屏，下缘不出屏就往上翻。
-    const r = anchor.getBoundingClientRect();
-    const w = pop.offsetWidth;
-    const h = pop.offsetHeight;
-    pop.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - w - 8)))}px`;
-    const top = r.bottom + 6 + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 6) : r.bottom + 6;
-    pop.style.top = `${Math.round(top)}px`;
+    // 贴着那颗：右缘不出屏，下缘放不下就往上翻。它自己有 70vh 上限和体内滚动，所以不再另封顶。
+    stickMenu(pop, anchor.getBoundingClientRect(), { gap: 6, cap: false });
     const onDown = (ev: PointerEvent) => {
       const t = ev.target as Node | null;
       if (t && (pop.contains(t) || anchor.contains(t))) return;

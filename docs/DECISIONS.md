@@ -2858,3 +2858,19 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - 进空态后没有「当前会话」，也就没有「当前工作区」：★ 行退回 `App.starredRow()` 里现成的兜底（全部置顶会话，跨工作区）。这与手动清空当前会话时的表现一致，本轮不改。
 
 **验证：** `npm run test:pillbar`（`web/tests/pillbar-unit.mjs`：右邻 / 无右邻取左邻 / 只有它 / 不在行里 / 未 ★ 占第 1 格时右邻是右边第一颗 ★ / 批量跳过同批右邻 / 批量落到左邻 / 整行被带走 → `null`）；`probes/archive-switch.mjs`（桩桥 + 真 Chromium：点击瞬间中栏未变、回声后落右邻、第 1 格全程没画过那颗归档会话、最右那颗落左邻、唯一颗 → 空态 + `#/` + 刷新后仍空态、归档非当前会话不动、从「已归档」段点开不被踢走、管理面板批量同落点、批量不含当前会话不动、窄屏与壳 B/C/D 同落点）；`npm --prefix web run typecheck`（含 i18n-check）。
+
+## D177 浮层的落位只留一个函数：`placeMenu` / `stickMenu`（无票，用户报的菜单截断，审查后收拢）
+
+**问题：** `⋯` 菜单贴着窗口底时整块戳出去（1200×420 里溢出 98px，「删除工作区」只剩半行）。根因不是某一行算错，而是这段逻辑在仓库里有四份手写副本，各自只记得其中一半：`pinmenu.ts` 两处只夹左右、封顶还有个 `Math.max(180, …)`（只剩 50px 也硬给 180px）；`app.ts` 的「更多」同款；`openWsPop` 自己数 height 翻转却不看 `max-height`；`wsmenu.ts` 什么都不管。加一条规则（会翻转、会封顶）等于改四处，下次再有人手写第五份，还是这个 bug。
+
+**决定：** `web/src/menuplace.ts` 一个纯函数 + 一个挂载器，别处不许再手写落位。
+
+- `placeMenu(anchor, size, viewport, { gap, cap })` 只做算术：默认往下开，**下方确实放不下且上方更宽敞**才翻上去（免得菜单在窗口中间自己跳）；长度封顶到所剩空间，窗口比菜单还矮时保底 `MENU_MIN_H = 96`（压成 0 高等于没弹）；最后整块夹进窗口 8px 边距。
+- `stickMenu(node, anchorRect, opts)` 负责量、写 inline `left/top/max-height`：先把上一次的 inline 封顶清掉再量自然高；封顶引出滚动条改了宽度就按真实宽度重夹一次右缘。
+- `cap: false` 给自带上限的浮层（`.ws-pop` 有 70vh 和体内滚动）：只摆位置，翻转按真实高度算 —— 否则会凭空离开锚点一段。
+- 菜单/列表自己挂 `scroll`（捕获，不冒泡）：锚点滚出窗口就关，否则重摆；**菜单肚子里**的滚动直接忽略，免得封顶后每滚一格都重排。
+- 高度只有一个真相：JS 按实际窗口算 inline `max-height`，CSS 不再写 `max-height`（原来的 `calc(100vh - 16px)` 是第二套数）。
+
+**代价 / 可改：** `.pin-menu` 的 `max-width: calc(100vw - 16px)` 是兜底，窄到装不下 212px 时仍会溢出（靠 `min-width` 优先），实际窗口没那么窄就不管。悬停气泡（`openPinMenu`）故意不挂 scroll：滚动条一动指针就离开胶囊，`pointerleave` 的 close 先到。
+
+**验证：** `npm run test:menuplace`（9 项：贴下方 / 贴底翻转 / 封顶 / 上下都窄时保底 96 / 上方更窄不翻 / 左右夹 / 比窗口宽 / `gap` / `cap:false`）；`probes/workspace-manage.mjs` 第 9 步对 900/480/420/380/300/200 六档按几何算出「该不该翻」再无条件断言，并把删除项滚进视野断言可见；`workspace-layout` / `workspace-settings` / `workspace-shells` / `round4-pin` / `round16-pin` / `pin-auto-open` 不回归。

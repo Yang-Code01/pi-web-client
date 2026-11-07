@@ -29,6 +29,7 @@
     "test:mk": "node bridge/tests/mk-file.mjs",
     "test:nowchip": "node --experimental-transform-types web/tests/nowchip-unit.mjs",
     "test:wsmanage": "node --experimental-transform-types web/tests/wsmanage-unit.mjs",
+    "test:menuplace": "node --experimental-transform-types web/tests/menuplace-unit.mjs",
     "test:defaults": "node --experimental-transform-types bridge/tests/settings-defaults.mjs",
     "test:permission": "node bridge/tests/default-permission.mjs",
     "test:pending": "node --experimental-transform-types web/tests/pending-unit.mjs",
