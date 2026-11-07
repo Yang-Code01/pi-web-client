@@ -18,7 +18,9 @@
   --line-strong: #2f3a48;
   --text: #e7eaf0;
   --dim: #9aa2b1;
-  --faint: #6b7280;
+  /* /peer 是另一份文档，不跑 app.ts 的 applyPrefs，所以这里自带一份默认值；
+     D158 管的是「同一份文档里同一判据只有一份」。 */
+  --faint: #8b93a1;
   --accent: #7dd3fc;
   --accent-bg: #0e2a36;
   --accent-dim: #0e3a4d;
@@ -593,7 +595,7 @@ body.embedded .brand .nm { display: none; }
 .crumbs .crumb-root { width: 24px; height: 24px; border: 0; }
 .pbody { flex: 1; min-height: 0; display: flex; }
 .pside { width: 168px; flex: none; overflow-y: auto; padding: 8px; border-right: 1px solid var(--line-soft); }
-.pside p { margin: 9px 6px 4px; font-size: 10px; letter-spacing: 0.4px; color: var(--faint); }
+.pside p { margin: 9px 6px 4px; font-size: 11px; letter-spacing: 0.4px; color: var(--faint); }
 .pside ul { list-style: none; margin: 0; padding: 0; }
 .pside li { display: flex; align-items: center; gap: 7px; height: 27px; padding: 0 7px; border-radius: 7px; font-size: 12px; color: var(--dim); cursor: pointer; }
 .pside li:hover { background: rgb(255 255 255 / 5%); color: var(--text); }

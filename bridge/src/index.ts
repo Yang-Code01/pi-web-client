@@ -59,7 +59,7 @@ import {
 } from "./notes.ts";
 import { actOnFailure, mergeFailures, readLedger, undoFailures, type CommitItem, type FailAction } from "./failures.ts";
 import { allowRemind, reminderText } from "./lessons.ts";
-import { mcpAddRequest, newer, searchMcp, searchPackages, type McpInstallOption } from "./market.ts";
+import { mcpAddRequest, newer, searchMcp, searchPackages, setIndexListener, type McpInstallOption } from "./market.ts";
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
@@ -952,6 +952,10 @@ async function main(): Promise<void> {
       if (client.readyState === WebSocket.OPEN) client.send(data);
     }
   };
+
+  // D81/D171: the MCP store's ranked index is a walk over hundreds of registry pages. Tell the page
+  // when it lands, so the unranked registry results it was shown get replaced without a re-search.
+  setIndexListener((idx) => broadcast({ type: "mcp.index", at: idx.at, truncated: Boolean(idx.truncated) }));
 
   /**
    * D150 · 两段式目录：先用 `-ne` 的快清单把面板填上（1–2 s），带扩展的完整清单落地后再补一次。
