@@ -683,6 +683,12 @@ type BootEntry = { id: string; text: string; images?: { data: string; mimeType: 
 /** #200：失败的原因决定那句人话怎么说 —— 界面不出现 exit code 这类内部话术。 */
 type BootFailure = "boot" | "stopped" | "refused";
 
+/**
+ * #198：交下一条之前等「这一轮真的开始」的上限。等不到就裸发 —— 宁可让 pi 自己开一轮，也不能
+ * 让用户盯着一个气泡干等（第一条可能被 `disposition: "handled"` 就地吃掉，压根没有 agent_start）。
+ */
+const BOOT_RUN_WAIT_MS = 10_000;
+
 export class Session extends EventEmitter {
   readonly state: SessionState;
   items: Item[] = [];
@@ -776,6 +782,8 @@ export class Session extends EventEmitter {
   private bootFailed: BootEntry[] = [];
   /** 补发泵一次只跑一条：并发跑会把顺序搅乱，也会把「这一轮开始了吗」的判断搞坏。 */
   private flushingBoot = false;
+  /** #198：泵挂在等 `agent_start` 的时候放这里，`agent_start` / 进程退出时把它叫醒。 */
+  private bootRunWait: { resolve: () => void; timer: NodeJS.Timeout } | null = null;
   /** pi's queue as of the last queue_update, so a page opened mid-run sees it too (#14). */
   private queue: { steering: string[]; followUp: string[] } = { steering: [], followUp: [] };
   /** The `!cmd` running right now; pi streams its output as bash_execution_update (#16). */
@@ -1061,6 +1069,8 @@ export class Session extends EventEmitter {
       this.state.owned = false;
       // A pi that died while still booting must not leave the page on 「正在启动…」 forever.
       this.setState({ running: false, starting: false });
+      // 进程没了，等「这一轮开始」的那条路也断了：先放它下来，它自己会看到 rpc 已死并标红剩下的。
+      this.wakeRunStart();
       // #197 / D177: 启动期收下的消息跟着这个进程一起没戏了 —— 气泡标红、给一句人话，不静默吞掉。
       const lost = this.bootQueue.splice(0);
       if (lost.length) this.failBoot(lost, closing ? "stopped" : "boot");
@@ -1159,6 +1169,8 @@ export class Session extends EventEmitter {
         this.stuckNoticed = false;
         this.emitWs({ type: "pi.status", sessionId: this.state.id, running: true });
         // #197 / #200: 这一轮真的开始了，启动期（或失败重试）剩下没交出去的消息现在可以按插话送。
+        // #198: 泵可能正挂在等这个信号 —— 先叫醒它（它在等的时候占着 `flushingBoot`）。
+        this.wakeRunStart();
         this.flushBootQueue();
         break;
       case "agent_end":
@@ -1170,6 +1182,8 @@ export class Session extends EventEmitter {
         // Whatever was queued has been delivered or cleared by now.
         this.queuedUser = [];
         this.setQueue([], []);
+        // #198: 一轮结束还没等到下一轮的开始信号？泵在等的就是「有没有这一轮」，放它走。
+        this.wakeRunStart();
         // The run answered its abort (or ended on its own): nothing left for the watchdog to end (#81).
         this.stuckAbortedAt = null;
         this.stuckNoticed = false;
@@ -1725,9 +1739,42 @@ export class Session extends EventEmitter {
         this.failBoot([next], "refused");
         continue;
       }
-      // 第一条开出这一轮，但 `agent_start` 还没到（运行态还是假的）：剩下的等它再送。
-      if (!this.state.running) return;
+      if (res?.disposition === "handled") {
+        // #198: pi 把这条就地处理掉了、一轮都没开 —— 别再等 `agent_start`，下一条裸发让它自己开一轮。
+        continue;
+      }
+      if (message.streamingBehavior && res?.disposition !== "queued") {
+        // #198: 它带着插话标记却没进队列 = 那一轮在送出去的瞬间已经结束，pi 单开了新一轮。
+        // 这一条就不在队列里了，右栏不能说它还排着。
+        this.unqueueUser(next.id);
+      }
+      // 第一条开出这一轮，但 `agent_start` 还没到（运行态还是假的）：剩下的等它再送（#198 的上限
+      // 是 10 秒，等不到就裸发，不让气泡干等）。
+      if (!this.state.running) await this.waitRunStart();
     }
+  }
+
+  /** #198: 等这一轮开始。等不到（10 秒上限）也算 —— 裸发兜底，不让气泡干等。 */
+  private waitRunStart(): Promise<void> {
+    if (this.state.running) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.wakeRunStart(), BOOT_RUN_WAIT_MS);
+      this.bootRunWait = { resolve, timer };
+    });
+  }
+
+  /** #198: 放下等待（`agent_start` 来了、或进程退出）。重复调用无害。 */
+  private wakeRunStart(): void {
+    const wait = this.bootRunWait;
+    if (!wait) return;
+    this.bootRunWait = null;
+    clearTimeout(wait.timer);
+    wait.resolve();
+  }
+
+  /** 这一条不在 pi 的队列里了（送出去时那一轮已结束），右栏与撤回都别再把它算进去。 */
+  private unqueueUser(id: string): void {
+    this.queuedUser = this.queuedUser.filter((q) => q.id !== id);
   }
 
   /**

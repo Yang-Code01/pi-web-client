@@ -2905,3 +2905,23 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **`claim` 现在有两种含义**（接管 / 重试）：这是有意的 —— 两者要做的动作完全一样（把 pi 拉起来 + 把没交出去的交出去），分开一个帧只会让前端多记一份状态。若日后重试需要「不重启 pi」，再拆。
 
 **验证：** `node bridge/tests/boot-queue.mjs`（桩 pi 慢启动 2500 ms）：B 段 —— 窗口期连发两条后打死桩 pi：两条都变 `pending: "failed"`、文本都在、没有 `item.remove`、notice 含「没有发出去」且**不含** `exit code` / `signal=`；B2 段 —— 发 `claim`（就是那颗「重试」）→ 收到 `starting: true` 的 session 帧 → 新 pid（≠ 被杀的那个）→ 桩 pi 按原顺序收到两条 prompt（第一条 `behavior=null`、第二条 `steer`）→ 两个 item 都以 `pending: "sent"` 回来。C 段 —— pi 就绪但拒收（桩 pi 对 `REFUSE…` 首次回 `handled` + `error`）：标 `failed`、文本还在、notice 可读、桩 pi 日志里有 `prompt-rejected`；C2 段 —— `claim`（pi 已活着，不重启）→ 补发 → `pending: "sent"`。`node bridge/tests/create-fast.mjs`、`PI_WEB_PORT=7918 node probes/session-starting.mjs` 不回归；`npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 i18n-check：删掉旧键 `没发出去，重发一次就行`，新增 `没发出去`、`先拉起 pi，再按原顺序补发没发出去的消息`，`重试` 复用已有）与两边 build。
+
+## D179 启动窗口里连发的几条：能塞就塞进同一轮，塞不进各自成一轮；等「这一轮开始」有 10 秒上限（`#198`；实现并进 D178 的那只泵）
+
+**问题：** D177 只保证「第一条」能发出去，D178 的泵解决「按序交」，但两处语义空着：① 第二条起凭什么算「同一轮」？pi 只在**正在流式输出**时才接受 `streamingBehavior`，交出去的那一刻这一轮可能刚好结束；② 泵发完第一条后要等 `agent_start` 才算「这一轮开始」，可第一条要是被 pi **就地处理**（斜杠命令、`disposition: "handled"`、压根没起 run），`agent_start` 永远不会来 —— 后面的几条会一直挂着，气泡永远「正在启动」。
+
+**决定：**
+
+1. **顺序交出，能塞就塞**：泵按到达顺序一条一条交；交之前 `state.running` 为真就带上 `streamingBehavior: "steer"`，让第 2、3 条落进正在进行的那一轮（用户本来也只会发「一句 + 两句补充」）。
+2. **塞不进就自己开一轮**：带标记却没被 pi 排进队列（响应 `disposition !== "queued"`，说明那一轮在交出去的瞬间结束了）不算失败 —— pi 已经单独开了新一轮，`queuedUser` 里立刻把这条摘掉（`unqueueUser`），免得「撤回」去删一条早就不在队列里的气泡。
+3. **就地处理掉的那条不算「这一轮没开始」**：`disposition === "handled"` 且没有 error → 下一条**裸发**（无 `streamingBehavior`），让它自己开一轮。
+4. **等「这一轮开始」有上限**：`BOOT_RUN_WAIT_MS = 10_000`；`agent_start`、`agent_settled`、进程退出都会 `wakeRunStart()` 放行，等不到就裸发兜底 —— 宁可多开一轮，也不让人盯着「正在启动」干等 10 秒以上。
+5. **队列条口径**：启动窗口里收下的消息一条都不进右栏队列条；只有 pi 真的把它们排进队列（`queue_update`）时才列出。
+
+**代价 / 可改：**
+
+- **合并是尽力而为，不是保证**：pi 那一轮恰好在两条之间结束时，第 2 条会成为下一轮的第一条（用户看到两次「处理中」而不是一次）。要强保证得让 pi 支持「先排队再开跑」，超出桥的能力。
+- **`BOOT_RUN_WAIT_MS` 是常量**，没进设置；机器慢到 `agent_start` 超过 10 秒才会看出它。
+- **与 D178 的失败重试共用同一只泵**：失败项 `unshift` 回队首，所以「重试」补发时仍按原顺序，也仍然享受上面的合并规则。
+
+**验证：** `node bridge/tests/boot-queue-merge.mjs`（桩 pi 慢启动 2500 ms）：A 段 —— 启动窗口里连发三条，窗口期桩 pi 一封 prompt 都没收到、三条气泡都在、右栏队列条空；就绪后第一条 `behavior=null`、第 2/3 条 `steer` 且落在同一轮（桩 pi 的 `run-start` 只有一行）；B 段 —— 队列条只列 pi 真收下的那两条，正在跑的第 1 条不算排队，这一轮结束队列条自己清空；C 段 —— 整条路没有一条被丢；D 段 —— 首条是 `HANDLED` 斜杠命令（就地处理、没起 run）时第二条 61 ms 内裸发（`behavior=null`），没有干等 10 秒上限，也没被 `Agent is already processing` 拒收。`node bridge/tests/boot-queue.mjs`（D178 的 A/B/C/D）、`node bridge/tests/create-fast.mjs`、`PI_WEB_PORT=7916 node probes/session-starting.mjs` 不回归。
