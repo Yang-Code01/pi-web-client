@@ -2858,3 +2858,30 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - 进空态后没有「当前会话」，也就没有「当前工作区」：★ 行退回 `App.starredRow()` 里现成的兜底（全部置顶会话，跨工作区）。这与手动清空当前会话时的表现一致，本轮不改。
 
 **验证：** `npm run test:pillbar`（`web/tests/pillbar-unit.mjs`：右邻 / 无右邻取左邻 / 只有它 / 不在行里 / 未 ★ 占第 1 格时右邻是右边第一颗 ★ / 批量跳过同批右邻 / 批量落到左邻 / 整行被带走 → `null`）；`probes/archive-switch.mjs`（桩桥 + 真 Chromium：点击瞬间中栏未变、回声后落右邻、第 1 格全程没画过那颗归档会话、最右那颗落左邻、唯一颗 → 空态 + `#/` + 刷新后仍空态、归档非当前会话不动、从「已归档」段点开不被踢走、管理面板批量同落点、批量不含当前会话不动、窄屏与壳 B/C/D 同落点）；`npm --prefix web run typecheck`（含 i18n-check）。
+
+## D177 启动窗口里也能发消息：桥收下、气泡立刻出现，pi 起来再交出去（`#197`；**推翻 D122 第 3 条**）
+
+**问题：** D122 让 `create` 不再等 pi，代价是「先看到空聊天框、pi 还在起」的两三秒（机器忙时 12–15 秒）。D122 第 3 条选择的缓解方式是**把输入框置灰**、placeholder 换成「pi 正在启动…」、`sendPrompt` 里再兜一次早退 —— 等于在这十几秒里把「我想说的第一句话」这件事整个拦下来。而这段时间恰恰是用户最有话可说的时候：刚建好会话、脑子里正想着要问什么，字打完却发不出去，等 pi 起来还得重新想一遍。
+
+**决定：**
+
+1. **`prompt()` 在 `starting` 为真时不再报错**：立刻把 user item 落地并广播（`pending: "booting"`），消息进该会话的**待发队列**（`bootQueue`）。命名逻辑照旧跑 —— 会话名由这条消息决定，左栏不用等 pi 起来就有名字。
+2. **就绪时按到达顺序交出第一条**：`starting` 翻假、且有活着的 rpc 时 `flushBootQueue()` 取队首，构造 message（跑起来时带 `streamingBehavior`，否则 null）、进 `queuedUser`、`rpc.request("prompt", …, 60000)`。同一枚气泡改成 `pending: "sent"`（`item.replace`）。
+3. **前端两种状态，一枚徽标**：`pending: "booting"` → 「正在启动 pi…」（小 spinner）；交给 pi 之后（运行态为真且这条是最后一条用户消息）→ 「处理中…」，本轮结束消失。「处理中…」是**推出来的**（`running` + 最后一条 user item），不新增协议字段。启动期输入框不禁用、placeholder 恢复普通文案、不出现中断按钮；状态行仍是 D122 那句「pi 正在启动（加载扩展，通常几秒）…」。
+4. **失败不静默**：rpc 在交出前后死掉 → 气泡标 `pending: "failed"`（红字「没发出去，重发一次就行」）并配一句 error notice（`pi 起不来了（<reason>），这条消息没有发出去；重新发一次就行。`）。完整重试归 #200。
+5. **既有前置检查照旧在前**：压缩互斥（「Cannot submit a prompt while compaction is in progress.」）等判断仍在入队**之前**走 —— 启动窗口不是绕过它们的理由。
+
+**为什么推翻 D122 第 3 条：**
+
+- **置灰解决的是「发出去石沉大海」，而不是「不许说话」。** 现在桥会把消息收下并排队，那条代价消失了：用户在启动期按 Enter，气泡立刻出现、pi 起来就发出，行为与平时一样，只是多等一会儿。
+- **排队归桥，不归页面：** 页面只知道「我发了」，刷新、切标签页、第二个标签页看到的都是同一枚气泡（`#197` 验收里明确要求）。更关键的是**一条会话只有桥那一份记录**：队列若放在前端，另一个标签页根本不知道这条消息存在，会话名也拿不到。
+- **几乎全是前端坏处：** 前端早退只是把「pi 还没好」翻译成「你什么都不许做」，而它本来就知道 `starting` 这件事 —— 把徽标说出来比把输入框关掉更有用。
+
+**代价 / 可改：**
+
+- **启动期连发的第 2、3 条仍在队列里等到 `starting` 翻假才排队首**：本票只保证「第一条」在就绪后交出去，多条怎么排（顺序、合并、插话还是排队跑）归 #198。窗口里连发两条的后果是第二条要等第一条跑完一轮才动。
+- **待发队列只在桥内存里，不落盘**：桥重启就没了。气泡还在（item 已落地），但没人会再把它交出去 —— 这也是 #200 要补的「重试」入口。
+- **样式是「同一枚徽标换文字」**，不是两条消息：`booting` → 无（`sent`）→「处理中…」。用户看不到「交给 pi 那一刻」的独立瞬间，只有徽标的消失 / 出现。
+- **`pending` 字段是发给前端的协议的一部分**：老版本前端会忽略它（`pending` 未知字段不参与渲染），行为退化成「气泡出现、没有任何徽标」，消息本身照发不误。
+
+**验证：** `node bridge/tests/boot-queue.mjs`（桩 pi 慢启动 2500 ms）：A 段 —— `starting` 为真、prompt 后 2 ms 内收到带 `pending: "booting"` + `clientId` 的 `item.add`、无 error notice、会话名变成这条消息、桩 pi 日志里窗口期一封 prompt 都没有；就绪后桩 pi 收到 prompt（`behavior=null`）、同一枚 item 变 `pending: "sent"`、没有 `item.remove`。B 段 —— 窗口期把桩 pi 打死：气泡变 `pending: "failed"`、文本还在、error notice 含「没有发出去」、没有 `item.remove`。`node bridge/tests/create-fast.mjs` 不回归（注释里「页面据此禁用输入框」同步改掉）。`PI_WEB_PORT=… node probes/session-starting.mjs`（桩桥 + 真 Chromium）：启动期状态行含「正在启动」+「加载扩展」、无中断按钮、textarea 可用且 placeholder 不含「正在启动」；Enter 后 `.msg.user` 只有一份、徽标「正在启动 pi…」、输入框清空、无错误提示；第二个标签页同一份气泡、同样说法；`starting:false running:true` → 「处理中…」；`running:false` → 徽标消失。`npm --prefix web run typecheck`（含 i18n-check）、`npm --prefix bridge run typecheck`。

@@ -2645,6 +2645,18 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .summary-card.custom > summary { color: var(--accent); }
 .summary-card .body { padding: 4px 16px 8px; border-top: 1px solid var(--line-soft); }
 
+/* #197 / D177: 用户气泡上那枚状态徽标 —— 正在启动 pi… / 处理中… / 没发出去。 */
+.msg .who .msg-pending {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; padding: 0 6px;
+  border-radius: 9px; background: var(--panel-2); color: var(--dim); font-size: 12px; line-height: 18px;
+}
+.msg .who .msg-pending .act-spin {
+  flex: none; width: 8px; height: 8px; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent;
+  animation: act-spin 0.8s linear infinite;
+}
+.msg .who .msg-pending.failed { background: transparent; color: var(--danger); }
+
 /* #24 copy in message headers, export links in the 会话 section */
 .msg .who .msg-copy { margin-left: 6px; padding: 0 4px; border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 12px; opacity: 0; transition: opacity 0.15s; }
 .msg:hover .who .msg-copy, .msg .who .msg-copy:focus-visible { opacity: 1; }

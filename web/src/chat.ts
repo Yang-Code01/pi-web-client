@@ -118,6 +118,13 @@ function compactArgs(args: unknown): string {
 export class ChatView {
   private cards = new Map<string, HTMLElement>();
   private toolCards = new Map<string, HTMLElement>();
+  /**
+   * #197 / D177: 用户气泡在这张表里（节点 + 桥发来的那条 item），好给最后一枚挂「处理中…」——
+   * 那一枚是推出来的，不来自协议。Map 的插入顺序就是对话顺序。
+   */
+  private users = new Map<string, { node: HTMLElement; item: UserItem }>();
+  /** 会话在跑一轮？用户气泡上的「处理中…」等于「运行态 + 这条是最后一条用户消息」。 */
+  private running = false;
   private draftBuffers = new Map<string, { text: string; thinking: string }>();
   /** One collapsed module per turn: every tool call lands here instead of the transcript. */
   private opsBody: HTMLElement | null = null;
@@ -407,6 +414,7 @@ export class ChatView {
   reset(items: Item[]): void {
     this.root.replaceChildren();
     this.cards.clear();
+    this.users.clear();
     this.toolCards.clear();
     this.draftBuffers.clear();
     this.opsBody = null;
@@ -493,7 +501,11 @@ export class ChatView {
       this.noteAfter(item);
     } else {
       this.push(node);
-      if (item.kind === "user") this.noteTurn(item, node);
+      if (item.kind === "user") {
+        this.noteTurn(item, node);
+        this.users.set(item.id, { node, item });
+        this.paintPending();
+      }
     }
     this.scrollToEnd();
   }
@@ -518,6 +530,10 @@ export class ChatView {
       // 只重建 body（节点留着 —— 刻度带指着它），按钮里的闭包拿的仍是乐观那条的文本。
       const body = node.querySelector(".body");
       if (body) body.replaceWith(this.buildUserBody(item));
+      // #197: 桥那份还多一枚待发状态（乐观那条不知道自己在排队），徽标按它重画。
+      this.users.delete(localId);
+      this.users.set(item.id, { node, item });
+      this.paintPending();
     }
     if (item.kind === "assistant") {
       this.assistantTexts.set(item.id, item.text ?? "");
@@ -541,6 +557,12 @@ export class ChatView {
       this.add(item);
       return;
     }
+    // #197: 用户气泡的 item.replace 只改待发状态 —— 节点留着（刻度带指着它），只重画徽标。
+    if (item.kind === "user" && item.id === id) {
+      this.users.set(id, { node, item });
+      this.paintPending();
+      return;
+    }
     const rebuilt = this.build(item);
     if (item.kind === "tool" && this.isAskTool(item.name)) {
       node.remove();
@@ -558,6 +580,43 @@ export class ChatView {
     // 流式那条回答是走 replace 收尾的（先 add 一张空卡、再整条换掉），add 里那一次看不到正文。
     if (item.kind === "assistant") this.noteAnswer(item);
     this.scrollToEnd();
+  }
+
+  /**
+   * #197 / D177: 用户气泡上那枚状态徽标，三种说法：
+   *   `booting` → 「正在启动 pi…」：桥收下了，还没交给 pi；
+   *   `failed`  → 「没发出去，重发一次就行」（标红；桥另外会给一句说明，见 #200）；
+   *   最后一条 + 运行态 → 「处理中…」：这一枚是推出来的，不写进协议，多端各自算出来都一样。
+   * 交给 pi 之后徽标就不见了，本轮结束同样消失。
+   */
+  private paintPending(): void {
+    const entries = [...this.users.values()];
+    const last = entries.length ? entries[entries.length - 1] : null;
+    for (const entry of entries) {
+      const who = entry.node.querySelector<HTMLElement>(".who");
+      if (!who) continue;
+      const state =
+        entry.item.pending === "booting" ? "booting" : entry.item.pending === "failed" ? "failed" : entry === last && this.running ? "running" : "";
+      let badge = who.querySelector<HTMLElement>(".msg-pending");
+      if (!state) {
+        badge?.remove();
+        continue;
+      }
+      if (!badge) {
+        badge = el("span", "msg-pending");
+        who.append(badge);
+      }
+      const label = state === "booting" ? tr("正在启动 pi…") : state === "failed" ? tr("没发出去，重发一次就行") : tr("处理中…");
+      badge.className = state === "failed" ? "msg-pending failed" : "msg-pending";
+      badge.replaceChildren(...(state === "failed" ? [] : [el("span", "act-spin")]), el("span", "", label));
+    }
+  }
+
+  /** 运行态变了：只有最后一枚用户消息会因为「处理中」而变样。 */
+  setRunning(running: boolean): void {
+    if (this.running === running) return;
+    this.running = running;
+    this.paintPending();
   }
 
   delta(id: string, field: "text" | "thinking", text: string): void {

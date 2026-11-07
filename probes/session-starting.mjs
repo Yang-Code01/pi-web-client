@@ -1,14 +1,15 @@
 /**
- * Probe: pi 正在启动时，界面要把这件事说出来，而且不让人往一个还没起来的 pi 里打字（D122）。
+ * Probe: pi 正在启动的窗口期，消息照常能发 —— 气泡先带「正在启动 pi…」，交给 pi 之后变「处理中…」。
  *
- * 背景：`create` 不再等 pi 启动（它要 8 秒，机器忙时 15 秒），所以新会话会先出现、pi 还在起。
- * 这几秒里如果 composer 照常可用，用户敲字发出去会石沉大海。桥用 `state.starting` 告诉页面，
- * 页面负责两件事：
- *   1. 状态行写「pi 正在启动（加载扩展，通常几秒）…」而不是「Enter 发送」的快捷键提示；
- *   2. 输入框置灰、placeholder 换成「pi 正在启动…」，发送兜底也拦住。
- * `starting` 翻成 false 之后，两样都必须恢复。
+ * 背景：`create` 不再等 pi 启动（D122），所以新会话会先出现、pi 还在起。D177 推翻了 D122 第 3 条
+ * （「启动期输入框置灰、不让人打字」）：桥会把这段时间的消息收下、等 pi 就绪再交出去，所以界面这
+ * 几秒里应当照常可用。这一页要钉住的是**气泡的两种状态**：
+ *   1. 启动期：状态行仍是「pi 正在启动（加载扩展，通常几秒）…」、没有中断按钮，但输入框可用、
+ *      placeholder 是平常那句；
+ *   2. 发出去的这条立刻出现，带「正在启动 pi…」；每一页只有一份（乐观气泡按 clientId 认领）；
+ *   3. `starting` 翻假 + 运行态为真 → 同一枚气泡变「处理中…」，本轮结束消失。
  *
- * 桩桥只推状态帧，不接 pi，所以这一秒钟级、可重复。
+ * 桩桥照真桥的形状回 `item.add` / `item.replace`，不收 pi，所以这一秒钟级、可重复。
  *
  * Run: npm --prefix web run build && node probes/session-starting.mjs
  */
@@ -59,6 +60,9 @@ const ME = { version: "probe", pi: "probe", public: false, tunnel: TUNNEL, pushK
 const base = { id: "probe-starting", name: "启动中", cwd: CWD, file: null, owned: true, origin: "web", running: false, done: false, updatedAt: Date.now(), approvals: 0, asks: 0 };
 const ITEMS = [{ kind: "user", id: "u1", ts: Date.now() - 60_000, text: "刚建好的会话" }];
 
+/** 桥那份记录：启动期发出去的消息在这里躺着，第二个标签页 subscribe 时看到的也是它。 */
+const items = [...ITEMS];
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", BASE);
   const json = (code, body) => {
@@ -90,10 +94,14 @@ server.on("upgrade", (req, socket, head) => {
   }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
 });
-/** 页面就是靠这条消息知道「pi 起来了没有」。 */
-let push = null;
+/** 页面就是靠这条消息知道「pi 起来了没有」、以及这一轮在不在跑。 */
+const broadcast = (payload) => {
+  for (const ws of wss.clients) if (ws.readyState === 1) ws.send(JSON.stringify(payload));
+};
+let userSeq = 1;
+/** 最近一次收下的那条，模拟桥把它交出去时补的那枚 `item.replace`（pending 翻 "sent"）。 */
+let lastUser = null;
 wss.on("connection", (ws) => {
-  push = (state) => ws.send(JSON.stringify({ type: "session.state", session: state }));
   ws.on("message", (raw) => {
     let msg;
     try {
@@ -102,15 +110,24 @@ wss.on("connection", (ws) => {
       return;
     }
     if (msg.type === "subscribe") {
-      ws.send(JSON.stringify({ type: "session", sessionId: base.id, state: base, items: ITEMS, approvals: [], asks: [], budget: null }));
+      ws.send(JSON.stringify({ type: "session", sessionId: base.id, state: { ...base, starting: true }, items, approvals: [], asks: [], budget: null }));
+      return;
+    }
+    if (msg.type === "prompt") {
+      // 真桥在启动期做的事：立刻把 user item 落地并广播，item 上带 `pending: "booting"`，
+      // 广播里带回 clientId —— 那一页据此认领自己的乐观气泡，别的页照常新画一条。
+      const item = { id: `user:${++userSeq}`, kind: "user", text: String(msg.text ?? ""), images: [], pending: "booting", ts: new Date().toISOString() };
+      items.push(item);
+      lastUser = item;
+      broadcast({ type: "item.add", sessionId: base.id, item, clientId: msg.clientId });
+      return;
     }
   });
-  const starting = { ...base, starting: true };
   ws.send(
     JSON.stringify({
       type: "hello",
       me: ME,
-      sessions: [starting],
+      sessions: [{ ...base, starting: true }],
       manage: { pin: [], order: [], archived: [] },
       trash: [],
       tunnel: TUNNEL,
@@ -132,35 +149,57 @@ try {
   await page.locator(".session-card").first().click();
   await until(async () => (await page.locator(".msg").count()) >= 1, 8000, "messages");
 
-  // ---- 1. 启动中：状态行说清楚、输入框禁掉
-  await page.evaluate(() => {
-    const app = document.querySelector(".session-card");
-    return app !== null;
-  });
-  if (push) push({ ...base, starting: true });
+  // ---- 1. 启动中：状态行照旧说清楚，但输入框照常可用、没有中断按钮
+  broadcast({ type: "session.state", session: { ...base, starting: true } });
   await until(async () => (await page.locator(".hint-status").innerText().catch(() => "")).includes("正在启动"), 8000, "starting hint");
   const hint = await page.locator(".hint-status").innerText();
   const box = page.locator(".composer textarea");
   check(hint.includes("pi 正在启动"), `状态行写的是启动中（「${hint.replace(/\s+/g, " ").trim()}」）`);
   check(hint.includes("加载扩展"), "状态行顺带解释了为什么慢（加载扩展）");
-  check(await box.isDisabled(), "输入框被禁用（不会往还没起来的 pi 里打字）");
-  check((await box.getAttribute("placeholder"))?.includes("正在启动"), `placeholder 也换成了启动中（${await box.getAttribute("placeholder")}）`);
+  check((await page.locator('.hint-status [data-act="interrupt"]').count()) === 0, "启动期状态行没有中断按钮（没东西可中断）");
+  check(await box.isEnabled(), "输入框可用（D177 推翻了「启动期置灰」）");
+  const placeholder = await box.getAttribute("placeholder");
+  check(!String(placeholder).includes("正在启动"), `placeholder 是平常那句，不是「pi 正在启动…」（${placeholder}）`);
   await page.screenshot({ path: path.join(OUT, "1-starting.png") });
 
-  // ---- 2. 起来了：一切恢复
-  push({ ...base, starting: false });
-  await until(async () => !(await box.isDisabled().catch(() => true)), 8000, "composer enabled");
-  const hint2 = await page.locator(".hint-status").innerText();
-  check(await box.isEnabled(), "starting=false 之后输入框恢复可用");
-  check(!hint2.includes("正在启动"), `状态行回到普通提示（「${hint2.replace(/\s+/g, " ").trim().slice(0, 40)}」）`);
-  await page.screenshot({ path: path.join(OUT, "2-ready.png") });
-
-  // ---- 3. 真能打字发出去（兜底：sendPrompt 里也有一次 starting 检查）
-  await box.fill("你好");
+  // ---- 2. 启动窗口里发一条：气泡立刻出现，带「正在启动 pi…」
+  const TEXT = "启动期发的第一条";
+  await box.fill(TEXT);
   await box.press("Enter");
-  await sleep(300);
-  const sent = await page.locator(".composer textarea").inputValue();
-  check(sent === "", "起来之后回车真的能把消息发出去（输入框被清空）");
+  const bubble = page.locator(".msg.user", { hasText: TEXT });
+  await until(async () => (await bubble.count()) >= 1, 8000, "user bubble");
+  await until(async () => (await bubble.locator(".msg-pending").innerText().catch(() => "")).includes("正在启动 pi"), 8000, "booting badge");
+  check((await bubble.count()) === 1, "只有一份气泡（乐观那条按 clientId 认领了桥的广播）");
+  check((await box.inputValue()) === "", "回车真的发出去了（输入框被清空）");
+  check(!(await bubble.locator(".msg-pending").getAttribute("class"))?.includes("failed"), "启动中的徽标是「进行中」样式，不是报错");
+  check((await page.locator(".notice, .msg.notice").count()) === 0, "没有错误提示");
+  await page.screenshot({ path: path.join(OUT, "2-booting.png") });
+
+  // ---- 3. 另一个标签页看到的是同一份：一样的气泡、一样的说法
+  const page2 = await context.newPage();
+  page2.on("pageerror", (e) => log("page2 error:", e.message));
+  await page2.goto(BASE, { waitUntil: "networkidle" });
+  await until(async () => (await page2.locator(".session-card").count()) >= 1, 8000, "page2 session card");
+  await page2.locator(".session-card").first().click();
+  const bubble2 = page2.locator(".msg.user", { hasText: TEXT });
+  await until(async () => (await bubble2.count()) >= 1, 8000, "page2 bubble");
+  check((await bubble2.count()) === 1, "第二个标签页也只有一份气泡");
+  check((await bubble2.locator(".msg-pending").innerText()).includes("正在启动 pi"), "第二个标签页的说法一样（正在启动 pi…）");
+
+  // ---- 4. pi 就绪、这一轮跑起来：同一枚徽标变「处理中…」
+  // 桥把这条交给 pi 的时候先补一枚 item.replace（`booting` → `sent`），运行态随后才翻上来。
+  broadcast({ type: "item.replace", sessionId: base.id, id: lastUser.id, item: { ...lastUser, pending: "sent" } });
+  broadcast({ type: "session.state", session: { ...base, starting: false, running: true } });
+  await until(async () => (await bubble.locator(".msg-pending").innerText().catch(() => "")).includes("处理中"), 8000, "running badge");
+  check(true, "交给 pi 之后徽标变成「处理中…」");
+  check((await page.locator(".hint-status").innerText()).includes("正在启动") === false, "状态行不再是启动文案");
+  await page.screenshot({ path: path.join(OUT, "3-running.png") });
+
+  // ---- 5. 本轮结束：徽标消失
+  broadcast({ type: "session.state", session: { ...base, starting: false, running: false } });
+  await until(async () => (await bubble.locator(".msg-pending").count()) === 0, 8000, "badge gone");
+  check(true, "本轮结束之后徽标消失");
+  await page.screenshot({ path: path.join(OUT, "4-done.png") });
 } catch (err) {
   failed += 1;
   console.error("ERROR", err?.message ?? err);
