@@ -210,7 +210,7 @@ export class BgRuns {
       run.logPath = live ?? join(ACP_DIR, `${id}.activity`);
       run.outPath = join(ACP_DIR, `${id}.out`);
     } else {
-      // pi-subagents 的 asyncDir 布局是公开契约（docs/observability.md「Async run artifacts」）：
+      // pi-subagents 的 asyncDir 布局是公开契约（它自己的 docs/observability.md「Async run artifacts」）：
       // `status.json` 的 `outputFile` 就是实时过程记录，`subagent-log-<id>.md` 是完成态摘要。
         const dir = str(d.asyncDir);
       if (dir && underSubagents(resolve(dir))) {
@@ -270,7 +270,8 @@ export class BgRuns {
   }
 
   /**
-   * 一个 run 的痕迹：活动记录尾 + 跑完的最终答复。只读 `%TEMP%\acp-delegate\` 里的文件 ——
+   * 一个 run 的痕迹：活动记录尾 + 跑完的最终答复。只读 `%TEMP%\acp-delegate\` 与
+   * `%TEMP%\pi-subagents-*\` 里的文件 ——
    * 路径是从 pi 的工具结果里拾来的（那也是一段可能被写邪的文本），所以读前再校验一次落点，
    * 不让一次注入就变成任意文件读取。文件还没写出来、被删了、超过上限，都只是少一段内容。
    */
