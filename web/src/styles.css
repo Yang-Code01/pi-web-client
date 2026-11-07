@@ -990,6 +990,23 @@ body.ws-tab-dragging .ws-tab:hover:not(.on) { color: var(--dim); background: non
 }
 .ws-tabs-more:hover { border-color: var(--line); background: var(--panel-2); color: var(--accent); }
 .ws-tabs-more[hidden] { display: none; }
+/* #175：横条末尾那颗 ＋（在 ＋N 左边）—— 新建一个空组，建完就在左栏里改名。
+   和 `.ws-tabs-more` 同一档尺寸，但常驻（不跟名额挂钩），所以只在壳 A 的横条里出现。 */
+.ws-tabs-add {
+  flex: none;
+  align-self: center;
+  margin-left: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.ws-tabs-add:hover { border-color: var(--line); background: var(--panel-2); color: var(--accent); }
+.ws-tabs-add[hidden] { display: none; }
 /* #121：`＋N` 的下拉 —— 外壳沿用 `.pin-menu` / `.pm-item`（同一张卡，用户不用学第二套）。 */
 .ws-tabs-menu { overflow-y: auto; max-width: min(320px, calc(100vw - 16px)); }
 .ws-session-row { grid-area: pins; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); }

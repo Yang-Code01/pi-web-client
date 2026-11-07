@@ -44,8 +44,17 @@ export function tabModel(o: { order: readonly string[]; max: number; current?: s
   return { visible, more };
 }
 
-/** #124 横向落点：`x` 落在哪一颗标签、插在它前面还是后面。 */
-export interface TabHit {
+/**
+ * #175：刚从横条 ＋ 建出来的组，是不是已经收进了 ＋N。桥把新组追加到 `order` 末尾，末尾还放得下
+ * 它就在横条上，返回 null；名额坐满时它直接进 `more`，返回 `more` 的条数（提示里的 N）。
+ * 快照里根本没这颗（旧广播 / 已删）也当「没什么好说」，不给一句对不上的提示。
+ */
+export function newTabFold(order: readonly string[], max: number, id: string): number | null {
+  const model = tabModel({ order, max });
+  return model.more.includes(id) ? model.more.length : null;
+}
+
+/** #124 横向落点：`x` 落在哪一颗标签、插在它前面还是后面。 */export interface TabHit {
   id: string;
   side: "before" | "after";
 }

@@ -261,6 +261,8 @@ export const en: Dict = {
   "这个工作区不在了": "That workspace is gone",
   "列表里没有 {p1}（目录过大时只列出一部分）": "Not in the listing: {p1} (big folders are listed in part)",
   "＋ 新建工作区": "+ New workspace",
+  "新建工作区": "New workspace",
+  "已新建，收在 ＋{p1} 里": "Created — it's filed under ＋{p1}",
   "先建一个空组，再把会话拖进去": "Creates an empty group; drag sessions into it afterwards",
   "会话信息：用量、费用、文件": "Session info: usage, cost, files",
   "会话列表": "Session list",

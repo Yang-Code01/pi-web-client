@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clampMax, TABS_MAX, TABS_MIN, tabHitTest, tabModel, tabReorder } from "../src/wstabs.ts";
+import { clampMax, newTabFold, TABS_MAX, TABS_MIN, tabHitTest, tabModel, tabReorder } from "../src/wstabs.ts";
 
 /** 桥下发的一份顺序（左栏与横条共用）。 */
 const ORDER = ["g1", "g2", "g3", "g4", "g5"];
@@ -54,6 +54,24 @@ test("名额进页面先按 1–5 夹住", () => {
   assert.equal(clampMax(2.7), 2);
   assert.equal(TABS_MIN, 1);
   assert.equal(TABS_MAX, 5);
+});
+
+// ---------------------------------------------------------------- #175 横条 ＋ 新建
+
+// 桥把新组追加到 order 末尾，`order` 已是建完之后的快照：末尾还放得下才画在横条上，
+// 否则它就在 ＋N 里 —— 页面据此说一句「已新建，收在 ＋N 里」。
+test("新建的组在不在横条上：末尾坐满最后一格算在，多出名额就算收进 ＋N", () => {
+  assert.equal(newTabFold(["a", "b", "c"], 3, "c"), null, "名额 3、刚好 3 组：新组就是最后一颗，不用吭声");
+  assert.equal(newTabFold(["a", "b", "c", "d"], 3, "d"), 1, "名额 3、4 组：新组收进 ＋N（里面 1 颗）");
+  assert.equal(newTabFold(["a", "b", "c", "d"], 4, "d"), null, "名额 4、4 组：画得下");
+  const nine = Array.from({ length: 9 }, (_, i) => `g${i + 1}`);
+  assert.equal(newTabFold([...nine, "manual:x"], 3, "manual:x"), 7, "9 组 + 新组、名额 3：提示里的 N 是 7");
+  assert.equal(newTabFold(["a"], 0, "a"), 1, "名额 0：它只能在 ＋N 里（1 颗）");
+});
+
+test("新建的组：不在 order 里 / order 有重复 id，都不许把一颗看不见的组说成在横条上", () => {
+  assert.equal(newTabFold(["a", "b"], 6, "ghost"), null, "快照里没有这颗：不提示");
+  assert.equal(newTabFold(["a", "a", "b"], 2, "b"), null, "重复 id 只算一颗，b 是第 2 颗、画得下");
 });
 
 // ---------------------------------------------------------------- #124 横向落点（#173 沿用）
