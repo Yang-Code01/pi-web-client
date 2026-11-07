@@ -33,6 +33,7 @@
     "test:permission": "node bridge/tests/default-permission.mjs",
     "test:pending": "node --experimental-transform-types web/tests/pending-unit.mjs",
     "test:continue": "node --experimental-transform-types web/tests/continue-unit.mjs",
+    "test:bgruns": "node --experimental-transform-types bridge/tests/bgruns-unit.mjs",
     "test:failures": "node --experimental-transform-types web/tests/failures-unit.mjs",
     "test:continue:ui": "node bridge/tests/continue-ui.mjs",
     "test:attach:ui": "node bridge/tests/attach-picker.mjs",

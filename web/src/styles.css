@@ -781,6 +781,27 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .takeover > .btn { flex: none; }
 .takeover.warn { border-color: var(--warn-dim); background: var(--warn-bg); color: var(--text); }
 
+/*
+ * D169: 后台子代理的那条提示。会话自己 settle 之后 pi 再也不会发 running ——— 这里是页面上
+ * 唯一能看出「它还在后台干活」的地方，所以它用强调色而不是告警色：这不是要你处理的事。
+ */
+.bg-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--accent-dim);
+  background: var(--accent-bg);
+  border-radius: var(--r);
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--dim);
+}
+.bg-bar .bg-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+.bg-bar .bg-text { color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bg-bar .bg-sep { flex: none; color: var(--faint); }
+.bg-bar .bg-elapsed { flex: none; font: 11px/1 var(--mono); color: var(--faint); }
+
 /* ---------------------------------------------------------------- approvals */
 .approval {
   border: 1px solid var(--warn-dim);
@@ -2542,6 +2563,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .pin-menu { animation: none; }
+  .bg-bar .bg-dot { animation: none; }
 }
 
 /* #18 extension status / widgets (ctx.ui.setStatus / setWidget over RPC) */

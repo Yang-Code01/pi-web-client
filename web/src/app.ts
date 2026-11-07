@@ -58,7 +58,7 @@ const CONTINUE_GUARD_MS = 1500;
 const CONTINUE_TEXT = "继续";
 
 /** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
-type BadgeKind = "ask" | "approve" | "locked" | "run" | "done";
+type BadgeKind = "ask" | "approve" | "locked" | "run" | "bg" | "done";
 
 interface SessionBadge {
   kind: BadgeKind;
@@ -100,8 +100,27 @@ function sessionBadge(s: SessionState): SessionBadge | null {
     return { kind: "locked", text: tr("终端占用"), cls: "lock", title: tr("pi CLI 在终端里正用着这个会话，网页这边只能看"), pending: false };
   }
   if (s.running) return { kind: "run", text: tr("运行中"), cls: "run", title: tr("agent 正在推进"), pending: false };
+  // D169: 会话自己 settle 了，派出去的 runner 还在跑 —— 「完成」是假的，得先把这枚亮出来。
+  if (s.bg && s.bg.n > 0) {
+    return {
+      kind: "bg",
+      text: s.bg.n > 1 ? tr("后台 {p1}", { p1: s.bg.n }) : tr("后台"),
+      cls: "run",
+      title: s.bg.agent ? tr("子代理 {p1} 还在后台跑，pi 会在它回来时接着做", { p1: s.bg.agent }) : tr("子代理还在后台跑，pi 会在它回来时接着做"),
+      pending: false,
+    };
+  }
   if (s.done) return { kind: "done", text: tr("完成"), cls: "done", title: "", pending: false };
   return null;
+}
+
+function bgElapsedText(since: number): string {
+  const secs = Math.max(0, Math.round((Date.now() - since) / 1000));
+  const m = Math.floor(secs / 60);
+  const s = String(secs % 60).padStart(2, "0");
+  // 跑过一小时的子代理很少，但真跑到了也不能显示成 90:04。
+  const clock = m < 60 ? `${m}:${s}` : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${s}`;
+  return tr("已跑 {p1}", { p1: clock });
 }
 
 export class App {
@@ -177,6 +196,8 @@ export class App {
   private textarea: HTMLTextAreaElement | null = null;
   /** 「继续」按钮（D159）：住在权限按钮正上方那 28.5px 里。每次重画 composer 都换一颗新的。 */
   private continueBtn: HTMLButtonElement | null = null;
+  /** D169: 输入框上方那条「子代理运行中」。`syncBgBar()` 造它，重画后要重新挂。 */
+  private bgBar: HTMLElement | null = null;
   /** 上一次点「继续」的会话与时刻（D159）：`pi.status` 回来之前按钮还亮着，连点会排两条。 */
   private continueAt: { id: string; at: number } = { id: "", at: 0 };
   /** Skill palette state (the popover above the composer). */
@@ -993,6 +1014,9 @@ export class App {
     setInterval(() => {
       for (const node of document.querySelectorAll<HTMLElement>(".approval .hint[data-deadline]")) {
         node.textContent = this.leftText(Number(node.dataset.deadline));
+      }
+      for (const node of document.querySelectorAll<HTMLElement>(".bg-elapsed[data-bg-since]")) {
+        node.textContent = bgElapsedText(Number(node.dataset.bgSince));
       }
       if (this.session?.running) this.fillHintStatus();
       // 刻度尺也养在这个闹钟里：只改 DOM 的格子数，不重画整个列表。
@@ -2066,6 +2090,7 @@ export class App {
         this.fillHintStatus();
         // 上面那条 else 走的就是「flags 变了但不用重画」：`starting` / 闲忙都可能在这里翻，「继续」跟着刷。
         this.syncContinueButton();
+        this.syncBgBar();
       }
     }
     this.renderTop();
@@ -7660,6 +7685,7 @@ export class App {
     this.modelChip = null;
     this.textarea = null;
     this.continueBtn = null;
+    this.bgBar = null;
     this.closeSkillPalette();
     this.imageBadge = null;
     if (!this.currentId) {
@@ -7795,6 +7821,8 @@ export class App {
     const queueBar = el("div", "queue-bar");
     this.queueBar = queueBar;
     host.append(extAbove, queueBar, row, hint, extBelow);
+    // D169: 提示条插在输入框上方（`row` 是锚点），重画后要重新挂回去。
+    this.syncBgBar();
     this.fillExt();
     this.fillQueueBar();
     this.fitComposer();
@@ -9938,8 +9966,51 @@ export class App {
           ? tr("pi 正在启动，起来之后再继续")
           : s?.running
             ? tr("pi 正在跑这一轮，停下之后再继续")
-            : tr("这条会话还没有说过话，没有可继续的");
+            : s?.bg && s.bg.n > 0
+              ? tr("子代理还在后台跑，pi 会在它回来时接着做")
+              : tr("这条会话还没有说过话，没有可继续的");
     btn.title = why || tr("把「继续」发给 pi —— 草稿留在输入框里，不会被动到");
+  }
+
+  /**
+   * D169: 输入框上方那条「子代理运行中」。会话自己 settle 之后，pi 再也不会发 `running: true`，
+   * 这条提示就是页面上唯一能看出「它还在后台干活」的地方（左栏同时有一枚「后台」徽标）。
+   *
+   * 不读 runner 的痕迹文件：桥只把「开始」与「结束」两件事折成 `state.bg` 推过来，秒数在这里滴答（
+   * `startClock()`），所以不用轮询也不用整块重画。
+   */
+  private syncBgBar(): void {
+    const bg = this.session?.bg;
+    const live = bg && bg.n > 0 ? bg : null;
+    if (!live) {
+      this.bgBar?.remove();
+      this.bgBar = null;
+      return;
+    }
+    if (!this.bgBar || !this.bgBar.isConnected) {
+      const bar = el("div", "bg-bar");
+      // 时间贴着文字走，不推到最右边：`总结本轮错误` 那颗浮动贴在输入框右上，推过去会被它压住。
+      bar.append(el("span", "bg-dot"), el("span", "bg-text"), el("span", "bg-sep", "·"), el("span", "bg-elapsed"));
+      bar.title = tr("pi 会在它回来时自己接着做；这时点「继续」等于插队多推一轮。");
+      const row = this.els.composerHost.querySelector(".row");
+      this.els.composerHost.insertBefore(bar, row);
+      this.bgBar = bar;
+    }
+    const bar = this.bgBar;
+    const text = bar.querySelector(".bg-text") as HTMLElement | null;
+    if (text) {
+      text.textContent =
+        live.n > 1
+          ? tr("{p1} 个子代理运行中", { p1: live.n })
+          : live.agent
+            ? tr("子代理运行中 · {p1}", { p1: live.agent })
+            : tr("子代理运行中");
+    }
+    const since = bar.querySelector(".bg-elapsed") as HTMLElement | null;
+    if (since) {
+      since.dataset.bgSince = String(live.since);
+      since.textContent = bgElapsedText(live.since);
+    }
   }
 
   /**

@@ -67,6 +67,16 @@ export interface ExtUi {
   title: string | null;
 }
 
+/**
+ * D169: 后台子代理。会话自己的 `running` 已经落回 false，这是「派出去的 runner 还在跑」。
+ * 只有摘要 —— 谁、几个、从什么时候开始；卡片和进度还没做。
+ */
+export interface BgView {
+  n: number;
+  agent?: string;
+  since: number;
+}
+
 export interface ApprovalRequest {
   id: string;
   sessionId: string;
@@ -112,6 +122,11 @@ export interface SessionState {
   ws?: string;
   /** Another process (the pi terminal) holds the lock: read-only, and the bridge refuses to delete it. */
   locked?: boolean;
+  /**
+   * D169: 派出去的后台子代理还在跑（桥的内存态，桥重启就没了）。有这个字段时「继续」灰着，
+   * 并在输入框上方给一条「子代理运行中」的提示 —— pi 会在 runner 回来时自己唤醒继续。
+   */
+  bg?: BgView | null;
   /** Launch options chosen at creation (#28), one line. */
   launch?: string;
 }

@@ -231,6 +231,44 @@ try {
   check("英文界面发出去的仍是字面「继续」", sentEn?.text === "继续", JSON.stringify(sentEn?.text));
   check("英文界面草稿也在", (await enPage.locator(".composer textarea").inputValue()) === "english draft");
   await en.close();
+  // -- E. 后台子代理（D169）：会话 settle 了，runner 还在跑 ------------------
+  // 用户报的就是这一段：页面看着空闲（pi.status 已是 false），既没有提示，又能点「继续」。
+  await turn("BGSTART please");
+  const bar = page.locator(".bg-bar");
+  for (let i = 0; i < 100; i++) {
+    if (await bar.count()) break;
+    await sleep(100);
+  }
+  check("输入框上方出现提示条", (await bar.count()) === 1);
+  const barText = await page.locator(".bg-bar .bg-text").innerText().catch(() => "");
+  check("提示条说是子代理在跑", /子代理运行中/.test(barText), JSON.stringify(barText));
+  check("提示条写着是谁", /researcher/.test(barText), JSON.stringify(barText));
+  check(
+    "提示条在输入框上方",
+    await page.evaluate(() => {
+      const b = document.querySelector(".bg-bar").getBoundingClientRect();
+      const r = document.querySelector(".composer .row").getBoundingClientRect();
+      return b.bottom <= r.top + 1;
+    }),
+  );
+  check("计时在走", /\d+:\d\d/.test(await page.locator(".bg-bar .bg-elapsed").innerText()), await page.locator(".bg-bar .bg-elapsed").innerText());
+  check("「继续」灰了 —— pi 会在它回来时接着做", await button.isDisabled());
+  const badges = await page.locator(".badge").allInnerTexts().catch(() => []);
+  check("左栏那枚是「后台」而不是「完成」", badges.includes("后台"), JSON.stringify(badges.slice(0, 8)));
+  await shot("bg", await composerClip());
+
+  await turn("BGDONE now");
+  for (let i = 0; i < 100; i++) {
+    if (!(await bar.count())) break;
+    await sleep(100);
+  }
+  check("完成通知一到，提示条收掉", (await bar.count()) === 0);
+  for (let i = 0; i < 100; i++) {
+    if (!(await button.isDisabled())) break;
+    await sleep(100);
+  }
+  check("「继续」又亮了", !(await button.isDisabled()));
+  await shot("bg-done", await composerClip());
 } catch (err) {
   check(`没跑完：${String(err?.message ?? err).split("\n")[0]}`, false);
   if (bridgeLog) log("bridge:", bridgeLog.slice(-1500));

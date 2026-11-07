@@ -14,17 +14,23 @@ export type ContinueState = "hidden" | "off" | "ready";
  * 除 `owned` 外都可缺省：老桥少发一个字段不该把按钮锁死。
  */
 export type ContinueSession = Pick<SessionState, "owned"> &
-  Partial<Pick<SessionState, "locked" | "starting" | "running">>;
+  Partial<Pick<SessionState, "locked" | "starting" | "running" | "bg">>;
 
 /**
  * - `hidden`：这一页没有写权（只读预览 / 终端里另一个 pi 持锁），发也发不出去 —— 先点「接管会话」。
  *   `locked` 目前只在桥的 `list()` 副本上出现（`bridge/src/sessions.ts` 注释：不许漏进广播的
  *   live state），所以它多半只是个兜底；真正常用的仍是 `owned`。
- * - `off`：pi 起不来或正忙着，或者这条会话还没有任何用户消息（「继续」无处可接）。
+ * - `off`：pi 起不来或正忙着，或者这条会话还没有任何用户消息（「继续」无处可接）；
+ *   或者后台子代理还在跑（D169）—— pi 会在 runner 回来时自己唤醒继续，此时点下去是插队多推一轮。
  * - `ready`：可以点。
  */
 export function continueState(s: ContinueSession | null | undefined, hasUserTurns: boolean): ContinueState {
   if (!s || !s.owned || s.locked) return "hidden";
-  if (s.starting || s.running || !hasUserTurns) return "off";
+  if (s.starting || s.running || bgBusy(s) || !hasUserTurns) return "off";
   return "ready";
+}
+
+/** 后台子代理在跑（`n` 缺省按 0：老桥不发这个字段）。 */
+export function bgBusy(s: ContinueSession | null | undefined): boolean {
+  return Boolean(s?.bg && s.bg.n > 0);
 }

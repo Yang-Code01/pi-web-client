@@ -2580,3 +2580,32 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - 没有做「在某个子文件夹里新建」（先点进去再建）；移动 / 删除 / 重命名也没做。
 
 **验证：** `node bridge/tests/mk-file.mjs`（12 项：0 字节、不覆盖、只建一层、父目录、Windows 规则、`makeDir` 报错文案回归）；`node bridge/tests/attach-picker.mjs` 在临时桥上用 Playwright（`locale: "zh-CN"`）跑两处界面：预填 / 回车 / 高亮 / 停在原地 / 重名保留原内容 / Esc 收起 / 文件管理器同款按钮。
+
+## D169 后台子代理：会话 settle 了也要说明白，并先把「继续」按住（无票，用户报的）
+
+**问题：** 让 pi 派一个后台子代理（`acp_delegate` / `subagent`，async）之后，界面立刻变回「空闲」：没有提示条，左栏那枚徽标写「完成」，输入框上方的「继续」还能点。用户看到的是一条已经收工的会话，实际后台还在跑；这时点「继续」等于插队多推一轮 —— 而 pi 本来就会在 runner 回来时自己接着做。
+
+**根因：** 桥里 `running` 只由 pi 的 `agent_start … agent_settled` 决定，而**子代理不是这一轮的一部分**：派出去的那次工具调用结束，pi 这一轮就 `agent_settled` 了，之后直到 completion 通知进来，协议里**再没有任何**「我还在忙」的信号。会话文件里那个 toolResult 的 `details.status` 也永远停在 `running`，读它没有意义。
+
+**决定：**
+
+- **桥端按会话记一张后台任务表**（新文件 `bridge/src/bgruns.ts`，`class BgRuns`）。两个口喂它：
+  - `noteToolEnd(tool, details, text)` —— `tool_execution_end` 的 `details` 里认 `runId`（acp_delegate 给 `{kind:"delegate", runId, agent}`，pi-subagents 给 `{runId, asyncDir}`）；没有 `details.runId` 时退回结果文本里的 `` runId `…` ``。**只有「刚开跑」的结果才算开一条**（`details.kind === "delegate"` / 有 `asyncDir` / 文本带 `Running in the background`），否则把 wait 的调用示例抄进结果就会造出幽灵任务。
+  - `noteText(text)` —— 结束信号只有 runner 自己注入回会话的那条消息（`[acp_delegate completed] … (runId `…`)`、`[acp_delegate FAILED ⚠️] …`）。它可能作为 steering 排进队列（`queue_update`），也可能直接把空闲会话唤醒（`message_start` 的 user 角色），**两头都接**。只在 runId 已认识时才动手，所以误判最多提前收条提示，不会凭空造任务。
+- **状态放在 `SessionState.bg`**：`{n, agent?, since}`，变了才 `setState`，且 `touch: false`（后台跑着不该把左栏的「几分钟前」刷新一遍）。走现成的 `session.state` 广播 + hello/list，所以刷新页面、换设备都还在 —— 但它**纯内存**，桥重启就没了（会话文件里查不到 runner 的死活，这是这一版接受的代价）。
+- **清空时写 `null` 而不是 `undefined`**：`undefined` 过 JSON 会被整条丢掉，页面就永远收不掉提示条（实测踩到过）。
+- **前端两处，同一份判据：**
+  - `web/src/continue-state.ts` 的 `continueState()` 里加一条 `bgBusy(s)` → `"off"`（灰，不是藏）。这个纯函数是「继续」的唯一判据口，`app.ts` 不另写判断。
+  - 输入框上方一条提示：`● 子代理运行中 · researcher · 已跑 1:23`（`.bg-bar`，插在 `.row` 之前）。秒数挂在已有的 `startClock()` 里滴答，不重画、不轮询。
+  - 左栏徽标在「运行中」与「完成」之间加一档「后台」/「后台 N」（`sessionBadge()`，`cls` 复用 `run`）。
+- **不读盘**：D133 那套（`.activity` 的 mtime + `status.json`）留给「卡片 + 步数 + 看过程」那一版；这一版只要「在不在跑、跑了多久」，读盘反而多一层可能读错的东西。`BgRun` 往外多带字段就能接上。
+
+**代价 / 可改：**
+
+- **桥重启后提示条会消失**（runner 还在跑，但表是内存的）。要跨重启就得把 runId 落盘，并解决「文件里查不出死活」—— 那时大概得回到 D133 的痕迹文件。
+- **一个从没报过完成的 run 会在 6 小时后被判死**（`SILENT_DEAD_MS`），界面上就是提示条自己收掉。真跑 6 小时以上的任务会被误判，但比「永远挂着一句运行中」好。
+- **跑完的 run 留 2 分钟**再丢（`KEEP_DONE_MS`），只为避免「完成」与「会话被唤醒」之间那帧闪一下；这 2 分钟里没有再展示任何东西。
+- **只覆盖会回报 `runId` 的两种派发**。别的「后台还在干活」形态（比如扩展自己起的定时任务）还没有口子。
+- **没有「点它看过程」**：提示条不可点，也没有取消按钮 —— 取消要走 `acp_delegate_cancel`，那是另一条链路。
+
+**验证：** `npm run test:bgruns`（12 项纯函数：acp/subagents 两条路、重复 runId 不重复记、完成/失败/取消都收、无 runId 不记账、误导性文本不造幽灵任务、`since` 取最早）；`npm run test:continue`（13 项，多出 3 项 bg 判据）；`node bridge/tests/continue-ui.mjs`（23 项，多出 9 项：假 pi 发一个 `acp_delegate` 结果后，提示条出现、写着 researcher、在输入框上方、计时在走、「继续」灰、左栏是「后台」；再发一条 user 角色的 completion 通知后，提示条收掉、「继续」又亮）。截图 `.scratch/shots/continue-bg*.png`。
