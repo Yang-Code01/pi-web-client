@@ -378,7 +378,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .session-sec { display: grid; gap: 4px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
 .sess-head { display: flex; align-items: center; gap: 4px; padding: 2px 4px; color: var(--faint); font-size: 11px; }
 .sess-head .label { color: var(--faint); }
-.sess-head .n { margin-left: auto; font-family: var(--mono); color: var(--faint); opacity: 0.85; }
+.sess-head .n { margin-left: auto; font-family: var(--mono); color: var(--faint); }
 .sess-head .chev { width: 12px; cursor: pointer; }
 /* 工作区组头（#95）：能点、能收起，色点 + 名字 + 待办角标 + 数量（贴样张 a-two-row 的手感）。 */
 .ws-head { padding: 5px 6px; gap: 7px; border-radius: 7px; cursor: pointer; color: var(--dim); }
