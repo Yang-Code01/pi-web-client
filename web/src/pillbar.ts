@@ -84,11 +84,21 @@ export function starredSessions<S extends PillSession>(
  *
  * 规则只有这一处：右邻优先，没有就取左邻，左右都没有（含「序列里只剩它」「它根本不在序列里」）
  * 返回 null —— 中栏进空态。改方向也只改这里。不读 DOM、不读 store。
+ *
+ * #191：一次回声带走好几颗 ★（批量归档）时，邻居按**归档之后**的 ★ 行算 —— `alsoArchived` 是
+ * 同一批里除它之外的 id，它们已经从行里消失，不算邻居（否则中栏会切到一颗刚归档的会话上）。
  */
-export function neighborAfterArchive(row: readonly string[], archivedId: string): string | null {
+export function neighborAfterArchive(
+  row: readonly string[],
+  archivedId: string,
+  alsoArchived: readonly string[] = [],
+): string | null {
   const at = row.indexOf(archivedId);
   if (at < 0) return null;
-  return row[at + 1] ?? row[at - 1] ?? null;
+  const gone = new Set([archivedId, ...alsoArchived]);
+  for (let i = at + 1; i < row.length; i += 1) if (!gone.has(row[i])) return row[i];
+  for (let i = at - 1; i >= 0; i -= 1) if (!gone.has(row[i])) return row[i];
+  return null;
 }
 
 export interface PillBarOpts<S extends PillSession = PillSession> {

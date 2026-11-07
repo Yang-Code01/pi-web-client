@@ -88,3 +88,20 @@ test("序列里只有它 → 无动作（中栏空态）", () => {
 test("当前会话没 ★、自己占第 1 格时，右邻就是右边第一颗 ★", () => {
   assert.equal(neighborAfterArchive(["cur", ...row], "cur"), "a");
 });
+
+// #191：批量归档 —— 一次回声同时带走好几颗 ★ 时，邻居按「归档之后」的 ★ 行算。
+test("批量：同批被带走的右邻跳过，落在归档后行里的下一个", () => {
+  assert.equal(neighborAfterArchive(row, "b", ["c"]), "d");
+});
+
+test("批量：同批带走整串右邻 → 落到左邻", () => {
+  assert.equal(neighborAfterArchive(row, "b", ["c", "d"]), "a");
+});
+
+test("批量：同批带走左边那几颗 → 右邻照旧", () => {
+  assert.equal(neighborAfterArchive(row, "b", ["a"]), "c");
+});
+
+test("批量：整批带走整行 → 无动作（中栏空态）", () => {
+  assert.equal(neighborAfterArchive(row, "b", ["a", "c", "d"]), null);
+});
