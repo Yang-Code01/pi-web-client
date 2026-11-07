@@ -2749,3 +2749,20 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 **代价 / 可改：** 文本兜底删掉后，只有文本、没有 `details` 的「开始」不再建卡；`details` 有 `runId` 但既无 `kind:"delegate"` 也无 `asyncDir`（更老的 acp 写法）同理 —— 少一条可见，好过错一条；`status.json` 每 30 秒读一次（文件几 KB，只在有 subagents run 时）；`output-0.log` 每次 attempt 会被清空，所以过程记录只有当前 attempt 的尾巴。
 
 **验证：** `npm run test:bgruns`（新增 4 组：D170 文档文本不建卡、无 details 不建卡、`…`/`sub_1` 不建卡、subagents 的 args→agent/task 与 `status.json`→hasLog/done）；`npm run typecheck`（含 i18n-check 1624 键 × 3 语言）；`npm run test:continue` 13 项。
+## D173 「读-改-写」的状态文件读不到时：不落盘、把改动排队、恢复后自己接上，并且让用户看见（`#184` 的审查补充）
+
+**问题：** `manage.json`（置顶 / 手排 / 归档）、`workspaces.json`、`bug-notes.json`、`failures/*.json` 都是「启动读一次 → 改内存 → 写回」。原来的 `readJson` 把「文件不存在」和「读失败 / 写到一半」揉成同一个 fallback，于是一次瞬时读失败（EBUSY、EACCES）会让内存里那份从**空状态**长出来，下一次拖动 / 改名就把空状态写回盘上 —— 不可逆。第一版补丁只在构造时判一次「读不到就不许写」，等于**整个进程生命周期**再也不保存：用户拖完置顶、重启一看全没了，界面却一直显示成功。
+
+**决定：** 把「读-改-写」收成一处 —— 新文件 `bridge/src/statefile.ts` 的 `class StateFile<T>`（`value()` / `update(fn)` / `lastError()`），`Manage`、`Workspaces` 都换成它。
+
+- **每次改动都重读盘**（不是开机读一次）：读到了就以盘为准，把 `update` 的闭包按顺序重放到新内容上再落盘；读不到就不写，闭包进队列，等文件恢复可读的**下一次改动**自己接上。闭包只碰传进来的 `data`，不碰 `this`，所以重放是幂等的。
+- **失败只报一次**（同一句错不重复刷；刷新是 400ms 一次），并通过 `onUnreadable` 回调接到桥的广播：`{type:"notice", level:"error", code:"state_file_unreadable", params:{p1:文件名}}`，走 `errText` 翻译，三种语言都有。**静默的「假成功」比丢一次改动更糟** —— 这是这一轮审查里唯一被标成「实现不对」的一条。
+- **`bug-notes.json` 直接抛**：`index.ts` 的 `notes.*` 处理器已经会把 message 回给界面（`notes.saved {error}`），`save()` 在读失败时 `throw` 而不是静默 `return`；`addShot` 失败时把刚写进 `assets/` 的图删掉（不留孤儿），`removeShot` 改成**先写索引再删图**（反过来保存失败会留下坏缩略图）。注释里「改动只留在内存里」也删了 —— 那不是真的，`listNotes()` 每次都读盘。
+- **`failures/*.json` 保持尽力而为**：它是遥测，宁可丢这一次新增，也不为它拦用户的动作；照样读失败不落盘、恢复后照常写。
+- `readJsonChecked` 留在 `paths.ts`（`readJson` 不动），`fileFor` 从 `failures.ts` 导出，测试直接 import —— 复刻哈希算法等于给测试埋一条「生产改名就静默失效」的暗雷。
+
+**否决的方案：** ①「构造时判一次、失败就永久拒写」—— 见上，一次瞬时错误变成永久不保存；②「读失败就抛，打断桥启动」—— 状态文件坏掉不该让整个 bridge 起不来；③「四处各写一遍守卫」—— 同一种模式四份副本，改一处漏三处（审查里被标成 Duplicated Code + Shotgun Surgery）。
+
+**代价 / 可改：** 每次拖动都多一次 `readFileSync`（文件都是几 KB，单线程桥里可忽略）；队列只在进程内，崩溃就丢（这些改动本来也只是 UI 排列，不是数据）；`state_file_unreadable` 的提示只在桥的聊天区出现一次，不会周期性提醒 —— 如果用户长时间没看，可能错过。
+
+**验证：** `npm run test:stateguard`（新建 `bridge/tests/state-read-guard.mjs`：`readJsonChecked` 三种语义、四个存储在坏文件下「一个字都不变」、首次运行照常写、**文件修好后排队的改动叠在盘上内容之上且保留其它字段**、notes 读失败必须抛）；`npm run test:tail`（`bridge/tests/tail-read-error.mjs`，用 PowerShell `FileShare.None` 独占句柄制造真 EBUSY：失败时不清屏、只报一次、`tailSig` 不推进，解锁后同一签名能重试成功）；`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（含 i18n 1624 键 × 3 语言）、`bridge/tests/done-persist.mjs`、`lessons-unit.mjs`、`web/tests/failures-unit.mjs`。

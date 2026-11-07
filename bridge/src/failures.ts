@@ -11,7 +11,7 @@
  * 忽略的只静默加次数 —— 这是用户定的「不用每次纠正我」。
  */
 import { createHash } from "node:crypto";
-import { readJson, statePath, writeJson } from "./paths.ts";
+import { readJsonChecked, statePath, writeJson } from "./paths.ts";
 
 export interface FailOcc {
   /** 会话 id。 */
@@ -96,18 +96,29 @@ function clean(s: unknown, max = MAX_TEXT): string {
 }
 
 /** 工作区 id 当文件名（可读），尾部再挂 8 位哈希：`F:/a b` 与 `F:/a_b` 不会落进同一本账。 */
-function fileFor(ws: string): string {
+export function fileFor(ws: string): string {
   const safe = ws.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 100) || "none";
   const tail = createHash("sha1").update(ws).digest("hex").slice(0, 8);
   return statePath("failures", `${safe}-${tail}.json`);
 }
+
+/** 读失败过的账本文件：在它们能读之前一律不落盘（见 save）。 */
+const unreadable = new Set<string>();
 
 export function emptyLedger(ws: string): FailLedger {
   return { version: 1, ws, label: "", entries: [], sessions: {} };
 }
 
 export function readLedger(ws: string): FailLedger {
-  const raw = readJson<Partial<FailLedger>>(fileFor(ws), {});
+  const file = fileFor(ws);
+  const res = readJsonChecked<Partial<FailLedger>>(file, {});
+  // 读失败过的账本在恢复前不落盘：空账本覆盖几百条历史，比丢这一次新增更糟。
+  if (res.ok) unreadable.delete(file);
+  else {
+    if (!unreadable.has(file)) console.error(`[failures] 读不到 ${file}（${res.error}）；这次不落盘，免得用空账本覆盖它`);
+    unreadable.add(file);
+  }
+  const raw = res.value;
   const entries = Array.isArray(raw.entries) ? raw.entries.filter((e): e is FailEntry => Boolean(e) && typeof e.key === "string") : [];
   return {
     version: 1,
@@ -141,7 +152,9 @@ function save(ledger: FailLedger): FailLedger {
   for (const e of ledger.entries) if (!seen.has(e.key)) seen.set(e.key, e);
   const entries = [...seen.values()].sort(byWeight).slice(0, MAX_ENTRIES);
   const out = { ...ledger, entries };
-  writeJson(fileFor(ledger.ws), out);
+  const file = fileFor(ledger.ws);
+  if (unreadable.has(file)) return out;
+  writeJson(file, out);
   return out;
 }
 
