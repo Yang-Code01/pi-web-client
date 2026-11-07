@@ -184,7 +184,7 @@ async function treeOf(repo: string, net: SkillNet): Promise<[string, number][]> 
 
 /** GitHub's own tree: the live one, and the only one that is not cached by jsDelivr for hours. */
 async function githubTree(repo: string, net: SkillNet): Promise<[string, number][]> {
-  const token = ghToken();
+  const token = await ghToken();
   const headers: Record<string, string> = { accept: "application/vnd.github+json" };
   if (token) headers.authorization = `Bearer ${token}`;
   const data = await net.json(`https://api.github.com/repos/${repo}/git/trees/HEAD?recursive=1`, headers);

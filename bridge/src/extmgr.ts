@@ -28,6 +28,10 @@ export interface Inventory {
   extensions: InstalledExtension[];
   mcp: InstalledMcp[];
   mcpError: string | null;
+  /** `pi mcp list` reported these server entries as broken (bad config), so they are not in `mcp`. */
+  mcpErrors: string[];
+  /** pi's own note on the run, e.g. “this project's .pi/mcp.json is ignored, the project is not trusted”. */
+  mcpNote: string | null;
   updates: number;
   checkedAt: number;
   /** `pi mcp list` has answered, so `mcp` below is the real list (not just “still running”). */
@@ -66,7 +70,7 @@ export async function inventory(cliPath: string, cwd: string | null, check: bool
   const checkedAt = Date.now();
   const list = await cli(cliPath, { op: "pkg.list", cwd: cwd ?? undefined });
   const rows = Array.isArray(list.data) ? (list.data as { scope: "user" | "project"; source: string; path: string | null }[]) : [];
-  const inv: Inventory = { packages: await inspectPackages(rows, false), extensions: looseExtensions(cwd), mcp: [], mcpError: null, updates: 0, checkedAt, mcpReady: false, versionsChecked: false };
+  const inv: Inventory = { packages: await inspectPackages(rows, false), extensions: looseExtensions(cwd), mcp: [], mcpError: null, mcpErrors: [], mcpNote: null, updates: 0, checkedAt, mcpReady: false, versionsChecked: false };
   const countUpdates = () => inv.packages.filter((p) => p.update).length + inv.mcp.filter((m) => m.version.update).length;
   const snapshot = () => {
     inv.updates = countUpdates();
@@ -79,6 +83,8 @@ export async function inventory(cliPath: string, cwd: string | null, check: bool
   const mcpStage = (async () => {
     const mcpList = await cli(cliPath, { op: "mcp.list", cwd: cwd ?? undefined });
     const servers = Array.isArray((mcpList.data as any)?.servers) ? ((mcpList.data as any).servers as any[]) : [];
+    inv.mcpErrors = Array.isArray((mcpList.data as any)?.errors) ? ((mcpList.data as any).errors as unknown[]).map(String) : [];
+    inv.mcpNote = typeof (mcpList.data as any)?.note === "string" ? String((mcpList.data as any).note) : null;
     inv.mcp = servers.map((s) => {
       const entry = s.source ? mcpEntry(String(s.source), String(s.name)) : null;
       commands.set(String(s.name), { command: entry?.command as string | undefined, args: entry?.args as string[] | undefined });
@@ -107,7 +113,14 @@ export async function inventory(cliPath: string, cwd: string | null, check: bool
 
   const versionStage = (async () => {
     if (!check) return;
-    inv.packages = await inspectPackages(rows, true).catch(() => inv.packages);
+    // Package versions do not depend on the MCP rows, and `pi mcp list` connects to every server
+    // (minutes, 180 s timeout): start the packages first so the wait below does not serialize them.
+    const pkgStage = inspectPackages(rows, true).catch(() => inv.packages);
+    // The MCP rows carry the versions: without this wait they are read while `inv.mcp` is still [] on
+    // any machine where `pi list` beats `pi mcp list` (a fresh agent dir: always), and the pin versions
+    // are silently never checked. The stage itself never rejects (it catches into `mcpError`).
+    await mcpStage;
+    inv.packages = await pkgStage;
     const bumped = await Promise.all(
       inv.mcp.map(async (m) => {
         const c = commands.get(m.name);
