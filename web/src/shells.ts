@@ -42,6 +42,14 @@ export function shellParts(id: LayoutId): ShellParts {
 }
 
 /**
+ * #175：横条末尾那颗「＋ 新建工作区」跟标签行同进同出 —— B/C/D 没有标签行，也就不画这颗
+ * （同一个「新建」在四个壳里四个位置，反而没人知道该去哪找）。纯表推导，单测守这一条。
+ */
+export function tabsAddShown(parts: ShellParts): boolean {
+  return parts.tabsRow;
+}
+
+/**
  * 两字头：竖列 48px / 色点条 52px，全名放不下（全名进 `title` 与 `aria-label`）。
  * 按**字**取而不是按码元取，代理对不会被劈成半个字符。空名字给个占位，不留一格空白。
  */

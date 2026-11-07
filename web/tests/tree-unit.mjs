@@ -146,23 +146,19 @@ test("★ 不跨组：一个组的 ★ 不影响另一个组的顺序", () => {
 
 // ---------------------------------------------------------------- 组之间
 
-test("有待处理的组排在前面", () => {
+test("组序按一份 order（左栏与横条共用），不看待处理 / 最近活动", () => {
   const sessions = [s("l1", LIB.id, { updatedAt: 900 }), s("p1", PWC.id, { updatedAt: 100, asks: 1 })];
-  const t = tree(sessions, {}, { groups: [LIB, PWC] });
-  assert.deepEqual(t.groups.map((g) => g.id), [PWC.id, LIB.id]);
-  assert.equal(t.groups[0].pending, 1);
+  const t = tree(sessions, {}, { groups: [LIB, PWC], order: [LIB.id, PWC.id] });
+  assert.deepEqual(t.groups.map((g) => g.id), [LIB.id, PWC.id]);
+  assert.equal(t.groups.find((g) => g.id === PWC.id).pending, 1, "待处理角标照旧");
 });
 
-test("都没有待处理时按最近活动倒序，活动时间一样再按名字", () => {
-  const sessions = [
-    s("l1", LIB.id, { updatedAt: 100 }),
-    s("p1", PWC.id, { updatedAt: 900 }),
-    s("m1", MANUAL.id, { updatedAt: 500 }),
-  ];
-  const t = tree(sessions, {}, { groups: [LIB, PWC, MANUAL] });
-  assert.deepEqual(t.groups.map((g) => g.id), [PWC.id, MANUAL.id, LIB.id]);
-  const tie = tree([s("a", LIB.id, { updatedAt: 1 }), s("b", PWC.id, { updatedAt: 1 })], {}, { groups: [PWC, LIB] });
-  assert.deepEqual(tie.groups.map((g) => g.name), ["library", "pi-web-client"]);
+test("order 里没有的组排末尾，再按名字；旧桥没 order 时就是全按名字", () => {
+  const sessions = [s("l1", LIB.id, { updatedAt: 100 }), s("p1", PWC.id, { updatedAt: 900 })];
+  const ranked = tree(sessions, {}, { groups: [PWC, LIB], order: [PWC.id] });
+  assert.deepEqual(ranked.groups.map((g) => g.id), [PWC.id, LIB.id]);
+  const legacy = tree(sessions, {}, { groups: [PWC, LIB] });
+  assert.deepEqual(legacy.groups.map((g) => g.name), ["library", "pi-web-client"]);
 });
 
 test("pending 只数组里在等你的会话（待回答 / 待确认）", () => {

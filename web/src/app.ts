@@ -15,7 +15,7 @@ import { PillBar, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
-import { railModel, shellParts, type RailItem } from "./shells.ts";
+import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
@@ -25,10 +25,10 @@ import { ScratchChat } from "./scratch.ts";
 import { skillOf } from "./skill.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
-import { PIN_MAX, PIN_MIN, TABS_DEFAULT, clampMax, tabHitTest, tabModel, tabReorder, type TabHit, type TabRect } from "./wstabs.ts";
+import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
-import { WS_NAME_MAX, dropBlocker, fixedBlocker, fixedDropped, fixedRows, renameIntent, toggleFixed } from "./wsmanage.ts";
+import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
@@ -384,10 +384,12 @@ export class App {
   private wsMenu: WsMenuHandle | null = null;
   /** 点了「新建工作区」：等桥把新组广播回来，就立刻进改名态（组的 id 只有桥知道）。 */
   private wsCreatePending = false;
-  /** #123 设置面板的「标签行」那块（步进器 + 勾选）；快照回来时只重画这一个小面。 */
+  /** #175：这一下新建是从横条那颗 ＋ 点的（建完若落在 ＋N 里要说一声）。 */
+  private wsCreateFromTabs = false;
+  /** #175：刚从横条 ＋ 建出来的组，下一次画横条时核一眼它在不在 ＋N 里（画完清掉）。 */
+  private wsNewNoteId: string | null = null;
+  /** #123 设置面板的「标签行」那块（名额步进器）；快照回来时只重画这一个小面。 */
   private wsPane: HTMLElement | null = null;
-  /** 名额调小时那句「取消了几个固定组」——换别的动作就收回去，不停留成旧消息。 */
-  private wsTabsNote = "";
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
   private manage: ManageState = { pin: [], order: [], archived: [] };
   private archivedOpen = false;
@@ -452,7 +454,7 @@ export class App {
    */
   private tabsMore: { close(): void } | null = null;
   /**
-   * #124 刚才那一拖是否真的挪了位置。`click` 紧跟在 `pointerup` 后面，不给个标记的话松手会被
+   * #174 刚才那一拖是否真的挪了位置。`click` 紧跟在 `pointerup` 后面，不给个标记的话松手会被
    * 当成一次点击，把组切到刚拖走的那颗上。
    */
   private tabDragMoved = false;
@@ -655,7 +657,15 @@ export class App {
     const wsTabsMore = el("button", "ws-tabs-more") as HTMLButtonElement;
     wsTabsMore.type = "button";
     wsTabsMore.hidden = true;
-    wsTabsRow.append(wsTabs, wsTabsMore);
+    // #175：新建工作区也搬一颗到横条末尾 —— 建完就地改名，不用先滚回左栏树底。
+    const wsTabsAdd = el("button", "ws-tabs-add") as HTMLButtonElement;
+    wsTabsAdd.type = "button";
+    wsTabsAdd.hidden = true;
+    wsTabsAdd.textContent = tr("＋");
+    wsTabsAdd.title = tr("新建工作区");
+    wsTabsAdd.setAttribute("aria-label", tr("新建工作区"));
+    wsTabsAdd.onclick = () => this.createWsFromTabs();
+    wsTabsRow.append(wsTabs, wsTabsAdd, wsTabsMore);
     wsTabsRow.hidden = true;
     const sessionRow = el("div", "ws-session-row");
     const nowSlotRow = el("div", "now-chip-slot");
@@ -687,7 +697,7 @@ export class App {
     shell.append(topbar, wsTabsRow, sessionRow, mainWrap, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, wsTabsRow, wsTabs, wsTabsMore, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, wsTabsRow, wsTabs, wsTabsAdd, wsTabsMore, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.binBtn = binBtn;
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
@@ -1970,11 +1980,14 @@ export class App {
             this.wsRenameId = born.id;
             this.wsRenameDraft = "";
             this.wsRenameFocus = true;
+            // #175：从横条 ＋ 建的组：画横条时核一眼它在不在 ＋N 里（在就说一声，免得像没建成）。
+            if (this.wsCreateFromTabs) this.wsNewNoteId = born.id;
           }
+          this.wsCreateFromTabs = false;
         }
         this.renderNowChip();
         this.renderSessions();
-        // #123：设置面板开着时，名额 / 固定组也跟着桥的快照对齐（截断发生在桥，页面只是镜子）。
+        // #123：设置面板开着时，名额也跟着桥的快照对齐（校验发生在桥，页面只是镜子）。
         if (this.sheetKind === "display") this.paintWsTabsPane();
         break;
       }
@@ -3126,11 +3139,10 @@ export class App {
     layoutBox.append(layoutChips);
     sheet.append(layoutBox);
 
-    // #123：标签行的固定名额 + 固定组勾选。名额存在桥端（`ws.tabs`），不进 `pi.prefs` ——
-    // 换浏览器打开还是同一个 N。两块都改完即发，不等「确定」。
+    // #123：标签行的名额。名额存在桥端（`ws.tabs`），不进 `pi.prefs` ——
+    // 换浏览器打开还是同一个 N。改完即发，不等「确定」。
     const wsTabsBox = el("div", "levels");
     wsTabsBox.append(el("div", "levels-label", tr("标签行")));
-    this.wsTabsNote = "";
     this.wsPane = el("div", "ws-tabs-pane");
     wsTabsBox.append(this.wsPane);
     sheet.append(wsTabsBox);
@@ -3155,27 +3167,26 @@ export class App {
   }
 
   /**
-   * #123 设置面板的「标签行」：名额步进器 + 固定组勾选。组序与左栏同一份（`buildTree` 的组序，
-   * 不带搜索过滤），勾选状态与标签行看同一把尺子（`fixedRows`）。桥的每份快照都重画这一块 ——
-   * 页面不另存一份可能说错的副本，截断之后这里跟着变就是「桥真的这么记了」。
+   * #123 设置面板的「标签行」：只剩「最多显示」步进器（顺序由标签行 / 左栏共用的一份 `order`
+   * 说了算；#176 起范围 1–12、默认 6）。桥的每份快照都重画这一块 —— 页面
+   * 不另存一份可能说错的副本。
    */
   private paintWsTabsPane(): void {
     const pane = this.wsPane;
     if (!pane) return;
-    // 重画会把刚按的那颗按钮换掉：按 data-act / data-ws 把焦点找回去，键盘用户不至于掉回 body。
+    // 重画会把刚按的那颗按钮换掉：按 data-act 把焦点找回去，键盘用户不至于掉回 body。
     const active = document.activeElement;
-    const key = active instanceof HTMLElement && pane.contains(active) ? `${active.dataset.act ?? ""}|${active.dataset.ws ?? ""}` : "";
+    const key = active instanceof HTMLElement && pane.contains(active) ? active.dataset.act ?? "" : "";
     const focusable = new Map<string, HTMLElement>();
     const keep = (node: HTMLButtonElement) => {
-      focusable.set(`${node.dataset.act ?? ""}|${node.dataset.ws ?? ""}`, node);
+      focusable.set(node.dataset.act ?? "", node);
       return node;
     };
     pane.replaceChildren();
     const max = this.workspaces.max ?? TABS_DEFAULT;
-    const pinned = this.workspaces.pinned ?? [];
 
     const row = el("div", "ws-max-row");
-    row.append(el("span", "ws-max-label", tr("固定名额")));
+    row.append(el("span", "ws-max-label", tr("最多显示")));
     const step = (act: string, text: string, title: string, delta: number, off: boolean) => {
       const btn = el("button", "ws-max-btn", text) as HTMLButtonElement;
       btn.type = "button";
@@ -3187,71 +3198,26 @@ export class App {
       row.append(keep(btn));
     };
     // 到边界的那一颗真置灰（disabled）：点得动却没反应，比灰着更让人怀疑。
-    step("ws-max-down", tr("－"), tr("固定名额减一"), -1, max <= PIN_MIN);
+    step("ws-max-down", tr("－"), tr("最多显示减一"), -1, max <= TABS_MIN);
     const num = el("span", "ws-max-n", String(max));
     num.dataset.act = "ws-max-n";
     row.append(num);
-    step("ws-max-up", tr("＋"), tr("固定名额加一"), 1, max >= PIN_MAX);
+    step("ws-max-up", tr("＋"), tr("最多显示加一"), 1, max >= TABS_MAX);
     pane.append(row);
-    // R9：不写「最多 N 个」这种绝对话术 —— 当前工作区在圈外时标签行会多画一颗。
-    pane.append(el("div", "ws-max-hint", tr("前 {p1} 个位置留给固定组；当前工作区不在其中时会多画一颗。", { p1: max })));
-
-    const tree = buildTree(this.sessions, this.manage, this.workspaces, "");
-    const byId = new Map(tree.groups.map((group) => [group.id, group]));
-    const rows = fixedRows(tree.groups, pinned, max);
-    pane.append(el("div", "ws-fixed-label", tr("固定组（顺序跟左栏一致）")));
-    const list = el("div", "ws-fixed-list");
-    for (const entry of rows) {
-      const group = byId.get(entry.id);
-      const name = group?.name ?? entry.id;
-      const btn = el("button", `ws-fixed-row${entry.checked ? " on" : ""}`) as HTMLButtonElement;
-      btn.type = "button";
-      btn.dataset.act = "ws-fixed-row";
-      btn.dataset.ws = entry.id;
-      btn.setAttribute("aria-pressed", String(entry.checked));
-      const dot = el("span", "ws-fixed-dot");
-      dot.style.background = group?.color ?? "var(--line)";
-      btn.append(dot, el("span", "ws-fixed-name", name), el("span", "ws-fixed-check", entry.checked ? "✓" : ""));
-      if (entry.blocker) {
-        // 勾满名额后其余行置灰并写明原因 —— 跟 ⋯ 菜单里那句 pm-why 用的是同一句话。
-        btn.disabled = true;
-        btn.title = entry.blocker;
-        btn.setAttribute("aria-label", tr("{p1}：{p2}", { p1: name, p2: entry.blocker }));
-      } else {
-        btn.title = entry.checked ? tr("取消固定") : tr("固定到标签行");
-        btn.onclick = () => this.setWsFixed(entry.id);
-      }
-      list.append(keep(btn));
-    }
-    pane.append(list);
-    const blocker = rows.find((entry) => entry.blocker)?.blocker;
-    if (blocker) pane.append(el("div", "ws-fixed-blocker", blocker));
-    if (this.wsTabsNote) pane.append(el("div", "ws-fixed-note", this.wsTabsNote));
+    // 旁注随当前值变：名额只决定画几颗，装不下的仍在 ＋N 里（#176）。
+    pane.append(el("div", "ws-max-hint", tr("横条最多放 {p1} 个，装不下的收进 ＋N", { p1: max })));
     if (key) focusable.get(key)?.focus();
   }
 
   /**
-   * 名额增 / 减：桥在同一次写里把超出名额的固定组截掉（R5），这里把「被取消了几个」当场说出来，
-   * 别让人以为自己的选择被弄丢了。数字与勾选等桥的快照回来再对齐，中间不做乐观改动。
+   * 名额增 / 减：数字与标签行等桥的快照回来再对齐，中间不做乐观改动。
    */
   private setTabsMax(next: number): void {
     const max = this.workspaces.max ?? TABS_DEFAULT;
     const want = clampMax(next);
     if (want === max) return;
-    const dropped = fixedDropped(this.workspaces.pinned ?? [], want);
-    this.wsTabsNote = dropped ? tr("名额缩到 {p1} 个：超出的 {p2} 个固定组已被取消", { p1: want, p2: dropped }) : "";
     this.paintWsTabsPane();
     this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", max: want }));
-  }
-
-  /** 设置面板里勾 / 取消一个固定组：与组头 ⋯ 菜单同一条动作、同一套名额判断。 */
-  private setWsFixed(id: string): void {
-    const pinned = this.workspaces.pinned ?? [];
-    const max = this.workspaces.max ?? TABS_DEFAULT;
-    const blocker = fixedBlocker(this.workspaces.groups.find((group) => group.id === id), pinned, max);
-    this.wsTabsNote = blocker ?? "";
-    if (!blocker) this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", pinned: toggleFixed(pinned, id) }));
-    this.paintWsTabsPane();
   }
 
   /**
@@ -4806,19 +4772,13 @@ export class App {
       todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
       head.append(todo);
     }
-    // #122 / R11：固定组在左栏也要能认出来 —— 标签行上它排前面，树里就得看得出是为什么。
-    if ((this.workspaces.pinned ?? []).includes(group.id)) {
-      const tag = el("span", "ws-fixed", "📌");
-      tag.title = tr("已固定到标签行");
-      tag.setAttribute("aria-label", tr("已固定"));
-      head.append(tag);
-    }
+    // #173：左栏组序就是 `order`，不再需要「为什么它排在前面」的徽记。
     head.append(el("span", "n", String(group.sessions.length)));
     if (!editing) {
       const more = el("button", "ws-more", "⋯") as HTMLButtonElement;
       more.type = "button";
       more.dataset.act = "ws-more";
-      more.title = tr("改名 / 固定 / 删除这个工作区");
+      more.title = tr("改名 / 移到最前 / 删除这个工作区");
       more.setAttribute("aria-label", tr("{p1} 的工作区菜单", { p1: group.name }));
       more.onclick = (ev) => {
         ev.stopPropagation();
@@ -4856,39 +4816,45 @@ export class App {
     this.renderSessions();
   }
 
-  /** 组头的 ⋯：改名 / 固定 / 删除。删不了就置灰并在菜单里写明原因，而不是把这个选择藏起来。 */
+  /** 组头的 ⋯：改名 / 移到最前 / 删除。做不了的置灰并在菜单里写明原因，不把这个选择藏起来。 */
   private openWsMore(group: TreeGroup<SessionState>, anchor: HTMLElement): void {
     this.wsMenu?.close();
     const info = this.workspaces.groups.find((g) => g.id === group.id);
-    const pinned = this.workspaces.pinned ?? [];
-    const max = this.workspaces.max ?? TABS_DEFAULT;
+    const order = this.wsGroupOrder();
     this.wsMenu = openWsMenu(anchor, {
       name: group.name,
       sub: info && !info.manual ? info.key : tr("手建的工作区"),
-      fixed: pinned.includes(group.id),
-      fixedBlocker: fixedBlocker(info, pinned, max),
+      // #177：已经是第一时就地置灰 + 说明，而不是藏掉这颗（跟删除同一个套路）。
+      // #178：旧桥没有 `order`（也不认识 ws.tabs），别给一个点下去会报「未知操作」的入口。
+      frontBlocker: !this.wsOrder()
+        ? tr("旧版桥不支持调整顺序")
+        : order[0] === group.id
+          ? tr("它已经是第一个了")
+          : null,
       dropBlocker: dropBlocker(info, group.sessions.length),
       onRename: () => this.startWsRename(group.id),
-      onToggleFixed: () => this.toggleWsFixed(group),
+      onFront: () => this.moveWsToFront(group.id),
       onDrop: () => this.dropWs(group.id),
     });
   }
 
-  /**
-   * #122 固定 / 取消固定：发一整份新列表（桥那端去重 / 剔脏 / 截断，页面只负责把「点完该是什么样」说清）。
-   * 名额满了就当场拒绝并提示 —— 菜单里已经置灰一次，但快照过期（别处刚固定满）时这里再兜一层。
-   */
-  private toggleWsFixed(group: TreeGroup<SessionState>): void {
-    const info = this.workspaces.groups.find((g) => g.id === group.id);
-    const pinned = this.workspaces.pinned ?? [];
-    const max = this.workspaces.max ?? TABS_DEFAULT;
-    const blocker = fixedBlocker(info, pinned, max);
-    if (blocker) {
-      this.warn(blocker);
-      return;
-    }
-    const next = toggleFixed(pinned, group.id);
-    this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", pinned: next }));
+  /** 桥下发的组序；旧桥没有这个字段（空数组也算新桥）。 */
+  private wsOrder(): string[] | null {
+    return Array.isArray(this.workspaces.order) ? this.workspaces.order : null;
+  }
+
+  /** #177：页面上那份组序 —— 优先桥下发的 `order`；旧桥没下发时退回树的组序（与标签行同一份兜底）。 */
+  private wsGroupOrder(): string[] {
+    const order = this.wsOrder();
+    if (order?.length) return order;
+    return buildTree(this.sessions, this.manage, this.workspaces, "").groups.map((group) => group.id);
+  }
+
+  /** #177：组头「移到最前」—— 用既有的 `ws.tabs { order }` 写回，不新增桥动作。 */
+  private moveWsToFront(id: string): void {
+    const next = moveToFront(this.wsGroupOrder(), id);
+    if (!next) return;
+    this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", order: next }));
   }
 
   private startWsRename(id: string): void {
@@ -4932,8 +4898,19 @@ export class App {
     this.wsCreatePending = true;
     window.setTimeout(() => {
       this.wsCreatePending = false;
+      this.wsCreateFromTabs = false;
     }, 5000);
     this.act(() => this.socket.send({ type: "manage", action: "ws.create", name: "" }));
+  }
+
+  /**
+   * #175：横条末尾那颗 ＋ —— 与树底的「新建工作区」是同一条路（只发既有的 `ws.create`）。
+   * 左栏收着时先把它展开：建完的组在树里进改名态，看不见输入框就没法起名。
+   */
+  private createWsFromTabs(): void {
+    if (this.collapsed.sessions) this.togglePane("sessions");
+    this.wsCreateFromTabs = true;
+    this.createWs();
   }
 
   private sessionSection(kind: "archived", title: string, list: SessionState[]): HTMLElement {
@@ -6310,26 +6287,26 @@ export class App {
 
   private failSaved(msg: any): void {
     if (msg.error) {
-      this.flashFailToast(tr("没记进账本：{p1}", { p1: String(msg.error) }), true, 6000);
+      this.flashToast(tr("没记进账本：{p1}", { p1: String(msg.error) }), true, 6000);
       return;
     }
     if (msg.ledger) this.setFailLedger(msg.ledger as FailLedger);
     if (msg.undone) {
-      this.flashFailToast(tr("已撤销这次入账"), false, 2600);
+      this.flashToast(tr("已撤销这次入账"), false, 2600);
       return;
     }
     // 标已修复 / 忽略 / 删除的回包也走这条路：账本刷新就够了，别弹「没有新的失败」。
     if (!msg.token) return;
     const n = Number(msg.added ?? 0);
     if (!n) {
-      this.flashFailToast(tr("这次没有新的失败"), false, 2600);
+      this.flashToast(tr("这次没有新的失败"), false, 2600);
       return;
     }
-    this.flashFailToast(tr("已记进账本 · {p1} 次 · 可撤销", { p1: n }), false, 10000, String(msg.token ?? ""));
+    this.flashToast(tr("已记进账本 · {p1} 次 · 可撤销", { p1: n }), false, 10000, String(msg.token ?? ""));
   }
 
-  /** 入账后的那条小提示：10 秒内能撤回（误点、或者这一轮其实只是探路）。 */
-  private flashFailToast(text: string, bad: boolean, ms: number, token = ""): void {
+  /** 一条几秒后自己消失的小提示（入账可撤销 / #175 新建的组收进了 ＋N）。同一时刻只留一条。 */
+  private flashToast(text: string, bad: boolean, ms: number, token = ""): void {
     this.failToast?.remove();
     window.clearTimeout(this.failToastTimer);
     const box = el("div", `fail-toast${bad ? " bad" : ""}`);
@@ -11694,18 +11671,14 @@ export class App {
   }
 
   /**
-   * With the left column collapsed there is nowhere to click a pinned session. A row of chips under
-   * the topbar keeps them one click away — same order as the list's 置顶 section, newest name first.
-   */
-  /**
-   * #97 壳 A 行 1：工作区标签页。横向一条；#121 起只画 N 颗（默认 3，桥端可调 1–5），
-   * 剩下的收进槽外那颗 `＋N`。当前工作区永远在圈内（不在就挤掉最后一个补位组），有会话卡在
+   * #97 壳 A 行 1：工作区标签页。横向一条；#121 起只画 N 颗（默认 6，桥端可调 1–12），
+   * 剩下的收进槽外那颗 `＋N`。当前工作区永远在圈内（不在就占最后一格），有会话卡在
    * 用户身上时带一颗待处理点。点一下 = 切到那一组：打开组里排最上面的那颗会话（★ 优先，跟左栏
-   * 同一份顺序）。
+   * 同一份顺序）；#174 起画出来的每一颗都能拖，拖完写回同一种 `order`。
    */
   private renderWorkspaceTabs(): void {
-    const { wsTabsRow, wsTabs, wsTabsMore } = this.els;
-    if (!wsTabsRow || !wsTabs || !wsTabsMore) return;
+    const { wsTabsRow, wsTabs, wsTabsMore, wsTabsAdd } = this.els;
+    if (!wsTabsRow || !wsTabs || !wsTabsMore || !wsTabsAdd) return;
     // #98：标签行只属于 A；B/C/D 的切组入口分别是浮层 / 竖列 / 色点条 + 树。
     // #119：窄屏也照画 —— 它现在就在 A 的顶栏那一行里，收起它就等于 A 的顶栏没标签了。
     const parts = shellParts(activeLayout(this.prefs));
@@ -11715,31 +11688,34 @@ export class App {
     this.closeTabsMore();
     wsTabs.replaceChildren();
     wsTabsMore.hidden = true;
+    // #175：那颗 ＋ 跟横条同进同出（B/C/D 没有横条，也就不画它）。
+    wsTabsAdd.hidden = !tabsAddShown(parts);
     wsTabsRow.hidden = !parts.tabsRow || !tree.groups.length;
-    if (wsTabsRow.hidden) return;
+    if (wsTabsRow.hidden) {
+      // 横条不画时这句提示没有出口，别攒到下一次渲染。
+      this.wsNewNoteId = null;
+      return;
+    }
     const byId = new Map(tree.groups.map((group) => [group.id, group]));
-    // #126：标签行的补位序按组名固定，**不跟最近活动走**。树是按「待处理 > 最近活动 > 名字」排的，
-    // 切到哪组的会话那组就`latest` 最新、跳到 `order[0]` —— 标签行最左那颗会跟着来回跳。
-    // 左栏保持活动序，两者不要求一致：标签是「去哪」的入口，位置得稳定。
-    const order = [...tree.groups]
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id))
-      .map((group) => group.id);
-    // #122：固定组与名额都由桥端下发（`pinned` 的顺序就是标签行顺序）；旧桥没这两个字段时
-    // 按「没有固定组 + 默认名额」画，与 #121 的样子一致。
-    const model = tabModel({
-      order,
-      pinned: this.workspaces.pinned ?? [],
-      max: this.workspaces.max ?? TABS_DEFAULT,
-      current: cur ?? undefined,
-    });
+    // #173：标签行与左栏用同一份 `order`（含折叠组），不再按名字或最近活动另排一套。
+    // 旧桥没下发 order 时退回树的组序（此时树自己也是按名字排的）。
+    const bridgeOrder = this.wsOrder();
+    const order = (bridgeOrder?.length ? bridgeOrder : tree.groups.map((group) => group.id)).filter((id) => byId.has(id));
+    const model = tabModel({ order, max: this.workspaces.max ?? TABS_DEFAULT, current: cur ?? undefined });
+    // #175：刚在横条 ＋ 上建的组：`order` 末尾、名额已满时它直接进 ＋N —— 说一声，
+    // 否则横条看起来没变，像是没建成（新组仍按 #173 的规则留在 order 末尾）。
+    const born = this.wsNewNoteId;
+    if (born) {
+      this.wsNewNoteId = null;
+      const folded = newTabFold(order, this.workspaces.max ?? TABS_DEFAULT, born);
+      if (folded != null) this.flashToast(tr("已新建，收在 ＋{p1} 里", { p1: folded }), false, 4000);
+    }
     for (const id of model.visible) {
       const group = byId.get(id);
       if (!group) continue;
-      const canDrag = model.fixed.includes(group.id);
       const tab = el("button", `ws-tab${group.id === cur ? " on" : ""}`);
       tab.dataset.ws = group.id;
-      // 补位组长得跟固定组一模一样，只是拖不动（#118 R8）—— 那就把「为什么拖不动」写在悬停上。
-      tab.title = canDrag ? tr("切到这个工作区") : tr("切到这个工作区；自动补位的组拖不动，先在组头菜单里固定");
+      tab.title = tr("切到这个工作区");
       tab.setAttribute("aria-label", tr("{p1}，{p2} 个会话", { p1: group.name, p2: group.sessions.length }));
       if (group.id === cur) tab.setAttribute("aria-current", "true");
       const dot = el("span", "ws-tab-dot");
@@ -11750,10 +11726,11 @@ export class App {
         todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
         tab.append(todo);
       }
-      // #124：只有固定组能拖。补位组连 pointerdown 都不接，所以它既不会起拖也不会拖出半个指示线。
-      if (canDrag) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id);
+      // #174：画出来的每一颗都能拖；拖完不误当点击。
+      // #178 R34：旧桥没有 `order`，顺序只是页面按名字兜底，拖了也无处落库 —— 不绑拖动。
+      // 过滤态只画命中组：此时拖出来的 order 会缺项、被桥按创建序补到末尾 —— 搜索时不绑拖。
+      if (bridgeOrder?.length && !this.filter) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id, model);
       tab.onclick = () => {
-        // 刚拖过一把：这次 click 是拖拽的尾巴，不能当成「切到这一组」。
         if (this.tabDragMoved) {
           this.tabDragMoved = false;
           return;
@@ -11779,22 +11756,20 @@ export class App {
   }
 
   /**
-   * #124 固定组拖拽重排。按下后移动超过 4px 才算起拖 —— 不超过就还是那次普通点击（切组），
-   * 所以 pointerdown 里不能 preventDefault、也不能抢 pointer capture。
+   * #174 标签行的鼠标拖拽重排。按下后移动超过 4px 才算
+   * 起拖 —— 不超过就还是那次普通点击（切组），所以 pointerdown 里不能 preventDefault、也不能抢
+   * pointer capture。只认鼠标：触屏 / 笔 / 键盘的排量不在这一票里（#172 Out of Scope）。
    *
    * 落点由 `tabHitTest()` 定（拖动源自己从 rects 里剔掉），指示线是一条 2px 竖线贴在落点那一侧；
-   * 松手只发一条 `ws.tabs { pinned }`，由桥端落库再广播回来 —— 页面不自己改本地顺序。
-   * 拖回原位 / 标签行里只剩它一颗 → `tabReorder()` 返回 null，一个字都不发。
-   * 只重排、不增删（#118 R7），所以这里没有「拖出固定区」这条路。
+   * 松手只发一条 `ws.tabs { order }`（整份 order 一次写回），由桥端落库再广播回来 —— 页面不自己
+   * 改本地顺序。拖回原位 / 落点没变 → `tabReorder()` 返回 null，一个字都不发。`model` 是这一帧画
+   * 出来的可见段 / 折叠段：重排只在可见段里算，折叠组既拖不动也不会被顺手拽进前几名。
    */
-  private startTabDrag(ev: PointerEvent, id: string): void {
-    // D149：只认鼠标 —— 触屏 / 笔的 pointerdown 不能进 4px 起拖判定，否则一点就画线。
+  private startTabDrag(ev: PointerEvent, id: string, model: TabModel): void {
     if (ev.button !== 0 || ev.pointerType !== "mouse") return;
     const tabs = this.els.wsTabs;
     const tab = ev.currentTarget as HTMLElement | null;
-    if (!tabs || !tab) return;
-    const pinned = this.workspaces.pinned ?? [];
-    if (!pinned.includes(id)) return;
+    if (!tabs || !tab || !model.visible.includes(id)) return;
     const x0 = ev.clientX;
     const y0 = ev.clientY;
     let moved = false;
@@ -11856,11 +11831,17 @@ export class App {
       window.setTimeout(() => {
         this.tabDragMoved = false;
       }, 0);
-      const next = tabReorder(pinned, id, hit);
-      if (next) this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", pinned: next }));
+      const next = tabReorder(model, id, hit);
+      if (next) {
+        // 只交顺序：名额有自己的入口，拖一下不该顺带把上一帧的 max 回写。
+        this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", order: next }));
+      }
     };
 
-    const cancel = (): void => cleanup();
+    const cancel = (): void => {
+      this.tabDragMoved = false;
+      cleanup();
+    };
 
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);

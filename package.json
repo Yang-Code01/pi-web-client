@@ -40,6 +40,7 @@
     "test:done": "node bridge/tests/done-persist.mjs",
     "test:skillblock": "node bridge/tests/skill-block.mjs",
     "test:lessons": "node --experimental-transform-types bridge/tests/lessons-unit.mjs",
+    "probe:workspace": "node probes/run-all.mjs",
     "test:tail": "node --experimental-transform-types bridge/tests/tail-read-error.mjs",
     "test:stateguard": "node --experimental-transform-types bridge/tests/state-read-guard.mjs"
   },

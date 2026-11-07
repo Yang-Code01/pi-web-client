@@ -2256,10 +2256,10 @@ async function main(): Promise<void> {
               return;
             }
             if (action === "ws.tabs") {
-              // #122：`pinned` / `max` 各自可缺省，缺省的那个一个字都不动；两个一起写、一次落盘。
-              const result = sessions.workspaces.setTabs({ pinned: msg.pinned, max: msg.max });
+              // #173：`order` 是全量组序（含折叠组），与 `max` 各自可缺省；缺省的那个一个字都不动。
+              const result = sessions.workspaces.setTabs({ order: msg.order, max: msg.max });
               if (!result.ok) {
-                send({ type: "notice", text: result.reason ?? "固定组没保存", level: "warn" });
+                send({ type: "notice", text: result.reason ?? "标签行顺序没保存", level: "warn" });
                 return;
               }
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });

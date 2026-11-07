@@ -404,8 +404,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   padding: 2px 4px; border-radius: 4px;
 }
 .ws-head .n { margin-left: auto; font: 11px/1 var(--mono); color: var(--faint); }
-/* #122：固定组的小标记（R11）。它跟在名字后面、在会话数前面，不抢名字的宽度。 */
-.ws-head .ws-fixed { flex: none; font-size: 10px; line-height: 1; opacity: 0.85; }
 .ws-head.folded { color: var(--faint); }
 .ws-head.folded .label { color: var(--faint); font-weight: 500; }
 /* #100：组头就地改名 + 那颗 ⋯。⋯ 跟会话卡片的 card-act 一个脾气：指着组头才出来，别的时候把位置让给名字。 */
@@ -1009,7 +1007,7 @@ html[data-layout="a"] .topbar > .dot { display: none; }
 .ws-tab-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; }
 .ws-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-tab-todo { flex: none; width: 6px; height: 6px; border-radius: 999px; background: var(--warn); box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.14); }
-/* #124 固定组可以拖着换顺序：落点是一条 2px 竖线，挂在标签槽里（内容坐标），槽横滚时跟着标签走。
+/* #124 标签可以拖着换顺序：落点是一条 2px 竖线，挂在标签槽里（内容坐标），槽横滚时跟着标签走。
    拖拽期间压掉选中与悬浮 —— 按钮里的字被刷蓝、鼠标每划过一颗都亮一下，就看不清线画面在哪了。 */
 .ws-tab-line { position: absolute; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--accent); pointer-events: none; }
 .ws-tab.drag { opacity: 0.45; }
@@ -1032,6 +1030,23 @@ body.ws-tab-dragging .ws-tab:hover:not(.on) { color: var(--dim); background: non
 }
 .ws-tabs-more:hover { border-color: var(--line); background: var(--panel-2); color: var(--accent); }
 .ws-tabs-more[hidden] { display: none; }
+/* #175：横条末尾那颗 ＋（在 ＋N 左边）—— 新建一个空组，建完就在左栏里改名。
+   和 `.ws-tabs-more` 同一档尺寸，但常驻（不跟名额挂钩），所以只在壳 A 的横条里出现。 */
+.ws-tabs-add {
+  flex: none;
+  align-self: center;
+  margin-left: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.ws-tabs-add:hover { border-color: var(--line); background: var(--panel-2); color: var(--accent); }
+.ws-tabs-add[hidden] { display: none; }
 /* #121：`＋N` 的下拉 —— 外壳沿用 `.pin-menu` / `.pm-item`（同一张卡，用户不用学第二套）。 */
 .ws-tabs-menu { overflow-y: auto; max-width: min(320px, calc(100vw - 16px)); }
 .ws-session-row { grid-area: pins; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); }
@@ -1553,7 +1568,7 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .layout-d .ld-line:nth-child(5) { top: 20px; }
 .layout-d .ld-body-wide { left: 27px; right: 4px; top: 11px; bottom: 4px; height: auto; }
 
-/* #123：设置里的「标签行」—— 名额步进器 + 固定组勾选。勾选行跟左栏组头同一套手感（色点 + 名字）。 */
+/* #123：设置里的「标签行」—— 只有名额步进器。 */
 .ws-tabs-pane { display: grid; gap: 8px; }
 .ws-max-row { display: flex; align-items: center; gap: 6px; }
 .ws-max-label { font-size: 12px; color: var(--dim); margin-right: 2px; }
@@ -1566,23 +1581,7 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .ws-max-btn:hover:not(:disabled) { border-color: var(--line-strong); color: var(--accent); }
 .ws-max-btn:disabled { opacity: 0.38; cursor: not-allowed; }
 .ws-max-n { min-width: 18px; text-align: center; font: 13px/1 var(--mono); color: var(--text); }
-.ws-max-hint, .ws-fixed-blocker { font-size: 11px; line-height: 1.45; color: var(--faint); }
-.ws-fixed-label { font-size: 11.5px; color: var(--dim); }
-.ws-fixed-list { display: grid; gap: 2px; max-height: 200px; overflow-y: auto; }
-.ws-fixed-row {
-  display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 8px;
-  border: 1px solid transparent; border-radius: 8px; background: none; color: var(--text);
-  font: 12px/1.35 var(--sans); text-align: left; cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
-}
-.ws-fixed-row:hover:not(:disabled) { background: var(--panel-2); border-color: var(--line); }
-.ws-fixed-row.on { border-color: var(--accent-dim); background: var(--panel-2); }
-.ws-fixed-row:disabled { opacity: 0.5; cursor: not-allowed; }
-.ws-fixed-dot { width: 8px; height: 8px; border-radius: 999px; flex: none; }
-.ws-fixed-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws-fixed-check { flex: none; width: 10px; font-size: 11px; color: var(--accent); }
-/* 名额调小导致截断时的提示：跟「不能勾」的灰字分开 —— 这条是说「刚发生了什么」，不是规矩。 */
-.ws-fixed-note { font-size: 11px; line-height: 1.45; color: var(--accent); }
+.ws-max-hint { font-size: 11px; line-height: 1.45; color: var(--faint); }
 
 @media (min-width: 760px) {
   .sheet-back { align-items: center; justify-items: center; padding: 24px; }

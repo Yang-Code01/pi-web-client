@@ -3,8 +3,8 @@
  *
  * 两个大面：
  *   A. 800px（<900px）四套布局统一退化 —— 只保「当前在哪」一颗（顶栏），点一下打开左栏
- *      （会话页）并滚到当前会话；不开浮层，竖列 / 色点条 / 标签行 / 胶囊条一概不占地方，
- *      窗口也不横向溢出。
+ *      （会话页）并滚到当前会话；不开浮层，竖列 / 色点条 / 胶囊条不占地方；A 的标签行仍留在
+ *      顶栏那一行（#119），B/C/D 不画；窗口也不横向溢出。
  *   B. 键盘可达性（宽屏 1100px）—— 组头 / 会话卡 / 那颗 Tab 可达、Enter/Space 触发；
  *      组头 Enter 折叠后焦点回到组头；卡片 Alt+←/→ 组间移动（发 ws.move）、Alt+↑/↓ 组内
  *      重排（发 arrange），焦点跟着移动后的卡走；B 浮层 / ⋯ 菜单 Esc 关闭后焦点还给开它的
@@ -255,8 +255,13 @@ for (const layout of ["a", "b", "c", "d"]) {
     pop: document.querySelectorAll(".ws-pop").length,
   }));
   ok(narrow.topChip || narrow.rowChip, `${layout}：800px 看得到当前会话那颗（${narrow.nowName}）`);
-  ok(narrow.count1 ?? true, "");
-  ok(!narrow.rail && !narrow.strip && !narrow.tabsRow && !narrow.pillRow, `${layout}：胶囊条/竖列/色点条/标签行都不占地方`);
+  const clean =
+    !narrow.rail && !narrow.strip && !narrow.pillRow && narrow.tabsRow === (layout === "a");
+  if (!clean) console.log(`  narrow(${layout})=`, JSON.stringify(narrow));
+  ok(
+    clean,
+    `${layout}：胶囊条/竖列/色点条收起；标签行只在 A 的顶栏里（${narrow.tabsRow ? "有" : "无"}）`,
+  );
   ok(!narrow.overflow, `${layout}：不横向溢出`);
   ok(narrow.pop === 0, `${layout}：窄屏没有浮层`);
 
@@ -287,7 +292,10 @@ for (const layout of ["a", "b", "c", "d"]) {
   await page.keyboard.press("Tab");
   await sleep(100);
   const first = await focused(page);
-  ok(first?.act === "where" || Boolean(first?.card) || first?.act === "new", `${layout}：第一个 Tab 停靠点是工作区入口/会话入口（${first?.act ?? first?.cls}）`);
+  ok(
+    first?.act === "where" || first?.act === "new" || Boolean(first?.card) || (layout === "a" && ["ws-tab", "ws-tabs-add"].some((c) => (first?.cls ?? "").split(/\s+/).includes(c))),
+    `${layout}：第一个 Tab 停靠点是工作区入口/会话入口（${first?.act ?? first?.cls}）`,
+  );
   await page.context().close();
 }
 

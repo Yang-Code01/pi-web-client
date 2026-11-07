@@ -31,9 +31,12 @@ export interface WorkspaceState {
   overrides: Record<string, string>;
   /** 归一化 cwd 的小写 → 工程根。缓存，只由 `resolve()` 写。 */
   keys: Record<string, string>;
-  /** #122 固定组 id，顺序即标签行顺序。存量文件没有这条 → 空列表。 */
-  pinned?: string[];
-  /** #122 固定名额，默认 3，读写都 clamp 到 1–5。存量文件没有这条 → 默认。 */
+  /**
+   * #173 一份顺序：全量组 id（含被折叠的），顺序即左栏 / 标签行顺序。存量文件没有这条 →
+   * 迁移：旧 `pinned` 顺序打头，其余按显示名字母序；`pinned` 从此退役。
+   */
+  order?: string[];
+  /** 标签行最多画几颗，默认 6，只接受 1–12 的整数（#176）。 */
   max?: number;
 }
 
@@ -63,28 +66,51 @@ export function groupId(root: unknown): string {
   return normalizePath(root).toLowerCase();
 }
 
-/** #122 标签行的固定名额：默认 3，可调范围 1–5（#118 R8）。 */
-export const TABS_DEFAULT = 3;
+/** 标签行名额：默认 6，可调范围 1–12（#176）。 */
+export const TABS_DEFAULT = 6;
 export const TABS_MIN = 1;
-export const TABS_MAX = 5;
+export const TABS_MAX = 12;
 
 /**
- * 名额：只认有限数，取整后 clamp 到 1–5；字符串 / null / NaN 之类返回 `null` = 非法。
- * 越界算合法（clamp），不是数字才算非法（协议要能回一句 notice 而不是悄悄改）。
+ * 名额：只认 1–12 的整数；字符串 / null / NaN / 小数 / 越界一律返回 `null` = 非法。
+ * 非法值由调用方回 notice 且**什么都不改**，不在这里悄悄 clamp（#172 R27）。
  */
 function readMax(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  return Math.min(TABS_MAX, Math.max(TABS_MIN, Math.trunc(value)));
+  if (typeof value !== "number" || !Number.isInteger(value)) return null;
+  if (value < TABS_MIN || value > TABS_MAX) return null;
+  return value;
 }
 
-/** 固定组列表：只留非空字符串并去重。组还在不在由调用方过滤（快照 / 写入前各有一把）。 */
-function readPinned(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
+/** 组在界面上的名字：用户起的名字 → 目录名 → 「新工作区」（与左栏 `buildTree()` 的回落同一套）。 */
+function displayName(group: WsGroup): string {
+  const own = group.name.trim();
+  if (own) return own;
+  const parts = normalizePath(group.key).split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? "新工作区";
+}
+
+/** 显示名字母序，大小写不敏感；同名靠 id 稳定。 */
+function byDisplayName(a: WsGroup, b: WsGroup): number {
+  return displayName(a).localeCompare(displayName(b), undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id);
+}
+
+/**
+ * order 的唯一洗法（#173）：去重、剔掉已经不存在的组、把缺的组补到末尾。
+ * `seed` 只在旧文件没有 order 时用 —— 旧 `pinned` 的顺序原样打头（迁移）；迁移补齐按显示名，
+ * 之后的日常补齐按创建序（`groups` 数组序），不按名字插队。
+ */
+function readOrder(value: unknown, groups: WsGroup[], seed: readonly unknown[] = []): string[] {
+  const known = new Set(groups.map((g) => g.id));
   const out: string[] = [];
-  for (const raw of value) {
-    if (typeof raw !== "string" || !raw || out.includes(raw)) continue;
-    out.push(raw);
-  }
+  const add = (id: unknown): void => {
+    if (typeof id !== "string" || !id || !known.has(id) || out.includes(id)) return;
+    out.push(id);
+  };
+  if (Array.isArray(value)) for (const id of value) add(id);
+  else for (const id of seed) add(id);
+  const missing = groups.filter((g) => !out.includes(g.id));
+  if (!Array.isArray(value)) missing.sort(byDisplayName);
+  for (const group of missing) out.push(group.id);
   return out;
 }
 
@@ -114,27 +140,32 @@ function readRecord(value: unknown, normalize: boolean): Record<string, string> 
 }
 
 function emptyState(): WorkspaceState {
-  return { groups: [], overrides: {}, keys: {}, pinned: [], max: TABS_DEFAULT };
+  return { groups: [], overrides: {}, keys: {}, order: [], max: TABS_DEFAULT };
 }
 
-/** 存量文件缺字段是常态：缺 `pinned` / `max` 按空列表、默认名额，不迁移、不写回。 */
+/**
+ * 存量文件缺字段是常态：缺 `order` 时按旧 `pinned` + 显示名迁移，缺 `max` 按默认名额。
+ * 迁移只在读时做；下一次写盘才落新形状，平时不改写旧文件。
+ */
 function normalize(raw: unknown): WorkspaceState {
-  const r = (raw && typeof raw === "object" ? raw : {}) as Partial<WorkspaceState>;
+  const r = (raw && typeof raw === "object" ? raw : {}) as Partial<WorkspaceState> & { pinned?: unknown };
+  const groups = readGroups(r.groups);
+  const legacy = !Array.isArray(r.order);
   return {
-    groups: readGroups(r.groups),
+    groups,
     overrides: readRecord(r.overrides, false),
     keys: readRecord(r.keys, true),
-    pinned: readPinned(r.pinned),
+    // #173 一份顺序接管：旧文件没有 order → 旧 pinned 打头、其余按显示名；此后 order 说了算。
+    order: readOrder(r.order, groups, legacy && Array.isArray(r.pinned) ? r.pinned : []),
     max: readMax(r.max) ?? TABS_DEFAULT,
   };
 }
 
-/** 组没了，固定列表里就不该还留着它的 id（#122）：悬空 id 会让标签行少一颗却不知道少了谁。 */
-function prunePinned(d: WorkspaceState): void {
-  if (!d.pinned) return;
+/** 组没了，order 里就不该还留着它的 id（#173）：悬空 id 会让顺序少一格却不知道少了谁。 */
+function pruneOrder(d: WorkspaceState): void {
   const ids = new Set(d.groups.map((g) => g.id));
-  const next = d.pinned.filter((id) => ids.has(id));
-  if (next.length !== d.pinned.length) d.pinned = next;
+  const next = (d.order ?? []).filter((id) => ids.has(id));
+  if (next.length !== (d.order ?? []).length) d.order = next;
 }
 
 /**
@@ -150,7 +181,7 @@ function prune(d: WorkspaceState): void {
   });
   if (keep.length !== d.groups.length) {
     d.groups = keep;
-    prunePinned(d);
+    pruneOrder(d);
   }
 }
 
@@ -173,13 +204,12 @@ export class Workspaces {
 
   snapshot(): WorkspaceState {
     const d = this.state.value();
-    const ids = new Set(d.groups.map((g) => g.id));
     return {
       groups: d.groups.map((g) => ({ ...g })),
       overrides: { ...d.overrides },
       keys: { ...d.keys },
-      // 坏文件里的悬空 id 不进画布：树 / 标签行只该看到还存在的组。
-      pinned: (d.pinned ?? []).filter((id) => ids.has(id)),
+      // 坏文件里的悬空 / 重复 id 不进画布：树 / 标签行只该看到还存在的组，顺序永远完整。
+      order: readOrder(d.order, d.groups),
       max: d.max ?? TABS_DEFAULT,
     };
   }
@@ -204,8 +234,8 @@ export class Workspaces {
    * 找不到就建（名字留空，显示时取目录名）。空 cwd（脏会话文件）不属于任何工作区 → `""`。
    */
   groupFor(sessionId: string, cwd: string): string {
-    const pinned = this.state.value().overrides[sessionId];
-    if (pinned && this.group(pinned)) return pinned;
+    const override = this.state.value().overrides[sessionId];
+    if (override && this.group(override)) return override;
     const key = this.keyOf(cwd);
     if (!key) return "";
     return this.ensure(key).id;
@@ -218,6 +248,8 @@ export class Workspaces {
     const created: WsGroup = { id, name: "", key, manual: false };
     this.state.update((d) => {
       if (!d.groups.some((g) => g.id === id)) d.groups.push({ ...created });
+      // #173 新出现的组追加到末尾：ensure 是「补一个」，不能插队改用户顺序。
+      d.order = readOrder(d.order, d.groups);
     });
     return created;
   }
@@ -273,6 +305,8 @@ export class Workspaces {
     const group: WsGroup = { id, name: String(name ?? "").trim().slice(0, 80), key: "", manual: true };
     this.state.update((d) => {
       d.groups.push({ ...group });
+      // #173 新组排到末尾，不按显示名插队。
+      d.order = readOrder(d.order, d.groups);
     });
     return { ...group };
   }
@@ -306,37 +340,35 @@ export class Workspaces {
     if (Object.values(this.state.value().overrides).includes(id)) return { ok: false, reason: "这个工作区里还有会话" };
     this.state.update((d) => {
       d.groups = d.groups.filter((g) => g.id !== id);
-      prunePinned(d);
+      pruneOrder(d);
     });
     return { ok: true };
   }
 
   /**
-   * 固定组 + 名额（#122）：两个字段各自可缺省，缺省的那个一个字都不动；给了就**一次落盘**写两个 ——
-   * 名额调小与「截断超出的固定组」必须是同一次写，否则会出现「名额 3、固定还是 5 个」的中间态。
+   * 标签行的顺序 + 名额（#173）：两个字段各自可缺省，缺省的那个一个字都不动；给了就**一次落盘**。
    *
-   * 写前四件事：去重、剔掉已经不存在的组、名额 clamp 到 1–5、超过名额的截断保留前面的。
-   * 名额 / 列表本身不合法时返回原因且**什么都不改** —— 调用方据此回 notice。
+   * `order` 是全量顺序（含折叠组），不按名额截断 —— 名额只决定画几颗，不影响顺序本身。
+   * 写前洗一遍：去重、剔掉已经不存在的组、缺的组按创建序补到末尾。名额只接受 1–12 的整数；
+   * 非法时返回原因且**什么都不改** —— 调用方据此回 notice。旧页面发来的 `pinned` 不参与排序。
    */
-  setTabs(input: { pinned?: unknown; max?: unknown }): { ok: boolean; reason?: string } {
+  setTabs(input: { order?: unknown; max?: unknown }): { ok: boolean; reason?: string } {
     const d0 = this.state.value();
     let max = d0.max ?? TABS_DEFAULT;
     if (input.max !== undefined) {
       const next = readMax(input.max);
-      if (next == null) return { ok: false, reason: `固定名额要是 ${TABS_MIN}–${TABS_MAX} 之间的数字` };
+      if (next == null) return { ok: false, reason: `最多显示要是 ${TABS_MIN}–${TABS_MAX} 之间的整数` };
       max = next;
     }
-    const known = new Set(d0.groups.map((g) => g.id));
-    let pinned: string[];
-    if (input.pinned !== undefined) {
-      if (!Array.isArray(input.pinned)) return { ok: false, reason: "固定组要是一份组 id 列表" };
-      pinned = readPinned(input.pinned).filter((id) => known.has(id));
+    let order: string[];
+    if (input.order !== undefined) {
+      if (!Array.isArray(input.order)) return { ok: false, reason: "标签行顺序要是一份组 id 列表" };
+      order = readOrder(input.order, d0.groups);
     } else {
-      pinned = (d0.pinned ?? []).filter((id) => known.has(id));
+      order = readOrder(d0.order, d0.groups);
     }
-    const nextPinned = pinned.slice(0, max);
     this.state.update((d) => {
-      d.pinned = nextPinned;
+      d.order = order;
       d.max = max;
     });
     return { ok: true };

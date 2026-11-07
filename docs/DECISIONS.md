@@ -2766,3 +2766,31 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 **代价 / 可改：** 每次拖动都多一次 `readFileSync`（文件都是几 KB，单线程桥里可忽略）；队列只在进程内，崩溃就丢（这些改动本来也只是 UI 排列，不是数据）；`state_file_unreadable` 的提示只在桥的聊天区出现一次，不会周期性提醒 —— 如果用户长时间没看，可能错过。
 
 **验证：** `npm run test:stateguard`（新建 `bridge/tests/state-read-guard.mjs`：`readJsonChecked` 三种语义、四个存储在坏文件下「一个字都不变」、首次运行照常写、**文件修好后排队的改动叠在盘上内容之上且保留其它字段**、notes 读失败必须抛）；`npm run test:tail`（`bridge/tests/tail-read-error.mjs`，用 PowerShell `FileShare.None` 独占句柄制造真 EBUSY：失败时不清屏、只报一次、`tailSig` 不推进，解锁后同一签名能重试成功）；`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（含 i18n 1624 键 × 3 语言）、`bridge/tests/done-persist.mjs`、`lessons-unit.mjs`、`web/tests/failures-unit.mjs`。
+
+## D174 工作区标签行 v3：`order` 是唯一顺序，固定 / 补位退役（#172 / #178）
+
+**问题：** #118 / #122 的标签行有两套顺序来源：用户固定的 `pinned` 列表管「谁在前面」，剩下的「补位组」按最近活动 / 左栏顺序填。固定还带名额语义（固定组占满 N 颗时当前组多画一颗），于是同一组会因活动时间换位、固定组与补位组的边界随名额变化，用户没法用一句话说出「横条为什么是这个顺序」。#172 把模型改成一份全量 `order`，本票收尾并清掉旧模型的代码、文案与探针旧账。
+
+**决定：**
+
+- **一份顺序：** `WorkspaceState.order` 存全量组 id（含被折叠的组），左栏树与顶栏标签行共用它；新组（`ensure` / `create`）追加到末尾，删组（`drop` / 临时组回收）从 `order` 剔除。顺序只由用户拖动、组头「移到最前」和 `order` 自愈补齐改变，不再看最近活动或待处理数。
+- **名额只决定画几颗：** `max` 由桥端持久化，默认 6；写入只接受 1–12 的整数，非法值回 notice 且不改任何字段（旧文件里读到非法值时回落默认 6），页面发 `ws.tabs { max }`，桥端不截断 `order`；改 max 不改顺序、不丢组。
+- **当前组永远在圈内：** 当前组不在 `order` 前 `max` 颗时占最后一格，原来第 `max` 颗让位进 `＋N`，横条总数不涨（`tabModel()`）；`＋N` 只列被折叠的组，点一行切组。
+- **可见即可拖：** `tabModel().visible` 里的每一颗都能用鼠标拖着重排；松手只写回整份 `order`（`ws.tabs { order }`），折叠组没有 DOM、不参与拖动。位移不到 4px 仍算点击，拖回原位一个字都不发。**替位组的拖动按显示位置算目标**（`tabReorder` 只重排可见段，折叠段原样跟在后面）——这是 #172 Implementation Decisions 的语义，#172 Further Notes 里「按真实位置」的旧说法已由本次评审修订。
+- **过滤态不绑拖动：** 左栏搜索词生效时标签行只画命中组，此时拖出来的 `order` 会缺项、被桥按创建序补到末尾；因此搜索时标签不绑 `pointerdown`，与左栏 `item.draggable = !this.filter` 同一套约定。
+- **窄屏仍是 D149：** 800px 下保留 A 壳的标签行与 ＋/＋N（槽内横滚，不出现页面横向溢出）；#172 R39 的「800px 不出现」已按 D149 修订，不回退 #119 的窄屏入口。
+- **`pinned` 运行期退役：** 快照与落盘不再有 `pinned`；`bridge/src/workspaces.ts` 的 `load()` 只从旧文件读一次，作为没有 `order` 时的迁移种子（旧 `pinned` 顺序打头，其余按显示名 `localeCompare`，再按 id 稳定），下一次写盘就只剩 `order`。`web/src/types.ts` 的会话级 `pinned?: boolean`（侧栏 ★）是另一件事，保留。
+- **新旧协议兼容：** 新页面 + 旧桥（快照没有 `order`）退回按显示名字母序，且不绑拖动；组头「移到最前」置灰并说明「旧版桥不支持调整顺序」（旧桥不认识 `ws.tabs`）。旧页面 + 新桥可能发 `ws.tabs { pinned }`：桥端忽略该字段，不改顺序、不报错。
+- **收尾清理：** 删除 `.ws-fixed-*` 死样式、设置里的固定组块旧样式与用户文案；`GLOSSARY.md` 的「工作区 / 标签行」按本模型改写，删「固定（组）」「补位（组）」；旧探针里「固定到第一行 / 默认 3」的断言按新模型校正。
+
+**为什么：** 顺序必须是可解释、可持久化的单一事实源 —— 两套来源（固定 + 活动）会让同一个组在刷新、切会话后换位，而「固定占满名额多画一颗」让横条颗数随状态变化。把 `max` 降为纯显示预算、让当前组替最后一格，既保证「当前组永远看得见」，又保证「横条不超 N」。迁移只在读时做、写时落新形状，避免启动时改写用户文件，也让回滚旧桥时旧文件仍可读（旧桥不认识 `order` 就按它自己的规则走）。
+
+**代价 / 可改：**
+
+- 旧桥下没有持久顺序：字母序只是页面兜底，拖不动、也不能「移到最前」；升级桥后不会自动把旧页面的临时顺序带过来（本来就没落库）。
+- `order` 里存的是组 id（路径小写 / `manual:<随机>`），改显示名不会换位；手动组永远追加在末尾，不能按名字插队。
+- 名额存在 `workspaces.json` 的 `max`，换浏览器仍是同一个 N；但它不跟随窗口宽度自动调整 —— 窄屏是否隐藏标签行由壳决定，不改 `max`。
+- `readOrder()` 对未知 / 重复 id 的清洗、缺失组按创建序补尾都在桥端做；页面拿到的永远是已补齐的快照，别再在页面里另推一套顺序。
+- 旧决策里出现「固定 / 补位」的条目（D149 等）保留原文，作为历史记录，不回改写。
+
+**验证：** `node --experimental-transform-types bridge/tests/workspace-unit.mjs`（迁移、order 落盘、旧页面 `pinned` 忽略、max 校验）；`node --experimental-transform-types web/tests/wstabs-unit.mjs`（`tabModel` / `tabReorder` / `moveToFront` / `newTabFold`）；`probes/workspace-tabs.mjs`（A 行几何、＋N、拖动、刷新持久化、＋ 新建、六步端到端）、`workspace-settings.mjs`（名额步进器）、`workspace-tree.mjs`、`workspace-layout.mjs`、`workspace-manage.mjs`、`workspace-migrate.mjs`（旧桥无 order 交叉用例）、`workspace-shells.mjs`、`workspace-drag.mjs`、`a11y-workspace.mjs`；`npm --prefix web run typecheck`（含 i18n-check）与 `npm run build:web`。
