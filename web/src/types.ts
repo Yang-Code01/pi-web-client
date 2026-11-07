@@ -462,3 +462,55 @@ export interface Note {
   archivedAt: number | null;
   deletedAt: number | null;
 }
+
+// ------------------------------------------------------------------ Teams（D167）
+/** 桥存在磁盘上的偏好（`<state>/teams.json`，面板改、桥读写）。 */
+export interface TeamsSettingsView {
+  browser: "edge" | "chrome";
+  notify: boolean;
+  target: string;
+  targetTitle: string;
+}
+
+/** `/api/teams` 与 `teams.status` 广播共用的一份快照。 */
+export interface TeamsStatus {
+  reachable: boolean;
+  state: "off" | "starting" | "needs-login" | "ready" | "error";
+  error: string | null;
+  browsers: ("edge" | "chrome")[];
+  browser: "edge" | "chrome";
+  notify: boolean;
+  target: { id: string; title: string; self: boolean };
+  /** `~/.pi/agent/mcp.json` 里已经有指向这个桥的 teams 条目。 */
+  mcpInstalled: boolean;
+  settings?: TeamsSettingsView;
+}
+
+export interface TeamsChatRow {
+  id: string;
+  title: string;
+  kind: "self" | "chat" | "meeting" | "channel";
+  lastActivity: string | null;
+  preview: string;
+}
+
+export interface TeamsMsgRow {
+  id: string;
+  from: string;
+  name: string;
+  time: string;
+  text: string;
+}
+
+export interface TeamsPersonRow {
+  mri: string;
+  name: string;
+  email: string | null;
+}
+
+/** 工具调 `teams_send` 发到别人的会话时要人点头；页面按这个画确认框。 */
+export interface TeamsConfirmRequest {
+  id: string;
+  to: { id: string; title: string; self: boolean };
+  text: string;
+}

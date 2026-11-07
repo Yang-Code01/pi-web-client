@@ -1,4 +1,18 @@
-import type { GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
+import type {
+  GitInfo,
+  Me,
+  PreviewInfo,
+  SessionState,
+  SheetMatches,
+  SheetMeta,
+  SheetWindow,
+  TeamsChatRow,
+  TeamsMsgRow,
+  TeamsPersonRow,
+  TeamsSettingsView,
+  TeamsStatus,
+  TunnelState,
+} from "./types.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -112,6 +126,24 @@ export const api = {
   tunnel: (action: "start" | "stop") =>
     req<{ tunnel: TunnelState }>("/api/tunnel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) }),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
+  /**
+   * D167：网页版 Teams。读消息、发消息都是 pi 那边的工具（`/mcp`）在干，这四个是给人按的：
+   * 登录、换浏览器、选推送目标、把 MCP 端点写进 pi 的配置。
+   */
+  teams: () => req<TeamsStatus & { settings: TeamsSettingsView }>("/api/teams"),
+  teamsSession: () => req<unknown>("/api/teams/session"),
+  teamsLogin: () => req<{ ok: boolean; state: string; reason?: string }>("/api/teams/login", { method: "POST" }),
+  teamsLogout: () => req<{ ok: true }>("/api/teams/logout", { method: "POST" }),
+  teamsBrowser: (browser: "edge" | "chrome") =>
+    req<TeamsSettingsView>("/api/teams/browser", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ browser }) }),
+  teamsNotify: (on: boolean) =>
+    req<TeamsSettingsView>("/api/teams/notify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ on }) }),
+  teamsTarget: (id: string, title: string) =>
+    req<{ id: string; title: string; self: boolean }>("/api/teams/target", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, title }) }),
+  teamsChats: (limit = 30) => req<{ chats: TeamsChatRow[] }>(`/api/teams/chats?limit=${limit}`),
+  teamsMessages: (chat: string, limit = 30) => req<{ chat: { id: string; title: string }; messages: TeamsMsgRow[] }>(`/api/teams/messages?chat=${encodeURIComponent(chat)}&limit=${limit}`),
+  teamsFind: (q: string) => req<{ people: TeamsPersonRow[] }>(`/api/teams/find?q=${encodeURIComponent(q)}`),
+  teamsMcp: () => req<{ changed: boolean; path: string; url: string }>("/api/teams/mcp", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),
 };

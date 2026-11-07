@@ -66,6 +66,9 @@ import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, se
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
+import { TeamsService } from "./teams/service.ts";
+import { teamsTools } from "./teams/tools.ts";
+import { handleMcp, installMcp, mcpInstalled, mcpToken } from "./mcp.ts";
 
 interface Config {
   port: number;
@@ -331,6 +334,33 @@ async function main(): Promise<void> {
     /* 只是诊断信息 */
   }
 
+  // ---------------------------------------------------------------- Teams（D167）
+  /**
+   * 网页版 Teams。桥养一个专用浏览器窗口（独立 profile），页面内 `fetch` 走 Teams 自己的登录态；
+   * 四个工具经 `/mcp` 交给 pi。
+   *
+   * 「发给别人」要人点头：工具调用挂在这里等页面点确认，最多 120 秒。没有页面、超时、点取消，
+   * 一律不发送。id 由 service 生成，回程必须原样带回 —— 否则一次旧的点击可能放行一条新消息。
+   */
+  const pendingTeamsConfirms = new Map<string, (ok: boolean) => void>();
+  const confirmTeams = (req: { id: string; to: { id: string; title: string; self: boolean }; text: string }): Promise<boolean> => {
+    if (!anyPresent()) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      const done = (ok: boolean) => {
+        if (!pendingTeamsConfirms.delete(req.id)) return;
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      const timer = setTimeout(() => done(false), 120_000);
+      pendingTeamsConfirms.set(req.id, done);
+      broadcast({ type: "teams.confirm", id: req.id, to: req.to, text: req.text });
+    });
+  };
+  const teams = new TeamsService(log, confirmTeams);
+  notifier.setTeamsSender((text) => teams.notify(text));
+  // 窗口是从上一轮桥继承下来的就直接续上登录态；没开就不在这里开（第一个工具调用/登录按钮才开）。
+  void teams.boot().catch(() => undefined);
+
   // Last line of defence: a single stray stream error used to kill the whole bridge (and with it
   // every connected client). Log it loudly and keep serving — sessions each own their child and
   // their file tail, so the rest of the server stays consistent.
@@ -394,6 +424,41 @@ async function main(): Promise<void> {
 
     // Capability-token file serving for previews: no cookie needed (sandboxed iframes have none).
     if (url.pathname.startsWith("/raw/") && serveRaw(req, res, url.pathname)) return;
+
+    // ---------------------------------------------------------------- MCP（D167）
+    // pi 通过 streamable HTTP 连这里，拿四个 Teams 工具。它没有 cookie，所以走 Bearer；
+    // 而且只认回环 —— 局域网里的另一台机器、以及隧道（cloudflared 的 remoteAddress 也是 loopback，
+    // 因此必须连 publicReq 一起看）都不能拿你的 Teams 身份发消息。
+    if (url.pathname === "/mcp") {
+      const remote = req.socket.remoteAddress ?? "";
+      const loop = /^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(remote) && !publicReq;
+      if (!loop) return json(res, 403, { error: "mcp 只接受本机回环" });
+      if (req.headers.authorization !== `Bearer ${mcpToken()}`) {
+        res.writeHead(401, { "www-authenticate": 'Bearer realm="pi-web-teams"' });
+        return res.end();
+      }
+      // 不需要服务端主动推流：GET 打开 SSE 按规范回 405；DELETE 是会话收尾，照收。
+      if (req.method === "GET") {
+        res.writeHead(405, { allow: "POST" });
+        return res.end();
+      }
+      if (req.method === "DELETE") {
+        res.writeHead(200);
+        return res.end();
+      }
+      if (req.method !== "POST") {
+        res.writeHead(405, { allow: "POST" });
+        return res.end();
+      }
+      const payload = await readBody(req).catch(() => null);
+      const reply = await handleMcp(payload, teamsTools(teams));
+      if (!reply) {
+        res.writeHead(202);
+        return res.end();
+      }
+      res.writeHead(reply.status, { "content-type": "application/json", "cache-control": "no-store", ...(reply.headers ?? {}) });
+      return res.end(JSON.stringify(reply.body));
+    }
 
     // ------------------------------------------------------------ ask-user (loopback only)
     // The `question` / `questionnaire` extensions run inside our pi child; in rpc mode they cannot
@@ -598,6 +663,89 @@ async function main(): Promise<void> {
         sessionsRoot: sessionsRootInfo().dir,
         sessionsRootSource: sessionsRootInfo().source,
       });
+    }
+
+    // ---------------------------------------------------------------- Teams（D167）
+    // 隧道只读：看会话、看消息、找人可以；登录、发消息、改设置、写 mcp.json 一律 403 ——
+    // 公网观众拿到的应该是一份可读的 Teams，不是你的发言权。
+    const teamsFail = (err: unknown) => {
+      const e = err as { code?: string; message?: string; detail?: string };
+      const code = e.code ?? "teams_error";
+      const status = code === "TEAMS_AUTH_EXPIRED" ? 401 : code === "TEAMS_AMBIGUOUS" || code === "TEAMS_NOT_CONFIRMED" ? 409 : code === "TEAMS_NO_MATCH" || code === "TEAMS_NO_CHAT" ? 404 : 400;
+      return fail(res, status, code, e.message ?? "Teams 调用失败", undefined, e.detail ? { detail: e.detail } : {});
+    };
+    if (url.pathname === "/api/teams" && req.method === "GET") {
+      return json(res, 200, { ...(await teams.status()), settings: teams.settingsView(), mcpInstalled: mcpInstalled(cfg.port) });
+    }
+    if (url.pathname.startsWith("/api/teams") && publicReq && req.method !== "GET") {
+      return fail(res, 403, "teams_public_readonly", "公网访问只能看 Teams，不能发消息、登录或改配置");
+    }
+    if (url.pathname === "/api/teams/session" && req.method === "GET") {
+      return json(res, 200, publicReq ? await teams.status() : await teams.login());
+    }
+    if (url.pathname === "/api/teams/login" && req.method === "POST") {
+      const out = await teams.openForLogin();
+      broadcast({ type: "teams.status", status: await teams.status() });
+      return json(res, 200, out);
+    }
+    if (url.pathname === "/api/teams/logout" && req.method === "POST") {
+      await teams.logout();
+      broadcast({ type: "teams.status", status: await teams.status() });
+      return json(res, 200, { ok: true });
+    }
+    if (url.pathname === "/api/teams/browser" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      return json(res, 200, teams.setBrowser(body.browser === "chrome" ? "chrome" : "edge"));
+    }
+    if (url.pathname === "/api/teams/notify" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      return json(res, 200, teams.setNotify(body.on === true));
+    }
+    if (url.pathname === "/api/teams/target" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      return json(res, 200, teams.setTarget(String(body.id ?? ""), String(body.title ?? "")));
+    }
+    if (url.pathname === "/api/teams/chats" && req.method === "GET") {
+      try {
+        return json(res, 200, { chats: await teams.chats(Number(url.searchParams.get("limit") ?? 20)) });
+      } catch (err) {
+        return teamsFail(err);
+      }
+    }
+    if (url.pathname === "/api/teams/messages" && req.method === "GET") {
+      try {
+        const chat = url.searchParams.get("chat") ?? "";
+        return json(res, 200, await teams.messages(chat, Number(url.searchParams.get("limit") ?? 20)));
+      } catch (err) {
+        return teamsFail(err);
+      }
+    }
+    if (url.pathname === "/api/teams/find" && req.method === "GET") {
+      try {
+        return json(res, 200, { people: await teams.people(url.searchParams.get("q") ?? "") });
+      } catch (err) {
+        return teamsFail(err);
+      }
+    }
+    if (url.pathname === "/api/teams/send" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await teams.send(String(body.chat ?? "") || undefined, String(body.text ?? "")));
+      } catch (err) {
+        return teamsFail(err);
+      }
+    }
+    if (url.pathname === "/api/teams/confirm" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const done = pendingTeamsConfirms.get(String(body.id ?? ""));
+      if (!done) return fail(res, 404, "teams_confirm_stale", "这个确认已经过期了");
+      done(body.ok === true);
+      return json(res, 200, { ok: true });
+    }
+    if (url.pathname === "/api/teams/mcp" && req.method === "POST") {
+      const out = installMcp(cfg.port);
+      log(`teams: mcp.json ${out.changed ? "updated" : "unchanged"} (${out.path})`);
+      return json(res, 200, { ...out, url: `http://127.0.0.1:${cfg.port}/mcp` });
     }
 
     // Folder picker for new sessions: the browser cannot see this machine's absolute paths.
@@ -1143,6 +1291,15 @@ async function main(): Promise<void> {
             notifier.setEnabled(msg.on === true);
             log(`notifications ${notifier.enabled ? "on" : "off"}`);
             broadcast({ type: "notify", on: notifier.enabled });
+            return;
+          }
+          case "teams.confirm": {
+            // 页面点了「发送」/「取消」。id 对不上就丢掉：一条旧的点击不能放行一条新消息。
+            if ((ws as any).publicReq) return;
+            const done = pendingTeamsConfirms.get(String(msg.id ?? ""));
+            if (!done) return;
+            done(msg.ok === true);
+            log(`teams confirm ${msg.ok === true ? "ok" : "cancel"} ${String(msg.id ?? "")}`);
             return;
           }
           case "stepup": {

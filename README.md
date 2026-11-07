@@ -151,6 +151,23 @@ PI_WEB_HOST=0.0.0.0 npm start
 - 会话文件是 append-only 且没有跨进程锁，所以 bridge 自己用 `state/locks/<id>.lock` 保证一个会话只有一个写者。
 - 内网通走的是明文 HTTP，同一网段能抓到内容；身份是一台机器的 `nodeId`，没有签名；v1 没有群聊、手机不能当发送端（peer 是 Node 进程）。
 
+## 网页版 Teams：用你已经登录的那个窗口
+
+不想为「读几条 Teams」去建 Entra 应用、等管理员同意？桥可以借你**已经登录好的**那个网页版 Teams：
+自己拉起一份独立的 Edge / Chrome 窗口（独立 profile，跟你平时开的那份互不影响），四个工具从那个页面里
+带着你现成的登录态去请求。不用配 OAuth，桥也不存你的口令。
+
+- **四个工具**：`teams_chats`（列会话）、`teams_read`（读最后 N 条）、`teams_find`（按名字搜人）、
+  `teams_send`（发纯文本，上限 8000 字）。装在 `~/.pi/agent/mcp.json` 的 `mcpServers.teams` 里，
+  顶栏 💬 Teams 的弹框里点「写入 mcp.json」，然后在 pi 里 `/reload`。
+- **发给自己随便发，发给别人要你点头**：`teams_send` 发到「与你自己的聊天」直接发；发到任何别人的会话，
+  网页上会弹一个确认框，你点「发送」才真的发出去，120 秒不理就放弃。
+- **pi 干完活推一条**：顶栏 💬 Teams 的弹框里选推送目标（默认自己的聊天），挂在 pi 设置 → 通知的总开关下。
+- **隧道只读**：公网访问时 Teams 页只能看，登录、发消息、改配置都会被拒；`/mcp` 只接受本机回环。
+- **边界**：走的是 Teams 网页自己的内部接口，Teams 改版可能要跟着改；要开着一个浏览器窗口；
+  不做附件 / 撤回 / 建群，**频道消息不发也不读**（那是另一套端点，会明确报错而不是发错地方）；
+  读回来的单条消息超过 1500 字会截断（留原文长度）；只装了 Edge 或 Chrome 的机器才可用。
+
 ## 测试
 
 ```bash
@@ -164,6 +181,7 @@ node bridge/tests/manage-check.mjs                                     # 会话�
 node probes/manage-ui.mjs                                              # 会话管理 UI：☆/拖拽/多选归档/两步删除/过滤（真 Chromium，7877）
 node probes/pin-auto-open.mjs                                          # 打开不置顶（D146）+ 置顶横栏折成「＋N」（桩桥 + 真 Chromium）
 node probes/workspace-migrate.mjs                                      # 迁移预览：首次弹、数字与左栏一致、确认后不再弹（桩桥 + 真 Chromium，7907）
+npm run test:teams                                                    # Teams：MCP 协议 + 「发给别人要确认」等 19 条判断（先 build bridge）
 npm run test:ask                                                      # 提问通道：HTTP 三道闸 + 真模型作答/取消（自带隔离桥 7891）
 npm run test:ask:ui                                                   # 提问抽屉：真 Chromium，刷新补发/多题/自己写/停止运行（7892）
 node probes/readme-shots.mjs                                          # 重拍 README 那六张图（临时桥 + fixture 会话，不碰 ~/.pi/agent）

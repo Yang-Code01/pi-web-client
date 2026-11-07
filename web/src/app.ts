@@ -30,7 +30,7 @@ import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { WS_NAME_MAX, dropBlocker, fixedBlocker, fixedDropped, fixedRows, renameIntent, toggleFixed } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TeamsChatRow, TeamsConfirmRequest, TeamsStatus, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
@@ -194,7 +194,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "teams" | "intro" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   private mkdirWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
@@ -227,6 +227,15 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /** D167：Teams 页的快照（null = 还没读到），以及「读取会话」给推送目标用的一页。 */
+  private teams: TeamsStatus | null = null;
+  /** Teams 弹框的 body（关掉就置空：状态是桥当场算的，下次打开重问）。 */
+  private teamsBody: HTMLElement | null = null;
+  private teamsChats: TeamsChatRow[] | null = null;
+  /** 一个操作在跑（按钮禁用）：起浏览器要几秒，并且同一时刻只放一件事过去。 */
+  private teamsBusy = false;
+  /** 工具发到别人会话前的确认框；它独立挂在 body 上，不占 `this.sheet`。 */
+  private teamsAsk: TeamsConfirmRequest | null = null;
   /**
    * D161: 设置面板底部那块「把现有会话也改掉」。`permDefaultsFor` 是已经问过桥的 cwd key
    * （空串 = 全局页），这样重绘不会一直重问同一个问题。
@@ -502,6 +511,12 @@ export class App {
     look.title = tr("字号与颜色");
     look.dataset.act = "look";
     look.onclick = () => this.openDisplaySheet();
+    // D167：网页版 Teams 是一个 dialog，不占版面、也不换页 —— 顶栏一颗按钮，点开就在当前画面上。
+    const teams = this.wideBtn("💬 Teams");
+    teams.title = tr("网页版 Teams：用你自己的登录态读会话、发消息（弹框打开，不换页）");
+    teams.dataset.act = "teams";
+    teams.onclick = () => this.openTeamsSheet();
+    this.els.teams = teams;
     const files = this.wideBtn(tr("📂 产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
     files.dataset.act = "artifacts";
@@ -542,7 +557,7 @@ export class App {
     this.els.scratch = scratch;
     // #96：「当前在哪」那颗自己是一个挂载点，不绑死在 topbar 的结构里（#97 / #98 换布局时
     // 只要把它挪到别处）。A 里它在行 2 的最左，B/C/D 里挪进顶栏（见 `paintShell()`）。
-    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
+    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, teams, files, term, fs, notes, peer, scratch, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -1542,6 +1557,18 @@ export class App {
       case "notify":
         this.me = { ...this.me, notify: msg.on !== false };
         if (this.sheetKind === "settings" && this.settingsTab === "notify") this.paintSettings();
+        break;
+      case "teams.status":
+        this.teams = msg.status as TeamsStatus;
+        if (this.sheetKind === "teams") this.paintTeamsSheet();
+        break;
+      case "teams.confirm":
+        // D167：pi 要往别人的会话里发东西。没有页面能点这一下，桥那边 120 秒后自己放弃。
+        this.showTeamsAsk({
+          id: String(msg.id ?? ""),
+          to: msg.to as TeamsConfirmRequest["to"],
+          text: String(msg.text ?? ""),
+        });
         break;
       case "runtime.stats":
         // D120 / #77：桥在每次 GC tick 上广播一次，所以面板不用自己轮询。
@@ -3186,6 +3213,8 @@ export class App {
       this.setWideLabel(peer, tr("🌐 内网通"));
       peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
     }
+    const teamsBtn = this.els.teams;
+    if (teamsBtn) teamsBtn.title = tr("网页版 Teams：用你自己的登录态读会话、发消息（弹框打开，不换页）");
     if (scratch) {
       this.setWideLabel(scratch, tr("💭 随手问"));
       scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
@@ -3266,6 +3295,7 @@ export class App {
     this.mgrRefresh = null;
     this.imageSheetPaint = null;
     this.wsPane = null;
+    this.teamsBody = null;
   }
 
   /** The model sheet's 会话 section: folded unless asked for (/session). */
@@ -7872,6 +7902,7 @@ export class App {
         this.flashSettings("");
         if (id === "runtime") this.socket.send({ type: "runtime.stats" });
         if (id === "passphrase") this.askPassphrase();
+        // Teams 一打开就重问一次：窗口活不活、登没登录是桥那边当场算的，本地缓存不可信。
         this.paintSettings();
       };
       tabs.append(b);
@@ -8050,6 +8081,237 @@ export class App {
     tools.append(push, test);
     body.append(tools);
     body.append(el("div", "hint", tr("Web Push 已订阅 {p1} 台设备。测试通知不受开关影响，页面在前也会弹。", { p1: this.me.pushCount })));
+  }
+
+  // ------------------------------------------------------------------ Teams（D167）
+
+  /** 重画 Teams 页（只在它正开着的时候）。 */
+  /**
+   * D167：网页版 Teams 的 dialog。不换页 —— 顶栏那颗按钮直接把它盖在当前画面上，关掉就回到原处。
+   * 内容是「人能做的四件事」（登录 / 换浏览器 / 选推送目标 / 写 mcp.json）；聊天记录不在这里，
+   * 读和发都是 pi 用 `/mcp` 上的工具在干。
+   */
+  private openTeamsSheet(): void {
+    this.closeSheet();
+    this.sheetKind = "teams";
+    const back = el("div", "sheet-back center");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet teams-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("网页版 Teams")));
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const body = el("div", "teams-body");
+    sheet.append(head, body);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    this.teamsBody = body;
+    // 每次打开都重问：状态是桥当场算的（起窗口要几秒、登录态可能刚过期）。
+    this.teams = null;
+    this.paintTeamsSheet();
+  }
+
+  /** 弹框开着就重画它；没开就什么也不做（状态由下一次打开时重问）。 */
+  private paintTeamsSheet(): void {
+    if (this.teamsBody) this.paintTeams(this.teamsBody);
+  }
+
+  private teamsError(err: unknown): string {
+    const e = err as { message?: string };
+    return String(e?.message ?? err);
+  }
+
+  /**
+   * 动作跑完统一重读一次 `/api/teams`：状态是桥当场算的（起浏览器要几秒、登录可能刚过期），
+   * 拿返回值拼比这里再猜一遍可靠。
+   */
+  private async teamsDo(fn: () => Promise<unknown>): Promise<void> {
+    if (this.teamsBusy) return;
+    this.teamsBusy = true;
+    this.paintTeamsSheet();
+    try {
+      await fn();
+      this.teams = await api.teams();
+    } catch (err) {
+      this.flashSettings(tr("Teams：{p1}", { p1: this.teamsError(err) }), true);
+    } finally {
+      this.teamsBusy = false;
+      this.paintTeamsSheet();
+    }
+  }
+
+  /**
+   * D167：Teams 页。这里不放聊天记录 —— 读消息、发消息是 pi 用 `/mcp` 上的四个工具在干；
+   * 界面只负责人才能做的事：登录、换浏览器、选「推给自己」的目标、把端点写进 pi 的配置。
+   */
+  private paintTeams(body: HTMLElement): void {
+    body.replaceChildren();
+    const st = this.teams;
+    if (!st) {
+      body.append(el("div", "empty", tr("读取中…")));
+      void api
+        .teams()
+        .then((s) => {
+          this.teams = s;
+          this.paintTeamsSheet();
+        })
+        .catch((err) => this.flashSettings(this.teamsError(err), true));
+      return;
+    }
+    const busy = this.teamsBusy;
+    const stateText = {
+      off: tr("窗口没开"),
+      starting: tr("正在打开浏览器…"),
+      "needs-login": tr("需要登录"),
+      ready: tr("已登录"),
+      error: tr("出错了"),
+    }[st.state];
+
+    const head = el("div", "settings-row");
+    head.append(el("span", "settings-label", tr("Teams 窗口")));
+    head.append(el("span", "hint", stateText));
+    body.append(head);
+    if (st.error) body.append(el("div", "hint bad", st.error));
+    if (st.browsers.length === 0) {
+      body.append(el("div", "hint bad", tr("这台机器上没找到 Edge 或 Chrome，装一个才能开 Teams 窗口。")));
+    }
+
+    const pick = el("div", "settings-row");
+    pick.append(el("span", "settings-label", tr("浏览器")));
+    const sel = el("select", "settings-select") as HTMLSelectElement;
+    for (const kind of st.browsers.length ? st.browsers : [st.browser]) {
+      const opt = el("option", "", kind === "chrome" ? "Google Chrome" : "Microsoft Edge") as HTMLOptionElement;
+      opt.value = kind;
+      sel.append(opt);
+    }
+    sel.value = st.browser;
+    sel.disabled = busy || st.browsers.length === 0;
+    sel.onchange = () => void this.teamsDo(() => api.teamsBrowser(sel.value as "edge" | "chrome"));
+    pick.append(sel);
+    body.append(pick);
+    body.append(el("div", "hint", tr("用的是这个浏览器单独的一个窗口和单独的一份 profile，跟你平时开的那个互不影响；换浏览器在下次开窗口时生效。")));
+
+    const tools = el("div", "queue-tools");
+    const open = el("button", "btn", st.state === "ready" ? tr("打开 Teams 窗口") : tr("打开窗口并登录")) as HTMLButtonElement;
+    open.disabled = busy || st.browsers.length === 0;
+    open.onclick = () => void this.teamsDo(() => api.teamsLogin());
+    const close = el("button", "btn ghost", tr("关闭窗口")) as HTMLButtonElement;
+    close.disabled = busy || st.state === "off";
+    close.onclick = () => void this.teamsDo(() => api.teamsLogout());
+    tools.append(open, close);
+    body.append(tools);
+    body.append(el("div", "hint", tr("窗口开着才能干活：消息是那个页面带着 Teams 自己的登录态去取的，桥不存你的口令。")));
+
+    const notifyRow = el("label", "settings-row");
+    notifyRow.append(el("span", "settings-label", tr("pi 干完活推一条到 Teams")));
+    const box = el("input") as HTMLInputElement;
+    box.type = "checkbox";
+    box.checked = st.notify;
+    box.disabled = busy;
+    box.onchange = () => void this.teamsDo(() => api.teamsNotify(box.checked));
+    notifyRow.append(box);
+    body.append(notifyRow);
+
+    const targetRow = el("div", "settings-row");
+    targetRow.append(el("span", "settings-label", tr("推送目标")));
+    const targetSel = el("select", "settings-select") as HTMLSelectElement;
+    const opts = new Map<string, string>();
+    opts.set(st.target.id, st.target.title || st.target.id);
+    opts.set("48:notes", tr("与你自己的聊天"));
+    for (const c of this.teamsChats ?? []) if (!opts.has(c.id)) opts.set(c.id, c.title || c.id);
+    for (const [id, title] of opts) {
+      const opt = el("option", "", title) as HTMLOptionElement;
+      opt.value = id;
+      targetSel.append(opt);
+    }
+    targetSel.value = opts.has(st.target.id) ? st.target.id : "48:notes";
+    targetSel.disabled = busy;
+    targetSel.onchange = () => {
+      const id = targetSel.value;
+      void this.teamsDo(() => api.teamsTarget(id, opts.get(id) ?? id));
+    };
+    const read = el("button", "btn ghost", tr("读取会话")) as HTMLButtonElement;
+    const targetCtl = el("div", "teams-inline");
+    targetCtl.append(targetSel);
+    read.disabled = busy;
+    read.onclick = () => {
+      if (this.teamsBusy) return;
+      this.teamsBusy = true;
+      this.paintTeamsSheet();
+      void api
+        .teamsChats(40)
+        .then((out) => {
+          this.teamsChats = out.chats;
+        })
+        .catch((err) => this.flashSettings(this.teamsError(err), true))
+        .finally(() => {
+          this.teamsBusy = false;
+          this.paintTeamsSheet();
+        });
+    };
+    targetCtl.append(read);
+    targetRow.append(targetCtl);
+    body.append(targetRow);
+    body.append(el("div", "hint", tr("「读取会话」只是把标题列出来给你选；推到自己的聊天最省事，也不会打扰别人。")));
+
+    const mcpRow = el("div", "settings-row");
+    mcpRow.append(el("span", "settings-label", tr("pi 的 MCP 配置")));
+    mcpRow.append(el("span", "hint", st.mcpInstalled ? tr("已写入 mcp.json") : tr("还没写入")));
+    body.append(mcpRow);
+    if (!st.mcpInstalled) {
+      const write = el("button", "btn", tr("写入 mcp.json")) as HTMLButtonElement;
+      write.disabled = busy;
+      write.onclick = () => void this.teamsDo(() => api.teamsMcp());
+      const box2 = el("div", "queue-tools");
+      box2.append(write);
+      body.append(box2);
+    }
+    body.append(el("div", "hint", tr("写完之后在 pi 里执行 /reload，teams_chats / teams_read / teams_find / teams_send 四个工具才会出现。")));
+    body.append(el("div", "hint", tr("公网访问只能看这一页：登录、发消息、改配置都会被拒；/mcp 只接受本机回环。")));
+  }
+
+  /**
+   * D167：工具要发到别人的会话，得有人点一下。这个框自己挂在 body 上 —— 设置面板可能正开着，
+   * 不能互相覆盖；关掉也只是关掉，不碰 `this.sheet`。
+   */
+  private showTeamsAsk(req: TeamsConfirmRequest): void {
+    this.closeTeamsAsk();
+    this.teamsAsk = req;
+    const back = el("div", "sheet-back center teams-ask-back");
+    const sheet = el("div", "sheet teams-ask");
+    sheet.append(el("div", "sheet-title", tr("要发一条 Teams 消息")));
+    sheet.append(el("div", "hint", tr("发给「{p1}」：不是你自己的聊天，发之前先问你一句。", { p1: req.to.title })));
+    sheet.append(el("div", "teams-ask-text", req.text));
+    const tools = el("div", "queue-tools");
+    const send = el("button", "btn", tr("发送")) as HTMLButtonElement;
+    send.onclick = () => this.answerTeamsAsk(true);
+    const cancel = el("button", "btn ghost", tr("取消")) as HTMLButtonElement;
+    cancel.onclick = () => this.answerTeamsAsk(false);
+    tools.append(send, cancel);
+    sheet.append(tools);
+    back.append(sheet);
+    back.onclick = (ev) => {
+      if (ev.target === back) this.answerTeamsAsk(false);
+    };
+    document.body.append(back);
+    send.focus();
+  }
+
+  private closeTeamsAsk(): void {
+    document.querySelector(".teams-ask-back")?.remove();
+    this.teamsAsk = null;
+  }
+
+  /** 回执走 WS（和权限确认同一条路）：没有页面在就没人点，桥那边 120 秒超时自己放弃。 */
+  private answerTeamsAsk(ok: boolean): void {
+    const req = this.teamsAsk;
+    this.closeTeamsAsk();
+    if (!req) return;
+    this.socket.send({ type: "teams.confirm", id: req.id, ok });
   }
 
   /**
@@ -12132,7 +12394,16 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["logout", tr("登出某个 provider")],
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "notify" | "runtime" | "changelog";
+type SettingsTab =
+  | "global"
+  | "project"
+  | "trust"
+  | "login"
+  | "passphrase"
+  | "ext"
+  | "notify"
+  | "runtime"
+  | "changelog";
 
 interface ExtPackage {
   scope: "user" | "project";

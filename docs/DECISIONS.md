@@ -2548,3 +2548,88 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **不给 > 100 万格**：只解析工作表清单与 `<dimension>`，不做整表扫描；300 万格 151ms / 100MB，浮窗里给清单、`30,000 行 × 100 列` 和「用本机程序打开」，不建网格、不发窗口请求。
 - **预取 3 屏**：顶部可见 21 行时请求 88 行（下方 3 屏，顶部没有上方可预取），桥端硬上限 400 行；滚动后按可见段 ±3 屏重新取，旧段按「可见 ±12 屏」裁剪。同一 `r0..r1/c0..c1` 连问两次，`rows` 的 JSON 全等；表切换用 epoch 丢弃过期响应，不再串行污染。
 - **没有测出来的**：真实客户文件（共享字符串/样式特别大的、合并区特别多的）、100 万格以上的深跳（不给档没有网格）、300 万格多工作表同时打开、长时间滚动后的内存回落、Firefox/Safari、以及 10 万到 40 万之间更细的全量边界（只采样了 10 万与 40 万两点）。soffice 大表的耗时与页数仍未测。
+
+## D167 网页版 Teams：借你浏览器里已有的登录态，用四个工具接进 pi（无票，用户要求）
+
+Teams 没有给个人的发消息 API（Graph 的 `/me/chats` 要租户管理员同意，`ChatMessage.Send` 对个人账号基本走不通），
+但网页版自己天天在用。所以这里不去要凭据，而是**开一扇专用窗口**：`<state>/teams-profile` 下的 Edge / Chrome，
+带 `--remote-debugging-port`，桥用 CDP 在里面执行页面自己的 `fetch` —— 请求带着 Teams 的登录态和前端注入的
+令牌，站在服务器角度和用户手点时一模一样。用户登录一次，cookie 留在那个 profile 里；桥本身**不解析、不存
+cookie、不存令牌**。
+
+- **读什么**：`/api/chatsvc/<region>/v1/users/ME/conversations`（会话列表）与 `/messages`（消息），
+  发消息 `POST /messages`，找人 `/api/mt/<region>/beta/users`，1:1 会话 `POST /users/ME/conversations`。
+  这些是网页版自己的端点，不是公开接口：region 与 header 变体（`bearer` / `bearer+x-skypetoken` / `skypetoken`）
+  靠**探测矩阵**定（`sea` / `emea` / `noam` / `apac` / `gcc`），命中缓存 10 分钟，所以 region 换了也只是重探一次。
+- **怎么交给 pi**：桥自己起一个 MCP 端点 `POST /mcp`（streamable HTTP 的子集：`initialize` / `tools/list` /
+  `tools/call` / `ping`），四个工具 `teams_chats` / `teams_read` / `teams_find` / `teams_send`。顶栏 `💬 Teams` 弹框里一键把
+  `{url, headers:{Authorization: "Bearer …"}}` 写进 `~/.pi/agent/mcp.json` 的 `mcpServers.teams`，其余条目原样保留。
+  **不用 stdio 的 MCP 子进程**：那要多养一个进程、多一份日志，而桥本来就在；token 落在状态目录（0600），
+  端点只认回环 + Bearer —— 局域网另一台机器、以及隧道（cloudflared 的 `remoteAddress` 也是 loopback，
+  所以要连 `publicReq` 一起看）都进不来。
+- **发给自己 vs 发给别人**：默认推送目标是 `48:notes`（与你自己的聊天），这是「pi 干完活告诉我一声」的自然落点。
+  工具要往**别人的**会话发，必须有人在页面上点「发送」（WS 广播 `teams.confirm`，120 秒超时即拒），
+  没有页面就 `TEAMS_NOT_CONFIRMED` 直接拒 —— 和审批同一条规矩：机器不能借你的名字跟同事说话。
+  确认 id 由桥生成、回程原样带回，一次旧点击放行不了新消息。
+- **公网只读**：隧道里能看 Teams 状态、会话标题和消息（`/api/teams*` 的 GET），但登录、发消息、改配置、
+  写 mcp.json 一律 403；`/mcp` 本身在回环之外直接 403。给观众的是一份可读的 Teams，不是你的发言权。
+- **代价 / 可改**：得开一个浏览器窗口（关掉就取不到消息，工具报「窗口没开」）；Teams 前端一改端点或 header，
+  探测矩阵要跟着改；页面里执行的是网页版自己的接口，不是官方契约，随时可能变；只在 Windows 上实测过
+  Edge / Chrome，macOS 的候选路径写了但没验；`teams_send` 的 1 秒最小间隔是保守值，不是接口要求。
+- **验证**：`npm run test:teams`（`bridge/tests/teams-unit.mjs`，19 条：HTML→纯文本、MCP 协议形状与错误码、
+  四工具清单、发给自己不问 / 发给别人必问 / 取消则一条都不发、目标落盘、关推送不碰浏览器）。
+  真实登录与收发要人配合，见 `probes/teams.mjs`（打开窗口、探测、列会话、读消息，`TEAMS_SEND=1` 才真发）。
+
+## D167 网页版 Teams：借你自己那个浏览器窗口读和发，四个工具走桥内建的 `/mcp`（无票，用户要求）
+
+**问题：** 用户要「接入网页版 Teams」——在 pi 里读会话、搜人、发消息，并且 pi 干完活能推一条到 Teams。
+官方路线是 Microsoft Graph：要建 Entra 应用、配权限、走 OAuth 回调，还要管理员同意；而用户每天用的是
+**已经登录好的** teams.microsoft.com。为这个多一层租户配置不划算，装一个机器人也不是他要的东西。
+
+**决定：**
+
+- **用一个专用浏览器窗口，不碰你平时开的那个**。桥自己拉起 Edge 或 Chrome 的第二份窗口
+  （`--remote-debugging-port` + 独立 `--user-data-dir=<state>/teams-profile`），登录态就在这份 profile 里；
+  之后所有请求都是**页面内 `fetch`**（`Credentials: include` 由页面自己带），桥不接触、也不存任何口令或
+  token。窗口关着 → 工具直接说 `TEAMS_OFF`，不会偷偷起一个。
+- **接口是 Teams 网页自己用的那套**：`/api/authsvc/v1.0/authz` 拿 skype/chatsvc token，再打
+  `/api/chatsvc/<region>/v1/...`。region 与鉴权头不确定，所以**探测矩阵**：3 种头
+  （`bearer+x-skypetoken` / `bearer` / `skypetoken`）× 5 个 region（sea/emea/noam/apac/gcc），命中后缓存
+  10 分钟；401/403 → `TEAMS_AUTH_EXPIRED`，页面里说「需要重新登录」。这条路是内部接口，**会变**——变了要
+  改的就是这两个文件（`bridge/src/teams/browser.ts` / `client.ts`），所以它们被单独放在 `teams/` 下。
+- **只做四件事**：`teams_chats`（列会话）、`teams_read`（读某个会话最后 N 条）、`teams_find`（按名字搜人）、
+  `teams_send`（发纯文本）。**频道消息不发也不读**（频道走 `/api/chatsvc/<region>/v1/teams/<team>/channels/<chan>/messages`，
+  不是私聊那套端点；静默发到错的地方比报错更糟，所以 `TEAMS_CHANNEL_UNSUPPORTED` 明说）。
+  不做附件、不做已读回执、不建群、不改消息、不删消息 —— 这些都要碰更大的
+  内部面，收益远小于「随时会坏」的代价。文字上限 8000 字，两条之间至少 1 秒。
+- **发给别人必须有人在页面上点一下**。发到「与你自己的聊天」（`48:notes`）不问；发到任何别的会话，
+  工具调用会挂住等 `/api/teams/confirm` 或 WS 回执，**最多 120 秒**：没有页面、超时、点取消，一律不发
+  （`TEAMS_NOT_CONFIRMED`）。请求带一个桥生成的 id，回执必须原样带回，这样一次旧点击放行不了一条新消息。
+  理由：`teams_send` 能替用户说话，而模型选错人并不难，一句「已发送」又撤不回来。
+- **推给自己是另一件事**：`notify` 走弹框里选定的目标（默认自己的聊天），**不弹确认**——位置是人自己设的，
+  而且需要开着浏览器点一下才发得出去的「通知」不算通知。它挂在 pi 设置 → 通知的总开关下面，是个子开关。
+- **MCP 端点由桥自己提供**（`POST /mcp`，streamable HTTP 的 JSON 子集：`initialize` / `tools/list` /
+  `tools/call` / `ping`，通知回 202）。两道门：**只认回环**（`remoteAddress` + `!publicReq`，隧道也挡），
+  以及 `Authorization: Bearer <token>`（token 落在 `<state>/mcp-token`，0600）。弹框里「写入 mcp.json」把
+  `mcpServers.teams` 塞进 `~/.pi/agent/mcp.json`，其余字段原样保留；写之前不覆盖、写完提示 `/reload`。
+- **隧道只读**：公网访问时 `/api/teams` 的 POST（登录、换浏览器、改目标、发消息、写配置）一律 403；
+  GET 的列表/消息/找人仍可用 —— 观众拿到一份可读的 Teams，拿不到你的发言权。
+
+**为什么不这么做：**
+
+- 不用 Graph API / 机器人框架：要租户配置和管理员同意，用户要的是「用我现在的登录态」。
+- 不把会话历史同步进 pi 的上下文：读一次给一次就行，长期镜像既占地方又会过期。
+- 不做「发出去以后自动回滚 / 撤回」：Teams 侧没有可靠的撤回，界面上给一个会骗人的按钮更糟。
+
+**代价 / 可改：**
+
+- 依赖 Teams 网页的内部接口：任何一次前端改版都可能要跟着改（症状会是一个 404/401，不会静默发错）。
+- 需要保持一个浏览器窗口开着；这是「不用配 OAuth」的代价，也是它不碰你口令的原因。
+- 只支持 Windows / macOS / Linux 上装了 Edge 或 Chrome 的机器；没有就明说装一个。
+- `/mcp` 目前只服务 pi 自带的那套 JSON 响应，没做 SSE 推流（规范允许 GET 回 405）。
+
+**验证：** `npm run test:teams` 覆盖 19 条不碰网络的判断（HTML→纯文本、MCP 协议与错误码、
+「发给自己不问 / 发给别人要确认 / 取消就一条都不发」、推送目标落盘、关掉推送不碰浏览器）；
+`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（含 i18n 门禁）、`npm --prefix web run build`
+都过。**没有验证的**：真实登录态下的四类接口（要人扫码 / 输密码）、内部接口在别的租户上的表现、
+长期挂着窗口的内存、以及 Teams 改版后的容错 —— 这些第一次真用时才能看到。
