@@ -8,6 +8,7 @@ import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, summarizeT
 import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
 import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions } from "./launch.ts";
+import { lessonFile } from "./lessons.ts";
 import { ensureDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
@@ -917,7 +918,7 @@ export class Session extends EventEmitter {
   }
 
   // ---------------------------------------------------------------- live (RPC)
-  async startLive(opts: { resume: boolean; cwd?: string; name?: string }): Promise<void> {
+  async startLive(opts: { resume: boolean; cwd?: string; name?: string; ws?: string }): Promise<void> {
     if (this.live) return;
     // A pi we are just spawning counts as activity on this session's clock: the watermark's
     // protection window (#79) starts here, whether or not pi has said anything yet.
@@ -939,9 +940,17 @@ export class Session extends EventEmitter {
     const args = ["--mode", "rpc"];
     if (process.env.PI_WEB_NO_EXT === "1") args.push("-ne");
     args.push("-e", approvalGatePath());
+    const cwd = opts.cwd || this.state.cwd || process.cwd();
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
     const launch = readLaunch(id);
     args.push(...launchArgs(launch));
+    // D164 延伸：这个工作区的老毛病跟着 spawn 一起进系统提示词（`PI_WEB_LESSONS=0` 可关）。
+    // 传文件而不是长文本：用户手填的那段自己就能占 20000 字，命令行塞不下两条这么长的。
+    // ws 由调用方（SessionManager）算：它手里才有工作区表，Session 自己不知道 cwd 属于哪个组。
+    if (process.env.PI_WEB_LESSONS !== "0" && opts.ws) {
+      const lessons = lessonFile(opts.ws);
+      if (lessons) args.push("--append-system-prompt", lessons);
+    }
     this.state.launch = describeLaunch(launch) || undefined;
     if (opts.resume && this.state.file) args.push("--session", this.state.file);
     else args.push("--session-id", id);
@@ -949,8 +958,6 @@ export class Session extends EventEmitter {
     // listing scans — that is what makes "no record" a fact rather than a filtered display.
     if (this.state.scratch) args.push("--session-dir", scratchSessionsDir());
     if (opts.name && !opts.resume) args.push("--name", opts.name);
-
-    const cwd = opts.cwd || this.state.cwd || process.cwd();
     this.rpc = new RpcChild({
       cli: this.cli,
       args,
@@ -2359,7 +2366,7 @@ export class SessionManager extends EventEmitter {
     await session.pinPermission();
     this.wire(session);
     this.sessions.set(id, session);
-    await session.startLive({ resume: false, cwd, name });
+    await session.startLive({ resume: false, cwd, ws: this.workspaces.groupFor(id, cwd), name });
     this.emit("ws", { type: "session.state", session: session.state });
     return session;
   }
@@ -2669,7 +2676,7 @@ export class SessionManager extends EventEmitter {
       }
     }
     await session.pinPermission();
-    await session.startLive({ resume: Boolean(session.state.file) });
+    await session.startLive({ resume: Boolean(session.state.file), ws: this.workspaces.groupFor(id, session.state.cwd ?? "") });
     this.emit("ws", { type: "session.state", session: session.state });
     if (session.state.origin !== "web") {
       // pi's TUI reads the session file once at startup: an open terminal will not see what the web adds.

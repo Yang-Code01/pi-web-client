@@ -8,8 +8,8 @@ import { filterCommands, type CommandItem } from "./commands.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
-import { diagnose, setKnownPlugins } from "./diagnose.ts";
-import { toCommit, type FailLedger, type SeenFail } from "./failures.ts";
+import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
+import { classify, entryKey, normalizeSig, sameFail, toCommit, type FailLedger, type SeenFail } from "./failures.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
@@ -163,6 +163,8 @@ export class App {
   private failLedger: FailLedger | null = null;
   private failWs = "";
   private sessionFails = new Map<string, SeenFail>();
+  /** 这个会话里已经叫住过的失败类别（keys）：同会话同一类只叫一次（桥那边还有一层节流）。 */
+  private failReminded = new Set<string>();
   /** 右下角那颗「⚡ 总结本轮错误」；每轮结束按 pending 亮灭。 */
   private failCta: HTMLButtonElement | null = null;
   private failToast: HTMLElement | null = null;
@@ -1318,6 +1320,7 @@ export class App {
         this.stats = { tokens: null, cost: null };
         // 换了会话：上一份「见过的失败」不能带过来，否则按钮会按别人的失败亮着。
         this.sessionFails.clear();
+        this.failReminded.clear();
         this.failLedger = this.failWs && this.failWs === (this.session?.ws ?? "") ? this.failLedger : null;
         this.chat.reset((msg.items ?? []) as Item[]);
         if (this.currentWs()) this.socket.send({ type: "failures.get", ws: this.currentWs() });
@@ -1351,6 +1354,7 @@ export class App {
       case "items":
         if (msg.sessionId !== this.currentId) break;
         this.sessionFails.clear();
+        this.failReminded.clear();
         this.chat.reset((msg.items ?? []) as Item[]);
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
@@ -6075,10 +6079,44 @@ export class App {
   }
 
   /** 聊天区报来一次失败。按 toolCallId 去重：同一张卡会被 live 事件、item.replace、重放各建一次。 */
-  private recordFail(f: { id: string; tool: string; cmd: string; out: string; at?: string }): void {
+  private recordFail(f: { id: string; tool: string; cmd: string; out: string; at?: string; live?: boolean }): void {
     if (!this.currentId || !f.id || this.sessionFails.has(f.id)) return;
-    this.sessionFails.set(f.id, { callId: f.id, tool: f.tool, cmd: f.cmd, out: f.out, at: f.at || new Date().toISOString() });
+    const seen: SeenFail = { callId: f.id, tool: f.tool, cmd: f.cmd, out: f.out, at: f.at || new Date().toISOString() };
+    this.sessionFails.set(f.id, seen);
+    // 只有刚跑完的那次才可能「当场叫住」：刷新页面回放历史时别再对着老失败念一遍。
+    if (f.live) this.maybeRemind(seen);
     this.syncFailCta();
+  }
+
+  /**
+   * 当场叫住（D164 延伸）：同一轮里同类第二次出现 —— 或账本里这一类已经栽过 3 次 —— 时，
+   * 让桥往会话里补一条自动提醒。判节流在桥那边（同类每会话一次、整会话最多 3 次），
+   * 这里只决定「值不值得叫」：benign（grep 没命中这类半正常）和用户中断不叫，它们不是毛病。
+   */
+  private maybeRemind(f: SeenFail): void {
+    const sid = this.currentId;
+    if (!sid) return;
+    let key = "";
+    let sig = "";
+    let cause = "";
+    try {
+      const d = diagnose({ tool: f.tool, cmd: f.cmd, out: f.out });
+      if (d.level !== "fail" && d.level !== "warn") return;
+      cause = d.cause ?? "";
+      const code = classify(f.tool, f.out, exitCodeOf(f.out));
+      sig = normalizeSig(f.cmd, f.tool, f.out);
+      key = entryKey(f.tool, code, sig);
+    } catch {
+      return; // 诊断只是锦上添花：判不出来就安静
+    }
+    if (this.failReminded.has(key)) return;
+    // 同一类在这个会话里到第几次了（按同样的钥匙重算，不能拿 toolCallId 比）。
+    const same = [...this.sessionFails.values()].filter((o) => sameFail(o, key)).length;
+    const old = this.failLedger?.entries.find((e) => e.key === key);
+    const ripe = Boolean(old && old.count >= 3 && !old.fixedAt && !old.ignoredAt);
+    if (same < 2 && !ripe) return;
+    this.failReminded.add(key);
+    this.socket.send({ type: "failures.remind", sid, key, tool: f.tool, sig, why: cause, n: Math.max(same, old?.count ?? 0) });
   }
 
   /** 这个会话还有几次失败没进账本：见过的条数 - 上次入账时的条数（点完按钮、账本回包后归零）。 */

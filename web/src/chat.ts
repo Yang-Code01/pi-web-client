@@ -117,7 +117,7 @@ export class ChatView {
    * 会话级失败回传（D164）：除了一张红卡，账本还要一份它。按 id 去重是 app 的事 ——
    * 同一张卡会在 live 事件、item.replace、reset 重放里各建一次，聊天区只画一张，账本也只能算一次。
    */
-  onFail: ((f: { id: string; tool: string; cmd: string; out: string; at?: string }) => void) | null = null;
+  onFail: ((f: { id: string; tool: string; cmd: string; out: string; at?: string; live?: boolean }) => void) | null = null;
   /** Following the stream: new content scrolls the view to the bottom. Cleared the moment the user says "I want to read up there". */
   private following = true;
   /** One pending frame at most — a burst of updates must cost one scroll, not one per update. */
@@ -611,7 +611,8 @@ export class ChatView {
         const name = card.querySelector(".name")?.textContent?.trim() || String(data.name ?? "tool");
         const cmd = card.querySelector(".cmd")?.textContent?.trim() || "";
         this.failureCard(key, { tool: name, cmd, out: String(data.result ?? "") }, Number(data.durationMs ?? 0));
-        this.onFail?.({ id: key, tool: name, cmd, out: String(data.result ?? "") });
+        // `live`: 这是刚跑完的一次（不是历史回放），只有它值得「当场叫住」。
+        this.onFail?.({ id: key, tool: name, cmd, out: String(data.result ?? ""), live: true });
       } else {
         this.noteAfter({
           id: `live-tool:${key}`,

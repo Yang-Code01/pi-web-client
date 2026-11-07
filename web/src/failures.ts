@@ -306,6 +306,15 @@ export interface CommitItem {
   fix: string;
 }
 
+/** 两条失败是不是同一类：按账本的归并键重算（toolCallId 只能区分「哪一次」，区分不了「哪一类」）。 */
+export function sameFail(a: SeenFail, key: string): boolean {
+  try {
+    return entryKey(a.tool, classify(a.tool, a.out, exitCodeOf(a.out)), normalizeSig(a.cmd, a.tool, a.out)) === key;
+  } catch {
+    return false;
+  }
+}
+
 export function toCommit(fail: SeenFail, why = "", fix = ""): CommitItem {
   const out = String(fail.out ?? "");
   const exit = exitCodeOf(out);
