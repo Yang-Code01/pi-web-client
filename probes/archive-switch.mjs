@@ -1,16 +1,18 @@
 /**
- * Probe: 归档当前会话 → 中栏切到 ★ 行的右邻（#189，#188 的 1/4）。
+ * Probe: 归档当前会话 → 中栏切到 ★ 行的邻居（#189 右邻，#190 左邻 / 空态；#188 的 1/4 → 2/4）。
  *
  * 报障的样子是「归档之后那颗会话跑到横向第一个」：归档照常落库、它从 ★ 行消失，但中栏还停在它上面，
  * 于是 ★ 行第 1 格的 nowchip（画的就是当前会话）被一颗已归档的会话占住。本票的语义是
- * 「归档它 = 离开它」：点击与回声之间不预切、不闪回，回声到达后只切一次，落在右邻那颗 ★ 上。
+ * 「归档它 = 离开它」：点击与回声之间不预切、不闪回，回声到达后只切一次，落在右邻 → 左邻 → 空态。
  *
  * 断言（对应票面 acceptance）：
  *   1. 点胶囊气泡里的归档 → 点击瞬间中栏仍是原会话，且归档帧还没发出去（不预切）；
  *   2. 桥回声到达后 → 中栏是右邻（hash / 左栏 .active / ★ 行 .cur 三处一致），归档只发一帧；
  *   3. ★ 行第 1 格（nowchip）自始至终没有画过那颗被归档的会话 —— 用 MutationObserver 全程采样；
  *   4. 归档一颗**不是**当前会话的胶囊（走卡片底部按钮）→ 中栏一动不动；
- *   5. 从「已归档」段主动点开一个归档会话 → 不被踢走（判定只看「本次刚变归档」的那批）。
+ *   5. 从「已归档」段主动点开一个归档会话 → 不被踢走（判定只看「本次刚变归档」的那批）；
+ *   6. 归档 ★ 行最右那颗（没有右邻）→ 落在左邻；
+ *   7. 归档唯一一颗 ★ → 中栏是现成空态、地址栏回到 `#/`；刷新后仍是空态，且从左侧打开会话能回去。
  *
  * 桩桥只实现归档：更新 archived、广播 manage 回声、按会话 id 回订阅快照 —— 与真桥的落库语义一致。
  *
@@ -277,6 +279,82 @@ await page.locator(`.session-card[data-id="st-5"]`).click();
 await sleep(700);
 const ctrl = await row();
 ok(ctrl.now.shown === true && ctrl.now.name === NAMES["st-5"], `控制组：不在 ★ 行的当前会话占住第 1 格（显示「${ctrl.now.name}」）`);
+
+/** 中栏的空态：现成那句「还没有打开会话 / 左边选一个，或者开一个新的」。 */
+const emptyState = () =>
+  page.evaluate(() => {
+    const box = document.querySelector(".chat-empty");
+    return {
+      hash: location.hash,
+      empty: Boolean(box && box.getClientRects().length),
+      title: document.querySelector(".chat-empty-title")?.textContent?.trim() ?? "",
+      hint: document.querySelector(".chat-empty-hint")?.textContent?.trim() ?? "",
+      active: document.querySelector(".session-card.active")?.dataset.id ?? null,
+      chips: [...document.querySelectorAll(".pin-strip .pin-chip[data-pin-id]")].map((c) => c.dataset.pinId),
+      now: (() => {
+        const btn = document.querySelector(".ws-session-row .now-chip-slot .now-btn");
+        const chip = btn?.querySelector(".now-chip");
+        return { shown: Boolean(btn) && !btn.hidden && !(chip && chip.hidden) };
+      })(),
+    };
+  });
+
+/** 在 ★ 行里归档当前那颗（走胶囊气泡，与上面同一条入口）。 */
+const archiveChip = async (id) => {
+  await page.locator(`.pin-strip .pin-chip[data-pin-id="${id}"]`).hover();
+  await page.waitForSelector('.pin-menu .pm-item[data-act="archive"]', { timeout: 4000 });
+  await page.locator('.pin-menu .pm-item[data-act="archive"]').click();
+};
+
+// 6) #190：归档 ★ 行最右那颗（没有右邻）→ 落在左邻
+await page.locator(`.session-card[data-id="st-4"]`).click();
+await page.waitForFunction(() => location.hash === "#/s/st-4", null, { timeout: 5000 });
+await sleep(400);
+const rightmostBefore = await row();
+ok(rightmostBefore.chips.map((c) => c.id).join(",") === "st-3,st-4", `归档前 ★ 行 = ${rightmostBefore.chips.map((c) => c.id).join(" → ")}（st-4 是最右那颗）`);
+await archiveChip("st-4");
+await page.waitForFunction(() => location.hash === "#/s/st-3", null, { timeout: 8000 });
+await sleep(500);
+const left = await current();
+ok(frames.length === 3 && frames[2].ids.join(",") === "st-4", `最右那颗只发了一帧归档（${JSON.stringify(frames[2])}）`);
+ok(left.hash === "st-3", `没有右邻 → 落在左邻 st-3（hash = ${left.hash}）`);
+ok(left.active === "st-3", `左栏 .active 也落在左邻 st-3（实际 ${left.active}）`);
+ok(left.curChip === "st-3", `★ 行 .cur 也落在左邻 st-3（实际 ${left.curChip}）`);
+box = await row();
+ok(box.chips.map((c) => c.id).join(",") === "st-3", `★ 行只剩 st-3（${box.chips.map((c) => c.id).join(" → ")}）`);
+await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-left.png`), clip: { x: 0, y: 0, width: 1100, height: 170 } });
+
+// 7) #190：归档唯一一颗 ★ → 中栏空态 + 地址栏无会话形态；刷新后仍是空态
+await archiveChip("st-3");
+await page.waitForFunction(() => location.hash === "#/" && document.querySelector(".chat-empty"), null, { timeout: 8000 });
+await sleep(500);
+const empty = await emptyState();
+ok(frames.length === 4 && frames[3].ids.join(",") === "st-3", `唯一那颗只发了一帧归档（${JSON.stringify(frames[3])}）`);
+ok(empty.hash === "#/", `地址栏回到无会话形态（hash = ${JSON.stringify(empty.hash)}）`);
+ok(empty.empty === true, "中栏是现成的空态（.chat-empty 可见）");
+ok(empty.title === "还没有打开会话", `空态标题用的是现成文案（「${empty.title}」）`);
+ok(empty.hint === "左边选一个，或者开一个新的", `空态提示用的是现成文案（「${empty.hint}」）`);
+ok(empty.active === null, "左栏没有任何会话被选中（不是残影）");
+ok(empty.chips.length === 0, `★ 行一颗都不剩（${empty.chips.join(" → ") || "空"}）`);
+ok(empty.now.shown === false, "第 1 格 nowchip 也没有画那颗归档会话");
+await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-empty.png`) });
+
+// 刷新：hash 仍是 `#/`，空态仍是空态（没把归档会话从 hash 里又拉回来）
+await page.reload({ waitUntil: "networkidle" });
+await sleep(800);
+const reloaded = await emptyState();
+ok(reloaded.hash === "#/", `刷新后地址栏仍是 ${JSON.stringify(reloaded.hash)}`);
+ok(reloaded.empty === true && reloaded.title === "还没有打开会话", "刷新后仍是空态（没有把归档会话又拉回中栏）");
+ok(reloaded.active === null, "刷新后左栏也没有选中任何会话");
+ok(reloaded.chips.length === 0, "刷新后 ★ 行仍然一颗都不剩");
+
+// 空态之后从左侧打开任意会话 → 正常回到会话页
+await page.locator(`.session-card[data-id="st-5"]`).click();
+await page.waitForFunction(() => location.hash === "#/s/st-5", null, { timeout: 5000 });
+await sleep(400);
+const back = await emptyState();
+ok(back.hash === "#/s/st-5" && back.active === "st-5", `空态后从左侧打开会话能正常回去（hash = ${back.hash}，active = ${back.active}）`);
+ok(back.empty === false, "……空态随之收起");
 
 await browser.close();
 await new Promise((r) => server.close(r));
