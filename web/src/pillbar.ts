@@ -79,16 +79,16 @@ export function starredSessions<S extends PillSession>(
 }
 
 /**
- * #188 / #189：归档当前会话之后该把中栏切到谁。`row` 是 ★ 行从左到右的 id 序列
+ * #188：归档当前会话之后该把中栏切到谁。`row` 是 ★ 行从左到右的 id 序列
  * （当前会话没点 ★ 时它自己就是第 1 格），`archivedId` 是刚被归档的那一颗。
  *
- * 规则只有这一处：#189 只做右邻；没有右邻（含「序列里只剩它」「它根本不在序列里」）先返回 null，
- * 不动作 —— 左邻与空态是 #190 的事，改方向也只改这里。不读 DOM、不读 store。
+ * 规则只有这一处：右邻优先，没有就取左邻，左右都没有（含「序列里只剩它」「它根本不在序列里」）
+ * 返回 null —— 中栏进空态。改方向也只改这里。不读 DOM、不读 store。
  */
 export function neighborAfterArchive(row: readonly string[], archivedId: string): string | null {
   const at = row.indexOf(archivedId);
   if (at < 0) return null;
-  return row[at + 1] ?? null;
+  return row[at + 1] ?? row[at - 1] ?? null;
 }
 
 export interface PillBarOpts<S extends PillSession = PillSession> {

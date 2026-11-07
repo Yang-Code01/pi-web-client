@@ -61,7 +61,8 @@ test("在别组置顶的会话不串进来：本区列表里没有的 ★ id 一
   assert.deepEqual(rowIds(["a"], ["x", "y"]), []);
 });
 
-// #189：归档当前会话之后该切到哪一颗 —— ★ 行从左到右的 id 序列 + 被归档的 id，规则只有这一个纯函数。
+// #188 / #189 / #190：归档当前会话之后该切到哪一颗 —— ★ 行从左到右的 id 序列 + 被归档的 id，
+// 规则只有这一个纯函数：右邻 → 左邻 → null（空态）。
 const row = ["a", "b", "c", "d"];
 
 test("归档当前会话：右邻存在就切右邻", () => {
@@ -72,14 +73,18 @@ test("归档的不是 ★ 行里的会话 → 不动作", () => {
   assert.equal(neighborAfterArchive(row, "x"), null);
 });
 
-test("序列里没有右邻 → #189 先不动作（左邻留给 #190）", () => {
-  assert.equal(neighborAfterArchive(row, "d"), null);
+test("没有右邻就取左邻：归档最右那颗 → 落在它左边最近那一颗", () => {
+  assert.equal(neighborAfterArchive(row, "d"), "c");
+});
+
+test("左右都没有邻居（序列里只剩它一颗）→ 无动作（中栏空态）", () => {
+  assert.equal(neighborAfterArchive(["only"], "only"), null);
+});
+
+test("序列里只有它 → 无动作（中栏空态）", () => {
+  assert.equal(neighborAfterArchive(["solo"], "solo"), null);
 });
 
 test("当前会话没 ★、自己占第 1 格时，右邻就是右边第一颗 ★", () => {
   assert.equal(neighborAfterArchive(["cur", ...row], "cur"), "a");
-});
-
-test("★ 行里只剩它一颗 → 不动作（空态留给 #190）", () => {
-  assert.equal(neighborAfterArchive(["only"], "only"), null);
 });

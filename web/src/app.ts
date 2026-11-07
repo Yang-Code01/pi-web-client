@@ -12186,7 +12186,7 @@ export class App {
   /**
    * #189：归档当前会话 = 归档它并离开它。只看**本次回声里刚变归档**的那批，不看「它现在是不是归档」——
    * 从「已归档」段主动点开一个归档会话是允许的状态，不能被自己这一眼踢走。
-   * 落点由 `neighborAfterArchive()` 一处决定（#190 补左邻与空态），切换走唯一的 `openSession()`。
+   * 落点由 `neighborAfterArchive()` 一处决定（右邻 → 左邻 → 空态），切换走唯一的 `openSession()`。
    */
   private switchAfterArchive(before: ReadonlySet<string>): void {
     const id = this.currentId;
@@ -12194,10 +12194,40 @@ export class App {
     if (before.has(id) || !this.manage.archived.includes(id)) return;
     // 当前会话没点 ★ 时它自己就是第 1 格（#188 的口径）：补上去，右邻不因这一格而变。
     const next = neighborAfterArchive(this.rowIds.includes(id) ? this.rowIds : [id, ...this.rowIds], id);
-    // #190 接上：没有右邻时改取左邻，再没有就进空态。本票先不动作。
-    if (!next) return;
+    // #190：左右都没有邻居 → 中栏回到现成的空态，不再把一颗归档会话留在中栏。
+    if (!next) {
+      this.closeCurrentSession();
+      return;
+    }
     this.openSession(next);
     // 地址栏跟着走：不另立一套规则，直接问 `go()` —— 它按页签推 hash（会话页 → `#/s/<id>`）。
+    this.go(this.tab);
+  }
+
+  /**
+   * #190：★ 行里左右都没有邻居时，「归档它 = 离开它」的落点就是空态 —— `renderChat()` 里现成的
+   * 「还没有打开会话 / 左边选一个，或者开一个新的」，不加文案、不改样式。
+   * 草稿照存（`switchDraft(null)`），归档本身不动；之后从左侧点任意会话都能正常回去。
+   */
+  private closeCurrentSession(): void {
+    if (!this.currentId) return;
+    this.switchDraft(null);
+    this.currentId = null;
+    this.session = null;
+    // 与 `openSession()` 换会话时清的是同一批：否则上一颗的待批 / 待答会挂进空态。
+    this.approvals = [];
+    this.asks = [];
+    this.pendingFresh = false;
+    this.usage = { contextTokens: null, contextWindow: null };
+    this.rate = 0;
+    this.rateAt = 0;
+    this.turnAt = null;
+    this.turnChars = { cjk: 0, other: 0 };
+    this.activity = "";
+    this.runSince = null;
+    this.chat.reset([]);
+    this.renderAll();
+    // 地址栏回到无会话的形态：`go()` 里 currentId 为空就是 `#/`。
     this.go(this.tab);
   }
 
