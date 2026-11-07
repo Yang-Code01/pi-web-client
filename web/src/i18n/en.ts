@@ -406,6 +406,7 @@ export const en: Dict = {
   "启动中…": "Starting…",
   "pi 正在启动（加载扩展，通常几秒）…": "pi is starting up (loading extensions — usually a few seconds)…",
   "pi 正在启动…": "pi is starting…",
+  "pi 还在启动，`!` 命令等它起来再跑": "pi is still starting up — run `!` commands once it's ready",
   "正在启动 pi…": "starting pi…",
   "处理中…": "Working…",
   "启动参数": "Launch arguments",

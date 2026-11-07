@@ -16,6 +16,11 @@
  *   9. 磁盘上的只读会话（没有写权）：输入框照常可用，发出去的气泡不等自动接管的握手 ——
  *      页面这一侧只能验证「能打字、气泡即刻出现」，气泡先于握手广播由 `bridge/tests/boot-queue.mjs` 钉住。
  *
+ * #202 的边界输入（同一套队列，不分叉）：
+ *  10. 启动期贴图：`.row` 上的「+N 图」与平时同一颗，发出去的那条 prompt 带着图、气泡说「附 N 张图片」；
+ *  11. 启动期贴一段代码：气泡的折叠渲染与平常一致、交出去的文字与气泡一字不差（缩进/制表符/行尾空格都在）；
+ *  12. 启动期 `!命令`：**不**排队、不静默丢 —— 给一句人话、草稿留在输入框，pi 起来后再按回车才真的发。
+ *
  * 桩桥照真桥的形状回 `item.add` / `item.replace`，不收 pi，所以这一秒钟级、可重复。
  *
  * Run: npm --prefix web run build && node probes/session-starting.mjs
@@ -136,10 +141,10 @@ wss.on("connection", (ws) => {
       // 真桥在启动期做的事：立刻把 user item 落地并广播，item 上带 `pending: "booting"`，
       // 广播里带回 clientId —— 那一页据此认领自己的乐观气泡，别的页照常新画一条。
       // #201：只读会话那条也一样 —— 桥在拉起 pi 之前就把气泡广播出来（测试里由 boot-queue 钉住顺序）。
-      const item = { id: `user:${++userSeq}`, kind: "user", text: String(msg.text ?? ""), images: [], pending: "booting", ts: new Date().toISOString() };
+      const item = { id: `user:${++userSeq}`, kind: "user", text: String(msg.text ?? ""), images: (Array.isArray(msg.images) ? msg.images : []).map((i) => ({ mimeType: String(i?.mimeType ?? "") })), pending: "booting", ts: new Date().toISOString() };
       (ro ? readonlyItems : items).push(item);
       if (!ro) lastUser = item;
-      prompts.push({ sessionId: ro ? readonly.id : base.id, text: String(msg.text ?? "") });
+      prompts.push({ sessionId: ro ? readonly.id : base.id, text: String(msg.text ?? ""), images: item.images.map((i) => i.mimeType) });
       broadcast({ type: "item.add", sessionId: ro ? readonly.id : base.id, item, clientId: msg.clientId });
       return;
     }
@@ -316,6 +321,135 @@ ${TEXT_B}`, 8000, "esc restore");
   check((await roBubble.locator(".msg-pending").innerText().catch(() => "")).includes("正在启动 pi"), "只读会话的气泡同样带待发徽标");
   check(prompts.at(-1)?.sessionId === readonly.id, "发的是这个只读会话的 prompt");
   await page.screenshot({ path: path.join(OUT, "8-readonly.png") });
+
+  // ---- 10. #202 启动期贴图：图跟着那条 prompt 一起走，气泡说「附 N 张图片」
+  await page.locator(".session-card", { hasText: "启动中" }).first().click();
+  await until(async () => (await page.locator(".hint-status").innerText().catch(() => "")).includes("正在启动"), 8000, "back to booting session");
+  /** 贴两张图（canvas 生成，走页面里那条真实粘贴路径 —— 和平时贴图同一个入口）。 */
+  const pasteImages = (colors) =>
+    page.evaluate(async (colors) => {
+      const dt = new DataTransfer();
+      for (const color of colors) {
+        const canvas = document.createElement("canvas");
+        canvas.width = 320;
+        canvas.height = 200;
+        const g = canvas.getContext("2d");
+        g.fillStyle = color;
+        g.fillRect(0, 0, canvas.width, canvas.height);
+        const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
+        dt.items.add(new File([blob], `${color}.png`, { type: "image/png" }));
+      }
+      document.querySelector(".composer textarea").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+      return dt.files.length;
+    }, colors);
+  const imageBadge = page.locator(".composer .row .image-badge");
+  check((await imageBadge.count()) === 0, "发之前手上没有待发图片");
+  await pasteImages(["#c0392b", "#2980b9"]);
+  await until(async () => (await imageBadge.count()) >= 1, 8000, "image badge");
+  check((await imageBadge.innerText()).includes("2"), `启动期贴两张图，徽标是「${(await imageBadge.innerText()).trim()}」（和平时同一颗）`);
+  const IMG_TEXT = "这两张图是启动期配上去的";
+  await box.fill(IMG_TEXT);
+  await box.press("Enter");
+  await until(async () => prompts.length > 0 && prompts.at(-1)?.text === IMG_TEXT, 8000, "image prompt");
+  check(prompts.at(-1).images.length === 2 && prompts.at(-1).images.every((m) => String(m).startsWith("image/")), `交出去的那条 prompt 还带着两张图（${JSON.stringify(prompts.at(-1).images)}）`);
+  const imgBubble = page.locator(".msg.user", { hasText: IMG_TEXT });
+  await until(async () => (await imgBubble.count()) >= 1, 8000, "image bubble");
+  // 乐观气泡先到，带图的桥 item 随后才认领它（adopt），所以「附 N 张图片」得等。
+  await until(async () => (await imgBubble.innerText()).includes("附 2 张图片"), 8000, "images notice");
+  check((await imgBubble.innerText()).includes("附 2 张图片"), "气泡照常标了「附 2 张图片」");
+  check((await imgBubble.locator(".msg-pending").innerText().catch(() => "")).includes("正在启动 pi"), "带图的气泡也带「正在启动 pi…」");
+  await until(async () => (await imageBadge.count()) === 0, 8000, "badge cleared");
+  check(true, "发出去之后待发图片清空（图已经跟着消息走了）");
+  await page.screenshot({ path: path.join(OUT, "9-images.png") });
+
+  // ---- 11. #202 启动期贴一段代码：气泡的折叠渲染与平时一致，交出去的一字不差
+  const PASTED = [
+    "```ts",
+    "export function pumpBootQueue(rpc: Rpc) {",
+    "    if (!rpc.alive) return;",
+    "    while (this.bootQueue.length) {",
+    "\tconst next = this.bootQueue.shift()!;",
+    '        if (!next) break;',
+    '        const message: any = { type: "prompt", message: next.text };',
+    "        if (this.state.running) message.streamingBehavior = next.behavior;",
+    "        if (next.images?.length) message.images = next.images;",
+    '        this.emitWs({ type: "item.replace", id: next.id, pending: "sent" });',
+    "    }",
+    "    // 行尾留两个空格  ",
+    "    return;",
+    "}",
+    "```",
+    "",
+    "/* 下面是贴进来的第二段：",
+    "   - 第一项",
+    "   - 第二项",
+    "   - 第三项",
+    "*/",
+    "const tail = '制表符\t在这里';",
+    "console.log(tail);",
+    "// 收尾",
+  ].join("\n");
+  const TYPED = "这段是接着打的";
+  const PASTE_TEXT = `${PASTED}\n\n${TYPED}`;
+  const pasteText = (text) =>
+    page.evaluate((text) => {
+      const dt = new DataTransfer();
+      dt.setData("text/plain", text);
+      document.querySelector(".composer textarea").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, text);
+  await pasteText(PASTED);
+  await until(async () => (await page.locator(".composer .paste-block").count()) >= 1, 8000, "paste block");
+  check((await page.locator(".composer .paste-block").innerText()).includes("粘贴的内容"), "大段粘贴进了「粘贴的内容」块（和平时一样）");
+  await box.fill(TYPED);
+  await box.press("Enter");
+  await until(async () => prompts.at(-1)?.text === PASTE_TEXT, 8000, "paste prompt");
+  check(true, "交出去的是粘贴块原文 + 空行 + 打的字（一个字没动）");
+  check(prompts.at(-1).text.includes("\tconst next") && prompts.at(-1).text.includes("行尾留两个空格  \n"), "缩进、制表符、行尾空格都还在");
+  const pasteBubble = page.locator(".msg.user", { hasText: "这段是接着打的" });
+  await until(async () => (await pasteBubble.count()) >= 1, 8000, "paste bubble");
+  const bootBody = await pasteBubble.locator(".fold-body .body").first().evaluate((n) => n.textContent ?? "");
+  check(bootBody === PASTE_TEXT, `气泡里的字与交出去的一致（${bootBody.length} 字 / ${PASTE_TEXT.length}）`);
+  const bootFold = await pasteBubble.locator(".foldable").first().getAttribute("class");
+  check(String(bootFold).includes("has-fold"), `长气泡带折叠（${bootFold}）`);
+  await page.screenshot({ path: path.join(OUT, "10-paste.png") });
+
+  // ---- 12. #202 启动期 `!命令`：不排队、给一句话，草稿留在输入框；就绪后同一条回车才真发
+  broadcast({ type: "session.state", session: { ...base, starting: true, running: false } });
+  await until(async () => (await page.locator(".hint-status").innerText().catch(() => "")).includes("正在启动"), 8000, "booting again");
+  const BOOT_CMD_INPUT = "!echo 启动期不该跑的命令";
+  const beforeBash = cmds.length;
+  await box.fill(BOOT_CMD_INPUT);
+  await box.press("Enter");
+  await until(
+    async () => (await page.locator(".notice, .msg.notice").allInnerTexts()).some((t) => t.includes("还在启动")),
+    8000,
+    "bash refusal notice",
+  );
+  const refusal = (await page.locator(".notice, .msg.notice").allInnerTexts()).find((t) => t.includes("还在启动")) ?? "";
+  check(refusal.includes("`!` 命令等它起来再跑"), `给了一句人话（「${refusal.replace(/\s+/g, " ").trim()}」）`);
+  check(!cmds.slice(beforeBash).some((m) => m.type === "bash"), "没有把 `!` 发上去（排到启动后跑才是那个惊喜）");
+  check((await box.inputValue()) === BOOT_CMD_INPUT, "草稿还在输入框里，pi 起来后按一次回车就行");
+  await page.screenshot({ path: path.join(OUT, "11-bash-refused.png") });
+  broadcast({ type: "session.state", session: { ...base, starting: false, running: false } });
+  await until(async () => !(await page.locator(".hint-status").innerText().catch(() => "")).includes("正在启动"), 8000, "booted");
+  await box.press("Enter");
+  await until(() => cmds.slice(beforeBash).some((m) => m.type === "bash"), 8000, "bash after ready");
+  const sentBash = cmds.slice(beforeBash).find((m) => m.type === "bash");
+  check(sentBash?.command === "echo 启动期不该跑的命令" && sentBash?.excludeFromContext === false, "pi 就绪后同一条回车才真发出去（`!` 照旧进上下文）");
+  check((await box.inputValue()) === "", "发出去之后输入框才清空");
+
+  // 折叠渲染不分启动期/平时：同一段文字两边长成同一个样子（同一个 `foldable` 量高逻辑）。
+  await box.fill(PASTE_TEXT);
+  await box.press("Enter");
+  await until(async () => (await page.locator(".msg.user", { hasText: TYPED }).count()) === 2, 8000, "calm bubble");
+  const calmBubble = page.locator(".msg.user", { hasText: TYPED }).nth(1);
+  // 折叠是量完高才挂上的（`requestAnimationFrame(measure)`），刚画出来那一帧还没有。
+  await until(async () => String(await calmBubble.locator(".foldable").first().getAttribute("class")).includes("has-fold"), 8000, "calm fold");
+  const calmFold = await calmBubble.locator(".foldable").first().getAttribute("class");
+  check(calmFold === bootFold, `平时那条的折叠与启动期一模一样（${calmFold}）`);
+  const bootFoldLabel = await pasteBubble.locator(".fold-label").first().innerText();
+  const calmFoldLabel = await calmBubble.locator(".fold-label").first().innerText();
+  check(bootFoldLabel === calmFoldLabel, `折叠按钮的说法也一样（「${calmFoldLabel}」）`);
 } catch (err) {
   failed += 1;
   console.error("ERROR", err?.message ?? err);

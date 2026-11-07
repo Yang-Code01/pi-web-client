@@ -2947,3 +2947,26 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **`acceptBeforeOpen()` 对 `live` 的会话返回 `null`**：那时气泡由 `prompt()` 自己落地，避免同一条消息落两枚。
 
 **验证：** `node bridge/tests/boot-queue.mjs`（桩 pi 慢启动 2500 ms）：6 段 —— 只读会话发一句，`item.add` 在「开始拉起 pi」（`starting: true`）**之前**到达（item#104 < starting#105，实测 <1000 ms）、气泡带 `booting`、就绪后 `behavior=null` 交出并 `sent`、`owned` 翻真、只起一支 pi 且走 `--session`；7 段 —— 接管与打字同时来，气泡 11 ms 落地、`claim` 与 `prompt` 只起一支 pi、只交出一次；8 段 —— 有 tty 锁时气泡标 `failed`、notice 说明原因、一支 pi 都没起；9 段 —— 删锁后点「重试」（`claim`）把同一枚气泡放回队列、补发成功变 `sent`、不重复画、仍只起一支 pi。`PI_WEB_PORT=7919 node probes/session-starting.mjs`：8 段 —— 启动期「继续」可见可点，点下去发的是「继续」、气泡立刻出现并带「正在启动 pi…」；9 段 —— 只读会话输入框可用、气泡立刻出现。`node --experimental-transform-types web/tests/continue-unit.mjs`（`starting` → `ready`）。`node bridge/tests/boot-queue-merge.mjs`、`node bridge/tests/create-fast.mjs`、`node bridge/tests/continue-ui.mjs`（40/40）不回归；两边 typecheck（i18n-check 1651 keys × 3 langs）与 build。
+
+## D181 启动窗口里的边界输入：图片原样带走、粘贴块不再削、`!` 命令给句人话不排队（`#202`；图片/粘贴沿用 D177 的队列，`!` 是唯一一条不进队列的）
+
+**问题：** D177–D180 把「启动期能发消息」做通了，但只验证了纯文本：① `BootEntry` 里 `images` 字段一直在、泵也一直在映射，可没人钉住「交出去的 prompt 真的还带着图」，界面上「+N 图」「附 N 张图片」在启动期有没有掉也没人看；② 粘贴块（长文本 / 代码块）送到桥之前会过一次 `p.text.trim()` —— 贴一段代码时那会削掉块首行的缩进和末尾的空行，交出去的内容和用户贴的不是一份；③ `!cmd` / `!!cmd` 走的是 RPC 的 `bash`，和 `bootQueue` 排的 prompt 根本不是一条通道。票面（#202 AC 3/5）假设「`!` 启动期不被拦、pi 起来后执行」，但 bash **没有队列语义**：排到启动后跑，等于把「顺手敲一下」变成一个延后执行的惊喜 —— 命令什么时候生效、在哪个目录、上下文里进不进，用户都不再看着。
+
+**决定：**
+
+1. **图片：一个字节都不碰，跟着同一条队列走**。`landUserPrompt()` 只把 `mimeType` 记进 item（气泡要的是「附 N 张图片」），`bootQueue` 的 `BootEntry` 带完整 `{data, mimeType}`，`pumpBootQueue()` 交出去时原样映射成 pi 的 `message.images`。前端「+N 图」徽标、图片面板、乐观气泡的认领都是启动期与平时同一套代码，没有第二个入口。
+2. **粘贴块：不再 `trim()`，只丢「整块都是空白」的**。`sendPrompt()` 里的 `p.text.trim()` 改成 `p.text.trim() ? p.text : ""`：气泡与交出去的文字同源（同一个 `text`），所以两边天然一致；保留缩进 / 制表符 / 行尾空格，正是「贴代码」要的。粘贴块仍按原顺序排在打字内容之前、空行分隔，一次发送合成一条 prompt —— 与平常一致，不为启动期另立格式。
+3. **`!` 命令：拒绝，不排队，草稿留在输入框**。两层同一句话「pi 还在启动，`!` 命令等它起来再跑」：
+   - 前端 `runBuiltinCommand()` 在 `socket.send({type:"bash"})` **之前**看 `session.starting`，命中就 `say(tr(…), "warn")` 并 `return true` 但**不**清稿 —— 用户按的这次回车没发东西，pi 起来后再按一次回车就是那条命令；
+   - 桥 `Session.bash()` 开头 `if (this.state.starting) throw`（在 `bashRun` 冲突检查与 BashItem 落地之前）—— 这道闸管的是前端看不见的窗口：只读会话的第一条 `!`，`openLive()` 会先把 pi 拉起来那一刻 `starting` 才为真，前端的 `session.starting` 还是假的。
+4. **不分叉**：图片、粘贴块走的仍是 D177/D178/D179 那一条 `bootQueue` + 泵；`!` 是**刻意不进队列**的那一类，桥里没有任何第二条待发通道。
+
+**代价 / 可改：**
+
+- **只读会话的第一条 `!` 会丢草稿**：前端那时 `starting` 还是假，命令发上去了，桥拉起 pi 后被闸挡下、notice 异步回来 —— 一句话有了，但输入框已经被清空（`done()` 在 `socket.send` 之后就跑）。修它需要「桥拒绝后把命令退回去」的通道，本票没做；启动窗口里（前端看得见 `starting` 的常态）不会丢。
+- **撤回（#199）只退文字，不退图**：`clearQueue` 的 `queue.restore` 只带 texts，所以启动期撤回一条带图的消息，图和气泡一起没了、文字回到输入框。既有取舍（#199 的范围），#202 没动 —— 要修得先决定「撤回时图放哪」（待发图片区 vs 一起退回草稿）。
+- **粘贴块的「整块空白」判断用的是 `trim()` 的结果**：内容保留，但只含空白的块仍然被丢，和手打空格不进队列一致。
+- **`!` 的拒绝是一句话，不是排队**：用户得自己再按一次回车。这是有意的 —— 见上，bash 没有「稍后执行」的语义，替用户记住命令就是在替他决定什么时候跑。若日后真要做，得先给 RPC 的 bash 补一套带序的队列语义（且要说清上下文如何进），不是前端加个数组。
+- **桥那句 notice 没有 sessionId**（WS 兜底 catch 的老形状），多标签页里离线的那些页看不见；常态路径由前端自己那句话负责。
+
+**验证：** `PI_WEB_PORT=7927 node bridge/tests/boot-queue.mjs`（桩 pi 慢启动 2500 ms）：F 段 —— 启动期发一条带两张图 + 一条纯文字，窗口期桩 pi 一条 prompt 都没收到、item 上是 `[{mimeType:"image/png"},{mimeType:"image/jpeg"}]`，就绪后桩 pi 记录的 `TEXTIMG` 那条带 `images: ["image/png","image/jpeg"]`、下一条是 `[]`、两条按序；`item.replace` 之后两张图还在、`pending: "sent"`。G 段 —— 启动期贴 7 行代码块 + 打字：气泡文字与桥收到的 `text` 一字不差（缩进、制表符、行尾空格都在），结尾是 `\n\n` + 打字内容。H 段 —— 启动期发 `bash`：notice 含「还在启动」与 `` `!` ``、**没有** bash 卡片、**没有** user 气泡（没被塞进 prompt 队列）、桩 pi 没有 `t:"bash"` 记录；`starting` 翻假后同一条 `!!` 照常跑、输出照常回来，且启动期那条始终没在后台补跑。`PI_WEB_PORT=7929 node probes/session-starting.mjs`：10 段 —— 启动期贴两张图，`.row` 徽标是「+2 图」，交出去的 prompt 带两张 `image/*`，气泡「附 2 张图片」+「正在启动 pi…」，发完徽标清空；11 段 —— 启动期贴 24 行代码块，气泡 `.foldable.has-fold`，气泡正文与交出去的文字逐字相等（605 字），12 段 —— 启动期 `!` 给一句人话、没发 `bash`、草稿还在，`starting` 翻假后再按回车才真发出去（`excludeFromContext: false`）；末尾把同一段文字在平时再发一次，两条气泡的 `foldable` class 与折叠按钮文案完全相同。`PI_WEB_PORT=7928 node bridge/tests/boot-queue-merge.mjs`、`node bridge/tests/create-fast.mjs`、`node bridge/tests/composer-actions.mjs` 不回归；两边 typecheck（i18n-check 1652 keys × 3 langs）与 build。顺手修好桩 pi 的一处真 bug：`bashAborted` 在 D169 那次提交里被写成 `const`（`abort_bash` 会赋值），于是桩 pi 收到第一条 `bash` 就抛 `Assignment to constant variable` 退出 1 —— H 段才发现（`bridge/tests/composer-actions.mjs` 因此也一直是红的）。

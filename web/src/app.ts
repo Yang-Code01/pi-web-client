@@ -2338,7 +2338,9 @@ export class App {
   private sendPrompt(behavior: "steer" | "followUp" = "steer"): void {
     if (!this.currentId) return;
     const typed = this.composerText.trim();
-    const pasted = this.pastes.map((p) => p.text.trim()).filter(Boolean);
+    // #202 / D181: 粘贴块原样带走。`trim()` 会削掉块首行的缩进和末尾的空行 —— 贴一段代码时那是内容，
+    // 不是排版噪音。只有「整块都是空白」才按空输入丢掉，和手打空格的规矩一致。
+    const pasted = this.pastes.map((p) => (p.text.trim() ? p.text : "")).filter(Boolean);
     const text = [...pasted, typed].filter(Boolean).join("\n\n");
     if (!text && !this.images.length) return;
     if (typed && !pasted.length && !this.images.length && this.answerFromComposer(typed)) return;
@@ -2406,6 +2408,14 @@ export class App {
       const exclude = typed.startsWith("!!");
       const command = typed.slice(exclude ? 2 : 1).trim();
       if (!command) return false;
+      // #202 / D181: 启动窗口里不接 `!`。它走的是 RPC 的 bash，而 `bootQueue` 排的是 prompt ——
+      // 两条通道没有共同的顺序语义，排进队列等于把「顺手敲一下」变成 pi 起来后突然执行的一条命令。
+      // 这里给一句话并**把草稿留在输入框里**（return true 但不清稿）：pi 起来后再按一次回车就行。
+      // 桥里另有一道同样的闸，`openLive()` 拉起 pi 之前的那些客户端也挡得住。
+      if (this.session?.starting) {
+        say(tr("pi 还在启动，`!` 命令等它起来再跑"), "warn");
+        return true;
+      }
       this.act(() => this.socket.send({ type: "bash", sessionId, command, excludeFromContext: exclude }));
       return done();
     }

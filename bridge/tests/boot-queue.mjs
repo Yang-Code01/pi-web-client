@@ -20,6 +20,13 @@
  *   8. 自动接管没成（终端里的 pi 还开着）：气泡标成没发出去，并说明原因；
  *   9. 挡路的东西没了再点「重试」：同一枚气泡回到待发、补发出去变「已交出」，不重复画、不重起 pi。
  *
+ * #202 把启动期最容易漏掉的三种边界输入钉在同一只泵上：
+ *   F. 带图的那条：气泡上记着两张图，就绪后图片跟着**同一条** prompt 交给 pi（不是只交文本），
+ *     后面的纯文本不会被顺带塞图，顺序也不变；
+ *   G. 粘贴块（长文本）：气泡里的与交给 pi 的是同一份，缩进 / 制表符 / 行尾空格一个不动；
+ *   H. `!` 命令：bash 走的是 RPC 的 bash，pi 没起来就没有这条通道 —— 不排队、不静默丢，
+ *     明说一句「还在启动」；就绪之后同一条命令照常能跑。
+ *
  * Run: npm --prefix bridge run build && node bridge/tests/boot-queue.mjs
  */
 import fs from "node:fs";
@@ -548,6 +555,156 @@ try {
   check(added5.slice(1).every((m) => mixedIds.includes(m.item.id)), "还在排队的两个气泡删掉");
   await sleep(600);
   check(!records().some((r) => r.t === "prompt" && TEXTS5.slice(1).includes(r.text)), "撤回的两条终究没交给 pi");
+
+  // ---------------------------------------------------------------- F. #202 启动期的图片：原样跟着这条走
+  log("F. 建第六个会话：启动窗口里发一条带两张图的，再发一条纯文本");
+  const mark6 = seen.length;
+  send({ type: "create", cwd: REPO, name: "带图的那个" });
+  const created6 = await waitFor(
+    (m) => m.type === "session" && m.state?.name === "带图的那个" && seen.indexOf(m) >= mark6,
+    20000,
+    "第六个 session 帧",
+  );
+  const sid6 = created6.sessionId ?? created6.state?.id;
+  check(created6.state?.starting === true, "第六个会话也在启动窗口里");
+  // 一张 1×1 的 PNG：桥不解码，只原样转给 pi，所以字节是不是真图不重要。
+  const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const IMAGES6 = [
+    { data: PNG_1PX, mimeType: "image/png" },
+    { data: PNG_1PX, mimeType: "image/jpeg" },
+  ];
+  const TEXTIMG = "配上两张图的那句";
+  const fromImg = seen.length;
+  send({ type: "prompt", sessionId: sid6, text: TEXTIMG, images: IMAGES6, clientId: "local:6:0" });
+  const addedImg = await waitFor(
+    (m) => m.type === "item.add" && m.sessionId === sid6 && m.item?.text === TEXTIMG && seen.indexOf(m) >= fromImg,
+    2000,
+    "带图那条的 item.add",
+  );
+  check(addedImg.item?.pending === "booting", `带图的气泡也立刻落地并排队（pending=${JSON.stringify(addedImg.item?.pending)}）`);
+  check(
+    JSON.stringify(addedImg.item?.images) === JSON.stringify(IMAGES6.map((i) => ({ mimeType: i.mimeType }))),
+    `气泡上记着两张图（${JSON.stringify(addedImg.item?.images)}）`,
+  );
+  const TEXTONLY = "跟在后头的一句";
+  send({ type: "prompt", sessionId: sid6, text: TEXTONLY, clientId: "local:6:1" });
+  await waitFor(
+    (m) => m.type === "item.add" && m.sessionId === sid6 && m.item?.text === TEXTONLY && seen.indexOf(m) >= fromImg,
+    2000,
+    "纯文本那条的 item.add",
+  );
+  check(!records().some((r) => r.t === "prompt" && (r.text === TEXTIMG || r.text === TEXTONLY)), "窗口里桩 pi 一封都没收到");
+
+  await waitFor((m) => m.type === "session.state" && m.session?.id === sid6 && m.session?.starting === false, 20000, "第六个会话 starting=false");
+  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXTIMG), 10000, "带图那条交给桩 pi");
+  const imgDelivered = records().find((r) => r.t === "prompt" && r.text === TEXTIMG);
+  check(
+    JSON.stringify(imgDelivered?.images) === JSON.stringify(["image/png", "image/jpeg"]),
+    `两张图跟着这条一起交给了 pi（${JSON.stringify(imgDelivered?.images)}）`,
+  );
+  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXTONLY), 10000, "纯文本那条交给桩 pi");
+  const textDelivered = records().find((r) => r.t === "prompt" && r.text === TEXTONLY);
+  check((textDelivered?.images ?? []).length === 0, "后一条纯文本没有被顺带塞上图（图跟着它自己的那条）");
+  const imgOrder = records()
+    .filter((r) => r.t === "prompt" && [TEXTIMG, TEXTONLY].includes(r.text))
+    .map((r) => r.text);
+  check(
+    JSON.stringify(imgOrder) === JSON.stringify([TEXTIMG, TEXTONLY]),
+    `交给 pi 的顺序与发出顺序一致（${JSON.stringify(imgOrder)}）`,
+  );
+  const replacedImg = await waitFor((m) => m.type === "item.replace" && m.sessionId === sid6 && m.id === addedImg.item.id, 10000, "带图那条的 item.replace sent");
+  check(replacedImg.item?.images?.length === 2 && replacedImg.item?.pending === "sent", "改成「已交出」之后气泡上的两张图还在");
+
+  // ---------------------------------------------------------------- G. #202 启动期的粘贴块：长文本原样交出去
+  log("G. 建第七个会话：启动窗口里贴一大段代码（缩进 + 制表符 + 行尾空格），后面再接着打字");
+  const mark7 = seen.length;
+  send({ type: "create", cwd: REPO, name: "贴了一段代码的那个" });
+  const created7 = await waitFor(
+    (m) => m.type === "session" && m.state?.name === "贴了一段代码的那个" && seen.indexOf(m) >= mark7,
+    20000,
+    "第七个 session 帧",
+  );
+  const sid7 = created7.sessionId ?? created7.state?.id;
+  check(created7.state?.starting === true, "第七个会话也在启动窗口里");
+  // 前端把粘贴块拼在打的字前面、空行分隔（`sendPrompt()`），桥和 pi 看到的就该是这一份，一个字符都不许动。
+  const PASTED7 = [
+    "```ts",
+    "export function boot(id: string) {",
+    "    if (!id) return; // 行尾留两个空格  ",
+    "\tconst tail = '制表符';",
+    "    return tail;",
+    "}",
+    "```",
+  ].join("\n");
+  const TYPED7 = "这段是接着打的";
+  const TEXT7 = `${PASTED7}\n\n${TYPED7}`;
+  const fromPaste = seen.length;
+  send({ type: "prompt", sessionId: sid7, text: TEXT7, clientId: "local:7:0" });
+  const addedPaste = await waitFor(
+    (m) => m.type === "item.add" && m.sessionId === sid7 && m.item?.kind === "user" && seen.indexOf(m) >= fromPaste,
+    2000,
+    "粘贴块那条的 item.add",
+  );
+  check(addedPaste.item?.text === TEXT7, "气泡里就是拼出来的那一整份（折叠由前端按长度自己算）");
+  check(!records().some((r) => r.t === "prompt" && r.text === TEXT7), "窗口里还是没交给 pi");
+  await waitFor((m) => m.type === "session.state" && m.session?.id === sid7 && m.session?.starting === false, 20000, "第七个会话 starting=false");
+  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXT7), 10000, "粘贴块那条交给桩 pi");
+  const deliveredPaste = records().find((r) => r.t === "prompt" && r.text === TEXT7);
+  check(deliveredPaste?.text === TEXT7, "交给 pi 的与气泡、与粘贴的那份一字不差");
+  check(
+    deliveredPaste?.text.includes("    if (!id) return; // 行尾留两个空格  ") && deliveredPaste?.text.includes("\tconst tail"),
+    "缩进、制表符、行尾空格都没被规范化掉",
+  );
+  check(deliveredPaste?.text.endsWith(`\n\n${TYPED7}`), "打的字接在粘贴块后面，空行分隔");
+
+  // ---------------------------------------------------------------- H. #202 启动期的 `!` 命令：不排队，明说一句
+  log("H. 建第八个会话：启动窗口里敲 ! 命令 —— 不进 bootQueue、不静默丢，就绪后照常能跑");
+  const mark8 = seen.length;
+  send({ type: "create", cwd: REPO, name: "敲了叹号命令的那个" });
+  const created8 = await waitFor(
+    (m) => m.type === "session" && m.state?.name === "敲了叹号命令的那个" && seen.indexOf(m) >= mark8,
+    20000,
+    "第八个 session 帧",
+  );
+  const sid8 = created8.sessionId ?? created8.state?.id;
+  check(created8.state?.starting === true, "第八个会话也在启动窗口里");
+  const BOOT_CMD = "echo 启动期不该执行的命令";
+  const fromBash = seen.length;
+  send({ type: "bash", sessionId: sid8, command: BOOT_CMD, excludeFromContext: false });
+  const bashRefused = await waitFor(
+    (m) => m.type === "notice" && m.level === "error" && /还在启动/.test(String(m.text)) && seen.indexOf(m) >= fromBash,
+    5000,
+    "启动期 ! 命令的说明",
+  );
+  check(/!/.test(String(bashRefused.text)), `给了一句人话（「${bashRefused.text}」）`);
+  check(
+    !seen.some((m) => m.type === "item.add" && m.sessionId === sid8 && m.item?.kind === "bash"),
+    "没有画出 bash 卡片（这条命令根本没发出去）",
+  );
+  check(
+    !seen.some((m) => m.type === "item.add" && m.sessionId === sid8 && m.item?.kind === "user"),
+    "也没有被塞进 prompt 队列（气泡上不该出现这条命令）",
+  );
+  check(!records().some((r) => r.t === "bash" && r.command === BOOT_CMD), "桩 pi 也没收到 bash（没起来就没有这条通道）");
+
+  await waitFor((m) => m.type === "session.state" && m.session?.id === sid8 && m.session?.starting === false, 20000, "第八个会话 starting=false");
+  send({ type: "bash", sessionId: sid8, command: BOOT_CMD, excludeFromContext: true });
+  const bashItem = await waitFor(
+    (m) => m.type === "item.add" && m.sessionId === sid8 && m.item?.kind === "bash" && m.item?.command === BOOT_CMD,
+    5000,
+    "就绪后的 bash 卡片",
+  );
+  check(bashItem.item?.excludeFromContext === true, "拦的只是启动窗口：就绪之后 !! 命令照常能跑");
+  await until(() => records().some((r) => r.t === "bash" && r.command === BOOT_CMD), 10000, "桩 pi 收到就绪后的 bash");
+  const bashDone = await waitFor((m) => m.type === "item.replace" && m.sessionId === sid8 && m.id === bashItem.item.id, 10000, "bash 结果");
+  check(
+    String(bashDone.item?.output ?? "").includes(`ran: ${BOOT_CMD}`),
+    `输出照常回来（${JSON.stringify(bashDone.item?.output)}）`,
+  );
+  check(
+    !records().some((r) => r.t === "bash" && r.command === BOOT_CMD && r.exclude !== true),
+    "启动期那条始终没有在后台补跑",
+  );
 
   ws.close();
 } catch (err) {

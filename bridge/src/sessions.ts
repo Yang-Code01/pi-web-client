@@ -1977,6 +1977,9 @@ export class Session extends EventEmitter {
   async bash(command: string, excludeFromContext: boolean): Promise<void> {
     const rpc = this.rpc;
     if (!rpc?.alive) throw new Error("会话没在运行");
+    // #202 / D181: 启动窗口里挡下 `!` 命令。bash 走的是 RPC，`bootQueue` 排的是 prompt ——
+    // 两条通道没有共同的顺序语义，硬塞进队列会把「顺手敲一下」变成启动后突然执行的一条命令。
+    if (this.state.starting) throw new Error("pi 还在启动，`!` 命令等它起来再跑");
     if (this.bashRun) throw new Error("上一条 ! 命令还在跑，等它结束或先停掉它");
     const item: BashItem = {
       id: `bash:${++this.bashCounter}`,
