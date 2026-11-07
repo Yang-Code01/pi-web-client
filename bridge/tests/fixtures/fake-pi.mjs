@@ -26,6 +26,15 @@ const out = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
 const note = (obj) => {
   if (LOG) fs.appendFileSync(LOG, `${JSON.stringify({ at: Date.now(), ...obj })}\n`);
 };
+/** #202: prompt 里带的图片只记 mimeType —— 测试要能说清「图是跟着这条一起到的」，不搬字节。 */
+const notePrompt = (cmd, text) =>
+  note({
+    t: "prompt",
+    pid: process.pid,
+    text,
+    behavior: cmd.streamingBehavior ?? null,
+    images: (Array.isArray(cmd.images) ? cmd.images : []).map((i) => String(i?.mimeType ?? "")),
+  });
 const ok = (id, command, data) => out({ type: "response", command, success: true, id, ...(data === undefined ? {} : { data }) });
 const fail = (id, command, error) => out({ type: "response", command, success: false, id, error });
 
@@ -70,7 +79,9 @@ let refusedOnce = 0;
 let steering = [];
 let followUp = [];
 let settleWaiters = [];
-const bashAborted = false;
+// `abort_bash` 会把它翻成 true，`bash` 处理完再翻回来 —— 必须是 let（#202 的 H 段踩到过：
+// 写成 const 之后桩 pi 在收到第一条 bash 时直接抛「Assignment to constant variable」）。
+let bashAborted = false;
 /** Resolver of the turn's pending confirm (#82): answered by `extension_ui_response` or `abort`. */
 let pendingConfirm = null;
 /** The command the stub claims it is about to run, so the approval card has something to show. */
@@ -406,13 +417,13 @@ async function handle(cmd) {
       // #198：RPC 的 `disposition: "handled"` —— pi 把这句话就地处理掉、一轮都没起（斜杠命令这类）。
       // 桥据此知道「不会有 agent_start 来了」，后面那条不必干等 10 秒。
       if (text.startsWith("HANDLED")) {
-        note({ t: "prompt", pid: process.pid, text, behavior: cmd.streamingBehavior ?? null });
+        notePrompt(cmd, text);
         return ok(id, type, { disposition: "handled" });
       }
       // #199：把应答压住一会儿——泵正等着这条的回执，后面几条就老老实实留在桥的 `bootQueue` 里，
       // 恰好是「就绪瞬间只交出第一条」那个时间窗（真实 pi 里这段是模型还没接上的那几百毫秒）。
       if (text.startsWith("HOLD")) {
-        note({ t: "prompt", pid: process.pid, text, behavior: cmd.streamingBehavior ?? null });
+        notePrompt(cmd, text);
         await sleep(1500);
         ok(id, type, { disposition: "started" });
         void run(text);
@@ -424,11 +435,11 @@ async function handle(cmd) {
           return fail(id, type, "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.");
         }
         (cmd.streamingBehavior === "steer" ? steering : followUp).push(text);
-        note({ t: "prompt", pid: process.pid, text, behavior: cmd.streamingBehavior });
+        notePrompt(cmd, text);
         queueUpdate();
         return ok(id, type, { disposition: "queued" });
       }
-      note({ t: "prompt", pid: process.pid, text, behavior: cmd.streamingBehavior ?? null });
+      notePrompt(cmd, text);
       ok(id, type, { disposition: "started" });
       void run(text);
       return;
