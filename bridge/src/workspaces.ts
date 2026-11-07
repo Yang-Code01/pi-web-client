@@ -148,7 +148,8 @@ export class Workspaces {
   }
 
   private load(): void {
-    // 旧文件可能还带着 #122 的 pinned：类型上已退役，迁移时从原始 JSON 里读一次。
+    // #178：旧文件可能还带着 #122 的 pinned。`pinned` 已从 WorkspaceState 退役，运行期不再写；
+    // 这里只从原始 JSON 读一次，作为首次迁移的 order 种子（见下方 readOrder），此后落盘只有 order。
     const raw = readJson<Partial<WorkspaceState> & { pinned?: unknown }>(this.file, {});
     const groups = readGroups(raw.groups);
     const legacy = !Array.isArray(raw.order);
@@ -201,8 +202,8 @@ export class Workspaces {
    * 找不到就建（名字留空，显示时取目录名）。空 cwd（脏会话文件）不属于任何工作区 → `""`。
    */
   groupFor(sessionId: string, cwd: string): string {
-    const pinned = this.data.overrides[sessionId];
-    if (pinned && this.group(pinned)) return pinned;
+    const override = this.data.overrides[sessionId];
+    if (override && this.group(override)) return override;
     const key = this.keyOf(cwd);
     if (!key) return "";
     return this.ensure(key).id;

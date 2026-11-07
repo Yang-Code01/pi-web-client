@@ -3057,8 +3057,8 @@ export class App {
   }
 
   /**
-   * #123 设置面板的「标签行」：只剩「最多显示」步进器（#173 起固定组退役，顺序由标签行 / 左栏
-   * 共用的一份 `order` 说了算；#176 起范围 1–12、默认 6）。桥的每份快照都重画这一块 —— 页面
+   * #123 设置面板的「标签行」：只剩「最多显示」步进器（顺序由标签行 / 左栏共用的一份 `order`
+   * 说了算；#176 起范围 1–12、默认 6）。桥的每份快照都重画这一块 —— 页面
    * 不另存一份可能说错的副本。
    */
   private paintWsTabsPane(): void {
@@ -4658,7 +4658,7 @@ export class App {
       todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
       head.append(todo);
     }
-    // #173：固定组退役，左栏不再需要「为什么它排在前面」的徽记。
+    // #173：左栏组序就是 `order`，不再需要「为什么它排在前面」的徽记。
     head.append(el("span", "n", String(group.sessions.length)));
     if (!editing) {
       const more = el("button", "ws-more", "⋯") as HTMLButtonElement;
@@ -4711,7 +4711,12 @@ export class App {
       name: group.name,
       sub: info && !info.manual ? info.key : tr("手建的工作区"),
       // #177：已经是第一时就地置灰 + 说明，而不是藏掉这颗（跟删除同一个套路）。
-      frontBlocker: order[0] === group.id ? tr("它已经是第一个了") : null,
+      // #178：旧桥没有 `order`（也不认识 ws.tabs），别给一个点下去会报「未知操作」的入口。
+      frontBlocker: !Array.isArray(this.workspaces.order)
+        ? tr("旧版桥不支持调整顺序")
+        : order[0] === group.id
+          ? tr("它已经是第一个了")
+          : null,
       dropBlocker: dropBlocker(info, group.sessions.length),
       onRename: () => this.startWsRename(group.id),
       onFront: () => this.moveWsToFront(group.id),
@@ -11337,7 +11342,7 @@ export class App {
    */
   /**
    * #97 壳 A 行 1：工作区标签页。横向一条；#121 起只画 N 颗（默认 6，桥端可调 1–12），
-   * 剩下的收进槽外那颗 `＋N`。当前工作区永远在圈内（不在就挤掉最后一个补位组），有会话卡在
+   * 剩下的收进槽外那颗 `＋N`。当前工作区永远在圈内（不在就占最后一格），有会话卡在
    * 用户身上时带一颗待处理点。点一下 = 切到那一组：打开组里排最上面的那颗会话（★ 优先，跟左栏
    * 同一份顺序）；#174 起画出来的每一颗都能拖，拖完写回同一种 `order`。
    */
@@ -11360,9 +11365,8 @@ export class App {
     const byId = new Map(tree.groups.map((group) => [group.id, group]));
     // #173：标签行与左栏用同一份 `order`（含折叠组），不再按名字或最近活动另排一套。
     // 旧桥没下发 order 时退回树的组序（此时树自己也是按名字排的）。
-    const order = (this.workspaces.order?.length ? this.workspaces.order : tree.groups.map((group) => group.id)).filter((id) =>
-      byId.has(id),
-    );
+    const bridgeOrder = Array.isArray(this.workspaces.order) && this.workspaces.order.length > 0 ? this.workspaces.order : null;
+    const order = (bridgeOrder ?? tree.groups.map((group) => group.id)).filter((id) => byId.has(id));
     const model = tabModel({ order, max: this.workspaces.max ?? TABS_DEFAULT, current: cur ?? undefined });
     // #175：刚在横条 ＋ 上建的组：`order` 末尾、名额已满时它直接进 ＋N —— 说一声，
     // 否则横条看起来没变，像是没建成（新组仍按 #173 的规则留在 order 末尾）。
@@ -11388,8 +11392,9 @@ export class App {
         todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
         tab.append(todo);
       }
-      // #174：画出来的每一颗都能拖（#124 的「只有固定组能拖」随 #173 退役）；拖完不误当点击。
-      tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id, model);
+      // #174：画出来的每一颗都能拖；拖完不误当点击。
+      // #178 R34：旧桥没有 `order`，顺序只是页面按名字兜底，拖了也无处落库 —— 不绑拖动。
+      if (bridgeOrder) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id, model);
       tab.onclick = () => {
         if (this.tabDragMoved) {
           this.tabDragMoved = false;
@@ -11416,7 +11421,7 @@ export class App {
   }
 
   /**
-   * #174 标签行的鼠标拖拽重排（#124 的「只有固定组能拖」随 #173 退役）。按下后移动超过 4px 才算
+   * #174 标签行的鼠标拖拽重排。按下后移动超过 4px 才算
    * 起拖 —— 不超过就还是那次普通点击（切组），所以 pointerdown 里不能 preventDefault、也不能抢
    * pointer capture。只认鼠标：触屏 / 笔 / 键盘的排量不在这一票里（#172 Out of Scope）。
    *

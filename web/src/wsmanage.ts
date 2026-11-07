@@ -10,7 +10,7 @@ import { tr } from "./i18n/index.ts";
  * - 空名字 = 恢复成目录名；桥的 `rename()` 存空串，显示时由 `buildTree()` 回落到目录名。
  * - 只有手建的空组能删：派生组是 cwd 派生的，删了下次又回来，那是假动作。
  *
- * #173：固定组那套助手（`fixedBlocker` / `fixedRows` / `fixedDropped` / `toggleFixed`）已退役，
+ * #173：旧的分组名额助手（`fixedBlocker` / `fixedRows` / `fixedDropped` / `toggleFixed`）已退役，
  * 顺序统一由桥端的 `order` 管，这里只剩改名与删除。
  */
 

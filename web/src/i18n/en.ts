@@ -248,6 +248,7 @@ export const en: Dict = {
   "移到最前": "Move to front",
   "排到第一位，横条与左栏一起跟着变": "Puts it first; the tab row and the sidebar follow",
   "它已经是第一个了": "It's already first",
+  "旧版桥不支持调整顺序": "The old bridge does not support reordering",
   "标签行": "Tab row",
   "最多显示": "Show at most",
   "最多显示减一": "One fewer tab",
