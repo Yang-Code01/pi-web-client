@@ -201,7 +201,7 @@ await check("推送目标落盘：setTarget 之后重新构造也读得回来", 
   const { svc } = fakeService();
   svc.setTarget("19:zzz@thread.v2", "李四");
   assert.equal(svc.settingsView().target, "19:zzz@thread.v2");
-  assert.deepEqual(svc.target(), { id: "19:zzz@thread.v2", title: "李四", self: false });
+  assert.deepEqual(svc.target(), { id: "19:zzz@thread.v2", title: "李四", self: false, kind: "chat" });
   const again = new TeamsService(
     () => {},
     async () => true,
@@ -225,6 +225,24 @@ await check("从没登录过：工具调用不自己起窗口，直接 TEAMS_OFF
   svc.browser.reachable = async () => false;
   await assert.rejects(() => svc.send(SELF_CHAT, "hi"), (err) => err.code === "TEAMS_OFF");
   assert.equal(spawned, 0);
+});
+
+await check("频道不发也不读：先报 TEAMS_CHANNEL_UNSUPPORTED，不去点确认", async () => {
+  const { svc, asked, sent } = fakeService();
+  svc.resolve = async () => ({ id: "19:chan@thread.tacv2", title: "项目频道", self: false, kind: "channel" });
+  await assert.rejects(() => svc.send("项目频道", "hi"), (err) => err.code === "TEAMS_CHANNEL_UNSUPPORTED");
+  assert.equal(asked.length, 0);
+  assert.equal(sent.length, 0);
+  await assert.rejects(() => svc.messages("项目频道", 5), (err) => err.code === "TEAMS_CHANNEL_UNSUPPORTED");
+});
+
+await check("teams_read 截断超长消息，并留下原长", async () => {
+  const long = "x".repeat(2000);
+  const svc = { messages: async () => ({ chat: { id: "48:notes", title: "与你自己的聊天", self: true, kind: "self" }, messages: [{ id: "m", from: "a", name: "A", time: "", text: long }] }) };
+  const tool = teamsTools(svc).find((t) => t.name === "teams_read");
+  const out = await tool.run({ chat: "48:notes" });
+  assert.ok(out.value.messages[0].text.length < 2000);
+  assert.match(out.value.messages[0].text, /原文 2000 字/);
 });
 
 await check("窗口没开时 status 只说 off，不会顺手把浏览器拉起来", async () => {

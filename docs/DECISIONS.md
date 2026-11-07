@@ -2598,7 +2598,9 @@ cookie、不存令牌**。
   10 分钟；401/403 → `TEAMS_AUTH_EXPIRED`，页面里说「需要重新登录」。这条路是内部接口，**会变**——变了要
   改的就是这两个文件（`bridge/src/teams/browser.ts` / `client.ts`），所以它们被单独放在 `teams/` 下。
 - **只做四件事**：`teams_chats`（列会话）、`teams_read`（读某个会话最后 N 条）、`teams_find`（按名字搜人）、
-  `teams_send`（发纯文本）。不做附件、不做已读回执、不建群、不改消息、不删消息 —— 这些都要碰更大的
+  `teams_send`（发纯文本）。**频道消息不发也不读**（频道走 `/api/chatsvc/<region>/v1/teams/<team>/channels/<chan>/messages`，
+  不是私聊那套端点；静默发到错的地方比报错更糟，所以 `TEAMS_CHANNEL_UNSUPPORTED` 明说）。
+  不做附件、不做已读回执、不建群、不改消息、不删消息 —— 这些都要碰更大的
   内部面，收益远小于「随时会坏」的代价。文字上限 8000 字，两条之间至少 1 秒。
 - **发给别人必须有人在页面上点一下**。发到「与你自己的聊天」（`48:notes`）不问；发到任何别的会话，
   工具调用会挂住等 `/api/teams/confirm` 或 WS 回执，**最多 120 秒**：没有页面、超时、点取消，一律不发

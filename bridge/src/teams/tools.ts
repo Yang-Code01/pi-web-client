@@ -6,6 +6,12 @@
 import type { McpTool } from "../mcp.ts";
 import type { TeamsService } from "./service.ts";
 
+/**
+ * 一条消息塞进上下文的上限。长消息（转发的大段日志、邮件正文）不截断会直接吃掉几千 token，
+ * 而模型这一段通常只需要知道「说了什么」；截断处留原长，需要全文时让人去网页看。
+ */
+const MAX_MSG_CHARS = 1500;
+
 export function teamsTools(service: TeamsService): McpTool[] {
   return [
     {
@@ -45,7 +51,10 @@ export function teamsTools(service: TeamsService): McpTool[] {
         if (!chat) throw new Error("缺少 chat");
         const limit = num(args.limit, 20);
         const out = await service.messages(chat, limit);
-        return { value: { chat: out.chat, messages: out.messages } };
+        const messages = out.messages.map((m) =>
+          m.text.length > MAX_MSG_CHARS ? { ...m, text: `${m.text.slice(0, MAX_MSG_CHARS)}…（截断，原文 ${m.text.length} 字）` } : m,
+        );
+        return { value: { chat: out.chat, messages } };
       },
     },
     {

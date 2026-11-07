@@ -33,6 +33,12 @@ export interface TeamsTarget {
   id: string;
   title: string;
   self: boolean;
+  /**
+   * 会话类型。`channel` 这一版**不发也不读**：频道消息走的是
+   * `/api/chatsvc/<region>/v1/teams/<team>/channels/<chan>/messages`，和私聊不是一套端点。
+   * 静默发到错的地方比报错更糟，所以宁可说清楚。
+   */
+  kind: "self" | "chat" | "meeting" | "channel";
 }
 
 export interface TeamsConfirmRequest {
@@ -105,7 +111,8 @@ export class TeamsService {
   }
 
   target(): TeamsTarget {
-    return { id: this.settings.target, title: this.settings.targetTitle, self: this.settings.target === SELF_CHAT };
+    const self = this.settings.target === SELF_CHAT;
+    return { id: this.settings.target, title: this.settings.targetTitle, self, kind: self ? "self" : "chat" };
   }
 
   async status(): Promise<TeamsStatus> {
@@ -211,6 +218,7 @@ export class TeamsService {
   async messages(chat: string, limit: number): Promise<{ chat: TeamsTarget; messages: TeamsMessage[] }> {
     await this.ready();
     const target = await this.resolve(chat);
+    if (target.kind === "channel") throw new TeamsError("TEAMS_CHANNEL_UNSUPPORTED", `「${target.title}」是个频道：频道消息走另一套端点，这一版不读频道`);
     return { chat: target, messages: await this.client.messages(target.id, limit) };
   }
 
@@ -227,18 +235,18 @@ export class TeamsService {
   async resolve(input: string | undefined): Promise<TeamsTarget> {
     const raw = (input ?? "").trim();
     if (!raw || /^(self|me|自己|我)$/i.test(raw)) return this.target();
-    if (raw === SELF_CHAT) return { id: SELF_CHAT, title: "与你自己的聊天", self: true };
+    if (raw === SELF_CHAT) return { id: SELF_CHAT, title: "与你自己的聊天", self: true, kind: "self" };
     if (/^\d{1,3}:[0-9a-f@._-]+$/i.test(raw)) {
       const hit = (await this.client.chats(50).catch(() => [])).find((c) => c.id === raw);
-      return { id: raw, title: hit?.title ?? raw, self: raw === SELF_CHAT };
+      return { id: raw, title: hit?.title ?? raw, self: raw === SELF_CHAT, kind: hit?.kind ?? "chat" };
     }
     const needle = raw.toLowerCase();
     const chats = await this.client.chats(50);
     const exact = chats.filter((c) => c.title.trim().toLowerCase() === needle);
-    if (exact.length === 1) return { id: exact[0]!.id, title: exact[0]!.title, self: exact[0]!.id === SELF_CHAT };
+    if (exact.length === 1) return { id: exact[0]!.id, title: exact[0]!.title, self: exact[0]!.id === SELF_CHAT, kind: exact[0]!.kind };
     if (exact.length > 1) throw new TeamsError("TEAMS_AMBIGUOUS", `有 ${exact.length} 个会话都叫「${raw}」`, exact.map((c) => c.id).join(", "));
     const fuzzy = chats.filter((c) => c.title.toLowerCase().includes(needle));
-    if (fuzzy.length === 1) return { id: fuzzy[0]!.id, title: fuzzy[0]!.title, self: fuzzy[0]!.id === SELF_CHAT };
+    if (fuzzy.length === 1) return { id: fuzzy[0]!.id, title: fuzzy[0]!.title, self: fuzzy[0]!.id === SELF_CHAT, kind: fuzzy[0]!.kind };
     if (fuzzy.length > 1)
       throw new TeamsError("TEAMS_AMBIGUOUS", `「${raw}」匹配到 ${fuzzy.length} 个会话`, fuzzy.slice(0, 8).map((c) => c.title).join(" / "));
 
@@ -253,11 +261,11 @@ export class TeamsService {
     if (!person.mri) {
       // Search fell back to conversation titles: the "person" is really that chat.
       const chat = chats.find((c) => c.title === person.name);
-      if (chat) return { id: chat.id, title: chat.title, self: chat.id === SELF_CHAT };
+      if (chat) return { id: chat.id, title: chat.title, self: chat.id === SELF_CHAT, kind: chat.kind };
       throw new TeamsError("TEAMS_NO_CHAT", `只找到「${person.name}」这个名字，没有可发的会话`);
     }
     const id = await this.client.openDirect(person.mri, person.name);
-    return { id, title: person.name, self: id === SELF_CHAT };
+    return { id, title: person.name, self: id === SELF_CHAT, kind: id === SELF_CHAT ? "self" : "chat" };
   }
 
   /**
@@ -270,13 +278,19 @@ export class TeamsService {
     const run = async () => {
       await this.ready();
       const target = await this.resolve(input);
+      if (target.kind === "channel") throw new TeamsError("TEAMS_CHANNEL_UNSUPPORTED", `「${target.title}」是个频道：频道消息走另一套端点，这一版不发到频道——换成私聊，或者让我在频道里回`);
       if (!target.self) {
         const ok = await this.confirm({ id: `snd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, to: target, text });
         if (!ok) throw new TeamsError("TEAMS_NOT_CONFIRMED", `没有在网页上确认发往「${target.title}」，已取消`);
       }
       const gap = MIN_GAP_MS - (Date.now() - this.lastSendAt);
       if (gap > 0) await sleep(gap);
-      const sent = await this.client.send(target.id, text);
+      const sent = await this.client.send(target.id, text).catch((err: unknown) => {
+        const e = err as TeamsError;
+        // 404 在这里几乎总是「这个 id 不是这条会话的」：改过名、退过群、或者用了旧的 id。
+        if (e.code === "TEAMS_HTTP_404") throw new TeamsError("TEAMS_CHAT_GONE", `发不进去：会话 id 可能已经失效（${target.id}）。先用 teams_chats 重新拿一次`);
+        throw err;
+      });
       this.lastSendAt = Date.now();
       // The log records the shape of the send, never the text: chat ids and lengths are enough to
       // debug, and chat contents do not belong in a file.
