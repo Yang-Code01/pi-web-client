@@ -12187,13 +12187,16 @@ export class App {
    * #189：归档当前会话 = 归档它并离开它。只看**本次回声里刚变归档**的那批，不看「它现在是不是归档」——
    * 从「已归档」段主动点开一个归档会话是允许的状态，不能被自己这一眼踢走。
    * 落点由 `neighborAfterArchive()` 一处决定（右邻 → 左邻 → 空态），切换走唯一的 `openSession()`。
+   * #191：批量归档时这一帧回声会同时带走好几颗 ★，邻居按归档之后的 ★ 行算（同批的邻居跳过）。
    */
   private switchAfterArchive(before: ReadonlySet<string>): void {
     const id = this.currentId;
     if (!id || this.session?.id !== id) return;
     if (before.has(id) || !this.manage.archived.includes(id)) return;
+    // 本次回声新变归档的整批（含它自己）：批量里刚被一起收起来的那几颗不再是邻居。
+    const alsoArchived = this.manage.archived.filter((x) => !before.has(x));
     // 当前会话没点 ★ 时它自己就是第 1 格（#188 的口径）：补上去，右邻不因这一格而变。
-    const next = neighborAfterArchive(this.rowIds.includes(id) ? this.rowIds : [id, ...this.rowIds], id);
+    const next = neighborAfterArchive(this.rowIds.includes(id) ? this.rowIds : [id, ...this.rowIds], id, alsoArchived);
     // #190：左右都没有邻居 → 中栏回到现成的空态，不再把一颗归档会话留在中栏。
     if (!next) {
       this.closeCurrentSession();

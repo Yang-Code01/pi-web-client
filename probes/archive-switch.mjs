@@ -12,7 +12,13 @@
  *   4. 归档一颗**不是**当前会话的胶囊（走卡片底部按钮）→ 中栏一动不动；
  *   5. 从「已归档」段主动点开一个归档会话 → 不被踢走（判定只看「本次刚变归档」的那批）；
  *   6. 归档 ★ 行最右那颗（没有右邻）→ 落在左邻；
- *   7. 归档唯一一颗 ★ → 中栏是现成空态、地址栏回到 `#/`；刷新后仍是空态，且从左侧打开会话能回去。
+ *   7. 归档唯一一颗 ★ → 中栏是现成空态、地址栏回到 `#/`；刷新后仍是空态，且从左侧打开会话能回去；
+ *   8. #191：管理面板批量归档（含当前会话）→ 与气泡演出的落点完全一致（同一初始局面下都是右邻）；
+ *   9. #191：一次批量同时带走当前会话和它的右邻 → 邻居按**归档之后**的 ★ 行算，跳过同批那颗、落到左邻；
+ *  10. #191：批量把 ★ 行整行带走 → 与单颗一样进空态；
+ *  11. #191：批量里**不含**当前会话 → 中栏 / hash / ★ 行 .cur 一动不动（回归）；
+ *  12. #191：窄屏（★ 行整行不显示）批量归档当前会话 → 落点与壳 A 一致；
+ *  13. #191：壳 B / C / D（★ 行不显示）同上 —— 同一份 ★ 顺序，不因壳而异。
  *
  * 桩桥只实现归档：更新 archived、广播 manage 回声、按会话 id 回订阅快照 —— 与真桥的落库语义一致。
  *
@@ -355,6 +361,165 @@ await sleep(400);
 const back = await emptyState();
 ok(back.hash === "#/s/st-5" && back.active === "st-5", `空态后从左侧打开会话能正常回去（hash = ${back.hash}，active = ${back.active}）`);
 ok(back.empty === false, "……空态随之收起");
+
+/* ------------------------------------------------------------------ #191
+ *
+ * 上面那条走的是「胶囊气泡 + 收起演出」：帧在 520 + 240ms 之后才发，回声比别处晚到。
+ * 下面从同一个初始局面出发，走**批量归档**（会话管理面板多选）与**别的壳 / 窄屏**，
+ * 断言落点与演出路径完全一致：右邻 → 左邻 → 空态，且邻居按归档之后的 ★ 行算。
+ */
+await page.context().close();
+
+/** 帧里的 ids 顺序是面板里「显示顺序」，不是断言对象 —— 只比集合。 */
+const sameSet = (got, want) => [...got].sort().join(",") === [...want].sort().join(",");
+
+/** 每个场景都从同一个局面开始：★ 行 = st-1 … st-4，当前会话 st-2，没有归档。 */
+const resetBridge = () => {
+  MANAGE.pin = ["st-1", "st-2", "st-3", "st-4"];
+  MANAGE.archived = [];
+  frames.length = 0;
+};
+
+/** 新开一张页面（可选换壳 / 换视口），停在 `#/s/st-2`。 */
+async function freshPage({ layout = "a", viewport = { width: 1100, height: 860 } } = {}) {
+  resetBridge();
+  const ctx = await browser.newContext({ viewport, locale: "zh-CN" });
+  // 壳是 localStorage 里的 `pi.prefs.layout`（readPrefs → layoutPref）—— 开页前种进去，等同设置里点那颗 chip。
+  if (layout !== "a") {
+    await ctx.addInitScript((id) => {
+      try {
+        const raw = localStorage.getItem("pi.prefs");
+        const prefs = raw ? JSON.parse(raw) : {};
+        localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, layout: id }));
+      } catch {
+        /* private mode */
+      }
+    }, layout);
+  }
+  const p = await ctx.newPage();
+  p.on("pageerror", (e) => console.log(`pageerror(${layout}):`, e.message));
+  await p.goto(`${BASE}/#/s/${CUR}`, { waitUntil: "networkidle" });
+  if (await p.locator('input[type="password"]').count()) {
+    await p.fill('input[type="password"]', "probe");
+    await p.click('button:has-text("进入")');
+  }
+  // 窄屏下左栏是另一个标签页（`.session-card` 只是挂着、不可见），所以只等它进 DOM。
+  await p.waitForSelector(".session-card", { state: "attached", timeout: 15000 });
+  await sleep(800);
+  return p;
+}
+
+/** 中栏现在是谁：hash + 左栏 .active。壳 B/C/D 与窄屏没有 ★ 行，所以 .cur 只在这时有值。 */
+const landing = (p) =>
+  p.evaluate(() => ({
+    hash: location.hash,
+    active: document.querySelector(".session-card.active")?.dataset.id ?? null,
+    curChip: document.querySelector(".pin-strip .pin-chip.cur")?.dataset.pinId ?? null,
+    chips: [...document.querySelectorAll(".pin-strip .pin-chip[data-pin-id]")].map((c) => c.dataset.pinId),
+    empty: Boolean(document.querySelector(".chat-empty")?.getClientRects().length),
+  }));
+
+/** 等中栏落到某处；等不到也**不抛** —— 让断言打 FAIL 行，而不是把探针整个炸掉。 */
+async function settle(p, pred, arg) {
+  try {
+    await p.waitForFunction(pred, arg, { timeout: 8000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 会话管理面板：开 → 勾这几行 → 点「归档」。窄屏与 B/C/D 里那颗「管理」按钮不在可视区，按 DOM 点。 */
+async function openManager(p) {
+  await p.evaluate(() => document.querySelector('.manage-bar .tool-btn[data-act="manage"]')?.click());
+  await p.waitForSelector(".mgr-sheet .mgr-row", { timeout: 5000 });
+  await sleep(250);
+}
+
+async function bulkArchive(p, ids) {
+  await openManager(p);
+  for (const id of ids) {
+    await p.locator(".mgr-sheet .mgr-row").filter({ hasText: NAMES[id] }).first().locator('input[type="checkbox"]').check();
+    await sleep(150);
+  }
+  await p.locator(".mgr-sheet .mgr-foot .btn").filter({ hasText: /^归档$/ }).click();
+}
+
+/** 关掉面板，好让 DOM 断言不被浮层挡着（overlay 不挡查询，但关掉更接近用户看到的结局）。 */
+async function closeManager(p) {
+  await p.evaluate(() => {
+    const head = document.querySelector(".mgr-sheet .sheet-head");
+    const btn = head ? [...head.querySelectorAll("button")].find((b) => b.textContent?.trim() === "关闭") : undefined;
+    btn?.click();
+  });
+  await sleep(350);
+}
+
+// 8) 批量归档（会话管理面板）含当前会话 → 与气泡演出同落点：右邻
+let p2 = await freshPage();
+let start = await landing(p2);
+ok(start.hash === `#/s/${CUR}` && start.chips.join(",") === "st-1,st-2,st-3,st-4", `批量场景起点：中栏 ${start.hash}，★ 行 ${start.chips.join(" → ")}`);
+await bulkArchive(p2, [CUR]);
+await settle(p2, (id) => location.hash === `#/s/${id}`, RIGHT);
+await closeManager(p2);
+let land = await landing(p2);
+ok(frames.length === 1 && frames[0].ids.join(",") === CUR, `管理面板批量（一颗）只发一帧归档（${JSON.stringify(frames)}）`);
+ok(land.hash === `#/s/${RIGHT}` && land.active === RIGHT && land.curChip === RIGHT, `批量归档当前会话 → 与演出路径同落点 ${RIGHT}（hash = ${land.hash}，active = ${land.active}，★ 行 = ${land.curChip}）`);
+ok(land.chips.join(",") === "st-1,st-3,st-4", `★ 行少掉那颗（${land.chips.join(" → ")}）`);
+
+// 9) 批量里同时带走当前会话和它的右邻 → 邻居按**归档之后**的 ★ 行算，跳过同批那颗，落到左邻
+await bulkArchive(p2, ["st-3", "st-4"]);
+await settle(p2, () => location.hash === "#/s/st-1");
+await closeManager(p2);
+land = await landing(p2);
+ok(frames.length === 2 && sameSet(frames[1].ids, ["st-3", "st-4"]), `第二次批量只发一帧、带走两颗（${JSON.stringify(frames[1])}）`);
+ok(land.hash === "#/s/st-1" && land.active === "st-1", `同批右邻被跳过 → 落在归档后 ★ 行的左邻 st-1（hash = ${land.hash}，active = ${land.active}）`);
+ok(land.chips.join(",") === "st-1", `★ 行只剩 st-1（${land.chips.join(" → ")}）`);
+
+// 10) 批量把 ★ 行整行带走 → 与单颗一样进空态
+await bulkArchive(p2, ["st-1"]);
+await settle(p2, () => location.hash === "#/" && Boolean(document.querySelector(".chat-empty")));
+await closeManager(p2);
+land = await landing(p2);
+ok(frames.length === 3 && frames[2].ids.join(",") === "st-1", `第三次批量只发一帧（${JSON.stringify(frames[2])}）`);
+ok(land.hash === "#/" && land.active === null && land.empty === true, `★ 行整行被带走 → 空态（hash = ${JSON.stringify(land.hash)}）`);
+ok(land.chips.length === 0, "……★ 行一颗都不剩");
+await p2.context().close();
+
+// 11) 批量里**不含**当前会话 → 中栏一动不动（回归）
+let p3 = await freshPage();
+await bulkArchive(p3, ["st-3", "st-4"]);
+for (let i = 0; i < 40 && !MANAGE.archived.includes("st-4"); i += 1) await sleep(100);
+await closeManager(p3);
+const untouched = await landing(p3);
+ok(frames.length === 1 && sameSet(frames[0].ids, ["st-3", "st-4"]), `批量不含当前会话：只发一帧、两颗都在里面（${JSON.stringify(frames[0])}）`);
+ok(untouched.hash === `#/s/${CUR}` && untouched.active === CUR, `……中栏一动不动（hash = ${untouched.hash}，active = ${untouched.active}）`);
+ok(untouched.curChip === CUR, `……★ 行 .cur 仍是当前会话（${untouched.curChip}）`);
+await p3.context().close();
+
+// 12) 窄屏（★ 行整行不显示）：落点与壳 A 一致
+const p4 = await freshPage({ viewport: { width: 760, height: 900 } });
+ok((await p4.evaluate(() => document.documentElement.dataset.compact)) === "true", "窄屏：data-compact 生效（★ 行整行不显示）");
+await bulkArchive(p4, [CUR]);
+await settle(p4, (id) => location.hash === `#/s/${id}`, RIGHT);
+await closeManager(p4);
+const narrow = await landing(p4);
+ok(narrow.hash === `#/s/${RIGHT}` && narrow.active === RIGHT, `窄屏批量归档当前会话 → 与壳 A 同落点 ${RIGHT}（hash = ${narrow.hash}，active = ${narrow.active}）`);
+ok(narrow.chips.length === 0, "……窄屏确实没有 ★ 行（落点靠的是同一份顺序）");
+await p4.context().close();
+
+// 13) 壳 B/C/D：★ 行不显示，落点仍与壳 A 一致
+for (const layout of ["b", "c", "d"]) {
+  const p = await freshPage({ layout });
+  ok((await p.evaluate(() => document.documentElement.dataset.layout)) === layout, `壳 ${layout}：data-layout 跟上`);
+  await bulkArchive(p, [CUR]);
+  await settle(p, (id) => location.hash === `#/s/${id}`, RIGHT);
+  await closeManager(p);
+  const got = await landing(p);
+  ok(got.hash === `#/s/${RIGHT}` && got.active === RIGHT, `壳 ${layout}：批量归档当前会话 → 与壳 A 同落点 ${RIGHT}（hash = ${got.hash}，active = ${got.active}）`);
+  ok(got.chips.length === 0, `壳 ${layout}：没有 ★ 行（落点不受壳影响）`);
+  await p.context().close();
+}
 
 await browser.close();
 await new Promise((r) => server.close(r));
