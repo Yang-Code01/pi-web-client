@@ -63,6 +63,11 @@ let thinkingLevel = "off";
 let running = false;
 let compacting = false;
 let abortRequested = false;
+/**
+ * #200: 「REFUSE…」这条第一次被拒（成功响应 + disposition handled + error，形状和真 pi 拒收一致的帧），
+ * 之后再发就正常跑 —— 测试才能证明「重试真的把这条补发出去了」，而不是碰巧没被拒。
+ */
+let refusedOnce = 0;
 let steering = [];
 let followUp = [];
 let settleWaiters = [];
@@ -376,6 +381,10 @@ async function handle(cmd) {
       return ok(id, type);
     case "prompt": {
       const text = String(cmd.message ?? "");
+      if (text.startsWith("REFUSE") && refusedOnce++ === 0) {
+        note({ t: "prompt-rejected", text, why: "refused" });
+        return ok(id, type, { disposition: "handled", error: "fake: this prompt is refused" });
+      }
       if (compacting) {
         note({ t: "prompt-rejected", text, why: "compacting" });
         return fail(id, type, "Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.");
