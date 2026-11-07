@@ -8,12 +8,16 @@
  * #174 再接上：**每一颗看得见的标签**都能用鼠标拖着换顺序（不再只限固定组），落点竖线跟手，松手
  * 只发一条 `ws.tabs { order, max }` 把整份 order 写回，刷新后还记得；位移不到 4px 仍算一次点击，
  * 拖回原位一个字都不发，拖完不误切组；`＋N` 里的折叠组没有 DOM，拖不起来。
+ * #175 再接上：标签行末尾、`＋N` 左边多一颗「＋」—— 点一下就是树底的「新建工作区」（同一个
+ * `ws.create`）：左栏多一个空组并就地改名；左栏收着时先展开，名字才看得见。名额满了照样能建，
+ * 新组按规则追加到 `order` 末尾、收进 `＋N`，页面用一条小提示说明它去哪了。
  *
  * 上一票（#119）的断言留着：A 壳顶栏只有一行、标签紧跟在 ◧ 后面、B/C/D 不画标签、800px 不破版。
  *
- * 桩桥照 #94 的协议发 `workspace` 快照，并像真桥那样把 `ws.tabs` 落到内存里再广播 —— 刷新页面
- * 拿到的就是「重启后的桥」，整份 order 与名额都在。造 9 个长名组，用显式 `updatedAt` 把组序钉成
- * 01→09（组序 = 待处理 → 最近活动倒序 → 名字），否则同一毫秒里建出来的 9 个组谁在前全凭运气。
+ * 桩桥照 #94 的协议发 `workspace` 快照，并像真桥那样把 `ws.tabs`（名额 / 顺序）与 `ws.create`
+ * （造空的手动组、追加到 order 末尾）落到内存里再广播 —— 刷新页面拿到的就是「重启后的桥」。
+ * 造 9 个长名组，用显式 `updatedAt` 把组序钉成 01→09（组序 = 待处理 → 最近活动倒序 → 名字），
+ * 否则同一毫秒里建出来的 9 个组谁在前全凭运气。
  *
  * Run: npm run build:web && PI_WEB_PORT=7931 node probes/workspace-tabs.mjs
  */
@@ -85,15 +89,22 @@ const SESSIONS = GROUPS.map((g, i) => ({
 const byId = (id) => SESSIONS.find((s) => s.id === id);
 
 // #173：一份 order 与名额也持久化 —— 存在内存里，刷新页面就像重启后的桥一样把它们拿回来。
-// 起点给空数组：客户端会退回组序（名字顺序 01→09），第一次拖动才把整份 order 写上来。
+// 起点就是名字顺序 01→09（#174 的拖动段与 #175 的 ＋ 段都以它为基准）；`ws.create` 往末尾追加。
+let createdGroups = 0;
 const WS = {
-  groups: GROUPS,
+  groups: [...GROUPS],
   overrides: {},
   keys: Object.fromEntries(SESSIONS.map((s) => [s.cwd.toLowerCase(), s.ws])),
-  order: [],
+  order: GROUPS.map((g) => g.id),
   max: 3,
 };
 const workspace = () => ({ ...WS, groups: WS.groups.map((g) => ({ ...g })), order: [...WS.order] });
+/** 桥广播一份完整快照（真桥每次写盘后都这么干）。 */
+const cast = () => {
+  for (const client of wss.clients) {
+    if (client.readyState === 1) client.send(JSON.stringify({ type: "workspaces", workspace: workspace() }));
+  }
+};
 /** 桥收到过的 manage 动作（固定要能核对「发了几条 / 该不发的时候发了没有」）。 */
 const CALLS = [];
 const MANAGE = { pin: [], order: SESSIONS.map((s) => s.id), archived: [] };
@@ -147,9 +158,15 @@ server.on("upgrade", (req, socket, head) => {
             const known = new Set(WS.groups.map((g) => g.id));
             WS.order = msg.order.filter((id, i, all) => typeof id === "string" && known.has(id) && all.indexOf(id) === i);
           }
-          for (const client of wss.clients) {
-            if (client.readyState === 1) client.send(JSON.stringify({ type: "workspaces", workspace: workspace() }));
-          }
+          cast();
+        }
+        // 真桥的 `workspaces.create()`：造一个空名的手动组，追加到 order 末尾。
+        if (msg.action === "ws.create") {
+          createdGroups += 1;
+          const id = `manual:stub${createdGroups}`;
+          WS.groups.push({ id, name: String(msg.name ?? ""), key: "", manual: true });
+          WS.order = [...WS.order, id];
+          cast();
         }
       }
     });
@@ -324,6 +341,11 @@ for (const id of ["b", "c", "d"]) {
   }));
   ok(chips.top === 1 && chips.rows === 0, `${id.toUpperCase()}：那颗仍在顶栏（顶栏 ${chips.top} / 行 2 ${chips.rows}）`);
   ok(s.tabsOverflow === false && (await page.evaluate(() => document.querySelector(".ws-tabs-row")?.hidden ?? false)), `${id.toUpperCase()}：标签行不画`);
+  const addShown = await page.evaluate(() => {
+    const add = document.querySelector(".ws-tabs-add");
+    return Boolean(add && !add.hidden && add.getClientRects().length > 0);
+  });
+  ok(!addShown, `${id.toUpperCase()}：横条那颗 ＋ 也不出现（#175 只属于 A）`);
   await page.close();
 }
 
@@ -354,6 +376,12 @@ const after = await page.evaluate(() => {
   return { left: more.getBoundingClientRect().left };
 });
 ok(scrolled.left > before.scroll && Math.abs(after.left - before.left) < 1, `800px：槽横滚了 ${scrolled.left}px，＋N 位置一动不动（${before.left} → ${after.left}）`);
+const addBox = await page.evaluate(() => {
+  const add = document.querySelector(".ws-tabs-add");
+  const more = document.querySelector(".ws-tabs-more");
+  return { add: add ? Math.round(add.getBoundingClientRect().left) : -1, more: more ? Math.round(more.getBoundingClientRect().left) : -1 };
+});
+ok(addBox.add > 0 && addBox.add < addBox.more, `800px：＋ 还在 ＋N 左边、没被槽带走（${addBox.add} < ${addBox.more}）`);
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-800.png`), clip: { x: 0, y: 0, width: 800, height: 140 } });
 await page.close();
 
@@ -364,6 +392,7 @@ const openWsMore = async (id) => {
   await page.locator(`.ws-sec[data-ws="${id}"] .ws-head .ws-more`).click();
   await sleep(250);
 };
+const treeOrder = () => page.evaluate(() => [...document.querySelectorAll(".ws-sec")].map((n) => n.dataset.ws ?? ""));
 const lastTabs = () => CALLS.filter((c) => c.action === "ws.tabs").at(-1) ?? null;
 const tabsCalls = () => CALLS.filter((c) => c.action === "ws.tabs").length;
 await openWsMore("f:/proj-09");
@@ -377,6 +406,10 @@ ok(!/固定/.test(menu.text), `菜单里没有固定入口（${menu.text.replace
 ok(menu.fixed === 0, `左栏没有「已固定」徽记（${menu.fixed} 个）`);
 await page.keyboard.press("Escape");
 await sleep(150);
+s = await barState();
+const treeIds = await treeOrder();
+ok(JSON.stringify(treeIds) === JSON.stringify(WS.order), `左栏组序就是那份 order（${treeIds.slice(0, 3).join(" / ")} …）`);
+ok(JSON.stringify(s.visibleIds) === JSON.stringify(WS.order.slice(0, 3)), `标签行是 order 的前 3 颗（${s.visibleIds.join(" / ")}）`);
 
 // 8) #174 任意标签可拖：竖线跟手，松手发一条 ws.tabs（整份 order），拖完不误切组
 /** 拖拽期间的现场：竖线在不在、画在哪、body 上的类还在不在。 */
@@ -599,6 +632,101 @@ await page.goto(`${BASE}/#/s/s-01-1`, { waitUntil: "networkidle" });
 await sleep(700);
 const backIds = (await barState()).visibleIds;
 ok(backIds.join() === baseIds.join(), `切回第一组：标签行完全复原（${backIds.join(" / ")}）`);
+
+await page.close();
+
+// 15) #175：横条末尾那颗 ＋（在 ＋N 左边、槽外面）—— 点一下就是树底的「新建工作区」
+const addState = () =>
+  page.evaluate(() => {
+    const row = document.querySelector(".ws-tabs-row");
+    const tabs = document.querySelector(".ws-tabs");
+    const add = document.querySelector(".ws-tabs-row .ws-tabs-add");
+    const more = document.querySelector(".ws-tabs-more");
+    const r = add?.getBoundingClientRect();
+    const mr = more?.getBoundingClientRect();
+    const field = document.querySelector(".ws-sec .ws-rename-input");
+    return {
+      inRow: Boolean(add && row && add.parentElement === row),
+      outsideSlot: Boolean(add && tabs && !tabs.contains(add)),
+      between: Boolean(add && tabs && more && tabs.nextElementSibling === add && add.nextElementSibling === more),
+      shown: Boolean(add && !add.hidden && add.getClientRects().length > 0),
+      text: add?.textContent?.trim() ?? "",
+      title: add?.title ?? "",
+      left: r ? Math.round(r.left) : -1,
+      moreLeft: mr ? Math.round(mr.left) : -1,
+      moreText: more?.textContent ?? "",
+      groups: document.querySelectorAll(".ws-sec").length,
+      editing: Boolean(field),
+      placeholder: field?.placeholder ?? "",
+      focused: Boolean(field && document.activeElement === field),
+      noLeft: document.querySelector(".app .main")?.classList.contains("no-left") ?? false,
+      toast: document.querySelector(".fail-toast")?.textContent ?? "",
+    };
+  });
+const createCalls = () => CALLS.filter((c) => c.action === "ws.create").length;
+
+page = await open(null);
+await sleep(500);
+let a = await addState();
+ok(a.shown && a.text === "＋", `A：横条末尾有 ＋（${a.text || "没有"}）`);
+ok(a.title === "新建工作区", `A：悬停说明是「${a.title}」`);
+ok(a.inRow && a.outsideSlot && a.between, "A：＋ 挂在横条里、标签槽外面、紧贴在 ＋N 左边");
+ok(a.left > 0 && a.left < a.moreLeft, `A：＋ 在 ＋N 左边（${a.left} < ${a.moreLeft}）`);
+ok(!a.editing, "点之前树里没有正在改名的组");
+
+// 16) 点名：新组按 #173 规则追加到 order 末尾；名额满了就收进 ＋N，并且说一声
+const orderBeforeCreate = [...WS.order];
+const creates0 = createCalls();
+const tabs0 = tabsCalls();
+await page.click(".ws-tabs-add");
+await sleep(700);
+ok(createCalls() === creates0 + 1, `点 ＋ 发一条 ws.create（${createCalls() - creates0} 条）`);
+const createMsg = CALLS.filter((c) => c.action === "ws.create").at(-1);
+ok(createMsg?.name === "", `发的是空名（"${createMsg?.name ?? "缺"}"）—— 名字留给改名行`);
+a = await addState();
+ok(a.groups === 10, `左栏多了一个组（${a.groups}）`);
+ok(a.editing && a.placeholder === "新工作区", `新组直接在原地改名：「${a.placeholder}」`);
+ok(a.focused, "改名行拿到焦点（直接打字就是名字）");
+ok(tabsCalls() === tabs0, "点 ＋ 没有顺手改 order（没发 ws.tabs）");
+const born = WS.order.at(-1);
+ok(WS.order.length === orderBeforeCreate.length + 1 && !orderBeforeCreate.includes(born ?? ""), `新组追加到 order 末尾（${born}）`);
+ok(a.moreText === "＋7", `名额满了：新组收在 ＋N 里（${a.moreText}）`);
+ok(/已新建，收在 ＋7 里/.test(a.toast), `并且用提示说清它去哪了（${a.toast.trim() || "没提示"}）`);
+
+// 17) Esc 取消改名：空组留着，名字回落成「新工作区」，顺序仍是末尾
+await page.keyboard.press("Escape");
+await sleep(350);
+a = await addState();
+const treeAfter = await treeOrder();
+ok(!a.editing, "Esc 取消改名");
+ok(a.groups === 10 && treeAfter.at(-1) === born, `空组留着、还是最后一组（${treeAfter.at(-1)}）`);
+ok(
+  (await page.locator(`.ws-sec[data-ws="${born}"] .ws-head .label`).textContent()) === "新工作区",
+  "没起名字的组显示「新工作区」",
+);
+await page.click(".ws-tabs-more");
+await sleep(220);
+s = await barState();
+ok(s.foldedIds.at(-1) === born, `＋N 菜单最后一行就是它（${s.foldedIds.at(-1)}）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+
+// 18) 左栏收着时点 ＋：先把左栏展开，再进改名态（否则按下去什么都看不见）
+await page.click('.side-toggle[data-act="sessions"]');
+await sleep(450);
+ok((await addState()).noLeft, "左栏已收起（.main 带 no-left）");
+const creates1 = createCalls();
+await page.click(".ws-tabs-add");
+await sleep(700);
+a = await addState();
+ok(createCalls() === creates1 + 1, `左栏收起时点 ＋ 照样发 ws.create（${createCalls() - creates1} 条）`);
+ok(!a.noLeft, "左栏自己展开了");
+ok(a.editing && a.focused, "改名行可见、并且拿到焦点");
+ok(a.groups === 11, `左栏又多一个组（${a.groups}）`);
+await page.keyboard.press("Escape");
+await sleep(300);
+
+await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-add.png`), clip: { x: 0, y: 0, width: 1000, height: 820 } });
 
 await page.close();
 

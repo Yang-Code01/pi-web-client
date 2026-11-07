@@ -15,7 +15,7 @@ import { PillBar, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
-import { railModel, shellParts, type RailItem } from "./shells.ts";
+import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
@@ -25,7 +25,7 @@ import { ScratchChat } from "./scratch.ts";
 import { skillOf } from "./skill.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
-import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
+import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, newTabFold, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
@@ -333,6 +333,10 @@ export class App {
   private wsMenu: WsMenuHandle | null = null;
   /** 点了「新建工作区」：等桥把新组广播回来，就立刻进改名态（组的 id 只有桥知道）。 */
   private wsCreatePending = false;
+  /** #175：这一下新建是从横条那颗 ＋ 点的（建完若落在 ＋N 里要说一声）。 */
+  private wsCreateFromTabs = false;
+  /** #175：刚从横条 ＋ 建出来的组，下一次画横条时核一眼它在不在 ＋N 里（画完清掉）。 */
+  private wsNewNoteId: string | null = null;
   /** #123 设置面板的「标签行」那块（名额步进器）；快照回来时只重画这一个小面。 */
   private wsPane: HTMLElement | null = null;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
@@ -602,7 +606,15 @@ export class App {
     const wsTabsMore = el("button", "ws-tabs-more") as HTMLButtonElement;
     wsTabsMore.type = "button";
     wsTabsMore.hidden = true;
-    wsTabsRow.append(wsTabs, wsTabsMore);
+    // #175：新建工作区也搬一颗到横条末尾 —— 建完就地改名，不用先滚回左栏树底。
+    const wsTabsAdd = el("button", "ws-tabs-add") as HTMLButtonElement;
+    wsTabsAdd.type = "button";
+    wsTabsAdd.hidden = true;
+    wsTabsAdd.textContent = tr("＋");
+    wsTabsAdd.title = tr("新建工作区");
+    wsTabsAdd.setAttribute("aria-label", tr("新建工作区"));
+    wsTabsAdd.onclick = () => this.createWsFromTabs();
+    wsTabsRow.append(wsTabs, wsTabsAdd, wsTabsMore);
     wsTabsRow.hidden = true;
     const sessionRow = el("div", "ws-session-row");
     const nowSlotRow = el("div", "now-chip-slot");
@@ -634,7 +646,7 @@ export class App {
     shell.append(topbar, wsTabsRow, sessionRow, mainWrap, tabs);
     app.append(shell);
 
-    Object.assign(this.els, { topbar, wsTabsRow, wsTabs, wsTabsMore, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    Object.assign(this.els, { topbar, wsTabsRow, wsTabs, wsTabsAdd, wsTabsMore, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
     this.binBtn = binBtn;
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
@@ -1885,7 +1897,10 @@ export class App {
             this.wsRenameId = born.id;
             this.wsRenameDraft = "";
             this.wsRenameFocus = true;
+            // #175：从横条 ＋ 建的组：画横条时核一眼它在不在 ＋N 里（在就说一声，免得像没建成）。
+            if (this.wsCreateFromTabs) this.wsNewNoteId = born.id;
           }
+          this.wsCreateFromTabs = false;
         }
         this.renderNowChip();
         this.renderSessions();
@@ -4738,8 +4753,19 @@ export class App {
     this.wsCreatePending = true;
     window.setTimeout(() => {
       this.wsCreatePending = false;
+      this.wsCreateFromTabs = false;
     }, 5000);
     this.act(() => this.socket.send({ type: "manage", action: "ws.create", name: "" }));
+  }
+
+  /**
+   * #175：横条末尾那颗 ＋ —— 与树底的「新建工作区」是同一条路（只发既有的 `ws.create`）。
+   * 左栏收着时先把它展开：建完的组在树里进改名态，看不见输入框就没法起名。
+   */
+  private createWsFromTabs(): void {
+    if (this.collapsed.sessions) this.togglePane("sessions");
+    this.wsCreateFromTabs = true;
+    this.createWs();
   }
 
   private sessionSection(kind: "archived", title: string, list: SessionState[]): HTMLElement {
@@ -6077,26 +6103,26 @@ export class App {
 
   private failSaved(msg: any): void {
     if (msg.error) {
-      this.flashFailToast(tr("没记进账本：{p1}", { p1: String(msg.error) }), true, 6000);
+      this.flashToast(tr("没记进账本：{p1}", { p1: String(msg.error) }), true, 6000);
       return;
     }
     if (msg.ledger) this.setFailLedger(msg.ledger as FailLedger);
     if (msg.undone) {
-      this.flashFailToast(tr("已撤销这次入账"), false, 2600);
+      this.flashToast(tr("已撤销这次入账"), false, 2600);
       return;
     }
     // 标已修复 / 忽略 / 删除的回包也走这条路：账本刷新就够了，别弹「没有新的失败」。
     if (!msg.token) return;
     const n = Number(msg.added ?? 0);
     if (!n) {
-      this.flashFailToast(tr("这次没有新的失败"), false, 2600);
+      this.flashToast(tr("这次没有新的失败"), false, 2600);
       return;
     }
-    this.flashFailToast(tr("已记进账本 · {p1} 次 · 可撤销", { p1: n }), false, 10000, String(msg.token ?? ""));
+    this.flashToast(tr("已记进账本 · {p1} 次 · 可撤销", { p1: n }), false, 10000, String(msg.token ?? ""));
   }
 
-  /** 入账后的那条小提示：10 秒内能撤回（误点、或者这一轮其实只是探路）。 */
-  private flashFailToast(text: string, bad: boolean, ms: number, token = ""): void {
+  /** 一条几秒后自己消失的小提示（入账可撤销 / #175 新建的组收进了 ＋N）。同一时刻只留一条。 */
+  private flashToast(text: string, bad: boolean, ms: number, token = ""): void {
     this.failToast?.remove();
     window.clearTimeout(this.failToastTimer);
     const box = el("div", `fail-toast${bad ? " bad" : ""}`);
@@ -11296,8 +11322,8 @@ export class App {
    * 同一份顺序）；#174 起画出来的每一颗都能拖，拖完写回同一种 `order`。
    */
   private renderWorkspaceTabs(): void {
-    const { wsTabsRow, wsTabs, wsTabsMore } = this.els;
-    if (!wsTabsRow || !wsTabs || !wsTabsMore) return;
+    const { wsTabsRow, wsTabs, wsTabsMore, wsTabsAdd } = this.els;
+    if (!wsTabsRow || !wsTabs || !wsTabsMore || !wsTabsAdd) return;
     // #98：标签行只属于 A；B/C/D 的切组入口分别是浮层 / 竖列 / 色点条 + 树。
     // #119：窄屏也照画 —— 它现在就在 A 的顶栏那一行里，收起它就等于 A 的顶栏没标签了。
     const parts = shellParts(activeLayout(this.prefs));
@@ -11307,6 +11333,8 @@ export class App {
     this.closeTabsMore();
     wsTabs.replaceChildren();
     wsTabsMore.hidden = true;
+    // #175：那颗 ＋ 跟横条同进同出（B/C/D 没有横条，也就不画它）。
+    wsTabsAdd.hidden = !tabsAddShown(parts);
     wsTabsRow.hidden = !parts.tabsRow || !tree.groups.length;
     if (wsTabsRow.hidden) return;
     const byId = new Map(tree.groups.map((group) => [group.id, group]));
@@ -11316,6 +11344,14 @@ export class App {
       byId.has(id),
     );
     const model = tabModel({ order, max: this.workspaces.max ?? TABS_DEFAULT, current: cur ?? undefined });
+    // #175：刚在横条 ＋ 上建的组：`order` 末尾、名额已满时它直接进 ＋N —— 说一声，
+    // 否则横条看起来没变，像是没建成（新组仍按 #173 的规则留在 order 末尾）。
+    const born = this.wsNewNoteId;
+    if (born) {
+      this.wsNewNoteId = null;
+      const folded = newTabFold(order, this.workspaces.max ?? TABS_DEFAULT, born);
+      if (folded != null) this.flashToast(tr("已新建，收在 ＋{p1} 里", { p1: folded }), false, 4000);
+    }
     for (const id of model.visible) {
       const group = byId.get(id);
       if (!group) continue;

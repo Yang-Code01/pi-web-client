@@ -1,6 +1,7 @@
 /**
  * #121 标签行只画 N 个 + `＋N`；#124 加横向落点；#173 起顺序只有一份 `order`（左栏 / 标签行共用）；
- * #174 每一颗可见标签都能拖（不再只限固定组 —— 固定组本身已随 #173 退役）。
+ * #174 每一颗可见标签都能拖（不再只限固定组 —— 固定组本身已随 #173 退役）；#175 横条 ＋ 建的组
+ * 直接进 `＋N` 时由 `newTabFold()` 报出它被收在第几行（提示用）。
  * 这里只做几何与集合运算（一份 order + 名额 + 当前组 → 可见标签 + 被折叠的组 + 拖动落点 + 松手后的
  * 新 order），碰不到 DOM —— 边界（当前组替最后一格、落点、原位松手）脱离页面就能核对。
  */
@@ -43,6 +44,16 @@ export function tabModel(o: { order: readonly string[]; max: number; current?: s
   const shown = new Set(visible);
   const more = order.filter((id) => !shown.has(id));
   return { visible, more };
+}
+
+/**
+ * #175：刚从横条 ＋ 建出来的组，是不是已经收进了 ＋N。桥把新组追加到 `order` 末尾，末尾还放得下
+ * 它就在横条上，返回 null；名额坐满时它直接进 `more`，返回 `more` 的条数（提示里的 N）。
+ * 快照里根本没这颗（旧广播 / 已删）也当「没什么好说」，不给一句对不上的提示。
+ */
+export function newTabFold(order: readonly string[], max: number, id: string): number | null {
+  const model = tabModel({ order, max });
+  return model.more.includes(id) ? model.more.length : null;
 }
 
 /** #124 横向落点：`x` 落在哪一颗标签、插在它前面还是后面。 */

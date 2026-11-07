@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { shellParts, railLabel, railModel } from "../src/shells.ts";
+import { shellParts, railLabel, railModel, tabsAddShown } from "../src/shells.ts";
 import { LAYOUT_IDS } from "../src/layout.ts";
 
 test("每一套壳都有拼法，且互不相同", () => {
@@ -59,6 +59,11 @@ test("D 树 + 图标条：树照旧，收起时缩成色点条", () => {
   assert.equal(parts.rail, false);
   assert.equal(parts.chipTop, true);
   assert.equal(parts.tabsRow || parts.sessionRow, false);
+});
+
+test("#175 横条的「＋ 新建工作区」只在壳 A：B/C/D 没有标签行，也就不画这颗", () => {
+  const shown = LAYOUT_IDS.filter((id) => tabsAddShown(shellParts(id)));
+  assert.deepEqual(shown, ["a"]);
 });
 
 test("不认识的 id 回 A：跟 layout.ts 同一条兜底", () => {
