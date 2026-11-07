@@ -2,14 +2,14 @@ import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 
 /**
- * #100：工作区组头那颗 ⋯ 的菜单（改名 / 删除）。#173 起顺序统一由一份 `order` 管，固定项退役。
+ * #100：工作区组头那颗 ⋯ 的菜单（改名 / 移到最前 / 删除）。#173 起顺序统一由一份 `order` 管，固定项退役。
  *
  * 外壳复用置顶胶囊的悬停气泡（`.pin-menu` / `.pm-item`，见 `pinmenu.ts`）：同一张圆角卡片、同一套
  * 行高与危险色，用户不用学第二套。挂在 `body` 上、`position: fixed` 贴组头下方 —— 左栏是
  * `overflow-y: auto`，组里弹出的东西会被裁掉。
  *
- * 做不了时不藏这一行：按钮置灰，下面一行灰字说明为什么（「还有 3 个会话」/「跟着目录走」）。
- * 藏起来只会让人以为这个组忘了做删除。
+ * 做不了时不藏这一行：按钮置灰，下面盖一行灰字说明为什么（「还有 3 个会话」/「跟着目录走」/「已经
+ * 是第一个」）。藏起来只会让人以为这个组忘了做删除。
  */
 
 export interface WsMenuOpts {
@@ -17,9 +17,12 @@ export interface WsMenuOpts {
   name: string;
   /** 第二行小字：派生组是目录路径，手建组说明它不绑目录。 */
   sub: string;
+  /** `null` = 能「移到最前」；否则是拒绝原因（已经是第一个）。 */
+  frontBlocker: string | null;
   /** `null` = 能删；否则是拒绝原因（来自 `dropBlocker()`）。 */
   dropBlocker: string | null;
   onRename(): void;
+  onFront(): void;
   onDrop(): void;
 }
 
@@ -58,6 +61,17 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
   const rename = item("rename", "✎", tr("重命名"), () => opts.onRename());
   rename.title = tr("清空名字就恢复成目录名");
 
+  // #177：常驻横条的入口 —— 点一下把这一组排到 `order[0]`，折叠组也走它（＋N 只是临时顶位）。
+  const front = item("front", "⇤", tr("移到最前"), () => opts.onFront());
+  if (opts.frontBlocker) {
+    front.disabled = true;
+    front.classList.add("blocked");
+    front.setAttribute("aria-disabled", "true");
+    front.title = opts.frontBlocker;
+  } else {
+    front.title = tr("排到第一位，横条与左栏一起跟着变");
+  }
+
   const drop = item("drop", "🗑", tr("删除工作区"), () => opts.onDrop());
   if (opts.dropBlocker) {
     drop.disabled = true;
@@ -68,7 +82,9 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
     drop.title = tr("只删这个空组，组里的东西一概不动");
   }
 
-  node.append(rename, drop);
+  node.append(rename, front, drop);
+  // 每个做不了的选择都盖一行原因，顺序跟着菜单项（移到最前在前、删除在后）。
+  if (opts.frontBlocker) node.append(el("div", "pm-why", opts.frontBlocker));
   if (opts.dropBlocker) node.append(el("div", "pm-why", opts.dropBlocker));
 
   const onDoc = (ev: Event): void => {

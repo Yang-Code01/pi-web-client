@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clampMax, newTabFold, TABS_DEFAULT, TABS_MAX, TABS_MIN, tabHitTest, tabModel, tabReorder } from "../src/wstabs.ts";
+import { clampMax, moveToFront, newTabFold, TABS_DEFAULT, TABS_MAX, TABS_MIN, tabHitTest, tabModel, tabReorder } from "../src/wstabs.ts";
 
 /** 桥下发的一份顺序（左栏与横条共用）。 */
 const ORDER = ["g1", "g2", "g3", "g4", "g5"];
@@ -178,4 +178,30 @@ test("重排：名额 1 时没有别的落点 → null", () => {
   const v = view(1, "g5");
   assert.deepEqual(v.visible, ["g5"]);
   assert.equal(tabReorder(v, "g5", { id: "g5", side: "after" }), null);
+});
+
+// ---------------------------------------------------------------- #177 组头「移到最前」
+
+test("移到最前：中间的组搬到第一，其余相对位置不变", () => {
+  assert.deepEqual(moveToFront(ORDER, "g3"), ["g3", "g1", "g2", "g4", "g5"]);
+});
+
+test("移到最前：末尾的组搬到第一", () => {
+  assert.deepEqual(moveToFront(ORDER, "g5"), ["g5", "g1", "g2", "g3", "g4"]);
+});
+
+test("移到最前：已经是最前 → null（一个字都不发）", () => {
+  assert.equal(moveToFront(ORDER, "g1"), null);
+  assert.equal(moveToFront(["only"], "only"), null);
+});
+
+test("移到最前：id 不在这份 order 里 / 空 order → null", () => {
+  assert.equal(moveToFront(ORDER, "ghost"), null);
+  assert.equal(moveToFront([], "g1"), null);
+});
+
+test("移到最前：不改入参", () => {
+  const input = [...ORDER];
+  moveToFront(input, "g4");
+  assert.deepEqual(input, ORDER);
 });
