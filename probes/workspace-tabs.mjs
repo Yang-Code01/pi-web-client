@@ -466,6 +466,10 @@ const ORDER0 = [
 ];
 s = await barState();
 ok(JSON.stringify(s.visibleIds) === JSON.stringify(ORDER0.slice(0, 3)), `起点：组序前三颗（${s.visibleIds.join(" / ")}）`);
+// 窗口先放宽到 1400：#121 只保证名额内的标签「画出来」，1000px 下第 3 颗有一截压在 ＋N 底下，
+// #175 又让 ＋ 占了横条右侧一小段 —— 想按住每一颗的中间拖，就得先让三颗整个露出来。
+await page.setViewportSize({ width: 1400, height: 820 });
+await sleep(300);
 const calls0 = tabsCalls();
 // 拖的是第 3 颗 —— #174 起不再只限固定组：可见段里任意一颗。
 const swap = await dragTab("f:/proj-03", "f:/proj-01", "before");
@@ -484,13 +488,13 @@ const ORDER1 = ["f:/proj-03", "f:/proj-01", "f:/proj-02", ...ORDER0.slice(3)];
 ok(JSON.stringify(lastTabs()?.order) === JSON.stringify(ORDER1), `写回的是整份 order（含折叠组，${lastTabs()?.order?.length} 个）`);
 ok(lastTabs()?.max === 3, `同一句里带上名额（max ${lastTabs()?.max}）`);
 ok(s.onWs === "f:/proj-01", `拖拽的尾巴没误触发切组（当前 ${s.onWs}）`);
-// 可聚焦元素没变多：标签仍是原来那颗 button，另一颗还是 ＋N。
+// 可聚焦元素没变多：标签仍是原来那几颗 button，另一颗是 ＋N，再加上 #175 的 ＋。
 const focus = await page.evaluate(() => ({
   buttons: [...document.querySelectorAll(".ws-tabs-row button")].map((n) => (n.className || "").trim()),
   extra: document.querySelectorAll(".ws-tabs-row [tabindex]:not(button)").length,
 }));
 ok(
-  focus.buttons.length === 4 && focus.buttons.every((c) => c === "ws-tabs-more" || /^ws-tab(\s|$)/.test(c)),
+  focus.buttons.length === 5 && focus.buttons.every((c) => c === "ws-tabs-more" || c === "ws-tabs-add" || /^ws-tab(\s|$)/.test(c)),
   `拖拽没有多出可聚焦元素（${focus.buttons.join(" / ")}，额外 ${focus.extra} 个）`,
 );
 
