@@ -148,6 +148,11 @@ export class ChatView {
    * add / replace 各会走到一次，app 那边靠同键覆盖去重，重放历史也不会多写。
    */
   onAnswer: ((text: string) => void) | null = null;
+  /**
+   * #200: 失败气泡旁那颗「重试」。动作是现有的接管（`claim`）：先把 pi 拉起来、钉权限、过锁检查，
+   * 桥那边就绪后按原顺序补发 —— 不新增协议帧。
+   */
+  onRetry: (() => void) | null = null;
   /** Following the stream: new content scrolls the view to the bottom. Cleared the moment the user says "I want to read up there". */
   private following = true;
   /** One pending frame at most — a burst of updates must cost one scroll, not one per update. */
@@ -585,7 +590,7 @@ export class ChatView {
   /**
    * #197 / D177: 用户气泡上那枚状态徽标，三种说法：
    *   `booting` → 「正在启动 pi…」：桥收下了，还没交给 pi；
-   *   `failed`  → 「没发出去，重发一次就行」（标红；桥另外会给一句说明，见 #200）；
+   *   `failed`  → 「没发出去」+ 一颗「重试」（#200）：文本还在、可复制，点重试先把 pi 拉起来再补发；
    *   最后一条 + 运行态 → 「处理中…」：这一枚是推出来的，不写进协议，多端各自算出来都一样。
    * 交给 pi 之后徽标就不见了，本轮结束同样消失。
    */
@@ -606,9 +611,17 @@ export class ChatView {
         badge = el("span", "msg-pending");
         who.append(badge);
       }
-      const label = state === "booting" ? tr("正在启动 pi…") : state === "failed" ? tr("没发出去，重发一次就行") : tr("处理中…");
       badge.className = state === "failed" ? "msg-pending failed" : "msg-pending";
-      badge.replaceChildren(...(state === "failed" ? [] : [el("span", "act-spin")]), el("span", "", label));
+      if (state === "failed") {
+        const retry = el("button", "msg-retry", tr("重试")) as HTMLButtonElement;
+        retry.type = "button";
+        retry.title = tr("先拉起 pi，再按原顺序补发没发出去的消息");
+        retry.onclick = () => this.onRetry?.();
+        badge.replaceChildren(el("span", "", tr("没发出去")), retry);
+        continue;
+      }
+      const label = state === "booting" ? tr("正在启动 pi…") : tr("处理中…");
+      badge.replaceChildren(el("span", "act-spin"), el("span", "", label));
     }
   }
 

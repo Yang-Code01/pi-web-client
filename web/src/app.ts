@@ -773,6 +773,8 @@ export class App {
     this.chat.onFail = (f) => this.recordFail(f);
     // 复盘那一轮的回写（D164 延伸）：模型把规矩写在回答末尾，这里捡出来交给桥。
     this.chat.onAnswer = (text) => this.takeRules(text);
+    // #200: 失败气泡旁的「重试」，动作就是接管 —— 桥那边会先拉起 pi，再按原顺序补发没发出去的那几条。
+    this.chat.onRetry = () => this.startClaim();
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
   }
