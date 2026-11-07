@@ -409,6 +409,15 @@ async function handle(cmd) {
         note({ t: "prompt", pid: process.pid, text, behavior: cmd.streamingBehavior ?? null });
         return ok(id, type, { disposition: "handled" });
       }
+      // #199：把应答压住一会儿——泵正等着这条的回执，后面几条就老老实实留在桥的 `bootQueue` 里，
+      // 恰好是「就绪瞬间只交出第一条」那个时间窗（真实 pi 里这段是模型还没接上的那几百毫秒）。
+      if (text.startsWith("HOLD")) {
+        note({ t: "prompt", pid: process.pid, text, behavior: cmd.streamingBehavior ?? null });
+        await sleep(1500);
+        ok(id, type, { disposition: "started" });
+        void run(text);
+        return;
+      }
       if (running) {
         if (!cmd.streamingBehavior) {
           note({ t: "prompt-rejected", text, why: "busy" });

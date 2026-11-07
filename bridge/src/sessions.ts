@@ -1909,31 +1909,53 @@ export class Session extends EventEmitter {
    * Take everything out of pi's queue and hand the text back to the editor (`queue.restore`),
    * dropping the bubbles of those messages: they were never sent. Used by stop and by the queue
    * bar's 撤回 button (#9, #14).
+   *
+   * #199: the same frame also empties the bridge's own `bootQueue` — during the boot window (#197)
+   * that IS the queue, and clearing only one of the two would either drop bubbles whose text comes
+   * back (`half cleared`) or leave messages that get delivered after the human withdrew them.
    */
   async withdrawQueue(): Promise<number> {
     const rpc = this.rpc;
     if (!rpc?.alive) return 0;
+    // Splice first, synchronously: flushBootQueue can only run between microtasks, so from here on
+    // it cannot find these messages any more. The order kept here is the order they were typed in.
+    const booted = this.bootQueue.splice(0);
+    const bootTexts = booted.map((q) => q.text);
+    const bootIds = booted.map((q) => q.id);
     const cleared = rpc.request<{ steering?: unknown[]; followUp?: unknown[] }>("clear_queue", {}, 10000);
     // Snapshot now: agent_settled may be processed before this response's promise callback runs.
     const queued = this.queuedUser.slice();
     let data: { steering?: unknown[]; followUp?: unknown[] };
-    try {
-      data = await cleared;
-    } catch {
-      return 0; // an old pi without clear_queue
+    if (this.state.starting) {
+      // A booting pi has not taken over its stdin yet: waiting for this answer would tie the
+      // withdrawal to the boot again (that is the wait #197 removed). The command still goes out —
+      // commands are dispatched in order, and pi's own queue is empty while prompts land in
+      // `bootQueue` — but the answer is not on the human's path.
+      void cleared.catch(() => {});
+      data = {};
+    } else {
+      try {
+        data = await cleared;
+      } catch {
+        // an old pi without clear_queue: the boot-window part was never with pi, so still hand it back
+        if (!bootIds.length) return 0;
+        data = {};
+      }
     }
     // pi expands the command before it queues it, so `clear_queue` hands back the whole SKILL.md;
     // fold it back on the way to the editor, and compare the same way the bubbles were recorded.
-    const texts = [...(data?.steering ?? []), ...(data?.followUp ?? [])]
-      .map((t) => normalizeUserText(String(t)))
-      .filter((t) => t.trim());
+    const texts = [
+      ...bootTexts,
+      ...[...(data?.steering ?? []), ...(data?.followUp ?? [])].map((t) => normalizeUserText(String(t))).filter((t) => t.trim()),
+    ];
     if (!texts.length) return 0;
     // Same as the terminal's Esc / Alt+Up: the queued text goes back to the editor.
     this.emitWs({ type: "queue.restore", sessionId: this.state.id, texts });
-    // Their bubbles claim they were sent: drop them (matched by text, oldest first).
-    const ids: string[] = [];
+    // Bubbles of boot-window messages are known by id; pi's queue only carries text, so those are
+    // matched by text (oldest first). `texts` starts with the boot ones — skip that many.
+    const ids = [...bootIds];
     const pool = [...queued];
-    for (const text of texts) {
+    for (const text of texts.slice(bootIds.length)) {
       const at = pool.findIndex((q) => normalizeUserText(q.text) === text);
       if (at >= 0) ids.push(pool.splice(at, 1)[0].id);
     }

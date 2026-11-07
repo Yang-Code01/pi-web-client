@@ -640,6 +640,8 @@ export const en: Dict = {
   "搜索并插入技能命令（/skill:name）": "Search and insert a skill command (/skill:name)",
   "搜索技能：名字或描述…": "Search skills: name or description…",
   "搜索结果，按热度排：": "Search results, sorted by popularity:",
+  "撤回": "Take back",
+  "把还没交给 pi 的消息拿回输入框（Esc）": "Take back the messages pi has not received yet (Esc)",
   "撤回到输入框": "Return to input box",
   "操作失败": "Action failed",
   "收起": "Collapse",
