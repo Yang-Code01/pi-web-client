@@ -1,5 +1,5 @@
 /**
- * 启动期发出的第一条消息（#197 / D177）：pi 还在加载扩展，桥先收下，气泡立刻出现。
+ * 启动期发出的第一条消息（#197 / D177）与启动失败后的重试（#200）。
  *
  * 用一个「启动很慢」的桩 pi（FAKE_PI_BOOT_MS）把启动窗口撑开，然后全部从外面看（WS 消息 +
  * 桩 pi 自己的日志，bridge/tests/fixtures/fake-pi.mjs）：
@@ -8,13 +8,17 @@
  *   3. 会话名由这条消息决定（左栏不用等 pi 起来就有名字）；
  *   4. `starting` 翻假之后桩 pi 收到这条 prompt（`behavior: null`，第一句不是插话），
  *      同一枚 item 以 `pending: "sent"` 广播一次 `item.replace`；
- *   5. 启动失败（进程在窗口里死了）时气泡留着、标成 `pending: "failed"`，并给一句可读的说明 ——
- *      不能静默消失。完整的重试是 #200。
+ *   5. 启动失败（进程在窗口里死了）时气泡留着、标成 `pending: "failed"`，并给一句人话 ——
+ *      不能静默消失，也不许把 exit code 这种东西甩给用户；
+ *   6. 点「重试」（前端发的就是现有的 `claim` 帧）→ 重新拉起 pi → 就绪后按原顺序把没发出去的
+ *      两条补发，带 `pending: "sent"` 回到正常态；
+ *   7. pi 起来了但拒收这一条（`disposition: "handled"` + `error`）也走同一条失败/重试路。
  *
  * #201 把同一套队列接到另外两个入口上（同一个桩 pi、同一条 WS 连接）：
  *   6. 磁盘上的只读会话直接发消息（自动接管）：气泡**先于**拉起 pi 的握手广播（这是本票最硬的一条）；
  *   7. 点「接管」之后马上打字：接管还在拉 pi，消息照样立刻落地 —— 而且只起一支 pi（单飞）；
- *   8. 自动接管没成（终端里的 pi 还开着）：气泡标成没发出去，并说明原因。
+ *   8. 自动接管没成（终端里的 pi 还开着）：气泡标成没发出去，并说明原因；
+ *   9. 挡路的东西没了再点「重试」：同一枚气泡回到待发、补发出去变「已交出」，不重复画、不重起 pi。
  *
  * Run: npm --prefix bridge run build && node bridge/tests/boot-queue.mjs
  */
@@ -65,7 +69,7 @@ const DISK_FILE = writeDiskSession(DISK_ID, "磁盘里的老会话");
 const CLAIM_ID = "zz-boot-queue-claim";
 const CLAIM_FILE = writeDiskSession(CLAIM_ID, "接管途中的那个");
 const LOCKED_ID = "zz-boot-queue-locked";
-writeDiskSession(LOCKED_ID, "终端里还开着");
+const LOCKED_FILE = writeDiskSession(LOCKED_ID, "终端里还开着");
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 let failed = 0;
@@ -227,7 +231,7 @@ try {
   check(!seen.some((m) => m.type === "item.remove" && (m.ids ?? []).includes(added.item.id)), "气泡没有被撤掉");
 
   // ---------------------------------------------------------------- B. 启动失败：气泡留着、给一句话
-  log("B. 建第二个会话，在启动窗口里发消息，然后让 pi 在窗口里死掉");
+  log("B. 建第二个会话，在启动窗口里连发两条，然后让 pi 在窗口里死掉");
   const mark2 = seen.length;
   send({ type: "create", cwd: REPO, name: "起不来的那个" });
   const created2 = await waitFor(
@@ -238,86 +242,160 @@ try {
   const sid2 = created2.sessionId ?? created2.state?.id;
   check(created2.state?.starting === true, "第二个会话也在启动窗口里");
 
-  const TEXT2 = "这条会赶上启动失败";
-  send({ type: "prompt", sessionId: sid2, text: TEXT2, clientId: "local:2" });
-  const added2 = await waitFor(
-    (m) => m.type === "item.add" && m.sessionId === sid2 && m.item?.text === TEXT2,
-    1500,
-    "第二个 item.add",
-  );
-  check(added2.item?.pending === "booting", "第二个气泡同样带着待发标记");
+  const TEXTS2 = ["这条会赶上启动失败", "同一批的第二条"];
+  const added2 = [];
+  for (const [i, text] of TEXTS2.entries()) {
+    send({ type: "prompt", sessionId: sid2, text, clientId: `local:2:${i}` });
+    const item = await waitFor((m) => m.type === "item.add" && m.sessionId === sid2 && m.item?.text === text, 1500, `第二个 item.add #${i}`);
+    check(item.item?.pending === "booting", `第 ${i + 1} 条气泡带着待发标记`);
+    added2.push(item);
+  }
 
-  await until(() => records().some((r) => r.t === "argv" && (r.argv ?? []).includes(sid2)), 10000, "第二个桩 pi 的 argv 行");
-  const launch = records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(sid2)).at(-1);
+  const launches2 = () => records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(sid2));
+  await until(() => launches2().length > 0, 10000, "第二个桩 pi 的 argv 行");
+  const launch = launches2().at(-1);
   check(Boolean(launch?.pid), `找到这个会话的桩 pi 进程（pid=${launch?.pid}）`);
   process.kill(launch.pid);
 
-  const failedItem = await waitFor(
-    (m) => m.type === "item.replace" && m.sessionId === sid2 && m.id === added2.item.id,
-    15000,
-    "item.replace failed",
-  );
-  check(failedItem.item?.pending === "failed", `pi 死在窗口里时气泡标成没发出去（pending=${JSON.stringify(failedItem.item?.pending)}）`);
-  check(failedItem.item?.text === TEXT2, "气泡内容还在（没有静默消失）");
-  const notice = await waitFor(
-    (m) => m.type === "notice" && m.sessionId === sid2 && m.level === "error",
-    5000,
-    "失败的说明",
-  );
+  for (const added of added2) {
+    const failedItem = await waitFor(
+      (m) => m.type === "item.replace" && m.sessionId === sid2 && m.id === added.item.id,
+      15000,
+      "item.replace failed",
+    );
+    check(failedItem.item?.pending === "failed", `pi 死在窗口里时气泡标成没发出去（pending=${JSON.stringify(failedItem.item?.pending)}）`);
+    check(failedItem.item?.text === added.item.text, "气泡内容还在（没有静默消失）");
+  }
+  const notice = await waitFor((m) => m.type === "notice" && m.sessionId === sid2 && m.level === "error", 5000, "失败的说明");
   check(/没有发出去/.test(String(notice.text)), `给了一句可读的说明（「${notice.text}」）`);
-  check(!seen.some((m) => m.type === "item.remove" && (m.ids ?? []).includes(added2.item.id)), "失败时气泡不被撤掉");
+  check(!/exit code|signal=|spawn|ENOENT/i.test(String(notice.text)), "说明里没有 exit code 之类的内部话术");
+  check(!seen.some((m) => m.type === "item.remove" && added2.some((a) => (m.ids ?? []).includes(a.item.id))), "失败时气泡不被撤掉");
 
-  // ---------------------------------------------------------------- C. 只读磁盘会话发消息 = 自动接管，气泡先于握手
-  log("C. 只读会话（磁盘上、没在跑）直接发消息：气泡不能等拉起 pi 那几秒");
+  // ---------------------------------------------------------------- B2. 点重试 → 拉起 pi → 按序补发
+  log("B2. 重试（前端发的就是 claim 帧）：重新拉起 pi，就绪后按原顺序补发两条");
+  const markRetry = seen.length;
+  send({ type: "claim", sessionId: sid2 });
+  const reclaimed = await waitFor(
+    (m) => m.type === "session" && (m.sessionId ?? m.state?.id) === sid2 && m.state?.starting === true && seen.indexOf(m) >= markRetry,
+    20000,
+    "重试后的 session 帧（starting 为真）",
+  );
+  check(Boolean(reclaimed), "重试先走接管路径：spawn 之后会话说自己在启动");
+  await waitFor((m) => m.type === "session.state" && m.session?.id === sid2 && m.session?.starting === false, 20000, "重试后 starting=false");
+  await until(() => launches2().length > 1, 15000, "重试拉起的新进程");
+  const respawned = launches2().at(-1);
+  check(respawned?.pid !== launch.pid, `真的重新起了一个进程（旧 ${launch.pid} → 新 ${respawned?.pid}）`);
+
+  for (const [i, text] of TEXTS2.entries()) {
+    await until(() => records().some((r) => r.t === "prompt" && r.text === text), 15000, `补发的第 ${i + 1} 条`);
+  }
+  const resent = records().filter((r) => r.t === "prompt" && TEXTS2.includes(r.text));
+  check(
+    JSON.stringify(resent.map((r) => r.text)) === JSON.stringify(TEXTS2),
+    `补发顺序和原来一致（${resent.map((r) => r.text).join(" → ")}）`,
+  );
+  check(resent[0]?.behavior === null, `第一条照旧开一轮（behavior=${JSON.stringify(resent[0]?.behavior ?? null)}）`);
+  check(resent[1]?.behavior === "steer", `第二条在这一轮里插话（behavior=${JSON.stringify(resent[1]?.behavior)}）`);
+  for (const added of added2) {
+    const back = await waitFor(
+      (m) => m.type === "item.replace" && m.sessionId === sid2 && m.id === added.item.id && m.item?.pending === "sent",
+      15000,
+      "item.replace sent（补发成功）",
+    );
+    check(back.item?.pending === "sent", `补发成功后徽标回到正常（pending=${JSON.stringify(back.item?.pending)}）`);
+  }
+
+  // ---------------------------------------------------------------- C. pi 起来了但拒收这一条
+  log("C. 建第三个会话，在启动窗口里发一条会被拒收的消息");
+  const mark3 = seen.length;
+  send({ type: "create", cwd: REPO, name: "拒收的那个" });
+  const created3 = await waitFor(
+    (m) => m.type === "session" && m.state?.name === "拒收的那个" && seen.indexOf(m) >= mark3,
+    20000,
+    "第三个 session 帧",
+  );
+  const sid3 = created3.sessionId ?? created3.state?.id;
+  const TEXT3 = "REFUSE 这条 pi 不收";
+  send({ type: "prompt", sessionId: sid3, text: TEXT3, clientId: "local:3" });
+  const added3 = await waitFor((m) => m.type === "item.add" && m.sessionId === sid3 && m.item?.text === TEXT3, 1500, "第三个 item.add");
+  check(added3.item?.pending === "booting", "第三个气泡先带着待发标记");
+  await waitFor((m) => m.type === "session.state" && m.session?.id === sid3 && m.session?.starting === false, 20000, "第三个会话就绪");
+  const refusedItem = await waitFor(
+    (m) => m.type === "item.replace" && m.sessionId === sid3 && m.id === added3.item.id && m.item?.pending === "failed",
+    15000,
+    "拒收后的 item.replace failed",
+  );
+  check(refusedItem.item?.pending === "failed", "pi 起来了但拒收时同样标失败");
+  check(refusedItem.item?.text === TEXT3, "被拒收的文本也还在");
+  const refusedNotice = await waitFor(
+    (m) => m.type === "notice" && m.sessionId === sid3 && m.level === "error",
+    5000,
+    "拒收的说明",
+  );
+  check(/没有发出去/.test(String(refusedNotice.text)), `拒收也有一句人话（「${refusedNotice.text}」）`);
+  check(records().some((r) => r.t === "prompt-rejected" && r.text === TEXT3), "桩 pi 记下了这次拒收（桥不是自己凭空标失败的）");
+
+  log("C2. 点重试：pi 已经活着，直接补发");
+  send({ type: "claim", sessionId: sid3 });
+  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXT3), 15000, "拒收的那条被补发");
+  const sentBack = await waitFor(
+    (m) => m.type === "item.replace" && m.sessionId === sid3 && m.id === added3.item.id && m.item?.pending === "sent",
+    15000,
+    "补发成功后 item.replace sent",
+  );
+  check(sentBack.item?.pending === "sent", "重试之后这条也回到正常态");
+
+  // ---------------------------------------------------------------- 6. 只读磁盘会话发消息 = 自动接管，气泡先于握手
+  log("6. 只读会话（磁盘上、没在跑）直接发消息：气泡不能等拉起 pi 那几秒");
   send({ type: "subscribe", sessionId: DISK_ID });
   const preview = await waitFor((m) => m.type === "session" && m.sessionId === DISK_ID, 10000, "只读会话的 session 帧");
   check(preview.state?.owned === false && !preview.state?.starting, "先从磁盘只读地看一眼：没有在跑");
 
-  const TEXT3 = "只读会话里发的第一句";
-  const mark3 = seen.length;
-  const t3 = Date.now();
-  send({ type: "prompt", sessionId: DISK_ID, text: TEXT3, clientId: "local:3" });
-  const added3 = await waitFor(
-    (m) => m.type === "item.add" && m.sessionId === DISK_ID && m.item?.text === TEXT3,
+  const TEXTC = "只读会话里发的第一句";
+  const markC = seen.length;
+  const tC = Date.now();
+  send({ type: "prompt", sessionId: DISK_ID, text: TEXTC, clientId: "local:3" });
+  const addedC = await waitFor(
+    (m) => m.type === "item.add" && m.sessionId === DISK_ID && m.item?.text === TEXTC,
     1500,
     "只读会话的 item.add",
   );
-  const took3 = Date.now() - t3;
-  check(took3 < 1000, `气泡在握手之前就落地了（${took3} ms，桩 pi 还要 ${BOOT_MS} ms 才答话）`);
-  check(added3.item?.pending === "booting", `带待发标记（pending=${JSON.stringify(added3.item?.pending)}）`);
-  check(added3.clientId === "local:3", "广播带回 clientId（那一页据此认领，不重复画）");
-  check(!records().some((r) => r.t === "prompt" && r.text === TEXT3), "窗口里没有硬塞给一个还没答话的 pi");
+  const tookC = Date.now() - tC;
+  check(tookC < 1000, `气泡在握手之前就落地了（${tookC} ms，桩 pi 还要 ${BOOT_MS} ms 才答话）`);
+  check(addedC.item?.pending === "booting", `带待发标记（pending=${JSON.stringify(addedC.item?.pending)}）`);
+  check(addedC.clientId === "local:3", "广播带回 clientId（那一页据此认领，不重复画）");
+  check(!records().some((r) => r.t === "prompt" && r.text === TEXTC), "窗口里没有硬塞给一个还没答话的 pi");
   check(
     !seen.some((m) => m.type === "notice" && m.sessionId === DISK_ID && m.level === "error"),
     "自动接管没有报错",
   );
 
   await waitFor((m) => m.type === "session.state" && m.session?.id === DISK_ID && m.session?.starting === false, 20000, "只读会话 starting=false");
-  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXT3), 10000, "桩 pi 收到只读会话这条 prompt");
-  const delivered3 = records().find((r) => r.t === "prompt" && r.text === TEXT3);
-  check(delivered3?.behavior === null, `就绪后开一轮（behavior=${JSON.stringify(delivered3?.behavior ?? null)}）`);
-  const argv3 = records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(DISK_FILE));
-  check(argv3.length === 1, `这个会话的 pi 只起了一次（argv 里带磁盘文件：${argv3.length} 次）`);
+  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXTC), 10000, "桩 pi 收到只读会话这条 prompt");
+  const deliveredC = records().find((r) => r.t === "prompt" && r.text === TEXTC);
+  check(deliveredC?.behavior === null, `就绪后开一轮（behavior=${JSON.stringify(deliveredC?.behavior ?? null)}）`);
+  const argvC = records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(DISK_FILE));
+  check(argvC.length === 1, `这个会话的 pi 只起了一次（argv 里带磁盘文件：${argvC.length} 次）`);
   check(
-    argv3[0]?.argv?.includes("--session") ?? false,
+    argvC[0]?.argv?.includes("--session") ?? false,
     "接管走的是 resume（--session <文件>），不是新会话",
   );
-  const replaced3 = await waitFor((m) => m.type === "item.replace" && m.sessionId === DISK_ID && m.id === added3.item.id, 10000, "只读会话 item.replace sent");
-  check(replaced3.item?.pending === "sent", `同一枚气泡改成已交出（pending=${JSON.stringify(replaced3.item?.pending)}）`);
-  const owned3 = await waitFor((m) => m.type === "session.state" && m.session?.id === DISK_ID && m.session?.owned === true, 10000, "owned 翻转");
-  check(Boolean(owned3), "发完之后这个会话已经是网页的了（自动接管）");
+  const replacedC = await waitFor((m) => m.type === "item.replace" && m.sessionId === DISK_ID && m.id === addedC.item.id, 10000, "只读会话 item.replace sent");
+  check(replacedC.item?.pending === "sent", `同一枚气泡改成已交出（pending=${JSON.stringify(replacedC.item?.pending)}）`);
+  const ownedC = await waitFor((m) => m.type === "session.state" && m.session?.id === DISK_ID && m.session?.owned === true, 10000, "owned 翻转");
+  check(Boolean(ownedC), "发完之后这个会话已经是网页的了（自动接管）");
   // 这一条要等整个握手过去再看：气泡的帧必须排在「开始拉起 pi」（starting:true）之前，
   // 也就是用户打完字的那一刻就看见了它，而不是等拉起 pi + get_state 回来。
-  const added3At = seen.indexOf(added3);
-  const started3 = seen.findIndex((m) => m.type === "session.state" && m.session?.id === DISK_ID && m.session?.starting === true);
+  const addedCAt = seen.indexOf(addedC);
+  const startedC = seen.findIndex((m) => m.type === "session.state" && m.session?.id === DISK_ID && m.session?.starting === true);
   check(
-    started3 > 0 && added3At < started3,
-    `item.add 排在「开始拉起 pi」之前（item#${added3At} < starting#${started3}）`,
+    startedC > 0 && addedCAt < startedC,
+    `item.add 排在「开始拉起 pi」之前（item#${addedCAt} < starting#${startedC}）`,
   );
-  check(seen.length > mark3, "上面几帧都是这次发消息之后才来的");
+  check(seen.length > markC, "上面几帧都是这次发消息之后才来的");
 
-  // ---------------------------------------------------------------- D. 接管途中打字：立刻落地，只起一支 pi
-  log("D. 点接管之后马上打字：接管还在拉 pi，消息也要立刻落地，而且不能因此把 pi 起两支");
+  // ---------------------------------------------------------------- 7. 接管途中打字：立刻落地，只起一支 pi
+  log("7. 点接管之后马上打字：接管还在拉 pi，消息也要立刻落地，而且不能因此把 pi 起两支");
   send({ type: "subscribe", sessionId: CLAIM_ID });
   const preview4 = await waitFor((m) => m.type === "session" && m.sessionId === CLAIM_ID, 10000, "第二个只读会话的 session 帧");
   check(preview4.state?.owned === false, "第二个会话也是只读的");
@@ -344,8 +422,8 @@ try {
   const replaced4 = await waitFor((m) => m.type === "item.replace" && m.sessionId === CLAIM_ID && m.id === added4.item.id, 10000, "接管途中 item.replace sent");
   check(replaced4.item?.pending === "sent", "气泡最后是已交出");
 
-  // ---------------------------------------------------------------- E. 自动接管没成：气泡标红、说明原因
-  log("E. 终端里的 pi 还开着（有 tty 锁）：自动接管会被拒，气泡要标成没发出去");
+  // ---------------------------------------------------------------- 8. 自动接管没成：气泡标红、说明原因
+  log("8. 终端里的 pi 还开着（有 tty 锁）：自动接管会被拒，气泡要标成没发出去");
   fs.mkdirSync(path.join(STATE, "locks"), { recursive: true });
   fs.writeFileSync(path.join(STATE, "locks", `${LOCKED_ID}.tty.json`), JSON.stringify({ pid: process.pid, at: Date.now() }));
   send({ type: "subscribe", sessionId: LOCKED_ID });
@@ -360,6 +438,30 @@ try {
   const why5 = await waitFor((m) => m.type === "notice" && m.level === "error" && /终端里的 pi/.test(String(m.text)), 10000, "被拒绝的原因");
   check(Boolean(why5), `说清楚了原因（「${why5.text}」）`);
   check(!records().some((r) => r.t === "argv" && (r.argv ?? []).includes(LOCKED_ID)), "没有去动那个会话（一支 pi 都没起）");
+
+  // ---------------------------------------------------------------- 9. 挡路的没了：点「重试」补发，不哑掉
+  log("9. 删掉 tty 锁、点「重试」（前端发的就是 claim 帧）：被拒过的那条要补发出去");
+  fs.rmSync(path.join(STATE, "locks", `${LOCKED_ID}.tty.json`), { force: true });
+  const markRetry5 = seen.length;
+  send({ type: "claim", sessionId: LOCKED_ID });
+  await waitFor(
+    (m) => m.type === "item.replace" && m.sessionId === LOCKED_ID && m.id === added5.item.id && m.item?.pending === "booting" && seen.indexOf(m) >= markRetry5,
+    20000,
+    "重试后气泡回到待发",
+  );
+  check(true, "重试把同一枚气泡放回队列（不是又画一条）");
+  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXT5), 20000, "桩 pi 收到被拒过的那条");
+  const delivered5 = records().find((r) => r.t === "prompt" && r.text === TEXT5);
+  check(delivered5?.behavior === null, `补发时是「开一轮」（behavior=${JSON.stringify(delivered5?.behavior ?? null)}）`);
+  await waitFor((m) => m.type === "item.replace" && m.sessionId === LOCKED_ID && m.id === added5.item.id && m.item?.pending === "sent", 20000, "重试后气泡改成已交出");
+  check(true, "补发之后气泡不再是「没发出去」");
+  check(
+    !seen.some((m) => m.type === "item.add" && m.sessionId === LOCKED_ID && m.item?.text === TEXT5 && seen.indexOf(m) >= markRetry5),
+    "没有重复画一条气泡",
+  );
+  const retryArgv = records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(LOCKED_FILE));
+  check(retryArgv.length === 1, `补发也只起了一支 pi（argv 里带磁盘文件：${retryArgv.length} 次）`);
+  check(retryArgv[0]?.argv?.includes("--session") ?? false, "补发同样是 resume（--session <文件>）");
 
   ws.close();
 } catch (err) {

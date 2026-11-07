@@ -9,6 +9,11 @@
  *   2. 发出去的这条立刻出现，带「正在启动 pi…」；每一页只有一份（乐观气泡按 clientId 认领）；
  *   3. `starting` 翻假 + 运行态为真 → 同一枚气泡变「处理中…」，本轮结束消失。
  *
+ * #201 接上另外两个入口（同一个桩桥）：
+ *   4. 启动期点「继续」不再是灰的，点下去发的就是「继续」两个字、气泡立刻出现；
+ *   5. 磁盘上的只读会话（没有写权）：输入框照常可用，发出去的气泡不等自动接管的握手 ——
+ *      页面这一侧只能验证「能打字、气泡即刻出现」，气泡先于握手广播由 `bridge/tests/boot-queue.mjs` 钉住。
+ *
  * 桩桥照真桥的形状回 `item.add` / `item.replace`，不收 pi，所以这一秒钟级、可重复。
  *
  * Run: npm --prefix web run build && node probes/session-starting.mjs
@@ -63,6 +68,13 @@ const ITEMS = [{ kind: "user", id: "u1", ts: Date.now() - 60_000, text: "刚建�
 /** 桥那份记录：启动期发出去的消息在这里躺着，第二个标签页 subscribe 时看到的也是它。 */
 const items = [...ITEMS];
 
+/** #201：磁盘上的只读会话（没在跑）。发消息 = 自动接管，但页面这边只关心「输入框能不能用、气泡来没来」。 */
+const readonly = { ...base, id: "probe-readonly", name: "只读的", file: "probe/session.jsonl", owned: false, origin: "terminal" };
+const readonlyItems = [{ kind: "user", id: "r1", ts: Date.now() - 120_000, text: "终端里聊过的" }];
+
+/** 桩桥收到的每条 prompt：只用来断言「点下去真的发了」。 */
+const prompts = [];
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", BASE);
   const json = (code, body) => {
@@ -109,17 +121,21 @@ wss.on("connection", (ws) => {
     } catch {
       return;
     }
+    const ro = msg.sessionId === readonly.id;
     if (msg.type === "subscribe") {
-      ws.send(JSON.stringify({ type: "session", sessionId: base.id, state: { ...base, starting: true }, items, approvals: [], asks: [], budget: null }));
+      const state = ro ? { ...readonly, starting: false } : { ...base, starting: true };
+      ws.send(JSON.stringify({ type: "session", sessionId: state.id, state, items: ro ? readonlyItems : items, approvals: [], asks: [], budget: null }));
       return;
     }
     if (msg.type === "prompt") {
       // 真桥在启动期做的事：立刻把 user item 落地并广播，item 上带 `pending: "booting"`，
       // 广播里带回 clientId —— 那一页据此认领自己的乐观气泡，别的页照常新画一条。
+      // #201：只读会话那条也一样 —— 桥在拉起 pi 之前就把气泡广播出来（测试里由 boot-queue 钉住顺序）。
       const item = { id: `user:${++userSeq}`, kind: "user", text: String(msg.text ?? ""), images: [], pending: "booting", ts: new Date().toISOString() };
-      items.push(item);
-      lastUser = item;
-      broadcast({ type: "item.add", sessionId: base.id, item, clientId: msg.clientId });
+      (ro ? readonlyItems : items).push(item);
+      if (!ro) lastUser = item;
+      prompts.push({ sessionId: ro ? readonly.id : base.id, text: String(msg.text ?? "") });
+      broadcast({ type: "item.add", sessionId: ro ? readonly.id : base.id, item, clientId: msg.clientId });
       return;
     }
   });
@@ -127,7 +143,7 @@ wss.on("connection", (ws) => {
     JSON.stringify({
       type: "hello",
       me: ME,
-      sessions: [{ ...base, starting: true }],
+      sessions: [{ ...base, starting: true }, { ...readonly, starting: false }],
       manage: { pin: [], order: [], archived: [] },
       trash: [],
       tunnel: TUNNEL,
@@ -200,6 +216,39 @@ try {
   await until(async () => (await bubble.locator(".msg-pending").count()) === 0, 8000, "badge gone");
   check(true, "本轮结束之后徽标消失");
   await page.screenshot({ path: path.join(OUT, "4-done.png") });
+
+  // ---- 6. #201 启动期的「继续」不再灰：它只是把「继续」两个字当一条消息发出去，和输入框同一个队列
+  broadcast({ type: "session.state", session: { ...base, starting: true, running: false } });
+  const continueBtn = page.locator(".continue-btn");
+  await until(async () => (await continueBtn.count()) >= 1, 8000, "continue button");
+  check(await continueBtn.isVisible(), "启动期「继续」露着（不是藏起来）");
+  check(await continueBtn.isEnabled(), "启动期「继续」是亮的（D178：没理由比输入框更早解锁）");
+  const why = String(await continueBtn.getAttribute("title"));
+  check(!why.includes("正在启动"), `悬停提示不再说「启动完再继续」（${JSON.stringify(why)}）`);
+  const beforeContinue = prompts.length;
+  await continueBtn.click();
+  await until(() => prompts.length > beforeContinue, 8000, "continue prompt");
+  check(prompts.at(-1)?.text === "继续", `点下去发的就是「继续」这两个字（${JSON.stringify(prompts.at(-1)?.text)}）`);
+  const continueBubble = page.locator(".msg.user", { hasText: "继续" });
+  await until(async () => (await continueBubble.count()) >= 1, 8000, "continue bubble");
+  check((await continueBubble.count()) === 1, "「继续」的气泡也立刻出现（只有一份）");
+  check((await continueBubble.locator(".msg-pending").innerText().catch(() => "")).includes("正在启动 pi"), "「继续」的气泡也带「正在启动 pi…」");
+  await page.screenshot({ path: path.join(OUT, "5-continue.png") });
+
+  // ---- 7. #201 只读会话（磁盘上、没在跑）：输入框照常可用，发出去的气泡不等自动接管的握手
+  await page.locator(".session-card", { hasText: "只读的" }).first().click();
+  await until(async () => (await page.locator(".takeover.warn").innerText().catch(() => "")).includes("发消息会自动接管"), 8000, "readonly bar");
+  const roBox = page.locator(".composer textarea");
+  check(await roBox.isEnabled(), "只读会话的输入框可用");
+  const ROTEXT = "只读会话里发的第一句";
+  await roBox.fill(ROTEXT);
+  await roBox.press("Enter");
+  const roBubble = page.locator(".msg.user", { hasText: ROTEXT });
+  await until(async () => (await roBubble.count()) >= 1, 8000, "readonly bubble");
+  check((await roBubble.count()) === 1, "只读会话的气泡立刻出现（只有一份）");
+  check((await roBubble.locator(".msg-pending").innerText().catch(() => "")).includes("正在启动 pi"), "只读会话的气泡同样带待发徽标");
+  check(prompts.at(-1)?.sessionId === readonly.id, "发的是这个只读会话的 prompt");
+  await page.screenshot({ path: path.join(OUT, "6-readonly.png") });
 } catch (err) {
   failed += 1;
   console.error("ERROR", err?.message ?? err);
