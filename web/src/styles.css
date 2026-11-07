@@ -2656,6 +2656,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   animation: act-spin 0.8s linear infinite;
 }
 .msg .who .msg-pending.failed { background: transparent; color: var(--danger); }
+/* #200: 失败气泡旁的「重试」—— 拉起 pi 再补发，和这句红字同一个语气，不做成主按钮。 */
+.msg .who .msg-pending .msg-retry {
+  padding: 0 5px; border: 1px solid currentColor; border-radius: 7px; background: none;
+  color: inherit; font: inherit; font-size: 12px; line-height: 16px; cursor: pointer;
+}
+.msg .who .msg-pending .msg-retry:hover { background: var(--panel-2); }
 
 /* #24 copy in message headers, export links in the 会话 section */
 .msg .who .msg-copy { margin-left: 6px; padding: 0 4px; border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 12px; opacity: 0; transition: opacity 0.15s; }

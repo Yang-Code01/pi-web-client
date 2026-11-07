@@ -1,5 +1,5 @@
 /**
- * 启动期发出的第一条消息（#197 / D177）：pi 还在加载扩展，桥先收下，气泡立刻出现。
+ * 启动期发出的第一条消息（#197 / D177）与启动失败后的重试（#200）。
  *
  * 用一个「启动很慢」的桩 pi（FAKE_PI_BOOT_MS）把启动窗口撑开，然后全部从外面看（WS 消息 +
  * 桩 pi 自己的日志，bridge/tests/fixtures/fake-pi.mjs）：
@@ -8,8 +8,11 @@
  *   3. 会话名由这条消息决定（左栏不用等 pi 起来就有名字）；
  *   4. `starting` 翻假之后桩 pi 收到这条 prompt（`behavior: null`，第一句不是插话），
  *      同一枚 item 以 `pending: "sent"` 广播一次 `item.replace`；
- *   5. 启动失败（进程在窗口里死了）时气泡留着、标成 `pending: "failed"`，并给一句可读的说明 ——
- *      不能静默消失。完整的重试是 #200。
+ *   5. 启动失败（进程在窗口里死了）时气泡留着、标成 `pending: "failed"`，并给一句人话 ——
+ *      不能静默消失，也不许把 exit code 这种东西甩给用户；
+ *   6. 点「重试」（前端发的就是现有的 `claim` 帧）→ 重新拉起 pi → 就绪后按原顺序把没发出去的
+ *      两条补发，带 `pending: "sent"` 回到正常态；
+ *   7. pi 起来了但拒收这一条（`disposition: "handled"` + `error`）也走同一条失败/重试路。
  *
  * Run: npm --prefix bridge run build && node bridge/tests/boot-queue.mjs
  */
@@ -174,7 +177,7 @@ try {
   check(!seen.some((m) => m.type === "item.remove" && (m.ids ?? []).includes(added.item.id)), "气泡没有被撤掉");
 
   // ---------------------------------------------------------------- B. 启动失败：气泡留着、给一句话
-  log("B. 建第二个会话，在启动窗口里发消息，然后让 pi 在窗口里死掉");
+  log("B. 建第二个会话，在启动窗口里连发两条，然后让 pi 在窗口里死掉");
   const mark2 = seen.length;
   send({ type: "create", cwd: REPO, name: "起不来的那个" });
   const created2 = await waitFor(
@@ -185,34 +188,108 @@ try {
   const sid2 = created2.sessionId ?? created2.state?.id;
   check(created2.state?.starting === true, "第二个会话也在启动窗口里");
 
-  const TEXT2 = "这条会赶上启动失败";
-  send({ type: "prompt", sessionId: sid2, text: TEXT2, clientId: "local:2" });
-  const added2 = await waitFor(
-    (m) => m.type === "item.add" && m.sessionId === sid2 && m.item?.text === TEXT2,
-    1500,
-    "第二个 item.add",
-  );
-  check(added2.item?.pending === "booting", "第二个气泡同样带着待发标记");
+  const TEXTS2 = ["这条会赶上启动失败", "同一批的第二条"];
+  const added2 = [];
+  for (const [i, text] of TEXTS2.entries()) {
+    send({ type: "prompt", sessionId: sid2, text, clientId: `local:2:${i}` });
+    const item = await waitFor((m) => m.type === "item.add" && m.sessionId === sid2 && m.item?.text === text, 1500, `第二个 item.add #${i}`);
+    check(item.item?.pending === "booting", `第 ${i + 1} 条气泡带着待发标记`);
+    added2.push(item);
+  }
 
-  await until(() => records().some((r) => r.t === "argv" && (r.argv ?? []).includes(sid2)), 10000, "第二个桩 pi 的 argv 行");
-  const launch = records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(sid2)).at(-1);
+  const launches2 = () => records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(sid2));
+  await until(() => launches2().length > 0, 10000, "第二个桩 pi 的 argv 行");
+  const launch = launches2().at(-1);
   check(Boolean(launch?.pid), `找到这个会话的桩 pi 进程（pid=${launch?.pid}）`);
   process.kill(launch.pid);
 
-  const failedItem = await waitFor(
-    (m) => m.type === "item.replace" && m.sessionId === sid2 && m.id === added2.item.id,
-    15000,
-    "item.replace failed",
-  );
-  check(failedItem.item?.pending === "failed", `pi 死在窗口里时气泡标成没发出去（pending=${JSON.stringify(failedItem.item?.pending)}）`);
-  check(failedItem.item?.text === TEXT2, "气泡内容还在（没有静默消失）");
-  const notice = await waitFor(
-    (m) => m.type === "notice" && m.sessionId === sid2 && m.level === "error",
-    5000,
-    "失败的说明",
-  );
+  for (const added of added2) {
+    const failedItem = await waitFor(
+      (m) => m.type === "item.replace" && m.sessionId === sid2 && m.id === added.item.id,
+      15000,
+      "item.replace failed",
+    );
+    check(failedItem.item?.pending === "failed", `pi 死在窗口里时气泡标成没发出去（pending=${JSON.stringify(failedItem.item?.pending)}）`);
+    check(failedItem.item?.text === added.item.text, "气泡内容还在（没有静默消失）");
+  }
+  const notice = await waitFor((m) => m.type === "notice" && m.sessionId === sid2 && m.level === "error", 5000, "失败的说明");
   check(/没有发出去/.test(String(notice.text)), `给了一句可读的说明（「${notice.text}」）`);
-  check(!seen.some((m) => m.type === "item.remove" && (m.ids ?? []).includes(added2.item.id)), "失败时气泡不被撤掉");
+  check(!/exit code|signal=|spawn|ENOENT/i.test(String(notice.text)), "说明里没有 exit code 之类的内部话术");
+  check(!seen.some((m) => m.type === "item.remove" && added2.some((a) => (m.ids ?? []).includes(a.item.id))), "失败时气泡不被撤掉");
+
+  // ---------------------------------------------------------------- B2. 点重试 → 拉起 pi → 按序补发
+  log("B2. 重试（前端发的就是 claim 帧）：重新拉起 pi，就绪后按原顺序补发两条");
+  const markRetry = seen.length;
+  send({ type: "claim", sessionId: sid2 });
+  const reclaimed = await waitFor(
+    (m) => m.type === "session" && (m.sessionId ?? m.state?.id) === sid2 && m.state?.starting === true && seen.indexOf(m) >= markRetry,
+    20000,
+    "重试后的 session 帧（starting 为真）",
+  );
+  check(Boolean(reclaimed), "重试先走接管路径：spawn 之后会话说自己在启动");
+  await waitFor((m) => m.type === "session.state" && m.session?.id === sid2 && m.session?.starting === false, 20000, "重试后 starting=false");
+  await until(() => launches2().length > 1, 15000, "重试拉起的新进程");
+  const respawned = launches2().at(-1);
+  check(respawned?.pid !== launch.pid, `真的重新起了一个进程（旧 ${launch.pid} → 新 ${respawned?.pid}）`);
+
+  for (const [i, text] of TEXTS2.entries()) {
+    await until(() => records().some((r) => r.t === "prompt" && r.text === text), 15000, `补发的第 ${i + 1} 条`);
+  }
+  const resent = records().filter((r) => r.t === "prompt" && TEXTS2.includes(r.text));
+  check(
+    JSON.stringify(resent.map((r) => r.text)) === JSON.stringify(TEXTS2),
+    `补发顺序和原来一致（${resent.map((r) => r.text).join(" → ")}）`,
+  );
+  check(resent[0]?.behavior === null, `第一条照旧开一轮（behavior=${JSON.stringify(resent[0]?.behavior ?? null)}）`);
+  check(resent[1]?.behavior === "steer", `第二条在这一轮里插话（behavior=${JSON.stringify(resent[1]?.behavior)}）`);
+  for (const added of added2) {
+    const back = await waitFor(
+      (m) => m.type === "item.replace" && m.sessionId === sid2 && m.id === added.item.id && m.item?.pending === "sent",
+      15000,
+      "item.replace sent（补发成功）",
+    );
+    check(back.item?.pending === "sent", `补发成功后徽标回到正常（pending=${JSON.stringify(back.item?.pending)}）`);
+  }
+
+  // ---------------------------------------------------------------- C. pi 起来了但拒收这一条
+  log("C. 建第三个会话，在启动窗口里发一条会被拒收的消息");
+  const mark3 = seen.length;
+  send({ type: "create", cwd: REPO, name: "拒收的那个" });
+  const created3 = await waitFor(
+    (m) => m.type === "session" && m.state?.name === "拒收的那个" && seen.indexOf(m) >= mark3,
+    20000,
+    "第三个 session 帧",
+  );
+  const sid3 = created3.sessionId ?? created3.state?.id;
+  const TEXT3 = "REFUSE 这条 pi 不收";
+  send({ type: "prompt", sessionId: sid3, text: TEXT3, clientId: "local:3" });
+  const added3 = await waitFor((m) => m.type === "item.add" && m.sessionId === sid3 && m.item?.text === TEXT3, 1500, "第三个 item.add");
+  check(added3.item?.pending === "booting", "第三个气泡先带着待发标记");
+  await waitFor((m) => m.type === "session.state" && m.session?.id === sid3 && m.session?.starting === false, 20000, "第三个会话就绪");
+  const refusedItem = await waitFor(
+    (m) => m.type === "item.replace" && m.sessionId === sid3 && m.id === added3.item.id && m.item?.pending === "failed",
+    15000,
+    "拒收后的 item.replace failed",
+  );
+  check(refusedItem.item?.pending === "failed", "pi 起来了但拒收时同样标失败");
+  check(refusedItem.item?.text === TEXT3, "被拒收的文本也还在");
+  const refusedNotice = await waitFor(
+    (m) => m.type === "notice" && m.sessionId === sid3 && m.level === "error",
+    5000,
+    "拒收的说明",
+  );
+  check(/没有发出去/.test(String(refusedNotice.text)), `拒收也有一句人话（「${refusedNotice.text}」）`);
+  check(records().some((r) => r.t === "prompt-rejected" && r.text === TEXT3), "桩 pi 记下了这次拒收（桥不是自己凭空标失败的）");
+
+  log("C2. 点重试：pi 已经活着，直接补发");
+  send({ type: "claim", sessionId: sid3 });
+  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXT3), 15000, "拒收的那条被补发");
+  const sentBack = await waitFor(
+    (m) => m.type === "item.replace" && m.sessionId === sid3 && m.id === added3.item.id && m.item?.pending === "sent",
+    15000,
+    "补发成功后 item.replace sent",
+  );
+  check(sentBack.item?.pending === "sent", "重试之后这条也回到正常态");
 
   // ---------------------------------------------------------------- C. 启动期撤回：整批退回、气泡同帧清空、pi 不被打扰
   log("C. 建第三个会话，启动窗口里连发三条，然后撤回（clearQueue）");

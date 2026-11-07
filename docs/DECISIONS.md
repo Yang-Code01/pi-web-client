@@ -2885,3 +2885,23 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **`pending` 字段是发给前端的协议的一部分**：老版本前端会忽略它（`pending` 未知字段不参与渲染），行为退化成「气泡出现、没有任何徽标」，消息本身照发不误。
 
 **验证：** `node bridge/tests/boot-queue.mjs`（桩 pi 慢启动 2500 ms）：A 段 —— `starting` 为真、prompt 后 2 ms 内收到带 `pending: "booting"` + `clientId` 的 `item.add`、无 error notice、会话名变成这条消息、桩 pi 日志里窗口期一封 prompt 都没有；就绪后桩 pi 收到 prompt（`behavior=null`）、同一枚 item 变 `pending: "sent"`、没有 `item.remove`。B 段 —— 窗口期把桩 pi 打死：气泡变 `pending: "failed"`、文本还在、error notice 含「没有发出去」、没有 `item.remove`。`node bridge/tests/create-fast.mjs` 不回归（注释里「页面据此禁用输入框」同步改掉）。`PI_WEB_PORT=… node probes/session-starting.mjs`（桩桥 + 真 Chromium）：启动期状态行含「正在启动」+「加载扩展」、无中断按钮、textarea 可用且 placeholder 不含「正在启动」；Enter 后 `.msg.user` 只有一份、徽标「正在启动 pi…」、输入框清空、无错误提示；第二个标签页同一份气泡、同样说法；`starting:false running:true` → 「处理中…」；`running:false` → 徽标消失。`npm --prefix web run typecheck`（含 i18n-check）、`npm --prefix bridge run typecheck`。
+
+## D178 启动失败的那条消息留着、标红、可重试：点「重试」= 接管，先拉起 pi 再按原顺序补发（`#200`；补上 D177 的代价第 2 条）
+
+**问题：** D177 让启动窗口里收下的消息在桥里排队，代价写在明处：队列只在内存里，pi 在窗口里死掉时气泡标红「没发出去，重发一次就行」—— 可「重发一次」让用户自己重新打一遍，而**同一条会话只有桥那一份记录**，用户手里攥着的只是屏幕上那段文字；再发一次还得先手点「接管」把 pi 叫起来。另一个来源更隐蔽：pi 起来了、桥也把 prompt 交出去了，pi 却回 `disposition: "handled"` + `error`（模型那头拒了、上下文超了之类），这条同样没进去，而 D177 只把它标成同一句红字。
+
+**决定：**
+
+1. **两种失败都「标失败 + 保留原件」**：窗口期进程死掉（`boot`）、桥正在退出（`stopped`）、pi 收下却回 `handled + error`（`refused`）。共同动作是把 `BootEntry` 从 `bootQueue` 挪进 `bootFailed`（桥内存），item 标 `pending: "failed"` 并广播 `item.replace` —— 文本、图片、复制全部照旧，气泡不删。
+2. **「重试」复用 `claim`，不新增帧**：前端那颗按钮就是现有的接管动作。`SessionManager.claim()` 在 `openLive()` 之后调一次 `session.retryBootMessages()` —— pi 没活着时 `openLive` 会重新 spawn、钉权限、过锁检查，会话起来了再补发；pi 还活着（`refused` 那种）`openLive` 直接早退，于是只补发、不重启。补发成功后 item 回到 `pending: "sent"`，之后「处理中…」由运行态推出来，用户不用再点第二次。
+3. **一个串行泵管两种场景**：`flushBootQueue()` 变成「一次只跑一条」的 `pumpBootQueue`。发一条、看运行态：还在跑就接着把下一条按插话送（`streamingBehavior: "steer"`），没在跑就停下来等 `agent_start`（那才是「这一轮开始了」的真实信号），`agent_settled` 兜一次底。重试项 `unshift` 回队首，所以顺序与它们当初的到达顺序一致；`starting` 还是真的时候只排队、不再泵（新 spawn 的 pi 连 `get_state` 都没答）。
+4. **文案说人话**：notice 按原因给三句话（「pi 没能起来」/「pi 已经停了」/「pi 没收下」），后面接动作（「点「重试」会先拉起 pi，再按原顺序补发」/「点「重试」会重新发一次」）。exit code、signal、pid 一律不进界面（旧文案 `pi 起不来了（exit code=1 signal=null）` 就是这么漏出去的）。徽标本身只说「没发出去」+ 一颗「重试」。
+
+**代价 / 可改：**
+
+- **`bootFailed` 也在内存里**：桥重启后失败的那几条只剩气泡（还能复制），重试按钮失效 —— 与 D177 对待发队列的取舍一致：不落盘，避免多写一份会被会话文件与 item 双写撞上的东西。
+- **重试是「整批」的**：点一下会把所有失败项一起补发，不能只挑其中一条重发；撤回（D177 提到的另一条出口）本票没做。
+- **补发成功不等 pi 真的回 ok 才回到 `sent`**：泵在请求发出前就把徽标改成 `sent`（和 D177 的第一条一致）；`refused` 是请求的**成功响应**，所以标红发生在之后一次 `item.replace`。中间的几十毫秒里徽标会闪一下「处理中…」再变红。
+- **`claim` 现在有两种含义**（接管 / 重试）：这是有意的 —— 两者要做的动作完全一样（把 pi 拉起来 + 把没交出去的交出去），分开一个帧只会让前端多记一份状态。若日后重试需要「不重启 pi」，再拆。
+
+**验证：** `node bridge/tests/boot-queue.mjs`（桩 pi 慢启动 2500 ms）：B 段 —— 窗口期连发两条后打死桩 pi：两条都变 `pending: "failed"`、文本都在、没有 `item.remove`、notice 含「没有发出去」且**不含** `exit code` / `signal=`；B2 段 —— 发 `claim`（就是那颗「重试」）→ 收到 `starting: true` 的 session 帧 → 新 pid（≠ 被杀的那个）→ 桩 pi 按原顺序收到两条 prompt（第一条 `behavior=null`、第二条 `steer`）→ 两个 item 都以 `pending: "sent"` 回来。C 段 —— pi 就绪但拒收（桩 pi 对 `REFUSE…` 首次回 `handled` + `error`）：标 `failed`、文本还在、notice 可读、桩 pi 日志里有 `prompt-rejected`；C2 段 —— `claim`（pi 已活着，不重启）→ 补发 → `pending: "sent"`。`node bridge/tests/create-fast.mjs`、`PI_WEB_PORT=7918 node probes/session-starting.mjs` 不回归；`npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 i18n-check：删掉旧键 `没发出去，重发一次就行`，新增 `没发出去`、`先拉起 pi，再按原顺序补发没发出去的消息`，`重试` 复用已有）与两边 build。
