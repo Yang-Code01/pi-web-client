@@ -8,6 +8,11 @@ import { fmtTime, tr } from "./i18n/index.ts";
 
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
 const BASH_SHOW = 20000;
+/**
+ * 离底多少像素以内算「已经在底部」（D54）。同一道容差也用来判断「下面还有没有东西」
+ * （`hasRoomBelow`，D168）——两处必须是同一个数，否则会出现「钮说下面有东西、但滚不动」的缝。
+ */
+const BOTTOM_SLACK = 24;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -222,23 +227,41 @@ export class ChatView {
     // The composer grows and shrinks under the transcript; while following, that must not unstick us.
     new ResizeObserver(() => {
       if (this.following) this.scheduleScroll();
+      // 视口变高 / 变矮可能让「下面还有东西」这个前提变了，那颗钮要跟着重算（见 hasRoomBelow）。
+      else this.renderJump();
     }).observe(root);
   }
 
   /** Distance left below the viewport, in px. Small enough that "at the bottom" means what it says. */
   private nearBottom(): boolean {
     const gap = this.root.scrollHeight - this.root.scrollTop - this.root.clientHeight;
-    return gap <= 24;
+    return gap <= BOTTOM_SLACK;
+  }
+
+  /**
+   * 转录下面还有东西可翻（多于 `BOTTOM_SLACK`）：短会话里上面滚不出旧内容，下面也没有
+   * 「回到底部」的去处，那颗钮在那儿只会骗人（D168）。两者共用同一道容差——差几像素不算。
+   */
+  private hasRoomBelow(): boolean {
+    return this.root.scrollHeight - this.root.clientHeight > BOTTOM_SLACK;
   }
 
   /** Wheel / key up: stop following and keep the follow closed while the smooth-scroll animation plays out. */
   private holdUp(): void {
+    // 短会话里上滚什么也翻不出来。以前照样关掉跟流，于是一格空滚就长出「↓ new」，
+    // 而下面其实空无一物——手势没有去处时，就当它没发生。
+    if (!this.following || !this.hasRoomBelow()) return;
     this.holdFollow = Math.max(this.holdFollow, performance.now() + 300);
     this.stopFollowing();
   }
 
+  /**
+   * 守卫放在这里而不是各个调用点：点缩略图（`jumpToTurn`）之类的第三条路也会走到这里，
+   * 而「不跟流 + 下面没东西」是个看不见也回不去的状态——钮被 `renderJump` 藏了，没有溢出就没有
+   * scroll 事件，`resumeFollowing` 永远不会被叫醒（D168）。
+   */
   private stopFollowing(): void {
-    if (!this.following) return;
+    if (!this.following || !this.hasRoomBelow()) return;
     this.following = false;
     this.renderJump();
   }
@@ -252,7 +275,10 @@ export class ChatView {
 
   private renderJump(): void {
     this.jump.classList.toggle("has-new", this.unread);
-    this.jump.hidden = this.following;
+    // 不跟流但下面没东西（内容缩水、窗口变高、或者本来就是空滚）：钮没有意义，别画。
+    // 跟流时短路，不读布局；只有「用户已经滚上去了」这条路上才会量一次 `scrollHeight`
+    // （delta 会经由 scrollToEnd 走到这里，一次文本重排的量级），换的是缩水时钮能立刻收。
+    this.jump.hidden = this.following || !this.hasRoomBelow();
     // The visible text is a glyph, so the meaning has to live somewhere readable.
     const label = this.unread ? tr("有新内容，回到底部") : tr("回到底部");
     this.jump.title = label;
@@ -788,6 +814,8 @@ export class ChatView {
           if (next) this.collapsed.add(id);
           else this.collapsed.delete(id);
           apply(next);
+          // 折起来会把内容缩掉一大截：下面可能就此空了，那颗钮不能还留在那儿（D168）。
+          this.renderJump();
         };
         fold.onclick = toggle;
         peek.onclick = toggle;
@@ -907,6 +935,8 @@ export class ChatView {
     btn.onclick = () => {
       box.classList.toggle("folded");
       apply();
+      // 同 buildAssistant 里的折行：内容缩水后「下面还有东西」可能不再成立（D168）。
+      this.renderJump();
     };
     let tall = false;
     const measure = () => {
@@ -1004,6 +1034,8 @@ export class ChatView {
       this.cards.get(id)?.remove();
       this.cards.delete(id);
     }
+    // 抽走的可能是最后几屏内容：下面空了，钮就该收起（D168）。
+    this.renderJump();
   }
 
   private buildTool(item: ToolItem): HTMLElement {

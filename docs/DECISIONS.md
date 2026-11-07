@@ -2580,3 +2580,21 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - 没有做「在某个子文件夹里新建」（先点进去再建）；移动 / 删除 / 重命名也没做。
 
 **验证：** `node bridge/tests/mk-file.mjs`（12 项：0 字节、不覆盖、只建一层、父目录、Windows 规则、`makeDir` 报错文案回归）；`node bridge/tests/attach-picker.mjs` 在临时桥上用 Playwright（`locale: "zh-CN"`）跑两处界面：预填 / 回车 / 高亮 / 停在原地 / 重名保留原内容 / Esc 收起 / 文件管理器同款按钮。
+
+## D168 「回到底部 / ↓ new」只在下面真有东西时出现：转录装得下（余量 ≤ 24px）时上滚不算「掉队」（无票，用户口头报障）
+
+**症状**：一条短会话（转录整体装得下、下面空无一物），鼠标在转录上随便上滚一格，底部正中就长出「↓ new」；再点一下回到底部，视口其实一动不动。
+
+**根因**：`wheel` 上滚、`PageUp` / `ArrowUp` / `Home` 都无条件 `holdUp() → stopFollowing()`，而「不跟流」这个状态本身就会画出那颗钮（`renderJump` 只看 `following`）。随后流式输出的下一段内容进来，`scrollToEnd()` 在 `!following` 时把 `unread` 点亮，于是连 new 小标也来了 —— 三种状态（手势、跟流、未读）各自都对，合起来却是一句假话：下面什么都没有。
+
+**决定**（`web/src/chat.ts`）：
+
+1. 新增 `hasRoomBelow()`：`scrollHeight - clientHeight > BOTTOM_SLACK`。`BOTTOM_SLACK = 24` 与 `nearBottom()` 共用（**接续 D54**：D54 把 24 记成「可改：阈值在 `nearBottom()` 里」，现在它同时决定「下面还有没有东西」，两处必须同一个数，否则会出现「钮说下面有东西、但滚不动」的缝）。
+2. 守卫放在 `stopFollowing()` **本身**（`!following || !hasRoomBelow()` 直接返回），而不是每个调用点各写一遍：`wheel` / `PageUp` / `Home`（`holdUp`）、`touchmove` 那条 ≥ 6px 的拖拽、以及点缩略图的 `jumpToTurn` 都汇到这一个出口。`holdUp()` 另外先早退一次，让 `holdFollow` 在空滚时也不被推后。
+3. `renderJump()` 的 `hidden` 改成 `following || !hasRoomBelow()`：内容缩水、窗口变高之后「下面没东西了」也不再画那颗钮。补三次重算覆盖「内容自己缩水」：挂在 `root` 的 `ResizeObserver`（不跟流时）、折行之后（`foldable` 的按钮与助手回复的 `msg-fold`，一次能缩掉几屏）、以及 `remove()` 抽回排队消息之后。新内容进来本来就会经 `scrollToEnd()` 再渲染一次。
+
+**为什么先看余量而不是先看方向**：D94 已经把「恢复跟流」限定成「视口在往下走 + 300ms 冷却」，那解决的是**手势被拽回去**；这一条是反面 —— 手势根本没发生位移，却改了状态。判据只能是「有没有东西可滚」，方向、速度、事件种类在这里都无能为力。
+
+**可改**：24px 这个容差（`BOTTOM_SLACK`）；`hasRoomBelow()` 只看纵向余量，横向溢出（超长代码行）不影响判断。只挡住「下面没东西」这一面，没有改变 D94 的「往下滚 + 300ms 冷却才恢复跟流」；余量落在 24–48px 之间时，钮会出现，但往下移不超过 24px 就会恢复跟流、钮随即收起。
+
+**验证**：`node probes/jump-nothing-below.mjs`（11 项，真实布局 + 真实 `mouse.wheel` + CDP 触摸，用 `tools/paths.mjs` / `tools/playwright.mjs` 取路径与浏览器，D114）：短会话初始 / 上滚 3 格 / 上滚后再来内容 / 触摸下拖 120px 都不出钮且视口仍钉底；喂到溢出后上滚，钮照常出现、掉队期间来内容亮 new、点一下回到底并收起；容差带（`room = 10`）上滚不出钮，刚过容差（`room = 60`）就出钮——把 `BOTTOM_SLACK` 改成 0 或 100 都会有一项失败；不跟流时把长回答折起来（`item.replace` 落定后点 `.msg-fold`），钮跟着收起。改前 8 项版的 5 项 FAIL（上滚后 `jumpHidden:false`，随后 `hasNew:true`，与报障截图一致），改后 11 项全 PASS。回归：`probes/scroll-race.mjs`（D68 / D94 的触摸 + 滚轮断言）与 `probes/round10-scroll.mjs`（Q-018 跟流、600 条突发）仍全 PASS。
