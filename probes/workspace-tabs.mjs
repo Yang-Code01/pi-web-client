@@ -1,12 +1,11 @@
 /**
  * Probe: #121 标签行只画 N 个 + `＋N`；#173 一份 `order` 接管顺序；#174 横条上每一颗都能拖。
  *
- * 票面要的是：标签行只画 N 颗（N 由桥端下发，默认 3），剩下的组数报在槽外的 `＋N` 上；点 `＋N` 只列
- * 被折叠的组，点一行切过去并关掉下拉；当前组排在组序很后面时它仍然在圈内（挤掉最后一个补位组）。
- * #173 接上：固定组退役 —— 组头 ⋯ 里只剩重命名 / 移到最前 / 删除（#177 加的第二项），左栏不再有
- * 「已固定」徽记，标签行与左栏
- * 共用一份 `order`。
- * #174 再接上：**每一颗看得见的标签**都能用鼠标拖着换顺序（不再只限固定组），落点竖线跟手，松手
+ * 票面要的是：标签行只画 N 颗（N 由桥端下发，默认 6、范围 1–12），剩下的组数报在槽外的 `＋N` 上；
+ * 点 `＋N` 只列被折叠的组，点一行切过去并关掉下拉；当前组排在组序很后面时它仍然在圈内（占最后一格）。
+ * #173 接上：组头 ⋯ 里只剩重命名 / 移到最前 / 删除（#177 加的第二项），左栏不再有额外徽记，
+ * 标签行与左栏共用一份 `order`。
+ * #174 再接上：**每一颗看得见的标签**都能用鼠标拖着换顺序，落点竖线跟手，松手
  * 只发一条 `ws.tabs { order, max }` 把整份 order 写回，刷新后还记得；位移不到 4px 仍算一次点击，
  * 拖回原位一个字都不发，拖完不误切组；`＋N` 里的折叠组没有 DOM，拖不起来。
  * #175 再接上：标签行末尾、`＋N` 左边多一颗「＋」—— 点一下就是树底的「新建工作区」（同一个
@@ -321,11 +320,11 @@ ok(s.count === 3, `切过去之后标签行仍是 3 颗（${s.count} 个）`);
 ok(s.menuRows === 0, `切完下拉关掉（还剩 ${s.menuRows} 行）`);
 await page.close();
 
-// 5) #121：当前组排在组序很后面时，它挤掉最后一个补位组进圈（#173 起是「当前组临时替最后一格」）
+// 5) #121：当前组排在组序很后面时，它占住最后一格（#173 起「当前组临时替最后一格」）
 page = await open(null, "s-09-1");
 s = await barState();
 ok(s.onWs === "f:/proj-09", `A：组序第 9 的当前组也在标签行上（${s.onWs}）`);
-ok(s.count === 3, `A：它挤掉了一个补位组，没多画（${s.count} 颗）`);
+ok(s.count === 3, `A：它只占最后一格、没多画（${s.count} 颗）`);
 ok(s.moreShown && s.moreText === "＋6", `A：被挤掉的那组回到 ＋N（${s.moreText}）`);
 await page.close();
 
@@ -386,7 +385,7 @@ ok(addBox.add > 0 && addBox.add < addBox.more, `800px：＋ 还在 ＋N 左边�
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-800.png`), clip: { x: 0, y: 0, width: 800, height: 140 } });
 await page.close();
 
-// 7) #173 固定组退役：组头 ⋯ 里只剩重命名 / 移到最前 / 删除，左栏不再有「已固定」徽记
+// 7) #173 组头菜单：只剩重命名 / 移到最前 / 删除，左栏没有额外徽记
 page = await open(null);
 const openWsMore = async (id) => {
   await page.locator(`.ws-sec[data-ws="${id}"] .ws-head`).hover();
@@ -472,7 +471,7 @@ ok(JSON.stringify(s.visibleIds) === JSON.stringify(ORDER0.slice(0, 3)), `起点�
 await page.setViewportSize({ width: 1400, height: 820 });
 await sleep(300);
 const calls0 = tabsCalls();
-// 拖的是第 3 颗 —— #174 起不再只限固定组：可见段里任意一颗。
+// 拖的是第 3 颗 —— #174 起可见段里任意一颗都能拖。
 const swap = await dragTab("f:/proj-03", "f:/proj-01", "before");
 ok(swap.mid.lines === 1 && swap.during.lines === 1, "拖动时画一条落点竖线");
 ok(swap.during.width === 2, `竖线是 2px（${swap.during.width}px）`);
@@ -732,6 +731,86 @@ await page.keyboard.press("Escape");
 await sleep(300);
 
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-add.png`), clip: { x: 0, y: 0, width: 1000, height: 820 } });
+
+// 19) #178 六步端到端：新建 → 拖动 → 刷新 → 从 ＋N 切回 → 移到最前 → 设置改 max
+await page.setViewportSize({ width: 1400, height: 820 });
+await sleep(300);
+const groups0 = (await addState()).groups;
+await page.click(".ws-tabs-add");
+await sleep(700);
+const sixNewState = await addState();
+ok(sixNewState.groups === groups0 + 1, `六步 1/6 新建：左栏多一个组（${groups0} → ${sixNewState.groups}）`);
+const sixNew = WS.order.at(-1);
+ok(
+  sixNew === "manual:stub3" && sixNewState.moreText === "＋9",
+  `六步 1/6 新建：新组追加到 order 末尾、收在 ＋N（${sixNew} / ${sixNewState.moreText}）`,
+);
+await page.keyboard.press("Escape");
+await sleep(300);
+
+const sixBefore = (await barState()).visibleIds;
+const sixMoved = sixBefore[0];
+const sixLast = sixBefore.at(-1);
+await dragTab(sixMoved, sixLast, "after");
+s = await barState();
+ok(
+  s.visibleIds.at(-1) === sixMoved && s.visibleIds.join() !== sixBefore.join(),
+  `六步 2/6 拖动：${sixMoved} 拖到可见段最后（${s.visibleIds.join(" / ")}）`,
+);
+const sixOrder = [...WS.order];
+
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(700);
+s = await barState();
+ok(JSON.stringify(WS.order) === JSON.stringify(sixOrder), "六步 3/6 刷新：桥里的 order 没变");
+ok(
+  JSON.stringify(s.visibleIds) === JSON.stringify(sixOrder.slice(0, 3)),
+  `六步 3/6 刷新：前三颗仍是刷新前那份 order（${s.visibleIds.join(" / ")}）`,
+);
+
+const switchTo = "f:/proj-02";
+ok(!s.visibleIds.includes(switchTo), `六步 4/6 切回：${switchTo} 此刻在 ＋N 里`);
+await page.click(".ws-tabs-more");
+await sleep(220);
+await page.locator(`.ws-tabs-menu .pm-item[data-ws="${switchTo}"]`).click();
+await sleep(700);
+s = await barState();
+ok(s.onWs === switchTo, `六步 4/6 切回：点 ＋N 那一行切到 ${switchTo}（当前 ${s.onWs}）`);
+ok(s.visibleIds.includes(switchTo), `六步 4/6 切回：当前组占住最后一格（${s.visibleIds.join(" / ")}）`);
+
+await openWsMore(switchTo);
+await sleep(200);
+await page.locator(".ws-menu .pm-item[data-act='front']").click();
+await sleep(600);
+s = await barState();
+ok(
+  s.visibleIds[0] === switchTo && WS.order[0] === switchTo,
+  `六步 5/6 移到最前：${switchTo} 排到第一（${s.visibleIds.join(" / ")}）`,
+);
+ok((await treeOrder())[0] === switchTo, `六步 5/6 移到最前：左栏也一起变（${(await treeOrder())[0]}）`);
+
+await page.locator('.icon-btn[data-act="look"]').click();
+await page.waitForSelector(".display-sheet .ws-max-row", { timeout: 5000 });
+await sleep(250);
+for (let i = 0; i < 9; i++) {
+  await page.locator('.ws-max-btn[data-act="ws-max-up"]').click({ force: true });
+  await sleep(220);
+}
+const sixMax = await page.evaluate(() => ({
+  n: document.querySelector(".ws-max-n")?.textContent ?? "",
+  count: document.querySelectorAll(".ws-tab").length,
+  moreHidden: document.querySelector(".ws-tabs-more")?.hidden ?? true,
+  groups: document.querySelectorAll(".ws-sec").length,
+}));
+ok(
+  sixMax.n === "12" && sixMax.count === sixMax.groups,
+  `六步 6/6 设置改 max：12 颗名额画下全部 ${sixMax.count} 组（${sixMax.n} / ${sixMax.count}）`,
+);
+ok(sixMax.moreHidden, "六步 6/6 设置改 max：装得下就不再出 ＋N");
+ok(lastTabs()?.max === 12, `六步 6/6 设置改 max：最后一条 ws.tabs 是 max 12（${lastTabs()?.max}）`);
+await page.locator('.display-sheet .btn:has-text("关闭")').click().catch(() => {});
+await sleep(200);
 
 await page.close();
 

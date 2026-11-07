@@ -89,6 +89,8 @@ const workspace = () => ({
   groups: GROUPS,
   overrides: {},
   keys: Object.fromEntries(SESSIONS.map((s) => [s.cwd.toLowerCase(), s.ws])),
+  // #176 名额由桥端下发；这个探针守的是「3 颗 + ＋N」的几何，显式钉住 3。
+  max: 3,
 });
 // 第 2 组里点过三颗 ★（#120 起行 2 只认 ★），顺序与「新到旧」不同：切过去后胶囊按 ★ 排。
 // 切组会打开该组排最上面那颗（★ 排在最前）= `s-02-3`，于是行 2 应该只剩另外两颗。
