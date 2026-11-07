@@ -115,6 +115,8 @@ a { color: var(--accent); text-decoration: none; }
   letter-spacing: 0.06em;
 }
 .login input:focus { outline: 2px solid var(--accent-dim); border-color: var(--accent); }
+/* 口令输入框（页面级 .login 与公网 step-up 的 .modal 两处）走同一个弱化色，不落浏览器默认灰。 */
+.login input::placeholder, .modal input::placeholder { color: var(--faint); }
 .login .err { color: var(--danger); font-size: 13px; min-height: 18px; }
 
 .btn {
