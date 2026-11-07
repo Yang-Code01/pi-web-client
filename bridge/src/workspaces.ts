@@ -1,5 +1,5 @@
 import { gitRoot } from "./git.ts";
-import { readJson, statePath, writeJson } from "./paths.ts";
+import { readJsonChecked, statePath, writeJson } from "./paths.ts";
 
 /**
  * 工作区（#72 / #94）= 工程 = 会话列表的一级分组。它不是 pi 的会话，也不是磁盘上某个目录的别名：
@@ -116,6 +116,8 @@ export class Workspaces {
   private data: WorkspaceState = { groups: [], overrides: {}, keys: {}, pinned: [], max: TABS_DEFAULT };
   private readonly file = statePath("workspaces.json");
   private readonly root: (dir: string) => Promise<string | null>;
+  /** 同 Manage：读失败就拒绝回写，否则一次「没读到」会变成整片工作区配置丢失。 */
+  private unreadable: string | null = null;
 
   constructor(options: WorkspacesOptions = {}) {
     this.root = options.root ?? gitRoot;
@@ -123,7 +125,12 @@ export class Workspaces {
   }
 
   private load(): void {
-    const raw = readJson<Partial<WorkspaceState>>(this.file, {});
+    const res = readJsonChecked<Partial<WorkspaceState>>(this.file, {});
+    this.unreadable = res.ok ? null : (res.error ?? "unknown");
+    if (this.unreadable) {
+      console.error(`[workspaces] 读不到 ${this.file}（${this.unreadable}）；这次运行不落盘，免得用空配置覆盖它`);
+    }
+    const raw = res.value;
     this.data = {
       groups: readGroups(raw.groups),
       overrides: readRecord(raw.overrides, false),
@@ -135,6 +142,7 @@ export class Workspaces {
   }
 
   private save(): void {
+    if (this.unreadable) return;
     try {
       writeJson(this.file, this.data);
     } catch {

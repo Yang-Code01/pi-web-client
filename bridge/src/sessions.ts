@@ -705,6 +705,8 @@ export class Session extends EventEmitter {
   private stuckNoticed = false;
   private tailTimer: NodeJS.Timeout | null = null;
   private tailSig = "";
+  /** 上一次读会话文件失败的原因；null = 上次读成功了。同一句错只通知一次。 */
+  private readError: string | null = null;
   /** D170：后台子代理。变化只往 `state.bg` 写一小块摘要（see `publishBg`）。 */
   private readonly bgRuns = new BgRuns(() => this.publishBg());
 
@@ -859,14 +861,30 @@ export class Session extends EventEmitter {
   }
 
   // ---------------------------------------------------------------- file view
-  private loadFromFile(): void {
-    if (!this.state.file) return;
+  /**
+   * 读盘的结果只有两种：读到了（`true`），或者没读到（`false`，内存里的对话保持原样）。
+   * 读失败绝不能写成 `items = []` —— 前端收到一次 `items: []` 就会清屏，而磁盘上的会话好好的，
+   * 用户看到的是「对话没了」。第一次读失败没内容可保，也要说一句为什么。
+   */
+  private loadFromFile(): boolean {
+    if (!this.state.file) return true;
     try {
       const res = loadEntries(this.state.file);
       this.items = entriesToItems(res.entries);
       this.state.truncated = res.truncated;
-    } catch {
-      this.items = [];
+      this.readError = null;
+      return true;
+    } catch (err) {
+      const reason = (err as Error)?.message ?? String(err);
+      // 同一句错只报一次：刷新是 400ms 一次，重试期间不能每 tick 刷一条通知。
+      if (reason !== this.readError) {
+        this.readError = reason;
+        this.notice(`读不到会话文件，界面停在上一次的内容：${reason}`, "error", {
+          code: "session_file_unreadable",
+          params: { p1: reason },
+        });
+      }
+      return false;
     }
   }
 
@@ -879,9 +897,10 @@ export class Session extends EventEmitter {
       // D162: 第一次读盘只是「打开」，不是一次活动 —— updatedAt 取文件自己的 mtime。
       // 之后文件真变了才 touch；终端里继续写也意味着上一轮完成状态过期了。
       const first = !this.tailSig;
-      this.tailSig = sig;
       const before = this.items;
-      this.loadFromFile();
+      // 读失败就不推进 tailSig：下一 tick 签名变了还会再来一次，文件恢复的那一刻自己接上。
+      if (!this.loadFromFile()) return;
+      this.tailSig = sig;
       if (first) {
         this.state.updatedAt = Math.round(stat.mtimeMs);
         // D162: a write while we were not tailing (terminal, or the bridge was stopped) expires

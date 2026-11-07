@@ -1,4 +1,4 @@
-import { readJson, statePath, writeJson } from "./paths.ts";
+import { readJsonChecked, statePath, writeJson } from "./paths.ts";
 
 /**
  * Session-list arrangement the user owns: pin, manual order, archive. Nothing here touches pi's
@@ -32,17 +32,29 @@ function time(s: { startedAt?: string; updatedAt: number }): number {
 export class Manage {
   private data: ManageState = { ...EMPTY };
   private readonly file = statePath("manage.json");
+  /**
+   * 上次读盘失败的原因（null = 读到了）。有值时**拒绝落盘**：内存里这份是从空状态长出来的，
+   * 写回去就是拿「没有置顶 / 没有顺序」覆盖盘上用户真实的排列，而且不可逆。
+   * 宁可这一次拖拽不持久化（重启后还在），也不杀掉旧数据。
+   */
+  private unreadable: string | null = null;
 
   constructor() {
     this.load();
   }
 
   private load(): void {
-    const raw = readJson<Partial<ManageState>>(this.file, {});
+    const res = readJsonChecked<Partial<ManageState>>(this.file, {});
+    this.unreadable = res.ok ? null : (res.error ?? "unknown");
+    if (this.unreadable) {
+      console.error(`[manage] 读不到 ${this.file}（${this.unreadable}）；这次运行不落盘，免得用空排列覆盖它`);
+    }
+    const raw = res.value;
     this.data = { pin: ids(raw.pin), order: ids(raw.order), archived: ids(raw.archived) };
   }
 
   private save(): void {
+    if (this.unreadable) return;
     try {
       writeJson(this.file, this.data);
     } catch {

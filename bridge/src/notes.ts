@@ -6,7 +6,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { ensureDir, readJson, statePath, writeJson } from "./paths.ts";
+import { ensureDir, readJsonChecked, statePath, writeJson } from "./paths.ts";
 
 export const NOTE_KINDS = ["bug", "change", "idea", "chore"] as const;
 export type NoteKind = (typeof NOTE_KINDS)[number];
@@ -49,6 +49,8 @@ const MAX_TITLE = 200;
 const MAX_BODY = 200_000;
 const MAX_SHOTS = 24;
 const MAX_SHOT_BYTES = 20 * 1024 * 1024;
+/** 上一次读盘失败的原因（null = 读到了）。读失败期间一律拒绝保存，见 save()。 */
+let unreadable: string | null = null;
 
 export function notesFile(): string {
   return statePath("notes", "bug-notes.json");
@@ -59,7 +61,14 @@ export function assetsDir(id: string): string {
 }
 
 export function listNotes(): Note[] {
-  const store = readJson<Partial<Store>>(notesFile(), {});
+  const res = readJsonChecked<Partial<Store>>(notesFile(), {});
+  // 读失败 = 「不知道盘上有什么」，不是「盘上是空的」：记住它，保存一律拒绝（见 save）。
+  if (res.ok) unreadable = null;
+  else {
+    if (res.error !== unreadable) console.error(`[notes] 读不到 ${notesFile()}（${res.error}）；保存会被拒绝，直到下一次能读到`);
+    unreadable = res.error ?? "unknown";
+  }
+  const store = res.value;
   const notes = Array.isArray(store.notes) ? store.notes : [];
   // 改过的排前面（新建 / 编辑都会刷 updatedAt），列表顺序就是 updatedAt 降序。
   return notes
@@ -69,6 +78,11 @@ export function listNotes(): Note[] {
 }
 
 function save(notes: Note[]): Note[] {
+  // 读失败时写回，就是把整本记录换成「只看得见这一次编辑」的一页 —— 不可逆，所以宁可不存。
+  if (unreadable) {
+    console.error(`[notes] 读不到 ${notesFile()}（${unreadable}），这次不落盘；改动只留在内存里`);
+    return notes;
+  }
   writeJson(notesFile(), { version: 1, notes } satisfies Store);
   return listNotes();
 }
