@@ -20,6 +20,7 @@ import { absentFor } from "./presence.ts";
 import { sampleMemory } from "./runtime.ts";
 import { defaultPermission } from "./permissiondefault.ts";
 import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
+import { isProtocolWidgetLines } from "./extwidgets.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -746,6 +747,12 @@ export class Session extends EventEmitter {
    * progress"), so prompt() waits on it instead of bouncing the user's message.
    */
   private compaction: { done: Promise<void>; resolve: () => void } | null = null;
+
+  /**
+   * 这一轮是「⚡ 自动复盘」开的（D164 延伸）：复盘本来就在谈失败，D169 的当场叫住再插一嘴就是噪音。
+   * 由 `failures.review` 置上、prompt 结束时落下；只影响 `failures.remind` 一个入口。
+   */
+  reviewing = false;
   /** User items sent while a run was active, i.e. sitting in pi's queue until delivered or cleared. */
   private queuedUser: { id: string; text: string }[] = [];
   /** pi's queue as of the last queue_update, so a page opened mid-run sees it too (#14). */
@@ -1975,6 +1982,12 @@ export class Session extends EventEmitter {
         if (!key) return true;
         if (Array.isArray(req.widgetLines)) {
           const lines = req.widgetLines.slice(0, 40).map((l: unknown) => stripAnsi(String(l ?? "")).slice(0, 400));
+          // 扩展塞过来的协议载荷（pi-subagents 的 `PI_SUBAGENT_ASYNC_JSON:{…}`）当文本铺出来就是
+          // 一坨被 400 字截断的原始 JSON，见 `extwidgets.ts`。「子代理在跑」另有 D170 的提示条。
+          if (isProtocolWidgetLines(lines)) {
+            if (this.extWidgets.delete(key)) this.emitExtUi();
+            return true;
+          }
           this.extWidgets.set(key, { lines, placement: req.widgetPlacement === "belowEditor" ? "belowEditor" : "aboveEditor" });
         } else this.extWidgets.delete(key);
         this.emitExtUi();

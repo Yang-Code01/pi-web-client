@@ -174,6 +174,9 @@ async function turn(text) {
     ui("setStatus", { statusKey: "gone", statusText: undefined });
     ui("setWidget", { widgetKey: "todo", widgetLines: ["TODO", "- a", "- b"], widgetPlacement: "aboveEditor" });
     ui("setWidget", { widgetKey: "foot", widgetLines: ["below line"], widgetPlacement: "belowEditor" });
+    // pi-subagents 在 RPC 模式下把状态快照当成 widget 推过来（一行哨兵 JSON）：桥应当认出来丢掉，
+    // 不然页面上就是输入框上方一坨被 400 字截断的原文（真事，用户截图报的）。
+    ui("setWidget", { widgetKey: "subagent-async", widgetLines: ['PI_SUBAGENT_ASYNC_JSON:{"kind":"pi-subagents.async-status-snapshot","version":1}'], widgetPlacement: "aboveEditor" });
     ui("setTitle", { title: "pi — fake title" });
     ui("set_editor_text", { text: "prefilled by extension" });
   }
@@ -258,6 +261,28 @@ Command exited with code 1` });
     }
     out({ type: "message_start", message: assistant("") });
     out({ type: "message_end", message: assistant("改完了。") });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
+  // 「发到会话复盘」（D164 延伸）：回答末尾按提示词要求回写规矩。
+  // 形状照真模型来：标记包在粗体里、前面夹一段解释 —— 前端在正文里找标记，不认整行的格式。
+  if (text.startsWith("[pi-web:review]")) {
+    // 类行的形状是 `- bash|path|cd <path> · bash · cd <path> —— …`，键取第一个分隔符之前那一段，
+    // 这样回写的键和界面算出来的完全一样（否则规矩会挂到一个界面上不存在的键上）。
+    const sep = ` ${String.fromCharCode(183)} `;
+    const row = text.split("\n").find((l) => l.startsWith("- ") && l.includes("|")) ?? "";
+    const key = row ? row.slice(2).split(sep)[0] : "bash|path|cd <path>";
+    note({ t: "review", key, classes: (text.match(/^- [a-z]+\|/gm) ?? []).length });
+    const body = [
+      "## 这一轮栽在哪",
+      `主因在路径：\`${key}\` 那一类，两次都是仓库名手打错了。`,
+      "",
+      "## 规矩",
+      `- **[pi-web:rule] ${key} :: 先 test -d 再 cd，方向先验再动手**`,
+    ].join("\n");
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: body } });
+    out({ type: "message_end", message: assistant(body) });
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }

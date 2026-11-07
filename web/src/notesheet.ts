@@ -10,6 +10,7 @@
 import { createEl as el } from "./chat.ts";
 import { FailPanel } from "./failpanel.ts";
 import { ripeEntries, type FailLedger } from "./failures.ts";
+import type { RuleBook } from "./rules.ts";
 import type { Note, NoteKind, NoteMode, NoteStatus } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 
@@ -202,6 +203,11 @@ export class NotesSheet {
     this.ledger = ledger;
     this.paintTabs();
     this.failPanel.setLedger(ledger);
+  }
+
+  /** 规矩整本换（D164 延伸）：与账本同一条路径进来，面板自己决定怎么画。 */
+  setRules(book: RuleBook | null): void {
+    this.failPanel.setRules(book);
   }
 
   private paintMode(): void {

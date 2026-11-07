@@ -1,4 +1,5 @@
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
+import { reviewBody, reviewDisplay } from "./failures.ts";
 import { highlightFragment } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
@@ -135,6 +136,11 @@ export class ChatView {
    * 同一张卡会在 live 事件、item.replace、reset 重放里各建一次，聊天区只画一张，账本也只能算一次。
    */
   onFail: ((f: { id: string; tool: string; cmd: string; out: string; at?: string; live?: boolean }) => void) | null = null;
+  /**
+   * assistant 说完一段（D164 延伸）：复盘那一轮的结尾里可能带着「规矩」行，由 app 解析后交给桥。
+   * add / replace 各会走到一次，app 那边靠同键覆盖去重，重放历史也不会多写。
+   */
+  onAnswer: ((text: string) => void) | null = null;
   /** Following the stream: new content scrolls the view to the bottom. Cleared the moment the user says "I want to read up there". */
   private following = true;
   /** One pending frame at most — a burst of updates must cost one scroll, not one per update. */
@@ -454,6 +460,7 @@ export class ChatView {
     if (item.kind === "assistant") {
       this.assistantTexts.set(item.id, item.text ?? "");
       if ((item.text ?? "").trim()) this.noteAnswered();
+      this.noteAnswer(item);
     }
     if (item.kind === "tool") {
       const existing = this.toolCards.get(item.toolCallId);
@@ -515,7 +522,16 @@ export class ChatView {
     if (item.kind === "assistant") {
       this.assistantTexts.set(item.id, item.text ?? "");
       if ((item.text ?? "").trim()) this.noteAnswered();
+      this.noteAnswer(item);
     }
+  }
+
+  /** 复盘回写的「规矩」行只往外交一次（外面按键覆盖去重，重放不会多写）。 */
+  private noteAnswer(item: Item): void {
+    if (item.kind !== "assistant") return;
+    const text = String(item.text ?? "");
+    if (!text.includes("[pi-web:rule]")) return;
+    this.onAnswer?.(text);
   }
 
   replace(id: string, item: Item): void {
@@ -539,6 +555,8 @@ export class ChatView {
       if (!this.isAskTool(item.name) && (item.isError || item.status === "error")) this.failFromItem(item);
       this.noteAfter(item);
     }
+    // 流式那条回答是走 replace 收尾的（先 add 一张空卡、再整条换掉），add 里那一次看不到正文。
+    if (item.kind === "assistant") this.noteAnswer(item);
     this.scrollToEnd();
   }
 
@@ -785,7 +803,8 @@ export class ChatView {
     }
 
     const reminded = item.kind === "user" ? reminderBody(item.text) : null;
-    const wrap = el("div", `msg ${reminded !== null ? "remind" : item.kind}`);
+    const reviewed = item.kind === "user" ? reviewBody(item.text) : null;
+    const wrap = el("div", `msg ${reminded !== null ? "remind" : reviewed !== null ? "review" : item.kind}`);
     if (item.kind === "assistant") (wrap as HTMLElement & { _raw?: string })._raw = item.text;
     // 桥注入的自动提醒（D169）：它是一条真正的 user 消息（pi 只有 prompt 通道），但说这话的不是人，
     // 所以不画成气泡、不给复制/分叉，抬头用界面语言，正文才是桥写的那段（内容本身来自账本/诊断，是中文数据）。
@@ -794,6 +813,16 @@ export class ChatView {
       head.textContent = tr("自动提醒 · 老毛病重犯 · {p1}", { p1: timeOf(item.ts) });
       const body = el("div", "body");
       body.textContent = reminded;
+      wrap.append(head, body);
+      return wrap;
+    }
+    // 「⚡ 复盘」那一轮也是一条 user 消息（桥只有 prompt 通道），但它是一段写给模型的交代：
+    // 原样排开（保留换行），不画气泡，免得人以为自己打过这一大段。
+    if (reviewed !== null) {
+      const head = el("div", "who");
+      head.textContent = tr("⚡ 自动复盘 · {p1}", { p1: timeOf(item.ts) });
+      const body = el("div", "body");
+      body.textContent = reviewDisplay(reviewed);
       wrap.append(head, body);
       return wrap;
     }
@@ -985,6 +1014,11 @@ export class ChatView {
     const reminded = reminderBody(item.text);
     if (reminded !== null) {
       body.textContent = reminded;
+      return body;
+    }
+    const reviewed = reviewBody(item.text);
+    if (reviewed !== null) {
+      body.textContent = reviewDisplay(reviewed);
       return body;
     }
     // 命令画成药丸、用户自己写的话原样跟在后面，规则在 skill.ts（与桥端的折叠规则成对）。
