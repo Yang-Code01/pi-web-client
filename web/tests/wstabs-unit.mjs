@@ -90,22 +90,70 @@ test("横向落点：一颗标签都没有 → null", () => {
   assert.equal(tabHitTest(10, []), null);
 });
 
-// ---------------------------------------------------------------- #173 在整份 order 上重排
+// ---------------------------------------------------------------- #174 每一颗可见标签都能拖
 
-test("重排：在整份 order 上只搬一颗，其余（含折叠组）相对位置不变", () => {
-  assert.deepEqual(tabReorder(ORDER, "g5", { id: "g1", side: "before" }), ["g5", "g1", "g2", "g3", "g4"]);
-  assert.deepEqual(tabReorder(ORDER, "g2", { id: "g4", side: "after" }), ["g1", "g3", "g4", "g2", "g5"]);
-  assert.deepEqual(tabReorder(ORDER, "g1", { id: "g3", side: "after" }), ["g2", "g3", "g1", "g4", "g5"]);
+/** 一份标签行视图（#173）：`order` + 名额 + 当前组 → 可见段 / 折叠段。 */
+const view = (max = 3, current) => tabModel({ order: ORDER, max, current });
+/** 松手后的整份 order：可见段重排完，接上原封不动的折叠段。 */
+const reorder = (max, current, id, hit) => tabReorder(view(max, current), id, hit);
+
+test("重排：只在可见段里搬一颗，折叠组原序接在后面", () => {
+  assert.deepEqual(reorder(3, undefined, "g3", { id: "g1", side: "before" }), ["g3", "g1", "g2", "g4", "g5"]);
+  assert.deepEqual(reorder(3, undefined, "g3", { id: "g2", side: "before" }), ["g1", "g3", "g2", "g4", "g5"]);
+  assert.deepEqual(reorder(3, undefined, "g1", { id: "g3", side: "after" }), ["g2", "g3", "g1", "g4", "g5"]);
+});
+
+test("重排：拖到最左端排第一，拖到最右端排在可见段最后", () => {
+  const first = reorder(3, undefined, "g3", { id: "g1", side: "before" });
+  assert.deepEqual(first, ["g3", "g1", "g2", "g4", "g5"]);
+  const last = reorder(3, undefined, "g1", { id: "g3", side: "after" });
+  assert.deepEqual(last, ["g2", "g3", "g1", "g4", "g5"]);
+  assert.equal(tabModel({ order: last, max: 3 }).visible[2], "g1", "拖到最右 = 排在可见段最后");
+});
+
+test("重排：相邻两颗对调，从左拖到右和从右拖到左得到同一份 order", () => {
+  const fromLeft = reorder(3, undefined, "g1", { id: "g2", side: "after" });
+  const fromRight = reorder(3, undefined, "g2", { id: "g1", side: "before" });
+  assert.deepEqual(fromLeft, ["g2", "g1", "g3", "g4", "g5"]);
+  assert.deepEqual(fromRight, fromLeft, "同一个插位，两侧各拖一次是同一份结果");
 });
 
 test("重排：拖回原位 → null（一个字都不发）", () => {
-  assert.equal(tabReorder(ORDER, "g1", { id: "g2", side: "before" }), null);
-  assert.equal(tabReorder(ORDER, "g3", { id: "g2", side: "after" }), null);
+  assert.equal(reorder(3, undefined, "g1", { id: "g2", side: "before" }), null);
+  assert.equal(reorder(3, undefined, "g2", { id: "g1", side: "after" }), null);
+  assert.equal(reorder(3, undefined, "g3", { id: "g2", side: "after" }), null);
+  assert.equal(reorder(3, undefined, "g2", { id: "g3", side: "before" }), null);
 });
 
-test("重排：落点是自己 / 自己不在 order 里 / 落点不在这份 order 里 → null", () => {
-  assert.equal(tabReorder(ORDER, "g1", { id: "g1", side: "after" }), null);
-  assert.equal(tabReorder(ORDER, "x", { id: "g2", side: "after" }), null);
-  assert.equal(tabReorder(ORDER, "g1", { id: "nope", side: "after" }), null);
-  assert.equal(tabReorder(ORDER, "g1", null), null);
+test("重排：落点是自己 / 折叠组 / 没有落点 → null（拖不进折叠组）", () => {
+  assert.equal(reorder(3, undefined, "g1", { id: "g1", side: "after" }), null);
+  assert.equal(reorder(3, undefined, "g1", { id: "g4", side: "before" }), null);
+  assert.equal(reorder(3, undefined, "g4", { id: "g1", side: "before" }), null, "折叠组没有 DOM，拖不动");
+  assert.equal(reorder(3, undefined, "g1", null), null);
+});
+
+test("重排：替位组可拖 —— 按可见段排，它从临时占位变成顺序里的一员", () => {
+  const v = view(3, "g5");
+  assert.deepEqual(v.visible, ["g1", "g2", "g5"]);
+  assert.deepEqual(v.more, ["g3", "g4"]);
+  // 替位组拖到最前：它排第一，折叠组原序跟在后面。
+  assert.deepEqual(tabReorder(v, "g5", { id: "g1", side: "before" }), ["g5", "g1", "g2", "g3", "g4"]);
+  // 第一颗拖到替位组右边：可见段变成 [g2, g5, g1]，被它顶下去的组留在 ＋N（横条不涨颗）。
+  const next = tabReorder(v, "g1", { id: "g5", side: "after" });
+  assert.deepEqual(next, ["g2", "g5", "g1", "g3", "g4"]);
+  assert.equal(next.length, ORDER.length, "不增删组");
+  const after = tabModel({ order: next, max: 3, current: "g5" });
+  assert.deepEqual(after.visible, ["g2", "g5", "g1"], "落点 clamp 在可见段里，折叠组没被拽进前 3");
+  assert.deepEqual(after.more, ["g3", "g4"], "被顶下去的组回 ＋N");
+});
+
+test("重排：替位组拖回自己那一格 → null（不偷偷重排折叠组）", () => {
+  assert.equal(reorder(3, "g5", "g5", { id: "g2", side: "after" }), null);
+  assert.equal(reorder(3, "g5", "g1", { id: "g2", side: "before" }), null);
+});
+
+test("重排：名额 1 时没有别的落点 → null", () => {
+  const v = view(1, "g5");
+  assert.deepEqual(v.visible, ["g5"]);
+  assert.equal(tabReorder(v, "g5", { id: "g5", side: "after" }), null);
 });
