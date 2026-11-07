@@ -33,11 +33,13 @@
     "test:permission": "node bridge/tests/default-permission.mjs",
     "test:pending": "node --experimental-transform-types web/tests/pending-unit.mjs",
     "test:continue": "node --experimental-transform-types web/tests/continue-unit.mjs",
+    "test:bgruns": "node --experimental-transform-types bridge/tests/bgruns-unit.mjs",
     "test:failures": "node --experimental-transform-types web/tests/failures-unit.mjs",
     "test:continue:ui": "node bridge/tests/continue-ui.mjs",
     "test:attach:ui": "node bridge/tests/attach-picker.mjs",
     "test:done": "node bridge/tests/done-persist.mjs",
-    "test:skillblock": "node bridge/tests/skill-block.mjs"
+    "test:skillblock": "node bridge/tests/skill-block.mjs",
+    "test:lessons": "node --experimental-transform-types bridge/tests/lessons-unit.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

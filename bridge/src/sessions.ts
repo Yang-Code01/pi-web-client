@@ -8,6 +8,7 @@ import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, summarizeT
 import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
 import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions } from "./launch.ts";
+import { lessonFile } from "./lessons.ts";
 import { ensureDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
@@ -18,6 +19,7 @@ import { lifecycle, gcTickMs, capProtectMs, type Lifecycle, type LifecycleThresh
 import { absentFor } from "./presence.ts";
 import { sampleMemory } from "./runtime.ts";
 import { defaultPermission } from "./permissiondefault.ts";
+import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -180,6 +182,11 @@ export interface SessionState {
   permission?: PermissionMode;
   /** Another process (the pi terminal) holds the lock, so this one is read-only and undeletable. */
   locked?: boolean;
+  /**
+   * D170: 派出去的后台子代理还在跑。会话自己的 `running` 已经落回 false —— 这正是要单列一块的原因，
+   * 「继续」按钮和左栏徽标都靠它。纯内存态：桥重启就没了（会话文件里查不到 runner 的死活）。
+   */
+  bg?: BgView | null;
   /** Launch options chosen when the session was created on the web (#28), as one line. */
   launch?: string;
 }
@@ -698,7 +705,32 @@ export class Session extends EventEmitter {
   private stuckNoticed = false;
   private tailTimer: NodeJS.Timeout | null = null;
   private tailSig = "";
-  private draftCounter = 0;
+  /** D170：后台子代理。变化只往 `state.bg` 写一小块摘要（see `publishBg`）。 */
+  private readonly bgRuns = new BgRuns(() => this.publishBg());
+
+  /**
+   * D170: 后台子代理只有两件事会变 —— 又起了一个、结束了一个。折成 `state.bg` 的一小块再广播；
+   * 秒数由前端自己滴答，不走桥。
+   */
+  private publishBg(): void {
+    const next = this.bgRuns.view();
+    const cur = this.state.bg;
+    // 字段会随「只剩刚跑完的」增减，逐个比不如比串形（见 `BgView`：n/since/recent/finishedAt/lastMs）。
+    if (JSON.stringify(cur ?? null) === JSON.stringify(next ?? null)) return;
+    // touch:false —— 后台跑着不算「这个会话有新动静」，左栏的时间别跟着跳。
+    // 显式 `null` 而不是 `undefined`：`undefined` 过 JSON 会被整条丢掉，页面就永远清不掉提示条。
+    this.setState({ bg: next ?? null }, { touch: false });
+  }
+
+  /** D170 详情：这个会话的后台任务（含刚跑完的）。没接过手的会话返回空。 */
+  bgList(): BgRunView[] {
+    return this.bgRuns.list();
+  }
+
+  /** D170 详情：一个 run 的活动记录尾 + 最终答复（只读临时目录里的痕迹文件）。 */
+  bgLog(runId: string, limit?: number): { run?: BgRun; log?: string; out?: string } {
+    return this.bgRuns.readLog(runId, limit);
+  }  private draftCounter = 0;
   /** Set while close() is taking pi down on purpose: its exit and shutdown noise are expected. */
   private closing = false;
   private closeQuietly = false;
@@ -917,7 +949,7 @@ export class Session extends EventEmitter {
   }
 
   // ---------------------------------------------------------------- live (RPC)
-  async startLive(opts: { resume: boolean; cwd?: string; name?: string }): Promise<void> {
+  async startLive(opts: { resume: boolean; cwd?: string; name?: string; ws?: string }): Promise<void> {
     if (this.live) return;
     // A pi we are just spawning counts as activity on this session's clock: the watermark's
     // protection window (#79) starts here, whether or not pi has said anything yet.
@@ -939,9 +971,17 @@ export class Session extends EventEmitter {
     const args = ["--mode", "rpc"];
     if (process.env.PI_WEB_NO_EXT === "1") args.push("-ne");
     args.push("-e", approvalGatePath());
+    const cwd = opts.cwd || this.state.cwd || process.cwd();
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
     const launch = readLaunch(id);
     args.push(...launchArgs(launch));
+    // D164 延伸：这个工作区的老毛病跟着 spawn 一起进系统提示词（`PI_WEB_LESSONS=0` 可关）。
+    // 传文件而不是长文本：用户手填的那段自己就能占 20000 字，命令行塞不下两条这么长的。
+    // ws 由调用方（SessionManager）算：它手里才有工作区表，Session 自己不知道 cwd 属于哪个组。
+    if (process.env.PI_WEB_LESSONS !== "0" && opts.ws) {
+      const lessons = lessonFile(opts.ws);
+      if (lessons) args.push("--append-system-prompt", lessons);
+    }
     this.state.launch = describeLaunch(launch) || undefined;
     if (opts.resume && this.state.file) args.push("--session", this.state.file);
     else args.push("--session-id", id);
@@ -949,8 +989,6 @@ export class Session extends EventEmitter {
     // listing scans — that is what makes "no record" a fact rather than a filtered display.
     if (this.state.scratch) args.push("--session-dir", scratchSessionsDir());
     if (opts.name && !opts.resume) args.push("--name", opts.name);
-
-    const cwd = opts.cwd || this.state.cwd || process.cwd();
     this.rpc = new RpcChild({
       cli: this.cli,
       args,
@@ -1100,6 +1138,10 @@ export class Session extends EventEmitter {
             model: ev.message?.model,
           } as any;
           this.emitWs({ type: "item.add", sessionId: this.state.id, item });
+        } else if (ev.message?.role === "user" || ev.message?.role === "custom") {
+          // D170: runner 的完成通知也可能直接把空闲会话唤醒（不进队列）—— 这一条也要收。
+          // `custom` 是扩展 `pi.sendMessage()` 注进来的那条；不一起认，就只剩 queue_update 一条路。
+          this.bgRuns.noteText(contentText(ev.message?.content));
         }
         break;
       }
@@ -1188,6 +1230,8 @@ export class Session extends EventEmitter {
       }
       case "tool_execution_end": {
         this.closeQuestionnaire(String(ev.toolCallId ?? ""));
+        // D170: pi 只在结果里承认一次「有这么个 run」（`details.runId`）。
+        this.bgRuns.noteToolEnd(String(ev.toolName ?? ""), (ev.result as any)?.details, contentText(ev.result));
         {
           const at = this.items.findIndex((it) => it.kind === "tool" && it.toolCallId === String(ev.toolCallId));
           if (at >= 0) {
@@ -1215,6 +1259,8 @@ export class Session extends EventEmitter {
         break;
       }
       case "queue_update": {
+        // D170: 完成通知是 steering，不是普通消息 —— 从这儿把对应的 run 结束掉。
+        this.bgRuns.noteText([...(ev.steering ?? []), ...(ev.followUp ?? [])].map(String).join("\n"));
         this.setQueue(ev.steering, ev.followUp);
         break;
       }
@@ -1975,6 +2021,8 @@ export class Session extends EventEmitter {
     this.clearApprovals();
     this.clearAsks();
     this.stopTail();
+    // D170: runner 是 pi 的子进程，跟着它走；表留着只会在重开的会话里挂一堆假任务。
+    this.bgRuns.reset();
     if (this.rpc) {
       const rpc = this.rpc;
       this.closing = true;
@@ -2359,7 +2407,7 @@ export class SessionManager extends EventEmitter {
     await session.pinPermission();
     this.wire(session);
     this.sessions.set(id, session);
-    await session.startLive({ resume: false, cwd, name });
+    await session.startLive({ resume: false, cwd, ws: this.workspaces.groupFor(id, cwd), name });
     this.emit("ws", { type: "session.state", session: session.state });
     return session;
   }
@@ -2669,7 +2717,7 @@ export class SessionManager extends EventEmitter {
       }
     }
     await session.pinPermission();
-    await session.startLive({ resume: Boolean(session.state.file) });
+    await session.startLive({ resume: Boolean(session.state.file), ws: this.workspaces.groupFor(id, session.state.cwd ?? "") });
     this.emit("ws", { type: "session.state", session: session.state });
     if (session.state.origin !== "web") {
       // pi's TUI reads the session file once at startup: an open terminal will not see what the web adds.

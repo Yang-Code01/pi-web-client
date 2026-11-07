@@ -57,6 +57,7 @@ import {
   type NoteStatus,
 } from "./notes.ts";
 import { actOnFailure, mergeFailures, readLedger, undoFailures, type CommitItem, type FailAction } from "./failures.ts";
+import { allowRemind, reminderText } from "./lessons.ts";
 import { mcpAddRequest, newer, searchMcp, searchPackages, type McpInstallOption } from "./market.ts";
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { createWriteLock } from "./writelock.ts";
@@ -1447,6 +1448,29 @@ async function main(): Promise<void> {
             send({ type: "skills", sessionId: msg.sessionId ?? null, commands: list });
             return;
           }
+          // ------------------------------------------------ 后台子代理的详情 (D170)
+          case "bg.list": {
+            const sid = String(msg.sessionId ?? "");
+            // 和 `bg.log` 同一条底线：公网那只读历史的手不该看得到本机的 prompt（`task` 就是派活原话）。
+            if ((ws as any).publicReq) {
+              send({ type: "bg.list", sessionId: msg.sessionId ?? null, runs: [], error: "public" });
+              return;
+            }
+            send({ type: "bg.list", sessionId: msg.sessionId ?? null, runs: sessions.get(sid)?.bgList() ?? [] });
+            return;
+          }
+          case "bg.log": {
+            // 读临时目录里的 runner 痕迹。公网那只读历史的手不该看得到本机的 prompt 与命令输出。
+            const sid = String(msg.sessionId ?? "");
+            const runId = String(msg.runId ?? "").slice(0, 80);
+            if ((ws as any).publicReq) {
+              send({ type: "bg.log", sessionId: msg.sessionId ?? null, runId });
+              return;
+            }
+            const limit = Math.min(200_000, Math.max(1000, Number(msg.limit) || 8000));
+            send({ type: "bg.log", sessionId: msg.sessionId ?? null, runId, ...(sessions.get(sid)?.bgLog(runId, limit) ?? {}) });
+            return;
+          }
           // ------------------------------------------------ 技能商店 (D126)
           case "skill.store": {
             // Read-only (a search), so the tunnel may ask too: nothing is written and the bridge
@@ -1988,6 +2012,37 @@ async function main(): Promise<void> {
             } catch (err: any) {
               send({ type: "failures.saved", error: String(err?.message ?? err) });
             }
+            return;
+          }
+          // D164 延伸：同一轮里第二次撞上同一类失败时叫住模型。前端判「这一会话里第几次」，
+          // 桥这边再对一次账本（总数 ≥2 才算老毛病）与节流：不新开会话（没在跑就不提醒，
+          // 否则为了一句提醒冷启一个 pi），同一类每个会话只提醒一次。
+          case "failures.remind": {
+            const sid = String(msg.sid ?? "");
+            const key = String(msg.key ?? "");
+            const ws = String(msg.ws ?? "");
+            const text = reminderText({ tool: msg.tool, sig: msg.sig, why: msg.why, n: msg.n });
+            const sess = sid ? sessions.get(sid) : undefined;
+            // 回执（ok:false）让前端下一轮还能重试：桥丢了这条不等于「这一类此会话已提醒过」。
+            if (process.env.PI_WEB_LESSONS === "0" || !sess || !sess.live || !text || !ws) return;
+            let total = 0;
+            try {
+              total = readLedger(ws).entries.find((e) => e.key === key)?.count ?? 0;
+            } catch {
+              total = 0; // 读不到账本就不打断模型：这本来只是个提醒
+            }
+            if (total < 2 || !allowRemind(sid, key)) {
+              send({ type: "failures.reminded", sessionId: sid, key, ok: false });
+              return;
+            }
+            void sess.prompt(text, undefined, undefined, "followUp").then(
+              () => send({ type: "failures.reminded", sessionId: sid, key, ok: true }),
+              (err: any) => {
+                log(`failures.remind failed: ${err?.message ?? err}`);
+                send({ type: "failures.reminded", sessionId: sid, key, ok: false });
+              },
+            );
+            log(`failures.remind → ${sid} (${key})`);
             return;
           }
           case "lockext.get": {

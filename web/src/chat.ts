@@ -8,6 +8,23 @@ import { fmtTime, tr } from "./i18n/index.ts";
 
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
 const BASH_SHOW = 20000;
+/**
+ * 离底多少像素以内算「已经在底部」（D54）。同一道容差也用来判断「下面还有没有东西」
+ * （`hasRoomBelow`，D168）——两处必须是同一个数，否则会出现「钮说下面有东西、但滚不动」的缝。
+ */
+const BOTTOM_SLACK = 24;
+
+/**
+ * 桥注入的自动提醒（`bridge/src/lessons.ts` 的 `reminderText`）开头就是这个标记。
+ * 它必须是 ASCII：界面语言换掉的是抬头的字，「这是一条提醒」得靠一个不随语言变的东西认出来。
+ */
+const REMIND_MARK = "[pi-web:remind]";
+
+/** 提醒正文（去掉标记）；不是提醒就返回 null。 */
+function reminderBody(text: string): string | null {
+  if (!text.startsWith(REMIND_MARK)) return null;
+  return text.slice(REMIND_MARK.length).replace(/^\s+/, "");
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -117,7 +134,7 @@ export class ChatView {
    * 会话级失败回传（D164）：除了一张红卡，账本还要一份它。按 id 去重是 app 的事 ——
    * 同一张卡会在 live 事件、item.replace、reset 重放里各建一次，聊天区只画一张，账本也只能算一次。
    */
-  onFail: ((f: { id: string; tool: string; cmd: string; out: string; at?: string }) => void) | null = null;
+  onFail: ((f: { id: string; tool: string; cmd: string; out: string; at?: string; live?: boolean }) => void) | null = null;
   /** Following the stream: new content scrolls the view to the bottom. Cleared the moment the user says "I want to read up there". */
   private following = true;
   /** One pending frame at most — a burst of updates must cost one scroll, not one per update. */
@@ -222,23 +239,41 @@ export class ChatView {
     // The composer grows and shrinks under the transcript; while following, that must not unstick us.
     new ResizeObserver(() => {
       if (this.following) this.scheduleScroll();
+      // 视口变高 / 变矮可能让「下面还有东西」这个前提变了，那颗钮要跟着重算（见 hasRoomBelow）。
+      else this.renderJump();
     }).observe(root);
   }
 
   /** Distance left below the viewport, in px. Small enough that "at the bottom" means what it says. */
   private nearBottom(): boolean {
     const gap = this.root.scrollHeight - this.root.scrollTop - this.root.clientHeight;
-    return gap <= 24;
+    return gap <= BOTTOM_SLACK;
+  }
+
+  /**
+   * 转录下面还有东西可翻（多于 `BOTTOM_SLACK`）：短会话里上面滚不出旧内容，下面也没有
+   * 「回到底部」的去处，那颗钮在那儿只会骗人（D168）。两者共用同一道容差——差几像素不算。
+   */
+  private hasRoomBelow(): boolean {
+    return this.root.scrollHeight - this.root.clientHeight > BOTTOM_SLACK;
   }
 
   /** Wheel / key up: stop following and keep the follow closed while the smooth-scroll animation plays out. */
   private holdUp(): void {
+    // 短会话里上滚什么也翻不出来。以前照样关掉跟流，于是一格空滚就长出「↓ new」，
+    // 而下面其实空无一物——手势没有去处时，就当它没发生。
+    if (!this.following || !this.hasRoomBelow()) return;
     this.holdFollow = Math.max(this.holdFollow, performance.now() + 300);
     this.stopFollowing();
   }
 
+  /**
+   * 守卫放在这里而不是各个调用点：点缩略图（`jumpToTurn`）之类的第三条路也会走到这里，
+   * 而「不跟流 + 下面没东西」是个看不见也回不去的状态——钮被 `renderJump` 藏了，没有溢出就没有
+   * scroll 事件，`resumeFollowing` 永远不会被叫醒（D168）。
+   */
   private stopFollowing(): void {
-    if (!this.following) return;
+    if (!this.following || !this.hasRoomBelow()) return;
     this.following = false;
     this.renderJump();
   }
@@ -252,7 +287,10 @@ export class ChatView {
 
   private renderJump(): void {
     this.jump.classList.toggle("has-new", this.unread);
-    this.jump.hidden = this.following;
+    // 不跟流但下面没东西（内容缩水、窗口变高、或者本来就是空滚）：钮没有意义，别画。
+    // 跟流时短路，不读布局；只有「用户已经滚上去了」这条路上才会量一次 `scrollHeight`
+    // （delta 会经由 scrollToEnd 走到这里，一次文本重排的量级），换的是缩水时钮能立刻收。
+    this.jump.hidden = this.following || !this.hasRoomBelow();
     // The visible text is a glyph, so the meaning has to live somewhere readable.
     const label = this.unread ? tr("有新内容，回到底部") : tr("回到底部");
     this.jump.title = label;
@@ -611,7 +649,8 @@ export class ChatView {
         const name = card.querySelector(".name")?.textContent?.trim() || String(data.name ?? "tool");
         const cmd = card.querySelector(".cmd")?.textContent?.trim() || "";
         this.failureCard(key, { tool: name, cmd, out: String(data.result ?? "") }, Number(data.durationMs ?? 0));
-        this.onFail?.({ id: key, tool: name, cmd, out: String(data.result ?? "") });
+        // `live`: 这是刚跑完的一次（不是历史回放），只有它值得「当场叫住」。
+        this.onFail?.({ id: key, tool: name, cmd, out: String(data.result ?? ""), live: true });
       } else {
         this.noteAfter({
           id: `live-tool:${key}`,
@@ -745,8 +784,19 @@ export class ChatView {
       return box;
     }
 
-    const wrap = el("div", `msg ${item.kind}`);
+    const reminded = item.kind === "user" ? reminderBody(item.text) : null;
+    const wrap = el("div", `msg ${reminded !== null ? "remind" : item.kind}`);
     if (item.kind === "assistant") (wrap as HTMLElement & { _raw?: string })._raw = item.text;
+    // 桥注入的自动提醒（D169）：它是一条真正的 user 消息（pi 只有 prompt 通道），但说这话的不是人，
+    // 所以不画成气泡、不给复制/分叉，抬头用界面语言，正文才是桥写的那段（内容本身来自账本/诊断，是中文数据）。
+    if (reminded !== null) {
+      const head = el("div", "who");
+      head.textContent = tr("自动提醒 · 老毛病重犯 · {p1}", { p1: timeOf(item.ts) });
+      const body = el("div", "body");
+      body.textContent = reminded;
+      wrap.append(head, body);
+      return wrap;
+    }
     const who = el("div", "who");
     if (item.kind === "user") {
       who.textContent = tr("你 · {p1}", { p1: timeOf(item.ts) });
@@ -788,6 +838,8 @@ export class ChatView {
           if (next) this.collapsed.add(id);
           else this.collapsed.delete(id);
           apply(next);
+          // 折起来会把内容缩掉一大截：下面可能就此空了，那颗钮不能还留在那儿（D168）。
+          this.renderJump();
         };
         fold.onclick = toggle;
         peek.onclick = toggle;
@@ -907,6 +959,8 @@ export class ChatView {
     btn.onclick = () => {
       box.classList.toggle("folded");
       apply();
+      // 同 buildAssistant 里的折行：内容缩水后「下面还有东西」可能不再成立（D168）。
+      this.renderJump();
     };
     let tall = false;
     const measure = () => {
@@ -928,6 +982,11 @@ export class ChatView {
 
   private buildUserBody(item: UserItem): HTMLElement {
     const body = el("div", "body");
+    const reminded = reminderBody(item.text);
+    if (reminded !== null) {
+      body.textContent = reminded;
+      return body;
+    }
     // 命令画成药丸、用户自己写的话原样跟在后面，规则在 skill.ts（与桥端的折叠规则成对）。
     fillUserBody(body, item);
     if (item.images?.length) {
@@ -1004,6 +1063,8 @@ export class ChatView {
       this.cards.get(id)?.remove();
       this.cards.delete(id);
     }
+    // 抽走的可能是最后几屏内容：下面空了，钮就该收起（D168）。
+    this.renderJump();
   }
 
   private buildTool(item: ToolItem): HTMLElement {

@@ -2581,7 +2581,102 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 
 **验证：** `node bridge/tests/mk-file.mjs`（12 项：0 字节、不覆盖、只建一层、父目录、Windows 规则、`makeDir` 报错文案回归）；`node bridge/tests/attach-picker.mjs` 在临时桥上用 Playwright（`locale: "zh-CN"`）跑两处界面：预填 / 回车 / 高亮 / 停在原地 / 重名保留原内容 / Esc 收起 / 文件管理器同款按钮。
 
-## D168 工作区标签行 v3：`order` 是唯一顺序，固定 / 补位退役（#172 / #178）
+## D168 「回到底部 / ↓ new」只在下面真有东西时出现：转录装得下（余量 ≤ 24px）时上滚不算「掉队」（无票，用户口头报障）
+
+**症状**：一条短会话（转录整体装得下、下面空无一物），鼠标在转录上随便上滚一格，底部正中就长出「↓ new」；再点一下回到底部，视口其实一动不动。
+
+**根因**：`wheel` 上滚、`PageUp` / `ArrowUp` / `Home` 都无条件 `holdUp() → stopFollowing()`，而「不跟流」这个状态本身就会画出那颗钮（`renderJump` 只看 `following`）。随后流式输出的下一段内容进来，`scrollToEnd()` 在 `!following` 时把 `unread` 点亮，于是连 new 小标也来了 —— 三种状态（手势、跟流、未读）各自都对，合起来却是一句假话：下面什么都没有。
+
+**决定**（`web/src/chat.ts`）：
+
+1. 新增 `hasRoomBelow()`：`scrollHeight - clientHeight > BOTTOM_SLACK`。`BOTTOM_SLACK = 24` 与 `nearBottom()` 共用（**接续 D54**：D54 把 24 记成「可改：阈值在 `nearBottom()` 里」，现在它同时决定「下面还有没有东西」，两处必须同一个数，否则会出现「钮说下面有东西、但滚不动」的缝）。
+2. 守卫放在 `stopFollowing()` **本身**（`!following || !hasRoomBelow()` 直接返回），而不是每个调用点各写一遍：`wheel` / `PageUp` / `Home`（`holdUp`）、`touchmove` 那条 ≥ 6px 的拖拽、以及点缩略图的 `jumpToTurn` 都汇到这一个出口。`holdUp()` 另外先早退一次，让 `holdFollow` 在空滚时也不被推后。
+3. `renderJump()` 的 `hidden` 改成 `following || !hasRoomBelow()`：内容缩水、窗口变高之后「下面没东西了」也不再画那颗钮。补三次重算覆盖「内容自己缩水」：挂在 `root` 的 `ResizeObserver`（不跟流时）、折行之后（`foldable` 的按钮与助手回复的 `msg-fold`，一次能缩掉几屏）、以及 `remove()` 抽回排队消息之后。新内容进来本来就会经 `scrollToEnd()` 再渲染一次。
+
+**为什么先看余量而不是先看方向**：D94 已经把「恢复跟流」限定成「视口在往下走 + 300ms 冷却」，那解决的是**手势被拽回去**；这一条是反面 —— 手势根本没发生位移，却改了状态。判据只能是「有没有东西可滚」，方向、速度、事件种类在这里都无能为力。
+
+**可改**：24px 这个容差（`BOTTOM_SLACK`）；`hasRoomBelow()` 只看纵向余量，横向溢出（超长代码行）不影响判断。只挡住「下面没东西」这一面，没有改变 D94 的「往下滚 + 300ms 冷却才恢复跟流」；余量落在 24–48px 之间时，钮会出现，但往下移不超过 24px 就会恢复跟流、钮随即收起。
+
+**验证**：`node probes/jump-nothing-below.mjs`（11 项，真实布局 + 真实 `mouse.wheel` + CDP 触摸，用 `tools/paths.mjs` / `tools/playwright.mjs` 取路径与浏览器，D114）：短会话初始 / 上滚 3 格 / 上滚后再来内容 / 触摸下拖 120px 都不出钮且视口仍钉底；喂到溢出后上滚，钮照常出现、掉队期间来内容亮 new、点一下回到底并收起；容差带（`room = 10`）上滚不出钮，刚过容差（`room = 60`）就出钮——把 `BOTTOM_SLACK` 改成 0 或 100 都会有一项失败；不跟流时把长回答折起来（`item.replace` 落定后点 `.msg-fold`），钮跟着收起。改前 8 项版的 5 项 FAIL（上滚后 `jumpHidden:false`，随后 `hasNew:true`，与报障截图一致），改后 11 项全 PASS。回归：`probes/scroll-race.mjs`（D68 / D94 的触摸 + 滚轮断言）与 `probes/round10-scroll.mjs`（Q-018 跟流、600 条突发）仍全 PASS。
+
+## D169 失败账本回流进了会话：老毛病跟着 spawn 进系统提示词，同类再犯当场叫住（无票，用户要求，D164 的延伸）
+
+**问题：** D164 的账本只会事后总结 —— 面板按次数排序，人读完改流程，可下一次的模型看不见它。同一个 `cd <path>` 的坑在这台机器上踩到第 9 次，换一个会话照踩。用户的目标是「以后不会出现这种错误」，光有记录不够，记录得往回流动。
+
+**决定：**
+
+- **两处回流，一条总开关**：`PI_WEB_LESSONS=0` 同时关掉下面两块（默认开）。一开始想做成设置项、由桥读 `ui-prefs`，但那要多一条前后端往返与一次落库；这是「看着烦就关掉」的东西，env 一行够用，真要常改再升级成设置项。
+- **开场记性**：`Session.startLive` 在 `launchArgs` 之后追加 `--append-system-prompt <文件>`（pi 的这个参数可重复，不会顶掉用户手填的那段，`docs/cli.md:231`）。文件由 `lessonFile(ws)` 写到 `<state>/lessons/<ws 的 sha1 前 8>.prompt.md`，内容 = 「≥3 次、没标已修复/忽略、不是用户中断、原因单一」的类，按次数降序最多 6 行、整体 ≤1200 字。**传文件不传长文本**：用户手填的系统提示词自己就能占两万字符，命令行塞不下两条。
+- **只收单一原因的类**：归并键把几次不相干的失败折成一类时，`why`/`fix` 会张冠李戴（本特性之前账本里那类「9 次 cd」正是如此）。`causes.length > 1` 的类只进账本、不进提示词 —— 宁可不说，也不给一句错结论。
+- **当场叫住**：前端在**实时**失败（`live` 标记，历史回放不算）里算出同类在这个会话里的第几次；第 2 次、或账本里这一类已栽过 3 次时发 `failures.remind {ws, sid, key, tool, sig, why, n}`。桥侧再核一次账本（`count >= 2`）并节流（同类每会话一次、整会话 3 次），然后 `Session.prompt(text, …, "followUp")` —— 正跑着就排队，跑完立刻看到。**没在跑就不提醒**：为一句提醒冷启一个 pi 不值得。
+- **提醒长得像系统，不像用户**：pi 的 RPC 只有 `prompt`，所以它在会话文件里是一条 user 消息。正文以 ASCII 标记 `[pi-web:remind]` 开头，前端据此画成「自动提醒 · 老毛病重犯」的竖线块（不给复制/分叉），刷新后从文件回放也认得出。抬头走 `tr()`，正文（诊断原文、形状）保持中文数据 —— 与工具输出同一条约定。
+- **回执**：桥回 `{type:"failures.reminded", ok}`；`ok:false`（没在跑 / 账本不够 / 节流）时前端释放「在途」标记，下一轮同类失败还能再试一次，不会因为一条被丢掉就永久静音。
+
+**为什么：** 三条 —— 为什么进系统提示词而不是每条消息都提醒、为什么门槛是 3 次、为什么「当场叫住」走 prompt 而不是 notice。
+
+- 每轮都塞一句「你以前栽过」会让模型疑神疑鬼，也占掉本该给任务的注意力；spawn 期一次、内容稳定的清单，才是「这个工程的常识」。
+- 2 次可能只是手滑；账本里 3 次以上、且没有标已修复/忽略，才算「这个仓库的老毛病」。同一个门槛给提示词与提醒共用，用户只需要理解一套规则。
+- notice 是瞬时的、不进模型上下文 —— 模型看不见就等于没提醒。
+
+**代价 / 可改：**
+
+- 提示词是 spawn 时的快照：会话开久了，账本新入的类不会追进这一轮；下一次唤醒（休眠后）才生效。
+- 账本里同一类累计到 3 次之前不出现；偶发失败永远只是记录。
+- 提醒文案是桥写的中文，en/ja 界面里抬头是译文、正文仍是中文（诊断与形状本来就是中文数据）。
+- 每个会话最多 3 次提醒：同类重犯第 4 次不会再有声 —— 那时该由人改流程了。
+- `lessonFile` 每次 spawn 重写一次文件；多会话同时 spawn 会各写一遍同样内容（原子 rename，不会读到半截）。
+
+**验证：** `npm run test:lessons`（10 项：门槛/顺序/长度/单一原因/文件落盘/文案/节流）；`node bridge/tests/lessons-spawn.mjs`（8 项，真 bridge + 脚本化 pi：首 spawn 不带参数 → 入账 3 次后重开 argv 里出现 `--append-system-prompt` 且文件内容对得上 → `failures.remind` 让 pi 真的收到一条提醒（回执 ok:true）→ 同 key 再发回执 ok:false 且不再重复）；`node bridge/tests/failures-ui.mjs` 28/28 不回归；`npm --prefix web run typecheck`（含 i18n-check）。
+
+## D170 后台子代理：会话 settle 了也要说明白，并先把「继续」按住（无票，用户报的）
+
+**问题：** 让 pi 派一个后台子代理（`acp_delegate` / `subagent`，async）之后，界面立刻变回「空闲」：没有提示条，左栏那枚徽标写「完成」，输入框上方的「继续」还能点。用户看到的是一条已经收工的会话，实际后台还在跑；这时点「继续」等于插队多推一轮 —— 而 pi 本来就会在 runner 回来时自己接着做。
+
+**根因：** 桥里 `running` 只由 pi 的 `agent_start … agent_settled` 决定，而**子代理不是这一轮的一部分**：派出去的那次工具调用结束，pi 这一轮就 `agent_settled` 了，之后直到 completion 通知进来，协议里**再没有任何**「我还在忙」的信号。会话文件里那个 toolResult 的 `details.status` 也永远停在 `running`，读它没有意义。
+
+**决定：**
+
+- **桥端按会话记一张后台任务表**（新文件 `bridge/src/bgruns.ts`，`class BgRuns`）。两个口喂它：
+  - `noteToolEnd(tool, details, text)` —— `tool_execution_end` 的 `details` 里认 `runId`（acp_delegate 给 `{kind:"delegate", runId, agent}`，pi-subagents 给 `{runId, asyncDir}`）；没有 `details.runId` 时退回结果文本里的 `` runId `…` ``。**只有「刚开跑」的结果才算开一条**（`details.kind === "delegate"` / 有 `asyncDir` / 文本带 `Running in the background`），否则把 wait 的调用示例抄进结果就会造出幽灵任务。
+  - `noteText(text)` —— 结束信号只有 runner 自己注入回会话的那条消息（`[acp_delegate completed] … (runId `…`)`、`[acp_delegate FAILED ⚠️] …`）。它可能作为 steering 排进队列（`queue_update`），也可能直接把空闲会话唤醒（`message_start` 的 user 角色），**两头都接**。只在 runId 已认识时才动手，所以误判最多提前收条提示，不会凭空造任务。
+- **状态放在 `SessionState.bg`**：`{n, agent?, since}`，变了才 `setState`，且 `touch: false`（后台跑着不该把左栏的「几分钟前」刷新一遍）。走现成的 `session.state` 广播 + hello/list，所以刷新页面、换设备都还在 —— 但它**纯内存**，桥重启就没了（会话文件里查不到 runner 的死活，这是这一版接受的代价）。
+- **清空时写 `null` 而不是 `undefined`**：`undefined` 过 JSON 会被整条丢掉，页面就永远收不掉提示条（实测踩到过）。
+- **前端两处，同一份判据：**
+  - `web/src/continue-state.ts` 的 `continueState()` 里加一条 `bgBusy(s)` → `"off"`（灰，不是藏）。这个纯函数是「继续」的唯一判据口，`app.ts` 不另写判断。
+  - 输入框上方一条提示：`● 子代理运行中 · researcher · 已跑 1:23`（`.bg-bar`，插在 `.row` 之前）。秒数挂在已有的 `startClock()` 里滴答，不重画、不轮询。
+  - 左栏徽标在「运行中」与「完成」之间加一档「后台」/「后台 N」（`sessionBadge()`，`cls` 复用 `run`）。
+- **不读盘**：D133 那套（`.activity` 的 mtime + `status.json`）留给「卡片 + 步数 + 看过程」那一版；这一版只要「在不在跑、跑了多久」，读盘反而多一层可能读错的东西。`BgRun` 往外多带字段就能接上。
+
+**代价 / 可改：**
+
+- **桥重启后提示条会消失**（runner 还在跑，但表是内存的）。刷新页面、换设备、重新打开会话都不会丢 —— `bg` 在会话状态里，跟 `running` 一样从 `hello` / `session` 快照里来。要跨重启就得把 runId 落盘，并解决「文件里查不出死活」—— 那时大概得回到 D133 的痕迹文件。
+- **一个从没报过完成的 run 会在 6 小时后被判死**（`SILENT_DEAD_MS`），界面上就是提示条自己收掉。真跑 6 小时以上的任务会被误判，但比「永远挂着一句运行中」好。
+- **跑完的 run 留 10 分钟**再丢（`KEEP_DONE_MS`）：这段时间提示条翻成「子代理已结束 · 用了 3:21」，点得开看最终输出，但**不再拦「继续」**。过后从表上、提示条上一起消失（`.out` 还在盘上，只是界面不再指过去）。
+- **只覆盖会回报 `runId` 的两种派发**。别的「后台还在干活」形态（比如扩展自己起的定时任务）还没有口子。
+
+**验证：** `npm run test:bgruns`（19 项纯函数：acp/subagents 两条路、重复 runId 不重复记、完成/失败/取消都收、无 runId 不记账、误导性文本不造幽灵任务、`since` 取最早、跑完转「已结束」且不再拦「继续」、线上形状不泄绝对路径、痕迹文件读尾与 `ACP_DIR` 前缀校验）；`npm run test:continue`（13 项，多出 3 项 bg 判据）；`node bridge/tests/continue-ui.mjs`（**40 项**：提示条出现/写着 researcher/在输入框上方/计时在走/「继续」灰/左栏是「后台」；点横幅开详情、写着任务原文、过程里读到手写的活动记录尾、关掉就收；点徽标也能开；**刷新页面后提示条与灰按钮都还在**；completion 通知（`role: "custom"` 那条）到了就翻成「已结束」、不再拦「继续」、样子不再闪；这时点开还能看到「已完成 · 用了 0:01」与 `.out` 里的最终输出）。截图 `.scratch/shots/continue-bg*.png`。
+
+**补：点开看详情（同一条 D170，用户问了「能点开看详细信息么」）**
+
+入口两个，开的是同一屏：输入框上方那条横幅（整条可点，`role="button"`，Enter/空格也行）、左栏「后台」徽标（`stopPropagation`，不然会顺带把卡片自己的「打开这个会话」也触发）。弹层用现成的 `.sheet`。
+
+里面一屏一张卡片，只有三块：
+
+- **概览**：agent、派出去的原话（`details.task`，没有就取结果里的 `Task:` 行）、runId、状态 + 耗时（**跑完用 `endedAt - startedAt` 报总耗时，写「用了 3:21」**；还在跑才写「已跑」）。
+- **过程**：runner 自己写的 `%TEMP%\acp-delegate\<runId>.activity` 尾巴（8000 字）。前端 1.5 秒轮询一次，内容没变就不动 DOM；贴着底看的时候自动跟到底，往上翻就不打扰。
+- **最终输出**：跑完之后同目录的 `.out`（那正是子代理最后那段答复）。
+
+桥加了两个只读口：`bg.list {sessionId}` → 这个会话的 run 列表，`bg.log {sessionId, runId, limit}` → `{log, out}`。
+
+**读盘处刻意收窄**：`tail()` 只允许读 `%TEMP%\acp-delegate\` 底下的路径（`resolve` 后前缀校验，挡住 `..`）。路径本身是从 pi 的工具结果文本里拾来的 —— 那是一段可能被写邪的东西，不能让它一次注入就变成任意文件读取。公网（`ws.publicReq`）一律拒绝：那只是看历史的手，不该看到本机的 prompt 与命令输出。文件还没写出来 / 已删 / 超上限，都只是少一段，不当错误报。
+
+**为什么轮询而不是推**：桥里没有「文件变了」的通知（D133 那套也是轮询 mtime），而这一屏只在打开时有人看 —— 关掉就 `clearInterval`，比常驻一个 fs.watch 便宜，也不会在没人看时读盘。
+
+**读尾不读全**：`tail()` 只读最后一段（`readSync` 从 `size - limit` 开始），不是 `readFileSync` 整份再截 —— 一个跑了几小时的 runner 的 `.activity` 可以很大，而桥是单线程的，1.5 秒轮一次不能拿来整文件读。
+
+`acp_delegate` 的结果文本里其实带着 `Live activity is streaming to \`…\``，**优先用它**（哪天目录换了也不用改代码），拿不到才退回按 runId 拼的默认路径。
+
+## D171 工作区标签行 v3：`order` 是唯一顺序，固定 / 补位退役（#172 / #178）
 
 **问题：** #118 / #122 的标签行有两套顺序来源：用户固定的 `pinned` 列表管「谁在前面」，剩下的「补位组」按最近活动 / 左栏顺序填。固定还带名额语义（固定组占满 N 颗时当前组多画一颗），于是同一组会因活动时间换位、固定组与补位组的边界随名额变化，用户没法用一句话说出「横条为什么是这个顺序」。#172 把模型改成一份全量 `order`，本票收尾并清掉旧模型的代码、文案与探针旧账。
 

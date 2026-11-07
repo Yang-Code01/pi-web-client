@@ -17,6 +17,7 @@
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
@@ -231,6 +232,100 @@ try {
   check("英文界面发出去的仍是字面「继续」", sentEn?.text === "继续", JSON.stringify(sentEn?.text));
   check("英文界面草稿也在", (await enPage.locator(".composer textarea").inputValue()) === "english draft");
   await en.close();
+  // -- E. 后台子代理（D170）：会话 settle 了，runner 还在跑 ------------------
+  // 用户报的就是这一段：页面看着空闲（pi.status 已是 false），既没有提示，又能点「继续」。
+  await turn("BGSTART please");
+  const bar = page.locator(".bg-bar");
+  for (let i = 0; i < 100; i++) {
+    if (await bar.count()) break;
+    await sleep(100);
+  }
+  check("输入框上方出现提示条", (await bar.count()) === 1);
+  const barText = await page.locator(".bg-bar .bg-text").innerText().catch(() => "");
+  check("提示条说是子代理在跑", /子代理运行中/.test(barText), JSON.stringify(barText));
+  check("提示条写着是谁", /researcher/.test(barText), JSON.stringify(barText));
+  check(
+    "提示条在输入框上方",
+    await page.evaluate(() => {
+      const b = document.querySelector(".bg-bar").getBoundingClientRect();
+      const r = document.querySelector(".composer .row").getBoundingClientRect();
+      return b.bottom <= r.top + 1;
+    }),
+  );
+  check("计时在走", /\d+:\d\d/.test(await page.locator(".bg-bar .bg-elapsed").innerText()), await page.locator(".bg-bar .bg-elapsed").innerText());
+  check("「继续」灰了 —— pi 会在它回来时接着做", await button.isDisabled());
+  const badges = await page.locator(".badge").allInnerTexts().catch(() => []);
+  check("左栏那枚是「后台」而不是「完成」", badges.includes("后台"), JSON.stringify(badges.slice(0, 8)));
+  await shot("bg", await composerClip());
+
+  // -- F. 点开看详情（D170）：概览 + 活动记录尾 ---------------------------------
+  // 假 pi 自己会把那份活动记录写进 `%TEMP%\acp-delegate`（跟真 runner 一个地方），这里只验桥读到了。
+  await bar.click();
+  let sheet = page.locator(".sheet.bg-sheet");
+  await sheet.waitFor({ timeout: 5000 }).catch(() => {});
+  check("点横幅能开详情", (await sheet.count()) === 1);
+  check("标题是「后台子代理」", /后台子代理/.test(await page.locator(".sheet.bg-sheet .sheet-title").innerText().catch(() => "")));
+  const cardText = await page.locator(".bg-run").innerText().catch(() => "");
+  check("详情里写着是谁", /researcher/.test(cardText), JSON.stringify(cardText.slice(0, 120)));
+  check("详情里写着派了什么活", /look at the files/.test(cardText), JSON.stringify(cardText.slice(0, 120)));
+  check("详情里带着 runId", /del_fake/.test(cardText));
+  for (let i = 0; i < 40; i++) {
+    if (/continueState/.test(await page.locator(".bg-run-log").innerText().catch(() => ""))) break;
+    await sleep(100);
+  }
+  const logText = await page.locator(".bg-run-log").innerText().catch(() => "");
+  check("过程里能看到它在跑什么", /continueState/.test(logText), JSON.stringify(logText.slice(0, 120)));
+  check("还在跑的时候没有「最终输出」", (await page.locator(".bg-run-out").isVisible().catch(() => false)) === false);
+  await shot("bg-sheet", { x: 0, y: 0, width: 900, height: 620 });
+  await page.locator(".sheet.bg-sheet .sheet-head button").click();
+  check("关掉之后详情不在了", (await page.locator(".sheet.bg-sheet").count()) === 0);
+
+  // 另一个入口：左栏那枚「后台」徽标。
+  const bgBadge = page.locator(".badge.clickable").first();
+  check("「后台」徽标可点", (await bgBadge.count()) === 1);
+  await bgBadge.click();
+  await page.locator(".sheet.bg-sheet").waitFor({ timeout: 5000 }).catch(() => {});
+  check("点徽标也能开详情", (await page.locator(".sheet.bg-sheet").count()) === 1);
+  await page.locator(".sheet.bg-sheet .sheet-head button").click();
+
+  // -- G. 刷新页面之后（D170）：提示条还在，因为它是会话状态而不是前端记忆 -------------
+  await page.reload();
+  const bar2 = page.locator(".bg-bar");
+  for (let i = 0; i < 150; i++) {
+    if (await bar2.count()) break;
+    await sleep(100);
+  }
+  check("刷新后提示条还在", (await bar2.count()) === 1);
+  check("刷新后「继续」还是灰的", await button.isDisabled());
+  await shot("bg-refresh", await composerClip());
+
+  // -- H. 跑完了（D170）：提示条翻成「看结果」，但「继续」不再被拦 -------------------
+  await turn("BGDONE now");
+  for (let i = 0; i < 100; i++) {
+    if (/已结束/.test(await page.locator(".bg-bar .bg-text").innerText().catch(() => ""))) break;
+    await sleep(100);
+  }
+  const idleText = await page.locator(".bg-bar .bg-text").innerText().catch(() => "");
+  check("完成通知一到，提示条翻成「已结束」", /子代理已结束/.test(idleText), JSON.stringify(idleText));
+  check("跑完了就不再拦「继续」", !(await button.isDisabled()));
+  check("跑完的样子不再闪", (await page.locator(".bg-bar.idle").count()) === 1);
+  await shot("bg-done", await composerClip());
+
+  // 结果还能点开看：这是「最终输出」唯一的正常路径 —— 没人在跑的时候点那一下。
+  await bar2.click();
+  sheet = page.locator(".sheet.bg-sheet");
+  await sheet.waitFor({ timeout: 5000 }).catch(() => {});
+  check("跑完之后徽标/横幅还点得开", (await sheet.count()) === 1);
+  const doneText = await page.locator(".bg-run").innerText().catch(() => "");
+  check("卡片上写「已完成」", /已完成/.test(doneText), JSON.stringify(doneText.slice(0, 160)));
+  check("是总耗时不是「结束至今」", /用了/.test(doneText), JSON.stringify(doneText.slice(0, 160)));
+  check("最终输出出来了", /三条接口都已对齐/.test(await page.locator(".bg-run-out").innerText().catch(() => "")));
+  await shot("bg-done-sheet", { x: 0, y: 0, width: 900, height: 620 });
+  await page.locator(".sheet.bg-sheet .sheet-head button").click();
+
+  // 清理：给下一个人留干净的临时目录。
+  fs.rmSync(path.join(os.tmpdir(), "acp-delegate", "del_fake.activity"), { force: true });
+  fs.rmSync(path.join(os.tmpdir(), "acp-delegate", "del_fake.out"), { force: true });
 } catch (err) {
   check(`没跑完：${String(err?.message ?? err).split("\n")[0]}`, false);
   if (bridgeLog) log("bridge:", bridgeLog.slice(-1500));
