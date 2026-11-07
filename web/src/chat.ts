@@ -612,6 +612,16 @@ export class ChatView {
     }
   }
 
+  /**
+   * #199: 桥还替我们拿着、没交给 pi 的用户消息条数。启动期状态行据此决定要不要给「撤回」——
+   * 没有可退的东西时那颗按钮不该出现。
+   */
+  bootingCount(): number {
+    let n = 0;
+    for (const entry of this.users.values()) if (entry.item.pending === "booting") n += 1;
+    return n;
+  }
+
   /** 运行态变了：只有最后一枚用户消息会因为「处理中」而变样。 */
   setRunning(running: boolean): void {
     if (this.running === running) return;
@@ -1152,10 +1162,15 @@ export class ChatView {
 
   /** Bubbles of queued messages that were pulled back into the editor (#9, #14). */
   remove(ids: string[]): void {
+    let droppedUser = false;
     for (const id of ids) {
       this.cards.get(id)?.remove();
       this.cards.delete(id);
+      // #199: 用户气泡被撤掉时，`users` 里那枚也要跟着走 —— 否则 bootingCount() 还在替它
+      // 数数，状态行的「撤回」撤完了也不肯消失。
+      if (this.users.delete(id)) droppedUser = true;
     }
+    if (droppedUser) this.paintPending();
     // 抽走的可能是最后几屏内容：下面空了，钮就该收起（D168）。
     this.renderJump();
   }

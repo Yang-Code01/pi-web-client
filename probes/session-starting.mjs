@@ -7,7 +7,9 @@
  *   1. 启动期：状态行仍是「pi 正在启动（加载扩展，通常几秒）…」、没有中断按钮，但输入框可用、
  *      placeholder 是平常那句；
  *   2. 发出去的这条立刻出现，带「正在启动 pi…」；每一页只有一份（乐观气泡按 clientId 认领）；
- *   3. `starting` 翻假 + 运行态为真 → 同一枚气泡变「处理中…」，本轮结束消失。
+ *   3. 启动期撤回（#199）：Esc 与状态行右侧那颗「撤回」都把这批消息按发出顺序退回输入框
+ *      （空行分隔）、气泡在两个标签页里同帧消失，且**不发 abort** —— pi 继续启动；
+ *   4. `starting` 翻假 + 运行态为真 → 同一枚气泡变「处理中…」，本轮结束消失。
  *
  * 桩桥照真桥的形状回 `item.add` / `item.replace`，不收 pi，所以这一秒钟级、可重复。
  *
@@ -99,6 +101,8 @@ const broadcast = (payload) => {
   for (const ws of wss.clients) if (ws.readyState === 1) ws.send(JSON.stringify(payload));
 };
 let userSeq = 1;
+/** 页面发上来的命令：撤回要证明「发的是 clearQueue，不是 abort」。 */
+const cmds = [];
 /** 最近一次收下的那条，模拟桥把它交出去时补的那枚 `item.replace`（pending 翻 "sent"）。 */
 let lastUser = null;
 wss.on("connection", (ws) => {
@@ -109,6 +113,7 @@ wss.on("connection", (ws) => {
     } catch {
       return;
     }
+    cmds.push(msg);
     if (msg.type === "subscribe") {
       ws.send(JSON.stringify({ type: "session", sessionId: base.id, state: { ...base, starting: true }, items, approvals: [], asks: [], budget: null }));
       return;
@@ -120,6 +125,15 @@ wss.on("connection", (ws) => {
       items.push(item);
       lastUser = item;
       broadcast({ type: "item.add", sessionId: base.id, item, clientId: msg.clientId });
+      return;
+    }
+    if (msg.type === "clearQueue") {
+      // 真桥的撤回：启动期收下的整批消息按发出顺序退回输入框，气泡同一帧删掉（#199）。
+      const booting = items.filter((it) => it.pending === "booting");
+      if (!booting.length) return;
+      items.splice(0, items.length, ...items.filter((it) => it.pending !== "booting"));
+      broadcast({ type: "queue.restore", sessionId: base.id, texts: booting.map((it) => it.text) });
+      broadcast({ type: "item.remove", sessionId: base.id, ids: booting.map((it) => it.id) });
       return;
     }
   });
@@ -162,17 +176,26 @@ try {
   check(!String(placeholder).includes("正在启动"), `placeholder 是平常那句，不是「pi 正在启动…」（${placeholder}）`);
   await page.screenshot({ path: path.join(OUT, "1-starting.png") });
 
-  // ---- 2. 启动窗口里发一条：气泡立刻出现，带「正在启动 pi…」
-  const TEXT = "启动期发的第一条";
-  await box.fill(TEXT);
-  await box.press("Enter");
-  const bubble = page.locator(".msg.user", { hasText: TEXT });
-  await until(async () => (await bubble.count()) >= 1, 8000, "user bubble");
-  await until(async () => (await bubble.locator(".msg-pending").innerText().catch(() => "")).includes("正在启动 pi"), 8000, "booting badge");
-  check((await bubble.count()) === 1, "只有一份气泡（乐观那条按 clientId 认领了桥的广播）");
+  // ---- 2. 启动窗口里连发两条：气泡立刻出现，带「正在启动 pi…」
+  const TEXT_A = "启动期第一句";
+  const TEXT_B = "启动期第二句";
+  for (const text of [TEXT_A, TEXT_B]) {
+    await box.fill(text);
+    await box.press("Enter");
+  }
+  const bubbleA = page.locator(".msg.user", { hasText: TEXT_A });
+  const bubbleB = page.locator(".msg.user", { hasText: TEXT_B });
+  await until(async () => (await bubbleA.count()) >= 1 && (await bubbleB.count()) >= 1, 8000, "user bubbles");
+  await until(async () => (await bubbleB.locator(".msg-pending").innerText().catch(() => "")).includes("正在启动 pi"), 8000, "booting badge");
+  check((await bubbleA.count()) === 1 && (await bubbleB.count()) === 1, "两条各一份气泡（乐观那条按 clientId 认领了桥的广播）");
   check((await box.inputValue()) === "", "回车真的发出去了（输入框被清空）");
-  check(!(await bubble.locator(".msg-pending").getAttribute("class"))?.includes("failed"), "启动中的徽标是「进行中」样式，不是报错");
+  check(!(await bubbleA.locator(".msg-pending").getAttribute("class"))?.includes("failed"), "启动中的徽标是「进行中」样式，不是报错");
   check((await page.locator(".notice, .msg.notice").count()) === 0, "没有错误提示");
+  // #199: 有排队消息时状态行右侧多一颗「撤回」，Esc 是同一个动作。
+  const withdrawBtn = page.locator(".hint-status button", { hasText: "撤回" });
+  await until(async () => (await withdrawBtn.count()) >= 1, 8000, "withdraw button");
+  check((await withdrawBtn.innerText()).includes("撤回"), "状态行给了「撤回」（启动期也有东西可退）");
+  check((await page.locator('.hint-status [data-act="interrupt"]').count()) === 0, "它不是中断按钮（没有 data-act=interrupt）");
   await page.screenshot({ path: path.join(OUT, "2-booting.png") });
 
   // ---- 3. 另一个标签页看到的是同一份：一样的气泡、一样的说法
@@ -181,25 +204,69 @@ try {
   await page2.goto(BASE, { waitUntil: "networkidle" });
   await until(async () => (await page2.locator(".session-card").count()) >= 1, 8000, "page2 session card");
   await page2.locator(".session-card").first().click();
-  const bubble2 = page2.locator(".msg.user", { hasText: TEXT });
-  await until(async () => (await bubble2.count()) >= 1, 8000, "page2 bubble");
-  check((await bubble2.count()) === 1, "第二个标签页也只有一份气泡");
-  check((await bubble2.locator(".msg-pending").innerText()).includes("正在启动 pi"), "第二个标签页的说法一样（正在启动 pi…）");
+  const bubbleA2 = page2.locator(".msg.user", { hasText: TEXT_A });
+  const bubbleB2 = page2.locator(".msg.user", { hasText: TEXT_B });
+  await until(async () => (await bubbleA2.count()) >= 1 && (await bubbleB2.count()) >= 1, 8000, "page2 bubbles");
+  check((await bubbleA2.count()) === 1 && (await bubbleB2.count()) === 1, "第二个标签页也是各一份气泡");
+  check((await bubbleB2.locator(".msg-pending").innerText()).includes("正在启动 pi"), "第二个标签页的说法一样（正在启动 pi…）");
 
-  // ---- 4. pi 就绪、这一轮跑起来：同一枚徽标变「处理中…」
+  // ---- 4. Esc：两条按发出顺序回到输入框，两个标签页的气泡同帧消失，pi 的启动不受影响
+  const beforeEsc = cmds.length;
+  await box.focus();
+  await box.press("Escape");
+  await until(async () => (await box.inputValue()) === `${TEXT_A}
+
+${TEXT_B}`, 8000, "esc restore");
+  check(true, "Esc 把两条按发出顺序放回输入框，空行分隔");
+  await until(async () => (await bubbleA.count()) === 0 && (await bubbleB.count()) === 0, 8000, "esc removes bubbles");
+  check(true, "气泡跟着没了（不留下一条假的「已发送」）");
+  await until(async () => (await bubbleA2.count()) === 0 && (await bubbleB2.count()) === 0, 8000, "page2 bubbles gone");
+  check(true, "另一个标签页的气泡同步消失");
+  const escCmds = cmds.slice(beforeEsc);
+  check(escCmds.some((m) => m.type === "clearQueue"), "Esc 发的是撤回（clearQueue）");
+  check(!escCmds.some((m) => m.type === "abort"), "Esc 撤回没有发 abort");
+  check((await page.locator(".hint-status").innerText()).includes("正在启动"), "撤回之后 pi 继续启动，状态行照旧（不用二次等待）");
+  check((await withdrawBtn.count()) === 0, "没有排队消息时「撤回」自己消失");
+  await page.screenshot({ path: path.join(OUT, "3-withdrawn-esc.png") });
+
+  // ---- 5. 状态行那颗「撤回」：和 Esc 等效（触屏、键盘失灵时用）
+  const TEXT_C = "用按钮撤回的这一条";
+  await box.fill(TEXT_C);
+  await box.press("Enter");
+  const bubbleC = page.locator(".msg.user", { hasText: TEXT_C });
+  await until(async () => (await bubbleC.count()) >= 1, 8000, "button-path bubble");
+  await until(async () => (await withdrawBtn.count()) >= 1, 8000, "withdraw button back");
+  const beforeClick = cmds.length;
+  await withdrawBtn.click();
+  await until(async () => (await box.inputValue()) === TEXT_C, 8000, "button restore");
+  check(true, "点「撤回」把这条放回输入框");
+  await until(async () => (await bubbleC.count()) === 0, 8000, "button removes bubble");
+  check(true, "气泡同步删掉");
+  const clickCmds = cmds.slice(beforeClick);
+  check(clickCmds.some((m) => m.type === "clearQueue") && !clickCmds.some((m) => m.type === "abort"), "按钮发的也是 clearQueue，不是 abort");
+  check((await page.locator(".hint-status").innerText()).includes("正在启动"), "撤回完 pi 还在启动，不需要再等一次");
+  await page.screenshot({ path: path.join(OUT, "4-withdrawn-button.png") });
+
+  // ---- 6. pi 就绪、这一轮跑起来：同一枚徽标变「处理中…」
   // 桥把这条交给 pi 的时候先补一枚 item.replace（`booting` → `sent`），运行态随后才翻上来。
+  const TEXT_D = "交给 pi 的那条";
+  await box.fill(TEXT_D);
+  await box.press("Enter");
+  const bubbleD = page.locator(".msg.user", { hasText: TEXT_D });
+  await until(async () => (await bubbleD.count()) >= 1, 8000, "sent-path bubble");
+  check(lastUser?.text === TEXT_D, "桩桥确实收到了这条 prompt");
   broadcast({ type: "item.replace", sessionId: base.id, id: lastUser.id, item: { ...lastUser, pending: "sent" } });
   broadcast({ type: "session.state", session: { ...base, starting: false, running: true } });
-  await until(async () => (await bubble.locator(".msg-pending").innerText().catch(() => "")).includes("处理中"), 8000, "running badge");
+  await until(async () => (await bubbleD.locator(".msg-pending").innerText().catch(() => "")).includes("处理中"), 8000, "running badge");
   check(true, "交给 pi 之后徽标变成「处理中…」");
   check((await page.locator(".hint-status").innerText()).includes("正在启动") === false, "状态行不再是启动文案");
-  await page.screenshot({ path: path.join(OUT, "3-running.png") });
+  await page.screenshot({ path: path.join(OUT, "5-running.png") });
 
-  // ---- 5. 本轮结束：徽标消失
+  // ---- 7. 本轮结束：徽标消失
   broadcast({ type: "session.state", session: { ...base, starting: false, running: false } });
-  await until(async () => (await bubble.locator(".msg-pending").count()) === 0, 8000, "badge gone");
+  await until(async () => (await bubbleD.locator(".msg-pending").count()) === 0, 8000, "badge gone");
   check(true, "本轮结束之后徽标消失");
-  await page.screenshot({ path: path.join(OUT, "4-done.png") });
+  await page.screenshot({ path: path.join(OUT, "6-done.png") });
 } catch (err) {
   failed += 1;
   console.error("ERROR", err?.message ?? err);

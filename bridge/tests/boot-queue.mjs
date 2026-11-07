@@ -214,6 +214,92 @@ try {
   check(/没有发出去/.test(String(notice.text)), `给了一句可读的说明（「${notice.text}」）`);
   check(!seen.some((m) => m.type === "item.remove" && (m.ids ?? []).includes(added2.item.id)), "失败时气泡不被撤掉");
 
+  // ---------------------------------------------------------------- C. 启动期撤回：整批退回、气泡同帧清空、pi 不被打扰
+  log("C. 建第三个会话，启动窗口里连发三条，然后撤回（clearQueue）");
+  const mark3 = seen.length;
+  send({ type: "create", cwd: REPO, name: "撤回来的那个" });
+  const created3 = await waitFor(
+    (m) => m.type === "session" && m.state?.name === "撤回来的那个" && seen.indexOf(m) >= mark3,
+    20000,
+    "第三个 session 帧",
+  );
+  const sid3 = created3.sessionId ?? created3.state?.id;
+  check(created3.state?.starting === true, "第三个会话也在启动窗口里");
+  const TEXTS3 = ["第一句：先看架构", "第二句：再补测试", "第三句：最后跑一遍"];
+  const added3 = [];
+  for (const [i, text] of TEXTS3.entries()) {
+    const from = seen.length;
+    send({ type: "prompt", sessionId: sid3, text, clientId: `local:3:${i}` });
+    added3.push(
+      await waitFor((m) => m.type === "item.add" && m.sessionId === sid3 && m.item?.text === text && seen.indexOf(m) >= from, 2000, `第三个会话的 item.add ${i}`),
+    );
+  }
+  check(added3.every((m) => m.item?.pending === "booting"), "三条都还在桥里排队（pending=booting）");
+  check(!records().some((r) => r.t === "prompt" && TEXTS3.includes(r.text)), "撤回之前桩 pi 一封都没收到");
+
+  const restoreFrom = seen.length;
+  send({ type: "clearQueue", sessionId: sid3 });
+  const restore = await waitFor((m) => m.type === "queue.restore" && m.sessionId === sid3 && seen.indexOf(m) >= restoreFrom, 5000, "启动期的 queue.restore");
+  check(JSON.stringify(restore.texts) === JSON.stringify(TEXTS3), `三条文本按发出顺序一次退回（${JSON.stringify(restore.texts)}）`);
+  const removed = await waitFor((m) => m.type === "item.remove" && m.sessionId === sid3 && seen.indexOf(m) >= restoreFrom, 5000, "启动期的 item.remove");
+  const goneIds = Array.isArray(removed.ids) ? removed.ids : [];
+  check(added3.every((m) => goneIds.includes(m.item.id)), `三条气泡一起删掉（${goneIds.length} 个 id）`);
+  check(seen.filter((m) => m.type === "queue.restore" && m.sessionId === sid3).length === 1, "只退回一次（没有「先清一半再清一半」的第二帧）");
+  check(
+    !seen.some((m) => m.type === "session.state" && m.session?.id === sid3 && m.session?.starting === false),
+    "撤回的那一刻会话还停在启动窗口里（撤回没有把它拽出来）",
+  );
+
+  await until(() => records().some((r) => r.t === "argv" && (r.argv ?? []).includes(sid3)), 10000, "第三个桩 pi 的 argv 行");
+  const launch3 = records().filter((r) => r.t === "argv" && (r.argv ?? []).includes(sid3)).at(-1);
+  check(!records().some((r) => r.t === "abort" && r.pid === launch3?.pid), "撤回不打断 pi：桩 pi 没收到 abort");
+
+  log("等第三个会话启动完成：撤回的那三条不能被补交");
+  await waitFor((m) => m.type === "session.state" && m.session?.id === sid3 && m.session?.starting === false, 20000, "第三个会话 starting=false");
+  await sleep(800);
+  check(!records().some((r) => r.t === "prompt" && TEXTS3.includes(r.text)), "启动完成后桩 pi 仍然一封都没收到（不是只清了桥的队头）");
+  check(!seen.some((m) => m.type === "item.replace" && m.sessionId === sid3), "没有气泡被改成「已交出」");
+  check(records().some((r) => r.t === "clear_queue"), "桥也跟 pi 要过它那份队列（两边都清，不是只清一半）");
+  const AFTER3 = "撤回之后这一句";
+  send({ type: "prompt", sessionId: sid3, text: AFTER3, clientId: "local:3:after" });
+  await until(() => records().some((r) => r.t === "prompt" && r.text === AFTER3), 10000, "撤回之后的新消息交给 pi");
+  check(records().some((r) => r.t === "prompt" && r.text === AFTER3), "撤回之后同一个会话照常能发（pi 继续启动完了，不用再等一次）");
+
+  // ---------------------------------------------------------------- D. 只退回没交出去的：已 sent 的那条留着
+  log("D. 建第四个会话：就绪瞬间只交出第一条，剩下的撤回来");
+  const mark4 = seen.length;
+  send({ type: "create", cwd: REPO, name: "交了一半的那个" });
+  const created4 = await waitFor(
+    (m) => m.type === "session" && m.state?.name === "交了一半的那个" && seen.indexOf(m) >= mark4,
+    20000,
+    "第四个 session 帧",
+  );
+  const sid4 = created4.sessionId ?? created4.state?.id;
+  const TEXTS4 = ["交出去的第一条", "还排队的第二条", "还排队的第三条"];
+  const added4 = [];
+  for (const [i, text] of TEXTS4.entries()) {
+    const from = seen.length;
+    send({ type: "prompt", sessionId: sid4, text, clientId: `local:4:${i}` });
+    added4.push(
+      await waitFor((m) => m.type === "item.add" && m.sessionId === sid4 && m.item?.text === text && seen.indexOf(m) >= from, 2000, `第四个会话的 item.add ${i}`),
+    );
+  }
+  await waitFor((m) => m.type === "session.state" && m.session?.id === sid4 && m.session?.starting === false, 20000, "第四个会话 starting=false");
+  const sentOne = await waitFor((m) => m.type === "item.replace" && m.sessionId === sid4 && m.id === added4[0].item.id, 10000, "第一条的 item.replace sent");
+  check(sentOne.item?.pending === "sent", "第一条已经交给 pi（气泡上写着 sent）");
+  await until(() => records().some((r) => r.t === "prompt" && r.text === TEXTS4[0]), 10000, "第一条交给桩 pi");
+
+  const mixedFrom = seen.length;
+  send({ type: "clearQueue", sessionId: sid4 });
+  const mixed = await waitFor((m) => m.type === "queue.restore" && m.sessionId === sid4 && seen.indexOf(m) >= mixedFrom, 8000, "混合队列的 queue.restore");
+  check(JSON.stringify(mixed.texts) === JSON.stringify(TEXTS4.slice(1)), `只退回还在桥里的两条（${JSON.stringify(mixed.texts)}）`);
+  const mixedRemoved = await waitFor((m) => m.type === "item.remove" && m.sessionId === sid4 && seen.indexOf(m) >= mixedFrom, 8000, "混合队列的 item.remove");
+  const mixedIds = Array.isArray(mixedRemoved.ids) ? mixedRemoved.ids : [];
+  check(!mixedIds.includes(added4[0].item.id), "已经 sent 的那条气泡留着");
+  check(added4.slice(1).every((m) => mixedIds.includes(m.item.id)), "还在排队的两个气泡删掉");
+  await sleep(600);
+  check(!records().some((r) => r.t === "prompt" && TEXTS4.slice(1).includes(r.text)), "撤回的两条终究没交给 pi");
+
   ws.close();
 } catch (err) {
   failed += 1;
