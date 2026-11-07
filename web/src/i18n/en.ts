@@ -1480,6 +1480,8 @@ export const en: Dict = {
   "{p1} 类 · {p2} 次": "{p1} kinds · {p2} times",
   "上下文超限": "Context limit",
   "为什么没成：{p1}": "Why it failed: {p1}",
+  "为什么没成：本类混了 {p1} 种原因 —— {p2}": "Why it failed: this kind mixes {p1} causes — {p2}",
+  "本类混了 {p1} 种原因：{p2}": "This kind mixes {p1} causes: {p2}",
   "交给 agent": "Hand to agent",
   "其它失败": "Other failures",
   "发生过 {p1} 次 · 显示最近 {p2} 条": "Happened {p1} times · showing the last {p2}",

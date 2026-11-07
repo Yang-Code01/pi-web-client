@@ -31,6 +31,8 @@ export interface FailEntry {
   first: string;
   last: string;
   why: string;
+  /** 这一类里出现过的不同「为什么」（桥端去重、上限 4）。缺省时用 `why` 当唯一一条。 */
+  causes?: string[];
   fix: string;
   fixedAt: string | null;
   ignoredAt: string | null;
@@ -75,7 +77,7 @@ export function codeLabel(code: string): string {
 /** 一行输出：去掉 ANSI、去掉 trailer，留第一行有字的内容。 */
 export function firstLine(out: string): string {
   const clean = String(out ?? "")
-    .replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "")
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -103,33 +105,186 @@ export function classify(tool: string, out: string, exit: number | null): FailCo
 }
 
 const PATHY = /^(?:[A-Za-z]:[\\/]|[\\/~.]{0,2}[\\/]|[A-Za-z0-9_.-]+[\\/][^\s]*)/;
+const FILEY = /^[A-Za-z0-9_.-]+\.(ts|tsx|js|mjs|cjs|json|css|scss|html|md|py|go|rs|yml|yaml|sh|ps1|txt)$/i;
 
+/** 一条失败里只有「哪一步坏了」值得进钥匙，其余细节（端口、行号、次数）一律折平。 */
 function tok(t: string): string {
-  const bare = t.replace(/^["'`]|["'`]$/g, "");
-  if (PATHY.test(bare) || /^[A-Za-z0-9_.-]+\.(ts|tsx|js|mjs|json|css|html|md|py|go|rs|yml|yaml)$/i.test(bare)) return "<path>";
+  const bare = t.replace(/^["'`(]+|["'`)",;:]+$/g, "");
+  if (PATHY.test(bare) || FILEY.test(bare)) return "<path>";
   // 端口、行号、次数都不该把同一类劈成两类：`:7864` 与 `:7888` 是同一个坑。
   return bare.replace(/\d+/g, "<n>").slice(0, 40);
 }
 
 /**
- * 命令形状：程序名 + 第一个非旗标参数（归一化后的）。管道取最后一段 —— 出事的通常是它
- * （`netstat | grep -E …` 没命中，是 grep 的空结果；shell 的 exit 也来自最后一段）。
+ * 切词：按空白切，但引号里的空白不切，引号本身不留 —— `grep -o "\.a {[^}]*}" f.css` 是一个参数，
+ * 不是三个（旧版按空白硬切，签名里才会出现 `ja.ts"` 这种半截）。
  */
-export function normalizeSig(cmd: string, tool = "bash"): string {
-  const first = String(cmd ?? "").split("\n")[0] ?? "";
-  const stage = first.split("|").pop() ?? first;
-  const head = stage.split(/&&|;|\|\|/)[0] ?? stage;
-  const words = head.split(/\s+/).filter(Boolean);
-  if (!words.length) return tool === "bash" ? "" : `${tool} <path>`;
-  const prog = tok(words[0]).replace(/^<path>$/, tool === "bash" ? "" : tool).split(/[\\/]/).pop() ?? "";
+function words(stage: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let q: string | null = null;
+  for (const ch of stage) {
+    if (q) {
+      if (ch === q) q = null;
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      q = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (cur) out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/**
+ * 把一条命令切成「会各自返回退出码的段」：`&&`、`||`、`;`、`|`、换行。
+ * heredoc 之后的正文不是命令（`python - <<'PY'` 后面几十行都是载荷），在第一个 `<<` 处截断。
+ */
+function stages(cmd: string): string[] {
+  const text = String(cmd ?? "");
+  const cut = text.indexOf("<<");
+  const src = cut >= 0 ? text.slice(0, cut) : text;
+  const out: string[] = [];
+  let cur = "";
+  let q: string | null = null;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (q) {
+      if (ch === q) q = null;
+      cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      q = ch;
+      cur += ch;
+      continue;
+    }
+    const two = src.slice(i, i + 2);
+    if (two === "&&" || two === "||") {
+      out.push(cur);
+      cur = "";
+      i++;
+      continue;
+    }
+    if (ch === "|" || ch === ";" || ch === "\n") {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  out.push(cur);
+  return out.map((s) => s.trim()).filter(Boolean);
+}
+
+/** 段里的程序名：跳过 `FOO=bar`、重定向和开头的旗标。 */
+function progOf(stage: string): string {
+  for (const w of words(stage)) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) continue;
+    if (/^[-<>]/.test(w) || /^\d*[<>]/.test(w)) continue;
+    return w;
+  }
+  return "";
+}
+
+/** 只是「先把环境摆好」或 shell 关键字：它们自己几乎不会失败，出事的是后面那步。 */
+const SETUP = /^(?:cd|chdir|pushd|popd|export|set|setx|unset|source|\.|true|:|\.|do|then|else|elif|fi|done|esac|while|until|if|for|case)$/i;
+const INTERP = /^(?:python[0-9.]*|py|node|nodejs|deno|bun|ruby|perl|php|lua|pwsh|powershell|bash|sh|zsh)$/i;
+
+function baseOf(p: string): string {
+  return p.split(/[\\/]/).pop() ?? p;
+}
+
+/**
+ * 输出里是否报过这个名字（按「命令位置」认：行首 `grep: …`、`bash: cd: …`、PowerShell 的 `ls : …`）。
+ * 不按子串找：`console.log(…)` 里也有 `ls`，那就把签名挑到后面那段去了。
+ */
+function mentions(text: string, name: string): boolean {
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line.startsWith(`${name}:`) || line.startsWith(`${name} :`)) return true;
+    // `bash: cd: /nope: …` / `sh: node: command not found`：shell 前缀很短，看前 24 字就够。
+    const at = line.indexOf(`: ${name}:`);
+    if (at >= 0 && at < 24) return true;
+  }
+  return false;
+}
+
+/**
+ * 挑「真正失败的那一段」。**证据优先**：某一段的程序名在错误输出里出现过（`node:internal/…`、
+ * `grep: …`、`bash: cd: …`），那就是它，取最后一个命中的。没有证据就退到最后一段非序言段 ——
+ * `&&` 链越靠后越可能才是出事的那步，而旧的「`&&` 取第一段」把全部 `cd X && …` 折成了 `cd <path>`
+ * （账本里 9 次毫不相干的失败因此并成了一类）。
+ */
+export function failingStage(cmd: string, out = ""): string {
+  const list = stages(cmd);
+  if (!list.length) return "";
+  if (list.length === 1) return list[0];
+  const body = list.filter((s) => !SETUP.test(baseOf(progOf(s))));
+  const pool = body.length ? body : list;
+  const text = String(out ?? "");
+  let hit = "";
+  // 证据在**所有**段里找，包括 `cd` 这种序言：`bash: cd: /nope: No such file` 会把签名拉回 cd，
+  // 而这恰恰是「目录拼错」该被归在一起的那类（D164）。
+  for (const s of list) {
+    const name = baseOf(progOf(s)).replace(/[^A-Za-z0-9_.-]/g, "");
+    if (name.length < 2) continue;
+    if (mentions(text, name)) hit = s;
+  }
+  return hit || pool[pool.length - 1];
+}
+
+/**
+ * 命令形状：**出事的那个程序** + 头两个非旗标参数（归一化后）。
+ *
+ * 旧版写死「管道取最后一段、`&&` 取第一段」：抽样的 46 次失败里有 31 次落在这种假类上 ——
+ * `cd <path>` 9 次、`head` 9 次、`tail` 8 次，卡片上还共用第一次的诊断。现在先看错误输出认人，
+ * 认不出来才按下标猜（见 `failingStage`）。
+ */
+export function normalizeSig(cmd: string, tool = "bash", out = ""): string {
+  const stage = failingStage(cmd, out);
+  const ws = words(stage);
+  if (!ws.length) return tool === "bash" ? "" : `${tool} <path>`;
+  let i = 0;
+  while (i < ws.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[i]) || /^[-<>]/.test(ws[i]) || /^\d*[<>]/.test(ws[i]))) i++;
+  const raw = ws[i] ?? ws[0];
+  const name = tok(raw).replace(/^<path>$/, tool === "bash" ? "" : tool).split(/[\\/]/).pop() ?? "";
+  // 脚本是内联的（`node -e`/`python -c`/`python -`/`powershell -Command "…"`）：载荷不进签名。
+  const args = ws.slice(i + 1);
+  const inline = args.some((a) => a === "-" || /^-[ce]$/.test(a) || a.length > 60);
+  if (INTERP.test(name) && inline) return `${name} <code>`;
   const rest: string[] = [];
-  for (const w of words.slice(1)) {
-    if (/^[-<>]/.test(w)) continue;
-    rest.push(tok(w));
+  let skipValue = false;
+  for (const w of args) {
+    if (skipValue) {
+      skipValue = false;
+      continue;
+    }
+    if (/^[-<>]/.test(w) || /^\d*[<>]/.test(w)) {
+      // `git -c k=v push`：旗标自己的值不是目标，`-c` 带一个值。
+      if (w === "-c" || w === "-C") skipValue = true;
+      continue;
+    }
+    if (w.includes("=") && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) continue; // 设置项不是目标
+    const t = tok(w);
+    if (!t) continue;
+    rest.push(t);
     if (rest.length >= 2) break;
   }
-  const name = tool === "bash" ? prog || words[0].slice(0, 30) : tool;
-  return [name, ...rest].filter(Boolean).join(" ");
+  const label = tool === "bash" ? name || cleanWord(ws[0]).slice(0, 30) : tool;
+  return [label, ...rest].filter(Boolean).join(" ");
+}
+
+function cleanWord(w: string): string {
+  return w.replace(/^["'`(]+|["'`)",;:]+$/g, "");
 }
 
 export function entryKey(tool: string, code: string, sig: string): string {
@@ -155,7 +310,7 @@ export function toCommit(fail: SeenFail, why = "", fix = ""): CommitItem {
   const out = String(fail.out ?? "");
   const exit = exitCodeOf(out);
   const code = classify(fail.tool, out, exit);
-  const sig = normalizeSig(fail.cmd, fail.tool);
+  const sig = normalizeSig(fail.cmd, fail.tool, out);
   return {
     key: entryKey(fail.tool, code, sig),
     at: fail.at,
@@ -185,13 +340,26 @@ export function entryState(e: FailEntry): "fixed" | "ignored" | "abort" | "open"
 
 export function stateLabel(e: FailEntry): string {
   const s = entryState(e);
-  return s === "fixed" ? tr("已修复") : s === "ignored" ? tr("已忽略") : s === "abort" ? tr("已中断") : tr("待修");
+  if (s === "fixed") return tr("已修复");
+  if (s === "ignored") return tr("已忽略");
+  if (s === "abort") return tr("已中断");
+  return tr("待修");
 }
 
 /** 一行标题：分类名 + 退出码（有的话）。 */
 export function entryTitle(e: FailEntry): string {
   const base = codeLabel(e.code);
   return e.code === "exit" && e.occ[0]?.exit != null ? base + tr("（exit {p1}）", { p1: String(e.occ[0].exit) }) : base;
+}
+
+/**
+ * 这一类里出现过的不同「为什么」。老账本没 `causes`，就用首次那句 `why` 兵底 ——
+ * 一句话解释整类只在「整类只有一种说法」时才成立，混了两种的下结论就是张冠李戴。
+ */
+export function causesOf(e: FailEntry): string[] {
+  const list = Array.isArray(e.causes) ? e.causes.filter((s) => typeof s === "string" && s.trim()) : [];
+  if (list.length) return list;
+  return e.why ? [e.why] : [];
 }
 
 export function clock(at: string): string {
@@ -212,12 +380,16 @@ export function failureMarkdown(e: FailEntry, wsLabel: string): string {
     tr("- 工作区：{p1}", { p1: wsLabel || "—" }),
     tr("- 首次 {p1} · 最近 {p2}", { p1: clock(e.first), p2: clock(e.last) }),
   ];
-  if (e.why) lines.push("", tr("为什么没成：{p1}", { p1: e.why }));
+  const causes = causesOf(e);
+  if (causes.length === 1) lines.push("", tr("为什么没成：{p1}", { p1: causes[0] }));
+  else if (causes.length > 1) lines.push("", tr("为什么没成：本类混了 {p1} 种原因 —— {p2}", { p1: causes.length, p2: causes.join(tr("；")) }));
   if (e.fix) lines.push("", tr("当时给的修法：{p1}", { p1: e.fix }));
   lines.push("", tr("最近 {p1} 次：", { p1: Math.min(3, e.occ.length) }));
   e.occ.slice(0, 3).forEach((o, i) => {
-    lines.push(`${i + 1}. ${clock(o.at)} · ${o.name || o.sid} · ${o.cmd || "—"}${o.exit != null ? ` · exit ${o.exit}` : ""}`);
-    if (o.out) lines.push(`   ${o.out}`);
+    const exit = o.exit == null ? "" : ` · exit ${o.exit}`;
+    lines.push(`${i + 1}. ${clock(o.at)} · ${o.name || o.sid} · ${o.cmd || "—"}${exit}`);
+    if (!o.out) return;
+    lines.push(`   ${o.out}`);
   });
   return lines.join("\n");
 }
