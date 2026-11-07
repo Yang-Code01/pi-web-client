@@ -148,14 +148,18 @@ check("文件里就是「反复踩的坑」那一段", lessonBody.includes("反�
 // 当场叫住：会话正跑着（刚发过 prompt），桥应当把它当 followUp 补进 pi 的输入。
 const turns = () => piLog().filter((l) => l.t === "turn");
 const before = turns().length;
-ws.send(JSON.stringify({ type: "failures.remind", sid: sessionId, key: "k1", tool: "bash", sig: "cd <path>", why: "目录不存在", n: 9 }));
+const remind = (key) => ({ type: "failures.remind", ws: WS_ID, sid: sessionId, key, tool: "bash", sig: "cd <path>", why: "目录不存在", n: 9 });
+ws.send(JSON.stringify(remind("bash|path|cd <path>")));
 for (let i = 0; i < 50 && turns().length === before; i++) await sleep(100);
 check("同一类再犯：桥补一条自动提醒", turns().slice(before).some((t) => String(t.text).includes("[自动提醒 · 老毛病重犯]")));
+const acks = () => seen.filter((m) => m.type === "failures.reminded");
+check("桥回执说投递成功（ok:true）", acks().some((m) => m.ok === true && m.key === "bash|path|cd <path>"));
 
 const after = turns().length;
-ws.send(JSON.stringify({ type: "failures.remind", sid: sessionId, key: "k1", tool: "bash", sig: "cd <path>", why: "目录不存在", n: 9 }));
+ws.send(JSON.stringify(remind("bash|path|cd <path>")));
 await sleep(1200);
 check("同一类只提醒一次（桥里节流，不靠前端）", turns().length === after);
+check("第二发不被当成新提醒：回执 ok:false", acks().some((m) => m.ok === false));
 
 const failed = results.filter((r) => !r.ok).length;
 if (failed) console.error(`\n--- bridge log ---\n${bridgeLog.slice(-2500)}`);

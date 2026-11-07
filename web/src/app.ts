@@ -165,6 +165,8 @@ export class App {
   private sessionFails = new Map<string, SeenFail>();
   /** 这个会话里已经叫住过的失败类别（keys）：同会话同一类只叫一次（桥那边还有一层节流）。 */
   private failReminded = new Set<string>();
+  /** 已发出、还没等到桥回执的 key：回执失败就释放，否则桥丢掉一条会让这一类永久静音。 */
+  private failRemindPending = new Set<string>();
   /** 右下角那颗「⚡ 总结本轮错误」；每轮结束按 pending 亮灭。 */
   private failCta: HTMLButtonElement | null = null;
   private failToast: HTMLElement | null = null;
@@ -1321,6 +1323,7 @@ export class App {
         // 换了会话：上一份「见过的失败」不能带过来，否则按钮会按别人的失败亮着。
         this.sessionFails.clear();
         this.failReminded.clear();
+        this.failRemindPending.clear();
         this.failLedger = this.failWs && this.failWs === (this.session?.ws ?? "") ? this.failLedger : null;
         this.chat.reset((msg.items ?? []) as Item[]);
         if (this.currentWs()) this.socket.send({ type: "failures.get", ws: this.currentWs() });
@@ -1355,6 +1358,7 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.sessionFails.clear();
         this.failReminded.clear();
+        this.failRemindPending.clear();
         this.chat.reset((msg.items ?? []) as Item[]);
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
@@ -1612,6 +1616,11 @@ export class App {
       case "failures.saved":
         if (msg.ws && this.currentWs() && msg.ws !== this.currentWs()) break;
         this.failSaved(msg);
+        break;
+      case "failures.reminded":
+        // 桥的回执：成不成都要收回「在途」标记；成了才记成「这一类已提醒过」。
+        this.failRemindPending.delete(String(msg.key ?? ""));
+        if (msg.ok && msg.sessionId === this.currentId) this.failReminded.add(String(msg.key ?? ""));
         break;
       case "bug.done": {
         if (msg.error) {
@@ -6109,14 +6118,23 @@ export class App {
     } catch {
       return; // 诊断只是锦上添花：判不出来就安静
     }
-    if (this.failReminded.has(key)) return;
+    if (this.failReminded.has(key) || this.failRemindPending.has(key)) return;
     // 同一类在这个会话里到第几次了（按同样的钥匙重算，不能拿 toolCallId 比）。
     const same = [...this.sessionFails.values()].filter((o) => sameFail(o, key)).length;
     const old = this.failLedger?.entries.find((e) => e.key === key);
     const ripe = Boolean(old && old.count >= 3 && !old.fixedAt && !old.ignoredAt);
     if (same < 2 && !ripe) return;
-    this.failReminded.add(key);
-    this.socket.send({ type: "failures.remind", sid, key, tool: f.tool, sig, why: cause, n: Math.max(same, old?.count ?? 0) });
+    this.failRemindPending.add(key);
+    this.socket.send({
+      type: "failures.remind",
+      ws: this.currentWs() ?? "",
+      sid,
+      key,
+      tool: f.tool,
+      sig,
+      why: cause,
+      n: Math.max(same, old?.count ?? 0),
+    });
   }
 
   /** 这个会话还有几次失败没进账本：见过的条数 - 上次入账时的条数（点完按钮、账本回包后归零）。 */

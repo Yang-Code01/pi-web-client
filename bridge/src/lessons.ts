@@ -48,11 +48,20 @@ export function lessonLine(e: FailEntry): string {
   return `- ${e.count} 次 · ${e.tool} · ${sig} —— ${advice.slice(0, MAX_ADVICE)}`;
 }
 
-/** 值得写进系统提示词的那些类：反复、未修、未忽略、不是用户中断。 */
+/**
+ * 这一类的「原因」够不够单一，能当成一句诊断写进提示词（PLAN §2）。
+ * 归并键把几十次不相干的失败折成一类时，`why`/`fix` 会张冠李戴 —— 多因的只留形状，不给结论。
+ * 老账本没有 `causes` 时退回 `why`：那正是它这一路的唯一说法。
+ */
+export function singleCause(e: FailEntry): boolean {
+  return (e.causes ?? (e.why ? [e.why] : [])).length <= 1;
+}
+
+/** 值得写进系统提示词的那些类：反复、未修、未忽略、不是用户中断、原因单一。 */
 export function ripeForLesson(ledger: FailLedger): FailEntry[] {
   return ledger.entries
-    .filter((e) => e.count >= MIN_COUNT && e.code !== "abort" && !e.fixedAt && !e.ignoredAt)
-    .sort((a, b) => b.count - a.count || (a.last < b.last ? 1 : a.last > b.last ? -1 : 0))
+    .filter((e) => e.count >= MIN_COUNT && e.code !== "abort" && !e.fixedAt && !e.ignoredAt && singleCause(e))
+    .sort((a, b) => b.count - a.count || String(b.last ?? "").localeCompare(String(a.last ?? "")))
     .slice(0, MAX_LINES);
 }
 
@@ -107,15 +116,21 @@ export function allowRemind(sid: string, key: string): boolean {
 }
 
 /** 测试用：清掉进程内的提醒记账。 */
-export function resetReminders(): void {
-  reminded.clear();
-}
+export function resetReminders(): void { reminded.clear(); }
+
+const MARK = "[pi-web:remind]";
 
 /**
- * 当场叫住模型的那句话。写成一条普通 user 消息（pi 的 RPC 只有 prompt），所以开头要自称
- * 「自动提醒」，否则它看起来像用户本人临时加的指令。
+ * 当场叫住模型的那句话。pi 的 RPC 只有 prompt，所以它在会话里长得像一条 user 消息；
+ * 开头用 ASCII 标记 `[pi-web:remind]`，前端据此把它画成「系统提醒」而不是「你说的话」
+ * （刷新后从会话文件回放也一样认得出来）。
  */
 export function reminderText(input: { tool?: unknown; sig?: unknown; why?: unknown; n?: unknown }): string {
+  const r = remindBody(input);
+  return r ? `${MARK}\n${r}` : "";
+}
+
+function remindBody(input: { tool?: unknown; sig?: unknown; why?: unknown; n?: unknown }): string {
   const tool = String(input.tool ?? "").trim().slice(0, 40);
   const sig = String(input.sig ?? "").trim().slice(0, 80);
   const why = String(input.why ?? "").replace(/\s+/g, " ").trim().slice(0, 160);

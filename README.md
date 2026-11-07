@@ -105,6 +105,7 @@ PI_WEB_HOST=0.0.0.0 npm start
 | `PI_WEB_TUNNEL` | 启动时自动开 trycloudflare 隧道 | 关 |
 | `PI_WEB_ROOT` | 前端静态目录 | `web/dist` |
 | `PI_WEB_NO_EXT=1` | 不加载审批门禁扩展 | 关 |
+| `PI_WEB_LESSONS=0` | 不把工作区的老毛病（⚡ AI 出错记录里反复出现的类）挂进新会话的系统提示词，也不补自动提醒（D168） | 开 |
 | `PI_BIN` | 指定 pi 的 `cli.js` | 自动找 |
 | `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` | 与 pi 同名同义：桥按 pi 的顺序找会话目录（环境变量 → 全局 `settings.json` 的 `sessionDir` → `~/.pi/agent/sessions`，D73） | 跟随 pi |
 | `PI_PEER=0` | 不启动内网通（peer 子进程） | 开 |

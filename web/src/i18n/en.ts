@@ -994,6 +994,7 @@ export const en: Dict = {
   "联网检查版本中…": "Checking versions online…",
   "自动压缩": "Auto-compact",
   "自动重试": "Auto-retry",
+  "自动提醒 · 老毛病重犯 · {p1}": "Auto-reminder · a repeat of an old failure · {p1}",
   "自检脚本判定不一致": "Self-check script returned inconsistent results",
   "自检脚本报了 {p1} 个问题（第一个在上面）": "The self-check script reported {p1} problems (the first one is above)",
   "装到全局": "Install globally",

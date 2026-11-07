@@ -1991,17 +1991,34 @@ async function main(): Promise<void> {
             }
             return;
           }
-          // D164 延伸：同一轮里第二次撞上同一类失败时叫住模型。前端判「第二次」，桥只做节流与投递：
-          // 不新开会话（没在跑就不提醒，否则为了一句提醒冷启一个 pi），同一类每个会话只提醒一次。
+          // D164 延伸：同一轮里第二次撞上同一类失败时叫住模型。前端判「这一会话里第几次」，
+          // 桥这边再对一次账本（总数 ≥2 才算老毛病）与节流：不新开会话（没在跑就不提醒，
+          // 否则为了一句提醒冷启一个 pi），同一类每个会话只提醒一次。
           case "failures.remind": {
             const sid = String(msg.sid ?? "");
             const key = String(msg.key ?? "");
+            const ws = String(msg.ws ?? "");
             const text = reminderText({ tool: msg.tool, sig: msg.sig, why: msg.why, n: msg.n });
             const sess = sid ? sessions.get(sid) : undefined;
-            if (!sess || !sess.live || !text || !allowRemind(sid, key)) return;
-            void sess.prompt(text, undefined, undefined, "followUp").catch((err: any) => {
-              log(`failures.remind failed: ${err?.message ?? err}`);
-            });
+            // 回执（ok:false）让前端下一轮还能重试：桥丢了这条不等于「这一类此会话已提醒过」。
+            if (process.env.PI_WEB_LESSONS === "0" || !sess || !sess.live || !text || !ws) return;
+            let total = 0;
+            try {
+              total = readLedger(ws).entries.find((e) => e.key === key)?.count ?? 0;
+            } catch {
+              total = 0; // 读不到账本就不打断模型：这本来只是个提醒
+            }
+            if (total < 2 || !allowRemind(sid, key)) {
+              send({ type: "failures.reminded", sessionId: sid, key, ok: false });
+              return;
+            }
+            void sess.prompt(text, undefined, undefined, "followUp").then(
+              () => send({ type: "failures.reminded", sessionId: sid, key, ok: true }),
+              (err: any) => {
+                log(`failures.remind failed: ${err?.message ?? err}`);
+                send({ type: "failures.reminded", sessionId: sid, key, ok: false });
+              },
+            );
             log(`failures.remind → ${sid} (${key})`);
             return;
           }

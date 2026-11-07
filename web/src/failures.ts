@@ -269,8 +269,9 @@ export function normalizeSig(cmd: string, tool = "bash", out = ""): string {
       continue;
     }
     if (/^[-<>]/.test(w) || /^\d*[<>]/.test(w)) {
-      // `git -c k=v push`：旗标自己的值不是目标，`-c` 带一个值。
-      if (w === "-c" || w === "-C") skipValue = true;
+      // `git -c k=v push` / `git -C <path> status`：这两个旗标的值不是目标，要连值一起跳过。
+      // 别的命令里的 `-c` 通常不是一个带值的旗标（`grep -c PATTERN` 下一项才是要数的模式）。
+      if ((w === "-c" || w === "-C") && /^(git|hg)$/.test(name)) skipValue = true;
       continue;
     }
     if (w.includes("=") && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) continue; // 设置项不是目标

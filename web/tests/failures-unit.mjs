@@ -104,6 +104,15 @@ test("内联脚本只记 <code>，不把载荷当参数", () => {
   assert.equal(normalizeSig("python - <<'PY'\nimport os\nprint(1)\nPY", "bash"), "python <code>");
 });
 
+test("grep 的 -c 是计数不是带值旗标：模式要留在签名里", () => {
+  // 回归：以前 `-c` 一律当成「带一个值」（为了 `git -c k=v`），把要数的模式吃了，
+  // 于是 `grep -c NOTE` 与 `grep -c TODO` 被并成同一类。
+  assert.match(normalizeSig("grep -c NOTE src/a.ts", "bash"), /^grep NOTE/);
+  assert.notEqual(normalizeSig("grep -c NOTE src/a.ts", "bash"), normalizeSig("grep -c TODO src/a.ts", "bash"));
+  // 而 `git -c user.name=x commit` 的 `-c` 确实带一个设置项，它不该进签名。
+  assert.ok(!normalizeSig("git -c user.name=x commit -m m", "bash").includes("user.name"));
+});
+
 test("引号里的分隔符不切段、不留半截引号", () => {
   assert.ok(normalizeSig('grep -o "a && b" f.css', "bash").startsWith("grep"));
   assert.ok(!normalizeSig('sed -n \'80,115p\' "web/src/ja.ts"', "bash").includes('"'));

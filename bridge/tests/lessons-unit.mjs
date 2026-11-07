@@ -48,15 +48,18 @@ check("空账本不产生任何注入", () => {
   assert.deepEqual(ripeForLesson(ledger()), []);
 });
 
-check("只收反复、未修、未忽略、非中断的类", () => {
+check("只收反复、未修、未忽略、非中断、原因单一的类", () => {
   const l = ledger(
     entry({ key: "hot", count: 7 }),
     entry({ key: "rare", count: 2 }),
     entry({ key: "fixed", count: 9, fixedAt: "x" }),
     entry({ key: "gone", count: 9, ignoredAt: "x" }),
     entry({ key: "abort", count: 9, code: "abort" }),
+    // 归并后混了好几种原因：形状还能说，但那句 why/fix 会张冠李戴，宁可不写进系统提示词。
+    entry({ key: "mixed", count: 9, causes: ["路径不存在", "权限不够", "traceback"] }),
+    entry({ key: "one", count: 9, causes: ["路径不存在"] }),
   );
-  assert.deepEqual(ripeForLesson(l).map((e) => e.key), ["hot"]);
+  assert.deepEqual(ripeForLesson(l).map((e) => e.key), ["one", "hot"]);
 });
 
 check("按次数降序，最多 6 行", () => {
@@ -98,7 +101,8 @@ check("落到磁盘：有老毛病才写文件，文件内容就是注入的那�
 
 check("提醒文案：自称自动、带上次诊断、叫它换做法", () => {
   const text = reminderText({ tool: "bash", sig: "cd <path>", why: "目录不存在", n: 9 });
-  assert.match(text, /^\[自动提醒 · 老毛病重犯\]/);
+  // ASCII 标记在最前面：前端靠它把这条 user 消息画成系统提醒（不随界面语言变）。
+  assert.match(text, /^\[pi-web:remind\]\n\[自动提醒 · 老毛病重犯\]/);
   assert.match(text, /已出现 9 次/);
   assert.match(text, /目录不存在/);
   assert.match(text, /别重复同样的尝试/);

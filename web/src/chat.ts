@@ -9,6 +9,18 @@ import { fmtTime, tr } from "./i18n/index.ts";
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
 const BASH_SHOW = 20000;
 
+/**
+ * 桥注入的自动提醒（`bridge/src/lessons.ts` 的 `reminderText`）开头就是这个标记。
+ * 它必须是 ASCII：界面语言换掉的是抬头的字，「这是一条提醒」得靠一个不随语言变的东西认出来。
+ */
+const REMIND_MARK = "[pi-web:remind]";
+
+/** 提醒正文（去掉标记）；不是提醒就返回 null。 */
+function reminderBody(text: string): string | null {
+  if (!text.startsWith(REMIND_MARK)) return null;
+  return text.slice(REMIND_MARK.length).replace(/^\s+/, "");
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -746,8 +758,19 @@ export class ChatView {
       return box;
     }
 
-    const wrap = el("div", `msg ${item.kind}`);
+    const reminded = item.kind === "user" ? reminderBody(item.text) : null;
+    const wrap = el("div", `msg ${reminded !== null ? "remind" : item.kind}`);
     if (item.kind === "assistant") (wrap as HTMLElement & { _raw?: string })._raw = item.text;
+    // 桥注入的自动提醒（D168）：它是一条真正的 user 消息（pi 只有 prompt 通道），但说这话的不是人，
+    // 所以不画成气泡、不给复制/分叉，抬头用界面语言，正文才是桥写的那段（内容本身来自账本/诊断，是中文数据）。
+    if (reminded !== null) {
+      const head = el("div", "who");
+      head.textContent = tr("自动提醒 · 老毛病重犯 · {p1}", { p1: timeOf(item.ts) });
+      const body = el("div", "body");
+      body.textContent = reminded;
+      wrap.append(head, body);
+      return wrap;
+    }
     const who = el("div", "who");
     if (item.kind === "user") {
       who.textContent = tr("你 · {p1}", { p1: timeOf(item.ts) });
@@ -929,6 +952,11 @@ export class ChatView {
 
   private buildUserBody(item: UserItem): HTMLElement {
     const body = el("div", "body");
+    const reminded = reminderBody(item.text);
+    if (reminded !== null) {
+      body.textContent = reminded;
+      return body;
+    }
     // 命令画成药丸、用户自己写的话原样跟在后面，规则在 skill.ts（与桥端的折叠规则成对）。
     fillUserBody(body, item);
     if (item.images?.length) {
