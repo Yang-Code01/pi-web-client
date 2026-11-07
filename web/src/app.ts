@@ -8,8 +8,8 @@ import { filterCommands, type CommandItem } from "./commands.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
-import { diagnose, setKnownPlugins } from "./diagnose.ts";
-import { toCommit, type FailLedger, type SeenFail } from "./failures.ts";
+import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
+import { classify, entryKey, normalizeSig, sameFail, toCommit, type FailLedger, type SeenFail } from "./failures.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
@@ -77,7 +77,7 @@ interface SessionBadge {
  * D162: 「完成」也显示在**当前打开的会话**上 —— 打开只是看，不再把完成抹掉。否则用户点开确认
  * 一眼，卡片就从「完成」退回时间，再也没法从列表判断这一轮到底结束了没有。
  */
-/** D169 详情的线上形状。见 `web/src/types.ts`（与左栏那份 `SessionState` 摆在一起）。 */
+/** D170 详情的线上形状。见 `web/src/types.ts`（与左栏那份 `SessionState` 摆在一起）。 */
 type BgRunDto = BgRunView;
 
 /** 详情里的一屏：一卡片 + 它三块会变的字。 */
@@ -114,7 +114,7 @@ function sessionBadge(s: SessionState): SessionBadge | null {
     return { kind: "locked", text: tr("终端占用"), cls: "lock", title: tr("pi CLI 在终端里正用着这个会话，网页这边只能看"), pending: false };
   }
   if (s.running) return { kind: "run", text: tr("运行中"), cls: "run", title: tr("agent 正在推进"), pending: false };
-  // D169: 会话自己 settle 了，派出去的 runner 还在跑 —— 「完成」是假的，得先把这枚亮出来。
+  // D170: 会话自己 settle 了，派出去的 runner 还在跑 —— 「完成」是假的，得先把这枚亮出来。
   if (bgBusy(s)) {
     return {
       kind: "bg",
@@ -137,7 +137,7 @@ function bgElapsedText(since: number, until = Date.now()): string {
   return tr("已跑 {p1}", { p1: clock });
 }
 
-/** 跑完之后的同一个钟：报「一共跑了多久」，而不是「结束至今」（D169 评审）。 */
+/** 跑完之后的同一个钟：报「一共跑了多久」，而不是「结束至今」（D170 评审）。 */
 function bgTookText(ms: number): string {
   const secs = Math.max(0, Math.round(ms / 1000));
   const m = Math.floor(secs / 60);
@@ -205,6 +205,10 @@ export class App {
   private failLedger: FailLedger | null = null;
   private failWs = "";
   private sessionFails = new Map<string, SeenFail>();
+  /** 这个会话里已经叫住过的失败类别（keys）：同会话同一类只叫一次（桥那边还有一层节流）。 */
+  private failReminded = new Set<string>();
+  /** 已发出、还没等到桥回执的 key：回执失败就释放，否则桥丢掉一条会让这一类永久静音。 */
+  private failRemindPending = new Set<string>();
   /** 右下角那颗「⚡ 总结本轮错误」；每轮结束按 pending 亮灭。 */
   private failCta: HTMLButtonElement | null = null;
   private failToast: HTMLElement | null = null;
@@ -219,9 +223,9 @@ export class App {
   private textarea: HTMLTextAreaElement | null = null;
   /** 「继续」按钮（D159）：住在权限按钮正上方那 28.5px 里。每次重画 composer 都换一颗新的。 */
   private continueBtn: HTMLButtonElement | null = null;
-  /** D169: 输入框上方那条「子代理运行中」。`syncBgBar()` 造它，重画后要重新挂。 */
+  /** D170: 输入框上方那条「子代理运行中」。`syncBgBar()` 造它，重画后要重新挂。 */
   private bgBar: HTMLElement | null = null;
-  /** D169 详情弹层：正在看的那一屏，和它 1.5 秒一次的轮询。关掉就 null。 */
+  /** D170 详情弹层：正在看的那一屏，和它 1.5 秒一次的轮询。关掉就 null。 */
   private bgSheet: { sessionId: string; body: HTMLElement; runs: Map<string, BgRunNode> } | null = null;
   private bgTimer: number | null = null;
   /** 上一次点「继续」的会话与时刻（D159）：`pi.status` 回来之前按钮还亮着，连点会排两条。 */
@@ -688,7 +692,7 @@ export class App {
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
     this.pillBar = new PillBar<SessionState>(pinStrip, {
-      // D169：钉条胶囊里那行小字就是徽标本身；「后台」那枚也让它点得开（胶囊其余部分仍是打开会话）。
+      // D170：钉条胶囊里那行小字就是徽标本身；「后台」那枚也让它点得开（胶囊其余部分仍是打开会话）。
       badge: (s) => {
         const b = this.badgeOf(s);
         return b ? { ...b, detail: b.kind === "bg" } : null;
@@ -1373,6 +1377,8 @@ export class App {
         this.stats = { tokens: null, cost: null };
         // 换了会话：上一份「见过的失败」不能带过来，否则按钮会按别人的失败亮着。
         this.sessionFails.clear();
+        this.failReminded.clear();
+        this.failRemindPending.clear();
         this.failLedger = this.failWs && this.failWs === (this.session?.ws ?? "") ? this.failLedger : null;
         this.chat.reset((msg.items ?? []) as Item[]);
         if (this.currentWs()) this.socket.send({ type: "failures.get", ws: this.currentWs() });
@@ -1406,6 +1412,8 @@ export class App {
       case "items":
         if (msg.sessionId !== this.currentId) break;
         this.sessionFails.clear();
+        this.failReminded.clear();
+        this.failRemindPending.clear();
         this.chat.reset((msg.items ?? []) as Item[]);
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
@@ -1673,6 +1681,11 @@ export class App {
       case "failures.saved":
         if (msg.ws && this.currentWs() && msg.ws !== this.currentWs()) break;
         this.failSaved(msg);
+        break;
+      case "failures.reminded":
+        // 桥的回执：成不成都要收回「在途」标记；成了才记成「这一类已提醒过」。
+        this.failRemindPending.delete(String(msg.key ?? ""));
+        if (msg.ok && msg.sessionId === this.currentId) this.failReminded.add(String(msg.key ?? ""));
         break;
       case "bug.done": {
         if (msg.error) {
@@ -2160,7 +2173,7 @@ export class App {
   }
 
   /**
-   * 徽标唯一的一颗元素。D169：「后台」那枚能点开详情（其它徽标还是纯提示），
+   * 徽标唯一的一颗元素。D170：「后台」那枚能点开详情（其它徽标还是纯提示），
    * 点它不能顺带把卡片/胶囊自己的「打开这个会话」也触发，所以一律 stopPropagation。
    */
   private badgeChip(s: SessionState): HTMLElement | null {
@@ -3361,7 +3374,7 @@ export class App {
     this.mgrRefresh = null;
     this.imageSheetPaint = null;
     this.wsPane = null;
-    // D169: 详情弹层关掉就停轮询，别让一个看不见的弹层一直读盘。
+    // D170: 详情弹层关掉就停轮询，别让一个看不见的弹层一直读盘。
     if (this.bgTimer !== null) window.clearInterval(this.bgTimer);
     this.bgTimer = null;
     this.bgSheet = null;
@@ -6168,10 +6181,53 @@ export class App {
   }
 
   /** 聊天区报来一次失败。按 toolCallId 去重：同一张卡会被 live 事件、item.replace、重放各建一次。 */
-  private recordFail(f: { id: string; tool: string; cmd: string; out: string; at?: string }): void {
+  private recordFail(f: { id: string; tool: string; cmd: string; out: string; at?: string; live?: boolean }): void {
     if (!this.currentId || !f.id || this.sessionFails.has(f.id)) return;
-    this.sessionFails.set(f.id, { callId: f.id, tool: f.tool, cmd: f.cmd, out: f.out, at: f.at || new Date().toISOString() });
+    const seen: SeenFail = { callId: f.id, tool: f.tool, cmd: f.cmd, out: f.out, at: f.at || new Date().toISOString() };
+    this.sessionFails.set(f.id, seen);
+    // 只有刚跑完的那次才可能「当场叫住」：刷新页面回放历史时别再对着老失败念一遍。
+    if (f.live) this.maybeRemind(seen);
     this.syncFailCta();
+  }
+
+  /**
+   * 当场叫住（D164 延伸）：同一轮里同类第二次出现 —— 或账本里这一类已经栽过 3 次 —— 时，
+   * 让桥往会话里补一条自动提醒。判节流在桥那边（同类每会话一次、整会话最多 3 次），
+   * 这里只决定「值不值得叫」：benign（grep 没命中这类半正常）和用户中断不叫，它们不是毛病。
+   */
+  private maybeRemind(f: SeenFail): void {
+    const sid = this.currentId;
+    if (!sid) return;
+    let key = "";
+    let sig = "";
+    let cause = "";
+    try {
+      const d = diagnose({ tool: f.tool, cmd: f.cmd, out: f.out });
+      if (d.level !== "fail" && d.level !== "warn") return;
+      cause = d.cause ?? "";
+      const code = classify(f.tool, f.out, exitCodeOf(f.out));
+      sig = normalizeSig(f.cmd, f.tool, f.out);
+      key = entryKey(f.tool, code, sig);
+    } catch {
+      return; // 诊断只是锦上添花：判不出来就安静
+    }
+    if (this.failReminded.has(key) || this.failRemindPending.has(key)) return;
+    // 同一类在这个会话里到第几次了（按同样的钥匙重算，不能拿 toolCallId 比）。
+    const same = [...this.sessionFails.values()].filter((o) => sameFail(o, key)).length;
+    const old = this.failLedger?.entries.find((e) => e.key === key);
+    const ripe = Boolean(old && old.count >= 3 && !old.fixedAt && !old.ignoredAt);
+    if (same < 2 && !ripe) return;
+    this.failRemindPending.add(key);
+    this.socket.send({
+      type: "failures.remind",
+      ws: this.currentWs() ?? "",
+      sid,
+      key,
+      tool: f.tool,
+      sig,
+      why: cause,
+      n: Math.max(same, old?.count ?? 0),
+    });
   }
 
   /** 这个会话还有几次失败没进账本：见过的条数 - 上次入账时的条数（点完按钮、账本回包后归零）。 */
@@ -7618,7 +7674,7 @@ export class App {
     if (archived) tag("arch", tr("已归档"));
     tag(s.origin === "web" ? "web" : "cli", s.origin === "web" ? tr("网页") : "CLI", s.origin === "web" ? tr("在网页里新建的会话") : tr("在终端 pi CLI 里创建的会话"));
     const badge = this.badgeOf(s);
-    // D169：「后台」那一枚在管理面板里也要点得开，不然同一枚徽标在左栏能点、到这里突然不能。
+    // D170：「后台」那一枚在管理面板里也要点得开，不然同一枚徽标在左栏能点、到这里突然不能。
     if (badge?.kind === "bg") {
       const chip = this.badgeChip(s);
       if (chip) line.append(chip);
@@ -7893,7 +7949,7 @@ export class App {
     const queueBar = el("div", "queue-bar");
     this.queueBar = queueBar;
     host.append(extAbove, queueBar, row, hint, extBelow);
-    // D169: 提示条插在输入框上方（`row` 是锚点），重画后要重新挂回去。
+    // D170: 提示条插在输入框上方（`row` 是锚点），重画后要重新挂回去。
     this.syncBgBar();
     this.fillExt();
     this.fillQueueBar();
@@ -10045,7 +10101,7 @@ export class App {
   }
 
   /**
-   * D169: 输入框上方那条「子代理运行中」。会话自己 settle 之后，pi 再也不会发 `running: true`，
+   * D170: 输入框上方那条「子代理运行中」。会话自己 settle 之后，pi 再也不会发 `running: true`，
    * 这条提示就是页面上唯一能看出「它还在后台干活」的地方（左栏同时有一枚「后台」徽标）。
    *
    * 不读 runner 的痕迹文件：桥只把「开始」与「结束」两件事折成 `state.bg` 推过来，秒数在这里滴答（
@@ -10054,7 +10110,7 @@ export class App {
   private syncBgBar(): void {
     const bg = this.session?.bg;
     const live = bgBusy(this.session) ? bg : null;
-    // 跑完的那一档还要留几分钟：不然「最终输出」只有在弹层恰好开着时才看得到（D169 评审）。
+    // 跑完的那一档还要留几分钟：不然「最终输出」只有在弹层恰好开着时才看得到（D170 评审）。
     const done = !live && bg && (bg.recent ?? 0) > 0 ? bg : null;
     if (!live && !done) {
       this.bgBar?.remove();
@@ -10065,7 +10121,7 @@ export class App {
       const bar = el("div", "bg-bar");
       // 时间贴着文字走，不推到最右边：`总结本轮错误` 那颗浮动贴在输入框右上，推过去会被它压住。
       bar.append(el("span", "bg-dot"), el("span", "bg-text"), el("span", "bg-sep", "·"), el("span", "bg-elapsed"));
-      // D169：整条都能点开详情。用 role=button 而不是 <button>：里面已经有文字与计时，语义上是一个入口。
+      // D170：整条都能点开详情。用 role=button 而不是 <button>：里面已经有文字与计时，语义上是一个入口。
       bar.setAttribute("role", "button");
       bar.tabIndex = 0;
       bar.onclick = () => this.openBgSheet();
@@ -10103,7 +10159,7 @@ export class App {
   }
 
   /**
-   * D169 详情：这条提示条背后到底在跑什么。概览（agent / 任务 / 状态 / 用时）+ 过程（runner 自己
+   * D170 详情：这条提示条背后到底在跑什么。概览（agent / 任务 / 状态 / 用时）+ 过程（runner 自己
    * 写的活动记录尾巴，1.5 秒一刷）+ 跑完之后的最终输出。桥只读 `%TEMP%\acp-delegate\` 里的痕迹，
    * 读不到（还没写、已被删、公网只读）就少一段，不当错误报。
    */

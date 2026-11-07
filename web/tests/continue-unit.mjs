@@ -60,7 +60,7 @@ test("字段缺省按「不是」算：老桥不发 locked/starting/running 也�
   assert.equal(continueState({ owned: false }, true), "hidden");
 });
 
-// ---------------------------------------------------------------- 后台子代理（D169）
+// ---------------------------------------------------------------- 后台子代理（D170）
 
 test("后台子代理还在跑 → 灰：pi 回来会自己接着做，点「继续」是插队多推一轮", () => {
   assert.equal(continueState({ ...owned, bg: { n: 1, since: Date.now() } }, true), "off");

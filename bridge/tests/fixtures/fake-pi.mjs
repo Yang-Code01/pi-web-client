@@ -132,7 +132,7 @@ async function turn(text) {
     return;
   }
   if (text.startsWith("BGSTART")) {
-    // D169: 派一个后台子代理，这一轮正常收尾 —— 会话自己 settle 了，runner 还在跑。
+    // D170: 派一个后台子代理，这一轮正常收尾 —— 会话自己 settle 了，runner 还在跑。
     // 形状照真 pi 来：`result` 是 `{ content, details }`（pi docs/json.md），活动路径在结果文本的
     // 第二段里并且**带缩进** —— 只认行首的解析器在这里就会把提示条弄丢。
     const activity = path.join(os.tmpdir(), "acp-delegate", "del_fake.activity");

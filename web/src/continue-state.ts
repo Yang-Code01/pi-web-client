@@ -21,7 +21,7 @@ export type ContinueSession = Pick<SessionState, "owned"> &
  *   `locked` 目前只在桥的 `list()` 副本上出现（`bridge/src/sessions.ts` 注释：不许漏进广播的
  *   live state），所以它多半只是个兜底；真正常用的仍是 `owned`。
  * - `off`：pi 起不来或正忙着，或者这条会话还没有任何用户消息（「继续」无处可接）；
- *   或者后台子代理还在跑（D169）—— pi 会在 runner 回来时自己唤醒继续，此时点下去是插队多推一轮。
+ *   或者后台子代理还在跑（D170）—— pi 会在 runner 回来时自己唤醒继续，此时点下去是插队多推一轮。
  * - `ready`：可以点。
  */
 export function continueState(s: ContinueSession | null | undefined, hasUserTurns: boolean): ContinueState {

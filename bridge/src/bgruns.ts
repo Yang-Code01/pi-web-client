@@ -1,5 +1,5 @@
 /**
- * 后台子代理（D169）：会话自己已经 settle，派出去的 runner 还在跑。
+ * 后台子代理（D170）：会话自己已经 settle，派出去的 runner 还在跑。
  *
  * pi 只在 `tool_execution_end` 的 `details` 里承认一次「有这么个 run」：
  *
@@ -12,7 +12,7 @@
  *
  * 为什么不拿盘上的东西判定成败：`AgentRun` 的 `details.status` 永远停在 `running`，`.activity`
  * 的 mtime 也区分不了「写完最后一行」与「卡住」，只有 runner 自己注入回来的那条通知算数。
- * 读盘只用于 D169 的看详情（`readLog()`），不参与状态机。
+ * 读盘只用于 D170 的看详情（`readLog()`），不参与状态机。
  */
 
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
@@ -237,7 +237,7 @@ export class BgRuns {
       view.since = first.startedAt;
     }
     if (done.length) {
-      // 跑完就收掉提示条的话，「最终输出」只有弹层恰好开着才看得到（D169 评审）。留一档：
+      // 跑完就收掉提示条的话，「最终输出」只有弹层恰好开着才看得到（D170 评审）。留一档：
       // 提示条翻成「已结束 · 点开看结果」，「继续」同时恢复正常。
       const last = done.reduce((a, b) => ((a.endedAt ?? a.startedAt) >= (b.endedAt ?? b.startedAt) ? a : b));
       const end = last.endedAt ?? last.startedAt;

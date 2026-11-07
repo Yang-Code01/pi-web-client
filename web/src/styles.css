@@ -631,6 +631,9 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* model ids are lowercase by nature: no uppercase transform, just wide tracking */
 .msg .who { font-size: 11px; color: var(--faint); letter-spacing: 0.06em; margin-bottom: 4px; }
 .msg.user .body { background: var(--accent-bg); border: 1px solid var(--accent-dim); border-radius: 12px 12px 12px 4px; padding: 8px 12px; white-space: pre-wrap; word-break: break-word; }
+/* 桥注入的自动提醒（D169）：说这话的不是人，所以不画成用户气泡 —— 左边一道竖线，抬头用警告色。 */
+.msg.remind .who { color: var(--warn); }
+.msg.remind .body { border-left: 2px solid var(--warn); padding: 2px 0 2px 10px; white-space: pre-wrap; word-break: break-word; }
 /* A `/skill:x` call: pi wrote the whole SKILL.md into the transcript, the bridge folds it back to the
    command and marks the item. The command is a pill; the user's own words follow it as plain text.
    Both the bubble and the 随手问 transcript draw it, so the rule carries both selectors. */
@@ -782,7 +785,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .takeover.warn { border-color: var(--warn-dim); background: var(--warn-bg); color: var(--text); }
 
 /*
- * D169: 后台子代理的那条提示。会话自己 settle 之后 pi 再也不会发 running ——— 这里是页面上
+ * D170: 后台子代理的那条提示。会话自己 settle 之后 pi 再也不会发 running ——— 这里是页面上
  * 唯一能看出「它还在后台干活」的地方，所以它用强调色而不是告警色：这不是要你处理的事。
  */
 .bg-bar {
@@ -3485,7 +3488,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-cfhint { flex: none; margin-left: 8px; color: #9a6b00; font-size: 11.5px; white-space: nowrap; }
 .sd-cfhint[hidden] { display: none; }
 
-/* D169 详情：点开「后台」那条提示，看 runner 在干什么。一屏一张卡片，过程贴着底长。 */
+/* D170 详情：点开「后台」那条提示，看 runner 在干什么。一屏一张卡片，过程贴着底长。 */
 .sheet.bg-sheet { grid-template-rows: auto minmax(0, 1fr); width: min(760px, 94vw); max-height: min(760px, calc(var(--vh1) * 84)); }
 .bg-sheet-body { overflow: auto; padding: 12px 16px 16px; display: grid; gap: 14px; align-content: start; }
 .bg-empty { color: var(--faint); font-size: 13px; padding: 6px 0; }
@@ -3505,5 +3508,5 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .badge.clickable { cursor: pointer; }
 .badge.clickable:hover { border-color: var(--accent); }
 .badge.clickable:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
-/* 钉条胶囊里那行小字：能点开详情的那几颗才挂这个类（D169）。 */
+/* 钉条胶囊里那行小字：能点开详情的那几颗才挂这个类（D170）。 */
 .pin-open .pin-sub-detail { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }

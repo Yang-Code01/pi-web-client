@@ -232,7 +232,7 @@ try {
   check("英文界面发出去的仍是字面「继续」", sentEn?.text === "继续", JSON.stringify(sentEn?.text));
   check("英文界面草稿也在", (await enPage.locator(".composer textarea").inputValue()) === "english draft");
   await en.close();
-  // -- E. 后台子代理（D169）：会话 settle 了，runner 还在跑 ------------------
+  // -- E. 后台子代理（D170）：会话 settle 了，runner 还在跑 ------------------
   // 用户报的就是这一段：页面看着空闲（pi.status 已是 false），既没有提示，又能点「继续」。
   await turn("BGSTART please");
   const bar = page.locator(".bg-bar");
@@ -258,7 +258,7 @@ try {
   check("左栏那枚是「后台」而不是「完成」", badges.includes("后台"), JSON.stringify(badges.slice(0, 8)));
   await shot("bg", await composerClip());
 
-  // -- F. 点开看详情（D169）：概览 + 活动记录尾 ---------------------------------
+  // -- F. 点开看详情（D170）：概览 + 活动记录尾 ---------------------------------
   // 假 pi 自己会把那份活动记录写进 `%TEMP%\acp-delegate`（跟真 runner 一个地方），这里只验桥读到了。
   await bar.click();
   let sheet = page.locator(".sheet.bg-sheet");
@@ -288,7 +288,7 @@ try {
   check("点徽标也能开详情", (await page.locator(".sheet.bg-sheet").count()) === 1);
   await page.locator(".sheet.bg-sheet .sheet-head button").click();
 
-  // -- G. 刷新页面之后（D169）：提示条还在，因为它是会话状态而不是前端记忆 -------------
+  // -- G. 刷新页面之后（D170）：提示条还在，因为它是会话状态而不是前端记忆 -------------
   await page.reload();
   const bar2 = page.locator(".bg-bar");
   for (let i = 0; i < 150; i++) {
@@ -299,7 +299,7 @@ try {
   check("刷新后「继续」还是灰的", await button.isDisabled());
   await shot("bg-refresh", await composerClip());
 
-  // -- H. 跑完了（D169）：提示条翻成「看结果」，但「继续」不再被拦 -------------------
+  // -- H. 跑完了（D170）：提示条翻成「看结果」，但「继续」不再被拦 -------------------
   await turn("BGDONE now");
   for (let i = 0; i < 100; i++) {
     if (/已结束/.test(await page.locator(".bg-bar .bg-text").innerText().catch(() => ""))) break;
