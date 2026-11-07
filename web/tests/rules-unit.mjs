@@ -91,6 +91,25 @@ check("包在列表项、引用、粗体、代码里都认得", () => {
   assert.equal(out[2].rule, "缩小范围或加超时");
 });
 
+check("成对的粗体 / 斜体 / 反引号剥掉，只留那一句话", () => {
+  const out = parseRules(
+    [
+      `${RULE_MARK} bash|path|cd <path> :: **先 test -d 再 cd**`,
+      `${RULE_MARK} bash|path|npm <dir> :: \`npm --prefix web ci\``,
+      `${RULE_MARK} bash|nocmd|tail <file> :: _读日志前先 ls 一遍_`,
+    ].join("\n"),
+  );
+  assert.deepEqual(
+    out.map((r) => r.rule),
+    ["先 test -d 再 cd", "npm --prefix web ci", "读日志前先 ls 一遍"],
+  );
+});
+
+check("单个 * 是通配符，不是粗体：结尾的 * 不能被吃掉", () => {
+  const out = parseRules(`${RULE_MARK} bash|path|ls <path> :: 没有 CI 就直接 npm run test:*`);
+  assert.equal(out[0].rule, "没有 CI 就直接 npm run test:*");
+});
+
 check("夹解释的回答里只捡带标记的行，别的句子不进账", () => {
   const text = [
     `## 这一轮怎么栽的`,
