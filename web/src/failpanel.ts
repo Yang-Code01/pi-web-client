@@ -8,7 +8,7 @@
  * 右栏是这一类最后一次为什么没成、当时给的修法、以及最近几次的原文。
  */
 import { createEl as el } from "./chat.ts";
-import { clock, codeLabel, entryState, entryTitle, failureMarkdown, ledgerMarkdown, ripeEntries, stateLabel, type FailEntry, type FailLedger } from "./failures.ts";
+import { causesOf, clock, entryState, entryTitle, failureMarkdown, ledgerMarkdown, stateLabel, type FailEntry, type FailLedger } from "./failures.ts";
 import { tr, fmtDate, fmtTime } from "./i18n/index.ts";
 
 export interface FailHost {
@@ -194,9 +194,17 @@ export class FailPanel {
       ),
     );
     const parts: HTMLElement[] = [head, meta];
-    if (e.why) {
+    const causes = causesOf(e);
+    if (causes.length === 1) {
       const why = el("div", "fail-why");
-      why.append(el("span", "fail-why-k", tr("为什么没成")), el("span", "", e.why));
+      why.append(el("span", "fail-why-k", tr("为什么没成")), el("span", "", causes[0]));
+      parts.push(why);
+    } else if (causes.length > 1) {
+      const why = el("div", "fail-why");
+      why.append(
+        el("span", "fail-why-k", tr("为什么没成")),
+        el("span", "", tr("本类混了 {p1} 种原因：{p2}", { p1: causes.length, p2: causes.join(tr("；")) })),
+      );
       parts.push(why);
     }
     if (e.fix) {

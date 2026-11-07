@@ -40,6 +40,13 @@ export interface FailEntry {
   last: string;
   /** 首次发生时的诊断：为什么没成 / 可复用修法。空串 = 当时没诊断出来。 */
   why: string;
+  /**
+   * 这一类里出现过的不同「为什么」(去重、上限 4)。
+   *
+   * 归并键把多次折叠成一类之后，同一个 `why` 会被当成整类的解释贴到每一次上——但一类里混了
+   * 两种毛病时那句话就是张冠李戴。`why` 仍留着（兼容、首次的那句最完整），面板只看这里。
+   */
+  causes?: string[];
   fix: string;
   /** 标了「已修复」的时间；再犯时清空。 */
   fixedAt: string | null;
@@ -188,6 +195,7 @@ export function mergeFailures(input: {
         first: when,
         last: when,
         why,
+        causes: why ? [why] : [],
         fix,
         fixedAt: null,
         ignoredAt: null,
@@ -202,6 +210,11 @@ export function mergeFailures(input: {
     hit.occ = [occ, ...hit.occ].slice(0, MAX_OCC);
     // 诊断文案只补空，不覆盖：同一类错误第一次的「为什么」通常最完整。
     if (!hit.why && why) hit.why = why;
+    // 但整类不能共用一句解释：把这一类里真出现过的说法都收着（面板据此决定敢不敢下结论）。
+    if (why) {
+      const seen = (hit.causes ??= hit.why ? [hit.why] : []);
+      if (!seen.includes(why) && seen.length < 4) seen.push(why);
+    }
     if (!hit.fix && fix) hit.fix = fix;
     // 再犯 = 修法没起作用：无论当初是「已修复」还是「已修复后又忽略」，都退回未修。
     // （只清 fixedAt：忽略状态保留，不吵醒用户，只加次数。）

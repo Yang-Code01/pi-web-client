@@ -14,6 +14,18 @@ const BASH_SHOW = 20000;
  */
 const BOTTOM_SLACK = 24;
 
+/**
+ * 桥注入的自动提醒（`bridge/src/lessons.ts` 的 `reminderText`）开头就是这个标记。
+ * 它必须是 ASCII：界面语言换掉的是抬头的字，「这是一条提醒」得靠一个不随语言变的东西认出来。
+ */
+const REMIND_MARK = "[pi-web:remind]";
+
+/** 提醒正文（去掉标记）；不是提醒就返回 null。 */
+function reminderBody(text: string): string | null {
+  if (!text.startsWith(REMIND_MARK)) return null;
+  return text.slice(REMIND_MARK.length).replace(/^\s+/, "");
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -122,7 +134,7 @@ export class ChatView {
    * 会话级失败回传（D164）：除了一张红卡，账本还要一份它。按 id 去重是 app 的事 ——
    * 同一张卡会在 live 事件、item.replace、reset 重放里各建一次，聊天区只画一张，账本也只能算一次。
    */
-  onFail: ((f: { id: string; tool: string; cmd: string; out: string; at?: string }) => void) | null = null;
+  onFail: ((f: { id: string; tool: string; cmd: string; out: string; at?: string; live?: boolean }) => void) | null = null;
   /** Following the stream: new content scrolls the view to the bottom. Cleared the moment the user says "I want to read up there". */
   private following = true;
   /** One pending frame at most — a burst of updates must cost one scroll, not one per update. */
@@ -637,7 +649,8 @@ export class ChatView {
         const name = card.querySelector(".name")?.textContent?.trim() || String(data.name ?? "tool");
         const cmd = card.querySelector(".cmd")?.textContent?.trim() || "";
         this.failureCard(key, { tool: name, cmd, out: String(data.result ?? "") }, Number(data.durationMs ?? 0));
-        this.onFail?.({ id: key, tool: name, cmd, out: String(data.result ?? "") });
+        // `live`: 这是刚跑完的一次（不是历史回放），只有它值得「当场叫住」。
+        this.onFail?.({ id: key, tool: name, cmd, out: String(data.result ?? ""), live: true });
       } else {
         this.noteAfter({
           id: `live-tool:${key}`,
@@ -771,8 +784,19 @@ export class ChatView {
       return box;
     }
 
-    const wrap = el("div", `msg ${item.kind}`);
+    const reminded = item.kind === "user" ? reminderBody(item.text) : null;
+    const wrap = el("div", `msg ${reminded !== null ? "remind" : item.kind}`);
     if (item.kind === "assistant") (wrap as HTMLElement & { _raw?: string })._raw = item.text;
+    // 桥注入的自动提醒（D169）：它是一条真正的 user 消息（pi 只有 prompt 通道），但说这话的不是人，
+    // 所以不画成气泡、不给复制/分叉，抬头用界面语言，正文才是桥写的那段（内容本身来自账本/诊断，是中文数据）。
+    if (reminded !== null) {
+      const head = el("div", "who");
+      head.textContent = tr("自动提醒 · 老毛病重犯 · {p1}", { p1: timeOf(item.ts) });
+      const body = el("div", "body");
+      body.textContent = reminded;
+      wrap.append(head, body);
+      return wrap;
+    }
     const who = el("div", "who");
     if (item.kind === "user") {
       who.textContent = tr("你 · {p1}", { p1: timeOf(item.ts) });
@@ -958,6 +982,11 @@ export class ChatView {
 
   private buildUserBody(item: UserItem): HTMLElement {
     const body = el("div", "body");
+    const reminded = reminderBody(item.text);
+    if (reminded !== null) {
+      body.textContent = reminded;
+      return body;
+    }
     // 命令画成药丸、用户自己写的话原样跟在后面，规则在 skill.ts（与桥端的折叠规则成对）。
     fillUserBody(body, item);
     if (item.images?.length) {

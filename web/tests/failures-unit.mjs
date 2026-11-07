@@ -7,6 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  causesOf,
   classify,
   entryKey,
   firstLine,
@@ -71,6 +72,57 @@ test("管道只取最后一段：前面的过滤器不改结论", () => {
   assert.ok(s.startsWith("head"));
 });
 
+// 下面这几条是拿真账本里的假类当回归（`%LOCALAPPDATA%/pi-web-client/failures/`，46 次里 31 次
+// 折在「拿 cd 或 | head 当签名」上）：形状必须取自真正出事的那一段。
+
+test("`cd X && 命令`：签名为后面那步，不是 cd", () => {
+  const cmd = 'cd /f/pi-web-client-wt/fix/complete-label/.scratch/complete-label && node cdp.mjs "http://127.0.0.1:7864/" probe1.js 6000';
+  assert.ok(normalizeSig(cmd, "bash", "node:internal/modules/esm/load:195").startsWith("node"));
+  // 没有输出可依时也不回到 cd：最后一段才是链里出事的那步。
+  assert.ok(normalizeSig(cmd, "bash").startsWith("node"));
+});
+
+test("cd 自己不存在：证据把签名拉回 cd", () => {
+  const out = "bash: cd: /nope: No such file or directory\n\nCommand exited with code 1";
+  assert.ok(normalizeSig("cd /nope && git status", "bash", out).startsWith("cd"));
+  assert.equal(classify("bash", out, 1), "path");
+});
+
+test("长链里按输出认人：grep 没命中就记 grep", () => {
+  const cmd = 'cd /tmp && curl -s http://127.0.0.1:7864/x.css -o live.css && wc -c live.css && grep -o "\\.a {[^}]*}" live.css';
+  assert.ok(normalizeSig(cmd, "bash", "123917 live.css").startsWith("grep"));
+  assert.ok(normalizeSig(cmd, "bash", "wc: live.css: No such file or directory").startsWith("wc"));
+});
+
+test("同名子串不算证据：node_modules 不认 node", () => {
+  const cmd = "cd /repo && grep -r foo node_modules";
+  assert.ok(normalizeSig(cmd, "bash", "ls: node_modules: No such file or directory").startsWith("grep"));
+});
+
+test("内联脚本只记 <code>，不把载荷当参数", () => {
+  assert.equal(normalizeSig("node -e \"JSON.parse('x')\"", "bash"), "node <code>");
+  assert.equal(normalizeSig("python - <<'PY'\nimport os\nprint(1)\nPY", "bash"), "python <code>");
+});
+
+test("grep 的 -c 是计数不是带值旗标：模式要留在签名里", () => {
+  // 回归：以前 `-c` 一律当成「带一个值」（为了 `git -c k=v`），把要数的模式吃了，
+  // 于是 `grep -c NOTE` 与 `grep -c TODO` 被并成同一类。
+  assert.match(normalizeSig("grep -c NOTE src/a.ts", "bash"), /^grep NOTE/);
+  assert.notEqual(normalizeSig("grep -c NOTE src/a.ts", "bash"), normalizeSig("grep -c TODO src/a.ts", "bash"));
+  // 而 `git -c user.name=x commit` 的 `-c` 确实带一个设置项，它不该进签名。
+  assert.ok(!normalizeSig("git -c user.name=x commit -m m", "bash").includes("user.name"));
+});
+
+test("引号里的分隔符不切段、不留半截引号", () => {
+  assert.ok(normalizeSig('grep -o "a && b" f.css', "bash").startsWith("grep"));
+  assert.ok(!normalizeSig('sed -n \'80,115p\' "web/src/ja.ts"', "bash").includes('"'));
+});
+
+test("多行脚本按行切段，仍认得出出事那行", () => {
+  const cmd = "cd /repo\nsed -n 1,5p a.ts\ngrep -rn foo src";
+  assert.ok(normalizeSig(cmd, "bash", "grep: src: No such file or directory").startsWith("grep"));
+});
+
 test("不同工具、不同分类 → 不同钥匙", () => {
   assert.notEqual(entryKey("bash", "path", "x"), entryKey("edit", "path", "x"));
   assert.notEqual(entryKey("bash", "path", "x"), entryKey("bash", "exit", "x"));
@@ -110,4 +162,26 @@ test("交接稿带次数、形状与最近发生的原文", () => {
 
 test("首行取错误行，不吃 ANSI 与空行", () => {
   assert.equal(firstLine("\n\n\u001b[31mbash: cd: /x: No such file\u001b[0m\nmore"), "bash: cd: /x: No such file");
+});
+
+test("一类里只有一种说法时，整类共享那句 why", () => {
+  assert.deepEqual(causesOf(entry({ why: "路径拼错" })), ["路径拼错"]);
+  assert.deepEqual(causesOf(entry({ why: "路径拼错", causes: ["路径拼错"] })), ["路径拼错"]);
+  assert.match(failureMarkdown(entry({ why: "路径拼错" }), "w"), /为什么没成：路径拼错/);
+});
+
+test("一类里混了好几种说法时，交接稿不下单一结论", () => {
+  const e = entry({ why: "断言失败", causes: ["断言失败", "模块加载失败", "命令没装"] });
+  assert.deepEqual(causesOf(e), ["断言失败", "模块加载失败", "命令没装"]);
+  const md = failureMarkdown(e, "w");
+  assert.match(md, /混了 3 种原因/);
+  assert.match(md, /命令没装/);
+  assert.doesNotMatch(md, /为什么没成：断言失败/);
+});
+
+test("老账本没有 causes 字段时仍能读", () => {
+  const e = entry({ why: "只有首句" });
+  delete e.causes;
+  assert.deepEqual(causesOf(e), ["只有首句"]);
+  assert.deepEqual(causesOf(entry({ why: "" })), []);
 });
