@@ -13092,8 +13092,10 @@ const LEGACY_ACCENTS: Record<string, string> = {
 };
 
 const TEXTS: Record<Prefs["text"], { text: string; dim: string; faint: string }> = {
-  soft: { text: "#d2d7e1", dim: "#8a92a0", faint: "#59606d" },
-  normal: { text: "#e7eaf0", dim: "#9aa2b1", faint: "#6b7280" },
+  // faint 是弱化文字（路径、计数、提示），三档都要过 WCAG AA 4.5:1：
+  // 原来 59606d / 6b7280 在 --panel 上只有 2.89 / 3.78:1。
+  soft: { text: "#d2d7e1", dim: "#8a92a0", faint: "#828a99" },
+  normal: { text: "#e7eaf0", dim: "#9aa2b1", faint: "#8b93a1" },
   bright: { text: "#fbfcff", dim: "#b9c1d0", faint: "#8a93a3" },
 };
 
