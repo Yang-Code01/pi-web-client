@@ -2801,10 +2801,9 @@ export class App {
     const accent = ACCENTS[this.prefs.accent] ?? ACCENTS[DEFAULT_PREFS.accent];
     root.setProperty("--accent", accent.accent);
     root.setProperty("--accent-dim", accent.dim);
-    const text = TEXTS[this.prefs.text] ?? TEXTS.normal;
-    root.setProperty("--text", text.text);
-    root.setProperty("--dim", text.dim);
-    root.setProperty("--faint", text.faint);
+    // D158：三档文字颜色（--text/--dim/--faint）只有 styles.css 里 [data-text] 那一份，这里只标档位。
+    // 读回来时 readPrefs 已经按 TEXT_STEPS 校验过，不会给 CSS 一个没有对应规则的值。
+    document.documentElement.dataset.text = this.prefs.text;
     // #97：布局也是外观偏好，但「哪一种壳」影响的是行与列的摆法，#98 还要在自己的 CSS 里挑壳。
     // 存的值原样留在 prefs 里，这里只标出这一版真正画出来的那一种（见 layout.ts 的 activeLayout）。
     this.paintLayout();
@@ -13089,12 +13088,6 @@ const LEGACY_ACCENTS: Record<string, string> = {
   琥珀: "amber",
   玫瑰: "rose",
   银灰: "slate",
-};
-
-const TEXTS: Record<Prefs["text"], { text: string; dim: string; faint: string }> = {
-  soft: { text: "#d2d7e1", dim: "#8a92a0", faint: "#59606d" },
-  normal: { text: "#e7eaf0", dim: "#9aa2b1", faint: "#6b7280" },
-  bright: { text: "#fbfcff", dim: "#b9c1d0", faint: "#8a93a3" },
 };
 
 const TEXT_STEPS: [Prefs["text"], string][] = [
