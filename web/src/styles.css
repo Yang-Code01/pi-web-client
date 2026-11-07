@@ -631,7 +631,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* model ids are lowercase by nature: no uppercase transform, just wide tracking */
 .msg .who { font-size: 11px; color: var(--faint); letter-spacing: 0.06em; margin-bottom: 4px; }
 .msg.user .body { background: var(--accent-bg); border: 1px solid var(--accent-dim); border-radius: 12px 12px 12px 4px; padding: 8px 12px; white-space: pre-wrap; word-break: break-word; }
-/* 桥注入的自动提醒（D168）：说这话的不是人，所以不画成用户气泡 —— 左边一道竖线，抬头用警告色。 */
+/* 桥注入的自动提醒（D169）：说这话的不是人，所以不画成用户气泡 —— 左边一道竖线，抬头用警告色。 */
 .msg.remind .who { color: var(--warn); }
 .msg.remind .body { border-left: 2px solid var(--warn); padding: 2px 0 2px 10px; white-space: pre-wrap; word-break: break-word; }
 /* A `/skill:x` call: pi wrote the whole SKILL.md into the transcript, the bridge folds it back to the
