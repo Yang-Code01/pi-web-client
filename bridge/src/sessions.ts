@@ -20,6 +20,7 @@ import { absentFor } from "./presence.ts";
 import { sampleMemory } from "./runtime.ts";
 import { defaultPermission } from "./permissiondefault.ts";
 import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
+import { isProtocolWidgetLines } from "./extwidgets.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -1975,6 +1976,12 @@ export class Session extends EventEmitter {
         if (!key) return true;
         if (Array.isArray(req.widgetLines)) {
           const lines = req.widgetLines.slice(0, 40).map((l: unknown) => stripAnsi(String(l ?? "")).slice(0, 400));
+          // 扩展塞过来的协议载荷（pi-subagents 的 `PI_SUBAGENT_ASYNC_JSON:{…}`）当文本铺出来就是
+          // 一坨被 400 字截断的原始 JSON，见 `extwidgets.ts`。「子代理在跑」另有 D170 的提示条。
+          if (isProtocolWidgetLines(lines)) {
+            if (this.extWidgets.delete(key)) this.emitExtUi();
+            return true;
+          }
           this.extWidgets.set(key, { lines, placement: req.widgetPlacement === "belowEditor" ? "belowEditor" : "aboveEditor" });
         } else this.extWidgets.delete(key);
         this.emitExtUi();
