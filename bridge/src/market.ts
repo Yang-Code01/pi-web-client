@@ -7,7 +7,7 @@
  * Nothing here installs anything: installs, removals and updates run through pi's own CLI
  * (picli.ts); enable / disable edit pi's settings.json (pisettings.ts) or the server's mcp.json.
  */
-import { execFile, spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -84,6 +84,25 @@ async function getJson<T = any>(url: string, headers?: Record<string, string>): 
   return JSON.parse(res.text) as T;
 }
 
+/**
+ * A JSON GET that rides out a dropped connection: the registry walk below is 300 pages long and one
+ * `ECONNRESET` (a proxy hiccup is enough) otherwise throws away every page fetched so far.
+ */
+async function getJsonRetry<T = any>(url: string, attempts = 3): Promise<T> {
+  let last: unknown = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await getJson<T>(url);
+    } catch (err) {
+      last = err;
+      // A 4xx is the registry saying no: asking again changes nothing.
+      if (/\s返回\s4\d\d$/.test(String((err as Error)?.message ?? "")) || i === attempts - 1) break;
+      await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+    }
+  }
+  throw last;
+}
+
 /** A JSON GET for other modules (the 技能商店 resolves repos the same proxy-aware way). */
 export async function fetchJson<T = any>(url: string, headers?: Record<string, string>): Promise<T> {
   return getJson<T>(url, headers);
@@ -117,17 +136,42 @@ export function pypiLatest(name: string): Promise<string | null> {
   });
 }
 
-/** Numeric-aware a > b for x.y.z(-pre). Unknown shapes compare as strings. */
+/**
+ * Semver-ish a > b. The numeric core decides first; on a tie a release beats a prerelease, and two
+ * prereleases compare identifier by identifier (numeric before alphanumeric, so `-beta.11` is newer
+ * than `-beta.2`, `-alpha` older than `-beta`). Build metadata (`+sha`) is ignored. Unknown shapes
+ * fall back to text.
+ */
 export function newer(a: string, b: string): boolean {
-  const parse = (v: string) => v.replace(/^v/, "").split(/[.+-]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+  const parse = (v: string) => {
+    const clean = v.replace(/^v/, "").split("+")[0] ?? "";
+    const dash = clean.indexOf("-");
+    const core = (dash < 0 ? clean : clean.slice(0, dash)).split(".").map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+    const pre = dash < 0 ? "" : clean.slice(dash + 1);
+    return { core, pre: pre ? pre.split(".") : [] };
+  };
   const pa = parse(a);
   const pb = parse(b);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const x = pa[i] ?? 0;
-    const y = pb[i] ?? 0;
+  for (let i = 0; i < Math.max(pa.core.length, pb.core.length); i++) {
+    const x = pa.core[i] ?? 0;
+    const y = pb.core[i] ?? 0;
     if (x === y) continue;
     if (typeof x === "number" && typeof y === "number") return x > y;
     return String(x) > String(y);
+  }
+  // Same core version: the release wins, otherwise compare the prerelease identifiers.
+  if (!pa.pre.length || !pb.pre.length) return !pa.pre.length && pb.pre.length > 0;
+  for (let i = 0; i < Math.max(pa.pre.length, pb.pre.length); i++) {
+    const x = pa.pre[i];
+    const y = pb.pre[i];
+    if (x === y) continue;
+    if (x === undefined) return false; // fewer identifiers wins: -alpha < -alpha.1
+    if (y === undefined) return true;
+    const nx = /^\d+$/.test(x);
+    const ny = /^\d+$/.test(y);
+    if (nx && ny) return Number(x) > Number(y);
+    if (nx !== ny) return nx; // numeric identifiers sort before alphanumeric ones
+    return x > y;
   }
   return false;
 }
@@ -487,56 +531,98 @@ function normalize(entry: any): StoreMcp | null {
   return { name: String(s.name), title: String(s.title ?? s.name.split("/").pop()), description: String(s.description ?? ""), version: String(s.version ?? ""), repo, stars: 0, options };
 }
 
-let building: Promise<{ at: number; items: StoreMcp[]; starsComplete: boolean }> | null = null;
+export interface McpIndex {
+  at: number;
+  items: StoreMcp[];
+  starsComplete: boolean;
+  /** The registry had more pages than we walked: the long tail is missing from the ranking. */
+  truncated?: boolean;
+}
+
+/** 600 pages × 100 entries. The registry had ~300 pages in Nov 2026; the cap only stops a runaway. */
+const INDEX_MAX_PAGES = 600;
+/** A walk that died costs minutes, so the next keystroke must not start it over. */
+const INDEX_FAILURE_COOLDOWN = 60_000;
+
+let building: Promise<McpIndex> | null = null;
+let lastFailure = 0;
+let indexListener: ((idx: McpIndex) => void) | null = null;
+
+/** Called after a successful build, so the page can drop its 「正在建立」 note instead of polling. */
+export function setIndexListener(fn: ((idx: McpIndex) => void) | null): void {
+  indexListener = fn;
+}
 
 /** Every active latest registry entry, with GitHub stars; rebuilt once a day in the background. */
-export function mcpIndex(force = false): Promise<{ at: number; items: StoreMcp[]; starsComplete: boolean; building?: boolean }> {
-  const disk = readJson<{ at?: number; items?: StoreMcp[]; starsComplete?: boolean } | null>(INDEX_FILE(), null);
+export function mcpIndex(force = false): Promise<{ at: number; items: StoreMcp[]; starsComplete: boolean; building?: boolean; truncated?: boolean }> {
+  const disk = readJson<{ at?: number; items?: StoreMcp[]; starsComplete?: boolean; truncated?: boolean } | null>(INDEX_FILE(), null);
   const fresh = disk?.at && Date.now() - disk.at < INDEX_TTL && Array.isArray(disk.items);
-  if (fresh && !force) return Promise.resolve({ at: disk!.at!, items: disk!.items!, starsComplete: Boolean(disk!.starsComplete) });
-  if (!building) {
+  if (fresh && !force) return Promise.resolve({ at: disk!.at!, items: disk!.items!, starsComplete: Boolean(disk!.starsComplete), truncated: Boolean(disk!.truncated) });
+  // A stale index is still useful while the new one builds.
+  const stale = disk?.items && !force ? Promise.resolve({ at: disk.at ?? 0, items: disk.items, starsComplete: Boolean(disk.starsComplete), building: true, truncated: Boolean(disk.truncated) }) : null;
+  if (!building && Date.now() - lastFailure >= INDEX_FAILURE_COOLDOWN) {
     building = buildIndex()
       .then((idx) => {
         ensureDir(path.dirname(INDEX_FILE()));
         writeJson(INDEX_FILE(), idx);
+        indexListener?.(idx);
         return idx;
+      })
+      .catch((err) => {
+        lastFailure = Date.now();
+        throw err;
       })
       .finally(() => {
         building = null;
       });
   }
-  // A stale index is still useful while the new one builds.
-  if (disk?.items && !force) return Promise.resolve({ at: disk.at ?? 0, items: disk.items, starsComplete: Boolean(disk.starsComplete), building: true });
-  return building;
+  if (stale) return stale;
+  if (building) return building;
+  // Cooling down after a failed walk with nothing on disk: the caller falls back to the live search.
+  return Promise.resolve({ at: 0, items: [], starsComplete: false, building: true });
 }
 
-async function buildIndex(): Promise<{ at: number; items: StoreMcp[]; starsComplete: boolean }> {
+async function buildIndex(): Promise<McpIndex> {
   const items = new Map<string, StoreMcp>();
   let cursor: string | null = null;
-  for (let page = 0; page < 200; page++) {
+  let pages = 0;
+  for (; pages < INDEX_MAX_PAGES; pages++) {
     const url = `https://registry.modelcontextprotocol.io/v0/servers?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
-    const data: any = await getJson(url);
+    const data: any = await getJsonRetry(url);
     for (const e of data.servers ?? []) {
       const n = normalize(e);
-      if (n) items.set(n.name, n);
+      if (!n) continue;
+      // Several versions of one name arrive; the newest wins whatever the order (the old code kept
+      // whichever came last, so an entry without `_meta` could pin an older version).
+      const prev = items.get(n.name);
+      if (!prev || newer(n.version, prev.version)) items.set(n.name, n);
     }
     cursor = data.metadata?.nextCursor ?? null;
     if (!cursor || !(data.servers ?? []).length) break;
   }
   const list = [...items.values()];
   const starsComplete = await fillStars(list);
-  return { at: Date.now(), items: list, starsComplete };
+  return { at: Date.now(), items: list, starsComplete, truncated: Boolean(cursor) && pages >= INDEX_MAX_PAGES };
 }
 
-/** A GitHub token when the machine has one (env or `gh auth token`); null = anonymous (60/h). */
-export function ghToken(): string | null {
-  if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) return (process.env.GH_TOKEN || process.env.GITHUB_TOKEN)!;
-  try {
-    const r = spawnSync("gh", ["auth", "token"], { encoding: "utf8", windowsHide: true, timeout: 10_000 });
-    return r.status === 0 ? r.stdout.trim() || null : null;
-  } catch {
-    return null;
+const GH_TOKEN_TTL = 10 * 60_000;
+let ghTokenCache: { at: number; value: Promise<string | null> } | null = null;
+
+/**
+ * A GitHub token when the machine has one (env or `gh auth token`); null = anonymous (60/h).
+ * Async and cached: `gh auth token` is a process spawn, and awaiting it here used to freeze the whole
+ * bridge (every session's streaming) for up to a second on each store search.
+ */
+export function ghToken(): Promise<string | null> {
+  const env = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (env) return Promise.resolve(env);
+  if (!ghTokenCache || Date.now() - ghTokenCache.at >= GH_TOKEN_TTL) {
+    const value = new Promise<string | null>((resolve) => {
+      execFile("gh", ["auth", "token"], { encoding: "utf8", timeout: 10_000, windowsHide: true }, (err, stdout) => resolve(err ? null : (stdout ?? "").trim() || null));
+    });
+    ghTokenCache = { at: Date.now(), value };
   }
+  return ghTokenCache.value;
 }
 
 /** Stars per repo: GraphQL in batches with a token, else anonymous REST for as many as allowed. */
@@ -547,7 +633,7 @@ async function fillStars(list: StoreMcp[]): Promise<boolean> {
     const m = /github\.com\/([^/]+)\/([^/#?]+)/.exec(url);
     return m ? { owner: m[1], name: m[2].replace(/\.git$/, "") } : null;
   };
-  const token = ghToken();
+  const token = await ghToken();
   let complete = true;
   if (token) {
     for (let i = 0; i < repos.length; i += 80) {
@@ -583,16 +669,15 @@ async function fillStars(list: StoreMcp[]): Promise<boolean> {
 }
 
 /** Which runners exist here: npx, uvx, docker. */
-export function runners(): Promise<{ npx: boolean; uvx: boolean; docker: boolean }> {
-  const has = (cmd: string) => {
-    try {
-      const r = spawnSync(process.platform === "win32" ? "where" : "which", [cmd], { windowsHide: true, timeout: 5000 });
-      return r.status === 0;
-    } catch {
-      return false;
-    }
-  };
-  return cached("runners", 10 * 60_000, async () => ({ npx: has("npx"), uvx: has("uvx"), docker: has("docker") }));
+export async function runners(): Promise<{ npx: boolean; uvx: boolean; docker: boolean }> {
+  // `execFile`, not `spawnSync`: this ran inside `searchMcp`, and a synchronous `where` ×3 froze the
+  // bridge (every stream, every session) for ~150 ms on the first store search of each 10-minute window.
+  const has = (cmd: string) =>
+    new Promise<boolean>((resolve) => {
+      execFile(process.platform === "win32" ? "where" : "which", [cmd], { windowsHide: true, timeout: 5000 }, (err) => resolve(!err));
+    });
+  const [npx, uvx, docker] = await Promise.all([cached("runner:npx", 10 * 60_000, () => has("npx")), cached("runner:uvx", 10 * 60_000, () => has("uvx")), cached("runner:docker", 10 * 60_000, () => has("docker"))]);
+  return { npx, uvx, docker };
 }
 
 /** Registry search without the index (first run, while the index is being built): no stars. */
@@ -601,19 +686,22 @@ async function liveSearch(query: string, limit: number): Promise<StoreMcp[]> {
   return (data.servers ?? []).map(normalize).filter((x: StoreMcp | null): x is StoreMcp => Boolean(x)).slice(0, limit);
 }
 
-export async function searchMcp(query: string, limit: number): Promise<{ items: StoreMcp[]; at: number; starsComplete: boolean; building: boolean; hasToken: boolean }> {
+export async function searchMcp(query: string, limit: number): Promise<{ items: StoreMcp[]; at: number; starsComplete: boolean; building: boolean; hasToken: boolean; truncated?: boolean }> {
   const disk = readJson<{ at?: number } | null>(INDEX_FILE(), null);
   let items: StoreMcp[];
   let at = 0;
   let starsComplete = false;
   let isBuilding = false;
+  let truncated = false;
   if (!disk?.at) {
-    // First run: building the ranked index takes a couple of minutes — answer from the registry now.
+    // First run: the ranked index is a background walk over a few hundred pages — answer from the
+    // registry right away and let it land (the page is told when it is ready, see setIndexListener).
     void mcpIndex().catch(() => {});
     items = await liveSearch(query, limit);
     isBuilding = true;
   } else {
     const idx = await mcpIndex();
+    truncated = Boolean(idx.truncated);
     const q = query.trim().toLowerCase();
     const terms = q.split(/\s+/).filter(Boolean);
     // The namespace (io.github.someone/…) would make "github" match half the registry: match the short name.
@@ -638,7 +726,7 @@ export async function searchMcp(query: string, limit: number): Promise<{ items: 
               : o,
     ),
   }));
-  return { items: marked, at, starsComplete, building: isBuilding, hasToken: Boolean(ghToken()) };
+  return { items: marked, at, starsComplete, building: isBuilding, hasToken: Boolean(await ghToken()), truncated };
 }
 
 /**

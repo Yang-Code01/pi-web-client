@@ -2675,3 +2675,46 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 **读尾不读全**：`tail()` 只读最后一段（`readSync` 从 `size - limit` 开始），不是 `readFileSync` 整份再截 —— 一个跑了几小时的 runner 的 `.activity` 可以很大，而桥是单线程的，1.5 秒轮一次不能拿来整文件读。
 
 `acp_delegate` 的结果文本里其实带着 `Live activity is streaming to \`…\``，**优先用它**（哪天目录换了也不用改代码），拿不到才退回按 runId 拼的默认路径。
+
+## D171 扩展 / MCP 商店的四个 bug：版本检查的竞态、索引的规模、同步 `gh` 与预发布比较（无票，用户要求排查）
+
+**问题（用户问「扩展和 mcp 商店是否存在 bug」，实测四个都真）：**
+
+1. **MCP 的更新检查会被静默丢掉，角标却照样数得出。** 一个把版本固定住的 npx / uvx MCP 服务器（`npx -y @modelcontextprotocol/server-everything@0.0.1`）永远不显示「可更新到 2.2.1」，而输入框下方「扩展」按钮上的角标写着 1 —— 点开里面什么都没有。
+2. **MCP 商店的排行索引第一次要 5–6 分钟，不是两句提示里的「约 2 分钟」**；而且 200 页的上限会把 Registry 的长尾（超过 2 万条）静默切掉。中途一次 TLS 抖动废掉整次抓取（实测第 281 页 `ECONNRESET`）。
+3. **每次 MCP 商店搜索都同步 spawn 一次 `gh auth token`**（`spawnSync`，冷的 932 ms、热的 75–80 ms），这期间整个 bridge 停摆：所有会话的流式输出、文件写入都等着。
+4. **`newer()` 把「有预发布」判成「更新」**：`newer("2.0.0", "2.0.0-beta.1")` 返回 false，字符串比较把 `beta` 排到了版本号后面。只有两边都是预发布时才错，所以平时看不出来。
+
+**根因：**
+
+1. `bridge/src/extmgr.ts` 的三段推送里，`mcpStage` 与 `versionStage` 是两个井行的异步函数，`versionStage` 在算版本前**没有 await `mcpStage`**：它 `inv.mcp.map(...)` 读到的是「此刻」的数组。`pi list`（不含扩展的快清单）比 `pi mcp list` 快时就是空数组 —— 新机器（0 个 pi 包）`inspectPackages` 立即返回，**必现且每次重检都必现**。而 `updateCount()`（角标）直接读 `mcp.json`、不走 `pi mcp list`，于是两边说法不同。测试掩盖了它：`bridge/tests/ext-manager.mjs` 写成 `if (mcp?.version.latest) check(...) else log("npm not reachable: update check skipped")`，竞态产生的空 `latest` 被当成网络问题跳过。
+2. `bridge/src/market.ts` 的 `buildIndex()` 是 `for (pages < 200)` 逐页 `getJson`，每页 1.5–1.6 s（实测 20 页 34.6 s、100 页 157.6 s、120 页 187.3 s），没有任何重试。
+3. `ghToken()` 用 `spawnSync` 且不缓存；`hasToken` 只驱动一句提示文案。
+4. `newer()` 把 `pre` 段的比较写成了整串比较，没有区分「release 比自己的预发布新」。
+
+**决定：**
+
+- **`versionStage` 开头 `await mcpStage`**（它自己 catch 成 `mcpError`，不会抛）。三段推送的时序不变：MCP 行仍然先到，版本随后补齐。
+- **索引：** 上限 200 → **600 页**（实测 Registry 条目远多于 2 万，600 页够到 6 万条）；每页 `getJsonRetry(url, 3)`（只对非 4xx 重试，500 ms / 1000 ms 退避），**一次抖动不再废掉整次抓取**；失败记 `lastFailure`，**60 s 内不再重试**（否则每个搜索都要重新撞一遍墙）；`truncated` 落盘并透到页面。
+- **索引期间可读：** `mcpIndex()` 有盘上的旧索引就先回旧的（`building: true`），后台走完再回新的 —— 原来过期索引会让每个搜索都卡 5 分钟建完才回。建好后 `setIndexListener` 让桥广播 `{type:"mcp.index"}`，页面收到就重发一次 `mcp.store`，**不用重新输入**。
+- **`ghToken()` 改异步 `execFile` + 10 分钟缓存**（与 `runners()` 同一个 `cached()`），`runners()` 也从 `spawnSync` 改 `execFile`（`cached` 键拆成 `runner:npx|uvx|docker`）。
+- **`newer()` 按 semver 比**：先比核心段（数值），核心相同后「没有预发布」的一方更新，都有预发布才逐 identifier 比（数字先于字母，短的更旧），`+build` 忽略。
+- **顺手把 pi 的自述透出来**（同一个类的问题，用户看不到就以为是桥丢了行）：`pi mcp list --json` 顶层有 `errors[]`（解析不了的条目，pi 从 `servers` 里剔掉）和 `note`（例如「这个项目未受信任，`.pi/mcp.json` 被忽略」）。`Inventory` 加 `mcpErrors` / `mcpNote` 原样带给页面，MCP 区块显示成提示行；`note` 命中 `/not trusted/i` 时换成本地化的解释 —— 否则「装到当前项目」的 MCP 装成功了却不在列表里，界面一声不响。
+
+**代价 / 可改：**
+
+- **600 页 ≈ 15 分钟**（按每页 1.5 s）。第一次用 MCP 商店的人等的是「排行」，这期间看到的是 Registry 直接搜索（无 star）。想更快只能向 registry 要更少页、或换成 star 预排序的上游数据 —— 现在没有这样的上游。
+- **`truncated` 只说明「没抓全」，不说是哪些**：长尾服务在排行里搜不到，但搜索框走的是同一份索引，所以**确实搜不到**（只有索引还没建好时才走 live registry）。这是规模的代价，不是 bug；真要全覆盖得把索引改成按需增量抓。
+- **`ghToken` 缓存 10 分钟**：中途 `gh auth login` / 换 token，最多 10 分钟才生效。`runners()` 同理（装了 uv 之后 10 分钟内仍显示「需要先安装 uv」）—— 和原来一样，只是键拆开了。
+- **`note` 的本地化靠正则匹配英文句子**：pi 改措辞就退回显示原文（仍是英文，但不丢信息）。
+- **`mcp.index` 是广播**：多开窗口时每个都重发一次 `mcp.store`，多花一次搜索；索引本来就一天一建，不值得为它做去重。
+
+**验证：**
+
+- `node bridge/tests/ext-manager.mjs` —— **39 项全过**，其中三条是这次新加的：
+  - `version compare`：`2.0.0 > 2.0.0-beta.1`、`1.0.0 > 1.0.0-rc.1`、`1.0.0-alpha.1 > 1.0.0-alpha`、`1.0.0-alpha < 1.0.0-beta`、`2.2.1+build.7 == 2.2.1`；
+  - `MCP version check reached npm for the pinned server`（`0.0.1 → 2.2.1`）+ `newer release found on npm → update offered` —— 换成「拿不到 `latest` 就失败」，竞态再回来会当场红；
+  - 同一次运行里 `update count 1`，与列表里的那条更新一致。
+- **竞态对照**（`PI_CODING_AGENT_DIR` 指到空 fixture + 一个 pin 住的 npx 服务器）：修复前 `FINAL {"version":"0.0.1","latest":null,"update":false}` 而 `updateCount() = 1`；修复后追加一段 `+1309ms packages=0 mcp=1 ready=true versions=true updates=1 … 0.0.1→2.2.1`，三段顺序变成「包 → MCP 行 → 版本」，角标与列表一致。
+- **索引路径**（盘上一份 30 小时前的索引 + 把代理指到死端口）：`searchMcp("")` 348 ms 返回按 star 降序的两条、`building: true`；第二次 1 ms（共用同一个 building promise，没有重新起走一遍）；后台那次抓取失败只记 `lastFailure`，没有把异常抛给搜索。
+- `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck` 通过（i18n **1627 键 × 3 语言**，新增 3 条、替换 1 条）。

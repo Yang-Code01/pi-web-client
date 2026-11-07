@@ -313,7 +313,7 @@ export class App {
   /** An inventory was asked for while one was still streaming; re-ask when it lands. */
   private extReloadPending = false;
   private extStore: { query: string; limit: number; items: StorePkg[] | null; error?: string } = { query: "", limit: 20, items: null };
-  private mcpStore: { query: string; limit: number; items: StoreMcpItem[] | null; error?: string; building?: boolean; starsComplete?: boolean; hasToken?: boolean } = { query: "", limit: 20, items: null };
+  private mcpStore: { query: string; limit: number; items: StoreMcpItem[] | null; error?: string; building?: boolean; starsComplete?: boolean; hasToken?: boolean; truncated?: boolean } = { query: "", limit: 20, items: null };
   private extScope: "global" | "project" = "global";
   private extArm: { key: string; until: number } | null = null;
   private extDirty = false;
@@ -1846,9 +1846,17 @@ export class App {
         this.extStore.error = msg.error ? errText(msg) : msg.error;
         this.paintExtIfOpen();
         break;
+      case "mcp.index":
+        // D81/D171: the ranked index finished building in the background — forget what is on screen (and
+        // what the tab switch would show later) so the next paint re-asks. Unranked registry results
+        // become the ranking without a retype. `paintMcpStore` sends `mcp.store` itself when `items` is null.
+        this.mcpStore.items = null;
+        this.mcpStore.building = false;
+        if (this.extTab === "mcp" && (this.sheetKind === "ext" || (this.sheetKind === "settings" && this.settingsTab === "ext"))) this.paintExtIfOpen();
+        break;
       case "mcp.store":
         if (String(msg.query ?? "") !== this.mcpStore.query) break;
-        this.mcpStore = { ...this.mcpStore, items: Array.isArray(msg.items) ? msg.items : [], error: msg.error ? errText(msg) : msg.error, building: Boolean(msg.building), starsComplete: Boolean(msg.starsComplete), hasToken: Boolean(msg.hasToken) };
+        this.mcpStore = { ...this.mcpStore, items: Array.isArray(msg.items) ? msg.items : [], error: msg.error ? errText(msg) : msg.error, building: Boolean(msg.building), starsComplete: Boolean(msg.starsComplete), hasToken: Boolean(msg.hasToken), truncated: Boolean(msg.truncated) };
         this.paintExtIfOpen();
         break;
       case "ext.changed":
@@ -9217,6 +9225,17 @@ export class App {
       mcp.append(wait);
     } else {
       if (inv.mcpError) mcp.append(el("div", "settings-hint", tr("pi mcp list 出错：{p1}", { p1: inv.mcpError })));
+      // pi drops entries it cannot parse from `servers` and lists them here; silence made them vanish.
+      for (const bad of inv.mcpErrors ?? []) mcp.append(el("div", "settings-hint", tr("pi 跳过了这个 MCP 条目：{p1}", { p1: bad })));
+      // The project's .pi/mcp.json only counts when pi trusts the project (D171).
+      if (inv.mcpNote)
+        mcp.append(
+          el(
+            "div",
+            "settings-hint",
+            /not trusted/i.test(inv.mcpNote) ? tr("项目未受信任：pi 不会读这里的 .pi/mcp.json，装在本项目的 MCP 不生效（在该项目里启动一次 pi 即可信任）。") : inv.mcpNote,
+          ),
+        );
       if (!inv.mcp.length) mcp.append(el("div", "empty", tr("没有配置 MCP 服务器，去「MCP 商店」看看")));
     }
     for (const m of inv.mcp) mcp.append(this.mcpRow(m, ro));
@@ -9459,7 +9478,8 @@ export class App {
     if (store.items === null && !store.error) this.socket.send({ type: "mcp.store", query: store.query, limit: store.limit });
     this.storeHeader(host, store, tr("搜索 MCP 服务（官方 MCP Registry）"), run);
     const notes: string[] = [tr("来源是官方 MCP Registry，按仓库的 GitHub star 排序。")];
-    if (store.building) notes.push(tr("排行数据正在后台建立（第一次约 2 分钟），现在显示的是 Registry 的直接搜索结果，没有 star。"));
+    if (store.building) notes.push(tr("排行数据正在后台建立（第一次要几分钟，取决于网络），现在显示的是 Registry 的直接搜索结果，没有 star；建好后这里会自动换成排行。"));
+    else if (store.truncated) notes.push(tr("Registry 条目太多，排行只统计了前面的一部分。"));
     else if (store.items && !store.starsComplete) notes.push(store.hasToken ? tr("部分仓库的 star 没查到。") : tr("没登录 GitHub CLI（gh），star 只查到一部分：运行 gh auth login 后排行更准。"));
     host.append(el("div", "settings-hint", notes.join("")));
     const list = el("div", "login-list");
@@ -12627,6 +12647,10 @@ interface ExtInventory {
   extensions: ExtLoose[];
   mcp: ExtMcp[];
   mcpError: string | null;
+  /** Server entries pi could not parse: dropped from `mcp`, explained here. */
+  mcpErrors?: string[];
+  /** pi's note on the run, e.g. the project's .pi/mcp.json is ignored because the project is untrusted. */
+  mcpNote?: string | null;
   updates: number;
   checkedAt: number;
   /** D113: `pi mcp list` has answered (before that, `mcp` is empty because it is still connecting). */

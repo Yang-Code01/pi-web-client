@@ -48,7 +48,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ------------------------------------------------------------------ A. pure pieces
 log("A. store → pi mcp add, versions, files");
-check(market.newer("1.10.0", "1.9.9") && !market.newer("1.0.0", "1.0.0") && market.newer("2.0.0", "2.0.0-beta.1") === false, "version compare");
+check(
+  market.newer("1.10.0", "1.9.9") &&
+    !market.newer("1.0.0", "1.0.0") &&
+    // A release is newer than its own pre-release, and pre-releases sort semver-wise (this used to
+    // return false: the string compare put "2.0.0-beta.1" above "2.0.0").
+    market.newer("2.0.0", "2.0.0-beta.1") === true &&
+    market.newer("1.0.0", "1.0.0-rc.1") === true &&
+    market.newer("1.0.0-alpha.1", "1.0.0-alpha") === true &&
+    market.newer("1.0.0-alpha", "1.0.0-beta") === false &&
+    market.newer("2.2.1", "2.2.1+build.7") === false,
+  "version compare",
+);
 const opt = {
   kind: "npm",
   label: "npx",
@@ -212,8 +223,12 @@ try {
   check(inv.extensions?.filter((x) => x.scope === "builtin").length === 4, "four built-ins listed");
   const mcp = inv.mcp?.find((m) => m.name === "everything");
   check(mcp && mcp.version.version === "0.0.1", `MCP server with its pinned version (${JSON.stringify(mcp?.version)})`);
-  if (mcp?.version.latest) check(mcp.version.update === true, `newer release found on npm (${mcp.version.latest})`);
-  else log("  (npm not reachable: update check skipped)");
+  // This check used to be skipped whenever `latest` was empty, which is exactly what the old
+  // `versionStage` race produced on a fresh agent dir (it read `inv.mcp` before `pi mcp list` had
+  // filled it) — the bug hid behind its own test. Now a missing `latest` is a failure, and so is a
+  // `latest` that says the pin is current while npm has 2.2.1.
+  check(mcp && typeof mcp.version.latest === "string" && mcp.version.latest !== "0.0.1", `MCP version check reached npm for the pinned server (${JSON.stringify(mcp?.version)})`);
+  check(mcp?.version.update === true, "newer release found on npm → update offered");
   check(typeof inv.updates === "number", `update count ${inv.updates}`);
 
   // disable / enable a built-in and the loose extension — D113: fired together, the lock keeps both.
