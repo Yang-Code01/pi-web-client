@@ -1728,7 +1728,33 @@ export const en: Dict = {
   "行为": "Behavior",
   "发现与扩展": "Discovery & extensions",
   "每个子代理": "Per subagent",
-  "占位：这一片只做只读清单，编辑在下一片。": "Placeholder: this slice only lists what is on disk; editing comes next.",
+  "看门狗": "Watchdog",
+  "看门狗、按 provider 覆盖、设备 —— 只改文件里已经写过的条目":
+    "Watchdog, per-provider overrides, machines — only entries already in the file can be edited",
+  "看门狗是另一次模型调用：复核主代理刚做完的事。这块改的是谁来看门，不是子代理自己用哪个模型。":
+    "The watchdog is another model call that reviews what the main agent just did. This block decides who watches, not which model the subagents themselves use.",
+  "每轮结束复核一次改动；继承 = 文件里不写这个键，按 pi-subagents 的默认（不做复核）。":
+    "Reviews the changes once per turn; Inherit leaves the key out of the file and uses pi-subagents' default (no review).",
+  "只对主代理的看门狗生效：拿不准时可以直接问你。":
+    "Only applies to the main agent's watchdog: it may ask you when unsure.",
+  "只管子代理自己的看门狗；留空 = 继承。": "Only the subagents' own watchdog; empty = inherit.",
+  "同上；留空 = 继承。": "Same as above; empty = inherit.",
+  "文件里没有按 agent 的看门狗覆盖；要加一条请用「编辑 JSON」。":
+    "No per-agent watchdog overrides in the file; use Edit JSON to add one.",
+  "按 provider 覆盖": "Per-provider overrides",
+  "这一层的优先级高于单 agent 覆盖：两边都写了，用 provider 这一份。只列文件里已经写过的条目。":
+    "This layer wins over the per-agent override: if both are set, the provider one is used. Only entries already in the file are listed.",
+  "文件里没有按 provider 的覆盖；要加一条请用「编辑 JSON」。":
+    "No per-provider overrides in the file; use Edit JSON to add one.",
+  "设备": "Machines",
+  "改完对新启动的子代理生效；要加一台请用「编辑 JSON」。":
+    "Changes apply to subagents started from now on; use Edit JSON to add a machine.",
+  "设备只能在全局新建：项目设置里写 Rex 主机，子代理会起不来，所以这里只读。":
+    "Machines can only be added in Global: a Rex host in project settings stops subagents from launching, so this is read-only here.",
+  "文件里还没有登记过设备。": "No machines registered in the file yet.",
+  "标签": "Label",
+  "内置标签，只读": "Built-in label, read-only",
+  "ssh 目标": "ssh target",
   "扫了 {p1} 个目录，共读到 {p2} 个 agent 定义（同名后者覆盖前者）。":
     "Scanned {p1} folders and found {p2} agent definitions (a later one with the same name wins).",
   "这台机器上没有装 pi-subagents：包内的 agent 目录不存在。装好之后这一页会自动列出来。":
