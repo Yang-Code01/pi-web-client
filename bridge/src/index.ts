@@ -39,7 +39,7 @@ import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, resetScratchDir
 import { BUILD_ID } from "./build-id.ts";
 import { removePidFile, writePidFile } from "./pidfile.ts";
 import { clipboardFiles, listDirs, makeDir, makeFile, statFiles, statPath } from "./dirs.ts";
-import { gitInfo } from "./git.ts";
+import { gitFetch, gitHistory, GitHistoryError, gitInfo } from "./git.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
 import { scanSubagents } from "./subagents.ts";
@@ -760,6 +760,38 @@ async function main(): Promise<void> {
       } catch (err: any) {
         // A missing git, a corrupt repo, a timeout: the line just keeps its key hints.
         return json(res, 200, { repo: null, error: String(err?.message ?? err).slice(0, 200) });
+      }
+    }
+
+    // 分支历史弹窗（D193）：两列提交 + ahead/behind，只读；走隧道时不给（分支名是本机工作状态）。
+    if (url.pathname === "/api/git/history" && req.method === "GET") {
+      if (publicReq) return json(res, 200, { repo: null });
+      const dir = (url.searchParams.get("dir") ?? "").trim();
+      if (!dir) return fail(res, 400, "dir_empty", "dir 不能为空", undefined, { repo: null });
+      if (!path.isAbsolute(dir)) return fail(res, 400, "dir_not_absolute", "dir 必须是绝对路径", undefined, { repo: null });
+      const n = Number(url.searchParams.get("n") ?? "") || 80;
+      try {
+        const history = await gitHistory(dir, { base: url.searchParams.get("base") ?? "", n, fresh: url.searchParams.get("fresh") === "1" });
+        return json(res, 200, history ?? { repo: null });
+      } catch (err: any) {
+        const code = err instanceof GitHistoryError ? err.code : "history_failed";
+        return json(res, 200, { repo: null, code, error: String(err?.message ?? err).slice(0, 200) });
+      }
+    }
+
+    // 弹窗里那个「⧗ Fetch origin」：本机唯一会出网的 git 调用，公网访问一律拒绝。
+    if (url.pathname === "/api/git/fetch" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "fetch_public", "通过公网访问时不能在你的电脑上跑 git fetch");
+      const body = await readBody(req).catch(() => ({}));
+      const dir = String(body?.dir ?? "").trim();
+      if (!dir) return fail(res, 400, "dir_empty", "dir 不能为空");
+      if (!path.isAbsolute(dir)) return fail(res, 400, "dir_not_absolute", "dir 必须是绝对路径");
+      try {
+        return json(res, 200, { ok: true, ...(await gitFetch(dir)) });
+      } catch (err: any) {
+        // gitFetch 的失败走 Object.assign(…, {code:"fetch_failed"})，和 GitHistoryError 是两种错，统一取 code 再兜一层。
+        const code = err instanceof GitHistoryError ? err.code : (err?.code ?? "fetch_failed");
+        return json(res, 200, { ok: false, code, error: String(err?.message ?? err).slice(0, 300) });
       }
     }
 

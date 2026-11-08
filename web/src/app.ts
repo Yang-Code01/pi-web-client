@@ -20,6 +20,7 @@ import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts"
 import { bgBusy, continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
+import { BranchSheet } from "./branchsheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
@@ -205,6 +206,8 @@ export class App {
   private modelsAsked = 0;
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
+  /** D193: 分支历史弹窗；同时只开一扇，关了才允许再开。 */
+  private branchSheet: BranchSheet | null = null;
   /** D164：AI 出错记录的账本（按工作区），以及这个会话里见过的失败（按 toolCallId 去重）。 */
   private failLedger: FailLedger | null = null;
   private failWs = "";
@@ -2755,26 +2758,29 @@ export class App {
     const lines = [tr("⎇ {p1}{p2}", { p1: label, p2: git.dirty ? tr(" · {p1} 个未提交改动", { p1: git.dirty }) : "" })];
     if (git.detached) lines.push(tr("detached HEAD：不在任何分支上"));
     if (git.empty) lines.push(tr("仓库里还没有提交"));
-    lines.push(git.repo, "", tr("Enter 发送 · Shift+Enter 换行 · {p1} 粘贴截图", { p1: PASTE_KEY }), tr("点一下复制分支名"));
+    lines.push(git.repo, "", tr("Enter 发送 · Shift+Enter 换行 · {p1} 粘贴截图", { p1: PASTE_KEY }), tr("点一下看分支历史"));
     chip.title = lines.join("\n");
-    chip.onclick = () => {
-      // `navigator.clipboard` is undefined over plain http:// on a LAN address — optional chaining has
-      // to wrap the call, not just the property, or the reply lands as a TypeError.
-      const copy = navigator.clipboard?.writeText(git.branch || label);
-      if (!copy) return;
-      const shown = chip.querySelector<HTMLElement>(".git-branch");
-      const back = shown?.textContent ?? "";
-      void copy
-        .then(() => {
-          if (!shown) return;
-          shown.textContent = tr("已复制");
-          setTimeout(() => {
-            if (shown.isConnected && shown.textContent === tr("已复制")) shown.textContent = back;
-          }, 900);
-        })
-        .catch(() => {});
-    };
+    chip.onclick = () => this.openBranchHistory(git);
     return chip;
+  }
+
+  /**
+   * D193: 分支 chip 单击从「复制」改成「看历史」——复制搬进弹窗的工具条，单击只做一件事，而这件事
+   * 现在有信息量。已经开着就关掉（再点一下等于关），不给第二层模态。
+   */
+  private openBranchHistory(git: GitInfo): void {
+    if (this.branchSheet) {
+      this.branchSheet.close();
+      return;
+    }
+    const cwd = (this.session?.cwd ?? "").trim();
+    if (!cwd) return;
+    const sheet = new BranchSheet({ dir: cwd, branch: git.branch });
+    sheet.onClose = () => {
+      if (this.branchSheet === sheet) this.branchSheet = null;
+    };
+    sheet.mount(document.getElementById("app") ?? document.body);
+    this.branchSheet = sheet;
   }
 
   /** The line under the composer: what pi is doing and for how long, or the key hints when idle. */

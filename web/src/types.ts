@@ -486,6 +486,33 @@ export interface GitInfo {
   dirty: number;
 }
 
+/** 分支历史弹窗的一行：`set` 是桥算好的「你独有 / 对面独有 / 两边相同」。 */
+export interface GitCommit {
+  h: string;
+  s: string;
+  an: string;
+  at: number;
+  merge: boolean;
+  set: "left" | "right" | "common";
+}
+
+/** `/api/git/history` 的应答（只在 `repo` 非空时存在）。 */
+export interface GitHistory {
+  repo: string;
+  head: string;
+  detached: boolean;
+  base: string;
+  baseAuto: boolean;
+  branches: { name: string; at: number }[];
+  ahead: number;
+  behind: number;
+  mergeBase: { h: string; at: number; s: string } | null;
+  left: GitCommit[];
+  right: GitCommit[];
+  more: { left: boolean; right: boolean };
+  fetchedAt: number;
+}
+
 /** 记录（D95）：bridge/src/notes.ts 的 Note 镜像，落在状态目录，不属于任何会话。 */
 export type NoteKind = "bug" | "change" | "idea" | "chore";
 export type NoteStatus = "pending" | "done" | "dropped";
