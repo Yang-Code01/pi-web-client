@@ -1721,7 +1721,8 @@ export const ja: Dict = {
   "复制分支名": "ブランチ名をコピー",
   "Esc 关闭": "Esc で閉じる",
   "点一下看分支历史": "クリックでブランチ履歴",
-  "从远程拉一次最新（只更新 remote-tracking ref）": "リモートから一度 fetch（remote-tracking ref のみ更新）",
+  "从远程拉一次（只更新 remote-tracking ref）": "リモートから一度 fetch（remote-tracking ref のみ更新）",
+  "拉取最新": "最新を取得",
   "正在读 git…": "git を読み込み中…",
   "这个仓库还没有提交": "このリポジトリにはまだコミットがありません",
   "有一次提交之后这里就有历史了": "コミットが 1 つあれば履歴が表示されます",
@@ -1739,4 +1740,8 @@ export const ja: Dict = {
   "不知道（还没 fetch 过）": "不明（まだ fetch していない）",
   "正在 fetch…": "fetch 中…",
   "已从 {p1} 拉了最新": "{p1} から最新を取得しました",
+  "游离 HEAD": "detached HEAD",
+  "远程": "リモート",
+  "自动 · 跟随 origin/HEAD": "自動 · origin/HEAD に追従",
+  "只显示最近 {p1} 条": "最新 {p1} 件のみ表示",
 };

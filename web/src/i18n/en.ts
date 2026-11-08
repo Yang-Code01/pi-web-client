@@ -1721,7 +1721,8 @@ export const en: Dict = {
   "复制分支名": "Copy branch name",
   "Esc 关闭": "Esc closes",
   "点一下看分支历史": "Click to see branch history",
-  "从远程拉一次最新（只更新 remote-tracking ref）": "Fetch once from the remote (updates remote-tracking refs only)",
+  "从远程拉一次（只更新 remote-tracking ref）": "Fetch once from the remote (updates remote-tracking refs only)",
+  "拉取最新": "Fetch latest",
   "正在读 git…": "Reading git…",
   "这个仓库还没有提交": "This repo has no commits yet",
   "有一次提交之后这里就有历史了": "It gets a history as soon as there is one commit",
@@ -1739,4 +1740,8 @@ export const en: Dict = {
   "不知道（还没 fetch 过）": "unknown (never fetched)",
   "正在 fetch…": "Fetching…",
   "已从 {p1} 拉了最新": "Pulled the latest from {p1}",
+  "游离 HEAD": "Detached HEAD",
+  "远程": "remote",
+  "自动 · 跟随 origin/HEAD": "Auto · follow origin/HEAD",
+  "只显示最近 {p1} 条": "Showing the last {p1} only",
 };

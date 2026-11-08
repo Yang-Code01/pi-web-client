@@ -659,7 +659,8 @@ async function main(): Promise<void> {
       try {
         return json(res, 200, { ok: true, ...(await gitFetch(dir)) });
       } catch (err: any) {
-        const code = err?.code ?? (err instanceof GitHistoryError ? err.code : "fetch_failed");
+        // gitFetch 的失败走 Object.assign(…, {code:"fetch_failed"})，和 GitHistoryError 是两种错，统一取 code 再兜一层。
+        const code = err instanceof GitHistoryError ? err.code : (err?.code ?? "fetch_failed");
         return json(res, 200, { ok: false, code, error: String(err?.message ?? err).slice(0, 300) });
       }
     }

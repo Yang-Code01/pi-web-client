@@ -3658,6 +3658,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .bc-col { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; }
 .bc-col + .bc-col { border-left: 1px solid var(--line-soft); }
 .bc-col-head { display: flex; align-items: center; gap: 7px; padding: 9px 14px; border-bottom: 1px solid var(--line-soft); background: var(--panel); }
+.bc-col-head .bc-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bc-col-head .grow { flex: 1; }
 .bc-col-head .bc-count { flex: none; font-size: 11px; color: var(--faint); }
 .bc-rows { overflow: auto; padding: 4px 0 10px; }
 .bc-row { display: grid; grid-template-columns: 4.4rem minmax(0, 1fr) auto; align-items: baseline; gap: 10px; padding: 5px 14px 5px 12px; border-left: 2px solid transparent; }

@@ -49,9 +49,15 @@ log("api:", JSON.stringify({ head: api.head, base: api.base, ahead: api.ahead, b
 const { chromium } = await loadPlaywright();
 const browser = await chromium.launch();
 const problems = [];
+const fails = [];
+/** 验收要能拒绝：不写断言的话这套东西只是把页面拍下来，Review 已经点过一次了。 */
+const ok = (cond, msg) => {
+  if (!cond) fails.push(msg);
+};
 
 async function open(width, height, tag) {
   const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 2, locale: "zh-CN" });
+  await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: BASE });
   const page = await ctx.newPage();
   page.on("pageerror", (e) => problems.push(`[${tag}] pageerror: ${e.message}`));
   page.on("response", (r) => {
@@ -97,6 +103,11 @@ async function open(width, height, tag) {
     };
   });
   log("弹窗:", JSON.stringify(info));
+  ok(info.pills.length === 2, "缺少领先/落后胶囊");
+  ok(info.rowsL > 0 && info.rowsR > 0, "两列都得有行");
+  ok(info.common > 0, "同一仓库里两列一定有公共历史");
+  ok(info.options[0] === "自动 · 跟随 origin/HEAD", `下拉第一项应是「自动」，实际 ${info.options[0]}`);
+  ok(/^数据来自 .+ · 只读$/.test(info.stamp ?? ""), `底部数据时间格式不对：${info.stamp}`);
   await page.screenshot({ path: `${OUT}/dialog-wide.png` });
 
   // 换对照分支 → 数字要变（选下拉里第二个）
@@ -118,6 +129,31 @@ async function open(width, height, tag) {
   await page.waitForTimeout(300);
   log("fetch →", JSON.stringify({ hint: (await page.locator(".branch-hint").textContent()).trim(), stamp: (await page.locator(".branch-stamp").textContent()).trim(), was: before }));
   await page.screenshot({ path: `${OUT}/dialog-after-fetch.png` });
+
+  // 复制没被删掉，只是搬进来了：点一下「已复制」，0.9 秒后自己换回来
+  await page.locator(".branch-tools .btn").first().click();
+  await page.waitForTimeout(150);
+  const copied = (await page.locator(".branch-tools .btn").first().textContent()).trim();
+  ok(copied === "已复制", `复制按钮没反馈，文字是 ${copied}`);
+  await page.waitForTimeout(1100);
+  const restored = (await page.locator(".branch-tools .btn").first().textContent()).trim();
+  ok(restored === "复制分支名", `复制按钮没换回原名，文字是 ${restored}`);
+  log("复制:", JSON.stringify({ copied, restored }));
+
+  // 分页封顶：桥端 300 封顶，按钮到顶要换成一句说明，不能再点出「点了没反应」
+  for (let i = 0; i < 4; i++) {
+    if (!(await page.locator(".bc-more").count())) break;
+    await page.locator(".bc-more").first().click();
+    await page.waitForTimeout(1500);
+  }
+  const cap = await page.evaluate(() => ({
+    rows: document.querySelectorAll(".bc-row").length,
+    more: document.querySelectorAll(".bc-more").length,
+    note: [...document.querySelectorAll(".bc-empty")].map((n) => n.textContent.trim()).filter((t) => t.startsWith("只显示最近")),
+  }));
+  ok(cap.rows <= 600, `封顶后两列共 ${cap.rows} 行，超过 300×2`);
+  if (cap.note.length) ok(cap.more === 0, "到了 300 封顶还留着「再加载」按钮");
+  log("封顶:", JSON.stringify(cap));
 
   // Esc 关闭
   await page.keyboard.press("Escape");
@@ -143,8 +179,12 @@ async function open(width, height, tag) {
   }
   await page.screenshot({ path: `${OUT}/dialog-narrow-right.png` });
   log("窄屏:", JSON.stringify({ tabs, visible }));
+  ok(tabs === 2, `窄屏应有 2 个 tab，实际 ${tabs}`);
+  ok(visible === 1, `窄屏只应显示 1 列，实际 ${visible}`);
   await ctx.close();
 }
 
 await browser.close();
+if (fails.length) problems.push(...fails.map((f) => `assert: ${f}`));
 console.log(problems.length ? `problem:\n  ${problems.join("\n  ")}` : "accept: ok — 没有 pageerror / console error");
+process.exitCode = fails.length ? 1 : 0;

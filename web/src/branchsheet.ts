@@ -4,7 +4,7 @@
  *
  * 三个决定都写在这里，改之前先读：
  * - **不自动 fetch**：打开只用本地 remote-tracking ref（秒开、不摸网络），要新数据点底部的
- *   `⧗ Fetch origin`。fetch 是唯一会出网的 git 调用，桥端还额外拒绝隧道访问。
+ *   `⟳ 拉取最新`。fetch 是唯一会出网的 git 调用，桥端还额外拒绝隧道访问。
  * - **集合由桥算**：每行是 `left` / `right` / `common` 三类之一，页面只负责淡显和描边 —
  *   两边各算一套迟早会漂（"你独有"的行在另一列却也算独有）。
  * - **弹窗是快照**：标题里带仓库路径、底部带数据时间；期间切分支不会被推着刷新，重开一次就是新的。
@@ -14,8 +14,20 @@ import { api } from "./api.ts";
 import { errText, fmtRelative, tr } from "./i18n/index.ts";
 import type { GitCommit, GitHistory } from "./types.ts";
 
+/** 左列标签：当前 HEAD 还是游离 HEAD —— 顶部和列头共用一份，别各算一遍。 */
+function headTag(data: GitHistory): string {
+  return data.detached ? tr("游离 HEAD") : "HEAD";
+}
+
+/** 右列标签：远程 ref 还是本地分支（没配远程时才会落到本地）。 */
+function baseTag(data: GitHistory): string {
+  return data.base.startsWith("origin/") || data.branches.length ? tr("远程") : tr("本地");
+}
+
 /** 一次取多少条；「再加载」按同样大小往后翻。 */
 const PAGE = 80;
+/** 和桥端 `gitHistory` 的 300 封顶对齐：到了就别再给按钮，按钮点了也不会长。 */
+const LIMIT_MAX = 300;
 
 export interface BranchSheetOptions {
   /** 会话的 cwd；桥端会自己找仓库根。 */
@@ -37,6 +49,7 @@ export class BranchSheet {
   private readonly stampEl: HTMLElement;
   private readonly hintEl: HTMLElement;
   private readonly fetchBtn: HTMLButtonElement;
+  private readonly fetchLabel: HTMLSpanElement;
 
   private data: GitHistory | null = null;
   private base = "";
@@ -84,8 +97,9 @@ export class BranchSheet {
     this.hintEl = el("span", "branch-hint");
     this.fetchBtn = el("button", "btn ghost branch-fetch") as HTMLButtonElement;
     this.fetchBtn.type = "button";
-    this.fetchBtn.append(el("span", "branch-fetch-glyph", "⟳"), el("span", "", tr("Fetch origin")));
-    this.fetchBtn.title = tr("从远程拉一次最新（只更新 remote-tracking ref）");
+    this.fetchLabel = el("span", "", tr("拉取最新"));
+    this.fetchBtn.append(el("span", "branch-fetch-glyph", "⟳"), this.fetchLabel);
+    this.fetchBtn.title = tr("从远程拉一次（只更新 remote-tracking ref）");
     this.fetchBtn.onclick = () => void this.doFetch();
     const esc = el("span", "branch-esc", tr("Esc 关闭"));
     const footRight = el("div", "branch-foot-right");
@@ -124,14 +138,15 @@ export class BranchSheet {
       const data = await api.gitHistory(this.dir, this.base, this.limit, fresh);
       if (ticket !== this.ticket) return;
       this.data = data;
-      this.base = data.base;
+      // baseAuto 时保持空串：下拉里那项是「自动」，选回它才能真的回到跟随 origin/HEAD。
+      this.base = data.baseAuto ? "" : data.base;
       this.repoEl.textContent = data.repo;
       this.repoEl.title = data.repo;
       this.paint();
     } catch (err) {
       if (ticket !== this.ticket) return;
-      this.data = null;
-      this.paintError(err);
+      // 换对照分支失败时留着上一份数据：顶部那条和下拉还在，才能直接挑另一个分支。
+      this.paintError(err, this.data);
     }
   }
 
@@ -153,7 +168,7 @@ export class BranchSheet {
   private async doFetch(): Promise<void> {
     if (this.fetchBtn.disabled) return;
     this.fetchBtn.disabled = true;
-    this.fetchBtn.querySelector("span:last-child")!.textContent = tr("正在 fetch…");
+    this.fetchLabel.textContent = tr("正在 fetch…");
     this.say("");
     try {
       const out = await api.gitFetch(this.dir);
@@ -164,7 +179,7 @@ export class BranchSheet {
       this.say(errText(err), true);
     } finally {
       this.fetchBtn.disabled = false;
-      this.fetchBtn.querySelector("span:last-child")!.textContent = tr("Fetch origin");
+      this.fetchLabel.textContent = tr("拉取最新");
     }
   }
 
@@ -182,10 +197,13 @@ export class BranchSheet {
     this.stampEl.textContent = tr("正在读 git…");
   }
 
-  private paintError(err: unknown): void {
+  private paintError(err: unknown, keep: GitHistory | null = null): void {
     const code = (err as { code?: string } | null)?.code;
-    this.cmpEl.replaceChildren();
-    this.tabsEl.replaceChildren();
+    // 有上一份数据就别拆顶部：下拉是唯一能换条分支再试的入口。
+    if (!keep) {
+      this.cmpEl.replaceChildren();
+      this.tabsEl.replaceChildren();
+    }
     const box = el("div", "branch-note");
     if (code === "empty") {
       box.append(el("div", "branch-note-title", tr("这个仓库还没有提交")), el("div", "branch-note-sub", tr("有一次提交之后这里就有历史了")));
@@ -200,7 +218,7 @@ export class BranchSheet {
     }
     this.colsEl.replaceChildren(box);
     this.stampEl.textContent = tr("只读");
-    this.fetchBtn.hidden = true;
+    this.fetchBtn.hidden = keep ? keep.branches.length === 0 : true;
   }
 
   private paint(): void {
@@ -216,7 +234,7 @@ export class BranchSheet {
   private paintCmp(data: GitHistory): void {
     const left = el("div", "bc-end left");
     left.append(el("span", "branch-glyph", "⎇"), el("span", "bc-name", data.head || tr("(未知)")));
-    left.append(el("span", "bc-tag", data.detached ? tr("detached") : "HEAD"));
+    left.append(el("span", "bc-tag", headTag(data)));
 
     const mid = el("div", "bc-mid");
     const pills = el("div", "bc-pills");
@@ -234,6 +252,11 @@ export class BranchSheet {
     if (data.branches.length) {
       const select = el("select", "bc-base") as HTMLSelectElement;
       select.setAttribute("aria-label", tr("对照分支"));
+      const auto = el("option") as HTMLOptionElement;
+      auto.value = "";
+      auto.textContent = tr("自动 · 跟随 origin/HEAD");
+      auto.selected = data.baseAuto;
+      select.append(auto);
       for (const branch of data.branches) {
         const option = el("option") as HTMLOptionElement;
         option.value = branch.name;
@@ -258,7 +281,7 @@ export class BranchSheet {
     } else {
       right.append(el("span", "bc-name", data.base));
     }
-    right.append(el("span", "bc-tag", data.base.startsWith("origin/") || data.branches.length ? tr("remote") : tr("本地")));
+    right.append(el("span", "bc-tag", baseTag(data)));
 
     const bar = el("div", "bc-bar");
     const total = data.ahead + data.behind;
@@ -300,8 +323,8 @@ export class BranchSheet {
   }
 
   private paintCols(data: GitHistory): void {
-    const left = this.column("left", data.head, data.detached ? tr("detached") : "HEAD", tr("{p1} 条你独有", { p1: data.ahead }), data.left, data.more.left);
-    const right = this.column("right", data.base, tr("remote"), tr("{p1} 条你没有", { p1: data.behind }), data.right, data.more.right);
+    const left = this.column("left", data.head, headTag(data), tr("{p1} 条你独有", { p1: data.ahead }), data.left, data.more.left);
+    const right = this.column("right", data.base, baseTag(data), tr("{p1} 条你没有", { p1: data.behind }), data.right, data.more.right);
     this.colsEl.replaceChildren(left, right);
   }
 
@@ -314,16 +337,18 @@ export class BranchSheet {
     const body = el("div", "bc-rows");
     body.append(...rows.map((row) => this.row(row, side)));
     if (!rows.length) body.append(el("div", "bc-empty", tr("没有提交")));
-    if (more) {
+    if (more && this.limit < LIMIT_MAX) {
       const moreBtn = el("button", "bc-more", tr("再加载 {p1} 条", { p1: PAGE })) as HTMLButtonElement;
       moreBtn.type = "button";
       moreBtn.onclick = () => {
         moreBtn.disabled = true;
         moreBtn.textContent = tr("正在读 git…");
-        this.limit += PAGE;
+        this.limit = Math.min(LIMIT_MAX, this.limit + PAGE);
         void this.load(false);
       };
       body.append(moreBtn);
+    } else if (more) {
+      body.append(el("div", "bc-empty", tr("只显示最近 {p1} 条", { p1: LIMIT_MAX })));
     }
     col.append(head, body);
     return col;
