@@ -216,9 +216,10 @@ export class ChatView {
   /**
    * #220: 一页更早的内容正往列表**最上面**插。这期间 `add()` 的副作用都得当成「历史」看：
    * 不跟流、不弹「有新内容」、不扰动当前这一轮的工具模块与刻度带 —— 插完再统一收尾。
-   * `before` 是插入光标（当时的视口锚点，没内容时就是回底钮）。
+   * `anchor` 是 DOM 锚点（当时的视口顶部节点，没内容时就是回底钮），**不是** `history.before`
+   * 那个条目 id 游标（那个叫 `topId`）。
    */
-  private staging: { before: HTMLElement; turns: { node: HTMLElement; label: string }[] } | null = null;
+  private staging: { anchor: HTMLElement; turns: { node: HTMLElement; label: string }[] } | null = null;
   /** 「载入更早」那一行：列表的第一块内容，没有更早的就整行收起来（#220）。 */
   private moreRow: HTMLElement;
   private moreBtn: HTMLButtonElement;
@@ -455,7 +456,7 @@ export class ChatView {
   /** Everything the transcript appends goes in *before* the jump button, which must stay the last child. */
   private push(node: HTMLElement): void {
     // 往前翻的时候，新内容落在「载入更早」那行下面、旧内容上面（#220）。
-    this.root.insertBefore(node, this.staging?.before ?? this.jump);
+    this.root.insertBefore(node, this.staging?.anchor ?? this.jump);
   }
 
   /** Keeps the tail marker and the jump button children of the scroller no matter how it is rebuilt. */
@@ -495,13 +496,14 @@ export class ChatView {
   }
 
   /**
-   * #220: 一页更早的内容到了。它插在「载入更早」那行下面、现有内容上面，屏幕上那几行必须原地不动 ——
-   * 按**节点**锚定：记下视口顶部那块内容的 rect.top，插完把差值补回 scrollTop。
+   * #220: 一页更早的内容到了。`before` 是发请求时的游标（当时就等于 `topId`）；不是当前这一页
+   * 就不要（换过会话、重连晚到、同一个响应到了两次），免得同一页插两遍或插到别人头上。
+   * 它插在「载入更早」那行下面、现有内容上面，屏幕上那几行必须原地不动 —— 按**节点**锚定：
+   * 记下视口顶部那块内容的 rect.top，插完把差值补回 scrollTop。
    * scrollHeight 差值不能用：实测偏几十像素（代码块/字体度量在下一帧才定型）。
    */
-  prepend(items: Item[], hasMore: boolean): void {
-    // 没人要这一页（换过会话、或者同一个响应到了两次）：丢掉，免得同一页插两遍。
-    if (!this.loadingOlder) return;
+  prepend(before: string, items: Item[], hasMore: boolean): void {
+    if (!this.loadingOlder || before !== this.topId) return;
     this.loadingOlder = false;
     if (!items.length) {
       // 桥说没有了（或者这一页是空的）：行收起来，别再发请求。
@@ -514,7 +516,7 @@ export class ChatView {
     const seen = new Set(this.users.keys());
     const held = this.holdTurnState();
     const fresh: { node: HTMLElement; label: string }[] = [];
-    this.staging = { before: anchor ?? this.jump, turns: fresh };
+    this.staging = { anchor: anchor ?? this.jump, turns: fresh };
     try {
       for (const item of items) this.add(item);
     } finally {

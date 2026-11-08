@@ -6,7 +6,7 @@
  *   node --experimental-transform-types bridge/tests/history-page-unit.mjs
  */
 import assert from "node:assert/strict";
-import { HISTORY_PAGE_SIZE, pageBefore, tailPage } from "../src/history.ts";
+import { HISTORY_PAGE_SIZE, itemsFrame, pageBefore, tailPage } from "../src/history.ts";
 
 const user = (id) => ({ id, kind: "user", text: id });
 const assistant = (id) => ({ id, kind: "assistant", text: id });
@@ -89,5 +89,17 @@ assert.deepEqual(pageBefore(transcript, transcript[0].id), { items: [], hasMore:
 // limit 同样夹在 [1, 一页]（没有用户消息的那段，页长就等于 limit）。
 assert.equal(pageBefore(noUser, "a159", 999).items.length, HISTORY_PAGE_SIZE, "limit 超界按一页算");
 assert.deepEqual(ids(pageBefore(noUser, "a159", 5)), ["a154", "t155", "a156", "a157", "a158"], "limit 小的时候就是那么几条（收在游标前面）");
+
+// ---------------------------------------------------------------- 随手问整段下发
+
+// 随手问没有「载入更早」的入口（#218 Out of Scope）：超过一页也必须整段下发，
+// 否则累积到 61 条之后，前面的话会在唤醒/重连的整页替换里悄悄消失。
+const long = Array.from({ length: 130 }, (_, i) => (i % 2 ? assistant(`a${i}`) : user(`u${i}`)));
+const scratchFrame = itemsFrame(long, { full: true });
+assert.equal(scratchFrame.items.length, 130, "随手问：130 条一次给全，不切页");
+assert.equal(scratchFrame.items[0].id, "u0", "从第一条开始，前面没有被丢掉");
+assert.deepEqual(scratchFrame.history, { hasMore: false, total: 130 }, "没有更早的：界面上不会出现「载入更早」");
+assert.deepEqual(itemsFrame(long).items, tailPage(long).items, "普通会话默认仍是末尾一页（行为不变）");
+assert.deepEqual(itemsFrame(long).history, { hasMore: true, total: 130 }, "普通会话的 history 照旧");
 
 console.log("history-page-unit: ok");
