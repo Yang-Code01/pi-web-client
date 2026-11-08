@@ -47,6 +47,7 @@
     "test:probes": "node web/tests/probes-unit.mjs",
     "probe:workspace": "node probes/run-all.mjs",
     "test:history": "node --experimental-transform-types bridge/tests/history-page-unit.mjs",
+    "test:history:ui": "node bridge/tests/history-ui.mjs",
     "test:tail": "node --experimental-transform-types bridge/tests/tail-read-error.mjs",
     "test:stateguard": "node --experimental-transform-types bridge/tests/state-read-guard.mjs"
   },

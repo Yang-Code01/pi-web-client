@@ -65,6 +65,15 @@ export interface SummaryItem extends ItemBase {
 }
 export type Item = UserItem | AssistantItem | ToolItem | NoticeItem | BashItem | SummaryItem;
 
+/**
+ * #218 / #220: `session` 帧里的 `items` 只有末页，历史总量与「上面还有没有」走这里。
+ * 老桥没有这个字段 —— 于是按「没有更早的」处理，翻页那一行就不出现。
+ */
+export interface SessionHistory {
+  hasMore: boolean;
+  total: number;
+}
+
 /** What pi extensions drew with ctx.ui.setStatus / setWidget / setTitle (fire-and-forget in RPC). */
 export interface ExtUi {
   status: { key: string; text: string }[];

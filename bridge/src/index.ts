@@ -22,6 +22,7 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
+import { pageBefore } from "./history.ts";
 import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
@@ -1256,6 +1257,16 @@ async function main(): Promise<void> {
             const snap = sessions.pagedSnapshot(msg.sessionId);
             (ws as any).watching = String(msg.sessionId);
             send({ type: "session", sessionId: msg.sessionId, ...snap, trust: await trustFor(snap.state.cwd) });
+            return;
+          }
+          /**
+           * #220：往前翻一页。纯内存切片 —— 不读盘、不碰 pi，所以点一下就能回。
+           * `limit` 由 `pageBefore()` 夹在 [1, 60]；`before` 不在这个会话里就回空页 + hasMore:false。
+           */
+          case "history.before": {
+            const session = sessions.get(String(msg.sessionId));
+            const page = session ? pageBefore(session.items, String(msg.before ?? ""), msg.limit) : { items: [], hasMore: false };
+            send({ type: "history", sessionId: msg.sessionId, before: msg.before, items: page.items, hasMore: page.hasMore });
             return;
           }
           case "claim": {
