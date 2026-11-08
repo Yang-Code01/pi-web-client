@@ -27,6 +27,11 @@ function approvalGatePath(): string {
   return process.env.PI_WEB_GATE ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "approval-gate.ts");
 }
 
+/** #224：`open_preview` 只属于网页会话 —— 它做的事就是把文件交给网页的预览面板。 */
+function previewToolPath(): string {
+  return process.env.PI_WEB_PREVIEW_TOOL ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "open-preview.ts");
+}
+
 export interface ApprovalRequest {
   id: string;
   sessionId: string;
@@ -1051,6 +1056,7 @@ export class Session extends EventEmitter {
     const args = ["--mode", "rpc"];
     if (process.env.PI_WEB_NO_EXT === "1") args.push("-ne");
     args.push("-e", approvalGatePath());
+    args.push("-e", previewToolPath());
     const cwd = opts.cwd || this.state.cwd || process.cwd();
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
     const launch = readLaunch(id);

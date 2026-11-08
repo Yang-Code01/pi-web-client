@@ -438,6 +438,40 @@ async function main(): Promise<void> {
       return json(res, 200, outcome);
     }
 
+    // ------------------------------------------------------------ open_preview (loopback only, #224)
+    // `open_preview` 工具跑在我们的子进程里，没有 cookie，所以和 /api/ask 一样站在 cookie 闸前面，
+    // 只认回环对端 + 会话级 token。它的活只有一件：把「打开这个文件」交给正在看这个会话的页面。
+    // 没有这样的连接就明确失败 —— 工具不能把「没人看见」当成「打开了」（投递范围的收紧见 #225）。
+    if (url.pathname === "/api/preview/open" && req.method === "POST") {
+      if (publicReq) return json(res, 403, { ok: false, reason: "tunnel", text: "预览只接受本机回环的请求（公网隧道进不来）。" });
+      const peer = req.socket.remoteAddress ?? "";
+      if (!/^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(peer)) return json(res, 403, { ok: false, reason: "non-loopback", text: "预览只接受本机回环的请求。" });
+      const body = await readBody(req).catch(() => ({}));
+      const session = sessions.byLoopbackToken(String(body.token ?? ""));
+      if (!session) {
+        log(`preview.open rejected: bad token from ${peer}`);
+        return json(res, 403, { ok: false, reason: "bad-token", text: "回环凭据不对。" });
+      }
+      let info: ReturnType<typeof openPreview>;
+      try {
+        info = openPreview({ cwd: session.state.cwd, file: session.state.file }, String(body.path ?? ""));
+      } catch (err: any) {
+        return json(res, 200, { ok: false, reason: "path", text: String(err?.message ?? err) });
+      }
+      const sid = session.state.id;
+      const payload = { type: "preview.open", sessionId: sid, path: info.abs };
+      let pages = 0;
+      for (const client of wss.clients) {
+        if ((client as any).watching === sid && client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify(payload));
+          pages++;
+        }
+      }
+      log(`preview.open ${sid.slice(0, 8)} → ${pages} page(s): ${info.abs}`);
+      if (!pages) return json(res, 200, { ok: false, reason: "no-page", text: "没有页面在看这个会话，预览没打开。" });
+      return json(res, 200, { ok: true, path: info.abs, name: info.name });
+    }
+
     if (url.pathname === "/api/login" && req.method === "POST") {
       const ip = clientIp(req.headers, req.socket.remoteAddress);
       if (!loginAllowed(ip)) return fail(res, 429, "too_many_attempts", "试太多次了，等一分钟再试");

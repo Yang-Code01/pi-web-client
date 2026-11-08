@@ -1590,6 +1590,13 @@ export class App {
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
         this.fillExt();
         break;
+      case "preview.open": {
+        // #224: `open_preview` 工具 → 桥 → 正在看这个会话的页面，在这里落到 viewer 上。
+        if (msg.sessionId !== this.currentId) break;
+        const target = String(msg.path ?? "");
+        if (target) void this.openPreview(target);
+        break;
+      }
       case "editor.set": {
         // ctx.ui.setEditorText: the extension replaces what is in the editor, like in the terminal.
         if (msg.sessionId !== this.currentId) break;
@@ -8711,6 +8718,8 @@ export class App {
     const get = (key: string): SettingsCell => readPath(data, key);
     const defaults = (view.defaults ?? {}) as Record<string, unknown>;
     // Project page: 「默认」 is what you actually get, so a global value wins over pi's factory one.
+    // SAFETY: 全局那一层和会话自己的一样是任意 JSON 设置；这里只当「按 key 取值的容器」用，
+    // 取不到就是 undefined，形状不对也不会被当成某个具体值。
     const parentData = (scope === "project" ? (this.settingsView.global?.json ?? null) : null) as unknown as SettingsCellOf | null;
     const parentGet = (key: string): SettingsCell => readPath(parentData, key);
     const fmtSetting = (v: unknown): string | null => {
