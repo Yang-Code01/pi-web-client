@@ -143,6 +143,36 @@ try {
   check("坏 JSON 时保存不可用", await page.locator("#subagents-acp .settings-foot .btn.primary").isDisabled());
   check("坏 JSON：磁盘一字未改", fs.readFileSync(CFG, "utf8") === broken);
 
+  // 文件里的 thinkingLevel 不在面板那七档里：下拉禁用 + 写一句「文件里是 X」，别做成可点却永远不产生 patch。
+  const odd = JSON.parse(JSON.stringify(after));
+  odd.pi.subagents.thinkingLevel = "turbo";
+  fs.writeFileSync(CFG, JSON.stringify(odd, null, 2), "utf8");
+  await page.locator("#subagents-acp .settings-foot .btn.ghost").click();
+  await page.waitForFunction(() => /turbo/.test(document.querySelector("#subagents-acp")?.textContent ?? ""), null, {
+    timeout: 20000,
+  });
+  const thinkRow = page.locator("#subagents-acp .settings-row", { hasText: "子代理的 thinkingLevel" });
+  const thinkSelect = thinkRow.locator("select");
+  const thinkText = (await thinkRow.innerText()).trim();
+  check("陌生档位：下拉禁用", await thinkSelect.isDisabled(), String(after?.pi?.subagents?.thinkingLevel ?? ""));
+  check("陌生档位：hint 写出文件里的值", thinkText.includes("turbo"), thinkText.replace(/\s+/g, " "));
+  check("陌生档位：hint 指出出口是编辑 JSON", /编辑 JSON/.test(thinkText));
+  check("陌生档位：下拉不显示一个假值", (await thinkSelect.inputValue()) === "");
+
+  // 还能改别的字段，而且保存不会把 thinkingLevel 改写成面板里的档。
+  await acp.locator("input.ns-input").first().fill("2");
+  const save2 = acp.locator(".settings-foot .btn.primary");
+  check("陌生档位：别的字段还能改", await save2.isEnabled());
+  await save2.click();
+  for (let i = 0; i < 100; i += 1) {
+    if (JSON.parse(fs.readFileSync(CFG, "utf8"))?.pi?.subagents?.maxDepth === 2) break;
+    await sleep(150);
+  }
+  const oddAfter = JSON.parse(fs.readFileSync(CFG, "utf8"));
+  check("陌生档位：别的字段照常写盘", oddAfter?.pi?.subagents?.maxDepth === 2, JSON.stringify(oddAfter.pi.subagents));
+  check("陌生档位：thinkingLevel 原样留着 turbo", oddAfter?.pi?.subagents?.thinkingLevel === "turbo");
+  check("陌生档位：没凭空多出键", Object.keys(oddAfter.pi.subagents).sort().join(",") === "enabled,maxDepth,thinkingLevel", Object.keys(oddAfter.pi.subagents).join(","));
+
   await page.screenshot({ path: path.join(ROOT, "acp-delegate.png") });
 } finally {
   await browser.close();

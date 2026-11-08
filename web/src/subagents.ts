@@ -12,6 +12,7 @@
  * 由 #215 在同一文件里加自己的分区，两边互不碰。
  */
 import { createEl as el } from "./chat.ts";
+import { fileNameOf } from "./dirpicker.ts";
 import { tr } from "./i18n/index.ts";
 import { paintAcpDelegateSection, type AcpDelegateSection } from "./subagents-acp.ts";
 
@@ -135,13 +136,23 @@ export interface SubagentOverride {
   thinking: string | null;
 }
 
-/** 读一行的覆盖（磁盘上的值，不是输入框里的草稿）。 */
+/**
+ * 读一行的覆盖（磁盘上的值，不是输入框里的草稿）。按**字面 key**取 `agentOverrides[name]`：名字里
+ * 带 `.` 时走点号路径会读到别的层级，也会把这种名字误判成「没写过」。
+ */
 export function subagentOverride(json: Record<string, unknown> | null, name: string): SubagentOverride {
-  const field = (key: "model" | "thinking"): string | null => {
-    const value = readSubagentsKey(json, `subagents.agentOverrides.${name}.${key}`);
-    return typeof value === "string" && value ? value : null;
-  };
+  const overrides = recordOf(readSubagentsKey(json, "subagents.agentOverrides"));
+  const fields = overrides ? recordOf(overrides[name] as SubagentsLeaf) : null;
+  const field = (key: "model" | "thinking"): string | null => textOf(fields, key);
   return { model: field("model"), thinking: field("thinking") };
+}
+
+/**
+ * 点号 patch 的键是按 `.` 分层的：agent 名字里带 `.` 时 `agentOverrides.<name>.model` 会插到别的
+ * 层级（写出一个谁都不认识的键）。这种名字在页面上只读，要改走「编辑 JSON」—— 保证不会发出这种键。
+ */
+export function subagentsNamePatchable(name: string): boolean {
+  return name.length > 0 && !name.includes(".");
 }
 
 /** 这一行偏离了 agent 自己的 frontmatter：任一覆盖非空（「改」标记与行高亮都读它）。 */
@@ -497,7 +508,7 @@ export function paintSubagentsPage(body: HTMLElement, page: SubagentsPage): void
     button.onclick = () => page.onScope(scope);
     return button;
   };
-  const projectName = page.cwd.split(/[\\/]/).filter(Boolean).pop() ?? page.cwd;
+  const projectName = fileNameOf(page.cwd);
   bar.append(
     scopeButton("global", tr("全局")),
     scopeButton("project", page.cwd ? tr("项目（{p1}）", { p1: projectName }) : tr("项目")),
@@ -619,7 +630,13 @@ export function paintSubagentsAgents(box: HTMLElement, page: SubagentsPage, edit
   }
   const tbody = table.createTBody();
 
-  const rows: { row: HTMLTableRowElement; chip: HTMLElement; clear: HTMLButtonElement; read(): SubagentOverride }[] = [];
+  const rows: {
+    row: HTMLTableRowElement;
+    chip: HTMLElement;
+    clear: HTMLButtonElement;
+    patchable: boolean;
+    read(): SubagentOverride;
+  }[] = [];
 
   /** 行高亮、「改」标记、清空按钮与标题里的计数都读当前输入框里的值（保存后重绘则读磁盘）。 */
   const refresh = (): void => {
@@ -628,13 +645,15 @@ export function paintSubagentsAgents(box: HTMLElement, page: SubagentsPage, edit
       const on = subagentOverridden(entry.read());
       entry.row.classList.toggle("changed", on);
       entry.chip.hidden = !on;
-      entry.clear.disabled = locked || !on;
+      entry.clear.disabled = locked || !entry.patchable || !on;
       if (on) overridden += 1;
     }
     count.textContent = tr("{p1} 个，{p2} 处已覆盖", { p1: rows.length, p2: overridden });
   };
 
   for (const agent of agents) {
+    // 名字带 `.` 的行只读：点号键插错层，写了也不生效（见 subagentsNamePatchable）。
+    const patchable = subagentsNamePatchable(agent.name);
     const current = subagentOverride(json, agent.name);
     const row = tbody.insertRow();
     row.title = agent.path;
@@ -642,18 +661,19 @@ export function paintSubagentsAgents(box: HTMLElement, page: SubagentsPage, edit
     const name = row.insertCell();
     name.className = "agent";
     name.append(document.createTextNode(agent.name));
+    if (!patchable) name.append(el("div", "subagents-hint", tr("名字里有「.」：点号键会插错层，这里只读，要改请用「编辑 JSON」。")));
     const chip = el("span", "subagents-badge changed", tr("已改"));
     name.append(chip);
 
     const source = row.insertCell();
     source.append(el("span", `subagents-badge ${agent.source}`, sourceLabelOf(agent.source)));
 
-    // agent 自己钉的值，只读；覆盖是盖在它上面的另一层。
+    // agent 自己钉的值，只读；覆盖是盖在它上面的另一层。没钉就写「未钉」，不是空着也不是破折号。
     const fm = row.insertCell();
     fm.className = "fm";
     for (const key of ["model", "thinking"] as const) {
       const line = el("div", "fm-line");
-      line.append(el("span", "k", key), document.createTextNode(agent[key] ?? "—"));
+      line.append(el("span", "k", key), document.createTextNode(agent[key] || tr("未钉")));
       fm.append(line);
     }
 
@@ -663,14 +683,14 @@ export function paintSubagentsAgents(box: HTMLElement, page: SubagentsPage, edit
     modelInput.setAttribute("list", "subagents-models");
     modelInput.value = current.model ?? "";
     modelInput.placeholder = tr("继承");
-    modelInput.disabled = locked;
+    modelInput.disabled = locked || !patchable;
     modelInput.classList.toggle("bad", !subagentsModelKnown(page.models, modelInput.value));
     modelCell.append(modelInput);
 
     const thinkingCell = row.insertCell();
     const thinking = el("select", "ns-input") as HTMLSelectElement;
     fillThinking(thinking, current.thinking ?? "");
-    thinking.disabled = locked;
+    thinking.disabled = locked || !patchable;
     thinkingCell.append(thinking);
 
     const clearCell = row.insertCell();
@@ -680,24 +700,26 @@ export function paintSubagentsAgents(box: HTMLElement, page: SubagentsPage, edit
     clearCell.append(clear);
 
     const read = (): SubagentOverride => ({ model: modelInput.value.trim() || null, thinking: thinking.value || null });
-    const commit = (): void => {
-      // 两个键一起交：没改的那半与磁盘相同，mark() 会把它从 patch 里摘掉。
-      editor?.mark(subagentOverridePatch(agent.name, modelInput.value, thinking.value));
-      refresh();
-    };
-    modelInput.oninput = () => {
-      // 不在清单里的 id 只标红：网关新上的模型不该等这一页更新，保存也不拦。
-      modelInput.classList.toggle("bad", !subagentsModelKnown(page.models, modelInput.value));
-      commit();
-    };
-    thinking.onchange = commit;
-    clear.onclick = () => {
-      modelInput.value = "";
-      thinking.value = "";
-      modelInput.classList.remove("bad");
-      commit();
-    };
-    rows.push({ row, chip, clear, read });
+    if (patchable) {
+      const commit = (): void => {
+        // 两个键一起交：没改的那半与磁盘相同，mark() 会把它从 patch 里摘掉。
+        editor?.mark(subagentOverridePatch(agent.name, modelInput.value, thinking.value));
+        refresh();
+      };
+      modelInput.oninput = () => {
+        // 不在清单里的 id 只标红：网关新上的模型不该等这一页更新，保存也不拦。
+        modelInput.classList.toggle("bad", !subagentsModelKnown(page.models, modelInput.value));
+        commit();
+      };
+      thinking.onchange = commit;
+      clear.onclick = () => {
+        modelInput.value = "";
+        thinking.value = "";
+        modelInput.classList.remove("bad");
+        commit();
+      };
+    }
+    rows.push({ row, chip, clear, patchable, read });
   }
   refresh();
   box.append(table);
@@ -800,23 +822,26 @@ export function paintSubagentsAdvanced(box: HTMLElement, page: SubagentsPage, ed
     input.classList.toggle("bad", !subagentsModelKnown(page.models, input.value));
   };
 
-  const modelField = (current: string | null): HTMLInputElement => {
+  /** `editable` 用来给点号拼不出来的一行（名字里带 `.`）上只读：控件在，但不写键。 */
+  const modelField = (current: string | null, editable = true): HTMLInputElement => {
     const input = el("input", "ns-input mono");
     input.type = "text";
     input.setAttribute("list", "subagents-models");
     input.value = current ?? "";
     input.placeholder = tr("继承");
-    input.disabled = locked;
+    input.disabled = locked || !editable;
     watchModel(input);
     return input;
   };
 
-  const thinkingField = (current: string | null): HTMLSelectElement => {
+  const thinkingField = (current: string | null, editable = true): HTMLSelectElement => {
     const select = el("select", "ns-input");
     fillThinking(select, current ?? "");
-    select.disabled = locked;
+    select.disabled = locked || !editable;
     return select;
   };
+
+  const dottedNote = tr("名字里有「.」：点号键会插错层，这里只读，要改请用「编辑 JSON」。");
 
   const watchdog = block(
     tr("看门狗"),
@@ -855,11 +880,13 @@ export function paintSubagentsAdvanced(box: HTMLElement, page: SubagentsPage, ed
     const rows = table(["agent", tr("覆盖 model"), tr("覆盖 thinking")]);
     for (const override of watchdogOverrides) {
       const line = rows.body.insertRow();
-      nameCell(line, override.agent);
-      const model = modelField(override.model);
+      const patchable = subagentsNamePatchable(override.agent);
+      nameCell(line, override.agent, patchable ? undefined : dottedNote);
+      const model = modelField(override.model, patchable);
       line.insertCell().append(model);
-      const thinking = thinkingField(override.thinking);
+      const thinking = thinkingField(override.thinking, patchable);
       line.insertCell().append(thinking);
+      if (!patchable) continue;
       const commit = (): void => {
         editor?.mark(watchdogChildOverridePatch(override.agent, model.value, thinking.value));
       };
@@ -883,11 +910,13 @@ export function paintSubagentsAdvanced(box: HTMLElement, page: SubagentsPage, ed
     const rows = table(["provider", "agent", tr("覆盖 model"), tr("覆盖 thinking")]);
     for (const override of providerRows) {
       const line = rows.body.insertRow();
-      nameCell(line, `${override.provider} / ${override.agent}`);
-      const model = modelField(override.model);
+      const patchable = subagentsNamePatchable(override.provider) && subagentsNamePatchable(override.agent);
+      nameCell(line, `${override.provider} / ${override.agent}`, patchable ? undefined : dottedNote);
+      const model = modelField(override.model, patchable);
       line.insertCell().append(model);
-      const thinking = thinkingField(override.thinking);
+      const thinking = thinkingField(override.thinking, patchable);
       line.insertCell().append(thinking);
+      if (!patchable) continue;
       const commit = (): void => {
         editor?.mark(providerOverridePatch(override.provider, override.agent, model.value, thinking.value));
       };

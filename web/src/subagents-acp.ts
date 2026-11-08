@@ -129,10 +129,12 @@ export function paintAcpDelegateSection(box: HTMLElement, page: AcpDelegateSecti
     thinking,
     knownThinking
       ? tr("派出去的子代理默认用哪一档思考。")
-      : tr("文件里现在写的是 {p1}，不是 billion-context 认识的档位；不懂就不动它。", { p1: view.config.thinkingLevel ?? "" }),
+      : tr("文件里是 {p1}（不在面板的七档里），要改请用「编辑 JSON」。", { p1: view.config.thinkingLevel ?? "" }),
   );
 
   for (const control of [enabled, depth, concurrent, thinking]) control.disabled = locked;
+  // 陌生档位不给下拉：七个选项里没有它的值，选任何一项都只会生成一个不是用户本意的键。
+  thinking.disabled = locked || !knownThinking;
 
   const foot = el("div", "settings-foot");
   const save = el("button", "btn primary", tr("保存"));

@@ -187,6 +187,26 @@ check("递归两层，.chain.md 不算 agent，没 frontmatter 的名字用文�
   assert.equal(out.directories.find((row) => row.path === dir).count, 3);
 });
 
+check("~/.agents 是 skills 的根，里面的 SKILL.md 不算 agent", () => {
+  const d = tree("home-dot-agents");
+  agentFile(path.join(d.homeDir, ".agents", "skills", "unslop", "SKILL.md"), "name: unslop\ndescription: 界面去 AI 味");
+  agentFile(path.join(d.agentDir, "agents", "real.md"), "name: real");
+  const out = scan(d);
+  assert.deepEqual(out.agents.map((a) => a.name), ["real"]);
+  assert.equal(out.directories.some((row) => row.path === path.join(d.homeDir, ".agents")), false);
+});
+
+check("旧项目路径 .agents 让给 .pi/agents（同名时项目配置目录赢）", () => {
+  const d = tree("legacy-agents");
+  agentFile(path.join(d.cwd, ".agents", "dup.md"), "name: dup\ndescription: 旧的");
+  agentFile(path.join(d.cwd, ".pi", "agents", "dup.md"), "name: dup\ndescription: 新的");
+  agentFile(path.join(d.cwd, ".agents", "only-legacy.md"), "name: legacy-only");
+  const out = scan(d);
+  const dup = out.agents.find((a) => a.name === "dup");
+  assert.equal(dup.path, path.join(d.cwd, ".pi", "agents", "dup.md"));
+  assert.deepEqual(out.agents.map((a) => a.name).sort(), ["dup", "legacy-only"]);
+});
+
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) {
   console.log(`\n${failures} 项失败`);

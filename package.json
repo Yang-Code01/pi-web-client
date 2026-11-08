@@ -49,7 +49,7 @@
     "test:tail": "node --experimental-transform-types bridge/tests/tail-read-error.mjs",
     "test:stateguard": "node --experimental-transform-types bridge/tests/state-read-guard.mjs",
     "test:subagents": "node --experimental-transform-types bridge/tests/subagents-unit.mjs && node --experimental-transform-types bridge/tests/subagents-basics-unit.mjs && node --experimental-transform-types bridge/tests/subagents-overrides-unit.mjs && node --experimental-transform-types bridge/tests/subagents-advanced-unit.mjs && node --experimental-transform-types bridge/tests/acpdelegate-unit.mjs",
-    "test:subagents:ui": "node bridge/tests/subagents-overrides-ui.mjs && node bridge/tests/acp-delegate-ui.mjs"
+    "test:subagents:ui": "node bridge/tests/subagents-overrides-ui.mjs && node bridge/tests/acp-delegate-ui.mjs && node bridge/tests/subagents-advanced-ui.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

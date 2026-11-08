@@ -3081,7 +3081,7 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 **验证：** `npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 `i18n-check`）；文案模板键在 `en.ts` / `ja.ts` 同步换键并补 `1 天` 的译名，漏一条 typecheck 会报。
 已有 step-up 用例（`bridge/tests/runtime-settings.mjs`、`sleep-all.mjs`）只断言「公网要口令」，不锁时长，不受影响。
 
-## D186 「子代理」设置页 = 一页两半 + 点号 patch + acp 深合并（#211 / #212–#216）
+## D187 「子代理」设置页 = 一页两半 + 点号 patch + acp 深合并（#211 / #212–#216）
 
 **问题：** 子代理的偏好散在两个文件、两个扩展里：pi 的 `settings.json` 的 `subagents.*`（模型、思考档位、每个 agent 的覆盖、看门狗、设备）与 billion-context 的 `billion-context.json` 的 `pi.subagents`（`acp_delegate` 的开关、深度、并发）。字段名要靠背，写错 key 静默不生效，整份覆盖 `billion-context.json` 会把 `providers` / `sessions` 一起吃掉。
 

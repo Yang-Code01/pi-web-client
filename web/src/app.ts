@@ -8465,6 +8465,9 @@ export class App {
         if (id === "runtime") this.socket.send({ type: "runtime.stats" });
         if (id === "passphrase") this.askPassphrase();
         if (id === "subagents") {
+          // 进 tab 时把 settings.json 也重问一遍：路径与字段不能是开 panel 那一刻的旧值。
+          this.socket.send({ type: "settings.get", scope: "global" });
+          if (cwd) this.socket.send({ type: "settings.get", scope: "project", cwd });
           this.requestSubagentsAgents();
           this.requestSubagentsAcp();
         }

@@ -20,6 +20,7 @@ import {
   subagentOverridePatch,
   subagentOverridden,
   subagentsModelKnown,
+  subagentsNamePatchable,
 } from "../../web/src/subagents.ts";
 
 let failures = 0;
@@ -113,6 +114,12 @@ check("手输不认识的模型 id：标红但不拦保存，值原样写进去"
 
 check("空值（= 继承）算认识：不会被标红", () => {
   assert.equal(subagentsModelKnown([], "  "), true);
+});
+
+check("名字带「.」的 agent 不生成可编辑控件（点号键会插错层）", () => {
+  assert.equal(subagentsNamePatchable("reviewer"), true);
+  assert.equal(subagentsNamePatchable("dotted.one"), false);
+  assert.equal(subagentsNamePatchable(""), false);
 });
 
 if (failures) {

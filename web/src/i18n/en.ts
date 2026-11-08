@@ -1789,8 +1789,11 @@ export const en: Dict = {
   "默认（不设）": "Default (unset)",
   "子代理的 thinkingLevel": "Subagent thinkingLevel",
   "派出去的子代理默认用哪一档思考。": "Which thinking level delegated subagents use by default.",
-  "文件里现在写的是 {p1}，不是 billion-context 认识的档位；不懂就不动它。":
-    "The file currently says {p1}, which is not a level billion-context knows; it is left alone.",
+  "文件里是 {p1}（不在面板的七档里），要改请用「编辑 JSON」。":
+    "The file says {p1}, which is not one of the panel's seven levels — edit the JSON to change it.",
+  "未钉": "not pinned",
+  "名字里有「.」：点号键会插错层，这里只读，要改请用「编辑 JSON」。":
+    "The name contains a dot, so a dotted key would land on the wrong level; this row is read-only — edit the JSON instead.",
   "没存上：{p1}": "Not saved: {p1}",
   "这个文件读不懂，保存不可用。": "This file cannot be parsed, so saving is disabled.",
   "重新读取": "Reload",

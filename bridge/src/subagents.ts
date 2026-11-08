@@ -108,10 +108,11 @@ export function scanSubagents(options: ScanSubagentsOptions = {}): SubagentScan 
   const packageRoots = options.packageRoots ?? defaultPackageRoots(agent, cwd);
   const plans: DirPlan[] = packageRoots.map((dir) => ({ dir: path.join(dir, "agents"), source: "package" as AgentSource }));
   plans.push({ dir: path.join(agent, "agents"), source: "user" });
-  plans.push({ dir: path.join(home, ".agents"), source: "user" });
   if (cwd) {
-    plans.push({ dir: path.join(cwd, ".pi", "agents"), source: "project" });
+    // 文档里的旧项目路径 `.agents/**/*.md` 排在 `.pi/agents` **前面**：同名时项目配置目录赢（agents.md 的
+    // Discovery notes）。`~/.agents` 不是 agent 目录 —— 那是 skills 的根，扫它会拿一堆 SKILL.md 当 agent。
     plans.push({ dir: path.join(cwd, ".agents"), source: "project" });
+    plans.push({ dir: path.join(cwd, ".pi", "agents"), source: "project" });
   }
   plans.push(...extraDirs);
 
