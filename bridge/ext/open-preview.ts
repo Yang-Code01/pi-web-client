@@ -53,7 +53,7 @@ const openPreviewTool = {
   parameters: {
     type: "object",
     properties: {
-      path: { type: "string", description: "要打开的文件路径：相对路径按会话的工作目录解析，也可以给绝对路径" },
+      path: { type: "string", description: "要打开的文件路径：相对路径按会话的工作目录解析。会话目录之外的绝对路径只有在会话里提到过才能打开" },
     },
     required: ["path"],
     additionalProperties: false,
@@ -72,6 +72,9 @@ const openPreviewTool = {
     }
     if (reply.reason === "no-page") {
       return textResult(`没有打开：用户现在没有在看这个会话（网页那边没有打开的页面）。把路径告诉用户，等他打开会话后再试。`, { ok: false, reason: "no-page" });
+    }
+    if (reply.reason === "untrusted-path") {
+      return textResult(`没有打开：这个路径不在会话目录里，会话里也没提到过。把文件放到会话目录里再试，或者直接把路径写出来。`, { ok: false, reason: "untrusted-path" });
     }
     return textResult(`没有打开（${reply.reason ?? "unknown"}）${reply.text ? `：${reply.text}` : "。"}`, { ok: false, reason: reply.reason });
   },

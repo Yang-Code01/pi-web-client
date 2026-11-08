@@ -65,7 +65,7 @@ import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCoun
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { piLatest } from "./piupdate.ts";
-import { openPreview, readAttachableImage, rememberEditable, savePreviewFile, serveRaw } from "./preview.ts";
+import { isTrustedPreviewPath, openPreview, readAttachableImage, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw } from "./preview.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
@@ -452,9 +452,27 @@ async function main(): Promise<void> {
         log(`preview.open rejected: bad token from ${peer}`);
         return json(res, 403, { ok: false, reason: "bad-token", text: "回环凭据不对。" });
       }
+      const sess = { cwd: session.state.cwd, file: session.state.file };
+      const rawPath = String(body.path ?? "");
+      let abs: string;
+      try {
+        abs = resolvePreviewPath(sess, rawPath);
+      } catch (err: any) {
+        return json(res, 200, { ok: false, reason: "path", text: String(err?.message ?? err) });
+      }
+      // #225: 这个工具能把任意绝对路径推进预览面板，而页面上能点开的只限于会话目录（D50 的宽松规则
+      // 只属于 /api/preview 与 /api/dirs）。目录外的路径，只有会话记录里真出现过才放行；拒绝时不签发凭据。
+      if (!isTrustedPreviewPath(sess, abs)) {
+        log(`preview.open rejected: untrusted path for ${session.state.id.slice(0, 8)}: ${abs}`);
+        return json(res, 200, {
+          ok: false,
+          reason: "untrusted-path",
+          text: "这个路径不在会话目录里，会话记录里也没提到过，所以没有打开。把文件放到会话目录里再试，或者直接把路径写出来。",
+        });
+      }
       let info: ReturnType<typeof openPreview>;
       try {
-        info = openPreview({ cwd: session.state.cwd, file: session.state.file }, String(body.path ?? ""));
+        info = openPreview(sess, rawPath);
       } catch (err: any) {
         return json(res, 200, { ok: false, reason: "path", text: String(err?.message ?? err) });
       }
