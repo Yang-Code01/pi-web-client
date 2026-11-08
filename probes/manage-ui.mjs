@@ -155,11 +155,13 @@ try {
   await card("戊").click();
   const del = page.locator(".manage-actions .btn.danger");
   await del.click();
-  assert((await del.textContent()) === "再点一次删除", "first click only arms the delete");
+  assert((await del.textContent()).includes("再点一次"), "first click only arms the delete");
   assert(fs.existsSync(files["戊"]), "file still there after the first click");
   await del.click();
   await until(async () => !(await sectionNames("rest")).includes("戊"), 5000, "戊 deleted");
-  assert(!fs.existsSync(files["戊"]), "session file deleted");
+  // D51: 删除是「进垃圾箱」，不是 unlink —— 回收站里还能还原。
+  assert(!fs.existsSync(files["戊"]), "session file left the sessions dir");
+  assert(fs.existsSync(path.join(STATE, "trash", "zz-manage-ui-4.jsonl")), "session file landed in the bin");
   assert(!manage().order.includes("zz-manage-ui-4"), "manage entry cleaned up");
   await page.screenshot({ path: path.join(OUT, "5-deleted.png") });
   log("two-step delete ok");

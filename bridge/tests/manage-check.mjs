@@ -2,8 +2,9 @@
  * Probe: session management (D46) against the real bridge.
  *
  * Covers: hand-set order survives a restart, archiving hides nothing from the API,
- * deleting a plain session removes the file + its name override, a live session is skipped
- * with a reason instead of failing the whole batch (Q-001), and a mixed batch still deletes.
+ * deleting a plain session removes the file + its name override, a live session is released
+ * and then binned instead of refusing (D198), a terminal-held one is still skipped with a
+ * reason (Q-001), and a mixed batch still deletes what it can.
  *
  * Run: node bridge/tests/manage-check.mjs
  */
@@ -50,7 +51,7 @@ function mkSession(id, text, hoursAgo) {
   return file;
 }
 
-const _fileB = mkSession("zz-manage-b", "第二个会话", 3);
+mkSession("zz-manage-b", "第二个会话", 3);
 const fileC = mkSession("zz-manage-c", "第三个会话", 2);
 const fileA = mkSession("zz-manage-a", "第一个会话", 1);
 const ids = { b: "zz-manage-b", c: "zz-manage-c", a: "zz-manage-a" };
@@ -219,37 +220,106 @@ try {
   send({ type: "manage", action: "delete", ids: [ids.a] });
   await waitFor("session.gone", (m) => m.ids?.includes?.(ids.a), 8000);
 
-  // 4. A live session is skipped, not fatal: partial success is the whole point of Q-001.
+  // 4. A live session is released, then binned: being busy is no longer a refusal (D198).
   ws.send(JSON.stringify({ type: "create", cwd: CWD }));
   const created = await waitFor("session", (m) => m.state?.owned === true, 90000);
   assert(created, "live session created");
   const liveId = created.sessionId;
-  const result = waitFor("delete.result", () => true, 8000);
+  // pi 要到第一条消息才落盘；先替它把文件写出来，这一条才真的走到「搬文件」。
+  const liveRow = await until(
+    async () => (await list()).find((s) => s.id === liveId && s.file),
+    30000,
+    "live session file path",
+  );
+  const liveFile = liveRow.file;
+  const at = new Date().toISOString();
+  fs.mkdirSync(path.dirname(liveFile), { recursive: true });
+  fs.writeFileSync(
+    liveFile,
+    [
+      { type: "session", version: 3, id: liveId, timestamp: at, cwd: CWD },
+      { type: "message", id: "m1", parentId: null, timestamp: at, message: { role: "user", content: [{ type: "text", text: "运行中的会话" }] } },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join("\n") + "\n",
+  );
+  const liveBin = path.join(STATE, "trash", `${liveId}.jsonl`);
+  const liveLock = path.join(STATE, "locks", `${liveId}.lock`);
+  assert(fs.existsSync(liveLock), "a live web session holds its write lock");
+  const result = waitFor("delete.result", () => true, 30000);
   send({ type: "manage", action: "delete", ids: [liveId] });
   const only = await result;
-  assert(only.skipped?.some((s) => s.id === liveId && s.reason), `live delete skipped with a reason (got ${JSON.stringify(only)})`);
-  assert(!only.removed?.length, "nothing removed");
-  assert((await order()).includes(liveId), "live session still there");
-  log("live delete skipped:", only.skipped[0].reason);
+  assert(only?.removed?.includes(liveId), `live delete removed it (got ${JSON.stringify(only)})`);
+  assert(only?.released?.includes(liveId), `live delete names what it released (got ${JSON.stringify(only)})`);
+  assert(!only?.skipped?.length, `nothing skipped (got ${JSON.stringify(only?.skipped)})`);
+  assert(fs.existsSync(liveBin) && !fs.existsSync(liveFile), "live payload moved to the bin");
+  assert(!fs.existsSync(liveLock), "its write lock was handed back");
+  assert(!(await order()).includes(liveId), "live session left the list");
+  log("live delete released", only.released.length, "session(s) first, then binned it");
 
-  // 4b. Mixed batch: the idle one goes, the live one comes back as skipped.
+  // 4b. A session pi never wrote a file for (created, nothing said yet) leaves no bin row: there is
+  // nothing on disk to keep, and nothing to restore.
+  ws.send(JSON.stringify({ type: "create", cwd: CWD }));
+  const fresh = await waitFor("session", (m) => m.state?.owned === true && m.sessionId !== liveId, 90000);
+  assert(fresh, "fresh live session created");
+  const freshId = fresh.sessionId;
+  const freshWait = waitFor("delete.result", () => true, 30000);
+  send({ type: "manage", action: "delete", ids: [freshId] });
+  const freshRes = await freshWait;
+  assert(freshRes?.removed?.includes(freshId), `empty live session removed (got ${JSON.stringify(freshRes)})`);
+  assert(freshRes?.released?.includes(freshId), "empty live session was released");
+  assert(!binIndex().some((it) => it.id === freshId), "no bin row for a session that never hit disk");
+  assert(!(await order()).includes(freshId), "empty live session left the list");
+  log("empty live delete: released, no bin row");
+
+  // 4b. A terminal's pi still refuses: its pid is not ours, so nothing here can stop it.
+  const fileD = mkSession("zz-manage-d", "终端里开着的会话", 1.5);
+  await until(async () => (await order()).includes("zz-manage-d"), 15000, "terminal-held session listed");
+  const lockD = path.join(STATE, "locks", "zz-manage-d.lock");
+  fs.mkdirSync(path.dirname(lockD), { recursive: true });
+  // 测试进程充当「终端里的 pi」：pid 是外来的，而且确实活着。
+  fs.writeFileSync(lockD, JSON.stringify({ pid: process.pid, at: Date.now() }));
+  const held = waitFor("delete.result", () => true, 8000);
+  send({ type: "manage", action: "delete", ids: ["zz-manage-d"] });
+  const refused = await held;
+  assert(
+    refused?.skipped?.some((s) => s.id === "zz-manage-d" && s.reason === "终端正在使用"),
+    `terminal lock still refuses (got ${JSON.stringify(refused)})`,
+  );
+  assert(!refused?.removed?.length, "nothing removed while the terminal holds it");
+  assert(fs.existsSync(fileD), "a terminal-held file is not moved");
+  // discover() 一直把「别人持锁」的文件排除在列表外（`filter((m) => !readLock(m.id))`）：那不是网页
+  // 能管的东西。锁一出现它就从列表消失，这里把这条既有语义显式断言下来。
+  assert(!(await order()).includes("zz-manage-d"), "a foreign lock hides it from discovery");
+  log("terminal-held delete refused:", refused.skipped[0].reason);
+
+  // 4c. Mixed batch: the idle one goes, the terminal-held one comes back as skipped.
   const mixed = waitFor("delete.result", (m) => m.removed?.length > 0, 8000);
-  send({ type: "manage", action: "delete", ids: [ids.c, liveId] });
+  send({ type: "manage", action: "delete", ids: [ids.c, "zz-manage-d"] });
   const report = await mixed;
   assert(report.removed.includes(ids.c), `idle session in the batch deleted (got ${JSON.stringify(report)})`);
-  assert(!report.removed.includes(liveId), "live session not deleted");
+  assert(!report.removed.includes("zz-manage-d"), "terminal-held session not deleted");
   const binC = path.join(STATE, "trash", `${ids.c}.jsonl`);
   assert(!fs.existsSync(fileC), "mixed batch moved the idle file out of the sessions dir");
   assert(fs.existsSync(binC), "mixed batch put the idle file in the bin");
-  assert((await order()).includes(liveId), "live session survived the mixed batch");
+  assert(fs.existsSync(fileD), "…and left the terminal-held one where it was");
   log("mixed batch: removed", report.removed.length, "skipped", report.skipped.length);
 
-  // 4c. Purging is the only irreversible step: the payloads are really unlinked.
+  // 4d. Once the terminal lets go, the same file goes too — the lock was the only thing holding it.
+  fs.unlinkSync(lockD);
+  const freed = waitFor("delete.result", () => true, 8000);
+  send({ type: "manage", action: "delete", ids: ["zz-manage-d"] });
+  const freedRes = await freed;
+  assert(freedRes.removed.includes("zz-manage-d"), `lock gone → delete goes through (got ${JSON.stringify(freedRes)})`);
+  assert(!fs.existsSync(fileD), "released-by-terminal file moved out of the sessions dir");
+
+  // 4e. Purging is the only irreversible step: the payloads are really unlinked.
   const purgeResult = waitFor("purge.result", (m) => m.purged?.length > 0, 8000);
   send({ type: "manage", action: "purge", ids: [] });
   const purged = await purgeResult;
   assert(purged.purged.includes(ids.c) && purged.purged.includes(ids.a), `purge reported ${JSON.stringify(purged)}`);
-  assert(!fs.existsSync(binC) && !fs.existsSync(binA), "purged payloads are gone from disk");
+  assert(purged.purged.includes(liveId) && purged.purged.includes("zz-manage-d"), "purge also took the released + terminal ones");
+  assert(!fs.existsSync(binC) && !fs.existsSync(binA) && !fs.existsSync(liveBin), "purged payloads are gone from disk");
   assert(!fs.existsSync(fileC) && !fs.existsSync(fileA), "…and did not come back to the sessions dir");
   assert(binIndex().length === 0, "bin index emptied");
   log("purge destroyed", purged.purged.length, "payloads");
@@ -263,8 +333,11 @@ try {
   await connect();
   now = await order();
   assert(now[0] === ids.b, `pinned survived restart (got ${now.map((x) => x.slice(-1)).join("")})`);
-  // The created session may be locked by its own still-running pi child, which discover() hides.
-  assert(!now.includes(ids.a) && !now.includes(ids.c), "deleted sessions stay deleted after restart");
+  // A live session is released before its file moves, so nothing here can still hold a lock.
+  assert(
+    !now.includes(ids.a) && !now.includes(ids.c) && !now.includes(liveId) && !now.includes(freshId) && !now.includes("zz-manage-d"),
+    "deleted sessions stay deleted after restart",
+  );
   assert(JSON.parse(fs.readFileSync(path.join(STATE, "manage.json"), "utf8")).pin[0] === ids.b, "pin still in manage.json");
   log("restart kept the arrangement");
 
