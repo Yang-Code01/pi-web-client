@@ -1737,7 +1737,13 @@ export const ja: Dict = {
   "扫描目录里没找到 agent 定义。": "スキャンしたフォルダに agent 定義が見つかりません。",
   "没有可列的 agent —— 先装 pi-subagents，或者往上面的目录里放 .md。":
     "表示できる agent がありません。pi-subagents をインストールするか、上のフォルダに .md を置いてください。",
-  "未钉": "未固定",
+  "已改": "変更",
+  "覆盖 model": "model の上書き",
+  "覆盖 thinking": "thinking の上書き",
+  "清空这一行的覆盖": "この行の上書きをクリア",
+  "{p1} 个，{p2} 处已覆盖": "{p1} 個、{p2} 件を上書き中",
+  "frontmatter 列只读；右边两列写的是 subagents.agentOverrides.<name>，优先级高于 frontmatter。":
+    "frontmatter 列は読み取り専用です。右の 2 列は subagents.agentOverrides.<name> に書き込み、frontmatter より優先されます。",
   "这个文件：{p1}": "このファイル：{p1}",
   "acp_delegate 由 billion-context 提供，参数写在上面的文件里 —— 和上面几片的 settings.json 不是同一个文件。保存只替换里面的 pi.subagents，providers 和会话数据原样保留。":
     "acp_delegate は billion-context 側の機能で、設定は上のファイルにあります（上の各セクションが書く settings.json とは別ファイル）。保存時は中の pi.subagents だけを置き換え、providers とセッションデータはそのまま残します。",

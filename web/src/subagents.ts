@@ -129,6 +129,34 @@ export function subagentsModelKnown(models: { provider: string; id: string }[], 
   return models.some((model) => model.provider === text.slice(0, at) && model.id === text.slice(at + 1));
 }
 
+/** `agentOverrides.<name>` 那一支；没写的那半边是 null（= 跟 frontmatter / 默认走）。 */
+export interface SubagentOverride {
+  model: string | null;
+  thinking: string | null;
+}
+
+/** 读一行的覆盖（磁盘上的值，不是输入框里的草稿）。 */
+export function subagentOverride(json: Record<string, unknown> | null, name: string): SubagentOverride {
+  const field = (key: "model" | "thinking"): string | null => {
+    const value = readSubagentsKey(json, `subagents.agentOverrides.${name}.${key}`);
+    return typeof value === "string" && value ? value : null;
+  };
+  return { model: field("model"), thinking: field("thinking") };
+}
+
+/** 这一行偏离了 agent 自己的 frontmatter：任一覆盖非空（「改」标记与行高亮都读它）。 */
+export function subagentOverridden(override: SubagentOverride): boolean {
+  return override.model !== null || override.thinking !== null;
+}
+
+/** 一行覆盖要写的两个键；空 = 删键，两个都空时 `agentOverrides.<name>` 整支随之消失。 */
+export function subagentOverridePatch(name: string, model: string, thinking: string): Record<string, SubagentsLeaf> {
+  return {
+    [`subagents.agentOverrides.${name}.model`]: model.trim() || null,
+    [`subagents.agentOverrides.${name}.thinking`]: thinking.trim() || null,
+  };
+}
+
 function sourceLabelOf(source: AgentSource): string {
   switch (source) {
     case "package":
@@ -151,17 +179,26 @@ export interface SubagentsBasicsHost {
 }
 
 /**
+ * 整页共用一个 patch：`mark()` 记改动，改回磁盘上的值就摘掉。`locked` 是同一套禁用条件
+ * （文件读不了 / 项目没被信任），agent 表的控件也照它禁用。
+ */
+export interface SubagentsEditor {
+  locked: boolean;
+  mark(entries: Record<string, SubagentsLeaf>): void;
+}
+
+/**
  * 「默认 / 行为 / 发现与扩展」三节一起画，三节共用一个 patch。
  *
  * 只写用户真的改过的键：值回到磁盘上原来那个就把它从 patch 里摘掉。空文本、空列表、「继承」
  * 一律是 `null`，桥侧 `applyPatch` 把它当删键。三种情况下控件与保存都不可用：文件读不了
  * （`view.error`）、项目没被信任、还没读到文件（只在外面画「读取中…」）。
  */
-export function paintSubagentsBasics(host: SubagentsBasicsHost, page: SubagentsPage): void {
+export function paintSubagentsBasics(host: SubagentsBasicsHost, page: SubagentsPage): SubagentsEditor | null {
   const view = page.view;
   if (!view) {
     for (const box of [host.defaults, host.behavior, host.discovery]) box.append(el("div", "empty", tr("读取中…")));
-    return;
+    return null;
   }
   const locked = Boolean(view.error) || (page.scope === "project" && !view.writable);
   const patch: Record<string, SubagentsLeaf> = {};
@@ -187,6 +224,7 @@ export function paintSubagentsBasics(host: SubagentsBasicsHost, page: SubagentsP
     }
     save.disabled = locked || !Object.keys(patch).length;
   };
+  const editor: SubagentsEditor = { locked, mark };
 
   const row = (box: HTMLElement, label: string, control: HTMLElement, hint?: string): void => {
     const line = el("label", "settings-row");
@@ -299,7 +337,7 @@ export function paintSubagentsBasics(host: SubagentsBasicsHost, page: SubagentsP
   listRow(host.discovery, "defaultSubagentOnlyExtensions", tr("逗号分隔；空 = 从文件里删掉这个键"));
   listRow(host.discovery, "modelScope.allow", tr("留空 = 不限制；特殊值 inherit / scoped"));
 
-  if (!scan) return;
+  if (!scan) return editor;
   if (!scan.installed) {
     host.discovery.append(el("div", "note", tr("这台机器上没有装 pi-subagents：包内的 agent 目录不存在。装好之后这一页会自动列出来。")));
   }
@@ -314,6 +352,7 @@ export function paintSubagentsBasics(host: SubagentsBasicsHost, page: SubagentsP
   if (!scan.directories.length) dirs.append(el("div", "subagents-hint", tr("一个目录都没扫到。")));
   host.discovery.append(dirs);
   for (const error of scan.errors) host.discovery.append(el("div", "note warn", error));
+  return editor;
 }
 
 export function paintSubagentsPage(body: HTMLElement, page: SubagentsPage): void {
@@ -397,53 +436,156 @@ export function paintSubagentsPage(body: HTMLElement, page: SubagentsPage): void
   };
 
   const footer = el("div", "subagents-foot");
-  paintSubagentsBasics(
+  const editor = paintSubagentsBasics(
     { defaults: section("default"), behavior: section("behavior"), discovery: section("discovery"), footer },
     page,
   );
   wrap.append(footer);
 
-  const agentsBox = section("agents");
-  agentsBox.append(el("h3", "", tr("每个子代理")));
+  paintSubagentsAgents(section("agents"), page, editor);
+
+  placeholder("advanced", tr("高级"));
+  paintAcpDelegateSection(section("acp"), page.acp);
+
+  body.append(wrap);
+}
+
+/**
+ * agent 表的右半边（#214）：每行只写 `agentOverrides.<name>.model|thinking`，左半边 frontmatter
+ * 列照旧只读 —— 覆盖改不动 agent 自己的 `.md`。改过的行整行高亮并带「改」；行尾「清空」把两个键
+ * 一起置 null，等于这一行回到 frontmatter。
+ */
+export function paintSubagentsAgents(box: HTMLElement, page: SubagentsPage, editor: SubagentsEditor | null): void {
+  const head = el("h3", "", tr("每个子代理"));
+  const count = el("span", "subagents-hint", "");
+  head.append(count);
+  box.append(head);
+
+  const scan = page.scan;
   if (!scan) {
-    agentsBox.append(el("div", "empty", tr("读取中…")));
-  } else if (!scan.agents.length) {
-    agentsBox.append(
+    box.append(el("div", "empty", tr("读取中…")));
+    return;
+  }
+  const agents = [...scan.agents].sort((a, b) => a.name.localeCompare(b.name));
+  if (!agents.length) {
+    box.append(
       el(
         "div",
         "subagents-hint",
         scan.installed ? tr("扫描目录里没找到 agent 定义。") : tr("没有可列的 agent —— 先装 pi-subagents，或者往上面的目录里放 .md。"),
       ),
     );
-  } else {
-    const table = document.createElement("table");
-    table.className = "subagents-agents";
-    const head = table.createTHead().insertRow();
-    for (const label of ["agent", tr("来源"), tr("模型"), tr("思考")]) {
-      head.append(el("th", "", label));
-    }
-    const tbody = table.createTBody();
-    const agents = [...scan.agents].sort((a, b) => a.name.localeCompare(b.name));
-    for (const agent of agents) {
-      const row = tbody.insertRow();
-      row.title = agent.path;
-      const name = row.insertCell();
-      name.className = "agent";
-      name.textContent = agent.name;
-      const source = row.insertCell();
-      source.append(el("span", `subagents-badge ${agent.source}`, sourceLabelOf(agent.source)));
-      const model = row.insertCell();
-      model.className = agent.model ? "fm" : "fm unset";
-      model.textContent = agent.model ?? tr("未钉");
-      const thinking = row.insertCell();
-      thinking.className = agent.thinking ? "fm" : "fm unset";
-      thinking.textContent = agent.thinking ?? tr("未钉");
-    }
-    agentsBox.append(table);
+    return;
   }
 
-  placeholder("advanced", tr("高级"));
-  paintAcpDelegateSection(section("acp"), page.acp);
+  const json = page.view?.json ?? null;
+  const locked = !editor || editor.locked;
 
-  body.append(wrap);
+  /** 七档 + 继承；值不认识时把磁盘上的那个值挂成「当前」，不假装它不存在。 */
+  const fillThinking = (select: HTMLSelectElement, current: string): void => {
+    select.append(new Option(tr("继承"), ""));
+    for (const level of THINKING_LEVELS) select.append(new Option(level, level));
+    if (current && !(THINKING_LEVELS as readonly string[]).includes(current)) {
+      select.append(new Option(tr("{p1}（当前）", { p1: current }), current));
+    }
+    select.value = current;
+  };
+
+  const table = document.createElement("table");
+  table.className = "subagents-agents";
+  const headRow = table.createTHead().insertRow();
+  for (const label of ["agent", tr("来源"), "frontmatter", tr("覆盖 model"), tr("覆盖 thinking"), ""]) {
+    headRow.append(el("th", "", label));
+  }
+  const tbody = table.createTBody();
+
+  const rows: { row: HTMLTableRowElement; chip: HTMLElement; clear: HTMLButtonElement; read(): SubagentOverride }[] = [];
+
+  /** 行高亮、「改」标记、清空按钮与标题里的计数都读当前输入框里的值（保存后重绘则读磁盘）。 */
+  const refresh = (): void => {
+    let overridden = 0;
+    for (const entry of rows) {
+      const on = subagentOverridden(entry.read());
+      entry.row.classList.toggle("changed", on);
+      entry.chip.hidden = !on;
+      entry.clear.disabled = locked || !on;
+      if (on) overridden += 1;
+    }
+    count.textContent = tr("{p1} 个，{p2} 处已覆盖", { p1: rows.length, p2: overridden });
+  };
+
+  for (const agent of agents) {
+    const current = subagentOverride(json, agent.name);
+    const row = tbody.insertRow();
+    row.title = agent.path;
+
+    const name = row.insertCell();
+    name.className = "agent";
+    name.append(document.createTextNode(agent.name));
+    const chip = el("span", "subagents-badge changed", tr("已改"));
+    name.append(chip);
+
+    const source = row.insertCell();
+    source.append(el("span", `subagents-badge ${agent.source}`, sourceLabelOf(agent.source)));
+
+    // agent 自己钉的值，只读；覆盖是盖在它上面的另一层。
+    const fm = row.insertCell();
+    fm.className = "fm";
+    for (const key of ["model", "thinking"] as const) {
+      const line = el("div", "fm-line");
+      line.append(el("span", "k", key), document.createTextNode(agent[key] ?? "—"));
+      fm.append(line);
+    }
+
+    const modelCell = row.insertCell();
+    const modelInput = el("input", "ns-input mono") as HTMLInputElement;
+    modelInput.type = "text";
+    modelInput.setAttribute("list", "subagents-models");
+    modelInput.value = current.model ?? "";
+    modelInput.placeholder = tr("继承");
+    modelInput.disabled = locked;
+    modelInput.classList.toggle("bad", !subagentsModelKnown(page.models, modelInput.value));
+    modelCell.append(modelInput);
+
+    const thinkingCell = row.insertCell();
+    const thinking = el("select", "ns-input") as HTMLSelectElement;
+    fillThinking(thinking, current.thinking ?? "");
+    thinking.disabled = locked;
+    thinkingCell.append(thinking);
+
+    const clearCell = row.insertCell();
+    const clear = el("button", "btn ghost subagents-clear", tr("清空")) as HTMLButtonElement;
+    clear.type = "button";
+    clear.title = tr("清空这一行的覆盖");
+    clearCell.append(clear);
+
+    const read = (): SubagentOverride => ({ model: modelInput.value.trim() || null, thinking: thinking.value || null });
+    const commit = (): void => {
+      // 两个键一起交：没改的那半与磁盘相同，mark() 会把它从 patch 里摘掉。
+      editor?.mark(subagentOverridePatch(agent.name, modelInput.value, thinking.value));
+      refresh();
+    };
+    modelInput.oninput = () => {
+      // 不在清单里的 id 只标红：网关新上的模型不该等这一页更新，保存也不拦。
+      modelInput.classList.toggle("bad", !subagentsModelKnown(page.models, modelInput.value));
+      commit();
+    };
+    thinking.onchange = commit;
+    clear.onclick = () => {
+      modelInput.value = "";
+      thinking.value = "";
+      modelInput.classList.remove("bad");
+      commit();
+    };
+    rows.push({ row, chip, clear, read });
+  }
+  refresh();
+  box.append(table);
+  box.append(
+    el(
+      "div",
+      "subagents-hint",
+      tr("frontmatter 列只读；右边两列写的是 subagents.agentOverrides.<name>，优先级高于 frontmatter。"),
+    ),
+  );
 }

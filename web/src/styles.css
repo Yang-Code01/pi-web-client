@@ -3678,9 +3678,22 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   text-align: left; font-size: 10.5px; font-weight: 400; letter-spacing: 0.05em; color: var(--faint);
   padding: 4px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap;
 }
-.subagents-sheet .subagents-agents th:nth-child(1) { width: 40%; }
+.subagents-sheet .subagents-agents th:nth-child(1) { width: 30%; }
+.subagents-sheet .subagents-agents th:nth-child(2) { width: 72px; }
+.subagents-sheet .subagents-agents th:nth-child(3) { width: 150px; }
 .subagents-sheet .subagents-agents td { padding: 3px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
 .subagents-sheet .subagents-agents tr:last-child td { border-bottom: 0; }
 .subagents-sheet .subagents-agents td.agent { font: 11.5px var(--mono); color: var(--text); white-space: nowrap; }
 .subagents-sheet .subagents-agents td.fm { font: 11px var(--mono); color: var(--dim); white-space: nowrap; }
 .subagents-sheet .subagents-agents td.fm.unset { color: var(--faint); }
+/* #214：右半边可编辑 —— frontmatter 列两行只读事实，覆盖列一组窄控件 */
+.subagents-sheet .subagents-agents td.fm .fm-line { display: flex; gap: 5px; }
+.subagents-sheet .subagents-agents td.fm .k { color: var(--faint); }
+.subagents-sheet .subagents-agents input.ns-input,
+.subagents-sheet .subagents-agents select.ns-input { padding: 4px 6px; font-size: 11.5px; }
+/* 覆盖改动了 frontmatter 的行：整行淡淡一层底色 + 名字后那枚「改」 */
+.subagents-sheet .subagents-agents tr.changed td { background: var(--accent-bg); }
+.subagents-sheet .subagents-badge.changed { margin-left: 5px; color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
+/* .subagents-badge 的 display 会盖掉 UA 的 [hidden]，得自己收回 */
+.subagents-sheet .subagents-badge[hidden] { display: none; }
+.subagents-sheet .subagents-clear { font-size: 10.5px; padding: 2px 6px; white-space: nowrap; }

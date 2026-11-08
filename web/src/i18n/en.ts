@@ -1737,7 +1737,13 @@ export const en: Dict = {
   "扫描目录里没找到 agent 定义。": "No agent definitions in the scanned folders.",
   "没有可列的 agent —— 先装 pi-subagents，或者往上面的目录里放 .md。":
     "No agents to list — install pi-subagents, or drop .md files into the folders above.",
-  "未钉": "Not pinned",
+  "已改": "changed",
+  "覆盖 model": "Override model",
+  "覆盖 thinking": "Override thinking",
+  "清空这一行的覆盖": "Clear this row's override",
+  "{p1} 个，{p2} 处已覆盖": "{p1} agents, {p2} overridden",
+  "frontmatter 列只读；右边两列写的是 subagents.agentOverrides.<name>，优先级高于 frontmatter。":
+    "The frontmatter column is read-only; the two columns on the right write subagents.agentOverrides.<name>, which wins over frontmatter.",
   "这个文件：{p1}": "This file: {p1}",
   "acp_delegate 由 billion-context 提供，参数写在上面的文件里 —— 和上面几片的 settings.json 不是同一个文件。保存只替换里面的 pi.subagents，providers 和会话数据原样保留。":
     "acp_delegate comes from billion-context; its settings live in the file above, not in the settings.json the sections above write. Saving only replaces pi.subagents inside it and leaves providers and session data untouched.",
