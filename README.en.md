@@ -134,7 +134,7 @@ All variables, defaults and meanings are listed once, in the Chinese README: [`R
 ## Boundaries (the important ones)
 
 - **The writer is exclusive: one session, one writer at a time.** Before taking a session over, the terminal side must have exited: pi does not lock session files, and two processes writing the same `.jsonl` produce two sibling branches that cannot see each other. The bridge adds a guard rail — refuse to take over a file written within the last 20 seconds (no override offered).
-- Connections over the public tunnel are **read-only** by default: sending a message or approving requires re-entering the passphrase (step-up, 10 minutes).
+- Connections over the public tunnel are **read-only** by default: sending a message or approving requires re-entering the passphrase (step-up, 1 day; D186).
 - Session files are append-only with no cross-process lock, so the bridge uses its own `state/locks/<id>.lock` to keep exactly one writer per session.
 - The LAN page speaks plaintext HTTP, so anyone on the same network can sniff it; identity is a per-machine `nodeId` with no signatures; v1 has no group chat and the phone cannot be a sender (peer is a Node process).
 
