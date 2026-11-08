@@ -423,6 +423,8 @@ export const en: Dict = {
   "回到会话列表": "Back to sessions",
   "回到会话的工作目录 {p1}": "Go to the session working directory {p1}",
   "回到底部": "Back to bottom",
+  "载入更早": "Load earlier",
+  "载入中…": "Loading…",
   "回到表单": "Back to the form",
   "在当前目录下新建一个文件夹": "New folder in this directory",
   "在当前目录下新建文件夹": "Create a folder in the current directory",

@@ -607,7 +607,19 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .chat-empty { display: grid; gap: 8px; justify-items: center; text-align: center; padding: 24px; }
 .chat-empty .chat-empty-title { color: var(--dim); font-size: 14px; }
 .chat-empty .chat-empty-hint { color: var(--faint); font-size: 12px; }
-.chat-scroll { padding: 16px 16px 8px; display: flex; flex-direction: column; gap: 12px; }
+/* #220: 翻页后的 scrollTop 是手算回填的（按节点锚定）。浏览器的 scroll anchoring 会在同一帧里再
+   改一遍 scrollTop，两边互相拽（Safari 根本没有这个特性，所以也不能靠它）—— 关掉，锚定只由
+   ChatView.prepend() 说了算。 */
+.chat-scroll { padding: 16px 16px 8px; display: flex; flex-direction: column; gap: 12px; overflow-anchor: none; }
+/* #220: 顶端那一行「载入更早」。它是列表的第一块内容 —— 翻出来的老内容插在它**下面**，不是顶上。 */
+.chat-more { display: flex; justify-content: center; }
+.chat-more[hidden] { display: none; }
+.chat-more .more-btn {
+  padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px; background: transparent;
+  color: var(--dim); font-size: 12px; line-height: 1.4; cursor: pointer;
+}
+.chat-more .more-btn:hover:not(:disabled) { color: var(--fg); border-color: var(--dim); }
+.chat-more .more-btn:disabled { cursor: default; opacity: .6; }
 /* 这个列容器有确定高度且 overflow-y:auto；子项若自带 overflow:hidden（如 .fcard），
    min-height:auto 会退化成 0，于是长会话里被 flex 压缩成 2px 细线。统一禁止收缩。 */
 .chat-scroll > * { flex: 0 0 auto; min-width: 0; }
