@@ -1738,4 +1738,17 @@ export const en: Dict = {
   "没有可列的 agent —— 先装 pi-subagents，或者往上面的目录里放 .md。":
     "No agents to list — install pi-subagents, or drop .md files into the folders above.",
   "未钉": "Not pinned",
+  "继承": "Inherit",
+  "没有单独覆盖的子代理都用这里的值": "Subagents without their own override use these values",
+  "可手输 provider/id；空 = 继承": "You can type provider/id; empty = inherit",
+  "裸 id 时用于消歧": "Used to disambiguate a bare id",
+  "更高的档位会被截断": "Higher levels are clamped down",
+  "一律不传 thinking": "Never pass thinking at all",
+  "不加载包内的子代理定义": "Do not load bundled agent definitions",
+  "未写该字段时默认继承": "Inherit by default when the field is absent",
+  "项目 agents / overrides 的锚点": "Anchor for project agents / overrides",
+  "逗号分隔；空 = 从文件里删掉这个键": "Comma-separated; empty = delete this key from the file",
+  "留空 = 不限制；特殊值 inherit / scoped": "Empty = no restriction; special values inherit / scoped",
+  "只保存你改过的键；清空一个字段 = 从文件里删掉它。":
+    "Only the keys you changed are saved; clearing a field deletes it from the file.",
 };
