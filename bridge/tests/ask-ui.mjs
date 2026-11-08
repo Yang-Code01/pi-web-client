@@ -206,6 +206,10 @@ try {
   }));
   await page.waitForSelector(".queue .ask-slot .ask-opts", { timeout: ASK_WAIT });
   check("a question re-opens the collapsed column by itself", !(await queueHidden()), "");
+  const autoW = await page.evaluate(
+    () => parseFloat(document.querySelector(".main")?.style.getPropertyValue("--queue-w") ?? "") || 0,
+  );
+  check("and re-opens it at a readable width", autoW >= 340, `${autoW}px`);
   const free = page.locator(".composer-input textarea");
   await free.fill("随便写点");
   await free.press("Enter");
@@ -256,12 +260,17 @@ try {
   await page.waitForSelector(".composer .ask-strip", { timeout: 3000 });
   const stripped = (await page.locator(".composer .ask-slot").count()) === 0;
   check("scrolling up folds the panel into one line", stripped);
+  // D190 决定 5：收起不动草稿。这里验输入框里已经打了一半的字。
+  const draft = page.locator(".composer-input textarea");
+  await draft.fill("草稿还在");
   await shot("folded");
   // 上滑那一下把重新跟流的闸门压到 300ms 后（`holdFollow`），人的手不会停在这儿；这里等一下再往下滚。
   await sleep(350);
   await page.mouse.wheel(0, 4000);
   await page.waitForSelector(".composer .ask-slot .ask-head", { timeout: 3000 });
   check("scrolling back to the bottom unfolds it", (await page.locator(".composer .ask-strip").count()) === 0);
+  check("and the half-typed draft survived the fold", (await draft.inputValue()) === "草稿还在", await draft.inputValue());
+  await draft.fill("");
   await page.locator(".composer .ask-head .btn.ghost", { hasText: "收起" }).click();
   const manualStrip = await page.locator(".composer .ask-strip").isVisible();
   await sleep(350);

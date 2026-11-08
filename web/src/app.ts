@@ -1622,6 +1622,8 @@ export class App {
         this.asks = [...this.asks.filter((a) => a.id !== ask.id), ask];
         this.askFolded = false;
         this.askAutoFolded = false;
+        // 新的这一份是新的「这一次」：上一道题时用户收起过右栏，不该连带着压下这一道。
+        this.askDockMuted = false;
         this.renderAsks();
         this.renderQueue();
         this.renderTabs();
@@ -11252,13 +11254,6 @@ export class App {
 
   // ---------------------------------------------------------------- asks
   /**
-   * Never a modal, and — since D189 — usually not the composer either: on a wide screen the
-   * question is answered in the 「需要你」 column, so the transcript keeps its height. Narrow
-   * screens and a collapsed column still get the panel above the textarea, and typing in the
-   * textarea answers either way. The user can wander off to other sessions and come back (the
-   * bridge re-sends pending asks on subscribe); nothing pops up on its own.
-   */
-  /**
    * 输入框的占位文案。D178（推翻 D122 第 3 条）：pi 还在启动时输入框照常可用 —— 桥会把消息收下、
    * 等 pi 起来再交出去，所以「Enter 发送」在启动期也是真的。所有写 placeholder 的地方都走这里。
    */
@@ -11292,8 +11287,10 @@ export class App {
    */
   private syncAskDock(): void {
     const main = this.els.main;
-    const want = this.askDock();
     const open = this.askWanted() && this.collapsed.queue && !this.askAutoOpened;
+    // 这一趟刚把它打开的话，宽度要在同一趟写进去：否则它先按 CSS 默认的 300px 露一下，
+    // 要等下一次渲染才跳到 384。
+    const want = this.askDock() || open;
     const current = main.style.getPropertyValue("--queue-w").trim();
     const target = `${this.askWidthPx()}px`;
     // 从没写过宽度时只加宽：用户自己拖到 600px 的栏，不该因为来了一道题被压回 384。
@@ -11338,11 +11335,16 @@ export class App {
     unpin();
   }
 
+  /**
+   * 一块面板两个家（D189 / D190）：宽屏答在「需要你」右栏，会话保持原高度；窄屏与收起的右栏
+   * 得到输入框上方的面板，收起时只剩一行（`askStrip`）。两种位置都能直接打字作答。用户去别的
+   * 会话转一圈回来，桥会重发待答的题目；到货时右栏自己打开一次，除此之外不弹任何东西。
+   */
   private renderAsks(): void {
     const host = this.els.composerHost;
     host.querySelector(".ask-slot, .ask-strip")?.remove();
     // 槽一删，寄居在里面的 ⚡ 按钮也跟着没了（后面的分支还可能提前 return），先把它捞出来。
-    this.placeFailCta();>>>>>>> aeb00f1 (feat(ask): fold the panel into one line while reading up top (D190))
+    this.placeFailCta();
     this.syncAskDock();
     this.fillHintStatus();
     if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
@@ -11377,7 +11379,7 @@ export class App {
     const q = ask.questions[st.active];
     const slot = el("div", "ask-slot");
     const head = el("div", "ask-head");
-    const more = this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
+    const more = place === "composer" && this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
     head.append(el("span", "t", tr("{p1}{p2}", { p1: total > 1 ? tr("需要你回答 · {p1} 题", { p1: total }) : tr("需要你回答"), p2: more })));
     if (place === "composer") {
       const fold = el("button", "btn ghost", tr("收起"));
@@ -11388,10 +11390,7 @@ export class App {
       };
       head.append(fold);
     }
-    const cancel = el("button", "btn ghost danger-text", tr("取消提问"));
-    cancel.title = tr("告诉模型你不回答这次提问");
-    cancel.onclick = () => this.answerAsk(ask, null);
-    head.append(cancel);
+    head.append(this.askCancelBtn(ask));
     slot.append(head);
 
     if (total > 1) {
@@ -11460,11 +11459,16 @@ export class App {
       this.askAutoFolded = false;
       this.renderAsks();
     };
+    const cancel = this.askCancelBtn(ask);
+    strip.append(open, cancel);
+    return strip;
+  }
+
+  private askCancelBtn(ask: AskRequest): HTMLElement {
     const cancel = el("button", "btn ghost danger-text", tr("取消提问"));
     cancel.title = tr("告诉模型你不回答这次提问");
     cancel.onclick = () => this.answerAsk(ask, null);
-    strip.append(open, cancel);
-    return strip;
+    return cancel;
   }
 
   /**

@@ -1713,7 +1713,6 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 }
 .ask-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .ask-head .t { font-size: 12px; font-weight: 500; flex: none; color: var(--accent); }
-.ask-head .m { flex: 1; min-width: 0; font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ask-head .btn { flex: none; padding: 4px 8px; font-size: 12px; }
 .ask-head .btn:first-of-type { margin-left: auto; }
 .ask-head .danger-text { color: var(--danger); }
@@ -1759,7 +1758,6 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
    scrolls, so the panel drops its own height caps and lets the column be the only scroller. */
 .queue .ask-slot .ask-prompt,
 .queue .ask-slot .ask-opts { max-height: none; overflow: visible; }
-.queue .ask-slot .ask-head .btn:first-of-type { margin-left: auto; }
 .queue .ask-slot .ask-opt { padding: 8px 10px; }
 .queue .ask-slot .ask-foot .btn { width: 100%; }
 

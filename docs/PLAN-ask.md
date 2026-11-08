@@ -87,7 +87,7 @@ POST /api/ask   x-pi-web-token: <token>
 
 - 桥：`bridge/src/sessions.ts`（`ask/answerAsk/cancelAsk/clearAsks`、`askToken`、`snapshot().asks`）、`bridge/src/index.ts`（`POST /api/ask` 闸前 + WS `answer` 闸后 + `ask` → push）。
 - 世界：`web/src/{types,app,chat}.ts` + `styles.css`；扩展：`~/.pi/agent/extensions/{question,questionnaire}.ts`（`.bak.20261031-031735`）。
-- 测试：`npm run test:ask`（unit + e2e，13 项）、`npm run test:ask:ui`（Chromium，28 项）、截图 `.scratch/shots/ask-*.png`。
+- 测试：`npm run test:ask`（unit + e2e，13 项）、`npm run test:ask:ui`（Chromium，33 项）、截图 `.scratch/shots/ask-*.png`。
 - 决定记录：`DECISIONS.md` D47；面板住哪见 D189；收起后的形态见 D190。
 
 ## 验收清单
