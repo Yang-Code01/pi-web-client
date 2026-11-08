@@ -35,6 +35,7 @@ import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } f
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { paintSubagentsPage, type SubagentScan } from "./subagents.ts";
+import type { AcpDelegatePatch, AcpDelegateView } from "./subagents-acp.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
@@ -295,6 +296,15 @@ export class App {
   private subagentsScan: SubagentScan | null = null;
   private subagentsScanFor = "";
   private subagentsScope: "global" | "project" = "global";
+  /**
+   * #215 acp_delegate 那一半：写的是 billion-context 的配置文件，与上面 settingsView 无关。
+   * `subagentsAcpLoadError` 是「连文件都没读到」（RPC 自己失败），与回包里的 `view.error`
+   * （文件读不懂）分开存，前者时整片只剩错误 + 重试。
+   */
+  private subagentsAcp: AcpDelegateView | null = null;
+  private subagentsAcpLoadError: { path: string; message: string } | null = null;
+  private subagentsAcpSaveError: string | null = null;
+  private subagentsAcpSaving = false;
   /**
    * D161: 设置面板底部那块「把现有会话也改掉」。`permDefaultsFor` 是已经问过桥的 cwd key
    * （空串 = 全局页），这样重绘不会一直重问同一个问题。
@@ -1978,6 +1988,30 @@ export class App {
         const scan = msg as SubagentScan;
         if ((scan.cwd ?? "") !== (this.session?.cwd ?? "")) break;
         this.subagentsScan = scan;
+        if (this.sheetKind === "settings" && this.settingsTab === "subagents") this.paintSettings();
+        break;
+      }
+      case "subagents.acp": {
+        this.subagentsAcp = {
+          path: String(msg.path ?? ""),
+          exists: Boolean(msg.exists),
+          error: msg.error == null ? null : String(msg.error),
+          config: (msg.config ?? { enabled: null, maxDepth: null, maxConcurrent: null, thinkingLevel: null }) as AcpDelegateView["config"],
+        };
+        this.subagentsAcpLoadError = null;
+        this.subagentsAcpSaving = false;
+        this.subagentsAcpSaveError = null;
+        if (msg.saved) this.flashSettings(tr("acp_delegate 已保存（写的是 billion-context 的配置文件，对新会话生效）"));
+        if (this.sheetKind === "settings" && this.settingsTab === "subagents") this.paintSettings();
+        break;
+      }
+      case "subagents.acp.error": {
+        const path = String(msg.path ?? "");
+        const message = String(msg.message ?? tr("读不了这个文件"));
+        // 还没拿到任何视图 = 读就失败了，整片给错误 + 重试；已经有视图 = 刚保存失败，保住表单内容。
+        if (!this.subagentsAcp) this.subagentsAcpLoadError = { path, message };
+        else this.subagentsAcpSaveError = message;
+        this.subagentsAcpSaving = false;
         if (this.sheetKind === "settings" && this.settingsTab === "subagents") this.paintSettings();
         break;
       }
@@ -8427,7 +8461,10 @@ export class App {
         this.flashSettings("");
         if (id === "runtime") this.socket.send({ type: "runtime.stats" });
         if (id === "passphrase") this.askPassphrase();
-        if (id === "subagents") this.requestSubagentsAgents();
+        if (id === "subagents") {
+          this.requestSubagentsAgents();
+          this.requestSubagentsAcp();
+        }
         this.paintSettings();
       };
       tabs.append(b);
@@ -8461,6 +8498,15 @@ export class App {
     this.socket.send({ type: "subagents.agents", cwd: cwd || null });
   }
 
+  /**
+   * `#215`：acp_delegate 那一半写的是 billion-context 的配置文件，和 settings.json 不同一份，
+   * 所以进 tab 时单独问一次；页内的 global / project 开关对它不生效。
+   */
+  private requestSubagentsAcp(): void {
+    this.subagentsAcpLoadError = null;
+    this.socket.send({ type: "subagents.acp.get" });
+  }
+
   private paintSubagents(body: HTMLElement): void {
     const cwd = this.session?.cwd ?? "";
     const scope = this.subagentsScope === "project" && cwd ? "project" : "global";
@@ -8486,6 +8532,20 @@ export class App {
         this.act(() =>
           this.socket.send({ type: "settings.set", scope, ...(scope === "project" ? { cwd: ready.cwd } : {}), patch }),
         );
+      },
+      acp: {
+        view: this.subagentsAcp,
+        loadError: this.subagentsAcpLoadError,
+        saving: this.subagentsAcpSaving,
+        saveError: this.subagentsAcpSaveError,
+        // 对外到公网时写文件要过 step-up；本机 / 局域网 act() 直接跑。
+        onSave: (patch: AcpDelegatePatch) => {
+          this.subagentsAcpSaving = true;
+          this.subagentsAcpSaveError = null;
+          this.act(() => this.socket.send({ type: "subagents.acp.set", patch }));
+          this.paintSettings();
+        },
+        onReload: () => this.requestSubagentsAcp(),
       },
     });
   }
