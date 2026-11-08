@@ -3058,3 +3058,25 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 
 **验证：** `npm run test:bgruns`（`bridge/tests/bgruns-unit.mjs` 新增 workflow 段）：`details` 抄真实形状（无 agent/task、无 outputFile）→ agent `researcher`、任务 `1. … 2. …`；`events.jsonl` 落盘前 `hasLog` false，落盘后 `prune()` 补上，时间线含 `workflow started` / `task-1 researcher started` / `task-1 completed`，不含 20 KB 的 `result.output`（`XXXX`）也不含 trace 快照（`operation`）；写 `status.json`（`state:"complete"` + 两段 `workflow.value.children`）→ `prune()` 翻 `done`、`hasOut` true、`readLog().out` 是 `## task-1 · researcher` / `## task-2 · researcher` 两段；脚本式（`{workflow:true}`、无 `args.tasks`）→ agent `planner`、任务 `拆一下这个需求`；`events.jsonl` 在 `prune()` 之前写出来 → `readLog()` 直接接上（不用等滴答）；派活那刻清单为空、之后写 `workflow-receipt.json` → `prune()` 把 agent / task 补回 `planner` / `1. … 2. …`；parallel 只给 `args.tasks` → 逐条列出（决定 5 的副作用，明写）。原有 acp / 单 run / parallel / D172 幽灵任务 / 路径白名单用例全部不回归；`npm --prefix bridge run typecheck`。
 
+
+## D186 前台派活的子代理（`async:false`）也算一张卡（无票，用户报的；派了 5 个却看不见任何提示）
+
+**问题：** 用户让模型「启动五个子代理去查斯诺克世锦赛赛程」，模型调的是 `subagent({workflow:"parallel", async:false, args:{tasks:[…5 条]}})` —— 脚本看着像后台，其实是**前台**（`async:false`）。页面上只有操作行的 `▸ 3 个操作 · bash ×2 · subagent ×1 · 运行中`：聊天下方没有提示条、详情面板里也什么都没有，用户以为「只启动了一个」。可 5 个孩子全都起来了 —— 每个 `async-subagent-runs/<runId>/status.json` 里都写着 `parentWorkflowRunId: "call_01_…"`（就是派活那次工具调用的 id）与 `workflowKey: "task-1"…"task-5"`，父 run 自己却**没有目录**。根因全在 `bridge/src/bgruns.ts`：建卡三闸里的「结构性开始信号」是 `d.kind === "delegate" || typeof d.asyncDir === "string"`，前台 workflow 两样都没有（结果文本是 `Workflow completed. Return: {…}`，没有 `Async workflow [uuid]`）；而 `tool_execution_start` 那刻手里明明有 `ev.args` 与 `ev.toolCallId`，却只发 ws 不建卡。
+
+**决定：**
+
+1. **在工具开始时立卡**：`noteToolStart(tool, args, callId)`，在 `bridge/src/sessions.ts` 的 `tool_execution_start` 里调用。三个条件：`tool === "subagent"` 且 callId 过 `ID_OK`；`args.action` 不是字符串（`status` / `guide` 是查询，不是派活）；**是 workflow 或 `tasks.length >= 2`** —— 单跑的前台调用不立卡，那种情况会话本来就没 settle，操作行已经在显示它了。
+2. **`agent` / `task` 直接读模型的 `args`**（`args.tasks[].task`，多个孩子逐条编号），不读盘：派活那刻就有，比后台那条 receipt 回填还准（那边只有截断过的 `sessionName`）。
+3. **过程记录 = 孩子各自的 `status.json` 现拼**：`fgChildren(parentId, since)` 扫 `tmpdir()` 下的 `pi-subagents-*` 根，按 `parentWorkflowRunId === callId` 认领，`status.json` 的 mtime 早于判活时刻的一律跳过；`fgTimeline()` 把 `startedAt` / `endedAt` 投影成 `task-1 researcher started` / `task-1 researcher complete` 两行。`hasLog` 用「已经扫到孩子」判，不指望一份不存在的日志文件。
+4. **最终答复从结果文本里取**：工具结束是唯一完成信号，`foregroundOutput()` 用 `jsonAfter(text, "Return: ")` 手写括号配平（跳过字符串与转义）取 `children[].output`，再按 `## <key> · <agent>` 分段；`tool_execution_end` 多传 `callId` 与 `isError`，前台那张卡在同一个调用里收掉。
+5. **文案去掉「后台」**：弹层标题「后台子代理」→「子代理」，空态「这个会话没有在跑的后台子代理。」→「这个会话没有子代理在跑。」（前台也在里面了，`en` / `ja` 同步）。事件/时间线的英文保持 runner 原样，不进 i18n。
+
+**代价 / 可改：**
+
+- **每 30 秒扫一遍 `tmpdir()` 下的所有 `pi-subagents-*` 根**（本机 89 个 `async-subagent-runs` 条目）：每个 `status.json` parse 一次，量级上没问题；真嫌多可以让 runner 落一份索引文件。
+- **只有 started / complete 两个点**：孩子内部的步骤（bash 调用、read 文件）看不到 —— 要细看得读孩子的 `transcriptPath`，那条路径不在这张卡的白名单里。
+- **单跑前台不立卡**：派**一个**子代理仍然没有提示条（会话在等它，操作行已经说明了）。要改就删掉 `kids.length < 2` 那道闸。
+- **时间以「派活那刻」为锚**：孩子若比它早落盘（时钟粒度 / 派发顺序），钳到 `0.0s` 而不是负数。
+- **`id` 是工具调用 id**（`call_…`），没有 `runId` 可以给人去 `subagent({action:"resume"})`；前台本来也 resume 不了。
+
+**验证：** `npm run test:bgruns` 新增「前台派活（D186）」段：`args` 形状抄真实调用 → 立卡即有 `agent: researcher` / 任务两行编号 / `view().n === 1`、`hasLog` 先 false；两个孩子 `status.json`（带 `parentWorkflowRunId`）落盘后 `prune()` → `hasLog` true、时间线含 `task-1 researcher started` / `task-1 researcher complete` / `task-2 researcher started`、不出负号；`noteToolEnd(…, callId)` → `done` + `hasOut` true + `out` 是 `## task-1 · researcher` / `## task-2 · researcher` 两段；单跑与 `action:"status"` 都不立卡。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1658 keys × 3 langs`）。
