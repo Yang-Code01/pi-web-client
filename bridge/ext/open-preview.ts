@@ -24,6 +24,18 @@ interface OpenReply {
   text?: string;
 }
 
+/**
+ * 已知 reason 只给一句**指令**（下一步做什么）；解释一律用桥回来的 `text`。桥的英文码
+ * （`tunnel` / `non-loopback` / `bad-token`）不原样吐给模型，它们的中文 `text` 优先。
+ */
+const INSTRUCTIONS: Record<string, string> = {
+  path: "把要打开的文件路径写清楚再试。",
+  "no-page": "把路径写出来告诉用户，等他打开这个会话后再试。",
+  "untrusted-path": "把文件放到会话目录里再试，或者直接把路径写出来。",
+  declined: "用户选择留在编辑器里；等他处理完未保存的改动再打开。",
+  "no-ack": "把路径写出来告诉用户。",
+};
+
 async function postOpen(filePath: string): Promise<OpenReply> {
   const base = process.env.PI_WEB_LOOPBACK;
   const token = process.env.PI_WEB_LOOPBACK_TOKEN;
@@ -32,6 +44,8 @@ async function postOpen(filePath: string): Promise<OpenReply> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ token, path: filePath }),
+    // 桥等页面回执，最长 15 秒；这里比它短就不能算「没回应」。5 秒是给这条回环请求自己的兜底。
+    signal: AbortSignal.timeout(5000),
   });
   const body = (await res.json().catch(() => ({}))) as any;
   if (!res.ok) {
@@ -48,7 +62,7 @@ const openPreviewTool = {
   name: "open_preview",
   label: "在网页里打开文件",
   description:
-    "在用户正在看的网页客户端里，用预览面板打开一个文件（文档、图片、表格、代码都行），标题就是文件名。用户要看的、或者你要给他指出来的文件，用它比贴路径更直接。注意：只有用户此刻正打开着这个会话时才能打开；返回 ok:false / no-page 就说明没有页面在看，此时不要当成打开了 —— 把路径写出来告诉用户即可。",
+    "在用户正在看的网页客户端里，用预览面板打开一个文件（文档、图片、表格、代码都行），标题就是文件名。用户要看的、或者你要给他指出来的文件，用它比贴路径更直接。注意：只有用户此刻正打开着这个会话时才能打开；`ok:false` 时看 `reason`：`no-page` = 没有页面在看这个会话，`untrusted-path` = 文件不在会话目录里、会话里也没提过，`declined` = 用户在未保存提示里选了留下，`no-ack` = 页面没回应 —— 这几种都别当成打开了，把路径写出来告诉用户。",
   promptSnippet: "open_preview(path) → 让网页的预览面板打开这个文件（没有页面在看这个会话时会失败）",
   parameters: {
     type: "object",
@@ -65,18 +79,22 @@ const openPreviewTool = {
     try {
       reply = await postOpen(target);
     } catch (err: any) {
-      return textResult(`没打开：${String(err?.message ?? err)}`, { ok: false, reason: "channel" });
+      // 超时也是 channel：连不上 / 不回应是同一类事，别把 `TimeoutError` 这种英文扔给模型。
+      const timedOut = err?.name === "TimeoutError" || err?.name === "AbortError";
+      const why = timedOut ? "网页这边 5 秒没有回应。" : String(err?.message ?? err);
+      return textResult(`没打开：${why}`, { ok: false, reason: "channel" });
     }
     if (reply.ok) {
       return textResult(`已在网页里打开「${reply.name ?? target}」。`, { ok: true, path: reply.path, name: reply.name });
     }
-    if (reply.reason === "no-page") {
-      return textResult(`没有打开：用户现在没有在看这个会话（网页那边没有打开的页面）。把路径告诉用户，等他打开会话后再试。`, { ok: false, reason: "no-page" });
-    }
-    if (reply.reason === "untrusted-path") {
-      return textResult(`没有打开：这个路径不在会话目录里，会话里也没提到过。把文件放到会话目录里再试，或者直接把路径写出来。`, { ok: false, reason: "untrusted-path" });
-    }
-    return textResult(`没有打开（${reply.reason ?? "unknown"}）${reply.text ? `：${reply.text}` : "。"}`, { ok: false, reason: reply.reason });
+    // 解释一律用桥回来的 `text`，这里只补一句「接下来做什么」（#224 复审：同一句话不能有三个作者）。
+    const reason = String(reply.reason ?? "");
+    const detail = String(reply.text ?? "").trim();
+    const instruction = INSTRUCTIONS[reason] ?? "";
+    const said = [detail, instruction]
+      .filter(Boolean)
+      .join(detail && !/[。！？]$/.test(detail) && instruction ? "。" : "");
+    return textResult(`没有打开：${said || "原因不明，把路径写出来告诉用户。"}`, { ok: false, reason: reply.reason });
   },
 };
 
