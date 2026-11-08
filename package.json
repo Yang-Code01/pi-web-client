@@ -19,6 +19,7 @@
     "test:rpc": "node bridge/tests/write-after-end.mjs",
     "test:ask": "node --experimental-transform-types bridge/tests/ask-unit.mjs && node bridge/tests/ask-e2e.mjs",
     "test:ask:ui": "node bridge/tests/ask-ui.mjs",
+    "test:preview": "node bridge/tests/preview-tool.mjs && node --experimental-transform-types bridge/tests/open-preview-unit.mjs",
     "test:scratch": "node bridge/tests/scratch-dirs.mjs && node bridge/tests/scratch-chat.mjs",
     "test:scratch:ui": "node bridge/tests/scratch-ui.mjs",
     "test:pillbar": "node --experimental-transform-types web/tests/pillbar-unit.mjs",
@@ -43,13 +44,20 @@
     "test:done": "node bridge/tests/done-persist.mjs",
     "test:skillblock": "node bridge/tests/skill-block.mjs",
     "test:lessons": "node --experimental-transform-types bridge/tests/lessons-unit.mjs",
+    "test:hint": "node bridge/tests/hint-spawn.mjs",
     "test:rules": "node --experimental-transform-types web/tests/rules-unit.mjs && node --experimental-transform-types bridge/tests/rules-unit.mjs",
     "test:probes": "node web/tests/probes-unit.mjs",
     "probe:workspace": "node probes/run-all.mjs",
+    "probe:preview": "node probes/preview-open.mjs",
+    "test:history": "node --experimental-transform-types bridge/tests/history-page-unit.mjs",
+    "test:history:ui": "node bridge/tests/history-paths-ui.mjs",
+    "test:loadolder:ui": "node bridge/tests/history-ui.mjs",
     "test:tail": "node --experimental-transform-types bridge/tests/tail-read-error.mjs",
     "test:stateguard": "node --experimental-transform-types bridge/tests/state-read-guard.mjs",
     "test:githist": "node --experimental-transform-types bridge/tests/git-history-unit.mjs",
-    "test:githist:ui": "node bridge/tests/git-history-ui.mjs"
+    "test:githist:ui": "node bridge/tests/git-history-ui.mjs",
+    "test:subagents": "node --experimental-transform-types bridge/tests/subagents-unit.mjs && node --experimental-transform-types bridge/tests/subagents-basics-unit.mjs && node --experimental-transform-types bridge/tests/subagents-overrides-unit.mjs && node --experimental-transform-types bridge/tests/subagents-advanced-unit.mjs && node --experimental-transform-types bridge/tests/acpdelegate-unit.mjs",
+    "test:subagents:ui": "node bridge/tests/subagents-overrides-ui.mjs && node bridge/tests/acp-delegate-ui.mjs && node bridge/tests/subagents-advanced-ui.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

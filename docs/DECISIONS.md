@@ -284,6 +284,8 @@
 
 **可改：** 想让「新会话默认允许提问」变成开关、或把抽屉改成行内展开（不遮住会话），都只动 `web/src/app.ts` 的 `openAskSheet` + `styles.css` 的 `.ask-sheet`。
 
+**#224 起（预备重构）：** 这份凭据不再只给「问用户」用，名字跟着改成中性的回环通道 —— env 是 `PI_WEB_LOOPBACK`（回环 origin，不是某个端点）+ `PI_WEB_LOOPBACK_TOKEN`，`Session.askToken` / `askUrl` → `loopbackToken` / `loopbackUrl`，`SessionManager.byAskToken` → `byLoopbackToken`。路由仍是 `/api/ask`；全局两个扩展同时认旧名 `PI_WEB_ASK`，旧桥起的会话不受影响。
+
 ## D48 会话管理：置顶 / 拖拽排序 / 归档 / 删除都只动 `state/manage.json`，删除才碰文件
 
 **需求：** 侧栏要能管理（m00507），用户在三个样张里选了 **A+C**：单列表 + 置顶拖拽 + 管理模式多选（样张留在 `.scratch/session-manage/`）。
@@ -3081,30 +3083,76 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 **验证：** `npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 `i18n-check`）；文案模板键在 `en.ts` / `ja.ts` 同步换键并补 `1 天` 的译名，漏一条 typecheck 会报。
 已有 step-up 用例（`bridge/tests/runtime-settings.mjs`、`sleep-all.mjs`）只断言「公网要口令」，不锁时长，不受影响。
 
-## D187 前台派活的子代理（`async:false`）也算一张卡（无票，用户报的；派了 5 个却看不见任何提示）
+## D190 open_preview 的路径信任只到「会话目录 + transcript 尾部」（#225）
 
-**问题：** 用户让模型「启动五个子代理去查斯诺克世锦赛赛程」，模型调的是 `subagent({workflow:"parallel", async:false, args:{tasks:[…5 条]}})` —— 脚本看着像后台，其实是**前台**（`async:false`）。页面上只有操作行的 `▸ 3 个操作 · bash ×2 · subagent ×1 · 运行中`：聊天下方没有提示条、详情面板里也什么都没有，用户以为「只启动了一个」。可 5 个孩子全都起来了 —— 每个 `async-subagent-runs/<runId>/status.json` 里都写着 `parentWorkflowRunId: "call_01_…"`（就是派活那次工具调用的 id）与 `workflowKey: "task-1"…"task-5"`，父 run 自己却**没有目录**。根因全在 `bridge/src/bgruns.ts`：建卡三闸里的「结构性开始信号」是 `d.kind === "delegate" || typeof d.asyncDir === "string"`，前台 workflow 两样都没有（结果文本是 `Workflow completed. Return: {…}`，没有 `Async workflow [uuid]`）；而 `tool_execution_start` 那刻手里明明有 `ev.args` 与 `ev.toolCallId`，却只发 ws 不建卡。
+**决定：** `/api/preview/open` 在调 `openPreview` 之前先过 `isTrustedPreviewPath`：路径在会话 cwd 之内，或在会话 transcript（`state.file`）里出现过，才放行；否则回 `{ok:false, reason:"untrusted-path"}`，**不签发 token、不投递**。`openPreview` 自己那条宽松规则（D50：任意绝对路径可读）保持不动，`/api/preview` 与 `/api/dirs` 照旧。
 
-**决定：**
+- transcript 只读尾部 `TRANSCRIPT_TAIL_BYTES = 512 KB`（`fstat` 拿 size，再从 `size - cap` 处一次读进来）：长会话的记录轻松过 10 MB，为一次工具调用整份读进内存不值。
+- 归一化：把连续 `/` 与 `\` 都折成单个 `/`（JSONL 里每个反斜杠是 `\`，折叠后两边天然一致），Windows 上再 `toLowerCase()`；匹配是朴素 substring。
+- 路径解析抽成 `resolvePreviewPath`，信任检查与真正打开用同一个结果，避免两处各解析一遍却解析出不同路径。
 
-1. **在工具开始时立卡**：`noteToolStart(tool, args, callId)`，在 `bridge/src/sessions.ts` 的 `tool_execution_start` 里调用。三个条件：`tool === "subagent"` 且 callId 过 `ID_OK`；`args.action` 不是字符串（`status` / `guide` 是查询，不是派活）；**`args.async === false`** —— 缺省 / `async:true` 是后台，那种 run 在 `tool_execution_end` 自己建卡，这里再建一张就是双卡，而且没有任何完成信号能收掉它（得等 `SILENT_DEAD_MS` 六小时）。再加一道：**是 workflow 或 `tasks.length >= 2`** —— 单跑的前台调用不立卡，那种情况会话本来就没 settle，操作行已经在显示它了。
-2. **`agent` / `task` 直接读模型的 `args`**（`args.tasks[].task`，多个孩子逐条编号），不读盘：派活那刻就有，比后台那条 receipt 回填还准（那边只有截断过的 `sessionName`）。脚本式前台 workflow（`{workflow:true}`、没有 `args.tasks`）派活那刻拿不到原文，`prune()` 从孩子 `steps[0].sessionName` 去掉 `agent: ` 前缀兜底 —— 那份被 runner 截断过，只能算半个原文。
-3. **过程记录 = 孩子各自的 `status.json` 现拼**：`fgChildren(parentId, since)` 扫 `tmpdir()` 下的 `pi-subagents-*` 根，按 `parentWorkflowRunId === callId` 认领，`status.json` 的 mtime 早于判活时刻的一律跳过；`fgTimeline()` 把 `startedAt` / `endedAt` 投影成 `task-1 researcher started` / `task-1 researcher complete` 两行。`hasLog` 用「已经扫到孩子」判，不指望一份不存在的日志文件。
-4. **最终答复从结果文本里取**：工具结束是唯一完成信号，`foregroundOutput()` 用 `jsonAfter(text, "Return: ")` 手写括号配平（跳过字符串与转义）取 `children[].output`，再按 `## <key> · <agent>` 分段；`tool_execution_end` 多传 `callId` 与 `isError`，前台那张卡在同一个调用里收掉。
-5. **文案去掉「后台」**：弹层标题「后台子代理」→「子代理」，空态「这个会话没有在跑的后台子代理。」→「这个会话没有子代理在跑。」（前台也在里面了，`en` / `ja` 同步）。**左栏胶囊仍是 `后台` / `后台 N`**：它只在 `!s.running && bgBusy(s)` 时出现（会话已 settle、派出去的还在跑），那种情况必然是后台派的。事件/时间线的英文保持 runner 原样，不进 i18n。
+**为什么：** 这个工具带的是会话级回环凭据，路径由模型随便填。`/api/preview` 的宽松规则有页面上的目录树兜着（是用户自己点开的），工具没有这一层：不设门槛就等于让模型把 `~/.ssh/id_rsa` 之类的东西推进用户的预览面板。反过来，pi 自己写到会话目录之外的文件（临时脚本、别的仓库里的报告）本来就该能看，「transcript 提过」就是那条正当通道 —— pi 提到过的路径一定在会话记录里。拒绝用一个独立 reason，工具回给模型的话才能说清「放哪儿再试」，而不是含糊的失败。
 
 **代价 / 可改：**
 
-- **每 30 秒扫一遍 `tmpdir()` 下的所有 `pi-subagents-*` 根**（本机 89 个 `async-subagent-runs` 条目）：每个 `status.json` parse 一次，量级上没问题；真嫌多可以让 runner 落一份索引文件。
-- **只有 started / complete 两个点**：孩子内部的步骤（bash 调用、read 文件）看不到 —— 要细看得读孩子的 `transcriptPath`，那条路径不在这张卡的白名单里。
-- **脚本式前台 workflow 的任务原文是截断的**：`sessionName` 只留到 `…（` 那么长，卡片上看到的是半个原文（这类 workflow 的完整 prompt 既不在 `args` 里，也没有父 `status.json` 可读）。
-- **单跑前台不立卡**：派**一个**子代理仍然没有提示条（会话在等它，操作行已经说明了）。要改就删掉 `kids.length < 2` 那道闸。
-- **时间以「派活那刻」为锚**：孩子若比它早落盘（时钟粒度 / 派发顺序），钳到 `0.0s` 而不是负数。
-- **`id` 是工具调用 id**（`call_…`），没有 `runId` 可以给人去 `subagent({action:"resume"})`；前台本来也 resume 不了。
+- **提及会过期**：一条路径被 512 KB 新历史压下去之后不再放行。工具通常在写完/读完后紧接着调用，够用；真要更久就调大常量，代价是每次调用多读几 MB。
+- **substring 不是路径边界匹配**：记录里提到 `a.md` 时 `a.md.bak` 也会命中（前提是那个文件真实存在）。这是「别让工具乱逛」的闸，不是沙箱。
+- **没做 realpath 归一**：cwd 里的软链接指向目录外仍然放行，与 `/api/preview` 的既有行为一致，这一票没有单独收紧。
+- **前端 `msg.sessionId !== this.currentId` 的双保险保留**：桥不该发错会话，但这道闸是免费的，探针里用 `routeWebSocket` 伪造一条错会话的 `preview.open` 把它测住。
+
+D
+
+**验证：** `node bridge/tests/preview-tool.mjs`（22 项：两个标签页都在看 → 都收到；cwd 外且 transcript 没提过 → `untrusted-path`、不回路径/凭据、不投递；提过 → 允许；再塞 600 KB 填充把提及挤出尾部窗口 → 重新拒绝）；`node probes/preview-open.mjs`（16 项：wrong-session 请求后标题、正文与 `scrollTop` 都不变；伪造错会话的 `preview.open` 被前端丢掉，同一条消息换对 sessionId 会打开；页面仍停在原会话；两个标签页都弹）；`npm run typecheck`。
+
+## D191 网页会话多一段「交付礼仪」提示词：覆盖全局规则、只投给正在看本会话的页面、先问后开（#226，父票 #223）
+
+**决定：** `Session.startLive` 在「工作区教训」之后再传一次 `--append-system-prompt`，内容是 `bridge/src/delivery.ts:18` 的 `DELIVERY_HINT`（8 行、514 字的短文本，不走文件）。`PI_WEB_HINT=0` 关掉，与 `PI_WEB_LESSONS=0` 同一手感；两个开关各管各的，谁关掉都不会顶掉另一段（pi 的这个参数可重复）。提示词里写死四件事：你在 pi-web-client 的网页客户端里、用户正在这个页面上看；这一段**覆盖**全局 AGENTS.md 的「产物交付：能开就直接开」；交付产物（html / md / 图片 / 表格 / 代码）先用问卷问「要在预览里打开吗？」（选项「在预览里打开」「先不看」），选了打开才调用 `open_preview`，不为交付开浏览器窗口或本机程序；工具回 `no-page` 就改说「点上面的路径」、回 `untrusted-path` 就说明文件不在会话目录，PDF / docx / 在预览里跑坏白屏的只讲原因并指向客户端既有的「用本机程序打开」出口。
+
+**为什么：**
+
+1. **不动全局 AGENTS.md。** 那条「能开就直接开」对终端里的 pi 仍然正确（终端没有预览面板，「打开」只能是外部程序），而全局文件归用户所有、影响所有项目 —— 为一个客户端改掉所有地方的交付方式不划算，也会让终端的 pi 去开一个没人看见的窗口。覆盖关系改由这段随会话注入的文本自己声明：模型是在 spawn 那一刻才知道自己在网页里，就在那一刻告诉它「两处冲突以这里为准」，比让两份常驻文档互相引用干净。终端会话没有这段注入，规则原样生效。
+2. **只投给「正在看本会话」的页面（与 D190 的投递范围同一条链）。** viewer 是单例面板，产物跟着会话走；一个后台会话写完文件就抢走前台页面的预览，等于把人的注意力从正在读的东西上拽开。没有页面在看就回 `no-page`，让模型改口写路径，而不是假装打开过 —— 否则它会接着讲用户根本没看到的东西。失败语义要在提示词里写死，因为模型对「工具失败」的默认反应常是重试或糊过去。
+3. **先问后开，不自动弹。** 一次交付可能不止一个产物（html + 图 + 表格），自动弹就是连着抢镜头，手机上尤其烦；从点击「在预览里打开」到 viewer 出现还隔着一次模型往返（1–3 秒），自动弹会让这段空白看起来像卡住。问一句把「开不开」留在人手里，代价是一次往返加一张问卷卡。
+
+**代价 / 可改：**
+
+- **提示词是每个网页会话 spawn 都要付的固定成本**（514 字）。嫌贵可以并进 lessons 那一段，或缩到只剩「你在网页里 + 先问后开」两行。
+- **问一次要等一次模型往返。** 要更快可以让问卷卡的「在预览里打开」自己直连 `/api/preview/open`（票面 Out of Scope，本次没做）；那时提示词里「选打开才调用工具」这句要改成「问卷已经替你打开」。
+- **`PI_WEB_HINT=0` 只关提示词、不关工具。** 模型仍可能从别处知道 `open_preview` 后直接调用；要彻底关掉就把 `previewToolPath()` 也挂到同一个开关上（现在故意不挂：工具本身无害，关提示词的人通常只是嫌啰嗦）。
+- **「同一个文件问过一次就不再问」只是提示词里的一句话**，桥不记账，同一轮里模型仍可能再问一次。
+- **PDF / docx 的出口靠客户端既有按钮**：提示词只说「指向它」，模型写出来的措辞不受控；要统一文案得在问卷卡或工具回包里给固定句子。
+
+**验证：** `npm run test:hint`（`bridge/tests/hint-spawn.mjs`，12 项：默认两段都在、教训文件内容对得上、交付提示词含「覆盖」/「要在预览里打开吗」/`open_preview`/`no-page`/`untrusted-path`/「用本机程序打开」且不超过 15 行、`PI_WEB_HINT=0` 只剩教训、`PI_WEB_LESSONS=0` 只剩提示）；`node --experimental-transform-types bridge/tests/lessons-spawn.mjs`（8 项；改了两条断言：#226 起第一次 spawn 也带交付提示词，「没有教训段」改成按值判断而不是按参数名）；`npm --prefix web run typecheck`（本次没有新增界面文案，i18n 键不变）。
+
+## D192 `open_preview` 要页面回执才算打开：`preview.open.done` + `no-ack` / `stale` 两个 reason（#224 复审，父票 #223）
+
+**决定：** `/api/preview/open` 不再「把 `preview.open` 帧扔出去就回 `ok:true`」，而是给这一帧带上 `reqId`（`crypto.randomUUID()`），在桥的内存里挂 `pendingPreview: Map<reqId, {ws, settle, timer}>`，等页面回一条 `{type:"preview.open.done", reqId, ok, reason?, text?}` 才结算：
+
+- 回执 `ok:true` → `{ok:true, path, name}`；
+- 回执 `ok:false, reason:"declined", text` → `{ok:false, reason:"declined", text}`，`text` 就是页面给的解释（用户在「未保存改动，留在这里 / 放弃并打开」里选了前者）；
+- 回执 `ok:false, reason:"stale"`（那条页签没在看这个会话）→ 跳过，继续等同会话别的页签 —— 多标签页时不能让它盖掉真正接住那一页的成功；全都 `stale` 就当没接住，回 `no-ack`；
+- 超时（`PI_WEB_PREVIEW_ACK_MS`，默认 `15000`）/ 连接断了 → `{ok:false, reason:"no-ack", text:"页面没有回应这次打开（可能刚关掉会话或在处理别的操作）。"}`；
+- 一条页面都没在看 → `{ok:false, reason:"no-page", ...}`（文案不变）。
+
+同一条 ws 关闭时，把它名下没结算的 `reqId` 一并结算成 `no-ack` 并 `clearTimeout`（否则请求挂到超时、map 泄漏）。前端配合两处：`openPreview()` 改成 `Promise<boolean>`（`leaveEditor` 被拒返回 `false`），收帧时把返回值当回执发回去；`closeCurrentSession()` 在把 `currentId` 置空之前发 `{type:"unsubscribe", sessionId}`，桥的 `case "unsubscribe"` 只清这一条连接自己的 `watching`（同会话的其它页签照旧在看）。
+
+**为什么：**
+
+1. **「投出去了」不等于「打开了」。** 旧实现只要有一页 `watching === sid` 就回成功，而页面其实可能已经把会话关掉（`closeCurrentSession()` 只清前端的 `currentId`，从没告诉桥）、可能正在处理别的操作、可能因为未保存改动把这次打开拒了。模型拿到 `ok:true` 就会接着讲「已经帮你打开了」——用户屏幕上什么都没有。这正是 #224 要禁的「假装打开」。让真正执行打开的那一页回一句，桥才有一个诚实的答案。
+2. **`stale` 与 `no-ack` 必须分开。** 多标签页时每条页面都收到同一帧，没看这个会话的页签（旧标签页、刚切走的页签）如果也回一句 `ok:false`，先到的那句就会把真正接住那页的成功盖掉 —— 所以它回 `stale`，语义是「这句不算数，继续等」。而「有页面在看却始终没人回」是另一回事（页面卡住 / 正在关会话），这时既不能说成功，也不该说 `no-page`（会误导模型让用户「先打开会话」，可用户明明开着），于是单列 `no-ack` 并给一句人话。
+3. **超时默认 15 秒，可调。** 正常回执是毫秒级（打开 viewer 是本地操作），慢的是「页面刚连上、会话还在加载」。15 秒足够覆盖一次真实的加载，又不至于让工具调用挂到模型自己超时。`PI_WEB_PREVIEW_ACK_MS` 是给测试用的（`bridge/tests/preview-tool.mjs` 里设 80ms，测「不回执 → no-ack」不必真等 15 秒），也是给慢机器/远程访问留的旋钮。
+
+**代价 / 可改：**
+
+- **`open_preview` 现在至少多一个往返**（浏览器 → 桥）。本地回环可以忽略；但它把「工具调用」和「浏览器还活着」绑在了一起：页面崩溃/挂起时工具会等满窗口再回 `no-ack`（这也是它比旧的「立即 ok」慢的原因，故意的）。嫌慢可以调小 `PI_WEB_PREVIEW_ACK_MS`。
+- **回执只认「同一条 ws 的同一个 `reqId`」**：页面刷新后旧请求不会误结算（那条连接已经关了，`pendingPreview` 里那格被结算成 `no-ack`）。
+- **`stale` 依赖前端判断**：前端只比 `msg.sessionId !== this.currentId`，不看 `viewer` 是否已经显示了同一个文件 —— 「已经开着这个文件」现在仍会重开一次（幂等，只是白跑一趟）。要省这一趟可以让前端在 `v.info.abs === path && v.pane === "preview"` 时直接回 `ok:true`。
+- **`declined` 的文案是两个作者**：桥给兜底句（页面没带 `text` 时），扩展那层只补一句指令（「等他处理完未保存的改动再打开」）。要真正单一来源，得让页面把整句话传上来。
+- **`no-ack` 的 15 秒是猜的**：没有实测数据支撑，若用户报「打开要等很久」，先看这一项。
 
 **验证：** `npm run test:bgruns` 新增「前台派活（D187）」段：`args` 形状抄真实调用 → 立卡即有 `agent: researcher` / 任务两行编号 / `view().n === 1`、`hasLog` 先 false；两个孩子 `status.json`（带 `parentWorkflowRunId`）落盘后 `prune()` → `hasLog` true、时间线含 `task-1 researcher started` / `task-1 researcher complete` / `task-2 researcher started`、不出负号；`noteToolEnd(…, callId)` → `done`、`readLog().out` 是 `## task-1 · researcher` / `## task-2 · researcher` 两段（`hasOut` 只是给类型契约的，前端按 `out` 的长度决定画不画）；**单跑、`action:"status"`、缺省 `async`、`async:true` 都不立卡**（后两条就是双卡的回归）；脚本式前台（`{workflow:true, async:false}`）派活那刻 `task` 为空，孩子落盘后 `prune()` 从 `sessionName` 补回 `planner` / `拆一下这个需求再分下去`。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1658 keys × 3 langs`），以及 `npm run test:continue:ui`（弹层标题断言从「后台子代理」改成「子代理」）。
 
-## D188 分支 chip 的单击从「复制」变成「看历史」：两列提交、顶上一条领先/落后，fetch 只能手按
+## D193 分支 chip 的单击从「复制」变成「看历史」：两列提交、顶上一条领先/落后，fetch 只能手按
 
 **问题：** 聊天下方那颗分支 chip（web/src/app.ts:2674 的 `gitChip`）点一下只把分支名塞进剪贴板 —— 想看清「我在 `feat/x` 上、比 `origin/main` 多 4 条少 8 条、从哪分叉的」得回终端敲三条 git。这次要的是一扇只读的弹窗：左列当前分支的线性历史，右列一条对照分支的历史，顶上横向一条说明谁在哪、领先多少、落后多少、从哪个提交分叉。
 
@@ -3130,4 +3178,3 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 **补（review 后）：** ① 界面文案不许走 ASCII 键 —— `Fetch origin` / `remote` / `detached` 换成「拉取最新」「远程」「游离 HEAD」（`HEAD`、`merge` 是 git 概念本身，留裸串，`i18n-check` 也只认含中文的键）。② 下拉首项是「自动 · 跟随 origin/HEAD」：选项值为空串，桥端重新走三级兜底，`baseAuto` 时前端也把 `this.base` 留空，否则换回一次就再也回不到自动。③ 分页对齐桥端的 300 封顶：到了把按钮换成一句「只显示最近 300 条」，不再给一颗点了不动的按钮。④ 换对照分支失败时留着上一份数据与下拉（失败态只占领列区），否则 `base_unknown` 时只剩关窗重开。⑤ `npm run test:githist:ui` 从「只 log」改真断言（胶囊/两列/公共行/下拉首项/数据时间格式/复制按钮/300 封顶/窄屏 2 tab 1 列），失败退出码 1。
 
 **验证：** `npm run test:githist`（新）—— 现搭裸库当 origin，断言分类（左 2 独有 + 3 公共、右侧 3 条 common）、ahead/behind、分叉点、`n` 下限 10、分页 `more`、`gitFetch` 之后 behind 从 0 变 1 且分叉点不动、空仓库 `empty`、非仓库 `null`、坏对照分支 `base_unknown`、detached HEAD 能读。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1680 keys × 3 langs`）。
-

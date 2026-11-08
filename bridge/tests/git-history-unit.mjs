@@ -1,5 +1,5 @@
 /**
- * D188: 分支历史弹窗的数据全在 `gitHistory` 里 —— 两列的每一行是 `left` / `right` / `common` 的哪一类、
+ * D193: 分支历史弹窗的数据全在 `gitHistory` 里 —— 两列的每一行是 `left` / `right` / `common` 的哪一类、
  * ahead / behind 是不是和 `rev-list --left-right --count` 一致、空仓库与非仓库会不会分得开。
  *
  * 这里用真 git 现搭一个小仓库（本地裸库当 origin），不 mock：这些边界（`origin/HEAD` 不在、只有

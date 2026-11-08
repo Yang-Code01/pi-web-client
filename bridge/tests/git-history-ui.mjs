@@ -1,5 +1,5 @@
 /**
- * D188 验收：在隔离实例上真开一次弹窗 —— 点 chip 出弹窗、两列有行、胶囊有数、挪窄变单列、
+ * D193 验收：在隔离实例上真开一次弹窗 —— 点 chip 出弹窗、两列有行、胶囊有数、挪窄变单列、
  * Esc 关得掉、fetch 失败时说人话（不是转一辈子）。
  *
  *   PI_WEB_BASE=http://127.0.0.1:17864 PI_WEB_DIR=<仓库> node bridge/tests/git-history-ui.mjs

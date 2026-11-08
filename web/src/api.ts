@@ -67,7 +67,7 @@ export const api = {
     return { repo: out.repo, branch: out.branch ?? "", detached: out.detached === true, empty: out.empty === true, dirty: out.dirty ?? 0 };
   },
   /**
-   * D188: 分支历史弹窗的两列。桥回 `{repo:null, code}` 时抛错（`empty` / `base_unknown` / 读不到），
+   * D193: 分支历史弹窗的两列。桥回 `{repo:null, code}` 时抛错（`empty` / `base_unknown` / 读不到），
    * 界面用 `errText()` 翻成人话。`fresh` 只在 fetch 之后用一次。
    */
   gitHistory: async (dir: string, base = "", n = 80, fresh = false): Promise<GitHistory> => {
@@ -77,7 +77,7 @@ export const api = {
     if (!out.repo) throw Object.assign(new Error(out.error ?? "读不了分支历史"), { code: out.code });
     return out;
   },
-  /** D188: 弹窗里那个手动 fetch。失败也回 200 + `{ok:false, code, error}`，这里统一抛。 */
+  /** D193: 弹窗里那个手动 fetch。失败也回 200 + `{ok:false, code, error}`，这里统一抛。 */
   gitFetch: async (dir: string): Promise<{ at: number; remote: string }> => {
     const out = await req<{ ok: boolean; at?: number; remote?: string; code?: string; error?: string }>("/api/git/fetch", {
       method: "POST",

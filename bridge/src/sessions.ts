@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
 import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions } from "./launch.ts";
 import { lessonFile } from "./lessons.ts";
+import { DELIVERY_HINT } from "./delivery.ts";
 import { ensureDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
@@ -21,10 +22,16 @@ import { sampleMemory } from "./runtime.ts";
 import { defaultPermission } from "./permissiondefault.ts";
 import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
 import { isProtocolWidgetLines } from "./extwidgets.ts";
+import { itemsFrame, type SessionHistory } from "./history.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
   return process.env.PI_WEB_GATE ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "approval-gate.ts");
+}
+
+/** #224：`open_preview` 只属于网页会话 —— 它做的事就是把文件交给网页的预览面板。 */
+function previewToolPath(): string {
+  return process.env.PI_WEB_PREVIEW_TOOL ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "open-preview.ts");
 }
 
 export interface ApprovalRequest {
@@ -689,6 +696,17 @@ type BootFailure = "boot" | "stopped" | "refused";
  */
 const BOOT_RUN_WAIT_MS = 10_000;
 
+/** `session` 帧的载荷：一条会话可画的全部内容（#219 起 `session` 帧里的 `items` 只装末尾一页）。 */
+export interface SessionSnapshot {
+  state: SessionState;
+  items: Item[];
+  approvals: ApprovalRequest[];
+  asks: AskRequest[];
+  budget: number | null;
+  ext: ExtUiState;
+  queue: { steering: string[]; followUp: string[] };
+}
+
 export class Session extends EventEmitter {
   readonly state: SessionState;
   items: Item[] = [];
@@ -697,10 +715,10 @@ export class Session extends EventEmitter {
   readonly asks = new Map<string, PendingAsk>();
   /** D90：还没结束的 `ask_user_question` 问卷，按 toolCallId。 */
   private questionnaires = new Map<string, OpenQuestionnaire>();
-  /** Handed to the child in PI_WEB_ASK_TOKEN so only our own pi can post questions. */
-  readonly askToken = crypto.randomUUID();
-  /** Set by SessionManager: where the child posts asks (loopback only). */
-  askUrl: string | null = null;
+  /** Handed to the child in PI_WEB_LOOPBACK_TOKEN so only our own pi can call back into the bridge. */
+  readonly loopbackToken = crypto.randomUUID();
+  /** Set by SessionManager: loopback origin the child posts to (asks, preview opens). */
+  loopbackUrl: string | null = null;
 
   /** Context-token ceiling the bridge enforces by compacting; null = off. Shared across sessions. */
   contextBudget: number | null = readBudget();
@@ -956,8 +974,10 @@ export class Session extends EventEmitter {
       // Usually the file only grew, so the old transcript is a prefix of the new one. A branch
       // switch in the terminal (/tree, then a new message) replaces part of it: resend everything.
       const prefix = before.length <= this.items.length && before.every((it, i) => it.id === this.items[i].id);
-      if (!prefix) this.emitWs({ type: "items", sessionId: this.state.id, items: this.items });
-      else {
+      if (!prefix) {
+        // #221: 分支切换换掉的是整条对话 —— 与首帧同一个规矩，只推末尾一页 + `history`。
+        this.emitWs({ type: "items", sessionId: this.state.id, ...this.tailFrame() });
+      } else {
         // Same ids can still carry new content: a tool card gets its result from a later line.
         for (let i = 0; i < before.length; i++) {
           if (JSON.stringify(before[i]) !== JSON.stringify(this.items[i])) {
@@ -1051,6 +1071,7 @@ export class Session extends EventEmitter {
     const args = ["--mode", "rpc"];
     if (process.env.PI_WEB_NO_EXT === "1") args.push("-ne");
     args.push("-e", approvalGatePath());
+    args.push("-e", previewToolPath());
     const cwd = opts.cwd || this.state.cwd || process.cwd();
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
     const launch = readLaunch(id);
@@ -1062,6 +1083,10 @@ export class Session extends EventEmitter {
       const lessons = lessonFile(opts.ws);
       if (lessons) args.push("--append-system-prompt", lessons);
     }
+    // #226 / D191：告诉模型它跑在网页客户端里，附交付礼仪（`PI_WEB_HINT=0` 可关）。
+    // 与上面那段各自追加：pi 的 `--append-system-prompt` 可重复，两个开关互不影响，谁关了都不顶掉另一个。
+    // 顺序是「用户手填 → 工作区教训 → 交付提示」：事实在前、这次会话的规矩在后（离对话最近）。
+    if (process.env.PI_WEB_HINT !== "0") args.push("--append-system-prompt", DELIVERY_HINT);
     this.state.launch = describeLaunch(launch) || undefined;
     if (opts.resume && this.state.file) args.push("--session", this.state.file);
     else args.push("--session-id", id);
@@ -1076,8 +1101,8 @@ export class Session extends EventEmitter {
       logPath: statePath("logs", `${id}.log`),
       env: {
         PI_WEB_ALLOW_FILE: allowFile(id),
-        // The ask-user extensions post here instead of opening a dialog (see PLAN-ask.md).
-        ...(this.askUrl ? { PI_WEB_ASK: this.askUrl, PI_WEB_ASK_TOKEN: this.askToken } : {}),
+        // The ask-user / preview extensions post here instead of opening a dialog (see PLAN-ask.md).
+        ...(this.loopbackUrl ? { PI_WEB_LOOPBACK: this.loopbackUrl, PI_WEB_LOOPBACK_TOKEN: this.loopbackToken } : {}),
       },
     });
 
@@ -1145,7 +1170,8 @@ export class Session extends EventEmitter {
       });
     // A resumed session starts with the transcript pi already wrote to disk.
     if (opts.resume) this.loadFromFile();
-    this.emitWs({ type: "items", sessionId: id, items: this.items });
+    // #221: 唤醒续接同样只推末尾一页，不然休眠一个大会话再叫醒，页面又要等整段。
+    this.emitWs({ type: "items", sessionId: id, ...this.tailFrame() });
     void this.refreshStats();
   }
 
@@ -2166,7 +2192,7 @@ export class Session extends EventEmitter {
     this.items = [];
     this.autoCompactUsed = false;
     this.setState({ file, truncated: false }, { touch: false });
-    this.emitWs({ type: "items", sessionId: this.state.id, items: [] });
+    this.emitWs({ type: "items", sessionId: this.state.id, items: [], history: { hasMore: false, total: 0 } });
     this.touch();
     if (before && before !== file) {
       try {
@@ -2399,15 +2425,7 @@ export class Session extends EventEmitter {
     this.emitExtUi();
   }
 
-  snapshot(): {
-    state: SessionState;
-    items: Item[];
-    approvals: ApprovalRequest[];
-    asks: AskRequest[];
-    budget: number | null;
-    ext: ExtUiState;
-    queue: { steering: string[]; followUp: string[] };
-  } {
+  snapshot(): SessionSnapshot {
     return {
       state: this.state,
       items: this.items,
@@ -2417,6 +2435,23 @@ export class Session extends EventEmitter {
       ext: this.extUi(),
       queue: this.queue,
     };
+  }
+
+  /**
+   * #219：`session` 帧只带末尾一页。`items` 仍然是这一页的原文，同帧用 `history` 说清
+   * 还有没有更早的、整段一共多少条 —— 老前端不认 `history`，照旧只画这一页。
+   * 随手问例外：它没有「载入更早」，整段下发（`itemsFrame`）。
+   */
+  pagedSnapshot(): SessionSnapshot & { history: SessionHistory } {
+    return { ...this.snapshot(), ...this.tailFrame() };
+  }
+
+  /**
+   * 三处整页帧（分支切换 / 唤醒续接 / 快照）共用的正文：普通会话是末尾一页，随手问整段。
+   * 随手问若也切页，累积超过一页后前面的话会在下一次唤醒时静默消失 —— 界面上没有入口能取回来。
+   */
+  private tailFrame(): { items: Item[]; history: SessionHistory } {
+    return itemsFrame(this.items, { full: Boolean(this.state.scratch) });
   }
 
   idleFor(): number {
@@ -2620,16 +2655,16 @@ export class SessionManager extends EventEmitter {
 
   constructor(
     private cli: string,
-    /** Loopback URL the child posts asks to; null disables the whole feature. */
-    private askUrl: string | null = null,
+    /** Loopback origin the child posts to; null disables the whole loopback channel. */
+    private loopbackUrl: string | null = null,
   ) {
     super();
   }
 
   /** Resolve the child that owns this token. Returns null for anything we did not spawn. */
-  byAskToken(token: string): Session | null {
+  byLoopbackToken(token: string): Session | null {
     if (!token) return null;
-    for (const s of this.sessions.values()) if (s.askToken === token) return s;
+    for (const s of this.sessions.values()) if (s.loopbackToken === token) return s;
     return null;
   }
 
@@ -2771,7 +2806,7 @@ export class SessionManager extends EventEmitter {
 
   private wire(session: Session): void {
     session.on("ws", (payload: any) => this.emit("ws", payload));
-    session.askUrl = this.askUrl;
+    session.loopbackUrl = this.loopbackUrl;
     session.on("state", (state: SessionState) => this.emit("ws", { type: "session.state", session: state }));
     session.on("approval", (approval: ApprovalRequest) => this.emit("approval", approval));
     session.on("ask", (ask: AskRequest, tool: string) => this.emit("ask", ask, tool));
@@ -3340,6 +3375,12 @@ export class SessionManager extends EventEmitter {
     // D162: handing a snapshot to a client no longer clears 完成 —— 打开只是看，不是新的一轮。
     const session = this.ensure(id);
     return session.snapshot();
+  }
+
+  /** #219: `session` 帧只带末尾一页，和老前端看到的整段是同一份数据的尾巴。 */
+  pagedSnapshot(id: string) {
+    if (!this.known(id)) throw new Error("找不到这个会话");
+    return this.ensure(id).pagedSnapshot();
   }
 
   respond(id: string, approvalId: string, decision: "approve" | "reject" | "cancel" | "always"): void {

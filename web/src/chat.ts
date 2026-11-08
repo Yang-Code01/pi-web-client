@@ -4,7 +4,7 @@ import { highlightFragment } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
-import type { BashItem, Item, ToolItem, UserItem } from "./types.ts";
+import type { BashItem, Item, SessionHistory, ToolItem, UserItem } from "./types.ts";
 import { fmtTime, tr } from "./i18n/index.ts";
 
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
@@ -14,6 +14,20 @@ const BASH_SHOW = 20000;
  * （`hasRoomBelow`，D168）——两处必须是同一个数，否则会出现「钮说下面有东西、但滚不动」的缝。
  */
 const BOTTOM_SLACK = 24;
+
+/**
+ * 「这一轮」在聊天区里的现场：工具模块（`details` + 标题 + 产物行）与这一轮的失败卡片。
+ * #220 往前插一页时要先收起来、插完再放回去 —— 插进来的历史条目会自己开关模块、记失败，
+ * 那些属于老的那一轮，不能算到用户正在看的这一轮头上。
+ */
+interface TurnState {
+  opsBody: HTMLElement | null;
+  opsTitle: HTMLElement | null;
+  opsBox: HTMLDetailsElement | null;
+  opsFiles: HTMLElement | null;
+  failAnchor: HTMLElement | null;
+  turnFails: Array<{ key: string; input: FailureInput }>;
+}
 
 /**
  * 桥注入的自动提醒（`bridge/src/lessons.ts` 的 `reminderText`）开头就是这个标记。
@@ -199,8 +213,31 @@ export class ChatView {
   private holdFollow = 0;
   /** scrollTop at the previous `scroll` event: only a viewport moving *down* may reopen the follow (D94). */
   private lastTop = 0;
+  /**
+   * #220: 一页更早的内容正往列表**最上面**插。这期间 `add()` 的副作用都得当成「历史」看：
+   * 不跟流、不弹「有新内容」、不扰动当前这一轮的工具模块与刻度带 —— 插完再统一收尾。
+   * `anchor` 是 DOM 锚点（当时的视口顶部节点，没内容时就是回底钮），**不是** `history.before`
+   * 那个条目 id 游标（那个叫 `topId`）。
+   */
+  private staging: { anchor: HTMLElement; turns: { node: HTMLElement; label: string }[] } | null = null;
+  /** 「载入更早」那一行：列表的第一块内容，没有更早的就整行收起来（#220）。 */
+  private moreRow: HTMLElement;
+  private moreBtn: HTMLButtonElement;
+  private hasOlder = false;
+  private loadingOlder = false;
+  /** 列表最上面那条的 id —— 往前翻的游标。`cards` 是 Map，插入序不一定是对话序，所以单独记。 */
+  private topId: string | null = null;
+  /** Set by the app: 用户要更早的一页，去桥那边要 `before` 之前那 60 条。 */
+  onLoadOlder: ((before: string) => void) | null = null;
 
   constructor(private root: HTMLElement) {
+    this.moreRow = el("div", "chat-more");
+    this.moreBtn = el("button", "more-btn");
+    this.moreBtn.type = "button";
+    this.moreBtn.onclick = () => this.loadOlder();
+    this.moreRow.append(this.moreBtn);
+    this.moreRow.hidden = true;
+
     this.jump = el("button", "chat-jump") as HTMLButtonElement;
     this.jump.type = "button";
     // Q-027: one round arrow in the middle of the transcript; when something arrived while reading
@@ -395,6 +432,11 @@ export class ChatView {
     const one = (item.text ?? "").replace(/\s+/g, " ").trim();
     const images = item.images?.length ?? 0;
     const label = one || (images ? tr("（{p1} 张图片）", { p1: images }) : tr("（空消息）"));
+    // 往前翻的时候，这些不是「新的」：先攒着，插完再 unshift 进 turns / 刻度带（#220）。
+    if (this.staging) {
+      this.staging.turns.push({ node, label });
+      return;
+    }
     this.turns.push({ node, label });
     this.turnRail.add(label);
     this.queueRailSync();
@@ -413,15 +455,16 @@ export class ChatView {
 
   /** Everything the transcript appends goes in *before* the jump button, which must stay the last child. */
   private push(node: HTMLElement): void {
-    this.root.insertBefore(node, this.jump);
+    // 往前翻的时候，新内容落在「载入更早」那行下面、旧内容上面（#220）。
+    this.root.insertBefore(node, this.staging?.anchor ?? this.jump);
   }
 
   /** Keeps the tail marker and the jump button children of the scroller no matter how it is rebuilt. */
   private mountChrome(): void {
-    this.root.append(this.jump);
+    this.root.append(this.moreRow, this.jump);
   }
 
-  reset(items: Item[]): void {
+  reset(items: Item[], history?: SessionHistory): void {
     this.root.replaceChildren();
     this.cards.clear();
     this.users.clear();
@@ -441,10 +484,139 @@ export class ChatView {
     this.turns = [];
     this.turnRail.clear();
     this.flashTurn(null);
+    this.staging = null;
+    this.hasOlder = history?.hasMore === true;
+    this.loadingOlder = false;
+    this.topId = items[0]?.id ?? null;
     // Chrome first: `push()` inserts before the jump button, so it has to be in the DOM already.
     this.mountChrome();
     for (const item of items) this.add(item);
+    this.renderMore();
     this.follow();
+  }
+
+  /**
+   * #220: 一页更早的内容到了。`before` 是发请求时的游标（当时就等于 `topId`）；不是当前这一页
+   * 就不要（换过会话、重连晚到、同一个响应到了两次），免得同一页插两遍或插到别人头上。
+   * 它插在「载入更早」那行下面、现有内容上面，屏幕上那几行必须原地不动 —— 按**节点**锚定：
+   * 记下视口顶部那块内容的 rect.top，插完把差值补回 scrollTop。
+   * scrollHeight 差值不能用：实测偏几十像素（代码块/字体度量在下一帧才定型）。
+   */
+  prepend(before: string, items: Item[], hasMore: boolean): void {
+    if (!this.loadingOlder || before !== this.topId) return;
+    this.loadingOlder = false;
+    if (!items.length) {
+      // 桥说没有了（或者这一页是空的）：行收起来，别再发请求。
+      this.hasOlder = hasMore;
+      this.renderMore();
+      return;
+    }
+    const anchor = this.contentTop();
+    const topBefore = anchor?.getBoundingClientRect().top ?? 0;
+    const seen = new Set(this.users.keys());
+    const held = this.holdTurnState();
+    const fresh: { node: HTMLElement; label: string }[] = [];
+    this.staging = { anchor: anchor ?? this.jump, turns: fresh };
+    try {
+      for (const item of items) this.add(item);
+    } finally {
+      this.staging = null;
+      this.releaseTurnState(held);
+    }
+    this.topId = items[0].id;
+    this.hasOlder = hasMore;
+    this.renderMore();
+    // 老轮补在刻度带上沿（不是尾端），且「你在哪一轮」不能因为一次翻页就换了个人。
+    this.turns = [...fresh, ...this.turns];
+    this.turnRail.prepend(fresh.map((turn) => turn.label));
+    // `users` 的插入序就是对话顺序（`paintPending()` 认最后一枚）：新翻出来的排在前面。
+    const older = [...this.users].filter(([id]) => !seen.has(id));
+    const rest = [...this.users].filter(([id]) => seen.has(id));
+    this.users = new Map([...older, ...rest]);
+    this.paintPending();
+    this.queueRailSync();
+    this.restoreAnchor(anchor, topBefore);
+  }
+
+  /** 点「载入更早」：加载中按钮是灰的，所以连点也只会发一个请求（#220）。 */
+  private loadOlder(): void {
+    if (!this.hasOlder || this.loadingOlder || !this.topId) return;
+    this.loadingOlder = true;
+    this.renderMore();
+    this.onLoadOlder?.(this.topId);
+  }
+
+  /** 那一行只在「还有更早的」时存在；加载中换成「载入中…」并点不动（#220）。 */
+  private renderMore(): void {
+    this.moreRow.hidden = !this.hasOlder;
+    this.moreBtn.disabled = this.loadingOlder;
+    this.moreBtn.textContent = this.loadingOlder ? tr("载入中…") : tr("载入更早");
+  }
+
+  /**
+   * 锚点：视口顶部那块内容。跳过「载入更早」那行和回底钮 —— 它们不跟内容一起动。
+   * 插第一条历史时列表还是空的，此时没有锚点（也就没有东西需要挤回原位）。
+   */
+  private contentTop(): HTMLElement | null {
+    for (const node of this.root.children) {
+      if (node === this.moreRow || node === this.jump) continue;
+      return node as HTMLElement;
+    }
+    return null;
+  }
+
+  /**
+   * 把锚点钉回它原来的屏幕位置，一共钉三次：插完立刻一次，下一帧一次，150ms 后再一次。
+   * 最后一页常带代码块/字体，高度到下一帧还会动一点，只钉一次就漂。
+   */
+  private restoreAnchor(anchor: HTMLElement | null, topBefore: number): void {
+    if (!anchor) return;
+    let expected = this.pin(anchor, topBefore, null);
+    const again = (): void => {
+      expected = this.pin(anchor, topBefore, expected);
+    };
+    requestAnimationFrame(again);
+    setTimeout(again, 150);
+  }
+
+  /**
+   * 一次钉：把 `anchor` 挪回 `topBefore`。`expected` 是上一次写下的 scrollTop —— 现在读到的
+   * 跟它对不上，说明用户自己滑了（或者浏览器把值夹到了两头），这一轮就不该再纠正，
+   * 不然一只手指正在往上翻，程序又把它拽回去。
+   */
+  private pin(anchor: HTMLElement, topBefore: number, expected: number | null): number {
+    // 换过会话了：锚点已经不在这份 DOM 里，它的 rect 全是 0，拿它算会把视口拖到顶上。
+    if (!anchor.isConnected) return this.root.scrollTop;
+    const max = this.root.scrollHeight - this.root.clientHeight;
+    const now = this.root.scrollTop;
+    if (expected !== null && Math.abs(now - Math.min(max, Math.max(0, expected))) > 1) return now;
+    const want = Math.min(max, Math.max(0, now + anchor.getBoundingClientRect().top - topBefore));
+    this.root.scrollTop = want;
+    return want;
+  }
+
+  /** 收走当前这一轮的现场（见 `TurnState`）；`closeOps()` 会把它清空，所以先存一份。 */
+  private holdTurnState(): TurnState {
+    const held: TurnState = {
+      opsBody: this.opsBody,
+      opsTitle: this.opsTitle,
+      opsBox: this.opsBox,
+      opsFiles: this.opsFiles,
+      failAnchor: this.failAnchor,
+      turnFails: this.turnFails,
+    };
+    this.closeOps();
+    this.turnFails = [];
+    return held;
+  }
+
+  private releaseTurnState(held: TurnState): void {
+    this.opsBody = held.opsBody;
+    this.opsTitle = held.opsTitle;
+    this.opsBox = held.opsBox;
+    this.opsFiles = held.opsFiles;
+    this.failAnchor = held.failAnchor;
+    this.turnFails = held.turnFails;
   }
 
   /**
@@ -456,6 +628,8 @@ export class ChatView {
       this.follow();
       return;
     }
+    // 正在往上面插历史：这会儿的「新内容」是别人的过去式，既不该跟流也不该弹提示（#220）。
+    if (this.staging) return;
     if (!this.following) {
       this.unread = true;
       this.renderJump();

@@ -18,6 +18,11 @@ export interface TurnRail {
   clear(): void;
   /** 新增一轮用户输入（`label` 是压成单行的开头文字）。 */
   add(label: string): void;
+  /**
+   * #220: 往前翻出一页 —— 更早的那些轮插到带上沿，不是尾端。`current` / `hot` 跟着往后挪，
+   * 免得「你在这儿」那根刻度换了个人。
+   */
+  prepend(labels: string[]): void;
   /** 「你在哪一轮」——滚动时由 ChatView 按视口顶部落下的那一轮喂进来。 */
   setCurrent(index: number): void;
 }
@@ -173,6 +178,13 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
     },
     add(label) {
       labels.push(label);
+      schedulePaint();
+    },
+    prepend(items) {
+      if (!items.length) return;
+      labels.unshift(...items);
+      if (current >= 0) current += items.length;
+      if (hot >= 0) hot += items.length;
       schedulePaint();
     },
     setCurrent(index) {

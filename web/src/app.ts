@@ -33,8 +33,10 @@ import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { stickMenu } from "./menuplace.ts";
 import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
+import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
+import { paintSubagentsPage, type SubagentScan } from "./subagents.ts";
+import type { AcpDelegatePatch, AcpDelegateView } from "./subagents-acp.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
@@ -204,7 +206,7 @@ export class App {
   private modelsAsked = 0;
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
-  /** D188: 分支历史弹窗；同时只开一扇，关了才允许再开。 */
+  /** D193: 分支历史弹窗；同时只开一扇，关了才允许再开。 */
   private branchSheet: BranchSheet | null = null;
   /** D164：AI 出错记录的账本（按工作区），以及这个会话里见过的失败（按 toolCallId 去重）。 */
   private failLedger: FailLedger | null = null;
@@ -293,6 +295,19 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /** #212 子代理页：进 tab 时问一次盘的结果，以及这一页自己的 scope（不是第三个 settings scope）。 */
+  private subagentsScan: SubagentScan | null = null;
+  private subagentsScanFor = "";
+  private subagentsScope: "global" | "project" = "global";
+  /**
+   * #215 acp_delegate 那一半：写的是 billion-context 的配置文件，与上面 settingsView 无关。
+   * `subagentsAcpLoadError` 是「连文件都没读到」（RPC 自己失败），与回包里的 `view.error`
+   * （文件读不懂）分开存，前者时整片只剩错误 + 重试。
+   */
+  private subagentsAcp: AcpDelegateView | null = null;
+  private subagentsAcpLoadError: { path: string; message: string } | null = null;
+  private subagentsAcpSaveError: string | null = null;
+  private subagentsAcpSaving = false;
   /**
    * D161: 设置面板底部那块「把现有会话也改掉」。`permDefaultsFor` 是已经问过桥的 cwd key
    * （空串 = 全局页），这样重绘不会一直重问同一个问题。
@@ -781,6 +796,9 @@ export class App {
     this.chat.onRetry = () => this.startClaim();
     // #202 / D183: 失败气泡上的第二条路 —— 不重试，把没发出去的那条放回输入框。
     this.chat.onWithdraw = () => this.withdrawFailed();
+    // #220: 顶端「载入更早」—— 要的是 `topId` 之前那 60 条，桥切成纯内存一页（不改协议其他部分）。
+    // 只负责转发：这一页还认不认（`before` 是不是当前 `topId`）由 ChatView 自己判断。
+    this.chat.onLoadOlder = (before) => this.socket.send({ type: "history.before", sessionId: this.currentId, before });
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
   }
@@ -1418,7 +1436,7 @@ export class App {
         this.failReviewPending = false;
         this.failLedger = this.failWs && this.failWs === (this.session?.ws ?? "") ? this.failLedger : null;
         this.failRules = this.failRulesWs && this.failRulesWs === (this.session?.ws ?? "") ? this.failRules : null;
-        this.chat.reset((msg.items ?? []) as Item[]);
+        this.chat.reset((msg.items ?? []) as Item[], msg.history as SessionHistory | undefined);
         this.chat.setRunning(this.session?.running === true);
         if (this.currentWs()) {
           this.socket.send({ type: "failures.get", ws: this.currentWs() });
@@ -1456,10 +1474,21 @@ export class App {
         this.sessionFails.clear();
         this.failReminded.clear();
         this.failRemindPending.clear();
-        this.chat.reset((msg.items ?? []) as Item[]);
+        // #221: 带 `history` 的 items 帧（首帧 / 分支切换 / 唤醒续接 / 重连重订阅）是**末尾一整页**，
+        // 永远整页替换；「载入更早」走的是另一条 `history` 帧，不从这里插进旧内容前面。
+        // `history` 仍然要传：整页替换完，顶端那一行才知道后面还有没有更早的（#220）。
+        // 这是 #221 的既定取舍：整页替换意味着重连后回到最后一页，已经翻出来的更早内容不保留。
+        this.chat.reset((msg.items ?? []) as Item[], msg.history as SessionHistory | undefined);
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
         this.syncContinueButton();
+        break;
+      case "history":
+        // #220: 一页更早的内容。归属由 ChatView 认（`before` 是否等于它当前的 `topId`）；
+        // 这里只管会话路由 —— 换会话后重连、重发都可能让老响应晚到。
+        if (msg.sessionId !== this.currentId) break;
+        if (typeof msg.before !== "string") break;
+        this.chat.prepend(msg.before, (msg.items ?? []) as Item[], msg.hasMore === true);
         break;
       case "item.add":
         if (msg.sessionId !== this.currentId) break;
@@ -1593,6 +1622,13 @@ export class App {
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
         this.fillExt();
         break;
+      case "preview.open": {
+        // #224: `open_preview` 工具 → 桥 → 正在看这个会话的页面，在这里落到 viewer 上。
+        // 桥现在要回执才算打开（复审）：页面接住了回 ok:true，被编辑器拦下回 declined，
+        // 不在看这个会话就回 stale —— 让同会话其它页签接住的那一回不被盖掉。
+        void this.answerPreviewOpen(msg);
+        break;
+      }
       case "editor.set": {
         // ctx.ui.setEditorText: the extension replaces what is in the editor, like in the terminal.
         if (msg.sessionId !== this.currentId) break;
@@ -1970,6 +2006,39 @@ export class App {
       case "settings.error":
         this.flashSettings(String(msg.message ?? tr("保存失败")), true);
         break;
+      // ------------------------------------------------------- 子代理扫盘（#212）
+      case "subagents.agents": {
+        // 只接当前会话 cwd 的那份：慢回答不能把这一页换成别的项目的扫描结果。
+        const scan = msg as SubagentScan;
+        if ((scan.cwd ?? "") !== (this.session?.cwd ?? "")) break;
+        this.subagentsScan = scan;
+        if (this.sheetKind === "settings" && this.settingsTab === "subagents") this.paintSettings();
+        break;
+      }
+      case "subagents.acp": {
+        this.subagentsAcp = {
+          path: String(msg.path ?? ""),
+          exists: Boolean(msg.exists),
+          error: msg.error == null ? null : String(msg.error),
+          config: (msg.config ?? { enabled: null, maxDepth: null, maxConcurrent: null, thinkingLevel: null }) as AcpDelegateView["config"],
+        };
+        this.subagentsAcpLoadError = null;
+        this.subagentsAcpSaving = false;
+        this.subagentsAcpSaveError = null;
+        if (msg.saved) this.flashSettings(tr("acp_delegate 已保存（写的是 billion-context 的配置文件，对新会话生效）"));
+        if (this.sheetKind === "settings" && this.settingsTab === "subagents") this.paintSettings();
+        break;
+      }
+      case "subagents.acp.error": {
+        const path = String(msg.path ?? "");
+        const message = String(msg.message ?? tr("读不了这个文件"));
+        // 还没拿到任何视图 = 读就失败了，整片给错误 + 重试；已经有视图 = 刚保存失败，保住表单内容。
+        if (!this.subagentsAcp) this.subagentsAcpLoadError = { path, message };
+        else this.subagentsAcpSaveError = message;
+        this.subagentsAcpSaving = false;
+        if (this.sheetKind === "settings" && this.settingsTab === "subagents") this.paintSettings();
+        break;
+      }
       case "trust": {
         if (this.session && msg.cwd === this.session.cwd) this.trust = (msg.trust as TrustState) ?? null;
         if (msg.saved) this.flashSettings(tr("信任决定已保存（写在 trust.json，终端里的 pi 也认）"));
@@ -2694,7 +2763,7 @@ export class App {
   }
 
   /**
-   * D188: 分支 chip 单击从「复制」改成「看历史」——复制搬进弹窗的工具条，单击只做一件事，而这件事
+   * D193: 分支 chip 单击从「复制」改成「看历史」——复制搬进弹窗的工具条，单击只做一件事，而这件事
    * 现在有信息量。已经开着就关掉（再点一下等于关），不给第二层模态。
    */
   private openBranchHistory(git: GitInfo): void {
@@ -5517,12 +5586,29 @@ export class App {
     this.sheet = back;
   }
 
-  private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false): Promise<void> {
-    if (!sessionId) return;
+  /**
+   * `preview.open` 的回执（#224 复审）：只有真把 viewer 拉起来了才算「打开了」。
+   * 没在看这个会话（刚关掉 / 切走了）回 `stale`，不动页面；用户在未保存提示里选「留在这里」回 `declined`。
+   */
+  private async answerPreviewOpen(msg: any): Promise<void> {
+    const reqId = String(msg.reqId ?? "");
+    const reply = (ok: boolean, reason?: string) => {
+      if (reqId) this.socket.send({ type: "preview.open.done", reqId, ok, reason });
+    };
+    if (msg.sessionId !== this.currentId) return reply(false, "stale");
+    const target = String(msg.path ?? "");
+    // 桥先解析过路径，空路径不会到这儿；真到了也当成没接住，别把空串送进 viewer。
+    if (!target) return reply(false, "stale");
+    const opened = await this.openPreview(target);
+    reply(opened, opened ? undefined : "declined");
+  }
+
+  private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false): Promise<boolean> {
+    if (!sessionId) return false;
     // 编辑中直接点别的文件：先问一句未保存的改动（D50）。
     const open = this.viewer;
     if (open?.pane === "edit" && open.dirty && open.info?.abs !== path) {
-      if (!(await this.leaveEditor(open))) return;
+      if (!(await this.leaveEditor(open))) return false;
     }
     // 打开一个新文件是历史里的一步；⟳ 刷新、返回/前进自己不算（D63）。
     if (!replace) {
@@ -5547,12 +5633,12 @@ export class App {
     try {
       v.info = await api.preview(sessionId, path);
     } catch (err: any) {
-      if (this.viewer !== v || v.path !== path) return;
+      if (this.viewer !== v || v.path !== path) return false;
       v.error = errText(err);
       this.paintViewer();
-      return;
+      return false;
     }
-    if (this.viewer !== v || v.path !== path) return;
+    if (this.viewer !== v || v.path !== path) return false;
     v.path = v.info.abs;
     // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
     if (!replace) this.retargetTop(path, v.info.abs, sessionId);
@@ -5561,16 +5647,17 @@ export class App {
       const info = v.info;
       this.closeViewer();
       this.openSheet(info);
-      return;
+      return true;
     }
     // #113: CSV / TSV 也在浮窗里，但没有 xlsx 那种元数据——字节由页面自己解码、切格。
     if (/\.(csv|tsv)$/i.test(v.info.name)) {
       const info = v.info;
       this.closeViewer();
       void this.openCsvSheet(info, sessionId);
-      return;
+      return true;
     }
     await this.loadViewerText();
+    return true;
   }
 
   /** #113：CSV / TSV 的浮窗——表格 / 源码两个 tab，编码嗅探在前端（D166），保存仍走文本通道。 */
@@ -8397,6 +8484,7 @@ export class App {
   private paintSettings(): void {
     const sheet = this.sheet?.querySelector(".settings-sheet");
     if (!sheet) return;
+    sheet.classList.toggle("subagents-sheet", this.settingsTab === "subagents");
     const tabs = sheet.querySelector<HTMLElement>(".settings-tabs")!;
     const body = sheet.querySelector<HTMLElement>(".settings-body")!;
     const cwd = this.session?.cwd ?? "";
@@ -8408,6 +8496,7 @@ export class App {
       ["login", tr("登录 / 凭据")],
       ["passphrase", tr("口令")],
       ["ext", tr("扩展与 MCP")],
+      ["subagents", tr("子代理")],
       ["notify", tr("通知")],
       ["runtime", tr("运行时")],
       ["changelog", tr("更新日志")],
@@ -8420,6 +8509,13 @@ export class App {
         this.flashSettings("");
         if (id === "runtime") this.socket.send({ type: "runtime.stats" });
         if (id === "passphrase") this.askPassphrase();
+        if (id === "subagents") {
+          // 进 tab 时把 settings.json 也重问一遍：路径与字段不能是开 panel 那一刻的旧值。
+          this.socket.send({ type: "settings.get", scope: "global" });
+          if (cwd) this.socket.send({ type: "settings.get", scope: "project", cwd });
+          this.requestSubagentsAgents();
+          this.requestSubagentsAcp();
+        }
         this.paintSettings();
       };
       tabs.append(b);
@@ -8432,6 +8528,7 @@ export class App {
     if (this.settingsTab === "notify") return this.paintNotify(body);
     if (this.settingsTab === "runtime") return this.paintRuntime(body);
     if (this.settingsTab === "changelog") return this.paintChangelog(body);
+    if (this.settingsTab === "subagents") return this.paintSubagents(body);
     const scope = this.settingsTab;
     const view = this.settingsView[scope];
     if (!view || (scope === "project" && view.cwd !== cwd)) {
@@ -8439,6 +8536,69 @@ export class App {
       return;
     }
     this.paintSettingsForm(body, view);
+  }
+
+  /**
+   * `#212`：这一页只问一次盘 —— 进 tab 问，换出去再回来重问（文件可能刚在编辑器里改过）。
+   * 扫盘是机器级的，和页内 global / project 开关无关，所以只在进 tab 时发。
+   */
+  private requestSubagentsAgents(): void {
+    const cwd = this.session?.cwd ?? "";
+    this.subagentsScanFor = cwd;
+    this.subagentsScan = null;
+    this.socket.send({ type: "subagents.agents", cwd: cwd || null });
+  }
+
+  /**
+   * `#215`：acp_delegate 那一半写的是 billion-context 的配置文件，和 settings.json 不同一份，
+   * 所以进 tab 时单独问一次；页内的 global / project 开关对它不生效。
+   */
+  private requestSubagentsAcp(): void {
+    this.subagentsAcpLoadError = null;
+    this.socket.send({ type: "subagents.acp.get" });
+  }
+
+  private paintSubagents(body: HTMLElement): void {
+    const cwd = this.session?.cwd ?? "";
+    const scope = this.subagentsScope === "project" && cwd ? "project" : "global";
+    const view = this.settingsView[scope];
+    // 项目视图可能还是上一个会话的（view.cwd 不匹配），拿来当当前路径行就是抹谎。
+    const ready = view && (scope === "global" || view.cwd === cwd) ? view : null;
+    paintSubagentsPage(body, {
+      scope,
+      cwd,
+      view: ready,
+      scan: this.subagentsScanFor === cwd ? this.subagentsScan : null,
+      models: this.models.map((model) => ({ provider: model.provider, id: model.id })),
+      projectEnabled: Boolean(cwd),
+      onScope: (next) => {
+        this.subagentsScope = next;
+        this.paintSettings();
+      },
+      onEditJson: () => {
+        if (ready) this.paintSettingsJson(body, ready);
+      },
+      onSave: (patch) => {
+        if (!ready) return;
+        this.act(() =>
+          this.socket.send({ type: "settings.set", scope, ...(scope === "project" ? { cwd: ready.cwd } : {}), patch }),
+        );
+      },
+      acp: {
+        view: this.subagentsAcp,
+        loadError: this.subagentsAcpLoadError,
+        saving: this.subagentsAcpSaving,
+        saveError: this.subagentsAcpSaveError,
+        // 对外到公网时写文件要过 step-up；本机 / 局域网 act() 直接跑。
+        onSave: (patch: AcpDelegatePatch) => {
+          this.subagentsAcpSaving = true;
+          this.subagentsAcpSaveError = null;
+          this.act(() => this.socket.send({ type: "subagents.acp.set", patch }));
+          this.paintSettings();
+        },
+        onReload: () => this.requestSubagentsAcp(),
+      },
+    });
   }
 
   /**
@@ -8717,6 +8877,8 @@ export class App {
     const get = (key: string): SettingsCell => readPath(data, key);
     const defaults = (view.defaults ?? {}) as Record<string, unknown>;
     // Project page: 「默认」 is what you actually get, so a global value wins over pi's factory one.
+    // SAFETY: 全局那一层和会话自己的一样是任意 JSON 设置；这里只当「按 key 取值的容器」用，
+    // 取不到就是 undefined，形状不对也不会被当成某个具体值。
     const parentData = (scope === "project" ? (this.settingsView.global?.json ?? null) : null) as unknown as SettingsCellOf | null;
     const parentGet = (key: string): SettingsCell => readPath(parentData, key);
     const fmtSetting = (v: unknown): string | null => {
@@ -12469,6 +12631,8 @@ export class App {
    */
   private closeCurrentSession(): void {
     if (!this.currentId) return;
+    // #224 复审：告诉桥「这张页面不再看它了」。否则桥还会对已关掉的页面投递、并把它当成功。
+    this.socket.send({ type: "unsubscribe", sessionId: this.currentId });
     this.switchDraft(null);
     this.currentId = null;
     this.session = null;
@@ -12903,7 +13067,7 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["logout", tr("登出某个 provider")],
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "notify" | "runtime" | "changelog";
+type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "runtime" | "changelog";
 
 interface ExtPackage {
   scope: "user" | "project";
