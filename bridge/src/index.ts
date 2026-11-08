@@ -298,7 +298,7 @@ async function main(): Promise<void> {
       return null;
     }
   };
-  const sessions = new SessionManager(pi.cli, `http://127.0.0.1:${cfg.port}/api/ask`);
+  const sessions = new SessionManager(pi.cli, `http://127.0.0.1:${cfg.port}`);
   /** D113: one writer per shared resource (`npm` root, each settings scope, each mcp.json). */
   const writeLock = createWriteLock();
   /**
@@ -365,7 +365,7 @@ async function main(): Promise<void> {
     } catch {
       /* 理由不需要请求体，读不到就算了 */
     }
-    const session = body?.token ? sessions.byAskToken(String(body.token)) : null;
+    const session = body?.token ? sessions.byLoopbackToken(String(body.token)) : null;
     log(`ask rejected (${why})${session ? ` for ${session.state.id.slice(0, 8)}` : ""}`);
     if (session) session.notice(text, "warn");
     else broadcast({ type: "notice", text, level: "warn" });
@@ -418,7 +418,7 @@ async function main(): Promise<void> {
       }
       // The token is the identity: it resolves to exactly one session, so nothing in the body can
       // claim to be another one.
-      const session = sessions.byAskToken(String(body.token ?? ""));
+      const session = sessions.byLoopbackToken(String(body.token ?? ""));
       if (!session) {
         log(`ask rejected: bad token from ${peer}`);
         return json(res, 403, { error: "bad token" });

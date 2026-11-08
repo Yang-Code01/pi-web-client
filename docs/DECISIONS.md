@@ -284,6 +284,8 @@
 
 **可改：** 想让「新会话默认允许提问」变成开关、或把抽屉改成行内展开（不遮住会话），都只动 `web/src/app.ts` 的 `openAskSheet` + `styles.css` 的 `.ask-sheet`。
 
+**#224 起（预备重构）：** 这份凭据不再只给「问用户」用，名字跟着改成中性的回环通道 —— env 是 `PI_WEB_LOOPBACK`（回环 origin，不是某个端点）+ `PI_WEB_LOOPBACK_TOKEN`，`Session.askToken` / `askUrl` → `loopbackToken` / `loopbackUrl`，`SessionManager.byAskToken` → `byLoopbackToken`。路由仍是 `/api/ask`；全局两个扩展同时认旧名 `PI_WEB_ASK`，旧桥起的会话不受影响。
+
 ## D48 会话管理：置顶 / 拖拽排序 / 归档 / 删除都只动 `state/manage.json`，删除才碰文件
 
 **需求：** 侧栏要能管理（m00507），用户在三个样张里选了 **A+C**：单列表 + 置顶拖拽 + 管理模式多选（样张留在 `.scratch/session-manage/`）。
