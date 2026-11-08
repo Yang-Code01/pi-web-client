@@ -154,11 +154,6 @@ export class App {
   private sessions: SessionState[] = [];
   private tunnel: TunnelState;
   private currentId: string | null = null;
-  /**
-   * #220: 已经发出去、还没回来的那次「往前翻一页」。同一个 `before` 的响应重复到达（重连、慢回复）
-   * 只会被用一次 —— 聊天区自己那边也拿 `loadingOlder` 挡住没人要的页。
-   */
-  private historyBefore: string | null = null;
   private session: SessionState | null = null;
   private approvals: ApprovalRequest[] = [];
   /** Questions from the model waiting for an answer (PLAN-ask.md). */
@@ -784,10 +779,8 @@ export class App {
     // #202 / D183: 失败气泡上的第二条路 —— 不重试，把没发出去的那条放回输入框。
     this.chat.onWithdraw = () => this.withdrawFailed();
     // #220: 顶端「载入更早」—— 要的是 `topId` 之前那 60 条，桥切成纯内存一页（不改协议其他部分）。
-    this.chat.onLoadOlder = (before) => {
-      this.historyBefore = before;
-      this.socket.send({ type: "history.before", sessionId: this.currentId, before });
-    };
+    // 只负责转发：这一页还认不认（`before` 是不是当前 `topId`）由 ChatView 自己判断。
+    this.chat.onLoadOlder = (before) => this.socket.send({ type: "history.before", sessionId: this.currentId, before });
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
   }
@@ -1466,17 +1459,18 @@ export class App {
         // #221: 带 `history` 的 items 帧（首帧 / 分支切换 / 唤醒续接 / 重连重订阅）是**末尾一整页**，
         // 永远整页替换；「载入更早」走的是另一条 `history` 帧，不从这里插进旧内容前面。
         // `history` 仍然要传：整页替换完，顶端那一行才知道后面还有没有更早的（#220）。
+        // 这是 #221 的既定取舍：整页替换意味着重连后回到最后一页，已经翻出来的更早内容不保留。
         this.chat.reset((msg.items ?? []) as Item[], msg.history as SessionHistory | undefined);
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
         this.syncContinueButton();
         break;
       case "history":
-        // #220: 一页更早的内容。只认自己发出去的那一页：换会话前后重连、重发都可能让老响应晚到。
+        // #220: 一页更早的内容。归属由 ChatView 认（`before` 是否等于它当前的 `topId`）；
+        // 这里只管会话路由 —— 换会话后重连、重发都可能让老响应晚到。
         if (msg.sessionId !== this.currentId) break;
-        if (typeof msg.before !== "string" || msg.before !== this.historyBefore) break;
-        this.historyBefore = null;
-        this.chat.prepend((msg.items ?? []) as Item[], msg.hasMore === true);
+        if (typeof msg.before !== "string") break;
+        this.chat.prepend(msg.before, (msg.items ?? []) as Item[], msg.hasMore === true);
         break;
       case "item.add":
         if (msg.sessionId !== this.currentId) break;

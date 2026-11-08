@@ -13,6 +13,12 @@ export interface HistoryPage extends SessionHistory {
   items: Item[];
 }
 
+/** 一帧整页历史的正文（`items` / `session` 帧共用）。 */
+export interface HistoryFrame {
+  items: Item[];
+  history: SessionHistory;
+}
+
 /** `history.before` 的响应体（协议见 #220）。 */
 export interface HistorySlice {
   items: Item[];
@@ -37,10 +43,22 @@ function pageStart(items: Item[], end: number, limit: number): number {
   return cut;
 }
 
-/** 末尾一页：打开 / 切换 / 新建会话时 `session` 帧带的就是它。 */
+/**
+ * 末尾一页：打开 / 切换 / 新建会话时 `session` 帧带的就是它。
+ */
 export function tailPage(items: Item[], limit = HISTORY_PAGE_SIZE): HistoryPage {
   const start = pageStart(items, items.length, pageSize(limit));
   return { items: items.slice(start), hasMore: start > 0, total: items.length };
+}
+
+/**
+ * 整页帧的正文。普通会话是末尾一页；`full` 是随手问 —— 它没有「载入更早」的入口
+ * （spec #218 Out of Scope），超过一页也只能整段下发，否则前面的话会静默消失。
+ */
+export function itemsFrame(items: Item[], opts: { full?: boolean } = {}): HistoryFrame {
+  if (opts.full) return { items, history: { hasMore: false, total: items.length } };
+  const page = tailPage(items);
+  return { items: page.items, history: { hasMore: page.hasMore, total: page.total } };
 }
 
 /**

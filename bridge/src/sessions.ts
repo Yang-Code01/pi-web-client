@@ -21,7 +21,7 @@ import { sampleMemory } from "./runtime.ts";
 import { defaultPermission } from "./permissiondefault.ts";
 import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
 import { isProtocolWidgetLines } from "./extwidgets.ts";
-import { tailPage, type SessionHistory } from "./history.ts";
+import { itemsFrame, type SessionHistory } from "./history.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -970,8 +970,7 @@ export class Session extends EventEmitter {
       const prefix = before.length <= this.items.length && before.every((it, i) => it.id === this.items[i].id);
       if (!prefix) {
         // #221: 分支切换换掉的是整条对话 —— 与首帧同一个规矩，只推末尾一页 + `history`。
-        const page = tailPage(this.items);
-        this.emitWs({ type: "items", sessionId: this.state.id, items: page.items, history: { hasMore: page.hasMore, total: page.total } });
+        this.emitWs({ type: "items", sessionId: this.state.id, ...this.tailFrame() });
       } else {
         // Same ids can still carry new content: a tool card gets its result from a later line.
         for (let i = 0; i < before.length; i++) {
@@ -1161,8 +1160,7 @@ export class Session extends EventEmitter {
     // A resumed session starts with the transcript pi already wrote to disk.
     if (opts.resume) this.loadFromFile();
     // #221: 唤醒续接同样只推末尾一页，不然休眠一个大会话再叫醒，页面又要等整段。
-    const page = tailPage(this.items);
-    this.emitWs({ type: "items", sessionId: id, items: page.items, history: { hasMore: page.hasMore, total: page.total } });
+    this.emitWs({ type: "items", sessionId: id, ...this.tailFrame() });
     void this.refreshStats();
   }
 
@@ -2431,10 +2429,18 @@ export class Session extends EventEmitter {
   /**
    * #219：`session` 帧只带末尾一页。`items` 仍然是这一页的原文，同帧用 `history` 说清
    * 还有没有更早的、整段一共多少条 —— 老前端不认 `history`，照旧只画这一页。
+   * 随手问例外：它没有「载入更早」，整段下发（`itemsFrame`）。
    */
   pagedSnapshot(): SessionSnapshot & { history: SessionHistory } {
-    const page = tailPage(this.items);
-    return { ...this.snapshot(), items: page.items, history: { hasMore: page.hasMore, total: page.total } };
+    return { ...this.snapshot(), ...this.tailFrame() };
+  }
+
+  /**
+   * 三处整页帧（分支切换 / 唤醒续接 / 快照）共用的正文：普通会话是末尾一页，随手问整段。
+   * 随手问若也切页，累积超过一页后前面的话会在下一次唤醒时静默消失 —— 界面上没有入口能取回来。
+   */
+  private tailFrame(): { items: Item[]; history: SessionHistory } {
+    return itemsFrame(this.items, { full: Boolean(this.state.scratch) });
   }
 
   idleFor(): number {
