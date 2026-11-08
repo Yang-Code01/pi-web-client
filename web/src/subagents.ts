@@ -9,6 +9,7 @@
  */
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
+import { paintAcpDelegateSection, type AcpDelegateSection } from "./subagents-acp.ts";
 
 export type AgentSource = "package" | "user" | "project" | "scan";
 
@@ -45,6 +46,8 @@ export interface SubagentsPage {
   /** 这一页打开时问的那次扫盘；null = 还在等桥回答。 */
   scan: SubagentScan | null;
   projectEnabled: boolean;
+  /** acp_delegate 那一半（#215）：写的是 billion-context 的文件，与上面的 settings.json 无关。 */
+  acp: AcpDelegateSection;
   onScope(scope: "global" | "project"): void;
   onEditJson(): void;
 }
@@ -201,7 +204,7 @@ export function paintSubagentsPage(body: HTMLElement, page: SubagentsPage): void
   }
 
   placeholder("advanced", tr("高级"));
-  placeholder("acp", "acp_delegate");
+  paintAcpDelegateSection(section("acp"), page.acp);
 
   body.append(wrap);
 }
