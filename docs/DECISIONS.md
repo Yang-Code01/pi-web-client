@@ -3179,7 +3179,7 @@ D
 
 **验证：** `npm run test:githist`（新）—— 现搭裸库当 origin，断言分类（左 2 独有 + 3 公共、右侧 3 条 common）、ahead/behind、分叉点、`n` 下限 10、分页 `more`、`gitFetch` 之后 behind 从 0 变 1 且分叉点不动、空仓库 `empty`、非仓库 `null`、坏对照分支 `base_unknown`、detached HEAD 能读。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1680 keys × 3 langs`）。
 
-## D194 关隧道：回包先走、再杀 cloudflared；hello 的隧道快照只许往新了盖
+## D194 关隧道：回包先走、再杀 cloudflared；hello 的隧道快照只许往新了盖（#236）
 
 **问题（用户报「关闭公网隧道点击不生效，没反应」）：** 从公网页面（quick tunnel 地址）点「关掉公网隧道」时，桥端先 `tunnel.stop()` 杀 cloudflared，再写响应 —— 回包要穿回的那条隧道此刻已经死了，浏览器拿到的是 Cloudflare 的 502 HTML，`api.tunnel()` 抛错；而按钮的 `.catch(() => null)` 把错误吞了、标签照旧，于是「点了没反应」。本机（127.0.0.1）点同一颗按钮一切正常，只有公网页面才会踩到，所以一直没被发现。
 
@@ -3187,15 +3187,19 @@ D
 
 **决定：**
 
-1. **stop 分支自己写响应，`res.end` 回调里再等 `TUNNEL_STOP_GRACE_MS = 400` 才 `tunnel.stop()`**（`bridge/src/index.ts` 的 `/api/tunnel`）。state 由路由现造：`{ ...tunnel.state, status: "off", url: null, error: null, updatedAt: Date.now() }`，不回读 `tunnel.state`。start 分支照旧先动作再回包（它不拆任何东西）。
-2. **grace 是经验值，不是同步点**：`res.end` 回调只保证数据交给了内核，cloudflared 还得把它转给 Cloudflare 边缘。400 ms 在本机实测够用（curl 走公网 URL 能拿到完整 200 + `{"status":"off"}`）；真要更保险得让 cloudflared 优雅退出，而 quick tunnel 没有这个接口。
-3. **hello 的隧道快照加门槛**：`if (msg.tunnel && msg.tunnel.updatedAt >= this.tunnel.updatedAt)`。`updatedAt` 是桥端 `Tunnel.setState()` 盖的时间戳，off 快照用路由那一刻的 `Date.now()`，必然 ≥ 任何更早算出的 hello —— 同一个钟，单调比较就够了。
-4. **失败必须说话**：去掉 `.catch(() => null)`，`catch` 里 `flashToast`。公网页面（`me.public`）且动作是 stop 时提示「没收到回包：隧道可能已经关了，这个页面也就断了」（这时候八成真的关了，含糊的报错反而误导），其余给「隧道操作失败：<原因>」。按钮在请求期间 `disabled`，防连点。
-5. **`start()` 也不再装死**：进程还活着但状态停在 `error`（`waitReady` 60 秒超时会留下活进程）时，旧逻辑 `if (this.child) return` 让「开」也点不动；改成换一条新进程。`child.on("exit")` 加 `if (this.child !== child) return` —— 被换掉的旧进程退出不许覆盖新进程的状态。
+1. **stop 分支先走 `json()` 把 off 回出去，再排一个独立的 `setTimeout(TUNNEL_STOP_GRACE_MS = 400)` 去 `tunnel.stop()`**（`bridge/src/index.ts` 的 `/api/tunnel`）。state 由路由现造：`{ ...tunnel.state, status: "off", url: null, error: null, updatedAt: Date.now() }`，不回读 `tunnel.state`。start 分支照旧先动作再回包（它不拆任何东西）。
+2. **定时器不挂在 `res.end` 的回调上**：回调只在数据真的写出去之后才触发，而「socket 已经断了」正是公网页面最常见的现场 —— 挂在那儿，最坏情况是界面翻成 off、cloudflared 还在跑，症状一模一样但更隐蔽。（这条是 review 抓出来的第一版实现错误。）
+3. **grace 是经验值，不是同步点**：`json()` 只保证数据交给内核，cloudflared 还得把它转给 Cloudflare 边缘。400 ms 在本机实测够用（curl 走公网 URL 能拿到完整 200 + `{"status":"off"}`）；真要更保险得让 cloudflared 优雅退出，而 quick tunnel 没有这个接口。
+4. **hello 的隧道快照加门槛**，收进 `web/src/tunnel-snapshot.ts` 的 `newerTunnel()`：`next && next.updatedAt >= prev.updatedAt ? next : prev`。`updatedAt` 是桥端 `Tunnel.setState()` 盖的时间戳，off 快照用路由那一刻的 `Date.now()`，必然 ≥ 任何更早算出的 hello —— 同一个钟，单调比较就够了。抽成模块是为了能在 Node 里单测（`app.ts` 整个类进不了单测环境）。
+5. **失败必须说话**：去掉 `.catch(() => null)`，`catch` 里 `flashToast`。公网页面（`me.public`）且动作是 stop 时提示「没收到回包：隧道可能已经关了，这个页面也就断了」（这时候八成真的关了，含糊的报错反而误导），其余给「隧道操作失败：<原因>」。按钮在请求期间 `disabled`，防连点。
+6. **`start()` 也不再装死**：进程还活着但状态停在 `error`（`waitReady` 60 秒超时会留下活进程）时，旧逻辑 `if (this.child) return` 让「开」也点不动；改成换一条新进程。`child.on("exit")` 加 `if (this.child !== child) return` —— 被换掉的旧进程退出不许覆盖新进程的状态。
+
+**为什么：** 症状是「点了没反应」，但它有两层：回包出不去（用户什么也看不到），和状态被旧快照盖回来（用户看到了，只是看到了错的东西）。只修一层都还是「不生效」，所以回包顺序、失败提示、快照门槛三件事一起做。代价是关隧道晚了 400 ms —— 换来的是「点了有回话，而不是猜」。
 
 **代价 / 可改：**
 
 - 关隧道后 400 ms 内再点「开」会和新进程抢同一份 state；按钮 `disabled` 只在单页面内挡得住。
-- 公网页面的 stop 一旦回包真的丢了，界面无法确认桥侧状态，只能给一句「可能已经关了」；下次 hello 会纠正（D194 第 3 条保证不会往旧了盖）。
+- 公网页面的 stop 一旦回包真的丢了，界面无法确认桥侧状态，只能给一句「可能已经关了」；下次 hello 会纠正（第 4 条保证不会往旧了盖）。
+- **`start()` 的换进程与 exit 守卫没有自动化用例**：要真跑子进程得能 spawn 一个假 cloudflared，Windows 上 `.cmd` 垫片 `spawn` 不了（EINVAL），`Tunnel` 又只吃一个 bin 路径。这条靠手工验（「开」在 error 状态下能把进程换掉），比没测好，但不是测住。
 
-**验证：** `npm run test:tunnel`（协议/参数/框线解析）；新增 `npm run test:tunnel:ui`（`bridge/tests/tunnel-ui.mjs`，自带丢弃式 bridge + Playwright 拦 `/api/tunnel` 造成功/500/回包丢失三种回包，断言 toast 与标签：失败不谎报、成功翻成「关掉公网隧道」并显示地址、回包丢了也要说出来）。真隧道对照：curl 走公网 URL 发 `POST /api/tunnel {"action":"stop"}` 拿到完整 200 + `{"tunnel":{"status":"off"...}}`；Playwright 公网页面连跑两轮点击，标签都在 1 秒内翻回「开公网隧道」。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1764 keys × 3 langs`）。
+**验证：** `npm run test:tunnel`（协议/参数/框线解析 + `web/tests/tunnel-snapshot-unit.mjs`：旧的 hello 盖不回 off、同毫秒收、更新的照收、没带 tunnel 保持原引用）；新增 `npm run test:tunnel:ui`（`bridge/tests/tunnel-ui.mjs`，自带丢弃式 bridge + Playwright 拦 `/api/tunnel` 造成功/500/回包丢失三种回包，断言 toast 与标签：失败不谎报、成功翻成「关掉公网隧道」并显示地址、回包丢了也要说出来）。真隧道对照：curl 走公网 URL 发 `POST /api/tunnel {"action":"stop"}` 拿到完整 200 + `{"tunnel":{"status":"off"...}}`；Playwright 公网页面连跑两轮点击，标签都在 1 秒内翻回「开公网隧道」。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1764 keys × 3 langs`）。

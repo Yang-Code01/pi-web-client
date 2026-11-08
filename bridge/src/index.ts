@@ -1080,12 +1080,12 @@ async function main(): Promise<void> {
       if (body.action !== "stop") return json(res, 200, { tunnel: tunnel.state });
       // 公网页面点「关掉公网隧道」时，这个请求是**穿过 cloudflared** 才到这里的：回包也得穿回去。
       // 先 stop 的话 cloudflared 当场死掉，浏览器拿到的是 Cloudflare 的 502 HTML，页面只能停在旧状态
-      // ——用户看到的就是「点了没反应」。所以先把响应写出去、等它离开 socket，再停（用例：tunnel-ui）。
+      // ——用户看到的就是「点了没反应」。所以先把响应写出去，隔 TUNNEL_STOP_GRACE_MS 再停。
       const off: TunnelState = { ...tunnel.state, status: "off", url: null, error: null, updatedAt: Date.now() };
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      res.end(JSON.stringify({ tunnel: off }), () => {
-        setTimeout(() => tunnel.stop(), TUNNEL_STOP_GRACE_MS).unref?.();
-      });
+      json(res, 200, { tunnel: off });
+      // 定时器不挂在 `res.end` 的回调上：socket 已经断了的时候那个回调根本不触发，隧道就永远不停
+      // （而断掉的 socket 正是公网页面最常见的现场）。晚一点无所谓，不停才是 bug。
+      setTimeout(() => tunnel.stop(), TUNNEL_STOP_GRACE_MS).unref?.();
       return;
     }
 

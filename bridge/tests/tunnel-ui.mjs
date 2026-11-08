@@ -44,8 +44,11 @@ fs.rmSync(ROOT, { recursive: true, force: true });
 fs.mkdirSync(STATE, { recursive: true });
 fs.mkdirSync(AGENT, { recursive: true });
 
+// 这件用例不真的开隧道：把 cloudflared 的路径从环境里摘掉（bridge 就找不到它），
+// 而 POST /api/tunnel 本来就被下面的 route 拦下，根本到不了桥。
+const { CLOUDFLARED_BIN: _hideBin, ...inherited } = process.env;
 const env = {
-  ...process.env,
+  ...inherited,
   PI_WEB_PORT: String(PORT),
   PI_WEB_STATE: STATE,
   PI_WEB_TUNNEL: "0",
@@ -53,8 +56,6 @@ const env = {
   PI_WEB_ROOT: path.join(REPO, "web", "dist"),
   PI_AGENT_DIR: AGENT,
 };
-delete env.CLOUDFLARED_BIN;
-// 这件用例不真的开隧道：把 cloudflared 藏起来，POST /api/tunnel 一律由 route 拦下。
 execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
 
 const bridge = spawn(process.execPath, [DIST], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
