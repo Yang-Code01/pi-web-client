@@ -1716,4 +1716,26 @@ export const en: Dict = {
   "生成页面视图": "Build the page view",
   "拖动调整左右比例（双击复原）": "Drag to adjust the split (double-click to reset)",
 "技能文件：{p1}": "Skill file: {p1}",
+  "包内": "Bundled",
+  "用户": "User",
+  "扫描目录": "Scanned folder",
+  "当前文件：{p1}": "Current file: {p1}",
+  "这个文件读不了：{p1}": "Can't read this file: {p1}",
+  "项目 scope 的 subagents.* 写在 <cwd>/.pi/settings.json，随这个 worktree 一起消失；长期偏好请写全局。":
+    "Project-scope subagents.* lives in <cwd>/.pi/settings.json and disappears with this worktree; keep long-lived preferences in Global.",
+  "默认": "Defaults",
+  "行为": "Behavior",
+  "发现与扩展": "Discovery & extensions",
+  "每个子代理": "Per subagent",
+  "占位：这一片只做只读清单，编辑在下一片。": "Placeholder: this slice only lists what is on disk; editing comes next.",
+  "扫了 {p1} 个目录，共读到 {p2} 个 agent 定义（同名后者覆盖前者）。":
+    "Scanned {p1} folders and found {p2} agent definitions (a later one with the same name wins).",
+  "这台机器上没有装 pi-subagents：包内的 agent 目录不存在。装好之后这一页会自动列出来。":
+    "pi-subagents is not installed on this machine, so the bundled agent folder is missing. Once it is installed this page lists it automatically.",
+  "目录不存在": "Folder not found",
+  "一个目录都没扫到。": "No folders were scanned.",
+  "扫描目录里没找到 agent 定义。": "No agent definitions in the scanned folders.",
+  "没有可列的 agent —— 先装 pi-subagents，或者往上面的目录里放 .md。":
+    "No agents to list — install pi-subagents, or drop .md files into the folders above.",
+  "未钉": "Not pinned",
 };
