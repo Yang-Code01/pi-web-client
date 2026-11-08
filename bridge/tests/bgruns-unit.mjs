@@ -333,6 +333,35 @@ syncRuns.noteToolStart("subagent", { agent: "worker", task: "一个孩子" }, "c
 assert.equal(syncRuns.list().length, 0, "单跑前台不立卡");
 syncRuns.noteToolStart("subagent", { action: "status", id: FG_ID }, "call_00_queries0001");
 assert.equal(syncRuns.list().length, 0, "action:status 是查询，不是派活");
+// 缺省 / `async:true` 是后台：那张卡由 `tool_execution_end` 建，这里再建就是双卡。
+syncRuns.noteToolStart("subagent", { workflow: "parallel", args: { tasks: [{ agent: "worker", task: "甲" }, { agent: "worker", task: "乙" }] } }, "call_00_background0001");
+assert.equal(syncRuns.list().length, 0, "后台并行不在开始建卡");
+syncRuns.noteToolStart("subagent", { workflow: "parallel", async: true, args: { tasks: [{ agent: "worker", task: "甲" }, { agent: "worker", task: "乙" }] } }, "call_00_background0002");
+assert.equal(syncRuns.list().length, 0, "显式 async:true 也是后台");
+
+// 脚本式前台 workflow（没有 `args.tasks`）：任务原文只能从孩子的 `sessionName` 兑底。
+const scriptFgId = "call_00_ETscriptfg0001";
+const scriptFgRoot = mkdtempSync(join(tmpdir(), "pi-subagents-sfg-"));
+const scriptChild = join(scriptFgRoot, "async-subagent-runs", "33333333-3333-4333-8333-333333333333");
+mkdirSync(scriptChild, { recursive: true });
+const scriptFg = new BgRuns(() => {});
+scriptFg.noteToolStart("subagent", { workflow: true, async: false }, scriptFgId);
+assert.equal(scriptFg.list()[0]?.task, "", "派活那刻确实没有任务原文");
+writeFileSync(
+  join(scriptChild, "status.json"),
+  JSON.stringify({
+    mode: "single",
+    state: "running",
+    parentWorkflowRunId: scriptFgId,
+    workflowKey: "task-1",
+    startedAt: Date.now() + 1000,
+    steps: [{ agent: "planner", sessionName: "planner: 拆一下这个需求再分下去", status: "running" }],
+  }),
+);
+scriptFg.prune();
+assert.equal(scriptFg.list()[0]?.agent, "planner");
+assert.equal(scriptFg.list()[0]?.task, "拆一下这个需求再分下去", "任务原文从 sessionName 兑底");
+rmSync(scriptFgRoot, { recursive: true, force: true });
 rmSync(fgRoot, { recursive: true, force: true });
 
 // ---------------------------------------------------------------- 读痕迹

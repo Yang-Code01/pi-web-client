@@ -264,7 +264,7 @@ try {
   let sheet = page.locator(".sheet.bg-sheet");
   await sheet.waitFor({ timeout: 5000 }).catch(() => {});
   check("点横幅能开详情", (await sheet.count()) === 1);
-  check("标题是「后台子代理」", /后台子代理/.test(await page.locator(".sheet.bg-sheet .sheet-title").innerText().catch(() => "")));
+  check("标题是「子代理」", /^子代理$/.test((await page.locator(".sheet.bg-sheet .sheet-title").innerText().catch(() => "")).trim()));
   const cardText = await page.locator(".bg-run").innerText().catch(() => "");
   check("详情里写着是谁", /researcher/.test(cardText), JSON.stringify(cardText.slice(0, 120)));
   check("详情里写着派了什么活", /look at the files/.test(cardText), JSON.stringify(cardText.slice(0, 120)));

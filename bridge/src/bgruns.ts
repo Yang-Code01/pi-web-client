@@ -1,5 +1,6 @@
 /**
- * 后台子代理（D170 / D172）：会话自己已经 settle，派出去的 runner 还在跑。
+ * 子代理（D170 / D172 / D186）：会话自己已经 settle，派出去的 runner 还在跑。前台派活
+ * （`async:false`）是例外 —— 它还在同一轮里，卡片只是为了让人看得见它在干什么。
  *
  * pi 只在 `tool_execution_end` 的 `details` 里承认一次「有这么个 run」：
  *
@@ -32,7 +33,8 @@ const ACP_DIR = join(tmpdir(), "acp-delegate");
 const TASK_LINE = /^Task:[ 	]*(.+)$/m;
 const LIVE_LOG = /Live activity is streaming to `([^`]+)`/;
 /** pi-subagents 的 async 目录：`<tmpdir>/pi-subagents-<scope>/async-subagent-runs/<id>/`。 */
-const SUBAGENTS_TMP = join(tmpdir(), "pi-subagents-");
+const SUBAGENTS_PREFIX = "pi-subagents-";
+const SUBAGENTS_TMP = join(tmpdir(), SUBAGENTS_PREFIX);
 /**
  * 只有这两个工具会「派一个后台子代理」。别的工具结果里出现同样的句子（读文档、看日志、
  * `grep` 到 D170 自己那段说明）不算 —— D172 的幽灵任务就是这么造出来的。
@@ -205,6 +207,8 @@ interface FgChild {
   /** `workflowKey`（`task-1` …），派活列表里的序号。 */
   key: string;
   agent: string;
+  /** `steps[0].sessionName` 去掉 `agent: ` 前缀 —— 只在缺任务原文时兜底用（runner 截过）。 */
+  task?: string;
   state: string;
   startedAt?: number;
   endedAt?: number;
@@ -320,8 +324,7 @@ function workflowTimeline(file: string, limit: number): string | undefined {
     }
     const ts = typeof ev.ts === "number" ? ev.ts : 0;
     if (!base) base = ts;
-    const rel = base && ts ? ((ts - base) / 1000).toFixed(1) : "?";
-    const stamp = `${rel.padStart(7)}s`;
+    const stamp = base && ts ? clock(ts, base) : "      ?s";
     const type = String(ev.type ?? "");
     if (type === "subagent.workflow.trace") continue; // 累积快照，下面三条骨架已经覆盖
     if (type === "subagent.child-status") {
@@ -338,6 +341,11 @@ function workflowTimeline(file: string, limit: number): string | undefined {
   if (!lines.length) return undefined;
   const text = lines.join("\n");
   return text.length > limit ? `…\n${text.slice(-limit)}` : text;
+}
+
+/** 时间线的一列：相对 `base` 的秒数，右对齐 7 位（`    8.6s`），两条时间线共用。 */
+function clock(at: number, base: number): string {
+  return `${(Math.max(0, at - base) / 1000).toFixed(1).padStart(7)}s`;
 }
 
 /**
@@ -374,7 +382,7 @@ function subagentRoots(): string[] {
   const roots: string[] = [];
   try {
     for (const name of readdirSync(tmpdir())) {
-      if (!name.startsWith("pi-subagents-")) continue;
+      if (!name.startsWith(SUBAGENTS_PREFIX)) continue;
       const root = join(tmpdir(), name);
       if (existsSync(join(root, "async-subagent-runs"))) roots.push(root);
     }
@@ -411,10 +419,12 @@ function fgChildren(parentId: string, since: number): FgChild[] {
       const obj = statusObject(dir);
       if (!obj || obj.parentWorkflowRunId !== parentId) continue;
       const step = Array.isArray(obj.steps) ? (obj.steps[0] as Record<string, unknown> | undefined) : undefined;
+      const raw = typeof step?.sessionName === "string" ? step.sessionName.replace(/^[^:]+:\s*/, "") : "";
       out.push({
         id: name,
         key: typeof obj.workflowKey === "string" ? obj.workflowKey : "",
         agent: typeof step?.agent === "string" ? step.agent : "",
+        ...(raw ? { task: raw } : {}),
         state: typeof obj.state === "string" ? obj.state : "",
         ...(typeof obj.startedAt === "number" ? { startedAt: obj.startedAt } : {}),
         ...(typeof obj.endedAt === "number" ? { endedAt: obj.endedAt } : {}),
@@ -439,8 +449,7 @@ function fgTimeline(run: BgRun, limit: number): string | undefined {
   }
   rows.sort((a, b) => a.at - b.at);
   // 孩子可能比派活那刻早一两秒落盘（时钟粒度 / 派发顺序），负数没有意义，底到 0。
-  const at = (ms: number) => `${(Math.max(0, ms - run.startedAt) / 1000).toFixed(1).padStart(7)}s`;
-  const text = rows.map((r) => `${at(r.at)}  ${r.text}`).join("\n");
+  const text = rows.map((r) => `${clock(Math.max(0, r.at), run.startedAt)}  ${r.text}`).join("\n");
   return text.length > limit ? `…\n${text.slice(-limit)}` : text;
 }
 
@@ -504,6 +513,9 @@ export class BgRuns {
     const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
     // `subagent({action:"status"|"guide"|…})` 是查询，不是派活。
     if (typeof a.action === "string") return;
+    // 只有显式 `async:false` 才是前台；缺省 / `true` 是后台，它在 `tool_execution_end` 自己建卡
+    // （这里再建一张就是双卡，而且没有任何完成信号能收掉它，得等 `SILENT_DEAD_MS`）。
+    if (a.async !== false) return;
     const kids = taskList(a);
     const workflow = Boolean(a.workflow);
     // 单跑的前台调用不立卡：会话本来就没 settle，操作行已经在显示它了（可改，见 D186 代价）。
@@ -731,11 +743,15 @@ export class BgRuns {
             run.children = kids;
             changed = true;
           }
-          if (!run.agent && kids.length) {
-            // 只补 agent：前台的 task 在派活那刻就从 `args` 拿刐了，孩子目录里只有被截断的 sessionName。
-            const summary = summarizeChildren(kids.map((k) => ({ agent: k.agent, task: "" })));
-            if (summary.agent) {
+          if (!run.agent || !run.task) {
+            // 前台没有父 run 可回填；孩子目录里只有被截断的 `sessionName`，但比空着强。
+            const summary = summarizeChildren(kids.map((k) => ({ agent: k.agent, task: k.task ?? "" })));
+            if (!run.agent && summary.agent) {
               run.agent = summary.agent;
+              changed = true;
+            }
+            if (!run.task && summary.task) {
+              run.task = summary.task;
               changed = true;
             }
           }
