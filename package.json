@@ -36,6 +36,8 @@
     "test:pending": "node --experimental-transform-types web/tests/pending-unit.mjs",
     "test:continue": "node --experimental-transform-types web/tests/continue-unit.mjs",
     "test:bgruns": "node --experimental-transform-types bridge/tests/bgruns-unit.mjs",
+    "test:whatsnew": "node --experimental-transform-types bridge/tests/whatsnew-unit.mjs",
+    "test:whatsnew:ui": "node bridge/tests/whatsnew-ui.mjs",
     "test:tunnel": "node --experimental-transform-types bridge/tests/tunnel-unit.mjs",
     "test:extwidgets": "node --experimental-transform-types bridge/tests/extwidgets-unit.mjs",
     "test:failures": "node --experimental-transform-types web/tests/failures-unit.mjs",

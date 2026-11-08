@@ -3204,3 +3204,57 @@ D
 - **`renderAsks()` / `fillExt()` 里各多一次 `placeFailCta()`**：是防御，不是必须 —— 提问卡与扩展块只在轮次里出现，那时 ⚡ 本来就不亮；但 `remove()` / `replaceChildren()` 会连孩子一起删，按钮会悬在已卸掉的节点上。
 
 **验证：** `npm run test:failures`（38 项，其中 8 项是 `ctaHost`：空 / 接管条 / 多块取最后 / absolute 跳过 / hidden 跳过 / 未登记→float / 卡片 / 多类名，另含「审批卡不认」）；`npm run test:failcta:ui`（13 项，丢弃式桥 + 真 Chromium：无条时是 `absolute` 浮层、让回终端后 ⚡ 进接管条且与「接管会话」矩形不相交、420px 并排不重叠、340px 换行到文字下一行、点开的小卡贴在 ⚡ 上方 8px 且不出视口、轮次进行中按钮不亮）；`node bridge/tests/failures-ui.mjs` 44/44；`npm --prefix web run typecheck`（i18n 1736 键不变，本次没加界面文案）。
+
+## D195 设置页两本账：pi 的更新日志照旧，本项目的读检出根 `CHANGELOG.md`（无票，用户要求）
+
+**问题：** 设置里那个「更新日志」tab 一直读的是**装机里 pi 包**的 `CHANGELOG.md`（`changelog(pi.cli)`），页面上没有一处是「这个网页客户端自己改了什么」。想知道本项目的进展只能翻 459 条 commit 或 158 条 D；而人手写日志的代价，正是这个仓库一直没写日志的原因。
+
+**决定：**
+
+1. 日志走检出根的 **`CHANGELOG.md`** 一个文件，按**日期分批**，批内分「新增 / 修复 / 设计决定」三组，每条一句、结尾带 `#PR` 或 `D编号`。不伪造 semver、不打 tag、不建 release。
+2. 桥新增 `GET /api/changelog?scope=self`（`bridge/src/whatsnew.ts` 的 `selfChangelog()`），读 `<检出根>/CHANGELOG.md`，附带根 `package.json` 的 version、当前分支与短 SHA，以及检出根的绝对路径（正文里的 `docs/DECISIONS.md` 这类相对链接按它解析，与会话 cwd 无关）；不带 `scope` 的老请求原样返回 pi 的那份，`/changelog` 的语义一点没动。
+3. 设置页新开 tab「本项目更新日志」，键盘命令 `/whatsnew` 直达；旧 tab 在中文里更名「pi 更新日志」。两个 tab 并排而不是二选一：一个是「pi 这个程序的版本说明」，一个是「我们这层的版本说明」，混在一页两边都失真。面板标题也跟着 tab 走（`pi 设置` / `pi 更新日志` / `本项目更新日志`）。
+4. **日志由 AI 写、人来扫一眼**：会话里说一句「写更新日志」，agent 读 `git log --first-parent` 与 `docs/DECISIONS.md`，把新批次插到最上面，走 worktree + PR。文件开头（说明段之后）留两行注释：`<!-- 写到 <SHA> · <日期> -->` 与「从哪些 sha 往后读」；下一批读的是 **`origin/main` 上那份**（D196），不是工作区里的。
+5. 渲染前抹掉 HTML 注释（那是人机锚点，`renderMarkdown` 不认）；截断按**字节**（默认 200 KB），超长保留最新批次、尾巴写「更早的批次略」；文件缺失返回空串，前端显示「这个检出里还没有 CHANGELOG.md」，不是 500。
+
+**为什么：**
+
+- **读文件而不是 build 时内联**：桥读自己所在的那份 checkout，换目录起桥就等于换日志，不需要为了改一行日志重新构建、重启服务。`bridge/src/*.ts` 直跑与 `bridge/dist/*.js` 构建后都落在 `<检出>/bridge/`，往上两层是同一个根。
+- **`scope` 参数而不是新端点**：两个日志的请求形状相同（`{version, text}`），前端只换 url；旧页面（以及任何绕过 UI 的脚本）不会因为新端点出现而改变行为。
+- **不生成 semver**：这个项目没有版本节奏，硬编 `v0.2.0` 只会逼着下次改号。日期 + 主题足够回答「那条改动是什么时候来的」，PR 号负责追到底。
+- **AI 写日志不是噱头**：日志的价值在「结果可读」，而结果就在 commit 与 D 条目里。人写要花一小时，AI 写要一次 PR 审读，而且它天然照着已有段落的语气续写 —— 第一版 8 批 55 条就是子代理读 git log + DECISIONS 产出的。
+
+**代价 / 可改：**
+
+- **日志只记到合并为止**：分支上没合的工作不写（只看 `--first-parent`），页面上说「已经有了」却还在 PR 里会骗人。
+- **`#编号` 不可点**：页面上是纯文本（`/changelog` 那份也不带链接），要点得复制到 GitHub。
+- **桥必须跑在自己的检出里**：从 npm 安装的桥没有 `CHANGELOG.md`，tab 会一直是「还没有」。目前桥只在检出里跑（`npm start`），等真发 npm 包时再决定随包带一份还是让 `scope=self` 返回空。
+- **`git` 子进程**：分支名与短 SHA 靠 `git rev-parse --short HEAD` 与 `git branch --show-current`（两条命令分开跑 —— `--short` 与 `--abbrev-ref` 同条会 `fatal: Needed a single revision`），失败留空串；5 秒缓存，连点 tab 不刷进程。
+- **版本号只有一个 0.1.0**：顶部那行显示的是根 `package.json` 的 version，它不随批次变。要真的改版本就得先有发版流程，这是另一件事。
+
+**验证：** `npm run test:whatsnew`（`bridge/tests/whatsnew-unit.mjs`：版本取根 `package.json`、正文有日期批与 `#PR` / `D` 锚点、HTML 注释不泄漏、120 字节截断带省略尾巴且不出替换符、短 SHA 非空、`root` 指向检出根（detached 时分支本就是空串，只断言类型））；`npm run test:whatsnew:ui`（Playwright + `locale:"zh-CN"` + 7887 上的丢弃式 bridge：两个 tab 并存、本项目页有 `#228`/`#229` 与「当前版本 0.1.0」、pi 页不含我们的批次、面板标题随 tab 变、`/whatsnew` 直达且激活该 tab、点开正文里的 `docs/DECISIONS.md` 后预览里读到的确实是该文件正文（不只看路径））；`npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（`i18n-check: ok — 1740 keys × 3 langs`）；`npm run build`；另用 `curl '/api/changelog?scope=self'` 核对返回 `{version:"0.1.0", branch, commit, text}`，不带 `scope` 仍是 pi 的 1.5.0 那份。
+
+## D196 补日志做成一条命令：`/whatsnew-write` + 项目技能（D195 的下一步）
+
+**问题：** D195 定了「AI 写、人扫眼」，但触发方式还是「在会话里说一句『写更新日志』」。锚点在哪、worktree 开在哪、分支怎么命名、PR 怎么写 —— 每次都靠现场发挥，写出来的批次语气与粒度会飘；也想不起要补的时候，日志就停在那儿。
+
+**决定：**
+
+1. **项目技能** `.pi/skills/whatsnew-write/`：`SKILL.md` 是流程（定位主检出 → fetch → 读锚点 → 列新合并与新 D → 写一批 → worktree 提交 → PR → 停下等合并），`references/writing-rules.md` 是条目怎么写（读者、三组、什么不写、字数、好/坏例子、术语表），`references/commands.md` 是命令与故障处置。带 `disable-model-invocation: true` —— 模型不会自己挑它干活。
+2. **命令** `.pi/prompts/whatsnew-write.md`（提示词模板，`argument-hint` 收补充要求）。模板只做两件事：指向 `SKILL.md` 并交代边界（只改 `CHANGELOG.md`、没有新提交就别开 PR、开完 PR 停），流程细节不复制第二份。
+3. **锚点读 `origin/main` 上的那份**（不是工作区里的），所以别人刚补过、或本地的日志还没合，都不会重写同一段；`git -C "$ROOT" log --first-parent <锚点>..origin/main` 天然只看已合进 main 的。主检出脏不影响 `worktree add`，新分支从 `docs/changelog-<时间戳>` 起。
+
+**为什么：**
+
+- **触发必须是显式的**：写不写取决于「这批有没有值得告诉用户的变化」。全自动就退化成 commit 复读机，而 D195 的前提是「AI 写、人扫眼」，不是「无人值守」。
+- **流程写成文件而不是每次口述**：批次粒度、PR 四段式、账号与代理、失败怎么办，都有据可查；下次是另一个会话（或另一个 agent）来做也一样。
+- **两个入口分工清楚**：`/whatsnew` 看，`/whatsnew-write` 写。
+
+**代价 / 可改：**
+
+- **只对本仓库里跑的 pi 可见**：项目级技能与模板，换目录就没了（和 `pi-web-client-test-dev` 同样的边界）。
+- **模板是纯文本展开**，机器不替它保证顺序；写错了靠 PR 审读与 `references/` 里的自查清单兜。
+- **`skill:` 那份也还在**（`/skill:whatsnew-write`）：两个入口做同一件事，`/` 菜单里会并排出现；名字前缀和查看用的 `/whatsnew` 撞，靠「-write」区分，真觉得绕可以改名（模板文件名就是命令名）。
+- **依赖锚点真实存在**：`CHANGELOG.md` 开头那两行注释被删的话，命令会停下问人，不会自己挑 SHA。
+
+**验证：** 模板展开实测：临时模板 `/zz-argcheck 甲 乙` 在会话记录（`~/.pi/agent/sessions/….jsonl`）里落成 `ARG=[甲 乙] ONE=[甲] TWO=[乙]`，即 `$@` / `$1` / `${2:-默认}` 都按文档展开。在测试实例（17876，本项目 worktree）里新建会话后发 `{"type":"commands"}`，返回的 146 条里有 `whatsnew-write [prompt]` 与 `skill:whatsnew-write [skill]`；只读那几步按文档原样跑通：`--git-common-dir` 反推出 `ROOT=F:/pi-web-client`（从 worktree 里调也一样）、锚点从 `origin/main:CHANGELOG.md` 取到失败时为空串（当前 main 还没有这个文件，属预期）、`10f96a0..origin/main` 数出 2 个合并（#227 / #232）；`git log --first-parent --format='%s' … | grep -oE '#[0-9]+'` 拿到 PR 号。

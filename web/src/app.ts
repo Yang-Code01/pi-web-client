@@ -2564,6 +2564,9 @@ export class App {
       case "changelog":
         this.openSettingsSheet("changelog");
         return done();
+      case "whatsnew":
+        this.openSettingsSheet("whatsnew");
+        return done();
       case "share":
         this.openShareSheet();
         return done();
@@ -8539,6 +8542,15 @@ export class App {
     const sheet = this.sheet?.querySelector(".settings-sheet");
     if (!sheet) return;
     sheet.classList.toggle("subagents-sheet", this.settingsTab === "subagents");
+    // 标题跟着 tab 走：在这两个 tab 里叫「pi 设置」会让人以为打开的又是 pi 那份。
+    const title = sheet.querySelector<HTMLElement>(".sheet-title");
+    if (title)
+      title.textContent =
+        this.settingsTab === "whatsnew"
+          ? tr("本项目更新日志")
+          : this.settingsTab === "changelog"
+            ? tr("pi 更新日志")
+            : tr("pi 设置");
     const tabs = sheet.querySelector<HTMLElement>(".settings-tabs")!;
     const body = sheet.querySelector<HTMLElement>(".settings-body")!;
     const cwd = this.session?.cwd ?? "";
@@ -8553,7 +8565,8 @@ export class App {
       ["subagents", tr("子代理")],
       ["notify", tr("通知")],
       ["runtime", tr("运行时")],
-      ["changelog", tr("更新日志")],
+      ["changelog", tr("pi 更新日志")],
+      ["whatsnew", tr("本项目更新日志")],
     ];
     for (const [id, label] of tabDefs) {
       const b = el("button", `chip${this.settingsTab === id ? " on" : ""}`, label) as HTMLButtonElement;
@@ -8582,6 +8595,7 @@ export class App {
     if (this.settingsTab === "notify") return this.paintNotify(body);
     if (this.settingsTab === "runtime") return this.paintRuntime(body);
     if (this.settingsTab === "changelog") return this.paintChangelog(body);
+    if (this.settingsTab === "whatsnew") return this.paintWhatsnew(body);
     if (this.settingsTab === "subagents") return this.paintSubagents(body);
     const scope = this.settingsTab;
     const view = this.settingsView[scope];
@@ -10240,6 +10254,35 @@ export class App {
       });
   }
 
+  /** D195：本项目的 CHANGELOG.md（设置页里和 pi 那个分开放，两个文档不同）。 */
+  private paintWhatsnew(body: HTMLElement): void {
+    body.append(el("div", "empty", tr("读取中…")));
+    fetch("/api/changelog?scope=self", { credentials: "same-origin" })
+      .then((r) => r.json())
+      .then((out: { version?: string; branch?: string; commit?: string; root?: string; text?: string }) => {
+        if (this.settingsTab !== "whatsnew") return;
+        body.replaceChildren();
+        const head = [out.branch, out.commit].filter(Boolean).join("@");
+        const where = [out.version, head].filter(Boolean).join(" · ");
+        body.append(el("div", "settings-path", tr("当前版本 {p1}", { p1: where })));
+        const md = el("div", "settings-changelog");
+        md.append(
+          renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {
+            // 正文里的 `docs/DECISIONS.md` 是可点的文件链接：预览若直接开在弹层背后，点了像没反应。
+            // 先收面板再交给预览；链接相对**仓库根**写，会话 cwd 可能不在这个仓库里（D195）。
+            openPath: (file) => {
+              this.closeSheet();
+              window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(out.root ?? "", file) } }));
+            },
+          }),
+        );
+        body.append(md);
+      })
+      .catch((err: Error) => {
+        body.replaceChildren(el("div", "empty", tr("读不到本项目的更新日志：{p1}", { p1: err.message })));
+      });
+  }
+
   // ---------------------------------------------------------------- tree / fork / clone (#17)
   private forkAt(target: { entryId: string; index?: number; text?: string }): void {
     const sessionId = this.currentId;
@@ -11568,7 +11611,7 @@ export class App {
     const keysBtn = el("button", "btn", Object.keys(this.keys).length ? tr("快捷键（已设 {p1} 个）", { p1: Object.keys(this.keys).length }) : tr("设置快捷键"));
     keysBtn.onclick = () => this.openKeysSheet();
     const piSettings = el("button", "btn", tr("pi 设置")) as HTMLButtonElement;
-    piSettings.title = tr("pi 的 settings.json（全局 / 项目）、项目信任、更新日志（/settings）");
+    piSettings.title = tr("pi 的 settings.json（全局 / 项目）、项目信任、两个更新日志（/settings）");
     piSettings.onclick = () => this.openSettingsSheet("global");
     keysTools.append(keysBtn, piSettings);
     host.append(el("h2", "", tr("快捷键")));
@@ -13129,13 +13172,14 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["reload", tr("重启这个会话的 pi，读到最新设置 / 扩展 / 技能")],
   ["trust", tr("项目信任：要不要加载这个目录的 .pi 配置")],
   ["changelog", tr("pi 更新日志")],
+  ["whatsnew", tr("本项目的更新日志（不是 pi 的）")],
   ["share", tr("上传会话、生成查看链接（Radius 或私有 gist）")],
   ["bug", tr("给 pi 开发者提交 bug 报告（/bug 描述）")],
   ["login", tr("登录模型 provider（API key / OAuth）")],
   ["logout", tr("登出某个 provider")],
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "runtime" | "changelog";
+type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "runtime" | "changelog" | "whatsnew";
 
 interface ExtPackage {
   scope: "user" | "project";
@@ -13804,6 +13848,20 @@ function loadDrafts(): Map<string, Draft> {
 
 function rawUrl(info: PreviewInfo): string {
   return `/raw/${info.token}/${info.rel}`;
+}
+
+/** 日志正文里的链接是相对仓库根写的：会话 cwd 不在那个仓库里也得点得开（D195）。 */
+function resolveFromRoot(root: string, p: string): string {
+  let target = p;
+  try {
+    target = decodeURIComponent(p);
+  } catch {
+    /* keep */
+  }
+  if (/^[A-Za-z]:[\\/]/.test(target) || target.startsWith("/") || target.startsWith("\\")) return target;
+  if (!root) return target;
+  const sep = root.includes("\\") ? "\\" : "/";
+  return `${root.replace(/[\\/]+$/, "")}${sep}${target.replace(/[/\\]+/g, sep)}`;
 }
 
 /** A link inside a previewed document is relative to that document, not to the session cwd. */
