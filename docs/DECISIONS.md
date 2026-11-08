@@ -1529,7 +1529,7 @@ if (s.idleFor() > IDLE_GC_MS) s.sleep();   // 2 小时
 
 1. **`create`（以及 `openLive`）不再等 `get_state`**：spawn 完立刻返回，会话马上出现在界面上。`get_state` 照旧发、回来补 `model` / `file`，只是不再拦住调用方。
 2. **`state.starting`**：spawn 时置 true，`get_state` 落地就翻 false（进程退出、close 也会清）。这是页面唯一需要知道的事。
-3. **界面把这几秒说出来**：`starting` 为真时，状态行写「pi 正在启动（加载扩展，通常几秒）…」而不是「Enter 发送」的快捷键提示；输入框置灰、placeholder 换成「pi 正在启动…」；`sendPrompt` 里再兜一次（键盘路径也要拦）。
+3. **界面把这几秒说出来**：`starting` 为真时，状态行写「pi 正在启动（加载扩展，通常几秒）…」而不是「Enter 发送」的快捷键提示；输入框置灰、placeholder 换成「pi 正在启动…」；`sendPrompt` 里再兜一次（键盘路径也要拦）。**（已被 D177 推翻，见 #197）**
 4. **启动耗时可观测**：`get_state` 落地时往桥日志写一行 `[boot] <sessionId> pi 启动完成 <ms>`。这是「新会话为什么慢」唯一的可观测出口 —— 以后要判断是不是扩展又长胖了，看这一行。
 
 **为什么：**
@@ -2874,3 +2874,138 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 **代价 / 可改：** `.pin-menu` 的 `max-width: calc(100vw - 16px)` 是兜底，窄到装不下 212px 时仍会溢出（靠 `min-width` 优先），实际窗口没那么窄就不管。悬停气泡（`openPinMenu`）故意不挂 scroll：滚动条一动指针就离开胶囊，`pointerleave` 的 close 先到。
 
 **验证：** `npm run test:menuplace`（9 项：贴下方 / 贴底翻转 / 封顶 / 上下都窄时保底 96 / 上方更窄不翻 / 左右夹 / 比窗口宽 / `gap` / `cap:false`）；`probes/workspace-manage.mjs` 第 9 步对 900/480/420/380/300/200 六档按几何算出「该不该翻」再无条件断言，并把删除项滚进视野断言可见；`workspace-layout` / `workspace-settings` / `workspace-shells` / `round4-pin` / `round16-pin` / `pin-auto-open` 不回归。
+## D178 启动窗口里也能发消息：桥收下、气泡立刻出现，pi 起来再交出去（`#197`；**推翻 D122 第 3 条**）
+
+**问题：** D122 让 `create` 不再等 pi，代价是「先看到空聊天框、pi 还在起」的两三秒（机器忙时 12–15 秒）。D122 第 3 条选择的缓解方式是**把输入框置灰**、placeholder 换成「pi 正在启动…」、`sendPrompt` 里再兜一次早退 —— 等于在这十几秒里把「我想说的第一句话」这件事整个拦下来。而这段时间恰恰是用户最有话可说的时候：刚建好会话、脑子里正想着要问什么，字打完却发不出去，等 pi 起来还得重新想一遍。
+
+**决定：**
+
+1. **`prompt()` 在 `starting` 为真时不再报错**：立刻把 user item 落地并广播（`pending: "booting"`），消息进该会话的**待发队列**（`bootQueue`）。命名逻辑照旧跑 —— 会话名由这条消息决定，左栏不用等 pi 起来就有名字。
+2. **就绪时按到达顺序交出第一条**：`starting` 翻假、且有活着的 rpc 时 `flushBootQueue()` 取队首，构造 message（跑起来时带 `streamingBehavior`，否则 null）、进 `queuedUser`、`rpc.request("prompt", …, 60000)`。同一枚气泡改成 `pending: "sent"`（`item.replace`）。（多条如何排、等不到 `agent_start` 怎么办 → 见 D180）
+3. **前端两种状态，一枚徽标**：`pending: "booting"` → 「正在启动 pi…」（小 spinner）；交给 pi 之后（运行态为真且这条是最后一条用户消息）→ 「处理中…」，本轮结束消失。「处理中…」是**推出来的**（`running` + 最后一条 user item），不新增协议字段。启动期输入框不禁用、placeholder 恢复普通文案、不出现中断按钮；状态行仍是 D122 那句「pi 正在启动（加载扩展，通常几秒）…」。
+4. **失败不静默**：rpc 在交出前后死掉 → 气泡标 `pending: "failed"`（红字「没发出去，重发一次就行」）并配一句 error notice（`pi 起不来了（<reason>），这条消息没有发出去；重新发一次就行。`）。完整重试归 #200。（完整的「保留 + 重试」→ 见 D179）
+5. **既有前置检查照旧在前**：压缩互斥（「Cannot submit a prompt while compaction is in progress.」）等判断仍在入队**之前**走 —— 启动窗口不是绕过它们的理由。
+
+**为什么推翻 D122 第 3 条：**
+
+- **置灰解决的是「发出去石沉大海」，而不是「不许说话」。** 现在桥会把消息收下并排队，那条代价消失了：用户在启动期按 Enter，气泡立刻出现、pi 起来就发出，行为与平时一样，只是多等一会儿。
+- **排队归桥，不归页面：** 页面只知道「我发了」，刷新、切标签页、第二个标签页看到的都是同一枚气泡（`#197` 验收里明确要求）。更关键的是**一条会话只有桥那一份记录**：队列若放在前端，另一个标签页根本不知道这条消息存在，会话名也拿不到。
+- **几乎全是前端坏处：** 前端早退只是把「pi 还没好」翻译成「你什么都不许做」，而它本来就知道 `starting` 这件事 —— 把徽标说出来比把输入框关掉更有用。
+
+**代价 / 可改：**
+
+- **启动期连发的第 2、3 条仍在队列里等到 `starting` 翻假才排队首**：本票只保证「第一条」在就绪后交出去，多条怎么排（顺序、合并、插话还是排队跑）归 #198。窗口里连发两条的后果是第二条要等第一条跑完一轮才动。
+- **待发队列只在桥内存里，不落盘**：桥重启就没了。气泡还在（item 已落地），但没人会再把它交出去 —— 这也是 #200 要补的「重试」入口。
+- **样式是「同一枚徽标换文字」**，不是两条消息：`booting` → 无（`sent`）→「处理中…」。用户看不到「交给 pi 那一刻」的独立瞬间，只有徽标的消失 / 出现。
+- **`pending` 字段是发给前端的协议的一部分**：老版本前端会忽略它（`pending` 未知字段不参与渲染），行为退化成「气泡出现、没有任何徽标」，消息本身照发不误。
+
+**验证：** `node bridge/tests/boot-queue.mjs`（桩 pi 慢启动 2500 ms）：A 段 —— `starting` 为真、prompt 后 2 ms 内收到带 `pending: "booting"` + `clientId` 的 `item.add`、无 error notice、会话名变成这条消息、桩 pi 日志里窗口期一封 prompt 都没有；就绪后桩 pi 收到 prompt（`behavior=null`）、同一枚 item 变 `pending: "sent"`、没有 `item.remove`。B 段 —— 窗口期把桩 pi 打死：气泡变 `pending: "failed"`、文本还在、error notice 含「没有发出去」、没有 `item.remove`。`node bridge/tests/create-fast.mjs` 不回归（注释里「页面据此禁用输入框」同步改掉）。`PI_WEB_PORT=… node probes/session-starting.mjs`（桩桥 + 真 Chromium）：启动期状态行含「正在启动」+「加载扩展」、无中断按钮、textarea 可用且 placeholder 不含「正在启动」；Enter 后 `.msg.user` 只有一份、徽标「正在启动 pi…」、输入框清空、无错误提示；第二个标签页同一份气泡、同样说法；`starting:false running:true` → 「处理中…」；`running:false` → 徽标消失。`npm --prefix web run typecheck`（含 i18n-check）、`npm --prefix bridge run typecheck`。
+
+## D179 启动失败的那条消息留着、标红、可重试：点「重试」= 接管，先拉起 pi 再按原顺序补发（`#200`；补上 D178 的代价第 2 条）
+
+**问题：** D178 让启动窗口里收下的消息在桥里排队，代价写在明处：队列只在内存里，pi 在窗口里死掉时气泡标红「没发出去，重发一次就行」—— 可「重发一次」让用户自己重新打一遍，而**同一条会话只有桥那一份记录**，用户手里攥着的只是屏幕上那段文字；再发一次还得先手点「接管」把 pi 叫起来。另一个来源更隐蔽：pi 起来了、桥也把 prompt 交出去了，pi 却回 `disposition: "handled"` + `error`（模型那头拒了、上下文超了之类），这条同样没进去，而 D178 只把它标成同一句红字。
+
+**决定：**
+
+1. **两种失败都「标失败 + 保留原件」**：窗口期进程死掉（`boot`）、桥正在退出（`stopped`）、pi 收下却回 `handled + error`（`refused`）。共同动作是把 `BootEntry` 从 `bootQueue` 挪进 `bootFailed`（桥内存），item 标 `pending: "failed"` 并广播 `item.replace` —— 文本、图片、复制全部照旧，气泡不删。
+2. **「重试」复用 `claim`，不新增帧**：前端那颗按钮就是现有的接管动作。`SessionManager.claim()` 在 `openLive()` 之后调一次 `session.retryBootMessages()` —— pi 没活着时 `openLive` 会重新 spawn、钉权限、过锁检查，会话起来了再补发；pi 还活着（`refused` 那种）`openLive` 直接早退，于是只补发、不重启。补发成功后 item 回到 `pending: "sent"`，之后「处理中…」由运行态推出来，用户不用再点第二次。
+3. **一个串行泵管两种场景**：`flushBootQueue()` 变成「一次只跑一条」的 `pumpBootQueue`。发一条、看运行态：还在跑就接着把下一条按插话送（`streamingBehavior: "steer"`），没在跑就停下来等 `agent_start`（那才是「这一轮开始了」的真实信号），`agent_settled` 兜一次底。重试项 `unshift` 回队首，所以顺序与它们当初的到达顺序一致；`starting` 还是真的时候只排队、不再泵（新 spawn 的 pi 连 `get_state` 都没答）。
+4. **文案说人话**：notice 按原因给三句话（「pi 没能起来」/「pi 已经停了」/「pi 没收下」），后面接动作（「点「重试」会先拉起 pi，再按原顺序补发」/「点「重试」会重新发一次」）。exit code、signal、pid 一律不进界面（旧文案 `pi 起不来了（exit code=1 signal=null）` 就是这么漏出去的）。徽标本身只说「没发出去」+ 一颗「重试」。
+
+**代价 / 可改：**
+
+- **`bootFailed` 也在内存里**：桥重启后失败的那几条只剩气泡（还能复制），重试按钮失效 —— 与 D178 对待发队列的取舍一致：不落盘，避免多写一份会被会话文件与 item 双写撞上的东西。
+- **重试是「整批」的**：点一下会把所有失败项一起补发，不能只挑其中一条重发；撤回（D178 提到的另一条出口）本票没做。
+- **补发成功不等 pi 真的回 ok 才回到 `sent`**：泵在请求发出前就把徽标改成 `sent`（和 D178 的第一条一致）；`refused` 是请求的**成功响应**，所以标红发生在之后一次 `item.replace`。中间的几十毫秒里徽标会闪一下「处理中…」再变红。
+- **`claim` 现在有两种含义**（接管 / 重试）：这是有意的 —— 两者要做的动作完全一样（把 pi 拉起来 + 把没交出去的交出去），分开一个帧只会让前端多记一份状态。若日后重试需要「不重启 pi」，再拆。
+
+**验证：** `node bridge/tests/boot-queue.mjs`（桩 pi 慢启动 2500 ms）：B 段 —— 窗口期连发两条后打死桩 pi：两条都变 `pending: "failed"`、文本都在、没有 `item.remove`、notice 含「没有发出去」且**不含** `exit code` / `signal=`；B2 段 —— 发 `claim`（就是那颗「重试」）→ 收到 `starting: true` 的 session 帧 → 新 pid（≠ 被杀的那个）→ 桩 pi 按原顺序收到两条 prompt（第一条 `behavior=null`、第二条 `steer`）→ 两个 item 都以 `pending: "sent"` 回来。C 段 —— pi 就绪但拒收（桩 pi 对 `REFUSE…` 首次回 `handled` + `error`）：标 `failed`、文本还在、notice 可读、桩 pi 日志里有 `prompt-rejected`；C2 段 —— `claim`（pi 已活着，不重启）→ 补发 → `pending: "sent"`。`node bridge/tests/create-fast.mjs`、`PI_WEB_PORT=7918 node probes/session-starting.mjs` 不回归；`npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 i18n-check：删掉旧键 `没发出去，重发一次就行`，新增 `没发出去`、`先拉起 pi，再按原顺序补发没发出去的消息`，`重试` 复用已有）与两边 build。
+
+## D180 启动窗口里连发的几条：能塞就塞进同一轮，塞不进各自成一轮；等「这一轮开始」有 10 秒上限（`#198`；实现并进 D179 的那只泵）
+
+**问题：** D178 只保证「第一条」能发出去，D179 的泵解决「按序交」，但两处语义空着：① 第二条起凭什么算「同一轮」？pi 只在**正在流式输出**时才接受 `streamingBehavior`，交出去的那一刻这一轮可能刚好结束；② 泵发完第一条后要等 `agent_start` 才算「这一轮开始」，可第一条要是被 pi **就地处理**（斜杠命令、`disposition: "handled"`、压根没起 run），`agent_start` 永远不会来 —— 后面的几条会一直挂着，气泡永远「正在启动」。
+
+**决定：**
+
+1. **顺序交出，能塞就塞**：泵按到达顺序一条一条交；交之前 `state.running` 为真就带上 `streamingBehavior: "steer"`，让第 2、3 条落进正在进行的那一轮（用户本来也只会发「一句 + 两句补充」）。
+2. **塞不进就自己开一轮**：带标记却没被 pi 排进队列（响应 `disposition !== "queued"`，说明那一轮在交出去的瞬间结束了）不算失败 —— pi 已经单独开了新一轮，`queuedUser` 里立刻把这条摘掉（`unqueueUser`），免得「撤回」去删一条早就不在队列里的气泡。
+3. **就地处理掉的那条不算「这一轮没开始」**：`disposition === "handled"` 且没有 error → 下一条**裸发**（无 `streamingBehavior`），让它自己开一轮。
+4. **等「这一轮开始」有上限**：`BOOT_RUN_WAIT_MS = 10_000`；`agent_start`、`agent_settled`、进程退出都会 `wakeRunStart()` 放行，等不到就裸发兜底 —— 宁可多开一轮，也不让人盯着「正在启动」干等 10 秒以上。
+5. **队列条口径**：启动窗口里收下的消息一条都不进右栏队列条；只有 pi 真的把它们排进队列（`queue_update`）时才列出。
+
+**代价 / 可改：**
+
+- **合并是尽力而为，不是保证**：pi 那一轮恰好在两条之间结束时，第 2 条会成为下一轮的第一条（用户看到两次「处理中」而不是一次）。要强保证得让 pi 支持「先排队再开跑」，超出桥的能力。
+- **`BOOT_RUN_WAIT_MS` 是常量**，没进设置；机器慢到 `agent_start` 超过 10 秒才会看出它。
+- **与 D179 的失败重试共用同一只泵**：失败项 `unshift` 回队首，所以「重试」补发时仍按原顺序，也仍然享受上面的合并规则。
+
+**验证：** `node bridge/tests/boot-queue-merge.mjs`（桩 pi 慢启动 2500 ms）：A 段 —— 启动窗口里连发三条，窗口期桩 pi 一封 prompt 都没收到、三条气泡都在、右栏队列条空；就绪后第一条 `behavior=null`、第 2/3 条 `steer` 且落在同一轮（桩 pi 的 `run-start` 只有一行）；B 段 —— 队列条只列 pi 真收下的那两条，正在跑的第 1 条不算排队，这一轮结束队列条自己清空；C 段 —— 整条路没有一条被丢；D 段 —— 首条是 `HANDLED` 斜杠命令（就地处理、没起 run）时第二条 61 ms 内裸发（`behavior=null`），没有干等 10 秒上限，也没被 `Agent is already processing` 拒收。`node bridge/tests/boot-queue.mjs`（D179 的 A/B/C/D）、`node bridge/tests/create-fast.mjs`、`PI_WEB_PORT=7916 node probes/session-starting.mjs` 不回归。
+
+## D181 启动期的另外三个入口也走同一条待发队列：接管、只读自动接管、「继续」（`#201`；复用 D178 的落地与 D179 的补发，撤回沿用 #199）
+
+**问题：** D178 只让「启动窗口里发一条」不再干等 pi，但另外三个入口各有各的等待：① 接管一个已经结束的终端会话，用户得先点「接管会话」、等 pi 起来，输入框才真的能发；② 磁盘上的只读会话（`owned: false`）发第一句时，桥先 `await openLive()`（拉起 pi、钉权限、等 `get_state`）才落地气泡 —— 打出去的字要等整个握手才出现在屏幕上，这几秒最容易被当成「没发出去」再打一遍；③ 启动窗口里「继续」是灰的，理由和当年的「输入框置灰」一样（D178 已经推翻过那个理由）。
+
+**决定：**
+
+1. **先落地，再握手**：`prompt` 分两步 —— `sessions.acceptBeforeOpen()` 把气泡广播出去（`pending: "booting"`），然后才 `openLive()`。握手一步不少（tty 锁、20 秒 mtime 检查、`pinPermission`、resume），**也不新增任何 WS 帧**；只读会话的第一句因此和普通发送一样立刻可见。
+2. **消息进的是会话自己的待发队列**：`acceptBeforeBoot()` 复用 D178 的 `landUserPrompt()` 与 `bootQueue`，所以撤回（#199 的同帧清空）、失败（D179 的标红 + 重试）、连发（D180 的按序交出）三条路一条都不分叉。
+3. **接管没成也走 D179 的失败路**：`failBeforeBoot()` 把原件挪进 `bootFailed`、气泡标红，原因由 WS 那一层原来的 notice 说（不重复说两遍）；点「重试」发的还是现有的 `claim` 帧 —— 先拉起 pi，再按原顺序补发，不需要新协议。
+4. **`openLive()` 单飞**：接管与「接管后立刻打字」是两条独立的命令，都会看见 `!live`。`SessionManager.opening` 让后来的那条等那一次在飞的拉起，否则同一份会话文件会有两个 pi 写者。
+5. **读回磁盘历史时保住还没交出去的气泡**：`keepUnsentBubbles()` 把 `bootQueue` 与 `bootFailed` 里的 item 接回历史之后 —— 它们不在文件里，不接回来用户刚打的那句会凭空消失，重试时也没东西可标。
+6. **「继续」不看 `starting`**：`continueState()` 只在 `running`、后台子代理忙、没有用户消息时变灰；启动窗口里点下去就是把「继续」两个字放进同一条队列。界面上那句「pi 正在启动，起来之后再继续」随按钮一起删掉（en/ja 同步）。
+
+**代价 / 可改：**
+
+- **气泡会先出现、再标红**：自动接管失败（终端里的 pi 还开着、20 秒内还在写）时，用户先看到气泡、随后才看到「没发出去」—— 这是「不等握手」的必然代价；反过来（先等再判）就是原来那几秒的空白。
+- **只读会话上「继续」仍然不显示**：按钮的显示条件还是 `owned`（`hidden`），与「发消息自动接管」是两条路；要在只读会话上也点「继续」得先决定它算不算「没有写权就别提供快捷方式」，本票没改。
+- **队列仍在内存里**：与 D178/D179 一致，桥重启后待发的那几条只剩气泡。
+- **`acceptBeforeOpen()` 对 `live` 的会话返回 `null`**：那时气泡由 `prompt()` 自己落地，避免同一条消息落两枚。
+
+**验证：** `node bridge/tests/boot-queue.mjs`（桩 pi 慢启动 2500 ms）：6 段 —— 只读会话发一句，`item.add` 在「开始拉起 pi」（`starting: true`）**之前**到达（item#104 < starting#105，实测 <1000 ms）、气泡带 `booting`、就绪后 `behavior=null` 交出并 `sent`、`owned` 翻真、只起一支 pi 且走 `--session`；7 段 —— 接管与打字同时来，气泡 11 ms 落地、`claim` 与 `prompt` 只起一支 pi、只交出一次；8 段 —— 有 tty 锁时气泡标 `failed`、notice 说明原因、一支 pi 都没起；9 段 —— 删锁后点「重试」（`claim`）把同一枚气泡放回队列、补发成功变 `sent`、不重复画、仍只起一支 pi。`PI_WEB_PORT=7919 node probes/session-starting.mjs`：8 段 —— 启动期「继续」可见可点，点下去发的是「继续」、气泡立刻出现并带「正在启动 pi…」；9 段 —— 只读会话输入框可用、气泡立刻出现。`node --experimental-transform-types web/tests/continue-unit.mjs`（`starting` → `ready`）。`node bridge/tests/boot-queue-merge.mjs`、`node bridge/tests/create-fast.mjs`、`node bridge/tests/continue-ui.mjs`（40/40）不回归；两边 typecheck（i18n-check 1651 keys × 3 langs）与 build。
+
+## D182 启动窗口里的边界输入：图片原样带走、粘贴块不再削、`!` 命令给句人话不排队（`#202`；图片/粘贴沿用 D178 的队列，`!` 是唯一一条不进队列的）
+
+**已被 D183 取代：** `!` 命令改为排进 `bootBash`（不再拒绝）；撤回窗口改按「还有气泡在桥里」判、失败气泡可退回输入框。下面第 3 条与「代价」里关于 `!` 的取舍以 D183 为准。
+
+**问题：** D178–D181 把「启动期能发消息」做通了，但只验证了纯文本：① `BootEntry` 里 `images` 字段一直在、泵也一直在映射，可没人钉住「交出去的 prompt 真的还带着图」，界面上「+N 图」「附 N 张图片」在启动期有没有掉也没人看；② 粘贴块（长文本 / 代码块）送到桥之前会过一次 `p.text.trim()` —— 贴一段代码时那会削掉块首行的缩进和末尾的空行，交出去的内容和用户贴的不是一份；③ `!cmd` / `!!cmd` 走的是 RPC 的 `bash`，和 `bootQueue` 排的 prompt 根本不是一条通道。票面（#202 AC 3/5）假设「`!` 启动期不被拦、pi 起来后执行」，但 bash **没有队列语义**：排到启动后跑，等于把「顺手敲一下」变成一个延后执行的惊喜 —— 命令什么时候生效、在哪个目录、上下文里进不进，用户都不再看着。
+
+**决定：**
+
+1. **图片：一个字节都不碰，跟着同一条队列走**。`landUserPrompt()` 只把 `mimeType` 记进 item（气泡要的是「附 N 张图片」），`bootQueue` 的 `BootEntry` 带完整 `{data, mimeType}`，`pumpBootQueue()` 交出去时原样映射成 pi 的 `message.images`。前端「+N 图」徽标、图片面板、乐观气泡的认领都是启动期与平时同一套代码，没有第二个入口。
+2. **粘贴块：不再 `trim()`，只丢「整块都是空白」的**。`sendPrompt()` 里的 `p.text.trim()` 改成 `p.text.trim() ? p.text : ""`：气泡与交出去的文字同源（同一个 `text`），所以两边天然一致；保留缩进 / 制表符 / 行尾空格，正是「贴代码」要的。粘贴块仍按原顺序排在打字内容之前、空行分隔，一次发送合成一条 prompt —— 与平常一致，不为启动期另立格式。
+3. **`!` 命令：拒绝，不排队，草稿留在输入框**。两层同一句话「pi 还在启动，`!` 命令等它起来再跑」：
+   - 前端 `runBuiltinCommand()` 在 `socket.send({type:"bash"})` **之前**看 `session.starting`，命中就 `say(tr(…), "warn")` 并 `return true` 但**不**清稿 —— 用户按的这次回车没发东西，pi 起来后再按一次回车就是那条命令；
+   - 桥 `Session.bash()` 开头 `if (this.state.starting) throw`（在 `bashRun` 冲突检查与 BashItem 落地之前）—— 这道闸管的是前端看不见的窗口：只读会话的第一条 `!`，`openLive()` 会先把 pi 拉起来那一刻 `starting` 才为真，前端的 `session.starting` 还是假的。
+4. **不分叉**：图片、粘贴块走的仍是 D178/D179/D180 那一条 `bootQueue` + 泵；`!` 是**刻意不进队列**的那一类，桥里没有任何第二条待发通道。
+
+**代价 / 可改：**
+
+- **只读会话的第一条 `!` 会丢草稿**：前端那时 `starting` 还是假，命令发上去了，桥拉起 pi 后被闸挡下、notice 异步回来 —— 一句话有了，但输入框已经被清空（`done()` 在 `socket.send` 之后就跑）。修它需要「桥拒绝后把命令退回去」的通道，本票没做；启动窗口里（前端看得见 `starting` 的常态）不会丢。
+- **撤回（#199）只退文字，不退图**：`clearQueue` 的 `queue.restore` 只带 texts，所以启动期撤回一条带图的消息，图和气泡一起没了、文字回到输入框。既有取舍（#199 的范围），#202 没动 —— 要修得先决定「撤回时图放哪」（待发图片区 vs 一起退回草稿）。
+- **粘贴块的「整块空白」判断用的是 `trim()` 的结果**：内容保留，但只含空白的块仍然被丢，和手打空格不进队列一致。
+- **`!` 的拒绝是一句话，不是排队**：用户得自己再按一次回车。这是有意的 —— 见上，bash 没有「稍后执行」的语义，替用户记住命令就是在替他决定什么时候跑。若日后真要做，得先给 RPC 的 bash 补一套带序的队列语义（且要说清上下文如何进），不是前端加个数组。
+- **桥那句 notice 没有 sessionId**（WS 兜底 catch 的老形状），多标签页里离线的那些页看不见；常态路径由前端自己那句话负责。
+
+**验证：** `PI_WEB_PORT=7927 node bridge/tests/boot-queue.mjs`（桩 pi 慢启动 2500 ms）：F 段 —— 启动期发一条带两张图 + 一条纯文字，窗口期桩 pi 一条 prompt 都没收到、item 上是 `[{mimeType:"image/png"},{mimeType:"image/jpeg"}]`，就绪后桩 pi 记录的 `TEXTIMG` 那条带 `images: ["image/png","image/jpeg"]`、下一条是 `[]`、两条按序；`item.replace` 之后两张图还在、`pending: "sent"`。G 段 —— 启动期贴 7 行代码块 + 打字：气泡文字与桥收到的 `text` 一字不差（缩进、制表符、行尾空格都在），结尾是 `\n\n` + 打字内容。H 段 —— 启动期发 `bash`：notice 含「还在启动」与 `` `!` ``、**没有** bash 卡片、**没有** user 气泡（没被塞进 prompt 队列）、桩 pi 没有 `t:"bash"` 记录；`starting` 翻假后同一条 `!!` 照常跑、输出照常回来，且启动期那条始终没在后台补跑。`PI_WEB_PORT=7929 node probes/session-starting.mjs`：10 段 —— 启动期贴两张图，`.row` 徽标是「+2 图」，交出去的 prompt 带两张 `image/*`，气泡「附 2 张图片」+「正在启动 pi…」，发完徽标清空；11 段 —— 启动期贴 24 行代码块，气泡 `.foldable.has-fold`，气泡正文与交出去的文字逐字相等（605 字），12 段 —— 启动期 `!` 给一句人话、没发 `bash`、草稿还在，`starting` 翻假后再按回车才真发出去（`excludeFromContext: false`）；末尾把同一段文字在平时再发一次，两条气泡的 `foldable` class 与折叠按钮文案完全相同。`PI_WEB_PORT=7928 node bridge/tests/boot-queue-merge.mjs`、`node bridge/tests/create-fast.mjs`、`node bridge/tests/composer-actions.mjs` 不回归；两边 typecheck（i18n-check 1652 keys × 3 langs）与 build。顺手修好桩 pi 的一处真 bug：`bashAborted` 在 D169 那次提交里被写成 `const`（`abort_bash` 会赋值），于是桩 pi 收到第一条 `bash` 就抛 `Assignment to constant variable` 退出 1 —— H 段才发现（`bridge/tests/composer-actions.mjs` 因此也一直是红的）。
+
+## D183 启动窗口评审修复：`!` 也排队、撤回看气泡、失败可退回、泵期间排尾、退出文案去数字（`#202` 评审；接 D178–D182）
+
+**问题：** #195 与 #197–#202 落地后两路评审找出五个真实缺口：① 只读会话的第一条 `!` 会在拉起 pi 的窗口里被桥拒绝，而前端已经清掉草稿 —— 命令没跑、稿也没了（D182 把这条写成「代价」，实际是丢用户输入）；② 首条已交给 pi、其余还在桥队列等 `agent_start` 的 ≤10 秒里，`starting` 已经是假，撤回按钮与 Esc 都被 `starting` 挡住，违背 #199 的「这批消息随时能退」；③ 失败气泡只有「重试」，没有 #195 状态机里写的「退回输入框」；④ 补发泵运行期间（`starting` 假、`bootQueue` 非空）新消息直奔 pi，插到更早的待发消息前面；⑤ pi 进程退出的 notice 仍把 `exit code=… signal=…` 甩给用户（#200 AC6 要求人话）。
+
+**决定：**
+
+1. **`!` 也排队，不再拒绝**（推翻 D182 决定 3）：`Session.bash()` 在 `starting` 为真时立刻落一张 `status: "queued"` 的 BashItem 并广播 `item.add`，命令进 `bootBash`；就绪处（`get_state` 落地的 `.finally`）`flushBootBash()` 按入队顺序逐条执行，跑前把同一张卡片改成 `running` 并 `item.replace`。前端删掉启动期的 `starting` 拦截，bash 卡片多一个 `queued` 态（`tr("等待 pi 启动…")` + `act-spin`，复用现有卡片视觉）。只读会话因此不再出现「拉起 pi 的那一瞬被拒」。
+2. **撤回的门按气泡判，不按 `starting` 判**：`withdrawBoot()` 与 Esc 都改成「`chat.bootingCount() > 0` 才动手」，状态行那颗「撤回」的显隐同判据。首条已交出、其余还在桥里的窗口里，`bootQueue` 里还有气泡，撤回照常可用。
+3. **失败气泡也能退回输入框**：`withdrawQueue()` 把 `bootFailed` 与 `bootQueue` 一起 splice，按原始输入顺序（`bootFailed` 是更早的失败批次，排在 `bootQueue` 之前）并进 `queue.restore`，并删掉对应气泡；failed 徽标旁加第二颗按钮（`tr("退回输入框")`）发 `clearQueue`。桥里 rpc 已经死了（`!rpc?.alive`）时也要清这两个队列并发 `queue.restore`，不能直接 `return 0`。
+4. **泵运行期间的新消息排到队尾**：`prompt()` 的 `booting` 判据从 `this.state.starting === true` 扩成 `=== true || this.bootQueue.length > 0` —— 泵还在清更早的消息时，新消息必须排在它们后面，保持输入顺序；气泡照旧带 `pending: "booting"`。
+5. **退出文案说人话**：进程意外退出的 notice 改成「pi 进程意外退出了（可能有别的终端占着这个会话）。历史留在磁盘，发消息会重新接管。」；`exit code=… signal=…` 只进 `console.log` 的 `[exit] <sessionId>` 一行。
+
+**代价 / 可改：**
+
+- **`!` 变成延后执行**：启动窗口里敲的命令不再「立刻跑」，而是等 pi 就绪后按入队顺序跑；执行时机从用户按回车那一刻挪到就绪那一刻。这是「不丢命令」换来的，且卡片上的「等待 pi 启动…」把这件事说在明处。
+- **`bootBash` 不随撤回清理**：`!` 一旦发出就算发出，`withdrawQueue()` 只退 prompt 队列。与平时一致 —— 已经跑过的 bash 也撤不回；把 `!` 混进「退回输入框」会让撤回的语义分叉（命令不是草稿）。要改得先决定「撤回一条还没跑的 `!`」算不算取消。
+- **`bootFailed` 仍不落盘**：D179 的取舍不变，桥重启后失败项只剩气泡可复制。
+- **撤回文本顺序**：`bootFailed` 排在更早的失败批次之前（按原始输入顺序），同一批内保序；`queue.restore` 仍只带文字，图片仍不退（D182 的既有取舍）。
+- **删除启动期 `!` 的提示文案**：前端不再说「pi 还在启动，`!` 命令等它起来再跑」，旧 i18n 键随删；这句话现在由卡片状态承担。
+
+**验证：** `PI_WEB_PORT=7934 node bridge/tests/boot-queue.mjs`：H 段改为启动期 `bash` → 卡片 `queued`、无 error notice、桩 pi 没收到；就绪后同一张卡片 `running` → `done`、输出含 `ran: …`、只跑一次。I 段 —— 只读会话启动期 `!echo hi`：不报错、卡片 `queued`、无 bash 记录；就绪后 `running` → `done`、只起一支 pi 且走 `--session`。J 段 —— 泵已交出第一条 HOLD、两条还在桥里时 `clearQueue`：`queue.restore` 只含后两条、`item.remove` 只删这两条、第一条与 bash 卡片不动、`!` 仍照常执行。K 段 —— 启动期两条失败后 `clearQueue`（rpc 已死）：文本按原顺序退回、气泡删除、notice 不含 `exit code` / `signal=`。`PI_WEB_PORT=7936 node probes/session-starting.mjs`：12 段 —— 启动期 `!` 照发、卡片「等待 pi 启动…」+ 转环、无拒绝、草稿清空只因命令已被收下，就绪后同一张卡片出输出；13 段 —— 只读会话自动接管的窗口里同样排队并跑出输出。`node bridge/tests/boot-queue-merge.mjs`、`node bridge/tests/create-fast.mjs`、`node bridge/tests/composer-actions.mjs`、`web/tests/continue-unit.mjs`、`bridge/tests/continue-ui.mjs` 不回归；两边 typecheck 与 build。

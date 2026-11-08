@@ -82,6 +82,8 @@ RPC 与 `--mode json` 共用同一套事件。证据：`docs/json.md:55` 起表�
   证据：`docs/json.md`（usage 说明）、`dist/core/agent-session.d.ts:202`
 - `prompt` 的 `success:true` 不代表完成：`data.disposition ∈ started|queued|handled`；`handled` 表示根本没起 run，别等 `agent_settled`。
   证据：`docs/rpc-commands.md:40`、`docs/rpc-commands.md:42`
+- `prompt` 在 `agent_settled` 的收尾窗口里可能被 `_deferredSettledActions` 吞掉、**不回响应**；另外 `disposition:"handled"` + `error` 表示 pi 已拒收（不是排队）。
+  证据：`bridge/src/sessions.ts:1810`（泵发出后等这条响应，60 秒超时兜底）、`bridge/src/sessions.ts:1820`（把 `handled && error` 当拒收走失败路）
 - `agent_end` ≠ idle：重试/溢出恢复/compaction/steering/follow-up 都可能继续，只有 `agent_settled` 是终态。
   证据：`docs/rpc.md:69`
 - 背压：每条事件写完 await `waitForRawStdoutBackpressure()`；另有 `session.agent.subscribe(async () => { await waitForRawStdoutBackpressure(); })`，使 **agent 事件层面也等 stdout 排空** → 客户端停读会阻塞 agent loop。

@@ -13,6 +13,12 @@ export interface UserItem extends ItemBase {
   /** The SKILL.md path pi wrote into the block (`location`), for the chip's tooltip. */
   skillPath?: string;
   images: { mimeType: string; size?: number }[];
+  /**
+   * #197: 启动期发出的消息在桥里的位置。`booting` 是「收了、还没交给 pi」，`sent` 是「交出去了」
+   * （气泡上那枚「处理中…」由前端按运行态推，不再看这个字段），`failed` 是「没交出去」。
+   * 正常（pi 已经在跑）发出的消息不带这个字段。
+   */
+  pending?: "booting" | "sent" | "failed";
 }
 export interface AssistantItem extends ItemBase {
   kind: "assistant";
@@ -50,7 +56,8 @@ export interface BashItem extends ItemBase {
   fullOutputPath?: string;
   /** `!!`: kept in the session, never sent to the model. */
   excludeFromContext?: boolean;
-  status: "running" | "done";
+  /** `queued`: 启动窗口里敲下的，还在等 pi 起来（D183）。 */
+  status: "queued" | "running" | "done";
   error?: string;
 }
 /**

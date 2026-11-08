@@ -774,6 +774,10 @@ export class App {
     this.chat.onFail = (f) => this.recordFail(f);
     // 复盘那一轮的回写（D164 延伸）：模型把规矩写在回答末尾，这里捡出来交给桥。
     this.chat.onAnswer = (text) => this.takeRules(text);
+    // #200: 失败气泡旁的「重试」，动作就是接管 —— 桥那边会先拉起 pi，再按原顺序补发没发出去的那几条。
+    this.chat.onRetry = () => this.startClaim();
+    // #202 / D183: 失败气泡上的第二条路 —— 不重试，把没发出去的那条放回输入框。
+    this.chat.onWithdraw = () => this.withdrawFailed();
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
   }
@@ -1412,6 +1416,7 @@ export class App {
         this.failLedger = this.failWs && this.failWs === (this.session?.ws ?? "") ? this.failLedger : null;
         this.failRules = this.failRulesWs && this.failRulesWs === (this.session?.ws ?? "") ? this.failRules : null;
         this.chat.reset((msg.items ?? []) as Item[]);
+        this.chat.setRunning(this.session?.running === true);
         if (this.currentWs()) {
           this.socket.send({ type: "failures.get", ws: this.currentWs() });
           this.socket.send({ type: "rules.get", ws: this.currentWs() });
@@ -1457,10 +1462,13 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         if (typeof msg.clientId === "string") this.chat.adopt(msg.clientId, msg.item as Item);
         else this.chat.add(msg.item as Item);
+        // #199: 启动期的「撤回」只在真有排队消息时才有位置，气泡来去都得重画这一行。
+        if (this.session?.starting) this.fillHintStatus();
         break;
       case "item.remove":
         if (msg.sessionId !== this.currentId) break;
         this.chat.remove(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
+        if (this.session?.starting) this.fillHintStatus();
         break;
       case "bash.delta":
         if (msg.sessionId !== this.currentId) break;
@@ -1484,6 +1492,7 @@ export class App {
       case "item.replace":
         if (msg.sessionId !== this.currentId) break;
         this.chat.replace(msg.id, msg.item as Item);
+        if (this.session?.starting) this.fillHintStatus();
         break;
       case "delta":
         if (msg.sessionId !== this.currentId) break;
@@ -2008,7 +2017,7 @@ export class App {
           this.syncContinueButton();
           // 任务结束才问「要不要把这一轮的错误记下来」（D164）。
           this.syncFailCta();
-          if (this.textarea) this.textarea.placeholder = this.composerHintText();
+          if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
         }
         if (!msg.running) this.turnAt = null;
         this.renderTop();
@@ -2211,6 +2220,8 @@ export class App {
     if (this.currentId === state.id) {
       const prev = this.session;
       this.session = state;
+      // #197 / D178: 气泡上那枚「处理中…」是推出来的（运行态 + 最后一条用户消息），不新增协议字段。
+      this.chat.setRunning(state.running === true);
       // Q-021: 一轮结束正是模型可能刚跑完 `git checkout` 的时刻。
       if (prev?.running && !state.running) void this.refreshGit(true);
       // The writer bar (接管 / 停止运行) and the status line both hang off these two flags.
@@ -2329,10 +2340,10 @@ export class App {
   // ---------------------------------------------------------------- actions
   private sendPrompt(behavior: "steer" | "followUp" = "steer"): void {
     if (!this.currentId) return;
-    // 启动中的 pi 收不了 prompt：与其发出去石沉大海，不如什么都不做（输入框本来就是禁用的）。
-    if (this.session?.starting) return;
     const typed = this.composerText.trim();
-    const pasted = this.pastes.map((p) => p.text.trim()).filter(Boolean);
+    // #202 / D182: 粘贴块原样带走。`trim()` 会削掉块首行的缩进和末尾的空行 —— 贴一段代码时那是内容，
+    // 不是排版噪音。只有「整块都是空白」才按空输入丢掉，和手打空格的规矩一致。
+    const pasted = this.pastes.map((p) => (p.text.trim() ? p.text : "")).filter(Boolean);
     const text = [...pasted, typed].filter(Boolean).join("\n\n");
     if (!text && !this.images.length) return;
     if (typed && !pasted.length && !this.images.length && this.answerFromComposer(typed)) return;
@@ -2400,6 +2411,8 @@ export class App {
       const exclude = typed.startsWith("!!");
       const command = typed.slice(exclude ? 2 : 1).trim();
       if (!command) return false;
+      // #202 / D183: 启动窗口里也照发 —— 桥把命令排进 `bootBash`，pi 就绪后按顺序跑，卡片先停在
+      // 「等待 pi 启动…」。草稿照常清空：命令已经交出去了。
       this.act(() => this.socket.send({ type: "bash", sessionId, command, excludeFromContext: exclude }));
       return done();
     }
@@ -2765,6 +2778,40 @@ export class App {
     box.prepend(this.cwdChip);
   }
 
+  /**
+   * #199: 启动期撤回 —— 状态行那颗「撤回」和 Esc 都走这里。发的是 `clearQueue`（桥把 bootQueue 与
+   * pi 的队列同一帧清掉、文本按序退回输入框），不是 `abort`：撤回不打断 pi 的启动。
+   * #202 / D183: 判据是「还有气泡在桥里等着」，不是 `starting` —— 首条已交出、剩下几条还在桥队列
+   * 等 `agent_start` 的那≤10 秒里，`starting` 已经是 false，但撤回仍然得可用（#199 AC）。
+   */
+  private withdrawBoot(): void {
+    if (!this.currentId || this.chat.bootingCount() < 1) return;
+    this.act(() => this.socket.send({ type: "clearQueue", sessionId: this.currentId }));
+  }
+
+  /**
+   * #200 / D183: 失败气泡上的「退回输入框」。失败项早就不在 `bootQueue` 里（D179 挪进了
+   * `bootFailed`），所以不能走上面那道「还有气泡在桥里」的判据 —— 按钮本身就是「我要退这一批」。
+   */
+  private withdrawFailed(): void {
+    if (!this.currentId) return;
+    this.act(() => this.socket.send({ type: "clearQueue", sessionId: this.currentId }));
+  }
+
+  /** 状态行那颗「撤回」：还有气泡在桥里就出现，判据同上（不是 `starting`）。 */
+  private paintWithdraw(box: HTMLElement): void {
+    const existing = box.querySelector<HTMLElement>(".hint-withdraw");
+    if (this.chat.bootingCount() < 1) {
+      existing?.remove();
+      return;
+    }
+    if (existing) return;
+    const back = el("button", "btn ghost hint-withdraw", tr("撤回"));
+    back.title = tr("把还没交给 pi 的消息拿回输入框（Esc）");
+    back.onclick = () => this.withdrawBoot();
+    box.append(back);
+  }
+
   private paintHintStatus(): void {
     const box = this.hintStatus;
     if (!box) return;
@@ -2773,6 +2820,8 @@ export class App {
     if (this.session?.starting) {
       box.className = "hint-status starting";
       box.replaceChildren(el("span", "act-spin"), el("span", "", tr("pi 正在启动（加载扩展，通常几秒）…")));
+      // #199: 桥把启动期收下的消息拿着 —— 人反悔了就在这里整批退回来（Esc 是同一个动作）。
+      this.paintWithdraw(box);
       return;
     }
     const running = Boolean(this.session?.running);
@@ -2790,9 +2839,11 @@ export class App {
       // Q-021: in a repository the branch replaces the key hints (they live in the chip's title).
       if (git) {
         box.replaceChildren(this.gitChip(git));
+        this.paintWithdraw(box);
         return;
       }
       box.replaceChildren(el("kbd", "", "Enter"), el("span", "", tr("发送 · Shift+Enter 换行 · ")), el("kbd", "", PASTE_KEY), el("span", "", tr(" 粘贴截图")));
+      this.paintWithdraw(box);
       return;
     }
     if (this.runSince == null) this.runSince = Date.now();
@@ -2856,6 +2907,7 @@ export class App {
     if (thinking) rows.push(row(tr("思考"), thinking, "think"));
     rows.push(el("div", "act-pop-meta", tr("已运行 {p1}{p2}", { p1: dur, p2: this.stepCount > 1 ? tr(" · 本轮第 {p1} 次工具调用", { p1: this.stepCount }) : "" })));
     pop.replaceChildren(...rows);
+    this.paintWithdraw(box);
   }
 
   /** usage.output is the whole message's output tokens, so this is the average over the turn. */
@@ -8038,8 +8090,7 @@ export class App {
     const row = el("div", "row");
     const box = el("div", "composer-input");
     const input = el("textarea");
-    input.placeholder = this.composerHintText();
-    if (s?.starting) input.disabled = true;
+    input.placeholder = this.composerPlaceholder();
     this.textarea = input;
     input.value = this.composerText;
     const pasteHost = el("div", "paste-list");
@@ -10289,16 +10340,15 @@ export class App {
     btn.disabled = state !== "ready";
     btn.hidden = state === "hidden";
     if (state === "hidden") return;
+    // #201 / D181：`starting` 不在其中 —— 启动窗口里点「继续」也会立刻发、进桥的待发队列。
     const why =
       state === "ready"
         ? ""
-        : s?.starting
-          ? tr("pi 正在启动，起来之后再继续")
-          : s?.running
-            ? tr("pi 正在跑这一轮，停下之后再继续")
-            : bgBusy(s)
-              ? tr("子代理还在后台跑，pi 会在它回来时接着做")
-              : tr("这条会话还没有说过话，没有可继续的");
+        : s?.running
+          ? tr("pi 正在跑这一轮，停下之后再继续")
+          : bgBusy(s)
+            ? tr("子代理还在后台跑，pi 会在它回来时接着做")
+            : tr("这条会话还没有说过话，没有可继续的");
     btn.title = why || tr("把「继续」发给 pi —— 草稿留在输入框里，不会被动到");
   }
 
@@ -10902,13 +10952,9 @@ export class App {
    * back (the bridge re-sends pending asks on subscribe). Nothing pops up on its own.
    */
   /**
-   * 输入框的占位文案：pi 还在启动的时候，「Enter 发送」是错的提示 —— 那时发送会被拦下来。
-   * 所有写 placeholder 的地方都走这里，别再直接调 composerPlaceholder()。
+   * 输入框的占位文案。D178（推翻 D122 第 3 条）：pi 还在启动时输入框照常可用 —— 桥会把消息收下、
+   * 等 pi 起来再交出去，所以「Enter 发送」在启动期也是真的。所有写 placeholder 的地方都走这里。
    */
-  private composerHintText(): string {
-    return this.session?.starting ? tr("pi 正在启动…") : this.composerPlaceholder();
-  }
-
   private composerPlaceholder(): string {
     if (this.asks.length) return ASK_PLACEHOLDER;
     return this.session?.running ? RUNNING_PLACEHOLDER : IDLE_PLACEHOLDER;
@@ -10918,7 +10964,7 @@ export class App {
     const host = this.els.composerHost;
     host.querySelector(".ask-slot")?.remove();
     this.fillHintStatus();
-    if (this.textarea) this.textarea.placeholder = this.composerHintText();
+    if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
     if (this.askLost && !this.asks.length) {
       const lost = this.askLostBlock();
       const row = host.querySelector(".row");
@@ -11585,6 +11631,15 @@ export class App {
       },
       true,
     );
+    // #199: 启动期按 Esc = 撤回。冒泡阶段监听，不去抢浮层/补全的 Esc（它们在 document 的 capture
+    // 阶段 stopPropagation）；运行态的 Esc 仍然只走「中断」那条绑定，不在这里改语义。
+    // #202 / D183: 判据看气泡不看 `starting`（首条已交出时 `starting` 已 false）。
+    window.addEventListener("keydown", (ev) => {
+      if (ev.isComposing || ev.key !== "Escape") return;
+      if (this.chat.bootingCount() < 1) return;
+      ev.preventDefault();
+      this.withdrawBoot();
+    });
   }
 
   private runAction(id: string): void {

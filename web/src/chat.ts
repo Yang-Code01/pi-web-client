@@ -118,6 +118,13 @@ function compactArgs(args: unknown): string {
 export class ChatView {
   private cards = new Map<string, HTMLElement>();
   private toolCards = new Map<string, HTMLElement>();
+  /**
+   * #197 / D178: 用户气泡在这张表里（节点 + 桥发来的那条 item），好给最后一枚挂「处理中…」——
+   * 那一枚是推出来的，不来自协议。Map 的插入顺序就是对话顺序。
+   */
+  private users = new Map<string, { node: HTMLElement; item: UserItem }>();
+  /** 会话在跑一轮？用户气泡上的「处理中…」等于「运行态 + 这条是最后一条用户消息」。 */
+  private running = false;
   private draftBuffers = new Map<string, { text: string; thinking: string }>();
   /** One collapsed module per turn: every tool call lands here instead of the transcript. */
   private opsBody: HTMLElement | null = null;
@@ -141,6 +148,16 @@ export class ChatView {
    * add / replace 各会走到一次，app 那边靠同键覆盖去重，重放历史也不会多写。
    */
   onAnswer: ((text: string) => void) | null = null;
+  /**
+   * #200: 失败气泡旁那颗「重试」。动作是现有的接管（`claim`）：先把 pi 拉起来、钉权限、过锁检查，
+   * 桥那边就绪后按原顺序补发 —— 不新增协议帧。
+   */
+  onRetry: (() => void) | null = null;
+  /**
+   * #202 / D183: 失败气泡上的第二条路 —— 不重试，把这批没发出去的消息退回输入框（`clearQueue`）。
+   * 「重试」是选择，不是唯一出路。
+   */
+  onWithdraw: (() => void) | null = null;
   /** Following the stream: new content scrolls the view to the bottom. Cleared the moment the user says "I want to read up there". */
   private following = true;
   /** One pending frame at most — a burst of updates must cost one scroll, not one per update. */
@@ -407,6 +424,7 @@ export class ChatView {
   reset(items: Item[]): void {
     this.root.replaceChildren();
     this.cards.clear();
+    this.users.clear();
     this.toolCards.clear();
     this.draftBuffers.clear();
     this.opsBody = null;
@@ -493,7 +511,11 @@ export class ChatView {
       this.noteAfter(item);
     } else {
       this.push(node);
-      if (item.kind === "user") this.noteTurn(item, node);
+      if (item.kind === "user") {
+        this.noteTurn(item, node);
+        this.users.set(item.id, { node, item });
+        this.paintPending();
+      }
     }
     this.scrollToEnd();
   }
@@ -518,6 +540,10 @@ export class ChatView {
       // 只重建 body（节点留着 —— 刻度带指着它），按钮里的闭包拿的仍是乐观那条的文本。
       const body = node.querySelector(".body");
       if (body) body.replaceWith(this.buildUserBody(item));
+      // #197: 桥那份还多一枚待发状态（乐观那条不知道自己在排队），徽标按它重画。
+      this.users.delete(localId);
+      this.users.set(item.id, { node, item });
+      this.paintPending();
     }
     if (item.kind === "assistant") {
       this.assistantTexts.set(item.id, item.text ?? "");
@@ -541,6 +567,12 @@ export class ChatView {
       this.add(item);
       return;
     }
+    // #197: 用户气泡的 item.replace 只改待发状态 —— 节点留着（刻度带指着它），只重画徽标。
+    if (item.kind === "user" && item.id === id) {
+      this.users.set(id, { node, item });
+      this.paintPending();
+      return;
+    }
     const rebuilt = this.build(item);
     if (item.kind === "tool" && this.isAskTool(item.name)) {
       node.remove();
@@ -558,6 +590,65 @@ export class ChatView {
     // 流式那条回答是走 replace 收尾的（先 add 一张空卡、再整条换掉），add 里那一次看不到正文。
     if (item.kind === "assistant") this.noteAnswer(item);
     this.scrollToEnd();
+  }
+
+  /**
+   * #197 / D178: 用户气泡上那枚状态徽标，三种说法：
+   *   `booting` → 「正在启动 pi…」：桥收下了，还没交给 pi；
+   *   `failed`  → 「没发出去」+ 一颗「重试」（#200）：文本还在、可复制，点重试先把 pi 拉起来再补发；
+   *   最后一条 + 运行态 → 「处理中…」：这一枚是推出来的，不写进协议，多端各自算出来都一样。
+   * 交给 pi 之后徽标就不见了，本轮结束同样消失。
+   */
+  private paintPending(): void {
+    const entries = [...this.users.values()];
+    const last = entries.length ? entries[entries.length - 1] : null;
+    for (const entry of entries) {
+      const who = entry.node.querySelector<HTMLElement>(".who");
+      if (!who) continue;
+      const state =
+        entry.item.pending === "booting" ? "booting" : entry.item.pending === "failed" ? "failed" : entry === last && this.running ? "running" : "";
+      let badge = who.querySelector<HTMLElement>(".msg-pending");
+      if (!state) {
+        badge?.remove();
+        continue;
+      }
+      if (!badge) {
+        badge = el("span", "msg-pending");
+        who.append(badge);
+      }
+      badge.className = state === "failed" ? "msg-pending failed" : "msg-pending";
+      if (state === "failed") {
+        const retry = el("button", "msg-retry", tr("重试")) as HTMLButtonElement;
+        retry.type = "button";
+        retry.title = tr("先拉起 pi，再按原顺序补发没发出去的消息");
+        retry.onclick = () => this.onRetry?.();
+        const back = el("button", "msg-retry", tr("退回输入框")) as HTMLButtonElement;
+        back.type = "button";
+        back.title = tr("把这条没发出去的消息放回输入框");
+        back.onclick = () => this.onWithdraw?.();
+        badge.replaceChildren(el("span", "", tr("没发出去")), retry, back);
+        continue;
+      }
+      const label = state === "booting" ? tr("正在启动 pi…") : tr("处理中…");
+      badge.replaceChildren(el("span", "act-spin"), el("span", "", label));
+    }
+  }
+
+  /**
+   * #199: 桥还替我们拿着、没交给 pi 的用户消息条数。启动期状态行据此决定要不要给「撤回」——
+   * 没有可退的东西时那颗按钮不该出现。
+   */
+  bootingCount(): number {
+    let n = 0;
+    for (const entry of this.users.values()) if (entry.item.pending === "booting") n += 1;
+    return n;
+  }
+
+  /** 运行态变了：只有最后一枚用户消息会因为「处理中」而变样。 */
+  setRunning(running: boolean): void {
+    if (this.running === running) return;
+    this.running = running;
+    this.paintPending();
   }
 
   delta(id: string, field: "text" | "thinking", text: string): void {
@@ -1044,7 +1135,8 @@ export class ChatView {
     head.append(tag);
     let state: string;
     let cls = "";
-    if (item.status === "running") state = tr("运行中…");
+    if (item.status === "queued") state = tr("等待 pi 启动…");
+    else if (item.status === "running") state = tr("运行中…");
     else if (item.error) {
       state = tr("失败");
       cls = " bad";
@@ -1056,14 +1148,17 @@ export class ChatView {
       state = item.exitCode == null ? tr("结束") : `exit ${item.exitCode}`;
       cls = item.exitCode == null ? "" : " bad";
     }
-    head.append(el("span", `bash-state${cls}`, state));
+    const stateEl = el("span", `bash-state${cls}`, state);
+    // #202 / D183: 排队的 `!` 和启动提示同一个语气：一枚小转环，不新造视觉。
+    if (item.status === "queued") stateEl.prepend(el("span", "act-spin"));
+    head.append(stateEl);
     if (item.status === "running") {
       const stop = el("button", "tool-btn bash-stop", tr("停止")) as HTMLButtonElement;
       stop.type = "button";
       stop.onclick = () => this.onBashStop?.(item.id);
       head.append(stop);
     }
-    const out = el("pre", "bash-out", item.output || (item.status === "running" ? "" : tr("（没有输出）")));
+    const out = el("pre", "bash-out", item.output || (item.status === "done" ? tr("（没有输出）") : ""));
     card.append(head, out);
     if (item.error) card.append(el("div", "bash-foot bad", item.error));
     if (item.truncated) card.append(el("div", "bash-foot", tr("输出太长，只显示末尾。完整内容：{p1}", { p1: item.fullOutputPath ?? tr("（pi 没给路径）") })));
@@ -1093,10 +1188,15 @@ export class ChatView {
 
   /** Bubbles of queued messages that were pulled back into the editor (#9, #14). */
   remove(ids: string[]): void {
+    let droppedUser = false;
     for (const id of ids) {
       this.cards.get(id)?.remove();
       this.cards.delete(id);
+      // #199: 用户气泡被撤掉时，`users` 里那枚也要跟着走 —— 否则 bootingCount() 还在替它
+      // 数数，状态行的「撤回」撤完了也不肯消失。
+      if (this.users.delete(id)) droppedUser = true;
     }
+    if (droppedUser) this.paintPending();
     // 抽走的可能是最后几屏内容：下面空了，钮就该收起（D168）。
     this.renderJump();
   }

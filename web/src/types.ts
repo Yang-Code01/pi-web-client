@@ -11,6 +11,11 @@ export interface UserItem extends ItemBase {
   /** The SKILL.md path pi recorded (`location`), used as the chip's tooltip. */
   skillPath?: string;
   images: { mimeType: string; size?: number }[];
+  /**
+   * #197 / D178: 启动期发出的消息由桥收下、替用户排队时带这个字段（`booting` → `sent` / `failed`）。
+   * 正常发送的消息没有它 —— 气泡上的「处理中…」不看这里，而是从运行态推的。
+   */
+  pending?: "booting" | "sent" | "failed";
 }
 export interface AssistantItem extends ItemBase {
   kind: "assistant";
@@ -48,7 +53,7 @@ export interface BashItem extends ItemBase {
   truncated?: boolean;
   fullOutputPath?: string;
   excludeFromContext?: boolean;
-  status: "running" | "done";
+  status: "queued" | "running" | "done";
   error?: string;
 }
 /** Compaction / branch summary / extension message (#31). */

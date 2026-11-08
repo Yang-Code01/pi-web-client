@@ -27,8 +27,8 @@ test("没开会话 → 藏（不是灰）", () => {
 
 // ---------------------------------------------------------------- 灰
 
-test("pi 正在启动 → 灰", () => {
-  assert.equal(continueState({ ...owned, starting: true }, true), "off");
+test("pi 正在启动 → 可点（#201）：启动窗口里发出去的消息进桥的待发队列，不拦人", () => {
+  assert.equal(continueState({ ...owned, starting: true }, true), "ready");
 });
 
 test("这一轮还在跑 → 灰（等它停下再继续）", () => {
@@ -54,9 +54,9 @@ test("跑完一轮（running 落回 false）又亮起来：常驻，不只在被
   assert.equal(continueState({ ...owned, running: false }, true), "ready");
 });
 
-test("字段缺省按「不是」算：老桥不发 locked/starting/running 也不该把按钮锁死", () => {
+test("字段缺省按「不是」算：老桥不发 locked/running 也不该把按钮锁死", () => {
   assert.equal(continueState({ owned: true }, true), "ready");
-  assert.equal(continueState({ owned: true, locked: undefined, starting: undefined, running: undefined }, true), "ready");
+  assert.equal(continueState({ owned: true, locked: undefined, running: undefined }, true), "ready");
   assert.equal(continueState({ owned: false }, true), "hidden");
 });
 

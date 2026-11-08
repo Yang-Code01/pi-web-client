@@ -2619,6 +2619,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .msg.bash .bash-state { font: 11.5px var(--mono); color: var(--ok); }
 .msg.bash .bash-state.bad { color: var(--danger); }
 .msg.bash.running .bash-state { color: var(--warn); }
+/* #202 / D183: 启动窗口里排着的 `!` —— 与启动提示同一个转环和语气。 */
+.msg.bash.queued .bash-state { color: var(--warn); display: inline-flex; align-items: center; gap: 5px; }
+.msg.bash .bash-state .act-spin {
+  flex: none; width: 8px; height: 8px; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent;
+  animation: act-spin 0.8s linear infinite;
+}
 .msg.bash .bash-out { margin: 0; padding: 8px 8px; font: 12px/1.45 var(--mono); color: var(--accent); white-space: pre-wrap; word-break: break-word; max-height: 22em; overflow-y: auto; }
 .msg.bash .bash-out:empty { display: none; }
 .msg.bash .bash-foot { padding: 4px 8px; font-size: 12px; color: var(--faint); border-top: 1px solid var(--line-soft); word-break: break-all; }
@@ -2649,6 +2656,24 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .summary-card[open] > summary::before { content: "▾ "; }
 .summary-card.custom > summary { color: var(--accent); }
 .summary-card .body { padding: 4px 16px 8px; border-top: 1px solid var(--line-soft); }
+
+/* #197 / D178: 用户气泡上那枚状态徽标 —— 正在启动 pi… / 处理中… / 没发出去。 */
+.msg .who .msg-pending {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; padding: 0 6px;
+  border-radius: 9px; background: var(--panel-2); color: var(--dim); font-size: 12px; line-height: 18px;
+}
+.msg .who .msg-pending .act-spin {
+  flex: none; width: 8px; height: 8px; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent;
+  animation: act-spin 0.8s linear infinite;
+}
+.msg .who .msg-pending.failed { background: transparent; color: var(--danger); }
+/* #200: 失败气泡旁的「重试」—— 拉起 pi 再补发，和这句红字同一个语气，不做成主按钮。 */
+.msg .who .msg-pending .msg-retry {
+  padding: 0 5px; border: 1px solid currentColor; border-radius: 7px; background: none;
+  color: inherit; font: inherit; font-size: 12px; line-height: 16px; cursor: pointer;
+}
+.msg .who .msg-pending .msg-retry:hover { background: var(--panel-2); }
 
 /* #24 copy in message headers, export links in the 会话 section */
 .msg .who .msg-copy { margin-left: 6px; padding: 0 4px; border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 12px; opacity: 0; transition: opacity 0.15s; }
