@@ -3116,6 +3116,22 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .fail-cta.done { border-color: var(--line-strong); color: var(--dim); }
 .fail-cta.done .fail-cta-n { background: color-mix(in srgb, var(--dim) 14%, transparent); }
 
+/* 行内锚点：顶上只要有条，它就并进条里（见 failures.ts 的 CTA_HOSTS），不再浮着 ——
+   浮着时右端正好压住那条自己的按钮（接管会话 / 决定是否信任 / 撤回）。
+   寄居的那条要允许换行：接管的说明文字挺长，窄屏下 pill 得有地方落。
+   （pill 自己用 `margin-left: auto` 推右边，flex 的 auto 边距会取消 stretch，所以列方向的条也适用。） */
+.takeover.has-cta { flex-wrap: wrap; row-gap: 6px; }
+
+/* 并进条里：不再绝对定位，跟着条自己的对齐走，右端由 margin-left:auto 推开。 */
+.fail-cta.inline {
+  position: static; right: auto; bottom: auto; z-index: auto;
+  margin-left: auto; flex: none;
+  height: 26px; padding: 0 8px; font-size: 11.5px;
+  box-shadow: none; animation: none;
+}
+/* 卡片堆（问卷 / 权限 / 扩展块）：自成一脚，右对齐。 */
+.fail-cta.inline.stacked { margin: 2px 0 0 auto; }
+
 /* 单击 CTA 弹出的小卡（样张 C）：两个举动，每个都先把代价写出来。 */
 .fail-menu {
   position: absolute; right: 0; bottom: calc(100% + 46px); z-index: 7;

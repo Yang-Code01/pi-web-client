@@ -3147,3 +3147,28 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **`stale` 依赖前端判断**：前端只比 `msg.sessionId !== this.currentId`，不看 `viewer` 是否已经显示了同一个文件 —— 「已经开着这个文件」现在仍会重开一次（幂等，只是白跑一趟）。要省这一趟可以让前端在 `v.info.abs === path && v.pane === "preview"` 时直接回 `ok:true`。
 - **`declined` 的文案是两个作者**：桥给兜底句（页面没带 `text` 时），扩展那层只补一句指令（「等他处理完未保存的改动再打开」）。要真正单一来源，得让页面把整句话传上来。
 - **`no-ack` 的 15 秒是猜的**：没有实测数据支撑，若用户报「打开要等很久」，先看这一项。
+
+## D193 「⚡ 总结本轮错误」并进 composer 上方那条，不再浮在它头顶（#234）
+
+**决定：** `.fail-cta` 的宿主不再写死 `.row`。
+
+- 每次 `renderChat`、以及那些条出现/消失之后跑一次 `placeFailCta()`（`web/src/app.ts`）：取 `.composer` 里 `.row` 之**前**、仍在参与排布的最后一块（`position` 不是 `absolute` / `fixed`，`getBoundingClientRect().height` 非 0），交给纯函数 `ctaHost()`（`web/src/failures.ts`）判三种形态 —— `rail`（接管条 / 后台运行条 / 队列条：pill 作为那条里的一员，`margin-left: auto` 挤到右边）、`card`（提问卡 / 审批卡 / 扩展组件：pill 自成一脚）、`float`（上方什么都没，或那块没登记：照旧 `absolute` 浮在 `.row` 右上）。
+- 宿主条尾如果是 `<button>`（接管会话 / 决定是否信任 / 停止后台），pill 插在它**前面** —— 条的主动作留在最右。
+- 宿主加 `has-cta`（接管条因此 `flex-wrap: wrap` + `row-gap: 6px`，字多的条才换行）；pill 加 `inline`（去掉定位、阴影与入场动画），卡片里再加 `stacked`。
+- 小卡（`.fail-menu`）改成按 pill 实测位置定位：`bottom = offsetParent.bottom - pill.top + 8`，不再用 `calc(100% + 46px)`。
+
+**为什么：**
+
+1. **叠层的绝对定位没法可靠避让。** 压它的那些条高度各异、字多了还会换行；量高度往上让会让整个 composer 每轮结束跳一次版，挤窄让位会把按钮挤成半截。条本身是 flex 行，pill 作为行内一员天然跟着排布走，代价只剩「哪条在就进哪条」这一层判断。
+2. **判断放在纯函数里，因为宿主表会变。** 以后再加条，只要往 `CTA_HOSTS` 添一行，取舍规则（取最后一块、跳过浮层与隐藏的）不用重写，也才能用不启浏览器的单测把它钉住。
+3. **主按钮留在最右是那条的既有版式。** 接管会话是那一行的主动作；按 DOM 末尾挂上去会把主按钮顶到内侧 —— 用户报的那半颗按钮就是从右边被盖起的，别用同样的顺序再犯一遍。
+4. **小卡定位跟着 pill 实测走。** pill 现在可能在条里、在卡片里、或浮着，`calc(100% + 46px)` 在这三种位置里只有一种是对的；`offsetParent` 才是真正的定位包含块（`.row` 有 `position: relative` 也未必接得住它最近的定位祖先）。
+
+**代价 / 可改：**
+
+- **宿主表是硬编码名单**（`CTA_HOSTS`）。新加一条 composer 条却忘了登记，pill 会退回浮层、又开始压人；`ctaHost()` 的兜底是 `float`（旧行为）而不是「随便猜一块」—— 宁愿旧样子也别乱塞。
+- **窄屏更挤。** 条换行后 composer 高一两行，会话区少一两行；嫌高可以把 pill 缩成只有 ⚡ 和数字（现在是「⚡ 总结本轮错误 N ▾」）。
+- **「插在按钮前面」是按「最后一个元素是 `<button>`」判的。** 将来某条尾巴是 `<a>` 或包了一层的按钮，pill 会落到它后面；要更稳就给主动作加 `data-primary` 之类的显式标记。
+- **`has-cta` 是给条改版式的开关**，扩展组件也算：若某个扩展自己就是 `display: grid`，`margin-left: auto` 在它里面可能不生效（会左对齐），不重叠但不好看。
+
+**验证：** `npm run test:failures`（38 项，其中 8 项是 `ctaHost`：空 / 接管条 / 多块取最后 / absolute 跳过 / hidden 跳过 / 未登记→float / 卡片 / 多类名）；`node bridge/tests/fail-cta-ui.mjs`（11 项，丢弃式桥 + 真 Chromium：无条时是 `absolute` 浮层、让回终端后 pill 进接管条且与「接管会话」矩形不相交、420px 不重叠、点开的小卡贴在 pill 上方 8px 且不出视口）；`node bridge/tests/failures-ui.mjs` 44/44；`npm --prefix web run typecheck`（i18n 1736 键不变，本次没加界面文案）。
