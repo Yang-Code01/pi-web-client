@@ -94,7 +94,10 @@ function transcript(prefix, rounds) {
 function writeSession(sid, rows, touchedAt) {
   const file = path.join(DIR, `2026-01-01T00-00-00-000Z_${sid}.jsonl`);
   const header = { type: "session", version: 3, id: sid, timestamp: t(0), cwd: WORK };
-  fs.writeFileSync(file, [header, ...rows].map((r) => JSON.stringify(r)).join("\n") + "\n");
+  // 先写临时文件再改名：桥每 400ms 读一次盘，直接覆写会让它读到半截 JSONL。
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, [header, ...rows].map((r) => JSON.stringify(r)).join("\n") + "\n");
+  fs.renameSync(tmp, file);
   fs.utimesSync(file, touchedAt, touchedAt);
   return file;
 }
