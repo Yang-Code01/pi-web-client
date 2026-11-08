@@ -10179,7 +10179,16 @@ export class App {
         const where = [out.version, head].filter(Boolean).join(" · ");
         body.append(el("div", "settings-path", tr("当前版本 {p1}", { p1: where })));
         const md = el("div", "settings-changelog");
-        md.append(renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）")));
+        md.append(
+          renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {
+            // 正文里的 `docs/DECISIONS.md` 是可点的文件链接：预览若直接开在弹层背后，点了像没反应。
+            // 先收面板再交给预览（相对路径由桥按会话 cwd 解析）。
+            openPath: (file) => {
+              this.closeSheet();
+              window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: file } }));
+            },
+          }),
+        );
         body.append(md);
       })
       .catch((err: Error) => {

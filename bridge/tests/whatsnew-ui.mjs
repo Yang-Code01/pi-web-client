@@ -167,6 +167,16 @@ try {
   await until(async () => (await bodyText()).includes("当前版本"), 15000, "self tab by command");
   const active = await page.locator(".settings-tabs .chip.on").innerText();
   check(active === "本项目更新日志", `/whatsnew 落在这一页（激活 ${active}）`);
+
+  // ---------------------------------------------------------------- D. 正文里的路径能点开
+  log("D. 点正文里的 docs/DECISIONS.md");
+  await page.locator(".settings-body a.file-link", { hasText: "docs/DECISIONS.md" }).first().click();
+  await until(async () => (await page.locator(".settings-sheet").count()) === 0, 5000, "sheet closed by link");
+  const shown = await until(async () => {
+    const n = page.locator(".viewer .viewer-path");
+    return (await n.count()) ? n.first().innerText() : null;
+  }, 10000, "viewer opened");
+  check(shown.includes("DECISIONS.md"), `预览里打开的是 ${shown}`);
 } catch (e) {
   failed = true;
   console.error("  FAIL", e.message);
