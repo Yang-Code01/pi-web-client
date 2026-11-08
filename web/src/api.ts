@@ -1,4 +1,4 @@
-import type { GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
+import type { GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -65,6 +65,27 @@ export const api = {
     );
     if (!out.repo) return null;
     return { repo: out.repo, branch: out.branch ?? "", detached: out.detached === true, empty: out.empty === true, dirty: out.dirty ?? 0 };
+  },
+  /**
+   * D188: 分支历史弹窗的两列。桥回 `{repo:null, code}` 时抛错（`empty` / `base_unknown` / 读不到），
+   * 界面用 `errText()` 翻成人话。`fresh` 只在 fetch 之后用一次。
+   */
+  gitHistory: async (dir: string, base = "", n = 80, fresh = false): Promise<GitHistory> => {
+    const out = await req<GitHistory & { repo: string | null; code?: string; error?: string }>(
+      `/api/git/history?dir=${encodeURIComponent(dir)}${base ? `&base=${encodeURIComponent(base)}` : ""}&n=${n}${fresh ? "&fresh=1" : ""}`,
+    );
+    if (!out.repo) throw Object.assign(new Error(out.error ?? "读不了分支历史"), { code: out.code });
+    return out;
+  },
+  /** D188: 弹窗里那个手动 fetch。失败也回 200 + `{ok:false, code, error}`，这里统一抛。 */
+  gitFetch: async (dir: string): Promise<{ at: number; remote: string }> => {
+    const out = await req<{ ok: boolean; at?: number; remote?: string; code?: string; error?: string }>("/api/git/fetch", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ dir }),
+    });
+    if (!out.ok) throw Object.assign(new Error(out.error ?? "git fetch 失败"), { code: out.code });
+    return { at: out.at ?? Date.now(), remote: out.remote ?? "origin" };
   },
   /** Bytes of an image on the bridge machine, as a File the composer can attach. */
   image: async (path: string): Promise<File> => {
