@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { entriesToItems, skillItemFor, withSkillItems } from "../src/items.ts";
-import { skillOfRead } from "../src/skills.ts";
+import { frontmatter, skillOfRead } from "../src/skills.ts";
 
 let n = 0;
 const ok = (msg) => console.log(`  ok ${++n}  ${msg}`);
@@ -44,6 +44,15 @@ ok("bash cat 进来的 SKILL.md 不标 —— 参数里那只是命令行，不�
 
 assert.equal(skillOfRead(SKILLS, "read", { path: "C:\\elsewhere\\SKILL.md" }), undefined);
 ok("不在清单里的 SKILL.md 不算");
+
+// read 的相对路径按会话 cwd 解（pi 的 read 就是这么解的），不按桥进程的 cwd
+assert.equal(skillOfRead(SKILLS, "read", { path: path.join("anatomy", "SKILL.md") }, ROOT)?.name, "anatomy");
+ok("相对路径 + cwd → 仍命中");
+
+// 带 BOM / 开头多一个空行的 SKILL.md 也是合法技能，别让描述退成空
+assert.equal(frontmatter("\uFEFF---\nname: anatomy\ndescription: 好\n---\n").description, "好");
+assert.equal(frontmatter("\n\n---\nname: anatomy\ndescription: 也好\n---\n").description, "也好");
+ok("BOM / 开头空行不影响 frontmatter");
 
 // ---------------------------------------------------------------- 插卡
 const user = { id: "u1", kind: "user", text: "画一张等距图，讲讲 bridge 和 pi 怎么分工。", images: [] };
@@ -92,12 +101,24 @@ assert.equal(withSkillItems(entriesToItems(entries), []).some((it) => it.kind ==
 ok("没有技能清单（或 cwd 为空）时什么都不插，绝不瞎标");
 
 // ---------------------------------------------------------------- 实时：调用点自己算卡
-const live = [];
-const liveCard = skillItemFor(live, SKILLS, { name: "read", args: { path: SKILL_MD } }, "先看一眼 anatomy 的规矩。");
+const live = [{ id: "a1", kind: "assistant", text: "先看一眼 anatomy 的规矩。", thinking: "" }];
+const liveCard = skillItemFor(live, SKILLS, { name: "read", args: { path: SKILL_MD } });
 assert.equal(liveCard?.whyFrom, "model");
 assert.equal(liveCard?.why, "先看一眼 anatomy 的规矩。");
 live.push(liveCard);
-assert.equal(skillItemFor(live, SKILLS, { name: "read", args: { path: SKILL_MD } }, "再读一遍。"), undefined);
+assert.equal(skillItemFor(live, SKILLS, { name: "read", args: { path: SKILL_MD } }), undefined);
 ok("实时：本轮已有同名卡就返回 undefined（不重复画）");
+
+// 多步轮次：先说话，再来一条只有工具调用、正文为空的 assistant 消息 —— 理由仍取它说的那句，
+// 而且回放给的就是实时那张卡（刷新不换词）。
+const entries2 = [
+  { type: "message", id: "u1", timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "把这批页面按 anatomy 的规矩画一下。" }] } },
+  { type: "message", id: "a1", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "assistant", content: [{ type: "text", text: "先看一眼 anatomy 的规矩。" }] } },
+  { type: "message", id: "a2", timestamp: "2026-01-01T00:00:02.000Z", message: { role: "assistant", content: [{ type: "toolCall", id: "t9", name: "read", arguments: { path: SKILL_MD } }] } },
+];
+const stepsCard = withSkillItems(entriesToItems(entries2), SKILLS).find((it) => it.kind === "skill");
+assert.equal(stepsCard?.whyFrom, "model");
+assert.equal(stepsCard?.why, "先看一眼 anatomy 的规矩。");
+ok("多步轮次：自己那句当线索，实时与回放同一张卡");
 
 console.log(`\n${n} checks passed`);

@@ -104,16 +104,17 @@ export function skillItemFor(
   items: Item[],
   skills: SkillEntry[],
   call: { name?: string; args?: unknown },
-  said: string,
+  cwd?: string,
 ): SkillItem | undefined {
-  const hit = skillOfRead(skills, call.name, call.args);
+  const hit = skillOfRead(skills, call.name, call.args, cwd);
   if (!hit) return undefined;
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
     if (it.kind === "user") break;
     if (it.kind === "skill" && it.name === hit.name) return undefined;
   }
-  const fromModel = oneLine(said);
+  // 理由一律从「已经画到画布上」的本轮条目里取：实时与回放走同一段扫描，刷新前后不会变词。
+  const fromModel = turnAssistantText(items);
   const why = fromModel || turnUserText(items);
   return {
     id: `skill:${hit.name}`,
@@ -123,6 +124,19 @@ export function skillItemFor(
     path: path.join(hit.path, "SKILL.md"),
     ...(why ? { why, whyFrom: fromModel ? "model" : "user" } : {}),
   };
+}
+
+/** 本轮里模型最近说的一句（看完工具结果又说话也照取最近一条）。 */
+function turnAssistantText(items: Item[]): string {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "user") return "";
+    if (it.kind === "assistant") {
+      const line = oneLine(it.text);
+      if (line) return line;
+    }
+  }
+  return "";
 }
 
 /** 本轮的起点（最后一条 user）之后那句用户原话。 */
@@ -137,17 +151,14 @@ function turnUserText(items: Item[]): string {
 /**
  * 回放：磁盘上没有任何「我用了技能」的记录，唯一的痕迹是 `read …\SKILL.md` 这个工具调用。
  * 把卡插在那个 read 之前（客户端收到第一张工具卡才建 ops 模块，所以卡会落在模块上面），
- * 一轮一个技能一张，`said` 在 user 处分段重置 —— 上一轮的话不能拿来当这一轮的线索。
+ * 一轮一个技能一张；去重与理由都由 `skillItemFor` 从画布回扫得出，与实时路径同一段代码。
  */
-export function withSkillItems(items: Item[], skills: SkillEntry[]): Item[] {
+export function withSkillItems(items: Item[], skills: SkillEntry[], cwd?: string): Item[] {
   if (!skills.length) return items;
   const out: Item[] = [];
-  let said = "";
   for (const item of items) {
-    if (item.kind === "user") said = "";
-    else if (item.kind === "assistant" && item.text.trim()) said = item.text;
     if (item.kind === "tool") {
-      const card = skillItemFor(out, skills, { name: item.name, args: item.args }, said);
+      const card = skillItemFor(out, skills, { name: item.name, args: item.args }, cwd);
       if (card) out.push({ ...card, id: `${item.id}:skill`, ts: item.ts });
     }
     out.push(item);

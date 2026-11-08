@@ -938,7 +938,7 @@ export class Session extends EventEmitter {
     try {
       const res = loadEntries(this.state.file);
       // 隐式触发只在工具参数里留了痕迹（`read …\SKILL.md`），回放时把技能卡补上（D199）。
-      this.items = this.keepUnsentBubbles(withSkillItems(entriesToItems(res.entries), this.skillsHere()));
+      this.items = this.keepUnsentBubbles(withSkillItems(entriesToItems(res.entries), this.skillsHere(), this.state.cwd || undefined));
       this.state.truncated = res.truncated;
       this.readError = null;
       return true;
@@ -1336,7 +1336,7 @@ export class Session extends EventEmitter {
         void this.refreshStats();
         for (const call of calls) {
           // D199：模型自己 read 了某个 SKILL.md 就是隐式触发 —— 在它那张 read 卡之前立一张技能卡。
-          const card = skillItemFor(this.items, this.skillsHere(), { name: String(call.name ?? ""), args: call.arguments }, text);
+          const card = skillItemFor(this.items, this.skillsHere(), { name: String(call.name ?? ""), args: call.arguments }, this.state.cwd || undefined);
           if (card) {
             const item: Item = { ...card, id: `live-skill:${String(call.id ?? "")}`, ts: new Date().toISOString() };
             this.emitWs({ type: "item.add", sessionId: this.state.id, item });
@@ -2294,6 +2294,7 @@ export class Session extends EventEmitter {
   /** Called after a pick so the next list reflects the new usage count. */
   dropSkillCache(): void {
     this.skillsCache = null;
+    this.skillScanCache = null;
   }
 
   /** Set (or clear) the context ceiling; persisted so it survives a bridge restart. */

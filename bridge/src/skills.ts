@@ -29,10 +29,12 @@ function readUsage(): UsageMap {
  * spaces, `|` keeps the line breaks) — long descriptions are routinely written as `description: >`.
  */
 export function frontmatter(text: string): { name?: string; description?: string } {
-  if (!text.startsWith("---")) return {};
-  const end = text.indexOf("\n---", 3);
+  // BOM 与开头空行是编辑器常见的手抖；它们不影响 frontmatter 的意思，却会把 startsWith 坑掉。
+  const src = text.replace(/^\uFEFF/, "").replace(/^(?:[ \t]*\r?\n)+/, "");
+  if (!src.startsWith("---")) return {};
+  const end = src.indexOf("\n---", 3);
   if (end < 0) return {};
-  const lines = text.slice(3, end).split(/\r?\n/);
+  const lines = src.slice(3, end).split(/\r?\n/);
   const out: { name?: string; description?: string } = {};
   for (let i = 0; i < lines.length; i++) {
     // Top-level keys only: a nested `name:` inside `metadata:` is not this skill's name.
@@ -144,11 +146,12 @@ export function scanSkills(cwd: string | null): SkillInfo[] {
  * 系统提示词只给了清单，读文件是唯一的加载动作）。只认 read：`cat` 到的 SKILL.md 我们看不见参数里的
  * 文件名之外的东西，宁可不标，也别标错。
  */
-export function skillOfRead(skills: SkillEntry[], name: string | undefined, args: unknown): SkillEntry | undefined {
+export function skillOfRead(skills: SkillEntry[], name: string | undefined, args: unknown, cwd?: string): SkillEntry | undefined {
   if (name !== "read") return undefined;
   const raw = (args as Record<string, unknown> | null | undefined)?.path;
   if (typeof raw !== "string" || !raw.trim()) return undefined;
-  const target = path.resolve(raw.trim());
+  // read 的相对路径是相对会话 cwd 解析的（pi 的 read 工具就是那个基准），不是相对桥进程。
+  const target = path.resolve(cwd ?? process.cwd(), raw.trim());
   for (const skill of skills) if (path.resolve(skill.path, "SKILL.md") === target) return skill;
   return undefined;
 }

@@ -682,6 +682,8 @@ export class ChatView {
       this.closeOps();
       this.clearTurnFails();
     }
+    // 隐式技能卡是「下面那张 read」的前言，不能落在它后面：收掉已有模块，让这张 read 自己开一个。
+    if (item.kind === "skill") this.closeOps();
     if (item.kind === "assistant") {
       this.assistantTexts.set(item.id, item.text ?? "");
       if ((item.text ?? "").trim()) this.noteAnswered();
@@ -1329,7 +1331,6 @@ export class ChatView {
     return body;
   }
 
-  /** A `!cmd` the user ran: its own card, not part of the model's tool module (#16). */
   /**
    * 隐式触发的技能（D199）：模型没说过自己用了什么，只在 `read` 里读了一份 SKILL.md。
    * 卡上答两件事：这个技能是干什么的（frontmatter 那句），以及它为什么在这轮被读
@@ -1368,6 +1369,7 @@ export class ChatView {
     return card;
   }
 
+  /** A `!cmd` the user ran: its own card, not part of the model's tool module (#16). */
   private buildBash(item: BashItem): HTMLElement {
     const wrap = el("div", `msg bash ${item.status}`);
     wrap.append(el("div", "who", tr("你 · {p1} 命令 · {p2}", { p1: item.excludeFromContext ? "!!" : "!", p2: timeOf(item.ts) })));

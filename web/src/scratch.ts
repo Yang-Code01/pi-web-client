@@ -73,6 +73,13 @@ function row(item: Item): HTMLElement {
     wrap.append(body);
     return wrap;
   }
+  if (item.kind === "skill") {
+    // 随手问里的隐式技能：一行就够（这里没有卡片的位置，也不该为它拆条），名字与“自动加载”跟聊天区同一套叫法。
+    const line = el("div", "sc-twoline", "🧩 ");
+    line.append(tr("技能"), " · ", item.name);
+    wrap.append(line);
+    return wrap;
+  }
   if (item.kind === "tool") {
     wrap.dataset.tool = item.name;
     wrap.append(el("div", "sc-twoline", `🔧 ${item.name}`));
