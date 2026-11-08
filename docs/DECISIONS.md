@@ -3103,3 +3103,33 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **`id` 是工具调用 id**（`call_…`），没有 `runId` 可以给人去 `subagent({action:"resume"})`；前台本来也 resume 不了。
 
 **验证：** `npm run test:bgruns` 新增「前台派活（D187）」段：`args` 形状抄真实调用 → 立卡即有 `agent: researcher` / 任务两行编号 / `view().n === 1`、`hasLog` 先 false；两个孩子 `status.json`（带 `parentWorkflowRunId`）落盘后 `prune()` → `hasLog` true、时间线含 `task-1 researcher started` / `task-1 researcher complete` / `task-2 researcher started`、不出负号；`noteToolEnd(…, callId)` → `done`、`readLog().out` 是 `## task-1 · researcher` / `## task-2 · researcher` 两段（`hasOut` 只是给类型契约的，前端按 `out` 的长度决定画不画）；**单跑、`action:"status"`、缺省 `async`、`async:true` 都不立卡**（后两条就是双卡的回归）；脚本式前台（`{workflow:true, async:false}`）派活那刻 `task` 为空，孩子落盘后 `prune()` 从 `sessionName` 补回 `planner` / `拆一下这个需求再分下去`。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1658 keys × 3 langs`），以及 `npm run test:continue:ui`（弹层标题断言从「后台子代理」改成「子代理」）。
+
+## D188 会话历史按页下发：`session` 帧只带末尾一页 + `history`，往前翻走 `history.before` 游标（spec #218；实现拆在 #219 / #220 / #221）
+
+**问题：** 走公网隧道（cloudflared，http2）切换会话要 5–7 秒才有东西看，之后界面还卡半秒多。同一条会话在内网打开只要一百多毫秒 —— 慢的不是隧道本身，而是「切一下就推整段历史」：95 个会话里快照中位 0.45 MB、p90 1.68 MB、最大 4.47 MB；一条 1267 条 / 2.6 MB 的会话，内网 143 ms 收到、1328 ms DOM 稳定，隧道上同一帧 6835 ms、渲染还是一次 501 ms 的长任务。桥生成快照只要 30 ms，瓶颈全在「整段历史进一帧、再一次性进 DOM」。
+
+**决定：**
+
+1. **一页 60 条**：`HISTORY_PAGE_SIZE = 60`（`bridge/src/history.ts`）。这是手感值，不是测出来的最优点：一屏上下能读到几轮，首屏又不会超过两百 KB（实测常见一页 45–170 KB，工具调用最密的一段 628 KB）。`limit` 夹在 `[1, 60]`，缺省与超界都按 60 算。
+2. **页首优先落在用户消息**：先看 `[末尾-60, 末尾)` 里**最早**那条 user；窗口里没有就往前找最近的一条，连同它开始的那一轮工具调用一起带回；一条 user 都没有才按条数切。这样一页读起来是完整的几轮，不会从半句工具输出开始。
+3. **`session` 帧带 `history: { hasMore, total }`**：订阅 / 认领 / 新建都只带末尾一页，`items` 仍是这一页的原文；`hasMore` 决定界面画不画「载入更早」，`total` 是整段条数。老前端不认 `history`，照旧只画这一页，不会白屏。
+4. **往前翻用 `history.before`**：请求 `{ sessionId, before: <item id>, limit? }`，回答 `{ sessionId, before, items, hasMore }`。游标就是这一页第一条的 item id —— 不用序号（序号会在写入时漂移）。`before` 找不到（会话被截断 / 换了分支）回空页 + `hasMore: false`，不报错。纯内存切片：不读盘、不碰 pi。
+5. **分支切换 / 唤醒续接 / 断线重订阅同样只推一页**（`Session.tailFrame()` 三处共用）；新建与清空是 `{ hasMore: false, total: 0 }`。重连的 `items` 帧仍是**整页替换** —— 这是 #221 的既定取舍：重连回到最后一页，已经翻出来的更早内容不保留。
+6. **锚定用节点，不用高度差**：插入前记下视口最上沿那个内容节点的 `rect.top`，插入后按差值补 `scrollTop`，再在下一帧和 150 ms 后用同一个节点钉回去（字体度量与代码块会让高度在插入后继续变）。`scrollHeight` 差值不能用：只算一次高度差实测偏 **87 px**。滚动容器同时 `overflow-anchor: none` —— 浏览器自己也会做滚动锚定，两边各补一次就跳两次，而且 Safari 没有这个特性，手算是唯一一致的做法。「载入更早」那行和回底按钮不参与锚定：它们钉在列表两端，拿它们当锚点会算出满量反向位移。
+7. **随手问保持全量**：它没有「载入更早」的入口（spec Out of Scope「不动随手问」），所以 `itemsFrame(items, { full: true })` 整段下发 + `history: { hasMore: false, total: N }`。若跟着切页，累积超过一页后前面的话会在下一次唤醒 / 重连时静默消失，界面上又没有入口能取回来。
+
+**为什么不上别的传输 / 渲染：**
+
+- **换 HTTP 拉历史**：同一载荷走 HTTP GET 在隧道上是 3417 ms，确实比 WS 的 6835 ms 快约一倍，但窗口化之后一页只有一百来 KB，WS 已经够用；再养一条 HTTP 路径就多一套鉴权、重连与竞态处理，不值得。
+- **permessage-deflate**：压缩是连接级的 —— 打开它要对所有小帧（delta、状态、审批）持续付出压缩开销，省下的只是打开会话时那一两百 KB；代理 / 隧道链路上还多一层协商与兼容风险。
+- **虚拟滚动 / 只渲染可见行**：这次靠「少放条目进 DOM」解决（60 条一次渲染在预算内）；虚拟滚动要自己处理可变行高与滚动位置，正好和「按节点锚定」冲突，测试面也大得多。更长的会话仍要靠分页，而不是重写渲染器。
+- **换 QUIC**：本机 cloudflared 的 UDP 预检失败（`UDP Connectivity … FAIL`），本来就没有选项。
+
+**代价 / 可改：**
+
+- **一页可能超过 60 条**：页首要落回最近的用户消息，工具调用特别密的一段会把整轮都带回来（实测最重 628 KB）。这是有意的取舍 —— 宁可一页大一点，也不让用户从半句工具输出开始读。
+- **重连回到最后一页**：翻了几页之后断线重连，已经翻出来的旧内容不再保留。要保留得在客户端缓存已翻页并在重连后重放，本票没做。
+- **`total` 只在快照里有**：`history` 响应不带 `total`，界面只在打开会话那一刻知道总数；目前没有用它做进度显示。
+- **60 是手感值**：要按实测调，只需改 `HISTORY_PAGE_SIZE`；协议里没有把页大小写死。
+
+**验证：** `npm run test:history`（`bridge/tests/history-page-unit.mjs`）：页首落 user、逐页拼到底不重不漏、`limit` 夹取、游标找不到回空页，以及随手问 130 条整段下发且 `hasMore:false`。`npm run test:history:ui`（`bridge/tests/history-paths-ui.mjs`）钉住三条只推一页的路径（切换 / 重连 / 分支切换 / 唤醒）与新建会话的空 `history`；`npm run test:loadolder:ui`（`bridge/tests/history-ui.mjs`）在真界面上验翻页条数、±2px 锚定、连点只发一次、翻到底行消失；`npm run test:continue:ui` 照旧全绿。

@@ -22,6 +22,7 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
+import { pageBefore } from "./history.ts";
 import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
@@ -1255,16 +1256,26 @@ async function main(): Promise<void> {
             return;
           }
           case "subscribe": {
-            const snap = sessions.snapshot(msg.sessionId);
+            const snap = sessions.pagedSnapshot(msg.sessionId);
             (ws as any).watching = String(msg.sessionId);
             send({ type: "session", sessionId: msg.sessionId, ...snap, trust: await trustFor(snap.state.cwd) });
+            return;
+          }
+          /**
+           * #220：往前翻一页。纯内存切片 —— 不读盘、不碰 pi，所以点一下就能回。
+           * `limit` 由 `pageBefore()` 夹在 [1, 60]；`before` 不在这个会话里就回空页 + hasMore:false。
+           */
+          case "history.before": {
+            const session = sessions.get(String(msg.sessionId));
+            const page = session ? pageBefore(session.items, String(msg.before ?? ""), msg.limit) : { items: [], hasMore: false };
+            send({ type: "history", sessionId: msg.sessionId, before: msg.before, items: page.items, hasMore: page.hasMore });
             return;
           }
           case "claim": {
             if (!(await requireStepUp())) return;
             const session = await sessions.claim(String(msg.sessionId));
             (ws as any).watching = session.state.id;
-            send({ type: "session", sessionId: session.state.id, ...session.snapshot(), trust: await trustFor(session.state.cwd) });
+            send({ type: "session", sessionId: session.state.id, ...session.pagedSnapshot(), trust: await trustFor(session.state.cwd) });
             return;
           }
           case "prompt": {
@@ -1376,7 +1387,7 @@ async function main(): Promise<void> {
             // client hears about the arrangement (the strip is a projection of manage.pin).
             if (msg.pin) sessions.pinLast(session.state.id);
             (ws as any).watching = session.state.id;
-            send({ type: "session", sessionId: session.state.id, ...session.snapshot(), trust: await trustFor(session.state.cwd) });
+            send({ type: "session", sessionId: session.state.id, ...session.pagedSnapshot(), trust: await trustFor(session.state.cwd) });
             broadcast({ type: "session.state", session: session.state });
             if (msg.pin) broadcast({ type: "manage", ...manageSnapshot() });
             return;
@@ -1685,7 +1696,7 @@ async function main(): Promise<void> {
             if (!(await requireStepUp())) return;
             const session = await sessions.reload(String(msg.sessionId ?? ""));
             (ws as any).watching = session.state.id;
-            send({ type: "session", sessionId: session.state.id, ...session.snapshot(), trust: await trustFor(session.state.cwd) });
+            send({ type: "session", sessionId: session.state.id, ...session.pagedSnapshot(), trust: await trustFor(session.state.cwd) });
             send({ type: "notice", sessionId: session.state.id, text: "已重新加载：pi 进程重启，设置、扩展、技能、模板、AGENTS.md 都是最新的了。", level: "info" });
             return;
           }
