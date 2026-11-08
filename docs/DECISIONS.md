@@ -351,7 +351,7 @@
 **可改**：想加自动过期，在 `Sessions.purge()` 前挂个启动时扫描即可；payload 目录是 `trashPayload()` 里的一个 `statePath("trash", …)`。
 
 ## D52 真终端：bridge 里挂 node-pty，窗口开箱即用但按「本机 + 二次口令」收窄
-决定：terminal 走 bridge 内置的 `node-pty`（`bridge/src/terminal.ts` 的 `Terminals`），不上第二套本地 service；每个会话最多同时 4 个，默认 shell 按 `pwsh` → `powershell.exe` → `cmd.exe` 逐级回退，cwd 取当前会话目录。安全边界三层：公网隧道请求一律拒（`publicReq`）、开终端必须过 `requireStepUp()`（二次口令，10 分钟）、只接受 cookie 鉴权的 ws。`.ps1/.psm1/.cmd/.bat` 在文件浏览器里右键可「用 PowerShell 运行 / 以管理员身份运行」，提权一律 `Start-Process -Verb RunAs` 另开桌面窗口（当前终端不升级，也接管不了提权进程的输入）。
+决定：terminal 走 bridge 内置的 `node-pty`（`bridge/src/terminal.ts` 的 `Terminals`），不上第二套本地 service；每个会话最多同时 4 个，默认 shell 按 `pwsh` → `powershell.exe` → `cmd.exe` 逐级回退，cwd 取当前会话目录。安全边界三层：公网隧道请求一律拒（`publicReq`）、开终端必须过 `requireStepUp()`（二次口令，10 分钟；D186 起 1 天）、只接受 cookie 鉴权的 ws。`.ps1/.psm1/.cmd/.bat` 在文件浏览器里右键可「用 PowerShell 运行 / 以管理员身份运行」，提权一律 `Start-Process -Verb RunAs` 另开桌面窗口（当前终端不升级，也接管不了提权进程的输入）。
 为什么：这个产品的用户就坐在跑 bridge 的那台机器上，需求是「一个能 `cd`、能跑交互式程序的窗口」，用一次性命令回显冒充终端会在第一个交互式程序上露馅。选内置而不是新 service，是因为新 service 要再解决一遍鉴权、保活、安装与开机自启，收益为零。提权只能新进程（Windows 没有别的路），所以干脆承认它：桌面窗口 + 应用内面板不假装自己是管理员。
 **踩过的坑**：`spawn` 带 `detached: true` 在 Windows 是 `DETACHED_PROCESS`（无控制台），而 `Start-Process` 需要桌面会话 —— 结果是**静默成功但什么都不做**（退出码 0、脚本没跑）。去掉 `detached`、保留 `stdio: "ignore"` + `windowsHide` + `unref()` 才对。
 **可改**：并发上限是 `MAX_TERMS`；默认 shell 顺序在 `whichPowerShell()`；想禁掉终端，删掉 ws 里 `term.*` 那几支即可，前端按钮会自然报「不支持」。
@@ -1638,7 +1638,7 @@ if (s.idleFor() > IDLE_GC_MS) s.sleep();   // 2 小时
   所以横栏超出宽度时从尾部往前收，收掉的进那颗「＋N」，点开是一张全量列表（`.pin-menu` 外壳，
   挂在 body 上，理由同 Q-035）。**当前会话那颗永不折叠** —— 藏了等于回到报障现场。
 - **公网未验口令时静默跳过**：桥的 manage 写操作要 step-up（D15），但每次点会话弹一次口令框比不置顶
-  更难受；跳过不弹，用户自己验过之后的 9 分钟窗口里照常置顶。
+  更难受；跳过不弹，用户自己验过之后的 step-up 窗口里照常置顶（D186 起前端改跟桥的 1 天窗口，不再自带 9 分钟近似值）。
 
 **为什么不用「置顶条只画当前会话」这种更省事的做法：** 用户要的是**状态**（置顶），不是**高亮**。
 状态能撑住「收起左栏、换标签页、重开页面」这一串场景；画一个假的当前胶囊只是把问题挪到下一个渲染点。
@@ -2563,7 +2563,7 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **建完停在原地**：刷新当前目录、把新行标成 `.hit` 并滚到可见处（`DirPicker.reveal(name)`），**不进入新文件夹、不打开新文件**。理由：这是「整理目录」的动线，不是「跳进去干活」；自动进去/打开会把筛选、滚动位置和上一跳的高亮一起冲掉。
 - **只建一层、名字原样**：桥端 `makeFile(parent, name)` / `makeDir(parent, name)` 共用 `checkEntryName()`（空名、`.`/`..`、255 上限、无 `/` `\`、控制字符、Windows 非法字符 / 结尾空格或点 / 保留名）与 `resolveParent()`；**不补扩展名**、不改大小写、不替用户去重（同名报「已经存在」）。
 - **文件是 0 字节空文件**，`fs.writeFileSync(target, "", { flag: "wx" })`：`wx` 让「同名即失败」变成原子操作 —— 先 `existsSync` 再写会留一个窗口，把别人（编辑器、终端里的 `touch`）刚建的同名文件截断。
-- **写就要口令，两者一视同仁**：`mkfile` 和 `mkdir` 一样先 `requireStepUp()`（本机 / 局域网连接天然放行，公网 10 分钟窗口）。
+- **写就要口令，两者一视同仁**：`mkfile` 和 `mkdir` 一样先 `requireStepUp()`（本机 / 局域网连接天然放行，公网 10 分钟窗口；D186 起 1 天）。
 - **信令**：新增 WS `{type:"mkfile", reqId, parent, name}` → `{type:"mkfile.result", reqId, path|error}`，和 `mkdir` 对称；前端把两张等待表合成 `mkWaits`（结果形状一样）。错误文案由桥端给中文原样显示（与 `mkdir` 一致，不自造 `errCode`）。
 - **输入行**：预填「新建文件夹」/「新建文件」并全选（同资源管理器：回车就是默认名）；`Enter` 提交、`Esc` 收起；盘符页（没有当前目录）两颗按钮隐藏。
 
@@ -3063,7 +3063,13 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 
 ## D186 step-up 窗口从 10 分钟放宽到 1 天，前端不再自带一套 9 分钟的钟（无票，用户报「开公网隧道访问会频繁让输口令」）
 
-**决定：** `bridge/src/index.ts` 的 `STEP_UP_MS` 从 `10 * 60 * 1000` 改成 `24 * 60 * 60 * 1000`；前端 `stepup-ok` 不再用本地常量 `9 * 60 * 1000` 自己算窗口，直接取桥推来的 `until` 减 1 分钟裕量（`web/src/app.ts`）。
+**决定：** `bridge/src/index.ts` 的 `STEP_UP_MS` 从 `10 * 60 * 1000` 改成 `24 * 60 * 60 * 1000`。
+
+`stepup-ok` 从此同时带 `until`（绝对时刻）与 `ttl`（相对时长），前端用 `Date.now() + ttl - 60s` 作为本地窗口：
+`until` 要拿浏览器时钟去比，手机时钟偏快就会「刚验完又弹」，正是这轮要治的症状；`ttl` 不受时钟偏差影响，`until` 只作旧桥的兜底。
+
+弹窗文案的时长改成占位符（`（{p1}内免重复）` + `tr("1 天")`），下次调窗口只动 `STEP_UP_MS` 与「1 天」那一条译名，
+不用再去改三份 i18n 里的整句。
 
 **为什么：** 用户报「频繁输密码」，先分时限：登录 cookie 是 30 天（`bridge/src/auth.ts:6`），本轮隧道 10:38 起只有 3 次 `ws connected`、2 次 `login ok`（两个不同公网 IP），登录态并没有反复失效 —— 反复弹的是 D15 的 step-up。10 分钟窗口当初按「手机上偶尔输一次」设计（D15），实际一轮对话里批准几次就到点；更糟的是前端还留了一份 9 分钟的近似值，比桥更早弹窗，等于实际窗口不到 10 分钟。1 天窗口仍要求「写入前现场证明持有口令」，只是把频率降到一天一次；D15 防的是口令从微信/浏览器历史里泄露后被陌生人拿去写，这个威胁模型和窗口长短关系不大。
 
@@ -3072,4 +3078,5 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **stepUntil 仍挂在单条 WS 连接的进程内存里**：桥重启、页面刷新、断线重连都会清零，只是不再每 10 分钟清零。要真正做到「一天只输一次」得把它移到按 IP/cookie 记的表或签名的 cookie 里，本次没改。
 - **窗口内被同一浏览器接管的人可以直接写**：和「cookie 被偷」同一等级的风险，D15 的边界本来也不是防这个。想做「批准前一律再验」就把 `STEP_UP_MS` 调回 0（会退化成每次操作都问）。
 
-**验证：** `npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 `i18n-check`）；文案那条键在 `en.ts` / `ja.ts` 同步改名，漏一条 typecheck 会报。已有 step-up 用例（`bridge/tests/runtime-settings.mjs`、`sleep-all.mjs`）只断言「公网要口令」，不锁时长，不受影响。
+**验证：** `npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 `i18n-check`）；文案模板键在 `en.ts` / `ja.ts` 同步换键并补 `1 天` 的译名，漏一条 typecheck 会报。
+已有 step-up 用例（`bridge/tests/runtime-settings.mjs`、`sleep-all.mjs`）只断言「公网要口令」，不锁时长，不受影响。

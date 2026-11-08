@@ -1183,7 +1183,8 @@ async function main(): Promise<void> {
             }
             resetLoginAttempts(ip);
             (ws as any).stepUntil = Date.now() + STEP_UP_MS;
-            send({ type: "stepup-ok", until: (ws as any).stepUntil });
+            // `ttl` 是相对时长：手机时钟偏快/偏慢时，按绝对值算的 until 会让前端提前或滞后弹窗。
+            send({ type: "stepup-ok", until: (ws as any).stepUntil, ttl: STEP_UP_MS });
             return;
           }
           case "models": {

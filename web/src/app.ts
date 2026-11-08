@@ -2182,9 +2182,11 @@ export class App {
         this.askStepUp();
         break;
       case "stepup-ok":
-        // D186: follow the bridge's own deadline (it sends `until`) minus a one-minute margin, so the
-        // UI re-asks just before the bridge would refuse instead of keeping a second, drifting window.
-        this.stepUntil = Number(msg.until) - 60_000 || 0;
+        // D186: follow the bridge's own deadline. `ttl` is a duration, so a phone whose clock is off
+        // does not re-ask early; `until` is the older bridge's absolute fallback. One-minute margin
+        // either way, so the UI re-asks just before the bridge would refuse.
+        const ttl = Number(msg.ttl);
+        this.stepUntil = ttl > 0 ? Date.now() + ttl - 60_000 : (Number(msg.until) - 60_000 || 0);
         this.closeModal();
         for (const run of this.pending.splice(0)) run();
         if (this.stepResync && this.currentId) this.socket.send({ type: "subscribe", sessionId: this.currentId });
@@ -2305,7 +2307,7 @@ export class App {
     const h = el("h2", "", tr("再验一次口令"));
     h.style.margin = "0";
     h.style.fontSize = "16px";
-    const p = el("p", "", tr("公网访问下，写入和批准前要重新验一次口令（1 天内免重复）。"));
+    const p = el("p", "", tr("公网访问下，写入和批准前要重新验一次口令（{p1}内免重复）。", { p1: tr("1 天") }));
     p.style.color = "var(--faint)";
     p.style.fontSize = "13px";
     p.style.margin = "0";
