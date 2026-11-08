@@ -5,7 +5,7 @@
  * rules live here in one block instead of being scattered through the message switch:
  *
  * - only loopback / LAN clients ever reach it (the ws switch refuses tunnel traffic before calling),
- *   and `term.open` additionally needs a fresh passphrase (step-up, 10 minutes);
+ *   and `term.open` additionally needs a fresh passphrase (step-up, 1 day since D186);
  * - at most `MAX_TERMS` shells at a time, killed with the bridge or when the client asks;
  * - a shell is a child of this process: it keeps working across a page reload (the buffer is
  *   replayed on `attach`) but never survives the bridge.

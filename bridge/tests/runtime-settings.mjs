@@ -109,6 +109,7 @@ async function startBridge({ name, reuse = false, env = {}, lifecycle }) {
     port: PORT,
     out,
     cookie,
+    pass,
     state,
     records,
     /** Every line the stub pi wrote: launches, turns, aborts, exits. */
@@ -266,6 +267,16 @@ async function refusedValues() {
     const demand = await pub.waitAfter(mark, (m) => m.type === "need-stepup" || m.type === "runtime.stats", 5000, "public edit");
     check(demand.type === "need-stepup", `从公共隧道改阈值被要求重新输口令（${demand.type}）`);
     check(pub.since(mark, (m) => m.type === "runtime.stats").length === 0, "而且没有回 stats —— 那条写入没有走到写盘");
+
+    // D186: the window is a day, and `ttl` (a duration) rides along so a phone whose clock is off
+    // cannot re-ask early; `until` must agree with it.
+    const before = Date.now();
+    const markStep = pub.seen.length;
+    pub.send({ type: "stepup", passphrase: bridge.pass });
+    const ok = await pub.waitAfter(markStep, (m) => m.type === "stepup-ok" || m.type === "notice", 5000, "public step-up");
+    check(ok.type === "stepup-ok", `补一次口令就放行（${ok.type}）`);
+    check(ok.ttl === 24 * 60 * 60 * 1000, `step-up 窗口按 ttl 给到 1 天（${ok.ttl}）`);
+    check(Math.abs(ok.until - (before + ok.ttl)) < 5000, `until 与 ttl 对得上（${ok.until} vs ${before + ok.ttl}）`);
     pub.close();
 
     const now = await stats(page, "after refusals");

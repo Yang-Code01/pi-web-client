@@ -64,6 +64,9 @@
 - 主题：仅暗色，中文界面
 
 ## D15 公网会话降级：写与审批前再验一次口令
+
+> **D186 修订（2026-11-08）：** 窗口从 10 分钟放宽到 1 天（用户报「频繁让输口令」）；前端不再自带 9 分钟的近似钟。下文「10 分钟」的时长以 D186 为准，判据与只读降级的其余部分不变。
+
 决定：隧道常开；来自非局域网地址的连接 = 只读会话（能看能读，不能发消息、不能批、不能改配置）。要写/批，先在网页上重输一次口令，换一个 10 分钟有效的 step-up 标记。
 为什么：口令会出现在微信消息、浏览器历史和日志里，泄露的后果从「机器被控」降到「别人看一眼聊天记录」。10 分钟窗口让手机上只需偶尔输一次，不至于每次批准都输。
 实现：**不能只看 socket 对端**——经 cloudflared 进来的请求对端永远是 `127.0.0.1`。判据是「有 `cf-connecting-ip` 头 = 走隧道 = 公网」；没有该头且对端是私网段（`127.*`/`10.*`/`192.168.*`/`172.16-31.*`/`::1`）= 局域网。公网且无 step-up → 403 `{needsStepUp:true}`，前端弹口令框。限流按 `cf-connecting-ip`（无则 socket 地址）计。
@@ -348,7 +351,7 @@
 **可改**：想加自动过期，在 `Sessions.purge()` 前挂个启动时扫描即可；payload 目录是 `trashPayload()` 里的一个 `statePath("trash", …)`。
 
 ## D52 真终端：bridge 里挂 node-pty，窗口开箱即用但按「本机 + 二次口令」收窄
-决定：terminal 走 bridge 内置的 `node-pty`（`bridge/src/terminal.ts` 的 `Terminals`），不上第二套本地 service；每个会话最多同时 4 个，默认 shell 按 `pwsh` → `powershell.exe` → `cmd.exe` 逐级回退，cwd 取当前会话目录。安全边界三层：公网隧道请求一律拒（`publicReq`）、开终端必须过 `requireStepUp()`（二次口令，10 分钟）、只接受 cookie 鉴权的 ws。`.ps1/.psm1/.cmd/.bat` 在文件浏览器里右键可「用 PowerShell 运行 / 以管理员身份运行」，提权一律 `Start-Process -Verb RunAs` 另开桌面窗口（当前终端不升级，也接管不了提权进程的输入）。
+决定：terminal 走 bridge 内置的 `node-pty`（`bridge/src/terminal.ts` 的 `Terminals`），不上第二套本地 service；每个会话最多同时 4 个，默认 shell 按 `pwsh` → `powershell.exe` → `cmd.exe` 逐级回退，cwd 取当前会话目录。安全边界三层：公网隧道请求一律拒（`publicReq`）、开终端必须过 `requireStepUp()`（二次口令，10 分钟；D186 起 1 天）、只接受 cookie 鉴权的 ws。`.ps1/.psm1/.cmd/.bat` 在文件浏览器里右键可「用 PowerShell 运行 / 以管理员身份运行」，提权一律 `Start-Process -Verb RunAs` 另开桌面窗口（当前终端不升级，也接管不了提权进程的输入）。
 为什么：这个产品的用户就坐在跑 bridge 的那台机器上，需求是「一个能 `cd`、能跑交互式程序的窗口」，用一次性命令回显冒充终端会在第一个交互式程序上露馅。选内置而不是新 service，是因为新 service 要再解决一遍鉴权、保活、安装与开机自启，收益为零。提权只能新进程（Windows 没有别的路），所以干脆承认它：桌面窗口 + 应用内面板不假装自己是管理员。
 **踩过的坑**：`spawn` 带 `detached: true` 在 Windows 是 `DETACHED_PROCESS`（无控制台），而 `Start-Process` 需要桌面会话 —— 结果是**静默成功但什么都不做**（退出码 0、脚本没跑）。去掉 `detached`、保留 `stdio: "ignore"` + `windowsHide` + `unref()` 才对。
 **可改**：并发上限是 `MAX_TERMS`；默认 shell 顺序在 `whichPowerShell()`；想禁掉终端，删掉 ws 里 `term.*` 那几支即可，前端按钮会自然报「不支持」。
@@ -1635,7 +1638,7 @@ if (s.idleFor() > IDLE_GC_MS) s.sleep();   // 2 小时
   所以横栏超出宽度时从尾部往前收，收掉的进那颗「＋N」，点开是一张全量列表（`.pin-menu` 外壳，
   挂在 body 上，理由同 Q-035）。**当前会话那颗永不折叠** —— 藏了等于回到报障现场。
 - **公网未验口令时静默跳过**：桥的 manage 写操作要 step-up（D15），但每次点会话弹一次口令框比不置顶
-  更难受；跳过不弹，用户自己验过之后的 9 分钟窗口里照常置顶。
+  更难受；跳过不弹，用户自己验过之后的 step-up 窗口里照常置顶（D186 起前端改跟桥的 1 天窗口，不再自带 9 分钟近似值）。
 
 **为什么不用「置顶条只画当前会话」这种更省事的做法：** 用户要的是**状态**（置顶），不是**高亮**。
 状态能撑住「收起左栏、换标签页、重开页面」这一串场景；画一个假的当前胶囊只是把问题挪到下一个渲染点。
@@ -2560,7 +2563,7 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **建完停在原地**：刷新当前目录、把新行标成 `.hit` 并滚到可见处（`DirPicker.reveal(name)`），**不进入新文件夹、不打开新文件**。理由：这是「整理目录」的动线，不是「跳进去干活」；自动进去/打开会把筛选、滚动位置和上一跳的高亮一起冲掉。
 - **只建一层、名字原样**：桥端 `makeFile(parent, name)` / `makeDir(parent, name)` 共用 `checkEntryName()`（空名、`.`/`..`、255 上限、无 `/` `\`、控制字符、Windows 非法字符 / 结尾空格或点 / 保留名）与 `resolveParent()`；**不补扩展名**、不改大小写、不替用户去重（同名报「已经存在」）。
 - **文件是 0 字节空文件**，`fs.writeFileSync(target, "", { flag: "wx" })`：`wx` 让「同名即失败」变成原子操作 —— 先 `existsSync` 再写会留一个窗口，把别人（编辑器、终端里的 `touch`）刚建的同名文件截断。
-- **写就要口令，两者一视同仁**：`mkfile` 和 `mkdir` 一样先 `requireStepUp()`（本机 / 局域网连接天然放行，公网 10 分钟窗口）。
+- **写就要口令，两者一视同仁**：`mkfile` 和 `mkdir` 一样先 `requireStepUp()`（本机 / 局域网连接天然放行，公网 10 分钟窗口；D186 起 1 天）。
 - **信令**：新增 WS `{type:"mkfile", reqId, parent, name}` → `{type:"mkfile.result", reqId, path|error}`，和 `mkdir` 对称；前端把两张等待表合成 `mkWaits`（结果形状一样）。错误文案由桥端给中文原样显示（与 `mkdir` 一致，不自造 `errCode`）。
 - **输入行**：预填「新建文件夹」/「新建文件」并全选（同资源管理器：回车就是默认名）；`Enter` 提交、`Esc` 收起；盘符页（没有当前目录）两颗按钮隐藏。
 
@@ -3058,3 +3061,45 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 
 **验证：** `npm run test:bgruns`（`bridge/tests/bgruns-unit.mjs` 新增 workflow 段）：`details` 抄真实形状（无 agent/task、无 outputFile）→ agent `researcher`、任务 `1. … 2. …`；`events.jsonl` 落盘前 `hasLog` false，落盘后 `prune()` 补上，时间线含 `workflow started` / `task-1 researcher started` / `task-1 completed`，不含 20 KB 的 `result.output`（`XXXX`）也不含 trace 快照（`operation`）；写 `status.json`（`state:"complete"` + 两段 `workflow.value.children`）→ `prune()` 翻 `done`、`hasOut` true、`readLog().out` 是 `## task-1 · researcher` / `## task-2 · researcher` 两段；脚本式（`{workflow:true}`、无 `args.tasks`）→ agent `planner`、任务 `拆一下这个需求`；`events.jsonl` 在 `prune()` 之前写出来 → `readLog()` 直接接上（不用等滴答）；派活那刻清单为空、之后写 `workflow-receipt.json` → `prune()` 把 agent / task 补回 `planner` / `1. … 2. …`；parallel 只给 `args.tasks` → 逐条列出（决定 5 的副作用，明写）。原有 acp / 单 run / parallel / D172 幽灵任务 / 路径白名单用例全部不回归；`npm --prefix bridge run typecheck`。
 
+## D186 step-up 窗口从 10 分钟放宽到 1 天，前端不再自带一套 9 分钟的钟（无票，用户报「开公网隧道访问会频繁让输口令」）
+
+**决定：** `bridge/src/index.ts` 的 `STEP_UP_MS` 从 `10 * 60 * 1000` 改成 `24 * 60 * 60 * 1000`。
+
+`stepup-ok` 从此同时带 `until`（绝对时刻）与 `ttl`（相对时长），前端用 `Date.now() + ttl - 60s` 作为本地窗口：
+`until` 要拿浏览器时钟去比，手机时钟偏快就会「刚验完又弹」，正是这轮要治的症状；`ttl` 不受时钟偏差影响，`until` 只作旧桥的兜底。
+
+弹窗文案的时长改成占位符（`（{p1}内免重复）` + `tr("1 天")`），下次调窗口只动 `STEP_UP_MS` 与「1 天」那一条译名，
+不用再去改三份 i18n 里的整句。
+
+**为什么：** 用户报「频繁输密码」，先分时限：登录 cookie 是 30 天（`bridge/src/auth.ts:6`），本轮隧道 10:38 起只有 3 次 `ws connected`、2 次 `login ok`（两个不同公网 IP），登录态并没有反复失效 —— 反复弹的是 D15 的 step-up。10 分钟窗口当初按「手机上偶尔输一次」设计（D15），实际一轮对话里批准几次就到点；更糟的是前端还留了一份 9 分钟的近似值，比桥更早弹窗，等于实际窗口不到 10 分钟。1 天窗口仍要求「写入前现场证明持有口令」，只是把频率降到一天一次；D15 防的是口令从微信/浏览器历史里泄露后被陌生人拿去写，这个威胁模型和窗口长短关系不大。
+
+**代价 / 可改：**
+
+- **stepUntil 仍挂在单条 WS 连接的进程内存里**：桥重启、页面刷新、断线重连都会清零，只是不再每 10 分钟清零。要真正做到「一天只输一次」得把它移到按 IP/cookie 记的表或签名的 cookie 里，本次没改。
+- **窗口内被同一浏览器接管的人可以直接写**：和「cookie 被偷」同一等级的风险，D15 的边界本来也不是防这个。想做「批准前一律再验」就把 `STEP_UP_MS` 调回 0（会退化成每次操作都问）。
+
+**验证：** `npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 `i18n-check`）；文案模板键在 `en.ts` / `ja.ts` 同步换键并补 `1 天` 的译名，漏一条 typecheck 会报。
+已有 step-up 用例（`bridge/tests/runtime-settings.mjs`、`sleep-all.mjs`）只断言「公网要口令」，不锁时长，不受影响。
+
+## D187 前台派活的子代理（`async:false`）也算一张卡（无票，用户报的；派了 5 个却看不见任何提示）
+
+**问题：** 用户让模型「启动五个子代理去查斯诺克世锦赛赛程」，模型调的是 `subagent({workflow:"parallel", async:false, args:{tasks:[…5 条]}})` —— 脚本看着像后台，其实是**前台**（`async:false`）。页面上只有操作行的 `▸ 3 个操作 · bash ×2 · subagent ×1 · 运行中`：聊天下方没有提示条、详情面板里也什么都没有，用户以为「只启动了一个」。可 5 个孩子全都起来了 —— 每个 `async-subagent-runs/<runId>/status.json` 里都写着 `parentWorkflowRunId: "call_01_…"`（就是派活那次工具调用的 id）与 `workflowKey: "task-1"…"task-5"`，父 run 自己却**没有目录**。根因全在 `bridge/src/bgruns.ts`：建卡三闸里的「结构性开始信号」是 `d.kind === "delegate" || typeof d.asyncDir === "string"`，前台 workflow 两样都没有（结果文本是 `Workflow completed. Return: {…}`，没有 `Async workflow [uuid]`）；而 `tool_execution_start` 那刻手里明明有 `ev.args` 与 `ev.toolCallId`，却只发 ws 不建卡。
+
+**决定：**
+
+1. **在工具开始时立卡**：`noteToolStart(tool, args, callId)`，在 `bridge/src/sessions.ts` 的 `tool_execution_start` 里调用。三个条件：`tool === "subagent"` 且 callId 过 `ID_OK`；`args.action` 不是字符串（`status` / `guide` 是查询，不是派活）；**`args.async === false`** —— 缺省 / `async:true` 是后台，那种 run 在 `tool_execution_end` 自己建卡，这里再建一张就是双卡，而且没有任何完成信号能收掉它（得等 `SILENT_DEAD_MS` 六小时）。再加一道：**是 workflow 或 `tasks.length >= 2`** —— 单跑的前台调用不立卡，那种情况会话本来就没 settle，操作行已经在显示它了。
+2. **`agent` / `task` 直接读模型的 `args`**（`args.tasks[].task`，多个孩子逐条编号），不读盘：派活那刻就有，比后台那条 receipt 回填还准（那边只有截断过的 `sessionName`）。脚本式前台 workflow（`{workflow:true}`、没有 `args.tasks`）派活那刻拿不到原文，`prune()` 从孩子 `steps[0].sessionName` 去掉 `agent: ` 前缀兜底 —— 那份被 runner 截断过，只能算半个原文。
+3. **过程记录 = 孩子各自的 `status.json` 现拼**：`fgChildren(parentId, since)` 扫 `tmpdir()` 下的 `pi-subagents-*` 根，按 `parentWorkflowRunId === callId` 认领，`status.json` 的 mtime 早于判活时刻的一律跳过；`fgTimeline()` 把 `startedAt` / `endedAt` 投影成 `task-1 researcher started` / `task-1 researcher complete` 两行。`hasLog` 用「已经扫到孩子」判，不指望一份不存在的日志文件。
+4. **最终答复从结果文本里取**：工具结束是唯一完成信号，`foregroundOutput()` 用 `jsonAfter(text, "Return: ")` 手写括号配平（跳过字符串与转义）取 `children[].output`，再按 `## <key> · <agent>` 分段；`tool_execution_end` 多传 `callId` 与 `isError`，前台那张卡在同一个调用里收掉。
+5. **文案去掉「后台」**：弹层标题「后台子代理」→「子代理」，空态「这个会话没有在跑的后台子代理。」→「这个会话没有子代理在跑。」（前台也在里面了，`en` / `ja` 同步）。**左栏胶囊仍是 `后台` / `后台 N`**：它只在 `!s.running && bgBusy(s)` 时出现（会话已 settle、派出去的还在跑），那种情况必然是后台派的。事件/时间线的英文保持 runner 原样，不进 i18n。
+
+**代价 / 可改：**
+
+- **每 30 秒扫一遍 `tmpdir()` 下的所有 `pi-subagents-*` 根**（本机 89 个 `async-subagent-runs` 条目）：每个 `status.json` parse 一次，量级上没问题；真嫌多可以让 runner 落一份索引文件。
+- **只有 started / complete 两个点**：孩子内部的步骤（bash 调用、read 文件）看不到 —— 要细看得读孩子的 `transcriptPath`，那条路径不在这张卡的白名单里。
+- **脚本式前台 workflow 的任务原文是截断的**：`sessionName` 只留到 `…（` 那么长，卡片上看到的是半个原文（这类 workflow 的完整 prompt 既不在 `args` 里，也没有父 `status.json` 可读）。
+- **单跑前台不立卡**：派**一个**子代理仍然没有提示条（会话在等它，操作行已经说明了）。要改就删掉 `kids.length < 2` 那道闸。
+- **时间以「派活那刻」为锚**：孩子若比它早落盘（时钟粒度 / 派发顺序），钳到 `0.0s` 而不是负数。
+- **`id` 是工具调用 id**（`call_…`），没有 `runId` 可以给人去 `subagent({action:"resume"})`；前台本来也 resume 不了。
+
+**验证：** `npm run test:bgruns` 新增「前台派活（D187）」段：`args` 形状抄真实调用 → 立卡即有 `agent: researcher` / 任务两行编号 / `view().n === 1`、`hasLog` 先 false；两个孩子 `status.json`（带 `parentWorkflowRunId`）落盘后 `prune()` → `hasLog` true、时间线含 `task-1 researcher started` / `task-1 researcher complete` / `task-2 researcher started`、不出负号；`noteToolEnd(…, callId)` → `done`、`readLog().out` 是 `## task-1 · researcher` / `## task-2 · researcher` 两段（`hasOut` 只是给类型契约的，前端按 `out` 的长度决定画不画）；**单跑、`action:"status"`、缺省 `async`、`async:true` 都不立卡**（后两条就是双卡的回归）；脚本式前台（`{workflow:true, async:false}`）派活那刻 `task` 为空，孩子落盘后 `prune()` 从 `sessionName` 补回 `planner` / `拆一下这个需求再分下去`。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1658 keys × 3 langs`），以及 `npm run test:continue:ui`（弹层标题断言从「后台子代理」改成「子代理」）。

@@ -2202,8 +2202,11 @@ export class App {
         this.askStepUp();
         break;
       case "stepup-ok":
-        // Own clock with a margin, so we re-ask a little before the bridge would refuse.
-        this.stepUntil = Date.now() + 9 * 60 * 1000;
+        // D186: follow the bridge's own deadline. `ttl` is a duration, so a phone whose clock is off
+        // does not re-ask early; `until` is the older bridge's absolute fallback. One-minute margin
+        // either way, so the UI re-asks just before the bridge would refuse.
+        const ttl = Number(msg.ttl);
+        this.stepUntil = ttl > 0 ? Date.now() + ttl - 60_000 : (Number(msg.until) - 60_000 || 0);
         this.closeModal();
         for (const run of this.pending.splice(0)) run();
         if (this.stepResync && this.currentId) this.socket.send({ type: "subscribe", sessionId: this.currentId });
@@ -2324,7 +2327,7 @@ export class App {
     const h = el("h2", "", tr("再验一次口令"));
     h.style.margin = "0";
     h.style.fontSize = "16px";
-    const p = el("p", "", tr("公网访问下，写入和批准前要重新验一次口令（10 分钟内免重复）。"));
+    const p = el("p", "", tr("公网访问下，写入和批准前要重新验一次口令（{p1}内免重复）。", { p1: tr("1 天") }));
     p.style.color = "var(--faint)";
     p.style.fontSize = "13px";
     p.style.margin = "0";
@@ -10446,7 +10449,7 @@ export class App {
     };
     const sheet = el("div", "sheet bg-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("后台子代理")));
+    head.append(el("div", "sheet-title", tr("子代理")));
     const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(close);
@@ -10477,7 +10480,7 @@ export class App {
     sheet.body.querySelector(".bg-empty")?.remove();
     if (!runs.length) {
       // `error` 只会在公网那只手上出现（桥不把任务原话发出去）；本地就是真的没有。
-      sheet.body.append(el("div", "bg-empty", error || tr("这个会话没有在跑的后台子代理。")));
+      sheet.body.append(el("div", "bg-empty", error || tr("这个会话没有子代理在跑。")));
       return;
     }
     for (const r of runs) {
