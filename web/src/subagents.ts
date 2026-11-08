@@ -157,6 +157,127 @@ export function subagentOverridePatch(name: string, model: string, thinking: str
   };
 }
 
+/** 「高级」的折叠状态单独一条键，别和设置页「高级」那条 `pi.settings.advanced` 互相覆盖。 */
+export const SUBAGENTS_ADVANCED_OPEN_KEY = "pi.settings.subagents.advanced";
+
+/** 只认 "1" 是展开：没存过、存了 "0"、或者被手改成别的值，都按折叠处理。 */
+export function subagentsAdvancedOpen(stored: string | null): boolean {
+  return stored === "1";
+}
+
+/** 高级区三块「只列已存在的条目」的取值：值是对象才算一条，其它形状当没写。 */
+function recordOf(raw: SubagentsLeaf): Record<string, unknown> | null {
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : null;
+}
+
+/** 条目里的一个文本叶子：空串 / 非字符串 = 没写。 */
+function textOf(node: Record<string, unknown> | null, key: string): string | null {
+  const value = node?.[key];
+  return typeof value === "string" && value ? value : null;
+}
+
+/** `subagents.watchdog.children.overrides.<agent>` 的一条。 */
+export interface WatchdogChildOverrideRow {
+  agent: string;
+  model: string | null;
+  thinking: string | null;
+}
+
+/** 看门狗按 agent 的覆盖：只列文件里已经写过的条目，按 agent 名字排序。 */
+export function watchdogChildrenOverrideRows(json: Record<string, unknown> | null): WatchdogChildOverrideRow[] {
+  const overrides = recordOf(readSubagentsKey(json, "subagents.watchdog.children.overrides"));
+  if (!overrides) return [];
+  const rows: WatchdogChildOverrideRow[] = [];
+  for (const agent of Object.keys(overrides).sort()) {
+    const fields = recordOf(overrides[agent] as SubagentsLeaf);
+    if (!fields) continue;
+    rows.push({ agent, model: textOf(fields, "model"), thinking: textOf(fields, "thinking") });
+  }
+  return rows;
+}
+
+/** 一条看门狗覆盖要写的两个键；空 = 删键，两个都空时这一条整支消失。 */
+export function watchdogChildOverridePatch(
+  agent: string,
+  model: string,
+  thinking: string,
+): Record<string, SubagentsLeaf> {
+  const at = `subagents.watchdog.children.overrides.${agent}`;
+  return { [`${at}.model`]: model.trim() || null, [`${at}.thinking`]: thinking.trim() || null };
+}
+
+/** `subagents.agentOverridesByProvider.<provider>.<agent>` 的一条。 */
+export interface ProviderOverrideRow {
+  provider: string;
+  agent: string;
+  model: string | null;
+  thinking: string | null;
+}
+
+/** 按 provider 的覆盖：只列文件里已经写过的条目，按 provider → agent 排序。 */
+export function providerOverrideRows(json: Record<string, unknown> | null): ProviderOverrideRow[] {
+  const providers = recordOf(readSubagentsKey(json, "subagents.agentOverridesByProvider"));
+  if (!providers) return [];
+  const rows: ProviderOverrideRow[] = [];
+  for (const provider of Object.keys(providers).sort()) {
+    const agents = recordOf(providers[provider] as SubagentsLeaf);
+    if (!agents) continue;
+    for (const agent of Object.keys(agents).sort()) {
+      const fields = recordOf(agents[agent] as SubagentsLeaf);
+      if (!fields) continue;
+      rows.push({ provider, agent, model: textOf(fields, "model"), thinking: textOf(fields, "thinking") });
+    }
+  }
+  return rows;
+}
+
+/** 一条 provider 覆盖要写的两个键。 */
+export function providerOverridePatch(
+  provider: string,
+  agent: string,
+  model: string,
+  thinking: string,
+): Record<string, SubagentsLeaf> {
+  const at = `subagents.agentOverridesByProvider.${provider}.${agent}`;
+  return { [`${at}.model`]: model.trim() || null, [`${at}.thinking`]: thinking.trim() || null };
+}
+
+/** `subagents.machines.<label>` 的一条：`rex.ssh` 是 ssh 目标，`cwd` 是那边的仓库根。 */
+export interface MachineRow {
+  label: string;
+  ssh: string | null;
+  cwd: string | null;
+}
+
+/** 设备：只列文件里已经登记过的标签，按标签排序。 */
+export function machineRows(json: Record<string, unknown> | null): MachineRow[] {
+  const machines = recordOf(readSubagentsKey(json, "subagents.machines"));
+  if (!machines) return [];
+  const rows: MachineRow[] = [];
+  for (const label of Object.keys(machines).sort()) {
+    const machine = recordOf(machines[label] as SubagentsLeaf);
+    if (!machine) continue;
+    rows.push({ label, ssh: textOf(recordOf(machine.rex as SubagentsLeaf), "ssh"), cwd: textOf(machine, "cwd") });
+  }
+  return rows;
+}
+
+/**
+ * `local` 是 pi-subagents 的内置标签（`machine: "local"`），写进文件没有意义；Rex 主机也只允许
+ * 写在用户设置里 —— 项目设置里写一个 `rex` 条目会让子代理起不来，所以项目 scope 一律只读。
+ */
+export function machineEditable(label: string, scope: "global" | "project"): boolean {
+  return scope === "global" && label !== "local";
+}
+
+/** 一台设备要写的两个键；空 = 删键，两个都空时这台整支消失。 */
+export function machinePatch(label: string, ssh: string, cwd: string): Record<string, SubagentsLeaf> {
+  return {
+    [`subagents.machines.${label}.rex.ssh`]: ssh.trim() || null,
+    [`subagents.machines.${label}.cwd`]: cwd.trim() || null,
+  };
+}
+
 function sourceLabelOf(source: AgentSource): string {
   switch (source) {
     case "package":
@@ -355,6 +476,16 @@ export function paintSubagentsBasics(host: SubagentsBasicsHost, page: SubagentsP
   return editor;
 }
 
+/** 七档 + 继承；值不认识时把磁盘上的那个值挂成「当前」，不假装它不存在。 */
+function fillThinking(select: HTMLSelectElement, current: string): void {
+  select.append(new Option(tr("继承"), ""));
+  for (const level of THINKING_LEVELS) select.append(new Option(level, level));
+  if (current && !(THINKING_LEVELS as readonly string[]).includes(current)) {
+    select.append(new Option(tr("{p1}（当前）", { p1: current }), current));
+  }
+  select.value = current;
+}
+
 export function paintSubagentsPage(body: HTMLElement, page: SubagentsPage): void {
   const wrap = el("div", "subagents-page");
 
@@ -415,7 +546,12 @@ export function paintSubagentsPage(body: HTMLElement, page: SubagentsPage): void
     link.onclick = (ev) => {
       ev.preventDefault();
       for (const [id, other] of links) other.classList.toggle("on", id === section.id);
-      anchors.get(section.id)?.scrollIntoView({ block: "start" });
+      const target = anchors.get(section.id);
+      // 「高级」默认折叠：先展开再滚，否则滚过去只看到一条标题。
+      for (const details of target?.querySelectorAll<HTMLDetailsElement>("details.subagents-advanced") ?? []) {
+        details.open = true;
+      }
+      target?.scrollIntoView({ block: "start" });
     };
     if (section.count !== undefined) link.append(el("span", "n", String(section.count)));
     links.set(section.id, link);
@@ -429,12 +565,6 @@ export function paintSubagentsPage(body: HTMLElement, page: SubagentsPage): void
 
   const section = (id: string): HTMLElement => anchors.get(id)!;
 
-  const placeholder = (id: string, label: string) => {
-    const box = section(id);
-    box.append(el("h3", "", label));
-    box.append(el("p", "subagents-hint", tr("占位：这一片只做只读清单，编辑在下一片。")));
-  };
-
   const footer = el("div", "subagents-foot");
   const editor = paintSubagentsBasics(
     { defaults: section("default"), behavior: section("behavior"), discovery: section("discovery"), footer },
@@ -444,7 +574,7 @@ export function paintSubagentsPage(body: HTMLElement, page: SubagentsPage): void
 
   paintSubagentsAgents(section("agents"), page, editor);
 
-  placeholder("advanced", tr("高级"));
+  paintSubagentsAdvanced(section("advanced"), page, editor);
   paintAcpDelegateSection(section("acp"), page.acp);
 
   body.append(wrap);
@@ -480,16 +610,6 @@ export function paintSubagentsAgents(box: HTMLElement, page: SubagentsPage, edit
 
   const json = page.view?.json ?? null;
   const locked = !editor || editor.locked;
-
-  /** 七档 + 继承；值不认识时把磁盘上的那个值挂成「当前」，不假装它不存在。 */
-  const fillThinking = (select: HTMLSelectElement, current: string): void => {
-    select.append(new Option(tr("继承"), ""));
-    for (const level of THINKING_LEVELS) select.append(new Option(level, level));
-    if (current && !(THINKING_LEVELS as readonly string[]).includes(current)) {
-      select.append(new Option(tr("{p1}（当前）", { p1: current }), current));
-    }
-    select.value = current;
-  };
 
   const table = document.createElement("table");
   table.className = "subagents-agents";
@@ -588,4 +708,236 @@ export function paintSubagentsAgents(box: HTMLElement, page: SubagentsPage, edit
       tr("frontmatter 列只读；右边两列写的是 subagents.agentOverrides.<name>，优先级高于 frontmatter。"),
     ),
   );
+}
+
+
+/**
+ * 「高级」区（#216）：看门狗、按 provider 覆盖、设备。
+ *
+ * 三块都只编辑文件里**已经存在**的条目 —— 新建一条还得同时定删除与校验语义，收益低，走「编辑
+ * JSON」。整块默认折叠，状态单独记一条 localStorage；左栏锚点点到它时由 `paintSubagentsPage`
+ * 先展开再滚。写入沿用点号 patch：空文本 = `null`，`applyPatch` 见到 null 删键，条目两个键都
+ * 空了整支随之消失。
+ */
+export function paintSubagentsAdvanced(box: HTMLElement, page: SubagentsPage, editor: SubagentsEditor | null): void {
+  const details = el("details", "subagents-advanced");
+  details.open = subagentsAdvancedOpen(localStorage.getItem(SUBAGENTS_ADVANCED_OPEN_KEY));
+  details.addEventListener("toggle", () => {
+    localStorage.setItem(SUBAGENTS_ADVANCED_OPEN_KEY, details.open ? "1" : "0");
+  });
+  const summary = el("summary");
+  summary.append(
+    el("span", "", tr("高级")),
+    el("span", "subagents-hint", tr("看门狗、按 provider 覆盖、设备 —— 只改文件里已经写过的条目")),
+  );
+  details.append(summary);
+  box.append(details);
+
+  const view = page.view;
+  if (!view) {
+    details.append(el("div", "empty", tr("读取中…")));
+    return;
+  }
+  if (view.error) {
+    details.append(el("div", "note warn", tr("这个文件读不了：{p1}", { p1: view.error })));
+    return;
+  }
+
+  const json = view.json;
+  const locked = !editor || editor.locked;
+  const body = el("div", "subagents-adv-body");
+  details.append(body);
+
+  /** 文件里的一个文本叶子（`subagents.<key>`）；空串与非字符串都当没写。 */
+  const str = (key: string): string | null => {
+    const value = readSubagentsKey(json, `subagents.${key}`);
+    return typeof value === "string" && value ? value : null;
+  };
+
+  /** 一块 = 标题 + 一行说明 + 表；没条目时调用方自己补一行。 */
+  const block = (title: string, hint: string): HTMLElement => {
+    const wrap = el("div", "subagents-adv-block");
+    wrap.append(el("h4", "", title), el("p", "subagents-hint", hint));
+    body.append(wrap);
+    return wrap;
+  };
+
+  const table = (headers: string[]): { el: HTMLTableElement; body: HTMLTableSectionElement } => {
+    const tableEl = document.createElement("table");
+    tableEl.className = "subagents-adv-rows";
+    const headRow = tableEl.createTHead().insertRow();
+    for (const label of headers) headRow.append(el("th", "", label));
+    return { el: tableEl, body: tableEl.createTBody() };
+  };
+
+  /** 标签格：名字 + 一句可选的只读说明（`local`）。 */
+  const nameCell = (row: HTMLTableRowElement, name: string, note?: string): void => {
+    const cell = row.insertCell();
+    cell.className = "name";
+    cell.append(document.createTextNode(name));
+    if (note) cell.append(el("div", "subagents-hint", note));
+  };
+
+  const fieldRow = (parent: HTMLElement, label: string, control: HTMLElement, hint: string): void => {
+    const line = el("label", "settings-row");
+    line.append(el("span", "settings-label", label), control, el("span", "settings-hint", hint));
+    parent.append(line);
+  };
+
+  /** 布尔三态：继承（文件里不写这个键）/ 开 / 关。 */
+  const boolField = (key: string): HTMLSelectElement => {
+    const select = el("select", "ns-input");
+    select.append(new Option(tr("继承"), ""), new Option(tr("开"), "true"), new Option(tr("关"), "false"));
+    const current = readSubagentsKey(json, `subagents.${key}`);
+    select.value = typeof current === "boolean" ? String(current) : "";
+    select.disabled = locked;
+    select.onchange = () => editor?.mark({ [`subagents.${key}`]: select.value === "" ? null : select.value === "true" });
+    return select;
+  };
+
+  const watchModel = (input: HTMLInputElement): void => {
+    // 不在清单里的 id 只标红：网关新上的模型不该等这一页更新，保存也不拦。
+    input.classList.toggle("bad", !subagentsModelKnown(page.models, input.value));
+  };
+
+  const modelField = (current: string | null): HTMLInputElement => {
+    const input = el("input", "ns-input mono");
+    input.type = "text";
+    input.setAttribute("list", "subagents-models");
+    input.value = current ?? "";
+    input.placeholder = tr("继承");
+    input.disabled = locked;
+    watchModel(input);
+    return input;
+  };
+
+  const thinkingField = (current: string | null): HTMLSelectElement => {
+    const select = el("select", "ns-input");
+    fillThinking(select, current ?? "");
+    select.disabled = locked;
+    return select;
+  };
+
+  const watchdog = block(
+    tr("看门狗"),
+    tr("看门狗是另一次模型调用：复核主代理刚做完的事。这块改的是谁来看门，不是子代理自己用哪个模型。"),
+  );
+  fieldRow(
+    watchdog,
+    "watchdog.enabled",
+    boolField("watchdog.enabled"),
+    tr("每轮结束复核一次改动；继承 = 文件里不写这个键，按 pi-subagents 的默认（不做复核）。"),
+  );
+  fieldRow(
+    watchdog,
+    "watchdog.clarification",
+    boolField("watchdog.clarification"),
+    tr("只对主代理的看门狗生效：拿不准时可以直接问你。"),
+  );
+  const childModel = modelField(str("watchdog.children.model"));
+  const childThinking = thinkingField(str("watchdog.children.thinking"));
+  const commitWatchdogChild = (): void => {
+    editor?.mark({
+      "subagents.watchdog.children.model": childModel.value.trim() || null,
+      "subagents.watchdog.children.thinking": childThinking.value || null,
+    });
+  };
+  childModel.oninput = () => {
+    watchModel(childModel);
+    commitWatchdogChild();
+  };
+  childThinking.onchange = commitWatchdogChild;
+  fieldRow(watchdog, "watchdog.children.model", childModel, tr("只管子代理自己的看门狗；留空 = 继承。"));
+  fieldRow(watchdog, "watchdog.children.thinking", childThinking, tr("同上；留空 = 继承。"));
+
+  const watchdogOverrides = watchdogChildrenOverrideRows(json);
+  if (watchdogOverrides.length) {
+    const rows = table(["agent", tr("覆盖 model"), tr("覆盖 thinking")]);
+    for (const override of watchdogOverrides) {
+      const line = rows.body.insertRow();
+      nameCell(line, override.agent);
+      const model = modelField(override.model);
+      line.insertCell().append(model);
+      const thinking = thinkingField(override.thinking);
+      line.insertCell().append(thinking);
+      const commit = (): void => {
+        editor?.mark(watchdogChildOverridePatch(override.agent, model.value, thinking.value));
+      };
+      model.oninput = () => {
+        watchModel(model);
+        commit();
+      };
+      thinking.onchange = commit;
+    }
+    watchdog.append(rows.el);
+  } else {
+    watchdog.append(el("p", "subagents-hint", tr("文件里没有按 agent 的看门狗覆盖；要加一条请用「编辑 JSON」。")));
+  }
+
+  const providers = block(
+    tr("按 provider 覆盖"),
+    tr("这一层的优先级高于单 agent 覆盖：两边都写了，用 provider 这一份。只列文件里已经写过的条目。"),
+  );
+  const providerRows = providerOverrideRows(json);
+  if (providerRows.length) {
+    const rows = table(["provider", "agent", tr("覆盖 model"), tr("覆盖 thinking")]);
+    for (const override of providerRows) {
+      const line = rows.body.insertRow();
+      nameCell(line, `${override.provider} / ${override.agent}`);
+      const model = modelField(override.model);
+      line.insertCell().append(model);
+      const thinking = thinkingField(override.thinking);
+      line.insertCell().append(thinking);
+      const commit = (): void => {
+        editor?.mark(providerOverridePatch(override.provider, override.agent, model.value, thinking.value));
+      };
+      model.oninput = () => {
+        watchModel(model);
+        commit();
+      };
+      thinking.onchange = commit;
+    }
+    providers.append(rows.el);
+  } else {
+    providers.append(el("p", "subagents-hint", tr("文件里没有按 provider 的覆盖；要加一条请用「编辑 JSON」。")));
+  }
+
+  const machines = block(
+    tr("设备"),
+    page.scope === "project"
+      ? tr("设备只能在全局新建：项目设置里写 Rex 主机，子代理会起不来，所以这里只读。")
+      : tr("改完对新启动的子代理生效；要加一台请用「编辑 JSON」。"),
+  );
+  const machineList = machineRows(json);
+  if (machineList.length) {
+    const rows = table([tr("标签"), "rex.ssh", "cwd"]);
+    for (const machine of machineList) {
+      const line = rows.body.insertRow();
+      nameCell(line, machine.label, machine.label === "local" ? tr("内置标签，只读") : undefined);
+      const editable = machineEditable(machine.label, page.scope) && !locked;
+
+      const ssh = el("input", "ns-input mono");
+      ssh.type = "text";
+      ssh.value = machine.ssh ?? "";
+      ssh.placeholder = tr("ssh 目标");
+      ssh.disabled = !editable;
+      line.insertCell().append(ssh);
+
+      const cwd = el("input", "ns-input mono");
+      cwd.type = "text";
+      cwd.value = machine.cwd ?? "";
+      cwd.placeholder = "/path/to/pi-web-client";
+      cwd.disabled = !editable;
+      line.insertCell().append(cwd);
+
+      const commit = (): void => {
+        editor?.mark(machinePatch(machine.label, ssh.value, cwd.value));
+      };
+      ssh.oninput = commit;
+      cwd.oninput = commit;
+    }
+    machines.append(rows.el);
+  } else {
+    machines.append(el("p", "subagents-hint", tr("文件里还没有登记过设备。")));
+  }
 }

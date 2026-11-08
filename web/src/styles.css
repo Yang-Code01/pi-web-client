@@ -3697,3 +3697,30 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* .subagents-badge 的 display 会盖掉 UA 的 [hidden]，得自己收回 */
 .subagents-sheet .subagents-badge[hidden] { display: none; }
 .subagents-sheet .subagents-clear { font-size: 10.5px; padding: 2px 6px; white-space: nowrap; }
+
+/* #216：「高级」默认折叠成一条 details；三块共用窄表，行标签是点号键或设备标签 */
+.subagents-sheet .subagents-advanced { border: 1px solid var(--line-soft); border-radius: 10px; padding: 0 12px; }
+.subagents-sheet .subagents-advanced > summary {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 10px 0; cursor: pointer; list-style: none;
+}
+.subagents-sheet .subagents-advanced > summary::-webkit-details-marker { display: none; }
+.subagents-sheet .subagents-advanced > summary > span:first-child { font-size: 12px; font-weight: 500; color: var(--text); }
+.subagents-sheet .subagents-advanced[open] > summary { border-bottom: 1px solid var(--line-soft); }
+.subagents-sheet .subagents-adv-body { padding: 10px 0 12px; display: grid; gap: 4px; }
+.subagents-sheet .subagents-adv-block { display: grid; gap: 6px; }
+.subagents-sheet .subagents-adv-block > h4 { margin: 0; font: 500 12px var(--mono); color: var(--text); }
+.subagents-sheet .subagents-adv-block > .subagents-hint { margin: 0; }
+.subagents-sheet .subagents-adv-rows { width: 100%; border-collapse: collapse; }
+.subagents-sheet .subagents-adv-rows th {
+  text-align: left; font-size: 10.5px; font-weight: 400; letter-spacing: 0.05em; color: var(--faint);
+  padding: 4px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap;
+}
+.subagents-sheet .subagents-adv-rows td { padding: 3px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.subagents-sheet .subagents-adv-rows tr:last-child td { border-bottom: 0; }
+.subagents-sheet .subagents-adv-rows td.name { font: 11.5px var(--mono); color: var(--text); white-space: nowrap; }
+.subagents-sheet .subagents-adv-rows td.name .subagents-hint { font-family: inherit; margin-top: 2px; }
+.subagents-sheet .subagents-adv-rows input.ns-input,
+.subagents-sheet .subagents-adv-rows select.ns-input { padding: 4px 6px; font-size: 11.5px; width: 100%; }
+
+.subagents-sheet .subagents-adv-block + .subagents-adv-block { margin-top: 10px; }
