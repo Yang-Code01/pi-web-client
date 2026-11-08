@@ -39,6 +39,7 @@
     "test:tunnel": "node --experimental-transform-types bridge/tests/tunnel-unit.mjs",
     "test:extwidgets": "node --experimental-transform-types bridge/tests/extwidgets-unit.mjs",
     "test:failures": "node --experimental-transform-types web/tests/failures-unit.mjs",
+    "test:failcta:ui": "node bridge/tests/fail-cta-ui.mjs",
     "test:continue:ui": "node bridge/tests/continue-ui.mjs",
     "test:attach:ui": "node bridge/tests/attach-picker.mjs",
     "test:done": "node bridge/tests/done-persist.mjs",

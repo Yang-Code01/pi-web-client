@@ -9,7 +9,7 @@ import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPicke
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
-import { classify, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type FailLedger, type SeenFail } from "./failures.ts";
+import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type ComposerChild, type FailLedger, type SeenFail } from "./failures.ts";
 import { parseRules, type RuleBook } from "./rules.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
@@ -218,6 +218,8 @@ export class App {
   private failRemindPending = new Set<string>();
   /** 右下角那颗「⚡ 总结本轮错误」；每轮结束按 pending 亮灭。 */
   private failCta: HTMLButtonElement | null = null;
+  /** ⚡ 按钮现在寄居在哪块容器里（`null` = 浮在输入框右上角）。 */
+  private failCtaHost: HTMLElement | null = null;
   /** 点开 CTA 的那张小卡（两个举动：记进账本 / 发到会话复盘）。 */
   private failMenu: HTMLElement | null = null;
   private failMenuAway: ((ev: Event) => void) | null = null;
@@ -6435,6 +6437,7 @@ export class App {
     const show = Boolean(s) && !s?.running && !s?.starting && n > 0;
     btn.hidden = !show;
     btn.classList.toggle("busy", this.failReviewPending);
+    this.placeFailCta();
     if (!show) {
       this.closeFailMenu();
       return;
@@ -6463,6 +6466,46 @@ export class App {
     return this.failRules?.reviewed?.[sid]?.n ?? 0;
   }
 
+  /**
+   * 把 ⚡ 按钮挂到该挂的地方：输入框上方只要有条（接管条、信任条、后台条、排队条…），它就走条里，
+   * 和那条自己的按钮并排；没有东西时照旧浮在输入框右上角。浮着的时候它正好压住那条右端的按钮
+   * （用户报的就是「接管会话」被压住一半），所以不能靠 z-index 抢，得换位置。
+   */
+  private placeFailCta(): void {
+    const btn = this.failCta;
+    const host = this.els.composerHost;
+    const row = host.querySelector(".row") as HTMLElement | null;
+    if (!btn || !row) return;
+    if (btn.hidden) {
+      // 没东西可总结：别在条里占着位子（接管条会为它留着换行的空当）。
+      btn.classList.remove("inline", "stacked");
+      this.failCtaHost = null;
+      return;
+    }
+    const kids = ([...host.children] as HTMLElement[]).slice(0, [...host.children].indexOf(row));
+    const where = ctaHost(kids.map((n) => {
+      const style = getComputedStyle(n);
+      const child: ComposerChild = { cls: n.className, layout: "flow" };
+      if (style.position === "absolute" || style.position === "fixed") child.layout = "absolute";
+      else if (!n.getBoundingClientRect().height) child.layout = "hidden";
+      return child;
+    }));
+    const target = where.kind === "float" ? row : kids[where.index];
+    // 条尾那颗按钮（接管会话 / 决定是否信任 / 停止后台）是那条的主动作，让它留在最右边：
+    // ⚡ 按钮插到它前面，而不是把主动作挤到里面去。卡片、队列行这类尾巴不是按钮的宿主照旧接在末尾。
+    const tail = target.lastElementChild;
+    const before = tail && tail !== btn && tail.tagName === "BUTTON" ? tail : null;
+    this.failCtaHost = target === row ? null : target;
+    if (btn.parentElement !== target) {
+      if (before) target.insertBefore(btn, before);
+      else target.append(btn);
+    }
+    // inline = 不再浮着；stacked = 卡片里自成一脚。两个类都由容器决定，见 failures.ts 的 CTA_HOSTS。
+    // 条自己的版式（接管条要换行）用 CSS `:has(> .fail-cta)`,不再额外挂类。
+    btn.classList.toggle("inline", where.kind !== "float");
+    btn.classList.toggle("stacked", where.kind === "card");
+  }
+
   private failButton(): HTMLButtonElement {
     const btn = el("button", "fail-cta") as HTMLButtonElement;
     btn.type = "button";
@@ -6479,12 +6522,22 @@ export class App {
   /** 单击弹小卡：两个举动各自写清代价（记进账本花 0、复盘烧一轮 token）。 */
   private openFailMenu(): void {
     const btn = this.failCta;
-    const row = btn?.parentElement;
+    // 小卡挂在 `.row` 里（宽度对齐 composer 的右边），纵向位置则按它真正的定位包含块实测 ——
+    // ⚡ 按钮并进条里以后还照旧用 `calc(100% + 46px)` 就会偏，见下。
+    const row = this.els.composerHost.querySelector(".row");
     if (!btn || !row) return;
     this.closeFailMenu();
     const box = el("div", "fail-menu");
     box.setAttribute("role", "menu");
     row.append(box);
+    // ⚡ 按钮在哪，菜单就在它头顶 8px 之外：固定的 `calc(100% + 46px)` 只在它浮着时对。
+    // 量的是 `offsetParent`（真正的定位包含块）的底，不是 `.row` 的底：菜单挂在 `.row` 里也可能被
+    // 更近的定位祖先接住（`absolute` 只看最近的 `position != static` 的祖先），按 `.row` 算会偏出一条内边。
+    const block = (box.offsetParent as HTMLElement | null) ?? row;
+    const b = btn.getBoundingClientRect();
+    box.style.bottom = `${Math.round(block.getBoundingClientRect().bottom - b.top + 8)}px`;
+    // 上方就这么多空地：菜单再长也别顶出视口，超出的自己滚。
+    box.style.maxHeight = `${Math.max(120, Math.round(b.top - 8))}px`;
     this.failMenu = box;
     this.paintFailMenu();
     const away = (ev: Event) => {
@@ -8295,6 +8348,7 @@ export class App {
     if (this.approvals.length) host.append(this.approvalNode());
     this.renderAsks();
     this.syncCwdChip();
+    this.placeFailCta();
   }
 
   /**
@@ -10432,7 +10486,11 @@ export class App {
     ];
     bar.replaceChildren();
     bar.hidden = !rows.length;
-    if (!rows.length) return;
+    if (!rows.length) {
+      // 条藏了，寄居在里面的 pill 也会跟着看不见：先把它弄出来。
+      this.placeFailCta();
+      return;
+    }
     const head = el("div", "queue-head");
     head.append(el("span", "queue-title", tr("排队中 {p1} 条", { p1: rows.length })));
     const back = el("button", "tool-btn", tr("撤回到输入框")) as HTMLButtonElement;
@@ -10449,6 +10507,7 @@ export class App {
       line.title = row.text;
       bar.append(line);
     }
+    this.placeFailCta();
   }
 
   /** Extension widgets above / below the editor, status lines below, title on the browser tab. */
@@ -10480,6 +10539,8 @@ export class App {
       }
       this.extBelow.replaceChildren(...nodes);
     }
+    // `replaceChildren` 会把寄居在扩展块里的 ⚡ 按钮一并带走：重新摆一次。
+    this.placeFailCta();
   }
 
   // ---------------------------------------------------------------- continue (D159)
@@ -10538,11 +10599,13 @@ export class App {
     if (!live && !done) {
       this.bgBar?.remove();
       this.bgBar = null;
+      this.placeFailCta();
       return;
     }
     if (!this.bgBar || !this.bgBar.isConnected) {
       const bar = el("div", "bg-bar");
-      // 时间贴着文字走，不推到最右边：`总结本轮错误` 那颗浮动贴在输入框右上，推过去会被它压住。
+      // 时间贴着文字走，不推到最右边：那颗「总结本轮错误」在有条的时候会并到这条的最右端，
+      // 再把计时也推过去，一行里就要挤三样东西。
       bar.append(el("span", "bg-dot"), el("span", "bg-text"), el("span", "bg-sep", "·"), el("span", "bg-elapsed"));
       // D170：整条都能点开详情。用 role=button 而不是 <button>：里面已经有文字与计时，语义上是一个入口。
       bar.setAttribute("role", "button");
@@ -10579,6 +10642,8 @@ export class App {
       delete since.dataset.bgSince;
       since.textContent = bgTookText(done.lastMs ?? 0);
     }
+    // 条刚出现 / 刚走，pill 的落点跟着变。
+    this.placeFailCta();
   }
 
   /**
@@ -11134,6 +11199,8 @@ export class App {
   private renderAsks(): void {
     const host = this.els.composerHost;
     host.querySelector(".ask-slot")?.remove();
+    // 槽一删，寄居在里面的 ⚡ 按钮也跟着没了（后面的分支还可能提前 return），先把它捞出来。
+    this.placeFailCta();
     this.fillHintStatus();
     if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
     if (this.askLost && !this.asks.length) {
@@ -11216,6 +11283,7 @@ export class App {
     const row = host.querySelector(".row");
     if (row) host.insertBefore(slot, row);
     else host.append(slot);
+    this.placeFailCta();
   }
 
   /**
