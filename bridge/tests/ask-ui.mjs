@@ -117,7 +117,26 @@ try {
   check("the inline panel opens by itself when a question arrives", true);
   const progress = seen.filter((m) => m.type === "pi.status" && m.running === true).length > 0;
   check("the turn is waiting on us", progress, "");
-  check("the panel sits in the composer", await page.locator(".composer .ask-slot .ask-opts").isVisible());
+  // D189: 宽屏上题目进「需要你」右栏，composer 只留输入框，右栏自己加宽到能读的尺寸。
+  check("the panel sits in the 需要你 column", await page.locator(".queue .ask-slot .ask-opts").isVisible());
+  check("the composer has no panel of its own", (await page.locator(".composer .ask-slot").count()) === 0);
+  const askW = await page.evaluate(() => document.querySelector(".main").style.getPropertyValue("--queue-w"));
+  check("the column widened for the answer", parseInt(askW, 10) >= 340, askW);
+  // 窗口一缩，宽度按布局宽重算（D189），不留在 1280 时的 384。
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await sleep(300);
+  const narrow = await page.evaluate(() => document.querySelector(".main").style.getPropertyValue("--queue-w"));
+  check("the width follows the window", parseInt(narrow, 10) === 340, narrow);
+  // 用户自己把栏拖到 600：来题时只加宽、不压窄。
+  const ours = await page.evaluate(() => document.querySelector(".main").style.getPropertyValue("--queue-w"));
+  await page.evaluate(() => document.querySelector(".main").style.setProperty("--queue-w", "600px"));
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await sleep(300);
+  const dragged = await page.evaluate(() => document.querySelector(".main").style.getPropertyValue("--queue-w"));
+  check("a column the user dragged wide is not narrowed", parseInt(dragged, 10) === 600, dragged);
+  await page.evaluate((v) => document.querySelector(".main").style.setProperty("--queue-w", v), ours);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await sleep(300);
   await shot("panel-single");
 
   // Reload: the pending ask must come back from the snapshot, not from live events.
@@ -170,19 +189,34 @@ try {
   const r3 = toolResult("question");
   check("cancelling tells the model", /cancel/i.test(r3), r3.slice(0, 100));
 
-  // -- turn 4: 自己写（直接打字回答） ----------------------------------------
+  // -- turn 4: 收起右栏后问题自己把它打开，自己写答案，答完还回收起 ----------
+  //  是栏里的内容；隐藏的是它外面那一节 （收起右栏 = 那一节 hidden）。
+  const queueHidden = () => page.evaluate(() => document.querySelector(".main .queue")?.parentElement?.hidden ?? false);
+  // 上一轮答完后栏已经自己收回了；只在开着的时候点一下，避免把「收起」点成「展开」。
+  if (!(await queueHidden())) {
+    await page.locator('[data-act="queue"]').click();
+    await page.waitForTimeout(300);
+  }
+  check("the column starts this turn collapsed", await queueHidden(), "");
   const start4 = seen.length;
   ws.send(JSON.stringify({
     type: "prompt",
     sessionId,
     text: "只调用 question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
   }));
-  await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
+  await page.waitForSelector(".queue .ask-slot .ask-opts", { timeout: ASK_WAIT });
+  check("a question re-opens the collapsed column by itself", !(await queueHidden()), "");
+  const autoW = await page.evaluate(
+    () => parseFloat(document.querySelector(".main")?.style.getPropertyValue("--queue-w") ?? "") || 0,
+  );
+  check("and re-opens it at a readable width", autoW >= 340, `${autoW}px`);
   const free = page.locator(".composer-input textarea");
   await free.fill("随便写点");
   await free.press("Enter");
   await page.waitForSelector(".ask-slot", { state: "detached", timeout: 20000 });
   check("typing in the composer answers the question", true);
+  await sleep(400);
+  check("answering puts the column back the way it was", await queueHidden(), "");
   await waitTurnEnd(start4, "free text");
   const r4 = toolResult("question");
   check("free text reaches the model as User wrote", /User wrote: 随便写点/.test(r4), r4.slice(0, 100));
@@ -199,7 +233,8 @@ try {
     sessionId,
     text: "只调用 question 工具一次，问我「选左边还是右边？」，选项只要「左边」和「右边」。不要做任何别的事。",
   }));
-  await p.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
+  await p.waitForSelector(".composer .ask-slot .ask-opts", { timeout: ASK_WAIT });
+  check("on a phone the panel is above the composer, not in a column", (await p.locator(".queue .ask-slot").count()) === 0);
   await p.screenshot({ path: path.join(OUT, "ask-phone.png") });
   log("shot ask-phone.png");
   await p.locator(".ask-opt", { hasText: "左边" }).click();
@@ -215,10 +250,35 @@ try {
     text: "只调用 question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
   }));
   await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
-  await page.locator(".ask-head .btn.ghost", { hasText: "收起" }).click();
-  const folded = await page.locator(".ask-slot").isVisible();
-  const optsGone = (await page.locator(".ask-slot .ask-opts").count()) === 0;
-  check("收起 keeps the head and drops the answers", folded && optsGone, JSON.stringify({ folded, optsGone }));
+  // 收起右栏 = 题目回落到 composer（D189 的窄屏/收起形态）。
+  await page.locator('[data-act="queue"]').click();
+  await page.waitForSelector(".composer .ask-slot .ask-opts", { timeout: 5000 });
+  check("collapsing the column moves the panel to the composer", true);
+  // D190: 上滑读历史 → 收成一行；往下滚回底部 → 展开；手动收起的不会被抢回来。
+  await page.mouse.move(640, 320);
+  await page.mouse.wheel(0, -400);
+  await page.waitForSelector(".composer .ask-strip", { timeout: 3000 });
+  const stripped = (await page.locator(".composer .ask-slot").count()) === 0;
+  check("scrolling up folds the panel into one line", stripped);
+  // D190 决定 5：收起不动草稿。这里验输入框里已经打了一半的字。
+  const draft = page.locator(".composer-input textarea");
+  await draft.fill("草稿还在");
+  await shot("folded");
+  // 上滑那一下把重新跟流的闸门压到 300ms 后（`holdFollow`），人的手不会停在这儿；这里等一下再往下滚。
+  await sleep(350);
+  await page.mouse.wheel(0, 4000);
+  await page.waitForSelector(".composer .ask-slot .ask-head", { timeout: 3000 });
+  check("scrolling back to the bottom unfolds it", (await page.locator(".composer .ask-strip").count()) === 0);
+  check("and the half-typed draft survived the fold", (await draft.inputValue()) === "草稿还在", await draft.inputValue());
+  await draft.fill("");
+  await page.locator(".composer .ask-head .btn.ghost", { hasText: "收起" }).click();
+  const manualStrip = await page.locator(".composer .ask-strip").isVisible();
+  await sleep(350);
+  await page.mouse.wheel(0, 4000);
+  await sleep(400);
+  check("a manual fold stays folded at the bottom", manualStrip && (await page.locator(".composer .ask-strip").isVisible()));
+  await page.locator(".composer .ask-strip .btn.primary", { hasText: "回答" }).click();
+  check("回答 unfolds it again", await page.locator(".composer .ask-head").isVisible());
   await page.locator('[data-act="interrupt"]').click();
   await page.waitForSelector(".ask-slot", { state: "detached", timeout: 30000 }).catch(() => {});
   await sleep(800);

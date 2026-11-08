@@ -178,6 +178,17 @@ export class App {
   /** The ask id this page submitted itself: its ask.remove is not a loss. */
   private lastAnsweredAsk: string | null = null;
   private askFolded = false;
+  /** 这次折叠是「上滑自动收的」还是用户自己按的 收起：前者到底会自动展开，后者不抢（D190）。 */
+  private askAutoFolded = false;
+  /**
+   * D189（右栏作答）：宽屏上题目答在「需要你」那一栏。这两颗记住「右栏是我们为提问打开的」和
+   * 「用户自己收起过、这次别再抢」，答完把宽度与收起状态还回原样。
+   */
+  private askAutoOpened = false;
+  private askDockMuted = false;
+  /** 展开提问时写进 `--queue-w` 的宽度（答完还回去；用户中途拖过就不还了）。 */
+  private askWidth: string | null = null;
+  private askWidthBefore: string | null = null;
   private connected = false;
   private tab: Tab = "sessions";
   private chat!: ChatView;
@@ -802,6 +813,9 @@ export class App {
     // #220: 顶端「载入更早」—— 要的是 `topId` 之前那 60 条，桥切成纯内存一页（不改协议其他部分）。
     // 只负责转发：这一页还认不认（`before` 是不是当前 `topId`）由 ChatView 自己判断。
     this.chat.onLoadOlder = (before) => this.socket.send({ type: "history.before", sessionId: this.currentId, before });
+    // D190: 折叠态的提问条 —— 上滑读历史就收成一行，回到底部再展开。
+    this.chat.onScrollUp = () => this.foldAskForReading();
+    this.chat.onSettleBottom = () => this.unfoldAskAtBottom();
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
   }
@@ -1084,8 +1098,14 @@ export class App {
   private togglePane(side: "sessions" | "queue"): void {
     this.collapsed[side] = !this.collapsed[side];
     writeFlag(`pi.collapse.${side}`, this.collapsed[side]);
+    if (side === "queue" && this.asks.length) {
+      // 答题中途手动收起右栏：这一份不再自动弹开，题目回落到 composer；下次彻底答完再恢复。
+      this.askDockMuted = this.collapsed.queue;
+      this.askAutoOpened = false;
+    }
     this.renderPanes();
     this.renderTop();
+    if (side === "queue") this.renderAsks();
   }
 
   private leftText(deadline: number): string {
@@ -1191,6 +1211,8 @@ export class App {
         paneFrame = 0;
         this.syncCompact();
         this.renderPanes();
+        // 右栏宽度是按布局宽算的 px（D189），跨过断点或改窗口大小都得重算。
+        if (this.asks.length) this.syncAskDock();
       });
     });
     this.renderAll();
@@ -1599,6 +1621,9 @@ export class App {
         }
         this.asks = [...this.asks.filter((a) => a.id !== ask.id), ask];
         this.askFolded = false;
+        this.askAutoFolded = false;
+        // 新的这一份是新的「这一次」：上一道题时用户收起过右栏，不该连带着压下这一道。
+        this.askDockMuted = false;
         this.renderAsks();
         this.renderQueue();
         this.renderTabs();
@@ -11229,24 +11254,98 @@ export class App {
 
   // ---------------------------------------------------------------- asks
   /**
-   * The question lives in the composer, not in a modal: options sit right above the textarea,
-   * typing in the textarea answers it, and the user can wander off to other sessions and come
-   * back (the bridge re-sends pending asks on subscribe). Nothing pops up on its own.
-   */
-  /**
    * 输入框的占位文案。D178（推翻 D122 第 3 条）：pi 还在启动时输入框照常可用 —— 桥会把消息收下、
    * 等 pi 起来再交出去，所以「Enter 发送」在启动期也是真的。所有写 placeholder 的地方都走这里。
    */
   private composerPlaceholder(): string {
-    if (this.asks.length) return ASK_PLACEHOLDER;
+    if (this.asks.length) return this.askDock() ? ASK_DOCK_PLACEHOLDER : ASK_PLACEHOLDER;
     return this.session?.running ? RUNNING_PLACEHOLDER : IDLE_PLACEHOLDER;
   }
 
+  /**
+   * D189: on a wide screen the question is answered in the 「需要你」 column, so the composer only
+   * keeps the textarea. Narrow screens and a collapsed right column fall back to the panel the
+   * composer has always drawn (PLAN-ask.md).
+   */
+  private askDock(): boolean {
+    return this.askWanted() && !this.collapsed.queue;
+  }
+
+  private askWanted(): boolean {
+    return Boolean(this.asks.length && this.currentId && !this.compact() && !this.askDockMuted);
+  }
+
+  /** 340 是「能读」的下限，420 是再加宽也没用处的点：1280 布局宽下落在 384。 */
+  private askWidthPx(): number {
+    return Math.round(Math.min(420, Math.max(340, (window.innerWidth / this.uiScale()) * 0.3)));
+  }
+
+  /**
+   * Keep the right column in the shape the answer needs: open it when the question lands (only if
+   * we opened it, so the user's own 收起 is respected), widen it to a readable width, and put both
+   * back once the last question is answered. A width the user drags mid-answer wins over ours.
+   */
+  private syncAskDock(): void {
+    const main = this.els.main;
+    const open = this.askWanted() && this.collapsed.queue && !this.askAutoOpened;
+    // 这一趟刚把它打开的话，宽度要在同一趟写进去：否则它先按 CSS 默认的 300px 露一下，
+    // 要等下一次渲染才跳到 384。
+    const want = this.askDock() || open;
+    const current = main.style.getPropertyValue("--queue-w").trim();
+    const target = `${this.askWidthPx()}px`;
+    // 从没写过宽度时只加宽：用户自己拖到 600px 的栏，不该因为来了一道题被压回 384。
+    const wider = !current || (parseFloat(current) || 0) < parseFloat(target);
+    const ours = this.askWidth !== null && current === this.askWidth;
+    const widen = want && (ours || (this.askWidth === null && wider)) && target !== this.askWidth;
+    const restore = !want && this.askWidth !== null;
+    const done = !this.asks.length && (this.askDockMuted || this.askAutoOpened);
+    if (!open && !widen && !restore && !done) return;
+    // 列宽一变，转录就按新宽度重排；`overflow-anchor: none`（D188）之下浏览器不会自己补，
+    // 所以先把顶端那条消息钉住，改完再补回来（跟流时交给 ResizeObserver 重新贴底）。
+    const unpin = this.chat.pinTop();
+    if (open) {
+      this.collapsed.queue = false;
+      this.askAutoOpened = true;
+      this.renderPanes();
+      this.renderTop();
+    }
+    if (widen) {
+      if (this.askWidth === null) this.askWidthBefore = current || null;
+      main.style.setProperty("--queue-w", target);
+      this.askWidth = target;
+    }
+    if (restore) {
+      // Only undo our own width: a drag during the answer already wrote the user's number.
+      if (main.style.getPropertyValue("--queue-w") === this.askWidth) {
+        if (this.askWidthBefore) main.style.setProperty("--queue-w", this.askWidthBefore);
+        else main.style.removeProperty("--queue-w");
+      }
+      this.askWidth = null;
+      this.askWidthBefore = null;
+    }
+    if (done) {
+      this.askDockMuted = false;
+      if (this.askAutoOpened) {
+        this.askAutoOpened = false;
+        this.collapsed.queue = true;
+        this.renderPanes();
+        this.renderTop();
+      }
+    }
+    unpin();
+  }
+
+  /**
+   * 一块面板两个家（D189 / D190）：宽屏答在「需要你」右栏，会话保持原高度；窄屏与收起的右栏
+   * 得到输入框上方的面板，收起时只剩一行（`askStrip`）。两种位置都能直接打字作答。用户去别的
+   * 会话转一圈回来，桥会重发待答的题目；到货时右栏自己打开一次，除此之外不弹任何东西。
+   */
   private renderAsks(): void {
     const host = this.els.composerHost;
-    host.querySelector(".ask-slot")?.remove();
+    host.querySelector(".ask-slot, .ask-strip")?.remove();
     // 槽一删，寄居在里面的 ⚡ 按钮也跟着没了（后面的分支还可能提前 return），先把它捞出来。
     this.placeFailCta();
+    this.syncAskDock();
     this.fillHintStatus();
     if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
     if (this.askLost && !this.asks.length) {
@@ -11257,79 +11356,138 @@ export class App {
     }
     const ask = this.asks[0];
     if (!ask || !this.currentId) return;
-    const st = this.askState(ask);
-    const total = ask.questions.length;
-    const q = ask.questions[st.active];
-
-    const slot = el("div", "ask-slot");
-    const head = el("div", "ask-head");
-    const more = this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
-    head.append(el("span", "t", tr("{p1}{p2}", { p1: total > 1 ? tr("需要你回答 · {p1} 题", { p1: total }) : tr("需要你回答"), p2: more })));
-    if (this.askFolded) head.append(el("span", "m", q.prompt.split("\n")[0].slice(0, 80)));
-    const fold = el("button", "btn ghost", this.askFolded ? tr("展开") : tr("收起"));
-    fold.onclick = () => {
-      this.askFolded = !this.askFolded;
-      this.renderAsks();
-    };
-    const cancel = el("button", "btn ghost danger-text", tr("取消提问"));
-    cancel.title = tr("告诉模型你不回答这次提问");
-    cancel.onclick = () => this.answerAsk(ask, null);
-    head.append(fold, cancel);
-    slot.append(head);
-
-    if (!this.askFolded) {
-      if (total > 1) {
-        const tabs = el("div", "ask-tabs");
-        ask.questions.forEach((x, i) => {
-          const tab = el("button", "ask-tab", `${x.label ?? `Q${i + 1}`}${st.drafts.has(x.id) ? " ✓" : ""}`);
-          if (i === st.active) tab.classList.add("on");
-          if (st.drafts.has(x.id)) tab.classList.add("done");
-          tab.onclick = () => {
-            st.active = i;
-            this.renderAsks();
-          };
-          tabs.append(tab);
-        });
-        slot.append(tabs);
-      }
-      slot.append(el("div", "ask-prompt", q.prompt));
-      const chosen = st.drafts.get(q.id);
-      if (q.options.length) {
-        const list = el("div", "ask-opts");
-        q.options.forEach((opt, i) => {
-          const btn = el("button", "ask-opt");
-          const on = q.multiSelect ? Boolean(chosen?.picks?.includes(i + 1)) : Boolean(chosen && !chosen.wasCustom && chosen.value === opt.value);
-          if (on) btn.classList.add("on");
-          btn.append(el("div", "l", `${q.multiSelect ? (on ? "☑ " : "☐ ") : ""}${opt.label}`));
-          if (opt.description) btn.append(el("div", "d", opt.description));
-          btn.onclick = () =>
-            q.multiSelect ? this.togglePick(ask, q, i + 1) : this.pickAnswer(ask, { id: q.id, value: opt.value, label: opt.label, index: i + 1 });
-          list.append(btn);
-        });
-        slot.append(list);
-      }
-      if (q.multiSelect) slot.append(el("div", "ask-note", tr("可以多选；也可以在输入框里另外写几句。")));
-      if (chosen?.wasCustom) slot.append(el("div", "ask-draft", tr("已填：{p1}", { p1: chosen.label })));
-      if (chosen?.text) slot.append(el("div", "ask-draft", tr("另写：{p1}", { p1: chosen.text })));
-      if (q.allowOther === false) slot.append(el("div", "ask-note", tr("这题只能从选项里选。")));
-      if (total > 1 || q.multiSelect) {
-        const missing = ask.questions.filter((x) => !st.drafts.has(x.id)).length;
-        const submit = el("button", "btn primary", missing ? (total > 1 ? tr("还差 {p1} 题", { p1: missing }) : tr("先选一项或写几句")) : total > 1 ? tr("提交全部回答") : tr("提交"));
-        submit.disabled = missing > 0;
-        submit.onclick = () => {
-          const answers = ask.questions.map((x) => st.drafts.get(x.id)).filter(Boolean) as AskAnswer[];
-          if (answers.length === total) this.answerAsk(ask, answers);
-        };
-        const foot = el("div", "ask-foot");
-        foot.append(submit);
-        slot.append(foot);
-      }
+    if (this.askDock()) {
+      // The panel lives in the right column now; the composer keeps the textarea (typing still answers).
+      this.renderQueue();
+      return;
     }
-
+    const slot = this.askFolded ? this.askStrip(ask) : this.askPanel(ask, "composer");
     const row = host.querySelector(".row");
     if (row) host.insertBefore(slot, row);
     else host.append(slot);
     this.placeFailCta();
+  }
+
+  /**
+   * One panel, two homes: above the composer (narrow / collapsed column) or inside 「需要你」.
+   * The head only carries 收起 above the composer — folding it in the column would leave nothing
+   * to answer with.
+   */
+  private askPanel(ask: AskRequest, place: "composer" | "queue"): HTMLElement {
+    const st = this.askState(ask);
+    const total = ask.questions.length;
+    const q = ask.questions[st.active];
+    const slot = el("div", "ask-slot");
+    const head = el("div", "ask-head");
+    const more = place === "composer" && this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
+    head.append(el("span", "t", tr("{p1}{p2}", { p1: total > 1 ? tr("需要你回答 · {p1} 题", { p1: total }) : tr("需要你回答"), p2: more })));
+    if (place === "composer") {
+      const fold = el("button", "btn ghost", tr("收起"));
+      fold.onclick = () => {
+        this.askFolded = true;
+        this.askAutoFolded = false;
+        this.renderAsks();
+      };
+      head.append(fold);
+    }
+    head.append(this.askCancelBtn(ask));
+    slot.append(head);
+
+    if (total > 1) {
+      const tabs = el("div", "ask-tabs");
+      ask.questions.forEach((x, i) => {
+        const tab = el("button", "ask-tab", `${x.label ?? `Q${i + 1}`}${st.drafts.has(x.id) ? " ✓" : ""}`);
+        if (i === st.active) tab.classList.add("on");
+        if (st.drafts.has(x.id)) tab.classList.add("done");
+        tab.onclick = () => {
+          st.active = i;
+          this.renderAsks();
+        };
+        tabs.append(tab);
+      });
+      slot.append(tabs);
+    }
+    slot.append(el("div", "ask-prompt", q.prompt));
+    const chosen = st.drafts.get(q.id);
+    if (q.options.length) {
+      const list = el("div", "ask-opts");
+      q.options.forEach((opt, i) => {
+        const btn = el("button", "ask-opt");
+        const on = q.multiSelect ? Boolean(chosen?.picks?.includes(i + 1)) : Boolean(chosen && !chosen.wasCustom && chosen.value === opt.value);
+        if (on) btn.classList.add("on");
+        btn.append(el("div", "l", `${q.multiSelect ? (on ? "☑ " : "☐ ") : ""}${opt.label}`));
+        if (opt.description) btn.append(el("div", "d", opt.description));
+        btn.onclick = () =>
+          q.multiSelect ? this.togglePick(ask, q, i + 1) : this.pickAnswer(ask, { id: q.id, value: opt.value, label: opt.label, index: i + 1 });
+        list.append(btn);
+      });
+      slot.append(list);
+    }
+    if (q.multiSelect) slot.append(el("div", "ask-note", tr("可以多选；也可以在输入框里另外写几句。")));
+    if (chosen?.wasCustom) slot.append(el("div", "ask-draft", tr("已填：{p1}", { p1: chosen.label })));
+    if (chosen?.text) slot.append(el("div", "ask-draft", tr("另写：{p1}", { p1: chosen.text })));
+    if (q.allowOther === false) slot.append(el("div", "ask-note", tr("这题只能从选项里选。")));
+    if (total > 1 || q.multiSelect) {
+      const missing = ask.questions.filter((x) => !st.drafts.has(x.id)).length;
+      const submit = el("button", "btn primary", missing ? (total > 1 ? tr("还差 {p1} 题", { p1: missing }) : tr("先选一项或写几句")) : total > 1 ? tr("提交全部回答") : tr("提交"));
+      submit.disabled = missing > 0;
+      submit.onclick = () => {
+        const answers = ask.questions.map((x) => st.drafts.get(x.id)).filter(Boolean) as AskAnswer[];
+        if (answers.length === total) this.answerAsk(ask, answers);
+      };
+      const foot = el("div", "ask-foot");
+      foot.append(submit);
+      slot.append(foot);
+    }
+    return slot;
+  }
+
+  /**
+   * D190: 折叠态就是一行 —— 题干 +「回答」+「取消提问」，34px。点「回答」展开；手动收起的也落在这里。
+   * 收起不动草稿：`askDrafts` 与输入框都还在，展开回来原样。
+   */
+  private askStrip(ask: AskRequest): HTMLElement {
+    const q = ask.questions[this.askState(ask).active];
+    const more = this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
+    const strip = el("div", "ask-strip");
+    strip.append(el("span", "k", tr("提问")));
+    strip.append(el("span", "q", `${q.prompt.split("\n")[0]}${more}`));
+    strip.append(el("span", "grow"));
+    const open = el("button", "btn primary", tr("回答"));
+    open.onclick = () => {
+      this.askFolded = false;
+      this.askAutoFolded = false;
+      this.renderAsks();
+    };
+    const cancel = this.askCancelBtn(ask);
+    strip.append(open, cancel);
+    return strip;
+  }
+
+  private askCancelBtn(ask: AskRequest): HTMLElement {
+    const cancel = el("button", "btn ghost danger-text", tr("取消提问"));
+    cancel.title = tr("告诉模型你不回答这次提问");
+    cancel.onclick = () => this.answerAsk(ask, null);
+    return cancel;
+  }
+
+  /**
+   * D190: 题目住在输入区上方时，往上一滚就收成一行 —— 读历史的人先要回那两百多像素。
+   * 只收自动的：用户自己按过「收起」，就不再抢（`askAutoFolded`）。
+   */
+  private foldAskForReading(): void {
+    if (this.askDock() || !this.asks.length || this.askFolded) return;
+    this.askFolded = true;
+    this.askAutoFolded = true;
+    this.renderAsks();
+  }
+
+  /** 回到底部（而且是往下滚回来的）：自动收起的纸条展开回完整面板。 */
+  private unfoldAskAtBottom(): void {
+    if (this.askDock() || !this.asks.length || !this.askFolded || !this.askAutoFolded) return;
+    this.askFolded = false;
+    this.askAutoFolded = false;
+    this.renderAsks();
   }
 
   /**
@@ -11491,6 +11649,13 @@ export class App {
 
   private focusAsk(): void {
     if (!this.asks.length) return;
+    if (this.askDock()) {
+      this.askFolded = false;
+      this.renderAsks();
+      this.els.queueInner.querySelector(".ask-slot")?.scrollIntoView({ block: "nearest" });
+      this.textarea?.focus();
+      return;
+    }
     this.go("chat");
     this.askFolded = false;
     this.renderAsks();
@@ -11566,6 +11731,8 @@ export class App {
 
   private renderQueue(): void {
     const host = this.els.queueInner;
+    // 答一份问卷会重画整栏；把阅读位置留着，别让人每点一次选项就回到顶部。
+    const kept = this.els.queuePane.scrollTop;
     host.replaceChildren();
     const pending = this.approvals;
     if (!pending.length && !this.asks.length) {
@@ -11573,13 +11740,19 @@ export class App {
     } else {
       if (this.asks.length) {
         host.append(el("h2", "", tr("等你回答")));
-        for (const a of this.asks) host.append(this.askCard(a));
+        if (this.askDock()) {
+          host.append(this.askPanel(this.asks[0], "queue"));
+          if (this.asks.length > 1) host.append(el("div", "hint", tr("还有 {p1} 份等着，答完这份再来。", { p1: this.asks.length - 1 })));
+        } else {
+          for (const a of this.asks) host.append(this.askCard(a));
+        }
       }
       if (pending.length) {
         host.append(el("h2", "", tr("等你批准")));
         for (const a of pending) host.append(this.approvalCard(a));
       }
     }
+    this.els.queuePane.scrollTop = kept;
 
     const tools = el("div", "actions");
     tools.style.display = "flex";
@@ -13455,6 +13628,8 @@ function settingFields(): SettingField[] {
 const IDLE_PLACEHOLDER = tr("Enter 发送 · Shift+Enter 换行");
 const RUNNING_PLACEHOLDER = tr("跑着呢：Enter 引导当前任务 · Alt+Enter 等这轮做完再处理 · Shift+Enter 换行");
 const ASK_PLACEHOLDER = tr("直接打字回答当前题（Enter 作答 · Shift+Enter 换行），或点上面的选项");
+/** D189: 题目在右栏里，输入框只剩「写完就答」这一条路。 */
+const ASK_DOCK_PLACEHOLDER = tr("直接打字回答（Enter 作答 · Shift+Enter 换行），或点右栏的选项");
 
 /** pi built-in commands the page cannot run yet → the issue that tracks them (#22). */
 const UNSUPPORTED_BUILTINS: Record<string, string> = {};

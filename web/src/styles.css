@@ -1713,10 +1713,20 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 }
 .ask-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .ask-head .t { font-size: 12px; font-weight: 500; flex: none; color: var(--accent); }
-.ask-head .m { flex: 1; min-width: 0; font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ask-head .btn { flex: none; padding: 4px 8px; font-size: 12px; }
 .ask-head .btn:first-of-type { margin-left: auto; }
 .ask-head .danger-text { color: var(--danger); }
+
+/* D190: 折叠态 —— 面板只剩一行。上滑读历史时自动落到这里，点「回答」展开回上面那块。 */
+.ask-strip {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  border: 1px solid var(--accent-dim); background: var(--accent-bg);
+  border-radius: 8px; padding: 3px 6px 3px 10px;
+}
+.ask-strip .k { flex: none; font-size: 12px; font-weight: 500; color: var(--accent); }
+.ask-strip .q { flex: 0 1 auto; min-width: 0; font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-strip .grow { flex: 1; }
+.ask-strip .btn { flex: none; padding: 3px 8px; font-size: 12px; }
 
 .ask-tabs { display: flex; gap: 4px; overflow-x: auto; }
 .ask-tab {
@@ -1743,6 +1753,13 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .ask-draft { font-size: 12px; color: var(--ok); white-space: pre-wrap; word-break: break-word; }
 .ask-note { font-size: 12px; color: var(--faint); }
 .ask-foot { display: flex; justify-content: flex-end; }
+
+/* D189: the same panel inside 「需要你」. The column is 340–420px wide and the pane already
+   scrolls, so the panel drops its own height caps and lets the column be the only scroller. */
+.queue .ask-slot .ask-prompt,
+.queue .ask-slot .ask-opts { max-height: none; overflow: visible; }
+.queue .ask-slot .ask-opt { padding: 8px 10px; }
+.queue .ask-slot .ask-foot .btn { width: 100%; }
 
 /* The transcript entry: question + the answer that came back. */
 .qa-card.clickable { cursor: pointer; }

@@ -32,7 +32,7 @@
 | 独占 | 只有 `owned` 会话能产生问题 |
 | 超时 | **无超时**（Q1 推荐项）：一直挂在桥里，只有「作答 / abort / 进程退出」能结束；HUD/队列要显示还有几个待答 |
 | 多题 | tab + 显式「提交」，可回改前面的题；单题点选即答；都带「取消」 |
-| 位置 | 底部抽屉（选项/描述/自己写都在里面）+ composer 上方一条「1 个待答 · 点此回答」 |
+| 位置 | ~~底部抽屉~~ → **composer 上方整块面板**（收起 / 窄屏），宽屏答在「需要你」右栏（D189）；收起后是一行条、上滑自动收、回到底部展开（D190） |
 
 ## Wire
 
@@ -87,8 +87,8 @@ POST /api/ask   x-pi-web-token: <token>
 
 - 桥：`bridge/src/sessions.ts`（`ask/answerAsk/cancelAsk/clearAsks`、`askToken`、`snapshot().asks`）、`bridge/src/index.ts`（`POST /api/ask` 闸前 + WS `answer` 闸后 + `ask` → push）。
 - 世界：`web/src/{types,app,chat}.ts` + `styles.css`；扩展：`~/.pi/agent/extensions/{question,questionnaire}.ts`（`.bak.20261031-031735`）。
-- 测试：`npm run test:ask`（unit + e2e，13 项）、`npm run test:ask:ui`（Chromium，19 项）、截图 `.scratch/shots/ask-*.png`。
-- 决定记录：`DECISIONS.md` D47。
+- 测试：`npm run test:ask`（unit + e2e，13 项）、`npm run test:ask:ui`（Chromium，33 项）、截图 `.scratch/shots/ask-*.png`。
+- 决定记录：`DECISIONS.md` D47；面板住哪见 D189；收起后的形态见 D190。
 
 ## 验收清单
 
