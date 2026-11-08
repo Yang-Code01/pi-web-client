@@ -1,5 +1,5 @@
 /**
- * 隧道快照只许往新了盖（D194）：公网页面重连频繁，早于「关掉」发出的 hello 会落在关掉之后。
+ * 隧道快照只许往新了盖（D197）：公网页面重连频繁，早于「关掉」发出的 hello 会落在关掉之后。
  *
  * Run: node --experimental-transform-types web/tests/tunnel-snapshot-unit.mjs
  */

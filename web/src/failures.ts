@@ -458,3 +458,54 @@ export function ledgerMarkdown(ledger: FailLedger, wsLabel: string): string {
   const head = tr("# AI 出错记录 · {p1}", { p1: wsLabel || ledger.ws });
   return [head, ""].concat(rows.map((e) => `${failureMarkdown(e, wsLabel)}\n---`)).join("\n\n");
 }
+
+// ---------------------------------------------------------------- 那颗「⚡ 总结本轮错误」往哪儿挂
+
+/**
+ * 输入框上方那几块「能收留 ⚡ 按钮」的容器，以及挂进去以后怎么排。
+ *
+ * 这颗 pill 原本永远浮在输入框右上角（`.fail-cta { bottom: calc(100% + 8px) }`），而那几块整行条
+ * （接管条、信任条、后台条、排队条）的右端也都放着自己的按钮 —— 于是它把「接管会话」压掉了一半。
+ * 只要上面垫着东西，它就得并进那一块，不能再浮着；新加一类条忘了登记，就又会撞回去。
+ *
+ * - `rail`：一行条（文字 + 右端按钮），⚡ 按钮跟在最后，`margin-left: auto` 把它推到右边；
+ * - `card`：一堆卡片 / 扩展自己画的块，⚡ 按钮自成一脚，右对齐；
+ * - 不登记的（完成列表那种跟着输入实时变的东西）宁可让它浮着，也不能塞进去跟着跳。
+ */
+const CTA_HOSTS: [string, "rail" | "card"][] = [
+  ["takeover", "rail"], // 信任条 / 只读预览条
+  ["bg-bar", "rail"], // 后台子代理
+  ["queue-bar", "rail"], // 排队的消息（flex column，pill 排到最后一行）
+  ["ask-slot", "card"], // 问卷
+  ["ext-widgets", "card"], // 扩展小部件
+];
+// 审批卡（`.approval-slot`）不在这张表里：它插在 `.row` 之后（`renderApprovals()` 用
+// `insertBefore(slot, hint)`），压根不在扫描范围里，也不会和按钮抢右端 —— 登记它只是死条目。
+
+/** 输入框和 `.row` 之间的一块：「还占着版面」/「浮层」/「没高度」。 */
+export interface ComposerChild {
+  cls: string;
+  layout: "flow" | "absolute" | "hidden";
+}
+
+export interface CtaHost {
+  /** 挂到第几块上（`-1` = 没有）。`kind === "float"` 时用不着它。 */
+  index: number;
+  kind: "rail" | "card" | "float";
+}
+
+/**
+ * ⚡ 按钮该挂到哪一块：输入框上方**最后一块还占着版面**的东西。
+ * 返回 `float` 表示没有能收留它的东西（或只有不登记的浮层），它就照旧浮在输入框右上角。
+ */
+export function ctaHost(children: ComposerChild[]): CtaHost {
+  for (let i = children.length - 1; i >= 0; i--) {
+    const c = children[i];
+    if (c.layout !== "flow") continue;
+    const cls = c.cls.split(/\s+/).filter(Boolean);
+    const hit = CTA_HOSTS.find(([name]) => cls.includes(name));
+    return { index: i, kind: hit ? hit[1] : "float" };
+  }
+  return { index: -1, kind: "float" };
+}
+

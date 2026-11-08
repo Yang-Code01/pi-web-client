@@ -3178,8 +3178,88 @@ D
 **补（review 后）：** ① 界面文案不许走 ASCII 键 —— `Fetch origin` / `remote` / `detached` 换成「拉取最新」「远程」「游离 HEAD」（`HEAD`、`merge` 是 git 概念本身，留裸串，`i18n-check` 也只认含中文的键）。② 下拉首项是「自动 · 跟随 origin/HEAD」：选项值为空串，桥端重新走三级兜底，`baseAuto` 时前端也把 `this.base` 留空，否则换回一次就再也回不到自动。③ 分页对齐桥端的 300 封顶：到了把按钮换成一句「只显示最近 300 条」，不再给一颗点了不动的按钮。④ 换对照分支失败时留着上一份数据与下拉（失败态只占领列区），否则 `base_unknown` 时只剩关窗重开。⑤ `npm run test:githist:ui` 从「只 log」改真断言（胶囊/两列/公共行/下拉首项/数据时间格式/复制按钮/300 封顶/窄屏 2 tab 1 列），失败退出码 1。
 
 **验证：** `npm run test:githist`（新）—— 现搭裸库当 origin，断言分类（左 2 独有 + 3 公共、右侧 3 条 common）、ahead/behind、分叉点、`n` 下限 10、分页 `more`、`gitFetch` 之后 behind 从 0 变 1 且分叉点不动、空仓库 `empty`、非仓库 `null`、坏对照分支 `base_unknown`、detached HEAD 能读。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1680 keys × 3 langs`）。
+## D194 「⚡ 总结本轮错误」并进 composer 上方那条，不再浮在它头顶（#234）
 
-## D194 关隧道：回包先走、再杀 cloudflared；hello 的隧道快照只许往新了盖（#236）
+**决定：** `.fail-cta` 的宿主不再写死 `.row`。
+
+- 每次 `renderChat`、以及那些条出现/消失之后跑一次 `placeFailCta()`（`web/src/app.ts`）：取 `.composer` 里 `.row` 之**前**、仍在参与排布的最后一块（`position` 不是 `absolute` / `fixed`，`getBoundingClientRect().height` 非 0），交给纯函数 `ctaHost()`（`web/src/failures.ts`）判三种形态 —— `rail`（接管条 / 后台运行条 / 队列条：⚡ 作为那条里的一员，`margin-left: auto` 挤到右边）、`card`（提问卡 / 扩展组件：自成一脚）、`float`（上方什么都没，或那块没登记：照旧 `absolute` 浮在 `.row` 右上）。按钮藏着时直接不挂（不占条里的位）。
+- 宿主条尾如果是 `<button>`（接管会话 / 决定是否信任 / 停止后台），⚡ 插在它**前面** —— 条的主动作留在最右。
+- 条自己的版式由 CSS 判：`.takeover:has(> .fail-cta:not([hidden]))` 才 `flex-wrap: wrap` + 给文字列 `min-width`（否则 `flex: 1` 的 basis 0 会把文字压到 0，永远轮不到换行）；⚡ 加 `inline`（去掉定位、阴影与入场动画），卡片里再加 `stacked`。
+- 小卡（`.fail-menu`）改成按 ⚡ 实测位置定位：`bottom = offsetParent.bottom - ⚡.top + 8`，不再用 `calc(100% + 46px)`；`max-height` 也按上方空地算，长菜单自己滚，顶不出视口。
+
+**为什么：**
+
+1. **叠层的绝对定位没法可靠避让。** 压它的那些条高度各异、字多了还会换行；量高度往上让会让整个 composer 每轮结束跳一次版，挤窄让位会把按钮挤成半截。条本身是 flex 行，pill 作为行内一员天然跟着排布走，代价只剩「哪条在就进哪条」这一层判断。
+2. **判断放在纯函数里，因为宿主表会变。** 以后再加条，只要往 `CTA_HOSTS` 添一行，取舍规则（取最后一块、跳过浮层与隐藏的）不用重写，也才能用不启浏览器的单测把它钉住。
+3. **主按钮留在最右是那条的既有版式。** 接管会话是那一行的主动作；按 DOM 末尾挂上去会把主按钮顶到内侧 —— 用户报的那半颗按钮就是从右边被盖起的，别用同样的顺序再犯一遍。
+4. **小卡定位跟着 ⚡ 实测走。** ⚡ 现在可能在条里、在卡片里、或浮着，`calc(100% + 46px)` 在这三种位置里只有一种是对的；`offsetParent` 才是真正的定位包含块（`.row` 有 `position: relative` 也未必接得住它最近的定位祖先）。
+
+**代价 / 可改：**
+
+- **宿主表是硬编码名单**（`CTA_HOSTS`）。新加一条 composer 条却忘了登记，⚡ 会退回浮层、又开始压人；`ctaHost()` 的兜底是 `float`（旧行为）而不是「随便猜一块」—— 宁愿旧样子也别乱塞。
+- **审批卡不登记**（`.approval-slot` 虽然也是卡片）：它插在 `.row` **之后**（`renderApprovals()` 用 `insertBefore(slot, hint)`），压根不在扫描范围里，也不会和按钮抢右端 —— 登记它只是死条目。
+- **窄屏更挤。** 文字列有 `min-width: 200px`，340px 左右条会换行，composer 高一两行；嫌高可以把 ⚡ 缩成只有图标和数字。
+- **「插在按钮前面」是按「最后一个元素是 `<button>`」判的。** 将来某条尾巴是 `<a>` 或包了一层的按钮，⚡ 会落到它后面；要更稳就给主动作加 `data-primary` 之类的显式标记。
+- **`card` 里的右对齐靠 `margin-left: auto`**：扩展组件若自己就是 `display: grid`，这个 auto 边距未必靠得过去（会左对齐），不重叠但不好看。
+- **`renderAsks()` / `fillExt()` 里各多一次 `placeFailCta()`**：是防御，不是必须 —— 提问卡与扩展块只在轮次里出现，那时 ⚡ 本来就不亮；但 `remove()` / `replaceChildren()` 会连孩子一起删，按钮会悬在已卸掉的节点上。
+
+**验证：** `npm run test:failures`（38 项，其中 8 项是 `ctaHost`：空 / 接管条 / 多块取最后 / absolute 跳过 / hidden 跳过 / 未登记→float / 卡片 / 多类名，另含「审批卡不认」）；`npm run test:failcta:ui`（13 项，丢弃式桥 + 真 Chromium：无条时是 `absolute` 浮层、让回终端后 ⚡ 进接管条且与「接管会话」矩形不相交、420px 并排不重叠、340px 换行到文字下一行、点开的小卡贴在 ⚡ 上方 8px 且不出视口、轮次进行中按钮不亮）；`node bridge/tests/failures-ui.mjs` 44/44；`npm --prefix web run typecheck`（i18n 1736 键不变，本次没加界面文案）。
+
+## D195 设置页两本账：pi 的更新日志照旧，本项目的读检出根 `CHANGELOG.md`（无票，用户要求）
+
+**问题：** 设置里那个「更新日志」tab 一直读的是**装机里 pi 包**的 `CHANGELOG.md`（`changelog(pi.cli)`），页面上没有一处是「这个网页客户端自己改了什么」。想知道本项目的进展只能翻 459 条 commit 或 158 条 D；而人手写日志的代价，正是这个仓库一直没写日志的原因。
+
+**决定：**
+
+1. 日志走检出根的 **`CHANGELOG.md`** 一个文件，按**日期分批**，批内分「新增 / 修复 / 设计决定」三组，每条一句、结尾带 `#PR` 或 `D编号`。不伪造 semver、不打 tag、不建 release。
+2. 桥新增 `GET /api/changelog?scope=self`（`bridge/src/whatsnew.ts` 的 `selfChangelog()`），读 `<检出根>/CHANGELOG.md`，附带根 `package.json` 的 version、当前分支与短 SHA，以及检出根的绝对路径（正文里的 `docs/DECISIONS.md` 这类相对链接按它解析，与会话 cwd 无关）；不带 `scope` 的老请求原样返回 pi 的那份，`/changelog` 的语义一点没动。
+3. 设置页新开 tab「本项目更新日志」，键盘命令 `/whatsnew` 直达；旧 tab 在中文里更名「pi 更新日志」。两个 tab 并排而不是二选一：一个是「pi 这个程序的版本说明」，一个是「我们这层的版本说明」，混在一页两边都失真。面板标题也跟着 tab 走（`pi 设置` / `pi 更新日志` / `本项目更新日志`）。
+4. **日志由 AI 写、人来扫一眼**：会话里说一句「写更新日志」，agent 读 `git log --first-parent` 与 `docs/DECISIONS.md`，把新批次插到最上面，走 worktree + PR。文件开头（说明段之后）留两行注释：`<!-- 写到 <SHA> · <日期> -->` 与「从哪些 sha 往后读」；下一批读的是 **`origin/main` 上那份**（D196），不是工作区里的。
+5. 渲染前抹掉 HTML 注释（那是人机锚点，`renderMarkdown` 不认）；截断按**字节**（默认 200 KB），超长保留最新批次、尾巴写「更早的批次略」；文件缺失返回空串，前端显示「这个检出里还没有 CHANGELOG.md」，不是 500。
+
+**为什么：**
+
+- **读文件而不是 build 时内联**：桥读自己所在的那份 checkout，换目录起桥就等于换日志，不需要为了改一行日志重新构建、重启服务。`bridge/src/*.ts` 直跑与 `bridge/dist/*.js` 构建后都落在 `<检出>/bridge/`，往上两层是同一个根。
+- **`scope` 参数而不是新端点**：两个日志的请求形状相同（`{version, text}`），前端只换 url；旧页面（以及任何绕过 UI 的脚本）不会因为新端点出现而改变行为。
+- **不生成 semver**：这个项目没有版本节奏，硬编 `v0.2.0` 只会逼着下次改号。日期 + 主题足够回答「那条改动是什么时候来的」，PR 号负责追到底。
+- **AI 写日志不是噱头**：日志的价值在「结果可读」，而结果就在 commit 与 D 条目里。人写要花一小时，AI 写要一次 PR 审读，而且它天然照着已有段落的语气续写 —— 第一版 8 批 55 条就是子代理读 git log + DECISIONS 产出的。
+
+**代价 / 可改：**
+
+- **日志只记到合并为止**：分支上没合的工作不写（只看 `--first-parent`），页面上说「已经有了」却还在 PR 里会骗人。
+- **`#编号` 不可点**：页面上是纯文本（`/changelog` 那份也不带链接），要点得复制到 GitHub。
+- **桥必须跑在自己的检出里**：从 npm 安装的桥没有 `CHANGELOG.md`，tab 会一直是「还没有」。目前桥只在检出里跑（`npm start`），等真发 npm 包时再决定随包带一份还是让 `scope=self` 返回空。
+- **`git` 子进程**：分支名与短 SHA 靠 `git rev-parse --short HEAD` 与 `git branch --show-current`（两条命令分开跑 —— `--short` 与 `--abbrev-ref` 同条会 `fatal: Needed a single revision`），失败留空串；5 秒缓存，连点 tab 不刷进程。
+- **版本号只有一个 0.1.0**：顶部那行显示的是根 `package.json` 的 version，它不随批次变。要真的改版本就得先有发版流程，这是另一件事。
+
+**验证：** `npm run test:whatsnew`（`bridge/tests/whatsnew-unit.mjs`：版本取根 `package.json`、正文有日期批与 `#PR` / `D` 锚点、HTML 注释不泄漏、120 字节截断带省略尾巴且不出替换符、短 SHA 非空、`root` 指向检出根（detached 时分支本就是空串，只断言类型））；`npm run test:whatsnew:ui`（Playwright + `locale:"zh-CN"` + 7887 上的丢弃式 bridge：两个 tab 并存、本项目页有 `#228`/`#229` 与「当前版本 0.1.0」、pi 页不含我们的批次、面板标题随 tab 变、`/whatsnew` 直达且激活该 tab、点开正文里的 `docs/DECISIONS.md` 后预览里读到的确实是该文件正文（不只看路径））；`npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（`i18n-check: ok — 1740 keys × 3 langs`）；`npm run build`；另用 `curl '/api/changelog?scope=self'` 核对返回 `{version:"0.1.0", branch, commit, text}`，不带 `scope` 仍是 pi 的 1.5.0 那份。
+
+## D196 补日志做成一条命令：`/whatsnew-write` + 项目技能（D195 的下一步）
+
+**问题：** D195 定了「AI 写、人扫眼」，但触发方式还是「在会话里说一句『写更新日志』」。锚点在哪、worktree 开在哪、分支怎么命名、PR 怎么写 —— 每次都靠现场发挥，写出来的批次语气与粒度会飘；也想不起要补的时候，日志就停在那儿。
+
+**决定：**
+
+1. **项目技能** `.pi/skills/whatsnew-write/`：`SKILL.md` 是流程（定位主检出 → fetch → 读锚点 → 列新合并与新 D → 写一批 → worktree 提交 → PR → 停下等合并），`references/writing-rules.md` 是条目怎么写（读者、三组、什么不写、字数、好/坏例子、术语表），`references/commands.md` 是命令与故障处置。带 `disable-model-invocation: true` —— 模型不会自己挑它干活。
+2. **命令** `.pi/prompts/whatsnew-write.md`（提示词模板，`argument-hint` 收补充要求）。模板只做两件事：指向 `SKILL.md` 并交代边界（只改 `CHANGELOG.md`、没有新提交就别开 PR、开完 PR 停），流程细节不复制第二份。
+3. **锚点读 `origin/main` 上的那份**（不是工作区里的），所以别人刚补过、或本地的日志还没合，都不会重写同一段；`git -C "$ROOT" log --first-parent <锚点>..origin/main` 天然只看已合进 main 的。主检出脏不影响 `worktree add`，新分支从 `docs/changelog-<时间戳>` 起。
+
+**为什么：**
+
+- **触发必须是显式的**：写不写取决于「这批有没有值得告诉用户的变化」。全自动就退化成 commit 复读机，而 D195 的前提是「AI 写、人扫眼」，不是「无人值守」。
+- **流程写成文件而不是每次口述**：批次粒度、PR 四段式、账号与代理、失败怎么办，都有据可查；下次是另一个会话（或另一个 agent）来做也一样。
+- **两个入口分工清楚**：`/whatsnew` 看，`/whatsnew-write` 写。
+
+**代价 / 可改：**
+
+- **只对本仓库里跑的 pi 可见**：项目级技能与模板，换目录就没了（和 `pi-web-client-test-dev` 同样的边界）。
+- **模板是纯文本展开**，机器不替它保证顺序；写错了靠 PR 审读与 `references/` 里的自查清单兜。
+- **`skill:` 那份也还在**（`/skill:whatsnew-write`）：两个入口做同一件事，`/` 菜单里会并排出现；名字前缀和查看用的 `/whatsnew` 撞，靠「-write」区分，真觉得绕可以改名（模板文件名就是命令名）。
+- **依赖锚点真实存在**：`CHANGELOG.md` 开头那两行注释被删的话，命令会停下问人，不会自己挑 SHA。
+
+**验证：** 模板展开实测：临时模板 `/zz-argcheck 甲 乙` 在会话记录（`~/.pi/agent/sessions/….jsonl`）里落成 `ARG=[甲 乙] ONE=[甲] TWO=[乙]`，即 `$@` / `$1` / `${2:-默认}` 都按文档展开。在测试实例（17876，本项目 worktree）里新建会话后发 `{"type":"commands"}`，返回的 146 条里有 `whatsnew-write [prompt]` 与 `skill:whatsnew-write [skill]`；只读那几步按文档原样跑通：`--git-common-dir` 反推出 `ROOT=F:/pi-web-client`（从 worktree 里调也一样）、锚点从 `origin/main:CHANGELOG.md` 取到失败时为空串（当前 main 还没有这个文件，属预期）、`10f96a0..origin/main` 数出 2 个合并（#227 / #232）；`git log --first-parent --format='%s' … | grep -oE '#[0-9]+'` 拿到 PR 号。
+
+## D197 关隧道：回包先走、再杀 cloudflared；hello 的隧道快照只许往新了盖（#236）
 
 **问题（用户报「关闭公网隧道点击不生效，没反应」）：** 从公网页面（quick tunnel 地址）点「关掉公网隧道」时，桥端先 `tunnel.stop()` 杀 cloudflared，再写响应 —— 回包要穿回的那条隧道此刻已经死了，浏览器拿到的是 Cloudflare 的 502 HTML，`api.tunnel()` 抛错；而按钮的 `.catch(() => null)` 把错误吞了、标签照旧，于是「点了没反应」。本机（127.0.0.1）点同一颗按钮一切正常，只有公网页面才会踩到，所以一直没被发现。
 
