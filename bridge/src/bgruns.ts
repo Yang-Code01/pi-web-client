@@ -1,5 +1,5 @@
 /**
- * 子代理（D170 / D172 / D186）：会话自己已经 settle，派出去的 runner 还在跑。前台派活
+ * 子代理（D170 / D172 / D187）：会话自己已经 settle，派出去的 runner 还在跑。前台派活
  * （`async:false`）是例外 —— 它还在同一轮里，卡片只是为了让人看得见它在干什么。
  *
  * pi 只在 `tool_execution_end` 的 `details` 里承认一次「有这么个 run」：
@@ -19,7 +19,7 @@
  * 读盘只碰白名单里的两处根（`%TEMP%` 下的 `acp-delegate` 与 `pi-subagents-*`），且只读尾巴
  * （见 `tail()`）。
  *
- * **前台派活也算一张卡**（D186）：`async:false` 的并行/工作流从来不会出现在结果 details 里，
+ * **前台派活也算一张卡**（D187）：`async:false` 的并行/工作流从来不会出现在结果 details 里，
  * 所以它在 `tool_execution_start` 就按工具调用 id 立卡，过程从孩子各自的 `status.json` 现拼，
  * 最终答复从结果文本的 `Return: {…}` 取。
  */
@@ -65,11 +65,11 @@ export interface BgRun {
    * 过程 = 同目录的 `events.jsonl`，最终答复 = `status.json` 的 `workflow.value.children[]`（D185）。 */
   workflow?: boolean;
   /** 派活时就是前台的（`async:false`）：没有 `asyncDir`、没有父 run 目录。卡片按工具调用 id 立起来，
-   * 孩子从各自 `status.json` 的 `parentWorkflowRunId` 认出来（D186）。 */
+   * 孩子从各自 `status.json` 的 `parentWorkflowRunId` 认出来（D187）。 */
   foreground?: boolean;
   /** 前台派活的孩子清单（`prune()` 里扫出来）：过程记录就靠它现拼。 */
   children?: FgChild[];
-  /** 前台跑完的答复：结果文本里那坨 `Return: {…}` 的 `children[].output`（D186）。 */
+  /** 前台跑完的答复：结果文本里那坨 `Return: {…}` 的 `children[].output`（D187）。 */
   outText?: string;
 }
 
@@ -375,7 +375,7 @@ function workflowOutput(dir: string, limit: number): string | undefined {
   return formatChildren(kids, limit);
 }
 
-// ---------------------------------------------------------------- 前台派活（`async:false`，D186）
+// ---------------------------------------------------------------- 前台派活（`async:false`，D187）
 
 /** `%TEMP%\pi-subagents-*` 这几个根（一台机器上可能有多个 scope，比如带用户名后缀的）。 */
 function subagentRoots(): string[] {
@@ -506,7 +506,7 @@ export class BgRuns {
   /**
    * 工具开始。前台并行/工作流（`async:false`）不会在 `tool_execution_end` 的 `details` 里承认
    * 「有这么个 run」—— 等结果回来任务早就结束了，卡片永远来不及出现。所以这一类在开始时
-   * 按工具调用 id 立卡（D186），`agent` / `task` 直接读模型的 `args`。
+   * 按工具调用 id 立卡（D187），`agent` / `task` 直接读模型的 `args`。
    */
   noteToolStart(tool: string, args: unknown, callId: string): void {
     if (tool !== "subagent" || !ID_OK.test(callId) || this.runs.has(callId)) return;
@@ -518,7 +518,7 @@ export class BgRuns {
     if (a.async !== false) return;
     const kids = taskList(a);
     const workflow = Boolean(a.workflow);
-    // 单跑的前台调用不立卡：会话本来就没 settle，操作行已经在显示它了（可改，见 D186 代价）。
+    // 单跑的前台调用不立卡：会话本来就没 settle，操作行已经在显示它了（可改，见 D187 代价）。
     if (!workflow && kids.length < 2) return;
     const summary = summarizeChildren(kids);
     const run: BgRun = {

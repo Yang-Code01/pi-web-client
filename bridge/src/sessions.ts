@@ -1317,7 +1317,7 @@ export class Session extends EventEmitter {
       }
       case "tool_execution_start": {
         if (ev.toolName === "ask_user_question") this.openQuestionnaire(String(ev.toolCallId ?? ""), ev.args);
-        // D186: 前台派活（`async:false`）的 run 不会出现在结果 details 里，卡片得在开始这刻立。
+        // D187: 前台派活（`async:false`）的 run 不会出现在结果 details 里，卡片得在开始这刻立。
         this.bgRuns.noteToolStart(String(ev.toolName ?? ""), ev.args, String(ev.toolCallId ?? ""));
         this.emitWs({
           type: "tool",
