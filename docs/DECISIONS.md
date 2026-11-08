@@ -3081,7 +3081,60 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 **验证：** `npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 `i18n-check`）；文案模板键在 `en.ts` / `ja.ts` 同步换键并补 `1 天` 的译名，漏一条 typecheck 会报。
 已有 step-up 用例（`bridge/tests/runtime-settings.mjs`、`sleep-all.mjs`）只断言「公网要口令」，不锁时长，不受影响。
 
-## D187 「子代理」设置页 = 一页两半 + 点号 patch + acp 深合并（#211 / #212–#216）
+## D187 前台派活的子代理（`async:false`）也算一张卡（无票，用户报的；派了 5 个却看不见任何提示）
+
+**问题：** 用户让模型「启动五个子代理去查斯诺克世锦赛赛程」，模型调的是 `subagent({workflow:"parallel", async:false, args:{tasks:[…5 条]}})` —— 脚本看着像后台，其实是**前台**（`async:false`）。页面上只有操作行的 `▸ 3 个操作 · bash ×2 · subagent ×1 · 运行中`：聊天下方没有提示条、详情面板里也什么都没有，用户以为「只启动了一个」。可 5 个孩子全都起来了 —— 每个 `async-subagent-runs/<runId>/status.json` 里都写着 `parentWorkflowRunId: "call_01_…"`（就是派活那次工具调用的 id）与 `workflowKey: "task-1"…"task-5"`，父 run 自己却**没有目录**。根因全在 `bridge/src/bgruns.ts`：建卡三闸里的「结构性开始信号」是 `d.kind === "delegate" || typeof d.asyncDir === "string"`，前台 workflow 两样都没有（结果文本是 `Workflow completed. Return: {…}`，没有 `Async workflow [uuid]`）；而 `tool_execution_start` 那刻手里明明有 `ev.args` 与 `ev.toolCallId`，却只发 ws 不建卡。
+
+**决定：**
+
+1. **在工具开始时立卡**：`noteToolStart(tool, args, callId)`，在 `bridge/src/sessions.ts` 的 `tool_execution_start` 里调用。三个条件：`tool === "subagent"` 且 callId 过 `ID_OK`；`args.action` 不是字符串（`status` / `guide` 是查询，不是派活）；**`args.async === false`** —— 缺省 / `async:true` 是后台，那种 run 在 `tool_execution_end` 自己建卡，这里再建一张就是双卡，而且没有任何完成信号能收掉它（得等 `SILENT_DEAD_MS` 六小时）。再加一道：**是 workflow 或 `tasks.length >= 2`** —— 单跑的前台调用不立卡，那种情况会话本来就没 settle，操作行已经在显示它了。
+2. **`agent` / `task` 直接读模型的 `args`**（`args.tasks[].task`，多个孩子逐条编号），不读盘：派活那刻就有，比后台那条 receipt 回填还准（那边只有截断过的 `sessionName`）。脚本式前台 workflow（`{workflow:true}`、没有 `args.tasks`）派活那刻拿不到原文，`prune()` 从孩子 `steps[0].sessionName` 去掉 `agent: ` 前缀兜底 —— 那份被 runner 截断过，只能算半个原文。
+3. **过程记录 = 孩子各自的 `status.json` 现拼**：`fgChildren(parentId, since)` 扫 `tmpdir()` 下的 `pi-subagents-*` 根，按 `parentWorkflowRunId === callId` 认领，`status.json` 的 mtime 早于判活时刻的一律跳过；`fgTimeline()` 把 `startedAt` / `endedAt` 投影成 `task-1 researcher started` / `task-1 researcher complete` 两行。`hasLog` 用「已经扫到孩子」判，不指望一份不存在的日志文件。
+4. **最终答复从结果文本里取**：工具结束是唯一完成信号，`foregroundOutput()` 用 `jsonAfter(text, "Return: ")` 手写括号配平（跳过字符串与转义）取 `children[].output`，再按 `## <key> · <agent>` 分段；`tool_execution_end` 多传 `callId` 与 `isError`，前台那张卡在同一个调用里收掉。
+5. **文案去掉「后台」**：弹层标题「后台子代理」→「子代理」，空态「这个会话没有在跑的后台子代理。」→「这个会话没有子代理在跑。」（前台也在里面了，`en` / `ja` 同步）。**左栏胶囊仍是 `后台` / `后台 N`**：它只在 `!s.running && bgBusy(s)` 时出现（会话已 settle、派出去的还在跑），那种情况必然是后台派的。事件/时间线的英文保持 runner 原样，不进 i18n。
+
+**代价 / 可改：**
+
+- **每 30 秒扫一遍 `tmpdir()` 下的所有 `pi-subagents-*` 根**（本机 89 个 `async-subagent-runs` 条目）：每个 `status.json` parse 一次，量级上没问题；真嫌多可以让 runner 落一份索引文件。
+- **只有 started / complete 两个点**：孩子内部的步骤（bash 调用、read 文件）看不到 —— 要细看得读孩子的 `transcriptPath`，那条路径不在这张卡的白名单里。
+- **脚本式前台 workflow 的任务原文是截断的**：`sessionName` 只留到 `…（` 那么长，卡片上看到的是半个原文（这类 workflow 的完整 prompt 既不在 `args` 里，也没有父 `status.json` 可读）。
+- **单跑前台不立卡**：派**一个**子代理仍然没有提示条（会话在等它，操作行已经说明了）。要改就删掉 `kids.length < 2` 那道闸。
+- **时间以「派活那刻」为锚**：孩子若比它早落盘（时钟粒度 / 派发顺序），钳到 `0.0s` 而不是负数。
+- **`id` 是工具调用 id**（`call_…`），没有 `runId` 可以给人去 `subagent({action:"resume"})`；前台本来也 resume 不了。
+
+**验证：** `npm run test:bgruns` 新增「前台派活（D187）」段：`args` 形状抄真实调用 → 立卡即有 `agent: researcher` / 任务两行编号 / `view().n === 1`、`hasLog` 先 false；两个孩子 `status.json`（带 `parentWorkflowRunId`）落盘后 `prune()` → `hasLog` true、时间线含 `task-1 researcher started` / `task-1 researcher complete` / `task-2 researcher started`、不出负号；`noteToolEnd(…, callId)` → `done`、`readLog().out` 是 `## task-1 · researcher` / `## task-2 · researcher` 两段（`hasOut` 只是给类型契约的，前端按 `out` 的长度决定画不画）；**单跑、`action:"status"`、缺省 `async`、`async:true` 都不立卡**（后两条就是双卡的回归）；脚本式前台（`{workflow:true, async:false}`）派活那刻 `task` 为空，孩子落盘后 `prune()` 从 `sessionName` 补回 `planner` / `拆一下这个需求再分下去`。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1658 keys × 3 langs`），以及 `npm run test:continue:ui`（弹层标题断言从「后台子代理」改成「子代理」）。
+
+## D188 会话历史按页下发：`session` 帧只带末尾一页 + `history`，往前翻走 `history.before` 游标（spec #218；实现拆在 #219 / #220 / #221）
+
+**问题：** 走公网隧道（cloudflared，http2）切换会话要 5–7 秒才有东西看，之后界面还卡半秒多。同一条会话在内网打开只要一百多毫秒 —— 慢的不是隧道本身，而是「切一下就推整段历史」：95 个会话里快照中位 0.45 MB、p90 1.68 MB、最大 4.47 MB；一条 1267 条 / 2.6 MB 的会话，内网 143 ms 收到、1328 ms DOM 稳定，隧道上同一帧 6835 ms、渲染还是一次 501 ms 的长任务。桥生成快照只要 30 ms，瓶颈全在「整段历史进一帧、再一次性进 DOM」。
+
+**决定：**
+
+1. **一页 60 条**：`HISTORY_PAGE_SIZE = 60`（`bridge/src/history.ts`）。这是手感值，不是测出来的最优点：一屏上下能读到几轮，首屏又不会超过两百 KB（实测常见一页 45–170 KB，工具调用最密的一段 628 KB）。`limit` 夹在 `[1, 60]`，缺省与超界都按 60 算。
+2. **页首优先落在用户消息**：先看 `[末尾-60, 末尾)` 里**最早**那条 user；窗口里没有就往前找最近的一条，连同它开始的那一轮工具调用一起带回；一条 user 都没有才按条数切。这样一页读起来是完整的几轮，不会从半句工具输出开始。
+3. **`session` 帧带 `history: { hasMore, total }`**：订阅 / 认领 / 新建都只带末尾一页，`items` 仍是这一页的原文；`hasMore` 决定界面画不画「载入更早」，`total` 是整段条数。老前端不认 `history`，照旧只画这一页，不会白屏。
+4. **往前翻用 `history.before`**：请求 `{ sessionId, before: <item id>, limit? }`，回答 `{ sessionId, before, items, hasMore }`。游标就是这一页第一条的 item id —— 不用序号（序号会在写入时漂移）。`before` 找不到（会话被截断 / 换了分支）回空页 + `hasMore: false`，不报错。纯内存切片：不读盘、不碰 pi。
+5. **分支切换 / 唤醒续接 / 断线重订阅同样只推一页**（`Session.tailFrame()` 三处共用）；新建与清空是 `{ hasMore: false, total: 0 }`。重连的 `items` 帧仍是**整页替换** —— 这是 #221 的既定取舍：重连回到最后一页，已经翻出来的更早内容不保留。
+6. **锚定用节点，不用高度差**：插入前记下视口最上沿那个内容节点的 `rect.top`，插入后按差值补 `scrollTop`，再在下一帧和 150 ms 后用同一个节点钉回去（字体度量与代码块会让高度在插入后继续变）。`scrollHeight` 差值不能用：只算一次高度差实测偏 **87 px**。滚动容器同时 `overflow-anchor: none` —— 浏览器自己也会做滚动锚定，两边各补一次就跳两次，而且 Safari 没有这个特性，手算是唯一一致的做法。「载入更早」那行和回底按钮不参与锚定：它们钉在列表两端，拿它们当锚点会算出满量反向位移。
+7. **随手问保持全量**：它没有「载入更早」的入口（spec Out of Scope「不动随手问」），所以 `itemsFrame(items, { full: true })` 整段下发 + `history: { hasMore: false, total: N }`。若跟着切页，累积超过一页后前面的话会在下一次唤醒 / 重连时静默消失，界面上又没有入口能取回来。
+
+**为什么不上别的传输 / 渲染：**
+
+- **换 HTTP 拉历史**：同一载荷走 HTTP GET 在隧道上是 3417 ms，确实比 WS 的 6835 ms 快约一倍，但窗口化之后一页只有一百来 KB，WS 已经够用；再养一条 HTTP 路径就多一套鉴权、重连与竞态处理，不值得。
+- **permessage-deflate**：压缩是连接级的 —— 打开它要对所有小帧（delta、状态、审批）持续付出压缩开销，省下的只是打开会话时那一两百 KB；代理 / 隧道链路上还多一层协商与兼容风险。
+- **虚拟滚动 / 只渲染可见行**：这次靠「少放条目进 DOM」解决（60 条一次渲染在预算内）；虚拟滚动要自己处理可变行高与滚动位置，正好和「按节点锚定」冲突，测试面也大得多。更长的会话仍要靠分页，而不是重写渲染器。
+- **换 QUIC**：本机 cloudflared 的 UDP 预检失败（`UDP Connectivity … FAIL`），本来就没有选项。
+
+**代价 / 可改：**
+
+- **一页可能超过 60 条**：页首要落回最近的用户消息，工具调用特别密的一段会把整轮都带回来（实测最重 628 KB）。这是有意的取舍 —— 宁可一页大一点，也不让用户从半句工具输出开始读。
+- **重连回到最后一页**：翻了几页之后断线重连，已经翻出来的旧内容不再保留。要保留得在客户端缓存已翻页并在重连后重放，本票没做。
+- **`total` 只在快照里有**：`history` 响应不带 `total`，界面只在打开会话那一刻知道总数；目前没有用它做进度显示。
+- **60 是手感值**：要按实测调，只需改 `HISTORY_PAGE_SIZE`；协议里没有把页大小写死。
+
+**验证：** `npm run test:history`（`bridge/tests/history-page-unit.mjs`）：页首落 user、逐页拼到底不重不漏、`limit` 夹取、游标找不到回空页，以及随手问 130 条整段下发且 `hasMore:false`。`npm run test:history:ui`（`bridge/tests/history-paths-ui.mjs`）钉住三条只推一页的路径（切换 / 重连 / 分支切换 / 唤醒）与新建会话的空 `history`；`npm run test:loadolder:ui`（`bridge/tests/history-ui.mjs`）在真界面上验翻页条数、±2px 锚定、连点只发一次、翻到底行消失；`npm run test:continue:ui` 照旧全绿。
+
+## D189 「子代理」设置页 = 一页两半 + 点号 patch + acp 深合并（#211 / #212–#216）
 
 **问题：** 子代理的偏好散在两个文件、两个扩展里：pi 的 `settings.json` 的 `subagents.*`（模型、思考档位、每个 agent 的覆盖、看门狗、设备）与 billion-context 的 `billion-context.json` 的 `pi.subagents`（`acp_delegate` 的开关、深度、并发）。字段名要靠背，写错 key 静默不生效，整份覆盖 `billion-context.json` 会把 `providers` / `sessions` 一起吃掉。
 
