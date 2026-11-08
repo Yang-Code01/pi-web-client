@@ -150,7 +150,7 @@ assert.equal(lateRuns.list()[0]?.hasLog, true, "下一次滴答把 outputFile �
 assert.equal(lateRuns.list()[0]?.state, "done");
 assert.equal(lateRuns.readLog(LATE_ID).log, "late line\n");
 
-// ---------------------------------------------------------------- workflow（D184）
+// ---------------------------------------------------------------- workflow（D185）
 
 /**
  * `subagent({workflow:"parallel", args:{tasks:[…]}})` 的真形状（fixture 抄自
@@ -260,7 +260,7 @@ backfillRuns.prune();
 assert.equal(backfillRuns.list()[0]?.agent, "planner", "receipt 里的 agent 补回来（不是空的「子代理」）");
 assert.equal(backfillRuns.list()[0]?.task, "1. 先读一遍 README\n2. 再拆成小任务", "receipt 里的 sessionName 补回任务原文");
 
-// 单 run / parallel：`??` 只在空位补，已有值一字不改（D184 决定 5）。
+// 单 run / parallel：`??` 只在空位补，已有值一字不改（D185 决定 5）。
 const PL_ID = "eeeeeeee-1111-2222-3333-ffffffffffff";
 const parallelRuns = new BgRuns(() => {});
 parallelRuns.noteToolEnd(

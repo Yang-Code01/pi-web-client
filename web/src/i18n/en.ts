@@ -88,7 +88,7 @@ export const en: Dict = {
   "bridge.err.cloudflared_error": "cloudflared error.",
   "bridge.err.tunnel_no_url": "No trycloudflare address in 40s, retrying.",
   "bridge.err.tunnel_unreachable": "Got the tunnel address but could not connect within 60s.",
-  "bridge.err.tunnel_lost": "Tunnel dropped (530), switching to a new address.",
+  "bridge.err.tunnel_lost": "Tunnel dropped (two probes in a row failed), switching to a new address.",
   "bridge.err.dirs_missing": "Directory does not exist.",
   "bridge.err.dirs_unreadable": "Could not read this directory.",
   "bridge.err.approval_expired": "\"{p1}\" waited for an approval nobody was in front of the page to give, so it expired. That tool call was dropped — send it again if you still need it.",

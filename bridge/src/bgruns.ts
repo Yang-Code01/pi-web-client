@@ -56,7 +56,7 @@ export interface BgRun {
   /** pi-subagents 的 async 目录：`status.json` 在它底下，判活/判死读它（不出桥）。 */
   dir?: string;
   /** 派的是一个 workflow（`subagent({workflow:…})`）。它的痕迹不长在 `outputFile` / 完成态摘要上：
-   * 过程 = 同目录的 `events.jsonl`，最终答复 = `status.json` 的 `workflow.value.children[]`（D184）。 */
+   * 过程 = 同目录的 `events.jsonl`，最终答复 = `status.json` 的 `workflow.value.children[]`（D185）。 */
   workflow?: boolean;
 }
 
@@ -190,7 +190,7 @@ interface Child {
 /**
  * `subagent({ workflow: "parallel", args: { tasks: [{ agent, task }] } })` 的派活原话在
  * `args.args.tasks[]` 里：顶层既没有 `agent` 也没有 `task`，只认顶层的话卡片永远写
- * 「（任务原文没传到桥）」（D184 现场）。`tasks` 也可能直接放在 `args` 上，两个位置都认。
+ * 「（任务原文没传到桥）」（D185 现场）。`tasks` 也可能直接放在 `args` 上，两个位置都认。
  */
 function taskList(a: Record<string, unknown>): Child[] {
   const inner = a.args && typeof a.args === "object" ? (a.args as Record<string, unknown>) : {};
@@ -251,7 +251,7 @@ function workflowEvents(dir: string): string | undefined {
 
 /**
  * 过程记录在哪：单 run / parallel 是 `status.json.outputFile`，workflow 没有这个字段，
- * 退到同目录的 `events.jsonl`（D184）。还没落盘就返回 undefined，由 `prune()` / `readLog()` 再补。
+ * 退到同目录的 `events.jsonl`（D185）。还没落盘就返回 undefined，由 `prune()` / `readLog()` 再补。
  */
 function logPathFor(dir: string, workflow: boolean): string | undefined {
   return statusField(dir, "outputFile") ?? (workflow ? workflowEvents(dir) : undefined);
@@ -370,7 +370,7 @@ export class BgRuns {
     const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
     const fromText = AGENT.exec(text);
     // workflow 的派活把原文藏在 `args.args.tasks[]` / `details.workflowChildren.children[]` 里，
-    // 顶层两个字段都是空的（D184）。这两个位置只在 pi-subagents 侧有意义。
+    // 顶层两个字段都是空的（D185）。这两个位置只在 pi-subagents 侧有意义。
     let kids: Child[] = [];
     if (source === "subagents") {
       kids = taskList(a);
@@ -535,7 +535,7 @@ export class BgRuns {
           if (!run.logPath) {
             // 派活那一刻 `status.json` 可能还没落盘（实测晚 ~1.4 s），过程记录要在这里补回来，
             // 否则 `hasLog` 会永久钉成 false，卡片一直说「桥还没接上」。workflow 补的是
-            // `events.jsonl`：它的 `status.json` 里根本没有 `outputFile`（D184）。
+            // `events.jsonl`：它的 `status.json` 里根本没有 `outputFile`（D185）。
             const out = logPathFor(run.dir, Boolean(run.workflow));
             if (out) run.logPath = out;
           }

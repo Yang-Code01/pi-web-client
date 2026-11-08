@@ -144,6 +144,7 @@
 - 停止：Windows 上 `taskkill /F /PID <pid>`（不带 `/F` 无效）。
 - 副作用：额外占 `127.0.0.1:20241` 起的 metrics 端口。
 - 不需要浏览器授权、`--no-autoupdate` 在 Windows 上是空操作（日志明说不会自动更新）。
+- **2026-11-08 修订（D184）**：启动参数加 `--protocol http2`（本机 QUIC 半死，见 D184），宽松兜底正则删掉。
 
 ## D30–D34（实现 M1 时撞出来的，已生效）
 
@@ -3010,7 +3011,31 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 
 **验证：** `PI_WEB_PORT=7934 node bridge/tests/boot-queue.mjs`：H 段改为启动期 `bash` → 卡片 `queued`、无 error notice、桩 pi 没收到；就绪后同一张卡片 `running` → `done`、输出含 `ran: …`、只跑一次。I 段 —— 只读会话启动期 `!echo hi`：不报错、卡片 `queued`、无 bash 记录；就绪后 `running` → `done`、只起一支 pi 且走 `--session`。J 段 —— 泵已交出第一条 HOLD、两条还在桥里时 `clearQueue`：`queue.restore` 只含后两条、`item.remove` 只删这两条、第一条与 bash 卡片不动、`!` 仍照常执行。K 段 —— 启动期两条失败后 `clearQueue`（rpc 已死）：文本按原顺序退回、气泡删除、notice 不含 `exit code` / `signal=`。`PI_WEB_PORT=7936 node probes/session-starting.mjs`：12 段 —— 启动期 `!` 照发、卡片「等待 pi 启动…」+ 转环、无拒绝、草稿清空只因命令已被收下，就绪后同一张卡片出输出；13 段 —— 只读会话自动接管的窗口里同样排队并跑出输出。`node bridge/tests/boot-queue-merge.mjs`、`node bridge/tests/create-fast.mjs`、`node bridge/tests/composer-actions.mjs`、`web/tests/continue-unit.mjs`、`bridge/tests/continue-ui.mjs` 不回归；两边 typecheck 与 build。
 
-## D184 `subagent({workflow:…})` 的后台 run 也要有任务原文、agent、过程记录和最终输出（无票，用户报的；读盘的三个字段全是空的）
+## D184 隧道默认走 http2：本机 QUIC 到 Cloudflare 边缘 10 秒就断，quick tunnel 一直换地址（无票，用户报「开公网隧道后不可访问」= 1033）
+
+**问题（2026-11-08 实测）：** cloudflared 2026.10.6 默认协商 QUIC。本机 QUIC 能注册，但 ~10 秒后 `ERR Serve tunnel error error="accept stream listener error: failed to accept QUIC stream: timeout: no recent network activity"`；重试偶尔直接 `ERR Register tunnel error from server side error="context deadline exceeded"` → `initial tunnel connection failed` → 进程 `code=1` 退出。桥按 D29 整进程重拉、**URL 每次变**；而 `waitReady` 那几秒确实探得通，于是对外报出的地址在一分钟内变成 530 / 1033 —— 用户拿到的链接永远是死的。`bridge.log` 里 02:14–02:20 每分钟一段 `tunnel up … ` + `隧道断了（530），正在换新地址` 就是这条链。换成 `--protocol http2` 后同机连续 5×10s 探测全 200，`ERR` 一条没有。
+
+**第二个坑：** `URL_FALLBACK_RE` 违反 D29 —— 从创建失败日志里抓到 `https://api.trycloudflare.com` 并报 `tunnel up`（02:17:30 日志实证），那是 Cloudflare 的 API 主机，不是隧道；配合 `probe` 的 `status > 0`（任何非 0 都算就绪），它还能一直显示「在线」。
+
+**决定：**
+
+1. spawn 参数加 `--protocol`，**默认 `http2`**；`PI_WEB_TUNNEL_PROTOCOL=auto|quic|http2` 覆盖（认不出的值回落默认，不把垃圾参数递给 cloudflared）。逻辑抽成 `tunnelProtocol()` / `tunnelArgs()` 并导出，便于单测。
+2. **只认框线里的 URL**：删 `URL_FALLBACK_RE`，解析收进 `parseTunnelUrl()`；`watch` 改成累积 4KB `buf` 再匹配，管道把横幅拆两块的偶发也不会漏。
+3. **就绪判据收紧成 `/healthz` 200**：530 是隧道没连上，502/404 也不是「能用」。
+4. **健康检查连续两次探不通才判死**并换地址（单次 530 多半是边缘抖动，换地址等于让已经发出去的链接立刻失效）；中文文案同步改「隧道断了（连续两次探不通），正在换新地址」，`en`/`ja` 一起改。
+5. cloudflared 退出时把 stderr 最后一条 `ERR` 附进 `error`（截 200 字符），写进 `bridge.log` —— 此前原因被整个吞掉，只能靠复现猜。
+
+**为什么不是 `--protocol auto`：** cloudflared 的 auto 只在「连不上」时降级；本机是「注册成功、随后没有数据」的半死形态，它不会自己换 http2，正好卡在这个坑里。
+
+**代价 / 可改：**
+
+- http2 比 QUIC 多一点握手开销（本机实测延迟差别看不出来，稳定性差别很大）。要回 QUIC 就 `PI_WEB_TUNNEL_PROTOCOL=quic`，不用改代码。
+- 断线后最长等 2 分钟（两次 × 60 秒巡检）才换地址：换来的是「已经发出去的链接不会因为一次抖动就作废」。
+- 退出原因进 `error` 后，UI 的 warn notice 里会多一段英文 stderr；它是诊断线索，不是给用户的操作指引。
+
+**验证：** `npm run test:tunnel`（框线解析 / 拒绝 `api.trycloudflare.com` / 协议默认与覆盖 / 参数拼装）；`npm --prefix bridge run typecheck`；手工对照 —— 默认 quic 9 秒内退出，`--protocol http2` 连续 50 秒 5 次 200。
+
+## D185 `subagent({workflow:…})` 的后台 run 也要有任务原文、agent、过程记录和最终输出（无票，用户报的；读盘的三个字段全是空的）
 
 **问题：** 用户派了一个 `subagent({workflow:"parallel", args:{tasks:[…5 条]}})`，详情弹层里只剩 UUID 和「运行中」：任务行「（任务原文没传到桥）」、卡片头落到默认的「子代理」、「过程」写「桥还没接上这个 runner 的过程记录。」。三处都因为 `bridge/src/bgruns.ts` 只按单 run / parallel 的形状读盘 —— `str(d.task) ?? str(a.task)`（workflow 的原文在 `args.args.tasks[]`，深一层）、`details` 里本来就没有 `agent`（pi-subagents 的 `subagent-executor.js:6188` 只给 `mode/runId/asyncDir/workflow/workflowChildren/…`）、`statusField(dir,"outputFile")`（workflow 的 `status.json` 25 个 key 里没有它，只有单 run / parallel 才写 `output-<n>.log`）。`prune()` 补的是同一个字段，所以 `hasLog` 不是晚一拍，是永久 false。
 
@@ -3032,3 +3057,4 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **`status.json` 每次详情轮询都 parse 一遍**（几十 KB）：1.5 秒一次、单会话量级，比多维护一份缓存简单；真嫌慢再加 mtime 缓存。
 
 **验证：** `npm run test:bgruns`（`bridge/tests/bgruns-unit.mjs` 新增 workflow 段）：`details` 抄真实形状（无 agent/task、无 outputFile）→ agent `researcher`、任务 `1. … 2. …`；`events.jsonl` 落盘前 `hasLog` false，落盘后 `prune()` 补上，时间线含 `workflow started` / `task-1 researcher started` / `task-1 completed`，不含 20 KB 的 `result.output`（`XXXX`）也不含 trace 快照（`operation`）；写 `status.json`（`state:"complete"` + 两段 `workflow.value.children`）→ `prune()` 翻 `done`、`hasOut` true、`readLog().out` 是 `## task-1 · researcher` / `## task-2 · researcher` 两段；脚本式（`{workflow:true}`、无 `args.tasks`）→ agent `planner`、任务 `拆一下这个需求`；`events.jsonl` 在 `prune()` 之前写出来 → `readLog()` 直接接上（不用等滴答）；派活那刻清单为空、之后写 `workflow-receipt.json` → `prune()` 把 agent / task 补回 `planner` / `1. … 2. …`；parallel 只给 `args.tasks` → 逐条列出（决定 5 的副作用，明写）。原有 acp / 单 run / parallel / D172 幽灵任务 / 路径白名单用例全部不回归；`npm --prefix bridge run typecheck`。
+
