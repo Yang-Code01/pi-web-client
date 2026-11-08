@@ -78,7 +78,8 @@ interface Config {
   peerPort: number;
 }
 
-const STEP_UP_MS = 10 * 60 * 1000;
+/** D186：公网写入窗口 1 天（原 D15 是 10 分钟）—— 手机上批准不该一轮对话就重输一次口令。 */
+const STEP_UP_MS = 24 * 60 * 60 * 1000;
 const MAX_BODY = 30 * 1024 * 1024;
 
 function loadConfig(): Config {

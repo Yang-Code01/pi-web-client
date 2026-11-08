@@ -64,6 +64,9 @@
 - 主题：仅暗色，中文界面
 
 ## D15 公网会话降级：写与审批前再验一次口令
+
+> **D186 修订（2026-11-08）：** 窗口从 10 分钟放宽到 1 天（用户报「频繁让输口令」）；前端不再自带 9 分钟的近似钟。下文「10 分钟」的时长以 D186 为准，判据与只读降级的其余部分不变。
+
 决定：隧道常开；来自非局域网地址的连接 = 只读会话（能看能读，不能发消息、不能批、不能改配置）。要写/批，先在网页上重输一次口令，换一个 10 分钟有效的 step-up 标记。
 为什么：口令会出现在微信消息、浏览器历史和日志里，泄露的后果从「机器被控」降到「别人看一眼聊天记录」。10 分钟窗口让手机上只需偶尔输一次，不至于每次批准都输。
 实现：**不能只看 socket 对端**——经 cloudflared 进来的请求对端永远是 `127.0.0.1`。判据是「有 `cf-connecting-ip` 头 = 走隧道 = 公网」；没有该头且对端是私网段（`127.*`/`10.*`/`192.168.*`/`172.16-31.*`/`::1`）= 局域网。公网且无 step-up → 403 `{needsStepUp:true}`，前端弹口令框。限流按 `cf-connecting-ip`（无则 socket 地址）计。
@@ -3058,3 +3061,15 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 
 **验证：** `npm run test:bgruns`（`bridge/tests/bgruns-unit.mjs` 新增 workflow 段）：`details` 抄真实形状（无 agent/task、无 outputFile）→ agent `researcher`、任务 `1. … 2. …`；`events.jsonl` 落盘前 `hasLog` false，落盘后 `prune()` 补上，时间线含 `workflow started` / `task-1 researcher started` / `task-1 completed`，不含 20 KB 的 `result.output`（`XXXX`）也不含 trace 快照（`operation`）；写 `status.json`（`state:"complete"` + 两段 `workflow.value.children`）→ `prune()` 翻 `done`、`hasOut` true、`readLog().out` 是 `## task-1 · researcher` / `## task-2 · researcher` 两段；脚本式（`{workflow:true}`、无 `args.tasks`）→ agent `planner`、任务 `拆一下这个需求`；`events.jsonl` 在 `prune()` 之前写出来 → `readLog()` 直接接上（不用等滴答）；派活那刻清单为空、之后写 `workflow-receipt.json` → `prune()` 把 agent / task 补回 `planner` / `1. … 2. …`；parallel 只给 `args.tasks` → 逐条列出（决定 5 的副作用，明写）。原有 acp / 单 run / parallel / D172 幽灵任务 / 路径白名单用例全部不回归；`npm --prefix bridge run typecheck`。
 
+## D186 step-up 窗口从 10 分钟放宽到 1 天，前端不再自带一套 9 分钟的钟（无票，用户报「开公网隧道访问会频繁让输口令」）
+
+**决定：** `bridge/src/index.ts` 的 `STEP_UP_MS` 从 `10 * 60 * 1000` 改成 `24 * 60 * 60 * 1000`；前端 `stepup-ok` 不再用本地常量 `9 * 60 * 1000` 自己算窗口，直接取桥推来的 `until` 减 1 分钟裕量（`web/src/app.ts`）。
+
+**为什么：** 用户报「频繁输密码」，先分时限：登录 cookie 是 30 天（`bridge/src/auth.ts:6`），本轮隧道 10:38 起只有 3 次 `ws connected`、2 次 `login ok`（两个不同公网 IP），登录态并没有反复失效 —— 反复弹的是 D15 的 step-up。10 分钟窗口当初按「手机上偶尔输一次」设计（D15），实际一轮对话里批准几次就到点；更糟的是前端还留了一份 9 分钟的近似值，比桥更早弹窗，等于实际窗口不到 10 分钟。1 天窗口仍要求「写入前现场证明持有口令」，只是把频率降到一天一次；D15 防的是口令从微信/浏览器历史里泄露后被陌生人拿去写，这个威胁模型和窗口长短关系不大。
+
+**代价 / 可改：**
+
+- **stepUntil 仍挂在单条 WS 连接的进程内存里**：桥重启、页面刷新、断线重连都会清零，只是不再每 10 分钟清零。要真正做到「一天只输一次」得把它移到按 IP/cookie 记的表或签名的 cookie 里，本次没改。
+- **窗口内被同一浏览器接管的人可以直接写**：和「cookie 被偷」同一等级的风险，D15 的边界本来也不是防这个。想做「批准前一律再验」就把 `STEP_UP_MS` 调回 0（会退化成每次操作都问）。
+
+**验证：** `npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 `i18n-check`）；文案那条键在 `en.ts` / `ja.ts` 同步改名，漏一条 typecheck 会报。已有 step-up 用例（`bridge/tests/runtime-settings.mjs`、`sleep-all.mjs`）只断言「公网要口令」，不锁时长，不受影响。
