@@ -3009,3 +3009,25 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **删除启动期 `!` 的提示文案**：前端不再说「pi 还在启动，`!` 命令等它起来再跑」，旧 i18n 键随删；这句话现在由卡片状态承担。
 
 **验证：** `PI_WEB_PORT=7934 node bridge/tests/boot-queue.mjs`：H 段改为启动期 `bash` → 卡片 `queued`、无 error notice、桩 pi 没收到；就绪后同一张卡片 `running` → `done`、输出含 `ran: …`、只跑一次。I 段 —— 只读会话启动期 `!echo hi`：不报错、卡片 `queued`、无 bash 记录；就绪后 `running` → `done`、只起一支 pi 且走 `--session`。J 段 —— 泵已交出第一条 HOLD、两条还在桥里时 `clearQueue`：`queue.restore` 只含后两条、`item.remove` 只删这两条、第一条与 bash 卡片不动、`!` 仍照常执行。K 段 —— 启动期两条失败后 `clearQueue`（rpc 已死）：文本按原顺序退回、气泡删除、notice 不含 `exit code` / `signal=`。`PI_WEB_PORT=7936 node probes/session-starting.mjs`：12 段 —— 启动期 `!` 照发、卡片「等待 pi 启动…」+ 转环、无拒绝、草稿清空只因命令已被收下，就绪后同一张卡片出输出；13 段 —— 只读会话自动接管的窗口里同样排队并跑出输出。`node bridge/tests/boot-queue-merge.mjs`、`node bridge/tests/create-fast.mjs`、`node bridge/tests/composer-actions.mjs`、`web/tests/continue-unit.mjs`、`bridge/tests/continue-ui.mjs` 不回归；两边 typecheck 与 build。
+
+## D184 `subagent({workflow:…})` 的后台 run 也要有任务原文、agent、过程记录和最终输出（无票，用户报的；读盘的三个字段全是空的）
+
+**问题：** 用户派了一个 `subagent({workflow:"parallel", args:{tasks:[…5 条]}})`，详情弹层里只剩 UUID 和「运行中」：任务行「（任务原文没传到桥）」、卡片头落到默认的「子代理」、「过程」写「桥还没接上这个 runner 的过程记录。」。三处都因为 `bridge/src/bgruns.ts` 只按单 run / parallel 的形状读盘 —— `str(d.task) ?? str(a.task)`（workflow 的原文在 `args.args.tasks[]`，深一层）、`details` 里本来就没有 `agent`（pi-subagents 的 `subagent-executor.js:6188` 只给 `mode/runId/asyncDir/workflow/workflowChildren/…`）、`statusField(dir,"outputFile")`（workflow 的 `status.json` 25 个 key 里没有它，只有单 run / parallel 才写 `output-<n>.log`）。`prune()` 补的是同一个字段，所以 `hasLog` 不是晚一拍，是永久 false。
+
+**决定：**
+
+1. **任务原文从 `args.args.tasks[]` 取**：`taskList(a)` 认 `a.tasks` 与 `a.args.tasks` 两个位置；多个孩子按原顺序逐条编号（`1. … 2. …`，12 条封顶 + `… (+N)`），`.bg-run-task` 本来就是 `white-space: pre-wrap`。
+2. **agent 两路兜底**：`args.args.tasks[].agent` 去重（超过 3 个写 `a + b + c +N`）；脚本式 workflow（没有 `args.tasks`）退到 `details.workflowChildren.children[].agent`，任务同样从那里的 `sessionName` 去掉 `researcher: ` 前缀。
+3. **过程记录 = `<asyncDir>/events.jsonl`**（`workflowEvents()`）：workflow 没有 `outputFile`，但 pi-subagents 自己往同目录写事件流。页面看到的不是原始 JSONL —— `workflowTimeline()` 只投影骨架（`workflow started` / `task-1 researcher started` / `task-1 completed` / `workflow complete`），跳过累积快照 `subagent.workflow.trace`，也不把孩子答复（`child_settled` 的 `result`）甩出来。事件名保持 runner 原文，不翻译、不进 i18n —— 跟 `.activity` 原样展示同一层级。
+4. **最终输出现拼**（`workflowOutput()`）：`status.json` 的 `workflow.value.children[].output`，按 `## <key> · <agent>` 分段；`hasOut` 对 workflow 用「跑完了没有」判（`state !== "running"`），不再指望一份永远不存在的 `subagent-log-<id>.md`。
+5. **单 run / parallel 一个字节不改**：`workflow` 只在 `details.mode === "workflow"` 时置位。
+
+**代价 / 可改：**
+
+- **一张卡代表整个 workflow**：5 个孩子共用一张卡、一个 runId。各自的进度只在「过程」那段文字里按时间排；要拆成 N 张卡得先改 `BgRuns` 的表结构与前端渲染，本票没做。
+- **`workflowTimeline` 按字节尾巴读**（`max(limit*4, 32KB)`）：极端情况（几十个孩子、`child_settled` 带大 `result`）会截掉早期骨架。实测那份 workflow 84 秒 22 行、9.7 KB，离上限很远。
+- **最终输出取开头**：超 `limit` 时截尾保留开头（结论在前）。要看完整答复仍需读 `outputReference` 指向的 `task-N.md` —— 那份不在桥的白名单里。
+- **脚本式 workflow 的任务是截断过的**：`sessionName` 只留到 `…fetch_c` 那么长，卡片上看到的是截断原文（这类 workflow 的完整 prompt 在 `details` 里根本没有）。
+- **`status.json` 每次详情轮询都 parse 一遍**（几十 KB）：1.5 秒一次、单会话量级，比多维护一份缓存简单；真嫌慢再加 mtime 缓存。
+
+**验证：** `npm run test:bgruns`（`bridge/tests/bgruns-unit.mjs` 新增 workflow 段）：`details` 抄真实形状（无 agent/task、无 outputFile）→ agent `researcher`、任务 `1. … 2. …`；`events.jsonl` 落盘前 `hasLog` false，落盘后 `prune()` 补上，时间线含 `workflow started` / `task-1 researcher started` / `task-1 completed`，不含 20 KB 的 `result.output`（`XXXX`）也不含 trace 快照（`operation`）；写 `status.json`（`state:"complete"` + 两段 `workflow.value.children`）→ `prune()` 翻 `done`、`hasOut` true、`readLog().out` 是 `## task-1 · researcher` / `## task-2 · researcher` 两段；脚本式（`{workflow:true}`、无 `args.tasks`）→ agent `planner`、任务 `拆一下这个需求`。原有 acp / 单 run / parallel / D172 幽灵任务 / 路径白名单用例全部不回归；`npm --prefix bridge run typecheck`。

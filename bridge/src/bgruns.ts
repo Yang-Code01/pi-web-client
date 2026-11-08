@@ -19,7 +19,7 @@
  * （见 `tail()`）。
  */
 
-import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -55,6 +55,9 @@ export interface BgRun {
   outPath?: string;
   /** pi-subagents 的 async 目录：`status.json` 在它底下，判活/判死读它（不出桥）。 */
   dir?: string;
+  /** 派的是一个 workflow（`subagent({workflow:…})`）。它的痕迹不长在 `outputFile` / 完成态摘要上：
+   * 过程 = 同目录的 `events.jsonl`，最终答复 = `status.json` 的 `workflow.value.children[]`（D184）。 */
+  workflow?: boolean;
 }
 
 /** 会话快照 / `SessionState.bg` 里那一小块：前端只画「N 个 · 谁 · 从什么时候」。 */
@@ -117,17 +120,22 @@ function underSubagents(abs: string, file = false): boolean {
   return file ? rest.includes(sep) : true;
 }
 
-/** pi-subagents 的 `status.json` 里读一个字符串字段（文件小、只在开卡/滴答时读一次）。 */
-function statusField(dir: string, key: string): string | undefined {
+/** pi-subagents 的 `status.json`（几十 KB，读一次解析一次；只在开卡 / 30 秒滴答 / 看详情时发生）。 */
+function statusObject(dir: string): Record<string, unknown> | undefined {
   const file = resolve(join(dir, "status.json"));
   if (!underSubagents(file, true)) return undefined;
   try {
-    const obj = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
-    const v = obj?.[key];
-    return typeof v === "string" ? v : undefined;
+    const obj = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    return obj && typeof obj === "object" ? (obj as Record<string, unknown>) : undefined;
   } catch {
     return undefined;
   }
+}
+
+/** `status.json` 里读一个字符串字段。 */
+function statusField(dir: string, key: string): string | undefined {
+  const v = statusObject(dir)?.[key];
+  return typeof v === "string" ? v : undefined;
 }
 
 /**
@@ -168,6 +176,132 @@ function tail(file: string, limit: number): string | undefined {
   }
 }
 
+// ---------------------------------------------------------------- workflow（`subagent({workflow:…})`）
+
+/**
+ * `subagent({ workflow: "parallel", args: { tasks: [{ agent, task }] } })` 的派活原话在
+ * `args.args.tasks[]` 里：顶层既没有 `agent` 也没有 `task`，只认顶层的话卡片永远写
+ * 「（任务原文没传到桥）」（D184 现场）。`tasks` 也可能直接放在 `args` 上，两个位置都认。
+ */
+function taskList(a: Record<string, unknown>): { agent: string; task: string }[] {
+  const inner = a.args && typeof a.args === "object" ? (a.args as Record<string, unknown>) : {};
+  const raw = Array.isArray(a.tasks) ? a.tasks : inner.tasks;
+  return Array.isArray(raw) ? pickChildren(raw as unknown[]) : [];
+}
+
+/**
+ * 脚本式 workflow 没有 `args.tasks`，但 `details.workflowChildren.children[]` 里有每个孩子的
+ * `agent` 和 `sessionName`（`researcher: <任务原话>`，pi-subagents 落盘时截断过）。
+ */
+function childList(d: Record<string, unknown>): { agent: string; task: string }[] {
+  const wf = d.workflowChildren && typeof d.workflowChildren === "object" ? (d.workflowChildren as Record<string, unknown>) : {};
+  const raw = Array.isArray(wf.children) ? (wf.children as unknown[]) : [];
+  return pickChildren(raw, true);
+}
+
+function pickChildren(raw: unknown[], fromSessionName = false): { agent: string; task: string }[] {
+  const out: { agent: string; task: string }[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const c = item as Record<string, unknown>;
+    const agent = typeof c.agent === "string" ? c.agent.trim() : "";
+    const name = fromSessionName && typeof c.sessionName === "string" ? c.sessionName.replace(/^[^:]+:\s*/, "").trim() : "";
+    const task = typeof c.task === "string" ? c.task.trim() : name;
+    if (agent || task) out.push({ agent, task });
+  }
+  return out;
+}
+
+/**
+ * 多个孩子合成卡片上的两行：agent 去重，任务按原顺序逐条编号（原文是给人看的，一个字不改）。
+ * 64 路并行时不能把整段任务列表全画出来，留前 12 条 + 余量。
+ */
+function summarizeChildren(kids: { agent: string; task: string }[]): { agent: string; task: string } {
+  const agents = [...new Set(kids.map((k) => k.agent).filter(Boolean))];
+  const tasks = kids.map((k) => k.task).filter(Boolean);
+  const more = tasks.length > 12 ? `\n… (+${tasks.length - 12})` : "";
+  return {
+    agent: agents.length > 3 ? `${agents.slice(0, 3).join(" + ")} +${agents.length - 3}` : agents.join(" + "),
+    task: tasks.length === 1 ? tasks[0] : tasks.slice(0, 12).map((t, i) => `${i + 1}. ${t}`).join("\n") + more,
+  };
+}
+
+/**
+ * workflow 的 `status.json` 没有 `outputFile`（那是单 run / parallel 的 `output-<n>.log`），
+ * 也没有完成态摘要 `subagent-log-<id>.md`；但同一目录里 pi-subagents 自己写着 `events.jsonl`
+ * —— 它就是 workflow 的过程记录。
+ */
+function workflowEvents(dir: string): string | undefined {
+  const file = resolve(join(dir, "events.jsonl"));
+  return underSubagents(file, true) && existsSync(file) ? file : undefined;
+}
+
+/**
+ * `events.jsonl` 里既有骨架也有整份孩子答复（`child_settled` 带 `result`），原样 tail 给页面
+ * 等于甩一坨被截断的 JSON。这里投影成「相对第 0 秒，谁在什么时候开始 / 完事」。
+ *
+ * `started` / `completed` 这些 token 是 runner 的事件名，不翻译 —— 跟 `.activity` 原样展示
+ * 同一个层级，界面文案不在这里。
+ */
+function workflowTimeline(file: string, limit: number): string | undefined {
+  // 先多读一点再投影：骨架行远小于原始事件行，按字节上限截断会丢掉更早的骨架。
+  const raw = tail(file, Math.max(limit * 4, 32_000));
+  if (!raw) return undefined;
+  const lines: string[] = [];
+  let base = 0;
+  for (const line of raw.split("\n")) {
+    const brace = line.indexOf("{");
+    if (brace < 0) continue;
+    let ev: Record<string, unknown>;
+    try {
+      ev = JSON.parse(line.slice(brace)) as Record<string, unknown>;
+    } catch {
+      continue; // tail 从半行开始：第一行残片、以及正在写的那一行
+    }
+    const ts = typeof ev.ts === "number" ? ev.ts : 0;
+    if (!base) base = ts;
+    const rel = base && ts ? ((ts - base) / 1000).toFixed(1) : "?";
+    const stamp = `${rel.padStart(7)}s`;
+    const type = String(ev.type ?? "");
+    if (type === "subagent.workflow.trace") continue; // 累积快照，下面三条骨架已经覆盖
+    if (type === "subagent.child-status") {
+      lines.push(`${stamp}  ${[ev.childId ?? ev.workflowKey, ev.agent, ev.status].filter(Boolean).join(" ")}`);
+    } else if (type === "subagent.workflow.child_settled") {
+      lines.push(`${stamp}  ${[ev.childKey, ev.outcome].filter(Boolean).join(" ")}`);
+    } else if (type === "subagent.workflow.started" || type === "subagent.workflow.completed") {
+      const what = type.slice(type.lastIndexOf(".") + 1);
+      lines.push(`${stamp}  workflow ${what}${typeof ev.state === "string" ? ` (${ev.state})` : ""}`);
+    } else {
+      lines.push(`${stamp}  ${type.replace(/^subagent\./, "")}`);
+    }
+  }
+  if (!lines.length) return undefined;
+  const text = lines.join("\n");
+  return text.length > limit ? `…\n${text.slice(-limit)}` : text;
+}
+
+/**
+ * workflow 跑完的答复不落成单个文件：它在 `status.json` 的 `workflow.value.children[]` 里，
+ * 每个孩子一段 `output`。总长可能几十 KB，取开头（结论都在前面），末尾标省略。
+ */
+function workflowOutput(dir: string, limit: number): string | undefined {
+  const wf = statusObject(dir)?.workflow;
+  const value = wf && typeof wf === "object" ? (wf as Record<string, unknown>).value : undefined;
+  const kids = value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).children) ? ((value as Record<string, unknown>).children as unknown[]) : [];
+  const parts: string[] = [];
+  for (const item of kids) {
+    if (!item || typeof item !== "object") continue;
+    const c = item as Record<string, unknown>;
+    const out = typeof c.output === "string" ? c.output.trim() : "";
+    if (!out) continue;
+    const head = [c.key, c.agent].filter((v) => typeof v === "string" && v).join(" · ");
+    parts.push(head ? `## ${head}\n${out}` : out);
+  }
+  if (!parts.length) return undefined;
+  const text = parts.join("\n\n");
+  return text.length > limit ? `${text.slice(0, limit)}\n…` : text;
+}
+
 /**
  * 一个会话的后台任务表。变化时只喊 `onChange`，喊不喊、多久喊一次由调用方决定 ——
  * 这里不碰 ws，也不认识 `SessionState`。
@@ -198,13 +332,23 @@ export class BgRuns {
     const looksStart = d.kind === "delegate" || typeof d.asyncDir === "string";
     if (!looksStart || !ID_OK.test(id)) return;
     const source: "acp" | "subagents" = d.kind === "delegate" || tool === "acp_delegate" ? "acp" : "subagents";
+    const workflow = d.mode === "workflow";
     // agent / task 优先取结构化字段：details 是 runner 转述的，args 是模型写的那一份
     // （pi-subagents 落盘时把任务原文打成 `[prompt redacted]`，只有 args 里还是原话）。
     const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
     const fromText = AGENT.exec(text);
-    const agent = str(d.agent) ?? str(a.agent) ?? fromText?.[1] ?? fromText?.[2] ?? "";
-    const task = str(d.task) ?? str(a.task) ?? (source === "acp" ? TASK_LINE.exec(text)?.[1] : undefined) ?? "";
-    const run: BgRun = { id, source, agent: agent.trim(), task: task.trim(), startedAt: Date.now(), state: "running" };
+    // workflow 的派活把原文藏在 `args.args.tasks[]` / `details.workflowChildren.children[]` 里，
+    // 顶层两个字段都是空的（D184）。这两个位置只在 pi-subagents 侧有意义。
+    let kids: { agent: string; task: string }[] = [];
+    if (source === "subagents") {
+      kids = taskList(a);
+      if (!kids.length) kids = childList(d);
+    }
+    const said = summarizeChildren(kids);
+    const agent = (str(d.agent) ?? str(a.agent) ?? fromText?.[1] ?? fromText?.[2] ?? said.agent ?? "").trim();
+    const task = (str(d.task) ?? str(a.task) ?? (source === "acp" ? TASK_LINE.exec(text)?.[1] : undefined) ?? said.task ?? "").trim();
+    const run: BgRun = { id, source, agent, task, startedAt: Date.now(), state: "running" };
+    if (workflow) run.workflow = true;
     const live = LIVE_LOG.exec(text)?.[1];
     if (source === "acp") {
       run.logPath = live ?? join(ACP_DIR, `${id}.activity`);
@@ -212,12 +356,13 @@ export class BgRuns {
     } else {
       // pi-subagents 的 asyncDir 布局是公开契约（它自己的 docs/observability.md「Async run artifacts」）：
       // `status.json` 的 `outputFile` 就是实时过程记录，`subagent-log-<id>.md` 是完成态摘要。
-        const dir = str(d.asyncDir);
+      // workflow 两者都没有：过程记录退到 `events.jsonl`，最终答复由 `workflowOutput()` 现拼。
+      const dir = str(d.asyncDir);
       if (dir && underSubagents(resolve(dir))) {
         run.dir = dir;
-        const out = statusField(dir, "outputFile");
+        const out = statusField(dir, "outputFile") ?? (workflow ? workflowEvents(dir) : undefined);
         if (out) run.logPath = out;
-        run.outPath = join(dir, `subagent-log-${id}.md`);
+        if (!workflow) run.outPath = join(dir, `subagent-log-${id}.md`);
       }
     }
     this.runs.set(id, run);
@@ -261,7 +406,8 @@ export class BgRuns {
         state: r.state,
         ...(r.endedAt ? { endedAt: r.endedAt } : {}),
         hasLog: Boolean(r.logPath),
-        hasOut: Boolean(r.outPath),
+        // workflow 的答复在 `status.json` 里现拼：跑完才有，别在 running 时撒谎说「有输出」。
+        hasOut: r.workflow ? r.state !== "running" : Boolean(r.outPath),
       }));
   }
 
@@ -279,8 +425,15 @@ export class BgRuns {
     const run = this.runs.get(id);
     if (!run) return {};
     const view: { run?: BgRun; log?: string; out?: string } = { run };
-    if (run.logPath) view.log = tail(run.logPath, limit);
-    if (run.outPath) view.out = tail(run.outPath, limit);
+    if (run.logPath) view.log = run.workflow ? workflowTimeline(run.logPath, limit) : tail(run.logPath, limit);
+    if (run.workflow) {
+      // workflow 没有单个输出文件：每个孩子的答复在 `status.json` 里，跑完之前这里是空的
+      // （前端就不画「最终输出」那段）。
+      const out = run.dir ? workflowOutput(run.dir, limit) : undefined;
+      if (out) view.out = out;
+    } else if (run.outPath) {
+      view.out = tail(run.outPath, limit);
+    }
     return view;
   }
 
@@ -344,8 +497,9 @@ export class BgRuns {
         if (run.source === "subagents" && run.dir) {
           if (!run.logPath) {
             // 派活那一刻 `status.json` 可能还没落盘（实测晚 ~1.4 s），过程记录要在这里补回来，
-            // 否则 `hasLog` 会永久钉成 false，卡片一直说「桥还没接上」。
-            const out = statusField(run.dir, "outputFile");
+            // 否则 `hasLog` 会永久钉成 false，卡片一直说「桥还没接上」。workflow 补的是
+            // `events.jsonl`：它的 `status.json` 里根本没有 `outputFile`（D184）。
+            const out = statusField(run.dir, "outputFile") ?? (run.workflow ? workflowEvents(run.dir) : undefined);
             if (out) run.logPath = out;
           }
           const st = statusField(run.dir, "state");
