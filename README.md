@@ -106,6 +106,8 @@ PI_WEB_HOST=0.0.0.0 npm start
 | `PI_WEB_ROOT` | 前端静态目录 | `web/dist` |
 | `PI_WEB_NO_EXT=1` | 不加载审批门禁扩展 | 关 |
 | `PI_WEB_LESSONS=0` | 不把工作区的老毛病（⚡ AI 出错记录里反复出现的类）挂进新会话的系统提示词，也不补自动提醒（D169） | 开 |
+| `PI_WEB_HINT=0` | 关掉网页客户端的交付提示词（「先问要不要在预览里打开」那一段），工作区教训照旧挂（D188） | 开 |
+| `PI_WEB_PREVIEW_ACK_MS` | `open_preview` 等页面回执的窗口：超时就回 `no-ack`，不再把「投出去了」当「打开了」（D189） | `15000` |
 | `PI_BIN` | 指定 pi 的 `cli.js` | 自动找 |
 | `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` | 与 pi 同名同义：桥按 pi 的顺序找会话目录（环境变量 → 全局 `settings.json` 的 `sessionDir` → `~/.pi/agent/sessions`，D73） | 跟随 pi |
 | `PI_PEER=0` | 不启动内网通（peer 子进程） | 开 |
@@ -206,6 +208,7 @@ node bridge/tests/peer-e2e.mjs                                        # 内网�
 node probes/peer-multicast.mjs                                        # 组播快检：这台机器的网络栈放不放行 239.255.42.99（通过 ≠ 穿过交换机也通）
 node probes/runtime-panel.mjs                                         # 运行时面板 UI：一行摘要 + 每个运行中的 pi 一行、桥广播就跟着变、「不可用」不留空、三语不缺键（#77，桩桥 + 真 Chromium）
 node bridge/tests/preview-tool.mjs                                    # open_preview 的回环路由：只投给正在看这个会话的页面，没有页面就明确失败（#224，假 pi）
+node --experimental-transform-types bridge/tests/open-preview-unit.mjs  # open_preview 扩展这一层：解释取自桥的 text、英文码不外泄、桥 5 秒不答算通道故障（#224 复审，http stub）
 node bridge/tests/hint-spawn.mjs                                      # 网页会话的交付提示词：默认教训 + 交付两段都在，PI_WEB_HINT=0 只剩教训、PI_WEB_LESSONS=0 只剩提示（#226，假 pi）
 node probes/preview-open.mjs                                          # open_preview 到 viewer：真 Chromium 里预览面板弹出、标题就是文件名（#224，桩桥 + 真 Chromium）
 ```
