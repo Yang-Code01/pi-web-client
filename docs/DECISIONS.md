@@ -3100,6 +3100,8 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **没做 realpath 归一**：cwd 里的软链接指向目录外仍然放行，与 `/api/preview` 的既有行为一致，这一票没有单独收紧。
 - **前端 `msg.sessionId !== this.currentId` 的双保险保留**：桥不该发错会话，但这道闸是免费的，探针里用 `routeWebSocket` 伪造一条错会话的 `preview.open` 把它测住。
 
+D
+
 **验证：** `node bridge/tests/preview-tool.mjs`（22 项：两个标签页都在看 → 都收到；cwd 外且 transcript 没提过 → `untrusted-path`、不回路径/凭据、不投递；提过 → 允许；再塞 600 KB 填充把提及挤出尾部窗口 → 重新拒绝）；`node probes/preview-open.mjs`（16 项：wrong-session 请求后标题、正文与 `scrollTop` 都不变；伪造错会话的 `preview.open` 被前端丢掉，同一条消息换对 sessionId 会打开；页面仍停在原会话；两个标签页都弹）；`npm run typecheck`。
 
 ## D191 网页会话多一段「交付礼仪」提示词：覆盖全局规则、只投给正在看本会话的页面、先问后开（#226，父票 #223）
@@ -3147,3 +3149,32 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **`stale` 依赖前端判断**：前端只比 `msg.sessionId !== this.currentId`，不看 `viewer` 是否已经显示了同一个文件 —— 「已经开着这个文件」现在仍会重开一次（幂等，只是白跑一趟）。要省这一趟可以让前端在 `v.info.abs === path && v.pane === "preview"` 时直接回 `ok:true`。
 - **`declined` 的文案是两个作者**：桥给兜底句（页面没带 `text` 时），扩展那层只补一句指令（「等他处理完未保存的改动再打开」）。要真正单一来源，得让页面把整句话传上来。
 - **`no-ack` 的 15 秒是猜的**：没有实测数据支撑，若用户报「打开要等很久」，先看这一项。
+
+**验证：** `npm run test:bgruns` 新增「前台派活（D187）」段：`args` 形状抄真实调用 → 立卡即有 `agent: researcher` / 任务两行编号 / `view().n === 1`、`hasLog` 先 false；两个孩子 `status.json`（带 `parentWorkflowRunId`）落盘后 `prune()` → `hasLog` true、时间线含 `task-1 researcher started` / `task-1 researcher complete` / `task-2 researcher started`、不出负号；`noteToolEnd(…, callId)` → `done`、`readLog().out` 是 `## task-1 · researcher` / `## task-2 · researcher` 两段（`hasOut` 只是给类型契约的，前端按 `out` 的长度决定画不画）；**单跑、`action:"status"`、缺省 `async`、`async:true` 都不立卡**（后两条就是双卡的回归）；脚本式前台（`{workflow:true, async:false}`）派活那刻 `task` 为空，孩子落盘后 `prune()` 从 `sessionName` 补回 `planner` / `拆一下这个需求再分下去`。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1658 keys × 3 langs`），以及 `npm run test:continue:ui`（弹层标题断言从「后台子代理」改成「子代理」）。
+
+## D193 分支 chip 的单击从「复制」变成「看历史」：两列提交、顶上一条领先/落后，fetch 只能手按
+
+**问题：** 聊天下方那颗分支 chip（web/src/app.ts:2674 的 `gitChip`）点一下只把分支名塞进剪贴板 —— 想看清「我在 `feat/x` 上、比 `origin/main` 多 4 条少 8 条、从哪分叉的」得回终端敲三条 git。这次要的是一扇只读的弹窗：左列当前分支的线性历史，右列一条对照分支的历史，顶上横向一条说明谁在哪、领先多少、落后多少、从哪个提交分叉。
+
+**决定：**
+
+1. **弹窗中心化，复用 `.sheet-back`**：新文件 `web/src/branchsheet.ts` 自带 DOM，`mount(#app)` 之后在捕获阶段注册 Esc，点遮罩关；同时只允许一扇（`app.branchSheet`），再点 chip 等于关。复制没有消失，搬进弹窗工具条 —— 单击只做一件事。
+2. **两列是两段 `git log`，不是一列砍开**：左 = `log -n N HEAD`，右 = `log -n N <base>`，每行的 `set` 由桥端判（`left`/`right`/`common`）。页面只认这个标签去淡显和描边，不自己比对哈希 —— 两边各算一套必然漂（同一行在一列算独有、另一列算公共）。
+3. **自己判独有/公共，不信 `--left-right` 的位置**：`rev-list -n N HEAD ^base` 与 `base ^HEAD` 各拿一份集合做成员表；`rev-list --left-right --count HEAD...<base>` 只负责两个数字。N 就是这一页的行数（10..300，默认 80），所以集合与列表同深，不会出现「行在列表里却没有标签」。
+4. **默认对照分支 = `origin/HEAD`**：`symbolic-ref refs/remotes/origin/HEAD` → `origin/main` → 第一个远程分支，三级兜底；`baseAuto` 记下是不是自己猜的，下拉换一个就变 false。当前分支自己当对照（ahead=behind=0）不报错，比例条收成一条安静的底色线。
+5. **不自动 fetch，给一颗按钮**：打开只用本地 remote-tracking ref（八个 git 进程、毫秒级）。fetch 是唯一出网的调用，单列 `/api/git/fetch`：POST、拒绝公网（`fetch_public` 403）、45 秒超时、`GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS=echo` + `credential.interactive=never` 三件套（缺一件，缺凭据的仓库会挂在等密码，而桥在等它退出）。底部那行「数据来自 12 分钟前」读的是 `.git/FETCH_HEAD` 的 mtime，读不到就明说「不知道」。
+6. **只读**：不 checkout、不 merge、不 pull。连对照分支都只读 ref。
+7. **窄屏单列**：<720px 把两列压成一列，顶上多两颗 tab「当前 · x」/「对照 · y」，靠 `.branch-cols[data-show]` 互斥。
+8. **底部分页而不是全量**：一页 80 条，到底给「再加载 80 条」；`more` 由 `rev-list --count` 与当前行数比出来（不是「恰好 80 条就当还有」）。
+
+**代价 / 可改：**
+
+- **每个会话切回都要重新读一遍**：弹窗是快照（标题带仓库路径、底部带数据时间），期间切分支不会自己刷。桥端有 5 秒 TTL 缓存，同参数连开两下不会真跑 git。
+- **没有 diff**：知道差多少条，但看不到差了什么。要看得点进提交 —— 那是下一步的事。
+- **只列 `refs/remotes`**：本地分支不能当对照（下拉里只有远程）。想对照本地 `main` 得先推上去，或者把 `for-each-ref refs/heads` 也拼进来。
+- **`for-each-ref --format` 不认 `%x1f`**：那是 pretty format 的写法，会原样吐出来；分支名不许有空格，所以用空格分隔。踩过。
+- **`--graph` 没有画**：样张 C（真实 lane 图）用户没选，选的是 A（计数胶囊 + 线性两列）。要换回图线，桥端得再跑一趟 `git log --graph` 并把前缀原样带上 —— 样张里那套逐字渲染的代码还在 `.scratch/git-history-dialog/prototype/c-lanes.html`。
+
+**补（review 后）：** ① 界面文案不许走 ASCII 键 —— `Fetch origin` / `remote` / `detached` 换成「拉取最新」「远程」「游离 HEAD」（`HEAD`、`merge` 是 git 概念本身，留裸串，`i18n-check` 也只认含中文的键）。② 下拉首项是「自动 · 跟随 origin/HEAD」：选项值为空串，桥端重新走三级兜底，`baseAuto` 时前端也把 `this.base` 留空，否则换回一次就再也回不到自动。③ 分页对齐桥端的 300 封顶：到了把按钮换成一句「只显示最近 300 条」，不再给一颗点了不动的按钮。④ 换对照分支失败时留着上一份数据与下拉（失败态只占领列区），否则 `base_unknown` 时只剩关窗重开。⑤ `npm run test:githist:ui` 从「只 log」改真断言（胶囊/两列/公共行/下拉首项/数据时间格式/复制按钮/300 封顶/窄屏 2 tab 1 列），失败退出码 1。
+
+**验证：** `npm run test:githist`（新）—— 现搭裸库当 origin，断言分类（左 2 独有 + 3 公共、右侧 3 条 common）、ahead/behind、分叉点、`n` 下限 10、分页 `more`、`gitFetch` 之后 behind 从 0 变 1 且分叉点不动、空仓库 `empty`、非仓库 `null`、坏对照分支 `base_unknown`、detached HEAD 能读。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1680 keys × 3 langs`）。
