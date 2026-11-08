@@ -2735,6 +2735,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .settings-sheet .settings-label { font-size: 12px; color: var(--text); }
 .settings-sheet .settings-row .settings-hint { grid-column: 2; }
 .settings-sheet .settings-hint { font-size: 11px; color: var(--faint); line-height: 1.5; }
+.settings-sheet .settings-hint.bad { color: var(--danger); }
 /* 分组小标题：长表单没人会从头读到尾，扫一眼就知道这一段是干什么的 */
 .settings-sheet .settings-group { font-size: 11px; letter-spacing: 0.06em; color: var(--faint); border-top: 1px solid var(--line-soft); padding-top: 10px; margin-top: 2px; }
 .settings-sheet .settings-form > .settings-group:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
@@ -3608,12 +3609,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .pin-open .pin-sub-detail { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
 
 /*
- * 设置 → 子代理（#212）：样张 B 的两栏工作台（980px、左锚点、右分区）。
+ * 设置 → 子代理（#212 只读清单，#213 基础字段可编辑）：样张 B 的两栏工作台（980px、左锚点、右分区）。
  * 样式只挂在 .subagents-sheet 下 —— 类名是从原型拷的，但不能泄漏到别的 sheet。
- * 这一片没有编辑控件：表里只有名字/来源/frontmatter，保存逻辑进来时再长输入框。
+ * 「默认 / 行为 / 发现与扩展」用既有 .settings-row / .ns-input；agent 表本身仍只读。
  */
 .settings-sheet.subagents-sheet { width: min(980px, calc(var(--vw1) * 96)); }
-.settings-sheet.subagents-sheet .settings-body { overflow: hidden; }
+.settings-sheet.subagents-sheet .settings-body { overflow: hidden; grid-template-rows: minmax(0, 1fr); }
 @media (max-width: 980px) {
   .settings-sheet.subagents-sheet { width: 100%; height: 100%; max-height: 100%; border-radius: 0; }
 }
@@ -3637,6 +3638,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   display: grid; grid-template-columns: 150px minmax(0, 1fr);
   border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden;
 }
+/* 保存按钮在右侧滚动区外面：表单再长，滚到底也还是这一颗 */
+.subagents-sheet .subagents-foot { display: flex; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.subagents-sheet .subagents-foot .spacer { flex: 1; }
+.subagents-sheet .subagents-foot .settings-hint { flex: 0 1 auto; min-width: 0; }
 .subagents-sheet .subagents-nav {
   display: grid; gap: 2px; align-content: start; padding: 10px 8px;
   background: var(--sunken); border-right: 1px solid var(--line-soft);
@@ -3653,6 +3658,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .subagents-sheet .subagents-pane { display: grid; gap: 18px; align-content: start; padding: 12px 16px 18px; overflow-y: auto; min-height: 0; }
 .subagents-sheet .subagents-sec { display: grid; gap: 8px; scroll-margin-top: 4px; }
 .subagents-sheet .subagents-sec > h3 { margin: 0; font-size: 12px; font-weight: 500; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.subagents-sheet .subagents-sec > h3 .subagents-hint { font-weight: 400; }
 .subagents-sheet .subagents-badge {
   display: inline-flex; align-items: center; font: 10.5px var(--mono);
   padding: 1px 6px; border-radius: 999px;

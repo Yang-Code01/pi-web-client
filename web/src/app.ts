@@ -8518,6 +8518,7 @@ export class App {
       cwd,
       view: ready,
       scan: this.subagentsScanFor === cwd ? this.subagentsScan : null,
+      models: this.models.map((model) => ({ provider: model.provider, id: model.id })),
       projectEnabled: Boolean(cwd),
       onScope: (next) => {
         this.subagentsScope = next;
@@ -8525,6 +8526,12 @@ export class App {
       },
       onEditJson: () => {
         if (ready) this.paintSettingsJson(body, ready);
+      },
+      onSave: (patch) => {
+        if (!ready) return;
+        this.act(() =>
+          this.socket.send({ type: "settings.set", scope, ...(scope === "project" ? { cwd: ready.cwd } : {}), patch }),
+        );
       },
       acp: {
         view: this.subagentsAcp,
