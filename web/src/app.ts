@@ -10429,7 +10429,7 @@ export class App {
     };
     const sheet = el("div", "sheet bg-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("后台子代理")));
+    head.append(el("div", "sheet-title", tr("子代理")));
     const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(close);
@@ -10460,7 +10460,7 @@ export class App {
     sheet.body.querySelector(".bg-empty")?.remove();
     if (!runs.length) {
       // `error` 只会在公网那只手上出现（桥不把任务原话发出去）；本地就是真的没有。
-      sheet.body.append(el("div", "bg-empty", error || tr("这个会话没有在跑的后台子代理。")));
+      sheet.body.append(el("div", "bg-empty", error || tr("这个会话没有子代理在跑。")));
       return;
     }
     for (const r of runs) {

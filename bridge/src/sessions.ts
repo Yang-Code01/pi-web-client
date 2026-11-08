@@ -1317,6 +1317,8 @@ export class Session extends EventEmitter {
       }
       case "tool_execution_start": {
         if (ev.toolName === "ask_user_question") this.openQuestionnaire(String(ev.toolCallId ?? ""), ev.args);
+        // D187: 前台派活（`async:false`）的 run 不会出现在结果 details 里，卡片得在开始这刻立。
+        this.bgRuns.noteToolStart(String(ev.toolName ?? ""), ev.args, String(ev.toolCallId ?? ""));
         this.emitWs({
           type: "tool",
           phase: "start",
@@ -1338,7 +1340,14 @@ export class Session extends EventEmitter {
         const seen = at >= 0 ? (this.items[at] as ToolItem) : undefined;
         // D170: pi 只在结果里承认一次「有这么个 run」（`details.runId`）。
         // D172: `args` 里是模型写的那份原文（pi-subagents 落盘时把 task 打成 [prompt redacted]）。
-        this.bgRuns.noteToolEnd(String(ev.toolName ?? ""), (ev.result as any)?.details, contentText(ev.result), seen?.args);
+        this.bgRuns.noteToolEnd(
+          String(ev.toolName ?? ""),
+          (ev.result as any)?.details,
+          contentText(ev.result),
+          seen?.args,
+          String(ev.toolCallId ?? ""),
+          Boolean(ev.isError),
+        );
         {
           if (at >= 0) {
             const prev = this.items[at] as ToolItem;
