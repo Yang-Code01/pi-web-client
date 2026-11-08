@@ -640,6 +640,7 @@ export const en: Dict = {
   "提交": "Submit",
   "提交全部回答": "Submit all answers",
   "提问": "Question",
+  "回答": "Answer",
   "搜索 MCP 服务（官方 MCP Registry）": "Search MCP servers (official MCP Registry)",
   "搜索 pi 扩展（npm 上带 pi-package 关键字的包）": "Search pi extensions (npm packages with the pi-package keyword)",
   "搜索 名字 / 目录 / 首条消息（空格分隔多个词）": "Search name / directory / first message (space-separated terms)",

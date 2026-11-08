@@ -246,14 +246,30 @@ try {
     text: "只调用 question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
   }));
   await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
-  // 收起右栏 = 题目回落到 composer（D189 的窄屏/收起形态），卷起来的那一颗仍在。
+  // 收起右栏 = 题目回落到 composer（D189 的窄屏/收起形态）。
   await page.locator('[data-act="queue"]').click();
   await page.waitForSelector(".composer .ask-slot .ask-opts", { timeout: 5000 });
   check("collapsing the column moves the panel to the composer", true);
+  // D190: 上滑读历史 → 收成一行；往下滚回底部 → 展开；手动收起的不会被抢回来。
+  await page.mouse.move(640, 320);
+  await page.mouse.wheel(0, -400);
+  await page.waitForSelector(".composer .ask-strip", { timeout: 3000 });
+  const stripped = (await page.locator(".composer .ask-slot").count()) === 0;
+  check("scrolling up folds the panel into one line", stripped);
+  await shot("folded");
+  // 上滑那一下把重新跟流的闸门压到 300ms 后（`holdFollow`），人的手不会停在这儿；这里等一下再往下滚。
+  await sleep(350);
+  await page.mouse.wheel(0, 4000);
+  await page.waitForSelector(".composer .ask-slot .ask-head", { timeout: 3000 });
+  check("scrolling back to the bottom unfolds it", (await page.locator(".composer .ask-strip").count()) === 0);
   await page.locator(".composer .ask-head .btn.ghost", { hasText: "收起" }).click();
-  const folded = await page.locator(".composer .ask-slot").isVisible();
-  const optsGone = (await page.locator(".composer .ask-slot .ask-opts").count()) === 0;
-  check("收起 keeps the head and drops the answers", folded && optsGone, JSON.stringify({ folded, optsGone }));
+  const manualStrip = await page.locator(".composer .ask-strip").isVisible();
+  await sleep(350);
+  await page.mouse.wheel(0, 4000);
+  await sleep(400);
+  check("a manual fold stays folded at the bottom", manualStrip && (await page.locator(".composer .ask-strip").isVisible()));
+  await page.locator(".composer .ask-strip .btn.primary", { hasText: "回答" }).click();
+  check("回答 unfolds it again", await page.locator(".composer .ask-head").isVisible());
   await page.locator('[data-act="interrupt"]').click();
   await page.waitForSelector(".ask-slot", { state: "detached", timeout: 30000 }).catch(() => {});
   await sleep(800);

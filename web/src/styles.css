@@ -1718,6 +1718,17 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .ask-head .btn:first-of-type { margin-left: auto; }
 .ask-head .danger-text { color: var(--danger); }
 
+/* D190: 折叠态 —— 面板只剩一行。上滑读历史时自动落到这里，点「回答」展开回上面那块。 */
+.ask-strip {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  border: 1px solid var(--accent-dim); background: var(--accent-bg);
+  border-radius: 8px; padding: 3px 6px 3px 10px;
+}
+.ask-strip .k { flex: none; font-size: 12px; font-weight: 500; color: var(--accent); }
+.ask-strip .q { flex: 0 1 auto; min-width: 0; font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-strip .grow { flex: 1; }
+.ask-strip .btn { flex: none; padding: 3px 8px; font-size: 12px; }
+
 .ask-tabs { display: flex; gap: 4px; overflow-x: auto; }
 .ask-tab {
   flex: none; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line);

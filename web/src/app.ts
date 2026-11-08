@@ -178,6 +178,8 @@ export class App {
   /** The ask id this page submitted itself: its ask.remove is not a loss. */
   private lastAnsweredAsk: string | null = null;
   private askFolded = false;
+  /** 这次折叠是「上滑自动收的」还是用户自己按的 收起：前者到底会自动展开，后者不抢（D190）。 */
+  private askAutoFolded = false;
   /**
    * D189（右栏作答）：宽屏上题目答在「需要你」那一栏。这两颗记住「右栏是我们为提问打开的」和
    * 「用户自己收起过、这次别再抢」，答完把宽度与收起状态还回原样。
@@ -811,6 +813,9 @@ export class App {
     // #220: 顶端「载入更早」—— 要的是 `topId` 之前那 60 条，桥切成纯内存一页（不改协议其他部分）。
     // 只负责转发：这一页还认不认（`before` 是不是当前 `topId`）由 ChatView 自己判断。
     this.chat.onLoadOlder = (before) => this.socket.send({ type: "history.before", sessionId: this.currentId, before });
+    // D190: 折叠态的提问条 —— 上滑读历史就收成一行，回到底部再展开。
+    this.chat.onScrollUp = () => this.foldAskForReading();
+    this.chat.onSettleBottom = () => this.unfoldAskAtBottom();
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
   }
@@ -1616,6 +1621,7 @@ export class App {
         }
         this.asks = [...this.asks.filter((a) => a.id !== ask.id), ask];
         this.askFolded = false;
+        this.askAutoFolded = false;
         this.renderAsks();
         this.renderQueue();
         this.renderTabs();
@@ -11334,9 +11340,9 @@ export class App {
 
   private renderAsks(): void {
     const host = this.els.composerHost;
-    host.querySelector(".ask-slot")?.remove();
+    host.querySelector(".ask-slot, .ask-strip")?.remove();
     // 槽一删，寄居在里面的 ⚡ 按钮也跟着没了（后面的分支还可能提前 return），先把它捞出来。
-    this.placeFailCta();
+    this.placeFailCta();>>>>>>> aeb00f1 (feat(ask): fold the panel into one line while reading up top (D190))
     this.syncAskDock();
     this.fillHintStatus();
     if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
@@ -11353,7 +11359,7 @@ export class App {
       this.renderQueue();
       return;
     }
-    const slot = this.askPanel(ask, "composer");
+    const slot = this.askFolded ? this.askStrip(ask) : this.askPanel(ask, "composer");
     const row = host.querySelector(".row");
     if (row) host.insertBefore(slot, row);
     else host.append(slot);
@@ -11373,11 +11379,11 @@ export class App {
     const head = el("div", "ask-head");
     const more = this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
     head.append(el("span", "t", tr("{p1}{p2}", { p1: total > 1 ? tr("需要你回答 · {p1} 题", { p1: total }) : tr("需要你回答"), p2: more })));
-    if (place === "composer" && this.askFolded) head.append(el("span", "m", q.prompt.split("\n")[0].slice(0, 80)));
     if (place === "composer") {
-      const fold = el("button", "btn ghost", this.askFolded ? tr("展开") : tr("收起"));
+      const fold = el("button", "btn ghost", tr("收起"));
       fold.onclick = () => {
-        this.askFolded = !this.askFolded;
+        this.askFolded = true;
+        this.askAutoFolded = false;
         this.renderAsks();
       };
       head.append(fold);
@@ -11388,7 +11394,6 @@ export class App {
     head.append(cancel);
     slot.append(head);
 
-    if (place === "composer" && this.askFolded) return slot;
     if (total > 1) {
       const tabs = el("div", "ask-tabs");
       ask.questions.forEach((x, i) => {
@@ -11436,6 +11441,49 @@ export class App {
       slot.append(foot);
     }
     return slot;
+  }
+
+  /**
+   * D190: 折叠态就是一行 —— 题干 +「回答」+「取消提问」，34px。点「回答」展开；手动收起的也落在这里。
+   * 收起不动草稿：`askDrafts` 与输入框都还在，展开回来原样。
+   */
+  private askStrip(ask: AskRequest): HTMLElement {
+    const q = ask.questions[this.askState(ask).active];
+    const more = this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
+    const strip = el("div", "ask-strip");
+    strip.append(el("span", "k", tr("提问")));
+    strip.append(el("span", "q", `${q.prompt.split("\n")[0]}${more}`));
+    strip.append(el("span", "grow"));
+    const open = el("button", "btn primary", tr("回答"));
+    open.onclick = () => {
+      this.askFolded = false;
+      this.askAutoFolded = false;
+      this.renderAsks();
+    };
+    const cancel = el("button", "btn ghost danger-text", tr("取消提问"));
+    cancel.title = tr("告诉模型你不回答这次提问");
+    cancel.onclick = () => this.answerAsk(ask, null);
+    strip.append(open, cancel);
+    return strip;
+  }
+
+  /**
+   * D190: 题目住在输入区上方时，往上一滚就收成一行 —— 读历史的人先要回那两百多像素。
+   * 只收自动的：用户自己按过「收起」，就不再抢（`askAutoFolded`）。
+   */
+  private foldAskForReading(): void {
+    if (this.askDock() || !this.asks.length || this.askFolded) return;
+    this.askFolded = true;
+    this.askAutoFolded = true;
+    this.renderAsks();
+  }
+
+  /** 回到底部（而且是往下滚回来的）：自动收起的纸条展开回完整面板。 */
+  private unfoldAskAtBottom(): void {
+    if (this.askDock() || !this.asks.length || !this.askFolded || !this.askAutoFolded) return;
+    this.askFolded = false;
+    this.askAutoFolded = false;
+    this.renderAsks();
   }
 
   /**

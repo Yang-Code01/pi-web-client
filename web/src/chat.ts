@@ -187,6 +187,13 @@ export class ChatView {
   onBashStop: ((id: string) => void) | null = null;
   /** Set by the app: ⑂ on a user message (#17). `index` = its position among user messages. */
   onFork: ((item: { id: string; text: string }, index: number) => void) | null = null;
+  /**
+   * D190: 用户开始往上读（跟流刚被关掉）。提问面板长在输入区上方时据此收成一行 —— 只报这一个边沿，
+   * 不跟着每一格滚轮走。
+   */
+  onScrollUp: (() => void) | null = null;
+  /** 回到底部，而且是往下滚回来的 —— 收起的提问面板据此展开（往上滚回的不算，见 `resumeFollowing`）。 */
+  onSettleBottom: (() => void) | null = null;
   /** Live view of the running tool call — nothing here is rendered in the transcript. */
   private live: LiveInfo = {};
   /**
@@ -336,6 +343,7 @@ export class ChatView {
     if (!this.following || !this.hasRoomBelow()) return;
     this.following = false;
     this.renderJump();
+    this.onScrollUp?.();
   }
 
   private resumeFollowing(): void {
@@ -343,6 +351,7 @@ export class ChatView {
     this.following = true;
     this.unread = false;
     this.renderJump();
+    this.onSettleBottom?.();
   }
 
   private renderJump(): void {
@@ -390,6 +399,7 @@ export class ChatView {
     this.root.scrollTop = this.root.scrollHeight;
     this.scheduleScroll();
     this.queueRailSync();
+    this.onSettleBottom?.();
   }
 
   /** 缩略图的那一下跳动不该每滚动一下就算一遍，一帧一次。 */
