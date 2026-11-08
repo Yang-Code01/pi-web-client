@@ -80,7 +80,8 @@ interface Config {
   peerPort: number;
 }
 
-const STEP_UP_MS = 10 * 60 * 1000;
+/** D186：公网写入窗口 1 天（原 D15 是 10 分钟）—— 手机上批准不该一轮对话就重输一次口令。 */
+const STEP_UP_MS = 24 * 60 * 60 * 1000;
 const MAX_BODY = 30 * 1024 * 1024;
 
 function loadConfig(): Config {
@@ -1184,7 +1185,8 @@ async function main(): Promise<void> {
             }
             resetLoginAttempts(ip);
             (ws as any).stepUntil = Date.now() + STEP_UP_MS;
-            send({ type: "stepup-ok", until: (ws as any).stepUntil });
+            // `ttl` 是相对时长：手机时钟偏快/偏慢时，按绝对值算的 until 会让前端提前或滞后弹窗。
+            send({ type: "stepup-ok", until: (ws as any).stepUntil, ttl: STEP_UP_MS });
             return;
           }
           case "models": {
