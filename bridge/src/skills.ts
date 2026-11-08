@@ -139,6 +139,20 @@ export function scanSkills(cwd: string | null): SkillInfo[] {
   return scanSkillEntries(cwd).map(({ path: _p, root: _r, link: _l, removable: _d, ...info }) => info);
 }
 
+/**
+ * 隐式触发：模型自己把 `read` 指到某个技能的 SKILL.md 上，就是「加载了这个技能」（pi 没有 Skill 工具，
+ * 系统提示词只给了清单，读文件是唯一的加载动作）。只认 read：`cat` 到的 SKILL.md 我们看不见参数里的
+ * 文件名之外的东西，宁可不标，也别标错。
+ */
+export function skillOfRead(skills: SkillEntry[], name: string | undefined, args: unknown): SkillEntry | undefined {
+  if (name !== "read") return undefined;
+  const raw = (args as Record<string, unknown> | null | undefined)?.path;
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  const target = path.resolve(raw.trim());
+  for (const skill of skills) if (path.resolve(skill.path, "SKILL.md") === target) return skill;
+  return undefined;
+}
+
 /** The same scan, keeping each skill's directory (installed list + uninstall guard). */
 export function scanSkillEntries(cwd: string | null): SkillEntry[] {
   const found = new Map<string, SkillEntry>();

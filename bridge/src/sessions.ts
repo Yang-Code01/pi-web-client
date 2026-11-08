@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { RpcChild } from "./rpc.ts";
 import { displayUserText, loadEntries, listSessionFiles, normalizeUserText, readMeta, titleFromUserText, typedSkill, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
-import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, summarizeToolArgs, type BashItem, type Item, type ToolItem, type UserItem } from "./items.ts";
+import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, skillItemFor, summarizeToolArgs, withSkillItems, type BashItem, type Item, type ToolItem, type UserItem } from "./items.ts";
 import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
 import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions } from "./launch.ts";
@@ -14,7 +14,7 @@ import { ensureDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootIn
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
 import { Workspaces } from "./workspaces.ts";
-import { rankSkills, scanSkills, type SkillInfo } from "./skills.ts";
+import { rankSkills, scanSkillEntries, scanSkills, type SkillEntry, type SkillInfo } from "./skills.ts";
 import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
 import { lifecycle, gcTickMs, capProtectMs, type Lifecycle, type LifecycleThresholds } from "./lifecycle.ts";
 import { absentFor } from "./presence.ts";
@@ -714,6 +714,8 @@ export interface SessionSnapshot {
 export class Session extends EventEmitter {
   readonly state: SessionState;
   items: Item[] = [];
+  /** 技能清单按 cwd 缓存：会话文件变一次就要重放一遍，不能每次再扫一次盘。 */
+  private skillScanCache: { cwd: string | null; at: number; list: SkillEntry[] } | null = null;
   rpc: RpcChild | null = null;
   readonly approvals = new Map<string, ApprovalRequest>();
   readonly asks = new Map<string, PendingAsk>();
@@ -935,7 +937,8 @@ export class Session extends EventEmitter {
     if (!this.state.file) return true;
     try {
       const res = loadEntries(this.state.file);
-      this.items = this.keepUnsentBubbles(entriesToItems(res.entries));
+      // 隐式触发只在工具参数里留了痕迹（`read …\SKILL.md`），回放时把技能卡补上（D199）。
+      this.items = this.keepUnsentBubbles(withSkillItems(entriesToItems(res.entries), this.skillsHere()));
       this.state.truncated = res.truncated;
       this.readError = null;
       return true;
@@ -1332,6 +1335,13 @@ export class Session extends EventEmitter {
         if (msg.usage) this.emitWs({ type: "usage", sessionId: this.state.id, usage: msg.usage });
         void this.refreshStats();
         for (const call of calls) {
+          // D199：模型自己 read 了某个 SKILL.md 就是隐式触发 —— 在它那张 read 卡之前立一张技能卡。
+          const card = skillItemFor(this.items, this.skillsHere(), { name: String(call.name ?? ""), args: call.arguments }, text);
+          if (card) {
+            const item: Item = { ...card, id: `live-skill:${String(call.id ?? "")}`, ts: new Date().toISOString() };
+            this.emitWs({ type: "item.add", sessionId: this.state.id, item });
+            this.upsert(item);
+          }
           const tool: ToolItem = {
             id: `live-tool:${call.id}`,
             kind: "tool",
@@ -2248,6 +2258,19 @@ export class Session extends EventEmitter {
     // Only pi's own answer is worth keeping; a fallback list is retried on the next open.
     this.skillsCache = fromPi ? { at: Date.now(), list: ranked } : null;
     return ranked;
+  }
+
+  /**
+   * D199：隐式技能卡用的清单（只要名字 / 描述 / 目录）。按 cwd 缓存 30s：会话文件每变一次就要重放
+   * 一遍整卷 items，每次再扫一遍盘会把 tail 循环拖慢。
+   */
+  private skillsHere(): SkillEntry[] {
+    const cwd = this.state.cwd ?? null;
+    const cache = this.skillScanCache;
+    if (cache && cache.cwd === cwd && Date.now() - cache.at < 30_000) return cache.list;
+    const list = scanSkillEntries(cwd);
+    this.skillScanCache = { cwd, at: Date.now(), list };
+    return list;
   }
 
   /**
