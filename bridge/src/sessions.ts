@@ -21,6 +21,7 @@ import { sampleMemory } from "./runtime.ts";
 import { defaultPermission } from "./permissiondefault.ts";
 import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
 import { isProtocolWidgetLines } from "./extwidgets.ts";
+import { tailPage, type SessionHistory } from "./history.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -688,6 +689,17 @@ type BootFailure = "boot" | "stopped" | "refused";
  * 让用户盯着一个气泡干等（第一条可能被 `disposition: "handled"` 就地吃掉，压根没有 agent_start）。
  */
 const BOOT_RUN_WAIT_MS = 10_000;
+
+/** `session` 帧的载荷：一条会话可画的全部内容（#219 起 `session` 帧里的 `items` 只装末尾一页）。 */
+export interface SessionSnapshot {
+  state: SessionState;
+  items: Item[];
+  approvals: ApprovalRequest[];
+  asks: AskRequest[];
+  budget: number | null;
+  ext: ExtUiState;
+  queue: { steering: string[]; followUp: string[] };
+}
 
 export class Session extends EventEmitter {
   readonly state: SessionState;
@@ -2390,15 +2402,7 @@ export class Session extends EventEmitter {
     this.emitExtUi();
   }
 
-  snapshot(): {
-    state: SessionState;
-    items: Item[];
-    approvals: ApprovalRequest[];
-    asks: AskRequest[];
-    budget: number | null;
-    ext: ExtUiState;
-    queue: { steering: string[]; followUp: string[] };
-  } {
+  snapshot(): SessionSnapshot {
     return {
       state: this.state,
       items: this.items,
@@ -2408,6 +2412,15 @@ export class Session extends EventEmitter {
       ext: this.extUi(),
       queue: this.queue,
     };
+  }
+
+  /**
+   * #219：`session` 帧只带末尾一页。`items` 仍然是这一页的原文，同帧用 `history` 说清
+   * 还有没有更早的、整段一共多少条 —— 老前端不认 `history`，照旧只画这一页。
+   */
+  pagedSnapshot(): SessionSnapshot & { history: SessionHistory } {
+    const page = tailPage(this.items);
+    return { ...this.snapshot(), items: page.items, history: { hasMore: page.hasMore, total: page.total } };
   }
 
   idleFor(): number {
@@ -3331,6 +3344,12 @@ export class SessionManager extends EventEmitter {
     // D162: handing a snapshot to a client no longer clears 完成 —— 打开只是看，不是新的一轮。
     const session = this.ensure(id);
     return session.snapshot();
+  }
+
+  /** #219: `session` 帧只带末尾一页，和老前端看到的整段是同一份数据的尾巴。 */
+  pagedSnapshot(id: string) {
+    if (!this.known(id)) throw new Error("找不到这个会话");
+    return this.ensure(id).pagedSnapshot();
   }
 
   respond(id: string, approvalId: string, decision: "approve" | "reject" | "cancel" | "always"): void {
