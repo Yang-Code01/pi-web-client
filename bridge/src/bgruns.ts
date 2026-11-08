@@ -30,14 +30,14 @@ const LIVE_LOG = /Live activity is streaming to `([^`]+)`/;
 /** pi-subagents 的 async 目录：`<tmpdir>/pi-subagents-<scope>/async-subagent-runs/<id>/`。 */
 const SUBAGENTS_TMP = join(tmpdir(), "pi-subagents-");
 /**
- * 只有这两个工具会「派一个后台任务」。别的工具结果里出现同样的句子（读文档、看日志、
+ * 只有这两个工具会「派一个后台子代理」。别的工具结果里出现同样的句子（读文档、看日志、
  * `grep` 到 D170 自己那段说明）不算 —— D172 的幽灵任务就是这么造出来的。
  */
 const DISPATCH = new Set(["acp_delegate", "subagent"]);
 /** 真的 runId 长这样：`del_…`（acp）、UUID / `call_…`（pi-subagents）。`…` 这种示例值不算。 */
 const ID_OK = /^(del_[A-Za-z0-9_]+|call_[A-Za-z0-9_]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
-/** 一个还在跑（或刚跑完）的后台任务。 */
+/** 一个还在跑（或刚跑完）的后台子代理（D170 的叫法：不用「后台任务」指代它，那个还包括 `!` 与构建）。 */
 export interface BgRun {
   id: string;
   /** 谁起的是两种实现：痕迹和完成通知都不一样。 */
@@ -120,9 +120,12 @@ function underSubagents(abs: string, file = false): boolean {
   return file ? rest.includes(sep) : true;
 }
 
-/** pi-subagents 的 `status.json`（几十 KB，读一次解析一次；只在开卡 / 30 秒滴答 / 看详情时发生）。 */
-function statusObject(dir: string): Record<string, unknown> | undefined {
-  const file = resolve(join(dir, "status.json"));
+/**
+ * `<dir>/<name>` 这份 JSON（默认 `status.json`，也可以是 `workflow-receipt.json`）。几十 KB，
+ * 读一次解析一次；只在开卡 / 30 秒滴答 / 看详情时发生。
+ */
+function statusObject(dir: string, name = "status.json"): Record<string, unknown> | undefined {
+  const file = resolve(join(dir, name));
   if (!underSubagents(file, true)) return undefined;
   try {
     const obj = JSON.parse(readFileSync(file, "utf8")) as unknown;
@@ -178,12 +181,18 @@ function tail(file: string, limit: number): string | undefined {
 
 // ---------------------------------------------------------------- workflow（`subagent({workflow:…})`）
 
+/** 一个孩子：谁在跑（`agent`）+ 派给它的原话（`task`）。 */
+interface Child {
+  agent: string;
+  task: string;
+}
+
 /**
  * `subagent({ workflow: "parallel", args: { tasks: [{ agent, task }] } })` 的派活原话在
  * `args.args.tasks[]` 里：顶层既没有 `agent` 也没有 `task`，只认顶层的话卡片永远写
  * 「（任务原文没传到桥）」（D184 现场）。`tasks` 也可能直接放在 `args` 上，两个位置都认。
  */
-function taskList(a: Record<string, unknown>): { agent: string; task: string }[] {
+function taskList(a: Record<string, unknown>): Child[] {
   const inner = a.args && typeof a.args === "object" ? (a.args as Record<string, unknown>) : {};
   const raw = Array.isArray(a.tasks) ? a.tasks : inner.tasks;
   return Array.isArray(raw) ? pickChildren(raw as unknown[]) : [];
@@ -193,19 +202,23 @@ function taskList(a: Record<string, unknown>): { agent: string; task: string }[]
  * 脚本式 workflow 没有 `args.tasks`，但 `details.workflowChildren.children[]` 里有每个孩子的
  * `agent` 和 `sessionName`（`researcher: <任务原话>`，pi-subagents 落盘时截断过）。
  */
-function childList(d: Record<string, unknown>): { agent: string; task: string }[] {
+function childList(d: Record<string, unknown>): Child[] {
   const wf = d.workflowChildren && typeof d.workflowChildren === "object" ? (d.workflowChildren as Record<string, unknown>) : {};
   const raw = Array.isArray(wf.children) ? (wf.children as unknown[]) : [];
   return pickChildren(raw, true);
 }
 
-function pickChildren(raw: unknown[], fromSessionName = false): { agent: string; task: string }[] {
-  const out: { agent: string; task: string }[] = [];
+/**
+ * `sessionNameAsTask`：清单里没有 `task` 字段（workflow 的孩子清单就是这种），才拿
+ * `sessionName` 去掉 `agent: ` 前缀当原话。
+ */
+function pickChildren(raw: unknown[], sessionNameAsTask = false): Child[] {
+  const out: Child[] = [];
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;
     const c = item as Record<string, unknown>;
     const agent = typeof c.agent === "string" ? c.agent.trim() : "";
-    const name = fromSessionName && typeof c.sessionName === "string" ? c.sessionName.replace(/^[^:]+:\s*/, "").trim() : "";
+    const name = sessionNameAsTask && typeof c.sessionName === "string" ? c.sessionName.replace(/^[^:]+:\s*/, "").trim() : "";
     const task = typeof c.task === "string" ? c.task.trim() : name;
     if (agent || task) out.push({ agent, task });
   }
@@ -216,7 +229,7 @@ function pickChildren(raw: unknown[], fromSessionName = false): { agent: string;
  * 多个孩子合成卡片上的两行：agent 去重，任务按原顺序逐条编号（原文是给人看的，一个字不改）。
  * 64 路并行时不能把整段任务列表全画出来，留前 12 条 + 余量。
  */
-function summarizeChildren(kids: { agent: string; task: string }[]): { agent: string; task: string } {
+function summarizeChildren(kids: Child[]): Child {
   const agents = [...new Set(kids.map((k) => k.agent).filter(Boolean))];
   const tasks = kids.map((k) => k.task).filter(Boolean);
   const more = tasks.length > 12 ? `\n… (+${tasks.length - 12})` : "";
@@ -234,6 +247,25 @@ function summarizeChildren(kids: { agent: string; task: string }[]): { agent: st
 function workflowEvents(dir: string): string | undefined {
   const file = resolve(join(dir, "events.jsonl"));
   return underSubagents(file, true) && existsSync(file) ? file : undefined;
+}
+
+/**
+ * 过程记录在哪：单 run / parallel 是 `status.json.outputFile`，workflow 没有这个字段，
+ * 退到同目录的 `events.jsonl`（D184）。还没落盘就返回 undefined，由 `prune()` / `readLog()` 再补。
+ */
+function logPathFor(dir: string, workflow: boolean): string | undefined {
+  return statusField(dir, "outputFile") ?? (workflow ? workflowEvents(dir) : undefined);
+}
+
+/**
+ * 派活那一刻 `details.workflowChildren.children[]` 还可能空着（脚本式 workflow 边跑边建孩子），
+ * 但 runner 早就把清单写进了同目录的 `workflow-receipt.json`：`workflowChildren.children[]`
+ * 带 `agent` 与 `sessionName`。空着的 agent / task 在 30 秒滴答里从这里补回来。
+ */
+function receiptChildren(dir: string): Child[] {
+  const wf = statusObject(dir, "workflow-receipt.json")?.workflowChildren;
+  const raw = wf && typeof wf === "object" ? (wf as Record<string, unknown>).children : undefined;
+  return Array.isArray(raw) ? pickChildren(raw as unknown[], true) : [];
 }
 
 /**
@@ -303,7 +335,7 @@ function workflowOutput(dir: string, limit: number): string | undefined {
 }
 
 /**
- * 一个会话的后台任务表。变化时只喊 `onChange`，喊不喊、多久喊一次由调用方决定 ——
+ * 一个会话的后台子代理表。变化时只喊 `onChange`，喊不喊、多久喊一次由调用方决定 ——
  * 这里不碰 ws，也不认识 `SessionState`。
  */
 export class BgRuns {
@@ -339,14 +371,14 @@ export class BgRuns {
     const fromText = AGENT.exec(text);
     // workflow 的派活把原文藏在 `args.args.tasks[]` / `details.workflowChildren.children[]` 里，
     // 顶层两个字段都是空的（D184）。这两个位置只在 pi-subagents 侧有意义。
-    let kids: { agent: string; task: string }[] = [];
+    let kids: Child[] = [];
     if (source === "subagents") {
       kids = taskList(a);
       if (!kids.length) kids = childList(d);
     }
-    const said = summarizeChildren(kids);
-    const agent = (str(d.agent) ?? str(a.agent) ?? fromText?.[1] ?? fromText?.[2] ?? said.agent ?? "").trim();
-    const task = (str(d.task) ?? str(a.task) ?? (source === "acp" ? TASK_LINE.exec(text)?.[1] : undefined) ?? said.task ?? "").trim();
+    const childSummary = summarizeChildren(kids);
+    const agent = (str(d.agent) ?? str(a.agent) ?? fromText?.[1] ?? fromText?.[2] ?? childSummary.agent ?? "").trim();
+    const task = (str(d.task) ?? str(a.task) ?? (source === "acp" ? TASK_LINE.exec(text)?.[1] : undefined) ?? childSummary.task ?? "").trim();
     const run: BgRun = { id, source, agent, task, startedAt: Date.now(), state: "running" };
     if (workflow) run.workflow = true;
     const live = LIVE_LOG.exec(text)?.[1];
@@ -360,7 +392,7 @@ export class BgRuns {
       const dir = str(d.asyncDir);
       if (dir && underSubagents(resolve(dir))) {
         run.dir = dir;
-        const out = statusField(dir, "outputFile") ?? (workflow ? workflowEvents(dir) : undefined);
+        const out = logPathFor(dir, workflow);
         if (out) run.logPath = out;
         if (!workflow) run.outPath = join(dir, `subagent-log-${id}.md`);
       }
@@ -425,6 +457,11 @@ export class BgRuns {
     const run = this.runs.get(id);
     if (!run) return {};
     const view: { run?: BgRun; log?: string; out?: string } = { run };
+    if (run.workflow && !run.logPath && run.dir) {
+      // 开卡时 `events.jsonl` 还没落盘，`prune()` 的 30 秒滴答之前不该一直说「桥还没接上」。
+      const lit = workflowEvents(run.dir);
+      if (lit) run.logPath = lit;
+    }
     if (run.logPath) view.log = run.workflow ? workflowTimeline(run.logPath, limit) : tail(run.logPath, limit);
     if (run.workflow) {
       // workflow 没有单个输出文件：每个孩子的答复在 `status.json` 里，跑完之前这里是空的
@@ -482,7 +519,7 @@ export class BgRuns {
   private arm(): void {
     if (this.sweep) return;
     this.sweep = setInterval(() => this.prune(), SWEEP_MS);
-    // 后台任务表不该是桥退不出去的原因（同 D133 的 unref 定时器）。
+    // 子代理表不该是桥退不出去的原因（同 D133 的 unref 定时器）。
     this.sweep.unref?.();
   }
 
@@ -499,8 +536,20 @@ export class BgRuns {
             // 派活那一刻 `status.json` 可能还没落盘（实测晚 ~1.4 s），过程记录要在这里补回来，
             // 否则 `hasLog` 会永久钉成 false，卡片一直说「桥还没接上」。workflow 补的是
             // `events.jsonl`：它的 `status.json` 里根本没有 `outputFile`（D184）。
-            const out = statusField(run.dir, "outputFile") ?? (run.workflow ? workflowEvents(run.dir) : undefined);
+            const out = logPathFor(run.dir, Boolean(run.workflow));
             if (out) run.logPath = out;
+          }
+          if (run.workflow && (!run.agent || !run.task)) {
+            // 脚本式 workflow 的孩子清单可能晚于派活那刻才齐：agent / task 空着的在这里补。
+            const summary = summarizeChildren(receiptChildren(run.dir));
+            if (!run.agent && summary.agent) {
+              run.agent = summary.agent;
+              changed = true;
+            }
+            if (!run.task && summary.task) {
+              run.task = summary.task;
+              changed = true;
+            }
           }
           const st = statusField(run.dir, "state");
           if (st === "complete" || st === "completed") {
