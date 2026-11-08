@@ -96,7 +96,7 @@ git -C "$WT" add CHANGELOG.md
 git -C "$WT" commit -m "docs(changelog): <日期> 批次，<N> 条"
 ```
 
-推送按仓库账号规矩（细节与故障处置见 `references/commands.md`）：先直连试一次，失败再套 `$BILLION_CONTEXT_PROXY`；push 用 `Yang-Code01` 的 token，`gh` 逐条带 `GH_TOKEN`。PR 用仓库风格的四段：**做了什么 / 依据 / 自查 / 没做**，标题写清是「更新日志：<日期> 批次（N 条）」。
+推送按仓库账号规矩（细节与故障处置见 `references/commands.md`）：先直连试一次，失败再套代理（`${BILLION_CONTEXT_PROXY:-http://127.0.0.1:18791}`，变量没导出时用这个字面端口）；push 用 `Yang-Code01` 的 token，`gh` 逐条带 `GH_TOKEN`。PR 用仓库风格的四段：**做了什么 / 依据 / 自查 / 没做**，标题写清是「更新日志：<日期> 批次（N 条）」。
 
 ## 八、交给人
 

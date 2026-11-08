@@ -10172,7 +10172,7 @@ export class App {
     body.append(el("div", "empty", tr("读取中…")));
     fetch("/api/changelog?scope=self", { credentials: "same-origin" })
       .then((r) => r.json())
-      .then((out: { version?: string; branch?: string; commit?: string; text?: string }) => {
+      .then((out: { version?: string; branch?: string; commit?: string; root?: string; text?: string }) => {
         if (this.settingsTab !== "whatsnew") return;
         body.replaceChildren();
         const head = [out.branch, out.commit].filter(Boolean).join("@");
@@ -10182,10 +10182,10 @@ export class App {
         md.append(
           renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {
             // 正文里的 `docs/DECISIONS.md` 是可点的文件链接：预览若直接开在弹层背后，点了像没反应。
-            // 先收面板再交给预览（相对路径由桥按会话 cwd 解析）。
+            // 先收面板再交给预览；链接相对**仓库根**写，会话 cwd 可能不在这个仓库里（D190）。
             openPath: (file) => {
               this.closeSheet();
-              window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: file } }));
+              window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(out.root ?? "", file) } }));
             },
           }),
         );
@@ -13745,6 +13745,20 @@ function loadDrafts(): Map<string, Draft> {
 
 function rawUrl(info: PreviewInfo): string {
   return `/raw/${info.token}/${info.rel}`;
+}
+
+/** 日志正文里的链接是相对仓库根写的：会话 cwd 不在那个仓库里也得点得开（D190）。 */
+function resolveFromRoot(root: string, p: string): string {
+  let target = p;
+  try {
+    target = decodeURIComponent(p);
+  } catch {
+    /* keep */
+  }
+  if (/^[A-Za-z]:[\\/]/.test(target) || target.startsWith("/") || target.startsWith("\\")) return target;
+  if (!root) return target;
+  const sep = root.includes("\\") ? "\\" : "/";
+  return `${root.replace(/[\\/]+$/, "")}${sep}${target.replace(/[/\\]+/g, sep)}`;
 }
 
 /** A link inside a previewed document is relative to that document, not to the session cwd. */

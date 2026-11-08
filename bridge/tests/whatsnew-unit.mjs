@@ -20,7 +20,10 @@ assert.equal(full.version, pkg.version, `版本要取根 package.json（${pkg.ve
 assert.ok(full.text.startsWith("# pi-web-client 更新日志"), "正文第一行是标题");
 assert.ok(full.text.includes("## 2026-"), "至少有一批带日期的段落");
 assert.ok(full.commit.length >= 7, `短 SHA 至少 7 位，拿到「${full.commit}」`);
-assert.ok(full.branch.length > 0, "在 worktree 里跑，分支名不该是空串");
+// detached HEAD 时分支就是空串（接口本身这么说），别让这种检出假失败。
+assert.equal(typeof full.branch, "string", "分支名是字符串，detached 时为空串");
+const rootPkg = JSON.parse(readFileSync(`${full.root}/package.json`, "utf8"));
+assert.equal(rootPkg.version, pkg.version, `root 要指向检出根，拿到「${full.root}」`);
 
 // ------------------------------------------------- ② 条目带锚点
 assert.match(full.text, /#\d+/, "每条要能指回 PR");

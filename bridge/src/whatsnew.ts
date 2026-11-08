@@ -22,6 +22,8 @@ export interface SelfChangelog {
   branch: string;
   /** 短 SHA；读不到时是空串（比如发行包里没有 .git）。 */
   commit: string;
+  /** 检出根的绝对路径：正文里的 `docs/DECISIONS.md` 这类相对链接按它解析，与会话 cwd 无关。 */
+  root: string;
   /** `CHANGELOG.md` 原文；没有这个文件时是空串。 */
   text: string;
 }
@@ -76,5 +78,5 @@ export async function selfChangelog(maxBytes = 200_000): Promise<SelfChangelog> 
     text = "";
   }
   const { branch, commit } = await readHead();
-  return { version: productVersion(), branch, commit, text };
+  return { version: productVersion(), branch, commit, root: ROOT, text };
 }

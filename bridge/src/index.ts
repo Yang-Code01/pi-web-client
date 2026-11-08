@@ -862,7 +862,7 @@ async function main(): Promise<void> {
     }
 
     // `/changelog` (#26): what is new in the installed pi; `scope=self` is this project's own
-    // log (D188), read from `<检出>/CHANGELOG.md` — the two are different documents.
+    // log (D190), read from `<检出>/CHANGELOG.md` — the two are different documents.
     if (url.pathname === "/api/changelog" && req.method === "GET") {
       if (url.searchParams.get("scope") === "self") return json(res, 200, await selfChangelog());
       return json(res, 200, { version: piVersion, text: changelog(pi.cli) });

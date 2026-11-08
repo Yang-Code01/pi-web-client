@@ -177,6 +177,9 @@ try {
     return (await n.count()) ? n.first().innerText() : null;
   }, 10000, "viewer opened");
   check(shown.includes("DECISIONS.md"), `预览里打开的是 ${shown}`);
+  // 只看路径会假通过：解析错 cwd 时路径照旧显示，正文却是空的。
+  const previewText = await page.locator(".viewer-body").first().innerText();
+  check(previewText.includes("D190"), "预览里读到的确实是 DECISIONS.md 正文");
 } catch (e) {
   failed = true;
   console.error("  FAIL", e.message);

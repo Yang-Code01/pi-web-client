@@ -3167,9 +3167,9 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 **决定：**
 
 1. 日志走检出根的 **`CHANGELOG.md`** 一个文件，按**日期分批**，批内分「新增 / 修复 / 设计决定」三组，每条一句、结尾带 `#PR` 或 `D编号`。不伪造 semver、不打 tag、不建 release。
-2. 桥新增 `GET /api/changelog?scope=self`（`bridge/src/whatsnew.ts` 的 `selfChangelog()`），读 `<检出根>/CHANGELOG.md`，附带根 `package.json` 的 version、当前分支与短 SHA；不带 `scope` 的老请求原样返回 pi 的那份，`/changelog` 的语义一点没动。
+2. 桥新增 `GET /api/changelog?scope=self`（`bridge/src/whatsnew.ts` 的 `selfChangelog()`），读 `<检出根>/CHANGELOG.md`，附带根 `package.json` 的 version、当前分支与短 SHA，以及检出根的绝对路径（正文里的 `docs/DECISIONS.md` 这类相对链接按它解析，与会话 cwd 无关）；不带 `scope` 的老请求原样返回 pi 的那份，`/changelog` 的语义一点没动。
 3. 设置页新开 tab「本项目更新日志」，键盘命令 `/whatsnew` 直达；旧 tab 在中文里更名「pi 更新日志」。两个 tab 并排而不是二选一：一个是「pi 这个程序的版本说明」，一个是「我们这层的版本说明」，混在一页两边都失真。面板标题也跟着 tab 走（`pi 设置` / `pi 更新日志` / `本项目更新日志`）。
-4. **日志由 AI 写、人来扫一眼**：会话里说一句「写更新日志」，agent 读 `git log --first-parent` 与 `docs/DECISIONS.md`，把新批次插到最上面，走 worktree + PR。文件末尾留 `<!-- 写到 <SHA> · <日期> -->` 作为下一批的增量起点，紧接一行说明从哪个 SHA 往后读。
+4. **日志由 AI 写、人来扫一眼**：会话里说一句「写更新日志」，agent 读 `git log --first-parent` 与 `docs/DECISIONS.md`，把新批次插到最上面，走 worktree + PR。文件开头（说明段之后）留两行注释：`<!-- 写到 <SHA> · <日期> -->` 与「从哪些 sha 往后读」；下一批读的是 **`origin/main` 上那份**（D191），不是工作区里的。
 5. 渲染前抹掉 HTML 注释（那是人机锚点，`renderMarkdown` 不认）；截断按**字节**（默认 200 KB），超长保留最新批次、尾巴写「更早的批次略」；文件缺失返回空串，前端显示「这个检出里还没有 CHANGELOG.md」，不是 500。
 
 **为什么：**
@@ -3177,7 +3177,7 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **读文件而不是 build 时内联**：桥读自己所在的那份 checkout，换目录起桥就等于换日志，不需要为了改一行日志重新构建、重启服务。`bridge/src/*.ts` 直跑与 `bridge/dist/*.js` 构建后都落在 `<检出>/bridge/`，往上两层是同一个根。
 - **`scope` 参数而不是新端点**：两个日志的请求形状相同（`{version, text}`），前端只换 url；旧页面（以及任何绕过 UI 的脚本）不会因为新端点出现而改变行为。
 - **不生成 semver**：这个项目没有版本节奏，硬编 `v0.2.0` 只会逼着下次改号。日期 + 主题足够回答「那条改动是什么时候来的」，PR 号负责追到底。
-- **AI 写日志不是噱头**：日志的价值在「结果可读」，而结果就在 commit 与 D 条目里。人写要花一小时，AI 写要一次 PR 审读，而且它天然照着已有段落的语气续写 —— 第一版 8 批 56 条就是子代理读 git log + DECISIONS 产出的。
+- **AI 写日志不是噱头**：日志的价值在「结果可读」，而结果就在 commit 与 D 条目里。人写要花一小时，AI 写要一次 PR 审读，而且它天然照着已有段落的语气续写 —— 第一版 8 批 55 条就是子代理读 git log + DECISIONS 产出的。
 
 **代价 / 可改：**
 
@@ -3187,7 +3187,7 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **`git` 子进程**：分支名与短 SHA 靠 `git rev-parse --short HEAD` 与 `git branch --show-current`（两条命令分开跑 —— `--short` 与 `--abbrev-ref` 同条会 `fatal: Needed a single revision`），失败留空串；5 秒缓存，连点 tab 不刷进程。
 - **版本号只有一个 0.1.0**：顶部那行显示的是根 `package.json` 的 version，它不随批次变。要真的改版本就得先有发版流程，这是另一件事。
 
-**验证：** `npm run test:whatsnew`（`bridge/tests/whatsnew-unit.mjs`：版本取根 `package.json`、正文有日期批与 `#PR` / `D` 锚点、HTML 注释不泄漏、120 字节截断带省略尾巴且不出替换符、分支与短 SHA 非空）；`npm run test:whatsnew:ui`（Playwright + `locale:"zh-CN"` + 7887 上的丢弃式 bridge：两个 tab 并存、本项目页有 `#228`/`#229` 与「当前版本 0.1.0」、pi 页不含我们的批次、面板标题随 tab 变、`/whatsnew` 直达且激活该 tab）；`npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（`i18n-check: ok — 1740 keys × 3 langs`）；`npm run build`；另用 `curl '/api/changelog?scope=self'` 核对返回 `{version:"0.1.0", branch, commit, text}`，不带 `scope` 仍是 pi 的 1.5.0 那份。
+**验证：** `npm run test:whatsnew`（`bridge/tests/whatsnew-unit.mjs`：版本取根 `package.json`、正文有日期批与 `#PR` / `D` 锚点、HTML 注释不泄漏、120 字节截断带省略尾巴且不出替换符、短 SHA 非空、`root` 指向检出根（detached 时分支本就是空串，只断言类型））；`npm run test:whatsnew:ui`（Playwright + `locale:"zh-CN"` + 7887 上的丢弃式 bridge：两个 tab 并存、本项目页有 `#228`/`#229` 与「当前版本 0.1.0」、pi 页不含我们的批次、面板标题随 tab 变、`/whatsnew` 直达且激活该 tab、点开正文里的 `docs/DECISIONS.md` 后预览里读到的确实是该文件正文（不只看路径））；`npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（`i18n-check: ok — 1740 keys × 3 langs`）；`npm run build`；另用 `curl '/api/changelog?scope=self'` 核对返回 `{version:"0.1.0", branch, commit, text}`，不带 `scope` 仍是 pi 的 1.5.0 那份。
 
 ## D191 补日志做成一条命令：`/whatsnew-write` + 项目技能（D190 的下一步）
 

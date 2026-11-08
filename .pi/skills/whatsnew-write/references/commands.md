@@ -52,9 +52,10 @@ git -C "$WT" push -u origin "$BR"          # ① 直连
 失败（`Failed to connect to github.com:443` / 超时）才走 ②，先验代理活着：
 
 ```bash
-curl -s -m 5 -x "$BILLION_CONTEXT_PROXY" -o /dev/null -w "%{http_code}\n" https://api.github.com   # 要 200
+PROXY="${BILLION_CONTEXT_PROXY:-http://127.0.0.1:18791}"   # 变量没导出时用这个字面端口（本机实测）
+HTTPS_PROXY="$PROXY" gh api rate_limit >/dev/null && echo "代理通"   # 判网络用 gh，不用 curl（见 docs/agents/issue-tracker.md）
 TOKEN=$(gh auth token --user Yang-Code01)
-git -C "$WT" -c http.https://github.com/.proxy="$BILLION_CONTEXT_PROXY" \
+git -C "$WT" -c http.https://github.com/.proxy="$PROXY" \
   -c credential.helper= \
   push https://x-access-token:$TOKEN@github.com/Yang-Code01/pi-web-client.git "$BR:$BR"
 ```
@@ -64,7 +65,7 @@ git -C "$WT" -c http.https://github.com/.proxy="$BILLION_CONTEXT_PROXY" \
 ## 开 PR
 
 ```bash
-HTTPS_PROXY=$BILLION_CONTEXT_PROXY GH_TOKEN=$(gh auth token --user Yang-Code01) \
+HTTPS_PROXY="$PROXY" GH_TOKEN=$(gh auth token --user Yang-Code01) \
   gh pr create --repo Yang-Code01/pi-web-client --base main --head "$BR" \
   --title "更新日志：<YYYY-MM-DD> 批次（<N> 条）" \
   --body "$(cat <<'EOF'
@@ -92,7 +93,7 @@ EOF
 | `gh pr create` 报 403、`does not have the correct permissions` | `gh` 的 active 账号不是 `Yang-Code01`。逐条带 `GH_TOKEN=$(gh auth token --user Yang-Code01)`；**不要** `gh auth switch` 了不切回来 |
 | push 403 / `Permission denied` | 同上，或忘带 `-c credential.helper=` |
 | `Failed to connect to github.com:443` | 直连不通，走上面的 ② |
-| curl 代理返回 `000` | 代理没起。先问用户，不要改全局 `http.proxy` |
+| `gh api rate_limit` 挂了 / `gh` 超时 | 代理没起或端口变了（旧的 18790 已不在监听）；先问用户，不要改全局 `http.proxy` |
 | `fatal: '<branch>' is already used by worktree` | 名字撞了，换 `STAMP`；顺手 `git -C "$ROOT" worktree list` 看看有没有该清的僵尸 |
 | 锚点为空 | 有人删了 `CHANGELOG.md` 开头的注释，停下问用户 |
 | `git log $ANCHOR..origin/main` 说 unknown revision | 锚点是别人本地还没 push 的 SHA，或 fetch 没跑成；重跑 `fetch origin main`，仍失败就换成 `origin/main` 上能找到的最近锚点并告知用户 |
