@@ -164,8 +164,12 @@ function issue(root: string): string {
   return token;
 }
 
-/** Throws a user-facing (Chinese) message when the path may not be previewed. */
-export function openPreview(session: { cwd: string; file: string | null }, rawPath: string): PreviewInfo {
+/**
+ * Where a caller-supplied path lands. Shared by `openPreview` and the `open_preview` trust check
+ * (#225) so the path that gets checked is exactly the path that gets opened.
+ * Throws a user-facing (Chinese) message when the path cannot even be resolved to one.
+ */
+export function resolvePreviewPath(session: { cwd: string }, rawPath: string): string {
   const raw = rawPath.trim().replace(/^["'`]+|["'`]+$/g, "").replace(/^file:\/\/\/?/i, "");
   if (!raw) throw new Error("路径为空");
   let decoded = raw;
@@ -174,7 +178,54 @@ export function openPreview(session: { cwd: string; file: string | null }, rawPa
   } catch {
     /* keep raw */
   }
-  const abs = path.isAbsolute(decoded) ? path.resolve(decoded) : path.resolve(session.cwd, decoded);
+  return path.isAbsolute(decoded) ? path.resolve(decoded) : path.resolve(session.cwd, decoded);
+}
+
+/** How much of the session transcript `open_preview` is allowed to read on every call. A long
+ * session's transcript passes 10 MB easily; scanning it whole would stall the bridge for a tool
+ * call. Only the tail is read, so a path mentioned very early stops counting once more than this
+ * much newer history has piled on top of it (#225). */
+export const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+
+/** The form both the transcript text and the candidate path are compared in: any run of `/` or `\`
+ * becomes one `/` (JSONL doubles every backslash, Windows treats both as separators) and Windows
+ * compares case-insensitively (#225). The match is a plain substring — this is a "don't let the tool
+ * roam the disk" guard, not a sandbox. */
+function mentionForm(s: string): string {
+  const slashed = s.replace(/[\\/]+/g, "/");
+  return isWin ? slashed.toLowerCase() : slashed;
+}
+
+function transcriptTail(file: string): string | null {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - TRANSCRIPT_TAIL_BYTES);
+    const buf = Buffer.alloc(size - start);
+    const n = fs.readSync(fd, buf, 0, buf.length, start);
+    return buf.subarray(0, n).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) fs.closeSync(fd);
+  }
+}
+
+/** #225: `open_preview` may only open what this session could already open by hand — a file under
+ * the session cwd, or one the session transcript mentions (that is how pi hands over something it
+ * wrote elsewhere). `openPreview` itself keeps D50's wider rule: /api/preview and /api/dirs serve
+ * whatever the user clicked in the directory listing. */
+export function isTrustedPreviewPath(session: { cwd: string; file: string | null }, abs: string): boolean {
+  if (isUnder(abs, session.cwd)) return true;
+  if (!session.file) return false;
+  const tail = transcriptTail(session.file);
+  return tail !== null && mentionForm(tail).includes(mentionForm(abs));
+}
+
+/** Throws a user-facing (Chinese) message when the path may not be previewed. */
+export function openPreview(session: { cwd: string; file: string | null }, rawPath: string): PreviewInfo {
+  const abs = resolvePreviewPath(session, rawPath);
   // Reads follow /api/dirs, which already lists any drive: a second, narrower rule here only made
   // the same path openable in one place and not the other (D50).
   const inCwd = isUnder(abs, session.cwd);

@@ -3082,3 +3082,22 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 
 **验证：** `npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 `i18n-check`）；文案模板键在 `en.ts` / `ja.ts` 同步换键并补 `1 天` 的译名，漏一条 typecheck 会报。
 已有 step-up 用例（`bridge/tests/runtime-settings.mjs`、`sleep-all.mjs`）只断言「公网要口令」，不锁时长，不受影响。
+
+## D187 open_preview 的路径信任只到「会话目录 + transcript 尾部」（#225）
+
+**决定：** `/api/preview/open` 在调 `openPreview` 之前先过 `isTrustedPreviewPath`：路径在会话 cwd 之内，或在会话 transcript（`state.file`）里出现过，才放行；否则回 `{ok:false, reason:"untrusted-path"}`，**不签发 token、不投递**。`openPreview` 自己那条宽松规则（D50：任意绝对路径可读）保持不动，`/api/preview` 与 `/api/dirs` 照旧。
+
+- transcript 只读尾部 `TRANSCRIPT_TAIL_BYTES = 512 KB`（`fstat` 拿 size，再从 `size - cap` 处一次读进来）：长会话的记录轻松过 10 MB，为一次工具调用整份读进内存不值。
+- 归一化：把连续 `/` 与 `\` 都折成单个 `/`（JSONL 里每个反斜杠是 `\`，折叠后两边天然一致），Windows 上再 `toLowerCase()`；匹配是朴素 substring。
+- 路径解析抽成 `resolvePreviewPath`，信任检查与真正打开用同一个结果，避免两处各解析一遍却解析出不同路径。
+
+**为什么：** 这个工具带的是会话级回环凭据，路径由模型随便填。`/api/preview` 的宽松规则有页面上的目录树兜着（是用户自己点开的），工具没有这一层：不设门槛就等于让模型把 `~/.ssh/id_rsa` 之类的东西推进用户的预览面板。反过来，pi 自己写到会话目录之外的文件（临时脚本、别的仓库里的报告）本来就该能看，「transcript 提过」就是那条正当通道 —— pi 提到过的路径一定在会话记录里。拒绝用一个独立 reason，工具回给模型的话才能说清「放哪儿再试」，而不是含糊的失败。
+
+**代价 / 可改：**
+
+- **提及会过期**：一条路径被 512 KB 新历史压下去之后不再放行。工具通常在写完/读完后紧接着调用，够用；真要更久就调大常量，代价是每次调用多读几 MB。
+- **substring 不是路径边界匹配**：记录里提到 `a.md` 时 `a.md.bak` 也会命中（前提是那个文件真实存在）。这是「别让工具乱逛」的闸，不是沙箱。
+- **没做 realpath 归一**：cwd 里的软链接指向目录外仍然放行，与 `/api/preview` 的既有行为一致，这一票没有单独收紧。
+- **前端 `msg.sessionId !== this.currentId` 的双保险保留**：桥不该发错会话，但这道闸是免费的，探针里用 `routeWebSocket` 伪造一条错会话的 `preview.open` 把它测住。
+
+**验证：** `node bridge/tests/preview-tool.mjs`（22 项：两个标签页都在看 → 都收到；cwd 外且 transcript 没提过 → `untrusted-path`、不回路径/凭据、不投递；提过 → 允许；再塞 600 KB 填充把提及挤出尾部窗口 → 重新拒绝）；`node probes/preview-open.mjs`（16 项：wrong-session 请求后标题、正文与 `scrollTop` 都不变；伪造错会话的 `preview.open` 被前端丢掉，同一条消息换对 sessionId 会打开；页面仍停在原会话；两个标签页都弹）；`npm run typecheck`。

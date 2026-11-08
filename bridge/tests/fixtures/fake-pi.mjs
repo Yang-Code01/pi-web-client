@@ -48,6 +48,12 @@ const argOf = (name) => {
 const SESSION_DIR = argOf("--session-dir");
 let sessionId = argOf("--session-id") || `fake-${process.pid}`;
 let sessionFile = SESSION_DIR ? path.join(SESSION_DIR, `${sessionId}.jsonl`) : "";
+/** #225: real pi always owns a session file; `FAKE_PI_SESSION=1` puts one at pi's normal layout
+ * (`<PI_AGENT_DIR>/sessions/<id>.jsonl`) so the bridge's `state.file` is a transcript a test can
+ * write into — that is the only way to exercise the "mentioned in the transcript" trust rule. */
+if (!sessionFile && process.env.FAKE_PI_SESSION === "1") {
+  sessionFile = path.join(process.env.PI_AGENT_DIR ?? os.tmpdir(), "sessions", `${sessionId}.jsonl`);
+}
 const touchSessionFile = () => {
   if (!sessionFile) return;
   try {

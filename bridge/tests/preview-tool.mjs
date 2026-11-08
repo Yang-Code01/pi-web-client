@@ -5,6 +5,10 @@
  * 没有页面在看 → `{ok:false, reason:"no-page"}`（不静默当成功）；页面看的是别的会话 →
  * 同样 no-page 且那条连接什么都收不到；token 不对 → 403。
  *
+ * #225 加的那组：两个标签页都在看本会话 → 两条都收到；会话目录之外、transcript 没提过 →
+ * `untrusted-path` 且不投递；目录外但 transcript 提过 → 允许；只扫 transcript 尾部（超窗口的
+ * 提及不算）。
+ *
  * 自带丢弃式 bridge + 脚本化 pi（fixture 会把回环 origin 与 token 写进 FAKE_PI_LOG），
  * 不花模型 turn、不碰 7864。端口默认 7892，可用 PREVIEW_PORT 改。
  *
@@ -37,6 +41,12 @@ fs.rmSync(ROOT, { recursive: true, force: true });
 for (const d of [STATE, AGENT, WORK]) fs.mkdirSync(d, { recursive: true });
 const DOC = path.join(WORK, "笔记.md");
 fs.writeFileSync(DOC, "# 笔记\n\n给 open_preview 看的。\n", "utf8");
+// #225: 会话目录之外的两份 —— 一份 transcript 提过，一份从没提过。
+const OUTSIDE = path.join(ROOT, "outside");
+fs.mkdirSync(OUTSIDE, { recursive: true });
+const SECRET = path.join(OUTSIDE, "没提过.md");
+const MENTIONED = path.join(OUTSIDE, "提过.md");
+for (const f of [SECRET, MENTIONED]) fs.writeFileSync(f, "# 目录外\n\n不该随手能开。\n", "utf8");
 
 const env = {
   ...process.env,
@@ -48,6 +58,8 @@ const env = {
   PI_AGENT_DIR: AGENT,
   PI_BIN: path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs"),
   FAKE_PI_LOG: PI_LOG,
+  // #225: 让桩 pi 报一个会话文件，测试才能往 transcript 里写「提到过」的那一行。
+  FAKE_PI_SESSION: "1",
 };
 execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
 const bridge = spawn(process.execPath, [DIST], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -129,6 +141,15 @@ try {
   check("网页会话的 pi 挂上了 open_preview 扩展", loaded.some((p) => /open-preview\.ts$/.test(p)), loaded.join(","));
   const token = aLine.loopbackToken;
   const open = (p, tok = token) => post("/api/preview/open", { token: tok, path: p });
+  /** 这条连接有没有收到针对这个路径的投递（等一会儿，别和 WS 抢时序）。 */
+  const deliveredTo = async (conn, target) => {
+    for (let i = 0; i < 40; i++) {
+      const hit = conn.seen.find((m) => m.type === "preview.open" && m.path === target);
+      if (hit) return hit;
+      await sleep(100);
+    }
+    return null;
+  };
 
   // ---- 1. 没有页面在看这个会话 → 明确失败，不当成功
   const none = await open(DOC);
@@ -162,7 +183,50 @@ try {
   const tunnel = await post("/api/preview/open", { token, path: DOC }, { "cf-connecting-ip": "203.0.113.9" });
   check("公网隧道 → 403", tunnel.status === 403, `${tunnel.status} ${JSON.stringify(tunnel.data)}`);
 
+  // ---- 6. 两个标签页都在看本会话 → 两条都收到（两边都是「正在看」）
+  const second = await page(A);
+  const DOC2 = path.join(WORK, "两份.md");
+  fs.writeFileSync(DOC2, "# 两份\n\n两个标签页都该看见。\n", "utf8");
+  const both = await open(DOC2);
+  check("两个标签页都在看 → ok:true", both.data?.ok === true, JSON.stringify(both.data));
+  const got1 = await deliveredTo(mine, DOC2);
+  const got2 = await deliveredTo(second, DOC2);
+  check("第一张标签页收到", got1?.path === DOC2, JSON.stringify(got1));
+  check("第二张标签页也收到", got2?.path === DOC2, JSON.stringify(got2));
+
+  // ---- 7. 会话目录之外、transcript 没提过 → 拒绝，且不投递、不签发
+  const leaked = await open(SECRET);
+  check(
+    "cwd 外且 transcript 没提过 → ok:false / reason:untrusted-path",
+    leaked.status === 200 && leaked.data?.ok === false && leaked.data?.reason === "untrusted-path",
+    `${leaked.status} ${JSON.stringify(leaked.data)}`,
+  );
+  check("拒绝时不回路径 / 凭据", leaked.data?.path === undefined && leaked.data?.token === undefined, JSON.stringify(leaked.data));
+  await sleep(300);
+  check("拒绝的那条没有投给任何页面", ![...mine.seen, ...second.seen].some((m) => m.type === "preview.open" && m.path === SECRET));
+
+  // ---- 8. 会话目录之外，但 transcript 里提过 → 允许（历史里出现过的文件本来就能手点开）
+  const transcript = path.join(AGENT, "sessions", `${A}.jsonl`);
+  check("桩 pi 报了会话文件（transcript 存在）", fs.existsSync(transcript), transcript);
+  const mention = `${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `那份放到了 ${MENTIONED} 里` }] } })}\n`;
+  fs.appendFileSync(transcript, mention, "utf8");
+  const mentioned = await open(MENTIONED);
+  check("cwd 外但 transcript 提过 → ok:true", mentioned.data?.ok === true, `${mentioned.status} ${JSON.stringify(mentioned.data)}`);
+  const got3 = await deliveredTo(mine, MENTIONED);
+  check("提过的那条投给了页面", got3?.path === MENTIONED, JSON.stringify(got3));
+
+  // ---- 9. 只扫 transcript 尾部：提及被挤出尾部窗口之后就不再算数（上限写在 preview.ts）
+  const filler = `${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "x".repeat(4096) }] } })}\n`;
+  fs.appendFileSync(transcript, filler.repeat(Math.ceil((600 * 1024) / filler.length)), "utf8");
+  const aged = await open(MENTIONED);
+  check(
+    "提及已滑出尾部窗口 → 重新拒绝",
+    aged.data?.ok === false && aged.data?.reason === "untrusted-path",
+    `${aged.status} ${JSON.stringify(aged.data)}`,
+  );
+
   mine.ws.close();
+  second.ws.close();
   other.ws.close();
   creator.close();
 } catch (err) {

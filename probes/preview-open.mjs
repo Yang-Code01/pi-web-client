@@ -1,8 +1,12 @@
 /**
- * Probe: `open_preview` 在真 Chromium 里真的把 viewer 拉起来，标题是文件名（#224）。
+ * Probe: `open_preview` 在真 Chromium 里真的把 viewer 拉起来，标题是文件名（#224）；
+ * 并且（#225）投递范围的收紧在页面上看得见：指错会话的请求不让页面变一丁点（正文、滚动位置都不动），
+ * 两个标签页都在看同一个会话时两边都弹。
  *
  * 工具自己跑在 pi 子进程里，浏览器看不到它；这个探针从「桥已经把 `preview.open` 投给页面」
  * 之后接手：一条回环请求 → 网页里的 viewer 弹出、`.viewer-name` 就是文件名。
+ * 前端还有一道「sessionId 不对就丢掉」的双保险，桥不可能自己发错，所以用
+ * `routeWebSocket` 抢过页面的 socket、伪造一条错会话的 `preview.open` 来测它。
  *
  * 自带丢弃式 bridge + 脚本化 pi（fixture 会把回环 origin 与 token 写进 FAKE_PI_LOG），
  * 不花模型 turn、不碰 7864。端口默认 7893，可用 PREVIEW_UI_PORT 改。
@@ -40,7 +44,12 @@ const check = (name, ok, detail = "") => {
 fs.rmSync(ROOT, { recursive: true, force: true });
 for (const d of [STATE, AGENT, WORK, OUT]) fs.mkdirSync(d, { recursive: true });
 const DOC = path.join(WORK, NAME);
-fs.writeFileSync(DOC, "# 笔记\n\nopen_preview 打开的。\n", "utf8");
+// 长文：正文必须能滚，"滚动位置没变" 才是一条有内容的断言。
+fs.writeFileSync(
+  DOC,
+  `# 笔记\n\nopen_preview 打开的。\n\n${Array.from({ length: 60 }, (_, i) => `第 ${i + 1} 段：${"长文用来把 viewer 撑到能滚动。".repeat(4)}`).join("\n\n")}\n`,
+  "utf8",
+);
 
 /** 上次崩掉留下的 bridge 会占着端口，探针就会悄悄跑在旧的 dist 上。 */
 function killPort(port) {
@@ -123,6 +132,13 @@ try {
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: "zh-CN" });
   await context.addCookies([{ name: cookieName, value: cookieValue, url: BASE }]);
+  // #225: 桥不会给错的会话投递，所以前端那道双保险只能伪造一条来测。拦下页面的 socket 并
+  // `connectToServer()`（双向转发照旧），之后就能以服务端的口吻往页面里塞 `preview.open`。
+  let pageWs = null;
+  await context.routeWebSocket("**/ws", (wsRoute) => {
+    pageWs = wsRoute;
+    wsRoute.connectToServer();
+  });
   const page = await context.newPage();
   page.on("pageerror", (e) => console.log("page error:", e.message));
   await page.goto(`${BASE}/#/s/${sid}`, { waitUntil: "networkidle" });
@@ -149,6 +165,94 @@ try {
   check(`标题是文件名（${NAME}）`, titled && title === NAME, JSON.stringify(title));
   check("正文渲染成 markdown 预览", (await page.locator(".viewer-body .md-doc").count()) === 1);
   await page.screenshot({ path: path.join(OUT, "1-opened.png"), animations: "disabled" });
+
+  // ---- #225: 页面此刻长什么样，用于「什么都没变」的断言（正文、滚动位置、viewer 个数）
+  const snapshot = (p) =>
+    p.evaluate(() => {
+      const body = document.querySelector(".viewer-body");
+      return {
+        name: document.querySelector(".viewer-name")?.textContent ?? "",
+        html: body?.innerHTML ?? "",
+        scrollTop: body?.scrollTop ?? -1,
+        viewers: document.querySelectorAll(".viewer").length,
+      };
+    });
+  const unchanged = (a, b) => a.name === b.name && a.html === b.html && a.viewers === b.viewers && a.scrollTop === b.scrollTop;
+
+  await page.locator(".viewer-body").evaluate((el) => (el.scrollTop = 400));
+  await sleep(400);
+  const before = await snapshot(page);
+  check("正文能滚（「滚动位置没变」才有意义）", before.scrollTop > 0, String(before.scrollTop));
+
+  // 另一个会话：只为拿一个「别人的」回环凭据
+  ws.send(JSON.stringify({ type: "create", cwd: WORK, name: "preview-other" }));
+  let sidB = null;
+  for (let i = 0; i < 300 && !sidB; i++) {
+    sidB = seen.find((m) => m.type === "session" && m.state?.id && m.state.id !== sid)?.state.id ?? null;
+    if (!sidB) await sleep(100);
+  }
+  if (!sidB) throw new Error("no second session");
+  for (let i = 0; i < 100 && !spawnLine(sidB)?.loopbackToken; i++) await sleep(100);
+  const tokenB = spawnLine(sidB)?.loopbackToken;
+  if (!tokenB) throw new Error("no loopback credential for the other session");
+  // 创建会话的那条连接自己会「在看」新建的会话（桥的 create 顺手订阅了它）。它不是页面，
+  // 留着的话请求 B 就会投给它，"没人看 B" 这个前提就假了 —— 先关掉。
+  ws.close();
+  await sleep(300);
+
+  const DOC2 = path.join(WORK, "两份.md");
+  fs.writeFileSync(DOC2, "# 两份\n\n给前端双保险用的。\n", "utf8");
+
+  // ---- 7. 请求指向别的会话 → no-page，而且当前页面一点没动（不能只断言「没弹 viewer」）
+  const wrong = await post("/api/preview/open", { token: tokenB, path: DOC2 });
+  check("请求指向别的会话 → no-page", wrong.data?.ok === false && wrong.data?.reason === "no-page", JSON.stringify(wrong.data));
+  await sleep(600);
+  const afterWrong = await snapshot(page);
+  check(
+    "wrong-session 之后页面内容没变（标题 / 正文 / viewer 个数）",
+    afterWrong.name === before.name && afterWrong.html === before.html && afterWrong.viewers === before.viewers,
+    `${JSON.stringify(afterWrong.name)} viewers=${afterWrong.viewers}`,
+  );
+  check("wrong-session 之后滚动位置没变", afterWrong.scrollTop === before.scrollTop, `${before.scrollTop} → ${afterWrong.scrollTop}`);
+  await page.screenshot({ path: path.join(OUT, "2-wrong-session.png"), animations: "disabled" });
+
+  // ---- 8. 前端双保险：sessionId 不是当前会话的 preview.open 直接丢掉
+  if (!pageWs) throw new Error("没截到页面的 WebSocket");
+  pageWs.send(JSON.stringify({ type: "preview.open", sessionId: sidB, path: DOC2 }));
+  await sleep(800);
+  const afterForged = await snapshot(page);
+  check("伪造的错会话投递被前端丢掉（内容）", unchanged(before, afterForged), JSON.stringify({ name: afterForged.name, viewers: afterForged.viewers }));
+  check("伪造的错会话投递被前端丢掉（滚动位置）", afterForged.scrollTop === before.scrollTop, `${before.scrollTop} → ${afterForged.scrollTop}`);
+
+  // 正对照：同一条伪造消息，sessionId 对了就会被打开 —— 否则上一条断言是空的。
+  pageWs.send(JSON.stringify({ type: "preview.open", sessionId: sid, path: DOC2 }));
+  const switched = await page
+    .waitForFunction(() => document.querySelector(".viewer-name")?.textContent === "两份.md", null, { timeout: 10000 })
+    .then(() => true)
+    .catch(() => false);
+  check("同一条伪造消息、会话对了就打开（上面那条不是空断言）", switched);
+  check("页面还在原会话（工具只开预览，不切会话）", page.url().endsWith(`#/s/${sid}`), page.url());
+
+  // ---- 9. 两个标签页都在看同一个会话 → 两边都弹
+  const page2 = await context.newPage();
+  page2.on("pageerror", (e) => console.log("page error:", e.message));
+  await page2.goto(`${BASE}/#/s/${sid}`, { waitUntil: "networkidle" });
+  await page2.locator(".topbar .icon-btn", { hasText: "文件" }).waitFor({ timeout: 15000 });
+  const DOC3 = path.join(WORK, "三份.md");
+  fs.writeFileSync(DOC3, "# 三份\n\n两个标签页都该弹。\n", "utf8");
+  let both = null;
+  const t2 = Date.now();
+  while (Date.now() - t2 < 15000) {
+    both = await post("/api/preview/open", { token, path: DOC3 });
+    const n1 = await page.locator(".viewer-name").textContent({ timeout: 500 }).catch(() => "");
+    const n2 = await page2.locator(".viewer-name").textContent({ timeout: 500 }).catch(() => "");
+    if (both.data?.ok && n1 === "三份.md" && n2 === "三份.md") break;
+    await sleep(300);
+  }
+  check("桥说打开了（两个标签页）", both?.data?.ok === true, JSON.stringify(both?.data));
+  check("第一张标签页弹到三份.md", (await page.locator(".viewer-name").textContent()) === "三份.md");
+  check("第二张标签页也弹到三份.md", (await page2.locator(".viewer-name").textContent()) === "三份.md");
+  await page2.screenshot({ path: path.join(OUT, "3-second-tab.png"), animations: "disabled" });
 
   ws.close();
 } catch (err) {
