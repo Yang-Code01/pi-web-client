@@ -34,6 +34,8 @@ import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
+import { paintSubagentsPage, type SubagentScan } from "./subagents.ts";
+import type { AcpDelegatePatch, AcpDelegateView } from "./subagents-acp.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
@@ -290,6 +292,19 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /** #212 子代理页：进 tab 时问一次盘的结果，以及这一页自己的 scope（不是第三个 settings scope）。 */
+  private subagentsScan: SubagentScan | null = null;
+  private subagentsScanFor = "";
+  private subagentsScope: "global" | "project" = "global";
+  /**
+   * #215 acp_delegate 那一半：写的是 billion-context 的配置文件，与上面 settingsView 无关。
+   * `subagentsAcpLoadError` 是「连文件都没读到」（RPC 自己失败），与回包里的 `view.error`
+   * （文件读不懂）分开存，前者时整片只剩错误 + 重试。
+   */
+  private subagentsAcp: AcpDelegateView | null = null;
+  private subagentsAcpLoadError: { path: string; message: string } | null = null;
+  private subagentsAcpSaveError: string | null = null;
+  private subagentsAcpSaving = false;
   /**
    * D161: 设置面板底部那块「把现有会话也改掉」。`permDefaultsFor` 是已经问过桥的 cwd key
    * （空串 = 全局页），这样重绘不会一直重问同一个问题。
@@ -1981,6 +1996,39 @@ export class App {
       case "settings.error":
         this.flashSettings(String(msg.message ?? tr("保存失败")), true);
         break;
+      // ------------------------------------------------------- 子代理扫盘（#212）
+      case "subagents.agents": {
+        // 只接当前会话 cwd 的那份：慢回答不能把这一页换成别的项目的扫描结果。
+        const scan = msg as SubagentScan;
+        if ((scan.cwd ?? "") !== (this.session?.cwd ?? "")) break;
+        this.subagentsScan = scan;
+        if (this.sheetKind === "settings" && this.settingsTab === "subagents") this.paintSettings();
+        break;
+      }
+      case "subagents.acp": {
+        this.subagentsAcp = {
+          path: String(msg.path ?? ""),
+          exists: Boolean(msg.exists),
+          error: msg.error == null ? null : String(msg.error),
+          config: (msg.config ?? { enabled: null, maxDepth: null, maxConcurrent: null, thinkingLevel: null }) as AcpDelegateView["config"],
+        };
+        this.subagentsAcpLoadError = null;
+        this.subagentsAcpSaving = false;
+        this.subagentsAcpSaveError = null;
+        if (msg.saved) this.flashSettings(tr("acp_delegate 已保存（写的是 billion-context 的配置文件，对新会话生效）"));
+        if (this.sheetKind === "settings" && this.settingsTab === "subagents") this.paintSettings();
+        break;
+      }
+      case "subagents.acp.error": {
+        const path = String(msg.path ?? "");
+        const message = String(msg.message ?? tr("读不了这个文件"));
+        // 还没拿到任何视图 = 读就失败了，整片给错误 + 重试；已经有视图 = 刚保存失败，保住表单内容。
+        if (!this.subagentsAcp) this.subagentsAcpLoadError = { path, message };
+        else this.subagentsAcpSaveError = message;
+        this.subagentsAcpSaving = false;
+        if (this.sheetKind === "settings" && this.settingsTab === "subagents") this.paintSettings();
+        break;
+      }
       case "trust": {
         if (this.session && msg.cwd === this.session.cwd) this.trust = (msg.trust as TrustState) ?? null;
         if (msg.saved) this.flashSettings(tr("信任决定已保存（写在 trust.json，终端里的 pi 也认）"));
@@ -8405,6 +8453,7 @@ export class App {
   private paintSettings(): void {
     const sheet = this.sheet?.querySelector(".settings-sheet");
     if (!sheet) return;
+    sheet.classList.toggle("subagents-sheet", this.settingsTab === "subagents");
     const tabs = sheet.querySelector<HTMLElement>(".settings-tabs")!;
     const body = sheet.querySelector<HTMLElement>(".settings-body")!;
     const cwd = this.session?.cwd ?? "";
@@ -8416,6 +8465,7 @@ export class App {
       ["login", tr("登录 / 凭据")],
       ["passphrase", tr("口令")],
       ["ext", tr("扩展与 MCP")],
+      ["subagents", tr("子代理")],
       ["notify", tr("通知")],
       ["runtime", tr("运行时")],
       ["changelog", tr("更新日志")],
@@ -8428,6 +8478,13 @@ export class App {
         this.flashSettings("");
         if (id === "runtime") this.socket.send({ type: "runtime.stats" });
         if (id === "passphrase") this.askPassphrase();
+        if (id === "subagents") {
+          // 进 tab 时把 settings.json 也重问一遍：路径与字段不能是开 panel 那一刻的旧值。
+          this.socket.send({ type: "settings.get", scope: "global" });
+          if (cwd) this.socket.send({ type: "settings.get", scope: "project", cwd });
+          this.requestSubagentsAgents();
+          this.requestSubagentsAcp();
+        }
         this.paintSettings();
       };
       tabs.append(b);
@@ -8440,6 +8497,7 @@ export class App {
     if (this.settingsTab === "notify") return this.paintNotify(body);
     if (this.settingsTab === "runtime") return this.paintRuntime(body);
     if (this.settingsTab === "changelog") return this.paintChangelog(body);
+    if (this.settingsTab === "subagents") return this.paintSubagents(body);
     const scope = this.settingsTab;
     const view = this.settingsView[scope];
     if (!view || (scope === "project" && view.cwd !== cwd)) {
@@ -8447,6 +8505,69 @@ export class App {
       return;
     }
     this.paintSettingsForm(body, view);
+  }
+
+  /**
+   * `#212`：这一页只问一次盘 —— 进 tab 问，换出去再回来重问（文件可能刚在编辑器里改过）。
+   * 扫盘是机器级的，和页内 global / project 开关无关，所以只在进 tab 时发。
+   */
+  private requestSubagentsAgents(): void {
+    const cwd = this.session?.cwd ?? "";
+    this.subagentsScanFor = cwd;
+    this.subagentsScan = null;
+    this.socket.send({ type: "subagents.agents", cwd: cwd || null });
+  }
+
+  /**
+   * `#215`：acp_delegate 那一半写的是 billion-context 的配置文件，和 settings.json 不同一份，
+   * 所以进 tab 时单独问一次；页内的 global / project 开关对它不生效。
+   */
+  private requestSubagentsAcp(): void {
+    this.subagentsAcpLoadError = null;
+    this.socket.send({ type: "subagents.acp.get" });
+  }
+
+  private paintSubagents(body: HTMLElement): void {
+    const cwd = this.session?.cwd ?? "";
+    const scope = this.subagentsScope === "project" && cwd ? "project" : "global";
+    const view = this.settingsView[scope];
+    // 项目视图可能还是上一个会话的（view.cwd 不匹配），拿来当当前路径行就是抹谎。
+    const ready = view && (scope === "global" || view.cwd === cwd) ? view : null;
+    paintSubagentsPage(body, {
+      scope,
+      cwd,
+      view: ready,
+      scan: this.subagentsScanFor === cwd ? this.subagentsScan : null,
+      models: this.models.map((model) => ({ provider: model.provider, id: model.id })),
+      projectEnabled: Boolean(cwd),
+      onScope: (next) => {
+        this.subagentsScope = next;
+        this.paintSettings();
+      },
+      onEditJson: () => {
+        if (ready) this.paintSettingsJson(body, ready);
+      },
+      onSave: (patch) => {
+        if (!ready) return;
+        this.act(() =>
+          this.socket.send({ type: "settings.set", scope, ...(scope === "project" ? { cwd: ready.cwd } : {}), patch }),
+        );
+      },
+      acp: {
+        view: this.subagentsAcp,
+        loadError: this.subagentsAcpLoadError,
+        saving: this.subagentsAcpSaving,
+        saveError: this.subagentsAcpSaveError,
+        // 对外到公网时写文件要过 step-up；本机 / 局域网 act() 直接跑。
+        onSave: (patch: AcpDelegatePatch) => {
+          this.subagentsAcpSaving = true;
+          this.subagentsAcpSaveError = null;
+          this.act(() => this.socket.send({ type: "subagents.acp.set", patch }));
+          this.paintSettings();
+        },
+        onReload: () => this.requestSubagentsAcp(),
+      },
+    });
   }
 
   /**
@@ -12911,7 +13032,7 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["logout", tr("登出某个 provider")],
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "notify" | "runtime" | "changelog";
+type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "runtime" | "changelog";
 
 interface ExtPackage {
   scope: "user" | "project";

@@ -41,6 +41,8 @@ import { clipboardFiles, listDirs, makeDir, makeFile, statFiles, statPath } from
 import { gitInfo } from "./git.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
+import { scanSubagents } from "./subagents.ts";
+import { acpConfigPath, readAcpDelegate, writeAcpDelegate } from "./acpdelegate.ts";
 import { cleanLaunch } from "./launch.ts";
 import { isWriteOp, runPiCli } from "./picli.ts";
 import { reportBug, shareSession } from "./pishare.ts";
@@ -1624,6 +1626,39 @@ async function main(): Promise<void> {
               send({ type: "settings", ...view, saved: true });
             } catch (err: any) {
               send({ type: "settings.error", scope, message: String(err?.message ?? err) });
+            }
+            return;
+          }
+          // 设置 → 子代理（#212）：只读磁盘。没装包 / 目录不在都走空结果 + errors，不回 error 帧 ——
+          // 这一页的「空」本身就是一种要展示的状态。
+          case "subagents.agents": {
+            const cwd = String(msg.cwd ?? "") || null;
+            try {
+              send({ type: "subagents.agents", ...scanSubagents({ cwd }) });
+            } catch (err: any) {
+              send({ type: "subagents.agents", cwd, installed: false, agents: [], directories: [], errors: [String(err?.message ?? err)] });
+            }
+            return;
+          }
+          // 设置 → 子代理 → acp_delegate（#215）：这一半写的是 billion-context 自己的配置文件，
+          // 和 settings.set 是两份文件、两条 RPC。读回「读不懂」也只是一种要展示的状态（带 error +
+          // 路径），不阻断设置页的其它 tab；写不进去才回 `.error`。
+          case "subagents.acp.get": {
+            try {
+              send({ type: "subagents.acp", ...readAcpDelegate() });
+            } catch (err: any) {
+              send({ type: "subagents.acp.error", path: acpConfigPath(), message: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "subagents.acp.set": {
+            if (!(await requireStepUp())) return;
+            try {
+              const view = writeAcpDelegate(msg.patch);
+              log(`acp_delegate written: ${view.path}`);
+              send({ type: "subagents.acp", ...view, saved: true });
+            } catch (err: any) {
+              send({ type: "subagents.acp.error", path: acpConfigPath(), message: String(err?.message ?? err) });
             }
             return;
           }

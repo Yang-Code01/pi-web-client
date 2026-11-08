@@ -1718,4 +1718,101 @@ export const en: Dict = {
   "生成页面视图": "Build the page view",
   "拖动调整左右比例（双击复原）": "Drag to adjust the split (double-click to reset)",
 "技能文件：{p1}": "Skill file: {p1}",
+  "包内": "Bundled",
+  "用户": "User",
+  "扫描目录": "Scanned folder",
+  "当前文件：{p1}": "Current file: {p1}",
+  "这个文件读不了：{p1}": "Can't read this file: {p1}",
+  "项目 scope 的 subagents.* 写在 <cwd>/.pi/settings.json，随这个 worktree 一起消失；长期偏好请写全局。":
+    "Project-scope subagents.* lives in <cwd>/.pi/settings.json and disappears with this worktree; keep long-lived preferences in Global.",
+  "默认": "Defaults",
+  "行为": "Behavior",
+  "发现与扩展": "Discovery & extensions",
+  "每个子代理": "Per subagent",
+  "看门狗": "Watchdog",
+  "看门狗、按 provider 覆盖、设备 —— 只改文件里已经写过的条目":
+    "Watchdog, per-provider overrides, machines — only entries already in the file can be edited",
+  "看门狗是另一次模型调用：复核主代理刚做完的事。这块改的是谁来看门，不是子代理自己用哪个模型。":
+    "The watchdog is another model call that reviews what the main agent just did. This block decides who watches, not which model the subagents themselves use.",
+  "每轮结束复核一次改动；继承 = 文件里不写这个键，按 pi-subagents 的默认（不做复核）。":
+    "Reviews the changes once per turn; Inherit leaves the key out of the file and uses pi-subagents' default (no review).",
+  "只对主代理的看门狗生效：拿不准时可以直接问你。":
+    "Only applies to the main agent's watchdog: it may ask you when unsure.",
+  "只管子代理自己的看门狗；留空 = 继承。": "Only the subagents' own watchdog; empty = inherit.",
+  "同上；留空 = 继承。": "Same as above; empty = inherit.",
+  "文件里没有按 agent 的看门狗覆盖；要加一条请用「编辑 JSON」。":
+    "No per-agent watchdog overrides in the file; use Edit JSON to add one.",
+  "按 provider 覆盖": "Per-provider overrides",
+  "这一层的优先级高于单 agent 覆盖：两边都写了，用 provider 这一份。只列文件里已经写过的条目。":
+    "This layer wins over the per-agent override: if both are set, the provider one is used. Only entries already in the file are listed.",
+  "文件里没有按 provider 的覆盖；要加一条请用「编辑 JSON」。":
+    "No per-provider overrides in the file; use Edit JSON to add one.",
+  "设备": "Machines",
+  "改完对新启动的子代理生效；要加一台请用「编辑 JSON」。":
+    "Changes apply to subagents started from now on; use Edit JSON to add a machine.",
+  "设备只能在全局新建：项目设置里写 Rex 主机，子代理会起不来，所以这里只读。":
+    "Machines can only be added in Global: a Rex host in project settings stops subagents from launching, so this is read-only here.",
+  "文件里还没有登记过设备。": "No machines registered in the file yet.",
+  "标签": "Label",
+  "内置标签，只读": "Built-in label, read-only",
+  "ssh 目标": "ssh target",
+  "扫了 {p1} 个目录，共读到 {p2} 个 agent 定义（同名后者覆盖前者）。":
+    "Scanned {p1} folders and found {p2} agent definitions (a later one with the same name wins).",
+  "这台机器上没有装 pi-subagents：包内的 agent 目录不存在。装好之后这一页会自动列出来。":
+    "pi-subagents is not installed on this machine, so the bundled agent folder is missing. Once it is installed this page lists it automatically.",
+  "目录不存在": "Folder not found",
+  "一个目录都没扫到。": "No folders were scanned.",
+  "扫描目录里没找到 agent 定义。": "No agent definitions in the scanned folders.",
+  "没有可列的 agent —— 先装 pi-subagents，或者往上面的目录里放 .md。":
+    "No agents to list — install pi-subagents, or drop .md files into the folders above.",
+  "已改": "changed",
+  "覆盖 model": "Override model",
+  "覆盖 thinking": "Override thinking",
+  "清空这一行的覆盖": "Clear this row's override",
+  "{p1} 个，{p2} 处已覆盖": "{p1} agents, {p2} overridden",
+  "frontmatter 列只读；右边两列写的是 subagents.agentOverrides.<name>，优先级高于 frontmatter。":
+    "The frontmatter column is read-only; the two columns on the right write subagents.agentOverrides.<name>, which wins over frontmatter.",
+  "这个文件：{p1}": "This file: {p1}",
+  "acp_delegate 由 billion-context 提供，参数写在上面的文件里 —— 和上面几片的 settings.json 不是同一个文件。保存只替换里面的 pi.subagents，providers 和会话数据原样保留。":
+    "acp_delegate comes from billion-context; its settings live in the file above, not in the settings.json the sections above write. Saving only replaces pi.subagents inside it and leaves providers and session data untouched.",
+  "对还没开始的会话生效：子代理启动时才注册 acp_delegate，正在跑的会话不会跟着变。":
+    "Takes effect for sessions that have not started yet: acp_delegate is registered when a subagent starts, so sessions already running keep what they had.",
+  "修好 {p1} 再点「重新读取」；这里不会在读不懂的文件上写盘，那会把 providers 一起抹掉。":
+    "Fix {p1}, then hit Reload. Nothing is written to a file that cannot be parsed — that would wipe providers along with it.",
+  "启用 acp_delegate": "Enable acp_delegate",
+  "默认（开）": "Default (on)",
+  "acp_delegate 让一个会话把任务派给另一个 pi 会话跑；「默认」= 不在文件里写这个键，按 billion-context 的默认（开）。":
+    "acp_delegate lets one session hand a task to another pi session. Default leaves the key out of the file, which means billion-context's own default: on.",
+  "空 = 不限": "Empty = unlimited",
+  "子代理最多再往下派几层；留空 = 不写这个键。": "How many levels of subagents may delegate further; empty leaves the key out.",
+  "同时最多跑几个子代理；留空 = 不写这个键（不限）。": "How many subagents may run at once; empty leaves the key out (unlimited).",
+  "只能填 ≥ 1 的整数，或者留空表示不限。": "Use a whole number ≥ 1, or leave it empty for no limit.",
+  "默认（不设）": "Default (unset)",
+  "子代理的 thinkingLevel": "Subagent thinkingLevel",
+  "派出去的子代理默认用哪一档思考。": "Which thinking level delegated subagents use by default.",
+  "文件里是 {p1}（不在面板的七档里），要改请用「编辑 JSON」。":
+    "The file says {p1}, which is not one of the panel's seven levels — edit the JSON to change it.",
+  "未钉": "not pinned",
+  "名字里有「.」：点号键会插错层，这里只读，要改请用「编辑 JSON」。":
+    "The name contains a dot, so a dotted key would land on the wrong level; this row is read-only — edit the JSON instead.",
+  "没存上：{p1}": "Not saved: {p1}",
+  "这个文件读不懂，保存不可用。": "This file cannot be parsed, so saving is disabled.",
+  "重新读取": "Reload",
+  "读不了这个文件": "Cannot read this file",
+  "没读到配置文件：{p1}": "Could not read the config file: {p1}",
+  "acp_delegate 已保存（写的是 billion-context 的配置文件，对新会话生效）":
+    "acp_delegate saved (in billion-context's config file; takes effect for new sessions)",
+  "继承": "Inherit",
+  "没有单独覆盖的子代理都用这里的值": "Subagents without their own override use these values",
+  "可手输 provider/id；空 = 继承": "You can type provider/id; empty = inherit",
+  "裸 id 时用于消歧": "Used to disambiguate a bare id",
+  "更高的档位会被截断": "Higher levels are clamped down",
+  "一律不传 thinking": "Never pass thinking at all",
+  "不加载包内的子代理定义": "Do not load bundled agent definitions",
+  "未写该字段时默认继承": "Inherit by default when the field is absent",
+  "项目 agents / overrides 的锚点": "Anchor for project agents / overrides",
+  "逗号分隔；空 = 从文件里删掉这个键": "Comma-separated; empty = delete this key from the file",
+  "留空 = 不限制；特殊值 inherit / scoped": "Empty = no restriction; special values inherit / scoped",
+  "只保存你改过的键；清空一个字段 = 从文件里删掉它。":
+    "Only the keys you changed are saved; clearing a field deletes it from the file.",
 };

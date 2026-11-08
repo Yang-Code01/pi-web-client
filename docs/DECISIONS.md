@@ -3133,3 +3133,29 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **60 是手感值**：要按实测调，只需改 `HISTORY_PAGE_SIZE`；协议里没有把页大小写死。
 
 **验证：** `npm run test:history`（`bridge/tests/history-page-unit.mjs`）：页首落 user、逐页拼到底不重不漏、`limit` 夹取、游标找不到回空页，以及随手问 130 条整段下发且 `hasMore:false`。`npm run test:history:ui`（`bridge/tests/history-paths-ui.mjs`）钉住三条只推一页的路径（切换 / 重连 / 分支切换 / 唤醒）与新建会话的空 `history`；`npm run test:loadolder:ui`（`bridge/tests/history-ui.mjs`）在真界面上验翻页条数、±2px 锚定、连点只发一次、翻到底行消失；`npm run test:continue:ui` 照旧全绿。
+
+## D189 「子代理」设置页 = 一页两半 + 点号 patch + acp 深合并（#211 / #212–#216）
+
+**问题：** 子代理的偏好散在两个文件、两个扩展里：pi 的 `settings.json` 的 `subagents.*`（模型、思考档位、每个 agent 的覆盖、看门狗、设备）与 billion-context 的 `billion-context.json` 的 `pi.subagents`（`acp_delegate` 的开关、深度、并发）。字段名要靠背，写错 key 静默不生效，整份覆盖 `billion-context.json` 会把 `providers` / `sessions` 一起吃掉。
+
+**决定：**
+
+1. **一页两半，两条写入路径。** 同一个「子代理」标签页里，上半是 pi settings（走既有 `settings.set` 的点号 patch），下半是 `acp_delegate`（走新 RPC `subagents.acp.set`）。分成两页的代价是用户还要记住「另一半在隔壁」，收益只是实现更整齐 —— 而这两半回答的是同一个问题（子代理用什么模型、受什么约束），所以合在一页，并在 `acp_delegate` 分区明写「这里写的是 billion-context 的文件」。
+2. **这不是第三个 scope。** 页内的「全局 / 项目」只是在现有两份 `settingsView` 之间切，写入仍是 `settings.set` + `cwd`；不新增 scope 概念，也就不需要改信任、step-up、路径白名单任何一处。
+3. **只发脏键，`null` 删键。** 页面记下用户实际改过的键，保存时只把这些键放进 patch；清空控件 = 发 `null`（桥删键并剪掉空壳）。好处是「改一个 agent」不会把别人手写的 `modelScope.agents.<name>` 之类一起写回去，也不会因为面板不认识某个键就把它抹掉。
+4. **agent 名单运行时扫盘，不硬编码。** 桥新模块扫「包内 → 用户级 → 项目级 → `agentScanDirs`」，同名后者赢，`agentExcludeDirs` 与 `!` 条目剪子树，frontmatter 只按行级 `key: value` 取 `model` / `thinking`。**不 import pi-subagents 包本身**：它是可选依赖，没装时要给空清单而不是让设置面板崩。
+5. **模型控件是 `<input list>` + datalist。** 下拉解决「常见 id 别手打错」，手输解决「网关新上的模型不必等面板更新」；值不认识只加红框，不拦保存 —— 前端没有能力判断一个 id 在别的机器上是否有效。
+6. **`acp_delegate` 深合并 + tmp/rename，坏 JSON 不落盘。** 读整份文件、只替换 `pi.subagents` 这一支、其余键（`providers`、`sessions`）原样保留；解析失败直接抛错、磁盘一个字节不动。这是「一次开关把登录信息弄丢」的唯一结构性防线。空值 = 删键，删空了连 `pi.subagents` 空壳一起删。
+7. **只编辑已存在的嵌套条目。** `agentOverridesByProvider`、`watchdog.children.overrides`、`machines` 三块只列文件里已有的行；新增走「编辑 JSON」。加行不只是多一个输入框，还要同时定下删除语义与「空行算不算条目」，收益低。
+8. **版面是两栏工作台（980px）**，其余设置页仍是 720px 单列。这一页字段量与嵌套深度（三层键）不适合单列表单；左栏锚点解决「一屏放不下、跳着改」的问题。
+9. **高级组默认折叠、展开状态记 localStorage**（独立键，不与现有设置页那条共用）：常规配置（默认模型、行为、每个 agent 的覆盖）一眼看得完，看门狗 / provider 覆盖 / 设备是偶尔才碰的。
+
+**代价 / 可改：**
+
+- **面板只覆盖它认识的键**：`modelScope.agents.<name>`、看门狗新条目、`machines` 新设备都得去「编辑 JSON」。这是有意为之（决定 7、9），不是漏做。
+- **不修「重绘丢草稿」的既有行为**：任何 `settings` / `subagents.*` 回包都会整页重绘，正在填但没保存的改动会丢。新页与旧页保持一致；要修得先给设置页加一层「草稿 vs 磁盘」的合并，收益与本功能无关。
+- **前端不知道为什么模型无效**：`<input list>` 的候选来自当前 `models` 列表，换网关后候选可能滞后一轮；标红只说明「这份清单里没有」。
+- **扫码依赖目录布局**：包内 agent 目录名（`<agentDir>/npm/node_modules/pi-subagents/agents`）是 pi-subagents 的实现细节，它改布局时面板会少几行（不会崩）。
+- **`acp_delegate` 只对新会话生效**：配置在子代理 spawn 时读，页面文案写清了这一点；让运行中的会话立刻换配置不在本功能范围内。
+
+**验证：** `npm run test:subagents`（`bridge/tests/subagents-unit.mjs` 扫盘/frontmatter/排除、`subagents-basics-unit.mjs` 点号 patch 落盘形状、`subagents-overrides-unit.mjs` 覆盖判定与 null 删键、`subagents-advanced-unit.mjs` 高级组读取与 local 只读、`acpdelegate-unit.mjs` 深合并/坏 JSON 不落盘/缺文件创建）；`npm run test:subagents:ui`（Playwright：`locale:"zh-CN"` + 隔离 bridge，改 agent 覆盖后磁盘出现 `subagents.agentOverrides.<name>.model`、关掉 `acp_delegate` 后 `pi.subagents.enabled === false` 且原有 `providers` 仍在）；`npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 `i18n-check`）。
