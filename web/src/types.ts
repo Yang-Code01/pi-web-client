@@ -191,6 +191,10 @@ export interface WorkspaceState {
 export interface DeleteReport {
   removed: string[];
   skipped: { id: string; name: string; reason: string }[];
+  /** Running sessions the bridge released before moving the file（旧桥没有这个字段）. */
+  released?: string[];
+  /** The subset of `removed` that really landed in the bin; empty sessions have no payload to keep. */
+  binned?: string[];
 }
 
 /** A deleted session parked in the bridge's bin: gone from the list, not gone from disk. */

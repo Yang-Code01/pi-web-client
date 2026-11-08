@@ -12,8 +12,8 @@
  *    清不掉。
  * 3. **画当前会话时以本地队列为准**：本地队列在订阅快照和作答时会重置，比列表里那份累加值新。
  *    快照还没回来的那一小段（刚 `openSession`、队列已被清空）例外，见 `App.pendingFresh`。
- *    列表那份留给组头角标、钉条和别的会话来事时的卡片；删除护栏只读 `approvals`
- *    （`App.busy()`，与桥端 `sessions.ts` 的 `trash()` 一致），不读这里的 `asks`。
+ *    列表那份留给组头角标、钉条和别的会话来事时的卡片；删除护栏只读 `locked`
+ *    （`App.deleteBlocked()`，与桥端 `sessions.ts` 的 `trash()` 一致，D198 起运行中不再拦）。
  */
 import type { SessionState } from "./types.ts";
 

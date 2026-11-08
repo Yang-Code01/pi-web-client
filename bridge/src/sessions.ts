@@ -203,6 +203,10 @@ export interface RemoveReport {
   removed: string[];
   /** Ids left alone, with the reason the manager shows next to the name. */
   skipped: { id: string; name: string; reason: string }[];
+  /** Ids that were running and got released on the way out (the page says so out loud). */
+  released: string[];
+  /** Ids of those that really landed in the bin; the rest had nothing on disk to keep. */
+  binned: string[];
 }
 
 /** One deleted session, parked in the bridge's own bin until it is emptied for real. */
@@ -3238,13 +3242,18 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Delete session files. The only destructive operation in the bridge: a live session or one with
-   * a pending approval is never deleted (its writer would keep writing to a removed file), and a
-   * session locked by the terminal is left alone.
+   * Delete session files. The only destructive operation in the bridge.
    *
-   * Partial success on purpose: a busy session no longer cancels the whole batch. It used to throw
-   * before any unlink, so the client cleared its selection, nothing was deleted, no `session.gone`
-   * was broadcast, and the cards stayed on screen with no visible reason.
+   * A running session is *released first*, not refused: the person asked to delete it, and a writer
+   * still holding the file makes the move either fail (EBUSY) or park a copy that keeps growing in
+   * the bin. `Session.close()` aborts the in-flight turn and waits for it to land on disk, so the
+   * last messages are still inside the file that gets parked — the turn is not lost, just stopped.
+   * The one case left alone is a session locked by the terminal: that pi is not our child, so there
+   * is nothing here that could hand its lock back.
+   *
+   * Partial success on purpose: a session that cannot be released no longer cancels the whole batch.
+   * It used to throw before any unlink, so the client cleared its selection, nothing was deleted, no
+   * `session.gone` was broadcast, and the cards stayed on screen with no visible reason.
    *
    * Deleting only moves the file into the bin (`purge` is the one irreversible step). The file leaves
    * pi's sessions dir, which is why pi itself and the list stop showing it.
@@ -3258,34 +3267,47 @@ export class SessionManager extends EventEmitter {
       const meta = metas.get(id);
       if (!session && !meta) continue;
       const name = session?.state.name ?? meta?.name ?? id.slice(0, 8);
+      // 终端里的 pi 不是本桥的子进程：杀不掉，也不能替它交还写者身份。写者身份有两个来源 ——
+      // 抢占用的 `<id>.lock`（别的桥实例）和 session-lock 扩展的 `<id>.tty.json`（终端 pi）。
       const lock = readLock(id);
-      const why = session?.live
-        ? "正在运行"
-        : session && session.approvals.size > 0
-          ? "有待批准的请求"
-          : lock && lock.pid !== process.pid
-            ? "终端正在使用"
-            : "";
-      if (why) {
-        skipped.push({ id, name, reason: why });
+      if ((lock && lock.pid !== process.pid) || readTtyLock(id)) {
+        skipped.push({ id, name, reason: "终端正在使用" });
         continue;
       }
       targets.push({ id, name, file: session?.state.file ?? meta?.file ?? null, cwd: session?.state.cwd ?? meta?.cwd });
     }
+    // 运行中的先交还写者，多个并行：一个卡住的 rpc 不该让整批按 7 秒一个排队等（close 的两次等待）。
+    const held = targets.map((t) => this.sessions.get(t.id)).filter((s): s is Session => Boolean(s?.live));
+    const released: string[] = [];
+    const settled = await Promise.allSettled(held.map((s) => s.close({ quiet: true })));
+    settled.forEach((r, i) => {
+      const s = held[i];
+      if (r.status === "fulfilled") released.push(s.state.id);
+      else skipped.push({ id: s.state.id, name: s.state.name, reason: `停止这个会话失败（${r.reason?.message ?? r.reason}）` });
+    });
+    const blocked = new Set(skipped.map((s) => s.id));
+    const binnedIds: string[] = [];
     const binned: TrashItem[] = [];
+    const gone: string[] = [];
     for (const t of targets) {
-      if (!t.file) {
-        skipped.push({ id: t.id, name: t.name, reason: "找不到会话文件" });
-        continue;
+      if (blocked.has(t.id)) continue;
+      // 有没有文件，要等到释放之后再看：close() 会等在飞的那一轮落盘，文件可能就在这一小段里
+      // 才出现。在释放之前算好，就会把「刚写完的会话」当成空会话 —— 移出列表却不搬文件，下一次
+      // 扫描又把它扫回来（删了还复活）。没有文件的只有一种：刚建、还没说话的空会话，关掉即可，
+      // 磁盘上本来就没东西可丢，也没东西可还原。
+      const file = t.file && fs.existsSync(t.file) ? t.file : null;
+      if (file) {
+        try {
+          const size = fs.statSync(file).size;
+          moveFile(file, trashPayload(t.id));
+          binnedIds.push(t.id);
+          binned.push({ id: t.id, name: t.name, file, cwd: t.cwd, deletedAt: Date.now(), size });
+        } catch (err: any) {
+          skipped.push({ id: t.id, name: t.name, reason: `文件移不进垃圾箱（${err?.code ?? err}）` });
+          continue;
+        }
       }
-      try {
-        const size = fs.statSync(t.file).size;
-        moveFile(t.file, trashPayload(t.id));
-        binned.push({ id: t.id, name: t.name, file: t.file, cwd: t.cwd, deletedAt: Date.now(), size });
-      } catch (err: any) {
-        skipped.push({ id: t.id, name: t.name, reason: `文件移不进垃圾箱（${err?.code ?? err}）` });
-        continue;
-      }
+      gone.push(t.id);
       const session = this.sessions.get(t.id);
       if (session) {
         try {
@@ -3304,12 +3326,12 @@ export class SessionManager extends EventEmitter {
       this.workspaces.forget(t.id);
     }
     if (binned.length) {
-      const gone = new Set(binned.map((b) => b.id));
-      writeTrash([...readTrash().filter((it) => !gone.has(it.id)), ...binned]);
+      const ids = new Set(binned.map((b) => b.id));
+      writeTrash([...readTrash().filter((it) => !ids.has(it.id)), ...binned]);
     }
     // The file scan is cached for a few seconds; a move must not be resurrected by it.
     this.cache = null;
-    return { removed: binned.map((t) => t.id), skipped };
+    return { removed: gone, skipped, released, binned: binnedIds };
   }
 
   /** Newest first. Rows whose payload vanished are dropped instead of shown as dead entries. */

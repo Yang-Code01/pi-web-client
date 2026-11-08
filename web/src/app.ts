@@ -2188,7 +2188,13 @@ export class App {
         const removed: string[] = Array.isArray(msg.removed) ? msg.removed.map(String) : [];
         const skipped: DeleteReport["skipped"] = Array.isArray(msg.skipped) ? msg.skipped : [];
         const parts: string[] = [];
-        if (removed.length) parts.push(tr("已移入垃圾箱 {p1} 个", { p1: removed.length }));
+        // 旧桥没有 binned：那时候 removed 里的都搬进了箱。
+        const binned: string[] = Array.isArray(msg.binned) ? msg.binned.map(String) : removed;
+        if (binned.length) parts.push(tr("已移入垃圾箱 {p1} 个", { p1: binned.length }));
+        const released: string[] = Array.isArray(msg.released) ? msg.released.map(String) : [];
+        if (released.length) parts.push(tr("其中 {p1} 个已先停止", { p1: released.length }));
+        // 刚建、还没说话的会话没有文件可搬：它真的没了，别让「已移入垃圾箱」替它撒谎。
+        if (removed.length > binned.length) parts.push(tr("另有 {p1} 个还没有内容，已直接删除", { p1: removed.length - binned.length }));
         if (skipped.length) {
           const names = skipped.slice(0, 3).map((s: DeleteReport["skipped"][number]) => tr("{p1}（{p2}）", { p1: s.name, p2: s.reason })).join(tr("、"));
           parts.push(tr("{p1} 个没删：{p2}{p3}", { p1: skipped.length, p2: names, p3: skipped.length > 3 ? " 等" : "" }));
@@ -5273,12 +5279,12 @@ export class App {
           this.archiveIds([s.id], !archived);
         };
         const armed = this.cardDelArm?.id === s.id;
-        const busy = App.busy(s);
+        const held = App.deleteBlocked(s);
         const del = el("button", `card-act del${armed ? " armed" : ""}`) as HTMLButtonElement;
         if (armed) del.textContent = tr("删除?");
         else del.append(...iconNodes(ICON_TRASH));
-        del.disabled = busy;
-        del.title = busy ? App.busyWhy(s) : armed ? tr("再点一次：移入垃圾箱") : tr("删除（先进垃圾箱，可在会话管理里还原）");
+        del.disabled = held;
+        del.title = App.deleteWhy(s, armed, tr("删除（先进垃圾箱，可在会话管理里还原）"));
         del.setAttribute("aria-label", tr("删除会话"));
         del.onclick = (ev) => {
           ev.stopPropagation();
@@ -7541,15 +7547,19 @@ export class App {
   }
 
   // ---------------------------------------------------------------- session manager
-  private static busy(s: SessionState): boolean {
-    // Mirrors the bridge's guard in sessions.ts remove(): a live writer, a pending approval, or a
-    // lock held by the pi terminal. `locked` has to come from the bridge — the web cannot see locks.
-    return s.running || s.owned || s.approvals > 0 || Boolean(s.locked);
+  private static deleteBlocked(s: SessionState): boolean {
+    // Only a terminal's pi still blocks the button: its pid is not ours, so nothing on this side can
+    // hand its lock back. Running / claimed / pending-approval sessions are released by the bridge
+    // as part of the delete (sessions.ts trash(): close the turn down first, then move the file).
+    return Boolean(s.locked);
   }
 
-  private static busyWhy(s: SessionState): string {
+  /** Hover copy: why it is greyed out, or what the second click will actually do. */
+  private static deleteWhy(s: SessionState, armed: boolean, idle: string): string {
     if (s.locked) return tr("终端正在使用这个会话，先在那边退出再删");
-    return tr("网页正在运行/接管这个会话，先停止运行再删");
+    if (armed) return tr("再点一次：移入垃圾箱");
+    if (s.running || s.owned || s.approvals > 0) return tr("删除（运行中：先停止这一轮再移入垃圾箱，可还原）");
+    return idle;
   }
 
   private mgrMatches(s: SessionState): boolean {
@@ -8001,7 +8011,7 @@ export class App {
         b.onclick = fn;
         return b;
       };
-      const deletable = picked.filter((s) => !App.busy(s)).map((s) => s.id);
+      const deletable = picked.filter((s) => !App.deleteBlocked(s)).map((s) => s.id);
       const delKey = `bulk:${deletable.join(",")}`;
       const armed = this.mgrDelArm?.key === delKey;
       const del = btn(armed ? tr("再点一次：移入垃圾箱 {p1} 个", { p1: deletable.length }) : deletable.length < ids.length ? tr("删除（{p1} 个可删）", { p1: deletable.length }) : tr("删除"), () => {
@@ -8013,7 +8023,7 @@ export class App {
         paint();
       }, `btn danger${armed ? " armed" : ""}`);
       del.disabled = !deletable.length;
-      if (deletable.length < ids.length) del.title = tr("运行中 / 网页接管中 / 待确认的会话不能删，先停止运行");
+      if (deletable.length < ids.length) del.title = tr("终端正在占用其中 {p1} 个会话，先在终端退出再删", { p1: ids.length - deletable.length });
       const spacer = el("span", "spacer");
       foot.append(
         allLabel,
@@ -8153,17 +8163,17 @@ export class App {
     act(archived ? ICON_UNARCHIVE : ICON_ARCHIVE, archived ? tr("恢复（取消归档）") : tr("归档（文件不动，只是收起来）"), () => this.archiveIds([s.id], !archived));
     const key = `one:${s.id}`;
     const armed = this.mgrDelArm?.key === key;
-    const busy = App.busy(s);
+    const held = App.deleteBlocked(s);
     const del = act(
       armed ? tr("删除?") : ICON_TRASH,
-      busy ? App.busyWhy(s) : armed ? tr("再点一次：移入垃圾箱") : tr("删除（先进垃圾箱，可还原）"),
+      App.deleteWhy(s, armed, tr("删除（先进垃圾箱，可还原）")),
       () => {
         if (this.mgrArm(key)) this.act(() => this.socket.send({ type: "manage", action: "delete", ids: [s.id] }));
         repaint();
       },
       `card-act del${armed ? " armed" : ""}`,
     );
-    del.disabled = busy;
+    del.disabled = held;
 
     row.append(box, main, times, acts);
     return row;
