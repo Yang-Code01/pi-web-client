@@ -19,7 +19,7 @@ git -C "$ROOT" log --first-parent --date=short --format='%h %ad %s' "$ANCHOR..or
 git -C "$ROOT" diff "$ANCHOR"..origin/main -- docs/DECISIONS.md | grep -E '^\+## D[0-9]+'
 ```
 
-标题是 `## D191 …`（两个井号），不是 `###`。
+标题是 `## D<编号> …`（两个井号），不是 `###`。
 
 只有**新加的**决定值得写进「设计决定」组；改措辞、改代价的不算新东西。
 

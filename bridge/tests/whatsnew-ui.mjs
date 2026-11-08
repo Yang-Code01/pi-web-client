@@ -1,5 +1,5 @@
 /**
- * D190 在真界面里跑一遍：设置页现在有**两本账** —— 「pi 更新日志」还是装机里 pi 包那份，
+ * D195 在真界面里跑一遍：设置页现在有**两本账** —— 「pi 更新日志」还是装机里 pi 包那份，
  * 「本项目更新日志」是检出根的 `CHANGELOG.md`，`/whatsnew` 直达后者。自带丢弃式 bridge，
  * 不花模型 turn，也不碰 7864。
  *
@@ -179,7 +179,7 @@ try {
   check(shown.includes("DECISIONS.md"), `预览里打开的是 ${shown}`);
   // 只看路径会假通过：解析错 cwd 时路径照旧显示，正文却是空的。
   const previewText = await page.locator(".viewer-body").first().innerText();
-  check(previewText.includes("D190"), "预览里读到的确实是 DECISIONS.md 正文");
+  check(previewText.includes("D195"), "预览里读到的确实是 DECISIONS.md 正文");
 } catch (e) {
   failed = true;
   console.error("  FAIL", e.message);

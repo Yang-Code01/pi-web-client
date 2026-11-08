@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { VERSION } from "./paths.ts";
 
 /**
- * D190：设置页「本项目更新日志」，和 pi 包里那个 CHANGELOG.md 不是一回事。
+ * D195：设置页「本项目更新日志」，和 pi 包里那个 CHANGELOG.md 不是一回事。
  *
  * 文件固定是检出根的 `CHANGELOG.md`。模块位置往上两层就是检出根 —— `bridge/src/*.ts`（源码
  * 直跑）和 `bridge/dist/*.js`（构建后）都落在 `<检出>/bridge/`，两种跑法得到同一个根。桥一般

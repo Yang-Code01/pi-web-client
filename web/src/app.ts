@@ -9,7 +9,7 @@ import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPicke
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
-import { classify, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type FailLedger, type SeenFail } from "./failures.ts";
+import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type ComposerChild, type FailLedger, type SeenFail } from "./failures.ts";
 import { parseRules, type RuleBook } from "./rules.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
@@ -20,6 +20,7 @@ import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts"
 import { bgBusy, continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
+import { BranchSheet } from "./branchsheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
@@ -205,6 +206,8 @@ export class App {
   private modelsAsked = 0;
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
+  /** D193: 分支历史弹窗；同时只开一扇，关了才允许再开。 */
+  private branchSheet: BranchSheet | null = null;
   /** D164：AI 出错记录的账本（按工作区），以及这个会话里见过的失败（按 toolCallId 去重）。 */
   private failLedger: FailLedger | null = null;
   private failWs = "";
@@ -215,6 +218,8 @@ export class App {
   private failRemindPending = new Set<string>();
   /** 右下角那颗「⚡ 总结本轮错误」；每轮结束按 pending 亮灭。 */
   private failCta: HTMLButtonElement | null = null;
+  /** ⚡ 按钮现在寄居在哪块容器里（`null` = 浮在输入框右上角）。 */
+  private failCtaHost: HTMLElement | null = null;
   /** 点开 CTA 的那张小卡（两个举动：记进账本 / 发到会话复盘）。 */
   private failMenu: HTMLElement | null = null;
   private failMenuAway: ((ev: Event) => void) | null = null;
@@ -1619,6 +1624,13 @@ export class App {
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
         this.fillExt();
         break;
+      case "preview.open": {
+        // #224: `open_preview` 工具 → 桥 → 正在看这个会话的页面，在这里落到 viewer 上。
+        // 桥现在要回执才算打开（复审）：页面接住了回 ok:true，被编辑器拦下回 declined，
+        // 不在看这个会话就回 stale —— 让同会话其它页签接住的那一回不被盖掉。
+        void this.answerPreviewOpen(msg);
+        break;
+      }
       case "editor.set": {
         // ctx.ui.setEditorText: the extension replaces what is in the editor, like in the terminal.
         if (msg.sessionId !== this.currentId) break;
@@ -2749,26 +2761,29 @@ export class App {
     const lines = [tr("⎇ {p1}{p2}", { p1: label, p2: git.dirty ? tr(" · {p1} 个未提交改动", { p1: git.dirty }) : "" })];
     if (git.detached) lines.push(tr("detached HEAD：不在任何分支上"));
     if (git.empty) lines.push(tr("仓库里还没有提交"));
-    lines.push(git.repo, "", tr("Enter 发送 · Shift+Enter 换行 · {p1} 粘贴截图", { p1: PASTE_KEY }), tr("点一下复制分支名"));
+    lines.push(git.repo, "", tr("Enter 发送 · Shift+Enter 换行 · {p1} 粘贴截图", { p1: PASTE_KEY }), tr("点一下看分支历史"));
     chip.title = lines.join("\n");
-    chip.onclick = () => {
-      // `navigator.clipboard` is undefined over plain http:// on a LAN address — optional chaining has
-      // to wrap the call, not just the property, or the reply lands as a TypeError.
-      const copy = navigator.clipboard?.writeText(git.branch || label);
-      if (!copy) return;
-      const shown = chip.querySelector<HTMLElement>(".git-branch");
-      const back = shown?.textContent ?? "";
-      void copy
-        .then(() => {
-          if (!shown) return;
-          shown.textContent = tr("已复制");
-          setTimeout(() => {
-            if (shown.isConnected && shown.textContent === tr("已复制")) shown.textContent = back;
-          }, 900);
-        })
-        .catch(() => {});
-    };
+    chip.onclick = () => this.openBranchHistory(git);
     return chip;
+  }
+
+  /**
+   * D193: 分支 chip 单击从「复制」改成「看历史」——复制搬进弹窗的工具条，单击只做一件事，而这件事
+   * 现在有信息量。已经开着就关掉（再点一下等于关），不给第二层模态。
+   */
+  private openBranchHistory(git: GitInfo): void {
+    if (this.branchSheet) {
+      this.branchSheet.close();
+      return;
+    }
+    const cwd = (this.session?.cwd ?? "").trim();
+    if (!cwd) return;
+    const sheet = new BranchSheet({ dir: cwd, branch: git.branch });
+    sheet.onClose = () => {
+      if (this.branchSheet === sheet) this.branchSheet = null;
+    };
+    sheet.mount(document.getElementById("app") ?? document.body);
+    this.branchSheet = sheet;
   }
 
   /** The line under the composer: what pi is doing and for how long, or the key hints when idle. */
@@ -5576,12 +5591,29 @@ export class App {
     this.sheet = back;
   }
 
-  private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false): Promise<void> {
-    if (!sessionId) return;
+  /**
+   * `preview.open` 的回执（#224 复审）：只有真把 viewer 拉起来了才算「打开了」。
+   * 没在看这个会话（刚关掉 / 切走了）回 `stale`，不动页面；用户在未保存提示里选「留在这里」回 `declined`。
+   */
+  private async answerPreviewOpen(msg: any): Promise<void> {
+    const reqId = String(msg.reqId ?? "");
+    const reply = (ok: boolean, reason?: string) => {
+      if (reqId) this.socket.send({ type: "preview.open.done", reqId, ok, reason });
+    };
+    if (msg.sessionId !== this.currentId) return reply(false, "stale");
+    const target = String(msg.path ?? "");
+    // 桥先解析过路径，空路径不会到这儿；真到了也当成没接住，别把空串送进 viewer。
+    if (!target) return reply(false, "stale");
+    const opened = await this.openPreview(target);
+    reply(opened, opened ? undefined : "declined");
+  }
+
+  private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false): Promise<boolean> {
+    if (!sessionId) return false;
     // 编辑中直接点别的文件：先问一句未保存的改动（D50）。
     const open = this.viewer;
     if (open?.pane === "edit" && open.dirty && open.info?.abs !== path) {
-      if (!(await this.leaveEditor(open))) return;
+      if (!(await this.leaveEditor(open))) return false;
     }
     // 打开一个新文件是历史里的一步；⟳ 刷新、返回/前进自己不算（D63）。
     if (!replace) {
@@ -5606,12 +5638,12 @@ export class App {
     try {
       v.info = await api.preview(sessionId, path);
     } catch (err: any) {
-      if (this.viewer !== v || v.path !== path) return;
+      if (this.viewer !== v || v.path !== path) return false;
       v.error = errText(err);
       this.paintViewer();
-      return;
+      return false;
     }
-    if (this.viewer !== v || v.path !== path) return;
+    if (this.viewer !== v || v.path !== path) return false;
     v.path = v.info.abs;
     // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
     if (!replace) this.retargetTop(path, v.info.abs, sessionId);
@@ -5620,16 +5652,17 @@ export class App {
       const info = v.info;
       this.closeViewer();
       this.openSheet(info);
-      return;
+      return true;
     }
     // #113: CSV / TSV 也在浮窗里，但没有 xlsx 那种元数据——字节由页面自己解码、切格。
     if (/\.(csv|tsv)$/i.test(v.info.name)) {
       const info = v.info;
       this.closeViewer();
       void this.openCsvSheet(info, sessionId);
-      return;
+      return true;
     }
     await this.loadViewerText();
+    return true;
   }
 
   /** #113：CSV / TSV 的浮窗——表格 / 源码两个 tab，编码嗅探在前端（D166），保存仍走文本通道。 */
@@ -6407,6 +6440,7 @@ export class App {
     const show = Boolean(s) && !s?.running && !s?.starting && n > 0;
     btn.hidden = !show;
     btn.classList.toggle("busy", this.failReviewPending);
+    this.placeFailCta();
     if (!show) {
       this.closeFailMenu();
       return;
@@ -6435,6 +6469,46 @@ export class App {
     return this.failRules?.reviewed?.[sid]?.n ?? 0;
   }
 
+  /**
+   * 把 ⚡ 按钮挂到该挂的地方：输入框上方只要有条（接管条、信任条、后台条、排队条…），它就走条里，
+   * 和那条自己的按钮并排；没有东西时照旧浮在输入框右上角。浮着的时候它正好压住那条右端的按钮
+   * （用户报的就是「接管会话」被压住一半），所以不能靠 z-index 抢，得换位置。
+   */
+  private placeFailCta(): void {
+    const btn = this.failCta;
+    const host = this.els.composerHost;
+    const row = host.querySelector(".row") as HTMLElement | null;
+    if (!btn || !row) return;
+    if (btn.hidden) {
+      // 没东西可总结：别在条里占着位子（接管条会为它留着换行的空当）。
+      btn.classList.remove("inline", "stacked");
+      this.failCtaHost = null;
+      return;
+    }
+    const kids = ([...host.children] as HTMLElement[]).slice(0, [...host.children].indexOf(row));
+    const where = ctaHost(kids.map((n) => {
+      const style = getComputedStyle(n);
+      const child: ComposerChild = { cls: n.className, layout: "flow" };
+      if (style.position === "absolute" || style.position === "fixed") child.layout = "absolute";
+      else if (!n.getBoundingClientRect().height) child.layout = "hidden";
+      return child;
+    }));
+    const target = where.kind === "float" ? row : kids[where.index];
+    // 条尾那颗按钮（接管会话 / 决定是否信任 / 停止后台）是那条的主动作，让它留在最右边：
+    // ⚡ 按钮插到它前面，而不是把主动作挤到里面去。卡片、队列行这类尾巴不是按钮的宿主照旧接在末尾。
+    const tail = target.lastElementChild;
+    const before = tail && tail !== btn && tail.tagName === "BUTTON" ? tail : null;
+    this.failCtaHost = target === row ? null : target;
+    if (btn.parentElement !== target) {
+      if (before) target.insertBefore(btn, before);
+      else target.append(btn);
+    }
+    // inline = 不再浮着；stacked = 卡片里自成一脚。两个类都由容器决定，见 failures.ts 的 CTA_HOSTS。
+    // 条自己的版式（接管条要换行）用 CSS `:has(> .fail-cta)`,不再额外挂类。
+    btn.classList.toggle("inline", where.kind !== "float");
+    btn.classList.toggle("stacked", where.kind === "card");
+  }
+
   private failButton(): HTMLButtonElement {
     const btn = el("button", "fail-cta") as HTMLButtonElement;
     btn.type = "button";
@@ -6451,12 +6525,22 @@ export class App {
   /** 单击弹小卡：两个举动各自写清代价（记进账本花 0、复盘烧一轮 token）。 */
   private openFailMenu(): void {
     const btn = this.failCta;
-    const row = btn?.parentElement;
+    // 小卡挂在 `.row` 里（宽度对齐 composer 的右边），纵向位置则按它真正的定位包含块实测 ——
+    // ⚡ 按钮并进条里以后还照旧用 `calc(100% + 46px)` 就会偏，见下。
+    const row = this.els.composerHost.querySelector(".row");
     if (!btn || !row) return;
     this.closeFailMenu();
     const box = el("div", "fail-menu");
     box.setAttribute("role", "menu");
     row.append(box);
+    // ⚡ 按钮在哪，菜单就在它头顶 8px 之外：固定的 `calc(100% + 46px)` 只在它浮着时对。
+    // 量的是 `offsetParent`（真正的定位包含块）的底，不是 `.row` 的底：菜单挂在 `.row` 里也可能被
+    // 更近的定位祖先接住（`absolute` 只看最近的 `position != static` 的祖先），按 `.row` 算会偏出一条内边。
+    const block = (box.offsetParent as HTMLElement | null) ?? row;
+    const b = btn.getBoundingClientRect();
+    box.style.bottom = `${Math.round(block.getBoundingClientRect().bottom - b.top + 8)}px`;
+    // 上方就这么多空地：菜单再长也别顶出视口，超出的自己滚。
+    box.style.maxHeight = `${Math.max(120, Math.round(b.top - 8))}px`;
     this.failMenu = box;
     this.paintFailMenu();
     const away = (ev: Event) => {
@@ -8267,6 +8351,7 @@ export class App {
     if (this.approvals.length) host.append(this.approvalNode());
     this.renderAsks();
     this.syncCwdChip();
+    this.placeFailCta();
   }
 
   /**
@@ -8860,6 +8945,8 @@ export class App {
     const get = (key: string): SettingsCell => readPath(data, key);
     const defaults = (view.defaults ?? {}) as Record<string, unknown>;
     // Project page: 「默认」 is what you actually get, so a global value wins over pi's factory one.
+    // SAFETY: 全局那一层和会话自己的一样是任意 JSON 设置；这里只当「按 key 取值的容器」用，
+    // 取不到就是 undefined，形状不对也不会被当成某个具体值。
     const parentData = (scope === "project" ? (this.settingsView.global?.json ?? null) : null) as unknown as SettingsCellOf | null;
     const parentGet = (key: string): SettingsCell => readPath(parentData, key);
     const fmtSetting = (v: unknown): string | null => {
@@ -10167,7 +10254,7 @@ export class App {
       });
   }
 
-  /** D190：本项目的 CHANGELOG.md（设置页里和 pi 那个分开放，两个文档不同）。 */
+  /** D195：本项目的 CHANGELOG.md（设置页里和 pi 那个分开放，两个文档不同）。 */
   private paintWhatsnew(body: HTMLElement): void {
     body.append(el("div", "empty", tr("读取中…")));
     fetch("/api/changelog?scope=self", { credentials: "same-origin" })
@@ -10182,7 +10269,7 @@ export class App {
         md.append(
           renderMarkdown(out.text || tr("（这个检出里还没有 CHANGELOG.md）"), {
             // 正文里的 `docs/DECISIONS.md` 是可点的文件链接：预览若直接开在弹层背后，点了像没反应。
-            // 先收面板再交给预览；链接相对**仓库根**写，会话 cwd 可能不在这个仓库里（D190）。
+            // 先收面板再交给预览；链接相对**仓库根**写，会话 cwd 可能不在这个仓库里（D195）。
             openPath: (file) => {
               this.closeSheet();
               window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path: resolveFromRoot(out.root ?? "", file) } }));
@@ -10442,7 +10529,11 @@ export class App {
     ];
     bar.replaceChildren();
     bar.hidden = !rows.length;
-    if (!rows.length) return;
+    if (!rows.length) {
+      // 条藏了，寄居在里面的 pill 也会跟着看不见：先把它弄出来。
+      this.placeFailCta();
+      return;
+    }
     const head = el("div", "queue-head");
     head.append(el("span", "queue-title", tr("排队中 {p1} 条", { p1: rows.length })));
     const back = el("button", "tool-btn", tr("撤回到输入框")) as HTMLButtonElement;
@@ -10459,6 +10550,7 @@ export class App {
       line.title = row.text;
       bar.append(line);
     }
+    this.placeFailCta();
   }
 
   /** Extension widgets above / below the editor, status lines below, title on the browser tab. */
@@ -10490,6 +10582,8 @@ export class App {
       }
       this.extBelow.replaceChildren(...nodes);
     }
+    // `replaceChildren` 会把寄居在扩展块里的 ⚡ 按钮一并带走：重新摆一次。
+    this.placeFailCta();
   }
 
   // ---------------------------------------------------------------- continue (D159)
@@ -10548,11 +10642,13 @@ export class App {
     if (!live && !done) {
       this.bgBar?.remove();
       this.bgBar = null;
+      this.placeFailCta();
       return;
     }
     if (!this.bgBar || !this.bgBar.isConnected) {
       const bar = el("div", "bg-bar");
-      // 时间贴着文字走，不推到最右边：`总结本轮错误` 那颗浮动贴在输入框右上，推过去会被它压住。
+      // 时间贴着文字走，不推到最右边：那颗「总结本轮错误」在有条的时候会并到这条的最右端，
+      // 再把计时也推过去，一行里就要挤三样东西。
       bar.append(el("span", "bg-dot"), el("span", "bg-text"), el("span", "bg-sep", "·"), el("span", "bg-elapsed"));
       // D170：整条都能点开详情。用 role=button 而不是 <button>：里面已经有文字与计时，语义上是一个入口。
       bar.setAttribute("role", "button");
@@ -10589,6 +10685,8 @@ export class App {
       delete since.dataset.bgSince;
       since.textContent = bgTookText(done.lastMs ?? 0);
     }
+    // 条刚出现 / 刚走，pill 的落点跟着变。
+    this.placeFailCta();
   }
 
   /**
@@ -11144,6 +11242,8 @@ export class App {
   private renderAsks(): void {
     const host = this.els.composerHost;
     host.querySelector(".ask-slot")?.remove();
+    // 槽一删，寄居在里面的 ⚡ 按钮也跟着没了（后面的分支还可能提前 return），先把它捞出来。
+    this.placeFailCta();
     this.fillHintStatus();
     if (this.textarea) this.textarea.placeholder = this.composerPlaceholder();
     if (this.askLost && !this.asks.length) {
@@ -11226,6 +11326,7 @@ export class App {
     const row = host.querySelector(".row");
     if (row) host.insertBefore(slot, row);
     else host.append(slot);
+    this.placeFailCta();
   }
 
   /**
@@ -12641,6 +12742,8 @@ export class App {
    */
   private closeCurrentSession(): void {
     if (!this.currentId) return;
+    // #224 复审：告诉桥「这张页面不再看它了」。否则桥还会对已关掉的页面投递、并把它当成功。
+    this.socket.send({ type: "unsubscribe", sessionId: this.currentId });
     this.switchDraft(null);
     this.currentId = null;
     this.session = null;
@@ -13747,7 +13850,7 @@ function rawUrl(info: PreviewInfo): string {
   return `/raw/${info.token}/${info.rel}`;
 }
 
-/** 日志正文里的链接是相对仓库根写的：会话 cwd 不在那个仓库里也得点得开（D190）。 */
+/** 日志正文里的链接是相对仓库根写的：会话 cwd 不在那个仓库里也得点得开（D195）。 */
 function resolveFromRoot(root: string, p: string): string {
   let target = p;
   try {

@@ -96,6 +96,8 @@ const piLog = () =>
   fs.existsSync(PI_LOG) ? fs.readFileSync(PI_LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
 /** 会话自己那次 spawn —— 桥还会用同一个 bin 起一个 `-ne --no-session` 的模型探测子进程，别把它算进来。 */
 const bootLines = () => piLog().filter((l) => l.t === "argv" && (l.argv ?? []).includes("--session-id"));
+/** `--append-system-prompt` 的每个值：#226 起除了教训文件，网页会话还会多一段交付提示词。 */
+const promptValues = (argv) => (argv ?? []).flatMap((a, i) => (a === "--append-system-prompt" ? [argv[i + 1] ?? ""] : []));
 
 ws.send(JSON.stringify({ type: "create", cwd: REPO_DIR, name: "lessons-spawn" }));
 let sessionId = null;
@@ -111,7 +113,11 @@ if (!sessionId) {
 console.log("session", sessionId, "ws", WS_ID);
 
 for (let i = 0; i < 100 && !bootLines().length; i++) await sleep(100);
-check("第一次 spawn：账本还空，不追加系统提示词", bootLines().length >= 1 && !bootLines()[0].argv.includes("--append-system-prompt"), JSON.stringify(bootLines()[0]?.argv ?? []));
+check(
+  "第一次 spawn：账本还空，不追加教训那段（#226 的交付提示词不算）",
+  bootLines().length >= 1 && !promptValues(bootLines()[0].argv).some((p) => p.includes("lessons")),
+  JSON.stringify(promptValues(bootLines()[0]?.argv ?? []).map((p) => p.slice(0, 40))),
+);
 
 const item = (at) => ({
   key: "bash|path|cd <path>",
@@ -139,8 +145,9 @@ await sleep(800);
 ws.send(JSON.stringify({ type: "prompt", sessionId, text: "reopen" }));
 for (let i = 0; i < 200 && bootLines().length < 2; i++) await sleep(100);
 const second = bootLines()[1];
-check("第二次 spawn：带上 --append-system-prompt", Boolean(second?.argv.includes("--append-system-prompt")));
-const lessonPath = second ? second.argv[second.argv.indexOf("--append-system-prompt") + 1] ?? "" : "";
+const secondPrompts = promptValues(second?.argv ?? []);
+check("第二次 spawn：带上教训那一段", secondPrompts.some((p) => p.includes("lessons")));
+const lessonPath = secondPrompts.find((p) => p.includes("lessons")) ?? "";
 check("提示词文件落在 state 的 lessons/ 下", lessonPath.includes("lessons") && fs.existsSync(lessonPath), lessonPath);
 const lessonBody = lessonPath && fs.existsSync(lessonPath) ? fs.readFileSync(lessonPath, "utf8") : "";
 check("文件里就是「反复踩的坑」那一段", lessonBody.includes("反复踩的坑") && lessonBody.includes("3 次 · bash · cd <path>"));

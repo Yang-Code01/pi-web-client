@@ -15,6 +15,7 @@ import {
   ripeEntries,
   entryState,
   failureMarkdown,
+  ctaHost,
 } from "../src/failures.ts";
 import { exitCodeOf, diagnose } from "../src/diagnose.ts";
 
@@ -199,4 +200,44 @@ test("老账本没有 causes 字段时仍能读", () => {
   delete e.causes;
   assert.deepEqual(causesOf(e), ["只有首句"]);
   assert.deepEqual(causesOf(entry({ why: "" })), []);
+});
+
+// ---------------------------------------------------------------- pill 往哪儿挂
+
+const flow = (cls) => ({ cls, layout: "flow" });
+
+test("输入框上方什么都没有时，pill 照旧浮着", () => {
+  assert.deepEqual(ctaHost([]), { index: -1, kind: "float" });
+});
+
+test("接管条在最上面时，pill 并进那一行", () => {
+  assert.deepEqual(ctaHost([flow("takeover")]), { index: 0, kind: "rail" });
+});
+
+test("取最后一块还占着版面的：后台条压过接管条", () => {
+  const kids = [flow("takeover"), flow("bg-bar")];
+  assert.deepEqual(ctaHost(kids), { index: 1, kind: "rail" });
+});
+
+test("绝对定位的浮层不算：它是浮着的，pill 得往下找", () => {
+  assert.deepEqual(ctaHost([flow("takeover"), { cls: "skill-pop", layout: "absolute" }]), { index: 0, kind: "rail" });
+});
+
+test("零高度的空块不算：空的排队条不该骗走 pill", () => {
+  assert.deepEqual(ctaHost([flow("takeover"), { cls: "queue-bar", layout: "hidden" }]), { index: 0, kind: "rail" });
+});
+
+test("没登记的实体块（完成列表）宁可浮着，也不能塞进去跟着跳", () => {
+  assert.deepEqual(ctaHost([flow("takeover"), flow("complete-pop")]), { index: 1, kind: "float" });
+});
+
+test("问卷 / 扩展块是卡片堆：⚡ 自成一脚", () => {
+  assert.equal(ctaHost([flow("ask-slot")]).kind, "card");
+  // 审批卡插在 .row 之后，永远进不了这张表（登记它只是死条目），所以这里不该认出来。
+  assert.equal(ctaHost([flow("approval-slot")]).kind, "float");
+  assert.equal(ctaHost([flow("ext-widgets above")]).kind, "card");
+});
+
+test("多类名也能认出宿主", () => {
+  assert.deepEqual(ctaHost([flow("bg-bar idle")]), { index: 0, kind: "rail" });
 });

@@ -106,6 +106,8 @@ PI_WEB_HOST=0.0.0.0 npm start
 | `PI_WEB_ROOT` | 前端静态目录 | `web/dist` |
 | `PI_WEB_NO_EXT=1` | 不加载审批门禁扩展 | 关 |
 | `PI_WEB_LESSONS=0` | 不把工作区的老毛病（⚡ AI 出错记录里反复出现的类）挂进新会话的系统提示词，也不补自动提醒（D169） | 开 |
+| `PI_WEB_HINT=0` | 关掉网页客户端的交付提示词（「先问要不要在预览里打开」那一段），工作区教训照旧挂（D191） | 开 |
+| `PI_WEB_PREVIEW_ACK_MS` | `open_preview` 等页面回执的窗口：超时就回 `no-ack`，不再把「投出去了」当「打开了」（D192） | `15000` |
 | `PI_BIN` | 指定 pi 的 `cli.js` | 自动找 |
 | `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` | 与 pi 同名同义：桥按 pi 的顺序找会话目录（环境变量 → 全局 `settings.json` 的 `sessionDir` → `~/.pi/agent/sessions`，D73） | 跟随 pi |
 | `PI_PEER=0` | 不启动内网通（peer 子进程） | 开 |
@@ -126,7 +128,7 @@ PI_WEB_HOST=0.0.0.0 npm start
 - **分支与导出**（D77）：`/tree` 打开会话树（缩进=分支，● = pi 会接着走的那条），任何一条用户消息都能 ⑂ 分叉成新会话（消息放回输入框），`/clone` 复制当前分支，`/import <路径>` 导入别处的会话文件；`/export` 用 pi 自带的 HTML 导出在新标签页打开（`/export jsonl` 下载原文件），`/copy` 或消息右上角 ⧉ 复制原文。
 - **输入补全**（D77）：输入框开头打 `/` 列出内建命令 + 扩展命令 + 提示词模板 + 技能；任意位置打 `@` 模糊搜索工作目录里的文件。终端 `＋` 可以选 shell（PowerShell / Git Bash / cmd，macOS / Linux 用 `$SHELL`）。
 - **技能商店**（D126）：技能面板底部右侧的「商店」打开一个 dialog——「商店」标签搜 skills.sh（社区技能目录，按安装量排，说明读自各仓库的 `SKILL.md`），装到全局 `<agentDir>/skills` 或当前项目 `.pi/skills`；「按地址安装」支持 `owner/repo`、GitHub 链接（可带 `/tree/<ref>/<path>`）和本机目录；「已安装」列出 pi 会加载的全部技能并分组（用户 / 项目），用户技能可以卸载（4 秒内再点一次，junction 只断链），项目技能只读。改完弹窗顶部给一颗「重新加载当前会话」，公网隧道下只读。
-- **pi 设置与项目信任**（D78）：右栏「pi 设置」（或 `/settings`）改全局 / 项目 `settings.json`——常用项是表单，其余「编辑 JSON」，写入走 pi 自己的文件锁、只动改过的字段；`/trust` 决定是否加载项目的 `.pi` 配置（写 `trust.json`，和终端同一份；网页里 pi 不能弹信任提示，所以没决定过的项目会在输入框上方提示）；`/reload` 重启这个会话的 pi 读最新设置；`/changelog` 看 pi 更新日志，`/whatsnew` 看本项目的 `CHANGELOG.md`（D190），`/whatsnew-write` 让 agent 补一批新的（D191）。新建会话的「高级」里可以给这个会话定 `--model` `--thinking` `--tools` `-e` `--skill` `--append-system-prompt` `-ne` `-nc` `--no-mcp` `--offline`，之后再接管也沿用。
+- **pi 设置与项目信任**（D78）：右栏「pi 设置」（或 `/settings`）改全局 / 项目 `settings.json`——常用项是表单，其余「编辑 JSON」，写入走 pi 自己的文件锁、只动改过的字段；`/trust` 决定是否加载项目的 `.pi` 配置（写 `trust.json`，和终端同一份；网页里 pi 不能弹信任提示，所以没决定过的项目会在输入框上方提示）；`/reload` 重启这个会话的 pi 读最新设置；`/changelog` 看 pi 更新日志，`/whatsnew` 看本项目的 `CHANGELOG.md`（D195），`/whatsnew-write` 让 agent 补一批新的（D196）。新建会话的「高级」里可以给这个会话定 `--model` `--thinking` `--tools` `-e` `--skill` `--append-system-prompt` `-ne` `-nc` `--no-mcp` `--offline`，之后再接管也沿用。
 - **登录、扩展与终端联动**（D79）：「pi 设置 → 登录 / 凭据」就是 `/login` `/logout`——pi 自己跑登录流程（API key 或 OAuth），网页只转达它的提问、授权链接和设备码，凭据由 pi 写进 `auth.json`；「扩展与 MCP」跑 pi 的 `install / remove / update` 和 `mcp add / list / remove / login / logout`；「全局」页底部可以把「会话锁」扩展装进 pi 的全局扩展，之后终端里的 pi 会登记自己开着的会话，网页不会去接管它（显示「终端占用」），终端打开网页正在写的会话前也会先提醒。
 - **升级 pi 本体**（D112）：「扩展与 MCP」页顶部一行「pi 本体」：当前版本、最新版本（带来源）、`重新检查`、`更新 pi`。检查是懒的、按来源缓存 30 分钟（先问 npm 安装源，失败再问 pi.dev），点更新先弹确认框（要联网、可能几分钟、会替换全局安装的 pi、失败没有自动回滚），装完桥自己重读磁盘上的版本并广播，页面上的版本号立刻变、不用重启桥；已开着的会话仍是旧代码，给一颗「重启当前会话」。
 - **分享与报 bug**（D80）：`/share` 照 pi 的顺序上传会话——登录了 Radius 传 Radius，否则用 GitHub CLI 建私有 gist，回一个 pi 的查看链接；`/bug` 用 pi 自己的报告格式（设置去敏、不含 API key，可选附上会话记录），上传给 pi 开发者或导出 zip 下载。两者发出前都先说明会带走什么。
@@ -184,7 +186,7 @@ node bridge/tests/shells.mjs                                          # 终端�
 node bridge/tests/settings-trust.mjs                                  # 设置读写 / 项目信任 / 启动参数 / 运行时设置 / 重新加载（D78，假 pi + 真 pi 模块）
 node bridge/tests/gate-modes.mjs                                      # 权限模式：只读白名单、逐个确认覆盖 MCP / 扩展工具（D78）
 node --experimental-transform-types bridge/tests/settings-defaults.mjs  # 设置面板的默认值来自 pi 包的 schema（D160）
-node --experimental-transform-types bridge/tests/whatsnew-unit.mjs  # 「本项目更新日志」读检出根 `CHANGELOG.md`，按字节截断、缺文件不抛（D190）
+node --experimental-transform-types bridge/tests/whatsnew-unit.mjs  # 「本项目更新日志」读检出根 `CHANGELOG.md`，按字节截断、缺文件不抛（D195）
 node bridge/tests/default-permission.mjs  # 默认权限：项目→全局→ask，会话首次被看见时钉住（D161）
 node bridge/tests/login-flow.mjs                                      # /login /logout：API key、取消、OAuth 授权链接转达、登出（D79，不联网）
 node bridge/tests/session-lock.mjs                                    # 终端会话锁扩展 + bridge 拒绝接管 + 安装 / 移除（D79）
@@ -206,6 +208,10 @@ node bridge/tests/i18n-ui.mjs                                         # 三语�
 node bridge/tests/peer-e2e.mjs                                        # 内网通：两实例互见、组播不可达时手动地址、消息/回执/补投、好友、文件哈希、agent 工具（D96–D107，先 build:peer）
 node probes/peer-multicast.mjs                                        # 组播快检：这台机器的网络栈放不放行 239.255.42.99（通过 ≠ 穿过交换机也通）
 node probes/runtime-panel.mjs                                         # 运行时面板 UI：一行摘要 + 每个运行中的 pi 一行、桥广播就跟着变、「不可用」不留空、三语不缺键（#77，桩桥 + 真 Chromium）
+node bridge/tests/preview-tool.mjs                                    # open_preview 的回环路由：只投给正在看这个会话的页面，没有页面就明确失败（#224，假 pi）
+node --experimental-transform-types bridge/tests/open-preview-unit.mjs  # open_preview 扩展这一层：解释取自桥的 text、英文码不外泄、桥 5 秒不答算通道故障（#224 复审，http stub）
+node bridge/tests/hint-spawn.mjs                                      # 网页会话的交付提示词：默认教训 + 交付两段都在，PI_WEB_HINT=0 只剩教训、PI_WEB_LESSONS=0 只剩提示（#226，假 pi）
+node probes/preview-open.mjs                                          # open_preview 到 viewer：真 Chromium 里预览面板弹出、标题就是文件名（#224，桩桥 + 真 Chromium）
 ```
 
 `npm run typecheck` 分别跑 bridge、peer 和 web 的 `tsc --noEmit`。
@@ -226,7 +232,7 @@ node .pi/skills/pi-web-client-test-dev/bin/env.mjs stop --id t1 # 或 --all
 
 ## 补更新日志（`/whatsnew-write`）
 
-`CHANGELOG.md` 由 AI 写、人扫一眼（D190）；写的那一步是一条命令（D191）：
+`CHANGELOG.md` 由 AI 写、人扫一眼（D195）；写的那一步是一条命令（D196）：
 
 ```text
 /whatsnew-write               # 读锚点后新合进 main 的提交，写成一批，开 worktree → 提交 → PR
