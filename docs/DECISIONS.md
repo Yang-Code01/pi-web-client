@@ -3083,7 +3083,7 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 **验证：** `npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（含 `i18n-check`）；文案模板键在 `en.ts` / `ja.ts` 同步换键并补 `1 天` 的译名，漏一条 typecheck 会报。
 已有 step-up 用例（`bridge/tests/runtime-settings.mjs`、`sleep-all.mjs`）只断言「公网要口令」，不锁时长，不受影响。
 
-## D187 open_preview 的路径信任只到「会话目录 + transcript 尾部」（#225）
+## D190 open_preview 的路径信任只到「会话目录 + transcript 尾部」（#225）
 
 **决定：** `/api/preview/open` 在调 `openPreview` 之前先过 `isTrustedPreviewPath`：路径在会话 cwd 之内，或在会话 transcript（`state.file`）里出现过，才放行；否则回 `{ok:false, reason:"untrusted-path"}`，**不签发 token、不投递**。`openPreview` 自己那条宽松规则（D50：任意绝对路径可读）保持不动，`/api/preview` 与 `/api/dirs` 照旧。
 
@@ -3102,14 +3102,14 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 
 **验证：** `node bridge/tests/preview-tool.mjs`（22 项：两个标签页都在看 → 都收到；cwd 外且 transcript 没提过 → `untrusted-path`、不回路径/凭据、不投递；提过 → 允许；再塞 600 KB 填充把提及挤出尾部窗口 → 重新拒绝）；`node probes/preview-open.mjs`（16 项：wrong-session 请求后标题、正文与 `scrollTop` 都不变；伪造错会话的 `preview.open` 被前端丢掉，同一条消息换对 sessionId 会打开；页面仍停在原会话；两个标签页都弹）；`npm run typecheck`。
 
-## D188 网页会话多一段「交付礼仪」提示词：覆盖全局规则、只投给正在看本会话的页面、先问后开（#226，父票 #223）
+## D191 网页会话多一段「交付礼仪」提示词：覆盖全局规则、只投给正在看本会话的页面、先问后开（#226，父票 #223）
 
 **决定：** `Session.startLive` 在「工作区教训」之后再传一次 `--append-system-prompt`，内容是 `bridge/src/delivery.ts:18` 的 `DELIVERY_HINT`（8 行、514 字的短文本，不走文件）。`PI_WEB_HINT=0` 关掉，与 `PI_WEB_LESSONS=0` 同一手感；两个开关各管各的，谁关掉都不会顶掉另一段（pi 的这个参数可重复）。提示词里写死四件事：你在 pi-web-client 的网页客户端里、用户正在这个页面上看；这一段**覆盖**全局 AGENTS.md 的「产物交付：能开就直接开」；交付产物（html / md / 图片 / 表格 / 代码）先用问卷问「要在预览里打开吗？」（选项「在预览里打开」「先不看」），选了打开才调用 `open_preview`，不为交付开浏览器窗口或本机程序；工具回 `no-page` 就改说「点上面的路径」、回 `untrusted-path` 就说明文件不在会话目录，PDF / docx / 在预览里跑坏白屏的只讲原因并指向客户端既有的「用本机程序打开」出口。
 
 **为什么：**
 
 1. **不动全局 AGENTS.md。** 那条「能开就直接开」对终端里的 pi 仍然正确（终端没有预览面板，「打开」只能是外部程序），而全局文件归用户所有、影响所有项目 —— 为一个客户端改掉所有地方的交付方式不划算，也会让终端的 pi 去开一个没人看见的窗口。覆盖关系改由这段随会话注入的文本自己声明：模型是在 spawn 那一刻才知道自己在网页里，就在那一刻告诉它「两处冲突以这里为准」，比让两份常驻文档互相引用干净。终端会话没有这段注入，规则原样生效。
-2. **只投给「正在看本会话」的页面（与 D187 的投递范围同一条链）。** viewer 是单例面板，产物跟着会话走；一个后台会话写完文件就抢走前台页面的预览，等于把人的注意力从正在读的东西上拽开。没有页面在看就回 `no-page`，让模型改口写路径，而不是假装打开过 —— 否则它会接着讲用户根本没看到的东西。失败语义要在提示词里写死，因为模型对「工具失败」的默认反应常是重试或糊过去。
+2. **只投给「正在看本会话」的页面（与 D190 的投递范围同一条链）。** viewer 是单例面板，产物跟着会话走；一个后台会话写完文件就抢走前台页面的预览，等于把人的注意力从正在读的东西上拽开。没有页面在看就回 `no-page`，让模型改口写路径，而不是假装打开过 —— 否则它会接着讲用户根本没看到的东西。失败语义要在提示词里写死，因为模型对「工具失败」的默认反应常是重试或糊过去。
 3. **先问后开，不自动弹。** 一次交付可能不止一个产物（html + 图 + 表格），自动弹就是连着抢镜头，手机上尤其烦；从点击「在预览里打开」到 viewer 出现还隔着一次模型往返（1–3 秒），自动弹会让这段空白看起来像卡住。问一句把「开不开」留在人手里，代价是一次往返加一张问卷卡。
 
 **代价 / 可改：**
@@ -3122,7 +3122,7 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 
 **验证：** `npm run test:hint`（`bridge/tests/hint-spawn.mjs`，12 项：默认两段都在、教训文件内容对得上、交付提示词含「覆盖」/「要在预览里打开吗」/`open_preview`/`no-page`/`untrusted-path`/「用本机程序打开」且不超过 15 行、`PI_WEB_HINT=0` 只剩教训、`PI_WEB_LESSONS=0` 只剩提示）；`node --experimental-transform-types bridge/tests/lessons-spawn.mjs`（8 项；改了两条断言：#226 起第一次 spawn 也带交付提示词，「没有教训段」改成按值判断而不是按参数名）；`npm --prefix web run typecheck`（本次没有新增界面文案，i18n 键不变）。
 
-## D189 `open_preview` 要页面回执才算打开：`preview.open.done` + `no-ack` / `stale` 两个 reason（#224 复审，父票 #223）
+## D192 `open_preview` 要页面回执才算打开：`preview.open.done` + `no-ack` / `stale` 两个 reason（#224 复审，父票 #223）
 
 **决定：** `/api/preview/open` 不再「把 `preview.open` 帧扔出去就回 `ok:true`」，而是给这一帧带上 `reqId`（`crypto.randomUUID()`），在桥的内存里挂 `pendingPreview: Map<reqId, {ws, settle, timer}>`，等页面回一条 `{type:"preview.open.done", reqId, ok, reason?, text?}` 才结算：
 

@@ -271,6 +271,99 @@ parallelRuns.noteToolEnd(
 );
 assert.equal(parallelRuns.list()[0]?.task, "1. 甲\n2. 乙", "parallel 没给 task 时也逐条列，而不是空着");
 
+// ---------------------------------------------------------------- 前台派活（D187）
+
+// `async:false` 的并行/工作流：结果 details 里什么都不认，卡片只能靠工具开始那刻立起来。
+const FG_ID = "call_00_ETforeground0001";
+const fgRoot = mkdtempSync(join(tmpdir(), "pi-subagents-fg-"));
+const fgBase = join(fgRoot, "async-subagent-runs");
+const fgRuns = new BgRuns(() => {});
+fgRuns.noteToolStart(
+  "subagent",
+  { workflow: "parallel", async: false, args: { tasks: [{ agent: "researcher", task: "查甲" }, { agent: "researcher", task: "查乙" }] } },
+  FG_ID,
+);
+const fgStart = fgRuns.list()[0];
+assert.equal(fgStart?.agent, "researcher", "前台派活的 agent 从 args.tasks 里取");
+assert.equal(fgStart?.task, "1. 查甲\n2. 查乙");
+assert.equal(fgStart?.state, "running");
+assert.equal(fgStart?.hasLog, false, "孩子还没落盘：过程记录先空着");
+assert.equal(fgRuns.view()?.n, 1, "派活那刻提示条就要在");
+
+// 孩子自己的 `status.json` 记着 `parentWorkflowRunId` = 派活那次工具调用 id。
+const childA = join(fgBase, "11111111-1111-4111-8111-111111111111");
+const childB = join(fgBase, "22222222-2222-4222-8222-222222222222");
+mkdirSync(childA, { recursive: true });
+mkdirSync(childB, { recursive: true });
+writeFileSync(
+  join(childA, "status.json"),
+  JSON.stringify({ mode: "single", state: "complete", parentWorkflowRunId: FG_ID, workflowKey: "task-1", startedAt: Date.now() + 1000, endedAt: Date.now() + 5000, steps: [{ agent: "researcher" }] }),
+);
+writeFileSync(
+  join(childB, "status.json"),
+  JSON.stringify({ mode: "single", state: "running", parentWorkflowRunId: FG_ID, workflowKey: "task-2", startedAt: Date.now() + 2000, steps: [{ agent: "researcher" }] }),
+);
+fgRuns.prune();
+assert.equal(fgRuns.list()[0]?.hasLog, true, "扫到孩子之后过程记录就有了");
+const fgLog = fgRuns.readLog(FG_ID).log ?? "";
+assert.match(fgLog, /task-1 researcher started/);
+assert.match(fgLog, /task-1 researcher complete/);
+assert.match(fgLog, /task-2 researcher started/);
+assert.doesNotMatch(fgLog, /-\d+\.\d+s/, "孩子时间早于派活也不出负号");
+assert.doesNotMatch(fgLog, /operation/);
+
+// 工具结束 = 跑完；答复在结果文本的 `Return: {…}` 里。
+fgRuns.noteToolEnd(
+  "subagent",
+  undefined,
+  `Run fan-out: 2/64 used, 62 remaining\nWorkflow completed. Return: {"ok":true,"children":[{"key":"task-1","agent":"researcher","ok":true,"output":"甲的回答"},{"key":"task-2","agent":"researcher","ok":true,"output":"乙的回答"}]}`,
+  undefined,
+  FG_ID,
+);
+const fgDone = fgRuns.list()[0];
+assert.equal(fgDone?.state, "done", "工具结束就收卡");
+assert.equal(fgDone?.hasOut, true);
+const fgOut = fgRuns.readLog(FG_ID).out ?? "";
+assert.match(fgOut, /## task-1 · researcher\n甲的回答/);
+assert.match(fgOut, /## task-2 · researcher\n乙的回答/);
+
+// 单跑的前台调用不立卡：会话本来就没 settle，操作行已经在显示它了。
+const syncRuns = new BgRuns(() => {});
+syncRuns.noteToolStart("subagent", { agent: "worker", task: "一个孩子" }, "call_00_single0001");
+assert.equal(syncRuns.list().length, 0, "单跑前台不立卡");
+syncRuns.noteToolStart("subagent", { action: "status", id: FG_ID }, "call_00_queries0001");
+assert.equal(syncRuns.list().length, 0, "action:status 是查询，不是派活");
+// 缺省 / `async:true` 是后台：那张卡由 `tool_execution_end` 建，这里再建就是双卡。
+syncRuns.noteToolStart("subagent", { workflow: "parallel", args: { tasks: [{ agent: "worker", task: "甲" }, { agent: "worker", task: "乙" }] } }, "call_00_background0001");
+assert.equal(syncRuns.list().length, 0, "后台并行不在开始建卡");
+syncRuns.noteToolStart("subagent", { workflow: "parallel", async: true, args: { tasks: [{ agent: "worker", task: "甲" }, { agent: "worker", task: "乙" }] } }, "call_00_background0002");
+assert.equal(syncRuns.list().length, 0, "显式 async:true 也是后台");
+
+// 脚本式前台 workflow（没有 `args.tasks`）：任务原文只能从孩子的 `sessionName` 兑底。
+const scriptFgId = "call_00_ETscriptfg0001";
+const scriptFgRoot = mkdtempSync(join(tmpdir(), "pi-subagents-sfg-"));
+const scriptChild = join(scriptFgRoot, "async-subagent-runs", "33333333-3333-4333-8333-333333333333");
+mkdirSync(scriptChild, { recursive: true });
+const scriptFg = new BgRuns(() => {});
+scriptFg.noteToolStart("subagent", { workflow: true, async: false }, scriptFgId);
+assert.equal(scriptFg.list()[0]?.task, "", "派活那刻确实没有任务原文");
+writeFileSync(
+  join(scriptChild, "status.json"),
+  JSON.stringify({
+    mode: "single",
+    state: "running",
+    parentWorkflowRunId: scriptFgId,
+    workflowKey: "task-1",
+    startedAt: Date.now() + 1000,
+    steps: [{ agent: "planner", sessionName: "planner: 拆一下这个需求再分下去", status: "running" }],
+  }),
+);
+scriptFg.prune();
+assert.equal(scriptFg.list()[0]?.agent, "planner");
+assert.equal(scriptFg.list()[0]?.task, "拆一下这个需求再分下去", "任务原文从 sessionName 兑底");
+rmSync(scriptFgRoot, { recursive: true, force: true });
+rmSync(fgRoot, { recursive: true, force: true });
+
 // ---------------------------------------------------------------- 读痕迹
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

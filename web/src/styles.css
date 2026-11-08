@@ -607,7 +607,19 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .chat-empty { display: grid; gap: 8px; justify-items: center; text-align: center; padding: 24px; }
 .chat-empty .chat-empty-title { color: var(--dim); font-size: 14px; }
 .chat-empty .chat-empty-hint { color: var(--faint); font-size: 12px; }
-.chat-scroll { padding: 16px 16px 8px; display: flex; flex-direction: column; gap: 12px; }
+/* #220: 翻页后的 scrollTop 是手算回填的（按节点锚定）。浏览器的 scroll anchoring 会在同一帧里再
+   改一遍 scrollTop，两边互相拽（Safari 根本没有这个特性，所以也不能靠它）—— 关掉，锚定只由
+   ChatView.prepend() 说了算。 */
+.chat-scroll { padding: 16px 16px 8px; display: flex; flex-direction: column; gap: 12px; overflow-anchor: none; }
+/* #220: 顶端那一行「载入更早」。它是列表的第一块内容 —— 翻出来的老内容插在它**下面**，不是顶上。 */
+.chat-more { display: flex; justify-content: center; }
+.chat-more[hidden] { display: none; }
+.chat-more .more-btn {
+  padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px; background: transparent;
+  color: var(--dim); font-size: 12px; line-height: 1.4; cursor: pointer;
+}
+.chat-more .more-btn:hover:not(:disabled) { color: var(--fg); border-color: var(--dim); }
+.chat-more .more-btn:disabled { cursor: default; opacity: .6; }
 /* 这个列容器有确定高度且 overflow-y:auto；子项若自带 overflow:hidden（如 .fcard），
    min-height:auto 会退化成 0，于是长会话里被 flex 压缩成 2px 细线。统一禁止收缩。 */
 .chat-scroll > * { flex: 0 0 auto; min-width: 0; }
@@ -2735,6 +2747,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .settings-sheet .settings-label { font-size: 12px; color: var(--text); }
 .settings-sheet .settings-row .settings-hint { grid-column: 2; }
 .settings-sheet .settings-hint { font-size: 11px; color: var(--faint); line-height: 1.5; }
+.settings-sheet .settings-hint.bad { color: var(--danger); }
 /* 分组小标题：长表单没人会从头读到尾，扫一眼就知道这一段是干什么的 */
 .settings-sheet .settings-group { font-size: 11px; letter-spacing: 0.06em; color: var(--faint); border-top: 1px solid var(--line-soft); padding-top: 10px; margin-top: 2px; }
 .settings-sheet .settings-form > .settings-group:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
@@ -3606,3 +3619,120 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .badge.clickable:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
 /* 钉条胶囊里那行小字：能点开详情的那几颗才挂这个类（D170）。 */
 .pin-open .pin-sub-detail { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+
+/*
+ * 设置 → 子代理（#212 只读清单，#213 基础字段可编辑）：样张 B 的两栏工作台（980px、左锚点、右分区）。
+ * 样式只挂在 .subagents-sheet 下 —— 类名是从原型拷的，但不能泄漏到别的 sheet。
+ * 「默认 / 行为 / 发现与扩展」用既有 .settings-row / .ns-input；agent 表本身仍只读。
+ */
+.settings-sheet.subagents-sheet { width: min(980px, calc(var(--vw1) * 96)); }
+.settings-sheet.subagents-sheet .settings-body { overflow: hidden; grid-template-rows: minmax(0, 1fr); }
+@media (max-width: 980px) {
+  .settings-sheet.subagents-sheet { width: 100%; height: 100%; max-height: 100%; border-radius: 0; }
+}
+.subagents-sheet .subagents-page { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.subagents-sheet .subagents-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.subagents-sheet .subagents-bar .spacer { flex: 1; }
+.subagents-sheet .subagents-seg {
+  font: inherit; font-size: 12px; color: var(--dim);
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  padding: 4px 9px; cursor: pointer;
+}
+.subagents-sheet .subagents-seg:hover { color: var(--text); background: var(--line-soft); }
+.subagents-sheet .subagents-seg[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.subagents-sheet .subagents-seg:disabled { opacity: 0.45; cursor: not-allowed; }
+.subagents-sheet .subagents-path { font: 11.5px var(--mono); color: var(--faint); overflow-wrap: anywhere; }
+.subagents-sheet .subagents-hint { margin: 0; font-size: 11px; line-height: 1.55; color: var(--faint); }
+.subagents-sheet .note { border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px 10px; font-size: 11.5px; line-height: 1.55; background: var(--sunken); color: var(--dim); }
+.subagents-sheet .note.warn { border-color: var(--warn-dim); background: var(--warn-bg); color: var(--warn); }
+.subagents-sheet .subagents-split {
+  flex: 1; min-height: 0; max-height: min(64vh, 600px);
+  display: grid; grid-template-columns: 150px minmax(0, 1fr);
+  border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden;
+}
+/* 保存按钮在右侧滚动区外面：表单再长，滚到底也还是这一颗 */
+.subagents-sheet .subagents-foot { display: flex; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.subagents-sheet .subagents-foot .spacer { flex: 1; }
+.subagents-sheet .subagents-foot .settings-hint { flex: 0 1 auto; min-width: 0; }
+.subagents-sheet .subagents-nav {
+  display: grid; gap: 2px; align-content: start; padding: 10px 8px;
+  background: var(--sunken); border-right: 1px solid var(--line-soft);
+}
+.subagents-sheet .subagents-nav a {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--dim); text-decoration: none;
+  padding: 5px 8px; border-radius: 7px; border: 1px solid transparent;
+}
+.subagents-sheet .subagents-nav a:hover { color: var(--text); background: var(--line-soft); }
+.subagents-sheet .subagents-nav a.on { color: var(--text); background: var(--line-soft); border-color: var(--line); }
+.subagents-sheet .subagents-nav a .n { margin-left: auto; font: 10.5px var(--mono); color: var(--line-lit); }
+.subagents-sheet .subagents-sep { height: 1px; background: var(--line-soft); margin: 6px 4px; }
+.subagents-sheet .subagents-pane { display: grid; gap: 18px; align-content: start; padding: 12px 16px 18px; overflow-y: auto; min-height: 0; }
+.subagents-sheet .subagents-sec { display: grid; gap: 8px; scroll-margin-top: 4px; }
+.subagents-sheet .subagents-sec > h3 { margin: 0; font-size: 12px; font-weight: 500; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.subagents-sheet .subagents-sec > h3 .subagents-hint { font-weight: 400; }
+.subagents-sheet .subagents-badge {
+  display: inline-flex; align-items: center; font: 10.5px var(--mono);
+  padding: 1px 6px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--dim); background: var(--line-soft);
+}
+.subagents-sheet .subagents-badge.package { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }
+.subagents-sheet .subagents-badge.user { color: var(--ok); border-color: var(--ok-dim); background: var(--ok-bg); }
+.subagents-sheet .subagents-badge.project { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
+.subagents-sheet .subagents-dirs { display: grid; gap: 2px; }
+.subagents-sheet .subagents-dir { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); }
+.subagents-sheet .subagents-dir:last-child { border-bottom: 0; }
+.subagents-sheet .subagents-dir .dp { flex: 1; min-width: 0; font: 11px var(--mono); color: var(--dim); overflow-wrap: anywhere; }
+.subagents-sheet .subagents-dir .n { font: 11px var(--mono); color: var(--faint); white-space: nowrap; }
+.subagents-sheet .subagents-dir.missing .dp { color: var(--faint); text-decoration: line-through; }
+.subagents-sheet .subagents-agents { width: 100%; border-collapse: collapse; font-size: 12px; }
+.subagents-sheet .subagents-agents th {
+  text-align: left; font-size: 10.5px; font-weight: 400; letter-spacing: 0.05em; color: var(--faint);
+  padding: 4px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap;
+}
+.subagents-sheet .subagents-agents th:nth-child(1) { width: 30%; }
+.subagents-sheet .subagents-agents th:nth-child(2) { width: 72px; }
+.subagents-sheet .subagents-agents th:nth-child(3) { width: 150px; }
+.subagents-sheet .subagents-agents td { padding: 3px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.subagents-sheet .subagents-agents tr:last-child td { border-bottom: 0; }
+.subagents-sheet .subagents-agents td.agent { font: 11.5px var(--mono); color: var(--text); white-space: nowrap; }
+.subagents-sheet .subagents-agents td.fm { font: 11px var(--mono); color: var(--dim); white-space: nowrap; }
+.subagents-sheet .subagents-agents td.fm.unset { color: var(--faint); }
+/* #214：右半边可编辑 —— frontmatter 列两行只读事实，覆盖列一组窄控件 */
+.subagents-sheet .subagents-agents td.fm .fm-line { display: flex; gap: 5px; }
+.subagents-sheet .subagents-agents td.fm .k { color: var(--faint); }
+.subagents-sheet .subagents-agents input.ns-input,
+.subagents-sheet .subagents-agents select.ns-input { padding: 4px 6px; font-size: 11.5px; }
+/* 覆盖改动了 frontmatter 的行：整行淡淡一层底色 + 名字后那枚「改」 */
+.subagents-sheet .subagents-agents tr.changed td { background: var(--accent-bg); }
+.subagents-sheet .subagents-badge.changed { margin-left: 5px; color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
+/* .subagents-badge 的 display 会盖掉 UA 的 [hidden]，得自己收回 */
+.subagents-sheet .subagents-badge[hidden] { display: none; }
+.subagents-sheet .subagents-clear { font-size: 10.5px; padding: 2px 6px; white-space: nowrap; }
+
+/* #216：「高级」默认折叠成一条 details；三块共用窄表，行标签是点号键或设备标签 */
+.subagents-sheet .subagents-advanced { border: 1px solid var(--line-soft); border-radius: 10px; padding: 0 12px; }
+.subagents-sheet .subagents-advanced > summary {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 10px 0; cursor: pointer; list-style: none;
+}
+.subagents-sheet .subagents-advanced > summary::-webkit-details-marker { display: none; }
+.subagents-sheet .subagents-advanced > summary > span:first-child { font-size: 12px; font-weight: 500; color: var(--text); }
+.subagents-sheet .subagents-advanced[open] > summary { border-bottom: 1px solid var(--line-soft); }
+.subagents-sheet .subagents-adv-body { padding: 10px 0 12px; display: grid; gap: 4px; }
+.subagents-sheet .subagents-adv-block { display: grid; gap: 6px; }
+.subagents-sheet .subagents-adv-block > h4 { margin: 0; font: 500 12px var(--mono); color: var(--text); }
+.subagents-sheet .subagents-adv-block > .subagents-hint { margin: 0; }
+.subagents-sheet .subagents-adv-rows { width: 100%; border-collapse: collapse; }
+.subagents-sheet .subagents-adv-rows th {
+  text-align: left; font-size: 10.5px; font-weight: 400; letter-spacing: 0.05em; color: var(--faint);
+  padding: 4px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap;
+}
+.subagents-sheet .subagents-adv-rows td { padding: 3px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.subagents-sheet .subagents-adv-rows tr:last-child td { border-bottom: 0; }
+.subagents-sheet .subagents-adv-rows td.name { font: 11.5px var(--mono); color: var(--text); white-space: nowrap; }
+.subagents-sheet .subagents-adv-rows td.name .subagents-hint { font-family: inherit; margin-top: 2px; }
+.subagents-sheet .subagents-adv-rows input.ns-input,
+.subagents-sheet .subagents-adv-rows select.ns-input { padding: 4px 6px; font-size: 11.5px; width: 100%; }
+
+.subagents-sheet .subagents-adv-block + .subagents-adv-block { margin-top: 10px; }

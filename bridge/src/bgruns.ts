@@ -1,5 +1,6 @@
 /**
- * 后台子代理（D170 / D172）：会话自己已经 settle，派出去的 runner 还在跑。
+ * 子代理（D170 / D172 / D187）：会话自己已经 settle，派出去的 runner 还在跑。前台派活
+ * （`async:false`）是例外 —— 它还在同一轮里，卡片只是为了让人看得见它在干什么。
  *
  * pi 只在 `tool_execution_end` 的 `details` 里承认一次「有这么个 run」：
  *
@@ -17,9 +18,13 @@
  *
  * 读盘只碰白名单里的两处根（`%TEMP%` 下的 `acp-delegate` 与 `pi-subagents-*`），且只读尾巴
  * （见 `tail()`）。
+ *
+ * **前台派活也算一张卡**（D187）：`async:false` 的并行/工作流从来不会出现在结果 details 里，
+ * 所以它在 `tool_execution_start` 就按工具调用 id 立卡，过程从孩子各自的 `status.json` 现拼，
+ * 最终答复从结果文本的 `Return: {…}` 取。
  */
 
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readdirSync, readSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -28,7 +33,8 @@ const ACP_DIR = join(tmpdir(), "acp-delegate");
 const TASK_LINE = /^Task:[ 	]*(.+)$/m;
 const LIVE_LOG = /Live activity is streaming to `([^`]+)`/;
 /** pi-subagents 的 async 目录：`<tmpdir>/pi-subagents-<scope>/async-subagent-runs/<id>/`。 */
-const SUBAGENTS_TMP = join(tmpdir(), "pi-subagents-");
+const SUBAGENTS_PREFIX = "pi-subagents-";
+const SUBAGENTS_TMP = join(tmpdir(), SUBAGENTS_PREFIX);
 /**
  * 只有这两个工具会「派一个后台子代理」。别的工具结果里出现同样的句子（读文档、看日志、
  * `grep` 到 D170 自己那段说明）不算 —— D172 的幽灵任务就是这么造出来的。
@@ -58,6 +64,13 @@ export interface BgRun {
   /** 派的是一个 workflow（`subagent({workflow:…})`）。它的痕迹不长在 `outputFile` / 完成态摘要上：
    * 过程 = 同目录的 `events.jsonl`，最终答复 = `status.json` 的 `workflow.value.children[]`（D185）。 */
   workflow?: boolean;
+  /** 派活时就是前台的（`async:false`）：没有 `asyncDir`、没有父 run 目录。卡片按工具调用 id 立起来，
+   * 孩子从各自 `status.json` 的 `parentWorkflowRunId` 认出来（D187）。 */
+  foreground?: boolean;
+  /** 前台派活的孩子清单（`prune()` 里扫出来）：过程记录就靠它现拼。 */
+  children?: FgChild[];
+  /** 前台跑完的答复：结果文本里那坨 `Return: {…}` 的 `children[].output`（D187）。 */
+  outText?: string;
 }
 
 /** 会话快照 / `SessionState.bg` 里那一小块：前端只画「N 个 · 谁 · 从什么时候」。 */
@@ -187,6 +200,25 @@ interface Child {
   task: string;
 }
 
+/** 前台派活的孩子：它的 `status.json` 就是过程记录（没有父 run 的 `events.jsonl` 可 tail）。 */
+interface FgChild {
+  /** 孩子的 run 目录名（UUID）。 */
+  id: string;
+  /** `workflowKey`（`task-1` …），派活列表里的序号。 */
+  key: string;
+  agent: string;
+  /** `steps[0].sessionName` 去掉 `agent: ` 前缀 —— 只在缺任务原文时兜底用（runner 截过）。 */
+  task?: string;
+  state: string;
+  startedAt?: number;
+  endedAt?: number;
+}
+
+/** 非空字符串才算数（`""` / 空白 / 非字符串都当没有）。 */
+function str(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim() ? v : undefined;
+}
+
 /**
  * `subagent({ workflow: "parallel", args: { tasks: [{ agent, task }] } })` 的派活原话在
  * `args.args.tasks[]` 里：顶层既没有 `agent` 也没有 `task`，只认顶层的话卡片永远写
@@ -292,8 +324,7 @@ function workflowTimeline(file: string, limit: number): string | undefined {
     }
     const ts = typeof ev.ts === "number" ? ev.ts : 0;
     if (!base) base = ts;
-    const rel = base && ts ? ((ts - base) / 1000).toFixed(1) : "?";
-    const stamp = `${rel.padStart(7)}s`;
+    const stamp = base && ts ? clock(ts, base) : "      ?s";
     const type = String(ev.type ?? "");
     if (type === "subagent.workflow.trace") continue; // 累积快照，下面三条骨架已经覆盖
     if (type === "subagent.child-status") {
@@ -312,16 +343,18 @@ function workflowTimeline(file: string, limit: number): string | undefined {
   return text.length > limit ? `…\n${text.slice(-limit)}` : text;
 }
 
+/** 时间线的一列：相对 `base` 的秒数，右对齐 7 位（`    8.6s`），两条时间线共用。 */
+function clock(at: number, base: number): string {
+  return `${(Math.max(0, at - base) / 1000).toFixed(1).padStart(7)}s`;
+}
+
 /**
- * workflow 跑完的答复不落成单个文件：它在 `status.json` 的 `workflow.value.children[]` 里，
- * 每个孩子一段 `output`。总长可能几十 KB，取开头（结论都在前面），末尾标省略。
+ * 几个孩子的答复拼成「最终输出」：每个孩子一段 `## key · agent` + `output`。
+ * 总长可能几十 KB，取开头（结论都在前面），末尾标省略。
  */
-function workflowOutput(dir: string, limit: number): string | undefined {
-  const wf = statusObject(dir)?.workflow;
-  const value = wf && typeof wf === "object" ? (wf as Record<string, unknown>).value : undefined;
-  const kids = value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).children) ? ((value as Record<string, unknown>).children as unknown[]) : [];
+function formatChildren(raw: unknown[], limit: number): string | undefined {
   const parts: string[] = [];
-  for (const item of kids) {
+  for (const item of raw) {
     if (!item || typeof item !== "object") continue;
     const c = item as Record<string, unknown>;
     const out = typeof c.output === "string" ? c.output.trim() : "";
@@ -332,6 +365,132 @@ function workflowOutput(dir: string, limit: number): string | undefined {
   if (!parts.length) return undefined;
   const text = parts.join("\n\n");
   return text.length > limit ? `${text.slice(0, limit)}\n…` : text;
+}
+
+/** workflow 跑完的答复不落成单个文件：它在 `status.json` 的 `workflow.value.children[]` 里。 */
+function workflowOutput(dir: string, limit: number): string | undefined {
+  const wf = statusObject(dir)?.workflow;
+  const value = wf && typeof wf === "object" ? (wf as Record<string, unknown>).value : undefined;
+  const kids = value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).children) ? ((value as Record<string, unknown>).children as unknown[]) : [];
+  return formatChildren(kids, limit);
+}
+
+// ---------------------------------------------------------------- 前台派活（`async:false`，D187）
+
+/** `%TEMP%\pi-subagents-*` 这几个根（一台机器上可能有多个 scope，比如带用户名后缀的）。 */
+function subagentRoots(): string[] {
+  const roots: string[] = [];
+  try {
+    for (const name of readdirSync(tmpdir())) {
+      if (!name.startsWith(SUBAGENTS_PREFIX)) continue;
+      const root = join(tmpdir(), name);
+      if (existsSync(join(root, "async-subagent-runs"))) roots.push(root);
+    }
+  } catch {
+    // 读不到就是没有：卡片上少一栏过程记录，不影响别的。
+  }
+  return roots;
+}
+
+/**
+ * 扫出这次派活的孩子。前台没有父 run 目录，但每个孩子自己的 `status.json` 记着
+ * `parentWorkflowRunId` = 派活那次工具调用的 id，按它筛比按时间猜稳。
+ *
+ * 只解析 `since` 之后新写过的 `status.json`：历史目录几十个，绝大多数一眼跳过。
+ */
+function fgChildren(parentId: string, since: number): FgChild[] {
+  const out: FgChild[] = [];
+  for (const root of subagentRoots()) {
+    const base = join(root, "async-subagent-runs");
+    let names: string[];
+    try {
+      names = readdirSync(base);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (name.startsWith(".")) continue;
+      const dir = join(base, name);
+      try {
+        if (statSync(join(dir, "status.json")).mtimeMs < since) continue;
+      } catch {
+        continue;
+      }
+      const obj = statusObject(dir);
+      if (!obj || obj.parentWorkflowRunId !== parentId) continue;
+      const step = Array.isArray(obj.steps) ? (obj.steps[0] as Record<string, unknown> | undefined) : undefined;
+      const raw = typeof step?.sessionName === "string" ? step.sessionName.replace(/^[^:]+:\s*/, "") : "";
+      out.push({
+        id: name,
+        key: typeof obj.workflowKey === "string" ? obj.workflowKey : "",
+        agent: typeof step?.agent === "string" ? step.agent : "",
+        ...(raw ? { task: raw } : {}),
+        state: typeof obj.state === "string" ? obj.state : "",
+        ...(typeof obj.startedAt === "number" ? { startedAt: obj.startedAt } : {}),
+        ...(typeof obj.endedAt === "number" ? { endedAt: obj.endedAt } : {}),
+      });
+    }
+  }
+  return out.sort((a, b) => (a.key || a.id).localeCompare(b.key || b.id, "en"));
+}
+
+/**
+ * 前台派活没有 `events.jsonl`（父 run 根本不落盘），过程记录由孩子自己的 `status.json` 现拼：
+ * 谁在第几秒开始、谁什么时候完事。与 workflow 的时间线同一个格式。
+ */
+function fgTimeline(run: BgRun, limit: number): string | undefined {
+  const kids = run.children ?? [];
+  if (!kids.length) return undefined;
+  const rows: { at: number; text: string }[] = [];
+  for (const k of kids) {
+    const who = [k.key || k.id.slice(0, 8), k.agent].filter(Boolean).join(" ");
+    rows.push({ at: k.startedAt ?? run.startedAt, text: `${who} started` });
+    if (k.endedAt) rows.push({ at: k.endedAt, text: `${who} ${k.state}` });
+  }
+  rows.sort((a, b) => a.at - b.at);
+  // 孩子可能比派活那刻早一两秒落盘（时钟粒度 / 派发顺序），负数没有意义，底到 0。
+  const text = rows.map((r) => `${clock(Math.max(0, r.at), run.startedAt)}  ${r.text}`).join("\n");
+  return text.length > limit ? `…\n${text.slice(-limit)}` : text;
+}
+
+/** 结果文本里 `marker` 之后那坨 JSON（前台 workflow 的答复就在 `Return: {…}` 的 `children[].output`）。 */
+function jsonAfter(text: string, marker: string): Record<string, unknown> | undefined {
+  const at = text.indexOf(marker);
+  if (at < 0) return undefined;
+  const start = text.indexOf("{", at + marker.length);
+  if (start < 0) return undefined;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        try {
+          const parsed = JSON.parse(text.slice(start, i + 1)) as unknown;
+          return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : undefined;
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/** 前台 workflow 的最终答复：工具结果文本里 `Return: {ok, children:[{key, agent, output}]}`。 */
+function foregroundOutput(text: string, limit: number): string | undefined {
+  const kids = jsonAfter(text, "Return: ")?.children;
+  return Array.isArray(kids) ? formatChildren(kids as unknown[], limit) : undefined;
 }
 
 /**
@@ -345,14 +504,57 @@ export class BgRuns {
   constructor(private readonly onChange: () => void) {}
 
   /**
+   * 工具开始。前台并行/工作流（`async:false`）不会在 `tool_execution_end` 的 `details` 里承认
+   * 「有这么个 run」—— 等结果回来任务早就结束了，卡片永远来不及出现。所以这一类在开始时
+   * 按工具调用 id 立卡（D187），`agent` / `task` 直接读模型的 `args`。
+   */
+  noteToolStart(tool: string, args: unknown, callId: string): void {
+    if (tool !== "subagent" || !ID_OK.test(callId) || this.runs.has(callId)) return;
+    const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
+    // `subagent({action:"status"|"guide"|…})` 是查询，不是派活。
+    if (typeof a.action === "string") return;
+    // 只有显式 `async:false` 才是前台；缺省 / `true` 是后台，它在 `tool_execution_end` 自己建卡
+    // （这里再建一张就是双卡，而且没有任何完成信号能收掉它，得等 `SILENT_DEAD_MS`）。
+    if (a.async !== false) return;
+    const kids = taskList(a);
+    const workflow = Boolean(a.workflow);
+    // 单跑的前台调用不立卡：会话本来就没 settle，操作行已经在显示它了（可改，见 D187 代价）。
+    if (!workflow && kids.length < 2) return;
+    const summary = summarizeChildren(kids);
+    const run: BgRun = {
+      id: callId,
+      source: "subagents",
+      agent: str(a.agent) ?? summary.agent,
+      task: str(a.task) ?? summary.task,
+      startedAt: Date.now(),
+      state: "running",
+      foreground: true,
+      children: [],
+    };
+    if (workflow) run.workflow = true;
+    this.runs.set(callId, run);
+    this.arm();
+    this.onChange();
+  }
+
+  /**
    * 工具结束。`details` 是 pi 转述的 runner 字段；老版本或别的工具可能没有，
    * 那时退回结果文本里的 `` runId `…` ``（`acp_delegate` 的结果一定会写一个）。
    */
-  noteToolEnd(tool: string, details: unknown, text: string, args?: unknown): void {
+  noteToolEnd(tool: string, details: unknown, text: string, args?: unknown, callId?: string, failed = false): void {
     const d = (details && typeof details === "object" ? details : {}) as Record<string, unknown>;
     const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
-    const id = typeof d.runId === "string" && d.runId ? d.runId : firstRunId(text);
+    const id = (typeof d.runId === "string" && d.runId) || firstRunId(text) || (callId ?? "");
     if (!id) return;
+    const known = this.runs.get(id);
+    if (known?.foreground) {
+      // 前台派活：工具结束就是跑完（没有第二个完成信号），答复在结果文本的 `Return: {…}` 里。
+      const out = foregroundOutput(text, 20_000);
+      if (out) known.outText = out;
+      known.children = fgChildren(id, known.startedAt);
+      this.end(id, failed ? "failed" : "done");
+      return;
+    }
     // `acp_delegate_wait` / `_cancel` / 取消回执：同一个 runId 的结束信号，不是新任务。
     if (this.runs.has(id)) {
       if (ENDED.test(text) && !/Running in the background/.test(text)) this.end(id, FAILED.test(text) ? "failed" : "done");
@@ -367,7 +569,6 @@ export class BgRuns {
     const workflow = d.mode === "workflow";
     // agent / task 优先取结构化字段：details 是 runner 转述的，args 是模型写的那一份
     // （pi-subagents 落盘时把任务原文打成 `[prompt redacted]`，只有 args 里还是原话）。
-    const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
     const fromText = AGENT.exec(text);
     // workflow 的派活把原文藏在 `args.args.tasks[]` / `details.workflowChildren.children[]` 里，
     // 顶层两个字段都是空的（D185）。这两个位置只在 pi-subagents 侧有意义。
@@ -437,9 +638,9 @@ export class BgRuns {
         startedAt: r.startedAt,
         state: r.state,
         ...(r.endedAt ? { endedAt: r.endedAt } : {}),
-        hasLog: Boolean(r.logPath),
+        hasLog: r.foreground ? Boolean(r.children?.length) : Boolean(r.logPath),
         // workflow 的答复在 `status.json` 里现拼：跑完才有，别在 running 时撒谎说「有输出」。
-        hasOut: r.workflow ? r.state !== "running" : Boolean(r.outPath),
+        hasOut: r.foreground ? Boolean(r.outText) : r.workflow ? r.state !== "running" : Boolean(r.outPath),
       }));
   }
 
@@ -457,6 +658,13 @@ export class BgRuns {
     const run = this.runs.get(id);
     if (!run) return {};
     const view: { run?: BgRun; log?: string; out?: string } = { run };
+    if (run.foreground) {
+      // 前台派活没有可 tail 的文件：过程 = 孩子们 `status.json` 现拼的时间线。
+      const text = fgTimeline(run, limit);
+      if (text) view.log = text;
+      if (run.outText) view.out = run.outText.length > limit ? `${run.outText.slice(0, limit)}\n…` : run.outText;
+      return view;
+    }
     if (run.workflow && !run.logPath && run.dir) {
       // 开卡时 `events.jsonl` 还没落盘，`prune()` 的 30 秒滴答之前不该一直说「桥还没接上」。
       const lit = workflowEvents(run.dir);
@@ -528,6 +736,26 @@ export class BgRuns {
     let changed = false;
     for (const [id, run] of this.runs) {
       if (run.state === "running") {
+        if (run.foreground) {
+          // 前台派活：孩子是事后才落盘的，30 秒滴答里把它们扫出来，卡片才有过程可看。
+          const kids = fgChildren(id, run.startedAt);
+          if (JSON.stringify(kids) !== JSON.stringify(run.children ?? [])) {
+            run.children = kids;
+            changed = true;
+          }
+          if (!run.agent || !run.task) {
+            // 前台没有父 run 可回填；孩子目录里只有被截断的 `sessionName`，但比空着强。
+            const summary = summarizeChildren(kids.map((k) => ({ agent: k.agent, task: k.task ?? "" })));
+            if (!run.agent && summary.agent) {
+              run.agent = summary.agent;
+              changed = true;
+            }
+            if (!run.task && summary.task) {
+              run.task = summary.task;
+              changed = true;
+            }
+          }
+        }
         // pi-subagents 有权威状态：`status.json.state`。真值是 `complete`/`failed`/`stopped`/
         // `running`（实测 20 份产物全是 `complete`；文档里写的是 `completed`，两个都认）。
         // 它的完成通知写的是 `Async: researcher [id]`，桥的 `RUN_ID` 认不出来，所以读这一眼。

@@ -22,6 +22,7 @@ import { sampleMemory } from "./runtime.ts";
 import { defaultPermission } from "./permissiondefault.ts";
 import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
 import { isProtocolWidgetLines } from "./extwidgets.ts";
+import { itemsFrame, type SessionHistory } from "./history.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -695,6 +696,17 @@ type BootFailure = "boot" | "stopped" | "refused";
  */
 const BOOT_RUN_WAIT_MS = 10_000;
 
+/** `session` 帧的载荷：一条会话可画的全部内容（#219 起 `session` 帧里的 `items` 只装末尾一页）。 */
+export interface SessionSnapshot {
+  state: SessionState;
+  items: Item[];
+  approvals: ApprovalRequest[];
+  asks: AskRequest[];
+  budget: number | null;
+  ext: ExtUiState;
+  queue: { steering: string[]; followUp: string[] };
+}
+
 export class Session extends EventEmitter {
   readonly state: SessionState;
   items: Item[] = [];
@@ -962,8 +974,10 @@ export class Session extends EventEmitter {
       // Usually the file only grew, so the old transcript is a prefix of the new one. A branch
       // switch in the terminal (/tree, then a new message) replaces part of it: resend everything.
       const prefix = before.length <= this.items.length && before.every((it, i) => it.id === this.items[i].id);
-      if (!prefix) this.emitWs({ type: "items", sessionId: this.state.id, items: this.items });
-      else {
+      if (!prefix) {
+        // #221: 分支切换换掉的是整条对话 —— 与首帧同一个规矩，只推末尾一页 + `history`。
+        this.emitWs({ type: "items", sessionId: this.state.id, ...this.tailFrame() });
+      } else {
         // Same ids can still carry new content: a tool card gets its result from a later line.
         for (let i = 0; i < before.length; i++) {
           if (JSON.stringify(before[i]) !== JSON.stringify(this.items[i])) {
@@ -1069,7 +1083,7 @@ export class Session extends EventEmitter {
       const lessons = lessonFile(opts.ws);
       if (lessons) args.push("--append-system-prompt", lessons);
     }
-    // #226 / D188：告诉模型它跑在网页客户端里，附交付礼仪（`PI_WEB_HINT=0` 可关）。
+    // #226 / D191：告诉模型它跑在网页客户端里，附交付礼仪（`PI_WEB_HINT=0` 可关）。
     // 与上面那段各自追加：pi 的 `--append-system-prompt` 可重复，两个开关互不影响，谁关了都不顶掉另一个。
     // 顺序是「用户手填 → 工作区教训 → 交付提示」：事实在前、这次会话的规矩在后（离对话最近）。
     if (process.env.PI_WEB_HINT !== "0") args.push("--append-system-prompt", DELIVERY_HINT);
@@ -1156,7 +1170,8 @@ export class Session extends EventEmitter {
       });
     // A resumed session starts with the transcript pi already wrote to disk.
     if (opts.resume) this.loadFromFile();
-    this.emitWs({ type: "items", sessionId: id, items: this.items });
+    // #221: 唤醒续接同样只推末尾一页，不然休眠一个大会话再叫醒，页面又要等整段。
+    this.emitWs({ type: "items", sessionId: id, ...this.tailFrame() });
     void this.refreshStats();
   }
 
@@ -1328,6 +1343,8 @@ export class Session extends EventEmitter {
       }
       case "tool_execution_start": {
         if (ev.toolName === "ask_user_question") this.openQuestionnaire(String(ev.toolCallId ?? ""), ev.args);
+        // D187: 前台派活（`async:false`）的 run 不会出现在结果 details 里，卡片得在开始这刻立。
+        this.bgRuns.noteToolStart(String(ev.toolName ?? ""), ev.args, String(ev.toolCallId ?? ""));
         this.emitWs({
           type: "tool",
           phase: "start",
@@ -1349,7 +1366,14 @@ export class Session extends EventEmitter {
         const seen = at >= 0 ? (this.items[at] as ToolItem) : undefined;
         // D170: pi 只在结果里承认一次「有这么个 run」（`details.runId`）。
         // D172: `args` 里是模型写的那份原文（pi-subagents 落盘时把 task 打成 [prompt redacted]）。
-        this.bgRuns.noteToolEnd(String(ev.toolName ?? ""), (ev.result as any)?.details, contentText(ev.result), seen?.args);
+        this.bgRuns.noteToolEnd(
+          String(ev.toolName ?? ""),
+          (ev.result as any)?.details,
+          contentText(ev.result),
+          seen?.args,
+          String(ev.toolCallId ?? ""),
+          Boolean(ev.isError),
+        );
         {
           if (at >= 0) {
             const prev = this.items[at] as ToolItem;
@@ -2168,7 +2192,7 @@ export class Session extends EventEmitter {
     this.items = [];
     this.autoCompactUsed = false;
     this.setState({ file, truncated: false }, { touch: false });
-    this.emitWs({ type: "items", sessionId: this.state.id, items: [] });
+    this.emitWs({ type: "items", sessionId: this.state.id, items: [], history: { hasMore: false, total: 0 } });
     this.touch();
     if (before && before !== file) {
       try {
@@ -2401,15 +2425,7 @@ export class Session extends EventEmitter {
     this.emitExtUi();
   }
 
-  snapshot(): {
-    state: SessionState;
-    items: Item[];
-    approvals: ApprovalRequest[];
-    asks: AskRequest[];
-    budget: number | null;
-    ext: ExtUiState;
-    queue: { steering: string[]; followUp: string[] };
-  } {
+  snapshot(): SessionSnapshot {
     return {
       state: this.state,
       items: this.items,
@@ -2419,6 +2435,23 @@ export class Session extends EventEmitter {
       ext: this.extUi(),
       queue: this.queue,
     };
+  }
+
+  /**
+   * #219：`session` 帧只带末尾一页。`items` 仍然是这一页的原文，同帧用 `history` 说清
+   * 还有没有更早的、整段一共多少条 —— 老前端不认 `history`，照旧只画这一页。
+   * 随手问例外：它没有「载入更早」，整段下发（`itemsFrame`）。
+   */
+  pagedSnapshot(): SessionSnapshot & { history: SessionHistory } {
+    return { ...this.snapshot(), ...this.tailFrame() };
+  }
+
+  /**
+   * 三处整页帧（分支切换 / 唤醒续接 / 快照）共用的正文：普通会话是末尾一页，随手问整段。
+   * 随手问若也切页，累积超过一页后前面的话会在下一次唤醒时静默消失 —— 界面上没有入口能取回来。
+   */
+  private tailFrame(): { items: Item[]; history: SessionHistory } {
+    return itemsFrame(this.items, { full: Boolean(this.state.scratch) });
   }
 
   idleFor(): number {
@@ -3342,6 +3375,12 @@ export class SessionManager extends EventEmitter {
     // D162: handing a snapshot to a client no longer clears 完成 —— 打开只是看，不是新的一轮。
     const session = this.ensure(id);
     return session.snapshot();
+  }
+
+  /** #219: `session` 帧只带末尾一页，和老前端看到的整段是同一份数据的尾巴。 */
+  pagedSnapshot(id: string) {
+    if (!this.known(id)) throw new Error("找不到这个会话");
+    return this.ensure(id).pagedSnapshot();
   }
 
   respond(id: string, approvalId: string, decision: "approve" | "reject" | "cancel" | "always"): void {

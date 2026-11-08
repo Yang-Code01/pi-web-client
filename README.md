@@ -106,8 +106,8 @@ PI_WEB_HOST=0.0.0.0 npm start
 | `PI_WEB_ROOT` | 前端静态目录 | `web/dist` |
 | `PI_WEB_NO_EXT=1` | 不加载审批门禁扩展 | 关 |
 | `PI_WEB_LESSONS=0` | 不把工作区的老毛病（⚡ AI 出错记录里反复出现的类）挂进新会话的系统提示词，也不补自动提醒（D169） | 开 |
-| `PI_WEB_HINT=0` | 关掉网页客户端的交付提示词（「先问要不要在预览里打开」那一段），工作区教训照旧挂（D188） | 开 |
-| `PI_WEB_PREVIEW_ACK_MS` | `open_preview` 等页面回执的窗口：超时就回 `no-ack`，不再把「投出去了」当「打开了」（D189） | `15000` |
+| `PI_WEB_HINT=0` | 关掉网页客户端的交付提示词（「先问要不要在预览里打开」那一段），工作区教训照旧挂（D191） | 开 |
+| `PI_WEB_PREVIEW_ACK_MS` | `open_preview` 等页面回执的窗口：超时就回 `no-ack`，不再把「投出去了」当「打开了」（D192） | `15000` |
 | `PI_BIN` | 指定 pi 的 `cli.js` | 自动找 |
 | `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` | 与 pi 同名同义：桥按 pi 的顺序找会话目录（环境变量 → 全局 `settings.json` 的 `sessionDir` → `~/.pi/agent/sessions`，D73） | 跟随 pi |
 | `PI_PEER=0` | 不启动内网通（peer 子进程） | 开 |
