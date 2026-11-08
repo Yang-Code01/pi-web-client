@@ -1737,7 +1737,13 @@ export const ja: Dict = {
   "扫描目录里没找到 agent 定义。": "スキャンしたフォルダに agent 定義が見つかりません。",
   "没有可列的 agent —— 先装 pi-subagents，或者往上面的目录里放 .md。":
     "表示できる agent がありません。pi-subagents をインストールするか、上のフォルダに .md を置いてください。",
-  "未钉": "未固定",
+  "已改": "変更",
+  "覆盖 model": "model の上書き",
+  "覆盖 thinking": "thinking の上書き",
+  "清空这一行的覆盖": "この行の上書きをクリア",
+  "{p1} 个，{p2} 处已覆盖": "{p1} 個、{p2} 件を上書き中",
+  "frontmatter 列只读；右边两列写的是 subagents.agentOverrides.<name>，优先级高于 frontmatter。":
+    "frontmatter 列は読み取り専用です。右の 2 列は subagents.agentOverrides.<name> に書き込み、frontmatter より優先されます。",
   "继承": "継承",
   "没有单独覆盖的子代理都用这里的值": "個別の上書きがないサブエージェントはこの値を使います",
   "可手输 provider/id；空 = 继承": "provider/id を直接入力できます。空 = 継承",

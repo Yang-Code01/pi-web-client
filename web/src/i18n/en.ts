@@ -1737,7 +1737,13 @@ export const en: Dict = {
   "扫描目录里没找到 agent 定义。": "No agent definitions in the scanned folders.",
   "没有可列的 agent —— 先装 pi-subagents，或者往上面的目录里放 .md。":
     "No agents to list — install pi-subagents, or drop .md files into the folders above.",
-  "未钉": "Not pinned",
+  "已改": "changed",
+  "覆盖 model": "Override model",
+  "覆盖 thinking": "Override thinking",
+  "清空这一行的覆盖": "Clear this row's override",
+  "{p1} 个，{p2} 处已覆盖": "{p1} agents, {p2} overridden",
+  "frontmatter 列只读；右边两列写的是 subagents.agentOverrides.<name>，优先级高于 frontmatter。":
+    "The frontmatter column is read-only; the two columns on the right write subagents.agentOverrides.<name>, which wins over frontmatter.",
   "继承": "Inherit",
   "没有单独覆盖的子代理都用这里的值": "Subagents without their own override use these values",
   "可手输 provider/id；空 = 继承": "You can type provider/id; empty = inherit",
