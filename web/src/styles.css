@@ -3606,3 +3606,75 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .badge.clickable:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
 /* 钉条胶囊里那行小字：能点开详情的那几颗才挂这个类（D170）。 */
 .pin-open .pin-sub-detail { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+
+/*
+ * 设置 → 子代理（#212）：样张 B 的两栏工作台（980px、左锚点、右分区）。
+ * 样式只挂在 .subagents-sheet 下 —— 类名是从原型拷的，但不能泄漏到别的 sheet。
+ * 这一片没有编辑控件：表里只有名字/来源/frontmatter，保存逻辑进来时再长输入框。
+ */
+.settings-sheet.subagents-sheet { width: min(980px, calc(var(--vw1) * 96)); }
+.settings-sheet.subagents-sheet .settings-body { overflow: hidden; }
+@media (max-width: 980px) {
+  .settings-sheet.subagents-sheet { width: 100%; height: 100%; max-height: 100%; border-radius: 0; }
+}
+.subagents-sheet .subagents-page { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.subagents-sheet .subagents-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.subagents-sheet .subagents-bar .spacer { flex: 1; }
+.subagents-sheet .subagents-seg {
+  font: inherit; font-size: 12px; color: var(--dim);
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  padding: 4px 9px; cursor: pointer;
+}
+.subagents-sheet .subagents-seg:hover { color: var(--text); background: var(--line-soft); }
+.subagents-sheet .subagents-seg[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.subagents-sheet .subagents-seg:disabled { opacity: 0.45; cursor: not-allowed; }
+.subagents-sheet .subagents-path { font: 11.5px var(--mono); color: var(--faint); overflow-wrap: anywhere; }
+.subagents-sheet .subagents-hint { margin: 0; font-size: 11px; line-height: 1.55; color: var(--faint); }
+.subagents-sheet .note { border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px 10px; font-size: 11.5px; line-height: 1.55; background: var(--sunken); color: var(--dim); }
+.subagents-sheet .note.warn { border-color: var(--warn-dim); background: var(--warn-bg); color: var(--warn); }
+.subagents-sheet .subagents-split {
+  flex: 1; min-height: 0; max-height: min(64vh, 600px);
+  display: grid; grid-template-columns: 150px minmax(0, 1fr);
+  border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden;
+}
+.subagents-sheet .subagents-nav {
+  display: grid; gap: 2px; align-content: start; padding: 10px 8px;
+  background: var(--sunken); border-right: 1px solid var(--line-soft);
+}
+.subagents-sheet .subagents-nav a {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--dim); text-decoration: none;
+  padding: 5px 8px; border-radius: 7px; border: 1px solid transparent;
+}
+.subagents-sheet .subagents-nav a:hover { color: var(--text); background: var(--line-soft); }
+.subagents-sheet .subagents-nav a.on { color: var(--text); background: var(--line-soft); border-color: var(--line); }
+.subagents-sheet .subagents-nav a .n { margin-left: auto; font: 10.5px var(--mono); color: var(--line-lit); }
+.subagents-sheet .subagents-sep { height: 1px; background: var(--line-soft); margin: 6px 4px; }
+.subagents-sheet .subagents-pane { display: grid; gap: 18px; align-content: start; padding: 12px 16px 18px; overflow-y: auto; min-height: 0; }
+.subagents-sheet .subagents-sec { display: grid; gap: 8px; scroll-margin-top: 4px; }
+.subagents-sheet .subagents-sec > h3 { margin: 0; font-size: 12px; font-weight: 500; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.subagents-sheet .subagents-badge {
+  display: inline-flex; align-items: center; font: 10.5px var(--mono);
+  padding: 1px 6px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--dim); background: var(--line-soft);
+}
+.subagents-sheet .subagents-badge.package { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }
+.subagents-sheet .subagents-badge.user { color: var(--ok); border-color: var(--ok-dim); background: var(--ok-bg); }
+.subagents-sheet .subagents-badge.project { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
+.subagents-sheet .subagents-dirs { display: grid; gap: 2px; }
+.subagents-sheet .subagents-dir { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); }
+.subagents-sheet .subagents-dir:last-child { border-bottom: 0; }
+.subagents-sheet .subagents-dir .dp { flex: 1; min-width: 0; font: 11px var(--mono); color: var(--dim); overflow-wrap: anywhere; }
+.subagents-sheet .subagents-dir .n { font: 11px var(--mono); color: var(--faint); white-space: nowrap; }
+.subagents-sheet .subagents-dir.missing .dp { color: var(--faint); text-decoration: line-through; }
+.subagents-sheet .subagents-agents { width: 100%; border-collapse: collapse; font-size: 12px; }
+.subagents-sheet .subagents-agents th {
+  text-align: left; font-size: 10.5px; font-weight: 400; letter-spacing: 0.05em; color: var(--faint);
+  padding: 4px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap;
+}
+.subagents-sheet .subagents-agents th:nth-child(1) { width: 40%; }
+.subagents-sheet .subagents-agents td { padding: 3px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.subagents-sheet .subagents-agents tr:last-child td { border-bottom: 0; }
+.subagents-sheet .subagents-agents td.agent { font: 11.5px var(--mono); color: var(--text); white-space: nowrap; }
+.subagents-sheet .subagents-agents td.fm { font: 11px var(--mono); color: var(--dim); white-space: nowrap; }
+.subagents-sheet .subagents-agents td.fm.unset { color: var(--faint); }
