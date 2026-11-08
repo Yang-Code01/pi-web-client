@@ -205,6 +205,8 @@ node bridge/tests/i18n-ui.mjs                                         # 三语�
 node bridge/tests/peer-e2e.mjs                                        # 内网通：两实例互见、组播不可达时手动地址、消息/回执/补投、好友、文件哈希、agent 工具（D96–D107，先 build:peer）
 node probes/peer-multicast.mjs                                        # 组播快检：这台机器的网络栈放不放行 239.255.42.99（通过 ≠ 穿过交换机也通）
 node probes/runtime-panel.mjs                                         # 运行时面板 UI：一行摘要 + 每个运行中的 pi 一行、桥广播就跟着变、「不可用」不留空、三语不缺键（#77，桩桥 + 真 Chromium）
+node bridge/tests/preview-tool.mjs                                    # open_preview 的回环路由：只投给正在看这个会话的页面，没有页面就明确失败（#224，假 pi）
+node probes/preview-open.mjs                                          # open_preview 到 viewer：真 Chromium 里预览面板弹出、标题就是文件名（#224，桩桥 + 真 Chromium）
 ```
 
 `npm run typecheck` 分别跑 bridge、peer 和 web 的 `tsc --noEmit`。

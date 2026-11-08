@@ -27,6 +27,11 @@ function approvalGatePath(): string {
   return process.env.PI_WEB_GATE ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "approval-gate.ts");
 }
 
+/** #224：`open_preview` 只属于网页会话 —— 它做的事就是把文件交给网页的预览面板。 */
+function previewToolPath(): string {
+  return process.env.PI_WEB_PREVIEW_TOOL ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "open-preview.ts");
+}
+
 export interface ApprovalRequest {
   id: string;
   sessionId: string;
@@ -697,10 +702,10 @@ export class Session extends EventEmitter {
   readonly asks = new Map<string, PendingAsk>();
   /** D90：还没结束的 `ask_user_question` 问卷，按 toolCallId。 */
   private questionnaires = new Map<string, OpenQuestionnaire>();
-  /** Handed to the child in PI_WEB_ASK_TOKEN so only our own pi can post questions. */
-  readonly askToken = crypto.randomUUID();
-  /** Set by SessionManager: where the child posts asks (loopback only). */
-  askUrl: string | null = null;
+  /** Handed to the child in PI_WEB_LOOPBACK_TOKEN so only our own pi can call back into the bridge. */
+  readonly loopbackToken = crypto.randomUUID();
+  /** Set by SessionManager: loopback origin the child posts to (asks, preview opens). */
+  loopbackUrl: string | null = null;
 
   /** Context-token ceiling the bridge enforces by compacting; null = off. Shared across sessions. */
   contextBudget: number | null = readBudget();
@@ -1051,6 +1056,7 @@ export class Session extends EventEmitter {
     const args = ["--mode", "rpc"];
     if (process.env.PI_WEB_NO_EXT === "1") args.push("-ne");
     args.push("-e", approvalGatePath());
+    args.push("-e", previewToolPath());
     const cwd = opts.cwd || this.state.cwd || process.cwd();
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
     const launch = readLaunch(id);
@@ -1076,8 +1082,8 @@ export class Session extends EventEmitter {
       logPath: statePath("logs", `${id}.log`),
       env: {
         PI_WEB_ALLOW_FILE: allowFile(id),
-        // The ask-user extensions post here instead of opening a dialog (see PLAN-ask.md).
-        ...(this.askUrl ? { PI_WEB_ASK: this.askUrl, PI_WEB_ASK_TOKEN: this.askToken } : {}),
+        // The ask-user / preview extensions post here instead of opening a dialog (see PLAN-ask.md).
+        ...(this.loopbackUrl ? { PI_WEB_LOOPBACK: this.loopbackUrl, PI_WEB_LOOPBACK_TOKEN: this.loopbackToken } : {}),
       },
     });
 
@@ -2611,16 +2617,16 @@ export class SessionManager extends EventEmitter {
 
   constructor(
     private cli: string,
-    /** Loopback URL the child posts asks to; null disables the whole feature. */
-    private askUrl: string | null = null,
+    /** Loopback origin the child posts to; null disables the whole loopback channel. */
+    private loopbackUrl: string | null = null,
   ) {
     super();
   }
 
   /** Resolve the child that owns this token. Returns null for anything we did not spawn. */
-  byAskToken(token: string): Session | null {
+  byLoopbackToken(token: string): Session | null {
     if (!token) return null;
-    for (const s of this.sessions.values()) if (s.askToken === token) return s;
+    for (const s of this.sessions.values()) if (s.loopbackToken === token) return s;
     return null;
   }
 
@@ -2762,7 +2768,7 @@ export class SessionManager extends EventEmitter {
 
   private wire(session: Session): void {
     session.on("ws", (payload: any) => this.emit("ws", payload));
-    session.askUrl = this.askUrl;
+    session.loopbackUrl = this.loopbackUrl;
     session.on("state", (state: SessionState) => this.emit("ws", { type: "session.state", session: state }));
     session.on("approval", (approval: ApprovalRequest) => this.emit("approval", approval));
     session.on("ask", (ask: AskRequest, tool: string) => this.emit("ask", ask, tool));

@@ -19,6 +19,7 @@
     "test:rpc": "node bridge/tests/write-after-end.mjs",
     "test:ask": "node --experimental-transform-types bridge/tests/ask-unit.mjs && node bridge/tests/ask-e2e.mjs",
     "test:ask:ui": "node bridge/tests/ask-ui.mjs",
+    "test:preview": "node bridge/tests/preview-tool.mjs",
     "test:scratch": "node bridge/tests/scratch-dirs.mjs && node bridge/tests/scratch-chat.mjs",
     "test:scratch:ui": "node bridge/tests/scratch-ui.mjs",
     "test:pillbar": "node --experimental-transform-types web/tests/pillbar-unit.mjs",
@@ -46,6 +47,7 @@
     "test:rules": "node --experimental-transform-types web/tests/rules-unit.mjs && node --experimental-transform-types bridge/tests/rules-unit.mjs",
     "test:probes": "node web/tests/probes-unit.mjs",
     "probe:workspace": "node probes/run-all.mjs",
+    "probe:preview": "node probes/preview-open.mjs",
     "test:tail": "node --experimental-transform-types bridge/tests/tail-read-error.mjs",
     "test:stateguard": "node --experimental-transform-types bridge/tests/state-read-guard.mjs"
   },

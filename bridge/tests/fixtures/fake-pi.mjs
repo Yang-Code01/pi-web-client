@@ -88,7 +88,16 @@ let pendingConfirm = null;
 const CONFIRM_MESSAGE = "rm -rf build/";
 // What the bridge started us with (launch options, #28), plus the PI_WEB_* vars it let through:
 // the bridge strips its own settings, and a test can assert one did not reach pi (#76).
-note({ t: "argv", pid: process.pid, argv: process.argv.slice(2), cwd: process.cwd(), piWeb: Object.keys(process.env).filter((k) => k.startsWith("PI_WEB_")) });
+note({
+  t: "argv",
+  pid: process.pid,
+  argv: process.argv.slice(2),
+  cwd: process.cwd(),
+  piWeb: Object.keys(process.env).filter((k) => k.startsWith("PI_WEB_")),
+  // Values a test needs to call the bridge back itself (loopback origin + per-child token).
+  loopback: process.env.PI_WEB_LOOPBACK ?? null,
+  loopbackToken: process.env.PI_WEB_LOOPBACK_TOKEN ?? null,
+});
 // One line per process that went away, so "it really exited" is provable from the log (#76).
 let exited = false;
 const noteExit = () => {
@@ -228,10 +237,10 @@ async function turn(text) {
     // browser (#82). The bridge holds this request open exactly as long as the ask is pending.
     out({ type: "message_start", message: assistant("") });
     const question = { id: "q1", label: "Q1", prompt: "选哪个", options: [{ value: "a", label: "A" }], allowOther: true };
-    const answer = await fetch(process.env.PI_WEB_ASK, {
+    const answer = await fetch(`${process.env.PI_WEB_LOOPBACK}/api/ask`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ token: process.env.PI_WEB_ASK_TOKEN, tool: "question", questions: [question] }),
+      body: JSON.stringify({ token: process.env.PI_WEB_LOOPBACK_TOKEN, tool: "question", questions: [question] }),
     })
       .then((r) => r.json())
       .catch(() => ({ cancelled: true }));
