@@ -154,6 +154,8 @@ export class Tunnel extends EventEmitter {
       await new Promise((r) => setTimeout(r, 1500));
     }
     this.setState({ status: "error", error: "隧道地址拿到了，但 60 秒内一直连不上", errCode: "tunnel_unreachable" });
+    // 边缘可能只是慢（cloudflared 自己会重连）：留着巡检，迟到就绪也能翻回 up，而不是永远停在 error。
+    this.startHealth(url);
   }
 
   /** D29：就绪 = `/healthz` 200。530 是隧道没连上，502/404 等也不是「能用」。 */
@@ -174,6 +176,7 @@ export class Tunnel extends EventEmitter {
       const ok = await this.probe(url);
       if (ok) {
         this.healthFails = 0;
+        if (this.state.status !== "up") this.setState({ status: "up", url, error: null });
         return;
       }
       if (this.state.status !== "up") return;
