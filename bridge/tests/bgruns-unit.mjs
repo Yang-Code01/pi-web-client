@@ -150,6 +150,127 @@ assert.equal(lateRuns.list()[0]?.hasLog, true, "下一次滴答把 outputFile �
 assert.equal(lateRuns.list()[0]?.state, "done");
 assert.equal(lateRuns.readLog(LATE_ID).log, "late line\n");
 
+// ---------------------------------------------------------------- workflow（D185）
+
+/**
+ * `subagent({workflow:"parallel", args:{tasks:[…]}})` 的真形状（fixture 抄自
+ * `%TEMP%\pi-subagents-user-yqm\async-subagent-runs\653a4f33-f664-40b6-a2a0-02e0fbf224ef\`）：
+ * details 没有 agent / task，status.json 没有 outputFile，过程记录只写在 events.jsonl 里。
+ */
+const WF_ID = "653a4f33-f664-40b6-a2a0-02e0fbf224ef";
+const wfDir = mkdtempSync(join(tmpdir(), "pi-subagents-wf-"));
+const wfDetails = {
+  mode: "workflow",
+  runId: WF_ID,
+  asyncId: WF_ID,
+  asyncDir: wfDir,
+  workflow: "parallel",
+  workflowChildren: { children: [{ childId: "task-1", state: "queued", agent: "researcher", sessionName: "researcher: 查一下南京今天的天气" }] },
+  results: [],
+};
+const wfArgs = { workflow: "parallel", args: { tasks: [{ agent: "researcher", task: "查一下南京今天的天气" }, { agent: "researcher", task: "查一下上海今天的天气" }] } };
+const wf = new BgRuns(() => {});
+wf.noteToolEnd("subagent", wfDetails, `Async workflow [${WF_ID}]`, wfArgs);
+assert.equal(wf.list().length, 1, "workflow 也是派活，要开卡");
+assert.equal(wf.list()[0]?.agent, "researcher", "agent 从 args.args.tasks[] 取，不是空的");
+assert.equal(wf.list()[0]?.task, "1. 查一下南京今天的天气\n2. 查一下上海今天的天气", "任务原文逐条列出来，不是「（任务原文没传到桥）」");
+assert.equal(wf.list()[0]?.hasLog, false, "events.jsonl 还没写：不撒谎");
+
+// 过程记录 = events.jsonl（workflow 的 status.json 里根本没有 outputFile）。
+const bigOut = "X".repeat(20_000);
+const evLines = [
+  { ts: 1794100503079, type: "subagent.workflow.started", runId: WF_ID },
+  { ts: 1794100504551, type: "subagent.child-status", childId: "task-1", status: "started", agent: "researcher", asyncDir: wfDir, label: "查一下南京…" },
+  { ts: 1794100503079, type: "subagent.workflow.trace", trace: [{ operation: "run", key: "task-1", state: "started", agent: "researcher" }] },
+  { ts: 1794100562494, type: "subagent.workflow.child_settled", childKey: "task-1", outcome: "completed", result: { output: bigOut } },
+  { ts: 1794100587610, type: "subagent.workflow.completed", state: "complete" },
+].map((e) => JSON.stringify(e));
+writeFileSync(join(wfDir, "events.jsonl"), `${evLines.join("\n")}\n`);
+wf.prune();
+assert.equal(wf.list()[0]?.hasLog, true, "events.jsonl 一落盘，下一次滴答就把过程记录补上");
+const timeline = wf.readLog(WF_ID).log ?? "";
+assert.match(timeline, /workflow started/, "骨架事件在");
+assert.match(timeline, /task-1 researcher started/);
+assert.match(timeline, /task-1 completed/);
+assert.equal(timeline.includes("XXXX"), false, "整份孩子答复（child_settled 的 result）不往页面上甩");
+assert.equal(timeline.includes("operation"), false, "trace 累积快照跳过，免得每行都重复一遍");
+assert.equal(timeline.length <= 8000, true, "投影后仍然受限");
+
+// status.json 落盘：state=complete 收工，最终答复从 workflow.value.children[] 现拼。
+writeFileSync(
+  join(wfDir, "status.json"),
+  JSON.stringify({
+    mode: "workflow",
+    state: "complete",
+    workflow: {
+      value: {
+        children: [
+          { key: "task-1", agent: "researcher", ok: true, output: "南京：小雨 15.9℃" },
+          { key: "task-2", agent: "researcher", ok: true, output: "上海：晴 21℃" },
+        ],
+      },
+    },
+  }),
+);
+wf.prune();
+assert.equal(wf.list()[0]?.state, "done");
+assert.equal(wf.list()[0]?.hasOut, true, "跑完就有最终输出（没有文件，现拼）");
+const wfOut = wf.readLog(WF_ID).out ?? "";
+assert.match(wfOut, /## task-1 · researcher\n南京：小雨 15\.9℃/);
+assert.match(wfOut, /## task-2 · researcher\n上海：晴 21℃/);
+
+// 脚本式 workflow（没有 args.tasks）：agent 和任务前缀只能来自 details.workflowChildren。
+const WF2 = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb";
+const scriptDir = mkdtempSync(join(tmpdir(), "pi-subagents-script-"));
+const scriptRuns = new BgRuns(() => {});
+scriptRuns.noteToolEnd(
+  "subagent",
+  { mode: "workflow", runId: WF2, asyncDir: scriptDir, workflowChildren: { children: [{ childId: "a", agent: "planner", sessionName: "planner: 拆一下这个需求" }] } },
+  `Async workflow [${WF2}]`,
+  { workflow: true },
+);
+assert.equal(scriptRuns.list()[0]?.agent, "planner", "脚本式：agent 从 workflowChildren 取");
+assert.equal(scriptRuns.list()[0]?.task, "拆一下这个需求", "sessionName 去掉 `planner: ` 前缀");
+
+// 看详情的那一刻 events.jsonl 才刚写出来：readLog 自己抬手，不必等 30 秒滴答（弹层 1.5 秒一轮）。
+writeFileSync(join(scriptDir, "events.jsonl"), `${JSON.stringify({ ts: 1, type: "subagent.workflow.started", runId: WF2 })}\n`);
+assert.match(scriptRuns.readLog(WF2).log ?? "", /workflow started/, "readLog 不靠 prune 也能接上过程记录");
+assert.equal(scriptRuns.list()[0]?.hasLog, true, "抬手之后 hasLog 也跟着真了");
+
+// 派活那刻孩子清单还是空的（脚本式 workflow 边跑边建）：agent / task 从 workflow-receipt.json 补。
+const WF3 = "cccccccc-1111-2222-3333-dddddddddddd";
+const lateWfDir = mkdtempSync(join(tmpdir(), "pi-subagents-latewf-"));
+const backfillRuns = new BgRuns(() => {});
+backfillRuns.noteToolEnd("subagent", { mode: "workflow", runId: WF3, asyncDir: lateWfDir }, `Async workflow [${WF3}]`, { workflow: true });
+assert.equal(backfillRuns.list()[0]?.agent, "", "清单空的：先空着");
+assert.equal(backfillRuns.list()[0]?.task, "", "清单空的：先空着");
+writeFileSync(
+  join(lateWfDir, "workflow-receipt.json"),
+  JSON.stringify({
+    workflowRunId: WF3,
+    workflowChildren: {
+      children: [
+        { childId: "task-1", agent: "planner", sessionName: "planner: 先读一遍 README" },
+        { childId: "task-2", agent: "planner", sessionName: "planner: 再拆成小任务" },
+      ],
+    },
+  }),
+);
+backfillRuns.prune();
+assert.equal(backfillRuns.list()[0]?.agent, "planner", "receipt 里的 agent 补回来（不是空的「子代理」）");
+assert.equal(backfillRuns.list()[0]?.task, "1. 先读一遍 README\n2. 再拆成小任务", "receipt 里的 sessionName 补回任务原文");
+
+// 单 run / parallel：`??` 只在空位补，已有值一字不改（D185 决定 5）。
+const PL_ID = "eeeeeeee-1111-2222-3333-ffffffffffff";
+const parallelRuns = new BgRuns(() => {});
+parallelRuns.noteToolEnd(
+  "subagent",
+  { mode: "parallel", runId: PL_ID, asyncDir: mkdtempSync(join(tmpdir(), "pi-subagents-par-")) },
+  `Async parallel [${PL_ID}]`,
+  { tasks: [{ agent: "worker", task: "甲" }, { agent: "worker", task: "乙" }] },
+);
+assert.equal(parallelRuns.list()[0]?.task, "1. 甲\n2. 乙", "parallel 没给 task 时也逐条列，而不是空着");
+
 // ---------------------------------------------------------------- 读痕迹
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
