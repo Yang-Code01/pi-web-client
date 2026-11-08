@@ -61,7 +61,21 @@ export class Tunnel extends EventEmitter {
 
   start(): void {
     this.wants = true;
-    if (this.child) return;
+    if (this.child) {
+      // 「开」也得有反应：进程还活着、但状态停在 error（waitReady 60 秒超时会留下活进程）时，
+      // 旧逻辑直接 return，按钮就像死了一样。换一条新进程重来一次。
+      if (this.state.status !== "error") return;
+      const old = this.child;
+      this.child = null;
+      try {
+        old.kill();
+      } catch {
+        /* ignore */
+      }
+      this.setState({ status: "starting", url: null, error: null });
+      this.spawnOnce();
+      return;
+    }
     this.setState({ status: "starting", url: null, error: null });
     this.spawnOnce();
   }
@@ -102,11 +116,13 @@ export class Tunnel extends EventEmitter {
     child.stderr?.on("data", watch);
     child.stdout?.on("data", watch);
 
-    child.on("error", (err) => {
+    child.on("error", (err: Error) => {
       this.setState({ status: "error", error: `cloudflared 错误：${err.message}`, errCode: "cloudflared_error", errParams: { p1: err.message } });
     });
 
-    child.on("exit", (code) => {
+    child.on("exit", (code: number | null) => {
+      // 已经被换掉（start 重来 / stop）的旧进程：它的退出不代表现在的隧道状态，别覆盖新进程的设置。
+      if (this.child !== child) return;
       this.child = null;
       if (this.retire) {
         this.retire();

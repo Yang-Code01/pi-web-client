@@ -322,6 +322,8 @@ export const en: Dict = {
   "关": "Off",
   "关于": "About",
   "关掉公网隧道": "Turn off the public tunnel",
+  "没收到回包：隧道可能已经关了，这个页面也就断了": "No reply came back: the tunnel is probably already off, and this page goes with it.",
+  "隧道操作失败：{p1}": "Tunnel action failed: {p1}",
   "关掉这个终端": "Close this terminal",
   "关键行 {p1} 行": "Key lines: {p1}",
   "关闭（Esc）": "Close (Esc)",
