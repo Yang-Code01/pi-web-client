@@ -1592,9 +1592,9 @@ export class App {
         break;
       case "preview.open": {
         // #224: `open_preview` 工具 → 桥 → 正在看这个会话的页面，在这里落到 viewer 上。
-        if (msg.sessionId !== this.currentId) break;
-        const target = String(msg.path ?? "");
-        if (target) void this.openPreview(target);
+        // 桥现在要回执才算打开（复审）：页面接住了回 ok:true，被编辑器拦下回 declined，
+        // 不在看这个会话就回 stale —— 让同会话其它页签接住的那一回不被盖掉。
+        void this.answerPreviewOpen(msg);
         break;
       }
       case "editor.set": {
@@ -5518,12 +5518,29 @@ export class App {
     this.sheet = back;
   }
 
-  private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false): Promise<void> {
-    if (!sessionId) return;
+  /**
+   * `preview.open` 的回执（#224 复审）：只有真把 viewer 拉起来了才算「打开了」。
+   * 没在看这个会话（刚关掉 / 切走了）回 `stale`，不动页面；用户在未保存提示里选「留在这里」回 `declined`。
+   */
+  private async answerPreviewOpen(msg: any): Promise<void> {
+    const reqId = String(msg.reqId ?? "");
+    const reply = (ok: boolean, reason?: string) => {
+      if (reqId) this.socket.send({ type: "preview.open.done", reqId, ok, reason });
+    };
+    if (msg.sessionId !== this.currentId) return reply(false, "stale");
+    const target = String(msg.path ?? "");
+    // 桥先解析过路径，空路径不会到这儿；真到了也当成没接住，别把空串送进 viewer。
+    if (!target) return reply(false, "stale");
+    const opened = await this.openPreview(target);
+    reply(opened, opened ? undefined : "declined");
+  }
+
+  private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false): Promise<boolean> {
+    if (!sessionId) return false;
     // 编辑中直接点别的文件：先问一句未保存的改动（D50）。
     const open = this.viewer;
     if (open?.pane === "edit" && open.dirty && open.info?.abs !== path) {
-      if (!(await this.leaveEditor(open))) return;
+      if (!(await this.leaveEditor(open))) return false;
     }
     // 打开一个新文件是历史里的一步；⟳ 刷新、返回/前进自己不算（D63）。
     if (!replace) {
@@ -5548,12 +5565,12 @@ export class App {
     try {
       v.info = await api.preview(sessionId, path);
     } catch (err: any) {
-      if (this.viewer !== v || v.path !== path) return;
+      if (this.viewer !== v || v.path !== path) return false;
       v.error = errText(err);
       this.paintViewer();
-      return;
+      return false;
     }
-    if (this.viewer !== v || v.path !== path) return;
+    if (this.viewer !== v || v.path !== path) return false;
     v.path = v.info.abs;
     // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
     if (!replace) this.retargetTop(path, v.info.abs, sessionId);
@@ -5562,16 +5579,17 @@ export class App {
       const info = v.info;
       this.closeViewer();
       this.openSheet(info);
-      return;
+      return true;
     }
     // #113: CSV / TSV 也在浮窗里，但没有 xlsx 那种元数据——字节由页面自己解码、切格。
     if (/\.(csv|tsv)$/i.test(v.info.name)) {
       const info = v.info;
       this.closeViewer();
       void this.openCsvSheet(info, sessionId);
-      return;
+      return true;
     }
     await this.loadViewerText();
+    return true;
   }
 
   /** #113：CSV / TSV 的浮窗——表格 / 源码两个 tab，编码嗅探在前端（D166），保存仍走文本通道。 */
@@ -12472,6 +12490,8 @@ export class App {
    */
   private closeCurrentSession(): void {
     if (!this.currentId) return;
+    // #224 复审：告诉桥「这张页面不再看它了」。否则桥还会对已关掉的页面投递、并把它当成功。
+    this.socket.send({ type: "unsubscribe", sessionId: this.currentId });
     this.switchDraft(null);
     this.currentId = null;
     this.session = null;

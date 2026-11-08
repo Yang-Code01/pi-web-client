@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -199,6 +200,70 @@ function fail(
   extra: Record<string, unknown> = {},
 ): void {
   json(res, status, { ...extra, error, code, ...(params ? { params } : {}) });
+}
+
+/** 回环对端（`::1` / IPv4-mapped / `127.0.0.1`）。/api/ask、/api/preview/open 与 /api/peer 共用一份，
+ *  将来放宽一处（比如局域网）不会再漏掉另一处。 */
+function isLoopbackPeer(addr: string): boolean {
+  return /^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(addr);
+}
+
+/**
+ * `preview.open` 的回执表（#224 复审）：桥把帧投出去之后要等页面说「接住了」才算打开。
+ * 键是 reqId —— 一次请求可能投给多个页签，每份一个 reqId；页面在**自己那条 ws** 上回
+ * `{type:"preview.open.done", reqId, ok, reason?, text?}`。
+ */
+const pendingPreview = new Map<string, { ws: WebSocket; settle: (ack: PreviewAck) => void }>();
+
+interface PreviewAck {
+  ok: boolean;
+  reason?: string;
+  text?: string;
+}
+
+/** 页面回执的等待上限：15 秒够一个慢标签页把弹窗画出来，也不至于让模型干等太久。 */
+const PREVIEW_ACK_MS = (() => {
+  const n = Number(process.env.PI_WEB_PREVIEW_ACK_MS ?? 15000);
+  return Number.isFinite(n) && n > 0 ? n : 15000;
+})();
+
+/** 投一帧给一个页签，等它的回执；超时或那条 ws 关掉都算 `no-ack`（结算一次，别泄漏）。 */
+function askPreviewAck(client: WebSocket, paint: (reqId: string) => void): Promise<PreviewAck> {
+  return new Promise((resolve) => {
+    if (client.readyState !== WebSocket.OPEN) {
+      resolve({ ok: false, reason: "no-ack" });
+      return;
+    }
+    const reqId = randomUUID();
+    const settle = (ack: PreviewAck) => {
+      const entry = pendingPreview.get(reqId);
+      if (!entry) return;
+      pendingPreview.delete(reqId);
+      clearTimeout(timer);
+      resolve(ack);
+    };
+    const timer = setTimeout(() => settle({ ok: false, reason: "no-ack" }), PREVIEW_ACK_MS);
+    pendingPreview.set(reqId, { ws: client, settle });
+    paint(reqId);
+  });
+}
+
+/** 第一个「有结论」的回执说了算：`stale`（这张页签没在看）要跳过，否则它会盖掉真正接住的那页。 */
+async function firstPreviewAck(acks: Promise<PreviewAck>[]): Promise<PreviewAck> {
+  if (!acks.length) return { ok: false, reason: "no-ack" };
+  let stale = 0;
+  return new Promise((resolve) => {
+    for (const ack of acks) {
+      void ack.then((a) => {
+        if (a.reason === "stale") {
+          // 全都说「我没在看」= 没有任何页签接住，按没回执算。
+          if (++stale === acks.length) resolve({ ok: false, reason: "no-ack" });
+          return;
+        }
+        resolve(a);
+      });
+    }
+  });
 }
 
 /**
@@ -409,7 +474,7 @@ async function main(): Promise<void> {
       // 写进该会话的 notice（隧道 + 非回环对端都是同一个理由）。
       if (publicReq) return askRefused(req, res, "你正通过公网隧道访问，浏览器里的表单回不到本机；请用 127.0.0.1 的地址打开再提问。", "tunnel");
       const peer = req.socket.remoteAddress ?? "";
-      if (!/^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(peer)) return askRefused(req, res, "提问只接受本机回环的请求（扩展与网页必须在这台电脑上）。", "non-loopback");
+      if (!isLoopbackPeer(peer)) return askRefused(req, res, "提问只接受本机回环的请求（扩展与网页必须在这台电脑上）。", "non-loopback");
       let body: any;
       try {
         body = await readBody(req);
@@ -445,7 +510,7 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/preview/open" && req.method === "POST") {
       if (publicReq) return json(res, 403, { ok: false, reason: "tunnel", text: "预览只接受本机回环的请求（公网隧道进不来）。" });
       const peer = req.socket.remoteAddress ?? "";
-      if (!/^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(peer)) return json(res, 403, { ok: false, reason: "non-loopback", text: "预览只接受本机回环的请求。" });
+      if (!isLoopbackPeer(peer)) return json(res, 403, { ok: false, reason: "non-loopback", text: "预览只接受本机回环的请求。" });
       const body = await readBody(req).catch(() => ({}));
       const session = sessions.byLoopbackToken(String(body.token ?? ""));
       if (!session) {
@@ -477,17 +542,27 @@ async function main(): Promise<void> {
         return json(res, 200, { ok: false, reason: "path", text: String(err?.message ?? err) });
       }
       const sid = session.state.id;
-      const payload = { type: "preview.open", sessionId: sid, path: info.abs };
-      let pages = 0;
+      const pages: WebSocket[] = [];
       for (const client of wss.clients) {
-        if ((client as any).watching === sid && client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify(payload));
-          pages++;
-        }
+        if ((client as any).watching === sid && client.readyState === WebSocket.OPEN) pages.push(client);
       }
-      log(`preview.open ${sid.slice(0, 8)} → ${pages} page(s): ${info.abs}`);
-      if (!pages) return json(res, 200, { ok: false, reason: "no-page", text: "没有页面在看这个会话，预览没打开。" });
-      return json(res, 200, { ok: true, path: info.abs, name: info.name });
+      log(`preview.open ${sid.slice(0, 8)} → ${pages.length} page(s): ${info.abs}`);
+      if (!pages.length) return json(res, 200, { ok: false, reason: "no-page", text: "没有页面在看这个会话，预览没打开。" });
+      // #224 复审：发送不等于打开。页面可能刚关了会话、正在处理别的操作，或者编辑器里还有没保存的改动
+      // —— 它自己会回一条 `preview.open.done`；只有真接住（ok:true）才回给模型 ok:true。
+      const ack = await firstPreviewAck(
+        pages.map((client) =>
+          askPreviewAck(client, (reqId) =>
+            client.send(JSON.stringify({ type: "preview.open", sessionId: sid, path: info.abs, reqId })),
+          ),
+        ),
+      );
+      if (ack.ok) return json(res, 200, { ok: true, path: info.abs, name: info.name });
+      if (ack.reason === "declined") {
+        return json(res, 200, { ok: false, reason: "declined", text: ack.text ?? "用户选择留在编辑器里，没有打开这个文件。" });
+      }
+      log(`preview.open ${sid.slice(0, 8)} → no ack (${ack.reason ?? "?"})`);
+      return json(res, 200, { ok: false, reason: "no-ack", text: "页面没有回应这次打开（可能刚关掉会话或在处理别的操作）。" });
     }
 
     if (url.pathname === "/api/login" && req.method === "POST") {
@@ -506,7 +581,7 @@ async function main(): Promise<void> {
     // ---------------------------------------------------------------- peer (#45)
     // 页面要 cookie；本机回环不加 cookie 也放行，方便 e2e 与 `/api/peer` 的健康检查。
     // 隧道过来又没 cookie 的请求一律 401，否则 `/api/peer/add` 就能被公网改配置。
-    const loopbackPeer = /^(::1|::ffff:127\.0\.0\.1|127\.0\.0\.1)$/.test(req.socket.remoteAddress ?? "");
+    const loopbackPeer = isLoopbackPeer(req.socket.remoteAddress ?? "");
     if (url.pathname.startsWith("/api/peer") && !ok && !loopbackPeer) {
       return json(res, 401, { error: "unauthorized" });
     }
@@ -1194,6 +1269,10 @@ async function main(): Promise<void> {
     // A login waiting on this page's answers (or an OAuth callback server) must not outlive it.
     ws.on("close", () => {
       dropClient(ws);
+      // 这条链接上还没回执的投递再也不会有人接：结算成 no-ack，别把 HTTP 请求挂到超时。
+      for (const entry of pendingPreview.values()) {
+        if (entry.ws === ws) entry.settle({ ok: false, reason: "no-ack" });
+      }
       for (const id of ((ws as any).logins ?? []) as string[]) cancelLogin(id);
     });
 
@@ -1310,6 +1389,22 @@ async function main(): Promise<void> {
             const snap = sessions.snapshot(msg.sessionId);
             (ws as any).watching = String(msg.sessionId);
             send({ type: "session", sessionId: msg.sessionId, ...snap, trust: await trustFor(snap.state.cwd) });
+            return;
+          }
+          case "unsubscribe": {
+            // 页面关掉会话 = 不再「在看」它（#224 复审）：只清自己这一格，同会话的其它页签照旧收投递。
+            if ((ws as any).watching === String(msg.sessionId)) (ws as any).watching = null;
+            return;
+          }
+          case "preview.open.done": {
+            // 页面对一条 `preview.open` 的回应（#224 复审）：只有投给**这条 ws** 的 reqId 才认。
+            const entry = pendingPreview.get(String(msg.reqId ?? ""));
+            if (!entry || entry.ws !== ws) return;
+            entry.settle({
+              ok: msg.ok === true,
+              reason: msg.ok === true ? undefined : String(msg.reason ?? ""),
+              text: msg.text ? String(msg.text) : undefined,
+            });
             return;
           }
           case "claim": {
