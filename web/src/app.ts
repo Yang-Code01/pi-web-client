@@ -11267,7 +11267,16 @@ export class App {
    * composer has always drawn (PLAN-ask.md).
    */
   private askDock(): boolean {
-    return Boolean(this.asks.length && this.currentId && !this.compact() && !this.collapsed.queue && !this.askDockMuted);
+    return this.askWanted() && !this.collapsed.queue;
+  }
+
+  private askWanted(): boolean {
+    return Boolean(this.asks.length && this.currentId && !this.compact() && !this.askDockMuted);
+  }
+
+  /** 340 是「能读」的下限，420 是再加宽也没用处的点：1280 布局宽下落在 384。 */
+  private askWidthPx(): number {
+    return Math.round(Math.min(420, Math.max(340, (window.innerWidth / this.uiScale()) * 0.3)));
   }
 
   /**
@@ -11277,28 +11286,32 @@ export class App {
    */
   private syncAskDock(): void {
     const main = this.els.main;
-    if (this.asks.length && this.currentId && !this.compact() && !this.askDockMuted && this.collapsed.queue && !this.askAutoOpened) {
+    const want = this.askDock();
+    const open = this.askWanted() && this.collapsed.queue && !this.askAutoOpened;
+    const current = main.style.getPropertyValue("--queue-w").trim();
+    const target = `${this.askWidthPx()}px`;
+    // 从没写过宽度时只加宽：用户自己拖到 600px 的栏，不该因为来了一道题被压回 384。
+    const wider = !current || (parseFloat(current) || 0) < parseFloat(target);
+    const ours = this.askWidth !== null && current === this.askWidth;
+    const widen = want && (ours || (this.askWidth === null && wider)) && target !== this.askWidth;
+    const restore = !want && this.askWidth !== null;
+    const done = !this.asks.length && (this.askDockMuted || this.askAutoOpened);
+    if (!open && !widen && !restore && !done) return;
+    // 列宽一变，转录就按新宽度重排；`overflow-anchor: none`（D188）之下浏览器不会自己补，
+    // 所以先把顶端那条消息钉住，改完再补回来（跟流时交给 ResizeObserver 重新贴底）。
+    const unpin = this.chat.pinTop();
+    if (open) {
       this.collapsed.queue = false;
       this.askAutoOpened = true;
       this.renderPanes();
       this.renderTop();
     }
-    const want = this.askDock();
-    main.classList.toggle("ask-open", want);
-    if (want) {
-      // 到货时加宽到「能读」的尺寸，但用户中途拖过就认拖出来的那个数（D189）。
-      const current = main.style.getPropertyValue("--queue-w").trim();
-      if (this.askWidth === null || current === this.askWidth) {
-        if (this.askWidth === null) this.askWidthBefore = current || null;
-        const px = `${Math.round(Math.min(420, Math.max(340, (window.innerWidth / this.uiScale()) * 0.3)))}px`;
-        if (px !== this.askWidth) {
-          main.style.setProperty("--queue-w", px);
-          this.askWidth = px;
-        }
-      }
-      return;
+    if (widen) {
+      if (this.askWidth === null) this.askWidthBefore = current || null;
+      main.style.setProperty("--queue-w", target);
+      this.askWidth = target;
     }
-    if (this.askWidth !== null) {
+    if (restore) {
       // Only undo our own width: a drag during the answer already wrote the user's number.
       if (main.style.getPropertyValue("--queue-w") === this.askWidth) {
         if (this.askWidthBefore) main.style.setProperty("--queue-w", this.askWidthBefore);
@@ -11307,7 +11320,7 @@ export class App {
       this.askWidth = null;
       this.askWidthBefore = null;
     }
-    if (!this.asks.length) {
+    if (done) {
       this.askDockMuted = false;
       if (this.askAutoOpened) {
         this.askAutoOpened = false;
@@ -11316,6 +11329,7 @@ export class App {
         this.renderTop();
       }
     }
+    unpin();
   }
 
   private renderAsks(): void {
@@ -11356,7 +11370,6 @@ export class App {
     const total = ask.questions.length;
     const q = ask.questions[st.active];
     const slot = el("div", "ask-slot");
-    slot.dataset.place = place;
     const head = el("div", "ask-head");
     const more = this.asks.length > 1 ? tr("（还有 {p1} 份）", { p1: this.asks.length - 1 }) : "";
     head.append(el("span", "t", tr("{p1}{p2}", { p1: total > 1 ? tr("需要你回答 · {p1} 题", { p1: total }) : tr("需要你回答"), p2: more })));

@@ -357,6 +357,29 @@ export class ChatView {
     this.jump.setAttribute("aria-label", label);
   }
 
+  /**
+   * D189: 右栏为提问打开 / 加宽会让会话按新宽度重排，而 `overflow-anchor: none`（D188）拿掉了浏览器
+   * 自带的滚动锚定 —— 不补的话，正在读的那段会整块上移。先记下视口顶端那条，改完按差值补回来。
+   * 跟流时不用管：宽度一变，root 的 ResizeObserver 会重新贴底。
+   */
+  pinTop(): () => void {
+    if (this.following) return () => {};
+    const box = this.root.getBoundingClientRect();
+    let anchor: HTMLElement | null = null;
+    for (const node of Array.from(this.root.children) as HTMLElement[]) {
+      if (node.getBoundingClientRect().bottom > box.top + 4) {
+        anchor = node;
+        break;
+      }
+    }
+    if (!anchor) return () => {};
+    const before = anchor.getBoundingClientRect().top;
+    return () => {
+      const delta = anchor!.getBoundingClientRect().top - before;
+      if (Math.abs(delta) > 0.5) this.root.scrollTop += delta;
+    };
+  }
+
   /** Jump to the bottom and keep following — used by the button, by reset(), and by "I just sent a message". */
   follow(): void {
     this.following = true;

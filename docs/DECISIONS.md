@@ -278,7 +278,7 @@
 
 **防护（三道，缺一不可）：** 路由放在 `if (!ok)` cookie 闸**之前**（子进程没有 cookie），因此自带检查 —— `isTunnelRequest(headers)` 为真直接 403（公网永远进不来）、peer 必须是回环地址、token 必须匹配某个 session。作答走 WS `answer`，与 `approve` 同级，同样要 `requireStepUp()`。
 
-**UI：** 底部抽屉（单题点选即答；多题 tab + 显式「提交」，可回改；都带「取消这次提问」和「自己写…」）+ composer 上方一条「待你回答 · 点此回答」顶条。关掉抽屉不再自动弹回（`askSeen` 记 id），但**刷新/重连时**没展示过的问题会自己弹开 —— 否则用户回来只看到模型不动。问句卡片不进 `.ops` 折叠模块：它是内容，不是操作记录，`chat.ts` 的 `add`/`replace`/`toolEvent` 三处都要绕开 ops 分组。
+**UI：** 底部抽屉（单题点选即答；多题 tab + 显式「提交」，可回改；都带「取消这次提问」和「自己写…」）+ composer 上方一条「待你回答 · 点此回答」顶条。关掉抽屉不再自动弹回（`askSeen` 记 id），但**刷新/重连时**没展示过的问题会自己弹开 —— 否则用户回来只看到模型不动。问句卡片不进 `.ops` 折叠模块：它是内容，不是操作记录，`chat.ts` 的 `add`/`replace`/`toolEvent` 三处都要绕开 ops 分组。**（D189 改了这一段：宽屏答在「需要你」右栏，收起右栏 / 窄屏才回到 composer 上方的整块面板。）**
 
 **验证：** `npm run test:ask`（`bridge/tests/ask-unit.mjs` 注册表单元 + `ask-e2e.mjs` 隔离桥 7891：三道闸 403、`/api/sessions` 仍 401、真模型单题作答拿到 `User selected: 2. 右边`、两题问卷取消拿到 `User cancelled the questionnaire`）；`npm run test:ask:ui`（`ask-ui.mjs`，真 Chromium + 真模型六轮：抽屉自弹、顶条、刷新补发、点选即答、气泡、两题 tab + 提交、自己写 `User wrote: 随便写点`、停止运行让 pending ask 以 `cancelled` 收尾、390px 手机版）。截图在 `.scratch/shots/ask-*.png`。
 
@@ -3284,17 +3284,19 @@ D
 - **`start()` 的换进程与 exit 守卫没有自动化用例**：要真跑子进程得能 spawn 一个假 cloudflared，Windows 上 `.cmd` 垫片 `spawn` 不了（EINVAL），`Tunnel` 又只吃一个 bin 路径。这条靠手工验（「开」在 error 状态下能把进程换掉），比没测好，但不是测住。
 
 **验证：** `npm run test:tunnel`（协议/参数/框线解析 + `web/tests/tunnel-snapshot-unit.mjs`：旧的 hello 盖不回 off、同毫秒收、更新的照收、没带 tunnel 保持原引用）；新增 `npm run test:tunnel:ui`（`bridge/tests/tunnel-ui.mjs`，自带丢弃式 bridge + Playwright 拦 `/api/tunnel` 造成功/500/回包丢失三种回包，断言 toast 与标签：失败不谎报、成功翻成「关掉公网隧道」并显示地址、回包丢了也要说出来）。真隧道对照：curl 走公网 URL 发 `POST /api/tunnel {"action":"stop"}` 拿到完整 200 + `{"tunnel":{"status":"off"...}}`；Playwright 公网页面连跑两轮点击，标签都在 1 秒内翻回「开公网隧道」。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1764 keys × 3 langs`）。
+
 ## D189 提问答在「需要你」右栏：到货自己开栏、加宽到能读，答完还回去（#230）
 
-**问题：** 面板原来长在 composer 的 grid 行里（`web/src/styles.css:601`，`grid-template-rows: 1fr auto`），题目一到就把会话挤小；更糟的是 `web/src/chat.ts:262-264` 的 ResizeObserver 在看到 following 时 `scheduleScroll()` 重新贴底，最后一条回复正好被顶出视口上沿。用户的实际操作是「先收起表单，再上滑读回复」，每问一次做一遍。用户提的替代方案是「滚轮上滑自动收起、读到底自动展开」（样张 E）。
+**问题：** 面板原来长在 composer 的 grid 行里（`web/src/styles.css:601`，`grid-template-rows: 1fr auto`），题目一到就把会话挤小；更糟的是 `web/src/chat.ts:300-304` 的 ResizeObserver（观察 `this.root`，不是 composer） 在看到 following 时 `scheduleScroll()` 重新贴底，最后一条回复正好被顶出视口上沿。用户的实际操作是「先收起表单，再上滑读回复」，每问一次做一遍。用户提的替代方案是「滚轮上滑自动收起、读到底自动展开」（样张 E）。
 
 **决定：**
 
-1. **宽屏答在右栏**：`!compact()`（有效宽度 ≥ 900，`app.ts:861`）且右栏没被收起时，题目渲染进「需要你」那一栏（`renderQueue()` 里用同一个 `askPanel()`），composer 只留输入框。窄屏（tab 制）与手动收起右栏时回落到原形态：composer 上方的整块面板，仍带「收起 / 展开」。
+1. **宽屏答在右栏**（改掉 D47 的 UI 一段：底部抽屉 → composer 面板 → 宽屏右栏；D47 的通道与「无超时」不动）：`!compact()`（有效宽度 ≥ 900，`app.ts:870` 的 `compact()`）且右栏没被收起时，题目渲染进「需要你」那一栏（`renderQueue()` 里用同一个 `askPanel()`），composer 只留输入框。窄屏（tab 制）与手动收起右栏时回落到原形态：composer 上方的整块面板，仍带「收起 / 展开」。
 2. **到货自己开栏**：收着的右栏在提问到达时自动展开一次（`askAutoOpened`），宽度取 `clamp(340, 30% × 布局宽, 420)`（1280 下实测 384px）。答完把宽度与收起状态还回去；用户中途自己收起的这一份不再抢（`askDockMuted`），题目当场回落到 composer。
 3. **两条作答路都通**：右栏里点选项；或者在输入框里直接打字（`answerFromComposer` 不变，占位文案换成「或点右栏的选项」）。
 4. **右栏只画第一份**：多份待答时，面板只渲染 `asks[0]`，其余显示「还有 N 份等着，答完这份再来。」—— 一栏里叠三个表单没人读得下去。
-5. **不写 localStorage**：加宽只是这一次的临时值（`--queue-w` inline）；用户拖过右栏就以拖动结果为准（答完不覆盖），`pi.queueW` 只在拖动结束时写。
+5. **改列宽时先钉住会话顶端**：`overflow-anchor: none`（D188）之下浏览器不会自己补，`chat.pinTop()` 在改宽前后按节点差值补 `scrollTop`（跟流时交给 ResizeObserver 重新贴底），否则你正在读的那段会整块上移。
+6. **不写 localStorage**：加宽只是这一次的临时值（`--queue-w` inline）；用户拖过右栏就以拖动结果为准（答完不覆盖），`pi.queueW` 只在拖动结束时写。
 
 **为什么不上样张 E（滚轮收起 / 到底展开）：**
 
@@ -3316,4 +3318,4 @@ D
 - **窄屏还是整块面板**：B 的 peek 没做；手机上仍然占 444px（样张实测）。
 - **临时宽度与拖动**：中途拖动会以用户的新宽度为准并写进 `pi.queueW`，下次提问按这个新默认再算。
 
-**验证：** `npm run test:ask:ui`（`bridge/tests/ask-ui.mjs`，真 Chromium + 真桥 + 真模型，25 条）：面板在 `.queue` 里而不在 composer、`--queue-w` 加宽到 ≥340、收起右栏后提问自己把栏打开、答完还回收起、390px 手机上仍在 composer、取消 / 自由文本 / 中断清理照旧。>>>>>>> 45a6f00 (feat(ask): answer in the 需要你 column, widen it on arrival, put it back after (#230))
+**验证：** `npm run test:ask:ui`（`bridge/tests/ask-ui.mjs`，真 Chromium + 真桥 + 真模型，28 条）：面板在 `.queue` 里而不在 composer、`--queue-w` 加宽到 ≥340、窗口缩到 1100 时重算成 340、拖到 600 的栏不被压窄、收起右栏后提问自己把栏打开、答完还回收起、390px 手机上仍在 composer（且右栏里没有面板）、取消 / 自由文本 / 中断清理照旧。

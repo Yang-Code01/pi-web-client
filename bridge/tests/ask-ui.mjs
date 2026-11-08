@@ -127,6 +127,14 @@ try {
   await sleep(300);
   const narrow = await page.evaluate(() => document.querySelector(".main").style.getPropertyValue("--queue-w"));
   check("the width follows the window", parseInt(narrow, 10) === 340, narrow);
+  // 用户自己把栏拖到 600：来题时只加宽、不压窄。
+  const ours = await page.evaluate(() => document.querySelector(".main").style.getPropertyValue("--queue-w"));
+  await page.evaluate(() => document.querySelector(".main").style.setProperty("--queue-w", "600px"));
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await sleep(300);
+  const dragged = await page.evaluate(() => document.querySelector(".main").style.getPropertyValue("--queue-w"));
+  check("a column the user dragged wide is not narrowed", parseInt(dragged, 10) === 600, dragged);
+  await page.evaluate((v) => document.querySelector(".main").style.setProperty("--queue-w", v), ours);
   await page.setViewportSize({ width: 1280, height: 900 });
   await sleep(300);
   await shot("panel-single");
@@ -182,10 +190,14 @@ try {
   check("cancelling tells the model", /cancel/i.test(r3), r3.slice(0, 100));
 
   // -- turn 4: 收起右栏后问题自己把它打开，自己写答案，答完还回收起 ----------
-  const queueHidden = () => page.evaluate(() => document.querySelectorAll(".main > .pane")[2].hidden);
-  await page.locator('[data-act="queue"]').click();
-  await page.waitForTimeout(300);
-  check("the column can be collapsed before a question lands", await queueHidden(), "");
+  //  是栏里的内容；隐藏的是它外面那一节 （收起右栏 = 那一节 hidden）。
+  const queueHidden = () => page.evaluate(() => document.querySelector(".main .queue")?.parentElement?.hidden ?? false);
+  // 上一轮答完后栏已经自己收回了；只在开着的时候点一下，避免把「收起」点成「展开」。
+  if (!(await queueHidden())) {
+    await page.locator('[data-act="queue"]').click();
+    await page.waitForTimeout(300);
+  }
+  check("the column starts this turn collapsed", await queueHidden(), "");
   const start4 = seen.length;
   ws.send(JSON.stringify({
     type: "prompt",
@@ -217,7 +229,8 @@ try {
     sessionId,
     text: "只调用 question 工具一次，问我「选左边还是右边？」，选项只要「左边」和「右边」。不要做任何别的事。",
   }));
-  await p.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
+  await p.waitForSelector(".composer .ask-slot .ask-opts", { timeout: ASK_WAIT });
+  check("on a phone the panel is above the composer, not in a column", (await p.locator(".queue .ask-slot").count()) === 0);
   await p.screenshot({ path: path.join(OUT, "ask-phone.png") });
   log("shot ask-phone.png");
   await p.locator(".ask-opt", { hasText: "左边" }).click();
