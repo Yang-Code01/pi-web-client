@@ -1158,6 +1158,8 @@ export const en: Dict = {
   "（用默认模型）": "(use default model)",
   "（空消息）": "(empty message)",
   "（自己写）{p1}": "(written by hand){p1}",
+  "直接打字回答（Enter 作答 · Shift+Enter 换行），或点右栏的选项": "Type your answer (Enter to answer · Shift+Enter for a new line), or click an option in the right column",
+  "还有 {p1} 份等着，答完这份再来。": "{p1} more are waiting — come back once this one is answered.",
   "（还有 {p1} 份）": "({p1} more)",
   "（这个 pi 包里没有 CHANGELOG.md）": "(this pi package has no CHANGELOG.md)",
   "（默认）": "(default)",

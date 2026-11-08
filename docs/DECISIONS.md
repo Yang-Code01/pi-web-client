@@ -3175,6 +3175,7 @@ D
 - **`for-each-ref --format` 不认 `%x1f`**：那是 pretty format 的写法，会原样吐出来；分支名不许有空格，所以用空格分隔。踩过。
 - **`--graph` 没有画**：样张 C（真实 lane 图）用户没选，选的是 A（计数胶囊 + 线性两列）。要换回图线，桥端得再跑一趟 `git log --graph` 并把前缀原样带上 —— 样张里那套逐字渲染的代码还在 `.scratch/git-history-dialog/prototype/c-lanes.html`。
 
+
 **补（review 后）：** ① 界面文案不许走 ASCII 键 —— `Fetch origin` / `remote` / `detached` 换成「拉取最新」「远程」「游离 HEAD」（`HEAD`、`merge` 是 git 概念本身，留裸串，`i18n-check` 也只认含中文的键）。② 下拉首项是「自动 · 跟随 origin/HEAD」：选项值为空串，桥端重新走三级兜底，`baseAuto` 时前端也把 `this.base` 留空，否则换回一次就再也回不到自动。③ 分页对齐桥端的 300 封顶：到了把按钮换成一句「只显示最近 300 条」，不再给一颗点了不动的按钮。④ 换对照分支失败时留着上一份数据与下拉（失败态只占领列区），否则 `base_unknown` 时只剩关窗重开。⑤ `npm run test:githist:ui` 从「只 log」改真断言（胶囊/两列/公共行/下拉首项/数据时间格式/复制按钮/300 封顶/窄屏 2 tab 1 列），失败退出码 1。
 
 **验证：** `npm run test:githist`（新）—— 现搭裸库当 origin，断言分类（左 2 独有 + 3 公共、右侧 3 条 common）、ahead/behind、分叉点、`n` 下限 10、分页 `more`、`gitFetch` 之后 behind 从 0 变 1 且分叉点不动、空仓库 `empty`、非仓库 `null`、坏对照分支 `base_unknown`、detached HEAD 能读。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1680 keys × 3 langs`）。
@@ -3283,3 +3284,36 @@ D
 - **`start()` 的换进程与 exit 守卫没有自动化用例**：要真跑子进程得能 spawn 一个假 cloudflared，Windows 上 `.cmd` 垫片 `spawn` 不了（EINVAL），`Tunnel` 又只吃一个 bin 路径。这条靠手工验（「开」在 error 状态下能把进程换掉），比没测好，但不是测住。
 
 **验证：** `npm run test:tunnel`（协议/参数/框线解析 + `web/tests/tunnel-snapshot-unit.mjs`：旧的 hello 盖不回 off、同毫秒收、更新的照收、没带 tunnel 保持原引用）；新增 `npm run test:tunnel:ui`（`bridge/tests/tunnel-ui.mjs`，自带丢弃式 bridge + Playwright 拦 `/api/tunnel` 造成功/500/回包丢失三种回包，断言 toast 与标签：失败不谎报、成功翻成「关掉公网隧道」并显示地址、回包丢了也要说出来）。真隧道对照：curl 走公网 URL 发 `POST /api/tunnel {"action":"stop"}` 拿到完整 200 + `{"tunnel":{"status":"off"...}}`；Playwright 公网页面连跑两轮点击，标签都在 1 秒内翻回「开公网隧道」。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1764 keys × 3 langs`）。
+## D189 提问答在「需要你」右栏：到货自己开栏、加宽到能读，答完还回去（#230）
+
+**问题：** 面板原来长在 composer 的 grid 行里（`web/src/styles.css:601`，`grid-template-rows: 1fr auto`），题目一到就把会话挤小；更糟的是 `web/src/chat.ts:262-264` 的 ResizeObserver 在看到 following 时 `scheduleScroll()` 重新贴底，最后一条回复正好被顶出视口上沿。用户的实际操作是「先收起表单，再上滑读回复」，每问一次做一遍。用户提的替代方案是「滚轮上滑自动收起、读到底自动展开」（样张 E）。
+
+**决定：**
+
+1. **宽屏答在右栏**：`!compact()`（有效宽度 ≥ 900，`app.ts:861`）且右栏没被收起时，题目渲染进「需要你」那一栏（`renderQueue()` 里用同一个 `askPanel()`），composer 只留输入框。窄屏（tab 制）与手动收起右栏时回落到原形态：composer 上方的整块面板，仍带「收起 / 展开」。
+2. **到货自己开栏**：收着的右栏在提问到达时自动展开一次（`askAutoOpened`），宽度取 `clamp(340, 30% × 布局宽, 420)`（1280 下实测 384px）。答完把宽度与收起状态还回去；用户中途自己收起的这一份不再抢（`askDockMuted`），题目当场回落到 composer。
+3. **两条作答路都通**：右栏里点选项；或者在输入框里直接打字（`answerFromComposer` 不变，占位文案换成「或点右栏的选项」）。
+4. **右栏只画第一份**：多份待答时，面板只渲染 `asks[0]`，其余显示「还有 N 份等着，答完这份再来。」—— 一栏里叠三个表单没人读得下去。
+5. **不写 localStorage**：加宽只是这一次的临时值（`--queue-w` inline）；用户拖过右栏就以拖动结果为准（答完不覆盖），`pi.queueW` 只在拖动结束时写。
+
+**为什么不上样张 E（滚轮收起 / 到底展开）：**
+
+- **点击没变少**：原来是「收起 → 上滑」，E 是「上滑 → 要答时展开」。省的是收起那一下，换来面板在阅读时自己动。
+- **目标会跑**：读到一半想顺手点选项，面板已经收起，得先滚回底；「回到底自动展开」又会在你刚要读底部时再改一次版面。
+- **触屏没有滚轮**：只能靠 6px 拖动阈值判（D68），翻长回复时手指一停一停就反复收/展。
+- **到货那一下没解决**：进来第一眼仍然是回复被顶走 + 一块大表单。
+
+**为什么不上别的：**
+
+- **A（预算 + 锚定）**：保留整块面板，只封顶 38% 并把回复末尾锚在面板上沿。改动最小，面板仍吃 300px 上下；现在它是「收起右栏 / 窄屏」时的形态，不是主路径。
+- **B（一屏两行）**：默认两行、点 chip 即答，代价是选项说明默认折起。它是窄屏的下一步（现在窄屏仍是整块面板），这次没做。
+- **C（行内作答）**：答题区就是会话里的卡，最新消息会把卡推走，得靠 composer 一行兜底入口。
+
+**代价 / 可改：**
+
+- **到货那一下会话窄 84px**（300 → 384），长回复会重排一次；这是「加宽到能读」的代价，`340/420/0.3` 三个数都能调。
+- **右栏变高**：题目 + 下面「通道 / 快捷键 / 关于」共用一个滚动条，第一屏基本只剩题目。想更干净可以让提问期间把那三节收起来，这次没做。
+- **窄屏还是整块面板**：B 的 peek 没做；手机上仍然占 444px（样张实测）。
+- **临时宽度与拖动**：中途拖动会以用户的新宽度为准并写进 `pi.queueW`，下次提问按这个新默认再算。
+
+**验证：** `npm run test:ask:ui`（`bridge/tests/ask-ui.mjs`，真 Chromium + 真桥 + 真模型，25 条）：面板在 `.queue` 里而不在 composer、`--queue-w` 加宽到 ≥340、收起右栏后提问自己把栏打开、答完还回收起、390px 手机上仍在 composer、取消 / 自由文本 / 中断清理照旧。>>>>>>> 45a6f00 (feat(ask): answer in the 需要你 column, widen it on arrival, put it back after (#230))

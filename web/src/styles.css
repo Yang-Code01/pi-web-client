@@ -1744,6 +1744,16 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .ask-note { font-size: 12px; color: var(--faint); }
 .ask-foot { display: flex; justify-content: flex-end; }
 
+/* D189: the same panel inside 「需要你」. The column is 340–420px wide and the pane already
+   scrolls, so the panel drops its own height caps and lets the column be the only scroller. */
+.queue .ask-slot { margin: 0 0 14px; }
+.queue .ask-slot .ask-prompt,
+.queue .ask-slot .ask-opts { max-height: none; overflow: visible; }
+.queue .ask-slot .ask-head .btn:first-of-type { margin-left: auto; }
+.queue .ask-slot .ask-opt { padding: 8px 10px; }
+.queue .ask-slot .ask-foot { justify-content: stretch; }
+.queue .ask-slot .ask-foot .btn { width: 100%; }
+
 /* The transcript entry: question + the answer that came back. */
 .qa-card.clickable { cursor: pointer; }
 .qa-body { display: grid; gap: 8px; padding: 8px 2px 2px; }

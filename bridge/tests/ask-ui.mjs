@@ -117,7 +117,18 @@ try {
   check("the inline panel opens by itself when a question arrives", true);
   const progress = seen.filter((m) => m.type === "pi.status" && m.running === true).length > 0;
   check("the turn is waiting on us", progress, "");
-  check("the panel sits in the composer", await page.locator(".composer .ask-slot .ask-opts").isVisible());
+  // D189: 宽屏上题目进「需要你」右栏，composer 只留输入框，右栏自己加宽到能读的尺寸。
+  check("the panel sits in the 需要你 column", await page.locator(".queue .ask-slot .ask-opts").isVisible());
+  check("the composer has no panel of its own", (await page.locator(".composer .ask-slot").count()) === 0);
+  const askW = await page.evaluate(() => document.querySelector(".main").style.getPropertyValue("--queue-w"));
+  check("the column widened for the answer", parseInt(askW, 10) >= 340, askW);
+  // 窗口一缩，宽度按布局宽重算（D189），不留在 1280 时的 384。
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await sleep(300);
+  const narrow = await page.evaluate(() => document.querySelector(".main").style.getPropertyValue("--queue-w"));
+  check("the width follows the window", parseInt(narrow, 10) === 340, narrow);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await sleep(300);
   await shot("panel-single");
 
   // Reload: the pending ask must come back from the snapshot, not from live events.
@@ -170,19 +181,26 @@ try {
   const r3 = toolResult("question");
   check("cancelling tells the model", /cancel/i.test(r3), r3.slice(0, 100));
 
-  // -- turn 4: 自己写（直接打字回答） ----------------------------------------
+  // -- turn 4: 收起右栏后问题自己把它打开，自己写答案，答完还回收起 ----------
+  const queueHidden = () => page.evaluate(() => document.querySelectorAll(".main > .pane")[2].hidden);
+  await page.locator('[data-act="queue"]').click();
+  await page.waitForTimeout(300);
+  check("the column can be collapsed before a question lands", await queueHidden(), "");
   const start4 = seen.length;
   ws.send(JSON.stringify({
     type: "prompt",
     sessionId,
     text: "只调用 question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
   }));
-  await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
+  await page.waitForSelector(".queue .ask-slot .ask-opts", { timeout: ASK_WAIT });
+  check("a question re-opens the collapsed column by itself", !(await queueHidden()), "");
   const free = page.locator(".composer-input textarea");
   await free.fill("随便写点");
   await free.press("Enter");
   await page.waitForSelector(".ask-slot", { state: "detached", timeout: 20000 });
   check("typing in the composer answers the question", true);
+  await sleep(400);
+  check("answering puts the column back the way it was", await queueHidden(), "");
   await waitTurnEnd(start4, "free text");
   const r4 = toolResult("question");
   check("free text reaches the model as User wrote", /User wrote: 随便写点/.test(r4), r4.slice(0, 100));
@@ -215,9 +233,13 @@ try {
     text: "只调用 question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
   }));
   await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
-  await page.locator(".ask-head .btn.ghost", { hasText: "收起" }).click();
-  const folded = await page.locator(".ask-slot").isVisible();
-  const optsGone = (await page.locator(".ask-slot .ask-opts").count()) === 0;
+  // 收起右栏 = 题目回落到 composer（D189 的窄屏/收起形态），卷起来的那一颗仍在。
+  await page.locator('[data-act="queue"]').click();
+  await page.waitForSelector(".composer .ask-slot .ask-opts", { timeout: 5000 });
+  check("collapsing the column moves the panel to the composer", true);
+  await page.locator(".composer .ask-head .btn.ghost", { hasText: "收起" }).click();
+  const folded = await page.locator(".composer .ask-slot").isVisible();
+  const optsGone = (await page.locator(".composer .ask-slot .ask-opts").count()) === 0;
   check("收起 keeps the head and drops the answers", folded && optsGone, JSON.stringify({ folded, optsGone }));
   await page.locator('[data-act="interrupt"]').click();
   await page.waitForSelector(".ask-slot", { state: "detached", timeout: 30000 }).catch(() => {});
