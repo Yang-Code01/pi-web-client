@@ -7,10 +7,11 @@
  * 验的是只有真 DOM 说得清的事：
  *   A. 上方什么都没有时，pill 照旧浮在输入框右上（`position: absolute`，挂在 `.row` 里）；
  *   B. 会话被「让回终端」后接管条出现 —— pill 必须并进那条，和「接管会话」并排，两块矩形不相交；
- *   C. 窄屏（420px）下条允许换行，pill 落到下一行也仍然不压按钮；
+ *   C. 窄屏（420px 并排、340px 换行）下都不压按钮；
  *   D. 这时点 pill，小卡贴着它往上开，且不出视口。
  *
- * 端口默认 7896，可用 FAIL_CTA_UI_PORT 改。截图落在 .scratch/shots/fail-cta-*.png。
+ * 端口默认 7894（7895 / 7896 分别给了 failures-ui 与 lessons-spawn），可用 FAIL_CTA_UI_PORT 改。
+ * 截图落在 .scratch/shots/fail-cta-*.png。
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -22,7 +23,7 @@ import { loadPlaywright } from "../../tools/playwright.mjs";
 const { chromium } = await loadPlaywright();
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.FAIL_CTA_UI_PORT ?? 7896);
+const PORT = Number(process.env.FAIL_CTA_UI_PORT ?? 7894);
 const ROOT = path.join(REPO, ".scratch", "fail-cta-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
@@ -207,6 +208,19 @@ try {
   check("窄屏下 pill 还在条里", (await where())?.parent.includes("takeover"));
   await shot("narrow");
 
+  // 再窄一点：文字列有下限，条真的换行，⚡ 落到文字下面一行
+  await page.setViewportSize({ width: 340, height: 860 });
+  await sleep(300);
+  const wrapPill = await rectOf(".fail-cta");
+  const wrapBtn = await rectOf(".takeover .claim-btn");
+  const wrapText = await rectOf(".takeover > span");
+  check(
+    "更窄时条换行，⚡ 落到文字下一行（仍不与按钮相叠）",
+    wrapPill.top >= wrapText.bottom - 2 && (await overlap(wrapPill, wrapBtn)) === 0,
+    `pill.top=${Math.round(wrapPill.top)} / 文字.bottom=${Math.round(wrapText.bottom)} / 按钮 ${Math.round(wrapBtn.left)}–${Math.round(wrapBtn.right)}`,
+  );
+  await shot("wrap");
+
   // -- D. 点开小卡：贴着 pill 往上开，不出视口 ------------------------
   await page.setViewportSize({ width: 1280, height: 860 });
   await sleep(200);
@@ -218,6 +232,24 @@ try {
   check("小卡在 pill 上方、离它 8px 左右", menu.bottom <= d.top + 1 && d.top - menu.bottom < 20, `${Math.round(d.top - menu.bottom)}px 空隙`);
   check("小卡没跑出视口顶", menu.top > 0, `top=${Math.round(menu.top)}`);
   await shot("menu");
+
+  // -- E. 提问卡在的时候按钮不亮（轮次跑着不打扰）----------------------------
+  // 这也是提问卡抢不走按钮的原因：卡只在轮次里出现，而轮次里 `syncFailCta()` 把 `show` 判成 false。
+  // （同理适用于扩展块；`renderAsks()` / `fillExt()` 里那两句 `placeFailCta()` 是防御：槽被
+  //  `replaceChildren` / `remove()` 连孩子一起删掉时，按钮不悬在已卸掉的节点上。）
+  await page.setViewportSize({ width: 1280, height: 860 });
+  await page.locator("textarea").click();
+  await page.waitForSelector(".fail-menu", { state: "detached", timeout: 5000 }).catch(() => {});
+  ws.send(JSON.stringify({ type: "prompt", sessionId, text: "ASK one" }));
+  await page.waitForSelector(".ask-slot .ask-opts", { timeout: 20000 });
+  check("轮次跑着时按钮藏着：不跟提问卡抢位置", !(await cta.isVisible()), JSON.stringify(await where()));
+  await shot("ask");
+  await page.locator(".ask-opt").first().click();
+  await page.waitForSelector(".ask-slot", { state: "detached", timeout: 20000 });
+  for (let i = 0; i < 200; i++) {
+    if (statusWhere(0).at(-1)?.running === false) break;
+    await sleep(100);
+  }
 } catch (err) {
   check(`场景跑完（${String(err?.message ?? err).split("\n")[0]}）`, false);
   await shot("failed").catch(() => {});
