@@ -1,7 +1,7 @@
 /**
  * Probe: pi 正在启动的窗口期，消息照常能发 —— 气泡先带「正在启动 pi…」，交给 pi 之后变「处理中…」。
  *
- * 背景：`create` 不再等 pi 启动（D122），所以新会话会先出现、pi 还在起。D177 推翻了 D122 第 3 条
+ * 背景：`create` 不再等 pi 启动（D122），所以新会话会先出现、pi 还在起。D178 推翻了 D122 第 3 条
  * （「启动期输入框置灰、不让人打字」）：桥会把这段时间的消息收下、等 pi 就绪再交出去，所以界面这
  * 几秒里应当照常可用。这一页要钉住的是**气泡的两种状态**：
  *   1. 启动期：状态行仍是「pi 正在启动（加载扩展，通常几秒）…」、没有中断按钮，但输入框可用、
@@ -169,7 +169,7 @@ wss.on("connection", (ws) => {
       return;
     }
     if (msg.type === "bash") {
-      // #202 / D182：启动窗口里 `!` 不拒绝，桥先落一张 queued 卡片；就绪后再补 running / done。
+      // #202 / D183：启动窗口里 `!` 不拒绝，桥先落一张 queued 卡片；就绪后再补 running / done。
       const sid = ro ? readonly.id : base.id;
       const item = {
         id: `bash:${++bashSeq}`,
@@ -187,7 +187,7 @@ wss.on("connection", (ws) => {
     }
     if (msg.type === "clearQueue") {
       // 真桥的撤回：启动期收下的整批消息按发出顺序退回输入框，气泡同一帧删掉（#199）。
-      // #200 / D182：失败项也能「退回输入框」，和还在桥里的那批一起退。
+      // #200 / D183：失败项也能「退回输入框」，和还在桥里的那批一起退。
       const booting = items.filter((it) => it.pending === "booting" || it.pending === "failed");
       if (!booting.length) return;
       items.splice(0, items.length, ...items.filter((it) => it.pending !== "booting"));
@@ -230,7 +230,7 @@ try {
   check(hint.includes("pi 正在启动"), `状态行写的是启动中（「${hint.replace(/\s+/g, " ").trim()}」）`);
   check(hint.includes("加载扩展"), "状态行顺带解释了为什么慢（加载扩展）");
   check((await page.locator('.hint-status [data-act="interrupt"]').count()) === 0, "启动期状态行没有中断按钮（没东西可中断）");
-  check(await box.isEnabled(), "输入框可用（D177 推翻了「启动期置灰」）");
+  check(await box.isEnabled(), "输入框可用（D178 推翻了「启动期置灰」）");
   const placeholder = await box.getAttribute("placeholder");
   check(!String(placeholder).includes("正在启动"), `placeholder 是平常那句，不是「pi 正在启动…」（${placeholder}）`);
   await page.screenshot({ path: path.join(OUT, "1-starting.png") });
@@ -332,7 +332,7 @@ ${TEXT_B}`, 8000, "esc restore");
   const continueBtn = page.locator(".continue-btn");
   await until(async () => (await continueBtn.count()) >= 1, 8000, "continue button");
   check(await continueBtn.isVisible(), "启动期「继续」露着（不是藏起来）");
-  check(await continueBtn.isEnabled(), "启动期「继续」是亮的（D180：没理由比输入框更早解锁）");
+  check(await continueBtn.isEnabled(), "启动期「继续」是亮的（D181：没理由比输入框更早解锁）");
   const why = String(await continueBtn.getAttribute("title"));
   check(!why.includes("正在启动"), `悬停提示不再说「启动完再继续」（${JSON.stringify(why)}）`);
   const beforeContinue = prompts.length;
@@ -515,7 +515,7 @@ ${TEXT_B}`, 8000, "esc restore");
   check(true, "pi 起来之后只读会话的 `!` 也跑出了输出（没有丢草稿，也没有丢命令）");
   await page.screenshot({ path: path.join(OUT, "12b-readonly-bash-done.png") });
 
-  // ---- 14. #200 / D182 失败气泡的第二条路：不重试，退回输入框
+  // ---- 14. #200 / D183 失败气泡的第二条路：不重试，退回输入框
   await page.locator(".session-card", { hasText: "启动中" }).first().click();
   // 切会话是异步的：不等它切回来就 fill/Enter，键会落到刚刚那个只读会话里（探针偶发超时就是这么来的）。
   // 判据用占位符 —— 还在启动的会话占位符写着「pi 正在启动…」，切回来了才是平时那句。

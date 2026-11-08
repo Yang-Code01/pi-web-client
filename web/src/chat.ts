@@ -119,7 +119,7 @@ export class ChatView {
   private cards = new Map<string, HTMLElement>();
   private toolCards = new Map<string, HTMLElement>();
   /**
-   * #197 / D177: 用户气泡在这张表里（节点 + 桥发来的那条 item），好给最后一枚挂「处理中…」——
+   * #197 / D178: 用户气泡在这张表里（节点 + 桥发来的那条 item），好给最后一枚挂「处理中…」——
    * 那一枚是推出来的，不来自协议。Map 的插入顺序就是对话顺序。
    */
   private users = new Map<string, { node: HTMLElement; item: UserItem }>();
@@ -154,7 +154,7 @@ export class ChatView {
    */
   onRetry: (() => void) | null = null;
   /**
-   * #202 / D182: 失败气泡上的第二条路 —— 不重试，把这批没发出去的消息退回输入框（`clearQueue`）。
+   * #202 / D183: 失败气泡上的第二条路 —— 不重试，把这批没发出去的消息退回输入框（`clearQueue`）。
    * 「重试」是选择，不是唯一出路。
    */
   onWithdraw: (() => void) | null = null;
@@ -593,7 +593,7 @@ export class ChatView {
   }
 
   /**
-   * #197 / D177: 用户气泡上那枚状态徽标，三种说法：
+   * #197 / D178: 用户气泡上那枚状态徽标，三种说法：
    *   `booting` → 「正在启动 pi…」：桥收下了，还没交给 pi；
    *   `failed`  → 「没发出去」+ 一颗「重试」（#200）：文本还在、可复制，点重试先把 pi 拉起来再补发；
    *   最后一条 + 运行态 → 「处理中…」：这一枚是推出来的，不写进协议，多端各自算出来都一样。
@@ -1149,7 +1149,7 @@ export class ChatView {
       cls = item.exitCode == null ? "" : " bad";
     }
     const stateEl = el("span", `bash-state${cls}`, state);
-    // #202 / D182: 排队的 `!` 和启动提示同一个语气：一枚小转环，不新造视觉。
+    // #202 / D183: 排队的 `!` 和启动提示同一个语气：一枚小转环，不新造视觉。
     if (item.status === "queued") stateEl.prepend(el("span", "act-spin"));
     head.append(stateEl);
     if (item.status === "running") {

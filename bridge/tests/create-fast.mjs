@@ -6,7 +6,7 @@
  *
  * 这份测试用一个「启动很慢」的桩 pi（FAKE_PI_BOOT_MS）钉住三件事：
  *   1. `create` 的应答（带 sessionId 的 session 帧）在 **1.5 秒内**到达，不跟着 pi 的启动走；
- *   2. 刚创建时 `state.starting === true`（页面据此显示「pi 正在启动…」；D177 起输入框不再禁用 ——
+ *   2. 刚创建时 `state.starting === true`（页面据此显示「pi 正在启动…」；D178 起输入框不再禁用 ——
  *      启动期发出的消息由桥排队，见 `boot-queue.mjs`）；
  *   3. pi 真的答完之后 `starting` 翻成 false —— 不然页面会永远停在「启动中」。
  *

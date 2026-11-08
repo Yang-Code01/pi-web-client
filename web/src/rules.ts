@@ -37,6 +37,33 @@ const MAX_RULE = 100;
 const MAX_KEY = 120;
 
 /**
+ * 只剥**成对**的强调 / 代码标记（`**一句**`、`_一句_`、`` `一句` ``），单个 `*` 一律不动。
+ *
+ * 早先的写法是 `/^[*_`\s]+|[*_`\s]+$/`，它会把结尾的单个 `*` 当粗体符号吃掉 ——
+ * `npm run test:*` 存进去就成了 `npm run test:`，一条能照做的规矩被改成了跑不通的命令。
+ */
+function stripMarks(raw: string): string {
+  let s = raw.trim();
+  for (let i = 0; i < 3; i += 1) {
+    const m = s.match(/^(\*\*|__|`|\*|_)([\s\S]+)\1$/);
+    if (!m) break;
+    const inner = m[2].trim();
+    if (!inner) break;
+    s = inner;
+  }
+  // 粗体从标记前面就开了（`**[pi-web:rule] … :: 一句**`）：只剩一个收尾符号时也得剥，
+  // 但只在句子里没有同种符号的情况下动手 —— `**/*.ts` 这种通配符要留住。
+  for (const mark of ["**", "__", "`"]) {
+    while (s.endsWith(mark)) {
+      const head = s.slice(0, -mark.length).trim();
+      if (!head || head.includes(mark)) break;
+      s = head;
+    }
+  }
+  return s;
+}
+
+/**
  * 从一段 assistant 正文里挑出所有规矩行 → `{key, rule}`。
  *
  * 只认「标记 + 键 + `::` + 一句话」；键必须带 `|`（`tool|code|sig`），
@@ -52,11 +79,8 @@ export function parseRules(text: string): { key: string; rule: string }[] {
     const sep = rest.indexOf("::");
     if (sep < 0) continue;
     const key = cleanKey(rest.slice(0, sep));
-    const rule = rest
-      .slice(sep + 2)
-      .replace(/^[*_`\s]+|[*_`\s]+$/g, "")
+    const rule = stripMarks(rest.slice(sep + 2))
       .replace(/\s+/g, " ")
-      .trim()
       .slice(0, MAX_RULE);
     if (!key || !rule) continue;
     if (seen.has(key)) continue;

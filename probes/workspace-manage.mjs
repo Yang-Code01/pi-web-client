@@ -10,7 +10,9 @@
  *   4. 清空名字：发的是空串，组头回落到目录名；
  *   5. Esc 取消：一个字都不发；
  *   6. 新建工作区：ws.create 发出去，空组立刻在树里（空态），并直接进改名态；
- *   7. 组里有会话时删不掉（原因带条数）；会话被挪回工程后，组能删，会话落在按 cwd 推出来的组里。
+ *   7. 组里有会话时删不掉（原因带条数）；会话被挪回工程后，组能删，会话落在按 cwd 推出来的组里；
+ *   9. 矮窗口 + 组头贴着窗口底：菜单整块留在窗口里（翻到组头上方，或自己滚），
+ *      「删除工作区」不能被窗口裁掉半行。
  *
  * Run: npm run build:web && node probes/workspace-manage.mjs
  */
@@ -18,6 +20,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadPlaywright } from "../tools/playwright.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = process.env.WS_DIST ? path.resolve(process.env.WS_DIST) : path.join(REPO, "web/dist");
@@ -31,27 +34,6 @@ const ok = (cond, what) => {
   console.log(`${cond ? "ok  " : "FAIL"} ${what}`);
   if (!cond) bad += 1;
 };
-
-async function launchPlaywright() {
-  const cache = path.join(process.env.LOCALAPPDATA ?? "", "npm-cache/_npx");
-  const candidates = [process.env.PW_PATH, path.join(REPO, "node_modules/playwright/index.mjs")].filter(Boolean);
-  try {
-    for (const dir of fs.readdirSync(cache)) candidates.push(path.join(cache, dir, "node_modules/playwright/index.mjs"));
-  } catch {
-    /* no npx cache */
-  }
-  for (const file of candidates) {
-    if (!file || !fs.existsSync(file)) continue;
-    try {
-      const mod = await import(pathToFileURL(file).href);
-      await mod.chromium.launch().then((b) => b.close());
-      return mod;
-    } catch {
-      /* half-installed playwright: try the next one */
-    }
-  }
-  throw new Error("找不到可用的 playwright（设 PW_PATH=<.../playwright/index.mjs>）");
-}
 
 /* ---------------- 桩桥：只实现这张票会用到的几条消息 ---------------- */
 
@@ -180,7 +162,7 @@ server.on("upgrade", (req, socket, head) => {
 });
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
 
-const { chromium } = await launchPlaywright();
+const { chromium } = await loadPlaywright();
 const browser = await chromium.launch();
 const context = await browser.newContext({ viewport: { width: 1180, height: 900 }, locale: "zh-CN" });
 const page = await context.newPage();
@@ -353,6 +335,65 @@ await sleep(350);
 ok(callOf("ws.drop")?.id === MANUAL.id, `发出去的是 ws.drop ${callOf("ws.drop")?.id}`);
 t = await tree();
 ok(!t.groups.some((g) => g.id === MANUAL?.id), `组从树里消失（现在只有 ${t.groups.map((g) => g.name).join(" / ")}）`);
+
+// 9) 矮窗口：组头贴着窗口底时菜单不能戳出窗口（bug：「删除工作区」只剩半行）。
+//    左栏能滚十几组，所以「组头就在窗口最底下」是日常状态，不是边角。
+//    每一档都按实测几何算「该翻还是该贴下方」，不做条件跳过：翻不翻都得有断言。
+for (const vh of [900, 480, 420, 380, 300, 200]) {
+  await page.setViewportSize({ width: 1180, height: vh });
+  await sleep(300);
+  await openMore(LIB.id);
+  await sleep(250);
+  const box = await page.evaluate((sel) => {
+    const node = document.querySelector(".ws-menu");
+    if (!node) return null;
+    const r = node.getBoundingClientRect();
+    const h = document.querySelector(sel + " .ws-more").getBoundingClientRect();
+    const rows = [...node.querySelectorAll(".pm-item, .pm-why")].map((e) => {
+      const q = e.getBoundingClientRect();
+      return { text: (e.textContent ?? "").trim().slice(0, 8), top: q.top, bottom: q.bottom };
+    });
+    return {
+      top: r.top,
+      bottom: r.bottom,
+      headTop: h.top,
+      headBottom: h.bottom,
+      headRow: document.querySelector(sel).getBoundingClientRect().top,
+      ih: innerHeight,
+      clientH: node.clientHeight,
+      scrollH: node.scrollHeight,
+      rows,
+      scrolls: node.scrollHeight > node.clientHeight + 1,
+    };
+  }, `.ws-sec[data-ws="${LIB.id}"] .ws-head`);
+  ok(Boolean(box), `${vh}px 窗口：⋯ 菜单打得开`);
+  if (!box) continue;
+  // 菜单整块在窗口里：位置夹进 8px 边距，高度封到窗口装得下的程度。
+  ok(box.top >= -0.5 && box.bottom <= box.ih + 0.5, `${vh}px 窗口：菜单整块在窗口里（${Math.round(box.top)}..${Math.round(box.bottom)} / ${box.ih}）`);
+  // 期望的落位方向由实测几何决定（和 placeMenu 同一条规矩），所以每一档都得对上，不存在「跳过」。
+  const natural = box.scrollH + 2; // scrollHeight 不含 1px 上下边框
+  const roomBelow = box.ih - box.headBottom - 4 - 8;
+  const roomAbove = box.headTop - 4 - 8;
+  const wantFlip = natural > roomBelow && roomAbove > roomBelow;
+  ok(box.top < box.headTop - 1 === wantFlip, `${vh}px 窗口：${wantFlip ? `下方只剩 ${Math.round(roomBelow)}px，翻到组头上方` : `下方放得下 ${Math.round(roomBelow)}px，贴在组头下方`}（顶 ${Math.round(box.top)} / 组头 ${Math.round(box.headBottom)}）`);
+  if (!wantFlip) ok(Math.abs(box.top - (box.headBottom + 4)) <= 1, `${vh}px 窗口：贴着组头下方 4px`);
+  if (wantFlip) await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-menu-flip-${vh}.png`) });
+  if (box.scrolls) {
+    // 封顶生效：菜单自己滚，「删除工作区」滚得出来、点得到。
+    const reach = await page.evaluate(() => {
+      const n = document.querySelector(".ws-menu");
+      const row = n.querySelector(".pm-item[data-act='drop']");
+      row.scrollIntoView({ block: "nearest" });
+      const a = row.getBoundingClientRect();
+      const b = n.getBoundingClientRect();
+      return { inside: a.top >= b.top - 0.5 && a.bottom <= b.bottom + 0.5, h: n.clientHeight };
+    });
+    ok(reach.inside, `${vh}px 窗口：菜单封顶到 ${reach.h}px 自己滚，「删除工作区」滚得出来`);
+  }
+  await page.keyboard.press("Escape");
+  await sleep(150);
+}
+await page.setViewportSize({ width: 1180, height: 900 });
 
 await browser.close();
 await new Promise((r) => server.close(r));

@@ -29,6 +29,7 @@
     "test:mk": "node bridge/tests/mk-file.mjs",
     "test:nowchip": "node --experimental-transform-types web/tests/nowchip-unit.mjs",
     "test:wsmanage": "node --experimental-transform-types web/tests/wsmanage-unit.mjs",
+    "test:menuplace": "node --experimental-transform-types web/tests/menuplace-unit.mjs",
     "test:defaults": "node --experimental-transform-types bridge/tests/settings-defaults.mjs",
     "test:permission": "node bridge/tests/default-permission.mjs",
     "test:pending": "node --experimental-transform-types web/tests/pending-unit.mjs",
@@ -42,6 +43,7 @@
     "test:skillblock": "node bridge/tests/skill-block.mjs",
     "test:lessons": "node --experimental-transform-types bridge/tests/lessons-unit.mjs",
     "test:rules": "node --experimental-transform-types web/tests/rules-unit.mjs && node --experimental-transform-types bridge/tests/rules-unit.mjs",
+    "test:probes": "node web/tests/probes-unit.mjs",
     "probe:workspace": "node probes/run-all.mjs",
     "test:tail": "node --experimental-transform-types bridge/tests/tail-read-error.mjs",
     "test:stateguard": "node --experimental-transform-types bridge/tests/state-read-guard.mjs"

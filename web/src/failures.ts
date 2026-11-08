@@ -56,7 +56,7 @@ export interface SeenFail {
   at: string;
 }
 
-export type FailCode = "path" | "nocmd" | "perm" | "timeout" | "rate" | "context" | "exit" | "abort" | "other";
+export type FailCode = "path" | "nocmd" | "perm" | "timeout" | "rate" | "context" | "exit" | "abort" | "stream" | "other";
 
 const CODE_LABEL: Record<FailCode, string> = {
   path: "路径不存在",
@@ -67,6 +67,7 @@ const CODE_LABEL: Record<FailCode, string> = {
   context: "上下文超限",
   exit: "命令失败",
   abort: "被中断",
+  stream: "模型流中断",
   other: "其它失败",
 };
 
@@ -99,6 +100,10 @@ export function classify(tool: string, out: string, exit: number | null): FailCo
   if (/(ETIMEDOUT|timed out|timeout|超时|killed after)/i.test(s)) return "timeout";
   if (/(\b429\b|rate.?limit|too many requests|quota exceeded|限流)/i.test(s)) return "rate";
   if (/(context (window|length)|too many tokens|maximum context|上下文(超|过)长)/i.test(s)) return "context";
+  // 模型流夭折：pi 把 provider 的断流当成一次工具级失败报上来（out 通常是 `terminated` 或
+  // `Stream ended without finish_reason`），没有退出码，也不属于任何本地命令。它不是「其它」，
+  // 归成一类才能看出是网关 / 模型侧在抖。`\bterminated\b` 不会命中 `unterminated`。
+  if (/(stream ended without finish_reason|\bterminated\b|socket hang up|ECONNRESET|ECONNREFUSED|fetch failed|network error|connection reset|连接被重置|响应流中断)/i.test(s)) return "stream";
   if (exit !== null && exit !== 0) return "exit";
   if (/\bexit(ed)? (with )?code [1-9]/i.test(s)) return "exit";
   return "other";

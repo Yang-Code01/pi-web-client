@@ -771,8 +771,8 @@ export class Session extends EventEmitter {
   /** User items sent while a run was active, i.e. sitting in pi's queue until delivered or cleared. */
   private queuedUser: { id: string; text: string }[] = [];
   /**
-   * #197 / D177: 启动窗口期（`starting` 为真）收到的消息。气泡已经落地并广播，消息本身留在这里等
-   * pi 起来 —— 只在桥内存里，桥重启就没了（代价见 D177）。就绪时按到达顺序交出去。
+   * #197 / D178: 启动窗口期（`starting` 为真）收到的消息。气泡已经落地并广播，消息本身留在这里等
+   * pi 起来 —— 只在桥内存里，桥重启就没了（代价见 D178）。就绪时按到达顺序交出去。
    */
   private bootQueue: BootEntry[] = [];
   /**
@@ -781,8 +781,8 @@ export class Session extends EventEmitter {
    */
   private bootFailed: BootEntry[] = [];
   /**
-   * #202 / D182: 启动窗口里敲下的 `!` 命令。bash 走 RPC，pi 没起来就没有通道，所以先排在这里，
-   * 就绪后由 `flushBootBash` 逐条跑。已经发出去的 `!` 不随撤回退回（见 D182 的取舍）。
+   * #202 / D183: 启动窗口里敲下的 `!` 命令。bash 走 RPC，pi 没起来就没有通道，所以先排在这里，
+   * 就绪后由 `flushBootBash` 逐条跑。已经发出去的 `!` 不随撤回退回（见 D183 的取舍）。
    */
   private bootBash: { itemId: string; command: string; excludeFromContext: boolean }[] = [];
   /** 补发泵一次只跑一条：并发跑会把顺序搅乱，也会把「这一轮开始了吗」的判断搞坏。 */
@@ -1096,7 +1096,7 @@ export class Session extends EventEmitter {
       this.setState({ running: false, starting: false });
       // 进程没了，等「这一轮开始」的那条路也断了：先放它下来，它自己会看到 rpc 已死并标红剩下的。
       this.wakeRunStart();
-      // #197 / D177: 启动期收下的消息跟着这个进程一起没戏了 —— 气泡标红、给一句人话，不静默吞掉。
+      // #197 / D178: 启动期收下的消息跟着这个进程一起没戏了 —— 气泡标红、给一句人话，不静默吞掉。
       const lost = this.bootQueue.splice(0);
       if (lost.length) this.failBoot(lost, closing ? "stopped" : "boot");
       releaseLock(id);
@@ -1107,13 +1107,13 @@ export class Session extends EventEmitter {
       this.resetExtUi();
       this.setQueue([], []);
       this.bashRun = null;
-      // #202 / D182: 排着还没跑的 `!` 也随这个进程作废，否则卡片会一直停在「等待 pi 启动」。
+      // #202 / D183: 排着还没跑的 `!` 也随这个进程作废，否则卡片会一直停在「等待 pi 启动」。
       for (const b of this.bootBash.splice(0)) this.failBash(b.itemId, "pi 进程退出了，这条命令没有跑");
       // A stop the user asked for is not news; only an exit nobody asked for is worth the stderr tail.
       if (closing) {
         if (!quiet) this.emitWs({ type: "notice", sessionId: id, text: "已停止运行，历史留在磁盘，发消息会自动接管。", level: "info" });
       } else {
-        // #200 AC6 / D182: 退出原因里的 exit code / signal 是给日志看的，界面只留人话。
+        // #200 AC6 / D183: 退出原因里的 exit code / signal 是给日志看的，界面只留人话。
         console.log(`[exit] ${id} pi 进程退出：${reason}`);
         this.emitWs({ type: "notice", sessionId: id, text: "pi 进程意外退出了（可能有别的终端占着这个会话）。历史留在磁盘，发消息会重新接管。", level: "warn" });
       }
@@ -1138,9 +1138,9 @@ export class Session extends EventEmitter {
         // 这一行是「新会话为什么慢」的唯一可观测出口：桥日志里能直接看到每次冷启花了多久。
         console.log(`[boot] ${id} pi 启动完成 ${Date.now() - bootAt} ms`);
         this.setState({ starting: false }, { touch: false });
-        // #197 / D177: 启动窗口期收下的消息在这里交出去。
+        // #197 / D178: 启动窗口期收下的消息在这里交出去。
         this.flushBootQueue();
-        // #202 / D182: 启动窗口里敲的 `!` 同理，等通道通了再跑。
+        // #202 / D183: 启动窗口里敲的 `!` 同理，等通道通了再跑。
         this.flushBootBash();
       });
     // A resumed session starts with the transcript pi already wrote to disk.
@@ -1674,11 +1674,11 @@ export class Session extends EventEmitter {
       await this.compaction.done;
       if (!this.rpc?.alive) throw new Error("会话已经停止，这条消息没有发出");
     }
-    // #197 / D177 + #202 / D182: `starting` 或补发泵还没把队列清空时都收 —— 后者表示更早的消息
+    // #197 / D178 + #202 / D183: `starting` 或补发泵还没把队列清空时都收 —— 后者表示更早的消息
     // 还在桥里等着交给 pi，新消息必须排到队尾，否则会插到它们前面。
     const booting = this.state.starting === true || this.bootQueue.length > 0;
     const userId = this.landUserPrompt(text, images, clientId, booting);
-    // #197 / D177: 启动窗口期到此为止。交给 pi 得等它把扩展加载完（get_state 回来），否则这一句会
+    // #197 / D178: 启动窗口期到此为止。交给 pi 得等它把扩展加载完（get_state 回来），否则这一句会
     // 撞上一个还没准备好的进程；消息先进桥自己的队列，气泡已经落地（带 `pending: "booting"`）。
     if (booting) {
       this.bootQueue.push({ id: userId, text, images, behavior });
@@ -1778,7 +1778,7 @@ export class Session extends EventEmitter {
    * #197: `starting` 翻假 = pi 的 get_state 回来了（扩展已经加载完），这时候才把启动期收下的
    * 消息按到达顺序交给它 —— 桥自己排队，所以这一段不必等页面重发。第一条开一轮；后面的等这一轮
    * 真的开始（`agent_start`）再逐条插话，因为 pi 只在正在流式输出时才认 `streamingBehavior`，
-   * 塞不进这一轮的自然变成下一轮（合并是尽力而为，见 D177）。
+   * 塞不进这一轮的自然变成下一轮（合并是尽力而为，见 D178）。
    * #200 的「重试」走同一条泵：失败项回到队首，再跑一遍就是「拉起 pi 后按原顺序补发」。
    */
   private flushBootQueue(): void {
@@ -1928,7 +1928,7 @@ export class Session extends EventEmitter {
    * #199: the same frame also empties the bridge's own `bootQueue` — during the boot window (#197)
    * that IS the queue, and clearing only one of the two would either drop bubbles whose text comes
    * back (`half cleared`) or leave messages that get delivered after the human withdrew them.
-   * #200 / D182: `bootFailed`（没发出去、只在等「重试」的那批）同样退回 —— 「重试」是选择，不是唯一出路。
+   * #200 / D183: `bootFailed`（没发出去、只在等「重试」的那批）同样退回 —— 「重试」是选择，不是唯一出路。
    */
   async withdrawQueue(): Promise<number> {
     const rpc = this.rpc;
@@ -2003,7 +2003,7 @@ export class Session extends EventEmitter {
   async bash(command: string, excludeFromContext: boolean): Promise<void> {
     const rpc = this.rpc;
     if (!rpc?.alive) throw new Error("会话没在运行");
-    // #202 / D182: 启动窗口里不再拒绝 —— 卡片先落地（queued），命令进 `bootBash`，就绪后按顺序跑。
+    // #202 / D183: 启动窗口里不再拒绝 —— 卡片先落地（queued），命令进 `bootBash`，就绪后按顺序跑。
     // 票面 AC 要的是「不被拦下、pi 起来后执行」：晚几秒跑只改变时机，命令本身一个字不动。
     if (this.state.starting) {
       const item = this.landBash(command, excludeFromContext, "queued");
@@ -2066,7 +2066,7 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * #202 / D182: pi 就绪之后把启动窗口里排下的 `!` 按顺序跑完。一条接一条（bash 一次只能跑一条），
+   * #202 / D183: pi 就绪之后把启动窗口里排下的 `!` 按顺序跑完。一条接一条（bash 一次只能跑一条），
    * 中途失败只作废那一条，后面的照跑。
    */
   private flushBootBash(): void {

@@ -29,6 +29,7 @@ import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
+import { stickMenu } from "./menuplace.ts";
 import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
@@ -775,7 +776,7 @@ export class App {
     this.chat.onAnswer = (text) => this.takeRules(text);
     // #200: 失败气泡旁的「重试」，动作就是接管 —— 桥那边会先拉起 pi，再按原顺序补发没发出去的那几条。
     this.chat.onRetry = () => this.startClaim();
-    // #202 / D182: 失败气泡上的第二条路 —— 不重试，把没发出去的那条放回输入框。
+    // #202 / D183: 失败气泡上的第二条路 —— 不重试，把没发出去的那条放回输入框。
     this.chat.onWithdraw = () => this.withdrawFailed();
     this.wireGrip(gripL, "sessions");
     this.wireGrip(gripR, "queue");
@@ -2219,7 +2220,7 @@ export class App {
     if (this.currentId === state.id) {
       const prev = this.session;
       this.session = state;
-      // #197 / D177: 气泡上那枚「处理中…」是推出来的（运行态 + 最后一条用户消息），不新增协议字段。
+      // #197 / D178: 气泡上那枚「处理中…」是推出来的（运行态 + 最后一条用户消息），不新增协议字段。
       this.chat.setRunning(state.running === true);
       // Q-021: 一轮结束正是模型可能刚跑完 `git checkout` 的时刻。
       if (prev?.running && !state.running) void this.refreshGit(true);
@@ -2340,7 +2341,7 @@ export class App {
   private sendPrompt(behavior: "steer" | "followUp" = "steer"): void {
     if (!this.currentId) return;
     const typed = this.composerText.trim();
-    // #202 / D181: 粘贴块原样带走。`trim()` 会削掉块首行的缩进和末尾的空行 —— 贴一段代码时那是内容，
+    // #202 / D182: 粘贴块原样带走。`trim()` 会削掉块首行的缩进和末尾的空行 —— 贴一段代码时那是内容，
     // 不是排版噪音。只有「整块都是空白」才按空输入丢掉，和手打空格的规矩一致。
     const pasted = this.pastes.map((p) => (p.text.trim() ? p.text : "")).filter(Boolean);
     const text = [...pasted, typed].filter(Boolean).join("\n\n");
@@ -2410,7 +2411,7 @@ export class App {
       const exclude = typed.startsWith("!!");
       const command = typed.slice(exclude ? 2 : 1).trim();
       if (!command) return false;
-      // #202 / D182: 启动窗口里也照发 —— 桥把命令排进 `bootBash`，pi 就绪后按顺序跑，卡片先停在
+      // #202 / D183: 启动窗口里也照发 —— 桥把命令排进 `bootBash`，pi 就绪后按顺序跑，卡片先停在
       // 「等待 pi 启动…」。草稿照常清空：命令已经交出去了。
       this.act(() => this.socket.send({ type: "bash", sessionId, command, excludeFromContext: exclude }));
       return done();
@@ -2780,7 +2781,7 @@ export class App {
   /**
    * #199: 启动期撤回 —— 状态行那颗「撤回」和 Esc 都走这里。发的是 `clearQueue`（桥把 bootQueue 与
    * pi 的队列同一帧清掉、文本按序退回输入框），不是 `abort`：撤回不打断 pi 的启动。
-   * #202 / D182: 判据是「还有气泡在桥里等着」，不是 `starting` —— 首条已交出、剩下几条还在桥队列
+   * #202 / D183: 判据是「还有气泡在桥里等着」，不是 `starting` —— 首条已交出、剩下几条还在桥队列
    * 等 `agent_start` 的那≤10 秒里，`starting` 已经是 false，但撤回仍然得可用（#199 AC）。
    */
   private withdrawBoot(): void {
@@ -2789,7 +2790,7 @@ export class App {
   }
 
   /**
-   * #200 / D182: 失败气泡上的「退回输入框」。失败项早就不在 `bootQueue` 里（D178 挪进了
+   * #200 / D183: 失败气泡上的「退回输入框」。失败项早就不在 `bootQueue` 里（D179 挪进了
    * `bootFailed`），所以不能走上面那道「还有气泡在桥里」的判据 —— 按钮本身就是「我要退这一批」。
    */
   private withdrawFailed(): void {
@@ -10339,7 +10340,7 @@ export class App {
     btn.disabled = state !== "ready";
     btn.hidden = state === "hidden";
     if (state === "hidden") return;
-    // #201 / D180：`starting` 不在其中 —— 启动窗口里点「继续」也会立刻发、进桥的待发队列。
+    // #201 / D181：`starting` 不在其中 —— 启动窗口里点「继续」也会立刻发、进桥的待发队列。
     const why =
       state === "ready"
         ? ""
@@ -10951,7 +10952,7 @@ export class App {
    * back (the bridge re-sends pending asks on subscribe). Nothing pops up on its own.
    */
   /**
-   * 输入框的占位文案。D177（推翻 D122 第 3 条）：pi 还在启动时输入框照常可用 —— 桥会把消息收下、
+   * 输入框的占位文案。D178（推翻 D122 第 3 条）：pi 还在启动时输入框照常可用 —— 桥会把消息收下、
    * 等 pi 起来再交出去，所以「Enter 发送」在启动期也是真的。所有写 placeholder 的地方都走这里。
    */
   private composerPlaceholder(): string {
@@ -11632,7 +11633,7 @@ export class App {
     );
     // #199: 启动期按 Esc = 撤回。冒泡阶段监听，不去抢浮层/补全的 Esc（它们在 document 的 capture
     // 阶段 stopPropagation）；运行态的 Esc 仍然只走「中断」那条绑定，不在这里改语义。
-    // #202 / D182: 判据看气泡不看 `starting`（首条已交出时 `starting` 已 false）。
+    // #202 / D183: 判据看气泡不看 `starting`（首条已交出时 `starting` 已 false）。
     window.addEventListener("keydown", (ev) => {
       if (ev.isComposing || ev.key !== "Escape") return;
       if (this.chat.bootingCount() < 1) return;
@@ -12146,12 +12147,9 @@ export class App {
       };
       pop.append(row);
     }
-    // 贴着那颗、右缘不出屏；高度按下面剩下的空间封顶，别顶出屏幕。
+    // 贴着那颗；下方放不下就翻上去，装不下的行自己滚（这条常常贴着窗口底）。
     const place = (): void => {
-      const r = anchor.getBoundingClientRect();
-      pop.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8)))}px`;
-      pop.style.top = `${Math.round(r.bottom + 6)}px`;
-      pop.style.maxHeight = `${Math.max(180, window.innerHeight - r.bottom - 6 - 10)}px`;
+      stickMenu(pop, anchor.getBoundingClientRect(), { gap: 6 });
     };
     const onDown = (ev: PointerEvent) => {
       const t = ev.target as Node | null;
@@ -12262,13 +12260,8 @@ export class App {
     this.dragScope = { el: body, group: ".ws-pop-sec", head: ".ws-pop-sec-head", item: ".ws-pop-item" };
     this.renderWsPop();
     anchor.setAttribute("aria-expanded", "true");
-    // 贴着那颗：右缘不出屏，下缘不出屏就往上翻。
-    const r = anchor.getBoundingClientRect();
-    const w = pop.offsetWidth;
-    const h = pop.offsetHeight;
-    pop.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - w - 8)))}px`;
-    const top = r.bottom + 6 + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 6) : r.bottom + 6;
-    pop.style.top = `${Math.round(top)}px`;
+    // 贴着那颗：右缘不出屏，下缘放不下就往上翻。它自己有 70vh 上限和体内滚动，所以不再另封顶。
+    stickMenu(pop, anchor.getBoundingClientRect(), { gap: 6, cap: false });
     const onDown = (ev: PointerEvent) => {
       const t = ev.target as Node | null;
       if (t && (pop.contains(t) || anchor.contains(t))) return;
