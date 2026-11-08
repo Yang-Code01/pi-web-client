@@ -13,6 +13,7 @@
  */
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
+import { paintAcpDelegateSection, type AcpDelegateSection } from "./subagents-acp.ts";
 
 export type AgentSource = "package" | "user" | "project" | "scan";
 
@@ -60,6 +61,8 @@ export interface SubagentsPage {
   /** 模型下拉的候选（会话模型清单）；不认识的 id 只标红，不拦保存。 */
   models: { provider: string; id: string }[];
   projectEnabled: boolean;
+  /** acp_delegate 那一半（#215）：写的是 billion-context 的文件，与上面的 settings.json 无关。 */
+  acp: AcpDelegateSection;
   onScope(scope: "global" | "project"): void;
   onEditJson(): void;
   /** 把这一页收集到的点号 patch 交给外面；没有脏键时保存按钮根本点不动。 */
@@ -442,7 +445,7 @@ export function paintSubagentsPage(body: HTMLElement, page: SubagentsPage): void
   paintSubagentsAgents(section("agents"), page, editor);
 
   placeholder("advanced", tr("高级"));
-  placeholder("acp", "acp_delegate");
+  paintAcpDelegateSection(section("acp"), page.acp);
 
   body.append(wrap);
 }

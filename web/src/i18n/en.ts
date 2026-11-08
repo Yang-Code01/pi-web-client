@@ -1744,6 +1744,33 @@ export const en: Dict = {
   "{p1} 个，{p2} 处已覆盖": "{p1} agents, {p2} overridden",
   "frontmatter 列只读；右边两列写的是 subagents.agentOverrides.<name>，优先级高于 frontmatter。":
     "The frontmatter column is read-only; the two columns on the right write subagents.agentOverrides.<name>, which wins over frontmatter.",
+  "这个文件：{p1}": "This file: {p1}",
+  "acp_delegate 由 billion-context 提供，参数写在上面的文件里 —— 和上面几片的 settings.json 不是同一个文件。保存只替换里面的 pi.subagents，providers 和会话数据原样保留。":
+    "acp_delegate comes from billion-context; its settings live in the file above, not in the settings.json the sections above write. Saving only replaces pi.subagents inside it and leaves providers and session data untouched.",
+  "对还没开始的会话生效：子代理启动时才注册 acp_delegate，正在跑的会话不会跟着变。":
+    "Takes effect for sessions that have not started yet: acp_delegate is registered when a subagent starts, so sessions already running keep what they had.",
+  "修好 {p1} 再点「重新读取」；这里不会在读不懂的文件上写盘，那会把 providers 一起抹掉。":
+    "Fix {p1}, then hit Reload. Nothing is written to a file that cannot be parsed — that would wipe providers along with it.",
+  "启用 acp_delegate": "Enable acp_delegate",
+  "默认（开）": "Default (on)",
+  "acp_delegate 让一个会话把任务派给另一个 pi 会话跑；「默认」= 不在文件里写这个键，按 billion-context 的默认（开）。":
+    "acp_delegate lets one session hand a task to another pi session. Default leaves the key out of the file, which means billion-context's own default: on.",
+  "空 = 不限": "Empty = unlimited",
+  "子代理最多再往下派几层；留空 = 不写这个键。": "How many levels of subagents may delegate further; empty leaves the key out.",
+  "同时最多跑几个子代理；留空 = 不写这个键（不限）。": "How many subagents may run at once; empty leaves the key out (unlimited).",
+  "只能填 ≥ 1 的整数，或者留空表示不限。": "Use a whole number ≥ 1, or leave it empty for no limit.",
+  "默认（不设）": "Default (unset)",
+  "子代理的 thinkingLevel": "Subagent thinkingLevel",
+  "派出去的子代理默认用哪一档思考。": "Which thinking level delegated subagents use by default.",
+  "文件里现在写的是 {p1}，不是 billion-context 认识的档位；不懂就不动它。":
+    "The file currently says {p1}, which is not a level billion-context knows; it is left alone.",
+  "没存上：{p1}": "Not saved: {p1}",
+  "这个文件读不懂，保存不可用。": "This file cannot be parsed, so saving is disabled.",
+  "重新读取": "Reload",
+  "读不了这个文件": "Cannot read this file",
+  "没读到配置文件：{p1}": "Could not read the config file: {p1}",
+  "acp_delegate 已保存（写的是 billion-context 的配置文件，对新会话生效）":
+    "acp_delegate saved (in billion-context's config file; takes effect for new sessions)",
   "继承": "Inherit",
   "没有单独覆盖的子代理都用这里的值": "Subagents without their own override use these values",
   "可手输 provider/id；空 = 继承": "You can type provider/id; empty = inherit",

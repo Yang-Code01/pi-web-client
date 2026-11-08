@@ -2735,6 +2735,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .settings-sheet .settings-label { font-size: 12px; color: var(--text); }
 .settings-sheet .settings-row .settings-hint { grid-column: 2; }
 .settings-sheet .settings-hint { font-size: 11px; color: var(--faint); line-height: 1.5; }
+.settings-sheet .settings-hint.bad { color: var(--danger); }
 /* 分组小标题：长表单没人会从头读到尾，扫一眼就知道这一段是干什么的 */
 .settings-sheet .settings-group { font-size: 11px; letter-spacing: 0.06em; color: var(--faint); border-top: 1px solid var(--line-soft); padding-top: 10px; margin-top: 2px; }
 .settings-sheet .settings-form > .settings-group:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
