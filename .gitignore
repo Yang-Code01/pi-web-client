@@ -18,6 +18,7 @@ probes/tmp/
 Thumbs.db
 desktop.ini
 
-# pi 自己的任务日志（bg_run、sessions 等）；项目级技能要进版本库，所以只忽略一层内容
+# pi 自己的任务日志（bg_run、sessions 等）；项目级技能与提示词模板要进版本库，所以只忽略一层内容
 .pi/*
 !.pi/skills/
+!.pi/prompts/

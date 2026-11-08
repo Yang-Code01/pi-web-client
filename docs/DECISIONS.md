@@ -3188,3 +3188,28 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **版本号只有一个 0.1.0**：顶部那行显示的是根 `package.json` 的 version，它不随批次变。要真的改版本就得先有发版流程，这是另一件事。
 
 **验证：** `npm run test:whatsnew`（`bridge/tests/whatsnew-unit.mjs`：版本取根 `package.json`、正文有日期批与 `#PR` / `D` 锚点、HTML 注释不泄漏、120 字节截断带省略尾巴且不出替换符、分支与短 SHA 非空）；`npm run test:whatsnew:ui`（Playwright + `locale:"zh-CN"` + 7887 上的丢弃式 bridge：两个 tab 并存、本项目页有 `#228`/`#229` 与「当前版本 0.1.0」、pi 页不含我们的批次、面板标题随 tab 变、`/whatsnew` 直达且激活该 tab）；`npm --prefix bridge run typecheck` + `npm --prefix web run typecheck`（`i18n-check: ok — 1740 keys × 3 langs`）；`npm run build`；另用 `curl '/api/changelog?scope=self'` 核对返回 `{version:"0.1.0", branch, commit, text}`，不带 `scope` 仍是 pi 的 1.5.0 那份。
+
+## D191 补日志做成一条命令：`/whatsnew-write` + 项目技能（D190 的下一步）
+
+**问题：** D190 定了「AI 写、人扫眼」，但触发方式还是「在会话里说一句『写更新日志』」。锚点在哪、worktree 开在哪、分支怎么命名、PR 怎么写 —— 每次都靠现场发挥，写出来的批次语气与粒度会飘；也想不起要补的时候，日志就停在那儿。
+
+**决定：**
+
+1. **项目技能** `.pi/skills/whatsnew-write/`：`SKILL.md` 是流程（定位主检出 → fetch → 读锚点 → 列新合并与新 D → 写一批 → worktree 提交 → PR → 停下等合并），`references/writing-rules.md` 是条目怎么写（读者、三组、什么不写、字数、好/坏例子、术语表），`references/commands.md` 是命令与故障处置。带 `disable-model-invocation: true` —— 模型不会自己挑它干活。
+2. **命令** `.pi/prompts/whatsnew-write.md`（提示词模板，`argument-hint` 收补充要求）。模板只做两件事：指向 `SKILL.md` 并交代边界（只改 `CHANGELOG.md`、没有新提交就别开 PR、开完 PR 停），流程细节不复制第二份。
+3. **锚点读 `origin/main` 上的那份**（不是工作区里的），所以别人刚补过、或本地的日志还没合，都不会重写同一段；`git -C "$ROOT" log --first-parent <锚点>..origin/main` 天然只看已合进 main 的。主检出脏不影响 `worktree add`，新分支从 `docs/changelog-<时间戳>` 起。
+
+**为什么：**
+
+- **触发必须是显式的**：写不写取决于「这批有没有值得告诉用户的变化」。全自动就退化成 commit 复读机，而 D190 的前提是「AI 写、人扫眼」，不是「无人值守」。
+- **流程写成文件而不是每次口述**：批次粒度、PR 四段式、账号与代理、失败怎么办，都有据可查；下次是另一个会话（或另一个 agent）来做也一样。
+- **两个入口分工清楚**：`/whatsnew` 看，`/whatsnew-write` 写。
+
+**代价 / 可改：**
+
+- **只对本仓库里跑的 pi 可见**：项目级技能与模板，换目录就没了（和 `pi-web-client-test-dev` 同样的边界）。
+- **模板是纯文本展开**，机器不替它保证顺序；写错了靠 PR 审读与 `references/` 里的自查清单兜。
+- **`skill:` 那份也还在**（`/skill:whatsnew-write`）：两个入口做同一件事，`/` 菜单里会并排出现；名字前缀和查看用的 `/whatsnew` 撞，靠「-write」区分，真觉得绕可以改名（模板文件名就是命令名）。
+- **依赖锚点真实存在**：`CHANGELOG.md` 开头那两行注释被删的话，命令会停下问人，不会自己挑 SHA。
+
+**验证：** 模板展开实测：临时模板 `/zz-argcheck 甲 乙` 在会话记录（`~/.pi/agent/sessions/….jsonl`）里落成 `ARG=[甲 乙] ONE=[甲] TWO=[乙]`，即 `$@` / `$1` / `${2:-默认}` 都按文档展开。在测试实例（17876，本项目 worktree）里新建会话后发 `{"type":"commands"}`，返回的 146 条里有 `whatsnew-write [prompt]` 与 `skill:whatsnew-write [skill]`；只读那几步按文档原样跑通：`--git-common-dir` 反推出 `ROOT=F:/pi-web-client`（从 worktree 里调也一样）、锚点从 `origin/main:CHANGELOG.md` 取到失败时为空串（当前 main 还没有这个文件，属预期）、`10f96a0..origin/main` 数出 2 个合并（#227 / #232）；`git log --first-parent --format='%s' … | grep -oE '#[0-9]+'` 拿到 PR 号。
