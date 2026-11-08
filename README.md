@@ -206,6 +206,7 @@ node bridge/tests/peer-e2e.mjs                                        # 内网�
 node probes/peer-multicast.mjs                                        # 组播快检：这台机器的网络栈放不放行 239.255.42.99（通过 ≠ 穿过交换机也通）
 node probes/runtime-panel.mjs                                         # 运行时面板 UI：一行摘要 + 每个运行中的 pi 一行、桥广播就跟着变、「不可用」不留空、三语不缺键（#77，桩桥 + 真 Chromium）
 node bridge/tests/preview-tool.mjs                                    # open_preview 的回环路由：只投给正在看这个会话的页面，没有页面就明确失败（#224，假 pi）
+node bridge/tests/hint-spawn.mjs                                      # 网页会话的交付提示词：默认教训 + 交付两段都在，PI_WEB_HINT=0 只剩教训、PI_WEB_LESSONS=0 只剩提示（#226，假 pi）
 node probes/preview-open.mjs                                          # open_preview 到 viewer：真 Chromium 里预览面板弹出、标题就是文件名（#224，桩桥 + 真 Chromium）
 ```
 
