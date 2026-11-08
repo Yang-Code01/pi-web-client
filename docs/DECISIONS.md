@@ -3178,3 +3178,24 @@ D
 **补（review 后）：** ① 界面文案不许走 ASCII 键 —— `Fetch origin` / `remote` / `detached` 换成「拉取最新」「远程」「游离 HEAD」（`HEAD`、`merge` 是 git 概念本身，留裸串，`i18n-check` 也只认含中文的键）。② 下拉首项是「自动 · 跟随 origin/HEAD」：选项值为空串，桥端重新走三级兜底，`baseAuto` 时前端也把 `this.base` 留空，否则换回一次就再也回不到自动。③ 分页对齐桥端的 300 封顶：到了把按钮换成一句「只显示最近 300 条」，不再给一颗点了不动的按钮。④ 换对照分支失败时留着上一份数据与下拉（失败态只占领列区），否则 `base_unknown` 时只剩关窗重开。⑤ `npm run test:githist:ui` 从「只 log」改真断言（胶囊/两列/公共行/下拉首项/数据时间格式/复制按钮/300 封顶/窄屏 2 tab 1 列），失败退出码 1。
 
 **验证：** `npm run test:githist`（新）—— 现搭裸库当 origin，断言分类（左 2 独有 + 3 公共、右侧 3 条 common）、ahead/behind、分叉点、`n` 下限 10、分页 `more`、`gitFetch` 之后 behind 从 0 变 1 且分叉点不动、空仓库 `empty`、非仓库 `null`、坏对照分支 `base_unknown`、detached HEAD 能读。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1680 keys × 3 langs`）。
+
+## D194 关隧道：回包先走、再杀 cloudflared；hello 的隧道快照只许往新了盖
+
+**问题（用户报「关闭公网隧道点击不生效，没反应」）：** 从公网页面（quick tunnel 地址）点「关掉公网隧道」时，桥端先 `tunnel.stop()` 杀 cloudflared，再写响应 —— 回包要穿回的那条隧道此刻已经死了，浏览器拿到的是 Cloudflare 的 502 HTML，`api.tunnel()` 抛错；而按钮的 `.catch(() => null)` 把错误吞了、标签照旧，于是「点了没反应」。本机（127.0.0.1）点同一颗按钮一切正常，只有公网页面才会踩到，所以一直没被发现。
+
+**第二个坑（同一个症状的另一半）：** `web/src/app.ts` 的 `case "hello"` 是 `this.tunnel = msg.tunnel ?? this.tunnel`。hello 带的是**连上那一刻**的隧道快照，公网页面 socket 频繁重连，一个早于关闭动作算出的快照会在回包之后到达，把 `off` 盖回 `up`、`renderAll()` 再把按钮翻成「关掉公网隧道」—— 桥已经关了，界面说还开着。
+
+**决定：**
+
+1. **stop 分支自己写响应，`res.end` 回调里再等 `TUNNEL_STOP_GRACE_MS = 400` 才 `tunnel.stop()`**（`bridge/src/index.ts` 的 `/api/tunnel`）。state 由路由现造：`{ ...tunnel.state, status: "off", url: null, error: null, updatedAt: Date.now() }`，不回读 `tunnel.state`。start 分支照旧先动作再回包（它不拆任何东西）。
+2. **grace 是经验值，不是同步点**：`res.end` 回调只保证数据交给了内核，cloudflared 还得把它转给 Cloudflare 边缘。400 ms 在本机实测够用（curl 走公网 URL 能拿到完整 200 + `{"status":"off"}`）；真要更保险得让 cloudflared 优雅退出，而 quick tunnel 没有这个接口。
+3. **hello 的隧道快照加门槛**：`if (msg.tunnel && msg.tunnel.updatedAt >= this.tunnel.updatedAt)`。`updatedAt` 是桥端 `Tunnel.setState()` 盖的时间戳，off 快照用路由那一刻的 `Date.now()`，必然 ≥ 任何更早算出的 hello —— 同一个钟，单调比较就够了。
+4. **失败必须说话**：去掉 `.catch(() => null)`，`catch` 里 `flashToast`。公网页面（`me.public`）且动作是 stop 时提示「没收到回包：隧道可能已经关了，这个页面也就断了」（这时候八成真的关了，含糊的报错反而误导），其余给「隧道操作失败：<原因>」。按钮在请求期间 `disabled`，防连点。
+5. **`start()` 也不再装死**：进程还活着但状态停在 `error`（`waitReady` 60 秒超时会留下活进程）时，旧逻辑 `if (this.child) return` 让「开」也点不动；改成换一条新进程。`child.on("exit")` 加 `if (this.child !== child) return` —— 被换掉的旧进程退出不许覆盖新进程的状态。
+
+**代价 / 可改：**
+
+- 关隧道后 400 ms 内再点「开」会和新进程抢同一份 state；按钮 `disabled` 只在单页面内挡得住。
+- 公网页面的 stop 一旦回包真的丢了，界面无法确认桥侧状态，只能给一句「可能已经关了」；下次 hello 会纠正（D194 第 3 条保证不会往旧了盖）。
+
+**验证：** `npm run test:tunnel`（协议/参数/框线解析）；新增 `npm run test:tunnel:ui`（`bridge/tests/tunnel-ui.mjs`，自带丢弃式 bridge + Playwright 拦 `/api/tunnel` 造成功/500/回包丢失三种回包，断言 toast 与标签：失败不谎报、成功翻成「关掉公网隧道」并显示地址、回包丢了也要说出来）。真隧道对照：curl 走公网 URL 发 `POST /api/tunnel {"action":"stop"}` 拿到完整 200 + `{"tunnel":{"status":"off"...}}`；Playwright 公网页面连跑两轮点击，标签都在 1 秒内翻回「开公网隧道」。另跑 `npm --prefix bridge run typecheck` 与 `npm --prefix web run typecheck`（含 `i18n-check: ok — 1764 keys × 3 langs`）。

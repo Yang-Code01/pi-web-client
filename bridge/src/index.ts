@@ -33,7 +33,7 @@ import { bumpSkillUsage } from "./skills.ts";
 import { describeStoreSkills, installSkill, installedSkills, previewSource, removeSkill, searchSkillStore } from "./skillstore.ts";
 import { Notifier } from "./notify.ts";
 import { anyPresent, dropClient, reportPresence } from "./presence.ts";
-import { Tunnel, findCloudflared } from "./tunnel.ts";
+import { Tunnel, findCloudflared, type TunnelState } from "./tunnel.ts";
 import { resolvePi, readVersion } from "./pi.ts";
 import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, resetScratchDir, statePath, sessionsRootInfo } from "./paths.ts";
 import { BUILD_ID } from "./build-id.ts";
@@ -85,6 +85,12 @@ interface Config {
 /** D186：公网写入窗口 1 天（原 D15 是 10 分钟）—— 手机上批准不该一轮对话就重输一次口令。 */
 const STEP_UP_MS = 24 * 60 * 60 * 1000;
 const MAX_BODY = 30 * 1024 * 1024;
+
+/**
+ * 关隧道时给回包留的时间：先把响应写出去，再等这么久才杀 cloudflared。
+ * 前半段是 `res.end` 的回调（数据已交给内核），剩下的留给 cloudflared 把回包转给 Cloudflare 边缘。
+ */
+const TUNNEL_STOP_GRACE_MS = 400;
 
 function loadConfig(): Config {
   const cfg = readJson<Partial<Config>>(statePath("config.json"), {});
@@ -1069,10 +1075,18 @@ async function main(): Promise<void> {
       if (body.action === "start") {
         if (!tunnelBin) return fail(res, 400, "cloudflared_missing", "没找到 cloudflared");
         tunnel.start();
-      } else if (body.action === "stop") {
-        tunnel.stop();
+        return json(res, 200, { tunnel: tunnel.state });
       }
-      return json(res, 200, { tunnel: tunnel.state });
+      if (body.action !== "stop") return json(res, 200, { tunnel: tunnel.state });
+      // 公网页面点「关掉公网隧道」时，这个请求是**穿过 cloudflared** 才到这里的：回包也得穿回去。
+      // 先 stop 的话 cloudflared 当场死掉，浏览器拿到的是 Cloudflare 的 502 HTML，页面只能停在旧状态
+      // ——用户看到的就是「点了没反应」。所以先把响应写出去、等它离开 socket，再停（用例：tunnel-ui）。
+      const off: TunnelState = { ...tunnel.state, status: "off", url: null, error: null, updatedAt: Date.now() };
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ tunnel: off }), () => {
+        setTimeout(() => tunnel.stop(), TUNNEL_STOP_GRACE_MS).unref?.();
+      });
+      return;
     }
 
     if (url.pathname === "/api/notify-test" && req.method === "POST") {

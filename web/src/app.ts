@@ -1401,7 +1401,9 @@ export class App {
         if (msg.manage) this.manage = msg.manage as ManageState;
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         if (this.currentId && !this.session) this.session = this.sessions.find((x) => x.id === this.currentId) ?? null;
-        this.tunnel = msg.tunnel ?? this.tunnel;
+        // 重连的 hello 带的是**连上那一刻**的隧道快照：它可能比手里那份还旧（正好在这时候关掉了隧道），
+        // 盖回去会让按钮又变回「关掉公网隧道」。只认更新的（updatedAt 是桥给的时间，两边同一个钟）。
+        if (msg.tunnel && msg.tunnel.updatedAt >= this.tunnel.updatedAt) this.tunnel = msg.tunnel;
         this.renderAll();
         // Q-021: 新会话 / 首屏恢复都可能带着另一个 cwd 进来。
         void this.refreshGit(true);
@@ -11480,10 +11482,20 @@ export class App {
     };
     const tun = el("button", "btn", this.tunnel.status === "up" ? tr("关掉公网隧道") : tr("开公网隧道"));
     tun.onclick = async () => {
-      const res = await api.tunnel(this.tunnel.status === "up" ? "stop" : "start").catch(() => null);
-      if (res) this.tunnel = res.tunnel;
-      this.renderTop();
-      this.renderQueue();
+      // 从公网页面点「关掉」时回包可能死在正在拆的隧道上（Cloudflare 502）：以前这里
+      // `.catch(() => null)` 把错误吞了，用户看到的就是「点了没反应」。失败必须说出来。
+      const up = this.tunnel.status === "up";
+      if (tun.disabled) return;
+      tun.disabled = true;
+      try {
+        const res = await api.tunnel(up ? "stop" : "start");
+        this.tunnel = res.tunnel;
+      } catch (err) {
+        this.flashToast(up && this.me.public ? tr("没收到回包：隧道可能已经关了，这个页面也就断了") : tr("隧道操作失败：{p1}", { p1: errText(err) }), true, 8000);
+      } finally {
+        this.renderTop();
+        this.renderQueue();
+      }
     };
     tools.append(push, test, tun);
     host.append(el("h2", "", tr("通道")));

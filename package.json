@@ -37,6 +37,7 @@
     "test:continue": "node --experimental-transform-types web/tests/continue-unit.mjs",
     "test:bgruns": "node --experimental-transform-types bridge/tests/bgruns-unit.mjs",
     "test:tunnel": "node --experimental-transform-types bridge/tests/tunnel-unit.mjs",
+    "test:tunnel:ui": "node bridge/tests/tunnel-ui.mjs",
     "test:extwidgets": "node --experimental-transform-types bridge/tests/extwidgets-unit.mjs",
     "test:failures": "node --experimental-transform-types web/tests/failures-unit.mjs",
     "test:continue:ui": "node bridge/tests/continue-ui.mjs",
