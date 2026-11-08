@@ -3121,3 +3121,29 @@ Playwright 用 `locale: "zh-CN"`；阈值的实测数字与 PDF 耗时回填本�
 - **PDF / docx 的出口靠客户端既有按钮**：提示词只说「指向它」，模型写出来的措辞不受控；要统一文案得在问卷卡或工具回包里给固定句子。
 
 **验证：** `npm run test:hint`（`bridge/tests/hint-spawn.mjs`，12 项：默认两段都在、教训文件内容对得上、交付提示词含「覆盖」/「要在预览里打开吗」/`open_preview`/`no-page`/`untrusted-path`/「用本机程序打开」且不超过 15 行、`PI_WEB_HINT=0` 只剩教训、`PI_WEB_LESSONS=0` 只剩提示）；`node --experimental-transform-types bridge/tests/lessons-spawn.mjs`（8 项；改了两条断言：#226 起第一次 spawn 也带交付提示词，「没有教训段」改成按值判断而不是按参数名）；`npm --prefix web run typecheck`（本次没有新增界面文案，i18n 键不变）。
+
+## D189 `open_preview` 要页面回执才算打开：`preview.open.done` + `no-ack` / `stale` 两个 reason（#224 复审，父票 #223）
+
+**决定：** `/api/preview/open` 不再「把 `preview.open` 帧扔出去就回 `ok:true`」，而是给这一帧带上 `reqId`（`crypto.randomUUID()`），在桥的内存里挂 `pendingPreview: Map<reqId, {ws, settle, timer}>`，等页面回一条 `{type:"preview.open.done", reqId, ok, reason?, text?}` 才结算：
+
+- 回执 `ok:true` → `{ok:true, path, name}`；
+- 回执 `ok:false, reason:"declined", text` → `{ok:false, reason:"declined", text}`，`text` 就是页面给的解释（用户在「未保存改动，留在这里 / 放弃并打开」里选了前者）；
+- 回执 `ok:false, reason:"stale"`（那条页签没在看这个会话）→ 跳过，继续等同会话别的页签 —— 多标签页时不能让它盖掉真正接住那一页的成功；全都 `stale` 就当没接住，回 `no-ack`；
+- 超时（`PI_WEB_PREVIEW_ACK_MS`，默认 `15000`）/ 连接断了 → `{ok:false, reason:"no-ack", text:"页面没有回应这次打开（可能刚关掉会话或在处理别的操作）。"}`；
+- 一条页面都没在看 → `{ok:false, reason:"no-page", ...}`（文案不变）。
+
+同一条 ws 关闭时，把它名下没结算的 `reqId` 一并结算成 `no-ack` 并 `clearTimeout`（否则请求挂到超时、map 泄漏）。前端配合两处：`openPreview()` 改成 `Promise<boolean>`（`leaveEditor` 被拒返回 `false`），收帧时把返回值当回执发回去；`closeCurrentSession()` 在把 `currentId` 置空之前发 `{type:"unsubscribe", sessionId}`，桥的 `case "unsubscribe"` 只清这一条连接自己的 `watching`（同会话的其它页签照旧在看）。
+
+**为什么：**
+
+1. **「投出去了」不等于「打开了」。** 旧实现只要有一页 `watching === sid` 就回成功，而页面其实可能已经把会话关掉（`closeCurrentSession()` 只清前端的 `currentId`，从没告诉桥）、可能正在处理别的操作、可能因为未保存改动把这次打开拒了。模型拿到 `ok:true` 就会接着讲「已经帮你打开了」——用户屏幕上什么都没有。这正是 #224 要禁的「假装打开」。让真正执行打开的那一页回一句，桥才有一个诚实的答案。
+2. **`stale` 与 `no-ack` 必须分开。** 多标签页时每条页面都收到同一帧，没看这个会话的页签（旧标签页、刚切走的页签）如果也回一句 `ok:false`，先到的那句就会把真正接住那页的成功盖掉 —— 所以它回 `stale`，语义是「这句不算数，继续等」。而「有页面在看却始终没人回」是另一回事（页面卡住 / 正在关会话），这时既不能说成功，也不该说 `no-page`（会误导模型让用户「先打开会话」，可用户明明开着），于是单列 `no-ack` 并给一句人话。
+3. **超时默认 15 秒，可调。** 正常回执是毫秒级（打开 viewer 是本地操作），慢的是「页面刚连上、会话还在加载」。15 秒足够覆盖一次真实的加载，又不至于让工具调用挂到模型自己超时。`PI_WEB_PREVIEW_ACK_MS` 是给测试用的（`bridge/tests/preview-tool.mjs` 里设 80ms，测「不回执 → no-ack」不必真等 15 秒），也是给慢机器/远程访问留的旋钮。
+
+**代价 / 可改：**
+
+- **`open_preview` 现在至少多一个往返**（浏览器 → 桥）。本地回环可以忽略；但它把「工具调用」和「浏览器还活着」绑在了一起：页面崩溃/挂起时工具会等满窗口再回 `no-ack`（这也是它比旧的「立即 ok」慢的原因，故意的）。嫌慢可以调小 `PI_WEB_PREVIEW_ACK_MS`。
+- **回执只认「同一条 ws 的同一个 `reqId`」**：页面刷新后旧请求不会误结算（那条连接已经关了，`pendingPreview` 里那格被结算成 `no-ack`）。
+- **`stale` 依赖前端判断**：前端只比 `msg.sessionId !== this.currentId`，不看 `viewer` 是否已经显示了同一个文件 —— 「已经开着这个文件」现在仍会重开一次（幂等，只是白跑一趟）。要省这一趟可以让前端在 `v.info.abs === path && v.pane === "preview"` 时直接回 `ok:true`。
+- **`declined` 的文案是两个作者**：桥给兜底句（页面没带 `text` 时），扩展那层只补一句指令（「等他处理完未保存的改动再打开」）。要真正单一来源，得让页面把整句话传上来。
+- **`no-ack` 的 15 秒是猜的**：没有实测数据支撑，若用户报「打开要等很久」，先看这一项。

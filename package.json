@@ -19,7 +19,7 @@
     "test:rpc": "node bridge/tests/write-after-end.mjs",
     "test:ask": "node --experimental-transform-types bridge/tests/ask-unit.mjs && node bridge/tests/ask-e2e.mjs",
     "test:ask:ui": "node bridge/tests/ask-ui.mjs",
-    "test:preview": "node bridge/tests/preview-tool.mjs",
+    "test:preview": "node bridge/tests/preview-tool.mjs && node --experimental-transform-types bridge/tests/open-preview-unit.mjs",
     "test:scratch": "node bridge/tests/scratch-dirs.mjs && node bridge/tests/scratch-chat.mjs",
     "test:scratch:ui": "node bridge/tests/scratch-ui.mjs",
     "test:pillbar": "node --experimental-transform-types web/tests/pillbar-unit.mjs",

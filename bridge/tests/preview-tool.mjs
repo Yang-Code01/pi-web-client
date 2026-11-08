@@ -1,13 +1,17 @@
 /**
  * Probe: `open_preview` 的桥端闭环（#224）—— 扩展打的那条本机回环路由。
  *
- * Covers: 有页面在看本会话 → `{ok:true}` 且**那条**连接收到 `{type:"preview.open", path}`；
+ * Covers: 有页面在看本会话 → `{ok:true}` 且**那条**连接收到 `{type:"preview.open", path, reqId}`；
  * 没有页面在看 → `{ok:false, reason:"no-page"}`（不静默当成功）；页面看的是别的会话 →
  * 同样 no-page 且那条连接什么都收不到；token 不对 → 403。
  *
  * #225 加的那组：两个标签页都在看本会话 → 两条都收到；会话目录之外、transcript 没提过 →
  * `untrusted-path` 且不投递；目录外但 transcript 提过 → 允许；只扫 transcript 尾部（超窗口的
  * 提及不算）。
+ *
+ * #224 复审加的那组：**页面回执才算打开**。页面不回 → `no-ack`（`PI_WEB_PREVIEW_ACK_MS=80`，
+ * 所以整轮跑得快）；回 `declined` → `declined`；`unsubscribe` 之后 → `no-page`；相对路径解析成
+ * 绝对路径；文件不存在 → `path`；一张页签回 `stale` 不压另张页签的 `ok:true`。
  *
  * 自带丢弃式 bridge + 脚本化 pi（fixture 会把回环 origin 与 token 写进 FAKE_PI_LOG），
  * 不花模型 turn、不碰 7864。端口默认 7892，可用 PREVIEW_PORT 改。
@@ -60,6 +64,8 @@ const env = {
   FAKE_PI_LOG: PI_LOG,
   // #225: 让桩 pi 报一个会话文件，测试才能往 transcript 里写「提到过」的那一行。
   FAKE_PI_SESSION: "1",
+  // #224 复审: 回执窗口压短，`no-ack` 用例不用真等 15 秒；正常用例的回执是即时的，不受影响。
+  PI_WEB_PREVIEW_ACK_MS: "80",
 };
 execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
 const bridge = spawn(process.execPath, [DIST], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -104,11 +110,26 @@ try {
   });
   const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
 
-  /** A page connection: opens with the cookie, then subscribes to one session (= `watching`). */
-  async function page(sid) {
+  /**
+   * A page connection: opens with the cookie, then subscribes to one session (= `watching`).
+   * #224 复审: 桥要回执才算打开，所以默认替页面回 `ok:true`；`ack:"none"` 装死、
+   * `ack:"declined"` / `ack:"stale"` 回对应的失败，`delay` 用来测「晚到的 stale 不压成功」。
+   */
+  async function page(sid, { ack = "ok", delay = 0, text } = {}) {
     const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie } });
     const seen = [];
-    ws.on("message", (b) => seen.push(JSON.parse(b.toString())));
+    ws.on("message", (b) => {
+      const msg = JSON.parse(b.toString());
+      seen.push(msg);
+      if (msg.type !== "preview.open" || !msg.reqId || ack === "none") return;
+      const done =
+        ack === "ok"
+          ? { type: "preview.open.done", reqId: msg.reqId, ok: true }
+          : { type: "preview.open.done", reqId: msg.reqId, ok: false, reason: ack, ...(text ? { text } : {}) };
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(done));
+      }, delay);
+    });
     await new Promise((r) => ws.on("open", r));
     ws.send(JSON.stringify({ type: "subscribe", sessionId: sid }));
     for (let i = 0; i < 100 && !seen.some((m) => m.type === "session" && m.state?.id === sid); i++) await sleep(100);
@@ -116,6 +137,8 @@ try {
   }
 
   const creator = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie } });
+  /** 最后统一收掉的页面（夹在用例中间开的那些）。 */
+  const cleanPages = [];
   const created = [];
   creator.on("message", (b) => created.push(JSON.parse(b.toString())));
   await new Promise((r) => creator.on("open", r));
@@ -225,9 +248,63 @@ try {
     `${aged.status} ${JSON.stringify(aged.data)}`,
   );
 
+  // ---- 10. 页面收到但不回执 → no-ack（#224 复审："投出去了"不等于"打开了"）
   mine.ws.close();
   second.ws.close();
+  await sleep(300);
+  const silent = await page(A, { ack: "none" });
+  const t0 = Date.now();
+  const mute = await open(DOC);
+  const took = Date.now() - t0;
+  check("页面不回执 → ok:false / reason:no-ack", mute.data?.ok === false && mute.data?.reason === "no-ack", JSON.stringify(mute.data));
+  check("no-ack 在回执窗口（80ms）后回来，没有真等 15 秒", took < 1000, `${took}ms`);
+  cleanPages.push(silent);
+
+  // ---- 11. 页面回 declined（用户在未保存提示里选了「留在这里」）→ 不假装打开
+  silent.ws.close();
+  await sleep(200);
+  const holder = await page(A, { ack: "declined", text: "用户留在编辑器里，没打开这个文件。" });
+  const declined = await open(DOC);
+  check(
+    "回执 declined → ok:false / reason:declined",
+    declined.data?.ok === false && declined.data?.reason === "declined",
+    JSON.stringify(declined.data),
+  );
+  check("declined 带上页面给的解释", declined.data?.text === "用户留在编辑器里，没打开这个文件。", String(declined.data?.text));
+  cleanPages.push(holder);
+
+  // ---- 12. 页面关掉会话会 unsubscribe → 桥不再认为它在看
+  holder.ws.send(JSON.stringify({ type: "unsubscribe", sessionId: A }));
+  await sleep(200);
+  const closedPage = await open(DOC);
+  check("unsubscribe 之后 → ok:false / reason:no-page", closedPage.data?.ok === false && closedPage.data?.reason === "no-page", JSON.stringify(closedPage.data));
+  holder.ws.close();
+  await sleep(200);
+
+  // ---- 13. 相对路径按会话 cwd 解析；文件不存在 → path
+  const back = await page(A);
+  const rel = await open("笔记.md");
+  check("相对路径 → ok:true", rel.data?.ok === true, `${rel.status} ${JSON.stringify(rel.data)}`);
+  check("相对路径解析成绝对路径", rel.data?.path === DOC, String(rel.data?.path));
+  const missing = await open("没有这个文件.md");
+  check("文件不存在 → ok:false / reason:path", missing.data?.ok === false && missing.data?.reason === "path", JSON.stringify(missing.data));
+  // 下面要测「一张页签 stale、另一张接住」，先把这张会正常回执的关掉，否则它先回 ok 就测不到 stale 了。
+  back.ws.close();
+  await sleep(200);
+
+  // ---- 14. 一张页签回 stale（它没在看），不压另一张页签的 ok:true
+  const staleTab = await page(A, { ack: "stale" });
+  const liveTab = await page(A, { ack: "ok", delay: 25 });
+  const DOC4 = path.join(WORK, "四份.md");
+  fs.writeFileSync(DOC4, "# 四份\n\n一张页签没在看，不该把成功盖掉。\n", "utf8");
+  const mixed = await open(DOC4);
+  check("一页回 stale、一页回 ok → ok:true", mixed.data?.ok === true, JSON.stringify(mixed.data));
+  check("stale 那张页签也收到了帧", Boolean(staleTab.seen.find((m) => m.type === "preview.open" && m.reqId)), JSON.stringify(staleTab.seen.filter((m) => m.type === "preview.open")));
+  check("接住的那张页签收到了帧", Boolean(liveTab.seen.find((m) => m.type === "preview.open" && m.reqId)));
+  cleanPages.push(staleTab, liveTab);
+
   other.ws.close();
+  for (const p of cleanPages) p.ws.close();
   creator.close();
 } catch (err) {
   console.error(bridgeLog.slice(-3000));

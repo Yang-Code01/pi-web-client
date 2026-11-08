@@ -4,7 +4,8 @@
  * 两个标签页都在看同一个会话时两边都弹。
  *
  * 工具自己跑在 pi 子进程里，浏览器看不到它；这个探针从「桥已经把 `preview.open` 投给页面」
- * 之后接手：一条回环请求 → 网页里的 viewer 弹出、`.viewer-name` 就是文件名。
+ * 之后接手：一条回环请求 → 网页里的 viewer 弹出、`.viewer-name` 就是文件名（md / html / 代码
+ * 三种文件各一条，都落在预览态）。
  * 前端还有一道「sessionId 不对就丢掉」的双保险，桥不可能自己发错，所以用
  * `routeWebSocket` 抢过页面的 socket、伪造一条错会话的 `preview.open` 来测它。
  *
@@ -253,6 +254,38 @@ try {
   check("第一张标签页弹到三份.md", (await page.locator(".viewer-name").textContent()) === "三份.md");
   check("第二张标签页也弹到三份.md", (await page2.locator(".viewer-name").textContent()) === "三份.md");
   await page2.screenshot({ path: path.join(OUT, "3-second-tab.png"), animations: "disabled" });
+
+  // ---- 10/11. html 与代码文件：也是落在预览态（`pane === "preview"`），标题是文件名。
+  // 两种文件在页面上长得完全不一样（html 在沙箱 iframe 里渲染，代码是带行号的 `<pre>`），
+  // 只测 md 会漏掉「打开是打开了，但落到编辑/浏览态上」这种回归。
+  const paneName = async (p) => (await p.locator(".viewer-head .pane-seg button.on").textContent({ timeout: 1000 }).catch(() => "")) ?? "";
+
+  const HTML_DOC = path.join(WORK, "演示.html");
+  fs.writeFileSync(HTML_DOC, "<!doctype html><meta charset=\"utf-8\"><h1>演示页</h1>\n", "utf8");
+  const htmlReply = await post("/api/preview/open", { token, path: HTML_DOC });
+  check("html: 桥说打开了", htmlReply.data?.ok === true, JSON.stringify(htmlReply.data));
+  const htmlTitled = await page
+    .waitForFunction(() => document.querySelector(".viewer-name")?.textContent === "演示.html", null, { timeout: 15000 })
+    .then(() => true)
+    .catch(() => false);
+  check("html: 标题是文件名（演示.html）", htmlTitled);
+  check("html: 落在预览态", (await paneName(page)) === "预览", await paneName(page));
+  check("html: 正文是沙箱 iframe", (await page.locator(".viewer-body iframe.viewer-frame").count()) === 1);
+  await page.screenshot({ path: path.join(OUT, "4-html.png"), animations: "disabled" });
+
+  const CODE_DOC = path.join(WORK, "示例.py");
+  fs.writeFileSync(CODE_DOC, "# 代码文件也该进预览\nprint('open_preview code marker')\n", "utf8");
+  const codeReply = await post("/api/preview/open", { token, path: CODE_DOC });
+  check("代码: 桥说打开了", codeReply.data?.ok === true, JSON.stringify(codeReply.data));
+  const codeTitled = await page
+    .waitForFunction(() => document.querySelector(".viewer-name")?.textContent === "示例.py", null, { timeout: 15000 })
+    .then(() => true)
+    .catch(() => false);
+  check("代码: 标题是文件名（示例.py）", codeTitled);
+  check("代码: 落在预览态", (await paneName(page)) === "预览", await paneName(page));
+  const codeText = (await page.locator(".viewer-body pre.viewer-src").textContent({ timeout: 2000 }).catch(() => "")) ?? "";
+  check("代码: 正文是带行号的源码", codeText.includes("open_preview code marker"), codeText.slice(0, 80));
+  await page.screenshot({ path: path.join(OUT, "5-code.png"), animations: "disabled" });
 
   ws.close();
 } catch (err) {
