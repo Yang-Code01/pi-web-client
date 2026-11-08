@@ -146,7 +146,7 @@ export const en: Dict = {
   "pi 按模型价格表算的估计值（get_session_stats）": "Estimate from pi's model price table (get_session_stats)",
   "pi 日志": "pi log",
   "pi 更新日志": "pi changelog",
-  "pi 的 settings.json（全局 / 项目）、项目信任、更新日志（/settings）": "pi's settings.json (global / project), project trust, changelog (/settings)",
+  "pi 的 settings.json（全局 / 项目）、项目信任、两个更新日志（/settings）": "pi's settings.json (global / project), project trust, both changelogs (/settings)",
   "pi 自己不锁会话文件，网页和终端同时写同一个会话会分叉。装上这个小扩展后，终端里的 pi 会登记自己开着的会话（网页就不会去接管它，列表里显示「终端占用」），打开一个网页正在写的会话时也会先提醒你。只影响之后启动的终端 pi。": "pi doesn't lock session files itself, so the web client and a terminal writing the same session will diverge. With this small extension installed, pi in a terminal registers the sessions it has open (the web client won't take them over and the list shows \"Terminal in use\"), and it warns you before opening a session the web client is writing. Only affects terminal pis started afterwards.",
   "pi 自带的单文件 HTML 导出（/export），在新标签页打开": "pi's built-in single-file HTML export (/export), opens in a new tab",
   "pi 设置": "pi settings",
@@ -680,7 +680,6 @@ export const en: Dict = {
   "普通名字＝只用这些；+x / -x＝在默认基础上增减（两种不能混用）": "Plain names = use only these; +x / -x = add to or remove from the defaults (don't mix the two)",
   "更新": "Updated",
   "更新 {p1}": "Updated {p1}",
-  "更新日志": "Changelog",
   "更早": "Older",
   "最多重试次数": "Max retries",
   "最小化：收回顶栏的「终端」按钮，shell 继续在后台跑（标签上的 × 才结束它）": "Minimize: return the terminal button to the top bar; the shell keeps running in the background (only × on the tab ends it)",
@@ -1815,4 +1814,9 @@ export const en: Dict = {
   "留空 = 不限制；特殊值 inherit / scoped": "Empty = no restriction; special values inherit / scoped",
   "只保存你改过的键；清空一个字段 = 从文件里删掉它。":
     "Only the keys you changed are saved; clearing a field deletes it from the file.",
+  "本项目更新日志": "This project's changelog",
+  "本项目的更新日志（不是 pi 的）": "This project's changelog (not pi's)",
+  "当前版本 {p1}": "Current version {p1}",
+  "读不到本项目的更新日志：{p1}": "Couldn't read this project's changelog: {p1}",
+  "（这个检出里还没有 CHANGELOG.md）": "(this checkout has no CHANGELOG.md yet)",
 };
