@@ -1453,6 +1453,8 @@ export class App {
         this.sessionFails.clear();
         this.failReminded.clear();
         this.failRemindPending.clear();
+        // #221: 带 `history` 的 items 帧（首帧 / 分支切换 / 唤醒续接 / 重连重订阅）是**末尾一整页**，
+        // 永远整页替换；「载入更早」走的是另一条 `history` 帧，不从这里插进旧内容前面。
         this.chat.reset((msg.items ?? []) as Item[]);
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
