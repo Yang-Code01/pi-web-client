@@ -968,8 +968,11 @@ export class Session extends EventEmitter {
       // Usually the file only grew, so the old transcript is a prefix of the new one. A branch
       // switch in the terminal (/tree, then a new message) replaces part of it: resend everything.
       const prefix = before.length <= this.items.length && before.every((it, i) => it.id === this.items[i].id);
-      if (!prefix) this.emitWs({ type: "items", sessionId: this.state.id, items: this.items });
-      else {
+      if (!prefix) {
+        // #221: 分支切换换掉的是整条对话 —— 与首帧同一个规矩，只推末尾一页 + `history`。
+        const page = tailPage(this.items);
+        this.emitWs({ type: "items", sessionId: this.state.id, items: page.items, history: { hasMore: page.hasMore, total: page.total } });
+      } else {
         // Same ids can still carry new content: a tool card gets its result from a later line.
         for (let i = 0; i < before.length; i++) {
           if (JSON.stringify(before[i]) !== JSON.stringify(this.items[i])) {
@@ -1157,7 +1160,9 @@ export class Session extends EventEmitter {
       });
     // A resumed session starts with the transcript pi already wrote to disk.
     if (opts.resume) this.loadFromFile();
-    this.emitWs({ type: "items", sessionId: id, items: this.items });
+    // #221: 唤醒续接同样只推末尾一页，不然休眠一个大会话再叫醒，页面又要等整段。
+    const page = tailPage(this.items);
+    this.emitWs({ type: "items", sessionId: id, items: page.items, history: { hasMore: page.hasMore, total: page.total } });
     void this.refreshStats();
   }
 
@@ -2169,7 +2174,7 @@ export class Session extends EventEmitter {
     this.items = [];
     this.autoCompactUsed = false;
     this.setState({ file, truncated: false }, { touch: false });
-    this.emitWs({ type: "items", sessionId: this.state.id, items: [] });
+    this.emitWs({ type: "items", sessionId: this.state.id, items: [], history: { hasMore: false, total: 0 } });
     this.touch();
     if (before && before !== file) {
       try {
