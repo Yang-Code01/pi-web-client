@@ -205,6 +205,8 @@ export interface RemoveReport {
   skipped: { id: string; name: string; reason: string }[];
   /** Ids that were running and got released on the way out (the page says so out loud). */
   released: string[];
+  /** Ids of those that really landed in the bin; the rest had nothing on disk to keep. */
+  binned: string[];
 }
 
 /** One deleted session, parked in the bridge's own bin until it is emptied for real. */
@@ -3265,17 +3267,15 @@ export class SessionManager extends EventEmitter {
       const meta = metas.get(id);
       if (!session && !meta) continue;
       const name = session?.state.name ?? meta?.name ?? id.slice(0, 8);
+      // 终端里的 pi 不是本桥的子进程：杀不掉，也不能替它交还写者身份。写者身份有两个来源 ——
+      // 抢占用的 `<id>.lock`（别的桥实例）和 session-lock 扩展的 `<id>.tty.json`（终端 pi）。
       const lock = readLock(id);
-      // 终端里的 pi 不是本桥的子进程：杀不掉，也不能替它交还写者身份。
-      if (lock && lock.pid !== process.pid) {
+      if ((lock && lock.pid !== process.pid) || readTtyLock(id)) {
         skipped.push({ id, name, reason: "终端正在使用" });
         continue;
       }
       targets.push({ id, name, file: session?.state.file ?? meta?.file ?? null, cwd: session?.state.cwd ?? meta?.cwd });
     }
-    // 有文件才搬（进垃圾箱）；没有文件的（刚建、pi 还没落盘的空会话）关掉就行 —— 磁盘上本来就
-    // 没东西可丢，也没东西可还原。
-    const binnable = targets.filter((t) => Boolean(t.file) && fs.existsSync(t.file as string));
     // 运行中的先交还写者，多个并行：一个卡住的 rpc 不该让整批按 7 秒一个排队等（close 的两次等待）。
     const held = targets.map((t) => this.sessions.get(t.id)).filter((s): s is Session => Boolean(s?.live));
     const released: string[] = [];
@@ -3286,15 +3286,21 @@ export class SessionManager extends EventEmitter {
       else skipped.push({ id: s.state.id, name: s.state.name, reason: `停止这个会话失败（${r.reason?.message ?? r.reason}）` });
     });
     const blocked = new Set(skipped.map((s) => s.id));
+    const binnedIds: string[] = [];
     const binned: TrashItem[] = [];
     const gone: string[] = [];
     for (const t of targets) {
       if (blocked.has(t.id)) continue;
-      if (binnable.includes(t)) {
-        const file = t.file as string;
+      // 有没有文件，要等到释放之后再看：close() 会等在飞的那一轮落盘，文件可能就在这一小段里
+      // 才出现。在释放之前算好，就会把「刚写完的会话」当成空会话 —— 移出列表却不搬文件，下一次
+      // 扫描又把它扫回来（删了还复活）。没有文件的只有一种：刚建、还没说话的空会话，关掉即可，
+      // 磁盘上本来就没东西可丢，也没东西可还原。
+      const file = t.file && fs.existsSync(t.file) ? t.file : null;
+      if (file) {
         try {
           const size = fs.statSync(file).size;
           moveFile(file, trashPayload(t.id));
+          binnedIds.push(t.id);
           binned.push({ id: t.id, name: t.name, file, cwd: t.cwd, deletedAt: Date.now(), size });
         } catch (err: any) {
           skipped.push({ id: t.id, name: t.name, reason: `文件移不进垃圾箱（${err?.code ?? err}）` });
@@ -3325,7 +3331,7 @@ export class SessionManager extends EventEmitter {
     }
     // The file scan is cached for a few seconds; a move must not be resurrected by it.
     this.cache = null;
-    return { removed: gone, skipped, released };
+    return { removed: gone, skipped, released, binned: binnedIds };
   }
 
   /** Newest first. Rows whose payload vanished are dropped instead of shown as dead entries. */

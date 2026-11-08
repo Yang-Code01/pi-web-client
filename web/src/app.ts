@@ -2188,9 +2188,13 @@ export class App {
         const removed: string[] = Array.isArray(msg.removed) ? msg.removed.map(String) : [];
         const skipped: DeleteReport["skipped"] = Array.isArray(msg.skipped) ? msg.skipped : [];
         const parts: string[] = [];
-        if (removed.length) parts.push(tr("已移入垃圾箱 {p1} 个", { p1: removed.length }));
+        // 旧桥没有 binned：那时候 removed 里的都搬进了箱。
+        const binned: string[] = Array.isArray(msg.binned) ? msg.binned.map(String) : removed;
+        if (binned.length) parts.push(tr("已移入垃圾箱 {p1} 个", { p1: binned.length }));
         const released: string[] = Array.isArray(msg.released) ? msg.released.map(String) : [];
-        if (released.length) parts.push(tr("其中 {p1} 个在运行，已先停止", { p1: released.length }));
+        if (released.length) parts.push(tr("其中 {p1} 个已先停止", { p1: released.length }));
+        // 刚建、还没说话的会话没有文件可搬：它真的没了，别让「已移入垃圾箱」替它撒谎。
+        if (removed.length > binned.length) parts.push(tr("另有 {p1} 个还没有内容，已直接删除", { p1: removed.length - binned.length }));
         if (skipped.length) {
           const names = skipped.slice(0, 3).map((s: DeleteReport["skipped"][number]) => tr("{p1}（{p2}）", { p1: s.name, p2: s.reason })).join(tr("、"));
           parts.push(tr("{p1} 个没删：{p2}{p3}", { p1: skipped.length, p2: names, p3: skipped.length > 3 ? " 等" : "" }));

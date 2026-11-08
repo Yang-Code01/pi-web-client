@@ -251,6 +251,7 @@ try {
   const only = await result;
   assert(only?.removed?.includes(liveId), `live delete removed it (got ${JSON.stringify(only)})`);
   assert(only?.released?.includes(liveId), `live delete names what it released (got ${JSON.stringify(only)})`);
+  assert(only?.binned?.includes(liveId), `live delete says it reached the bin (got ${JSON.stringify(only)})`);
   assert(!only?.skipped?.length, `nothing skipped (got ${JSON.stringify(only?.skipped)})`);
   assert(fs.existsSync(liveBin) && !fs.existsSync(liveFile), "live payload moved to the bin");
   assert(!fs.existsSync(liveLock), "its write lock was handed back");
@@ -268,17 +269,22 @@ try {
   const freshRes = await freshWait;
   assert(freshRes?.removed?.includes(freshId), `empty live session removed (got ${JSON.stringify(freshRes)})`);
   assert(freshRes?.released?.includes(freshId), "empty live session was released");
+  assert(!freshRes?.binned?.includes(freshId), "an empty session is not reported as binned");
   assert(!binIndex().some((it) => it.id === freshId), "no bin row for a session that never hit disk");
   assert(!(await order()).includes(freshId), "empty live session left the list");
   log("empty live delete: released, no bin row");
 
-  // 4b. A terminal's pi still refuses: its pid is not ours, so nothing here can stop it.
+  // 4c. A terminal's pi still refuses: its pid is not ours, so nothing here can stop it. Both
+  // markers count — the write lock another bridge takes, and the tty marker the terminal extension
+  // writes (readTtyLock); the file must not move under either one.
   const fileD = mkSession("zz-manage-d", "终端里开着的会话", 1.5);
   await until(async () => (await order()).includes("zz-manage-d"), 15000, "terminal-held session listed");
   const lockD = path.join(STATE, "locks", "zz-manage-d.lock");
+  const ttyD = path.join(STATE, "locks", "zz-manage-d.tty.json");
   fs.mkdirSync(path.dirname(lockD), { recursive: true });
   // 测试进程充当「终端里的 pi」：pid 是外来的，而且确实活着。
   fs.writeFileSync(lockD, JSON.stringify({ pid: process.pid, at: Date.now() }));
+  fs.writeFileSync(ttyD, JSON.stringify({ pid: process.pid }));
   const held = waitFor("delete.result", () => true, 8000);
   send({ type: "manage", action: "delete", ids: ["zz-manage-d"] });
   const refused = await held;
@@ -293,7 +299,7 @@ try {
   assert(!(await order()).includes("zz-manage-d"), "a foreign lock hides it from discovery");
   log("terminal-held delete refused:", refused.skipped[0].reason);
 
-  // 4c. Mixed batch: the idle one goes, the terminal-held one comes back as skipped.
+  // 4d. Mixed batch: the idle one goes, the terminal-held one comes back as skipped.
   const mixed = waitFor("delete.result", (m) => m.removed?.length > 0, 8000);
   send({ type: "manage", action: "delete", ids: [ids.c, "zz-manage-d"] });
   const report = await mixed;
@@ -305,15 +311,16 @@ try {
   assert(fs.existsSync(fileD), "…and left the terminal-held one where it was");
   log("mixed batch: removed", report.removed.length, "skipped", report.skipped.length);
 
-  // 4d. Once the terminal lets go, the same file goes too — the lock was the only thing holding it.
+  // 4e. Once the terminal lets go, the same file goes too — the lock was the only thing holding it.
   fs.unlinkSync(lockD);
+  fs.unlinkSync(ttyD);
   const freed = waitFor("delete.result", () => true, 8000);
   send({ type: "manage", action: "delete", ids: ["zz-manage-d"] });
   const freedRes = await freed;
   assert(freedRes.removed.includes("zz-manage-d"), `lock gone → delete goes through (got ${JSON.stringify(freedRes)})`);
   assert(!fs.existsSync(fileD), "released-by-terminal file moved out of the sessions dir");
 
-  // 4e. Purging is the only irreversible step: the payloads are really unlinked.
+  // 4f. Purging is the only irreversible step: the payloads are really unlinked.
   const purgeResult = waitFor("purge.result", (m) => m.purged?.length > 0, 8000);
   send({ type: "manage", action: "purge", ids: [] });
   const purged = await purgeResult;

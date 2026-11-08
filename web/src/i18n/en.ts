@@ -1379,7 +1379,8 @@ export const en: Dict = {
   "左栏要按工作区分组了：同一个工程根下的会话归到一组，组里 ★ 排前，归档的另放最后一区。下面是你会看到的样子。": "The left column is about to group sessions by workspace: everything under one project root lands in one group, ★ sorts to the top inside a group, and archived sessions keep their own section at the end. Here is what you will get.",
   "{p1} 个会话": "{p1} sessions",
   "其中 {p1} 个是你拖过的": "{p1} of them you moved by hand",
-  "其中 {p1} 个在运行，已先停止": "{p1} of them were running and got stopped first",
+  "其中 {p1} 个已先停止": "{p1} of them got stopped first",
+  "另有 {p1} 个还没有内容，已直接删除": "{p1} more had nothing in them yet and were dropped outright",
   "会建 {p1} 个工作区、{p2} 个会话": "Creates {p1} workspaces with {p2} sessions",
   "会建 {p1} 个工作区、{p2} 个会话，其中 {p3} 个是你拖过的": "Creates {p1} workspaces with {p2} sessions, {p3} of them moved by hand",
   // ---- 技能商店 (D126)

@@ -155,7 +155,7 @@ try {
   await card("戊").click();
   const del = page.locator(".manage-actions .btn.danger");
   await del.click();
-  assert((await del.textContent()).includes("再点一次"), "first click only arms the delete");
+  assert((await del.textContent()).includes("再点一次：移入垃圾箱"), "first click only arms the delete");
   assert(fs.existsSync(files["戊"]), "file still there after the first click");
   await del.click();
   await until(async () => !(await sectionNames("rest")).includes("戊"), 5000, "戊 deleted");

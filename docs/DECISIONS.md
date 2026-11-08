@@ -302,7 +302,7 @@
 
 **交互细节：** 卡片永远只有一个点击语义 —— 非管理模式下打开会话，管理模式下切换选中；✎ / ☆ 都 `stopPropagation`。拖拽手柄只在 hover 时显示，且**过滤生效时禁用拖拽**（看不见的卡片没法排位置）。归档段默认折叠，数量在段头；管理条移动到列表上方（侧栏会滚动，放底部会被裁掉一半，样张里就出现过）。
 
-**验证：** `node bridge/tests/manage-check.mjs`（隔离桥 7876 + 3 个手工会话文件 + 真 pi 建一个 live 会话）：pin/order 写入 `manage.json`、排序按 pin→order、归档后 API 仍在且沉底、删只读会话后文件 + `names.json` + `manage.json` 三处都干净、live 会话删除被拒、**重启后排列仍在**。`node probes/manage-ui.mjs`（真 Chromium + 隔离桥 7877）：☆ 置顶、拖 戊 到 乙 下方、管理模式下选 2 个归档 → 展开已归档 → 恢复、两步删除真的删掉文件、过滤只剩 1 张且不可拖。截图在 `.scratch/manage-ui/shots/`。**可改：** 想加分组就在同一个 JSON 里加 `groups`（样张 B 已写过）；想把归档做成「真的看不见」只需 `list()` 过滤 `archived`。
+**验证：** `node bridge/tests/manage-check.mjs`（隔离桥 7876 + 3 个手工会话文件 + 真 pi 建 live 会话）：pin/order 写入 `manage.json`、排序按 pin→order、归档后 API 仍在且沉底、删只读会话后文件 + `names.json` + `manage.json` 三处都干净、**live 会话先被释放再进箱（D198）**、**终端持锁仍然被拒（D198）**、**重启后排列仍在**。`node probes/manage-ui.mjs`（真 Chromium + 隔离桥 7877）：☆ 置顶、拖 戊 到 乙 下方、管理模式下选 2 个归档 → 展开已归档 → 恢复、两步删除把文件移进 `state/trash/`（D51 之后不再是 unlink）、过滤只剩 1 张且不可拖。截图在 `.scratch/manage-ui/shots/`。**可改：** 想加分组就在同一个 JSON 里加 `groups`（样张 B 已写过）；想把归档做成「真的看不见」只需 `list()` 过滤 `archived`。
 
 ## D49 失败诊断：界面要给的是「结论」，不是「更多原文」（取代 D44 的画法）
 
@@ -3353,12 +3353,12 @@ D
 
 **决定：**
 
-1. **桥（`Sessions.trash()`）：** 只有终端锁还拒绝（`skipped: 终端正在使用`）。live / 网页接管 / 待审批的一律先 `close({ quiet: true })` 再搬文件，关掉的 id 进新字段 `released: string[]`。
-2. **有文件才进箱：** pi 要到第一条消息才落盘（实测：`create` 之后 19 秒，`state.file` 有路径但文件不存在），所以「刚建、还没说话」的会话没有文件可搬 —— 这种直接关掉、从列表里拿掉，不写垃圾箱行（磁盘上本来就没东西可丢，也没东西可还原）。有文件路径且文件在的才搬进 `state/trash/`。
+1. **桥（`Sessions.trash()`）：** 只剩终端锁还拒绝（`skipped: 终端正在使用`），且两种写者身份都算：`<id>.lock` 的 pid 不是本桥（另一个桥实例），以及 session-lock 扩展写的 `<id>.tty.json`（终端里开着，`readTtyLock()`）。live / 网页接管 / 待审批的一律先 `close({ quiet: true })` 再搬文件，关掉的 id 进新字段 `released: string[]`。
+2. **有文件才进箱，且要在释放之后才判：** pi 要到第一条消息才落盘（实测：`create` 之后 19 秒，`state.file` 有路径但文件不存在），所以「刚建、还没说话」的会话没有文件可搬 —— 这种直接关掉、从列表里拿掉，不写垃圾箱行（磁盘上本来就没东西可丢，也没东西可还原）。**判断必须放在 `close()` 之后、逐个做：** `close()` 会 abort 并等在飞的那一轮落盘（≤ 5s），文件可能就在这一小段里才出现。审查时第一版算在释放之前，等于把「刚写完的会话」当空会话：移出列表却不搬文件，`cache = null` 之后下一次扫描又把它扫回来 —— 就是 D48 里那个「复活」。进箱的 id 另外放进 `binned: string[]`，页面拿它报「已移入垃圾箱 N 个」，剩下的报「另有 N 个还没有内容，已直接删除」。
 3. **并行关闭：** `Promise.allSettled(held.map((s) => s.close({ quiet: true })))`。一次 close 最坏 7s（5s + 2s），批量删除不该按 7s×N 排队。关失败（rejected）的进 skipped 并保留文件，不移文件也不谎报删除。
 4. **`quiet: true`：** 被删除打断的那一轮不该再弹「已停止运行，历史留在磁盘，发消息会自动接管」—— 那句是「释放会话」的台词，而这里会话马上就不在了。
-5. **页面：** 删除按钮只在 `locked`（终端占用）时置灰；`App.busy()` 换成 `App.deleteBlocked()`，只判 `Boolean(s.locked)`。hover 文案分三档：终端占用 / 已武装 / 运行中（「删除（运行中：先停止这一轮再移入垃圾箱，可还原）」）。结果提示补一句「其中 N 个在运行，已先停止」。
-6. **i18n：** 删「网页正在运行/接管这个会话，先停止运行再删」与「运行中 / 网页接管中 / 待确认的会话不能删，先停止运行」两条旧文案，加三条新的。
+5. **页面：** 删除按钮只在 `locked`（终端占用）时置灰；`App.busy()` 换成 `App.deleteBlocked()`，只判 `Boolean(s.locked)`。hover 文案分三档：终端占用 / 已武装 / 运行中（「删除（运行中：先停止这一轮再移入垃圾箱，可还原）」）。结果提示补两句：「其中 N 个已先停止」（`released`，`live` 里也包含「接管但空转」的，所以话术只说停止不说着火）、「另有 N 个还没有内容，已直接删除」（`removed` 减 `binned`）。
+6. **i18n：** 删「网页正在运行/接管这个会话，先停止运行再删」与「运行中 / 网页接管中 / 待确认的会话不能删，先停止运行」两条旧文案，加四条新的（含批量删除的「终端正在占用其中 {p1} 个会话，先在终端退出再删」）。
 
 **为什么保留终端锁这道闸：** 让终端里的 pi 继续往一个已被搬走的文件写，等于制造两个写者（D31 / D48 的同一个理由）。而「运行中」不是拒绝删除的理由，只是「这次删除多做一件事」。
 
@@ -3367,6 +3367,7 @@ D
 - 删除最坏多等 ~7s（abort 5s + exit 2s），批量时按钮转圈更久。想先回包、后台关也可以，但那样 `session.gone` 与进程真正退出之间会出现观察窗口，这次先要确定性。
 - `released` 是桥新增的可选字段：旧前端忽略它，不报错。
 - 终端持锁时仍然只能先去终端退出（不变）。
+- 新网页 + 旧桥：按钮不再置灰，但旧桥会回 `skipped: 正在运行`（提示是真话，只是姿态不好看）。桥与网页同仓同版本发布，没做能力协商。
 - 若同一 id 正被另一个桥实例接管，`close()` 会失败 → 进 skipped、文件不动；这条没有专门测试，按 `readLock` 的语义它是可达的。
 
-**验证：** `node bridge/tests/manage-check.mjs`（D48 的探针按新语义重写）：删 live 会话 → `removed` + `released` 都含它、`skipped` 为空、payload 进 `state/trash/`、`state/locks/<id>.lock` 消失、列表里没了；写一个外来 pid 的锁文件 → 仍然 `skipped: 终端正在使用` 且文件原地不动；混合批（idle + 终端占用）→ idle 进垃圾箱、终端占用的保留；删掉锁文件后再删 → 通过；purge 把 live / 终端占用的都真删；重启后这些 id 都不回来。两边 typecheck（`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`，后者含 i18n-check 1772 键 × 3 语言）。
+**验证：** `node bridge/tests/manage-check.mjs`（D48 的探针按新语义重写）：删 live 会话 → `removed` / `binned` / `released` 都含它、`skipped` 为空、payload 进 `state/trash/`、`state/locks/<id>.lock` 消失、列表里没了；刚建的空会话 → `released` 有它、垃圾箱**没有**空行；写一个外来 pid 的锁文件（`.lock` 与 `.tty.json` 都覆盖）→ 仍然 `skipped: 终端正在使用` 且文件原地不动；混合批（idle + 终端占用）→ idle 进垃圾箱、终端占用的保留；删掉锁文件后再删 → 通过；purge 把 live / 终端占用的都真删；重启后这些 id 都不回来。两边 typecheck（`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`，后者含 i18n-check）。
