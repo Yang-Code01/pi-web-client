@@ -3371,3 +3371,32 @@ D
 - 若同一 id 正被另一个桥实例接管，`close()` 会失败 → 进 skipped、文件不动；这条没有专门测试，按 `readLock` 的语义它是可达的。
 
 **验证：** `node bridge/tests/manage-check.mjs`（D48 的探针按新语义重写）：删 live 会话 → `removed` / `binned` / `released` 都含它、`skipped` 为空、payload 进 `state/trash/`、`state/locks/<id>.lock` 消失、列表里没了；刚建的空会话 → `released` 有它、垃圾箱**没有**空行；写一个外来 pid 的锁文件（`.lock` 与 `.tty.json` 都覆盖）→ 仍然 `skipped: 终端正在使用` 且文件原地不动；混合批（idle + 终端占用）→ idle 进垃圾箱、终端占用的保留；删掉锁文件后再删 → 通过；purge 把 live / 终端占用的都真删；重启后这些 id 都不回来。两边 typecheck（`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`，后者含 i18n-check）。
+
+## D199 隐式触发的技能在对话里立一张卡：靠 `read …\SKILL.md` 认，理由是它读之前那句话（用户要求）
+
+**问题：** 用户点了「技能」面板或用 `/skill:x` 发的技能，气泡上有一枚药丸（D165），能看出「这一轮用了什么」。但模型自己挑的技能 —— 提示词触发的隐式加载 —— 在界面上完全不存在：pi 没有 Skill 工具（`pi-coding-agent/dist/core/sdk.js` 内建只有 read/write/edit/bash/grep/find/ls/powershell），系统提示词里只有 `<available_skills>` 清单（`dist/core/skills.js` 的 `formatSkillsForPrompt`，一行 name + 一行 description + location），加载动作就是模型自己 `read` 那份 SKILL.md。于是对话里只多出一张普通的 `read` 工具卡，用户既不知道「它刚用了一个技能」，也不知道「这个技能是干什么的」和「为什么是它」。用户要的就是这三样：显示出来、一句话说清是干啥的、说清为啥触发。
+
+**决定：**
+
+1. **判定用路径匹配，零侵入。** 新增 `skillOfRead(skills, name, args, cwd?)`（`bridge/src/skills.ts`）：只有 `name === "read"` 且 `path.resolve(cwd, args.path)` 正好等于某个技能目录下的 `SKILL.md` 才算命中（`cwd` 是会话 cwd —— pi 的 read 就是按它解相对路径的）。不挂 pi 扩展、不改 pi 侧任何东西 —— 记录里本来就有这条工具调用，参数里有绝对路径。
+2. **只认 `read`。** `bash cat …\SKILL.md` 不标：命令行的字符串里出现路径和「读了它」不是一回事（`grep`、`echo`、写文件都会带路径）。
+3. **回放也补上。** 老会话（磁盘上的 JSONL）里没有「用了技能」这种事件，唯一的痕迹同样是那次 read。`withSkillItems(items, skills)`（`bridge/src/items.ts`）在 `entriesToItems` 之后跑一遍，把卡插在命中的 tool item 之前；`bridge/src/sessions.ts` 的 `loadFromFile()` 里接上。技能清单按 cwd 缓存 30s（`skillsHere()`），否则每次文件变化重放整卷都要扫一次盘。
+4. **实时也补上，用同一个判据。** assistant 消息带 toolCall 到达时（`bridge/src/sessions.ts` 的 `item.add` 循环）先问一次 `skillItemFor(this.items, …)`，命中就先把 `skill` item 推给页面，再推 tool item。
+5. **一轮一个技能一张卡。** `skillItemFor` 从画布末尾往回扫，遇到本轮最后一条 user 就停 —— 已经画过同名卡就不再画（模型常把同一份 SKILL.md 读两遍：先读主体，读完附件再读）。
+6. **「为什么」只能写线索。** 记录里没有动机字段。卡上那句取**模型读之前最近说的那句**，它没说话就退回**本轮用户消息**（`whyFrom` 区分两者），压成一行、截 120 字。这句不是在调用点传进去的，而是卡要落地时从「已经画到画布上的本轮条目」回扫出来的（`turnAssistantText`）—— 实时与回放跑同一段代码，同一条消息刷新前后不会换词。所以卡片写「触发线索：它读之前说「…」」，不写「因为」—— 那是我们编的。
+7. **形态（用户在三个样张里选的 A）：** 一张独立卡，名字（等宽 accent）+「自动加载」虚线徽标 + `SKILL.md` 出口（点开走 `pi-preview`）+ 一句话描述（frontmatter 的 description，两行截断，全文在 title）+ 触发线索一行。虚线徽标说的是「没人让你用它，它自己挑的」，与 `/skill:` 药丸（实线 + 用户气泡里）形成对照。卡到达时页面收掉已经开着的那一摞操作（`closeOps()`）：卡是「下面那张 read」的前言，不收的话那张 read 会落进上面那摞、画在卡前面（多步轮次里就是这个顺序）。
+8. **不动计数。** `uses` / `lastUsed` 仍然只由用户真发 `/skill:<name>` 计数（`bumpSkillUsage`）。隐式触发不进「常用」排序：那是「你爱用什么」，不是「模型爱读什么」。
+
+**为什么不做成 pi 扩展：** 扩展能在 `tool_call` 上看到参数并 `appendEntry` 一条自定义消息，但那样第二份实现要跟着 pi 的扩展 API 走（还有 `PI_WEB_*` 挂载、扩展找不到时的降级），而桥本来就要把 JSONL 重放成 items —— 在重放里认路径，实时与历史两条路自然同源。代价是 `bash cat` 那种读法标不出来（见下）。
+
+**代价 / 可改：**
+
+- `bash cat SKILL.md`、`sed -n … SKILL.md` 不标；要标得解析命令行，误报比漏报难收拾。
+- 模型把 SKILL.md 内容贴错路径读（比如读 `skills/x/README.md`）不标 —— 只有 SKILL.md 本身才算。
+- 用户自己为了看看技能写了什么而 `read` 一次，也会被标成「本轮用了这个技能」。这是「一条路径判据」的固有代价；折中是加一条「仅当该技能 description 与用户消息有交集」的猜测规则，不做（会把假阳性换成假阴性）。
+- 卡占两行高度，一轮多一次；嫌吵就在 CSS 里把 `.skillcard .why` 藏掉（一句话是什么仍在）。
+- 老会话回放依赖 cwd 能扫到技能目录：技能后来被删了，老会话里那张卡就不出现（宁缺，不瞎标）。
+- 一轮里技能卡会把这一轮的操作拆成两摞（卡前 / 卡后）：多步轮次里模型先跑几条命令再读技能，那一轮就是「一摞 + 卡 + 一摞」，比硬塞进同一摞更诚实，但也比平时多一个折叠头。
+- 用户这轮只发了张图（没有文字）、模型也没说话时，卡上没有线索那一行 —— 没话可引，不编。
+
+**验证：** `node bridge/tests/skill-implicit.mjs`（14 项）：路径命中 / 正反斜杠 / 同目录别的文件 / `bash` 不命中 / 清单外路径 / 相对路径 + cwd / BOM 与开头空行的 frontmatter / 一轮去重 / 卡位置在 read 之前 / 下一轮重新计 / 回放退回用户消息（`whyFrom=user` 与 `id: e2:c1:skill`）/ 清单为空不插 / 实时去重 / 多步轮次里实时与回放给出同一张卡。`npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（含 i18n-check：1777 键 × 3 语）都过。

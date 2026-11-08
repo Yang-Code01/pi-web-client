@@ -38,6 +38,19 @@ export interface ToolItem extends ItemBase {
   durationMs?: number;
   status: "running" | "ok" | "error" | "unknown";
 }
+/**
+ * 模型自己加载了一个技能（隐式触发）：它在 `read` 里读了 SKILL.md —— pi 没有 Skill 工具，
+ * 系统提示词只给清单，读文件就是加载。名字与描述来自 frontmatter，`why` 是它读之前说的那句。
+ */
+export interface SkillItem extends ItemBase {
+  kind: "skill";
+  name: string;
+  description: string;
+  why?: string;
+  /** `model` = 它读之前说的那句；`user` = 退回本轮用户消息。 */
+  whyFrom?: "model" | "user";
+  path?: string;
+}
 export interface NoticeItem extends ItemBase {
   kind: "notice";
   text: string;
@@ -63,7 +76,7 @@ export interface SummaryItem extends ItemBase {
   title: string;
   text: string;
 }
-export type Item = UserItem | AssistantItem | ToolItem | NoticeItem | BashItem | SummaryItem;
+export type Item = UserItem | AssistantItem | ToolItem | SkillItem | NoticeItem | BashItem | SummaryItem;
 
 /**
  * #218 / #220: `session` 帧里的 `items` 只有末页，历史总量与「上面还有没有」走这里。

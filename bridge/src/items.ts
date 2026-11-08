@@ -1,3 +1,5 @@
+import path from "node:path";
+import { skillOfRead, type SkillEntry } from "./skills.ts";
 import { extractText, skillExpansion, type SessionEntry } from "./sessionfile.ts";
 
 export interface ItemBase {
@@ -70,7 +72,99 @@ export interface SummaryItem extends ItemBase {
   title: string;
   text: string;
 }
-export type Item = UserItem | AssistantItem | ToolItem | NoticeItem | BashItem | SummaryItem;
+/**
+ * 模型自己加载了一个技能（隐式触发）：它在 `read` 里直接读了 SKILL.md。名字与一句话描述来自
+ * frontmatter，`why` 是它读之前自己说的那句（没说话就用本轮用户消息）—— 记录里没有「动机」这个字段，
+ * 这两样是能找到的最接近的东西，所以卡片说的是「触发线索」，不是「因为」。
+ */
+export interface SkillItem extends ItemBase {
+  kind: "skill";
+  name: string;
+  description: string;
+  /** 一句话理由的原文（已压成一行并截断）。 */
+  why?: string;
+  /** `model` = 它读之前说的那句；`user` = 退回本轮用户消息。 */
+  whyFrom?: "model" | "user";
+  /** SKILL.md 的绝对路径，卡上的「SKILL.md」出口用它。 */
+  path?: string;
+}
+export type Item = UserItem | AssistantItem | ToolItem | SkillItem | NoticeItem | BashItem | SummaryItem;
+
+/** 一行化：卡片正文只占一行，换行与缩进会把高度撑开。 */
+export function oneLine(text: string, max = 120): string {
+  const flat = String(text ?? "").replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/**
+ * 技能卡：只在本轮（最后一条 user 之后）没画过同名卡时才给一张。
+ * `items` 是「到目前为止」的画布，插卡就把结果写回去，下一张卡自然能在里面看到去重结果。
+ */
+export function skillItemFor(
+  items: Item[],
+  skills: SkillEntry[],
+  call: { name?: string; args?: unknown },
+  cwd?: string,
+): SkillItem | undefined {
+  const hit = skillOfRead(skills, call.name, call.args, cwd);
+  if (!hit) return undefined;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "user") break;
+    if (it.kind === "skill" && it.name === hit.name) return undefined;
+  }
+  // 理由一律从「已经画到画布上」的本轮条目里取：实时与回放走同一段扫描，刷新前后不会变词。
+  const fromModel = turnAssistantText(items);
+  const why = fromModel || turnUserText(items);
+  return {
+    id: `skill:${hit.name}`,
+    kind: "skill",
+    name: hit.name,
+    description: hit.description,
+    path: path.join(hit.path, "SKILL.md"),
+    ...(why ? { why, whyFrom: fromModel ? "model" : "user" } : {}),
+  };
+}
+
+/** 本轮里模型最近说的一句（看完工具结果又说话也照取最近一条）。 */
+function turnAssistantText(items: Item[]): string {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "user") return "";
+    if (it.kind === "assistant") {
+      const line = oneLine(it.text);
+      if (line) return line;
+    }
+  }
+  return "";
+}
+
+/** 本轮的起点（最后一条 user）之后那句用户原话。 */
+function turnUserText(items: Item[]): string {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "user") return oneLine(it.text);
+  }
+  return "";
+}
+
+/**
+ * 回放：磁盘上没有任何「我用了技能」的记录，唯一的痕迹是 `read …\SKILL.md` 这个工具调用。
+ * 把卡插在那个 read 之前（客户端收到第一张工具卡才建 ops 模块，所以卡会落在模块上面），
+ * 一轮一个技能一张；去重与理由都由 `skillItemFor` 从画布回扫得出，与实时路径同一段代码。
+ */
+export function withSkillItems(items: Item[], skills: SkillEntry[], cwd?: string): Item[] {
+  if (!skills.length) return items;
+  const out: Item[] = [];
+  for (const item of items) {
+    if (item.kind === "tool") {
+      const card = skillItemFor(out, skills, { name: item.name, args: item.args }, cwd);
+      if (card) out.push({ ...card, id: `${item.id}:skill`, ts: item.ts });
+    }
+    out.push(item);
+  }
+  return out;
+}
 
 /** A custom (extension) message, if pi would show it: `display:false` ones stay hidden, like in the TUI. */
 export function customMessageItem(id: string, ts: string | undefined, raw: any): SummaryItem | null {

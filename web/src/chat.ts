@@ -4,7 +4,7 @@ import { highlightFragment } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
 import { mountTurnRail, type TurnRail } from "./turns.ts";
-import type { BashItem, Item, SessionHistory, ToolItem, UserItem } from "./types.ts";
+import type { BashItem, Item, SessionHistory, SkillItem, ToolItem, UserItem } from "./types.ts";
 import { fmtTime, tr } from "./i18n/index.ts";
 
 /** Characters of a running `!cmd` output kept on screen (the bridge keeps the same tail). */
@@ -682,6 +682,8 @@ export class ChatView {
       this.closeOps();
       this.clearTurnFails();
     }
+    // 隐式技能卡是「下面那张 read」的前言，不能落在它后面：收掉已有模块，让这张 read 自己开一个。
+    if (item.kind === "skill") this.closeOps();
     if (item.kind === "assistant") {
       this.assistantTexts.set(item.id, item.text ?? "");
       if ((item.text ?? "").trim()) this.noteAnswered();
@@ -1090,6 +1092,7 @@ export class ChatView {
     }
     if (item.kind === "tool") return this.buildTool(item);
     if (item.kind === "bash") return this.buildBash(item);
+    if (item.kind === "skill") return this.buildSkill(item);
     if (item.kind === "summary") {
       // Folded by default: it is context the model reads, not something the user needs to reread.
       const box = el("details", `summary-card ${item.variant}`);
@@ -1326,6 +1329,44 @@ export class ChatView {
       body.append(tag);
     }
     return body;
+  }
+
+  /**
+   * 隐式触发的技能（D199）：模型没说过自己用了什么，只在 `read` 里读了一份 SKILL.md。
+   * 卡上答两件事：这个技能是干什么的（frontmatter 那句），以及它为什么在这轮被读
+   * （它读之前自己说的那句；没说话就退回你这轮的话）。
+   */
+  private buildSkill(item: SkillItem): HTMLElement {
+    const card = el("article", "skillcard");
+    const row = el("div", "row");
+    row.append(el("span", "n", item.name));
+    row.append(el("span", "auto", tr("自动加载")));
+    if (item.path) {
+      const src = el("button", "src", "SKILL.md");
+      src.title = item.path;
+      src.onclick = (ev) => {
+        ev.stopPropagation();
+        openPreview(String(item.path));
+      };
+      row.append(src);
+    }
+    card.append(row);
+    const desc = el("p", "desc", item.description || tr("这个技能没写描述"));
+    // 卡上只给两行（CSS clamp），全文挂在 title 上：描述往往是「干什么 + 什么时候用」一整段。
+    if (item.description) desc.title = item.description;
+    card.append(desc);
+    if (item.why) {
+      card.append(
+        el(
+          "p",
+          "why",
+          item.whyFrom === "model"
+            ? tr("触发线索：它读之前说「{p1}」", { p1: item.why })
+            : tr("触发线索：你这轮说「{p1}」", { p1: item.why }),
+        ),
+      );
+    }
+    return card;
   }
 
   /** A `!cmd` the user ran: its own card, not part of the model's tool module (#16). */

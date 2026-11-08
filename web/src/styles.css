@@ -722,6 +722,17 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .tool.err { border-color: var(--danger-dim); }
 .tool .status { font-size: 11px; color: var(--faint); }
 .tool.err .status { color: var(--danger); }
+/* 隐式技能（D199）：模型自己读了 SKILL.md，本轮就多一张卡 —— 一句话是什么 + 为什么是它。
+   虚线徽标说的是「没人让你用它」：它挑的，不是你点的。 */
+.skillcard { border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); background: var(--panel); border-radius: 12px; padding: 10px 12px; min-width: 0; }
+.skillcard .row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.skillcard .n { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+.skillcard .auto { font-size: 11px; color: var(--faint); border: 1px dashed var(--line); border-radius: 999px; padding: 0 6px; line-height: 1.5; white-space: nowrap; }
+.skillcard .src { margin-left: auto; border: 0; background: none; padding: 0; font: inherit; font-size: 11px; color: var(--faint); cursor: pointer; }
+.skillcard .src:hover { color: var(--accent); }
+/* 技能的 description 常带着一整串「当用户说…时使用」，全铺出来是四五行。卡上只给两行，全文在 title 里。 */
+.skillcard .desc { margin: 4px 0 0; font-size: 13px; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.skillcard .why { margin: 3px 0 0; font-size: 12px; color: var(--dim); }
 /* A failure buried in a collapsed module is invisible and, once the card is open, a 40-line
    traceback still does not say what went wrong. So each failure gets its own card right after the
    module: conclusion first, then only the key lines, raw log folded. Rules live in diagnose.ts. */
