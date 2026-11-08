@@ -88,7 +88,7 @@ export const ja: Dict = {
   "bridge.err.cloudflared_error": "cloudflared でエラーが発生しました。",
   "bridge.err.tunnel_no_url": "40 秒たっても trycloudflare のアドレスを取得できません。再試行中です。",
   "bridge.err.tunnel_unreachable": "トンネルのアドレスは取得できましたが、60 秒たっても接続できません。",
-  "bridge.err.tunnel_lost": "トンネルが切れました（530）。新しいアドレスに切り替えています。",
+  "bridge.err.tunnel_lost": "トンネルが切れました（2 回連続で応答なし）。新しいアドレスに切り替えています。",
   "bridge.err.dirs_missing": "ディレクトリが存在しません。",
   "bridge.err.dirs_unreadable": "このディレクトリを読めませんでした。",
   "bridge.err.approval_expired": "「{p1}」の承認は、誰も画面を見ていないまま期限切れになりました。そのツール呼び出しは破棄済みです。必要ならもう一度送ってください。",

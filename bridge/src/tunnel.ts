@@ -14,7 +14,28 @@ export interface TunnelState {
 }
 
 const URL_RE = /\|\s{1,}(https:\/\/[a-z0-9][a-z0-9-]*\.trycloudflare\.com)\s*\|/i;
-const URL_FALLBACK_RE = /(https:\/\/[a-z0-9][a-z0-9-]*\.trycloudflare\.com)/i;
+
+/**
+ * D29：只认框线里那行。cloudflared 创建失败时会打 `api.trycloudflare.com`，宽松正则会把 API
+ * 主机当成隧道地址（曾因此对外报出一个永远 1033 的 URL）。
+ */
+export function parseTunnelUrl(text: string): string | null {
+  const m = URL_RE.exec(text);
+  return m ? m[1] : null;
+}
+
+/** D184：本机 UDP/QUIC 到 Cloudflare 边缘被限速，默认走 http2；要试自动/QUIC 就设这个 env。 */
+export const TUNNEL_PROTOCOLS = ["auto", "quic", "http2"] as const;
+export type TunnelProtocol = (typeof TUNNEL_PROTOCOLS)[number];
+
+export function tunnelProtocol(env: NodeJS.ProcessEnv = process.env): TunnelProtocol {
+  const raw = (env.PI_WEB_TUNNEL_PROTOCOL ?? "").trim().toLowerCase();
+  return (TUNNEL_PROTOCOLS as readonly string[]).includes(raw) ? (raw as TunnelProtocol) : "http2";
+}
+
+export function tunnelArgs(port: number, protocol: TunnelProtocol = tunnelProtocol()): string[] {
+  return ["tunnel", "--url", `http://127.0.0.1:${port}`, "--no-autoupdate", "--protocol", protocol];
+}
 
 export class Tunnel extends EventEmitter {
   state: TunnelState = { status: "off", url: null, error: null, updatedAt: Date.now() };
@@ -23,6 +44,8 @@ export class Tunnel extends EventEmitter {
   private attempts = 0;
   private healthTimer: NodeJS.Timeout | null = null;
   private retire: (() => void) | null = null;
+  /** D184：连续几次探不通才算死 —— 单次 530 常常是边缘抖动，换地址只会让已经发出去的链接立刻失效。 */
+  private healthFails = 0;
 
   constructor(
     private port: number,
@@ -44,7 +67,7 @@ export class Tunnel extends EventEmitter {
   }
 
   private spawnOnce(): void {
-    const args = ["tunnel", "--url", `http://127.0.0.1:${this.port}`, "--no-autoupdate"];
+    const args = tunnelArgs(this.port);
     const env = { ...process.env };
     const proxy = process.env.BILLION_CONTEXT_PROXY || process.env.HTTPS_PROXY;
     if (proxy && !env.HTTPS_PROXY) env.HTTPS_PROXY = proxy;
@@ -58,13 +81,18 @@ export class Tunnel extends EventEmitter {
     }
     this.child = child;
     let found = "";
+    let buf = "";
+    let errTail = "";
 
     const watch = (chunk: Buffer | string) => {
-      if (found) return;
       const line = chunk.toString();
-      const m = URL_RE.exec(line) || URL_FALLBACK_RE.exec(line);
-      if (m) {
-        found = m[1];
+      // 框线可能被管道拆成两块，留一小段尾巴再匹配。
+      buf = (buf + line).slice(-4096);
+      if (/\sERR\s/.test(line)) errTail = line.replace(/\r?\n/g, " ").trim().slice(-200);
+      if (found) return;
+      const url = parseTunnelUrl(buf);
+      if (url) {
+        found = url;
         this.attempts = 0;
         this.setState({ status: "starting", url: found });
         void this.waitReady(found);
@@ -84,7 +112,9 @@ export class Tunnel extends EventEmitter {
         this.retire();
         this.retire = null;
       }
-      this.setState({ status: this.wants ? "error" : "off", url: null, error: this.wants ? `cloudflared 退出（code=${code}）` : null });
+      // 原因就在 stderr 最后那条 ERR 里（QUIC 被限速时是 `context deadline exceeded`），别吞掉。
+      const why = errTail ? `：${errTail}` : "";
+      this.setState({ status: this.wants ? "error" : "off", url: null, error: this.wants ? `cloudflared 退出（code=${code}）${why}` : null });
       if (this.wants) this.retry();
     });
 
@@ -126,11 +156,11 @@ export class Tunnel extends EventEmitter {
     this.setState({ status: "error", error: "隧道地址拿到了，但 60 秒内一直连不上", errCode: "tunnel_unreachable" });
   }
 
+  /** D29：就绪 = `/healthz` 200。530 是隧道没连上，502/404 等也不是「能用」。 */
   private async probe(url: string): Promise<boolean> {
     try {
       const res = await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(8000), redirect: "manual" });
-      if (res.status === 530) return false;
-      return res.status > 0;
+      return res.status === 200;
     } catch {
       return false;
     }
@@ -138,16 +168,23 @@ export class Tunnel extends EventEmitter {
 
   private startHealth(url: string): void {
     if (this.healthTimer) clearInterval(this.healthTimer);
+    this.healthFails = 0;
     this.healthTimer = setInterval(async () => {
       if (!this.child || this.state.url !== url) return;
       const ok = await this.probe(url);
-      if (!ok && this.state.status === "up") {
-        this.setState({ status: "error", error: "隧道断了（530），正在换新地址", errCode: "tunnel_lost" });
-        try {
-          this.child?.kill();
-        } catch {
-          /* ignore */
-        }
+      if (ok) {
+        this.healthFails = 0;
+        return;
+      }
+      if (this.state.status !== "up") return;
+      // 两次连续探不通才判死（D184）：一次 530 多半是边缘抖动。
+      this.healthFails += 1;
+      if (this.healthFails < 2) return;
+      this.setState({ status: "error", error: "隧道断了（连续两次探不通），正在换新地址", errCode: "tunnel_lost" });
+      try {
+        this.child?.kill();
+      } catch {
+        /* ignore */
       }
     }, 60_000);
     this.healthTimer.unref?.();
