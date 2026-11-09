@@ -2067,5 +2067,6 @@ export const en: Dict = {
   "正在准备页面…": "Preparing the pages…",
   "点一下用本机程序打开": "Click to open it in a desktop app",
   "另存": "Save a copy",
+  "没开会话，先不显示": "No session open, so this stays hidden",
   "打不开这个文件：{p1}": "Couldn't open this file: {p1}",
 };
