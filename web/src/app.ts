@@ -29,6 +29,7 @@ import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./s
 import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
+import { chromeFrom, isChromeVisible, type ChromeContext, type ChromeState } from "./chrome.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
@@ -351,8 +352,8 @@ export class App {
   /** #30: is the terminal session-lock extension in pi's global extensions? */
   private lockExt: { installed: boolean; path: string } | null = null;
   /** #33 扩展与 MCP: package rows, MCP servers, and the console of the last pi command. */
-  /** D81 扩展 manager state. */
-  private uiPrefs: { showExtButton: boolean } = { showExtButton: true };
+  /** D81 扩展 manager state. #288: `chrome` 是 #281 的三态可见性，`showExtButton` 是 `chrome.ext` 的派生值。 */
+  private uiPrefs: { showExtButton: boolean; chrome: ChromeState } = { showExtButton: true, chrome: {} };
   private extUpdates = 0;
   private extTab: "installed" | "ext" | "mcp" = "installed";
   private extInv: ExtInventory | null = null;
@@ -1422,7 +1423,7 @@ export class App {
       }
       case "hello":
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
-        if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
+        if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false, chrome: chromeFrom(msg.ui.chrome) };
         // D154：桥上的 build 换了，页面里的 JS 还是旧的 —— 提示刷新，不自动 reload。
         if (typeof msg.buildId === "string") this.checkBuild(msg.buildId);
         // D113: a dropped socket mid-stream would leave the ⟳ spinning forever (the flags gate the
@@ -1936,7 +1937,9 @@ export class App {
         break;
       }
       case "ui":
-        if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
+        if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false, chrome: chromeFrom(msg.ui.chrome) };
+        // 可见性只认桥的回执：不本地先猜，否则广播与自己的补丁会打架。
+        this.paintChrome();
         this.renderChat();
         if (this.sheetKind === "settings" && this.settingsTab === "ext") this.paintSettings();
         break;
@@ -3495,6 +3498,14 @@ export class App {
   }
 
   /**
+   * #288：判断按钮可见性只需要这两件事实。560 是 D138 的窄屏断点，跟 `compact()` 一样按缩放后的
+   * 有效宽度算 —— `@media` 看的是视口宽度，2.0 字号下会漏判（D158）。
+   */
+  private chromeCtx(): ChromeContext {
+    return { hasSession: !!this.currentId, narrow: window.innerWidth / this.uiScale() < 560 };
+  }
+
+  /**
    * Retranslate the bits that are built once and never re-rendered: the topbar's fixed four
    * buttons, the new-session button and the two filter placeholders. `renderTop()` only repaints
    * the session list, `renderSessions()` the chips — neither touches these.
@@ -3528,6 +3539,9 @@ export class App {
       jira.title = tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP");
       jira.setAttribute("aria-label", tr("Jira"));
     }
+    // #288：终端的可见性只在这一处算（纯函数 web/src/chrome.ts）。这一票只接这一颗，
+    // 产物 / 文件管理器与下沿四颗仍是旧逻辑，留给 #289–#292。
+    term.hidden = !isChromeVisible("terminal", this.uiPrefs.chrome, this.chromeCtx());
     newBtn.textContent = tr("开新会话");
     sessFilter.placeholder = tr("过滤名字 / 目录");
     manageBtn.textContent = tr("管理");
@@ -4716,6 +4730,8 @@ export class App {
   // ---------------------------------------------------------------- render
   private renderAll(): void {
     this.renderTop();
+    // #288：偏好或当前会话变化都要重画；终端等按钮的可见性只由 paintChrome() 算。
+    this.paintChrome();
     this.renderSessions();
     this.renderChat();
     this.renderApprovals();
