@@ -10,7 +10,8 @@
  *   D. 本机在任何一帧上都不会看到 `hasMore: true`（界面因此不会长出「载入更早」）；
  *   E. 隧道的 `history.before` 照旧按游标取上一页。
  *
- * 只用 Node 的 ws 客户端，不起浏览器；端口默认 7889，`PAGING_SCOPE_PORT` 可改，不碰 7864。
+ * 只用 Node 的 ws 客户端，不起浏览器；端口默认 7891（7888 continue-ui、7889 attach-picker、
+ * 7890 history-ui 已占），`PAGING_SCOPE_PORT` 可改，不碰 7864。
  *
  *   node bridge/tests/paging-scope.mjs
  */
@@ -21,7 +22,7 @@ import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.PAGING_SCOPE_PORT ?? 7889);
+const PORT = Number(process.env.PAGING_SCOPE_PORT ?? 7891);
 const ROOT = path.join(REPO, ".scratch", "paging-scope");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");

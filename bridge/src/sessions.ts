@@ -2497,8 +2497,9 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * #219：`session` 帧只带末尾一页。`items` 仍然是这一页的原文，同帧用 `history` 说清
-   * 还有没有更早的、整段一共多少条 —— 老前端不认 `history`，照旧只画这一页。
+   * #219：隧道连接的 `session` 帧只带末尾一页（本机 / 内网由 `frameFor` 换成整段，D215）。
+   * `items` 仍然是这一页的原文，同帧用 `history` 说清还有没有更早的、整段一共多少条
+   * —— 老前端不认 `history`，照旧只画这一页。
    * 随手问例外：它没有「载入更早」，整段下发（`itemsFrame`）。
    */
   pagedSnapshot(): SessionSnapshot & { history: SessionHistory } {
