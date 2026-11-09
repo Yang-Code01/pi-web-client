@@ -313,6 +313,15 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         return json(res, 200, await files.send(peerId, tmp, name));
       }
 
+      // D209：收件目录里那份文件的绝对路径。站内翻页 / 「用本机程序打开」都要它，
+      // 只回环——和 /files 同一道门（能拿字节能拿路径）。
+      if (url.pathname === "/files/meta" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const stored = files.storedPath(url.searchParams.get("id") ?? "");
+        if (!stored) return json(res, 404, { error: "没有这个文件" });
+        return json(res, 200, { ok: true, path: stored.path, name: stored.name, size: stored.size, mime: stored.mime });
+      }
+
       if (url.pathname === "/files" && req.method === "GET") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
         const stored = files.storedPath(url.searchParams.get("id") ?? "");

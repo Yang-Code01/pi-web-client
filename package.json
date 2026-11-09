@@ -21,6 +21,7 @@
     "test:artifacts": "node bridge/tests/artifacts-unit.mjs && node bridge/tests/artifacts-e2e.mjs",
     "test:ask:ui": "node bridge/tests/ask-ui.mjs",
     "test:preview": "node bridge/tests/preview-tool.mjs && node --experimental-transform-types bridge/tests/open-preview-unit.mjs",
+    "test:slides": "node --experimental-strip-types bridge/tests/slides-unit.mjs",
     "test:scratch": "node bridge/tests/scratch-dirs.mjs && node bridge/tests/scratch-chat.mjs",
     "test:scratch:ui": "node bridge/tests/scratch-ui.mjs",
     "test:pillbar": "node --experimental-transform-types web/tests/pillbar-unit.mjs",

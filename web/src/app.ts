@@ -24,6 +24,7 @@ import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { openSysmanage } from "./sysmanage.ts";
 import { BranchSheet } from "./branchsheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
+import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
 import { skillOf } from "./skill.ts";
@@ -460,6 +461,8 @@ export class App {
   private termDock: HTMLElement | null = null;
   /** D166: 表格浮窗与终端并列，不进 viewer 面板；同一时间只开一扇。 */
   private sheetDock: SheetDialog | null = null;
+  /** D209：幻灯片浮窗（与表格浮窗并列，各自记住自己的几何）。 */
+  private slidesDock: SlidesDialog | null = null;
   private termTabStrip: HTMLElement | null = null;
   private termBodies: HTMLElement | null = null;
   private termTabs = new Map<string, TermTab>();
@@ -6000,6 +6003,13 @@ export class App {
       this.openSheet(info);
       return true;
     }
+    // D209: 演示文稿也走自己的浮窗 —— viewer 面板只有 min(760px, 55vw)，一页幻灯片在那儿只能当缩略图。
+    if (v.info.kind === "slides") {
+      const info = v.info;
+      this.closeViewer();
+      this.openSlides(info);
+      return true;
+    }
     // #113: CSV / TSV 也在浮窗里，但没有 xlsx 那种元数据——字节由页面自己解码、切格。
     if (/\.(csv|tsv)$/i.test(v.info.name)) {
       const info = v.info;
@@ -6107,6 +6117,32 @@ export class App {
       onRaise: () => this.raiseWindow(dialog.root),
     });
     this.sheetDock = dialog;
+    this.overlay(dialog.root);
+    this.raiseWindow(dialog.root);
+    dialog.open();
+  }
+
+  /** D209：幻灯片浮窗（无遮罩、不抢焦点）。关掉旧的那扇再开新的。 */
+  private openSlides(info: PreviewInfo): void {
+    this.slidesDock?.destroy();
+    this.slidesDock = null;
+    const dialog = new SlidesDialog({
+      token: info.token,
+      name: info.name,
+      path: info.abs,
+      pages: info.slides?.pages ?? null,
+      engine: info.slides?.engine ?? true,
+      scale: () => this.uiScale(),
+      onOpen: () => this.openInApp(info.token),
+      onReveal: () => this.reveal(info.abs),
+      onReopen: () => void this.openPreview(info.abs, this.currentId, true),
+      onClose: () => {
+        if (this.winFront === dialog.root) this.winFront = null;
+        if (this.slidesDock === dialog) this.slidesDock = null;
+      },
+      onRaise: () => this.raiseWindow(dialog.root),
+    });
+    this.slidesDock = dialog;
     this.overlay(dialog.root);
     this.raiseWindow(dialog.root);
     dialog.open();
@@ -6615,17 +6651,17 @@ export class App {
       return;
     }
     if (info.kind === "binary") {
-      // #106: .xls / .ods / 加密包 / 改了扩展名的 zip — 这里不看，交给这台电脑上的默认程序。
-      const workbook = WORKBOOK.test(info.name);
-      const box = el("div", workbook ? "viewer-msg workbook" : "viewer-msg");
+      // #106/D209: .xls / .ods / 加密包 / 改了扩展名的 zip / pdf / docx / ppt — 这里不看，交给这台电脑上的默认程序。
+      const desktop = DESKTOP_OPEN.test(info.name);
+      const box = el("div", desktop ? "viewer-msg workbook" : "viewer-msg");
       box.append(
         el(
           "div",
           "",
-          workbook ? tr("这个格式这里不支持，用本机程序打开") : tr("二进制文件（{p1}），这里不直接显示。", { p1: fmtSize(info.size) }),
+          desktop ? tr("这个格式这里不支持，用本机程序打开") : tr("二进制文件（{p1}），这里不直接显示。", { p1: fmtSize(info.size) }),
         ),
       );
-      if (workbook) {
+      if (desktop) {
         const open = el("button", "btn", tr("用默认程序打开"));
         open.onclick = () => {
           open.disabled = true;
@@ -7089,6 +7125,8 @@ export class App {
         settings: (tab) => this.openSettingsSheet(tab),
         // #252：交给 agent 的两个出口与笔记面板同一套实现（预填只填、新会话不自动发）。
         handoff: { prefill: (text) => this.prefill(text), newSessionWith: (text) => this.newSessionWith(text) },
+        // D209：附件下载到本机后，点一行就在这次的预览里打开（没有会话时安静地什么都不做）。
+        openFile: (path) => void this.openPreview(path),
       });
     this.jira.open();
   }
@@ -13189,8 +13227,9 @@ export class App {
    * #126：顺序按 `manage.pin` 定，切会话不重排；当前会话在 ★ 行里时带主题色填充。
    * #127：既然填色已经能认出「我在哪」，当前会话点过 ★ 时最左那颗就是重复的 —— 它只在
    * 「本区没给当前会话点 ★」时出场，兜住「名字在界面上总得看得到」这条。
-   * 没有工作区快照（旧桥 / 桩桥）时退回置顶列表：不知道「本区」时，置顶区至少是用户自己
-   * 挑过的那批。
+   * D210：没有当前会话时行 2 只留 ＋ —— 没有「我在哪」就没有「本区」，不再拿全量置顶顶上去
+   * （那会让左栏只有 1 个会话的工作区里冒出别组的 13 颗）。没有工作区快照（旧桥 / 桩桥）
+   * 时仍退回置顶列表：那种桥根本不知道「本区」是什么，置顶至少是用户自己挑过的那批。
    */
   private renderSessionRow(): void {
     const host = this.els.pinStrip;
@@ -13217,18 +13256,29 @@ export class App {
     this.pillBar.render(shown, this.currentId);
   }
 
-  /** ★ 行从左到右的那一串（#120 / #127）：本区 ★ 按 `manage.pin`；不知道本区时退回置顶列表。 */
+  /**
+   * ★ 行从左到右的那一串（#120 / #127 / D210）：本区 ★ 按 `manage.pin`。
+   *
+   * D210：「本区」只在有当前会话时才有定义 —— 没有它，这里回空而不是回全量置顶。以前那两条
+   * 兜底（没会话 / 反查不到组）会把 14 颗别组置顶铺进一个只有 1 个会话的工作区，用户看到的就是
+   * 「我明明只在这组，第二排却是别人的会话」。宁可空：空态只有 ＋，永远不会指错组。
+   */
   private starredRow(): SessionState[] {
     const pins = this.manage.pin
       .map((id) => this.sessions.find((s) => s.id === id))
       .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
     const cur = this.session;
-    if (!cur || !this.workspaces?.groups?.length) return pins;
+    // 旧桥 / 桩桥不发 workspace 快照：这里「本区」这个概念不存在，退回置顶列表。这条要在「没有当前
+    // 会话」之前判 —— 那种桥的行 2 本来就只是置顶列表，跟开没开会话无关。
+    if (!this.workspaces?.groups?.length) return pins;
+    // 没有当前会话：不知道自己在本区哪儿，一颗都不列。
+    if (!cur) return [];
     const listed = this.sessions.find((x) => x.id === cur.id);
     const group = wsOf(cur, this.workspaces, listed?.ws);
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     const mine = group ? tree.groups.find((g) => g.id === group.id) : undefined;
-    return mine ? starredSessions(mine.sessions, this.manage.pin) : pins;
+    // 反查不到本区（脏快照 / 过滤把组滤没了）：同样不猜，回空。
+    return starredSessions(mine?.sessions, this.manage.pin);
   }
 
   /** #189：当前打开的会话已经在「已归档」里。 */
@@ -14653,7 +14703,7 @@ function splitImages(files: File[]): { images: File[]; others: File[] } {
 const ATTACH_IMAGE = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
 
 /** #106: 表格类文件即使读不了（.xls/.ods/加密包），也用「这个格式这里不支持」而不是通用二进制文案。 */
-const WORKBOOK = /\.(xlsx|xlsm|xlsb|xls|ods)$/i;
+const DESKTOP_OPEN = /\.(xlsx|xlsm|xlsb|xls|ods|pptx|pptm|ppsx|potx|ppt|pps|pdf|doc|docx)$/i;
 
 /** SVG has no pixels: render it through an <img> (scripts never run there) onto a canvas. */
 async function rasterizeSvg(file: File): Promise<ImageBitmap | null> {

@@ -216,6 +216,20 @@ export class PeerHost {
     return fetch(`http://127.0.0.1:${this.opts.port}/files?id=${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(30_000) });
   }
 
+  /** D209：入站文件在收件目录里的绝对路径（只问本机 peer 守护进程，拿不到就 null）。 */
+  async filePath(id: string): Promise<string | null> {
+    try {
+      const res = await fetch(`http://127.0.0.1:${this.opts.port}/files/meta?id=${encodeURIComponent(id)}`, {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { path?: unknown };
+      return typeof body.path === "string" && body.path ? body.path : null;
+    } catch {
+      return null;
+    }
+  }
+
   addManual(addr: string): Promise<any> {
     return this.call("/peer/add", { addr });
   }
