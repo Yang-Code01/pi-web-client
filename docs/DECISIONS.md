@@ -3696,3 +3696,20 @@ D
 **为什么：** 图片是会话文件里最大的一块，快照的职责是「列出有什么」，不是「把所有字节送到页面」；按需接口还能让只读的休眠会话在没被打开时也看图（`locate(id)` 直接拿文件，不拉起 pi）。
 
 **验证：** `npm run test:image`（`session-image-unit.mjs` 6 项 + `session-image.mjs` 9 项：列表、两序号字节/mime、越界 404、负序号 400、幽灵会话/条目 404、缓存头）；`npm run test:image:ui`（Playwright 11 项：气泡缩略图源是接口、点开 1×1 原图解码成功、Esc 关闭；合成 paste 后待发角标、弹层缩略图按钮、data URL 灯箱、× 关闭；真发出去后 `user:N` 从桥内存取图并解码；无页面异常）。`npm run typecheck`、`npm run build` 通过。
+
+## D214 diff 弹窗：单边改动单栏铺满，hunk 头不再漏行
+
+**问题：** 新建文件（整份都是 `+`）在左右对照里等于把右半屏复制成两半：左列只剩 48px 行号和一大片空白，代码挤在半屏，998 行每行只看得见十来个字。另外往下滚时，代码会从 hunk 头**上方**那条缝里露出来 —— `@@ -0,0 +1,998 @@` 头顶压着半行代码（穿模）。
+
+**原因（穿模）：** `.diff-scroll { padding: 8px 0 24px }` 撞上 `.diff-hunk { position: sticky; top: 0 }`。sticky 的吸附矩形是**滚动容器自己的 padding box**，容器带内边距，头就停在 +8px，那一条 8px 永远露着下滚的行。跟 `backdrop-filter`、合成层都无关（都摘掉复现页照样漏）。
+
+**决定：**
+
+1. **整份改动只有一种行**（全是 `+`，或全是 `-`）时改单栏：一行「号 + 代码」，`grid-template-columns: 48px minmax(0, 1fr)`；号取存在的那一边（全新增用 `newNo`，全删除用 `oldNo`）。混着改的照旧左右对照 —— 有可比内容时才值得占两列。
+2. **上下留白从滚动容器挪到内层 `.diff-pad`**：`.diff-scroll { padding: 0 }`，`.diff-pad { padding: 8px 0 24px }`。滚动容器没有内边距，sticky 头就贴着滚动口顶边，缝没了；静止时那 8px 呼吸感由内层给。
+
+**为什么单栏按文件、不按 hunk：** 同一个文件里一半单栏一半对照，滚动时版面会跳；而「整份只有一种行」正好是唯一**没有对比内容**的情形（新建、纯追加、纯删除）。
+
+**代价：** 单栏时行的横向空间比对照模式多一倍，长行省略号的位置随窗口变（本来就是 `overflow: hidden` 不横滚）；窄屏（≤760px）那条 `.diff-row{min-width:560px}` 横滚规则对单栏不再适用，显式 `min-width: 0` 取消，免得手机上每行都要横拖。
+
+**验证：** 静态复现页（真 `web/src/styles.css`，900 / 1280 / 420 宽、`--ui-scale: 2`、`.diff-scroll.scrollTop = 140`）量 `hunk.top − scroll.top`：改前 8 / 改后 0，顶部不再有行露出；单栏文本宽度 636 里占 588（对照模式 270）；420 宽 `scrollWidth == clientWidth`（不横滚）；`npm --prefix web run typecheck`（含 i18n-check）、`npm --prefix web run build`。

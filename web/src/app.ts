@@ -5849,12 +5849,16 @@ export class App {
         main.replaceChildren(bar, scroll);
         return;
       }
+      // 整份只有新增（或只有删除）时没有「对比」可看：单栏铺满，别把一半地方留给空白。
+      const only = this.onlySide(d);
+      const pad = el("div", "diff-pad");
       for (const h of d.hunks) {
         const hh = el("div", "diff-hunk", h.header);
         hunkEls.push(hh);
-        scroll.append(hh, this.sideBySide(h));
+        pad.append(hh, only ? this.unifiedTable(h, only) : this.sideBySide(h));
       }
-      if (d.truncated) scroll.append(el("div", "diff-note", tr("改动太多，只显示了前面一部分。")));
+      if (d.truncated) pad.append(el("div", "diff-note", tr("改动太多，只显示了前面一部分。")));
+      scroll.append(pad);
       main.replaceChildren(bar, scroll);
     };
 
@@ -5917,6 +5921,43 @@ export class App {
     if (d.reason === "too-large") return tr("文件太大，没有逐行比对（只比了大小）。");
     if (d.reason === "rewrite") return tr("改动太大，按「整体重写」处理，没有逐行比对。");
     return tr("和写入前相比没有变化。");
+  }
+
+  /**
+   * 整份改动只有一种行（全是 `+` 或全是 `-`，典型是新建文件）时没有两边可比 ——
+   * 返回该用哪一边的行号来决定单栏；混着改的照旧左右对照。
+   */
+  private onlySide(d: ArtifactDiff): "new" | "old" | null {
+    let plus = false;
+    let minus = false;
+    for (const h of d.hunks) {
+      for (const ln of h.lines) {
+        if (ln.kind === "+") plus = true;
+        else if (ln.kind === "-") minus = true;
+        if (plus && minus) return null;
+      }
+    }
+    return plus ? "new" : minus ? "old" : null;
+  }
+
+  /**
+   * 单栏：一行「号 + 代码」铺满宽度。给整份只有新增 / 只有删除的文件用 ——
+   * 另一边整列都是空的，左右对照只会把代码挤进半屏（新建文件尤其明显）。
+   */
+  private unifiedTable(h: ArtifactHunk, side: "old" | "new"): HTMLElement {
+    const table = el("div", "diff-table unified");
+    for (const ln of h.lines) {
+      const row = el("div", "diff-row");
+      const no = el("span", "diff-no", String((side === "old" ? ln.oldNo : ln.newNo) ?? ""));
+      const text = el("span", "diff-text");
+      text.textContent = ln.text;
+      const kind = ln.kind === "-" ? "minus" : ln.kind === "+" ? "plus" : "same";
+      no.classList.add(kind);
+      text.classList.add(kind);
+      row.append(no, text);
+      table.append(row);
+    }
+    return table;
   }
 
   /**
