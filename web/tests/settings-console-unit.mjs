@@ -9,6 +9,7 @@ import {
   buildMatrix,
   diffPatch,
   effectiveOf,
+  flattenSettings,
   formatCell,
   inheritText,
 } from "../src/settings-matrix.ts";
@@ -329,4 +330,28 @@ test("diffPatch：不修改入参", () => {
   diffPatch(snapshot, draft, DIFF_FIELDS);
   assert.deepEqual(snapshot, snapshotBefore);
   assert.deepEqual(draft, draftBefore);
+});
+
+test("flattenSettings：嵌套对象拍成点号键，数组留整格，空对象不落键", () => {
+  assert.deepEqual(
+    flattenSettings({
+      theme: "dark",
+      defaultProvider: "stub",
+      defaultModel: "fake-model",
+      compaction: { enabled: false, reserveTokens: 1000 },
+      images: { autoResize: true },
+      nested: { empty: {} },
+      enabledModels: ["stub/*", "other/*"],
+    }),
+    {
+      theme: "dark",
+      defaultProvider: "stub",
+      defaultModel: "fake-model",
+      "compaction.enabled": false,
+      "compaction.reserveTokens": 1000,
+      "images.autoResize": true,
+      enabledModels: ["stub/*", "other/*"],
+    },
+  );
+  assert.deepEqual(flattenSettings(null), {});
 });

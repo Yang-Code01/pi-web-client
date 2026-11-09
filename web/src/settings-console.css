@@ -121,6 +121,22 @@
   gap: 8px;
 }
 
+/* #285：作用域分段在标题下方；固定高度，切页时不把下方内容顶来顶去。 */
+.st-head__scope {
+  display: flex;
+  align-items: center;
+  min-height: 27px;
+  margin-top: 9px;
+}
+
+.st-head__scope:empty {
+  display: none;
+}
+
+.st-head__actions .btn {
+  align-self: center;
+}
+
 /* flashSettings() 的落点。老的 `.settings-sheet .settings-note` 是横条，这里是标题下面的一行字。 */
 .st-console .st-head .settings-note {
   min-height: 0;
@@ -281,6 +297,42 @@
 
 .st-changelog {
   min-width: 0;
+}
+
+/* ---------------------------------------------------------------- 表单行的来源 chip */
+.settings-sheet .settings-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-src {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  color: var(--faint);
+  font-family: var(--sans);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+}
+
+.settings-src.on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* 设置文件坏掉是错误，不是「提醒」：红条压过 .warn 的黄。 */
+.settings-sheet .takeover.bad {
+  color: var(--text);
+  background: var(--danger-bg);
+  border-color: var(--danger-dim);
 }
 
 /* ---------------------------------------------------------------- footer */
