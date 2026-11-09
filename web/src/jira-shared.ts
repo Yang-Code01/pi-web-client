@@ -1,5 +1,5 @@
 /**
- * Jira 面板与单测共用的纯函数（#248）：站点地址判定、token 掩码。
+ * Jira 面板与单测共用的纯函数（#248、#249）：站点地址判定、token 掩码、工单行链接与元信息。
  *
  * 单独一个文件是为了让 `web/tests/jira-unit.mjs` 能直接跑：`jira.ts` 为了 `el()` 要 import
  * `chat.ts`，而 `chat.ts` 的构造器参数属性过不了 Node 26 的 strip-only（`--experimental-transform-types`
@@ -8,6 +8,21 @@
  * `bridge/src/jira.ts` 里有一份同口径的权威校验，两边都改才算改完。
  */
 import { tr } from "./i18n/index.ts";
+
+export interface JiraIssue {
+  key: string;
+  summary: string;
+  type: string;
+  /** Jira 没有优先级时回 null。 */
+  priority: string | null;
+  status: string;
+  updated: string;
+}
+
+export interface JiraProject {
+  key: string;
+  name: string;
+}
 
 const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 
@@ -49,4 +64,23 @@ export function siteUrlProblem(raw: string): string | null {
 export function keyMask(key: string): string {
   const k = key.trim();
   return k.length > 4 ? `••••${k.slice(-4)}` : "••••";
+}
+
+/** 工单 / 项目的 Jira 页面：站点去掉结尾 `/` 再拼 `/browse/<KEY>`。 */
+export function browseUrl(siteUrl: string, key: string): string {
+  return `${siteUrl.trim().replace(/\/+$/, "")}/browse/${encodeURIComponent(key)}`;
+}
+
+/** ISO 时间 → 本地 `2026-11-08 14:03`；解不出时间就给空串，页面据此省略这一段。 */
+export function formatUpdated(iso: string): string {
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return "";
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 工单第二行：类型 · 优先级 · 状态 · 更新时间。优先级空显示 `—`，时间空就省略。 */
+export function issueMeta(issue: JiraIssue): string {
+  return [issue.type, issue.priority || "—", issue.status, formatUpdated(issue.updated)].filter(Boolean).join(" · ");
 }
