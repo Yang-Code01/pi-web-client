@@ -175,3 +175,33 @@ export function tabReorder(
   }
   return [...next, ...model.more];
 }
+
+/** #277 标签改名浮层的高度与贴边距（与 `.ws-tab-rename-input` 的 CSS 保持一致）。 */
+export const TAB_RENAME_HEIGHT = 30;
+const TAB_RENAME_GAP = 4;
+const TAB_RENAME_EDGE = 8;
+const TAB_RENAME_MIN_WIDTH = 160;
+
+export interface TabRenameBox {
+  left: number;
+  top: number;
+  width: number;
+}
+
+/**
+ * #277 改名浮层贴在哪：以标签的视口矩形为锚，宽度至少 160px；右边 / 下边放不下就往回收，
+ * 窄窗口先缩宽度，保证整只输入框留在视口里。返回的是 `position: fixed` 的坐标 —— 浮层挂在
+ * `document.body` 上，不进标签行，所以不会把整行撑高或推走。
+ */
+export function tabRenameBox(
+  anchor: { left: number; top: number; bottom: number; width: number },
+  viewport: { width: number; height: number },
+): TabRenameBox {
+  const room = Math.max(0, viewport.width - TAB_RENAME_EDGE * 2);
+  const width = Math.max(0, Math.min(Math.max(anchor.width, TAB_RENAME_MIN_WIDTH), room));
+  const left = Math.max(TAB_RENAME_EDGE, Math.min(anchor.left, viewport.width - width - TAB_RENAME_EDGE));
+  let top = anchor.bottom + TAB_RENAME_GAP;
+  if (top + TAB_RENAME_HEIGHT > viewport.height - TAB_RENAME_EDGE) top = anchor.top - TAB_RENAME_GAP - TAB_RENAME_HEIGHT;
+  top = Math.max(TAB_RENAME_EDGE, Math.min(top, viewport.height - TAB_RENAME_HEIGHT - TAB_RENAME_EDGE));
+  return { left, top, width };
+}

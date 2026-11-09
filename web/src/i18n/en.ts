@@ -284,6 +284,8 @@ export const en: Dict = {
   "这个工作区跟着目录走，不能删": "This workspace follows a folder and can't be deleted",
   "这个工作区里还有 {p1} 个会话，先把它们拖回工程或删掉": "This workspace still holds {p1} sessions — move them back to a project or delete them first",
   "这个工作区不在了": "That workspace is gone",
+  "这个工作区不在了，名字没改": "That workspace is gone — the name was not changed",
+  "改名没存下 · 还是原来的名字": "The rename did not stick — still the old name",
   "列表里没有 {p1}（目录过大时只列出一部分）": "Not in the listing: {p1} (big folders are listed in part)",
   "＋ 新建工作区": "+ New workspace",
   "新建工作区": "New workspace",

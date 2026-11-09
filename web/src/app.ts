@@ -30,7 +30,7 @@ import { ScratchChat } from "./scratch.ts";
 import { skillOf } from "./skill.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
-import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabReorder, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
+import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { stickMenu } from "./menuplace.ts";
@@ -441,6 +441,15 @@ export class App {
   private wsRenameDraft = "";
   private wsRenameFocus = false;
   private wsRenameCaret: number | null = null;
+  /**
+   * #277 横条标签改名：浮层挂在 body 上（不进标签槽，不撑高整行），这里只留组 id 与输入框。
+   * `away` 是捕获阶段的 pointerdown：点浮层外面就等于提交。
+   */
+  private wsTabRename: { id: string; input: HTMLInputElement; away: (ev: PointerEvent) => void } | null = null;
+  /** #277 两下规则：上一次点击落在哪颗、什么时候；第二下落在同一颗且够快才进编辑。 */
+  private tabClickLast: { id: string; at: number } | null = null;
+  /** #277 桥不回声：发出改名后等下一份快照确认；名字没变回来就说一声（原值本来就没被改过）。 */
+  private wsRenameAck: { id: string; name: string; timer: number } | null = null;
   /** 组头的 ⋯ 菜单最多一张；树重画前先关掉它（锚点要被换掉）。 */
   private wsMenu: WsMenuHandle | null = null;
   /** 点了「新建工作区」：等桥把新组广播回来，就立刻进改名态（组的 id 只有桥知道）。 */
@@ -2186,6 +2195,8 @@ export class App {
         const wsBefore = this.currentWsId();
         const orderBefore = this.wsGroupOrder();
         this.workspaces = (msg.workspace as WorkspaceState) ?? { groups: [], overrides: {}, keys: {} };
+        // #277：改名发出后等的那份快照到了 —— 名字对上 / 组没了在这里收尾。
+        this.settleWsRename();
         // #100：刚点的「新建工作区」回来了 —— 空组已经进树，接着让人给它起个名字。
         if (this.wsCreatePending) {
           const born = this.workspaces.groups.find((g) => g.manual && !before.has(g.id));
@@ -5217,13 +5228,145 @@ export class App {
   private commitWsRename(): void {
     const id = this.wsRenameId;
     if (!id) return;
-    const current = this.workspaces.groups.find((g) => g.id === id)?.name ?? "";
-    const next = renameIntent(current, this.wsRenameDraft);
+    const draft = this.wsRenameDraft;
     this.wsRenameId = null;
     this.wsRenameDraft = "";
     this.renderSessions();
+    this.sendWsRename(id, draft);
+  }
+
+  /**
+   * #277 左栏组头与横条浮层共用这一条改名提交：空串回落目录名、同名不发。
+   *
+   * 桥的 `ws.rename` 没有失败回执 —— 组不在了它只是不写、照样广播。页面这边能看见的拒绝有两种：
+   * 发之前组已经没了，和发之后下一份快照里名字还是旧的。两种都提示并保留原值（页面从不先改名字，
+   * 快照才是唯一来源）。等确认的那段时间里名字要是先被别的客户端改了，也算没存下。
+   */
+  private sendWsRename(id: string, draft: string): void {
+    const group = this.workspaces.groups.find((g) => g.id === id);
+    if (!group) {
+      this.flashToast(tr("这个工作区不在了，名字没改"), true, 4000);
+      return;
+    }
+    const next = renameIntent(group.name, draft);
     if (next == null) return;
-    this.act(() => this.socket.send({ type: "manage", action: "ws.rename", id, name: next }));
+    this.act(() => {
+      if (this.socket.status !== "open") {
+        this.flashToast(tr("改名没存下 · 还是原来的名字"), true, 4000);
+        return;
+      }
+      this.expectWsRename(id, next);
+      this.socket.send({ type: "manage", action: "ws.rename", id, name: next });
+    });
+  }
+
+  /** 发出改名后盯着下一份快照；1.5 秒还没见到新名字就按「桥没收下」处理。 */
+  private expectWsRename(id: string, name: string): void {
+    if (this.wsRenameAck) window.clearTimeout(this.wsRenameAck.timer);
+    const timer = window.setTimeout(() => {
+      const ack = this.wsRenameAck;
+      if (!ack || ack.id !== id || ack.name !== name) return;
+      this.wsRenameAck = null;
+      const group = this.workspaces.groups.find((g) => g.id === id);
+      if (!group) this.flashToast(tr("这个工作区不在了，名字没改"), true, 4000);
+      else if (group.name !== name) this.flashToast(tr("改名没存下 · 还是原来的名字"), true, 4000);
+    }, 1500);
+    this.wsRenameAck = { id, name, timer };
+  }
+
+  /** 每份工作区快照都过一眼：名字对上了就撤销确认计时；组没了就当场提示。 */
+  private settleWsRename(): void {
+    const ack = this.wsRenameAck;
+    if (!ack) return;
+    const group = this.workspaces.groups.find((g) => g.id === ack.id);
+    if (!group) {
+      window.clearTimeout(ack.timer);
+      this.wsRenameAck = null;
+      this.flashToast(tr("这个工作区不在了，名字没改"), true, 4000);
+    } else if (group.name === ack.name) {
+      window.clearTimeout(ack.timer);
+      this.wsRenameAck = null;
+    }
+  }
+
+  /**
+   * #277 横条标签双击改名：浮层是 body 上的 fixed 输入框，锚在标签的视口矩形上（`tabRenameBox()`），
+   * 不插进 `.ws-tabs`，所以不会把整行撑高或推走；窄窗口由几何函数夹回视口。
+   *
+   * 双击非当前组时第一下只切组（见 `tab.onclick` 的两下判断），第二下才进编辑 ——
+   * 浮层出现时组已经切过去了。
+   */
+  private startWsTabRename(group: TreeGroup<SessionState>): void {
+    this.cancelWsTabRename();
+    const raw = this.workspaces.groups.find((g) => g.id === group.id)?.name ?? "";
+    const input = el("input", "rename-input ws-tab-rename-input") as HTMLInputElement;
+    input.value = raw;
+    // 还没起名的组：输入框留空，占位显示目录名，和左栏改名的手感一致。
+    input.placeholder = group.name;
+    input.spellcheck = false;
+    input.autocomplete = "off";
+    input.maxLength = WS_NAME_MAX;
+    input.setAttribute("aria-label", tr("工作区名（留空就恢复成目录名）"));
+    input.onkeydown = (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        this.commitWsTabRename();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        this.cancelWsTabRename();
+      }
+    };
+    input.onblur = () => {
+      if (this.wsTabRename?.input === input) this.commitWsTabRename();
+    };
+    const away = (ev: PointerEvent) => {
+      if (ev.target === input) return;
+      this.commitWsTabRename();
+    };
+    this.wsTabRename = { id: group.id, input, away };
+    document.body.append(input);
+    // 捕获阶段：点标签 / 左栏 / 空白都先提交，再让那一下自己的点击继续走。
+    document.addEventListener("pointerdown", away, true);
+    this.placeWsTabRename();
+    queueMicrotask(() => {
+      input.focus();
+      input.select();
+    });
+  }
+
+  /** 只拆浮层，不提交（Esc / 组没了 / 换一颗标签时用）。 */
+  private cancelWsTabRename(): void {
+    const st = this.wsTabRename;
+    if (!st) return;
+    this.wsTabRename = null;
+    document.removeEventListener("pointerdown", st.away, true);
+    st.input.remove();
+  }
+
+  /** Enter / 点别处 / 失焦：先拆浮层，再走和左栏同一条提交。 */
+  private commitWsTabRename(): void {
+    const st = this.wsTabRename;
+    if (!st) return;
+    const draft = st.input.value;
+    this.cancelWsTabRename();
+    this.sendWsRename(st.id, draft);
+  }
+
+  /** 标签重画 / 窗口缩放之后重新贴一次；组或标签没了就收起浮层，不拿旧坐标硬撑。 */
+  private placeWsTabRename(): void {
+    const st = this.wsTabRename;
+    if (!st) return;
+    const tabs = this.els.wsTabs;
+    const tab = tabs ? [...tabs.querySelectorAll<HTMLElement>(".ws-tab")].find((n) => n.dataset.ws === st.id) : null;
+    if (!tab || !this.workspaces.groups.some((g) => g.id === st.id)) {
+      this.cancelWsTabRename();
+      return;
+    }
+    const box = tabRenameBox(tab.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
+    st.input.style.left = `${box.left}px`;
+    st.input.style.top = `${box.top}px`;
+    st.input.style.width = `${box.width}px`;
   }
 
   private dropWs(id: string): void {
@@ -13077,6 +13220,7 @@ export class App {
     if (wsTabsRow.hidden) {
       // 横条不画时这句提示没有出口，别攒到下一次渲染。
       this.wsNewNoteId = null;
+      this.cancelWsTabRename();
       return;
     }
     const byId = new Map(tree.groups.map((group) => [group.id, group]));
@@ -13121,9 +13265,21 @@ export class App {
       // #178 R34：旧桥没有 `order`，顺序只是页面按名字兜底，拖了也无处落库 —— 不绑拖动。
       // 过滤态只画命中组：此时拖出来的 order 会缺项、被桥按创建序补到末尾 —— 搜索时不绑拖。
       if (bridgeOrder?.length && !this.filter) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id, model, order);
-      tab.onclick = () => {
+      // #277：两下规则 —— 第一下照常切组，第二下（同一颗、够快）才进编辑。双击当前组时第一下是
+      // 原地切组，所以直接进编辑；双击非当前组时第一下已经切过去，浮层出现时组一定已经是它。
+      // 用 click 的 detail + 上一次点击判断，不另绑 dblclick：拖动过的第一下已经被 tabDragMoved 吞掉。
+      tab.onclick = (ev) => {
         if (this.tabDragMoved) {
           this.tabDragMoved = false;
+          this.tabClickLast = null;
+          return;
+        }
+        const last = this.tabClickLast;
+        const dbl = ev.detail >= 2 && last?.id === group.id && performance.now() - last.at <= 600;
+        this.tabClickLast = { id: group.id, at: performance.now() };
+        if (dbl) {
+          this.tabClickLast = null;
+          this.startWsTabRename(group);
           return;
         }
         this.gotoGroup(group);
@@ -13160,6 +13316,8 @@ export class App {
     } else {
       wsTabsMore.onclick = null;
     }
+    // #277 标签重建过一轮：浮层挂在 body 上没被换掉，位置要按新标签再贴一次。
+    this.placeWsTabRename();
     // 量宽要等布局落地：hidden 刚摘掉的那一帧 clientWidth 还是 0。
     requestAnimationFrame(() => this.paintWsTabFade());
   }

@@ -333,6 +333,19 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   font-size: 14px;
 }
 .rename-input:focus { outline: 2px solid var(--accent-dim); outline-offset: 0; }
+/* #277：横条标签改名浮层挂在 body 上，用 fixed 坐标贴住标签（几何在 `tabRenameBox()`）。
+   高度要和 `TAB_RENAME_HEIGHT` 一致；不占标签行的布局，所以整行既不变高也不被推走。 */
+.ws-tab-rename-input {
+  position: fixed;
+  z-index: 45;
+  box-sizing: border-box;
+  height: 30px;
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: 7px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  font-size: 12.5px;
+}
 .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
 .badge.wait { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
 .badge.run { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }

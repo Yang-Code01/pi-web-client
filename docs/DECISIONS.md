@@ -3697,7 +3697,7 @@ D
 
 **验证：** `npm run test:image`（`session-image-unit.mjs` 6 项 + `session-image.mjs` 9 项：列表、两序号字节/mime、越界 404、负序号 400、幽灵会话/条目 404、缓存头）；`npm run test:image:ui`（Playwright 11 项：气泡缩略图源是接口、点开 1×1 原图解码成功、Esc 关闭；合成 paste 后待发角标、弹层缩略图按钮、data URL 灯箱、× 关闭；真发出去后 `user:N` 从桥内存取图并解码；无页面异常）。`npm run typecheck`、`npm run build` 通过。
 
-## D214 横条成员是 `inRow` 过滤器，空组可删（含目录组）；按目录新建时目录就是组的身份
+## D214 横条成员是 `inRow` 过滤器，空组可删（含目录组）；按目录新建时目录就是组的身份；双击标签就地改名
 
 **问题：** 组多了以后横条放不下。只靠 `max` + `＋N` 能防爆，但用户没法把「最近不看、也不想它总占名额」的组从横条里拿掉；把组从 `order` 里删掉又会让左栏和横条的共用顺序失真。左栏这边，删除边界原本是「只有手建的空组能删，派生组一律不给删」—— 理由是派生组由 cwd 推出来，删了下次 `groupFor()` 又建回来，那是假动作。但只要会话都搬走了，一个空的目录组留在左栏里就是个死格子：点进去没有东西，也删不掉，只能等它自己消失（而它不会）。#274 要把这条边界改成「有会话才拦」。
 
@@ -3721,11 +3721,17 @@ D
 16. **`ws.created { id, created }` 回执**：快照照旧先广播（所有客户端都看得见新组），这一条只回给发起者 —— 页面凭它切组，`created:false` 时补一句「这个工作区已经在列表里」。失败（目录读不了 / 桥拒绝）只回 `notice`：不广播、不落半个组、页面不切走。
 17. **对话框两栏（原型 B）**：左栏=已有工作区（当前那个标「这里」，点一行 = 右侧目录跳过去），右栏=真目录浏览（复用 `mountDirPicker`，不再写第二套目录实现）。选到已有目录按钮变「带你过去」，不发创建；否则「就在这里新建」，建完直接切过去、不进改名态；脚注一句话说清这一下会发生什么。空组没有会话可开，切过去的表现是左栏展开并把那一行滚到眼前。
 18. **`wsCreateAction()` / `groupAtDir()` / `cleanDirPath()` 放在 `web/src/wsmanage.ts`**（纯函数、可单测）：页面先用快照自己判断「这个目录是不是已经有组」，省掉一次注定被拒的往返；桥端仍然做最终去重 —— 客户端的快照随时可能过期。
+19. **双击标签就地改名**（#277）：输入框是挂在 `body` 上的 `position: fixed` 浮层（`.ws-tab-rename-input`），几何由纯函数 `tabRenameBox()` 算 —— 贴当前标签下沿 4px，左右/上下都 clamp 进视口，最窄 160px。浮层不进标签槽，所以不推走整行、也不改行高；横条重画时按新标签位置再贴一次。
+20. **两下规则**：一次双击里第一下照常切组，第二下才进编辑 —— 双击当前组时第一下是原地切组，直接进编辑；双击非当前组时第一下已经切过去，浮层出现时组一定已经是它。判定用 click 的 `detail` 加「上一次点击落在哪颗、隔了多久」，不另绑 `dblclick`：拖动过的那一下仍由 `tabDragMoved` 吞掉，4px 以内的点击照旧只切组。
+21. **复用左栏的改名提交路径**：`renameIntent()` 判「没变 / 空串回落目录名」，`ws.rename` 走同一个 `act()` 队列；页面不做乐观改名，快照是唯一来源。桥对 `ws.rename` 没有回执，所以发出后等 1.5s 内的下一份快照：组没了 → toast「这个工作区不在了，名字没改」；组还在但名字不是请求值 → toast「改名没存下 · 还是原来的名字」。两种情况横条和左栏都保持原值。
+22. **入口只在有横条的壳里**：B/C/D 不画横条，也就没有横条改名；左栏组头的改名与 `⋯` 菜单那条 rename 都保留，两条都发同一种 `ws.rename`。
 
 **为什么：** 成员是「横条收哪些组」的过滤条件，不是第二套排序；把被移出的组留在 `order` 里，放回时才能回到原位置，左栏也不会因为横条开关而重排。左栏则是「我有哪些工程」的清点区，空着的格子要么能删、要么得说明为什么不能删；「派生组不许删」在会话都搬走之后就没有依据了 —— 用户要的是把这一项从列表里拿掉，而不是删目录。反过来，有会话的组一律拦在桥端：页面置灰只是提示，真正的边界不能靠 UI 自觉。
 
 按目录新建同样踩在「组是从 cwd 推出来的」这条老地基上：`ensure()` / `resolve()` / `prune()` 都认 `groupId`，所以建组也用同一个身份函数，而不是另立一张映射（多一张表就多一处会不同步的真相）。对话框把「选已有组」和「选目录」摆在一屏，是因为用户此刻只需要回答一个问题：这个目录是新建，还是已经在了。
 
-**验证：** `node --experimental-transform-types bridge/tests/workspace-unit.mjs`（旧文件缺字段读 true、快照带字段、setRow 落盘/跨重启/不改 order/max；空目录组删掉后快照与 `order` 一起少一项、有会话的目录组仍拒且状态不动、删组顺手清 override）；`node --experimental-transform-types web/tests/wstabs-unit.mjs`（四份输出、当前组被移出仍 ≤ max、名额 0、旧桥 members 缺省、带 offRow 的拖拽保留非成员原格）；`node --experimental-transform-types web/tests/wsmanage-unit.mjs`（`dropBlocker` 四种组合与新旧桥识别、`wsNeighborsAfterDrop` 的顺序、`dropHint` 分得开手动组与目录组）；`probes/workspace-tabs.mjs`（悬停 ⊙、移出/撤销、两段托盘、当前组虚线占最后一格且 ＋N 不重复、刷新持久化、B/C/D 无 ⊙/托盘、旧桥回退；「空」徽标与空态并存 / 有会话时没有徽标、拒绝删有会话的组且不发 `ws.drop`、删空的手动组与空的目录组、刷新后不复活、删掉当前组落到右邻且不留空白页）；`npm --prefix web run typecheck`（含 i18n-check）、`npm --prefix bridge run typecheck`、`npm run build` 通过；`probes/workspace-manage.mjs` 与 `probes/workspace-tree.mjs` 照旧全绿。#278 之后再加：`bridge/tests/workspace-unit.mjs` 的按目录建组段（大小写 / 双斜杠 / 尾斜杠去重、跨重启不新建、worktree 折回主仓库、非 git 目录的身份与追加 `order` 末尾、失败不动状态、并发只建一个）；`web/tests/wsmanage-unit.mjs`（`cleanDirPath` / `dirBaseName` / `groupAtDir` / `wsCreateAction`）；`probes/workspace-tabs.mjs`（两栏与「这里」、已有目录「带你过去」且不发创建、新目录建组后追加 order 并在横条里、不进改名态、`created:false` 的提示、失败只在对话框里说一声、旧桥退回空壳组）。
+双击改名不改模型：名字仍住在组的 `name` 上，横条只是同一个 `ws.rename` 的第二入口；浮层挂在 `body` 上、不进标签槽，是「改个名字不该把整行标签挤走」的直接做法。两下规则判在 click 上而不是另绑 `dblclick`，是因为拖动也走同一条 pointerdown/click 链，再挂一个 `dblclick` 只会和拖动抢同一串事件。
 
-**代价 / 可改：** 桥侧的删除现在要先数一遍会话（`list()` 本来就每页都在跑，多这一次不贵）。派生组删掉之后目录还在，下一次有会话落进那个目录，组会重新出现 —— 这是刻意的，删的是列表项不是目录，也不做「删过的组记仇」那种黑名单。按目录建组多一次 `stat` + `root` 解析（可能起一个 git 子进程），只在用户按下按钮之后发生，不预热、不缓存目录身份。
+**验证：** `node --experimental-transform-types bridge/tests/workspace-unit.mjs`（旧文件缺字段读 true、快照带字段、setRow 落盘/跨重启/不改 order/max；空目录组删掉后快照与 `order` 一起少一项、有会话的目录组仍拒且状态不动、删组顺手清 override）；`node --experimental-transform-types web/tests/wstabs-unit.mjs`（四份输出、当前组被移出仍 ≤ max、名额 0、旧桥 members 缺省、带 offRow 的拖拽保留非成员原格）；`node --experimental-transform-types web/tests/wsmanage-unit.mjs`（`dropBlocker` 四种组合与新旧桥识别、`wsNeighborsAfterDrop` 的顺序、`dropHint` 分得开手动组与目录组）；`probes/workspace-tabs.mjs`（悬停 ⊙、移出/撤销、两段托盘、当前组虚线占最后一格且 ＋N 不重复、刷新持久化、B/C/D 无 ⊙/托盘、旧桥回退；「空」徽标与空态并存 / 有会话时没有徽标、拒绝删有会话的组且不发 `ws.drop`、删空的手动组与空的目录组、刷新后不复活、删掉当前组落到右邻且不留空白页；#277 双击当前标签、浮层贴标签且不改行高、Enter/点别处保存、Esc 不改、空串发空名、非当前组两下规则、拖动不误开、桥拒收提示且保留原值）；`npm --prefix web run typecheck`（含 i18n-check）、`npm --prefix bridge run typecheck`、`npm run build` 通过；`probes/workspace-manage.mjs` 与 `probes/workspace-tree.mjs` 照旧全绿。#278 之后再加：`bridge/tests/workspace-unit.mjs` 的按目录建组段（大小写 / 双斜杠 / 尾斜杠去重、跨重启不新建、worktree 折回主仓库、非 git 目录的身份与追加 `order` 末尾、失败不动状态、并发只建一个）；`web/tests/wsmanage-unit.mjs`（`cleanDirPath` / `dirBaseName` / `groupAtDir` / `wsCreateAction`）；`probes/workspace-tabs.mjs`（两栏与「这里」、已有目录「带你过去」且不发创建、新目录建组后追加 order 并在横条里、不进改名态、`created:false` 的提示、失败只在对话框里说一声、旧桥退回空壳组）。#277 之后再加：`web/tests/wstabs-unit.mjs` 的 `tabRenameBox()` 五个落点（贴标签下沿、靠右往左挪、窄窗口缩宽、贴底翻到上方、极矮窗口仍留边）。
+
+**代价 / 可改：** 桥侧的删除现在要先数一遍会话（`list()` 本来就每页都在跑，多这一次不贵）。派生组删掉之后目录还在，下一次有会话落进那个目录，组会重新出现 —— 这是刻意的，删的是列表项不是目录，也不做「删过的组记仇」那种黑名单。按目录建组多一次 `stat` + `root` 解析（可能起一个 git 子进程），只在用户按下按钮之后发生，不预热、不缓存目录身份。双击改名的浮层挂在 `body` 上、只在横条重画时重新贴位（单独缩放窗口要等下一次重画才对齐），换来的是它永远不参与 `.ws-tabs` 的布局；桥对 `ws.rename` 没有回执，页面只能盯着下一份快照，最坏 1.5s 才知道名字没存下 —— 这是不新增一条确认消息换来的。
