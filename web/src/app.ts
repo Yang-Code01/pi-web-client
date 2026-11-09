@@ -1,6 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import "./settings-console.css";
 import { api } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
@@ -3597,6 +3598,7 @@ export class App {
     // 留着它，下一次开的会话会莫名其妙带着别的会话的笔记（见 prefillNext）。
     if (this.sheetKind === "new") this.prefillNext = null;
     // Dismissing the question drawer must not make it pop open again on the next subscribe.
+    document.removeEventListener("keydown", this.settingsEsc, true);
     this.sheet?.remove();
     this.sheet = null;
     this.sheetKind = null;
@@ -8932,6 +8934,42 @@ export class App {
   }
 
   // ---------------------------------------------------------------- pi settings / trust (#26 #21)
+
+  /**
+   * #283：左栏九项的文案。global / project 是同一页（页内分段切），changelog / whatsnew 也是 ——
+   * 两个 tab id 都还活着，只是不再各占一格。
+   */
+  private settingsNavLabel(tab: SettingsTab): string {
+    switch (tab) {
+      case "global":
+      case "project":
+        return tr("设置");
+      case "trust":
+        return tr("项目信任");
+      case "login":
+        return tr("登录·凭据");
+      case "passphrase":
+        return tr("口令");
+      case "ext":
+        return tr("扩展与 MCP");
+      case "subagents":
+        return tr("子代理");
+      case "notify":
+        return tr("通知");
+      case "runtime":
+        return tr("运行时");
+      default:
+        return tr("更新日志");
+    }
+  }
+
+  /** 和 settingsNavLabel 配套：左栏哪一格亮着。global/project、changelog/whatsnew 各算一格。 */
+  private settingsNavKey(tab: SettingsTab): string {
+    if (tab === "global" || tab === "project") return "global";
+    if (tab === "changelog" || tab === "whatsnew") return "changelog";
+    return tab;
+  }
+
   private openSettingsSheet(tab: SettingsTab): void {
     this.closeSheet();
     this.sheetKind = "settings";
@@ -8943,28 +8981,101 @@ export class App {
       this.socket.send({ type: "runtime.stats" });
     }
     if (tab === "passphrase") this.askPassphrase();
-    const back = el("div", "sheet-back");
+    const back = el("div", "st-back");
     back.onclick = (ev) => {
       if (ev.target === back) this.closeSheet();
     };
-    const sheet = el("div", "sheet settings-sheet");
-    const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("pi 设置")));
-    const close = el("button", "btn ghost", tr("关闭"));
+    // 根节点留着 .settings-sheet：styles.css 里 `.settings-sheet .settings-*` 那一段是各页 painter
+    // 的样式，换壳只换容器。不加 .sheet —— `.sheet.settings-sheet` 会把宽度钉回 720px。
+    const consoleNode = el("section", "st-console settings-sheet");
+    consoleNode.setAttribute("role", "dialog");
+    consoleNode.setAttribute("aria-modal", "true");
+    consoleNode.setAttribute("aria-label", tr("pi 设置"));
+    const head = el("header", "st-head");
+    const headMain = el("div", "st-head__main");
+    headMain.append(el("div", "st-eyebrow", tr("pi 设置")));
+    const title = el("h2", "st-title");
+    title.dataset.role = "title";
+    const sub = el("div", "st-sub");
+    sub.dataset.role = "sub";
+    const badges = el("div", "st-badges");
+    badges.dataset.role = "badges";
+    // flashSettings() 找的就是 .settings-note，位置换了但类名留着。
+    headMain.append(title, sub, badges, el("div", "settings-note"));
+    const actions = el("div", "st-head__actions");
+    const refresh = el("button", "btn ghost", tr("刷新")) as HTMLButtonElement;
+    refresh.type = "button";
+    refresh.title = tr("重新读一遍设置文件与各页的数字（不写盘）");
+    refresh.onclick = () => this.refreshSettings();
+    const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
+    close.type = "button";
     close.onclick = () => this.closeSheet();
-    head.append(close);
-    const tabs = el("div", "settings-tabs");
-    const body = el("div", "settings-body");
-    const note = el("div", "settings-note");
-    sheet.append(head, tabs, note, body);
-    back.append(sheet);
+    actions.append(refresh, close);
+    head.append(headMain, actions);
+
+    const main = el("div", "st-main");
+    const nav = el("nav", "st-nav");
+    nav.setAttribute("aria-label", tr("设置"));
+    const pane = el("div", "st-pane");
+    pane.dataset.role = "pane";
+    main.append(nav, pane);
+
+    const foot = el("footer", "st-foot");
+    foot.append(
+      el("span", "st-foot__hint", tr("设置写在 settings.json；没显式设过的项走 pi 的默认值")),
+      el("span", "st-foot__meta", "pi-web-client"),
+    );
+    consoleNode.append(head, main, foot);
+    back.append(consoleNode);
     this.overlay(back);
     this.sheet = back;
+    document.addEventListener("keydown", this.settingsEsc, true);
     this.socket.send({ type: "settings.get", scope: "global" });
     this.socket.send({ type: "lockext.get" });
     if (this.session?.cwd) {
       this.socket.send({ type: "settings.get", scope: "project", cwd: this.session.cwd });
       this.socket.send({ type: "trust.get", cwd: this.session.cwd });
+    }
+    this.paintSettings();
+  }
+
+  /** #283：Escape 关设置面板。压着别的浮层时不越级关自己 —— 先关的该是最上面那层。 */
+  private settingsEsc = (ev: KeyboardEvent): void => {
+    if (ev.key !== "Escape" || ev.defaultPrevented || this.sheetKind !== "settings") return;
+    if (document.querySelectorAll(".st-back, .sheet-back, .image-view").length > 1) return;
+    this.closeSheet();
+  };
+
+  /** #283 header 的「刷新」：把打开面板时问过的东西重问一遍，再照当前页重画。不写盘。 */
+  private refreshSettings(): void {
+    const cwd = this.session?.cwd ?? "";
+    this.socket.send({ type: "settings.get", scope: "global" });
+    this.socket.send({ type: "lockext.get" });
+    if (cwd) {
+      this.socket.send({ type: "settings.get", scope: "project", cwd });
+      this.socket.send({ type: "trust.get", cwd });
+    }
+    if (this.settingsTab === "runtime") this.socket.send({ type: "runtime.stats" });
+    if (this.settingsTab === "subagents") {
+      this.requestSubagentsAgents();
+      this.requestSubagentsAcp();
+    }
+    this.paintSettings();
+  }
+
+  /** #283：左栏点一格。照旧 chip 的 onclick（进 tab 该补的请求照发），落点是整页重画。 */
+  private selectSettingsTab(tab: SettingsTab): void {
+    const cwd = this.session?.cwd ?? "";
+    this.settingsTab = tab;
+    this.flashSettings("");
+    if (tab === "runtime") this.socket.send({ type: "runtime.stats" });
+    if (tab === "passphrase") this.askPassphrase();
+    if (tab === "subagents") {
+      // 进 tab 时把 settings.json 也重问一遍：路径与字段不能是开 panel 那一刻的旧值。
+      this.socket.send({ type: "settings.get", scope: "global" });
+      if (cwd) this.socket.send({ type: "settings.get", scope: "project", cwd });
+      this.requestSubagentsAgents();
+      this.requestSubagentsAcp();
     }
     this.paintSettings();
   }
@@ -8980,71 +9091,163 @@ export class App {
   }
 
   private paintSettings(): void {
-    const sheet = this.sheet?.querySelector(".settings-sheet");
-    if (!sheet) return;
-    sheet.classList.toggle("subagents-sheet", this.settingsTab === "subagents");
-    // 标题跟着 tab 走：在这两个 tab 里叫「pi 设置」会让人以为打开的又是 pi 那份。
-    const title = sheet.querySelector<HTMLElement>(".sheet-title");
-    if (title)
-      title.textContent =
-        this.settingsTab === "whatsnew"
-          ? tr("本项目更新日志")
-          : this.settingsTab === "changelog"
-            ? tr("pi 更新日志")
-            : tr("pi 设置");
-    const tabs = sheet.querySelector<HTMLElement>(".settings-tabs")!;
-    const body = sheet.querySelector<HTMLElement>(".settings-body")!;
+    const consoleNode = this.sheet?.querySelector<HTMLElement>(".st-console");
+    if (!consoleNode) return;
+    const pane = consoleNode.querySelector<HTMLElement>(".st-pane");
+    if (!pane) return;
+    // 子代理那一页整段样式挂在 `.subagents-sheet` 下（styles.css 3826 起），类还是照旧 toggle 在根上。
+    consoleNode.classList.toggle("subagents-sheet", this.settingsTab === "subagents");
     const cwd = this.session?.cwd ?? "";
-    tabs.replaceChildren();
-    const tabDefs: [SettingsTab, string][] = [
-      ["global", tr("全局")],
-      ["project", cwd ? tr("项目（{p1}）", { p1: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd }) : tr("项目")],
-      ["trust", tr("项目信任")],
-      ["login", tr("登录 / 凭据")],
-      ["passphrase", tr("口令")],
-      ["ext", tr("扩展与 MCP")],
-      ["subagents", tr("子代理")],
-      ["notify", tr("通知")],
-      ["runtime", tr("运行时")],
-      ["changelog", tr("pi 更新日志")],
-      ["whatsnew", tr("本项目更新日志")],
-    ];
-    for (const [id, label] of tabDefs) {
-      const b = el("button", `chip${this.settingsTab === id ? " on" : ""}`, label) as HTMLButtonElement;
-      b.disabled = (id === "project" || id === "trust") && !cwd;
-      b.onclick = () => {
-        this.settingsTab = id;
-        this.flashSettings("");
-        if (id === "runtime") this.socket.send({ type: "runtime.stats" });
-        if (id === "passphrase") this.askPassphrase();
-        if (id === "subagents") {
-          // 进 tab 时把 settings.json 也重问一遍：路径与字段不能是开 panel 那一刻的旧值。
-          this.socket.send({ type: "settings.get", scope: "global" });
-          if (cwd) this.socket.send({ type: "settings.get", scope: "project", cwd });
-          this.requestSubagentsAgents();
-          this.requestSubagentsAcp();
-        }
-        this.paintSettings();
-      };
-      tabs.append(b);
-    }
-    body.replaceChildren();
-    if (this.settingsTab === "trust") return this.paintTrust(body);
-    if (this.settingsTab === "login") return this.paintLogin(body);
-    if (this.settingsTab === "passphrase") return this.paintPassphrase(body);
-    if (this.settingsTab === "ext") return this.paintExtSettings(body);
-    if (this.settingsTab === "notify") return this.paintNotify(body);
-    if (this.settingsTab === "runtime") return this.paintRuntime(body);
-    if (this.settingsTab === "changelog") return this.paintChangelog(body);
-    if (this.settingsTab === "whatsnew") return this.paintWhatsnew(body);
-    if (this.settingsTab === "subagents") return this.paintSubagents(body);
-    const scope = this.settingsTab;
+    this.paintSettingsHead(consoleNode, cwd);
+    this.paintSettingsNav(consoleNode, cwd);
+    pane.replaceChildren();
+    const tab = this.settingsTab;
+    if (tab === "trust") return this.paintTrust(pane);
+    if (tab === "login") return this.paintLogin(pane);
+    if (tab === "passphrase") return this.paintPassphrase(pane);
+    if (tab === "ext") return this.paintExtSettings(pane);
+    if (tab === "notify") return this.paintNotify(pane);
+    if (tab === "runtime") return this.paintRuntime(pane);
+    if (tab === "changelog" || tab === "whatsnew") return this.paintSettingsChangelog(pane);
+    if (tab === "subagents") return this.paintSubagents(pane);
+    this.paintSettingsScopeBar(pane, cwd);
+    const scope = tab; // 走到这里是 global | project：同一页的两份
     const view = this.settingsView[scope];
     if (!view || (scope === "project" && view.cwd !== cwd)) {
-      body.append(el("div", "empty", tr("读取中…")));
+      pane.append(el("div", "empty", tr("读取中…")));
       return;
     }
-    this.paintSettingsForm(body, view);
+    this.paintSettingsForm(pane, view);
+  }
+
+  /** #283：header 的标题跟页走，副标题只写真实路径，徽标只在有真数时挂。 */
+  private paintSettingsHead(consoleNode: HTMLElement, cwd: string): void {
+    const tab = this.settingsTab;
+    const title = consoleNode.querySelector<HTMLElement>('[data-role="title"]');
+    if (title) title.textContent = this.settingsNavLabel(tab);
+    const sub = consoleNode.querySelector<HTMLElement>('[data-role="sub"]');
+    if (sub) {
+      sub.replaceChildren();
+      if (tab === "global" || tab === "project") {
+        const view = this.settingsView[tab];
+        sub.append(el("span", "", tab === "global" ? tr("全局") : tr("项目")));
+        if (view) sub.append(el("span", "", " · "), el("span", "mono", view.path));
+      } else if (tab === "trust" && cwd) {
+        sub.append(el("span", "", tr("项目信任")), el("span", "", " · "), el("span", "mono", cwd));
+      }
+    }
+    const badges = consoleNode.querySelector<HTMLElement>('[data-role="badges"]');
+    if (!badges) return;
+    badges.replaceChildren();
+    const badge = (text: string, cls = ""): HTMLElement => el("span", cls ? `st-badge ${cls}` : "st-badge", text);
+    badges.append(this.connected ? badge(tr("bridge 已连接"), "ok") : badge(tr("bridge 离线"), "warn"));
+    if (this.me.pi) badges.append(badge(`pi ${this.me.pi}`));
+    const globalKeys = this.settingsView.global?.json ? Object.keys(this.settingsView.global.json).length : 0;
+    if (globalKeys) badges.append(badge(tr("{p1} 个键", { p1: globalKeys })));
+    const projectKeys = this.settingsView.project?.json ? Object.keys(this.settingsView.project.json).length : 0;
+    if (projectKeys) badges.append(badge(tr("{p1} 个被项目覆盖", { p1: projectKeys })));
+    if (this.extInv) badges.append(badge(tr("{p1} 个扩展", { p1: this.extInv.packages.length })));
+    if (this.subagentsScan) badges.append(badge(tr("{p1} 个子代理", { p1: this.subagentsScan.agents.length })));
+  }
+
+  /** #283：左栏两组九项。计数只在有真实来源时才挂（键数 / 扩展 / 子代理）。 */
+  private paintSettingsNav(consoleNode: HTMLElement, cwd: string): void {
+    const nav = consoleNode.querySelector<HTMLElement>(".st-nav");
+    if (!nav) return;
+    const active = this.settingsNavKey(this.settingsTab);
+    const globalKeys = this.settingsView.global?.json ? Object.keys(this.settingsView.global.json).length : 0;
+    const extCount = this.extInv ? this.extInv.packages.length : 0;
+    const agentCount = this.subagentsScan ? this.subagentsScan.agents.length : 0;
+    const groups: { label: string; items: [SettingsTab, string, number][] }[] = [
+      {
+        label: tr("设置"),
+        items: [
+          ["global", tr("全局与项目"), globalKeys],
+          ["trust", tr("项目信任"), 0],
+        ],
+      },
+      {
+        label: tr("系统"),
+        items: [
+          ["login", tr("登录·凭据"), 0],
+          ["passphrase", tr("口令"), 0],
+          ["ext", tr("扩展与 MCP"), extCount],
+          ["subagents", tr("子代理"), agentCount],
+          ["notify", tr("通知"), 0],
+          ["runtime", tr("运行时"), 0],
+          ["changelog", tr("更新日志"), 0],
+        ],
+      },
+    ];
+    nav.replaceChildren();
+    for (const group of groups) {
+      nav.append(el("div", "st-nav__group", group.label));
+      for (const [id, label, count] of group.items) {
+        const on = this.settingsNavKey(id) === active;
+        const item = el("button", `st-nav__item${on ? " on" : ""}`) as HTMLButtonElement;
+        item.type = "button";
+        item.dataset.tab = id;
+        if (on) item.setAttribute("aria-current", "page");
+        item.append(el("span", "st-nav__label", label));
+        if (count > 0) item.append(el("span", "st-nav__count", String(count)));
+        item.disabled = (id === "trust" || id === "project") && !cwd;
+        item.onclick = () => this.selectSettingsTab(id);
+        nav.append(item);
+      }
+    }
+  }
+
+  /**
+   * #283：global / project 仍各是一个 tab id（深链与既有调用点不变），在页内用这个开关切。
+   * 默认是「全局」那一份；没有 cwd 时「项目」不可点。
+   */
+  private paintSettingsScopeBar(pane: HTMLElement, cwd: string): void {
+    const scope: "global" | "project" = this.settingsTab === "project" ? "project" : "global";
+    const bar = el("div", "st-scopebar");
+    const seg = el("div", "st-seg");
+    seg.setAttribute("role", "group");
+    const make = (id: "global" | "project", label: string): HTMLButtonElement => {
+      const b = el("button", `st-seg__btn${scope === id ? " on" : ""}`, label) as HTMLButtonElement;
+      b.type = "button";
+      b.dataset.scope = id;
+      b.setAttribute("aria-pressed", String(scope === id));
+      b.disabled = id === "project" && !cwd;
+      b.onclick = () => {
+        if (scope === id) return;
+        this.settingsTab = id;
+        this.paintSettings();
+      };
+      return b;
+    };
+    seg.append(make("global", tr("全局")), make("project", tr("项目")));
+    bar.append(seg);
+    pane.append(bar);
+  }
+
+  /** #283：两个更新日志合成一页 —— pi 那份与本项目那份用页内分段切，深链仍按 tab id 落到对应段。 */
+  private paintSettingsChangelog(pane: HTMLElement): void {
+    const current = this.settingsTab === "whatsnew" ? "whatsnew" : "changelog";
+    const seg = el("div", "st-seg");
+    seg.setAttribute("role", "group");
+    const make = (id: "changelog" | "whatsnew", label: string): HTMLButtonElement => {
+      const on = current === id;
+      const b = el("button", `st-seg__btn${on ? " on" : ""}`, label) as HTMLButtonElement;
+      b.type = "button";
+      b.dataset.tab = id;
+      b.setAttribute("aria-pressed", String(on));
+      b.onclick = () => {
+        if (this.settingsTab === id) return;
+        this.settingsTab = id;
+        this.paintSettings();
+      };
+      return b;
+    };
+    seg.append(make("changelog", "pi"), make("whatsnew", tr("本项目")));
+    const page = el("div", "st-changelog");
+    pane.append(seg, page);
+    // 两个 painter 的「读回来时这个 tab 还在吗」守卫靠的就是 settingsTab，分段切换走的是整页重画。
+    if (current === "changelog") this.paintChangelog(page);
+    else this.paintWhatsnew(page);
   }
 
   /**

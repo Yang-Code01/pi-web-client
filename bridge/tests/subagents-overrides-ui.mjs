@@ -136,7 +136,7 @@ try {
       await page.keyboard.press("Enter");
       await until(() => page.locator(".settings-sheet").count(), 10000, "settings sheet");
     }
-    await page.locator(".settings-tabs .chip", { hasText: "子代理" }).click();
+    await page.locator(".st-nav__item", { hasText: "子代理" }).click();
     await until(async () => (await page.locator(".subagents-agents tr", { hasText: "researcher" }).count()) > 0, 20000, "agent row");
     await sleep(400);
   };
