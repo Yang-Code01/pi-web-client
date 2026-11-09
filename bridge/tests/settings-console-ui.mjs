@@ -24,6 +24,8 @@ const PROJECT = path.join(ROOT, "project");
 const SHOTS = path.join(REPO, ".scratch", "shots");
 const BASE = `http://127.0.0.1:${PORT}`;
 const PASS = "settings-console-ui-pass";
+const GLOBAL_FILE = path.join(AGENT, "settings.json");
+const PROJECT_FILE = path.join(PROJECT, ".pi", "settings.json");
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -60,6 +62,10 @@ fs.mkdirSync(STATE, { recursive: true });
 fs.mkdirSync(AGENT, { recursive: true });
 fs.mkdirSync(PROJECT, { recursive: true });
 fs.mkdirSync(SHOTS, { recursive: true });
+// 两份都不是白纸：保存后要能看出「只动了改过的键」。项目里有 .pi/settings.json 才谈得上信任。
+fs.mkdirSync(path.dirname(PROJECT_FILE), { recursive: true });
+fs.writeFileSync(GLOBAL_FILE, JSON.stringify({ theme: "dark" }));
+fs.writeFileSync(PROJECT_FILE, JSON.stringify({ theme: "dark" }));
 
 const env = { ...process.env };
 for (const k of Object.keys(env)) if (/_API_KEY$|_TOKEN$/.test(k)) delete env[k];
@@ -102,9 +108,13 @@ try {
     ws.on("error", j);
   });
   await until(() => seen.some((m) => m.type === "hello"), 10000, "hello");
+  const ask = async (msg, pred, what, timeout = 20000) => {
+    const from = seen.length;
+    ws.send(JSON.stringify(msg));
+    return until(() => seen.slice(from).find(pred), timeout, what);
+  };
   ws.send(JSON.stringify({ type: "create", cwd: PROJECT, name: "settings-console-ui" }));
   const created = await until(() => seen.find((m) => m.type === "session" && m.sessionId), 20000, "create");
-  ws.close();
   check(Boolean(created), `会话（${created.sessionId}）`);
 
   browser = await chromium.launch();
@@ -128,7 +138,7 @@ try {
   const eyebrow = (await page.locator(".st-eyebrow").evaluate((n) => n.textContent ?? "")).trim();
   check(eyebrow === "pi 设置", `eyebrow「pi 设置」（${eyebrow}）`);
   const title = (await page.locator(".st-title").innerText()).trim();
-  check(title === "设置", `标题跟着页走（${title}）`);
+  check(title === "设置 · 全局", `标题跟着作用域（${title}）`);
 
   const groups = (await page.locator(".st-nav__group").allInnerTexts()).map((s) => s.trim());
   check(groups.length === 2 && groups[0] === "设置" && groups[1] === "系统", `左栏两组（${groups.join(" / ")}）`);
@@ -140,10 +150,109 @@ try {
     `九项文案（${labels.join(" / ")}）`,
   );
 
+  // ---------------------------------------------------------------- G. C3 双作用域表单
+  log("G1. 全局：改默认思考档位，只写这一个键");
+  const scopeButtons = page.locator(".st-head__scope .st-seg__btn");
+  check((await scopeButtons.allInnerTexts()).map((s) => s.trim()).join("/") === "全局/项目", "头部 scope 分段两项");
+  check((await page.locator(".st-head__scope .st-seg__btn.on").innerText()).trim() === "全局", "默认亮在全局");
+  const thinkRow = () => page.locator(".settings-row").filter({ hasText: "默认思考档位" });
+  await thinkRow().locator("select").selectOption("max");
+  await page.locator('[data-role="settings-save"]').click();
+  await until(
+    () => {
+      try {
+        return JSON.parse(fs.readFileSync(GLOBAL_FILE, "utf8")).defaultThinkingLevel === "max";
+      } catch {
+        return false;
+      }
+    },
+    15000,
+    "global settings saved",
+  );
+  const globalAfter = JSON.parse(fs.readFileSync(GLOBAL_FILE, "utf8"));
+  check(
+    globalAfter.theme === "dark" &&
+      globalAfter.defaultThinkingLevel === "max" &&
+      Object.keys(globalAfter).sort().join(",") === "defaultThinkingLevel,theme",
+    `全局文件只多了改过的键（${JSON.stringify(globalAfter)}）`,
+  );
+  await until(async () => (await thinkRow().locator(".settings-src").innerText()).trim() === "已设置", 15000, "global chip");
+  check(true, "全局已设置 chip 更新");
+
+  log("G4. 项目未信任：黄条 + 保存/输入 disabled");
+  await page.locator('.st-head__scope .st-seg__btn[data-scope="project"]').click();
+  await until(async () => (await page.locator(".st-title").innerText()).trim() === "设置 · pi-web-client", 15000, "project title");
+  const untrusted = page.locator(".takeover.warn", { hasText: "没有被信任" });
+  await untrusted.waitFor({ timeout: 15000 });
+  check((await untrusted.innerText()).includes("去项目信任"), "黄条带「去项目信任」");
+  check(await page.locator('[data-role="settings-save"]').isDisabled(), "未信任时保存 disabled");
+  const projectInputs = page.locator(".settings-row input, .settings-row select");
+  check(
+    (await projectInputs.count()) > 0 && (await projectInputs.evaluateAll((nodes) => nodes.every((n) => n.disabled))),
+    `未信任时输入 disabled（${await projectInputs.count()} 个）`,
+  );
+  await page.screenshot({ path: path.join(SHOTS, "settings-console-project-untrusted.png") });
+
+  log("G2. 信任后切项目：继承 placeholder、模型写一对键");
+  await ask({ type: "trust.set", cwd: PROJECT, option: 0 }, (m) => m.type === "trust" && m.saved, "trust.set");
+  await page.locator(".st-head__actions button", { hasText: "刷新" }).click();
+  await until(async () => (await page.locator(".takeover.warn", { hasText: "没有被信任" }).count()) === 0, 20000, "trusted repaint");
+  await until(async () => !(await page.locator('[data-role="settings-save"]').isDisabled()), 15000, "save enabled");
+  const projectThink = thinkRow();
+  check((await projectThink.locator(".settings-src").innerText()).trim() === "未设置", "项目行 chip「未设置」");
+  const inherited = (await projectThink.locator('select option[value=""]').textContent()).trim();
+  check(inherited === "继承全局 · max", `项目 placeholder 继承全局（${inherited}）`);
+  const modelRow = () => page.locator(".settings-row").filter({ hasText: "默认模型" });
+  await modelRow().locator("select").selectOption("stub/fake-model-2");
+  await page.locator('[data-role="settings-save"]').click();
+  await until(
+    () => {
+      try {
+        const j = JSON.parse(fs.readFileSync(PROJECT_FILE, "utf8"));
+        return j.defaultProvider === "stub" && j.defaultModel === "fake-model-2";
+      } catch {
+        return false;
+      }
+    },
+    15000,
+    "project settings saved",
+  );
+  const projectAfter = JSON.parse(fs.readFileSync(PROJECT_FILE, "utf8"));
+  check(
+    projectAfter.theme === "dark" && projectAfter.defaultProvider === "stub" && projectAfter.defaultModel === "fake-model-2",
+    `项目文件写到 defaultProvider + defaultModel（${JSON.stringify(projectAfter)}）`,
+  );
+  await until(async () => (await modelRow().locator(".settings-src").innerText()).trim() === "覆盖", 15000, "project chip");
+  check(true, "项目已覆盖 chip 更新");
+
+  log("G3. 切 scope 保留草稿");
+  const dirRow = () => page.locator(".settings-row").filter({ hasText: "会话目录" });
+  await dirRow().locator("input").fill("草稿目录");
+  await page.locator('.st-head__scope .st-seg__btn[data-scope="global"]').click();
+  await until(async () => (await page.locator(".st-title").innerText()).trim() === "设置 · 全局", 15000, "back to global");
+  await page.locator('.st-head__scope .st-seg__btn[data-scope="project"]').click();
+  await until(async () => (await page.locator(".st-title").innerText()).trim() === "设置 · pi-web-client", 15000, "back to project");
+  check((await dirRow().locator("input").inputValue()) === "草稿目录", `草稿还在（${await dirRow().locator("input").inputValue()}）`);
+  await dirRow().locator("input").fill("");
+
+  log("G5. 坏 JSON：红条，只留 JSON 编辑器");
+  fs.writeFileSync(GLOBAL_FILE, "{ nope");
+  await page.locator('.st-head__scope .st-seg__btn[data-scope="global"]').click();
+  await page.locator(".st-head__actions button", { hasText: "刷新" }).click();
+  const broken = page.locator(".takeover.warn", { hasText: "不是合法的 JSON" });
+  await broken.waitFor({ timeout: 15000 });
+  check(await page.locator("textarea.settings-json").isVisible(), "坏 JSON 时只剩 JSON 编辑器");
+  check((await page.locator(".settings-row input, .settings-row select").count()) === 0, "坏 JSON 时表单不可编辑（没有输入框）");
+  await page.screenshot({ path: path.join(SHOTS, "settings-console-broken-json.png") });
+  fs.writeFileSync(GLOBAL_FILE, JSON.stringify({ theme: "dark", defaultThinkingLevel: "max" }, null, 2));
+  await page.locator(".st-head__actions button", { hasText: "刷新" }).click();
+  await until(async () => (await page.locator("textarea.settings-json").count()) === 0, 20000, "form back after fix");
+  check(Boolean(await thinkRow().count()), "修好文件后回到表单");
+
   // ---------------------------------------------------------------- B. 每一页都能打开、都有内容
   log("B. 逐个点开九项");
   const pages = [
-    ["global", "设置", "全局与项目", "settings"],
+    ["global", "设置 · 全局", "全局与项目", "settings"],
     ["trust", "项目信任", "项目信任", "信任"],
     ["login", "登录·凭据", "登录·凭据", ""],
     ["passphrase", "口令", "口令", "口令"],
@@ -166,7 +275,7 @@ try {
     const heading = (await page.locator(".st-title").innerText()).trim();
     check(heading === wantTitle, `${tab}：标题「${wantTitle}」（${heading}）`);
     check(!keyword || text.includes(keyword), `${tab}：正文有内容（${text.length} 字）`);
-    const on = (await page.locator(".st-nav__item.on").innerText()).trim();
+    const on = (await page.locator(".st-nav__item.on .st-nav__label").innerText()).trim();
     check(on === wantNav, `${tab}：左栏亮着这一项（${on}）`);
     if (tab === "global" || tab === "subagents") {
       await page.screenshot({ path: path.join(SHOTS, `settings-console-${tab}.png`) });
@@ -189,7 +298,7 @@ try {
 
   // ---------------------------------------------------------------- D. 更新日志两本账合成一页
   log("D. 更新日志：页内分段切 pi / 本项目");
-  const segs = (await page.locator(".st-seg .st-seg__btn").allInnerTexts()).map((s) => s.trim());
+  const segs = (await page.locator(".st-pane .st-seg .st-seg__btn").allInnerTexts()).map((s) => s.trim());
   check(segs.join("/") === "pi/本项目", `分段两项（${segs.join(" / ")}）`);
   const piText = await until(
     async () => {
@@ -200,7 +309,7 @@ try {
     "pi changelog",
   );
   check(piText.includes("Changelog") || piText.length > 200, `pi 那份有正文（${piText.length} 字）`);
-  await page.locator('.st-seg__btn[data-tab="whatsnew"]').click();
+  await page.locator('.st-pane .st-seg__btn[data-tab="whatsnew"]').click();
   const selfText = await until(
     async () => {
       const t = await page.locator(".st-pane").innerText();
@@ -210,7 +319,7 @@ try {
     "self changelog",
   );
   check(!selfText.includes("当前 pi"), "切到「本项目」是另一份正文");
-  check((await page.locator(".st-seg__btn.on").innerText()).trim() === "本项目", "分段亮在「本项目」");
+  check((await page.locator(".st-pane .st-seg .st-seg__btn.on").innerText()).trim() === "本项目", "分段亮在「本项目」");
   // 深链仍按 tab id 落：/whatsnew 直接停在这一段。
   await page.keyboard.press("Escape");
   await until(async () => (await page.locator(".st-console").count()) === 0, 5000, "escape");
@@ -218,7 +327,7 @@ try {
   await page.keyboard.press("Enter");
   await page.locator(".st-console").waitFor({ timeout: 20000 });
   check(
-    (await page.locator(".st-seg__btn.on").innerText()).trim() === "本项目",
+    (await page.locator(".st-pane .st-seg__btn.on").innerText()).trim() === "本项目",
     "/whatsnew 落在同一页的「本项目」段",
   );
   await page.screenshot({ path: path.join(SHOTS, "settings-console-1440.png") });

@@ -7,6 +7,29 @@ import { tr } from "./i18n/index.ts";
 /** settings.json 的扁平视图：键是 `compaction.reserveTokens` 这种点号键。 */
 export type SettingsJson = Record<string, unknown>;
 
+/**
+ * settings.json 拍平成点号键：diffPatch 只认这种形状，嵌套对象在这里折开，数组整格保留。
+ * 空对象不落键（「文件里没有这个对象」和「空对象」在设置里是同一件事）。
+ */
+export function flattenSettings(json: SettingsJson | null | undefined): SettingsJson {
+  const out: SettingsJson = {};
+  const walk = (value: unknown, prefix: string): void => {
+    if (value === null || typeof value !== "object") {
+      if (prefix) out[prefix] = value;
+      return;
+    }
+    if (Array.isArray(value)) {
+      if (prefix) out[prefix] = value;
+      return;
+    }
+    for (const [key, child] of Object.entries(value as SettingsJson)) {
+      walk(child, prefix ? `${prefix}.${key}` : key);
+    }
+  };
+  if (json) walk(json, "");
+  return out;
+}
+
 /** 与 settingFields() 的 kind 同一套取值。 */
 export type SettingKind = "text" | "number" | "bool" | "select" | "list" | "model";
 
