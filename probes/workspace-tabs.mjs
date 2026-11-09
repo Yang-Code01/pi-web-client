@@ -8,6 +8,11 @@
  * #174 再接上：**每一颗看得见的标签**都能用鼠标拖着换顺序，落点竖线跟手，松手
  * 只发一条 `ws.tabs { order, max }` 把整份 order 写回，刷新后还记得；位移不到 4px 仍算一次点击，
  * 拖回原位一个字都不发，拖完不误切组；`＋N` 里的折叠组没有 DOM，拖不起来。
+ * #276 再接上：横条成员开定 —— 悬停任意可见标签出 ⊙（当前组也有），点掉只是 `ws.row {inRow:false}`；
+ * 组还在左栏，toast 能撤销；当前组被移出后仍占最后一格（虚线 + 名字划掉，名额不涨）；
+ * `＋N` 分两段：装不下（只切组）/ 不在横条里（放回并切组），刷新后成员状态还在。
+ * 旧桥没有 `inRow` 时全部当成员、不画 ⊙、组头菜单也没有「在横条中」。
+ *
  * #175 再接上：标签行末尾、`＋N` 左边多一颗「＋」—— 点一下就是树底的「新建工作区」（同一个
  * `ws.create`）：左栏多一个空组并就地改名；左栏收着时先展开，名字才看得见。名额满了照样能建，
  * 新组按规则追加到 `order` 末尾、收进 `＋N`，页面用一条小提示说明它去哪了。
@@ -59,7 +64,7 @@ const state = (id, name, cwd, ws) => ({
 
 const GROUPS = Array.from({ length: 9 }, (_, i) => {
   const n = String(i + 1).padStart(2, "0");
-  return { id: `f:/proj-${n}`, name: `客户 ${n} 号的后台系统`, key: `F:/proj-${n}`, manual: false };
+  return { id: `f:/proj-${n}`, name: `客户 ${n} 号的后台系统`, key: `F:/proj-${n}`, manual: false, inRow: true };
 });
 const SESSIONS = GROUPS.map((g, i) => ({
   ...state(`s-${g.id.slice(-2)}-1`, `工程 ${g.id.slice(-2)} · 会话 1`, g.key, g.id),
@@ -143,11 +148,19 @@ server.on("upgrade", (req, socket, head) => {
           }
           cast();
         }
+        // #276 真桥的 `setRow()`：组存在且 inRow 是布尔才写，写完广播；否则静默忽略。
+        if (msg.action === "ws.row") {
+          const group = WS.groups.find((g) => g.id === msg.id);
+          if (group && typeof msg.inRow === "boolean") {
+            group.inRow = msg.inRow;
+            cast();
+          }
+        }
         // 真桥的 `workspaces.create()`：造一个空名的手动组，追加到 order 末尾。
         if (msg.action === "ws.create") {
           createdGroups += 1;
           const id = `manual:stub${createdGroups}`;
-          WS.groups.push({ id, name: String(msg.name ?? ""), key: "", manual: true });
+          WS.groups.push({ id, name: String(msg.name ?? ""), key: "", manual: true, inRow: true });
           WS.order = [...WS.order, id];
           cast();
         }
@@ -329,6 +342,11 @@ for (const id of ["b", "c", "d"]) {
     return Boolean(add && !add.hidden && add.getClientRects().length > 0);
   });
   ok(!addShown, `${id.toUpperCase()}：横条那颗 ＋ 也不出现（#175 只属于 A）`);
+  const rowUi = await page.evaluate(() => ({
+    toggles: document.querySelectorAll(".ws-tab-row-toggle").length,
+    board: document.querySelectorAll(".ws-tabs-board, .ws-tray").length,
+  }));
+  ok(rowUi.toggles === 0 && rowUi.board === 0, `${id.toUpperCase()}：不画 ⊙，也没有两段式托盘（${rowUi.toggles} / ${rowUi.board}）`);
   await page.close();
 }
 
@@ -384,7 +402,15 @@ const menu = await page.evaluate(() => ({
   text: document.querySelector(".ws-menu")?.textContent ?? "",
   fixed: document.querySelectorAll(".ws-fixed").length,
 }));
-ok(JSON.stringify(menu.acts) === JSON.stringify(["rename", "front", "drop"]), `组头 ⋯ 只剩重命名 / 移到最前 / 删除（${menu.acts.join(" / ")}）`);
+ok(
+  JSON.stringify(menu.acts) === JSON.stringify(["rename", "row", "front", "drop"]),
+  `组头 ⋯ 有重命名 / 在横条中 / 移到最前 / 删除（${menu.acts.join(" / ")}）`,
+);
+const rowItem = await page.evaluate(() => {
+  const n = document.querySelector('.ws-menu .pm-item[data-act="row"]');
+  return n ? { checked: n.getAttribute("aria-checked"), on: n.classList.contains("on"), text: n.textContent ?? "" } : null;
+});
+ok(rowItem?.checked === "true" && rowItem.on && /在横条中/.test(rowItem.text), `组头菜单的「在横条中」是勾上的（${rowItem?.checked ?? "缺"} / ${rowItem?.text ?? ""}）`);
 ok(!/固定/.test(menu.text), `菜单里没有固定入口（${menu.text.replace(/\s+/g, " ").trim()}）`);
 ok(menu.fixed === 0, `左栏没有「已固定」徽记（${menu.fixed} 个）`);
 await page.keyboard.press("Escape");
@@ -477,8 +503,9 @@ const focus = await page.evaluate(() => ({
   extra: document.querySelectorAll(".ws-tabs-row [tabindex]:not(button)").length,
 }));
 ok(
-  focus.buttons.length === 5 && focus.buttons.every((c) => c === "ws-tabs-more" || c === "ws-tabs-add" || /^ws-tab(\s|$)/.test(c)),
-  `拖拽没有多出可聚焦元素（${focus.buttons.join(" / ")}，额外 ${focus.extra} 个）`,
+  focus.buttons.length === 8 &&
+    focus.buttons.every((c) => c === "ws-tabs-more" || c === "ws-tabs-add" || /^ws-tab(\s|$)/.test(c) || /^ws-tab-row-toggle(\s|$)/.test(c)),
+  `可聚焦元素 = 3 颗标签 + 3 个 ⊙ + ＋N + ＋（${focus.buttons.join(" / ")}，额外 ${focus.extra} 个）`,
 );
 
 // 9) 刷新后顺序还在（桥落库了 —— 桩桥在内存里持久化整份 order）
@@ -822,6 +849,198 @@ await page.evaluate(() => {
   i.dispatchEvent(new Event("input", { bubbles: true }));
 });
 await sleep(300);
+
+// ── #276 横条成员开定 ───────────────────────────────────────────────────────
+const rowState = () =>
+  page.evaluate(() => {
+    const cols = [...document.querySelectorAll(".ws-tabs-board .ws-tray-col")];
+    const ids = (col) => [...(col?.querySelectorAll(".pm-item") ?? [])].map((n) => n.dataset.ws ?? "");
+    const off = document.querySelector(".ws-tab.off-row");
+    const name = off?.querySelector(".ws-tab-name");
+    const toggle = document.querySelector(".ws-tab-slot.row .ws-tab-row-toggle");
+    return {
+      visibleIds: [...document.querySelectorAll(".ws-tab")].map((n) => n.dataset.ws ?? ""),
+      toggles: document.querySelectorAll(".ws-tab-row-toggle").length,
+      toggleOpacity: toggle ? getComputedStyle(toggle).opacity : "missing",
+      board: document.querySelectorAll(".ws-tabs-board").length,
+      trayCols: cols.length,
+      leftIds: ids(cols[0]),
+      rightIds: ids(cols[1]),
+      leftTitle: cols[0]?.querySelector(".ws-tray-title")?.textContent ?? "",
+      rightTitle: cols[1]?.querySelector(".ws-tray-title")?.textContent ?? "",
+      rightEmpty: cols[1]?.querySelector(".pm-why")?.textContent ?? "",
+      rows: document.querySelectorAll(".ws-tabs-menu .pm-item").length,
+      offCount: document.querySelectorAll(".ws-tab.off-row").length,
+      offBorder: off ? getComputedStyle(off).borderTopStyle : "missing",
+      offLine: name ? getComputedStyle(name).textDecorationLine : "missing",
+      stray: document.querySelectorAll(".ws-tab-stray").length,
+      moreText: document.querySelector(".ws-tabs-more")?.textContent ?? "",
+      toast: document.querySelector(".fail-toast")?.textContent ?? "",
+      undo: Boolean(document.querySelector(".fail-toast-undo")),
+    };
+  });
+
+const rowCalls = () => CALLS.filter((c) => c.action === "ws.row");
+const lastRowCall = () => rowCalls().at(-1) ?? null;
+const hoverToggle = async (id) => {
+  const tab = page.locator(`.ws-tab[data-ws="${id}"]`);
+  await tab.hover();
+  await tab.locator("xpath=..").locator(".ws-tab-row-toggle").click();
+};
+const openTray = async () => {
+  await page.click(".ws-tabs-more");
+  await sleep(220);
+};
+
+// 回到原始 9 组、order 01→09、名额 3。
+WS.groups = GROUPS.map((g) => ({ ...g }));
+WS.order = GROUPS.map((g) => g.id);
+WS.max = 3;
+cast();
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(600);
+
+s = await rowState();
+ok(s.toggles === 3 && s.toggleOpacity === "0", `A：3 颗可见标签各有一个 ⊙，默认藏着（${s.toggles} / ${s.toggleOpacity}）`);
+const beforeHover = await page.evaluate(() => {
+  const n = document.querySelector(".ws-tab-slot.row .ws-tab-row-toggle");
+  const slot = n?.parentElement;
+  return { opacity: n ? getComputedStyle(n).opacity : "missing", slot: Boolean(slot) };
+});
+await page.locator(".ws-tab.on").hover();
+await sleep(100);
+const currentToggle = await page.evaluate(() => {
+  const n = document.querySelector('.ws-tab-slot:has(.ws-tab.on) .ws-tab-row-toggle');
+  return n ? getComputedStyle(n).opacity : "missing";
+});
+ok(currentToggle === "1", `A：当前组自己也有 ⊙（${currentToggle}）`);
+await page.locator('.ws-tab[data-ws="f:/proj-02"]').hover();
+await sleep(120);
+const afterHover = await page.evaluate(() => {
+  const n = document.querySelector('.ws-tab-slot:has(.ws-tab[data-ws="f:/proj-02"]) .ws-tab-row-toggle');
+  return { opacity: n ? getComputedStyle(n).opacity : "missing", pointer: n ? getComputedStyle(n).pointerEvents : "missing" };
+});
+ok(beforeHover.slot && afterHover.opacity === "1" && afterHover.pointer === "auto", `A：悬停标签才浮出 ⊙（${beforeHover.opacity} → ${afterHover.opacity}）`);
+
+const rowOrderBefore = [...WS.order];
+await hoverToggle("f:/proj-02");
+await sleep(420);
+s = await rowState();
+const removed = lastRowCall();
+ok(removed?.id === "f:/proj-02" && removed?.inRow === false, `A：点 ⊙ 发 ws.row 移出 f:/proj-02（${removed?.id}/${removed?.inRow}）`);
+ok(WS.groups.find((g) => g.id === "f:/proj-02")?.inRow === false, "A：成员状态落到桥里");
+ok(!s.visibleIds.includes("f:/proj-02") && s.visibleIds.length === 3, `A：横条立刻少一颗、只剩 3 颗（${s.visibleIds.join(" / ")}）`);
+ok((await treeOrder()).includes("f:/proj-02"), "A：组还在左栏树里");
+ok(/移出横条/.test(s.toast) && s.undo, `A：toast 说明去哪了，并且有撤销（${s.toast.trim()}）`);
+ok(s.moreText === "＋6", `A：被移出的组收进 ＋N（${s.moreText}）`);
+
+await page.locator(".fail-toast-undo").click();
+await sleep(420);
+s = await rowState();
+const undone = lastRowCall();
+ok(undone?.id === "f:/proj-02" && undone?.inRow === true, `A：撤销发 ws.row 放回（${undone?.id}/${undone?.inRow}）`);
+ok(JSON.stringify(WS.order) === JSON.stringify(rowOrderBefore), "A：撤销没有改 order");
+ok(s.visibleIds[1] === "f:/proj-02" && !s.toast, `A：撤销回到原来的位置（${s.visibleIds.join(" / ")}）`);
+
+// 再移出 02，验两段式托盘。
+await hoverToggle("f:/proj-02");
+await sleep(420);
+await openTray();
+s = await rowState();
+ok(s.board === 1 && s.trayCols === 2, `＋N 是两段式托盘（${s.board} / ${s.trayCols} 列）`);
+ok(s.leftIds.length === 5 && s.leftTitle === "装不下 5", `左段只列装不下的 5 组（${s.leftTitle} / ${s.leftIds.length}）`);
+ok(s.rightIds.length === 1 && s.rightIds[0] === "f:/proj-02" && s.rightTitle === "不在横条里 1", `右段列不在横条里的 1 组（${s.rightTitle} / ${s.rightIds.join(" / ")}）`);
+
+let rowCount = rowCalls().length;
+await page.locator('.ws-tabs-board .ws-tray-col:nth-child(1) .pm-item[data-ws="f:/proj-05"]').click();
+await sleep(650);
+s = await rowState();
+ok((await barState()).onWs === "f:/proj-05" && rowCalls().length === rowCount, "左段点一行只切组，不发 ws.row");
+ok(s.visibleIds.includes("f:/proj-05"), "左段点的那组顶到最后一格");
+ok(WS.groups.find((g) => g.id === "f:/proj-02")?.inRow === false, "左段点一行没顺手改成员");
+
+await openTray();
+await page.locator('.ws-tabs-board .ws-tray-col:nth-child(2) .pm-item[data-ws="f:/proj-02"]').click();
+await sleep(700);
+s = await rowState();
+ok(lastRowCall()?.id === "f:/proj-02" && lastRowCall()?.inRow === true, "右段点一行先放回横条（ws.row true）");
+ok((await barState()).onWs === "f:/proj-02", `右段点一行还切到它（当前 ${(await barState()).onWs}）`);
+ok(s.visibleIds.includes("f:/proj-02") && s.moreText === "＋6", `放回后横条恢复 3 颗 + ＋6（${s.visibleIds.join(" / ")} / ${s.moreText}）`);
+
+// 切回 01 当前组，再把它移出：仍占最后一格，且 ＋N 不能重复数。
+await page.locator('.ws-tab[data-ws="f:/proj-01"]').click();
+await sleep(500);
+await hoverToggle("f:/proj-01");
+await sleep(450);
+s = await rowState();
+ok(s.visibleIds.length === 3 && s.visibleIds[2] === "f:/proj-01", `当前组被移出仍占最后一格（${s.visibleIds.join(" / ")}）`);
+ok(s.offCount === 1 && s.offBorder === "dashed" && s.offLine === "line-through" && s.stray === 1, `当前组是虚线 + 名字划掉 + ⊘（${s.offBorder} / ${s.offLine} / ${s.stray}）`);
+ok(/当前组/.test(s.toast), `toast 说清它还是当前组（${s.toast.trim()}）`);
+ok(s.moreText === "＋6", `＋N 不把临时占位的当前组重复数（${s.moreText}）`);
+await openTray();
+s = await rowState();
+ok(s.leftIds.length === 6 && s.rightIds.length === 0 && s.rightTitle === "不在横条里 0", `托盘左 6 / 右 0，当前组不算「不在横条里」（${s.leftTitle} / ${s.rightTitle}）`);
+ok(/全都在横条里/.test(s.rightEmpty), `右段空态说全都放回来了（${s.rightEmpty}）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(650);
+s = await rowState();
+ok(WS.groups.find((g) => g.id === "f:/proj-01")?.inRow === false, "刷新后桥里仍记得当前组被移出");
+ok(JSON.stringify(s.visibleIds) === JSON.stringify(["f:/proj-02", "f:/proj-03", "f:/proj-01"]) && s.offCount === 1, `刷新后仍是 3 颗、当前组虚线占最后一格（${s.visibleIds.join(" / ")}）`);
+
+await hoverToggle("f:/proj-01");
+await sleep(450);
+s = await rowState();
+ok(lastRowCall()?.id === "f:/proj-01" && lastRowCall()?.inRow === true && s.offCount === 0, "当前组的 ⊙ 也能把它放回横条");
+
+// 组头 ⋯ 的「在横条中」= 同一颗 ⊙：勾选状态跟着桥走。
+await openWsMore("f:/proj-06");
+let item = await page.evaluate(() => {
+  const n = document.querySelector('.ws-menu .pm-item[data-act="row"]');
+  return n ? { checked: n.getAttribute("aria-checked"), on: n.classList.contains("on") } : null;
+});
+ok(item?.checked === "true" && item.on, "组头菜单「在横条中」对成员是勾上的");
+await page.locator('.ws-menu .pm-item[data-act="row"]').click();
+await sleep(420);
+ok(lastRowCall()?.id === "f:/proj-06" && lastRowCall()?.inRow === false, "点菜单项等于点 ⊙（ws.row false）");
+ok(WS.groups.find((g) => g.id === "f:/proj-06")?.inRow === false, "菜单点击也落到桥里");
+await openWsMore("f:/proj-06");
+item = await page.evaluate(() => {
+  const n = document.querySelector('.ws-menu .pm-item[data-act="row"]');
+  return n ? { checked: n.getAttribute("aria-checked"), on: n.classList.contains("on") } : null;
+});
+ok(item?.checked === "false" && !item.on, "移出后菜单项不勾");
+await page.locator('.ws-menu .pm-item[data-act="row"]').click();
+await sleep(420);
+ok(lastRowCall()?.id === "f:/proj-06" && lastRowCall()?.inRow === true, "再点一下放回横条（ws.row true）");
+
+// 旧桥（组上没有 inRow）：全部当成员、不画 ⊙、菜单里没有这一项，托盘仍是单段。
+for (const g of WS.groups) delete g.inRow;
+cast();
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(600);
+s = await rowState();
+ok(s.toggles === 0, "旧桥：不画任何 ⊙");
+await openWsMore("f:/proj-09");
+const oldActs = await page.evaluate(() => [...document.querySelectorAll(".ws-menu .pm-item")].map((n) => n.dataset.act ?? ""));
+ok(JSON.stringify(oldActs) === JSON.stringify(["rename", "front", "drop"]), `旧桥：组头菜单没有「在横条中」（${oldActs.join(" / ")}）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+await openTray();
+s = await rowState();
+ok(s.board === 0 && s.trayCols === 0 && s.rows === 6, `旧桥：＋N 还是原来那一种单段菜单（${s.board} / ${s.rows} 行）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+for (const g of WS.groups) g.inRow = true;
+cast();
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(500);
 
 await page.close();
 

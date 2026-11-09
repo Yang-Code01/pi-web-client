@@ -3696,3 +3696,20 @@ D
 **为什么：** 图片是会话文件里最大的一块，快照的职责是「列出有什么」，不是「把所有字节送到页面」；按需接口还能让只读的休眠会话在没被打开时也看图（`locate(id)` 直接拿文件，不拉起 pi）。
 
 **验证：** `npm run test:image`（`session-image-unit.mjs` 6 项 + `session-image.mjs` 9 项：列表、两序号字节/mime、越界 404、负序号 400、幽灵会话/条目 404、缓存头）；`npm run test:image:ui`（Playwright 11 项：气泡缩略图源是接口、点开 1×1 原图解码成功、Esc 关闭；合成 paste 后待发角标、弹层缩略图按钮、data URL 灯箱、× 关闭；真发出去后 `user:N` 从桥内存取图并解码；无页面异常）。`npm run typecheck`、`npm run build` 通过。
+
+## D214 横条成员开定：`inRow` 是过滤器，不是第二份顺序；当前组被移出仍占最后一格
+
+**问题：** 组多了以后横条放不下。只靠 `max` + `＋N` 能防爆，但用户没法把「最近不看、也不想它总占名额」的组从横条里拿掉；把组从 `order` 里删掉又会让左栏和横条的共用顺序失真。
+
+**决定：**
+
+1. **每组多一个 `inRow: boolean`，缺省 true。** 桥端 `WsGroup` 落库并在快照里下发；旧状态文件没有这个字段时读成 true，旧桥完全不发这个字段时网页按「全员都在横条里」处理。成员只是 `order` 上的过滤器，`order` / `max` 的语义不变。
+2. **新消息 `ws.row { id, inRow }`。** 组不存在或 `inRow` 不是布尔就静默忽略；有效时写盘并广播整份 workspace 快照（与 `ws.rename` 同一条路）。页面不本地猜，等广播回来重画。
+3. **模型多出两份输出：** `more`（成员里装不下的）+ `offRow`（不在横条里且没有临时占位的）+ `currentOffRow`（当前组自己不在横条里）。当前组被移出后仍占最后一格，横条总数永远不超过 `max`；它画虚线与名字划掉，和「装不下」区分开。因为这一格已经算 visible，`offRow` 不再收它，否则 `＋N` 会重复数。
+4. **`＋N` 两段：** 左「装不下」点一行只切组，成员不变；右「不在横条里」点一行先 `ws.row true` 再切过去。当前组被移出后不进右段，用标签上的 ⊙ 放回。
+5. **⊙ 是唯一主入口：** 悬停任意可见标签（包括当前组）出 ⊙，点一下移出横条并给带「撤销」的 toast；撤销只把成员放回，不改 `order`，所以回到原位置。左栏组头 ⋯ 的「在横条中」是同一动作的第二入口，只有新桥才出现（旧桥不画，不置灰）。
+6. **拖拽只重排成员。** 带 `offRow` 时把可见段的新次序按原位置替换回整份 `order`，不在横条里的组一格都不动，避免拖一下把非成员从顺序里丢掉。
+
+**为什么：** 成员是「横条收哪些组」的过滤条件，不是第二套排序；把被移出的组留在 `order` 里，放回时才能回到原位置，左栏也不会因为横条开关而重排。
+
+**验证：** `node --experimental-transform-types bridge/tests/workspace-unit.mjs`（旧文件缺字段读 true、快照带字段、setRow 落盘/跨重启/不改 order/max）；`web/tests/wstabs-unit.mjs`（四份输出、当前组被移出仍 ≤ max、名额 0、旧桥 members 缺省、带 offRow 的拖拽保留非成员原格）；`web/tests/wsmanage-unit.mjs`（新旧桥识别）；`probes/workspace-tabs.mjs`（悬停 ⊙、移出/撤销、两段托盘、当前组虚线占最后一格且 ＋N 不重复、刷新持久化、B/C/D 无 ⊙/托盘、旧桥回退）；`npm --prefix web run typecheck`（含 i18n-check）、`npm --prefix bridge run typecheck`、`npm run build` 通过。

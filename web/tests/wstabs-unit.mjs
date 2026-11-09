@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clampMax, moveToFront, newTabFold, TABS_DEFAULT, TABS_MAX, TABS_MIN, tabHitTest, tabModel, tabReorder } from "../src/wstabs.ts";
+import { clampMax, moveToFront, newTabFold, rowModel, TABS_DEFAULT, TABS_MAX, TABS_MIN, tabHitTest, tabModel, tabReorder } from "../src/wstabs.ts";
 
 /** 桥下发的一份顺序（左栏与横条共用）。 */
 const ORDER = ["g1", "g2", "g3", "g4", "g5"];
@@ -174,6 +174,15 @@ test("重排：替位组拖回自己那一格 → null（不偷偷重排折叠�
   assert.equal(reorder(3, "g5", "g1", { id: "g2", side: "before" }), null);
 });
 
+test("#276 重排：不在横条里的组留在原格，不被拖丢", () => {
+  const m = rowModel({ order: ORDER, max: 3, members: ["g1", "g3", "g5"] });
+  assert.deepEqual(m.visible, ["g1", "g3", "g5"]);
+  assert.deepEqual(m.offRow, ["g2", "g4"]);
+  const next = tabReorder(m, "g5", { id: "g1", side: "before" }, ORDER);
+  assert.deepEqual(next, ["g5", "g2", "g1", "g4", "g3"], "成员按可见段重排，非成员各回原格");
+  assert.equal(next.length, ORDER.length, "不增删组");
+});
+
 test("重排：名额 1 时没有别的落点 → null", () => {
   const v = view(1, "g5");
   assert.deepEqual(v.visible, ["g5"]);
@@ -204,4 +213,74 @@ test("移到最前：不改入参", () => {
   const input = [...ORDER];
   moveToFront(input, "g4");
   assert.deepEqual(input, ORDER);
+});
+
+// ---------------------------------------------------------------- #276 横条成员（在 / 不在横条里）
+
+
+test("#276 成员过滤：可见段只取在横条里的组，剩下的进「装不下」，不在的进「不在横条里」", () => {
+  const m = rowModel({ order: ORDER, max: 3, members: ["g1", "g3", "g5"], current: "g1" });
+  assert.deepEqual(m.visible, ["g1", "g3", "g5"]);
+  assert.deepEqual(m.more, [], "三个成员都画得下");
+  assert.deepEqual(m.offRow, ["g2", "g4"]);
+  assert.equal(m.currentOffRow, false);
+});
+
+test("#276 成员超出名额：当前组不在可见段时替最后一格，原末位进「装不下」", () => {
+  const m = rowModel({ order: ORDER, max: 3, members: ["g1", "g2", "g3", "g4"], current: "g4" });
+  assert.deepEqual(m.visible, ["g1", "g2", "g4"]);
+  assert.deepEqual(m.more, ["g3"]);
+  assert.deepEqual(m.offRow, ["g5"]);
+  assert.equal(m.currentOffRow, false, "g4 仍是成员，只是被名额挤出来");
+});
+
+test("#276 当前组不在成员里：仍占最后一格，总数不超名额，且标成 currentOffRow", () => {
+  const m = rowModel({ order: ORDER, max: 3, members: ["g1", "g2", "g3", "g4"], current: "g5" });
+  assert.deepEqual(m.visible, ["g1", "g2", "g5"], "最后一格留给当前组，g3 退进装不下");
+  assert.deepEqual(m.more, ["g3", "g4"]);
+  assert.deepEqual(m.offRow, [], "当前组仍占最后一格，不进「不在横条里」那一段（避免 ＋N 重复数）");
+  assert.equal(m.currentOffRow, true);
+  assert.ok(m.visible.length <= 3, "横条颗数永远不超过名额");
+});
+
+test("#276 当前组被移出、名额 1：唯一那格是当前组，成员全进装不下", () => {
+  const m = rowModel({ order: ORDER, max: 1, members: ["g1", "g2"], current: "g5" });
+  assert.deepEqual(m.visible, ["g5"]);
+  assert.deepEqual(m.more, ["g1", "g2"]);
+  assert.deepEqual(m.offRow, ["g3", "g4"], "当前组仍占最后一格，不在右段里");
+  assert.equal(m.currentOffRow, true);
+});
+
+test("#276 成员为空：当前组临时独占最后一格，其余全在「不在横条里」", () => {
+  const m = rowModel({ order: ORDER, max: 3, members: [], current: "g3" });
+  assert.deepEqual(m.visible, ["g3"]);
+  assert.deepEqual(m.more, []);
+  assert.deepEqual(m.offRow, ["g1", "g2", "g4", "g5"], "当前组仍占最后一格，不在右段里");
+  assert.equal(m.currentOffRow, true);
+});
+
+test("#276 members 缺省 / null = 旧桥：所有组都在横条里，不新增第四份输出", () => {
+  for (const members of [undefined, null]) {
+    const m = rowModel({ order: ORDER, max: 3, current: "g5", members });
+    assert.deepEqual(m.visible, ["g1", "g2", "g5"]);
+    assert.deepEqual(m.more, ["g3", "g4"]);
+    assert.deepEqual(m.offRow, []);
+    assert.equal(m.currentOffRow, false);
+  }
+});
+
+test("#276 未知成员 id 忽略；重复 order 只认第一次", () => {
+  const m = rowModel({ order: ["g1", "g1", "g2"], max: 3, members: ["g1", "ghost", "g2"], current: "ghost" });
+  assert.deepEqual(m.visible, ["g1", "g2"], "ghost 不在 order 里，既不画也不当当前组");
+  assert.deepEqual(m.more, []);
+  assert.deepEqual(m.offRow, []);
+  assert.equal(m.currentOffRow, false);
+});
+
+test("#276 名额 0：照样不画，当前组也不能突破 0", () => {
+  const m = rowModel({ order: ORDER, max: 0, members: ["g1", "g2"], current: "g5" });
+  assert.deepEqual(m.visible, []);
+  assert.deepEqual(m.more, ["g1", "g2"]);
+  assert.deepEqual(m.offRow, ["g3", "g4", "g5"], "非成员全在右段；成员 g1/g2 在装不下那一段");
+  assert.equal(m.currentOffRow, true);
 });

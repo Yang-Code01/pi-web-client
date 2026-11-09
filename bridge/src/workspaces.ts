@@ -23,6 +23,8 @@ export interface WsGroup {
   key: string;
   /** 用户手建的组：可以删（空的时候），派生组跟着目录走。 */
   manual: boolean;
+  /** #276：是否参加横条（标签行）。缺字段的旧状态按 true 读。 */
+  inRow: boolean;
 }
 
 export interface WorkspaceState {
@@ -124,7 +126,14 @@ function readGroups(value: unknown): WsGroup[] {
     const manual = g.manual === true;
     const id = manual ? g.id : groupId(g.id);
     if (!id || out.some((x) => x.id === id)) continue;
-    out.push({ id, name: typeof g.name === "string" ? g.name : "", key: manual ? "" : normalizePath(g.key ?? g.id), manual });
+    out.push({
+      id,
+      name: typeof g.name === "string" ? g.name : "",
+      key: manual ? "" : normalizePath(g.key ?? g.id),
+      manual,
+      // #276：存量文件没有 inRow，读成成员；只有明确的 false 才算移出横条。
+      inRow: g.inRow !== false,
+    });
   }
   return out;
 }
@@ -245,7 +254,7 @@ export class Workspaces {
     const id = groupId(key);
     const existing = this.group(id);
     if (existing) return existing;
-    const created: WsGroup = { id, name: "", key, manual: false };
+    const created: WsGroup = { id, name: "", key, manual: false, inRow: true };
     this.state.update((d) => {
       if (!d.groups.some((g) => g.id === id)) d.groups.push({ ...created });
       // #173 新出现的组追加到末尾：ensure 是「补一个」，不能插队改用户顺序。
@@ -299,10 +308,24 @@ export class Workspaces {
     return true;
   }
 
+  /**
+   * #276：把组放进 / 移出横条。只改成员标记，不动 `order` / `max`（成员是过滤器，不是排序）。
+   * 组不存在或值没变化返回 false；调用方据此决定要不要广播。
+   */
+  setRow(id: string, inRow: boolean): boolean {
+    const group = this.group(id);
+    if (!group || group.inRow === inRow) return false;
+    this.state.update((d) => {
+      const g = d.groups.find((x) => x.id === id);
+      if (g) g.inRow = inRow;
+    });
+    return true;
+  }
+
   /** 手建一个组（比如「客户 A 的三个仓库」）：v1 里它只是会话的集合，不绑工程根。 */
   create(name: string): WsGroup {
     const id = `manual:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    const group: WsGroup = { id, name: String(name ?? "").trim().slice(0, 80), key: "", manual: true };
+    const group: WsGroup = { id, name: String(name ?? "").trim().slice(0, 80), key: "", manual: true, inRow: true };
     this.state.update((d) => {
       d.groups.push({ ...group });
       // #173 新组排到末尾，不按显示名插队。
