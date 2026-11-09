@@ -56,6 +56,21 @@ export interface JiraProject {
   name: string;
 }
 
+/** 详情里的一条附件：大小 / 作者未知时分别是 `null` / 空串（评论 media 节点拿不到这些）。 */
+export interface JiraAttachment {
+  id: string;
+  filename: string;
+  size: number | null;
+  author: string;
+  created: string;
+}
+
+/** #250：`description` 是上游 ADF 原样透传，桥不解释它（D203）。 */
+export interface JiraIssueDetail {
+  issue: JiraIssue & { description: unknown };
+  attachments: { issue: JiraAttachment[]; comments: JiraAttachment[] };
+}
+
 export interface JiraCtx {
   /** 公网隧道进来的请求：读照常，写 403。 */
   publicReq: boolean;
@@ -317,14 +332,18 @@ function meOf(raw: any): JiraMe {
   };
 }
 
-/** 发一个 GET 并把非 2xx 翻成统一的错误码（与 `me` 同一口径）；2xx 返回解析后的 JSON。 */
-async function upstreamJson(config: JiraConfig, ctx: JiraCtx, path: string): Promise<any> {
+/**
+ * 发一个 GET 并把非 2xx 翻成统一的错误码（与 `me` 同一口径）；2xx 返回解析后的 JSON。
+ * `notFound` 只在按 key 取单个对象时传入：列表接口上的 404 是桥自己拼错了路由，不算「工单不存在」。
+ */
+async function upstreamJson(config: JiraConfig, ctx: JiraCtx, path: string, notFound?: string): Promise<any> {
   const res = await fetchSite(config, ctx, path);
   if (!res.ok) {
     const message = await upstreamMessage(res);
     const tail = message ? `：${message}` : "";
     if (res.status === 401) throw new JiraError("jira_auth", 401, `Jira 不认这组凭据（401）${tail}`);
     if (res.status === 403) throw new JiraError("jira_forbidden", 403, `这组凭据没有权限（403）${tail}`);
+    if (res.status === 404 && notFound) throw new JiraError("jira_not_found", 404, notFound);
     throw new JiraError("jira_upstream", 502, `Jira 回了 ${res.status}${tail}`);
   }
   return res.json().catch(() => null);
@@ -374,6 +393,107 @@ async function listProjects(config: JiraConfig, ctx: JiraCtx): Promise<JiraProje
     .map(projectOf)
     .filter((project: JiraProject) => project.key !== "")
     .slice(0, LIST_MAX);
+}
+
+// ---------------------------------------------------------------- #250 详情
+
+/** 工单 key 的形状校验（不是权限校验：能看哪个工单由固定站点 + 用户 token 决定）。 */
+const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
+const DETAIL_FIELDS = "summary,description,issuetype,priority,status,updated,attachment";
+const COMMENT_PAGE = 100;
+
+function attachmentOf(raw: any): JiraAttachment | null {
+  const id = typeof raw?.id === "string" ? raw.id : "";
+  if (!id) return null;
+  return {
+    id,
+    filename: typeof raw?.filename === "string" ? raw.filename : "",
+    // 上游可能省掉 size：页面要能区分「未知」与 0 字节。
+    size: typeof raw?.size === "number" && Number.isFinite(raw.size) ? raw.size : null,
+    author: typeof raw?.author?.displayName === "string" ? raw.author.displayName : "",
+    created: typeof raw?.created === "string" ? raw.created : "",
+  };
+}
+
+/** ADF 里 `media` / `mediaSingle` 节点就是评论附件：只挖 `attrs.id`，正文一个字段都不带出去。 */
+function mediaOf(node: any, out: { id: string; filename: string }[]): void {
+  if (!node || typeof node !== "object") return;
+  const type = typeof node.type === "string" ? node.type : "";
+  if (type === "media" || type === "mediaSingle" || type === "mediaInline") {
+    const id = typeof node.attrs?.id === "string" ? node.attrs.id.trim() : "";
+    if (id) {
+      const alt = typeof node.attrs?.alt === "string" ? node.attrs.alt.trim() : "";
+      const title = typeof node.attrs?.title === "string" ? node.attrs.title.trim() : "";
+      out.push({ id, filename: alt || title || "附件" });
+    }
+  }
+  if (Array.isArray(node.content)) for (const child of node.content) mediaOf(child, out);
+}
+
+/**
+ * 评论只为附件而取：遍历每条评论的 ADF body 收 media 节点，按 id 去重。
+ * 评论正文 / 作者以外的字段一律不进入返回值 —— 这是 #250 的接口边界，别顺手透传。
+ */
+function commentAttachments(raw: any): JiraAttachment[] {
+  const comments = Array.isArray(raw?.comments) ? raw.comments : [];
+  const seen = new Set<string>();
+  const out: JiraAttachment[] = [];
+  for (const comment of comments) {
+    const media: { id: string; filename: string }[] = [];
+    mediaOf(comment?.body, media);
+    for (const item of media) {
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      out.push({
+        id: item.id,
+        filename: item.filename,
+        size: null,
+        author: typeof comment?.author?.displayName === "string" ? comment.author.displayName : "",
+        created: typeof comment?.created === "string" ? comment.created : "",
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * `GET /api/jira/issues/:key`：单工单详情。不做缓存（D203）——点开才要，重复点开由前端记忆。
+ * 评论接口失败就整个详情按该错误码失败：附件清单本来就是详情的一部分，静默吞掉会让界面
+ * 假装「这条工单没有评论附件」，比报错更容易误导人。
+ */
+async function getIssueDetail(res: http.ServerResponse, ctx: JiraCtx, rawKey: string): Promise<void> {
+  const config = listConfig(res);
+  if (!config) return;
+  if (!ISSUE_KEY.test(rawKey)) return fail(res, 400, "jira_key", "工单号看起来不对（应为 ACME-123 这种）");
+  const key = rawKey.toUpperCase();
+
+  const rawIssue = await upstreamJson(
+    config,
+    ctx,
+    `/rest/api/3/issue/${key}?fields=${DETAIL_FIELDS}`,
+    "Jira 上没有这个工单",
+  );
+  const rawComments = await upstreamJson(
+    config,
+    ctx,
+    `/rest/api/3/issue/${key}/comment?maxResults=${COMMENT_PAGE}`,
+    "Jira 上没有这个工单",
+  );
+
+  const base = issueOf(rawIssue);
+  const list = Array.isArray(rawIssue?.fields?.attachment) ? rawIssue.fields.attachment : [];
+  const detail: JiraIssueDetail = {
+    issue: {
+      ...base,
+      key: base.key || key,
+      description: rawIssue?.fields?.description ?? null,
+    },
+    attachments: {
+      issue: list.map(attachmentOf).filter((item: JiraAttachment | null): item is JiraAttachment => item !== null),
+      comments: commentAttachments(rawComments),
+    },
+  };
+  return json(res, 200, detail);
 }
 
 /** 列表接口的公共前半段：读配置，没配就说 `jira_not_configured`。 */
@@ -548,6 +668,15 @@ export async function handleJira(
       const refresh = url.searchParams.get("refresh") === "1";
       if (url.pathname === "/api/jira/issues") await getIssues(res, ctx, refresh);
       else await getProjects(res, ctx, refresh);
+      return true;
+    }
+    // #250：`/api/jira/issues/<KEY>`。key 不在 URL 里解码：形状校验只认 `[A-Za-z0-9_-]`。
+    if (url.pathname.startsWith("/api/jira/issues/")) {
+      if (method !== "GET") {
+        fail(res, 405, "bad_method", "不支持这个请求方法");
+        return true;
+      }
+      await getIssueDetail(res, ctx, url.pathname.slice("/api/jira/issues/".length));
       return true;
     }
     fail(res, 404, "not_found", "没有这个接口");

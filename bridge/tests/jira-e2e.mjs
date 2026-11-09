@@ -30,9 +30,15 @@ let jiraMode = "ok";
 /** `search/jql` 单独一档：`ok` / `empty` / `403`。 */
 let searchMode = "ok";
 /** 上游每被命中一次就 +1：用来断言缓存命中与 `refresh=1` 绕过。 */
-const hits = { myself: 0, search: 0, projects: 0 };
+const hits = { myself: 0, search: 0, projects: 0, issue: 0, comment: 0 };
 /** 上游收到的最后一个 `search/jql` 查询串（断言页面传不进来任意查询）。 */
 let lastSearch = null;
+/** 上游收到的最后一个详情路径（断言 key 已大写化）。 */
+let lastIssuePath = "";
+/** `ok` / `404`：详情用例单独一档，不影响别的接口。 */
+let detailMode = "ok";
+
+const SENTINEL_COMMENT_TEXT = "SENTINEL_COMMENT_TEXT_DO_NOT_LEAK";
 
 const ISSUES = [
   {
@@ -81,6 +87,72 @@ const jira = http.createServer((req, res) => {
     if (deny()) return;
     if (searchMode === "403") return send(403, { errorMessages: ["You do not have permission to view this"] });
     return send(200, { issues: searchMode === "empty" ? [] : ISSUES });
+  }
+  if (url.pathname === "/rest/api/3/issue/ACME-12") {
+    hits.issue++;
+    lastIssuePath = url.pathname;
+    if (deny()) return;
+    if (detailMode === "404") return send(404, { errorMessages: ["Issue does not exist or you do not have permission to see it."] });
+    return send(200, {
+      key: "ACME-12",
+      fields: {
+        summary: "Fix the flux capacitor",
+        issuetype: { name: "Bug" },
+        priority: { name: "High" },
+        status: { name: "In Progress" },
+        updated: "2026-11-08T09:30:00.000+0000",
+        description: {
+          type: "doc",
+          version: 1,
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: "The flux capacitor needs 1.21 gigawatts." }] },
+            { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "Steps" }] },
+          ],
+        },
+        attachment: [
+          {
+            id: "att-1",
+            filename: "spec.pdf",
+            size: 2048,
+            author: { displayName: "Ada Lovelace" },
+            created: "2026-11-07T10:00:00.000+0000",
+          },
+          // 上游省掉 size / author：桥要回 null / 空串，不能瞎编。
+          { id: "att-2", filename: "mystery.bin" },
+        ],
+      },
+    });
+  }
+  if (url.pathname === "/rest/api/3/issue/ACME-12/comment") {
+    hits.comment++;
+    lastIssuePath = url.pathname;
+    if (deny()) return;
+    if (detailMode === "404") return send(404, { errorMessages: ["Issue does not exist"] });
+    const body = (mediaId, alt) => ({
+      type: "doc",
+      version: 1,
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: SENTINEL_COMMENT_TEXT }] },
+        { type: "mediaSingle", content: [{ type: "media", attrs: { id: mediaId, alt, type: "file" } }] },
+      ],
+    });
+    return send(200, {
+      comments: [
+        {
+          id: "c-1",
+          author: { displayName: "Grace Hopper" },
+          created: "2026-11-08T12:00:00.000+0000",
+          body: body("media-9", "screenshot.png"),
+        },
+        {
+          id: "c-2",
+          author: { displayName: "Alan Turing" },
+          created: "2026-11-08T13:00:00.000+0000",
+          // 同一个 media id：去重后只算一条，作者取第一次遇到的评论。
+          body: body("media-9", "duplicate.png"),
+        },
+      ],
+    });
   }
   if (url.pathname === "/rest/api/3/project/search") {
     hits.projects++;
@@ -288,11 +360,15 @@ async function connect() {
   freshState();
   jiraMode = "ok";
   searchMode = "ok";
+  detailMode = "ok";
   await call("PUT", "/api/jira/config", { siteUrl: SITE, email: EMAIL, apiKey: TOKEN });
   hits.myself = 0;
   hits.search = 0;
   hits.projects = 0;
+  hits.issue = 0;
+  hits.comment = 0;
   lastSearch = null;
+  lastIssuePath = "";
 }
 
 const FIXED_JQL = "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC";
@@ -402,4 +478,111 @@ test("未配置时 GET issues / projects 说 jira_not_configured", async () => {
     assert.equal(out.status, 400);
     assert.equal(out.json.code, "jira_not_configured");
   }
+});
+
+// ---------------------------------------------------------------- #250 详情
+
+test("GET issues/:key：字段映射，description 原样透传", async () => {
+  await connect();
+  const out = await call("GET", "/api/jira/issues/ACME-12");
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.json.issue, {
+    key: "ACME-12",
+    summary: "Fix the flux capacitor",
+    type: "Bug",
+    priority: "High",
+    status: "In Progress",
+    updated: "2026-11-08T09:30:00.000+0000",
+    description: {
+      type: "doc",
+      version: 1,
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "The flux capacitor needs 1.21 gigawatts." }] },
+        { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "Steps" }] },
+      ],
+    },
+  });
+  assert.equal(hits.issue, 1);
+  assert.equal(hits.comment, 1);
+});
+
+test("GET issues/:key：两段附件（issue + 评论 media），未知大小/作者回 null/空串", async () => {
+  await connect();
+  const out = await call("GET", "/api/jira/issues/ACME-12");
+  assert.deepEqual(out.json.attachments, {
+    issue: [
+      {
+        id: "att-1",
+        filename: "spec.pdf",
+        size: 2048,
+        author: "Ada Lovelace",
+        created: "2026-11-07T10:00:00.000+0000",
+      },
+      { id: "att-2", filename: "mystery.bin", size: null, author: "", created: "" },
+    ],
+    comments: [
+      {
+        id: "media-9",
+        filename: "screenshot.png",
+        size: null,
+        author: "Grace Hopper",
+        created: "2026-11-08T12:00:00.000+0000",
+      },
+    ],
+  });
+});
+
+test("GET issues/:key：响应全文不含评论正文", async () => {
+  await connect();
+  const out = await call("GET", "/api/jira/issues/ACME-12");
+  assert.equal(out.status, 200);
+  assert.ok(!out.text.includes(SENTINEL_COMMENT_TEXT), "评论正文不许进入详情响应");
+  assert.ok(!out.text.includes('"body"'), "ADF body 原样不许出现");
+});
+
+test("GET issues/:key：key 大写化后才拼上游，不合法形状 400 jira_key", async () => {
+  await connect();
+  const lower = await call("GET", "/api/jira/issues/acme-12");
+  assert.equal(lower.status, 200);
+  assert.equal(lastIssuePath, "/rest/api/3/issue/ACME-12/comment", "上游只该收到大写 key");
+
+  for (const bad of ["acme", "ACME-", "1ACME-2", "ACME 12", "ACME-12/comment"]) {
+    const out = await call("GET", `/api/jira/issues/${encodeURIComponent(bad)}`);
+    assert.equal(out.status, 400, `${bad} 应该被拒绝`);
+    assert.equal(out.json.code, "jira_key");
+  }
+  assert.equal(hits.issue, 1, "形状不对的 key 不该打上游");
+});
+
+test("GET issues/:key：上游 404 → 404 jira_not_found，401/403 沿用既有码", async () => {
+  await connect();
+  detailMode = "404";
+  const missing = await call("GET", "/api/jira/issues/ACME-12");
+  assert.equal(missing.status, 404);
+  assert.equal(missing.json.code, "jira_not_found");
+  assert.match(missing.json.error, /Jira 上没有这个工单/);
+
+  detailMode = "ok";
+  jiraMode = "401";
+  const auth = await call("GET", "/api/jira/issues/ACME-12");
+  assert.equal(auth.status, 401);
+  assert.equal(auth.json.code, "jira_auth");
+
+  jiraMode = "403";
+  const forbidden = await call("GET", "/api/jira/issues/ACME-12");
+  assert.equal(forbidden.status, 403);
+  assert.equal(forbidden.json.code, "jira_forbidden");
+  assert.ok(!forbidden.text.includes(TOKEN));
+});
+
+test("GET issues/:key：不缓存，未配置 400 jira_not_configured", async () => {
+  await connect();
+  await call("GET", "/api/jira/issues/ACME-12");
+  await call("GET", "/api/jira/issues/ACME-12");
+  assert.equal(hits.issue, 2, "详情不做缓存（D203）");
+
+  freshState();
+  const out = await call("GET", "/api/jira/issues/ACME-12");
+  assert.equal(out.status, 400);
+  assert.equal(out.json.code, "jira_not_configured");
 });

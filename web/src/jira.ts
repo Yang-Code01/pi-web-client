@@ -10,8 +10,8 @@
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import { errText, tr } from "./i18n/index.ts";
-import { browseUrl, issueMeta, keyMask, siteUrlProblem } from "./jira-shared.ts";
-import type { JiraIssue, JiraProject } from "./jira-shared.ts";
+import { adfToText, browseUrl, formatBytes, formatUpdated, issueMeta, keyMask, siteUrlProblem } from "./jira-shared.ts";
+import type { JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
 
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
 export { keyMask, siteUrlProblem } from "./jira-shared.ts";
@@ -59,6 +59,22 @@ type PanelState =
 
 type ReadyState = Extract<PanelState, { kind: "ready" }>;
 
+type DetailState =
+  | { kind: "loading" }
+  | { kind: "ready"; data: JiraIssueDetail }
+  | { kind: "error"; text: string; code: string };
+
+/** 每行的展开状态 + 已经取到的详情（#250）：`state === null` 表示还没请求过。 */
+interface DetailEntry {
+  open: boolean;
+  state: DetailState | null;
+  /** 当前这行详情块的 DOM；整块重画后由 `issueEl` 换成新元素。 */
+  el: HTMLElement | null;
+}
+
+/** 描述超过这个字数就截断，并给一个「在新窗口打开」。 */
+const DESC_LIMIT = 800;
+
 function isAuthCode(code: string): boolean {
   return code === "jira_auth" || code === "jira_forbidden";
 }
@@ -80,6 +96,8 @@ export class JiraPanel {
   private seq = 0;
   private lastFocus: HTMLElement | null = null;
   private esc: ((ev: KeyboardEvent) => void) | null = null;
+  /** #250：展开的行与详情缓存（面板实例内存，不落盘、桥也不缓存，D203）。 */
+  private details = new Map<string, DetailEntry>();
 
   constructor(host: JiraHost) {
     this.host = host;
@@ -87,6 +105,8 @@ export class JiraPanel {
 
   open(): void {
     if (this.root) this.close();
+    // 每次重开都从干净的详情开始：换账号 / 换站点后旧工单的详情不该继续显示。
+    this.details.clear();
     this.lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.state = { kind: "loading" };
     this.esc = (ev) => {
@@ -213,6 +233,7 @@ export class JiraPanel {
       if (!this.root) return;
       const mask = keyMask(this.form.apiKey);
       this.config = { configured: true, siteUrl: this.form.siteUrl.trim(), email: this.form.email.trim(), keyMask: mask };
+      this.details.clear();
       this.state = this.listsPending(out.me, mask);
       waitLists = true;
       // 验证过就把它从输入框里抹掉：留在页面上没有用，只会多一处能截到图的地方。
@@ -235,6 +256,7 @@ export class JiraPanel {
       await api.jiraClear();
       if (!this.root) return;
       this.config = null;
+      this.details.clear();
       this.form = { siteUrl: "", email: "", apiKey: "" };
       this.state = { kind: "form", note: tr("已退出连接"), bad: false };
     } catch (err) {
@@ -495,8 +517,9 @@ export class JiraPanel {
     return sec;
   }
 
-  /** 一行不可展开（展开是 #250）：key 开新标签，第二行是类型 / 优先级 / 状态 / 更新时间。 */
+  /** 点一行就地展开 / 收起详情（#250）：不重画列表，滚动位置自然不动。 */
   private issueEl(siteUrl: string, issue: JiraIssue): HTMLElement {
+    const wrap = el("div", "jira-issue-wrap");
     const line = el("div", "jira-issue");
     const top = el("div", "jira-issue-top");
     const key = el("a", "jira-issue-key", issue.key);
@@ -507,7 +530,126 @@ export class JiraPanel {
     line.append(top);
     const meta = issueMeta(issue);
     if (meta) line.append(el("div", "jira-issue-meta", meta));
-    return line;
+
+    const entry = this.details.get(issue.key);
+    const detail = el("div", "jira-detail");
+    line.classList.toggle("open", entry?.open === true);
+    line.tabIndex = 0;
+    line.setAttribute("role", "button");
+    line.setAttribute("aria-expanded", entry?.open ? "true" : "false");
+    const toggle = () => this.toggleDetail(issue.key, siteUrl, detail);
+    line.onclick = (ev) => {
+      // key 是「去 Jira 看」的链接：点它只开新标签，不当成展开 / 收起。
+      if ((ev.target as HTMLElement).closest("a")) return;
+      toggle();
+    };
+    line.onkeydown = (ev) => {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      if ((ev.target as HTMLElement).closest("a")) return;
+      ev.preventDefault();
+      toggle();
+    };
+
+    wrap.append(line, detail);
+    if (entry) {
+      entry.el = detail;
+      this.paintDetail(entry, siteUrl, issue.key);
+    }
+    return wrap;
+  }
+
+  private toggleDetail(key: string, siteUrl: string, box: HTMLElement): void {
+    const entry = this.details.get(key) ?? { open: false, state: null, el: box };
+    entry.el = box;
+    entry.open = !entry.open;
+    this.details.set(key, entry);
+    const line = box.parentElement?.querySelector<HTMLElement>(".jira-issue");
+    line?.classList.toggle("open", entry.open);
+    line?.setAttribute("aria-expanded", entry.open ? "true" : "false");
+    this.paintDetail(entry, siteUrl, key);
+    // 收起再展开不重请求：只有第一次展开（state 还是 null）才去问桥。
+    if (entry.open && entry.state === null) void this.loadDetail(key, siteUrl);
+  }
+
+  /** 详情只影响这一行：请求失败也只在这一行里显示错误 + 重试。 */
+  private async loadDetail(key: string, siteUrl: string): Promise<void> {
+    const seq = this.seq;
+    const entry = this.details.get(key);
+    if (!entry) return;
+    entry.state = { kind: "loading" };
+    this.paintDetail(entry, siteUrl, key);
+    try {
+      const data = await api.jiraIssue(key);
+      const current = this.details.get(key);
+      if (!current || seq !== this.seq) return;
+      current.state = { kind: "ready", data };
+      this.paintDetail(current, siteUrl, key);
+    } catch (err) {
+      const current = this.details.get(key);
+      if (!current || seq !== this.seq) return;
+      current.state = { kind: "error", text: errText(err), code: codeOf(err) };
+      this.paintDetail(current, siteUrl, key);
+    }
+  }
+
+  private paintDetail(entry: DetailEntry, siteUrl: string, key: string): void {
+    const box = entry.el;
+    if (!box) return;
+    box.replaceChildren();
+    box.classList.toggle("open", entry.open);
+    if (!entry.open || !entry.state) return;
+    const state = entry.state;
+
+    if (state.kind === "loading") {
+      box.append(el("div", "jira-detail-loading", tr("正在读取详情…")));
+      return;
+    }
+    if (state.kind === "error") {
+      box.append(el("div", "jira-detail-error", state.text));
+      const actions = el("div", "jira-actions");
+      const again = el("button", "btn ghost", tr("重试"));
+      again.onclick = () => void this.loadDetail(key, siteUrl);
+      actions.append(again);
+      box.append(actions);
+      return;
+    }
+
+    const data = state.data;
+    const desc = el("div", "jira-desc");
+    const text = adfToText(data.issue.description);
+    if (!text) {
+      desc.append(el("div", "jira-desc-empty", tr("没有描述")));
+    } else {
+      const cut = text.length > DESC_LIMIT;
+      desc.append(el("div", "jira-desc-text", cut ? `${text.slice(0, DESC_LIMIT)}…` : text));
+      if (cut) {
+        const more = el("a", "jira-link", tr("在新窗口打开"));
+        more.href = browseUrl(siteUrl, key);
+        more.target = "_blank";
+        more.rel = "noopener noreferrer";
+        desc.append(more);
+      }
+    }
+    box.append(desc);
+
+    // 两段附件：空的那段整段不渲染（标题也不留）。只列不下载（#251 才谈下载）。
+    const parts = [
+      { title: tr("issue 附件"), items: data.attachments.issue },
+      { title: tr("评论附件"), items: data.attachments.comments },
+    ];
+    for (const part of parts) {
+      if (part.items.length === 0) continue;
+      const sec = el("div", "jira-attachments");
+      sec.append(el("div", "jira-section-title", part.title));
+      for (const item of part.items) {
+        const row = el("div", "jira-attach");
+        row.append(el("div", "jira-attach-name", item.filename || tr("（没有文件名）")));
+        const info = [formatBytes(item.size), item.author, formatUpdated(item.created)].filter(Boolean).join(" · ");
+        if (info) row.append(el("div", "jira-attach-meta", info));
+        sec.append(row);
+      }
+      box.append(sec);
+    }
   }
 
   private row(key: string, value: string): HTMLElement {

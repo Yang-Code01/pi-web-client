@@ -1894,4 +1894,11 @@ export const en: Dict = {
   "重新填一次 token": "Enter the token again",
   "打开设置": "Open settings",
   "读工单描述和评论要用 Jira MCP：在「设置 → 扩展与 MCP」里安装。": "Reading issue descriptions and comments needs the Jira MCP: install it under Settings → Extensions & MCP.",
+  "正在读取详情…": "Loading details…",
+  "没有描述": "No description",
+  "在新窗口打开": "Open in a new window",
+  "issue 附件": "Issue attachments",
+  "评论附件": "Comment attachments",
+  "（没有文件名）": "(no filename)",
+  "[附件]": "[Attachment]",
 };

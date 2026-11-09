@@ -1,5 +1,5 @@
 import type { GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
-import type { JiraIssue, JiraProject } from "./jira-shared.ts";
+import type { JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -147,6 +147,9 @@ export const api = {
   /** #249：桥固定查「分配给我 + 未解决」；refresh 绕过桥的 60 秒缓存（D202）。 */
   jiraIssues: (refresh = false) => req<{ issues: JiraIssue[] }>(`/api/jira/issues${refresh ? "?refresh=1" : ""}`),
   jiraProjects: (refresh = false) => req<{ projects: JiraProject[] }>(`/api/jira/projects${refresh ? "?refresh=1" : ""}`),
+  /** #250：单工单详情。key 只做形状校验（桥端权威）；description 是 ADF，由页面转文本（D203）。 */
+  jiraIssue: (key: string) =>
+    req<JiraIssueDetail>(`/api/jira/issues/${encodeURIComponent(key)}`),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),
