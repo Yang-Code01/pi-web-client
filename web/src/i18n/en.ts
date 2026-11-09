@@ -553,6 +553,7 @@ export const en: Dict = {
   "归档（收进「已归档」，文件不动）": "Archive (into Archived; files stay put)",
   "归档（文件不动，只是收起来）": "Archive (files stay put, just tucked away)",
   "当前": "Current",
+  "当前使用": "In use",
   "当前 pi {p1}": "Current pi {p1}",
   "当前会话名：{p1}": "Current session name: {p1}",
   "当前目录不在 git 仓库里（cwd 不对）": "The current directory is not inside a git repository (wrong cwd)",
