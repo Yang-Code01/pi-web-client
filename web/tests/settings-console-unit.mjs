@@ -207,16 +207,16 @@ test("列表字段：两层都有值时 merge=true，但不伪造合并后的数
 });
 
 test("formatCell：叶子/数组/模型都按现有 fmtSetting 的样子显示", () => {
-  assert.equal(formatCell("text", "/tmp/pi", {}), "/tmp/pi");
-  assert.equal(formatCell("number", 0, {}), "0");
-  assert.equal(formatCell("bool", true, {}), "开");
-  assert.equal(formatCell("bool", false, {}), "关");
-  assert.equal(formatCell("select", "max", {}), "max");
-  assert.equal(formatCell("list", ["read", "bash"], {}), "read, bash");
-  assert.equal(formatCell("model", { provider: "deepseek", model: "v4" }, {}), "deepseek/v4");
-  assert.equal(formatCell("text", undefined, {}), "");
-  assert.equal(formatCell("text", "", {}), "");
-  assert.equal(formatCell("text", null, {}), "");
+  assert.equal(formatCell("text", "/tmp/pi"), "/tmp/pi");
+  assert.equal(formatCell("number", 0), "0");
+  assert.equal(formatCell("bool", true), "开");
+  assert.equal(formatCell("bool", false), "关");
+  assert.equal(formatCell("select", "max"), "max");
+  assert.equal(formatCell("list", ["read", "bash"]), "read, bash");
+  assert.equal(formatCell("model", { provider: "deepseek", model: "v4" }), "deepseek/v4");
+  assert.equal(formatCell("text", undefined), "");
+  assert.equal(formatCell("text", ""), "");
+  assert.equal(formatCell("text", null), "");
 });
 
 test("inheritText：继承全局 / 继承 pi 默认 / 默认三种文案", () => {

@@ -164,14 +164,9 @@ function isModelValue(value: SettingCell): value is ModelValue {
 }
 
 /**
- * 一格显示成什么。`defaults` 只是对齐调用签名：要显示哪一层的值由 effectiveOf 先算好，
- * 这里不替调用方挑来源。
+ * 一格显示成什么。要显示哪一层的值由 effectiveOf / 调用方先算好，这里不挑来源。
  */
-export function formatCell(
-  kind: SettingKind,
-  value: SettingCell,
-  _defaults: SettingsJson | null | undefined,
-): string {
+export function formatCell(kind: SettingKind, value: SettingCell): string {
   if (value === undefined || value === null || value === "") return "";
   if (kind === "model") return isModelValue(value) ? `${value.provider}/${value.model}` : "";
   if (kind === "bool") return value === true ? tr("开") : tr("关");
@@ -188,7 +183,7 @@ export function inheritText(
   field: MatrixField,
 ): string {
   if (source === "project") return "";
-  const text = formatCell(kind, value, {});
+  const text = formatCell(kind, value);
   if (source === "global") return text ? tr("继承全局 · {p1}", { p1: text }) : "";
   if (text) return tr("继承 pi 默认 · {p1}", { p1: text });
   return field.defaultText ? tr("默认 · {p1}", { p1: field.defaultText }) : tr("默认|继承");

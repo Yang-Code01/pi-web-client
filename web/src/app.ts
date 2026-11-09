@@ -9072,8 +9072,8 @@ export class App {
 
     const foot = el("footer", "st-foot");
     foot.append(
-      el("span", "st-foot__hint", tr("设置写在 settings.json；没显式设过的项走 pi 的默认值")),
-      el("span", "st-foot__meta", "pi-web-client"),
+      el("span", "st-foot__hint", tr("保存写整张表单；每行仍标出覆盖 / 未设置")),
+      el("span", "st-foot__meta", "pi-web-client · D214"),
     );
     consoleNode.append(head, main, foot);
     back.append(consoleNode);
@@ -9181,6 +9181,33 @@ export class App {
     this.paintSettingsForm(pane, view);
   }
 
+  /**
+   * 头部 badge 与左栏计数同源：全局 = `settingFields()` 的字段数；项目覆盖 = 矩阵里项目层有值的行
+   * （模型那一对算 1 行）。文件里不认识的键在这张表上没行，不算覆盖。
+   */
+  private settingsCounts(cwd: string): { globalKeys: number; projectOverrides: number } {
+    const fields = settingFields();
+    const globalView = this.settingsView.global;
+    const projectView = this.settingsView.project;
+    const projectJson = cwd && projectView && projectView.cwd === cwd ? (projectView.json ?? null) : null;
+    const rows = buildMatrix(fields, globalView?.json ?? null, projectJson, globalView?.defaults ?? {});
+    return {
+      globalKeys: fields.length,
+      projectOverrides: rows.filter((row) => row.project !== undefined).length,
+    };
+  }
+
+  /** 草稿一变或回包落地后只刷新保存按钮：整页重画会把正在输入的焦点抢走。 */
+  private updateSettingsSaveState(): void {
+    const save = this.sheet?.querySelector<HTMLButtonElement>('[data-role="settings-save"]');
+    if (!save) return;
+    const scope = this.settingsScope;
+    const view = this.settingsView[scope];
+    save.textContent = scope === "project" ? tr("保存·项目") : tr("保存·全局");
+    save.disabled =
+      !view || Boolean(view.error) || (scope === "project" && !view.writable) || !this.settingsDirty(scope);
+  }
+
   /** #283：header 的标题跟页走，副标题只写真实路径，徽标只在有真数时挂。 */
   private paintSettingsHead(consoleNode: HTMLElement, cwd: string): void {
     const tab = this.settingsTab;
@@ -9217,39 +9244,34 @@ export class App {
       compare.disabled = !globalView || Boolean(globalView.error);
     }
     const save = consoleNode.querySelector<HTMLButtonElement>('[data-role="settings-save"]');
-    if (save) {
-      const view = this.settingsView[this.settingsScope];
-      save.hidden = tab !== "global" || this.settingsCompare;
-      save.disabled =
-        !view || Boolean(view.error) || (this.settingsScope === "project" && !view.writable);
-    }
+    if (save) save.hidden = tab !== "global" || this.settingsCompare;
+    this.updateSettingsSaveState();
     const badges = consoleNode.querySelector<HTMLElement>('[data-role="badges"]');
     if (!badges) return;
     badges.replaceChildren();
     const badge = (text: string, cls = ""): HTMLElement => el("span", cls ? `st-badge ${cls}` : "st-badge", text);
     badges.append(this.connected ? badge(tr("bridge 已连接"), "ok") : badge(tr("bridge 离线"), "warn"));
     if (this.me.pi) badges.append(badge(`pi ${this.me.pi}`));
-    const globalKeys = this.settingsView.global?.json ? Object.keys(this.settingsView.global.json).length : 0;
-    if (globalKeys) badges.append(badge(tr("{p1} 个键", { p1: globalKeys })));
-    const projectKeys = this.settingsView.project?.json ? Object.keys(this.settingsView.project.json).length : 0;
-    if (projectKeys) badges.append(badge(tr("{p1} 个被项目覆盖", { p1: projectKeys })));
+    const counts = this.settingsCounts(cwd);
+    if (counts.globalKeys) badges.append(badge(tr("{p1} 个键", { p1: counts.globalKeys })));
+    if (counts.projectOverrides) badges.append(badge(tr("{p1} 个被项目覆盖", { p1: counts.projectOverrides })));
     if (this.extInv) badges.append(badge(tr("{p1} 个扩展", { p1: this.extInv.packages.length })));
     if (this.subagentsScan) badges.append(badge(tr("{p1} 个子代理", { p1: this.subagentsScan.agents.length })));
   }
 
-  /** #283：左栏两组九项。计数只在有真实来源时才挂（键数 / 扩展 / 子代理）。 */
+  /** #283：左栏两组九项。计数只在有真实来源时才挂（字段数 / 项目覆盖 / 扩展 / 子代理）。 */
   private paintSettingsNav(consoleNode: HTMLElement, cwd: string): void {
     const nav = consoleNode.querySelector<HTMLElement>(".st-nav");
     if (!nav) return;
     const active = this.settingsNavKey(this.settingsTab);
-    const globalKeys = this.settingsView.global?.json ? Object.keys(this.settingsView.global.json).length : 0;
+    const counts = this.settingsCounts(cwd);
     const extCount = this.extInv ? this.extInv.packages.length : 0;
     const agentCount = this.subagentsScan ? this.subagentsScan.agents.length : 0;
     const groups: { label: string; items: [SettingsTab, string, number][] }[] = [
       {
         label: tr("设置"),
         items: [
-          ["global", tr("全局与项目"), globalKeys],
+          ["global", tr("全局与项目"), counts.globalKeys],
           ["trust", tr("项目信任"), 0],
         ],
       },
@@ -9277,7 +9299,6 @@ export class App {
         if (on) item.setAttribute("aria-current", "page");
         item.append(el("span", "st-nav__label", label));
         if (count > 0) item.append(el("span", "st-nav__count", String(count)));
-        item.disabled = (id === "trust" || id === "project") && !cwd;
         item.onclick = () => this.selectSettingsTab(id);
         nav.append(item);
       }
@@ -9286,7 +9307,7 @@ export class App {
 
   /**
    * #285：global / project 仍是同一个 tab，头部这个分段切的是作用域。
-   * 没有 cwd 时「项目」不可点；离开这一页时分段整个收起。
+   * 没有 cwd 时「项目」照样能点：切过去是「先打开一个会话」的空态，而不是一颗点不动的按钮。
    */
   private paintSettingsScopeBar(consoleNode: HTMLElement, cwd: string): void {
     const host = consoleNode.querySelector<HTMLElement>('[data-role="scope"]');
@@ -9298,12 +9319,7 @@ export class App {
     const seg = el("div", "st-seg");
     seg.setAttribute("role", "group");
     const make = (id: "global" | "project", label: string): HTMLButtonElement => {
-      const on = this.settingsScope === id;
-      const b = el("button", `st-seg__btn${on ? " on" : ""}`, label) as HTMLButtonElement;
-      b.type = "button";
-      b.dataset.scope = id;
-      b.setAttribute("aria-pressed", String(on));
-      b.disabled = id === "project" && !cwd;
+      const b = this.settingsSegButton("scope", id, label, this.settingsScope === id);
       b.onclick = () => {
         if (this.settingsScope === id) return;
         this.settingsScope = id;
@@ -9316,17 +9332,27 @@ export class App {
     host.append(seg);
   }
 
+  /** 两个页内分段控件（作用域 / 更新日志）共用同一种带选中态的按钮。 */
+  private settingsSegButton(
+    name: "scope" | "tab",
+    id: string,
+    label: string,
+    on: boolean,
+  ): HTMLButtonElement {
+    const b = el("button", `st-seg__btn${on ? " on" : ""}`, label) as HTMLButtonElement;
+    b.type = "button";
+    b.dataset[name] = id;
+    b.setAttribute("aria-pressed", String(on));
+    return b;
+  }
+
   /** #283：两个更新日志合成一页 —— pi 那份与本项目那份用页内分段切，深链仍按 tab id 落到对应段。 */
   private paintSettingsChangelog(pane: HTMLElement): void {
     const current = this.settingsTab === "whatsnew" ? "whatsnew" : "changelog";
     const seg = el("div", "st-seg");
     seg.setAttribute("role", "group");
     const make = (id: "changelog" | "whatsnew", label: string): HTMLButtonElement => {
-      const on = current === id;
-      const b = el("button", `st-seg__btn${on ? " on" : ""}`, label) as HTMLButtonElement;
-      b.type = "button";
-      b.dataset.tab = id;
-      b.setAttribute("aria-pressed", String(on));
+      const b = this.settingsSegButton("tab", id, label, current === id);
       b.onclick = () => {
         if (this.settingsTab === id) return;
         this.settingsTab = id;
@@ -9679,7 +9705,7 @@ export class App {
     const rows = buildMatrix(fields, globalView?.json ?? null, projectJson, defaults);
     const rowOf = new Map(rows.map((row) => [row.key, row]));
     const cellText = (kind: SettingField["kind"], value: unknown): string =>
-      formatCell(kind, value as Parameters<typeof formatCell>[1], defaults);
+      formatCell(kind, value as Parameters<typeof formatCell>[1]);
     const only = this.settingsOnlyOverrides;
 
     const tools = el("div", "st-cmp-tools");
@@ -9761,7 +9787,7 @@ export class App {
         const node = cell("project", "unset");
         const inherited =
           row.global !== undefined
-            ? tr("继承全局 · {p1}", { p1: cellText(row.kind, row.global) })
+            ? inheritText(row.kind, "global", row.global as Parameters<typeof inheritText>[2], f)
             : inheritText(row.kind, "default", row.effective as Parameters<typeof inheritText>[2], f);
         node.append(el("span", "st-cmp-v", inherited || tr("未设置")));
         line.append(node);
@@ -9828,9 +9854,10 @@ export class App {
     const draft = this.ensureSettingsDraft(view);
     const setDraft = (key: string, value: unknown): void => {
       draft[key] = value;
+      this.updateSettingsSaveState();
     };
     const cellText = (kind: SettingField["kind"], value: unknown): string =>
-      formatCell(kind, value as Parameters<typeof formatCell>[1], defaults);
+      formatCell(kind, value as Parameters<typeof formatCell>[1]);
     /** 空输入框的灰字：项目层优先说会继承到哪个值，全局层说 pi 的默认。 */
     const emptyLabel = (f: SettingField, row: MatrixRow): string => {
       if (scope === "project") {
@@ -9857,7 +9884,6 @@ export class App {
         return f.kind === "list" ? tr("{p1} · 与全局合并", { p1: base }) : base;
       }
       const parts: string[] = [];
-      if (f.kind === "list") parts.push(tr("与全局合并"));
       if (f.hint) parts.push(f.hint);
       else if (row.global === undefined) parts.push(tr("留空保存 = 使用 pi 默认"));
       return parts.join(" · ");
@@ -10064,7 +10090,7 @@ export class App {
     const snapshot = this.settingsSnapshots.get(scope) ?? {};
     const changed = diffPatch(snapshot, draft, settingFields());
     if (!Object.keys(changed).length) {
-      this.flashSettings(tr("已保存"));
+      this.updateSettingsSaveState();
       return;
     }
     const sessionId = this.currentId;
