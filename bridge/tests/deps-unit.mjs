@@ -57,7 +57,7 @@ const subagents = REQUIRED_PACKAGES.find((p) => p.name === "pi-subagents");
 const webAccess = REQUIRED_PACKAGES.find((p) => p.name === "pi-web-access");
 assert.equal(installSource(subagents), "npm:pi-subagents@0.86.0");
 assert.equal(installSource(webAccess), "npm:pi-web-access");
-assert.ok(REQUIRED_PACKAGES.every((p) => p.name && p.feature && p.why), "每条都要有名字、功能、为什么");
+assert.ok(REQUIRED_PACKAGES.every((p) => p.name && p.id), "每条都要有名字和功能 id");
 assert.equal(OPTIONAL_PACKAGES.length, 1);
 assert.equal(OPTIONAL_PACKAGES[0].name, "billion-context");
 

@@ -1860,6 +1860,9 @@ export const en: Dict = {
   "自动 · 跟随 origin/HEAD": "Auto · follow origin/HEAD",
   "只显示最近 {p1} 条": "Showing the last {p1} only",
   "本项目需要": "This project needs",
+  "设置→子代理、后台卡、subagent 工具": "Settings → Subagents, background cards, the subagent tool",
+  "网页问卷（ask_user_question）": "The web questionnaire (ask_user_question)",
+  "web_search / fetch_content / source_check 等联网工具": "Network tools such as web_search / fetch_content / source_check",
   "都齐了": "All set",
   "缺 {p1} 个": "{p1} missing",
   "要 pi {p1} 或更新": "Needs pi {p1} or newer",
@@ -1870,7 +1873,7 @@ export const en: Dict = {
   "（没有记录原因）": "(no reason recorded)",
   "问不到：{p1}": "Could not check: {p1}",
   "这台机器上没有装 billion-context，acp_delegate 现在用不了 —— 下面的开关存了也不会生效。": "billion-context is not installed on this machine, so acp_delegate does not work — the switches below save a setting nothing reads.",
-  "装法：在终端里跑 pi install npm:billion-context，然后重开 pi。": "To install it: run pi install npm:billion-context in a terminal, then restart pi.",
+  "装法：在终端里跑 pi install {p1}，然后重开 pi。": "To install it: run pi install {p1} in a terminal, then restart pi.",
   "pi（没找到）": "pi (not found)",
   "低于 {p1}": "below {p1}",
 };

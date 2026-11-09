@@ -3426,3 +3426,28 @@ D
 - 一轮只有一个技能时也是一行摘要，比原来多一次点击才能看到描述。
 
 **验证：** `node probes/skill-group.mjs`（20 项，真实 Chromium + 手写会话文件）：两轮各一组 / 默认折叠 / 摘要点名 3 个技能且按到达顺序 / 徽标 / tooltip 全文 / 组里 3 张完整卡（描述、`SKILL.md` 出口、线索）/ 模型说过话用最近那句 / 没说话退回用户消息 / 第二轮另起一组 / 折叠时摘要一行高 / 展开 3 张卡 / chevron 转 90° / 收回后详情不占高度。`npm --prefix web run typecheck`（含 i18n-check：1779 键 × 3 语）与 `npm run test:skill`（14 项）都过。
+
+## D201 部署时一次把依赖备齐：`npm install` 顺手装 pi 与三个扩展（用户要求）
+
+**问题：** 这个网页有三块能力不在仓库里：设置→子代理直接读 `pi-subagents` 的会话目录（`bridge/src/subagents.ts`、`bridge/src/bgruns.ts`），网页问卷按 `@juicesharp/rpiv-ask-user-question` 的 rpc-fallback 对话框格式回填（`bridge/src/questionnaire.ts`），随手问的联网工具由 `pi-web-access` 提供。它们住在 pi 自己的全局目录（`~/.pi/agent`），clone 下来 `npm install` 拿不到 —— 于是同一份代码在两个人的机器上表现不同，而缺的那块通常只是**静默少一个工具**，不报错，也不在界面上说。
+
+**决定：**
+
+1. **在部署时装，不在启动时装。** 入口是仓库根的 `postinstall` → `scripts/bootstrap.mjs`，用户跑一次 `npm install`，再 `npm start`。桥每天开关，不在后台改用户的全局目录。
+2. **装之前先查。** 先定位 pi（`resolvePi()` 的候选表，不是另抄一份）；低于 `MIN_PI_VERSION` 才 `npm i -g @earendil-works/pi-coding-agent@latest`；三个扩展只看 pi 的 `settings.json` 里有没有这个名字，有就一动不动 —— 不升级、不降级，哪怕比钉的版本旧（旧了只在页面上提示「能用」）。
+3. **钉两个、放一个。** `pi-subagents@0.86.0` 与 `@juicesharp/rpiv-ask-user-question@2.15.0` 钉住，因为网页解析它们的目录布局与对话框格式；`pi-web-access` 不钉，只调它的工具。清单只有一处：`bridge/src/deps.ts`。
+4. **装到用户全局**，效果等同用户自己 `pi install`；不写项目里的 `.pi/settings.json`（它只对 cwd 所在项目生效，桥会开任意工程的会话）。
+5. **能关掉。** `PI_WEB_NO_AUTOINSTALL=1`、`--deps-only`、`CI` 三种情形只装子包的 `node_modules`，一行都不往全局写。
+6. **缺了要看得见。** `/api/deps` 报「pi 够不够新 + 三个在不在 + 上次 `npm install` 的结果」，设置→「扩展与 MCP」顶部列出来并给一条可复制的命令；没装 `billion-context` 时设置→子代理的 `acp_delegate` 整片灰掉并说装法。
+
+**为什么不在 spawn 时注入 `-e`：** 那条路要先判断包在不在、再拼路径，缺了就静默退化成「没有这些工具」，而且每个会话都要判一次；用户要的是「装一次，以后不管」。
+
+**不碰的东西：** MCP 服务器（atlassian / browser-use）与本项目功能无关，不装、不改 `mcp.json`；pi 的鉴权与模型配置不动。
+
+**代价 / 可改：**
+
+- `npm install` 会往用户的全局目录写东西 —— 所以失败不炸安装，只把原因写进 `<状态目录>/bootstrap.json` 让页面说。
+- 已装就不动，所以「钉版本」只对第一次安装生效：老机器上留着的旧版不会自己升，页面只说「比 x 旧，能用」。
+- 三个包名 + 最低 pi 版本在 `bridge/src/deps.ts`、README 与测试里各出现一次；改版本要三处一起改（README 与测试里都写着它们抄自哪里）。
+
+**验证：** `node scripts/bootstrap.mjs --check`（本机：pi 1.5.0，三个包已装，退出码 0）；`node scripts/bootstrap.mjs --deps-only`（不碰全局，三包依赖各跑一次）；`npm run test:deps`（纯函数与 `pi list` 文本解析）；`npm run test:deps:ui`（真桥 + 真 pi，两种状态各跑一次，含端口冲突与灰化）。

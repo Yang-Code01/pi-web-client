@@ -8672,6 +8672,8 @@ export class App {
   }
 
   private paintSubagents(body: HTMLElement): void {
+    // 这一页要用「有没有装 billion-context」决定灰不灰；先进这里的人也得把答案拿到。
+    if (!this.deps && !this.depsLoading && Date.now() - this.depsAt > 30_000) this.loadDeps(false);
     const cwd = this.session?.cwd ?? "";
     const scope = this.subagentsScope === "project" && cwd ? "project" : "global";
     const view = this.settingsView[scope];
@@ -8701,7 +8703,10 @@ export class App {
         view: this.subagentsAcp,
         loadError: this.subagentsAcpLoadError,
         // 没装 billion-context 时这一区灰掉：开关存得下，但子代理不会注册 acp_delegate。
-        providerInstalled: this.deps?.optional.find((o) => o.name === "billion-context")?.installed,
+        providerInstalled: this.deps?.optional.find((o) => o.id === "acp")?.installed,
+        providerSource: this.deps?.optional.find((o) => o.id === "acp")?.name
+          ? `npm:${this.deps.optional.find((o) => o.id === "acp")!.name}`
+          : undefined,
         saving: this.subagentsAcpSaving,
         saveError: this.subagentsAcpSaveError,
         // 对外到公网时写文件要过 step-up；本机 / 局域网 act() 直接跑。
@@ -9501,8 +9506,22 @@ export class App {
    * 「本项目需要」：pi 版本 + 三个扩展。这些不在这个仓库里，也不会跟 `npm install` 一起下来，
    * 缺了往往只是**静默少一个工具** —— 所以摆在这一页最上面，缺了就写清楚缺什么、怎么补。
    */
+  /** 包 id 的界面说法。要在调用时 `tr()`：模块级数组会在切语言前就算好。 */
+  private depsFeature(id: string): string {
+    switch (id) {
+      case "subagents":
+        return tr("设置→子代理、后台卡、subagent 工具");
+      case "questionnaire":
+        return tr("网页问卷（ask_user_question）");
+      case "web-access":
+        return tr("web_search / fetch_content / source_check 等联网工具");
+      default:
+        return id;
+    }
+  }
+
   private paintDepsNeeded(body: HTMLElement): void {
-    const box = el("div", "ext-pi");
+    const box = el("div", "ext-pi ext-deps");
     const report = this.deps;
     const row = el("div", "settings-foot");
     row.append(el("span", "pi-name", tr("本项目需要")));
@@ -9539,8 +9558,8 @@ export class App {
       for (const pkg of report.packages) {
         const ver = pkg.foundVersion ? ` ${pkg.foundVersion}` : "";
         const behind = pkg.behind && pkg.version ? tr("（比 {p1} 旧，能用）", { p1: pkg.version }) : "";
-        const note = pkg.installed ? ver + behind : pkg.feature;
-        line(pkg.installed, pkg.name, note, pkg.why);
+        const what = this.depsFeature(pkg.id);
+        line(pkg.installed, pkg.name, pkg.installed ? ver + behind : what, what);
       }
       box.append(list);
 
@@ -9576,7 +9595,7 @@ export class App {
     if (this.depsLoading) return;
     if (!force && this.depsAt && Date.now() - this.depsAt < 30_000) return;
     this.depsLoading = true;
-    this.paintExtIfOpen();
+    this.paintDepsSurface();
     void api
       .deps()
       .then((report) => {
@@ -9591,8 +9610,17 @@ export class App {
       .finally(() => {
         this.depsAt = Date.now();
         this.depsLoading = false;
-        this.paintExtIfOpen();
+        this.paintDepsSurface();
       });
+  }
+
+  /**
+   * 答案到了重画哪一页：设置里的两个 tab 都要（子代理那边靠它决定灰不灰），
+   * 独立的扩展管理面板也要。
+   */
+  private paintDepsSurface(): void {
+    if (this.sheetKind === "settings") this.paintSettings();
+    else this.paintExtIfOpen();
   }
 
   private checkPiUpdate(force = false): void {

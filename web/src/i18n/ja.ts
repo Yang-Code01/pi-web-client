@@ -1860,6 +1860,9 @@ export const ja: Dict = {
   "自动 · 跟随 origin/HEAD": "自動 · origin/HEAD に追従",
   "只显示最近 {p1} 条": "最新 {p1} 件のみ表示",
   "本项目需要": "このプロジェクトに必要",
+  "设置→子代理、后台卡、subagent 工具": "設定 → サブエージェント、バックグラウンドカード、subagent ツール",
+  "网页问卷（ask_user_question）": "ウェブのアンケート（ask_user_question）",
+  "web_search / fetch_content / source_check 等联网工具": "web_search / fetch_content / source_check などのネットワークツール",
   "都齐了": "すべて揃っています",
   "缺 {p1} 个": "{p1} 件不足",
   "要 pi {p1} 或更新": "pi {p1} 以降が必要",
@@ -1870,7 +1873,7 @@ export const ja: Dict = {
   "（没有记录原因）": "（理由の記録なし）",
   "问不到：{p1}": "確認できません: {p1}",
   "这台机器上没有装 billion-context，acp_delegate 现在用不了 —— 下面的开关存了也不会生效。": "このマシンには billion-context が入っていないため acp_delegate は使えません。下のスイッチは保存しても効きません。",
-  "装法：在终端里跑 pi install npm:billion-context，然后重开 pi。": "導入方法: ターミナルで pi install npm:billion-context を実行し、pi を開き直してください。",
+  "装法：在终端里跑 pi install {p1}，然后重开 pi。": "導入方法: ターミナルで pi install {p1} を実行し、pi を開き直してください。",
   "pi（没找到）": "pi（見つかりません）",
   "低于 {p1}": "{p1} より古い",
 };

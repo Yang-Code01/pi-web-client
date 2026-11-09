@@ -1,5 +1,5 @@
 /**
- * 本项目跑起来还缺什么（#D-待定）：pi 本体 + 三个 pi 扩展。
+ * 本项目跑起来还缺什么（#D201）：pi 本体 + 三个 pi 扩展。
  *
  * 网页有一部分功能不在这个仓库里：设置→子代理要读 `pi-subagents` 的会话目录，网页问卷要
  * `@juicesharp/rpiv-ask-user-question` 的 rpc-fallback 对话框格式，随手问的联网工具由
@@ -16,6 +16,12 @@
 /** pi 的最低版本：1.4 起 MCP 是内置扩展，但网页用到的部分按 1.5 验过。 */
 export const MIN_PI_VERSION = "1.5.0";
 
+/**
+ * 缺了会少哪块功能。**这里是 id，不是文案**：中文只在 `web/src` 里用 `tr()` 写，
+ * 命令行那几句在 `scripts/bootstrap.mjs` 自己的表里。
+ */
+export type PackageId = "subagents" | "questionnaire" | "web-access";
+
 export interface RequiredPackage {
   /** `pi install` 认的来源，不带版本：`npm:pi-subagents`。 */
   source: string;
@@ -23,43 +29,28 @@ export interface RequiredPackage {
   name: string;
   /** 钉死的版本；`null` = 不写版本，跟着 latest。 */
   version: string | null;
-  /** 缺了会少哪块功能（页面上一行话）。 */
-  feature: string;
-  /** 为什么钉 / 为什么不钉：给下一个想改版本号的人看。 */
-  why: string;
+  /** 缺了少哪块功能（页面按 id 翻文案）。 */
+  id: PackageId;
 }
 
 export const REQUIRED_PACKAGES: RequiredPackage[] = [
-  {
-    source: "npm:pi-subagents",
-    name: "pi-subagents",
-    version: "0.86.0",
-    feature: "设置→子代理、后台卡、subagent 工具",
-    why: "网页直接读它的会话目录（%TEMP%\\pi-subagents-*）与 async JSON 事件，目录布局变了就静默读不到，所以钉住。",
-  },
+  // 钉住：网页直接读它的会话目录（%TEMP%\pi-subagents-*）与 async JSON 事件，
+  // 目录布局变了就静默读不到。
+  { source: "npm:pi-subagents", name: "pi-subagents", version: "0.86.0", id: "subagents" },
+  // 钉住：网页按它的 rpc-fallback 逐题对话框回填答案（bridge/src/questionnaire.ts），
+  // 对话框格式变了就对不上。
   {
     source: "npm:@juicesharp/rpiv-ask-user-question",
     name: "@juicesharp/rpiv-ask-user-question",
     version: "2.15.0",
-    feature: "网页问卷（ask_user_question）",
-    why: "网页按它的 rpc-fallback 逐题对话框回填答案（bridge/src/questionnaire.ts），对话框格式变了就对不上，所以钉住。",
+    id: "questionnaire",
   },
-  {
-    source: "npm:pi-web-access",
-    name: "pi-web-access",
-    version: null,
-    feature: "web_search / fetch_content / source_check 等联网工具",
-    why: "只用它的工具，不解析它的输出格式，跟着 latest 走。",
-  },
+  // 不钉：只用它的工具，不解析它的输出格式。
+  { source: "npm:pi-web-access", name: "pi-web-access", version: null, id: "web-access" },
 ];
 
 /** 可选、但少了就会缺一整块界面的包：不装、不拦人，只把界面灰掉并说原因。 */
-export const OPTIONAL_PACKAGES: { name: string; feature: string }[] = [
-  {
-    name: "billion-context",
-    feature: "acp_delegate（设置→子代理最下面那一区）",
-  },
-];
+export const OPTIONAL_PACKAGES: { name: string; id: "acp" }[] = [{ name: "billion-context", id: "acp" }];
 
 /** `pi install` 的参数：钉了版本就是 `npm:foo@1.2.3`，否则原样。 */
 export function installSource(pkg: RequiredPackage): string {

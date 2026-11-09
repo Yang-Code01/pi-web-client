@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 一条命令备齐这个项目要的东西（#D-待定）：pi 本体 → 三个 pi 扩展 → bridge / peer / web 的依赖。
+ * 一条命令备齐这个项目要的东西（#D201）：pi 本体 → 三个 pi 扩展 → bridge / peer / web 的依赖。
  *
  * 为什么不是桥启动时自己装：装东西要写用户的全局目录（`~/.pi/agent`），那是用户的地盘，桥每天
  * 开开关关不该在后台偷偷改它；`npm install` 是用户自己按下的一次性动作，放在这里最诚实。
@@ -22,7 +22,6 @@
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -47,7 +46,7 @@ async function loadModules() {
   }
 }
 
-const { MIN_PI_VERSION, REQUIRED_PACKAGES, bareSource, installSource, piTooOld, agentDir, piCandidates } = await loadModules();
+const { MIN_PI_VERSION, REQUIRED_PACKAGES, bareSource, installSource, piTooOld, agentDir, piCandidates, statePath } = await loadModules();
 
 const args = new Set(process.argv.slice(2));
 const CHECK = args.has("--check");
@@ -56,12 +55,34 @@ const CI = !!process.env.CI && !args.has("--force");
 const NO_AUTO = !!process.env.PI_WEB_NO_AUTOINSTALL && !args.has("--force");
 const DEPS_ONLY = args.has("--deps-only") || CI || NO_AUTO;
 const QUIET = args.has("--quiet");
-const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
+// npm 在 Windows 上是 `npm.cmd`。Node 从 18.20 起拒绝 spawn 一个不带 shell 的 `.cmd`（EINVAL），
+// 所以这里不叫 npm 这个名字：让 node 直接跑 `npm-cli.js`。postinstall 里有 npm_execpath，
+// 手动 `node scripts/bootstrap.mjs` 时按 node 自己的安装位置猜一次。
+const NPM_CLI = (() => {
+  const fromEnv = process.env.npm_execpath;
+  if (fromEnv && /npm-cli\.js$/i.test(fromEnv) && fs.existsSync(fromEnv)) return fromEnv;
+  const guess = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+  return fs.existsSync(guess) ? guess : null;
+})();
+
+/** 命令行里说「缺了少哪块」的口径。界面上另有一套（web/src/app.ts 的 depsFeature），
+ *  两边都按 id 取，不共用中文 —— 一个给终端，一个给 tr()。 */
+const FEATURE = {
+  subagents: "设置→子代理、后台卡、subagent 工具",
+  questionnaire: "网页问卷（ask_user_question）",
+  "web-access": "web_search / fetch_content 等联网工具",
+};
 
 const out = (line = "") => console.log(line);
 const step = (line) => {
   if (!QUIET) out(line);
 };
+
+function runNpm(npmArgs, opts = {}) {
+  if (NPM_CLI) return run(process.execPath, [NPM_CLI, ...npmArgs], opts);
+  // 非 Windows 上 npm 是普通的 node 脚本，能直接 spawn；Windows 退到 shell（参数都是常量）。
+  return run("npm", npmArgs, { ...opts, shell: process.platform === "win32" });
+}
 
 function run(cmd, cmdArgs, opts = {}) {
   const r = spawnSync(cmd, cmdArgs, { encoding: "utf8", timeout: opts.timeout ?? 15 * 60_000, windowsHide: true, ...opts });
@@ -90,7 +111,7 @@ function findPi() {
 
 function installPi() {
   step(`  pi 不在或低于 ${MIN_PI_VERSION}，装最新版…`);
-  const r = run(NPM, ["install", "-g", "@earendil-works/pi-coding-agent@latest"], { timeout: 30 * 60_000 });
+  const r = runNpm(["install", "-g", "@earendil-works/pi-coding-agent@latest"], { timeout: 30 * 60_000 });
   if (r.code === 0) return null;
   const why = (r.stderr || r.stdout || r.error || "").trim().split(/\r?\n/).slice(-4).join("\n");
   if (process.platform === "win32") {
@@ -133,7 +154,7 @@ function installPackages(pi, record) {
     const hit = have.find((h) => h.name.toLowerCase() === pkg.name.toLowerCase());
     if (hit) {
       record.skipped.push(`${pkg.source}${pkg.version ? `（要 ${pkg.version}）` : ""} 已装${packageVersion(pkg.name) ? ` ${packageVersion(pkg.name)}` : ""}，不动`);
-      step(`  ✓ ${pkg.source} 已装，跳过（${pkg.feature}）`);
+      step(`  ✓ ${pkg.source} 已装，跳过（${FEATURE[pkg.id] ?? pkg.id}）`);
       continue;
     }
     const want = installSource(pkg);
@@ -143,7 +164,7 @@ function installPackages(pi, record) {
       record.installed.push(`${want}（缺）`);
       record.ok = false;
       record.error ??= `缺 ${want}`;
-      step(`  ✗ 缺 ${want}（${pkg.feature}）`);
+      step(`  ✗ 缺 ${want}（${FEATURE[pkg.id] ?? pkg.id}）`);
       continue;
     }
     const r = run(process.execPath, [pi.cli, "install", want], { timeout: 20 * 60_000 });
@@ -166,7 +187,7 @@ function installProjectDeps(record) {
     if (!fs.existsSync(path.join(dir, "package.json"))) continue;
     if (CHECK) continue;
     step(`  → ${name} 的依赖…`);
-    const r = run(NPM, ["install", "--prefix", dir, "--no-audit", "--no-fund"], { timeout: 30 * 60_000 });
+    const r = runNpm(["install", "--prefix", dir, "--no-audit", "--no-fund"], { timeout: 30 * 60_000 });
     if (r.code !== 0) {
       const why = (r.stderr || r.stdout || r.error || "").trim().split(/\r?\n/).slice(-3).join(" / ");
       record.error ??= `${name} 的依赖装不上：${why}`;
@@ -184,12 +205,16 @@ if (CI || NO_AUTO) step(CI ? "  （CI：只装子包依赖，不碰全局 pi 目
 
 let pi = findPi();
 record.pi = pi?.version ?? null;
-if (!pi || piTooOld(pi.version)) {
+if (DEPS_ONLY && !CHECK) {
+  // --deps-only / CI / PI_WEB_NO_AUTOINSTALL：一行都不往用户全局目录写。
+  step(`  - pi ${pi?.version ?? "（没找到）"}（这一轮不碰全局 pi 目录）`);
+} else if (!pi || piTooOld(pi.version)) {
   if (CHECK) {
     record.ok = false;
     record.error ??= pi ? `pi ${pi.version} 低于 ${MIN_PI_VERSION}` : "找不到 pi";
     step(`  ✗ ${record.error}`);
   } else {
+    const was = pi?.cli ?? null;
     const err = installPi();
     if (err) {
       record.ok = false;
@@ -197,12 +222,19 @@ if (!pi || piTooOld(pi.version)) {
     }
     pi = findPi();
     record.pi = pi?.version ?? null;
+    // 装完还旧 = 装到了别的前缀，而候选表前面还有一个旧的。桥也按同一张表找，所以照实说。
+    if (pi && piTooOld(pi.version)) {
+      record.ok = false;
+      record.error ??= `装完还是 ${pi.version}（${pi.cli}）${was && was !== pi.cli ? `，原来那个在 ${was}` : ""}：先处理更前面那个 pi，或把 PATH 指到新装的那份`;
+      step(`  ✗ ${record.error}`);
+    }
   }
 } else {
   step(`  ✓ pi ${pi.version}（≥ ${MIN_PI_VERSION}）`);
 }
 
-if (!DEPS_ONLY) {
+// --check 装不了东西，所以 DEPS_ONLY 也照查（不然「三个包全缺」会报 0）。
+if (!DEPS_ONLY || CHECK) {
   if (pi) installPackages(pi, record);
   else if (!record.error) {
     record.ok = false;
@@ -213,12 +245,14 @@ installProjectDeps(record);
 record.ok = record.ok && !record.error;
 
 // 状态文件给桥读（`/api/deps` 的 bootstrap 字段）：页面据此说“上次 npm install 没成功”。
-try {
-  const stateDir = process.env.PI_WEB_STATE || path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), ".local", "share"), "pi-web-client");
-  fs.mkdirSync(stateDir, { recursive: true });
-  fs.writeFileSync(path.join(stateDir, "bootstrap.json"), `${JSON.stringify(record, null, 2)}\n`);
-} catch (err) {
-  step(`  （状态没写下来：${err?.message ?? err}）`);
+// `--check` 说好了只看不动，就不写它。
+if (!CHECK) {
+  try {
+    fs.mkdirSync(path.dirname(statePath("bootstrap.json")), { recursive: true });
+    fs.writeFileSync(statePath("bootstrap.json"), `${JSON.stringify(record, null, 2)}\n`);
+  } catch (err) {
+    step(`  （状态没写下来：${err?.message ?? err}）`);
+  }
 }
 
 const took = ((Date.now() - started) / 1000).toFixed(1);

@@ -43,6 +43,8 @@ export interface AcpDelegateSection {
   loadError: { path: string; message: string } | null;
   /** 这台机器的 pi 里有没有装 billion-context（桥的 `/api/deps` 说的）；false = 整片灰掉。 */
   providerInstalled?: boolean;
+  /** 装它用的参数（`npm:billion-context`）：来源在 bridge/src/deps.ts 的 OPTIONAL_PACKAGES 里，别手抄。 */
+  providerSource?: string;
   saving: boolean;
   /** 上一次保存的失败原因；成功保存由 app 的 settings-note 播报。 */
   saveError: string | null;
@@ -83,7 +85,9 @@ export function paintAcpDelegateSection(box: HTMLElement, page: AcpDelegateSecti
   if (off) {
     // 包不在时，这里的开关存得下、但没人读：说清楚，并把控件灰掉（下面的 refresh 会把保存也禁了）。
     box.append(el("p", "note warn", tr("这台机器上没有装 billion-context，acp_delegate 现在用不了 —— 下面的开关存了也不会生效。")));
-    box.append(el("p", "subagents-hint", tr("装法：在终端里跑 pi install npm:billion-context，然后重开 pi。")));
+    box.append(
+      el("p", "subagents-hint", tr("装法：在终端里跑 pi install {p1}，然后重开 pi。", { p1: page.providerSource ?? "npm:billion-context" })),
+    );
   }
   if (!view.exists) box.append(el("p", "subagents-hint", tr("（还没有这个文件，保存时创建）")));
 

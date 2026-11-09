@@ -7,7 +7,7 @@
  * 都在，✓/✗ 跟 `/api/deps` 一致（不自己编结论）；③ 缺东西时有一行可复制的命令、不缺时没有。
  *
  * 用本机真装的 pi（`pi list` 是本地命令，不联网），所以断言对「装齐了」和「没装齐」两种机器都成立：
- * 期望值一律从 `/api/deps` 取，不从写死的清单取。端口 7893，可用 DEPS_UI_PORT 改。
+ * 期望值一律从 `/api/deps` 取，不从写死的清单取。端口 7896（7893/7894/7895/7898/7899 归别的探针），可用 DEPS_UI_PORT 改。
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -18,7 +18,7 @@ import { loadPlaywright } from "../../tools/playwright.mjs";
 
 const { chromium } = await loadPlaywright();
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.DEPS_UI_PORT ?? 7893);
+const PORT = Number(process.env.DEPS_UI_PORT ?? 7896);
 const ROOT = path.join(REPO, ".scratch", "deps-ui");
 const STATE = path.join(ROOT, "state");
 const PROJECT = path.join(ROOT, "project");
@@ -61,6 +61,7 @@ bridge.stdout.on("data", (b) => (bridgeLog += b.toString()));
 bridge.stderr.on("data", (b) => (bridgeLog += b.toString()));
 
 let browser = null;
+let page = null;
 try {
   await until(async () => (await fetch(`${BASE}/healthz`).catch(() => null))?.ok, 20000, "healthz");
 
@@ -92,7 +93,7 @@ try {
   browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 1360, height: 900 }, deviceScaleFactor: 2, locale: "zh-CN" });
   await ctx.addCookies([{ name: cookie.split("=")[0], value: cookie.split("=").slice(1).join("="), url: BASE }]);
-  const page = await ctx.newPage();
+  page = await ctx.newPage();
   page.on("pageerror", (e) => {
     failed += 1;
     console.error("  FAIL pageerror:", e.message);
@@ -146,10 +147,31 @@ try {
     check("装了 billion-context：不灰", !/没有装 billion-context/.test(acpText));
   }
 
+  // 直接进「子代理」、不经过「扩展与 MCP」：这一页自己也得拉 /api/deps，灰化不能靠上一次的残留。
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(".composer textarea").waitFor({ timeout: 20000 });
+  await page.locator(".composer textarea").fill("/settings");
+  await page.keyboard.press("Enter");
+  await until(() => page.locator(".settings-sheet").count(), 10000, "settings sheet (again)");
+  await page.locator(".settings-tabs .chip", { hasText: "子代理" }).first().click();
+  await page.locator("#subagents-acp .settings-foot").waitFor({ timeout: 15000 });
+  const acpFirst = page.locator("#subagents-acp");
+  if (bc && !bc.installed) {
+    await until(async () => /没有装 billion-context/.test(await acpFirst.innerText()), 15000, "deps on subagents tab");
+    check("先点子代理也灰：说清原因", true);
+    check("先点子代理也灰：保存不可用", await page.locator("#subagents-acp .btn.primary").isDisabled());
+  } else {
+    check("先点子代理不误灰", !/没有装 billion-context/.test(await acpFirst.innerText()));
+  }
+
   await page.screenshot({ path: path.join(REPO, ".scratch", "shots", "deps-acp.png"), fullPage: false });
 } catch (err) {
   failed += 1;
   console.error("FAIL", err?.message ?? err);
+  // 失败现场：截图 + 页面上第一段文字，避免下次只能猜。
+  await page?.screenshot({ path: path.join(REPO, ".scratch", "shots", "deps-ui-fail.png") }).catch(() => {});
+  console.error("  sheet:", await page?.locator(".settings-sheet").count().catch(() => -1));
+  console.error("  body:", (await page?.locator("body").innerText().catch(() => "")).slice(0, 300));
   if (bridgeLog) console.error(bridgeLog.slice(-2000));
 } finally {
   await browser?.close().catch(() => {});

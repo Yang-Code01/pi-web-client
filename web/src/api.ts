@@ -35,8 +35,8 @@ export interface DepPackageStatus {
   name: string;
   /** 钉死的版本；null = 跟 latest。 */
   version: string | null;
-  feature: string;
-  why: string;
+  /** 缺了少哪块功能：id，文案在 app.ts 的 depsFeature() 里用 tr() 写。 */
+  id: string;
   installed: boolean;
   foundVersion: string | null;
   /** 装了但比钉的旧：只提示，不自动升（已装就不动）。 */
@@ -59,7 +59,7 @@ export interface DepsReport {
   autoInstall: boolean;
   packages: DepPackageStatus[];
   /** 可选包（例如 billion-context）：没装不拦人，界面自己决定要不要灰掉。 */
-  optional: { name: string; feature: string; installed: boolean }[];
+  optional: { name: string; id: string; installed: boolean }[];
   missing: number;
   ready: boolean;
   bootstrap: DepsBootstrap | null;

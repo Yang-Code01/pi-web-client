@@ -7,7 +7,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { bareSource, bootstrapCommand, depStatus, MIN_PI_VERSION, OPTIONAL_PACKAGES, piTooOld, type DepStatus } from "./deps.ts";
+import { bareSource, bootstrapCommand, depStatus, missingCount, MIN_PI_VERSION, OPTIONAL_PACKAGES, piTooOld, type DepStatus } from "./deps.ts";
 import { readJson, statePath } from "./paths.ts";
 import { runPiCli } from "./picli.ts";
 
@@ -29,7 +29,7 @@ export interface DepsReport {
   autoInstall: boolean;
   packages: DepStatus[];
   /** 可选包：没装不拦人，界面自己决定要不要灰掉。 */
-  optional: { name: string; feature: string; installed: boolean }[];
+  optional: { name: string; id: string; installed: boolean }[];
   missing: number;
   /** pi 够新且三个都在。 */
   ready: boolean;
@@ -57,7 +57,7 @@ export async function depsReport(cliPath: string, piVersion: string): Promise<De
     };
   });
   const packages = depStatus(found);
-  const missing = packages.filter((p) => !p.installed).length;
+  const missing = missingCount(packages);
   const piOk = !piTooOld(piVersion);
   return {
     pi: { version: piVersion, min: MIN_PI_VERSION, ok: piOk },
