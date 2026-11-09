@@ -11,7 +11,11 @@
  *   D. 翻到最早一页后那一行整个消失；
  *   E. 刻度带按整段历史画（#243）：一开始就是 120 行（30 实 + 90 个 `.ghost` 占位），
  *      翻一页后实/淡边界从 90 上移到 60、总高度不变，点第一根刻度能定位到最早那轮；
- *   F. 切到别的会话再切回来：回到第一页，刻度带重新按全量索引摆好（没有残留的已载入轮）。
+ *   F. 切到别的会话再切回来：回到第一页，刻度带重新按全量索引摆好（没有残留的已载入轮）；
+ *   G. 点最上面那根淡色刻度（#244）：自己连翻 3 页，最后滚到第 1 轮并高亮，中途不需要再点，
+ *      按钮按手动翻页的样子变灰、刻度带 `busy`；
+ *   H. 翻页途中用户上滚：跳转停下，已经取回的那一页留着，滚动位置不被拽到第 1 轮；
+ *   I. 索引里有、正文里没有的那一轮：翻到头就停，顶部那一行说「没翻到第 N 轮」，不再发请求。
  *
  * 桥侧形状（#218 定的）：`session` 帧只带末页 + `history:{hasMore,total}`；
  * `{type:"history.before", sessionId, before, limit?}` → `{type:"history", sessionId, before, items, hasMore}`，
@@ -309,17 +313,7 @@ check("未载入的行用 --faint 那一档（比已载入的淡）", tones.row 
 check("未载入的刻度颜色比已载入的淡一档", tones.tick !== null && tones.tick !== tones.solidTick, JSON.stringify(tones));
 check("「当前」不会落在 ghost 刻度上", (await page.evaluate(() => document.querySelectorAll(".turn-tick.ghost.cur").length)) === 0);
 
-// 点 ghost：这张票不要求真跳（#244 才做自动翻页），但不能抛错、不能发请求。
-const ghostClickBefore = { users: await users(), requests: await page.evaluate(() => window.__before), errors: pageErrors.length };
-await page.evaluate(() => document.querySelector(".turn-tick.ghost").click());
-await sleep(400);
-check(
-  "点未载入的刻度：不跳、不发请求、不抛错",
-  (await users()) === ghostClickBefore.users &&
-    (await page.evaluate(() => window.__before)) === ghostClickBefore.requests &&
-    pageErrors.length === ghostClickBefore.errors,
-  `users=${await users()} requests=${await page.evaluate(() => window.__before)} errors=${pageErrors.length}`,
-);
+// 点 ghost：见下面的 G（#244）—— 那张票让它不再只是看得见的占位。
 
 /** Viewport-top content node: the one the eye uses as an anchor. Skips the more row and the jump button. */
 const setAnchor = () =>
@@ -370,6 +364,9 @@ async function pageFrom(where) {
 }
 
 // B（顶部）+ C（连点只发一次）—— 两下同步点击
+// 先像往上读的人那样滚一格：把跟流关掉。否则翻页之后输入区再定一次高度（实测 3px）时，
+// 那颗 ResizeObserver 会在「跟流」时把视口贴回底部，量到的就不是翻页的位移了。
+await page.evaluate(() => document.querySelector(".chat-scroll").dispatchEvent(new WheelEvent("wheel", { deltaY: -160, bubbles: true })));
 await scrollTo("top");
 await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
 const topAnchor = await setAnchor();
@@ -445,6 +442,175 @@ await sleep(200);
 check("切走再回来回到第一页", (await users()) === PAGE_TURNS, `users=${await users()}`);
 check("切走再回来按钮又出现", !(await moreLabel()).hidden, JSON.stringify(await moreLabel()));
 check("切走再回来：120 行重新按全量索引摆好（30 实 + 90 淡）", (await rows()) === TURNS && (await ghostRows()) === TURNS - PAGE_TURNS, `rows=${await rows()} ghost=${await ghostRows()}`);
+
+// ---- G. #244：点最上面那根淡色刻度 → 自己连翻 3 页，最后滚到第 1 轮并高亮 --------------------
+await settleRail();
+const jumpBase = await page.evaluate(() => window.__before);
+const jumpStart = await page.evaluate(() => {
+  document.querySelector(".turn-tick.ghost").click();
+  const btn = document.querySelector(".chat-more .more-btn");
+  return {
+    disabled: btn.disabled,
+    text: btn.textContent ?? "",
+    busy: document.querySelector(".turn-rail").classList.contains("busy"),
+  };
+});
+check(
+  "自动翻页起手：按钮灰了、写「载入中…」，刻度带在忙",
+  jumpStart.disabled && jumpStart.text === "载入中…" && jumpStart.busy,
+  JSON.stringify(jumpStart),
+);
+// 三页都是一瞬间的事，等「那一轮到了并高亮」比等条数稳（高亮是自己消失的）。
+await page.waitForFunction(() => document.querySelector(".chat-scroll .msg.user")?.classList.contains("turn-flash") === true, null, { timeout: 20000 });
+const jumped = await page.evaluate(() => {
+  const node = document.querySelector(".chat-scroll .msg.user");
+  return { text: node?.querySelector(".body")?.textContent?.trim() ?? "", users: document.querySelectorAll(".chat-scroll .msg.user").length };
+});
+check("自动翻页翻到第 1 轮并高亮它", jumped.text === "问 1" && jumped.users === TURNS, JSON.stringify(jumped));
+check(
+  "自动翻页正好发了 3 个请求（每页一次，中间不需要再点）",
+  (await page.evaluate(() => window.__before)) - jumpBase === 3,
+  `requests=${(await page.evaluate(() => window.__before)) - jumpBase}`,
+);
+const jumpSettled = {
+  more: await moreLabel(),
+  busy: await page.evaluate(() => document.querySelector(".turn-rail").classList.contains("busy")),
+};
+check("翻完按钮收起、刻度带不忙了", jumpSettled.more.hidden && !jumpSettled.busy, JSON.stringify(jumpSettled));
+await settleScroll();
+const jumpLanded = await page.evaluate(() => {
+  const sc = document.querySelector(".chat-scroll");
+  const node = document.querySelector(".chat-scroll .msg.user");
+  return { delta: node.getBoundingClientRect().top - sc.getBoundingClientRect().top, text: node.querySelector(".body")?.textContent?.trim() };
+});
+check("自动翻完滚到第 1 轮（对齐视口顶）", jumpLanded.text === "问 1" && Math.abs(jumpLanded.delta) < 120, JSON.stringify(jumpLanded));
+
+// ---- H. #244：翻页途中用户上滚 → 跳转停下，已取回的页留着，位置不被拽走 --------------------
+// 回到第一页（切走再切回来），上一段已经把 120 轮全载入了。
+await page.evaluate((id) => (location.hash = `#/s/${id}`), B);
+await page.waitForFunction(() => document.querySelectorAll(".chat-scroll .msg.user").length === 2, null, { timeout: 15000 });
+await page.evaluate((id) => (location.hash = `#/s/${id}`), A);
+await page.waitForFunction((n) => document.querySelectorAll(".chat-scroll .msg.user").length === n, PAGE_TURNS, { timeout: 15000 });
+await settleRail();
+await scrollTo("mid");
+await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+const cancelBase = await page.evaluate(() => window.__before);
+// 点完同一个 tick 里就上滚：请求已在飞，取消得跟上「用户自己动手」。
+await page.evaluate(() => {
+  document.querySelector(".turn-tick.ghost").click();
+  document.querySelector(".chat-scroll").dispatchEvent(new WheelEvent("wheel", { deltaY: -160, bubbles: true }));
+});
+await page.waitForFunction((n) => document.querySelectorAll(".chat-scroll .msg.user").length > n, PAGE_TURNS, { timeout: 15000 });
+await sleep(700); // 再等一会儿：不该有第二页、第三页跟上来
+const cancelled = {
+  users: await users(),
+  requests: (await page.evaluate(() => window.__before)) - cancelBase,
+  flashing: await page.evaluate(() => document.querySelectorAll(".msg.user.turn-flash").length),
+  firstAway: await page.evaluate(() => {
+    const sc = document.querySelector(".chat-scroll");
+    // 第 1 轮该在视口上方很远的地方（没被拽过去）；负得不够就是跳了。
+    return Math.round(document.querySelector(".chat-scroll .msg.user").getBoundingClientRect().top - sc.getBoundingClientRect().top);
+  }),
+  more: await moreLabel(),
+};
+check(
+  "上滚取消：只取回已经发出的那一页，不再接着翻",
+  cancelled.users === PAGE_TURNS * 2 && cancelled.requests === 1,
+  JSON.stringify(cancelled),
+);
+check(
+  "上滚取消：不跳、不高亮，滚动没被拽到第 1 轮",
+  cancelled.flashing === 0 && cancelled.firstAway < -200,
+  JSON.stringify(cancelled),
+);
+check(
+  "上滚取消：按钮回到「载入更早」、刻度带不忙了",
+  !cancelled.more.hidden && cancelled.more.text === "载入更早" && !cancelled.more.disabled && !(await page.evaluate(() => document.querySelector(".turn-rail").classList.contains("busy"))),
+  JSON.stringify(cancelled.more),
+);
+
+// ---- I. #244：索引里有、正文里没有的那一轮 → 翻到头就停，并说「没翻到第 N 轮」 --------------------
+// 这一段的假桥在页面侧：把 session 帧的 history.turns 前面塞一个正文里永远翻不到的轮次。
+const ctx2 = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "zh-CN" });
+await ctx2.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
+await ctx2.addInitScript(() => {
+  window.__before = 0;
+  const send = WebSocket.prototype.send;
+  WebSocket.prototype.send = function (data) {
+    try {
+      if (JSON.parse(data)?.type === "history.before") window.__before += 1;
+    } catch {
+      /* 非 JSON 帧 */
+    }
+    return send.call(this, data);
+  };
+  // 改 `onmessage` 这一路就够了（ws.ts 用的是 ws.onmessage），没必要接管整个 socket。
+  const desc = Object.getOwnPropertyDescriptor(WebSocket.prototype, "onmessage");
+  Object.defineProperty(WebSocket.prototype, "onmessage", {
+    configurable: true,
+    get() {
+      return desc.get.call(this);
+    },
+    set(fn) {
+      desc.set.call(this, function (ev) {
+        let out = ev;
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "session" && Array.isArray(msg.history?.turns)) {
+            msg.history.turns = [{ id: "phantom-turn", text: "问 0", images: [] }, ...msg.history.turns];
+            out = new MessageEvent("message", { data: JSON.stringify(msg) });
+          }
+        } catch {
+          /* 非 JSON / 结构不对：原样交给页面 */
+        }
+        fn.call(this, out);
+      });
+    },
+  });
+});
+const page2 = await ctx2.newPage();
+page2.on("pageerror", (e) => log("pageerror(ctx2):", e.message));
+await page2.goto(`${BASE}/#/s/${A}`);
+await page2.waitForSelector(".chat-more .more-btn", { timeout: 20000 });
+await page2.waitForFunction(() => document.querySelectorAll(".chat-scroll .msg.user").length === 30, null, { timeout: 15000 });
+await page2.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+const phantomRows = await page2.evaluate(() => document.querySelectorAll(".turn-row").length);
+check("索引里多了那条不存在的轮次（121 行，91 淡）", phantomRows === TURNS + 1, `rows=${phantomRows}`);
+// 这里点的是**行**（不是刻度）：两种形状共用一个回调，行这条腿由这一段覆盖。
+const phantomStart = await page2.evaluate(() => {
+  const row = document.querySelector(".turn-row.ghost");
+  row.click();
+  return { ghost: row.title, busy: document.querySelector(".turn-rail").classList.contains("busy") };
+});
+check("点的就是那条不存在的第 1 轮（点的是行）", phantomStart.ghost.includes("问 0") && phantomStart.busy, JSON.stringify(phantomStart));
+await page2.waitForFunction(() => document.querySelector(".chat-more .more-btn")?.textContent === "没翻到第 1 轮", null, { timeout: 20000 });
+const stuck = await page2.evaluate(() => {
+  const row = document.querySelector(".chat-more");
+  const btn = row.querySelector(".more-btn");
+  return {
+    users: document.querySelectorAll(".chat-scroll .msg.user").length,
+    noteHidden: row.hidden === true,
+    noteDisabled: btn.disabled === true,
+    requests: window.__before,
+    ghostRows: document.querySelectorAll(".turn-row.ghost").length,
+    busy: document.querySelector(".turn-rail").classList.contains("busy"),
+    flashing: document.querySelectorAll(".msg.user.turn-flash").length,
+  };
+});
+check(
+  "翻到尽头也没有那一轮：停下、不跳、不忙了",
+  stuck.users === TURNS && stuck.flashing === 0 && !stuck.busy && stuck.ghostRows === 1,
+  JSON.stringify(stuck),
+);
+check("失败那行是可见的（没更早的了也要露出来）", !stuck.noteHidden && stuck.noteDisabled, JSON.stringify(stuck));
+check("翻到头一共 3 个请求（每页一次）", stuck.requests === 3, `requests=${stuck.requests}`);
+await sleep(800);
+check(
+  "失败之后不再继续发请求",
+  (await page2.evaluate(() => window.__before)) === 3 && (await page2.evaluate(() => document.querySelectorAll(".chat-scroll .msg.user").length)) === TURNS,
+  `requests=${await page2.evaluate(() => window.__before)}`,
+);
+await ctx2.close();
 
 await browser.close();
 bridge.kill();
