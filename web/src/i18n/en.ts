@@ -1885,6 +1885,13 @@ export const en: Dict = {
   "退出连接": "Disconnect",
   "已退出连接": "Disconnected",
   "去改 token": "Change the token",
+  "我的未完成": "My open issues",
+  "可访问项目": "Projects you can see",
+  "没有分配给你且未完成的工单": "No open issues assigned to you",
+  "（没有标题）": "(no summary)",
+  "刷新失败：{p1}": "Refresh failed: {p1}",
+  "凭据失效，改一下 token 再试": "Credentials expired — update the token and try again",
+  "重新填一次 token": "Enter the token again",
   "打开设置": "Open settings",
   "读工单描述和评论要用 Jira MCP：在「设置 → 扩展与 MCP」里安装。": "Reading issue descriptions and comments needs the Jira MCP: install it under Settings → Extensions & MCP.",
 };

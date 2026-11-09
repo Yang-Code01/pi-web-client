@@ -1,15 +1,17 @@
 /**
- * Jira 面板（#248）：顶栏「🔷 Jira」打开的那扇 dialog。
+ * Jira 面板（#248、#249）：顶栏「🔷 Jira」打开的那扇 dialog。
  *
- * 本单只做「连接」这一层 —— 未连接是表单，连上之后是当前账号；工单列表 / 详情 / 附件是后续
- * 工单。两条边界：
+ * #248 做「连接」这一层（表单 / 当前账号）；#249 在 ready 态下再放两段列表：「我的未完成」与
+ * 「可访问项目」。两条边界：
  * - 凭据只在桥那边，这里拿到的永远是掩码；除了桥回的 `avatarUrl`，页面不拼任何 Jira 地址。
- * - 每次 `open()` 都重新问一次桥，不拿内存里的旧状态当已连接（换机器、隧道退连接都能立刻反映）。
+ * - 每次 `open()` 都重新问一次桥，不拿内存里的旧状态当已连接（换机器、隧道退连接都能立刻反映）；
+ *   列表本身不缓存，60 秒的复用是桥那边的责任（D202）。
  */
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
 import { errText, tr } from "./i18n/index.ts";
-import { keyMask, siteUrlProblem } from "./jira-shared.ts";
+import { browseUrl, issueMeta, keyMask, siteUrlProblem } from "./jira-shared.ts";
+import type { JiraIssue, JiraProject } from "./jira-shared.ts";
 
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
 export { keyMask, siteUrlProblem } from "./jira-shared.ts";
@@ -34,11 +36,32 @@ interface JiraConfigView {
   keyMask: string;
 }
 
+type ListState<T> =
+  | { kind: "loading" }
+  | { kind: "ready"; items: T[] }
+  | { kind: "error"; text: string; code: string };
+
 type PanelState =
   | { kind: "loading" }
   | { kind: "form"; note: string; bad: boolean }
-  | { kind: "ready"; me: JiraMe; mask: string }
+  | {
+      kind: "ready";
+      me: JiraMe;
+      mask: string;
+      siteUrl: string;
+      issues: ListState<JiraIssue>;
+      projects: ListState<JiraProject>;
+      refreshing: boolean;
+      /** 刷新失败时的一行错误；旧列表留着，不清空。 */
+      refreshNote: string;
+    }
   | { kind: "error"; text: string; code: string; retry: boolean };
+
+type ReadyState = Extract<PanelState, { kind: "ready" }>;
+
+function isAuthCode(code: string): boolean {
+  return code === "jira_auth" || code === "jira_forbidden";
+}
 
 function codeOf(err: unknown): string {
   const code = (err as { code?: unknown } | null)?.code;
@@ -88,7 +111,7 @@ export class JiraPanel {
     back?.focus();
   }
 
-  /** 语言切了：整块重画；表单值在 `this.form` 里，不会丢。 */
+  /** 语言切了：整块重画；表单值在 `this.form` 里，列表在 `this.state` 里，不会丢也不重新请求。 */
   refreshLang(): void {
     if (this.root) this.render();
   }
@@ -119,13 +142,28 @@ export class JiraPanel {
     try {
       const me = await api.jiraMe();
       if (seq !== this.seq || !this.root) return;
-      this.state = { kind: "ready", me, mask: this.config?.keyMask ?? "" };
+      this.state = this.listsPending(me, this.config?.keyMask ?? "");
     } catch (err) {
       if (seq !== this.seq) return;
       this.showError(err, true);
       return;
     }
     this.render();
+    await this.loadLists(seq, false);
+  }
+
+  /** 刚进 ready 态时列表还不知道：先占位（不抽动布局），再由 `loadLists` 填上。 */
+  private listsPending(me: JiraMe, mask: string): PanelState {
+    return {
+      kind: "ready",
+      me,
+      mask,
+      siteUrl: this.config?.siteUrl ?? this.form.siteUrl.trim(),
+      issues: { kind: "loading" },
+      projects: { kind: "loading" },
+      refreshing: false,
+      refreshNote: "",
+    };
   }
 
   private showError(err: unknown, retry: boolean): void {
@@ -165,6 +203,7 @@ export class JiraPanel {
     this.saving = true;
     this.state = { kind: "form", note: tr("正在让 Jira 验证这组凭据…"), bad: false };
     this.render();
+    let waitLists = false;
     try {
       const out = await api.jiraSave({
         siteUrl: this.form.siteUrl.trim(),
@@ -172,8 +211,10 @@ export class JiraPanel {
         apiKey: this.form.apiKey.trim(),
       });
       if (!this.root) return;
-      this.config = { configured: true, siteUrl: this.form.siteUrl.trim(), email: this.form.email.trim(), keyMask: "" };
-      this.state = { kind: "ready", me: out.me, mask: keyMask(this.form.apiKey) };
+      const mask = keyMask(this.form.apiKey);
+      this.config = { configured: true, siteUrl: this.form.siteUrl.trim(), email: this.form.email.trim(), keyMask: mask };
+      this.state = this.listsPending(out.me, mask);
+      waitLists = true;
       // 验证过就把它从输入框里抹掉：留在页面上没有用，只会多一处能截到图的地方。
       this.form.apiKey = "";
     } catch (err) {
@@ -183,6 +224,7 @@ export class JiraPanel {
       this.saving = false;
     }
     this.render();
+    if (waitLists) void this.loadLists(this.seq, false);
   }
 
   private async disconnect(): Promise<void> {
@@ -232,7 +274,7 @@ export class JiraPanel {
     const body = el("div", "jira-body");
     if (this.state.kind === "loading") body.append(el("div", "jira-loading", tr("正在问桥…")));
     else if (this.state.kind === "form") body.append(this.formEl(this.state));
-    else if (this.state.kind === "ready") body.append(this.profileEl(this.state));
+    else if (this.state.kind === "ready") body.append(this.readyEl(this.state));
     else body.append(this.errorEl(this.state));
 
     sheet.append(head, body, this.footEl());
@@ -320,7 +362,46 @@ export class JiraPanel {
     return wrap;
   }
 
-  private profileEl(state: { me: JiraMe; mask: string }): HTMLElement {
+  // -------------------------------------------------------------- 我的未完成 / 可访问项目
+
+  /** 并行拉两段列表；没到货时保持占位。「刷新」失败不动旧列表，只多一行错误。 */
+  private async loadLists(seq: number, refresh: boolean): Promise<void> {
+    const [issues, projects] = await Promise.allSettled([api.jiraIssues(refresh), api.jiraProjects(refresh)]);
+    if (seq !== this.seq || !this.root || this.state.kind !== "ready") return;
+    const prev = this.state;
+
+    let nextIssues: ListState<JiraIssue>;
+    let note = "";
+    if (issues.status === "fulfilled") {
+      nextIssues = { kind: "ready", items: issues.value.issues };
+    } else {
+      const code = codeOf(issues.reason);
+      if (refresh && !isAuthCode(code) && prev.issues.kind === "ready") {
+        // 强制刷新失败时不把已经读到的列表清掉，只提示这次没取到新的。
+        nextIssues = prev.issues;
+        note = tr("刷新失败：{p1}", { p1: errText(issues.reason) });
+      } else {
+        nextIssues = { kind: "error", text: errText(issues.reason), code };
+      }
+    }
+
+    const nextProjects: ListState<JiraProject> =
+      projects.status === "fulfilled"
+        ? { kind: "ready", items: projects.value.projects }
+        : { kind: "error", text: errText(projects.reason), code: codeOf(projects.reason) };
+
+    this.state = { ...prev, issues: nextIssues, projects: nextProjects, refreshing: false, refreshNote: note };
+    this.render();
+  }
+
+  private async refreshLists(): Promise<void> {
+    if (this.state.kind !== "ready" || this.state.refreshing) return;
+    this.state = { ...this.state, refreshing: true, refreshNote: "" };
+    this.render();
+    await this.loadLists(this.seq, true);
+  }
+
+  private readyEl(state: ReadyState): HTMLElement {
     const me = state.me;
     const box = el("div", "jira-profile");
     const card = el("div", "jira-card");
@@ -343,6 +424,10 @@ export class JiraPanel {
     rows.append(this.row(tr("API token"), state.mask || "—"));
     box.append(rows);
 
+    box.append(this.issuesEl(state));
+    const projects = this.projectsEl(state);
+    if (projects) box.append(projects);
+
     const actions = el("div", "jira-actions");
     const out = el("button", "btn ghost jira-disconnect", tr("退出连接"));
     out.disabled = this.saving;
@@ -350,6 +435,79 @@ export class JiraPanel {
     actions.append(out);
     box.append(actions);
     return box;
+  }
+
+  private issuesEl(state: ReadyState): HTMLElement {
+    const sec = el("div", "jira-section jira-issues");
+    const head = el("div", "jira-section-head");
+    head.append(el("div", "jira-section-title", tr("我的未完成")));
+    const refresh = el("button", "btn ghost jira-refresh", "↻");
+    refresh.title = tr("刷新");
+    refresh.setAttribute("aria-label", tr("刷新"));
+    refresh.disabled = state.refreshing || state.issues.kind === "loading";
+    refresh.onclick = () => void this.refreshLists();
+    head.append(refresh);
+    sec.append(head);
+
+    if (state.refreshNote) sec.append(el("div", "jira-note bad", state.refreshNote));
+
+    if (state.issues.kind === "loading") {
+      sec.append(el("div", "jira-list-placeholder", tr("正在读取…")));
+    } else if (state.issues.kind === "error") {
+      if (isAuthCode(state.issues.code)) {
+        const expired = el("div", "jira-expired");
+        expired.append(el("div", "jira-note bad", tr("凭据失效，改一下 token 再试")));
+        const fix = el("button", "btn primary", tr("去改 token"));
+        fix.onclick = () => this.showForm(tr("重新填一次 token"), true);
+        expired.append(fix);
+        sec.append(expired);
+      } else {
+        sec.append(el("div", "jira-list-error", state.issues.text));
+      }
+    } else if (state.issues.items.length === 0) {
+      sec.append(el("div", "jira-empty", tr("没有分配给你且未完成的工单")));
+    } else {
+      const list = el("div", "jira-list");
+      for (const issue of state.issues.items) list.append(this.issueEl(state.siteUrl, issue));
+      sec.append(list);
+    }
+    return sec;
+  }
+
+  /** 项目取不到或为空时整段不渲染（标题也不留）。 */
+  private projectsEl(state: ReadyState): HTMLElement | null {
+    if (state.projects.kind !== "ready" || state.projects.items.length === 0) return null;
+    const sec = el("div", "jira-section jira-projects");
+    const head = el("div", "jira-section-head");
+    head.append(el("div", "jira-section-title", tr("可访问项目")));
+    sec.append(head);
+
+    const chips = el("div", "jira-chips");
+    for (const project of state.projects.items) {
+      const chip = el("a", "jira-chip", project.name || project.key);
+      chip.href = browseUrl(state.siteUrl, project.key);
+      chip.target = "_blank";
+      chip.rel = "noopener noreferrer";
+      chip.title = project.name ? `${project.key} · ${project.name}` : project.key;
+      chips.append(chip);
+    }
+    sec.append(chips);
+    return sec;
+  }
+
+  /** 一行不可展开（展开是 #250）：key 开新标签，第二行是类型 / 优先级 / 状态 / 更新时间。 */
+  private issueEl(siteUrl: string, issue: JiraIssue): HTMLElement {
+    const line = el("div", "jira-issue");
+    const top = el("div", "jira-issue-top");
+    const key = el("a", "jira-issue-key", issue.key);
+    key.href = browseUrl(siteUrl, issue.key);
+    key.target = "_blank";
+    key.rel = "noopener noreferrer";
+    top.append(key, el("span", "jira-issue-summary", issue.summary || tr("（没有标题）")));
+    line.append(top);
+    const meta = issueMeta(issue);
+    if (meta) line.append(el("div", "jira-issue-meta", meta));
+    return line;
   }
 
   private row(key: string, value: string): HTMLElement {

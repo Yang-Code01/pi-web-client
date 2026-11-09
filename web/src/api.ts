@@ -1,4 +1,5 @@
 import type { GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
+import type { JiraIssue, JiraProject } from "./jira-shared.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -143,6 +144,9 @@ export const api = {
   jiraClear: () => req<{ ok: true }>("/api/jira/config", { method: "DELETE" }),
   jiraMe: () =>
     req<{ accountId: string; displayName: string; email: string; timezone: string; avatarUrl: string }>("/api/jira/me"),
+  /** #249：桥固定查「分配给我 + 未解决」；refresh 绕过桥的 60 秒缓存（D202）。 */
+  jiraIssues: (refresh = false) => req<{ issues: JiraIssue[] }>(`/api/jira/issues${refresh ? "?refresh=1" : ""}`),
+  jiraProjects: (refresh = false) => req<{ projects: JiraProject[] }>(`/api/jira/projects${refresh ? "?refresh=1" : ""}`),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),

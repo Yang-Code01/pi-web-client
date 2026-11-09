@@ -3445,3 +3445,19 @@ D
 **代价 / 可改：** 明文 0600 在 Windows 上 `chmod` 基本无效（ACL 仍按用户目录继承，同用户进程可读）；换钥匙串是一次独立改动，接口形状不用变。掩码只露后 4 位，用户据此分辨「是不是换过 token」，看不到全串——这是有意的。
 
 **验证：** `node bridge/tests/jira-e2e.mjs`（9 项，假 Jira + 临时 `PI_WEB_STATE`）：未配置 `configured:false` / 错 token 400 + `jira_auth` + 原话 + **文件不存在** / 正确凭据落盘且 GET 响应全文不含 token / `GET me` 401→401、403→403 / 未配置 `jira_not_configured` / DELETE 后回未配置 / 隧道 PUT·DELETE 403 `tunnel_readonly` 而 GET 200 / 白名单外头像 502 `jira_avatar` / `avatarUrlAllowed` 正反例。`node web/tests/jira-unit.mjs`（7 项，纯函数在 `web/src/jira-shared.ts`，不经 `chat.ts`，Node 26 直接跑）：`siteUrlProblem` 的 http·IP·localhost·`.local`·path·query 全拒、正常 Cloud 站点（含结尾 `/`、无 scheme）通过；`keyMask` 只露后 4 位。`npm --prefix web run typecheck`（含 i18n-check：1807 键 × 3 语）与 `npm run build:web` 都过。
+
+## D202 Jira 列表：桥固定查询 + 60 秒内存缓存（工单 #249）
+
+**问题：** 连上 Jira 之后，面板要显示「我的未完成」和「可访问项目」。这两段都是上游实时数据，但面板开关频繁（每次 `open()` 都重新问桥，D201），Jira Cloud 又按账号限流；同时页面不该有能力对 Jira 发起任意查询。
+
+**决定：**
+
+1. **查询由桥写死，页面没有查询面。** `GET /api/jira/issues` 固定 `jql = "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC"`、`maxResults=20`、`fields=summary,issuetype,priority,status,updated`，打新的 `GET /rest/api/3/search/jql`（老的 `/rest/api/3/search` 正被 Atlassian 下线）；`GET /api/jira/projects` 固定 `GET /rest/api/3/project/search?maxResults=20`，只取 `values` 的 `key`/`name`。除了 `refresh=1`，页面传来的其它 query（`jql`、`fields`、`startAt`、`maxResults`…）一律忽略。代价：本单只能看「分配给我 + 未解决」这一种列表，想换查询条件得改桥——这正是 #249 要的边界，任意 JQL 入口是另一个产品决定。
+2. **60 秒内存缓存，按当前配置分键。** issues / projects 各一条，键是 `产物 + siteUrl + email + keyMask(apiKey)`；只缓存整理后的 `JiraIssue[]` / `JiraProject[]`（不缓存上游响应对象），过期即弃。`GET …?refresh=1` 跳过读取、取到后覆盖缓存；只有成功的 2xx 结果会进缓存，401/403/网络错不缓存，下次照旧重试。代价：两个标签页共享同一份缓存（它们本来就在同一台桥后面），换账号后 60 秒内看到旧列表的窗口最多一个 TTL。
+3. **为什么不落盘。** 列表是易变数据，缓存的目的只是省请求、避开限流；进程重启后重取一次的成本远低于维护一份可能过期的文件，也少一处要跟着「清除凭据」清理的磁盘状态。代价：桥一重启就冷启动，第一打开面板必然打两次上游。
+4. **保存 / 清除凭据时清空缓存。** `writeJiraConfig` / `clearJiraConfig` 都调用 `clearListCache()`：换了站点或 token 还读旧缓存，等于把上一个账号能看的列表展示给下一个人。键里已经带了配置，清空是双保险，也顺手回收内存。代价：重连后的第一次打开一定等一个往返（本来也要验证凭据）。
+5. **错误码沿用 `me` 的口径。** 未配置 400 `jira_not_configured`；上游 401 → 401 `jira_auth`；403 → 403 `jira_forbidden`；其它非 2xx / 网络错 502 `jira_upstream` / `jira_network`；响应永远 `{ error, code }`，不回 token。前端据此把 401/403 整块换成「凭据失效 + 去改 token」，其它错误只在列表位置留一行字。
+
+**为什么缓存放在桥而不是页面：** 页面缓存跨不过标签页、也挡不住刷新页面，而限流是账号级的；桥是唯一知道当前凭据的地方，缓存键能跟着配置走，保存/清除凭据时也能一致地失效。代价：桥多一份进程内状态，多实例部署时各自一份（本工具就是单机进程，不做共享缓存）。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（17 项，假 Jira 加 `search/jql` 与 `project/search` + 命中计数器）：固定 JQL/字段（含页面传 `jql`、`fields`、`startAt` 被忽略）、字段映射（priority 为空回 `null`）、空列表、401/403 映射、两次读取只打一次上游、`refresh=1` 再打一次、`projects` 的映射与缓存、重新保存凭据清空缓存、未配置 400。`node web/tests/jira-unit.mjs`（10 项）：`browseUrl` / `formatUpdated` / `issueMeta`。`npm --prefix web run typecheck`（含 i18n-check：1814 键 × 3 语）与 `npm run build:web` 都过。

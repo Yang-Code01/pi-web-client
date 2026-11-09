@@ -1,5 +1,5 @@
 /**
- * Jira 面板（#248）的桥端：一个站点、一组凭据、只读。
+ * Jira 面板（#248、#249）的桥端：一个站点、一组凭据、只读。
  *
  * 三条边界，改之前先看 D201：
  * - 页面永远拿不到 API token：GET 只回掩码，错误文本与日志里也不带它；
@@ -15,7 +15,17 @@ import { ensureDir, readJsonChecked, statePath } from "./paths.ts";
 
 const TIMEOUT_MS = 15000;
 const MYSELF = "/rest/api/3/myself";
+// #249：新的 JQL 端点（老的 `/rest/api/3/search` 正被 Atlassian 下线）与项目列表。
+const SEARCH = "/rest/api/3/search/jql";
+const PROJECTS = "/rest/api/3/project/search";
 const MAX_BODY = 64 * 1024;
+
+/** 页面传不了查询：JQL 与字段都在桥里写死（D202）。 */
+const MY_OPEN_JQL = "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC";
+const ISSUE_FIELDS = "summary,issuetype,priority,status,updated";
+const LIST_MAX = 20;
+/** 列表缓存 60 秒：面板反复开关时别把 Jira 的限流额度打满。只存内存，不落盘（D202）。 */
+const LIST_TTL_MS = 60_000;
 
 export interface JiraConfig {
   siteUrl: string;
@@ -29,6 +39,21 @@ export interface JiraMe {
   email: string;
   timezone: string;
   avatarUrl: string;
+}
+
+export interface JiraIssue {
+  key: string;
+  summary: string;
+  type: string;
+  /** 没有优先级时 Jira 回 null，页面据此省略或显示占位。 */
+  priority: string | null;
+  status: string;
+  updated: string;
+}
+
+export interface JiraProject {
+  key: string;
+  name: string;
 }
 
 export interface JiraCtx {
@@ -161,6 +186,7 @@ export function isJiraConfigured(): boolean {
 }
 
 function writeJiraConfig(config: JiraConfig): void {
+  clearListCache();
   const file = configFile();
   ensureDir(statePath("jira"));
   const tmp = `${file}.tmp`;
@@ -175,8 +201,38 @@ function writeJiraConfig(config: JiraConfig): void {
 }
 
 function clearJiraConfig(): void {
+  clearListCache();
   fs.rmSync(configFile(), { force: true });
   fs.rmSync(`${configFile()}.tmp`, { force: true });
+}
+
+// ---------------------------------------------------------------- 列表缓存
+
+/** 缓存的是整理后的列表，不是上游响应对象：页面要的字段之外的东西不留。 */
+const listCache = new Map<string, { at: number; value: unknown }>();
+
+/** 按当前配置分键：换站点 / 换账号 / 换 token 之后，旧列表不该再端上来。 */
+function cacheKey(kind: string, config: JiraConfig): string {
+  return `${kind}\n${config.siteUrl}\n${config.email}\n${keyMask(config.apiKey)}`;
+}
+
+function cacheGet<T>(kind: string, config: JiraConfig): T | null {
+  const hit = listCache.get(cacheKey(kind, config));
+  if (!hit) return null;
+  if (Date.now() - hit.at > LIST_TTL_MS) {
+    listCache.delete(cacheKey(kind, config));
+    return null;
+  }
+  return hit.value as T;
+}
+
+function cachePut<T>(kind: string, config: JiraConfig, value: T): void {
+  listCache.set(cacheKey(kind, config), { at: Date.now(), value });
+}
+
+/** 保存 / 清除凭据时清空：旧凭据名下的列表不再可信（D202）。 */
+function clearListCache(): void {
+  listCache.clear();
 }
 
 // ---------------------------------------------------------------- 出站请求
@@ -261,9 +317,9 @@ function meOf(raw: any): JiraMe {
   };
 }
 
-/** `GET /myself`：拿不到就抛（码与状态见上）。 */
-async function myself(config: JiraConfig, ctx: JiraCtx): Promise<JiraMe> {
-  const res = await fetchSite(config, ctx, MYSELF);
+/** 发一个 GET 并把非 2xx 翻成统一的错误码（与 `me` 同一口径）；2xx 返回解析后的 JSON。 */
+async function upstreamJson(config: JiraConfig, ctx: JiraCtx, path: string): Promise<any> {
+  const res = await fetchSite(config, ctx, path);
   if (!res.ok) {
     const message = await upstreamMessage(res);
     const tail = message ? `：${message}` : "";
@@ -271,8 +327,83 @@ async function myself(config: JiraConfig, ctx: JiraCtx): Promise<JiraMe> {
     if (res.status === 403) throw new JiraError("jira_forbidden", 403, `这组凭据没有权限（403）${tail}`);
     throw new JiraError("jira_upstream", 502, `Jira 回了 ${res.status}${tail}`);
   }
-  const raw = await res.json().catch(() => null);
-  return meOf(raw);
+  return res.json().catch(() => null);
+}
+
+/** `GET /myself`：拿不到就抛（码与状态见上）。 */
+async function myself(config: JiraConfig, ctx: JiraCtx): Promise<JiraMe> {
+  return meOf(await upstreamJson(config, ctx, MYSELF));
+}
+
+function issueOf(raw: any): JiraIssue {
+  const fields = raw?.fields;
+  const name = (x: any): string => (typeof x?.name === "string" ? x.name : "");
+  return {
+    key: typeof raw?.key === "string" ? raw.key : "",
+    summary: typeof fields?.summary === "string" ? fields.summary : "",
+    type: name(fields?.issuetype),
+    priority: typeof fields?.priority?.name === "string" ? fields.priority.name : null,
+    status: name(fields?.status),
+    updated: typeof fields?.updated === "string" ? fields.updated : "",
+  };
+}
+
+function projectOf(raw: any): JiraProject {
+  return {
+    key: typeof raw?.key === "string" ? raw.key : "",
+    name: typeof raw?.name === "string" ? raw.name : "",
+  };
+}
+
+/** 固定 JQL + 固定字段：页面传的 `jql` / `fields` / `startAt` 一律被忽略。 */
+async function listIssues(config: JiraConfig, ctx: JiraCtx): Promise<JiraIssue[]> {
+  const query = new URLSearchParams({ jql: MY_OPEN_JQL, maxResults: String(LIST_MAX), fields: ISSUE_FIELDS });
+  const raw = await upstreamJson(config, ctx, `${SEARCH}?${query}`);
+  const list = Array.isArray(raw?.issues) ? raw.issues : [];
+  return list
+    .map(issueOf)
+    .filter((issue: JiraIssue) => issue.key !== "")
+    .slice(0, LIST_MAX);
+}
+
+async function listProjects(config: JiraConfig, ctx: JiraCtx): Promise<JiraProject[]> {
+  const query = new URLSearchParams({ maxResults: String(LIST_MAX) });
+  const raw = await upstreamJson(config, ctx, `${PROJECTS}?${query}`);
+  const list = Array.isArray(raw?.values) ? raw.values : [];
+  return list
+    .map(projectOf)
+    .filter((project: JiraProject) => project.key !== "")
+    .slice(0, LIST_MAX);
+}
+
+/** 列表接口的公共前半段：读配置，没配就说 `jira_not_configured`。 */
+function listConfig(res: http.ServerResponse): JiraConfig | null {
+  const config = readJiraConfig();
+  if (!config) {
+    fail(res, 400, "jira_not_configured", "还没连接 Jira");
+    return null;
+  }
+  return config;
+}
+
+async function getIssues(res: http.ServerResponse, ctx: JiraCtx, refresh: boolean): Promise<void> {
+  const config = listConfig(res);
+  if (!config) return;
+  const cached = refresh ? null : cacheGet<JiraIssue[]>("issues", config);
+  if (cached) return json(res, 200, { issues: cached });
+  const issues = await listIssues(config, ctx);
+  cachePut("issues", config, issues);
+  return json(res, 200, { issues });
+}
+
+async function getProjects(res: http.ServerResponse, ctx: JiraCtx, refresh: boolean): Promise<void> {
+  const config = listConfig(res);
+  if (!config) return;
+  const cached = refresh ? null : cacheGet<JiraProject[]>("projects", config);
+  if (cached) return json(res, 200, { projects: cached });
+  const projects = await listProjects(config, ctx);
+  cachePut("projects", config, projects);
+  return json(res, 200, { projects });
 }
 
 // ---------------------------------------------------------------- HTTP 小件
@@ -406,6 +537,17 @@ export async function handleJira(
       }
       if (url.pathname === "/api/jira/me") await getMe(res, ctx);
       else await getAvatar(res, ctx);
+      return true;
+    }
+    if (url.pathname === "/api/jira/issues" || url.pathname === "/api/jira/projects") {
+      if (method !== "GET") {
+        fail(res, 405, "bad_method", "不支持这个请求方法");
+        return true;
+      }
+      // 只认 `refresh`；`jql` / `fields` / `startAt` 这类参数一律不读（D202）。
+      const refresh = url.searchParams.get("refresh") === "1";
+      if (url.pathname === "/api/jira/issues") await getIssues(res, ctx, refresh);
+      else await getProjects(res, ctx, refresh);
       return true;
     }
     fail(res, 404, "not_found", "没有这个接口");
