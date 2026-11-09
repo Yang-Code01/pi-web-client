@@ -441,3 +441,98 @@ test("#276 新组默认在横条里；setRow 落盘、跨重启保留，且不�
   assert.equal(restarted.setRow(a, true), true);
   assert.equal(restarted.snapshot().groups.find((g) => g.id === a)?.inRow, true);
 });
+
+// ---------------------------------------------------------------- #278 按目录建组
+
+test("#278 按目录建组：同一个目录只建一个组（大小写 / 斜杠 / 尾斜杠都算同一个）", async () => {
+  const ws = fresh();
+  const first = await ws.createDir(library.root);
+  assert.equal(first.ok, true);
+  assert.equal(first.created, true);
+  assert.equal(first.group.id, id(library.root));
+  assert.equal(first.group.key, normalizePath(library.root));
+  assert.equal(first.group.manual, false);
+  assert.equal(first.group.inRow, true, "新组默认在横条里");
+  assert.equal(first.group.name, "", "名字留空，页面按目录名显示");
+
+  const slashed = normalizePath(library.root);
+  const variants = [
+    slashed.replace("/library", "/LIBRARY"),
+    slashed.split("/").join("//"),
+    `${slashed}/`,
+  ];
+  for (const variant of variants) {
+    assert.notEqual(variant, library.root, `${variant} 该和原样不同（否则这条没在测归一化）`);
+  }
+  for (const variant of variants) {
+    const again = await ws.createDir(variant);
+    assert.equal(again.ok, true, variant);
+    assert.equal(again.created, false, `${variant} 已经在列表里，不许再建`);
+    assert.equal(again.group.id, first.group.id, variant);
+  }
+  assert.equal(ws.snapshot().groups.length, 1, "一个目录永远只有一组");
+
+  const restarted = fresh({}, process.env.PI_WEB_STATE);
+  const after = await restarted.createDir(library.root);
+  assert.equal(after.created, false, "重启后照样认得");
+  assert.equal(after.group.id, first.group.id);
+});
+
+test("#278 worktree 目录并回主仓那个组，不新建", async () => {
+  const ws = fresh();
+  const main = await ws.createDir(library.root);
+  const wt = await ws.createDir(library.trees[0]);
+  assert.equal(wt.ok, true);
+  assert.equal(wt.created, false);
+  assert.equal(wt.group.id, main.group.id, "worktree 和主仓是同一个工作区");
+  assert.equal(ws.snapshot().groups.length, 1);
+});
+
+test("#278 非 git 目录就是它自己；新组追加到 order 末尾", async () => {
+  const ws = fresh();
+  const existing = ws.groupFor("s1", plain);
+  const res = await ws.createDir(plain2);
+  assert.equal(res.ok, true);
+  assert.equal(res.created, true);
+  assert.equal(res.group.id, id(plain2), "非 git 目录用 cwd 当身份");
+  assert.equal(res.group.key, normalizePath(plain2));
+  assert.deepEqual(ws.snapshot().order, [existing, res.group.id], "建完排在横条最后");
+});
+
+test("#278 已经有组的目录（resolve 出来的）不重复建", async () => {
+  const ws = fresh();
+  await ws.resolve([library.root]);
+  const existing = ws.groupFor("s1", library.root);
+  const before = ws.snapshot();
+  const res = await ws.createDir(library.root);
+  assert.equal(res.ok, true);
+  assert.equal(res.created, false);
+  assert.equal(res.group.id, existing);
+  assert.deepEqual(ws.snapshot().groups, before.groups, "组一个不多一个不少");
+  assert.deepEqual(ws.snapshot().order, before.order, "order 也不动");
+});
+
+test("#278 打不开 / 不是目录：回一句原因，不留下半个组", async () => {
+  const file = path.join(tmp, "not-a-dir-278.txt");
+  fs.writeFileSync(file, "x");
+  const ws = fresh();
+  for (const [bad, label] of [
+    [path.join(tmp, "missing-278"), "不存在的目录"],
+    [file, "文件不是目录"],
+    ["", "没选目录"],
+  ]) {
+    const res = await ws.createDir(bad);
+    assert.equal(res.ok, false, label);
+    assert.ok(res.reason, `${label} 要带原因（桥据此回 notice）`);
+  }
+  assert.deepEqual(ws.snapshot().groups, [], "失败不许留下半个组");
+  assert.deepEqual(ws.snapshot().order, []);
+});
+
+test("#278 连点两次（并发）也只建一个组", async () => {
+  const ws = fresh();
+  const [a, b] = await Promise.all([ws.createDir(plain), ws.createDir(plain)]);
+  assert.equal([a.created, b.created].filter(Boolean).length, 1, "只有一次算新建");
+  assert.equal(a.group.id, b.group.id);
+  assert.equal(ws.snapshot().groups.length, 1);
+});

@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { gitRoot } from "./git.ts";
 import { statePath } from "./paths.ts";
 import { StateFile, type StateFailure } from "./statefile.ts";
@@ -31,7 +32,7 @@ export interface WorkspaceState {
   groups: WsGroup[];
   /** sessionId → groupId：拖过就钉死，优先于 cwd 推导；「放回工程」= 删掉这一条。 */
   overrides: Record<string, string>;
-  /** 归一化 cwd 的小写 → 工程根。缓存，只由 `resolve()` 写。 */
+  /** 归一化 cwd 的小写 → 工程根。缓存，只由 `resolve()` / `createDir()` 写。 */
   keys: Record<string, string>;
   /**
    * #173 一份顺序：全量组 id（含被折叠的），顺序即左栏 / 标签行顺序。存量文件没有这条 →
@@ -45,6 +46,15 @@ export interface WorkspaceState {
 export interface WorkspacesOptions {
   /** Test seam: count or stub the git call. Defaults to `gitRoot` from git.ts. */
   root?: (dir: string) => Promise<string | null>;
+}
+
+/** #278 `createDir()` 的结果：成功时带组，`created:false` = 这个目录原来就在列表里。 */
+export interface WsCreateResult {
+  ok: boolean;
+  group?: WsGroup;
+  created?: boolean;
+  /** ok=false 时给人看的一句话（桥原样回 notice）。 */
+  reason?: string;
 }
 
 /**
@@ -332,6 +342,46 @@ export class Workspaces {
       d.order = readOrder(d.order, d.groups);
     });
     return { ...group };
+  }
+
+  /**
+   * #278：按目录建一个工作区。目录就是组的身份，所以先问 `root`（git 工程根 / worktree 并回主仓），
+   * 归一化后拿 id 与已有组比 —— 同一个目录永远只有一个组，第二次点只回已有的那个（`created:false`）。
+   *
+   * 失败（没选、打不开、不是目录）不落任何东西，只回一句给人看的原因。
+   */
+  async createDir(dir: string): Promise<WsCreateResult> {
+    const picked = normalizePath(dir);
+    if (!picked) return { ok: false, reason: "没有选目录" };
+    let info;
+    try {
+      info = await stat(picked);
+    } catch {
+      return { ok: false, reason: `打不开这个目录：${picked}` };
+    }
+    if (!info.isDirectory()) return { ok: false, reason: `这不是一个目录：${picked}` };
+
+    let root: string | null = null;
+    try {
+      root = await this.root(picked);
+    } catch {
+      root = null;
+    }
+    const key = normalizePath(root ?? picked);
+    const id = groupId(key);
+    const group: WsGroup = { id, name: "", key, manual: false, inRow: true };
+    // 「建没建」由写锁里的查重决定，不是查完再建：两次并发点按也只能建一个。
+    // `update` 会先在缓存上跑一遍、读盘后再重放一遍，所以这里每遍都按「现在有没有」重算 ——
+    // 重放那遍看到的才是盘上的真相。
+    let created = false;
+    this.state.update((d) => {
+      created = !d.groups.some((g) => g.id === id);
+      if (created) d.groups.push({ ...group });
+      // 手指点的那个目录（可能是 worktree / 子目录）也记一笔，下次 groupFor 直接命中真工程根。
+      d.keys[picked.toLowerCase()] = key;
+      d.order = readOrder(d.order, d.groups);
+    });
+    return { ok: true, group: { ...(this.group(id) ?? group) }, created };
   }
 
   /** 拖动落点：写 overrides。`wsId` 为空 = 放回工程（删 override，重新跟 cwd 走）。 */
