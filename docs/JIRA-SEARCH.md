@@ -62,6 +62,8 @@ v1 面板只有一条固定查询「分配给我 + 未解决」（D203）。本�
 
 ```
 [resolution = Unresolved AND]
+[summary ~ "…" AND]
+[text ~ "…" AND]
 [project = "…" AND]
 [statusCategory = "…" AND]
 [status = "…" AND]
@@ -83,6 +85,7 @@ ORDER BY <sort> <order>[, updated DESC]
 
 - `escJql(s)`：`\` → `\\`，`"` → `\"`，`\r` / `\n` / `\t` 等控制字符 → 空格，再 `trim()`。
 - 用户输入永远只出现在引号内的**值**位置；字段名、操作符、排序方向都来自白名单。
+- 只含控制字符的值转义后为空，按未填处理（不会拼出 `field ~ ""`）。
 - 超长直接 400，不截断（截断会让用户以为查的是全串）。
 
 ### 3.4 校验
@@ -92,6 +95,7 @@ ORDER BY <sort> <order>[, updated DESC]
 | `status` 无 `project` | 400 `jira_query` | `status` |
 | `person` 与 `unassigned` 同给 | 400 `jira_query` | `unassigned` |
 | `person` 给了但 `relations` 为空 / 含未知值 | 400 `jira_query` | `relations` |
+| 不按人查时，`relations` 的值不校验、不参与拼装 | — | — |
 | 枚举不合法（`statusCategory` / `sort` / `order`） | 400 `jira_query` | 对应字段 |
 | 超长 / 项目 key 形状不对 / token 过长 | 400 `jira_query` | 对应字段 |
 | 上游对 JQL 回 400 | 400 `jira_query` | —（带可读上游消息） |
