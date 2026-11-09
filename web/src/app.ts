@@ -13216,8 +13216,9 @@ export class App {
    * #126：顺序按 `manage.pin` 定，切会话不重排；当前会话在 ★ 行里时带主题色填充。
    * #127：既然填色已经能认出「我在哪」，当前会话点过 ★ 时最左那颗就是重复的 —— 它只在
    * 「本区没给当前会话点 ★」时出场，兜住「名字在界面上总得看得到」这条。
-   * 没有工作区快照（旧桥 / 桩桥）时退回置顶列表：不知道「本区」时，置顶区至少是用户自己
-   * 挑过的那批。
+   * D210：没有当前会话时行 2 只留 ＋ —— 没有「我在哪」就没有「本区」，不再拿全量置顶顶上去
+   * （那会让左栏只有 1 个会话的工作区里冒出别组的 13 颗）。没有工作区快照（旧桥 / 桩桥）
+   * 时仍退回置顶列表：那种桥根本不知道「本区」是什么，置顶至少是用户自己挑过的那批。
    */
   private renderSessionRow(): void {
     const host = this.els.pinStrip;
@@ -13244,18 +13245,29 @@ export class App {
     this.pillBar.render(shown, this.currentId);
   }
 
-  /** ★ 行从左到右的那一串（#120 / #127）：本区 ★ 按 `manage.pin`；不知道本区时退回置顶列表。 */
+  /**
+   * ★ 行从左到右的那一串（#120 / #127 / D210）：本区 ★ 按 `manage.pin`。
+   *
+   * D210：「本区」只在有当前会话时才有定义 —— 没有它，这里回空而不是回全量置顶。以前那两条
+   * 兜底（没会话 / 反查不到组）会把 14 颗别组置顶铺进一个只有 1 个会话的工作区，用户看到的就是
+   * 「我明明只在这组，第二排却是别人的会话」。宁可空：空态只有 ＋，永远不会指错组。
+   */
   private starredRow(): SessionState[] {
     const pins = this.manage.pin
       .map((id) => this.sessions.find((s) => s.id === id))
       .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
     const cur = this.session;
-    if (!cur || !this.workspaces?.groups?.length) return pins;
+    // 旧桥 / 桩桥不发 workspace 快照：这里「本区」这个概念不存在，退回置顶列表。这条要在「没有当前
+    // 会话」之前判 —— 那种桥的行 2 本来就只是置顶列表，跟开没开会话无关。
+    if (!this.workspaces?.groups?.length) return pins;
+    // 没有当前会话：不知道自己在本区哪儿，一颗都不列。
+    if (!cur) return [];
     const listed = this.sessions.find((x) => x.id === cur.id);
     const group = wsOf(cur, this.workspaces, listed?.ws);
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     const mine = group ? tree.groups.find((g) => g.id === group.id) : undefined;
-    return mine ? starredSessions(mine.sessions, this.manage.pin) : pins;
+    // 反查不到本区（脏快照 / 过滤把组滤没了）：同样不猜，回空。
+    return starredSessions(mine?.sessions, this.manage.pin);
   }
 
   /** #189：当前打开的会话已经在「已归档」里。 */

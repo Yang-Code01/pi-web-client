@@ -57,7 +57,11 @@ const KEYS = Object.fromEntries(SESSIONS.map((s) => [s.cwd.toLowerCase(), s.ws])
 const workspace = () => ({ groups: GROUPS, overrides: OVERRIDES, keys: KEYS });
 /** 页面发上来的每一条（B 的浮层拖拽要断言真的发了 `ws.move`）。 */
 const msgs = [];
-const MANAGE = { pin: [], order: SESSIONS.map((s) => s.id), archived: [] };
+/**
+ * D210：pin 里放一颗 proj-01 的 ★（s-01-2）和两颗别组的 —— 探针后面打开的是 proj-01 的 s-01-1，
+ * 于是能同时证明两件事：行 2 只画本区那一颗，别组的两颗不串进来。
+ */
+const MANAGE = { pin: ["s-01-2", "s-02-1", "s-03-2"], order: SESSIONS.map((s) => s.id), archived: [] };
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "stub", pi: "stub", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "stub" };
 
@@ -242,6 +246,12 @@ for (const layout of ["a", "b", "c", "d"]) {
 
   await setLayout(page, layout);
   const p1 = await prefs(page);
+  // D210：没打开会话 → 行 2 不铺别组 ★；打开 proj-01 的会话后也一颗都不串进来。
+  const rowPins = () => page.locator(".ws-session-row .pin-chip[data-pin-id]").count();
+  if (layout === "a") {
+    const none = await rowPins();
+    ok(none === 0, `a：没打开会话时行 2 不列别组 ★（${none}）`);
+  }
   ok((await htmlLayout(page)) === layout, `${layout}：data-layout 跟上（${await htmlLayout(page)}）`);
   ok(p1.layout === layout, `${layout}：写进 pi.prefs（layout = ${p1.layout}）`);
 
@@ -250,6 +260,12 @@ for (const layout of ["a", "b", "c", "d"]) {
   await sleep(400);
   if (!(await collapsed(page))) await toggleLeft(page);
   ok(await collapsed(page), `${layout}：左栏收起了`);
+  if (layout === "a") {
+    const shown = await page
+      .locator(".ws-session-row .pin-chip[data-pin-id]")
+      .evaluateAll((els) => els.map((e) => e.dataset.pinId ?? ""));
+    ok(shown.join() === "s-01-2", `a：打开 proj-01 的会话后，行 2 只留本区那颗 ★（${shown.join(" / ") || "空"}）`);
+  }
   const s1 = await shells(page);
   const chips = { a: s1.rowChip, b: s1.topChip, c: s1.topChip, d: s1.topChip };
   ok(chips[layout], `${layout}：收起态看得到当前会话那颗（${layout === "a" ? "行 2" : "顶栏"}）`);
