@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>原型目录 · 按钮可见性</title>
+    <link rel="stylesheet" href="./app.css" />
+    <link rel="stylesheet" href="./proto.css" />
+  </head>
+  <body>
+    <main class="cat">
+      <h1>按钮可见性 · 三个样张</h1>
+      <p class="lede">
+        要回答的问题只有一个：<b>「外观与语言」里那 11 颗的开关，长什么样最好用？</b>
+        三张都是真的 HTML，点开就是真外壳 + 真 sheet，底下那条胶囊是原型专用的换版条（← → 也能换）。
+      </p>
+      <ul class="fixed">
+        <li>11 颗固定</li>
+        <li>Aa 不能关</li>
+        <li>恢复默认不碰它们</li>
+        <li>每组一个「全部显示」</li>
+        <li>关掉＝真拿掉，空间还回去</li>
+        <li>首选存桥端（换设备同一份）</li>
+      </ul>
+
+      <div class="cat-grid">
+        <a class="cat-card" href="./sheet.html?variant=A">
+          <span class="k">A</span>
+          <h2>双列清单</h2>
+          <div class="thumb">
+            <div class="tb-row"><i class="tb-box on"></i><i class="tb-line"></i><i class="tb-box on"></i><i class="tb-line s"></i></div>
+            <div class="tb-row"><i class="tb-box on"></i><i class="tb-line"></i><i class="tb-box on"></i><i class="tb-line s"></i></div>
+            <div class="tb-row"><i class="tb-box"></i><i class="tb-line"></i><i class="tb-box on"></i><i class="tb-line s"></i></div>
+            <div class="tb-row"><i class="tb-box on"></i><i class="tb-line"></i><i class="tb-box on"></i><i class="tb-line s"></i></div>
+            <div class="tb-row"><i class="tb-box on"></i><i class="tb-line s"></i></div>
+          </div>
+          <p>最省地方：一组两列、34px 一行，11 颗只占六行。眼睛顺着勾走，跟设置里其它清单一个语言。</p>
+        </a>
+
+        <a class="cat-card" href="./sheet.html?variant=B">
+          <span class="k">B</span>
+          <h2>实时预览</h2>
+          <div class="thumb">
+            <div class="tb-row"><i class="tb-tile"></i><i class="tb-tile"></i><i class="tb-tile"></i><i class="tb-tile"></i></div>
+            <div class="tb-row" style="height: 14px"><i class="tb-line"></i></div>
+            <div class="tb-row"><i class="tb-tile"></i><i class="tb-tile"></i><i class="tb-tile"></i></div>
+            <div class="tb-row"><i class="tb-tile"></i><i class="tb-tile"></i><i class="tb-tile"></i></div>
+          </div>
+          <p>先画一遍你的顶栏和输入框：点哪颗，那颗就从画里消失。还能把预览切到手机宽，看见「自动收起」到底是怎么收的。</p>
+        </a>
+
+        <a class="cat-card" href="./sheet.html?variant=C">
+          <span class="k">C</span>
+          <h2>三态分段</h2>
+          <div class="thumb">
+            <div class="tb-row"><i class="tb-line"></i><span class="tb-seg"><i class="on"></i><i></i><i></i></span></div>
+            <div class="tb-row"><i class="tb-line"></i><span class="tb-seg"><i></i><i class="on"></i><i></i></span></div>
+            <div class="tb-row"><i class="tb-line s"></i><span class="tb-seg"><i></i><i></i><i class="on"></i></span></div>
+            <div class="tb-row"><i class="tb-line"></i><span class="tb-seg"><i></i><i class="on"></i><i></i></span></div>
+          </div>
+          <p>把「显示 / 自动 / 隐藏」摊在明面上：自动＝照默认走（手机上文件夹自己会收）。多一列按钮，换掉一整类「我明明勾了它怎么没了」的困惑。</p>
+        </a>
+      </div>
+
+      <p class="cat-note">
+        三张都是 <code>.scratch/chrome-visibility/prototype/</code> 里的一次性代码，看完就扔；选中的那版会按 spec 重写进
+        <code>web/src/app.ts</code>。换版也可以直接改地址：<code>sheet.html?variant=A|B|C</code>。
+      </p>
+    </main>
+  </body>
+</html>
