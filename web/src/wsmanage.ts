@@ -20,6 +20,16 @@ export interface WsGroupLike {
   name: string;
   key: string;
   manual: boolean;
+  /** #276：新桥的横条成员标记；旧桥没有这个字段。 */
+  inRow?: boolean;
+}
+
+/**
+ * #276：当前快照是不是认识横条成员。
+ * 旧桥的组没有 `inRow`，此时所有组都当成员、不画 ⊙、左栏菜单也不放「在横条中」（而不是置灰）。
+ */
+export function hasRowMembership(groups: readonly Pick<WsGroupLike, "inRow">[]): boolean {
+  return groups.length > 0 && groups.every((g) => typeof g.inRow === "boolean");
 }
 
 /** 名字上限，与桥的 `rename()` / `create()` 里的 `slice(0, 80)` 对齐。 */

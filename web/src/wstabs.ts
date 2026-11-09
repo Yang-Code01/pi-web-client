@@ -27,22 +27,62 @@ export interface TabModel {
   more: string[];
 }
 
+export interface TabRowModel extends TabModel {
+  /** 成员里放不进横条的组（含当前组）：仍按 order 的相对顺序。 */
+  more: string[];
+  /** 不在横条里、且没有临时占位的组（inRow=false），按 order 的相对顺序。 */
+  offRow: string[];
+  /** 当前组本身不在横条里：它仍占最后一格，但画虚线、名字划掉。 */
+  currentOffRow: boolean;
+}
+
 /**
- * 标签行画哪几颗（#173）：按 `order` 取前 `max` 颗；当前组不在其中时**占最后一格**，
- * 原来第 `max` 颗退进 `more`，所以横条永远不超过名额。
+ * #276 横条成员模型：先按 `inRow` 过滤出成员，再在成员里取前 `max` 颗；当前组不在可见段里时
+ * **占最后一格**（原第 `max` 颗退进 `more`），所以横条永远不超过名额。
+ *
+ * `members` 为 `null` / `undefined` 表示旧桥不认识 `inRow`：所有组都当成员，`offRow` 为空。
+ * `offRow` 是 ＋N 右段「不在横条里」：被移出的当前组仍占最后一格，所以不在这一份里，
+ * 由 `currentOffRow` 单独标出。
  */
-export function tabModel(o: { order: readonly string[]; max: number; current?: string }): TabModel {
+export function rowModel(o: {
+  order: readonly string[];
+  max: number;
+  current?: string;
+  members?: readonly string[] | null;
+}): TabRowModel {
   const max = Number.isFinite(o.max) ? Math.max(0, Math.trunc(o.max)) : 0;
   // 坏快照里的重复 id 只认第一次出现的那颗。
   const order: string[] = [];
   for (const id of o.order) if (!order.includes(id)) order.push(id);
 
-  const visible = order.slice(0, max);
+  const memberSet = o.members == null ? null : new Set(o.members);
+  const rowOrder = memberSet ? order.filter((id) => memberSet.has(id)) : order;
+  const visible = rowOrder.slice(0, max);
   const current = o.current && order.includes(o.current) ? o.current : null;
-  if (current && visible.length && !visible.includes(current)) visible[visible.length - 1] = current;
+  // 当前组是成员但排在名额之外，或干脆被移出了横条：两种情况都占最后一格。
+  if (current && max > 0 && !visible.includes(current)) {
+    visible.splice(Math.max(0, max - 1), 1, current);
+  }
 
   const shown = new Set(visible);
-  const more = order.filter((id) => !shown.has(id));
+  const more = rowOrder.filter((id) => !shown.has(id));
+  // 当前组被移出后仍要占最后一格：它算 visible，不再进「不在横条里」那一段（否则 ＋N 会重复数）。
+  const offRow = memberSet ? order.filter((id) => !memberSet.has(id) && !shown.has(id)) : [];
+  return {
+    visible,
+    more,
+    offRow,
+    currentOffRow: current !== null && memberSet !== null && !memberSet.has(current),
+  };
+}
+
+/**
+ * 标签行画哪几颗（#173）：按 `order` 取前 `max` 颗；当前组不在其中时**占最后一格**，
+ * 原来第 `max` 颗退进 `more`，所以横条永远不超过名额。
+ * #276 起这只是全员都在横条里的旧视图；带成员过滤请用 `rowModel()`。
+ */
+export function tabModel(o: { order: readonly string[]; max: number; current?: string }): TabModel {
+  const { visible, more } = rowModel({ ...o, members: null });
   return { visible, more };
 }
 
@@ -51,9 +91,16 @@ export function tabModel(o: { order: readonly string[]; max: number; current?: s
  * 它就在横条上，返回 null；名额坐满时它直接进 `more`，返回 `more` 的条数（提示里的 N）。
  * 快照里根本没这颗（旧广播 / 已删）也当「没什么好说」，不给一句对不上的提示。
  */
-export function newTabFold(order: readonly string[], max: number, id: string): number | null {
-  const model = tabModel({ order, max });
-  return model.more.includes(id) ? model.more.length : null;
+export function newTabFold(
+  order: readonly string[],
+  max: number,
+  id: string,
+  members?: readonly string[] | null,
+): number | null {
+  const model = rowModel({ order, max, members });
+  // #276：＋N 现在数的是「装不下 + 不在横条里」两段的总数。
+  const folded = [...model.more, ...model.offRow];
+  return folded.includes(id) ? folded.length : null;
 }
 
 /**
@@ -104,14 +151,27 @@ export function tabHitTest(x: number, rects: TabRect[]): TabHit | null {
  * 一颗（`tabHitTest()` 量的是画出来的标签，天然夹在 `[0, max-1]`），插位算完后把「重排过的可见段 +
  * 原封不动的折叠段」整份交回去。所以拖到最右端 = 排在可见段最后；替位组也能拖，拖完它就从「临时占
  * 最后一格」变成顺序里的一员，被它顶下去的那颗回 ＋N，横条不涨颗数（#172 R18）。拖拽只重排、不增删
- * （#118 R7）。
+ * （#118 R7）。#276 带了「不在横条里」的组时，再多交一份 `order`：成员的重排按原位置写回去，
+ * 非成员的顺序一格都不动。
  */
-export function tabReorder(model: TabModel, id: string, hit: TabHit | null): string[] | null {
+export function tabReorder(
+  model: TabModel,
+  id: string,
+  hit: TabHit | null,
+  order?: readonly string[],
+): string[] | null {
   if (!hit) return null;
   const at = model.visible.indexOf(id);
   const target = model.visible.indexOf(hit.id);
   if (at < 0 || target < 0 || target === at) return null;
   const next = moveTo(model.visible, id, (at < target ? target - 1 : target) + (hit.side === "after" ? 1 : 0));
   if (next.every((x, i) => x === model.visible[i])) return null;
+  const offRow = "offRow" in model ? (model as TabRowModel).offRow : [];
+  if (order && offRow.length) {
+    // 只把可见段的新次序替换回原位置，不在横条里的组留在原格。
+    const visible = new Set(model.visible);
+    let cursor = 0;
+    return order.map((x) => (visible.has(x) ? next[cursor++] : x));
+  }
   return [...next, ...model.more];
 }

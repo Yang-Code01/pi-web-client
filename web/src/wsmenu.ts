@@ -26,6 +26,8 @@ export interface WsMenuOpts {
   frontBlocker: string | null;
   /** `null` = 能删；否则是拒绝原因（来自 `dropBlocker()`）。 */
   dropBlocker: string | null;
+  /** #276：新桥才有；旧桥整个字段不传，菜单里连这一行都不出现。 */
+  row?: { checked: boolean; onToggle(): void };
   onRename(): void;
   onFront(): void;
   onDrop(): void;
@@ -64,6 +66,16 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
   const rename = item("rename", "✎", tr("重命名"), () => opts.onRename());
   rename.title = tr("清空名字就恢复成目录名");
 
+  // #276：旧桥没有成员字段 → 这一行整个不画（不是置灰）；新桥用 aria-checked 表示在不在横条里。
+  let row: HTMLButtonElement | null = null;
+  if (opts.row) {
+    row = item("row", opts.row.checked ? "✓" : "○", tr("在横条中"), () => opts.row?.onToggle());
+    row.setAttribute("role", "menuitemcheckbox");
+    row.setAttribute("aria-checked", String(opts.row.checked));
+    row.classList.toggle("on", opts.row.checked);
+    row.title = opts.row.checked ? tr("点一下移出横条") : tr("点一下放回横条");
+  }
+
   // #177：常驻横条的入口 —— 点一下把这一组排到 `order[0]`，折叠组也走它（＋N 只是临时顶位）。
   const front = item("front", "⇤", tr("移到最前"), () => opts.onFront());
   if (opts.frontBlocker) {
@@ -85,7 +97,7 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
     drop.title = tr("只删这个空组，组里的东西一概不动");
   }
 
-  node.append(rename, front, drop);
+  node.append(rename, ...(row ? [row] : []), front, drop);
   // 每个做不了的选择都盖一行原因，顺序跟着菜单项（移到最前在前、删除在后）。
   if (opts.frontBlocker) {
     const why = el("div", "pm-why", opts.frontBlocker);

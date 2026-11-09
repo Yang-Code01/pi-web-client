@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanGroupName, dropBlocker, renameIntent } from "../src/wsmanage.ts";
+import { cleanGroupName, dropBlocker, hasRowMembership, renameIntent } from "../src/wsmanage.ts";
 
 const LIB = { id: "f:/pi-web-client", name: "", key: "F:/pi-web-client", manual: false };
 const MANUAL = { id: "manual:abc", name: "客户 A", key: "", manual: true };
@@ -72,4 +72,20 @@ test("组没了也删不掉（快照过期时的兜底）", () => {
 test("派生组即使空了也不给删 —— 拒绝先于「空不空」判断", () => {
   assert.ok(dropBlocker(LIB, 0));
   assert.equal(dropBlocker({ ...LIB, manual: true }, 0), null);
+});
+
+// ---------------------------------------------------------------- #276 桥是否支持横条成员
+
+
+test("#276 每组都带布尔 inRow 才算支持横条成员（新桥）", () => {
+  assert.equal(hasRowMembership([{ ...LIB, inRow: true }, { ...MANUAL, inRow: false }]), true);
+});
+
+test("#276 旧桥的快照没有 inRow 字段：整份按「都在横条里」处理，不画成员入口", () => {
+  assert.equal(hasRowMembership([LIB, MANUAL]), false);
+  assert.equal(hasRowMembership([{ ...LIB, inRow: true }, MANUAL]), false, "缺一颗也不冒充新桥");
+});
+
+test("#276 空快照没有可判断的组：不当作支持", () => {
+  assert.equal(hasRowMembership([]), false);
 });

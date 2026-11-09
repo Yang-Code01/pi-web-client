@@ -373,3 +373,36 @@ test("#173 临时组被回收时从 order 里消失，真工程根成为新组�
   const real = ws.groupFor("s-tree", tree);
   assert.deepEqual(ws.snapshot().order, [real], "真工程根成为新组，追加进 order");
 });
+
+// ---------------------------------------------------------------- #276 横条成员
+
+test("#276 旧状态文件没有 inRow：读成在横条里（true），快照一定带上这个字段", () => {
+  const dir = path.join(tmp, "state-276-legacy");
+  legacy(dir, { order: [ALPHA, BETA, GAMMA] });
+  const snap = fresh({}, dir).snapshot();
+  assert.deepEqual(snap.groups.map((g) => g.inRow), [true, true, true]);
+});
+
+test("#276 新组默认在横条里；setRow 落盘、跨重启保留，且不改 order / max", () => {
+  const dir = path.join(tmp, "state-276-row");
+  const ws = fresh({}, dir);
+  const a = ws.groupFor("s1", plain);
+  const manual = ws.create("客户 A").id;
+  assert.equal(ws.snapshot().groups.find((g) => g.id === a)?.inRow, true);
+  assert.equal(ws.snapshot().groups.find((g) => g.id === manual)?.inRow, true);
+
+  ws.setTabs({ order: [manual, a], max: 2 });
+  const order = [...ws.snapshot().order];
+  assert.equal(ws.setRow(a, false), true, "改成不在横条里算有改动");
+  const snap = ws.snapshot();
+  assert.equal(snap.groups.find((g) => g.id === a)?.inRow, false);
+  assert.deepEqual(snap.order, order, "成员只是过滤条件，不动组序");
+  assert.equal(snap.max, 2, "成员不动名额");
+
+  const restarted = fresh({}, dir);
+  assert.equal(restarted.snapshot().groups.find((g) => g.id === a)?.inRow, false, "重启后仍记得");
+  assert.equal(restarted.setRow(a, false), false, "已经是这个值：不算改动");
+  assert.equal(restarted.setRow("nope", true), false, "找不到的组：不算改动");
+  assert.equal(restarted.setRow(a, true), true);
+  assert.equal(restarted.snapshot().groups.find((g) => g.id === a)?.inRow, true);
+});

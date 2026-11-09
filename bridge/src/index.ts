@@ -2767,6 +2767,14 @@ async function main(): Promise<void> {
               broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
               return;
             }
+            if (action === "ws.row") {
+              // #276：id 不存在或 inRow 不是布尔就静默忽略（旧页面 / 坏消息不该换来一条 warn）。
+              if (typeof msg.id !== "string" || typeof msg.inRow !== "boolean") return;
+              if (!sessions.workspaces.group(msg.id)) return;
+              sessions.workspaces.setRow(msg.id, msg.inRow);
+              broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+              return;
+            }
             if (action === "ws.drop") {
               const id = String(msg.id ?? "");
               const result = sessions.workspaces.drop(id);

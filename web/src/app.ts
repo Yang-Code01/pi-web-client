@@ -30,12 +30,12 @@ import { ScratchChat } from "./scratch.ts";
 import { skillOf } from "./skill.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
-import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
+import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabReorder, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { stickMenu } from "./menuplace.ts";
 import { newerTunnel } from "./tunnel-snapshot.ts";
-import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
+import { WS_NAME_MAX, dropBlocker, hasRowMembership, renameIntent } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
@@ -5075,11 +5075,12 @@ export class App {
     this.renderSessions();
   }
 
-  /** 组头的 ⋯：改名 / 移到最前 / 删除。做不了的置灰并在菜单里写明原因，不把这个选择藏起来。 */
+  /** 组头的 ⋯：改名 / 在横条中 / 移到最前 / 删除。做不了的置灰并在菜单里写明原因，不把这个选择藏起来。 */
   private openWsMore(group: TreeGroup<SessionState>, anchor: HTMLElement): void {
     this.wsMenu?.close();
     const info = this.workspaces.groups.find((g) => g.id === group.id);
     const order = this.wsGroupOrder();
+    const rowAware = hasRowMembership(this.workspaces.groups);
     this.wsMenu = openWsMenu(anchor, {
       name: group.name,
       sub: info && !info.manual ? info.key : tr("手建的工作区"),
@@ -5091,10 +5092,35 @@ export class App {
           ? tr("它已经是第一个了")
           : null,
       dropBlocker: dropBlocker(info, group.sessions.length),
+      // #276：旧桥没有成员字段 → 整行不出现；新桥点一下等于标签上的 ⊙。
+      row:
+        rowAware && info
+          ? { checked: info.inRow !== false, onToggle: () => this.setWsRow(group.id, info.inRow === false) }
+          : undefined,
       onRename: () => this.startWsRename(group.id),
       onFront: () => this.moveWsToFront(group.id),
       onDrop: () => this.dropWs(group.id),
     });
+  }
+
+  /** #276：横条成员写回桥；页面不在本地猜，等广播回来再重画。 */
+  private setWsRow(id: string, inRow: boolean): void {
+    this.act(() => this.socket.send({ type: "manage", action: "ws.row", id, inRow }));
+  }
+
+  /** #276：⊙ 移出横条；当前组仍临时占最后一格，所以提示里把这件事说清。 */
+  private removeWsRow(group: TreeGroup<SessionState>): void {
+    this.setWsRow(group.id, false);
+    const current = group.id === this.currentWsId();
+    this.flashToast(
+      current
+        ? tr("已把 {p1} 移出横条；还是当前组，只能占最后一格", { p1: group.name })
+        : tr("已把 {p1} 移出横条 · 它还在左栏里", { p1: group.name }),
+      false,
+      6000,
+      "",
+      () => this.setWsRow(group.id, true),
+    );
   }
 
   /** 桥下发的组序；旧桥没有这个字段（空数组也算新桥）。 */
@@ -7139,16 +7165,17 @@ export class App {
   }
 
   /** 一条几秒后自己消失的小提示（入账可撤销 / #175 新建的组收进了 ＋N）。同一时刻只留一条。 */
-  private flashToast(text: string, bad: boolean, ms: number, token = ""): void {
+  private flashToast(text: string, bad: boolean, ms: number, token = "", onUndo?: () => void): void {
     this.failToast?.remove();
     window.clearTimeout(this.failToastTimer);
     const box = el("div", `fail-toast${bad ? " bad" : ""}`);
     box.append(el("span", "", text));
-    if (token) {
+    if (token || onUndo) {
       const undo = el("button", "fail-toast-undo", tr("撤销"));
       undo.onclick = () => {
         box.remove();
-        this.socket.send({ type: "failures.undo", token });
+        if (onUndo) onUndo();
+        else this.socket.send({ type: "failures.undo", token });
       };
       box.append(undo);
     }
@@ -12859,26 +12886,34 @@ export class App {
     // 旧桥没下发 order 时退回树的组序（此时树自己也是按名字排的）。
     const bridgeOrder = this.wsOrder();
     const order = (bridgeOrder?.length ? bridgeOrder : tree.groups.map((group) => group.id)).filter((id) => byId.has(id));
-    const model = tabModel({ order, max: this.workspaces.max ?? TABS_DEFAULT, current: cur ?? undefined });
+    // #276：旧桥的组没有 inRow → 全员都在横条里，也不画 ⊙ / 左侧菜单项。
+    const rowAware = hasRowMembership(this.workspaces.groups);
+    const members = rowAware
+      ? this.workspaces.groups.filter((group) => group.inRow !== false).map((group) => group.id)
+      : null;
+    const model = rowModel({ order, max: this.workspaces.max ?? TABS_DEFAULT, current: cur ?? undefined, members });
     // #175：刚在横条 ＋ 上建的组：`order` 末尾、名额已满时它直接进 ＋N —— 说一声，
     // 否则横条看起来没变，像是没建成（新组仍按 #173 的规则留在 order 末尾）。
     const born = this.wsNewNoteId;
     if (born) {
       this.wsNewNoteId = null;
-      const folded = newTabFold(order, this.workspaces.max ?? TABS_DEFAULT, born);
+      const folded = newTabFold(order, this.workspaces.max ?? TABS_DEFAULT, born, members);
       if (folded != null) this.flashToast(tr("已新建，收在 ＋{p1} 里", { p1: folded }), false, 4000);
     }
     for (const id of model.visible) {
       const group = byId.get(id);
       if (!group) continue;
-      const tab = el("button", `ws-tab${group.id === cur ? " on" : ""}`);
+      const offRow = model.currentOffRow && group.id === cur;
+      const slot = el("div", `ws-tab-slot${rowAware ? " row" : ""}`);
+      const tab = el("button", `ws-tab${group.id === cur ? " on" : ""}${offRow ? " off-row" : ""}`);
       tab.dataset.ws = group.id;
-      tab.title = tr("切到这个工作区");
+      tab.title = offRow ? tr("当前组被移出横条，临时占最后一格") : tr("切到这个工作区");
       tab.setAttribute("aria-label", tr("{p1}，{p2} 个会话", { p1: group.name, p2: group.sessions.length }));
       if (group.id === cur) tab.setAttribute("aria-current", "true");
       const dot = el("span", "ws-tab-dot");
       dot.style.background = group.color;
       tab.append(dot, el("span", "ws-tab-name", group.name));
+      if (offRow) tab.append(el("span", "ws-tab-stray", "⊘"));
       if (group.pending) {
         const todo = el("span", "ws-tab-todo");
         todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
@@ -12887,7 +12922,7 @@ export class App {
       // #174：画出来的每一颗都能拖；拖完不误当点击。
       // #178 R34：旧桥没有 `order`，顺序只是页面按名字兜底，拖了也无处落库 —— 不绑拖动。
       // 过滤态只画命中组：此时拖出来的 order 会缺项、被桥按创建序补到末尾 —— 搜索时不绑拖。
-      if (bridgeOrder?.length && !this.filter) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id, model);
+      if (bridgeOrder?.length && !this.filter) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id, model, order);
       tab.onclick = () => {
         if (this.tabDragMoved) {
           this.tabDragMoved = false;
@@ -12895,17 +12930,35 @@ export class App {
         }
         this.gotoGroup(group);
       };
-      wsTabs.append(tab);
+      slot.append(tab);
+      if (rowAware) {
+        const label = offRow ? tr("把 {p1} 放回横条", { p1: group.name }) : tr("把 {p1} 移出横条", { p1: group.name });
+        const toggle = el("button", "ws-tab-row-toggle", "⊙") as HTMLButtonElement;
+        toggle.type = "button";
+        toggle.title = label;
+        toggle.setAttribute("aria-label", label);
+        toggle.onclick = (ev) => {
+          ev.stopPropagation();
+          // 已经不在横条里的当前组：这一下是放回去；其他标签都是移出。
+          if (offRow) this.setWsRow(group.id, true);
+          else this.removeWsRow(group);
+        };
+        slot.append(toggle);
+      }
+      wsTabs.append(slot);
     }
     // #121：超出的组收进这颗。它在槽外面（见 createShell），槽横滚时位置不动。
-    if (model.more.length) {
-      const why = tr("还有 {p1} 个工作区", { p1: model.more.length });
-      const folded = model.more.map((id) => byId.get(id)).filter((group): group is TreeGroup<SessionState> => Boolean(group));
+    // #276：rowAware 时 Ｎ = 装不下 + 不在横条里（两段都从这颗进）。
+    const outside = rowAware ? [...model.more, ...model.offRow] : model.more;
+    if (outside.length) {
+      const why = rowAware
+        ? tr("装不下 {p1} 个 · 不在横条里 {p2} 个", { p1: model.more.length, p2: model.offRow.length })
+        : tr("还有 {p1} 个工作区", { p1: outside.length });
       wsTabsMore.hidden = false;
-      wsTabsMore.textContent = tr("＋{p1}", { p1: folded.length });
+      wsTabsMore.textContent = tr("＋{p1}", { p1: outside.length });
       wsTabsMore.title = why;
       wsTabsMore.setAttribute("aria-label", why);
-      wsTabsMore.onclick = () => this.toggleTabsMore(folded);
+      wsTabsMore.onclick = () => this.toggleTabsMore(model, byId, rowAware);
     } else {
       wsTabsMore.onclick = null;
     }
@@ -12923,7 +12976,7 @@ export class App {
    * 改本地顺序。拖回原位 / 落点没变 → `tabReorder()` 返回 null，一个字都不发。`model` 是这一帧画
    * 出来的可见段 / 折叠段：重排只在可见段里算，折叠组既拖不动也不会被顺手拽进前几名。
    */
-  private startTabDrag(ev: PointerEvent, id: string, model: TabModel): void {
+  private startTabDrag(ev: PointerEvent, id: string, model: TabModel, order: readonly string[]): void {
     if (ev.button !== 0 || ev.pointerType !== "mouse") return;
     const tabs = this.els.wsTabs;
     const tab = ev.currentTarget as HTMLElement | null;
@@ -12989,7 +13042,8 @@ export class App {
       window.setTimeout(() => {
         this.tabDragMoved = false;
       }, 0);
-      const next = tabReorder(model, id, hit);
+      // #276：把原 order 一并交给它，不在横条里的组才不会被拖丢（只重排可见段）。
+      const next = tabReorder(model, id, hit, order);
       if (next) {
         // 只交顺序：名额有自己的入口，拖一下不该顺带把上一帧的 max 回写。
         this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", order: next }));
@@ -13012,8 +13066,15 @@ export class App {
     box.classList.toggle("fade", box.scrollWidth > box.clientWidth + 1);
   }
 
-  /** #121：`＋N` 点开 = 只列被折叠的组；点一行切过去并把下拉关掉。 */
-  private toggleTabsMore(groups: TreeGroup<SessionState>[]): void {
+  /**
+   * #121：`＋N` 点开 = 列出横条外的组；点一行切过去并把下拉关掉。
+   * #276：新桥分两段 —— 左「装不下」只切组，右「不在横条里」放回横条并切过去；旧桥仍是单列。
+   */
+  private toggleTabsMore(
+    model: TabRowModel,
+    byId: Map<string, TreeGroup<SessionState>>,
+    rowAware: boolean,
+  ): void {
     if (this.tabsMore) {
       this.closeTabsMore();
       return;
@@ -13021,25 +13082,74 @@ export class App {
     const anchor = this.els.wsTabsMore;
     if (!anchor) return;
     // 外壳复用置顶胶囊那张卡（`.pin-menu` / `.pm-item`）：同一个下拉，只是列的是工作区。
-    const pop = el("div", "pin-menu ws-tabs-menu");
+    const pop = el("div", `pin-menu ws-tabs-menu${rowAware ? " ws-tabs-board" : ""}`);
     pop.setAttribute("role", "menu");
-    pop.setAttribute("aria-label", tr("被折叠的工作区"));
-    pop.append(el("div", "pm-head", tr("还有 {p1} 个工作区", { p1: groups.length })));
-    for (const group of groups) {
+    pop.setAttribute("aria-label", rowAware ? tr("横条外的工作区") : tr("被折叠的工作区"));
+
+    const rowFor = (group: TreeGroup<SessionState>, icon: string, pick: () => void): HTMLButtonElement => {
       const row = el("button", "pm-item") as HTMLButtonElement;
       row.type = "button";
       row.setAttribute("role", "menuitem");
       row.dataset.ws = group.id;
-      const dot = el("span", "pm-ico", "●");
-      dot.style.color = group.color;
-      row.append(dot, el("span", "pm-text", group.name));
+      const mark = el("span", "pm-ico", icon);
+      if (icon === "●") mark.style.color = group.color;
+      row.append(mark, el("span", "pm-text", group.name));
       row.title = group.name;
       row.onclick = (ev) => {
         ev.stopPropagation();
-        this.closeTabsMore();
-        this.gotoGroup(group);
+        pick();
       };
-      pop.append(row);
+      return row;
+    };
+
+    if (rowAware) {
+      const board = el("div", "ws-tray");
+      const col = (head: string, sub: string): HTMLElement => {
+        const box = el("div", "ws-tray-col");
+        const title = el("div", "ws-tray-head");
+        title.append(el("span", "ws-tray-title", head), el("span", "ws-tray-why", sub));
+        box.append(title);
+        return box;
+      };
+      const overflow = col(tr("装不下 {p1}", { p1: model.more.length }), tr("点了就切过去，横条不动"));
+      for (const id of model.more) {
+        const group = byId.get(id);
+        if (!group) continue;
+        overflow.append(
+          rowFor(group, "●", () => {
+            this.closeTabsMore();
+            this.gotoGroup(group);
+          }),
+        );
+      }
+      if (!overflow.querySelector(".pm-item")) overflow.append(el("div", "pm-why", tr("都装得下。")));
+
+      const offRow = col(tr("不在横条里 {p1}", { p1: model.offRow.length }), tr("点了就放回横条并切过去"));
+      for (const id of model.offRow) {
+        const group = byId.get(id);
+        if (!group) continue;
+        offRow.append(
+          rowFor(group, tr("＋"), () => {
+            this.closeTabsMore();
+            this.setWsRow(group.id, true);
+            this.gotoGroup(group);
+          }),
+        );
+      }
+      if (!offRow.querySelector(".pm-item")) offRow.append(el("div", "pm-why", tr("全都在横条里。")));
+      board.append(overflow, offRow);
+      pop.append(board);
+    } else {
+      const groups = model.more.map((id) => byId.get(id)).filter((group): group is TreeGroup<SessionState> => Boolean(group));
+      pop.append(el("div", "pm-head", tr("还有 {p1} 个工作区", { p1: groups.length })));
+      for (const group of groups) {
+        pop.append(
+          rowFor(group, "●", () => {
+            this.closeTabsMore();
+            this.gotoGroup(group);
+          }),
+        );
+      }
     }
     // 贴着那颗；下方放不下就翻上去，装不下的行自己滚（这条常常贴着窗口底）。
     const place = (): void => {
