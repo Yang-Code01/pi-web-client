@@ -626,6 +626,8 @@ function renderThreadList(): void {
 interface Group {
   title: string;
   items: Contact[];
+  /** 空着也留一组：好友那两组即使没人也要画出来（0 人也算信息）。 */
+  keep?: boolean;
 }
 
 function contactGroups(): Group[] {
@@ -650,10 +652,11 @@ function contactGroups(): Group[] {
     list.slice().sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.nickname.localeCompare(b.nickname));
   const groups: Group[] = [];
   if (pending.length) groups.push({ title: tr("待处理"), items: favFirst(pending) });
-  groups.push({ title: tr("好友 · 在线"), items: favFirst(online) });
-  groups.push({ title: tr("好友 · 离线"), items: favFirst(offline) });
+  groups.push({ title: tr("好友 · 在线"), items: favFirst(online), keep: true });
+  groups.push({ title: tr("好友 · 离线"), items: favFirst(offline), keep: true });
   if (nearby.length) groups.push({ title: tr("附近的人"), items: favFirst(nearby) });
-  return groups.filter((g) => g.items.length > 0 || g.title.startsWith(tr("好友")));
+  // 别拿组标题去比 tr("好友")：译文换个写法（「친구」之类）就静默失效了。
+  return groups.filter((g) => g.items.length > 0 || g.keep);
 }
 
 function renderContactList(): void {
@@ -976,7 +979,9 @@ function composeBox(t: Thread): HTMLElement {
     const f = item.getAsFile();
     if (!f) return;
     ev.preventDefault();
-    void uploadBlob(tr("截图 {p1}.png", { p1: new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).replace(/:/g, "-") }), f);
+    const now = new Date();
+    const stamp = `${fmtTime(now).replace(/:/g, "-")}-${String(now.getSeconds()).padStart(2, "0")}`;
+    void uploadBlob(tr("截图 {p1}.png", { p1: stamp }), f);
   });
   return wrap;
 }
