@@ -311,6 +311,10 @@ const tones = await page.evaluate(() => {
 });
 check("未载入的行用 --faint 那一档（比已载入的淡）", tones.row === tones.faint && tones.row !== tones.solidRow, JSON.stringify(tones));
 check("未载入的刻度颜色比已载入的淡一档", tones.tick !== null && tones.tick !== tones.solidTick, JSON.stringify(tones));
+check(
+  "未载入的行可及名里也写着「未载入」（读屏听得出它还没载入）",
+  (await page.evaluate(() => document.querySelector(".turn-row.ghost")?.getAttribute("aria-label") ?? "")).includes("未载入"),
+);
 check("「当前」不会落在 ghost 刻度上", (await page.evaluate(() => document.querySelectorAll(".turn-tick.ghost.cur").length)) === 0);
 
 // 点 ghost：见下面的 G（#244）—— 那张票让它不再只是看得见的占位。
@@ -573,6 +577,9 @@ page2.on("pageerror", (e) => log("pageerror(ctx2):", e.message));
 await page2.goto(`${BASE}/#/s/${A}`);
 await page2.waitForSelector(".chat-more .more-btn", { timeout: 20000 });
 await page2.waitForFunction(() => document.querySelectorAll(".chat-scroll .msg.user").length === 30, null, { timeout: 15000 });
+// 这一段的「可见」得有带子：窄版（`<html data-compact>`, <900px）下 `.turn-rail` 整个 display:none，
+// 量出来全是 0 的 rect。把窗口拉到桌面宽度再点。
+await page2.setViewportSize({ width: 1200, height: 844 });
 await page2.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 const phantomRows = await page2.evaluate(() => document.querySelectorAll(".turn-row").length);
 check("索引里多了那条不存在的轮次（121 行，91 淡）", phantomRows === TURNS + 1, `rows=${phantomRows}`);
@@ -603,6 +610,33 @@ check(
   JSON.stringify(stuck),
 );
 check("失败那行是可见的（没更早的了也要露出来）", !stuck.noteHidden && stuck.noteDisabled, JSON.stringify(stuck));
+// 正文顶部那行这时在视口上方几千像素外；带子固定在右缘，同一句话得真落在视口里（#244 的「可见」）。
+const noteBox = await page2.evaluate(() => {
+  const note = document.querySelector(".turn-note");
+  if (!note || note.hidden) return null;
+  const box = note.getBoundingClientRect();
+  return {
+    text: note.textContent ?? "",
+    top: Math.round(box.top),
+    bottom: Math.round(box.bottom),
+    right: Math.round(box.right),
+    width: Math.round(box.width),
+    height: Math.round(box.height),
+    h: window.innerHeight,
+    w: window.innerWidth,
+  };
+});
+check(
+  "失败那句挂在刻度带上、真在视口里",
+  noteBox !== null &&
+    noteBox.text === "没翻到第 1 轮" &&
+    noteBox.width > 0 &&
+    noteBox.height > 0 &&
+    noteBox.top >= 0 &&
+    noteBox.bottom <= noteBox.h &&
+    noteBox.right <= noteBox.w,
+  JSON.stringify(noteBox),
+);
 check("翻到头一共 3 个请求（每页一次）", stuck.requests === 3, `requests=${stuck.requests}`);
 await sleep(800);
 check(
@@ -610,6 +644,12 @@ check(
   (await page2.evaluate(() => window.__before)) === 3 && (await page2.evaluate(() => document.querySelectorAll(".chat-scroll .msg.user").length)) === TURNS,
   `requests=${await page2.evaluate(() => window.__before)}`,
 );
+await sleep(2400);
+const cleared = await page2.evaluate(() => ({
+  note: document.querySelector(".turn-note")?.hidden === true,
+  more: document.querySelector(".chat-more")?.hidden === true,
+}));
+check("三秒后失败提示自己收了（带子上和正文那行都收）", cleared.note && cleared.more, JSON.stringify(cleared));
 await ctx2.close();
 
 await browser.close();

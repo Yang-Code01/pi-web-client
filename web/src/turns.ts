@@ -38,6 +38,11 @@ export interface TurnRail {
   setCurrent(index: number): void;
   /** #244: 自动往回翻页期间，淡的那一段轻脉动 —— 「那一带正在动」。 */
   setBusy(busy: boolean): void;
+  /**
+   * #244: 跳转失败的那句话，挂在带子上。带子固定在右缘、不随滚动走，而正文顶部那一行
+   * （`.chat-more`）在视口上方几千像素外 —— 「可见」得靠这里。由 ChatView 计时清掉。
+   */
+  setNote(note: string | null): void;
 }
 
 export interface TurnRailOpts {
@@ -54,6 +59,20 @@ export interface TurnRailOpts {
   viewport?: HTMLElement | null;
 }
 
+/** 一根刻度 / 一行的写法：ghost 与已载入共用「第 N 轮：…」，ghost 多一句「（未载入）」。 */
+function titleOf(index: number, label: string, ghost: boolean): string {
+  return ghost
+    ? tr("第 {p1} 轮（未载入）：{p2}", { p1: index + 1, p2: label })
+    : tr("第 {p1} 轮：{p2}", { p1: index + 1, p2: label });
+}
+
+/** 无障碍名字比 tooltip 多说一个动作 —— 两者都能点，ghost 点了是「往回翻到它」。 */
+function ariaOf(index: number, label: string, ghost: boolean): string {
+  return ghost
+    ? tr("跳到第 {p1} 轮（未载入）：{p2}", { p1: index + 1, p2: label })
+    : tr("跳到第 {p1} 轮：{p2}", { p1: index + 1, p2: label });
+}
+
 export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
   const rail = document.createElement("div");
   rail.className = "turn-rail";
@@ -61,6 +80,11 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
   const list = document.createElement("div");
   list.className = "turn-list";
   rail.append(list);
+  /** #244: 失败提示的落点（在带子顶端往左伸出去）；`paint()` 重建子节点时要把它带上。 */
+  const note = document.createElement("div");
+  note.className = "turn-note";
+  note.hidden = true;
+  note.setAttribute("role", "status");
   host.append(rail);
 
   /** 已载入的轮次（刻度带下半段，实线）。 */
@@ -142,15 +166,8 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
       tick.type = "button";
       tick.className = ghost ? "turn-tick ghost" : "turn-tick";
       tick.dataset.i = String(index);
-      tick.title = ghost
-        ? tr("第 {p1} 轮（未载入）：{p2}", { p1: index + 1, p2: label })
-        : tr("第 {p1} 轮：{p2}", { p1: index + 1, p2: label });
-      tick.setAttribute(
-        "aria-label",
-        ghost
-          ? tr("第 {p1} 轮（未载入）：{p2}", { p1: index + 1, p2: label })
-          : tr("跳到第 {p1} 轮：{p2}", { p1: index + 1, p2: label }),
-      );
+      tick.title = titleOf(index, label, ghost);
+      tick.setAttribute("aria-label", ariaOf(index, label, ghost));
       // ghost 还没载入：点它交给 ChatView 自动往回翻页（#244），没有节点可预览所以不挂 hover。
       if (ghost) {
         const id = ghosts[index].id;
@@ -173,9 +190,9 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
       row.type = "button";
       row.className = ghost ? "turn-row ghost" : "turn-row";
       row.dataset.i = String(index);
-      row.title = ghost
-        ? tr("第 {p1} 轮（未载入）：{p2}", { p1: index + 1, p2: label })
-        : tr("第 {p1} 轮：{p2}", { p1: index + 1, p2: label });
+      row.title = titleOf(index, label, ghost);
+      // 行按钮的可及名默认只是那行字；ghost 要听得出「还没载入、点了会去翻」。#244 两种都给同一套。
+      row.setAttribute("aria-label", ariaOf(index, label, ghost));
       const text = document.createElement("span");
       text.className = "txt";
       text.textContent = label;
@@ -196,7 +213,7 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
       return row;
     });
 
-    rail.replaceChildren(...ticks, list);
+    rail.replaceChildren(...ticks, list, note);
     list.replaceChildren(...rows);
     markCurrent();
     markHot();
@@ -267,6 +284,10 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
     },
     setBusy(busy) {
       rail.classList.toggle("busy", busy);
+    },
+    setNote(text) {
+      note.textContent = text ?? "";
+      note.hidden = !text;
     },
   };
 }

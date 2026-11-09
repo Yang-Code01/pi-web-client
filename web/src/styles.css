@@ -2420,6 +2420,14 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   50% { opacity: 1; }
 }
 .turn-rail.busy .turn-tick.ghost { animation: turn-busy 1.1s ease-in-out infinite; }
+/* #244: 跳转失败的那句「没翻到第 N 轮」。带子固定在右缘，不随滚动走；正文顶部那一行在视口上方，
+   所以「可见」靠这里：从带子顶端往左伸出去，3 秒后自己消失（不接点击，只是说话）。 */
+.turn-note {
+  position: absolute; right: 22px; top: 0; white-space: nowrap;
+  padding: 4px 9px; border-radius: 999px; font-size: 12px; line-height: 1.4;
+  color: var(--text); background: var(--panel-3); border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45); pointer-events: none;
+}
 /* 展开时刻度让位：弹层正好盖住这一列，行尾那根短横接替它 —— 看起来是同一块面板，不是一个框外面
    还挂着一列刻度（用户口径：鼠标移上去「要和 chat 融合到同一个框里面」）。 */
 .turn-rail:hover .turn-tick,

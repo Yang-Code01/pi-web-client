@@ -41,10 +41,14 @@ function reminderBody(text: string): string | null {
   return text.slice(REMIND_MARK.length).replace(/^\s+/, "");
 }
 
+/** 刻度带上一行的截断长度，与桥的 `TURN_TEXT_MAX`（`bridge/src/history.ts`）对齐 —— 同一轮载入前后，tooltip 得是同一句。 */
+const TURN_LABEL_MAX = 80;
+
 /** 一轮用户输入在刻度带上的文字：正文折成一行；没字就说图片 / 空消息（#242 的索引里也是这套说法）。 */
 function turnLabel(text: string, images: number): string {
   const one = (text ?? "").replace(/\s+/g, " ").trim();
-  return one || (images ? tr("（{p1} 张图片）", { p1: images }) : tr("（空消息）"));
+  if (one) return one.length > TURN_LABEL_MAX ? `${one.slice(0, TURN_LABEL_MAX - 1)}…` : one;
+  return images ? tr("（{p1} 张图片）", { p1: images }) : tr("（空消息）");
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -533,16 +537,21 @@ export class ChatView {
     this.failPendingJump();
   }
 
-  /** #244: 翻到尽头也没有那一轮（索引与正文不一致）：停下，并在顶部那一行说一声。 */
+  /**
+   * #244: 翻到尽头也没有那一轮（索引与正文不一致）：停下，并在顶部那一行说一声。
+   * 那行在滚出视口的上方，所以同一句也挂在刻度带上 —— 「可见」是票面要求。
+   */
   private failPendingJump(): void {
     const pending = this.pendingJump;
     if (!pending) return;
     this.pendingJump = null;
     this.turnRail.setBusy(false);
     this.moreNote = tr("没翻到第 {p1} 轮", { p1: pending.n });
+    this.turnRail.setNote(this.moreNote);
     clearTimeout(this.moreNoteTimer);
     this.moreNoteTimer = window.setTimeout(() => {
       this.moreNote = null;
+      this.turnRail.setNote(null);
       this.renderMore();
     }, 3000);
     this.renderMore();
@@ -608,6 +617,7 @@ export class ChatView {
     this.cancelPendingJump();
     clearTimeout(this.moreNoteTimer);
     this.moreNote = null;
+    this.turnRail.setNote(null);
     this.root.replaceChildren();
     this.cards.clear();
     this.users.clear();
