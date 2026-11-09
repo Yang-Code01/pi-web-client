@@ -29,7 +29,7 @@ import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./s
 import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
-import { chromeFrom, isChromeVisible, type ChromeContext, type ChromeState } from "./chrome.ts";
+import { chromeFrom, isChromeVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
@@ -1235,6 +1235,8 @@ export class App {
         paneFrame = 0;
         this.syncCompact();
         this.renderPanes();
+        // D138 的 560 断点看的是视口宽度：窗口一拖，文件管理器那颗的默认就得重算。
+        this.paintChrome();
         // 右栏宽度是按布局宽算的 px（D189），跨过断点或改窗口大小都得重算。
         if (this.asks.length) this.syncAskDock();
       });
@@ -2372,6 +2374,8 @@ export class App {
     }
     this.renderTop();
     this.renderSessions();
+    // #289：接管会把 owned 翻过来（当前会话没变，但接管按钮与顶栏都该在同一个点重画）。
+    this.paintChrome();
   }
 
   /**
@@ -3110,6 +3114,8 @@ export class App {
     // 构造里 `applyPrefs()` 先跑一次（那时 DOM 还没搭）：只落 `<html data-layout>`，别去碰 els。
     if (!this.nowBtn) return;
     this.renderPanes();
+    // #289：换壳也走同一个重画点 —— 壳决定某些颗挂在哪，可见性不跟着壳分叉。
+    this.paintChrome();
   }
 
   /**
@@ -3494,7 +3500,6 @@ export class App {
     applyLang(next);
     // 推送标题跟界面语言走：bridge 只在内存里记这一个值。
     this.socket.send({ type: "lang", lang: next });
-    this.paintChrome();
     this.renderAll();
     // #86：随手问是独立 dialog，不在 renderAll 的覆盖范围里。
     this.scratch.refreshLang();
@@ -3512,42 +3517,54 @@ export class App {
   }
 
   /**
-   * Retranslate the bits that are built once and never re-rendered: the topbar's fixed four
-   * buttons, the new-session button and the two filter placeholders. `renderTop()` only repaints
-   * the session list, `renderSessions()` the chips — neither touches these.
+   * #289：顶栏七颗的文字与可见性**只在这一处**写。切语言、换壳、收到 `ui`、建 / 关 / 接管会话
+   * 最后都落回这里；可见性问纯函数 `isChromeVisible()`（web/src/chrome.ts），不在别处再拼条件。
+   * `renderTop()` 只画会话名与连接状态，`renderSessions()` 只画左栏卡片 —— 都不碰这七颗。
    */
   private paintChrome(): void {
     const { look, files, term, fs, notes, peer, scratch, jira, manageBtn, binBtn, tabs } = this.els;
     const newBtn = this.els.newBtn as HTMLButtonElement;
     const sessFilter = this.els.sessFilter as HTMLInputElement;
+    const ctx = this.chromeCtx();
+    const chrome = this.uiPrefs.chrome;
+    const noSessionWhy = tr("没开会话，先不显示");
+    /**
+     * 一颗按钮：`hidden` 是唯一开关（样式表里 `.icon-btn[hidden]{display:none!important}`），
+     * 关掉不留空位。产物 / 文件管理器是「会话里才有内容」的两颗：显式打开也换不来一个会话，
+     * 那就照藏，把原因写进 title —— 不是另起一条规则。
+     */
+    const show = (id: ChromeId, btn: HTMLElement, title: string, sessionBound = false): void => {
+      const visible = isChromeVisible(id, chrome, ctx);
+      btn.hidden = !visible;
+      btn.title = sessionBound && !visible && chrome[id] === true ? `${title} · ${noSessionWhy}` : title;
+    };
     look.title = tr("外观与语言");
     look.setAttribute("aria-label", tr("外观与语言"));
     this.setWideLabel(files, tr("📂 产物"));
-    files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
+    show("artifacts", files, tr("本会话写过的文件（md / html / 图片…点开预览）"), true);
     this.setWideLabel(term, tr(">_ 终端"));
     term.setAttribute("aria-label", tr("终端"));
-    term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
+    show("terminal", term, tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）"));
     this.setWideLabel(fs, tr("📁 文件管理器"));
-    fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
-    // 记录与内网通是顶栏常显的两颗（#45 / D108），标题也要跟着换；
-    // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写。
-    if (notes) this.paintNotesBadge();
+    show("files", fs, tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件"), true);
+    // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写；这里只按它的结果决定画不画。
+    if (notes) {
+      this.paintNotesBadge();
+      show("notes", notes, notes.title);
+    }
     if (peer) {
       this.setWideLabel(peer, tr("🌐 内网通"));
-      peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
+      show("peer", peer, tr("内网通：发现同一内网里的人，直接对话、传文件"));
     }
     if (scratch) {
       this.setWideLabel(scratch, tr("💭 随手问"));
-      scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
+      show("scratch", scratch, tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog"));
     }
     if (jira) {
       this.setWideLabel(jira, tr("🔷 Jira"));
-      jira.title = tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP");
       jira.setAttribute("aria-label", tr("Jira"));
+      show("jira", jira, tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP"));
     }
-    // #288：终端的可见性只在这一处算（纯函数 web/src/chrome.ts）。这一票只接这一颗，
-    // 产物 / 文件管理器与下沿四颗仍是旧逻辑，留给 #289–#292。
-    term.hidden = !isChromeVisible("terminal", this.uiPrefs.chrome, this.chromeCtx());
     newBtn.textContent = tr("开新会话");
     sessFilter.placeholder = tr("过滤名字 / 目录");
     manageBtn.textContent = tr("管理");
@@ -4736,7 +4753,7 @@ export class App {
   // ---------------------------------------------------------------- render
   private renderAll(): void {
     this.renderTop();
-    // #288：偏好或当前会话变化都要重画；终端等按钮的可见性只由 paintChrome() 算。
+    // #289：偏好、壳、语言、当前会话任何一样变了都重画；顶栏七颗的可见性只由 paintChrome() 算。
     this.paintChrome();
     this.renderSessions();
     this.renderChat();
@@ -4752,8 +4769,7 @@ export class App {
     const running = this.session?.running;
     dot.className = `dot ${!this.connected ? "bad" : running ? "busy" : this.session?.owned ? "live" : ""}`;
     title.textContent = this.session ? this.session.name : "pi";
-    this.els.files.hidden = !this.currentId;
-    this.els.fs.hidden = !this.currentId;
+    // 产物 / 文件管理器画不画由 paintChrome() 按 isChromeVisible() 一处决定，这里不再按 currentId 另写一份。
     const bits: string[] = [];
     if (this.me.public) bits.push(tr("公网"));
     if (this.tunnel.status === "up" && this.tunnel.url) bits.push(this.tunnel.url.replace("https://", ""));
