@@ -34,7 +34,7 @@ export interface JiraAttachment {
   created: string;
 }
 
-/** `description` 是桥透传的 ADF（D203），类型只在页面端解释。 */
+/** `description` 是桥透传的 ADF（D204），类型只在页面端解释。 */
 export interface JiraIssueDetail {
   issue: JiraIssue & { description: unknown };
   attachments: { issue: JiraAttachment[]; comments: JiraAttachment[] };
@@ -116,7 +116,7 @@ export function formatBytes(size: number | null | undefined): string {
   return `${text} ${units[unit]}`;
 }
 
-// ---------------------------------------------------------------- ADF → 纯文本（D203）
+// ---------------------------------------------------------------- ADF → 纯文本（D204）
 
 interface AdfMark {
   type?: string;
@@ -240,7 +240,7 @@ function blockLines(node: AdfNode, depth: number): string[] {
 }
 
 /**
- * ADF → 纯文本（D203）：桥不解释 ADF，页面把它转成可读文本。段落 / 标题 / 列表 / 代码块 /
+ * ADF → 纯文本（D204）：桥不解释 ADF，页面把它转成可读文本。段落 / 标题 / 列表 / 代码块 /
  * 表格 / 引用 / 分隔线都保留阅读顺序，media 节点变成 `[图片]` / `[附件]` 占位。
  * 不是 ADF（null、字符串、形状不对）时退回能拿到的文字或空串。
  */
@@ -298,7 +298,7 @@ export interface HandoffPromptInput {
 }
 
 /**
- * 交给 agent 的提示词（#252，D205）：工单号 / 标题 / 链接 / 状态 / 优先级 / 类型 + 固定指令。
+ * 交给 agent 的提示词（#252，D206）：工单号 / 标题 / 链接 / 状态 / 优先级 / 类型 + 固定指令。
  *
  * 它是给 agent 的指令，不是界面文案，所以不走 `tr()`；附件那一行只在确实下载过时出现，
  * 由桥端 `GET /api/jira/issues/:key/downloaded` 的事实决定，不靠页面猜。
@@ -306,7 +306,7 @@ export interface HandoffPromptInput {
 export function handoffPrompt(input: HandoffPromptInput): string {
   const key = input.key.trim();
   const summary = input.summary.trim();
-  // i18n-ignore-start 给 agent 的指令，不是界面文案（D205）：不跟界面语言变，也不进词典。
+  // i18n-ignore-start 给 agent 的指令，不是界面文案（D206）：不跟界面语言变，也不进词典。
   const lines: string[] = [`处理这个 Jira 工单：${key}${summary ? ` — ${summary}` : ""}`, ""];
   lines.push(`链接：${browseUrl(input.siteUrl, key)}`);
   const status = input.status?.trim() ? `状态：${input.status.trim()}` : "";

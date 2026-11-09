@@ -144,10 +144,10 @@ export const api = {
   jiraClear: () => req<{ ok: true }>("/api/jira/config", { method: "DELETE" }),
   jiraMe: () =>
     req<{ accountId: string; displayName: string; email: string; timezone: string; avatarUrl: string }>("/api/jira/me"),
-  /** #249：桥固定查「分配给我 + 未解决」；refresh 绕过桥的 60 秒缓存（D202）。 */
+  /** #249：桥固定查「分配给我 + 未解决」；refresh 绕过桥的 60 秒缓存（D203）。 */
   jiraIssues: (refresh = false) => req<{ issues: JiraIssue[] }>(`/api/jira/issues${refresh ? "?refresh=1" : ""}`),
   jiraProjects: (refresh = false) => req<{ projects: JiraProject[] }>(`/api/jira/projects${refresh ? "?refresh=1" : ""}`),
-  /** #250：单工单详情。key 只做形状校验（桥端权威）；description 是 ADF，由页面转文本（D203）。 */
+  /** #250：单工单详情。key 只做形状校验（桥端权威）；description 是 ADF，由页面转文本（D204）。 */
   jiraIssue: (key: string) =>
     req<JiraIssueDetail>(`/api/jira/issues/${encodeURIComponent(key)}`),
   /** #251：附件根目录。隧道访客只能读；写入由桥回 403 `tunnel_readonly`。 */

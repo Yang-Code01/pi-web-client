@@ -1,7 +1,7 @@
 /**
  * Jira 面板（#248、#249）的桥端：一个站点、一组凭据、只读。
  *
- * 三条边界，改之前先看 D201：
+ * 三条边界，改之前先看 D202：
  * - 页面永远拿不到 API token：GET 只回掩码，错误文本与日志里也不带它；
  * - 出站只发配置里的那个站点（`/rest/api/3/*`），头像额外允许 Atlassian 头像 CDN；
  * - 隧道访客只读：保存 / 清除凭据一律 403「回本机操作」。
@@ -25,11 +25,11 @@ const MAX_DOWNLOAD = 100 * 1024 * 1024;
 /** 附件内容可能几 MB 到几十 MB，别套 15 秒的 JSON 超时（那个是给元数据用的）。 */
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** 页面传不了查询：JQL 与字段都在桥里写死（D202）。 */
+/** 页面传不了查询：JQL 与字段都在桥里写死（D203）。 */
 const MY_OPEN_JQL = "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC";
 const ISSUE_FIELDS = "summary,issuetype,priority,status,updated";
 const LIST_MAX = 20;
-/** 列表缓存 60 秒：面板反复开关时别把 Jira 的限流额度打满。只存内存，不落盘（D202）。 */
+/** 列表缓存 60 秒：面板反复开关时别把 Jira 的限流额度打满。只存内存，不落盘（D203）。 */
 const LIST_TTL_MS = 60_000;
 
 export interface JiraConfig {
@@ -70,7 +70,7 @@ export interface JiraAttachment {
   created: string;
 }
 
-/** #250：`description` 是上游 ADF 原样透传，桥不解释它（D203）。 */
+/** #250：`description` 是上游 ADF 原样透传，桥不解释它（D204）。 */
 export interface JiraIssueDetail {
   issue: JiraIssue & { description: unknown };
   attachments: { issue: JiraAttachment[]; comments: JiraAttachment[] };
@@ -153,7 +153,7 @@ export function keyMask(key: string): string {
 }
 
 /**
- * 头像 URL 允许名单（D201）：与配置站点同 origin，或 Atlassian 自己的头像 CDN。
+ * 头像 URL 允许名单（D202）：与配置站点同 origin，或 Atlassian 自己的头像 CDN。
  * 放行 atl-paas.net 是因为 Cloud 的 `avatarUrls` 就落在那个 CDN 上；代价是这一条比
  * 「只发配置站点」宽一点，所以其余字段（https、无 userinfo、443、无 fragment）一个不放。
  */
@@ -250,7 +250,7 @@ function cachePut<T>(kind: string, config: JiraConfig, value: T): void {
   listCache.set(cacheKey(kind, config), { at: Date.now(), value });
 }
 
-/** 保存 / 清除凭据时清空：旧凭据名下的列表不再可信（D202）。 */
+/** 保存 / 清除凭据时清空：旧凭据名下的列表不再可信（D203）。 */
 function clearListCache(): void {
   listCache.clear();
 }
@@ -278,7 +278,7 @@ async function requestJira(
 ): Promise<Response> {
   if (!allowed(target)) throw new JiraError("jira_site", 400, "只允许访问配置的 Jira 站点");
   const headers = new Headers();
-  // 附件下载的第二跳是 Media 签名 URL，凭据已经写在签名里：不拼 Authorization（D204）。
+  // 附件下载的第二跳是 Media 签名 URL，凭据已经写在签名里：不拼 Authorization（D205）。
   if (auth) headers.set("authorization", basicAuth(config));
   headers.set("accept", "application/json");
   try {
@@ -499,7 +499,7 @@ async function loadDetail(config: JiraConfig, ctx: JiraCtx, key: string): Promis
 }
 
 /**
- * `GET /api/jira/issues/:key`：单工单详情。不做缓存（D203）——点开才要，重复点开由前端记忆。
+ * `GET /api/jira/issues/:key`：单工单详情。不做缓存（D204）——点开才要，重复点开由前端记忆。
  * 评论接口失败就整个详情按该错误码失败：附件清单本来就是详情的一部分，静默吞掉会让界面
  * 假装「这条工单没有评论附件」，比报错更容易误导人。
  */
@@ -521,7 +521,7 @@ function attachmentsFile(): string {
 }
 
 /**
- * 附件根目录单独存在 `state/jira/attachments.json`，不并进含 token 的 config.json（D204）：
+ * 附件根目录单独存在 `state/jira/attachments.json`，不并进含 token 的 config.json（D205）：
  * 换凭据时目录不该跟着丢，排查时导出状态文件也不该顺手把 token 带出去。
  */
 export function readAttachmentRoot(): string | null {
@@ -584,7 +584,7 @@ function fitStem(stem: string, ext: string): string {
 }
 
 /**
- * 跨平台文件名清洗（D204）：非法字符与控制字符换成 `_`，去首尾空白与结尾的点，
+ * 跨平台文件名清洗（D205）：非法字符与控制字符换成 `_`，去首尾空白与结尾的点，
  * Windows 保留名前加 `_`，空名回 `attachment-<id>`，长度截到 ~120 且保留扩展名。
  */
 export function safeFileName(name: string, id: string): string {
@@ -605,7 +605,7 @@ function namedWithId(name: string, id: string): string {
   return `${fitStem(`${stem}-${suffix}`, ext)}${ext}`;
 }
 
-/** 同批重名才加 id；磁盘上已存在就覆盖 —— 重下同一附件不堆副本（D204）。 */
+/** 同批重名才加 id；磁盘上已存在就覆盖 —— 重下同一附件不堆副本（D205）。 */
 function uniqueName(name: string, id: string, used: Map<string, string>): string {
   const key = name.toLowerCase();
   const taken = used.get(key);
@@ -620,7 +620,7 @@ function uniqueName(name: string, id: string, used: Map<string, string>): string
 
 /**
  * media uuid → attachment id 的探测结果。ADF 里 `media` 节点的 `attrs.id` 是 media services 的
- * uuid，不是 attachment id（D204）；只有评论 media 且直接取 404 时才探测，结果按 attachment id 记在
+ * uuid，不是 attachment id（D205）；只有评论 media 且直接取 404 时才探测，结果按 attachment id 记在
  * 内存里，别每次详情都全量探测。
  */
 const mediaUuidByAttachment = new Map<string, string>();
@@ -659,7 +659,7 @@ async function attachmentIdForMedia(
 
 /**
  * 第二跳（附件内容 302 到 Media 签名 URL）：只认 https 且 host 是配置站点或 `*.atl-paas.net`，
- * 且不带 userinfo / 非 443 端口 / fragment；跟随时**不带 Authorization**（D204）。
+ * 且不带 userinfo / 非 443 端口 / fragment；跟随时**不带 Authorization**（D205）。
  */
 export function attachmentRedirectAllowed(raw: string, siteUrl: string): boolean {
   let target: URL;
@@ -828,7 +828,7 @@ async function saveOne(
 
 /**
  * `POST /api/jira/issues/:key/download`：串行落盘到 `<root>/<KEY>/`。没设根目录就直接 400，
- * 一个字节都不写；批量里单项失败不影响整单 200（D204）。
+ * 一个字节都不写；批量里单项失败不影响整单 200（D205）。
  */
 async function downloadIssueAttachments(res: http.ServerResponse, ctx: JiraCtx, rawKey: string): Promise<void> {
   const config = listConfig(res);
@@ -858,7 +858,7 @@ async function downloadIssueAttachments(res: http.ServerResponse, ctx: JiraCtx, 
 }
 
 /**
- * `GET /api/jira/issues/:key/downloaded`：这单在本机已经下过几个文件（D205）。只读磁盘，
+ * `GET /api/jira/issues/:key/downloaded`：这单在本机已经下过几个文件（D206）。只读磁盘，
  * 不建目录、不拉 Jira；没设根目录 / 目录不存在 / 空目录都回 `{ dir: null, count: 0 }`。
  * 隧道访客也能读：这只是「有没有下过」的事实，不含凭据。
  */
@@ -1047,7 +1047,7 @@ export async function handleJira(
         fail(res, 405, "bad_method", "不支持这个请求方法");
         return true;
       }
-      // 只认 `refresh`；`jql` / `fields` / `startAt` 这类参数一律不读（D202）。
+      // 只认 `refresh`；`jql` / `fields` / `startAt` 这类参数一律不读（D203）。
       const refresh = url.searchParams.get("refresh") === "1";
       if (url.pathname === "/api/jira/issues") await getIssues(res, ctx, refresh);
       else await getProjects(res, ctx, refresh);

@@ -2206,7 +2206,7 @@ export class Session extends EventEmitter {
     this.items = [];
     this.autoCompactUsed = false;
     this.setState({ file, truncated: false }, { touch: false });
-    this.emitWs({ type: "items", sessionId: this.state.id, items: [], history: { hasMore: false, total: 0 } });
+    this.emitWs({ type: "items", sessionId: this.state.id, items: [], history: { hasMore: false, total: 0, turns: [] } });
     this.touch();
     if (before && before !== file) {
       try {

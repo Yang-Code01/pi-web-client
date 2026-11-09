@@ -66,7 +66,7 @@ function inModuleConst(node) {
 
 /**
  * `// i18n-ignore-start <理由>` 与 `// i18n-ignore-end` 之间的中文不当界面文案查：
- * 目前只给「发给模型的指令」（D205 的 Jira 交接提示词）用 —— 它不是给人看的文案，
+ * 目前只给「发给模型的指令」（D206 的 Jira 交接提示词）用 —— 它不是给人看的文案，
  * 也不该随界面语言变。区间按行号算，包含两道注释行。
  */
 function ignoredRanges(src) {

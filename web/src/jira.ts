@@ -5,7 +5,7 @@
  * 「可访问项目」。两条边界：
  * - 凭据只在桥那边，这里拿到的永远是掩码；除了桥回的 `avatarUrl`，页面不拼任何 Jira 地址。
  * - 每次 `open()` 都重新问一次桥，不拿内存里的旧状态当已连接（换机器、隧道退连接都能立刻反映）；
- *   列表本身不缓存，60 秒的复用是桥那边的责任（D202）。
+ *   列表本身不缓存，60 秒的复用是桥那边的责任（D203）。
  */
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
@@ -112,7 +112,7 @@ export class JiraPanel {
   private seq = 0;
   private lastFocus: HTMLElement | null = null;
   private esc: ((ev: KeyboardEvent) => void) | null = null;
-  /** #250：展开的行与详情缓存（面板实例内存，不落盘、桥也不缓存，D203）。 */
+  /** #250：展开的行与详情缓存（面板实例内存，不落盘、桥也不缓存，D204）。 */
   private details = new Map<string, DetailEntry>();
   /** #251：附件根目录（null = 没设）；每次 open / 连接成功后向桥问一次，不信旧值。 */
   private attachRoot: string | null = null;
@@ -140,7 +140,7 @@ export class JiraPanel {
         this.closeHandoff();
         return;
       }
-      // 目录选择层开着时，Esc 只收这一层：一下关两层太粗（D204 的「改」也不该顺手关掉面板）。
+      // 目录选择层开着时，Esc 只收这一层：一下关两层太粗（D205 的「改」也不该顺手关掉面板）。
       if (this.pickerLayer) {
         this.closePicker();
         return;
@@ -999,7 +999,7 @@ export class JiraPanel {
     return box;
   }
 
-  /** 底部固定一行 MCP 提示：本单不探测 MCP 装没装，只把人送到设置页（D201）。 */
+  /** 底部固定一行 MCP 提示：本单不探测 MCP 装没装，只把人送到设置页（D202）。 */
   private footEl(): HTMLElement {
     const foot = el("div", "jira-foot");
     foot.append(el("span", "jira-mcp", tr("读工单描述和评论要用 Jira MCP：在「设置 → 扩展与 MCP」里安装。")));

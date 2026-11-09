@@ -674,7 +674,7 @@ test("GET issues/:key：不缓存，未配置 400 jira_not_configured", async ()
   await connect();
   await call("GET", "/api/jira/issues/ACME-12");
   await call("GET", "/api/jira/issues/ACME-12");
-  assert.equal(hits.issue, 2, "详情不做缓存（D203）");
+  assert.equal(hits.issue, 2, "详情不做缓存（D204）");
 
   freshState();
   const out = await call("GET", "/api/jira/issues/ACME-12");
@@ -706,7 +706,7 @@ test("PUT root：只收绝对路径，建得出来才保存", async () => {
   assert.equal(saved.json.root, root);
   assert.ok(fs.existsSync(root), "PUT 要把目录建出来");
   assert.deepEqual((await call("GET", "/api/jira/attachments/root")).json, { root });
-  // 根目录独立成文件，不写进含 token 的 config.json（D204）。
+  // 根目录独立成文件，不写进含 token 的 config.json（D205）。
   assert.ok(fs.existsSync(path.join(state, "jira", "attachments.json")));
   const config = JSON.parse(fs.readFileSync(path.join(state, "jira", "config.json"), "utf8"));
   assert.equal(config.root, undefined);

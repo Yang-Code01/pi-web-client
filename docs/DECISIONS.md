@@ -3427,7 +3427,33 @@ D
 
 **验证：** `node probes/skill-group.mjs`（20 项，真实 Chromium + 手写会话文件）：两轮各一组 / 默认折叠 / 摘要点名 3 个技能且按到达顺序 / 徽标 / tooltip 全文 / 组里 3 张完整卡（描述、`SKILL.md` 出口、线索）/ 模型说过话用最近那句 / 没说话退回用户消息 / 第二轮另起一组 / 折叠时摘要一行高 / 展开 3 张卡 / chevron 转 90° / 收回后详情不占高度。`npm --prefix web run typecheck`（含 i18n-check：1779 键 × 3 语）与 `npm run test:skill`（14 项）都过。
 
-## D201 Jira 连接：凭据留在桥里，页面只见掩码；隧道只读（工单 #248）
+## D201 点未载入的刻度自己把那一轮翻回来：索引随帧走、淡一档占位、用户一动手就停（#241 3/3）
+
+**问题：** 刻度带（D60 / #243）已经把整段会话画成一根根刻度，没载入的淡一档占位。但那些淡刻度只是「看得见的占位」：点它什么也不发生，想回到第 1 轮还得滚到顶、一页页按「载入更早」。用户要的是「点哪儿就带我去哪儿」—— 界面自己往回要页，直到那一轮到货，再滚过去、高亮它；中途他自己动手了就停下，别把他拽走。三个决定绕不开：整段历史怎么让前端知道（正文还是索引）、没载入的怎么显示（藏还是淡）、自动翻页什么时候算被用户接管。
+
+**决定：**
+
+1. **整段轮次索引随帧下发，正文仍按页取。** `session` / `items` 帧的 `history.turns?: { id, text, images }[]` 是**整段会话**的轮次索引（#242），前端拿它画刻度带、算「第几轮」。正文不动：一页 30 轮约 200KB 级，而索引一帧 2–3KB（实测 120 轮 / 60 items 的 `session` 帧 17.7KB，其中索引约 2.5KB）。要正文就发 `history.before` 一页一页取。
+2. **坐标一律靠 id，不靠下标。** 往前翻会把新轮次插到 `turns` 前面，任何数字下标在下一次 `prepend` 之后就失效。所以 `ChatView.turns` 带 `id`（`noteTurn` 用 `item.id`，`prepend` 的 staging 路径也带；`adopt` 把本地 id 换成服务器 id），刻度带的 ghost 段也带 id（`setGhosts({ id, label }[])`），ghost 的点击只回 id（`TurnRailOpts.onPickGhost(id)`）；已载入的刻度/行仍是原来的下标坐标（`onPick(loadedIndex)` / `setCurrent` / `onHover`），那段实现没变。
+3. **淡一档占位，而不是把没载入的藏起来。** 刻度带的高度就是「这段会话有多长」；藏掉未载入的那 90 根，翻一页带子就会长一截，位置也跟着跳，用户没法靠它判断自己在哪儿、还能往回多少。淡色占位 + 从尾部吃掉（`prepend` 把等量的 ghost 换成实线）保证总高度、总根数从头到尾不变。
+4. **一次跳转 = 一个 `pendingJump: { id, n }`，串行翻页。** `jumpToTurnId(id)` 先在 `turns` 里找：找到就 `jumpToTurn(index)` + `flashTurn(index, 1200)`（跟点已载入刻度同一套观感）；找不到就记下 `pendingJump`（`n` 是它在全量索引里的第几轮，失败文案要用），立刻 `loadOlder()` 走**同一条**手动翻页的路（同一颗按钮、同一个 `loadingOlder` 禁用态）。每页到了（`prepend` 末尾的 `afterOlderPage(advanced)`）先查 id 到没到：到了就收尾（清 `pendingJump` → `jumpToTurn` + 高亮），没到且 `hasMore` 就 `setTimeout(…, 0)` 排下一轮（不递归、不并发 —— 每页一次请求，`before` 游标是上一页的顶），`hasMore` 为假或空页（`advanced === false`）就失败收尾。
+5. **「用户一动手就停」是取消边界。** `holdUp()`（上滚 / 键盘）、`stopFollowing()`（touch / 跳转）、点任何已载入的刻度或行、`reset()`（切会话 / 重连换了内容）都在开头清掉 `pendingJump`；已经发出的那一次请求不回退、到货的页照常插入，但**不 follow() 也不 jumpToTurn()**，滚动位置不动。用户自己点「载入更早」等于「我接管了」：清掉 pending，但这次手动翻页照常进行。
+6. **反馈都在带子上，不在会话里插条目。** 载入中沿用顶部那一行（按钮 `disabled` + 「载入中…」），另给刻度带 `setBusy(true)` 挂 `.busy`，`.turn-tick.ghost` 轻脉动（`prefers-reduced-motion` 下不动）—— 「那一带在动」得在刻度带上看得见，因为用户点的就是带子。失败也写两处：正文顶部那一行 `moreNote`（3 秒后自清）优先于「载入更早」、**即使没有更早的也要显示**（`hasOlder === false` 时那一行本来是藏的），**并且同一句挂到带子顶端**（`.turn-note`，`role="status"`，3 秒后自清）—— 带子固定在右缘、不随滚动走，而顶部那一行在自动翻页期间早就在视口上方几千像素外，只写那一行等于没反馈（评审提的 P1，已补断言：提示的 bounding box 必须落在视口内）。文案 `没翻到第 {p1} 轮`（i18n 三语）。不往会话里插 notice 条目：那是记录，翻页失败是当下的一次操作结果。
+
+**为什么「用户动手就停」：** 自动翻页是替用户跑腿，不是接管视口。翻三页要几次往返，这段时间里他可能自己滚上去了、点了别的轮次、切了会话 —— 这些都说明他改主意了。停的粒度只到「不再往前要页」：已经发出的请求照收（取消它反而让 `loadingOlder` 卡住，或者白丢一页已经付出的等待），已经取回的页留着（下次往上滚就是现成的），**唯一不许的是把他从当前位置拽走**。失败同理：到头了也没有那一轮，说明索引与正文不一致（桥那边删过/改过），再翻只会无限空转，所以停下并说清楚「没翻到第 N 轮」。
+
+**代价 / 可改：**
+
+- 每帧多 2–3KB：`session` / `items` 帧都带整段索引，轮次越多越大（120 轮 ≈ 2.5KB，1000 轮就 ≈ 20KB）。嫌大可以让桥按「最近 N 轮 + 更早的只给条数」裁，刻度带就得改成两段画法。
+- 协议多一个可选字段：老桥不下发 `history.turns` 时前端 `history?.turns ?? []` → ghost 段为空，刻度带退回「只有已载入的、还不知道后面有多少」的旧行为，按钮和手动翻页不受影响。
+- 前端多维护一段 ghost 坐标：id → 第几轮（`turnOrdinal`）、ghost 段整体替换、`prepend` 从尾部吃掉等量的 ghost。id 与正文对不上时（见失败那条）只能靠「翻到头」兜底。
+- 翻页次数多时是连续请求：每页一次、串行（不并发，`before` 游标就是链条），从第 30 轮跳回第 1 轮要 3 个往返。想快就得让桥支持「按 id 直接给一页」（`history.at` 之类），这次没做。
+- 跳转会把还在排队的锚点补偿作废（`anchorPinRun`）：往前插一页后的三次钉（立刻 / 下一帧 / 150ms）会把平滑滚动按回原处，所以跳转推进代数、让剩下的钉自己让路。
+
+- 刻度受版面限制仍挨 D60 采样：`fit = floor((0.7×视口高 + 4) / 6)`（844px 约 99 根、900px 约 105 根），所以「120 轮 = 120 根刻度」只在能装下时成立；**行是全量的**（120 行）。票面那句话要当「轮次都画上了、能装下就一根不少」读。
+
+**验证：** `node --experimental-strip-types bridge/tests/history-ui.mjs`（63 项）：G. 点最上面那根淡刻度 → 期间按钮 `disabled` + 「载入中…」、刻度带 `.busy`，正好 3 个 `history.before`，翻完定位到第 1 轮并带 `.turn-flash`、按钮收起、`.busy` 撤掉；H. 起跳后同一拍派发上滚 `wheel` → 只取回已在飞的那一页（1 个请求）、不高亮、第 1 轮仍在视口上方很远、按钮回「载入更早」；I. 假桥在 `session` 帧的 `history.turns` 前插一条正文里不存在的轮次 → 点那一**行**（行与刻度共用回调）翻到头就停（3 个请求）、顶部那行是「没翻到第 1 轮」且可见（行不隐藏、钮不可点）、**带子上那句提示的 bounding box 落在视口内**、不跳不高亮、800ms 后不再发请求、3 秒后两处提示都自己收。另有「ghost 行的 aria-label 写着未载入」。已载入的刻度点击照旧即时定位（E 段原断言）。两边 typecheck（`npm --prefix web run typecheck` 含 i18n-check、`npm --prefix bridge run typecheck`）与 `bridge/tests/history-page-unit.mjs` 都过。
+## D202 Jira 连接：凭据留在桥里，页面只见掩码；隧道只读（工单 #248）
 
 **问题：** 网页客户端要连 Jira（#247 第一张单：入口 + 连接 + 个人信息）。Jira Cloud 的 REST API 用 Basic 认证（邮箱 + API token），token 等于账号的完全权限；页面是可能被隧道带出去的，凭证存哪、谁能读、能对哪里发请求，都得先定下来。
 
@@ -3446,9 +3472,9 @@ D
 
 **验证：** `node bridge/tests/jira-e2e.mjs`（9 项，假 Jira + 临时 `PI_WEB_STATE`）：未配置 `configured:false` / 错 token 400 + `jira_auth` + 原话 + **文件不存在** / 正确凭据落盘且 GET 响应全文不含 token / `GET me` 401→401、403→403 / 未配置 `jira_not_configured` / DELETE 后回未配置 / 隧道 PUT·DELETE 403 `tunnel_readonly` 而 GET 200 / 白名单外头像 502 `jira_avatar` / `avatarUrlAllowed` 正反例。`node web/tests/jira-unit.mjs`（7 项，纯函数在 `web/src/jira-shared.ts`，不经 `chat.ts`，Node 26 直接跑）：`siteUrlProblem` 的 http·IP·localhost·`.local`·path·query 全拒、正常 Cloud 站点（含结尾 `/`、无 scheme）通过；`keyMask` 只露后 4 位。`npm --prefix web run typecheck`（含 i18n-check：1807 键 × 3 语）与 `npm run build:web` 都过。
 
-## D202 Jira 列表：桥固定查询 + 60 秒内存缓存（工单 #249）
+## D203 Jira 列表：桥固定查询 + 60 秒内存缓存（工单 #249）
 
-**问题：** 连上 Jira 之后，面板要显示「我的未完成」和「可访问项目」。这两段都是上游实时数据，但面板开关频繁（每次 `open()` 都重新问桥，D201），Jira Cloud 又按账号限流；同时页面不该有能力对 Jira 发起任意查询。
+**问题：** 连上 Jira 之后，面板要显示「我的未完成」和「可访问项目」。这两段都是上游实时数据，但面板开关频繁（每次 `open()` 都重新问桥，D202），Jira Cloud 又按账号限流；同时页面不该有能力对 Jira 发起任意查询。
 
 **决定：**
 
@@ -3462,7 +3488,7 @@ D
 
 **验证：** `node bridge/tests/jira-e2e.mjs`（17 项，假 Jira 加 `search/jql` 与 `project/search` + 命中计数器）：固定 JQL/字段（含页面传 `jql`、`fields`、`startAt` 被忽略）、字段映射（priority 为空回 `null`）、空列表、401/403 映射、两次读取只打一次上游、`refresh=1` 再打一次、`projects` 的映射与缓存、重新保存凭据清空缓存、未配置 400。`node web/tests/jira-unit.mjs`（10 项）：`browseUrl` / `formatUpdated` / `issueMeta`。`npm --prefix web run typecheck`（含 i18n-check：1814 键 × 3 语）与 `npm run build:web` 都过。
 
-## D203 Jira 详情：ADF 在页面端解释、评论只为附件而取、详情不缓存（工单 #250）
+## D204 Jira 详情：ADF 在页面端解释、评论只为附件而取、详情不缓存（工单 #250）
 
 **问题：** 「我的未完成」里点一行要就地展开详情：描述（Jira Cloud 存的是 ADF）+ 两段附件清单（issue 附件、评论附件）。描述要不要桥先转成文本、评论正文要不要一起返回、详情要不要缓存，三件事都会影响接口边界与将来的下载（#251）。
 
@@ -3470,13 +3496,13 @@ D
 
 1. **描述 ADF → 纯文本在页面端做，桥原样透传。** `GET /api/jira/issues/:key` 的 `issue.description` 就是上游 `fields.description`（可能是 `null` 或 ADF 对象），桥不解析、不裁剪；`web/src/jira-shared.ts` 的 `adfToText()` 把段落 / 标题 / 列表 / 代码块 / 表格 / 引用 / 分隔线转成可读文本，`media` 节点变成 `[图片]` / `[附件]` 占位，超过 800 字截断并给「在新窗口打开」。代价：页面多一层要跟着 ADF 演进维护的转换器（认不出的节点类型会退化成丢格式的纯文本）；好处是桥保持「只做认证与转发」的单一职责，将来别的界面（预览、摘要）能复用同一份 ADF。
 2. **评论只为附件而取：只挖 `media` / `mediaSingle` 节点的 `attrs.id`。** 详情固定打一次 `GET /rest/api/3/issue/<KEY>/comment?maxResults=100`，遍历每条评论的 ADF body 收集 media id，映射成 `{ id, filename: attrs.alt || attrs.title || "附件", size: null, author: comment.author.displayName, created: comment.created }`，按 id 去重；评论正文、body 原样、其它字段都不进响应（e2e 用哨兵字符串断言全文不含）。代价：评论附件拿不到真实大小（media 节点里没有），界面显示 `—`；这条评论接口失败时整个详情按该错误码失败，而不是静默少一段附件——宁可让用户看见「读不到」，也不假装「没有评论附件」。
-3. **详情不缓存，只记在面板实例内存里。** 详情是点开才要的数据，桥端没有 TTL 缓存（与 D202 的列表缓存分开）；页面用 `Map<key, {open, state}>` 记住已经取到的结果，收起再展开、多行同时展开都不重请求，面板关闭 / 重连 / 换账号即丢弃。代价：同一工单在两个标签页里各请求一次；页面刷新后重新取；换来的是不会把上一个账号的工单详情留在内存里，也少一份要跟凭据失效同步的缓存。
+3. **详情不缓存，只记在面板实例内存里。** 详情是点开才要的数据，桥端没有 TTL 缓存（与 D203 的列表缓存分开）；页面用 `Map<key, {open, state}>` 记住已经取到的结果，收起再展开、多行同时展开都不重请求，面板关闭 / 重连 / 换账号即丢弃。代价：同一工单在两个标签页里各请求一次；页面刷新后重新取；换来的是不会把上一个账号的工单详情留在内存里，也少一份要跟凭据失效同步的缓存。
 
 **接口形状：** `GET /api/jira/issues/:key` → `{ issue: { key, summary, type, priority, status, updated, description }, attachments: { issue: [...], comments: [...] } }`。key 先过形状校验 `^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`（不匹配 400 `jira_key`），大写化后拼 URL；这只是形状校验，能不能看由固定站点与用户 token 决定。上游 404 → 404 `jira_not_found`（「Jira 上没有这个工单」），401/403 沿用 `jira_auth` / `jira_forbidden`。
 
 **验证：** `node bridge/tests/jira-e2e.mjs`（23 项，新增 6 项）：详情字段映射与 description 原样透传、两段附件映射（未知 size → `null`、未知 author → 空串、评论 media 按 id 去重）、响应全文不含 `SENTINEL_COMMENT_TEXT`、key 大写化与形状校验、404/401/403 映射、详情不缓存与未配置 400。`node web/tests/jira-unit.mjs`（18 项，新增 8 项）：`adfToText` 的段落 / 标题 / 嵌套无序与有序列表 / 代码块 / 表格 / media 占位 / mention / hardBreak / 链接 / 空输入，`formatBytes` 的 B/KB/MB 与未知值。`npm --prefix web run typecheck`（含 i18n-check：1821 键 × 3 语）与 `npm run build:web` 都过。
 
-## D204 Jira 下载全部附件：根目录独立成文件、评论 media 探测 uuid、100 MB 上限与串行（工单 #251）
+## D205 Jira 下载全部附件：根目录独立成文件、评论 media 探测 uuid、100 MB 上限与串行（工单 #251）
 
 **问题：** 详情块里的两段附件（issue 附件 + 评论附件）要能一键收下来。落盘到哪、评论里那些 media 的 id 与 attachment id 不是一回事、跳转是签名 URL、超大文件与并发、公网隧道下的写权限，五件事都要在桥这边定清楚。
 
@@ -3500,7 +3526,7 @@ D
 
 **偏移点（未在真实租户上核实）：** 白名单按工单原文只收 `*.atl-paas.net`；Atlassian Media 的真实主机若是 `api.media.atlassian.com` 之类，跳转会整体 `failed`。实机确认后只改 `attachmentRedirectAllowed` 一处；先把「拒绝未知主机」定下来，比先放行再看发生了什么安全。
 
-## D205 Jira「交给 agent」：提示词在页面拼、附件行由桥端的 downloaded 事实决定、浮层照抄笔记面板（工单 #252）
+## D206 Jira「交给 agent」：提示词在页面拼、附件行由桥端的 downloaded 事实决定、浮层照抄笔记面板（工单 #252）
 
 **问题：** 列表每一行和展开的详情里都要有一颗「交给 agent ▾」，两个出口（预填当前会话 / 新开会话）与笔记面板一致。要定清楚的是：提示词在哪拼、附件路径那一行凭什么出现、浮层是抽共用件还是复制。
 

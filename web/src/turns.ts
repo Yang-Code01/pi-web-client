@@ -7,6 +7,10 @@ import { tr } from "./i18n/index.ts";
  * 就跳回那一轮，鼠标扫过某行时那一轮会亮一下，顺带在正文里高亮对应那条用户消息（Q-028）。
  *
  * 这里只管几何、抽样和高亮，不认识消息结构：ChatView 递进来的是「一行文字」，跳转也由它自己做。
+ *
+ * #243: 带子画的是**整段会话**，不只是已载入的部分 —— 桥上把全量轮次索引一起送了下来，
+ * 未载入的那些以 `ghost` 排在已载入段上面，淡一档占位；翻出一页就吃掉等量的 ghost。
+ * #244: 点 ghost 不再什么都不发生 —— 带子把那一轮的 id 交回去，由 ChatView 自动往回翻页去找。
  */
 
 /** 刻度只有 2px 高、间距 4px，所以一条刻度占 6px 版面。 */
@@ -21,15 +25,31 @@ export interface TurnRail {
   /**
    * #220: 往前翻出一页 —— 更早的那些轮插到带上沿，不是尾端。`current` / `hot` 跟着往后挪，
    * 免得「你在这儿」那根刻度换了个人。
+   * #243: 这些轮次本来就以 ghost 占位在带上沿，所以先吃掉等量的 ghost 再插（见实现里的说明）。
    */
   prepend(labels: string[]): void;
-  /** 「你在哪一轮」——滚动时由 ChatView 按视口顶部落下的那一轮喂进来。 */
+  /**
+   * #243: 整段历史里**还没载入**的那些轮（更早的），整体替换「淡的那一段」。
+   * 它们永远排在已载入段前面；`onPick` / `onHover` / `setCurrent` 的 index 都只数已载入的轮次。
+   * 带 id 是因为翻页会把新轮次插到前面 —— 数字下标一变就指错人（#244）。
+   */
+  setGhosts(items: { id: string; label: string }[]): void;
+  /** 「你在哪一轮」——滚动时由 ChatView 按视口顶部落下的那一轮喂进来（只看已载入的）。 */
   setCurrent(index: number): void;
+  /** #244: 自动往回翻页期间，淡的那一段轻脉动 —— 「那一带正在动」。 */
+  setBusy(busy: boolean): void;
+  /**
+   * #244: 跳转失败的那句话，挂在带子上。带子固定在右缘、不随滚动走，而正文顶部那一行
+   * （`.chat-more`）在视口上方几千像素外 —— 「可见」得靠这里。由 ChatView 计时清掉。
+   */
+  setNote(note: string | null): void;
 }
 
 export interface TurnRailOpts {
   /** 点某一行 / 某根刻度。 */
   onPick(index: number): void;
+  /** #244: 点未载入的那一行 / 那一根刻度 —— 交回它的 id，跳转由 ChatView 自己翻页去找。 */
+  onPickGhost?(id: string): void;
   /** 鼠标在某一行上（null = 离开），用于在正文里预览高亮那条消息。 */
   onHover(index: number | null): void;
   /**
@@ -39,6 +59,20 @@ export interface TurnRailOpts {
   viewport?: HTMLElement | null;
 }
 
+/** 一根刻度 / 一行的写法：ghost 与已载入共用「第 N 轮：…」，ghost 多一句「（未载入）」。 */
+function titleOf(index: number, label: string, ghost: boolean): string {
+  return ghost
+    ? tr("第 {p1} 轮（未载入）：{p2}", { p1: index + 1, p2: label })
+    : tr("第 {p1} 轮：{p2}", { p1: index + 1, p2: label });
+}
+
+/** 无障碍名字比 tooltip 多说一个动作 —— 两者都能点，ghost 点了是「往回翻到它」。 */
+function ariaOf(index: number, label: string, ghost: boolean): string {
+  return ghost
+    ? tr("跳到第 {p1} 轮（未载入）：{p2}", { p1: index + 1, p2: label })
+    : tr("跳到第 {p1} 轮：{p2}", { p1: index + 1, p2: label });
+}
+
 export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
   const rail = document.createElement("div");
   rail.className = "turn-rail";
@@ -46,31 +80,56 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
   const list = document.createElement("div");
   list.className = "turn-list";
   rail.append(list);
+  /** #244: 失败提示的落点（在带子顶端往左伸出去）；`paint()` 重建子节点时要把它带上。 */
+  const note = document.createElement("div");
+  note.className = "turn-note";
+  note.hidden = true;
+  note.setAttribute("role", "status");
   host.append(rail);
 
+  /** 已载入的轮次（刻度带下半段，实线）。 */
   const labels: string[] = [];
-  /** 刻度下标 → 轮次下标。轮次多于版面时按比例抽样，首尾一定保留（最后一轮永远在带上）。 */
+  /**
+   * 未载入的轮次（刻度带上半段，`ghost`）：从最早的到离已载入段最近的。和 `labels` 拼起来才是
+   * 整段会话的顺序；翻出一页就从**尾部**吃掉等量 ghost。
+   */
+  let ghosts: { id: string; label: string }[] = [];
+  /** 刻度下标 → 整条带子里的轮次下标（ghost + 已载入）。轮次多于版面时按比例抽样，首尾一定保留。 */
   let mapped: number[] = [];
   let ticks: HTMLButtonElement[] = [];
   let rows: HTMLButtonElement[] = [];
+  /** 「当前」/「悬停」都只用**已载入轮次的下标**（ChatView 的坐标系），画的时候再加 ghost 偏移。 */
   let current = -1;
   let hot = -1;
+
+  const total = (): number => ghosts.length + labels.length;
 
   /** 一根刻度代表从它到下一根刻度之间的所有轮次，所以「当前」落在区间里就算命中。 */
   const covers = (k: number, index: number): boolean => {
     const from = mapped[k];
-    const to = k + 1 < mapped.length ? mapped[k + 1] : labels.length;
+    const to = k + 1 < mapped.length ? mapped[k + 1] : total();
     return index >= from && index < to;
   };
 
   const markCurrent = (): void => {
-    rows.forEach((row, i) => row.classList.toggle("cur", i === current));
-    ticks.forEach((tick, k) => tick.classList.toggle("cur", current >= 0 && covers(k, current)));
+    const at = current >= 0 ? ghosts.length + current : -1;
+    rows.forEach((row, i) => {
+      row.classList.toggle("cur", i === at);
+    });
+    // ghost 只占位：即使某个 ghost 刻度的区间伸进了已载入段，「当前」也不能落在它上面。
+    ticks.forEach((tick, k) => {
+      tick.classList.toggle("cur", at >= 0 && mapped[k] >= ghosts.length && covers(k, at));
+    });
   };
 
   const markHot = (): void => {
-    rows.forEach((row, i) => row.classList.toggle("hot", i === hot));
-    ticks.forEach((tick, k) => tick.classList.toggle("hot", hot >= 0 && covers(k, hot)));
+    const at = hot >= 0 ? ghosts.length + hot : -1;
+    rows.forEach((row, i) => {
+      row.classList.toggle("hot", i === at);
+    });
+    ticks.forEach((tick, k) => {
+      tick.classList.toggle("hot", at >= 0 && mapped[k] >= ghosts.length && covers(k, at));
+    });
   };
 
   /** 让带子垂直居中于正文视口（而不是连输入框一起算的整个对话栏）。 */
@@ -83,57 +142,78 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
   };
 
   const paint = (): void => {
-    rail.hidden = labels.length < 2;
+    // 带子是整段会话（ghost + 已载入）的缩略，不只是已经翻出来的那几页。
+    const all = [...ghosts.map((ghost) => ghost.label), ...labels];
+    rail.hidden = all.length < 2;
     frame();
     // 版面高度按正文视口七成算：刻度带上下一起来，最长也就是这个高度。
     const view = opts.viewport ?? host;
     const avail = Math.max(96, Math.round((view.clientHeight || 560) * 0.7));
     const fit = Math.max(3, Math.floor((avail + TICK_GAP) / (TICK_H + TICK_GAP)));
     mapped = [];
-    if (labels.length <= fit) {
-      for (let i = 0; i < labels.length; i++) mapped.push(i);
+    if (all.length <= fit) {
+      for (let i = 0; i < all.length; i++) mapped.push(i);
     } else {
-      for (let j = 0; j < fit; j++) mapped.push(Math.round((j * (labels.length - 1)) / (fit - 1)));
+      for (let j = 0; j < fit; j++) mapped.push(Math.round((j * (all.length - 1)) / (fit - 1)));
     }
 
     ticks = mapped.map((index) => {
+      const ghost = index < ghosts.length;
+      // 已载入轮次的下标（ghost 内部加偏移，ChatView 递进来的坐标不用改）。
+      const turn = index - ghosts.length;
+      const label = ghost ? ghosts[index].label : labels[turn];
       const tick = document.createElement("button");
       tick.type = "button";
-      tick.className = "turn-tick";
+      tick.className = ghost ? "turn-tick ghost" : "turn-tick";
       tick.dataset.i = String(index);
-      tick.title = tr("第 {p1} 轮：{p2}", { p1: index + 1, p2: labels[index] });
-      tick.setAttribute("aria-label", tr("跳到第 {p1} 轮：{p2}", { p1: index + 1, p2: labels[index] }));
-      tick.onclick = () => opts.onPick(index);
-      tick.onpointerenter = () => {
-        hot = index;
-        markHot();
-        opts.onHover(index);
-      };
+      tick.title = titleOf(index, label, ghost);
+      tick.setAttribute("aria-label", ariaOf(index, label, ghost));
+      // ghost 还没载入：点它交给 ChatView 自动往回翻页（#244），没有节点可预览所以不挂 hover。
+      if (ghost) {
+        const id = ghosts[index].id;
+        tick.onclick = () => opts.onPickGhost?.(id);
+      } else {
+        tick.onclick = () => opts.onPick(turn);
+        tick.onpointerenter = () => {
+          hot = turn;
+          markHot();
+          opts.onHover(turn);
+        };
+      }
       return tick;
     });
 
-    rows = labels.map((label, index) => {
+    rows = all.map((label, index) => {
+      const ghost = index < ghosts.length;
+      const turn = index - ghosts.length;
       const row = document.createElement("button");
       row.type = "button";
-      row.className = "turn-row";
+      row.className = ghost ? "turn-row ghost" : "turn-row";
       row.dataset.i = String(index);
-      row.title = tr("第 {p1} 轮：{p2}", { p1: index + 1, p2: label });
+      row.title = titleOf(index, label, ghost);
+      // 行按钮的可及名默认只是那行字；ghost 要听得出「还没载入、点了会去翻」。#244 两种都给同一套。
+      row.setAttribute("aria-label", ariaOf(index, label, ghost));
       const text = document.createElement("span");
       text.className = "txt";
       text.textContent = label;
       const dash = document.createElement("span");
       dash.className = "dash";
       row.append(text, dash);
-      row.onclick = () => opts.onPick(index);
-      row.onpointerenter = () => {
-        hot = index;
-        markHot();
-        opts.onHover(index);
-      };
+      if (ghost) {
+        const id = ghosts[index].id;
+        row.onclick = () => opts.onPickGhost?.(id);
+      } else {
+        row.onclick = () => opts.onPick(turn);
+        row.onpointerenter = () => {
+          hot = turn;
+          markHot();
+          opts.onHover(turn);
+        };
+      }
       return row;
     });
 
-    rail.replaceChildren(...ticks, list);
+    rail.replaceChildren(...ticks, list, note);
     list.replaceChildren(...rows);
     markCurrent();
     markHot();
@@ -172,6 +252,7 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
   return {
     clear() {
       labels.length = 0;
+      ghosts = [];
       current = -1;
       hot = -1;
       paint();
@@ -180,8 +261,16 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
       labels.push(label);
       schedulePaint();
     },
+    setGhosts(items) {
+      ghosts = items.map((item) => ({ ...item }));
+      schedulePaint();
+    },
     prepend(items) {
       if (!items.length) return;
+      // #243: 这些轮次本来就以 ghost 占位在带子上沿，先吃掉等量的（从离已载入段最近的开始）。
+      // 索引缺失（老桥 / 被截断）时 ghost 可能不够：不拦住翻页，多出来的轮次直接按已载入画。
+      const eaten = Math.min(items.length, ghosts.length);
+      if (eaten) ghosts = ghosts.slice(0, ghosts.length - eaten);
       labels.unshift(...items);
       if (current >= 0) current += items.length;
       if (hot >= 0) hot += items.length;
@@ -192,6 +281,13 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
       if (next === current) return;
       current = next;
       markCurrent();
+    },
+    setBusy(busy) {
+      rail.classList.toggle("busy", busy);
+    },
+    setNote(text) {
+      note.textContent = text ?? "";
+      note.hidden = !text;
     },
   };
 }
