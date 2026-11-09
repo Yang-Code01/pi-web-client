@@ -135,12 +135,13 @@ function walk(file, out) {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
       const text = node.text;
       if (CJK.test(text)) {
-        if (isIgnored(node)) {
-          // 不是界面文案（给模型的指令）：既不报漏翻，也不进键集合。
-        } else if (isTrKey(node)) {
+        if (isTrKey(node)) {
+          // 区间里的 tr() 仍然算键：忽略只针对「不是界面文案」的裸字面量。
           out.keys.add(text);
           const line = sf.getLineAndCharacterOfPosition(node.getStart()).line + 1;
           if (!out.context.has(text)) out.context.set(text, { file: path.relative(here, file), line, src: src.split("\n")[line - 1].trim().slice(0, 200) });
+        } else if (isIgnored(node)) {
+          // 不是界面文案（给模型的指令）：不报漏翻。
         } else if (inLangNames(node)) {
           // LANGS 的标签是各自语言的原生写法（简体中文 / English / 日本語），永远不翻译。
         } else if (inModuleConst(node)) {
@@ -152,15 +153,13 @@ function walk(file, out) {
     } else if (ts.isTemplateExpression(node) && CJK.test(node.getText(sf))) {
       // 模板串：整段算一个键（占位符由 codemod 换成 {p1}…，位置对应 templateSpans 顺序）。
       // 没走 tr() 的模板串同样要报：只查普通字面量的话，`${count} 条待处理` 这种会漏掉。
-      if (isIgnored(node)) {
-        // 给模型的指令（不在 i18n-ignore 区间内才查）。
-      } else if (!isTrKey(node) && !inLogicCall(node)) {
-        out.bare.push({ file: path.relative(here, file), line: sf.getLineAndCharacterOfPosition(node.getStart()).line + 1, start: node.getStart(sf), end: node.getEnd(), text: node.getText(sf).replace(/\s+/g, " ").slice(0, 60) });
-      } else if (isTrKey(node)) {
+      if (isTrKey(node)) {
         const key = node.head.text + node.templateSpans.map((s, i) => `{p${i + 1}}` + s.literal.text).join("");
         out.keys.add(key);
         const line = sf.getLineAndCharacterOfPosition(node.getStart()).line + 1;
         if (!out.context.has(key)) out.context.set(key, { file: path.relative(here, file), line, src: src.split("\n")[line - 1].trim().slice(0, 200) });
+      } else if (!isIgnored(node) && !inLogicCall(node)) {
+        out.bare.push({ file: path.relative(here, file), line: sf.getLineAndCharacterOfPosition(node.getStart()).line + 1, start: node.getStart(sf), end: node.getEnd(), text: node.getText(sf).replace(/\s+/g, " ").slice(0, 60) });
       }
     }
     ts.forEachChild(node, visit);

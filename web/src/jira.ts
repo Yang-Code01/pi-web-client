@@ -16,7 +16,6 @@ import { adfToText, browseUrl, downloadMark, formatBytes, formatUpdated, handoff
 import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
 
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
-export { keyMask, siteUrlProblem } from "./jira-shared.ts";
 
 export interface JiraHandoff {
   /** 只把提示词放进当前输入框，不发送。 */
@@ -835,8 +834,9 @@ export class JiraPanel {
    * 不阻断交接（少一行路径总比交不出去好）。
    */
   private async downloadedDir(key: string): Promise<string | null> {
-    const known = this.details.get(key)?.download?.dir;
-    if (known) return known;
+    const known = this.details.get(key)?.download;
+    // 只有真落过盘才复用：整单全跳过/失败时目录是空的，不能拿它去拼「已经下载到本机」。
+    if (known?.dir && known.items.some((item) => item.status === "saved")) return known.dir;
     try {
       return (await api.jiraDownloaded(key)).dir;
     } catch {

@@ -25,6 +25,7 @@
     "test:pillbar": "node --experimental-transform-types web/tests/pillbar-unit.mjs",
     "test:dirpath": "node --experimental-transform-types web/tests/dirpath-unit.mjs",
     "test:commands": "node --experimental-transform-types web/tests/commands-unit.mjs",
+    "test:jira": "node bridge/tests/jira-e2e.mjs && node web/tests/jira-unit.mjs",
     "test:skill": "node bridge/tests/skill-implicit.mjs",
     "test:models": "node bridge/tests/models-unit.mjs",
     "test:stat": "node bridge/tests/stat-path.mjs",

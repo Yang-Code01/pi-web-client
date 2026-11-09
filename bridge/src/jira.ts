@@ -109,7 +109,7 @@ function isIpLiteral(host: string): boolean {
 }
 
 /**
- * 站点地址的毛病（中文原因）或 null。桥侧是权威校验，页面 `web/src/jira.ts` 有一份同口径的
+ * 站点地址的毛病（中文原因）或 null。桥侧是权威校验，页面 `web/src/jira-shared.ts` 有一份同口径的
  * 即时提示 —— 两边都改才算改完。
  */
 export function siteUrlProblem(raw: string): string | null {
@@ -967,14 +967,14 @@ async function saveConfig(req: http.IncomingMessage, res: http.ServerResponse, c
 }
 
 async function getMe(res: http.ServerResponse, ctx: JiraCtx): Promise<void> {
-  const config = readJiraConfig();
-  if (!config) return fail(res, 400, "jira_not_configured", "还没连接 Jira");
+  const config = listConfig(res);
+  if (!config) return;
   return json(res, 200, await myself(config, ctx));
 }
 
 async function getAvatar(res: http.ServerResponse, ctx: JiraCtx): Promise<void> {
-  const config = readJiraConfig();
-  if (!config) return fail(res, 400, "jira_not_configured", "还没连接 Jira");
+  const config = listConfig(res);
+  if (!config) return;
   try {
     const me = await myself(config, ctx);
     if (!me.avatarUrl || !avatarAllowed(config, ctx, me.avatarUrl)) {
