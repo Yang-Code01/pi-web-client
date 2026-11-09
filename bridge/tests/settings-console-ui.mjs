@@ -169,7 +169,7 @@ try {
   const footHint = (await page.locator(".st-foot__hint").innerText()).trim();
   check(footHint === "保存写整张表单；每行仍标出覆盖 / 未设置", `底部说明（${footHint}）`);
   const footMeta = (await page.locator(".st-foot__meta").innerText()).trim();
-  check(footMeta === "pi-web-client · D214", `底部元信息（${footMeta}）`);
+  check(footMeta === "pi-web-client · D216", `底部元信息（${footMeta}）`);
 
   const groups = (await page.locator(".st-nav__group").allInnerTexts()).map((s) => s.trim());
   check(groups.length === 2 && groups[0] === "设置" && groups[1] === "系统", `左栏两组（${groups.join(" / ")}）`);

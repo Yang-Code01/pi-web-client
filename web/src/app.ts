@@ -28,6 +28,7 @@ import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
+import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
@@ -3780,7 +3781,16 @@ export class App {
         chips.append(chip);
       }
     };
-    for (const m of this.models) {
+    // 在用的模型钉在最上面（每次打开按当前会话重画，换了模型就跟着换），其余按来源分组。
+    const { pinned, groups } = groupModels(this.models, { id: startModel });
+    const sections: { title: string; models: ModelInfo[] }[] = [];
+    if (pinned) sections.push({ title: tr("当前使用"), models: [pinned] });
+    for (const g of groups) sections.push({ title: g.provider, models: g.models });
+    for (const section of sections) {
+      const isPinned = !!pinned && section.models[0] === pinned;
+      const group = modelGroupSection(section.title, section.models.length, { pinned: isPinned });
+      list.append(group.node);
+      for (const m of section.models) {
       const row = el("button", `model-row${m.id === draftModel ? " on" : ""}`);
       row.dataset.id = m.id;
       const nameEl = el("span", "m-name", shortModelName(m.name));
@@ -3804,7 +3814,8 @@ export class App {
       row.ondblclick = () => {
         if (!confirm.disabled) confirm.click();
       };
-      list.append(row);
+      group.body.append(row);
+      }
     }
     sheet.append(list);
 
@@ -4443,7 +4454,7 @@ export class App {
     };
     const model = el("select", "ns-input") as HTMLSelectElement;
     model.append(new Option(tr("（用默认模型）"), ""));
-    for (const m of this.models) model.append(new Option(`${shortModelName(m.name)} · ${m.provider}`, `${m.provider}/${m.id}`));
+    appendModelOptions(model, this.models, undefined, (m) => shortModelName(m.name), tr("当前使用"));
     field(tr("模型 --model"), model);
     const thinking = el("select", "ns-input") as HTMLSelectElement;
     for (const lv of ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"]) thinking.append(new Option(lv || tr("（默认）"), lv));
@@ -5865,12 +5876,16 @@ export class App {
         main.replaceChildren(bar, scroll);
         return;
       }
+      // 整份只有新增（或只有删除）时没有「对比」可看：单栏铺满，别把一半地方留给空白。
+      const only = this.onlySide(d);
+      const pad = el("div", "diff-pad");
       for (const h of d.hunks) {
         const hh = el("div", "diff-hunk", h.header);
         hunkEls.push(hh);
-        scroll.append(hh, this.sideBySide(h));
+        pad.append(hh, only ? this.unifiedTable(h, only) : this.sideBySide(h));
       }
-      if (d.truncated) scroll.append(el("div", "diff-note", tr("改动太多，只显示了前面一部分。")));
+      if (d.truncated) pad.append(el("div", "diff-note", tr("改动太多，只显示了前面一部分。")));
+      scroll.append(pad);
       main.replaceChildren(bar, scroll);
     };
 
@@ -5933,6 +5948,43 @@ export class App {
     if (d.reason === "too-large") return tr("文件太大，没有逐行比对（只比了大小）。");
     if (d.reason === "rewrite") return tr("改动太大，按「整体重写」处理，没有逐行比对。");
     return tr("和写入前相比没有变化。");
+  }
+
+  /**
+   * 整份改动只有一种行（全是 `+` 或全是 `-`，典型是新建文件）时没有两边可比 ——
+   * 返回该用哪一边的行号来决定单栏；混着改的照旧左右对照。
+   */
+  private onlySide(d: ArtifactDiff): "new" | "old" | null {
+    let plus = false;
+    let minus = false;
+    for (const h of d.hunks) {
+      for (const ln of h.lines) {
+        if (ln.kind === "+") plus = true;
+        else if (ln.kind === "-") minus = true;
+        if (plus && minus) return null;
+      }
+    }
+    return plus ? "new" : minus ? "old" : null;
+  }
+
+  /**
+   * 单栏：一行「号 + 代码」铺满宽度。给整份只有新增 / 只有删除的文件用 ——
+   * 另一边整列都是空的，左右对照只会把代码挤进半屏（新建文件尤其明显）。
+   */
+  private unifiedTable(h: ArtifactHunk, side: "old" | "new"): HTMLElement {
+    const table = el("div", "diff-table unified");
+    for (const ln of h.lines) {
+      const row = el("div", "diff-row");
+      const no = el("span", "diff-no", String((side === "old" ? ln.oldNo : ln.newNo) ?? ""));
+      const text = el("span", "diff-text");
+      text.textContent = ln.text;
+      const kind = ln.kind === "-" ? "minus" : ln.kind === "+" ? "plus" : "same";
+      no.classList.add(kind);
+      text.classList.add(kind);
+      row.append(no, text);
+      table.append(row);
+    }
+    return table;
   }
 
   /**
@@ -9073,7 +9125,7 @@ export class App {
     const foot = el("footer", "st-foot");
     foot.append(
       el("span", "st-foot__hint", tr("保存写整张表单；每行仍标出覆盖 / 未设置")),
-      el("span", "st-foot__meta", "pi-web-client · D214"),
+      el("span", "st-foot__meta", "pi-web-client · D216"),
     );
     consoleNode.append(head, main, foot);
     back.append(consoleNode);
@@ -9935,13 +9987,15 @@ export class App {
       } else if (f.kind === "select" || f.kind === "model") {
         const sel = el("select", "ns-input") as HTMLSelectElement;
         sel.append(new Option(empty || tr("（清空）"), ""));
-        const opts = f.kind === "model"
-          ? this.models.map((m): [string, string] => [`${m.provider}/${m.id}`, `${shortModelName(m.name)} · ${m.provider}`])
-          : f.choices
-            ? f.choices.map((c): [string, string] => [c.value, c.label])
-            : (f.options ?? []).map((o): [string, string] => [o, o]);
-        for (const [value, label] of opts) sel.append(new Option(label, value));
         const cur = typeof current === "string" ? current : "";
+        if (f.kind === "model") {
+          const at = cur.indexOf("/");
+          const pin = at > 0 ? { provider: cur.slice(0, at), id: cur.slice(at + 1) } : undefined;
+          appendModelOptions(sel, this.models, pin, (m) => shortModelName(m.name), tr("当前使用"));
+        } else {
+          const opts = f.choices ? f.choices.map((c) => [c.value, c.label]) : (f.options ?? []).map((o) => [o, o]);
+          for (const [v, label] of opts) sel.append(new Option(label, v));
+        }
         if (cur && ![...sel.options].some((o) => o.value === cur)) sel.append(new Option(tr("{p1}（当前）", { p1: cur }), cur));
         sel.value = cur;
         sel.onchange = () => {

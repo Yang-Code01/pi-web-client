@@ -3697,7 +3697,41 @@ D
 
 **验证：** `npm run test:image`（`session-image-unit.mjs` 6 项 + `session-image.mjs` 9 项：列表、两序号字节/mime、越界 404、负序号 400、幽灵会话/条目 404、缓存头）；`npm run test:image:ui`（Playwright 11 项：气泡缩略图源是接口、点开 1×1 原图解码成功、Esc 关闭；合成 paste 后待发角标、弹层缩略图按钮、data URL 灯箱、× 关闭；真发出去后 `user:N` 从桥内存取图并解码；无页面异常）。`npm run typecheck`、`npm run build` 通过。
 
-## D214 设置面板改成本机管理同构的 C3 控制台：表单为主、对照只读、保存走 diff（#282–#287）
+## D214 diff 弹窗：单边改动单栏铺满，hunk 头不再漏行
+
+**问题：** 新建文件（整份都是 `+`）在左右对照里等于把右半屏复制成两半：左列只剩 48px 行号和一大片空白，代码挤在半屏，998 行每行只看得见十来个字。另外往下滚时，代码会从 hunk 头**上方**那条缝里露出来 —— `@@ -0,0 +1,998 @@` 头顶压着半行代码（穿模）。
+
+**原因（穿模）：** `.diff-scroll { padding: 8px 0 24px }` 撞上 `.diff-hunk { position: sticky; top: 0 }`。sticky 的吸附矩形是**滚动容器自己的 padding box**，容器带内边距，头就停在 +8px，那一条 8px 永远露着下滚的行。跟 `backdrop-filter`、合成层都无关（都摘掉复现页照样漏）。
+
+**决定：**
+
+1. **整份改动只有一种行**（全是 `+`，或全是 `-`）时改单栏：一行「号 + 代码」，`grid-template-columns: 48px minmax(0, 1fr)`；号取存在的那一边（全新增用 `newNo`，全删除用 `oldNo`）。混着改的照旧左右对照 —— 有可比内容时才值得占两列。
+2. **上下留白从滚动容器挪到内层 `.diff-pad`**：`.diff-scroll { padding: 0 }`，`.diff-pad { padding: 8px 0 24px }`。滚动容器没有内边距，sticky 头就贴着滚动口顶边，缝没了；静止时那 8px 呼吸感由内层给。
+
+**为什么单栏按文件、不按 hunk：** 同一个文件里一半单栏一半对照，滚动时版面会跳；而「整份只有一种行」正好是唯一**没有对比内容**的情形（新建、纯追加、纯删除）。
+
+**代价：** 单栏时行的横向空间比对照模式多一倍，长行省略号的位置随窗口变（本来就是 `overflow: hidden` 不横滚）；窄屏（≤760px）那条 `.diff-row{min-width:560px}` 横滚规则对单栏不再适用，显式 `min-width: 0` 取消，免得手机上每行都要横拖。
+
+**验证：** 静态复现页（真 `web/src/styles.css`，900 / 1280 / 420 宽、`--ui-scale: 2`、`.diff-scroll.scrollTop = 140`）量 `hunk.top − scroll.top`：改前 8 / 改后 0，顶部不再有行露出；单栏文本宽度 636 里占 588（对照模式 270）；420 宽 `scrollWidth == clientWidth`（不横滚）；`npm --prefix web run typecheck`（含 i18n-check）、`npm --prefix web run build`。
+
+## D215 历史分页只跟隧道连接走：本机 / 内网仍整段下发
+
+**问题：** #218 为公网隧道把首帧切成末尾一页（`HISTORY_PAGE_SIZE = 60`）。#219–#221（2026-11-08，PR #228）把这条规矩扩展到分支切换、唤醒续接与重连，并且 `items` 帧整页替换，页面收到就 `chat.reset()`。结果本机也被切了页：切走会话再切回来，历史回到第一页，「载入更早」重新出现、还得再点一遍（#220 的验收项本来就这么写）。而本机实测一条 1267 条 / 2.6 MB 的会话：收帧 143 ms、DOM 稳定 1.3 s、最长一次任务 501 ms —— 本来就不慢，分页在那里只带来副作用。
+
+**决定：**
+
+1. **分页形状跟着连接走，不跟着会话走。** 认证层早就逐条判定过「这条连接是不是从隧道来的」（`isTunnelRequest`：`cf-connecting-ip` 或 `x-forwarded-proto: https`，结果记在 `publicReq`），`frameFor(client, payload)` 就照它整形：隧道连接原样（末尾一页 + `history`），其余把 `session` / `items` 帧的 `items` 换成整段、`history` 换成 `{hasMore:false, total}`。
+2. **单播与广播同一处成形。** subscribe / claim / create / reload 四个 `session` 帧与分支切换那条 `items` 帧都过 `frameFor`；`broadcast()` 只序列化「整段」和「原样」两份字节，逐连接挑一份发，不按连接重复序列化。
+3. **`PI_WEB_PAGE_ALL=1` 强制本机也分页**，给分页的两套 UI 用例（`test:history:ui`、`test:loadolder:ui`）和复现隧道行为用。
+4. **前端一行不用改。** `hasMore:false` + 全量 `items` 就是 #219 之前的老形状，「载入更早」自然不出现；隧道上的分页、刻度带 ghost 刻度与点刻度自动往回翻（#242–#244）全部照旧。
+
+**为什么按连接、不按配置 / UA：** 同一个人常同时开着本机标签页和公网手机；配置是全局的，而连接头是逐条的，认证层本来也依赖它判定公网请求。
+
+**代价：** 本机的大会话仍是 1.3 s 的 DOM 稳定与一次 501 ms 长任务（用户接受：卡的不是网络）；`frameFor` 给每帧多一次会话查找，命中时是常数开销。
+
+**验证：** `npm run test:paging`（`bridge/tests/paging-scope.mjs` 14 项：本机订阅 220 条整段 + `hasMore:false`、隧道 60 条 + `hasMore:true` + total 220、同一会话两帧 21 083 B vs 43 764 B、分支切换广播按连接分形状、本机任何帧都不出现 `hasMore:true`、隧道的 `history.before` 照旧翻页）；`npm run test:paging:ui`（`bridge/tests/paging-local-ui.mjs` 15 项，从页面这一层：开关不设 `PI_WEB_PAGE_ALL`，打开一条 220 条的会话帧里就是 220 条、110 轮一次画完、切走再切回仍整段且没有 `.chat-more`、断线重连不翻倍、全程 0 帧说「还有更早」）；`npm run test:history:ui`（28 项，`PI_WEB_PAGE_ALL=1`）；`npm run test:loadolder:ui`（63 项，同）；`npm --prefix bridge run typecheck`。`claim` / `reload` 两条单播起点是拉起 pi（`sessions.claim` / `sessions.reload` → `openLive`），不另起 pi 验；形状与 subscribe 共用 `sessionFrameOf` + `frameFor` 两处，subscribe 那条已盖到。
+
+## D216 设置面板改成本机管理同构的 C3 控制台：表单为主、对照只读、保存走 diff（#282–#287）
 
 **问题：** 老设置是 720px 弹层里 11 颗会换行的 chip，下面一长串表单；「全局」和「项目」是两个独立页，想看一个值现在从哪来要来回切页；默认值只以「（默认：…）」挤在标签里，项目没设置时输入框是空的，看不出会继承全局还是 pi 默认；窗口一窄，chip 换行、表单被压得很窄。旁边的本机管理已经是分组控制台，两个入口像两个产品（#282）。
 
