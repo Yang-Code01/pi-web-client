@@ -2410,6 +2410,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* 当前这一轮（落在视口顶部的那一轮）稍宽稍亮；鼠标扫到的那一轮用强调色 */
 .turn-tick.cur { width: 11px; background: var(--dim); }
 .turn-tick.hot, .turn-tick:hover { width: 14px; background: var(--accent); }
+/* #243: 整段历史里还没载入的轮次先占位 —— 淡一档（现成的 --faint），点不动、不发光。 */
+.turn-tick.ghost { background: color-mix(in srgb, var(--faint) 25%, transparent); }
+.turn-tick.ghost:hover { width: 9px; background: color-mix(in srgb, var(--faint) 25%, transparent); }
 /* 展开时刻度让位：弹层正好盖住这一列，行尾那根短横接替它 —— 看起来是同一块面板，不是一个框外面
    还挂着一列刻度（用户口径：鼠标移上去「要和 chat 融合到同一个框里面」）。 */
 .turn-rail:hover .turn-tick,
@@ -2451,6 +2454,11 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .turn-row.cur .dash { flex-basis: 24px; background: var(--text); }
 .turn-row.hot, .turn-row:hover { background: rgba(125, 211, 252, 0.16); color: #fff; }
 .turn-row.hot .dash, .turn-row:hover .dash { background: var(--accent); }
+/* #243: 未载入的行同理 —— 淡一档、不跟指针反应（没有节点可闪，#244 才接自动翻页）。 */
+.turn-row.ghost { color: var(--faint); cursor: default; }
+.turn-row.ghost .dash { background: color-mix(in srgb, var(--faint) 45%, transparent); }
+.turn-row.ghost:hover { background: transparent; color: var(--faint); }
+.turn-row.ghost:hover .dash { background: color-mix(in srgb, var(--faint) 45%, transparent); }
 
 /* 悬停预览：正文里对应那条用户消息描一圈边（点完那一下也会亮一下再退掉） */
 .msg.user .body { transition: border-color 0.16s ease, box-shadow 0.16s ease; }
