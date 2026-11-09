@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { neighborAfterArchive, pillChip, starredSessions } from "../src/pillbar.ts";
+import { neighborAfterArchive, pillChip, starredSessions, zoneStarred } from "../src/pillbar.ts";
 
 const time = (ts) => `t${ts}`;
 const session = { id: "st-1", name: "会话 01", cwd: "E:/demo", updatedAt: 7 };
@@ -59,6 +59,18 @@ test("一组里没有 ★ 时行 2 一颗胶囊都没有（只剩 NowChip 和 �
 
 test("在别组置顶的会话不串进来：本区列表里没有的 ★ id 一律忽略", () => {
   assert.deepEqual(rowIds(["a"], ["x", "y"]), []);
+});
+
+// D208：本区没定义（没有当前会话 / 反查不到组）时一颗都不画，**不**退到全量置顶。
+const zoneIds = (ids, stars) =>
+  zoneStarred(ids?.map((id) => ({ ...session, id })) ?? null, stars).map((s) => s.id);
+
+test("没有当前会话 → 行 2 清空（不拿全量置顶顶上去）", () => {
+  assert.deepEqual(zoneIds(null, ["a", "b", "c"]), []);
+});
+
+test("本区有定义时，仍然只留本区里的 ★", () => {
+  assert.deepEqual(zoneIds(["a"], ["c", "a"]), ["a"]);
 });
 
 // #188 / #189 / #190：归档当前会话之后该切到哪一颗 —— ★ 行从左到右的 id 序列 + 被归档的 id，

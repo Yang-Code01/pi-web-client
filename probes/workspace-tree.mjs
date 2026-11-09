@@ -228,6 +228,11 @@ await passGate();
 await sleep(500);
 
 let t = await tree();
+// D208：行 2 的「本区」只在有当前会话时才有定义。这里没打开任何会话，而 manage.pin 里有一颗
+// tools 组的 s-tools —— 改前它会被当成全量置顶铺进行 2，改后行 2 只剩那颗 ＋。
+const rowChips = await page.locator(".pin-strip .pin-chip[data-pin-id]").count();
+ok(rowChips === 0, `没打开会话时行 2 不列任何 ★ 胶囊（${rowChips}）`);
+ok((await page.locator(".pin-strip .pin-new").count()) === 1, "没打开会话时行 2 只剩 ＋");
 ok(t.groups.length === 3, `左栏出现 ${t.groups.length} 个工作区组（library / blog / tools）`);
 ok(
   t.groups.some((g) => g.name === "pi-web-client") && t.groups.some((g) => g.name === "blog") && t.groups.some((g) => g.name === "tools"),

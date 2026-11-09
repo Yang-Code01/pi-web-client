@@ -3567,3 +3567,21 @@ D
 **接口形状：** 细节见 `docs/JIRA-SEARCH.md`。`GET /api/jira/search` → `{ ok, issues, nextPageToken?, isLast, degraded? }`；`GET /api/jira/meta?project=` → `{ ok, statusCategories, types, priorities, statuses, partial? }`；`GET /api/jira/users?q=` → `{ ok, users, unavailable? }`；错误沿用 `jira_not_configured` / `jira_auth` / `jira_forbidden` / `jira_upstream` / `jira_network`，参数错误新增 `jira_query`（带 `field`）。
 
 **验证：** 本 PR 只落设计与实现单（#256–#259）。实现门槛：`node bridge/tests/jira-search-unit.mjs`（条件→JQL 与校验）、`node bridge/tests/jira-e2e.mjs`（三条路由、watcher 重试、meta 缓存、隧道）、`node web/tests/jira-unit.mjs`（query 组装与本地记忆）、`npm --prefix web run typecheck`（含 i18n-check）、`npm run build:web`；界面按 `docs/JIRA-SEARCH.md` 的手点清单验收。
+
+## D208 行 2 的「本区」不拿全量置顶兜底：没有当前会话就只剩 ＋
+
+**问题：** 用户在只有 1 个会话的「月报」工作区里，看到行 2 铺着 13 颗别组的 ★ 胶囊（截图里是 9 颗 + `＋5`），括弧里那句「我明明只在这组」就是 D145 留下的两条兜底造成的：`starredRow()` 在**没有当前会话**、以及**反查不到当前会话属于哪个组**时都返回 `manage.pin` 全量。全量置顶与当前组无关，于是左栏越干净，这条越像串组。
+
+**决定：** 行 2 的「本区」只在有当前会话时才有定义。
+
+1. 没有当前会话 → 返回空，`PillBar` 只剩尾巴那颗 ＋（不传 `empty` 文案，所以连提示都没有）。
+2. 有当前会话但 `wsOf()` 反查不到组（脏快照 / 过滤把组滤掉）→ 同样返回空，**不**猜一个组、也不退回全量。
+3. 旧桥 / 桩桥根本不发 `workspace` 快照时仍退回 `manage.pin`：那种桥里「本区」这个概念不存在，置顶是它唯一能给的集合。
+
+实现：`web/src/app.ts` 的 `starredRow()` 三条出口 + `web/src/pillbar.ts` 的新纯函数 `zoneStarred(zone | null, stars)`（`null` = 本区没定义 → `[]`），后者让「不猜」这条可以脱离 DOM 单测。
+
+**为什么：** 行 2 的职责是「我在这个工程里，这个工程里有什么事」。没有当前会话时它答不了第一问，退回全量置顶等于用「所有工程」回答「这个工程」——用户看到的就是别组的会话。空态至少不会指错组；左栏与顶栏标签仍然在，要找会话不缺入口。
+
+**代价 / 可改：** 没有当前会话时行 2 只剩一颗 ＋，一屏之内看不出「有哪些置顶」（要开左栏）；这是有意的：置顶的作用是「在本区里排前」，不是全局收藏夹。若以后想要「全局收藏」，应该是另一个入口（比如左栏的「已置顶」分区），而不是让行 2 兼职。
+
+**验证：** `node web/tests/pillbar-unit.mjs`（新增 2 项：`zoneStarred(null, …)` 为 `[]`、本区有定义时仍只留本区 ★）；`probes/workspace-tree.mjs`（新增 2 项：没打开会话时行 2 零胶囊、只剩 ＋）；`probes/workspace-shells.mjs`（A 壳新增 2 项：没打开会话时别组 ★ 不进行 2；打开 proj-01 的会话后行 2 只留本区那颗 `s-01-2`）；`probes/pin-auto-open.mjs`（12 项全绿，旧桥回退 `manage.pin` 的行为未变）。`npm --prefix web run typecheck`（含 i18n-check）与 `npm run build:web` 通过。
