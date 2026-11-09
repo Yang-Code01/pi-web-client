@@ -48,3 +48,53 @@ export function appendModelOptions(
     select.append(g);
   }
 }
+
+const OPEN_KEY = "pi.modelGroups.open";
+
+function openSet(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(OPEN_KEY) ?? "[]");
+    return new Set(Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * One foldable provider section: a clickable head and a body to put the rows in. Groups start
+ * folded (a long catalog is the reason for grouping); which ones the user opened is remembered
+ * across pickers and reloads. The pinned section is never folded.
+ */
+export function modelGroupSection(title: string, count: number, opts: { pinned?: boolean; key?: string } = {}): { node: HTMLElement; body: HTMLElement } {
+  const node = document.createElement("div");
+  node.className = `model-group${opts.pinned ? " pinned" : ""}`;
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = `model-group-head${opts.pinned ? " pinned" : ""}`;
+  const body = document.createElement("div");
+  body.className = "model-group-body";
+  const key = opts.key ?? title;
+  const paint = (open: boolean): void => {
+    node.classList.toggle("folded", !open);
+    head.textContent = `${opts.pinned ? "" : open ? "▾ " : "▸ "}${title} · ${count}`;
+    head.setAttribute("aria-expanded", String(open));
+  };
+  paint(opts.pinned || openSet().has(key));
+  if (!opts.pinned) {
+    head.onclick = (ev) => {
+      ev.stopPropagation();
+      const set = openSet();
+      const open = !set.has(key);
+      if (open) set.add(key);
+      else set.delete(key);
+      try {
+        localStorage.setItem(OPEN_KEY, JSON.stringify([...set]));
+      } catch {
+        /* private mode: fold state just won't stick */
+      }
+      paint(open);
+    };
+  }
+  node.append(head, body);
+  return { node, body };
+}

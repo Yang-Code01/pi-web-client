@@ -14,7 +14,7 @@ import { createEl as el } from "./chat.ts";
 import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
 import { tr } from "./i18n/index.ts";
-import { groupModels } from "./modelgroups.ts";
+import { groupModels, modelGroupSection } from "./modelgroups.ts";
 import type { Item, ModelInfo, SessionState } from "./types.ts";
 
 export interface ScratchHost {
@@ -382,7 +382,8 @@ export class ScratchChat {
     const { pinned, groups } = groupModels(list, { id: current });
     const sections = [...(pinned ? [{ title: tr("当前使用"), models: [pinned] }] : []), ...groups.map((g) => ({ title: g.provider, models: g.models }))];
     for (const section of sections) {
-      this.modelMenu.append(el("div", "model-group-head", `${section.title} · ${section.models.length}`));
+      const group = modelGroupSection(section.title, section.models.length, { pinned: !!pinned && section.models[0] === pinned });
+      this.modelMenu.append(group.node);
       for (const m of section.models) {
       const row = el("button", `scratch-model${m.id === current ? " on" : ""}`);
       row.append(el("span", "m-name", m.name || m.id), el("span", "m-prov", m.provider));
@@ -398,7 +399,7 @@ export class ScratchChat {
           level: this.state?.thinkingLevel || undefined,
         });
       };
-      this.modelMenu.append(row);
+      group.body.append(row);
       }
     }
   }

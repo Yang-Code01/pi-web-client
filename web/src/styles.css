@@ -4275,5 +4275,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sld-acts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
 
 /* 模型选择：在用的钉在最上面，其余按来源（provider）分组 */
-.model-group-head { position: sticky; top: 0; z-index: 1; padding: 6px 4px 2px; background: var(--panel); color: var(--faint); font: 600 11px/1.4 var(--sans); letter-spacing: .02em; }
+.model-group-head { position: sticky; top: 0; z-index: 1; display: block; width: 100%; text-align: left; border: 0; cursor: pointer; padding: 6px 4px 2px; background: var(--panel); color: var(--faint); font: 600 11px/1.4 var(--sans); letter-spacing: .02em; }
+.model-group-head:hover { color: var(--fg, inherit); }
+.model-group-head.pinned { cursor: default; }
+.model-group-body { display: grid; gap: 4px; }
+.model-group.folded > .model-group-body { display: none; }
 .model-group-head.pinned { color: var(--accent); }
