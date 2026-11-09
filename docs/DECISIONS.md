@@ -3426,3 +3426,22 @@ D
 - 一轮只有一个技能时也是一行摘要，比原来多一次点击才能看到描述。
 
 **验证：** `node probes/skill-group.mjs`（20 项，真实 Chromium + 手写会话文件）：两轮各一组 / 默认折叠 / 摘要点名 3 个技能且按到达顺序 / 徽标 / tooltip 全文 / 组里 3 张完整卡（描述、`SKILL.md` 出口、线索）/ 模型说过话用最近那句 / 没说话退回用户消息 / 第二轮另起一组 / 折叠时摘要一行高 / 展开 3 张卡 / chevron 转 90° / 收回后详情不占高度。`npm --prefix web run typecheck`（含 i18n-check：1779 键 × 3 语）与 `npm run test:skill`（14 项）都过。
+
+## D201 Jira 连接：凭据留在桥里，页面只见掩码；隧道只读（工单 #248）
+
+**问题：** 网页客户端要连 Jira（#247 第一张单：入口 + 连接 + 个人信息）。Jira Cloud 的 REST API 用 Basic 认证（邮箱 + API token），token 等于账号的完全权限；页面是可能被隧道带出去的，凭证存哪、谁能读、能对哪里发请求，都得先定下来。
+
+**决定：**
+
+1. **凭据由桥保管，明文 0600 写 `statePath("jira", "config.json")`（`{ siteUrl, email, apiKey }`）。** 页面只能 `GET /api/jira/config`，拿到的是 `{ configured, siteUrl, email, keyMask }`——token 只回 `••••` + 后 4 位。错误文本、日志也不含 token。代价：本机任何读到这个文件的人就有完整权限；页面被 XSS 也拿不到 token，但拦不住本机同用户的进程。要再加一层，可将来接系统钥匙串（Windows Credential Manager），目前不做。
+2. **保存先验证，再落盘。** `PUT /api/jira/config` 用这组凭据真打 `GET /rest/api/3/myself`，2xx 才写文件；非 2xx / 网络错一律 400 + `{ error, code }`，状态目录里不出现新文件，页面保留用户已填的值。代价：保存慢一个往返（15 秒超时封顶），且 Jira 抖动时保存不了——这正是要暴露的事。
+3. **单站点，只发配置站点。** 站点地址必须 https、无 userinfo、无路径/查询/片段、不是 IP 字面量、不是 `localhost` / `*.local` / `*.internal`；出站只有 `new URL("/rest/api/3/…", siteUrl)`，并在 `fetch` 前断言目标 origin 与配置站点相同（重定向 `redirect: "manual"`，不跟）。桥不做开放代理：没有任何接口接受用户给的 URL。代价：不支持自建 Server/Data Center（http + 内网域名），也不支持同一账号连多个站点——要连就退出重连。
+4. **头像多信一个 Atlassian 域名。** 头像字节由桥去取（`GET /api/jira/me/avatar`），但 Cloud 的 `avatarUrls` 实际落在 `*.atl-paas.net` CDN 上，只认「同站 origin」会让所有人的头像都取不到。所以允许名单 = 同站 origin 或 host 以 `.atl-paas.net` 结尾，两者都要求 https、无 userinfo、端口为空或 443、无 fragment；仍不接受任意 URL（页面没有入口传 URL），不跟随重定向，取不到就 502 `jira_avatar`、界面退回首字母。代价：放行了一个第三方域名——它由 Atlassian 控制、且只用于取图；若哪天 CDN 换域名，按这份名单会取不到头像，改一处常量即可。
+5. **隧道只读。** `publicReq`（隧道来的请求）下 `PUT` / `DELETE /api/jira/config` 一律 403 `{ error: "回本机操作", code: "tunnel_readonly" }`；`GET config` / `GET me` 照常。代价：在外面用手机改 token 得回本机——写凭据这件事不该让一条隧道代劳。
+6. **不探测 Jira MCP。** 面板底部只放一行提示「读描述和评论要用 Jira MCP：在设置 → 扩展与 MCP 里安装」+ 一颗跳过去的按钮。查 MCP 有没有装要读设置、猜服务器名，提示反而更容易说错。代价：用户装没装、装得对不对，面板不知道；点进去自己看。
+
+**为什么由桥代理而不是浏览器直连：** token 一旦进了浏览器就能被页面脚本、扩展、隧道读到；由桥保管，页面拿不到原始 token，出站地址也只由桥决定（上面第 3 条），顺手把 CORS 与「站点地址由用户填」的 SSRF 面收在一处。代价是桥多两个上游请求路径与一个凭据文件。
+
+**代价 / 可改：** 明文 0600 在 Windows 上 `chmod` 基本无效（ACL 仍按用户目录继承，同用户进程可读）；换钥匙串是一次独立改动，接口形状不用变。掩码只露后 4 位，用户据此分辨「是不是换过 token」，看不到全串——这是有意的。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（9 项，假 Jira + 临时 `PI_WEB_STATE`）：未配置 `configured:false` / 错 token 400 + `jira_auth` + 原话 + **文件不存在** / 正确凭据落盘且 GET 响应全文不含 token / `GET me` 401→401、403→403 / 未配置 `jira_not_configured` / DELETE 后回未配置 / 隧道 PUT·DELETE 403 `tunnel_readonly` 而 GET 200 / 白名单外头像 502 `jira_avatar` / `avatarUrlAllowed` 正反例。`node web/tests/jira-unit.mjs`（7 项，纯函数在 `web/src/jira-shared.ts`，不经 `chat.ts`，Node 26 直接跑）：`siteUrlProblem` 的 http·IP·localhost·`.local`·path·query 全拒、正常 Cloud 站点（含结尾 `/`、无 scheme）通过；`keyMask` 只露后 4 位。`npm --prefix web run typecheck`（含 i18n-check：1807 键 × 3 语）与 `npm run build:web` 都过。
