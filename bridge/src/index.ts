@@ -1137,6 +1137,31 @@ async function main(): Promise<void> {
       }
     }
 
+    // 会话里的一枚图片（点开缩略图）。条目正文里只有 mimeType，字节按条目 id 从会话文件流式读；
+    // 刚发出、还没落盘的 `user:N` 气泡由桥内存里那份兜底。
+    if (url.pathname === "/api/session/image" && req.method === "GET") {
+      const id = url.searchParams.get("id") ?? "";
+      const item = url.searchParams.get("item") ?? "";
+      const index = Number(url.searchParams.get("n"));
+      if (!Number.isInteger(index) || index < 0) return fail(res, 400, "bad_image_index", "图片序号不对");
+      if (!sessions.locate(id)) return fail(res, 404, "session_not_found", "找不到这个会话");
+      try {
+        const img = await sessions.image(id, item, index);
+        if (!img) return fail(res, 404, "image_not_found", "这张图片在会话文件里已经找不到了");
+        res.writeHead(200, {
+          "content-type": img.mimeType,
+          "content-length": String(img.data.length),
+          // 条目写进文件就不会再变；同一张图重复渲染不必再问一次桥。
+          "cache-control": "private, max-age=31536000, immutable",
+          "x-content-type-options": "nosniff",
+        });
+        res.end(img.data);
+        return;
+      } catch (err: any) {
+        return fail(res, 500, "image_read_failed", `读不了这张图片：${String(err?.message ?? err).slice(0, 200)}`);
+      }
+    }
+
     // #24 `/export`: the session as pi's own self-contained HTML (`pi --export`, opened in a tab), or the
     // raw JSONL file as a download. Read-only on the session file; works whether or not it is live.
     if (url.pathname === "/api/export" && req.method === "GET") {

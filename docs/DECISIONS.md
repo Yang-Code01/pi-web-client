@@ -3680,3 +3680,19 @@ D
 **验证**
 
 `npm run test:sysmanage`（netstat 解析、网卡合并/掩码/默认路由、服务归类、DNS 预设与解析、端口/服务过滤、格式化）；`npm run typecheck`（含 i18n-check，新增文案 ×3 语）；`npm run build`；测试实例上四页签真数据 + 公网头打码 + 同值不弹 UAC；真实改 DNS 的 UAC 与恢复留本机手验（会动整机网络，不在自动化里跑）。
+
+## D213 会话 / 待发图片都能点开看原图：快照只带 mimeType，字节按需走 `/api/session/image`
+
+**问题：** 用户气泡里的图片只有一行「附 N 张图片」；待发弹层的缩略图是死图，想看大一点只能先发出去。会话快照里的 `images` 只有 `{mimeType}`（`bridge/src/items.ts` 的 `entriesToItems` 故意不带 base64），所以页面没有可显示的源。
+
+**决定：**
+
+1. **快照不塞图片字节。** 一个 4 MB 的截图变成 base64 会撑大每一页 `session` 帧，也会让 localStorage 草稿爆掉；只保留 `mimeType`，点开时单独请求。
+2. **新 `GET /api/session/image?id=&item=&n=`**：`n` 必须是 ≥0 的整数（否则 400 `bad_image_index`）；`id` 找不到 404 `session_not_found`；条目/序号取不到 404 `image_not_found`；成功 200 带原始 `content-type`、`content-length`、`cache-control: private, max-age=31536000, immutable`、`x-content-type-options: nosniff`。
+3. **读字节两条路。** 本次进程里发出去的 `user:N` 气泡，原图还留在 `Session.promptImages`（上限 40 条用户消息，`close()` 清掉），不必回读文件；落盘条目走 `loadEntryImage(file, id, n)`，用 `readline` 逐行扫、先 `line.includes(entryId)` 再 `JSON.parse`，不整文件进内存。
+4. **页面**：`chat.ts` 的 `buildUserBody` 给每张图画 `.msg-image` 按钮（`loading="lazy"`），源由 `app.ts` 注入的 `setImageSource` 拼；点击派 `pi-image` 事件，`app.ts` 的 `openImage()` 在 `#app` 上盖一层 `.image-view` 灯箱（Esc / 点背景 / × 关闭，`z-index` 高于待发弹层）。待发弹层的 `.image-open` 按钮同样调 `openImage()`。
+5. **取不到图的降级**：`<img onerror>` 移除按钮、回落到原来的「附 N 张图片」灰字；`imageSource` 返回空时也不画破图。
+
+**为什么：** 图片是会话文件里最大的一块，快照的职责是「列出有什么」，不是「把所有字节送到页面」；按需接口还能让只读的休眠会话在没被打开时也看图（`locate(id)` 直接拿文件，不拉起 pi）。
+
+**验证：** `npm run test:image`（`session-image-unit.mjs` 6 项 + `session-image.mjs` 9 项：列表、两序号字节/mime、越界 404、负序号 400、幽灵会话/条目 404、缓存头）；`npm run test:image:ui`（Playwright 11 项：气泡缩略图源是接口、点开 1×1 原图解码成功、Esc 关闭；合成 paste 后待发角标、弹层缩略图按钮、data URL 灯箱、× 关闭；真发出去后 `user:N` 从桥内存取图并解码；无页面异常）。`npm run typecheck`、`npm run build` 通过。
