@@ -1,12 +1,39 @@
-import type { Item } from "./items.ts";
+import { oneLine, type Item } from "./items.ts";
 
 /** 一页历史多少条（#218：60 是手感值 —— 一屏上下能读到几轮，首帧又不会超过两百 KB）。 */
 export const HISTORY_PAGE_SIZE = 60;
+
+/** 轮次索引里一行文字的宽度：刻度带旁边只放得下一句短话（#242）。 */
+const TURN_TEXT_MAX = 80;
+
+/** 整段会话的一轮（#242）：一条用户消息算一轮，`items` 里的用户条目按原顺序各占一条。 */
+export interface HistoryTurn {
+  /** 这条用户消息在条目流里的 id，与 `items` 里的 id 对得上。 */
+  id: string;
+  /** 折成一行、超过 `TURN_TEXT_MAX` 截断后的正文；图片只报张数，不占字。 */
+  text: string;
+  images: number;
+}
 
 /** `session` 帧里跟着 `items` 一起下发的元数据。 */
 export interface SessionHistory {
   hasMore: boolean;
   total: number;
+  /**
+   * 整段会话的轮次索引（#242），不只是这一页的。声明成可选是为了「新前端连老桥」：
+   * 老桥没有这个字段；桥上永远填，没有轮次就是 `[]`。
+   */
+  turns?: HistoryTurn[];
+}
+
+/** 整段会话的轮次索引：`items` 里的用户消息按原顺序，每条一轮。 */
+function turnIndex(items: Item[]): HistoryTurn[] {
+  const turns: HistoryTurn[] = [];
+  for (const item of items) {
+    if (item.kind !== "user") continue;
+    turns.push({ id: item.id, text: oneLine(item.text, TURN_TEXT_MAX), images: item.images.length });
+  }
+  return turns;
 }
 
 export interface HistoryPage extends SessionHistory {
@@ -48,7 +75,7 @@ function pageStart(items: Item[], end: number, limit: number): number {
  */
 export function tailPage(items: Item[], limit = HISTORY_PAGE_SIZE): HistoryPage {
   const start = pageStart(items, items.length, pageSize(limit));
-  return { items: items.slice(start), hasMore: start > 0, total: items.length };
+  return { items: items.slice(start), hasMore: start > 0, total: items.length, turns: turnIndex(items) };
 }
 
 /**
@@ -56,9 +83,9 @@ export function tailPage(items: Item[], limit = HISTORY_PAGE_SIZE): HistoryPage 
  * （spec #218 Out of Scope），超过一页也只能整段下发，否则前面的话会静默消失。
  */
 export function itemsFrame(items: Item[], opts: { full?: boolean } = {}): HistoryFrame {
-  if (opts.full) return { items, history: { hasMore: false, total: items.length } };
+  if (opts.full) return { items, history: { hasMore: false, total: items.length, turns: turnIndex(items) } };
   const page = tailPage(items);
-  return { items: page.items, history: { hasMore: page.hasMore, total: page.total } };
+  return { items: page.items, history: { hasMore: page.hasMore, total: page.total, turns: page.turns } };
 }
 
 /**

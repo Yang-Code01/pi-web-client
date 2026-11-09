@@ -8,14 +8,16 @@
 import assert from "node:assert/strict";
 import { HISTORY_PAGE_SIZE, itemsFrame, pageBefore, tailPage } from "../src/history.ts";
 
-const user = (id) => ({ id, kind: "user", text: id });
+const user = (id) => ({ id, kind: "user", text: id, images: [] });
 const assistant = (id) => ({ id, kind: "assistant", text: id });
 const tool = (id) => ({ id, kind: "tool", toolCallId: id, name: "read", args: "{}", result: "" });
 const ids = (page) => page.items.map((it) => it.id);
+// #242 给 `history` 多带了一份 `turns`；老断言只关心分页字段，折掉它再比。
+const withoutTurns = ({ turns, ...rest }) => rest;
 
 // ---------------------------------------------------------------- 空 / 不足一页
 
-assert.deepEqual(tailPage([]), { items: [], hasMore: false, total: 0 }, "空历史的末尾一页就是空的");
+assert.deepEqual(withoutTurns(tailPage([])), { items: [], hasMore: false, total: 0 }, "空历史的末尾一页就是空的");
 assert.equal(tailPage([]).hasMore, false);
 
 const short = [user("u1"), assistant("a1"), tool("t1")];
@@ -98,8 +100,55 @@ const long = Array.from({ length: 130 }, (_, i) => (i % 2 ? assistant(`a${i}`) :
 const scratchFrame = itemsFrame(long, { full: true });
 assert.equal(scratchFrame.items.length, 130, "随手问：130 条一次给全，不切页");
 assert.equal(scratchFrame.items[0].id, "u0", "从第一条开始，前面没有被丢掉");
-assert.deepEqual(scratchFrame.history, { hasMore: false, total: 130 }, "没有更早的：界面上不会出现「载入更早」");
+assert.deepEqual(withoutTurns(scratchFrame.history), { hasMore: false, total: 130 }, "没有更早的：界面上不会出现「载入更早」");
 assert.deepEqual(itemsFrame(long).items, tailPage(long).items, "普通会话默认仍是末尾一页（行为不变）");
-assert.deepEqual(itemsFrame(long).history, { hasMore: true, total: 130 }, "普通会话的 history 照旧");
+assert.deepEqual(withoutTurns(itemsFrame(long).history), { hasMore: true, total: 130 }, "普通会话的 history 照旧");
+
+// ---------------------------------------------------------------- 整段轮次索引（#242）
+
+// 120 轮：首帧正文仍只带末尾一页，但 `history.turns` 要说清整段有多少轮、分别是谁。
+const longSession = [];
+for (let i = 0; i < 120; i++) {
+  longSession.push(user(`u${i}`));
+  longSession.push(assistant(`a${i}`));
+}
+const firstFrame = itemsFrame(longSession);
+assert.equal(firstFrame.history.hasMore, true, "120 轮的会话首帧只有末尾一页（这张票不改分页）");
+assert.equal(firstFrame.history.turns.length, 120, "首帧的 turns 是整段 120 轮，不是这一页的轮数");
+assert.deepEqual(
+  firstFrame.history.turns.map((t) => t.id),
+  longSession.filter((it) => it.kind === "user").map((it) => it.id),
+  "turns 的 id 与顺序和条目流里的用户消息一致",
+);
+
+// 一条文字：折回成一行（换行 / 连续空白压平）、超过 80 字截断补 `…`；纯图片轮只算张数。
+const messy = `第一行\n  第二行 ${"x".repeat(200)}`;
+const withImages = { id: "u-img", kind: "user", text: "", images: [{ mimeType: "image/png" }, { mimeType: "image/jpeg" }, { mimeType: "image/webp" }] };
+const indexFrame = itemsFrame([
+  { id: "u-long", kind: "user", text: messy, images: [] },
+  assistant("a-long"),
+  { id: "u-short", kind: "user", text: "  好的  ", images: [] },
+  withImages,
+]);
+const turns = indexFrame.history.turns;
+assert.deepEqual(turns.map((t) => t.id), ["u-long", "u-short", "u-img"], "非用户条目（助手 / 工具）不占轮次");
+assert.equal(turns[0].text, `第一行 第二行 ${"x".repeat(71)}…`, "长文本折回一行、截到 80 字并补 …");
+assert.equal(turns[0].text.length, 80, "截断后的长度就是 80（79 字 + …）");
+assert.ok(!/[\n\r]/.test(turns[0].text) && !/\s{2}/.test(turns[0].text), "换行与连续空白都压平了");
+assert.equal(turns[1].text, "好的", "短文本只压空白，不补省略号");
+assert.equal(turns[1].images, 0, "纯文字轮 images 是 0");
+assert.deepEqual(turns[2].text, "", "纯图片轮没有文字");
+assert.equal(turns[2].images, 3, "纯图片轮 images 数就是图片张数");
+
+// 随手问（整段下发）同样带索引，且与普通会话算出的是同一份。
+assert.deepEqual(itemsFrame(longSession, { full: true }).history.turns, firstFrame.history.turns, "随手问整段下发时索引同样覆盖整段");
+
+// 没有用户条目：给空数组，不是缺字段（新前端可以直接读）。
+const noTurns = tailPage([assistant("a1"), tool("t1")]);
+assert.deepEqual(noTurns.turns, [], "没有用户条目的会话给空数组");
+assert.ok("turns" in itemsFrame([assistant("a1")]).history, "字段必须在帧里，而不是 undefined");
+
+// `history.before` 的分页响应形状不变：不带 turns（老前端与协议契约都不受影响）。
+assert.deepEqual(Object.keys(pageBefore(transcript, transcript[10].id)).sort(), ["hasMore", "items"], "history.before 的响应形状不变");
 
 console.log("history-page-unit: ok");
