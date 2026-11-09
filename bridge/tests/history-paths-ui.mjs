@@ -114,6 +114,8 @@ const env = {
   PI_WEB_TUNNEL: "0",
   PI_WEB_HOST: "127.0.0.1",
   PI_WEB_ROOT: path.join(REPO, "web", "dist"),
+  // 分页只对隧道连接生效（#218 补）：这两套用例验的就是分页，本机起的桥要显式打开。
+  PI_WEB_PAGE_ALL: "1",
   PI_AGENT_DIR: AGENT,
   PI_BIN: path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs"),
   FAKE_PI_LOG: path.join(ROOT, "fake-pi.jsonl"),
