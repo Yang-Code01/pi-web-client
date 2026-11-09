@@ -3549,3 +3549,21 @@ D
 - 笔记面板的 `handoffMenu()` 实际没有上下翻转（固定开在按钮下方）；本单按验收要求自行加了翻转与窗口内夹取，所以两份浮层代码不完全一样。
 - 附件目录的结尾分隔符跟随目录本身（Windows 上是 `\`），不使用固定的 `/`；这与工单原文的 `<根目录>/<KEY>/` 在 Windows 上不是逐字相同，但避免了 `C:\…\ACME-12/` 这种混搭。
 - 为了让「中文但不翻译」的字面量过门禁，改了 `web/i18n-check.mjs`：新增行区间标记，只跳过区间内的字面量，其余检查逻辑未动。
+
+## D207 Jira 搜索：第二颗 tab、结构化条件只由桥拼 JQL、人员选择器带无权限降级（工单 #256–#259）
+
+**问题：** v1 只能看「分配给我 + 未解决」（D203）；要按人（含别人的）、项目、状态、类型、优先级查，得离开面板去 Jira 网站。开放查询能力会把「页面能对 Jira 发什么」这条边界（D202/D203）重新打开：原始 JQL 一旦从页面进来，桥就成了任意查询代理；人员字段还牵着「找不到人」与「没有看关注者权限」两种常见失败。
+
+**决定：**
+
+1. **形态选 A：面板内两颗 tab**（我的未完成 / 搜索），各自滚动、各自保留状态；默认列表，首次进搜索自动跑一次记忆条件（没有就跑全部未解决）。B（同屏折叠）与 C（按钮切块）在原型里对比过，不入库。代价：搜索不能与列表同屏对照；换来的是两个入口平权、互不挤位置。
+2. **页面只传结构化条件，JQL 仍由桥拼。** 白名单参数、长度/枚举/互斥校验、`escJql` 转义都在桥端；页面没有 `jql` 参数入口，未知参数忽略。这与 D203「页面没有查询面」一致，只是把条件集从一条固定 JQL 扩到一张受控表单。代价：新增一种条件要改桥；换来的是注入面收敛在一处。
+3. **人员是选择器，账号 ID 优先、自由文本兜底。** 输入 ≥2 字走 `GET /api/jira/users`（代理 `/rest/api/3/user/search`），选中存 `accountId`；该接口要 `Browse users and groups`，401/403 时回 `unavailable` 而不是报错，页面退化成手输邮箱/accountId。三个关系勾（经办人/报告人/关注者）默认全选、OR 语义；`未分配` 与人员互斥。代价：名字重名时以选中的 accountId 为准，自由文本可能被 Jira 判为找不到人；换来的是没有权限的人仍能查。
+4. **关注者被拒时自动降级，而不是整单失败。** 带 `watcher` 的查询遇到上游 400/403，桥去掉 watcher 重试一次；成功则回 `degraded: { watchers: true }`，页面在结果上方说明。**只剩 watcher 一项时不重试**（去掉就变成无条件，结果会悄悄变宽），直接 403 并提示改选经办人 / 报告人。代价：真正的 JQL 错误会多打一次上游；换来的是大多数人不至于因为一个勾选就看不到任何结果。
+5. **分页 20 + `nextPageToken`，没有总数。** 新版 `/rest/api/3/search/jql` 不返回 total，界面只说「已显示 N 条」，`isLast` 后说「已全部加载」；不为了一个数字再打一次估算接口。代价：用户不知道总共多少条；换来的是不做假数字、不增加请求。
+6. **元数据单独取、短期缓存；搜索结果不缓存。** `GET /api/jira/meta?project=` 给类型/优先级/项目内状态，5 分钟内存缓存（键含配置与项目），失败不缓存；`status` 必须带 `project`（否则状态名跨项目歧义），桥端 400。搜索是用户主动动作且条件多变，缓存收益低、串条件风险高，故不缓存；D203 的列表缓存不动。代价：搜索每次一个往返；换来的是结果永远对应当前条件。
+7. **边界不变：单站点、只读、隧道 GET 可查。** 搜索只发配置站点的 `/rest/api/3/*`；隧道访客能查（读），没有任何写路径。
+
+**接口形状：** 细节见 `docs/JIRA-SEARCH.md`。`GET /api/jira/search` → `{ ok, issues, nextPageToken?, isLast, degraded? }`；`GET /api/jira/meta?project=` → `{ ok, statusCategories, types, priorities, statuses, partial? }`；`GET /api/jira/users?q=` → `{ ok, users, unavailable? }`；错误沿用 `jira_not_configured` / `jira_auth` / `jira_forbidden` / `jira_upstream` / `jira_network`，参数错误新增 `jira_query`（带 `field`）。
+
+**验证：** 本 PR 只落设计与实现单（#256–#259）。实现门槛：`node bridge/tests/jira-search-unit.mjs`（条件→JQL 与校验）、`node bridge/tests/jira-e2e.mjs`（三条路由、watcher 重试、meta 缓存、隧道）、`node web/tests/jira-unit.mjs`（query 组装与本地记忆）、`npm --prefix web run typecheck`（含 i18n-check）、`npm run build:web`；界面按 `docs/JIRA-SEARCH.md` 的手点清单验收。
