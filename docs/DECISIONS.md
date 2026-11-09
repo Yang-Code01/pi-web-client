@@ -3643,8 +3643,22 @@ D
 
 **验证：** `node web/tests/pillbar-unit.mjs`（新增 2 项：本区未定义（`null` / `undefined`）为 `[]`、本区有定义时仍只留本区 ★）；`probes/workspace-tree.mjs`（新增 2 项：没打开会话时行 2 零胶囊、只剩 ＋）；`probes/workspace-shells.mjs`（A 壳新增 2 项：没打开会话时别组 ★ 不进行 2；打开 proj-01 的会话后行 2 只留本区那颗 `s-01-2`）；`probes/pin-auto-open.mjs`（22 项全绿；新增 1 项：旧桥 + 没有当前会话时行 2 仍铺满全部置顶，旧桥回退的行为未变）。`npm --prefix web run typecheck`（含 i18n-check）与 `npm run build:web` 通过。
 
+## D211 diff 弹窗右边被裁：`.sheet` 是 grid 却没钉列，隐式列按 max-content 长过自己的 width
 
-## D211 本机管理：独立控制台，读走 REST、DNS 写走 UAC 助手，公网只读打码
+**现象：** 产物弹窗打开某个文件的 diff 之后，右上角的「关闭」整颗看不见、只露一条边；`j / k 换文件` 那行提示和白字计数的 `按 git 估算` 粘在一起；路径栏的「在查看器里打开」和路径文本叠在一起；没有基线时的说明文字从右侧被切掉半句（`F:/pi-web-client/.scratch/shots/bug-diff-overlap.jpg`）。
+
+**根因（仿真实 DOM 的 harness 复现，不是推测）：** `.sheet` 是 `display: grid`，只写了 `grid-template-rows`（`web/src/styles.css:1485`），**没写 `grid-template-columns`** —— 那条隐式列按 `max-content` 定宽，标题栏的内容宽（title 333 + hint 240 + 关闭 60 ≈ 633）把列撑到 594px，比 `.sheet` 自己的 `width: min(560px, 100%)` 还宽，再被同一元素上的 `overflow: hidden` 从右边裁掉。实测：sheet 560 / head 594.1（右 955.1 vs sheet 右 920），`.sheet-head > .btn` 被 flex 收缩到 58.9×58.3（两字标签折成两行）。同类先例：D60 的 `.turn-list`、`.dir-list` 都是这个坑。
+
+**修法：** ① `.sheet` 补 `grid-template-columns: minmax(0, 1fr)`；② `.sheet-head` 补 `gap: 8px`（title 与 `margin-left: auto` 的 hint 之间原来零间距）；③ `.sheet-head > .btn { flex: none }` —— 按钮按内容宽排，要收的是标题和提示，不让按钮折行长高；④ `.diff-hint` 补 `min-width: 0; overflow: hidden; text-overflow: ellipsis`，让它可收、收的时候出省略号而不是被裁。
+
+**顺带把 diff 弹窗开到 920px（独立、可回退）：** 560px 扣掉 208px 左栏后每边只剩 ~130px，48px 行号 + 80px 代码，而 `.diff-text` 是 `white-space: pre` + `overflow: hidden`（不横滚）—— 左右对照在那个宽度下不成立，一行只能看十来个字。`@media (min-width: 760px)` 里给 `width: min(920px, calc(var(--vw1) * 94))`，窄屏仍是原来的全宽单列（`.diff-row` 在 ≤760 有 `min-width: 560px` 横滚）。用 `--vw1` 是为了跟 `#app { zoom }` 下的 UI 缩放对齐（同 `.ext-sheet` / `.mgr-sheet`）。
+
+**验证：** harness `F:/pi-web-client-wt/fix-diff-sheet-overflow/.scratch/diff-overlap/repro.html`（链接真 `web/src/styles.css`，DOM 照 `web/src/app.ts:5744-5820` 拼）+ `check.mjs`（Playwright）：修前 1280 宽下 head 594.1 > 560、close 58.9×58.3、`在查看器里打开` 右缘 943.1 > 920；修后 360 / 420 / 560 / 640 / 760 / 800 / 900 / 1100 / 1280 / 1600 十个宽度全过 —— 关闭恒 60×38.1、head 不溢出不折行、按钮全在 sheet 内，<760 仍是 `x=0` 全宽。`node bridge/tests/whatsnew-ui.mjs` 全绿（设置页也是 `.sheet`，确认基础规则的改动没伤到别的抽屉）；`npm run build` 与 `npm run typecheck`（含 i18n-check）通过。
+
+**可改：** 920 / 94vw 两个数是按「两列各 356px 能读 48 列左右」定的；hint 在窄一点的窗口会先出省略号，如果更想让它换行就换成两行 grid。
+
+
+## D212 本机管理：独立控制台，读走 REST、DNS 写走 UAC 助手，公网只读打码
 
 「pi 设置」旁边要能看这台机器，并且切 DNS，但不能再做成一页 pi 配置。DNS 是整机状态，改错会影响域登录、内网域名和 Jira；桥又常年以普通权限跑着。这个功能的关键不是把 `ipconfig` 画出来，而是把「谁能改、改之前存什么、失败怎么退」定死。
 

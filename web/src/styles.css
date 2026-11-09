@@ -1485,12 +1485,18 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .sheet {
   background: var(--panel); border-top: 1px solid var(--line);
   border-radius: 16px 16px 0 0; max-height: calc(var(--vh1) * 78); display: grid; grid-template-rows: auto 1fr auto;
+  /* 列也要钉住：不写列时那条隐式 auto 轨按 max-content 长，标题栏一长就把整张抽屉撑得比自己的
+     width 还宽，再被下面的 overflow: hidden 从右边裁掉——diff 弹窗的「关闭」整颗被裁到看不见就是这么来的。 */
+  grid-template-columns: minmax(0, 1fr);
   overflow: hidden; /* 任何一块内容高了都只在自己的框里滚，不许画到弹层外面 */
   padding-bottom: env(safe-area-inset-bottom, 0px);
   animation: sheet-up var(--dur-2) var(--ease);
 }
 @keyframes sheet-up { from { transform: translateY(16px); opacity: 0.4; } }
-.sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 8px; border-bottom: 1px solid var(--line-soft); }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 16px 8px; border-bottom: 1px solid var(--line-soft); }
+/* 标题栏里的按钮按内容宽（flex:none）排：让它们参与收缩的话，挤到 min-content 时两字标签会折成两行，
+   一条 38px 高的按钮变成 58px，整条标题栏跟着变高、看着像坏了。要收也是标题和提示去收。 */
+.sheet-head > .btn { flex: none; }
 .sheet-title { font-size: 14px; font-weight: 500; color: var(--text); }
 /* 抽屉里没有第二套聚焦语言：浏览器默认的「白 outline」比信号色环还响（新建会话的会话名输入框
    聚焦时就是一圈白）。这里用 :where() 把优先级压到 0，控件自己写了 :focus 规则的照旧走自己的。 */
@@ -2024,11 +2030,16 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .art-go { font-size: 11px; color: var(--accent); opacity: 0; white-space: nowrap; }
 .art-row:hover .art-go, .art-row:focus-visible .art-go { opacity: 1; }
 
-/* D207 C 方案：独立 diff 弹窗（左栏换文件 + 左右对照）。 */
+/* D208 C 方案：独立 diff 弹窗（左栏换文件 + 左右对照）。 */
 .diff-sheet { height: 86vh; max-height: 88vh; }
+@media (min-width: 760px) {
+  /* 宽度要自己开：默认的 560px 扣掉 208px 左栏后一边只剩 ~130px，一行代码只能看到十来个字——
+     左右对照在那个宽度下不成立。窄屏不给这个宽度：那里本来就回到全宽单列（见文件末尾的媒体查询）。 */
+  .diff-sheet { width: min(920px, calc(var(--vw1) * 94)); }
+}
 .diff-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .diff-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.diff-hint { margin-left: auto; font: 11px var(--mono); color: var(--faint); white-space: nowrap; }
+.diff-hint { margin-left: auto; min-width: 0; font: 11px var(--mono); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .diff-body { display: grid; grid-template-columns: 208px minmax(0, 1fr); min-height: 0; overflow: hidden; }
 .diff-rail { overflow-y: auto; border-right: 1px solid var(--line-soft); padding: 8px; display: grid; gap: 2px; align-content: start; }
 .diff-file {
