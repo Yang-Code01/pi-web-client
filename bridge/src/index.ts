@@ -23,7 +23,7 @@ import {
   verifyPassphrase,
 } from "./auth.ts";
 import { stateDir } from "./paths.ts";
-import { pageBefore } from "./history.ts";
+import { itemsFrame, pageBefore } from "./history.ts";
 import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
@@ -1292,10 +1292,36 @@ async function main(): Promise<void> {
     });
   });
 
+  /**
+   * #218 补：分页只是**隧道上的传输优化**，不是新的存储模型。本机 / 内网连接照旧整段下发 ——
+   * 切回会话立刻是完整历史，不用再一页页点「载入更早」；只有穿过 cloudflared 的连接吃分页。
+   * `PI_WEB_PAGE_ALL=1` 让本机连接也分页，UI 用例靠它覆盖翻页那条路（见 history-ui / history-paths-ui）。
+   */
+  const pageAll = process.env.PI_WEB_PAGE_ALL === "1";
+  const pagedFor = (client: WebSocket): boolean => pageAll || Boolean((client as any).publicReq);
+
+  /**
+   * 一帧整页历史按**连接**成形：分页连接是末尾一页，其余整段。`session`（单播）与 `items`（广播）
+   * 共用这一处 —— 形状跟着连接走，不跟着会话走，否则同一条会话在两个标签页里只能二选一。
+   */
+  const frameFor = (client: WebSocket, payload: any): any => {
+    if (pagedFor(client) || !payload?.history) return payload;
+    if (payload.type !== "session" && payload.type !== "items") return payload;
+    const session = sessions.get(String(payload.sessionId ?? ""));
+    if (!session) return payload;
+    return { ...payload, items: session.items, history: itemsFrame(session.items, { full: true }).history };
+  };
+
   const broadcast = (payload: any) => {
-    const data = JSON.stringify(payload);
+    // 整页帧只会有两种形状（隧道一页 / 本机整段），每份只序列化一次；其余帧所有连接共用一份字节。
+    const cache = new Map<string, string>();
     for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN) client.send(data);
+      if (client.readyState !== WebSocket.OPEN) continue;
+      const shaped = frameFor(client as WebSocket, payload);
+      const key = shaped === payload ? "shared" : "full";
+      let data = cache.get(key);
+      if (data === undefined) cache.set(key, (data = JSON.stringify(shaped)));
+      client.send(data);
     }
   };
 
@@ -1605,7 +1631,7 @@ async function main(): Promise<void> {
           case "subscribe": {
             const snap = sessions.pagedSnapshot(msg.sessionId);
             (ws as any).watching = String(msg.sessionId);
-            send({ type: "session", sessionId: msg.sessionId, ...snap, trust: await trustFor(snap.state.cwd) });
+            send(frameFor(ws, { type: "session", sessionId: msg.sessionId, ...snap, trust: await trustFor(snap.state.cwd) }));
             return;
           }
           /**
@@ -1638,7 +1664,7 @@ async function main(): Promise<void> {
             if (!(await requireStepUp())) return;
             const session = await sessions.claim(String(msg.sessionId));
             (ws as any).watching = session.state.id;
-            send({ type: "session", sessionId: session.state.id, ...session.pagedSnapshot(), trust: await trustFor(session.state.cwd) });
+            send(frameFor(ws, { type: "session", sessionId: session.state.id, ...session.pagedSnapshot(), trust: await trustFor(session.state.cwd) }));
             return;
           }
           case "prompt": {
@@ -1750,7 +1776,7 @@ async function main(): Promise<void> {
             // client hears about the arrangement (the strip is a projection of manage.pin).
             if (msg.pin) sessions.pinLast(session.state.id);
             (ws as any).watching = session.state.id;
-            send({ type: "session", sessionId: session.state.id, ...session.pagedSnapshot(), trust: await trustFor(session.state.cwd) });
+            send(frameFor(ws, { type: "session", sessionId: session.state.id, ...session.pagedSnapshot(), trust: await trustFor(session.state.cwd) }));
             broadcast({ type: "session.state", session: session.state });
             if (msg.pin) broadcast({ type: "manage", ...manageSnapshot() });
             return;
@@ -2092,7 +2118,7 @@ async function main(): Promise<void> {
             if (!(await requireStepUp())) return;
             const session = await sessions.reload(String(msg.sessionId ?? ""));
             (ws as any).watching = session.state.id;
-            send({ type: "session", sessionId: session.state.id, ...session.pagedSnapshot(), trust: await trustFor(session.state.cwd) });
+            send(frameFor(ws, { type: "session", sessionId: session.state.id, ...session.pagedSnapshot(), trust: await trustFor(session.state.cwd) }));
             send({ type: "notice", sessionId: session.state.id, text: "已重新加载：pi 进程重启，设置、扩展、技能、模板、AGENTS.md 都是最新的了。", level: "info" });
             return;
           }
