@@ -57,9 +57,11 @@ test("每个条件单独出现时拼进固定位置", () => {
   );
 });
 
-test("组合时顺序固定：项目 → 状态类别 → 状态 → 类型 → 优先级 → 人员 → 未分配", () => {
+test("组合时顺序固定：标题 → 全文本 → 项目 → 状态类别 → 状态 → 类型 → 优先级 → 人员 → 未分配", () => {
   assert.equal(
     jql({
+      title: "登录",
+      text: "白屏",
       project: "ACME",
       statusCategory: "done",
       status: "Done",
@@ -71,7 +73,7 @@ test("组合时顺序固定：项目 → 状态类别 → 状态 → 类型 → 
       sort: "created",
       order: "asc",
     }),
-    'project = "ACME" AND statusCategory = "Done" AND status = "Done" AND issuetype = "Bug" AND priority = "High" AND (assignee = "5b10ac8d" OR watcher = "5b10ac8d") ORDER BY created ASC',
+    'summary ~ "登录" AND text ~ "白屏" AND project = "ACME" AND statusCategory = "Done" AND status = "Done" AND issuetype = "Bug" AND priority = "High" AND (assignee = "5b10ac8d" OR watcher = "5b10ac8d") ORDER BY created ASC',
   );
 });
 
@@ -131,8 +133,19 @@ test("排序：priority 补更新时间作次序，其它不重复", () => {
   assert.equal(jql({ sort: "updated", order: "asc" }), "resolution = Unresolved ORDER BY updated ASC");
 });
 
-test("nextPageToken 原样透传", () => {
-  assert.equal(parse({ nextPageToken: "t-1" }).nextPageToken, "t-1");
+test("nextPageToken 原样透传（含空格），空串算没给", () => {
+  assert.equal(parse({ nextPageToken: " t 1 " }).nextPageToken, " t 1 ");
+  assert.equal(parse({ nextPageToken: "" }).nextPageToken, undefined);
+});
+
+test("不按人查时 relations 被忽略，不让空/未知值拖垮整条查询", () => {
+  assert.deepEqual(parse({ relations: "" }).relations, []);
+  assert.deepEqual(parse({ relations: "assignee,owner" }).relations, []);
+});
+
+test("只含控制字符的值转义后为空，按未填处理", () => {
+  assert.equal(jql({ title: "\u0000" }), DEFAULT);
+  assert.equal(jql({ person: "\u0000" }), DEFAULT);
 });
 
 test("未知参数、maxResults 与空值都被忽略", () => {
@@ -157,6 +170,14 @@ test("引号、反斜杠、换行与控制字符", () => {
   assert.equal(escJql('x"y\\z'), 'x\\"y\\\\z');
 });
 
+test("手工构造的空关系组会被 build 拒绝", () => {
+  const params = { ...parse(""), person: "x", relations: [] };
+  assert.throws(
+    () => buildSearchJql(params),
+    (err) => err instanceof SearchQueryError && err.field === "relations",
+  );
+});
+
 test("非法参数逐条报 jira_query 与字段", () => {
   const reject = (init, field) => {
     assert.throws(
@@ -174,7 +195,7 @@ test("非法参数逐条报 jira_query 与字段", () => {
   reject({ status: "Done" }, "status");
   reject({ person: "a", unassigned: "1" }, "unassigned");
   reject({ person: "a", relations: "" }, "relations");
-  reject({ relations: "assignee,owner" }, "relations");
+  reject({ person: "a", relations: "assignee,owner" }, "relations");
   reject({ statusCategory: "progress" }, "statusCategory");
   reject({ sort: "key" }, "sort");
   reject({ order: "down" }, "order");

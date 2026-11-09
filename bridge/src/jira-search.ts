@@ -12,6 +12,9 @@ export type SearchRelation = (typeof SEARCH_RELATIONS)[number];
 export const SEARCH_SORTS = ["updated", "created", "priority"] as const;
 export type SearchSort = (typeof SEARCH_SORTS)[number];
 
+export const SEARCH_ORDERS = ["asc", "desc"] as const;
+export type SearchOrder = (typeof SEARCH_ORDERS)[number];
+
 export const STATUS_CATEGORY_KEYS = ["new", "indeterminate", "done"] as const;
 export type StatusCategoryKey = (typeof STATUS_CATEGORY_KEYS)[number];
 
@@ -76,8 +79,23 @@ function checkLength(value: string | undefined, max: number, field: string, labe
   }
 }
 
+/** 白名单枚举：合法就收窄成字面量类型，不合法返回 undefined。 */
+function pick<T extends string>(raw: string | undefined, allowed: readonly T[]): T | undefined {
+  if (raw === undefined) return undefined;
+  return (allowed as readonly string[]).includes(raw) ? (raw as T) : undefined;
+}
+
+/** 转义后的值；只含控制字符时转义结果是空串，按未填处理（不拼出 `field ~ ""`）。 */
+function quote(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const escaped = escJql(raw);
+  return escaped ? escaped : undefined;
+}
+
 function parseRelations(query: URLSearchParams, hasPerson: boolean): SearchRelation[] {
-  if (!query.has("relations")) return hasPerson ? [...SEARCH_RELATIONS] : [];
+  // 不按人查时关系没有意义：即使页面顺手带了一个空/未知值，也不让整条查询失败。
+  if (!hasPerson) return [];
+  if (!query.has("relations")) return [...SEARCH_RELATIONS];
   const items = (query.get("relations") ?? "").split(",").map((item) => item.trim());
   if (items.some((item) => !item)) {
     throw new SearchQueryError("relations", "关系至少要留一项，且不能有空项");
@@ -103,7 +121,9 @@ export function parseSearchParams(query: URLSearchParams): SearchParams {
   const priority = read(query, "priority");
   const person = read(query, "person");
   const personAccountId = read(query, "personAccountId");
-  const nextPageToken = read(query, "nextPageToken");
+  const rawToken = query.get("nextPageToken");
+  // 原样透传：不 trim、不改写，只有空串算没给。
+  const nextPageToken = rawToken === null || rawToken === "" ? undefined : rawToken;
   const rawCategory = read(query, "statusCategory");
   const rawSort = read(query, "sort");
   const rawOrder = read(query, "order");
@@ -122,24 +142,24 @@ export function parseSearchParams(query: URLSearchParams): SearchParams {
   if (project !== undefined && !PROJECT_KEY.test(project)) {
     throw new SearchQueryError("project", "项目 key 只能是大写字母开头的 1–10 位大写字母、数字或下划线");
   }
-  if (rawCategory !== undefined && !(STATUS_CATEGORY_KEYS as readonly string[]).includes(rawCategory)) {
+  const statusCategory = pick(rawCategory, STATUS_CATEGORY_KEYS);
+  if (rawCategory !== undefined && statusCategory === undefined) {
     throw new SearchQueryError("statusCategory", `状态类别只能是 ${STATUS_CATEGORY_KEYS.join(" / ")}`);
   }
   if (status !== undefined && project === undefined) {
     throw new SearchQueryError("status", "选具体状态前先选项目");
   }
-  if (rawSort !== undefined && !(SEARCH_SORTS as readonly string[]).includes(rawSort)) {
+  const sort = pick(rawSort, SEARCH_SORTS);
+  if (rawSort !== undefined && sort === undefined) {
     throw new SearchQueryError("sort", `排序只能是 ${SEARCH_SORTS.join(" / ")}`);
   }
-  if (rawOrder !== undefined && rawOrder !== "asc" && rawOrder !== "desc") {
+  const order = pick(rawOrder, SEARCH_ORDERS);
+  if (rawOrder !== undefined && order === undefined) {
     throw new SearchQueryError("order", "方向只能是 asc / desc");
   }
 
   const hasPerson = person !== undefined || personAccountId !== undefined;
   const relations = parseRelations(query, hasPerson);
-  if (hasPerson && relations.length === 0) {
-    throw new SearchQueryError("relations", "按人查时至少选一种关系");
-  }
   if (unassigned && hasPerson) {
     throw new SearchQueryError("unassigned", "已勾选未分配，不能再按人员筛选");
   }
@@ -148,7 +168,7 @@ export function parseSearchParams(query: URLSearchParams): SearchParams {
     title,
     text,
     project,
-    statusCategory: rawCategory as StatusCategoryKey | undefined,
+    statusCategory,
     status,
     type,
     priority,
@@ -157,8 +177,8 @@ export function parseSearchParams(query: URLSearchParams): SearchParams {
     relations,
     unassigned,
     includeResolved,
-    sort: (rawSort as SearchSort | undefined) ?? "updated",
-    order: (rawOrder as "asc" | "desc" | undefined) ?? "desc",
+    sort: sort ?? "updated",
+    order: order ?? "desc",
     nextPageToken,
   };
 }
@@ -179,20 +199,26 @@ export function escJql(raw: string): string {
 export function buildSearchJql(params: SearchParams): string {
   const clauses: string[] = [];
   if (!params.includeResolved) clauses.push("resolution = Unresolved");
-  if (params.title) clauses.push(`summary ~ "${escJql(params.title)}"`);
-  if (params.text) clauses.push(`text ~ "${escJql(params.text)}"`);
-  if (params.project) clauses.push(`project = "${escJql(params.project)}"`);
+  const title = quote(params.title);
+  if (title) clauses.push(`summary ~ "${title}"`);
+  const text = quote(params.text);
+  if (text) clauses.push(`text ~ "${text}"`);
+  const project = quote(params.project);
+  if (project) clauses.push(`project = "${project}"`);
   if (params.statusCategory) clauses.push(`statusCategory = "${STATUS_CATEGORIES[params.statusCategory]}"`);
-  if (params.status) clauses.push(`status = "${escJql(params.status)}"`);
-  if (params.type) clauses.push(`issuetype = "${escJql(params.type)}"`);
-  if (params.priority) clauses.push(`priority = "${escJql(params.priority)}"`);
+  const status = quote(params.status);
+  if (status) clauses.push(`status = "${status}"`);
+  const type = quote(params.type);
+  if (type) clauses.push(`issuetype = "${type}"`);
+  const priority = quote(params.priority);
+  if (priority) clauses.push(`priority = "${priority}"`);
 
-  const person = params.personAccountId ?? params.person;
+  const person = quote(params.personAccountId ?? params.person);
   if (person) {
     if (params.relations.length === 0) {
       throw new SearchQueryError("relations", "按人查时至少选一种关系");
     }
-    const who = `"${escJql(person)}"`;
+    const who = `"${person}"`;
     clauses.push(`(${params.relations.map((relation) => `${relation} = ${who}`).join(" OR ")})`);
   }
   if (params.unassigned) clauses.push("assignee IS EMPTY");
