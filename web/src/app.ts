@@ -444,6 +444,13 @@ export class App {
   private wsNewNoteId: string | null = null;
   /** #123 设置面板的「标签行」那块（名额步进器）；快照回来时只重画这一个小面。 */
   private wsPane: HTMLElement | null = null;
+  /** #291 设置面板的「预览 + 开关墙」那块；`ui` 回执与断线时只重画这一个小面。 */
+  private chromePane: HTMLElement | null = null;
+  /**
+   * #291 预览的观察档（桌面 / 手机 390）。它只是这张画的宽度，不是偏好：不写盘、不进 `chrome`，
+   * 也不改真窗口 —— 方块的两态拿它判，才不会在 1440 的表里「切了手机却什么都没变」。
+   */
+  private chromePreviewNarrow = false;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
   private manage: ManageState = { pin: [], order: [], archived: [] };
   private archivedOpen = false;
@@ -1181,6 +1188,8 @@ export class App {
       if (this.connected) this.reportPresence();
       this.renderTop();
       this.renderSessions();
+      // #291：断桥时开关墙整块置灰，连上再亮回来 —— 这块的重画点跟着连接状态走。
+      if (this.sheetKind === "display") this.paintChromePane();
       // A shell outlives the page: ask the bridge what is still running and rebuild a tab per shell.
       if (this.connected) this.socket.send({ type: "term.list" });
     });
@@ -1947,6 +1956,7 @@ export class App {
         // 可见性只认桥的回执：不本地先猜，否则广播与自己的补丁会打架。
         this.paintChrome();
         this.renderChat();
+        if (this.sheetKind === "display") this.paintChromePane();
         if (this.sheetKind === "settings" && this.settingsTab === "ext") this.paintSettings();
         break;
       case "ext.updates":
@@ -3420,6 +3430,14 @@ export class App {
     sheet.append(wsTabsBox);
     this.paintWsTabsPane();
 
+    // #291：预览 + 开关墙。预览是「点一下就能关掉」的那张画，开关墙是找不到按钮时的兜底；
+    // 两处写的是同一份 `chrome`，都走 `ui.set`，等桥的广播回来再重画。
+    const chromeBox = el("div", "levels");
+    this.chromePane = el("div", "chrome-pane");
+    chromeBox.append(this.chromePane);
+    sheet.append(chromeBox);
+    this.paintChromePane();
+
     const foot = el("div", "sheet-foot");
     const reset = el("button", "btn ghost", tr("恢复默认"));
     reset.onclick = () => {
@@ -3436,6 +3454,192 @@ export class App {
     back.append(sheet);
     this.overlay(back);
     this.sheet = back;
+  }
+
+  /**
+   * #291：「外观与语言」里的实时预览 + 开关墙。
+   *
+   * 预览是顶栏 / 下沿的一张缩略画：胶囊亮不亮、方块实线还是虚线，全问 `isChromeVisible()`；
+   * 宽度用**这张画自己的**档（桌面 / 手机 390），不是真窗口 —— 否则在 1440 的表里点「手机」，
+   * 文件管理器不会退场。写状态只走 `ui.set`（`null` = 删键，回默认），等桥的 `ui` 广播回来再重画，
+   * 本地不留副本。
+   *
+   * 预览活在「开了会话」的假设里：没开会话时产物 / 文件管理器本来就不长，跟着灭会让人以为点不亮，
+   * 所以把原因写进方块的 title。断桥时整块置灰、按钮真 `disabled`。
+   */
+  private paintChromePane(): void {
+    const pane = this.chromePane;
+    if (!pane) return;
+    // 重画会把刚按的那颗换掉：按 data-act 把焦点找回去，键盘用户不至于掉回 body。
+    const active = document.activeElement;
+    const key = active instanceof HTMLElement && pane.contains(active) ? active.dataset.act ?? "" : "";
+    const focusable = new Map<string, HTMLElement>();
+    const keep = (node: HTMLElement): HTMLElement => {
+      if (node.dataset.act) focusable.set(node.dataset.act, node);
+      return node;
+    };
+    pane.replaceChildren();
+    const offline = !this.connected;
+    pane.classList.toggle("offline", offline);
+    const ctx: ChromeContext = { hasSession: true, narrow: this.chromePreviewNarrow };
+    const chrome = this.uiPrefs.chrome;
+    const lit = (id: ChromeId): boolean => isChromeVisible(id, chrome, ctx);
+    const set = (id: ChromeId, on: boolean): void => {
+      if (!this.connected) return;
+      this.act(() => this.socket.send({ type: "ui.set", chrome: { [id]: on } }));
+    };
+    /** 「📂 产物」在第一个空格处拆成图标与名字，和真按钮 `setWideLabel()` 同一套文案。 */
+    const split = (label: string): [string, string] => {
+      const cut = label.indexOf(" ");
+      return cut > 0 ? [label.slice(0, cut), label.slice(cut + 1)] : ["", label];
+    };
+
+    const head = el("div", "chrome-head");
+    head.append(el("span", "levels-label", tr("顶栏 / 下沿预览")));
+    pane.append(head);
+
+    // ---- 上半：实时预览。点胶囊就是关掉那颗，和真顶栏同一个 `hidden` 语义。
+    const pv = el("div", `chrome-pv${this.chromePreviewNarrow ? " narrow" : ""}`);
+    const pvTop = el("div", "chrome-pv-top");
+    pvTop.append(el("span", "chrome-pv-title", tr("会话名")));
+    const topItems: [ChromeId, string][] = [
+      ["artifacts", tr("📂 产物")],
+      ["terminal", tr(">_ 终端")],
+      ["files", tr("📁 文件管理器")],
+      ["notes", "🐞 bug"],
+      ["peer", tr("🌐 内网通")],
+      ["scratch", tr("💭 随手问")],
+      ["jira", tr("🔷 Jira")],
+    ];
+    for (const [id, label] of topItems) {
+      const [ic, name] = split(label);
+      const btn = el("button", "chrome-pv-btn") as HTMLButtonElement;
+      btn.type = "button";
+      btn.dataset.chrome = id;
+      btn.dataset.act = `pv-${id}`;
+      if (ic) btn.append(el("span", "ic", ic));
+      btn.append(el("span", "pv-name", name));
+      btn.hidden = !lit(id);
+      btn.disabled = offline;
+      btn.title = tr("点一下隐藏「{p1}」", { p1: name });
+      btn.setAttribute("aria-label", btn.title);
+      btn.onclick = () => set(id, false);
+      pvTop.append(keep(btn));
+    }
+    // `Aa` 就在这颗位置上，但它不在 `CHROME_IDS` 里：这张表靠它进来，关掉就再也打不开了。
+    const aa = el("button", "chrome-pv-btn chrome-pv-aa", "Aa") as HTMLButtonElement;
+    aa.type = "button";
+    aa.disabled = true;
+    aa.title = tr("Aa 关不掉：这张表靠它进来");
+    pvTop.append(aa);
+    pv.append(pvTop);
+
+    const bottomItems: [ChromeId, string][] = [
+      ["skills", tr("技能")],
+      ["ext", tr("扩展")],
+      ["attach", tr("文件")],
+      ["model", tr("模型")],
+    ];
+    const pvComp = el("div", "chrome-pv-comp");
+    pvComp.append(el("span", "chrome-pv-in"));
+    for (const [id, name] of bottomItems) {
+      const btn = el("button", `chrome-pv-tool${id === "model" ? " chrome-pv-model" : ""}`, name) as HTMLButtonElement;
+      btn.type = "button";
+      btn.dataset.chrome = id;
+      btn.dataset.act = `pv-${id}`;
+      btn.hidden = !lit(id);
+      btn.disabled = offline;
+      btn.title = tr("点一下隐藏「{p1}」", { p1: name });
+      btn.setAttribute("aria-label", btn.title);
+      btn.onclick = () => set(id, false);
+      pvComp.append(keep(btn));
+    }
+    pv.append(pvComp);
+    pane.append(pv);
+
+    const bar = el("div", "chrome-pv-bar");
+    bar.append(el("span", "chrome-pv-bar-label", tr("预览宽度")));
+    const seg = el("span", "chrome-seg");
+    for (const [width, label] of [["wide", tr("桌面")], ["narrow", tr("手机 390")]] as ["wide" | "narrow", string][]) {
+      const btn = el("button", (width === "narrow") === this.chromePreviewNarrow ? "on" : "", label) as HTMLButtonElement;
+      btn.type = "button";
+      btn.dataset.width = width;
+      btn.dataset.act = `width-${width}`;
+      btn.setAttribute("aria-pressed", String((width === "narrow") === this.chromePreviewNarrow));
+      btn.onclick = () => {
+        if (this.chromePreviewNarrow === (width === "narrow")) return;
+        this.chromePreviewNarrow = width === "narrow";
+        this.paintChromePane();
+      };
+      seg.append(keep(btn));
+    }
+    bar.append(seg, el("span", "chrome-pv-hint", tr("点预览里的按钮可以直接关掉")));
+    pane.append(bar);
+    if (this.chromePreviewNarrow) {
+      pane.append(el("div", "chrome-note", tr("手机宽度下「文件管理器」默认收起；想留着就点亮下面的方块")));
+    }
+
+    // ---- 下半：开关墙。每块「全部显示」= 把这组键删掉（回默认），不是写 true。
+    const wall = el("div", "chrome-wall");
+    wall.append(el("div", "levels-label", tr("点一下就收起来，再点一下放回来")));
+    const groups: [string, string, [ChromeId, string, string][]][] = [
+      ["top", tr("顶栏按钮"), topItems.map(([id, label]) => { const [ic, name] = split(label); return [id, ic, name]; })],
+      ["bottom", tr("输入框下沿"), bottomItems.map(([id, name]) => [id, "·", name] as [ChromeId, string, string])],
+    ];
+    for (const [group, label, items] of groups) {
+      const box = el("div", "chrome-group");
+      const ghead = el("div", "chrome-head");
+      ghead.append(el("span", "levels-label", label));
+      const all = el("button", "chrome-all", tr("全部显示")) as HTMLButtonElement;
+      all.type = "button";
+      all.dataset.group = group;
+      all.dataset.act = `all-${group}`;
+      all.disabled = offline;
+      all.title = tr("把这组按钮全部放回来（回到默认）");
+      all.onclick = () => {
+        if (!this.connected) return;
+        const patch: Record<string, null> = {};
+        for (const [id] of items) patch[id] = null;
+        this.act(() => this.socket.send({ type: "ui.set", chrome: patch }));
+      };
+      ghead.append(keep(all));
+      box.append(ghead);
+
+      const tiles = el("div", "chrome-tiles");
+      for (const [id, ic, name] of items) {
+        const on = lit(id);
+        const tile = el("button", `chrome-tile${on ? "" : " off"}`) as HTMLButtonElement;
+        tile.type = "button";
+        tile.dataset.chrome = id;
+        tile.dataset.act = `tile-${id}`;
+        tile.disabled = offline;
+        tile.setAttribute("aria-pressed", String(on));
+        tile.append(
+          el("span", "chrome-tile-ic", ic || "·"),
+          el("span", "chrome-tile-name", name),
+          el("span", "chrome-tile-eye", on ? "●" : "○"),
+        );
+        // 虚着的方块要说清「为什么虚」：会话限定与窄档默认都不在 `chrome` 里，光看键看不出来。
+        const why: string[] = [];
+        if (id === "artifacts" || id === "files") why.push(tr("没开会话时不显示"));
+        if (id === "files" && ctx.narrow && chrome[id] === undefined) why.push(tr("手机上默认收起"));
+        const hint = on
+          ? tr("点一下隐藏「{p1}」", { p1: name })
+          : tr("点一下显示「{p1}」", { p1: name });
+        tile.title = [hint, ...why].join(" · ");
+        tile.setAttribute("aria-label", tile.title);
+        tile.onclick = () => set(id, !on);
+        tiles.append(keep(tile));
+      }
+      box.append(tiles);
+      wall.append(box);
+    }
+    pane.append(wall);
+
+    if (offline) {
+      pane.append(el("div", "chrome-offline", tr("连上桥才能改可见性：现在点了不会有反应")));
+    }
+    if (key) focusable.get(key)?.focus();
   }
 
   /**
@@ -3667,6 +3871,7 @@ export class App {
     this.mgrRefresh = null;
     this.imageSheetPaint = null;
     this.wsPane = null;
+    this.chromePane = null;
     // D170: 详情弹层关掉就停轮询，别让一个看不见的弹层一直读盘。
     if (this.bgTimer !== null) window.clearInterval(this.bgTimer);
     this.bgTimer = null;
