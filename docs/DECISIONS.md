@@ -3461,3 +3461,17 @@ D
 **为什么缓存放在桥而不是页面：** 页面缓存跨不过标签页、也挡不住刷新页面，而限流是账号级的；桥是唯一知道当前凭据的地方，缓存键能跟着配置走，保存/清除凭据时也能一致地失效。代价：桥多一份进程内状态，多实例部署时各自一份（本工具就是单机进程，不做共享缓存）。
 
 **验证：** `node bridge/tests/jira-e2e.mjs`（17 项，假 Jira 加 `search/jql` 与 `project/search` + 命中计数器）：固定 JQL/字段（含页面传 `jql`、`fields`、`startAt` 被忽略）、字段映射（priority 为空回 `null`）、空列表、401/403 映射、两次读取只打一次上游、`refresh=1` 再打一次、`projects` 的映射与缓存、重新保存凭据清空缓存、未配置 400。`node web/tests/jira-unit.mjs`（10 项）：`browseUrl` / `formatUpdated` / `issueMeta`。`npm --prefix web run typecheck`（含 i18n-check：1814 键 × 3 语）与 `npm run build:web` 都过。
+
+## D203 Jira 详情：ADF 在页面端解释、评论只为附件而取、详情不缓存（工单 #250）
+
+**问题：** 「我的未完成」里点一行要就地展开详情：描述（Jira Cloud 存的是 ADF）+ 两段附件清单（issue 附件、评论附件）。描述要不要桥先转成文本、评论正文要不要一起返回、详情要不要缓存，三件事都会影响接口边界与将来的下载（#251）。
+
+**决定：**
+
+1. **描述 ADF → 纯文本在页面端做，桥原样透传。** `GET /api/jira/issues/:key` 的 `issue.description` 就是上游 `fields.description`（可能是 `null` 或 ADF 对象），桥不解析、不裁剪；`web/src/jira-shared.ts` 的 `adfToText()` 把段落 / 标题 / 列表 / 代码块 / 表格 / 引用 / 分隔线转成可读文本，`media` 节点变成 `[图片]` / `[附件]` 占位，超过 800 字截断并给「在新窗口打开」。代价：页面多一层要跟着 ADF 演进维护的转换器（认不出的节点类型会退化成丢格式的纯文本）；好处是桥保持「只做认证与转发」的单一职责，将来别的界面（预览、摘要）能复用同一份 ADF。
+2. **评论只为附件而取：只挖 `media` / `mediaSingle` 节点的 `attrs.id`。** 详情固定打一次 `GET /rest/api/3/issue/<KEY>/comment?maxResults=100`，遍历每条评论的 ADF body 收集 media id，映射成 `{ id, filename: attrs.alt || attrs.title || "附件", size: null, author: comment.author.displayName, created: comment.created }`，按 id 去重；评论正文、body 原样、其它字段都不进响应（e2e 用哨兵字符串断言全文不含）。代价：评论附件拿不到真实大小（media 节点里没有），界面显示 `—`；这条评论接口失败时整个详情按该错误码失败，而不是静默少一段附件——宁可让用户看见「读不到」，也不假装「没有评论附件」。
+3. **详情不缓存，只记在面板实例内存里。** 详情是点开才要的数据，桥端没有 TTL 缓存（与 D202 的列表缓存分开）；页面用 `Map<key, {open, state}>` 记住已经取到的结果，收起再展开、多行同时展开都不重请求，面板关闭 / 重连 / 换账号即丢弃。代价：同一工单在两个标签页里各请求一次；页面刷新后重新取；换来的是不会把上一个账号的工单详情留在内存里，也少一份要跟凭据失效同步的缓存。
+
+**接口形状：** `GET /api/jira/issues/:key` → `{ issue: { key, summary, type, priority, status, updated, description }, attachments: { issue: [...], comments: [...] } }`。key 先过形状校验 `^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`（不匹配 400 `jira_key`），大写化后拼 URL；这只是形状校验，能不能看由固定站点与用户 token 决定。上游 404 → 404 `jira_not_found`（「Jira 上没有这个工单」），401/403 沿用 `jira_auth` / `jira_forbidden`。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（23 项，新增 6 项）：详情字段映射与 description 原样透传、两段附件映射（未知 size → `null`、未知 author → 空串、评论 media 按 id 去重）、响应全文不含 `SENTINEL_COMMENT_TEXT`、key 大写化与形状校验、404/401/403 映射、详情不缓存与未配置 400。`node web/tests/jira-unit.mjs`（18 项，新增 8 项）：`adfToText` 的段落 / 标题 / 嵌套无序与有序列表 / 代码块 / 表格 / media 占位 / mention / hardBreak / 链接 / 空输入，`formatBytes` 的 B/KB/MB 与未知值。`npm --prefix web run typecheck`（含 i18n-check：1821 键 × 3 语）与 `npm run build:web` 都过。
