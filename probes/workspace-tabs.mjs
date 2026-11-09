@@ -19,6 +19,9 @@
  * #279 再接上：空组在组头标「空」，删除边界改成「有会话才拦」—— 空的手动组与空的目录组都能从 ⋯
  * 里删掉（快照 / order / 左栏一起消失），有会话时仍置灰并说清原因；当前组被删掉（别的客户端删的）
  * 时页面落到右邻，不留在空白页上。
+ * #277 再接上：双击当前标签就地改名（浮层贴标签、不吃行高、窄窗口不出视口）；非当前组的一次双击里
+ * 第一下只切组、第二下才编辑；Enter / 点别处保存，Esc 不改，留空回落目录名；拖动过的手不许弹浮层；
+ * 桥没收下（桩桥故意不回写）时提示并保留原值。
  *
  * 上一票（#119）的断言留着：A 壳顶栏只有一行、标签紧跟在 ◧ 后面、B/C/D 不画标签、800px 不破版。
  *
@@ -80,6 +83,8 @@ const byId = (id) => SESSIONS.find((s) => s.id === id);
 // #173：一份 order 与名额也持久化 —— 存在内存里，刷新页面就像重启后的桥一样把它们拿回来。
 // 起点就是名字顺序 01→09（#174 的拖动段与 #175 的 ＋ 段都以它为基准）；`ws.create` 往末尾追加。
 let createdGroups = 0;
+/** #277：桩桥故意不收改名，用来核对「拒绝时提示 + 保留原值」。 */
+let RENAME_DROP = false;
 const WS = {
   groups: [...GROUPS],
   overrides: {},
@@ -159,6 +164,14 @@ server.on("upgrade", (req, socket, head) => {
             group.inRow = msg.inRow;
             cast();
           }
+        }
+        // #277 真桥的 `rename()`：trim + slice(0,80)，组不在 / 同名都静默不写，但照样广播快照。
+        // RENAME_DROP 让桩桥扮演「拒收」：收下动作、不回写名字，页面只能靠下一份快照发现。
+        if (msg.action === "ws.rename") {
+          const group = WS.groups.find((g) => g.id === msg.id);
+          const name = String(msg.name ?? "").trim().slice(0, 80);
+          if (group && !RENAME_DROP && group.name !== name) group.name = name;
+          cast();
         }
         // 真桥的 `workspaces.create()`：造一个空名的手动组，追加到 order 末尾。
         if (msg.action === "ws.create") {
@@ -1057,6 +1070,151 @@ cast();
 await page.reload({ waitUntil: "networkidle" });
 await page.waitForSelector(".session-card", { timeout: 15000 });
 await sleep(500);
+
+await page.close();
+
+// ── #277 横条标签双击改名 ───────────────────────────────────────────────────
+// 浮层是 body 上的 fixed 输入框：贴当前标签下沿、不改标签行高度；Enter / 点别处存，Esc 丢，
+// 空串交给桥回落目录名。非当前组的两下规则、拖动阈值、桥拒收的提示都在这一段里。
+WS.groups = GROUPS.map((g) => ({ ...g }));
+WS.order = GROUPS.map((g) => g.id);
+WS.max = 3;
+RENAME_DROP = false;
+cast();
+page = await open(null);
+await sleep(500);
+
+const renameCalls = () => CALLS.filter((c) => c.action === "ws.rename");
+const lastRenameCall = () => renameCalls().at(-1) ?? null;
+/** 当前标签上那颗改名浮层：在不在、值、焦点、贴在哪儿、有没有出视口，以及提示条。 */
+const tabRenameState = () =>
+  page.evaluate(() => {
+    const input = document.querySelector(".ws-tab-rename-input");
+    const tab = document.querySelector(".ws-tab.on");
+    const row = document.querySelector(".ws-tabs-row");
+    const ir = input?.getBoundingClientRect();
+    const tr = tab?.getBoundingClientRect();
+    const rr = row?.getBoundingClientRect();
+    return {
+      exists: Boolean(input),
+      value: input?.value ?? "",
+      focused: document.activeElement === input,
+      input: ir ? { left: ir.left, top: ir.top, right: ir.right, bottom: ir.bottom, height: ir.height } : null,
+      tabBottom: tr?.bottom ?? null,
+      rowH: rr?.height ?? 0,
+      inViewport: Boolean(ir && ir.left >= 6 && ir.top >= 6 && ir.right <= window.innerWidth - 6 && ir.bottom <= window.innerHeight - 6),
+      gap: ir && tr ? Math.round(ir.top - tr.bottom) : null,
+      onWs: tab?.dataset.ws ?? "",
+      toast: document.querySelector(".fail-toast")?.textContent ?? "",
+    };
+  });
+/** 某一组在横条与左栏同时显示的名字（两处要一起变）。 */
+const shownNames = (id) =>
+  page.evaluate((id) => {
+    const tab = document.querySelector(`.ws-tab[data-ws="${id}"] .ws-tab-name`);
+    const sec = document.querySelector(`.ws-sec[data-ws="${id}"]`);
+    return { tab: tab?.textContent ?? "", tree: sec?.querySelector(".ws-head > .label")?.textContent ?? "" };
+  }, id);
+const dblTab = async (id) => {
+  await page.locator(`.ws-tab[data-ws="${id}"]`).dblclick();
+  await sleep(260);
+};
+
+// A. 双击当前标签：浮层贴在标签下沿，行高不变，值就是原名。
+const rowH0 = await page.evaluate(() => document.querySelector(".ws-tabs-row")?.getBoundingClientRect().height ?? 0);
+await dblTab("f:/proj-01");
+let rn = await tabRenameState();
+ok(rn.exists && rn.focused, "双击当前标签弹出改名输入框并聚焦");
+ok(rn.value === "客户 01 号的后台系统", `浮层里是原来的全名（${rn.value}）`);
+ok(rn.input && Math.abs(rn.input.height - 30) < 1, `浮层高度 30（${rn.input?.height}）`);
+ok(Math.abs(rn.rowH - rowH0) < 1, `浮层不撑高标签行（${rowH0} → ${rn.rowH}）`);
+ok(rn.gap != null && rn.gap >= 2 && rn.gap <= 8, `浮层贴着标签下沿（间距 ${rn.gap}px）`);
+ok(rn.inViewport, "浮层整个落在视口里");
+
+// B. Enter 保存：横条与左栏同时改，刷新后还在。
+await page.locator(".ws-tab-rename-input").fill("客户 01 号 · 改名");
+await page.locator(".ws-tab-rename-input").press("Enter");
+await sleep(450);
+rn = await tabRenameState();
+ok(!rn.exists, "Enter 后浮层收起");
+ok(lastRenameCall()?.id === "f:/proj-01" && lastRenameCall()?.name === "客户 01 号 · 改名", `发出去的是 ws.rename（${lastRenameCall()?.name}）`);
+let names = await shownNames("f:/proj-01");
+ok(names.tab === "客户 01 号 · 改名" && names.tree === "客户 01 号 · 改名", `横条与左栏同时更新（${names.tab} / ${names.tree}）`);
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(600);
+names = await shownNames("f:/proj-01");
+ok(names.tab === "客户 01 号 · 改名" && names.tree === "客户 01 号 · 改名", "刷新后名字仍在（桥里真写了）");
+
+// C. Esc：什么都不发，名字不动。
+let rename0 = renameCalls().length;
+await dblTab("f:/proj-01");
+await page.locator(".ws-tab-rename-input").fill("不要这个名字");
+await page.locator(".ws-tab-rename-input").press("Escape");
+await sleep(300);
+rn = await tabRenameState();
+names = await shownNames("f:/proj-01");
+ok(!rn.exists && renameCalls().length === rename0, "Esc 收起浮层、不发 ws.rename");
+ok(names.tab === "客户 01 号 · 改名" && names.tree === "客户 01 号 · 改名", "Esc 后横条与左栏都还是原值");
+
+// D. 点浮层外面 = 保存。
+await dblTab("f:/proj-01");
+await page.locator(".ws-tab-rename-input").fill("点外面保存");
+await page.mouse.click(620, 220);
+await sleep(450);
+rn = await tabRenameState();
+names = await shownNames("f:/proj-01");
+ok(!rn.exists && lastRenameCall()?.name === "点外面保存", "点别处收起浮层并按当前值保存");
+ok(names.tab === "点外面保存" && names.tree === "点外面保存", "点别处保存后两处一起更新");
+
+// E. 留空：发空串，桥负责回落目录名；这里核对动作本身，显示回落由桥的单测管。
+await dblTab("f:/proj-01");
+await page.locator(".ws-tab-rename-input").fill("");
+await page.locator(".ws-tab-rename-input").press("Enter");
+await sleep(400);
+ok(lastRenameCall()?.id === "f:/proj-01" && lastRenameCall()?.name === "", "留空发出 name:\"\"（交给桥回落目录名）");
+ok(WS.groups.find((g) => g.id === "f:/proj-01")?.name === "", "桩桥收到空名（真桥会换成目录名）");
+WS.groups.find((g) => g.id === "f:/proj-01").name = "客户 01 号的后台系统";
+cast();
+await sleep(350);
+
+// F. 非当前组的两下规则：一次双击里第一下只切组、第二下才进编辑。
+rename0 = renameCalls().length;
+await dblTab("f:/proj-02");
+rn = await tabRenameState();
+ok(rn.exists && rn.onWs === "f:/proj-02" && rn.value === "客户 02 号的后台系统", "双击非当前组：第一下切组、第二下进编辑，浮层出现时组已切过去");
+ok(renameCalls().length === rename0, "只切组的那一下不发 ws.rename");
+await page.locator(".ws-tab-rename-input").fill("客户 02 号 · 改名");
+await page.locator(".ws-tab-rename-input").press("Enter");
+await sleep(400);
+names = await shownNames("f:/proj-02");
+ok(names.tab === "客户 02 号 · 改名" && names.tree === "客户 02 号 · 改名", "第二下改名照常写入");
+
+// G. 拖动 4px 阈值：拖过之后不弹浮层；单击仍然只是切组。
+const dragBox = await page.locator('.ws-tab[data-ws="f:/proj-02"]').boundingBox();
+await page.mouse.move(dragBox.x + dragBox.width / 2, dragBox.y + dragBox.height / 2);
+await page.mouse.down();
+await page.mouse.move(dragBox.x + dragBox.width / 2 + 30, dragBox.y + dragBox.height / 2, { steps: 5 });
+await page.mouse.up();
+await sleep(450);
+rn = await tabRenameState();
+ok(!rn.exists, "拖动超过 4px 不弹改名浮层");
+await page.locator('.ws-tab[data-ws="f:/proj-03"]').click();
+await sleep(450);
+rn = await tabRenameState();
+ok(rn.onWs === "f:/proj-03" && !rn.exists, "拖过之后单击仍是切组，不会误进编辑");
+
+// H. 桥拒收：页面不做乐观改名，靠下一份快照发现没写进去，提示并保留原值。
+RENAME_DROP = true;
+await dblTab("f:/proj-03");
+await page.locator(".ws-tab-rename-input").fill("不会保存的名字");
+await page.locator(".ws-tab-rename-input").press("Enter");
+await sleep(1900);
+rn = await tabRenameState();
+names = await shownNames("f:/proj-03");
+ok(/改名没存下/.test(rn.toast), `桥没收下时提示没存下（${rn.toast}）`);
+ok(names.tab === "客户 03 号的后台系统" && names.tree === "客户 03 号的后台系统", `提示后横条与左栏保留原值（${names.tab}）`);
+RENAME_DROP = false;
 
 await page.close();
 

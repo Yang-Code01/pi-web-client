@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clampMax, moveToFront, newTabFold, rowModel, TABS_DEFAULT, TABS_MAX, TABS_MIN, tabHitTest, tabModel, tabReorder } from "../src/wstabs.ts";
+import { clampMax, moveToFront, newTabFold, rowModel, TABS_DEFAULT, TABS_MAX, TABS_MIN, tabHitTest, tabModel, tabRenameBox, tabReorder } from "../src/wstabs.ts";
 
 /** 桥下发的一份顺序（左栏与横条共用）。 */
 const ORDER = ["g1", "g2", "g3", "g4", "g5"];
@@ -283,4 +283,32 @@ test("#276 名额 0：照样不画，当前组也不能突破 0", () => {
   assert.deepEqual(m.more, ["g1", "g2"]);
   assert.deepEqual(m.offRow, ["g3", "g4", "g5"], "非成员全在右段；成员 g1/g2 在装不下那一段");
   assert.equal(m.currentOffRow, true);
+});
+
+// ---------------------------------------------------------------- #277 标签改名浮层的落点
+
+test("#277 浮层贴着标签：宽度至少 160，落在标签下沿 4px", () => {
+  const box = tabRenameBox({ left: 100, top: 20, bottom: 50, width: 80 }, { width: 1000, height: 800 });
+  assert.deepEqual(box, { left: 100, top: 54, width: 160 });
+});
+
+test("#277 浮层靠右：右边留 8px，宁可往左挪也不出视口", () => {
+  const box = tabRenameBox({ left: 940, top: 20, bottom: 50, width: 80 }, { width: 1000, height: 800 });
+  assert.deepEqual(box, { left: 832, top: 54, width: 160 });
+});
+
+test("#277 窄窗口：浮层缩到视口内（左右各留 8px）", () => {
+  const box = tabRenameBox({ left: 300, top: 20, bottom: 50, width: 180 }, { width: 150, height: 800 });
+  assert.deepEqual(box, { left: 8, top: 54, width: 134 });
+});
+
+test("#277 标签贴底：下面放不下就翻到标签上方", () => {
+  const box = tabRenameBox({ left: 100, top: 760, bottom: 790, width: 80 }, { width: 1000, height: 800 });
+  assert.deepEqual(box, { left: 100, top: 726, width: 160 });
+});
+
+test("#277 极矮窗口：上下都放不下时仍从上边 8px 开始（不出视口）", () => {
+  const box = tabRenameBox({ left: 100, top: 10, bottom: 40, width: 80 }, { width: 1000, height: 34 });
+  assert.equal(box.top, 8);
+  assert.equal(box.left, 100);
 });
