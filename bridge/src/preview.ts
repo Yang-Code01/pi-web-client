@@ -16,7 +16,7 @@ import { gbkEncode, utf8Bytes } from "./sheet/gbk.ts";
  * previewed page cannot read the bridge's cookies or call its API.
  */
 
-export type PreviewKind = "markdown" | "html" | "image" | "text" | "sheet" | "binary";
+export type PreviewKind = "markdown" | "html" | "image" | "text" | "sheet" | "slides" | "binary";
 
 export interface PreviewInfo {
   token: string;
@@ -29,6 +29,9 @@ export interface PreviewInfo {
   size: number;
   mtime: number;
   kind: PreviewKind;
+  /** Only for `kind === "slides"`: how many pages we counted (null = unknown) and whether this
+   * machine can render them here (no PowerPoint → the page says so instead of spinning). */
+  slides?: { pages: number | null; engine: boolean };
 }
 
 const TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
@@ -42,6 +45,14 @@ const HTML = new Set([".html", ".htm", ".xhtml"]);
 const SHEET = new Set([".xlsx", ".xlsm"]);
 // #106: workbooks we refuse to parse but can still open in Excel (the grant is what /api/open takes).
 const OPENABLE = new Set([".xlsx", ".xlsm", ".xlsb", ".xls", ".ods"]);
+// D209: presentations get their own floating window (slides/Dialog), not the sheet grid.
+const SLIDES = new Set([".pptx", ".pptm", ".ppsx", ".potx", ".ppt", ".pps"]);
+// OLE-format decks (.ppt/.pps, or any password-protected package): no zip index to count pages from.
+const LEGACY_SLIDES = new Set([".ppt", ".pps"]);
+// D209: files that only make sense in a desktop app — we hand out a grant and a button, never parse.
+const DOCS = new Set([".pdf", ".doc", ".docx"]);
+/** Everything /api/open will launch in the OS: workbooks, decks, documents. */
+export const OPENS_ON_DESKTOP = new Set([...OPENABLE, ...SLIDES, ...DOCS]);
 const IMAGE: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -143,6 +154,8 @@ export function kindOf(file: string): PreviewKind {
   if (IMAGE[ext]) return "image";
   // Not a zip inside: .xls renamed to .xlsx, or an encrypted package. Say so, don't half-parse it.
   if (SHEET.has(ext)) return isZipPackage(file) ? "sheet" : "binary";
+  // Legacy/OLE decks have no zip index, but PowerPoint still opens them — don't downgrade them.
+  if (SLIDES.has(ext)) return LEGACY_SLIDES.has(ext) || isZipPackage(file) ? "slides" : "binary";
   return looksText(file) ? "text" : "binary";
 }
 
@@ -216,15 +229,26 @@ function transcriptTail(file: string): string | null {
  * the session cwd, or one the session transcript mentions (that is how pi hands over something it
  * wrote elsewhere). `openPreview` itself keeps D50's wider rule: /api/preview and /api/dirs serve
  * whatever the user clicked in the directory listing. */
-export function isTrustedPreviewPath(session: { cwd: string; file: string | null }, abs: string): boolean {
+export function isTrustedPreviewPath(
+  session: { cwd: string; file: string | null },
+  abs: string,
+  extraRoots: string[] = [],
+): boolean {
   if (isUnder(abs, session.cwd)) return true;
+  // D209: the Jira download dir and the peer inbox are roots the *user* configured — a file sitting
+  // in one of them is as clickable as one in the cwd, so the agent may open it too.
+  if (extraRoots.some((root) => root && isUnder(abs, root))) return true;
   if (!session.file) return false;
   const tail = transcriptTail(session.file);
   return tail !== null && mentionForm(tail).includes(mentionForm(abs));
 }
 
 /** Throws a user-facing (Chinese) message when the path may not be previewed. */
-export function openPreview(session: { cwd: string; file: string | null }, rawPath: string): PreviewInfo {
+export function openPreview(
+  session: { cwd: string; file: string | null },
+  rawPath: string,
+  pinRoots: string[] = [],
+): PreviewInfo {
   const abs = resolvePreviewPath(session, rawPath);
   // Reads follow /api/dirs, which already lists any drive: a second, narrower rule here only made
   // the same path openable in one place and not the other (D50).
@@ -236,15 +260,19 @@ export function openPreview(session: { cwd: string; file: string | null }, rawPa
     throw new Error(`文件不存在：${abs}`);
   }
   if (!st.isFile()) throw new Error(`不是文件：${abs}`);
-  // Root = cwd when possible so `../assets/x.css` from a nested page still resolves.
-  const root = inCwd ? path.resolve(session.cwd) : path.dirname(abs);
+  // Root = cwd when possible so `../assets/x.css` from a nested page still resolves. A caller that
+  // names trusted roots (Jira attachment dir / peer inbox, D209) pins the token to the folder the
+  // file actually sits in: the page gets no wider a read grant than the list it was clicked from.
+  const pinned = pinRoots.find((root) => root && isUnder(abs, root)) ?? null;
+  const root = pinned ?? (inCwd ? path.resolve(session.cwd) : path.dirname(abs));
   const rel = path.relative(root, abs).split(path.sep).map(encodeURIComponent).join("/");
   const kind = kindOf(abs);
   const token = issue(root);
   // The sheet endpoints never take a path from the page: this grant (path + mtime) is the only key.
-  // #106: the same grant is what /api/open accepts, so a file we refuse to parse can still be opened.
+  // #106/D209: the same grant is what /api/open accepts, so a file we refuse to parse can still be
+  // opened in its desktop app (workbooks, decks, PDF/Word).
   const ext = path.extname(abs).toLowerCase();
-  if (kind === "sheet" || OPENABLE.has(ext)) registerFileGrant(token, abs, st.mtimeMs);
+  if (OPENS_ON_DESKTOP.has(ext)) registerFileGrant(token, abs, st.mtimeMs);
   return { token, rel, root, name: path.basename(abs), abs, size: st.size, mtime: st.mtimeMs, kind };
 }
 

@@ -3589,3 +3589,39 @@ D
 **验证**
 
 `node bridge/tests/artifacts-unit.mjs`（新增/修改/没变含 CRLF/已删除/二进制/无基线/相对与绝对路径去重/清理）、`node bridge/tests/artifacts-e2e.mjs`（临时桥：snapshot 无 token 与假 token 都 403、未知会话 404、`/api/git` 未被闸到）、`npm run typecheck`（含 i18n-check，新增 24 条文案 ×3 语）、`npm run build`。界面用原型页先对齐过三个候选的观感，真机手验留给测试环境（一条真模型回合写两个文件）。
+
+## D209 幻灯片支持：能打开文件的地方都要能开 .pptx，翻页走 PowerPoint → PDF（#265）
+
+「用户或 agent 能直接打开一个本地文件」的入口有四条：预览面板 / 文件管理器、聊天里的附件与路径 chip、Jira 面板的附件行、内网通收到的文件。它们过去只认「文本 / 图片 / 表格 / 其它二进制」四类，`.pptx` 落进最后一类——页面明写「这个格式这里不支持」，而且只有 xlsx 家族才配一颗「用默认程序打开」。结果是：能看见文件，打不开它；客户发来的季度汇报在网页里就是一行字。
+
+还有一处更早就错位的地方：`bridge/src/delivery.ts` 一直告诉模型「预览打不了的就指向客户端里已有的『用本机程序打开』出口」，可那颗按钮只对 `WORKBOOK` 家族出现。对 pdf/docx/ppt 来说是句空话，模型顺着这句话让用户去点，用户找不到。
+
+**决定**
+
+1. **两步走，先本机能开、再站内翻页。** 第一步（便宜、立刻可用）把「用本机程序打开」从 xlsx 家族扩到**所有会落到 binary 支线、且有桌面程序认领的格式**：`.pptx .pptm .ppsx .potx .ppt .pps .pdf .doc .docx`（加上原有 `.xlsx .xlsm .xlsb .xls .ods`）。判定在桥（`OPENS_ON_DESKTOP` 那张表），前端只问 `kind` 与扩展名，不再各自维护正则。第二步才是站内翻页。代价：`.pdf`、`.docx` 从「只能下载」变成「能交给本机」，多一条启动外部程序的路径；这与 D69 当年担心的「网页启动任意关联程序」是同一类风险，区别在于现在只对**用户亲手点开的那个文件**、且只在回环页面（`/api/open` 本来就是回环 + token）。
+
+2. **扩展名分家族，伪装包退 binary，老二进制直接认。** `.pptx .pptm .ppsx .potx` 必须是 zip 包（`isZipPackage` 沿用表格那边的判定），不是就退 binary 并给「用本机程序打开」；`.ppt .pps` 是 97-2003 的 OLE 二进制，没有可靠的结构判据，直接认。改了扩展名的 pptx（比如改名成 `.doc`）按扩展名走，仍是 binary —— 但 grant 在，本机照样能开。**不做内容嗅探**：那是给「打开就崩」开了个口子，而「点了打不开」是可解释的。
+
+3. **站内翻页 = PowerPoint COM 转 PDF，塞进 iframe，放在独立的幻灯片浮窗里。** 不复用 `viewer` 面板：它固定 `min(760px,55vw)`（D121），一页 16:9 的幻灯片塞进去只剩半张；也不复用 `/raw`——它的 `content-security-policy: sandbox` 会让浏览器内建 PDF 查看器白屏（D166 已经因此给表格单开了 `/api/sheet/pdf`）。所以照抄 D166 的形状，另开 `/api/slides/pdf`：POST 换状态、GET 取字节，`content-disposition: inline`，`nosniff`，`no-store`。iframe 不带 `sandbox`（要 PDF 查看器自己的 origin），这是 D166 已接受的取舍。
+
+4. **把「文件 → PDF」抽成共用设施，`sheet/pdf.ts` 降级成 wrapper。** 新 `bridge/src/docpdf/service.ts` 收排队、缓存键（`sha256(abs\0mtime)`）、两阶段状态、失败记忆、超时、临时目录、`%PDF-` 校验、清理；`engine` 是唯一的变量。表格的 driver 仍是 LibreOffice（行为、错误码 `sheet_pdf_failed/_timeout/_soffice`、`PI_SOFFICE` 全部不变），幻灯片的是 COM。**不顺手改 sheet-pdf 的旧行为**（它至今不清理缓存），只给新目录加 `retain: {count: 50, days: 7}`——旧坑单独修，别混在一次变更里。
+
+5. **页数上限要在启动 PowerPoint 之前判。** `200` 页：先只读 zip 中央目录数 `ppt/slides/slideN.xml`（读尾 66 KB 找 EOCD，不整包进内存），超了直接 `slides_pdf_pages`。认不出结构（加密包、Zip64）就不数，只靠 50 MB 体积上限——认输比吃内存好。为什么不转完再判：一次 PowerPoint 启动 8 秒起步，转完再拒不但是白等，还会在磁盘上留一份没人要的 PDF。
+
+6. **COM 只读、无窗口、强制禁宏、超时杀进程树。** `Presentations.Open($Src, ReadOnly:=$true, Untitled:=$false, WithWindow:=$false)`、`AutomationSecurity = 3`（`msoAutomationSecurityForceDisable`）、`SaveAs(..., 32 = ppSaveAsPDF)`、`Close()` + `Quit()`。PowerShell 脚本**只写 ASCII**、`param()` 必须是第一句：Windows PowerShell 5.1 按 ANSI 读无 BOM 的 UTF-8，一句中文注释就能让整个脚本炸。超时 180 秒，先 `taskkill` 掉这次新出现的 `POWERPNT.EXE` 再抛 `slides_pdf_timeout`。代价：**接受 PowerPoint 窗口闪一下**（`WithWindow:=$false` 也拦不住进程启动那一下）；换来的是不依赖装载项、不写用户模板。
+
+7. **打开即转、直出页面；关掉浮窗不取消转换。** 不做「先信息页再点按钮」（那要多一次点击和一次状态机），浮窗一开就轮询 `POST /api/slides/pdf`，`ready` 直接挂 iframe。用户提前关窗，转换继续跑完落缓存——下次打开直接 `ready`（实测缓存命中 0.5 秒，首次 8.1 秒）。失败记进 `failures`，只有页面上的「重试」带 `retry: true` 才重转，避免一次坏文件把 PowerPoint 反复拉起来。
+
+8. **可信根：Jira 附件目录与内网通收件箱，每次请求现读配置。** 这两处的文件不在会话 cwd 下，工具和页面都够不着。`previewPins()` 每个请求调 `readAttachmentRoot()` 与 `peer.view().status?.config?.inbox`，命中就把 token 的 `root` 钉在那个目录上（不是 cwd）——页面拿到的读权不多于它刚才列出的那份清单。**只信当前配置值**：用户改掉附件根，旧目录立刻不再是可信根。`open_preview` 工具走 `isTrustedPreviewPath(session, abs, pins)`，所以 agent 也能开这两处的文件。
+
+9. **内网通点卡片 = 用本机程序打开（与原计划的偏差）。** 原定「点卡片 = 站内预览」，落地时发现 `web/peer.html` 是独立页面、自己的 bundle，不加载 `app.ts`，也没有会话上下文；而 `/api/preview` 必须 `sessions.locate(sessionId)`，SPA 启动时又不会自动选会话，深链预览会 404。所以改为：卡片点击 → `POST /api/peer/open` → 桥问 peer 守护进程要收件目录里的**真路径**（新增回环 `/files/meta`）→ `openWithApp`。「另存」小链接保留。`.pptx` 由 PowerPoint 打开，仍然满足「能打开」；代价是没了站内翻页。
+
+10. **公网不给演示文稿内容，也不给路径。** 与表格同一条口径（US 46）：`/api/preview` 在隧道请求上一律 403 `slides_public`「通过公网访问时不提供演示文稿内容，回本机操作」，页面根本拿不到 token。`/api/peer/open` 同样拒绝公网。
+
+**接口形状**
+
+`POST /api/preview {sessionId, path}` 的 `kind` 新增 `"slides"`，并带 `slides: {pages: number|null, engine: boolean}`（页数与「这台机器有没有 PowerPoint」提前告诉页面，别让它轮询一场注定失败的转换）。`POST /api/slides/pdf {token, retry?}` → `{id, status: "ready"|"pending"|"failed", error?, code?}`；`GET /api/slides/pdf?id=&token=` → 200 `application/pdf`（完成）/ 202 text/plain「幻灯片还在生成」/ 404 `slides_pdf_gone`（id 与当前 grant 的 key 不符）。错误码：`slides_pdf_failed`、`slides_pdf_timeout`、`slides_pdf_powerpoint`（未安装 / COM 未注册，HTTP 503）、`slides_pdf_pages`；公网 403 `slides_public`。`POST /api/peer/open {id}` → `{ok, message}`；peer 守护进程新增 `GET /files/meta?id=` → `{ok, path, name, size, mime}`（只回环）。
+
+**验证**
+
+`node --experimental-strip-types bridge/tests/slides-unit.mjs`（`npm run test:slides`）—— 共用设施的排队/缓存/失败记忆/`retry`/超时+kill/页数粗筛/体积上限/清理各一组，`countSlides` 的 3 / 0 / null / null，以及分类与 pinRoots；`npm run test:preview` 不回归；`npm run typecheck`（含 i18n-check，14 条新文案 ×3 语）、`npm run build`。真机另验（本机 PowerPoint 16，未提交脚本）：3 页真 pptx → 首次 8.1s 出 PDF、缓存命中 0.5s、`/api/open` 能交给桌面程序；Playwright + 真桥 + Edge 通道截图确认浮窗里渲染出「Slide 1 / 1 of 3」，拖拽缩放后几何落 `pi.slidesGeom`，重开保留。Playwright 自带 Chromium 没有 PDF 插件，headless 里是白框——那不是这套实现的问题。

@@ -22,6 +22,8 @@ const PROJECTS = "/rest/api/3/project/search";
 const MAX_BODY = 64 * 1024;
 /** #251：单文件上限；超了只跳过这一项，同批其它文件照常落盘。 */
 const MAX_DOWNLOAD = 100 * 1024 * 1024;
+/** 「已下载」列表一次最多报这么多个文件（D209）：下载目录是人手整理的，几百个文件之后没人逐行点。 */
+const MAX_DOWNLOADED_FILES = 300;
 /** 附件内容可能几 MB 到几十 MB，别套 15 秒的 JSON 超时（那个是给元数据用的）。 */
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -875,8 +877,19 @@ function getDownloaded(res: http.ServerResponse, rawKey: string): void {
     return json(res, 200, { dir: null, count: 0 });
   }
   // 只数普通文件：子目录（用户自己整理的）不算下载结果。
+  const files = entries.filter((entry) => entry.isFile()).slice(0, MAX_DOWNLOADED_FILES);
   const count = entries.filter((entry) => entry.isFile()).length;
-  return json(res, 200, count > 0 ? { dir, count } : { dir: null, count: 0 });
+  if (count === 0) return json(res, 200, { dir: null, count: 0 });
+  // D209：行要点得开 —— 把每个文件的绝对路径一并给出去（页面不再自己拼分隔符）。
+  return json(res, 200, {
+    dir,
+    count,
+    files: files.map((entry) => {
+      const file = join(dir, entry.name);
+      const st = fs.statSync(file, { throwIfNoEntry: false });
+      return { name: entry.name, path: file, size: st?.size ?? 0, mtime: st?.mtimeMs ?? 0 };
+    }),
+  });
 }
 
 /** 列表接口的公共前半段：读配置，没配就说 `jira_not_configured`。 */

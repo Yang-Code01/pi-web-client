@@ -4145,6 +4145,14 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   white-space: nowrap;
 }
 .jira-attach-meta { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* D209：下载过的附件变成按钮——点一下就在会话里打开。名字的等宽字体与截断保持不变。 */
+.jira-attach.open {
+  border: 0; border-radius: 7px; background: transparent; padding: 4px 6px; margin: 0 -6px;
+  text-align: left; cursor: pointer; font: inherit;
+}
+.jira-attach.open:hover { background: #eef1f5; }
+.jira-attach.open:focus-visible { outline: 2px solid #7aa7f8; outline-offset: 1px; }
+.jira-attach.open .jira-attach-name { color: #2f6feb; }
 
 /* #251：下载按钮 + 结果就地显示（已保存到 <dir>，再逐项一行）。 */
 .jira-download { display: grid; gap: 6px; border-top: 1px solid var(--line-soft); padding-top: 8px; min-width: 0; }
@@ -4212,3 +4220,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .jira-detail.open { padding-left: 8px; margin-left: 0; }
   .jira-desc-text { max-height: none; }
 }
+
+/* D209：幻灯片浮窗。外壳直接复用 `.sd`（标题栏、拖拽、脚注、几何都一样），
+   body 里只有一页 PDF —— 所以把表格那套 padding / 网格的边距全去掉。 */
+.sld .sd-body { padding: 0; background: #f2f4f7; }
+.sld-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+.sld .sd-msg { flex-direction: column; gap: 7px; pointer-events: auto; }
+.sld-hint { font-size: 11.5px; color: var(--dim); }
+.sld-error { display: grid; gap: 10px; justify-items: center; max-width: 560px; }
+.sld-acts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
