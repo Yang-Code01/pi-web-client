@@ -21,6 +21,7 @@ import { bgBusy, continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { JiraPanel } from "./jira.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
+import { openSysmanage } from "./sysmanage.ts";
 import { BranchSheet } from "./branchsheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
@@ -2612,6 +2613,10 @@ export class App {
       case "settings":
       case "scoped-models":
         this.openSettingsSheet("global");
+        return done();
+      case "sysmanage":
+        this.closeSheet();
+        openSysmanage();
         return done();
       case "trust":
         this.openSettingsSheet("trust");
@@ -12214,7 +12219,13 @@ export class App {
     const piSettings = el("button", "btn", tr("pi 设置")) as HTMLButtonElement;
     piSettings.title = tr("pi 的 settings.json（全局 / 项目）、项目信任、两个更新日志（/settings）");
     piSettings.onclick = () => this.openSettingsSheet("global");
-    keysTools.append(keysBtn, piSettings);
+    const sysmanage = el("button", "btn", tr("本机管理")) as HTMLButtonElement;
+    sysmanage.title = tr("本机信息、网卡与 DNS、端口与服务");
+    sysmanage.onclick = () => {
+      this.closeSheet();
+      openSysmanage();
+    };
+    keysTools.append(keysBtn, piSettings, sysmanage);
     host.append(el("h2", "", tr("快捷键")));
     host.append(keysTools);
     host.append(el("h2", "", tr("关于")));
@@ -13781,6 +13792,7 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["debug", tr("这个会话的 pi 日志")],
   ["hotkeys", tr("快捷键")],
   ["settings", tr("pi 设置（全局 / 项目）")],
+  ["sysmanage", tr("本机管理（信息 / DNS / 端口）")],
   ["scoped-models", tr("循环切换的模型范围")],
   ["reload", tr("重启这个会话的 pi，读到最新设置 / 扩展 / 技能")],
   ["trust", tr("项目信任：要不要加载这个目录的 .pi 配置")],

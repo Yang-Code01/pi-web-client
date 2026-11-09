@@ -1,5 +1,6 @@
 import type { ArtifactDiff, ArtifactList, GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
 import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
+import type { DnsResult, SysNetwork, SysOverview, SysPorts, SysServices } from "./sysmanage-types.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -195,6 +196,16 @@ export const api = {
       count: number;
       files?: { name: string; path: string; size: number; mtime: number }[];
     }>(`/api/jira/issues/${encodeURIComponent(key)}/downloaded`),
+  /** #266：本机管理。读本机与局域网；公网拿到的已经由桥打码。 */
+  sysOverview: () => req<SysOverview>("/api/sys?section=overview"),
+  sysNetwork: () => req<SysNetwork>("/api/sys?section=network"),
+  sysPorts: () => req<SysPorts>("/api/sys?section=ports"),
+  sysServices: () => req<SysServices>("/api/sys?section=services"),
+  /** 写只有 DNS；桥端本机/局域网预授权，公网 403。每次应用都会在主机桌面弹 UAC。 */
+  sysDnsApply: (guid: string, servers: string[]) =>
+    req<DnsResult>("/api/sys/dns", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ guid, servers }) }),
+  sysDnsRestore: (guid: string) =>
+    req<DnsResult>("/api/sys/dns/restore", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ guid }) }),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),

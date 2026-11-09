@@ -3643,6 +3643,44 @@ D
 
 **验证：** `node web/tests/pillbar-unit.mjs`（新增 2 项：本区未定义（`null` / `undefined`）为 `[]`、本区有定义时仍只留本区 ★）；`probes/workspace-tree.mjs`（新增 2 项：没打开会话时行 2 零胶囊、只剩 ＋）；`probes/workspace-shells.mjs`（A 壳新增 2 项：没打开会话时别组 ★ 不进行 2；打开 proj-01 的会话后行 2 只留本区那颗 `s-01-2`）；`probes/pin-auto-open.mjs`（22 项全绿；新增 1 项：旧桥 + 没有当前会话时行 2 仍铺满全部置顶，旧桥回退的行为未变）。`npm --prefix web run typecheck`（含 i18n-check）与 `npm run build:web` 通过。
 
+## D211 diff 弹窗右边被裁：`.sheet` 是 grid 却没钉列，隐式列按 max-content 长过自己的 width
+
+**现象：** 产物弹窗打开某个文件的 diff 之后，右上角的「关闭」整颗看不见、只露一条边；`j / k 换文件` 那行提示和白字计数的 `按 git 估算` 粘在一起；路径栏的「在查看器里打开」和路径文本叠在一起；没有基线时的说明文字从右侧被切掉半句（`F:/pi-web-client/.scratch/shots/bug-diff-overlap.jpg`）。
+
+**根因（仿真实 DOM 的 harness 复现，不是推测）：** `.sheet` 是 `display: grid`，只写了 `grid-template-rows`（`web/src/styles.css:1485`），**没写 `grid-template-columns`** —— 那条隐式列按 `max-content` 定宽，标题栏的内容宽（title 333 + hint 240 + 关闭 60 ≈ 633）把列撑到 594px，比 `.sheet` 自己的 `width: min(560px, 100%)` 还宽，再被同一元素上的 `overflow: hidden` 从右边裁掉。实测：sheet 560 / head 594.1（右 955.1 vs sheet 右 920），`.sheet-head > .btn` 被 flex 收缩到 58.9×58.3（两字标签折成两行）。同类先例：D60 的 `.turn-list`、`.dir-list` 都是这个坑。
+
+**修法：** ① `.sheet` 补 `grid-template-columns: minmax(0, 1fr)`；② `.sheet-head` 补 `gap: 8px`（title 与 `margin-left: auto` 的 hint 之间原来零间距）；③ `.sheet-head > .btn { flex: none }` —— 按钮按内容宽排，要收的是标题和提示，不让按钮折行长高；④ `.diff-hint` 补 `min-width: 0; overflow: hidden; text-overflow: ellipsis`，让它可收、收的时候出省略号而不是被裁。
+
+**顺带把 diff 弹窗开到 920px（独立、可回退）：** 560px 扣掉 208px 左栏后每边只剩 ~130px，48px 行号 + 80px 代码，而 `.diff-text` 是 `white-space: pre` + `overflow: hidden`（不横滚）—— 左右对照在那个宽度下不成立，一行只能看十来个字。`@media (min-width: 760px)` 里给 `width: min(920px, calc(var(--vw1) * 94))`，窄屏仍是原来的全宽单列（`.diff-row` 在 ≤760 有 `min-width: 560px` 横滚）。用 `--vw1` 是为了跟 `#app { zoom }` 下的 UI 缩放对齐（同 `.ext-sheet` / `.mgr-sheet`）。
+
+**验证：** harness `F:/pi-web-client-wt/fix-diff-sheet-overflow/.scratch/diff-overlap/repro.html`（链接真 `web/src/styles.css`，DOM 照 `web/src/app.ts:5744-5820` 拼）+ `check.mjs`（Playwright）：修前 1280 宽下 head 594.1 > 560、close 58.9×58.3、`在查看器里打开` 右缘 943.1 > 920；修后 360 / 420 / 560 / 640 / 760 / 800 / 900 / 1100 / 1280 / 1600 十个宽度全过 —— 关闭恒 60×38.1、head 不溢出不折行、按钮全在 sheet 内，<760 仍是 `x=0` 全宽。`node bridge/tests/whatsnew-ui.mjs` 全绿（设置页也是 `.sheet`，确认基础规则的改动没伤到别的抽屉）；`npm run build` 与 `npm run typecheck`（含 i18n-check）通过。
+
+**可改：** 920 / 94vw 两个数是按「两列各 356px 能读 48 列左右」定的；hint 在窄一点的窗口会先出省略号，如果更想让它换行就换成两行 grid。
+
+
+## D212 本机管理：独立控制台，读走 REST、DNS 写走 UAC 助手，公网只读打码
+
+「pi 设置」旁边要能看这台机器，并且切 DNS，但不能再做成一页 pi 配置。DNS 是整机状态，改错会影响域登录、内网域名和 Jira；桥又常年以普通权限跑着。这个功能的关键不是把 `ipconfig` 画出来，而是把「谁能改、改之前存什么、失败怎么退」定死。
+
+**决定**
+
+1. **独立控制台，四个分区，C 布局。** 不从设置 sheet 里长 tab：DNS 影响整台机器，不该藏在「某个项目的 pi 设置」里。左栏概况 / 网络与 DNS / 端口与服务 / 服务，右栏内容；入口是「pi 设置」旁边的按钮 + `/sysmanage`。原型阶段比较过设置式页签、单页体检报告、双栏控制台，选 C 是因为它把「网卡列表」和「DNS 编辑」放在同一屏，切网卡不用滚动。代价是比设置页多一层导航；换来的是 DNS 的当前值、预设、应用按钮始终同屏。
+2. **读走 REST，不新增 WS 协议。** 四个分区各自 `GET /api/sys?section=`，前端按 tab 懒加载。理由是这些是请求-响应式快照，没有服务端推送需求；WS 那条 `onMessage` 的 `switch` 已经很长，再塞四种子协议只会增加状态。缓存：network 30s、ports 10s、services 30s；DNS 改动后只清 network。
+3. **采集选快路径，慢的靠缓存。** 概况用 Node 的 `os` + `fs.statfsSync` + 一次注册表（`DisplayVersion` / `CurrentBuild` / `UBR`）；网卡用 `Win32_NetworkAdapter` + `Win32_NetworkAdapterConfiguration`（冷 ~2.2s、热 ~0.9s），不用 `Get-NetAdapter`（1.4s）叠 `Get-NetIPConfiguration`（2.3s）；端口用 `netstat -ano`（123ms）+ `Win32_Process`（~1.1s）；服务用 `Win32_Service`（~1.5s，含 PathName）；防火墙读注册表三档 `EnableFirewall`（~0.4s），不用 2.5–4.7s 的 `Get-NetFirewallProfile`。网卡按 GUID 定位用 `Win32_NetworkAdapter -Filter "GUID='{...}'"`——`Get-NetAdapter` 没有 `-InterfaceGuid`，这条踩过。
+4. **DNS 只改 IPv4，按网卡记原值，绝不自动回滚。** 预设 = 公司 172.28.1.23 / 阿里 / 腾讯 / 114 / Google / Cloudflare / 自定义；首次应用前把原值写进 `statePath("sysmanage.json")`（键是 InterfaceGuid），页顶常驻「原值已保存 + 恢复」。原值是 DHCP 时恢复用 `-ResetServerAddresses`，静态则写回保存的数组。不做「N 分钟后自动恢复」：改 DNS 的人通常要的就是一直用下去，倒计时会在开会/跑构建时突然把网断掉；也不做启动时自动回滚，只在页面上给一键恢复。代价是桥崩了原值仍在文件里，但不会自己动。
+5. **写操作走一次性 UAC 助手，桥不常驻管理员。** 桥用校验过的值（GUID 正则、InterfaceIndex 整数、`node:net` 的 IPv4 校验、最多 3 个）生成固定 `.ps1` + 回执路径，`Start-Process powershell -Verb RunAs -Wait` 拉起；助手执行 `Set-DnsClientServerAddress` + `Clear-DnsClientCache`，把 `{ok, error, after}` 写成无 BOM UTF-8 JSON；桥 120s 超时，UAC 取消记 `uac_denied`。**不 detached**：Windows 的 `detached: true` 是 `DETACHED_PROCESS`，`Start-Process -Verb RunAs` 需要桌面会话，D52 已经踩过「静默成功但什么都没做」。每次应用都弹 UAC 是刻意的：DNS 是整机改动，必须有人在主机前点「是」。
+6. **权限边界在桥端，不在 UI。** 本机/局域网沿用现有 WS 升级的预授权（`publicReq` 为 false 时 `stepUntil` 已给满）；公网（`cf-connecting-ip` / `x-forwarded-proto: https`）读也打码：主机名前 2 位、IP/MAC/网关/DNS、进程名/服务名与路径，桥在返回前就抹掉，不指望前端隐藏；DNS 写直接 403。公网端口/服务只回数量，不回明细。这样即使有人绕过页面直接打 API，拿到的也只是打码后的摘要。
+7. **非 Windows 降级为只读。** macOS/Linux 只回概况与网卡（能读多少读多少），`supported: false`；DNS/端口/服务在界面上说明「暂不支持」，不伪造空表。第一版不写 systemd/networkd，也不碰 `/etc/resolv.conf`。
+8. **「服务」单独一页，默认只看非 Microsoft 且运行中。** 端口页放对外监听 + 防火墙三档；服务页放可搜索的全量列表，带「显示 Microsoft / 含已停止」开关。Microsoft 判定看路径（`\Windows\`、`\Microsoft\`、`\WindowsApps\` 之外的 `microsoft shared`）与显示名前缀；没路径的当 Microsoft，避免默认列表被系统服务淹没。
+
+**接口形状**
+
+`GET /api/sys?section=overview|network|ports|services` → 对应的 `SysOverview` / `SysNetwork` / `SysPorts` / `SysServices`；公网时 `public: true`，字段已打码。`POST /api/sys/dns {guid, servers}` → `{ok, before, after, unchanged, saved, dhcp}`；同值回 `unchanged: true` 且不弹 UAC。`POST /api/sys/dns/restore {guid}` → `{ok, dhcp, before, after}`；没有原值回 404 `no_saved_dns`。错误统一 `{error, code}`：`dns_guid` / `dns_servers` / `adapter_not_found` / `uac_denied` / `uac_timeout` / `no_receipt` / `dns_failed` / `dns_state` / `public_dns` / `dns_busy`。
+
+**验证**
+
+`npm run test:sysmanage`（netstat 解析、网卡合并/掩码/默认路由、服务归类、DNS 预设与解析、端口/服务过滤、格式化）；`npm run typecheck`（含 i18n-check，新增文案 ×3 语）；`npm run build`；测试实例上四页签真数据 + 公网头打码 + 同值不弹 UAC；真实改 DNS 的 UAC 与恢复留本机手验（会动整机网络，不在自动化里跑）。
+
 ## D213 会话 / 待发图片都能点开看原图：快照只带 mimeType，字节按需走 `/api/session/image`
 
 **问题：** 用户气泡里的图片只有一行「附 N 张图片」；待发弹层的缩略图是死图，想看大一点只能先发出去。会话快照里的 `images` 只有 `{mimeType}`（`bridge/src/items.ts` 的 `entriesToItems` 故意不带 base64），所以页面没有可显示的源。
