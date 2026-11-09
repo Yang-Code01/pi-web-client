@@ -12,15 +12,24 @@ import { createEl as el } from "./chat.ts";
 import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
-import { adfToText, browseUrl, downloadMark, formatBytes, formatUpdated, issueMeta, keyMask, siteUrlProblem } from "./jira-shared.ts";
+import { adfToText, browseUrl, downloadMark, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, siteUrlProblem } from "./jira-shared.ts";
 import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
 
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
 export { keyMask, siteUrlProblem } from "./jira-shared.ts";
 
+export interface JiraHandoff {
+  /** 只把提示词放进当前输入框，不发送。 */
+  prefill(text: string): void;
+  /** 开一个新会话，建好后把提示词填进它的输入框，不自动发送。 */
+  newSessionWith(text: string): void;
+}
+
 export interface JiraHost {
   /** 底部那行 MCP 提示的落点：直接开到设置里的「扩展与 MCP」。 */
   settings(tab: "ext"): void;
+  /** #252：交给 agent 的两个出口；没接上时浮层里给一行错误，不静默。 */
+  handoff?: JiraHandoff;
 }
 
 export interface JiraMe {
@@ -110,6 +119,8 @@ export class JiraPanel {
   private attachRoot: string | null = null;
   /** 内嵌在面板里的目录选择层；`null` = 没开。 */
   private pickerLayer: HTMLElement | null = null;
+  /** #252：交给 agent 的浮层；`off` 摘掉浮层自己的全局监听（外点 / 滚动 / 尺寸变化）。 */
+  private handoffPop: { el: HTMLElement; timer: number; off: () => void } | null = null;
 
   constructor(host: JiraHost) {
     this.host = host;
@@ -125,6 +136,11 @@ export class JiraPanel {
       if (ev.key !== "Escape") return;
       ev.preventDefault();
       ev.stopPropagation();
+      // 交给 agent 的浮层最轻：Esc 先只收它（与目录层同理，一下关两层太粗）。
+      if (this.handoffPop) {
+        this.closeHandoff();
+        return;
+      }
       // 目录选择层开着时，Esc 只收这一层：一下关两层太粗（D204 的「改」也不该顺手关掉面板）。
       if (this.pickerLayer) {
         this.closePicker();
@@ -138,6 +154,7 @@ export class JiraPanel {
   }
 
   close(): void {
+    this.closeHandoff();
     this.closePicker();
     if (this.esc) document.removeEventListener("keydown", this.esc, true);
     this.esc = null;
@@ -548,6 +565,7 @@ export class JiraPanel {
     key.target = "_blank";
     key.rel = "noopener noreferrer";
     top.append(key, el("span", "jira-issue-summary", issue.summary || tr("（没有标题）")));
+    top.append(this.handoffButton(issue, siteUrl));
     line.append(top);
     const meta = issueMeta(issue);
     if (meta) line.append(el("div", "jira-issue-meta", meta));
@@ -560,13 +578,13 @@ export class JiraPanel {
     line.setAttribute("aria-expanded", entry?.open ? "true" : "false");
     const toggle = () => this.toggleDetail(issue.key, siteUrl, detail);
     line.onclick = (ev) => {
-      // key 是「去 Jira 看」的链接：点它只开新标签，不当成展开 / 收起。
-      if ((ev.target as HTMLElement).closest("a")) return;
+      // key 是「去 Jira 看」的链接，行内的按钮有自己的动作：两者都不当展开 / 收起。
+      if ((ev.target as HTMLElement).closest("a, button")) return;
       toggle();
     };
     line.onkeydown = (ev) => {
       if (ev.key !== "Enter" && ev.key !== " ") return;
-      if ((ev.target as HTMLElement).closest("a")) return;
+      if ((ev.target as HTMLElement).closest("a, button")) return;
       ev.preventDefault();
       toggle();
     };
@@ -673,6 +691,11 @@ export class JiraPanel {
     }
 
     box.append(this.downloadEl(entry, key, siteUrl));
+
+    // #252：详情底部也能直接交给 agent（工单信息与行内那颗用同一份）。
+    const bar = el("div", "jira-handoff-bar");
+    bar.append(this.handoffButton(data.issue, siteUrl));
+    box.append(bar);
   }
 
   /** #251：下载按钮 + 结果就地显示，不再弹第二层结果窗。 */
@@ -733,6 +756,122 @@ export class JiraPanel {
     }
     const current = this.details.get(key) ?? entry;
     this.paintDetail(current, siteUrl, key);
+  }
+
+  // -------------------------------------------------------------- 交给 agent（#252）
+
+  /** 行尾与详情底部共用的一颗。点在行里时不能冒泡成「展开 / 收起」。 */
+  private handoffButton(issue: JiraIssue, siteUrl: string): HTMLButtonElement {
+    const btn = el("button", "btn ghost jira-handoff", tr("交给 agent ▾"));
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      this.openHandoffMenu(btn, issue, siteUrl);
+    };
+    return btn;
+  }
+
+  /**
+   * 浮层的一份拷贝（笔记面板 `notesheet.ts` 的 `handoffMenu`，按用户要求不抽共用件）：
+   * 两项文案与那边完全一致，点外面 / Esc / 滚动 / 改尺寸都关，放不下就翻到锚点上方。
+   */
+  private openHandoffMenu(anchor: HTMLElement, issue: JiraIssue, siteUrl: string): void {
+    this.closeHandoff();
+    const pop = el("div", "jira-handoff-pop");
+    pop.style.position = "fixed";
+    const r = anchor.getBoundingClientRect();
+    // 左右夹进窗口；先贴在锚点下方，量过高度再决定要不要翻上去。
+    pop.style.left = `${Math.max(12, Math.min(r.right - 260, innerWidth - 274))}px`;
+    pop.style.top = `${r.bottom + 6}px`;
+    pop.style.visibility = "hidden";
+    const err = el("div", "jira-handoff-err");
+    err.hidden = true;
+    const add = (label: string, hint: string, run: () => void) => {
+      const b = el("button");
+      b.append(el("span", "handoff-label", label), el("span", "handoff-hint", hint));
+      b.onclick = () => run();
+      pop.append(b);
+    };
+    add(tr("预填到当前会话"), tr("写进输入框，Enter 才发"), () => void this.handoffRun(pop, err, issue, siteUrl, "prefill"));
+    add(tr("新开一个会话"), tr("建好后填进那个会话的输入框，不自动发送"), () => void this.handoffRun(pop, err, issue, siteUrl, "new"));
+    pop.append(err);
+    document.body.append(pop);
+    // 下方放不下且上方更宽裕就翻上去；上下都窄就贴窗口顶，不让浮层探出窗口。
+    const h = pop.offsetHeight;
+    const below = innerHeight - r.bottom - 6 - 12;
+    if (h > below && r.top - 6 - 12 > below) pop.style.top = `${Math.max(12, r.top - 6 - h)}px`;
+    pop.style.visibility = "";
+
+    const onOutside = (ev: Event) => {
+      if (!pop.contains(ev.target as Node)) this.closeHandoff();
+    };
+    const onMove = () => this.closeHandoff();
+    // 打开浮层的这一下 click 还在冒泡：下一轮再挂外点监听，否则它立刻把自己关掉。
+    const timer = window.setTimeout(() => document.addEventListener("click", onOutside), 0);
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    this.handoffPop = {
+      el: pop,
+      timer,
+      off: () => {
+        window.clearTimeout(timer);
+        document.removeEventListener("click", onOutside);
+        window.removeEventListener("scroll", onMove, true);
+        window.removeEventListener("resize", onMove);
+      },
+    };
+  }
+
+  /** 只收浮层，不动 Jira 面板（预填完用户可能还想看别的工单）。 */
+  private closeHandoff(): void {
+    const pop = this.handoffPop;
+    if (!pop) return;
+    pop.off();
+    pop.el.remove();
+    this.handoffPop = null;
+  }
+
+  /**
+   * #252：这单已经下到哪了。详情里刚下载过就复用那个目录，否则问桥；问不到按「没下过」处理，
+   * 不阻断交接（少一行路径总比交不出去好）。
+   */
+  private async downloadedDir(key: string): Promise<string | null> {
+    const known = this.details.get(key)?.download?.dir;
+    if (known) return known;
+    try {
+      return (await api.jiraDownloaded(key)).dir;
+    } catch {
+      return null;
+    }
+  }
+
+  private async handoffRun(
+    pop: HTMLElement,
+    err: HTMLElement,
+    issue: JiraIssue,
+    siteUrl: string,
+    kind: "prefill" | "new",
+  ): Promise<void> {
+    const dir = await this.downloadedDir(issue.key);
+    const text = handoffPrompt({
+      key: issue.key,
+      summary: issue.summary,
+      siteUrl,
+      status: issue.status,
+      priority: issue.priority,
+      type: issue.type,
+      dir,
+    });
+    try {
+      const handoff = this.host.handoff;
+      if (!handoff) throw new Error(tr("没有可用的会话出口"));
+      if (kind === "prefill") handoff.prefill(text);
+      else handoff.newSessionWith(text);
+      this.closeHandoff();
+    } catch (e) {
+      if (this.handoffPop?.el !== pop) return;
+      err.textContent = tr("交给 agent 失败：{p1}", { p1: errText(e) });
+      err.hidden = false;
+    }
   }
 
   // -------------------------------------------------------------- 附件根目录（#251）

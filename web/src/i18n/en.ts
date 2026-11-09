@@ -1204,6 +1204,8 @@ export const en: Dict = {
   "{p1} 字": "{p1} chars",
   "{p1} 张待保存": "Waiting to save: {p1}",
   "交给 agent ▾": "Hand to agent ▾",
+  "交给 agent 失败：{p1}": "Could not hand it to the agent: {p1}",
+  "没有可用的会话出口": "No session is available to hand it to",
   "保存中…": "Saving…",
   "先写点什么": "Write something first",
   "先写点什么再存": "Write something before saving",

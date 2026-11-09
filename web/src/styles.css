@@ -3975,6 +3975,26 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-issue-key:hover { text-decoration: underline; }
 .jira-issue-summary { min-width: 0; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jira-issue-meta { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* #252：「交给 agent ▾」—— 行尾一颗、详情底部一颗；标题照旧可省略，按钮不被挤掉。 */
+.jira-handoff { flex: none; padding: 0 6px; line-height: 20px; font-size: 11px; white-space: nowrap; }
+.jira-issue-top .jira-handoff { margin-left: auto; }
+.jira-handoff-bar { display: flex; justify-content: flex-end; }
+/* 浮层视觉与笔记面板的 .note-handoff 一致（代码是复制的一份，样式也照抄）。 */
+.jira-handoff-pop {
+  position: fixed;
+  z-index: 80;
+  min-width: 260px;
+  display: grid;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+.jira-handoff-pop button { display: grid; gap: 2px; text-align: left; padding: 8px 8px; border-radius: 8px; border: 0; background: transparent; }
+.jira-handoff-pop button:hover { background: var(--line-soft); }
+.jira-handoff-err { padding: 2px 8px 6px; font-size: 11px; color: var(--danger); }
 .jira-list-placeholder,
 .jira-empty { font-size: 12px; color: var(--dim); }
 .jira-list-error { font-size: 12px; color: var(--danger); white-space: pre-wrap; }

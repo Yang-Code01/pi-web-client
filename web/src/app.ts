@@ -6788,7 +6788,12 @@ export class App {
 
   /** #248：顶栏 🔷。第一次打开才建面板；每次 `open()` 都会重新问桥，不信内存里的旧状态。 */
   private openJira(): void {
-    if (!this.jira) this.jira = new JiraPanel({ settings: (tab) => this.openSettingsSheet(tab) });
+    if (!this.jira)
+      this.jira = new JiraPanel({
+        settings: (tab) => this.openSettingsSheet(tab),
+        // #252：交给 agent 的两个出口与笔记面板同一套实现（预填只填、新会话不自动发）。
+        handoff: { prefill: (text) => this.prefill(text), newSessionWith: (text) => this.newSessionWith(text) },
+      });
     this.jira.open();
   }
 
