@@ -256,3 +256,29 @@ export function adfToText(adf: unknown): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
+
+/** #251：桥回的一批下载结果。单项失败不整单失败（HTTP 仍是 200），所以状态挂在每一项上。 */
+export type JiraDownloadStatus = "saved" | "skipped" | "failed";
+
+export interface JiraDownloadItem {
+  id: string;
+  filename: string;
+  path: string;
+  status: JiraDownloadStatus;
+  /** `skipped` / `failed` 的原因（桥那边写好的中文短句）。 */
+  reason?: string;
+}
+
+export interface JiraDownloadResult {
+  dir: string;
+  items: JiraDownloadItem[];
+}
+
+/**
+ * 每项前面的记号：对勾只留给真落盘的那项 —— 跳过和失败各有自己的记号，别让人把「没下」看成「下好了」。
+ */
+export function downloadMark(status: JiraDownloadStatus): string {
+  if (status === "saved") return "✓";
+  if (status === "skipped") return "·";
+  return "✗";
+}

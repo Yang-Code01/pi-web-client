@@ -1,5 +1,5 @@
 import type { GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
-import type { JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
+import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -150,6 +150,17 @@ export const api = {
   /** #250：单工单详情。key 只做形状校验（桥端权威）；description 是 ADF，由页面转文本（D203）。 */
   jiraIssue: (key: string) =>
     req<JiraIssueDetail>(`/api/jira/issues/${encodeURIComponent(key)}`),
+  /** #251：附件根目录。隧道访客只能读；写入由桥回 403 `tunnel_readonly`。 */
+  jiraAttachRoot: () => req<{ root: string | null }>("/api/jira/attachments/root"),
+  jiraSetAttachRoot: (root: string) =>
+    req<{ ok: true; root: string }>("/api/jira/attachments/root", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ root }),
+    }),
+  /** #251：把这一单的附件全收下来；桥端串行，一次一个文件，超 100 MB 的跳过。 */
+  jiraDownload: (key: string) =>
+    req<JiraDownloadResult>(`/api/jira/issues/${encodeURIComponent(key)}/download`, { method: "POST" }),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),
