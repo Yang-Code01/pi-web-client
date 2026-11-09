@@ -913,7 +913,15 @@ function fileCard(e: Entry, mine: boolean): HTMLElement {
     });
   } else {
     const foot = h("div", "fbot");
-    const act = h("a", "act", tr("另存 / 打开"));
+    // D209：点卡片 = 用本机程序打开收件箱里那份真文件（收件时已经落盘，不是再下载一次）。
+    card.title = tr("点一下用本机程序打开");
+    card.style.cursor = "pointer";
+    card.addEventListener("click", () => {
+      void postJson("/api/peer/open", { id: e.id }).catch((err: any) =>
+        toast(tr("打不开这个文件：{p1}", { p1: String((err as Error)?.message ?? err) })),
+      );
+    });
+    const act = h("a", "act", tr("另存"));
     act.href = `/api/peer/file?id=${encodeURIComponent(e.id)}`;
     act.target = "_blank";
     act.rel = "noopener";

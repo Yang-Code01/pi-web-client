@@ -29,6 +29,8 @@ export interface JiraHost {
   settings(tab: "ext"): void;
   /** #252：交给 agent 的两个出口；没接上时浮层里给一行错误，不静默。 */
   handoff?: JiraHandoff;
+  /** D209：附件已经落到本机了，点一行就在会话里把它打开（ppt/pdf/图片都和文件树同一条路）。 */
+  openFile?: (path: string) => void;
 }
 
 export interface JiraMe {
@@ -680,7 +682,15 @@ export class JiraPanel {
       const sec = el("div", "jira-attachments");
       sec.append(el("div", "jira-section-title", part.title));
       for (const item of part.items) {
-        const row = el("div", "jira-attach");
+        // D209：这批已经落到本机了，就点这一行打开它（跟文件树里点一个文件是同一件事）。
+        // 没下载过的不装作能点——只有在已经有 path 时才变成按钮。
+        const saved = entry.download?.items.find((it) => it.path && it.filename === item.filename);
+        const row = saved?.path ? el("button", "jira-attach open") : el("div", "jira-attach");
+        if (row instanceof HTMLButtonElement) {
+          row.type = "button";
+          row.title = saved!.path!;
+          row.onclick = () => this.host.openFile?.(saved!.path!);
+        }
         row.append(el("div", "jira-attach-name", item.filename || tr("（没有文件名）")));
         const info = [formatBytes(item.size), item.author, formatUpdated(item.created)].filter(Boolean).join(" · ");
         if (info) row.append(el("div", "jira-attach-meta", info));

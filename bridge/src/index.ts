@@ -69,11 +69,13 @@ import { mcpAddRequest, newer, searchMcp, searchPackages, setIndexListener, type
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
-import { handleJira } from "./jira.ts";
+import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { piLatest } from "./piupdate.ts";
 import { isTrustedPreviewPath, openPreview, readAttachableImage, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw } from "./preview.ts";
+import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
+import { countSlides, slidesAvailable, slidesPdfFile, slidesPdfKey, slidesPdfStatus, slidesProbe } from "./slides/index.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
 
 interface Config {
@@ -448,6 +450,16 @@ async function main(): Promise<void> {
     return json(res, 403, { error: why, text });
   };
 
+  /**
+   * D209：用户自己配的「文件就在这儿」的两处根 —— Jira 附件根（D205）与内网通收件箱（#45）。
+   * 每请求现读一次：改了设置，旧目录立刻不再是可信根（不缓存路径）。
+   */
+  const previewPins = (): string[] => {
+    const jira = readAttachmentRoot();
+    const inbox = peer.view().status?.config?.inbox ?? null;
+    return [jira, inbox].filter((root): root is string => Boolean(root));
+  };
+
   // ---------------------------------------------------------------- http
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -538,7 +550,7 @@ async function main(): Promise<void> {
       }
       // #225: 这个工具能把任意绝对路径推进预览面板，而页面上能点开的只限于会话目录（D50 的宽松规则
       // 只属于 /api/preview 与 /api/dirs）。目录外的路径，只有会话记录里真出现过才放行；拒绝时不签发凭据。
-      if (!isTrustedPreviewPath(sess, abs)) {
+      if (!isTrustedPreviewPath(sess, abs, previewPins())) {
         log(`preview.open rejected: untrusted path for ${session.state.id.slice(0, 8)}: ${abs}`);
         return json(res, 200, {
           ok: false,
@@ -548,7 +560,7 @@ async function main(): Promise<void> {
       }
       let info: ReturnType<typeof openPreview>;
       try {
-        info = openPreview(sess, rawPath);
+        info = openPreview(sess, rawPath, previewPins());
       } catch (err: any) {
         return json(res, 200, { ok: false, reason: "path", text: String(err?.message ?? err) });
       }
@@ -574,6 +586,30 @@ async function main(): Promise<void> {
       }
       log(`preview.open ${sid.slice(0, 8)} → no ack (${ack.reason ?? "?"})`);
       return json(res, 200, { ok: false, reason: "no-ack", text: "页面没有回应这次打开（可能刚关掉会话或在处理别的操作）。" });
+    }
+
+    // ------------------------------------------------------------ 产物基线 (loopback only, D208)
+    // `artifact-snapshot` 扩展在 `tool_call` 里等这个请求，回去以后 pi 才真正写文件 —— 所以这里读到的
+    // 一定是写入前的字节。和 /api/ask、/api/preview/open 一样：只认回环 + 会话级 token，没有 cookie。
+    // 失败一律 200：记账失败不能让一次写入失败，扩展那边也不解析错误体。
+    if (url.pathname === "/api/artifacts/snapshot" && req.method === "POST") {
+      if (publicReq) return json(res, 403, { ok: false, reason: "tunnel" });
+      const peer = req.socket.remoteAddress ?? "";
+      if (!isLoopbackPeer(peer)) return json(res, 403, { ok: false, reason: "non-loopback" });
+      const body = await readBody(req).catch(() => ({}));
+      const session = sessions.byLoopbackToken(String(body.token ?? ""));
+      if (!session) {
+        log(`artifacts.snapshot rejected: bad token from ${peer}`);
+        return json(res, 403, { ok: false, reason: "bad-token" });
+      }
+      try {
+        const abs = resolvePreviewPath({ cwd: session.state.cwd }, String(body.path ?? ""));
+        const out = recordSnapshot(session.state.id, abs);
+        return json(res, 200, { ok: true, kept: out.kept, existed: out.snap?.existed ?? null });
+      } catch (err: any) {
+        log(`artifacts.snapshot failed: ${String(err?.message ?? err)}`);
+        return json(res, 200, { ok: false, error: String(err?.message ?? err) });
+      }
     }
 
     if (url.pathname === "/api/login" && req.method === "POST") {
@@ -689,6 +725,14 @@ async function main(): Promise<void> {
       } catch (err) {
         return json(res, 404, { error: (err as Error).message });
       }
+    }
+    // D209：内网通收到的文件，点卡片就用本机程序打开（收件目录里的那份真文件，不是下载副本）。
+    if (url.pathname === "/api/peer/open" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "open_public", "公网不能打开本机程序");
+      const body = await readBody(req).catch(() => ({}));
+      const abs = await peer.filePath(String(body?.id ?? ""));
+      if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
+      return json(res, 200, await openWithApp(abs));
     }
     if (url.pathname === "/api/peer/add" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
@@ -835,12 +879,18 @@ async function main(): Promise<void> {
       const where = sessions.locate(sessionId);
       if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
       try {
-        const info = openPreview(where, String(body.path ?? ""));
+        const info = openPreview(where, String(body.path ?? ""), previewPins());
         // 公网不读表内容（US 46）：xlsx 与 csv/tsv 的字节都不给；.xls/.ods 走二进制分支本就只给「用默认程序打开」，open 已另拒。
         const ext = path.extname(info.abs).toLowerCase();
         if (publicReq && (info.kind === "sheet" || ext === ".csv" || ext === ".tsv")) {
           return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
         }
+        // D209：演示文稿内容也不从公网给（与表格同一条隐私口径，演示稿比表格更不该外泄）。
+        if (publicReq && info.kind === "slides") {
+          return fail(res, 403, "slides_public", "通过公网访问时不提供演示文稿内容，回本机操作");
+        }
+        // 页数与本机能不能转：提前告诉页面，别让它点开就开始轮询一个注定失败的转换。
+        if (info.kind === "slides") info.slides = { pages: await countSlides(info.abs), engine: slidesAvailable() };
         // 公网也不泄本机绝对路径（US 46 延伸）：binary 分支（.xls/.ods/加密包）内容与 open 都已拒，路径一并抹掉。
         if (publicReq && info.kind === "binary") info.abs = "";
         // Text files opened here become writable for this session (D50).
@@ -848,6 +898,39 @@ async function main(): Promise<void> {
         return json(res, 200, info);
       } catch (err: any) {
         return json(res, 400, { error: String(err?.message ?? err) });
+      }
+    }
+
+    // D208: 产物弹窗的数据。页面把自己重放历史时收到的 write/edit 路径递过来（最近写的在前），
+    // 桥负责解析、查基线、算行数；路径来自已登录页面，读盘本身不超过 /api/preview 已有的能力。
+    if (url.pathname === "/api/artifacts/list" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const sessionId = String(body.sessionId ?? "");
+      const where = sessions.locate(sessionId);
+      if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
+      const raw = Array.isArray(body.items) ? body.items : [];
+      const items = raw
+        .filter((it: any) => it && typeof it.path === "string")
+        .slice(0, 500)
+        .map((it: any) => ({ path: String(it.path), tool: String(it.tool ?? "write"), writes: Number(it.writes) || 1 }));
+      try {
+        return json(res, 200, await listArtifacts(sessionId, where.cwd, items));
+      } catch (err: any) {
+        log(`artifacts.list failed: ${String(err?.message ?? err)}`);
+        return fail(res, 500, "artifacts_failed", "读不了这个会话的产物");
+      }
+    }
+
+    if (url.pathname === "/api/artifacts/diff" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const sessionId = String(body.sessionId ?? "");
+      const where = sessions.locate(sessionId);
+      if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
+      try {
+        // 没基线不是错误，是答案的一种（D208）：200 + reason，页面用 diffReasonText 说人话。
+        return json(res, 200, await diffArtifact(sessionId, where.cwd, String(body.path ?? "")));
+      } catch (err: any) {
+        return fail(res, 400, "artifacts_diff", String(err?.message ?? err));
       }
     }
 
@@ -944,6 +1027,55 @@ async function main(): Promise<void> {
       } catch (err: any) {
         const code = String(err?.code ?? "") || "sheet_pdf_failed";
         return fail(res, code === "sheet_pdf_soffice" ? 503 : 502, code, String(err?.message ?? err));
+      }
+    }
+
+    // D209: 幻灯片翻页的 PDF（PowerPoint 无窗口导出）。和 /api/sheet/pdf 同一套两阶段契约
+    // （POST 起转换/查状态，GET 拿字节），也同样**不能**走 /raw —— 那里的 `content-security-policy:
+    // sandbox` 会让浏览器内建 PDF 查看器白屏（D166 踩过）。
+    if (url.pathname === "/api/slides/pdf" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "slides_public", "通过公网访问时不提供演示文稿内容，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      const grant = await resolveSheetGrant(res, String(body.token ?? ""));
+      if (!grant) return;
+      try {
+        return json(res, 200, await slidesPdfStatus(grant.abs, grant.mtimeMs, body.retry === true));
+      } catch (err: any) {
+        const code = String(err?.code ?? "") || "slides_pdf_failed";
+        return fail(res, code === "slides_pdf_powerpoint" ? 503 : 502, code, String(err?.message ?? err));
+      }
+    }
+
+    if (url.pathname === "/api/slides/pdf" && req.method === "GET") {
+      if (publicReq) return fail(res, 403, "slides_public", "通过公网访问时不提供演示文稿内容，回本机操作");
+      const grant = await resolveSheetGrant(res, url.searchParams.get("token") ?? "");
+      if (!grant) return;
+      const id = url.searchParams.get("id") ?? "";
+      // 只有这张凭据能换出这个 id 对应的 PDF。
+      if (id !== slidesPdfKey(grant.abs, grant.mtimeMs)) {
+        return fail(res, 404, "slides_pdf_gone", "幻灯片视图已失效，请重新生成");
+      }
+      try {
+        const pdf = await slidesPdfFile(id);
+        if (!pdf) {
+          // 还在转：让前端继续轮询状态端点，不要挂住这条请求。
+          res.writeHead(202, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+          res.end("幻灯片还在生成");
+          return;
+        }
+        const size = (await fs.promises.stat(pdf.file)).size;
+        res.writeHead(200, {
+          "content-type": "application/pdf",
+          "content-length": String(size),
+          "content-disposition": 'inline; filename="slides.pdf"',
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+        });
+        fs.createReadStream(pdf.file).pipe(res);
+        return;
+      } catch (err: any) {
+        const code = String(err?.code ?? "") || "slides_pdf_failed";
+        return fail(res, code === "slides_pdf_powerpoint" ? 503 : 502, code, String(err?.message ?? err));
       }
     }
 
@@ -2654,6 +2786,12 @@ async function main(): Promise<void> {
     // pid 文件：更新器靠它找到并重启「这一个」进程（见 pidfile.ts 的注释）。
     writePidFile(cfg.port);
     log(`listening on http://${cfg.host}:${cfg.port}`);
+    // D209：启动时探一次引擎，排错时第一眼看日志就知道「这台机器能不能站内翻页」。
+    const slidesProbed = slidesProbe();
+    log(
+      `slides: ${slidesProbed.available ? "PowerPoint" : "no PowerPoint"}` +
+        `${slidesProbed.exe ? ` (${slidesProbed.exe})` : ""}`,
+    );
     console.log(`\n  pi-web-client 已启动：http://127.0.0.1:${cfg.port}`);
     if (fresh) console.log(`  口令（首次生成，只显示这一次）：${fresh}\n`);
     else console.log(`  口令在 ${statePath("passphrase.txt")}\n`);

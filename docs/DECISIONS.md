@@ -3568,6 +3568,63 @@ D
 
 **验证：** 本 PR 只落设计与实现单（#256–#259）。实现门槛：`node bridge/tests/jira-search-unit.mjs`（条件→JQL 与校验）、`node bridge/tests/jira-e2e.mjs`（三条路由、watcher 重试、meta 缓存、隧道）、`node web/tests/jira-unit.mjs`（query 组装与本地记忆）、`npm --prefix web run typecheck`（含 i18n-check）、`npm run build:web`；界面按 `docs/JIRA-SEARCH.md` 的手点清单验收。
 
+## D208 产物弹窗：会话级基线快照判「新增 / 修改 / 删除」，改动放进独立 diff 弹窗
+
+产物弹窗过去只记「哪个工具写过这个路径」：`write` 覆盖已有文件也显示「写入」，同一路径写了两次只有一行，改了多少完全不知道。根因是「新增还是修改」是**文件事实**，而弹窗当时拿到的是**工具事实**——pi 的 `write` 返回值只有一句 `Successfully wrote to <path>`（`dist/core/tools/write.js:50`），`edit` 才带 `details.diff`，所以靠工具结果猜不出覆盖还是新建。
+
+**决定**
+
+1. **基线在写入前抓，抓在 pi 的 `tool_call` 钩子里。** 新增 `bridge/ext/artifact-snapshot.ts` 扩展，由 `sessions.ts` 与既有两个扩展一起 `-e` 注入；钩子里把路径回打给桥（`POST /api/artifacts/snapshot`，回环 + 会话 token），桥读磁盘存下**第一次**碰它时的字节。`tool_call` 在执行前且被 await，这是唯一零竞态的位置。替代方案（桥在 `tool_execution_start` 抢读）是毫秒级竞速，新建文件大概率读成「修改」、diff 恒空，否决。
+2. **快照是会话级的，不是全局的。** 存 `statePath("artifacts", <sessionId>)`：`index.json` + `<sha256(abs)>.orig`。单文件 2 MB、单会话 500 个文件封顶；到顶之后的新文件不再拍快照，那些行只能走 git 估算或标「未知」——宁可少一条基线，也不无限长。会话被彻底删除时（`sessions.purge`）一并清掉。
+3. **状态有五档，缺基线时不猜。** `new` / `modified` / `same` / `deleted` / `unknown`。没有基线时先问 git（`git show <root-relative>` 能否解出会话开始时的 blob），能给就标「按 git 估算」，否则明说「未知」——不把猜测画成事实。判断「没变」用的是 `diffTexts` 的 `added === removed === 0`，不是字节相等，否则 CRLF ↔ LF 会被算成整文件重写。
+4. **改动呈现选独立弹窗（C）。** 产物弹窗只留徽章 + `+N −M` + `工具×次数`；点一行开 `diff-sheet`：左栏换文件、右边左右对照、`j / k` 换文件 `← / →` 换 hunk `Esc` 关。否决了「行内展开」（弹窗要变高、只能塞前 60 行）与「查看器加变更页」（得为同一个文件开关两次查看器）；代价是多了第三套浮窗，但它只在产物弹窗里可达，不进查看器的导航。
+5. **只认 write 系工具。** `bash` / `apply_patch` 之外的方式写文件不触发钩子，P0/P1 不追（`WRITE_TOOLS` 与既有 approval-gate 同名不同源，将来若要合并再抽公共常量）。二进制只给大小变化，`>2MB` 或 `>5000 行` 或改动超过 3000 行只给原因不给逐行；`diffTexts` 对前两种回 `added=removed=0`，那只是「没比」，状态必须是 `unknown` 而不是 `same`。
+
+**接口形状**
+
+`POST /api/artifacts/list {sessionId, items}` → `{items, summary, baseline}`；`POST /api/artifacts/diff {sessionId, path}` → `{path, abs, status, estimate, binary, added, removed, hunks, truncated, reason?, sizeBefore, sizeAfter}`（没基线也是 200 + `reason: "no-baseline"`，不是错误）；`POST /api/artifacts/snapshot {token, path}` 只给扩展（回环 + token，失败也回 200，记账不能挡写入）。清单的 `items` 由页面从自己的工具条目里算（`chat.ts` 的 `written` 现在带 `writes` 计数），桥只负责「拿这些路径和磁盘比」——会话历史重放是免费的。
+
+界面文案不由桥拼：`why` 是码（`no-baseline` / `git-head-missing` / `snapshot-too-big` / `size-only` / `binary-size-only` / `built-then-deleted` / `diff-too-large` / `diff-rewrite`），句子在 `app.ts` 的 `artifactWhyText()` 里经 `tr()` 取，否则 `i18n-check` 扫不到桥端，三种语言里两种会缺。
+
+**验证**
+
+`node bridge/tests/artifacts-unit.mjs`（新增/修改/没变含 CRLF/已删除/二进制/无基线/相对与绝对路径去重/清理）、`node bridge/tests/artifacts-e2e.mjs`（临时桥：snapshot 无 token 与假 token 都 403、未知会话 404、`/api/git` 未被闸到）、`npm run typecheck`（含 i18n-check，新增 24 条文案 ×3 语）、`npm run build`。界面用原型页先对齐过三个候选的观感，真机手验留给测试环境（一条真模型回合写两个文件）。
+
+## D209 幻灯片支持：能打开文件的地方都要能开 .pptx，翻页走 PowerPoint → PDF（#265）
+
+「用户或 agent 能直接打开一个本地文件」的入口有四条：预览面板 / 文件管理器、聊天里的附件与路径 chip、Jira 面板的附件行、内网通收到的文件。它们过去只认「文本 / 图片 / 表格 / 其它二进制」四类，`.pptx` 落进最后一类——页面明写「这个格式这里不支持」，而且只有 xlsx 家族才配一颗「用默认程序打开」。结果是：能看见文件，打不开它；客户发来的季度汇报在网页里就是一行字。
+
+还有一处更早就错位的地方：`bridge/src/delivery.ts` 一直告诉模型「预览打不了的就指向客户端里已有的『用本机程序打开』出口」，可那颗按钮只对 `WORKBOOK` 家族出现。对 pdf/docx/ppt 来说是句空话，模型顺着这句话让用户去点，用户找不到。
+
+**决定**
+
+1. **两步走，先本机能开、再站内翻页。** 第一步（便宜、立刻可用）把「用本机程序打开」从 xlsx 家族扩到**所有会落到 binary 支线、且有桌面程序认领的格式**：`.pptx .pptm .ppsx .potx .ppt .pps .pdf .doc .docx`（加上原有 `.xlsx .xlsm .xlsb .xls .ods`）。判定在桥（`OPENS_ON_DESKTOP` 那张表），前端只问 `kind` 与扩展名，不再各自维护正则。第二步才是站内翻页。代价：`.pdf`、`.docx` 从「只能下载」变成「能交给本机」，多一条启动外部程序的路径；这与 D69 当年担心的「网页启动任意关联程序」是同一类风险，区别在于现在只对**用户亲手点开的那个文件**、且只在回环页面（`/api/open` 本来就是回环 + token）。
+
+2. **扩展名分家族，伪装包退 binary，老二进制直接认。** `.pptx .pptm .ppsx .potx` 必须是 zip 包（`isZipPackage` 沿用表格那边的判定），不是就退 binary 并给「用本机程序打开」；`.ppt .pps` 是 97-2003 的 OLE 二进制，没有可靠的结构判据，直接认。改了扩展名的 pptx（比如改名成 `.doc`）按扩展名走，仍是 binary —— 但 grant 在，本机照样能开。**不做内容嗅探**：那是给「打开就崩」开了个口子，而「点了打不开」是可解释的。
+
+3. **站内翻页 = PowerPoint COM 转 PDF，塞进 iframe，放在独立的幻灯片浮窗里。** 不复用 `viewer` 面板：它固定 `min(760px,55vw)`（D121），一页 16:9 的幻灯片塞进去只剩半张；也不复用 `/raw`——它的 `content-security-policy: sandbox` 会让浏览器内建 PDF 查看器白屏（D166 已经因此给表格单开了 `/api/sheet/pdf`）。所以照抄 D166 的形状，另开 `/api/slides/pdf`：POST 换状态、GET 取字节，`content-disposition: inline`，`nosniff`，`no-store`。iframe 不带 `sandbox`（要 PDF 查看器自己的 origin），这是 D166 已接受的取舍。
+
+4. **把「文件 → PDF」抽成共用设施，`sheet/pdf.ts` 降级成 wrapper。** 新 `bridge/src/docpdf/service.ts` 收排队、缓存键（`sha256(abs\0mtime)`）、两阶段状态、失败记忆、超时、临时目录、`%PDF-` 校验、清理；`engine` 是唯一的变量。表格的 driver 仍是 LibreOffice（行为、错误码 `sheet_pdf_failed/_timeout/_soffice`、`PI_SOFFICE` 全部不变），幻灯片的是 COM。**不顺手改 sheet-pdf 的旧行为**（它至今不清理缓存），只给新目录加 `retain: {count: 50, days: 7}`——旧坑单独修，别混在一次变更里。
+
+5. **页数上限要在启动 PowerPoint 之前判。** `200` 页：先只读 zip 中央目录数 `ppt/slides/slideN.xml`（读尾 66 KB 找 EOCD，不整包进内存），超了直接 `slides_pdf_pages`。认不出结构（加密包、Zip64）就不数，只靠 50 MB 体积上限——认输比吃内存好。为什么不转完再判：一次 PowerPoint 启动 8 秒起步，转完再拒不但是白等，还会在磁盘上留一份没人要的 PDF。
+
+6. **COM 只读、无窗口、强制禁宏、超时杀进程树。** `Presentations.Open($Src, ReadOnly:=$true, Untitled:=$false, WithWindow:=$false)`、`AutomationSecurity = 3`（`msoAutomationSecurityForceDisable`）、`SaveAs(..., 32 = ppSaveAsPDF)`、`Close()` + `Quit()`。PowerShell 脚本**只写 ASCII**、`param()` 必须是第一句：Windows PowerShell 5.1 按 ANSI 读无 BOM 的 UTF-8，一句中文注释就能让整个脚本炸。超时 180 秒，先 `taskkill` 掉这次新出现的 `POWERPNT.EXE` 再抛 `slides_pdf_timeout`。代价：**接受 PowerPoint 窗口闪一下**（`WithWindow:=$false` 也拦不住进程启动那一下）；换来的是不依赖装载项、不写用户模板。
+
+7. **打开即转、直出页面；关掉浮窗不取消转换。** 不做「先信息页再点按钮」（那要多一次点击和一次状态机），浮窗一开就轮询 `POST /api/slides/pdf`，`ready` 直接挂 iframe。用户提前关窗，转换继续跑完落缓存——下次打开直接 `ready`（实测缓存命中 0.5 秒，首次 8.1 秒）。失败记进 `failures`，只有页面上的「重试」带 `retry: true` 才重转，避免一次坏文件把 PowerPoint 反复拉起来。
+
+8. **可信根：Jira 附件目录与内网通收件箱，每次请求现读配置。** 这两处的文件不在会话 cwd 下，工具和页面都够不着。`previewPins()` 每个请求调 `readAttachmentRoot()` 与 `peer.view().status?.config?.inbox`，命中就把 token 的 `root` 钉在那个目录上（不是 cwd）——页面拿到的读权不多于它刚才列出的那份清单。**只信当前配置值**：用户改掉附件根，旧目录立刻不再是可信根。`open_preview` 工具走 `isTrustedPreviewPath(session, abs, pins)`，所以 agent 也能开这两处的文件。
+
+9. **内网通点卡片 = 用本机程序打开（与原计划的偏差）。** 原定「点卡片 = 站内预览」，落地时发现 `web/peer.html` 是独立页面、自己的 bundle，不加载 `app.ts`，也没有会话上下文；而 `/api/preview` 必须 `sessions.locate(sessionId)`，SPA 启动时又不会自动选会话，深链预览会 404。所以改为：卡片点击 → `POST /api/peer/open` → 桥问 peer 守护进程要收件目录里的**真路径**（新增回环 `/files/meta`）→ `openWithApp`。「另存」小链接保留。`.pptx` 由 PowerPoint 打开，仍然满足「能打开」；代价是没了站内翻页。
+
+10. **公网不给演示文稿内容，也不给路径。** 与表格同一条口径（US 46）：`/api/preview` 在隧道请求上一律 403 `slides_public`「通过公网访问时不提供演示文稿内容，回本机操作」，页面根本拿不到 token。`/api/peer/open` 同样拒绝公网。
+
+**接口形状**
+
+`POST /api/preview {sessionId, path}` 的 `kind` 新增 `"slides"`，并带 `slides: {pages: number|null, engine: boolean}`（页数与「这台机器有没有 PowerPoint」提前告诉页面，别让它轮询一场注定失败的转换）。`POST /api/slides/pdf {token, retry?}` → `{id, status: "ready"|"pending"|"failed", error?, code?}`；`GET /api/slides/pdf?id=&token=` → 200 `application/pdf`（完成）/ 202 text/plain「幻灯片还在生成」/ 404 `slides_pdf_gone`（id 与当前 grant 的 key 不符）。错误码：`slides_pdf_failed`、`slides_pdf_timeout`、`slides_pdf_powerpoint`（未安装 / COM 未注册，HTTP 503）、`slides_pdf_pages`；公网 403 `slides_public`。`POST /api/peer/open {id}` → `{ok, message}`；peer 守护进程新增 `GET /files/meta?id=` → `{ok, path, name, size, mime}`（只回环）。
+
+**验证**
+
+`node --experimental-strip-types bridge/tests/slides-unit.mjs`（`npm run test:slides`）—— 共用设施的排队/缓存/失败记忆/`retry`/超时+kill/页数粗筛/体积上限/清理各一组，`countSlides` 的 3 / 0 / null / null，以及分类与 pinRoots；`npm run test:preview` 不回归；`npm run typecheck`（含 i18n-check，14 条新文案 ×3 语）、`npm run build`。真机另验（本机 PowerPoint 16，未提交脚本）：3 页真 pptx → 首次 8.1s 出 PDF、缓存命中 0.5s、`/api/open` 能交给桌面程序；Playwright + 真桥 + Edge 通道截图确认浮窗里渲染出「Slide 1 / 1 of 3」，拖拽缩放后几何落 `pi.slidesGeom`，重开保留。Playwright 自带 Chromium 没有 PDF 插件，headless 里是白框——那不是这套实现的问题。
 ## D210 行 2 的「本区」不拿全量置顶兜底：没有当前会话就只剩 ＋
 
 **问题：** 用户在只有 1 个会话的「月报」工作区里，看到行 2 铺着 13 颗别组的 ★ 胶囊（截图里是 9 颗 + `＋5`），括弧里那句「我明明只在这组」就是 D145 留下的两条兜底造成的：`starredRow()` 在**没有当前会话**、以及**反查不到当前会话属于哪个组**时都返回 `manage.pin` 全量。全量置顶与当前组无关，于是左栏越干净，这条越像串组。
@@ -3585,3 +3642,4 @@ D
 **代价 / 可改：** 没有当前会话时行 2 只剩一颗 ＋，一屏之内看不出「有哪些置顶」（要开左栏）；这是有意的：置顶的作用是「在本区里排前」，不是全局收藏夹。若以后想要「全局收藏」，应该是另一个入口（比如左栏的「已置顶」分区），而不是让行 2 兼职。
 
 **验证：** `node web/tests/pillbar-unit.mjs`（新增 2 项：本区未定义（`null` / `undefined`）为 `[]`、本区有定义时仍只留本区 ★）；`probes/workspace-tree.mjs`（新增 2 项：没打开会话时行 2 零胶囊、只剩 ＋）；`probes/workspace-shells.mjs`（A 壳新增 2 项：没打开会话时别组 ★ 不进行 2；打开 proj-01 的会话后行 2 只留本区那颗 `s-01-2`）；`probes/pin-auto-open.mjs`（22 项全绿；新增 1 项：旧桥 + 没有当前会话时行 2 仍铺满全部置顶，旧桥回退的行为未变）。`npm --prefix web run typecheck`（含 i18n-check）与 `npm run build:web` 通过。
+

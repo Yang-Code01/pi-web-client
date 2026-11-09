@@ -1,4 +1,4 @@
-import type { GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
+import type { ArtifactDiff, ArtifactList, GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
 import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
 
 /**
@@ -97,6 +97,23 @@ export const api = {
   },
   preview: (sessionId: string, path: string) =>
     req<PreviewInfo>("/api/preview", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId, path }) }),
+  /**
+   * D208: 产物弹窗的两条数据。
+   * 列表由页面把重放历史时收到的 write/edit 递过去（路径 + 工具 + 次数），桥负责解析/查基线/算行数；
+   * 差异按路径单独取，切文件时只多拉这一份。
+   */
+  artifactsList: (sessionId: string, items: { path: string; tool: string; writes: number }[]) =>
+    req<ArtifactList>("/api/artifacts/list", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, items }),
+    }),
+  artifactDiff: (sessionId: string, path: string) =>
+    req<ArtifactDiff>("/api/artifacts/diff", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, path }),
+    }),
   /** D166: sheet metadata and one visible row window, both keyed by the /api/preview grant token. */
   sheetMeta: (token: string) =>
     req<SheetMeta>("/api/sheet/meta", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }),
@@ -105,6 +122,15 @@ export const api = {
     req<{ id: string; status: "ready" | "pending" | "failed"; error?: string; code?: string }>("/api/sheet/pdf", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token, retry }) }),
   /** #112: the byte endpoint the iframe points at once the page view is ready. */
   sheetPdfUrl: (id: string, token: string) => `/api/sheet/pdf?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`,
+  /** D209: same two-stage contract as the page view, but PowerPoint lays the deck out. */
+  slidesPdf: (token: string, retry = false) =>
+    req<{ id: string; status: "ready" | "pending" | "failed"; error?: string; code?: string }>("/api/slides/pdf", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, retry }),
+    }),
+  slidesPdfUrl: (id: string, token: string) =>
+    `/api/slides/pdf?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`,
   sheetWindow: (token: string, sheet: string, r0: number, r1: number, c0: number, c1: number) =>
     req<SheetWindow>("/api/sheet/window", {
       method: "POST",
@@ -161,9 +187,14 @@ export const api = {
   /** #251：把这一单的附件全收下来；桥端串行，一次一个文件，超 100 MB 的跳过。 */
   jiraDownload: (key: string) =>
     req<JiraDownloadResult>(`/api/jira/issues/${encodeURIComponent(key)}/download`, { method: "POST" }),
-  /** #252：这单在本机已经下过几个文件；没下过时 `{ dir: null, count: 0 }`。只读磁盘，隧道也允许。 */
+  /** #252/D209：这单在本机已经下过几个文件；没下过时 `{ dir: null, count: 0 }`。只读磁盘，隧道也允许。
+   *  file 级的 `path` 是桥拼好的绝对路径（页面不该自己拼分隔符）。 */
   jiraDownloaded: (key: string) =>
-    req<{ dir: string | null; count: number }>(`/api/jira/issues/${encodeURIComponent(key)}/downloaded`),
+    req<{
+      dir: string | null;
+      count: number;
+      files?: { name: string; path: string; size: number; mtime: number }[];
+    }>(`/api/jira/issues/${encodeURIComponent(key)}/downloaded`),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),

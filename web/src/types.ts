@@ -394,6 +394,91 @@ export interface SkillSourceItem {
   local: boolean;
 }
 
+/**
+ * D208 产物弹窗：「新增 / 修改」是文件事实，不是工具事实。
+ * - status 由桥比「写入前的原文」和现在的文件得出；
+ * - `new` 只在这条路径在会话开始前确实不存在时出现；
+ * - 拿不到原文时宁可 `unknown`，也不拿 git 冒充事实 —— 那种情况 `estimate` 为 true。
+ */
+export type ArtifactStatus = "new" | "modified" | "same" | "deleted" | "unknown";
+
+export interface ArtifactRow {
+  /** 模型写文件时用的路径原文（相对/绝对都可能有）。 */
+  path: string;
+  abs: string;
+  status: ArtifactStatus;
+  /** 最后一次写它用的工具。 */
+  tool: string;
+  /** 这个会话里被写过几次（write×2 edit×1 里的数字）。 */
+  writes: number;
+  added: number;
+  removed: number;
+  /** 基线来自 git 的 HEAD，不是会话开始前的真实内容。 */
+  estimate: boolean;
+  binary: boolean;
+  diffable: boolean;
+  sizeBefore: number | null;
+  sizeAfter: number | null;
+  /** 为什么是 unknown / 为什么没有行数。是码不是句子，文案走 tr()。 */
+  why?: ArtifactWhy;
+}
+
+/** 桥只发码，句子在页面（D208）；键与 `bridge/src/artifacts.ts` 的 ArtifactWhy 一一对应。 */
+export type ArtifactWhy =
+  | "no-baseline"
+  | "git-head-missing"
+  | "snapshot-too-big"
+  | "size-only"
+  | "binary-size-only"
+  | "built-then-deleted"
+  | "diff-too-large"
+  | "diff-rewrite";
+
+export interface ArtifactSummary {
+  new: number;
+  modified: number;
+  same: number;
+  deleted: number;
+  unknown: number;
+  added: number;
+  removed: number;
+}
+
+export interface ArtifactList {
+  items: ArtifactRow[];
+  summary: ArtifactSummary;
+  /** exact = 每一行都有写入前的原文；partial = 一部分；none = 一条都没有。 */
+  baseline: "exact" | "partial" | "none";
+}
+
+export interface ArtifactDiffLine {
+  kind: "+" | "-" | " ";
+  text: string;
+  oldNo: number | null;
+  newNo: number | null;
+}
+
+export interface ArtifactHunk {
+  /** `@@ -12,7 +12,9 @@` 这种原始头。 */
+  header: string;
+  lines: ArtifactDiffLine[];
+}
+
+export interface ArtifactDiff {
+  path: string;
+  abs: string;
+  status: ArtifactStatus;
+  estimate: boolean;
+  binary: boolean;
+  added: number;
+  removed: number;
+  hunks: ArtifactHunk[];
+  truncated: boolean;
+  sizeBefore: number | null;
+  sizeAfter: number | null;
+  reason?: "no-baseline" | "binary" | "too-large" | "rewrite";
+}
+
 export interface PreviewInfo {
   token: string;
   rel: string;
@@ -403,7 +488,9 @@ export interface PreviewInfo {
   root: string;
   size: number;
   mtime: number;
-  kind: "markdown" | "html" | "image" | "text" | "sheet" | "binary";
+  kind: "markdown" | "html" | "image" | "text" | "sheet" | "slides" | "binary";
+  /** D209：只有 kind==="slides" 有 —— 数出来的页数（null = 认不出）与本机能不能转。 */
+  slides?: { pages: number | null; engine: boolean };
 }
 
 /** D166 表格预览：格子只带显示串，有数字格式的按格式显示。 */
