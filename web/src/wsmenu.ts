@@ -26,6 +26,8 @@ export interface WsMenuOpts {
   frontBlocker: string | null;
   /** `null` = 能删；否则是拒绝原因（来自 `dropBlocker()`）。 */
   dropBlocker: string | null;
+  /** 能删时的说明（手动组 / 目录组各一句，见 `dropHint()`）；不给就按手动组那句说。 */
+  dropHint?: string;
   onRename(): void;
   onFront(): void;
   onDrop(): void;
@@ -82,7 +84,7 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
     drop.setAttribute("aria-disabled", "true");
     drop.title = opts.dropBlocker;
   } else {
-    drop.title = tr("只删这个空组，组里的东西一概不动");
+    drop.title = opts.dropHint ?? tr("只删这个空组，组里的东西一概不动");
   }
 
   node.append(rename, front, drop);

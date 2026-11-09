@@ -404,6 +404,11 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   padding: 2px 4px; border-radius: 4px;
 }
 .ws-head .n { margin-left: auto; font: 11px/1 var(--mono); color: var(--faint); }
+/* #279：空组徽标 —— 不抢名字的位置，只多一个小方框；有会话时它根本不会被画出来。 */
+.ws-head .ws-empty-badge {
+  flex: none; padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px;
+  font: 10px/1.4 var(--mono); color: var(--faint);
+}
 .ws-head.folded { color: var(--faint); }
 .ws-head.folded .label { color: var(--faint); font-weight: 500; }
 /* #100：组头就地改名 + 那颗 ⋯。⋯ 跟会话卡片的 card-act 一个脾气：指着组头才出来，别的时候把位置让给名字。 */

@@ -11,11 +11,15 @@
  * #175 再接上：标签行末尾、`＋N` 左边多一颗「＋」—— 点一下就是树底的「新建工作区」（同一个
  * `ws.create`）：左栏多一个空组并就地改名；左栏收着时先展开，名字才看得见。名额满了照样能建，
  * 新组按规则追加到 `order` 末尾、收进 `＋N`，页面用一条小提示说明它去哪了。
+ * #279 再接上：空组在组头标「空」，删除边界改成「有会话才拦」—— 空的手动组与空的目录组都能从 ⋯
+ * 里删掉（快照 / order / 左栏一起消失），有会话时仍置灰并说清原因；当前组被删掉（别的客户端删的）
+ * 时页面落到右邻，不留在空白页上。
  *
  * 上一票（#119）的断言留着：A 壳顶栏只有一行、标签紧跟在 ◧ 后面、B/C/D 不画标签、800px 不破版。
  *
- * 桩桥照 #94 的协议发 `workspace` 快照，并像真桥那样把 `ws.tabs`（名额 / 顺序）与 `ws.create`
- * （造空的手动组、追加到 order 末尾）落到内存里再广播 —— 刷新页面拿到的就是「重启后的桥」。
+ * 桩桥照 #94 的协议发 `workspace` 快照，并像真桥那样把 `ws.tabs`（名额 / 顺序）、`ws.create`
+ * （造空的手动组、追加到 order 末尾）与 `ws.drop`（数会话：有就回 notice，空的才真删）落到内存里
+ * 再广播 —— 刷新页面拿到的就是「重启后的桥」。
  * 造 9 个长名组，用显式 `updatedAt` 把组序钉成 01→09（组序 = 待处理 → 最近活动倒序 → 名字），
  * 否则同一毫秒里建出来的 9 个组谁在前全凭运气。
  *
@@ -150,6 +154,18 @@ server.on("upgrade", (req, socket, head) => {
           WS.groups.push({ id, name: String(msg.name ?? ""), key: "", manual: true });
           WS.order = [...WS.order, id];
           cast();
+        }
+        // 真桥的 `dropWorkspace()`（#279）：组里还有会话就回 notice，空的才真删，再广播新快照。
+        if (msg.action === "ws.drop") {
+          const id = String(msg.id ?? "");
+          if (SESSIONS.some((x) => x.ws === id)) {
+            ws.send(JSON.stringify({ type: "notice", text: "这个工作区里还有会话", level: "warn" }));
+          } else {
+            WS.groups = WS.groups.filter((g) => g.id !== id);
+            WS.order = WS.order.filter((x) => x !== id);
+            for (const [sid, wid] of Object.entries(WS.overrides)) if (wid === id) delete WS.overrides[sid];
+            cast();
+          }
         }
       }
     });
@@ -368,7 +384,7 @@ ok(addBox.add > 0 && addBox.add < addBox.more, `800px：＋ 还在 ＋N 左边�
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-800.png`), clip: { x: 0, y: 0, width: 800, height: 140 } });
 await page.close();
 
-// 7) #173 组头菜单：只剩重命名 / 移到最前 / 删除，左栏没有额外徽记
+// 7) #173 组头菜单：只剩重命名 / 移到最前 / 删除，左栏没有「已固定」那种额外徽记（#279 的「空」是另一回事）
 page = await open(null);
 const openWsMore = async (id) => {
   await page.locator(`.ws-sec[data-ws="${id}"] .ws-head`).hover();
@@ -822,6 +838,119 @@ await page.evaluate(() => {
   i.dispatchEvent(new Event("input", { bubbles: true }));
 });
 await sleep(300);
+
+await page.close();
+
+// 20) #279 空组：左栏标「空」、能删（手动组 / 目录组都行）；有会话仍然删不掉；删掉当前组落到右邻
+// 桩桥重摆一组「干净」的工作区：两个空组（一个目录组、一个手动组）+ 一个装了会话的手动组 ——
+// #279 的两条边界都得有东西可看：空得掉、非空拦得住。
+const IDLE = { id: "f:/idle", name: "空工程", key: "F:/idle", manual: false };
+const EMPTY = { id: "manual:empty", name: "空的手动组", key: "", manual: true };
+const BUSY = { id: "manual:busy", name: "有会话的手动组", key: "", manual: true };
+WS.groups = [...GROUPS.map((g) => ({ ...g })), IDLE, EMPTY, BUSY];
+WS.order = WS.groups.map((g) => g.id);
+WS.max = 10;
+byId("s-09-1").ws = BUSY.id; // 手动组装了会话之后，跟目录组一样删不掉
+cast();
+page = await open(null);
+await sleep(600);
+
+/** 某一组在左栏的样子：在不在、有没有「空」徽标、空态那句话、组头的会话数。 */
+const groupState = (id) =>
+  page.evaluate((id) => {
+    const sec = document.querySelector(`.ws-sec[data-ws="${id}"]`);
+    return {
+      exists: Boolean(sec),
+      badge: sec?.querySelector(".ws-head .ws-empty-badge")?.textContent ?? "",
+      emptyCard: sec?.querySelector(".ws-empty")?.textContent ?? "",
+      count: sec?.querySelector(".ws-head .n")?.textContent ?? "",
+    };
+  }, id);
+/** 组头 ⋯ 里删除那一项：能不能点、悬停说明、置灰时的原因行。 */
+const menuState = () =>
+  page.evaluate(() => {
+    const drop = document.querySelector('.ws-menu .pm-item[data-act="drop"]');
+    return {
+      disabled: Boolean(drop?.disabled),
+      aria: drop?.getAttribute("aria-disabled") ?? "",
+      title: drop?.title ?? "",
+      why: document.querySelector('.ws-menu .pm-why[data-for="drop"]')?.textContent ?? "",
+    };
+  });
+const dropCalls = () => CALLS.filter((c) => c.action === "ws.drop");
+
+let gs = await groupState(IDLE.id);
+ok(gs.exists && gs.badge === "空", `空目录组在左栏标「空」（${gs.badge || "没有徽标"}）`);
+ok(gs.emptyCard.includes("这个工作区里还没有会话"), `「空」徽标与空态那句话并存（${gs.emptyCard}）`);
+ok(gs.count === "0", `空组的会话数是 0（${gs.count}）`);
+gs = await groupState(EMPTY.id);
+ok(gs.badge === "空" && gs.emptyCard.includes("这个工作区里还没有会话"), "空的手动组一样标「空」、一样有空态");
+gs = await groupState("f:/proj-01");
+ok(gs.exists && gs.badge === "" && gs.emptyCard === "", `有会话的组没有「空」徽标（${gs.badge || "没有徽标"}）`);
+gs = await groupState(BUSY.id);
+ok(gs.badge === "" && gs.count === "1", `装了会话的手动组也没有「空」（${gs.count} 个会话）`);
+
+// 20a) 有会话：目录组与手动组都拒绝，原因沿用原文案，点了也不发 ws.drop
+const dropCalls0 = dropCalls().length;
+await openWsMore("f:/proj-01");
+let ms = await menuState();
+ok(ms.disabled && ms.aria === "true", "有会话的目录组：删除项置灰");
+ok(/跟着目录走/.test(ms.why), `原因还是「跟着目录走」（${ms.why}）`);
+await page.locator('.ws-menu .pm-item[data-act="drop"]').click({ force: true });
+await sleep(250);
+ok(dropCalls().length === dropCalls0, `点灰掉的删除项没发 ws.drop（${dropCalls().length - dropCalls0} 条）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+
+await openWsMore(BUSY.id);
+ms = await menuState();
+ok(ms.disabled && /还有 1 个会话/.test(ms.why), `有会话的手动组：删不掉，原因是「还有 1 个会话」（${ms.why}）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+
+// 20b) 空的手动组：能删，说明写的是「只删这个空组」，删掉后快照 / order / 左栏同时少一项
+await openWsMore(EMPTY.id);
+ms = await menuState();
+ok(!ms.disabled && ms.aria === "", "空的手动组：删除项可点");
+ok(/只删这个空组/.test(ms.title), `手动组的删除说明分得清删的是组（${ms.title}）`);
+await page.locator('.ws-menu .pm-item[data-act="drop"]').click();
+await sleep(600);
+ok(dropCalls().at(-1)?.id === EMPTY.id, `发出去的是 ws.drop ${dropCalls().at(-1)?.id}（期望 ${EMPTY.id}）`);
+ok(!WS.groups.some((g) => g.id === EMPTY.id) && !WS.order.includes(EMPTY.id), "桥的快照与 order 里都没它了");
+ok(!(await treeOrder()).includes(EMPTY.id) && !(await groupState(EMPTY.id)).exists, "左栏里那块整个不见了");
+
+// 20c) 空的目录组：同样能删，说明写的是「只把这个目录移出列表」
+await openWsMore(IDLE.id);
+ms = await menuState();
+ok(!ms.disabled, "空的目录组：删除项可点");
+ok(/移出列表/.test(ms.title), `目录组的删除说明只说把这一项移出列表（${ms.title}）`);
+await page.locator('.ws-menu .pm-item[data-act="drop"]').click();
+await sleep(600);
+ok(dropCalls().at(-1)?.id === IDLE.id, `发出去的是 ws.drop ${dropCalls().at(-1)?.id}（期望 ${IDLE.id}）`);
+ok(!(await groupState(IDLE.id)).exists && !(await treeOrder()).includes(IDLE.id), "空的目录组从快照 / order / 左栏一起消失");
+
+// 删完刷新：桥那边真删了，两个组都不会自己长回来
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(700);
+const afterReload = await treeOrder();
+ok(!afterReload.includes(EMPTY.id) && !afterReload.includes(IDLE.id), `刷新后两个空组也没回来（${afterReload.length} 组）`);
+
+// 20d) 删掉的要是当前组：页面落到相邻组（右邻优先），不留在空白页
+//      页面上删不掉自己的组（有会话就拦），所以这里模拟「别的客户端 / 上一秒的快照」把它删了：
+//      桩桥直接广播一份没有它的快照，和真桥 `ws.drop` 的广播同一个形状（keys 不动，会话因此没了归属）。
+await page.goto(`${BASE}/#/s/s-04-1`, { waitUntil: "networkidle" });
+await sleep(700);
+s = await barState();
+ok(s.onWs === "f:/proj-04", `先站到 proj-04（当前 ${s.onWs}）`);
+WS.groups = WS.groups.filter((g) => g.id !== "f:/proj-04");
+WS.order = WS.order.filter((id) => id !== "f:/proj-04");
+cast();
+await sleep(900);
+s = await barState();
+ok(s.onWs === "f:/proj-05", `当前组没了：落到右邻 proj-05（当前 ${s.onWs}）`);
+ok((await page.evaluate(() => location.hash)) === "#/s/s-05-1", "落点是右邻那颗会话");
+ok((await page.locator(".session-card").count()) > 0, "页面上有卡片，不是空白页");
 
 await page.close();
 

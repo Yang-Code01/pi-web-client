@@ -176,11 +176,46 @@ test("手动组：建、改名、只允许删空的", async () => {
 
   ws.move(["s9"], manual.id);
   assert.equal(ws.groupFor("s9", plain), manual.id);
-  assert.equal(ws.drop(manual.id).ok, false, "有会话的组不许删");
+  assert.equal(ws.drop(manual.id, 1).ok, false, "有会话的组不许删");
 
   ws.move(["s9"], "");
-  assert.equal(ws.drop(manual.id).ok, true);
+  assert.equal(ws.drop(manual.id, 0).ok, true);
   assert.ok(!ws.snapshot().groups.some((g) => g.id === manual.id));
+});
+
+// ---------------------------------------------------------------- #279 空组可删（含目录组）
+
+test("#279 目录组空了也能删：快照与 order 同时去掉它", async () => {
+  const ws = fresh();
+  await ws.resolve([library.root, plain]);
+  const lib = ws.groupFor("s1", library.root);
+  ws.forget("s1");
+  assert.ok(ws.snapshot().groups.some((g) => g.id === lib), "先确认它还在、且没有会话");
+
+  assert.equal(ws.drop(lib, 0).ok, true, "空的目录组能删");
+  assert.ok(!ws.snapshot().groups.some((g) => g.id === lib), "从快照里消失");
+  assert.ok(!ws.snapshot().order.includes(lib), "从 order 里消失");
+});
+
+test("#279 有会话的目录组仍然拒绝，原因还是「跟着目录走」", async () => {
+  const ws = fresh();
+  await ws.resolve([library.root, plain]);
+  const lib = ws.groupFor("s1", library.root);
+
+  const refused = ws.drop(lib, 2);
+  assert.equal(refused.ok, false);
+  assert.ok(refused.reason.includes("目录"), `派生组的拒绝原因要说明它跟着目录走：${refused.reason}`);
+  assert.ok(ws.snapshot().groups.some((g) => g.id === lib), "拒绝时一个字都不动");
+});
+
+test("#279 删组顺手清掉指向它的 override（会话已经没了的那种）", () => {
+  const ws = fresh();
+  const a = ws.create("客户 A").id;
+  ws.move(["ghost"], a);
+  assert.equal(ws.snapshot().overrides.ghost, a);
+
+  assert.equal(ws.drop(a, 0).ok, true);
+  assert.equal(ws.snapshot().overrides.ghost, undefined, "别留悬空指向");
 });
 
 test("forget 清掉 override，不留悬空指向", async () => {
@@ -259,7 +294,7 @@ test("#173 新组追加到末尾（创建序），不按名字插队；删组从
   assert.deepEqual(ws.snapshot().order, [b, a], "ensure 出来的新组排在末尾");
   const manual = ws.create("客户 A").id;
   assert.deepEqual(ws.snapshot().order, [b, a, manual], "create 也是追加");
-  assert.equal(ws.drop(manual).ok, true);
+  assert.equal(ws.drop(manual, 0).ok, true);
   assert.deepEqual(ws.snapshot().order, [b, a], "drop 从 order 里移除");
 });
 

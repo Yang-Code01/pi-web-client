@@ -2768,13 +2768,16 @@ async function main(): Promise<void> {
               return;
             }
             if (action === "ws.drop") {
+              // #279：空组（手动组 / 目录组）都能删；有会话时由 `dropWorkspace()` 拒绝并给原因。
               const id = String(msg.id ?? "");
-              const result = sessions.workspaces.drop(id);
+              const result = sessions.dropWorkspace(id);
               if (!result.ok) {
                 send({ type: "notice", text: result.reason ?? "这个工作区不能删", level: "warn" });
                 return;
               }
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+              // 删组会顺手清掉还指着它的 override，会话的 `ws` 跟着挪窝 —— 一起广播，别让卡片停在死组里。
+              broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
               return;
             }
             if (action === "ws.tabs") {

@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanGroupName, dropBlocker, renameIntent } from "../src/wsmanage.ts";
+import { cleanGroupName, dropBlocker, dropHint, renameIntent, wsNeighborsAfterDrop } from "../src/wsmanage.ts";
 
 const LIB = { id: "f:/pi-web-client", name: "", key: "F:/pi-web-client", manual: false };
 const MANUAL = { id: "manual:abc", name: "客户 A", key: "", manual: true };
@@ -51,25 +51,50 @@ test("改了名字就发洗过的那个", () => {
 
 // ---------------------------------------------------------------- 能不能删
 
-test("手建的空组可以删", () => {
+// #279 边界改成「有会话才拦」：空的手动组与空的目录组都能删。
+
+ test("空组能删，手动组与目录组一样", () => {
   assert.equal(dropBlocker(MANUAL, 0), null);
+  assert.equal(dropBlocker(LIB, 0), null);
 });
 
-test("有会话的组删不掉，原因里带上会话数", () => {
+test("手动组有会话：删不掉，原因里带上会话数", () => {
   const blocker = dropBlocker(MANUAL, 3);
   assert.ok(blocker && blocker.includes("3"), `原因要说清还有几个会话：${blocker}`);
 });
 
-test("跟着目录走的组删不掉：删了下次又回来", () => {
-  const blocker = dropBlocker(LIB, 0);
+test("目录组有会话：删不掉，原因还是「跟着目录走」", () => {
+  const blocker = dropBlocker(LIB, 3);
   assert.ok(blocker && blocker.includes("目录"), `派生组的拒绝原因要说明它跟着目录走：${blocker}`);
 });
 
 test("组没了也删不掉（快照过期时的兜底）", () => {
   assert.ok(dropBlocker(undefined, 0));
+  assert.ok(dropBlocker(undefined, 3));
 });
 
-test("派生组即使空了也不给删 —— 拒绝先于「空不空」判断", () => {
-  assert.ok(dropBlocker(LIB, 0));
-  assert.equal(dropBlocker({ ...LIB, manual: true }, 0), null);
+// ---------------------------------------------------------------- 删掉当前组之后落到哪
+
+test("删掉中间的组：先右邻、再左邻", () => {
+  assert.deepEqual(wsNeighborsAfterDrop(["a", "b", "c"], "b"), ["c", "a"]);
+});
+
+test("删掉最后一组：没有右邻就退到左邻，近的在前", () => {
+  assert.deepEqual(wsNeighborsAfterDrop(["a", "b", "c"], "c"), ["b", "a"]);
+});
+
+test("删掉第一个组：只剩右邻", () => {
+  assert.deepEqual(wsNeighborsAfterDrop(["a", "b", "c"], "a"), ["b", "c"]);
+});
+
+test("要删的组不在组序里（快照已经变了）：没有落点", () => {
+  assert.deepEqual(wsNeighborsAfterDrop(["a", "b"], "z"), []);
+});
+
+test("能删时，删除项底下那句说明分得清手动组与目录组", () => {
+  const manual = dropHint(MANUAL);
+  const dir = dropHint(LIB);
+  assert.match(manual, /组/, `手动组要说清删的是组：${manual}`);
+  assert.match(dir, /目录/, `目录组要说清删的是列表里的这一项：${dir}`);
+  assert.notEqual(manual, dir);
 });
