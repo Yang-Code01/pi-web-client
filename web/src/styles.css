@@ -1890,6 +1890,10 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
   /* 「📂 产物」和「📁 文件管理器」收成图标之后并排两颗几乎一样的文件夹 —— 窄屏上只能留一个。
      留产物（这个会话写过的东西），盘符浏览回桌面端用。 */
   .topbar .icon-btn.wide[data-act="files"] { display: none !important; }
+  /* #292「开关优先」：上面那条不动，只在这里被顶开。根元素带 data-chrome-narrow="files" 就表示
+     用户在「外观与语言」里显式点亮了文件管理器 —— 窄屏也照画；`:not([hidden])` 让「没开会话」
+     的藏法仍然赢。排不下时照旧由 .topbar 自己横向滚（见 .topbar 的 overflow-x），文档不跟着滚。 */
+  html[data-chrome-narrow~="files"] .topbar .icon-btn.wide[data-act="files"]:not([hidden]) { display: inline-flex !important; }
 }
 .file-link { color: var(--accent); text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; word-break: break-all; }
 .file-link:hover { text-decoration-style: solid; }

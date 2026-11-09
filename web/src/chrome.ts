@@ -25,6 +25,9 @@ export interface ChromeContext {
 
 const SESSION_ONLY: readonly string[] = ["artifacts", "files"];
 
+/** D138 在 560px 以下用 CSS 藏掉的按钮：只有它们存在「显式打开要顶开样式表」的问题。 */
+const NARROW_CSS_HIDDEN: readonly ChromeId[] = ["files"];
+
 /**
  * 这一颗画不画。`id` 收 `string` 是因为桥可能带来更新版本的 id：不认识的按默认画，旧页面不该
  * 因此把新按钮藏掉。
@@ -37,6 +40,15 @@ export function isChromeVisible(id: ChromeId | string, chrome: ChromeState | nul
   if (choice === true) return true;
   if (id === "files" && ctx.narrow) return false;
   return true;
+}
+
+/**
+ * #292「开关优先」：窄屏要顶开 D138 的那些 id —— 空数组表示没人显式打开，样式表原样生效。
+ * 只表达「显式 true」这一件事，不含会话事实；没开会话时按钮仍带 `hidden`，页面靠覆盖规则里的
+ * `:not([hidden])` 不让它复活。页面把它写成根元素的 `data-chrome-narrow`。
+ */
+export function narrowForcedVisible(chrome: ChromeState | null | undefined): ChromeId[] {
+  return NARROW_CSS_HIDDEN.filter((id) => chrome?.[id] === true);
 }
 
 /** 页面收到 `hello.ui.chrome` / `ui.ui.chrome` 时归一：未知 id 与非布尔值都不进页面状态。 */
