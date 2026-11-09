@@ -29,7 +29,7 @@ import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./s
 import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
-import { chromeFrom, isChromeVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
+import { chromeFrom, isChromeVisible, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
@@ -3754,6 +3754,15 @@ export class App {
     const sessFilter = this.els.sessFilter as HTMLInputElement;
     const ctx = this.chromeCtx();
     const chrome = this.uiPrefs.chrome;
+    /**
+     * #292「开关优先」：D138 的窄屏规则不动，只被顶开 —— 根元素带 `data-chrome-narrow`（值是按
+     * 空格分隔的 id），样式表里 560px 之内排在 D138 之后的那条规则认它。标记只表达「显式 true」
+     * 这一件事，不含会话事实：没开会话时按钮仍带 `hidden`，覆盖规则的 `:not([hidden])` 不让它复活。
+     */
+    const forcedNarrow = narrowForcedVisible(chrome);
+    const root = document.documentElement;
+    if (forcedNarrow.length) root.dataset.chromeNarrow = forcedNarrow.join(" ");
+    else delete root.dataset.chromeNarrow;
     const noSessionWhy = tr("没开会话，先不显示");
     /**
      * 一颗按钮：`hidden` 是唯一开关（样式表里 `.icon-btn[hidden]{display:none!important}`），

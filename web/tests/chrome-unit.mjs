@@ -9,7 +9,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CHROME_IDS, chromeFrom, isChromeVisible } from "../src/chrome.ts";
+import { CHROME_IDS, chromeFrom, isChromeVisible, narrowForcedVisible } from "../src/chrome.ts";
 
 const TOP = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira"];
 const BOTTOM = ["skills", "ext", "attach", "model"];
@@ -71,6 +71,19 @@ test("非布尔值当作没写：退回默认，不被 truthy 骗成 true", () =
   assert.equal(isChromeVisible("terminal", { terminal: "yes" }, DESK), true, "字符串不算显式");
   assert.equal(isChromeVisible("files", { files: "no" }, MOBILE), false, "字符串也不算显式打开窄屏");
   assert.equal(isChromeVisible("files", { files: 1 }, MOBILE), false);
+});
+
+test("窄屏强制显示：只有显式 true 的文件管理器要顶开 D138", () => {
+  assert.deepEqual(narrowForcedVisible({}), [], "没键 = 不顶开，D138 原样");
+  assert.deepEqual(narrowForcedVisible(null), []);
+  assert.deepEqual(narrowForcedVisible(undefined), []);
+  assert.deepEqual(narrowForcedVisible({ files: true }), ["files"], "显式 true 才顶开");
+  assert.deepEqual(narrowForcedVisible({ files: false }), [], "显式 false 是藏，不是顶开");
+  assert.deepEqual(narrowForcedVisible({ files: "yes" }), [], "非布尔不算显式");
+  assert.deepEqual(narrowForcedVisible({ files: 1 }), []);
+  // 只有被 D138 的 CSS 藏掉的才需要标记；其余 10 颗窄屏本来就画。
+  const allTrue = Object.fromEntries(CHROME_IDS.map((id) => [id, true]));
+  assert.deepEqual(narrowForcedVisible(allTrue), ["files"]);
 });
 
 test("chromeFrom：只收白名单里的布尔值", () => {
