@@ -12,7 +12,7 @@ import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
 import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type ComposerChild, type FailLedger, type SeenFail } from "./failures.ts";
 import { parseRules, type RuleBook } from "./rules.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
-import { PillBar, neighborAfterArchive, zoneStarred } from "./pillbar.ts";
+import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
@@ -12928,16 +12928,17 @@ export class App {
       .map((id) => this.sessions.find((s) => s.id === id))
       .filter((s): s is SessionState => s !== undefined && !this.manage.archived.includes(s.id));
     const cur = this.session;
-    // 没有当前会话：不知道「本区」是哪个，一颗都不列。
-    if (!cur) return [];
-    // 旧桥 / 桩桥不发 workspace 快照：这时「本区」这个概念不存在，退回置顶列表。
+    // 旧桥 / 桩桥不发 workspace 快照：这里「本区」这个概念不存在，退回置顶列表。这条要在「没有当前
+    // 会话」之前判 —— 那种桥的行 2 本来就只是置顶列表，跟开没开会话无关。
     if (!this.workspaces?.groups?.length) return pins;
+    // 没有当前会话：不知道自己在本区哪儿，一颗都不列。
+    if (!cur) return [];
     const listed = this.sessions.find((x) => x.id === cur.id);
     const group = wsOf(cur, this.workspaces, listed?.ws);
     const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
     const mine = group ? tree.groups.find((g) => g.id === group.id) : undefined;
     // 反查不到本区（脏快照 / 过滤把组滤没了）：同样不猜，回空。
-    return zoneStarred(mine?.sessions ?? null, this.manage.pin);
+    return starredSessions(mine?.sessions, this.manage.pin);
   }
 
   /** #189：当前打开的会话已经在「已归档」里。 */

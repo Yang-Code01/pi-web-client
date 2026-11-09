@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { neighborAfterArchive, pillChip, starredSessions, zoneStarred } from "../src/pillbar.ts";
+import { neighborAfterArchive, pillChip, starredSessions } from "../src/pillbar.ts";
 
 const time = (ts) => `t${ts}`;
 const session = { id: "st-1", name: "会话 01", cwd: "E:/demo", updatedAt: 7 };
@@ -63,10 +63,11 @@ test("在别组置顶的会话不串进来：本区列表里没有的 ★ id 一
 
 // D208：本区没定义（没有当前会话 / 反查不到组）时一颗都不画，**不**退到全量置顶。
 const zoneIds = (ids, stars) =>
-  zoneStarred(ids?.map((id) => ({ ...session, id })) ?? null, stars).map((s) => s.id);
+  starredSessions(ids?.map((id) => ({ ...session, id })), stars).map((s) => s.id);
 
 test("没有当前会话 → 行 2 清空（不拿全量置顶顶上去）", () => {
   assert.deepEqual(zoneIds(null, ["a", "b", "c"]), []);
+  assert.deepEqual(zoneIds(undefined, ["a"]), []);
 });
 
 test("本区有定义时，仍然只留本区里的 ★", () => {

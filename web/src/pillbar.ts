@@ -57,36 +57,29 @@ export function pillChip(s: PillSession, currentId: string | null, badge: PillBa
 
 /**
  * #120 行 2 画哪些胶囊：本区里点过 ★ 的那些，当前那颗不重复画（最左的 NowChip 已经代表它）。
- * `sessions` 是外壳给的「本区会话」，顺序就按左栏那一份（★ 已经排在前面），这里只做过滤 ——
+ * `zone` 是外壳给的「本区会话」，顺序就按左栏那一份（★ 已经排在前面），这里只做过滤 ——
  * 于是别组的置顶不会串进本区，没 ★ 的组也就一颗都不剩。
+ *
+ * D208：`zone` 为 `null` / `undefined` 表示「本区没定义」（没有当前会话，或反查不到它属于哪个组）——
+ * 这时一颗都不画（只剩 ＋），**不**退到全量置顶：没有「我在哪」就谈不上「本区」，拿别组的置顶顶替
+ * 正是「只有 1 个会话的工作区里冒出 13 颗别组胶囊」的来源。
  *
  * 行 2 画的是「本区里点过 ★ 的会话」，顺序按 `stars`（= `manage.pin`）排 ——
  * 不跟会话列表自己的「最近活动」序，也不跟切会话重排。当前会话也在里面，
  * 靠 `.cur` 的主题色填充认出来（#126）。
  */
 export function starredSessions<S extends PillSession>(
-  sessions: readonly S[],
+  zone: readonly S[] | null | undefined,
   stars: readonly string[],
 ): S[] {
-  const byId = new Map(sessions.map((s) => [s.id, s]));
+  if (!zone) return [];
+  const byId = new Map(zone.map((s) => [s.id, s]));
   const out: S[] = [];
   for (const id of stars) {
     const s = byId.get(id);
     if (s) out.push(s);
   }
   return out;
-}
-
-/**
- * D208：行 2 的数据源 —— `zone` 为 null 表示「本区没定义」（没有当前会话，或反查不到它属于哪个组）。
- * 这时一颗都不画（只剩 ＋），**不**退到全量置顶：没有「我在哪」就谈不上「本区」，拿别组的置顶顶替
- * 正是「只有 1 个会话的工作区里冒出 13 颗别组胶囊」的来源。
- */
-export function zoneStarred<S extends PillSession>(
-  zone: readonly S[] | null,
-  stars: readonly string[],
-): S[] {
-  return zone ? starredSessions(zone, stars) : [];
 }
 
 /**
