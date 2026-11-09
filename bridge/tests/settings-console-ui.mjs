@@ -139,6 +139,37 @@ try {
   check(eyebrow === "pi 设置", `eyebrow「pi 设置」（${eyebrow}）`);
   const title = (await page.locator(".st-title").innerText()).trim();
   check(title === "设置 · 全局", `标题跟着作用域（${title}）`);
+  const saveBtn = () => page.locator('[data-role="settings-save"]');
+  const subText = await until(
+    async () => {
+      const t = (await page.locator('[data-role="sub"]').innerText()).trim();
+      return t.includes("settings.json") ? t : null;
+    },
+    15000,
+    "sub path",
+  );
+  check(subText.includes("全局") && subText.includes(AGENT), `副标题写作用域 + 真实路径（${subText}）`);
+  // 头部计数与左栏计数同源：字段定义多少条就是多少个键，不是文件里几个顶层键。
+  const badgeTexts = await until(
+    async () => {
+      const t = (await page.locator(".st-badges .st-badge").allInnerTexts()).map((x) => x.trim());
+      return t.some((x) => /^\d+ 个键$/.test(x)) ? t : null;
+    },
+    20000,
+    "key badge",
+  );
+  const keyBadge = badgeTexts.find((x) => /^\d+ 个键$/.test(x));
+  const keyCount = Number(/^(\d+)/.exec(keyBadge)[1]);
+  const navCountText = (await page.locator('.st-nav__item[data-tab="global"] .st-nav__count').innerText()).trim();
+  check(keyCount >= 8, `全局键数来自字段定义（${keyBadge}）`);
+  check(navCountText === String(keyCount), `左栏计数与 badge 一致（${navCountText} / ${keyCount}）`);
+  check(!badgeTexts.some((x) => /个被项目覆盖/.test(x)), "项目还没有覆盖时不挂覆盖 badge");
+  check((await saveBtn().innerText()).trim() === "保存·全局", "全局作用域按钮写「保存·全局」");
+  check(await saveBtn().isDisabled(), "没有改动 → 保存 disabled");
+  const footHint = (await page.locator(".st-foot__hint").innerText()).trim();
+  check(footHint === "保存写整张表单；每行仍标出覆盖 / 未设置", `底部说明（${footHint}）`);
+  const footMeta = (await page.locator(".st-foot__meta").innerText()).trim();
+  check(footMeta === "pi-web-client · D214", `底部元信息（${footMeta}）`);
 
   const groups = (await page.locator(".st-nav__group").allInnerTexts()).map((s) => s.trim());
   check(groups.length === 2 && groups[0] === "设置" && groups[1] === "系统", `左栏两组（${groups.join(" / ")}）`);
@@ -149,6 +180,13 @@ try {
     labels.join("/") === "全局与项目/项目信任/登录·凭据/口令/扩展与 MCP/子代理/通知/运行时/更新日志",
     `九项文案（${labels.join(" / ")}）`,
   );
+  await page.locator('.st-head__actions button', { hasText: "关闭" }).click();
+  await until(async () => (await page.locator(".st-console").count()) === 0, 5000, "close button");
+  check((await page.locator(".st-console").count()) === 0, "「关闭」按钮真的关掉面板");
+  await page.locator(".composer textarea").fill("/settings");
+  await page.keyboard.press("Enter");
+  await page.locator(".st-console").waitFor({ timeout: 20000 });
+  await until(async () => (await page.locator(".settings-form").count()) > 0, 20000, "form after reopen");
 
   // ---------------------------------------------------------------- G. C3 双作用域表单
   log("G1. 全局：改默认思考档位，只写这一个键");
@@ -157,7 +195,8 @@ try {
   check((await page.locator(".st-head__scope .st-seg__btn.on").innerText()).trim() === "全局", "默认亮在全局");
   const thinkRow = () => page.locator(".settings-row").filter({ hasText: "默认思考档位" });
   await thinkRow().locator("select").selectOption("max");
-  await page.locator('[data-role="settings-save"]').click();
+  check(!(await saveBtn().isDisabled()), "改了输入 → 保存 enabled");
+  await saveBtn().click();
   await until(
     () => {
       try {
@@ -178,6 +217,8 @@ try {
   );
   await until(async () => (await thinkRow().locator(".settings-src").innerText()).trim() === "已设置", 15000, "global chip");
   check(true, "全局已设置 chip 更新");
+  await until(async () => await saveBtn().isDisabled(), 15000, "save disabled after save");
+  check(await saveBtn().isDisabled(), "保存成功后又回到 disabled");
 
   log("G4. 项目未信任：黄条 + 保存/输入 disabled");
   await page.locator('.st-head__scope .st-seg__btn[data-scope="project"]').click();
@@ -209,14 +250,16 @@ try {
   await ask({ type: "trust.set", cwd: PROJECT, option: 0 }, (m) => m.type === "trust" && m.saved, "trust.set");
   await page.locator(".st-head__actions button", { hasText: "刷新" }).click();
   await until(async () => (await page.locator(".takeover.warn", { hasText: "没有被信任" }).count()) === 0, 20000, "trusted repaint");
-  await until(async () => !(await page.locator('[data-role="settings-save"]').isDisabled()), 15000, "save enabled");
+  check((await saveBtn().innerText()).trim() === "保存·项目", "项目作用域按钮写「保存·项目」");
+  check(await saveBtn().isDisabled(), "信任后没有改动 → 保存仍 disabled");
   const projectThink = thinkRow();
   check((await projectThink.locator(".settings-src").innerText()).trim() === "未设置", "项目行 chip「未设置」");
   const inherited = (await projectThink.locator('select option[value=""]').textContent()).trim();
   check(inherited === "继承全局 · max", `项目 placeholder 继承全局（${inherited}）`);
   const modelRow = () => page.locator(".settings-row").filter({ hasText: "默认模型" });
   await modelRow().locator("select").selectOption("stub/fake-model-2");
-  await page.locator('[data-role="settings-save"]').click();
+  check(!(await saveBtn().isDisabled()), "项目改了输入 → 保存 enabled");
+  await saveBtn().click();
   await until(
     () => {
       try {
@@ -236,6 +279,15 @@ try {
   );
   await until(async () => (await modelRow().locator(".settings-src").innerText()).trim() === "覆盖", 15000, "project chip");
   check(true, "项目已覆盖 chip 更新");
+  const coverBadge = await until(
+    async () => {
+      const t = (await page.locator(".st-badges .st-badge").allInnerTexts()).map((x) => x.trim());
+      return t.find((x) => /^\d+ 个被项目覆盖$/.test(x)) ?? null;
+    },
+    15000,
+    "override badge",
+  );
+  check(coverBadge === "1 个被项目覆盖", `项目覆盖按行计数（模型一对键算 1 行：${coverBadge}）`);
   await page.screenshot({ path: path.join(SHOTS, "settings-console-form.png") });
 
   log("G3. 切 scope 保留草稿");
@@ -308,6 +360,7 @@ try {
   const cmpNote = (await page.locator(".st-cmp-note").innerText()).trim();
   check(cmpNote.includes("表格只读") && cmpNote.includes("只写你改过的键"), `顶部说明（${cmpNote}）`);
   check((await compareBtn().innerText()).trim() === "回到表单", "进入对照后按钮变「回到表单」");
+  check(await saveBtn().isHidden(), "对照模式下保存按钮隐藏");
   const cmpRow = (key) => page.locator(`.st-cmp-row[data-key="${key}"]`);
   const cmpCell = (key, scope) => cmpRow(key).locator(`.st-cmp-cell[data-scope="${scope}"]`);
   const modelGlobal = (await cmpCell("defaultModel", "global").innerText()).trim();
@@ -446,8 +499,8 @@ try {
   const navBox = await page.locator(".st-nav").boundingBox();
   const paneBox = await page.locator(".st-pane").boundingBox();
   check(Boolean(navBox && paneBox) && paneBox.y >= navBox.y + navBox.height - 1, "左栏在正文上方（单列）");
-  const overflow = await page.locator(".st-console").evaluate((n) => n.scrollWidth - n.clientWidth);
-  check(overflow <= 1, `900px 不横向溢出（${overflow}px）`);
+  const overflow = await page.locator(".st-pane").evaluate((n) => n.scrollWidth - n.clientWidth);
+  check(overflow <= 1, `900px 正文不横向溢出（${overflow}px）`);
   await page.screenshot({ path: path.join(SHOTS, "settings-console-900.png") });
 
   // ---------------------------------------------------------------- F. Escape
@@ -465,6 +518,49 @@ try {
   await page.locator(".st-console").waitFor({ timeout: 20000 });
   await until(async () => (await page.locator(".settings-form").count()) > 0, 20000, "form on reopen");
   check((await page.locator(".st-cmp").count()) === 0, "重新打开设置默认是表单");
+
+  // ---------------------------------------------------------------- N. 没有 cwd：信任页可达，项目 scope 给空态
+  log("N. 没有会话：信任页可点、项目 scope 是空态");
+  const ctx2 = await browser.newContext({ locale: "zh-CN", viewport: { width: 1400, height: 940 } });
+  await ctx2.addCookies([{ name: cookie.split("=")[0], value: cookie.split("=").slice(1).join("="), url: BASE }]);
+  const page2 = await ctx2.newPage();
+  page2.on("pageerror", (e) => pageErrors.push(String(e)));
+  // 新 context 没有 localStorage，就不会自动接回上一个会话：这是真的「没有 cwd」。
+  await page2.goto(`${BASE}/#/q`, { waitUntil: "domcontentloaded" });
+  const entry = page2.locator('button:has-text("pi 设置")').first();
+  await until(async () => (await entry.count()) > 0 && (await entry.isVisible()), 20000, "settings entry in queue rail");
+  await entry.click();
+  await page2.locator(".st-console").waitFor({ timeout: 20000 });
+  check(!(await page2.locator('.st-nav__item[data-tab="trust"]').isDisabled()), "没有 cwd 时「项目信任」仍可点");
+  await page2.locator('.st-nav__item[data-tab="trust"]').click();
+  const trustEmpty = await until(
+    async () => {
+      const t = (await page2.locator(".st-pane .empty").innerText()).trim();
+      return t || null;
+    },
+    15000,
+    "trust empty state",
+  );
+  check(trustEmpty === "先打开一个会话", `没有 cwd 时信任页给空态（${trustEmpty}）`);
+  await page2.locator('.st-nav__item[data-tab="global"]').click();
+  const projectScope = page2.locator('.st-head__scope .st-seg__btn[data-scope="project"]');
+  check(!(await projectScope.isDisabled()), "没有 cwd 时项目 scope 仍可切");
+  await projectScope.click();
+  const projectEmpty = await until(
+    async () => {
+      const t = (await page2.locator(".st-pane .empty").innerText()).trim();
+      return t === "先打开一个会话" ? t : null;
+    },
+    15000,
+    "project empty state",
+  );
+  check(projectEmpty === "先打开一个会话", "没有 cwd 时项目 scope 给空态");
+  const save2 = page2.locator('[data-role="settings-save"]');
+  check((await save2.innerText()).trim() === "保存·项目", "空态也按作用域写按钮文案");
+  check(await save2.isDisabled(), "空态保存 disabled");
+  await page2.screenshot({ path: path.join(SHOTS, "settings-console-no-cwd.png") });
+  await ctx2.close();
+
   check(pageErrors.length === 0, `没有 pageerror${pageErrors.length ? `：${pageErrors.slice(0, 3).join(" | ")}` : ""}`);
   if (pageErrors.length) failed = true;
 } catch (e) {
