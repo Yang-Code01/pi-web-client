@@ -10,6 +10,7 @@ import { piModule } from "./pimods.ts";
 import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions } from "./launch.ts";
 import { lessonFile } from "./lessons.ts";
 import { DELIVERY_HINT } from "./delivery.ts";
+import { forgetSession } from "./artifacts.ts";
 import { ensureDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
@@ -32,6 +33,11 @@ function approvalGatePath(): string {
 /** #224：`open_preview` 只属于网页会话 —— 它做的事就是把文件交给网页的预览面板。 */
 function previewToolPath(): string {
   return process.env.PI_WEB_PREVIEW_TOOL ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "open-preview.ts");
+}
+
+/** D208：写入前留原文。和预览工具一样只在网页会话里挂 —— 终端里的 pi 没有这个弹窗。 */
+function artifactToolPath(): string {
+  return process.env.PI_WEB_ARTIFACT_TOOL ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "artifact-snapshot.ts");
 }
 
 export interface ApprovalRequest {
@@ -1079,6 +1085,7 @@ export class Session extends EventEmitter {
     if (process.env.PI_WEB_NO_EXT === "1") args.push("-ne");
     args.push("-e", approvalGatePath());
     args.push("-e", previewToolPath());
+    args.push("-e", artifactToolPath());
     const cwd = opts.cwd || this.state.cwd || process.cwd();
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
     const launch = readLaunch(id);
@@ -3408,6 +3415,8 @@ export class SessionManager extends EventEmitter {
       purged.push(it.id);
       // D162: 永久删除才丢完成标记；trash() 有意保留，restore() 后「完成」还在。
       forgetFinished(it.id);
+      // D208: 产物基线跟着会话一起走，别在状态目录里留一堆没人认领的 .orig。
+      forgetSession(it.id);
     }
     if (purged.length) {
       const gone = new Set(purged);

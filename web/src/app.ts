@@ -35,7 +35,7 @@ import { stickMenu } from "./menuplace.ts";
 import { newerTunnel } from "./tunnel-snapshot.ts";
 import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
-import type { AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
+import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
 import { paintSubagentsPage, type SubagentScan } from "./subagents.ts";
 import type { AcpDelegatePatch, AcpDelegateView } from "./subagents-acp.ts";
@@ -610,7 +610,7 @@ export class App {
     const files = this.wideBtn(tr("📂 产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
     files.dataset.act = "artifacts";
-    files.onclick = () => this.openArtifactsSheet();
+    files.onclick = () => void this.openArtifactsSheet();
     files.hidden = true;
     // D92: the shell sits next to 产物 now — it is a dialog over the page, and this button is both
     // its opener and the place it minimizes back to. Not session-scoped, so it never hides.
@@ -5591,8 +5591,14 @@ export class App {
   }
 
   // ---------------------------------------------------------------- file preview
-  private openArtifactsSheet(): void {
+  /**
+   * D208: 产物弹窗。和以前最大的区别是「状态不是工具名」—— 每行的 新增/修改 来自桥对
+   * 「写入前的原文」和现在的文件的比较，所以 write 覆盖一个已有文件会显示「修改」。
+   * 点一行直接开独立 diff 弹窗（C 方案），不离开这个列表也一样能对比改动。
+   */
+  private async openArtifactsSheet(): Promise<void> {
     if (!this.currentId) return;
+    const sessionId = this.currentId;
     this.closeSheet();
     this.sheetKind = "display";
     const back = el("div", "sheet-back");
@@ -5605,26 +5611,16 @@ export class App {
     const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(close);
+    const sum = el("div", "art-sum");
+    const filters = el("div", "art-filters");
     const list = el("div", "art-list");
-    const items = this.chat.artifacts();
-    if (!items.length) list.append(el("div", "empty", tr("这个会话还没写过文件。AI 回复里提到的路径也可以直接点开预览。")));
-    for (const it of items) {
-      const row = el("button", "art-row");
-      const name = it.path.split(/[\\/]/).filter(Boolean).pop() ?? it.path;
-      row.append(el("span", "art-ico", previewIcon(it.path)), el("span", "art-name", name), el("span", "art-tool", it.tool === "write" ? tr("写入") : tr("修改")), el("span", "art-path", it.path));
-      row.title = it.path;
-      row.onclick = () => {
-        this.closeSheet();
-        void this.openPreview(it.path);
-      };
-      list.append(row);
-    }
+    list.append(el("div", "empty", tr("正在比对产物…")));
     // Free-form path: anything in the cwd or mentioned in the session.
     const foot = el("div", "art-foot");
     const input = el("input", "ns-input mono") as HTMLInputElement;
     input.placeholder = tr("输入路径预览（相对会话工作目录，或绝对路径）");
     const go = el("button", "btn", tr("预览"));
-    const submit = () => {
+    const submit = (): void => {
       const p = input.value.trim();
       if (!p) return;
       this.closeSheet();
@@ -5635,12 +5631,307 @@ export class App {
       if (ev.key === "Enter") submit();
     };
     foot.append(input, go);
-    sheet.append(head, list, foot);
+    sheet.append(head, sum, filters, list, foot);
     back.append(sheet);
     this.overlay(back);
     this.sheet = back;
+
+    let data: ArtifactList;
+    try {
+      data = await api.artifactsList(sessionId, this.chat.artifacts());
+    } catch (err: any) {
+      if (this.sheet !== back) return;
+      list.replaceChildren(el("div", "empty", tr("读不到产物列表：{p1}", { p1: String(err?.message ?? err) })));
+      return;
+    }
+    // 比对是异步的：弹窗可能已经关了，或者已经换成了别的弹窗 —— 别往死掉的节点里写。
+    if (this.sheet !== back) return;
+    if (!data.items.length) {
+      list.replaceChildren(el("div", "empty", tr("这个会话还没写过文件。AI 回复里提到的路径也可以直接点开预览。")));
+      return;
+    }
+
+    const s = data.summary;
+    const pill = (cls: string, text: string): HTMLElement => el("span", `art-sum-pill ${cls}`, text);
+    if (s.new) sum.append(pill("new", tr("新增 {p1}", { p1: s.new })));
+    if (s.modified) sum.append(pill("mod", tr("修改 {p1}", { p1: s.modified })));
+    if (s.deleted) sum.append(pill("del", tr("删除 {p1}", { p1: s.deleted })));
+    if (s.unknown) sum.append(pill("unk", tr("未知 {p1}", { p1: s.unknown })));
+    if (s.added || s.removed) sum.append(el("span", "art-sum-count", `+${s.added} −${s.removed}`));
+    if (data.baseline !== "exact") sum.append(el("span", "art-sum-note", data.baseline === "none" ? tr("没有写入前的原文，状态只能靠猜") : tr("部分文件没有写入前的原文")));
+
+    type Filter = "all" | ArtifactRow["status"];
+    let filter: Filter = "all";
+    const paint = (): void => {
+      list.replaceChildren();
+      for (const r of data.items) {
+        if (filter !== "all" && r.status !== filter) continue;
+        list.append(this.artifactRow(sessionId, r, data));
+      }
+      if (!list.childElementCount) list.append(el("div", "empty", tr("这一类里没有文件。")));
+    };
+    const chips: { key: Filter; label: string; n: number }[] = [
+      { key: "all", label: tr("全部"), n: data.items.length },
+      { key: "new", label: tr("新增"), n: s.new },
+      { key: "modified", label: tr("修改"), n: s.modified },
+      { key: "deleted", label: tr("已删除"), n: s.deleted },
+      { key: "unknown", label: tr("未知"), n: s.unknown },
+    ];
+    for (const c of chips) {
+      if (c.key !== "all" && !c.n) continue;
+      const chip = el("button", "art-chip", `${c.label} ${c.n}`);
+      if (c.key === filter) chip.classList.add("on");
+      chip.onclick = () => {
+        filter = c.key;
+        for (const other of filters.children) other.classList.toggle("on", other === chip);
+        paint();
+      };
+      filters.append(chip);
+    }
+    paint();
   }
 
+  /** 弹窗里的一行。`writes` 是「这个会话写过它几次」，不是行数。 */
+  private artifactRow(sessionId: string, r: ArtifactRow, data: ArtifactList): HTMLElement {
+    const row = el("button", `art-row st-${r.status}`);
+    const name = fileNameOf(r.path);
+    const main = el("span", "art-main");
+    const line = el("span", "art-line");
+    line.append(el("span", "art-name", name), el("span", `art-badge st-${r.status}`, this.artStatusLabel(r.status)));
+    if (r.added || r.removed) line.append(el("span", "art-count", `+${r.added} −${r.removed}`));
+    line.append(el("span", "art-tools", `${r.tool}×${r.writes}`));
+    if (r.estimate) line.append(el("span", "art-est", tr("按 git 估算")));
+    main.append(line, el("span", "art-path", r.path));
+    if (!r.diffable && r.why) main.append(el("span", "art-why", this.artifactWhyText(r.why)));
+    row.append(el("span", "art-ico", previewIcon(r.path)), main);
+    row.title = r.path;
+    if (r.diffable) {
+      row.append(el("span", "art-go", tr("看改动")));
+      row.onclick = () => void this.openDiffSheet(sessionId, r.path, data);
+    } else {
+      // 没有可对比的改动（二进制 / 未知 / 没变）：点开就是看文件本身，别给一个空弹窗。
+      row.onclick = () => {
+        this.closeSheet();
+        void this.openPreview(r.path);
+      };
+    }
+    return row;
+  }
+
+  private artStatusLabel(status: ArtifactRow["status"]): string {
+    if (status === "new") return tr("新增");
+    if (status === "modified") return tr("修改");
+    if (status === "same") return tr("未变");
+    if (status === "deleted") return tr("已删除");
+    return tr("未知");
+  }
+
+  /**
+   * C 方案：独立 diff 弹窗 —— 左边换文件，右边左右对照，键盘 j/k 换文件、←/→ 跳 hunk。
+   * 和查看器分开是故意的：查看器负责「看文件」，这里负责「看这次改了什么」，各占一个全屏。
+   */
+  private async openDiffSheet(sessionId: string, path: string, known?: ArtifactList): Promise<void> {
+    this.closeSheet();
+    this.sheetKind = "display";
+    const back = el("div", "sheet-back");
+    back.tabIndex = -1;
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet diff-sheet");
+    const head = el("div", "sheet-head");
+    const title = el("div", "sheet-title diff-title");
+    const hint = el("div", "diff-hint", tr("j / k 换文件 · ← / → 换 hunk · Esc 关闭"));
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSheet();
+    head.append(title, hint, close);
+    const rail = el("div", "diff-rail");
+    const main = el("div", "diff-main");
+    const body = el("div", "diff-body");
+    body.append(rail, main);
+    sheet.append(head, body);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    back.focus();
+
+    let data = known;
+    if (!data) {
+      try {
+        data = await api.artifactsList(sessionId, this.chat.artifacts());
+      } catch {
+        data = undefined;
+      }
+      if (this.sheet !== back) return;
+    }
+    const files = (data?.items ?? []).filter((r) => r.diffable);
+    if (!files.length) {
+      main.replaceChildren(el("div", "empty", tr("这个会话没有可以对比改动的文件。")));
+      return;
+    }
+    let current = files.findIndex((r) => r.path === path);
+    if (current < 0) current = 0;
+    let hunkEls: HTMLElement[] = [];
+    let hunkIdx = 0;
+
+    const paintRail = (): void => {
+      rail.replaceChildren();
+      for (let i = 0; i < files.length; i++) {
+        const r = files[i]!;
+        const b = el("button", `diff-file st-${r.status}`);
+        if (i === current) b.classList.add("on");
+        const nm = fileNameOf(r.path);
+        b.append(el("span", `diff-dot st-${r.status}`), el("span", "diff-file-name", nm), el("span", "diff-file-count", `+${r.added} −${r.removed}`));
+        b.title = r.path;
+        b.onclick = () => {
+          current = i;
+          paintRail();
+          void loadInto();
+        };
+        rail.append(b);
+      }
+    };
+
+    const loadInto = async (): Promise<void> => {
+      const row = files[current];
+      if (!row) return;
+      const nm = fileNameOf(row.path);
+      title.replaceChildren(el("span", "art-ico", previewIcon(row.path)), el("span", "diff-name", nm));
+      title.append(el("span", `art-badge st-${row.status}`, this.artStatusLabel(row.status)), el("span", "art-count", `+${row.added} −${row.removed}`));
+      if (row.estimate) title.append(el("span", "art-est", tr("按 git 估算")));
+      main.replaceChildren(el("div", "empty", tr("正在读改动…")));
+      let d: ArtifactDiff;
+      try {
+        d = await api.artifactDiff(sessionId, row.path);
+      } catch (err: any) {
+        if (this.sheet === back) main.replaceChildren(el("div", "empty", String(err?.message ?? err)));
+        return;
+      }
+      if (this.sheet !== back) return;
+      hunkEls = [];
+      hunkIdx = 0;
+      const bar = el("div", "diff-bar");
+      bar.append(el("span", "diff-path", d.path));
+      const open = el("button", "btn ghost", tr("在查看器里打开"));
+      open.onclick = () => void this.openPreview(d.path);
+      bar.append(open);
+      const scroll = el("div", "diff-scroll");
+      if (d.reason || !d.hunks.length) {
+        scroll.append(el("div", "empty", this.diffReasonText(d)));
+        main.replaceChildren(bar, scroll);
+        return;
+      }
+      for (const h of d.hunks) {
+        const hh = el("div", "diff-hunk", h.header);
+        hunkEls.push(hh);
+        scroll.append(hh, this.sideBySide(h));
+      }
+      if (d.truncated) scroll.append(el("div", "diff-note", tr("改动太多，只显示了前面一部分。")));
+      main.replaceChildren(bar, scroll);
+    };
+
+    back.addEventListener("keydown", (ev) => {
+      if (this.sheet !== back) return;
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        this.closeSheet();
+        return;
+      }
+      if (ev.key === "j" || ev.key === "k") {
+        const next = current + (ev.key === "j" ? 1 : -1);
+        if (next < 0 || next >= files.length) return;
+        ev.preventDefault();
+        current = next;
+        paintRail();
+        void loadInto();
+        return;
+      }
+      if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
+        const next = hunkIdx + (ev.key === "ArrowRight" ? 1 : -1);
+        if (next < 0 || next >= hunkEls.length) return;
+        ev.preventDefault();
+        hunkIdx = next;
+        hunkEls[hunkIdx]?.scrollIntoView({ block: "start" });
+      }
+    });
+
+    paintRail();
+    void loadInto();
+  }
+
+  /** `why` 是桥发的码（D208），句子在这边 —— 桥不拼界面文案。 */
+  private artifactWhyText(why: ArtifactWhy): string {
+    switch (why) {
+      case "no-baseline":
+        return tr("会话开始时没有留下原文（桥没在运行或扩展被关了），文件也不在 git 的 HEAD 里");
+      case "git-head-missing":
+        return tr("这个文件在 git 的 HEAD 里读不出来");
+      case "snapshot-too-big":
+        return tr("写入前那份原文超过 2 MB，只记了大小");
+      case "size-only":
+        return tr("写入前那份原文超过 2 MB，只能比较大小");
+      case "binary-size-only":
+        return tr("二进制文件，只能比较大小");
+      case "built-then-deleted":
+        return tr("建过又删掉了");
+      case "diff-too-large":
+        return tr("文件太大，只给行数统计");
+      case "diff-rewrite":
+        return tr("改动太大，按「整体重写」统计");
+      default:
+        return "";
+    }
+  }
+
+  private diffReasonText(d: ArtifactDiff): string {
+    if (d.reason === "no-baseline") return tr("这个文件没有写入前的原文，读不出改了什么。点「在查看器里打开」看现在的样子。");
+    if (d.reason === "binary") return tr("二进制文件，只记了大小：{p1} → {p2}", { p1: fmtSize(d.sizeBefore ?? 0), p2: fmtSize(d.sizeAfter ?? 0) });
+    if (d.reason === "too-large") return tr("文件太大，没有逐行比对（只比了大小）。");
+    if (d.reason === "rewrite") return tr("改动太大，按「整体重写」处理，没有逐行比对。");
+    return tr("和写入前相比没有变化。");
+  }
+
+  /**
+   * 把一个 unified hunk 摊成左右两列：连续的 - 和 + 先配对成一行一行，中间垫空行保持对齐。
+   * 上下文行两边都画 —— 左右对照最容易读的就是「同一行原来是什么、现在是什么」。
+   */
+  private sideBySide(h: ArtifactHunk): HTMLElement {
+    const table = el("div", "diff-table");
+    const pairs: { left?: ArtifactDiffLine; right?: ArtifactDiffLine }[] = [];
+    let dels: ArtifactDiffLine[] = [];
+    let adds: ArtifactDiffLine[] = [];
+    const flush = (): void => {
+      const n = Math.max(dels.length, adds.length);
+      for (let i = 0; i < n; i++) pairs.push({ left: dels[i], right: adds[i] });
+      dels = [];
+      adds = [];
+    };
+    for (const ln of h.lines) {
+      if (ln.kind === "-") dels.push(ln);
+      else if (ln.kind === "+") adds.push(ln);
+      else {
+        flush();
+        pairs.push({ left: ln, right: ln });
+      }
+    }
+    flush();
+    const cell = (row: HTMLElement, ln: ArtifactDiffLine | undefined, side: "old" | "new"): void => {
+      const no = el("span", "diff-no", ln ? String((side === "old" ? ln.oldNo : ln.newNo) ?? "") : "");
+      const text = el("span", "diff-text");
+      text.textContent = ln ? ln.text : "";
+      const kind = !ln ? "blank" : ln.kind === "-" ? "minus" : ln.kind === "+" ? "plus" : "same";
+      no.classList.add(kind);
+      text.classList.add(kind);
+      row.append(no, text);
+    };
+    for (const p of pairs) {
+      const row = el("div", "diff-row");
+      cell(row, p.left, "old");
+      cell(row, p.right, "new");
+      table.append(row);
+    }
+    return table;
+  }
   /**
    * `preview.open` 的回执（#224 复审）：只有真把 viewer 拉起来了才算「打开了」。
    * 没在看这个会话（刚关掉 / 切走了）回 `stale`，不动页面；用户在未保存提示里选「留在这里」回 `declined`。
@@ -12162,7 +12453,7 @@ export class App {
         this.togglePane("queue");
         break;
       case "artifacts":
-        this.openArtifactsSheet();
+        void this.openArtifactsSheet();
         break;
       case "files":
         this.openFiles();
