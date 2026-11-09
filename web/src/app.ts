@@ -43,6 +43,7 @@ import { tr } from "./i18n/index.ts";
 import {
   buildMatrix,
   diffPatch,
+  effectiveOf,
   flattenSettings,
   formatCell,
   inheritText,
@@ -329,6 +330,10 @@ export class App {
   /** #285: flattened drafts + the on-disk snapshot they diff against, kept per scope while the sheet is open. */
   private settingsDrafts = new Map<"global" | "project", SettingsJson>();
   private settingsSnapshots = new Map<"global" | "project", SettingsJson>();
+  /** #286: header 「对照」 swaps the form for the read-only two-layer table; pointing at a row goes back. */
+  private settingsCompare = false;
+  /** #286: view-only filter for the compare table; reset whenever the sheet opens. */
+  private settingsOnlyOverrides = false;
   /** #212 子代理页：进 tab 时问一次盘的结果，以及这一页自己的 scope（不是第三个 settings scope）。 */
   private subagentsScan: SubagentScan | null = null;
   private subagentsScanFor = "";
@@ -9003,6 +9008,8 @@ export class App {
     // Closing and reopening starts from what is on disk again; only scope switches keep drafts.
     this.settingsDrafts.clear();
     this.settingsSnapshots.clear();
+    this.settingsCompare = false;
+    this.settingsOnlyOverrides = false;
     if (tab === "login") this.authProviders = null; // re-read: someone may have logged in from the terminal
     if (tab === "runtime") {
       // 上一次按按钮的回执已经过期了：打开面板时重新问数字，也从一张白纸开始。
@@ -9034,6 +9041,14 @@ export class App {
     // flashSettings() 找的就是 .settings-note，位置换了但类名留着。
     headMain.append(title, sub, scopeHost, badges, el("div", "settings-note"));
     const actions = el("div", "st-head__actions");
+    const compare = el("button", "btn ghost", tr("对照")) as HTMLButtonElement;
+    compare.type = "button";
+    compare.dataset.role = "settings-compare";
+    compare.onclick = () => {
+      this.settingsCompare = !this.settingsCompare;
+      this.flashSettings("");
+      this.paintSettings();
+    };
     const save = el("button", "btn primary", tr("保存")) as HTMLButtonElement;
     save.type = "button";
     save.dataset.role = "settings-save";
@@ -9045,7 +9060,7 @@ export class App {
     const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
     close.type = "button";
     close.onclick = () => this.closeSheet();
-    actions.append(save, refresh, close);
+    actions.append(compare, save, refresh, close);
     head.append(headMain, actions);
 
     const main = el("div", "st-main");
@@ -9102,6 +9117,9 @@ export class App {
   private selectSettingsTab(tab: SettingsTab): void {
     const cwd = this.session?.cwd ?? "";
     this.settingsTab = tab;
+    // #286: compare and its filter are modes of the settings page; leaving it drops them.
+    this.settingsCompare = false;
+    this.settingsOnlyOverrides = false;
     this.flashSettings("");
     if (tab === "runtime") this.socket.send({ type: "runtime.stats" });
     if (tab === "passphrase") this.askPassphrase();
@@ -9145,6 +9163,14 @@ export class App {
     if (tab === "runtime") return this.paintRuntime(pane);
     if (tab === "changelog" || tab === "whatsnew") return this.paintSettingsChangelog(pane);
     if (tab === "subagents") return this.paintSubagents(pane);
+    // #286: the compare table reads both layers, so it does not depend on the current scope's view.
+    if (this.settingsCompare) {
+      const globalView = this.settingsView.global;
+      if (globalView && !globalView.error) return this.paintSettingsCompare(pane);
+      // 对照要给不出表时（读取中 / 坏 JSON）自己退回表单，按钮文案也跟着退。
+      this.settingsCompare = false;
+      this.paintSettingsHead(consoleNode, cwd);
+    }
     // #285: one page, two scopes; the segment lives in the header.
     const scope = this.settingsScope;
     const view = this.settingsView[scope];
@@ -9181,10 +9207,19 @@ export class App {
       }
     }
     this.paintSettingsScopeBar(consoleNode, cwd);
+    // #286: compare is a whole-page mode; the scope segment and save button are meaningless in it.
+    const compare = consoleNode.querySelector<HTMLButtonElement>('[data-role="settings-compare"]');
+    if (compare) {
+      const globalView = this.settingsView.global;
+      compare.hidden = tab !== "global";
+      compare.textContent = this.settingsCompare ? tr("回到表单") : tr("对照");
+      compare.setAttribute("aria-pressed", String(this.settingsCompare));
+      compare.disabled = !globalView || Boolean(globalView.error);
+    }
     const save = consoleNode.querySelector<HTMLButtonElement>('[data-role="settings-save"]');
     if (save) {
       const view = this.settingsView[this.settingsScope];
-      save.hidden = tab !== "global";
+      save.hidden = tab !== "global" || this.settingsCompare;
       save.disabled =
         !view || Boolean(view.error) || (this.settingsScope === "project" && !view.writable);
     }
@@ -9258,6 +9293,8 @@ export class App {
     if (!host) return;
     host.replaceChildren();
     if (this.settingsTab !== "global") return;
+    // #286: 对照 shows both layers at once, so the scope segment has nothing left to switch.
+    if (this.settingsCompare) return;
     const seg = el("div", "st-seg");
     seg.setAttribute("role", "group");
     const make = (id: "global" | "project", label: string): HTMLButtonElement => {
@@ -9629,6 +9666,136 @@ export class App {
   }
 
   /**
+   * #286：对照视图——只读三列表（设置 / 全局 / 项目），行序与分组照 `settingFields()`。
+   * 表里不碰草稿：点一行就关对照、回表单，按字段 key 落到那一行的输入上。
+   */
+  private paintSettingsCompare(body: HTMLElement): void {
+    const cwd = this.session?.cwd ?? "";
+    const globalView = this.settingsView.global;
+    const defaults = globalView?.defaults ?? {};
+    const projectView = this.settingsView.project;
+    const projectJson = cwd && projectView && projectView.cwd === cwd ? (projectView.json ?? null) : null;
+    const fields = settingFields();
+    const rows = buildMatrix(fields, globalView?.json ?? null, projectJson, defaults);
+    const rowOf = new Map(rows.map((row) => [row.key, row]));
+    const cellText = (kind: SettingField["kind"], value: unknown): string =>
+      formatCell(kind, value as Parameters<typeof formatCell>[1], defaults);
+    const only = this.settingsOnlyOverrides;
+
+    const tools = el("div", "st-cmp-tools");
+    tools.append(el("span", "st-cmp-note", tr("表格只读，点一行回到表单；表单里改，保存时只写你改过的键")));
+    const filter = el("button", "btn ghost st-cmp-filter", only ? tr("显示全部") : tr("只看项目覆盖")) as HTMLButtonElement;
+    filter.type = "button";
+    filter.dataset.role = "settings-filter";
+    filter.setAttribute("aria-pressed", String(only));
+    filter.onclick = () => {
+      this.settingsOnlyOverrides = !this.settingsOnlyOverrides;
+      this.paintSettings();
+    };
+    tools.append(filter);
+    body.append(tools);
+
+    const table = el("div", "st-cmp");
+    table.setAttribute("role", "table");
+    table.setAttribute("aria-label", tr("设置对照"));
+    const head = el("div", "st-cmp-head");
+    head.setAttribute("role", "row");
+    for (const label of [tr("设置"), tr("全局"), tr("项目")]) {
+      const cell = el("span", "", label);
+      cell.setAttribute("role", "columnheader");
+      head.append(cell);
+    }
+    table.append(head);
+
+    let group = "";
+    for (const f of fields) {
+      const row = rowOf.get(f.key);
+      if (!row) continue;
+      // 高级项在表单里收进 <details>；这里放在最后，同样标成一组。
+      const title = row.advanced ? tr("高级") : row.group;
+      if (title && title !== group) {
+        group = title;
+        table.append(el("div", "st-cmp-group", title));
+      }
+      const line = el("div", `st-cmp-row${only && row.project === undefined ? " dim" : ""}`);
+      line.dataset.key = row.key;
+      line.setAttribute("role", "button");
+      line.tabIndex = 0;
+      line.append(el("span", "st-cmp-label", f.label));
+      const cell = (scope: "global" | "project", cls = ""): HTMLElement => {
+        const node = el("div", cls ? `st-cmp-cell ${cls}` : "st-cmp-cell");
+        node.dataset.scope = scope;
+        return node;
+      };
+      const tags = (node: HTMLElement, texts: string[]): void => {
+        for (const text of texts) node.append(el("span", "st-cmp-tag", text));
+      };
+
+      // 全局列：设了就是值；没设时写 pi 的默认（项目层的值不能冒充全局的默认）。
+      if (row.global !== undefined) {
+        const node = cell("global", row.source === "global" ? "win" : "");
+        node.append(el("span", "st-cmp-v", cellText(row.kind, row.global)));
+        if (row.source === "global") tags(node, [tr("全局生效")]);
+        line.append(node);
+      } else {
+        const node = cell("global", "unset");
+        const fallback = cellText(row.kind, effectiveOf(row.key, row.kind, null, null, defaults).value) || f.defaultText || "";
+        node.append(el("span", "st-cmp-v", fallback ? tr("默认 · {p1}", { p1: fallback }) : tr("默认|继承")));
+        line.append(node);
+      }
+
+      // 项目列：globalOnly 只有「仅全局」；否则是项目值 / 合并 / 继承全局 / 继承 pi 默认。
+      if (row.globalOnly) {
+        const node = cell("project", "unset");
+        node.append(el("span", "st-cmp-v", tr("仅全局")));
+        line.append(node);
+      } else if (row.project !== undefined) {
+        const node = cell("project", row.source === "project" ? "win" : "");
+        node.append(el("span", "st-cmp-v", cellText(row.kind, row.project)));
+        const marks: string[] = [];
+        if (row.merge) marks.push(tr("合并"));
+        if (row.source === "project") marks.push(tr("项目生效"));
+        tags(node, marks);
+        line.append(node);
+      } else {
+        const node = cell("project", "unset");
+        const inherited =
+          row.global !== undefined
+            ? tr("继承全局 · {p1}", { p1: cellText(row.kind, row.global) })
+            : inheritText(row.kind, "default", row.effective as Parameters<typeof inheritText>[2], f);
+        node.append(el("span", "st-cmp-v", inherited || tr("未设置")));
+        line.append(node);
+      }
+
+      const go = (): void => this.focusSettingRow(row.key);
+      line.onclick = go;
+      line.onkeydown = (ev) => {
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        ev.preventDefault();
+        go();
+      };
+      table.append(line);
+    }
+    body.append(table);
+  }
+
+  /** #286：回表单后按字段 key（不是 DOM 顺序）定位，展开「高级」、滚到中间、聚焦并闪一下。 */
+  private focusSettingRow(key: string): void {
+    this.settingsCompare = false;
+    this.flashSettings("");
+    this.paintSettings();
+    const rows = this.sheet?.querySelectorAll<HTMLElement>(".settings-row");
+    const line = rows ? [...rows].find((node) => node.dataset.key === key) : undefined;
+    if (!line) return;
+    const advanced = line.closest("details");
+    if (advanced) advanced.open = true;
+    line.scrollIntoView({ block: "center" });
+    line.classList.add("flash");
+    window.setTimeout(() => line.classList.remove("flash"), 1500);
+    line.querySelector<HTMLElement>("input, select")?.focus();
+  }
+
+  /**
    * #285：同一张字段表画两个作用域。草稿是扁平的（点号键），`buildMatrix` 回答「这一行会继承什么」，
    * 保存时 `diffPatch` 只把改过的键发给桥。
    */
@@ -9713,6 +9880,8 @@ export class App {
         form.append(el("div", "settings-group", f.group));
       }
       const line = el("label", "settings-row");
+      // #286: the compare table points back here by field key, not by DOM position.
+      line.dataset.key = f.key;
       const labelEl = el("span", "settings-label", f.label);
       const onlyGlobal = scope === "project" && Boolean(f.globalOnly);
       if (!onlyGlobal) labelEl.append(sourceChip(row));
