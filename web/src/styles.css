@@ -983,6 +983,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 @keyframes act-spin { to { transform: rotate(360deg); } }
 /* the compact + model buttons sit at the far right of the hint row, past the keyboard hint */
 .composer .hint-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; }
+/* #290: `display: flex` 会盖过 UA 的 [hidden]，四颗全关时整行要真的让位。 */
+.composer .hint-tools[hidden] { display: none; }
 .composer .hint-tools .btn { padding: 4px 12px; font-size: 12px; border-radius: 8px; flex: 0 0 auto; white-space: nowrap; }
 .composer .hint-tools .release-btn { color: var(--dim); }
 .claim-btn { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }

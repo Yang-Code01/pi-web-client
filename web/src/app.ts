@@ -29,7 +29,7 @@ import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./s
 import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
-import { chromeFrom, isChromeVisible, type ChromeContext, type ChromeState } from "./chrome.ts";
+import { chromeFrom, isChromeVisible, type ChromeContext, type ChromeState, type ChromeId } from "./chrome.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
@@ -352,8 +352,8 @@ export class App {
   /** #30: is the terminal session-lock extension in pi's global extensions? */
   private lockExt: { installed: boolean; path: string } | null = null;
   /** #33 扩展与 MCP: package rows, MCP servers, and the console of the last pi command. */
-  /** D81 扩展 manager state. #288: `chrome` 是 #281 的三态可见性，`showExtButton` 是 `chrome.ext` 的派生值。 */
-  private uiPrefs: { showExtButton: boolean; chrome: ChromeState } = { showExtButton: true, chrome: {} };
+  /** D81 扩展 manager state. #290: 只有 `chrome` 一份真源（扩展开关就是 `chrome.ext`），没有旧布尔。 */
+  private uiPrefs: { chrome: ChromeState } = { chrome: {} };
   private extUpdates = 0;
   private extTab: "installed" | "ext" | "mcp" = "installed";
   private extInv: ExtInventory | null = null;
@@ -370,6 +370,10 @@ export class App {
   private mcpForm: { name: string; option: number; values: Record<string, string>; exposure: string; description: string; local: boolean; item: string } | null = null;
   private extVars: string[] = [];
   private extButton: HTMLButtonElement | null = null;
+  /** #290：下沿那一行与另外三颗，`paintComposerChrome()` 只改它们的 `hidden`，不重建。 */
+  private hintTools: HTMLElement | null = null;
+  private skillButton: HTMLButtonElement | null = null;
+  private attachButton: HTMLButtonElement | null = null;
   private cliRun: { runId: string | null; op: string; out: string; code: number | null | undefined; error?: string } | null = null;
   /**
    * D113: the writes this page started and has not seen finish, keyed by the `reqId` it sent. Each one
@@ -1423,7 +1427,7 @@ export class App {
       }
       case "hello":
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
-        if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false, chrome: chromeFrom(msg.ui.chrome) };
+        if (msg.ui) this.uiPrefs = { chrome: chromeFrom(msg.ui.chrome) };
         // D154：桥上的 build 换了，页面里的 JS 还是旧的 —— 提示刷新，不自动 reload。
         if (typeof msg.buildId === "string") this.checkBuild(msg.buildId);
         // D113: a dropped socket mid-stream would leave the ⟳ spinning forever (the flags gate the
@@ -1937,7 +1941,7 @@ export class App {
         break;
       }
       case "ui":
-        if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false, chrome: chromeFrom(msg.ui.chrome) };
+        if (msg.ui) this.uiPrefs = { chrome: chromeFrom(msg.ui.chrome) };
         // 可见性只认桥的回执：不本地先猜，否则广播与自己的补丁会打架。
         this.paintChrome();
         this.renderChat();
@@ -3512,6 +3516,25 @@ export class App {
   }
 
   /**
+   * #290：下沿那一行的显隐。四颗各自 `hidden`；整行跟着还有没有可见的子节点 —— `release-btn`
+   * （释放 / 让回终端）不归 `chrome` 管，不能跟着一起藏。判断只走 `isChromeVisible`，和顶栏同源。
+   * `renderChat()` 拼完 composer 也会调这里，所以重建后不需要再经过 `paintChrome()`。
+   */
+  private paintComposerChrome(): void {
+    const tools = this.hintTools;
+    if (!tools) return;
+    const ctx = this.chromeCtx();
+    const show = (btn: HTMLButtonElement | null, id: ChromeId): void => {
+      if (btn) btn.hidden = !isChromeVisible(id, this.uiPrefs.chrome, ctx);
+    };
+    show(this.skillButton, "skills");
+    show(this.extButton, "ext");
+    show(this.attachButton, "attach");
+    show(this.modelChip, "model");
+    tools.hidden = !Array.from(tools.children).some((child) => !(child as HTMLElement).hidden);
+  }
+
+  /**
    * Retranslate the bits that are built once and never re-rendered: the topbar's fixed four
    * buttons, the new-session button and the two filter placeholders. `renderTop()` only repaints
    * the session list, `renderSessions()` the chips — neither touches these.
@@ -3546,8 +3569,11 @@ export class App {
       jira.setAttribute("aria-label", tr("Jira"));
     }
     // #288：终端的可见性只在这一处算（纯函数 web/src/chrome.ts）。这一票只接这一颗，
-    // 产物 / 文件管理器与下沿四颗仍是旧逻辑，留给 #289–#292。
+    // 产物 / 文件管理器仍是旧逻辑，留给 #289–#292。
     term.hidden = !isChromeVisible("terminal", this.uiPrefs.chrome, this.chromeCtx());
+    // #290：下沿四颗是在拼 composer 时一次建好的，重画 composer 时不经过这里 —— 它自己也会调
+    // `paintComposerChrome()`，两处共用同一份判断。
+    this.paintComposerChrome();
     newBtn.textContent = tr("开新会话");
     sessFilter.placeholder = tr("过滤名字 / 目录");
     manageBtn.textContent = tr("管理");
@@ -8722,6 +8748,10 @@ export class App {
     this.hintStatus = null;
     this.cwdChip = null;
     this.modelChip = null;
+    this.hintTools = null;
+    this.skillButton = null;
+    this.attachButton = null;
+    this.extButton = null;
     this.textarea = null;
     this.continueBtn = null;
     this.bgBar = null;
@@ -8817,28 +8847,27 @@ export class App {
     this.fillHintStatus();
     hint.append(status);
     const tools = el("div", "hint-tools");
+    this.hintTools = tools;
     const skillBtn = el("button", "btn ghost", tr("技能"));
     skillBtn.dataset.act = "skills";
     skillBtn.title = tr("搜索并插入技能命令（/skill:name）");
     skillBtn.onclick = () => this.openSkillPalette();
+    this.skillButton = skillBtn;
     const pathBtn = el("button", "btn ghost", tr("文件"));
     pathBtn.dataset.act = "attach";
     pathBtn.title = tr("选文件：图片直接附加，其他文件插入完整路径（pi 会自己去读）。截图或资源管理器里复制的文件也可以 {p1}", { p1: PASTE_KEY });
     pathBtn.onclick = () => this.openFilePicker();
+    this.attachButton = pathBtn;
     const chip = el("button", "model-chip");
     chip.onclick = () => this.openModelSheet();
     chip.append(el("span", "chip-model", ""), el("span", "chip-ctx", ""), el("span", "chip-rate", ""), el("span", "chip-level", ""));
     this.modelChip = chip;
-    tools.append(skillBtn);
-    if (this.uiPrefs.showExtButton) {
-      const extBtn = el("button", "btn ghost ext-btn", tr("扩展")) as HTMLButtonElement;
-      extBtn.title = tr("已安装的扩展与 MCP、扩展商店、MCP 商店（可在 pi 设置 → 扩展与 MCP 里隐藏这个按钮）");
-      extBtn.onclick = () => this.openExtManager();
-      this.extButton = extBtn;
-      tools.append(extBtn);
-      this.paintExtButton();
-    } else this.extButton = null;
-    tools.append(pathBtn, chip);
+    const extBtn = el("button", "btn ghost ext-btn", tr("扩展")) as HTMLButtonElement;
+    extBtn.title = tr("已安装的扩展与 MCP、扩展商店、MCP 商店（可在 pi 设置 → 扩展与 MCP 里隐藏这个按钮）");
+    extBtn.onclick = () => this.openExtManager();
+    this.extButton = extBtn;
+    this.paintExtButton();
+    tools.append(skillBtn, extBtn, pathBtn, chip);
     if (s?.owned) {
       // The explanation lives in the tooltip so it no longer costs the composer a whole row.
       const fromWeb = s.origin === "web";
@@ -8851,6 +8880,7 @@ export class App {
     }
     hint.append(tools);
     this.fillModelChip();
+    this.paintComposerChrome();
 
     const extAbove = el("div", "ext-widgets above");
     const extBelow = el("div", "ext-widgets below");
@@ -9889,8 +9919,9 @@ export class App {
     const row = el("label", "ns-adv-flag ext-switch");
     const box = el("input") as HTMLInputElement;
     box.type = "checkbox";
-    box.checked = this.uiPrefs.showExtButton;
-    box.onchange = () => this.act(() => this.socket.send({ type: "ui.set", showExtButton: box.checked }));
+    // #290：勾选状态就是 `chrome.ext`（与下沿那颗同一个判断），改动写的也是同一个字段。
+    box.checked = isChromeVisible("ext", this.uiPrefs.chrome, this.chromeCtx());
+    box.onchange = () => this.act(() => this.socket.send({ type: "ui.set", chrome: { ext: box.checked } }));
     row.append(box, el("span", "", tr("在输入框下方显示「扩展」按钮（点开就是下面这套管理界面）")));
     body.append(row);
     const host = el("div", "ext-host");
