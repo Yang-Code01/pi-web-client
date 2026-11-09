@@ -3,7 +3,7 @@
  * 默认页、页首落在用户消息、工具调用再密也能把开头那条用户消息带回、逐页拼到底不重不漏、
  * 空历史 / 不足一页 / `limit` 超界都有确定结果。
  *
- *   node --experimental-transform-types bridge/tests/history-page-unit.mjs
+ *   node --experimental-strip-types bridge/tests/history-page-unit.mjs
  */
 import assert from "node:assert/strict";
 import { HISTORY_PAGE_SIZE, itemsFrame, pageBefore, tailPage } from "../src/history.ts";

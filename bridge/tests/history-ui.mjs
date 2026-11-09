@@ -245,18 +245,19 @@ const boundary = () =>
 const settleRail = () =>
   page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 /**
- * 等平滑滚动停下：时长跟着距离走（120 轮从底部跳顶要约 1.5s），
- * 拿动画中间的位置判「有没有跳过去」会假红。判据仍是最终落点。
+ * 等视口稳住：连续两次采到的 `scrollTop` 一样、且至少等了 250ms 才算（翻页后输入区会再定一次高、
+ * 跟流时还会被贴回底部，早量的那一瞬不是最终落点）。不要求中间「动过」——没滚动也是稳的。
  */
 const settleScroll = async () => {
+  const start = Date.now();
   let last = null;
-  let moved = false;
-  for (let i = 0; i < 40; i += 1) {
-    await sleep(100);
+  let stable = 0;
+  while (Date.now() - start < 4000) {
+    await sleep(60);
     const top = await page.evaluate(() => Math.round(document.querySelector(".chat-scroll").scrollTop));
-    if (top === last && moved) return top;
-    if (top !== last) moved = true;
+    stable = top === last ? stable + 1 : 0;
     last = top;
+    if (stable >= 2 && Date.now() - start >= 250) return top;
   }
   return last;
 };
@@ -351,7 +352,7 @@ async function clickMore({ settle = true } = {}) {
   if (settle) {
     await page.waitForFunction((n) => document.querySelectorAll(".chat-scroll .msg.user").length > n, had, { timeout: 15000 });
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-    await sleep(320);
+    await settleScroll();
   }
 }
 
@@ -384,7 +385,7 @@ const during = await page.evaluate(() => {
 });
 await page.waitForFunction((n) => document.querySelectorAll(".chat-scroll .msg.user").length > n, PAGE_TURNS, { timeout: 15000 });
 await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-await sleep(320);
+await settleScroll();
 check("加载中按钮是灰的、写「载入中…」", during.disabled && during.text === "载入中…", JSON.stringify(during));
 check(
   "连点两下只发一个 history.before",
