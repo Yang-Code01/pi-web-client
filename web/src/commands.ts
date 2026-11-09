@@ -61,3 +61,17 @@ export function filterCommands(all: CommandItem[], query: string): CommandItem[]
   if (bare.length < 3) return [];
   return all.filter((x) => (x.desc ?? "").toLowerCase().includes(bare)).slice(0, MAX_ITEMS);
 }
+
+/**
+ * 面板命令（#293）：顶栏那几颗按钮可以在「外观与语言」里关掉，关掉之后这三条斜杠命令是找回来的路。
+ *
+ * `id` 就是 `app.ts` 动作表（`runAction` / 快捷键）的动作 id —— 命令不另写一套打开逻辑，
+ * 只把同一个动作叫一遍。`desc` 是中文原文键，和快捷键表里那三行的字一致（`tr` 在 app.ts 里翻）；
+ * `label` 则由 id 拼成 `/<id>`，所以补全里敲 `/term` 就能选中 `/terminal`。
+ */
+export type PanelCommand = { id: "terminal" | "files" | "artifacts"; desc: string };
+export const PANEL_COMMANDS: PanelCommand[] = [
+  { id: "terminal", desc: "打开终端" },
+  { id: "files", desc: "文件管理器" },
+  { id: "artifacts", desc: "产物列表" },
+];

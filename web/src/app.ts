@@ -4,7 +4,7 @@ import "@xterm/xterm/css/xterm.css";
 import { api } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
-import { filterCommands, type CommandItem } from "./commands.ts";
+import { filterCommands, PANEL_COMMANDS, type CommandItem } from "./commands.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
@@ -2645,6 +2645,12 @@ export class App {
       case "logout":
         this.authFilter = arg;
         this.openSettingsSheet("login");
+        return done();
+      // #293: 顶栏按钮可以关掉，这三条是找回来的路 —— 走快捷键同一张动作表，不另写打开逻辑。
+      case "terminal":
+      case "files":
+      case "artifacts":
+        this.runAction(name);
         return done();
       case "reload":
         if (!owned) {
@@ -5658,6 +5664,8 @@ export class App {
    */
   private async openArtifactsSheet(): Promise<void> {
     if (!this.currentId) return;
+    // 已经开着就别重建：会把筛选与滚动位置打回去（`/artifacts` 与那颗按钮都走这里）。
+    if (this.sheet?.querySelector(".art-sheet")) return;
     const sessionId = this.currentId;
     this.closeSheet();
     this.sheetKind = "display";
@@ -13890,6 +13898,7 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["bug", tr("给 pi 开发者提交 bug 报告（/bug 描述）")],
   ["login", tr("登录模型 provider（API key / OAuth）")],
   ["logout", tr("登出某个 provider")],
+  ...PANEL_COMMANDS.map((c): [string, string] => [c.id, tr(c.desc)]),
 ];
 
 type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "runtime" | "changelog" | "whatsnew";
