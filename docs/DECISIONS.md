@@ -3499,3 +3499,27 @@ D
 **验证：** `node bridge/tests/jira-e2e.mjs`（33 项，新增 10 项：root 的 null / 相对路径 400 / 建目录 / 不写进 config.json、隧道 PUT 403 而 GET 200、`need_root` 不拉详情、完整下载的目录结构与清洗 / 同批重名 / 超限 / 评论 media 探测 / 白名单外跳转 / 第二跳 `authorization` 为 null、重下覆盖、隧道 POST 403、`safeFileName` 与 `attachmentRootProblem` 与 `attachmentRedirectAllowed` 的单测）。`node web/tests/jira-unit.mjs`（19 项，新增 `downloadMark`）、`node web/tests/commands-unit.mjs` 通过；`npm --prefix web run typecheck`（含 i18n-check：1831 键 × 3 语）与 `npm run build:web` 都过。
 
 **偏移点（未在真实租户上核实）：** 白名单按工单原文只收 `*.atl-paas.net`；Atlassian Media 的真实主机若是 `api.media.atlassian.com` 之类，跳转会整体 `failed`。实机确认后只改 `attachmentRedirectAllowed` 一处；先把「拒绝未知主机」定下来，比先放行再看发生了什么安全。
+
+## D205 Jira「交给 agent」：提示词在页面拼、附件行由桥端的 downloaded 事实决定、浮层照抄笔记面板（工单 #252）
+
+**问题：** 列表每一行和展开的详情里都要有一颗「交给 agent ▾」，两个出口（预填当前会话 / 新开会话）与笔记面板一致。要定清楚的是：提示词在哪拼、附件路径那一行凭什么出现、浮层是抽共用件还是复制。
+
+**决定：**
+
+1. **提示词是纯函数，在页面端拼。** `web/src/jira-shared.ts` 的 `handoffPrompt(input)` 把工单号 / 标题 / 链接（复用 `browseUrl`）/ 状态 / 优先级 / 类型与固定指令拼成一段文本；`type` 与 `status` 缺省就省略那一段，`priority: null` 写「优先级：未设置」。它**不走 `tr()`**——这是给 agent 的指令，不是界面文案，切英文界面也不该改变指令内容；`web/i18n-check.mjs` 为此加了 `// i18n-ignore-start <理由>` … `// i18n-ignore-end` 行区间（用法记在 `docs/I18N.md`），区间内既不报漏翻也不进词典。代价：改提示词得动代码、且没有多语言版本；换来的是指令稳定、可单测（`node web/tests/jira-unit.mjs` 直接 import，不经 `chat.ts`）。
+
+2. **附件那一行只在确实下载过时出现，事实由桥端给。** 新增只读 `GET /api/jira/issues/:key/downloaded` → `{ dir: string | null, count: number }`：没设根目录、目录不存在、目录里没有普通文件都回 `{ dir: null, count: 0 }`；否则 `dir = <root>/<KEY>`、`count` 只数 `readdirSync(..., { withFileTypes: true })` 里的普通文件（子目录不算）。它不建目录、不拉 Jira、隧道访客也能读。页面点击交接时：详情里刚下载过就复用 `download.dir`，否则问桥，桥问不到按「没下过」处理，不阻断交接。代价：每次交接多一次本地往返（详情刚下载过时省掉），换来的是提示词不会骗 agent「附件在这个目录」——空目录/没下过时宁可不写这一行。
+
+3. **浮层从笔记面板复制一份，不抽共用件。** `web/src/jira.ts` 的 `openHandoffMenu()` 照抄 `notesheet.ts` 的 `handoffMenu()`：同样两颗按钮、同一批 `tr` 键（`预填到当前会话` / `写进输入框，Enter 才发`、`新开一个会话` / `建好后填进那个会话的输入框，不自动发送`），点外面、`Esc`、滚动、改尺寸都关。额外补了两点：上下翻转（下方放不下且上方更宽裕就翻到锚点上方）与夹进窗口边（左右 12px、上下 12px），因为验收要求「展开位置不超出窗口」，而笔记那份只是贴着按钮往下开。`prefill` / `newSessionWith` 抛错或没接上时，在浮层里显示一行中文错误，不静默。代价：两份约五十行浮层代码要同步维护，改交互得改两处；换来笔记面板零风险，Jira 这边的布局与错误态能独立演进（用户明确要求不抽共用件）。
+
+4. **交接完只收浮层，不关 Jira 面板。** 预填只把提示词放进当前输入框（发不发由人按 Enter）；新开会话沿用既有出口——设 `prefillNext` 再开会话，建好后填进输入框，不自动发送。关掉整个 Jira 面板会让用户丢失列表与展开状态，而预填完往往还要看别的工单。代价：面板与输入框同时在场，用户要自己切走；这是「预填」这个动作本来的语义。
+
+**接口形状：** `GET /api/jira/issues/:key/downloaded` → `{ dir: string | null, count: number }`；key 先过与详情相同的形状校验（不匹配 400 `jira_key`），非 GET 405 `bad_method`；隧道 GET 200（只读）。`handoffPrompt(input: { key, summary, siteUrl, status?, priority?: string | null, type?, dir?: string | null })`：`dir` 为空（`null` / 缺省 / 空白）不出现附件行，有值时补一个与目录同风格的结尾分隔符（Windows 根的 `C:\…\<KEY>` 补 `\`，POSIX 补 `/`）。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（36 项，新增 3 项：没设根目录 `{null,0}` 且不拉 Jira、`<root>/<KEY>/` 两个文件加一个子目录 → `{dir, count: 2}`、目录不存在与空目录都是 `{null,0}` 且隧道访客写了一个文件后读到 `{dir, count: 1}`）。`node web/tests/jira-unit.mjs`（23 项，新增 4 项：全文逐字、附件行有/无与结尾分隔符、优先级 `null` 与缺省、空标题只留工单号）。`node web/tests/commands-unit.mjs`（13 项）通过；`npm --prefix web run typecheck`（含 i18n-check：1833 键 × 3 语）与 `npm run build:web` 都过。
+
+**偏移点：**
+
+- 笔记面板的 `handoffMenu()` 实际没有上下翻转（固定开在按钮下方）；本单按验收要求自行加了翻转与窗口内夹取，所以两份浮层代码不完全一样。
+- 附件目录的结尾分隔符跟随目录本身（Windows 上是 `\`），不使用固定的 `/`；这与工单原文的 `<根目录>/<KEY>/` 在 Windows 上不是逐字相同，但避免了 `C:\…\ACME-12/` 这种混搭。
+- 为了让「中文但不翻译」的字面量过门禁，改了 `web/i18n-check.mjs`：新增行区间标记，只跳过区间内的字面量，其余检查逻辑未动。
