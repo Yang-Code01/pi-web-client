@@ -28,7 +28,7 @@ export interface TabModel {
 }
 
 export interface TabRowModel extends TabModel {
-  /** 成员里放不进横条的组（含当前组）：仍按 order 的相对顺序。 */
+  /** 与父接口的差别：这里是成员里装不下的（多一道 `inRow` 过滤），含当前组。 */
   more: string[];
   /** 不在横条里、且没有临时占位的组（inRow=false），按 order 的相对顺序。 */
   offRow: string[];

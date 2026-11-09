@@ -252,6 +252,7 @@ export const en: Dict = {
   "会话 ID": "Session ID",
   "新工作区": "New workspace",
   "这个工作区里还没有会话。": "No sessions in this workspace yet.",
+  "这个工作区里的会话都归档了。": "All sessions in this workspace are archived.",
   "放回工程": "Back to its project",
   "按 cwd 回到「{p1}」": "Returns to “{p1}” by cwd",
   "按 cwd 回到推导出来的组": "Returns to the workspace its cwd implies",

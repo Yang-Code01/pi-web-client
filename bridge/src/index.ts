@@ -1451,8 +1451,9 @@ async function main(): Promise<void> {
       public: (ws as any).publicReq,
       ui: readUiPrefs(),
       notes: listNotes(),
-      // #278：页面据此决定 ＋ 是「挑目录建组」还是退回「空壳组 + 就地改名」（旧桥没有这项）。
-      caps: ["ws.create.dir"],
+      // #278：页面据此决定 ＋ 是「挑目录建组」还是退回「空壳组 + 就地改名」（旧桥没有这项）；
+      // `ws.resolve.dir` = 对话框能问「这个目录折回到哪个组」（子目录 / worktree）。
+      caps: ["ws.create.dir", "ws.resolve.dir"],
     });
     // 先用 1–2 s 的快清单打招呼，带扩展的完整清单十几秒后自己补上（D150）。
     void pushCatalog(ws, { resend: true });
@@ -2748,6 +2749,13 @@ async function main(): Promise<void> {
             if (action === "ws.rename") {
               sessions.workspaces.rename(String(msg.id ?? ""), String(msg.name ?? ""));
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+              return;
+            }
+            if (action === "ws.resolve") {
+              // #278：只读解析「这个目录折回到哪个组」—— 子目录 / worktree 用；不建组、不广播。
+              const dir = typeof msg.dir === "string" ? msg.dir : "";
+              const group = dir ? await sessions.workspaces.resolveDir(dir) : null;
+              send({ type: "ws.resolved", dir, id: group?.id ?? null });
               return;
             }
             if (action === "ws.create") {

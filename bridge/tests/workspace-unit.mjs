@@ -176,7 +176,10 @@ test("手动组：建、改名、只允许删空的", async () => {
 
   ws.move(["s9"], manual.id);
   assert.equal(ws.groupFor("s9", plain), manual.id);
-  assert.equal(ws.drop(manual.id, 1).ok, false, "有会话的组不许删");
+  const refused = ws.drop(manual.id, 1);
+  assert.equal(refused.ok, false, "有会话的组不许删");
+  assert.equal(refused.reason, "这个工作区里还有 1 个会话，先把它们拖回工程或删掉", "与页面 dropBlocker() 逐字一致（带计数）");
+  assert.equal(ws.drop("manual:nope", 0).reason, "这个工作区不在了", "与页面 dropBlocker() 的兜底句一致");
 
   ws.move(["s9"], "");
   assert.equal(ws.drop(manual.id, 0).ok, true);
@@ -486,6 +489,27 @@ test("#278 worktree 目录并回主仓那个组，不新建", async () => {
   assert.equal(wt.created, false);
   assert.equal(wt.group.id, main.group.id, "worktree 和主仓是同一个工作区");
   assert.equal(ws.snapshot().groups.length, 1);
+});
+
+test("#278 只读解析：git 子目录 / worktree 折回已有组，不建组、不写缓存", async () => {
+  const ws = fresh();
+  const main = await ws.createDir(library.root);
+  const sub = path.join(library.root, "web");
+  fs.mkdirSync(sub, { recursive: true });
+  assert.equal((await ws.resolveDir(sub))?.id, main.group.id, "git 子目录折回主仓");
+  assert.equal((await ws.resolveDir(library.trees[0]))?.id, main.group.id, "worktree 折回主仓");
+
+  const before = ws.snapshot();
+  assert.equal(await ws.resolveDir(plain2), null, "没建过的目录不凭空回报命中");
+  assert.deepEqual(ws.snapshot(), before, "只读：不建组、不改 order、不写缓存");
+});
+
+test("#278 只读解析：组删掉后缓存指向它也不再命中", async () => {
+  const ws = fresh();
+  const main = await ws.createDir(plain);
+  assert.equal((await ws.resolveDir(plain))?.id, main.group.id, "目录 → 组（缓存后一次 git 也不跑）");
+  assert.equal(ws.drop(main.group.id, 0).ok, true);
+  assert.equal(await ws.resolveDir(plain), null, "组没了就是没有，不复活");
 });
 
 test("#278 非 git 目录就是它自己；新组追加到 order 末尾", async () => {

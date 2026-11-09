@@ -15,6 +15,7 @@ import {
   dropBlocker,
   dropHint,
   groupAtDir,
+  groupAtResolvedDir,
   hasRowMembership,
   renameIntent,
   wsCreateAction,
@@ -72,6 +73,7 @@ test("改了名字就发洗过的那个", () => {
 test("手动组有会话：删不掉，原因里带上会话数", () => {
   const blocker = dropBlocker(MANUAL, 3);
   assert.ok(blocker && blocker.includes("3"), `原因要说清还有几个会话：${blocker}`);
+  assert.equal(blocker, "这个工作区里还有 3 个会话，先把它们拖回工程或删掉", "与桥 drop() 的拒绝句逐字一致");
 });
 
 test("目录组有会话：删不掉，原因还是「跟着目录走」", () => {
@@ -175,4 +177,35 @@ test("#278 没选目录：不建、按钮也不冒充能建", () => {
   assert.equal(action.dir, "");
   assert.equal(action.create, false);
   assert.equal(action.existing, undefined);
+});
+
+// ---------------------------------------------------------------- #278 桥解析折回目录
+
+// 子目录 / worktree 逐字比 `key` 比不出来，但桥的 `ws.resolve` 会折回工程根。
+
+test("#278 子目录：桥说折回这个组 → 按钮跟着改口，不再「就在这里新建」", () => {
+  const action = wsCreateAction([LIB, MANUAL], "F:/pi-web-client/web", { dir: "F:/pi-web-client/web", id: LIB.id });
+  assert.equal(action.existing?.id, LIB.id);
+  assert.equal(action.label, "带你过去");
+  assert.equal(action.create, false);
+});
+
+test("#278 worktree：桥折回主仓那个组，按钮同样改口", () => {
+  const action = wsCreateAction([LIB], "F:/pi-web-client/.worktrees/a", { dir: "F:/pi-web-client/.worktrees/a", id: LIB.id });
+  assert.equal(action.existing?.id, LIB.id);
+  assert.equal(action.create, false);
+});
+
+test("#278 桥说没有 / 回答的是别的目录：退回本地逐字比较（旧桥行为不变）", () => {
+  const fresh = wsCreateAction([LIB], "F:/work/new", { dir: "F:/work/new", id: null });
+  assert.equal(fresh.existing, undefined);
+  assert.equal(fresh.create, true);
+
+  const stale = wsCreateAction([LIB], "F:/pi-web-client/web", { dir: "F:/work/old", id: "f:/work/old" });
+  assert.equal(stale.existing, undefined, "旧回答不许算到新目录头上");
+  assert.equal(stale.create, true);
+});
+
+test("#278 回答指向快照里没有的组：退回逐字比较，不把按钮留在死路上", () => {
+  assert.equal(groupAtResolvedDir([LIB], "F:/pi-web-client", { dir: "F:/pi-web-client", id: "f:/gone" })?.id, LIB.id);
 });

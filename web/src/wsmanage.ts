@@ -4,7 +4,8 @@ import { tr } from "./i18n/index.ts";
  * #100：工作区管理的纯逻辑 —— 改名输入怎么洗、这条 rename 要不要发、这个组能不能删。
  *
  * 规则两端各有一份（桥是权威、页面要在点之前就把「不能删」说清楚），这里只放**决定**，不放 DOM：
- * 页面对话框 / 探针都从这里取答案，免得「置灰的按钮」和「桥真的拒绝了」说出两套话。
+ * 页面对话框 / 探针都从这里取答案；桥的 `drop()` 拒绝时说的是同一组句子（手动组带会话计数），
+ * 免得「置灰的按钮」和「桥真的拒绝了」说出两套话。
  *
  * 语义（`.scratch/workspace/spec.md` + D126）：
  * - 空名字 = 恢复成目录名；桥的 `rename()` 存空串，显示时由 `buildTree()` 回落到目录名。
@@ -123,6 +124,35 @@ export function groupAtDir(groups: readonly WsGroupLike[], dir: unknown): WsGrou
   return groups.find((g) => !g.manual && Boolean(g.key) && cleanDirPath(g.key).toLowerCase() === want);
 }
 
+/**
+ * #278：桥对「这个目录折回到哪个组」的只读回答 —— 子目录 / worktree 会被折回工程根，
+ * 逐字比 `key` 比不出来。`id: null` = 桥说这个目录不落在已有组里。
+ */
+export interface DirResolution {
+  /** 问的是哪个目录（`cleanDirPath()` 过）。 */
+  dir: string;
+  /** 命中的组 id；null = 没有。 */
+  id: string | null;
+}
+
+/**
+ * #278：先信桥的折回回答（对号入座到当前目录），没有回答 / 组不在快照里就退回逐字比较。
+ * 旧桥不会回答，行为与 `groupAtDir()` 一样。
+ */
+export function groupAtResolvedDir(
+  groups: readonly WsGroupLike[],
+  dir: unknown,
+  resolved?: DirResolution | null,
+): WsGroupLike | undefined {
+  const clean = cleanDirPath(dir);
+  if (resolved && resolved.dir === clean) {
+    if (!resolved.id) return undefined;
+    const hit = groups.find((g) => g.id === resolved.id);
+    if (hit) return hit;
+  }
+  return groupAtDir(groups, clean);
+}
+
 /** #278：新建对话框底部那颗按钮的答案。 */
 export interface WsCreateAction {
   /** 发出去的路径（已归一化）；空串 = 还没选目录。 */
@@ -135,11 +165,12 @@ export interface WsCreateAction {
 
 /**
  * #278：这个目录点下去该干什么 —— 已经在列表里就只带你过去（按钮改口），
- * 否则就在这里新建。判断与桥一致，免得说出两套话。
+ * 否则就在这里新建。判断与桥一致，免得说出两套话。`resolved` = 桥对折回工程根的回答
+ * （子目录 / worktree）；没问过就退回逐字比较。
  */
-export function wsCreateAction(groups: readonly WsGroupLike[], dir: unknown): WsCreateAction {
+export function wsCreateAction(groups: readonly WsGroupLike[], dir: unknown, resolved?: DirResolution | null): WsCreateAction {
   const clean = cleanDirPath(dir);
-  const existing = groupAtDir(groups, clean);
+  const existing = groupAtResolvedDir(groups, clean, resolved);
   if (existing) return { dir: clean, create: false, label: tr("带你过去"), existing };
   return { dir: clean, create: Boolean(clean), label: tr("就在这里新建") };
 }

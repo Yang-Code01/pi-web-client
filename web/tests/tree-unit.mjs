@@ -89,6 +89,17 @@ test("归档是全局分区：不出现在任何工作区里，哪怕它还挂�
   assert.deepEqual(ids(t.archived), ["old"]);
 });
 
+test("#279 组里只剩归档会话：sessions 空、count 不为 0（页面据此不标「空」也不让删）", () => {
+  const t = tree([s("old", LIB.id), s("old2", LIB.id)], { archived: ["old", "old2"] }, { groups: [LIB] });
+  assert.deepEqual(t.groups[0].sessions, [], "归档不进组");
+  assert.equal(t.groups[0].count, 2, "但数的时候算上（桥 drop 也用这个口径）");
+});
+
+test("#279 真的空组 count 是 0（手动组与目录组都算）", () => {
+  const t = tree([], {}, { groups: [LIB, MANUAL] });
+  for (const id of [LIB.id, MANUAL.id]) assert.equal(t.groups.find((g) => g.id === id)?.count, 0, id);
+});
+
 // ---------------------------------------------------------------- 颜色
 
 test("组色按 id 稳定，取自既有调色板", () => {

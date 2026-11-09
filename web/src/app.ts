@@ -45,6 +45,7 @@ import {
   renameIntent,
   wsCreateAction,
   wsNeighborsAfterDrop,
+  type DirResolution,
 } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
@@ -78,6 +79,8 @@ const CONTINUE_TEXT = "继续";
 
 /** #278：桥的 hello `caps` 里表示「ws.create 带 dir 能按目录建组」。旧桥没有这项。 */
 const WS_CREATE_DIR_CAP = "ws.create.dir";
+/** #278：桥的 hello `caps` 里表示「ws.resolve 能把子目录 / worktree 折回已有组」。旧桥没有这项。 */
+const WS_RESOLVE_DIR_CAP = "ws.resolve.dir";
 
 /** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
 type BadgeKind = "ask" | "approve" | "locked" | "run" | "bg" | "done";
@@ -464,6 +467,12 @@ export class App {
   private wsNewBusy = false;
   /** #278：对话框重画（失败提示回来时把按钮恢复可点）；关掉时摘掉。 */
   private wsNewPaint: (() => void) | null = null;
+  /** #278：当前选中的目录（对话框里的 picked），异步回答按它对号入座。 */
+  private wsNewPicked = "";
+  /** #278：桥对当前目录的折回回答；null = 还没问 / 旧桥不会答。 */
+  private wsNewResolve: DirResolution | null = null;
+  /** #278：问桥的防抖计时器 —— 选目录是一路点出来的，别每一下都跑一次 git。 */
+  private wsNewResolveTimer: ReturnType<typeof setTimeout> | null = null;
   /** #123 设置面板的「标签行」那块（名额步进器）；快照回来时只重画这一个小面。 */
   private wsPane: HTMLElement | null = null;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
@@ -2227,6 +2236,15 @@ export class App {
         if (msg.created === false) this.flashToast(tr("这个工作区已经在列表里"), false, 3600);
         break;
       }
+      case "ws.resolved": {
+        // #278：桥把子目录 / worktree 折回工程根后的回答。只认当前还选着的那个目录，旧回答丢掉。
+        if (this.sheetKind !== "wsnew") break;
+        const dir = cleanDirPath(msg.dir);
+        if (dir !== this.wsNewPicked) break;
+        this.wsNewResolve = { dir, id: typeof msg.id === "string" ? msg.id : null };
+        this.wsNewPaint?.();
+        break;
+      }
       case "session.gone": {
         const gone = new Set<string>((msg.ids ?? []) as string[]);
         this.sessions = this.sessions.filter((s) => !gone.has(s.id));
@@ -3660,6 +3678,10 @@ export class App {
     // #278：按目录新建的对话框关掉 = 这一次不建了；还挂着的「请求在飞」与重画钩子一起摘掉。
     this.wsNewBusy = false;
     this.wsNewPaint = null;
+    this.wsNewPicked = "";
+    this.wsNewResolve = null;
+    if (this.wsNewResolveTimer !== null) window.clearTimeout(this.wsNewResolveTimer);
+    this.wsNewResolveTimer = null;
     // D170: 详情弹层关掉就停轮询，别让一个看不见的弹层一直读盘。
     if (this.bgTimer !== null) window.clearInterval(this.bgTimer);
     this.bgTimer = null;
@@ -5041,7 +5063,7 @@ export class App {
     head.tabIndex = 0;
     head.setAttribute("aria-expanded", String(!collapsed));
     head.title = collapsed ? tr("展开这个工作区") : tr("收起这个工作区");
-    head.setAttribute("aria-label", tr("{p1}，{p2} 个会话，{p3}", { p1: group.name, p2: group.sessions.length, p3: collapsed ? tr("已收起") : tr("已展开") }));
+    head.setAttribute("aria-label", tr("{p1}，{p2} 个会话，{p3}", { p1: group.name, p2: group.count, p3: collapsed ? tr("已收起") : tr("已展开") }));
     head.append(el("span", "chev", collapsed ? "▸" : "▾"));
     const dot = el("span", "ws-dot");
     dot.style.background = group.color;
@@ -5085,15 +5107,15 @@ export class App {
     } else {
       head.append(el("span", "label", group.name));
     }
-    // #279：空组在组头标一个「空」，跟下面那句「这个工作区里还没有会话。」并存；有会话时它自己消失。
-    if (!group.sessions.length) head.append(el("span", "ws-empty-badge", tr("空")));
+    // #279：空组在组头标一个「空」，跟下面那句空态并存；有会话（含归档）时它自己消失。
+    if (!group.count) head.append(el("span", "ws-empty-badge", tr("空")));
     if (group.pending) {
       const todo = el("span", "todo", tr("待 {p1}", { p1: group.pending }));
       todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
       head.append(todo);
     }
     // #173：左栏组序就是 `order`，不再需要「为什么它排在前面」的徽记。
-    head.append(el("span", "n", String(group.sessions.length)));
+    head.append(el("span", "n", String(group.count)));
     if (!editing) {
       const more = el("button", "ws-more", "⋯") as HTMLButtonElement;
       more.type = "button";
@@ -5120,7 +5142,9 @@ export class App {
     const cards = el("div", "session-cards");
     for (const s of group.sessions) cards.append(this.sessionCard(s));
     // 手建的空组：显示空态，不显示一个没有内容的组头（后端派生的组不可能为空，过滤态下整组会消失）。
-    if (!group.sessions.length) cards.append(el("div", "empty ws-empty", tr("这个工作区里还没有会话。")));
+    if (!group.sessions.length) {
+      cards.append(el("div", "empty ws-empty", group.count ? tr("这个工作区里的会话都归档了。") : tr("这个工作区里还没有会话。")));
+    }
     sec.append(cards);
     return sec;
   }
@@ -5152,7 +5176,7 @@ export class App {
         : order[0] === group.id
           ? tr("它已经是第一个了")
           : null,
-      dropBlocker: dropBlocker(info, group.sessions.length),
+      dropBlocker: dropBlocker(info, group.count),
       // #276：旧桥没有成员字段 → 整行不出现；新桥点一下等于标签上的 ⊙。
       row:
         rowAware && info
@@ -5498,8 +5522,22 @@ export class App {
     foot.append(note, cancel, primary);
 
     let picked = this.wsNewStartDir();
+    this.wsNewPicked = cleanDirPath(picked);
+    this.wsNewResolve = null;
+    /** 选目录是一路点出来的：防抖后问一次桥；失败 / 旧桥就退回本地逐字比较。 */
+    const askResolve = (): void => {
+      if (!this.bridgeCaps.includes(WS_RESOLVE_DIR_CAP)) return;
+      const dir = cleanDirPath(picked);
+      if (!dir) return;
+      if (this.wsNewResolveTimer !== null) window.clearTimeout(this.wsNewResolveTimer);
+      this.wsNewResolveTimer = window.setTimeout(() => {
+        this.wsNewResolveTimer = null;
+        if (this.sheetKind !== "wsnew") return;
+        this.act(() => this.socket.send({ type: "manage", action: "ws.resolve", dir }));
+      }, 180);
+    };
     const paint = (): void => {
-      const action = wsCreateAction(this.workspaces.groups, picked);
+      const action = wsCreateAction(this.workspaces.groups, picked, this.wsNewResolve);
       if (!action.dir) note.textContent = tr("挑一个目录，建成工作区");
       else if (action.existing) {
         note.textContent = tr("这个目录已经在列表里：{p1} → 会带你过去，不会再建一个", { p1: dirBaseName(picked) });
@@ -5510,7 +5548,7 @@ export class App {
     this.wsNewPaint = paint;
     primary.onclick = () => {
       if (this.wsNewBusy) return;
-      const action = wsCreateAction(this.workspaces.groups, picked);
+      const action = wsCreateAction(this.workspaces.groups, picked, this.wsNewResolve);
       if (!action.dir) return;
       if (action.existing) {
         this.closeSheet();
@@ -5533,10 +5571,14 @@ export class App {
       fallback: true,
       onState: (state: DirPickerState) => {
         picked = state.path;
+        this.wsNewPicked = cleanDirPath(picked);
+        this.wsNewResolve = null;
         this.wsNewPaint?.();
+        askResolve();
       },
     });
     paint();
+    askResolve();
   }
 
   private sessionSection(kind: "archived", title: string, list: SessionState[]): HTMLElement {
@@ -13449,7 +13491,9 @@ export class App {
       row.dataset.ws = group.id;
       const mark = el("span", "pm-ico", icon);
       if (icon === "●") mark.style.color = group.color;
-      row.append(mark, el("span", "pm-text", group.name));
+      const n = el("span", `pm-n${group.count ? "" : " zero"}`, String(group.count));
+      n.title = tr("{p1} 个会话", { p1: group.count });
+      row.append(mark, el("span", "pm-text", group.name), n);
       row.title = group.name;
       row.onclick = (ev) => {
         ev.stopPropagation();

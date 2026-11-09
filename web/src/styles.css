@@ -1155,6 +1155,10 @@ body.ws-tab-dragging .ws-tab:hover:not(.on) { color: var(--dim); background: non
 /* #276：横条外两段（装不下 / 不在横条里）并排；两列都能滚，窄屏也不折成一条长菜单。 */
 .ws-tabs-menu.ws-tabs-board { max-width: min(560px, calc(100vw - 16px)); overflow: hidden; }
 .ws-tray { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr); gap: 2px; padding: 4px; }
+/* #279：托盘每行末尾带该组会话数（归档也算）。行宽固定，名字让位、省略号收尾。 */
+.ws-tray .pm-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-tray .pm-n { flex: none; margin-left: auto; font: 10.5px/1 var(--mono); color: var(--faint); }
+.ws-tray .pm-n.zero { opacity: 0.55; }
 .ws-tray-col { display: flex; flex-direction: column; min-width: 0; max-height: min(420px, calc(100vh - 80px)); overflow-y: auto; }
 .ws-tray-col + .ws-tray-col { border-left: 1px solid var(--line-soft); }
 .ws-tray-head { display: grid; gap: 1px; padding: 4px 8px 6px; }

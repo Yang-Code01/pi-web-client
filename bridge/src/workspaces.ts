@@ -384,6 +384,26 @@ export class Workspaces {
     return { ok: true, group: { ...(this.group(id) ?? group) }, created };
   }
 
+  /**
+   * #278：只读地问一句「这个目录折回工程根之后，命中列表里的哪个组？」—— 子目录 / worktree 也算。
+   * 不建组、不写缓存（`ensure` / `resolve` / `createDir` 才写），只给对话框改主按钮文案用。
+   */
+  async resolveDir(dir: string): Promise<WsGroup | null> {
+    const picked = normalizePath(dir);
+    if (!picked) return null;
+    // `createDir()` 过后同一个目录已经记了折叠结果：先查缓存，省一次 git。
+    const cached = this.state.value().keys[picked.toLowerCase()];
+    let key = cached ? normalizePath(cached) : "";
+    if (!key) {
+      try {
+        key = normalizePath((await this.root(picked)) ?? picked);
+      } catch {
+        key = picked;
+      }
+    }
+    return this.group(groupId(key)) ?? null;
+  }
+
   /** 拖动落点：写 overrides。`wsId` 为空 = 放回工程（删 override，重新跟 cwd 走）。 */
   move(sessionIds: string[], wsId: string): boolean {
     const target = String(wsId ?? "").trim();
@@ -410,13 +430,19 @@ export class Workspaces {
    *
    * 会话数由调用方数（`Sessions.dropWorkspace`）传进来：组里的会话可能来自 override，也可能来自 cwd
    * 派生，只看 `overrides` 会漏掉后者 —— 带着会话删掉一个派生组，下一次 `groupFor` 又把它建回来。
-   * 有会话时仍说原来的那句话（手动组「还有会话」，目录组「跟着目录走」）。
+   * 有会话时仍说原来的那句话（手动组「还有 N 个会话」，目录组「跟着目录走」）——
+   * 手动组那句与页面 `dropBlocker()` 逐字一致（#279 review：别让置灰理由和桥的拒绝说出两套话）。
    */
   drop(id: string, sessions: number): { ok: boolean; reason?: string } {
     const group = this.group(id);
-    if (!group) return { ok: false, reason: "找不到这个工作区" };
+    if (!group) return { ok: false, reason: "这个工作区不在了" };
     if (sessions > 0) {
-      return { ok: false, reason: group.manual ? "这个工作区里还有会话" : "这个工作区跟着目录走，不能删" };
+      return {
+        ok: false,
+        reason: group.manual
+          ? `这个工作区里还有 ${sessions} 个会话，先把它们拖回工程或删掉`
+          : "这个工作区跟着目录走，不能删",
+      };
     }
     this.state.update((d) => {
       d.groups = d.groups.filter((g) => g.id !== id);
