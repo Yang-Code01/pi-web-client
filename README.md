@@ -65,19 +65,38 @@
 ## 要求
 
 - **Node ≥ 22.19**（本机 v24.11.1，LTS 22/24 都可以）。仓库里的 `.nvmrc` 指向 24。
-- **pi 必须先装好**，它不是本项目的 npm 依赖：`npm i -g @earendil-works/pi-coding-agent@1.4.0`。bridge 启动时只负责去磁盘上找它的 `cli.js`，找不到会直接报错并列出所有试过的路径。
+- **pi ≥ 1.5.0**，它不是本项目的 npm 依赖，但 `npm install` 会顺带帮你装（见下面「这个项目需要什么」）；机器上已经装着 ≥ 1.5.0 的就一动不动。bridge 启动时只负责去磁盘上找它的 `cli.js`，找不到会直接报错并列出所有试过的路径。
   - 查找顺序：`PI_BIN` → nvm（`%LOCALAPPDATA%\nvm\v*`，仅 Windows）→ PATH 里的 `pi` / `pi.cmd` / `pi.bat` 启动器 → node 同级的 `node_modules` → `npm root -g` → `%APPDATA%\npm`、`%ProgramData%\npm`（仅 Windows）。
   - 也就是说：**pi 是用 npm 全局装的就能自动找到**（Linux/macOS 走 `npm root -g`）；用 pnpm / bun / 装在项目里，就把 `PI_BIN` 指到 `.../pi-coding-agent/dist/bundle/cli.js`。
 - 可选：cloudflared（Windows `winget install Cloudflare.cloudflared`，macOS `brew install cloudflared`），只有要从公网访问才需要。找它时依次试 `CLOUDFLARED_BIN` → `PATH` → 几个常见安装位置。
 - 部署时 **`bridge/ext/` 要跟着走**：审批门禁是那里的 `approval-gate.ts`（内网通的三个 agent 工具也注册在这个文件里），`bridge/dist/` 里没有它，只拷 `dist/` 会静默失去全部审批拦截与 agent 收发能力。
 
+### 这个项目需要什么
+
+网页有好几块功能不在这个仓库里，而是 pi 的扩展（`pi install` 装进 `~/.pi/agent`，clone 代码拿不到）。
+缺了它们的症状往往只是**静默少一个工具**，所以 `npm install` 会顺手补齐：
+
+| 包 | 版本 | 缺了会怎样 |
+| --- | --- | --- |
+| `pi-subagents` | 钉 `0.86.0` | 设置→子代理、后台卡、子代理工具都没有；网页直接读它的会话目录（`%TEMP%\pi-subagents-*`）与 async JSON 事件，目录布局变了就静默读不到，所以钉住 |
+| `@juicesharp/rpiv-ask-user-question` | 钉 `2.15.0` | 网页上的问卷点不了：`bridge/src/questionnaire.ts` 按它的逐题对话框格式回填答案 |
+| `pi-web-access` | latest | `web_search` / `fetch_content` / `source_check` 这些联网工具没有，诊断与「随手问」只剩本地能力 |
+
+`npm install` 会跑 `scripts/bootstrap.mjs`，按顺序做三件事：找 pi（没有、或低于 1.5.0 就 `npm i -g @earendil-works/pi-coding-agent@latest`）→ 看 `~/.pi/agent/settings.json` 里有没有上面三个包，缺的才 `pi install` → 装 bridge / peer / web 的依赖。
+**已经装着的包不动**：不升级、不降级，哪怕版本比钉的旧（页面上会标一句「比 x 旧，能用」）。
+结果写在状态目录的 `bootstrap.json`，页面上「设置 → 扩展」顶部的「本项目需要」会照着说，缺东西时给一条可复制的命令。
+
+- 只检查、不装：`node scripts/bootstrap.mjs --check`（不齐时退出码 1）。
+- 不碰全局目录：`PI_WEB_NO_AUTOINSTALL=1 node scripts/bootstrap.mjs`，或 `npm install --ignore-scripts`。
+- CI 里（有 `CI` 环境变量）只装子包依赖，不往构建机的全局目录写 pi 与扩展。
+- Windows 上连 npm 都没有时，脚本会提示先 `winget install OpenJS.NodeJS.LTS`，然后重开终端。
+- 不装 `billion-context` 也能跑，只是「设置 → 子代理」最下面的 `acp_delegate` 会灰掉并写明装法。
+
 ## 跑起来
 
 ```bash
-npm --prefix bridge install    # 不要加 --omit=dev：npm start 要靠 devDependencies 里的 tsc 编译
-npm --prefix peer install
-npm --prefix web install
-npm start                      # tsc 编译 bridge + 打包 peer 与 web/dist，再跑 dist/index.js（约 2 秒）
+npm install   # 一条就够：postinstall 跑 scripts/bootstrap.mjs，补 pi / 三个扩展 / 三个子包的依赖
+npm start     # tsc 编译 bridge + 打包 peer 与 web/dist，再跑 dist/index.js（约 2 秒）
 ```
 
 首次启动会打印一次口令（也写在状态目录的 `passphrase.txt`）：

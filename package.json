@@ -7,6 +7,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
+    "postinstall": "node scripts/bootstrap.mjs",
+    "setup": "node scripts/bootstrap.mjs",
     "start": "npm run build && node bridge/dist/index.js",
     "start:nobuild": "node bridge/dist/index.js",
     "build": "node scripts/build.mjs",
@@ -62,7 +64,8 @@
     "test:githist": "node --experimental-transform-types bridge/tests/git-history-unit.mjs",
     "test:githist:ui": "node bridge/tests/git-history-ui.mjs",
     "test:subagents": "node --experimental-transform-types bridge/tests/subagents-unit.mjs && node --experimental-transform-types bridge/tests/subagents-basics-unit.mjs && node --experimental-transform-types bridge/tests/subagents-overrides-unit.mjs && node --experimental-transform-types bridge/tests/subagents-advanced-unit.mjs && node --experimental-transform-types bridge/tests/acpdelegate-unit.mjs",
-    "test:subagents:ui": "node bridge/tests/subagents-overrides-ui.mjs && node bridge/tests/acp-delegate-ui.mjs && node bridge/tests/subagents-advanced-ui.mjs"
+    "test:subagents:ui": "node bridge/tests/subagents-overrides-ui.mjs && node bridge/tests/acp-delegate-ui.mjs && node bridge/tests/subagents-advanced-ui.mjs",
+    "test:deps": "node bridge/tests/deps-unit.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
