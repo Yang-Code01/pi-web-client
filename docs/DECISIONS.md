@@ -3607,7 +3607,7 @@ D
 
 **接口形状**
 
-`GET /api/sys?section=overview|network|ports|services` → 对应的 `SysOverview` / `SysNetwork` / `SysPorts` / `SysServices`；公网时 `public: true`，字段已打码。`POST /api/sys/dns {guid, servers}` → `{ok, before, after, unchanged, saved, dhcp}`；同值回 `unchanged: true` 且不弹 UAC。`POST /api/sys/dns/restore {guid}` → `{ok, dhcp, before, after}`；没有原值回 404 `no_saved_dns`。错误统一 `{error, code}`：`dns_guid` / `dns_servers` / `adapter_not_found` / `uac_denied` / `dns_timeout` / `dns_failed` / `dns_state` / `public_dns` / `dns_busy`。
+`GET /api/sys?section=overview|network|ports|services` → 对应的 `SysOverview` / `SysNetwork` / `SysPorts` / `SysServices`；公网时 `public: true`，字段已打码。`POST /api/sys/dns {guid, servers}` → `{ok, before, after, unchanged, saved, dhcp}`；同值回 `unchanged: true` 且不弹 UAC。`POST /api/sys/dns/restore {guid}` → `{ok, dhcp, before, after}`；没有原值回 404 `no_saved_dns`。错误统一 `{error, code}`：`dns_guid` / `dns_servers` / `adapter_not_found` / `uac_denied` / `uac_timeout` / `no_receipt` / `dns_failed` / `dns_state` / `public_dns` / `dns_busy`。
 
 **验证**
 

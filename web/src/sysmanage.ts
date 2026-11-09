@@ -472,6 +472,19 @@ class SysPanel {
     if (adapter.dhcp) line.append(el("span", "sys-tag", "DHCP"));
     main.append(line);
     main.append(el("span", "sys-adapter__desc", `#${adapter.index} · ${adapter.description}`));
+    main.append(
+      el("span", "sys-adapter__meta", tr("掩码 {p1}", { p1: adapter.mask.length ? adapter.mask.join(", ") : "—" })),
+    );
+    main.append(
+      el(
+        "span",
+        "sys-adapter__meta",
+        tr("网关 {p1} · MAC {p2}", {
+          p1: adapter.gateway.length ? adapter.gateway.join(", ") : "—",
+          p2: adapter.mac || "—",
+        }),
+      ),
+    );
     row.append(main);
     const right = el("span", "sys-adapter__right");
     right.append(el("span", "sys-adapter__value", adapter.ipv4.length ? adapter.ipv4.join(", ") : tr("未连接")));

@@ -451,6 +451,15 @@
   text-overflow: ellipsis;
 }
 
+.sys-adapter__meta {
+  overflow: hidden;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sys-adapter__right {
   display: grid;
   gap: 2px;

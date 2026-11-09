@@ -62,7 +62,7 @@ const done = (code = 0) => {
     /* ignore */
   }
   const bad = code !== 0 || results.some((r) => !r.ok);
-  if (bad) console.error("\nbridge log tail:\n" + bridgeLog.slice(-2000));
+  if (bad) console.error(`\nbridge log tail:\n${bridgeLog.slice(-2000)}`);
   process.exit(bad ? 1 : 0);
 };
 
@@ -103,6 +103,12 @@ check("概况有网卡", (await page.locator(".sys-adapter").count()) > 0, Strin
 await page.getByRole("button", { name: /网络与 DNS/ }).first().click();
 await page.locator(".sys-dns").waitFor({ timeout: 20_000 });
 check("网卡列表", (await page.locator(".sys-net__list .sys-adapter").count()) > 0);
+const adapterText = (await page.locator(".sys-net__list .sys-adapter").first().innerText()).trim();
+check(
+  "网卡显示掩码/网关/MAC",
+  adapterText.includes("掩码") && adapterText.includes("网关") && adapterText.includes("MAC"),
+  adapterText.slice(0, 100),
+);
 check("DNS 预设 >= 6", (await page.locator(".sys-preset").count()) >= 6, String(await page.locator(".sys-preset").count()));
 check("DNS 编辑器有应用按钮", (await page.getByRole("button", { name: "应用 DNS" }).count()) === 1);
 

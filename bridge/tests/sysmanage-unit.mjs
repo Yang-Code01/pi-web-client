@@ -4,7 +4,7 @@
  *   node --experimental-transform-types bridge/tests/sysmanage-unit.mjs
  */
 import assert from "node:assert/strict";
-import { normalizeAdapters, normalizeServices, parseNetstat } from "../src/sysmanage.ts";
+import { normalizeAdapters, normalizeNodeInterfaces, normalizeServices, parseNetstat } from "../src/sysmanage.ts";
 
 // ------------------------------------------------- ① netstat 解析
 
@@ -140,5 +140,30 @@ assert.deepEqual(
   ["Dell Client Management Service", "Microsoft Office Click-to-Run Service", "Mystery", "Task Scheduler"],
   "按显示名排序",
 );
+
+// ------------------------------------------------- ⑤ 非 Windows 网卡
+
+const nodeAdapters = normalizeNodeInterfaces([
+  [
+    "en0",
+    [
+      { address: "192.168.1.5", netmask: "255.255.255.0", family: "IPv4", mac: "aa:bb:cc:dd:ee:ff", internal: false, cidr: "192.168.1.5/24", scopeid: 0 },
+      { address: "fe80::1", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "aa:bb:cc:dd:ee:ff", internal: false, cidr: "fe80::1/64", scopeid: 1 },
+    ],
+  ],
+  [
+    "lo0",
+    [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: true, cidr: "127.0.0.1/8", scopeid: 0 }],
+  ],
+  ["empty", undefined],
+]);
+assert.deepEqual(nodeAdapters.map((a) => a.name), ["en0", "lo0"], "按名称排序，跳过没有地址的接口");
+assert.deepEqual(nodeAdapters[0].ipv4, ["192.168.1.5"], "只收 IPv4");
+assert.deepEqual(nodeAdapters[0].mask, ["255.255.255.0"], "保留掩码");
+assert.equal(nodeAdapters[0].mac, "aa:bb:cc:dd:ee:ff", "保留 MAC");
+assert.equal(nodeAdapters[0].status, "up");
+assert.equal(nodeAdapters[0].dhcp, false, "非 Windows 不猜 DHCP");
+assert.equal(nodeAdapters[1].mac, "", "全零 MAC 不显示");
+assert.equal(nodeAdapters[1].status, "up");
 
 console.log(`sysmanage-unit: ok — ${ports.length} 个端口 / ${adapters.length} 张网卡 / ${services.length} 个服务`);

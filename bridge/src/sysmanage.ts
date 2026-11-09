@@ -396,8 +396,39 @@ export function normalizeAdapters(rawAdapters: RawAdapter[], rawConfigs: RawConf
   });
 }
 
+/**
+ * 非 Windows：Node 能读到的网卡（名称 / IPv4 / 掩码 / MAC）。
+ * 没有逐网卡网关与 DNS 的通用接口，`gateway` / `dns` 留空，DNS 页整页只读。
+ */
+export function normalizeNodeInterfaces(entries: [string, os.NetworkInterfaceInfo[] | undefined][]): SysAdapter[] {
+  const rows: SysAdapter[] = [];
+  let index = 0;
+  for (const [name, addresses] of entries) {
+    if (!addresses?.length) continue;
+    const v4 = addresses.filter((a) => a.family === "IPv4");
+    const mac = addresses.find((a) => a.mac && !/^00:00:00:00:00:00$/i.test(a.mac))?.mac ?? "";
+    rows.push({
+      guid: name,
+      name,
+      description: name,
+      index: index++,
+      status: v4.length ? "up" : "unknown",
+      mac,
+      ipv4: v4.map((a) => a.address),
+      mask: v4.map((a) => a.netmask),
+      gateway: [],
+      dns: [],
+      dhcp: false,
+      default: false,
+    });
+  }
+  return rows.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 async function readNetworkRaw(): Promise<SysAdapter[]> {
-  if (process.platform !== "win32") return [];
+  if (process.platform !== "win32") {
+    return normalizeNodeInterfaces(Object.entries(os.networkInterfaces()));
+  }
   const script =
     `$ads=@(Get-CimInstance Win32_NetworkAdapter | Select-Object InterfaceIndex,NetConnectionID,Description,MACAddress,GUID,NetConnectionStatus)\n` +
     `$cfgs=@(Get-CimInstance Win32_NetworkAdapterConfiguration | Select-Object InterfaceIndex,IPAddress,IPSubnet,DefaultIPGateway,DNSServerSearchOrder,DHCPEnabled,IPConnectionMetric)\n` +
