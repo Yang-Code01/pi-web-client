@@ -69,6 +69,7 @@ import { mcpAddRequest, newer, searchMcp, searchPackages, setIndexListener, type
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
+import { handleJira } from "./jira.ts";
 import { piLatest } from "./piupdate.ts";
 import { isTrustedPreviewPath, openPreview, readAttachableImage, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw } from "./preview.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
@@ -725,6 +726,9 @@ async function main(): Promise<void> {
       if (!url.pathname.startsWith("/api/")) return serveStatic(res, url.pathname); // let the SPA show the login form
       return json(res, 401, { error: "unauthorized" });
     }
+
+    // #248 Jira 面板：单站点、只读、凭据不出桥。路由都在 jira.ts 里，这里只接线。
+    if (await handleJira(req, res, url, { publicReq })) return;
 
     if (url.pathname === "/api/me") {
       return json(res, 200, {
