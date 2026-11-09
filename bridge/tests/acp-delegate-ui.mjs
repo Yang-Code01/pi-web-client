@@ -97,7 +97,7 @@ try {
   await page.locator(".composer-input textarea").press("Enter");
   await page.waitForSelector(".settings-sheet", { timeout: 20000 });
 
-  await page.locator(".settings-tabs .chip", { hasText: "子代理" }).click();
+  await page.locator(".st-nav__item", { hasText: "子代理" }).click();
   await page.waitForSelector(".subagents-sheet", { timeout: 20000 });
   await page.waitForSelector("#subagents-acp .settings-foot", { timeout: 20000 });
 

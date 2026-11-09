@@ -1,0 +1,377 @@
+/*
+ * #283 设置控制台壳（C3 双栏）。只画容器：header / 左栏 nav / 右栏 pane / footer。
+ * 各页正文仍是 app.ts 里原有的 painter 画的，样式也还在 styles.css 的 `.settings-sheet .settings-*`
+ * 那一段 —— 根节点同时带着 `.settings-sheet` 类，就是为了那批后代规则继续命中。
+ * 前缀一律 `.st-`：本机管理是 `.sys-*`，两边不共用类名，免得调一边动另一边。
+ */
+
+*[hidden] {
+  display: none !important;
+}
+
+.st-back {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(4, 6, 9, 0.62);
+  backdrop-filter: blur(2px);
+}
+
+.st-console {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(1080px, 96vw);
+  height: min(840px, 90vh);
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--sans);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+}
+
+/* ---------------------------------------------------------------- header */
+.st-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.st-head__main {
+  min-width: 0;
+}
+
+.st-eyebrow {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.st-title {
+  margin: 3px 0 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 25px;
+  font-weight: 650;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-sub {
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.st-sub:empty {
+  display: none;
+}
+
+.st-sub .mono {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.st-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.st-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  color: var(--dim);
+  font-size: 10.5px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.st-badge.ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: var(--ok-dim);
+}
+
+.st-badge.warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-dim);
+}
+
+.st-head__actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+/* flashSettings() 的落点。老的 `.settings-sheet .settings-note` 是横条，这里是标题下面的一行字。 */
+.st-console .st-head .settings-note {
+  min-height: 0;
+  margin-top: 6px;
+  padding: 0;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* ---------------------------------------------------------------- 左栏 + 右栏 */
+.st-main {
+  display: grid;
+  grid-template-columns: var(--st-nav-w, 214px) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.st-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 0;
+  padding: 12px;
+  overflow: auto;
+  background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
+  border-right: 1px solid var(--line-soft);
+}
+
+.st-nav__group {
+  padding: 12px 11px 4px;
+  color: var(--faint);
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.st-nav__group:first-child {
+  padding-top: 4px;
+}
+
+.st-nav__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 11px;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+
+.st-nav__item:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.st-nav__item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.st-nav__item:disabled:hover {
+  color: var(--dim);
+  background: transparent;
+}
+
+.st-nav__item.on {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.st-nav__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-nav__count {
+  min-width: 18px;
+  padding: 1px 5px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-align: center;
+  background: var(--panel-3);
+  border-radius: 999px;
+}
+
+.st-nav__item.on .st-nav__count {
+  color: var(--accent);
+}
+
+.st-pane {
+  min-width: 0;
+  min-height: 0;
+  padding: 18px 22px 26px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+/* ---------------------------------------------------------------- 页内的分段与作用域条 */
+.st-scopebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.st-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.st-seg__btn {
+  padding: 4px 11px;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 11.5px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.st-seg__btn:hover {
+  color: var(--text);
+}
+
+.st-seg__btn.on {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.st-seg__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.st-seg__btn:disabled:hover {
+  color: var(--dim);
+}
+
+.st-changelog {
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------- footer */
+.st-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  color: var(--faint);
+  font-size: 10.5px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.st-foot__hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-foot__meta {
+  flex: none;
+  font-family: var(--mono);
+  opacity: 0.7;
+}
+
+/* ---------------------------------------------------------------- 窄屏：左栏横过去 */
+@media (max-width: 900px) {
+  .st-back {
+    padding: 10px;
+  }
+
+  .st-console {
+    width: 96vw;
+    height: 94vh;
+  }
+
+  .st-main {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .st-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .st-nav__group,
+  .st-nav__count {
+    display: none;
+  }
+
+  .st-nav__item {
+    width: auto;
+    padding: 7px 11px;
+  }
+
+  .st-nav__item.on {
+    box-shadow: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .st-back {
+    padding: 0;
+  }
+
+  .st-console {
+    width: 100vw;
+    height: 100vh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .st-head {
+    padding: 14px;
+  }
+
+  .st-title {
+    font-size: 20px;
+  }
+
+  .st-badges {
+    display: none;
+  }
+
+  .st-pane {
+    padding: 14px;
+  }
+}
