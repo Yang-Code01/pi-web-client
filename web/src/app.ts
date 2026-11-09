@@ -562,6 +562,10 @@ export class App {
       const path = (ev as CustomEvent<{ path?: string }>).detail?.path;
       if (path) void this.openPreview(path);
     });
+    window.addEventListener("pi-image", (ev) => {
+      const d = (ev as CustomEvent<{ src?: string; alt?: string }>).detail;
+      if (d?.src) this.openImage(d.src, d.alt ?? "");
+    });
     this.startClock();
     this.socket.connect();
     this.routeFromHash();
@@ -812,6 +816,11 @@ export class App {
     // 顶栏这批按钮只构造一次，语言一切换就得靠 paintChrome() 重写文字（renderAll 碰不到它们）。
     this.paintChrome();
     this.chat = new ChatView(scroll);
+    // 图片字节在会话文件里，只有 app 知道当前会话 id；刚发出、还没落盘的 `user:N` 气泡由桥内存兜底。
+    this.chat.setImageSource((itemId, index) => {
+      const id = this.currentId;
+      return id ? `/api/session/image?id=${encodeURIComponent(id)}&item=${encodeURIComponent(itemId)}&n=${index}` : null;
+    });
     this.chat.onBashStop = () => this.act(() => this.socket.send({ type: "abortBash", sessionId: this.currentId }));
     this.chat.onFork = (item, index) => this.forkAt({ entryId: item.id, index, text: item.text });
     // 账本要的是「这次会话里所有失败」，聊天区只画本轮的红卡：两边各收各的，按 toolCallId 去重。
@@ -5950,6 +5959,39 @@ export class App {
     if (!target) return reply(false, "stale");
     const opened = await this.openPreview(target);
     reply(opened, opened ? undefined : "declined");
+  }
+
+  /**
+   * 图放大看：深色底、居中原图，点背景 / × / Esc 关。会话气泡与待发图片共用；不占 `this.sheet`
+   * 的槽位，所以从待发图片弹层里点开时，下面那层还在，关掉大图接着删图。
+   */
+  private openImage(src: string, alt = ""): void {
+    if (!src) return;
+    const back = el("div", "image-view");
+    const img = el("img", "image-view-img") as HTMLImageElement;
+    img.src = src;
+    img.alt = alt || tr("图片");
+    const close = el("button", "image-view-x", "×") as HTMLButtonElement;
+    close.type = "button";
+    close.title = tr("关闭");
+    close.setAttribute("aria-label", tr("关闭"));
+    const shut = (): void => {
+      window.removeEventListener("keydown", onKey, true);
+      back.remove();
+    };
+    const onKey = (ev: KeyboardEvent): void => {
+      if (ev.key !== "Escape") return;
+      ev.stopPropagation();
+      shut();
+    };
+    close.onclick = shut;
+    back.onclick = (ev) => {
+      if (ev.target === back) shut();
+    };
+    window.addEventListener("keydown", onKey, true);
+    back.append(img, close);
+    this.overlay(back);
+    close.focus();
   }
 
   private async openPreview(path: string, sessionId: string | null = this.currentId, replace = false): Promise<boolean> {
@@ -11560,9 +11602,16 @@ export class App {
         const thumb = el("img", "image-thumb") as HTMLImageElement;
         thumb.src = `data:${image.mimeType};base64,${image.data}`;
         thumb.alt = tr("待发图片 {p1}", { p1: index + 1 });
+        // 缩略图整块可点：看清楚再决定发不发，而不是放大缩小猜。
+        const open = el("button", "image-open") as HTMLButtonElement;
+        open.type = "button";
+        open.title = tr("点击查看大图");
+        open.setAttribute("aria-label", tr("查看第 {p1} 张图片", { p1: index + 1 }));
+        open.append(thumb);
+        open.onclick = () => this.openImage(thumb.src, thumb.alt);
         // 序号常驻：删掉一张后重新编号，跟在输入框里写「第 2 张」对得上。
         const no = el("span", "image-no", String(index + 1));
-        tile.append(no);
+        tile.append(no, open);
         const drop = el("button", "image-x", "×") as HTMLButtonElement;
         drop.type = "button";
         drop.title = tr("删掉这张");
@@ -11572,7 +11621,7 @@ export class App {
           this.updateImageBadge();
           paint();
         };
-        tile.append(thumb, drop);
+        tile.append(drop);
         grid.append(tile);
       });
     };

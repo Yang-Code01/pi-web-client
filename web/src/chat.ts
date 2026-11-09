@@ -161,6 +161,11 @@ export class ChatView {
    * 那一枚是推出来的，不来自协议。Map 的插入顺序就是对话顺序。
    */
   private users = new Map<string, { node: HTMLElement; item: UserItem }>();
+  /**
+   * 会话图片的 URL。条目里只有 mimeType，字节在会话文件里，只有 app 知道当前会话 id；返回 null
+   * 就退回旧的一行「附 N 张图片」。
+   */
+  private imageSource: ((itemId: string, index: number) => string | null) | null = null;
   /** 会话在跑一轮？用户气泡上的「处理中…」等于「运行态 + 这条是最后一条用户消息」。 */
   private running = false;
   private draftBuffers = new Map<string, { text: string; thinking: string }>();
@@ -1024,6 +1029,11 @@ export class ChatView {
     return n;
   }
 
+  /** 会话图片的 URL 由 app 注入（只有它知道当前会话 id）；null 时气泡退回旧的一行文字。 */
+  setImageSource(fn: (itemId: string, index: number) => string | null): void {
+    this.imageSource = fn;
+  }
+
   /** 运行态变了：只有最后一枚用户消息会因为「处理中」而变样。 */
   setRunning(running: boolean): void {
     if (this.running === running) return;
@@ -1503,8 +1513,34 @@ export class ChatView {
     // 命令画成药丸、用户自己写的话原样跟在后面，规则在 skill.ts（与桥端的折叠规则成对）。
     fillUserBody(body, item);
     if (item.images?.length) {
-      const tag = el("div", "notice", tr("附 {p1} 张图片", { p1: item.images.length }));
-      body.append(tag);
+      const box = el("div", "msg-images");
+      const fallback = el("div", "notice", tr("附 {p1} 张图片", { p1: item.images.length }));
+      item.images.forEach((_, index) => {
+        const src = this.imageSource?.(item.id, index) ?? null;
+        if (!src) return;
+        const thumb = el("img") as HTMLImageElement;
+        thumb.src = src;
+        thumb.alt = tr("消息里的图片 {p1}", { p1: index + 1 });
+        thumb.loading = "lazy";
+        thumb.decoding = "async";
+        const btn = el("button", "msg-image") as HTMLButtonElement;
+        btn.type = "button";
+        btn.title = tr("点击查看大图");
+        btn.append(thumb);
+        btn.onclick = () => openImage(src, thumb.alt);
+        // 老会话被裁过尾、条目已经不在文件里时，图会读不到：退回一行文字，至少不是一块碎图。
+        thumb.addEventListener("error", () => {
+          btn.remove();
+          if (!box.querySelector(".msg-image")) fallback.hidden = false;
+        });
+        box.append(btn);
+      });
+      if (box.children.length) {
+        fallback.hidden = true;
+        body.append(box, fallback);
+      } else {
+        body.append(fallback);
+      }
     }
     return body;
   }
@@ -1868,6 +1904,11 @@ export function fileIcon(p: string): string {
 
 function openPreview(path: string): void {
   window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path } }));
+}
+
+/** 点开一张会话图片：手风琴交给 app 的灯箱，聊天区只管把事件递出去。 */
+function openImage(src: string, alt: string): void {
+  window.dispatchEvent(new CustomEvent("pi-image", { detail: { src, alt } }));
 }
 
 function toolSummary(item: ToolItem): string {

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import readline from "node:readline";
 
 export interface SessionHeader {
   type: "session";
@@ -332,6 +333,39 @@ export interface LoadResult {
   leafId: string | null;
   size: number;
   mtime: number;
+}
+
+/**
+ * One image part of a `message` entry, by entry id and index among that message's image parts.
+ *
+ * The transcript view only carries image metadata (`mimeType`), so a thumbnail asks for the bytes
+ * here. Streaming, not `loadEntries()`: that one keeps just the tail window (16 MB) while a pasted
+ * image can be several MB and the entry may sit far before it. The line prefilter is cheap — entry
+ * ids are uuids and base64 never contains a `-`.
+ */
+export async function loadEntryImage(file: string, entryId: string, index: number): Promise<{ mimeType: string; data: Buffer } | null> {
+  if (!entryId || !Number.isInteger(index) || index < 0) return null;
+  const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+  try {
+    for await (const line of rl) {
+      if (!line.includes(entryId)) continue;
+      let entry: any;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (entry?.id !== entryId || entry.type !== "message") continue;
+      const parts = Array.isArray(entry.message?.content) ? entry.message.content : [];
+      const images = parts.filter((c: any) => c && c.type === "image");
+      const hit = images[index];
+      if (!hit || typeof hit.data !== "string") return null;
+      return { mimeType: String(hit.mimeType ?? "image/png"), data: Buffer.from(hit.data, "base64") };
+    }
+    return null;
+  } finally {
+    rl.close();
+  }
 }
 
 /**
