@@ -10,6 +10,7 @@ import { tr } from "./i18n/index.ts";
  *
  * #243: 带子画的是**整段会话**，不只是已载入的部分 —— 桥上把全量轮次索引一起送了下来，
  * 未载入的那些以 `ghost` 排在已载入段上面，淡一档占位；翻出一页就吃掉等量的 ghost。
+ * #244: 点 ghost 不再什么都不发生 —— 带子把那一轮的 id 交回去，由 ChatView 自动往回翻页去找。
  */
 
 /** 刻度只有 2px 高、间距 4px，所以一条刻度占 6px 版面。 */
@@ -30,15 +31,20 @@ export interface TurnRail {
   /**
    * #243: 整段历史里**还没载入**的那些轮（更早的），整体替换「淡的那一段」。
    * 它们永远排在已载入段前面；`onPick` / `onHover` / `setCurrent` 的 index 都只数已载入的轮次。
+   * 带 id 是因为翻页会把新轮次插到前面 —— 数字下标一变就指错人（#244）。
    */
-  setGhosts(labels: string[]): void;
+  setGhosts(items: { id: string; label: string }[]): void;
   /** 「你在哪一轮」——滚动时由 ChatView 按视口顶部落下的那一轮喂进来（只看已载入的）。 */
   setCurrent(index: number): void;
+  /** #244: 自动往回翻页期间，淡的那一段轻脉动 —— 「那一带正在动」。 */
+  setBusy(busy: boolean): void;
 }
 
 export interface TurnRailOpts {
   /** 点某一行 / 某根刻度。 */
   onPick(index: number): void;
+  /** #244: 点未载入的那一行 / 那一根刻度 —— 交回它的 id，跳转由 ChatView 自己翻页去找。 */
+  onPickGhost?(id: string): void;
   /** 鼠标在某一行上（null = 离开），用于在正文里预览高亮那条消息。 */
   onHover(index: number | null): void;
   /**
@@ -63,7 +69,7 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
    * 未载入的轮次（刻度带上半段，`ghost`）：从最早的到离已载入段最近的。和 `labels` 拼起来才是
    * 整段会话的顺序；翻出一页就从**尾部**吃掉等量 ghost。
    */
-  let ghosts: string[] = [];
+  let ghosts: { id: string; label: string }[] = [];
   /** 刻度下标 → 整条带子里的轮次下标（ghost + 已载入）。轮次多于版面时按比例抽样，首尾一定保留。 */
   let mapped: number[] = [];
   let ticks: HTMLButtonElement[] = [];
@@ -113,7 +119,7 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
 
   const paint = (): void => {
     // 带子是整段会话（ghost + 已载入）的缩略，不只是已经翻出来的那几页。
-    const all = [...ghosts, ...labels];
+    const all = [...ghosts.map((ghost) => ghost.label), ...labels];
     rail.hidden = all.length < 2;
     frame();
     // 版面高度按正文视口七成算：刻度带上下一起来，最长也就是这个高度。
@@ -131,7 +137,7 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
       const ghost = index < ghosts.length;
       // 已载入轮次的下标（ghost 内部加偏移，ChatView 递进来的坐标不用改）。
       const turn = index - ghosts.length;
-      const label = ghost ? ghosts[index] : labels[turn];
+      const label = ghost ? ghosts[index].label : labels[turn];
       const tick = document.createElement("button");
       tick.type = "button";
       tick.className = ghost ? "turn-tick ghost" : "turn-tick";
@@ -145,8 +151,11 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
           ? tr("第 {p1} 轮（未载入）：{p2}", { p1: index + 1, p2: label })
           : tr("跳到第 {p1} 轮：{p2}", { p1: index + 1, p2: label }),
       );
-      // ghost 没有节点可跳、可闪：#244 的自动翻页做出来之前，点它什么也不发生。
-      if (!ghost) {
+      // ghost 还没载入：点它交给 ChatView 自动往回翻页（#244），没有节点可预览所以不挂 hover。
+      if (ghost) {
+        const id = ghosts[index].id;
+        tick.onclick = () => opts.onPickGhost?.(id);
+      } else {
         tick.onclick = () => opts.onPick(turn);
         tick.onpointerenter = () => {
           hot = turn;
@@ -173,7 +182,10 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
       const dash = document.createElement("span");
       dash.className = "dash";
       row.append(text, dash);
-      if (!ghost) {
+      if (ghost) {
+        const id = ghosts[index].id;
+        row.onclick = () => opts.onPickGhost?.(id);
+      } else {
         row.onclick = () => opts.onPick(turn);
         row.onpointerenter = () => {
           hot = turn;
@@ -233,7 +245,7 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
       schedulePaint();
     },
     setGhosts(items) {
-      ghosts = [...items];
+      ghosts = items.map((item) => ({ ...item }));
       schedulePaint();
     },
     prepend(items) {
@@ -252,6 +264,9 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
       if (next === current) return;
       current = next;
       markCurrent();
+    },
+    setBusy(busy) {
+      rail.classList.toggle("busy", busy);
     },
   };
 }
