@@ -88,6 +88,28 @@ const WS = {
   max: 3,
 };
 const workspace = () => ({ ...WS, groups: WS.groups.map((g) => ({ ...g })), order: [...WS.order] });
+/** #278：hello 的 `caps` —— 默认空（旧桥）；「按目录新建」那一段再把它打开。 */
+const CAPS = [];
+/**
+ * #278：桩目录树（键 = 小写归一化路径）。真桥的 `/api/dirs` 形状照 `bridge/src/dirs.ts`：
+ * `{ path, parent, dirs, files }`，不存在时带 `error`。只铺页面走到的那几层。
+ */
+const DIRS = new Map([
+  ["", { path: "", parent: null, dirs: ["F:/"] }],
+  ["f:/", { path: "F:/", parent: "", dirs: [] }],
+]);
+/** 归一化：反斜杠→斜杠、去掉尾部分隔符；盘符根补回 `/`（`F:` 与 `F:/` 是同一个地方）。 */
+const normDir = (raw) => {
+  let want = String(raw ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (/^[a-zA-Z]:$/.test(want)) want += "/";
+  return want;
+};
+const stubDirs = (raw) => {
+  const want = normDir(raw);
+  const hit = DIRS.get(want.toLowerCase());
+  if (hit) return { ...hit, files: [] };
+  return { path: want, parent: null, dirs: [], files: [], error: "目录不存在", errCode: "ENOENT" };
+};
 /** 桥广播一份完整快照（真桥每次写盘后都这么干）。 */
 const cast = () => {
   for (const client of wss.clients) {
@@ -110,6 +132,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/healthz") return json(200, { ok: true });
   if (url.pathname === "/api/me") return json(200, ME);
   if (url.pathname === "/api/git") return json(200, { repo: null });
+  if (url.pathname === "/api/dirs") return json(200, stubDirs(url.searchParams.get("path") ?? ""));
   const rel = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\//, "");
   const file = path.join(DIST, rel);
   if (!path.resolve(file).startsWith(path.resolve(DIST)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
@@ -161,6 +184,23 @@ server.on("upgrade", (req, socket, head) => {
           }
         }
         // 真桥的 `workspaces.create()`：造一个空名的手动组，追加到 order 末尾。
+        // #278：带 `dir` 时目录就是组的身份 —— 同目录不重建（回 created:false），`f:/broken` 回拒绝。
+        if (msg.action === "ws.create" && typeof msg.dir === "string" && msg.dir) {
+          const dir = normDir(msg.dir);
+          const key = DIRS.get(dir.toLowerCase())?.path ?? dir;
+          const id = key.toLowerCase();
+          if (id === "f:/broken") {
+            ws.send(JSON.stringify({ type: "notice", text: `打不开这个目录：${key}`, level: "warn" }));
+            return;
+          }
+          const existed = WS.groups.some((g) => g.id === id);
+          if (!existed) WS.groups.push({ id, name: "", key, manual: false, inRow: true });
+          WS.order = existed ? [...WS.order] : [...WS.order, id];
+          WS.keys[dir.toLowerCase()] = key;
+          cast();
+          ws.send(JSON.stringify({ type: "ws.created", id, created: !existed }));
+          return;
+        }
         if (msg.action === "ws.create") {
           createdGroups += 1;
           const id = `manual:stub${createdGroups}`;
@@ -182,7 +222,7 @@ server.on("upgrade", (req, socket, head) => {
         }
       }
     });
-    ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS, manage: MANAGE, trash: [], tunnel: TUNNEL, workspace: workspace() }));
+    ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS, manage: MANAGE, trash: [], tunnel: TUNNEL, workspace: workspace(), caps: [...CAPS] }));
   });
 });
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
@@ -1171,6 +1211,180 @@ ok(s.onWs === "f:/proj-05", `当前组没了：落到右邻 proj-05（当前 ${s
 ok((await page.evaluate(() => location.hash)) === "#/s/s-05-1", "落点是右邻那颗会话");
 ok((await page.locator(".session-card").count()) > 0, "页面上有卡片，不是空白页");
 
+await page.close();
+
+// 21) #278 按目录新建：对话框两栏、这里徽标、已有目录「带你过去」、新目录就地建组并切过去
+// 摆回一份干净快照（#279 段删过组、挪过会话），再给每个目录组补一层「空目录」的桩。
+for (const g of GROUPS) g.inRow = true;
+WS.groups = GROUPS.map((g) => ({ ...g }));
+WS.order = GROUPS.map((g) => g.id);
+WS.max = 10;
+byId("s-01-1").ws = "f:/proj-01";
+byId("s-09-1").ws = "f:/proj-09";
+DIRS.set("f:/", { path: "F:/", parent: "", dirs: [...GROUPS.map((g) => g.key.split("/").pop()), "fresh-app", "broken"] });
+for (const g of GROUPS) DIRS.set(g.key.toLowerCase(), { path: g.key, parent: "F:/", dirs: [] });
+DIRS.set("f:/fresh-app", { path: "F:/fresh-app", parent: "F:/", dirs: [] });
+DIRS.set("f:/broken", { path: "F:/broken", parent: "F:/", dirs: [] });
+// 新桥才有的能力：hello 的 `caps` 带上 `ws.create.dir` 之后，＋ 才走「挑目录」。
+CAPS.push("ws.create.dir");
+cast();
+page = await open(null);
+await sleep(700);
+
+const toastText = () => page.evaluate(() => document.querySelector(".fail-toast")?.textContent ?? "");
+/** 对话框此刻的样子：标题、左栏每一行（带不带「这里」）、脚注、按钮、面包屑、目录行。 */
+const wsNewState = () =>
+  page.evaluate(() => {
+    const sheet = document.querySelector(".ws-new-sheet");
+    if (!sheet) return null;
+    return {
+      title: sheet.querySelector(".sheet-title")?.textContent ?? "",
+      side: [...sheet.querySelectorAll(".ws-new-side .ws-new-pick")].map((n) => ({
+        id: n.dataset.ws ?? "",
+        name: n.querySelector(".m-name")?.textContent ?? "",
+        here: n.querySelector(".ws-here")?.textContent ?? "",
+      })),
+      note: sheet.querySelector(".ws-new-note")?.textContent ?? "",
+      primary: sheet.querySelector(".sheet-foot .btn.primary")?.textContent ?? "",
+      disabled: Boolean(sheet.querySelector(".sheet-foot .btn.primary")?.disabled),
+      crumbs: [...sheet.querySelectorAll(".ws-new-dir .crumb")].map((n) => n.textContent ?? ""),
+      rows: [...sheet.querySelectorAll(".ws-new-dir .dir-row")].map((n) => (n.textContent ?? "").replace(/^\u{1F4C1}/u, "").trim()),
+    };
+  });
+
+const createsA = createCalls();
+await page.click(".ws-tabs-add");
+await sleep(600);
+let ns = await wsNewState();
+ok(Boolean(ns), "新桥：点 ＋ 打开「按目录新建」对话框");
+ok(ns?.title === "新建工作区 · 选一个目录", `标题是「${ns?.title}」`);
+ok(ns?.side.length === 9, `左栏列出 9 个已有工作区（${ns?.side.length} 行）`);
+ok(
+  ns?.side[0].here === "这里" && ns.side.slice(1).every((r) => r.here === ""),
+  `当前工作区标「这里」，别的不标（${ns?.side.map((r) => r.here || "-").join(" ")}）`,
+);
+ok(/这个目录已经在列表里：proj-01/.test(ns?.note ?? ""), `起点就是当前目录：说明会带你过去（${ns?.note}）`);
+ok(ns?.primary === "带你过去" && !ns?.disabled, `已有目录时按钮是「${ns?.primary}」`);
+ok((await page.locator(".ws-new-dir .dir-filter").count()) === 1, "右侧是真目录浏览（筛选框在）");
+ok(createCalls() === createsA, "只是打开对话框，没发 ws.create");
+
+// 21a) 左栏点一行 = 目录跳过去；已有目录只「带你过去」，不发创建
+await page.click('.ws-new-side .ws-new-pick[data-ws="f:/proj-02"]');
+await sleep(600);
+ns = await wsNewState();
+ok(ns?.crumbs.includes("proj-02"), `点左栏那一行，目录跳到 proj-02（${ns?.crumbs.join(" / ")}）`);
+ok(/这个目录已经在列表里：proj-02/.test(ns?.note ?? "") && ns?.primary === "带你过去", "还是已有目录：按钮仍「带你过去」");
+await page.click(".ws-new-sheet .sheet-foot .btn.primary");
+await sleep(700);
+s = await barState();
+ok(createCalls() === createsA, `「带你过去」不发 ws.create（${createCalls() - createsA} 条）`);
+ok((await wsNewState()) === null, "对话框关掉");
+ok(/这个工作区已经在列表里/.test(await toastText()), `提示「这个工作区已经在列表里」（${(await toastText()).trim()}）`);
+ok(s.onWs === "f:/proj-02" && (await page.evaluate(() => location.hash)) === "#/s/s-02-1", `切到了 proj-02（${s.onWs}）`);
+
+// 21b) 选新目录：按钮变「就在这里新建」，建完直接切过去、不进改名态
+await page.click(".ws-tabs-add");
+await sleep(600);
+ns = await wsNewState();
+ok(ns?.crumbs.includes("proj-02") && ns?.primary === "带你过去", "再打开：从当前目录 proj-02 起步");
+await page.click('.ws-new-dir .crumb:has-text("F:")');
+await sleep(500);
+ns = await wsNewState();
+ok(ns?.rows.includes("fresh-app") && ns?.rows.includes("broken"), `F:/ 下面看得见 fresh-app 与 broken（${ns?.rows.join(" / ")}）`);
+const createsB = createCalls();
+await page.click('.ws-new-dir .dir-row:has-text("fresh-app")');
+await sleep(500);
+ns = await wsNewState();
+ok(/将新建：fresh-app/.test(ns?.note ?? ""), `新目录：说明将新建（${ns?.note}）`);
+ok(ns?.primary === "就在这里新建" && !ns?.disabled, `按钮变成「${ns?.primary}」`);
+await page.click(".ws-new-sheet .sheet-foot .btn.primary");
+await sleep(900);
+s = await barState();
+const dirMsg = CALLS.filter((c) => c.action === "ws.create").at(-1);
+ok(
+  createCalls() === createsB + 1 && String(dirMsg?.dir ?? "").toLowerCase() === "f:/fresh-app",
+  `发一条带 dir 的 ws.create（${dirMsg?.dir ?? "没有 dir"}）`,
+);
+ok((await wsNewState()) === null, "建完对话框关掉");
+ok(WS.order.at(-1) === "f:/fresh-app", `新组追加到 order 末尾（${WS.order.at(-1)}）`);
+const freshGroup = WS.groups.find((g) => g.id === "f:/fresh-app");
+ok(freshGroup?.inRow === true && freshGroup?.name === "", "新组在横条里、名字留给目录名");
+ok((await page.locator(".ws-rename-input").count()) === 0, "没有进改名态");
+ok(s.onWs === "f:/proj-02", `空组没有会话可开，当前会话不变（${s.onWs}）`);
+const freshRow = await page.evaluate(() => {
+  const sec = document.querySelector('.ws-sec[data-ws="f:/fresh-app"]');
+  if (!sec) return null;
+  const r = sec.getBoundingClientRect();
+  return { top: r.top, bottom: r.bottom, inView: r.top >= 0 && r.bottom <= window.innerHeight };
+});
+ok(freshRow?.inView === true, `左栏把新组那一行滚到眼前（${freshRow ? `${Math.round(freshRow.top)}–${Math.round(freshRow.bottom)}px` : "没找到"}）`);
+ok((await page.locator('.ws-sec[data-ws="f:/fresh-app"] .ws-empty').count()) === 1, "左栏看得见这个空组");
+
+// 21c) 别的客户端刚建过同一个目录：本页快照还旧，按下去桥只回 created:false —— 带 id 切过去，别说又建了一个
+const stale = workspace();
+stale.groups = stale.groups.filter((g) => g.id !== "f:/fresh-app");
+stale.order = stale.order.filter((id) => id !== "f:/fresh-app");
+for (const client of wss.clients) {
+  if (client.readyState === 1) client.send(JSON.stringify({ type: "workspaces", workspace: stale }));
+}
+await sleep(400);
+await page.goto(`${BASE}/#/s/s-09-1`, { waitUntil: "networkidle" });
+await sleep(500);
+await page.click(".ws-tabs-add");
+await sleep(600);
+ns = await wsNewState();
+ok(Boolean(ns) && ns.side.every((r) => r.id !== "f:/fresh-app"), "旧快照：对话框左栏里还没有 fresh-app");
+await page.click('.ws-new-dir .crumb:has-text("F:")');
+await sleep(500);
+const createsC = createCalls();
+await page.click('.ws-new-dir .dir-row:has-text("fresh-app")');
+await sleep(500);
+await page.click(".ws-new-sheet .sheet-foot .btn.primary");
+await sleep(900);
+ok(createCalls() === createsC + 1, "旧快照下会发 ws.create（客户端不知道它已经存在）");
+ok(/这个工作区已经在列表里/.test(await toastText()), "桥回 created:false：提示「这个工作区已经在列表里」");
+ok(WS.groups.filter((g) => g.id === "f:/fresh-app").length === 1, "桥里仍然只有一个 fresh-app");
+ok((await wsNewState()) === null, "created:false 也把对话框关掉");
+
+// 21d) 桥拒绝：只在对话框里说一声 —— 不建半个组、不切走、按钮能重试
+await page.click(".ws-tabs-add");
+await sleep(600);
+await page.click('.ws-new-dir .crumb:has-text("F:")');
+await sleep(500);
+await page.click('.ws-new-dir .dir-row:has-text("broken")');
+await sleep(500);
+ns = await wsNewState();
+ok(/将新建：broken/.test(ns?.note ?? ""), "broken 也能选（页面不替桥做主）");
+const createsD = createCalls();
+const groupsBefore = WS.groups.length;
+await page.click(".ws-new-sheet .sheet-foot .btn.primary");
+await sleep(900);
+ns = await wsNewState();
+ok(Boolean(ns), "失败后对话框还开着（不把人踢走）");
+ok(/打不开这个目录/.test(await toastText()), `提示说清原因（${(await toastText()).trim()}）`);
+ok(createCalls() === createsD + 1 && WS.groups.length === groupsBefore, "发了 ws.create，但桥里没多出半个组");
+ok(WS.groups.every((g) => g.id !== "f:/broken"), "broken 没进快照");
+ok((await barState()).onWs === "f:/proj-09", "当前工作区没变");
+ok(ns?.primary === "就在这里新建" && ns?.disabled === false, "按钮回到可点（可以重试）");
+
+// 21e) 旧桥（hello 里没有 caps）：＋ 退回「空壳组 + 就地改名」，不摆一张点了会坏的对话框
+await page.click(".ws-new-sheet .sheet-foot .btn.ghost");
+await sleep(300);
+ok((await wsNewState()) === null, "取消关掉对话框");
+CAPS.length = 0;
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(600);
+const createsE = createCalls();
+await page.click(".ws-tabs-add");
+await sleep(800);
+ok((await wsNewState()) === null, "旧桥：点 ＋ 不打开目录对话框");
+const oldMsg = CALLS.filter((c) => c.action === "ws.create").at(-1);
+ok(createCalls() === createsE + 1 && oldMsg?.name === "" && oldMsg?.dir === undefined, "旧桥：还是发空名 ws.create（没有 dir）");
+a = await addState();
+ok(a.editing && a.placeholder === "新工作区", "旧桥：新组照样就地改名");
+await page.keyboard.press("Escape");
+await sleep(300);
 await page.close();
 
 await browser.close();

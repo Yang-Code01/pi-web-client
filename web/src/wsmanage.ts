@@ -92,3 +92,54 @@ export function dropHint(group: WsGroupLike): string {
     ? tr("只删这个空组，组里的东西一概不动")
     : tr("只把这个目录移出列表，目录里的文件一概不动");
 }
+
+// ---------------------------------------------------------------- #278 按目录建组
+
+/**
+ * #278：路径归一化，与桥端 `normalizePath()` 同一套 —— 反斜杠转正斜杠、折叠重复斜杠、去尾斜杠、
+ * 盘符根保留 `F:/`。页面只用它比对「是不是同一个目录」，权威判断仍在桥。
+ */
+export function cleanDirPath(raw: unknown): string {
+  let s = String(raw ?? "").trim().replace(/\\/g, "/");
+  if (!s) return "";
+  const unc = s.startsWith("//");
+  s = s.replace(/\/{2,}/g, "/");
+  if (unc) s = `/${s}`;
+  s = s.replace(/\/+$/, "");
+  if (!s) return "/";
+  return /^[a-zA-Z]:$/.test(s) ? `${s}/` : s;
+}
+
+/** #278：目录名（`F:/work/app/` → `app`），空路径给空串。新组名字就取这个（显示层自己回落）。 */
+export function dirBaseName(raw: unknown): string {
+  const parts = cleanDirPath(raw).split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? "";
+}
+
+/** #278：这个目录已经在列表里了吗 —— 组身份是 `key`，忽略大小写 / 正反斜杠 / 尾斜杠后比较。 */
+export function groupAtDir(groups: readonly WsGroupLike[], dir: unknown): WsGroupLike | undefined {
+  const want = cleanDirPath(dir).toLowerCase();
+  if (!want) return undefined;
+  return groups.find((g) => !g.manual && Boolean(g.key) && cleanDirPath(g.key).toLowerCase() === want);
+}
+
+/** #278：新建对话框底部那颗按钮的答案。 */
+export interface WsCreateAction {
+  /** 发出去的路径（已归一化）；空串 = 还没选目录。 */
+  dir: string;
+  /** false = 不发送创建（已在列表里 / 没选目录）。 */
+  create: boolean;
+  label: string;
+  existing?: WsGroupLike;
+}
+
+/**
+ * #278：这个目录点下去该干什么 —— 已经在列表里就只带你过去（按钮改口），
+ * 否则就在这里新建。判断与桥一致，免得说出两套话。
+ */
+export function wsCreateAction(groups: readonly WsGroupLike[], dir: unknown): WsCreateAction {
+  const clean = cleanDirPath(dir);
+  const existing = groupAtDir(groups, clean);
+  if (existing) return { dir: clean, create: false, label: tr("带你过去"), existing };
+  return { dir: clean, create: Boolean(clean), label: tr("就在这里新建") };
+}

@@ -8,7 +8,18 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanGroupName, dropBlocker, dropHint, hasRowMembership, renameIntent, wsNeighborsAfterDrop } from "../src/wsmanage.ts";
+import {
+  cleanDirPath,
+  cleanGroupName,
+  dirBaseName,
+  dropBlocker,
+  dropHint,
+  groupAtDir,
+  hasRowMembership,
+  renameIntent,
+  wsCreateAction,
+  wsNeighborsAfterDrop,
+} from "../src/wsmanage.ts";
 
 const LIB = { id: "f:/pi-web-client", name: "", key: "F:/pi-web-client", manual: false };
 const MANUAL = { id: "manual:abc", name: "客户 A", key: "", manual: true };
@@ -113,4 +124,55 @@ test("#276 旧桥的快照没有 inRow 字段：整份按「都在横条里」�
 
 test("#276 空快照没有可判断的组：不当作支持", () => {
   assert.equal(hasRowMembership([]), false);
+});
+
+// ---------------------------------------------------------------- #278 按目录建组
+
+test("#278 路径归一化与桥同一套：反斜杠 / 重复斜杠 / 尾斜杠 / 盘符根", () => {
+  assert.equal(cleanDirPath("F:\\work\\app\\"), "F:/work/app");
+  assert.equal(cleanDirPath("F://work///app"), "F:/work/app");
+  assert.equal(cleanDirPath("  F:/work/app/  "), "F:/work/app");
+  assert.equal(cleanDirPath("F:\\"), "F:/", "盘符根保留斜杠");
+  assert.equal(cleanDirPath(""), "");
+  assert.equal(cleanDirPath(null), "");
+});
+
+test("#278 目录名取最后一段，空路径给空串", () => {
+  assert.equal(dirBaseName("F:/work/app/"), "app");
+  assert.equal(dirBaseName("F:\\work\\app"), "app");
+  assert.equal(dirBaseName("/srv/repo"), "repo");
+  assert.equal(dirBaseName(""), "");
+});
+
+test("#278 找已在列表里的组：忽略大小写、正反斜杠、尾斜杠", () => {
+  const groups = [LIB, MANUAL, { id: "f:/work/app", name: "", key: "F:/work/app", manual: false }];
+  assert.equal(groupAtDir(groups, "f:/PI-WEB-CLIENT")?.id, LIB.id);
+  assert.equal(groupAtDir(groups, "f:\\pi-web-client\\")?.id, LIB.id);
+  assert.equal(groupAtDir(groups, "F:/work/app")?.id, "f:/work/app");
+  assert.equal(groupAtDir(groups, "F:/work/other"), undefined);
+  assert.equal(groupAtDir([MANUAL], ""), undefined, "手动组没有目录，不能被「空目录」撞上");
+});
+
+test("#278 已经在列表里 → 按钮说「带你过去」，不会建第二个", () => {
+  const groups = [LIB, MANUAL];
+  const action = wsCreateAction(groups, "f:/PI-WEB-CLIENT/");
+  assert.equal(action.dir, "f:/PI-WEB-CLIENT", "发出去的是归一化后的路径");
+  assert.equal(action.existing?.id, LIB.id);
+  assert.equal(action.label, "带你过去");
+  assert.equal(action.create, false, "已有目录不发送创建");
+});
+
+test("#278 新目录 → 按钮说「就在这里新建」，发送归一化后的路径", () => {
+  const action = wsCreateAction([LIB, MANUAL], "F:\\work\\new\\");
+  assert.equal(action.dir, "F:/work/new");
+  assert.equal(action.existing, undefined);
+  assert.equal(action.label, "就在这里新建");
+  assert.equal(action.create, true);
+});
+
+test("#278 没选目录：不建、按钮也不冒充能建", () => {
+  const action = wsCreateAction([LIB], "   ");
+  assert.equal(action.dir, "");
+  assert.equal(action.create, false);
+  assert.equal(action.existing, undefined);
 });

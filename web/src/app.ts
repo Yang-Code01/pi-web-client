@@ -35,7 +35,17 @@ import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { stickMenu } from "./menuplace.ts";
 import { newerTunnel } from "./tunnel-snapshot.ts";
-import { WS_NAME_MAX, dropBlocker, dropHint, hasRowMembership, renameIntent, wsNeighborsAfterDrop } from "./wsmanage.ts";
+import {
+  WS_NAME_MAX,
+  cleanDirPath,
+  dirBaseName,
+  dropBlocker,
+  dropHint,
+  hasRowMembership,
+  renameIntent,
+  wsCreateAction,
+  wsNeighborsAfterDrop,
+} from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
@@ -65,6 +75,9 @@ const CONTINUE_GUARD_MS = 1500;
  * （写成模块级常量也是告诉 `i18n-check`：这不是漏翻的界面文案。）
  */
 const CONTINUE_TEXT = "继续";
+
+/** #278：桥的 hello `caps` 里表示「ws.create 带 dir 能按目录建组」。旧桥没有这项。 */
+const WS_CREATE_DIR_CAP = "ws.create.dir";
 
 /** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
 type BadgeKind = "ask" | "approve" | "locked" | "run" | "bg" | "done";
@@ -280,7 +293,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | "wsnew" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   /** 新建文件夹 / 新建文件共用一个等待表：两条结果的形状一样（`{ path }` / `{ error }`，D167）。 */
@@ -436,6 +449,12 @@ export class App {
   private wsCreateFromTabs = false;
   /** #175：刚从横条 ＋ 建出来的组，下一次画横条时核一眼它在不在 ＋N 里（画完清掉）。 */
   private wsNewNoteId: string | null = null;
+  /** #278：桥在 hello 里声明的能力。没有 `ws.create.dir` 的旧桥，＋ 退回「空壳组 + 就地改名」。 */
+  private bridgeCaps: string[] = [];
+  /** #278：按目录新建的请求在飞 —— 按钮先别让人连点。 */
+  private wsNewBusy = false;
+  /** #278：对话框重画（失败提示回来时把按钮恢复可点）；关掉时摘掉。 */
+  private wsNewPaint: (() => void) | null = null;
   /** #123 设置面板的「标签行」那块（名额步进器）；快照回来时只重画这一个小面。 */
   private wsPane: HTMLElement | null = null;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
@@ -729,7 +748,7 @@ export class App {
     wsTabsAdd.textContent = tr("＋");
     wsTabsAdd.title = tr("新建工作区");
     wsTabsAdd.setAttribute("aria-label", tr("新建工作区"));
-    wsTabsAdd.onclick = () => this.createWsFromTabs();
+    wsTabsAdd.onclick = () => this.openWsCreate();
     wsTabsRow.append(wsTabs, wsTabsAdd, wsTabsMore);
     wsTabsRow.hidden = true;
     const sessionRow = el("div", "ws-session-row");
@@ -1421,6 +1440,8 @@ export class App {
       }
       case "hello":
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
+        // #278：旧桥不带 caps —— 缺这一项就当它不会按目录建组。
+        this.bridgeCaps = Array.isArray(msg.caps) ? (msg.caps as unknown[]).filter((c): c is string => typeof c === "string") : [];
         if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
         // D154：桥上的 build 换了，页面里的 JS 还是旧的 —— 提示刷新，不自动 reload。
         if (typeof msg.buildId === "string") this.checkBuild(msg.buildId);
@@ -2185,6 +2206,16 @@ export class App {
         if (this.sheetKind === "display") this.paintWsTabsPane();
         break;
       }
+      case "ws.created": {
+        // #278：按目录建组的回执（快照已经先到）。建没建成都是同一组，直接切过去；
+        // `created:false` = 这个目录原来就在列表里 —— 说一声，不让人以为又建了一个。
+        this.wsNewBusy = false;
+        if (this.sheetKind === "wsnew") this.closeSheet();
+        const id = String(msg.id ?? "");
+        if (id) this.switchToWsGroup(id);
+        if (msg.created === false) this.flashToast(tr("这个工作区已经在列表里"), false, 3600);
+        break;
+      }
       case "session.gone": {
         const gone = new Set<string>((msg.ids ?? []) as string[]);
         this.sessions = this.sessions.filter((s) => !gone.has(s.id));
@@ -2268,6 +2299,14 @@ export class App {
           break;
         }
         if (this.claiming && msg.level === "error" && (!msg.sessionId || msg.sessionId === this.claiming)) this.endClaim();
+        // #278：按目录建组失败（目录读不了 / 桥拒绝）—— 请求正在飞、对话框还开着就只在那里说一声，
+        // 不关它、不切走；别的 notice 照旧进聊天流。
+        if (this.sheetKind === "wsnew" && this.wsNewBusy && !msg.sessionId) {
+          this.wsNewBusy = false;
+          this.wsNewPaint?.();
+          this.flashToast(String(msg.text ?? ""), true, 6000);
+          break;
+        }
         // D110：`code` 存在时按语言渲染，否则显示 bridge 给的原句（多数是 pi 产出的文本）。
         if (!msg.sessionId || msg.sessionId === this.currentId) this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: msg.code ? errText(msg) : msg.text, level: msg.level ?? "info" });
         break;
@@ -3607,6 +3646,9 @@ export class App {
     this.mgrRefresh = null;
     this.imageSheetPaint = null;
     this.wsPane = null;
+    // #278：按目录新建的对话框关掉 = 这一次不建了；还挂着的「请求在飞」与重画钩子一起摘掉。
+    this.wsNewBusy = false;
+    this.wsNewPaint = null;
     // D170: 详情弹层关掉就停轮询，别让一个看不见的弹层一直读盘。
     if (this.bgTimer !== null) window.clearInterval(this.bgTimer);
     this.bgTimer = null;
@@ -4963,10 +5005,12 @@ export class App {
     btn.type = "button";
     btn.dataset.act = "ws-create";
     btn.textContent = tr("＋ 新建工作区");
-    btn.title = tr("先建一个空组，再把会话拖进去");
+    btn.title = this.bridgeCaps.includes(WS_CREATE_DIR_CAP)
+      ? tr("挑一个目录，建成工作区")
+      : tr("先建一个空组，再把会话拖进去");
     btn.onclick = (ev) => {
       ev.stopPropagation();
-      this.createWs();
+      this.openWsCreate();
     };
     row.append(btn);
     return row;
@@ -5226,6 +5270,130 @@ export class App {
     if (this.collapsed.sessions) this.togglePane("sessions");
     this.wsCreateFromTabs = true;
     this.createWs();
+  }
+
+  /**
+   * #278：＋ / 「新建工作区」的入口 —— 新桥先挑目录（目录就是组的身份，同目录不重建）；
+   * 旧桥没有 `ws.create.dir`，原样退回「空壳组 + 就地改名」，绝不摆一张点了会坏的对话框。
+   */
+  private openWsCreate(): void {
+    if (!this.bridgeCaps.includes(WS_CREATE_DIR_CAP)) {
+      this.createWsFromTabs();
+      return;
+    }
+    this.openWsNewSheet();
+  }
+
+  /** #278：对话框从哪儿开始浏览 —— 当前工作区的目录，其次当前会话的 cwd。 */
+  private wsNewStartDir(): string {
+    const id = this.currentWsId();
+    const group = id ? this.workspaces.groups.find((g) => g.id === id) : undefined;
+    if (group && !group.manual && group.key) return cleanDirPath(group.key);
+    return cleanDirPath(this.session?.cwd ?? "");
+  }
+
+  /** #278：建完 / 「带你过去」都走这里 —— 切到那一组；空组没有会话可开，就把左栏滚到它那一行。 */
+  private switchToWsGroup(id: string): void {
+    const group = buildTree(this.sessions, this.manage, this.workspaces, "").groups.find((g) => g.id === id);
+    if (!group) return;
+    this.gotoGroup(group);
+    if (group.sessions.length) return;
+    const row = Array.from(this.els.sessList.querySelectorAll<HTMLElement>(".ws-sec")).find((node) => node.dataset.ws === id);
+    row?.scrollIntoView({ block: "nearest" });
+  }
+
+  /**
+   * #278 按目录新建工作区（与 #276 横条同一套组）：左边=已经在列表里（当前那个标「这里」），
+   * 右边=真目录浏览（`mountDirPicker`，不是第二套目录实现）。选到已有目录 → 按钮变「带你过去」，不发创建。
+   */
+  private openWsNewSheet(): void {
+    if (this.sheetKind === "wsnew") return;
+    this.closeSheet();
+    this.sheetKind = "wsnew";
+    const back = el("div", "sheet-back center");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet ws-new-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("新建工作区 · 选一个目录")));
+    const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
+    close.type = "button";
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+
+    const body = el("div", "ws-new-body");
+    const side = el("div", "ws-new-side");
+    side.append(el("div", "ws-new-side-title", tr("已经在列表里")));
+    const here = this.currentWsId();
+    const groups = buildTree(this.sessions, this.manage, this.workspaces, "").groups.filter((group) => !group.manual);
+    let picker: DirPicker | null = null;
+    for (const group of groups) {
+      const row = el("button", "model-row ws-new-pick") as HTMLButtonElement;
+      row.type = "button";
+      row.dataset.ws = group.id;
+      row.title = group.key;
+      const dot = el("span", "ws-dot");
+      dot.style.background = group.color;
+      row.append(dot, el("span", "m-name", group.name));
+      if (group.id === here) row.append(el("span", "ws-here", tr("这里")));
+      row.onclick = () => void picker?.go(group.key);
+      side.append(row);
+    }
+    if (!groups.length) side.append(el("div", "empty", tr("还没有按目录分的工作区")));
+
+    const dirHost = el("div", "ws-new-dir");
+    body.append(side, dirHost);
+
+    const foot = el("div", "sheet-foot");
+    const note = el("div", "ws-new-note");
+    const cancel = el("button", "btn ghost", tr("取消")) as HTMLButtonElement;
+    cancel.type = "button";
+    cancel.onclick = () => this.closeSheet();
+    const primary = el("button", "btn primary", tr("就在这里新建")) as HTMLButtonElement;
+    primary.type = "button";
+    foot.append(note, cancel, primary);
+
+    let picked = this.wsNewStartDir();
+    const paint = (): void => {
+      const action = wsCreateAction(this.workspaces.groups, picked);
+      if (!action.dir) note.textContent = tr("挑一个目录，建成工作区");
+      else if (action.existing) {
+        note.textContent = tr("这个目录已经在列表里：{p1} → 会带你过去，不会再建一个", { p1: dirBaseName(picked) });
+      } else note.textContent = tr("将新建：{p1} · 名字 = 目录名", { p1: dirBaseName(picked) });
+      primary.textContent = action.label;
+      primary.disabled = this.wsNewBusy || !action.dir;
+    };
+    this.wsNewPaint = paint;
+    primary.onclick = () => {
+      if (this.wsNewBusy) return;
+      const action = wsCreateAction(this.workspaces.groups, picked);
+      if (!action.dir) return;
+      if (action.existing) {
+        this.closeSheet();
+        this.switchToWsGroup(action.existing.id);
+        this.flashToast(tr("这个工作区已经在列表里"), false, 3600);
+        return;
+      }
+      this.wsNewBusy = true;
+      paint();
+      this.act(() => this.socket.send({ type: "manage", action: "ws.create", dir: action.dir }));
+    };
+
+    sheet.append(head, body, foot);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    picker = mountDirPicker(dirHost, {
+      start: picked,
+      filter: true,
+      fallback: true,
+      onState: (state: DirPickerState) => {
+        picked = state.path;
+        this.wsNewPaint?.();
+      },
+    });
+    paint();
   }
 
   private sessionSection(kind: "archived", title: string, list: SessionState[]): HTMLElement {
