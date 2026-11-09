@@ -994,7 +994,7 @@ export class Session extends EventEmitter {
       const prefix = before.length <= this.items.length && before.every((it, i) => it.id === this.items[i].id);
       if (!prefix) {
         // #221: 分支切换换掉的是整条对话 —— 与首帧同一个规矩，只推末尾一页 + `history`。
-        this.emitWs({ type: "items", sessionId: this.state.id, ...this.tailFrame() });
+        this.emitWs({ type: "items", sessionId: this.state.id, ...this.frame() });
       } else {
         // Same ids can still carry new content: a tool card gets its result from a later line.
         for (let i = 0; i < before.length; i++) {
@@ -1190,7 +1190,7 @@ export class Session extends EventEmitter {
     // A resumed session starts with the transcript pi already wrote to disk.
     if (opts.resume) this.loadFromFile();
     // #221: 唤醒续接同样只推末尾一页，不然休眠一个大会话再叫醒，页面又要等整段。
-    this.emitWs({ type: "items", sessionId: id, ...this.tailFrame() });
+    this.emitWs({ type: "items", sessionId: id, ...this.frame() });
     void this.refreshStats();
   }
 
@@ -2503,15 +2503,16 @@ export class Session extends EventEmitter {
    * 随手问例外：它没有「载入更早」，整段下发（`itemsFrame`）。
    */
   pagedSnapshot(): SessionSnapshot & { history: SessionHistory } {
-    return { ...this.snapshot(), ...this.tailFrame() };
+    return { ...this.snapshot(), ...this.frame() };
   }
-
   /**
-   * 三处整页帧（分支切换 / 唤醒续接 / 快照）共用的正文：普通会话是末尾一页，随手问整段。
-   * 随手问若也切页，累积超过一页后前面的话会在下一次唤醒时静默消失 —— 界面上没有入口能取回来。
+   * 一帧整页历史的正文（`session` / `items` 帧共用的那两项）：默认末尾一页，`full` 要整段。
+   * 分页只是隧道上的传输优化（D215），所以「这一帧要哪种形状」由调用方按**连接**决定；
+   * 随手问永远整段 —— 它没有「载入更早」，切了页前面的话会在下一次唤醒时静默消失。
+   * 三处整页帧（分支切换 / 唤醒续接 / 快照）与桥的 `frameFor` 都从这里取，别各拼一份。
    */
-  private tailFrame(): { items: Item[]; history: SessionHistory } {
-    return itemsFrame(this.items, { full: Boolean(this.state.scratch) });
+  frame(opts: { full?: boolean } = {}): { items: Item[]; history: SessionHistory } {
+    return itemsFrame(this.items, { full: Boolean(opts.full) || Boolean(this.state.scratch) });
   }
 
   idleFor(): number {

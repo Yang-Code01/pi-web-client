@@ -10,6 +10,9 @@
  *   D. 本机在任何一帧上都不会看到 `hasMore: true`（界面因此不会长出「载入更早」）；
  *   E. 隧道的 `history.before` 照旧按游标取上一页。
  *
+ * `claim` / `reload` 不在这里试：两者都从 `openLive` 拉起 pi，与这条线无头用例的「不起进程」相冲。
+ * 它们的帧由 subscribe 共用的 `sessionFrameOf` + `frameFor` 成形（见 D215 验证）。
+ *
  * 只用 Node 的 ws 客户端，不起浏览器；端口默认 7891（7888 continue-ui、7889 attach-picker、
  * 7890 history-ui 已占），`PAGING_SCOPE_PORT` 可改，不碰 7864。
  *
