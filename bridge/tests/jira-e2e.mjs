@@ -810,6 +810,49 @@ test("POST download：隧道访客 403 tunnel_readonly，不碰磁盘", async ()
   assert.ok(fs.existsSync(path.join(state, "jira", "attachments.json")));
 });
 
+test("GET downloaded：没设根目录就说没下过，也不去拉 Jira", async () => {
+  freshState();
+  const out = await call("GET", "/api/jira/issues/ACME-12/downloaded");
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.json, { dir: null, count: 0 });
+  assert.equal(hits.issue, 0);
+});
+
+test("GET downloaded：只数 <root>/<KEY>/ 里的普通文件，key 大小写都认", async () => {
+  await connect();
+  const root = path.join(tmp, "attach-root-downloaded");
+  await call("PUT", "/api/jira/attachments/root", { root });
+  const dir = path.join(root, "ACME-12");
+  fs.mkdirSync(path.join(dir, "nested"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "a.txt"), "a");
+  fs.writeFileSync(path.join(dir, "b.png"), "b");
+
+  const out = await call("GET", "/api/jira/issues/acme-12/downloaded");
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.json, { dir, count: 2 });
+  assert.equal(hits.issue, 0, "只读目录，不拉详情");
+});
+
+test("GET downloaded：目录不存在 / 为空都说没下过，隧道访客也能读", async () => {
+  await connect();
+  const root = path.join(tmp, "attach-root-downloaded-empty");
+  await call("PUT", "/api/jira/attachments/root", { root });
+  const tunnel = { "x-test-tunnel": "1" };
+  const missing = await call("GET", "/api/jira/issues/ACME-31/downloaded", undefined, tunnel);
+  assert.equal(missing.status, 200);
+  assert.deepEqual(missing.json, { dir: null, count: 0 });
+
+  const dir = path.join(root, "ACME-31");
+  fs.mkdirSync(dir, { recursive: true });
+  const empty = await call("GET", "/api/jira/issues/ACME-31/downloaded");
+  assert.deepEqual(empty.json, { dir: null, count: 0 });
+
+  fs.writeFileSync(path.join(dir, "only.txt"), "x");
+  const after = await call("GET", "/api/jira/issues/ACME-31/downloaded", undefined, tunnel);
+  assert.equal(after.status, 200);
+  assert.deepEqual(after.json, { dir, count: 1 });
+});
+
 test("safeFileName：非法字符 / 保留名 / 空名 / 结尾点 / 长度", () => {
   assert.equal(safeFileName("bad:name*?<x>.txt", "d-1"), "bad_name___x_.txt");
   assert.equal(safeFileName("dir/sub\\file.txt", "d-2"), "dir_sub_file.txt");

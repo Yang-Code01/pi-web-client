@@ -857,6 +857,28 @@ async function downloadIssueAttachments(res: http.ServerResponse, ctx: JiraCtx, 
   json(res, 200, { dir, items });
 }
 
+/**
+ * `GET /api/jira/issues/:key/downloaded`：这单在本机已经下过几个文件（D205）。只读磁盘，
+ * 不建目录、不拉 Jira；没设根目录 / 目录不存在 / 空目录都回 `{ dir: null, count: 0 }`。
+ * 隧道访客也能读：这只是「有没有下过」的事实，不含凭据。
+ */
+function getDownloaded(res: http.ServerResponse, rawKey: string): void {
+  if (!ISSUE_KEY.test(rawKey)) return fail(res, 400, "jira_key", "工单号看起来不对（应为 ACME-123 这种）");
+  const key = rawKey.toUpperCase();
+  const root = readAttachmentRoot();
+  if (!root) return json(res, 200, { dir: null, count: 0 });
+  const dir = join(root, key);
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return json(res, 200, { dir: null, count: 0 });
+  }
+  // 只数普通文件：子目录（用户自己整理的）不算下载结果。
+  const count = entries.filter((entry) => entry.isFile()).length;
+  return json(res, 200, count > 0 ? { dir, count } : { dir: null, count: 0 });
+}
+
 /** 列表接口的公共前半段：读配置，没配就说 `jira_not_configured`。 */
 function listConfig(res: http.ServerResponse): JiraConfig | null {
   const config = readJiraConfig();
@@ -1051,6 +1073,15 @@ export async function handleJira(
     // #250：`/api/jira/issues/<KEY>`。key 不在 URL 里解码：形状校验只认 `[A-Za-z0-9_-]`。
     if (url.pathname.startsWith("/api/jira/issues/")) {
       const rest = url.pathname.slice("/api/jira/issues/".length);
+      // #252：`GET /api/jira/issues/<KEY>/downloaded`。只读磁盘，隧道访客也能问。
+      if (rest.endsWith("/downloaded")) {
+        if (method !== "GET") {
+          fail(res, 405, "bad_method", "不支持这个请求方法");
+          return true;
+        }
+        getDownloaded(res, rest.slice(0, -"/downloaded".length));
+        return true;
+      }
       // #251：`POST /api/jira/issues/<KEY>/download`。写磁盘，隧道访客同样 403。
       if (rest.endsWith("/download")) {
         if (method !== "POST") {
