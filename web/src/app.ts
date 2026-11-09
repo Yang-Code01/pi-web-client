@@ -27,7 +27,7 @@ import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
-import { appendModelOptions, groupModels } from "./modelgroups.ts";
+import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
@@ -3760,7 +3760,9 @@ export class App {
     if (pinned) sections.push({ title: tr("当前使用"), models: [pinned] });
     for (const g of groups) sections.push({ title: g.provider, models: g.models });
     for (const section of sections) {
-      list.append(el("div", `model-group-head${section.models[0] === pinned ? " pinned" : ""}`, `${section.title} · ${section.models.length}`));
+      const isPinned = !!pinned && section.models[0] === pinned;
+      const group = modelGroupSection(section.title, section.models.length, { pinned: isPinned });
+      list.append(group.node);
       for (const m of section.models) {
       const row = el("button", `model-row${m.id === draftModel ? " on" : ""}`);
       row.dataset.id = m.id;
@@ -3785,7 +3787,7 @@ export class App {
       row.ondblclick = () => {
         if (!confirm.disabled) confirm.click();
       };
-      list.append(row);
+      group.body.append(row);
       }
     }
     sheet.append(list);
