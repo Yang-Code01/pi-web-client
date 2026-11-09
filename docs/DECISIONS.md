@@ -3697,9 +3697,9 @@ D
 
 **验证：** `npm run test:image`（`session-image-unit.mjs` 6 项 + `session-image.mjs` 9 项：列表、两序号字节/mime、越界 404、负序号 400、幽灵会话/条目 404、缓存头）；`npm run test:image:ui`（Playwright 11 项：气泡缩略图源是接口、点开 1×1 原图解码成功、Esc 关闭；合成 paste 后待发角标、弹层缩略图按钮、data URL 灯箱、× 关闭；真发出去后 `user:N` 从桥内存取图并解码；无页面异常）。`npm run typecheck`、`npm run build` 通过。
 
-## D214 横条成员开定：`inRow` 是过滤器，不是第二份顺序；当前组被移出仍占最后一格
+## D214 横条成员是 `inRow` 过滤器，空组可删（含目录组）；当前组被移出仍占最后一格
 
-**问题：** 组多了以后横条放不下。只靠 `max` + `＋N` 能防爆，但用户没法把「最近不看、也不想它总占名额」的组从横条里拿掉；把组从 `order` 里删掉又会让左栏和横条的共用顺序失真。
+**问题：** 组多了以后横条放不下。只靠 `max` + `＋N` 能防爆，但用户没法把「最近不看、也不想它总占名额」的组从横条里拿掉；把组从 `order` 里删掉又会让左栏和横条的共用顺序失真。左栏这边，删除边界原本是「只有手建的空组能删，派生组一律不给删」—— 理由是派生组由 cwd 推出来，删了下次 `groupFor()` 又建回来，那是假动作。但只要会话都搬走了，一个空的目录组留在左栏里就是个死格子：点进去没有东西，也删不掉，只能等它自己消失（而它不会）。#274 要把这条边界改成「有会话才拦」。
 
 **决定：**
 
@@ -3709,7 +3709,15 @@ D
 4. **`＋N` 两段：** 左「装不下」点一行只切组，成员不变；右「不在横条里」点一行先 `ws.row true` 再切过去。当前组被移出后不进右段，用标签上的 ⊙ 放回。
 5. **⊙ 是唯一主入口：** 悬停任意可见标签（包括当前组）出 ⊙，点一下移出横条并给带「撤销」的 toast；撤销只把成员放回，不改 `order`，所以回到原位置。左栏组头 ⋯ 的「在横条中」是同一动作的第二入口，只有新桥才出现（旧桥不画，不置灰）。
 6. **拖拽只重排成员。** 带 `offRow` 时把可见段的新次序按原位置替换回整份 `order`，不在横条里的组一格都不动，避免拖一下把非成员从顺序里丢掉。
+7. **`dropBlocker(group, sessions)` 只看会话数**（`web/src/wsmanage.ts`）：组不存在 → 「这个工作区不在了」（快照过期兜底）；有会话 → 拒绝；空组 → `null`，手动组与目录组一样。顺序是「不存在 → 有会话 → 空」，先说的那个才是真正的理由。
+8. **拒绝原因按组类型分开**：手动组「这个工作区里还有 N 个会话，先把它们拖回工程或删掉」，目录组「这个工作区跟着目录走，不能删」。后一句从此不再是「空了也不给删」，而是解释「为什么带着会话删不掉」—— 派生组的归属由 cwd 决定，删了它，那些会话下一次还是会回来。
+9. **会话数由桥数，页面只做投影。** `Sessions.dropWorkspace(id)` 用 `list()` 数 `ws === id` 的会话，再交给 `Workspaces.drop(id, sessions)`。不再用 `Object.values(overrides).includes(id)`：override 只覆盖「拖过的」会话，cwd 派生来的会话不在里面 —— 只看 override，带着会话删掉一个派生组，下一次 `groupFor()` 又把它建回来。归档的也算（它们不在左栏里，但组没了它们就没归属）。删成功时顺手清掉指向它的 override，不留悬空指向；`index.ts` 的 `ws.drop` 成功后除了 `workspaces` 快照，也广播一条 `sessions.list`（会话的 `ws` 可能跟着挪窝）。
+10. **空组在组头标「空」**（`.ws-empty-badge`），与组里的「这个工作区里还没有会话。」那句话并存：一个是组头上的状态，一个是组里的解释。有会话时徽标根本不画，不需要额外同步。
+11. **删除说明分手动组 / 目录组两句**（`dropHint()`）：手动组「只删这个空组，组里的东西一概不动」，目录组「只把这个目录移出列表，目录里的文件一概不动」。删组永远不动文件，这两句话得在点下去之前说清。
+12. **删掉当前组就落到右邻**（`wsNeighborsAfterDrop(order, id)`：右邻在前、再左邻反过来，近的优先）。落点只认「这一组里有会话可开」的邻居；邻居全是空的就把左栏亮出来，至少别让人对着一个不属于任何组的会话发愣。当前会话要是已经跟着目录落进了别的组（`currentWsId()` 还答得出），页面本来就有归属，不硬切。
 
-**为什么：** 成员是「横条收哪些组」的过滤条件，不是第二套排序；把被移出的组留在 `order` 里，放回时才能回到原位置，左栏也不会因为横条开关而重排。
+**为什么：** 成员是「横条收哪些组」的过滤条件，不是第二套排序；把被移出的组留在 `order` 里，放回时才能回到原位置，左栏也不会因为横条开关而重排。左栏则是「我有哪些工程」的清点区，空着的格子要么能删、要么得说明为什么不能删；「派生组不许删」在会话都搬走之后就没有依据了 —— 用户要的是把这一项从列表里拿掉，而不是删目录。反过来，有会话的组一律拦在桥端：页面置灰只是提示，真正的边界不能靠 UI 自觉。
 
-**验证：** `node --experimental-transform-types bridge/tests/workspace-unit.mjs`（旧文件缺字段读 true、快照带字段、setRow 落盘/跨重启/不改 order/max）；`web/tests/wstabs-unit.mjs`（四份输出、当前组被移出仍 ≤ max、名额 0、旧桥 members 缺省、带 offRow 的拖拽保留非成员原格）；`web/tests/wsmanage-unit.mjs`（新旧桥识别）；`probes/workspace-tabs.mjs`（悬停 ⊙、移出/撤销、两段托盘、当前组虚线占最后一格且 ＋N 不重复、刷新持久化、B/C/D 无 ⊙/托盘、旧桥回退）；`npm --prefix web run typecheck`（含 i18n-check）、`npm --prefix bridge run typecheck`、`npm run build` 通过。
+**验证：** `node --experimental-transform-types bridge/tests/workspace-unit.mjs`（旧文件缺字段读 true、快照带字段、setRow 落盘/跨重启/不改 order/max；空目录组删掉后快照与 `order` 一起少一项、有会话的目录组仍拒且状态不动、删组顺手清 override）；`node --experimental-transform-types web/tests/wstabs-unit.mjs`（四份输出、当前组被移出仍 ≤ max、名额 0、旧桥 members 缺省、带 offRow 的拖拽保留非成员原格）；`node --experimental-transform-types web/tests/wsmanage-unit.mjs`（`dropBlocker` 四种组合与新旧桥识别、`wsNeighborsAfterDrop` 的顺序、`dropHint` 分得开手动组与目录组）；`probes/workspace-tabs.mjs`（悬停 ⊙、移出/撤销、两段托盘、当前组虚线占最后一格且 ＋N 不重复、刷新持久化、B/C/D 无 ⊙/托盘、旧桥回退；「空」徽标与空态并存 / 有会话时没有徽标、拒绝删有会话的组且不发 `ws.drop`、删空的手动组与空的目录组、刷新后不复活、删掉当前组落到右邻且不留空白页）；`npm --prefix web run typecheck`（含 i18n-check）、`npm --prefix bridge run typecheck`、`npm run build` 通过；`probes/workspace-manage.mjs` 与 `probes/workspace-tree.mjs` 照旧全绿。
+
+**代价 / 可改：** 桥侧的删除现在要先数一遍会话（`list()` 本来就每页都在跑，多这一次不贵）。派生组删掉之后目录还在，下一次有会话落进那个目录，组会重新出现 —— 这是刻意的，删的是列表项不是目录，也不做「删过的组记仇」那种黑名单。

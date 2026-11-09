@@ -355,15 +355,24 @@ export class Workspaces {
     return changed;
   }
 
-  /** 只允许删空的手动组：派生组是 cwd 派生的，删了下次又回来，那是假动作。 */
-  drop(id: string): { ok: boolean; reason?: string } {
+  /**
+   * 删工作区（#279）：只拦有会话的组 —— 空的手动组与空的目录组都能删。
+   *
+   * 会话数由调用方数（`Sessions.dropWorkspace`）传进来：组里的会话可能来自 override，也可能来自 cwd
+   * 派生，只看 `overrides` 会漏掉后者 —— 带着会话删掉一个派生组，下一次 `groupFor` 又把它建回来。
+   * 有会话时仍说原来的那句话（手动组「还有会话」，目录组「跟着目录走」）。
+   */
+  drop(id: string, sessions: number): { ok: boolean; reason?: string } {
     const group = this.group(id);
     if (!group) return { ok: false, reason: "找不到这个工作区" };
-    if (!group.manual) return { ok: false, reason: "这个工作区跟着目录走，不能删" };
-    if (Object.values(this.state.value().overrides).includes(id)) return { ok: false, reason: "这个工作区里还有会话" };
+    if (sessions > 0) {
+      return { ok: false, reason: group.manual ? "这个工作区里还有会话" : "这个工作区跟着目录走，不能删" };
+    }
     this.state.update((d) => {
       d.groups = d.groups.filter((g) => g.id !== id);
       pruneOrder(d);
+      // 顺手清掉还指着它的 override：那些会话已经不在列表里了，留着就是悬空指向。
+      for (const [sessionId, wsId] of Object.entries(d.overrides)) if (wsId === id) delete d.overrides[sessionId];
     });
     return { ok: true };
   }

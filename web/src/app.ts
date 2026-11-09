@@ -35,7 +35,7 @@ import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { stickMenu } from "./menuplace.ts";
 import { newerTunnel } from "./tunnel-snapshot.ts";
-import { WS_NAME_MAX, dropBlocker, hasRowMembership, renameIntent } from "./wsmanage.ts";
+import { WS_NAME_MAX, dropBlocker, dropHint, hasRowMembership, renameIntent, wsNeighborsAfterDrop } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
@@ -2161,6 +2161,9 @@ export class App {
       // #94：桥侧每次改名 / 拖动 / 建组都会广播一份完整快照。同名快照可能重复到，但重画很便宜。
       case "workspaces": {
         const before = new Set(this.workspaces.groups.map((g) => g.id));
+        // #279：删掉的要是当前组，落点得在快照翻篇之前算好（之后就没有这一组的位置了）。
+        const wsBefore = this.currentWsId();
+        const orderBefore = this.wsGroupOrder();
         this.workspaces = (msg.workspace as WorkspaceState) ?? { groups: [], overrides: {}, keys: {} };
         // #100：刚点的「新建工作区」回来了 —— 空组已经进树，接着让人给它起个名字。
         if (this.wsCreatePending) {
@@ -2177,6 +2180,7 @@ export class App {
         }
         this.renderNowChip();
         this.renderSessions();
+        this.landAfterWsDrop(wsBefore, orderBefore);
         // #123：设置面板开着时，名额也跟着桥的快照对齐（校验发生在桥，页面只是镜子）。
         if (this.sheetKind === "display") this.paintWsTabsPane();
         break;
@@ -5026,6 +5030,8 @@ export class App {
     } else {
       head.append(el("span", "label", group.name));
     }
+    // #279：空组在组头标一个「空」，跟下面那句「这个工作区里还没有会话。」并存；有会话时它自己消失。
+    if (!group.sessions.length) head.append(el("span", "ws-empty-badge", tr("空")));
     if (group.pending) {
       const todo = el("span", "todo", tr("待 {p1}", { p1: group.pending }));
       todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
@@ -5097,6 +5103,8 @@ export class App {
         rowAware && info
           ? { checked: info.inRow !== false, onToggle: () => this.setWsRow(group.id, info.inRow === false) }
           : undefined,
+      // #279：能删时也要说清删的是什么 —— 手动组删的是组，目录组只是把这一项移出列表。
+      dropHint: info ? dropHint(info) : undefined,
       onRename: () => this.startWsRename(group.id),
       onFront: () => this.moveWsToFront(group.id),
       onDrop: () => this.dropWs(group.id),
@@ -5176,6 +5184,28 @@ export class App {
 
   private dropWs(id: string): void {
     this.act(() => this.socket.send({ type: "manage", action: "ws.drop", id }));
+  }
+
+  /**
+   * #279：当前组被删掉之后落到相邻组 —— 右邻优先、再左邻（`wsNeighborsAfterDrop()`）。
+   *
+   * 只认「这一组里有会话可开」的邻居：空组切过去只会看见另一张空态，不如把左栏亮出来。
+   * 当前会话要是已经跟着目录落进了别的组（`currentWsId()` 还答得出），页面本来就有归属，不硬切。
+   */
+  private landAfterWsDrop(gone: string | null, orderBefore: string[]): void {
+    if (!gone || !this.session) return;
+    if (this.workspaces.groups.some((g) => g.id === gone)) return;
+    if (this.currentWsId()) return;
+    // 用未过滤的树找落点：过滤态下邻居可能整组被藏起来，那也不该停在半路。
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, "");
+    for (const id of wsNeighborsAfterDrop(orderBefore, gone)) {
+      const first = tree.groups.find((g) => g.id === id)?.sessions[0];
+      if (first) {
+        this.openFromList(first.id);
+        return;
+      }
+    }
+    if (this.collapsed.sessions) this.togglePane("sessions");
   }
 
   private createWs(): void {

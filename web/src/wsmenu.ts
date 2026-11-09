@@ -28,6 +28,8 @@ export interface WsMenuOpts {
   dropBlocker: string | null;
   /** #276：新桥才有；旧桥整个字段不传，菜单里连这一行都不出现。 */
   row?: { checked: boolean; onToggle(): void };
+  /** 能删时的说明（手动组 / 目录组各一句，见 `dropHint()`）；不给就按手动组那句说。 */
+  dropHint?: string;
   onRename(): void;
   onFront(): void;
   onDrop(): void;
@@ -94,7 +96,7 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
     drop.setAttribute("aria-disabled", "true");
     drop.title = opts.dropBlocker;
   } else {
-    drop.title = tr("只删这个空组，组里的东西一概不动");
+    drop.title = opts.dropHint ?? tr("只删这个空组，组里的东西一概不动");
   }
 
   node.append(rename, ...(row ? [row] : []), front, drop);
