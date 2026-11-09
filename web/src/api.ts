@@ -132,6 +132,17 @@ export const api = {
     req<{ ok: boolean; message: string }>("/api/reveal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) }),
   tunnel: (action: "start" | "stop") =>
     req<{ tunnel: TunnelState }>("/api/tunnel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) }),
+  /** #248：Jira 面板。token 只在桥那边，这里拿到的是掩码；保存失败会抛带 `code` 的错。 */
+  jiraConfig: () =>
+    req<{ configured: boolean; siteUrl: string; email: string; keyMask: string }>("/api/jira/config"),
+  jiraSave: (body: { siteUrl: string; email: string; apiKey: string }) =>
+    req<{ ok: true; me: { accountId: string; displayName: string; email: string; timezone: string; avatarUrl: string } }>(
+      "/api/jira/config",
+      { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+    ),
+  jiraClear: () => req<{ ok: true }>("/api/jira/config", { method: "DELETE" }),
+  jiraMe: () =>
+    req<{ accountId: string; displayName: string; email: string; timezone: string; avatarUrl: string }>("/api/jira/me"),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),

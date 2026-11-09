@@ -19,6 +19,7 @@ import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } fro
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
 import { bgBusy, continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
+import { JiraPanel } from "./jira.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { BranchSheet } from "./branchsheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
@@ -212,6 +213,8 @@ export class App {
   private els: Record<string, HTMLElement> = {};
   /** #86：随手问。它的帧不走当前会话那条路，自己认领；模型目录也是现成的。 */
   private readonly scratch = new ScratchChat({ send: (msg) => this.socket.send(msg), models: () => this.models });
+  /** #248：Jira 面板。第一次点才建；关闭后整块移除，下次打开重新问桥。 */
+  private jira: JiraPanel | null = null;
   private models: ModelInfo[] = [];
   /** D150：目录是两段式（快的先到、带扩展的补上），所以记住最近一次失败原因与「什么时候问过」。 */
   private modelsError = "";
@@ -642,9 +645,15 @@ export class App {
     scratch.dataset.act = "scratch";
     scratch.onclick = () => this.scratch.open();
     this.els.scratch = scratch;
+    // #248：Jira 面板。跟「随手问」一样是顶栏常驻的 dialog 入口（窄屏只留 🔷）。
+    const jira = this.wideBtn(tr("🔷 Jira"));
+    jira.title = tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP");
+    jira.dataset.act = "jira";
+    jira.onclick = () => this.openJira();
+    this.els.jira = jira;
     // #96：「当前在哪」那颗自己是一个挂载点，不绑死在 topbar 的结构里（#97 / #98 换布局时
     // 只要把它挪到别处）。A 里它在行 2 的最左，B/C/D 里挪进顶栏（见 `paintShell()`）。
-    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, files, term, fs, notes, peer, scratch, look, collapseRight);
+    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, files, term, fs, notes, peer, scratch, jira, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -3462,6 +3471,8 @@ export class App {
     this.renderAll();
     // #86：随手问是独立 dialog，不在 renderAll 的覆盖范围里。
     this.scratch.refreshLang();
+    // #248：Jira 面板同理。
+    this.jira?.refreshLang();
     if (this.sheetKind === "display") this.openDisplaySheet();
   }
 
@@ -3471,7 +3482,7 @@ export class App {
    * the session list, `renderSessions()` the chips — neither touches these.
    */
   private paintChrome(): void {
-    const { look, files, term, fs, notes, peer, scratch, manageBtn, binBtn, tabs } = this.els;
+    const { look, files, term, fs, notes, peer, scratch, jira, manageBtn, binBtn, tabs } = this.els;
     const newBtn = this.els.newBtn as HTMLButtonElement;
     const sessFilter = this.els.sessFilter as HTMLInputElement;
     look.title = tr("外观与语言");
@@ -3493,6 +3504,11 @@ export class App {
     if (scratch) {
       this.setWideLabel(scratch, tr("💭 随手问"));
       scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
+    }
+    if (jira) {
+      this.setWideLabel(jira, tr("🔷 Jira"));
+      jira.title = tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP");
+      jira.setAttribute("aria-label", tr("Jira"));
     }
     newBtn.textContent = tr("开新会话");
     sessFilter.placeholder = tr("过滤名字 / 目录");
@@ -6768,6 +6784,12 @@ export class App {
       box.remove();
       if (this.failToast === box) this.failToast = null;
     }, ms);
+  }
+
+  /** #248：顶栏 🔷。第一次打开才建面板；每次 `open()` 都会重新问桥，不信内存里的旧状态。 */
+  private openJira(): void {
+    if (!this.jira) this.jira = new JiraPanel({ settings: (tab) => this.openSettingsSheet(tab) });
+    this.jira.open();
   }
 
   /** 顶栏 🐞：本地随手记，不跟会话走，所以没有 currentId 也能开。 */
