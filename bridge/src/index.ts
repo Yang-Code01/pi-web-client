@@ -70,6 +70,7 @@ import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCoun
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { handleJira } from "./jira.ts";
+import { handleSysmanage } from "./sysmanage.ts";
 import { piLatest } from "./piupdate.ts";
 import { isTrustedPreviewPath, openPreview, readAttachableImage, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw } from "./preview.ts";
 import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
@@ -751,6 +752,9 @@ async function main(): Promise<void> {
       if (!url.pathname.startsWith("/api/")) return serveStatic(res, url.pathname); // let the SPA show the login form
       return json(res, 401, { error: "unauthorized" });
     }
+
+    // #266 本机管理：读本机信息；DNS 改动只有本机/局域网能发起，公网在模块里 403。
+    if (await handleSysmanage(req, res, url, { publicReq, port: cfg.port, version: VERSION, log })) return;
 
     // #248 Jira 面板：单站点、只读、凭据不出桥。路由都在 jira.ts 里，这里只接线。
     if (await handleJira(req, res, url, { publicReq })) return;

@@ -40,6 +40,8 @@
     "test:continue": "node --experimental-transform-types web/tests/continue-unit.mjs",
     "test:bgruns": "node --experimental-transform-types bridge/tests/bgruns-unit.mjs",
     "test:whatsnew": "node --experimental-transform-types bridge/tests/whatsnew-unit.mjs",
+    "test:sysmanage": "node bridge/tests/sysmanage-unit.mjs && node web/tests/sysmanage-unit.mjs",
+    "test:sysmanage:ui": "node bridge/tests/sysmanage-ui.mjs",
     "test:whatsnew:ui": "node bridge/tests/whatsnew-ui.mjs",
     "test:tunnel": "node --experimental-transform-types bridge/tests/tunnel-unit.mjs && node --experimental-transform-types web/tests/tunnel-snapshot-unit.mjs",
     "test:tunnel:ui": "node bridge/tests/tunnel-ui.mjs",
