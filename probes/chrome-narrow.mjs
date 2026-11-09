@@ -14,10 +14,11 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadPlaywright } from "../tools/playwright.mjs";
+import { freePort } from "./port.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = process.env.CHROME_DIST ? path.resolve(process.env.CHROME_DIST) : path.join(REPO, "web/dist");
-const PORT = Number(process.env.PI_WEB_PORT ?? 7932);
+const PORT = await freePort(Number(process.env.PI_WEB_PORT ?? 7932));
 const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

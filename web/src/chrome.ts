@@ -25,6 +25,11 @@ export interface ChromeContext {
 
 const SESSION_ONLY: readonly string[] = ["artifacts", "files"];
 
+/** 只在会话里才有内容的 id：没开会话时连显式打开也画不出来。列表只在这里写一次。 */
+export function isSessionOnly(id: ChromeId | string): boolean {
+  return SESSION_ONLY.includes(id);
+}
+
 /** D138 在 560px 以下用 CSS 藏掉的按钮：只有它们存在「显式打开要顶开样式表」的问题。 */
 const NARROW_CSS_HIDDEN: readonly ChromeId[] = ["files"];
 
@@ -34,7 +39,7 @@ const NARROW_CSS_HIDDEN: readonly ChromeId[] = ["files"];
  */
 export function isChromeVisible(id: ChromeId | string, chrome: ChromeState | null | undefined, ctx: ChromeContext): boolean {
   if (!(CHROME_IDS as readonly string[]).includes(id)) return true;
-  if (SESSION_ONLY.includes(id) && !ctx.hasSession) return false;
+  if (isSessionOnly(id) && !ctx.hasSession) return false;
   const choice = chrome?.[id as ChromeId];
   if (choice === false) return false;
   if (choice === true) return true;

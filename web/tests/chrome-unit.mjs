@@ -3,7 +3,7 @@
  *
  * 三态用「键在不在」表达：缺失 = 默认行为，`false` = 关掉，`true` = 显式打开（窄屏也照开）。
  * 默认行为本身带两条例外：产物 / 文件管理器要开会话，文件管理器在 560px（D138）以下不进顶栏。
- * 浏览器里「真的少了一颗 / 刷新还在」由 `probes/chrome-visible.mjs` 把关。
+ * 浏览器里「真的少了一颗 / 刷新还在」由 `probes/chrome-topbar.mjs` / `chrome-bottom.mjs` / `chrome-sheet.mjs` / `chrome-narrow.mjs` 把关。
  *
  * Run: node --experimental-transform-types web/tests/chrome-unit.mjs
  */

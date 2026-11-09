@@ -29,7 +29,7 @@ import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./s
 import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
-import { chromeFrom, isChromeVisible, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
+import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
@@ -155,6 +155,15 @@ function bgTookText(ms: number): string {
   const s = String(secs % 60).padStart(2, "0");
   const clock = m < 60 ? `${m}:${s}` : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${s}`;
   return tr("用了 {p1}", { p1: clock });
+}
+
+/**
+ * 「📂 产物」在第一个空格处拆成图标与名字。宽按钮（`setWideLabel`）与 Aa 里的预览胶囊共用
+ * 这一份，不然同一套文案在两处各按各的规则拆，改一处忘另一处。
+ */
+function splitWideLabel(label: string): [string, string] {
+  const cut = label.indexOf(" ");
+  return cut > 0 ? [label.slice(0, cut), label.slice(cut + 1)] : ["", label];
 }
 
 export class App {
@@ -599,9 +608,9 @@ export class App {
 
   /** 同一颗宽按钮的字会换（终端跑起来之后是「>_ 终端 2」），所以拆开这件事得能重做一遍。 */
   private setWideLabel(btn: HTMLElement, label: string): void {
-    const cut = label.indexOf(" ");
-    btn.replaceChildren(el("span", "ic", cut > 0 ? label.slice(0, cut) : label));
-    if (cut > 0) btn.append(el("span", "lb", label.slice(cut + 1)));
+    const [ic, name] = splitWideLabel(label);
+    btn.replaceChildren(el("span", "ic", ic || name));
+    if (ic) btn.append(el("span", "lb", name));
   }
 
   // ---------------------------------------------------------------- layout
@@ -3481,19 +3490,14 @@ export class App {
     pane.replaceChildren();
     const offline = !this.connected;
     pane.classList.toggle("offline", offline);
-    const ctx: ChromeContext = { hasSession: true, narrow: this.chromePreviewNarrow };
+    // 会话事实照实给：没开会话时产物 / 文件管理器在真顶栏里也不画，预览不该比真顶栏多一颗。
+    const ctx: ChromeContext = { hasSession: !!this.currentId, narrow: this.chromePreviewNarrow };
     const chrome = this.uiPrefs.chrome;
     const lit = (id: ChromeId): boolean => isChromeVisible(id, chrome, ctx);
     const set = (id: ChromeId, on: boolean): void => {
       if (!this.connected) return;
       this.act(() => this.socket.send({ type: "ui.set", chrome: { [id]: on } }));
     };
-    /** 「📂 产物」在第一个空格处拆成图标与名字，和真按钮 `setWideLabel()` 同一套文案。 */
-    const split = (label: string): [string, string] => {
-      const cut = label.indexOf(" ");
-      return cut > 0 ? [label.slice(0, cut), label.slice(cut + 1)] : ["", label];
-    };
-
     const head = el("div", "chrome-head");
     head.append(el("span", "levels-label", tr("顶栏 / 下沿预览")));
     pane.append(head);
@@ -3512,7 +3516,7 @@ export class App {
       ["jira", tr("🔷 Jira")],
     ];
     for (const [id, label] of topItems) {
-      const [ic, name] = split(label);
+      const [ic, name] = splitWideLabel(label);
       const btn = el("button", "chrome-pv-btn") as HTMLButtonElement;
       btn.type = "button";
       btn.dataset.chrome = id;
@@ -3583,7 +3587,7 @@ export class App {
     const wall = el("div", "chrome-wall");
     wall.append(el("div", "levels-label", tr("点一下就收起来，再点一下放回来")));
     const groups: [string, string, [ChromeId, string, string][]][] = [
-      ["top", tr("顶栏按钮"), topItems.map(([id, label]) => { const [ic, name] = split(label); return [id, ic, name]; })],
+      ["top", tr("顶栏按钮"), topItems.map(([id, label]) => { const [ic, name] = splitWideLabel(label); return [id, ic, name]; })],
       ["bottom", tr("输入框下沿"), bottomItems.map(([id, name]) => [id, "·", name] as [ChromeId, string, string])],
     ];
     for (const [group, label, items] of groups) {
@@ -3621,7 +3625,7 @@ export class App {
         );
         // 虚着的方块要说清「为什么虚」：会话限定与窄档默认都不在 `chrome` 里，光看键看不出来。
         const why: string[] = [];
-        if (id === "artifacts" || id === "files") why.push(tr("没开会话时不显示"));
+        if (isSessionOnly(id)) why.push(tr("没开会话时不显示"));
         if (id === "files" && ctx.narrow && chrome[id] === undefined) why.push(tr("手机上默认收起"));
         const hint = on
           ? tr("点一下隐藏「{p1}」", { p1: name })
