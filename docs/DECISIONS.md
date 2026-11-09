@@ -3567,3 +3567,25 @@ D
 **接口形状：** 细节见 `docs/JIRA-SEARCH.md`。`GET /api/jira/search` → `{ ok, issues, nextPageToken?, isLast, degraded? }`；`GET /api/jira/meta?project=` → `{ ok, statusCategories, types, priorities, statuses, partial? }`；`GET /api/jira/users?q=` → `{ ok, users, unavailable? }`；错误沿用 `jira_not_configured` / `jira_auth` / `jira_forbidden` / `jira_upstream` / `jira_network`，参数错误新增 `jira_query`（带 `field`）。
 
 **验证：** 本 PR 只落设计与实现单（#256–#259）。实现门槛：`node bridge/tests/jira-search-unit.mjs`（条件→JQL 与校验）、`node bridge/tests/jira-e2e.mjs`（三条路由、watcher 重试、meta 缓存、隧道）、`node web/tests/jira-unit.mjs`（query 组装与本地记忆）、`npm --prefix web run typecheck`（含 i18n-check）、`npm run build:web`；界面按 `docs/JIRA-SEARCH.md` 的手点清单验收。
+
+## D208 产物弹窗：会话级基线快照判「新增 / 修改 / 删除」，改动放进独立 diff 弹窗
+
+产物弹窗过去只记「哪个工具写过这个路径」：`write` 覆盖已有文件也显示「写入」，同一路径写了两次只有一行，改了多少完全不知道。根因是「新增还是修改」是**文件事实**，而弹窗当时拿到的是**工具事实**——pi 的 `write` 返回值只有一句 `Successfully wrote to <path>`（`dist/core/tools/write.js:50`），`edit` 才带 `details.diff`，所以靠工具结果猜不出覆盖还是新建。
+
+**决定**
+
+1. **基线在写入前抓，抓在 pi 的 `tool_call` 钩子里。** 新增 `bridge/ext/artifact-snapshot.ts` 扩展，由 `sessions.ts` 与既有两个扩展一起 `-e` 注入；钩子里把路径回打给桥（`POST /api/artifacts/snapshot`，回环 + 会话 token），桥读磁盘存下**第一次**碰它时的字节。`tool_call` 在执行前且被 await，这是唯一零竞态的位置。替代方案（桥在 `tool_execution_start` 抢读）是毫秒级竞速，新建文件大概率读成「修改」、diff 恒空，否决。
+2. **快照是会话级的，不是全局的。** 存 `statePath("artifacts", <sessionId>)`：`index.json` + `<sha256(abs)>.orig`。单文件 2 MB、单会话 500 个文件封顶；到顶之后的新文件不再拍快照，那些行只能走 git 估算或标「未知」——宁可少一条基线，也不无限长。会话被彻底删除时（`sessions.purge`）一并清掉。
+3. **状态有五档，缺基线时不猜。** `new` / `modified` / `same` / `deleted` / `unknown`。没有基线时先问 git（`git show <root-relative>` 能否解出会话开始时的 blob），能给就标「按 git 估算」，否则明说「未知」——不把猜测画成事实。判断「没变」用的是 `diffTexts` 的 `added === removed === 0`，不是字节相等，否则 CRLF ↔ LF 会被算成整文件重写。
+4. **改动呈现选独立弹窗（C）。** 产物弹窗只留徽章 + `+N −M` + `工具×次数`；点一行开 `diff-sheet`：左栏换文件、右边左右对照、`j / k` 换文件 `← / →` 换 hunk `Esc` 关。否决了「行内展开」（弹窗要变高、只能塞前 60 行）与「查看器加变更页」（得为同一个文件开关两次查看器）；代价是多了第三套浮窗，但它只在产物弹窗里可达，不进查看器的导航。
+5. **只认 write 系工具。** `bash` / `apply_patch` 之外的方式写文件不触发钩子，P0/P1 不追（`WRITE_TOOLS` 与既有 approval-gate 同名不同源，将来若要合并再抽公共常量）。二进制只给大小变化，`>2MB` 或 `>5000 行` 或改动超过 3000 行只给原因不给逐行；`diffTexts` 对前两种回 `added=removed=0`，那只是「没比」，状态必须是 `unknown` 而不是 `same`。
+
+**接口形状**
+
+`POST /api/artifacts/list {sessionId, items}` → `{items, summary, baseline}`；`POST /api/artifacts/diff {sessionId, path}` → `{path, abs, status, estimate, binary, added, removed, hunks, truncated, reason?, sizeBefore, sizeAfter}`（没基线也是 200 + `reason: "no-baseline"`，不是错误）；`POST /api/artifacts/snapshot {token, path}` 只给扩展（回环 + token，失败也回 200，记账不能挡写入）。清单的 `items` 由页面从自己的工具条目里算（`chat.ts` 的 `written` 现在带 `writes` 计数），桥只负责「拿这些路径和磁盘比」——会话历史重放是免费的。
+
+界面文案不由桥拼：`why` 是码（`no-baseline` / `git-head-missing` / `snapshot-too-big` / `size-only` / `binary-size-only` / `built-then-deleted` / `diff-too-large` / `diff-rewrite`），句子在 `app.ts` 的 `artifactWhyText()` 里经 `tr()` 取，否则 `i18n-check` 扫不到桥端，三种语言里两种会缺。
+
+**验证**
+
+`node bridge/tests/artifacts-unit.mjs`（新增/修改/没变含 CRLF/已删除/二进制/无基线/相对与绝对路径去重/清理）、`node bridge/tests/artifacts-e2e.mjs`（临时桥：snapshot 无 token 与假 token 都 403、未知会话 404、`/api/git` 未被闸到）、`npm run typecheck`（含 i18n-check，新增 24 条文案 ×3 语）、`npm run build`。界面用原型页先对齐过三个候选的观感，真机手验留给测试环境（一条真模型回合写两个文件）。

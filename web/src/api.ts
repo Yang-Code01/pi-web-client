@@ -1,4 +1,4 @@
-import type { GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
+import type { ArtifactDiff, ArtifactList, GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
 import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
 
 /**
@@ -97,6 +97,23 @@ export const api = {
   },
   preview: (sessionId: string, path: string) =>
     req<PreviewInfo>("/api/preview", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId, path }) }),
+  /**
+   * D208: 产物弹窗的两条数据。
+   * 列表由页面把重放历史时收到的 write/edit 递过去（路径 + 工具 + 次数），桥负责解析/查基线/算行数；
+   * 差异按路径单独取，切文件时只多拉这一份。
+   */
+  artifactsList: (sessionId: string, items: { path: string; tool: string; writes: number }[]) =>
+    req<ArtifactList>("/api/artifacts/list", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, items }),
+    }),
+  artifactDiff: (sessionId: string, path: string) =>
+    req<ArtifactDiff>("/api/artifacts/diff", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, path }),
+    }),
   /** D166: sheet metadata and one visible row window, both keyed by the /api/preview grant token. */
   sheetMeta: (token: string) =>
     req<SheetMeta>("/api/sheet/meta", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }),

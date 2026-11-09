@@ -72,6 +72,7 @@ import { answer as answerLogin, cancel as cancelLogin, listProviders, login as s
 import { handleJira } from "./jira.ts";
 import { piLatest } from "./piupdate.ts";
 import { isTrustedPreviewPath, openPreview, readAttachableImage, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw } from "./preview.ts";
+import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
@@ -576,6 +577,30 @@ async function main(): Promise<void> {
       return json(res, 200, { ok: false, reason: "no-ack", text: "页面没有回应这次打开（可能刚关掉会话或在处理别的操作）。" });
     }
 
+    // ------------------------------------------------------------ 产物基线 (loopback only, D208)
+    // `artifact-snapshot` 扩展在 `tool_call` 里等这个请求，回去以后 pi 才真正写文件 —— 所以这里读到的
+    // 一定是写入前的字节。和 /api/ask、/api/preview/open 一样：只认回环 + 会话级 token，没有 cookie。
+    // 失败一律 200：记账失败不能让一次写入失败，扩展那边也不解析错误体。
+    if (url.pathname === "/api/artifacts/snapshot" && req.method === "POST") {
+      if (publicReq) return json(res, 403, { ok: false, reason: "tunnel" });
+      const peer = req.socket.remoteAddress ?? "";
+      if (!isLoopbackPeer(peer)) return json(res, 403, { ok: false, reason: "non-loopback" });
+      const body = await readBody(req).catch(() => ({}));
+      const session = sessions.byLoopbackToken(String(body.token ?? ""));
+      if (!session) {
+        log(`artifacts.snapshot rejected: bad token from ${peer}`);
+        return json(res, 403, { ok: false, reason: "bad-token" });
+      }
+      try {
+        const abs = resolvePreviewPath({ cwd: session.state.cwd }, String(body.path ?? ""));
+        const out = recordSnapshot(session.state.id, abs);
+        return json(res, 200, { ok: true, kept: out.kept, existed: out.snap?.existed ?? null });
+      } catch (err: any) {
+        log(`artifacts.snapshot failed: ${String(err?.message ?? err)}`);
+        return json(res, 200, { ok: false, error: String(err?.message ?? err) });
+      }
+    }
+
     if (url.pathname === "/api/login" && req.method === "POST") {
       const ip = clientIp(req.headers, req.socket.remoteAddress);
       if (!loginAllowed(ip)) return fail(res, 429, "too_many_attempts", "试太多次了，等一分钟再试");
@@ -848,6 +873,39 @@ async function main(): Promise<void> {
         return json(res, 200, info);
       } catch (err: any) {
         return json(res, 400, { error: String(err?.message ?? err) });
+      }
+    }
+
+    // D208: 产物弹窗的数据。页面把自己重放历史时收到的 write/edit 路径递过来（最近写的在前），
+    // 桥负责解析、查基线、算行数；路径来自已登录页面，读盘本身不超过 /api/preview 已有的能力。
+    if (url.pathname === "/api/artifacts/list" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const sessionId = String(body.sessionId ?? "");
+      const where = sessions.locate(sessionId);
+      if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
+      const raw = Array.isArray(body.items) ? body.items : [];
+      const items = raw
+        .filter((it: any) => it && typeof it.path === "string")
+        .slice(0, 500)
+        .map((it: any) => ({ path: String(it.path), tool: String(it.tool ?? "write"), writes: Number(it.writes) || 1 }));
+      try {
+        return json(res, 200, await listArtifacts(sessionId, where.cwd, items));
+      } catch (err: any) {
+        log(`artifacts.list failed: ${String(err?.message ?? err)}`);
+        return fail(res, 500, "artifacts_failed", "读不了这个会话的产物");
+      }
+    }
+
+    if (url.pathname === "/api/artifacts/diff" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const sessionId = String(body.sessionId ?? "");
+      const where = sessions.locate(sessionId);
+      if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
+      try {
+        // 没基线不是错误，是答案的一种（D208）：200 + reason，页面用 diffReasonText 说人话。
+        return json(res, 200, await diffArtifact(sessionId, where.cwd, String(body.path ?? "")));
+      } catch (err: any) {
+        return fail(res, 400, "artifacts_diff", String(err?.message ?? err));
       }
     }
 

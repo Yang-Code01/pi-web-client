@@ -211,7 +211,7 @@ export class ChatView {
   private unread = false;
   private jump: HTMLButtonElement;
   /** Files the agent wrote or edited in this session, latest last. */
-  private written = new Map<string, { tool: string; at: number }>();
+  private written = new Map<string, { tool: string; at: number; writes: number }>();
   /** Assistant replies the user folded; kept across rebuilds and session re-renders. */
   private collapsed = new Set<string>();
   /** Set by the app: the 停止 button on a running `!cmd` card. */
@@ -1373,8 +1373,13 @@ export class ChatView {
   }
 
   /** Files written or edited so far, newest first. */
-  artifacts(): { path: string; tool: string }[] {
-    return [...this.written.entries()].reverse().map(([path, v]) => ({ path, tool: v.tool }));
+  /**
+   * D208: 产物弹窗要的是「这条路径在这个会话里被写过几次、最后一次用什么工具」，不是文件状态 ——
+   * 状态得桥去比写入前的原文（write 覆盖已有文件同样是「修改」）。相对/绝对写法故意原样保留：
+   * 桥会按 abs 去重，这里要是合并了反而看不出用户当时用的是哪种写法。
+   */
+  artifacts(): { path: string; tool: string; writes: number }[] {
+    return [...this.written.entries()].reverse().map(([path, v]) => ({ path, tool: v.tool, writes: v.writes }));
   }
 
   /** A write/edit lands in the session's artifact list and as a chip under this turn's module. */
@@ -1383,8 +1388,10 @@ export class ChatView {
     if (!WRITE_TOOLS.has(tool)) return;
     const path = toolPath(args);
     if (!path) return;
+    // 同一个路径再写一次：计数 +1，同时挪到 Map 末尾（artifacts() 反着取 = 最近写的在前）。
+    const prev = this.written.get(path);
     this.written.delete(path);
-    this.written.set(path, { tool, at: Date.now() });
+    this.written.set(path, { tool, at: Date.now(), writes: (prev?.writes ?? 0) + 1 });
     const box = this.opsBox;
     if (!box || box.parentNode !== this.root) return;
     if (!this.opsFiles || !this.opsFiles.isConnected) {
