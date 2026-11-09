@@ -1,6 +1,6 @@
 /**
- * Jira 面板与单测共用的纯函数（#248、#249、#250）：站点地址判定、token 掩码、工单行链接与
- * 元信息、ADF → 纯文本、字节大小格式化。
+ * Jira 面板与单测共用的纯函数（#248、#249、#250、#252）：站点地址判定、token 掩码、工单行链接与
+ * 元信息、ADF → 纯文本、字节大小格式化、交给 agent 的提示词。
  *
  * 单独一个文件是为了让 `web/tests/jira-unit.mjs` 能直接跑：`jira.ts` 为了 `el()` 要 import
  * `chat.ts`，而 `chat.ts` 的构造器参数属性过不了 Node 26 的 strip-only（`--experimental-transform-types`
@@ -281,4 +281,48 @@ export function downloadMark(status: JiraDownloadStatus): string {
   if (status === "saved") return "✓";
   if (status === "skipped") return "·";
   return "✗";
+}
+
+// ---------------------------------------------------------------- #252 交给 agent
+
+export interface HandoffPromptInput {
+  key: string;
+  summary: string;
+  siteUrl: string;
+  status?: string;
+  /** `null` = Jira 上没设优先级（写成「未设置」）；`undefined` = 不传这一段。 */
+  priority?: string | null;
+  type?: string;
+  /** 桥回的本机附件目录（`<root>/<KEY>`）；空 = 没下载过，提示词里不出现附件那一行。 */
+  dir?: string | null;
+}
+
+/**
+ * 交给 agent 的提示词（#252，D205）：工单号 / 标题 / 链接 / 状态 / 优先级 / 类型 + 固定指令。
+ *
+ * 它是给 agent 的指令，不是界面文案，所以不走 `tr()`；附件那一行只在确实下载过时出现，
+ * 由桥端 `GET /api/jira/issues/:key/downloaded` 的事实决定，不靠页面猜。
+ */
+export function handoffPrompt(input: HandoffPromptInput): string {
+  const key = input.key.trim();
+  const summary = input.summary.trim();
+  // i18n-ignore-start 给 agent 的指令，不是界面文案（D205）：不跟界面语言变，也不进词典。
+  const lines: string[] = [`处理这个 Jira 工单：${key}${summary ? ` — ${summary}` : ""}`, ""];
+  lines.push(`链接：${browseUrl(input.siteUrl, key)}`);
+  const status = input.status?.trim() ? `状态：${input.status.trim()}` : "";
+  const priority = input.priority === null ? "优先级：未设置" : input.priority?.trim() ? `优先级：${input.priority.trim()}` : "";
+  const type = input.type?.trim() ? `类型：${input.type.trim()}` : "";
+  const meta = [status, priority, type].filter(Boolean);
+  if (meta.length) lines.push(meta.join(" · "));
+  lines.push("");
+  lines.push("请用 Jira MCP 工具（如 mcp__atlassian__*）读取这个工单的详细描述和全部评论，正文我没有贴进来。");
+  lines.push("- 结合代码分析问题原因；如果是 bug，给出具体、可复现的操作步骤。");
+  lines.push("- 描述或评论里的附件/截图你看不到时，先问我是我自己下载，还是已经下好了、路径在哪。");
+  const dir = input.dir?.trim().replace(/[\\/]+$/, "");
+  // 结尾用目录自己的分隔符风格（Windows 根目录回的是 `C:\\…`，加个 `/` 会变成混搭）。
+  if (dir) lines.push(`- 已经下载到本机的附件在：${dir}${dir.includes("\\") ? "\\" : "/"}`);
+  lines.push("");
+  lines.push("如果你的工具里没有可用的 Jira，先直接告诉我，不要猜内容。需要我确认的地方先问，不要直接改代码。");
+  // i18n-ignore-end
+  return lines.join("\n");
 }

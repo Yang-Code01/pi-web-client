@@ -161,6 +161,9 @@ export const api = {
   /** #251：把这一单的附件全收下来；桥端串行，一次一个文件，超 100 MB 的跳过。 */
   jiraDownload: (key: string) =>
     req<JiraDownloadResult>(`/api/jira/issues/${encodeURIComponent(key)}/download`, { method: "POST" }),
+  /** #252：这单在本机已经下过几个文件；没下过时 `{ dir: null, count: 0 }`。只读磁盘，隧道也允许。 */
+  jiraDownloaded: (key: string) =>
+    req<{ dir: string | null; count: number }>(`/api/jira/issues/${encodeURIComponent(key)}/downloaded`),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),

@@ -1,6 +1,6 @@
 /**
- * Jira 面板的纯函数（#248、#249、#250）：站点地址判定、token 掩码、工单行链接与元信息、
- * ADF → 纯文本、字节大小格式化。
+ * Jira 面板的纯函数（#248、#249、#250、#252）：站点地址判定、token 掩码、工单行链接与元信息、
+ * ADF → 纯文本、字节大小格式化、交给 agent 的提示词。
  *
  * 只测这几层；dialog 的交互（Esc、焦点、错误态按钮、缓存、展开）不启浏览器，靠肉眼与桥端 e2e 探针。
  * 站点地址的正负例必须与 `bridge/src/jira.ts` 的 `siteUrlProblem` 一一对应 —— 那边是权威。
@@ -11,7 +11,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adfToText, browseUrl, downloadMark, formatBytes, formatUpdated, issueMeta, keyMask, siteUrlProblem } from "../src/jira-shared.ts";
+import { adfToText, browseUrl, downloadMark, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, siteUrlProblem } from "../src/jira-shared.ts";
 
 const bad = (raw) => {
   const problem = siteUrlProblem(raw);
@@ -205,4 +205,56 @@ test("downloadMark：对勾只给真落盘的那项", () => {
   assert.equal(downloadMark("saved"), "✓");
   assert.equal(downloadMark("skipped"), "·");
   assert.equal(downloadMark("failed"), "✗");
+});
+
+// ---------------------------------------------------------------- #252 交给 agent
+
+const handoff = {
+  key: "ACME-12",
+  summary: "登录页偶发 500",
+  siteUrl: "https://acme.atlassian.net/",
+  status: "待办",
+  priority: "高",
+  type: "Bug",
+};
+
+test("handoffPrompt：全文逐字，工单信息与固定指令都在", () => {
+  assert.equal(
+    handoffPrompt(handoff),
+    [
+      "处理这个 Jira 工单：ACME-12 — 登录页偶发 500",
+      "",
+      "链接：https://acme.atlassian.net/browse/ACME-12",
+      "状态：待办 · 优先级：高 · 类型：Bug",
+      "",
+      "请用 Jira MCP 工具（如 mcp__atlassian__*）读取这个工单的详细描述和全部评论，正文我没有贴进来。",
+      "- 结合代码分析问题原因；如果是 bug，给出具体、可复现的操作步骤。",
+      "- 描述或评论里的附件/截图你看不到时，先问我是我自己下载，还是已经下好了、路径在哪。",
+      "",
+      "如果你的工具里没有可用的 Jira，先直接告诉我，不要猜内容。需要我确认的地方先问，不要直接改代码。",
+    ].join("\n"),
+  );
+});
+
+test("handoffPrompt：下载过才有附件行，路径以结尾斜杠收尾", () => {
+  const withDir = handoffPrompt({ ...handoff, dir: "C:\\Users\\me\\jira\\ACME-12" });
+  assert.ok(withDir.includes("- 已经下载到本机的附件在：C:\\Users\\me\\jira\\ACME-12\\\n\n如果你的工具里"));
+  // 已经带结尾斜杠（Windows 或 POSIX）不重复加。
+  assert.ok(withDir.includes("ACME-12\\\n"));
+  assert.ok(!withDir.includes("ACME-12\\\\\n"));
+  assert.ok(handoffPrompt({ ...handoff, dir: "D:/jira/ACME-12/" }).includes("D:/jira/ACME-12/\n"));
+  // 没下载过（null / 缺省 / 空白）就没有这一行。
+  for (const dir of [null, undefined, "  "]) {
+    assert.ok(!handoffPrompt({ ...handoff, dir }).includes("已经下载到本机的附件在"), `dir=${dir}`);
+  }
+});
+
+test("handoffPrompt：优先级 null 写「未设置」，缺省就省略那一段", () => {
+  assert.ok(handoffPrompt({ ...handoff, priority: null }).includes("状态：待办 · 优先级：未设置 · 类型：Bug"));
+  assert.ok(handoffPrompt({ ...handoff, priority: undefined }).includes("状态：待办 · 类型：Bug"));
+});
+
+test("handoffPrompt：标题为空只留工单号，链接跟着 key", () => {
+  const text = handoffPrompt({ ...handoff, summary: "  ", key: "ACME-7" });
+  assert.ok(text.startsWith("处理这个 Jira 工单：ACME-7\n\n链接：https://acme.atlassian.net/browse/ACME-7\n"));
 });
