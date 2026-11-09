@@ -27,6 +27,20 @@ interface TurnState {
   opsFiles: HTMLElement | null;
   failAnchor: HTMLElement | null;
   turnFails: Array<{ key: string; input: FailureInput }>;
+  /** 本轮已经建出来的技能组；翻页插历史时指针也得一起收走，否则老条目会被追加进来。 */
+  skillGroup: SkillGroup | null;
+}
+
+/**
+ * 一轮里自动加载的技能合成一个折叠组（用户要求）：不展开时永远只有一行 ——「自动加载 N 个技能 ·
+ * 名字…」，点开才是每张技能卡的全文。组落在本轮第一张技能卡的位置，后续同类卡追加进来，
+ * 摘要行跟着刷新；换一条用户消息就是新一轮，指针清空。
+ */
+interface SkillGroup {
+  body: HTMLElement;
+  count: HTMLElement;
+  names: HTMLElement;
+  skillNames: string[];
 }
 
 /**
@@ -154,6 +168,8 @@ export class ChatView {
   private opsBody: HTMLElement | null = null;
   private opsTitle: HTMLElement | null = null;
   private opsBox: HTMLDetailsElement | null = null;
+  /** 本轮自动加载的技能组（见 `SkillGroup`）；换轮、重置、翻页插历史时清空。 */
+  private skillGroup: SkillGroup | null = null;
   /** Failures also get a card right after the module, keyed by toolCallId. */
   private failCards = new Map<string, HTMLElement>();
   private failAnchor: HTMLElement | null = null;
@@ -626,6 +642,7 @@ export class ChatView {
     this.opsBody = null;
     this.opsTitle = null;
     this.opsBox = null;
+    this.skillGroup = null;
     this.failCards.clear();
     this.failAnchor = null;
     this.turnFails = [];
@@ -776,8 +793,11 @@ export class ChatView {
       opsFiles: this.opsFiles,
       failAnchor: this.failAnchor,
       turnFails: this.turnFails,
+      skillGroup: this.skillGroup,
     };
     this.closeOps();
+    // 插进来的历史属于更早的轮次：它的技能要另起组，不能追加到用户正在看的这一轮里。
+    this.skillGroup = null;
     this.turnFails = [];
     return held;
   }
@@ -789,6 +809,7 @@ export class ChatView {
     this.opsFiles = held.opsFiles;
     this.failAnchor = held.failAnchor;
     this.turnFails = held.turnFails;
+    this.skillGroup = held.skillGroup;
   }
 
   /**
@@ -820,6 +841,8 @@ export class ChatView {
     if (item.kind === "user") {
       this.closeOps();
       this.clearTurnFails();
+      // 技能组按轮分：上一条用户消息之前加载的技能，不该再被收进新的组。
+      this.skillGroup = null;
     }
     // 隐式技能卡是「下面那张 read」的前言，不能落在它后面：收掉已有模块，让这张 read 自己开一个。
     if (item.kind === "skill") this.closeOps();
@@ -847,6 +870,12 @@ export class ChatView {
     }
     const node = this.build(item);
     this.cards.set(item.id, node);
+    // 本轮所有自动加载的技能只占一个折叠组（用户要求），组落在第一张卡的位置。
+    if (item.kind === "skill") {
+      this.groupSkill(node, item);
+      this.scrollToEnd();
+      return;
+    }
     if (item.kind === "tool") {
       this.toolCards.set(item.toolCallId, node);
       if (this.isAskTool(item.name)) this.push(node);
@@ -1471,6 +1500,36 @@ export class ChatView {
       body.append(tag);
     }
     return body;
+  }
+
+  /**
+   * 本轮的技能组：一行摘要（自动加载 · N 个技能 · 名字…），点开是每张卡。用 `<details>` 而不是
+   * 自绘开关：折叠状态归浏览器，后面再追加技能时也不会被重画成展开。
+   */
+  private ensureSkillGroup(): SkillGroup {
+    if (this.skillGroup) return this.skillGroup;
+    const box = el("details", "skillgroup");
+    const summary = el("summary");
+    const count = el("span", "skillgroup-n");
+    const names = el("span", "skillgroup-names");
+    summary.append(el("span", "chev", "▸"), el("span", "auto", tr("自动加载")), count, names);
+    const body = el("div", "skillgroup-body");
+    box.append(summary, body);
+    this.push(box);
+    this.skillGroup = { body, count, names, skillNames: [] };
+    return this.skillGroup;
+  }
+
+  /** 一张技能卡落进本轮的组里，摘要行（数量 + 名字）跟着刷新 —— 实时再来一张也只是多一行字。 */
+  private groupSkill(card: HTMLElement, item: SkillItem): void {
+    const group = this.ensureSkillGroup();
+    group.body.append(card);
+    group.skillNames.push(item.name);
+    group.count.textContent = tr("{p1} 个技能", { p1: group.skillNames.length });
+    const all = group.skillNames.join(" · ");
+    // 名字多时摘要行省略（CSS），全文挂在 title 上。
+    group.names.textContent = all;
+    group.names.title = tr("自动加载：{p1}", { p1: all });
   }
 
   /**

@@ -1033,6 +1033,8 @@ export const en: Dict = {
   "自动重试": "Auto-retry",
   "自动提醒 · 老毛病重犯 · {p1}": "Auto-reminder · a repeat of an old failure · {p1}",
   "自动加载": "auto-loaded",
+  "{p1} 个技能": "{p1} skill(s)",
+  "自动加载：{p1}": "Auto-loaded: {p1}",
   "这个技能没写描述": "This skill has no description.",
   "触发线索：它读之前说「{p1}」": "Clue: it said “{p1}” just before reading it",
   "触发线索：你这轮说「{p1}」": "Why: your message this turn — “{p1}”",
