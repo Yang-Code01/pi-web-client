@@ -203,7 +203,7 @@ try {
     (await page.locator(".settings-row input, .settings-row select").evaluateAll((nodes) => nodes.every((n) => n.disabled))),
     "回表单输入仍 disabled",
   );
-  await page.screenshot({ path: path.join(SHOTS, "settings-console-project-untrusted.png") });
+  await page.screenshot({ path: path.join(SHOTS, "settings-console-untrusted.png") });
 
   log("G2. 信任后切项目：继承 placeholder、模型写一对键");
   await ask({ type: "trust.set", cwd: PROJECT, option: 0 }, (m) => m.type === "trust" && m.saved, "trust.set");
@@ -236,6 +236,7 @@ try {
   );
   await until(async () => (await modelRow().locator(".settings-src").innerText()).trim() === "覆盖", 15000, "project chip");
   check(true, "项目已覆盖 chip 更新");
+  await page.screenshot({ path: path.join(SHOTS, "settings-console-form.png") });
 
   log("G3. 切 scope 保留草稿");
   const dirRow = () => page.locator(".settings-row").filter({ hasText: "会话目录" });
@@ -246,6 +247,40 @@ try {
   await until(async () => (await page.locator(".st-title").innerText()).trim() === "设置 · pi-web-client", 15000, "back to project");
   check((await dirRow().locator("input").inputValue()) === "草稿目录", `草稿还在（${await dirRow().locator("input").inputValue()}）`);
   await dirRow().locator("input").fill("");
+
+  log("G3b. 外部改动后刷新：保留草稿并提示会覆盖");
+  await dirRow().locator("input").fill("草稿目录");
+  fs.writeFileSync(
+    PROJECT_FILE,
+    JSON.stringify({ theme: "dark", defaultProvider: "stub", defaultModel: "fake-model-2", sessionDir: "外部目录" }),
+  );
+  await page.locator(".st-head__actions button", { hasText: "刷新" }).click();
+  await page.locator(".settings-note", { hasText: "设置已从别处更新" }).waitFor({ timeout: 15000 });
+  check(true, "外部更新给出「会覆盖这些键」提示");
+  check((await dirRow().locator("input").inputValue()) === "草稿目录", "外部更新后草稿还在");
+  fs.writeFileSync(
+    PROJECT_FILE,
+    JSON.stringify({ theme: "dark", defaultProvider: "stub", defaultModel: "fake-model-2" }),
+  );
+  await dirRow().locator("input").fill("");
+  await page.locator(".st-head__actions button", { hasText: "刷新" }).click();
+  await page.locator('.st-nav__item[data-tab="global"]').click();
+
+  log("G3c. 保存失败：红字提示 + 草稿保留");
+  await dirRow().locator("input").fill("失败草稿");
+  fs.writeFileSync(PROJECT_FILE, "{ nope");
+  await page.locator('[data-role="settings-save"]').click();
+  const saveFailed = page.locator(".settings-note.bad", { hasText: "磁盘上的 settings.json" });
+  await saveFailed.waitFor({ timeout: 15000 });
+  check(true, "保存失败红字指向磁盘上的 settings.json");
+  check((await dirRow().locator("input").inputValue()) === "失败草稿", "保存失败后草稿还在");
+  fs.writeFileSync(
+    PROJECT_FILE,
+    JSON.stringify({ theme: "dark", defaultProvider: "stub", defaultModel: "fake-model-2" }),
+  );
+  await dirRow().locator("input").fill("");
+  await page.locator(".st-head__actions button", { hasText: "刷新" }).click();
+  await page.locator('.st-nav__item[data-tab="global"]').click();
 
   log("G5. 坏 JSON：红条，只留 JSON 编辑器");
   fs.writeFileSync(GLOBAL_FILE, "{ nope");
@@ -285,6 +320,7 @@ try {
   log("H2. globalOnly 行项目列「仅全局」");
   const onlyGlobal = (await cmpCell("cacheWarming", "project").innerText()).trim();
   check(onlyGlobal === "仅全局", `globalOnly 项目格（${onlyGlobal}）`);
+  await page.screenshot({ path: path.join(SHOTS, "settings-console-compare.png") });
 
   log("H3. 「只看项目覆盖」只影响视图");
   const opacity = async (key) => Number(await cmpRow(key).evaluate((n) => getComputedStyle(n).opacity));

@@ -44,6 +44,8 @@
     "test:whatsnew": "node --experimental-transform-types bridge/tests/whatsnew-unit.mjs",
     "test:sysmanage": "node bridge/tests/sysmanage-unit.mjs && node web/tests/sysmanage-unit.mjs",
     "test:sysmanage:ui": "node bridge/tests/sysmanage-ui.mjs",
+    "test:settings": "node web/tests/settings-console-unit.mjs",
+    "test:settings:ui": "node bridge/tests/settings-console-ui.mjs",
     "test:whatsnew:ui": "node bridge/tests/whatsnew-ui.mjs",
     "test:tunnel": "node --experimental-transform-types bridge/tests/tunnel-unit.mjs && node --experimental-transform-types web/tests/tunnel-snapshot-unit.mjs",
     "test:tunnel:ui": "node bridge/tests/tunnel-ui.mjs",
