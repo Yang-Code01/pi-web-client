@@ -27,6 +27,7 @@ import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
 import { ScratchChat } from "./scratch.ts";
+import { appendModelOptions, groupModels } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
@@ -3753,7 +3754,14 @@ export class App {
         chips.append(chip);
       }
     };
-    for (const m of this.models) {
+    // 在用的模型钉在最上面（每次打开按当前会话重画，换了模型就跟着换），其余按来源分组。
+    const { pinned, groups } = groupModels(this.models, { id: startModel });
+    const sections: { title: string; models: ModelInfo[] }[] = [];
+    if (pinned) sections.push({ title: tr("当前使用"), models: [pinned] });
+    for (const g of groups) sections.push({ title: g.provider, models: g.models });
+    for (const section of sections) {
+      list.append(el("div", `model-group-head${section.models[0] === pinned ? " pinned" : ""}`, `${section.title} · ${section.models.length}`));
+      for (const m of section.models) {
       const row = el("button", `model-row${m.id === draftModel ? " on" : ""}`);
       row.dataset.id = m.id;
       const nameEl = el("span", "m-name", shortModelName(m.name));
@@ -3778,6 +3786,7 @@ export class App {
         if (!confirm.disabled) confirm.click();
       };
       list.append(row);
+      }
     }
     sheet.append(list);
 
@@ -4416,7 +4425,7 @@ export class App {
     };
     const model = el("select", "ns-input") as HTMLSelectElement;
     model.append(new Option(tr("（用默认模型）"), ""));
-    for (const m of this.models) model.append(new Option(`${shortModelName(m.name)} · ${m.provider}`, `${m.provider}/${m.id}`));
+    appendModelOptions(model, this.models, undefined, (m) => shortModelName(m.name), tr("当前使用"));
     field(tr("模型 --model"), model);
     const thinking = el("select", "ns-input") as HTMLSelectElement;
     for (const lv of ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"]) thinking.append(new Option(lv || tr("（默认）"), lv));
@@ -9452,11 +9461,15 @@ export class App {
       } else if (f.kind === "select" || f.kind === "model") {
         const sel = el("select", "ns-input") as HTMLSelectElement;
         sel.append(new Option(empty, ""));
-        const opts = f.kind === "model"
-          ? this.models.map((m) => [`${m.provider}/${m.id}`, `${shortModelName(m.name)} · ${m.provider}`])
-          : (f.choices ? f.choices.map((c) => [c.value, c.label]) : (f.options ?? []).map((o) => [o, o]));
-        for (const [v, label] of opts) sel.append(new Option(label, v));
         const cur = typeof current === "string" ? current : "";
+        if (f.kind === "model") {
+          const at = cur.indexOf("/");
+          const pin = at > 0 ? { provider: cur.slice(0, at), id: cur.slice(at + 1) } : undefined;
+          appendModelOptions(sel, this.models, pin, (m) => shortModelName(m.name), tr("当前使用"));
+        } else {
+          const opts = f.choices ? f.choices.map((c) => [c.value, c.label]) : (f.options ?? []).map((o) => [o, o]);
+          for (const [v, label] of opts) sel.append(new Option(label, v));
+        }
         if (cur && ![...sel.options].some((o) => o.value === cur)) sel.append(new Option(tr("{p1}（当前）", { p1: cur }), cur));
         sel.value = cur;
         sel.onchange = () => {
