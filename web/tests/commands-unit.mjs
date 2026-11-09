@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { filterCommands } from "../src/commands.ts";
+import { filterCommands, PANEL_COMMANDS } from "../src/commands.ts";
 
 const cmd = (name, desc = "", tag = "技能") => ({ insert: `/${name} `, label: `/${name}`, desc, tag });
 const labels = (items) => items.map((x) => x.label);
@@ -93,4 +93,30 @@ test("空输入给前 40 条，名字命中多于 40 也截到 40", () => {
 
 test("大小写不敏感", () => {
   assert.deepEqual(filterCommands(skills, "HAND"), filterCommands(skills, "hand"));
+});
+
+// #293：按钮被「外观与语言」关掉之后，这三条命令是找回来的路。id 就是 app.ts 动作表里的 id。
+test("面板找回命令：/terminal /files /artifacts 三条 id 与文案", () => {
+  assert.deepEqual(
+    PANEL_COMMANDS.map((c) => c.id),
+    ["terminal", "files", "artifacts"],
+  );
+  assert.deepEqual(
+    PANEL_COMMANDS.map((c) => c.desc),
+    ["打开终端", "文件管理器", "产物列表"],
+  );
+});
+
+test("面板命令能被补全选中：/term /fil /art 各只留一条", () => {
+  const items = PANEL_COMMANDS.map((c) => ({ insert: `/${c.id} `, label: `/${c.id}`, desc: c.desc, tag: "内建" }));
+  for (const [q, want] of [
+    ["term", "/terminal"],
+    ["fil", "/files"],
+    ["art", "/artifacts"],
+  ])
+    assert.deepEqual(labels(filterCommands(items, q)), [want]);
+  // 整名命中排第一，敲全了也不被别的命令压下去。
+  const mixed = [...items, cmd("terminalinfo"), cmd("filesize")];
+  assert.equal(labels(filterCommands(mixed, "terminal"))[0], "/terminal");
+  assert.equal(labels(filterCommands(mixed, "files"))[0], "/files");
 });
