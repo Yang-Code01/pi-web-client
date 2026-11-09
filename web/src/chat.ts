@@ -41,6 +41,12 @@ function reminderBody(text: string): string | null {
   return text.slice(REMIND_MARK.length).replace(/^\s+/, "");
 }
 
+/** 一轮用户输入在刻度带上的文字：正文折成一行；没字就说图片 / 空消息（#242 的索引里也是这套说法）。 */
+function turnLabel(text: string, images: number): string {
+  const one = (text ?? "").replace(/\s+/g, " ").trim();
+  return one || (images ? tr("（{p1} 张图片）", { p1: images }) : tr("（空消息）"));
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -462,9 +468,7 @@ export class ChatView {
 
   /** 一轮用户输入 = 缩略图上的一根刻度。`reset()` 也会经由 `add()` 走到这里。 */
   private noteTurn(item: UserItem, node: HTMLElement): void {
-    const one = (item.text ?? "").replace(/\s+/g, " ").trim();
-    const images = item.images?.length ?? 0;
-    const label = one || (images ? tr("（{p1} 张图片）", { p1: images }) : tr("（空消息）"));
+    const label = turnLabel(item.text ?? "", item.images?.length ?? 0);
     // 往前翻的时候，这些不是「新的」：先攒着，插完再 unshift 进 turns / 刻度带（#220）。
     if (this.staging) {
       this.staging.turns.push({ node, label });
@@ -523,7 +527,15 @@ export class ChatView {
     this.topId = items[0]?.id ?? null;
     // Chrome first: `push()` inserts before the jump button, so it has to be in the DOM already.
     this.mountChrome();
+    const loadedIds = new Set(items.filter((item): item is UserItem => item.kind === "user").map((item) => item.id));
     for (const item of items) this.add(item);
+    // #243: 整段会话的索引里，这一页没载入的那些先以 ghost 占位在带子上沿。
+    // 老桥没有 `turns` → 空数组，退回「只画已载入的轮次」。
+    this.turnRail.setGhosts(
+      (history?.turns ?? [])
+        .filter((turn) => !loadedIds.has(turn.id))
+        .map((turn) => turnLabel(turn.text, turn.images)),
+    );
     this.renderMore();
     this.follow();
   }

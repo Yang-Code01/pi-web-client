@@ -957,6 +957,7 @@ export const en: Dict = {
   "立即压缩": "Compact now",
   "端口被占用": "Port in use",
   "第 {p1} 轮：{p2}": "Turn {p1}: {p2}",
+  "第 {p1} 轮（未载入）：{p2}": "Turn {p1} (not loaded): {p2}",
   "等了 60 秒还没启动起来，看看服务端日志": "Still not started after 60 seconds — check the server logs",
   "等了 60 秒还没接管成功，看看服务端日志": "Takeover still not done after 60 seconds — check the server logs",
   "等你回答": "Waiting for your answer",
