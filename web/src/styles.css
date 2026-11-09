@@ -3953,6 +3953,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-k { color: var(--dim); flex: none; min-width: 5.5em; }
 .jira-v { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jira-disconnect { color: var(--danger); }
+/* #251：附件目录一行 —— 路径可省略，右边的按钮不跟着挤。 */
+.jira-root .jira-v { flex: 1; min-width: 0; }
+.jira-root .jira-v.mono { font-family: var(--mono); }
+.jira-root-btn { flex: none; }
 
 /* #249：「我的未完成」+「可访问项目」。行不可展开（展开是 #250）。 */
 .jira-section { display: grid; gap: 8px; border-top: 1px solid var(--line-soft); padding-top: 12px; min-width: 0; }
@@ -4030,6 +4034,51 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   white-space: nowrap;
 }
 .jira-attach-meta { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* #251：下载按钮 + 结果就地显示（已保存到 <dir>，再逐项一行）。 */
+.jira-download { display: grid; gap: 6px; border-top: 1px solid var(--line-soft); padding-top: 8px; min-width: 0; }
+.jira-dl-dir { display: flex; gap: 6px; font-size: 12px; color: var(--dim); min-width: 0; }
+.jira-dl-dir-k { flex: none; }
+.jira-dl-dir-v { font-family: var(--mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jira-dl-item { display: flex; gap: 6px; min-width: 0; font-size: 12px; }
+.jira-dl-mark { flex: none; width: 1em; text-align: center; }
+.jira-dl-text { min-width: 0; display: grid; gap: 1px; }
+.jira-dl-name { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jira-dl-path { font-family: var(--mono); font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jira-dl-reason { font-size: 11px; color: var(--dim); }
+.jira-dl-item.saved .jira-dl-mark { color: var(--accent); }
+.jira-dl-item.skipped .jira-dl-mark,
+.jira-dl-item.skipped .jira-dl-name { color: var(--dim); }
+.jira-dl-item.failed .jira-dl-mark,
+.jira-dl-item.failed .jira-dl-reason { color: var(--danger); }
+
+/* #251：面板里内嵌一层目录选择（复用 dirpicker），Esc 一次只收这一层。 */
+.jira-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(3, 5, 8, 0.62);
+  backdrop-filter: blur(2px);
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  padding: 16px;
+}
+.jira-picker-box {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+  width: min(760px, 96vw);
+  max-height: min(84vh, 760px);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+.jira-picker-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px 4px; }
+.jira-picker-body { min-height: 220px; overflow: auto; padding: 6px 14px 0; }
+.jira-picker-foot { display: flex; align-items: center; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid var(--line-soft); }
+.jira-picker-foot .jira-note { flex: 1; min-width: 0; }
 
 .jira-foot {
   display: flex;

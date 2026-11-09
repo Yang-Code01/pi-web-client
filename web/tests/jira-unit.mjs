@@ -11,7 +11,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adfToText, browseUrl, formatBytes, formatUpdated, issueMeta, keyMask, siteUrlProblem } from "../src/jira-shared.ts";
+import { adfToText, browseUrl, downloadMark, formatBytes, formatUpdated, issueMeta, keyMask, siteUrlProblem } from "../src/jira-shared.ts";
 
 const bad = (raw) => {
   const problem = siteUrlProblem(raw);
@@ -197,4 +197,12 @@ test("formatBytes：B / KB / MB 进位，未知显示 —", () => {
   assert.equal(formatBytes(undefined), "—");
   assert.equal(formatBytes(Number.NaN), "—");
   assert.equal(formatBytes(-1), "—");
+});
+
+// ---------------------------------------------------------------- #251 下载结果
+
+test("downloadMark：对勾只给真落盘的那项", () => {
+  assert.equal(downloadMark("saved"), "✓");
+  assert.equal(downloadMark("skipped"), "·");
+  assert.equal(downloadMark("failed"), "✗");
 });

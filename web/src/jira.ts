@@ -9,9 +9,11 @@
  */
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
+import { mountDirPicker } from "./dirpicker.ts";
+import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
-import { adfToText, browseUrl, formatBytes, formatUpdated, issueMeta, keyMask, siteUrlProblem } from "./jira-shared.ts";
-import type { JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
+import { adfToText, browseUrl, downloadMark, formatBytes, formatUpdated, issueMeta, keyMask, siteUrlProblem } from "./jira-shared.ts";
+import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
 
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
 export { keyMask, siteUrlProblem } from "./jira-shared.ts";
@@ -70,6 +72,12 @@ interface DetailEntry {
   state: DetailState | null;
   /** 当前这行详情块的 DOM；整块重画后由 `issueEl` 换成新元素。 */
   el: HTMLElement | null;
+  /** #251：正在下载（按钮禁用 + 文案「正在下载…」）。 */
+  busy: boolean;
+  /** 上一批下载的结果；null = 还没下过或刚刚失败。 */
+  download: JiraDownloadResult | null;
+  /** 整单失败的理由（隧道 403、目录写不进去…）；单项的理由在 item.reason 上。 */
+  dlError: string;
 }
 
 /** 描述超过这个字数就截断，并给一个「在新窗口打开」。 */
@@ -98,6 +106,10 @@ export class JiraPanel {
   private esc: ((ev: KeyboardEvent) => void) | null = null;
   /** #250：展开的行与详情缓存（面板实例内存，不落盘、桥也不缓存，D203）。 */
   private details = new Map<string, DetailEntry>();
+  /** #251：附件根目录（null = 没设）；每次 open / 连接成功后向桥问一次，不信旧值。 */
+  private attachRoot: string | null = null;
+  /** 内嵌在面板里的目录选择层；`null` = 没开。 */
+  private pickerLayer: HTMLElement | null = null;
 
   constructor(host: JiraHost) {
     this.host = host;
@@ -113,6 +125,11 @@ export class JiraPanel {
       if (ev.key !== "Escape") return;
       ev.preventDefault();
       ev.stopPropagation();
+      // 目录选择层开着时，Esc 只收这一层：一下关两层太粗（D204 的「改」也不该顺手关掉面板）。
+      if (this.pickerLayer) {
+        this.closePicker();
+        return;
+      }
       this.close();
     };
     document.addEventListener("keydown", this.esc, true);
@@ -121,6 +138,7 @@ export class JiraPanel {
   }
 
   close(): void {
+    this.closePicker();
     if (this.esc) document.removeEventListener("keydown", this.esc, true);
     this.esc = null;
     this.seq += 1;
@@ -151,6 +169,7 @@ export class JiraPanel {
         this.focusFirst();
         return;
       }
+      await this.loadAttachRoot();
       await this.loadMe(seq);
     } catch (err) {
       if (seq !== this.seq) return;
@@ -234,6 +253,7 @@ export class JiraPanel {
       const mask = keyMask(this.form.apiKey);
       this.config = { configured: true, siteUrl: this.form.siteUrl.trim(), email: this.form.email.trim(), keyMask: mask };
       this.details.clear();
+      await this.loadAttachRoot();
       this.state = this.listsPending(out.me, mask);
       waitLists = true;
       // 验证过就把它从输入框里抹掉：留在页面上没有用，只会多一处能截到图的地方。
@@ -444,6 +464,7 @@ export class JiraPanel {
     const rows = el("div", "jira-rows");
     rows.append(this.row(tr("时区"), me.timezone || "—"));
     rows.append(this.row(tr("API token"), state.mask || "—"));
+    rows.append(this.attachRootRow());
     box.append(rows);
 
     box.append(this.issuesEl(state));
@@ -559,7 +580,7 @@ export class JiraPanel {
   }
 
   private toggleDetail(key: string, siteUrl: string, box: HTMLElement): void {
-    const entry = this.details.get(key) ?? { open: false, state: null, el: box };
+    const entry = this.details.get(key) ?? { open: false, state: null, el: box, busy: false, download: null, dlError: "" };
     entry.el = box;
     entry.open = !entry.open;
     this.details.set(key, entry);
@@ -650,6 +671,166 @@ export class JiraPanel {
       }
       box.append(sec);
     }
+
+    box.append(this.downloadEl(entry, key, siteUrl));
+  }
+
+  /** #251：下载按钮 + 结果就地显示，不再弹第二层结果窗。 */
+  private downloadEl(entry: DetailEntry, key: string, siteUrl: string): HTMLElement {
+    const box = el("div", "jira-download");
+    const bar = el("div", "jira-actions");
+    const btn = el("button", "btn primary jira-dl-btn", entry.busy ? tr("正在下载…（一次一个）") : tr("下载全部")) as HTMLButtonElement;
+    btn.disabled = entry.busy;
+    btn.onclick = () => void this.downloadAll(key, siteUrl, entry);
+    bar.append(btn);
+    box.append(bar);
+    if (entry.dlError) box.append(el("div", "jira-note bad", entry.dlError));
+    const result = entry.download;
+    if (!result) return box;
+
+    const dir = el("div", "jira-dl-dir");
+    dir.append(el("span", "jira-dl-dir-k", tr("已保存到")), el("span", "jira-dl-dir-v", result.dir));
+    dir.title = result.dir;
+    box.append(dir);
+    for (const item of result.items) {
+      const row = el("div", `jira-dl-item ${item.status}`);
+      row.title = item.path;
+      const text = el("div", "jira-dl-text");
+      text.append(el("div", "jira-dl-name", item.filename || tr("（没有文件名）")));
+      text.append(el("div", "jira-dl-path", item.path));
+      if (item.reason) text.append(el("div", "jira-dl-reason", item.reason));
+      row.append(el("span", "jira-dl-mark", downloadMark(item.status)), text);
+      box.append(row);
+    }
+    return box;
+  }
+
+  /** #251：整单一次 POST；桥那边串行落盘，单项失败只失败那一项。 */
+  private async downloadAll(key: string, siteUrl: string, entry: DetailEntry, retried = false): Promise<void> {
+    if (entry.busy) return;
+    entry.busy = true;
+    entry.dlError = "";
+    this.paintDetail(entry, siteUrl, key);
+    try {
+      const out = await api.jiraDownload(key);
+      const current = this.details.get(key) ?? entry;
+      current.download = out;
+      current.dlError = "";
+    } catch (err) {
+      const current = this.details.get(key) ?? entry;
+      current.download = null;
+      // 第一次点还没设目录：弹选择器，选完自动重试一次（只一次，不再弹）。
+      if (codeOf(err) === "need_root" && !retried) {
+        current.busy = false;
+        this.paintDetail(current, siteUrl, key);
+        this.openRootPicker(() => void this.downloadAll(key, siteUrl, current, true));
+        return;
+      }
+      current.dlError = errText(err);
+    } finally {
+      const current = this.details.get(key) ?? entry;
+      current.busy = false;
+    }
+    const current = this.details.get(key) ?? entry;
+    this.paintDetail(current, siteUrl, key);
+  }
+
+  // -------------------------------------------------------------- 附件根目录（#251）
+
+  private async loadAttachRoot(): Promise<void> {
+    try {
+      this.attachRoot = (await api.jiraAttachRoot()).root;
+    } catch {
+      // 问不到就当没设：面板照常能用，只是下载前会先弹选择器。
+    }
+  }
+
+  /** 账号信息里的一行：路径等宽、过长省略（title 给全），右边一颗设置 / 修改。 */
+  private attachRootRow(): HTMLElement {
+    const line = el("div", "jira-row jira-root");
+    line.append(el("span", "jira-k", tr("附件目录")));
+    const root = this.attachRoot;
+    const value = el("span", `jira-v${root ? " mono" : ""}`, root ?? tr("未设置"));
+    if (root) value.title = root;
+    const btn = el("button", "btn ghost jira-root-btn", root ? tr("修改") : tr("设置"));
+    btn.onclick = () => this.openRootPicker(() => undefined);
+    line.append(value, btn);
+    return line;
+  }
+
+  private closePicker(): void {
+    this.pickerLayer?.remove();
+    this.pickerLayer = null;
+  }
+
+  /**
+   * 在面板里内嵌一层目录选择（复用 dirpicker.ts，不另起 window.prompt）。
+   * 选完 PUT 到桥，成功后重画面板（那一行跟着变）再回调；取消就什么都不动。
+   */
+  private openRootPicker(onSaved: (root: string) => void): void {
+    this.closePicker();
+    const layer = el("div", "jira-picker");
+    layer.onclick = (ev) => {
+      if (ev.target === layer) this.closePicker();
+    };
+    const box = el("div", "jira-picker-box");
+    const head = el("div", "jira-picker-head");
+    head.append(el("div", "sheet-title", this.attachRoot ? tr("换一个附件根目录") : tr("选一个附件根目录")));
+    head.append(el("button", "btn ghost jira-close", "×"));
+    (head.lastElementChild as HTMLButtonElement).title = tr("取消");
+    (head.lastElementChild as HTMLButtonElement).setAttribute("aria-label", tr("取消"));
+    (head.lastElementChild as HTMLButtonElement).onclick = () => this.closePicker();
+
+    const hint = el("div", "jira-hint", tr("每个工单的附件落在 <根目录>/<KEY>/ 里。"));
+    const body = el("div", "jira-picker-body");
+    const err = el("div", "jira-note bad");
+    err.hidden = true;
+    const foot = el("div", "jira-picker-foot");
+    const cancel = el("button", "btn ghost", tr("取消"));
+    cancel.onclick = () => this.closePicker();
+    const ok = el("button", "btn primary", tr("用这个目录")) as HTMLButtonElement;
+    ok.disabled = true;
+    foot.append(err, cancel, ok);
+
+    let current = "";
+    let picker: DirPicker | null = null;
+    picker = mountDirPicker(body, {
+      start: this.attachRoot ?? "",
+      files: false,
+      fallback: true,
+      onState: (s) => {
+        current = s.path;
+        ok.disabled = !s.path || !!s.error;
+      },
+    });
+
+    ok.onclick = () => {
+      const root = current || picker?.path() || "";
+      if (!root) return;
+      ok.disabled = true;
+      ok.textContent = tr("正在保存…");
+      err.hidden = true;
+      void (async () => {
+        try {
+          const out = await api.jiraSetAttachRoot(root);
+          if (!this.root) return;
+          this.attachRoot = out.root;
+          this.closePicker();
+          this.render();
+          onSaved(out.root);
+        } catch (e) {
+          err.textContent = errText(e);
+          err.hidden = false;
+          ok.textContent = tr("用这个目录");
+          ok.disabled = false;
+        }
+      })();
+    };
+
+    box.append(head, hint, body, foot);
+    layer.append(box);
+    this.root?.append(layer);
+    this.pickerLayer = layer;
   }
 
   private row(key: string, value: string): HTMLElement {

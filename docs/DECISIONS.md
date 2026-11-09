@@ -3475,3 +3475,27 @@ D
 **接口形状：** `GET /api/jira/issues/:key` → `{ issue: { key, summary, type, priority, status, updated, description }, attachments: { issue: [...], comments: [...] } }`。key 先过形状校验 `^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`（不匹配 400 `jira_key`），大写化后拼 URL；这只是形状校验，能不能看由固定站点与用户 token 决定。上游 404 → 404 `jira_not_found`（「Jira 上没有这个工单」），401/403 沿用 `jira_auth` / `jira_forbidden`。
 
 **验证：** `node bridge/tests/jira-e2e.mjs`（23 项，新增 6 项）：详情字段映射与 description 原样透传、两段附件映射（未知 size → `null`、未知 author → 空串、评论 media 按 id 去重）、响应全文不含 `SENTINEL_COMMENT_TEXT`、key 大写化与形状校验、404/401/403 映射、详情不缓存与未配置 400。`node web/tests/jira-unit.mjs`（18 项，新增 8 项）：`adfToText` 的段落 / 标题 / 嵌套无序与有序列表 / 代码块 / 表格 / media 占位 / mention / hardBreak / 链接 / 空输入，`formatBytes` 的 B/KB/MB 与未知值。`npm --prefix web run typecheck`（含 i18n-check：1821 键 × 3 语）与 `npm run build:web` 都过。
+
+## D204 Jira 下载全部附件：根目录独立成文件、评论 media 探测 uuid、100 MB 上限与串行（工单 #251）
+
+**问题：** 详情块里的两段附件（issue 附件 + 评论附件）要能一键收下来。落盘到哪、评论里那些 media 的 id 与 attachment id 不是一回事、跳转是签名 URL、超大文件与并发、公网隧道下的写权限，五件事都要在桥这边定清楚。
+
+**决定：**
+
+1. **根目录存独立文件，不进 `config.json`。** `statePath("jira", "attachments.json")` 里只有 `{ "root": "<绝对路径>" }`；接口 `GET /api/jira/attachments/root` → `{ root: string | null }`，`PUT` 收 `{ root }`，按 `^[A-Za-z]:[\\/]`、`^\\\\`（UNC）、`^/`（POSIX）认绝对路径，`fs.mkdirSync(root, { recursive: true })` 不抛错才写盘，否则 400 `jira_root`；隧道访客 PUT 403 `tunnel_readonly`（「回本机操作」），GET 照常。代价：桥多一份状态文件，而且「退出连接」不清它（目录不是凭据，重连不该丢）；好处是含 token 的那份文件（chmod 0600）里不会多出一个用户可重复编辑的路径字段。
+
+2. **`POST /api/jira/issues/:key/download` 是批量语义，单项失败不整单失败。** 没设根目录 → 400 `need_root`（「还没设置附件目录」），而且在拉详情之前就返回，一个字节都不写；有目录时拉与详情同一套数据（issue 字段 + 评论 media），落 `<root>/<KEY>/`（KEY 大写），回 `{ dir, items: [{ id, filename, path, status: "saved" | "skipped" | "failed", reason? }] }`，HTTP 仍是 200。`reason` 是中文短句（超限 / 取不到内容 / 找不到对应附件 / 跳转到不允许的地址…）。代价：前端要分「整单错误」（400/403，显示在按钮下）与「单项失败」（逐行显示）两层。
+
+3. **评论 media 的 uuid 不是 attachment id，按需探测。** ADF 里 `attrs.id` 是 media services 的 UUID，直接当 `/rest/api/3/attachment/content/{uuid}` 用会 404。做法：先按 uuid 取；404 时对这张工单的 issue 附件逐个 `GET /rest/api/3/attachment/content/{attachmentId}`（手动不跟随跳转），从 302 的 `Location` 里取 `/file/{uuid}/binary` 的 uuid 反查，命中即重试；探测结果（含失败）记在进程内 `Map`，只有「这张工单有评论 media 且按 uuid 取不到」时才发生。代价：最坏情况每单多 N 次（N = issue 附件数）探测请求；缓存不落盘、桥重启重来。
+
+4. **单文件 100 MB 上限、全程串行。** `MAX_DOWNLOAD = 100 * 1024 * 1024`；`Content-Length` 超限直接 `skipped`（不建文件、不发请求体读取）；没有长度就边写边数，超限立刻中断、删掉半截文件、记 `skipped`。一个文件 `await` 完再下一个，不并发。代价：上限写死，要改得动代码；整单耗时是各文件之和，换来的是不需要并发池、限速与部分失败回收。
+
+5. **跳转只认站点自己或 `*.atl-paas.net` 的 https，第二跳不带 Authorization。** 第一跳 `redirect:"manual"`，`Location` 必须 https、无 userinfo、无 hash、端口空或 443，且 host 等于配置站点或 `atl-paas.net` / `*.atl-paas.net`；跟随那一跳走同一套超时与代理缝，但**不带** Authorization（签名 URL 自带凭据）；别的 host 一律 `failed`。代价：Atlassian 换域名 / 改端口 / 换 CDN 时下载会整体 `failed`，要跟着改白名单这一处；放宽成「任意 https」等于让上游指定主机拿到我们的 Basic 头（SSRF + 凭据外泄）。
+
+6. **文件名清洗是一层纯函数，重名靠附件 id、重下覆盖。** 导出 `safeFileName(name, id)`：`\ / : * ? " < > |` 与控制字符换成 `_`，去首尾空白与结尾的点，Windows 保留名（CON / PRN / AUX / NUL / COM1-9 / LPT1-9，带扩展名也算）前加 `_`，空名回落 `attachment-<id>`，截到 120 字符且保留扩展名；同批内重名 → `name-<id>.ext`；磁盘上已有同名文件就是覆盖（重下不堆副本）。代价：只差非法字符的两个附件会在磁盘上撞名，靠 id 后缀区分；`_CON.txt` 这类改名对用户可见，但比在 Windows 上写失败好。
+
+**接口形状：** `GET /api/jira/attachments/root` → `{ root: string | null }`；`PUT …/attachments/root` body `{ root }` → `{ ok: true, root }`（不合法 400 `jira_root`；隧道 403 `tunnel_readonly`）；`POST /api/jira/issues/:key/download` → `{ dir, items: [{ id, filename, path, status, reason? }] }`（没设目录 400 `need_root`；隧道 403 `tunnel_readonly`；key 形状校验同 `GET /api/jira/issues/:key`，大写化）。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（33 项，新增 10 项：root 的 null / 相对路径 400 / 建目录 / 不写进 config.json、隧道 PUT 403 而 GET 200、`need_root` 不拉详情、完整下载的目录结构与清洗 / 同批重名 / 超限 / 评论 media 探测 / 白名单外跳转 / 第二跳 `authorization` 为 null、重下覆盖、隧道 POST 403、`safeFileName` 与 `attachmentRootProblem` 与 `attachmentRedirectAllowed` 的单测）。`node web/tests/jira-unit.mjs`（19 项，新增 `downloadMark`）、`node web/tests/commands-unit.mjs` 通过；`npm --prefix web run typecheck`（含 i18n-check：1831 键 × 3 语）与 `npm run build:web` 都过。
+
+**偏移点（未在真实租户上核实）：** 白名单按工单原文只收 `*.atl-paas.net`；Atlassian Media 的真实主机若是 `api.media.atlassian.com` 之类，跳转会整体 `failed`。实机确认后只改 `attachmentRedirectAllowed` 一处；先把「拒绝未知主机」定下来，比先放行再看发生了什么安全。

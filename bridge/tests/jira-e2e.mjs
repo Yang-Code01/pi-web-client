@@ -21,7 +21,9 @@ const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "pi-jir
 process.env.PI_WEB_STATE = path.join(tmp, "state");
 fs.mkdirSync(process.env.PI_WEB_STATE, { recursive: true });
 
-const { avatarUrlAllowed, handleJira } = await import("../src/jira.ts");
+const { attachmentRedirectAllowed, attachmentRootProblem, avatarUrlAllowed, handleJira, safeFileName } = await import(
+  "../src/jira.ts"
+);
 
 // ---------------------------------------------------------------- 假 Jira
 
@@ -29,8 +31,10 @@ const { avatarUrlAllowed, handleJira } = await import("../src/jira.ts");
 let jiraMode = "ok";
 /** `search/jql` 单独一档：`ok` / `empty` / `403`。 */
 let searchMode = "ok";
-/** 上游每被命中一次就 +1：用来断言缓存命中与 `refresh=1` 绕过。 */
-const hits = { myself: 0, search: 0, projects: 0, issue: 0, comment: 0 };
+/** 上游每被命中一次就 +1：用来断言缓存命中与 `refresh=1` 绕过。#251 再加按附件 id 计数的 content。 */
+const hits = { myself: 0, search: 0, projects: 0, issue: 0, comment: 0, content: {} };
+/** #251：第二跳（签名 URL 那一跳）收到的 Authorization —— 必须是 null。 */
+let secondHopAuth = null;
 /** 上游收到的最后一个 `search/jql` 查询串（断言页面传不进来任意查询）。 */
 let lastSearch = null;
 /** 上游收到的最后一个详情路径（断言 key 已大写化）。 */
@@ -153,6 +157,95 @@ const jira = http.createServer((req, res) => {
         },
       ],
     });
+  }
+  // #251：下载用的工单与附件内容（与 ACME-12 分开，别搅乱 #250 的断言）。
+  if (url.pathname === "/rest/api/3/issue/ACME-77") {
+    hits.issue++;
+    lastIssuePath = url.pathname;
+    if (deny()) return;
+    return send(200, {
+      key: "ACME-77",
+      fields: {
+        summary: "Attachments to download",
+        issuetype: { name: "Task" },
+        priority: null,
+        status: { name: "To Do" },
+        updated: "2026-11-08T10:00:00.000+0000",
+        description: null,
+        attachment: [
+          // 文件名清洗：`: * ? < >` 都要变成 `_`。
+          { id: "d-1", filename: "bad:name*?<x>.txt", size: 5 },
+          // 同批重名：第二条要加附件 id 后缀。
+          { id: "d-2", filename: "same.pdf", size: 5 },
+          { id: "d-3", filename: "same.pdf", size: 6 },
+          // 超 100 MB：不请求内容，直接跳过。
+          { id: "d-4", filename: "huge.bin", size: 150 * 1024 * 1024 },
+          // 上游没给 size：边写边数，小文件照常落盘。
+          { id: "d-5", filename: "stream.bin" },
+          // 评论 media 的 uuid→attachment id 探测用：内容先 302。
+          { id: "d-media", filename: "media-source.bin", size: 9 },
+          // 跳转到白名单外的 host：必须 failed，不能真去取。
+          { id: "d-bad", filename: "evil.bin", size: 4 },
+        ],
+      },
+    });
+  }
+  if (url.pathname === "/rest/api/3/issue/ACME-77/comment") {
+    hits.comment++;
+    if (deny()) return;
+    return send(200, {
+      comments: [
+        {
+          id: "c-77",
+          author: { displayName: "Grace Hopper" },
+          created: "2026-11-08T12:00:00.000+0000",
+          body: {
+            type: "doc",
+            version: 1,
+            content: [
+              {
+                type: "mediaSingle",
+                content: [{ type: "media", attrs: { id: "media-9", alt: "screenshot.png", type: "file" } }],
+              },
+            ],
+          },
+        },
+      ],
+    });
+  }
+  // #251：附件内容。按 id 回不同字节；302 指向同一台假 Jira，用来验「第二跳不带 Authorization」。
+  const content = /^\/rest\/api\/3\/attachment\/content\/(.+)$/.exec(url.pathname);
+  if (content) {
+    const id = decodeURIComponent(content[1]);
+    hits.content[id] = (hits.content[id] ?? 0) + 1;
+    if (id === "media-9") return send(404, { errorMessages: ["Attachment does not exist"] });
+    if (id === "d-media") {
+      res.writeHead(302, { location: `${jiraBase}/file/media-9/binary` });
+      res.end();
+      return;
+    }
+    if (id === "d-bad") {
+      res.writeHead(302, { location: "https://evil.example/file/x/binary" });
+      res.end();
+      return;
+    }
+    if (id === "d-5") {
+      // 故意不给 content-length（chunked）：桥要边写边数。
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      res.end("chunked-body");
+      return;
+    }
+    const bytes = { "d-1": "alpha", "d-2": "first", "d-3": "second", "d-4": "huge" }[id];
+    if (bytes === undefined) return send(404, { errorMessages: ["Attachment does not exist"] });
+    res.writeHead(200, { "content-type": "application/octet-stream", "content-length": Buffer.byteLength(bytes) });
+    res.end(bytes);
+    return;
+  }
+  if (url.pathname === "/file/media-9/binary") {
+    secondHopAuth = req.headers.authorization ?? null;
+    res.writeHead(200, { "content-type": "image/png", "content-length": 9 });
+    res.end("png-bytes");
+    return;
   }
   if (url.pathname === "/rest/api/3/project/search") {
     hits.projects++;
@@ -367,6 +460,8 @@ async function connect() {
   hits.projects = 0;
   hits.issue = 0;
   hits.comment = 0;
+  hits.content = {};
+  secondHopAuth = null;
   lastSearch = null;
   lastIssuePath = "";
 }
@@ -585,4 +680,172 @@ test("GET issues/:key：不缓存，未配置 400 jira_not_configured", async ()
   const out = await call("GET", "/api/jira/issues/ACME-12");
   assert.equal(out.status, 400);
   assert.equal(out.json.code, "jira_not_configured");
+});
+
+// ---------------------------------------------------------------- #251 下载全部附件
+
+test("GET /api/jira/attachments/root：没设过回 null，不需要先连接 Jira", async () => {
+  freshState();
+  const out = await call("GET", "/api/jira/attachments/root");
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.json, { root: null });
+});
+
+test("PUT root：只收绝对路径，建得出来才保存", async () => {
+  await connect();
+  const state = process.env.PI_WEB_STATE;
+  const relative = await call("PUT", "/api/jira/attachments/root", { root: "jira/attachments" });
+  assert.equal(relative.status, 400);
+  assert.equal(relative.json.code, "jira_root");
+  assert.match(relative.json.error, /绝对路径/);
+  assert.ok(!fs.existsSync(path.join(state, "jira", "attachments.json")));
+
+  const root = path.join(tmp, "attach-root-ok");
+  const saved = await call("PUT", "/api/jira/attachments/root", { root });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.json.root, root);
+  assert.ok(fs.existsSync(root), "PUT 要把目录建出来");
+  assert.deepEqual((await call("GET", "/api/jira/attachments/root")).json, { root });
+  // 根目录独立成文件，不写进含 token 的 config.json（D204）。
+  assert.ok(fs.existsSync(path.join(state, "jira", "attachments.json")));
+  const config = JSON.parse(fs.readFileSync(path.join(state, "jira", "config.json"), "utf8"));
+  assert.equal(config.root, undefined);
+});
+
+test("PUT root：隧道访客 403 tunnel_readonly，GET 照常", async () => {
+  const state = freshState();
+  const root = path.join(tmp, "attach-root-tunnel");
+  const tunnel = { "x-test-tunnel": "1" };
+  const denied = await call("PUT", "/api/jira/attachments/root", { root }, tunnel);
+  assert.equal(denied.status, 403);
+  assert.equal(denied.json.code, "tunnel_readonly");
+  assert.match(denied.json.error, /回本机操作/);
+  assert.ok(!fs.existsSync(path.join(state, "jira", "attachments.json")));
+
+  const read = await call("GET", "/api/jira/attachments/root", undefined, tunnel);
+  assert.equal(read.status, 200);
+  assert.deepEqual(read.json, { root: null });
+});
+
+test("POST download：没设根目录 → 400 need_root，一个字节都不写", async () => {
+  await connect();
+  const state = process.env.PI_WEB_STATE;
+  const out = await call("POST", "/api/jira/issues/ACME-77/download");
+  assert.equal(out.status, 400);
+  assert.equal(out.json.code, "need_root");
+  assert.match(out.json.error, /还没设置附件目录/);
+  assert.equal(hits.issue, 0, "没目录就别去拉详情");
+  assert.ok(!fs.existsSync(path.join(state, "jira", "attachments.json")));
+  assert.deepEqual(fs.readdirSync(tmp).filter((name) => name.startsWith("ACME-77")), []);
+});
+
+test("POST download：落到 <root>/<KEY>/，清洗 / 重名 / 超限 / 跳转各按规则", async () => {
+  await connect();
+  const root = path.join(tmp, "attach-root-77");
+  await call("PUT", "/api/jira/attachments/root", { root });
+
+  const out = await call("POST", "/api/jira/issues/acme-77/download");
+  assert.equal(out.status, 200);
+  const dir = path.join(root, "ACME-77");
+  assert.equal(out.json.dir, dir);
+  assert.ok(fs.existsSync(dir), "KEY 要大写化再建目录");
+
+  const byId = Object.fromEntries(out.json.items.map((item) => [item.id, item]));
+  // 文件名清洗：`: * ? < >` 换成 `_`；磁盘上就是这个名字。
+  assert.equal(byId["d-1"].status, "saved");
+  assert.equal(byId["d-1"].filename, "bad_name___x_.txt");
+  assert.equal(fs.readFileSync(path.join(dir, "bad_name___x_.txt"), "utf8"), "alpha");
+  // 同批重名：后来的那条加附件 id 后缀。
+  assert.equal(byId["d-2"].filename, "same.pdf");
+  assert.equal(byId["d-3"].filename, "same-d-3.pdf");
+  assert.equal(fs.readFileSync(path.join(dir, "same-d-3.pdf"), "utf8"), "second");
+  // 超过 100 MB：跳过并说明，不写文件。
+  assert.equal(byId["d-4"].status, "skipped");
+  assert.match(byId["d-4"].reason, /100 MB/);
+  assert.ok(!fs.existsSync(path.join(dir, "huge.bin")));
+  // 上游没给 size：边写边数，小文件照常落盘。
+  assert.equal(byId["d-5"].status, "saved");
+  assert.equal(fs.readFileSync(path.join(dir, "stream.bin"), "utf8"), "chunked-body");
+  // 评论 media：uuid 不是 attachment id，探测对上后重试。
+  assert.equal(byId["media-9"].status, "saved");
+  assert.equal(byId["media-9"].filename, "screenshot.png");
+  assert.equal(fs.readFileSync(path.join(dir, "screenshot.png"), "utf8"), "png-bytes");
+  // 跳转到白名单外的 host：失败，不写文件。
+  assert.equal(byId["d-bad"].status, "failed");
+  assert.match(byId["d-bad"].reason, /不允许的地址/);
+  assert.equal(secondHopAuth, null, "第二跳不能带 Authorization");
+  assert.deepEqual(fs.readdirSync(dir).sort(), [
+    "bad_name___x_.txt",
+    "media-source.bin",
+    "same-d-3.pdf",
+    "same.pdf",
+    "screenshot.png",
+    "stream.bin",
+  ]);
+});
+
+test("POST download：重下同一工单是覆盖，不堆副本", async () => {
+  await connect();
+  const root = path.join(tmp, "attach-root-again");
+  await call("PUT", "/api/jira/attachments/root", { root });
+  const dir = path.join(root, "ACME-77");
+  await call("POST", "/api/jira/issues/ACME-77/download");
+  const first = fs.readdirSync(dir).sort();
+  const again = await call("POST", "/api/jira/issues/ACME-77/download");
+  assert.equal(again.status, 200);
+  assert.deepEqual(fs.readdirSync(dir).sort(), first);
+  assert.equal(fs.readFileSync(path.join(dir, "same.pdf"), "utf8"), "first");
+});
+
+test("POST download：隧道访客 403 tunnel_readonly，不碰磁盘", async () => {
+  await connect();
+  const state = process.env.PI_WEB_STATE;
+  const root = path.join(tmp, "attach-root-tunnel-dl");
+  await call("PUT", "/api/jira/attachments/root", { root });
+  const out = await call("POST", "/api/jira/issues/ACME-77/download", undefined, { "x-test-tunnel": "1" });
+  assert.equal(out.status, 403);
+  assert.equal(out.json.code, "tunnel_readonly");
+  assert.match(out.json.error, /回本机操作/);
+  assert.ok(!fs.existsSync(path.join(root, "ACME-77")));
+  assert.ok(fs.existsSync(path.join(state, "jira", "attachments.json")));
+});
+
+test("safeFileName：非法字符 / 保留名 / 空名 / 结尾点 / 长度", () => {
+  assert.equal(safeFileName("bad:name*?<x>.txt", "d-1"), "bad_name___x_.txt");
+  assert.equal(safeFileName("dir/sub\\file.txt", "d-2"), "dir_sub_file.txt");
+  assert.equal(safeFileName("CON.txt", "d-3"), "_CON.txt");
+  assert.equal(safeFileName("lpt9", "d-4"), "_lpt9");
+  assert.equal(safeFileName("  report.pdf.  ", "d-5"), "report.pdf");
+  assert.equal(safeFileName("", "d-6"), "attachment-d-6");
+  assert.equal(safeFileName("   ", "d-7"), "attachment-d-7");
+  const long = safeFileName(`${"a".repeat(200)}.pdf`, "d-8");
+  assert.equal(long.length, 120);
+  assert.ok(long.endsWith(".pdf"));
+  assert.equal(safeFileName("hi\u0001there.txt", "d-9"), "hi_there.txt");
+});
+
+test("attachmentRootProblem：只认绝对路径（盘符 / UNC / POSIX）", () => {
+  assert.equal(attachmentRootProblem(""), "请填一个附件目录");
+  assert.equal(attachmentRootProblem("   "), "请填一个附件目录");
+  assert.equal(attachmentRootProblem("jira"), "附件目录要填绝对路径（例如 D:\\jira 或 /home/me/jira）");
+  assert.equal(attachmentRootProblem("./out"), "附件目录要填绝对路径（例如 D:\\jira 或 /home/me/jira）");
+  assert.equal(attachmentRootProblem("C:\\jira"), null);
+  assert.equal(attachmentRootProblem("C:/jira"), null);
+  assert.equal(attachmentRootProblem("\\\\nas\\share"), null);
+  assert.equal(attachmentRootProblem("/home/me/jira"), null);
+});
+
+test("attachmentRedirectAllowed：只认站点自己与 *.atl-paas.net 的 https", () => {
+  const site = "https://acme.atlassian.net";
+  assert.equal(attachmentRedirectAllowed("https://acme.atlassian.net/file/u1/binary", site), true);
+  assert.equal(attachmentRedirectAllowed("https://media.atl-paas.net/file/u1/binary", site), true);
+  assert.equal(attachmentRedirectAllowed("https://media.atl-paas.net:443/file/u1/binary", site), true);
+  assert.equal(attachmentRedirectAllowed("https://atl-paas.net/file/u1/binary", site), true);
+  assert.equal(attachmentRedirectAllowed("http://media.atl-paas.net/file/u1/binary", site), false);
+  assert.equal(attachmentRedirectAllowed("https://evil.example/file/u1/binary", site), false);
+  assert.equal(attachmentRedirectAllowed("https://media.atl-paas.net.evil.example/f", site), false);
+  assert.equal(attachmentRedirectAllowed("https://user:pw@media.atl-paas.net/f", site), false);
+  assert.equal(attachmentRedirectAllowed("https://media.atl-paas.net:8443/f", site), false);
+  assert.equal(attachmentRedirectAllowed("https://media.atl-paas.net/f#x", site), false);
+  assert.equal(attachmentRedirectAllowed("not a url", site), false);
 });
