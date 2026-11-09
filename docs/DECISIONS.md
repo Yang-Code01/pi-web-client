@@ -3568,7 +3568,7 @@ D
 
 **验证：** 本 PR 只落设计与实现单（#256–#259）。实现门槛：`node bridge/tests/jira-search-unit.mjs`（条件→JQL 与校验）、`node bridge/tests/jira-e2e.mjs`（三条路由、watcher 重试、meta 缓存、隧道）、`node web/tests/jira-unit.mjs`（query 组装与本地记忆）、`npm --prefix web run typecheck`（含 i18n-check）、`npm run build:web`；界面按 `docs/JIRA-SEARCH.md` 的手点清单验收。
 
-## D208 行 2 的「本区」不拿全量置顶兜底：没有当前会话就只剩 ＋
+## D210 行 2 的「本区」不拿全量置顶兜底：没有当前会话就只剩 ＋
 
 **问题：** 用户在只有 1 个会话的「月报」工作区里，看到行 2 铺着 13 颗别组的 ★ 胶囊（截图里是 9 颗 + `＋5`），括弧里那句「我明明只在这组」就是 D145 留下的两条兜底造成的：`starredRow()` 在**没有当前会话**、以及**反查不到当前会话属于哪个组**时都返回 `manage.pin` 全量。全量置顶与当前组无关，于是左栏越干净，这条越像串组。
 

@@ -58,7 +58,7 @@ const workspace = () => ({ groups: GROUPS, overrides: OVERRIDES, keys: KEYS });
 /** 页面发上来的每一条（B 的浮层拖拽要断言真的发了 `ws.move`）。 */
 const msgs = [];
 /**
- * D208：pin 里放一颗 proj-01 的 ★（s-01-2）和两颗别组的 —— 探针后面打开的是 proj-01 的 s-01-1，
+ * D210：pin 里放一颗 proj-01 的 ★（s-01-2）和两颗别组的 —— 探针后面打开的是 proj-01 的 s-01-1，
  * 于是能同时证明两件事：行 2 只画本区那一颗，别组的两颗不串进来。
  */
 const MANAGE = { pin: ["s-01-2", "s-02-1", "s-03-2"], order: SESSIONS.map((s) => s.id), archived: [] };
@@ -246,7 +246,7 @@ for (const layout of ["a", "b", "c", "d"]) {
 
   await setLayout(page, layout);
   const p1 = await prefs(page);
-  // D208：没打开会话 → 行 2 不铺别组 ★；打开 proj-01 的会话后也一颗都不串进来。
+  // D210：没打开会话 → 行 2 不铺别组 ★；打开 proj-01 的会话后也一颗都不串进来。
   const rowPins = () => page.locator(".ws-session-row .pin-chip[data-pin-id]").count();
   if (layout === "a") {
     const none = await rowPins();

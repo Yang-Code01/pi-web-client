@@ -228,7 +228,7 @@ await passGate();
 await sleep(500);
 
 let t = await tree();
-// D208：行 2 的「本区」只在有当前会话时才有定义。这里没打开任何会话，而 manage.pin 里有一颗
+// D210：行 2 的「本区」只在有当前会话时才有定义。这里没打开任何会话，而 manage.pin 里有一颗
 // tools 组的 s-tools —— 改前它会被当成全量置顶铺进行 2，改后行 2 只剩那颗 ＋。
 const rowChips = await page.locator(".pin-strip .pin-chip[data-pin-id]").count();
 ok(rowChips === 0, `没打开会话时行 2 不列任何 ★ 胶囊（${rowChips}）`);

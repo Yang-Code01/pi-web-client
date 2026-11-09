@@ -7,7 +7,7 @@
  * 由顶栏那颗 NowChip（#96）负责说。
  *
  * 断言七件事：
- *   0. 旧桥（hello 里没有 workspace 快照）+ 没有当前会话 → 行 2 仍铺置顶列表（D208 决定 3）；
+ *   0. 旧桥（hello 里没有 workspace 快照）+ 没有当前会话 → 行 2 仍铺置顶列表（D210 决定 3）；
  *   1. 深链 `#/s/<id>` 打开一个没置顶过的会话 → pin / order 一个都不动（会话确实打开了）；
  *   2. 左栏点开另一个没置顶的会话 → 同样不动，而且前端不再发 `opened` 这条消息；
  *   3. 从「已归档」点开归档会话 → 会话能打开，但它仍然留在归档里；
@@ -140,7 +140,7 @@ const strip = () =>
     };
   });
 
-// 0) 旧桥 + 没有当前会话：行 2 仍铺置顶（D208 决定 3 —— 旧桥那条腿比「没有当前会话」先判）
+// 0) 旧桥 + 没有当前会话：行 2 仍铺置顶（D210 决定 3 —— 旧桥那条腿比「没有当前会话」先判）
 await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
 if (await page.locator('input[type="password"]').count()) {
   await page.fill('input[type="password"]', "probe");
