@@ -191,6 +191,18 @@ try {
     (await projectInputs.count()) > 0 && (await projectInputs.evaluateAll((nodes) => nodes.every((n) => n.disabled))),
     `未信任时输入 disabled（${await projectInputs.count()} 个）`,
   );
+  log("G4b. 未信任也能看对照，回表单仍只读");
+  await page.locator('[data-role="settings-compare"]').click();
+  await page.locator(".st-cmp").waitFor({ timeout: 15000 });
+  check((await page.locator(".st-cmp-row").count()) > 0, "未信任时对照表可看");
+  check((await page.locator(".st-cmp-cell.win").count()) > 0, "未信任时生效格仍标出");
+  await page.locator('.st-cmp-row[data-key="defaultModel"]').click();
+  await until(async () => (await page.locator(".st-cmp").count()) === 0, 15000, "compare closed untrusted");
+  check(await page.locator('[data-role="settings-save"]').isDisabled(), "回表单保存仍 disabled");
+  check(
+    (await page.locator(".settings-row input, .settings-row select").evaluateAll((nodes) => nodes.every((n) => n.disabled))),
+    "回表单输入仍 disabled",
+  );
   await page.screenshot({ path: path.join(SHOTS, "settings-console-project-untrusted.png") });
 
   log("G2. 信任后切项目：继承 placeholder、模型写一对键");
@@ -248,6 +260,63 @@ try {
   await page.locator(".st-head__actions button", { hasText: "刷新" }).click();
   await until(async () => (await page.locator("textarea.settings-json").count()) === 0, 20000, "form back after fix");
   check(Boolean(await thinkRow().count()), "修好文件后回到表单");
+
+  // ---------------------------------------------------------------- H. #286 对照表
+  log("H. 「对照」：三列只读表 + 生效标记");
+  const compareBtn = () => page.locator('[data-role="settings-compare"]');
+  check((await compareBtn().innerText()).trim() === "对照", "头部有「对照」");
+  await compareBtn().click();
+  await page.locator(".st-cmp").waitFor({ timeout: 15000 });
+  const cmpHead = (await page.locator(".st-cmp-head > span").allInnerTexts()).map((s) => s.trim());
+  check(cmpHead.join("/") === "设置/全局/项目", `对照表三列（${cmpHead.join("/")}）`);
+  check((await page.locator(".st-cmp input, .st-cmp select").count()) === 0, "对照表只读（没有输入）");
+  const cmpNote = (await page.locator(".st-cmp-note").innerText()).trim();
+  check(cmpNote.includes("表格只读") && cmpNote.includes("只写你改过的键"), `顶部说明（${cmpNote}）`);
+  check((await compareBtn().innerText()).trim() === "回到表单", "进入对照后按钮变「回到表单」");
+  const cmpRow = (key) => page.locator(`.st-cmp-row[data-key="${key}"]`);
+  const cmpCell = (key, scope) => cmpRow(key).locator(`.st-cmp-cell[data-scope="${scope}"]`);
+  const modelGlobal = (await cmpCell("defaultModel", "global").innerText()).trim();
+  check(modelGlobal.includes("默认 · 自动，挑一个能用的"), `模型全局格「默认 · X」（${modelGlobal}）`);
+  const modelProject = (await cmpCell("defaultModel", "project").innerText()).trim();
+  check(modelProject.includes("项目生效"), `模型项目格「项目生效」（${modelProject}）`);
+  const thinkInherit = (await cmpCell("defaultThinkingLevel", "project").innerText()).trim();
+  check(thinkInherit.includes("继承全局 · max"), `未设置项目格「继承全局」（${thinkInherit}）`);
+
+  log("H2. globalOnly 行项目列「仅全局」");
+  const onlyGlobal = (await cmpCell("cacheWarming", "project").innerText()).trim();
+  check(onlyGlobal === "仅全局", `globalOnly 项目格（${onlyGlobal}）`);
+
+  log("H3. 「只看项目覆盖」只影响视图");
+  const opacity = async (key) => Number(await cmpRow(key).evaluate((n) => getComputedStyle(n).opacity));
+  const filterBtn = () => page.locator('[data-role="settings-filter"]');
+  check((await opacity("defaultThinkingLevel")) === 1, "未过滤时无覆盖行正常显示");
+  await filterBtn().click();
+  await until(async () => (await opacity("defaultThinkingLevel")) < 0.5, 15000, "rows without project override dim");
+  check((await opacity("defaultThinkingLevel")) < 0.5, "无项目覆盖的行变暗");
+  check((await opacity("defaultModel")) === 1, "有项目覆盖的行不变暗");
+  check((await filterBtn().innerText()).trim() === "显示全部", "过滤后按钮变「显示全部」");
+  await filterBtn().click();
+  await until(async () => (await opacity("defaultThinkingLevel")) === 1, 15000, "dim restored");
+  check((await filterBtn().innerText()).trim() === "只看项目覆盖", "再点恢复全部行");
+
+  log("H4. 点行回表单、聚焦、高亮");
+  await cmpRow("defaultModel").click();
+  await until(async () => (await page.locator(".st-cmp").count()) === 0, 15000, "compare closed");
+  check((await compareBtn().innerText()).trim() === "对照", "按钮变回「对照」");
+  check(
+    await page.locator('.settings-row[data-key="defaultModel"] select').evaluate((n) => n === document.activeElement),
+    "默认模型的输入获得焦点",
+  );
+  check((await page.locator('.settings-row[data-key="defaultModel"].flash').count()) === 1, "对应行短暂高亮");
+
+  log("H5. 换页退出对照，回设置页默认表单");
+  await compareBtn().click();
+  await page.locator(".st-cmp").waitFor({ timeout: 15000 });
+  await page.locator('.st-nav__item[data-tab="trust"]').click();
+  await until(async () => (await page.locator(".st-cmp").count()) === 0, 15000, "compare reset on nav");
+  await page.locator('.st-nav__item[data-tab="global"]').click();
+  await until(async () => (await page.locator(".settings-form").count()) > 0, 15000, "form back");
+  check((await compareBtn().innerText()).trim() === "对照", "换页后对照关闭");
 
   // ---------------------------------------------------------------- B. 每一页都能打开、都有内容
   log("B. 逐个点开九项");
@@ -346,11 +415,20 @@ try {
   await page.screenshot({ path: path.join(SHOTS, "settings-console-900.png") });
 
   // ---------------------------------------------------------------- F. Escape
-  log("F. Escape 关闭");
+  log("F. Escape 关闭；重新打开默认表单");
   await page.setViewportSize({ width: 1440, height: 940 });
+  await page.locator('.st-nav__item[data-tab="global"]').click();
+  await until(async () => (await page.locator(".settings-form").count()) > 0, 15000, "settings form");
+  await page.locator('[data-role="settings-compare"]').click();
+  await page.locator(".st-cmp").waitFor({ timeout: 15000 });
   await page.keyboard.press("Escape");
   await until(async () => (await page.locator(".st-console").count()) === 0, 5000, "escape close");
   check((await page.locator(".st-console").count()) === 0, "Escape 关掉控制台");
+  await page.locator(".composer textarea").fill("/settings");
+  await page.keyboard.press("Enter");
+  await page.locator(".st-console").waitFor({ timeout: 20000 });
+  await until(async () => (await page.locator(".settings-form").count()) > 0, 20000, "form on reopen");
+  check((await page.locator(".st-cmp").count()) === 0, "重新打开设置默认是表单");
   check(pageErrors.length === 0, `没有 pageerror${pageErrors.length ? `：${pageErrors.slice(0, 3).join(" | ")}` : ""}`);
   if (pageErrors.length) failed = true;
 } catch (e) {
