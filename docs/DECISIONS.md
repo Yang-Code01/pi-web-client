@@ -3453,3 +3453,99 @@ D
 - 刻度受版面限制仍挨 D60 采样：`fit = floor((0.7×视口高 + 4) / 6)`（844px 约 99 根、900px 约 105 根），所以「120 轮 = 120 根刻度」只在能装下时成立；**行是全量的**（120 行）。票面那句话要当「轮次都画上了、能装下就一根不少」读。
 
 **验证：** `node --experimental-strip-types bridge/tests/history-ui.mjs`（63 项）：G. 点最上面那根淡刻度 → 期间按钮 `disabled` + 「载入中…」、刻度带 `.busy`，正好 3 个 `history.before`，翻完定位到第 1 轮并带 `.turn-flash`、按钮收起、`.busy` 撤掉；H. 起跳后同一拍派发上滚 `wheel` → 只取回已在飞的那一页（1 个请求）、不高亮、第 1 轮仍在视口上方很远、按钮回「载入更早」；I. 假桥在 `session` 帧的 `history.turns` 前插一条正文里不存在的轮次 → 点那一**行**（行与刻度共用回调）翻到头就停（3 个请求）、顶部那行是「没翻到第 1 轮」且可见（行不隐藏、钮不可点）、**带子上那句提示的 bounding box 落在视口内**、不跳不高亮、800ms 后不再发请求、3 秒后两处提示都自己收。另有「ghost 行的 aria-label 写着未载入」。已载入的刻度点击照旧即时定位（E 段原断言）。两边 typecheck（`npm --prefix web run typecheck` 含 i18n-check、`npm --prefix bridge run typecheck`）与 `bridge/tests/history-page-unit.mjs` 都过。
+## D202 Jira 连接：凭据留在桥里，页面只见掩码；隧道只读（工单 #248）
+
+**问题：** 网页客户端要连 Jira（#247 第一张单：入口 + 连接 + 个人信息）。Jira Cloud 的 REST API 用 Basic 认证（邮箱 + API token），token 等于账号的完全权限；页面是可能被隧道带出去的，凭证存哪、谁能读、能对哪里发请求，都得先定下来。
+
+**决定：**
+
+1. **凭据由桥保管，明文 0600 写 `statePath("jira", "config.json")`（`{ siteUrl, email, apiKey }`）。** 页面只能 `GET /api/jira/config`，拿到的是 `{ configured, siteUrl, email, keyMask }`——token 只回 `••••` + 后 4 位。错误文本、日志也不含 token。代价：本机任何读到这个文件的人就有完整权限；页面被 XSS 也拿不到 token，但拦不住本机同用户的进程。要再加一层，可将来接系统钥匙串（Windows Credential Manager），目前不做。
+2. **保存先验证，再落盘。** `PUT /api/jira/config` 用这组凭据真打 `GET /rest/api/3/myself`，2xx 才写文件；非 2xx / 网络错一律 400 + `{ error, code }`，状态目录里不出现新文件，页面保留用户已填的值。代价：保存慢一个往返（15 秒超时封顶），且 Jira 抖动时保存不了——这正是要暴露的事。
+3. **单站点，只发配置站点。** 站点地址必须 https、无 userinfo、无路径/查询/片段、不是 IP 字面量、不是 `localhost` / `*.local` / `*.internal`；出站只有 `new URL("/rest/api/3/…", siteUrl)`，并在 `fetch` 前断言目标 origin 与配置站点相同（重定向 `redirect: "manual"`，不跟）。桥不做开放代理：没有任何接口接受用户给的 URL。代价：不支持自建 Server/Data Center（http + 内网域名），也不支持同一账号连多个站点——要连就退出重连。
+4. **头像多信一个 Atlassian 域名。** 头像字节由桥去取（`GET /api/jira/me/avatar`），但 Cloud 的 `avatarUrls` 实际落在 `*.atl-paas.net` CDN 上，只认「同站 origin」会让所有人的头像都取不到。所以允许名单 = 同站 origin 或 host 以 `.atl-paas.net` 结尾，两者都要求 https、无 userinfo、端口为空或 443、无 fragment；仍不接受任意 URL（页面没有入口传 URL），不跟随重定向，取不到就 502 `jira_avatar`、界面退回首字母。代价：放行了一个第三方域名——它由 Atlassian 控制、且只用于取图；若哪天 CDN 换域名，按这份名单会取不到头像，改一处常量即可。
+5. **隧道只读。** `publicReq`（隧道来的请求）下 `PUT` / `DELETE /api/jira/config` 一律 403 `{ error: "回本机操作", code: "tunnel_readonly" }`；`GET config` / `GET me` 照常。代价：在外面用手机改 token 得回本机——写凭据这件事不该让一条隧道代劳。
+6. **不探测 Jira MCP。** 面板底部只放一行提示「读描述和评论要用 Jira MCP：在设置 → 扩展与 MCP 里安装」+ 一颗跳过去的按钮。查 MCP 有没有装要读设置、猜服务器名，提示反而更容易说错。代价：用户装没装、装得对不对，面板不知道；点进去自己看。
+
+**为什么由桥代理而不是浏览器直连：** token 一旦进了浏览器就能被页面脚本、扩展、隧道读到；由桥保管，页面拿不到原始 token，出站地址也只由桥决定（上面第 3 条），顺手把 CORS 与「站点地址由用户填」的 SSRF 面收在一处。代价是桥多两个上游请求路径与一个凭据文件。
+
+**代价 / 可改：** 明文 0600 在 Windows 上 `chmod` 基本无效（ACL 仍按用户目录继承，同用户进程可读）；换钥匙串是一次独立改动，接口形状不用变。掩码只露后 4 位，用户据此分辨「是不是换过 token」，看不到全串——这是有意的。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（9 项，假 Jira + 临时 `PI_WEB_STATE`）：未配置 `configured:false` / 错 token 400 + `jira_auth` + 原话 + **文件不存在** / 正确凭据落盘且 GET 响应全文不含 token / `GET me` 401→401、403→403 / 未配置 `jira_not_configured` / DELETE 后回未配置 / 隧道 PUT·DELETE 403 `tunnel_readonly` 而 GET 200 / 白名单外头像 502 `jira_avatar` / `avatarUrlAllowed` 正反例。`node web/tests/jira-unit.mjs`（7 项，纯函数在 `web/src/jira-shared.ts`，不经 `chat.ts`，Node 26 直接跑）：`siteUrlProblem` 的 http·IP·localhost·`.local`·path·query 全拒、正常 Cloud 站点（含结尾 `/`、无 scheme）通过；`keyMask` 只露后 4 位。`npm --prefix web run typecheck`（含 i18n-check：1807 键 × 3 语）与 `npm run build:web` 都过。
+
+## D203 Jira 列表：桥固定查询 + 60 秒内存缓存（工单 #249）
+
+**问题：** 连上 Jira 之后，面板要显示「我的未完成」和「可访问项目」。这两段都是上游实时数据，但面板开关频繁（每次 `open()` 都重新问桥，D202），Jira Cloud 又按账号限流；同时页面不该有能力对 Jira 发起任意查询。
+
+**决定：**
+
+1. **查询由桥写死，页面没有查询面。** `GET /api/jira/issues` 固定 `jql = "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC"`、`maxResults=20`、`fields=summary,issuetype,priority,status,updated`，打新的 `GET /rest/api/3/search/jql`（老的 `/rest/api/3/search` 正被 Atlassian 下线）；`GET /api/jira/projects` 固定 `GET /rest/api/3/project/search?maxResults=20`，只取 `values` 的 `key`/`name`。除了 `refresh=1`，页面传来的其它 query（`jql`、`fields`、`startAt`、`maxResults`…）一律忽略。代价：本单只能看「分配给我 + 未解决」这一种列表，想换查询条件得改桥——这正是 #249 要的边界，任意 JQL 入口是另一个产品决定。
+2. **60 秒内存缓存，按当前配置分键。** issues / projects 各一条，键是 `产物 + siteUrl + email + keyMask(apiKey)`；只缓存整理后的 `JiraIssue[]` / `JiraProject[]`（不缓存上游响应对象），过期即弃。`GET …?refresh=1` 跳过读取、取到后覆盖缓存；只有成功的 2xx 结果会进缓存，401/403/网络错不缓存，下次照旧重试。代价：两个标签页共享同一份缓存（它们本来就在同一台桥后面），换账号后 60 秒内看到旧列表的窗口最多一个 TTL。
+3. **为什么不落盘。** 列表是易变数据，缓存的目的只是省请求、避开限流；进程重启后重取一次的成本远低于维护一份可能过期的文件，也少一处要跟着「清除凭据」清理的磁盘状态。代价：桥一重启就冷启动，第一打开面板必然打两次上游。
+4. **保存 / 清除凭据时清空缓存。** `writeJiraConfig` / `clearJiraConfig` 都调用 `clearListCache()`：换了站点或 token 还读旧缓存，等于把上一个账号能看的列表展示给下一个人。键里已经带了配置，清空是双保险，也顺手回收内存。代价：重连后的第一次打开一定等一个往返（本来也要验证凭据）。
+5. **错误码沿用 `me` 的口径。** 未配置 400 `jira_not_configured`；上游 401 → 401 `jira_auth`；403 → 403 `jira_forbidden`；其它非 2xx / 网络错 502 `jira_upstream` / `jira_network`；响应永远 `{ error, code }`，不回 token。前端据此把 401/403 整块换成「凭据失效 + 去改 token」，其它错误只在列表位置留一行字。
+
+**为什么缓存放在桥而不是页面：** 页面缓存跨不过标签页、也挡不住刷新页面，而限流是账号级的；桥是唯一知道当前凭据的地方，缓存键能跟着配置走，保存/清除凭据时也能一致地失效。代价：桥多一份进程内状态，多实例部署时各自一份（本工具就是单机进程，不做共享缓存）。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（17 项，假 Jira 加 `search/jql` 与 `project/search` + 命中计数器）：固定 JQL/字段（含页面传 `jql`、`fields`、`startAt` 被忽略）、字段映射（priority 为空回 `null`）、空列表、401/403 映射、两次读取只打一次上游、`refresh=1` 再打一次、`projects` 的映射与缓存、重新保存凭据清空缓存、未配置 400。`node web/tests/jira-unit.mjs`（10 项）：`browseUrl` / `formatUpdated` / `issueMeta`。`npm --prefix web run typecheck`（含 i18n-check：1814 键 × 3 语）与 `npm run build:web` 都过。
+
+## D204 Jira 详情：ADF 在页面端解释、评论只为附件而取、详情不缓存（工单 #250）
+
+**问题：** 「我的未完成」里点一行要就地展开详情：描述（Jira Cloud 存的是 ADF）+ 两段附件清单（issue 附件、评论附件）。描述要不要桥先转成文本、评论正文要不要一起返回、详情要不要缓存，三件事都会影响接口边界与将来的下载（#251）。
+
+**决定：**
+
+1. **描述 ADF → 纯文本在页面端做，桥原样透传。** `GET /api/jira/issues/:key` 的 `issue.description` 就是上游 `fields.description`（可能是 `null` 或 ADF 对象），桥不解析、不裁剪；`web/src/jira-shared.ts` 的 `adfToText()` 把段落 / 标题 / 列表 / 代码块 / 表格 / 引用 / 分隔线转成可读文本，`media` 节点变成 `[图片]` / `[附件]` 占位，超过 800 字截断并给「在新窗口打开」。代价：页面多一层要跟着 ADF 演进维护的转换器（认不出的节点类型会退化成丢格式的纯文本）；好处是桥保持「只做认证与转发」的单一职责，将来别的界面（预览、摘要）能复用同一份 ADF。
+2. **评论只为附件而取：只挖 `media` / `mediaSingle` 节点的 `attrs.id`。** 详情固定打一次 `GET /rest/api/3/issue/<KEY>/comment?maxResults=100`，遍历每条评论的 ADF body 收集 media id，映射成 `{ id, filename: attrs.alt || attrs.title || "附件", size: null, author: comment.author.displayName, created: comment.created }`，按 id 去重；评论正文、body 原样、其它字段都不进响应（e2e 用哨兵字符串断言全文不含）。代价：评论附件拿不到真实大小（media 节点里没有），界面显示 `—`；这条评论接口失败时整个详情按该错误码失败，而不是静默少一段附件——宁可让用户看见「读不到」，也不假装「没有评论附件」。
+3. **详情不缓存，只记在面板实例内存里。** 详情是点开才要的数据，桥端没有 TTL 缓存（与 D203 的列表缓存分开）；页面用 `Map<key, {open, state}>` 记住已经取到的结果，收起再展开、多行同时展开都不重请求，面板关闭 / 重连 / 换账号即丢弃。代价：同一工单在两个标签页里各请求一次；页面刷新后重新取；换来的是不会把上一个账号的工单详情留在内存里，也少一份要跟凭据失效同步的缓存。
+
+**接口形状：** `GET /api/jira/issues/:key` → `{ issue: { key, summary, type, priority, status, updated, description }, attachments: { issue: [...], comments: [...] } }`。key 先过形状校验 `^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`（不匹配 400 `jira_key`），大写化后拼 URL；这只是形状校验，能不能看由固定站点与用户 token 决定。上游 404 → 404 `jira_not_found`（「Jira 上没有这个工单」），401/403 沿用 `jira_auth` / `jira_forbidden`。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（23 项，新增 6 项）：详情字段映射与 description 原样透传、两段附件映射（未知 size → `null`、未知 author → 空串、评论 media 按 id 去重）、响应全文不含 `SENTINEL_COMMENT_TEXT`、key 大写化与形状校验、404/401/403 映射、详情不缓存与未配置 400。`node web/tests/jira-unit.mjs`（18 项，新增 8 项）：`adfToText` 的段落 / 标题 / 嵌套无序与有序列表 / 代码块 / 表格 / media 占位 / mention / hardBreak / 链接 / 空输入，`formatBytes` 的 B/KB/MB 与未知值。`npm --prefix web run typecheck`（含 i18n-check：1821 键 × 3 语）与 `npm run build:web` 都过。
+
+## D205 Jira 下载全部附件：根目录独立成文件、评论 media 探测 uuid、100 MB 上限与串行（工单 #251）
+
+**问题：** 详情块里的两段附件（issue 附件 + 评论附件）要能一键收下来。落盘到哪、评论里那些 media 的 id 与 attachment id 不是一回事、跳转是签名 URL、超大文件与并发、公网隧道下的写权限，五件事都要在桥这边定清楚。
+
+**决定：**
+
+1. **根目录存独立文件，不进 `config.json`。** `statePath("jira", "attachments.json")` 里只有 `{ "root": "<绝对路径>" }`；接口 `GET /api/jira/attachments/root` → `{ root: string | null }`，`PUT` 收 `{ root }`，按 `^[A-Za-z]:[\\/]`、`^\\\\`（UNC）、`^/`（POSIX）认绝对路径，`fs.mkdirSync(root, { recursive: true })` 不抛错才写盘，否则 400 `jira_root`；隧道访客 PUT 403 `tunnel_readonly`（「回本机操作」），GET 照常。代价：桥多一份状态文件，而且「退出连接」不清它（目录不是凭据，重连不该丢）；好处是含 token 的那份文件（chmod 0600）里不会多出一个用户可重复编辑的路径字段。
+
+2. **`POST /api/jira/issues/:key/download` 是批量语义，单项失败不整单失败。** 没设根目录 → 400 `need_root`（「还没设置附件目录」），而且在拉详情之前就返回，一个字节都不写；有目录时拉与详情同一套数据（issue 字段 + 评论 media），落 `<root>/<KEY>/`（KEY 大写），回 `{ dir, items: [{ id, filename, path, status: "saved" | "skipped" | "failed", reason? }] }`，HTTP 仍是 200。`reason` 是中文短句（超限 / 取不到内容 / 找不到对应附件 / 跳转到不允许的地址…）。代价：前端要分「整单错误」（400/403，显示在按钮下）与「单项失败」（逐行显示）两层。
+
+3. **评论 media 的 uuid 不是 attachment id，按需探测。** ADF 里 `attrs.id` 是 media services 的 UUID，直接当 `/rest/api/3/attachment/content/{uuid}` 用会 404。做法：先按 uuid 取；404 时对这张工单的 issue 附件逐个 `GET /rest/api/3/attachment/content/{attachmentId}`（手动不跟随跳转），从 302 的 `Location` 里取 `/file/{uuid}/binary` 的 uuid 反查，命中即重试；探测结果（含失败）记在进程内 `Map`，只有「这张工单有评论 media 且按 uuid 取不到」时才发生。代价：最坏情况每单多 N 次（N = issue 附件数）探测请求；缓存不落盘、桥重启重来。
+
+4. **单文件 100 MB 上限、全程串行。** `MAX_DOWNLOAD = 100 * 1024 * 1024`；`Content-Length` 超限直接 `skipped`（不建文件、不发请求体读取）；没有长度就边写边数，超限立刻中断、删掉半截文件、记 `skipped`。一个文件 `await` 完再下一个，不并发。代价：上限写死，要改得动代码；整单耗时是各文件之和，换来的是不需要并发池、限速与部分失败回收。
+
+5. **跳转只认站点自己或 `*.atl-paas.net` 的 https，第二跳不带 Authorization。** 第一跳 `redirect:"manual"`，`Location` 必须 https、无 userinfo、无 hash、端口空或 443，且 host 等于配置站点或 `atl-paas.net` / `*.atl-paas.net`；跟随那一跳走同一套超时与代理缝，但**不带** Authorization（签名 URL 自带凭据）；别的 host 一律 `failed`。代价：Atlassian 换域名 / 改端口 / 换 CDN 时下载会整体 `failed`，要跟着改白名单这一处；放宽成「任意 https」等于让上游指定主机拿到我们的 Basic 头（SSRF + 凭据外泄）。
+
+6. **文件名清洗是一层纯函数，重名靠附件 id、重下覆盖。** 导出 `safeFileName(name, id)`：`\ / : * ? " < > |` 与控制字符换成 `_`，去首尾空白与结尾的点，Windows 保留名（CON / PRN / AUX / NUL / COM1-9 / LPT1-9，带扩展名也算）前加 `_`，空名回落 `attachment-<id>`，截到 120 字符且保留扩展名；同批内重名 → `name-<id>.ext`；磁盘上已有同名文件就是覆盖（重下不堆副本）。代价：只差非法字符的两个附件会在磁盘上撞名，靠 id 后缀区分；`_CON.txt` 这类改名对用户可见，但比在 Windows 上写失败好。
+
+**接口形状：** `GET /api/jira/attachments/root` → `{ root: string | null }`；`PUT …/attachments/root` body `{ root }` → `{ ok: true, root }`（不合法 400 `jira_root`；隧道 403 `tunnel_readonly`）；`POST /api/jira/issues/:key/download` → `{ dir, items: [{ id, filename, path, status, reason? }] }`（没设目录 400 `need_root`；隧道 403 `tunnel_readonly`；key 形状校验同 `GET /api/jira/issues/:key`，大写化）。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（33 项，新增 10 项：root 的 null / 相对路径 400 / 建目录 / 不写进 config.json、隧道 PUT 403 而 GET 200、`need_root` 不拉详情、完整下载的目录结构与清洗 / 同批重名 / 超限 / 评论 media 探测 / 白名单外跳转 / 第二跳 `authorization` 为 null、重下覆盖、隧道 POST 403、`safeFileName` 与 `attachmentRootProblem` 与 `attachmentRedirectAllowed` 的单测）。`node web/tests/jira-unit.mjs`（19 项，新增 `downloadMark`）、`node web/tests/commands-unit.mjs` 通过；`npm --prefix web run typecheck`（含 i18n-check：1831 键 × 3 语）与 `npm run build:web` 都过。
+
+**偏移点（未在真实租户上核实）：** 白名单按工单原文只收 `*.atl-paas.net`；Atlassian Media 的真实主机若是 `api.media.atlassian.com` 之类，跳转会整体 `failed`。实机确认后只改 `attachmentRedirectAllowed` 一处；先把「拒绝未知主机」定下来，比先放行再看发生了什么安全。
+
+## D206 Jira「交给 agent」：提示词在页面拼、附件行由桥端的 downloaded 事实决定、浮层照抄笔记面板（工单 #252）
+
+**问题：** 列表每一行和展开的详情里都要有一颗「交给 agent ▾」，两个出口（预填当前会话 / 新开会话）与笔记面板一致。要定清楚的是：提示词在哪拼、附件路径那一行凭什么出现、浮层是抽共用件还是复制。
+
+**决定：**
+
+1. **提示词是纯函数，在页面端拼。** `web/src/jira-shared.ts` 的 `handoffPrompt(input)` 把工单号 / 标题 / 链接（复用 `browseUrl`）/ 状态 / 优先级 / 类型与固定指令拼成一段文本；`type` 与 `status` 缺省就省略那一段，`priority: null` 写「优先级：未设置」。它**不走 `tr()`**——这是给 agent 的指令，不是界面文案，切英文界面也不该改变指令内容；`web/i18n-check.mjs` 为此加了 `// i18n-ignore-start <理由>` … `// i18n-ignore-end` 行区间（用法记在 `docs/I18N.md`），区间内既不报漏翻也不进词典。代价：改提示词得动代码、且没有多语言版本；换来的是指令稳定、可单测（`node web/tests/jira-unit.mjs` 直接 import，不经 `chat.ts`）。
+
+2. **附件那一行只在确实下载过时出现，事实由桥端给。** 新增只读 `GET /api/jira/issues/:key/downloaded` → `{ dir: string | null, count: number }`：没设根目录、目录不存在、目录里没有普通文件都回 `{ dir: null, count: 0 }`；否则 `dir = <root>/<KEY>`、`count` 只数 `readdirSync(..., { withFileTypes: true })` 里的普通文件（子目录不算）。它不建目录、不拉 Jira、隧道访客也能读。页面点击交接时：详情里刚下载过就复用 `download.dir`，否则问桥，桥问不到按「没下过」处理，不阻断交接。代价：每次交接多一次本地往返（详情刚下载过时省掉），换来的是提示词不会骗 agent「附件在这个目录」——空目录/没下过时宁可不写这一行。
+
+3. **浮层从笔记面板复制一份，不抽共用件。** `web/src/jira.ts` 的 `openHandoffMenu()` 照抄 `notesheet.ts` 的 `handoffMenu()`：同样两颗按钮、同一批 `tr` 键（`预填到当前会话` / `写进输入框，Enter 才发`、`新开一个会话` / `建好后填进那个会话的输入框，不自动发送`），点外面、`Esc`、滚动、改尺寸都关。额外补了两点：上下翻转（下方放不下且上方更宽裕就翻到锚点上方）与夹进窗口边（左右 12px、上下 12px），因为验收要求「展开位置不超出窗口」，而笔记那份只是贴着按钮往下开。`prefill` / `newSessionWith` 抛错或没接上时，在浮层里显示一行中文错误，不静默。代价：两份约五十行浮层代码要同步维护，改交互得改两处；换来笔记面板零风险，Jira 这边的布局与错误态能独立演进（用户明确要求不抽共用件）。
+
+4. **交接完只收浮层，不关 Jira 面板。** 预填只把提示词放进当前输入框（发不发由人按 Enter）；新开会话沿用既有出口——设 `prefillNext` 再开会话，建好后填进输入框，不自动发送。关掉整个 Jira 面板会让用户丢失列表与展开状态，而预填完往往还要看别的工单。代价：面板与输入框同时在场，用户要自己切走；这是「预填」这个动作本来的语义。
+
+**接口形状：** `GET /api/jira/issues/:key/downloaded` → `{ dir: string | null, count: number }`；key 先过与详情相同的形状校验（不匹配 400 `jira_key`），非 GET 405 `bad_method`；隧道 GET 200（只读）。`handoffPrompt(input: { key, summary, siteUrl, status?, priority?: string | null, type?, dir?: string | null })`：`dir` 为空（`null` / 缺省 / 空白）不出现附件行，有值时补一个与目录同风格的结尾分隔符（Windows 根的 `C:\…\<KEY>` 补 `\`，POSIX 补 `/`）。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（36 项，新增 3 项：没设根目录 `{null,0}` 且不拉 Jira、`<root>/<KEY>/` 两个文件加一个子目录 → `{dir, count: 2}`、目录不存在与空目录都是 `{null,0}` 且隧道访客写了一个文件后读到 `{dir, count: 1}`）。`node web/tests/jira-unit.mjs`（23 项，新增 4 项：全文逐字、附件行有/无与结尾分隔符、优先级 `null` 与缺省、空标题只留工单号）。`node web/tests/commands-unit.mjs`（13 项）通过；`npm --prefix web run typecheck`（含 i18n-check：1833 键 × 3 语）与 `npm run build:web` 都过。
+
+**偏移点：**
+
+- 笔记面板的 `handoffMenu()` 实际没有上下翻转（固定开在按钮下方）；本单按验收要求自行加了翻转与窗口内夹取，所以两份浮层代码不完全一样。
+- 附件目录的结尾分隔符跟随目录本身（Windows 上是 `\`），不使用固定的 `/`；这与工单原文的 `<根目录>/<KEY>/` 在 Windows 上不是逐字相同，但避免了 `C:\…\ACME-12/` 这种混搭。
+- 为了让「中文但不翻译」的字面量过门禁，改了 `web/i18n-check.mjs`：新增行区间标记，只跳过区间内的字面量，其余检查逻辑未动。

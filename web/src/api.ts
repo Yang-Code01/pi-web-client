@@ -1,4 +1,5 @@
 import type { GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
+import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -132,6 +133,37 @@ export const api = {
     req<{ ok: boolean; message: string }>("/api/reveal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) }),
   tunnel: (action: "start" | "stop") =>
     req<{ tunnel: TunnelState }>("/api/tunnel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) }),
+  /** #248：Jira 面板。token 只在桥那边，这里拿到的是掩码；保存失败会抛带 `code` 的错。 */
+  jiraConfig: () =>
+    req<{ configured: boolean; siteUrl: string; email: string; keyMask: string }>("/api/jira/config"),
+  jiraSave: (body: { siteUrl: string; email: string; apiKey: string }) =>
+    req<{ ok: true; me: { accountId: string; displayName: string; email: string; timezone: string; avatarUrl: string } }>(
+      "/api/jira/config",
+      { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+    ),
+  jiraClear: () => req<{ ok: true }>("/api/jira/config", { method: "DELETE" }),
+  jiraMe: () =>
+    req<{ accountId: string; displayName: string; email: string; timezone: string; avatarUrl: string }>("/api/jira/me"),
+  /** #249：桥固定查「分配给我 + 未解决」；refresh 绕过桥的 60 秒缓存（D203）。 */
+  jiraIssues: (refresh = false) => req<{ issues: JiraIssue[] }>(`/api/jira/issues${refresh ? "?refresh=1" : ""}`),
+  jiraProjects: (refresh = false) => req<{ projects: JiraProject[] }>(`/api/jira/projects${refresh ? "?refresh=1" : ""}`),
+  /** #250：单工单详情。key 只做形状校验（桥端权威）；description 是 ADF，由页面转文本（D204）。 */
+  jiraIssue: (key: string) =>
+    req<JiraIssueDetail>(`/api/jira/issues/${encodeURIComponent(key)}`),
+  /** #251：附件根目录。隧道访客只能读；写入由桥回 403 `tunnel_readonly`。 */
+  jiraAttachRoot: () => req<{ root: string | null }>("/api/jira/attachments/root"),
+  jiraSetAttachRoot: (root: string) =>
+    req<{ ok: true; root: string }>("/api/jira/attachments/root", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ root }),
+    }),
+  /** #251：把这一单的附件全收下来；桥端串行，一次一个文件，超 100 MB 的跳过。 */
+  jiraDownload: (key: string) =>
+    req<JiraDownloadResult>(`/api/jira/issues/${encodeURIComponent(key)}/download`, { method: "POST" }),
+  /** #252：这单在本机已经下过几个文件；没下过时 `{ dir: null, count: 0 }`。只读磁盘，隧道也允许。 */
+  jiraDownloaded: (key: string) =>
+    req<{ dir: string | null; count: number }>(`/api/jira/issues/${encodeURIComponent(key)}/downloaded`),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),
