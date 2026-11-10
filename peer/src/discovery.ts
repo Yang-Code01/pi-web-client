@@ -93,6 +93,9 @@ export class Discovery extends EventEmitter {
   }
 
   announce(): void {
+    // D99：隐身的人不发 announce —— 组播里那一包带 nodeId / nickname / hostname / port，
+    // 发出去就等于自己报门牌。以前只拦了 sendHello，定时器每 10 秒照样组播一次。
+    if (this.cfg.hidden) return;
     const payload = JSON.stringify(this.packet("hello"));
     const sock = this.sock;
     if (!sock) return;

@@ -103,8 +103,13 @@ export class History {
     return new Set(this.read(nodeId, count).map((entry) => entry.id));
   }
 
-  threads(online: { nodeId: string; nickname: string; hostname: string; port: number }[]): ThreadSummary[] {
+  /** 会话列表。名字优先用查得到的人：在线表 → 通讯录 → 最后一条的 from。 */
+  threads(
+    online: { nodeId: string; nickname: string; hostname: string; port: number }[],
+    contacts: { nodeId: string; nickname: string; hostname: string; port: number }[] = [],
+  ): ThreadSummary[] {
     const byId = new Map(online.map((peer) => [peer.nodeId, peer]));
+    const byContact = new Map(contacts.map((contact) => [contact.nodeId, contact]));
     let files: string[] = [];
     try {
       files = fs.readdirSync(statePath("history")).filter((name) => name.endsWith(".jsonl"));
@@ -123,7 +128,13 @@ export class History {
           break;
         }
       }
-      const known = byId.get(nodeId) ?? byId.get(last?.from.nodeId ?? "");
+      // 最后一条是我发的（回执 / 回信）时 `last.from` 是我，`from` 为 null：
+      // 这时候只有通讯录还记着他的名字，不回退就会把 uuid 前 8 位当昵称显示。
+      const known =
+        byId.get(nodeId) ??
+        byContact.get(nodeId) ??
+        byId.get(last?.from.nodeId ?? "") ??
+        byContact.get(last?.from.nodeId ?? "");
       const from = last?.from.nodeId === nodeId ? last.from : null;
       const all = this.read(nodeId, 2000).filter((entry) => entry.kind === "text");
       out.push({

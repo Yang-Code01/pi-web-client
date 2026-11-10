@@ -1581,7 +1581,7 @@ export const en: Dict = {
   "选一个联系人": "Select a contact",
   "重试": "Retry",
   "附近的人": "Nearby",
-  "隐身中：别人看不到你，你也看不到新的人": "Hidden: others can't see you, and you won't see anyone new",
+  "隐身中：别人看不到你，但仍能看见别人": "Hidden: others can't see you, but you can still see them",
   "服务已更新，刷新后生效": "The server was updated — refresh to load the new version",
   "AI 出错记录": "AI failures",
   "# AI 出错记录 · {p1}": "# AI failures · {p1}",

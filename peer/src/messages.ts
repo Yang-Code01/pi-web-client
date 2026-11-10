@@ -10,7 +10,7 @@ import type { Relations } from "./peers.ts";
 /** 单条文本上限（决定 25）：再长就让用户改发文件，协议这边硬拒 32 KB。 */
 export const MAX_TEXT_BYTES = 32 * 1024;
 
-/** uuidv7：前 48 位是毫秒时间戳，所以同一毫秒内的多条也能保持发送顺序。 */
+/** uuidv7：前 48 位是毫秒时间戳，所以跨毫秒天然有序；同一毫秒内剩余位是随机的，不保证先后。 */
 export function uuidv7(now = Date.now()): string {
   const bytes = randomBytes(16);
   let ts = BigInt(now);

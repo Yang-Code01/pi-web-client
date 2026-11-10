@@ -124,8 +124,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         }
         saveConfig(cfg);
         // 隐身→可见：立刻丢一份 announce，别等下一轮定时（10 秒里对方还看不见）。
-        // 反过来（可见→隐身）什么都不发：`announce()` 本身不查 hidden（D99 只管「收到别人时不回」），
-        // 这时候主动发一包正好把自己的 nodeId 送上门，与隐身相反。
+        // 可见→隐身不发：`announce()` 自己就查 hidden（D99），这里再额外补一刀只会绕开那个守卫。
         if (wasHidden && !cfg.hidden) discovery.announce();
         return json(res, 200, {
           ok: true,
@@ -191,7 +190,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       // 以下三条只给本机页面 / pi 工具用。历史只在回环上可读（决定 4；隧道里那条 403 是设计好的）。
       if (url.pathname === "/threads" && req.method === "GET") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
-        return json(res, 200, { ok: true, threads: history.threads(discovery.online()) });
+        return json(res, 200, { ok: true, threads: history.threads(discovery.online(), relations.list()) });
       }
 
       if (url.pathname === "/messages" && req.method === "GET") {

@@ -211,9 +211,24 @@ export class PeerHost {
     return this.request("GET", `/fs?path=${encodeURIComponent(dir)}`);
   }
 
-  /** 收件目录里的文件；返回原始响应，由调用方 pipe 给浏览器（图片是几 MB，不能转 JSON）。 */
-  fileStream(id: string): Promise<Response> {
-    return fetch(`http://127.0.0.1:${this.opts.port}/files?id=${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(30_000) });
+  /**
+   * 收件目录里的文件；返回原始响应，由调用方 pipe 给浏览器（图片是几 MB，不能转 JSON）。
+   *
+   * 30 秒只卡「拿到响应头」。以前把 `AbortSignal.timeout(30_000)` 直接交给 fetch，它按整段
+   * 响应计时：几百 MB 的文件下到一半就被掐断，用户拿到截断的文件。头到了之后由调用方
+   * 在浏览器断开时 abort。
+   */
+  async fileStream(id: string, signal?: AbortSignal): Promise<Response> {
+    const ctrl = new AbortController();
+    const abort = () => ctrl.abort();
+    const timer = setTimeout(abort, 30_000);
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+    try {
+      return await fetch(`http://127.0.0.1:${this.opts.port}/files?id=${encodeURIComponent(id)}`, { signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** D209：入站文件在收件目录里的绝对路径（只问本机 peer 守护进程，拿不到就 null）。 */

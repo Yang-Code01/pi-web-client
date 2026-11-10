@@ -108,6 +108,71 @@ try {
   await until("手动地址后 C 也看到 A", seenBy(17968, sa), 8000);
   log("ok 手动地址兜底");
 
+  // ---- 隐身（D99）：隐身的 peer 一条 announce 都不许发，也不许透露身份。 ----
+  // 嗅探器在 D 起来之后才绑：启动时那一包已经过去了，这里只看 /peer/refresh 触发的那一包
+  // （定时器和 /peer/refresh 走的是同一个 announce()）。
+  const dgram = await import("node:dgram");
+  const dstate = path.join(ROOT, "d");
+  fs.mkdirSync(dstate, { recursive: true });
+  fs.writeFileSync(path.join(dstate, "config.json"), JSON.stringify({ hidden: true }));
+  const D = start("d", 17970, 17967, "丁");
+  const sd = await until("D 起来", async () => (await status(17970))?.nodeId);
+
+  const heard = [];
+  const sniffer = dgram.createSocket({ type: "udp4", reuseAddr: true });
+  sniffer.on("message", (buf) => {
+    try {
+      const packet = JSON.parse(buf.toString());
+      if (packet?.nodeId) heard.push(packet);
+    } catch {
+      /* 不是我们的包 */
+    }
+  });
+  await new Promise((resolve, reject) => {
+    sniffer.once("error", reject);
+    sniffer.bind(17967, () => {
+      try {
+        sniffer.addMembership("239.255.42.99");
+      } catch {
+        /* 只有一块网卡时也可能报错，单播仍可测 */
+      }
+      resolve();
+    });
+  });
+  const flush = () => heard.splice(0, heard.length);
+  const waitFor = async (pred, ms = 2500) => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      const hit = heard.find(pred);
+      if (hit) return hit;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return null;
+  };
+  await new Promise((r) => setTimeout(r, 300));
+
+  // 对照组：可见的 A 必须能被嗅到，否则后面的「0 条」什么都不证明。
+  flush();
+  await fetch("http://127.0.0.1:17965/peer/refresh", { method: "POST" });
+  if (!(await waitFor((p) => p.nodeId === sa))) throw new Error("对照组失败：嗅不到可见 peer 的 announce");
+
+  flush();
+  await fetch("http://127.0.0.1:17970/peer/refresh", { method: "POST" });
+  await new Promise((r) => setTimeout(r, 1200));
+  const leaked = heard.filter((p) => p.nodeId === sd);
+  sniffer.close();
+  if (leaked.length) throw new Error(`隐身还发了 ${leaked.length} 条 announce：${JSON.stringify(leaked[0]).slice(0, 160)}`);
+  log("ok 隐身不发 announce");
+
+  const invisible = await (await fetch("http://127.0.0.1:17970/peer/hello", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ proto: 1, nodeId: "probe-invisible", nickname: "探针" }),
+  })).json();
+  if (invisible.hidden !== true) throw new Error(`隐身不该交身份，实际 ${JSON.stringify(invisible)}`);
+  log("ok 隐身不回 hello 身份");
+  D.kill();
+
   // ---- 第 2 片：1:1 文字 ----
   const send = await fetch("http://127.0.0.1:17965/send", {
     method: "POST",
@@ -294,6 +359,28 @@ try {
   const again2 = await (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`)).json();
   if (again2.entries.filter((e) => e.kind === "file").length !== 1) throw new Error("文件重发写了多张卡片");
   log("ok 同一文件只留一张卡片");
+
+  // 0 字节文件：空的 .log / .txt 也要能发（以前 begin 用 size <= 0 直接 400）。
+  const emptyPath = path.join(ROOT, "空文件.txt");
+  fs.writeFileSync(emptyPath, "");
+  const sendEmpty = await fetch("http://127.0.0.1:17965/files/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sb, path: emptyPath }),
+  });
+  if (!sendEmpty.ok) throw new Error(`发 0 字节文件失败：${sendEmpty.status} ${await sendEmpty.text()}`);
+  const emptyCard = await until(
+    "B 收到 0 字节文件",
+    async () => {
+      const body = await (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`)).json();
+      return body.entries?.find((e) => e.kind === "file" && e.file?.name === "空文件.txt") ?? false;
+    },
+    10000,
+  );
+  if (emptyCard.file.size !== 0) throw new Error(`0 字节文件大小不对：${emptyCard.file.size}`);
+  const emptyBytes = await (await fetch(`http://127.0.0.1:17966/files?id=${emptyCard.id}`)).arrayBuffer();
+  if (emptyBytes.byteLength !== 0) throw new Error(`落盘的 0 字节文件不是空的：${emptyBytes.byteLength}`);
+  log("ok 0 字节文件也能发（大小与落盘都一致）");
 
   // token 是发的凭据：随便编一个必须被拒。
   for (const [p, body] of [
