@@ -730,7 +730,7 @@ export class App {
     // 这颗以前是「Aa」：现在它是整个设置抽屉（外观 + 语言 + 通道 + 快捷键）的入口，所以画成齿轮。
     // 16px 是量出来的：13px 的 ⚙ 在这个等宽字体里糊成一圈，看不出八颗齿；U+FE0E 要单色字形，不要彩色 emoji。
     const look = el("button", "icon-btn set-btn", "\u2699\uFE0E");
-    look.title = tr("设置：外观、语言、通道、快捷键");
+    look.title = tr("设置：外观 / 连接与设置");
     look.setAttribute("aria-label", look.title);
     look.dataset.act = "look";
     look.onclick = () => this.openDisplaySheet();
@@ -2642,6 +2642,8 @@ export class App {
         this.tunnel = msg.tunnel;
         this.renderTop();
         this.renderQueue();
+        // 隧道状态从桥（或别的客户端）推过来时，左栏已经不再画这块了，得顺手重画抽屉里的连接页。
+        this.paintConnPage();
         break;
       default:
         break;
@@ -3869,8 +3871,19 @@ export class App {
     const done = el("span", "done", tr("复制"));
     row.append(done);
     row.onclick = () => {
-      void navigator.clipboard
-        ?.writeText(value)
+      // `navigator.clipboard` 在局域网 http 地址下不存在，可选链要包住调用而不是属性；
+      // 拿不到就退化成「选中让用户自己按 Ctrl+C」，绝不假报一句「已复制」。
+      const copy = navigator.clipboard?.writeText(value);
+      if (!copy) {
+        const range = document.createRange();
+        range.selectNodeContents(row.querySelector(".v") ?? row);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+        this.flashToast(tr("这个地址拿不到剪贴板（http 的局域网地址浏览器不给）"), true, 6000);
+        return;
+      }
+      void copy
         .then(() => {
           done.textContent = tr("已复制");
           done.classList.add("on");
@@ -3879,7 +3892,7 @@ export class App {
             done.classList.remove("on");
           }, 1200);
         })
-        .catch(() => this.flashToast(tr("复制失败：浏览器没给剪贴板权限"), true, 4000));
+        .catch(() => this.flashToast(tr("复制失败：手动选中它复制"), true, 6000));
     };
     return row;
   }
@@ -3950,11 +3963,11 @@ export class App {
       pvTop.append(keep(btn));
     }
     // `Aa` 就在这颗位置上，但它不在 `CHROME_IDS` 里：这张表靠它进来，关掉就再也打不开了。
-    const aa = el("button", "chrome-pv-btn chrome-pv-aa", "\u2699\uFE0E") as HTMLButtonElement;
-    aa.type = "button";
-    aa.disabled = true;
-    aa.title = tr("⚙ 关不掉：这张表靠它进来");
-    pvTop.append(aa);
+    const gear = el("button", "chrome-pv-btn chrome-pv-gear", "\u2699\uFE0E") as HTMLButtonElement;
+    gear.type = "button";
+    gear.disabled = true;
+    gear.title = tr("⚙ 关不掉：这张表靠它进来");
+    pvTop.append(gear);
     pv.append(pvTop);
 
     const bottomItems: [ChromeId, string][] = [
@@ -4197,7 +4210,7 @@ export class App {
       btn.hidden = !visible;
       btn.title = sessionBound && !visible && chrome[id] === true ? `${title} · ${noSessionWhy}` : title;
     };
-    look.title = tr("设置：外观、语言、通道、快捷键");
+    look.title = tr("设置：外观 / 连接与设置");
     look.setAttribute("aria-label", look.title);
     this.setWideLabel(files, tr("📂 产物"));
     show("artifacts", files, tr("本会话写过的文件（md / html / 图片…点开预览）"), true);
@@ -16668,7 +16681,7 @@ const SHORTCUTS: { id: string; label: string }[] = [
   { id: "artifacts", label: tr("产物列表") },
   { id: "files", label: tr("文件管理器") },
   { id: "notes", label: tr("bug 记录") },
-  { id: "look", label: tr("设置：外观 / 通道 / 快捷键") },
+  { id: "look", label: tr("设置：外观 / 连接与设置") },
   { id: "skills", label: tr("技能面板") },
   { id: "attach", label: tr("附加文件") },
   { id: "terminal", label: tr("打开终端") },

@@ -1913,7 +1913,7 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .chrome-pv-btn[hidden] { display: none; }
 .chrome-pv-btn:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text); }
 .chrome-pv-btn .ic { font-family: var(--mono); }
-.chrome-pv-aa { font: 500 9.5px/1 var(--mono); opacity: 0.55; cursor: default; }
+.chrome-pv-gear { font: 500 11px/1 var(--mono); opacity: 0.55; cursor: default; }
 .chrome-pv-comp { display: flex; align-items: center; gap: 4px; overflow: hidden; }
 .chrome-pv-in { flex: 1 1 auto; min-width: 0; height: 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
 .chrome-pv-tool {
