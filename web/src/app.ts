@@ -842,6 +842,11 @@ export class App {
     app.append(shell);
 
     Object.assign(this.els, { topbar, wsTabsRow, wsTabs, wsTabsAdd, wsTabsMore, sessionRow, pinStrip, collapseLeft, collapseRight, look, files, term, fs, dot, title, sub, main, sessionsPane, sessionsInner, manageBar, sessFilter, manageBtn, binBtn, newBtn, sessList, chatPane, scroll, composerHost, queuePane, queueInner, tabs });
+    // #315: the composer's cap is half of this pane, so any change to the pane's height (a window
+    // drag, collapsing the right column, another tab on a narrow screen) has to re-measure it.
+    // Observe the pane, not the composer: the composer grows inside the pane, so watching it would
+    // feed its own height back in.
+    new ResizeObserver(() => this.fitComposer()).observe(chatPane);
     this.binBtn = binBtn;
     // #93：左栏收起时那条横栏里的三样东西（胶囊 /「＋N」/ 折起来那张列表）现在是一个共用组件：
     // 外壳只交数据与回调，组件自己管排布、★ 点完的焦点归还与浮层。
@@ -9465,6 +9470,9 @@ export class App {
     const row = el("div", "row");
     const box = el("div", "composer-input");
     const input = el("textarea");
+    // #315: `rows` defaults to 2, so an empty field would start two lines tall no matter what the
+    // auto-height says. One row is the floor; `fitComposer()` grows it from there.
+    input.rows = 1;
     input.placeholder = this.composerPlaceholder();
     this.textarea = input;
     input.value = this.composerText;
@@ -12664,12 +12672,19 @@ export class App {
     this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text, level: "warn" });
   }
 
-  /** Auto-height for the main composer textarea. */
+  /** Auto-height for the main composer textarea (#315): one line at rest, content height up to a cap. */
   private fitComposer(): void {
     const input = this.textarea;
     if (!input) return;
+    // Measure first: only with `height: auto` does `scrollHeight` report what the text needs.
     input.style.height = "auto";
-    input.style.height = `${Math.min(180, input.scrollHeight)}px`;
+    // The cap is half of the whole chat pane — not of `.chat-scroll`, which this box itself shrinks
+    // (#313). A hidden pane measures 0: leave the height to the text until it is shown again.
+    const pane = this.els.chatPane;
+    const limit = pane && pane.clientHeight > 0 ? Math.min(520, pane.clientHeight / 2) : 0;
+    // `height` is border-box, `scrollHeight` leaves the border out — add it back or we clip a pixel.
+    const border = input.offsetHeight - input.clientHeight;
+    input.style.height = limit > 0 ? `${Math.min(limit, input.scrollHeight + border)}px` : "auto";
   }
 
   /** Long pastes live in their own foldable box above what the user types next. */

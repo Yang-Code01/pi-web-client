@@ -36,6 +36,7 @@ const ALL = [
   "chrome-bottom",
   "chrome-sheet",
   "chrome-narrow",
+  "composer-grow",
 ];
 
 const argv = process.argv.slice(2);
