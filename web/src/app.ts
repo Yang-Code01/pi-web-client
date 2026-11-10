@@ -5,7 +5,7 @@ import "./settings-console.css";
 import { api } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
-import { filterCommands, type CommandItem } from "./commands.ts";
+import { filterCommands, PANEL_COMMANDS, type CommandItem } from "./commands.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
@@ -30,14 +30,26 @@ import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./s
 import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
+import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
-import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
+import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
 import { openWsMenu, type WsMenuHandle } from "./wsmenu.ts";
 import { stickMenu } from "./menuplace.ts";
 import { newerTunnel } from "./tunnel-snapshot.ts";
-import { WS_NAME_MAX, dropBlocker, renameIntent } from "./wsmanage.ts";
+import {
+  WS_NAME_MAX,
+  cleanDirPath,
+  dirBaseName,
+  dropBlocker,
+  dropHint,
+  hasRowMembership,
+  renameIntent,
+  wsCreateAction,
+  wsNeighborsAfterDrop,
+  type DirResolution,
+} from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
 import type { ArtifactDiff, ArtifactDiffLine, ArtifactHunk, ArtifactList, ArtifactRow, ArtifactWhy, AskAnswer, AskQuestion, AskRequest, ApprovalRequest, DeleteReport, ExtUi, GitInfo, InstalledSkill, Item, ManageState, Me, Note, ModelInfo, PassphraseView, PermissionMode, PreviewInfo, RuntimeStats, BgRunView, SessionHistory, SessionState, SheetMeta, SheetWindow, SkillInfo, SkillSourceItem, SkillStoreItem, SleepAllReceipt, TrashItem, TunnelState, WorkspaceState } from "./types.ts";
 import { tr } from "./i18n/index.ts";
@@ -77,6 +89,11 @@ const CONTINUE_GUARD_MS = 1500;
  * （写成模块级常量也是告诉 `i18n-check`：这不是漏翻的界面文案。）
  */
 const CONTINUE_TEXT = "继续";
+
+/** #278：桥的 hello `caps` 里表示「ws.create 带 dir 能按目录建组」。旧桥没有这项。 */
+const WS_CREATE_DIR_CAP = "ws.create.dir";
+/** #278：桥的 hello `caps` 里表示「ws.resolve 能把子目录 / worktree 折回已有组」。旧桥没有这项。 */
+const WS_RESOLVE_DIR_CAP = "ws.resolve.dir";
 
 /** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
 type BadgeKind = "ask" | "approve" | "locked" | "run" | "bg" | "done";
@@ -165,6 +182,15 @@ function bgTookText(ms: number): string {
   const s = String(secs % 60).padStart(2, "0");
   const clock = m < 60 ? `${m}:${s}` : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${s}`;
   return tr("用了 {p1}", { p1: clock });
+}
+
+/**
+ * 「📂 产物」在第一个空格处拆成图标与名字。宽按钮（`setWideLabel`）与 Aa 里的预览胶囊共用
+ * 这一份，不然同一套文案在两处各按各的规则拆，改一处忘另一处。
+ */
+function splitWideLabel(label: string): [string, string] {
+  const cut = label.indexOf(" ");
+  return cut > 0 ? [label.slice(0, cut), label.slice(cut + 1)] : ["", label];
 }
 
 export class App {
@@ -292,7 +318,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | "wsnew" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   /** 新建文件夹 / 新建文件共用一个等待表：两条结果的形状一样（`{ path }` / `{ error }`，D167）。 */
@@ -371,8 +397,8 @@ export class App {
   /** #30: is the terminal session-lock extension in pi's global extensions? */
   private lockExt: { installed: boolean; path: string } | null = null;
   /** #33 扩展与 MCP: package rows, MCP servers, and the console of the last pi command. */
-  /** D81 扩展 manager state. */
-  private uiPrefs: { showExtButton: boolean } = { showExtButton: true };
+  /** D81 扩展 manager state. #290: 只有 `chrome` 一份真源（扩展开关就是 `chrome.ext`），没有旧布尔。 */
+  private uiPrefs: { chrome: ChromeState } = { chrome: {} };
   private extUpdates = 0;
   private extTab: "installed" | "ext" | "mcp" = "installed";
   private extInv: ExtInventory | null = null;
@@ -389,6 +415,10 @@ export class App {
   private mcpForm: { name: string; option: number; values: Record<string, string>; exposure: string; description: string; local: boolean; item: string } | null = null;
   private extVars: string[] = [];
   private extButton: HTMLButtonElement | null = null;
+  /** #290：下沿那一行与另外三颗，`paintComposerChrome()` 只改它们的 `hidden`，不重建。 */
+  private hintTools: HTMLElement | null = null;
+  private skillButton: HTMLButtonElement | null = null;
+  private attachButton: HTMLButtonElement | null = null;
   private cliRun: { runId: string | null; op: string; out: string; code: number | null | undefined; error?: string } | null = null;
   /**
    * D113: the writes this page started and has not seen finish, keyed by the `reqId` it sent. Each one
@@ -449,6 +479,15 @@ export class App {
   private wsRenameDraft = "";
   private wsRenameFocus = false;
   private wsRenameCaret: number | null = null;
+  /**
+   * #277 横条标签改名：浮层挂在 body 上（不进标签槽，不撑高整行），这里只留组 id 与输入框。
+   * `away` 是捕获阶段的 pointerdown：点浮层外面就等于提交。
+   */
+  private wsTabRename: { id: string; input: HTMLInputElement; away: (ev: PointerEvent) => void } | null = null;
+  /** #277 两下规则：上一次点击落在哪颗、什么时候；第二下落在同一颗且够快才进编辑。 */
+  private tabClickLast: { id: string; at: number } | null = null;
+  /** #277 桥不回声：发出改名后等下一份快照确认；名字没变回来就说一声（原值本来就没被改过）。 */
+  private wsRenameAck: { id: string; name: string; timer: number } | null = null;
   /** 组头的 ⋯ 菜单最多一张；树重画前先关掉它（锚点要被换掉）。 */
   private wsMenu: WsMenuHandle | null = null;
   /** 点了「新建工作区」：等桥把新组广播回来，就立刻进改名态（组的 id 只有桥知道）。 */
@@ -457,8 +496,27 @@ export class App {
   private wsCreateFromTabs = false;
   /** #175：刚从横条 ＋ 建出来的组，下一次画横条时核一眼它在不在 ＋N 里（画完清掉）。 */
   private wsNewNoteId: string | null = null;
+  /** #278：桥在 hello 里声明的能力。没有 `ws.create.dir` 的旧桥，＋ 退回「空壳组 + 就地改名」。 */
+  private bridgeCaps: string[] = [];
+  /** #278：按目录新建的请求在飞 —— 按钮先别让人连点。 */
+  private wsNewBusy = false;
+  /** #278：对话框重画（失败提示回来时把按钮恢复可点）；关掉时摘掉。 */
+  private wsNewPaint: (() => void) | null = null;
+  /** #278：当前选中的目录（对话框里的 picked），异步回答按它对号入座。 */
+  private wsNewPicked = "";
+  /** #278：桥对当前目录的折回回答；null = 还没问 / 旧桥不会答。 */
+  private wsNewResolve: DirResolution | null = null;
+  /** #278：问桥的防抖计时器 —— 选目录是一路点出来的，别每一下都跑一次 git。 */
+  private wsNewResolveTimer: ReturnType<typeof setTimeout> | null = null;
   /** #123 设置面板的「标签行」那块（名额步进器）；快照回来时只重画这一个小面。 */
   private wsPane: HTMLElement | null = null;
+  /** #291 设置面板的「预览 + 开关墙」那块；`ui` 回执与断线时只重画这一个小面。 */
+  private chromePane: HTMLElement | null = null;
+  /**
+   * #291 预览的观察档（桌面 / 手机 390）。它只是这张画的宽度，不是偏好：不写盘、不进 `chrome`，
+   * 也不改真窗口 —— 方块的两态拿它判，才不会在 1440 的表里「切了手机却什么都没变」。
+   */
+  private chromePreviewNarrow = false;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
   private manage: ManageState = { pin: [], order: [], archived: [] };
   private archivedOpen = false;
@@ -607,9 +665,9 @@ export class App {
 
   /** 同一颗宽按钮的字会换（终端跑起来之后是「>_ 终端 2」），所以拆开这件事得能重做一遍。 */
   private setWideLabel(btn: HTMLElement, label: string): void {
-    const cut = label.indexOf(" ");
-    btn.replaceChildren(el("span", "ic", cut > 0 ? label.slice(0, cut) : label));
-    if (cut > 0) btn.append(el("span", "lb", label.slice(cut + 1)));
+    const [ic, name] = splitWideLabel(label);
+    btn.replaceChildren(el("span", "ic", ic || name));
+    if (ic) btn.append(el("span", "lb", name));
   }
 
   // ---------------------------------------------------------------- layout
@@ -750,7 +808,7 @@ export class App {
     wsTabsAdd.textContent = tr("＋");
     wsTabsAdd.title = tr("新建工作区");
     wsTabsAdd.setAttribute("aria-label", tr("新建工作区"));
-    wsTabsAdd.onclick = () => this.createWsFromTabs();
+    wsTabsAdd.onclick = () => this.openWsCreate();
     wsTabsRow.append(wsTabs, wsTabsAdd, wsTabsMore);
     wsTabsRow.hidden = true;
     const sessionRow = el("div", "ws-session-row");
@@ -1196,6 +1254,8 @@ export class App {
       if (this.connected) this.reportPresence();
       this.renderTop();
       this.renderSessions();
+      // #291：断桥时开关墙整块置灰，连上再亮回来 —— 这块的重画点跟着连接状态走。
+      if (this.sheetKind === "display") this.paintChromePane();
       // A shell outlives the page: ask the bridge what is still running and rebuild a tab per shell.
       if (this.connected) this.socket.send({ type: "term.list" });
     });
@@ -1254,6 +1314,8 @@ export class App {
         paneFrame = 0;
         this.syncCompact();
         this.renderPanes();
+        // D138 的 560 断点看的是视口宽度：窗口一拖，文件管理器那颗的默认就得重算。
+        this.paintChrome();
         // 右栏宽度是按布局宽算的 px（D189），跨过断点或改窗口大小都得重算。
         if (this.asks.length) this.syncAskDock();
       });
@@ -1442,7 +1504,9 @@ export class App {
       }
       case "hello":
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
-        if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
+        // #278：旧桥不带 caps —— 缺这一项就当它不会按目录建组。
+        this.bridgeCaps = Array.isArray(msg.caps) ? (msg.caps as unknown[]).filter((c): c is string => typeof c === "string") : [];
+        if (msg.ui) this.uiPrefs = { chrome: chromeFrom(msg.ui.chrome) };
         // D154：桥上的 build 换了，页面里的 JS 还是旧的 —— 提示刷新，不自动 reload。
         if (typeof msg.buildId === "string") this.checkBuild(msg.buildId);
         // D113: a dropped socket mid-stream would leave the ⟳ spinning forever (the flags gate the
@@ -1962,8 +2026,11 @@ export class App {
         break;
       }
       case "ui":
-        if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
+        if (msg.ui) this.uiPrefs = { chrome: chromeFrom(msg.ui.chrome) };
+        // 可见性只认桥的回执：不本地先猜，否则广播与自己的补丁会打架。
+        this.paintChrome();
         this.renderChat();
+        if (this.sheetKind === "display") this.paintChromePane();
         if (this.sheetKind === "settings" && this.settingsTab === "ext") this.paintSettings();
         break;
       case "ext.updates":
@@ -2192,7 +2259,12 @@ export class App {
       // #94：桥侧每次改名 / 拖动 / 建组都会广播一份完整快照。同名快照可能重复到，但重画很便宜。
       case "workspaces": {
         const before = new Set(this.workspaces.groups.map((g) => g.id));
+        // #279：删掉的要是当前组，落点得在快照翻篇之前算好（之后就没有这一组的位置了）。
+        const wsBefore = this.currentWsId();
+        const orderBefore = this.wsGroupOrder();
         this.workspaces = (msg.workspace as WorkspaceState) ?? { groups: [], overrides: {}, keys: {} };
+        // #277：改名发出后等的那份快照到了 —— 名字对上 / 组没了在这里收尾。
+        this.settleWsRename();
         // #100：刚点的「新建工作区」回来了 —— 空组已经进树，接着让人给它起个名字。
         if (this.wsCreatePending) {
           const born = this.workspaces.groups.find((g) => g.manual && !before.has(g.id));
@@ -2208,8 +2280,28 @@ export class App {
         }
         this.renderNowChip();
         this.renderSessions();
+        this.landAfterWsDrop(wsBefore, orderBefore);
         // #123：设置面板开着时，名额也跟着桥的快照对齐（校验发生在桥，页面只是镜子）。
         if (this.sheetKind === "display") this.paintWsTabsPane();
+        break;
+      }
+      case "ws.created": {
+        // #278：按目录建组的回执（快照已经先到）。建没建成都是同一组，直接切过去；
+        // `created:false` = 这个目录原来就在列表里 —— 说一声，不让人以为又建了一个。
+        this.wsNewBusy = false;
+        if (this.sheetKind === "wsnew") this.closeSheet();
+        const id = String(msg.id ?? "");
+        if (id) this.switchToWsGroup(id);
+        if (msg.created === false) this.flashToast(tr("这个工作区已经在列表里"), false, 3600);
+        break;
+      }
+      case "ws.resolved": {
+        // #278：桥把子目录 / worktree 折回工程根后的回答。只认当前还选着的那个目录，旧回答丢掉。
+        if (this.sheetKind !== "wsnew") break;
+        const dir = cleanDirPath(msg.dir);
+        if (dir !== this.wsNewPicked) break;
+        this.wsNewResolve = { dir, id: typeof msg.id === "string" ? msg.id : null };
+        this.wsNewPaint?.();
         break;
       }
       case "session.gone": {
@@ -2295,6 +2387,14 @@ export class App {
           break;
         }
         if (this.claiming && msg.level === "error" && (!msg.sessionId || msg.sessionId === this.claiming)) this.endClaim();
+        // #278：按目录建组失败（目录读不了 / 桥拒绝）—— 请求正在飞、对话框还开着就只在那里说一声，
+        // 不关它、不切走；别的 notice 照旧进聊天流。
+        if (this.sheetKind === "wsnew" && this.wsNewBusy && !msg.sessionId) {
+          this.wsNewBusy = false;
+          this.wsNewPaint?.();
+          this.flashToast(String(msg.text ?? ""), true, 6000);
+          break;
+        }
         // D110：`code` 存在时按语言渲染，否则显示 bridge 给的原句（多数是 pi 产出的文本）。
         if (!msg.sessionId || msg.sessionId === this.currentId) this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: msg.code ? errText(msg) : msg.text, level: msg.level ?? "info" });
         break;
@@ -2399,6 +2499,8 @@ export class App {
     }
     this.renderTop();
     this.renderSessions();
+    // #289：接管会把 owned 翻过来（当前会话没变，但接管按钮与顶栏都该在同一个点重画）。
+    this.paintChrome();
   }
 
   /**
@@ -2668,6 +2770,12 @@ export class App {
       case "logout":
         this.authFilter = arg;
         this.openSettingsSheet("login");
+        return done();
+      // #293: 顶栏按钮可以关掉，这三条是找回来的路 —— 走快捷键同一张动作表，不另写打开逻辑。
+      case "terminal":
+      case "files":
+      case "artifacts":
+        this.runAction(name);
         return done();
       case "reload":
         if (!owned) {
@@ -3131,6 +3239,8 @@ export class App {
     // 构造里 `applyPrefs()` 先跑一次（那时 DOM 还没搭）：只落 `<html data-layout>`，别去碰 els。
     if (!this.nowBtn) return;
     this.renderPanes();
+    // #289：换壳也走同一个重画点 —— 壳决定某些颗挂在哪，可见性不跟着壳分叉。
+    this.paintChrome();
   }
 
   /**
@@ -3431,6 +3541,14 @@ export class App {
     sheet.append(wsTabsBox);
     this.paintWsTabsPane();
 
+    // #291：预览 + 开关墙。预览是「点一下就能关掉」的那张画，开关墙是找不到按钮时的兜底；
+    // 两处写的是同一份 `chrome`，都走 `ui.set`，等桥的广播回来再重画。
+    const chromeBox = el("div", "levels");
+    this.chromePane = el("div", "chrome-pane");
+    chromeBox.append(this.chromePane);
+    sheet.append(chromeBox);
+    this.paintChromePane();
+
     const foot = el("div", "sheet-foot");
     const reset = el("button", "btn ghost", tr("恢复默认"));
     reset.onclick = () => {
@@ -3447,6 +3565,187 @@ export class App {
     back.append(sheet);
     this.overlay(back);
     this.sheet = back;
+  }
+
+  /**
+   * #291：「外观与语言」里的实时预览 + 开关墙。
+   *
+   * 预览是顶栏 / 下沿的一张缩略画：胶囊亮不亮、方块实线还是虚线，全问 `isChromeVisible()`；
+   * 宽度用**这张画自己的**档（桌面 / 手机 390），不是真窗口 —— 否则在 1440 的表里点「手机」，
+   * 文件管理器不会退场。写状态只走 `ui.set`（`null` = 删键，回默认），等桥的 `ui` 广播回来再重画，
+   * 本地不留副本。
+   *
+   * 预览活在「开了会话」的假设里：没开会话时产物 / 文件管理器本来就不长，跟着灭会让人以为点不亮，
+   * 所以把原因写进方块的 title。断桥时整块置灰、按钮真 `disabled`。
+   */
+  private paintChromePane(): void {
+    const pane = this.chromePane;
+    if (!pane) return;
+    // 重画会把刚按的那颗换掉：按 data-act 把焦点找回去，键盘用户不至于掉回 body。
+    const active = document.activeElement;
+    const key = active instanceof HTMLElement && pane.contains(active) ? active.dataset.act ?? "" : "";
+    const focusable = new Map<string, HTMLElement>();
+    const keep = (node: HTMLElement): HTMLElement => {
+      if (node.dataset.act) focusable.set(node.dataset.act, node);
+      return node;
+    };
+    pane.replaceChildren();
+    const offline = !this.connected;
+    pane.classList.toggle("offline", offline);
+    // 会话事实照实给：没开会话时产物 / 文件管理器在真顶栏里也不画，预览不该比真顶栏多一颗。
+    const ctx: ChromeContext = { hasSession: !!this.currentId, narrow: this.chromePreviewNarrow };
+    const chrome = this.uiPrefs.chrome;
+    const lit = (id: ChromeId): boolean => isChromeVisible(id, chrome, ctx);
+    const set = (id: ChromeId, on: boolean): void => {
+      if (!this.connected) return;
+      this.act(() => this.socket.send({ type: "ui.set", chrome: { [id]: on } }));
+    };
+    const head = el("div", "chrome-head");
+    head.append(el("span", "levels-label", tr("顶栏 / 下沿预览")));
+    pane.append(head);
+
+    // ---- 上半：实时预览。点胶囊就是关掉那颗，和真顶栏同一个 `hidden` 语义。
+    const pv = el("div", `chrome-pv${this.chromePreviewNarrow ? " narrow" : ""}`);
+    const pvTop = el("div", "chrome-pv-top");
+    pvTop.append(el("span", "chrome-pv-title", tr("会话名")));
+    const topItems: [ChromeId, string][] = [
+      ["artifacts", tr("📂 产物")],
+      ["terminal", tr(">_ 终端")],
+      ["files", tr("📁 文件管理器")],
+      ["notes", "🐞 bug"],
+      ["peer", tr("🌐 内网通")],
+      ["scratch", tr("💭 随手问")],
+      ["jira", tr("🔷 Jira")],
+    ];
+    for (const [id, label] of topItems) {
+      const [ic, name] = splitWideLabel(label);
+      const btn = el("button", "chrome-pv-btn") as HTMLButtonElement;
+      btn.type = "button";
+      btn.dataset.chrome = id;
+      btn.dataset.act = `pv-${id}`;
+      if (ic) btn.append(el("span", "ic", ic));
+      btn.append(el("span", "pv-name", name));
+      btn.hidden = !lit(id);
+      btn.disabled = offline;
+      btn.title = tr("点一下隐藏「{p1}」", { p1: name });
+      btn.setAttribute("aria-label", btn.title);
+      btn.onclick = () => set(id, false);
+      pvTop.append(keep(btn));
+    }
+    // `Aa` 就在这颗位置上，但它不在 `CHROME_IDS` 里：这张表靠它进来，关掉就再也打不开了。
+    const aa = el("button", "chrome-pv-btn chrome-pv-aa", "Aa") as HTMLButtonElement;
+    aa.type = "button";
+    aa.disabled = true;
+    aa.title = tr("Aa 关不掉：这张表靠它进来");
+    pvTop.append(aa);
+    pv.append(pvTop);
+
+    const bottomItems: [ChromeId, string][] = [
+      ["skills", tr("技能")],
+      ["ext", tr("扩展")],
+      ["attach", tr("文件")],
+      ["model", tr("模型")],
+    ];
+    const pvComp = el("div", "chrome-pv-comp");
+    pvComp.append(el("span", "chrome-pv-in"));
+    for (const [id, name] of bottomItems) {
+      const btn = el("button", `chrome-pv-tool${id === "model" ? " chrome-pv-model" : ""}`, name) as HTMLButtonElement;
+      btn.type = "button";
+      btn.dataset.chrome = id;
+      btn.dataset.act = `pv-${id}`;
+      btn.hidden = !lit(id);
+      btn.disabled = offline;
+      btn.title = tr("点一下隐藏「{p1}」", { p1: name });
+      btn.setAttribute("aria-label", btn.title);
+      btn.onclick = () => set(id, false);
+      pvComp.append(keep(btn));
+    }
+    pv.append(pvComp);
+    pane.append(pv);
+
+    const bar = el("div", "chrome-pv-bar");
+    bar.append(el("span", "chrome-pv-bar-label", tr("预览宽度")));
+    const seg = el("span", "chrome-seg");
+    for (const [width, label] of [["wide", tr("桌面")], ["narrow", tr("手机 390")]] as ["wide" | "narrow", string][]) {
+      const btn = el("button", (width === "narrow") === this.chromePreviewNarrow ? "on" : "", label) as HTMLButtonElement;
+      btn.type = "button";
+      btn.dataset.width = width;
+      btn.dataset.act = `width-${width}`;
+      btn.setAttribute("aria-pressed", String((width === "narrow") === this.chromePreviewNarrow));
+      btn.onclick = () => {
+        if (this.chromePreviewNarrow === (width === "narrow")) return;
+        this.chromePreviewNarrow = width === "narrow";
+        this.paintChromePane();
+      };
+      seg.append(keep(btn));
+    }
+    bar.append(seg, el("span", "chrome-pv-hint", tr("点预览里的按钮可以直接关掉")));
+    pane.append(bar);
+    if (this.chromePreviewNarrow) {
+      pane.append(el("div", "chrome-note", tr("手机宽度下「文件管理器」默认收起；想留着就点亮下面的方块")));
+    }
+
+    // ---- 下半：开关墙。每块「全部显示」= 把这组键删掉（回默认），不是写 true。
+    const wall = el("div", "chrome-wall");
+    wall.append(el("div", "levels-label", tr("点一下就收起来，再点一下放回来")));
+    const groups: [string, string, [ChromeId, string, string][]][] = [
+      ["top", tr("顶栏按钮"), topItems.map(([id, label]) => { const [ic, name] = splitWideLabel(label); return [id, ic, name]; })],
+      ["bottom", tr("输入框下沿"), bottomItems.map(([id, name]) => [id, "·", name] as [ChromeId, string, string])],
+    ];
+    for (const [group, label, items] of groups) {
+      const box = el("div", "chrome-group");
+      const ghead = el("div", "chrome-head");
+      ghead.append(el("span", "levels-label", label));
+      const all = el("button", "chrome-all", tr("全部显示")) as HTMLButtonElement;
+      all.type = "button";
+      all.dataset.group = group;
+      all.dataset.act = `all-${group}`;
+      all.disabled = offline;
+      all.title = tr("把这组按钮全部放回来（回到默认）");
+      all.onclick = () => {
+        if (!this.connected) return;
+        const patch: Record<string, null> = {};
+        for (const [id] of items) patch[id] = null;
+        this.act(() => this.socket.send({ type: "ui.set", chrome: patch }));
+      };
+      ghead.append(keep(all));
+      box.append(ghead);
+
+      const tiles = el("div", "chrome-tiles");
+      for (const [id, ic, name] of items) {
+        const on = lit(id);
+        const tile = el("button", `chrome-tile${on ? "" : " off"}`) as HTMLButtonElement;
+        tile.type = "button";
+        tile.dataset.chrome = id;
+        tile.dataset.act = `tile-${id}`;
+        tile.disabled = offline;
+        tile.setAttribute("aria-pressed", String(on));
+        tile.append(
+          el("span", "chrome-tile-ic", ic || "·"),
+          el("span", "chrome-tile-name", name),
+          el("span", "chrome-tile-eye", on ? "●" : "○"),
+        );
+        // 虚着的方块要说清「为什么虚」：会话限定与窄档默认都不在 `chrome` 里，光看键看不出来。
+        const why: string[] = [];
+        if (isSessionOnly(id)) why.push(tr("没开会话时不显示"));
+        if (id === "files" && ctx.narrow && chrome[id] === undefined) why.push(tr("手机上默认收起"));
+        const hint = on
+          ? tr("点一下隐藏「{p1}」", { p1: name })
+          : tr("点一下显示「{p1}」", { p1: name });
+        tile.title = [hint, ...why].join(" · ");
+        tile.setAttribute("aria-label", tile.title);
+        tile.onclick = () => set(id, !on);
+        tiles.append(keep(tile));
+      }
+      box.append(tiles);
+      wall.append(box);
+    }
+    pane.append(wall);
+
+    if (offline) {
+      pane.append(el("div", "chrome-offline", tr("连上桥才能改可见性：现在点了不会有反应")));
+    }
+    if (key) focusable.get(key)?.focus();
   }
 
   /**
@@ -3515,7 +3814,6 @@ export class App {
     applyLang(next);
     // 推送标题跟界面语言走：bridge 只在内存里记这一个值。
     this.socket.send({ type: "lang", lang: next });
-    this.paintChrome();
     this.renderAll();
     // #86：随手问是独立 dialog，不在 renderAll 的覆盖范围里。
     this.scratch.refreshLang();
@@ -3525,39 +3823,93 @@ export class App {
   }
 
   /**
-   * Retranslate the bits that are built once and never re-rendered: the topbar's fixed four
-   * buttons, the new-session button and the two filter placeholders. `renderTop()` only repaints
-   * the session list, `renderSessions()` the chips — neither touches these.
+   * #288：判断按钮可见性只需要这两件事实。560 是 D138 的窄屏断点，跟 `compact()` 一样按缩放后的
+   * 有效宽度算 —— `@media` 看的是视口宽度，2.0 字号下会漏判（D158）。
+   */
+  private chromeCtx(): ChromeContext {
+    return { hasSession: !!this.currentId, narrow: window.innerWidth / this.uiScale() < 560 };
+  }
+
+  /**
+   * #290：下沿那一行的显隐。四颗各自 `hidden`；整行跟着还有没有可见的子节点 —— `release-btn`
+   * （释放 / 让回终端）不归 `chrome` 管，不能跟着一起藏。判断只走 `isChromeVisible`，和顶栏同源。
+   * `renderChat()` 拼完 composer 也会调这里，所以重建后不需要再经过 `paintChrome()`。
+   */
+  private paintComposerChrome(): void {
+    const tools = this.hintTools;
+    if (!tools) return;
+    const ctx = this.chromeCtx();
+    const show = (btn: HTMLButtonElement | null, id: ChromeId): void => {
+      if (btn) btn.hidden = !isChromeVisible(id, this.uiPrefs.chrome, ctx);
+    };
+    show(this.skillButton, "skills");
+    show(this.extButton, "ext");
+    show(this.attachButton, "attach");
+    show(this.modelChip, "model");
+    tools.hidden = !Array.from(tools.children).some((child) => !(child as HTMLElement).hidden);
+  }
+
+  /**
+   * #289：顶栏七颗的文字与可见性**只在这一处**写。切语言、换壳、收到 `ui`、建 / 关 / 接管会话
+   * 最后都落回这里；可见性问纯函数 `isChromeVisible()`（web/src/chrome.ts），不在别处再拼条件。
+   * `renderTop()` 只画会话名与连接状态，`renderSessions()` 只画左栏卡片 —— 都不碰这七颗。
    */
   private paintChrome(): void {
     const { look, files, term, fs, notes, peer, scratch, jira, manageBtn, binBtn, tabs } = this.els;
     const newBtn = this.els.newBtn as HTMLButtonElement;
     const sessFilter = this.els.sessFilter as HTMLInputElement;
+    const ctx = this.chromeCtx();
+    const chrome = this.uiPrefs.chrome;
+    /**
+     * #292「开关优先」：D138 的窄屏规则不动，只被顶开 —— 根元素带 `data-chrome-narrow`（值是按
+     * 空格分隔的 id），样式表里 560px 之内排在 D138 之后的那条规则认它。标记只表达「显式 true」
+     * 这一件事，不含会话事实：没开会话时按钮仍带 `hidden`，覆盖规则的 `:not([hidden])` 不让它复活。
+     */
+    const forcedNarrow = narrowForcedVisible(chrome);
+    const root = document.documentElement;
+    if (forcedNarrow.length) root.dataset.chromeNarrow = forcedNarrow.join(" ");
+    else delete root.dataset.chromeNarrow;
+    const noSessionWhy = tr("没开会话，先不显示");
+    /**
+     * 一颗按钮：`hidden` 是唯一开关（样式表里 `.icon-btn[hidden]{display:none!important}`），
+     * 关掉不留空位。产物 / 文件管理器是「会话里才有内容」的两颗：显式打开也换不来一个会话，
+     * 那就照藏，把原因写进 title —— 不是另起一条规则。
+     */
+    const show = (id: ChromeId, btn: HTMLElement, title: string, sessionBound = false): void => {
+      const visible = isChromeVisible(id, chrome, ctx);
+      btn.hidden = !visible;
+      btn.title = sessionBound && !visible && chrome[id] === true ? `${title} · ${noSessionWhy}` : title;
+    };
     look.title = tr("外观与语言");
     look.setAttribute("aria-label", tr("外观与语言"));
     this.setWideLabel(files, tr("📂 产物"));
-    files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
+    show("artifacts", files, tr("本会话写过的文件（md / html / 图片…点开预览）"), true);
     this.setWideLabel(term, tr(">_ 终端"));
     term.setAttribute("aria-label", tr("终端"));
-    term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
+    show("terminal", term, tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）"));
     this.setWideLabel(fs, tr("📁 文件管理器"));
-    fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
-    // 记录与内网通是顶栏常显的两颗（#45 / D108），标题也要跟着换；
-    // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写。
-    if (notes) this.paintNotesBadge();
+    show("files", fs, tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件"), true);
+    // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写；这里只按它的结果决定画不画。
+    if (notes) {
+      this.paintNotesBadge();
+      show("notes", notes, notes.title);
+    }
     if (peer) {
       this.setWideLabel(peer, tr("🌐 内网通"));
-      peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
+      show("peer", peer, tr("内网通：发现同一内网里的人，直接对话、传文件"));
     }
     if (scratch) {
       this.setWideLabel(scratch, tr("💭 随手问"));
-      scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
+      show("scratch", scratch, tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog"));
     }
     if (jira) {
       this.setWideLabel(jira, tr("🔷 Jira"));
-      jira.title = tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP");
       jira.setAttribute("aria-label", tr("Jira"));
+      show("jira", jira, tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP"));
     }
+    // #290：下沿四颗是在拼 composer 时一次建好的，重画 composer 时不经过这里 —— 它自己也会调
+    // `paintComposerChrome()`，两处共用同一份判断。
+    this.paintComposerChrome();
     newBtn.textContent = tr("开新会话");
     sessFilter.placeholder = tr("过滤名字 / 目录");
     manageBtn.textContent = tr("管理");
@@ -3635,6 +3987,14 @@ export class App {
     this.mgrRefresh = null;
     this.imageSheetPaint = null;
     this.wsPane = null;
+    this.chromePane = null;
+    // #278：按目录新建的对话框关掉 = 这一次不建了；还挂着的「请求在飞」与重画钩子一起摘掉。
+    this.wsNewBusy = false;
+    this.wsNewPaint = null;
+    this.wsNewPicked = "";
+    this.wsNewResolve = null;
+    if (this.wsNewResolveTimer !== null) clearTimeout(this.wsNewResolveTimer);
+    this.wsNewResolveTimer = null;
     // D170: 详情弹层关掉就停轮询，别让一个看不见的弹层一直读盘。
     if (this.bgTimer !== null) window.clearInterval(this.bgTimer);
     this.bgTimer = null;
@@ -4748,6 +5108,8 @@ export class App {
   // ---------------------------------------------------------------- render
   private renderAll(): void {
     this.renderTop();
+    // #289：偏好、壳、语言、当前会话任何一样变了都重画；顶栏七颗的可见性只由 paintChrome() 算。
+    this.paintChrome();
     this.renderSessions();
     this.renderChat();
     this.renderApprovals();
@@ -4762,8 +5124,7 @@ export class App {
     const running = this.session?.running;
     dot.className = `dot ${!this.connected ? "bad" : running ? "busy" : this.session?.owned ? "live" : ""}`;
     title.textContent = this.session ? this.session.name : "pi";
-    this.els.files.hidden = !this.currentId;
-    this.els.fs.hidden = !this.currentId;
+    // 产物 / 文件管理器画不画由 paintChrome() 按 isChromeVisible() 一处决定，这里不再按 currentId 另写一份。
     const bits: string[] = [];
     if (this.me.public) bits.push(tr("公网"));
     if (this.tunnel.status === "up" && this.tunnel.url) bits.push(this.tunnel.url.replace("https://", ""));
@@ -5002,10 +5363,12 @@ export class App {
     btn.type = "button";
     btn.dataset.act = "ws-create";
     btn.textContent = tr("＋ 新建工作区");
-    btn.title = tr("先建一个空组，再把会话拖进去");
+    btn.title = this.bridgeCaps.includes(WS_CREATE_DIR_CAP)
+      ? tr("挑一个目录，建成工作区")
+      : tr("先建一个空组，再把会话拖进去");
     btn.onclick = (ev) => {
       ev.stopPropagation();
-      this.createWs();
+      this.openWsCreate();
     };
     row.append(btn);
     return row;
@@ -5025,7 +5388,7 @@ export class App {
     head.tabIndex = 0;
     head.setAttribute("aria-expanded", String(!collapsed));
     head.title = collapsed ? tr("展开这个工作区") : tr("收起这个工作区");
-    head.setAttribute("aria-label", tr("{p1}，{p2} 个会话，{p3}", { p1: group.name, p2: group.sessions.length, p3: collapsed ? tr("已收起") : tr("已展开") }));
+    head.setAttribute("aria-label", tr("{p1}，{p2} 个会话，{p3}", { p1: group.name, p2: group.count, p3: collapsed ? tr("已收起") : tr("已展开") }));
     head.append(el("span", "chev", collapsed ? "▸" : "▾"));
     const dot = el("span", "ws-dot");
     dot.style.background = group.color;
@@ -5069,13 +5432,15 @@ export class App {
     } else {
       head.append(el("span", "label", group.name));
     }
+    // #279：空组在组头标一个「空」，跟下面那句空态并存；有会话（含归档）时它自己消失。
+    if (!group.count) head.append(el("span", "ws-empty-badge", tr("空")));
     if (group.pending) {
       const todo = el("span", "todo", tr("待 {p1}", { p1: group.pending }));
       todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
       head.append(todo);
     }
     // #173：左栏组序就是 `order`，不再需要「为什么它排在前面」的徽记。
-    head.append(el("span", "n", String(group.sessions.length)));
+    head.append(el("span", "n", String(group.count)));
     if (!editing) {
       const more = el("button", "ws-more", "⋯") as HTMLButtonElement;
       more.type = "button";
@@ -5102,7 +5467,9 @@ export class App {
     const cards = el("div", "session-cards");
     for (const s of group.sessions) cards.append(this.sessionCard(s));
     // 手建的空组：显示空态，不显示一个没有内容的组头（后端派生的组不可能为空，过滤态下整组会消失）。
-    if (!group.sessions.length) cards.append(el("div", "empty ws-empty", tr("这个工作区里还没有会话。")));
+    if (!group.sessions.length) {
+      cards.append(el("div", "empty ws-empty", group.count ? tr("这个工作区里的会话都归档了。") : tr("这个工作区里还没有会话。")));
+    }
     sec.append(cards);
     return sec;
   }
@@ -5118,11 +5485,12 @@ export class App {
     this.renderSessions();
   }
 
-  /** 组头的 ⋯：改名 / 移到最前 / 删除。做不了的置灰并在菜单里写明原因，不把这个选择藏起来。 */
+  /** 组头的 ⋯：改名 / 在横条中 / 移到最前 / 删除。做不了的置灰并在菜单里写明原因，不把这个选择藏起来。 */
   private openWsMore(group: TreeGroup<SessionState>, anchor: HTMLElement): void {
     this.wsMenu?.close();
     const info = this.workspaces.groups.find((g) => g.id === group.id);
     const order = this.wsGroupOrder();
+    const rowAware = hasRowMembership(this.workspaces.groups);
     this.wsMenu = openWsMenu(anchor, {
       name: group.name,
       sub: info && !info.manual ? info.key : tr("手建的工作区"),
@@ -5133,11 +5501,38 @@ export class App {
         : order[0] === group.id
           ? tr("它已经是第一个了")
           : null,
-      dropBlocker: dropBlocker(info, group.sessions.length),
+      dropBlocker: dropBlocker(info, group.count),
+      // #276：旧桥没有成员字段 → 整行不出现；新桥点一下等于标签上的 ⊙。
+      row:
+        rowAware && info
+          ? { checked: info.inRow !== false, onToggle: () => this.setWsRow(group.id, info.inRow === false) }
+          : undefined,
+      // #279：能删时也要说清删的是什么 —— 手动组删的是组，目录组只是把这一项移出列表。
+      dropHint: info ? dropHint(info) : undefined,
       onRename: () => this.startWsRename(group.id),
       onFront: () => this.moveWsToFront(group.id),
       onDrop: () => this.dropWs(group.id),
     });
+  }
+
+  /** #276：横条成员写回桥；页面不在本地猜，等广播回来再重画。 */
+  private setWsRow(id: string, inRow: boolean): void {
+    this.act(() => this.socket.send({ type: "manage", action: "ws.row", id, inRow }));
+  }
+
+  /** #276：⊙ 移出横条；当前组仍临时占最后一格，所以提示里把这件事说清。 */
+  private removeWsRow(group: TreeGroup<SessionState>): void {
+    this.setWsRow(group.id, false);
+    const current = group.id === this.currentWsId();
+    this.flashToast(
+      current
+        ? tr("已把 {p1} 移出横条；还是当前组，只能占最后一格", { p1: group.name })
+        : tr("已把 {p1} 移出横条 · 它还在左栏里", { p1: group.name }),
+      false,
+      6000,
+      "",
+      () => this.setWsRow(group.id, true),
+    );
   }
 
   /** 桥下发的组序；旧桥没有这个字段（空数组也算新桥）。 */
@@ -5182,17 +5577,171 @@ export class App {
   private commitWsRename(): void {
     const id = this.wsRenameId;
     if (!id) return;
-    const current = this.workspaces.groups.find((g) => g.id === id)?.name ?? "";
-    const next = renameIntent(current, this.wsRenameDraft);
+    const draft = this.wsRenameDraft;
     this.wsRenameId = null;
     this.wsRenameDraft = "";
     this.renderSessions();
+    this.sendWsRename(id, draft);
+  }
+
+  /**
+   * #277 左栏组头与横条浮层共用这一条改名提交：空串回落目录名、同名不发。
+   *
+   * 桥的 `ws.rename` 没有失败回执 —— 组不在了它只是不写、照样广播。页面这边能看见的拒绝有两种：
+   * 发之前组已经没了，和发之后下一份快照里名字还是旧的。两种都提示并保留原值（页面从不先改名字，
+   * 快照才是唯一来源）。等确认的那段时间里名字要是先被别的客户端改了，也算没存下。
+   */
+  private sendWsRename(id: string, draft: string): void {
+    const group = this.workspaces.groups.find((g) => g.id === id);
+    if (!group) {
+      this.flashToast(tr("这个工作区不在了，名字没改"), true, 4000);
+      return;
+    }
+    const next = renameIntent(group.name, draft);
     if (next == null) return;
-    this.act(() => this.socket.send({ type: "manage", action: "ws.rename", id, name: next }));
+    this.act(() => {
+      if (this.socket.status !== "open") {
+        this.flashToast(tr("改名没存下 · 还是原来的名字"), true, 4000);
+        return;
+      }
+      this.expectWsRename(id, next);
+      this.socket.send({ type: "manage", action: "ws.rename", id, name: next });
+    });
+  }
+
+  /** 发出改名后盯着下一份快照；1.5 秒还没见到新名字就按「桥没收下」处理。 */
+  private expectWsRename(id: string, name: string): void {
+    if (this.wsRenameAck) window.clearTimeout(this.wsRenameAck.timer);
+    const timer = window.setTimeout(() => {
+      const ack = this.wsRenameAck;
+      if (!ack || ack.id !== id || ack.name !== name) return;
+      this.wsRenameAck = null;
+      const group = this.workspaces.groups.find((g) => g.id === id);
+      if (!group) this.flashToast(tr("这个工作区不在了，名字没改"), true, 4000);
+      else if (group.name !== name) this.flashToast(tr("改名没存下 · 还是原来的名字"), true, 4000);
+    }, 1500);
+    this.wsRenameAck = { id, name, timer };
+  }
+
+  /** 每份工作区快照都过一眼：名字对上了就撤销确认计时；组没了就当场提示。 */
+  private settleWsRename(): void {
+    const ack = this.wsRenameAck;
+    if (!ack) return;
+    const group = this.workspaces.groups.find((g) => g.id === ack.id);
+    if (!group) {
+      window.clearTimeout(ack.timer);
+      this.wsRenameAck = null;
+      this.flashToast(tr("这个工作区不在了，名字没改"), true, 4000);
+    } else if (group.name === ack.name) {
+      window.clearTimeout(ack.timer);
+      this.wsRenameAck = null;
+    }
+  }
+
+  /**
+   * #277 横条标签双击改名：浮层是 body 上的 fixed 输入框，锚在标签的视口矩形上（`tabRenameBox()`），
+   * 不插进 `.ws-tabs`，所以不会把整行撑高或推走；窄窗口由几何函数夹回视口。
+   *
+   * 双击非当前组时第一下只切组（见 `tab.onclick` 的两下判断），第二下才进编辑 ——
+   * 浮层出现时组已经切过去了。
+   */
+  private startWsTabRename(group: TreeGroup<SessionState>): void {
+    this.cancelWsTabRename();
+    const raw = this.workspaces.groups.find((g) => g.id === group.id)?.name ?? "";
+    const input = el("input", "rename-input ws-tab-rename-input") as HTMLInputElement;
+    input.value = raw;
+    // 还没起名的组：输入框留空，占位显示目录名，和左栏改名的手感一致。
+    input.placeholder = group.name;
+    input.spellcheck = false;
+    input.autocomplete = "off";
+    input.maxLength = WS_NAME_MAX;
+    input.setAttribute("aria-label", tr("工作区名（留空就恢复成目录名）"));
+    input.onkeydown = (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        this.commitWsTabRename();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        this.cancelWsTabRename();
+      }
+    };
+    input.onblur = () => {
+      if (this.wsTabRename?.input === input) this.commitWsTabRename();
+    };
+    const away = (ev: PointerEvent) => {
+      if (ev.target === input) return;
+      this.commitWsTabRename();
+    };
+    this.wsTabRename = { id: group.id, input, away };
+    document.body.append(input);
+    // 捕获阶段：点标签 / 左栏 / 空白都先提交，再让那一下自己的点击继续走。
+    document.addEventListener("pointerdown", away, true);
+    this.placeWsTabRename();
+    queueMicrotask(() => {
+      input.focus();
+      input.select();
+    });
+  }
+
+  /** 只拆浮层，不提交（Esc / 组没了 / 换一颗标签时用）。 */
+  private cancelWsTabRename(): void {
+    const st = this.wsTabRename;
+    if (!st) return;
+    this.wsTabRename = null;
+    document.removeEventListener("pointerdown", st.away, true);
+    st.input.remove();
+  }
+
+  /** Enter / 点别处 / 失焦：先拆浮层，再走和左栏同一条提交。 */
+  private commitWsTabRename(): void {
+    const st = this.wsTabRename;
+    if (!st) return;
+    const draft = st.input.value;
+    this.cancelWsTabRename();
+    this.sendWsRename(st.id, draft);
+  }
+
+  /** 标签重画 / 窗口缩放之后重新贴一次；组或标签没了就收起浮层，不拿旧坐标硬撑。 */
+  private placeWsTabRename(): void {
+    const st = this.wsTabRename;
+    if (!st) return;
+    const tabs = this.els.wsTabs;
+    const tab = tabs ? [...tabs.querySelectorAll<HTMLElement>(".ws-tab")].find((n) => n.dataset.ws === st.id) : null;
+    if (!tab || !this.workspaces.groups.some((g) => g.id === st.id)) {
+      this.cancelWsTabRename();
+      return;
+    }
+    const box = tabRenameBox(tab.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
+    st.input.style.left = `${box.left}px`;
+    st.input.style.top = `${box.top}px`;
+    st.input.style.width = `${box.width}px`;
   }
 
   private dropWs(id: string): void {
     this.act(() => this.socket.send({ type: "manage", action: "ws.drop", id }));
+  }
+
+  /**
+   * #279：当前组被删掉之后落到相邻组 —— 右邻优先、再左邻（`wsNeighborsAfterDrop()`）。
+   *
+   * 只认「这一组里有会话可开」的邻居：空组切过去只会看见另一张空态，不如把左栏亮出来。
+   * 当前会话要是已经跟着目录落进了别的组（`currentWsId()` 还答得出），页面本来就有归属，不硬切。
+   */
+  private landAfterWsDrop(gone: string | null, orderBefore: string[]): void {
+    if (!gone || !this.session) return;
+    if (this.workspaces.groups.some((g) => g.id === gone)) return;
+    if (this.currentWsId()) return;
+    // 用未过滤的树找落点：过滤态下邻居可能整组被藏起来，那也不该停在半路。
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, "");
+    for (const id of wsNeighborsAfterDrop(orderBefore, gone)) {
+      const first = tree.groups.find((g) => g.id === id)?.sessions[0];
+      if (first) {
+        this.openFromList(first.id);
+        return;
+      }
+    }
+    if (this.collapsed.sessions) this.togglePane("sessions");
   }
 
   private createWs(): void {
@@ -5213,6 +5762,148 @@ export class App {
     if (this.collapsed.sessions) this.togglePane("sessions");
     this.wsCreateFromTabs = true;
     this.createWs();
+  }
+
+  /**
+   * #278：＋ / 「新建工作区」的入口 —— 新桥先挑目录（目录就是组的身份，同目录不重建）；
+   * 旧桥没有 `ws.create.dir`，原样退回「空壳组 + 就地改名」，绝不摆一张点了会坏的对话框。
+   */
+  private openWsCreate(): void {
+    if (!this.bridgeCaps.includes(WS_CREATE_DIR_CAP)) {
+      this.createWsFromTabs();
+      return;
+    }
+    this.openWsNewSheet();
+  }
+
+  /** #278：对话框从哪儿开始浏览 —— 当前工作区的目录，其次当前会话的 cwd。 */
+  private wsNewStartDir(): string {
+    const id = this.currentWsId();
+    const group = id ? this.workspaces.groups.find((g) => g.id === id) : undefined;
+    if (group && !group.manual && group.key) return cleanDirPath(group.key);
+    return cleanDirPath(this.session?.cwd ?? "");
+  }
+
+  /** #278：建完 / 「带你过去」都走这里 —— 切到那一组；空组没有会话可开，就把左栏滚到它那一行。 */
+  private switchToWsGroup(id: string): void {
+    const group = buildTree(this.sessions, this.manage, this.workspaces, "").groups.find((g) => g.id === id);
+    if (!group) return;
+    this.gotoGroup(group);
+    if (group.sessions.length) return;
+    const row = Array.from(this.els.sessList.querySelectorAll<HTMLElement>(".ws-sec")).find((node) => node.dataset.ws === id);
+    row?.scrollIntoView({ block: "nearest" });
+  }
+
+  /**
+   * #278 按目录新建工作区（与 #276 横条同一套组）：左边=已经在列表里（当前那个标「这里」），
+   * 右边=真目录浏览（`mountDirPicker`，不是第二套目录实现）。选到已有目录 → 按钮变「带你过去」，不发创建。
+   */
+  private openWsNewSheet(): void {
+    if (this.sheetKind === "wsnew") return;
+    this.closeSheet();
+    this.sheetKind = "wsnew";
+    const back = el("div", "sheet-back center");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet ws-new-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("新建工作区 · 选一个目录")));
+    const close = el("button", "btn ghost", tr("关闭")) as HTMLButtonElement;
+    close.type = "button";
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+
+    const body = el("div", "ws-new-body");
+    const side = el("div", "ws-new-side");
+    side.append(el("div", "ws-new-side-title", tr("已经在列表里")));
+    const here = this.currentWsId();
+    const groups = buildTree(this.sessions, this.manage, this.workspaces, "").groups.filter((group) => !group.manual);
+    let picker: DirPicker | null = null;
+    for (const group of groups) {
+      const row = el("button", "model-row ws-new-pick") as HTMLButtonElement;
+      row.type = "button";
+      row.dataset.ws = group.id;
+      row.title = group.key;
+      const dot = el("span", "ws-dot");
+      dot.style.background = group.color;
+      row.append(dot, el("span", "m-name", group.name));
+      if (group.id === here) row.append(el("span", "ws-here", tr("这里")));
+      row.onclick = () => void picker?.go(group.key);
+      side.append(row);
+    }
+    if (!groups.length) side.append(el("div", "empty", tr("还没有按目录分的工作区")));
+
+    const dirHost = el("div", "ws-new-dir");
+    body.append(side, dirHost);
+
+    const foot = el("div", "sheet-foot");
+    const note = el("div", "ws-new-note");
+    const cancel = el("button", "btn ghost", tr("取消")) as HTMLButtonElement;
+    cancel.type = "button";
+    cancel.onclick = () => this.closeSheet();
+    const primary = el("button", "btn primary", tr("就在这里新建")) as HTMLButtonElement;
+    primary.type = "button";
+    foot.append(note, cancel, primary);
+
+    let picked = this.wsNewStartDir();
+    this.wsNewPicked = cleanDirPath(picked);
+    this.wsNewResolve = null;
+    /** 选目录是一路点出来的：防抖后问一次桥；失败 / 旧桥就退回本地逐字比较。 */
+    const askResolve = (): void => {
+      if (!this.bridgeCaps.includes(WS_RESOLVE_DIR_CAP)) return;
+      const dir = cleanDirPath(picked);
+      if (!dir) return;
+      if (this.wsNewResolveTimer !== null) clearTimeout(this.wsNewResolveTimer);
+      this.wsNewResolveTimer = setTimeout(() => {
+        this.wsNewResolveTimer = null;
+        if (this.sheetKind !== "wsnew") return;
+        this.act(() => this.socket.send({ type: "manage", action: "ws.resolve", dir }));
+      }, 180);
+    };
+    const paint = (): void => {
+      const action = wsCreateAction(this.workspaces.groups, picked, this.wsNewResolve);
+      if (!action.dir) note.textContent = tr("挑一个目录，建成工作区");
+      else if (action.existing) {
+        note.textContent = tr("这个目录已经在列表里：{p1} → 会带你过去，不会再建一个", { p1: dirBaseName(picked) });
+      } else note.textContent = tr("将新建：{p1} · 名字 = 目录名", { p1: dirBaseName(picked) });
+      primary.textContent = action.label;
+      primary.disabled = this.wsNewBusy || !action.dir;
+    };
+    this.wsNewPaint = paint;
+    primary.onclick = () => {
+      if (this.wsNewBusy) return;
+      const action = wsCreateAction(this.workspaces.groups, picked, this.wsNewResolve);
+      if (!action.dir) return;
+      if (action.existing) {
+        this.closeSheet();
+        this.switchToWsGroup(action.existing.id);
+        this.flashToast(tr("这个工作区已经在列表里"), false, 3600);
+        return;
+      }
+      this.wsNewBusy = true;
+      paint();
+      this.act(() => this.socket.send({ type: "manage", action: "ws.create", dir: action.dir }));
+    };
+
+    sheet.append(head, body, foot);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    picker = mountDirPicker(dirHost, {
+      start: picked,
+      filter: true,
+      fallback: true,
+      onState: (state: DirPickerState) => {
+        picked = state.path;
+        this.wsNewPicked = cleanDirPath(picked);
+        this.wsNewResolve = null;
+        this.wsNewPaint?.();
+        askResolve();
+      },
+    });
+    paint();
+    askResolve();
   }
 
   private sessionSection(kind: "archived", title: string, list: SessionState[]): HTMLElement {
@@ -5658,6 +6349,8 @@ export class App {
    */
   private async openArtifactsSheet(): Promise<void> {
     if (!this.currentId) return;
+    // 已经开着就别重建：会把筛选与滚动位置打回去（`/artifacts` 与那颗按钮都走这里）。
+    if (this.sheet?.querySelector(".art-sheet")) return;
     const sessionId = this.currentId;
     this.closeSheet();
     this.sheetKind = "display";
@@ -7223,16 +7916,17 @@ export class App {
   }
 
   /** 一条几秒后自己消失的小提示（入账可撤销 / #175 新建的组收进了 ＋N）。同一时刻只留一条。 */
-  private flashToast(text: string, bad: boolean, ms: number, token = ""): void {
+  private flashToast(text: string, bad: boolean, ms: number, token = "", onUndo?: () => void): void {
     this.failToast?.remove();
     window.clearTimeout(this.failToastTimer);
     const box = el("div", `fail-toast${bad ? " bad" : ""}`);
     box.append(el("span", "", text));
-    if (token) {
+    if (token || onUndo) {
       const undo = el("button", "fail-toast-undo", tr("撤销"));
       undo.onclick = () => {
         box.remove();
-        this.socket.send({ type: "failures.undo", token });
+        if (onUndo) onUndo();
+        else this.socket.send({ type: "failures.undo", token });
       };
       box.append(undo);
     }
@@ -8730,6 +9424,10 @@ export class App {
     this.hintStatus = null;
     this.cwdChip = null;
     this.modelChip = null;
+    this.hintTools = null;
+    this.skillButton = null;
+    this.attachButton = null;
+    this.extButton = null;
     this.textarea = null;
     this.continueBtn = null;
     this.bgBar = null;
@@ -8825,28 +9523,27 @@ export class App {
     this.fillHintStatus();
     hint.append(status);
     const tools = el("div", "hint-tools");
+    this.hintTools = tools;
     const skillBtn = el("button", "btn ghost", tr("技能"));
     skillBtn.dataset.act = "skills";
     skillBtn.title = tr("搜索并插入技能命令（/skill:name）");
     skillBtn.onclick = () => this.openSkillPalette();
+    this.skillButton = skillBtn;
     const pathBtn = el("button", "btn ghost", tr("文件"));
     pathBtn.dataset.act = "attach";
     pathBtn.title = tr("选文件：图片直接附加，其他文件插入完整路径（pi 会自己去读）。截图或资源管理器里复制的文件也可以 {p1}", { p1: PASTE_KEY });
     pathBtn.onclick = () => this.openFilePicker();
+    this.attachButton = pathBtn;
     const chip = el("button", "model-chip");
     chip.onclick = () => this.openModelSheet();
     chip.append(el("span", "chip-model", ""), el("span", "chip-ctx", ""), el("span", "chip-rate", ""), el("span", "chip-level", ""));
     this.modelChip = chip;
-    tools.append(skillBtn);
-    if (this.uiPrefs.showExtButton) {
-      const extBtn = el("button", "btn ghost ext-btn", tr("扩展")) as HTMLButtonElement;
-      extBtn.title = tr("已安装的扩展与 MCP、扩展商店、MCP 商店（可在 pi 设置 → 扩展与 MCP 里隐藏这个按钮）");
-      extBtn.onclick = () => this.openExtManager();
-      this.extButton = extBtn;
-      tools.append(extBtn);
-      this.paintExtButton();
-    } else this.extButton = null;
-    tools.append(pathBtn, chip);
+    const extBtn = el("button", "btn ghost ext-btn", tr("扩展")) as HTMLButtonElement;
+    extBtn.title = tr("已安装的扩展与 MCP、扩展商店、MCP 商店（可在 pi 设置 → 扩展与 MCP 里隐藏这个按钮）");
+    extBtn.onclick = () => this.openExtManager();
+    this.extButton = extBtn;
+    this.paintExtButton();
+    tools.append(skillBtn, extBtn, pathBtn, chip);
     if (s?.owned) {
       // The explanation lives in the tooltip so it no longer costs the composer a whole row.
       const fromWeb = s.origin === "web";
@@ -8859,6 +9556,7 @@ export class App {
     }
     hint.append(tools);
     this.fillModelChip();
+    this.paintComposerChrome();
 
     const extAbove = el("div", "ext-widgets above");
     const extBelow = el("div", "ext-widgets below");
@@ -10408,8 +11106,9 @@ export class App {
     const row = el("label", "ns-adv-flag ext-switch");
     const box = el("input") as HTMLInputElement;
     box.type = "checkbox";
-    box.checked = this.uiPrefs.showExtButton;
-    box.onchange = () => this.act(() => this.socket.send({ type: "ui.set", showExtButton: box.checked }));
+    // #290：勾选状态就是 `chrome.ext`（与下沿那颗同一个判断），改动写的也是同一个字段。
+    box.checked = isChromeVisible("ext", this.uiPrefs.chrome, this.chromeCtx());
+    box.onchange = () => this.act(() => this.socket.send({ type: "ui.set", chrome: { ext: box.checked } }));
     row.append(box, el("span", "", tr("在输入框下方显示「扩展」按钮（点开就是下面这套管理界面）")));
     body.append(row);
     const host = el("div", "ext-host");
@@ -13494,6 +14193,7 @@ export class App {
     if (wsTabsRow.hidden) {
       // 横条不画时这句提示没有出口，别攒到下一次渲染。
       this.wsNewNoteId = null;
+      this.cancelWsTabRename();
       return;
     }
     const byId = new Map(tree.groups.map((group) => [group.id, group]));
@@ -13501,26 +14201,34 @@ export class App {
     // 旧桥没下发 order 时退回树的组序（此时树自己也是按名字排的）。
     const bridgeOrder = this.wsOrder();
     const order = (bridgeOrder?.length ? bridgeOrder : tree.groups.map((group) => group.id)).filter((id) => byId.has(id));
-    const model = tabModel({ order, max: this.workspaces.max ?? TABS_DEFAULT, current: cur ?? undefined });
+    // #276：旧桥的组没有 inRow → 全员都在横条里，也不画 ⊙ / 左侧菜单项。
+    const rowAware = hasRowMembership(this.workspaces.groups);
+    const members = rowAware
+      ? this.workspaces.groups.filter((group) => group.inRow !== false).map((group) => group.id)
+      : null;
+    const model = rowModel({ order, max: this.workspaces.max ?? TABS_DEFAULT, current: cur ?? undefined, members });
     // #175：刚在横条 ＋ 上建的组：`order` 末尾、名额已满时它直接进 ＋N —— 说一声，
     // 否则横条看起来没变，像是没建成（新组仍按 #173 的规则留在 order 末尾）。
     const born = this.wsNewNoteId;
     if (born) {
       this.wsNewNoteId = null;
-      const folded = newTabFold(order, this.workspaces.max ?? TABS_DEFAULT, born);
+      const folded = newTabFold(order, this.workspaces.max ?? TABS_DEFAULT, born, members);
       if (folded != null) this.flashToast(tr("已新建，收在 ＋{p1} 里", { p1: folded }), false, 4000);
     }
     for (const id of model.visible) {
       const group = byId.get(id);
       if (!group) continue;
-      const tab = el("button", `ws-tab${group.id === cur ? " on" : ""}`);
+      const offRow = model.currentOffRow && group.id === cur;
+      const slot = el("div", `ws-tab-slot${rowAware ? " row" : ""}`);
+      const tab = el("button", `ws-tab${group.id === cur ? " on" : ""}${offRow ? " off-row" : ""}`);
       tab.dataset.ws = group.id;
-      tab.title = tr("切到这个工作区");
+      tab.title = offRow ? tr("当前组被移出横条，临时占最后一格") : tr("切到这个工作区");
       tab.setAttribute("aria-label", tr("{p1}，{p2} 个会话", { p1: group.name, p2: group.sessions.length }));
       if (group.id === cur) tab.setAttribute("aria-current", "true");
       const dot = el("span", "ws-tab-dot");
       dot.style.background = group.color;
       tab.append(dot, el("span", "ws-tab-name", group.name));
+      if (offRow) tab.append(el("span", "ws-tab-stray", "⊘"));
       if (group.pending) {
         const todo = el("span", "ws-tab-todo");
         todo.title = tr("{p1} 个会话在等你", { p1: group.pending });
@@ -13529,28 +14237,60 @@ export class App {
       // #174：画出来的每一颗都能拖；拖完不误当点击。
       // #178 R34：旧桥没有 `order`，顺序只是页面按名字兜底，拖了也无处落库 —— 不绑拖动。
       // 过滤态只画命中组：此时拖出来的 order 会缺项、被桥按创建序补到末尾 —— 搜索时不绑拖。
-      if (bridgeOrder?.length && !this.filter) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id, model);
-      tab.onclick = () => {
+      if (bridgeOrder?.length && !this.filter) tab.onpointerdown = (ev) => this.startTabDrag(ev, group.id, model, order);
+      // #277：两下规则 —— 第一下照常切组，第二下（同一颗、够快）才进编辑。双击当前组时第一下是
+      // 原地切组，所以直接进编辑；双击非当前组时第一下已经切过去，浮层出现时组一定已经是它。
+      // 用 click 的 detail + 上一次点击判断，不另绑 dblclick：拖动过的第一下已经被 tabDragMoved 吞掉。
+      tab.onclick = (ev) => {
         if (this.tabDragMoved) {
           this.tabDragMoved = false;
+          this.tabClickLast = null;
+          return;
+        }
+        const last = this.tabClickLast;
+        const dbl = ev.detail >= 2 && last?.id === group.id && performance.now() - last.at <= 600;
+        this.tabClickLast = { id: group.id, at: performance.now() };
+        if (dbl) {
+          this.tabClickLast = null;
+          this.startWsTabRename(group);
           return;
         }
         this.gotoGroup(group);
       };
-      wsTabs.append(tab);
+      slot.append(tab);
+      if (rowAware) {
+        const label = offRow ? tr("把 {p1} 放回横条", { p1: group.name }) : tr("把 {p1} 移出横条", { p1: group.name });
+        const toggle = el("button", "ws-tab-row-toggle", "⊙") as HTMLButtonElement;
+        toggle.type = "button";
+        toggle.title = label;
+        toggle.setAttribute("aria-label", label);
+        toggle.onclick = (ev) => {
+          ev.stopPropagation();
+          // 已经不在横条里的当前组：这一下是放回去；其他标签都是移出。
+          if (offRow) this.setWsRow(group.id, true);
+          else this.removeWsRow(group);
+        };
+        slot.append(toggle);
+      }
+      wsTabs.append(slot);
     }
     // #121：超出的组收进这颗。它在槽外面（见 createShell），槽横滚时位置不动。
-    if (model.more.length) {
-      const why = tr("还有 {p1} 个工作区", { p1: model.more.length });
-      const folded = model.more.map((id) => byId.get(id)).filter((group): group is TreeGroup<SessionState> => Boolean(group));
+    // #276：rowAware 时 Ｎ = 装不下 + 不在横条里（两段都从这颗进）。
+    const outside = rowAware ? [...model.more, ...model.offRow] : model.more;
+    if (outside.length) {
+      const why = rowAware
+        ? tr("装不下 {p1} 个 · 不在横条里 {p2} 个", { p1: model.more.length, p2: model.offRow.length })
+        : tr("还有 {p1} 个工作区", { p1: outside.length });
       wsTabsMore.hidden = false;
-      wsTabsMore.textContent = tr("＋{p1}", { p1: folded.length });
+      wsTabsMore.textContent = tr("＋{p1}", { p1: outside.length });
       wsTabsMore.title = why;
       wsTabsMore.setAttribute("aria-label", why);
-      wsTabsMore.onclick = () => this.toggleTabsMore(folded);
+      wsTabsMore.onclick = () => this.toggleTabsMore(model, byId, rowAware);
     } else {
       wsTabsMore.onclick = null;
     }
+    // #277 标签重建过一轮：浮层挂在 body 上没被换掉，位置要按新标签再贴一次。
+    this.placeWsTabRename();
     // 量宽要等布局落地：hidden 刚摘掉的那一帧 clientWidth 还是 0。
     requestAnimationFrame(() => this.paintWsTabFade());
   }
@@ -13565,7 +14305,7 @@ export class App {
    * 改本地顺序。拖回原位 / 落点没变 → `tabReorder()` 返回 null，一个字都不发。`model` 是这一帧画
    * 出来的可见段 / 折叠段：重排只在可见段里算，折叠组既拖不动也不会被顺手拽进前几名。
    */
-  private startTabDrag(ev: PointerEvent, id: string, model: TabModel): void {
+  private startTabDrag(ev: PointerEvent, id: string, model: TabModel, order: readonly string[]): void {
     if (ev.button !== 0 || ev.pointerType !== "mouse") return;
     const tabs = this.els.wsTabs;
     const tab = ev.currentTarget as HTMLElement | null;
@@ -13631,7 +14371,8 @@ export class App {
       window.setTimeout(() => {
         this.tabDragMoved = false;
       }, 0);
-      const next = tabReorder(model, id, hit);
+      // #276：把原 order 一并交给它，不在横条里的组才不会被拖丢（只重排可见段）。
+      const next = tabReorder(model, id, hit, order);
       if (next) {
         // 只交顺序：名额有自己的入口，拖一下不该顺带把上一帧的 max 回写。
         this.act(() => this.socket.send({ type: "manage", action: "ws.tabs", order: next }));
@@ -13654,8 +14395,15 @@ export class App {
     box.classList.toggle("fade", box.scrollWidth > box.clientWidth + 1);
   }
 
-  /** #121：`＋N` 点开 = 只列被折叠的组；点一行切过去并把下拉关掉。 */
-  private toggleTabsMore(groups: TreeGroup<SessionState>[]): void {
+  /**
+   * #121：`＋N` 点开 = 列出横条外的组；点一行切过去并把下拉关掉。
+   * #276：新桥分两段 —— 左「装不下」只切组，右「不在横条里」放回横条并切过去；旧桥仍是单列。
+   */
+  private toggleTabsMore(
+    model: TabRowModel,
+    byId: Map<string, TreeGroup<SessionState>>,
+    rowAware: boolean,
+  ): void {
     if (this.tabsMore) {
       this.closeTabsMore();
       return;
@@ -13663,25 +14411,76 @@ export class App {
     const anchor = this.els.wsTabsMore;
     if (!anchor) return;
     // 外壳复用置顶胶囊那张卡（`.pin-menu` / `.pm-item`）：同一个下拉，只是列的是工作区。
-    const pop = el("div", "pin-menu ws-tabs-menu");
+    const pop = el("div", `pin-menu ws-tabs-menu${rowAware ? " ws-tabs-board" : ""}`);
     pop.setAttribute("role", "menu");
-    pop.setAttribute("aria-label", tr("被折叠的工作区"));
-    pop.append(el("div", "pm-head", tr("还有 {p1} 个工作区", { p1: groups.length })));
-    for (const group of groups) {
+    pop.setAttribute("aria-label", rowAware ? tr("横条外的工作区") : tr("被折叠的工作区"));
+
+    const rowFor = (group: TreeGroup<SessionState>, icon: string, pick: () => void): HTMLButtonElement => {
       const row = el("button", "pm-item") as HTMLButtonElement;
       row.type = "button";
       row.setAttribute("role", "menuitem");
       row.dataset.ws = group.id;
-      const dot = el("span", "pm-ico", "●");
-      dot.style.color = group.color;
-      row.append(dot, el("span", "pm-text", group.name));
+      const mark = el("span", "pm-ico", icon);
+      if (icon === "●") mark.style.color = group.color;
+      const n = el("span", `pm-n${group.count ? "" : " zero"}`, String(group.count));
+      n.title = tr("{p1} 个会话", { p1: group.count });
+      row.append(mark, el("span", "pm-text", group.name), n);
       row.title = group.name;
       row.onclick = (ev) => {
         ev.stopPropagation();
-        this.closeTabsMore();
-        this.gotoGroup(group);
+        pick();
       };
-      pop.append(row);
+      return row;
+    };
+
+    if (rowAware) {
+      const board = el("div", "ws-tray");
+      const col = (head: string, sub: string): HTMLElement => {
+        const box = el("div", "ws-tray-col");
+        const title = el("div", "ws-tray-head");
+        title.append(el("span", "ws-tray-title", head), el("span", "ws-tray-why", sub));
+        box.append(title);
+        return box;
+      };
+      const overflow = col(tr("装不下 {p1}", { p1: model.more.length }), tr("点了就切过去，横条不动"));
+      for (const id of model.more) {
+        const group = byId.get(id);
+        if (!group) continue;
+        overflow.append(
+          rowFor(group, "●", () => {
+            this.closeTabsMore();
+            this.gotoGroup(group);
+          }),
+        );
+      }
+      if (!overflow.querySelector(".pm-item")) overflow.append(el("div", "pm-why", tr("都装得下。")));
+
+      const offRow = col(tr("不在横条里 {p1}", { p1: model.offRow.length }), tr("点了就放回横条并切过去"));
+      for (const id of model.offRow) {
+        const group = byId.get(id);
+        if (!group) continue;
+        offRow.append(
+          rowFor(group, tr("＋"), () => {
+            this.closeTabsMore();
+            this.setWsRow(group.id, true);
+            this.gotoGroup(group);
+          }),
+        );
+      }
+      if (!offRow.querySelector(".pm-item")) offRow.append(el("div", "pm-why", tr("全都在横条里。")));
+      board.append(overflow, offRow);
+      pop.append(board);
+    } else {
+      const groups = model.more.map((id) => byId.get(id)).filter((group): group is TreeGroup<SessionState> => Boolean(group));
+      pop.append(el("div", "pm-head", tr("还有 {p1} 个工作区", { p1: groups.length })));
+      for (const group of groups) {
+        pop.append(
+          rowFor(group, "●", () => {
+            this.closeTabsMore();
+            this.gotoGroup(group);
+          }),
+        );
+      }
     }
     // 贴着那颗；下方放不下就翻上去，装不下的行自己滚（这条常常贴着窗口底）。
     const place = (): void => {
@@ -14444,6 +15243,7 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["bug", tr("给 pi 开发者提交 bug 报告（/bug 描述）")],
   ["login", tr("登录模型 provider（API key / OAuth）")],
   ["logout", tr("登出某个 provider")],
+  ...PANEL_COMMANDS.map((c): [string, string] => [c.id, tr(c.desc)]),
 ];
 
 type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "runtime" | "changelog" | "whatsnew";

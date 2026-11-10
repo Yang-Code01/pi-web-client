@@ -61,6 +61,7 @@
     "test:rules": "node --experimental-transform-types web/tests/rules-unit.mjs && node --experimental-transform-types bridge/tests/rules-unit.mjs",
     "test:probes": "node web/tests/probes-unit.mjs",
     "probe:workspace": "node probes/run-all.mjs",
+    "probe:chrome": "node probes/run-all.mjs --only chrome-topbar,chrome-bottom,chrome-sheet,chrome-narrow",
     "probe:preview": "node probes/preview-open.mjs",
     "probe:extstore": "node probes/ext-store-paint.mjs",
     "test:history": "node --experimental-strip-types bridge/tests/history-page-unit.mjs",

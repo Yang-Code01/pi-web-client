@@ -189,6 +189,8 @@ export interface WsGroup {
   /** 工程根（`manual` 组为空）。 */
   key: string;
   manual: boolean;
+  /** #276：是否参加横条；旧桥不带这个字段（undefined = 所有组都在横条里）。 */
+  inRow?: boolean;
 }
 
 /**

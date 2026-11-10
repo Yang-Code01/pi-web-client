@@ -13,12 +13,26 @@ import fs from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
 import { ensureDir, readJsonChecked, statePath } from "./paths.ts";
+import {
+  buildSearchJql,
+  parseSearchParams,
+  SEARCH_PAGE_SIZE,
+  SearchQueryError,
+  STATUS_CATEGORY_KEYS,
+} from "./jira-search.ts";
+import type { SearchParams } from "./jira-search.ts";
 
 const TIMEOUT_MS = 15000;
 const MYSELF = "/rest/api/3/myself";
 // #249：新的 JQL 端点（老的 `/rest/api/3/search` 正被 Atlassian 下线）与项目列表。
 const SEARCH = "/rest/api/3/search/jql";
 const PROJECTS = "/rest/api/3/project/search";
+// #257：搜索用的元数据与人员搜索。
+const TYPES = "/rest/api/3/issuetype";
+const PRIORITIES = "/rest/api/3/priority";
+const USERS = "/rest/api/3/user/search";
+/** #257：类型/优先级/项目状态变得很慢，5 分钟缓存够用；搜索结果本身不缓存。 */
+const META_TTL_MS = 5 * 60 * 1000;
 const MAX_BODY = 64 * 1024;
 /** #251：单文件上限；超了只跳过这一项，同批其它文件照常落盘。 */
 const MAX_DOWNLOAD = 100 * 1024 * 1024;
@@ -29,7 +43,7 @@ const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** 页面传不了查询：JQL 与字段都在桥里写死（D203）。 */
 const MY_OPEN_JQL = "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC";
-const ISSUE_FIELDS = "summary,issuetype,priority,status,updated";
+const ISSUE_FIELDS = "summary,issuetype,priority,status,assignee,updated";
 const LIST_MAX = 20;
 /** 列表缓存 60 秒：面板反复开关时别把 Jira 的限流额度打满。只存内存，不落盘（D203）。 */
 const LIST_TTL_MS = 60_000;
@@ -55,12 +69,30 @@ export interface JiraIssue {
   /** 没有优先级时 Jira 回 null，页面据此省略或显示占位。 */
   priority: string | null;
   status: string;
+  /** 显示名；未分配或上游按隐私策略不给名字时为空串。 */
+  assignee: string;
   updated: string;
 }
 
 export interface JiraProject {
   key: string;
   name: string;
+}
+
+/** #257：搜索条件表单的选项。`statusCategories` 是桥内常量，页面自己上标签。 */
+export interface JiraSearchMeta {
+  statusCategories: readonly string[];
+  types: { id: string; name: string }[];
+  priorities: { id: string; name: string }[];
+  statuses: { id: string; name: string }[];
+  /** 项目状态没取到时为 true：类型/优先级照常给，不让整张表单失败。 */
+  partial: boolean;
+}
+
+export interface JiraUser {
+  accountId: string;
+  displayName: string;
+  emailAddress: string;
 }
 
 /** 详情里的一条附件：大小 / 作者未知时分别是 `null` / 空串（评论 media 节点拿不到这些）。 */
@@ -91,10 +123,13 @@ export interface JiraCtx {
 class JiraError extends Error {
   readonly code: string;
   readonly status: number;
-  constructor(code: string, status: number, message: string) {
+  /** 上游原始状态码（仅供降级判断）；桥自己产生的错误没有这个值。 */
+  readonly upstreamStatus?: number;
+  constructor(code: string, status: number, message: string, upstreamStatus?: number) {
     super(message);
     this.code = code;
     this.status = status;
+    this.upstreamStatus = upstreamStatus;
   }
 }
 
@@ -238,10 +273,10 @@ function cacheKey(kind: string, config: JiraConfig): string {
   return `${kind}\n${config.siteUrl}\n${config.email}\n${keyMask(config.apiKey)}`;
 }
 
-function cacheGet<T>(kind: string, config: JiraConfig): T | null {
+function cacheGet<T>(kind: string, config: JiraConfig, ttl = LIST_TTL_MS): T | null {
   const hit = listCache.get(cacheKey(kind, config));
   if (!hit) return null;
-  if (Date.now() - hit.at > LIST_TTL_MS) {
+  if (Date.now() - hit.at > ttl) {
     listCache.delete(cacheKey(kind, config));
     return null;
   }
@@ -374,8 +409,20 @@ function issueOf(raw: any): JiraIssue {
     type: name(fields?.issuetype),
     priority: typeof fields?.priority?.name === "string" ? fields.priority.name : null,
     status: name(fields?.status),
+    assignee: personName(fields?.assignee),
     updated: typeof fields?.updated === "string" ? fields.updated : "",
   };
+}
+
+/**
+ * 人员显示名：`displayName` 优先，隐私模式下 Jira 可能只给 `accountId`（此时用邮箱/账号兜底，
+ * 总比一行空白强）。未分配是 `null`，回空串。
+ */
+function personName(raw: any): string {
+  if (!raw || typeof raw !== "object") return "";
+  if (typeof raw.displayName === "string" && raw.displayName) return raw.displayName;
+  if (typeof raw.emailAddress === "string" && raw.emailAddress) return raw.emailAddress;
+  return typeof raw.accountId === "string" ? raw.accountId : "";
 }
 
 function projectOf(raw: any): JiraProject {
@@ -404,6 +451,171 @@ async function listProjects(config: JiraConfig, ctx: JiraCtx): Promise<JiraProje
     .map(projectOf)
     .filter((project: JiraProject) => project.key !== "")
     .slice(0, LIST_MAX);
+}
+
+// ---------------------------------------------------------------- #257 搜索
+
+interface SearchOutcome {
+  issues: JiraIssue[];
+  nextPageToken?: string;
+  isLast: boolean;
+  degraded?: { watchers: true };
+}
+
+/** 上游状态 → 桥的错误码；`upstreamStatus` 留给关注者降级判断。 */
+function searchError(status: number, message: string): JiraError {
+  const tail = message ? `：${message}` : "";
+  if (status === 400) return new JiraError("jira_query", 400, `Jira 不接受这条查询（400）${tail}`, 400);
+  if (status === 401) return new JiraError("jira_auth", 401, `Jira 不认这组凭据（401）${tail}`, 401);
+  if (status === 403) return new JiraError("jira_forbidden", 403, `这组凭据没有权限（403）${tail}`, 403);
+  return new JiraError("jira_upstream", 502, `Jira 回了 ${status}${tail}`, status);
+}
+
+async function searchOnce(config: JiraConfig, ctx: JiraCtx, params: SearchParams): Promise<SearchOutcome> {
+  const query = new URLSearchParams({
+    jql: buildSearchJql(params),
+    maxResults: String(SEARCH_PAGE_SIZE),
+    fields: ISSUE_FIELDS,
+  });
+  if (params.nextPageToken !== undefined) query.set("nextPageToken", params.nextPageToken);
+  const res = await fetchSite(config, ctx, `${SEARCH}?${query}`);
+  if (!res.ok) throw searchError(res.status, await upstreamMessage(res));
+  const body = (await res.json().catch(() => null)) as any;
+  const raw = Array.isArray(body?.issues) ? body.issues : [];
+  const issues = raw.map(issueOf).filter((x: JiraIssue) => x.key !== "").slice(0, SEARCH_PAGE_SIZE);
+  const nextPageToken =
+    typeof body?.nextPageToken === "string" && body.nextPageToken !== "" ? body.nextPageToken : undefined;
+  // 新版 search/jql 不返回 total；拿不到 isLast 就按「没有下一页」推断。
+  const isLast = body?.isLast === true || nextPageToken === undefined;
+  return { issues, nextPageToken, isLast };
+}
+
+/**
+ * 关注者降级：只有 watcher 被 400/403 拒绝时才去掉重试一次；只剩 watcher 就不重试
+ * （去掉会变成无条件查询，结果悄悄变宽）。重试仍失败按第二次的错误往上抛。
+ */
+async function searchIssues(config: JiraConfig, ctx: JiraCtx, params: SearchParams): Promise<SearchOutcome> {
+  const watcher = params.person !== undefined && params.relations.includes("watcher");
+  try {
+    return await searchOnce(config, ctx, params);
+  } catch (err) {
+    if (!watcher || !(err instanceof JiraError)) throw err;
+    if (err.upstreamStatus !== 400 && err.upstreamStatus !== 403) throw err;
+    const relations = params.relations.filter((x) => x !== "watcher");
+    if (relations.length === 0) {
+      throw new JiraError("jira_forbidden", 403, "这组凭据不能按关注者查询（需要 View Voters and Watchers 权限）");
+    }
+    const out = await searchOnce(config, ctx, { ...params, relations });
+    return { ...out, degraded: { watchers: true } };
+  }
+}
+
+function optionsOf(raw: any): { id: string; name: string }[] {
+  return (Array.isArray(raw) ? raw : [])
+    .map((x: any) => ({
+      id: typeof x?.id === "string" ? x.id : "",
+      name: typeof x?.name === "string" ? x.name : "",
+    }))
+    .filter((x: { name: string }) => x.name !== "");
+}
+
+/** 项目状态按「状态名」压平去重（同一状态会挂到多个工单类型下）。 */
+function statusOptionsOf(raw: any): { id: string; name: string }[] {
+  const out: { id: string; name: string }[] = [];
+  const seen = new Set<string>();
+  for (const group of Array.isArray(raw) ? raw : []) {
+    for (const s of Array.isArray(group?.statuses) ? group.statuses : []) {
+      const name = typeof s?.name === "string" ? s.name : "";
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      out.push({ id: typeof s?.id === "string" ? s.id : "", name });
+    }
+  }
+  return out;
+}
+
+async function loadMeta(config: JiraConfig, ctx: JiraCtx, project?: string): Promise<JiraSearchMeta> {
+  const kind = `meta\n${project ?? ""}`;
+  const cached = cacheGet<JiraSearchMeta>(kind, config, META_TTL_MS);
+  if (cached) return cached;
+  const [types, priorities] = await Promise.all([
+    upstreamJson(config, ctx, TYPES),
+    upstreamJson(config, ctx, PRIORITIES),
+  ]);
+  let statuses: { id: string; name: string }[] = [];
+  let partial = false;
+  if (project) {
+    try {
+      statuses = statusOptionsOf(
+        await upstreamJson(config, ctx, `/rest/api/3/project/${encodeURIComponent(project)}/statuses`),
+      );
+    } catch (err) {
+      // 项目状态取不到只降级这一块：类型/优先级仍然可用。
+      if (!(err instanceof JiraError)) throw err;
+      partial = true;
+    }
+  }
+  const value: JiraSearchMeta = {
+    statusCategories: [...STATUS_CATEGORY_KEYS],
+    types: optionsOf(types),
+    priorities: optionsOf(priorities),
+    statuses,
+    partial,
+  };
+  // statuses 失败时只缓存「完整」的响应：partial 进缓存会让下一次也看不到状态。
+  if (!partial) cachePut(kind, config, value);
+  return value;
+}
+
+/** 返回 null 表示上游不让我们搜人（401/403），由路由回 `unavailable`，不报错。 */
+async function loadUsers(config: JiraConfig, ctx: JiraCtx, q: string): Promise<JiraUser[] | null> {
+  const query = new URLSearchParams({ query: q, maxResults: String(SEARCH_PAGE_SIZE) });
+  let raw: any;
+  try {
+    raw = await upstreamJson(config, ctx, `${USERS}?${query}`);
+  } catch (err) {
+    if (err instanceof JiraError && err.code === "jira_forbidden") return null;
+    throw err;
+  }
+  return (Array.isArray(raw) ? raw : [])
+    .map((x: any) => ({
+      accountId: typeof x?.accountId === "string" ? x.accountId : "",
+      displayName: personName(x),
+      emailAddress: typeof x?.emailAddress === "string" ? x.emailAddress : "",
+    }))
+    .filter((x: JiraUser) => x.accountId !== "")
+    .slice(0, SEARCH_PAGE_SIZE);
+}
+
+async function getSearch(res: http.ServerResponse, ctx: JiraCtx, query: URLSearchParams): Promise<void> {
+  const config = listConfig(res);
+  if (!config) return;
+  let params: SearchParams;
+  try {
+    params = parseSearchParams(query);
+  } catch (err) {
+    if (err instanceof SearchQueryError) return fail(res, 400, err.code, err.message);
+    throw err;
+  }
+  return json(res, 200, { ok: true, ...(await searchIssues(config, ctx, params)) });
+}
+
+async function getMeta(res: http.ServerResponse, ctx: JiraCtx, project?: string): Promise<void> {
+  const config = listConfig(res);
+  if (!config) return;
+  const key = (project ?? "").trim() || undefined;
+  return json(res, 200, { ok: true, ...(await loadMeta(config, ctx, key)) });
+}
+
+async function getUsers(res: http.ServerResponse, ctx: JiraCtx, raw?: string): Promise<void> {
+  const config = listConfig(res);
+  if (!config) return;
+  const q = (raw ?? "").trim();
+  if (!q) return json(res, 200, { ok: true, users: [] });
+  if (q.length > 200) return fail(res, 400, "jira_query", "搜索词最多 200 个字符");
+  const users = await loadUsers(config, ctx, q);
+  if (users === null) return json(res, 200, { ok: true, users: [], unavailable: true });
+  return json(res, 200, { ok: true, users });
 }
 
 // ---------------------------------------------------------------- #250 详情
@@ -1053,6 +1265,17 @@ export async function handleJira(
       }
       if (url.pathname === "/api/jira/me") await getMe(res, ctx);
       else await getAvatar(res, ctx);
+      return true;
+    }
+    if (url.pathname === "/api/jira/search" || url.pathname === "/api/jira/meta" || url.pathname === "/api/jira/users") {
+      if (method !== "GET") {
+        fail(res, 405, "bad_method", "不支持这个请求方法");
+        return true;
+      }
+      // #257：搜索 / 表单元数据 / 人员搜索。只读，隧道访客照常。
+      if (url.pathname === "/api/jira/search") await getSearch(res, ctx, url.searchParams);
+      else if (url.pathname === "/api/jira/meta") await getMeta(res, ctx, url.searchParams.get("project") ?? undefined);
+      else await getUsers(res, ctx, url.searchParams.get("q") ?? undefined);
       return true;
     }
     if (url.pathname === "/api/jira/issues" || url.pathname === "/api/jira/projects") {
