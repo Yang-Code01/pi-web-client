@@ -126,7 +126,10 @@ function installPi() {
   step(`  pi 不在或低于 ${MIN_PI_VERSION}，装最新版…`);
   const npmArgs = ["install", "-g", "@earendil-works/pi-coding-agent@latest"];
   let r = runNpm(npmArgs, { timeout: 30 * 60_000 });
-  if (r.code !== 0 && /EALLOWREMOTE/.test(`${r.stderr}${r.stdout}`)) {
+  // 记下第一次是不是这个错：重试后 `r` 被覆盖，npm 的末行通常是 `A complete log…`，
+  // 再对 `tail(r, 4)` 嗅一遍会把提示吞掉。
+  const refusedRemote = r.code !== 0 && /EALLOWREMOTE/.test(`${r.stderr}${r.stdout}`);
+  if (refusedRemote) {
     // npm ≥ 12 默认 allow-remote=none：registry 与 tarball 不同源（典型是 registry 被指到
     // `http://` 镜像，包地址却是 `https://`）时，npm 把包当成「remote」拒掉。
     // 只放行这一次调用，不去改用户的 npmrc。
@@ -135,7 +138,7 @@ function installPi() {
   }
   if (r.code === 0) return null;
   let why = tail(r, 4, "\n");
-  if (/EALLOWREMOTE/.test(why)) {
+  if (refusedRemote) {
     why +=
       "\n（npm ≥ 12 的 allow-remote=none 挡住了 tarball 下载：把 registry 换成同名 https 地址，" +
       "例如 `npm config set registry https://registry.npmmirror.com/`）";

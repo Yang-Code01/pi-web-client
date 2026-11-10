@@ -38,11 +38,26 @@ const fake = (over = {}) => ({
 }
 
 // nvm：当前 node 自己那一份排最前，别的版本也留着（跑桥的 node 未必是装 pi 的那个）。
+// 造真目录：`NVM_DIR` 是 nvm 的**根**，版本在它底下的 `versions/node/vX`。
 {
-  const nvm = "/home/me/.nvm/versions/node";
-  const prevExecPath = "/home/me/.nvm/versions/node/v24.1.0/bin/node";
-  const got = piCandidates(fake({ execPath: prevExecPath, env: { HOME: "/home/me", NVM_DIR: nvm } }));
-  assert.equal(got[0], path.join(nvm, "v24.1.0", "lib", "node_modules", PKG_IN_NM), "当前版本先试");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nvm-"));
+  try {
+    const nvmHome = path.join(tmp, ".nvm");
+    const versionsRoot = path.join(nvmHome, "versions", "node");
+    for (const v of ["v22.1.0", "v24.1.0"]) {
+      const bundle = path.join(versionsRoot, v, "lib", "node_modules", PKG_IN_NM);
+      fs.mkdirSync(path.dirname(bundle), { recursive: true });
+      fs.writeFileSync(bundle, "//\n");
+    }
+    const execPath = path.join(versionsRoot, "v24.1.0", "bin", "node");
+    const got = piCandidates(fake({ execPath, env: { HOME: tmp, NVM_DIR: nvmHome } }));
+    const cand = (v) => path.join(versionsRoot, v, "lib", "node_modules", PKG_IN_NM);
+    assert.equal(got[0], cand("v24.1.0"), `当前版本先试：${got.join(", ")}`);
+    assert.ok(got.includes(cand("v22.1.0")), `别的版本也要留着：${got.join(", ")}`);
+    assert.ok(got.indexOf(cand("v24.1.0")) < got.indexOf(cand("v22.1.0")), "从新到旧");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 // ---------------------------------------------------------------- npm root -g
@@ -75,21 +90,29 @@ const fake = (over = {}) => ({
     const cli = path.join(pkgRoot, "dist", "bundle", "cli.js");
     fs.writeFileSync(cli, '#!/usr/bin/env node\nimport "./cli-runtime.js";\n');
     fs.mkdirSync(path.join(tmp, "bin"), { recursive: true });
-    fs.symlinkSync(cli, path.join(tmp, "bin", "pi"));
+    // Windows 上建软链要 Developer Mode（否则 EPERM）：建不出来就跳过这条断言，
+    // 别让整套测试因为平台权限而变红。
+    let linked = true;
+    try {
+      fs.symlinkSync(cli, path.join(tmp, "bin", "pi"));
+    } catch {
+      linked = false;
+      console.log("skip — 建不出软链（Windows 要 Developer Mode），跳过 POSIX 启动器软链断言");
+    }
 
-    const got = piCandidates(fake({ pathEnv: path.join(tmp, "bin"), env: { HOME: "" } }));
-    // 比 realpath：macOS 的 /tmp 本身就是软链，realpathSync 会换成 /private/var/...
-    assert.ok(got.includes(fs.realpathSync(cli)), `软链要跟到真 cli.js：${got.join(", ")}`);
+    if (linked) {
+      const got = piCandidates(fake({ pathEnv: path.join(tmp, "bin"), env: { HOME: "" } }));
+      // 比 realpath：macOS 的 /tmp 本身就是软链，realpathSync 会换成 /private/var/...
+      assert.ok(got.includes(fs.realpathSync(cli)), `软链要跟到真 cli.js：${got.join(", ")}`);
+    }
 
-    // Windows：启动器脚本里写死真路径，读出来。
+    // Windows：启动器脚本里写死真路径，读出来。内容用真 Windows 分隔符，断言整条相等
+    // （混着 `/` 的 fixture 只能测到半截，测不出抽取是否忠实）。
+    const winCli = `C:\\apps\\pi\\${PKG_IN_NM.replaceAll("/", "\\")}`;
     const cmd = path.join(tmp, "bin", "pi.cmd");
-    fs.writeFileSync(cmd, `@node.exe "C:\\apps\\pi\\${PKG_IN_NM}" %*\r\n`);
+    fs.writeFileSync(cmd, `@node.exe "${winCli}" %*\r\n`);
     const win = piCandidates(fake({ platform: "win32", pathEnv: path.join(tmp, "bin") }));
-    // 分隔符在 POSIX 上跑测试时会混（内容里是 `\`，path.join 给的是 `/`），只看头尾。
-    assert.ok(
-      win.some((c) => /^C:[\\/]apps[\\/]pi[\\/]/.test(c) && c.includes("pi-coding-agent")),
-      `pi.cmd 里的路径：${win.join(", ")}`,
-    );
+    assert.ok(win.includes(winCli), `pi.cmd 里的路径要原样读出来：${win.join(", ")}`);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

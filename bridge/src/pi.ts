@@ -18,20 +18,24 @@ export interface PiProbe {
   npmRoot: (() => string | null) | null;
 }
 
+/** 一个「装着若干 node 版本」的目录里有哪些版本，新的排前面。目录不存在（没装 nvm）就是空。 */
+function versionsUnder(root: string): string[] {
+  try {
+    return fs
+      .readdirSync(root)
+      .filter((d) => /^v\d+\./.test(d))
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  } catch {
+    return [];
+  }
+}
+
 /** Windows 上 nvm 把每个版本的全局前缀放在 `%LOCALAPPDATA%\nvm\vX`；POSIX 见 posixCandidates。 */
 function nvmCandidates(p: PiProbe): string[] {
   if (p.platform !== "win32") return [];
   const root = p.env.LOCALAPPDATA ? path.join(p.env.LOCALAPPDATA, "nvm") : "";
   if (!root) return [];
-  try {
-    return fs
-      .readdirSync(root)
-      .filter((d) => /^v\d+\./.test(d))
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
-      .map((d) => path.join(root, d, PKG));
-  } catch {
-    return [];
-  }
+  return versionsUnder(root).map((d) => path.join(root, d, PKG));
 }
 
 /**
@@ -45,16 +49,9 @@ function posixCandidates(p: PiProbe): string[] {
   // execPath = <前缀>/bin/node
   const prefix = path.dirname(path.dirname(p.execPath));
   const out = [inPrefix(prefix)];
+  // `NVM_DIR` 是 nvm 的根；没装 nvm 时 versionsUnder 给空数组，当前前缀那条已经够了。
   const nvmRoot = path.join(p.env.NVM_DIR || path.join(p.env.HOME ?? "", ".nvm"), "versions", "node");
-  try {
-    const versions = fs
-      .readdirSync(nvmRoot)
-      .filter((d) => /^v\d+\./.test(d))
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-    for (const v of versions) out.push(inPrefix(path.join(nvmRoot, v)));
-  } catch {
-    /* 没有 nvm（或不是 nvm 装的 node）：当前前缀那条已经够了 */
-  }
+  for (const v of versionsUnder(nvmRoot)) out.push(inPrefix(path.join(nvmRoot, v)));
   return out;
 }
 
@@ -71,13 +68,14 @@ function launcherCandidates(p: PiProbe): string[] {
       const file = path.join(dir, name);
       if (!fs.existsSync(file)) continue;
       try {
-        if (fs.lstatSync(file).isSymbolicLink()) {
+        const st = fs.lstatSync(file);
+        if (st.isSymbolicLink()) {
           const real = fs.realpathSync(file);
           if (/cli\.js$/i.test(real) && fs.existsSync(real)) out.push(real);
           continue;
         }
         // 启动器脚本本身只有几行；真是一整块 bundle（> 1 MB）就别去读它。
-        if (fs.lstatSync(file).size > 1_000_000) continue;
+        if (st.size > 1_000_000) continue;
         const text = fs.readFileSync(file, "utf8");
         for (const m of text.matchAll(/"([^"]*pi-coding-agent[^"]*cli\.js)"/g)) out.push(m[1]);
         for (const m of text.matchAll(/([A-Za-z]:\\[^\s"]*pi-coding-agent[^\s"]*cli\.js)/g)) out.push(m[1]);
