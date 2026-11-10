@@ -3752,3 +3752,24 @@ D
 **验证**
 
 `npm run build`；`npm --prefix web run typecheck`（含 i18n-check，2003 keys × 3 langs）；`node web/tests/settings-console-unit.mjs`（19 项：分组、覆盖计数、生效值、placeholder、模型对、列表合并、diffPatch）；`node bridge/tests/settings-console-ui.mjs`（A–H：壳与九项、全局只写一个键、项目继承 + 覆盖、对照生效/过滤/点行聚焦、未信任只读、坏 JSON 只读、900px 横排、更新日志分段、Escape/关闭、外部更新与保存失败保留草稿、无 pageerror）；根脚本 `npm run test:settings`、`npm run test:settings:ui` 与上面两条单测同源。截图 `.scratch/shots/settings-console-form.png`、`settings-console-compare.png`、`settings-console-untrusted.png` 只给 PR 看，`.scratch` 不进产品包。
+
+## D217 商店页重画：请求从渲染里挪出来，重画保存滚动与焦点（#310）
+
+**问题：** 扩展商店与 MCP 商店的列表是「重画 = 重建整块 DOM」，而请求写在渲染函数里（`paintExtStore` / `paintMcpStore` 末尾 `if (items === null) send(...)`）。一次 tab 切换、每段库存推送、每次回包都会重画，于是：一次搜索发两个 `ext.store`，进一次 MCP 商店发五个 `mcp.store`；`storeHeader` 每次重画都用「上次发请求时」的文本覆盖输入框，在途时打的字被吞、光标被夹回旧位置；设置页那个宿主更彻底——`paintExtIfOpen` 对它只调 `paintSettings()`，滚动位置归零。另外 `checkPiUpdate()` 在 `paintPiUpdate → paintExtSettings` 内部同步调 `paintExtIfOpen()`，重入 `paintSettings` 之后外层继续往已脱离的节点 append，首帧出现两份开关与两份管理器。桥端 `searchMcp` 与 `mcpIndex` 各自 `readJson` 一遍索引（11.4MB / 21,108 条），每个查询两次同步解析，约 170ms 卡住事件循环。
+
+**决定**
+
+1. **渲染不发请求。** 请求只从一个地方出：`requestExtStore()` / `requestMcpStore()`，按 `(查询, 条数)` 在途去重，回包到达时清标记（清在 query 守卫之前——旧查询的回包也得结束它自己的请求）。渲染里的兜底变成调这个方法，语义是「打开时还没有东西可看」，不再每次重画都发一次。
+2. **重画保存并恢复滚动、焦点与光标，两个宿主一起。** 弹窗滚在 `.settings-body`、控制台滚在 `.st-pane`（`.ext-host` 自己不滚），恢复顺序是**先 `focus({preventScroll:true})` 再设 `scrollTop`**——`focus()` 会把输入框滚进视口，反过来会把页面拉回顶部。这是「设置页以前完全没存」的补齐，不是新交互。
+3. **请求期间不清空列表。** 清空后中间态只剩「查询中…」，面板变矮，浏览器的 `scrollTop` 被钳到 0；等到列表回来再恢复已经晚了（这正是旧实现恢复不了的根因）。代价是新查询的头几百毫秒里还看得见上一批结果——商店列表本来就是这个手感，比闪一下白屏好。
+4. **paint 内部的重画断在微任务里。** `checkPiUpdate()` 里的 `paintExtIfOpen()` 改成 `queueMicrotask(...)`：调用栈上的那层 paint 先画完，再重画，就不会两次 append 到同一父节点。没有改成「不要再画」——`piChecking` 的状态徽标需要立刻反映。
+5. **索引一次解析。** `readIndexDisk()` 按 `mtime + size` 记住解析结果，`mcpIndex` 接受调用方已经读过的索引（`preloaded`），写盘后失效；10 分钟没人用就丢掉，免得桥长期驻留 ~30MB 解析后的条目。
+6. **「已安装」按 pi 记下的出处整词匹配。** 用 `version.identifier`（npx / uvx / docker 跑的那个包）与 `transport`，正则两侧要求词边界（前导集合里**没有** `/`，否则 `pkg` 会命中 `@scope/pkg`）。旧写法 `服务器名 + includes(identifier)` 靠 transport 里带着包名侥幸命中，同时会把 `exa` 认成 `exa-search` 装过。
+
+**接口形状**
+
+没有新桥命令：仍是 `ext.store` / `mcp.store` / `ext.inventory`。前端新增 `requestExtStore` / `requestMcpStore` / `mcpInstalled(identifier, haystack)`；`extStore`、`mcpStore` 各多一个 `inflight` 字段（不在 WS 消息里传）。桥端 `mcpIndex(force, preloaded?)` 多一个可选参数与 `readIndexDisk()` 缓存，`searchMcp` 不再自己 `readJson`。
+
+**验证**
+
+`npm run typecheck`（三个包 + i18n-check 2005 keys × 3 langs）；`npm run test:settings`（19 项）；`npm run test:settings:ui`（全绿）；新增 `npm run probe:extstore`（`probes/ext-store-paint.mjs`，桩桥 + 真 Chromium，商店回包故意延迟 700ms）：T6 边加载边打字、T1 在途打字、T7 一次搜索一个 `ext.store`、T3 进店一个 `mcp.store`、T4 装过的仍显示「已安装」、T8 弹窗滚动、T5 设置页首帧一份、T2 设置页输入/滚动/光标。同一探针在旧代码上跑出 5 条红（`agh` 吞字、2 个、5 个、两份管理器、滚动 60→0），新代码 11 条全绿；索引实测改后首次 267ms、之后 9–12ms。
