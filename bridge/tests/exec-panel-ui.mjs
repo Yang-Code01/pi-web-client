@@ -123,7 +123,22 @@ try {
   await page.waitForSelector(".app", { timeout: 20000 });
   await page.waitForSelector(".exec-now", { timeout: 20000 });
   check("execution-tab selection survives reload", await page.locator('[data-exec-tab="exec"]').getAttribute("aria-selected") === "true");
+  await page.waitForFunction(() => document.querySelector('[data-exec-metric="cost"] .exec-metric-value')?.textContent?.trim() === "$0.0400", null, { timeout: 20000 });
   check("round metrics survive reload", (await page.locator('[data-exec-metric="cost"] .exec-metric-value').innerText()) === "$0.0400");
+
+  await page.locator('[data-exec-tab="needs"]').click();
+  socket.send(JSON.stringify({ type: "prompt", sessionId, text: "PLAN snapshot scenario" }));
+  await page.waitForFunction(() => document.querySelector(".todo-tool")?.textContent?.includes("计划 1/3"), null, { timeout: 20000 });
+  check("todo tool is a compact one-line chat card", (await page.locator(".todo-tool").innerText()).includes("开始「实现计划快照」"));
+  await page.locator(".todo-tool").click();
+  await page.waitForFunction(() => document.querySelector('[data-exec-tab="exec"]')?.getAttribute("aria-selected") === "true" && document.querySelector(".exec-plan.exec-flash"), null, { timeout: 5000 });
+  check("clicking a todo card opens execution and flashes the plan", (await page.locator(".exec-plan.exec-flash").count()) === 1);
+  check("current card title includes active plan task", (await page.locator(".exec-now h2").innerText()).includes("计划 2/3 · 实现计划快照"));
+  check("plan item shows its attributed step count", (await page.locator('.exec-plan-task[data-plan-task-id="2"] .exec-plan-step-count').innerText()) === "1 步");
+  await page.locator('.exec-plan-task[data-plan-task-id="2"]').click();
+  check("selecting a plan item highlights matching steps and dims other steps", (await page.locator(".exec-step.selected").count()) === 1 && (await page.locator(".exec-step.dimmed").count()) === 1);
+  await page.locator('.exec-plan-task[data-plan-task-id="2"]').click();
+  check("selecting the active plan item again clears step highlighting", (await page.locator(".exec-step.dimmed").count()) === 0);
   check("page has no uncaught errors", pageErrors.length === 0, pageErrors.join("; "));
   console.log("All execution-panel smoke checks passed.");
 } finally {

@@ -311,11 +311,23 @@ async function turn(text) {
       addEntry("custom", { customType: "rpiv-todo-state", data: details });
     }
 
+    const beforeStepId = "call-plan-before";
+    const beforeStepArgs = { path: "context.md" };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: beforeStepId, name: "read", arguments: beforeStepArgs }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: beforeStepId, toolName: "read", args: beforeStepArgs });
+    out({ type: "tool_execution_end", toolCallId: beforeStepId, toolName: "read", isError: false, result: "Prior to plan update" });
     const callId = "call-plan-snapshot";
     out({ type: "message_start", message: assistant("") });
     out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: callId, name: "todo", arguments: { action: "update", id: 2, status: "in_progress" } }], stopReason: "toolUse" }) });
     out({ type: "tool_execution_start", toolCallId: callId, toolName: "todo", args: { action: "update", id: 2, status: "in_progress" } });
     out({ type: "tool_execution_end", toolCallId: callId, toolName: "todo", isError: false, result: { content: [{ type: "text", text: "Updated #2" }], details } });
+    const stepId = "call-plan-step";
+    const stepArgs = { path: "plan.md" };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: stepId, name: "read", arguments: stepArgs }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: stepId, toolName: "read", args: stepArgs });
+    out({ type: "tool_execution_end", toolCallId: stepId, toolName: "read", isError: false, result: "Plan step evidence" });
     out({ type: "message_start", message: assistant("") });
     out({ type: "message_end", message: assistant("Plan snapshot updated.") });
     out({ type: "agent_end", messages: [], willRetry: false });

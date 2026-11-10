@@ -758,6 +758,11 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .tool.err { border-color: var(--danger-dim); }
 .tool .status { font-size: 11px; color: var(--faint); }
 .tool.err .status { color: var(--danger); }
+.todo-tool { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 7px 10px; color: var(--dim); text-align: left; cursor: pointer; }
+.todo-tool:hover { border-color: var(--accent-dim); background: var(--accent-bg); }
+.todo-icon { flex: none; }
+.todo-summary { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+.todo-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* 隐式技能（D199）：模型自己读了 SKILL.md，本轮就多一张卡 —— 一句话是什么 + 为什么是它。
    虚线徽标说的是「没人让你用它」：它挑的，不是你点的。 */
 .skillcard { border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); background: var(--panel); border-radius: 12px; padding: 10px 12px; min-width: 0; }
@@ -1481,10 +1486,14 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .exec-plan-heading { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
 .exec-plan-heading strong { color: var(--text); font-size: 13px; }
 .exec-plan-listed { overflow: hidden; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; }
+.exec-plan-clear { margin-left: auto; padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px; background: transparent; color: var(--faint); font: inherit; font-size: 11px; cursor: pointer; }
+.exec-plan-clear:hover { color: var(--text); border-color: var(--accent-dim); }
 .exec-plan-progress { overflow: hidden; height: 4px; margin: 7px 0; border-radius: 4px; background: var(--line); }
 .exec-plan-progress-fill { height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }
 .exec-plan-tasks { display: grid; gap: 4px; }
-.exec-plan-task { display: flex; align-items: flex-start; gap: 7px; min-width: 0; font-size: 12px; }
+.exec-plan-task { display: flex; align-items: flex-start; gap: 7px; width: 100%; min-width: 0; padding: 3px 4px; border: 0; border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.exec-plan-task:hover, .exec-plan-task.picked { background: var(--accent-bg); }
+.exec-plan-task:focus-visible, .exec-plan-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .exec-plan-state { flex: none; width: 14px; color: var(--faint); text-align: center; }
 .exec-plan-task.completed .exec-plan-state { color: var(--ok); }
 .exec-plan-task.in_progress .exec-plan-state { color: var(--accent); animation: exec-plan-spin 1.4s linear infinite; }
@@ -1492,6 +1501,7 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .exec-plan-copy { display: flex; flex-wrap: wrap; gap: 2px 7px; min-width: 0; }
 .exec-plan-subject { overflow-wrap: anywhere; }
 .exec-plan-active, .exec-plan-waiting { color: var(--faint); font-size: 11px; }
+.exec-plan-step-count { flex: none; margin-left: auto; color: var(--faint); font-size: 10px; white-space: nowrap; }
 @keyframes exec-plan-spin { to { transform: rotate(360deg); } }
 .exec-now { border: 1px solid var(--accent-dim); background: linear-gradient(180deg, var(--accent-bg), var(--panel-2)); border-radius: var(--r); padding: 10px 12px; min-width: 0; }
 .exec-now.idle { border-color: var(--line); background: var(--panel-2); }
@@ -1519,6 +1529,8 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .exec-timeline { display: grid; gap: 3px; }
 .exec-step { display: grid; grid-template-columns: 18px minmax(70px, auto) minmax(0, 1fr) auto; align-items: center; gap: 6px; width: 100%; padding: 7px 5px; border: 0; border-radius: 6px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .exec-step:hover { background: var(--panel-2); }
+.exec-step.selected { background: var(--accent-bg); }
+.exec-step.dimmed { opacity: .38; }
 .exec-state { text-align: center; font-size: 12px; }
 .exec-state.running { color: var(--accent); }
 .exec-state.success { color: var(--ok); }

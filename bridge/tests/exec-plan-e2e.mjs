@@ -114,6 +114,9 @@ try {
   );
   assert.ok(planFrame, "todo tool completion broadcasts the full plan snapshot");
   assert.deepEqual(planFrame.plan.tasks.map((task) => task.id), [1, 2, 3, 4]);
+  const liveTodoItem = await waitFor(first.frames, (frame) => frame.type === "item.replace" && frame.sessionId === sessionId && frame.item?.kind === "tool" && frame.item.name === "todo", promptAt);
+  assert.ok(liveTodoItem, "live todo completion replaces the tool item");
+  assert.deepEqual(liveTodoItem.item.plan, planFrame.plan, "live todo item carries the resulting plan snapshot");
   assert.ok(await waitFor(first.frames, (frame) => frame.type === "pi.status" && frame.sessionId === sessionId && frame.running === false, promptAt));
   socket.close();
   socket = null;
@@ -133,6 +136,9 @@ try {
   assert.ok(reopened, "reopening a session returns its history frame");
   assert.deepEqual(reopened.plan?.tasks.map((task) => task.id), [1, 2, 3, 4]);
   assert.equal(reopened.plan?.tasks.find((task) => task.id === 2)?.status, "in_progress");
+  const replayedTodoItem = reopened.items.find((item) => item.kind === "tool" && item.name === "todo");
+  assert.ok(replayedTodoItem, "replayed tail includes the todo tool item");
+  assert.deepEqual(replayedTodoItem.plan, reopened.plan, "replayed todo item carries its historical snapshot");
   assert.ok(reopened.history.turns.length > reopened.items.length, `${reopened.history.turns.length} full turns vs ${reopened.items.length} tail-page items`);
   assert.equal(reopened.history.turns[1]?.id, reopened.plan?.listedRound, "listing round is retained from the persisted branch snapshot");
   assert.equal(reopened.items.some((item) => item.id === reopened.plan?.listedRound), false, "the listed round is not on the returned tail page");

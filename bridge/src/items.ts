@@ -1,6 +1,7 @@
 import path from "node:path";
 import { skillOfRead, type SkillEntry } from "./skills.ts";
 import { extractText, skillExpansion, type SessionEntry } from "./sessionfile.ts";
+import type { PlanSnapshot } from "./execplan.ts";
 
 export interface ItemBase {
   id: string;
@@ -36,6 +37,8 @@ export interface ToolItem extends ItemBase {
   toolCallId: string;
   name: string;
   args: unknown;
+  /** Snapshot after a todo update; null explicitly records a cleared plan. */
+  plan?: PlanSnapshot | null;
   partialResult?: string;
   result?: string;
   isError?: boolean;
@@ -232,7 +235,7 @@ export function currentBranch(entries: SessionEntry[]): SessionEntry[] {
 }
 
 /** Convert pi session entries (from disk) into renderable items. */
-export function entriesToItems(entries: SessionEntry[]): Item[] {
+export function entriesToItems(entries: SessionEntry[], todoSnapshots?: Map<string, PlanSnapshot | null>): Item[] {
   const items: Item[] = [];
   const toolIndex = new Map<string, ToolItem>();
 
@@ -327,6 +330,7 @@ export function entriesToItems(entries: SessionEntry[]): Item[] {
       const target = toolIndex.get(String(msg.toolCallId ?? ""));
       if (target) {
         target.result = contentText(msg.content).slice(0, 20000);
+        if (target.name === "todo" && todoSnapshots?.has(target.toolCallId)) target.plan = todoSnapshots.get(target.toolCallId) ?? null;
         target.isError = Boolean(msg.isError);
         target.status = msg.isError ? "error" : "ok";
       }

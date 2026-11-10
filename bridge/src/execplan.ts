@@ -59,9 +59,13 @@ function applyDetails(
 }
 
 /** Replay todo snapshots on pi's active branch; custom entries cover nested tool calls. */
-export function planFromEntries(entries: SessionEntry[]): PlanSnapshot | null {
+export function planReplayFromEntries(entries: SessionEntry[]): {
+  plan: PlanSnapshot | null;
+  toolResults: Map<string, PlanSnapshot | null>;
+} {
   let plan: PlanSnapshot | null = null;
   let roundId: string | null = null;
+  const toolResults = new Map<string, PlanSnapshot | null>();
   for (const entry of currentBranch(entries)) {
     if (entry.type === "message" && entry.message?.role === "user") roundId = entry.id;
     if (entry.type === "custom" && entry.customType === "rpiv-todo-state") {
@@ -70,8 +74,14 @@ export function planFromEntries(entries: SessionEntry[]): PlanSnapshot | null {
     }
     if (entry.type !== "message" || entry.message?.role !== "toolResult" || entry.message?.toolName !== "todo") continue;
     plan = applyDetails(plan, entry.message.details, roundId);
+    const toolCallId = entry.message.toolCallId;
+    if (typeof toolCallId === "string" && toolCallId) toolResults.set(toolCallId, plan);
   }
-  return plan;
+  return { plan, toolResults };
+}
+
+export function planFromEntries(entries: SessionEntry[]): PlanSnapshot | null {
+  return planReplayFromEntries(entries).plan;
 }
 
 export function planFromToolResult(

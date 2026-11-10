@@ -229,11 +229,77 @@ test("plan progress excludes deleted tasks and resolves its listing round across
     listedRoundOrdinal: 2,
     activeTaskId: 2,
     tasks: [
-      { id: 1, subject: "已完成", status: "completed", activeForm: undefined, waitingOn: [] },
-      { id: 2, subject: "正在写", status: "in_progress", activeForm: "正在写测试", waitingOn: [] },
-      { id: 3, subject: "等前置", status: "pending", activeForm: undefined, waitingOn: [2] },
+      { id: 1, subject: "已完成", status: "completed", activeForm: undefined, waitingOn: [], stepCount: 0 },
+      { id: 2, subject: "正在写", status: "in_progress", activeForm: "正在写测试", waitingOn: [], stepCount: 0 },
+      { id: 3, subject: "等前置", status: "pending", activeForm: undefined, waitingOn: [2], stepCount: 0 },
     ],
   });
+});
+
+test("steps follow the in-progress plan task at their start and todo calls are not steps", () => {
+  const snapshot = (activeId) => ({
+    listedRound: "u1",
+    tasks: [
+      { id: 1, subject: "实现", status: activeId === 1 ? "in_progress" : "pending" },
+      { id: 2, subject: "验证", status: activeId === 2 ? "in_progress" : "pending" },
+    ],
+  });
+  const view = execView({
+    ...base,
+    items: [
+      user("u1", "2025-01-01T00:00:00Z"),
+      { ...tool("todo-1", "2025-01-01T00:00:01Z", "ok"), name: "todo", plan: snapshot(1) },
+      tool("t1", "2025-01-01T00:00:02Z", "ok"),
+      { id: "s1", ts: "2025-01-01T00:00:03Z", kind: "skill", name: "review", description: "Review" },
+      { ...tool("todo-2", "2025-01-01T00:00:04Z", "ok"), name: "todo", plan: snapshot(2) },
+      tool("t2", "2025-01-01T00:00:05Z", "ok"),
+      { ...tool("todo-3", "2025-01-01T00:00:06Z", "ok"), name: "todo", plan: { listedRound: "u1", tasks: snapshot(null).tasks } },
+      tool("t3", "2025-01-01T00:00:07Z", "ok"),
+    ],
+  });
+
+  assert.deepEqual(view.timeline.map((row) => [row.id, row.planTaskId]), [
+    ["t3", null],
+    ["t2", 2],
+    ["s1", 1],
+    ["t1", 1],
+  ]);
+  assert.deepEqual(view.plan.tasks.map((task) => [task.id, task.stepCount]), [[1, 2], [2, 1]]);
+});
+
+test("historical and cross-round plan views use the latest snapshot through the selected round", () => {
+  const firstPlan = {
+    listedRound: "u1",
+    tasks: [{ id: 1, subject: "跨轮任务", status: "in_progress" }],
+  };
+  const laterPlan = {
+    listedRound: "u1",
+    tasks: [{ id: 1, subject: "跨轮任务", status: "completed" }, { id: 2, subject: "后续任务", status: "in_progress" }],
+  };
+  const items = [
+    user("u1", "2025-01-01T00:00:00Z"),
+    { ...tool("todo-1", "2025-01-01T00:00:01Z", "ok"), name: "todo", plan: firstPlan },
+    tool("t1", "2025-01-01T00:00:02Z", "ok"),
+    user("u2", "2025-01-01T00:00:03Z"),
+    tool("t2", "2025-01-01T00:00:04Z", "ok"),
+    { ...tool("todo-2", "2025-01-01T00:00:05Z", "ok"), name: "todo", plan: laterPlan },
+    tool("t3", "2025-01-01T00:00:06Z", "ok"),
+    user("u3", "2025-01-01T00:00:07Z"),
+    tool("t4", "2025-01-01T00:00:08Z", "ok"),
+  ];
+  const planRounds = [{ id: "u1", ordinal: 1 }, { id: "u2", ordinal: 2 }, { id: "u3", ordinal: 3 }];
+
+  const historical = execView({ ...base, items, selectedRound: "u1", planRounds, plan: laterPlan });
+  assert.deepEqual(historical.plan.tasks.map((task) => task.id), [1]);
+  assert.deepEqual(historical.timeline.map((row) => [row.id, row.planTaskId]), [["t1", 1]]);
+
+  const inherited = execView({ ...base, items, selectedRound: "u2", planRounds, plan: laterPlan });
+  assert.deepEqual(inherited.plan.tasks.map((task) => [task.id, task.status]), [[1, "completed"], [2, "in_progress"]]);
+  assert.deepEqual(inherited.timeline.map((row) => [row.id, row.planTaskId]), [["t3", 2], ["t2", 1]]);
+
+  const laterWithoutTodo = execView({ ...base, items, selectedRound: "u3", planRounds, plan: laterPlan });
+  assert.deepEqual(laterWithoutTodo.plan.tasks.map((task) => task.id), [1, 2]);
+  assert.deepEqual(laterWithoutTodo.timeline.map((row) => [row.id, row.planTaskId]), [["t4", 2]]);
 });
 
 test("a missing or empty plan snapshot degrades to no plan", () => {

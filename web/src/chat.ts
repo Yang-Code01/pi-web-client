@@ -189,6 +189,8 @@ export class ChatView {
    * 同一张卡会在 live 事件、item.replace、reset 重放里各建一次，聊天区只画一张，账本也只能算一次。
    */
   onFail: ((f: { id: string; tool: string; cmd: string; out: string; at?: string; live?: boolean }) => void) | null = null;
+  /** Set by the app: compact plan cards open the execution pane. */
+  onTodoClick: (() => void) | null = null;
   /**
    * assistant 说完一段（D164 延伸）：复盘那一轮的结尾里可能带着「规矩」行，由 app 解析后交给桥。
    * add / replace 各会走到一次，app 那边靠同键覆盖去重，重放历史也不会多写。
@@ -932,7 +934,7 @@ export class ChatView {
     }
     if (item.kind === "tool") {
       this.toolCards.set(item.toolCallId, node);
-      if (this.isAskTool(item.name)) this.push(node);
+      if (this.isAskTool(item.name) || this.isTodoTool(item.name)) this.push(node);
       else {
         this.ensureOps().append(node);
         this.refreshOps();
@@ -1010,7 +1012,7 @@ export class ChatView {
       return;
     }
     const rebuilt = this.build(item);
-    if (item.kind === "tool" && this.isAskTool(item.name)) {
+    if (item.kind === "tool" && (this.isAskTool(item.name) || this.isTodoTool(item.name))) {
       node.remove();
       this.push(rebuilt);
     } else node.replaceWith(rebuilt);
@@ -1771,6 +1773,7 @@ export class ChatView {
 
   private buildTool(item: ToolItem): HTMLElement {
     if (this.isAskTool(item.name)) return this.buildAsk(item);
+    if (this.isTodoTool(item.name)) return this.buildTodo(item);
     const card = el("div", "tool");
     card.dataset.running = item.status === "running" ? "1" : "0";
     if (item.isError || item.status === "error") card.classList.add("err");
@@ -1809,10 +1812,43 @@ export class ChatView {
    * `question` / `questionnaire` are the one tool whose transcript entry *is* the content: show each
    * question and the answer that came back. Pending cards open the drawer when tapped.
    */
+  private buildTodo(item: ToolItem): HTMLButtonElement {
+    const card = el("button", "tool todo-tool") as HTMLButtonElement;
+    card.type = "button";
+    card.dataset.running = item.status === "running" ? "1" : "0";
+    if (item.isError || item.status === "error") card.classList.add("err");
+    const tasks = item.plan?.tasks.filter((task) => task.status !== "deleted") ?? [];
+    const done = tasks.filter((task) => task.status === "completed").length;
+    const args = item.args && typeof item.args === "object" ? item.args as Record<string, unknown> : {};
+    const task = item.plan?.tasks.find((candidate) => candidate.id === Number(args.id));
+    const subject = typeof args.subject === "string" ? args.subject : task?.subject ?? "";
+    const action = String(args.action ?? "");
+    const status = String(args.status ?? task?.status ?? "");
+    const actionText = action === "clear"
+      ? tr("清空计划")
+      : action === "create" || action === "add"
+        ? tr("新增「{p1}」", { p1: subject || tr("计划项") })
+        : status === "in_progress"
+          ? tr("开始「{p1}」", { p1: subject || tr("计划项") })
+          : status === "completed"
+            ? tr("完成「{p1}」", { p1: subject || tr("计划项") })
+            : tr("更新计划");
+    const summary = tr("计划 {p1}/{p2} · {p3}", { p1: done, p2: tasks.length, p3: actionText });
+    card.setAttribute("aria-label", summary);
+    card.title = tr("点击查看执行面板计划");
+    card.append(el("span", "todo-icon", "📋"), el("span", "todo-summary", summary));
+    card.onclick = () => this.onTodoClick?.();
+    return card;
+  }
+
   /** The two tools whose transcript entry is a question card, not an entry of the ops module. */
   private isAskTool(name: unknown): boolean {
     const n = String(name ?? "");
     return n === "question" || n === "questionnaire";
+  }
+
+  private isTodoTool(name: unknown): boolean {
+    return String(name ?? "").toLowerCase() === "todo";
   }
 
   private buildAsk(item: ToolItem): HTMLElement {
