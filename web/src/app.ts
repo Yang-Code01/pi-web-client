@@ -12701,9 +12701,15 @@ export class App {
   /**
    * #317: once the box is at its cap the draft scrolls inside it, so its top can slide out of sight
    * with nothing on screen saying so. Fade the top 24px only while the draft sits part way down its
-   * own scroll range: back at the first line (`scrollTop === 0`) nothing is hidden above, and at the
-   * far end of the range the ticket says the hint is gone as well — both ends stay crisp, and the
-   * fade marks the stretch between them (1px of slack at the far end for rounding).
+   * own scroll range: back at the first line (`scrollTop === 0`) nothing is hidden above, and once
+   * the bottom is in view the hint is gone as well — both ends stay crisp and the fade marks the
+   * stretch between them.
+   *
+   * “At the bottom” is measured, not read off `scrollTop === max`: the browser stops scrolling as
+   * soon as the caret line fits, which leaves the box's own bottom padding (12px) below the fold, so
+   * while typing the box rests short of `max`. Treat “what is left to scroll is no more than the
+   * bottom inset (padding + border)” as the bottom, and the reading position a draft rests at — caret
+   * on the last line — stays free of the fade; only scrolling up from there brings it back.
    *
    * A mask, not a gradient to lay over the text: a mask carries alpha only, so there is no colour to
    * pick for each theme and no band where an overlay meets the background — and it adds no layer that
@@ -12714,7 +12720,9 @@ export class App {
     const input = this.textarea;
     if (!input) return;
     const max = input.scrollHeight - input.clientHeight;
-    input.classList.toggle("has-hidden-top", max > 0 && input.scrollTop > 0 && input.scrollTop < max - 1);
+    const inset = parseFloat(getComputedStyle(input).paddingBottom) + (input.offsetHeight - input.clientHeight);
+    const atBottom = max - input.scrollTop <= inset + 1;
+    input.classList.toggle("has-hidden-top", max > 0 && input.scrollTop > 0 && !atBottom);
   }
 
   /** Long pastes live in their own foldable box above what the user types next. */
