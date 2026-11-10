@@ -15,7 +15,8 @@
  *   G. 点最上面那根淡色刻度（#244）：自己连翻 3 页，最后滚到第 1 轮并高亮，中途不需要再点，
  *      按钮按手动翻页的样子变灰、刻度带 `busy`；
  *   H. 翻页途中用户上滚：跳转停下，已经取回的那一页留着，滚动位置不被拽到第 1 轮；
- *   I. 索引里有、正文里没有的那一轮：翻到头就停，顶部那一行说「没翻到第 N 轮」，不再发请求。
+ *   I. 索引里有、正文里没有的那一轮：翻到头就停，顶部那一行说「没翻到第 N 轮」，不再发请求；
+ *   J. 真鼠标点列表上部的一行：按下时列表不被 focusin 拽回最底，翻页重画后也不被补发的 pointerenter 拽走。
  *
  * 桥侧形状（#218 定的）：`session` 帧只带末页 + `history:{hasMore,total}`；
  * `{type:"history.before", sessionId, before, limit?}` → `{type:"history", sessionId, before, items, hasMore}`，
@@ -654,6 +655,60 @@ const cleared = await page2.evaluate(() => ({
 }));
 check("三秒后失败提示自己收了（带子上和正文那行都收）", cleared.note && cleared.more, JSON.stringify(cleared));
 await ctx2.close();
+
+// ---- J. 真鼠标点列表上部的一行：按下那一刻不能把列表拽回最底（18194 会话的现场） ----------------
+// 上面几段都用 `row.click()`，不经过 pointerdown → focus；真点击时按钮先拿焦点，`focusin` 曾把列表
+// 滚回最底，抬起时指针下已换成别的行，click 落在列表本身 —— 哪一行的回调都没走，「点了没反应、跳到最后」。
+const ctx3 = await browser.newContext({ viewport: { width: 1200, height: 844 }, locale: "zh-CN" });
+await ctx3.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
+const page3 = await ctx3.newPage();
+page3.on("pageerror", (e) => log("pageerror(ctx3):", e.message));
+await page3.goto(`${BASE}/#/s/${A}`);
+await page3.waitForFunction(() => document.querySelectorAll(".chat-scroll .msg.user").length === 30, null, { timeout: 15000 });
+await page3.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+const railBox = await page3.locator(".turn-rail").boundingBox();
+await page3.mouse.move(railBox.x + railBox.width - 3, railBox.y + railBox.height / 2);
+await page3.waitForFunction(() => document.querySelector(".turn-list").getBoundingClientRect().width > 0, null, { timeout: 5000 });
+// 把列表滚到最上面，指针移到第一行（第 1 轮，淡的）上再按下去。
+await page3.evaluate(() => {
+  document.querySelector(".turn-list").scrollTop = 0;
+});
+const firstRow = await page3.locator('.turn-row[data-i="0"]').boundingBox();
+await page3.mouse.move(firstRow.x + firstRow.width / 2, firstRow.y + firstRow.height / 2);
+await page3.mouse.down();
+const listAfterDown = await page3.evaluate(() => Math.round(document.querySelector(".turn-list").scrollTop));
+await page3.mouse.up();
+check("按下那一刻列表不动（不被 focusin 拽回最底）", listAfterDown === 0, `listTop=${listAfterDown}`);
+await page3
+  .waitForFunction(() => document.querySelector(".msg.user.turn-flash")?.textContent?.match(/问 1(?!\d)/), null, { timeout: 20000 })
+  .catch(() => {});
+const landed = await page3.evaluate(() => document.querySelector(".msg.user.turn-flash")?.textContent ?? null);
+check("真鼠标点第 1 轮那一行：翻页过去并高亮它", /问 1(?!\d)/.test(landed ?? ""), `flash=${landed}`);
+// 自动翻页重画了好几次列表；指针还在带子上，列表就得还停在刚才那一行（不被重画 / 补发的 pointerenter 拽到最底）。
+const listAfterJump = await page3.evaluate(() => Math.round(document.querySelector(".turn-list").scrollTop));
+check("翻页重画后列表还停在点的那一行", listAfterJump === 0, `listTop=${listAfterJump}`);
+// 已载入的行走的是另一条回调（onPick），同样的「按下就被拽到最底」也会让它点不到：离开再进来，点中部的第 61 轮。
+await page3.mouse.move(5, 5);
+await page3.mouse.move(railBox.x + railBox.width - 3, railBox.y + railBox.height / 2);
+await page3.waitForFunction(() => document.querySelector(".turn-list").getBoundingClientRect().width > 0, null, { timeout: 5000 });
+const midTop = await page3.evaluate(() => {
+  const list = document.querySelector(".turn-list");
+  const row = list.querySelector('.turn-row[data-i="60"]');
+  list.scrollTop = row.offsetTop - list.clientHeight / 2;
+  return Math.round(list.scrollTop);
+});
+const midRow = await page3.locator('.turn-row[data-i="60"]').boundingBox();
+await page3.mouse.move(midRow.x + midRow.width / 2, midRow.y + midRow.height / 2);
+await page3.mouse.down();
+const midAfterDown = await page3.evaluate(() => Math.round(document.querySelector(".turn-list").scrollTop));
+await page3.mouse.up();
+const midLanded = await page3.evaluate(() => document.querySelector(".msg.user.turn-flash")?.textContent ?? null);
+check(
+  "真鼠标点已载入的第 61 轮：列表不动、正文高亮它",
+  midAfterDown === midTop && /问 61(?!\d)/.test(midLanded ?? ""),
+  `listTop=${midAfterDown} want=${midTop} flash=${midLanded}`,
+);
+await ctx3.close();
 
 await browser.close();
 bridge.kill();
