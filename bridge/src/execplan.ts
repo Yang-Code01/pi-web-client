@@ -80,10 +80,6 @@ export function planReplayFromEntries(entries: SessionEntry[]): {
   return { plan, toolResults };
 }
 
-export function planFromEntries(entries: SessionEntry[]): PlanSnapshot | null {
-  return planReplayFromEntries(entries).plan;
-}
-
 export function planFromToolResult(
   previous: PlanSnapshot | null,
   toolName: unknown,
