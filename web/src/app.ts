@@ -48,6 +48,7 @@ import {
   renameIntent,
   wsCreateAction,
   wsNeighborsAfterDrop,
+  workspaceDeleteReason,
   type DirResolution,
 } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
@@ -318,7 +319,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | "wsnew" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | "wsnew" | "wsdelete" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   /** 新建文件夹 / 新建文件共用一个等待表：两条结果的形状一样（`{ path }` / `{ error }`，D167）。 */
@@ -2341,6 +2342,18 @@ export class App {
           this.go("sessions", true);
         } else {
           this.renderSessions();
+        }
+        break;
+      }
+      case "ws.delete.result": {
+        if (msg.deleted === true) {
+          this.flashToast(tr("工作区已删除；会话可在垃圾箱还原"), false, 4200);
+        } else {
+          const skipped = Array.isArray(msg.skipped) ? msg.skipped.length : 0;
+          const reason = skipped
+            ? tr("有 {p1} 个会话无法移入垃圾箱，工作区已保留", { p1: skipped })
+            : tr("工作区未删除：{p1}", { p1: workspaceDeleteReason(msg.reasonCode) });
+          this.flashToast(reason, true, 6000);
         }
         break;
       }
@@ -5258,7 +5271,7 @@ export class App {
     this.wsMenu = null;
     host.replaceChildren();
 
-    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter);
+    const tree = buildTree(this.sessions, this.manage, this.workspaces, this.filter, this.currentId);
     if (this.renameId && !this.sessions.some((s) => s.id === this.renameId)) this.renameId = null;
     if (this.wsRenameId && !this.workspaces.groups.some((g) => g.id === this.wsRenameId)) this.wsRenameId = null;
     // A deleted or now-hidden session must not stay "picked".
@@ -5523,8 +5536,8 @@ export class App {
         rowAware && info
           ? { checked: info.inRow !== false, onToggle: () => this.setWsRow(group.id, info.inRow === false) }
           : undefined,
-      // #279：能删时也要说清删的是什么 —— 手动组删的是组，目录组只是把这一项移出列表。
-      dropHint: info ? dropHint(info) : undefined,
+      // #279：有会话（包括归档会话）时说明删除效果；空组不需要多一行提示。
+      dropHint: info && this.sessions.some((s) => wsOf(s, this.workspaces, s.ws)?.id === group.id) ? dropHint(info) : undefined,
       onRename: () => this.startWsRename(group.id),
       onFront: () => this.moveWsToFront(group.id),
       onDrop: () => this.dropWs(group.id),
@@ -5735,7 +5748,64 @@ export class App {
   }
 
   private dropWs(id: string): void {
-    this.act(() => this.socket.send({ type: "manage", action: "ws.drop", id }));
+    const group = this.workspaces.groups.find((item) => item.id === id);
+    if (!group) return;
+    const sessions = this.sessions.filter((session) => wsOf(session, this.workspaces, session.ws)?.id === id);
+    const back = el("div", "sheet-back center");
+    const sheet = el("section", "sheet ws-delete-sheet");
+    sheet.setAttribute("role", "dialog");
+    sheet.setAttribute("aria-modal", "true");
+    sheet.setAttribute("aria-labelledby", "ws-delete-title");
+    sheet.onclick = (event) => event.stopPropagation();
+    back.onclick = (event) => {
+      if (event.target === back) this.closeSheet();
+    };
+
+    const head = el("div", "sheet-head");
+    const title = el("div", "sheet-title", tr("删除工作区"));
+    title.id = "ws-delete-title";
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSheet();
+    head.append(title, close);
+    sheet.append(head);
+
+    const summary = el("div", "ws-delete-summary");
+    summary.append(el("strong", "", group.name || group.key || group.id));
+    summary.append(el("p", "", sessions.length
+      ? tr("确认后，以下会话将移入垃圾箱；从垃圾箱还原会话时，工作区也会恢复。")
+      : tr("这个工作区里没有会话，确认后只会删除工作区。")));
+    sheet.append(summary);
+
+    const list = el("div", "ws-delete-list");
+    if (!sessions.length) list.append(el("div", "ws-delete-empty", tr("这个工作区里还没有会话。")));
+    for (const session of sessions) {
+      const row = el("div", "ws-delete-session");
+      const detail = el("div", "ws-delete-detail");
+      detail.append(el("div", "ws-delete-name", session.name || session.id));
+      if (session.cwd) detail.append(el("div", "ws-delete-path", session.cwd));
+      row.append(detail);
+      if (this.manage.archived.includes(session.id)) row.append(el("span", "ws-delete-badge", tr("已归档")));
+      list.append(row);
+    }
+    sheet.append(list);
+
+    const foot = el("div", "sheet-foot");
+    const cancel = el("button", "btn ghost", tr("取消"));
+    cancel.dataset.act = "cancel";
+    cancel.onclick = () => this.closeSheet();
+    const confirm = el("button", "btn danger", sessions.length ? tr("删除并移入垃圾箱") : tr("删除工作区"));
+    confirm.dataset.act = "confirm";
+    confirm.onclick = () => {
+      this.closeSheet();
+      this.act(() => this.socket.send({ type: "manage", action: "ws.delete", id, sessionIds: sessions.map((session) => session.id) }));
+    };
+    foot.append(cancel, confirm);
+    sheet.append(foot);
+    back.append(sheet);
+    this.sheetKind = "wsdelete";
+    this.overlay(back);
+    this.sheet = back;
+    cancel.focus();
   }
 
   /**
@@ -5807,7 +5877,7 @@ export class App {
     this.gotoGroup(group);
     if (group.sessions.length) return;
     const row = Array.from(this.els.sessList.querySelectorAll<HTMLElement>(".ws-sec")).find((node) => node.dataset.ws === id);
-    row?.scrollIntoView({ block: "nearest" });
+    row?.scrollIntoView({ block: "center" });
   }
 
   /**

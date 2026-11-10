@@ -19,6 +19,7 @@ import {
   hasRowMembership,
   renameIntent,
   wsCreateAction,
+  workspaceDeleteReason,
   wsNeighborsAfterDrop,
 } from "../src/wsmanage.ts";
 
@@ -61,24 +62,13 @@ test("改了名字就发洗过的那个", () => {
   assert.equal(renameIntent("", "新名字"), "新名字");
 });
 
-// ---------------------------------------------------------------- 能不能删
+// ---------------------------------------------------------------- 能不能发起删除确认
 
-// #279 边界改成「有会话才拦」：空的手动组与空的目录组都能删。
-
- test("空组能删，手动组与目录组一样", () => {
+test("空组与有会话的组都能发起删除确认", () => {
   assert.equal(dropBlocker(MANUAL, 0), null);
   assert.equal(dropBlocker(LIB, 0), null);
-});
-
-test("手动组有会话：删不掉，原因里带上会话数", () => {
-  const blocker = dropBlocker(MANUAL, 3);
-  assert.ok(blocker && blocker.includes("3"), `原因要说清还有几个会话：${blocker}`);
-  assert.equal(blocker, "这个工作区里还有 3 个会话，先把它们拖回工程或删掉", "与桥 drop() 的拒绝句逐字一致");
-});
-
-test("目录组有会话：删不掉，原因还是「跟着目录走」", () => {
-  const blocker = dropBlocker(LIB, 3);
-  assert.ok(blocker && blocker.includes("目录"), `派生组的拒绝原因要说明它跟着目录走：${blocker}`);
+  assert.equal(dropBlocker(MANUAL, 3), null);
+  assert.equal(dropBlocker(LIB, 3), null);
 });
 
 test("组没了也删不掉（快照过期时的兜底）", () => {
@@ -104,12 +94,21 @@ test("要删的组不在组序里（快照已经变了）：没有落点", () =>
   assert.deepEqual(wsNeighborsAfterDrop(["a", "b"], "z"), []);
 });
 
-test("能删时，删除项底下那句说明分得清手动组与目录组", () => {
+test("删除说明明确会移入垃圾箱、还原会恢复工作区", () => {
   const manual = dropHint(MANUAL);
   const dir = dropHint(LIB);
-  assert.match(manual, /组/, `手动组要说清删的是组：${manual}`);
-  assert.match(dir, /目录/, `目录组要说清删的是列表里的这一项：${dir}`);
-  assert.notEqual(manual, dir);
+  assert.equal(manual, dir, "手动组和目录组删除语义一致");
+  assert.match(manual, /垃圾箱/, `说明提到垃圾箱：${manual}`);
+  assert.match(manual, /还原/, `说明提到还原：${manual}`);
+});
+
+test("桥端工作区删除失败码映射为本地化文案", () => {
+  assert.equal(workspaceDeleteReason("workspace-not-found"), "这个工作区不在了");
+  assert.match(workspaceDeleteReason("confirmation-list-required"), /确认列表/);
+  assert.match(workspaceDeleteReason("membership-changed"), /会话已变化/);
+  assert.match(workspaceDeleteReason("sessions-not-trashed"), /移入垃圾箱/);
+  assert.match(workspaceDeleteReason("workspace-not-empty"), /仍有会话/);
+  assert.equal(workspaceDeleteReason("unknown-code"), "请重试");
 });
 
 // ---------------------------------------------------------------- #276 桥是否支持横条成员

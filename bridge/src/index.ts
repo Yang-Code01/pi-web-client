@@ -2776,7 +2776,7 @@ async function main(): Promise<void> {
               const report = sessions.restore(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
               if (report.restored.length) broadcast({ type: "manage", ...manageSnapshot() });
               broadcast({ type: "trash", items: sessions.trashList() });
-              if (report.restored.length) send({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
+              if (report.restored.length) broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
               send({ type: "restore.result", ...report });
               return;
             }
@@ -2847,8 +2847,21 @@ async function main(): Promise<void> {
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
               return;
             }
+            if (action === "ws.delete") {
+              const id = String(msg.id ?? "");
+              const sessionIds = Array.isArray(msg.sessionIds) ? msg.sessionIds.map(String) : undefined;
+              const result = await sessions.deleteWorkspace(id, sessionIds);
+              const report = result.report;
+              if (report?.removed.length) broadcast({ type: "session.gone", ids: report.removed });
+              broadcast({ type: "manage", ...manageSnapshot() });
+              broadcast({ type: "trash", items: sessions.trashList() });
+              broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+              broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
+              send({ type: "ws.delete.result", id, deleted: result.deleted, reasonCode: result.reasonCode, ...(report ?? {}) });
+              return;
+            }
             if (action === "ws.drop") {
-              // #279：空组（手动组 / 目录组）都能删；有会话时由 `dropWorkspace()` 拒绝并给原因。
+              // Legacy clients may only remove empty groups; populated-workspace deletion requires confirmation.
               const id = String(msg.id ?? "");
               const result = sessions.dropWorkspace(id);
               if (!result.ok) {

@@ -13,8 +13,7 @@ import { stickMenu } from "./menuplace.ts";
  * 再放不下就自己滚 —— 别让「删除工作区」只剩半行在窗口外面。左栏一滚组头就跑，所以滚动时重摆
  * （`scroll` 不冒泡，得用捕获），组头彻底滚出窗口就把菜单关掉，别让它在边上飘一块。
  *
- * 做不了时不藏这一行：按钮置灰，下面盖一行灰字说明为什么（「还有 3 个会话」/「跟着目录走」/「已经
- * 是第一个」）。藏起来只会让人以为这个组忘了做删除。
+ * 做不了时不藏这一行：按钮置灰，下面盖一行灰字说明原因；删除会影响组内会话时也在菜单里说明效果。
  */
 
 export interface WsMenuOpts {
@@ -28,7 +27,7 @@ export interface WsMenuOpts {
   dropBlocker: string | null;
   /** #276：新桥才有；旧桥整个字段不传，菜单里连这一行都不出现。 */
   row?: { checked: boolean; onToggle(): void };
-  /** 能删时的说明（手动组 / 目录组各一句，见 `dropHint()`）；不给就按手动组那句说。 */
+  /** 有组内会话时的删除效果说明（见 `dropHint()`）；空组可不传。 */
   dropHint?: string;
   onRename(): void;
   onFront(): void;
@@ -96,18 +95,19 @@ export function openWsMenu(anchor: HTMLElement, opts: WsMenuOpts): WsMenuHandle 
     drop.setAttribute("aria-disabled", "true");
     drop.title = opts.dropBlocker;
   } else {
-    drop.title = opts.dropHint ?? tr("只删这个空组，组里的东西一概不动");
+    drop.title = opts.dropHint ?? "";
   }
 
   node.append(rename, ...(row ? [row] : []), front, drop);
-  // 每个做不了的选择都盖一行原因，顺序跟着菜单项（移到最前在前、删除在后）。
+  // 不可执行的选择显示原因；可执行的删除若有会话，则显示删除效果说明。
   if (opts.frontBlocker) {
     const why = el("div", "pm-why", opts.frontBlocker);
     why.dataset.for = "front";
     node.append(why);
   }
-  if (opts.dropBlocker) {
-    const why = el("div", "pm-why", opts.dropBlocker);
+  const dropInfo = opts.dropBlocker ?? opts.dropHint;
+  if (dropInfo) {
+    const why = el("div", "pm-why", dropInfo);
     why.dataset.for = "drop";
     node.append(why);
   }

@@ -3881,3 +3881,11 @@ D
 **接口：** `POST /api/sys/winnat/restart` → `{ok, wasRunning, depsFailed, winnat}`；公网 403 `public_winnat`。新增错误码 `public_winnat` / `uac_busy` / `winnat_failed` / `winnat_stop_failed`；`uac_denied` / `uac_timeout` / `no_receipt` / `unsupported_platform` 的 en/ja 文案改成不点名 DNS 的通用说法。
 
 **验证：** `node bridge/tests/sysmanage-unit.mjs`（`normalizeWinnat`）、`node web/tests/sysmanage-unit.mjs`（状态文案）、`node bridge/tests/sysmanage-ui.mjs`（卡片 + 按钮、公网 403、network 带 winnat）；助手脚本非提权干跑（停止那步按预期回 `winnat_stop_failed`）。真点 UAC「是」重启留本机手验——会动整机 NAT 网络。
+
+## D222 已确认的工作区删除：会话进垃圾箱，恢复时还原工作区
+
+**问题：** D217 将「有会话的组不能删」作为桥端边界，并明确删组不动文件。新的工作区删除流程需要允许用户在确认后删除有会话的组，同时保留可恢复性。
+
+**决定：** 确认框列出工作区当前的会话，桥端校验确认时的会话 ID 列表仍与实际成员完全一致；确认后将会话移入垃圾箱，只有所有成员都成功移入后才删除工作区，任何会话无法移入时保留工作区。每个垃圾箱条目记录工作区快照与原顺序，恢复会话时重建工作区、成员关联与顺序；没有文件的空会话仅在这条工作区删除路径中先生成可恢复的会话头文件。普通会话删除沿用原语义，旧客户端的 `ws.drop` 仍只允许删除空组。本条只取代 D217 对「有会话的组」的删除限制，D217 其余决定不变。
+
+**为什么：** 用户要移除的是工作区列表项，而不是永久丢弃其中的会话；将会话和工作区关系一并放进垃圾箱，才能在恢复时还原原来的工作区身份与位置。桥端核对确认时的成员快照，可避免用户确认后成员已变化仍误删。

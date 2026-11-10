@@ -14,7 +14,7 @@ import { forgetSession } from "./artifacts.ts";
 import { ensureDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
-import { Workspaces } from "./workspaces.ts";
+import { Workspaces, type WsGroup } from "./workspaces.ts";
 import { rankSkills, scanSkillEntries, scanSkills, type SkillEntry, type SkillInfo } from "./skills.ts";
 import { matchDialog, parseQuestionnaire, replyFor, type QuestionnaireQuestion } from "./questionnaire.ts";
 import { lifecycle, gcTickMs, capProtectMs, type Lifecycle, type LifecycleThresholds } from "./lifecycle.ts";
@@ -205,6 +205,13 @@ export interface SessionState {
   launch?: string;
 }
 
+export type WorkspaceDeleteReasonCode =
+  | "workspace-not-found"
+  | "confirmation-list-required"
+  | "membership-changed"
+  | "sessions-not-trashed"
+  | "workspace-not-empty";
+
 export interface RemoveReport {
   removed: string[];
   /** Ids left alone, with the reason the manager shows next to the name. */
@@ -224,6 +231,8 @@ export interface TrashItem {
   cwd?: string;
   deletedAt: number;
   size: number;
+  /** Workspace membership snapshot: restoring this session also restores its former group and order. */
+  workspace?: { group: WsGroup; order: number };
 }
 
 /** Trash payloads live next to the bridge's state, never in pi's sessions dir. */
@@ -3290,14 +3299,40 @@ export class SessionManager extends EventEmitter {
     return this.workspaces.resolve(cwds);
   }
 
-  /**
-   * 删工作区（#279）：页面按左栏的空组放行，桥这里是权威 —— 组里还有会话就拒绝，空的才真删。
-   *
-   * 会话数只能从 `list()` 数：组里的会话可能来自 override，也可能来自 cwd 派生，只看 `overrides`
-   * 会漏掉后者。归档的也算 —— 它们不在左栏里，但组被删掉之后它们就没了归属。
-   */
+  /** Legacy empty-only operation: newer clients use deleteWorkspace after an explicit confirmation. */
   dropWorkspace(id: string): { ok: boolean; reason?: string } {
-    return this.workspaces.drop(id, this.list().filter((s) => s.ws === id).length);
+    return this.workspaces.drop(id, this.list().filter((session) => session.ws === id).length);
+  }
+
+  /** Move every session in a workspace to trash, then remove the now-empty group. */
+  async deleteWorkspace(
+    id: string,
+    expectedIds: string[] | undefined,
+  ): Promise<{ ok: boolean; deleted: boolean; reasonCode?: WorkspaceDeleteReasonCode; report?: RemoveReport }> {
+    if (!this.workspaces.group(id)) return { ok: false, deleted: false, reasonCode: "workspace-not-found" };
+    if (!Array.isArray(expectedIds)) {
+      return { ok: false, deleted: false, reasonCode: "confirmation-list-required" };
+    }
+    const currentIds = this.list().filter((session) => session.ws === id).map((session) => session.id).sort();
+    const expected = [...new Set(expectedIds)].sort();
+    if (expected.length !== expectedIds.length || expected.join("\n") !== currentIds.join("\n")) {
+      return { ok: false, deleted: false, reasonCode: "membership-changed" };
+    }
+    const report = await this.trash(currentIds, { preserveEmpty: true });
+    if (report.skipped.length) {
+      return { ok: false, deleted: false, reasonCode: "sessions-not-trashed", report };
+    }
+    const remaining = this.list().filter((session) => session.ws === id).length;
+    const dropped = this.workspaces.drop(id, remaining);
+    if (!dropped.ok) {
+      return {
+        ok: false,
+        deleted: false,
+        reasonCode: dropped.reason === "这个工作区不在了" ? "workspace-not-found" : "workspace-not-empty",
+        report,
+      };
+    }
+    return { ok: true, deleted: true, report };
   }
 
   /** Q-022: 置顶横条的 ＋ 建出来的会话，落到 pin 列表末尾。 */
@@ -3326,9 +3361,12 @@ export class SessionManager extends EventEmitter {
    * Deleting only moves the file into the bin (`purge` is the one irreversible step). The file leaves
    * pi's sessions dir, which is why pi itself and the list stop showing it.
    */
-  async trash(ids: string[]): Promise<RemoveReport> {
+  async trash(ids: string[], options: { preserveEmpty?: boolean } = {}): Promise<RemoveReport> {
+    const listed = new Map(this.list().map((session) => [session.id, session]));
+    const workspaceSnapshot = this.workspaces.snapshot();
+    const workspaceGroups = new Map(workspaceSnapshot.groups.map((group) => [group.id, group]));
     const metas = new Map(this.metas().map((m) => [m.id, m]));
-    const targets: { id: string; name: string; file: string | null; cwd?: string }[] = [];
+    const targets: { id: string; name: string; file: string | null; cwd?: string; workspace?: TrashItem["workspace"] }[] = [];
     const skipped: RemoveReport["skipped"] = [];
     for (const id of ids) {
       const session = this.sessions.get(id);
@@ -3342,7 +3380,13 @@ export class SessionManager extends EventEmitter {
         skipped.push({ id, name, reason: "终端正在使用" });
         continue;
       }
-      targets.push({ id, name, file: session?.state.file ?? meta?.file ?? null, cwd: session?.state.cwd ?? meta?.cwd });
+      const workspaceId = listed.get(id)?.ws;
+      const group = workspaceId ? workspaceGroups.get(workspaceId) : undefined;
+      const orderIndex = group ? workspaceSnapshot.order?.indexOf(group.id) ?? -1 : -1;
+      const workspace = group
+        ? { group: { ...group }, order: orderIndex >= 0 ? orderIndex : workspaceSnapshot.groups.length }
+        : undefined;
+      targets.push({ id, name, file: session?.state.file ?? meta?.file ?? null, cwd: session?.state.cwd ?? meta?.cwd, workspace });
     }
     // 运行中的先交还写者，多个并行：一个卡住的 rpc 不该让整批按 7 秒一个排队等（close 的两次等待）。
     const held = targets.map((t) => this.sessions.get(t.id)).filter((s): s is Session => Boolean(s?.live));
@@ -3361,15 +3405,51 @@ export class SessionManager extends EventEmitter {
       if (blocked.has(t.id)) continue;
       // 有没有文件，要等到释放之后再看：close() 会等在飞的那一轮落盘，文件可能就在这一小段里
       // 才出现。在释放之前算好，就会把「刚写完的会话」当成空会话 —— 移出列表却不搬文件，下一次
-      // 扫描又把它扫回来（删了还复活）。没有文件的只有一种：刚建、还没说话的空会话，关掉即可，
-      // 磁盘上本来就没东西可丢，也没东西可还原。
-      const file = t.file && fs.existsSync(t.file) ? t.file : null;
+      // 扫描又把它扫回来（删了还复活）。普通删除可直接移除空会话；工作区删除需可回滚，
+      // 因此 preserveEmpty 会先写入只有 session header 的文件，再走同一套垃圾箱移动流程。
+      let file = t.file && fs.existsSync(t.file) ? t.file : null;
+      if (!file && options.preserveEmpty) {
+        if (!t.cwd) {
+          skipped.push({ id: t.id, name: t.name, reason: "空会话缺少工作目录，无法移入垃圾箱" });
+          continue;
+        }
+        const root = sessionsRootInfo();
+        const dir =
+          root.source === "default" || root.source === "PI_AGENT_DIR" ? path.join(root.dir, encodeCwd(t.cwd)) : root.dir;
+        file = path.join(dir, `${Date.now()}_${t.id}.jsonl`);
+        let created = false;
+        try {
+          fs.mkdirSync(dir, { recursive: true });
+          const fd = fs.openSync(file, "wx");
+          created = true;
+          try {
+            const timestamp = new Date().toISOString();
+            fs.writeFileSync(fd, `${JSON.stringify({ type: "session", version: 3, id: t.id, timestamp, cwd: t.cwd })}\n`);
+          } finally {
+            fs.closeSync(fd);
+          }
+        } catch (err: any) {
+          if (created) {
+            try { fs.rmSync(file, { force: true }); } catch { /* leave other sessions alone */ }
+          }
+          skipped.push({ id: t.id, name: t.name, reason: `空会话无法移入垃圾箱（${err?.code ?? err}）` });
+          continue;
+        }
+      }
       if (file) {
         try {
           const size = fs.statSync(file).size;
           moveFile(file, trashPayload(t.id));
           binnedIds.push(t.id);
-          binned.push({ id: t.id, name: t.name, file, cwd: t.cwd, deletedAt: Date.now(), size });
+          binned.push({
+            id: t.id,
+            name: t.name,
+            file,
+            cwd: t.cwd,
+            deletedAt: Date.now(),
+            size,
+            ...(t.workspace ? { workspace: t.workspace } : {}),
+          });
         } catch (err: any) {
           skipped.push({ id: t.id, name: t.name, reason: `文件移不进垃圾箱（${err?.code ?? err}）` });
           continue;
@@ -3422,10 +3502,20 @@ export class SessionManager extends EventEmitter {
         skipped.push({ id, reason: "不在垃圾箱里" });
         continue;
       }
+      let moved = false;
       try {
         moveFile(trashPayload(id), it.file);
+        moved = true;
+        if (it.workspace) this.workspaces.restoreSession(it.workspace.group, id, it.workspace.order);
         restored.push(id);
       } catch (err: any) {
+        if (moved) {
+          try {
+            moveFile(it.file, trashPayload(id));
+          } catch {
+            /* Keep the original restore error; the next trash-list refresh will expose a missing payload. */
+          }
+        }
         skipped.push({ id, reason: `还原失败（${err?.code ?? err}）` });
       }
     }

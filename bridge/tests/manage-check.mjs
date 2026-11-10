@@ -25,6 +25,23 @@ const CWD = REPO;
 fs.rmSync(ROOT, { recursive: true, force: true });
 fs.mkdirSync(STATE, { recursive: true });
 fs.mkdirSync(SESSIONS, { recursive: true });
+const WORKSPACE_ID = "manual:workspace-delete-check";
+const OTHER_WORKSPACE_ID = "manual:other-workspace";
+const EMPTY_WORKSPACE_ID = "manual:empty-workspace-check";
+fs.writeFileSync(
+  path.join(STATE, "workspaces.json"),
+  JSON.stringify({
+    groups: [
+      { id: OTHER_WORKSPACE_ID, name: "另一个工作区", key: "", manual: true, inRow: true },
+      { id: WORKSPACE_ID, name: "可恢复工作区", key: "", manual: true, inRow: true },
+      { id: EMPTY_WORKSPACE_ID, name: "空会话工作区", key: "", manual: true, inRow: true },
+    ],
+    overrides: { "zz-manage-a": WORKSPACE_ID },
+    keys: {},
+    order: [OTHER_WORKSPACE_ID, WORKSPACE_ID, EMPTY_WORKSPACE_ID],
+    max: 6,
+  }),
+);
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const assert = (cond, msg) => {
@@ -207,8 +224,9 @@ try {
   log("delete moved the file to the bin, not into the void");
 
   // 3b. Restore puts the file back where it came from and the list picks it up again.
+  const normalRestore = waitFor("restore.result", (m) => m.restored?.includes(ids.a), 8000);
   send({ type: "manage", action: "restore", ids: [ids.a] });
-  const back = await waitFor("restore.result", (m) => m.restored?.includes(ids.a), 8000);
+  const back = await normalRestore;
   assert(back, `restore reported (got ${JSON.stringify(back)})`);
   assert(fs.existsSync(fileA), "restored file is back at its original path");
   assert(!fs.existsSync(binA), "payload left the bin");
@@ -216,7 +234,47 @@ try {
   assert((await order()).includes(ids.a), "restored session is listed again");
   log("restore undid the delete");
 
-  // 3c. Bin it again, so the restart check below means something.
+  // 3c. A confirmation must include the displayed membership; stale confirmations do nothing.
+  const missingDelete = waitFor("ws.delete.result", (m) => m.id === WORKSPACE_ID, 1800);
+  send({ type: "manage", action: "ws.delete", id: WORKSPACE_ID });
+  const missingResult = await missingDelete;
+  assert(missingResult?.deleted === false && missingResult.reasonCode === "confirmation-list-required", `missing confirmation list rejected (got ${JSON.stringify(missingResult)})`);
+  assert(fs.existsSync(fileA), "confirmation without a session list leaves the file untouched");
+
+  const staleDelete = waitFor("ws.delete.result", (m) => m.id === WORKSPACE_ID, 1800);
+  send({ type: "manage", action: "ws.delete", id: WORKSPACE_ID, sessionIds: [ids.b] });
+  const staleResult = await staleDelete;
+  assert(staleResult?.deleted === false && staleResult.reasonCode === "membership-changed", `stale confirmation rejected (got ${JSON.stringify(staleResult)})`);
+  assert(fs.existsSync(fileA), "stale confirmation leaves the session file untouched");
+  assert(JSON.parse(fs.readFileSync(path.join(STATE, "workspaces.json"), "utf8")).groups.some((g) => g.id === WORKSPACE_ID), "stale confirmation keeps the workspace");
+
+  const wsDelete = waitFor("ws.delete.result", (m) => m.id === WORKSPACE_ID, 1800);
+  send({ type: "manage", action: "ws.delete", id: WORKSPACE_ID, sessionIds: [ids.a] });
+  const wsDeleted = await wsDelete;
+  assert(wsDeleted?.deleted === true, `workspace delete completed (got ${JSON.stringify(wsDeleted)})`);
+  assert(!fs.existsSync(fileA) && fs.existsSync(binA), "workspace deletion moved the session file to trash");
+  const workspaceTrash = binIndex().find((it) => it.id === ids.a);
+  assert(workspaceTrash?.workspace?.group?.id === WORKSPACE_ID, "trash metadata remembers the deleted workspace");
+  assert(workspaceTrash?.workspace?.order === 1, "trash metadata remembers the workspace order index");
+  const removedWorkspace = JSON.parse(fs.readFileSync(path.join(STATE, "workspaces.json"), "utf8"));
+  assert(!removedWorkspace.groups.some((g) => g.id === WORKSPACE_ID), "deleted workspace left the workspace list");
+
+  const workspaceRestoreWait = waitFor("restore.result", (m) => m.restored?.includes(ids.a), 8000);
+  const restoredListWait = waitFor("sessions.list", (m) => m.sessions?.some((s) => s.id === ids.a && s.ws === WORKSPACE_ID), 8000);
+  send({ type: "manage", action: "restore", ids: [ids.a] });
+  const workspaceRestore = await workspaceRestoreWait;
+  assert(workspaceRestore, `workspace session restored (got ${JSON.stringify(workspaceRestore)})`);
+  const restoredList = await restoredListWait;
+  assert(restoredList?.workspace?.groups?.some((g) => g.id === WORKSPACE_ID && g.name === "可恢复工作区"), "restore rebuilt the workspace with its saved name");
+  const restoredWorkspace = JSON.parse(fs.readFileSync(path.join(STATE, "workspaces.json"), "utf8"));
+  assert(restoredWorkspace.overrides[ids.a] === WORKSPACE_ID, "restored session is assigned back to its workspace");
+  assert(
+    restoredWorkspace.order.indexOf(WORKSPACE_ID) === workspaceTrash?.workspace?.order,
+    `restored workspace returns to its saved order index ${workspaceTrash?.workspace?.order} (${restoredWorkspace.order.join(" / ")})`,
+  );
+  log("workspace delete moved its session to trash; restore rebuilt the workspace");
+
+  // 3d. Bin it again, so the restart check below means something.
   send({ type: "manage", action: "delete", ids: [ids.a] });
   await waitFor("session.gone", (m) => m.ids?.includes?.(ids.a), 8000);
 
@@ -258,21 +316,30 @@ try {
   assert(!(await order()).includes(liveId), "live session left the list");
   log("live delete released", only.released.length, "session(s) first, then binned it");
 
-  // 4b. A session pi never wrote a file for (created, nothing said yet) leaves no bin row: there is
-  // nothing on disk to keep, and nothing to restore.
+  // 4b. Workspace deletion must also bin an empty live session that pi never wrote to disk.
   ws.send(JSON.stringify({ type: "create", cwd: CWD }));
   const fresh = await waitFor("session", (m) => m.state?.owned === true && m.sessionId !== liveId, 90000);
   assert(fresh, "fresh live session created");
   const freshId = fresh.sessionId;
-  const freshWait = waitFor("delete.result", () => true, 30000);
+  const moved = waitFor("sessions.list", (m) => m.sessions?.some((s) => s.id === freshId && s.ws === EMPTY_WORKSPACE_ID), 8000);
+  send({ type: "manage", action: "ws.move", ids: [freshId], wsId: EMPTY_WORKSPACE_ID });
+  assert(await moved, "fresh empty session moved into the workspace");
+  const freshDelete = waitFor("ws.delete.result", (m) => m.id === EMPTY_WORKSPACE_ID, 30000);
+  send({ type: "manage", action: "ws.delete", id: EMPTY_WORKSPACE_ID, sessionIds: [freshId] });
+  const freshRes = await freshDelete;
+  assert(freshRes?.deleted === true && freshRes.report?.binned?.includes(freshId), `empty workspace session binned (got ${JSON.stringify(freshRes)})`);
+  const freshBin = path.join(STATE, "trash", `${freshId}.jsonl`);
+  assert(fs.existsSync(freshBin), "empty workspace session has a restorable trash payload");
+  assert(binIndex().find((it) => it.id === freshId)?.workspace?.group?.id === EMPTY_WORKSPACE_ID, "empty session trash row saves its workspace");
+  const freshRestore = waitFor("restore.result", (m) => m.restored?.includes(freshId), 8000);
+  send({ type: "manage", action: "restore", ids: [freshId] });
+  assert(await freshRestore, "empty workspace session restored");
+  assert((await list()).find((s) => s.id === freshId)?.ws === EMPTY_WORKSPACE_ID, "restored empty session returns to its workspace");
+  const freshDeleteAgain = waitFor("delete.result", (m) => m.removed?.includes(freshId), 30000);
   send({ type: "manage", action: "delete", ids: [freshId] });
-  const freshRes = await freshWait;
-  assert(freshRes?.removed?.includes(freshId), `empty live session removed (got ${JSON.stringify(freshRes)})`);
-  assert(freshRes?.released?.includes(freshId), "empty live session was released");
-  assert(!freshRes?.binned?.includes(freshId), "an empty session is not reported as binned");
-  assert(!binIndex().some((it) => it.id === freshId), "no bin row for a session that never hit disk");
-  assert(!(await order()).includes(freshId), "empty live session left the list");
-  log("empty live delete: released, no bin row");
+  assert(await freshDeleteAgain, "restored empty session can be deleted normally");
+  assert(!(await order()).includes(freshId), "empty session left the list");
+  log("workspace delete: empty live session got a header-only trash payload and was restorable");
 
   // 4c. A terminal's pi still refuses: its pid is not ours, so nothing here can stop it. Both
   // markers count — the write lock another bridge takes, and the tty marker the terminal extension

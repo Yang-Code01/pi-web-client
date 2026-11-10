@@ -218,3 +218,14 @@ test("空的手建组：命中组名时留下（渲染层显示空态），不�
   const over = tree([s("l1", LIB.id)], {}, { groups: [LIB, MANUAL] }, "library");
   assert.deepEqual(groups(over), [[LIB.id, ["l1"]]]);
 });
+
+test("当前打开的会话优先显示在所属工作区最前面", () => {
+  const sessions = [
+    s("pinned", LIB.id, { startedAt: t3("2024-03-01") }),
+    s("current", LIB.id, { startedAt: t3("2024-01-01") }),
+    s("other", PWC.id, { startedAt: t3("2024-04-01") }),
+  ];
+  const t = buildTree(sessions, { pin: ["pinned"], order: [], archived: [] }, { groups: [LIB, PWC] }, "", "current");
+  assert.deepEqual(ids(t.groups.find((g) => g.id === LIB.id).sessions), ["current", "pinned"]);
+  assert.deepEqual(ids(t.groups.find((g) => g.id === PWC.id).sessions), ["other"]);
+});

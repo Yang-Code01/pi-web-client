@@ -125,6 +125,7 @@ export function buildTree<T extends TreeSession>(
   manage: TreeManage,
   workspace?: TreeWorkspace | null,
   filter = "",
+  currentId: string | null = null,
 ): Tree<T> {
   const pin = manage.pin ?? [];
   const order = manage.order ?? [];
@@ -165,6 +166,9 @@ export function buildTree<T extends TreeSession>(
     return at < 0 ? -1 : at;
   };
   const compare = (a: T, b: T): number => {
+    const aCurrent = a.id === currentId;
+    const bCurrent = b.id === currentId;
+    if (aCurrent !== bCurrent) return aCurrent ? -1 : 1;
     const ap = rank(pin, a.id);
     const bp = rank(pin, b.id);
     if (ap >= 0 || bp >= 0) {

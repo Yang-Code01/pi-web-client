@@ -309,8 +309,8 @@ ok(
 );
 ok(m?.items.find((i) => i.act === "front")?.disabled === false, "折叠组的「移到最前」可点（入口在左栏组头，不依赖横条 DOM）");
 ok(
-  m?.items.find((i) => i.act === "drop")?.disabled === true && (m?.reasons ?? []).some((r) => r.includes("跟着目录走")),
-  "删除仍按原规则置灰并写明原因（派生组）",
+  m?.items.find((i) => i.act === "drop")?.disabled === false && (m?.reasons ?? []).some((r) => r.includes("垃圾箱")),
+  "有会话的派生组仍可发起删除确认并提示移入垃圾箱",
 );
 
 // 键盘：Tab 得到这颗菜单项（role=menuitem 的 button），Enter 触发。

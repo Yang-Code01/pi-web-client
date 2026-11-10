@@ -5,12 +5,12 @@
  * create 给一个新 id；drop 只肯删空的手动组；move 空 wsId = 删 override）。断言：
  *   1. 组头有 ⋯，菜单三行（重命名 / 移到最前 / 删除工作区）；#177 的「移到最前」在这里只占位，
  *      标签行本身的探针在 `probes/workspace-tabs.mjs`；
- *   2. 派生组 + 有会话：删除项置灰，下面一行写明「还有 N 个会话」，点它不发 ws.drop；
+ *   2. 有会话的工作区可发起删除确认；会话列表完整展示，取消不发 ws.delete；
  *   3. 改名：输入框进组头，Enter 提交的是洗过的名字（折叠空白），组头立刻变；
  *   4. 清空名字：发的是空串，组头回落到目录名；
  *   5. Esc 取消：一个字都不发；
  *   6. 新建工作区：ws.create 发出去，空组立刻在树里（空态），并直接进改名态；
- *   7. 组里有会话时删不掉（原因带条数）；会话被挪回工程后，组能删，会话落在按 cwd 推出来的组里；
+ *   7. 组里有会话时可以打开确认框；取消不删除；会话被挪回工程后，空组也可确认删除；
  *   9. 矮窗口 + 组头贴着窗口底：菜单整块留在窗口里（翻到组头上方，或自己滚），
  *      「删除工作区」不能被窗口裁掉半行。
  *
@@ -116,7 +116,7 @@ server.on("upgrade", (req, socket, head) => {
         return;
       }
       if (!String(msg.action ?? "").startsWith("ws.")) return;
-      CALLS.push({ action: msg.action, id: msg.id, name: msg.name, wsId: msg.wsId, ids: msg.ids });
+      CALLS.push({ action: msg.action, id: msg.id, name: msg.name, wsId: msg.wsId, ids: msg.ids, sessionIds: msg.sessionIds });
 
       if (msg.action === "ws.rename") {
         const g = WORKSPACE.groups.find((x) => x.id === msg.id);
@@ -130,6 +130,22 @@ server.on("upgrade", (req, socket, head) => {
         WORKSPACE.groups.push(group);
         MANUAL = group;
         cast({ type: "workspaces", workspace: WORKSPACE });
+        return;
+      }
+      if (msg.action === "ws.delete") {
+        const id = String(msg.id ?? "");
+        const members = SESSIONS.filter((session) => groupFor(session) === id).map((session) => session.id);
+        const expected = Array.isArray(msg.sessionIds) ? msg.sessionIds.map(String).sort() : members.slice().sort();
+        if (!WORKSPACE.groups.some((g) => g.id === id) || expected.join("\n") !== members.slice().sort().join("\n")) {
+          ws.send(JSON.stringify({ type: "ws.delete.result", id, deleted: false, reasonCode: "membership-changed", skipped: [] }));
+          return;
+        }
+        for (let i = SESSIONS.length - 1; i >= 0; i--) if (members.includes(SESSIONS[i].id)) SESSIONS.splice(i, 1);
+        WORKSPACE.groups = WORKSPACE.groups.filter((g) => g.id !== id);
+        WORKSPACE.order = (WORKSPACE.order ?? []).filter((x) => x !== id);
+        for (const [sid, wid] of Object.entries(WORKSPACE.overrides)) if (wid === id) delete WORKSPACE.overrides[sid];
+        cast({ type: "workspaces", workspace: WORKSPACE });
+        ws.send(JSON.stringify({ type: "ws.delete.result", id, deleted: true, removed: members, binned: members, skipped: [], released: [] }));
         return;
       }
       if (msg.action === "ws.drop") {
@@ -220,24 +236,39 @@ await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
 await passGate();
 await sleep(400);
 
+// 0) 左侧工作区行要有足够大的纵向点击区域。
+const wsHeadHeight = await page.locator(`.ws-sec[data-ws="${LIB.id}"] .ws-head`).evaluate((node) => node.getBoundingClientRect().height);
+ok(wsHeadHeight >= 36, `工作区行高度至少 36px（当前 ${wsHeadHeight.toFixed(1)}px）`);
+
 // 1) 组头有 ⋯，树底有「新建工作区」
 let t = await tree();
 ok(t.groups.length === 1 && t.groups[0].name === "library", `开局一个派生组：${t.groups.map((g) => g.name).join(" / ")}`);
 ok((await more(LIB.id).count()) === 1, "组头有 ⋯ 按钮");
 ok(/新建工作区/.test(t.newRow ?? ""), `树底有「${t.newRow}」`);
 
-// 2) 有会话的派生组：删除项置灰 + 写明原因，点了也不发 ws.drop
+// 2) 有会话的派生组：删除项可点，显示会话清单，取消不发 ws.delete
 await openMore(LIB.id);
 await sleep(200);
 t = await tree();
 ok(Boolean(t.menu), "点 ⋯ 弹出菜单");
 ok(t.menu?.items.map((i) => i.text).join(" / ") === "重命名 / 移到最前 / 删除工作区", `菜单三行：${t.menu?.items.map((i) => i.text).join(" / ")}`);
 const del = t.menu?.items.find((i) => i.act === "drop");
-ok(del?.disabled === true, "派生组的「删除工作区」是灰的");
-ok(t.menu?.whys.some((w) => /跟着目录走/.test(w)) === true, `原因写明：${t.menu?.whys.join(" / ")}`);
-await page.locator(".ws-menu .pm-item[data-act='drop']").click({ force: true }).catch(() => {});
-await sleep(200);
-ok(callOf("ws.drop") === null, "点灰掉的删除项：没有发 ws.drop");
+ok(del?.disabled === false, "有会话的目录工作区仍可发起删除确认");
+if (del?.disabled === false) {
+  await page.locator(".ws-menu .pm-item[data-act='drop']").click();
+  await sleep(200);
+  const dialog = await page.evaluate(() => ({
+    title: document.querySelector(".ws-delete-sheet .sheet-title")?.textContent?.trim() ?? "",
+    names: [...document.querySelectorAll(".ws-delete-session .ws-delete-name")].map((n) => n.textContent?.trim() ?? ""),
+  }));
+  ok(Boolean(dialog.title), "删除前打开工作区会话确认对话框");
+  ok(dialog.names.includes("改左栏") && dialog.names.includes("写脚本"), `确认框列出工作区会话（${dialog.names.join(" / ")}）`);
+  await page.locator(".ws-delete-sheet [data-act='cancel']").click();
+  await sleep(150);
+  ok((await page.locator(".ws-delete-sheet").count()) === 0, "取消后关闭确认框，不删除工作区");
+  await openMore(LIB.id);
+  await sleep(150);
+}
 await page.keyboard.press("Escape");
 await sleep(150);
 ok((await page.locator(".ws-menu").count()) === 0, "Esc 关掉菜单");
@@ -298,7 +329,7 @@ await sleep(300);
 t = await tree();
 ok(t.groups.find((g) => g.id === MANUAL?.id)?.name === "临时组", "给它起了名字，组头就是新名字");
 
-// 7) 会话被拖进这个空组（#99 的动作，这里从桩里做）→ 组有了会话就删不掉
+// 7) 会话被拖进这个空组（#99 的动作，这里从桩里做）→ 组有会话时仍可打开确认框
 await page.evaluate(() => {}); // 留一拍：让上面的广播落定
 CALLS.push({ action: "ws.move", ids: ["s-a"], wsId: "manual:p1" });
 WORKSPACE.overrides["s-a"] = MANUAL.id;
@@ -311,9 +342,12 @@ ok(t.groups.find((g) => g.id === MANUAL?.id)?.cards.join() === "s-a", "挪进组
 await openMore(MANUAL.id);
 await sleep(200);
 t = await tree();
-ok(t.menu?.items.find((i) => i.act === "drop")?.disabled === true, "有会话的手动组：删除项也灰了");
-ok(t.menu?.whys.some((w) => /还有 1 个会话/.test(w)) === true, `原因带上条数：${t.menu?.whys.join(" / ")}`);
-await page.keyboard.press("Escape");
+ok(t.menu?.items.find((i) => i.act === "drop")?.disabled === false, "有会话的手动组：删除项可以打开确认");
+await page.locator(".ws-menu .pm-item[data-act='drop']").click();
+await sleep(200);
+const manualDeleteNames = await page.locator(".ws-delete-session .ws-delete-name").allTextContents();
+ok(manualDeleteNames.includes("改左栏"), `手动组确认框列出会话（${manualDeleteNames.join(" / ")}）`);
+await page.locator(".ws-delete-sheet [data-act='cancel']").click();
 await sleep(150);
 
 // 8) 会话被挪回工程（ws.move 空 wsId）→ 组空了 → 能删；会话落在 cwd 推出来的组里
@@ -333,7 +367,9 @@ ok(t.menu?.dropWhy === null, "能删的时候删除项不显示原因行");
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-drop.png`), clip: { x: 0, y: 0, width: 380, height: 820 } });
 await page.locator(".ws-menu .pm-item[data-act='drop']").click();
 await sleep(350);
-ok(callOf("ws.drop")?.id === MANUAL.id, `发出去的是 ws.drop ${callOf("ws.drop")?.id}`);
+await page.locator(".ws-delete-sheet [data-act='confirm']").click();
+await sleep(350);
+ok(callOf("ws.delete")?.id === MANUAL.id, `确认后发出去的是 ws.delete ${callOf("ws.delete")?.id}`);
 t = await tree();
 ok(!t.groups.some((g) => g.id === MANUAL?.id), `组从树里消失（现在只有 ${t.groups.map((g) => g.name).join(" / ")}）`);
 
