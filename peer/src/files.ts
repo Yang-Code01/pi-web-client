@@ -154,8 +154,11 @@ export class Files {
       const from = body?.from as PeerIdentity | undefined;
       const messageId = String(body?.messageId ?? "");
       const name = String(body?.name ?? "").replace(/[\\/:*?"<>|]/g, "_").slice(0, 180) || "文件";
-      const size = Number(body?.size) || 0;
-      if (!from?.nodeId || !messageId || size <= 0) return { status: 400, body: { error: "bad begin", retryable: false } };
+      const size = Number(body?.size);
+      // 0 字节也是合法文件（空日志、占位符）：只拒负数与非数字。
+      if (!from?.nodeId || !messageId || !Number.isFinite(size) || size < 0) {
+        return { status: 400, body: { error: "bad begin", retryable: false } };
+      }
       const check = await verify(fromAddr, from);
       if (check) return check;
       // 决定 9：文件只给好友。文字谁都能发，文件不行——写盘是不可撤销的。
@@ -234,7 +237,18 @@ export class Files {
     }
     if (waiting.sha256) {
       const hash = createHash("sha256");
-      hash.update(fs.readFileSync(waiting.part));
+      // 按块喂哈希：readFileSync 会把整份文件塞进内存，GB 级文件在收尾时直接 ENOBUFS。
+      const fd = fs.openSync(waiting.part, "r");
+      try {
+        const buf = Buffer.allocUnsafe(CHUNK);
+        for (;;) {
+          const read = fs.readSync(fd, buf, 0, buf.length, null);
+          if (read <= 0) break;
+          hash.update(buf.subarray(0, read));
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
       const got = hash.digest("hex");
       if (got !== waiting.sha256) {
         this.tokens.delete(token);

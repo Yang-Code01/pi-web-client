@@ -368,11 +368,16 @@ function msgSig(): string {
   return S.msgs.map((m) => `${m.id}:${m.ack?.status ?? ""}`).join("|");
 }
 
+/** 拉取序号：只让最新一次请求的响应落到 S.msgs 上。 */
+let msgSeq = 0;
+
 async function loadMessages(id = S.thread): Promise<void> {
   if (!id) return;
+  // 慢响应要能丢：手点得比网快时，A 的响应会在切到 B 之后才回来。
+  const seq = ++msgSeq;
   const data = await getJson<{ entries: Entry[] }>(`/api/peer/messages?peer=${encodeURIComponent(id)}&limit=200`).catch(() => null);
   // 拉不到就保持旧内容：一次超时不该把聊天清空
-  if (!data) return;
+  if (!data || seq !== msgSeq || S.thread !== id) return;
   S.msgs = data.entries ?? [];
   S.msgsFor = id;
 }
@@ -480,7 +485,7 @@ function renderHint(): void {
     return;
   }
   const bits: string[] = [];
-  if (st?.config.hidden) bits.push(tr("隐身中：别人看不到你，你也看不到新的人"));
+  if (st?.config.hidden) bits.push(tr("隐身中：别人看不到你，但仍能看见别人"));
   if (st?.config.dnd) bits.push(tr("免打扰：新消息不提醒"));
   hintEl.append(ic("eyeOff"), h("span", "grow", bits.join(" · ")));
   const off = h("button", "btn", tr("去改"));
@@ -811,8 +816,31 @@ function backBtn(): HTMLButtonElement {
   return b;
 }
 
+/**
+ * 当前的会话对象。有历史就从 /threads 里取；刚加的好友还没历史（peer 的 /threads 只遍历
+ * history 目录），就用通讯录 / 在线表拼一个，不然聊天区只剩「选一个会话」，第一条消息没法发。
+ */
+function threadOf(id: string | null): Thread | null {
+  if (!id) return null;
+  const found = S.threads.find((x) => x.nodeId === id);
+  if (found) return found;
+  const contact = contactOf(id);
+  const online = S.view?.status?.online.find((p) => p.nodeId === id);
+  const nickname = contact?.nickname || online?.nickname;
+  if (!nickname) return null;
+  return {
+    nodeId: id,
+    nickname,
+    hostname: contact?.hostname || online?.hostname || "",
+    port: contact?.port ?? online?.port ?? 0,
+    last: null,
+    count: 0,
+    online: Boolean(online),
+  };
+}
+
 function renderChat(): void {
-  const t = S.threads.find((x) => x.nodeId === S.thread);
+  const t = threadOf(S.thread);
   if (!t) {
     mainEl.append(
       emptyState("msg", tr("选一个会话"), tr("左边挑一个人；还没有人就在「联系人」里加一个地址")),
@@ -1304,7 +1332,7 @@ function renderMe(): void {
   const sw = h("div", "card");
   sw.append(h("h3", "", tr("开关")));
   sw.append(
-    toggle(tr("隐身"), tr("别人看不到你，你也收不到新的人"), st.config.hidden, (on) => void setConfig({ hidden: on })),
+    toggle(tr("隐身"), tr("别人看不到你，但消息照收"), st.config.hidden, (on) => void setConfig({ hidden: on })),
     toggle(tr("免打扰"), tr("新消息不弹提醒，消息照收"), st.config.dnd, (on) => void setConfig({ dnd: on })),
     toggle(tr("暂停收文件"), tr("别人发来的文件会被拒收，消息不受影响"), st.config.pauseFiles, (on) => void setConfig({ pauseFiles: on })),
   );

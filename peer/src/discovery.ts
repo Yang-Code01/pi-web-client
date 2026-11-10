@@ -93,6 +93,9 @@ export class Discovery extends EventEmitter {
   }
 
   announce(): void {
+    // D99：隐身的人不发 announce —— 组播里那一包带 nodeId / nickname / hostname / port，
+    // 发出去就等于自己报门牌。以前只拦了 sendHello，定时器每 10 秒照样组播一次。
+    if (this.cfg.hidden) return;
     const payload = JSON.stringify(this.packet("hello"));
     const sock = this.sock;
     if (!sock) return;
@@ -248,6 +251,9 @@ export class Discovery extends EventEmitter {
     const value = addr.trim();
     if (!/^[^:\s]+:\d+$/.test(value)) throw new Error("地址要写成 ip:port");
     if (!this.cfg.manual.includes(value)) this.cfg.manual.push(value);
+    // 隐身时只记地址、不发包：单播 hello 里同样带 nodeId / nickname / hostname / port，
+    // 发出去就把自己报给了这个地址（sendHello 早就早退了，UDP 这一发以前漏在这里）。
+    if (this.cfg.hidden) return;
     const [host, port] = value.split(":");
     this.sock?.send(JSON.stringify(this.packet("hello")), Number(port), host, () => {
       /* UDP 只是碰运气，真正的确认走下面的 HTTP */

@@ -65,6 +65,8 @@
     "test:hint": "node bridge/tests/hint-spawn.mjs",
     "test:rules": "node --experimental-transform-types web/tests/rules-unit.mjs && node --experimental-transform-types bridge/tests/rules-unit.mjs",
     "test:probes": "node web/tests/probes-unit.mjs",
+    "test:peer": "node bridge/tests/peer-e2e.mjs && node bridge/tests/peer-history.mjs",
+    "test:peer:ui": "node bridge/tests/peer-ui.mjs",
     "probe:workspace": "node probes/run-all.mjs",
     "probe:chrome": "node probes/run-all.mjs --only chrome-topbar,chrome-bottom,chrome-sheet,chrome-narrow",
     "probe:preview": "node probes/preview-open.mjs",

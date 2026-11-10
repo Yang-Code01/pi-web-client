@@ -773,8 +773,14 @@ async function main(): Promise<void> {
       }
     }
     if (url.pathname === "/api/peer/file" && req.method === "GET") {
+      // 浏览器取消下载 / 关掉预览时把上游也断开；否则 30 秒的「等头」计时器已经不生效，
+      // 这条 stream 会一直挂在 peer 上。
+      const ctrl = new AbortController();
+      res.on("close", () => {
+        if (!res.writableEnded) ctrl.abort();
+      });
       try {
-        const upstream = await peer.fileStream(url.searchParams.get("id") ?? "");
+        const upstream = await peer.fileStream(url.searchParams.get("id") ?? "", ctrl.signal);
         if (!upstream.ok || !upstream.body) return json(res, upstream.status, { error: "取不到这个文件" });
         const headers: Record<string, string> = { "cache-control": "private, max-age=60" };
         for (const key of ["content-type", "content-length", "content-disposition"]) {
@@ -782,9 +788,17 @@ async function main(): Promise<void> {
           if (value) headers[key] = value;
         }
         res.writeHead(200, headers);
-        Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
+        const body = Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]);
+        // 流断了（客户端断开 / peer 出错）要自己收尾：pipe 不转发 error，冒出去就是 uncaughtException。
+        body.on("error", (err) => {
+          log(`peer 文件流中断：${(err as Error).message}`);
+          if (!res.writableEnded) res.destroy();
+        });
+        body.pipe(res);
         return;
       } catch (err) {
+        // 客户端先断了（ctrl 已 abort），这条错误没人收；再写就是往 destroyed socket 上写。
+        if (res.destroyed || res.writableEnded) return;
         return json(res, 404, { error: (err as Error).message });
       }
     }
