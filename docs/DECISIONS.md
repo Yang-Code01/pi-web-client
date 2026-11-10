@@ -3979,3 +3979,25 @@ D
 **代价 / 可改：** 80 字符是拍的值（一行大约放得下 60–80 个西文字符），阈值与 `<pre>` 高度都可改。参数带密钥时展开就是明文——与改动前一样，只是不再默认摆出来。
 
 **验证：** `npm run test:exec-panel:ui` 的 NOWARGS 场景（在途 `ask_user_question`，参数是一段 24 次重复的长文本）：默认一行（高度 ≤ 1.5 倍行高且内容溢出）、按钮在且 `aria-expanded=false`、没有 `pre`；点开后全文（>120 字）出现在 `.exec-now-args`、`aria-expanded=true`；再点收起。
+
+## D229 网页会话再挂一段「计划维护」提示词：D223 的观察结果出来了，模型不更新计划
+
+**问题：** D223 把执行面板的计划来源定为 `@juicesharp/rpiv-todo`，并明确「不加提示词、上线后观察扩展默认行为」——理由是扩展自己已经在 `promptGuidelines` 里写了「开工前标 `in_progress`、完成立刻标、不许批量收尾」（`@juicesharp/rpiv-todo/todo.ts:58-68`），pi 会把它拼进系统提示（`pi-coding-agent/dist/core/system-prompt.js:31-64`），再写一遍是重复。
+
+观察结果不算好：2026-11-10 的会话 `38bae779`（cwd `F:\pi-web-client`，deepseek-v4.1-flash）里，`todo create` 建了 8 项、全 `pending`，之后跑到开好 PR #338，中间又发了 **99 次工具调用**（bash 79 / read 10 / edit 5 / write 2 / compress 3），`todo` 更新 **0 次**；右侧面板于是全程 8 行 ○、每项 0 步。全机 357 个会话里 3 个用过 todo，全是单次 `create`（5 / 6 / 8 项），`update` 一次都没有。
+
+**决定：** 网页会话 spawn 时再追加一段 `PLAN_HINT`（`bridge/src/delivery.ts`，`bridge/src/sessions.ts` 里 push），排在交付提示词之后；`PI_WEB_PLAN_HINT=0` 可关，与 `PI_WEB_HINT` / `PI_WEB_LESSONS` 各自独立。
+
+- **讲机制，不只喊纪律。** 扩展那段是抽象要求（「记得更新」），这段先说清「面板读的是你最近一次 `todo` 快照，不调用它就一直停创建时的样子」，再给三条硬约束（开工前 `in_progress`、做完立刻 `completed`、不批量补；计划本身变了当场改）。弱模型不照做往往不是忘了规则，是没建立「不更新会怎样」的因果。
+- **允许不建计划。** 提示词第一句就是「要么别建计划」，宁可没有计划，也不要一屏停在 0/N 的假进度。
+- **只对网页会话生效。** 终端里没有这块面板，不该替用户的教育模型多付 token；代价是同一工作区里两边行为不一样，README 的环境变量表与这一段说明里都写清楚。
+- **仍然可能被无视。** 提示词不是机制，模型照样可以不遵守；这次先用真会话复验，不行再往下走选项 B（面板如实标注「计划未更新」）。
+
+**不管的：** 不从工具调用自动推断任务完成（会造假进度）；不改扩展包（vendored 依赖，升级会覆盖）；不改现有 UI 呈现。
+
+**可改的：** `PLAN_HINT` 的措辞、行数、是否按模型/供应商分流；开关名。若复验发现无效，删掉这段与开关即可回到 D223 的状态，不影响数据结构。
+
+**验证：** `node bridge/tests/hint-spawn.mjs`（20 项：三段 argv 与顺序、三个开关各自只关自己那段、计划提示词含机制与三条约束）；`npm run test:exec-plan` 不受影响。
+
+真会话复验（同一个模型 `cn:deepseek-v4.1-flash`、thinking `max`，测试桥 17864，不是 7864）：给一个三步任务，模型 `todo create` 建了三项，随后 **19.3s → 39.7s 之间推了 7 帧 `plan`**：`0/3 pending` → `0/3 in_progress` → `1/3` → `1/3 + 第二项 in_progress` → `2/3` → `2/3 + 第三项 in_progress` → `3/3`，会话里 `todo` 调用 7 次（create + 6 次 update）。对照组 `38bae779`（无这段提示词）：create 之后 99 次工具调用、0 次 update。同一根因、同一个模型，差别就在这段提示词。
+

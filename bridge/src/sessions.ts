@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
 import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions } from "./launch.ts";
 import { lessonFile } from "./lessons.ts";
-import { DELIVERY_HINT } from "./delivery.ts";
+import { DELIVERY_HINT, PLAN_HINT } from "./delivery.ts";
 import { forgetSession } from "./artifacts.ts";
 import { ensureDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
@@ -1133,8 +1133,11 @@ export class Session extends EventEmitter {
     }
     // #226 / D191：告诉模型它跑在网页客户端里，附交付礼仪（`PI_WEB_HINT=0` 可关）。
     // 与上面那段各自追加：pi 的 `--append-system-prompt` 可重复，两个开关互不影响，谁关了都不顶掉另一个。
-    // 顺序是「用户手填 → 工作区教训 → 交付提示」：事实在前、这次会话的规矩在后（离对话最近）。
+    // 顺序是「用户手填 → 工作区教训 → 交付提示 → 计划提示」：事实在前、这次会话的规矩在后（离对话最近）。
     if (process.env.PI_WEB_HINT !== "0") args.push("--append-system-prompt", DELIVERY_HINT);
+    // #339 / D229：执行面板的计划列表只有 todo 一个数据源，不更新就永远停创建时（`PI_WEB_PLAN_HINT=0` 可关）。
+    // 第三个开关，同样不顶掉前两段：谁知道哪个模型听哪句话呢，关一个只关它自己那条。
+    if (process.env.PI_WEB_PLAN_HINT !== "0") args.push("--append-system-prompt", PLAN_HINT);
     this.state.launch = describeLaunch(launch) || undefined;
     if (opts.resume && this.state.file) args.push("--session", this.state.file);
     else args.push("--session-id", id);

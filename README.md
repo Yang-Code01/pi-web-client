@@ -143,6 +143,7 @@ PI_WEB_HOST=0.0.0.0 npm start
 | `PI_WEB_NO_EXT=1` | 不加载审批门禁扩展 | 关 |
 | `PI_WEB_LESSONS=0` | 不把工作区的老毛病（⚡ AI 出错记录里反复出现的类）挂进新会话的系统提示词，也不补自动提醒（D169） | 开 |
 | `PI_WEB_HINT=0` | 关掉网页客户端的交付提示词（「先问要不要在预览里打开」那一段），工作区教训照旧挂（D191） | 开 |
+| `PI_WEB_PLAN_HINT=0` | 关掉网页会话的「计划维护」提示词（执行面板的计划靠 `todo` 更新，不更新就停在创建时，D229）；交付提示词与工作区教训照旧挂 | 开 |
 | `PI_WEB_PREVIEW_ACK_MS` | `open_preview` 等页面回执的窗口：超时就回 `no-ack`，不再把「投出去了」当「打开了」（D192） | `15000` |
 | `PI_WEB_PAGE_ALL=1` | 本机也按隧道那样分页（历史一次只给末尾一页）；给分页的 UI 用例与复现隧道行为用，平时不用开（D215） | 关 |
 | `PI_BIN` | 指定 pi 的 `cli.js` | 自动找 |
@@ -247,7 +248,7 @@ node probes/peer-multicast.mjs                                        # 组播�
 node probes/runtime-panel.mjs                                         # 运行时面板 UI：一行摘要 + 每个运行中的 pi 一行、桥广播就跟着变、「不可用」不留空、三语不缺键（#77，桩桥 + 真 Chromium）
 node bridge/tests/preview-tool.mjs                                    # open_preview 的回环路由：只投给正在看这个会话的页面，没有页面就明确失败（#224，假 pi）
 node --experimental-transform-types bridge/tests/open-preview-unit.mjs  # open_preview 扩展这一层：解释取自桥的 text、英文码不外泄、桥 5 秒不答算通道故障（#224 复审，http stub）
-node bridge/tests/hint-spawn.mjs                                      # 网页会话的交付提示词：默认教训 + 交付两段都在，PI_WEB_HINT=0 只剩教训、PI_WEB_LESSONS=0 只剩提示（#226，假 pi）
+node bridge/tests/hint-spawn.mjs                                      # 网页会话的系统提示词：默认教训 + 交付 + 计划三段都在、顺序对，PI_WEB_HINT / PI_WEB_LESSONS / PI_WEB_PLAN_HINT 各只关自己那段（#226 #339，假 pi）
 node probes/preview-open.mjs                                          # open_preview 到 viewer：真 Chromium 里预览面板弹出、标题就是文件名（#224，桩桥 + 真 Chromium）
 ```
 
