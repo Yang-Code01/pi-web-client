@@ -19,6 +19,7 @@ const base = { phase: "idle", streamChars: 0, selectedRound: null, now: Date.par
 test("an idle view with no loaded turns has an empty previous-turn summary", () => {
   assert.deepEqual(execView({ ...base, items: [], stats: null, roundStats: {} }), {
     now: { kind: "idle", previousDurationMs: null, succeeded: null, activeTools: [] },
+    runningChildren: [],
     timeline: [],
     rounds: [],
     selectedRound: null,
@@ -258,6 +259,57 @@ test("subagent runs attach to their dispatch and show one child level of steps",
   });
   assert.equal("subagent" in view.timeline[0].subagent.steps[0], false, "grandchildren stay a single non-expandable line");
   assert.deepEqual(view.metrics.subagents, { cost: 0.02, tokens: 40 });
+});
+
+test("running children show subscribed plan steps and fall back to their task", () => {
+  const view = execView({
+    ...base,
+    items: [],
+    childRuns: [
+      {
+        runId: "child-plan",
+        toolCallId: "call-child-plan",
+        agent: "researcher",
+        task: "inspect and summarize",
+        state: "running",
+        plan: {
+          listedRound: "child-u1",
+          tasks: [{ id: 1, subject: "Summarize findings", activeForm: "Summarizing findings", status: "in_progress" }],
+        },
+        items: [],
+      },
+      {
+        runId: "child-tool",
+        toolCallId: "call-child-tool",
+        agent: "runner",
+        task: "inspect the files",
+        state: "running",
+        items: [tool("child-live-tool", "2025-01-01T00:00:09Z", "running")],
+      },
+      {
+        runId: "child-unsubscribed",
+        toolCallId: "call-child-unsubscribed",
+        agent: "writer",
+        task: "write the report",
+        state: "running",
+        items: [],
+      },
+      {
+        runId: "child-done",
+        toolCallId: "call-child-done",
+        agent: "worker",
+        task: "finished task",
+        state: "done",
+        items: [],
+      },
+    ],
+  });
+
+  assert.deepEqual(view.runningChildren, [
+    { runId: "child-plan", agent: "researcher", step: "Summarizing findings" },
+    { runId: "child-tool", agent: "runner", step: "bash" },
+    { runId: "child-unsubscribed", agent: "writer", step: "write the report" },
+  ]);
 });
 
 test("child plan snapshots count attributed steps without making todo calls into steps", () => {

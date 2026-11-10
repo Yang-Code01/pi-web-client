@@ -139,8 +139,15 @@ export interface ExecMetricsView {
   contextPercent: number | null;
 }
 
+interface ExecNowChild {
+  runId: string;
+  agent: string;
+  step: string;
+}
+
 export interface ExecViewModel {
   now: ExecNowView;
+  runningChildren: ExecNowChild[];
   timeline: ExecTimelineRow[];
   rounds: ExecRound[];
   selectedRound: string | null;
@@ -187,6 +194,20 @@ function childPlanAndSteps(run: ExecChildRunInput, now: number): { plan: ExecPla
     if (step.planTaskId !== null) stepCounts.set(step.planTaskId, (stepCounts.get(step.planTaskId) ?? 0) + 1);
   }
   return { plan: planView(sourcePlan, [], stepCounts), steps };
+}
+
+function activeChildLines(childRuns: ExecChildRunInput[], now: number): ExecNowChild[] {
+  return childRuns.flatMap((run) => {
+    if (run.state !== "running") return [];
+    const child = childPlanAndSteps(run, now);
+    const activeTask = child.plan?.tasks.find((task) => task.id === child.plan?.activeTaskId);
+    const activeStep = child.steps.find((step) => step.status === "running" || step.status === "unknown");
+    return [{
+      runId: run.runId,
+      agent: run.agent || run.task,
+      step: activeTask?.activeForm || activeTask?.subject || activeStep?.label || run.task,
+    }];
+  });
 }
 
 function timelineRows(
@@ -448,6 +469,7 @@ export function execView(input: ExecViewInput): ExecViewModel {
   );
   return {
     now,
+    runningChildren: activeChildLines(input.childRuns ?? [], input.now),
     timeline,
     rounds: roundOptions,
     selectedRound: selected?.id ?? null,

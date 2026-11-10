@@ -14184,6 +14184,11 @@ export class App {
         : result ? tr("空闲 · {p1}", { p1: result }) : tr("空闲");
       card.append(el("div", "exec-now-line", message));
     }
+    for (const child of view.runningChildren) {
+      const line = el("div", "exec-now-line exec-now-child");
+      line.append(el("b", "", child.agent), el("span", "", child.step));
+      card.append(line);
+    }
     return card;
   }
 

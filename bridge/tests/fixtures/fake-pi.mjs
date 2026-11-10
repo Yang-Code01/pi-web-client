@@ -202,7 +202,7 @@ async function turn(text) {
       { type: "message", id: "child-u1", parentId: null, timestamp: at(), message: { role: "user", content: [{ type: "text", text: "child task" }] } },
       { type: "message", id: "child-plan-call", parentId: "child-u1", timestamp: at(), message: { role: "assistant", content: [{ type: "toolCall", id: "child-call-plan", name: "todo", arguments: { action: "create", tasks: planTasks } }] } },
       { type: "message", id: "child-plan-result", parentId: "child-plan-call", timestamp: at(), message: { role: "toolResult", toolCallId: "child-call-plan", toolName: "todo", content: [{ type: "text", text: "Plan updated" }], details: { action: "create", tasks: planTasks } } },
-      { type: "message", id: "child-a1", parentId: "child-plan-result", timestamp: at(), message: { role: "assistant", content: [{ type: "text", text: "child-first" }], usage: usage(15, 0.01) } },
+      { type: "message", id: "child-a1", parentId: "child-plan-result", timestamp: at(), message: { role: "assistant", content: [{ type: "text", text: "child-first" }, { type: "toolCall", id: "child-call-live", name: "child_lookup", arguments: { query: "current step" } }], usage: usage(15, 0.01) } },
     ];
     fs.writeFileSync(session, `${entries.map((entry) => JSON.stringify(entry)).join(newline)}${newline}`);
     const append = (id, parentId, answer, count, cost) => fs.appendFileSync(session, `${JSON.stringify({

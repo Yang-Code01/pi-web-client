@@ -146,6 +146,9 @@ try {
   await childToggle.click();
   await page.waitForFunction(() => document.querySelector(".exec-plan.mini .exec-plan-task") !== null
     && document.querySelector(".exec-subagent-plan")?.textContent === "计划 2/2", null, { timeout: 20000 });
+  await page.waitForFunction(() => document.querySelector(".exec-now")?.textContent?.includes("child_lookup"), null, { timeout: 20000 });
+  check("now card shows a running child agent and its subscribed transcript step", (await page.locator(".exec-now").innerText()).includes("researcher")
+    && (await page.locator(".exec-now").innerText()).includes("child_lookup"));
   check("child plan badge shows the latest snapshot progress", (await page.locator(".exec-subagent-plan").last().innerText()) === "计划 2/2");
   check("expanded child renders its compact read-only plan", (await page.locator(".exec-plan.mini .exec-plan-task").count()) === 2
     && await page.locator(".exec-plan.mini .exec-plan-task").first().evaluate((row) => row.tagName === "DIV" && row.onclick === null));
