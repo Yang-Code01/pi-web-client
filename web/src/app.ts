@@ -9490,6 +9490,8 @@ export class App {
       this.updateComplete();
     };
     input.onclick = () => this.updateComplete();
+    // #317: the box scrolls on its own once it is at its cap; keep the top fade in step with it.
+    input.onscroll = () => this.syncComposerFade();
     // A click on a suggestion blurs the field first: give the click time to land.
     input.onblur = () => setTimeout(() => {
       if (document.activeElement !== this.textarea) this.closeComplete();
@@ -12693,6 +12695,24 @@ export class App {
     // `height` is border-box, `scrollHeight` leaves the border out — add it back or we clip a pixel.
     const border = input.offsetHeight - input.clientHeight;
     input.style.height = limit > 0 ? `${Math.min(limit, input.scrollHeight + border)}px` : "auto";
+    this.syncComposerFade();
+  }
+
+  /**
+   * #317: once the box is at its cap the top of the draft is out of sight, with nothing on screen
+   * saying so. Fade the top 24px while there really is text hidden up there — `scrollTop > 0` says
+   * the first line has gone above the fold; at the first line nothing is hidden and nothing fades.
+   *
+   * A mask, not a gradient to lay over the text: a mask carries alpha only, so there is no colour to
+   * pick for each theme and no band where an overlay meets the background — and it adds no layer that
+   * could swallow a click, a selection drag or the scrollbar. No transition: `fitComposer` runs on
+   * every keystroke, and reduced motion then has nothing to opt out of.
+   */
+  private syncComposerFade(): void {
+    const input = this.textarea;
+    if (!input) return;
+    const overflows = input.scrollHeight > input.clientHeight + 1;
+    input.classList.toggle("has-hidden-top", overflows && input.scrollTop > 0);
   }
 
   /** Long pastes live in their own foldable box above what the user types next. */

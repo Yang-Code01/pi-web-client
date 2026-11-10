@@ -14,6 +14,10 @@
  * pane, so messages stay visible; going wide again restores the half-pane cap without a reload; at a
  * 1.25 UI scale the cap is still measured in layout px, i.e. the rendered box is the cap zoomed once.
  *
+ * #317 adds the top fade: an overflowing box fades its top 24px while the first line sits above the
+ * fold (scrolled back to the first line → no fade), never below the cap, and a wheel inside the box
+ * scrolls the box without moving the transcript.
+ *
  * Run: node probes/composer-grow.mjs   (needs `npm run build:web` first)
  */
 import fs from "node:fs";
@@ -58,6 +62,18 @@ const ME = { version: "probe", pi: "probe", public: false, tunnel: TUNNEL, pushK
 const HISTORY = [
   { kind: "user", id: "u1", ts: Date.now() - 120_000, text: "先随便聊两句，让对话区有内容。" },
   { kind: "assistant", id: "a1", ts: Date.now() - 60_000, model: "pi", text: "好。" },
+  // #317: the wheel check needs a transcript long enough to overflow `.chat-scroll` by itself — a
+  // conversation that cannot scroll could never prove that the box does not scroll it.
+  ...Array.from({ length: 8 }, (_, i) => [
+    { kind: "user", id: `u${i + 2}`, ts: Date.now() - 50_000 + i * 2, text: `第 ${i + 2} 轮：把对话区填到能滚动为止。` },
+    {
+      kind: "assistant",
+      id: `a${i + 2}`,
+      ts: Date.now() - 49_000 + i * 2,
+      model: "pi",
+      text: "收到。这一行够长，能占住对话区的一席之地，让框内滚动与对话区滚动彼此分得开。",
+    },
+  ]).flat(),
 ];
 
 let sock = null;
@@ -374,6 +390,110 @@ try {
   );
   await page.screenshot({ path: path.join(OUT, "8-zoom-125.png") });
   log("zoom 1.25", `${zoomed.box}px layout cap`, `${zoomed.visual.toFixed(1)}px rendered`);
+
+  // 9. #317 top fade. Runs at scale 1 again so the fade is judged unzoomed.
+  await page.evaluate(() => {
+    const prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+    localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, scale: 1 }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  if ((await field.count()) === 0) {
+    await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "session card after reload");
+    await page.locator(".session-card").first().click();
+  }
+  await until(async () => (await field.count()) === 1, 8000, "composer after the second reload");
+  assert(Math.abs((await layoutMetrics()).scale - 1) < 0.001, `the fade is checked at scale 1 (${(await layoutMetrics()).scale})`);
+
+  /**
+   * What the fade looks like from outside: the box's own scroll position, the mask the browser
+   * computes for it, who owns a click in the top band, and where the transcript sits. The mask is
+   * the only observable of “the text fades here” — there is no painted layer to measure.
+   */
+  const fadeState = () =>
+    page.evaluate(() => {
+      const t = document.querySelector(".composer textarea");
+      const cs = getComputedStyle(t);
+      const mask = cs.maskImage && cs.maskImage !== "none" ? cs.maskImage : cs.webkitMaskImage;
+      const r = t.getBoundingClientRect();
+      // 5px in from the top: inside the 24px fade band, clear of the 1px border.
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + 5);
+      const chat = document.querySelector(".chat-scroll");
+      return {
+        scrollTop: t.scrollTop,
+        overflow: t.scrollHeight - t.clientHeight,
+        mask: mask || "none",
+        transition: cs.transitionDuration,
+        pointerEvents: cs.pointerEvents,
+        hitIsTextarea: hit === t,
+        hit: hit ? `${hit.tagName.toLowerCase()}.${hit.className}` : "none",
+        chatTop: chat.scrollTop,
+        chatOverflow: chat.scrollHeight - chat.clientHeight,
+        box: { left: r.left, top: r.top, width: r.width, height: r.height },
+      };
+    });
+  const scrollBoxTo = async (where) => {
+    await page.evaluate((where) => {
+      const t = document.querySelector(".composer textarea");
+      t.scrollTop = where === "bottom" ? t.scrollHeight : where;
+    }, where);
+    await sleep(200);
+  };
+
+  await field.fill(lines(40));
+  await sleep(150);
+  const capped = await fadeState();
+  assert(capped.overflow > 20, `#317 needs a box that really overflows (${capped.overflow}px hidden)`);
+  // `fill` puts the caret at the end, so the box sits at the bottom of the draft: lines are hidden
+  // above the fold, which is exactly when the fade has something to say.
+  assert(capped.scrollTop > 40, `the draft is scrolled down, lines hidden above (scrollTop ${capped.scrollTop} of ${capped.overflow})`);
+  assert(/gradient/.test(capped.mask), `scrolled down in an overflowing box: the top fades (mask ${capped.mask})`);
+  assert(/24px/.test(capped.mask), `the fade is 24px tall (mask ${capped.mask})`);
+  const maskColours = [...capped.mask.matchAll(/rgba?\([^)]*\)/g)].map((m) => m[0]);
+  assert(
+    maskColours.length > 0 && maskColours.every((c) => /^rgba?\(0, 0, 0(, 0)?\)$/.test(c)),
+    `the fade is pure alpha — no colour of its own to clash with the theme (${maskColours.join(" ")})`,
+  );
+  assert(!/[1-9]/.test(capped.transition), `no transition on the fade, so nothing to suppress under reduced motion (${capped.transition})`);
+  assert(capped.pointerEvents === "auto", `the box still takes pointer events (${capped.pointerEvents})`);
+  assert(capped.hitIsTextarea, `a click in the fade band lands on the textarea itself, not on a layer (${capped.hit})`);
+  await page.screenshot({ path: path.join(OUT, "9-fade-top.png") });
+  log("overflowing, scrolled down: faded top confirmed", capped.mask);
+
+  // A wheel inside the box belongs to the box: the transcript must not scroll along with it.
+  assert(capped.chatOverflow > 60, `the transcript can scroll on its own (${capped.chatOverflow}px)`);
+  const beforeWheel = await fadeState();
+  await page.mouse.move(beforeWheel.box.left + beforeWheel.box.width / 2, beforeWheel.box.top + beforeWheel.box.height / 2);
+  await page.mouse.wheel(0, -90);
+  await sleep(250);
+  const afterWheel = await fadeState();
+  assert(afterWheel.scrollTop < beforeWheel.scrollTop - 20, `the wheel scrolls the box itself (${beforeWheel.scrollTop} → ${afterWheel.scrollTop})`);
+  assert(
+    Math.abs(afterWheel.chatTop - beforeWheel.chatTop) <= 1,
+    `and the transcript stayed put (chat scrollTop ${beforeWheel.chatTop} → ${afterWheel.chatTop})`,
+  );
+  assert(/gradient/.test(afterWheel.mask), `still inside the draft, still faded (mask ${afterWheel.mask})`);
+  log("wheel in box:", `box ${beforeWheel.scrollTop} → ${afterWheel.scrollTop}`, `chat ${beforeWheel.chatTop} → ${afterWheel.chatTop}`);
+
+  // Back at the first line nothing is hidden above the fold, so the fade goes away at once — and
+  // comes back as soon as the box is scrolled down into the draft again.
+  await scrollBoxTo(0);
+  const atTop = await fadeState();
+  assert(atTop.scrollTop === 0, `the box is back at its first line (scrollTop ${atTop.scrollTop})`);
+  assert(atTop.mask === "none", `nothing is above the fold: no fade (mask ${atTop.mask})`);
+  await page.screenshot({ path: path.join(OUT, "10-no-fade.png") });
+  await scrollBoxTo("bottom");
+  const again = await fadeState();
+  assert(/gradient/.test(again.mask), `scrolling down again brings the fade back (mask ${again.mask})`);
+  log("first line: no fade; scrolled down again: faded");
+
+  // Below the cap nothing is above the fold, so the fade never shows — even pinned to the end.
+  await field.fill(lines(20));
+  await sleep(150);
+  await scrollBoxTo("bottom");
+  const underCap = await fadeState();
+  assert(underCap.overflow <= 1, `20 lines stay under the cap (overflow ${underCap.overflow}px)`);
+  assert(underCap.mask === "none", `under the cap there is no fade (mask ${underCap.mask})`);
+  log("20 lines, under the cap: no fade");
 
   log("ALL OK");
 } finally {

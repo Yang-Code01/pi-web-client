@@ -931,6 +931,14 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .composer textarea::placeholder { color: var(--faint); }
 .composer textarea:focus { outline: none; border-color: var(--accent); }
+/* #317: 撞到上限后，框里还藏着上半截文字。顶部 24px 让**文字自己**淡出 —— 用 mask，不是盖一层
+   渐变色块：mask 只带透明度、不带颜色，所以不用为每套主题挑过渡色，也不会在哪一层和底色相接处
+   多出一条色带；它更不生成可命中的层，点选文字、拖滚动条照旧落在文本域自己身上。滚动位置变化时
+   由 `syncComposerFade()`（app.ts）加减这颗 class；这里不加过渡，`fitComposer` 每敲一个字都跑。 */
+.composer textarea.has-hidden-top {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 24px);
+  mask-image: linear-gradient(to bottom, transparent, #000 24px);
+}
 .composer .hint { color: var(--faint); font-size: 11px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; row-gap: 4px; }
 .composer .hint kbd { font-family: var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 0 4px; }
 .composer .hint-status { display: flex; gap: 4px; align-items: center; min-width: 0; flex: 1 1 260px; }
