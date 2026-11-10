@@ -124,9 +124,22 @@ function findPi() {
 
 function installPi() {
   step(`  pi 不在或低于 ${MIN_PI_VERSION}，装最新版…`);
-  const r = runNpm(["install", "-g", "@earendil-works/pi-coding-agent@latest"], { timeout: 30 * 60_000 });
+  const npmArgs = ["install", "-g", "@earendil-works/pi-coding-agent@latest"];
+  let r = runNpm(npmArgs, { timeout: 30 * 60_000 });
+  if (r.code !== 0 && /EALLOWREMOTE/.test(`${r.stderr}${r.stdout}`)) {
+    // npm ≥ 12 默认 allow-remote=none：registry 与 tarball 不同源（典型是 registry 被指到
+    // `http://` 镜像，包地址却是 `https://`）时，npm 把包当成「remote」拒掉。
+    // 只放行这一次调用，不去改用户的 npmrc。
+    step("  npm 拒了 remote 取包（npm ≥ 12 的 allow-remote=none），加 --allow-remote=all 再试一次…");
+    r = runNpm([...npmArgs, "--allow-remote=all"], { timeout: 30 * 60_000 });
+  }
   if (r.code === 0) return null;
-  const why = tail(r, 4, "\n");
+  let why = tail(r, 4, "\n");
+  if (/EALLOWREMOTE/.test(why)) {
+    why +=
+      "\n（npm ≥ 12 的 allow-remote=none 挡住了 tarball 下载：把 registry 换成同名 https 地址，" +
+      "例如 `npm config set registry https://registry.npmmirror.com/`）";
+  }
   if (process.platform === "win32") {
     // 没有 npm 的时候还有一条路：winget 装个 Node，再走一遍。装完的 Node 要重新开外壳才进 PATH，
     // 所以我们只把命令打出来 —— 在这个进程里换 PATH 是哄自己。
