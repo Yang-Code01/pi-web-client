@@ -1,6 +1,9 @@
 /**
  * 「本项目需要」这份清单的判断逻辑（`bridge/src/deps.ts`）：版本比较、来源拆解、跟 `pi list`
- * 的结果配对。全是纯函数，这里只喂字符串与假行，不碰真磁盘、不跑真 pi。
+ * 的结果配对。全是纯函数，这里只喂字符串与假行，不跑真 pi。
+ *
+ * 下面断言里的版本号（1.5.0 / 0.86.0 / 2.15.0）**抄自 `bridge/src/deps.ts`**；README「这个项目
+ * 需要什么」那张表也是抄的，最后一段把它和清单对一遍，改钉版时三处一起改。
  *
  *   node bridge/tests/deps-unit.mjs
  */
@@ -13,6 +16,7 @@ import {
   bootstrapCommand,
   compareSemver,
   depStatus,
+  foundPackages,
   installSource,
   MIN_PI_VERSION,
   missingCount,
@@ -20,6 +24,7 @@ import {
   parseSemver,
   piTooOld,
   REQUIRED_PACKAGES,
+  sourceName,
 } from "../src/deps.ts";
 import { statusFromList } from "../src/depsstatus.ts";
 
@@ -39,7 +44,11 @@ assert.equal(compareSemver("乱写的", "1.0.0"), -1, "解析不出来当 0：�
 assert.equal(MIN_PI_VERSION, "1.5.0");
 assert.equal(piTooOld("1.4.9"), true);
 assert.equal(piTooOld("1.5.0"), false);
-assert.equal(piTooOld("1.5.0-rc.1"), false);
+assert.equal(piTooOld("1.5.0-rc.1"), true, "预发布版比正式版旧（semver）：1.5.0-rc.1 不够 1.5.0");
+assert.equal(piTooOld("1.5.1-rc.1"), false, "下一版的预发布已经比 1.5.0 新");
+assert.equal(compareSemver("1.5.0-rc.1", "1.5.0"), -1);
+assert.equal(compareSemver("1.5.0", "1.5.0-rc.1"), 1);
+assert.equal(compareSemver("1.5.0-rc.1", "1.5.0-rc.2"), 0, "预发布号之间不细分");
 assert.equal(piTooOld(null), true, "没找到 pi 也算不够");
 
 // ---------------------------------------------------------------- 来源
@@ -51,6 +60,14 @@ assert.equal(bareSource("npm:pi-subagents@latest"), "npm:pi-subagents");
 assert.equal(bareSource("npm:pi-subagents"), "npm:pi-subagents");
 assert.equal(bareSource("..\\packages\\pi-tui"), "..\\packages\\pi-tui", "本地路径原样");
 assert.equal(bareSource("git+https://example.com/x.git@v1.2.3"), "git+https://example.com/x.git");
+
+// 来源本身指向哪个包名：git / 本地路径装的同名包也要认得出来（不然会再装一份 npm 版）。
+assert.equal(sourceName("npm:@juicesharp/rpiv-ask-user-question@2.15.0"), "@juicesharp/rpiv-ask-user-question");
+assert.equal(sourceName("npm:pi-subagents"), "pi-subagents");
+assert.equal(sourceName("git:github.com/someone/pi-subagents@v0.86.0"), "pi-subagents");
+assert.equal(sourceName("https://github.com/someone/pi-subagents.git"), "pi-subagents");
+assert.equal(sourceName("..\\packages\\pi-tui"), "pi-tui");
+assert.equal(sourceName("/home/me/src/pi-web-access/"), "pi-web-access");
 
 // 钉住的钉版本，不钉的原样。
 const subagents = REQUIRED_PACKAGES.find((p) => p.name === "pi-subagents");
@@ -104,8 +121,14 @@ const listText = `User packages:
   npm:@juicesharp/rpiv-ask-user-question@2.15.0
     ${dirAsk}
   npm:pi-web-access`;
-const readVersionAt = (dir) => JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).version ?? null;
-const parsed = statusFromList(listText, readVersionAt);
+const readPkg = (dir) => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+  } catch {
+    return null;
+  }
+};
+const parsed = statusFromList(listText, readPkg);
 assert.equal(parsed.length, 3);
 assert.ok(parsed.every((s) => s.installed), "带版本的来源也要认出来");
 assert.equal(parsed.find((s) => s.name === "pi-subagents").foundVersion, "0.86.0");
@@ -113,10 +136,38 @@ assert.equal(parsed.find((s) => s.name === "@juicesharp/rpiv-ask-user-question")
 assert.equal(parsed.find((s) => s.name === "pi-web-access").foundVersion, null, "没给路径就是读不到版本，不是没装");
 
 // 只有表头、或者什么都没有：三个都算缺（不能因为输出像样就以为装上了）。
-assert.equal(statusFromList("User packages:", readVersionAt).filter((s) => s.installed).length, 0);
-assert.equal(statusFromList("", readVersionAt).length, 3);
+assert.equal(statusFromList("User packages:", readPkg).filter((s) => s.installed).length, 0);
+assert.equal(statusFromList("", readPkg).length, 3);
+
+// git / 本地路径装的：包名读它自己的 package.json，读不到按来源猜 —— 都算已装。
+const dirGit = fake("git-sub", "pi-subagents", "0.85.0");
+const gitList = `User packages:
+  git:github.com/someone/pi-subagents
+    ${dirGit}
+  ..\\packages\\pi-web-access`;
+const gitParsed = statusFromList(gitList, readPkg);
+assert.equal(gitParsed.find((s) => s.name === "pi-subagents").installed, true, "git 来源装的也算");
+assert.equal(gitParsed.find((s) => s.name === "pi-subagents").foundVersion, "0.85.0");
+assert.equal(gitParsed.find((s) => s.name === "pi-web-access").installed, true, "本地路径装的（没有 package.json 可读）按末段名认");
+
+// 只装在某个工程里的（Project packages）不算：清单约定装到用户全局。
+const projectOnly = `Project packages:
+  npm:pi-subagents
+    ${dirSub}`;
+assert.equal(statusFromList(projectOnly, readPkg).find((s) => s.name === "pi-subagents").installed, false);
+assert.equal(foundPackages([{ scope: "project", source: "npm:x", path: null }], readPkg).length, 0);
 fs.rmSync(home, { recursive: true, force: true });
 
 assert.equal(bootstrapCommand(), "node scripts/bootstrap.mjs");
+
+// ---------------------------------------------------------------- README 的表抄得对不对
+
+const readme = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "README.md"), "utf8");
+assert.ok(readme.includes(`pi ≥ ${MIN_PI_VERSION}`), `README 要写 pi ≥ ${MIN_PI_VERSION}`);
+for (const pkg of REQUIRED_PACKAGES) {
+  const row = readme.split(/\r?\n/).find((line) => line.startsWith(`| \`${pkg.name}\``));
+  assert.ok(row, `README 的表里缺 ${pkg.name}`);
+  assert.ok(row.includes(pkg.version ? `钉 \`${pkg.version}\`` : "latest"), `README 里 ${pkg.name} 的版本跟 deps.ts 不一致：${row}`);
+}
 
 console.log("deps-unit: ok");

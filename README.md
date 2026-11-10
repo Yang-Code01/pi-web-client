@@ -82,12 +82,22 @@
 | `@juicesharp/rpiv-ask-user-question` | 钉 `2.15.0` | 网页上的问卷点不了：`bridge/src/questionnaire.ts` 按它的逐题对话框格式回填答案 |
 | `pi-web-access` | latest | `web_search` / `fetch_content` / `source_check` 这些联网工具没有，诊断与「随手问」只剩本地能力 |
 
-`npm install` 会跑 `scripts/bootstrap.mjs`，按顺序做三件事：找 pi（没有、或低于 1.5.0 就 `npm i -g @earendil-works/pi-coding-agent@latest`）→ 看 `~/.pi/agent/settings.json` 里有没有上面三个包，缺的才 `pi install` → 装 bridge / peer / web 的依赖。
+表里的版本号和上面的 `pi ≥ 1.5.0` 都抄自 `bridge/src/deps.ts`（清单只有那一处），`npm run test:deps` 会把这张表和它对一遍。
+
+`npm install` 会跑 `scripts/bootstrap.mjs`，按顺序做三件事：
+
+1. 找 pi：没有、或低于 1.5.0（`1.5.0-rc.x` 这类预发布也算低）才 `npm i -g @earendil-works/pi-coding-agent@latest`；已有 ≥ 1.5.0 的一动不动。
+2. 问 `pi list` 用户级装了哪些包，按包名对上面三个，缺的才 `pi install`。npm、git 地址、本地路径装的同名包都算已装，不会再装一份 npm 版；只装在某个工程里（项目级 `.pi/settings.json`）的不算。
+3. 装 bridge / peer / web 的依赖（就是原来那三条 `npm --prefix … install`）。
+
 **已经装着的包不动**：不升级、不降级，哪怕版本比钉的旧（页面上会标一句「比 x 旧，能用」）。
+页面上「本项目需要」判断装没装用的是同一套规则，所以页面说 ✓ 的，脚本也不会去装。
 结果写在状态目录的 `bootstrap.json`，页面上「设置 → 扩展」顶部的「本项目需要」会照着说，缺东西时给一条可复制的命令。
 
 - 只检查、不装：`node scripts/bootstrap.mjs --check`（不齐时退出码 1）。
-- 不碰全局目录：`PI_WEB_NO_AUTOINSTALL=1 node scripts/bootstrap.mjs`，或 `npm install --ignore-scripts`。
+- 不碰全局目录：`PI_WEB_NO_AUTOINSTALL=1 npm install`（或在 CI 里跑）。这时只做第 3 步，pi 和扩展一样都不动。
+- `npm install --ignore-scripts` 会把上面三步**全部**跳过，连子包依赖都不装；用了它就得自己跑那三条 `npm --prefix bridge|peer|web install`。
+- 某一步失败不会让 `npm install` 报错退出：原因写进状态目录的 `bootstrap.json`，页面上会说；手动装齐之后那条失败提示自己消失。
 - CI 里（有 `CI` 环境变量）只装子包依赖，不往构建机的全局目录写 pi 与扩展。
 - Windows 上连 npm 都没有时，脚本会提示先 `winget install OpenJS.NodeJS.LTS`，然后重开终端。
 - 不装 `billion-context` 也能跑，只是「设置 → 子代理」最下面的 `acp_delegate` 会灰掉并写明装法。

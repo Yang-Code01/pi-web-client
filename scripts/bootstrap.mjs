@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 一条命令备齐这个项目要的东西（#D201）：pi 本体 → 三个 pi 扩展 → bridge / peer / web 的依赖。
+ * 一条命令备齐这个项目要的东西（D201）：pi 本体 → 三个 pi 扩展 → bridge / peer / web 的依赖。
  *
  * 为什么不是桥启动时自己装：装东西要写用户的全局目录（`~/.pi/agent`），那是用户的地盘，桥每天
  * 开开关关不该在后台偷偷改它；`npm install` 是用户自己按下的一次性动作，放在这里最诚实。
@@ -8,7 +8,8 @@
  * 三件事按顺序做，每件都先查再动：
  *   1. pi 本体：找不到、或低于清单里的最低版本，才 `npm i -g @earendil-works/pi-coding-agent@latest`。
  *      机器上已经有更新的版本就一动不动 —— 不降级、不替用户决定。
- *   2. 三个扩展：只看 pi 的 settings 里有没有这个包（有就不动，哪怕版本旧），缺的才 `pi install`。
+ *   2. 三个扩展：问 `pi list` 用户级装了哪些包，按包名对（npm / git / 本地路径装的都算），
+ *      有就不动（哪怕版本旧），缺的才 `pi install`。和页面上「本项目需要」用的是同一个判据。
  *   3. 子包依赖：bridge / peer / web 各跑一次 `npm --prefix … install`（node_modules 已在时也跑，
  *      它自己会判断要不要动）。
  *
@@ -38,6 +39,8 @@ async function loadModules() {
       ...(await import("../bridge/src/deps.ts")),
       ...(await import("../bridge/src/paths.ts")),
       ...(await import("../bridge/src/pi.ts")),
+      ...(await import("../bridge/src/picli.ts")),
+      ...(await import("../bridge/src/depsstatus.ts")),
     };
   } catch (err) {
     if (!process.allowedNodeEnvironmentFlags.has(FLAG)) throw err;
@@ -46,7 +49,8 @@ async function loadModules() {
   }
 }
 
-const { MIN_PI_VERSION, REQUIRED_PACKAGES, bareSource, installSource, piTooOld, agentDir, piCandidates, statePath } = await loadModules();
+const { MIN_PI_VERSION, REQUIRED_PACKAGES, bootstrapCommand, foundPackages, installSource, parsePackages, piTooOld, piCandidates, readPackageJson, statePath } =
+  await loadModules();
 
 const args = new Set(process.argv.slice(2));
 const CHECK = args.has("--check");
@@ -70,7 +74,7 @@ const NPM_CLI = (() => {
 const FEATURE = {
   subagents: "设置→子代理、后台卡、subagent 工具",
   questionnaire: "网页问卷（ask_user_question）",
-  "web-access": "web_search / fetch_content 等联网工具",
+  "web-access": "web_search / fetch_content / source_check 等联网工具",
 };
 
 const out = (line = "") => console.log(line);
@@ -82,6 +86,11 @@ function runNpm(npmArgs, opts = {}) {
   if (NPM_CLI) return run(process.execPath, [NPM_CLI, ...npmArgs], opts);
   // 非 Windows 上 npm 是普通的 node 脚本，能直接 spawn；Windows 退到 shell（参数都是常量）。
   return run("npm", npmArgs, { ...opts, shell: process.platform === "win32" });
+}
+
+/** 失败时给人看的那几行：stderr 优先，取最后 n 行。 */
+function tail(r, n, sep = " / ") {
+  return (r.stderr || r.stdout || r.error || "").trim().split(/\r?\n/).slice(-n).join(sep);
 }
 
 function run(cmd, cmdArgs, opts = {}) {
@@ -113,7 +122,7 @@ function installPi() {
   step(`  pi 不在或低于 ${MIN_PI_VERSION}，装最新版…`);
   const r = runNpm(["install", "-g", "@earendil-works/pi-coding-agent@latest"], { timeout: 30 * 60_000 });
   if (r.code === 0) return null;
-  const why = (r.stderr || r.stdout || r.error || "").trim().split(/\r?\n/).slice(-4).join("\n");
+  const why = tail(r, 4, "\n");
   if (process.platform === "win32") {
     // 没有 npm 的时候还有一条路：winget 装个 Node，再走一遍。装完的 Node 要重新开外壳才进 PATH，
     // 所以我们只把命令打出来 —— 在这个进程里换 PATH 是哄自己。
@@ -128,32 +137,29 @@ function installPi() {
 
 // ---------------------------------------------------------------- 2. 三个扩展
 
-function installedSources() {
-  const file = path.join(agentDir(), "settings.json");
-  let json = {};
-  try {
-    json = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    /* 没有 settings.json：等于什么都没装 */
-  }
-  const rows = Array.isArray(json.packages) ? json.packages : [];
-  return rows
-    .map((row) => (typeof row === "string" ? row : typeof row?.source === "string" ? row.source : ""))
-    .filter(Boolean)
-    .map((source) => ({ source: bareSource(source), full: source, name: bareSource(source).replace(/^npm:/, "") }));
-}
-
-function packageVersion(name) {
-  // npm 装的包落在 <agentDir>/npm/node_modules；git / 本地来源读不到就算 null（只用于显示）。
-  return readVersionAt(path.join(agentDir(), "npm", "node_modules", ...name.split("/")));
+/**
+ * 用户级已装的包。和页面同一个判据（`foundPackages`，D201）：问 `pi list`，包名读各包自己的
+ * package.json，读不到才按来源猜 —— 所以 git / 本地路径装的同名包也认得出来，不会再装一份。
+ * `pi list` 跑不起来就不装任何扩展：宁可少装，也不装出两份同名扩展。
+ */
+function installedPackages(pi) {
+  const r = run(process.execPath, [pi.cli, "list"], { timeout: 60_000 });
+  if (r.code !== 0) return { error: `pi list 跑不起来：${tail(r, 3)}`, found: [] };
+  return { error: null, found: foundPackages(parsePackages(r.stdout), readPackageJson) };
 }
 
 function installPackages(pi, record) {
-  const have = installedSources();
+  const listed = installedPackages(pi);
+  if (listed.error) {
+    record.ok = false;
+    record.error ??= listed.error;
+    step(`  ✗ ${listed.error}（扩展这一轮不装，免得装出重复的）`);
+    return;
+  }
   for (const pkg of REQUIRED_PACKAGES) {
-    const hit = have.find((h) => h.name.toLowerCase() === pkg.name.toLowerCase());
+    const hit = listed.found.find((h) => h.name.toLowerCase() === pkg.name.toLowerCase());
     if (hit) {
-      record.skipped.push(`${pkg.source}${pkg.version ? `（要 ${pkg.version}）` : ""} 已装${packageVersion(pkg.name) ? ` ${packageVersion(pkg.name)}` : ""}，不动`);
+      record.skipped.push(`${pkg.source}${pkg.version ? `（要 ${pkg.version}）` : ""} 已装${hit.version ? ` ${hit.version}` : ""}（${hit.source}），不动`);
       step(`  ✓ ${pkg.source} 已装，跳过（${FEATURE[pkg.id] ?? pkg.id}）`);
       continue;
     }
@@ -172,7 +178,7 @@ function installPackages(pi, record) {
       record.installed.push(want);
       step(`  ✓ ${want}`);
     } else {
-      const why = (r.stderr || r.stdout || r.error || "").trim().split(/\r?\n/).slice(-3).join(" / ");
+      const why = tail(r, 3);
       record.error ??= `${want} 装不上：${why}`;
       step(`  ✗ ${want}：${why}`);
     }
@@ -189,7 +195,7 @@ function installProjectDeps(record) {
     step(`  → ${name} 的依赖…`);
     const r = runNpm(["install", "--prefix", dir, "--no-audit", "--no-fund"], { timeout: 30 * 60_000 });
     if (r.code !== 0) {
-      const why = (r.stderr || r.stdout || r.error || "").trim().split(/\r?\n/).slice(-3).join(" / ");
+      const why = tail(r, 3);
       record.error ??= `${name} 的依赖装不上：${why}`;
       step(`  ✗ ${name}：${why}`);
     }
@@ -262,7 +268,7 @@ if (record.ok) {
 } else {
   out("");
   out("⚠ 依赖没整备齐：" + record.error);
-  out("  可以再跑一次： " + "node scripts/bootstrap.mjs");
+  out("  可以再跑一次： " + bootstrapCommand());
   out("  或者手动装：");
   for (const pkg of REQUIRED_PACKAGES) out(`    pi install ${installSource(pkg)}`);
 }

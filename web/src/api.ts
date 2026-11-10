@@ -29,6 +29,9 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   /** `/api/stat` 的回答：文件夹、文件、不存在，或者不给看（权限）。 */
 export type PathInfo = { path: string; kind: "dir" | "file" | "missing" | "denied"; parent: string | null };
 
+/** 缺了少哪块功能的 id：和 `bridge/src/deps.ts` 的 `PackageId` 同一组值（前端不 import 桥的源码，所以抄一份）。 */
+export type DepPackageId = "subagents" | "questionnaire" | "web-access";
+
 /** 一个“本项目需要”的 pi 包：来源、钉住的版本、缺了少哪块功能、现在装没装。 */
 export interface DepPackageStatus {
   source: string;
@@ -36,7 +39,7 @@ export interface DepPackageStatus {
   /** 钉死的版本；null = 跟 latest。 */
   version: string | null;
   /** 缺了少哪块功能：id，文案在 app.ts 的 depsFeature() 里用 tr() 写。 */
-  id: string;
+  id: DepPackageId;
   installed: boolean;
   foundVersion: string | null;
   /** 装了但比钉的旧：只提示，不自动升（已装就不动）。 */
@@ -56,7 +59,6 @@ export interface DepsBootstrap {
 /** `/api/deps`：pi 够不够新 + 三个扩展在不在（只读，只问本地 `pi list`）。 */
 export interface DepsReport {
   pi: { version: string; min: string; ok: boolean };
-  autoInstall: boolean;
   packages: DepPackageStatus[];
   /** 可选包（例如 billion-context）：没装不拦人，界面自己决定要不要灰掉。 */
   optional: { name: string; id: string; installed: boolean }[];

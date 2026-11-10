@@ -7,7 +7,7 @@
  * 都在，✓/✗ 跟 `/api/deps` 一致（不自己编结论）；③ 缺东西时有一行可复制的命令、不缺时没有。
  *
  * 用本机真装的 pi（`pi list` 是本地命令，不联网），所以断言对「装齐了」和「没装齐」两种机器都成立：
- * 期望值一律从 `/api/deps` 取，不从写死的清单取。端口 7896（7893/7894/7895/7898/7899 归别的探针），可用 DEPS_UI_PORT 改。
+ * 期望值一律从 `/api/deps` 取，不从写死的清单取。端口 7886（7893–7899 都已有主人，7896 归 lessons-spawn / tunnel-ui），可用 DEPS_UI_PORT 改。
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -18,7 +18,7 @@ import { loadPlaywright } from "../../tools/playwright.mjs";
 
 const { chromium } = await loadPlaywright();
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
-const PORT = Number(process.env.DEPS_UI_PORT ?? 7896);
+const PORT = Number(process.env.DEPS_UI_PORT ?? 7886);
 const ROOT = path.join(REPO, ".scratch", "deps-ui");
 const STATE = path.join(ROOT, "state");
 const PROJECT = path.join(ROOT, "project");
@@ -74,7 +74,7 @@ try {
 
   const report = await (await fetch(`${BASE}/api/deps`, { headers: { cookie } })).json();
   log("api/deps:", JSON.stringify({ pi: report.pi, missing: report.missing, ready: report.ready, optional: report.optional }));
-  check("后端说得清 pi 版本", typeof report.pi.version === "string" && report.pi.min === "1.5.0", `${report.pi.version} ≥ ${report.pi.min}`);
+  check("后端说得清 pi 版本", typeof report.pi.version === "string" && /^\d+\.\d+\.\d+$/.test(report.pi.min), `${report.pi.version} ≥ ${report.pi.min}`);
   check("三个包都在清单里", Array.isArray(report.packages) && report.packages.length === 3);
 
   // 设置页的入口在聊天里，先建一个会话。
@@ -106,8 +106,12 @@ try {
   await page.locator(".settings-tabs .chip", { hasText: "扩展" }).first().click();
   const box = page.locator(".ext-pi", { hasText: "本项目需要" }).first();
   await box.waitFor({ timeout: 15000 });
-  // 等那一块自己问完（问不到时上面会写「检查中…」）。
-  await until(async () => !(await box.innerText()).includes("检查中…"), 15000, "deps loaded");
+  // 第一次进这一页会顺手问 /api/deps：问的那一下不能把整页画成两份（以前会：同步重画一遍，
+  // 外层再追加一次开关行与扩展列表）。要在答案回来之前数，回来以后重画会把多的那份抹掉。
+  const hosts = await page.locator(".settings-body .ext-host").count();
+  check("第一次进扩展页：只画一份", hosts === 1, String(hosts));
+  // 等那一块自己问完（问不到时上面会写「检查中…」）。`pi list` 在 Windows 上要跑 10 秒上下，给足 45 秒。
+  await until(async () => !(await box.innerText()).includes("检查中…"), 45000, "deps loaded");
 
   const text = await box.innerText();
   check("标题是「本项目需要」", text.includes("本项目需要"));
@@ -157,7 +161,7 @@ try {
   await page.locator("#subagents-acp .settings-foot").waitFor({ timeout: 15000 });
   const acpFirst = page.locator("#subagents-acp");
   if (bc && !bc.installed) {
-    await until(async () => /没有装 billion-context/.test(await acpFirst.innerText()), 15000, "deps on subagents tab");
+    await until(async () => /没有装 billion-context/.test(await acpFirst.innerText()), 45000, "deps on subagents tab");
     check("先点子代理也灰：说清原因", true);
     check("先点子代理也灰：保存不可用", await page.locator("#subagents-acp .btn.primary").isDisabled());
   } else {

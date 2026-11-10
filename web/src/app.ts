@@ -1,7 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { api, type DepsReport } from "./api.ts";
+import { api, type DepPackageId, type DepsReport } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { filterCommands, type CommandItem } from "./commands.ts";
@@ -9438,6 +9438,10 @@ export class App {
    * bypasses that cache.
    */
   private paintPiUpdate(body: HTMLElement): void {
+    // Lazy: ask once per visit, and only when the answer is missing or older than the bridge's cache.
+    // Ask before painting and without a repaint: this runs mid-paint, and a synchronous repaint here
+    // would draw the whole tab once, then let the outer paint append its rows a second time.
+    if (!this.piChecking && (!this.piUpd || Date.now() - this.piUpd.checkedAt > 30 * 60_000)) this.checkPiUpdate(false, false);
     const box = el("div", "ext-pi");
     const row = el("div", "settings-foot");
     row.append(el("span", "pi-name", tr("pi 本体")), el("span", "pi-ver", `pi ${this.me.pi}`));
@@ -9498,16 +9502,10 @@ export class App {
       box.append(force);
     }
     body.append(box);
-    // Lazy: ask once per visit, and only when the answer is missing or older than the bridge's cache.
-    if (!this.piChecking && (!this.piUpd || Date.now() - this.piUpd.checkedAt > 30 * 60_000)) this.checkPiUpdate();
   }
 
-  /**
-   * 「本项目需要」：pi 版本 + 三个扩展。这些不在这个仓库里，也不会跟 `npm install` 一起下来，
-   * 缺了往往只是**静默少一个工具** —— 所以摆在这一页最上面，缺了就写清楚缺什么、怎么补。
-   */
   /** 包 id 的界面说法。要在调用时 `tr()`：模块级数组会在切语言前就算好。 */
-  private depsFeature(id: string): string {
+  private depsFeature(id: DepPackageId): string {
     switch (id) {
       case "subagents":
         return tr("设置→子代理、后台卡、subagent 工具");
@@ -9520,7 +9518,14 @@ export class App {
     }
   }
 
+  /**
+   * 「本项目需要」：pi 版本 + 三个扩展。这些不在这个仓库里，也不会跟 `npm install` 一起下来，
+   * 缺了往往只是**静默少一个工具** —— 所以摆在这一页最上面，缺了就写清楚缺什么、怎么补。
+   */
   private paintDepsNeeded(body: HTMLElement): void {
+    // 一次设置页只问一次；30 秒内不重复问（每问一次都要跑一次本地的 `pi list`）。先问再画，
+    // 这一遍就能显示「检查中…」。
+    if (!this.deps && !this.depsLoading && Date.now() - this.depsAt > 30_000) this.loadDeps(false);
     const box = el("div", "ext-pi ext-deps");
     const report = this.deps;
     const row = el("div", "settings-foot");
@@ -9582,20 +9587,21 @@ export class App {
         foot.append(copy);
         box.append(foot);
       }
-      if (report.bootstrap && !report.bootstrap.ok) {
+      // 只在还没齐的时候提上次失败：用户后来手动装齐了，这条就过时了。
+      if (!report.ready && report.bootstrap && !report.bootstrap.ok) {
         box.append(el("p", "note warn", tr("上次自动安装没成功：{p1}", { p1: report.bootstrap.error || tr("（没有记录原因）") })));
       }
     }
     body.append(box);
-    // 一次设置页只问一次；30 秒内不重复问（每问一次都要跑一次本地的 `pi list`）。
-    if (!report && !this.depsLoading && Date.now() - this.depsAt > 30_000) this.loadDeps(false);
   }
 
   private loadDeps(force: boolean): void {
     if (this.depsLoading) return;
     if (!force && this.depsAt && Date.now() - this.depsAt < 30_000) return;
     this.depsLoading = true;
-    this.paintDepsSurface();
+    // 自动的那几次（force=false）是在画页面的半路上调的：这时同步重画会把整页先画一份，
+    // 外层返回后再追加一份。调用方自己接着画就会看到 depsLoading，只有点「重新检查」才重画。
+    if (force) this.paintDepsSurface();
     void api
       .deps()
       .then((report) => {
@@ -9623,11 +9629,11 @@ export class App {
     else this.paintExtIfOpen();
   }
 
-  private checkPiUpdate(force = false): void {
+  private checkPiUpdate(force = false, repaint = true): void {
     if (this.piChecking) return;
     this.piChecking = true;
     this.socket.send({ type: "pi.update.check", ...(force ? { force: true } : {}) });
-    this.paintExtIfOpen();
+    if (repaint) this.paintExtIfOpen();
   }
 
   /** The update replaces the globally installed pi: say what that costs before running it. */

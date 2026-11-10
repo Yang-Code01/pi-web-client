@@ -3434,7 +3434,7 @@ D
 **决定：**
 
 1. **在部署时装，不在启动时装。** 入口是仓库根的 `postinstall` → `scripts/bootstrap.mjs`，用户跑一次 `npm install`，再 `npm start`。桥每天开关，不在后台改用户的全局目录。
-2. **装之前先查。** 先定位 pi（`resolvePi()` 的候选表，不是另抄一份）；低于 `MIN_PI_VERSION` 才 `npm i -g @earendil-works/pi-coding-agent@latest`；三个扩展只看 pi 的 `settings.json` 里有没有这个名字，有就一动不动 —— 不升级、不降级，哪怕比钉的版本旧（旧了只在页面上提示「能用」）。
+2. **装之前先查。** 先定位 pi（`resolvePi()` 的候选表，不是另抄一份）；低于 `MIN_PI_VERSION` 才 `npm i -g @earendil-works/pi-coding-agent@latest`；三个扩展问 `pi list` 的**用户级**包、按包名对（包名读各包自己的 `package.json`，读不到才按来源末段猜，所以 git / 本地路径装的同名包也算），有就一动不动 —— 不升级、不降级，哪怕比钉的版本旧（旧了只在页面上提示「能用」）。脚本与 `/api/deps` 共用这一个判据（`bridge/src/deps.ts` 的 `foundPackages`）：页面说 ✓ 的，脚本就不会再装一份同名扩展。`pi list` 跑不起来时这一轮不装扩展，宁可少装也不装重。预发布的 pi（`1.5.0-rc.x`）算低于 `1.5.0`。
 3. **钉两个、放一个。** `pi-subagents@0.86.0` 与 `@juicesharp/rpiv-ask-user-question@2.15.0` 钉住，因为网页解析它们的目录布局与对话框格式；`pi-web-access` 不钉，只调它的工具。清单只有一处：`bridge/src/deps.ts`。
 4. **装到用户全局**，效果等同用户自己 `pi install`；不写项目里的 `.pi/settings.json`（它只对 cwd 所在项目生效，桥会开任意工程的会话）。
 5. **能关掉。** `PI_WEB_NO_AUTOINSTALL=1`、`--deps-only`、`CI` 三种情形只装子包的 `node_modules`，一行都不往全局写。
@@ -3448,6 +3448,6 @@ D
 
 - `npm install` 会往用户的全局目录写东西 —— 所以失败不炸安装，只把原因写进 `<状态目录>/bootstrap.json` 让页面说。
 - 已装就不动，所以「钉版本」只对第一次安装生效：老机器上留着的旧版不会自己升，页面只说「比 x 旧，能用」。
-- 三个包名 + 最低 pi 版本在 `bridge/src/deps.ts`、README 与测试里各出现一次；改版本要三处一起改（README 与测试里都写着它们抄自哪里）。
+- 三个包名 + 最低 pi 版本在 `bridge/src/deps.ts`、README 与测试里各出现一次；改版本要三处一起改。README 那张表下面与 `bridge/tests/deps-unit.mjs` 开头都写着「抄自 `bridge/src/deps.ts`」，`npm run test:deps` 会把 README 的表和清单对一遍，抄漏了就失败。
 
 **验证：** `node scripts/bootstrap.mjs --check`（本机：pi 1.5.0，三个包已装，退出码 0）；`node scripts/bootstrap.mjs --deps-only`（不碰全局，三包依赖各跑一次）；`npm run test:deps`（纯函数与 `pi list` 文本解析）；`npm run test:deps:ui`（真桥 + 真 pi，两种状态各跑一次，含端口冲突与灰化）。
