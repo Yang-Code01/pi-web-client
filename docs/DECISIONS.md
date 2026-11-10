@@ -3871,7 +3871,7 @@ D
 
 **决定：**
 
-1. **还是一次性 UAC 助手（D212 第 5 条），抽成通用 `runElevated(kind, body, failCode)`**，DNS 改动和 WinNAT 重启都走它；超时常量改名 `UAC_TIMEOUT`（120s）。助手 `.ps1` 只放 ASCII：桥写的是无 BOM UTF-8，Windows PowerShell 5.1 会按 ANSI 读，中文会乱码；中文提示由桥按 `code` 拼。
+1. **还是一次性 UAC 助手（D212 第 5 条），抽成通用 `runElevated(kind, body, failCode)`**，DNS 改动和 WinNAT 重启都走它；超时常量改名 `UAC_TIMEOUT`（120s）。助手 `.ps1` 只放 ASCII：桥写的是无 BOM UTF-8，Windows PowerShell 5.1 会按 ANSI 读，中文会乱码；中文提示由桥按 `code` 拼。**以后新加的提权脚本照此办理**——条件：脚本交给 `powershell.exe`（Windows PowerShell 5.1）跑、文件无 BOM。若哪天改成带 BOM 写入或改用 `pwsh` 7（默认 UTF-8）可以放宽，但脚本只回 `code`、文案由桥拼的分工照旧，便于 i18n。
 2. **一把锁 `elevatedBusy`**：同一时刻只弹一个 UAC，DNS 和 WinNAT 互斥，统一错误码 `uac_busy`（原 `dns_busy` 废弃）。
 3. **结果与 .bat 对齐：** 原本在跑却停不下来 → `winnat_stop_failed`（.bat 里随后的 `net start` 会因「已启动」报错）；原本没在跑 → 只启动，回 `wasRunning:false`，页面如实说「只是启动了它」，不假装重启过；启动失败 → `winnat_failed`。
 4. **停止带 `-Force`，但事先记下在跑的依赖服务，WinNAT 起来后逐个拉起**；拉不起的名字回 `depsFailed`，页面提示。停、启各 `WaitForStatus` 30 秒，整体落在 `UAC_TIMEOUT` 内，避免「桥超时放锁、助手还在跑」。

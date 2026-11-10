@@ -1,7 +1,11 @@
 /**
  * #266 本机管理：桥端纯函数的单测——不跑 PowerShell、不碰真网卡。
  *
- *   node --experimental-transform-types bridge/tests/sysmanage-unit.mjs
+ *   node bridge/tests/sysmanage-unit.mjs
+ *
+ * 只靠类型擦除：被测的 src/sysmanage.ts 没有 enum / 参数属性，Node ≥22.18 默认就能直接跑。
+ * 别照抄别的测试加 --experimental-transform-types：Node 26 起这个参数已删除，会直接报 bad option；
+ * Node 22–25 上加不加都行。
  */
 import assert from "node:assert/strict";
 import { normalizeAdapters, normalizeNodeInterfaces, normalizeServices, normalizeWinnat, parseNetstat } from "../src/sysmanage.ts";
