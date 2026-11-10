@@ -290,8 +290,12 @@ function deck(n) {
   check("binary 也有 grant（能交给默认程序）", !!fileGrant(openPreview(session, fake).token));
 
   const pdf = put(work, "e.pdf", pdfBytes);
-  check(".pdf 仍是 binary（D50 不变）", openPreview(session, pdf).kind === "binary");
-  check(".pdf 现在也能用本机程序打开（D209 统一出口）", !!fileGrant(openPreview(session, pdf).token));
+  check(".pdf 现在是 pdf kind（内嵌查看器，D50 修订）", openPreview(session, pdf).kind === "pdf", openPreview(session, pdf).kind);
+  check(".pdf 仍然能用本机程序打开（D209 统一出口）", !!fileGrant(openPreview(session, pdf).token));
+  // 回归：加密/结构化 PDF 的前 8 KB 可能一个 NUL 都没有（字段全是十六进制密文），
+  // 曾经因此落到 looksText() → text → 前端把 %PDF- 与压缩流当 UTF-8 渲染成乱码。
+  const asciiPdf = put(work, "g.pdf", Buffer.from("%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Encrypt << /A <0123456789ABCDEF> >> >>\nendobj\n%%EOF\n"));
+  check("前 8 KB 无 NUL 的 PDF 也是 pdf，不回落到 text", openPreview(session, asciiPdf).kind === "pdf", openPreview(session, asciiPdf).kind);
 
   const docx = put(work, "f.docx", zipOf({ "word/document.xml": "<d/>" }));
   check(".docx 是 binary 但有 grant", openPreview(session, docx).kind === "binary" && !!fileGrant(openPreview(session, docx).token));

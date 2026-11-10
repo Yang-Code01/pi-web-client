@@ -7052,9 +7052,11 @@ export class App {
       return false;
     }
     if (this.viewer !== v || v.path !== path) return false;
-    v.path = v.info.abs;
+    // 公网请求里桥会把 abs 抹成空串（不把本机绝对路径给隧道那头），那时保留调用方给的路径：
+    // 空串会让 ⟳ 和历史步都退化成 400「路径为空」。
+    v.path = v.info.abs || path;
     // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
-    if (!replace) this.retargetTop(path, v.info.abs, sessionId);
+    if (!replace) this.retargetTop(path, v.path, sessionId);
     // D166: spreadsheet files leave the binary branch and open in their own dialog, not the viewer.
     if (v.info.kind === "sheet") {
       const info = v.info;
@@ -7529,7 +7531,8 @@ export class App {
       return;
     }
     if (this.viewer !== v) return;
-    this.pushStep({ path: next.abs }, v.sessionId);
+    // 公网下 next.abs 是空串（桥抹掉本机路径），历史步要留一个能再打开的相对路径。
+    this.pushStep({ path: next.abs || abs }, v.sessionId);
     if (next.kind === "html") {
       // iframe 已经在显示它了：只对齐头部，不要重挂 iframe（那会白跳一次回原文件）。
       v.path = next.abs;
@@ -7541,7 +7544,7 @@ export class App {
       this.paintViewer();
       return;
     }
-    await this.openPreview(next.abs, v.sessionId, true);
+    await this.openPreview(next.abs || abs, v.sessionId, true);
   }
 
   private paintViewer(): void {
@@ -7617,6 +7620,10 @@ export class App {
     }
     tbtn("⟳", tr("刷新（重新读取文件）"), () => void this.openPreview(v.path, v.sessionId, true));
     if (info) {
+      // D209 的第一步出口在 binary 支线的提示框里；那里看不到的格式（现在的 pdf）在头部补一颗，
+      // 否则「用本机程序打开」对它们是句空话（D50 修订：pdf 不再落 binary）。
+      if (info.kind !== "binary" && DESKTOP_OPEN.test(info.name))
+        tbtn("🖥", tr("用默认程序打开"), () => void this.openInApp(info.token));
       const open = tbtn("↗", tr("在新标签页打开"), () => this.openRawTab(rawUrl(info)));
       open.classList.add("wide-only");
       const copy = tbtn("⧉", tr("复制路径"), () => void navigator.clipboard?.writeText(info.abs));
@@ -7641,7 +7648,13 @@ export class App {
     body.removeAttribute("data-edit-path");
     // Keep an html iframe alive across header-only repaints (its own state / scroll matter).
     const frame = body.querySelector<HTMLIFrameElement>("iframe.viewer-frame");
-    if (info?.kind === "html" && v.mode === "render" && !v.error && frame && v.framePath === info.abs) return;
+    if (
+      !v.error &&
+      frame &&
+      v.framePath === info?.abs &&
+      (info.kind === "pdf" || (info.kind === "html" && v.mode === "render"))
+    )
+      return;
 
     body.replaceChildren();
     body.className = "viewer-body";
@@ -7709,8 +7722,23 @@ export class App {
       body.append(img);
       return;
     }
+    if (info.kind === "pdf") {
+      // 浏览器内建查看器就是最好的阅读器：不解析、不转换，iframe 直接指向 /raw 的字节。
+      // 不加 sandbox 属性（查看器要自己的 origin）；/raw 的 CSP sandbox 在 Chrome / Edge 的 iframe 里
+      // 不影响 PDF 渲染（实测，D50 补记），所以不必像表格/幻灯片那样单开端点。
+      const f = el("iframe", "viewer-frame") as HTMLIFrameElement;
+      f.src = url;
+      f.dataset.src = url;
+      v.frame = f;
+      v.framePath = info.abs;
+      v.frameToken = info.token;
+      body.classList.add("frame");
+      body.append(f);
+      return;
+    }
     if (info.kind === "binary") {
-      // #106/D209: .xls / .ods / 加密包 / 改了扩展名的 zip / pdf / docx / ppt — 这里不看，交给这台电脑上的默认程序。
+      // #106/D209: .xls / .ods / 加密包 / 改了扩展名的 zip / docx / ppt — 这里不看，交给这台电脑上的默认程序。
+      // pdf 曾经也走这条（D50 原文「PDF 特殊处理」），D50 修订后它有了自己的 kind 与内嵌查看器。
       const desktop = DESKTOP_OPEN.test(info.name);
       const box = el("div", desktop ? "viewer-msg workbook" : "viewer-msg");
       box.append(
