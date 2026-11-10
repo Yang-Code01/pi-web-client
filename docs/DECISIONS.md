@@ -3730,3 +3730,25 @@ D
 **代价：** 本机的大会话仍是 1.3 s 的 DOM 稳定与一次 501 ms 长任务（用户接受：卡的不是网络）；`frameFor` 给每帧多一次会话查找，命中时是常数开销。
 
 **验证：** `npm run test:paging`（`bridge/tests/paging-scope.mjs` 14 项：本机订阅 220 条整段 + `hasMore:false`、隧道 60 条 + `hasMore:true` + total 220、同一会话两帧 21 083 B vs 43 764 B、分支切换广播按连接分形状、本机任何帧都不出现 `hasMore:true`、隧道的 `history.before` 照旧翻页）；`npm run test:paging:ui`（`bridge/tests/paging-local-ui.mjs` 15 项，从页面这一层：开关不设 `PI_WEB_PAGE_ALL`，打开一条 220 条的会话帧里就是 220 条、110 轮一次画完、切走再切回仍整段且没有 `.chat-more`、断线重连不翻倍、全程 0 帧说「还有更早」）；`npm run test:history:ui`（28 项，`PI_WEB_PAGE_ALL=1`）；`npm run test:loadolder:ui`（63 项，同）；`npm --prefix bridge run typecheck`。`claim` / `reload` 两条单播起点是拉起 pi（`sessions.claim` / `sessions.reload` → `openLive`），不另起 pi 验；形状与 subscribe 共用 `sessionFrameOf` + `frameFor` 两处，subscribe 那条已盖到。
+
+## D216 设置面板改成本机管理同构的 C3 控制台：表单为主、对照只读、保存走 diff（#282–#287）
+
+**问题：** 老设置是 720px 弹层里 11 颗会换行的 chip，下面一长串表单；「全局」和「项目」是两个独立页，想看一个值现在从哪来要来回切页；默认值只以「（默认：…）」挤在标签里，项目没设置时输入框是空的，看不出会继承全局还是 pi 默认；窗口一窄，chip 换行、表单被压得很窄。旁边的本机管理已经是分组控制台，两个入口像两个产品（#282）。
+
+**决定**
+
+1. **选 C3 控制台，不选 C1 / C2。** 弹层换成 `.st-console`：顶部 eyebrow「pi 设置」+ 标题 + 当前设置文件路径 + badge，左栏两组（设置 / 系统）九项，右侧内容区，底部一行说明；「全局 | 项目」是设置页里的分段，不再是两个平级 tab。C1（表格里就地编辑）每改一格都要处理一次保存/确认，点得更多，而且表格本来是用来「看」的；C2（每行一个独立表单）多一层进出导航，也丢掉了旧表单的手感。C3 保留旧表单的肌肉记忆、迁移最小，用只读的对照表回答「谁在生效」；代价是改之前要先点回表单，但「点行回表单并聚焦」把这一步压成一次点击。
+2. **表单为主，一行一个字段。** 每行标「覆盖 / 未设置」（全局页是「已设置 / 未设置」）；项目未设置时选项里写「继承全局 · X」或「继承 pi 默认 · X」，默认值灰字「默认 · X」；列表字段标「与全局合并」，全局独有的标「仅全局」，复杂对象提示用 JSON 编辑；高级项收进折叠的「高级」。JSON 编辑器一直保留，切到复杂对象时仍是唯一入口。
+3. **对照只读。** 三列「设置 / 全局 / 项目」；生效格高亮并标「全局生效 / 项目生效」，未设置格 dashed；「只看项目覆盖」只把没有项目覆盖的行变暗（不删行），再点恢复；点任意行退出对照、回到表单、展开对应的「高级」、滚到中间并聚焦输入。对照是设置页的模式，换页或换 tab 就退出，不在别的页面上残留。
+4. **保存单位是当前作用域的整张表单，实际只发 diff。** 打开/刷新时留一份快照，`diffPatch()` 只把与快照不同的键放进 `settings.set` 的 `patch`；模型是 provider + model 一对，任一边变了两个键一起发；清空写成 `null`（桥按删除处理），没动过的键一个都不写；没有 diff 时保存按钮就是 disabled（不再点了只闪「已保存」），有 diff 才可点。这取代了更早的「每格保存」偏好：用户接受「整表单 + 一次保存」，diff 是安全阀——表单动作只有一个，但不会把没碰过的键、以及别人并发改的无关键一起盖掉。代价是改一格也要走一次表单保存；同一个键被两边同时改仍是后写者赢，所以才有下面的外部更新提示。
+5. **草稿与异常都按「不丢用户输入」处理。** 切全局/项目保留草稿；有脏草稿时外部推来 `settings.view` 不覆盖草稿，只提示「设置已从别处更新，保存会覆盖这些键」；`settings.set` 失败保留草稿并给红字；项目未信任时表单只读、保存 disabled、黄条给「去项目信任」，对照仍可看；settings.json 解析失败时红条 + 只留 JSON 编辑器，修好刷新回表单。刷新只重读、不写盘。
+6. **导航合并但旧入口都还在。** 九项覆盖旧的 11 个 tab：设置组「全局与项目 / 项目信任」，系统组「登录·凭据 / 口令 / 扩展与 MCP / 子代理 / 通知 / 运行时 / 更新日志」；pi 更新日志与项目更新日志合成一个入口，页内用分段切。tab id 不动，所以命令面板、`/settings`、`/whatsnew` 和 `#/settings?tab=trust` 这类深链仍落到原来的页。
+7. **窄窗口横排、Esc/关闭/刷新不变。** 900px 左栏变一行横排且内容区不横溢，640px 占满屏幕；`Escape`、关闭按钮、刷新按钮沿用旧行为。
+
+**接口形状**
+
+没有新的桥接口或 WS 命令：仍是 `settings.get` / `settings.set {scope, cwd?, patch?}` / `settings.error` 与 `trust.*`。新增的是前端纯函数 `web/src/settings-matrix.ts`（分组、生效值、placeholder、`diffPatch`）、`web/src/settings-console.css` 和 `web/src/app.ts` 里的控制台渲染；所有新文案走 `web/src/i18n/` 的 `tr("中文原文")`，en / ja 各一条。
+
+**验证**
+
+`npm run build`；`npm --prefix web run typecheck`（含 i18n-check，2003 keys × 3 langs）；`node web/tests/settings-console-unit.mjs`（19 项：分组、覆盖计数、生效值、placeholder、模型对、列表合并、diffPatch）；`node bridge/tests/settings-console-ui.mjs`（A–H：壳与九项、全局只写一个键、项目继承 + 覆盖、对照生效/过滤/点行聚焦、未信任只读、坏 JSON 只读、900px 横排、更新日志分段、Escape/关闭、外部更新与保存失败保留草稿、无 pageerror）；根脚本 `npm run test:settings`、`npm run test:settings:ui` 与上面两条单测同源。截图 `.scratch/shots/settings-console-form.png`、`settings-console-compare.png`、`settings-console-untrusted.png` 只给 PR 看，`.scratch` 不进产品包。

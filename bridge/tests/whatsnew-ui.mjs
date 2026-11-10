@@ -124,17 +124,19 @@ try {
   await page.goto(`${BASE}/#/s/${created.sessionId}`, { waitUntil: "domcontentloaded" });
   await page.locator(".composer textarea").waitFor({ timeout: 20000 });
 
-  const bodyText = () => page.locator(".settings-body").innerText();
+  const bodyText = () => page.locator(".st-pane").innerText();
 
-  // ---------------------------------------------------------------- A. 两个 tab 都在
-  log("A. /settings → 切到「本项目更新日志」");
+  // #283 起两本账合成「更新日志」一页，页内分段：pi / 本项目。
+  // ---------------------------------------------------------------- A. 两个分段都在
+  log("A. /settings → 更新日志 → 切到「本项目」");
   await page.locator(".composer textarea").fill("/settings");
   await page.keyboard.press("Enter");
   await until(() => page.locator(".settings-sheet").count(), 10000, "settings sheet");
-  const labels = await page.locator(".settings-tabs .chip").allInnerTexts();
-  check(labels.includes("pi 更新日志") && labels.includes("本项目更新日志"), `两个 tab（${labels.join(" / ")}）`);
+  await page.locator(".st-nav__item", { hasText: "更新日志" }).click();
+  const labels = await page.locator(".st-seg__btn").allInnerTexts();
+  check(labels.includes("pi") && labels.includes("本项目"), `两个分段（${labels.join(" / ")}）`);
 
-  await page.locator(".settings-tabs .chip", { hasText: "本项目更新日志" }).click();
+  await page.locator('.st-seg__btn[data-tab="whatsnew"]').click();
   const ours = await until(async () => {
     const t = await bodyText();
     return t.includes("当前版本") && t.length > 200 ? t : null;
@@ -143,34 +145,34 @@ try {
   check(ours.includes("历史分页与子代理设置"), "正文是我们自己的批次标题");
   check(ours.includes("#228") || ours.includes("#229"), "条目带 PR 锚点");
   check(!ours.includes("<!--") && !ours.includes("写到 10f96a0"), "HTML 注释没漏到页面上");
-  const title = await page.locator(".settings-sheet .sheet-title").innerText();
-  check(title === "本项目更新日志", `面板标题跟着 tab 走（${title}）`);
+  const title = await page.locator(".st-title").innerText();
+  check(title === "更新日志", `面板标题（${title}）`);
   await page.screenshot({ path: path.join(SHOTS, "whatsnew-self.png") });
 
   // ---------------------------------------------------------------- B. 切回 pi 那份
-  log("B. 切回「pi 更新日志」");
-  await page.locator(".settings-tabs .chip", { hasText: "pi 更新日志" }).click();
+  log("B. 切回「pi」那段");
+  await page.locator('.st-seg__btn[data-tab="changelog"]').click();
   const pi = await until(async () => {
     const t = await bodyText();
     return t.includes("Changelog") && t.length > 200 ? t : null;
   }, 15000, "pi changelog");
   check(!pi.includes("历史分页与子代理设置"), "pi 那页没有我们的批次（两份不串味）");
-  check((await page.locator(".settings-sheet .sheet-title").innerText()) === "pi 更新日志", "pi 那页标题也换了");
+  check((await page.locator(".st-seg__btn.on").innerText()).trim() === "pi", "分段亮回「pi」");
 
   // ---------------------------------------------------------------- C. /whatsnew 直达
   log("C. 关掉面板，敲 /whatsnew");
-  await page.locator(".settings-sheet .sheet-head button", { hasText: "关闭" }).click();
+  await page.locator(".st-head__actions button", { hasText: "关闭" }).click();
   await until(async () => (await page.locator(".settings-sheet").count()) === 0, 5000, "sheet closed");
   await page.locator(".composer textarea").fill("/whatsnew");
   await page.keyboard.press("Enter");
   await until(() => page.locator(".settings-sheet").count(), 10000, "sheet again");
   await until(async () => (await bodyText()).includes("当前版本"), 15000, "self tab by command");
-  const active = await page.locator(".settings-tabs .chip.on").innerText();
-  check(active === "本项目更新日志", `/whatsnew 落在这一页（激活 ${active}）`);
+  const active = await page.locator(".st-seg__btn.on").innerText();
+  check(active === "本项目", `/whatsnew 落在这一页的这一段（激活 ${active}）`);
 
   // ---------------------------------------------------------------- D. 正文里的路径能点开
   log("D. 点正文里的 docs/DECISIONS.md");
-  await page.locator(".settings-body a.file-link", { hasText: "docs/DECISIONS.md" }).first().click();
+  await page.locator(".st-pane a.file-link", { hasText: "docs/DECISIONS.md" }).first().click();
   await until(async () => (await page.locator(".settings-sheet").count()) === 0, 5000, "sheet closed by link");
   const shown = await until(async () => {
     const n = page.locator(".viewer .viewer-path");
