@@ -26,7 +26,7 @@
 
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readdirSync, readSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 /** runner 的痕迹目录（acp_delegate 把 `<runId>.activity` / `.out` / `.session.jsonl` 都写在这里）。 */
 const ACP_DIR = join(tmpdir(), "acp-delegate");

@@ -211,11 +211,14 @@ async function turn(text) {
       `Running in the background at ${tick}${root}${tick}.`,
       `Live activity is streaming to ${tick}${activity}${tick}.`,
     ].join(newline);
+    const callId = `call-${runId}`;
+    const args = { agent: "researcher", task: "inspect child updates" };
     out({ type: "message_start", message: assistant("") });
-    out({ type: "tool_execution_start", toolCallId: `call-${runId}`, toolName: "acp_delegate", args: { agent: "researcher", task: "inspect child updates" } });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: callId, name: "acp_delegate", arguments: args }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: callId, toolName: "acp_delegate", args });
     out({
       type: "tool_execution_end",
-      toolCallId: `call-${runId}`,
+      toolCallId: callId,
       toolName: "acp_delegate",
       isError: false,
       result: {
@@ -223,6 +226,7 @@ async function turn(text) {
         details: { kind: "delegate", runId, agent: "researcher", task: "inspect child updates" },
       },
     });
+    out({ type: "message_start", message: assistant("") });
     out({ type: "message_end", message: assistant("子代理已启动。", { stopReason: "stop" }) });
     out({ type: "agent_end", messages: [], willRetry: false });
     return;

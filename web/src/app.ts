@@ -32,7 +32,7 @@ import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroup
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { Socket } from "./ws.ts";
-import { execView, type ExecPhase, type ExecRoundStats, type ExecStatsSnapshot, type ExecViewModel } from "./exec-view.ts";
+import { execView, type ExecChildRunInput, type ExecPhase, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
@@ -97,6 +97,7 @@ const CONTINUE_TEXT = "继续";
 const WS_CREATE_DIR_CAP = "ws.create.dir";
 /** #278：桥的 hello `caps` 里表示「ws.resolve 能把子目录 / worktree 折回已有组」。旧桥没有这项。 */
 const WS_RESOLVE_DIR_CAP = "ws.resolve.dir";
+const WS_EXEC_CHILD_CAP = "exec.child.subscribe";
 
 /** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
 type BadgeKind = "ask" | "approve" | "locked" | "run" | "bg" | "done";
@@ -120,6 +121,13 @@ interface SessionBadge {
  */
 /** D170 详情的线上形状。见 `web/src/types.ts`（与左栏那份 `SessionState` 摆在一起）。 */
 type BgRunDto = BgRunView;
+
+interface ExecChildState {
+  items: Item[];
+  stats: ExecStatsSnapshot | null;
+  state: "running" | "done" | "failed";
+  pending: boolean;
+}
 
 /** 详情里的一屏：一卡片 + 它三块会变的字。 */
 interface BgRunNode {
@@ -238,6 +246,15 @@ export class App {
   private queueTab: QueueTab = readQueueTab();
   private execSelectedRound: string | null = null;
   private execRoundStats: Record<string, ExecRoundStats> = {};
+  private execRuns: BgRunDto[] = [];
+  private execChildStates = new Map<string, ExecChildState>();
+  private execChildErrors = new Map<string, string>();
+  private execChildExpanded = new Set<string>();
+  private execChildDetails = new Set<string>();
+  private execChildSubscribed = new Set<string>();
+  private execChildTimer: number | null = null;
+  private execChildSessionId: string | null = null;
+  private publicAccess = false;
   private execPhase: ExecPhase = "idle";
   private execStreamChars = 0;
   private execStreamText = "";
@@ -1423,6 +1440,13 @@ export class App {
    * D162: 打开只是看 —— 不清完成；bridge 也一样（snapshot 不再 markSeen）。
    */
   private resetSessionView(): void {
+    this.stopExecChildWatches();
+    this.execChildSessionId = null;
+    this.execRuns = [];
+    this.execChildStates.clear();
+    this.execChildErrors.clear();
+    this.execChildExpanded.clear();
+    this.execChildDetails.clear();
     this.approvals = [];
     this.asks = [];
     this.pendingFresh = false;
@@ -1532,6 +1556,8 @@ export class App {
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         // #278：旧桥不带 caps —— 缺这一项就当它不会按目录建组。
         this.bridgeCaps = Array.isArray(msg.caps) ? (msg.caps as unknown[]).filter((c): c is string => typeof c === "string") : [];
+        this.publicAccess = msg.public === true;
+        this.execChildSubscribed.clear();
         if (msg.ui) this.uiPrefs = { chrome: chromeFrom(msg.ui.chrome) };
         // D154：桥上的 build 换了，页面里的 JS 还是旧的 —— 提示刷新，不自动 reload。
         if (typeof msg.buildId === "string") this.checkBuild(msg.buildId);
@@ -1574,9 +1600,19 @@ export class App {
         this.creating?.finish();
         // bridge sends the snapshot as {sessionId, state, items, approvals, budget}
         if (msg.sessionId) {
-          // A freshly created session arrives here without openSession(): give it its own (empty) draft.
-          if (String(msg.sessionId) !== this.currentId) this.switchDraft(String(msg.sessionId));
-          this.currentId = String(msg.sessionId);
+          const nextId = String(msg.sessionId);
+          if (nextId !== this.currentId) {
+            this.stopExecChildWatches();
+            this.execChildSessionId = null;
+            this.execRuns = [];
+            this.execChildStates.clear();
+            this.execChildErrors.clear();
+            this.execChildExpanded.clear();
+            this.execChildDetails.clear();
+            // A freshly created session arrives here without openSession(): give it its own (empty) draft.
+            this.switchDraft(nextId);
+          }
+          this.currentId = nextId;
         }
         this.execRoundStats = this.currentId ? readExecRoundStats(this.currentId) : {};
         this.usage = { contextTokens: null, contextWindow: null };
@@ -1677,12 +1713,49 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.chat.bashDelta(String(msg.id ?? ""), String(msg.text ?? ""));
         break;
-      case "bg.list":
-        if (!this.bgSheet || msg.sessionId !== this.bgSheet.sessionId) break;
-        // 桥只发错误码（文案在这边翻了再显示），目前只有一种：公网那只手看不到后台任务。
-        const why = msg.error === "public" ? tr("公网访问时看不到后台任务") : "";
-        this.paintBgSheet(Array.isArray(msg.runs) ? (msg.runs as BgRunDto[]) : [], why);
+      case "bg.list": {
+        const runs = Array.isArray(msg.runs) ? (msg.runs as BgRunDto[]) : [];
+        if (msg.sessionId === this.currentId) {
+          this.execRuns = runs;
+          this.syncExecChildWatches();
+          if (this.queueTab === "exec") this.renderQueue();
+        }
+        if (this.bgSheet && msg.sessionId === this.bgSheet.sessionId) {
+          // 桥只发错误码（文案在这边翻了再显示），目前只有一种：公网那只手看不到后台任务。
+          const why = msg.error === "public" ? tr("公网访问时看不到后台任务") : "";
+          this.paintBgSheet(runs, why);
+        }
         break;
+      }
+      case "exec.child.snapshot":
+      case "exec.child.delta": {
+        if (msg.sessionId !== this.currentId) break;
+        const runId = String(msg.runId ?? "");
+        const incoming = Array.isArray(msg.items) ? (msg.items as Item[]) : [];
+        const previous = this.execChildStates.get(runId);
+        const items = msg.type === "exec.child.snapshot" || msg.reset === true
+          ? incoming
+          : [...new Map([...(previous?.items ?? []), ...incoming].map((item) => [item.id, item])).values()];
+        this.execChildErrors.delete(runId);
+        this.execChildStates.set(runId, {
+          items,
+          stats: msg.stats && typeof msg.stats === "object" ? msg.stats as ExecStatsSnapshot : null,
+          state: msg.state === "done" || msg.state === "failed" ? msg.state : "running",
+          pending: msg.pending === true,
+        });
+        if (this.queueTab === "exec") this.renderQueue();
+        break;
+      }
+      case "exec.child.unavailable": {
+        if (msg.sessionId !== this.currentId) break;
+        const runId = String(msg.runId ?? "");
+        this.execChildSubscribed.delete(runId);
+        this.execChildErrors.set(runId, String(msg.error ?? "unavailable"));
+        const previous = this.execChildStates.get(runId);
+        if (previous) this.execChildStates.set(runId, { ...previous, pending: false });
+        if (this.queueTab === "exec") this.renderQueue();
+        break;
+      }
       case "bg.log":
         if (msg.sessionId !== this.bgSheet?.sessionId) break;
         this.fillBgRun(String(msg.runId ?? ""), msg.log, msg.out);
@@ -13822,6 +13895,7 @@ export class App {
   }
 
   private selectQueueTab(tab: QueueTab): void {
+    if (this.queueTab === "exec" && tab !== "exec") this.stopExecChildWatches();
     this.queueTab = tab;
     try {
       localStorage.setItem("pi.queueTab", tab);
@@ -13857,10 +13931,88 @@ export class App {
     if (this.currentId) saveExecRoundStats(this.currentId, this.execRoundStats);
   }
 
+  private execChildAvailable(): boolean {
+    return this.bridgeCaps.includes(WS_EXEC_CHILD_CAP) && !this.publicAccess;
+  }
+
+  private ensureExecRuns(): void {
+    if (!this.currentId || this.queueTab !== "exec" || !this.execChildAvailable()) return;
+    if (this.execChildTimer !== null && this.execChildSessionId === this.currentId) return;
+    this.stopExecChildWatches();
+    this.execChildSessionId = this.currentId;
+    const refresh = () => {
+      if (this.currentId === this.execChildSessionId && this.queueTab === "exec") {
+        this.socket.send({ type: "bg.list", sessionId: this.execChildSessionId });
+      }
+    };
+    refresh();
+    this.execChildTimer = window.setInterval(refresh, 1500);
+  }
+
+  private subscribeExecChild(runId: string): void {
+    if (!this.currentId || !this.execChildAvailable() || this.execChildSubscribed.has(runId)) return;
+    this.execChildSessionId = this.currentId;
+    this.execChildSubscribed.add(runId);
+    this.execChildErrors.delete(runId);
+    const current = this.execChildStates.get(runId);
+    this.execChildStates.set(runId, current
+      ? { ...current, pending: true }
+      : { items: [], stats: null, state: "running", pending: true });
+    this.socket.send({ type: "exec.child.subscribe", sessionId: this.currentId, runId });
+  }
+
+  private unsubscribeExecChild(runId: string): void {
+    if (this.execChildSubscribed.delete(runId) && this.execChildSessionId) {
+      this.socket.send({ type: "exec.child.unsubscribe", sessionId: this.execChildSessionId, runId });
+    }
+  }
+
+  private stopExecChildWatches(): void {
+    if (this.execChildTimer !== null) window.clearInterval(this.execChildTimer);
+    this.execChildTimer = null;
+    for (const runId of this.execChildSubscribed) {
+      if (this.execChildSessionId) this.socket.send({ type: "exec.child.unsubscribe", sessionId: this.execChildSessionId, runId });
+    }
+    this.execChildSubscribed.clear();
+  }
+
+  private syncExecChildWatches(): void {
+    const active = new Set(this.execRuns.map((run) => run.id));
+    for (const runId of this.execChildSubscribed) {
+      if (!active.has(runId) || !this.execChildExpanded.has(runId)) this.unsubscribeExecChild(runId);
+    }
+    for (const runId of this.execChildExpanded) {
+      if (active.has(runId)) this.subscribeExecChild(runId);
+    }
+  }
+
+  private toggleExecChild(runId: string): void {
+    if (!this.execChildAvailable()) return;
+    if (this.execChildExpanded.has(runId)) {
+      this.execChildExpanded.delete(runId);
+      this.unsubscribeExecChild(runId);
+    } else {
+      this.execChildExpanded.add(runId);
+      this.subscribeExecChild(runId);
+    }
+    this.renderQueue();
+  }
+
   private execModel(): ExecViewModel {
     const running = this.session?.running === true;
     return execView({
       items: this.chat.loadedItems(),
+      childRuns: this.execRuns.map((run): ExecChildRunInput => ({
+        runId: run.id,
+        toolCallId: run.toolCallId ?? "",
+        agent: run.agent,
+        task: run.task,
+        state: run.state,
+        items: this.execChildExpanded.has(run.id) ? this.execChildStates.get(run.id)?.items ?? [] : [],
+        stats: this.execChildStates.get(run.id)?.stats ?? null,
+      })),
+      childSessionsAvailable: this.bridgeCaps.includes(WS_EXEC_CHILD_CAP),
+      publicAccess: this.publicAccess,
       phase: running ? (this.execPhase === "idle" ? "waiting" : this.execPhase) : "idle",
       streamChars: this.execStreamChars,
       streamSummary: this.execSummary(),
@@ -13989,7 +14141,80 @@ export class App {
     return card;
   }
 
+  private execChildStep(step: ExecSubagentRow["steps"][number], runId: string): HTMLElement {
+    const key = `${runId}:${step.id}`;
+    const expanded = this.execChildDetails.has(key);
+    const wrap = el("div", "exec-child-step-wrap");
+    const button = el("button", "exec-child-step") as HTMLButtonElement;
+    button.type = "button";
+    button.setAttribute("aria-expanded", String(expanded));
+    const state = el("span", `exec-state ${step.status}`);
+    state.textContent = step.status === "running" ? "◌" : step.status === "error" ? "✗" : step.status === "success" ? "✓" : "•";
+    const summary = typeof step.args === "string" ? step.args : this.execArgs(step.args);
+    button.append(state, el("span", "exec-step-name", step.kind === "skill" ? tr("技能 · {p1}", { p1: step.label }) : step.label), el("span", "exec-step-args", summary));
+    button.onclick = () => {
+      if (expanded) this.execChildDetails.delete(key);
+      else this.execChildDetails.add(key);
+      this.renderQueue();
+    };
+    wrap.append(button);
+    if (expanded) {
+      const details = el("div", "exec-child-step-detail");
+      if (step.args != null && summary) details.append(el("span", "exec-child-detail-label", tr("参数")), el("pre", "", this.execArgs(step.args)));
+      if (step.result) {
+        const result = step.result.length > 1200 ? `${step.result.slice(0, 1200)}…` : step.result;
+        details.append(el("span", "exec-child-detail-label", tr("结果摘要")), el("pre", "", result));
+      }
+      if (details.childNodes.length) wrap.append(details);
+    }
+    return wrap;
+  }
+
+  private execSubagentNode(row: NonNullable<ExecViewModel["timeline"][number]["subagent"]>): HTMLElement {
+    const wrap = el("section", "exec-subagent");
+    const toggle = el("button", "exec-subagent-toggle") as HTMLButtonElement;
+    const expanded = this.execChildExpanded.has(row.runId);
+    const childState = this.execChildStates.get(row.runId);
+    const unavailable = this.execChildErrors.has(row.runId);
+    toggle.type = "button";
+    toggle.disabled = row.locked;
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.setAttribute("aria-label", expanded ? tr("折叠子代理") : tr("展开子代理"));
+    const identity = row.agent ? tr("子代理 · {p1}", { p1: row.agent }) : tr("子代理");
+    toggle.append(el("span", "exec-subagent-caret", expanded ? "▾" : "▸"), el("span", "exec-subagent-title", identity));
+    const statusText = row.status === "running" ? tr("运行中") : row.status === "done" ? tr("已完成") : row.status === "failed" ? tr("失败") : tr("等待状态");
+    toggle.append(el("span", `exec-subagent-status ${row.status}`, statusText));
+    const totals = el("span", "exec-subagent-totals");
+    totals.append(this.execMetricNumber(row.stats.tokens), document.createTextNode(" "), el("span", "", tr("Token 数")), document.createTextNode(" · "), this.execMetricCost(row.stats.cost));
+    toggle.append(totals);
+    toggle.onclick = () => this.toggleExecChild(row.runId);
+    wrap.append(toggle);
+    if (row.task) wrap.append(el("div", "exec-subagent-task", row.task));
+    if (row.locked) {
+      wrap.append(el("div", "exec-subagent-note", this.publicAccess ? tr("公网访问时子代理详情已锁定") : tr("当前桥不支持子代理会话订阅")));
+      return wrap;
+    }
+    if (!expanded) return wrap;
+    if (unavailable) {
+      wrap.append(el("div", "exec-empty", tr("子代理会话暂不可用")));
+      return wrap;
+    }
+    if (childState?.pending && !row.steps.length) {
+      wrap.append(el("div", "exec-empty", tr("等待子代理会话…")));
+      return wrap;
+    }
+    if (!row.steps.length) {
+      wrap.append(el("div", "exec-empty", tr("暂无子代理步骤")));
+      return wrap;
+    }
+    const steps = el("div", "exec-child-steps");
+    for (const step of row.steps) steps.append(this.execChildStep(step, row.runId));
+    wrap.append(steps);
+    return wrap;
+  }
+
   private renderExecPanel(): HTMLElement {
+    this.ensureExecRuns();
     const model = this.execModel();
     this.execSelectedRound = model.selectedRound;
     const panel = el("div", "exec-panel");
@@ -14032,7 +14257,10 @@ export class App {
       button.onclick = () => {
         if (!this.chat.jumpToItem(row.id)) this.flashToast(tr("这一步不在已加载的聊天里"), false, 1800);
       };
-      list.append(button);
+      const entry = el("div", "exec-step-entry");
+      entry.append(button);
+      if (row.subagent) entry.append(this.execSubagentNode(row.subagent));
+      list.append(entry);
     }
     if (!model.timeline.length) list.append(el("div", "exec-empty", tr("本轮还没有步骤")));
     panel.append(list);
