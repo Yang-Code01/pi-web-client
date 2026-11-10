@@ -19,7 +19,7 @@
 
 ### 设计决定
 
-- mermaid 按需下载（动态 import 切成独立 chunk），配色读 CSS 变量不抄第二份；渲染结果按不可信处理：`securityLevel: strict`、导前剥脚本与 `on*` 属性、全程不用 innerHTML #PR D227
+- mermaid 按需下载（动态 import 切成独立 chunk），配色读 CSS 变量不抄第二份；渲染结果按不可信处理：`securityLevel: strict`、导前剥脚本与 `on*` 属性、全程不用 innerHTML #347 D227
 - `final` 与 `streaming` 现在同义：网页的实时回答本来就不排 markdown，所有排版都发生在消息落定之后 D227
 
 ## 未发布 · macOS 上 `npm install` 装不起来
