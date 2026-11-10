@@ -456,9 +456,12 @@ class SysPanel {
     }
     const editor = el("div", "sys-dns");
     this.paintDnsEditor(editor, data);
-    layout.append(list, editor);
+    // 右栏：DNS 编辑在上、WinNAT 在下；放进同一栏，不再在网卡列表下面另起一整行。
+    const side = el("div", "sys-net__side");
+    side.append(editor);
+    if (data.winnat) side.append(this.winnatCard(data.winnat, data.public || !data.supported, data.public));
+    layout.append(list, side);
     pane.append(layout);
-    if (data.winnat) pane.append(this.winnatCard(data.winnat, data.public || !data.supported, data.public));
   }
 
   /** 重启 WinNAT（原桌面 netweb_restar.bat）：端口被 Hyper-V / WSL 保留占住时用。 */

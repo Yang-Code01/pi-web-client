@@ -104,6 +104,23 @@
   display: none;
 }
 
+/* 横幅为空时 display:none 会让后面的格子往前挪一行，主体落进 auto 行、页脚被挤出圆角框。钉死行号。 */
+.sys-head {
+  grid-row: 1;
+}
+
+.sys-banners {
+  grid-row: 2;
+}
+
+.sys-main {
+  grid-row: 3;
+}
+
+.sys-foot {
+  grid-row: 4;
+}
+
 .sys-banners {
   display: grid;
 }
@@ -533,8 +550,13 @@
   border-radius: 12px;
 }
 
+.sys-net__side {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
 .sys-winnat {
-  margin-top: 16px;
   padding: 14px;
   background: var(--panel-2);
   border: 1px solid var(--line);
