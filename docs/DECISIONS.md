@@ -3938,3 +3938,20 @@ D
 **i18n：** 新键 9 条（含 `设置`）。en 的「连接与设置」译成 `Channels & hotkeys` 而不是 `Connection & settings`：后者在 390 宽会折成两行，把标题栏撑高一倍（页签已加 `white-space: nowrap`，折行会改成裁切，更糟）。顺手修了 `"设置": "Set"` 这条错译 —— 仓库里四处 `tr("设置")` 都是名词（导航标签、作用域分片），英文里被译成了动词。
 
 **验证：** `npm --prefix web run typecheck`（含 i18n-check，2196 键 × 3 语言）；`probes/run-all.mjs --only chrome-topbar,chrome-bottom,chrome-sheet,chrome-narrow,workspace-layout,workspace-settings,a11y-workspace` 7/7 通过；独立实例实测：左上右栏无「通道 / 快捷键 / 关于」标题、抽屉标题「设置」、两页签可切、滚到底标题仍在视口、重开仍是上次那页、复制写进剪贴板（回读 `pi 1.5.0 · bridge 0.1.0`）、en + 390 标题行不溢出（`scrollWidth == clientWidth`）。
+
+## D226 找 pi 的候选表按平台补全；npm ≥ 12 拒 remote 取包时只放开这一次调用
+
+**问题：** macOS + nvm 上 `npm install` 会在 postinstall 里报「pi 装不上」然后整段失败，可 `pi --version` 明明是 1.5.2。三处拼路径的错叠在一起：POSIX 的全局包在 `<node 前缀>/lib/node_modules`，候选表写的是 `bin/node_modules`；`npm root -g` 返回的已经是 `node_modules` 那一层，再拼 `node_modules/...` 就成了 `node_modules/node_modules/...`；`bin/pi` 是软链，`statSync` 跟到 bundle 上（> 1 MB）就把这条候选整个跳过。三处都不报错，只是「假装机器上没装 pi」——于是去重装，而重装又撞上 npm 12 的 `allow-remote=none`（registry 被指到 `http://` 镜像、包地址是 `https://`，npm 把包当成「remote」拒掉），看到的只有一句 `EALLOWREMOTE`。
+
+**决定：**
+
+- **POSIX 单独一条前缀候选**：`<execPath 的祖父>/lib/node_modules/<pkg>`；再按 `$NVM_DIR/versions/node/v*`（没设就是 `~/.nvm`）从新到旧各补一条 —— 跑桥的 node 未必是装 pi 的那个版本。Windows 的 `%LOCALAPPDATA%\nvm`、`%APPDATA%\npm`、`%ProgramData%\npm` 照旧。
+- **`npm root -g` 只拼包路径，不拼 `node_modules`**。这条以前在哪个平台都没命中过，纯属白跑一次 npm。
+- **启动器先看是不是软链**：是就跟 realpath，结尾是 `cli.js` 就用它；不是才当脚本读（`pi.cmd` 里写着真路径）。跳过只看**启动器自己**的大小（`lstatSync`），不跟到目标上去。
+- **`EALLOWREMOTE` 只放开这一次调用**：重试一次 `npm install -g … --allow-remote=all`，**不改用户的 `~/.npmrc`**。还是失败就把「把 registry 换成同名 https 地址」写进错误里，别让人对着 `EALLOWREMOTE` 猜。
+
+**为什么改候选表而不是让用户手工 `pi install` / 设 `PI_BIN`：** 桥自己也用同一张表（`resolvePi()`），表错了这台机器上 bridge 连 pi 子进程都起不来；`PI_BIN` 是兜底，不该拿来当日常方案。
+
+**代价：** `piCandidates()` 多了一个可选入参（`PiProbe`），测试可以喂假环境，不用真 fork npm、真读 bundle。POSIX 上 `bin/node_modules` 那条候选去掉了（本来就只在便携版 Windows 有意义）。
+
+**验证：** `npm run test:pi`（POSIX 前缀、nvm 多版本、`npm root -g` 不重复拼、软链启动器、`pi.cmd` 里的路径、`PI_BIN` 优先、`readVersion` 上溯三层）；本机（macOS + nvm）`resolvePi()` 由抛异常变成 `1.5.2`；`node scripts/bootstrap.mjs --check` 从「找不到 pi」变成「✓ pi 1.5.2」；`tsc -p bridge/tsconfig.json --noEmit` 通过。
