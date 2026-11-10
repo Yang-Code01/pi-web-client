@@ -3904,3 +3904,19 @@ D
 **决定：** 执行面板从市场扩展 `@juicesharp/rpiv-todo` 的 `todo` 工具结果读取 `details.tasks`，桥随会话帧与计划帧转发快照；不另造计划工具、不加提示词或规划开关，上线后观察扩展默认行为。扩展固定为 2.15.0，并进入 D220 自动安装清单。
 
 **为什么：** 这是已有成熟扩展，而且作者已在 D220 清单中；它把完整任务快照保存在当前会话分支里，能随 `/reload`、`/resume`、`/tree` 与压缩重放，不需要桥另建一份计划状态。复用同一快照可让网页只读呈现，不为计划再引入另一套真相。
+
+## D224 `npm start` 先确认 pi 扩展齐了，缺了就拦下（用户要求）
+
+**问题：** D220 只在 `npm install` 时装扩展，`npm start` 只核对子包的 `node_modules`。清单里新加一个扩展（D223 的 `@juicesharp/rpiv-todo`）后，pull 完直接 `npm start` 一声不吭，缺的功能只在网页的设置页和执行面板里才看得到。
+
+**决定：** `npm start` 第一步跑 `node scripts/bootstrap.mjs --start`：pi 找不到 / 太旧、或清单里有扩展没装，就列出缺什么、提示先跑 `npm install`，退出码 1，不编译不启动；都齐了直接往下走。判据与 D220 相同（`pi list` 的用户级包，按包名对，版本旧不算缺）。`--start` 什么都不装，也不写 `bootstrap.json`。
+
+- **记住「齐了」。** `pi list` 要把 pi 整个加载一遍（本机约 18 秒）。结论存在状态目录的 `start-check.json`，键是 pi 的位置与版本、清单、pi 的 agent 目录（`PI_CODING_AGENT_DIR` 可换）及其 `settings.json` 大小与修改时间（`pi install` / `pi remove` 都会改它）；键不变就跳过。只记「齐了」，缺东西时每次都重查。
+- **查不了不挡人。** `pi list` 跑不起来时只打一行 ⚠，照常启动，免得 pi 自己的毛病把桥也拖住。
+- `PI_WEB_NO_AUTOINSTALL=1` 时 `npm install` 不会装扩展，所以改给手动 `pi install …` 的命令（只列缺的）；`CI` 下整段跳过。
+
+**为什么拦而不是只提示：** 用户要求「没装就提示先执行 npm install，装了才直接启动」；缺扩展时网页是静默少功能，拦在启动前最不容易被忽略。
+
+**不管的：** bridge-update 技能的 `restart.mjs` 自己跑 `npm run build` 再起进程，不经过 `npm start`，这一查不覆盖它。
+
+**验证：** `npm run test:start-check`（桩 pi：齐了放行并记住、缓存命中不再跑 `pi list`、`settings.json` 变了重查、缺扩展拦下且只列缺的、缺了不记缓存、关自动安装只给缺的 `pi install` 命令、换 agent 目录重查、`pi list` 失败照常启动、pi 太旧拦下）。

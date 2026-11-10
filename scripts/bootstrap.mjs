@@ -20,6 +20,8 @@
  *   node scripts/bootstrap.mjs            装
  *   node scripts/bootstrap.mjs --check    只报告（不装任何东西），不齐时退出码 1
  *   node scripts/bootstrap.mjs --deps-only  只装子包依赖（CI 用：不碰全局 pi 目录）
+ *   node scripts/bootstrap.mjs --start    `npm start` 前的关卡（D224）：pi 与扩展齐了才放行，缺了就说
+ *                                          缺哪个、先跑 npm install；什么都不装
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -49,7 +51,7 @@ async function loadModules() {
   }
 }
 
-const { MIN_PI_VERSION, REQUIRED_PACKAGES, bootstrapCommand, foundPackages, installSource, parsePackages, piTooOld, piCandidates, readPackageJson, statePath } =
+const { MIN_PI_VERSION, REQUIRED_PACKAGES, agentDir, bootstrapCommand, foundPackages, installSource, parsePackages, piTooOld, piCandidates, readPackageJson, statePath } =
   await loadModules();
 
 const args = new Set(process.argv.slice(2));
@@ -59,6 +61,7 @@ const CI = !!process.env.CI && !args.has("--force");
 const NO_AUTO = !!process.env.PI_WEB_NO_AUTOINSTALL && !args.has("--force");
 const DEPS_ONLY = args.has("--deps-only") || CI || NO_AUTO;
 const QUIET = args.has("--quiet");
+const START = args.has("--start");
 // npm 在 Windows 上是 `npm.cmd`。Node 从 18.20 起拒绝 spawn 一个不带 shell 的 `.cmd`（EINVAL），
 // 所以这里不叫 npm 这个名字：让 node 直接跑 `npm-cli.js`。postinstall 里有 npm_execpath，
 // 手动 `node scripts/bootstrap.mjs` 时按 node 自己的安装位置猜一次。
@@ -158,7 +161,7 @@ function installPackages(pi, record) {
     return;
   }
   for (const pkg of REQUIRED_PACKAGES) {
-    const hit = listed.found.find((h) => h.name.toLowerCase() === pkg.name.toLowerCase());
+    const hit = findInstalled(listed.found, pkg);
     if (hit) {
       record.skipped.push(`${pkg.source}${pkg.version ? `（要 ${pkg.version}）` : ""} 已装${hit.version ? ` ${hit.version}` : ""}（${hit.source}），不动`);
       step(`  ✓ ${pkg.source} 已装，跳过（${FEATURE[pkg.id] ?? pkg.id}）`);
@@ -202,6 +205,79 @@ function installProjectDeps(record) {
     }
   }
 }
+
+// ---------------------------------------------------------------- npm start 前的关卡（D224）
+
+/** 按包名对（npm 包名不分大小写）；装和查共用这一个判据。 */
+function findInstalled(found, pkg) {
+  return found.find((h) => h.name.toLowerCase() === pkg.name.toLowerCase());
+}
+
+/**
+ * 「齐了」的结论记在状态目录里，键是 pi 的位置与版本、清单、pi 的 settings.json（装 / 卸扩展都会
+ * 改它）。键不变就不再问 `pi list` —— 它要把 pi 整个加载一遍，一次十几秒，每次 npm start 都跑
+ * 太贵。只记「齐了」：缺东西时每次都重新问，补上就放行。
+ */
+function startKey(pi) {
+  const dir = path.resolve(agentDir());
+  let settings = "none";
+  try {
+    const st = fs.statSync(path.join(dir, "settings.json"));
+    settings = `${st.size}:${st.mtimeMs}`;
+  } catch {
+    // 没有 settings.json：pi 还没装过任何包。
+  }
+  return JSON.stringify({ pi: pi.cli, version: pi.version, need: REQUIRED_PACKAGES.map(installSource), agent: dir, settings });
+}
+
+function startCheck() {
+  if (CI) return 0;
+  const pi = findPi();
+  // lines 说缺什么；manual 是关了自动安装时要人手动跑的命令（只列缺的）。
+  const blocked = (lines, manual) => {
+    out("✗ pi 的依赖没备齐，这次不启动：");
+    for (const line of lines) out(`  - ${line}`);
+    if (NO_AUTO) {
+      out("PI_WEB_NO_AUTOINSTALL 开着，npm install 不会替你装；手动装：");
+      for (const cmd of manual) out(`  ${cmd}`);
+    } else {
+      out("先在仓库根目录跑一次 npm install（会自动装上），再 npm start。");
+    }
+    return 1;
+  };
+  const piInstall = ["npm install -g @earendil-works/pi-coding-agent@latest"];
+  if (!pi) return blocked(["找不到 pi"], piInstall);
+  if (piTooOld(pi.version)) return blocked([`pi ${pi.version} 低于 ${MIN_PI_VERSION}`], piInstall);
+
+  const cache = statePath("start-check.json");
+  const key = startKey(pi);
+  try {
+    if (JSON.parse(fs.readFileSync(cache, "utf8")).key === key) return 0;
+  } catch {
+    // 没记过或坏了：重新问。
+  }
+  const listed = installedPackages(pi);
+  if (listed.error) {
+    out(`⚠ 没法确认 pi 扩展齐不齐（${listed.error}），照常启动。`);
+    return 0;
+  }
+  const missing = REQUIRED_PACKAGES.filter((pkg) => !findInstalled(listed.found, pkg));
+  if (missing.length)
+    return blocked(
+      missing.map((pkg) => `缺 ${installSource(pkg)}（${FEATURE[pkg.id] ?? pkg.id}）`),
+      missing.map((pkg) => `pi install ${installSource(pkg)}`),
+    );
+  try {
+    fs.mkdirSync(path.dirname(cache), { recursive: true });
+    fs.writeFileSync(cache, `${JSON.stringify({ key, at: Date.now() })}\n`);
+  } catch {
+    // 记不下来只是下次再问一遍。
+  }
+  out(`✓ pi 扩展齐了（${REQUIRED_PACKAGES.length} 个）`);
+  return 0;
+}
+
+if (START) process.exit(startCheck());
 
 // ---------------------------------------------------------------- 主流程
 
