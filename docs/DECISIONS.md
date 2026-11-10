@@ -3921,6 +3921,53 @@ D
 
 **验证：** `npm run test:start-check`（桩 pi：齐了放行并记住、缓存命中不再跑 `pi list`、`settings.json` 变了重查、缺扩展拦下且只列缺的、缺了不记缓存、关自动安装只给缺的 `pi install` 命令、换 agent 目录重查、`pi list` 失败照常启动、pi 太旧拦下）。
 
+## D225 设置抽屉分成「外观」与「连接与设置」两页，入口从 `Aa` 换成一枚齿轮（用户要求）
+
+**问题：** 右栏（「需要你 / 执行」）底下挂了三组跟排队毫无关系的东西：通道（Web Push / 发测试通知 / 公网隧道）、快捷键（含 pi 设置、本机管理）、关于（一行 11px 的 `pi · bridge · 会话目录`）。它们是设置，却占着唯一那个「等你的事」面板的版面：有批准卡时三组按钮被挤到下面，没等你的事时那一栏一半是空的设置。
+
+**决定：** 三组整体搬进顶栏那颗抽屉，抽屉从「外观与语言」改名「设置」，标题后紧跟两枚页签 `外观` | `连接与设置`（chip，不另起一行，390 宽与 en / ja 都放得下）；右栏的三组连标题一起删掉，只剩「等你批准 / 待办 / 执行」。
+
+- **入口是齿轮，不是 `Aa`。** `⚙`（U+2699 + U+FE0E，单色字形）16px —— 13px 在这个等宽字体里糊成一圈。抽屉已经不只管字号，`Aa` 名不副实；`data-act` 仍是 `look`，快捷键面板里那条动作名跟成「设置：外观 / 通道 / 快捷键」。抽屉预览里的那颗占位方块同理（`⚙ 关不掉`）。
+- **标题与页签钉住，只有页自己滚。** 外观页本来就长，整块滚的话翻到底想换页得先滚回顶上：`.sheet.display-sheet` 由 grid 改 flex 列，`.set-page` 吃剩下的高并 `overflow-y: auto`。
+- **停在哪页记进 `pi.prefs.settingsTab`**（`"look"` / `"conn"`），下次打开还是那页。「恢复默认」不碰它 —— 和语言一样，那是「我的选择」，不是被重置的样式。
+- **关于 = 两行可点复制**（版本 `pi x · bridge y`、会话目录），贴在「连接与设置」页底。以前是一行不能选中的小字，报问题时得手抄路径。
+- **通道搬走后重画点跟着走。** 以前隧道点完靠 `renderQueue()`；抽屉不在那条路上，改成隧道回包后 `renderTop() + paintConnPage()`，抽屉没开时后者直接返回。
+
+**代价：** `.sheet` 高度是自适应的，连接页比外观页短，切页签或从别的入口进来时抽屉会跳一下高度（内容撑多高就多高）。没加 `min-height` 兜：真加固定值，窄屏和小窗里反而会空出一块。
+
+**i18n：** 新键 9 条（含 `设置`）。en 的「连接与设置」译成 `Channels & hotkeys` 而不是 `Connection & settings`：后者在 390 宽会折成两行，把标题栏撑高一倍（页签已加 `white-space: nowrap`，折行会改成裁切，更糟）。顺手修了 `"设置": "Set"` 这条错译 —— 仓库里四处 `tr("设置")` 都是名词（导航标签、作用域分片），英文里被译成了动词。
+
+**验证：** `npm --prefix web run typecheck`（含 i18n-check，2196 键 × 3 语言）；`probes/run-all.mjs --only chrome-topbar,chrome-bottom,chrome-sheet,chrome-narrow,workspace-layout,workspace-settings,a11y-workspace` 7/7 通过；独立实例实测：左上右栏无「通道 / 快捷键 / 关于」标题、抽屉标题「设置」、两页签可切、滚到底标题仍在视口、重开仍是上次那页、复制写进剪贴板（回读 `pi 1.5.0 · bridge 0.1.0`）、en + 390 标题行不溢出（`scrollWidth == clientWidth`）。
+
+## D226 找 pi 的候选表按平台补全；npm ≥ 12 拒 remote 取包时只放开这一次调用
+
+**问题：** macOS + nvm 上 `npm install` 会在 postinstall 里报「pi 装不上」然后整段失败，可 `pi --version` 明明是 1.5.2。三处拼路径的错叠在一起：POSIX 的全局包在 `<node 前缀>/lib/node_modules`，候选表写的是 `bin/node_modules`；`npm root -g` 返回的已经是 `node_modules` 那一层，再拼 `node_modules/...` 就成了 `node_modules/node_modules/...`；`bin/pi` 是软链，`statSync` 跟到 bundle 上（> 1 MB）就把这条候选整个跳过。三处都不报错，只是「假装机器上没装 pi」——于是去重装，而重装又撞上 npm 12 的 `allow-remote=none`（registry 被指到 `http://` 镜像、包地址是 `https://`，npm 把包当成「remote」拒掉），看到的只有一句 `EALLOWREMOTE`。
+
+**决定：**
+
+- **POSIX 单独一条前缀候选**：`<execPath 的祖父>/lib/node_modules/<pkg>`；再按 `$NVM_DIR/versions/node/v*`（没设就是 `~/.nvm`）从新到旧各补一条 —— 跑桥的 node 未必是装 pi 的那个版本。Windows 的 `%LOCALAPPDATA%\nvm`、`%APPDATA%\npm`、`%ProgramData%\npm` 照旧。
+- **`npm root -g` 只拼包路径，不拼 `node_modules`**。这条以前在哪个平台都没命中过，纯属白跑一次 npm。
+- **启动器先看是不是软链**：是就跟 realpath，结尾是 `cli.js` 就用它；不是才当脚本读（`pi.cmd` 里写着真路径）。跳过只看**启动器自己**的大小（`lstatSync`），不跟到目标上去。
+- **`EALLOWREMOTE` 只放开这一次调用**：重试一次 `npm install -g … --allow-remote=all`，**不改用户的 `~/.npmrc`**。还是失败就把「把 registry 换成同名 https 地址」写进错误里，别让人对着 `EALLOWREMOTE` 猜。
+
+**为什么改候选表而不是让用户手工 `pi install` / 设 `PI_BIN`：** 桥自己也用同一张表（`resolvePi()`），表错了这台机器上 bridge 连 pi 子进程都起不来；`PI_BIN` 是兜底，不该拿来当日常方案。
+
+**代价：** `piCandidates()` 多了一个可选入参（`PiProbe`），测试可以喂假环境，不用真 fork npm、真读 bundle。POSIX 上 `bin/node_modules` 那条候选去掉了（本来就只在便携版 Windows 有意义）。
+
+**验证：** `npm run test:pi`（POSIX 前缀、nvm 多版本、`npm root -g` 不重复拼、软链启动器、`pi.cmd` 里的路径、`PI_BIN` 优先、`readVersion` 上溯三层）；本机（macOS + nvm）`resolvePi()` 由抛异常变成 `1.5.2`；`node scripts/bootstrap.mjs --check` 从「找不到 pi」变成「✓ pi 1.5.2」；`tsc -p bridge/tsconfig.json --noEmit` 通过。
+
+## D227 聊天记录里一轮的计划更新折成一张卡（用户要求）
+
+**问题：** 每调一次 `todo`，聊天里就多一张「计划 x/y · 完成「…」」的窄条。八项的计划要更新七八次，记录里就挂七八条，把正文挤出去；而这些中途快照在右侧执行面板里本来就有对应的计划与步骤。
+
+**决定：** 同一轮（两条用户消息之间）的所有 `todo` 调用在聊天里只占一张卡：主行显示最新快照，右边 `▾ N`（N > 1 才出现）展开这一轮的每次更新（时间 / 动作 / 记号）；主行仍是「点击查看执行面板计划」。换轮（`user` 消息）与 `reset()` 另起一张；往前翻历史（`prepend`）时旧轮各自成组，不并进当前这张。
+
+**为什么折而不是删：** 中途快照能说明「计划在第几步变的」，删掉就只剩最终态；折起来保留这份证据，又只占一行。默认收起，扫读成本与一张卡时相同。
+
+**代价 / 可改：** 展开记录不做虚拟滚动，一轮更新特别多（几十次）时这张卡会很高；真碍事就只留最近若干条。记号与执行面板同一套（✓ / ◌ / ○），聊天里不显示归属步骤数。
+
+**验证：** `npm run test:exec-panel:ui` 的 PLANLOOP 场景（一轮三次 `todo`）：只出一张卡、主行是最后一次快照并带「3 次更新」、更新默认收起、展开后三行按时间顺序、单击主行仍打开执行面板；单次更新的轮次不出现展开钮。
+
 ## D228 「现在」卡里的长参数默认压成一行（用户要求）
 
 **问题：** 「现在」卡把在途工具的完整参数直接摆出来：子代理那一行是整段任务描述（几百字），`ask_user_question` 是整段 JSON，一张两行的卡被撑成一屏。它上面是计划列表、左边是正文，这块恰恰是谁都不看的。

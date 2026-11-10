@@ -729,8 +729,11 @@ export class App {
     collapseRight.dataset.side = "right";
     collapseRight.dataset.act = "queue";
     collapseRight.onclick = () => this.togglePane("queue");
-    const look = el("button", "icon-btn icon-text", "Aa");
-    look.title = tr("字号与颜色");
+    // 这颗以前是「Aa」：现在它是整个设置抽屉（外观 + 语言 + 通道 + 快捷键）的入口，所以画成齿轮。
+    // 16px 是量出来的：13px 的 ⚙ 在这个等宽字体里糊成一圈，看不出八颗齿；U+FE0E 要单色字形，不要彩色 emoji。
+    const look = el("button", "icon-btn set-btn", "\u2699\uFE0E");
+    look.title = tr("设置：外观 / 连接与设置");
+    look.setAttribute("aria-label", look.title);
     look.dataset.act = "look";
     look.onclick = () => this.openDisplaySheet();
     const files = this.wideBtn(tr("📂 产物"));
@@ -2641,6 +2644,8 @@ export class App {
         this.tunnel = msg.tunnel;
         this.renderTop();
         this.renderQueue();
+        // 隧道状态从桥（或别的客户端）推过来时，左栏已经不再画这块了，得顺手重画抽屉里的连接页。
+        this.paintConnPage();
         break;
       default:
         break;
@@ -3467,11 +3472,29 @@ export class App {
 
     const sheet = el("div", "sheet display-sheet");
     const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("外观与语言")));
+    head.append(el("div", "sheet-title", tr("设置")));
+    // 两枚页签跟标题同排（样张 V2）：不另起一行，抽屉一打开就看得见两个入口。
+    const tabs = el("div", "set-tabs");
+    for (const [id, label] of [
+      ["look", tr("外观")],
+      ["conn", tr("连接与设置")],
+    ] as const) {
+      const chip = el("button", "chip", label);
+      chip.dataset.tab = id;
+      chip.onclick = () => this.setDisplayTab(id);
+      tabs.append(chip);
+    }
+    head.append(tabs);
     const close = el("button", "btn ghost", tr("关闭"));
     close.onclick = () => this.closeSheet();
     head.append(close);
     sheet.append(head);
+    // 每页自己滚：标题 + 页签钉在上面（以前是整块 .sheet 一起滚，翻到下面想换页得滚回顶上）。
+    const lookPage = el("div", "set-page");
+    lookPage.dataset.page = "look";
+    const connPage = el("div", "set-page");
+    connPage.dataset.page = "conn";
+    sheet.append(lookPage, connPage);
 
     // 语言放第一组：换语言是「整页立刻变样」的事，比字号更需要一眼找到（D110）。
     const langBox = el("div", "levels");
@@ -3484,7 +3507,7 @@ export class App {
       langChips.append(chip);
     }
     langBox.append(langChips);
-    sheet.append(langBox);
+    lookPage.append(langBox);
 
     const sizeBox = el("div", "levels");
     const sizeRead = el("span", "size-read");
@@ -3533,7 +3556,7 @@ export class App {
     const sizeCtl = el("div", "size-ctl");
     sizeCtl.append(smallAa, rail, bigAa, marks);
     sizeBox.append(sizeCtl);
-    sheet.append(sizeBox);
+    lookPage.append(sizeBox);
 
     /** 把值抹到控件上（轨道填充 / 读数 / 刻度的「已过」状态 / 刻度字的高亮）。 */
     const paintSize = (v: number): void => {
@@ -3667,7 +3690,7 @@ export class App {
       swatches.append(sw);
     }
     colorBox.append(swatches);
-    sheet.append(colorBox);
+    lookPage.append(colorBox);
 
     const textBox = el("div", "levels");
     textBox.append(el("div", "levels-label", tr("文字亮度")));
@@ -3683,7 +3706,7 @@ export class App {
       textChips.append(chip);
     }
     textBox.append(textChips);
-    sheet.append(textBox);
+    lookPage.append(textBox);
 
     // #97：工作区布局。四颗 chip 各带一张 CSS 画的小示意图（不引图片：设置面板要能离线打开，
     // 一张 png 就得多一条资源路径）。这一票只点亮 A，其余三颗置灰 + 悬停说明「下一步补上」——
@@ -3715,7 +3738,7 @@ export class App {
       layoutChips.append(chip);
     }
     layoutBox.append(layoutChips);
-    sheet.append(layoutBox);
+    lookPage.append(layoutBox);
 
     // #123：标签行的名额。名额存在桥端（`ws.tabs`），不进 `pi.prefs` ——
     // 换浏览器打开还是同一个 N。改完即发，不等「确定」。
@@ -3723,7 +3746,7 @@ export class App {
     wsTabsBox.append(el("div", "levels-label", tr("标签行")));
     this.wsPane = el("div", "ws-tabs-pane");
     wsTabsBox.append(this.wsPane);
-    sheet.append(wsTabsBox);
+    lookPage.append(wsTabsBox);
     this.paintWsTabsPane();
 
     // #291：预览 + 开关墙。预览是「点一下就能关掉」的那张画，开关墙是找不到按钮时的兜底；
@@ -3731,29 +3754,153 @@ export class App {
     const chromeBox = el("div", "levels");
     this.chromePane = el("div", "chrome-pane");
     chromeBox.append(this.chromePane);
-    sheet.append(chromeBox);
+    lookPage.append(chromeBox);
     this.paintChromePane();
 
     const foot = el("div", "sheet-foot");
     const reset = el("button", "btn ghost", tr("恢复默认"));
     reset.onclick = () => {
-      // 恢复默认只恢复字号/颜色/亮度/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍。
-      // 布局回到 A（DEFAULT_PREFS.layout），与「新装用户看到的就是两行制」对齐。
-      this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang, wsIntroSeen: this.prefs.wsIntroSeen };
+      // 恢复默认只恢复字号/颜色/亮度/布局：语言是「我是谁」，不该被配色重置带走；迁移预览也别再来一遍；
+      // 停在哪一页同样是「我的选择」，不一起重置（否则一点恢复默认就被弹回外观页）。
+      this.prefs = { ...DEFAULT_PREFS, lang: this.prefs.lang, wsIntroSeen: this.prefs.wsIntroSeen, settingsTab: this.prefs.settingsTab };
       savePrefs(this.prefs);
       this.applyPrefs();
       this.openDisplaySheet();
     };
     foot.append(reset);
-    sheet.append(foot);
+    lookPage.append(foot);
 
     back.append(sheet);
     this.overlay(back);
     this.sheet = back;
+    this.setDisplayTab(this.prefs.settingsTab);
+  }
+
+  /** 抽屉换页签：只切显隐，不重建（重建会丢掉滑块拖到一半的手感）。停在哪页记进 `pi.prefs`。 */
+  private setDisplayTab(tab: Prefs["settingsTab"]): void {
+    if (this.prefs.settingsTab !== tab) {
+      this.prefs = { ...this.prefs, settingsTab: tab };
+      savePrefs(this.prefs);
+    }
+    const sheet = this.sheet;
+    if (!sheet) return;
+    for (const page of sheet.querySelectorAll<HTMLElement>(".set-page")) page.hidden = page.dataset.page !== tab;
+    for (const chip of sheet.querySelectorAll<HTMLElement>(".set-tabs .chip")) chip.classList.toggle("on", chip.dataset.tab === tab);
+    if (tab === "conn") this.paintConnPage();
   }
 
   /**
-   * #291：「外观与语言」里的实时预览 + 开关墙。
+   * 「连接与设置」那一页：从「需要你」栏搬过来的通道、快捷键，加上关于。
+   *
+   * 这三块以前在左栏底部，隧道一开一关会顺带重画整栏；搬进抽屉之后没有 `renderQueue()` 那条路了，
+   * 所以隧道点完要自己重画（抽屉没开时 `paintConnPage` 直接返回）。
+   */
+  private paintConnPage(): void {
+    const page = this.sheet?.querySelector<HTMLElement>('.set-page[data-page="conn"]');
+    if (!page) return;
+    page.replaceChildren();
+
+    const chan = el("div", "levels");
+    chan.append(el("div", "levels-label", tr("通道")));
+    const chanTools = el("div", "set-tools");
+    const push = el("button", "btn", tr("开启 Web Push"));
+    push.onclick = () => void this.enablePush();
+    const test = el("button", "btn", tr("发测试通知"));
+    test.onclick = async () => {
+      const res = await api.notifyTest().catch((e) => ({ push: 0, wechat: String(e.message ?? e) }));
+      alert(tr("Web Push 送达 {p1} 台；微信：{p2}", { p1: res.push, p2: res.wechat }));
+    };
+    const tun = el("button", "btn", this.tunnel.status === "up" ? tr("关掉公网隧道") : tr("开公网隧道"));
+    tun.onclick = async () => {
+      // 从公网页面点「关掉」时回包可能死在正在拆的隧道上（Cloudflare 502）：以前这里
+      // `.catch(() => null)` 把错误吞了，用户看到的就是「点了没反应」。失败必须说出来。
+      const up = this.tunnel.status === "up";
+      if (tun.disabled) return;
+      tun.disabled = true;
+      try {
+        const res = await api.tunnel(up ? "stop" : "start");
+        this.tunnel = res.tunnel;
+      } catch (err) {
+        this.flashToast(up && this.me.public ? tr("没收到回包：隧道可能已经关了，这个页面也就断了") : tr("隧道操作失败：{p1}", { p1: errText(err) }), true, 8000);
+      } finally {
+        this.renderTop();
+        this.paintConnPage();
+      }
+    };
+    chanTools.append(push, test, tun);
+    chan.append(chanTools);
+    chan.append(el("div", "hint", tr("Web Push 订阅 {p1} 台设备", { p1: this.me.pushCount })));
+    if (this.tunnel.url) {
+      const link = el("a", "set-link", this.tunnel.url);
+      link.href = this.tunnel.url;
+      link.target = "_blank";
+      chan.append(link);
+    }
+    if (this.tunnel.error) chan.append(el("div", "notice warn", errText(this.tunnel)));
+    page.append(chan);
+
+    const keys = el("div", "levels");
+    keys.append(el("div", "levels-label", tr("快捷键")));
+    const keysTools = el("div", "set-tools");
+    const keysBtn = el("button", "btn", Object.keys(this.keys).length ? tr("快捷键（已设 {p1} 个）", { p1: Object.keys(this.keys).length }) : tr("设置快捷键"));
+    keysBtn.onclick = () => this.openKeysSheet();
+    const piSettings = el("button", "btn", tr("pi 设置")) as HTMLButtonElement;
+    piSettings.title = tr("pi 的 settings.json（全局 / 项目）、项目信任、两个更新日志（/settings）");
+    piSettings.onclick = () => this.openSettingsSheet("global");
+    const sysmanage = el("button", "btn", tr("本机管理")) as HTMLButtonElement;
+    sysmanage.title = tr("本机信息、网卡与 DNS、端口与服务");
+    sysmanage.onclick = () => {
+      this.closeSheet();
+      openSysmanage();
+    };
+    keysTools.append(keysBtn, piSettings, sysmanage);
+    keys.append(keysTools);
+    page.append(keys);
+
+    // 关于贴底：两行都能点一下复制（版本、会话目录），报问题时直接粘。
+    const about = el("div", "sheet-foot set-about");
+    about.append(el("div", "levels-label", tr("关于")));
+    about.append(this.copyRow(tr("版本"), `pi ${this.me.pi} · bridge ${this.me.version}`));
+    about.append(this.copyRow(tr("会话目录"), this.me.sessionsRoot));
+    page.append(about);
+  }
+
+  /** 点一下复制一行（关于里的版本 / 会话目录）。 */
+  private copyRow(label: string, value: string): HTMLElement {
+    const row = el("button", "set-copy") as HTMLButtonElement;
+    row.title = tr("点一下复制");
+    row.append(el("span", "k", label), el("span", "v", value));
+    const done = el("span", "done", tr("复制"));
+    row.append(done);
+    row.onclick = () => {
+      // `navigator.clipboard` 在局域网 http 地址下不存在，可选链要包住调用而不是属性；
+      // 拿不到就退化成「选中让用户自己按 Ctrl+C」，绝不假报一句「已复制」。
+      const copy = navigator.clipboard?.writeText(value);
+      if (!copy) {
+        const range = document.createRange();
+        range.selectNodeContents(row.querySelector(".v") ?? row);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+        this.flashToast(tr("这个地址拿不到剪贴板（http 的局域网地址浏览器不给）"), true, 6000);
+        return;
+      }
+      void copy
+        .then(() => {
+          done.textContent = tr("已复制");
+          done.classList.add("on");
+          setTimeout(() => {
+            done.textContent = tr("复制");
+            done.classList.remove("on");
+          }, 1200);
+        })
+        .catch(() => this.flashToast(tr("复制失败：手动选中它复制"), true, 6000));
+    };
+    return row;
+  }
+
+  /**
+   * #291：设置 → 外观里的实时预览 + 开关墙。
    *
    * 预览是顶栏 / 下沿的一张缩略画：胶囊亮不亮、方块实线还是虚线，全问 `isChromeVisible()`；
    * 宽度用**这张画自己的**档（桌面 / 手机 390），不是真窗口 —— 否则在 1440 的表里点「手机」，
@@ -3818,11 +3965,11 @@ export class App {
       pvTop.append(keep(btn));
     }
     // `Aa` 就在这颗位置上，但它不在 `CHROME_IDS` 里：这张表靠它进来，关掉就再也打不开了。
-    const aa = el("button", "chrome-pv-btn chrome-pv-aa", "Aa") as HTMLButtonElement;
-    aa.type = "button";
-    aa.disabled = true;
-    aa.title = tr("Aa 关不掉：这张表靠它进来");
-    pvTop.append(aa);
+    const gear = el("button", "chrome-pv-btn chrome-pv-gear", "\u2699\uFE0E") as HTMLButtonElement;
+    gear.type = "button";
+    gear.disabled = true;
+    gear.title = tr("⚙ 关不掉：这张表靠它进来");
+    pvTop.append(gear);
     pv.append(pvTop);
 
     const bottomItems: [ChromeId, string][] = [
@@ -4065,8 +4212,8 @@ export class App {
       btn.hidden = !visible;
       btn.title = sessionBound && !visible && chrome[id] === true ? `${title} · ${noSessionWhy}` : title;
     };
-    look.title = tr("外观与语言");
-    look.setAttribute("aria-label", tr("外观与语言"));
+    look.title = tr("设置：外观 / 连接与设置");
+    look.setAttribute("aria-label", look.title);
     this.setWideLabel(files, tr("📂 产物"));
     show("artifacts", files, tr("本会话写过的文件（md / html / 图片…点开预览）"), true);
     this.setWideLabel(term, tr(">_ 终端"));
@@ -14560,63 +14707,6 @@ export class App {
       }
     }
     this.els.queuePane.scrollTop = kept;
-
-    const tools = el("div", "actions");
-    tools.style.display = "flex";
-    tools.style.gap = "8px";
-    tools.style.flexWrap = "wrap";
-    const push = el("button", "btn", tr("开启 Web Push"));
-    push.onclick = () => void this.enablePush();
-    const test = el("button", "btn", tr("发测试通知"));
-    test.onclick = async () => {
-      const res = await api.notifyTest().catch((e) => ({ push: 0, wechat: String(e.message ?? e) }));
-      alert(tr("Web Push 送达 {p1} 台；微信：{p2}", { p1: res.push, p2: res.wechat }));
-    };
-    const tun = el("button", "btn", this.tunnel.status === "up" ? tr("关掉公网隧道") : tr("开公网隧道"));
-    tun.onclick = async () => {
-      // 从公网页面点「关掉」时回包可能死在正在拆的隧道上（Cloudflare 502）：以前这里
-      // `.catch(() => null)` 把错误吞了，用户看到的就是「点了没反应」。失败必须说出来。
-      const up = this.tunnel.status === "up";
-      if (tun.disabled) return;
-      tun.disabled = true;
-      try {
-        const res = await api.tunnel(up ? "stop" : "start");
-        this.tunnel = res.tunnel;
-      } catch (err) {
-        this.flashToast(up && this.me.public ? tr("没收到回包：隧道可能已经关了，这个页面也就断了") : tr("隧道操作失败：{p1}", { p1: errText(err) }), true, 8000);
-      } finally {
-        this.renderTop();
-        this.renderQueue();
-      }
-    };
-    tools.append(push, test, tun);
-    host.append(el("h2", "", tr("通道")));
-    host.append(tools);
-    host.append(el("div", "hint", tr("Web Push 订阅 {p1} 台设备", { p1: this.me.pushCount })));
-    if (this.tunnel.url) {
-      const link = el("a", "", this.tunnel.url);
-      link.href = this.tunnel.url;
-      link.target = "_blank";
-      host.append(link);
-    }
-    if (this.tunnel.error) host.append(el("div", "notice warn", errText(this.tunnel)));
-    const keysTools = el("div", "queue-tools");
-    const keysBtn = el("button", "btn", Object.keys(this.keys).length ? tr("快捷键（已设 {p1} 个）", { p1: Object.keys(this.keys).length }) : tr("设置快捷键"));
-    keysBtn.onclick = () => this.openKeysSheet();
-    const piSettings = el("button", "btn", tr("pi 设置")) as HTMLButtonElement;
-    piSettings.title = tr("pi 的 settings.json（全局 / 项目）、项目信任、两个更新日志（/settings）");
-    piSettings.onclick = () => this.openSettingsSheet("global");
-    const sysmanage = el("button", "btn", tr("本机管理")) as HTMLButtonElement;
-    sysmanage.title = tr("本机信息、网卡与 DNS、端口与服务");
-    sysmanage.onclick = () => {
-      this.closeSheet();
-      openSysmanage();
-    };
-    keysTools.append(keysBtn, piSettings, sysmanage);
-    host.append(el("h2", "", tr("快捷键")));
-    host.append(keysTools);
-    host.append(el("h2", "", tr("关于")));
-    host.append(el("div", "hint about", `pi ${this.me.pi} · bridge ${this.me.version} · ${this.me.sessionsRoot}`));
   }
 
   // ---------------------------------------------------------------- terminal (Q-007 · D70 · D92)
@@ -16278,6 +16368,8 @@ type Prefs = {
   lang: Lang;
   /** 收起的工作区（#95）：组 id 列表，跟 accent 一起存在 `pi.prefs` 里，不另开 storage key。 */
   wsCollapsed: string[];
+  /** 设置抽屉停在哪一页（样张 V2 定的）：只记选择，不参与「恢复默认」。 */
+  settingsTab: "look" | "conn";
   /** 工作区布局（#97）：稳定 id（a/b/c/d），标签过 `tr()`；读口在 `layout.ts`。 */
   layout: LayoutId;
   /** #101 迁移预览只弹一次：用户点了「就这样开始」才写这个标记（取消不写，下次还弹）。 */
@@ -16297,6 +16389,7 @@ const DEFAULT_PREFS: Prefs = {
   lang: "zh-Hans",
   wsCollapsed: [],
   layout: "a",
+  settingsTab: "look",
   wsIntroSeen: false,
 };
 
@@ -16613,7 +16706,7 @@ const SHORTCUTS: { id: string; label: string }[] = [
   { id: "artifacts", label: tr("产物列表") },
   { id: "files", label: tr("文件管理器") },
   { id: "notes", label: tr("bug 记录") },
-  { id: "look", label: tr("字号与配色") },
+  { id: "look", label: tr("设置：外观 / 连接与设置") },
   { id: "skills", label: tr("技能面板") },
   { id: "attach", label: tr("附加文件") },
   { id: "terminal", label: tr("打开终端") },
@@ -16866,6 +16959,7 @@ function readPrefs(): Prefs {
       wsCollapsed: Array.isArray(p?.wsCollapsed) ? p.wsCollapsed.filter((x: unknown): x is string => typeof x === "string") : [],
       // #97：布局走 layout.ts 的读口（它自己处理乱值 / 大小写），这里不再写一遍白名单。
       layout: layoutPref(p),
+      settingsTab: p?.settingsTab === "conn" ? "conn" : "look",
       wsIntroSeen: p?.wsIntroSeen === true,
     };
   } catch {
