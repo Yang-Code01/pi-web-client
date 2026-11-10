@@ -924,13 +924,10 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   min-height: 44px;
   resize: none;
   padding: 12px 12px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 12px;
   font-size: 15px;
 }
 .composer textarea::placeholder { color: var(--faint); }
-.composer textarea:focus { outline: none; border-color: var(--accent); }
+.composer textarea:focus { outline: none; }
 /* #317: 撞到上限后，框里会藏住上半截文字。滚到框内中段时，顶部 24px 让**文字自己**淡出；回到第一
    行（上面没东西可藏）或到了最下面（光标停靠在末行也算到底，内缩怎么量见 `syncComposerFade()`）
    都不显示。用 mask，不是盖一层渐变色块：
@@ -2401,11 +2398,19 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .dir-list { grid-template-columns: minmax(0, 1fr); overflow-x: hidden; }
 
 /* ---- long pastes: their own foldable box inside the composer, apart from the typed text ---- */
-.composer-input { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.composer-input textarea { width: 100%; }
-.composer-input.has-pastes { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
-.composer-input.has-pastes:focus-within { border-color: var(--accent); }
-.composer-input.has-pastes > textarea { border: 0; background: transparent; border-radius: 0 0 12px 12px; }
+/* #317 follow-up: the fade is a mask on the textarea, and a mask carries alpha for everything the
+   element paints — with the panel colour and the border on the box, the top 24px would fade those
+   too, leaving a washed-out strip instead of the first line of text. So the panel, the border, its
+   focus ring and the radius live on this wrapper, which has no mask; the textarea is a transparent,
+   borderless sheet inside it, and the fade can only reach text. */
+.composer-input {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.composer-input:focus-within { border-color: var(--accent); }
+.composer-input > textarea { width: 100%; border: 0; background: transparent; border-radius: 0; }
 .paste-list { display: grid; gap: 4px; padding: 8px 8px 0; }
 .paste-list[hidden] { display: none; }
 .paste-block { border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); overflow: hidden; }

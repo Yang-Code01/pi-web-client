@@ -1,5 +1,7 @@
 /**
- * Probe: #315 — the composer grows with its content, capped by half the chat pane.
+ * Probe: #313 — the composer grows with its content, capped by half the chat pane. Covers tickets
+ * #315–#319: the cap itself, the narrow and zoomed cap, the top fade, the paste fold budget, and the
+ * transcript holding the bottom across the growth.
  *
  * Stands in for the bridge (serves `web/dist`, speaks enough ws to open one session) and drives a
  * real Chromium: the height of a textarea can only be checked in a browser, and the cap depends on
@@ -20,15 +22,17 @@
  * never below the cap, and a wheel inside the box scrolls the box without moving the transcript.
  *
  * #318 adds the paste fold: a 30-line paste arrives folded, expanding it splits the composer's cap
- * in half (the fold takes the other half), the fold scrolls inside itself past its half, a real
- * corner drag stops at that half, collapsing gives the composer the whole cap back, and the narrow
- * layout still leaves the composer a line.
+ * in half (the fold takes the other half), two folds at once split it three ways so composer and both
+ * folds together never pass the cap, the fold scrolls inside itself past its share, a real corner
+ * drag stops at that share, collapsing gives the composer the whole cap back, and the narrow layout
+ * still leaves the composer a line.
  *
  * #319 adds the transcript's side of the growth: a box that grows under a following transcript keeps
- * the last message wholly inside the band, a box that grows while the user reads history leaves the
- * message at the top of the band where it was, shrinking back to one line keeps the hold on the
- * bottom without moving a mid-transcript reading position, and a stream in flight keeps following
- * across the growth.
+ * the last message wholly inside the band — including a paste fold opened by a click, which has to
+ * pin in that click's own task, before the next frame; a box that grows while the user reads history
+ * leaves the message at the top of the band where it was, shrinking back to one line keeps the hold
+ * on the bottom without moving a mid-transcript reading position, and a stream in flight keeps
+ * following across the growth.
  *
  * Run: node probes/composer-grow.mjs   (needs `npm run build:web` first)
  */
@@ -38,12 +42,13 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
 import { loadPlaywright } from "../tools/playwright.mjs";
+import { freePort } from "./port.mjs";
 
 const { chromium } = await loadPlaywright();
 const wsMod = await import(pathToFileURL(wsWrapper()).href);
 const { WebSocketServer } = wsMod;
 
-const PORT = Number(process.env.PI_WEB_PORT ?? 7931);
+const PORT = await freePort(Number(process.env.PI_WEB_PORT ?? 7946));
 const OUT = path.join(REPO, ".scratch/composer-grow/shots");
 const BASE = `http://127.0.0.1:${PORT}`;
 fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
@@ -443,7 +448,10 @@ try {
     page.evaluate(() => {
       const t = document.querySelector(".composer textarea");
       const cs = getComputedStyle(t);
+      const wrapper = document.querySelector(".composer-input");
+      const wcs = getComputedStyle(wrapper);
       const mask = cs.maskImage && cs.maskImage !== "none" ? cs.maskImage : cs.webkitMaskImage;
+      const wrapperMask = wcs.maskImage && wcs.maskImage !== "none" ? wcs.maskImage : wcs.webkitMaskImage;
       const r = t.getBoundingClientRect();
       // 5px in from the top: inside the 24px fade band, clear of the 1px border.
       const hit = document.elementFromPoint(r.left + r.width / 2, r.top + 5);
@@ -454,6 +462,13 @@ try {
         // What "the bottom" means in CSS px here: the part of the box a caret line needs below it.
         inset: parseFloat(cs.paddingBottom) + (t.offsetHeight - t.clientHeight),
         mask: mask || "none",
+        // The fade must reach the text only: the panel and the border live on the wrapper, which
+        // carries no mask, so neither can be faded away by the 24px band.
+        wrapperMask: wrapperMask || "none",
+        wrapperBg: wcs.backgroundColor,
+        wrapperBorder: `${wcs.borderTopWidth} ${wcs.borderTopStyle} ${wcs.borderTopColor}`,
+        inputBg: cs.backgroundColor,
+        inputBorder: `${cs.borderTopWidth} ${cs.borderTopStyle}`,
         transition: cs.transitionDuration,
         pointerEvents: cs.pointerEvents,
         hitIsTextarea: hit === t,
@@ -490,7 +505,7 @@ try {
   await page.screenshot({ path: path.join(OUT, "10-no-fade.png") });
   log("caret on the last line (resting at the bottom): no fade", `scrollTop ${capped.scrollTop}/${capped.overflow}, ${restGap}px left vs ${capped.inset}px inset`);
 
-  // 1. Scrolling up from the reading position: 24px at the top fade out, and nothing is painted to
+  // 9a. Scrolling up from the reading position: 24px at the top fade out, and nothing is painted to
   // fade them. A wheel inside the box belongs to the box: the transcript must not scroll along.
   assert(capped.chatOverflow > 60, `the transcript can scroll on its own (${capped.chatOverflow}px)`);
   const beforeWheel = capped;
@@ -515,19 +530,28 @@ try {
     `the fade is pure alpha — no colour of its own to clash with the theme (${maskColours.join(" ")})`,
   );
   assert(!/[1-9]/.test(faded.transition), `no transition on the fade, so nothing to suppress under reduced motion (${faded.transition})`);
+  assert(faded.wrapperMask === "none", `the panel wrapper carries no mask of its own (mask ${faded.wrapperMask})`);
+  assert(
+    faded.inputBg === "rgba(0, 0, 0, 0)" && faded.inputBorder === "0px none",
+    `the textarea paints no background and no border, so the fade can only touch text (${faded.inputBg}, border ${faded.inputBorder})`,
+  );
+  assert(
+    faded.wrapperBg !== "rgba(0, 0, 0, 0)" && /^1px solid/.test(faded.wrapperBorder),
+    `the panel background and the 1px border sit on the unmasked wrapper (${faded.wrapperBg}, border ${faded.wrapperBorder})`,
+  );
   assert(faded.pointerEvents === "auto", `the box still takes pointer events (${faded.pointerEvents})`);
   assert(faded.hitIsTextarea, `a click in the fade band lands on the textarea itself, not on a layer (${faded.hit})`);
   await page.screenshot({ path: path.join(OUT, "9-fade-top.png") });
   log("wheel up in the box: faded top confirmed", faded.mask, `chat ${beforeWheel.chatTop} → ${faded.chatTop}`);
 
-  // 2. Back at the first line nothing is hidden above the fold, so the fade goes away there too.
+  // 9b. Back at the first line nothing is hidden above the fold, so the fade goes away there too.
   await scrollBoxTo(0);
   const atTop = await fadeState();
   assert(atTop.scrollTop === 0, `the box is back at its first line (scrollTop ${atTop.scrollTop})`);
   assert(atTop.mask === "none", `nothing is above the fold: no fade (mask ${atTop.mask})`);
   log("first line: no fade");
 
-  // 3. And at the true end of the scroll range, still nothing: both ends read clean.
+  // 9c. And at the true end of the scroll range, still nothing: both ends read clean.
   await scrollBoxTo("bottom");
   const atBottom = await fadeState();
   assert(atBottom.scrollTop >= atBottom.overflow - 1, `the box is at the end of its range (scrollTop ${atBottom.scrollTop} of ${atBottom.overflow})`);
@@ -553,8 +577,20 @@ try {
       const input = document.querySelector(".composer-input > textarea");
       const scroll = document.querySelector(".chat-scroll");
       const body = document.querySelector(".paste-body");
-      const cs = body ? getComputedStyle(body) : null;
-      const r = body ? body.getBoundingClientRect() : null;
+      const describe = (b) => {
+        const cs = getComputedStyle(b);
+        const r = b.getBoundingClientRect();
+        return {
+          box: b.offsetHeight,
+          scrollHeight: b.scrollHeight,
+          clientHeight: b.clientHeight,
+          maxHeight: cs.maxHeight === "none" ? null : parseFloat(cs.maxHeight),
+          overflowY: cs.overflowY,
+          resize: cs.resize,
+          rect: { left: r.left, top: r.top, width: r.width, height: r.height },
+        };
+      };
+      const bodies = [...document.querySelectorAll(".paste-body")];
       return {
         paneHeight: pane.clientHeight,
         inputBox: input.offsetHeight,
@@ -569,17 +605,8 @@ try {
         compact: document.documentElement.dataset.compact === "true",
         folds: document.querySelectorAll(".paste-block").length,
         openFolds: document.querySelectorAll(".paste-block.open").length,
-        body: body
-          ? {
-              box: body.offsetHeight,
-              scrollHeight: body.scrollHeight,
-              clientHeight: body.clientHeight,
-              maxHeight: cs.maxHeight === "none" ? null : parseFloat(cs.maxHeight),
-              overflowY: cs.overflowY,
-              resize: cs.resize,
-              rect: { left: r.left, top: r.top, width: r.width, height: r.height },
-            }
-          : null,
+        body: body ? describe(body) : null,
+        bodies: bodies.map(describe),
       };
     });
 
@@ -704,14 +731,98 @@ try {
   await page.screenshot({ path: path.join(OUT, "12-paste-narrow.png") });
   log("narrow fold", `composer ${narrowFold.inputBox}px, fold ${narrowFold.body.box}px, chat ${narrowFold.scrollBox}px`);
 
+  // 10b. Two folds open at once. The cap is split by the whole number of boxes it feeds — `n` open
+  //      folds leave the composer and every fold `cap / (1 + n)` — not by a fixed half each: two
+  //      halves plus the composer would take 1.5× the cap and push the conversation out of the pane.
+  //      One open fold still lands on the #318 half-and-half.
+  await page.setViewportSize({ width: 1200, height: 1100 });
+  await sleep(400);
+  // Closing a fold only ever removes one body, so bound the loop: a click that stops working must
+  // fail here, not spin forever.
+  for (let i = 0; i < 10 && (await page.locator(".paste-block.open").count()) > 0; i++) {
+    await page.locator(".paste-block.open .paste-toggle").first().click();
+    await sleep(150);
+  }
+  assert((await page.locator(".paste-block.open").count()) === 0, "folds closed for a known geometry");
+  while ((await page.locator(".paste-x").count()) > 0) {
+    await page.locator(".paste-x").first().click();
+    await sleep(120);
+  }
+  await mainField.fill(lines(40));
+  await sleep(120);
+  const pasteInto = async (text) => {
+    await page.evaluate((text) => {
+      const t = document.querySelector(".composer-input > textarea");
+      const dt = new DataTransfer();
+      dt.setData("text/plain", text);
+      t.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, text);
+    await sleep(150);
+  };
+  await pasteInto(pasteText);
+  await pasteInto(pasteText);
+  await until(async () => (await page.locator(".paste-block").count()) === 2, 4000, "two paste folds");
+  await page.locator(".paste-toggle").nth(0).click();
+  await sleep(200);
+  await page.locator(".paste-toggle").nth(1).click();
+  await until(async () => (await page.locator(".paste-body").count()) === 2, 4000, "two paste editors");
+  await sleep(250);
+  const twoOpen = await budget();
+  const twoCap = Math.min(520, twoOpen.paneHeight * 0.5);
+  const third = twoCap / 3;
+  assert(twoOpen.openFolds === 2, `10b both folds are open (${twoOpen.openFolds})`);
+  assert(
+    Math.abs(twoOpen.inputBox - third) <= 2,
+    `10b with two folds open the composer takes a third of the cap (${twoOpen.inputBox}px, want ${third.toFixed(1)})`,
+  );
+  assert(
+    twoOpen.bodies.length === 2 && twoOpen.bodies.every((b) => b.maxHeight !== null && Math.abs(b.maxHeight - third) <= 1),
+    `10b each fold is capped at that third (${twoOpen.bodies.map((b) => b.maxHeight).join(", ")}, want ${third.toFixed(1)})`,
+  );
+
+  // A real drag of each corner: the caps have to bind, otherwise “sum ≤ cap” would pass on the
+  // folds' 160px default height instead of proving the split.
+  for (let i = 0; i < 2; i++) {
+    const gripBox = (await budget()).bodies[i];
+    const gx = gripBox.rect.left + gripBox.rect.width - 7;
+    const gy = gripBox.rect.top + gripBox.rect.height - 7;
+    await page.mouse.move(gx, gy);
+    await page.mouse.down();
+    await page.mouse.move(gx, gy + 300, { steps: 12 });
+    await sleep(120);
+    await page.mouse.up();
+    await sleep(250);
+  }
+  const spread = await budget();
+  const budgetTotal = spread.inputBox + spread.bodies.reduce((n, b) => n + b.box, 0);
+  assert(
+    spread.bodies.every((b) => b.box >= third - 2),
+    `10b both folds really reached their third (${spread.bodies.map((b) => b.box).join(", ")} vs ${third.toFixed(1)})`,
+  );
+  assert(
+    budgetTotal <= twoCap + 2,
+    `10b composer + both folds stay inside the cap (${budgetTotal}px <= ${twoCap.toFixed(1)})`,
+  );
+  assert(spread.scrollBox >= 300, `10b two open folds still leave the transcript a 300px band (${spread.scrollBox}px)`);
+  assert(spread.visibleMsgs >= 2, `10b and whole messages stay readable (${spread.visibleMsgs})`);
+  await page.screenshot({ path: path.join(OUT, "12b-two-folds.png") });
+  log(
+    "10b two folds",
+    `composer ${spread.inputBox}px + folds ${spread.bodies.map((b) => b.box).join(" + ")}px = ${budgetTotal} of ${twoCap.toFixed(1)}`,
+    `chat ${spread.scrollBox}px, ${spread.visibleMsgs} whole messages`,
+  );
+
   // #319 starts wide, with no fold and a one-line box: the #318 fold is part of the previous
   // section's fixture, not of this one, so put the page back to a known geometry first.
   await page.setViewportSize({ width: 1200, height: 1100 });
   await sleep(400);
-  while ((await page.locator(".paste-body").count()) > 0) {
-    await page.locator(".paste-toggle").first().click();
+  // Closing a fold only ever removes one body, so bound the loop: a click that stops working must
+  // fail here, not spin forever.
+  for (let i = 0; i < 10 && (await page.locator(".paste-block.open").count()) > 0; i++) {
+    await page.locator(".paste-block.open .paste-toggle").first().click();
     await sleep(150);
   }
+  assert((await page.locator(".paste-block.open").count()) === 0, "folds closed for a known geometry");
   while ((await page.locator(".paste-x").count()) > 0) {
     await page.locator(".paste-x").first().click();
     await sleep(120);
@@ -865,6 +976,45 @@ try {
   assert(!(await jumpUp()), "13b opening the fold did not break the follow");
   await page.screenshot({ path: path.join(OUT, "13b-fold-grow.png") });
   log("13b fold opened while following", `band ${foldShut.view.height.toFixed(0)} → ${foldOpen.view.height.toFixed(0)}px, gap ${foldOpen.gap.toFixed(1)}`);
+  await page.locator(".paste-x").first().click();
+  await sleep(200);
+
+  // 13d. The same pin through a fold that opens while following. `renderPastes()` rebuilds the fold
+  //      list before `fitComposer()` measures, so the height from before the rebuild is what tells
+  //      the transcript it grew — read after the rebuild, the growth looks like zero and the band is
+  //      pinned a frame late. Click inside `dispatchEvent`'s task: no frame can run in between.
+  await pasteInto(pasteText);
+  await until(async () => (await page.locator(".paste-block").count()) === 1, 4000, "paste fold for 13d");
+  await gotoBottom();
+  const foldTask = await page.evaluate(() => {
+    const scroll = document.querySelector(".chat-scroll");
+    const input = document.querySelector(".composer-input > textarea");
+    const bandBefore = scroll.getBoundingClientRect().height;
+    const box = input.getBoundingClientRect().height;
+    document.querySelector(".paste-toggle").click();
+    const view = scroll.getBoundingClientRect();
+    const msgs = [...scroll.querySelectorAll(".msg")];
+    const last = msgs[msgs.length - 1].getBoundingClientRect();
+    return {
+      box,
+      bandBefore,
+      band: view.height,
+      gap: scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight,
+      lastBottom: last.bottom,
+      viewBottom: view.bottom,
+    };
+  });
+  assert(foldTask.box < 60, `13d the composer itself is one line when the fold opens (${foldTask.box.toFixed(0)}px)`);
+  assert(
+    foldTask.band < foldTask.bandBefore - 100,
+    `13d opening the fold shrank the band inside the same task (${foldTask.bandBefore.toFixed(0)} → ${foldTask.band.toFixed(0)}px)`,
+  );
+  assert(
+    foldTask.gap <= 1 && foldTask.lastBottom <= foldTask.viewBottom + 1,
+    `13d pinned before the next frame (gap ${foldTask.gap.toFixed(1)}px, last line ${foldTask.lastBottom.toFixed(0)} vs band bottom ${foldTask.viewBottom.toFixed(0)})`,
+  );
+  await page.screenshot({ path: path.join(OUT, "13d-fold-same-task-pin.png") });
+  log("13d fold pinned in the click's task", `band ${foldTask.bandBefore.toFixed(0)} → ${foldTask.band.toFixed(0)}px, gap ${foldTask.gap.toFixed(1)}`);
   await page.locator(".paste-x").first().click();
   await sleep(200);
 

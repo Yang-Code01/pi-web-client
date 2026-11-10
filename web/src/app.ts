@@ -12816,16 +12816,32 @@ export class App {
     this.chat.add({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text, level: "warn" });
   }
 
-  /** Auto-height for the main composer textarea (#315): one line at rest, content height up to a cap. */
-  private fitComposer(): void {
+  /** The composer's cap: a share of the chat pane, and for #316 a smaller share when it is the whole screen. */
+  private static readonly COMPOSER_CAP_PX = 520;
+  private static readonly COMPOSER_SHARE = 0.5;
+  private static readonly COMPOSER_SHARE_COMPACT = 0.4;
+
+  /** Borders measured in layout px: `height` is border-box, `clientHeight` leaves the border out. */
+  private borderY(el: HTMLElement): number {
+    return el.offsetHeight - el.clientHeight;
+  }
+
+  /**
+   * Auto-height for the main composer textarea (#315): one line at rest, content height up to a cap.
+   *
+   * `preGrowHeight` is the composer's height from *before* the caller changed what it contains —
+   * `renderPastes` passes it, because it appends the rebuilt folds before calling in here and the
+   * height it would read now already includes them (#319).
+   */
+  private fitComposer(preGrowHeight?: number): void {
     const input = this.textarea;
     if (!input) return;
     // #319: the transcript holds the bottom by itself, but it has to be told *why* the band changed
     // size — its own size observer has no direction and lands a frame late (see
-    // `chat.noteComposerShift`). Measure the whole composer: an open paste fold grows it too, without
-    // touching the textarea's height.
+    // `chat.noteComposerGrew`). Measure the whole composer, not just the textarea: opening a paste
+    // fold grows it without touching the textarea's height.
     const host = this.els.composerHost;
-    const before = host.offsetHeight;
+    const before = preGrowHeight ?? host.offsetHeight;
     // Measure first: only with `height: auto` does `scrollHeight` report what the text needs.
     input.style.height = "auto";
     // The cap is a share of the whole chat pane — not of `.chat-scroll`, which this box itself
@@ -12834,27 +12850,27 @@ export class App {
     // conversation keeps the rest; wide screens get half. `clientHeight` is layout px, so
     // `#app { zoom }` scales the rendered box once, never twice (D123 — no vh/vw here).
     const pane = this.els.chatPane;
-    const share = this.compact() ? 0.4 : 0.5;
-    const cap = pane && pane.clientHeight > 0 ? Math.min(520, pane.clientHeight * share) : 0;
-    // #318: while a paste fold is open, the composer and that fold split the cap in half — a fixed
-    // split, not two boxes measuring each other, so neither can squeeze the other by growing. A
-    // fold that is merely collapsed costs nothing: the box keeps the whole cap.
-    const openFold = this.pastes.some((p) => p.open);
-    const limit = openFold ? cap / 2 : cap;
-    // `height` is border-box, `scrollHeight` leaves the border out — add it back or we clip a pixel.
-    const border = input.offsetHeight - input.clientHeight;
-    input.style.height = limit > 0 ? `${Math.min(limit, input.scrollHeight + border)}px` : "auto";
-    this.fitPastes(openFold ? cap / 2 : 0);
+    const share = this.compact() ? App.COMPOSER_SHARE_COMPACT : App.COMPOSER_SHARE;
+    const cap = pane && pane.clientHeight > 0 ? Math.min(App.COMPOSER_CAP_PX, pane.clientHeight * share) : 0;
+    // #318: while paste folds are open, the composer and each fold split the cap evenly — a fixed
+    // split, not boxes measuring each other, so none can squeeze another by growing. `n` open folds
+    // feed `n + 1` boxes, so each takes `cap / (n + 1)`: one fold is the half-and-half of #318, and
+    // two folds can no longer take two halves plus a half and push chat out of the pane. A fold that
+    // is merely collapsed costs nothing: the box keeps the whole cap.
+    const openFolds = this.pastes.filter((p) => p.open).length;
+    const limit = openFolds > 0 ? cap / (openFolds + 1) : cap;
+    input.style.height = limit > 0 ? `${Math.min(limit, input.scrollHeight + this.borderY(input))}px` : "auto";
+    this.fitPastes(openFolds > 0 ? limit : 0);
     this.syncComposerFade();
     // Read the host back after the write: that layout is what lets the transcript pin before the
     // next frame paints. Nothing to report when the box stayed the same size.
     const delta = host.offsetHeight - before;
-    if (delta !== 0) this.chat.noteComposerShift(delta);
+    if (delta > 0) this.chat.noteComposerGrew();
   }
 
   /**
-   * #318: an expanded paste fold is capped like the composer, and while it is open the composer
-   * keeps only the other half (see `fitComposer`). The cap is written inline in layout px from the
+   * #318: an expanded paste fold is capped like the composer, and while folds are open the composer
+   * keeps an equal share (see `fitComposer`). The cap is written inline in layout px from the
    * pane's measured height — the same reading `fitComposer` uses — so a `resize: vertical` drag
    * stops at it, and anything taller scrolls inside the fold instead of pushing the transcript up.
    * Driven from `fitComposer`, i.e. the pane's ResizeObserver and the window resize frame.
@@ -12889,7 +12905,7 @@ export class App {
     const input = this.textarea;
     if (!input) return;
     const max = input.scrollHeight - input.clientHeight;
-    const inset = parseFloat(getComputedStyle(input).paddingBottom) + (input.offsetHeight - input.clientHeight);
+    const inset = parseFloat(getComputedStyle(input).paddingBottom) + this.borderY(input);
     const atBottom = max - input.scrollTop <= inset + 1;
     input.classList.toggle("has-hidden-top", max > 0 && input.scrollTop > 0 && !atBottom);
   }
@@ -12898,9 +12914,12 @@ export class App {
   private renderPastes(): void {
     const host = this.pasteHost;
     if (!host) return;
+    // #319: the rebuilt folds are in the DOM before `fitComposer` measures, so its own reading would
+    // already include the fold that just opened and the growth would look like zero. Read the height
+    // here, while the composer still stands at its pre-rebuild size, and pass it along.
+    const before = this.els.composerHost?.offsetHeight ?? 0;
     host.replaceChildren();
     host.hidden = !this.pastes.length;
-    host.parentElement?.classList.toggle("has-pastes", this.pastes.length > 0);
     this.pastes.forEach((p, index) => {
       const block = el("div", `paste-block${p.open ? " open" : ""}`);
       const head = el("div", "paste-head");
@@ -12943,9 +12962,9 @@ export class App {
       }
       host.append(block);
     });
-    // Opening or dropping a fold changes whether the composer splits its cap, and a rebuilt body
-    // needs the cap put back on it — the same pass measures both (#318).
-    this.fitComposer();
+    // Opening or dropping a fold changes how many boxes share the cap, and a rebuilt body needs the
+    // cap put back on it — the same pass measures both (#318).
+    this.fitComposer(before);
   }
 
   private async addImages(files: FileList | readonly File[] | null): Promise<void> {
