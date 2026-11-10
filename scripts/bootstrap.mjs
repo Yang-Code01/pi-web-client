@@ -73,6 +73,7 @@ const NPM_CLI = (() => {
  *  两边都按 id 取，不共用中文 —— 一个给终端，一个给 tr()。 */
 const FEATURE = {
   subagents: "设置→子代理、后台卡、subagent 工具",
+  todo: "执行面板计划区（@juicesharp/rpiv-todo）",
   questionnaire: "网页问卷（ask_user_question）",
   "web-access": "web_search / fetch_content / source_check 等联网工具",
 };
