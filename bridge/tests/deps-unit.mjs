@@ -83,17 +83,18 @@ assert.equal(OPTIONAL_PACKAGES[0].name, "billion-context");
 const found = [
   { source: "npm:pi-subagents", name: "pi-subagents", version: "0.86.0" },
   { source: "npm:@juicesharp/rpiv-ask-user-question", name: "@juicesharp/rpiv-ask-user-question", version: "2.15.0" },
+  { source: "npm:@juicesharp/rpiv-todo", name: "@juicesharp/rpiv-todo", version: "2.15.0" },
   { source: "npm:pi-web-access", name: "pi-web-access", version: null },
 ];
 const all = depStatus(found);
-assert.equal(all.length, 3);
+assert.equal(all.length, 4);
 assert.ok(all.every((s) => s.installed));
 assert.equal(missingCount(all), 0);
 assert.equal(all.find((s) => s.name === "pi-subagents").behind, false);
 assert.equal(all.find((s) => s.name === "pi-web-access").behind, false, "不钉版本就没有“旧”这回事");
 
 const partial = depStatus([{ source: "npm:pi-subagents", name: "pi-subagents", version: "0.84.0" }]);
-assert.equal(missingCount(partial), 2);
+assert.equal(missingCount(partial), 3);
 const sub = partial.find((s) => s.name === "pi-subagents");
 assert.equal(sub.installed, true);
 assert.equal(sub.behind, true, "装了但比钉的旧：提示，但不升级");
@@ -115,11 +116,14 @@ const fake = (dir, name, version) => {
 };
 const dirSub = fake("pi-subagents", "pi-subagents", "0.86.0");
 const dirAsk = fake(path.join("@juicesharp", "rpiv-ask-user-question"), "@juicesharp/rpiv-ask-user-question", "2.15.0");
+const dirTodo = fake(path.join("@juicesharp", "rpiv-todo"), "@juicesharp/rpiv-todo", "2.15.0");
 const listText = `User packages:
   npm:pi-subagents
     ${dirSub}
   npm:@juicesharp/rpiv-ask-user-question@2.15.0
     ${dirAsk}
+  npm:@juicesharp/rpiv-todo@2.15.0
+    ${dirTodo}
   npm:pi-web-access`;
 const readPkg = (dir) => {
   try {
@@ -129,15 +133,16 @@ const readPkg = (dir) => {
   }
 };
 const parsed = statusFromList(listText, readPkg);
-assert.equal(parsed.length, 3);
+assert.equal(parsed.length, 4);
 assert.ok(parsed.every((s) => s.installed), "带版本的来源也要认出来");
 assert.equal(parsed.find((s) => s.name === "pi-subagents").foundVersion, "0.86.0");
 assert.equal(parsed.find((s) => s.name === "@juicesharp/rpiv-ask-user-question").foundVersion, "2.15.0");
+assert.equal(parsed.find((s) => s.name === "@juicesharp/rpiv-todo").foundVersion, "2.15.0");
 assert.equal(parsed.find((s) => s.name === "pi-web-access").foundVersion, null, "没给路径就是读不到版本，不是没装");
 
 // 只有表头、或者什么都没有：三个都算缺（不能因为输出像样就以为装上了）。
 assert.equal(statusFromList("User packages:", readPkg).filter((s) => s.installed).length, 0);
-assert.equal(statusFromList("", readPkg).length, 3);
+assert.equal(statusFromList("", readPkg).length, 4);
 
 // git / 本地路径装的：包名读它自己的 package.json，读不到按来源猜 —— 都算已装。
 const dirGit = fake("git-sub", "pi-subagents", "0.85.0");

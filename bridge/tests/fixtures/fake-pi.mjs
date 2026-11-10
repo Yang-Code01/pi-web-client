@@ -268,6 +268,58 @@ async function turn(text) {
     out({ type: "auto_retry_end", success: false, attempt: 2, finalError: "401 invalid api key" });
     return;
   }
+  if (text.startsWith("PLAN")) {
+    const tasks = [
+      { id: 1, subject: "检查现有实现", status: "completed" },
+      { id: 2, subject: "实现计划快照", activeForm: "实现计划快照", status: "in_progress" },
+      { id: 3, subject: "验证回放", status: "pending", blockedBy: [2] },
+      { id: 4, subject: "已移除任务", status: "deleted" },
+    ];
+    const initial = { action: "create", params: {}, tasks: tasks.map((task) => ({ ...task, status: "pending" })), nextId: 5 };
+    const details = { action: "update", params: { id: 2, status: "in_progress" }, tasks, nextId: 5 };
+    if (sessionFile) {
+      touchSessionFile();
+      let parentId = null;
+      try {
+        const lines = fs.readFileSync(sessionFile, "utf8").trim().split("\n");
+        parentId = JSON.parse(lines.at(-1)).id ?? null;
+      } catch { /* a new fake session only has its header */ }
+      const addEntry = (type, fields) => {
+        const entry = { type, id: `fake-plan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, parentId, timestamp: new Date().toISOString(), ...fields };
+        fs.appendFileSync(sessionFile, `${JSON.stringify(entry)}\n`);
+        parentId = entry.id;
+        return entry.id;
+      };
+      for (let round = 1; round <= 70; round += 1) {
+        const userId = addEntry("message", { message: { role: "user", content: [{ type: "text", text: `earlier round ${round}` }] } });
+        const assistantId = addEntry("message", { parentId: userId, message: assistant(`earlier answer ${round}`) });
+        parentId = assistantId;
+        if (round === 2) addEntry("custom", { customType: "rpiv-todo-state", data: initial });
+      }
+      const userId = addEntry("message", { message: { role: "user", content: [{ type: "text", text }] } });
+      const callId = "call-plan-snapshot";
+      const assistantId = addEntry("message", {
+        parentId: userId,
+        message: assistant("", { content: [{ type: "toolCall", id: callId, name: "todo", arguments: { action: "update", id: 2, status: "in_progress" } }], stopReason: "toolUse" }),
+      });
+      const resultId = addEntry("message", {
+        parentId: assistantId,
+        message: { role: "toolResult", toolCallId: callId, toolName: "todo", content: [{ type: "text", text: "Updated #2" }], details },
+      });
+      parentId = resultId;
+      addEntry("custom", { customType: "rpiv-todo-state", data: details });
+    }
+
+    const callId = "call-plan-snapshot";
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: callId, name: "todo", arguments: { action: "update", id: 2, status: "in_progress" } }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: callId, toolName: "todo", args: { action: "update", id: 2, status: "in_progress" } });
+    out({ type: "tool_execution_end", toolCallId: callId, toolName: "todo", isError: false, result: { content: [{ type: "text", text: "Updated #2" }], details } });
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("Plan snapshot updated.") });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   // #86：pi 每调一次工具都会先发一条「文字为空、只有工具调用」的 assistant 消息。
   // 页面上不能因此多出一堆「随手问 / …」。
   if (/^TOOLS/.test(text)) {

@@ -32,7 +32,7 @@ import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroup
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { Socket } from "./ws.ts";
-import { execView, type ExecPhase, type ExecViewModel } from "./exec-view.ts";
+import { execView, type ExecPhase, type ExecPlanSnapshot, type ExecRound, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
@@ -237,6 +237,8 @@ export class App {
   private tab: Tab = "sessions";
   private queueTab: QueueTab = readQueueTab();
   private execSelectedRound: string | null = null;
+  private execPlan: ExecPlanSnapshot | null = null;
+  private execPlanRounds: ExecRound[] = [];
   private execPhase: ExecPhase = "idle";
   private execStreamChars = 0;
   private execStreamText = "";
@@ -411,7 +413,7 @@ export class App {
   private extTab: "installed" | "ext" | "mcp" = "installed";
   private extInv: ExtInventory | null = null;
   private extInvLoading = false;
-  /** “本项目需要”那一块（/api/deps）：pi 版本 + 三个扩展。null = 还没问到。 */
+  /** “本项目需要”那一块（/api/deps）：pi 版本 + 四个扩展。null = 还没问到。 */
   private deps: DepsReport | null = null;
   private depsLoading = false;
   /** 问不到 /api/deps 的原因（桥太旧或断了）：页面上说实话，不假装「都齐了」。 */
@@ -1587,6 +1589,10 @@ export class App {
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
         if ("trust" in msg) this.trust = (msg.trust as TrustState | null) ?? null;
         this.queue = msg.queue ? { steering: msg.queue.steering ?? [], followUp: msg.queue.followUp ?? [] } : { steering: [], followUp: [] };
+        this.execPlan = msg.plan && typeof msg.plan === "object" ? msg.plan as ExecPlanSnapshot : null;
+        this.execPlanRounds = Array.isArray((msg.history as SessionHistory | undefined)?.turns)
+          ? (msg.history as SessionHistory).turns!.map((turn, index) => ({ id: turn.id, ordinal: index + 1 }))
+          : [];
         this.stats = { tokens: null, cost: null };
         // 换了会话：上一份「见过的失败」不能带过来，否则按钮会按别人的失败亮着。
         this.sessionFails.clear();
@@ -1641,11 +1647,18 @@ export class App {
         // 永远整页替换；「载入更早」走的是另一条 `history` 帧，不从这里插进旧内容前面。
         // `history` 仍然要传：整页替换完，顶端那一行才知道后面还有没有更早的（#220）。
         // 这是 #221 的既定取舍：整页替换意味着重连后回到最后一页，已经翻出来的更早内容不保留。
+        const turns = (msg.history as SessionHistory | undefined)?.turns;
+        if (Array.isArray(turns)) this.execPlanRounds = turns.map((turn, index) => ({ id: turn.id, ordinal: index + 1 }));
         this.chat.reset((msg.items ?? []) as Item[], msg.history as SessionHistory | undefined);
         if (this.queueTab === "exec") this.renderQueue();
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
         this.syncContinueButton();
+        break;
+      case "plan":
+        if (msg.sessionId !== this.currentId) break;
+        this.execPlan = msg.plan && typeof msg.plan === "object" ? msg.plan as ExecPlanSnapshot : null;
+        if (this.queueTab === "exec") this.renderQueue();
         break;
       case "history":
         // #220: 一页更早的内容。归属由 ChatView 认（`before` 是否等于它当前的 `topId`）；
@@ -1659,6 +1672,10 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         if (typeof msg.clientId === "string") this.chat.adopt(msg.clientId, msg.item as Item);
         else this.chat.add(msg.item as Item);
+        if ((msg.item as Item).kind === "user" && !this.execPlanRounds.some((round) => round.id === (msg.item as Item).id)) {
+          const ordinal = this.execPlanRounds.reduce((last, round) => Math.max(last, round.ordinal), 0) + 1;
+          this.execPlanRounds = [...this.execPlanRounds, { id: (msg.item as Item).id, ordinal }];
+        }
         // #199: 启动期的「撤回」只在真有排队消息时才有位置，气泡来去都得重画这一行。
         if (this.session?.starting) this.fillHintStatus();
         if (this.queueTab === "exec") this.renderQueue();
@@ -11336,6 +11353,8 @@ export class App {
         return tr("设置→子代理、后台卡、subagent 工具");
       case "questionnaire":
         return tr("网页问卷（ask_user_question）");
+      case "todo":
+        return tr("执行面板计划区（@juicesharp/rpiv-todo）");
       case "web-access":
         return tr("web_search / fetch_content / source_check 等联网工具");
       default:
@@ -11344,7 +11363,7 @@ export class App {
   }
 
   /**
-   * 「本项目需要」：pi 版本 + 三个扩展。这些不在这个仓库里，也不会跟 `npm install` 一起下来，
+   * 「本项目需要」：pi 版本 + 四个扩展。这些不在这个仓库里，也不会跟 `npm install` 一起下来，
    * 缺了往往只是**静默少一个工具** —— 所以摆在这一页最上面，缺了就写清楚缺什么、怎么补。
    */
   private paintDepsNeeded(body: HTMLElement): void {
@@ -11442,6 +11461,7 @@ export class App {
         this.depsAt = Date.now();
         this.depsLoading = false;
         this.paintDepsSurface();
+        if (this.queueTab === "exec") this.renderQueue();
       });
   }
 
@@ -13833,6 +13853,8 @@ export class App {
       streamChars: this.execStreamChars,
       streamSummary: this.execSummary(),
       selectedRound: this.execSelectedRound,
+      plan: this.execPlan,
+      planRounds: this.execPlanRounds,
       now: Date.now(),
     });
   }
@@ -13846,6 +13868,57 @@ export class App {
     if (ms === null) return "";
     const seconds = ms / 1000;
     return tr("{p1} 秒", { p1: seconds < 10 ? seconds.toFixed(1) : Math.round(seconds) });
+  }
+
+  private execPlanBox(view: ExecViewModel): HTMLElement {
+    const box = el("section", "exec-plan");
+    const plan = view.plan;
+    if (!plan) {
+      const todo = this.deps?.packages.find((pkg) => pkg.id === "todo");
+      box.append(el(
+        "div",
+        "exec-plan-empty",
+        todo && !todo.installed
+          ? tr("未安装计划扩展；请到设置 → 扩展安装 {p1}", { p1: "@juicesharp/rpiv-todo" })
+          : tr("本任务没有列计划"),
+      ));
+      return box;
+    }
+
+    const heading = el("div", "exec-plan-heading");
+    heading.append(el("strong", "", tr("计划 {p1}/{p2}", { p1: plan.done, p2: plan.total })));
+    if (plan.listedRoundOrdinal !== null) {
+      heading.append(el("span", "exec-plan-listed", tr("第 {p1} 轮列出", { p1: plan.listedRoundOrdinal })));
+    }
+    box.append(heading);
+
+    const progress = el("div", "exec-plan-progress");
+    progress.setAttribute("role", "progressbar");
+    progress.setAttribute("aria-label", tr("计划进度"));
+    progress.setAttribute("aria-valuemin", "0");
+    progress.setAttribute("aria-valuemax", String(plan.total));
+    progress.setAttribute("aria-valuenow", String(plan.done));
+    const fill = el("div", "exec-plan-progress-fill");
+    fill.style.width = `${plan.total ? Math.round((plan.done / plan.total) * 100) : 0}%`;
+    progress.append(fill);
+    box.append(progress);
+
+    const tasks = el("div", "exec-plan-tasks");
+    for (const task of plan.tasks) {
+      const row = el("div", `exec-plan-task ${task.status}`);
+      const marker = task.status === "completed" ? "✓" : task.status === "in_progress" ? "◌" : "○";
+      const markerNode = el("span", "exec-plan-state", marker);
+      const statusLabel = task.status === "completed" ? tr("已完成") : task.status === "in_progress" ? tr("进行中") : tr("待做");
+      markerNode.setAttribute("aria-label", statusLabel);
+      const copy = el("div", "exec-plan-copy");
+      copy.append(el("span", "exec-plan-subject", task.subject));
+      if (task.status === "in_progress" && task.activeForm) copy.append(el("span", "exec-plan-active", task.activeForm));
+      for (const id of task.waitingOn) copy.append(el("span", "exec-plan-waiting", tr("等 #{p1}", { p1: id })));
+      row.append(markerNode, copy);
+      tasks.append(row);
+    }
+    box.append(tasks);
+    return box;
   }
 
   private execNowCard(view: ExecViewModel): HTMLElement {
@@ -13890,6 +13963,8 @@ export class App {
     const model = this.execModel();
     this.execSelectedRound = model.selectedRound;
     const panel = el("div", "exec-panel");
+    if (!this.deps && !this.depsLoading && Date.now() - this.depsAt > 30_000) this.loadDeps(false);
+    panel.append(this.execPlanBox(model));
     const now = this.execNowCard(model);
     now.classList.add("exec-now-slot");
     panel.append(now);

@@ -23,6 +23,7 @@
     "test:artifacts": "node bridge/tests/artifacts-unit.mjs && node bridge/tests/artifacts-e2e.mjs",
     "test:ask:ui": "node bridge/tests/ask-ui.mjs",
     "test:exec-panel:ui": "node bridge/tests/exec-panel-ui.mjs",
+    "test:exec-plan": "node --experimental-strip-types web/tests/exec-view-unit.mjs && npm run build:bridge && node bridge/tests/exec-plan-e2e.mjs",
     "test:preview": "node bridge/tests/preview-tool.mjs && node --experimental-transform-types bridge/tests/open-preview-unit.mjs",
     "test:image": "node --experimental-transform-types bridge/tests/session-image-unit.mjs && node bridge/tests/session-image.mjs",
     "test:slides": "node --experimental-strip-types bridge/tests/slides-unit.mjs",

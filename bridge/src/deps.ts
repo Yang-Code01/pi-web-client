@@ -1,9 +1,9 @@
 /**
- * 本项目跑起来还缺什么（D220）：pi 本体 + 三个 pi 扩展。
+ * 本项目跑起来还缺什么（D220）：pi 本体 + 四个 pi 扩展。
  *
  * 网页有一部分功能不在这个仓库里：设置→子代理要读 `pi-subagents` 的会话目录，网页问卷要
- * `@juicesharp/rpiv-ask-user-question` 的 rpc-fallback 对话框格式，随手问的联网工具由
- * `pi-web-access` 提供。它们装在 pi 自己的全局目录里，clone 下来 `npm install` 拿不到 ——
+ * `@juicesharp/rpiv-ask-user-question` 的 rpc-fallback 对话框格式，执行计划由
+ * `@juicesharp/rpiv-todo` 提供，随手问的联网工具由 `pi-web-access` 提供。它们装在 pi 自己的全局目录里，clone 下来 `npm install` 拿不到 ——
  * 于是同一份代码在两个人的机器上表现不同，而缺的那一块往往只是**静默少一个工具**。
  *
  * 这个文件是那份清单的唯一来源：`scripts/bootstrap.mjs` 照着它装，桥按它算状态
@@ -21,7 +21,7 @@ export const MIN_PI_VERSION = "1.5.0";
  * 缺了会少哪块功能。**这里是 id，不是文案**：中文只在 `web/src` 里用 `tr()` 写，
  * 命令行那几句在 `scripts/bootstrap.mjs` 自己的表里。
  */
-export type PackageId = "subagents" | "questionnaire" | "web-access";
+export type PackageId = "subagents" | "questionnaire" | "todo" | "web-access";
 
 export interface RequiredPackage {
   /** `pi install` 认的来源，不带版本：`npm:pi-subagents`。 */
@@ -46,6 +46,8 @@ export const REQUIRED_PACKAGES: RequiredPackage[] = [
     version: "2.15.0",
     id: "questionnaire",
   },
+  // 钉住：执行面板读取它持久化的 `todo` 快照（D223）。
+  { source: "npm:@juicesharp/rpiv-todo", name: "@juicesharp/rpiv-todo", version: "2.15.0", id: "todo" },
   // 不钉：只用它的工具，不解析它的输出格式。
   { source: "npm:pi-web-access", name: "pi-web-access", version: null, id: "web-access" },
 ];
