@@ -161,7 +161,7 @@ a { color: var(--accent); text-decoration: none; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 16px calc(12px + env(safe-area-inset-top, 0px));
+  padding: 11px 16px calc(11px + env(safe-area-inset-top, 0px));
   /* 窄屏上这一排按钮本来就排不下（最长的写着「文件管理器」）。以前是直接溢出到屏幕外，
      连文档都跟着横向滚动 596px；现在这一条自己横向滚，右边几颗划得到、外面不再滚。 */
   overflow-x: auto;
@@ -403,7 +403,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .sess-head .n { margin-left: auto; font-family: var(--mono); color: var(--faint); }
 .sess-head .chev { width: 12px; cursor: pointer; }
 /* 工作区组头（#95）：能点、能收起，色点 + 名字 + 待办角标 + 数量（贴样张 a-two-row 的手感）。 */
-.ws-head { padding: 5px 6px; gap: 7px; border-radius: 7px; cursor: pointer; color: var(--dim); }
+.ws-head { min-height: 36px; padding: 7px 6px; gap: 7px; border-radius: 7px; cursor: pointer; color: var(--dim); }
 .ws-head:hover, .ws-head:focus-visible { background: var(--panel-2); color: var(--text); outline: none; }
 .ws-head .chev { color: var(--faint); font-size: 10px; width: 10px; cursor: inherit; }
 .ws-head .ws-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; background: var(--slate); }
@@ -427,7 +427,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* #100：组头就地改名 + 那颗 ⋯。⋯ 跟会话卡片的 card-act 一个脾气：指着组头才出来，别的时候把位置让给名字。 */
 .ws-head .ws-rename-input { flex: 1; min-width: 0; padding: 2px 6px; font-size: 12px; font-weight: 550; border-radius: 6px; }
 .ws-head .ws-more {
-  flex: none; display: grid; place-items: center; width: 20px; height: 18px; padding: 0;
+  flex: none; display: grid; place-items: center; width: 24px; height: 24px; padding: 0;
   border: 1px solid transparent; border-radius: 6px; background: none; color: var(--faint);
   font: 12px/1 var(--sans); cursor: pointer;
 }
@@ -447,7 +447,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ws-new-btn:hover, .ws-new-btn:focus-visible {
   color: var(--text); border-color: var(--accent-dim); background: var(--panel-2); outline: none;
 }
-/** 组头 ⋯ 的菜单：外壳就是置顶胶囊那张卡（.pin-menu），这里只补「为什么删不了」那行灰字。
+/** 组头 ⋯ 的菜单：外壳就是置顶胶囊那张卡（.pin-menu），这里补删除原因或删除效果说明。
  * 高度上限与滚动在 .pin-menu 上：`menuplace.ts#stickMenu` 按剩下多少窗口算 `max-height`，矮窗口里菜单自己滚。 */
 .ws-menu .pm-why { padding: 6px 12px 8px; max-width: 240px; font-size: 11px; line-height: 1.4; color: var(--faint); }
 .ws-menu .pm-item.blocked { opacity: 0.55; cursor: not-allowed; }
@@ -501,6 +501,24 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .session-card .pin-btn:hover { color: var(--text); background: var(--panel-2); border-color: var(--line); }
 .session-sec[data-sec="archived"] { border-top: 1px solid var(--line-soft); padding-top: 6px; margin-top: 2px; }
 @media (hover: none) { .session-card .grip, .session-card .pin-btn { opacity: 0.6; } }
+
+/* ---------------------------------------------------------------- workspace delete confirmation */
+.sheet.ws-delete-sheet {
+  width: min(820px, calc(var(--vw1) * 94)); height: min(calc(var(--vh1) * 82), 760px); max-height: calc(var(--vh1) * 82);
+  border-radius: 16px; border: 1px solid var(--line); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+.ws-delete-summary { padding: 14px 18px 10px; color: var(--dim); }
+.ws-delete-summary strong { color: var(--text); font-size: 15px; font-weight: 600; }
+.ws-delete-summary p { margin: 6px 0 0; font-size: 12px; line-height: 1.5; }
+.ws-delete-list { min-height: 0; overflow-y: auto; margin: 0 16px 12px; border: 1px solid var(--line-soft); border-radius: 10px; }
+.ws-delete-session { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); }
+.ws-delete-session:last-child { border-bottom: 0; }
+.ws-delete-name { color: var(--text); font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.ws-delete-path { margin-top: 4px; color: var(--faint); font-size: 11px; overflow-wrap: anywhere; }
+.ws-delete-badge { color: var(--faint); font-size: 11px; }
+.ws-delete-empty { padding: 18px; color: var(--faint); font-size: 12px; text-align: center; }
+.sheet.ws-delete-sheet .sheet-foot { padding: 12px 16px 16px; }
 
 /* ---------------------------------------------------------------- session manager */
 .sheet-back.center { align-items: center; justify-items: center; padding: 16px; }
@@ -1046,7 +1064,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 /* 标签撑满这一行（不写死高度）：当前组那条下划线才贴着行底，而不是悬在行中间（#118 决策）。 */
 .topbar > .ws-tabs-row .ws-tabs { align-items: stretch; }
-.topbar > .ws-tabs-row .ws-tab { align-self: stretch; }
+.topbar > .ws-tabs-row .ws-tab { align-self: stretch; min-height: 36px; }
 /* A 的顶栏不再放会话名 / 那串小字 / 连接状态点：会话名在行 2 那颗上（#118），隧道信息在 B/C/D 有。 */
 html[data-layout="a"] .topbar > .title,
 html[data-layout="a"] .topbar > .sub,

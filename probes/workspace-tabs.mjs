@@ -233,7 +233,28 @@ server.on("upgrade", (req, socket, head) => {
           WS.order = [...WS.order, id];
           cast();
         }
-        // 真桥的 `dropWorkspace()`（#279）：组里还有会话（归档也算）就回 notice，空的才真删，再广播新快照。
+        // 工作区删除先经过显式确认；会话移入垃圾箱后再删除空组。
+        if (msg.action === "ws.delete") {
+          const id = String(msg.id ?? "");
+          const group = WS.groups.find((g) => g.id === id);
+          const memberIds = SESSIONS.filter((session) => session.ws === id || WS.overrides[session.id] === id).map((session) => session.id);
+          const expected = Array.isArray(msg.sessionIds) ? msg.sessionIds.map(String).sort() : memberIds.slice().sort();
+          if (!group || expected.join("\n") !== memberIds.slice().sort().join("\n")) {
+            ws.send(JSON.stringify({ type: "ws.delete.result", id, deleted: false, reason: "工作区里的会话已变化，请重新确认", skipped: [] }));
+            return;
+          }
+          for (let i = SESSIONS.length - 1; i >= 0; i--) if (memberIds.includes(SESSIONS[i].id)) SESSIONS.splice(i, 1);
+          WS.groups = WS.groups.filter((g) => g.id !== id);
+          WS.order = WS.order.filter((x) => x !== id);
+          for (const [sid, wid] of Object.entries(WS.overrides)) if (wid === id) delete WS.overrides[sid];
+          MANAGE.pin = MANAGE.pin.filter((sid) => !memberIds.includes(sid));
+          MANAGE.order = MANAGE.order.filter((sid) => !memberIds.includes(sid));
+          MANAGE.archived = MANAGE.archived.filter((sid) => !memberIds.includes(sid));
+          cast();
+          ws.send(JSON.stringify({ type: "ws.delete.result", id, deleted: true, removed: memberIds, binned: memberIds, skipped: [], released: [] }));
+          return;
+        }
+        // Legacy empty-only operation retained for old bridge clients.
         if (msg.action === "ws.drop") {
           const id = String(msg.id ?? "");
           const n = SESSIONS.filter((x) => x.ws === id).length;
@@ -354,7 +375,8 @@ ok(s.inTopbar, "A：工作区标签行挂在顶栏里（.topbar > .ws-tabs-row�
 ok(s.firstChild.includes("side-toggle") && s.secondIsRow, `A：标签紧跟在折叠左栏的 ◧ 后面（第 1 颗 ${s.firstChild}）`);
 ok(Boolean(s.bar && s.row && s.bar.top <= s.row.top + 1 && s.row.bottom <= s.bar.bottom + 1), "A：标签行在顶栏的框内");
 ok(Boolean(s.tool && s.row && Math.abs(s.tool.cy - s.row.cy) < 14), "A：标签和工具按钮在同一行（中心线相差不到 14px）");
-ok(Boolean(s.bar && s.bar.h <= 60), `A：顶栏只有一行高（${s.bar?.h}px）`);
+ok(Boolean(s.bar && s.bar.h <= 64), `A：顶栏只有一行高（${s.bar?.h}px）`);
+ok(Boolean(s.tab && s.tab.h >= 36), `A：工作区横栏标签点击高度至少 36px（当前 ${s.tab?.h}px）`);
 
 // 2) A：会话名 / 顶栏那串小字 / 连接状态点都不再出现在这一行
 ok(!s.title && !s.sub && !s.dot, `A：会话名 / 小字 / 状态点都藏了（title ${s.title} · sub ${s.sub} · dot ${s.dot}）`);
@@ -984,6 +1006,8 @@ cast();
 await page.reload({ waitUntil: "networkidle" });
 await page.waitForSelector(".session-card", { timeout: 15000 });
 await sleep(600);
+await page.mouse.move(0, 0);
+await sleep(180);
 
 s = await rowState();
 ok(s.toggles === 3 && s.toggleOpacity === "0", `A：3 颗可见标签各有一个 ⊙，默认藏着（${s.toggles} / ${s.toggleOpacity}）`);
@@ -1038,7 +1062,7 @@ ok(s.leftCounts.length === 5 && s.leftCounts.every((c) => c === "1"), `托盘左
 ok(s.rightIds.length === 1 && s.rightIds[0] === "f:/proj-02" && s.rightTitle === "不在横条里 1", `右段列不在横条里的 1 组（${s.rightTitle} / ${s.rightIds.join(" / ")}）`);
 ok(s.rightCounts.length === 1 && s.rightCounts[0] === "1", `托盘右段也带会话数（${s.rightCounts.join(" / ")}）`);
 
-let rowCount = rowCalls().length;
+const rowCount = rowCalls().length;
 await page.locator('.ws-tabs-board .ws-tray-col:nth-child(1) .pm-item[data-ws="f:/proj-05"]').click();
 await sleep(650);
 s = await rowState();
@@ -1311,7 +1335,7 @@ const menuState = () =>
       why: document.querySelector('.ws-menu .pm-why[data-for="drop"]')?.textContent ?? "",
     };
   });
-const dropCalls = () => CALLS.filter((c) => c.action === "ws.drop");
+const dropCalls = () => CALLS.filter((c) => c.action === "ws.delete");
 
 let gs = await groupState(IDLE.id);
 ok(gs.exists && gs.badge === "空", `空目录组在左栏标「空」（${gs.badge || "没有徽标"}）`);
@@ -1324,43 +1348,55 @@ ok(gs.exists && gs.badge === "" && gs.emptyCard === "", `有会话的组没有�
 gs = await groupState(BUSY.id);
 ok(gs.badge === "" && gs.count === "1", `装了会话的手动组也没有「空」（${gs.count} 个会话）`);
 
-// 20a) 有会话：目录组与手动组都拒绝，原因沿用原文案，点了也不发 ws.drop
+// 20a) 有会话的工作区可发起确认；对话框列出会话，取消不发送删除请求
 const dropCalls0 = dropCalls().length;
 await openWsMore("f:/proj-01");
 let ms = await menuState();
-ok(ms.disabled && ms.aria === "true", "有会话的目录组：删除项置灰");
-ok(/跟着目录走/.test(ms.why), `原因还是「跟着目录走」（${ms.why}）`);
-await page.locator('.ws-menu .pm-item[data-act="drop"]').click({ force: true });
+ok(!ms.disabled && ms.aria === "", "有会话的目录组：删除项可发起确认");
+ok(/垃圾箱/.test(ms.why), `菜单说明删除后移入垃圾箱（${ms.why}）`);
+await page.locator('.ws-menu .pm-item[data-act="drop"]').click();
 await sleep(250);
-ok(dropCalls().length === dropCalls0, `点灰掉的删除项没发 ws.drop（${dropCalls().length - dropCalls0} 条）`);
-await page.keyboard.press("Escape");
+let deleteRows = await page.locator(".ws-delete-session .ws-delete-name").allTextContents();
+ok(deleteRows.length === 1 && deleteRows[0].includes("工程 01 · 会话 1"), `确认框列出目录组会话（${deleteRows.join(" / ")}）`);
+await page.locator('.ws-delete-sheet [data-act="cancel"]').click();
 await sleep(150);
+ok(dropCalls().length === dropCalls0, "取消目录组删除不发送 ws.delete");
 
 await openWsMore(BUSY.id);
 ms = await menuState();
-ok(ms.disabled && /还有 1 个会话/.test(ms.why), `有会话的手动组：删不掉，原因是「还有 1 个会话」（${ms.why}）`);
-await page.keyboard.press("Escape");
+ok(!ms.disabled && /垃圾箱/.test(ms.why), `有会话的手动组也允许确认删除（${ms.why}）`);
+await page.locator('.ws-menu .pm-item[data-act="drop"]').click();
+await sleep(250);
+deleteRows = await page.locator(".ws-delete-session .ws-delete-name").allTextContents();
+ok(deleteRows.length === 1 && deleteRows[0].includes("工程 09 · 会话 1"), `手动组确认框列出会话（${deleteRows.join(" / ")}）`);
+await page.locator('.ws-delete-sheet [data-act="cancel"]').click();
 await sleep(150);
+ok(dropCalls().length === dropCalls0, "取消手动组删除不发送 ws.delete");
 
-// 20b) 空的手动组：能删，说明写的是「只删这个空组」，删掉后快照 / order / 左栏同时少一项
+// 20b) 空的手动组：显示确认框，确认后快照 / order / 左栏同时少一项
 await openWsMore(EMPTY.id);
 ms = await menuState();
 ok(!ms.disabled && ms.aria === "", "空的手动组：删除项可点");
-ok(/只删这个空组/.test(ms.title), `手动组的删除说明分得清删的是组（${ms.title}）`);
+ok(ms.title === "" && ms.why === "", "空手动组没有会话，不显示垃圾箱说明行");
 await page.locator('.ws-menu .pm-item[data-act="drop"]').click();
+await sleep(250);
+ok((await page.locator(".ws-delete-sheet").count()) === 1, "点删除后先显示确认弹窗");
+await page.locator('.ws-delete-sheet [data-act="confirm"]').click();
 await sleep(600);
-ok(dropCalls().at(-1)?.id === EMPTY.id, `发出去的是 ws.drop ${dropCalls().at(-1)?.id}（期望 ${EMPTY.id}）`);
+ok(dropCalls().at(-1)?.id === EMPTY.id, `确认后发出去的是 ws.delete ${dropCalls().at(-1)?.id}（期望 ${EMPTY.id}）`);
 ok(!WS.groups.some((g) => g.id === EMPTY.id) && !WS.order.includes(EMPTY.id), "桥的快照与 order 里都没它了");
 ok(!(await treeOrder()).includes(EMPTY.id) && !(await groupState(EMPTY.id)).exists, "左栏里那块整个不见了");
 
-// 20c) 空的目录组：同样能删，说明写的是「只把这个目录移出列表」
+// 20c) 空的目录组：同样经确认后删除列表项
 await openWsMore(IDLE.id);
 ms = await menuState();
 ok(!ms.disabled, "空的目录组：删除项可点");
-ok(/移出列表/.test(ms.title), `目录组的删除说明只说把这一项移出列表（${ms.title}）`);
+ok(ms.title === "" && ms.why === "", "空目录组没有会话，不显示垃圾箱说明行");
 await page.locator('.ws-menu .pm-item[data-act="drop"]').click();
+await sleep(250);
+await page.locator('.ws-delete-sheet [data-act="confirm"]').click();
 await sleep(600);
-ok(dropCalls().at(-1)?.id === IDLE.id, `发出去的是 ws.drop ${dropCalls().at(-1)?.id}（期望 ${IDLE.id}）`);
+ok(dropCalls().at(-1)?.id === IDLE.id, `确认后发出去的是 ws.delete ${dropCalls().at(-1)?.id}（期望 ${IDLE.id}）`);
 ok(!(await groupState(IDLE.id)).exists && !(await treeOrder()).includes(IDLE.id), "空的目录组从快照 / order / 左栏一起消失");
 
 // 删完刷新：桥那边真删了，两个组都不会自己长回来
@@ -1583,13 +1619,15 @@ ok(gs.emptyCard.includes("这个工作区里的会话都归档了"), `空态说�
 const dropCallsA = dropCalls().length;
 await openWsMore(RETIRED.id);
 ms = await menuState();
-ok(ms.disabled && ms.aria === "true", "只有归档会话的组：删除项置灰（点了必被桥拒）");
-ok(ms.why === "这个工作区里还有 1 个会话，先把它们拖回工程或删掉", `原因与桥的拒绝句逐字一致（${ms.why}）`);
-await page.locator('.ws-menu .pm-item[data-act="drop"]').click({ force: true });
+ok(!ms.disabled && ms.aria === "", "只有归档会话的组：删除项仍可发起确认");
+ok(/垃圾箱/.test(ms.why), `说明归档会话也会进入垃圾箱（${ms.why}）`);
+await page.locator('.ws-menu .pm-item[data-act="drop"]').click();
 await sleep(250);
-ok(dropCalls().length === dropCallsA, `点灰掉的删除项没发 ws.drop（${dropCalls().length - dropCallsA} 条）`);
-await page.keyboard.press("Escape");
+const archivedDeleteNames = await page.locator(".ws-delete-session .ws-delete-name").allTextContents();
+ok(archivedDeleteNames.includes("已经归档的会话"), `确认框也列出归档会话（${archivedDeleteNames.join(" / ")}）`);
+await page.locator('.ws-delete-sheet [data-act="cancel"]').click();
 await sleep(150);
+ok(dropCalls().length === dropCallsA, "取消归档会话组删除不发送 ws.delete");
 
 // 22a) P2：＋N 托盘每行带会话数；空组给 0（灰一档），归档的组数 1
 await page.click(".ws-tabs-more");
@@ -1611,13 +1649,15 @@ ok(trayN.nameClipped, "托盘行名字用省略号收尾，数量不被挤出去
 await page.keyboard.press("Escape");
 await sleep(150);
 
-// 22b) 真的空组（手动组）仍可删：页面放行、桥也真的删
+// 22b) 真的空组（手动组）仍可删：页面先确认，桥再删
 await openWsMore(EMPTY2.id);
 ms = await menuState();
 ok(!ms.disabled, "真的空组：删除项仍然可点");
 await page.locator('.ws-menu .pm-item[data-act="drop"]').click();
+await sleep(250);
+await page.locator('.ws-delete-sheet [data-act="confirm"]').click();
 await sleep(600);
-ok(dropCalls().at(-1)?.id === EMPTY2.id && !WS.groups.some((g) => g.id === EMPTY2.id), "真空组删得掉（快照里也没了）");
+ok(dropCalls().at(-1)?.id === EMPTY2.id && !WS.groups.some((g) => g.id === EMPTY2.id), "确认后空组删得掉（快照里也没了）");
 
 // 23) P2 #278：选到已有组的子目录 —— 桥 `ws.resolve` 折回之后，主按钮改口「带你过去」
 DIRS.set("f:/proj-01", { path: "F:/proj-01", parent: "F:/", dirs: ["web"] });

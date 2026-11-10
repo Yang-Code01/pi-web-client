@@ -453,6 +453,23 @@ export class Workspaces {
     return { ok: true };
   }
 
+  /** Restore a trashed session's workspace and its former order position. */
+  restoreSession(group: WsGroup, sessionId: string, orderIndex: number): void {
+    if (!sessionId) return;
+    const restored = readGroups([group])[0];
+    if (!restored) return;
+    this.state.update((d) => {
+      const existing = d.groups.findIndex((item) => item.id === restored.id);
+      if (existing >= 0) d.groups[existing] = { ...restored };
+      else d.groups.push({ ...restored });
+      d.overrides[sessionId] = restored.id;
+      const order = readOrder(d.order, d.groups).filter((id) => id !== restored.id);
+      const at = Number.isInteger(orderIndex) && orderIndex >= 0 ? Math.min(orderIndex, order.length) : order.length;
+      order.splice(at, 0, restored.id);
+      d.order = readOrder(order, d.groups);
+    });
+  }
+
   /**
    * 标签行的顺序 + 名额（#173）：两个字段各自可缺省，缺省的那个一个字都不动；给了就**一次落盘**。
    *

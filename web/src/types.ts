@@ -226,6 +226,8 @@ export interface TrashItem {
   cwd?: string;
   deletedAt: number;
   size: number;
+  /** Workspace to restore with this session after a workspace-wide delete. */
+  workspace?: { group: WsGroup; order: number };
 }
 
 /** The part of the sidebar the user owns: pin, manual order, archive (D46). */

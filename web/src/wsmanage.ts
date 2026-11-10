@@ -3,14 +3,12 @@ import { tr } from "./i18n/index.ts";
 /**
  * #100：工作区管理的纯逻辑 —— 改名输入怎么洗、这条 rename 要不要发、这个组能不能删。
  *
- * 规则两端各有一份（桥是权威、页面要在点之前就把「不能删」说清楚），这里只放**决定**，不放 DOM：
- * 页面对话框 / 探针都从这里取答案；桥的 `drop()` 拒绝时说的是同一组句子（手动组带会话计数），
- * 免得「置灰的按钮」和「桥真的拒绝了」说出两套话。
+ * 删除事务由桥端权威处理；这里放前端菜单提示与纯逻辑，不放 DOM：
+ * UI 允许对现存工作区发起确认，桥校验确认时的会话列表、移入垃圾箱后再删除工作区。
  *
  * 语义（`.scratch/workspace/spec.md` + D126）：
  * - 空名字 = 恢复成目录名；桥的 `rename()` 存空串，显示时由 `buildTree()` 回落到目录名。
- * - #279 起删除边界是「有会话才拦」：空的手动组与空的目录组都能删（D217）；有会话时仍说原来的
- *   那句话 —— 手动组「还有 N 个会话」，目录组「跟着目录走」。
+ * - #279 起工作区删除前显示成员确认；确认后组内会话进垃圾箱，工作区随后删除；从垃圾箱还原会话时恢复其工作区关联。
  *
  * #173：旧的分组名额助手（`fixedBlocker` / `fixedRows` / `fixedDropped` / `toggleFixed`）已退役，
  * 顺序统一由桥端的 `order` 管，这里只剩改名与删除。
@@ -58,18 +56,10 @@ export function renameIntent(current: string, draft: unknown): string | null {
 }
 
 /**
- * 「这个组能不能删」：`null` = 能删；否则是给人看的原因（菜单里那行灰字）。
- * 顺序有讲究：组不存在 → 有会话 → 空，先说的那个才是真正的理由。#279 之后空组一律可删，
- * 「跟着目录走」不再是拒绝理由，只剩给「还有会话的目录组」解释为什么它删不掉。
+ * 「这个组能不能删」：`null` = 能发起确认；实际删除前会由桥端把组内会话移入垃圾箱。
  */
-export function dropBlocker(group: WsGroupLike | undefined, sessions: number): string | null {
-  if (!group) return tr("这个工作区不在了");
-  if (sessions > 0) {
-    return group.manual
-      ? tr("这个工作区里还有 {p1} 个会话，先把它们拖回工程或删掉", { p1: sessions })
-      : tr("这个工作区跟着目录走，不能删");
-  }
-  return null;
+export function dropBlocker(group: WsGroupLike | undefined, _sessions: number): string | null {
+  return group ? null : tr("这个工作区不在了");
 }
 
 /**
@@ -84,14 +74,9 @@ export function wsNeighborsAfterDrop(order: string[], droppedId: string): string
   return [...order.slice(at + 1), ...order.slice(0, at).reverse()];
 }
 
-/**
- * #279：能删时，删除那一项底下挂的说明 —— 手动组删掉的是「组」本身，目录组只是把这一项移出列表，
- * 目录里的文件一概不动。两句话分开写，免得让人以为删组会删文件。
- */
-export function dropHint(group: WsGroupLike): string {
-  return group.manual
-    ? tr("只删这个空组，组里的东西一概不动")
-    : tr("只把这个目录移出列表，目录里的文件一概不动");
+/** Deletion moves file-backed sessions into trash; restore recreates the workspace association. */
+export function dropHint(_group: WsGroupLike): string {
+  return tr("工作区里的会话会移入垃圾箱；从垃圾箱还原会话时工作区也会恢复");
 }
 
 // ---------------------------------------------------------------- #278 按目录建组
