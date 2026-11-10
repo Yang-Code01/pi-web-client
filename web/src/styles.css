@@ -936,18 +936,26 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .composer .row { position: relative; display: flex; gap: 8px; align-items: flex-end; }
 .composer textarea {
-  flex: 1;
+  /* `flex-basis: auto`, not 0: the box is a column flex item now, and a 0 basis would let the flex
+     algorithm pick its height and ignore the one `fitComposer()` measures (#315). */
+  flex: 1 1 auto;
   min-height: 44px;
-  max-height: 180px;
   resize: none;
   padding: 12px 12px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 12px;
   font-size: 15px;
 }
 .composer textarea::placeholder { color: var(--faint); }
-.composer textarea:focus { outline: none; border-color: var(--accent); }
+.composer textarea:focus { outline: none; }
+/* #317: 撞到上限后，框里会藏住上半截文字。滚到框内中段时，顶部 24px 让**文字自己**淡出；回到第一
+   行（上面没东西可藏）或到了最下面（光标停靠在末行也算到底，内缩怎么量见 `syncComposerFade()`）
+   都不显示。用 mask，不是盖一层渐变色块：
+   mask 只带透明度、不带颜色，所以不用为每套主题挑过渡色，也不会在哪一层和底色相接处多出一条色带；
+   它更不生成可命中的层，点选文字、拖滚动条照旧落在文本域自己身上。滚动位置变化时由
+   `syncComposerFade()`（app.ts）加减这颗 class；这里不加过渡，`fitComposer` 每敲一个字都跑。 */
+.composer textarea.has-hidden-top {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 24px);
+  mask-image: linear-gradient(to bottom, transparent, #000 24px);
+}
 .composer .hint { color: var(--faint); font-size: 11px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; row-gap: 4px; }
 .composer .hint kbd { font-family: var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 0 4px; }
 .composer .hint-status { display: flex; gap: 4px; align-items: center; min-width: 0; flex: 1 1 260px; }
@@ -2408,11 +2416,19 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .dir-list { grid-template-columns: minmax(0, 1fr); overflow-x: hidden; }
 
 /* ---- long pastes: their own foldable box inside the composer, apart from the typed text ---- */
-.composer-input { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.composer-input textarea { width: 100%; }
-.composer-input.has-pastes { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
-.composer-input.has-pastes:focus-within { border-color: var(--accent); }
-.composer-input.has-pastes > textarea { border: 0; background: transparent; border-radius: 0 0 12px 12px; }
+/* #317 follow-up: the fade is a mask on the textarea, and a mask carries alpha for everything the
+   element paints — with the panel colour and the border on the box, the top 24px would fade those
+   too, leaving a washed-out strip instead of the first line of text. So the panel, the border, its
+   focus ring and the radius live on this wrapper, which has no mask; the textarea is a transparent,
+   borderless sheet inside it, and the fade can only reach text. */
+.composer-input {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.composer-input:focus-within { border-color: var(--accent); }
+.composer-input > textarea { width: 100%; border: 0; background: transparent; border-radius: 0; }
 .paste-list { display: grid; gap: 4px; padding: 8px 8px 0; }
 .paste-list[hidden] { display: none; }
 .paste-block { border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); overflow: hidden; }
@@ -2433,6 +2449,9 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .paste-x:hover { color: var(--danger); }
 .composer textarea.paste-body {
   display: block; width: 100%; min-height: 0; height: 160px; max-height: none; resize: vertical;
+  /* #318：上限按面板高度由 `fitPastes()`（app.ts）写成内联 max-height，和内联 height 一起被浏览器
+     收口：拖不过上限，超出的内容在块内滚动（overflow: auto），不去挤对话区。 */
+  overflow: auto;
   border: 0; border-top: 1px solid var(--line-soft); border-radius: 0; background: var(--bg);
   font: 12px/1.5 var(--mono); padding: 8px 8px; color: var(--text);
 }

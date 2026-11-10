@@ -103,5 +103,5 @@ git -C "$WT" commit -m "docs(changelog): <日期> 批次，<N> 条"
 回报三行以内：PR 链接、新增 N 条（哪几组）、锚点 `旧 → 新`。然后**停**。用户说合并才合并，合并之后才：
 
 ```bash
-git -C "$ROOT" worktree remove "$WT" && git -C "$ROOT" branch -d "docs/changelog-$STAMP"
+node "$ROOT/tools/worktree-remove.mjs" "$WT" && git -C "$ROOT" branch -d "docs/changelog-$STAMP"
 ```

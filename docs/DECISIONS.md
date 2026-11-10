@@ -3675,7 +3675,7 @@ D
 
 **接口形状**
 
-`GET /api/sys?section=overview|network|ports|services` → 对应的 `SysOverview` / `SysNetwork` / `SysPorts` / `SysServices`；公网时 `public: true`，字段已打码。`POST /api/sys/dns {guid, servers}` → `{ok, before, after, unchanged, saved, dhcp}`；同值回 `unchanged: true` 且不弹 UAC。`POST /api/sys/dns/restore {guid}` → `{ok, dhcp, before, after}`；没有原值回 404 `no_saved_dns`。错误统一 `{error, code}`：`dns_guid` / `dns_servers` / `adapter_not_found` / `uac_denied` / `uac_timeout` / `no_receipt` / `dns_failed` / `dns_state` / `public_dns` / `dns_busy`。
+`GET /api/sys?section=overview|network|ports|services` → 对应的 `SysOverview` / `SysNetwork` / `SysPorts` / `SysServices`；公网时 `public: true`，字段已打码。`POST /api/sys/dns {guid, servers}` → `{ok, before, after, unchanged, saved, dhcp}`；同值回 `unchanged: true` 且不弹 UAC。`POST /api/sys/dns/restore {guid}` → `{ok, dhcp, before, after}`；没有原值回 404 `no_saved_dns`。错误统一 `{error, code}`：`dns_guid` / `dns_servers` / `adapter_not_found` / `uac_denied` / `uac_timeout` / `no_receipt` / `dns_failed` / `dns_state` / `public_dns` / `uac_busy`（原 `dns_busy`，见 D221）。
 
 **验证**
 
@@ -3865,7 +3865,24 @@ D
 
 **验证：** `node scripts/bootstrap.mjs --check`（本机：pi 1.5.0，三个包已装，退出码 0）；`node scripts/bootstrap.mjs --deps-only`（不碰全局，三包依赖各跑一次）；`npm run test:deps`（纯函数与 `pi list` 文本解析）；`npm run test:deps:ui`（真桥 + 真 pi，两种状态各跑一次，含端口冲突与灰化）。
 
-## D221 已确认的工作区删除：会话进垃圾箱，恢复时还原工作区
+## D221 本机管理加「重启 WinNAT」：第二个 UAC 写操作，跟 DNS 共用助手与锁
+
+**问题：** 用户桌面上有个 `netweb_restar.bat`（自提权 → `net stop winnat` → `net start winnat`），端口被 Hyper-V / WSL 保留、绑定报「访问权限不允许」时双击用。要把它挪进本机管理 → 网络与 DNS，不再靠桌面脚本。
+
+**决定：**
+
+1. **还是一次性 UAC 助手（D212 第 5 条），抽成通用 `runElevated(kind, body, failCode)`**，DNS 改动和 WinNAT 重启都走它；超时常量改名 `UAC_TIMEOUT`（120s）。助手 `.ps1` 只放 ASCII：桥写的是无 BOM UTF-8，Windows PowerShell 5.1 会按 ANSI 读，中文会乱码；中文提示由桥按 `code` 拼。**以后新加的提权脚本照此办理**——条件：脚本交给 `powershell.exe`（Windows PowerShell 5.1）跑、文件无 BOM。若哪天改成带 BOM 写入或改用 `pwsh` 7（默认 UTF-8）可以放宽，但脚本只回 `code`、文案由桥拼的分工照旧，便于 i18n。
+2. **一把锁 `elevatedBusy`**：同一时刻只弹一个 UAC，DNS 和 WinNAT 互斥，统一错误码 `uac_busy`（原 `dns_busy` 废弃）。
+3. **结果与 .bat 对齐：** 原本在跑却停不下来 → `winnat_stop_failed`（.bat 里随后的 `net start` 会因「已启动」报错）；原本没在跑 → 只启动，回 `wasRunning:false`，页面如实说「只是启动了它」，不假装重启过；启动失败 → `winnat_failed`。
+4. **停止带 `-Force`，但事先记下在跑的依赖服务，WinNAT 起来后逐个拉起**；拉不起的名字回 `depsFailed`，页面提示。停、启各 `WaitForStatus` 30 秒，整体落在 `UAC_TIMEOUT` 内，避免「桥超时放锁、助手还在跑」。
+5. **失败也清缓存、页面也重读**：停下来却没启动成功时，卡片得显示真实状态（`Stopped`），不能停在 30 秒缓存里的「运行中」。
+6. **状态一起读**：`SysNetwork.winnat = {status, start} | null`，在读网卡那一次 PowerShell 里顺带 `Get-Service winnat`，不多起进程。页面上服务状态/启动类型走 `serviceStatusLabel` / `serviceStartLabel` 翻译。点按钮先 `confirm`：会断几秒 WSL / Docker / Hyper-V NAT 网络。
+
+**接口：** `POST /api/sys/winnat/restart` → `{ok, wasRunning, depsFailed, winnat}`；公网 403 `public_winnat`。新增错误码 `public_winnat` / `uac_busy` / `winnat_failed` / `winnat_stop_failed`；`uac_denied` / `uac_timeout` / `no_receipt` / `unsupported_platform` 的 en/ja 文案改成不点名 DNS 的通用说法。
+
+**验证：** `node bridge/tests/sysmanage-unit.mjs`（`normalizeWinnat`）、`node web/tests/sysmanage-unit.mjs`（状态文案）、`node bridge/tests/sysmanage-ui.mjs`（卡片 + 按钮、公网 403、network 带 winnat）；助手脚本非提权干跑（停止那步按预期回 `winnat_stop_failed`）。真点 UAC「是」重启留本机手验——会动整机 NAT 网络。
+
+## D222 已确认的工作区删除：会话进垃圾箱，恢复时还原工作区
 
 **问题：** D217 将「有会话的组不能删」作为桥端边界，并明确删组不动文件。新的工作区删除流程需要允许用户在确认后删除有会话的组，同时保留可恢复性。
 

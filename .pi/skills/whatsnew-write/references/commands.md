@@ -101,7 +101,7 @@ EOF
 ## 收尾（用户说合并之后才做）
 
 ```bash
-git -C "$ROOT" worktree remove "$WT"
+node "$ROOT/tools/worktree-remove.mjs" "$WT"   # 先拆外链再删，见 AGENTS.md
 git -C "$ROOT" branch -d "$BR"
 ```
 

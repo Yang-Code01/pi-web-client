@@ -1,10 +1,14 @@
 /**
  * #266 本机管理：桥端纯函数的单测——不跑 PowerShell、不碰真网卡。
  *
- *   node --experimental-transform-types bridge/tests/sysmanage-unit.mjs
+ *   node bridge/tests/sysmanage-unit.mjs
+ *
+ * 只靠类型擦除：被测的 src/sysmanage.ts 没有 enum / 参数属性，Node ≥22.18 默认就能直接跑。
+ * 别照抄别的测试加 --experimental-transform-types：Node 26 起这个参数已删除，会直接报 bad option；
+ * Node 22–25 上加不加都行。
  */
 import assert from "node:assert/strict";
-import { normalizeAdapters, normalizeNodeInterfaces, normalizeServices, parseNetstat } from "../src/sysmanage.ts";
+import { normalizeAdapters, normalizeNodeInterfaces, normalizeServices, normalizeWinnat, parseNetstat } from "../src/sysmanage.ts";
 
 // ------------------------------------------------- ① netstat 解析
 
@@ -165,5 +169,12 @@ assert.equal(nodeAdapters[0].status, "up");
 assert.equal(nodeAdapters[0].dhcp, false, "非 Windows 不猜 DHCP");
 assert.equal(nodeAdapters[1].mac, "", "全零 MAC 不显示");
 assert.equal(nodeAdapters[1].status, "up");
+
+// ------------------------------------------------- WinNAT 状态
+
+assert.deepEqual(normalizeWinnat({ status: "Running", start: "Manual" }), { status: "Running", start: "Manual" });
+assert.deepEqual(normalizeWinnat({ status: "Stopped" }), { status: "Stopped", start: "" }, "缺启动类型就空串");
+assert.equal(normalizeWinnat(null), null, "没有 winnat 服务 → null");
+assert.equal(normalizeWinnat({ status: 4 }), null, "枚举数字不收（脚本必须转字符串）");
 
 console.log(`sysmanage-unit: ok — ${ports.length} 个端口 / ${adapters.length} 张网卡 / ${services.length} 个服务`);
