@@ -338,6 +338,27 @@ async function turn(text) {
     out({ type: "auto_retry_end", success: false, attempt: 2, finalError: "401 invalid api key" });
     return;
   }
+  if (text.startsWith("PLANLOOP")) {
+    // #341: 一轮里三次 todo 调用 —— 聊天记录必须把它们折成一张卡（不是三张）。
+    const a = { id: 1, subject: "甲", status: "pending" };
+    const b = { id: 2, subject: "乙", status: "pending" };
+    const steps = [
+      { args: { action: "create", tasks: [a, b] }, details: { action: "create", params: {}, tasks: [a, b], nextId: 3 } },
+      { args: { action: "update", id: 1, status: "in_progress" }, details: { action: "update", params: { id: 1, status: "in_progress" }, tasks: [{ ...a, status: "in_progress" }, b], nextId: 3 } },
+      { args: { action: "update", id: 1, status: "completed" }, details: { action: "update", params: { id: 1, status: "completed" }, tasks: [{ ...a, status: "completed" }, b], nextId: 3 } },
+    ];
+    for (const [i, step] of steps.entries()) {
+      const id = `call-plan-loop-${i}`;
+      out({ type: "message_start", message: assistant("") });
+      out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id, name: "todo", arguments: step.args }], stopReason: "toolUse" }) });
+      out({ type: "tool_execution_start", toolCallId: id, toolName: "todo", args: step.args });
+      out({ type: "tool_execution_end", toolCallId: id, toolName: "todo", isError: false, result: { content: [{ type: "text", text: "Plan updated" }], details: step.details } });
+    }
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("Plan loop done.") });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   if (text.startsWith("PLAN")) {
     const tasks = [
       { id: 1, subject: "检查现有实现", status: "completed" },
