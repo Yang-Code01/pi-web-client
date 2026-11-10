@@ -9,7 +9,7 @@ import { tr } from "./i18n/index.ts";
  *
  * 语义（`.scratch/workspace/spec.md` + D126）：
  * - 空名字 = 恢复成目录名；桥的 `rename()` 存空串，显示时由 `buildTree()` 回落到目录名。
- * - #279 起删除边界是「有会话才拦」：空的手动组与空的目录组都能删（D214）；有会话时仍说原来的
+ * - #279 起删除边界是「有会话才拦」：空的手动组与空的目录组都能删（D217）；有会话时仍说原来的
  *   那句话 —— 手动组「还有 N 个会话」，目录组「跟着目录走」。
  *
  * #173：旧的分组名额助手（`fixedBlocker` / `fixedRows` / `fixedDropped` / `toggleFixed`）已退役，
