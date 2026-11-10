@@ -9490,6 +9490,8 @@ export class App {
       this.updateComplete();
     };
     input.onclick = () => this.updateComplete();
+    // #317: the box scrolls on its own once it is at its cap; keep the top fade in step with it.
+    input.onscroll = () => this.syncComposerFade();
     // A click on a suggestion blurs the field first: give the click time to land.
     input.onblur = () => setTimeout(() => {
       if (document.activeElement !== this.textarea) this.closeComplete();
@@ -12693,6 +12695,34 @@ export class App {
     // `height` is border-box, `scrollHeight` leaves the border out — add it back or we clip a pixel.
     const border = input.offsetHeight - input.clientHeight;
     input.style.height = limit > 0 ? `${Math.min(limit, input.scrollHeight + border)}px` : "auto";
+    this.syncComposerFade();
+  }
+
+  /**
+   * #317: once the box is at its cap the draft scrolls inside it, so its top can slide out of sight
+   * with nothing on screen saying so. Fade the top 24px only while the draft sits part way down its
+   * own scroll range: back at the first line (`scrollTop === 0`) nothing is hidden above, and once
+   * the bottom is in view the hint is gone as well — both ends stay crisp and the fade marks the
+   * stretch between them.
+   *
+   * “At the bottom” is measured, not read off `scrollTop === max`: the browser stops scrolling as
+   * soon as the caret line fits, which leaves the box's own bottom padding (12px) below the fold, so
+   * while typing the box rests short of `max`. Treat “what is left to scroll is no more than the
+   * bottom inset (padding + border)” as the bottom, and the reading position a draft rests at — caret
+   * on the last line — stays free of the fade; only scrolling up from there brings it back.
+   *
+   * A mask, not a gradient to lay over the text: a mask carries alpha only, so there is no colour to
+   * pick for each theme and no band where an overlay meets the background — and it adds no layer that
+   * could swallow a click, a selection drag or the scrollbar. No transition: `fitComposer` runs on
+   * every keystroke, and reduced motion then has nothing to opt out of.
+   */
+  private syncComposerFade(): void {
+    const input = this.textarea;
+    if (!input) return;
+    const max = input.scrollHeight - input.clientHeight;
+    const inset = parseFloat(getComputedStyle(input).paddingBottom) + (input.offsetHeight - input.clientHeight);
+    const atBottom = max - input.scrollTop <= inset + 1;
+    input.classList.toggle("has-hidden-top", max > 0 && input.scrollTop > 0 && !atBottom);
   }
 
   /** Long pastes live in their own foldable box above what the user types next. */
