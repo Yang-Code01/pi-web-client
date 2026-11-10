@@ -111,7 +111,7 @@ check(
 );
 check("DNS 预设 >= 6", (await page.locator(".sys-preset").count()) >= 6, String(await page.locator(".sys-preset").count()));
 check("DNS 编辑器有应用按钮", (await page.getByRole("button", { name: "应用 DNS" }).count()) === 1);
-check("WinNAT 卡片有重启按钮", (await page.locator(".sys-winnat").getByRole("button", { name: "重启 WinNAT" }).count()) === 1);
+check("WinNAT 卡片有重启按钮", (await page.locator(".sys-winnat").getByRole("button", { name: /^(重启|启动) WinNAT$/ }).count()) === 1);
 await page.locator(".sys-winnat").screenshot({ path: path.join(OUT, "sysmanage-winnat.png") });
 
 await page.getByRole("button", { name: /端口与服务/ }).first().click();

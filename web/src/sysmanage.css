@@ -548,6 +548,12 @@
   margin-bottom: 6px;
 }
 
+.sys-winnat__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
 .sys-winnat__title {
   font-weight: 600;
 }

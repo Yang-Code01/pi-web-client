@@ -58,7 +58,10 @@ export interface WinnatInfo {
 
 export interface WinnatResult {
   ok: true;
-  stopWarning: string;
+  /** 重启前是否在跑；false 表示这次只是把它启动起来。 */
+  wasRunning: boolean;
+  /** 被连带停掉、事后没拉起来的依赖服务名。 */
+  depsFailed: string[];
   winnat: WinnatInfo;
 }
 

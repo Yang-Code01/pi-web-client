@@ -117,3 +117,28 @@ export function filterServices(services: SysService[], opts: ServiceFilter): Sys
     );
   });
 }
+
+/** Windows 服务状态 / 启动类型（PowerShell 枚举名）→ 界面文案；认不出就原样显示。 */
+const SERVICE_STATUS_LABELS: Record<string, string> = {
+  Running: "运行中",
+  Stopped: "已停止",
+  StartPending: "正在启动",
+  StopPending: "正在停止",
+  Paused: "已暂停",
+};
+
+const SERVICE_START_LABELS: Record<string, string> = {
+  Automatic: "自动",
+  Manual: "手动",
+  Disabled: "禁用",
+};
+
+export function serviceStatusLabel(status: string): string {
+  const label = SERVICE_STATUS_LABELS[status];
+  return label ? tr(label) : status;
+}
+
+export function serviceStartLabel(start: string): string {
+  const label = SERVICE_START_LABELS[start];
+  return label ? tr(label) : start;
+}
