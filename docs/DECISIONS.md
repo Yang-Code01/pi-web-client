@@ -343,6 +343,14 @@
 
 **不做的：** 新建/删除/重命名、可展开树（D7 早已否掉）、PDF 特殊处理（落 binary 分支：提示 + 新标签页/下载）、「让 pi 读这个文件」按钮（D49 同款理由）。
 
+> **后续修订（PDF 内嵌预览）：「PDF 特殊处理」这一条做了。** `kindOf`（`bridge/src/preview.ts:150`）给 `.pdf` 单独返回 kind `"pdf"`，不再落到 `looksText()` 的嗅探里；预览态的 body 是一颗 `<iframe class="viewer-frame">` 直接指向 `/raw` 的字节，翻页/缩放/下载/打印交给浏览器内建的 PDF 查看器，面板不解析也不转换。触发它的是一个真实文件：`ANAJ00L30K25FN0005K9.pdf`（1.4 MB 的加密 PDF，`/CreationDate` 之类的字符串全是十六进制密文，前 8192 字节里 **0 个 NUL、0 个控制字符**）——`looksText()` 只看前 8 KB，判成 `text`，前端 `loadViewerText()` 再 `res.text()` 一读，压缩流就成了乱码。相邻的第二个毛病是：即便没被误判成文本，PDF 也只会落 `binary`（「这个格式这里不支持」），面板里永远看不到内容。
+>
+> **顺带更正 D166 / D209 里「`/raw` 的 CSP sandbox 会让 PDF 白屏」这句话 —— 它是错的。** 白屏来自 Playwright 自带的 Chromium 没有 PDF 插件（D209 自己的测试记录里也写了这一点），不是 `content-security-policy: sandbox`。实测：同一份 PDF 由本站 `/raw` 提供（带 `sandbox allow-scripts …`）、嵌在 `<iframe>` 里，Chrome 与 Edge 的**有头**模式都能正常渲染出纸面与工具栏（截图在 PR 里）；headless 的 Playwright Chromium 里始终是深灰空框，那是浏览器缺插件、与响应头无关。所以 pdf 不需要像表格/幻灯片那样另开一个不带 sandbox 的端点。
+>
+> **出口没丢：** `pdf` 不再走 binary 支线，提示框里那颗「用默认程序打开」就看不到了；所以 pdf 的头部工具条补了一颗同名按钮（`web/src/app.ts` 的 `paintViewer`，条件 `info.kind !== "binary" && DESKTOP_OPEN.test(info.name)`），`/api/open` 的凭据照 D209 在 `openPreview` 里注册（`OPENS_ON_DESKTOP`）。
+>
+> **回归：** `bridge/tests/slides-unit.mjs` 的「.pdf 是 pdf（不是 binary / 不是 text）」两条（含「前 8 KB 无 NUL 的加密 PDF」），`probes/preview-open.mjs` 的 pdf 段（iframe 在、不是 `<pre>`、`/api/preview` 回 `kind: "pdf"`、`/raw` 的 `content-type: application/pdf`）；`PW_CHANNEL=chrome PW_HEADFUL=1 node probes/preview-open.mjs` 还能把 `shots/6-pdf.png` 拍成真渲染的样子。
+
 **实现落点：** 读侧 `bridge/src/preview.ts` 的 `openPreview`（门已删）+ `bridge/src/index.ts` 的 `POST /api/preview`；写侧同文件的 `rememberEditable` / `savePreviewFile` + `POST /api/save`；界面是新文件 `web/src/dirpicker.ts`（一份目录浏览器，被 viewer 浏览态、开新会话、输入框附件三处复用）+ `web/src/app.ts` 的 `ViewerPane` 三态。两道回归：`node bridge/tests/save-check.mjs`（9 组桥端断言，含 409/403/400/BOM/另存副本）与 `node probes/fs-ui.mjs`（9 组真实浏览器断言，含移动端与脏内容拦截）。
 
 **可改：** 想收回全盘可读，只需在 `openPreview` 里加回 `isUnder` 一行；想只允许改文档，把 `savePreviewFile` 的可写判定从 `kind` 收窄成扩展名白名单；2MB 上限是 `savePreviewFile` 里的一个常量。规格与步骤见 `.scratch/fs-explorer/PLAN.md`。
@@ -2500,7 +2508,8 @@ select 14；笔记抽屉更齐，11 / 12 / 13 / 14 全有（`.note-meta-input` 1
 - **图表不在网格里占位**：只有 zip 里真有 `xl/charts/chartN.xml` 时才提供「页面视图」——
   `soffice --headless --convert-to pdf` 转一次（本机实测冷 12.2s / 同 profile 热 6.7s，38 KB PDF），
   按 `path+mtime` 缓存，挂同源 `/api/sheet/pdf` 的 iframe（`/raw` 每条响应都带
-  `CSP: sandbox ...`，PDF 在里面白屏，所以必须另开端点，且这个端点不带 sandbox）。
+  `CSP: sandbox ...`，PDF 在里面白屏，所以必须另开端点，且这个端点不带 sandbox；
+  **更正：**「白屏」是 Playwright 自带 Chromium 缺 PDF 插件造成的，不是 sandbox 头 —— 见 D50 的 PDF 修订）。
 - **窗口是浮窗，不是 viewer 面板**（用户看过样张后定的，推翻「套进右侧预览栏」）：默认 1180×780，
   够宽时左网格右纸面，拖窄到 900 以下退成「网格 / 页面视图」两个 tab；手势照 D92 / D93
   （标题栏拖走、右下角改宽高、上边缘 7px 改高、双击复原、几何记 localStorage、clamp 在视口内），
@@ -3602,7 +3611,7 @@ D
 
 2. **扩展名分家族，伪装包退 binary，老二进制直接认。** `.pptx .pptm .ppsx .potx` 必须是 zip 包（`isZipPackage` 沿用表格那边的判定），不是就退 binary 并给「用本机程序打开」；`.ppt .pps` 是 97-2003 的 OLE 二进制，没有可靠的结构判据，直接认。改了扩展名的 pptx（比如改名成 `.doc`）按扩展名走，仍是 binary —— 但 grant 在，本机照样能开。**不做内容嗅探**：那是给「打开就崩」开了个口子，而「点了打不开」是可解释的。
 
-3. **站内翻页 = PowerPoint COM 转 PDF，塞进 iframe，放在独立的幻灯片浮窗里。** 不复用 `viewer` 面板：它固定 `min(760px,55vw)`（D121），一页 16:9 的幻灯片塞进去只剩半张；也不复用 `/raw`——它的 `content-security-policy: sandbox` 会让浏览器内建 PDF 查看器白屏（D166 已经因此给表格单开了 `/api/sheet/pdf`）。所以照抄 D166 的形状，另开 `/api/slides/pdf`：POST 换状态、GET 取字节，`content-disposition: inline`，`nosniff`，`no-store`。iframe 不带 `sandbox`（要 PDF 查看器自己的 origin），这是 D166 已接受的取舍。
+3. **站内翻页 = PowerPoint COM 转 PDF，塞进 iframe，放在独立的幻灯片浮窗里。** 不复用 `viewer` 面板：它固定 `min(760px,55vw)`（D121），一页 16:9 的幻灯片塞进去只剩半张；也不复用 `/raw`——它的 `content-security-policy: sandbox` 会让浏览器内建 PDF 查看器白屏（D166 已经因此给表格单开了 `/api/sheet/pdf`；**更正：**这条实测不成立，白屏来自 Playwright Chromium 缺插件，见 D50 的 PDF 修订）。所以照抄 D166 的形状，另开 `/api/slides/pdf`：POST 换状态、GET 取字节，`content-disposition: inline`，`nosniff`，`no-store`。iframe 不带 `sandbox`（要 PDF 查看器自己的 origin），这是 D166 已接受的取舍。
 
 4. **把「文件 → PDF」抽成共用设施，`sheet/pdf.ts` 降级成 wrapper。** 新 `bridge/src/docpdf/service.ts` 收排队、缓存键（`sha256(abs\0mtime)`）、两阶段状态、失败记忆、超时、临时目录、`%PDF-` 校验、清理；`engine` 是唯一的变量。表格的 driver 仍是 LibreOffice（行为、错误码 `sheet_pdf_failed/_timeout/_soffice`、`PI_SOFFICE` 全部不变），幻灯片的是 COM。**不顺手改 sheet-pdf 的旧行为**（它至今不清理缓存），只给新目录加 `retain: {count: 50, days: 7}`——旧坑单独修，别混在一次变更里。
 

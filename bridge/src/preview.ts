@@ -6,7 +6,7 @@ import { registerFileGrant } from "./sheet/index.ts";
 import { gbkEncode, utf8Bytes } from "./sheet/gbk.ts";
 
 /**
- * File preview for session artifacts (md / html / images / text).
+ * File preview for session artifacts (md / html / images / pdf / text).
  *
  * The logged-in page asks `/api/preview` for a file; if the path is inside the session's cwd or
  * the session transcript mentions it, the bridge hands out a capability token bound to a root
@@ -16,7 +16,7 @@ import { gbkEncode, utf8Bytes } from "./sheet/gbk.ts";
  * previewed page cannot read the bridge's cookies or call its API.
  */
 
-export type PreviewKind = "markdown" | "html" | "image" | "text" | "sheet" | "slides" | "binary";
+export type PreviewKind = "markdown" | "html" | "image" | "pdf" | "text" | "sheet" | "slides" | "binary";
 
 export interface PreviewInfo {
   token: string;
@@ -43,6 +43,8 @@ const HTML = new Set([".html", ".htm", ".xhtml"]);
 // D166: .xlsx/.xlsm get their own dialog. .csv/.tsv stay text; .xls/.ods/.xlsb stay binary and are
 // only handed to the desktop app (#106).
 const SHEET = new Set([".xlsx", ".xlsm"]);
+// 浏览器内建查看器能渲染的 PDF：既不解析也不下载，直接让 iframe 指向 /raw。
+const PDF = new Set([".pdf"]);
 // #106: workbooks we refuse to parse but can still open in Excel (the grant is what /api/open takes).
 const OPENABLE = new Set([".xlsx", ".xlsm", ".xlsb", ".xls", ".ods"]);
 // D209: presentations get their own floating window (slides/Dialog), not the sheet grid.
@@ -152,6 +154,9 @@ export function kindOf(file: string): PreviewKind {
   if (MD.has(ext)) return "markdown";
   if (HTML.has(ext)) return "html";
   if (IMAGE[ext]) return "image";
+  // PDF 必须先认掉：一旦落到 looksText() 的嗅探，加密/结构化 PDF 的前 8 KB 往往一个 NUL 都没有
+  // （字段全是十六进制密文），会被判成 text，前端就把 %PDF- 头和压缩流当 UTF-8 渲染成满屏乱码。
+  if (PDF.has(ext)) return "pdf";
   // Not a zip inside: .xls renamed to .xlsx, or an encrypted package. Say so, don't half-parse it.
   if (SHEET.has(ext)) return isZipPackage(file) ? "sheet" : "binary";
   // Legacy/OLE decks have no zip index, but PowerPoint still opens them — don't downgrade them.

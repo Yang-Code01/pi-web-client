@@ -7463,6 +7463,10 @@ export class App {
     }
     tbtn("⟳", tr("刷新（重新读取文件）"), () => void this.openPreview(v.path, v.sessionId, true));
     if (info) {
+      // D209 的第一步出口在 binary 支线的提示框里；那里看不到的格式（现在的 pdf）在头部补一颗，
+      // 否则「用本机程序打开」对它们是句空话（D50 修订：pdf 不再落 binary）。
+      if (info.kind !== "binary" && DESKTOP_OPEN.test(info.name))
+        tbtn("🖥", tr("用默认程序打开"), () => void this.openInApp(info.token));
       const open = tbtn("↗", tr("在新标签页打开"), () => this.openRawTab(rawUrl(info)));
       open.classList.add("wide-only");
       const copy = tbtn("⧉", tr("复制路径"), () => void navigator.clipboard?.writeText(info.abs));
@@ -7487,7 +7491,13 @@ export class App {
     body.removeAttribute("data-edit-path");
     // Keep an html iframe alive across header-only repaints (its own state / scroll matter).
     const frame = body.querySelector<HTMLIFrameElement>("iframe.viewer-frame");
-    if (info?.kind === "html" && v.mode === "render" && !v.error && frame && v.framePath === info.abs) return;
+    if (
+      !v.error &&
+      frame &&
+      v.framePath === info?.abs &&
+      (info.kind === "pdf" || (info.kind === "html" && v.mode === "render"))
+    )
+      return;
 
     body.replaceChildren();
     body.className = "viewer-body";
@@ -7555,8 +7565,23 @@ export class App {
       body.append(img);
       return;
     }
+    if (info.kind === "pdf") {
+      // 浏览器内建查看器就是最好的阅读器：不解析、不转换，iframe 直接指向 /raw 的字节。
+      // 不加 sandbox 属性（查看器要自己的 origin）；/raw 的 CSP sandbox 在 Chrome / Edge 的 iframe 里
+      // 不影响 PDF 渲染（实测，D50 补记），所以不必像表格/幻灯片那样单开端点。
+      const f = el("iframe", "viewer-frame") as HTMLIFrameElement;
+      f.src = url;
+      f.dataset.src = url;
+      v.frame = f;
+      v.framePath = info.abs;
+      v.frameToken = info.token;
+      body.classList.add("frame");
+      body.append(f);
+      return;
+    }
     if (info.kind === "binary") {
-      // #106/D209: .xls / .ods / 加密包 / 改了扩展名的 zip / pdf / docx / ppt — 这里不看，交给这台电脑上的默认程序。
+      // #106/D209: .xls / .ods / 加密包 / 改了扩展名的 zip / docx / ppt — 这里不看，交给这台电脑上的默认程序。
+      // pdf 曾经也走这条（D50 原文「PDF 特殊处理」），D50 修订后它有了自己的 kind 与内嵌查看器。
       const desktop = DESKTOP_OPEN.test(info.name);
       const box = el("div", desktop ? "viewer-msg workbook" : "viewer-msg");
       box.append(
