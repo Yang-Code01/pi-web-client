@@ -1,0 +1,150 @@
+import type { Item } from "./types.ts";
+
+export type ExecPhase = "idle" | "thinking" | "writing" | "tool" | "waiting";
+
+export interface ExecViewInput {
+  items: Item[];
+  phase: ExecPhase;
+  streamChars: number;
+  streamSummary?: string;
+  selectedRound: string | null;
+  now: number;
+}
+
+export interface ExecActiveTool {
+  id: string;
+  name: string;
+  args: unknown;
+  elapsedMs: number;
+}
+
+export type ExecNowView =
+  | { kind: "idle"; previousDurationMs: number | null; succeeded: boolean | null; activeTools: [] }
+  | { kind: "thinking" | "writing"; characters: number; summary: string; activeTools: ExecActiveTool[] }
+  | { kind: "tool"; activeTools: ExecActiveTool[] }
+  | { kind: "waiting"; activeTools: [] };
+
+export interface ExecTimelineRow {
+  id: string;
+  kind: "tool" | "skill";
+  label: string;
+  args: unknown;
+  status: "running" | "success" | "error" | "unknown";
+  durationMs: number | null;
+}
+
+export interface ExecRound {
+  id: string;
+  ordinal: number;
+}
+
+export interface ExecViewModel {
+  now: ExecNowView;
+  timeline: ExecTimelineRow[];
+  rounds: ExecRound[];
+  selectedRound: string | null;
+}
+
+interface LoadedRound {
+  id: string;
+  items: Item[];
+}
+
+function loadedRounds(items: Item[]): LoadedRound[] {
+  const rounds: LoadedRound[] = [];
+  for (const item of items) {
+    if (item.kind === "user") rounds.push({ id: item.id, items: [item] });
+    else rounds.at(-1)?.items.push(item);
+  }
+  return rounds;
+}
+
+function timeOf(item: Item): number | null {
+  if (!item.ts) return null;
+  const at = Date.parse(item.ts);
+  return Number.isFinite(at) ? at : null;
+}
+
+function timelineRows(items: Item[], now: number): ExecTimelineRow[] {
+  const rows: ExecTimelineRow[] = [];
+  for (const item of items) {
+    if (item.kind === "tool") {
+      if (item.name.toLowerCase() === "todo") continue;
+      const status = item.isError || item.status === "error"
+        ? "error"
+        : item.status === "running"
+          ? "running"
+          : item.status === "ok"
+            ? "success"
+            : "unknown";
+      const started = timeOf(item);
+      const durationMs = typeof item.durationMs === "number"
+        ? item.durationMs
+        : status === "running" && started !== null
+          ? Math.max(0, now - started)
+          : null;
+      rows.push({ id: item.id, kind: "tool", label: item.name, args: item.args, status, durationMs });
+    } else if (item.kind === "skill") {
+      rows.push({ id: item.id, kind: "skill", label: item.name, args: "", status: "success", durationMs: null });
+    }
+  }
+  return rows.reverse();
+}
+
+function previousDuration(items: Item[]): number | null {
+  const first = items.find((item) => item.kind === "user");
+  const start = first ? timeOf(first) : null;
+  const end = [...items].reverse().map(timeOf).find((at) => at !== null) ?? null;
+  return start === null || end === null ? null : Math.max(0, end - start);
+}
+
+function activeTools(items: Item[], now: number): ExecActiveTool[] {
+  return items.flatMap((item) => {
+    if (item.kind !== "tool" || item.status !== "running") return [];
+    const started = timeOf(item);
+    return [{
+      id: item.id,
+      name: item.name,
+      args: item.args,
+      elapsedMs: typeof item.durationMs === "number"
+        ? item.durationMs
+        : started === null
+          ? 0
+          : Math.max(0, now - started),
+    }];
+  });
+}
+
+/** Derive the now card and reverse-chronological steps from loaded transcript items only. */
+export function execView(input: ExecViewInput): ExecViewModel {
+  const rounds = loadedRounds(input.items);
+  const roundOptions = rounds.map((round, index) => ({ id: round.id, ordinal: index + 1 }));
+  const currentRound = rounds.at(-1) ?? null;
+  const selected = rounds.find((round) => round.id === input.selectedRound) ?? currentRound;
+  const selectedIsCurrent = selected !== null && selected.id === currentRound?.id;
+  const selectedItems = selected?.items ?? [];
+  const active = selectedIsCurrent ? activeTools(selectedItems, input.now) : [];
+  const timeline = timelineRows(selectedItems, input.now);
+  let now: ExecNowView;
+
+  if (selectedIsCurrent && input.phase === "thinking") {
+    now = { kind: "thinking", characters: input.streamChars, summary: input.streamSummary ?? "", activeTools: active };
+  } else if (selectedIsCurrent && input.phase === "writing") {
+    now = { kind: "writing", characters: input.streamChars, summary: input.streamSummary ?? "", activeTools: active };
+  } else if (selectedIsCurrent && input.phase === "tool" && active.length) {
+    now = { kind: "tool", activeTools: active };
+  } else if (selectedIsCurrent && input.phase === "waiting") {
+    now = { kind: "waiting", activeTools: [] };
+  } else {
+    const rows = timelineRows(selectedItems, input.now);
+    const failed = rows.some((row) => row.status === "error");
+    now = {
+      kind: "idle",
+      previousDurationMs: previousDuration(selectedItems),
+      succeeded: selectedItems.length ? !failed : null,
+      activeTools: [],
+    };
+  }
+
+  return { now, timeline, rounds: roundOptions, selectedRound: selected?.id ?? null };
+}
