@@ -285,6 +285,18 @@ export class ChatView {
   private moreNoteTimer = 0;
   /** #244: 轮次 id → 整段历史里的第几轮（1 起）；只在 reset 时按桥的索引填，翻出来的轮不走这张表。 */
   private turnOrdinal = new Map<string, number>();
+  /**
+   * #341: 一轮里的 `todo` 调用折成一张卡（用户要求）：主行是**最新**一次的快照，右边一枚「▾ N」
+   * 展开这一轮的每次更新。`user` 消息、`reset()` 都把它切成新的一轮。
+   */
+  private todoGroup: {
+    node: HTMLElement;
+    main: HTMLButtonElement;
+    label: HTMLElement;
+    toggle: HTMLButtonElement;
+    list: HTMLElement;
+    updates: { key: string; item: ToolItem; row: HTMLElement; mark: HTMLElement; text: HTMLElement }[];
+  } | null = null;
 
   constructor(private root: HTMLElement) {
     this.moreRow = el("div", "chat-more");
@@ -684,6 +696,7 @@ export class ChatView {
     this.opsTitle = null;
     this.opsBox = null;
     this.skillGroup = null;
+    this.todoGroup = null;
     this.failCards.clear();
     this.failAnchor = null;
     this.turnFails = [];
@@ -738,10 +751,14 @@ export class ChatView {
     const held = this.holdTurnState();
     const fresh: { id: string; node: HTMLElement; label: string }[] = [];
     this.staging = { anchor: anchor ?? this.jump, turns: fresh };
+    // #341: 翻出来的旧轮各自成组，不许并进当前这一轮那张卡。
+    const liveGroup = this.todoGroup;
+    this.todoGroup = null;
     try {
       for (const item of items) this.add(item);
     } finally {
       this.staging = null;
+      this.todoGroup = liveGroup;
       this.releaseTurnState(held);
     }
     const olderIds = new Set(items.map((item) => item.id));
@@ -899,6 +916,8 @@ export class ChatView {
       this.clearTurnFails();
       // 技能组按轮分：上一条用户消息之前加载的技能，不该再被收进新的组。
       this.skillGroup = null;
+      // #341: 计划卡也按轮分：新的一轮从一张新卡开始。
+      this.todoGroup = null;
     }
     // 隐式技能卡是「下面那张 read」的前言，不能落在它后面：收掉已有模块，让这张 read 自己开一个。
     if (item.kind === "skill") this.closeOps();
@@ -920,9 +939,21 @@ export class ChatView {
         return;
       }
       if (existing) {
+        // #341: todo 的卡是这一轮的折叠卡，结果帧就地回填到卡里那一行。
+        if (this.isTodoTool(item.name) && this.updateTodo(item)) return;
         this.mergeTool(existing, item);
         return;
       }
+    }
+    // #341: 同一轮里的下一次 todo 调用折进现有那张卡，不再各占一行。
+    if (item.kind === "tool" && this.isTodoTool(item.name) && this.todoGroup && !this.staging) {
+      const group = this.todoGroup;
+      this.addTodoUpdate(item);
+      this.cards.set(item.id, group.node);
+      this.toolCards.set(item.toolCallId, group.node);
+      this.noteAfter(item);
+      this.scrollToEnd();
+      return;
     }
     const node = this.build(item);
     this.cards.set(item.id, node);
@@ -1009,6 +1040,15 @@ export class ChatView {
     if (item.kind === "user" && item.id === id) {
       this.users.set(id, { node, item });
       this.paintPending();
+      return;
+    }
+    // #341: 折叠卡里的那一行就地更新；不属于这张卡（翻出来的旧轮）才重建。
+    if (item.kind === "tool" && this.isTodoTool(item.name) && this.updateTodo(item)) {
+      const group = this.todoGroup!;
+      this.cards.delete(id);
+      this.cards.set(item.id, group.node);
+      this.toolCards.set(item.toolCallId, group.node);
+      this.scrollToEnd();
       return;
     }
     const rebuilt = this.build(item);
@@ -1812,11 +1852,81 @@ export class ChatView {
    * `question` / `questionnaire` are the one tool whose transcript entry *is* the content: show each
    * question and the answer that came back. Pending cards open the drawer when tapped.
    */
-  private buildTodo(item: ToolItem): HTMLButtonElement {
-    const card = el("button", "tool todo-tool") as HTMLButtonElement;
-    card.type = "button";
-    card.dataset.running = item.status === "running" ? "1" : "0";
-    if (item.isError || item.status === "error") card.classList.add("err");
+  /**
+   * #341: 一轮里的 `todo` 调用折成一张卡（用户要求）：主行是最新一次的快照，右边一枚「▾ N」
+   * 展开这一轮的每次更新；点主行仍然是去执行面板看计划。
+   */
+  private buildTodo(item: ToolItem): HTMLElement {
+    const node = el("div", "tool todo-group");
+    const row = el("div", "todo-row");
+    const main = el("button", "todo-tool") as HTMLButtonElement;
+    main.type = "button";
+    main.title = tr("点击查看执行面板计划");
+    const label = el("span", "todo-summary");
+    main.append(el("span", "todo-icon", "📋"), label);
+    main.onclick = () => this.onTodoClick?.();
+    const toggle = el("button", "todo-toggle") as HTMLButtonElement;
+    toggle.type = "button";
+    toggle.hidden = true;
+    toggle.title = tr("展开这一轮的计划更新");
+    const list = el("ol", "todo-updates");
+    list.hidden = true;
+    toggle.onclick = () => {
+      list.hidden = !list.hidden;
+      toggle.setAttribute("aria-expanded", String(!list.hidden));
+      toggle.textContent = list.hidden ? "▾" : "▴";
+      toggle.title = list.hidden ? tr("展开这一轮的计划更新") : tr("收起计划更新");
+    };
+    row.append(main, toggle);
+    node.append(row, list);
+    this.todoGroup = { node, main, label, toggle, list, updates: [] };
+    this.addTodoUpdate(item);
+    return node;
+  }
+
+  /** #341: 往当前折叠卡里添一条更新；主行、次数、展开钮随之刷新。 */
+  private addTodoUpdate(item: ToolItem): void {
+    const group = this.todoGroup;
+    if (!group) return;
+    const row = el("li", "todo-update");
+    row.dataset.status = todoStatus(item);
+    const mark = el("span", "todo-mark", todoMark(item));
+    const text = el("span", "todo-text", this.todoText(item));
+    row.append(mark, text, el("span", "todo-at", timeOf(item.ts)));
+    group.list.append(row);
+    group.updates.push({ key: item.toolCallId, item, row, mark, text });
+    this.paintTodoGroup();
+  }
+
+  /** #341: 结果帧到达时就地改那一行（`mergeTool` 的 todo 版本）。不属于这张卡就返回 false。 */
+  private updateTodo(item: ToolItem): boolean {
+    const group = this.todoGroup;
+    const hit = group?.updates.find((update) => update.key === item.toolCallId || update.item.id === item.id);
+    if (!group || !hit) return false;
+    hit.item = item;
+    hit.row.dataset.status = todoStatus(item);
+    hit.mark.textContent = todoMark(item);
+    hit.text.textContent = this.todoText(item);
+    this.paintTodoGroup();
+    return true;
+  }
+
+  private paintTodoGroup(): void {
+    const group = this.todoGroup;
+    if (!group || !group.updates.length) return;
+    const latest = group.updates[group.updates.length - 1].item;
+    const n = group.updates.length;
+    const summary = this.todoText(latest) + (n > 1 ? tr(" · {p1} 次更新", { p1: String(n) }) : "");
+    group.label.textContent = summary;
+    group.main.setAttribute("aria-label", summary);
+    group.node.dataset.running = latest.status === "running" ? "1" : "0";
+    group.node.classList.toggle("err", Boolean(latest.isError || latest.status === "error"));
+    group.toggle.hidden = n < 2;
+    if (!group.toggle.hidden) group.toggle.textContent = group.list.hidden ? "▾" : "▴";
+  }
+
+  /** #341: 一条 `todo` 调用在聊天里的说法（不含图标）。 */
+  private todoText(item: ToolItem): string {
     const tasks = item.plan?.tasks.filter((task) => task.status !== "deleted") ?? [];
     const done = tasks.filter((task) => task.status === "completed").length;
     const args = item.args && typeof item.args === "object" ? item.args as Record<string, unknown> : {};
@@ -1833,12 +1943,7 @@ export class ChatView {
           : status === "completed"
             ? tr("完成「{p1}」", { p1: subject || tr("计划项") })
             : tr("更新计划");
-    const summary = tr("计划 {p1}/{p2} · {p3}", { p1: done, p2: tasks.length, p3: actionText });
-    card.setAttribute("aria-label", summary);
-    card.title = tr("点击查看执行面板计划");
-    card.append(el("span", "todo-icon", "📋"), el("span", "todo-summary", summary));
-    card.onclick = () => this.onTodoClick?.();
-    return card;
+    return tr("计划 {p1}/{p2} · {p3}", { p1: done, p2: tasks.length, p3: actionText });
   }
 
   /** The two tools whose transcript entry is a question card, not an entry of the ops module. */
@@ -1891,6 +1996,25 @@ export class ChatView {
     }
     return card;
   }
+}
+
+/** #341: 折叠卡里一行更新的状态 —— 与执行面板计划区同一套记号。 */
+function todoStatus(item: ToolItem): string {
+  const args = item.args && typeof item.args === "object" ? item.args as Record<string, unknown> : {};
+  if (String(args.action ?? "") === "clear") return "cleared";
+  const status = String(args.status ?? "");
+  if (status === "completed" || status === "in_progress") return status;
+  const tasks = item.plan?.tasks.filter((task) => task.status !== "deleted") ?? [];
+  return tasks.length && tasks.every((task) => task.status === "completed") ? "completed" : "pending";
+}
+
+function todoMark(item: ToolItem): string {
+  if (item.isError || item.status === "error") return "!";
+  const status = todoStatus(item);
+  if (status === "completed") return "✓";
+  if (status === "in_progress") return "◌";
+  if (status === "cleared") return "—";
+  return "○";
 }
 
 function durationText(ms?: number): string {

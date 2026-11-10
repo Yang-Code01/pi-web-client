@@ -1,5 +1,5 @@
 /**
- * Smoke the execution subtab against the local fake pi implementation.
+ * Smoke the execution subtab and the folded plan card in the transcript against the local fake pi implementation (#341: one card per turn).
  *
  * Run after `npm run build:bridge && npm run build:web` with:
  *   node bridge/tests/exec-panel-ui.mjs
@@ -139,6 +139,23 @@ try {
   check("selecting a plan item highlights matching steps and dims other steps", (await page.locator(".exec-step.selected").count()) === 1 && (await page.locator(".exec-step.dimmed").count()) === 1);
   await page.locator('.exec-plan-task[data-plan-task-id="2"]').click();
   check("selecting the active plan item again clears step highlighting", (await page.locator(".exec-step.dimmed").count()) === 0);
+
+  // #341: 一轮里多次 todo 调用 —— 聊天里只留一张折叠卡，展开才看每次更新。
+  socket.send(JSON.stringify({ type: "prompt", sessionId, text: "PLANLOOP" }));
+  await page.waitForFunction(() => [...document.querySelectorAll(".todo-summary")].some((node) => node.textContent?.includes("次更新")), null, { timeout: 20000 });
+  const planCards = page.locator(".todo-group");
+  check("one folded plan card per turn", (await planCards.count()) === 2, `${await planCards.count()} cards`);
+  const loopCard = planCards.last();
+  const loopLabel = await loopCard.locator(".todo-summary").innerText();
+  check("folded card keeps the latest snapshot", loopLabel.includes("计划 1/2 · 完成「甲」"), loopLabel);
+  check("folded card counts the updates", loopLabel.includes("3 次更新"), loopLabel);
+  check("update rows start folded away", await loopCard.locator(".todo-updates").evaluate((node) => node.hidden));
+  check("a single-update turn gets no toggle", await planCards.first().locator(".todo-toggle").evaluate((node) => node.hidden));
+  await loopCard.locator(".todo-toggle").click();
+  check("expanding lists every update", (await loopCard.locator(".todo-update").count()) === 3);
+  const updates = await loopCard.locator(".todo-update").allInnerTexts();
+  check("updates read in order, newest last", updates[0].includes("计划 0/2 · 新增「计划项」") && updates[1].includes("开始「甲」") && updates[2].includes("完成「甲」"), updates.join(" | "));
+  check("a todo card in the fold still opens the execution plan", (await loopCard.locator(".todo-tool").getAttribute("aria-label"))?.includes("3 次更新") === true);
 
   socket.send(JSON.stringify({ type: "prompt", sessionId, text: "BGCHILD" }));
   await page.waitForFunction(() => [...document.querySelectorAll(".exec-subagent-task")].some((row) => row.textContent?.includes("inspect child updates")), null, { timeout: 20000 });

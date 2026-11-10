@@ -763,6 +763,20 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .todo-icon { flex: none; }
 .todo-summary { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
 .todo-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* #341: 一轮里的 todo 调用折成一张卡 —— 主行是「现在」，点右边的 ▾ 才铺开这一轮的每次更新。
+   主行仍是那颗「去执行面板看计划」的钮，所以内层按钮不再画第二层边框与底色。 */
+.todo-group { padding: 0; overflow: hidden; }
+.todo-row { display: flex; align-items: center; gap: 2px; }
+.todo-row .todo-tool { flex: 1; min-width: 0; border: 0; background: none; }
+.todo-toggle { flex: none; border: 0; background: none; padding: 4px 10px 4px 0; color: var(--faint); font: 11px/1 var(--mono); cursor: pointer; }
+.todo-toggle:hover { color: var(--accent); }
+.todo-updates { margin: 0; padding: 6px 12px 8px 30px; border-top: 1px solid var(--line-soft); list-style: none; display: grid; gap: 3px; }
+.todo-update { display: flex; gap: 6px; align-items: baseline; min-width: 0; font-size: 12px; color: var(--dim); }
+.todo-mark { flex: none; width: 1em; color: var(--faint); }
+.todo-update[data-status="completed"] .todo-mark { color: var(--accent); }
+.todo-update[data-status="in_progress"] .todo-mark { color: var(--text); }
+.todo-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-at { margin-left: auto; flex: none; font: 11px var(--mono); color: var(--faint); }
 /* 隐式技能（D199）：模型自己读了 SKILL.md，本轮就多一张卡 —— 一句话是什么 + 为什么是它。
    虚线徽标说的是「没人让你用它」：它挑的，不是你点的。 */
 .skillcard { border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); background: var(--panel); border-radius: 12px; padding: 10px 12px; min-width: 0; }
