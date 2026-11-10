@@ -10,8 +10,8 @@
 
 ### 修复
 
-- macOS / Linux 上 `npm install` 不再掉进「装不上 pi」：找 pi 的候选表补上了 `<node 前缀>/lib/node_modules` 与 nvm 的各版本目录，`npm root -g` 不再拼成 `node_modules/node_modules/…`，`bin/pi` 这个软链也能跟到真 CLI 了 #PR D226
-- npm ≥ 12（`allow-remote=none`）拒了全局安装的 remote 取包时，bootstrap 自己重试一次 `--allow-remote=all`，并提示把 `http://` 镜像换成 https，而不是只抛一句 `EALLOWREMOTE` #PR D226
+- macOS / Linux 上 `npm install` 不再掉进「装不上 pi」：找 pi 的候选表补上了 `<node 前缀>/lib/node_modules` 与 nvm 的各版本目录，`npm root -g` 不再拼成 `node_modules/node_modules/…`，`bin/pi` 这个软链也能跟到真 CLI 了 #341 D226
+- npm ≥ 12（`allow-remote=none`）拒了全局安装的 remote 取包时，bootstrap 自己重试一次 `--allow-remote=all`，并提示把 `http://` 镜像换成 https，而不是只抛一句 `EALLOWREMOTE` #341 D226
 
 ## 未发布 · 设置抽屉分两页（Aa → ⚙）
 
