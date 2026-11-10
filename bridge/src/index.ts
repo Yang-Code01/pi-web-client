@@ -27,7 +27,7 @@ import { pageBefore } from "./history.ts";
 import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
-import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
+import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion, type RuntimeStats } from "./sessions.ts";
 import { defaultPermission } from "./permissiondefault.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { describeStoreSkills, installSkill, installedSkills, previewSource, removeSkill, searchSkillStore } from "./skillstore.ts";
@@ -1422,7 +1422,7 @@ async function main(): Promise<void> {
    * D120: the panel stays live without a timer of its own, but only pages that actually asked for
    * the numbers get the tick's broadcast — a 60 s push to every idle tab is nobody's feature.
    */
-  const broadcastRuntime = (stats: object) => {
+  const broadcastRuntime = (stats: RuntimeStats) => {
     const data = JSON.stringify({ type: "runtime.stats", ...stats });
     for (const client of wss.clients) {
       if (client.readyState === WebSocket.OPEN && (client as any).wantsRuntime) client.send(data);
