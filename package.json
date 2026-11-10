@@ -62,6 +62,8 @@
     "probe:chrome": "node probes/run-all.mjs --only chrome-topbar,chrome-bottom,chrome-sheet,chrome-narrow",
     "probe:preview": "node probes/preview-open.mjs",
     "test:history": "node --experimental-strip-types bridge/tests/history-page-unit.mjs",
+    "test:paging": "node bridge/tests/paging-scope.mjs",
+    "test:paging:ui": "node bridge/tests/paging-local-ui.mjs",
     "test:history:ui": "node bridge/tests/history-paths-ui.mjs",
     "test:loadolder:ui": "node --experimental-strip-types bridge/tests/history-ui.mjs",
     "test:tail": "node --experimental-transform-types bridge/tests/tail-read-error.mjs",
