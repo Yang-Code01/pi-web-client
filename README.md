@@ -112,8 +112,9 @@ npm start     # tsc 编译 bridge + 打包 peer 与 web/dist，再跑 dist/index
 
 以后每次启动只要 `npm start`，它每次都会重新编译，所以 `git pull` 之后只改了代码时也直接 `npm start`。
 pull 进来的改动如果动了子包的依赖（`bridge/` `peer/` `web/` 的 `package-lock.json`），`npm start` 会在编译前拦下来，
-列出对不上的包并让你先跑 `npm install`。拿不准的时候就每次 pull 后都 `npm install` 一次：已经齐了的东西它都跳过，
-只多花十几秒（主要是 `pi list`）。「本项目需要」的扩展清单变了也靠这一步补上。
+列出对不上的包并让你先跑 `npm install`。「本项目需要」的 pi 扩展也一样：`npm start` 先确认下表里的扩展都装了，
+缺了就列出缺哪个、让你先跑 `npm install`（D224）。这一查要跑 `pi list`（十几秒），所以只在清单、pi 或 pi 的
+`settings.json` 变了之后的第一次启动真跑，齐了就记下来，之后的启动不再多花时间。
 
 首次启动会打印一次口令（也写在状态目录的 `passphrase.txt`）：
 
