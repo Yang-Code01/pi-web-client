@@ -28,6 +28,7 @@ import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
 import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion, type RuntimeStats } from "./sessions.ts";
+import { resolveChildSessionFile } from "./bgruns.ts";
 import { entriesToItems } from "./items.ts";
 import type { Item } from "./items.ts";
 import { loadEntries, type SessionEntry } from "./sessionfile.ts";
@@ -1564,7 +1565,7 @@ async function main(): Promise<void> {
       let items = watch.items;
       let plan = watch.plan;
       let stats = watch.stats;
-      let file = child.sessionFile ?? null;
+      let file = child.sessionFile ? resolveChildSessionFile(child.sessionFile) ?? null : null;
       let size = watch.size;
       let mtime = watch.mtime;
       if (!file && watch.file) {

@@ -24,9 +24,9 @@
  * 最终答复从结果文本的 `Return: {…}` 取。
  */
 
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** runner 的痕迹目录（acp_delegate 把 `<runId>.activity` / `.out` / `.session.jsonl` 都写在这里）。 */
 const ACP_DIR = join(tmpdir(), "acp-delegate");
@@ -134,6 +134,41 @@ function underSubagents(abs: string, file = false): boolean {
   const rest = abs.slice(SUBAGENTS_TMP.length);
   if (!rest || rest.startsWith("..")) return false;
   return file ? rest.includes(sep) : true;
+}
+
+function pathStartsWith(value: string, prefix: string): boolean {
+  const candidate = process.platform === "win32" ? value.toLowerCase() : value;
+  const expected = process.platform === "win32" ? prefix.toLowerCase() : prefix;
+  return candidate.startsWith(expected);
+}
+
+function containsPath(root: string, candidate: string): boolean {
+  const rest = relative(root, candidate);
+  return rest !== "" && rest !== ".." && !rest.startsWith(`..${sep}`) && !isAbsolute(rest);
+}
+
+/** Resolve a child transcript only when its real file remains inside an approved temp subagent root. */
+export function resolveChildSessionFile(file: string): string | undefined {
+  try {
+    const tempRoot = realpathSync.native(tmpdir());
+    const realFile = realpathSync.native(file);
+    const fromTemp = relative(tempRoot, realFile);
+    if (!fromTemp || fromTemp === ".." || fromTemp.startsWith(`..${sep}`) || isAbsolute(fromTemp)) return undefined;
+
+    const [rootName, ...rest] = fromTemp.split(sep);
+    if (!rootName || rest.length === 0) return undefined;
+    const acpRoot = process.platform === "win32" ? "acp-delegate".toLowerCase() : "acp-delegate";
+    const actualRootName = process.platform === "win32" ? rootName.toLowerCase() : rootName;
+    if (actualRootName !== acpRoot && !pathStartsWith(rootName, SUBAGENTS_PREFIX)) return undefined;
+
+    const realRoot = realpathSync.native(join(tempRoot, rootName));
+    const rootFromTemp = relative(tempRoot, realRoot);
+    if (!rootFromTemp || rootFromTemp === ".." || rootFromTemp.startsWith(`..${sep}`) || rootFromTemp.includes(sep) || isAbsolute(rootFromTemp)) return undefined;
+    if (!containsPath(realRoot, realFile)) return undefined;
+    return realFile;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -659,9 +694,10 @@ export class BgRuns {
     if (!run) return undefined;
     if (run.source === "acp") {
       const file = resolve(join(ACP_DIR, `${id}.session.jsonl`));
-      if (!file.startsWith(ACP_DIR + sep)) return undefined;
+      const safeFile = resolveChildSessionFile(file);
+      if (!safeFile) return undefined;
       try {
-        return statSync(file).isFile() ? file : undefined;
+        return statSync(safeFile).isFile() ? safeFile : undefined;
       } catch {
         return undefined;
       }
@@ -673,8 +709,8 @@ export class BgRuns {
       if (!step || typeof step !== "object") continue;
       const raw = (step as Record<string, unknown>).sessionFile;
       if (typeof raw !== "string" || !raw.trim()) continue;
-      const file = resolve(raw);
-      if (!underSubagents(file, true)) continue;
+      const file = resolveChildSessionFile(resolve(raw));
+      if (!file) continue;
       try {
         if (statSync(file).isFile()) return file;
       } catch {
