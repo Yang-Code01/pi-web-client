@@ -14,9 +14,9 @@
  * pane, so messages stay visible; going wide again restores the half-pane cap without a reload; at a
  * 1.25 UI scale the cap is still measured in layout px, i.e. the rendered box is the cap zoomed once.
  *
- * #317 adds the top fade: an overflowing box fades its top 24px while the first line sits above the
- * fold (scrolled back to the first line → no fade), never below the cap, and a wheel inside the box
- * scrolls the box without moving the transcript.
+ * #317 adds the top fade: an overflowing box fades its top 24px only while the draft sits part way
+ * down its own scroll range — no fade at either end (first line, or bottom of the range), never below
+ * the cap — and a wheel inside the box scrolls the box without moving the transcript.
  *
  * Run: node probes/composer-grow.mjs   (needs `npm run build:web` first)
  */
@@ -443,24 +443,42 @@ try {
   await sleep(150);
   const capped = await fadeState();
   assert(capped.overflow > 20, `#317 needs a box that really overflows (${capped.overflow}px hidden)`);
-  // `fill` puts the caret at the end, so the box sits at the bottom of the draft: lines are hidden
-  // above the fold, which is exactly when the fade has something to say.
+  // `fill` leaves the caret on the last line, which is near the bottom but not at it: the browser
+  // scrolls only far enough to show the caret, leaving the box's own 12px bottom padding below the
+  // fold. So the positions below are driven explicitly — bottom, middle, top, bottom.
   assert(capped.scrollTop > 40, `the draft is scrolled down, lines hidden above (scrollTop ${capped.scrollTop} of ${capped.overflow})`);
-  assert(/gradient/.test(capped.mask), `scrolled down in an overflowing box: the top fades (mask ${capped.mask})`);
-  assert(/24px/.test(capped.mask), `the fade is 24px tall (mask ${capped.mask})`);
-  const maskColours = [...capped.mask.matchAll(/rgba?\([^)]*\)/g)].map((m) => m[0]);
+
+  // 1. At the far end of its range the box shows no hint: both ends read clean, and only the stretch
+  // between them fades.
+  await scrollBoxTo("bottom");
+  const atBottom = await fadeState();
+  assert(atBottom.scrollTop >= atBottom.overflow - 1, `the box is at the bottom of its range (scrollTop ${atBottom.scrollTop} of ${atBottom.overflow})`);
+  assert(atBottom.mask === "none", `at the bottom of the draft nothing fades (mask ${atBottom.mask})`);
+  await page.screenshot({ path: path.join(OUT, "10-no-fade.png") });
+  log("bottom of the range: no fade", `scrollTop ${atBottom.scrollTop}/${atBottom.overflow}`);
+
+  // 2. Part way down: 24px at the top fade out, and nothing is painted to fade them.
+  await scrollBoxTo(Math.round(capped.overflow / 2));
+  const faded = await fadeState();
+  assert(
+    faded.scrollTop > 0 && faded.scrollTop < faded.overflow - 1,
+    `the draft sits part way down its range (scrollTop ${faded.scrollTop} of ${faded.overflow})`,
+  );
+  assert(/gradient/.test(faded.mask), `scrolled into the middle: the top fades (mask ${faded.mask})`);
+  assert(/24px/.test(faded.mask), `the fade is 24px tall (mask ${faded.mask})`);
+  const maskColours = [...faded.mask.matchAll(/rgba?\([^)]*\)/g)].map((m) => m[0]);
   assert(
     maskColours.length > 0 && maskColours.every((c) => /^rgba?\(0, 0, 0(, 0)?\)$/.test(c)),
     `the fade is pure alpha — no colour of its own to clash with the theme (${maskColours.join(" ")})`,
   );
-  assert(!/[1-9]/.test(capped.transition), `no transition on the fade, so nothing to suppress under reduced motion (${capped.transition})`);
-  assert(capped.pointerEvents === "auto", `the box still takes pointer events (${capped.pointerEvents})`);
-  assert(capped.hitIsTextarea, `a click in the fade band lands on the textarea itself, not on a layer (${capped.hit})`);
+  assert(!/[1-9]/.test(faded.transition), `no transition on the fade, so nothing to suppress under reduced motion (${faded.transition})`);
+  assert(faded.pointerEvents === "auto", `the box still takes pointer events (${faded.pointerEvents})`);
+  assert(faded.hitIsTextarea, `a click in the fade band lands on the textarea itself, not on a layer (${faded.hit})`);
   await page.screenshot({ path: path.join(OUT, "9-fade-top.png") });
-  log("overflowing, scrolled down: faded top confirmed", capped.mask);
+  log("scrolled into the middle: faded top confirmed", faded.mask);
 
   // A wheel inside the box belongs to the box: the transcript must not scroll along with it.
-  assert(capped.chatOverflow > 60, `the transcript can scroll on its own (${capped.chatOverflow}px)`);
+  assert(faded.chatOverflow > 60, `the transcript can scroll on its own (${faded.chatOverflow}px)`);
   const beforeWheel = await fadeState();
   await page.mouse.move(beforeWheel.box.left + beforeWheel.box.width / 2, beforeWheel.box.top + beforeWheel.box.height / 2);
   await page.mouse.wheel(0, -90);
@@ -471,20 +489,22 @@ try {
     Math.abs(afterWheel.chatTop - beforeWheel.chatTop) <= 1,
     `and the transcript stayed put (chat scrollTop ${beforeWheel.chatTop} → ${afterWheel.chatTop})`,
   );
-  assert(/gradient/.test(afterWheel.mask), `still inside the draft, still faded (mask ${afterWheel.mask})`);
+  assert(/gradient/.test(afterWheel.mask), `still between the two ends, still faded (mask ${afterWheel.mask})`);
   log("wheel in box:", `box ${beforeWheel.scrollTop} → ${afterWheel.scrollTop}`, `chat ${beforeWheel.chatTop} → ${afterWheel.chatTop}`);
 
-  // Back at the first line nothing is hidden above the fold, so the fade goes away at once — and
-  // comes back as soon as the box is scrolled down into the draft again.
+  // 3. Back at the first line nothing is hidden above the fold, so the fade goes away there too.
   await scrollBoxTo(0);
   const atTop = await fadeState();
   assert(atTop.scrollTop === 0, `the box is back at its first line (scrollTop ${atTop.scrollTop})`);
   assert(atTop.mask === "none", `nothing is above the fold: no fade (mask ${atTop.mask})`);
-  await page.screenshot({ path: path.join(OUT, "10-no-fade.png") });
+  log("first line: no fade");
+
+  // 4. And back at the bottom, still nothing: the fade only marks the middle of the range.
   await scrollBoxTo("bottom");
-  const again = await fadeState();
-  assert(/gradient/.test(again.mask), `scrolling down again brings the fade back (mask ${again.mask})`);
-  log("first line: no fade; scrolled down again: faded");
+  const bottomAgain = await fadeState();
+  assert(bottomAgain.scrollTop >= bottomAgain.overflow - 1, `back at the bottom of the range (scrollTop ${bottomAgain.scrollTop} of ${bottomAgain.overflow})`);
+  assert(bottomAgain.mask === "none", `back at the bottom: still no fade (mask ${bottomAgain.mask})`);
+  log("bottom again: no fade");
 
   // Below the cap nothing is above the fold, so the fade never shows — even pinned to the end.
   await field.fill(lines(20));
