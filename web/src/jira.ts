@@ -91,6 +91,8 @@ interface DetailEntry {
 
 /** 描述超过这个字数就截断，并给一个「在新窗口打开」。 */
 const DESC_LIMIT = 800;
+/** 表单里站点地址的默认值：团队就用这一个站点，省得每次手敲；用户改了以用户填的为准。 */
+const DEFAULT_SITE_URL = "https://kaigit.atlassian.net/";
 
 function isAuthCode(code: string): boolean {
   return code === "jira_auth" || code === "jira_forbidden";
@@ -107,7 +109,7 @@ export class JiraPanel {
   private state: PanelState = { kind: "loading" };
   private config: JiraConfigView | null = null;
   /** 表单的当前值：每次重画都从这里恢复，别让一次渲染把用户敲的字弄丢。 */
-  private form = { siteUrl: "", email: "", apiKey: "" };
+  private form = { siteUrl: DEFAULT_SITE_URL, email: "", apiKey: "" };
   private saving = false;
   /** 关闭 / 重开时作废还在路上的请求。 */
   private seq = 0;
@@ -397,7 +399,7 @@ export class JiraPanel {
       if (!this.root) return;
       this.config = null;
       this.details.clear();
-      this.form = { siteUrl: "", email: "", apiKey: "" };
+      this.form = { siteUrl: DEFAULT_SITE_URL, email: "", apiKey: "" };
       this.state = { kind: "form", note: tr("已退出连接"), bad: false };
     } catch (err) {
       if (!this.root) return;
@@ -489,7 +491,8 @@ export class JiraPanel {
     token.type = "password";
     token.value = this.form.apiKey;
     token.placeholder = "ATATT…";
-    token.autocomplete = "off";
+    // 不能用 "off"：Chrome / Edge 对密码框无视它，会把浏览器存过的密码自动填进来，看着像 token 被预填了。
+    token.autocomplete = "new-password";
     token.spellcheck = false;
     token.oninput = () => {
       this.form.apiKey = token.value;
