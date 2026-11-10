@@ -24,7 +24,7 @@ import { defaultPermission } from "./permissiondefault.ts";
 import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
 import { isProtocolWidgetLines } from "./extwidgets.ts";
 import { itemsFrame, type SessionHistory } from "./history.ts";
-import { planFromEntries, planFromToolResult, type PlanSnapshot } from "./execplan.ts";
+import { planReplayFromEntries, planFromToolResult, type PlanSnapshot } from "./execplan.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -971,9 +971,10 @@ export class Session extends EventEmitter {
     if (!this.state.file) return true;
     try {
       const res = loadEntries(this.state.file);
-      // 隐式触发只在工具参数里留了痕迹（`read …\SKILL.md`），回放时把技能卡补上（D199）。
-      this.plan = planFromEntries(res.entries);
-      this.items = this.keepUnsentBubbles(withSkillItems(entriesToItems(res.entries), this.skillsHere(), this.state.cwd || undefined));
+      // 回放计划快照供当前计划区与每条 todo 卡片的历史快照共用。
+      const planReplay = planReplayFromEntries(res.entries);
+      this.plan = planReplay.plan;
+      this.items = this.keepUnsentBubbles(withSkillItems(entriesToItems(res.entries, planReplay.toolResults), this.skillsHere(), this.state.cwd || undefined));
       this.state.truncated = res.truncated;
       this.readError = null;
       return true;
@@ -1447,6 +1448,7 @@ export class Session extends EventEmitter {
               isError: Boolean(ev.isError),
               result: contentText(ev.result).slice(0, 20000),
               durationMs: ev.durationMs,
+              ...(prev.name === "todo" ? { plan: this.plan } : {}),
             };
             this.items[at] = next;
             this.emitWs({ type: "item.replace", sessionId: this.state.id, id: prev.id, item: next });

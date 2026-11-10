@@ -27,11 +27,25 @@ export interface AssistantItem extends ItemBase {
   /** Set by pi when stopReason is "error": the provider's own message (401, rate limit, overflow…). */
   errorMessage?: string;
 }
+export type ToolPlanStatus = "pending" | "in_progress" | "completed" | "deleted";
+export interface ToolPlanTask {
+  id: number;
+  subject: string;
+  activeForm?: string;
+  status: ToolPlanStatus;
+  blockedBy?: number[];
+}
+export interface ToolPlanSnapshot {
+  tasks: ToolPlanTask[];
+  listedRound: string | null;
+}
 export interface ToolItem extends ItemBase {
   kind: "tool";
   toolCallId: string;
   name: string;
   args: unknown;
+  /** Snapshot after a todo update; null explicitly records a cleared plan. */
+  plan?: ToolPlanSnapshot | null;
   partialResult?: string;
   result?: string;
   isError?: boolean;

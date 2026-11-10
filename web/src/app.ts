@@ -245,6 +245,7 @@ export class App {
   private tab: Tab = "sessions";
   private queueTab: QueueTab = readQueueTab();
   private execSelectedRound: string | null = null;
+  private execSelectedPlanTaskId: number | null = null;
   private execPlan: ExecPlanSnapshot | null = null;
   private execPlanRounds: ExecRound[] = [];
   private execRoundStats: Record<string, ExecRoundStats> = {};
@@ -945,6 +946,7 @@ export class App {
     this.chat.onFork = (item, index) => this.forkAt({ entryId: item.id, index, text: item.text });
     // 账本要的是「这次会话里所有失败」，聊天区只画本轮的红卡：两边各收各的，按 toolCallId 去重。
     this.chat.onFail = (f) => this.recordFail(f);
+    this.chat.onTodoClick = () => this.openExecPlanFromChat();
     // 复盘那一轮的回写（D164 延伸）：模型把规矩写在回答末尾，这里捡出来交给桥。
     this.chat.onAnswer = (text) => this.takeRules(text);
     // #200: 失败气泡旁的「重试」，动作就是接管 —— 桥那边会先拉起 pi，再按原顺序补发没发出去的那几条。
@@ -1709,6 +1711,13 @@ export class App {
       case "item.add":
         if (msg.sessionId !== this.currentId) break;
         const item = msg.item as Item;
+        const latestRoundBefore = [...this.chat.loadedItems()].reverse().find(
+          (loaded) => loaded.kind === "user" && loaded.id !== item.id && loaded.id !== msg.clientId,
+        );
+        if (item.kind === "user" && (this.execSelectedRound === null || this.execSelectedRound === latestRoundBefore?.id)) {
+          this.execSelectedRound = null;
+          this.execSelectedPlanTaskId = null;
+        }
         if (typeof msg.clientId === "string") this.chat.adopt(msg.clientId, item);
         else this.chat.add(item);
         if (item.kind === "user" && !this.execPlanRounds.some((round) => round.id === item.id)) {
@@ -1733,9 +1742,10 @@ export class App {
       case "bg.list": {
         const runs = Array.isArray(msg.runs) ? (msg.runs as BgRunDto[]) : [];
         if (msg.sessionId === this.currentId) {
+          const runsChanged = JSON.stringify(this.execRuns) !== JSON.stringify(runs);
           this.execRuns = runs;
           this.syncExecChildWatches();
-          if (this.queueTab === "exec") this.renderQueue();
+          if (runsChanged && this.queueTab === "exec") this.renderQueue();
         }
         if (this.bgSheet && msg.sessionId === this.bgSheet.sessionId) {
           // 桥只发错误码（文案在这边翻了再显示），目前只有一种：公网那只手看不到后台任务。
@@ -13925,6 +13935,18 @@ export class App {
     this.renderQueue();
   }
 
+  private openExecPlanFromChat(): void {
+    this.execSelectedPlanTaskId = null;
+    this.selectQueueTab("exec");
+    requestAnimationFrame(() => {
+      const box = this.els.queueInner?.querySelector<HTMLElement>(".exec-plan");
+      if (!box) return;
+      box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      box.classList.add("exec-flash");
+      window.setTimeout(() => box.classList.remove("exec-flash"), 1200);
+    });
+  }
+
   private execStatsSnapshot(): ExecStatsSnapshot {
     return {
       tokens: this.stats.tokens ? { ...this.stats.tokens } : null,
@@ -14059,6 +14081,7 @@ export class App {
   private execPlanBox(view: ExecViewModel): HTMLElement {
     const box = el("section", "exec-plan");
     const plan = view.plan;
+    box.dataset.execPlanBox = "1";
     if (!plan) {
       const todo = this.deps?.packages.find((pkg) => pkg.id === "todo");
       box.append(el(
@@ -14071,10 +14094,20 @@ export class App {
       return box;
     }
 
+    if (!plan.tasks.some((task) => task.id === this.execSelectedPlanTaskId)) this.execSelectedPlanTaskId = null;
     const heading = el("div", "exec-plan-heading");
     heading.append(el("strong", "", tr("计划 {p1}/{p2}", { p1: plan.done, p2: plan.total })));
     if (plan.listedRoundOrdinal !== null) {
       heading.append(el("span", "exec-plan-listed", tr("第 {p1} 轮列出", { p1: plan.listedRoundOrdinal })));
+    }
+    if (this.execSelectedPlanTaskId !== null) {
+      const clear = el("button", "exec-plan-clear", tr("取消高亮")) as HTMLButtonElement;
+      clear.type = "button";
+      clear.onclick = () => {
+        this.execSelectedPlanTaskId = null;
+        this.renderQueue();
+      };
+      heading.append(clear);
     }
     box.append(heading);
 
@@ -14091,7 +14124,12 @@ export class App {
 
     const tasks = el("div", "exec-plan-tasks");
     for (const task of plan.tasks) {
-      const row = el("div", `exec-plan-task ${task.status}`);
+      const selected = this.execSelectedPlanTaskId === task.id;
+      const row = el("button", `exec-plan-task ${task.status}${selected ? " picked" : ""}`) as HTMLButtonElement;
+      row.type = "button";
+      row.dataset.planTaskId = String(task.id);
+      row.setAttribute("aria-pressed", String(selected));
+      row.title = task.subject;
       const marker = task.status === "completed" ? "✓" : task.status === "in_progress" ? "◌" : "○";
       const markerNode = el("span", "exec-plan-state", marker);
       const statusLabel = task.status === "completed" ? tr("已完成") : task.status === "in_progress" ? tr("进行中") : tr("待做");
@@ -14100,7 +14138,11 @@ export class App {
       copy.append(el("span", "exec-plan-subject", task.subject));
       if (task.status === "in_progress" && task.activeForm) copy.append(el("span", "exec-plan-active", task.activeForm));
       for (const id of task.waitingOn) copy.append(el("span", "exec-plan-waiting", tr("等 #{p1}", { p1: id })));
-      row.append(markerNode, copy);
+      row.append(markerNode, copy, el("span", "exec-plan-step-count", tr("{p1} 步", { p1: task.stepCount })));
+      row.onclick = () => {
+        this.execSelectedPlanTaskId = selected ? null : task.id;
+        this.renderQueue();
+      };
       tasks.append(row);
     }
     box.append(tasks);
@@ -14109,7 +14151,11 @@ export class App {
 
   private execNowCard(view: ExecViewModel): HTMLElement {
     const card = el("section", `exec-now${view.now.kind === "idle" ? " idle" : ""}`);
-    card.append(el("h2", "", tr("现在")));
+    const activeTask = view.plan?.tasks.find((task) => task.id === view.plan?.activeTaskId);
+    const title = activeTask && view.plan
+      ? tr("现在 · 计划 {p1}/{p2} · {p3}", { p1: view.plan.done + 1, p2: view.plan.total, p3: activeTask.subject })
+      : tr("现在");
+    card.append(el("h2", "", title));
     if (view.now.kind === "thinking" || view.now.kind === "writing") {
       const label = view.now.kind === "thinking" ? tr("思考中") : tr("正在写回复");
       card.append(el("div", "exec-now-line", tr("{p1} · 已 {p2} 字", { p1: label, p2: view.now.characters })));
@@ -14308,6 +14354,7 @@ export class App {
     }
     select.onchange = () => {
       this.execSelectedRound = select.value || null;
+      this.execSelectedPlanTaskId = null;
       this.renderQueue();
     };
     select.hidden = model.rounds.length < 2;
@@ -14315,9 +14362,12 @@ export class App {
     panel.append(heading);
     const list = el("div", "exec-timeline");
     for (const row of model.timeline) {
-      const button = el("button", "exec-step") as HTMLButtonElement;
+      const selectedPlanTaskId = this.execSelectedPlanTaskId;
+      const selected = selectedPlanTaskId !== null && row.planTaskId === selectedPlanTaskId;
+      const button = el("button", `exec-step${selectedPlanTaskId === null ? "" : selected ? " selected" : " dimmed"}`) as HTMLButtonElement;
       button.type = "button";
       button.dataset.itemId = row.id;
+      button.dataset.planTaskId = row.planTaskId === null ? "" : String(row.planTaskId);
       button.title = tr("点击跳到聊天里的这一步");
       const state = el("span", `exec-state ${row.status}`);
       state.textContent = row.status === "running" ? "◌" : row.status === "error" ? "✗" : row.status === "success" ? "✓" : "•";

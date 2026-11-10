@@ -97,6 +97,7 @@ export interface ExecTimelineRow {
   status: "running" | "success" | "error" | "unknown";
   durationMs: number | null;
   subagent?: ExecSubagentRow;
+  planTaskId: number | null;
 }
 
 export interface ExecRound {
@@ -110,6 +111,7 @@ export interface ExecPlanTaskView {
   activeForm: string | undefined;
   status: Exclude<ExecPlanStatus, "deleted">;
   waitingOn: number[];
+  stepCount: number;
 }
 
 export interface ExecPlanView {
@@ -173,15 +175,21 @@ function dispatchRunId(item: Extract<Item, { kind: "tool" }>): string | null {
 function timelineRows(
   items: Item[],
   now: number,
+  startingPlan: ExecPlanSnapshot | null = null,
   childRuns: ExecChildRunInput[] = [],
   childSessionsAvailable = false,
   publicAccess = false,
 ): ExecTimelineRow[] {
   const childrenByTool = new Map(childRuns.map((run) => [run.toolCallId, run]));
   const rows: ExecTimelineRow[] = [];
+  let plan = startingPlan;
   for (const item of items) {
+    if (item.kind === "tool" && item.name.toLowerCase() === "todo") {
+      if ("plan" in item) plan = item.plan ?? null;
+      continue;
+    }
+    const planTaskId = plan?.tasks.find((task) => task.status === "in_progress")?.id ?? null;
     if (item.kind === "tool") {
-      if (item.name.toLowerCase() === "todo") continue;
       let status: ExecTimelineRow["status"] = "unknown";
       if (item.isError || item.status === "error") status = "error";
       else if (item.status === "running") status = "running";
@@ -206,9 +214,9 @@ function timelineRows(
           locked: publicAccess || !childSessionsAvailable,
         };
       }
-      rows.push({ id: item.id, kind: "tool", label: item.name, args: item.args, status, durationMs, ...(subagent ? { subagent } : {}) });
+      rows.push({ id: item.id, kind: "tool", label: item.name, args: item.args, status, durationMs, planTaskId, ...(subagent ? { subagent } : {}) });
     } else if (item.kind === "skill") {
-      rows.push({ id: item.id, kind: "skill", label: item.name, args: "", status: "success", durationMs: null });
+      rows.push({ id: item.id, kind: "skill", label: item.name, args: "", status: "success", durationMs: null, planTaskId });
     }
   }
   return rows.reverse();
@@ -237,7 +245,11 @@ function previousDuration(items: Item[]): number | null {
   return start === null || end === null ? null : Math.max(0, end - start);
 }
 
-function planView(plan: ExecPlanSnapshot | null | undefined, rounds: ExecRound[] = []): ExecPlanView | null {
+function planView(
+  plan: ExecPlanSnapshot | null | undefined,
+  rounds: ExecRound[] = [],
+  stepCounts: Map<number, number> = new Map(),
+): ExecPlanView | null {
   if (!plan || !Array.isArray(plan.tasks)) return null;
   const tasks = plan.tasks.filter((task) => task && task.status !== "deleted");
   if (!tasks.length) return null;
@@ -260,6 +272,7 @@ function planView(plan: ExecPlanSnapshot | null | undefined, rounds: ExecRound[]
             return dependency !== undefined && dependency.status !== "completed";
           })
         : [],
+      stepCount: stepCounts.get(task.id) ?? 0,
     })),
   };
 }
@@ -328,6 +341,25 @@ function roundMetrics(
   };
 }
 
+function planAtRoundStart(rounds: LoadedRound[], selectedRound: LoadedRound | null): ExecPlanSnapshot | null {
+  let plan: ExecPlanSnapshot | null = null;
+  for (const round of rounds) {
+    if (round === selectedRound) return plan;
+    for (const item of round.items) {
+      if (item.kind === "tool" && item.name.toLowerCase() === "todo" && "plan" in item) plan = item.plan ?? null;
+    }
+  }
+  return null;
+}
+
+function planThroughRound(round: LoadedRound | null, startingPlan: ExecPlanSnapshot | null): ExecPlanSnapshot | null {
+  let plan = startingPlan;
+  for (const item of round?.items ?? []) {
+    if (item.kind === "tool" && item.name.toLowerCase() === "todo" && "plan" in item) plan = item.plan ?? null;
+  }
+  return plan;
+}
+
 function activeTools(items: Item[], now: number): ExecActiveTool[] {
   return items.flatMap((item) => {
     if (item.kind !== "tool" || item.status !== "running") return [];
@@ -346,14 +378,24 @@ export function execView(input: ExecViewInput): ExecViewModel {
   const selected = rounds.find((round) => round.id === input.selectedRound) ?? currentRound;
   const selectedIsCurrent = selected !== null && selected.id === currentRound?.id;
   const selectedItems = selected?.items ?? [];
+  const planAtStart = planAtRoundStart(rounds, selected);
+  const sawTodoSnapshot = rounds.some((round) => round.items.some((item) => item.kind === "tool" && item.name.toLowerCase() === "todo" && "plan" in item));
+  const attributionStart = !sawTodoSnapshot && selectedIsCurrent ? input.plan ?? null : planAtStart;
+  const historicalPlan = planThroughRound(selected, planAtStart);
+  const selectedPlan = selectedIsCurrent && input.plan !== undefined ? input.plan : historicalPlan;
   const active = selectedIsCurrent ? activeTools(selectedItems, input.now) : [];
   const timeline = timelineRows(
     selectedItems,
     input.now,
+    attributionStart,
     input.childRuns ?? [],
     input.childSessionsAvailable ?? false,
     input.publicAccess ?? false,
   );
+  const stepCounts = new Map<number, number>();
+  for (const row of timeline) {
+    if (row.planTaskId !== null) stepCounts.set(row.planTaskId, (stepCounts.get(row.planTaskId) ?? 0) + 1);
+  }
   let now: ExecNowView;
 
   if (selectedIsCurrent && input.phase === "thinking") {
@@ -365,7 +407,7 @@ export function execView(input: ExecViewInput): ExecViewModel {
   } else if (selectedIsCurrent && input.phase === "waiting") {
     now = { kind: "waiting", activeTools: [] };
   } else {
-    const rows = timelineRows(selectedItems, input.now);
+    const rows = timeline;
     const failed = rows.some((row) => row.status === "error");
     now = {
       kind: "idle",
@@ -389,7 +431,7 @@ export function execView(input: ExecViewInput): ExecViewModel {
     timeline,
     rounds: roundOptions,
     selectedRound: selected?.id ?? null,
-    plan: planView(input.plan, input.planRounds),
+    plan: planView(selectedPlan, input.planRounds, stepCounts),
     metrics,
   };
 }
