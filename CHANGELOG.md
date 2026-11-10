@@ -6,6 +6,12 @@
 <!-- 写到 2e5fe3c · 2026-11-10 -->
 <!-- 下一批从这里往后读：git log --first-parent 2e5fe3c..origin/main；只读已合进 main 的，没合的不写。 -->
 
+## 未发布 · `allow-remote=none` 不再拦着装扩展
+
+### 修复
+
+- `npm install` 装四个 pi 扩展时不再因 npm ≥ 12 的 `allow-remote=none` 失败：装 pi 本体、`pi install`、三个子包依赖都改成「遇到这种错就带 `npm_config_allow_remote=all` 再试一次」，只放开那一次子进程，不碰 `~/.npmrc` #PR D227
+
 ## 未发布 · macOS 上 `npm install` 装不起来
 
 ### 修复

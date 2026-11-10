@@ -20,6 +20,7 @@ import {
   installSource,
   MIN_PI_VERSION,
   missingCount,
+  npmRefusedRemote,
   OPTIONAL_PACKAGES,
   parseSemver,
   piTooOld,
@@ -164,6 +165,24 @@ assert.equal(foundPackages([{ scope: "project", source: "npm:x", path: null }], 
 fs.rmSync(home, { recursive: true, force: true });
 
 assert.equal(bootstrapCommand(), "node scripts/bootstrap.mjs");
+
+// ---------------------------------------------------------------- npm ≥ 12 拒 remote 取包
+
+// 两种写法都要认得：一个是错误码，一个是「不许下这个 tarball」那行。
+assert.equal(
+  npmRefusedRemote('npm error code EALLOWREMOTE\nnpm error Fetching packages of type "remote" have been disabled'),
+  true,
+);
+assert.equal(
+  npmRefusedRemote(
+    'npm error Refusing to fetch "jsbi@https://registry.npmmirror.com/jsbi/-/jsbi-4.3.2.tgz"',
+  ),
+  true,
+  "`pi install` 内部调 npm 时只有这一行",
+);
+assert.equal(npmRefusedRemote(""), false);
+assert.equal(npmRefusedRemote(null), false);
+assert.equal(npmRefusedRemote("npm error code E404"), false, "别的错不重试");
 
 // ---------------------------------------------------------------- README 的表抄得对不对
 

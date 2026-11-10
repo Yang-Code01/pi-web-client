@@ -3955,3 +3955,35 @@ D
 **代价：** `piCandidates()` 多了一个可选入参（`PiProbe`），测试可以喂假环境，不用真 fork npm、真读 bundle。POSIX 上 `bin/node_modules` 那条候选去掉了（本来就只在便携版 Windows 有意义）。
 
 **验证：** `npm run test:pi`（POSIX 前缀、nvm 多版本、`npm root -g` 不重复拼、软链启动器、`pi.cmd` 里的路径、`PI_BIN` 优先、`readVersion` 上溯三层）；本机（macOS + nvm）`resolvePi()` 由抛异常变成 `1.5.2`；`node scripts/bootstrap.mjs --check` 从「找不到 pi」变成「✓ pi 1.5.2」；`tsc -p bridge/tsconfig.json --noEmit` 通过。
+
+## D227 `allow-remote=none` 由 bootstrap 自己重试，不替用户改 npmrc
+
+**问题：** D226 修好「找得到 pi」之后，`npm install` 还是会在装扩展那步失败：
+
+```
+⚠ 依赖没整备齐：npm:pi-subagents@0.86.0 装不上：npm error Refusing to fetch
+  "jsbi@https://registry.npmmirror.com/jsbi/-/jsbi-4.3.2.tgz" …
+```
+
+`pi install` 内部要跑一次 `npm install --prefix ~/.pi/agent/npm`，子依赖照样撞上 npm ≥ 12 的 `allow-remote=none`。更麻烦的是：从 `npm start` 起的进程本身就把 `npm_config_registry=http://registry.npmmirror.com/` 带进了环境，**改 `~/.npmrc` 也盖不过它**（`npm config list` 会明说 `overridden by env`）。
+
+**决定：**
+
+- 判定收进 `bridge/src/deps.ts` 的 `npmRefusedRemote()`：`EALLOWREMOTE` 与 `Refusing to fetch` 两种写法都认（前者是 npm 自己装时的错误码，后者是 `pi install` 透出来的那行）。别的错（`E404` 之类）不重试。
+- `scripts/bootstrap.mjs` 的三处 npm 入口（装 pi 本体、`pi install`、三个子包依赖）都是「跑一次 → 这种错就带 `npm_config_allow_remote=all` 再跑一次」。**只对那一次子进程放开**，不动 `~/.npmrc`、不改全局配置。`run()` 的 `env` 现在是「追加几个变量」而不是替掉整个环境。
+- 重试提示是单独一行（`npm 拒了 remote 取包…，放开这一次重试…`），失败时再补一句「把 registry 换成同名 https 地址」。
+
+**为什么不用 `--allow-remote=all` 参数：** `pi install` 是 pi 自己的子命令，我们控制不了它传给 npm 的参数，只能给环境；统一走 env 一处口径，行为一致。
+
+**代价：** 真被劫持的 tarball 理论上能过——但那是用户自己配的镜像，且只在这一个子进程里生效。
+
+**验证：** `npm run test:deps`（新增 `npmRefusedRemote` 的四种输入）；端到端用临时 agent 目录 + 强行 `npm_config_registry=http://…` 复现：
+
+```
+PI_CODING_AGENT_DIR=/tmp/pi-agent-test npm_config_registry=http://registry.npmmirror.com/ node scripts/bootstrap.mjs
+  → 装 npm:pi-subagents@0.86.0 …
+  npm 拒了 remote 取包（npm ≥ 12 的 allow-remote=none），放开这一次重试…
+  ✓ npm:pi-subagents@0.86.0   （四个扩展 + 三个子包依赖同样走通）
+```
+
+真实 `~/.pi/agent` 未被触碰（临时目录已删）。

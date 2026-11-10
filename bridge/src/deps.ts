@@ -108,6 +108,19 @@ export function piTooOld(version: string | null): boolean {
   return !version || compareSemver(version, MIN_PI_VERSION) < 0;
 }
 
+/**
+ * npm ≥ 12 的 `allow-remote=none` 把下载挡回去时，输出里一定有这两句之一：
+ *   `npm error code EALLOWREMOTE`
+ *   `npm error Refusing to fetch "jsbi@https://registry.npmmirror.com/…"`
+ *
+ * 典型成因：registry 被指到 `http://` 镜像，而包地址是 `https://`，npm 把包当成「remote」。
+ * bootstrap 据此决定「只给这一次子进程放开 remote，再试一遍」（D227）——不碰用户的 npmrc，
+ * 因为从 `npm start` 起的进程本身就把 `npm_config_registry` 带进环境了，改 npmrc 盖不过它。
+ */
+export function npmRefusedRemote(output: string | null | undefined): boolean {
+  return /EALLOWREMOTE|Refusing to fetch/i.test(output ?? "");
+}
+
 export interface DepStatus extends RequiredPackage {
   installed: boolean;
   /** 装着的版本（读它自己的 package.json）；装了但读不出就是 null。 */

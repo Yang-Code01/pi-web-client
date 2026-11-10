@@ -51,7 +51,7 @@ async function loadModules() {
   }
 }
 
-const { MIN_PI_VERSION, REQUIRED_PACKAGES, agentDir, bootstrapCommand, foundPackages, installSource, parsePackages, piTooOld, piCandidates, readPackageJson, statePath } =
+const { MIN_PI_VERSION, REQUIRED_PACKAGES, agentDir, bootstrapCommand, foundPackages, installSource, npmRefusedRemote, parsePackages, piTooOld, piCandidates, readPackageJson, statePath } =
   await loadModules();
 
 const args = new Set(process.argv.slice(2));
@@ -92,13 +92,36 @@ function runNpm(npmArgs, opts = {}) {
   return run("npm", npmArgs, { ...opts, shell: process.platform === "win32" });
 }
 
+/**
+ * npm ≥ 12 的 `allow-remote=none`：registry 与 tarball 不同源（典型是 registry 被指到 `http://`
+ * 镜像、包地址却是 `https://`）时，npm 把包当成「remote」拒掉。
+ *
+ * 重试时只给**这一次子进程**放开 remote 取包，不动用户的 npmrc —— 从 `npm start` 起的进程本身
+ * 就把 `npm_config_registry=http://…` 带进了环境，改 npmrc 也盖不过它（D227）。
+ */
+const ALLOW_REMOTE_ENV = { npm_config_allow_remote: "all" };
+
+/** 第一次被 remote 拒了就用放开的环境再来一次；返回最终结果。 */
+function withRemoteRetry(first, again) {
+  if (first.code === 0 || !npmRefusedRemote(`${first.stderr}${first.stdout}`)) return first;
+  step("  npm 拒了 remote 取包（npm ≥ 12 的 allow-remote=none），放开这一次重试…");
+  return again();
+}
+
 /** 失败时给人看的那几行：stderr 优先，取最后 n 行。 */
 function tail(r, n, sep = " / ") {
   return (r.stderr || r.stdout || r.error || "").trim().split(/\r?\n/).slice(-n).join(sep);
 }
 
 function run(cmd, cmdArgs, opts = {}) {
-  const r = spawnSync(cmd, cmdArgs, { encoding: "utf8", timeout: opts.timeout ?? 15 * 60_000, windowsHide: true, ...opts });
+  const r = spawnSync(cmd, cmdArgs, {
+    encoding: "utf8",
+    timeout: opts.timeout ?? 15 * 60_000,
+    windowsHide: true,
+    ...opts,
+    // opts.env 是「额外加几个变量」，不是替掉整个环境（子进程还得要 PATH / HOME）。
+    env: opts.env ? { ...process.env, ...opts.env } : process.env,
+  });
   return { code: r.status ?? (r.error ? -1 : 0), stdout: r.stdout ?? "", stderr: r.stderr ?? "", error: r.error?.message ?? null };
 }
 
@@ -125,20 +148,15 @@ function findPi() {
 function installPi() {
   step(`  pi 不在或低于 ${MIN_PI_VERSION}，装最新版…`);
   const npmArgs = ["install", "-g", "@earendil-works/pi-coding-agent@latest"];
-  let r = runNpm(npmArgs, { timeout: 30 * 60_000 });
-  // 记下第一次是不是这个错：重试后 `r` 被覆盖，npm 的末行通常是 `A complete log…`，
-  // 再对 `tail(r, 4)` 嗅一遍会把提示吞掉。
-  const refusedRemote = r.code !== 0 && /EALLOWREMOTE/.test(`${r.stderr}${r.stdout}`);
-  if (refusedRemote) {
-    // npm ≥ 12 默认 allow-remote=none：registry 与 tarball 不同源（典型是 registry 被指到
-    // `http://` 镜像，包地址却是 `https://`）时，npm 把包当成「remote」拒掉。
-    // 只放行这一次调用，不去改用户的 npmrc。
-    step("  npm 拒了 remote 取包（npm ≥ 12 的 allow-remote=none），加 --allow-remote=all 再试一次…");
-    r = runNpm([...npmArgs, "--allow-remote=all"], { timeout: 30 * 60_000 });
-  }
+  const attempt = (extra) => runNpm(npmArgs, { timeout: 30 * 60_000, ...extra });
+  const first = attempt({});
+  // 记下第一次是不是这个错：重试后 `first` 还在，但 npm 末行是 `A complete log…`，
+  // 只对着 `first` 嗅一遍是安全的，对重试结果再嗅就会把提示吞掉。
+  const blockedRemote = npmRefusedRemote(`${first.stderr}${first.stdout}`);
+  const r = withRemoteRetry(first, () => attempt({ env: ALLOW_REMOTE_ENV }));
   if (r.code === 0) return null;
   let why = tail(r, 4, "\n");
-  if (refusedRemote) {
+  if (blockedRemote) {
     why +=
       "\n（npm ≥ 12 的 allow-remote=none 挡住了 tarball 下载：把 registry 换成同名 https 地址，" +
       "例如 `npm config set registry https://registry.npmmirror.com/`）";
@@ -193,7 +211,10 @@ function installPackages(pi, record) {
       step(`  ✗ 缺 ${want}（${FEATURE[pkg.id] ?? pkg.id}）`);
       continue;
     }
-    const r = run(process.execPath, [pi.cli, "install", want], { timeout: 20 * 60_000 });
+    // `pi install` 内部自己跑 npm（`--prefix ~/.pi/agent/npm`），所以子依赖也会撞上
+    // allow-remote=none；同一种错就同样放开一次。
+    const attempt = (extra) => run(process.execPath, [pi.cli, "install", want], { timeout: 20 * 60_000, ...extra });
+    const r = withRemoteRetry(attempt({}), () => attempt({ env: ALLOW_REMOTE_ENV }));
     if (r.code === 0) {
       record.installed.push(want);
       step(`  ✓ ${want}`);
@@ -213,7 +234,8 @@ function installProjectDeps(record) {
     if (!fs.existsSync(path.join(dir, "package.json"))) continue;
     if (CHECK) continue;
     step(`  → ${name} 的依赖…`);
-    const r = runNpm(["install", "--prefix", dir, "--no-audit", "--no-fund"], { timeout: 30 * 60_000 });
+    const attempt = (extra) => runNpm(["install", "--prefix", dir, "--no-audit", "--no-fund"], { timeout: 30 * 60_000, ...extra });
+    const r = withRemoteRetry(attempt({}), () => attempt({ env: ALLOW_REMOTE_ENV }));
     if (r.code !== 0) {
       const why = tail(r, 3);
       record.error ??= `${name} 的依赖装不上：${why}`;
