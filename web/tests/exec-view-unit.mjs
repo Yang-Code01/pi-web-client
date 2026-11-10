@@ -201,7 +201,21 @@ test("historical round metrics use that round's final snapshot", () => {
   });
 });
 
-test("waiting phase is distinct from idle", () => {
+test("waiting phase keeps overlapping running tools visible", () => {
+  const view = execView({
+    ...base,
+    phase: "waiting",
+    items: [
+      user("u1", "2025-01-01T00:00:00Z"),
+      tool("t1", "2025-01-01T00:00:01Z", "running"),
+      tool("t2", "2025-01-01T00:00:02Z", "running"),
+    ],
+  });
+  assert.equal(view.now.kind, "tool");
+  assert.deepEqual(view.now.activeTools.map((active) => active.id), ["t1", "t2"]);
+});
+
+test("waiting phase is distinct from idle when no tool remains active", () => {
   const view = execView({ ...base, phase: "waiting", items: [user("u1", "2025-01-01T00:00:00Z")] });
   assert.equal(view.now.kind, "waiting");
 });

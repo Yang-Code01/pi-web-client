@@ -418,12 +418,12 @@ export function execView(input: ExecViewInput): ExecViewModel {
   }
   let now: ExecNowView;
 
-  if (selectedIsCurrent && input.phase === "thinking") {
+  if (selectedIsCurrent && active.length) {
+    now = { kind: "tool", activeTools: active };
+  } else if (selectedIsCurrent && input.phase === "thinking") {
     now = { kind: "thinking", characters: input.streamChars, summary: input.streamSummary ?? "", activeTools: active };
   } else if (selectedIsCurrent && input.phase === "writing") {
     now = { kind: "writing", characters: input.streamChars, summary: input.streamSummary ?? "", activeTools: active };
-  } else if (selectedIsCurrent && input.phase === "tool" && active.length) {
-    now = { kind: "tool", activeTools: active };
   } else if (selectedIsCurrent && input.phase === "waiting") {
     now = { kind: "waiting", activeTools: [] };
   } else {
