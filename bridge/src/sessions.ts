@@ -21,6 +21,7 @@ import { lifecycle, gcTickMs, capProtectMs, type Lifecycle, type LifecycleThresh
 import { absentFor } from "./presence.ts";
 import { sampleMemory } from "./runtime.ts";
 import { defaultPermission } from "./permissiondefault.ts";
+import { mermaidPref } from "./renderprefs.ts";
 import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
 import { isProtocolWidgetLines } from "./extwidgets.ts";
 import { itemsFrame, type SessionHistory } from "./history.ts";
@@ -195,6 +196,12 @@ export interface SessionState {
   ws?: string;
   /** Tool permission mode the approval gate enforces (state/allow/<id>.json `mode`). */
   permission?: PermissionMode;
+  /**
+   * D227: 网页怎么排 markdown —— 目前只有 `markdown.mermaid`（off / final / streaming）。
+   * 桥在 pi spawn 的那一刻按项目 → 全局 → pi 出厂值解一次，页面照它渲染；缺字段（旧桥、旧页面）
+   * 当作 pi 的出厂值 `streaming`。
+   */
+  mermaid?: string;
   /** Another process (the pi terminal) holds the lock, so this one is read-only and undeletable. */
   locked?: boolean;
   /**
@@ -940,6 +947,22 @@ export class Session extends EventEmitter {
     writeFinishedAt(this.state.id, null);
   }
 
+  /**
+   * D227: 渲染偏好（`markdown.mermaid`）。pi 在 spawn 时读一次 settings.json，网页的 markdown 是
+   * 自己排的，所以在同一个地方（每次 spawn、每次保存设置）也解一次，让两个前端看的是同一份值。
+   */
+  async refreshRenderPrefs(cwd: string | null = this.state.cwd || null): Promise<void> {
+    let mode = "streaming";
+    try {
+      mode = (await mermaidPref(this.cli, cwd)).mode;
+    } catch {
+      /* 读设置失败不该拦住开会话：用 pi 的出厂值，下次再试 */
+    }
+    if (this.state.mermaid === mode) return;
+    // 广播不用自己发：`setState` 已经走 `wire()` 里那条 `state` 监听。
+    this.setState({ mermaid: mode }, { touch: false });
+  }
+
   applyPermission(mode: PermissionMode): void {
     if (this.state.permission === mode) return;
     this.setState({ permission: mode }, { touch: false });
@@ -1121,6 +1144,8 @@ export class Session extends EventEmitter {
     args.push("-e", previewToolPath());
     args.push("-e", artifactToolPath());
     const cwd = opts.cwd || this.state.cwd || process.cwd();
+    // D227: pi 接下来要读的那份 settings.json，网页排 markdown 时也用同一份。
+    await this.refreshRenderPrefs(cwd);
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
     const launch = readLaunch(id);
     args.push(...launchArgs(launch));
@@ -3177,6 +3202,22 @@ export class SessionManager extends EventEmitter {
       }
     }
     return pinned;
+  }
+
+  /**
+   * D227: 设置里存了渲染偏好，已经在跑的会话也跟着换（不重起 pi：这把渲染是网页自己的事）。
+   * `cwd` 限制在一个项目上——和 `permissionDefaultSessions` 同一个口径；`null` = 全局，即所有会话。
+   */
+  async refreshRenderPrefs(cwd: string | null): Promise<number> {
+    const want = cwd ? normalizeDir(cwd) : "";
+    let changed = 0;
+    for (const s of this.sessions.values()) {
+      if (!s.live) continue;
+      if (want && normalizeDir(s.state.cwd ?? "") !== want) continue;
+      await s.refreshRenderPrefs();
+      changed += 1;
+    }
+    return changed;
   }
 
   /**

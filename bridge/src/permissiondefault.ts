@@ -9,8 +9,9 @@
  *   <cwd>/.pi/settings.json          { "web": { "defaultPermission": "strict" } }   ← 项目覆盖全局
  *
  * 解析顺序 项目 → 全局 → `"ask"`（pi 自己不带这个键时的出厂值，也是 D1 的默认）。
+ * 两层怎么读、什么时候算「这一层没说话」，都在 `scopedSetting()` 里（D227 起和渲染偏好共用）。
  */
-import { readSettings } from "./pisettings.ts";
+import { scopedSetting } from "./pisettings.ts";
 import type { PermissionMode } from "./sessions.ts";
 
 /** The dotted key inside settings.json. Written by the settings form like any other setting. */
@@ -26,36 +27,10 @@ export interface PermissionDefault {
   path: string | null;
 }
 
-/** The value under `DEFAULT_PERMISSION_KEY`, or null when it is missing / not one of the four modes. */
-function pick(json: Record<string, unknown> | null): PermissionMode | null {
-  let node: unknown = json;
-  for (const part of DEFAULT_PERMISSION_KEY.split(".")) {
-    if (!node || typeof node !== "object" || Array.isArray(node)) return null;
-    node = (node as Record<string, unknown>)[part];
-  }
-  return typeof node === "string" && (MODES as string[]).includes(node) ? (node as PermissionMode) : null;
-}
+const isMode = (v: unknown): v is PermissionMode => typeof v === "string" && (MODES as string[]).includes(v);
 
 export async function defaultPermission(cli: string, cwd: string | null): Promise<PermissionDefault> {
-  let out: PermissionDefault = { mode: "ask", source: "fallback", path: null };
-  for (const scope of ["project", "global"] as const) {
-    if (scope === "project" && !cwd) continue;
-    // An unreadable or broken file just doesn't answer: the next scope still gets a say.
-    try {
-      const view = await readSettings(cli, scope, cwd);
-      // An untrusted project's settings.json is not loaded by pi at all — it must not answer here
-      // either. `writable` is that trust decision (see pisettings.ts), so it doubles as the gate.
-      if (scope === "project" && !view.writable) continue;
-      const mode = pick(view.json);
-      if (mode) {
-        out = { mode, source: scope, path: view.path };
-        break;
-      }
-    } catch (err) {
-      // A broken file does not answer, but silence here is what makes 「为什么项目默认值不生效」
-      // undebuggable — the bridge log is the only place this can surface.
-      console.error(`[permission] 读不到 ${scope} 的默认权限：`, err);
-    }
-  }
-  return out;
+  const hit = await scopedSetting(cli, cwd, DEFAULT_PERMISSION_KEY, isMode);
+  if (hit.value && hit.source !== "none") return { mode: hit.value, source: hit.source, path: hit.path };
+  return { mode: "ask", source: "fallback", path: null };
 }

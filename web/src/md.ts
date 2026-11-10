@@ -11,6 +11,7 @@
 
 import { highlightFragment } from "./highlight.ts";
 import { tr } from "./i18n/index.ts";
+import { isMermaidFence, mermaidMode, mountMermaid } from "./mermaid.ts";
 
 export interface MdOptions {
   /** Rendering a whole document rather than a chat message. */
@@ -23,7 +24,7 @@ export interface MdOptions {
 
 /** Extensions worth linking when the text names a file that has a directory part. */
 const CODE_EXT =
-  "md|markdown|html?|png|jpe?g|gif|svg|webp|bmp|ico|txt|csv|tsv|log|json|jsonl|ya?ml|toml|ini|xml|pdf|tsx?|jsx?|mjs|cjs|vue|svelte|css|scss|less|py|rb|go|rs|java|kt|cs|cpp|cc|c|h|hpp|sh|ps1|bat|cmd|sql|lua|php|swift|dart|r|gradle|properties|env|lock|conf|cfg";
+  "md|markdown|html?|png|jpe?g|gif|svg|webp|bmp|ico|txt|csv|tsv|log|json|jsonl|ya?ml|toml|ini|xml|pdf|tsx?|jsx?|mjs|cjs|vue|svelte|css|scss|less|py|rb|go|rs|java|kt|cs|cpp|cc|c|h|hpp|sh|ps1|bat|cmd|sql|lua|php|swift|dart|nix|groovy|gradle|r|properties|env|lock|conf|cfg";
 // Name characters: no whitespace, quotes, brackets or CJK punctuation.
 const NAME = "[^\\s`'\"<>|*?:()\\[\\]{}，。；：！？、（）【】「」『』《》\\\\/]";
 const WIN_ABS = `[A-Za-z]:[\\\\/](?:${NAME}+[\\\\/])*${NAME}+\\.[A-Za-z0-9]{1,10}`;
@@ -275,6 +276,16 @@ export function renderMarkdown(src: string, opts: MdOptions = {}): DocumentFragm
         pre.classList.add("hl");
       }
       pre.appendChild(code);
+      // D227: ```mermaid 长成图。原文先挂在里面（画出来之前、画不出来之后都是它），
+      // 图到了再整块换掉 —— 加载失败也还有原文可看，不会留下一块空白。
+      if (isMermaidFence(fence[2]) && mermaidMode() !== "off") {
+        const host = document.createElement("div");
+        host.className = "md-mermaid";
+        host.append(pre);
+        frag.appendChild(host);
+        mountMermaid(host, text);
+        continue;
+      }
       frag.appendChild(pre);
       continue;
     }

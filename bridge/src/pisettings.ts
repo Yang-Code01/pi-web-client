@@ -107,6 +107,54 @@ export function applyPatch(base: Obj, patch: Obj): Obj {
   return out;
 }
 
+/** `a.b.c` in a settings object; undefined when any step is missing (or not an object on the way). */
+export function dotted(json: Record<string, unknown> | null | undefined, key: string): unknown {
+  let node: unknown = json ?? undefined;
+  for (const part of key.split(".")) {
+    if (!isObj(node)) return undefined;
+    node = node[part];
+  }
+  return node;
+}
+
+export interface ScopedSetting<T> {
+  value: T | null;
+  /** Which file answered; `none` = neither scope had an acceptable value. */
+  source: SettingsScope | "none";
+  path: string | null;
+}
+
+/**
+ * 一个点号键在两层 settings.json 里的生效值：项目 → 全局 → 都没有（D161 / D227 共用这一套）。
+ *
+ * 两条规矩来自 pi 自己：项目未授信时它的 settings.json 根本不加载，所以也不回答问题；
+ * 某一层写着非法值等于没写，下一层照旧有发言权。
+ */
+export async function scopedSetting<T>(
+  cli: string,
+  cwd: string | null,
+  key: string,
+  accept: (v: unknown) => v is T,
+): Promise<ScopedSetting<T>> {
+  let out: ScopedSetting<T> = { value: null, source: "none", path: null };
+  for (const scope of ["project", "global"] as const) {
+    if (scope === "project" && !cwd) continue;
+    // 读不到、坏文件都不算答案：下一层还有机会（具体原因进桥日志）。
+    try {
+      const view = await readSettings(cli, scope, cwd);
+      if (scope === "project" && !view.writable) continue;
+      const value = dotted(view.json, key);
+      if (value !== undefined && accept(value)) {
+        out = { value, source: scope, path: view.path };
+        break;
+      }
+    } catch (err) {
+      console.error(`[settings] 读不到 ${scope} 的 ${key}：`, err);
+    }
+  }
+  return out;
+}
+
 /**
  * Write settings under pi's lock. Either `patch` (field → value, null = remove) merged onto what is
  * on disk *at write time*, or `raw` (the whole file from the JSON editor, validated first).

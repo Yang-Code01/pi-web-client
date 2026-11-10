@@ -2211,6 +2211,13 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .file-chip:hover { border-color: var(--accent-dim); color: var(--accent); }
 
 .msg .body .md-table, .md-doc .md-table { overflow-x: auto; margin: 8px 0; }
+
+/* D227: mermaid 图。画出来之前、画不出来之后里面是原文那段 <pre>（有它才不会跳高）；
+   图到了整块换成 svg，宽图自己横滚，不把气泡撑破。 */
+.md-mermaid { margin: 8px 0; overflow-x: auto; }
+.md-mermaid.pending pre { opacity: 0.55; }
+.md-mermaid svg { display: block; max-width: 100%; height: auto; }
+.md-mermaid-error { color: var(--warn); font-size: 12px; margin-top: 4px; }
 .msg .body table, .md-doc table { border-collapse: collapse; font-size: 13px; }
 .msg .body th, .msg .body td, .md-doc th, .md-doc td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; }
 .msg .body th, .md-doc th { background: var(--panel-2); font-weight: 500; }

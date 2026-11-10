@@ -180,6 +180,8 @@ export interface SessionState {
   /** First user message, for searching in the manager. */
   preview?: string;
   permission?: PermissionMode;
+  /** D227: 网页怎么排 markdown（只有 `markdown.mermaid`：off / final / streaming），缺省当 pi 的出厂值。 */
+  mermaid?: string;
   /** Sidebar arrangement from the bridge (state/manage.json). */
   pinned?: boolean;
   archived?: boolean;

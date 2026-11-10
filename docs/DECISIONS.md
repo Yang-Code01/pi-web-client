@@ -3955,3 +3955,21 @@ D
 **代价：** `piCandidates()` 多了一个可选入参（`PiProbe`），测试可以喂假环境，不用真 fork npm、真读 bundle。POSIX 上 `bin/node_modules` 那条候选去掉了（本来就只在便携版 Windows 有意义）。
 
 **验证：** `npm run test:pi`（POSIX 前缀、nvm 多版本、`npm root -g` 不重复拼、软链启动器、`pi.cmd` 里的路径、`PI_BIN` 优先、`readVersion` 上溯三层）；本机（macOS + nvm）`resolvePi()` 由抛异常变成 `1.5.2`；`node scripts/bootstrap.mjs --check` 从「找不到 pi」变成「✓ pi 1.5.2」；`tsc -p bridge/tsconfig.json --noEmit` 通过。
+
+## D227 Mermaid 图跟 pi 的 `markdown.mermaid` 走；顺带补上 pi 1.5.1 的四门高亮语言
+
+**问题：** pi 1.5.1 把终端的 Mermaid 又提了一档（饼图、自定义样式、可点击标签，还画进分支与压缩摘要）。网页这边一处都没有：`web/src/md.ts` 只把 ` ```mermaid ` 当普通代码块，而 markdown 是网页自己排的 —— pi 的渲染管线（`pi.registerMarkdownTransformer`，内置 mermaid 就在里面）对页面完全不起作用。同一个会话，终端里是图，网页里是一段源码。1.5.1 给 read/write 视图补的 dart / nix / groovy / gradle 高亮也同理缺着。
+
+**决定：**
+
+- **用 mermaid 本体在浏览器里画，而不是转成图片。** `web/package.json` 加 `mermaid@^12`，`web/src/mermaid.ts` 里 `import("mermaid")` 动态引入：Vite 切出独立 chunk，没有图的那一天页面一个字节都不为它多付（`main` 只涨了约 15 KB，全是下面那四门语法）。
+- **模式来自 `settings.json`，不是页面自己的偏好。** 桥按 `项目 → 全局 → pi 出厂值` 解 `markdown.mermaid`（`bridge/src/renderprefs.ts`，复用 D161 那套作用域查找），随会话状态下发成 `state.mermaid`。这样终端和网页对同一份设置的理解是一样的，而不是各有一套开关。设置面板多一行「Mermaid 图」，改完立刻推给活着的会话。
+- **`final` 与 `streaming` 现在同义，这是如实而不是偷懒。** 网页的实时回答根本不排 markdown（`chat.ts` 的 `delta()` 只写 `textContent`），所有 markdown 渲染都发生在消息落定之后，所以没有「边写边画」这个中间态。值照收，等哪天实时排版了再分叉；设置项里的 hint 把这件事写给用户看。
+- **图与原文互为退路。** 画出来之前、画不出来之后，那块里都是原文 `<pre>`；成功才整块换掉，失败在原文下面加一句人话（对应 pi 的 "Mermaid diagram not rendered: …"）。源码寄存在 `data-mermaid-src` 上，所以模式改成 `off` 时不用重排转录，就地退回代码块（`applyMermaidMode()`）。
+- **渲染结果按「不可信」处理。** `securityLevel: "strict"`、`htmlLabels: false`，导入前再剥 `<script>` / `<foreignObject>` 这类节点与 `on*` / `javascript:` 属性，并且只走 `DOMParser` + `importNode`，不对任何元素写 innerHTML（本仓库 `md.ts` 的老规矩）。
+- **配色读 CSS 变量，不抄第二份。** `--panel` / `--text` / `--line-strong` …在渲染时用 `getComputedStyle` 取，跟着 D158 的三档文字亮度一起变；TS 里不留颜色常量。
+- **高亮语言：** `highlight.js` 子集补 `dart` / `nix` / `groovy` / `gradle`（pi 1.5.1 在 read/write 视图加的四门）。swift / php / kotlin / lua / ruby 仍然不装 —— 那是 Q-031 决策 2 的既定取舍。
+
+**代价：** 首次遇到 mermaid 图要现下载一块 ~165 KB（gzip）的 mermaid 核心 + 对应图类型的分块，之后有缓存；渲染是串行的（mermaid 有全局状态），一段消息里塞十几张图时会排队；`final` 与 `streaming` 暂时没有区别。设置里那一行的三个选项名（不画 / 写完再画 / 边写边画）是按网页现状写的，如果哪天实时排版了，第三个才有真正的意义。
+
+**验证：** `npm run test:mermaid`（`web/tests/mermaid-unit.mjs`：`isMermaidFence` 按 pi 的判据取标签第一个词、忽略大小写；模式值非法的回落。`bridge/tests/renderprefs-unit.mjs`：项目 → 全局 → 出厂值三层、非法值等于没写、未授信项目不算答案、授信后项目覆盖全局、`dotted()` 的形状、以及 D161 的默认权限在重构后行为不变）；`node bridge/tests/default-permission.mjs` 全绿（`scopedSetting()` 重构没走味）；`probes/mermaid-render.mjs`（真 Chromium + 桩桥 12 项）：围栏画成 `<svg>` 且标签文字对得上、成功后原文 `<pre>` 不再留两份、旁边 `ts` 围栏照旧是代码块、坏语法标 `failed` 且原文与原因都在、推一条 `mermaid:"off"` 的会话状态图就地退回代码块、再推回 `streaming` 图回来、控制台无报错；截图 `.scratch/mermaid-render/shots/`（图在深色主题下可读）。回归：`probes/run-all.mjs --only chrome-topbar,chrome-bottom,workspace-layout` 3/3 通过（`composer-grow` 在 macOS 上本来就差 2px，main 上同样失败，与本次无关）。`npm run build:web` 里 mermaid 全部落在按需 chunk。

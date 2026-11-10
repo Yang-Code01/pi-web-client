@@ -2213,6 +2213,9 @@ async function main(): Promise<void> {
                 raw: typeof msg.raw === "string" ? msg.raw : undefined,
               });
               log(`settings ${scope} written: ${view.path}`);
+              // D227: 网页排 markdown 的那一项（`markdown.mermaid`）改了就让活着的会话跟着换，
+              // 不用等 pi 重启 —— 排版是页面自己的事，pi 那边下一次 spawn 才会重新读。
+              void sessions.refreshRenderPrefs(cwd).catch((err: any) => log(`render prefs: ${String(err?.message ?? err)}`));
               send({ type: "settings", ...view, saved: true });
             } catch (err: any) {
               send({ type: "settings.error", scope, message: String(err?.message ?? err) });

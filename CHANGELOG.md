@@ -6,6 +6,22 @@
 <!-- 写到 2e5fe3c · 2026-11-10 -->
 <!-- 下一批从这里往后读：git log --first-parent 2e5fe3c..origin/main；只读已合进 main 的，没合的不写。 -->
 
+## 未发布 · 网页里能看图了：Mermaid + pi 1.5.1 的四门高亮语言
+
+### 新增
+
+- ` ```mermaid ` 围栏在网页里画成图（之前只有一段源码）：跟着 pi 的 `markdown.mermaid` 走，设置面板多一行「Mermaid 图」（不画 / 写完再画 / 边写边画），改完立刻生效，不用重开会话 D227
+- 高亮补上 dart / nix / groovy / gradle —— pi 1.5.1 在 read/write 视图加的那四门 D227
+
+### 修复
+
+- 图还没画出来、或者这段语法画不出来时，原文 `<pre>` 照旧在（失败时下面多一句人话，不再是一块空白）D227
+
+### 设计决定
+
+- mermaid 按需下载（动态 import 切成独立 chunk），配色读 CSS 变量不抄第二份；渲染结果按不可信处理：`securityLevel: strict`、导前剥脚本与 `on*` 属性、全程不用 innerHTML #PR D227
+- `final` 与 `streaming` 现在同义：网页的实时回答本来就不排 markdown，所有排版都发生在消息落定之后 D227
+
 ## 未发布 · macOS 上 `npm install` 装不起来
 
 ### 修复

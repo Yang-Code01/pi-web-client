@@ -2295,4 +2295,12 @@ export const en: Dict = {
   "版本": "Version",
   "点一下复制": "Click to copy",
   "⚙ 关不掉：这张表靠它进来": "⚙ Can't be hidden: it's the way into this sheet",
+  "Mermaid 图": "Mermaid diagrams",
+  "不画": "Off",
+  "写完再画": "When finished",
+  "边写边画": "While streaming",
+  "代码块里的 mermaid 图：现有网页的实时回答本来就不排版，所以「写完再画」和「边写边画」现在效果一样，留给哪天实时排版":
+    "Mermaid diagrams in code fences. Live replies are not markdown-rendered here yet, so \"when finished\" and \"while streaming\" behave the same today",
+  "图画不出来（{p1}），原文留在下面": "Could not draw the diagram ({p1}); the source stays below",
+  "图画不出来，原文留在下面": "Could not draw the diagram; the source stays below",
 };

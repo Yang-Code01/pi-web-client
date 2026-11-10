@@ -9,6 +9,7 @@ import { filterCommands, PANEL_COMMANDS, type CommandItem } from "./commands.ts"
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
+import { applyMermaidMode, mermaidMode, setMermaidMode } from "./mermaid.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
 import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type ComposerChild, type FailLedger, type SeenFail } from "./failures.ts";
 import { parseRules, type RuleBook } from "./rules.ts";
@@ -1629,6 +1630,8 @@ export class App {
         this.turnChars = { cjk: 0, other: 0 };
         if (msg.state) this.session = msg.state as SessionState;
         else if (msg.session) this.session = msg.session;
+        // D227: 先定下 mermaid 的画法再画转录 —— 下面是 `chat.reset()`，晚了第一屏就是旧模式。
+        setMermaidMode(this.session?.mermaid);
         this.budget = typeof msg.budget === "number" ? msg.budget : null;
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
         if ("trust" in msg) this.trust = (msg.trust as TrustState | null) ?? null;
@@ -2664,6 +2667,10 @@ export class App {
     if (this.currentId === state.id) {
       const prev = this.session;
       this.session = state;
+      // D227: markdown 怎么排（mermaid 画不画）跟着会话状态走；值变了只动那几块图，不重排转录。
+      const wasMermaid = mermaidMode();
+      setMermaidMode(state.mermaid);
+      if (wasMermaid !== mermaidMode()) applyMermaidMode(document);
       // #197 / D178: 气泡上那枚「处理中…」是推出来的（运行态 + 最后一条用户消息），不新增协议字段。
       this.chat.setRunning(state.running === true);
       // Q-021: 一轮结束正是模型可能刚跑完 `git checkout` 的时刻。
@@ -16608,6 +16615,19 @@ function settingFields(): SettingField[] {
   { key: "images.autoResize", label: tr("图片自动缩"), kind: "bool", hint: tr("上传的图先压到模型能吃的大小") },
   { key: "images.blockImages", label: tr("不给模型发图片"), kind: "bool", hint: tr("整张图换成一段说明文字，省 token 但模型看不见图") },
   { key: "enableSkillCommands", label: tr("技能注册成 /skill:名字"), kind: "bool" },
+  // D227: pi 用这个键决定终端里画不画 mermaid；网页照同一份值，所以得让它在这里改得了。
+  {
+    key: "markdown.mermaid",
+    label: tr("Mermaid 图"),
+    kind: "select",
+    choices: [
+      { value: "off", label: tr("不画") },
+      { value: "final", label: tr("写完再画") },
+      { value: "streaming", label: tr("边写边画") },
+    ],
+    defaultText: tr("边写边画"),
+    hint: tr("代码块里的 mermaid 图：现有网页的实时回答本来就不排版，所以「写完再画」和「边写边画」现在效果一样，留给哪天实时排版"),
+  },
 
   // D161: 桥自有键（web. 命名空间），存在 pi 的 settings.json 里，读写和别的设置同一条路。
   {

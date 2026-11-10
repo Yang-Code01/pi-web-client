@@ -16,15 +16,19 @@ import bash from "highlight.js/lib/languages/bash";
 import c from "highlight.js/lib/languages/c";
 import css from "highlight.js/lib/languages/css";
 import csharp from "highlight.js/lib/languages/csharp";
+import dart from "highlight.js/lib/languages/dart";
 import diff from "highlight.js/lib/languages/diff";
 import dockerfile from "highlight.js/lib/languages/dockerfile";
 import go from "highlight.js/lib/languages/go";
+import gradle from "highlight.js/lib/languages/gradle";
+import groovy from "highlight.js/lib/languages/groovy";
 import ini from "highlight.js/lib/languages/ini";
 import java from "highlight.js/lib/languages/java";
 import javascript from "highlight.js/lib/languages/javascript";
 import json from "highlight.js/lib/languages/json";
 import makefile from "highlight.js/lib/languages/makefile";
 import markdown from "highlight.js/lib/languages/markdown";
+import nix from "highlight.js/lib/languages/nix";
 import powershell from "highlight.js/lib/languages/powershell";
 import python from "highlight.js/lib/languages/python";
 import rust from "highlight.js/lib/languages/rust";
@@ -38,15 +42,19 @@ const LANGS: Record<string, any> = {
   c,
   css,
   csharp,
+  dart,
   diff,
   dockerfile,
   go,
+  gradle,
+  groovy,
   ini,
   java,
   javascript,
   json,
   makefile,
   markdown,
+  nix,
   powershell,
   python,
   rust,
@@ -60,8 +68,9 @@ for (const [name, grammar] of Object.entries(LANGS)) hljs.registerLanguage(name,
 
 /**
  * Extension → grammar. Anything not listed here is shown as plain text: the grammars we ship are the
- * ones a coding agent actually previews (Q-031 决策 2), and 20 of them already cost ~90 KB minified.
- * Dropped on purpose: swift / php / kotlin / dart / lua / ruby — add a line here (plus an import) when
+ * ones a coding agent actually previews (Q-031 决策 2), and the set already costs ~90 KB minified.
+ * D227: dart / nix / groovy / gradle joined when pi 1.5.1 added them to its read and write views.
+ * Still dropped on purpose: swift / php / kotlin / lua / ruby — add a line here (plus an import) when
  * a real file needs one.
  */
 const BY_EXT: Record<string, string> = {
@@ -111,6 +120,10 @@ const BY_EXT: Record<string, string> = {
   cxx: "c",
   hpp: "c",
   cs: "csharp",
+  dart: "dart",
+  nix: "nix",
+  groovy: "groovy",
+  gradle: "gradle",
   diff: "diff",
   patch: "diff",
   mk: "makefile",
