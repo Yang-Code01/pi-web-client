@@ -139,6 +139,18 @@ try {
   check("selecting a plan item highlights matching steps and dims other steps", (await page.locator(".exec-step.selected").count()) === 1 && (await page.locator(".exec-step.dimmed").count()) === 1);
   await page.locator('.exec-plan-task[data-plan-task-id="2"]').click();
   check("selecting the active plan item again clears step highlighting", (await page.locator(".exec-step.dimmed").count()) === 0);
+
+  socket.send(JSON.stringify({ type: "prompt", sessionId, text: "BGCHILD" }));
+  await page.waitForFunction(() => [...document.querySelectorAll(".exec-subagent-task")].some((row) => row.textContent?.includes("inspect child updates")), null, { timeout: 20000 });
+  const childToggle = page.locator(".exec-subagent").filter({ hasText: "inspect child updates" }).locator(".exec-subagent-toggle");
+  await childToggle.click();
+  await page.waitForFunction(() => document.querySelector(".exec-plan.mini .exec-plan-task") !== null
+    && document.querySelector(".exec-subagent-plan")?.textContent === "计划 2/2", null, { timeout: 20000 });
+  check("child plan badge shows the latest snapshot progress", (await page.locator(".exec-subagent-plan").last().innerText()) === "计划 2/2");
+  check("expanded child renders its compact read-only plan", (await page.locator(".exec-plan.mini .exec-plan-task").count()) === 2
+    && await page.locator(".exec-plan.mini .exec-plan-task").first().evaluate((row) => row.tagName === "DIV" && row.onclick === null));
+  await childToggle.click();
+  check("child plan badge remains visible when collapsed", (await page.locator(".exec-subagent-plan").last().innerText()) === "计划 2/2");
   check("page has no uncaught errors", pageErrors.length === 0, pageErrors.join("; "));
   console.log("All execution-panel smoke checks passed.");
 } finally {

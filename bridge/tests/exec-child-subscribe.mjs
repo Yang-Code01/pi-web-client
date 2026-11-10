@@ -107,8 +107,13 @@ try {
   local.send({ type: "exec.child.subscribe", sessionId, runId: RUN_ID });
   const snapshot = await local.waitFor((frame) => frame.type === "exec.child.snapshot" && frame.runId === RUN_ID, "initial child snapshot");
   assert.equal(snapshot.items.some((item) => item.kind === "assistant" && item.text === "child-first"), true);
+  assert.deepEqual(snapshot.plan.tasks.map((task) => [task.id, task.status]), [[1, "completed"], [2, "in_progress"]]);
+  assert.deepEqual(snapshot.items.find((item) => item.kind === "tool" && item.name === "todo").plan, snapshot.plan);
   assert.equal(snapshot.stats.tokens.total, 15);
   assert.equal(snapshot.stats.cost, 0.01);
+  const planUpdate = await local.waitFor((frame) => frame.type === "exec.child.delta" && frame.runId === RUN_ID && frame.plan?.tasks?.[1]?.status === "completed", "plan-only child update", 7000);
+  assert.deepEqual(planUpdate.items, [], "a changed plan snapshot is sent even without a new display item");
+  assert.equal(planUpdate.plan.tasks.filter((task) => task.status === "completed").length, 2);
   const appended = await local.waitFor((frame) => frame.type === "exec.child.delta" && frame.runId === RUN_ID && frame.items.some((item) => item.kind === "assistant" && item.text === "child-second"), "incremental child append", 7000);
   assert.equal(appended.items.length, 1, "appends arrive as one added child item, not a full transcript replay");
   assert.equal(appended.stats.tokens.total, 30);

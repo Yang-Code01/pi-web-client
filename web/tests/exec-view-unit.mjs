@@ -236,12 +236,67 @@ test("subagent runs attach to their dispatch and show one child level of steps",
       status: "success",
       durationMs: null,
       result: "found it",
+      planTaskId: null,
     }],
+    plan: null,
     stats: { cost: 0.02, tokens: 40 },
     locked: false,
   });
   assert.equal("subagent" in view.timeline[0].subagent.steps[0], false, "grandchildren stay a single non-expandable line");
   assert.deepEqual(view.metrics.subagents, { cost: 0.02, tokens: 40 });
+});
+
+test("child plan snapshots count attributed steps without making todo calls into steps", () => {
+  const firstPlan = {
+    listedRound: "child-u1",
+    tasks: [
+      { id: 1, subject: "检查输入", status: "in_progress" },
+      { id: 2, subject: "写结论", status: "pending", blockedBy: [1] },
+    ],
+  };
+  const latestPlan = {
+    listedRound: "child-u1",
+    tasks: [
+      { id: 1, subject: "检查输入", status: "completed" },
+      { id: 2, subject: "写结论", activeForm: "正在写结论", status: "in_progress", blockedBy: [1] },
+    ],
+  };
+  const childDispatch = { ...tool("dispatch", "2025-01-01T00:00:02Z", "ok"), toolCallId: "call-child-plan", name: "acp_delegate" };
+  const view = execView({
+    ...base,
+    items: [user("u1", "2025-01-01T00:00:00Z"), childDispatch],
+    childSessionsAvailable: true,
+    childRuns: [{
+      runId: "child-plan",
+      toolCallId: "call-child-plan",
+      agent: "researcher",
+      task: "inspect and summarize",
+      state: "running",
+      plan: latestPlan,
+      items: [
+        user("child-u1", "2025-01-01T00:00:00Z"),
+        { ...tool("child-todo-1", "2025-01-01T00:00:01Z", "ok"), name: "todo", plan: firstPlan },
+        tool("child-step-1", "2025-01-01T00:00:02Z", "ok"),
+        { ...tool("child-todo-2", "2025-01-01T00:00:03Z", "ok"), name: "todo", plan: latestPlan },
+        tool("child-step-2", "2025-01-01T00:00:04Z", "running"),
+      ],
+    }],
+  });
+
+  const child = view.timeline[0].subagent;
+  assert.deepEqual(child.plan, {
+    done: 1,
+    total: 2,
+    listedRound: "child-u1",
+    listedRoundOrdinal: null,
+    activeTaskId: 2,
+    tasks: [
+      { id: 1, subject: "检查输入", activeForm: undefined, status: "completed", waitingOn: [], stepCount: 1 },
+      { id: 2, subject: "写结论", activeForm: "正在写结论", status: "in_progress", waitingOn: [], stepCount: 1 },
+    ],
+  });
+  assert.deepEqual(child.steps.map((step) => [step.id, step.planTaskId]), [["child-step-2", 2], ["child-step-1", 1]]);
+  assert.equal(child.steps.some((step) => step.kind === "tool" && step.label === "todo"), false);
 });
 
 test("child totals aggregate only loaded subagent runs with available statistics", () => {

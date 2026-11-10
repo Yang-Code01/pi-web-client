@@ -193,16 +193,29 @@ async function turn(text) {
     });
     fs.mkdirSync(root, { recursive: true });
     fs.writeFileSync(activity, "child session fixture");
+    const planTasks = [
+      { id: 1, subject: "Inspect child session", status: "completed" },
+      { id: 2, subject: "Summarize findings", activeForm: "Summarizing findings", status: "in_progress", blockedBy: [1] },
+    ];
     const entries = [
       { type: "session", id: `child-${process.pid}`, timestamp: at(), cwd: process.cwd() },
       { type: "message", id: "child-u1", parentId: null, timestamp: at(), message: { role: "user", content: [{ type: "text", text: "child task" }] } },
-      { type: "message", id: "child-a1", parentId: "child-u1", timestamp: at(), message: { role: "assistant", content: [{ type: "text", text: "child-first" }], usage: usage(15, 0.01) } },
+      { type: "message", id: "child-plan-call", parentId: "child-u1", timestamp: at(), message: { role: "assistant", content: [{ type: "toolCall", id: "child-call-plan", name: "todo", arguments: { action: "create", tasks: planTasks } }] } },
+      { type: "message", id: "child-plan-result", parentId: "child-plan-call", timestamp: at(), message: { role: "toolResult", toolCallId: "child-call-plan", toolName: "todo", content: [{ type: "text", text: "Plan updated" }], details: { action: "create", tasks: planTasks } } },
+      { type: "message", id: "child-a1", parentId: "child-plan-result", timestamp: at(), message: { role: "assistant", content: [{ type: "text", text: "child-first" }], usage: usage(15, 0.01) } },
     ];
     fs.writeFileSync(session, `${entries.map((entry) => JSON.stringify(entry)).join(newline)}${newline}`);
     const append = (id, parentId, answer, count, cost) => fs.appendFileSync(session, `${JSON.stringify({
       type: "message", id, parentId, timestamp: at(), message: { role: "assistant", content: [{ type: "text", text: answer }], usage: usage(count, cost) },
     })}${newline}`);
-    setTimeout(() => append("child-a2", "child-a1", "child-second", 15, 0.01), 1200);
+    const updatedPlanTasks = [
+      { id: 1, subject: "Inspect child session", status: "completed" },
+      { id: 2, subject: "Summarize findings", status: "completed", blockedBy: [1] },
+    ];
+    setTimeout(() => fs.appendFileSync(session, `${JSON.stringify({
+      type: "custom", id: "child-plan-state", parentId: "child-a1", timestamp: at(), customType: "rpiv-todo-state", data: { action: "update", tasks: updatedPlanTasks },
+    })}${newline}`), 550);
+    setTimeout(() => append("child-a2", "child-plan-state", "child-second", 15, 0.01), 1200);
     setTimeout(() => append("child-a3", "child-a2", "child-third", 15, 0.01), 3200);
     const quotedRunId = [tick, runId, tick].join("");
     const resultText = [

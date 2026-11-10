@@ -32,7 +32,7 @@ import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroup
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { Socket } from "./ws.ts";
-import { execView, type ExecChildRunInput, type ExecPhase, type ExecPlanSnapshot, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
+import { execView, type ExecChildRunInput, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
@@ -124,6 +124,7 @@ type BgRunDto = BgRunView;
 
 interface ExecChildState {
   items: Item[];
+  plan: ExecPlanSnapshot | null;
   stats: ExecStatsSnapshot | null;
   state: "running" | "done" | "failed";
   pending: boolean;
@@ -1766,6 +1767,9 @@ export class App {
         this.execChildErrors.delete(runId);
         this.execChildStates.set(runId, {
           items,
+          plan: msg.plan === undefined
+            ? previous?.plan ?? null
+            : msg.plan && typeof msg.plan === "object" ? msg.plan as ExecPlanSnapshot : null,
           stats: msg.stats && typeof msg.stats === "object" ? msg.stats as ExecStatsSnapshot : null,
           state: msg.state === "done" || msg.state === "failed" ? msg.state : "running",
           pending: msg.pending === true,
@@ -13999,7 +14003,7 @@ export class App {
     const current = this.execChildStates.get(runId);
     this.execChildStates.set(runId, current
       ? { ...current, pending: true }
-      : { items: [], stats: null, state: "running", pending: true });
+      : { items: [], plan: null, stats: null, state: "running", pending: true });
     this.socket.send({ type: "exec.child.subscribe", sessionId: this.currentId, runId });
   }
 
@@ -14051,6 +14055,7 @@ export class App {
         task: run.task,
         state: run.state,
         items: this.execChildExpanded.has(run.id) ? this.execChildStates.get(run.id)?.items ?? [] : [],
+        plan: this.execChildStates.get(run.id)?.plan ?? null,
         stats: this.execChildStates.get(run.id)?.stats ?? null,
       })),
       childSessionsAvailable: this.bridgeCaps.includes(WS_EXEC_CHILD_CAP),
@@ -14078,11 +14083,11 @@ export class App {
     return tr("{p1} 秒", { p1: seconds < 10 ? seconds.toFixed(1) : Math.round(seconds) });
   }
 
-  private execPlanBox(view: ExecViewModel): HTMLElement {
-    const box = el("section", "exec-plan");
-    const plan = view.plan;
-    box.dataset.execPlanBox = "1";
+  private execPlanBox(plan: ExecPlanView | null, mini = false): HTMLElement {
+    const box = el("section", `exec-plan${mini ? " mini" : ""}`);
+    if (!mini) box.dataset.execPlanBox = "1";
     if (!plan) {
+      if (mini) return box;
       const todo = this.deps?.packages.find((pkg) => pkg.id === "todo");
       box.append(el(
         "div",
@@ -14094,13 +14099,13 @@ export class App {
       return box;
     }
 
-    if (!plan.tasks.some((task) => task.id === this.execSelectedPlanTaskId)) this.execSelectedPlanTaskId = null;
+    if (!mini && !plan.tasks.some((task) => task.id === this.execSelectedPlanTaskId)) this.execSelectedPlanTaskId = null;
     const heading = el("div", "exec-plan-heading");
     heading.append(el("strong", "", tr("计划 {p1}/{p2}", { p1: plan.done, p2: plan.total })));
-    if (plan.listedRoundOrdinal !== null) {
+    if (!mini && plan.listedRoundOrdinal !== null) {
       heading.append(el("span", "exec-plan-listed", tr("第 {p1} 轮列出", { p1: plan.listedRoundOrdinal })));
     }
-    if (this.execSelectedPlanTaskId !== null) {
+    if (!mini && this.execSelectedPlanTaskId !== null) {
       const clear = el("button", "exec-plan-clear", tr("取消高亮")) as HTMLButtonElement;
       clear.type = "button";
       clear.onclick = () => {
@@ -14124,11 +14129,15 @@ export class App {
 
     const tasks = el("div", "exec-plan-tasks");
     for (const task of plan.tasks) {
-      const selected = this.execSelectedPlanTaskId === task.id;
-      const row = el("button", `exec-plan-task ${task.status}${selected ? " picked" : ""}`) as HTMLButtonElement;
-      row.type = "button";
-      row.dataset.planTaskId = String(task.id);
-      row.setAttribute("aria-pressed", String(selected));
+      const selected = !mini && this.execSelectedPlanTaskId === task.id;
+      const row = mini
+        ? el("div", `exec-plan-task ${task.status}`)
+        : el("button", `exec-plan-task ${task.status}${selected ? " picked" : ""}`) as HTMLButtonElement;
+      if (!mini) {
+        (row as HTMLButtonElement).type = "button";
+        row.dataset.planTaskId = String(task.id);
+        row.setAttribute("aria-pressed", String(selected));
+      }
       row.title = task.subject;
       const marker = task.status === "completed" ? "✓" : task.status === "in_progress" ? "◌" : "○";
       const markerNode = el("span", "exec-plan-state", marker);
@@ -14139,10 +14148,12 @@ export class App {
       if (task.status === "in_progress" && task.activeForm) copy.append(el("span", "exec-plan-active", task.activeForm));
       for (const id of task.waitingOn) copy.append(el("span", "exec-plan-waiting", tr("等 #{p1}", { p1: id })));
       row.append(markerNode, copy, el("span", "exec-plan-step-count", tr("{p1} 步", { p1: task.stepCount })));
-      row.onclick = () => {
-        this.execSelectedPlanTaskId = selected ? null : task.id;
-        this.renderQueue();
-      };
+      if (!mini) {
+        (row as HTMLButtonElement).onclick = () => {
+          this.execSelectedPlanTaskId = selected ? null : task.id;
+          this.renderQueue();
+        };
+      }
       tasks.append(row);
     }
     box.append(tasks);
@@ -14301,6 +14312,7 @@ export class App {
     toggle.setAttribute("aria-label", expanded ? tr("折叠子代理") : tr("展开子代理"));
     const identity = row.agent ? tr("子代理 · {p1}", { p1: row.agent }) : tr("子代理");
     toggle.append(el("span", "exec-subagent-caret", expanded ? "▾" : "▸"), el("span", "exec-subagent-title", identity));
+    if (row.plan) toggle.append(el("span", "exec-subagent-plan", tr("计划 {p1}/{p2}", { p1: row.plan.done, p2: row.plan.total })));
     const statusText = row.status === "running" ? tr("运行中") : row.status === "done" ? tr("已完成") : row.status === "failed" ? tr("失败") : tr("等待状态");
     toggle.append(el("span", `exec-subagent-status ${row.status}`, statusText));
     const totals = el("span", "exec-subagent-totals");
@@ -14318,6 +14330,7 @@ export class App {
       wrap.append(el("div", "exec-empty", tr("子代理会话暂不可用")));
       return wrap;
     }
+    if (row.plan) wrap.append(this.execPlanBox(row.plan, true));
     if (childState?.pending && !row.steps.length) {
       wrap.append(el("div", "exec-empty", tr("等待子代理会话…")));
       return wrap;
@@ -14338,7 +14351,7 @@ export class App {
     this.execSelectedRound = model.selectedRound;
     const panel = el("div", "exec-panel");
     if (!this.deps && !this.depsLoading && Date.now() - this.depsAt > 30_000) this.loadDeps(false);
-    panel.append(this.execPlanBox(model));
+    panel.append(this.execPlanBox(model.plan));
     const now = this.execNowCard(model);
     now.classList.add("exec-now-slot");
     panel.append(now, this.execMetricsCard(model));

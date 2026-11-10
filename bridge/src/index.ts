@@ -31,6 +31,7 @@ import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion, typ
 import { entriesToItems } from "./items.ts";
 import type { Item } from "./items.ts";
 import { loadEntries, type SessionEntry } from "./sessionfile.ts";
+import { planReplayFromEntries, type PlanSnapshot } from "./execplan.ts";
 import { defaultPermission } from "./permissiondefault.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { describeStoreSkills, installSkill, installedSkills, previewSource, removeSkill, searchSkillStore } from "./skillstore.ts";
@@ -103,6 +104,7 @@ interface ChildWatch {
   size: number;
   mtime: number;
   items: Item[];
+  plan: PlanSnapshot | null;
   stats: ChildSessionStats | null;
   state: string;
 }
@@ -1560,6 +1562,7 @@ async function main(): Promise<void> {
         return;
       }
       let items = watch.items;
+      let plan = watch.plan;
       let stats = watch.stats;
       let file = child.sessionFile ?? null;
       let size = watch.size;
@@ -1574,7 +1577,9 @@ async function main(): Promise<void> {
           const stat = fs.statSync(file);
           if (file !== watch.file || stat.size !== watch.size || stat.mtimeMs !== watch.mtime) {
             const loaded = loadEntries(file);
-            items = entriesToItems(loaded.entries);
+            const replay = planReplayFromEntries(loaded.entries);
+            items = entriesToItems(loaded.entries, replay.toolResults);
+            plan = replay.plan;
             stats = childSessionStats(loaded.entries);
             size = stat.size;
             mtime = stat.mtimeMs;
@@ -1589,11 +1594,12 @@ async function main(): Promise<void> {
       const reset = ids.some((id, index) => nextIds[index] !== id);
       const oldItems = new Map(watch.items.map((item) => [item.id, JSON.stringify(item)]));
       const changed = reset ? items : items.filter((item) => oldItems.get(item.id) !== JSON.stringify(item));
-      const changedAnything = initial || changed.length > 0 || state !== watch.state || JSON.stringify(stats) !== JSON.stringify(watch.stats) || file !== watch.file;
+      const changedAnything = initial || changed.length > 0 || state !== watch.state || JSON.stringify(plan) !== JSON.stringify(watch.plan) || JSON.stringify(stats) !== JSON.stringify(watch.stats) || file !== watch.file;
       watch.file = file;
       watch.size = size;
       watch.mtime = mtime;
       watch.items = items;
+      watch.plan = plan;
       watch.stats = stats;
       watch.state = state;
       if (!changedAnything) return;
@@ -1604,6 +1610,7 @@ async function main(): Promise<void> {
         toolCallId: child.run.toolCallId,
         state,
         items: initial || reset ? items : changed,
+        plan,
         stats,
         ...(reset && !initial ? { reset: true } : {}),
         pending: !file,
@@ -1812,7 +1819,7 @@ async function main(): Promise<void> {
              stopChildWatch(key);
              let watch: ChildWatch;
              const timer = setInterval(() => pollChildWatch(watch), 1000);
-             watch = { sessionId, runId, timer, file: null, size: -1, mtime: -1, items: [], stats: null, state: "unknown" };
+             watch = { sessionId, runId, timer, file: null, size: -1, mtime: -1, items: [], plan: null, stats: null, state: "unknown" };
              childWatches.set(key, watch);
              pollChildWatch(watch, true);
              return;

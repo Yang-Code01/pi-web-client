@@ -1482,17 +1482,24 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .exec-pip { display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: var(--warn); vertical-align: 1px; }
 .exec-panel { display: grid; gap: 10px; min-width: 0; }
 .exec-plan { min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); }
+.exec-plan.mini { padding: 5px 7px; border-radius: 6px; background: var(--panel); }
 .exec-plan-empty { overflow: hidden; color: var(--faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .exec-plan-heading { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
 .exec-plan-heading strong { color: var(--text); font-size: 13px; }
+.exec-plan.mini .exec-plan-heading { font-size: 10px; }
+.exec-plan.mini .exec-plan-heading strong { font-size: 11px; }
 .exec-plan-listed { overflow: hidden; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; }
 .exec-plan-clear { margin-left: auto; padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px; background: transparent; color: var(--faint); font: inherit; font-size: 11px; cursor: pointer; }
 .exec-plan-clear:hover { color: var(--text); border-color: var(--accent-dim); }
 .exec-plan-progress { overflow: hidden; height: 4px; margin: 7px 0; border-radius: 4px; background: var(--line); }
+.exec-plan.mini .exec-plan-progress { height: 3px; margin: 4px 0; }
 .exec-plan-progress-fill { height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }
 .exec-plan-tasks { display: grid; gap: 4px; }
+.exec-plan.mini .exec-plan-tasks { gap: 2px; }
 .exec-plan-task { display: flex; align-items: flex-start; gap: 7px; width: 100%; min-width: 0; padding: 3px 4px; border: 0; border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .exec-plan-task:hover, .exec-plan-task.picked { background: var(--accent-bg); }
+.exec-plan.mini .exec-plan-task { padding: 2px 3px; font-size: 10px; cursor: default; }
+.exec-plan.mini .exec-plan-task:hover { background: transparent; }
 .exec-plan-task:focus-visible, .exec-plan-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .exec-plan-state { flex: none; width: 14px; color: var(--faint); text-align: center; }
 .exec-plan-task.completed .exec-plan-state { color: var(--ok); }
@@ -1542,10 +1549,11 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .exec-flash { outline: 2px solid var(--accent); outline-offset: 2px; animation: exec-flash 1.2s ease-out forwards; }
 .exec-step-entry { display: grid; min-width: 0; }
 .exec-subagent { display: grid; gap: 5px; min-width: 0; margin: 0 4px 6px 24px; padding: 6px 7px; border-left: 2px solid var(--line); border-radius: 0 6px 6px 0; background: var(--panel-2); }
-.exec-subagent-toggle { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 5px; width: 100%; padding: 2px 0; border: 0; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.exec-subagent-toggle { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto auto; align-items: center; gap: 5px; width: 100%; padding: 2px 0; border: 0; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .exec-subagent-toggle:disabled { cursor: default; opacity: .7; }
 .exec-subagent-caret { color: var(--accent); }
 .exec-subagent-title { overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.exec-subagent-plan { padding: 1px 5px; border-radius: 8px; color: var(--accent); background: var(--accent-bg); font-size: 9px; white-space: nowrap; }
 .exec-subagent-status { color: var(--faint); font-size: 10px; white-space: nowrap; }
 .exec-subagent-status.running { color: var(--accent); }
 .exec-subagent-status.failed { color: var(--danger); }

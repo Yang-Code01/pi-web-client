@@ -66,6 +66,7 @@ export interface ExecChildRunInput {
   task: string;
   state: "running" | "done" | "failed";
   items: Item[];
+  plan?: ExecPlanSnapshot | null;
   stats?: ExecStatsSnapshot | null;
 }
 
@@ -77,6 +78,7 @@ export interface ExecChildStep {
   status: "running" | "success" | "error" | "unknown";
   durationMs: number | null;
   result?: string;
+  planTaskId: number | null;
 }
 
 export interface ExecSubagentRow {
@@ -85,6 +87,7 @@ export interface ExecSubagentRow {
   task: string;
   status: "running" | "done" | "failed" | "unknown";
   steps: ExecChildStep[];
+  plan: ExecPlanView | null;
   stats: { cost: number | null; tokens: number | null };
   locked: boolean;
 }
@@ -172,6 +175,20 @@ function dispatchRunId(item: Extract<Item, { kind: "tool" }>): string | null {
   return match?.[1] ?? null;
 }
 
+function childPlanAndSteps(run: ExecChildRunInput, now: number): { plan: ExecPlanView | null; steps: ExecChildStep[] } {
+  const todoSnapshots = run.items.filter((item) => item.kind === "tool" && item.name.toLowerCase() === "todo" && "plan" in item);
+  const latestItemPlan = todoSnapshots.at(-1);
+  const sourcePlan = run.plan !== undefined
+    ? run.plan
+    : latestItemPlan?.kind === "tool" ? latestItemPlan.plan ?? null : null;
+  const steps = childTimelineRows(run.items, now, todoSnapshots.length ? null : sourcePlan);
+  const stepCounts = new Map<number, number>();
+  for (const step of steps) {
+    if (step.planTaskId !== null) stepCounts.set(step.planTaskId, (stepCounts.get(step.planTaskId) ?? 0) + 1);
+  }
+  return { plan: planView(sourcePlan, [], stepCounts), steps };
+}
+
 function timelineRows(
   items: Item[],
   now: number,
@@ -204,12 +221,14 @@ function timelineRows(
         : "");
       let subagent: ExecSubagentRow | undefined;
       if (runId) {
+        const child = run ? childPlanAndSteps(run, now) : { plan: null, steps: [] };
         subagent = {
           runId,
           agent: run?.agent ?? "",
           task,
           status: run?.state ?? (item.status === "running" ? "running" : "unknown"),
-          steps: run ? childTimelineRows(run.items, now) : [],
+          steps: child.steps,
+          plan: child.plan,
           stats: { cost: run?.stats?.cost ?? null, tokens: totalTokens(run?.stats ?? null) },
           locked: publicAccess || !childSessionsAvailable,
         };
@@ -223,8 +242,8 @@ function timelineRows(
 }
 
 /** Child timelines deliberately stop at one level: child tool rows never receive subagent children. */
-function childTimelineRows(items: Item[], now: number): ExecChildStep[] {
-  return timelineRows(items, now).map((row) => {
+function childTimelineRows(items: Item[], now: number, startingPlan: ExecPlanSnapshot | null = null): ExecChildStep[] {
+  return timelineRows(items, now, startingPlan).map((row) => {
     const item = items.find((candidate) => candidate.id === row.id);
     return {
       id: row.id,
@@ -234,6 +253,7 @@ function childTimelineRows(items: Item[], now: number): ExecChildStep[] {
       status: row.status,
       durationMs: row.durationMs,
       ...(item?.kind === "tool" && typeof item.result === "string" ? { result: item.result } : {}),
+      planTaskId: row.planTaskId,
     };
   });
 }
