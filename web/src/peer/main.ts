@@ -1332,7 +1332,7 @@ function renderMe(): void {
   const sw = h("div", "card");
   sw.append(h("h3", "", tr("开关")));
   sw.append(
-    toggle(tr("隐身"), tr("别人看不到你，你也收不到新的人"), st.config.hidden, (on) => void setConfig({ hidden: on })),
+    toggle(tr("隐身"), tr("别人看不到你，但消息照收"), st.config.hidden, (on) => void setConfig({ hidden: on })),
     toggle(tr("免打扰"), tr("新消息不弹提醒，消息照收"), st.config.dnd, (on) => void setConfig({ dnd: on })),
     toggle(tr("暂停收文件"), tr("别人发来的文件会被拒收，消息不受影响"), st.config.pauseFiles, (on) => void setConfig({ pauseFiles: on })),
   );

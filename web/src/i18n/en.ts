@@ -1510,7 +1510,7 @@ export const en: Dict = {
   "再发一次申请": "Send the request again",
   "删除好友": "Remove friend",
   "别人发来的文件会被拒收，消息不受影响": "Files from others are declined; messages are unaffected",
-  "别人看不到你，你也收不到新的人": "Others can't see you, and you won't discover anyone new",
+  "别人看不到你，但消息照收": "Others can't see you, but messages still arrive",
   "剩余空间": "Free space",
   "去改": "Fix it",
   "发文件": "Send a file",

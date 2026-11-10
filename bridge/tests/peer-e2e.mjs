@@ -171,6 +171,33 @@ try {
   })).json();
   if (invisible.hidden !== true) throw new Error(`隐身不该交身份，实际 ${JSON.stringify(invisible)}`);
   log("ok 隐身不回 hello 身份");
+
+  // 手动地址也不能泄露身份：隐身时 addManual 只记地址，不发 hello（含单播 UDP）。
+  // 单播发往对方的 HTTP 端口（UDP 上没有 peer 监听），这里自己绑一个来收。
+  const unicast = [];
+  const tap = dgram.createSocket({ type: "udp4", reuseAddr: true });
+  tap.on("message", (buf) => {
+    try {
+      const packet = JSON.parse(buf.toString());
+      if (packet?.nodeId) unicast.push(packet);
+    } catch {
+      /* 不是我们的包 */
+    }
+  });
+  await new Promise((resolve, reject) => {
+    tap.once("error", reject);
+    tap.bind(17968, resolve);
+  });
+  const added = await fetch("http://127.0.0.1:17970/peer/add", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ addr: "127.0.0.1:17968" }),
+  });
+  if (!added.ok) throw new Error(`隐身时 /peer/add 回 ${added.status}：${await added.text()}`);
+  await new Promise((r) => setTimeout(r, 600));
+  tap.close();
+  if (unicast.length) throw new Error(`隐身加手动地址还发了 ${unicast.length} 条单播：${JSON.stringify(unicast[0]).slice(0, 160)}`);
+  log("ok 隐身加手动地址不发单播");
   D.kill();
 
   // ---- 第 2 片：1:1 文字 ----
