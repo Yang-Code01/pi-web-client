@@ -1487,6 +1487,9 @@ async function main(): Promise<void> {
       public: (ws as any).publicReq,
       ui: readUiPrefs(),
       notes: listNotes(),
+      // #278：页面据此决定 ＋ 是「挑目录建组」还是退回「空壳组 + 就地改名」（旧桥没有这项）；
+      // `ws.resolve.dir` = 对话框能问「这个目录折回到哪个组」（子目录 / worktree）。
+      caps: ["ws.create.dir", "ws.resolve.dir"],
     });
     // 先用 1–2 s 的快清单打招呼，带扩展的完整清单十几秒后自己补上（D150）。
     void pushCatalog(ws, { resend: true });
@@ -2784,7 +2787,28 @@ async function main(): Promise<void> {
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
               return;
             }
+            if (action === "ws.resolve") {
+              // #278：只读解析「这个目录折回到哪个组」—— 子目录 / worktree 用；不建组、不广播。
+              const dir = typeof msg.dir === "string" ? msg.dir : "";
+              const group = dir ? await sessions.workspaces.resolveDir(dir) : null;
+              send({ type: "ws.resolved", dir, id: group?.id ?? null });
+              return;
+            }
             if (action === "ws.create") {
+              // #278：带 dir = 按目录建组（目录即组身份，已在列表里就只回 id，不再建第二个）；
+              // 不带 dir = 老规矩，建一个空壳手动组、由页面接着进入改名。
+              const dir = typeof msg.dir === "string" ? msg.dir : "";
+              if (dir) {
+                const result = await sessions.workspaces.createDir(dir);
+                if (!result.ok || !result.group) {
+                  send({ type: "notice", text: result.reason ?? "这个目录没能建成工作区", level: "warn" });
+                  return;
+                }
+                broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+                // 先广播快照、再回执：页面收到回执时树里已经有这一组了（也可能本来就有）。
+                send({ type: "ws.created", id: result.group.id, created: result.created === true });
+                return;
+              }
               sessions.workspaces.create(String(msg.name ?? ""));
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
               return;
@@ -2803,14 +2827,25 @@ async function main(): Promise<void> {
               broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
               return;
             }
+            if (action === "ws.row") {
+              // #276：id 不存在或 inRow 不是布尔就静默忽略（旧页面 / 坏消息不该换来一条 warn）。
+              if (typeof msg.id !== "string" || typeof msg.inRow !== "boolean") return;
+              if (!sessions.workspaces.group(msg.id)) return;
+              sessions.workspaces.setRow(msg.id, msg.inRow);
+              broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+              return;
+            }
             if (action === "ws.drop") {
+              // #279：空组（手动组 / 目录组）都能删；有会话时由 `dropWorkspace()` 拒绝并给原因。
               const id = String(msg.id ?? "");
-              const result = sessions.workspaces.drop(id);
+              const result = sessions.dropWorkspace(id);
               if (!result.ok) {
                 send({ type: "notice", text: result.reason ?? "这个工作区不能删", level: "warn" });
                 return;
               }
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+              // 删组会顺手清掉还指着它的 override，会话的 `ws` 跟着挪窝 —— 一起广播，别让卡片停在死组里。
+              broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
               return;
             }
             if (action === "ws.tabs") {

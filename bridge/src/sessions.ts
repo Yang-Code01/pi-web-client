@@ -3290,6 +3290,16 @@ export class SessionManager extends EventEmitter {
     return this.workspaces.resolve(cwds);
   }
 
+  /**
+   * 删工作区（#279）：页面按左栏的空组放行，桥这里是权威 —— 组里还有会话就拒绝，空的才真删。
+   *
+   * 会话数只能从 `list()` 数：组里的会话可能来自 override，也可能来自 cwd 派生，只看 `overrides`
+   * 会漏掉后者。归档的也算 —— 它们不在左栏里，但组被删掉之后它们就没了归属。
+   */
+  dropWorkspace(id: string): { ok: boolean; reason?: string } {
+    return this.workspaces.drop(id, this.list().filter((s) => s.ws === id).length);
+  }
+
   /** Q-022: 置顶横条的 ＋ 建出来的会话，落到 pin 列表末尾。 */
   pinLast(id: string): void {
     this.manage.pinLast(id);
