@@ -1,21 +1,7 @@
-import type { Item } from "./types.ts";
+import type { Item, ToolPlanSnapshot as ExecPlanSnapshot, ToolPlanStatus as ExecPlanStatus, ToolPlanTask as ExecPlanTask } from "./types.ts";
+export type { ExecPlanSnapshot, ExecPlanStatus, ExecPlanTask };
 
 export type ExecPhase = "idle" | "thinking" | "writing" | "tool" | "waiting";
-
-export type ExecPlanStatus = "pending" | "in_progress" | "completed" | "deleted";
-
-export interface ExecPlanTask {
-  id: number;
-  subject: string;
-  activeForm?: string;
-  status: ExecPlanStatus;
-  blockedBy?: number[];
-}
-
-export interface ExecPlanSnapshot {
-  tasks: ExecPlanTask[];
-  listedRound: string | null;
-}
 
 export interface ExecStatsSnapshot {
   tokens: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number } | null;
