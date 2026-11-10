@@ -918,9 +918,10 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .composer .row { position: relative; display: flex; gap: 8px; align-items: flex-end; }
 .composer textarea {
-  flex: 1;
+  /* `flex-basis: auto`, not 0: the box is a column flex item now, and a 0 basis would let the flex
+     algorithm pick its height and ignore the one `fitComposer()` measures (#315). */
+  flex: 1 1 auto;
   min-height: 44px;
-  max-height: 180px;
   resize: none;
   padding: 12px 12px;
   background: var(--panel);

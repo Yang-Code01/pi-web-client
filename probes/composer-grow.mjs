@@ -1,0 +1,282 @@
+/**
+ * Probe: #315 — the composer grows with its content, capped by half the chat pane.
+ *
+ * Stands in for the bridge (serves `web/dist`, speaks enough ws to open one session) and drives a
+ * real Chromium: the height of a textarea can only be checked in a browser, and the cap depends on
+ * the measured height of `section.pane.chat-pane` (never on `.chat-scroll`, which the growing
+ * composer itself shrinks).
+ *
+ * Checks: one line when empty, every line visible up to twenty (no step at some row count), the cap
+ * is `min(520, chatPane.clientHeight / 2)`, deleting lines shrinks at once, sending clears back to
+ * one line, and a shorter window recomputes the cap without a reload.
+ *
+ * Run: node probes/composer-grow.mjs   (needs `npm run build:web` first)
+ */
+import fs from "node:fs";
+import http from "node:http";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { REPO, DIST, wsWrapper } from "../tools/paths.mjs";
+import { loadPlaywright } from "../tools/playwright.mjs";
+
+const { chromium } = await loadPlaywright();
+const wsMod = await import(pathToFileURL(wsWrapper()).href);
+const { WebSocketServer } = wsMod;
+
+const PORT = Number(process.env.PI_WEB_PORT ?? 7931);
+const OUT = path.join(REPO, ".scratch/composer-grow/shots");
+const BASE = `http://127.0.0.1:${PORT}`;
+fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
+fs.mkdirSync(OUT, { recursive: true });
+
+const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
+const assert = (cond, msg) => {
+  if (!cond) {
+    console.error("FAIL:", msg);
+    process.exitCode = 1;
+    throw new Error(msg);
+  }
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (fn, ms, what) => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await fn()) return;
+    await sleep(80);
+  }
+  throw new Error(`timeout waiting for ${what}`);
+};
+
+const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
+const SESSION = { id: "probe-grow", name: "输入框探针", cwd: REPO, file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "量输入框高度" };
+const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
+const ME = { version: "probe", pi: "probe", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "probe" };
+const HISTORY = [
+  { kind: "user", id: "u1", ts: Date.now() - 120_000, text: "先随便聊两句，让对话区有内容。" },
+  { kind: "assistant", id: "a1", ts: Date.now() - 60_000, model: "pi", text: "好。" },
+];
+
+let sock = null;
+const send = (msg) => sock?.readyState === 1 && sock.send(JSON.stringify(msg));
+/** What the page sent as a prompt — the send key must not leave the draft behind. */
+const prompts = [];
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url ?? "/", BASE);
+  if (url.pathname === "/healthz") return res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+  if (url.pathname === "/api/login" && req.method === "POST") {
+    res.writeHead(200, { "content-type": "application/json", "set-cookie": "pwc=probe; Path=/; HttpOnly; SameSite=Lax" });
+    return res.end('{"ok":true}');
+  }
+  if (url.pathname === "/api/me") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify(ME));
+  }
+  const rel = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\//, "");
+  const file = path.join(DIST, rel);
+  if (!path.resolve(file).startsWith(path.resolve(DIST)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+    res.writeHead(404, { "content-type": "text/plain" }).end("nope");
+    return;
+  }
+  res.writeHead(200, { "content-type": MIME[path.extname(file)] ?? "application/octet-stream" });
+  fs.createReadStream(file).pipe(res);
+});
+
+const wss = new WebSocketServer({ noServer: true });
+server.on("upgrade", (req, socket, head) => {
+  if (!(req.url ?? "").startsWith("/ws")) {
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+});
+wss.on("connection", (ws) => {
+  sock = ws;
+  ws.on("close", () => {
+    if (sock === ws) sock = null;
+  });
+  ws.on("message", (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+    if (msg.type === "subscribe") {
+      ws.send(JSON.stringify({ type: "session", sessionId: SESSION.id, state: SESSION, items: [...HISTORY], approvals: [], asks: [], budget: null }));
+    }
+    if (msg.type === "prompt") {
+      prompts.push(msg);
+      // A real bridge answers with `ack`: without it the page still clears the draft, but the
+      // send path leaves a pending row behind; ack keeps the pane in its normal resting state.
+      ws.send(JSON.stringify({ type: "ack", sessionId: SESSION.id, clientId: msg.clientId }));
+    }
+  });
+  ws.send(JSON.stringify({ type: "hello", me: ME, sessions: [SESSION], manage: { pin: [], order: [], archived: [] }, trash: [], tunnel: TUNNEL }));
+});
+
+await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+log("fake bridge on", BASE);
+
+const lines = (n) => Array.from({ length: n }, (_, i) => `第 ${i + 1} 行文字`).join("\n");
+
+let browser;
+try {
+  browser = await chromium.launch();
+  const context = await browser.newContext({ viewport: { width: 1200, height: 1100 }, locale: "zh-CN" });
+  const page = await context.newPage();
+  page.on("pageerror", (e) => log("page error:", e.message));
+  page.on("console", (m) => {
+    if (m.type() === "error") log("console error:", m.text().slice(0, 160));
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "session card");
+  await page.locator(".session-card").first().click();
+
+  const field = page.locator(".composer textarea");
+  await until(async () => (await field.count()) === 1, 8000, "composer textarea");
+
+  /** Everything the assertions need, measured from the live page. */
+  const metrics = () =>
+    page.evaluate(() => {
+      const t = document.querySelector(".composer textarea");
+      const pane = document.querySelector(".chat-pane");
+      const cs = getComputedStyle(t);
+      return {
+        height: t.getBoundingClientRect().height,
+        clientHeight: t.clientHeight,
+        scrollHeight: t.scrollHeight,
+        paneHeight: pane.clientHeight,
+        padding: parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom),
+        border: parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth),
+        maxHeight: cs.maxHeight,
+        value: t.value,
+      };
+    });
+
+  /**
+   * One text line's box height, measured off a detached div with the textarea's own font. This is
+   * the expected-value source: the probe must not recompute what `fitComposer()` does.
+   */
+  const lineBox = () =>
+    page.evaluate(() => {
+      const t = document.querySelector(".composer textarea");
+      const cs = getComputedStyle(t);
+      const probe = document.createElement("div");
+      probe.style.position = "absolute";
+      probe.style.visibility = "hidden";
+      probe.style.whiteSpace = "pre";
+      probe.style.fontFamily = cs.fontFamily;
+      probe.style.fontSize = cs.fontSize;
+      probe.style.fontWeight = cs.fontWeight;
+      probe.style.letterSpacing = cs.letterSpacing;
+      probe.style.lineHeight = cs.lineHeight;
+      probe.textContent = "x";
+      document.body.append(probe);
+      const h = probe.getBoundingClientRect().height;
+      probe.remove();
+      return h;
+    });
+
+  const lh = await lineBox();
+  const chrome = await metrics();
+  log("line box", lh.toFixed(2), "padding", chrome.padding, "border", chrome.border, "pane", chrome.paneHeight);
+
+  /** Height a composer holding `n` lines should have (border-box), capped by the pane formula. */
+  const expectedHeight = (n, paneHeight) => {
+    const natural = Math.max(44, n * lh + chrome.padding + chrome.border);
+    const cap = Math.min(520, paneHeight * 0.5);
+    return { natural, cap, want: Math.min(natural, cap) };
+  };
+
+  // 1. Empty: one line, nothing scrolling inside the box, and no second cap left in the stylesheet.
+  //    “One line” is the textarea's own line box plus its padding and border — 44px is only the CSS
+  //    min-height, which the real line box here (15px font) exceeds.
+  const oneLine = Math.max(44, lh + chrome.padding + chrome.border);
+  const empty = await metrics();
+  assert(empty.value === "", "the composer starts empty");
+  assert(Math.abs(empty.height - oneLine) <= 2, `empty composer is one line tall (${empty.height.toFixed(1)}px, want ${oneLine.toFixed(1)})`);
+  assert(empty.height < oneLine + lh - 2, `and not the browser's two-row default (${empty.height.toFixed(1)}px)`);
+  assert(empty.scrollHeight - empty.clientHeight <= 1, `empty composer does not scroll (${empty.scrollHeight} vs ${empty.clientHeight})`);
+  assert(empty.maxHeight === "none", `the stylesheet no longer caps the composer (computed max-height ${empty.maxHeight})`);
+  await page.screenshot({ path: path.join(OUT, "1-empty.png") });
+  log("empty", empty.height.toFixed(1), "px");
+
+  // 2. One to twenty lines: the box is exactly as tall as the text, with no flat stop part way.
+  const sizes = [1, 3, 8, 20];
+  const heights = {};
+  for (const n of sizes) {
+    await field.fill(lines(n));
+    await sleep(60);
+    const m = await metrics();
+    const want = expectedHeight(n, m.paneHeight);
+    heights[n] = m.height;
+    assert(
+      Math.abs(m.height - want.want) <= 2,
+      `${n} line(s): height ${m.height.toFixed(1)}px, want ${want.want.toFixed(1)} (natural ${want.natural.toFixed(1)}, cap ${want.cap.toFixed(1)})`,
+    );
+    if (want.natural <= want.cap) {
+      assert(m.scrollHeight - m.clientHeight <= 1, `${n} line(s) all visible, no inner scrollbar (${m.scrollHeight} vs ${m.clientHeight})`);
+    }
+    log(`${n} line(s)`, m.height.toFixed(1), "px (cap", want.cap.toFixed(1), ")");
+  }
+  assert(heights[1] < heights[3] && heights[3] < heights[8], `height follows the content (${sizes.map((n) => heights[n].toFixed(1)).join(" < ")})`);
+  await page.screenshot({ path: path.join(OUT, "2-twenty-lines.png") });
+
+  // 3. Deleting lines shrinks right away (no animation to wait out).
+  await field.fill(lines(10));
+  await sleep(60);
+  const ten = await metrics();
+  await field.fill(lines(3));
+  await sleep(60);
+  const three = await metrics();
+  const want3 = expectedHeight(3, three.paneHeight);
+  assert(three.height < ten.height - 20, `deleting lines shrinks the box (${ten.height.toFixed(1)} → ${three.height.toFixed(1)})`);
+  assert(Math.abs(three.height - want3.want) <= 2, `shrunk to 3 lines (${three.height.toFixed(1)}px, want ${want3.want.toFixed(1)})`);
+  await page.screenshot({ path: path.join(OUT, "3-shrunk.png") });
+
+  // 4. Sending clears back to a single line.
+  await field.fill("这一行会被发出去");
+  await sleep(60);
+  await field.press("Enter");
+  await until(async () => prompts.length >= 1, 4000, "prompt on the wire");
+  assert(prompts[0].text === "这一行会被发出去", `the prompt went out intact (${JSON.stringify(prompts[0].text)})`);
+  await until(async () => (await page.evaluate(() => document.querySelector(".composer textarea")?.value ?? "?")) === "", 4000, "cleared draft");
+  const cleared = await metrics();
+  assert(Math.abs(cleared.height - oneLine) <= 2, `clearing after send returns to one line (${cleared.height.toFixed(1)}px, want ${oneLine.toFixed(1)})`);
+  log("cleared", cleared.height.toFixed(1), "px");
+
+  // 5. Cap: a tall window, then a short one. The cap has to follow the pane, not a constant.
+  await field.fill(lines(40));
+  await sleep(80);
+  const tall = await metrics();
+  const tallWant = expectedHeight(40, tall.paneHeight);
+  assert(tallWant.natural > tallWant.cap, `the probe needs a cap that really bites (natural ${tallWant.natural.toFixed(1)} > cap ${tallWant.cap.toFixed(1)})`);
+  assert(Math.abs(tall.height - tallWant.cap) <= 2, `past the cap the box stops at ${tallWant.cap.toFixed(1)}px (got ${tall.height.toFixed(1)})`);
+  assert(tall.scrollHeight - tall.clientHeight > 20, `and the overflow scrolls inside the box (${tall.scrollHeight} vs ${tall.clientHeight})`);
+  await page.screenshot({ path: path.join(OUT, "4-at-cap.png") });
+
+  await page.setViewportSize({ width: 1200, height: 620 });
+  await sleep(400);
+  const short = await metrics();
+  const shortWant = expectedHeight(40, short.paneHeight);
+  assert(short.paneHeight < tall.paneHeight - 100, `the window really got shorter (pane ${tall.paneHeight} → ${short.paneHeight})`);
+  assert(
+    Math.abs(short.height - shortWant.cap) <= 2,
+    `the cap follows the shorter pane (${short.height.toFixed(1)}px, want ${shortWant.cap.toFixed(1)} from pane ${short.paneHeight})`,
+  );
+  assert(short.height < tall.height - 20, `the box got shorter with the window (${tall.height.toFixed(1)} → ${short.height.toFixed(1)})`);
+  await page.screenshot({ path: path.join(OUT, "5-short-window.png") });
+
+  await page.setViewportSize({ width: 1200, height: 1100 });
+  await sleep(400);
+  const back = await metrics();
+  assert(Math.abs(back.height - tall.height) <= 2, `growing the window back restores the cap (${back.height.toFixed(1)} vs ${tall.height.toFixed(1)})`);
+  log("cap follows the pane:", tallWant.cap.toFixed(1), "→", shortWant.cap.toFixed(1), "→", back.height.toFixed(1));
+
+  log("ALL OK");
+} finally {
+  await browser?.close();
+  server.close();
+  wss.close();
+}
