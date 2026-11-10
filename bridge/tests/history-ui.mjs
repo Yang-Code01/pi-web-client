@@ -15,7 +15,8 @@
  *   G. 点最上面那根淡色刻度（#244）：自己连翻 3 页，最后滚到第 1 轮并高亮，中途不需要再点，
  *      按钮按手动翻页的样子变灰、刻度带 `busy`；
  *   H. 翻页途中用户上滚：跳转停下，已经取回的那一页留着，滚动位置不被拽到第 1 轮；
- *   I. 索引里有、正文里没有的那一轮：翻到头就停，顶部那一行说「没翻到第 N 轮」，不再发请求。
+ *   I. 索引里有、正文里没有的那一轮：翻到头就停，顶部那一行说「没翻到第 N 轮」，不再发请求；
+ *   J. 真鼠标点列表上部的一行：按下时列表不被 focusin 拽回最底，翻页重画后也不被补发的 pointerenter 拽走。
  *
  * 桥侧形状（#218 定的）：`session` 帧只带末页 + `history:{hasMore,total}`；
  * `{type:"history.before", sessionId, before, limit?}` → `{type:"history", sessionId, before, items, hasMore}`，
