@@ -1579,7 +1579,6 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .queue .empty { padding: 2px 2px 0; text-align: left; font-size: 12px; }
 /* `.hint` 以前没有规则，落回 body 的 15px：比它上面的 12px 标题还大，是这一栏最响的字。 */
 .queue .hint { margin: 8px 2px 0; font-size: 12px; color: var(--faint); }
-.queue .hint.about { font-family: var(--mono); }
 .queue .queue-tools { display: flex; flex-wrap: wrap; gap: 8px; }
 .queue a { font-size: 12px; color: var(--accent); word-break: break-all; }
 .empty { color: var(--faint); font-size: 13px; padding: 24px 12px; text-align: center; }
@@ -1634,9 +1633,39 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 :where(html[data-compact="true"]) .ws-session-row .pin-strip { display: none; }
 :where(html[data-compact="true"]) .main .pane { height: 100%; }
 
-/* ---------------------------------------------------------------- appearance sheet */
-.icon-btn.icon-text { font: 500 12px/1 var(--mono); letter-spacing: 0.01em; }
-.sheet.display-sheet { grid-template-rows: auto; overflow-y: auto; }
+/* ---------------------------------------------------------------- settings drawer */
+/* 顶栏那颗齿轮（以前是 Aa）：13px 的 ⚙ 在这个等宽字体里糊成一圈，16px 才看得出八颗齿。 */
+.icon-btn.set-btn { font: 400 16px/1 var(--mono); }
+/* 标题 + 两枚页签钉在顶上，只有页自己滚（以前是整块 .sheet 一起滚，翻到底想换页得滚回顶上）。
+   grid 换成 flex 列：`.set-page` 撑满剩下那点高，min-height:0 是让它真的能缩下来（不加就是 overflow 不触发）。 */
+.sheet.display-sheet { display: flex; flex-direction: column; overflow: hidden; }
+.set-tabs { display: inline-flex; gap: 4px; margin-right: auto; }
+/* 页签不许折成两行（390 宽 + en 时会：「Connection & settings」折行把标题栏撑高一倍），宁可让标题去收。 */
+.set-tabs .chip { white-space: nowrap; }
+.set-page { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-bottom: 2px; }
+.set-page[hidden] { display: none; }
+.set-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+/* 通道那行订阅数：以前是 `.queue .hint`（12px 淡字），搬进抽屉后没有那条规则了，不补就会落回 15px 正文 —— 比它上面的标题还响。 */
+.set-page .hint { margin: 8px 0 0; font-size: 12px; color: var(--faint); }
+.set-link {
+  display: block; margin-top: 8px; font: 11.5px/1.5 var(--mono); color: var(--accent);
+  text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.set-link:hover { text-decoration: underline; }
+
+/* 关于贴在「连接与设置」页底：以前是左栏里一行 11px 的小字，现在两行都能点一下复制。
+   两颗类名是为了赢过后面的 `.sheet-foot{display:flex;justify-content:flex-end}`（第 2661 行）。 */
+.sheet-foot.set-about { display: grid; gap: 2px; justify-content: stretch; padding: 12px 16px 14px; }
+.set-copy {
+  display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; align-items: baseline; gap: 8px;
+  padding: 6px 8px; border: 1px solid transparent; border-radius: 8px;
+  background: none; color: var(--text); text-align: left; cursor: pointer; font: 11.5px/1.5 var(--mono);
+}
+.set-copy:hover { border-color: var(--line); background: var(--panel-2); }
+.set-copy .k { color: var(--faint); }
+.set-copy .v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-copy .done { color: var(--faint); font: 11px/1 var(--sans); }
+.set-copy .done.on { color: var(--ok); }
 .levels + .levels { border-top: 1px solid var(--line-soft); }
 .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
 .swatch {
@@ -1884,7 +1913,7 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .chrome-pv-btn[hidden] { display: none; }
 .chrome-pv-btn:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text); }
 .chrome-pv-btn .ic { font-family: var(--mono); }
-.chrome-pv-aa { font: 500 9.5px/1 var(--mono); opacity: 0.55; cursor: default; }
+.chrome-pv-gear { font: 500 11px/1 var(--mono); opacity: 0.55; cursor: default; }
 .chrome-pv-comp { display: flex; align-items: center; gap: 4px; overflow: hidden; }
 .chrome-pv-in { flex: 1 1 auto; min-width: 0; height: 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
 .chrome-pv-tool {
