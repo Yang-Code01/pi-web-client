@@ -2293,4 +2293,8 @@ export const en: Dict = {
   "待做": "Pending",
   "等 #{p1}": "Waiting for #{p1}",
   "执行面板计划区（@juicesharp/rpiv-todo）": "Execution panel plan section (@juicesharp/rpiv-todo)",
+  "展开参数": "Show arguments",
+  "收起参数": "Hide arguments",
+  "展开 {p1} 的参数": "Show the arguments of {p1}",
+  "收起 {p1} 的参数": "Hide the arguments of {p1}",
 };

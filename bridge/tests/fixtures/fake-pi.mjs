@@ -175,6 +175,18 @@ async function turn(text) {
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
+  if (text.startsWith("NOWARGS")) {
+    // #344: 一个在途工具，参数比一行长得多（子代理任务、ask 的整段 JSON 都是这样）——「现在」卡要把它压成一行。
+    const long = "很长的问题文本 ".repeat(24);
+    const args = { questions: [{ id: "q1", header: "折叠哪里", prompt: long, options: [{ value: "a", label: "A" }] }] };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: "call-long", name: "ask_user_question", arguments: args }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: "call-long", toolName: "ask_user_question", args });
+    while (!abortRequested) await sleep(100);
+    out({ type: "tool_execution_end", toolCallId: "call-long", isError: false, result: "answered" });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   if (text.startsWith("BGCHILD")) {
     const runId = process.env.FAKE_PI_CHILD_RUN_ID || `del_fake_${process.pid}`;
     const root = path.join(os.tmpdir(), "acp-delegate");

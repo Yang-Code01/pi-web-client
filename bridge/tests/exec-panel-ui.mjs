@@ -154,6 +154,18 @@ try {
     && await page.locator(".exec-plan.mini .exec-plan-task").first().evaluate((row) => row.tagName === "DIV" && row.onclick === null));
   await childToggle.click();
   check("child plan badge remains visible when collapsed", (await page.locator(".exec-subagent-plan").last().innerText()) === "计划 2/2");
+  socket.send(JSON.stringify({ type: "prompt", sessionId, text: "NOWARGS" }));
+  await page.waitForSelector(".exec-now-tool", { timeout: 20000 });
+  const nowTool = page.locator(".exec-now-tool").first();
+  const clamped = await nowTool.locator(".exec-args").evaluate((node) => ({ height: node.getBoundingClientRect().height, line: parseFloat(getComputedStyle(node).lineHeight) || 0, over: node.scrollWidth > node.clientWidth + 1 }));
+  check("long tool args occupy one line", clamped.line > 0 && clamped.height <= clamped.line * 1.5 && clamped.over, JSON.stringify(clamped));
+  check("long tool args get an expand button", await nowTool.locator(".exec-now-toggle").isVisible() && (await nowTool.locator(".exec-now-toggle").getAttribute("aria-expanded")) === "false");
+  check("no expanded args before the click", (await page.locator(".exec-now-args").count()) === 0);
+  await nowTool.locator(".exec-now-toggle").click();
+  await page.waitForSelector(".exec-now-args", { timeout: 5000 });
+  check("expanding shows the full argument text", (await page.locator(".exec-now-args").innerText()).length > 120 && (await page.locator(".exec-now-tool .exec-now-toggle").getAttribute("aria-expanded")) === "true");
+  await page.locator(".exec-now-tool .exec-now-toggle").click();
+  check("collapsing hides it again", (await page.locator(".exec-now-args").count()) === 0);
   check("page has no uncaught errors", pageErrors.length === 0, pageErrors.join("; "));
   console.log("All execution-panel smoke checks passed.");
 } finally {

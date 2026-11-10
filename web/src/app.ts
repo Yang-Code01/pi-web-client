@@ -255,6 +255,8 @@ export class App {
   private execChildErrors = new Map<string, string>();
   private execChildExpanded = new Set<string>();
   private execChildDetails = new Set<string>();
+  /** #344: 「现在」卡里展开过参数的工具；key 是「名字 + 参数全文」，同一工具再出现还保持展开。 */
+  private execNowExpanded = new Set<string>();
   private execChildSubscribed = new Set<string>();
   private execChildTimer: number | null = null;
   private execChildSessionId: string | null = null;
@@ -14221,8 +14223,31 @@ export class App {
   }
 
   private execActiveTool(active: { name: string; args: unknown; elapsedMs: number }): HTMLElement {
-    const line = el("div", "exec-now-line");
-    line.append(el("b", "", active.name), el("span", "exec-args", this.execArgs(active.args)), el("span", "exec-elapsed", this.execDuration(active.elapsedMs)));
+    const full = this.execArgs(active.args);
+    const key = `${active.name}\u0000${full}`;
+    const open = this.execNowExpanded.has(key);
+    const line = el("div", "exec-now-line exec-now-tool");
+    line.append(el("b", "", active.name), el("span", "exec-args", full));
+    // 子代理的任务、ask 的整段 JSON 一次能铺十几行，把「现在」卡撑成正文。长的默认只占一行，点开再看全文。
+    if (full.length > 80) {
+      const toggle = el("button", "exec-now-toggle") as HTMLButtonElement;
+      toggle.type = "button";
+      toggle.textContent = open ? "▴" : "▾";
+      toggle.title = open ? tr("收起参数") : tr("展开参数");
+      toggle.setAttribute("aria-expanded", String(open));
+      toggle.setAttribute("aria-label", open ? tr("收起 {p1} 的参数", { p1: active.name }) : tr("展开 {p1} 的参数", { p1: active.name }));
+      toggle.onclick = () => {
+        if (open) this.execNowExpanded.delete(key);
+        else {
+          if (this.execNowExpanded.size >= 64) this.execNowExpanded.clear();
+          this.execNowExpanded.add(key);
+        }
+        this.renderQueue();
+      };
+      line.append(toggle);
+    }
+    line.append(el("span", "exec-elapsed", this.execDuration(active.elapsedMs)));
+    if (open) line.append(el("pre", "exec-now-args", full));
     return line;
   }
 
