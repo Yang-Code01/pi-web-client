@@ -89,21 +89,41 @@ try {
   await page.waitForSelector(".composer-input textarea", { timeout: 20000 });
   await page.waitForSelector('[data-exec-tab="needs"]', { timeout: 20000 });
   check("needs-you remains the initial execution-pane tab", await page.locator('[data-exec-tab="needs"]').getAttribute("aria-selected") === "true");
+  for (let i = 0; i < 100 && !frames.some((frame) => frame.type === "stats" && frame.sessionId === sessionId); i += 1) await sleep(100);
+  check("initial stats snapshot arrived before the first turn", frames.some((frame) => frame.type === "stats" && frame.sessionId === sessionId));
+  await page.locator('[data-exec-tab="exec"]').click();
+  await page.waitForFunction(() => document.querySelector(".exec-context-label")?.textContent?.includes("0.5%"), null, { timeout: 20000 });
+  check("browser received current stats before the round starts", (await page.locator(".exec-context-label").innerText()).includes("0.5%"));
 
   socket.send(JSON.stringify({ type: "prompt", sessionId, text: "TOOLS" }));
-  await page.locator('[data-exec-tab="exec"]').click();
   await page.waitForSelector(".exec-now", { timeout: 20000 });
   await page.waitForSelector(".exec-timeline .exec-step", { timeout: 20000 });
   check("execution tab shows the now card and loaded timeline", await page.locator(".exec-now").innerText().then((text) => text.includes("现在")));
   check("timeline steps link to loaded chat cards", (await page.locator(".exec-timeline .exec-step").count()) > 0);
+  check("metrics count tools without treating skills as tools", await page.locator(".exec-metric-grid .exec-metric:nth-child(2)").innerText().then((text) => text.includes("工具 / 失败") && text.includes("3 / 0")));
+  check("metrics show context usage and percent", await page.locator(".exec-context-label").innerText().then((text) => text.includes(" / ") && text.includes("0.5%")));
   await page.locator(".exec-timeline .exec-step").first().click();
   await page.waitForSelector(".exec-flash", { timeout: 5000 });
   check("clicking a timeline step jumps to and flashes its chat card", (await page.locator(".exec-flash").count()) > 0);
+
+  socket.send(JSON.stringify({ type: "prompt", sessionId, text: "METRICS" }));
+  const rounds = page.locator(".exec-rounds");
+  await page.waitForFunction(() => document.querySelector(".exec-rounds")?.options.length === 2, null, { timeout: 20000 });
+  await rounds.selectOption({ index: 1 });
+  await page.waitForFunction(() => document.querySelector('[data-exec-metric="cost"] .exec-metric-value')?.textContent?.trim() === "$0.0100", null, { timeout: 20000 });
+  check("cost rises at the first message-end stats frame while the run continues", (await page.locator('[data-exec-metric="cost"] .exec-metric-value').innerText()) === "$0.0100");
+  await page.waitForFunction(() => document.querySelector('[data-exec-metric="cost"] .exec-metric-value')?.textContent?.trim() === "$0.0400", null, { timeout: 20000 });
+  check("cost updates again at the next message-end stats frame", (await page.locator('[data-exec-metric="cost"] .exec-metric-value').innerText()) === "$0.0400");
+  await rounds.selectOption({ index: 0 });
+  check("historical round shows its own saved metrics", (await page.locator('[data-exec-metric="cost"] .exec-metric-value').innerText()) === "$0.0000");
+  await rounds.selectOption({ index: 1 });
+  check("returning to the current round restores its metrics", (await page.locator('[data-exec-metric="cost"] .exec-metric-value').innerText()) === "$0.0400");
 
   await page.reload();
   await page.waitForSelector(".app", { timeout: 20000 });
   await page.waitForSelector(".exec-now", { timeout: 20000 });
   check("execution-tab selection survives reload", await page.locator('[data-exec-tab="exec"]').getAttribute("aria-selected") === "true");
+  check("round metrics survive reload", (await page.locator('[data-exec-metric="cost"] .exec-metric-value').innerText()) === "$0.0400");
   check("page has no uncaught errors", pageErrors.length === 0, pageErrors.join("; "));
   console.log("All execution-panel smoke checks passed.");
 } finally {

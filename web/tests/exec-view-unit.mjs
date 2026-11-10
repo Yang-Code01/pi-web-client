@@ -14,15 +14,41 @@ const tool = (id, ts, status, extra = {}) => ({
   status,
   ...extra,
 });
-const base = { phase: "idle", streamChars: 0, selectedRound: null, now: Date.parse("2025-01-01T00:00:10Z") };
+const base = { phase: "idle", streamChars: 0, selectedRound: null, now: Date.parse("2025-01-01T00:00:10Z"), stats: null, roundStats: {} };
 
 test("an idle view with no loaded turns has an empty previous-turn summary", () => {
-  assert.deepEqual(execView({ ...base, items: [] }), {
+  assert.deepEqual(execView({ ...base, items: [], stats: null, roundStats: {} }), {
     now: { kind: "idle", previousDurationMs: null, succeeded: null, activeTools: [] },
     timeline: [],
     rounds: [],
     selectedRound: null,
+    metrics: {
+      durationMs: null,
+      toolCount: 0,
+      failureCount: 0,
+      cost: null,
+      tokens: null,
+      main: { cost: null, tokens: null },
+      subagents: { cost: 0, tokens: 0 },
+      contextTokens: null,
+      contextWindow: null,
+      contextPercent: null,
+    },
   });
+});
+
+test("session context usage is visible before the first turn", () => {
+  const view = execView({
+    ...base,
+    items: [],
+    stats: { tokens: { total: 15 }, cost: 0.01, contextTokens: 1000, contextWindow: 200000 },
+  });
+
+  assert.equal(view.metrics.cost, null);
+  assert.equal(view.metrics.tokens, null);
+  assert.equal(view.metrics.contextTokens, 1000);
+  assert.equal(view.metrics.contextWindow, 200000);
+  assert.equal(view.metrics.contextPercent, 0.5);
 });
 
 test("idle view summarizes the loaded previous turn duration and failures", () => {
@@ -39,6 +65,16 @@ test("idle view summarizes the loaded previous turn duration and failures", () =
   assert.equal(view.now.previousDurationMs, 8000);
   assert.equal(view.now.succeeded, false);
   assert.deepEqual(view.rounds, [{ id: "u1", ordinal: 1 }]);
+});
+
+test("current round duration advances with the clock while active", () => {
+  const view = execView({
+    ...base,
+    phase: "thinking",
+    items: [user("u1", "2025-01-01T00:00:00Z")],
+  });
+
+  assert.equal(view.metrics.durationMs, 10000);
 });
 
 test("thinking and writing phases expose streamed character count and recent summary", () => {
@@ -96,6 +132,72 @@ test("skills are labeled as skill steps, and older rounds use only loaded items"
   assert.equal(view.timeline[0].kind, "skill");
   assert.equal(view.timeline[0].args, "");
   assert.equal(view.timeline[0].durationMs, null);
+});
+
+test("round metrics subtract its baseline and count only non-todo tools and tool failures", () => {
+  const start = { tokens: { total: 100 }, cost: 0.2, contextTokens: 1000, contextWindow: 10000 };
+  const current = { tokens: { total: 175 }, cost: 0.45, contextTokens: 9000, contextWindow: 10000 };
+  const view = execView({
+    ...base,
+    items: [
+      user("u1", "2025-01-01T00:00:00Z"),
+      tool("t1", "2025-01-01T00:00:02Z", "ok"),
+      { ...tool("todo", "2025-01-01T00:00:03Z", "ok"), name: "todo" },
+      { id: "s1", ts: "2025-01-01T00:00:04Z", kind: "skill", name: "review", description: "Review" },
+      tool("t2", "2025-01-01T00:00:06Z", "error", { isError: true }),
+      assistant("a1", "2025-01-01T00:00:08Z"),
+    ],
+    stats: current,
+    roundStats: { u1: { baseline: start, final: current } },
+  });
+
+  assert.deepEqual(view.metrics, {
+    durationMs: 8000,
+    toolCount: 2,
+    failureCount: 1,
+    cost: 0.25,
+    tokens: 75,
+    main: { cost: 0.25, tokens: 75 },
+    subagents: { cost: 0, tokens: 0 },
+    contextTokens: 9000,
+    contextWindow: 10000,
+    contextPercent: 90,
+  });
+});
+
+test("historical round metrics use that round's final snapshot", () => {
+  const oldStart = { tokens: { total: 100 }, cost: 0.2, contextTokens: 1000, contextWindow: 10000 };
+  const oldEnd = { tokens: { total: 140 }, cost: 0.45, contextTokens: 5000, contextWindow: 10000 };
+  const current = { tokens: { total: 900 }, cost: 3, contextTokens: 8000, contextWindow: 10000 };
+  const view = execView({
+    ...base,
+    selectedRound: "u1",
+    items: [
+      user("u1", "2025-01-01T00:00:00Z"),
+      assistant("a1", "2025-01-01T00:00:04Z"),
+      user("u2", "2025-01-01T00:00:05Z"),
+      assistant("a2", "2025-01-01T00:00:09Z"),
+    ],
+    stats: current,
+    roundStats: {
+      u1: { baseline: oldStart, final: oldEnd },
+      u2: { baseline: oldEnd, final: current },
+    },
+  });
+
+  assert.equal(view.selectedRound, "u1");
+  assert.deepEqual(view.metrics, {
+    durationMs: 4000,
+    toolCount: 0,
+    failureCount: 0,
+    cost: 0.25,
+    tokens: 40,
+    main: { cost: 0.25, tokens: 40 },
+    subagents: { cost: 0, tokens: 0 },
+    contextTokens: 5000,
+    contextWindow: 10000,
+    contextPercent: 50,
+  });
 });
 
 test("waiting phase is distinct from idle", () => {

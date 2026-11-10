@@ -2,6 +2,18 @@ import type { Item } from "./types.ts";
 
 export type ExecPhase = "idle" | "thinking" | "writing" | "tool" | "waiting";
 
+export interface ExecStatsSnapshot {
+  tokens: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number } | null;
+  cost: number | null;
+  contextTokens: number | null;
+  contextWindow: number | null;
+}
+
+export interface ExecRoundStats {
+  baseline: ExecStatsSnapshot | null;
+  final: ExecStatsSnapshot | null;
+}
+
 export interface ExecViewInput {
   items: Item[];
   phase: ExecPhase;
@@ -9,6 +21,8 @@ export interface ExecViewInput {
   streamSummary?: string;
   selectedRound: string | null;
   now: number;
+  stats?: ExecStatsSnapshot | null;
+  roundStats?: Record<string, ExecRoundStats>;
 }
 
 export interface ExecActiveTool {
@@ -38,11 +52,25 @@ export interface ExecRound {
   ordinal: number;
 }
 
+export interface ExecMetricsView {
+  durationMs: number | null;
+  toolCount: number;
+  failureCount: number;
+  cost: number | null;
+  tokens: number | null;
+  main: { cost: number | null; tokens: number | null };
+  subagents: { cost: number; tokens: number };
+  contextTokens: number | null;
+  contextWindow: number | null;
+  contextPercent: number | null;
+}
+
 export interface ExecViewModel {
   now: ExecNowView;
   timeline: ExecTimelineRow[];
   rounds: ExecRound[];
   selectedRound: string | null;
+  metrics: ExecMetricsView;
 }
 
 interface LoadedRound {
@@ -98,6 +126,60 @@ function previousDuration(items: Item[]): number | null {
   return start === null || end === null ? null : Math.max(0, end - start);
 }
 
+function totalTokens(snapshot: ExecStatsSnapshot | null): number | null {
+  const tokens = snapshot?.tokens;
+  if (!tokens) return null;
+  if (typeof tokens.total === "number" && Number.isFinite(tokens.total)) return tokens.total;
+  const counters = [tokens.input, tokens.output, tokens.cacheRead, tokens.cacheWrite]
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return counters.length ? counters.reduce((sum, value) => sum + value, 0) : null;
+}
+
+function delta(current: number | null, baseline: number | null): number | null {
+  if (current === null || baseline === null) return null;
+  return Math.max(0, current - baseline);
+}
+
+function roundMetrics(
+  items: Item[],
+  selectedIsCurrent: boolean,
+  phase: ExecPhase,
+  now: number,
+  stats: ExecStatsSnapshot | null,
+  roundStats: ExecRoundStats | undefined,
+): ExecMetricsView {
+  const first = items.find((item) => item.kind === "user");
+  const start = first ? timeOf(first) : null;
+  const end = selectedIsCurrent && phase !== "idle"
+    ? now
+    : [...items].reverse().map(timeOf).find((at) => at !== null) ?? null;
+  const timeMs = start === null || end === null ? null : Math.max(0, end - start);
+  const tools = items.filter((item): item is Extract<Item, { kind: "tool" }> => item.kind === "tool" && item.name.toLowerCase() !== "todo");
+  const failureCount = tools.filter((item) => item.isError || item.status === "error").length;
+  const snapshot = selectedIsCurrent || !first ? stats ?? roundStats?.final ?? null : roundStats?.final ?? null;
+  const baseline = roundStats?.baseline ?? null;
+  const cost = delta(snapshot?.cost ?? null, baseline?.cost ?? null);
+  const tokens = delta(totalTokens(snapshot), totalTokens(baseline));
+  const contextTokens = snapshot?.contextTokens ?? null;
+  const contextWindow = snapshot?.contextWindow ?? null;
+  const contextPercent = contextTokens !== null && contextWindow !== null && contextWindow > 0
+    ? (contextTokens / contextWindow) * 100
+    : null;
+
+  return {
+    durationMs: timeMs,
+    toolCount: tools.length,
+    failureCount,
+    cost,
+    tokens,
+    main: { cost, tokens },
+    subagents: { cost: 0, tokens: 0 },
+    contextTokens,
+    contextWindow,
+    contextPercent,
+  };
+}
+
 function activeTools(items: Item[], now: number): ExecActiveTool[] {
   return items.flatMap((item) => {
     if (item.kind !== "tool" || item.status !== "running") return [];
@@ -146,5 +228,13 @@ export function execView(input: ExecViewInput): ExecViewModel {
     };
   }
 
-  return { now, timeline, rounds: roundOptions, selectedRound: selected?.id ?? null };
+  const metrics = roundMetrics(
+    selectedItems,
+    selectedIsCurrent,
+    input.phase,
+    input.now,
+    input.stats ?? null,
+    selected ? input.roundStats?.[selected.id] : undefined,
+  );
+  return { now, timeline, rounds: roundOptions, selectedRound: selected?.id ?? null, metrics };
 }

@@ -73,6 +73,7 @@ const FAKE_MODELS = [
 ];
 let currentModel = FAKE_MODELS[0];
 let thinkingLevel = "off";
+let sessionStats = { tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cost: 0.01, contextUsage: { tokens: 1000, contextWindow: 200000, percent: 0.5 } };
 
 let running = false;
 let compacting = false;
@@ -268,6 +269,18 @@ async function turn(text) {
     out({ type: "auto_retry_end", success: false, attempt: 2, finalError: "401 invalid api key" });
     return;
   }
+  if (text.startsWith("METRICS")) {
+    // Two assistant message-end stats frames in one run let the browser smoke verify live cost growth.
+    sessionStats = { tokens: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, total: 30 }, cost: 0.02, contextUsage: { tokens: 2000, contextWindow: 200000, percent: 1 } };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("first update") });
+    await sleep(800);
+    sessionStats = { tokens: { input: 40, output: 20, cacheRead: 0, cacheWrite: 0, total: 60 }, cost: 0.05, contextUsage: { tokens: 5000, contextWindow: 200000, percent: 2.5 } };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("second update") });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   // #86：pi 每调一次工具都会先发一条「文字为空、只有工具调用」的 assistant 消息。
   // 页面上不能因此多出一堆「随手问 / …」。
   if (/^TOOLS/.test(text)) {
@@ -402,7 +415,7 @@ async function handle(cmd) {
       note({ t: "set_thinking_level", pid: process.pid, level: thinkingLevel });
       return ok(id, type);
     case "get_session_stats":
-      return ok(id, type, { tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cost: 0.01, contextUsage: { tokens: 1000, contextWindow: 200000, percent: 0.5 } });
+      return ok(id, type, sessionStats);
     case "get_available_models": {
       const LEVEL_MAP = { off: "off", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
       return ok(id, type, { models: FAKE_MODELS.map((m) => ({ ...m, reasoning: true, thinkingLevelMap: LEVEL_MAP, input: ["text"], contextWindow: 200000 })) });
