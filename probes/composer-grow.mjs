@@ -24,6 +24,12 @@
  * corner drag stops at that half, collapsing gives the composer the whole cap back, and the narrow
  * layout still leaves the composer a line.
  *
+ * #319 adds the transcript's side of the growth: a box that grows under a following transcript keeps
+ * the last message wholly inside the band, a box that grows while the user reads history leaves the
+ * message at the top of the band where it was, shrinking back to one line keeps the hold on the
+ * bottom without moving a mid-transcript reading position, and a stream in flight keeps following
+ * across the growth.
+ *
  * Run: node probes/composer-grow.mjs   (needs `npm run build:web` first)
  */
 import fs from "node:fs";
@@ -88,6 +94,21 @@ const HISTORY = [
 let sock = null;
 /** What the page sent as a prompt — the send key must not leave the draft behind. */
 const prompts = [];
+const send = (msg) => (sock?.readyState === 1 ? sock.send(JSON.stringify(msg)) : false);
+/** #319: a reply that keeps arriving while the box grows — the only way to judge "following". */
+let streaming = false;
+const startStream = (everyMs) => {
+  streaming = true;
+  const tick = () => {
+    if (!streaming) return;
+    send({ type: "delta", sessionId: SESSION.id, id: "a1", field: "text", text: `正在写第 ${Math.random().toString(36).slice(2, 8)} 个字。\n` });
+    setTimeout(tick, everyMs);
+  };
+  tick();
+};
+const stopStream = () => {
+  streaming = false;
+};
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", BASE);
@@ -683,8 +704,286 @@ try {
   await page.screenshot({ path: path.join(OUT, "12-paste-narrow.png") });
   log("narrow fold", `composer ${narrowFold.inputBox}px, fold ${narrowFold.body.box}px, chat ${narrowFold.scrollBox}px`);
 
+  // #319 starts wide, with no fold and a one-line box: the #318 fold is part of the previous
+  // section's fixture, not of this one, so put the page back to a known geometry first.
+  await page.setViewportSize({ width: 1200, height: 1100 });
+  await sleep(400);
+  while ((await page.locator(".paste-body").count()) > 0) {
+    await page.locator(".paste-toggle").first().click();
+    await sleep(150);
+  }
+  while ((await page.locator(".paste-x").count()) > 0) {
+    await page.locator(".paste-x").first().click();
+    await sleep(120);
+  }
+  await page.locator(".composer-input > textarea").fill("");
+  await sleep(200);
+
+  /**
+   * What the transcript looks like from outside: where every message sits relative to the visible
+   * band, and how much is left below. The reader's position is a message's box, never `scrollTop` —
+   * the band itself changes height, so `scrollTop` alone cannot tell “still showing the last line”
+   * from “the last line slid under the composer”.
+   */
+  const transcript = () =>
+    page.evaluate(() => {
+      const scroll = document.querySelector(".chat-scroll");
+      const view = scroll.getBoundingClientRect();
+      const boxes = [...scroll.querySelectorAll(".msg")].map((m) => {
+        const r = m.getBoundingClientRect();
+        return { text: (m.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 24), top: r.top, bottom: r.bottom };
+      });
+      return {
+        scrollTop: scroll.scrollTop,
+        max: scroll.scrollHeight - scroll.clientHeight,
+        gap: scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight,
+        view: { top: view.top, bottom: view.bottom, height: view.height },
+        boxes,
+        last: boxes.length ? boxes[boxes.length - 1] : null,
+      };
+    });
+  const jumpUp = async () => {
+    const j = page.locator(".chat-jump");
+    return (await j.count()) > 0 && (await j.first().isVisible());
+  };
+  /** Reach the bottom the way a user does: the button (follow()) when it is up, else scroll by hand. */
+  const gotoBottom = async () => {
+    if (await jumpUp()) {
+      await page.locator(".chat-jump").first().click();
+      await sleep(350);
+    } else {
+      await page.evaluate(() => {
+        const el = document.querySelector(".chat-scroll");
+        el.scrollTop = el.scrollHeight;
+      });
+      await sleep(250);
+    }
+  };
+  /** A wheel gesture over the middle of the visible transcript — never over the composer. */
+  const wheelTranscript = async (dy) => {
+    const band = await page.locator(".chat-scroll").boundingBox();
+    await page.mouse.move(band.x + band.width / 2, band.y + band.height / 2);
+    await page.mouse.wheel(0, dy);
+    await sleep(450);
+  };
+  /** Pinned: nothing left below, and the last message wholly inside the visible band. */
+  const assertPinned = async (where, slack = 1) => {
+    const t = await transcript();
+    assert(t.gap <= slack, `${where}: at the bottom (gap ${t.gap.toFixed(1)}px)`);
+    assert(t.last !== null, `${where}: the transcript still has messages`);
+    assert(
+      t.last.bottom <= t.view.bottom + 1 && t.last.top >= t.view.top - 1,
+      `${where}: the last message is wholly inside the band (${t.last.top.toFixed(1)}–${t.last.bottom.toFixed(1)} vs band ${t.view.top.toFixed(1)}–${t.view.bottom.toFixed(1)})`,
+    );
+    return t;
+  };
+
+  // 13. #319 — the box grows under a following transcript: the last message must stay where a reader
+  //     looks for it. The band shrinks by exactly the amount the box grew, so this is measured on the
+  //     message box: `scrollTop === scrollHeight - clientHeight` can hold while the last line sits
+  //     under the composer.
+  await gotoBottom();
+  const rest = await assertPinned("13 before growing");
+  assert(!(await jumpUp()), "13 starts out following (no jump button)");
+  const oneLineBox = await metrics();
+  await field.fill(lines(40));
+  await sleep(350);
+  const grownBox = await metrics();
+  const atCap = await assertPinned("13 with the box at its cap");
+  assert(
+    grownBox.height > oneLineBox.height + 200,
+    `13 the box really grew (${oneLineBox.height.toFixed(1)} → ${grownBox.height.toFixed(1)}px)`,
+  );
+  assert(
+    atCap.view.height < rest.view.height - 200,
+    `13 the band really shrank (${rest.view.height.toFixed(1)} → ${atCap.view.height.toFixed(1)}px)`,
+  );
+  assert(!(await jumpUp()), "13 the growth did not read as “the user left the bottom” (no jump button)");
+  await page.screenshot({ path: path.join(OUT, "13-grow-follows.png") });
+  log(
+    "13 grow while following",
+    `box ${oneLineBox.height.toFixed(0)} → ${grownBox.height.toFixed(0)}px`,
+    `band ${rest.view.height.toFixed(0)} → ${atCap.view.height.toFixed(0)}px`,
+    `gap ${atCap.gap.toFixed(1)}`,
+  );
+
+  // 13c. The pin has to land in the keystroke's own task, not a frame later. The input handler writes
+  //      the textarea's height synchronously; a pin that waits for the scroller's own size observer
+  //      paints one frame with the last line pushed under the box. Read the geometry in that same
+  //      task — no frame can run while the page is still inside `dispatchEvent`.
+  await field.fill("");
+  await sleep(200);
+  await gotoBottom();
+  const sameTask = await page.evaluate((text) => {
+    const t = document.querySelector(".composer-input > textarea");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setValue.call(t, text);
+    t.dispatchEvent(new Event("input", { bubbles: true }));
+    const scroll = document.querySelector(".chat-scroll");
+    const view = scroll.getBoundingClientRect();
+    const msgs = [...scroll.querySelectorAll(".msg")];
+    const last = msgs[msgs.length - 1].getBoundingClientRect();
+    return {
+      box: t.getBoundingClientRect().height,
+      band: view.height,
+      gap: scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight,
+      lastBottom: last.bottom,
+      viewBottom: view.bottom,
+    };
+  }, lines(40));
+  assert(sameTask.box > 400, `13c the box grew inside the input task (${sameTask.box.toFixed(0)}px)`);
+  assert(sameTask.band < 500, `13c the band shrank inside the same task (${sameTask.band.toFixed(0)}px)`);
+  assert(
+    sameTask.gap <= 1 && sameTask.lastBottom <= sameTask.viewBottom + 1,
+    `13c pinned before the next frame (gap ${sameTask.gap.toFixed(1)}px, last line ${sameTask.lastBottom.toFixed(0)} vs band bottom ${sameTask.viewBottom.toFixed(0)})`,
+  );
+  await page.screenshot({ path: path.join(OUT, "13c-same-task-pin.png") });
+  log("13c pin in the keystroke's task", `box ${sameTask.box.toFixed(0)}px, band ${sameTask.band.toFixed(0)}px, gap ${sameTask.gap.toFixed(1)}`);
+
+  // 13b. The same growth through a paste fold: opening it pushes the band up by the fold's height
+  //      while the composer is still one line — a grow the composer's own box does not show.
+  await field.fill("");
+  await sleep(200);
+  await gotoBottom();
+  await page.evaluate((text) => {
+    const t = document.querySelector(".composer-input > textarea");
+    const dt = new DataTransfer();
+    dt.setData("text/plain", text);
+    t.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, pasteText);
+  await until(async () => (await page.locator(".paste-block").count()) === 1, 4000, "paste fold for #319");
+  await gotoBottom();
+  const foldShut = await assertPinned("13b fold shut");
+  await page.locator(".paste-toggle").first().click();
+  await until(async () => (await page.locator(".paste-body").count()) === 1, 4000, "paste editor for #319");
+  await sleep(350);
+  const foldOpen = await assertPinned("13b fold opened");
+  assert(
+    foldOpen.view.height < foldShut.view.height - 150,
+    `13b opening the fold pushed the band up (${foldShut.view.height.toFixed(1)} → ${foldOpen.view.height.toFixed(1)}px)`,
+  );
+  assert(!(await jumpUp()), "13b opening the fold did not break the follow");
+  await page.screenshot({ path: path.join(OUT, "13b-fold-grow.png") });
+  log("13b fold opened while following", `band ${foldShut.view.height.toFixed(0)} → ${foldOpen.view.height.toFixed(0)}px, gap ${foldOpen.gap.toFixed(1)}`);
+  await page.locator(".paste-x").first().click();
+  await sleep(200);
+
+  // 14. #319 — already reading history: growing the box must leave the reading position alone. The
+  //     wheel below is a real gesture, so the app itself decides the follow is off (a programmatic
+  //     `scrollTop` would leave `following` on and the next frame would drag the view back).
+  await field.fill("");
+  await sleep(200);
+  await gotoBottom();
+  await wheelTranscript(-220);
+  const beforeRead = await transcript();
+  assert(beforeRead.gap > 100, `14 the wheel really left the bottom (gap ${beforeRead.gap.toFixed(0)}px)`);
+  assert(await jumpUp(), "14 not following any more: the jump button is up");
+  const readIndex = beforeRead.boxes.findIndex((b) => b.top >= beforeRead.view.top - 1);
+  assert(readIndex >= 0, "14 there is a message at the top of the band to read");
+  const anchorMsg = beforeRead.boxes[readIndex];
+  await field.fill(lines(40));
+  await sleep(350);
+  const afterRead = await transcript();
+  const moved = afterRead.boxes[readIndex].top - anchorMsg.top;
+  assert(Math.abs(moved) <= 2, `14 the message being read did not move (${moved.toFixed(1)}px, “${anchorMsg.text}”)`);
+  assert(
+    Math.abs(afterRead.scrollTop - beforeRead.scrollTop) <= 2,
+    `14 the view was not dragged to the bottom (scrollTop ${beforeRead.scrollTop.toFixed(0)} → ${afterRead.scrollTop.toFixed(0)})`,
+  );
+  assert(
+    afterRead.view.height < beforeRead.view.height - 200,
+    `14 the box grew and the band shrank (${beforeRead.view.height.toFixed(0)} → ${afterRead.view.height.toFixed(0)}px)`,
+  );
+  assert(await jumpUp(), "14 still not following: the jump button stays up");
+  await page.screenshot({ path: path.join(OUT, "14-grow-while-reading.png") });
+  log(
+    "14 grow while reading",
+    `message “${anchorMsg.text}” moved ${moved.toFixed(1)}px`,
+    `band ${beforeRead.view.height.toFixed(0)} → ${afterRead.view.height.toFixed(0)}px`,
+  );
+
+  // 15. #319 — shrinking back to one line. From the bottom: the band grows downwards and the hold on
+  //     the bottom must survive it, with the last message still wholly visible.
+  await gotoBottom();
+  const capHold = await assertPinned("15 before shrinking from the bottom");
+  await field.fill("");
+  await sleep(350);
+  const shrunkBottom = await assertPinned("15 shrunk at the bottom");
+  assert(
+    shrunkBottom.view.height > capHold.view.height + 200,
+    `15 the band grew back (${capHold.view.height.toFixed(0)} → ${shrunkBottom.view.height.toFixed(0)}px)`,
+  );
+  assert(!(await jumpUp()), "15 the user at the bottom was not bounced off it");
+  log("15 shrink at the bottom", `band ${capHold.view.height.toFixed(0)} → ${shrunkBottom.view.height.toFixed(0)}px, gap ${shrunkBottom.gap.toFixed(1)}`);
+  await page.screenshot({ path: path.join(OUT, "15-shrink-at-bottom.png") });
+
+  // 15b. From the middle: the band grows downwards, so what is being read must not shift. The
+  //      reading position has to be further from the bottom than the box is tall, otherwise the
+  //      browser's own clamp (and not the app) decides where the view ends up.
+  await field.fill(lines(40));
+  await sleep(300);
+  const capGeo = await transcript();
+  assert(
+    Math.round(capGeo.max / 2) > 470,
+    `15b the transcript is long enough to read mid-way (max ${capGeo.max.toFixed(0)}px of scroll)`,
+  );
+  await wheelTranscript(-Math.round(capGeo.max / 2));
+  const midBefore = await transcript();
+  assert(midBefore.gap > 470, `15b the reading position sits above the clamp zone (gap ${midBefore.gap.toFixed(0)}px)`);
+  const midIndex = midBefore.boxes.findIndex((b) => b.top >= midBefore.view.top - 1);
+  assert(midIndex >= 0, "15b there is a message at the top of the band to read");
+  const midMsg = midBefore.boxes[midIndex];
+  await field.fill("");
+  await sleep(350);
+  const midAfter = await transcript();
+  const midMoved = midAfter.boxes[midIndex].top - midMsg.top;
+  assert(Math.abs(midMoved) <= 2, `15b the message being read did not move (${midMoved.toFixed(1)}px, “${midMsg.text}”)`);
+  assert(
+    Math.abs(midAfter.scrollTop - midBefore.scrollTop) <= 2,
+    `15b the shrinking box did not scroll the view (scrollTop ${midBefore.scrollTop.toFixed(0)} → ${midAfter.scrollTop.toFixed(0)})`,
+  );
+  assert(await jumpUp(), "15b still reading history: the jump button stays up");
+  log(
+    "15b shrink while reading",
+    `message “${midMsg.text}” moved ${midMoved.toFixed(1)}px`,
+    `band ${midBefore.view.height.toFixed(0)} → ${midAfter.view.height.toFixed(0)}px`,
+  );
+  await page.screenshot({ path: path.join(OUT, "15b-shrink-while-reading.png") });
+
+  // 16. #319 — a reply arrives while the box grows. Following has to survive the growth, so the tail
+  //     of the streaming message stays visible and nothing claims there is new content below.
+  await field.fill("");
+  await sleep(200);
+  await gotoBottom();
+  startStream(60);
+  await sleep(400);
+  const streamStart = await transcript();
+  assert(streamStart.gap <= 80, `16 the running stream is followed (gap ${streamStart.gap.toFixed(0)}px)`);
+  await field.fill(lines(40));
+  await sleep(450);
+  const streamGrown = await transcript();
+  assert(
+    streamGrown.view.height < streamStart.view.height - 200,
+    `16 the box grew mid-stream (band ${streamStart.view.height.toFixed(0)} → ${streamGrown.view.height.toFixed(0)}px)`,
+  );
+  assert(streamGrown.gap <= 80, `16 the follow survived the growth (gap ${streamGrown.gap.toFixed(0)}px)`);
+  assert(
+    streamGrown.last.bottom <= streamGrown.view.bottom + 80,
+    `16 the tail of the streaming message is still visible (${streamGrown.last.bottom.toFixed(0)} vs band bottom ${streamGrown.view.bottom.toFixed(0)})`,
+  );
+  assert(!(await jumpUp()), "16 still following: no jump button and no “new” badge");
+  stopStream();
+  await sleep(400);
+  await assertPinned("16 once the stream stops");
+  await page.screenshot({ path: path.join(OUT, "16-stream-grow.png") });
+  log(
+    "16 grow mid-stream",
+    `band ${streamStart.view.height.toFixed(0)} → ${streamGrown.view.height.toFixed(0)}px, gap ${streamGrown.gap.toFixed(0)}, tail visible`,
+  );
+
   log("ALL OK");
 } finally {
+  stopStream();
   await browser?.close();
   server.close();
   wss.close();
