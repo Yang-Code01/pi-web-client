@@ -84,6 +84,7 @@
     "test:subagents:ui": "node bridge/tests/subagents-overrides-ui.mjs && node bridge/tests/acp-delegate-ui.mjs && node bridge/tests/subagents-advanced-ui.mjs",
     "test:start-check": "node bridge/tests/start-check.mjs",
     "test:deps": "node --experimental-strip-types bridge/tests/deps-unit.mjs",
+    "test:pi": "node --experimental-transform-types bridge/tests/pi-candidates-unit.mjs",
     "test:deps:ui": "node bridge/tests/deps-ui.mjs",
     "test:image:ui": "node bridge/tests/session-image-ui.mjs"
   },
