@@ -19,6 +19,7 @@ import {
   hasRowMembership,
   renameIntent,
   wsCreateAction,
+  workspaceDeleteReason,
   wsNeighborsAfterDrop,
 } from "../src/wsmanage.ts";
 
@@ -99,6 +100,15 @@ test("删除说明明确会移入垃圾箱、还原会恢复工作区", () => {
   assert.equal(manual, dir, "手动组和目录组删除语义一致");
   assert.match(manual, /垃圾箱/, `说明提到垃圾箱：${manual}`);
   assert.match(manual, /还原/, `说明提到还原：${manual}`);
+});
+
+test("桥端工作区删除失败码映射为本地化文案", () => {
+  assert.equal(workspaceDeleteReason("workspace-not-found"), "这个工作区不在了");
+  assert.match(workspaceDeleteReason("confirmation-list-required"), /确认列表/);
+  assert.match(workspaceDeleteReason("membership-changed"), /会话已变化/);
+  assert.match(workspaceDeleteReason("sessions-not-trashed"), /移入垃圾箱/);
+  assert.match(workspaceDeleteReason("workspace-not-empty"), /仍有会话/);
+  assert.equal(workspaceDeleteReason("unknown-code"), "请重试");
 });
 
 // ---------------------------------------------------------------- #276 桥是否支持横条成员

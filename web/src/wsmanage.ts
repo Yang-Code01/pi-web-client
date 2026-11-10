@@ -79,6 +79,24 @@ export function dropHint(_group: WsGroupLike): string {
   return tr("工作区里的会话会移入垃圾箱；从垃圾箱还原会话时工作区也会恢复");
 }
 
+/** Translate bridge-owned failure codes without leaking backend-language prose into the UI. */
+export function workspaceDeleteReason(code: unknown): string {
+  switch (code) {
+    case "workspace-not-found":
+      return tr("这个工作区不在了");
+    case "confirmation-list-required":
+      return tr("缺少工作区删除确认列表，请重新确认");
+    case "membership-changed":
+      return tr("工作区里的会话已变化，请重新确认");
+    case "sessions-not-trashed":
+      return tr("有会话无法移入垃圾箱，工作区已保留");
+    case "workspace-not-empty":
+      return tr("工作区仍有会话，无法删除");
+    default:
+      return tr("请重试");
+  }
+}
+
 // ---------------------------------------------------------------- #278 按目录建组
 
 /**

@@ -238,13 +238,13 @@ try {
   const missingDelete = waitFor("ws.delete.result", (m) => m.id === WORKSPACE_ID, 1800);
   send({ type: "manage", action: "ws.delete", id: WORKSPACE_ID });
   const missingResult = await missingDelete;
-  assert(missingResult?.deleted === false && /确认时的会话列表/.test(missingResult.reason), `missing confirmation list rejected (got ${JSON.stringify(missingResult)})`);
+  assert(missingResult?.deleted === false && missingResult.reasonCode === "confirmation-list-required", `missing confirmation list rejected (got ${JSON.stringify(missingResult)})`);
   assert(fs.existsSync(fileA), "confirmation without a session list leaves the file untouched");
 
   const staleDelete = waitFor("ws.delete.result", (m) => m.id === WORKSPACE_ID, 1800);
   send({ type: "manage", action: "ws.delete", id: WORKSPACE_ID, sessionIds: [ids.b] });
   const staleResult = await staleDelete;
-  assert(staleResult?.deleted === false && /已变化/.test(staleResult.reason), `stale confirmation rejected (got ${JSON.stringify(staleResult)})`);
+  assert(staleResult?.deleted === false && staleResult.reasonCode === "membership-changed", `stale confirmation rejected (got ${JSON.stringify(staleResult)})`);
   assert(fs.existsSync(fileA), "stale confirmation leaves the session file untouched");
   assert(JSON.parse(fs.readFileSync(path.join(STATE, "workspaces.json"), "utf8")).groups.some((g) => g.id === WORKSPACE_ID), "stale confirmation keeps the workspace");
 

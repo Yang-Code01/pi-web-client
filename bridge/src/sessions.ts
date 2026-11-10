@@ -205,6 +205,13 @@ export interface SessionState {
   launch?: string;
 }
 
+export type WorkspaceDeleteReasonCode =
+  | "workspace-not-found"
+  | "confirmation-list-required"
+  | "membership-changed"
+  | "sessions-not-trashed"
+  | "workspace-not-empty";
+
 export interface RemoveReport {
   removed: string[];
   /** Ids left alone, with the reason the manager shows next to the name. */
@@ -3301,23 +3308,31 @@ export class SessionManager extends EventEmitter {
   async deleteWorkspace(
     id: string,
     expectedIds: string[] | undefined,
-  ): Promise<{ ok: boolean; deleted: boolean; reason?: string; report?: RemoveReport }> {
-    if (!this.workspaces.group(id)) return { ok: false, deleted: false, reason: "这个工作区不在了" };
+  ): Promise<{ ok: boolean; deleted: boolean; reasonCode?: WorkspaceDeleteReasonCode; report?: RemoveReport }> {
+    if (!this.workspaces.group(id)) return { ok: false, deleted: false, reasonCode: "workspace-not-found" };
     if (!Array.isArray(expectedIds)) {
-      return { ok: false, deleted: false, reason: "缺少确认时的会话列表，请重新确认" };
+      return { ok: false, deleted: false, reasonCode: "confirmation-list-required" };
     }
     const currentIds = this.list().filter((session) => session.ws === id).map((session) => session.id).sort();
     const expected = [...new Set(expectedIds)].sort();
     if (expected.length !== expectedIds.length || expected.join("\n") !== currentIds.join("\n")) {
-      return { ok: false, deleted: false, reason: "工作区里的会话已变化，请重新确认" };
+      return { ok: false, deleted: false, reasonCode: "membership-changed" };
     }
     const report = await this.trash(currentIds, { preserveEmpty: true });
     if (report.skipped.length) {
-      return { ok: false, deleted: false, reason: "有会话无法移入垃圾箱，工作区已保留", report };
+      return { ok: false, deleted: false, reasonCode: "sessions-not-trashed", report };
     }
     const remaining = this.list().filter((session) => session.ws === id).length;
     const dropped = this.workspaces.drop(id, remaining);
-    return { ...dropped, deleted: dropped.ok, report };
+    if (!dropped.ok) {
+      return {
+        ok: false,
+        deleted: false,
+        reasonCode: dropped.reason === "这个工作区不在了" ? "workspace-not-found" : "workspace-not-empty",
+        report,
+      };
+    }
+    return { ok: true, deleted: true, report };
   }
 
   /** Q-022: 置顶横条的 ＋ 建出来的会话，落到 pin 列表末尾。 */

@@ -137,7 +137,7 @@ server.on("upgrade", (req, socket, head) => {
         const members = SESSIONS.filter((session) => groupFor(session) === id).map((session) => session.id);
         const expected = Array.isArray(msg.sessionIds) ? msg.sessionIds.map(String).sort() : members.slice().sort();
         if (!WORKSPACE.groups.some((g) => g.id === id) || expected.join("\n") !== members.slice().sort().join("\n")) {
-          ws.send(JSON.stringify({ type: "ws.delete.result", id, deleted: false, reason: "工作区里的会话已变化，请重新确认", skipped: [] }));
+          ws.send(JSON.stringify({ type: "ws.delete.result", id, deleted: false, reasonCode: "membership-changed", skipped: [] }));
           return;
         }
         for (let i = SESSIONS.length - 1; i >= 0; i--) if (members.includes(SESSIONS[i].id)) SESSIONS.splice(i, 1);

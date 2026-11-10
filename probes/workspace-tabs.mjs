@@ -240,7 +240,7 @@ server.on("upgrade", (req, socket, head) => {
           const memberIds = SESSIONS.filter((session) => session.ws === id || WS.overrides[session.id] === id).map((session) => session.id);
           const expected = Array.isArray(msg.sessionIds) ? msg.sessionIds.map(String).sort() : memberIds.slice().sort();
           if (!group || expected.join("\n") !== memberIds.slice().sort().join("\n")) {
-            ws.send(JSON.stringify({ type: "ws.delete.result", id, deleted: false, reason: "工作区里的会话已变化，请重新确认", skipped: [] }));
+            ws.send(JSON.stringify({ type: "ws.delete.result", id, deleted: false, reasonCode: "membership-changed", skipped: [] }));
             return;
           }
           for (let i = SESSIONS.length - 1; i >= 0; i--) if (memberIds.includes(SESSIONS[i].id)) SESSIONS.splice(i, 1);

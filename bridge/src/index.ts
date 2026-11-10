@@ -2857,7 +2857,7 @@ async function main(): Promise<void> {
               broadcast({ type: "trash", items: sessions.trashList() });
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
               broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
-              send({ type: "ws.delete.result", id, deleted: result.deleted, reason: result.reason, ...(report ?? {}) });
+              send({ type: "ws.delete.result", id, deleted: result.deleted, reasonCode: result.reasonCode, ...(report ?? {}) });
               return;
             }
             if (action === "ws.drop") {

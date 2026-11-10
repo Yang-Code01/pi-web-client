@@ -48,6 +48,7 @@ import {
   renameIntent,
   wsCreateAction,
   wsNeighborsAfterDrop,
+  workspaceDeleteReason,
   type DirResolution,
 } from "./wsmanage.ts";
 import { hitTest, keyMovePlan, keyShiftIndex, moveTo, planDrop, type DropHit } from "./drag.ts";
@@ -2342,7 +2343,7 @@ export class App {
           const skipped = Array.isArray(msg.skipped) ? msg.skipped.length : 0;
           const reason = skipped
             ? tr("有 {p1} 个会话无法移入垃圾箱，工作区已保留", { p1: skipped })
-            : tr("工作区未删除：{p1}", { p1: String(msg.reason ?? tr("请重试")) });
+            : tr("工作区未删除：{p1}", { p1: workspaceDeleteReason(msg.reasonCode) });
           this.flashToast(reason, true, 6000);
         }
         break;
