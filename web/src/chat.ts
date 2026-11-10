@@ -946,7 +946,7 @@ export class ChatView {
       }
     }
     // #341: 同一轮里的下一次 todo 调用折进现有那张卡，不再各占一行。
-    if (item.kind === "tool" && this.isTodoTool(item.name) && this.todoGroup && !this.staging) {
+    if (item.kind === "tool" && this.isTodoTool(item.name) && this.todoGroup) {
       const group = this.todoGroup;
       this.addTodoUpdate(item);
       this.cards.set(item.id, group.node);

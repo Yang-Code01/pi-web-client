@@ -149,13 +149,17 @@ try {
   const loopLabel = await loopCard.locator(".todo-summary").innerText();
   check("folded card keeps the latest snapshot", loopLabel.includes("计划 1/2 · 完成「甲」"), loopLabel);
   check("folded card counts the updates", loopLabel.includes("3 次更新"), loopLabel);
-  check("update rows start folded away", await loopCard.locator(".todo-updates").evaluate((node) => node.hidden));
+  check("update rows start folded away", await loopCard.locator(".todo-updates").evaluate((node) => node.hidden && getComputedStyle(node).display === "none"));
   check("a single-update turn gets no toggle", await planCards.first().locator(".todo-toggle").evaluate((node) => node.hidden));
   await loopCard.locator(".todo-toggle").click();
   check("expanding lists every update", (await loopCard.locator(".todo-update").count()) === 3);
   const updates = await loopCard.locator(".todo-update").allInnerTexts();
   check("updates read in order, newest last", updates[0].includes("计划 0/2 · 新增「计划项」") && updates[1].includes("开始「甲」") && updates[2].includes("完成「甲」"), updates.join(" | "));
-  check("a todo card in the fold still opens the execution plan", (await loopCard.locator(".todo-tool").getAttribute("aria-label"))?.includes("3 次更新") === true);
+  check("folded card labels the whole turn", (await loopCard.locator(".todo-tool").getAttribute("aria-label"))?.includes("3 次更新") === true);
+  await page.locator('[data-exec-tab="needs"]').click();
+  await loopCard.locator(".todo-tool").click();
+  await page.waitForFunction(() => document.querySelector('[data-exec-tab="exec"]')?.getAttribute("aria-selected") === "true" && document.querySelector(".exec-plan.exec-flash"), null, { timeout: 5000 });
+  check("a todo card in the fold still opens the execution plan", (await page.locator(".exec-plan.exec-flash").count()) === 1);
 
   socket.send(JSON.stringify({ type: "prompt", sessionId, text: "BGCHILD" }));
   await page.waitForFunction(() => [...document.querySelectorAll(".exec-subagent-task")].some((row) => row.textContent?.includes("inspect child updates")), null, { timeout: 20000 });
