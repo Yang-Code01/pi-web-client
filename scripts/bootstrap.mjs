@@ -161,7 +161,7 @@ function installPackages(pi, record) {
     return;
   }
   for (const pkg of REQUIRED_PACKAGES) {
-    const hit = listed.found.find((h) => h.name.toLowerCase() === pkg.name.toLowerCase());
+    const hit = findInstalled(listed.found, pkg);
     if (hit) {
       record.skipped.push(`${pkg.source}${pkg.version ? `（要 ${pkg.version}）` : ""} 已装${hit.version ? ` ${hit.version}` : ""}（${hit.source}），不动`);
       step(`  ✓ ${pkg.source} 已装，跳过（${FEATURE[pkg.id] ?? pkg.id}）`);
@@ -208,7 +208,10 @@ function installProjectDeps(record) {
 
 // ---------------------------------------------------------------- npm start 前的关卡（D224）
 
-const isInstalled = (found, pkg) => found.some((h) => h.name.toLowerCase() === pkg.name.toLowerCase());
+/** 按包名对（npm 包名不分大小写）；装和查共用这一个判据。 */
+function findInstalled(found, pkg) {
+  return found.find((h) => h.name.toLowerCase() === pkg.name.toLowerCase());
+}
 
 /**
  * 「齐了」的结论记在状态目录里，键是 pi 的位置与版本、清单、pi 的 settings.json（装 / 卸扩展都会
@@ -216,32 +219,35 @@ const isInstalled = (found, pkg) => found.some((h) => h.name.toLowerCase() === p
  * 太贵。只记「齐了」：缺东西时每次都重新问，补上就放行。
  */
 function startKey(pi) {
+  const dir = path.resolve(agentDir());
   let settings = "none";
   try {
-    const st = fs.statSync(path.join(agentDir(), "settings.json"));
+    const st = fs.statSync(path.join(dir, "settings.json"));
     settings = `${st.size}:${st.mtimeMs}`;
   } catch {
     // 没有 settings.json：pi 还没装过任何包。
   }
-  return JSON.stringify({ pi: pi.cli, version: pi.version, need: REQUIRED_PACKAGES.map(installSource), settings });
+  return JSON.stringify({ pi: pi.cli, version: pi.version, need: REQUIRED_PACKAGES.map(installSource), agent: dir, settings });
 }
 
 function startCheck() {
   if (CI) return 0;
   const pi = findPi();
-  const blocked = (lines) => {
+  // lines 说缺什么；manual 是关了自动安装时要人手动跑的命令（只列缺的）。
+  const blocked = (lines, manual) => {
     out("✗ pi 的依赖没备齐，这次不启动：");
     for (const line of lines) out(`  - ${line}`);
     if (NO_AUTO) {
       out("PI_WEB_NO_AUTOINSTALL 开着，npm install 不会替你装；手动装：");
-      for (const pkg of REQUIRED_PACKAGES) out(`  pi install ${installSource(pkg)}`);
+      for (const cmd of manual) out(`  ${cmd}`);
     } else {
       out("先在仓库根目录跑一次 npm install（会自动装上），再 npm start。");
     }
     return 1;
   };
-  if (!pi) return blocked(["找不到 pi"]);
-  if (piTooOld(pi.version)) return blocked([`pi ${pi.version} 低于 ${MIN_PI_VERSION}`]);
+  const piInstall = ["npm install -g @earendil-works/pi-coding-agent@latest"];
+  if (!pi) return blocked(["找不到 pi"], piInstall);
+  if (piTooOld(pi.version)) return blocked([`pi ${pi.version} 低于 ${MIN_PI_VERSION}`], piInstall);
 
   const cache = statePath("start-check.json");
   const key = startKey(pi);
@@ -255,8 +261,12 @@ function startCheck() {
     out(`⚠ 没法确认 pi 扩展齐不齐（${listed.error}），照常启动。`);
     return 0;
   }
-  const missing = REQUIRED_PACKAGES.filter((pkg) => !isInstalled(listed.found, pkg));
-  if (missing.length) return blocked(missing.map((pkg) => `缺 ${installSource(pkg)}（${FEATURE[pkg.id] ?? pkg.id}）`));
+  const missing = REQUIRED_PACKAGES.filter((pkg) => !findInstalled(listed.found, pkg));
+  if (missing.length)
+    return blocked(
+      missing.map((pkg) => `缺 ${installSource(pkg)}（${FEATURE[pkg.id] ?? pkg.id}）`),
+      missing.map((pkg) => `pi install ${installSource(pkg)}`),
+    );
   try {
     fs.mkdirSync(path.dirname(cache), { recursive: true });
     fs.writeFileSync(cache, `${JSON.stringify({ key, at: Date.now() })}\n`);

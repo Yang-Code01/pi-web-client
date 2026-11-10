@@ -94,10 +94,26 @@ assert.doesNotMatch(miss.out, /rpiv-ask-user-question/, "只列缺的");
 const missAgain = start({ installed: ["pi-subagents"], env: { PI_WEB_STATE: miss.state } });
 assert.equal(missAgain.code, 1);
 
-// 6. 关了自动安装：npm install 不会装，所以给手动 pi install 的命令。
+// 6. 关了自动安装：npm install 不会装，所以给手动 pi install 的命令 —— 只给缺的。
 const noAuto = start({ installed: ["pi-subagents"], env: { PI_WEB_NO_AUTOINSTALL: "1" } });
 assert.equal(noAuto.code, 1, noAuto.out);
 assert.match(noAuto.out, /pi install npm:@juicesharp\/rpiv-todo@2\.15\.0/);
+assert.doesNotMatch(noAuto.out, /pi install npm:pi-subagents/, "已装的不该叫人再装");
+
+// 6b. 换了 pi 的 agent 目录（PI_CODING_AGENT_DIR），哪怕 settings.json 一模一样，也要重新确认。
+const agentA = path.join(tmp, "agent-A");
+const agentB = path.join(tmp, "agent-B");
+for (const dir of [agentA, agentB]) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "settings.json"), "{}");
+  fs.utimesSync(path.join(dir, "settings.json"), 1_700_000_000, 1_700_000_000);
+}
+const stateAB = path.join(tmp, "state-AB");
+const onA = start({ env: { PI_WEB_STATE: stateAB, PI_CODING_AGENT_DIR: agentA } });
+assert.equal(onA.code, 0, onA.out);
+const onB = start({ installed: ["pi-subagents"], env: { PI_WEB_STATE: stateAB, PI_CODING_AGENT_DIR: agentB } });
+assert.equal(onB.calls, 1, "换了 agent 目录不能沿用上一个目录的「齐了」");
+assert.equal(onB.code, 1, onB.out);
 
 // 7. pi list 跑不起来：说一声，照常启动（不因为查不了就挡人）。
 const fail = start({ env: { FAKE_FAIL: "1" } });
@@ -111,4 +127,4 @@ assert.equal(old.code, 1, old.out);
 assert.match(old.out, /0\.1\.0/);
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log("start-check: 8 cases passed");
+console.log("start-check: 9 cases passed");
