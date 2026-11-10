@@ -289,14 +289,9 @@ export class ChatView {
    * #341: 一轮里的 `todo` 调用折成一张卡（用户要求）：主行是**最新**一次的快照，右边一枚「▾ N」
    * 展开这一轮的每次更新。`user` 消息、`reset()` 都把它切成新的一轮。
    */
-  private todoGroup: {
-    node: HTMLElement;
-    main: HTMLButtonElement;
-    label: HTMLElement;
-    toggle: HTMLButtonElement;
-    list: HTMLElement;
-    updates: { key: string; item: ToolItem; row: HTMLElement; mark: HTMLElement; text: HTMLElement }[];
-  } | null = null;
+  private todoGroup: TodoGroup | null = null;
+  /** #341: toolCallId → 那一行所在的分组。结果帧晚到（用户已经发下一句）时也还能落回原来的卡。 */
+  private todoRows = new Map<string, { group: TodoGroup; update: TodoUpdate }>();
 
   constructor(private root: HTMLElement) {
     this.moreRow = el("div", "chat-more");
@@ -697,6 +692,7 @@ export class ChatView {
     this.opsBox = null;
     this.skillGroup = null;
     this.todoGroup = null;
+    this.todoRows.clear();
     this.failCards.clear();
     this.failAnchor = null;
     this.turnFails = [];
@@ -1043,13 +1039,15 @@ export class ChatView {
       return;
     }
     // #341: 折叠卡里的那一行就地更新；不属于这张卡（翻出来的旧轮）才重建。
-    if (item.kind === "tool" && this.isTodoTool(item.name) && this.updateTodo(item)) {
-      const group = this.todoGroup!;
-      this.cards.delete(id);
-      this.cards.set(item.id, group.node);
-      this.toolCards.set(item.toolCallId, group.node);
-      this.scrollToEnd();
-      return;
+    if (item.kind === "tool" && this.isTodoTool(item.name)) {
+      const group = this.updateTodo(item);
+      if (group) {
+        this.cards.delete(id);
+        this.cards.set(item.id, group.node);
+        this.toolCards.set(item.toolCallId, group.node);
+        this.scrollToEnd();
+        return;
+      }
     }
     const rebuilt = this.build(item);
     if (item.kind === "tool" && (this.isAskTool(item.name) || this.isTodoTool(item.name))) {
@@ -1894,25 +1892,27 @@ export class ChatView {
     const text = el("span", "todo-text", this.todoText(item));
     row.append(mark, text, el("span", "todo-at", timeOf(item.ts)));
     group.list.append(row);
-    group.updates.push({ key: item.toolCallId, item, row, mark, text });
-    this.paintTodoGroup();
+    const update = { key: item.toolCallId, item, row, mark, text };
+    group.updates.push(update);
+    this.todoRows.set(item.toolCallId, { group, update });
+    this.paintTodoGroup(group);
   }
 
-  /** #341: 结果帧到达时就地改那一行（`mergeTool` 的 todo 版本）。不属于这张卡就返回 false。 */
-  private updateTodo(item: ToolItem): boolean {
-    const group = this.todoGroup;
-    const hit = group?.updates.find((update) => update.key === item.toolCallId || update.item.id === item.id);
-    if (!group || !hit) return false;
+  /** #341: 结果帧到达时就地改那一行（`mergeTool` 的 todo 版本）。改到了就返回它所在的分组。 */
+  private updateTodo(item: ToolItem): TodoGroup | null {
+    const slot = this.todoRows.get(item.toolCallId);
+    const group = slot?.group ?? this.todoGroup;
+    const hit = slot?.update ?? group?.updates.find((update) => update.key === item.toolCallId || update.item.id === item.id);
+    if (!group || !hit) return null;
     hit.item = item;
     hit.row.dataset.status = todoStatus(item);
     hit.mark.textContent = todoMark(item);
     hit.text.textContent = this.todoText(item);
-    this.paintTodoGroup();
-    return true;
+    this.paintTodoGroup(group);
+    return group;
   }
 
-  private paintTodoGroup(): void {
-    const group = this.todoGroup;
+  private paintTodoGroup(group = this.todoGroup): void {
     if (!group || !group.updates.length) return;
     const latest = group.updates[group.updates.length - 1].item;
     const n = group.updates.length;
@@ -1997,6 +1997,17 @@ export class ChatView {
     return card;
   }
 }
+
+/** #341: 一轮的计划折叠卡，以及卡里的一行更新。 */
+type TodoUpdate = { key: string; item: ToolItem; row: HTMLElement; mark: HTMLElement; text: HTMLElement };
+type TodoGroup = {
+  node: HTMLElement;
+  main: HTMLButtonElement;
+  label: HTMLElement;
+  toggle: HTMLButtonElement;
+  list: HTMLElement;
+  updates: TodoUpdate[];
+};
 
 /** #341: 折叠卡里一行更新的状态 —— 与执行面板计划区同一套记号。 */
 function todoStatus(item: ToolItem): string {
