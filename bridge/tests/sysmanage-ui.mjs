@@ -3,8 +3,8 @@
  *
  *   npm run build && node bridge/tests/sysmanage-ui.mjs
  *
- * 自带丢弃式 bridge（端口 7893），不碰 7864；只读本机数据，不真的改 DNS——
- * 改 DNS 会弹 UAC 并动整机网络，留本机手验。截图落在 .scratch/shots/sysmanage-ui.png。
+ * 自带丢弃式 bridge（端口 7893），不碰 7864；只读本机数据，不真的改 DNS / 重启 WinNAT——
+ * 两者都会弹 UAC 并动整机网络，留本机手验。截图落在 .scratch/shots/sysmanage-ui.png。
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -111,6 +111,8 @@ check(
 );
 check("DNS 预设 >= 6", (await page.locator(".sys-preset").count()) >= 6, String(await page.locator(".sys-preset").count()));
 check("DNS 编辑器有应用按钮", (await page.getByRole("button", { name: "应用 DNS" }).count()) === 1);
+check("WinNAT 卡片有重启按钮", (await page.locator(".sys-winnat").getByRole("button", { name: /^(重启|启动) WinNAT$/ }).count()) === 1);
+await page.locator(".sys-winnat").screenshot({ path: path.join(OUT, "sysmanage-winnat.png") });
 
 await page.getByRole("button", { name: /端口与服务/ }).first().click();
 await page.locator(".sys-table tbody tr").first().waitFor({ timeout: 20_000 });
@@ -143,8 +145,14 @@ const pubWrite = await ctx.request.post(`${BASE}/api/sys/dns`, {
 });
 check("公网 DNS 写 403", pubWrite.status() === 403, `HTTP ${pubWrite.status()}`);
 
+const pubWinnat = await ctx.request.post(`${BASE}/api/sys/winnat/restart`, {
+  headers: { "cf-connecting-ip": "203.0.113.9" },
+});
+check("公网重启 WinNAT 403", pubWinnat.status() === 403, `HTTP ${pubWinnat.status()}`);
+
 // 同值 DNS 必须走 unchanged，不弹 UAC。
 const net = await (await ctx.request.get(`${BASE}/api/sys?section=network`)).json();
+check("network 带 WinNAT 状态", typeof net.winnat?.status === "string", JSON.stringify(net.winnat));
 const target = net.adapters?.find((a) => Array.isArray(a.dns) && a.dns.length);
 if (target) {
   const same = await ctx.request.post(`${BASE}/api/sys/dns`, {

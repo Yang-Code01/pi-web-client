@@ -1,9 +1,9 @@
 /**
- * 本机管理（#266）：只读的本机信息 + 逐网卡的 DNS 切换。
+ * 本机管理（#266）：只读的本机信息 + 逐网卡的 DNS 切换 + 重启 WinNAT。
  *
  * 三条边界：
  * - 读：本机与局域网照常；公网隧道只回打码后的数据（主机名 / IP / MAC / 端口 / 服务名）。
- * - 写：只有 DNS，而且必须在本机桌面点 UAC「是」；公网一律 403。
+ * - 写：只有 DNS 与重启 WinNAT，而且必须在本机桌面点 UAC「是」；公网一律 403。
  * - 平台：Windows 走 PowerShell/CIM；其它平台只回概况与网卡，DNS/端口/服务明确「暂不支持」。
  *
  * 采集尽量少起 PowerShell：概况用 Node `os` + `statfs` + 一次注册表；网卡/服务用带 TTL 的 CIM
@@ -20,7 +20,8 @@ import { readJsonChecked, statePath, writeJson } from "./paths.ts";
 
 const MAX_BODY = 8 * 1024;
 const PS_TIMEOUT = 30_000;
-const DNS_TIMEOUT = 120_000;
+/** 一次 UAC 提权（等人点「是」+ 助手跑完）的总时限。 */
+const UAC_TIMEOUT = 120_000;
 
 export type SysSection = "overview" | "network" | "ports" | "services";
 export type NetStatus = "up" | "disconnected" | "not_present" | "unknown";
@@ -62,13 +63,29 @@ export interface DnsSaved {
   at: number;
 }
 
+/** WinNAT 服务（Hyper-V / WSL / Docker 的 NAT）。读不到就是 null。 */
+export interface WinnatInfo {
+  status: string;
+  start: string;
+}
+
 export interface SysNetwork {
   public: boolean;
   platform: string;
   supported: boolean;
   adapters: SysAdapter[];
   saved: DnsSaved[];
+  winnat: WinnatInfo | null;
   updatedAt: number;
+}
+
+export interface WinnatResult {
+  ok: true;
+  /** 重启前是否在跑；false 表示这次只是把它启动起来。 */
+  wasRunning: boolean;
+  /** 停 WinNAT 时被连带停掉、事后没拉起来的依赖服务名；不影响结果。 */
+  depsFailed: string[];
+  winnat: WinnatInfo;
 }
 
 export type PortScope = "all" | "nic" | "loopback";
@@ -425,29 +442,54 @@ export function normalizeNodeInterfaces(entries: [string, os.NetworkInterfaceInf
   return rows.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function readNetworkRaw(): Promise<SysAdapter[]> {
+interface NetworkRaw {
+  adapters: SysAdapter[];
+  winnat: WinnatInfo | null;
+}
+
+/** PowerShell 回的 `{status,start}`；缺字段就当读不到。 */
+export function normalizeWinnat(value: unknown): WinnatInfo | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as { status?: unknown; start?: unknown };
+  if (typeof v.status !== "string" || !v.status) return null;
+  return { status: v.status, start: typeof v.start === "string" ? v.start : "" };
+}
+
+// 状态和启动类型转成字符串，否则 ConvertTo-Json 给的是枚举数字。
+const WINNAT_PS =
+  `$w=Get-Service -Name winnat -ErrorAction SilentlyContinue\n` +
+  `$wn=if($w){[pscustomobject]@{status=[string]$w.Status;start=[string]$w.StartType}}else{$null}\n`;
+
+async function readNetworkRaw(): Promise<NetworkRaw> {
   if (process.platform !== "win32") {
-    return normalizeNodeInterfaces(Object.entries(os.networkInterfaces()));
+    return { adapters: normalizeNodeInterfaces(Object.entries(os.networkInterfaces())), winnat: null };
   }
   const script =
     `$ads=@(Get-CimInstance Win32_NetworkAdapter | Select-Object InterfaceIndex,NetConnectionID,Description,MACAddress,GUID,NetConnectionStatus)\n` +
     `$cfgs=@(Get-CimInstance Win32_NetworkAdapterConfiguration | Select-Object InterfaceIndex,IPAddress,IPSubnet,DefaultIPGateway,DNSServerSearchOrder,DHCPEnabled,IPConnectionMetric)\n` +
-    `[pscustomobject]@{adapters=$ads;configs=$cfgs} | ConvertTo-Json -Depth 6 -Compress`;
+    WINNAT_PS +
+    `[pscustomobject]@{adapters=$ads;configs=$cfgs;winnat=$wn} | ConvertTo-Json -Depth 6 -Compress`;
   const result = await runPowerShell(script, 30_000);
   if (result.timedOut) throw new SysError(504, "sys_timeout", "读取网卡超时");
-  const data = parseJson<{ adapters?: RawAdapter | RawAdapter[]; configs?: RawConfig | RawConfig[] }>(result.stdout);
+  const data = parseJson<{ adapters?: RawAdapter | RawAdapter[]; configs?: RawConfig | RawConfig[]; winnat?: unknown }>(
+    result.stdout,
+  );
   if (!data) throw new SysError(500, "sys_network", result.stderr.trim() || "读不到网卡信息");
-  return normalizeAdapters(asArray(data.adapters), asArray(data.configs));
+  return {
+    adapters: normalizeAdapters(asArray(data.adapters), asArray(data.configs)),
+    winnat: normalizeWinnat(data.winnat),
+  };
 }
 
 export async function readNetwork(ctx: SysmanageCtx): Promise<SysNetwork> {
-  const adapters = await cached("network", 30_000, readNetworkRaw);
+  const { adapters, winnat } = await cached("network", 30_000, readNetworkRaw);
   const raw: SysNetwork = {
     public: false,
     platform: process.platform,
     supported: process.platform === "win32",
     adapters,
     saved: savedDns(ctx),
+    winnat,
     updatedAt: Date.now(),
   };
   if (!ctx.publicReq) return raw;
@@ -733,25 +775,23 @@ interface ElevatedResult {
   after: string[];
 }
 
+type Receipt = Record<string, unknown> & { ok?: boolean; code?: string; error?: string };
+
 /**
- * 用 UAC 提权跑一次 DNS 改动。助手脚本只由校验过的值拼成；回执是 JSON，桥再读回来。
- * 取消 UAC 时 Start-Process 抛 1223，包装脚本把它写成 `uac_denied`。
+ * 用 UAC 提权跑一段助手脚本。脚本只由校验过的值拼成；`body` 里调 `Write-Receipt` 写成功回执，
+ * 抛错时包装成 `{ok:false,code:failCode}`。取消 UAC 时 Start-Process 抛 1223，写成 `uac_denied`。
+ * 回执是 JSON，桥再读回来；读不到就是 `no_receipt`。
  */
-async function runElevatedDns(target: DnsTarget, servers: string[], reset: boolean): Promise<ElevatedResult> {
+async function runElevated(kind: string, body: string, failCode: string): Promise<Receipt> {
   const token = randomUUID();
-  const helper = statePath(`sysmanage-dns-${token}.ps1`);
-  const receipt = statePath(`sysmanage-dns-${token}.json`);
-  const action = reset
-    ? `Set-DnsClientServerAddress -InterfaceIndex ${target.index} -ResetServerAddresses`
-    : `Set-DnsClientServerAddress -InterfaceIndex ${target.index} -ServerAddresses @(${servers.map(psQuote).join(",")})`;
+  const helper = statePath(`sysmanage-${kind}-${token}.ps1`);
+  const receipt = statePath(`sysmanage-${kind}-${token}.json`);
   const helperScript =
     `$ErrorActionPreference='Stop'\n$ProgressPreference='SilentlyContinue'\n` +
     `$receipt=${psQuote(receipt)}\n` +
     `function Write-Receipt([object]$o){[IO.File]::WriteAllText($receipt,($o|ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($false)))}\n` +
-    `try{\n${action}\nClear-DnsClientCache\n` +
-    `$after=@(Get-DnsClientServerAddress -InterfaceIndex ${target.index} -AddressFamily IPv4 | Select-Object -ExpandProperty ServerAddresses)\n` +
-    `Write-Receipt ([pscustomobject]@{ok=$true;after=$after})\n` +
-    `}catch{Write-Receipt ([pscustomobject]@{ok=$false;code='dns_failed';error=$_.Exception.Message});exit 1}\n`;
+    `try{\n${body}\n` +
+    `}catch{Write-Receipt ([pscustomobject]@{ok=$false;code=${psQuote(failCode)};error=$_.Exception.Message});exit 1}\n`;
   // -ArgumentList 这里必须是一整条字符串：Start-Process 用空格拼接数组，路径带空格会断。
   const argLine = `-NoProfile -ExecutionPolicy Bypass -File "${helper}"`;
   const wrapperScript =
@@ -766,34 +806,21 @@ async function runElevatedDns(target: DnsTarget, servers: string[], reset: boole
     `exit 1\n}\n`;
   try {
     fs.writeFileSync(helper, helperScript, "utf8");
-    const result = await runPowerShell(wrapperScript, DNS_TIMEOUT);
+    const result = await runPowerShell(wrapperScript, UAC_TIMEOUT);
     if (result.timedOut) {
-      return { ok: false, code: "uac_timeout", error: "等了 120 秒还没有回执：UAC 可能还开着", after: [] };
+      return { ok: false, code: "uac_timeout", error: "等了 120 秒还没有回执：UAC 可能还开着，或者提权助手还在跑" };
     }
-    type Receipt = { ok?: boolean; code?: string; error?: string; after?: string | string[] };
     let data: Receipt | null = null;
     try {
-      data = JSON.parse(fs.readFileSync(receipt, "utf8")) as Receipt;
+      const parsed = JSON.parse(fs.readFileSync(receipt, "utf8")) as unknown;
+      data = parsed && typeof parsed === "object" ? (parsed as Receipt) : null;
     } catch {
       data = null;
     }
     if (!data) {
-      return {
-        ok: false,
-        code: "no_receipt",
-        error: result.stderr.trim() || "提权助手没有留下回执",
-        after: [],
-      };
+      return { ok: false, code: "no_receipt", error: result.stderr.trim() || "提权助手没有留下回执" };
     }
-    if (data.ok !== true) {
-      return {
-        ok: false,
-        code: typeof data.code === "string" ? data.code : "dns_failed",
-        error: typeof data.error === "string" ? data.error : "DNS 改动失败",
-        after: [],
-      };
-    }
-    return { ok: true, after: asArray(data.after).filter((v): v is string => typeof v === "string" && v.length > 0) };
+    return data;
   } finally {
     for (const file of [helper, receipt]) {
       try {
@@ -805,14 +832,111 @@ async function runElevatedDns(target: DnsTarget, servers: string[], reset: boole
   }
 }
 
-let dnsBusy = false;
+/** 提权失败回执 → SysError：取消 UAC 是 403，其余 500。 */
+function elevatedError(data: { code?: unknown; error?: unknown }, fallbackCode: string, fallbackMessage: string): SysError {
+  const code = typeof data.code === "string" ? data.code : fallbackCode;
+  return new SysError(code === "uac_denied" ? 403 : 500, code, typeof data.error === "string" ? data.error : fallbackMessage);
+}
+
+async function runElevatedDns(target: DnsTarget, servers: string[], reset: boolean): Promise<ElevatedResult> {
+  const action = reset
+    ? `Set-DnsClientServerAddress -InterfaceIndex ${target.index} -ResetServerAddresses`
+    : `Set-DnsClientServerAddress -InterfaceIndex ${target.index} -ServerAddresses @(${servers.map(psQuote).join(",")})`;
+  const body =
+    `${action}\nClear-DnsClientCache\n` +
+    `$after=@(Get-DnsClientServerAddress -InterfaceIndex ${target.index} -AddressFamily IPv4 | Select-Object -ExpandProperty ServerAddresses)\n` +
+    `Write-Receipt ([pscustomobject]@{ok=$true;after=$after})`;
+  const data = await runElevated("dns", body, "dns_failed");
+  if (data.ok !== true) {
+    return {
+      ok: false,
+      code: typeof data.code === "string" ? data.code : "dns_failed",
+      error: typeof data.error === "string" ? data.error : "DNS 改动失败",
+      after: [],
+    };
+  }
+  const after = asArray(data.after as string | string[] | null | undefined);
+  return { ok: true, after: after.filter((v): v is string => typeof v === "string" && v.length > 0) };
+}
+
+/** 同一时刻只允许一个 UAC 弹窗：DNS 与 WinNAT 共用这一把锁。 */
+let elevatedBusy = false;
+
+function claimElevated(): void {
+  if (elevatedBusy) throw new SysError(409, "uac_busy", "另一个提权操作还在等 UAC");
+  elevatedBusy = true;
+}
+
+const SERVICE_WAIT = "[TimeSpan]::FromSeconds(30)";
+
+/**
+ * 重启 WinNAT（搬自桌面上的 netweb_restar.bat）：端口被 Hyper-V / WSL 保留、绑定报
+ * 「访问权限不允许」时常用的解法。会短暂断掉 WSL / Docker / Hyper-V 虚拟机的 NAT 网络。
+ *
+ * 与 .bat 对齐的结果：原本在跑却停不下来 → 失败（.bat 里 `net start` 会因「已启动」报错）；
+ * 原本没在跑 → 只启动，`wasRunning:false` 如实告诉页面；启动失败 → 失败。
+ * 停止带 -Force 会连带停依赖服务，所以先记下在跑的依赖，WinNAT 起来后再逐个拉起。
+ * 停 / 启各等 30 秒，整体落在 UAC_TIMEOUT 之内，不会出现「桥超时放锁、助手还在跑」。
+ */
+export async function restartWinnat(ctx: SysmanageCtx): Promise<WinnatResult> {
+  if (ctx.publicReq) throw new SysError(403, "public_winnat", "公网不能重启 WinNAT；请回本机操作");
+  if (process.platform !== "win32") throw new SysError(501, "unsupported_platform", "这个系统没有 WinNAT");
+  claimElevated();
+  try {
+    ctx.log?.("sysmanage winnat restart");
+    const body =
+      `$s=Get-Service -Name winnat -ErrorAction Stop
+` +
+      `$was=($s.Status -eq 'Running')
+` +
+      `$deps=@($s.DependentServices | Where-Object { $_.Status -eq 'Running' } | ForEach-Object { $_.Name })
+` +
+      `$warn=@()
+` +
+      `if($was){
+` +
+      `try{Stop-Service -Name winnat -Force -NoWait -ErrorAction Stop;$s.Refresh();$s.WaitForStatus('Stopped',${SERVICE_WAIT})}
+` +
+      `catch{Write-Receipt ([pscustomobject]@{ok=$false;code='winnat_stop_failed';error=$_.Exception.Message});exit 1}
+` +
+      `}
+` +
+      `$s.Refresh()
+` +
+      `if($s.Status -ne 'Running'){$s.Start();$s.WaitForStatus('Running',${SERVICE_WAIT})}
+` +
+      `foreach($d in $deps){try{Start-Service -Name $d -ErrorAction Stop}catch{$warn+=$d}}
+` +
+      WINNAT_PS +
+      `Write-Receipt ([pscustomobject]@{ok=$true;wasRunning=$was;depsFailed=$warn;winnat=$wn})`;
+    const data = await runElevated("winnat", body, "winnat_failed");
+    if (data.ok !== true) {
+      // 助手脚本只放 ASCII（Windows PowerShell 5.1 把无 BOM 的 .ps1 当 ANSI 读），中文前缀在这里加。
+      if (data.code === "winnat_stop_failed") data.error = `WinNAT 停不下来，没有重启：${String(data.error ?? "")}`;
+      else if (data.code === "winnat_failed") data.error = `WinNAT 没能启动：${String(data.error ?? "")}`;
+      throw elevatedError(data, "winnat_failed", "重启 WinNAT 失败");
+    }
+    const depsFailed = asArray(data.depsFailed as string | string[] | null | undefined).filter(
+      (v): v is string => typeof v === "string" && v.length > 0,
+    );
+    return {
+      ok: true,
+      wasRunning: data.wasRunning === true,
+      depsFailed,
+      winnat: normalizeWinnat(data.winnat) ?? { status: "Unknown", start: "" },
+    };
+  } finally {
+    // 失败也清：停下来了却没启动成功时，页面得看到真实状态。
+    bust("network");
+    elevatedBusy = false;
+  }
+}
 
 export async function applyDns(guid: string, servers: unknown, ctx: SysmanageCtx): Promise<DnsResult> {
   if (ctx.publicReq) throw new SysError(403, "public_dns", "公网不能改本机 DNS；请回本机操作");
   if (process.platform !== "win32") throw new SysError(501, "unsupported_platform", "这个系统暂不支持改 DNS");
-  if (dnsBusy) throw new SysError(409, "dns_busy", "另一个 DNS 改动还在等 UAC");
   const clean = normalizeServers(servers);
-  dnsBusy = true;
+  claimElevated();
   try {
     const target = await readDnsTarget(guid);
     if (sameList(target.dns, clean)) {
@@ -848,11 +972,7 @@ export async function applyDns(guid: string, servers: unknown, ctx: SysmanageCtx
         delete after.adapters[guid];
         writeDnsFile(after);
       }
-      throw new SysError(
-        result.code === "uac_denied" ? 403 : 500,
-        result.code ?? "dns_failed",
-        result.error ?? "DNS 改动失败",
-      );
+      throw elevatedError(result, "dns_failed", "DNS 改动失败");
     }
     const after = readDnsFile();
     const saved = after.adapters[guid];
@@ -870,16 +990,15 @@ export async function applyDns(guid: string, servers: unknown, ctx: SysmanageCtx
       dhcp: target.dhcp,
     };
   } finally {
-    dnsBusy = false;
+    elevatedBusy = false;
   }
 }
 
 export async function restoreDns(guid: string, ctx: SysmanageCtx): Promise<DnsResult> {
   if (ctx.publicReq) throw new SysError(403, "public_dns", "公网不能改本机 DNS；请回本机操作");
   if (process.platform !== "win32") throw new SysError(501, "unsupported_platform", "这个系统暂不支持改 DNS");
-  if (dnsBusy) throw new SysError(409, "dns_busy", "另一个 DNS 改动还在等 UAC");
   if (!isGuid(guid)) throw new SysError(400, "dns_guid", "网卡标识不对");
-  dnsBusy = true;
+  claimElevated();
   try {
     const file = readDnsFile();
     const saved = file.adapters[guid];
@@ -889,11 +1008,7 @@ export async function restoreDns(guid: string, ctx: SysmanageCtx): Promise<DnsRe
     ctx.log?.(`sysmanage dns restore ${guid} -> ${saved.dhcp ? "DHCP" : `[${saved.before.join(",")}]`}`);
     const result = await runElevatedDns(target, saved.dhcp ? [] : saved.before, saved.dhcp);
     if (!result.ok) {
-      throw new SysError(
-        result.code === "uac_denied" ? 403 : 500,
-        result.code ?? "dns_failed",
-        result.error ?? "恢复 DNS 失败",
-      );
+      throw elevatedError(result, "dns_failed", "恢复 DNS 失败");
     }
     const after = readDnsFile();
     delete after.adapters[guid];
@@ -907,7 +1022,7 @@ export async function restoreDns(guid: string, ctx: SysmanageCtx): Promise<DnsRe
       dhcp: saved.dhcp,
     };
   } finally {
-    dnsBusy = false;
+    elevatedBusy = false;
   }
 }
 
@@ -1006,6 +1121,11 @@ export async function handleSysmanage(
       const body = await readJsonBody(req).catch(() => null);
       const guid = typeof body?.guid === "string" ? body.guid : "";
       json(res, 200, await restoreDns(guid, ctx));
+      return true;
+    }
+
+    if (url.pathname === "/api/sys/winnat/restart" && req.method === "POST") {
+      json(res, 200, await restartWinnat(ctx));
       return true;
     }
 

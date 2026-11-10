@@ -12,6 +12,8 @@ import {
   parseDnsInput,
   presetOf,
   sameServers,
+  serviceStartLabel,
+  serviceStatusLabel,
   uptimeParts,
   visiblePorts,
 } from "../src/sysmanage-model.ts";
@@ -117,4 +119,12 @@ test("格式化：GiB 口径、开机拆分", () => {
   assert.equal(formatBytes(0), "0 GB");
   assert.deepEqual(uptimeParts(4 * 86_400 + 19 * 3_600 + 52 * 60), { days: 4, hours: 19, minutes: 52 });
   assert.deepEqual(uptimeParts(-5), { days: 0, hours: 0, minutes: 0 });
+});
+
+test("WinNAT 状态文案：认得的翻译，认不出的原样", () => {
+  assert.equal(serviceStatusLabel("Running"), "运行中");
+  assert.equal(serviceStatusLabel("Stopped"), "已停止");
+  assert.equal(serviceStatusLabel("Weird"), "Weird");
+  assert.equal(serviceStartLabel("Manual"), "手动");
+  assert.equal(serviceStartLabel(""), "");
 });

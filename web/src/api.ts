@@ -1,6 +1,6 @@
 import type { ArtifactDiff, ArtifactList, GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
 import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
-import type { DnsResult, SysNetwork, SysOverview, SysPorts, SysServices } from "./sysmanage-types.ts";
+import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices } from "./sysmanage-types.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -260,6 +260,7 @@ export const api = {
     req<DnsResult>("/api/sys/dns", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ guid, servers }) }),
   sysDnsRestore: (guid: string) =>
     req<DnsResult>("/api/sys/dns/restore", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ guid }) }),
+  sysWinnatRestart: () => req<WinnatResult>("/api/sys/winnat/restart", { method: "POST" }),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),
