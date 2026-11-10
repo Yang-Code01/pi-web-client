@@ -36,6 +36,29 @@ const PASS = "preview-open-pass";
 const NAME = "笔记.md";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 最小单页 PDF（带正确 xref），给定一行可见文字。浏览器内建查看器能真渲染它。 */
+function minPdf(text) {
+  const stream = `BT /F1 24 Tf 50 120 Td (${text.replace(/[()\\]/g, "\\$&")}) Tj ET`;
+  const objs = [
+    "<</Type/Catalog/Pages 2 0 R>>",
+    "<</Type/Pages/Kids[3 0 R]/Count 1>>",
+    "<</Type/Page/Parent 2 0 R/MediaBox[0 0 400 200]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>",
+    `<</Length ${stream.length}>>stream\n${stream}\nendstream`,
+    "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+  ];
+  let out = "%PDF-1.4\n";
+  const offs = [];
+  objs.forEach((o, i) => {
+    offs.push(out.length);
+    out += `${i + 1} 0 obj\n${o}\nendobj\n`;
+  });
+  const xref = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const o of offs) out += `${String(o).padStart(10, "0")} 00000 n \n`;
+  out += `trailer\n<</Size ${objs.length + 1}/Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`;
+  return out;
+}
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push({ name, ok });
@@ -130,7 +153,13 @@ try {
   if (!token) throw new Error("no loopback credential");
   console.log("session", sid);
 
-  browser = await chromium.launch({ headless: true });
+  // PW_CHANNEL=chrome 用本机 Chrome/Edge（带 PDF 插件）：Playwright 自带的 Chromium 没有，
+  // PDF 那条用例在它里面只能断言 DOM（iframe 在、不是 <pre>），看不到真实渲染。
+  // 而且 PDF 插件只管有头模式：headless 下 iframe 一致是灰底，所以看渲染要用 PW_HEADFUL=1。
+  browser = await chromium.launch({
+    headless: !process.env.PW_HEADFUL,
+    ...(process.env.PW_CHANNEL ? { channel: process.env.PW_CHANNEL } : {}),
+  });
   const context = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: "zh-CN" });
   await context.addCookies([{ name: cookieName, value: cookieValue, url: BASE }]);
   // #225: 桥不会给错的会话投递，所以前端那道双保险只能伪造一条来测。拦下页面的 socket 并
@@ -286,6 +315,72 @@ try {
   const codeText = (await page.locator(".viewer-body pre.viewer-src").textContent({ timeout: 2000 }).catch(() => "")) ?? "";
   check("代码: 正文是带行号的源码", codeText.includes("open_preview code marker"), codeText.slice(0, 80));
   await page.screenshot({ path: path.join(OUT, "5-code.png"), animations: "disabled" });
+
+  // ---- 12. PDF：内嵌查看器（D50 修订）。Playwright 自带的 Chromium 没有 PDF 插件，
+  // iframe 里会是白框 —— 那不算失败；这里只断言「没被当成文本渲染」和字节层的契约。
+  const PDF_DOC = path.join(WORK, "白皮书.pdf");
+  // 能真的渲染出来的最小 PDF（带正确 xref）：本机 Chrome 那一轮截图里能看见纸面，
+  // 而不是一片空白；判 text 的回归在 slides-unit 里用“前 8 KB 无 NUL 的加密 PDF”守。
+  fs.writeFileSync(PDF_DOC, minPdf("PDF PREVIEW OK"));
+  const pdfReply = await post("/api/preview/open", { token, path: PDF_DOC });
+  check("pdf: 桥说打开了", pdfReply.data?.ok === true, JSON.stringify(pdfReply.data));
+  const pdfTitled = await page
+    .waitForFunction(() => document.querySelector(".viewer-name")?.textContent === "白皮书.pdf", null, { timeout: 15000 })
+    .then(() => true)
+    .catch(() => false);
+  check("pdf: 标题是文件名（白皮书.pdf）", pdfTitled);
+  check("pdf: 落在预览态", (await paneName(page)) === "预览", await paneName(page));
+  check("pdf: 正文是 iframe，不是当文本读的 <pre>", (await page.locator(".viewer-body iframe.viewer-frame").count()) === 1
+    && (await page.locator(".viewer-body pre.viewer-src").count()) === 0);
+  const pdfInfo = await page.evaluate(async (p) => {
+    const res = await fetch("/api/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: location.hash.split("/").pop(), path: p }),
+    });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  }, PDF_DOC);
+  check("pdf: /api/preview 回 kind=pdf（不是 text 也不是 binary）", pdfInfo.body?.kind === "pdf", `HTTP ${pdfInfo.status} ${String(pdfInfo.body?.kind)}`);
+  const pdfRaw = await fetch(`${BASE}${pdfInfo.body?.token ? `/raw/${pdfInfo.body.token}/${pdfInfo.body.rel}` : "/raw"}`);
+  check("pdf: /raw 的 content-type 是 application/pdf", pdfRaw.headers.get("content-type") === "application/pdf", String(pdfRaw.headers.get("content-type")));
+  await sleep(2500); // PDF 插件自渲染要一会儿（有头模式下才画得出来），截图前等它落定
+  await page.screenshot({ path: path.join(OUT, "6-pdf.png"), animations: "disabled" });
+
+  // ---- 13. 公网（隧道）会话：桥会把 abs 抹成空串（不把本机路径给隧道那头），⟳ 不能把它当路径。
+  // 改前：第一次 ⟳ 把 v.path 置空，第二次 ⟳ 发 path:"" → 桥 400「路径为空」→ iframe 被错误框顶掉（P1）。
+  // 这里只给 /api/preview 加隧道头（cf 走的就是 x-forwarded-proto: https，见 bridge/src/auth.ts:165）。
+  await page.route("**/api/preview", (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    return route.continue({ headers: { ...route.request().headers(), "x-forwarded-proto": "https" } });
+  });
+  const refresh = page.locator('button[title="刷新（重新读取文件）"]').first();
+  // 先确认 route 真的把请求变成了「公网」：桥那时会回 status 200 但 abs 为空。
+  const tunnelProbe = await page.evaluate(async (p) => {
+    const res = await fetch("/api/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: location.hash.split("/").pop(), path: p }),
+    });
+    const body = await res.json().catch(() => null);
+    return { status: res.status, abs: body?.abs, kind: body?.kind, token: !!body?.token };
+  }, PDF_DOC);
+  check("pdf: 隧道头生效（200 / kind=pdf / abs 被抹空 / token 还在）", tunnelProbe.status === 200 && tunnelProbe.kind === "pdf" && tunnelProbe.abs === "" && tunnelProbe.token === true, JSON.stringify(tunnelProbe));
+  await refresh.click();
+  await sleep(1500);
+  await refresh.click();
+  await sleep(1500);
+  const pdfAfterRefresh = {
+    frames: await page.locator(".viewer-body iframe.viewer-frame").count(),
+    errors: await page.locator(".viewer-msg.err").count(),
+    errText: await page.locator(".viewer-msg.err").first().textContent().catch(() => ""),
+    title: await page.locator(".viewer-name").first().textContent().catch(() => ""),
+  };
+  check(
+    "pdf: 公网会话连按两次 ⟳ 仍是内嵌查看器（不变成「路径为空」的错误框）",
+    pdfAfterRefresh.frames === 1 && pdfAfterRefresh.errors === 0 && pdfAfterRefresh.title === "白皮书.pdf",
+    JSON.stringify(pdfAfterRefresh),
+  );
+  await page.unroute("**/api/preview");
 
   ws.close();
 } catch (err) {

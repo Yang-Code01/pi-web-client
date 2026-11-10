@@ -897,7 +897,8 @@ async function main(): Promise<void> {
         // 页数与本机能不能转：提前告诉页面，别让它点开就开始轮询一个注定失败的转换。
         if (info.kind === "slides") info.slides = { pages: await countSlides(info.abs), engine: slidesAvailable() };
         // 公网也不泄本机绝对路径（US 46 延伸）：binary 分支（.xls/.ods/加密包）内容与 open 都已拒，路径一并抹掉。
-        if (publicReq && info.kind === "binary") info.abs = "";
+        // PDF 现在有自己的 kind（浏览器内嵌看），路径同样不给。
+        if (publicReq && (info.kind === "binary" || info.kind === "pdf")) info.abs = "";
         // Text files opened here become writable for this session (D50).
         rememberEditable(sessionId, info);
         return json(res, 200, info);

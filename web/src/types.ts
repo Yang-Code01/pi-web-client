@@ -492,7 +492,7 @@ export interface PreviewInfo {
   root: string;
   size: number;
   mtime: number;
-  kind: "markdown" | "html" | "image" | "text" | "sheet" | "slides" | "binary";
+  kind: "markdown" | "html" | "image" | "pdf" | "text" | "sheet" | "slides" | "binary";
   /** D209：只有 kind==="slides" 有 —— 数出来的页数（null = 认不出）与本机能不能转。 */
   slides?: { pages: number | null; engine: boolean };
 }
