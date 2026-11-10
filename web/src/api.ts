@@ -31,8 +31,49 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   /** `/api/stat` 的回答：文件夹、文件、不存在，或者不给看（权限）。 */
 export type PathInfo = { path: string; kind: "dir" | "file" | "missing" | "denied"; parent: string | null };
 
+/** 缺了少哪块功能的 id：和 `bridge/src/deps.ts` 的 `PackageId` 同一组值（前端不 import 桥的源码，所以抄一份）。 */
+export type DepPackageId = "subagents" | "questionnaire" | "web-access";
+
+/** 一个“本项目需要”的 pi 包：来源、钉住的版本、缺了少哪块功能、现在装没装。 */
+export interface DepPackageStatus {
+  source: string;
+  name: string;
+  /** 钉死的版本；null = 跟 latest。 */
+  version: string | null;
+  /** 缺了少哪块功能：id，文案在 app.ts 的 depsFeature() 里用 tr() 写。 */
+  id: DepPackageId;
+  installed: boolean;
+  foundVersion: string | null;
+  /** 装了但比钉的旧：只提示，不自动升（已装就不动）。 */
+  behind: boolean;
+}
+
+/** `scripts/bootstrap.mjs` 跑完留在状态目录里的结果。 */
+export interface DepsBootstrap {
+  at: number;
+  ok: boolean;
+  error: string | null;
+  installed: string[];
+  skipped: string[];
+  pi: string | null;
+}
+
+/** `/api/deps`：pi 够不够新 + 三个扩展在不在（只读，只问本地 `pi list`）。 */
+export interface DepsReport {
+  pi: { version: string; min: string; ok: boolean };
+  packages: DepPackageStatus[];
+  /** 可选包（例如 billion-context）：没装不拦人，界面自己决定要不要灰掉。 */
+  optional: { name: string; id: string; installed: boolean }[];
+  missing: number;
+  ready: boolean;
+  bootstrap: DepsBootstrap | null;
+  command: string;
+}
+
 export const api = {
   me: () => req<Me>("/api/me"),
+  /** 本项目需要什么（pi 版本 + 三个扩展）。只读；装是 `npm install` 的 postinstall 干的。 */
+  deps: () => req<DepsReport>("/api/deps"),
   login: (passphrase: string) =>
     req<{ ok: true }>("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ passphrase }) }),
   logout: () => req<{ ok: true }>("/api/logout", { method: "POST" }),

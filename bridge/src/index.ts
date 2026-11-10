@@ -46,6 +46,7 @@ import { selfChangelog } from "./whatsnew.ts";
 import { scanSubagents } from "./subagents.ts";
 import { acpConfigPath, readAcpDelegate, writeAcpDelegate } from "./acpdelegate.ts";
 import { cleanLaunch } from "./launch.ts";
+import { depsReport } from "./depsstatus.ts";
 import { isWriteOp, runPiCli } from "./picli.ts";
 import { reportBug, shareSession } from "./pishare.ts";
 import {
@@ -1196,6 +1197,12 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/changelog" && req.method === "GET") {
       if (url.searchParams.get("scope") === "self") return json(res, 200, await selfChangelog());
       return json(res, 200, { version: piVersion, text: changelog(pi.cli) });
+    }
+
+    // 本项目需要什么（pi 够不够新、三个扩展在不在）。只读、只问本地 `pi list`，页面每次打开
+    // 设置都敢问一遍；真正的安装是 `npm install` 的 postinstall（scripts/bootstrap.mjs）。
+    if (url.pathname === "/api/deps" && req.method === "GET") {
+      return json(res, 200, await depsReport(pi.cli, piVersion));
     }
 
     // #25 `@` in the composer: fuzzy file search under the session's cwd (relative paths).

@@ -7,6 +7,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
+    "postinstall": "node scripts/bootstrap.mjs",
+    "setup": "node scripts/bootstrap.mjs",
     "start": "npm run build && node bridge/dist/index.js",
     "start:nobuild": "node bridge/dist/index.js",
     "build": "node scripts/build.mjs",
@@ -75,6 +77,8 @@
     "test:githist:ui": "node bridge/tests/git-history-ui.mjs",
     "test:subagents": "node --experimental-transform-types bridge/tests/subagents-unit.mjs && node --experimental-transform-types bridge/tests/subagents-basics-unit.mjs && node --experimental-transform-types bridge/tests/subagents-overrides-unit.mjs && node --experimental-transform-types bridge/tests/subagents-advanced-unit.mjs && node --experimental-transform-types bridge/tests/acpdelegate-unit.mjs",
     "test:subagents:ui": "node bridge/tests/subagents-overrides-ui.mjs && node bridge/tests/acp-delegate-ui.mjs && node bridge/tests/subagents-advanced-ui.mjs",
+    "test:deps": "node --experimental-strip-types bridge/tests/deps-unit.mjs",
+    "test:deps:ui": "node bridge/tests/deps-ui.mjs",
     "test:image:ui": "node bridge/tests/session-image-ui.mjs"
   },
   "dependencies": {

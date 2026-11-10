@@ -2,7 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./settings-console.css";
-import { api } from "./api.ts";
+import { api, type DepPackageId, type DepsReport } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { filterCommands, PANEL_COMMANDS, type CommandItem } from "./commands.ts";
@@ -403,6 +403,13 @@ export class App {
   private extTab: "installed" | "ext" | "mcp" = "installed";
   private extInv: ExtInventory | null = null;
   private extInvLoading = false;
+  /** “本项目需要”那一块（/api/deps）：pi 版本 + 三个扩展。null = 还没问到。 */
+  private deps: DepsReport | null = null;
+  private depsLoading = false;
+  /** 问不到 /api/deps 的原因（桥太旧或断了）：页面上说实话，不假装「都齐了」。 */
+  private depsError: string | null = null;
+  /** 上一次问的时刻（成功或失败都算）：30 秒内不重复问，免得每次重画都 spawn 一次 pi list。 */
+  private depsAt = 0;
   /** D113: a 「联网检查更新」 request is in flight (drives the spinner and the 「检查中…」 tags). */
   private extCheckLoading = false;
   /** An inventory was asked for while one was still streaming; re-ask when it lands. */
@@ -10144,6 +10151,8 @@ export class App {
   }
 
   private paintSubagents(body: HTMLElement): void {
+    // 这一页要用「有没有装 billion-context」决定灰不灰；先进这里的人也得把答案拿到。
+    if (!this.deps && !this.depsLoading && Date.now() - this.depsAt > 30_000) this.loadDeps(false);
     const cwd = this.session?.cwd ?? "";
     const scope = this.subagentsScope === "project" && cwd ? "project" : "global";
     const view = this.settingsView[scope];
@@ -10172,6 +10181,11 @@ export class App {
       acp: {
         view: this.subagentsAcp,
         loadError: this.subagentsAcpLoadError,
+        // 没装 billion-context 时这一区灰掉：开关存得下，但子代理不会注册 acp_delegate。
+        providerInstalled: this.deps?.optional.find((o) => o.id === "acp")?.installed,
+        providerSource: this.deps?.optional.find((o) => o.id === "acp")?.name
+          ? `npm:${this.deps.optional.find((o) => o.id === "acp")!.name}`
+          : undefined,
         saving: this.subagentsAcpSaving,
         saveError: this.subagentsAcpSaveError,
         // 对外到公网时写文件要过 step-up；本机 / 局域网 act() 直接跑。
@@ -11103,6 +11117,7 @@ export class App {
   private paintExtSettings(body: HTMLElement): void {
     // #49: pi itself sits above the inventory — it is the program doing all of the below.
     this.paintPiUpdate(body);
+    this.paintDepsNeeded(body);
     const row = el("label", "ns-adv-flag ext-switch");
     const box = el("input") as HTMLInputElement;
     box.type = "checkbox";
@@ -11184,8 +11199,131 @@ export class App {
       box.append(force);
     }
     body.append(box);
-    // Lazy: ask once per visit, and only when the answer is missing or older than the bridge's cache.
-    if (!this.piChecking && (!this.piUpd || Date.now() - this.piUpd.checkedAt > 30 * 60_000)) this.checkPiUpdate();
+  }
+
+  /** 包 id 的界面说法。要在调用时 `tr()`：模块级数组会在切语言前就算好。 */
+  private depsFeature(id: DepPackageId): string {
+    switch (id) {
+      case "subagents":
+        return tr("设置→子代理、后台卡、subagent 工具");
+      case "questionnaire":
+        return tr("网页问卷（ask_user_question）");
+      case "web-access":
+        return tr("web_search / fetch_content / source_check 等联网工具");
+      default:
+        return id;
+    }
+  }
+
+  /**
+   * 「本项目需要」：pi 版本 + 三个扩展。这些不在这个仓库里，也不会跟 `npm install` 一起下来，
+   * 缺了往往只是**静默少一个工具** —— 所以摆在这一页最上面，缺了就写清楚缺什么、怎么补。
+   */
+  private paintDepsNeeded(body: HTMLElement): void {
+    // 一次设置页只问一次；30 秒内不重复问（每问一次都要跑一次本地的 `pi list`）。先问再画，
+    // 这一遍就能显示「检查中…」。
+    if (!this.deps && !this.depsLoading && Date.now() - this.depsAt > 30_000) this.loadDeps(false);
+    const box = el("div", "ext-pi ext-deps");
+    const report = this.deps;
+    const row = el("div", "settings-foot");
+    row.append(el("span", "pi-name", tr("本项目需要")));
+    const hint = el("span", "settings-hint");
+    if (this.depsLoading) hint.textContent = tr("检查中…");
+    else if (!report) hint.textContent = this.depsError ? tr("问不到：{p1}", { p1: this.depsError }) : "";
+    else if (report.ready) hint.textContent = tr("都齐了");
+    else if (report.missing) hint.textContent = tr("缺 {p1} 个", { p1: String(report.missing) });
+    else hint.textContent = tr("要 pi {p1} 或更新", { p1: report.pi.min });
+    row.append(hint, el("span", "spacer"));
+    const recheck = el("button", "btn ghost", tr("重新检查")) as HTMLButtonElement;
+    recheck.disabled = this.depsLoading;
+    recheck.onclick = () => this.loadDeps(true);
+    row.append(recheck);
+    box.append(row);
+
+    if (report) {
+      const list = el("div", "");
+      list.style.display = "flex";
+      list.style.flexDirection = "column";
+      list.style.gap = "2px";
+      const line = (ok: boolean, name: string, note: string, title?: string) => {
+        const item = el("div", "settings-hint");
+        item.append(el("span", "", `${ok ? "✓" : "✗"} ${name}`), el("span", "", note ? `  ${note}` : ""));
+        if (title) item.title = title;
+        if (!ok) item.classList.add("bad");
+        list.append(item);
+      };
+      line(
+        report.pi.ok,
+        report.pi.version ? `pi ${report.pi.version}` : tr("pi（没找到）"),
+        report.pi.ok ? "" : tr("低于 {p1}", { p1: report.pi.min }),
+      );
+      for (const pkg of report.packages) {
+        const ver = pkg.foundVersion ? ` ${pkg.foundVersion}` : "";
+        const behind = pkg.behind && pkg.version ? tr("（比 {p1} 旧，能用）", { p1: pkg.version }) : "";
+        const what = this.depsFeature(pkg.id);
+        line(pkg.installed, pkg.name, pkg.installed ? ver + behind : what, what);
+      }
+      box.append(list);
+
+      if (!report.ready) {
+        const foot = el("div", "settings-foot");
+        foot.append(
+          el(
+            "span",
+            "settings-hint",
+            tr("在跑这个项目的仓库根目录里执行一次 `npm install`（它会自动补上），或者手动跑： {p1}", { p1: report.command }),
+          ),
+          el("span", "spacer"),
+        );
+        const copy = el("button", "btn ghost", tr("复制命令")) as HTMLButtonElement;
+        copy.onclick = () => {
+          void navigator.clipboard.writeText(report.command).then(() => {
+            copy.textContent = tr("已复制");
+          });
+        };
+        foot.append(copy);
+        box.append(foot);
+      }
+      // 只在还没齐的时候提上次失败：用户后来手动装齐了，这条就过时了。
+      if (!report.ready && report.bootstrap && !report.bootstrap.ok) {
+        box.append(el("p", "note warn", tr("上次自动安装没成功：{p1}", { p1: report.bootstrap.error || tr("（没有记录原因）") })));
+      }
+    }
+    body.append(box);
+  }
+
+  private loadDeps(force: boolean): void {
+    if (this.depsLoading) return;
+    if (!force && this.depsAt && Date.now() - this.depsAt < 30_000) return;
+    this.depsLoading = true;
+    // 自动的那几次（force=false）是在画页面的半路上调的：这时同步重画会把整页先画一份，
+    // 外层返回后再追加一份。调用方自己接着画就会看到 depsLoading，只有点「重新检查」才重画。
+    if (force) this.paintDepsSurface();
+    void api
+      .deps()
+      .then((report) => {
+        this.deps = report;
+        this.depsError = null;
+      })
+      .catch((err: unknown) => {
+        // 桥太旧（没有 /api/deps）或断了：不留假象，下次打开再试。
+        this.deps = null;
+        this.depsError = String((err as Error)?.message ?? err);
+      })
+      .finally(() => {
+        this.depsAt = Date.now();
+        this.depsLoading = false;
+        this.paintDepsSurface();
+      });
+  }
+
+  /**
+   * 答案到了重画哪一页：设置里的两个 tab 都要（子代理那边靠它决定灰不灰），
+   * 独立的扩展管理面板也要。
+   */
+  private paintDepsSurface(): void {
+    if (this.sheetKind === "settings") this.paintSettings();
+    else this.paintExtIfOpen();
   }
 
   private checkPiUpdate(force = false): void {

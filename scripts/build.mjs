@@ -60,6 +60,42 @@ const sha = shortSha();
 const id = `${sha}-${Date.now().toString(36)}`;
 const env = { ...process.env, PI_BUILD_ID: id };
 
+/**
+ * pull 之后子包的依赖变了、但没跑 `npm install`：不挡的话 tsc / vite 只会报一句
+ * `Cannot find module …`，看不出该做什么。这里拿仓库里的 `package-lock.json` 跟 npm 装完留下的
+ * `node_modules/.package-lock.json` 比一遍：锁文件里的每个包都要以同一版本在场。
+ * 可选依赖（`optional: true`，比如别的平台的 esbuild 二进制）本来就可能没装，不算。
+ * 返回问题描述；没问题是 null。没有锁文件的包不查。
+ */
+function staleDeps(pkg) {
+  const readLock = (file) => {
+    try {
+      return JSON.parse(fs.readFileSync(file, "utf8")).packages ?? {};
+    } catch {
+      return null;
+    }
+  };
+  const want = readLock(path.join(root, pkg, "package-lock.json"));
+  if (!want) return null;
+  const have = readLock(path.join(root, pkg, "node_modules", ".package-lock.json"));
+  if (!have) return "还没装过依赖";
+  const off = [];
+  for (const [key, meta] of Object.entries(want)) {
+    if (!key.startsWith("node_modules/") || meta.optional || meta.link) continue;
+    const got = have[key]?.version;
+    if (got !== meta.version) off.push(`${key.slice("node_modules/".length)} ${got ?? "没装"} → ${meta.version}`);
+  }
+  if (!off.length) return null;
+  return `${off.length} 个依赖跟锁文件对不上：${off.slice(0, 3).join("；")}${off.length > 3 ? "；…" : ""}`;
+}
+
+const stale = targets.map((pkg) => [pkg, staleDeps(pkg)]).filter(([, why]) => why);
+if (stale.length) {
+  for (const [pkg, why] of stale) console.error(`✗ ${pkg}：${why}`);
+  console.error("依赖有变化（多半是刚 pull 过），先在仓库根目录跑一次 npm install，再 npm start。");
+  process.exit(1);
+}
+
 for (const pkg of targets) {
   const code = npm(["--prefix", pkg, "run", "build"], env);
   if (code) process.exit(code);

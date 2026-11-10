@@ -53,8 +53,11 @@ function launcherCandidates(): string[] {
 function npmRootCandidates(): string[] {
   const out: string[] = [];
   try {
-    const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-    const root = execFileSync(npm, ["root", "-g"], {
+    // Windows 上 npm 是 `npm.cmd`：Node ≥ 18.20 拒绝不带 shell 去跑 `.cmd`（EINVAL，会被下面的 catch
+    // 静默吞掉，这一条候选就永远缺席）。参数是常量，走 shell 没有注入面。
+    const win = process.platform === "win32";
+    const root = execFileSync(win ? "npm.cmd" : "npm", ["root", "-g"], {
+      shell: win,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5000,
@@ -153,8 +156,7 @@ export async function fetchModels(cli: string, opts: { fast?: boolean; timeoutMs
     child.stderr.on("data", (d) => { stderr = (stderr + d.toString("utf8")).slice(-2000); });
     child.stdout.on("data", (d) => {
       buf += d.toString("utf8");
-      let at: number;
-      while ((at = buf.indexOf("\n")) >= 0) {
+      for (let at = buf.indexOf("\n"); at >= 0; at = buf.indexOf("\n")) {
         const line = buf.slice(0, at).replace(/\r$/, "");
         buf = buf.slice(at + 1);
         if (!line.trim()) continue;
@@ -180,7 +182,7 @@ export async function fetchModels(cli: string, opts: { fast?: boolean; timeoutMs
     // Same race as RpcChild: the child can be gone before this write lands.
     child.stdin.on("error", (err: Error) => done(err));
     try {
-      child.stdin.write(JSON.stringify({ id: "models-1", type: "get_available_models" }) + "\n");
+      child.stdin.write(`${JSON.stringify({ id: "models-1", type: "get_available_models" })}\n`);
     } catch (err) {
       done(err as Error);
     }
