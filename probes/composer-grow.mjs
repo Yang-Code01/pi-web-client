@@ -10,6 +10,10 @@
  * is `min(520, chatPane.clientHeight / 2)`, deleting lines shrinks at once, sending clears back to
  * one line, and a shorter window recomputes the cap without a reload.
  *
+ * #316 adds the narrow and zoomed viewports: at 390×720 (effective width < 900) the cap is 40% of the
+ * pane, so messages stay visible; going wide again restores the half-pane cap without a reload; at a
+ * 1.25 UI scale the cap is still measured in layout px, i.e. the rendered box is the cap zoomed once.
+ *
  * Run: node probes/composer-grow.mjs   (needs `npm run build:web` first)
  */
 import fs from "node:fs";
@@ -57,7 +61,6 @@ const HISTORY = [
 ];
 
 let sock = null;
-const send = (msg) => sock?.readyState === 1 && sock.send(JSON.stringify(msg));
 /** What the page sent as a prompt — the send key must not leave the draft behind. */
 const prompts = [];
 
@@ -183,11 +186,34 @@ try {
   log("line box", lh.toFixed(2), "padding", chrome.padding, "border", chrome.border, "pane", chrome.paneHeight);
 
   /** Height a composer holding `n` lines should have (border-box), capped by the pane formula. */
-  const expectedHeight = (n, paneHeight) => {
+  const expectedHeight = (n, paneHeight, share = 0.5) => {
     const natural = Math.max(44, n * lh + chrome.padding + chrome.border);
-    const cap = Math.min(520, paneHeight * 0.5);
+    const cap = Math.min(520, paneHeight * share);
     return { natural, cap, want: Math.min(natural, cap) };
   };
+
+  /**
+   * Layout-px sizes plus what the conversation shows. `#app` carries `zoom: var(--ui-scale)` (#316):
+   * `offsetHeight` / `clientHeight` are layout px, `getBoundingClientRect()` is visual px, so both
+   * sides of the cap can be checked against each other.
+   */
+  const layoutMetrics = () =>
+    page.evaluate(() => {
+      const t = document.querySelector(".composer textarea");
+      const pane = document.querySelector(".chat-pane");
+      const scroll = document.querySelector(".chat-scroll");
+      const sr = scroll.getBoundingClientRect();
+      const msgs = [...scroll.querySelectorAll(".msg")].map((m) => m.getBoundingClientRect());
+      return {
+        box: t.offsetHeight,
+        visual: t.getBoundingClientRect().height,
+        paneHeight: pane.clientHeight,
+        scrollBox: scroll.clientHeight,
+        visibleMessages: msgs.filter((r) => r.height > 0 && r.bottom > sr.top + 1 && r.top < sr.bottom - 1).length,
+        scale: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--ui-scale")) || 1,
+        compact: document.documentElement.dataset.compact === "true",
+      };
+    });
 
   // 1. Empty: one line, nothing scrolling inside the box, and no second cap left in the stylesheet.
   //    “One line” is the textarea's own line box plus its padding and border — 44px is only the CSS
@@ -273,6 +299,81 @@ try {
   const back = await metrics();
   assert(Math.abs(back.height - tall.height) <= 2, `growing the window back restores the cap (${back.height.toFixed(1)} vs ${tall.height.toFixed(1)})`);
   log("cap follows the pane:", tallWant.cap.toFixed(1), "→", shortWant.cap.toFixed(1), "→", back.height.toFixed(1));
+
+  // 6. #316 narrow: effective width < 900 → the cap is 40% of the pane, so the conversation above
+  //    still shows. Effective width is `innerWidth / uiScale` (D158), which jsdom cannot judge.
+  await page.setViewportSize({ width: 390, height: 720 });
+  await sleep(400);
+  const narrow = await layoutMetrics();
+  assert(narrow.compact, `390×720 is the narrow layout (data-compact ${narrow.compact})`);
+  const narrowWant = expectedHeight(40, narrow.paneHeight, 0.4);
+  assert(
+    narrowWant.natural > narrowWant.cap,
+    `narrow: the cap really bites (natural ${narrowWant.natural.toFixed(1)} > cap ${narrowWant.cap.toFixed(1)})`,
+  );
+  assert(
+    Math.abs(narrow.box - narrowWant.cap) <= 2,
+    `narrow caps at 40% of the pane (${narrow.box}px, want ${narrowWant.cap.toFixed(1)} from pane ${narrow.paneHeight})`,
+  );
+  assert(narrow.box < narrow.paneHeight * 0.5, `and that is tighter than the wide half-pane cap (${narrow.box} vs ${(narrow.paneHeight * 0.5).toFixed(1)})`);
+  assert(narrow.scrollBox >= 150, `the conversation keeps a visible band under the cap (${narrow.scrollBox} of ${narrow.paneHeight})`);
+  assert(narrow.visibleMessages >= 2, `messages stay visible above the composer (${narrow.visibleMessages})`);
+  await page.screenshot({ path: path.join(OUT, "6-narrow.png") });
+  log("narrow", `${narrow.box}px cap`, "scroll", narrow.scrollBox, "visible msgs", narrow.visibleMessages);
+
+  // 7. Wide again with the same 40-line draft: the formula switches on the spot, no stale 40% value.
+  await page.setViewportSize({ width: 1200, height: 1100 });
+  await sleep(400);
+  const wideBack = await layoutMetrics();
+  assert(!wideBack.compact, `back to wide (data-compact ${wideBack.compact})`);
+  const wideBackWant = expectedHeight(40, wideBack.paneHeight);
+  assert(wideBackWant.natural > wideBackWant.cap, `wide again: the cap really bites (natural ${wideBackWant.natural.toFixed(1)})`);
+  assert(
+    Math.abs(wideBack.box - wideBackWant.cap) <= 2,
+    `crossing back to wide swaps in the half-pane cap at once (${wideBack.box}px, want ${wideBackWant.cap.toFixed(1)} from pane ${wideBack.paneHeight})`,
+  );
+  assert(wideBack.box > narrow.box + 20, `and the box grew back (${narrow.box} → ${wideBack.box})`);
+  await page.screenshot({ path: path.join(OUT, "7-wide-again.png") });
+  log("wide again", `${wideBack.box}px cap`);
+
+  // 8. #316 zoom: the settings slider persists `scale` in `pi.prefs`, so write it there and reload —
+  //    the real entry point, not a hand-set CSS variable. The cap must stay in layout px: the
+  //    rendered box is `cap × 1.25`, not `cap × 1.25²`.
+  await page.evaluate(() => {
+    let prefs = {};
+    try {
+      prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}");
+    } catch {
+      prefs = {};
+    }
+    localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, scale: 1.25 }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  if ((await field.count()) === 0) {
+    await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "session card after reload");
+    await page.locator(".session-card").first().click();
+  }
+  await until(async () => (await field.count()) === 1, 8000, "composer after reload");
+  await field.fill(lines(40));
+  await sleep(120);
+  const zoomed = await layoutMetrics();
+  assert(Math.abs(zoomed.scale - 1.25) < 0.001, `the UI scale really is 1.25 (${zoomed.scale})`);
+  assert(!zoomed.compact, `1200px at 1.25 is still wide (effective ${(1200 / zoomed.scale).toFixed(0)})`);
+  const zoomCap = Math.min(520, zoomed.paneHeight * 0.5);
+  assert(
+    Math.abs(zoomed.box - zoomCap) <= 2,
+    `at 1.25 the cap is still layout px (${zoomed.box}px, want ${zoomCap.toFixed(1)} from pane ${zoomed.paneHeight})`,
+  );
+  assert(
+    Math.abs(zoomed.visual - zoomCap * 1.25) <= 3,
+    `rendered height is that cap zoomed once (${zoomed.visual.toFixed(1)}px, want ${(zoomCap * 1.25).toFixed(1)})`,
+  );
+  assert(
+    zoomed.visual < zoomCap * 1.25 * 1.25 - 10,
+    `not zoomed twice (${zoomed.visual.toFixed(1)}px, a double zoom would be ${(zoomCap * 1.25 * 1.25).toFixed(1)})`,
+  );
+  await page.screenshot({ path: path.join(OUT, "8-zoom-125.png") });
+  log("zoom 1.25", `${zoomed.box}px layout cap`, `${zoomed.visual.toFixed(1)}px rendered`);
 
   log("ALL OK");
 } finally {
