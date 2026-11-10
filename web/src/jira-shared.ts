@@ -98,9 +98,11 @@ export function formatUpdated(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** 工单第二行：类型 · 优先级 · 状态 · 更新时间。优先级空显示 `—`，时间空就省略。 */
-export function issueMeta(issue: JiraIssue): string {
-  return [issue.type, issue.priority || "—", issue.status, formatUpdated(issue.updated)].filter(Boolean).join(" · ");
+/** 工单第二行：类型 · 优先级 · 状态（· 经办人）· 更新时间。优先级空显示 `—`，时间空就省略。 */
+export function issueMeta(issue: JiraIssue, assignee?: string): string {
+  return [issue.type, issue.priority || "—", issue.status, assignee, formatUpdated(issue.updated)]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** 未知大小显示 `—`，其余按 1024 进位；`1.0 KB` 写成 `1 KB`。 */

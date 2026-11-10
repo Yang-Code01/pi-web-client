@@ -84,6 +84,8 @@ test("工单元信息：用 · 连类型 / 优先级 / 状态 / 时间，空优�
   assert.equal(meta.split(" · ").length, 4);
   assert.ok(!issueMeta({ ...issue, updated: "" }).includes("·  "), "时间空时不留下多余的 ·");
   assert.equal(issueMeta({ ...issue, type: "", priority: "", status: "", updated: "" }), "—");
+  assert.ok(issueMeta(issue, "Ada").includes(" · Ada · "), "有经办人时插在时间前面");
+  assert.ok(!issueMeta(issue).includes("Ada"), "列表模式不显示经办人");
 });
 
 // ---------------------------------------------------------------- #250 ADF → 纯文本

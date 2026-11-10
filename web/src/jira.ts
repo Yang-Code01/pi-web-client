@@ -1289,7 +1289,7 @@ export class JiraPanel {
       return;
     }
     const list = el("div", "jira-results");
-    for (const issue of this.searchItems) list.append(this.issueEl(this.siteUrl, issue));
+    for (const issue of this.searchItems) list.append(this.issueEl(this.siteUrl, issue, true));
     box.append(list);
     const foot = el("div", "jira-result-foot");
     if (this.searchMoreError) foot.append(el("span", "jira-hint bad", this.searchMoreError));
@@ -1364,7 +1364,7 @@ export class JiraPanel {
   }
 
   /** 点一行就地展开 / 收起详情（#250）：不重画列表，滚动位置自然不动。 */
-  private issueEl(siteUrl: string, issue: JiraIssue): HTMLElement {
+  private issueEl(siteUrl: string, issue: JiraIssue, showAssignee = false): HTMLElement {
     const wrap = el("div", "jira-issue-wrap");
     const line = el("div", "jira-issue");
     const top = el("div", "jira-issue-top");
@@ -1375,7 +1375,7 @@ export class JiraPanel {
     top.append(key, el("span", "jira-issue-summary", issue.summary || tr("（没有标题）")));
     top.append(this.handoffButton(issue, siteUrl));
     line.append(top);
-    const meta = issueMeta(issue);
+    const meta = showAssignee ? issueMeta(issue, issue.assignee || tr("未分配")) : issueMeta(issue);
     if (meta) line.append(el("div", "jira-issue-meta", meta));
 
     const entry = this.details.get(issue.key);
