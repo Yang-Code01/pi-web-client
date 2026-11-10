@@ -1476,6 +1476,23 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .exec-tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
 .exec-pip { display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: var(--warn); vertical-align: 1px; }
 .exec-panel { display: grid; gap: 10px; min-width: 0; }
+.exec-plan { min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); }
+.exec-plan-empty { overflow: hidden; color: var(--faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.exec-plan-heading { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
+.exec-plan-heading strong { color: var(--text); font-size: 13px; }
+.exec-plan-listed { overflow: hidden; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; }
+.exec-plan-progress { overflow: hidden; height: 4px; margin: 7px 0; border-radius: 4px; background: var(--line); }
+.exec-plan-progress-fill { height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }
+.exec-plan-tasks { display: grid; gap: 4px; }
+.exec-plan-task { display: flex; align-items: flex-start; gap: 7px; min-width: 0; font-size: 12px; }
+.exec-plan-state { flex: none; width: 14px; color: var(--faint); text-align: center; }
+.exec-plan-task.completed .exec-plan-state { color: var(--ok); }
+.exec-plan-task.in_progress .exec-plan-state { color: var(--accent); animation: exec-plan-spin 1.4s linear infinite; }
+.exec-plan-task.completed .exec-plan-subject { color: var(--faint); text-decoration: line-through; }
+.exec-plan-copy { display: flex; flex-wrap: wrap; gap: 2px 7px; min-width: 0; }
+.exec-plan-subject { overflow-wrap: anywhere; }
+.exec-plan-active, .exec-plan-waiting { color: var(--faint); font-size: 11px; }
+@keyframes exec-plan-spin { to { transform: rotate(360deg); } }
 .exec-now { border: 1px solid var(--accent-dim); background: linear-gradient(180deg, var(--accent-bg), var(--panel-2)); border-radius: var(--r); padding: 10px 12px; min-width: 0; }
 .exec-now.idle { border-color: var(--line); background: var(--panel-2); }
 .exec-now h2 { margin: 0 0 8px; padding: 0; border: 0; color: var(--text); font-size: 13px; }

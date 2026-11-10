@@ -22,6 +22,7 @@ test("an idle view with no loaded turns has an empty previous-turn summary", () 
     timeline: [],
     rounds: [],
     selectedRound: null,
+    plan: null,
     metrics: {
       durationMs: null,
       toolCount: 0,
@@ -212,7 +213,6 @@ test("subagent runs attach to their dispatch and show one child level of steps",
     items: [user("u1", "2025-01-01T00:00:00Z"), dispatch],
     childSessionsAvailable: true,
     childRuns: [{
-
       runId: "del_child",
       toolCallId: "call-delegate",
       agent: "researcher",
@@ -268,4 +268,40 @@ test("dispatch run ids remain visible but disabled without child-session capabil
 
   const publicView = execView({ ...base, items: [user("u1", "2025-01-01T00:00:00Z"), dispatch], childSessionsAvailable: true, publicAccess: true });
   assert.equal(publicView.timeline[0].subagent.locked, true);
+});
+
+test("plan progress excludes deleted tasks and resolves its listing round across the full index", () => {
+  const view = execView({
+    ...base,
+    items: [user("u70", "2025-01-01T00:00:00Z")],
+    plan: {
+      listedRound: "u2",
+      tasks: [
+        { id: 1, subject: "已完成", status: "completed" },
+        { id: 2, subject: "正在写", activeForm: "正在写测试", status: "in_progress" },
+        { id: 3, subject: "等前置", status: "pending", blockedBy: [1, 2, 4, 99] },
+        { id: 4, subject: "已删除", status: "deleted" },
+      ],
+    },
+    planRounds: [{ id: "u2", ordinal: 2 }, { id: "u70", ordinal: 70 }],
+  });
+
+  assert.deepEqual(view.plan, {
+    done: 1,
+    total: 3,
+    listedRound: "u2",
+    listedRoundOrdinal: 2,
+    activeTaskId: 2,
+    tasks: [
+      { id: 1, subject: "已完成", status: "completed", activeForm: undefined, waitingOn: [] },
+      { id: 2, subject: "正在写", status: "in_progress", activeForm: "正在写测试", waitingOn: [] },
+      { id: 3, subject: "等前置", status: "pending", activeForm: undefined, waitingOn: [2] },
+    ],
+  });
+});
+
+test("a missing or empty plan snapshot degrades to no plan", () => {
+  const items = [user("u1", "2025-01-01T00:00:00Z")];
+  assert.equal(execView({ ...base, items }).plan, null);
+  assert.equal(execView({ ...base, items, plan: { listedRound: "u1", tasks: [] } }).plan, null);
 });

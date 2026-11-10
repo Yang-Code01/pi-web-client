@@ -2,6 +2,21 @@ import type { Item } from "./types.ts";
 
 export type ExecPhase = "idle" | "thinking" | "writing" | "tool" | "waiting";
 
+export type ExecPlanStatus = "pending" | "in_progress" | "completed" | "deleted";
+
+export interface ExecPlanTask {
+  id: number;
+  subject: string;
+  activeForm?: string;
+  status: ExecPlanStatus;
+  blockedBy?: number[];
+}
+
+export interface ExecPlanSnapshot {
+  tasks: ExecPlanTask[];
+  listedRound: string | null;
+}
+
 export interface ExecStatsSnapshot {
   tokens: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number } | null;
   cost: number | null;
@@ -20,6 +35,9 @@ export interface ExecViewInput {
   streamChars: number;
   streamSummary?: string;
   selectedRound: string | null;
+  plan?: ExecPlanSnapshot | null;
+  /** Full session turn index; plan provenance is not limited to loaded transcript pages. */
+  planRounds?: ExecRound[];
   now: number;
   stats?: ExecStatsSnapshot | null;
   roundStats?: Record<string, ExecRoundStats>;
@@ -86,6 +104,23 @@ export interface ExecRound {
   ordinal: number;
 }
 
+export interface ExecPlanTaskView {
+  id: number;
+  subject: string;
+  activeForm: string | undefined;
+  status: Exclude<ExecPlanStatus, "deleted">;
+  waitingOn: number[];
+}
+
+export interface ExecPlanView {
+  done: number;
+  total: number;
+  listedRound: string | null;
+  listedRoundOrdinal: number | null;
+  activeTaskId: number | null;
+  tasks: ExecPlanTaskView[];
+}
+
 export interface ExecMetricsView {
   durationMs: number | null;
   toolCount: number;
@@ -104,6 +139,7 @@ export interface ExecViewModel {
   timeline: ExecTimelineRow[];
   rounds: ExecRound[];
   selectedRound: string | null;
+  plan: ExecPlanView | null;
   metrics: ExecMetricsView;
 }
 
@@ -199,6 +235,33 @@ function previousDuration(items: Item[]): number | null {
   const start = first ? timeOf(first) : null;
   const end = [...items].reverse().map(timeOf).find((at) => at !== null) ?? null;
   return start === null || end === null ? null : Math.max(0, end - start);
+}
+
+function planView(plan: ExecPlanSnapshot | null | undefined, rounds: ExecRound[] = []): ExecPlanView | null {
+  if (!plan || !Array.isArray(plan.tasks)) return null;
+  const tasks = plan.tasks.filter((task) => task && task.status !== "deleted");
+  if (!tasks.length) return null;
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const active = tasks.find((task) => task.status === "in_progress");
+  return {
+    done: tasks.filter((task) => task.status === "completed").length,
+    total: tasks.length,
+    listedRound: typeof plan.listedRound === "string" ? plan.listedRound : null,
+    listedRoundOrdinal: rounds.find((round) => round.id === plan.listedRound)?.ordinal ?? null,
+    activeTaskId: active?.id ?? null,
+    tasks: tasks.map((task) => ({
+      id: task.id,
+      subject: task.subject,
+      activeForm: task.activeForm,
+      status: task.status as Exclude<ExecPlanStatus, "deleted">,
+      waitingOn: task.status === "pending"
+        ? (task.blockedBy ?? []).filter((id) => {
+            const dependency = byId.get(id);
+            return dependency !== undefined && dependency.status !== "completed";
+          })
+        : [],
+    })),
+  };
 }
 
 function totalTokens(snapshot: ExecStatsSnapshot | null): number | null {
@@ -321,5 +384,12 @@ export function execView(input: ExecViewInput): ExecViewModel {
     selected ? input.roundStats?.[selected.id] : undefined,
     input.childRuns ?? [],
   );
-  return { now, timeline, rounds: roundOptions, selectedRound: selected?.id ?? null, metrics };
+  return {
+    now,
+    timeline,
+    rounds: roundOptions,
+    selectedRound: selected?.id ?? null,
+    plan: planView(input.plan, input.planRounds),
+    metrics,
+  };
 }

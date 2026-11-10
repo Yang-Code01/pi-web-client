@@ -24,6 +24,7 @@ import { defaultPermission } from "./permissiondefault.ts";
 import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
 import { isProtocolWidgetLines } from "./extwidgets.ts";
 import { itemsFrame, type SessionHistory } from "./history.ts";
+import { planFromEntries, planFromToolResult, type PlanSnapshot } from "./execplan.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -724,11 +725,13 @@ export interface SessionSnapshot {
   budget: number | null;
   ext: ExtUiState;
   queue: { steering: string[]; followUp: string[] };
+  plan: PlanSnapshot | null;
 }
 
 export class Session extends EventEmitter {
   readonly state: SessionState;
   items: Item[] = [];
+  plan: PlanSnapshot | null = null;
   /** 技能清单按 cwd 缓存：会话文件变一次就要重放一遍，不能每次再扫一次盘。 */
   private skillScanCache: { cwd: string | null; at: number; list: SkillEntry[] } | null = null;
   rpc: RpcChild | null = null;
@@ -969,6 +972,7 @@ export class Session extends EventEmitter {
     try {
       const res = loadEntries(this.state.file);
       // 隐式触发只在工具参数里留了痕迹（`read …\SKILL.md`），回放时把技能卡补上（D199）。
+      this.plan = planFromEntries(res.entries);
       this.items = this.keepUnsentBubbles(withSkillItems(entriesToItems(res.entries), this.skillsHere(), this.state.cwd || undefined));
       this.state.truncated = res.truncated;
       this.readError = null;
@@ -997,8 +1001,12 @@ export class Session extends EventEmitter {
       // 之后文件真变了才 touch；终端里继续写也意味着上一轮完成状态过期了。
       const first = !this.tailSig;
       const before = this.items;
+      const previousPlan = this.plan;
       // 读失败就不推进 tailSig：下一 tick 拿同一个签名再比一次、再读一次，文件恢复的那一刻自己接上。
       if (!this.loadFromFile()) return;
+      if (JSON.stringify(previousPlan) !== JSON.stringify(this.plan)) {
+        this.emitWs({ type: "plan", sessionId: this.state.id, plan: this.plan });
+      }
       this.tailSig = sig;
       if (first) {
         this.state.updatedAt = Math.round(stat.mtimeMs);
@@ -1410,6 +1418,16 @@ export class Session extends EventEmitter {
         this.closeQuestionnaire(String(ev.toolCallId ?? ""));
         const at = this.items.findIndex((it) => it.kind === "tool" && it.toolCallId === String(ev.toolCallId));
         const seen = at >= 0 ? (this.items[at] as ToolItem) : undefined;
+        const resultDetails = (ev.result as any)?.details;
+        this.plan = planFromToolResult(
+          this.plan,
+          ev.toolName ?? seen?.name,
+          resultDetails,
+          [...this.items].reverse().find((item) => item.kind === "user")?.id ?? null,
+        );
+        if (ev.toolName === "todo" || seen?.name === "todo") {
+          this.emitWs({ type: "plan", sessionId: this.state.id, plan: this.plan });
+        }
         // D170: pi 只在结果里承认一次「有这么个 run」（`details.runId`）。
         // D172: `args` 里是模型写的那份原文（pi-subagents 落盘时把 task 打成 [prompt redacted]）。
         this.bgRuns.noteToolEnd(
@@ -2513,6 +2531,7 @@ export class Session extends EventEmitter {
       budget: this.contextBudget,
       ext: this.extUi(),
       queue: this.queue,
+      plan: this.plan,
     };
   }
 

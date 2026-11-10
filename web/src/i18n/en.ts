@@ -2274,4 +2274,12 @@ export const en: Dict = {
   "等待子代理会话…": "Waiting for the subagent session…",
   "暂无子代理步骤": "No subagent steps yet",
   "结果摘要": "Result summary",
+  "本任务没有列计划": "No plan listed for this task",
+  "未安装计划扩展；请到设置 → 扩展安装 {p1}": "Plan extension not installed; install {p1} in Settings → Extensions",
+  "计划 {p1}/{p2}": "Plan {p1}/{p2}",
+  "第 {p1} 轮列出": "Listed in turn {p1}",
+  "计划进度": "Plan progress",
+  "待做": "Pending",
+  "等 #{p1}": "Waiting for #{p1}",
+  "执行面板计划区（@juicesharp/rpiv-todo）": "Execution panel plan section (@juicesharp/rpiv-todo)",
 };

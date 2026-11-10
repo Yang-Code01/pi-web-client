@@ -32,7 +32,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export type PathInfo = { path: string; kind: "dir" | "file" | "missing" | "denied"; parent: string | null };
 
 /** 缺了少哪块功能的 id：和 `bridge/src/deps.ts` 的 `PackageId` 同一组值（前端不 import 桥的源码，所以抄一份）。 */
-export type DepPackageId = "subagents" | "questionnaire" | "web-access";
+export type DepPackageId = "subagents" | "questionnaire" | "todo" | "web-access";
 
 /** 一个“本项目需要”的 pi 包：来源、钉住的版本、缺了少哪块功能、现在装没装。 */
 export interface DepPackageStatus {
