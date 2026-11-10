@@ -100,6 +100,26 @@ check("概况显示主机名", hostname.length > 2, hostname);
 check("概况有磁盘", (await page.locator(".sys-disk").count()) > 0, String(await page.locator(".sys-disk").count()));
 check("概况有网卡", (await page.locator(".sys-adapter").count()) > 0, String(await page.locator(".sys-adapter").count()));
 
+/**
+ * 布局不变量：头 / 主体 / 页脚都在控制台圆角框里，主体不压页脚。
+ * 与窗口大小无关——窗口小内容区应该自己滚动，不该把页脚挤出框（横幅为空时 grid 行错位就是这样穿模的）。
+ */
+async function checkLayout(label) {
+  const r = await page.evaluate(() => {
+    const box = (s) => {
+      const e = document.querySelector(s);
+      if (!e || getComputedStyle(e).display === "none") return null;
+      const b = e.getBoundingClientRect();
+      return { top: b.top, bottom: b.bottom };
+    };
+    return { c: box(".sys-console"), head: box(".sys-head"), main: box(".sys-main"), foot: box(".sys-foot") };
+  });
+  const within = (x) => x && r.c && x.top >= r.c.top - 1 && x.bottom <= r.c.bottom + 1;
+  const ok = within(r.head) && within(r.main) && within(r.foot) && r.main.bottom <= r.foot.top + 1;
+  check(`${label}：头/主体/页脚都在控制台框内`, Boolean(ok), JSON.stringify(r));
+}
+await checkLayout("概况");
+
 await page.getByRole("button", { name: /网络与 DNS/ }).first().click();
 await page.locator(".sys-dns").waitFor({ timeout: 20_000 });
 check("网卡列表", (await page.locator(".sys-net__list .sys-adapter").count()) > 0);
@@ -113,6 +133,12 @@ check("DNS 预设 >= 6", (await page.locator(".sys-preset").count()) >= 6, Strin
 check("DNS 编辑器有应用按钮", (await page.getByRole("button", { name: "应用 DNS" }).count()) === 1);
 check("WinNAT 卡片有重启按钮", (await page.locator(".sys-winnat").getByRole("button", { name: /^(重启|启动) WinNAT$/ }).count()) === 1);
 await page.locator(".sys-winnat").screenshot({ path: path.join(OUT, "sysmanage-winnat.png") });
+await checkLayout("网络与 DNS");
+// 矮窗口（笔记本 125% 缩放一类）再验一次：内容放不下时也只该内容区滚动。
+await page.setViewportSize({ width: 1280, height: 720 });
+await page.waitForTimeout(150);
+await checkLayout("网络与 DNS @1280×720");
+await page.setViewportSize({ width: 1440, height: 940 });
 
 await page.getByRole("button", { name: /端口与服务/ }).first().click();
 await page.locator(".sys-table tbody tr").first().waitFor({ timeout: 20_000 });

@@ -22,7 +22,7 @@ description: 给 pi-web-client 起一套隔离的测试环境（bridge + 内网�
 git worktree add <仓库父目录>/<仓库名>-wt/<slug> <branch>   # slug = 分支名去掉 feat/，/ 换成 -
 ```
 
-测完要么 `git worktree remove <path>`，要么明确告诉用户目录留在哪。
+测完要么 `node tools/worktree-remove.mjs <path>`（先拆 node_modules 等外链再删，别直接 `git worktree remove`），要么明确告诉用户目录留在哪。
 
 ## 启动
 
