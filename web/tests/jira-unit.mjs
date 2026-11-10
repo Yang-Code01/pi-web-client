@@ -11,7 +11,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adfToText, browseUrl, downloadMark, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, siteUrlProblem } from "../src/jira-shared.ts";
+import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_STORAGE_KEY } from "../src/jira-shared.ts";
 
 const bad = (raw) => {
   const problem = siteUrlProblem(raw);
@@ -257,4 +257,90 @@ test("handoffPrompt：优先级 null 写「未设置」，缺省就省略那一�
 test("handoffPrompt：标题为空只留工单号，链接跟着 key", () => {
   const text = handoffPrompt({ ...handoff, summary: "  ", key: "ACME-7" });
   assert.ok(text.startsWith("处理这个 Jira 工单：ACME-7\n\n链接：https://acme.atlassian.net/browse/ACME-7\n"));
+});
+
+// ---------------------------------------------------------------- #258 搜索条件
+
+test("emptySearch：默认关系三个都勾，排序最近更新降序", () => {
+  const s = emptySearch();
+  assert.deepEqual(s.relations, [...SEARCH_RELATIONS]);
+  assert.equal(s.sort, "updated");
+  assert.equal(s.order, "desc");
+  assert.equal(s.unassigned, false);
+  assert.equal(s.includeResolved, false);
+  assert.equal(SEARCH_STORAGE_KEY, "pi.jira.search.last");
+});
+
+test("searchQuery：空值不带，标题去空白，项目大写", () => {
+  const q = searchQuery({ ...emptySearch(), title: " 登录 ", text: "", project: "acme", priority: "" });
+  assert.equal(q.get("title"), "登录");
+  assert.equal(q.has("text"), false);
+  assert.equal(q.has("priority"), false);
+  assert.equal(q.get("project"), "ACME");
+  assert.equal(q.get("sort"), "updated");
+  assert.equal(q.get("order"), "desc");
+  assert.equal(q.has("includeResolved"), false);
+});
+
+test("searchQuery / normalizeSearch：未分配不带人员与关系，但不清表单里选的人", () => {
+  const s = normalizeSearch({ ...emptySearch(), personText: "Ada", unassigned: true });
+  assert.equal(s.personText, "Ada");
+  assert.equal(s.unassigned, true);
+  const q = searchQuery(s);
+  assert.equal(q.get("unassigned"), "1");
+  assert.equal(q.has("person"), false);
+  assert.equal(q.has("relations"), false);
+});
+
+test("searchQuery：选定的人用 personAccountId，自由文本用 person", () => {
+  const picked = normalizeSearch({ ...emptySearch(), person: { accountId: "acc-1", displayName: "Ada" }, personText: "ignored" });
+  assert.equal(picked.person.accountId, "acc-1");
+  assert.equal(picked.personText, "");
+  assert.equal(searchQuery(picked).get("personAccountId"), "acc-1");
+  assert.equal(searchQuery(picked).has("person"), false);
+  assert.equal(searchQuery({ ...emptySearch(), personText: " Ada " }).get("person"), "Ada");
+  assert.equal(searchQuery({ ...emptySearch(), personText: "Ada" }).get("relations"), "assignee,reporter,watcher");
+});
+
+test("normalizeSearch：项目清空连带清具体状态与类别", () => {
+  const s = normalizeSearch({ ...emptySearch(), project: "", status: "Done", statusCategory: "done" });
+  assert.equal(s.status, "");
+  assert.equal(s.statusCategory, "");
+});
+
+test("normalizeSearch：关系去重、未知值丢弃、有人却没勾关系时回默认三项", () => {
+  assert.deepEqual(normalizeSearch({ ...emptySearch(), relations: ["watcher", "bogus", "watcher"] }).relations, ["watcher"]);
+  assert.deepEqual(normalizeSearch({ ...emptySearch(), personText: "Ada", relations: [] }).relations, [...SEARCH_RELATIONS]);
+});
+
+test("serializeSearch / readSavedSearch：条件往返，坏 JSON / 版本不对返回 null", () => {
+  const saved = serializeSearch({
+    ...emptySearch(),
+    title: "白屏",
+    project: "acme",
+    statusCategory: "done",
+    person: { accountId: "acc-9", displayName: "Ada" },
+    includeResolved: true,
+  });
+  const back = readSavedSearch(saved);
+  assert.equal(back.title, "白屏");
+  assert.equal(back.project, "ACME");
+  assert.equal(back.statusCategory, "done");
+  assert.equal(back.person.accountId, "acc-9");
+  assert.equal(back.includeResolved, true);
+  for (const raw of [null, "", "{oops", "null", JSON.stringify({ v: 2 }), JSON.stringify([])]) {
+    assert.equal(readSavedSearch(raw), null, `raw=${raw}`);
+  }
+});
+
+test("readSavedSearch：单个字段类型/枚举不对只丢该字段", () => {
+  const s = readSavedSearch(
+    JSON.stringify({ v: 1, title: 5, sort: "bogus", order: "sideways", relations: ["nope"], project: "acme", status: "Done" }),
+  );
+  assert.equal(s.title, "");
+  assert.equal(s.sort, "updated");
+  assert.equal(s.order, "desc");
+  assert.deepEqual(s.relations, []);
+  assert.equal(s.project, "ACME");
+  assert.equal(s.status, "Done");
 });
