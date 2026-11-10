@@ -12829,11 +12829,32 @@ export class App {
     // `#app { zoom }` scales the rendered box once, never twice (D123 — no vh/vw here).
     const pane = this.els.chatPane;
     const share = this.compact() ? 0.4 : 0.5;
-    const limit = pane && pane.clientHeight > 0 ? Math.min(520, pane.clientHeight * share) : 0;
+    const cap = pane && pane.clientHeight > 0 ? Math.min(520, pane.clientHeight * share) : 0;
+    // #318: while a paste fold is open, the composer and that fold split the cap in half — a fixed
+    // split, not two boxes measuring each other, so neither can squeeze the other by growing. A
+    // fold that is merely collapsed costs nothing: the box keeps the whole cap.
+    const openFold = this.pastes.some((p) => p.open);
+    const limit = openFold ? cap / 2 : cap;
     // `height` is border-box, `scrollHeight` leaves the border out — add it back or we clip a pixel.
     const border = input.offsetHeight - input.clientHeight;
     input.style.height = limit > 0 ? `${Math.min(limit, input.scrollHeight + border)}px` : "auto";
+    this.fitPastes(openFold ? cap / 2 : 0);
     this.syncComposerFade();
+  }
+
+  /**
+   * #318: an expanded paste fold is capped like the composer, and while it is open the composer
+   * keeps only the other half (see `fitComposer`). The cap is written inline in layout px from the
+   * pane's measured height — the same reading `fitComposer` uses — so a `resize: vertical` drag
+   * stops at it, and anything taller scrolls inside the fold instead of pushing the transcript up.
+   * Driven from `fitComposer`, i.e. the pane's ResizeObserver and the window resize frame.
+   */
+  private fitPastes(limit: number): void {
+    const host = this.pasteHost;
+    if (!host) return;
+    for (const body of host.querySelectorAll<HTMLTextAreaElement>("textarea.paste-body")) {
+      body.style.maxHeight = limit > 0 ? `${limit}px` : "";
+    }
   }
 
   /**
@@ -12912,6 +12933,9 @@ export class App {
       }
       host.append(block);
     });
+    // Opening or dropping a fold changes whether the composer splits its cap, and a rebuilt body
+    // needs the cap put back on it — the same pass measures both (#318).
+    this.fitComposer();
   }
 
   private async addImages(files: FileList | readonly File[] | null): Promise<void> {

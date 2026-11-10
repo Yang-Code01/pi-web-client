@@ -2426,6 +2426,9 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .paste-x:hover { color: var(--danger); }
 .composer textarea.paste-body {
   display: block; width: 100%; min-height: 0; height: 160px; max-height: none; resize: vertical;
+  /* #318：上限按面板高度由 `fitPastes()`（app.ts）写成内联 max-height，和内联 height 一起被浏览器
+     收口：拖不过上限，超出的内容在块内滚动（overflow: auto），不去挤对话区。 */
+  overflow: auto;
   border: 0; border-top: 1px solid var(--line-soft); border-radius: 0; background: var(--bg);
   font: 12px/1.5 var(--mono); padding: 8px 8px; color: var(--text);
 }
