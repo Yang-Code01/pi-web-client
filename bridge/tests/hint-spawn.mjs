@@ -1,14 +1,18 @@
 /**
- * #226：网页会话 spawn 时带两段系统提示词 —— 「工作区教训」+「交付礼仪」，开关各自独立。
+ * #226 / #339：网页会话 spawn 时带三段系统提示词 —— 「工作区教训」+「交付礼仪」+「计划维护」，
+ * 三个开关各自独立。
  *
- * A. 默认：argv 里两个 `--append-system-prompt`，一段是 lessons/ 下的账本文件（本仓库的老毛病），
- *    另一段是交付提示词：声明覆盖全局 AGENTS.md 的「产物交付」、先问卷再 `open_preview`、
+ * A. 默认：argv 里三个 `--append-system-prompt`，一段是 lessons/ 下的账本文件（本仓库的老毛病），
+ *    一段是交付提示词：声明覆盖全局 AGENTS.md 的「产物交付」、先问卷再 `open_preview`、
  *    不起浏览器窗口、`no-page` / `untrusted-path` 怎么说话、打不开的格式指向「用本机程序打开」。
- * B. `PI_WEB_HINT=0`：只剩教训那一段（提示词关掉不能顺手把教训也顶掉）。
- * C. `PI_WEB_LESSONS=0`：只剩交付提示词（反过来也一样）。
+ *    第三段是计划提示词：右侧计划读的是 todo 快照、开工前标 in_progress、做完立刻标 completed、
+ *    不许批量补（#339：模型 create 完就不 update，面板停 0/N）。
+ * B. `PI_WEB_HINT=0`：剩下教训 + 计划（关一段不能顺手把别的顶掉）。
+ * C. `PI_WEB_LESSONS=0`：剩下交付 + 计划（反过来也一样）。
+ * D. `PI_WEB_PLAN_HINT=0`：剩下教训 + 交付（第三个开关同样独立）。
  *
  * 自带丢弃式 bridge + 脚本化 pi（fixture 把 argv 写进 FAKE_PI_LOG），不花模型 turn、
- * 不碰 7864。每个用例按系统分配的空闲端口起桥，三个用例可以连跑、也不会撞上别的探针。
+ * 不碰 7864。每个用例按系统分配的空闲端口起桥，四个用例可以连跑、也不会撞上别的探针。
  *
  *   node bridge/tests/hint-spawn.mjs
  */
@@ -80,6 +84,7 @@ async function bootCase(label, extra = {}) {
   const env = { ...process.env };
   delete env.PI_WEB_HINT;
   delete env.PI_WEB_LESSONS;
+  delete env.PI_WEB_PLAN_HINT;
   Object.assign(
     env,
     {
@@ -198,14 +203,18 @@ ${bridgeLog.slice(-3000)}`));
 }
 
 const HINT_NEEDS = ["覆盖", "要在预览里打开吗", "先不看", "open_preview", "no-page", "untrusted-path", "用本机程序打开"];
-const lessonFileOf = (ps) => ps.find((p) => !p.includes("open_preview")) ?? "";
+/** 计划提示词要讲的是机制 + 三条硬约束；`todo` / `in_progress` / `completed` 少一个就说明写歪了。 */
+const PLAN_NEEDS = ["todo", "in_progress", "completed", "批量", "快照"];
+const lessonFileOf = (ps) => ps.find((p) => p.includes("lessons")) ?? "";
 const hintOf = (ps) => ps.find((p) => p.includes("open_preview")) ?? "";
+const planOf = (ps) => ps.find((p) => p.includes("执行 → 计划")) ?? "";
+const countOf = (ps) => ps.length;
 
-// ---- A. 默认：两段都在 ----
+// ---- A. 默认：三段都在，顺序是教训 → 交付 → 计划 ----
 {
   const a = await bootCase("both");
   const ps = prompts(a.argv);
-  check("默认：两段 --append-system-prompt", ps.length === 2, JSON.stringify(ps.map((p) => p.slice(0, 40))));
+  check("默认：三段 --append-system-prompt", countOf(ps) === 3, JSON.stringify(ps.map((p) => p.slice(0, 40))));
   const lessonPath = lessonFileOf(ps);
   check("其中一段是 lessons/ 下的教训文件", lessonPath.includes("lessons") && fs.existsSync(lessonPath), lessonPath);
   const lessonBody = lessonPath && fs.existsSync(lessonPath) ? fs.readFileSync(lessonPath, "utf8") : "";
@@ -214,18 +223,28 @@ const hintOf = (ps) => ps.find((p) => p.includes("open_preview")) ?? "";
   const missing = HINT_NEEDS.filter((w) => !hint.includes(w));
   check("另一段是交付提示词（覆盖关系、问卷、open_preview、失败话术）", Boolean(hint) && !missing.length, missing.join(" / ") || "全部命中");
   check("交付提示词是短文本，不是文件路径", hint.split("\n").length <= 15 && !fs.existsSync(hint), `${hint.split("\n").length} 行`);
+  const plan = planOf(ps);
+  const planMissing = PLAN_NEEDS.filter((w) => !plan.includes(w));
+  check("第三段是计划提示词（快照机制 + 开工/完成/不批量）", Boolean(plan) && !planMissing.length, planMissing.join(" / ") || "全部命中");
+  check("计划提示词是短文本，不是文件路径", plan.split("\n").length <= 12 && !fs.existsSync(plan), `${plan.split("\n").length} 行`);
+  check(
+    "顺序：教训 → 交付 → 计划（规矩离对话最近）",
+    ps.indexOf(lessonPath) === 0 && ps.indexOf(hint) === 1 && ps.indexOf(plan) === 2,
+    ps.map((p) => p.slice(0, 18)).join(" | "),
+  );
   await a.stop();
 }
 
-// ---- B. PI_WEB_HINT=0：教训那段必须还在 ----
+// ---- B. PI_WEB_HINT=0：教训与计划那段必须还在 ----
 {
   const b = await bootCase("hint-off", { PI_WEB_HINT: "0" });
   const ps = prompts(b.argv);
-  check("PI_WEB_HINT=0：只剩一段 --append-system-prompt", ps.length === 1, JSON.stringify(ps.map((p) => p.slice(0, 40))));
-  const lessonPath = ps[0] ?? "";
-  check("留下的正是教训文件（没被开关顶掉）", lessonPath.includes("lessons") && fs.existsSync(lessonPath), lessonPath);
+  check("PI_WEB_HINT=0：剩两段 --append-system-prompt", countOf(ps) === 2, JSON.stringify(ps.map((p) => p.slice(0, 40))));
+  const lessonPath = lessonFileOf(ps);
+  check("留下的有教训文件（没被开关顶掉）", lessonPath.includes("lessons") && fs.existsSync(lessonPath), lessonPath);
   const lessonBody = lessonPath && fs.existsSync(lessonPath) ? fs.readFileSync(lessonPath, "utf8") : "";
   check("教训文件内容照旧", lessonBody.includes("反复踩的坑"));
+  check("留下的还有计划提示词", PLAN_NEEDS.every((w) => planOf(ps).includes(w)));
   check("整条 argv 里没有交付提示词", b.argv.every((a) => !a.includes("open_preview") && !a.includes("用本机程序打开")));
   await b.stop();
 }
@@ -234,10 +253,21 @@ const hintOf = (ps) => ps.find((p) => p.includes("open_preview")) ?? "";
 {
   const c = await bootCase("lessons-off", { PI_WEB_LESSONS: "0" });
   const ps = prompts(c.argv);
-  check("PI_WEB_LESSONS=0：只剩一段 --append-system-prompt", ps.length === 1, JSON.stringify(ps.map((p) => p.slice(0, 40))));
+  check("PI_WEB_LESSONS=0：剩两段 --append-system-prompt", countOf(ps) === 2, JSON.stringify(ps.map((p) => p.slice(0, 40))));
   check("留下的是交付提示词", hintOf(ps) !== "" && HINT_NEEDS.every((w) => hintOf(ps).includes(w)));
+  check("留下的是计划提示词", PLAN_NEEDS.every((w) => planOf(ps).includes(w)));
   check("没有教训文件路径", ps.every((p) => !p.includes("lessons")));
   await c.stop();
+}
+
+// ---- D. PI_WEB_PLAN_HINT=0：关计划那段，另外两段照旧 ----
+{
+  const d = await bootCase("plan-off", { PI_WEB_PLAN_HINT: "0" });
+  const ps = prompts(d.argv);
+  check("PI_WEB_PLAN_HINT=0：剩两段 --append-system-prompt", countOf(ps) === 2, JSON.stringify(ps.map((p) => p.slice(0, 40))));
+  check("教训与交付都还在", fs.existsSync(lessonFileOf(ps)) && HINT_NEEDS.every((w) => hintOf(ps).includes(w)));
+  check("整条 argv 里没有计划提示词", d.argv.every((a) => !a.includes("执行 → 计划") && !a.includes("in_progress")));
+  await d.stop();
 }
 
 const failed = results.filter((r) => !r.ok).length;
