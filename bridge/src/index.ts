@@ -28,6 +28,9 @@ import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
 import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion, type RuntimeStats } from "./sessions.ts";
+import { entriesToItems } from "./items.ts";
+import type { Item } from "./items.ts";
+import { loadEntries, type SessionEntry } from "./sessionfile.ts";
 import { defaultPermission } from "./permissiondefault.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { describeStoreSkills, installSkill, installedSkills, previewSource, removeSkill, searchSkillStore } from "./skillstore.ts";
@@ -91,6 +94,60 @@ interface Config {
 /** D186：公网写入窗口 1 天（原 D15 是 10 分钟）—— 手机上批准不该一轮对话就重输一次口令。 */
 const STEP_UP_MS = 24 * 60 * 60 * 1000;
 const MAX_BODY = 30 * 1024 * 1024;
+
+interface ChildWatch {
+  sessionId: string;
+  runId: string;
+  timer: NodeJS.Timeout;
+  file: string | null;
+  size: number;
+  mtime: number;
+  items: Item[];
+  stats: ChildSessionStats | null;
+  state: string;
+}
+
+interface ChildSessionStats {
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number } | null;
+  cost: number | null;
+  contextTokens: null;
+  contextWindow: null;
+}
+
+/** Child session files have no live RPC stats endpoint, so derive cumulative usage from saved assistant entries. */
+function childSessionStats(entries: SessionEntry[]): ChildSessionStats {
+  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  let sawTokens = false;
+  let cost = 0;
+  let sawCost = false;
+  for (const entry of entries) {
+    if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+    const usage = entry.message.usage;
+    if (!usage || typeof usage !== "object") continue;
+    for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) {
+      const value = usage[key];
+      if (typeof value !== "number" || !Number.isFinite(value)) continue;
+      tokens[key] += value;
+      sawTokens = true;
+    }
+    const total = typeof usage.totalTokens === "number" && Number.isFinite(usage.totalTokens)
+      ? usage.totalTokens
+      : tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite;
+    if (typeof usage.totalTokens === "number" && Number.isFinite(usage.totalTokens)) sawTokens = true;
+    tokens.total += total;
+    const messageCost = usage.cost?.total;
+    if (typeof messageCost === "number" && Number.isFinite(messageCost)) {
+      cost += messageCost;
+      sawCost = true;
+    }
+  }
+  return {
+    tokens: sawTokens ? tokens : null,
+    cost: sawCost ? cost : null,
+    contextTokens: null,
+    contextWindow: null,
+  };
+}
 
 /**
  * 关隧道时给回包留的时间：先把响应写出去，再等这么久才杀 cloudflared。
@@ -1481,6 +1538,77 @@ async function main(): Promise<void> {
     const send = (payload: any) => {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
     };
+    const childWatches = new Map<string, ChildWatch>();
+    const childWatchKey = (sessionId: string, runId: string) => `${sessionId}\u0000${runId}`;
+    const stopChildWatch = (key: string) => {
+      const watch = childWatches.get(key);
+      if (!watch) return;
+      clearInterval(watch.timer);
+      childWatches.delete(key);
+    };
+    const stopChildWatches = (sessionId?: string) => {
+      for (const [key, watch] of childWatches) {
+        if (sessionId === undefined || watch.sessionId === sessionId) stopChildWatch(key);
+      }
+    };
+    const pollChildWatch = (watch: ChildWatch, initial = false) => {
+      const session = sessions.get(watch.sessionId);
+      const child = session?.bgChildSession(watch.runId);
+      if (!session || !child) {
+        send({ type: "exec.child.unavailable", sessionId: watch.sessionId, runId: watch.runId, error: "run" });
+        stopChildWatch(childWatchKey(watch.sessionId, watch.runId));
+        return;
+      }
+      let items = watch.items;
+      let stats = watch.stats;
+      let file = child.sessionFile ?? null;
+      let size = watch.size;
+      let mtime = watch.mtime;
+      if (!file && watch.file) {
+        send({ type: "exec.child.unavailable", sessionId: watch.sessionId, runId: watch.runId, error: "session-file" });
+        stopChildWatch(childWatchKey(watch.sessionId, watch.runId));
+        return;
+      }
+      if (file) {
+        try {
+          const stat = fs.statSync(file);
+          if (file !== watch.file || stat.size !== watch.size || stat.mtimeMs !== watch.mtime) {
+            const loaded = loadEntries(file);
+            items = entriesToItems(loaded.entries);
+            stats = childSessionStats(loaded.entries);
+            size = stat.size;
+            mtime = stat.mtimeMs;
+          }
+        } catch {
+          file = null;
+        }
+      }
+      const state = child.run.state;
+      const ids = watch.items.map((item) => item.id);
+      const nextIds = items.map((item) => item.id);
+      const reset = ids.some((id, index) => nextIds[index] !== id);
+      const oldItems = new Map(watch.items.map((item) => [item.id, JSON.stringify(item)]));
+      const changed = reset ? items : items.filter((item) => oldItems.get(item.id) !== JSON.stringify(item));
+      const changedAnything = initial || changed.length > 0 || state !== watch.state || JSON.stringify(stats) !== JSON.stringify(watch.stats) || file !== watch.file;
+      watch.file = file;
+      watch.size = size;
+      watch.mtime = mtime;
+      watch.items = items;
+      watch.stats = stats;
+      watch.state = state;
+      if (!changedAnything) return;
+      send({
+        type: initial ? "exec.child.snapshot" : "exec.child.delta",
+        sessionId: watch.sessionId,
+        runId: watch.runId,
+        toolCallId: child.run.toolCallId,
+        state,
+        items: initial || reset ? items : changed,
+        stats,
+        ...(reset && !initial ? { reset: true } : {}),
+        pending: !file,
+      });
+    };
     send({
       type: "hello",
       version: VERSION,
@@ -1496,7 +1624,7 @@ async function main(): Promise<void> {
       notes: listNotes(),
       // #278：页面据此决定 ＋ 是「挑目录建组」还是退回「空壳组 + 就地改名」（旧桥没有这项）；
       // `ws.resolve.dir` = 对话框能问「这个目录折回到哪个组」（子目录 / worktree）。
-      caps: ["ws.create.dir", "ws.resolve.dir"],
+      caps: ["ws.create.dir", "ws.resolve.dir", "exec.child.subscribe"],
     });
     // 先用 1–2 s 的快清单打招呼，带扩展的完整清单十几秒后自己补上（D150）。
     void pushCatalog(ws, { resend: true });
@@ -1531,6 +1659,7 @@ async function main(): Promise<void> {
 
     // A login waiting on this page's answers (or an OAuth callback server) must not outlive it.
     ws.on("close", () => {
+      stopChildWatches();
       dropClient(ws);
       // 这条链接上还没回执的投递再也不会有人接：结算成 no-ack，别把 HTTP 请求挂到超时。
       for (const entry of pendingPreview.values()) {
@@ -1649,8 +1778,10 @@ async function main(): Promise<void> {
             return;
           }
           case "subscribe": {
-            const snap = sessions.pagedSnapshot(msg.sessionId);
-            (ws as any).watching = String(msg.sessionId);
+            const sid = String(msg.sessionId);
+            for (const [key, watch] of childWatches) if (watch.sessionId !== sid) stopChildWatch(key);
+            const snap = sessions.pagedSnapshot(sid);
+            (ws as any).watching = sid;
             send(frameFor(ws, { ...sessionFrameOf(snap), trust: await trustFor(snap.state.cwd) }));
             void sessions.get(String(msg.sessionId))?.refreshStats();
             return;
@@ -1665,11 +1796,39 @@ async function main(): Promise<void> {
             send({ type: "history", sessionId: msg.sessionId, before: msg.before, items: page.items, hasMore: page.hasMore });
             return;
           }
-          case "unsubscribe": {
-            // 页面关掉会话 = 不再「在看」它（#224 复审）：只清自己这一格，同会话的其它页签照旧收投递。
-            if ((ws as any).watching === String(msg.sessionId)) (ws as any).watching = null;
-            return;
-          }
+           case "exec.child.subscribe": {
+             const sessionId = String(msg.sessionId ?? "");
+             const runId = String(msg.runId ?? "").slice(0, 100);
+             if ((ws as any).publicReq) {
+               send({ type: "exec.child.unavailable", sessionId, runId, error: "public" });
+               return;
+             }
+             const session = sessions.get(sessionId);
+             if (!runId || !session?.bgChildSession(runId)) {
+               send({ type: "exec.child.unavailable", sessionId, runId, error: "run" });
+               return;
+             }
+             const key = childWatchKey(sessionId, runId);
+             stopChildWatch(key);
+             let watch: ChildWatch;
+             const timer = setInterval(() => pollChildWatch(watch), 1000);
+             watch = { sessionId, runId, timer, file: null, size: -1, mtime: -1, items: [], stats: null, state: "unknown" };
+             childWatches.set(key, watch);
+             pollChildWatch(watch, true);
+             return;
+           }
+           case "exec.child.unsubscribe": {
+             stopChildWatch(childWatchKey(String(msg.sessionId ?? ""), String(msg.runId ?? "").slice(0, 100)));
+             return;
+           }
+           case "unsubscribe": {
+             // Closing the parent session view also releases its private child-session polling watches.
+             const sid = String(msg.sessionId);
+             stopChildWatches(sid);
+             // 页面关掉会话 = 不再「在看」它（#224 复审）：只清自己这一格，同会话的其它页签照旧收投递。
+             if ((ws as any).watching === sid) (ws as any).watching = null;
+             return;
+           }
           case "preview.open.done": {
             // 页面对一条 `preview.open` 的回应（#224 复审）：只有投给**这条 ws** 的 reqId 才认。
             const entry = pendingPreview.get(String(msg.reqId ?? ""));

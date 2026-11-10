@@ -784,6 +784,17 @@ export class Session extends EventEmitter {
     return this.bgRuns.list();
   }
 
+  /** Internal child-session subscription data; never send `sessionFile` to the browser. */
+  bgChildSession(runId: string): { run: Pick<BgRun, "id" | "toolCallId" | "agent" | "task" | "state">; sessionFile?: string } | undefined {
+    const run = this.bgRuns.get(runId);
+    if (!run) return undefined;
+    const sessionFile = this.bgRuns.childSessionFile(runId);
+    return {
+      run: { id: run.id, toolCallId: run.toolCallId, agent: run.agent, task: run.task, state: run.state },
+      ...(sessionFile ? { sessionFile } : {}),
+    };
+  }
+
   /** D170 详情：一个 run 的活动记录尾 + 最终答复（只读临时目录里的痕迹文件）。 */
   bgLog(runId: string, limit?: number): { run?: BgRun; log?: string; out?: string } {
     return this.bgRuns.readLog(runId, limit);

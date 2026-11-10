@@ -175,6 +175,58 @@ async function turn(text) {
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
+  if (text.startsWith("BGCHILD")) {
+    const runId = process.env.FAKE_PI_CHILD_RUN_ID || `del_fake_${process.pid}`;
+    const root = path.join(os.tmpdir(), "acp-delegate");
+    const activity = path.join(root, `${runId}.activity`);
+    const session = path.join(root, `${runId}.session.jsonl`);
+    const newline = String.fromCharCode(10);
+    const tick = String.fromCharCode(96);
+    const at = () => new Date().toISOString();
+    const usage = (totalTokens, totalCost) => ({
+      input: totalTokens - 5,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens,
+      cost: { input: totalCost, output: 0, cacheRead: 0, cacheWrite: 0, total: totalCost },
+    });
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(activity, "child session fixture");
+    const entries = [
+      { type: "session", id: `child-${process.pid}`, timestamp: at(), cwd: process.cwd() },
+      { type: "message", id: "child-u1", parentId: null, timestamp: at(), message: { role: "user", content: [{ type: "text", text: "child task" }] } },
+      { type: "message", id: "child-a1", parentId: "child-u1", timestamp: at(), message: { role: "assistant", content: [{ type: "text", text: "child-first" }], usage: usage(15, 0.01) } },
+    ];
+    fs.writeFileSync(session, `${entries.map((entry) => JSON.stringify(entry)).join(newline)}${newline}`);
+    const append = (id, parentId, answer, count, cost) => fs.appendFileSync(session, `${JSON.stringify({
+      type: "message", id, parentId, timestamp: at(), message: { role: "assistant", content: [{ type: "text", text: answer }], usage: usage(count, cost) },
+    })}${newline}`);
+    setTimeout(() => append("child-a2", "child-a1", "child-second", 15, 0.01), 1200);
+    setTimeout(() => append("child-a3", "child-a2", "child-third", 15, 0.01), 3200);
+    const quotedRunId = [tick, runId, tick].join("");
+    const resultText = [
+      `Delegated to **researcher** (runId ${quotedRunId}).`,
+      "Task: inspect child updates",
+      `Running in the background at ${tick}${root}${tick}.`,
+      `Live activity is streaming to ${tick}${activity}${tick}.`,
+    ].join(newline);
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "tool_execution_start", toolCallId: `call-${runId}`, toolName: "acp_delegate", args: { agent: "researcher", task: "inspect child updates" } });
+    out({
+      type: "tool_execution_end",
+      toolCallId: `call-${runId}`,
+      toolName: "acp_delegate",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: resultText }],
+        details: { kind: "delegate", runId, agent: "researcher", task: "inspect child updates" },
+      },
+    });
+    out({ type: "message_end", message: assistant("子代理已启动。", { stopReason: "stop" }) });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   if (text.startsWith("BGSTART")) {
     // D170: 派一个后台子代理，这一轮正常收尾 —— 会话自己 settle 了，runner 还在跑。
     // 形状照真 pi 来：`result` 是 `{ content, details }`（pi docs/json.md），活动路径在结果文本的

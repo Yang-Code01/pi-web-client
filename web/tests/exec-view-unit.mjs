@@ -204,3 +204,68 @@ test("waiting phase is distinct from idle", () => {
   const view = execView({ ...base, phase: "waiting", items: [user("u1", "2025-01-01T00:00:00Z")] });
   assert.equal(view.now.kind, "waiting");
 });
+
+test("subagent runs attach to their dispatch and show one child level of steps", () => {
+  const dispatch = { ...tool("dispatch", "2025-01-01T00:00:02Z", "ok"), toolCallId: "call-delegate", name: "acp_delegate" };
+  const view = execView({
+    ...base,
+    items: [user("u1", "2025-01-01T00:00:00Z"), dispatch],
+    childSessionsAvailable: true,
+    childRuns: [{
+
+      runId: "del_child",
+      toolCallId: "call-delegate",
+      agent: "researcher",
+      task: "inspect the files",
+      state: "running",
+      items: [tool("child-tool", "2025-01-01T00:00:03Z", "ok", { result: "found it" })],
+      stats: { tokens: { total: 40 }, cost: 0.02, contextTokens: null, contextWindow: null },
+    }],
+  });
+
+  assert.deepEqual(view.timeline[0].subagent, {
+    runId: "del_child",
+    agent: "researcher",
+    task: "inspect the files",
+    status: "running",
+    steps: [{
+      id: "child-tool",
+      kind: "tool",
+      label: "bash",
+      args: { command: "child-tool" },
+      status: "success",
+      durationMs: null,
+      result: "found it",
+    }],
+    stats: { cost: 0.02, tokens: 40 },
+    locked: false,
+  });
+  assert.equal("subagent" in view.timeline[0].subagent.steps[0], false, "grandchildren stay a single non-expandable line");
+  assert.deepEqual(view.metrics.subagents, { cost: 0.02, tokens: 40 });
+});
+
+test("child totals aggregate only loaded subagent runs with available statistics", () => {
+  const dispatch = (id, callId) => ({ ...tool(id, "2025-01-01T00:00:02Z", "ok"), toolCallId: callId, name: "subagent" });
+  const view = execView({
+    ...base,
+    items: [user("u1", "2025-01-01T00:00:00Z"), dispatch("d1", "call-1"), dispatch("d2", "call-2")],
+    childRuns: [
+      { runId: "run-1", toolCallId: "call-1", agent: "worker", task: "one", state: "done", items: [], stats: { tokens: { total: 25 }, cost: 0.01, contextTokens: null, contextWindow: null } },
+      { runId: "run-2", toolCallId: "call-2", agent: "worker", task: "two", state: "failed", items: [], stats: { tokens: { total: 10 }, cost: 0.03, contextTokens: null, contextWindow: null } },
+      { runId: "other-round", toolCallId: "old-call", agent: "worker", task: "old", state: "done", items: [], stats: { tokens: { total: 100 }, cost: 1, contextTokens: null, contextWindow: null } },
+    ],
+  });
+
+  assert.deepEqual(view.metrics.subagents, { cost: 0.04, tokens: 35 });
+  assert.equal(view.timeline.length, 2, "unmatched runs do not create phantom rows");
+});
+
+test("dispatch run ids remain visible but disabled without child-session capability or on public access", () => {
+  const dispatch = { ...tool("dispatch", "2025-01-01T00:00:02Z", "ok", { result: "Delegated (runId `del_child`)." }), name: "acp_delegate" };
+  const local = execView({ ...base, items: [user("u1", "2025-01-01T00:00:00Z"), dispatch] });
+  assert.equal(local.timeline[0].subagent.runId, "del_child");
+  assert.equal(local.timeline[0].subagent.locked, true);
+
+  const publicView = execView({ ...base, items: [user("u1", "2025-01-01T00:00:00Z"), dispatch], childSessionsAvailable: true, publicAccess: true });
+  assert.equal(publicView.timeline[0].subagent.locked, true);
+});

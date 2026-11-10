@@ -117,6 +117,7 @@ export interface BgView {
 /** D170 详情的线上形状（桥 `bg.list` 的 `runs[]`）；路径不出桥，只说有没有可看的。 */
 export interface BgRunView {
   id: string;
+  toolCallId?: string;
   source: "acp" | "subagents";
   agent: string;
   task: string;

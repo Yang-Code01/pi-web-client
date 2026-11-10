@@ -26,7 +26,7 @@
 
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readdirSync, readSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 
 /** runner 的痕迹目录（acp_delegate 把 `<runId>.activity` / `.out` / `.session.jsonl` 都写在这里）。 */
 const ACP_DIR = join(tmpdir(), "acp-delegate");
@@ -46,6 +46,8 @@ const ID_OK = /^(del_[A-Za-z0-9_]+|call_[A-Za-z0-9_]+|[0-9a-f]{8}-[0-9a-f]{4}-[0
 /** 一个还在跑（或刚跑完）的后台子代理（D170 的叫法：不用「后台任务」指代它，那个还包括 `!` 与构建）。 */
 export interface BgRun {
   id: string;
+  /** 发起这次 dispatch 的父会话工具调用 id，用它把 run 节点挂回 timeline。 */
+  toolCallId?: string;
   /** 谁起的是两种实现：痕迹和完成通知都不一样。 */
   source: "acp" | "subagents";
   agent: string;
@@ -90,6 +92,7 @@ export interface BgView {
 /** 线上形状（`bg.list` 的 `runs[]`）：绝对路径不出桥，只告诉前端「有没有可看的」。 */
 export interface BgRunView {
   id: string;
+  toolCallId?: string;
   source: "acp" | "subagents";
   agent: string;
   task: string;
@@ -523,6 +526,7 @@ export class BgRuns {
     const summary = summarizeChildren(kids);
     const run: BgRun = {
       id: callId,
+      toolCallId: callId,
       source: "subagents",
       agent: str(a.agent) ?? summary.agent,
       task: str(a.task) ?? summary.task,
@@ -580,7 +584,7 @@ export class BgRuns {
     const childSummary = summarizeChildren(kids);
     const agent = (str(d.agent) ?? str(a.agent) ?? fromText?.[1] ?? fromText?.[2] ?? childSummary.agent ?? "").trim();
     const task = (str(d.task) ?? str(a.task) ?? (source === "acp" ? TASK_LINE.exec(text)?.[1] : undefined) ?? childSummary.task ?? "").trim();
-    const run: BgRun = { id, source, agent, task, startedAt: Date.now(), state: "running" };
+    const run: BgRun = { id, source, agent, task, startedAt: Date.now(), state: "running", ...(callId ? { toolCallId: callId } : {}) };
     if (workflow) run.workflow = true;
     const live = LIVE_LOG.exec(text)?.[1];
     if (source === "acp") {
@@ -632,6 +636,7 @@ export class BgRuns {
       .sort((a, b) => a.startedAt - b.startedAt)
       .map((r) => ({
         id: r.id,
+        ...(r.toolCallId ? { toolCallId: r.toolCallId } : {}),
         source: r.source,
         agent: r.agent,
         task: r.task,
@@ -648,8 +653,39 @@ export class BgRuns {
     return this.runs.get(id);
   }
 
+  /** The child transcript path is internal to the bridge and never appears in `BgRunView`. */
+  childSessionFile(id: string): string | undefined {
+    const run = this.runs.get(id);
+    if (!run) return undefined;
+    if (run.source === "acp") {
+      const file = resolve(join(ACP_DIR, `${id}.session.jsonl`));
+      if (!file.startsWith(ACP_DIR + sep)) return undefined;
+      try {
+        return statSync(file).isFile() ? file : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    if (!run.dir) return undefined;
+    const steps = statusObject(run.dir)?.steps;
+    if (!Array.isArray(steps)) return undefined;
+    for (const step of [...steps].reverse()) {
+      if (!step || typeof step !== "object") continue;
+      const raw = (step as Record<string, unknown>).sessionFile;
+      if (typeof raw !== "string" || !raw.trim()) continue;
+      const file = resolve(raw);
+      if (!underSubagents(file, true)) continue;
+      try {
+        if (statSync(file).isFile()) return file;
+      } catch {
+        // A step can advertise its session before pi creates the file; a later subscription can retry.
+      }
+    }
+    return undefined;
+  }
+
   /**
-   * 一个 run 的痕迹：活动记录尾 + 跑完的最终答复。只读 `%TEMP%\acp-delegate\` 与
+   * 一个 run 的痕迹:活动记录尾 + 跑完的最终答复。只读 `%TEMP%\acp-delegate\` 与
    * `%TEMP%\pi-subagents-*\` 里的文件 ——
    * 路径是从 pi 的工具结果里拾来的（那也是一段可能被写邪的文本），所以读前再校验一次落点，
    * 不让一次注入就变成任意文件读取。文件还没写出来、被删了、超过上限，都只是少一段内容。

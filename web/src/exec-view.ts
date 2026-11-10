@@ -23,6 +23,9 @@ export interface ExecViewInput {
   now: number;
   stats?: ExecStatsSnapshot | null;
   roundStats?: Record<string, ExecRoundStats>;
+  childRuns?: ExecChildRunInput[];
+  childSessionsAvailable?: boolean;
+  publicAccess?: boolean;
 }
 
 export interface ExecActiveTool {
@@ -38,6 +41,36 @@ export type ExecNowView =
   | { kind: "tool"; activeTools: ExecActiveTool[] }
   | { kind: "waiting"; activeTools: [] };
 
+export interface ExecChildRunInput {
+  runId: string;
+  toolCallId: string;
+  agent: string;
+  task: string;
+  state: "running" | "done" | "failed";
+  items: Item[];
+  stats?: ExecStatsSnapshot | null;
+}
+
+export interface ExecChildStep {
+  id: string;
+  kind: "tool" | "skill";
+  label: string;
+  args: unknown;
+  status: "running" | "success" | "error" | "unknown";
+  durationMs: number | null;
+  result?: string;
+}
+
+export interface ExecSubagentRow {
+  runId: string;
+  agent: string;
+  task: string;
+  status: "running" | "done" | "failed" | "unknown";
+  steps: ExecChildStep[];
+  stats: { cost: number | null; tokens: number | null };
+  locked: boolean;
+}
+
 export interface ExecTimelineRow {
   id: string;
   kind: "tool" | "skill";
@@ -45,6 +78,7 @@ export interface ExecTimelineRow {
   args: unknown;
   status: "running" | "success" | "error" | "unknown";
   durationMs: number | null;
+  subagent?: ExecSubagentRow;
 }
 
 export interface ExecRound {
@@ -93,30 +127,71 @@ function timeOf(item: Item): number | null {
   return Number.isFinite(at) ? at : null;
 }
 
-function timelineRows(items: Item[], now: number): ExecTimelineRow[] {
+function dispatchRunId(item: Extract<Item, { kind: "tool" }>): string | null {
+  if (!/^(acp_delegate|subagent)$/.test(item.name)) return null;
+  const result = item.result ?? "";
+  const match = /runId\s*[`"']?([A-Za-z0-9_-]+)/.exec(result) ?? /Async:\s*[\w.-]+\s*\[([A-Za-z0-9_-]+)\]/.exec(result);
+  return match?.[1] ?? null;
+}
+
+function timelineRows(
+  items: Item[],
+  now: number,
+  childRuns: ExecChildRunInput[] = [],
+  childSessionsAvailable = false,
+  publicAccess = false,
+): ExecTimelineRow[] {
+  const childrenByTool = new Map(childRuns.map((run) => [run.toolCallId, run]));
   const rows: ExecTimelineRow[] = [];
   for (const item of items) {
     if (item.kind === "tool") {
       if (item.name.toLowerCase() === "todo") continue;
-      const status = item.isError || item.status === "error"
-        ? "error"
-        : item.status === "running"
-          ? "running"
-          : item.status === "ok"
-            ? "success"
-            : "unknown";
+      let status: ExecTimelineRow["status"] = "unknown";
+      if (item.isError || item.status === "error") status = "error";
+      else if (item.status === "running") status = "running";
+      else if (item.status === "ok") status = "success";
       const started = timeOf(item);
-      const durationMs = typeof item.durationMs === "number"
-        ? item.durationMs
-        : status === "running" && started !== null
-          ? Math.max(0, now - started)
-          : null;
-      rows.push({ id: item.id, kind: "tool", label: item.name, args: item.args, status, durationMs });
+      let durationMs = typeof item.durationMs === "number" ? item.durationMs : null;
+      if (durationMs === null && status === "running" && started !== null) durationMs = Math.max(0, now - started);
+      const run = childrenByTool.get(item.toolCallId);
+      const runId = run?.runId ?? dispatchRunId(item);
+      const task = run?.task ?? (item.args && typeof item.args === "object" && typeof (item.args as Record<string, unknown>).task === "string"
+        ? String((item.args as Record<string, unknown>).task)
+        : "");
+      let subagent: ExecSubagentRow | undefined;
+      if (runId) {
+        subagent = {
+          runId,
+          agent: run?.agent ?? "",
+          task,
+          status: run?.state ?? (item.status === "running" ? "running" : "unknown"),
+          steps: run ? childTimelineRows(run.items, now) : [],
+          stats: { cost: run?.stats?.cost ?? null, tokens: totalTokens(run?.stats ?? null) },
+          locked: publicAccess || !childSessionsAvailable,
+        };
+      }
+      rows.push({ id: item.id, kind: "tool", label: item.name, args: item.args, status, durationMs, ...(subagent ? { subagent } : {}) });
     } else if (item.kind === "skill") {
       rows.push({ id: item.id, kind: "skill", label: item.name, args: "", status: "success", durationMs: null });
     }
   }
   return rows.reverse();
+}
+
+/** Child timelines deliberately stop at one level: child tool rows never receive subagent children. */
+function childTimelineRows(items: Item[], now: number): ExecChildStep[] {
+  return timelineRows(items, now).map((row) => {
+    const item = items.find((candidate) => candidate.id === row.id);
+    return {
+      id: row.id,
+      kind: row.kind,
+      label: row.label,
+      args: row.args,
+      status: row.status,
+      durationMs: row.durationMs,
+      ...(item?.kind === "tool" && typeof item.result === "string" ? { result: item.result } : {}),
+    };
+  });
 }
 
 function previousDuration(items: Item[]): number | null {
@@ -147,13 +222,15 @@ function roundMetrics(
   now: number,
   stats: ExecStatsSnapshot | null,
   roundStats: ExecRoundStats | undefined,
+  childRuns: ExecChildRunInput[],
 ): ExecMetricsView {
   const first = items.find((item) => item.kind === "user");
   const start = first ? timeOf(first) : null;
   const end = selectedIsCurrent && phase !== "idle"
     ? now
     : [...items].reverse().map(timeOf).find((at) => at !== null) ?? null;
-  const timeMs = start === null || end === null ? null : Math.max(0, end - start);
+  let timeMs: number | null = null;
+  if (start !== null && end !== null) timeMs = Math.max(0, end - start);
   const tools = items.filter((item): item is Extract<Item, { kind: "tool" }> => item.kind === "tool" && item.name.toLowerCase() !== "todo");
   const failureCount = tools.filter((item) => item.isError || item.status === "error").length;
   const snapshot = selectedIsCurrent || !first ? stats ?? roundStats?.final ?? null : roundStats?.final ?? null;
@@ -165,6 +242,14 @@ function roundMetrics(
   const contextPercent = contextTokens !== null && contextWindow !== null && contextWindow > 0
     ? (contextTokens / contextWindow) * 100
     : null;
+  const childRunIds = new Set(tools.map((item) => item.toolCallId));
+  const childTotals = childRuns.filter((run) => childRunIds.has(run.toolCallId)).reduce(
+    (sum, run) => ({
+      cost: sum.cost + (typeof run.stats?.cost === "number" && Number.isFinite(run.stats.cost) ? run.stats.cost : 0),
+      tokens: sum.tokens + (totalTokens(run.stats ?? null) ?? 0),
+    }),
+    { cost: 0, tokens: 0 },
+  );
 
   return {
     durationMs: timeMs,
@@ -173,7 +258,7 @@ function roundMetrics(
     cost,
     tokens,
     main: { cost, tokens },
-    subagents: { cost: 0, tokens: 0 },
+    subagents: childTotals,
     contextTokens,
     contextWindow,
     contextPercent,
@@ -184,16 +269,9 @@ function activeTools(items: Item[], now: number): ExecActiveTool[] {
   return items.flatMap((item) => {
     if (item.kind !== "tool" || item.status !== "running") return [];
     const started = timeOf(item);
-    return [{
-      id: item.id,
-      name: item.name,
-      args: item.args,
-      elapsedMs: typeof item.durationMs === "number"
-        ? item.durationMs
-        : started === null
-          ? 0
-          : Math.max(0, now - started),
-    }];
+    let elapsedMs = typeof item.durationMs === "number" ? item.durationMs : 0;
+    if (typeof item.durationMs !== "number" && started !== null) elapsedMs = Math.max(0, now - started);
+    return [{ id: item.id, name: item.name, args: item.args, elapsedMs }];
   });
 }
 
@@ -206,7 +284,13 @@ export function execView(input: ExecViewInput): ExecViewModel {
   const selectedIsCurrent = selected !== null && selected.id === currentRound?.id;
   const selectedItems = selected?.items ?? [];
   const active = selectedIsCurrent ? activeTools(selectedItems, input.now) : [];
-  const timeline = timelineRows(selectedItems, input.now);
+  const timeline = timelineRows(
+    selectedItems,
+    input.now,
+    input.childRuns ?? [],
+    input.childSessionsAvailable ?? false,
+    input.publicAccess ?? false,
+  );
   let now: ExecNowView;
 
   if (selectedIsCurrent && input.phase === "thinking") {
@@ -235,6 +319,7 @@ export function execView(input: ExecViewInput): ExecViewModel {
     input.now,
     input.stats ?? null,
     selected ? input.roundStats?.[selected.id] : undefined,
+    input.childRuns ?? [],
   );
   return { now, timeline, rounds: roundOptions, selectedRound: selected?.id ?? null, metrics };
 }
