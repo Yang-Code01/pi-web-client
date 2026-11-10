@@ -2198,7 +2198,12 @@ async function main(): Promise<void> {
           // ------------------------------------------------ 扩展 manager (D81)
           case "ui.set": {
             if (!(await requireStepUp())) return;
-            const prefs = writeUiPrefs({ ...(typeof msg.showExtButton === "boolean" ? { showExtButton: msg.showExtButton } : {}) });
+            // #288：新报文 `{ chrome: { id: boolean|null } }`（null = 删键）；旧的 `{ showExtButton }`
+            // 继续接受，映射进 chrome.ext。白名单过滤在 writeUiPrefs 里。
+            const prefs = writeUiPrefs({
+              chrome: msg.chrome && typeof msg.chrome === "object" && !Array.isArray(msg.chrome) ? (msg.chrome as Record<string, unknown>) : undefined,
+              showExtButton: typeof msg.showExtButton === "boolean" ? msg.showExtButton : undefined,
+            });
             broadcast({ type: "ui", ui: prefs });
             return;
           }

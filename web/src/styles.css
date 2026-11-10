@@ -983,6 +983,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 @keyframes act-spin { to { transform: rotate(360deg); } }
 /* the compact + model buttons sit at the far right of the hint row, past the keyboard hint */
 .composer .hint-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; }
+/* #290: `display: flex` 会盖过 UA 的 [hidden]，四颗全关时整行要真的让位。 */
+.composer .hint-tools[hidden] { display: none; }
 .composer .hint-tools .btn { padding: 4px 12px; font-size: 12px; border-radius: 8px; flex: 0 0 auto; white-space: nowrap; }
 .composer .hint-tools .release-btn { color: var(--dim); }
 .claim-btn { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
@@ -1662,6 +1664,88 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .ws-max-n { min-width: 18px; text-align: center; font: 13px/1 var(--mono); color: var(--text); }
 .ws-max-hint { font-size: 11px; line-height: 1.45; color: var(--faint); }
 
+/* #291：「外观与语言」里的实时预览 + 开关墙。
+   预览是顶栏 / 下沿的缩略画（手机档宽 300px：390px 屏上表内宽只有 ~358，再宽就横向溢出），
+   开关墙是两块方块；虚线 = 现在不画，实线 = 画着。 */
+.chrome-pane { display: grid; gap: 8px; }
+.chrome-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.chrome-note { font-size: 11px; line-height: 1.5; color: var(--faint); }
+.chrome-offline { font-size: 11px; line-height: 1.5; color: var(--dim); }
+
+.chrome-pv {
+  justify-self: start; width: 100%; max-width: 100%;
+  display: grid; gap: 7px; padding: 7px 8px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+  transition: width 0.18s ease;
+}
+.chrome-pv.narrow { width: min(300px, 100%); }
+.chrome-pv-top {
+  display: flex; align-items: center; gap: 4px;
+  overflow-x: auto; overflow-y: hidden; white-space: nowrap; scrollbar-width: none;
+}
+.chrome-pv-top::-webkit-scrollbar { display: none; }
+.chrome-pv-title {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  font-size: 10.5px; color: var(--dim);
+}
+.chrome-pv-btn {
+  flex: none; display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 5px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--dim);
+  font: 9.5px/1 var(--sans); white-space: nowrap; cursor: pointer;
+}
+/* 元素自己的 inline-flex 压得住 [hidden] 的 display:none，得显式写一条（原型里踩过）。 */
+.chrome-pv-btn[hidden] { display: none; }
+.chrome-pv-btn:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text); }
+.chrome-pv-btn .ic { font-family: var(--mono); }
+.chrome-pv-aa { font: 500 9.5px/1 var(--mono); opacity: 0.55; cursor: default; }
+.chrome-pv-comp { display: flex; align-items: center; gap: 4px; overflow: hidden; }
+.chrome-pv-in { flex: 1 1 auto; min-width: 0; height: 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.chrome-pv-tool {
+  flex: none; height: 14px; padding: 0 4px;
+  border: 1px solid var(--line-soft); border-radius: 5px; background: var(--panel); color: var(--dim);
+  font: 9px/12px var(--sans); white-space: nowrap; cursor: pointer;
+}
+.chrome-pv-tool[hidden] { display: none; }
+.chrome-pv-tool:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text); }
+.chrome-pv-model { border-radius: 999px; font-family: var(--mono); color: var(--faint); }
+.chrome-pv-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--faint); }
+.chrome-pv-bar-label { color: var(--dim); }
+.chrome-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.chrome-seg button {
+  border: 0; background: none; color: var(--faint);
+  font: 10.5px/1 var(--sans); padding: 4px 8px; cursor: pointer;
+}
+.chrome-seg button.on { background: var(--panel-3); color: var(--text); }
+
+.chrome-wall { display: grid; gap: 8px; }
+.chrome-group { display: grid; gap: 6px; }
+.chrome-all {
+  border: 0; background: none; padding: 2px 0;
+  font: 11.5px/1 var(--sans); color: var(--faint); cursor: pointer;
+}
+.chrome-all:hover:not(:disabled) { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.chrome-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; }
+.chrome-tile {
+  display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 32px; padding: 7px 8px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--panel); color: var(--text);
+  font: 12px/1.2 var(--sans); text-align: left; cursor: pointer;
+}
+.chrome-tile:hover:not(:disabled) { border-color: var(--line-strong); }
+.chrome-tile-ic { flex: none; width: 1.4em; text-align: center; font: 11px/1 var(--mono); color: var(--dim); }
+.chrome-tile-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chrome-tile-eye { flex: none; font-size: 10px; color: var(--accent); }
+.chrome-tile.off { border-style: dashed; background: none; color: var(--faint); }
+.chrome-tile.off .chrome-tile-ic,
+.chrome-tile.off .chrome-tile-name { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--line-strong); }
+.chrome-tile.off .chrome-tile-eye { color: var(--line-lit); }
+/* 断桥：整块灰掉已经是给人看的提示，真实拦截靠 JS 的 disabled（键盘也进不去）。 */
+.chrome-pane.offline .chrome-pv,
+.chrome-pane.offline .chrome-pv-bar,
+.chrome-pane.offline .chrome-tiles,
+.chrome-pane.offline .chrome-all { opacity: 0.4; }
+.chrome-pane.offline .chrome-pv-btn,
+.chrome-pane.offline .chrome-tile { cursor: not-allowed; }
+
 @media (min-width: 760px) {
   .sheet-back { align-items: center; justify-items: center; padding: 24px; }
   .sheet { width: min(560px, 100%); border-radius: 16px; border: 1px solid var(--line); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55); max-height: calc(var(--vh1) * 82); }
@@ -1888,6 +1972,10 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
   /* 「📂 产物」和「📁 文件管理器」收成图标之后并排两颗几乎一样的文件夹 —— 窄屏上只能留一个。
      留产物（这个会话写过的东西），盘符浏览回桌面端用。 */
   .topbar .icon-btn.wide[data-act="files"] { display: none !important; }
+  /* #292「开关优先」：上面那条不动，只在这里被顶开。根元素带 data-chrome-narrow="files" 就表示
+     用户在「外观与语言」里显式点亮了文件管理器 —— 窄屏也照画；`:not([hidden])` 让「没开会话」
+     的藏法仍然赢。排不下时照旧由 .topbar 自己横向滚（见 .topbar 的 overflow-x），文档不跟着滚。 */
+  html[data-chrome-narrow~="files"] .topbar .icon-btn.wide[data-act="files"]:not([hidden]) { display: inline-flex !important; }
 }
 .file-link { color: var(--accent); text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; word-break: break-all; }
 .file-link:hover { text-decoration-style: solid; }
