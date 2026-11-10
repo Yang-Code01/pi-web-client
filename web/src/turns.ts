@@ -215,7 +215,7 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
 
     // 列表展开着（正在看 / 刚点了一个 ghost、自动翻页还在吃 ghost）就别把它拽回最底：翻页不改变行数，
     // 原地不动正好还对着刚才那一行。收着时仍然停在最下面。
-    const keep = rail.matches(":hover, :focus-within") ? list.scrollTop : null;
+    const keep = rail.matches(":hover, :has(:focus-visible)") ? list.scrollTop : null;
     rail.replaceChildren(...ticks, list, note);
     list.replaceChildren(...rows);
     markCurrent();
@@ -234,7 +234,9 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
   };
 
   // 整条带子离开才算「不看了」：从刻度扫到行、从一行扫到另一行都不算离开。
+  let inside = false;
   rail.addEventListener("pointerleave", () => {
+    inside = false;
     hot = -1;
     markHot();
     opts.onHover(null);
@@ -243,11 +245,11 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
   const toBottom = (): void => {
     list.scrollTop = list.scrollHeight;
   };
-  rail.addEventListener("pointerenter", (e) => {
-    // 重画（自动翻页吃 ghost）会拆掉指针下那一行，Chrome 以那个已拆掉的节点为 relatedTarget 再补一次 enter，
-    // 并没有先离开 —— 不是「刚展开」，别把正在看的列表拽回最底。
-    const from = e.relatedTarget;
-    if (from instanceof Node && (!from.isConnected || rail.contains(from))) return;
+  rail.addEventListener("pointerenter", () => {
+    // 重画（自动翻页吃 ghost）会拆掉指针下那一行，Chrome 会再补一次 enter，却没有先发 leave ——
+    // 不是「刚展开」，别把正在看的列表拽回最底。
+    if (inside) return;
+    inside = true;
     toBottom();
   });
   // 键盘 Tab 进来才需要 focusin 这一下。鼠标 / 触摸点一行时按钮在 pointerdown 之后就拿焦点 —— 这时把列表

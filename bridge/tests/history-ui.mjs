@@ -687,6 +687,27 @@ check("真鼠标点第 1 轮那一行：翻页过去并高亮它", /问 1(?!\d)/
 // 自动翻页重画了好几次列表；指针还在带子上，列表就得还停在刚才那一行（不被重画 / 补发的 pointerenter 拽到最底）。
 const listAfterJump = await page3.evaluate(() => Math.round(document.querySelector(".turn-list").scrollTop));
 check("翻页重画后列表还停在点的那一行", listAfterJump === 0, `listTop=${listAfterJump}`);
+// 已载入的行走的是另一条回调（onPick），同样的「按下就被拽到最底」也会让它点不到：离开再进来，点中部的第 61 轮。
+await page3.mouse.move(5, 5);
+await page3.mouse.move(railBox.x + railBox.width - 3, railBox.y + railBox.height / 2);
+await page3.waitForFunction(() => document.querySelector(".turn-list").getBoundingClientRect().width > 0, null, { timeout: 5000 });
+const midTop = await page3.evaluate(() => {
+  const list = document.querySelector(".turn-list");
+  const row = list.querySelector('.turn-row[data-i="60"]');
+  list.scrollTop = row.offsetTop - list.clientHeight / 2;
+  return Math.round(list.scrollTop);
+});
+const midRow = await page3.locator('.turn-row[data-i="60"]').boundingBox();
+await page3.mouse.move(midRow.x + midRow.width / 2, midRow.y + midRow.height / 2);
+await page3.mouse.down();
+const midAfterDown = await page3.evaluate(() => Math.round(document.querySelector(".turn-list").scrollTop));
+await page3.mouse.up();
+const midLanded = await page3.evaluate(() => document.querySelector(".msg.user.turn-flash")?.textContent ?? null);
+check(
+  "真鼠标点已载入的第 61 轮：列表不动、正文高亮它",
+  midAfterDown === midTop && /问 61(?!\d)/.test(midLanded ?? ""),
+  `listTop=${midAfterDown} want=${midTop} flash=${midLanded}`,
+);
 await ctx3.close();
 
 await browser.close();
