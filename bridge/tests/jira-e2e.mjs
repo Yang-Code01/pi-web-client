@@ -29,10 +29,16 @@ const { attachmentRedirectAllowed, attachmentRootProblem, avatarUrlAllowed, hand
 
 /** 200 / 401 / 403 由用例改；只实现面板真正会打的那几个口子。 */
 let jiraMode = "ok";
-/** `search/jql` 单独一档：`ok` / `empty` / `403`。 */
+/** `search/jql` 单独一档：`ok` / `empty` / `403` / `watcher403` / `paged`。 */
 let searchMode = "ok";
+/** meta 的项目状态单独一档：`ok` / `403`。 */
+let statusesMode = "ok";
+/** 人员搜索：`ok` / `403` / `401` / `500`。 */
+let usersMode = "ok";
+/** 每次 search/jql 收到的 nextPageToken（断言分页透传）。 */
+const searchTokens = [];
 /** 上游每被命中一次就 +1：用来断言缓存命中与 `refresh=1` 绕过。#251 再加按附件 id 计数的 content。 */
-const hits = { myself: 0, search: 0, projects: 0, issue: 0, comment: 0, content: {} };
+const hits = { myself: 0, search: 0, projects: 0, issue: 0, comment: 0, types: 0, priorities: 0, statuses: 0, users: 0, content: {} };
 /** #251：第二跳（签名 URL 那一跳）收到的 Authorization —— 必须是 null。 */
 let secondHopAuth = null;
 /** 上游收到的最后一个 `search/jql` 查询串（断言页面传不进来任意查询）。 */
@@ -52,6 +58,7 @@ const ISSUES = [
       issuetype: { name: "Bug" },
       priority: { name: "High" },
       status: { name: "In Progress" },
+      assignee: { displayName: "Ada Lovelace" },
       updated: "2026-11-08T09:30:00.000+0000",
     },
   },
@@ -62,6 +69,7 @@ const ISSUES = [
       issuetype: { name: "Task" },
       priority: null,
       status: { name: "To Do" },
+      assignee: null,
       updated: "2026-11-05T14:02:11.000+0000",
     },
   },
@@ -88,8 +96,17 @@ const jira = http.createServer((req, res) => {
   if (url.pathname === "/rest/api/3/search/jql") {
     hits.search++;
     lastSearch = url.searchParams;
+    const token = url.searchParams.get("nextPageToken");
+    searchTokens.push(token);
     if (deny()) return;
     if (searchMode === "403") return send(403, { errorMessages: ["You do not have permission to view this"] });
+    if (searchMode === "watcher403" && (url.searchParams.get("jql") ?? "").includes("watcher")) {
+      return send(403, { errorMessages: ["You do not have permission to view watchers"] });
+    }
+    if (searchMode === "paged") {
+      if (token === null) return send(200, { issues: ISSUES.slice(0, 1), nextPageToken: "tok-2", isLast: false });
+      return send(200, { issues: ISSUES.slice(1), isLast: true });
+    }
     return send(200, { issues: searchMode === "empty" ? [] : ISSUES });
   }
   if (url.pathname === "/rest/api/3/issue/ACME-12") {
@@ -104,6 +121,7 @@ const jira = http.createServer((req, res) => {
         issuetype: { name: "Bug" },
         priority: { name: "High" },
         status: { name: "In Progress" },
+        assignee: { displayName: "Ada Lovelace" },
         updated: "2026-11-08T09:30:00.000+0000",
         description: {
           type: "doc",
@@ -256,6 +274,56 @@ const jira = http.createServer((req, res) => {
         { key: "OPS", name: "Operations" },
       ],
     });
+  }
+  if (url.pathname === "/rest/api/3/issuetype") {
+    hits.types++;
+    if (deny()) return;
+    return send(200, [
+      { id: "10001", name: "Bug" },
+      { id: "10002", name: "Task" },
+      { id: "", name: "" },
+    ]);
+  }
+  if (url.pathname === "/rest/api/3/priority") {
+    hits.priorities++;
+    if (deny()) return;
+    return send(200, [
+      { id: "1", name: "High" },
+      { id: "2", name: "Low" },
+    ]);
+  }
+  if (url.pathname === "/rest/api/3/project/ACME/statuses") {
+    hits.statuses++;
+    if (statusesMode === "403") return send(403, { errorMessages: ["No permission to view statuses"] });
+    return send(200, [
+      {
+        id: "1",
+        name: "Bug",
+        statuses: [
+          { id: "3", name: "In Progress" },
+          { id: "1", name: "To Do" },
+        ],
+      },
+      {
+        id: "2",
+        name: "Task",
+        statuses: [
+          { id: "3", name: "In Progress" },
+          { id: "10000", name: "Done" },
+        ],
+      },
+    ]);
+  }
+  if (url.pathname === "/rest/api/3/user/search") {
+    hits.users++;
+    if (usersMode === "403") return send(403, { errorMessages: ["No Browse users permission"] });
+    if (usersMode === "401") return send(401, { errorMessages: ["Unauthorized"] });
+    if (usersMode === "500") return send(500, { errorMessages: ["boom"] });
+    return send(200, [
+      { accountId: "acc-9", displayName: "林小满", emailAddress: "lin@acme.com" },
+      // 没有 accountId 的脏数据要被丢掉。
+      { displayName: "ghost" },
+    ]);
   }
   if (url.pathname !== "/rest/api/3/myself") return send(404, { errorMessages: ["not found"] });
   hits.myself++;
@@ -454,20 +522,27 @@ async function connect() {
   jiraMode = "ok";
   searchMode = "ok";
   detailMode = "ok";
+  statusesMode = "ok";
+  usersMode = "ok";
   await call("PUT", "/api/jira/config", { siteUrl: SITE, email: EMAIL, apiKey: TOKEN });
   hits.myself = 0;
   hits.search = 0;
   hits.projects = 0;
   hits.issue = 0;
   hits.comment = 0;
+  hits.types = 0;
+  hits.priorities = 0;
+  hits.statuses = 0;
+  hits.users = 0;
   hits.content = {};
+  searchTokens.length = 0;
   secondHopAuth = null;
   lastSearch = null;
   lastIssuePath = "";
 }
 
 const FIXED_JQL = "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC";
-const FIXED_FIELDS = "summary,issuetype,priority,status,updated";
+const FIXED_FIELDS = "summary,issuetype,priority,status,assignee,updated";
 
 test("GET issues：固定 JQL + 字段映射（priority 为空回 null）", async () => {
   await connect();
@@ -480,6 +555,7 @@ test("GET issues：固定 JQL + 字段映射（priority 为空回 null）", asyn
       type: "Bug",
       priority: "High",
       status: "In Progress",
+      assignee: "Ada Lovelace",
       updated: "2026-11-08T09:30:00.000+0000",
     },
     {
@@ -488,6 +564,7 @@ test("GET issues：固定 JQL + 字段映射（priority 为空回 null）", asyn
       type: "Task",
       priority: null,
       status: "To Do",
+      assignee: "",
       updated: "2026-11-05T14:02:11.000+0000",
     },
   ]);
@@ -587,6 +664,7 @@ test("GET issues/:key：字段映射，description 原样透传", async () => {
     type: "Bug",
     priority: "High",
     status: "In Progress",
+    assignee: "Ada Lovelace",
     updated: "2026-11-08T09:30:00.000+0000",
     description: {
       type: "doc",
@@ -891,4 +969,202 @@ test("attachmentRedirectAllowed：只认站点自己与 *.atl-paas.net 的 https
   assert.equal(attachmentRedirectAllowed("https://media.atl-paas.net:8443/f", site), false);
   assert.equal(attachmentRedirectAllowed("https://media.atl-paas.net/f#x", site), false);
   assert.equal(attachmentRedirectAllowed("not a url", site), false);
+});
+
+// ---------------------------------------------------------------- #257 搜索
+
+test("GET search：固定字段 / 默认 JQL，assignee 映射（未分配空串）", async () => {
+  await connect();
+  const out = await call("GET", "/api/jira/search");
+  assert.equal(out.status, 200);
+  assert.equal(out.json.ok, true);
+  assert.equal(out.json.isLast, true);
+  assert.equal(lastSearch.get("jql"), "resolution = Unresolved ORDER BY updated DESC");
+  assert.equal(lastSearch.get("fields"), FIXED_FIELDS);
+  assert.equal(lastSearch.get("maxResults"), "20");
+  assert.equal(out.json.issues[0].assignee, "Ada Lovelace");
+  assert.equal(out.json.issues[1].assignee, "");
+});
+
+test("GET search：条件 → JQL 白名单，页面传的 jql / fields 被忽略", async () => {
+  await connect();
+  const query = new URLSearchParams({
+    title: '登录 "白屏"',
+    text: "stack",
+    project: "ACME",
+    statusCategory: "indeterminate",
+    status: "In Progress",
+    type: "Bug",
+    priority: "High",
+    person: "林",
+    relations: "assignee,reporter",
+    includeResolved: "1",
+    sort: "created",
+    order: "asc",
+    jql: "project = EVIL",
+    fields: "key",
+  });
+  const out = await call("GET", `/api/jira/search?${query}`);
+  assert.equal(out.status, 200);
+  const jql = lastSearch.get("jql");
+  assert.equal(
+    jql,
+    'summary ~ "登录 \\"白屏\\"" AND text ~ "stack" AND project = "ACME" AND statusCategory = "In Progress" AND status = "In Progress" AND issuetype = "Bug" AND priority = "High" AND (assignee = "林" OR reporter = "林") ORDER BY created ASC',
+  );
+  assert.doesNotMatch(jql, /EVIL/);
+  assert.equal(lastSearch.get("fields"), FIXED_FIELDS);
+});
+
+test("GET search：默认未解决 / includeResolved / 未分配", async () => {
+  await connect();
+  await call("GET", "/api/jira/search");
+  assert.equal(lastSearch.get("jql"), "resolution = Unresolved ORDER BY updated DESC");
+  await call("GET", "/api/jira/search?includeResolved=1");
+  assert.equal(lastSearch.get("jql"), "ORDER BY updated DESC");
+  await call("GET", "/api/jira/search?unassigned=1");
+  assert.equal(lastSearch.get("jql"), "resolution = Unresolved AND assignee IS EMPTY ORDER BY updated DESC");
+});
+
+test("GET search：nextPageToken 往返与 isLast", async () => {
+  await connect();
+  searchMode = "paged";
+  const first = await call("GET", "/api/jira/search");
+  assert.equal(first.json.isLast, false);
+  assert.equal(first.json.nextPageToken, "tok-2");
+  assert.equal(first.json.issues.length, 1);
+  const second = await call("GET", "/api/jira/search?nextPageToken=tok-2");
+  assert.equal(second.json.isLast, true);
+  assert.equal(second.json.nextPageToken, undefined);
+  assert.deepEqual(searchTokens, [null, "tok-2"]);
+});
+
+test("GET search：关注者被拒 → 去掉重试一次并回 degraded", async () => {
+  await connect();
+  searchMode = "watcher403";
+  const out = await call("GET", "/api/jira/search?person=%E6%9E%97");
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.json.degraded, { watchers: true });
+  assert.equal(hits.search, 2);
+  assert.doesNotMatch(lastSearch.get("jql") ?? "", /watcher/);
+});
+
+test("GET search：只勾关注者被拒 → 不重试，直接 403 jira_forbidden", async () => {
+  await connect();
+  searchMode = "watcher403";
+  const out = await call("GET", "/api/jira/search?person=%E6%9E%97&relations=watcher");
+  assert.equal(out.status, 403);
+  assert.equal(out.json.code, "jira_forbidden");
+  assert.equal(hits.search, 1);
+});
+
+test("GET search：重试仍失败按第二次错误映射（也只打两次）", async () => {
+  await connect();
+  searchMode = "403";
+  const out = await call("GET", "/api/jira/search?person=%E6%9E%97&relations=assignee,watcher");
+  assert.equal(out.status, 403);
+  assert.equal(out.json.code, "jira_forbidden");
+  assert.equal(hits.search, 2);
+});
+
+test("GET search：坏参数 400 jira_query，不打上游", async () => {
+  await connect();
+  const out = await call("GET", "/api/jira/search?status=Done");
+  assert.equal(out.status, 400);
+  assert.equal(out.json.code, "jira_query");
+  assert.equal(hits.search, 0);
+});
+
+test("GET search：不缓存；隧道 GET 200；未配置 400", async () => {
+  await connect();
+  await call("GET", "/api/jira/search");
+  await call("GET", "/api/jira/search");
+  assert.equal(hits.search, 2);
+  const tunnel = await call("GET", "/api/jira/search", undefined, { "x-test-tunnel": "1" });
+  assert.equal(tunnel.status, 200);
+  const wrong = await call("POST", "/api/jira/search");
+  assert.equal(wrong.status, 405);
+  freshState();
+  const out = await call("GET", "/api/jira/search");
+  assert.equal(out.status, 400);
+  assert.equal(out.json.code, "jira_not_configured");
+});
+
+test("GET meta：类型 / 优先级 / 状态映射，状态按名去重", async () => {
+  await connect();
+  const out = await call("GET", "/api/jira/meta?project=ACME");
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.json.types, [
+    { id: "10001", name: "Bug" },
+    { id: "10002", name: "Task" },
+  ]);
+  assert.deepEqual(out.json.priorities, [
+    { id: "1", name: "High" },
+    { id: "2", name: "Low" },
+  ]);
+  assert.deepEqual(out.json.statuses, [
+    { id: "3", name: "In Progress" },
+    { id: "1", name: "To Do" },
+    { id: "10000", name: "Done" },
+  ]);
+  assert.deepEqual(out.json.statusCategories, ["new", "indeterminate", "done"]);
+  assert.equal(out.json.partial, false);
+});
+
+test("GET meta：5 分钟缓存；不带 project 不取状态", async () => {
+  await connect();
+  await call("GET", "/api/jira/meta?project=ACME");
+  await call("GET", "/api/jira/meta?project=ACME");
+  assert.equal(hits.types, 1);
+  assert.equal(hits.priorities, 1);
+  assert.equal(hits.statuses, 1);
+  const bare = await call("GET", "/api/jira/meta");
+  assert.equal(bare.json.partial, false);
+  assert.deepEqual(bare.json.statuses, []);
+  assert.equal(hits.statuses, 1);
+});
+
+test("GET meta：statuses 失败 → partial 且不缓存失败结果", async () => {
+  await connect();
+  statusesMode = "403";
+  const first = await call("GET", "/api/jira/meta?project=ACME");
+  assert.equal(first.status, 200);
+  assert.equal(first.json.partial, true);
+  assert.deepEqual(first.json.statuses, []);
+  assert.equal(first.json.types.length, 2);
+  statusesMode = "ok";
+  const second = await call("GET", "/api/jira/meta?project=ACME");
+  assert.equal(second.json.partial, false);
+  assert.equal(second.json.statuses.length, 3);
+  assert.equal(hits.types, 2);
+  assert.equal(hits.statuses, 2);
+});
+
+test("GET users：映射；空 q 不打上游；403 unavailable；401 jira_auth；500 502", async () => {
+  await connect();
+  const ok = await call("GET", "/api/jira/users?q=%E6%9E%97");
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json.users, [{ accountId: "acc-9", displayName: "林小满", emailAddress: "lin@acme.com" }]);
+  assert.equal(ok.json.unavailable, undefined);
+  const empty = await call("GET", "/api/jira/users?q=");
+  assert.deepEqual(empty.json.users, []);
+  assert.equal(hits.users, 1);
+
+  usersMode = "403";
+  const denied = await call("GET", "/api/jira/users?q=x");
+  assert.equal(denied.status, 200);
+  assert.equal(denied.json.unavailable, true);
+  assert.deepEqual(denied.json.users, []);
+
+  usersMode = "401";
+  const expired = await call("GET", "/api/jira/users?q=x");
+  assert.equal(expired.status, 401);
+  assert.equal(expired.json.code, "jira_auth");
+
+  usersMode = "500";
+  const broken = await call("GET", "/api/jira/users?q=x");
+  assert.equal(broken.status, 502);
+  assert.equal(broken.json.code, "jira_upstream");
+
+  const tunnel = await call("GET", "/api/jira/users?q=x", undefined, { "x-test-tunnel": "1" });
+  assert.equal(tunnel.status, 502);
 });

@@ -17,6 +17,8 @@ export interface JiraIssue {
   /** Jira 没有优先级时回 null。 */
   priority: string | null;
   status: string;
+  /** 经办人显示名；未分配或上游按隐私策略不给名字时为空串。 */
+  assignee: string;
   updated: string;
 }
 

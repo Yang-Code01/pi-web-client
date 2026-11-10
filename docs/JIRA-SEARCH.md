@@ -165,7 +165,7 @@ GET /api/jira/search?title=登录&project=ACME&statusCategory=indeterminate
 { "ok": true, "users": [{ "accountId": "…", "displayName": "林小满", "emailAddress": "…" }] }
 ```
 
-- 该接口需要 `Browse users and groups` 权限。上游 401/403 → **200** `{ "ok": true, "users": [], "unavailable": true }`，页面据此退化成自由文本，不弹错误。
+- 该接口需要 `Browse users and groups` 权限。上游 403 → **200** `{ "ok": true, "users": [], "unavailable": true }`，页面据此退化成自由文本，不弹错误；401 照常回 `jira_auth`，别把凭据失效伪装成「搜不了人」。
 - 其它错误照常 502。
 - 不做缓存（人名搜索是即时交互）。
 
