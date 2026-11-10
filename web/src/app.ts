@@ -32,7 +32,7 @@ import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroup
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { Socket } from "./ws.ts";
-import { execView, type ExecPhase, type ExecPlanSnapshot, type ExecRound, type ExecViewModel } from "./exec-view.ts";
+import { execView, type ExecPhase, type ExecPlanSnapshot, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
@@ -239,6 +239,7 @@ export class App {
   private execSelectedRound: string | null = null;
   private execPlan: ExecPlanSnapshot | null = null;
   private execPlanRounds: ExecRound[] = [];
+  private execRoundStats: Record<string, ExecRoundStats> = {};
   private execPhase: ExecPhase = "idle";
   private execStreamChars = 0;
   private execStreamText = "";
@@ -1579,6 +1580,7 @@ export class App {
           if (String(msg.sessionId) !== this.currentId) this.switchDraft(String(msg.sessionId));
           this.currentId = String(msg.sessionId);
         }
+        this.execRoundStats = this.currentId ? readExecRoundStats(this.currentId) : {};
         this.usage = { contextTokens: null, contextWindow: null };
         this.rate = 0;
         this.turnAt = null;
@@ -1670,12 +1672,14 @@ export class App {
         break;
       case "item.add":
         if (msg.sessionId !== this.currentId) break;
-        if (typeof msg.clientId === "string") this.chat.adopt(msg.clientId, msg.item as Item);
-        else this.chat.add(msg.item as Item);
-        if ((msg.item as Item).kind === "user" && !this.execPlanRounds.some((round) => round.id === (msg.item as Item).id)) {
+        const item = msg.item as Item;
+        if (typeof msg.clientId === "string") this.chat.adopt(msg.clientId, item);
+        else this.chat.add(item);
+        if (item.kind === "user" && !this.execPlanRounds.some((round) => round.id === item.id)) {
           const ordinal = this.execPlanRounds.reduce((last, round) => Math.max(last, round.ordinal), 0) + 1;
-          this.execPlanRounds = [...this.execPlanRounds, { id: (msg.item as Item).id, ordinal }];
+          this.execPlanRounds = [...this.execPlanRounds, { id: item.id, ordinal }];
         }
+        this.beginExecRound(item);
         // #199: 启动期的「撤回」只在真有排队消息时才有位置，气泡来去都得重画这一行。
         if (this.session?.starting) this.fillHintStatus();
         if (this.queueTab === "exec") this.renderQueue();
@@ -1735,7 +1739,9 @@ export class App {
           contextTokens: typeof msg.context?.tokens === "number" ? msg.context.tokens : null,
           contextWindow: typeof msg.context?.contextWindow === "number" ? msg.context.contextWindow : this.usage.contextWindow,
         };
+        this.updateExecRoundStats();
         this.fillModelChip();
+        if (this.queueTab === "exec") this.renderQueue();
         break;
       case "budget":
         if (msg.sessionId !== this.currentId) break;
@@ -13845,6 +13851,32 @@ export class App {
     this.renderQueue();
   }
 
+  private execStatsSnapshot(): ExecStatsSnapshot {
+    return {
+      tokens: this.stats.tokens ? { ...this.stats.tokens } : null,
+      cost: this.stats.cost,
+      contextTokens: this.usage.contextTokens,
+      contextWindow: this.usage.contextWindow,
+    };
+  }
+
+  private beginExecRound(item: Item): void {
+    if (item.kind !== "user") return;
+    const snapshot = this.execStatsSnapshot();
+    const hasSnapshot = snapshot.tokens !== null || snapshot.cost !== null || snapshot.contextTokens !== null || snapshot.contextWindow !== null;
+    this.execRoundStats[item.id] = { baseline: hasSnapshot ? snapshot : null, final: hasSnapshot ? snapshot : null };
+    if (this.currentId) saveExecRoundStats(this.currentId, this.execRoundStats);
+  }
+
+  private updateExecRoundStats(): void {
+    const items = this.chat.loadedItems();
+    const latestRound = [...items].reverse().find((item) => item.kind === "user");
+    if (!latestRound || latestRound.kind !== "user") return;
+    const existing = this.execRoundStats[latestRound.id];
+    this.execRoundStats[latestRound.id] = { baseline: existing?.baseline ?? null, final: this.execStatsSnapshot() };
+    if (this.currentId) saveExecRoundStats(this.currentId, this.execRoundStats);
+  }
+
   private execModel(): ExecViewModel {
     const running = this.session?.running === true;
     return execView({
@@ -13856,6 +13888,8 @@ export class App {
       plan: this.execPlan,
       planRounds: this.execPlanRounds,
       now: Date.now(),
+      stats: this.execStatsSnapshot(),
+      roundStats: this.execRoundStats,
     });
   }
 
@@ -13959,6 +13993,75 @@ export class App {
     }
   }
 
+  private execMetricNumber(value: number | null): string {
+    return value === null ? "–" : new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
+  }
+
+  private execMetricCost(value: number | null): string {
+    return value === null ? "–" : `$${value.toFixed(4)}`;
+  }
+
+  private execMetricsCard(model: ExecViewModel): HTMLElement {
+    const metrics = model.metrics;
+    const card = el("section", "exec-metrics");
+    card.setAttribute("aria-label", tr("数字"));
+    const grid = el("div", "exec-metric-grid");
+    const metric = (label: string, value: string, duration = false) => {
+      const box = el("div", "exec-metric");
+      box.append(el("span", "exec-metric-label", label));
+      const number = el("b", "exec-metric-value", value);
+      if (duration) number.dataset.execDuration = "1";
+      box.append(number);
+      return box;
+    };
+    const costMetric = metric(tr("本轮费用"), this.execMetricCost(metrics.cost));
+    costMetric.dataset.execMetric = "cost";
+    grid.append(
+      metric(tr("本轮耗时"), metrics.durationMs === null ? "–" : this.execDuration(metrics.durationMs), true),
+      metric(tr("工具 / 失败"), `${metrics.toolCount} / ${metrics.failureCount}`),
+      costMetric,
+    );
+    card.append(grid);
+
+    const subtotal = (label: string, totals: { cost: number | null; tokens: number | null }) => {
+      const row = el("div", "exec-metric-subtotal");
+      row.append(el("span", "exec-metric-label", label));
+      const tokenLabel = tr("Token 数");
+      row.append(el("span", "exec-metric-total", `${this.execMetricNumber(totals.tokens)} ${tokenLabel} · ${this.execMetricCost(totals.cost)}`));
+      return row;
+    };
+    const subtotals = el("div", "exec-metric-subtotals");
+    subtotals.append(subtotal(tr("主会话"), metrics.main), subtotal(tr("子代理"), metrics.subagents));
+    card.append(subtotals);
+
+    const context = el("div", "exec-context");
+    const percent = metrics.contextPercent;
+    const percentText = percent === null ? "–" : `${percent.toFixed(1).replace(/\.0$/, "")}%`;
+    context.append(el("div", "exec-context-label", tr("上下文 {p1} / {p2} · {p3}", {
+      p1: this.execMetricNumber(metrics.contextTokens),
+      p2: this.execMetricNumber(metrics.contextWindow),
+      p3: percentText,
+    })));
+    const bar = el("div", "exec-context-bar");
+    bar.setAttribute("role", "progressbar");
+    bar.setAttribute("aria-label", tr("上下文占用"));
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", "100");
+    if (percent === null) {
+      bar.setAttribute("aria-valuetext", "–");
+      bar.classList.add("unknown");
+    } else {
+      bar.setAttribute("aria-valuenow", String(Math.max(0, Math.min(100, percent))));
+      bar.setAttribute("aria-valuetext", percentText);
+      const fill = el("span", "exec-context-fill");
+      fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+      bar.append(fill);
+    }
+    context.append(bar);
+    card.append(context);
+    return card;
+  }
+
   private renderExecPanel(): HTMLElement {
     const model = this.execModel();
     this.execSelectedRound = model.selectedRound;
@@ -13967,7 +14070,7 @@ export class App {
     panel.append(this.execPlanBox(model));
     const now = this.execNowCard(model);
     now.classList.add("exec-now-slot");
-    panel.append(now);
+    panel.append(now, this.execMetricsCard(model));
     const heading = el("div", "exec-heading");
     heading.append(el("h2", "", tr("步骤")));
     const select = el("select", "exec-rounds") as HTMLSelectElement;
@@ -14019,6 +14122,8 @@ export class App {
       next.classList.add("exec-now-slot");
       slot.replaceWith(next);
     }
+    const duration = this.els.queueInner?.querySelector<HTMLElement>("[data-exec-duration]");
+    if (duration) duration.textContent = this.execDuration(this.execModel().metrics.durationMs) || "–";
     for (const node of this.els.queueInner?.querySelectorAll<HTMLElement>(".exec-step-duration[data-started-at]") ?? []) {
       const at = Date.parse(node.dataset.startedAt ?? "");
       if (Number.isFinite(at)) node.textContent = this.execDuration(Math.max(0, Date.now() - at));
@@ -15766,6 +15871,46 @@ function readFlag(key: string): boolean {
     return localStorage.getItem(key) === "1";
   } catch {
     return false;
+  }
+}
+
+function isExecStatsSnapshot(value: unknown): value is ExecStatsSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const snapshot = value as Record<string, unknown>;
+  const finiteOrNull = (number: unknown) => number === null || (typeof number === "number" && Number.isFinite(number));
+  if (!finiteOrNull(snapshot.cost) || !finiteOrNull(snapshot.contextTokens) || !finiteOrNull(snapshot.contextWindow)) return false;
+  if (snapshot.tokens === null) return true;
+  if (!snapshot.tokens || typeof snapshot.tokens !== "object" || Array.isArray(snapshot.tokens)) return false;
+  return ["input", "output", "cacheRead", "cacheWrite", "total"].every((key) => {
+    const number = (snapshot.tokens as Record<string, unknown>)[key];
+    return number === undefined || (typeof number === "number" && Number.isFinite(number));
+  });
+}
+
+function readExecRoundStats(sessionId: string): Record<string, ExecRoundStats> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(`pi.execRoundStats.${encodeURIComponent(sessionId)}`) ?? "null") as unknown;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const records: Record<string, ExecRoundStats> = {};
+    for (const [id, value] of Object.entries(raw)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const record = value as Record<string, unknown>;
+      const baseline = record.baseline === null || isExecStatsSnapshot(record.baseline) ? record.baseline as ExecStatsSnapshot | null : null;
+      const final = record.final === null || isExecStatsSnapshot(record.final) ? record.final as ExecStatsSnapshot | null : null;
+      if ("baseline" in record || "final" in record) records[id] = { baseline, final };
+    }
+    return records;
+  } catch {
+    return {};
+  }
+}
+
+function saveExecRoundStats(sessionId: string, records: Record<string, ExecRoundStats>): void {
+  if (!sessionId) return;
+  try {
+    localStorage.setItem(`pi.execRoundStats.${encodeURIComponent(sessionId)}`, JSON.stringify(records));
+  } catch {
+    // Quota/private mode can disable persistence; in-memory metrics still work.
   }
 }
 

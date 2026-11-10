@@ -1211,8 +1211,8 @@ export class Session extends EventEmitter {
     void this.refreshStats();
   }
 
-  /** Token/context numbers for the composer HUD; best effort, never throws. */
-  private async refreshStats(): Promise<void> {
+  /** Token/context numbers for the composer HUD and new subscribers; best effort, never throws. */
+  async refreshStats(): Promise<void> {
     if (!this.rpc?.alive) return;
     try {
       const stats = await this.rpc.request<any>("get_session_stats", {}, 15000);

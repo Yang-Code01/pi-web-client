@@ -1652,6 +1652,7 @@ async function main(): Promise<void> {
             const snap = sessions.pagedSnapshot(msg.sessionId);
             (ws as any).watching = String(msg.sessionId);
             send(frameFor(ws, { ...sessionFrameOf(snap), trust: await trustFor(snap.state.cwd) }));
+            void sessions.get(String(msg.sessionId))?.refreshStats();
             return;
           }
           /**
