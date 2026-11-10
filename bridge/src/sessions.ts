@@ -1135,7 +1135,7 @@ export class Session extends EventEmitter {
     // 与上面那段各自追加：pi 的 `--append-system-prompt` 可重复，两个开关互不影响，谁关了都不顶掉另一个。
     // 顺序是「用户手填 → 工作区教训 → 交付提示 → 计划提示」：事实在前、这次会话的规矩在后（离对话最近）。
     if (process.env.PI_WEB_HINT !== "0") args.push("--append-system-prompt", DELIVERY_HINT);
-    // #339 / D226：执行面板的计划列表只有 todo 一个数据源，不更新就永远停创建时（`PI_WEB_PLAN_HINT=0` 可关）。
+    // #339 / D229：执行面板的计划列表只有 todo 一个数据源，不更新就永远停创建时（`PI_WEB_PLAN_HINT=0` 可关）。
     // 第三个开关，同样不顶掉前两段：谁知道哪个模型听哪句话呢，关一个只关它自己那条。
     if (process.env.PI_WEB_PLAN_HINT !== "0") args.push("--append-system-prompt", PLAN_HINT);
     this.state.launch = describeLaunch(launch) || undefined;

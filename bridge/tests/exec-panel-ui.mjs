@@ -1,5 +1,5 @@
 /**
- * Smoke the execution subtab against the local fake pi implementation.
+ * Smoke the execution subtab and the folded plan card in the transcript against the local fake pi implementation (#341: one card per turn).
  *
  * Run after `npm run build:bridge && npm run build:web` with:
  *   node bridge/tests/exec-panel-ui.mjs
@@ -140,6 +140,27 @@ try {
   await page.locator('.exec-plan-task[data-plan-task-id="2"]').click();
   check("selecting the active plan item again clears step highlighting", (await page.locator(".exec-step.dimmed").count()) === 0);
 
+  // #341: 一轮里多次 todo 调用 —— 聊天里只留一张折叠卡，展开才看每次更新。
+  socket.send(JSON.stringify({ type: "prompt", sessionId, text: "PLANLOOP" }));
+  await page.waitForFunction(() => [...document.querySelectorAll(".todo-summary")].some((node) => node.textContent?.includes("次更新")), null, { timeout: 20000 });
+  const planCards = page.locator(".todo-group");
+  check("one folded plan card per turn", (await planCards.count()) === 2, `${await planCards.count()} cards`);
+  const loopCard = planCards.last();
+  const loopLabel = await loopCard.locator(".todo-summary").innerText();
+  check("folded card keeps the latest snapshot", loopLabel.includes("计划 1/2 · 完成「甲」"), loopLabel);
+  check("folded card counts the updates", loopLabel.includes("3 次更新"), loopLabel);
+  check("update rows start folded away", await loopCard.locator(".todo-updates").evaluate((node) => node.hidden && getComputedStyle(node).display === "none"));
+  check("a single-update turn gets no toggle", await planCards.first().locator(".todo-toggle").evaluate((node) => node.hidden));
+  await loopCard.locator(".todo-toggle").click();
+  check("expanding lists every update", (await loopCard.locator(".todo-update").count()) === 3);
+  const updates = await loopCard.locator(".todo-update").allInnerTexts();
+  check("updates read in order, newest last", updates[0].includes("计划 0/2 · 新增「计划项」") && updates[1].includes("开始「甲」") && updates[2].includes("完成「甲」"), updates.join(" | "));
+  check("folded card labels the whole turn", (await loopCard.locator(".todo-tool").getAttribute("aria-label"))?.includes("3 次更新") === true);
+  await page.locator('[data-exec-tab="needs"]').click();
+  await loopCard.locator(".todo-tool").click();
+  await page.waitForFunction(() => document.querySelector('[data-exec-tab="exec"]')?.getAttribute("aria-selected") === "true" && document.querySelector(".exec-plan.exec-flash"), null, { timeout: 5000 });
+  check("a todo card in the fold still opens the execution plan", (await page.locator(".exec-plan.exec-flash").count()) === 1);
+
   socket.send(JSON.stringify({ type: "prompt", sessionId, text: "BGCHILD" }));
   await page.waitForFunction(() => [...document.querySelectorAll(".exec-subagent-task")].some((row) => row.textContent?.includes("inspect child updates")), null, { timeout: 20000 });
   const childToggle = page.locator(".exec-subagent").filter({ hasText: "inspect child updates" }).locator(".exec-subagent-toggle");
@@ -154,6 +175,18 @@ try {
     && await page.locator(".exec-plan.mini .exec-plan-task").first().evaluate((row) => row.tagName === "DIV" && row.onclick === null));
   await childToggle.click();
   check("child plan badge remains visible when collapsed", (await page.locator(".exec-subagent-plan").last().innerText()) === "计划 2/2");
+  socket.send(JSON.stringify({ type: "prompt", sessionId, text: "NOWARGS" }));
+  await page.waitForSelector(".exec-now-tool", { timeout: 20000 });
+  const nowTool = page.locator(".exec-now-tool").first();
+  const clamped = await nowTool.locator(".exec-args").evaluate((node) => ({ height: node.getBoundingClientRect().height, line: parseFloat(getComputedStyle(node).lineHeight) || 0, over: node.scrollWidth > node.clientWidth + 1 }));
+  check("long tool args occupy one line", clamped.line > 0 && clamped.height <= clamped.line * 1.5 && clamped.over, JSON.stringify(clamped));
+  check("long tool args get an expand button", await nowTool.locator(".exec-now-toggle").isVisible() && (await nowTool.locator(".exec-now-toggle").getAttribute("aria-expanded")) === "false");
+  check("no expanded args before the click", (await page.locator(".exec-now-args").count()) === 0);
+  await nowTool.locator(".exec-now-toggle").click();
+  await page.waitForSelector(".exec-now-args", { timeout: 5000 });
+  check("expanding shows the full argument text", (await page.locator(".exec-now-args").innerText()).length > 120 && (await page.locator(".exec-now-tool .exec-now-toggle").getAttribute("aria-expanded")) === "true");
+  await page.locator(".exec-now-tool .exec-now-toggle").click();
+  check("collapsing hides it again", (await page.locator(".exec-now-args").count()) === 0);
   check("page has no uncaught errors", pageErrors.length === 0, pageErrors.join("; "));
   console.log("All execution-panel smoke checks passed.");
 } finally {
