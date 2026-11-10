@@ -6898,9 +6898,11 @@ export class App {
       return false;
     }
     if (this.viewer !== v || v.path !== path) return false;
-    v.path = v.info.abs;
+    // 公网请求里桥会把 abs 抹成空串（不把本机绝对路径给隧道那头），那时保留调用方给的路径：
+    // 空串会让 ⟳ 和历史步都退化成 400「路径为空」。
+    v.path = v.info.abs || path;
     // 相对路径解析成绝对路径之后，把刚记的那一步对齐，免得同一次打开留下两格。
-    if (!replace) this.retargetTop(path, v.info.abs, sessionId);
+    if (!replace) this.retargetTop(path, v.path, sessionId);
     // D166: spreadsheet files leave the binary branch and open in their own dialog, not the viewer.
     if (v.info.kind === "sheet") {
       const info = v.info;
@@ -7375,7 +7377,8 @@ export class App {
       return;
     }
     if (this.viewer !== v) return;
-    this.pushStep({ path: next.abs }, v.sessionId);
+    // 公网下 next.abs 是空串（桥抹掉本机路径），历史步要留一个能再打开的相对路径。
+    this.pushStep({ path: next.abs || abs }, v.sessionId);
     if (next.kind === "html") {
       // iframe 已经在显示它了：只对齐头部，不要重挂 iframe（那会白跳一次回原文件）。
       v.path = next.abs;
@@ -7387,7 +7390,7 @@ export class App {
       this.paintViewer();
       return;
     }
-    await this.openPreview(next.abs, v.sessionId, true);
+    await this.openPreview(next.abs || abs, v.sessionId, true);
   }
 
   private paintViewer(): void {

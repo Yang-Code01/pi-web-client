@@ -346,6 +346,42 @@ try {
   await sleep(2500); // PDF 插件自渲染要一会儿（有头模式下才画得出来），截图前等它落定
   await page.screenshot({ path: path.join(OUT, "6-pdf.png"), animations: "disabled" });
 
+  // ---- 13. 公网（隧道）会话：桥会把 abs 抹成空串（不把本机路径给隧道那头），⟳ 不能把它当路径。
+  // 改前：第一次 ⟳ 把 v.path 置空，第二次 ⟳ 发 path:"" → 桥 400「路径为空」→ iframe 被错误框顶掉（P1）。
+  // 这里只给 /api/preview 加隧道头（cf 走的就是 x-forwarded-proto: https，见 bridge/src/auth.ts:165）。
+  await page.route("**/api/preview", (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    return route.continue({ headers: { ...route.request().headers(), "x-forwarded-proto": "https" } });
+  });
+  const refresh = page.locator('button[title="刷新（重新读取文件）"]').first();
+  // 先确认 route 真的把请求变成了「公网」：桥那时会回 status 200 但 abs 为空。
+  const tunnelProbe = await page.evaluate(async (p) => {
+    const res = await fetch("/api/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: location.hash.split("/").pop(), path: p }),
+    });
+    const body = await res.json().catch(() => null);
+    return { status: res.status, abs: body?.abs, kind: body?.kind, token: !!body?.token };
+  }, PDF_DOC);
+  check("pdf: 隧道头生效（200 / kind=pdf / abs 被抹空 / token 还在）", tunnelProbe.status === 200 && tunnelProbe.kind === "pdf" && tunnelProbe.abs === "" && tunnelProbe.token === true, JSON.stringify(tunnelProbe));
+  await refresh.click();
+  await sleep(1500);
+  await refresh.click();
+  await sleep(1500);
+  const pdfAfterRefresh = {
+    frames: await page.locator(".viewer-body iframe.viewer-frame").count(),
+    errors: await page.locator(".viewer-msg.err").count(),
+    errText: await page.locator(".viewer-msg.err").first().textContent().catch(() => ""),
+    title: await page.locator(".viewer-name").first().textContent().catch(() => ""),
+  };
+  check(
+    "pdf: 公网会话连按两次 ⟳ 仍是内嵌查看器（不变成「路径为空」的错误框）",
+    pdfAfterRefresh.frames === 1 && pdfAfterRefresh.errors === 0 && pdfAfterRefresh.title === "白皮书.pdf",
+    JSON.stringify(pdfAfterRefresh),
+  );
+  await page.unroute("**/api/preview");
+
   ws.close();
 } catch (err) {
   console.error(bridgeOut.join("").slice(-3000));
