@@ -55,6 +55,16 @@ function reminderBody(text: string): string | null {
   return text.slice(REMIND_MARK.length).replace(/^\s+/, "");
 }
 
+/** 刻度带上一行的截断长度，与桥的 `TURN_TEXT_MAX`（`bridge/src/history.ts`）对齐 —— 同一轮载入前后，tooltip 得是同一句。 */
+const TURN_LABEL_MAX = 80;
+
+/** 一轮用户输入在刻度带上的文字：正文折成一行；没字就说图片 / 空消息（#242 的索引里也是这套说法）。 */
+function turnLabel(text: string, images: number): string {
+  const one = (text ?? "").replace(/\s+/g, " ").trim();
+  if (one) return one.length > TURN_LABEL_MAX ? `${one.slice(0, TURN_LABEL_MAX - 1)}…` : one;
+  return images ? tr("（{p1} 张图片）", { p1: images }) : tr("（空消息）");
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -151,6 +161,11 @@ export class ChatView {
    * 那一枚是推出来的，不来自协议。Map 的插入顺序就是对话顺序。
    */
   private users = new Map<string, { node: HTMLElement; item: UserItem }>();
+  /**
+   * 会话图片的 URL。条目里只有 mimeType，字节在会话文件里，只有 app 知道当前会话 id；返回 null
+   * 就退回旧的一行「附 N 张图片」。
+   */
+  private imageSource: ((itemId: string, index: number) => string | null) | null = null;
   /** 会话在跑一轮？用户气泡上的「处理中…」等于「运行态 + 这条是最后一条用户消息」。 */
   private running = false;
   private draftBuffers = new Map<string, { text: string; thinking: string }>();
@@ -192,11 +207,16 @@ export class ChatView {
   private following = true;
   /** One pending frame at most — a burst of updates must cost one scroll, not one per update. */
   private pendingScroll = 0;
+  /**
+   * #244: 往前翻一页后的锚点会钉三次（立刻 / 下一帧 / 150ms），而自动翻页可能在同一拍里就要跳走。
+   * 每发起一轮锚点就换一代，跳转把代数往前推 — 还没跑的那几次钉作废，不能把视口拽回底部。
+   */
+  private anchorPinRun = 0;
   /** Something arrived while the user was reading up top. */
   private unread = false;
   private jump: HTMLButtonElement;
   /** Files the agent wrote or edited in this session, latest last. */
-  private written = new Map<string, { tool: string; at: number }>();
+  private written = new Map<string, { tool: string; at: number; writes: number }>();
   /** Assistant replies the user folded; kept across rebuilds and session re-renders. */
   private collapsed = new Set<string>();
   /** Set by the app: the 停止 button on a running `!cmd` card. */
@@ -223,7 +243,7 @@ export class ChatView {
   /** This turn's written files, as chips under the ops module. */
   private opsFiles: HTMLElement | null = null;
   /** The user turns, in order — one tick on the rail each. `reset()` refills it through `add()`. */
-  private turns: { node: HTMLElement; label: string }[] = [];
+  private turns: { id: string; node: HTMLElement; label: string }[] = [];
   /** 右缘的轮次缩略图（Q-028）。它挂在滚动视口外面，所以不会随之滚走。 */
   private turnRail: TurnRail;
   /** 缩略图里悬停/点击时在正文高亮的那条消息。 */
@@ -242,7 +262,7 @@ export class ChatView {
    * `anchor` 是 DOM 锚点（当时的视口顶部节点，没内容时就是回底钮），**不是** `history.before`
    * 那个条目 id 游标（那个叫 `topId`）。
    */
-  private staging: { anchor: HTMLElement; turns: { node: HTMLElement; label: string }[] } | null = null;
+  private staging: { anchor: HTMLElement; turns: { id: string; node: HTMLElement; label: string }[] } | null = null;
   /** 「载入更早」那一行：列表的第一块内容，没有更早的就整行收起来（#220）。 */
   private moreRow: HTMLElement;
   private moreBtn: HTMLButtonElement;
@@ -252,12 +272,26 @@ export class ChatView {
   private topId: string | null = null;
   /** Set by the app: 用户要更早的一页，去桥那边要 `before` 之前那 60 条。 */
   onLoadOlder: ((before: string) => void) | null = null;
+  /**
+   * #244: 「把我带到某一轮去」的现场。翻页会把新轮次插到 `turns` 前面，所以认的是 id 而不是下标；
+   * `n` 是整段历史里的第几轮，只用于失败文案。非空期间刻度带亮着 `.busy`。
+   */
+  private pendingJump: { id: string; n: number } | null = null;
+  /** #244: 翻到尽头也没找到那一轮时，顶部那一行改说这句（3 秒后退回「载入更早」）。 */
+  private moreNote: string | null = null;
+  private moreNoteTimer = 0;
+  /** #244: 轮次 id → 整段历史里的第几轮（1 起）；只在 reset 时按桥的索引填，翻出来的轮不走这张表。 */
+  private turnOrdinal = new Map<string, number>();
 
   constructor(private root: HTMLElement) {
     this.moreRow = el("div", "chat-more");
     this.moreBtn = el("button", "more-btn");
     this.moreBtn.type = "button";
-    this.moreBtn.onclick = () => this.loadOlder();
+    // #244: 用户自己点「载入更早」= 接管：停掉自动翻页，但这次手动翻页照发。
+    this.moreBtn.onclick = () => {
+      this.cancelPendingJump();
+      this.loadOlder();
+    };
     this.moreRow.append(this.moreBtn);
     this.moreRow.hidden = true;
 
@@ -272,6 +306,8 @@ export class ChatView {
     // 挂在 .chat-pane（滚动视口的父节点）而不是 root：缩略图要跟着视口停住，不能跟内容一起滚。
     this.turnRail = mountTurnRail(this.root.parentElement ?? this.root, {
       onPick: (index) => this.jumpToTurn(index),
+      // #244: ghost 刻度的坐标会随翻页失效（id 不会），所以那条路交回 id 自己翻。
+      onPickGhost: (id) => this.jumpToTurnId(id),
       onHover: (index) => this.flashTurn(index),
       viewport: this.root,
     });
@@ -343,6 +379,8 @@ export class ChatView {
 
   /** Wheel / key up: stop following and keep the follow closed while the smooth-scroll animation plays out. */
   private holdUp(): void {
+    // #244: 用户一动手就不再把他拽到别处去 —— 已经取回的页留着，滚动位置不动。
+    this.cancelPendingJump();
     // 短会话里上滚什么也翻不出来。以前照样关掉跟流，于是一格空滚就长出「↓ new」，
     // 而下面其实空无一物——手势没有去处时，就当它没发生。
     if (!this.following || !this.hasRoomBelow()) return;
@@ -356,6 +394,8 @@ export class ChatView {
    * scroll 事件，`resumeFollowing` 永远不会被叫醒（D168）。
    */
   private stopFollowing(): void {
+    // #244: touch / 键盘 / 跳转都会走到这里：「我要去的那一轮」到此为止。
+    this.cancelPendingJump();
     if (!this.following || !this.hasRoomBelow()) return;
     this.following = false;
     this.renderJump();
@@ -441,6 +481,10 @@ export class ChatView {
 
   /** 点缩略图里的一行：把那一轮滚到视口顶部（最后一轮则直接回到底部继续跟流）。 */
   private jumpToTurn(index: number): void {
+    // #244: 点已载入的轮次 = 用户自己找了去处，自动翻页让道（它自己的收尾也会走到这里，先清过再走的）。
+    this.cancelPendingJump();
+    // 刚插入的一页还排着锚点补偿：跳转说了算，那几次别再钉（否则会把平滑滚动按回原处）。
+    this.anchorPinRun += 1;
     const turn = this.turns[index];
     if (!turn || !turn.node.isConnected) return;
     this.flashTurn(index, 1200);
@@ -455,6 +499,83 @@ export class ChatView {
     this.holdFollow = performance.now() + 900;
     const top = turn.node.getBoundingClientRect().top - this.root.getBoundingClientRect().top + this.root.scrollTop - 6;
     this.root.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  }
+
+  /**
+   * #244: 点未载入的刻度 / 行 —— 「把我带到那一轮去」。已经在列表里就直接定位（与点已载入的同观感），
+   * 否则起自动往回翻页：一页一页地要，直到那一轮被插进来。
+   */
+  private jumpToTurnId(id: string): void {
+    const index = this.turns.findIndex((turn) => turn.id === id);
+    if (index >= 0) {
+      this.jumpToTurn(index);
+      this.flashTurn(index, 1200);
+      return;
+    }
+    this.pendingJump = { id, n: this.turnOrdinal.get(id) ?? 0 };
+    this.turnRail.setBusy(true);
+    this.loadOlder();
+    // 一页都发不出去（没有游标 / 本来就没有更早的）：没有回包可等，当场收尾。
+    if (!this.loadingOlder) this.failPendingJump();
+  }
+
+  /**
+   * #244: 取消自动翻页（用户自己动手了）。只停「继续往前找」这件事：已经发出去的请求不回退，
+   * 到货的页照常插入，滚动位置也不动 —— 不 follow()、不 jumpToTurn()。
+   */
+  private cancelPendingJump(): void {
+    if (!this.pendingJump) return;
+    this.pendingJump = null;
+    this.turnRail.setBusy(false);
+    this.renderMore();
+  }
+
+  /**
+   * #244: 一页更早的到了（或确认没有了）：自动翻页在这里决定「继续翻 / 到了 / 放弃」。
+   * `advanced` 为 false 是空页 —— 没有进展就停下，不能靠 hasMore 再要一遍同一页。
+   */
+  private afterOlderPage(advanced: boolean): void {
+    const pending = this.pendingJump;
+    if (!pending) return;
+    const index = this.turns.findIndex((turn) => turn.id === pending.id);
+    if (index >= 0) {
+      this.pendingJump = null;
+      this.turnRail.setBusy(false);
+      this.renderMore();
+      this.jumpToTurn(index);
+      this.flashTurn(index, 1200);
+      return;
+    }
+    // 不在这一页：还有更早就排下一轮再要（不在响应处理的调用栈里直接发），否则收尾成失败。
+    if (advanced && this.hasOlder) {
+      setTimeout(() => {
+        if (!this.pendingJump) return;
+        this.loadOlder();
+        if (!this.loadingOlder) this.failPendingJump();
+      }, 0);
+      return;
+    }
+    this.failPendingJump();
+  }
+
+  /**
+   * #244: 翻到尽头也没有那一轮（索引与正文不一致）：停下，并在顶部那一行说一声。
+   * 那行在滚出视口的上方，所以同一句也挂在刻度带上 —— 「可见」是票面要求。
+   */
+  private failPendingJump(): void {
+    const pending = this.pendingJump;
+    if (!pending) return;
+    this.pendingJump = null;
+    this.turnRail.setBusy(false);
+    this.moreNote = tr("没翻到第 {p1} 轮", { p1: pending.n });
+    this.turnRail.setNote(this.moreNote);
+    clearTimeout(this.moreNoteTimer);
+    this.moreNoteTimer = window.setTimeout(() => {
+      this.moreNote = null;
+      this.turnRail.setNote(null);
+      this.renderMore();
+    }, 3000);
+    this.renderMore();
   }
 
   /** 悬停预览：正文里给对应那条用户消息描一圈边（`ms` > 0 时自己消失，用于点击后的短暂标记）。 */
@@ -478,15 +599,14 @@ export class ChatView {
 
   /** 一轮用户输入 = 缩略图上的一根刻度。`reset()` 也会经由 `add()` 走到这里。 */
   private noteTurn(item: UserItem, node: HTMLElement): void {
-    const one = (item.text ?? "").replace(/\s+/g, " ").trim();
-    const images = item.images?.length ?? 0;
-    const label = one || (images ? tr("（{p1} 张图片）", { p1: images }) : tr("（空消息）"));
+    const label = turnLabel(item.text ?? "", item.images?.length ?? 0);
+    const turn = { id: item.id, node, label };
     // 往前翻的时候，这些不是「新的」：先攒着，插完再 unshift 进 turns / 刻度带（#220）。
     if (this.staging) {
-      this.staging.turns.push({ node, label });
+      this.staging.turns.push(turn);
       return;
     }
-    this.turns.push({ node, label });
+    this.turns.push(turn);
     this.turnRail.add(label);
     this.queueRailSync();
   }
@@ -514,6 +634,11 @@ export class ChatView {
   }
 
   reset(items: Item[], history?: SessionHistory): void {
+    // #244: 换会话 / 重连换了内容 —— 那个「要去的轮次」已经不在这份记录里了。
+    this.cancelPendingJump();
+    clearTimeout(this.moreNoteTimer);
+    this.moreNote = null;
+    this.turnRail.setNote(null);
     this.root.replaceChildren();
     this.cards.clear();
     this.users.clear();
@@ -540,7 +665,16 @@ export class ChatView {
     this.topId = items[0]?.id ?? null;
     // Chrome first: `push()` inserts before the jump button, so it has to be in the DOM already.
     this.mountChrome();
+    const loadedIds = new Set(items.filter((item): item is UserItem => item.kind === "user").map((item) => item.id));
     for (const item of items) this.add(item);
+    // #243: 整段会话的索引里，这一页没载入的那些先以 ghost 占位在带子上沿。
+    // 老桥没有 `turns` → 空数组，退回「只画已载入的轮次」。
+    const index = history?.turns ?? [];
+    // #244: ghost 的点击只带 id 回来，这里把「第几轮」也记下（失败文案要用）。
+    this.turnOrdinal = new Map(index.map((turn, i) => [turn.id, i + 1]));
+    this.turnRail.setGhosts(
+      index.filter((turn) => !loadedIds.has(turn.id)).map((turn) => ({ id: turn.id, label: turnLabel(turn.text, turn.images) })),
+    );
     this.renderMore();
     this.follow();
   }
@@ -559,13 +693,14 @@ export class ChatView {
       // 桥说没有了（或者这一页是空的）：行收起来，别再发请求。
       this.hasOlder = hasMore;
       this.renderMore();
+      this.afterOlderPage(false);
       return;
     }
     const anchor = this.contentTop();
     const topBefore = anchor?.getBoundingClientRect().top ?? 0;
     const seen = new Set(this.users.keys());
     const held = this.holdTurnState();
-    const fresh: { node: HTMLElement; label: string }[] = [];
+    const fresh: { id: string; node: HTMLElement; label: string }[] = [];
     this.staging = { anchor: anchor ?? this.jump, turns: fresh };
     try {
       for (const item of items) this.add(item);
@@ -586,6 +721,8 @@ export class ChatView {
     this.paintPending();
     this.queueRailSync();
     this.restoreAnchor(anchor, topBefore);
+    // #244: 自动翻页的下一步在插完、钉回锚点之后才做 —— 中间那一次不打乱用户正在看的位置。
+    this.afterOlderPage(true);
   }
 
   /** 点「载入更早」：加载中按钮是灰的，所以连点也只会发一个请求（#220）。 */
@@ -596,11 +733,16 @@ export class ChatView {
     this.onLoadOlder?.(this.topId);
   }
 
-  /** 那一行只在「还有更早的」时存在；加载中换成「载入中…」并点不动（#220）。 */
+  /**
+   * 那一行在「还有更早的 / 正在载入 / 刚翻输了一轮」时都在。优先级：
+   * 载入中 → 失败那句（此时可能已经没有更早了，也要露出来）→ 「载入更早」。
+   */
   private renderMore(): void {
-    this.moreRow.hidden = !this.hasOlder;
-    this.moreBtn.disabled = this.loadingOlder;
-    this.moreBtn.textContent = this.loadingOlder ? tr("载入中…") : tr("载入更早");
+    const note = this.moreNote;
+    this.moreRow.hidden = !this.hasOlder && !this.loadingOlder && note === null;
+    // 那句失败提示不是一颗能点的钮（点了也没有更早的可要），三秒后自然回到「载入更早」。
+    this.moreBtn.disabled = this.loadingOlder || note !== null;
+    this.moreBtn.textContent = this.loadingOlder ? tr("载入中…") : (note ?? tr("载入更早"));
   }
 
   /**
@@ -621,8 +763,10 @@ export class ChatView {
    */
   private restoreAnchor(anchor: HTMLElement | null, topBefore: number): void {
     if (!anchor) return;
+    const run = ++this.anchorPinRun;
     let expected = this.pin(anchor, topBefore, null);
     const again = (): void => {
+      if (run !== this.anchorPinRun) return;
       expected = this.pin(anchor, topBefore, expected);
     };
     requestAnimationFrame(again);
@@ -781,6 +925,9 @@ export class ChatView {
       // #197: 桥那份还多一枚待发状态（乐观那条不知道自己在排队），徽标按它重画。
       this.users.delete(localId);
       this.users.set(item.id, { node, item });
+      // #244: ghost 点击靠 id 找轮次——乐观那条的 id 在这里换成真的，刻度带里的坐标也要换。
+      const turn = this.turns.find((entry) => entry.id === localId);
+      if (turn) turn.id = item.id;
       this.paintPending();
     }
     if (item.kind === "assistant") {
@@ -880,6 +1027,11 @@ export class ChatView {
     let n = 0;
     for (const entry of this.users.values()) if (entry.item.pending === "booting") n += 1;
     return n;
+  }
+
+  /** 会话图片的 URL 由 app 注入（只有它知道当前会话 id）；null 时气泡退回旧的一行文字。 */
+  setImageSource(fn: (itemId: string, index: number) => string | null): void {
+    this.imageSource = fn;
   }
 
   /** 运行态变了：只有最后一枚用户消息会因为「处理中」而变样。 */
@@ -1231,8 +1383,13 @@ export class ChatView {
   }
 
   /** Files written or edited so far, newest first. */
-  artifacts(): { path: string; tool: string }[] {
-    return [...this.written.entries()].reverse().map(([path, v]) => ({ path, tool: v.tool }));
+  /**
+   * D208: 产物弹窗要的是「这条路径在这个会话里被写过几次、最后一次用什么工具」，不是文件状态 ——
+   * 状态得桥去比写入前的原文（write 覆盖已有文件同样是「修改」）。相对/绝对写法故意原样保留：
+   * 桥会按 abs 去重，这里要是合并了反而看不出用户当时用的是哪种写法。
+   */
+  artifacts(): { path: string; tool: string; writes: number }[] {
+    return [...this.written.entries()].reverse().map(([path, v]) => ({ path, tool: v.tool, writes: v.writes }));
   }
 
   /** A write/edit lands in the session's artifact list and as a chip under this turn's module. */
@@ -1241,8 +1398,10 @@ export class ChatView {
     if (!WRITE_TOOLS.has(tool)) return;
     const path = toolPath(args);
     if (!path) return;
+    // 同一个路径再写一次：计数 +1，同时挪到 Map 末尾（artifacts() 反着取 = 最近写的在前）。
+    const prev = this.written.get(path);
     this.written.delete(path);
-    this.written.set(path, { tool, at: Date.now() });
+    this.written.set(path, { tool, at: Date.now(), writes: (prev?.writes ?? 0) + 1 });
     const box = this.opsBox;
     if (!box || box.parentNode !== this.root) return;
     if (!this.opsFiles || !this.opsFiles.isConnected) {
@@ -1354,8 +1513,34 @@ export class ChatView {
     // 命令画成药丸、用户自己写的话原样跟在后面，规则在 skill.ts（与桥端的折叠规则成对）。
     fillUserBody(body, item);
     if (item.images?.length) {
-      const tag = el("div", "notice", tr("附 {p1} 张图片", { p1: item.images.length }));
-      body.append(tag);
+      const box = el("div", "msg-images");
+      const fallback = el("div", "notice", tr("附 {p1} 张图片", { p1: item.images.length }));
+      item.images.forEach((_, index) => {
+        const src = this.imageSource?.(item.id, index) ?? null;
+        if (!src) return;
+        const thumb = el("img") as HTMLImageElement;
+        thumb.src = src;
+        thumb.alt = tr("消息里的图片 {p1}", { p1: index + 1 });
+        thumb.loading = "lazy";
+        thumb.decoding = "async";
+        const btn = el("button", "msg-image") as HTMLButtonElement;
+        btn.type = "button";
+        btn.title = tr("点击查看大图");
+        btn.append(thumb);
+        btn.onclick = () => openImage(src, thumb.alt);
+        // 老会话被裁过尾、条目已经不在文件里时，图会读不到：退回一行文字，至少不是一块碎图。
+        thumb.addEventListener("error", () => {
+          btn.remove();
+          if (!box.querySelector(".msg-image")) fallback.hidden = false;
+        });
+        box.append(btn);
+      });
+      if (box.children.length) {
+        fallback.hidden = true;
+        body.append(box, fallback);
+      } else {
+        body.append(fallback);
+      }
     }
     return body;
   }
@@ -1719,6 +1904,11 @@ export function fileIcon(p: string): string {
 
 function openPreview(path: string): void {
   window.dispatchEvent(new CustomEvent("pi-preview", { detail: { path } }));
+}
+
+/** 点开一张会话图片：手风琴交给 app 的灯箱，聊天区只管把事件递出去。 */
+function openImage(src: string, alt: string): void {
+  window.dispatchEvent(new CustomEvent("pi-image", { detail: { src, alt } }));
 }
 
 function toolSummary(item: ToolItem): string {

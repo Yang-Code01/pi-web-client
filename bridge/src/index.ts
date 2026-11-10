@@ -27,7 +27,7 @@ import { pageBefore } from "./history.ts";
 import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
-import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion } from "./sessions.ts";
+import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion, type RuntimeStats } from "./sessions.ts";
 import { defaultPermission } from "./permissiondefault.ts";
 import { bumpSkillUsage } from "./skills.ts";
 import { describeStoreSkills, installSkill, installedSkills, previewSource, removeSkill, searchSkillStore } from "./skillstore.ts";
@@ -70,10 +70,14 @@ import { mcpAddRequest, newer, searchMcp, searchPackages, setIndexListener, type
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
+import { handleJira, readAttachmentRoot } from "./jira.ts";
+import { handleSysmanage } from "./sysmanage.ts";
 import { piLatest } from "./piupdate.ts";
 import { isTrustedPreviewPath, openPreview, readAttachableImage, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw } from "./preview.ts";
+import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
+import { countSlides, slidesAvailable, slidesPdfFile, slidesPdfKey, slidesPdfStatus, slidesProbe } from "./slides/index.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
 
 interface Config {
@@ -448,6 +452,16 @@ async function main(): Promise<void> {
     return json(res, 403, { error: why, text });
   };
 
+  /**
+   * D209：用户自己配的「文件就在这儿」的两处根 —— Jira 附件根（D205）与内网通收件箱（#45）。
+   * 每请求现读一次：改了设置，旧目录立刻不再是可信根（不缓存路径）。
+   */
+  const previewPins = (): string[] => {
+    const jira = readAttachmentRoot();
+    const inbox = peer.view().status?.config?.inbox ?? null;
+    return [jira, inbox].filter((root): root is string => Boolean(root));
+  };
+
   // ---------------------------------------------------------------- http
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -538,7 +552,7 @@ async function main(): Promise<void> {
       }
       // #225: 这个工具能把任意绝对路径推进预览面板，而页面上能点开的只限于会话目录（D50 的宽松规则
       // 只属于 /api/preview 与 /api/dirs）。目录外的路径，只有会话记录里真出现过才放行；拒绝时不签发凭据。
-      if (!isTrustedPreviewPath(sess, abs)) {
+      if (!isTrustedPreviewPath(sess, abs, previewPins())) {
         log(`preview.open rejected: untrusted path for ${session.state.id.slice(0, 8)}: ${abs}`);
         return json(res, 200, {
           ok: false,
@@ -548,7 +562,7 @@ async function main(): Promise<void> {
       }
       let info: ReturnType<typeof openPreview>;
       try {
-        info = openPreview(sess, rawPath);
+        info = openPreview(sess, rawPath, previewPins());
       } catch (err: any) {
         return json(res, 200, { ok: false, reason: "path", text: String(err?.message ?? err) });
       }
@@ -574,6 +588,30 @@ async function main(): Promise<void> {
       }
       log(`preview.open ${sid.slice(0, 8)} → no ack (${ack.reason ?? "?"})`);
       return json(res, 200, { ok: false, reason: "no-ack", text: "页面没有回应这次打开（可能刚关掉会话或在处理别的操作）。" });
+    }
+
+    // ------------------------------------------------------------ 产物基线 (loopback only, D208)
+    // `artifact-snapshot` 扩展在 `tool_call` 里等这个请求，回去以后 pi 才真正写文件 —— 所以这里读到的
+    // 一定是写入前的字节。和 /api/ask、/api/preview/open 一样：只认回环 + 会话级 token，没有 cookie。
+    // 失败一律 200：记账失败不能让一次写入失败，扩展那边也不解析错误体。
+    if (url.pathname === "/api/artifacts/snapshot" && req.method === "POST") {
+      if (publicReq) return json(res, 403, { ok: false, reason: "tunnel" });
+      const peer = req.socket.remoteAddress ?? "";
+      if (!isLoopbackPeer(peer)) return json(res, 403, { ok: false, reason: "non-loopback" });
+      const body = await readBody(req).catch(() => ({}));
+      const session = sessions.byLoopbackToken(String(body.token ?? ""));
+      if (!session) {
+        log(`artifacts.snapshot rejected: bad token from ${peer}`);
+        return json(res, 403, { ok: false, reason: "bad-token" });
+      }
+      try {
+        const abs = resolvePreviewPath({ cwd: session.state.cwd }, String(body.path ?? ""));
+        const out = recordSnapshot(session.state.id, abs);
+        return json(res, 200, { ok: true, kept: out.kept, existed: out.snap?.existed ?? null });
+      } catch (err: any) {
+        log(`artifacts.snapshot failed: ${String(err?.message ?? err)}`);
+        return json(res, 200, { ok: false, error: String(err?.message ?? err) });
+      }
     }
 
     if (url.pathname === "/api/login" && req.method === "POST") {
@@ -690,6 +728,14 @@ async function main(): Promise<void> {
         return json(res, 404, { error: (err as Error).message });
       }
     }
+    // D209：内网通收到的文件，点卡片就用本机程序打开（收件目录里的那份真文件，不是下载副本）。
+    if (url.pathname === "/api/peer/open" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "open_public", "公网不能打开本机程序");
+      const body = await readBody(req).catch(() => ({}));
+      const abs = await peer.filePath(String(body?.id ?? ""));
+      if (!abs) return fail(res, 404, "peer_file", "取不到这个文件（可能已经被挪走了）");
+      return json(res, 200, await openWithApp(abs));
+    }
     if (url.pathname === "/api/peer/add" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       try {
@@ -726,6 +772,12 @@ async function main(): Promise<void> {
       if (!url.pathname.startsWith("/api/")) return serveStatic(res, url.pathname); // let the SPA show the login form
       return json(res, 401, { error: "unauthorized" });
     }
+
+    // #266 本机管理：读本机信息；DNS 改动只有本机/局域网能发起，公网在模块里 403。
+    if (await handleSysmanage(req, res, url, { publicReq, port: cfg.port, version: VERSION, log })) return;
+
+    // #248 Jira 面板：单站点、只读、凭据不出桥。路由都在 jira.ts 里，这里只接线。
+    if (await handleJira(req, res, url, { publicReq })) return;
 
     if (url.pathname === "/api/me") {
       return json(res, 200, {
@@ -832,12 +884,18 @@ async function main(): Promise<void> {
       const where = sessions.locate(sessionId);
       if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
       try {
-        const info = openPreview(where, String(body.path ?? ""));
+        const info = openPreview(where, String(body.path ?? ""), previewPins());
         // 公网不读表内容（US 46）：xlsx 与 csv/tsv 的字节都不给；.xls/.ods 走二进制分支本就只给「用默认程序打开」，open 已另拒。
         const ext = path.extname(info.abs).toLowerCase();
         if (publicReq && (info.kind === "sheet" || ext === ".csv" || ext === ".tsv")) {
           return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
         }
+        // D209：演示文稿内容也不从公网给（与表格同一条隐私口径，演示稿比表格更不该外泄）。
+        if (publicReq && info.kind === "slides") {
+          return fail(res, 403, "slides_public", "通过公网访问时不提供演示文稿内容，回本机操作");
+        }
+        // 页数与本机能不能转：提前告诉页面，别让它点开就开始轮询一个注定失败的转换。
+        if (info.kind === "slides") info.slides = { pages: await countSlides(info.abs), engine: slidesAvailable() };
         // 公网也不泄本机绝对路径（US 46 延伸）：binary 分支（.xls/.ods/加密包）内容与 open 都已拒，路径一并抹掉。
         if (publicReq && info.kind === "binary") info.abs = "";
         // Text files opened here become writable for this session (D50).
@@ -845,6 +903,39 @@ async function main(): Promise<void> {
         return json(res, 200, info);
       } catch (err: any) {
         return json(res, 400, { error: String(err?.message ?? err) });
+      }
+    }
+
+    // D208: 产物弹窗的数据。页面把自己重放历史时收到的 write/edit 路径递过来（最近写的在前），
+    // 桥负责解析、查基线、算行数；路径来自已登录页面，读盘本身不超过 /api/preview 已有的能力。
+    if (url.pathname === "/api/artifacts/list" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const sessionId = String(body.sessionId ?? "");
+      const where = sessions.locate(sessionId);
+      if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
+      const raw = Array.isArray(body.items) ? body.items : [];
+      const items = raw
+        .filter((it: any) => it && typeof it.path === "string")
+        .slice(0, 500)
+        .map((it: any) => ({ path: String(it.path), tool: String(it.tool ?? "write"), writes: Number(it.writes) || 1 }));
+      try {
+        return json(res, 200, await listArtifacts(sessionId, where.cwd, items));
+      } catch (err: any) {
+        log(`artifacts.list failed: ${String(err?.message ?? err)}`);
+        return fail(res, 500, "artifacts_failed", "读不了这个会话的产物");
+      }
+    }
+
+    if (url.pathname === "/api/artifacts/diff" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      const sessionId = String(body.sessionId ?? "");
+      const where = sessions.locate(sessionId);
+      if (!where) return fail(res, 404, "session_not_found", "找不到这个会话");
+      try {
+        // 没基线不是错误，是答案的一种（D208）：200 + reason，页面用 diffReasonText 说人话。
+        return json(res, 200, await diffArtifact(sessionId, where.cwd, String(body.path ?? "")));
+      } catch (err: any) {
+        return fail(res, 400, "artifacts_diff", String(err?.message ?? err));
       }
     }
 
@@ -944,6 +1035,55 @@ async function main(): Promise<void> {
       }
     }
 
+    // D209: 幻灯片翻页的 PDF（PowerPoint 无窗口导出）。和 /api/sheet/pdf 同一套两阶段契约
+    // （POST 起转换/查状态，GET 拿字节），也同样**不能**走 /raw —— 那里的 `content-security-policy:
+    // sandbox` 会让浏览器内建 PDF 查看器白屏（D166 踩过）。
+    if (url.pathname === "/api/slides/pdf" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "slides_public", "通过公网访问时不提供演示文稿内容，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      const grant = await resolveSheetGrant(res, String(body.token ?? ""));
+      if (!grant) return;
+      try {
+        return json(res, 200, await slidesPdfStatus(grant.abs, grant.mtimeMs, body.retry === true));
+      } catch (err: any) {
+        const code = String(err?.code ?? "") || "slides_pdf_failed";
+        return fail(res, code === "slides_pdf_powerpoint" ? 503 : 502, code, String(err?.message ?? err));
+      }
+    }
+
+    if (url.pathname === "/api/slides/pdf" && req.method === "GET") {
+      if (publicReq) return fail(res, 403, "slides_public", "通过公网访问时不提供演示文稿内容，回本机操作");
+      const grant = await resolveSheetGrant(res, url.searchParams.get("token") ?? "");
+      if (!grant) return;
+      const id = url.searchParams.get("id") ?? "";
+      // 只有这张凭据能换出这个 id 对应的 PDF。
+      if (id !== slidesPdfKey(grant.abs, grant.mtimeMs)) {
+        return fail(res, 404, "slides_pdf_gone", "幻灯片视图已失效，请重新生成");
+      }
+      try {
+        const pdf = await slidesPdfFile(id);
+        if (!pdf) {
+          // 还在转：让前端继续轮询状态端点，不要挂住这条请求。
+          res.writeHead(202, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+          res.end("幻灯片还在生成");
+          return;
+        }
+        const size = (await fs.promises.stat(pdf.file)).size;
+        res.writeHead(200, {
+          "content-type": "application/pdf",
+          "content-length": String(size),
+          "content-disposition": 'inline; filename="slides.pdf"',
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+        });
+        fs.createReadStream(pdf.file).pipe(res);
+        return;
+      } catch (err: any) {
+        const code = String(err?.code ?? "") || "slides_pdf_failed";
+        return fail(res, code === "slides_pdf_powerpoint" ? 503 : 502, code, String(err?.message ?? err));
+      }
+    }
+
     // The file explorer's save: only paths /api/preview handed out as text may be written.
     if (url.pathname === "/api/save" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
@@ -995,6 +1135,31 @@ async function main(): Promise<void> {
         return json(res, 200, sessions.snapshot(id));
       } catch (err: any) {
         return json(res, 404, { error: String(err?.message ?? err) });
+      }
+    }
+
+    // 会话里的一枚图片（点开缩略图）。条目正文里只有 mimeType，字节按条目 id 从会话文件流式读；
+    // 刚发出、还没落盘的 `user:N` 气泡由桥内存里那份兜底。
+    if (url.pathname === "/api/session/image" && req.method === "GET") {
+      const id = url.searchParams.get("id") ?? "";
+      const item = url.searchParams.get("item") ?? "";
+      const index = Number(url.searchParams.get("n"));
+      if (!Number.isInteger(index) || index < 0) return fail(res, 400, "bad_image_index", "图片序号不对");
+      if (!sessions.locate(id)) return fail(res, 404, "session_not_found", "找不到这个会话");
+      try {
+        const img = await sessions.image(id, item, index);
+        if (!img) return fail(res, 404, "image_not_found", "这张图片在会话文件里已经找不到了");
+        res.writeHead(200, {
+          "content-type": img.mimeType,
+          "content-length": String(img.data.length),
+          // 条目写进文件就不会再变；同一张图重复渲染不必再问一次桥。
+          "cache-control": "private, max-age=31536000, immutable",
+          "x-content-type-options": "nosniff",
+        });
+        res.end(img.data);
+        return;
+      } catch (err: any) {
+        return fail(res, 500, "image_read_failed", `读不了这张图片：${String(err?.message ?? err).slice(0, 200)}`);
       }
     }
 
@@ -1128,16 +1293,52 @@ async function main(): Promise<void> {
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      (ws as any).publicReq = isTunnelRequest(req.headers);
-      (ws as any).stepUntil = (ws as any).publicReq ? 0 : Number.MAX_SAFE_INTEGER;
+      const client = ws as ClientSocket;
+      client.publicReq = isTunnelRequest(req.headers);
+      client.stepUntil = client.publicReq ? 0 : Number.MAX_SAFE_INTEGER;
       wss.emit("connection", ws, req);
     });
   });
 
+  /** 升级时记在连接上的两件事：是不是从隧道来的（D215）、首帧要不要按步下发。 */
+  type ClientSocket = WebSocket & { publicReq?: boolean; stepUntil?: number };
+
+  /**
+   * #218 补：分页只是**隧道上的传输优化**，不是新的存储模型。本机 / 内网连接照旧整段下发 ——
+   * 切回会话立刻是完整历史，不用再一页页点「载入更早」；只有穿过 cloudflared 的连接吃分页。
+   * `PI_WEB_PAGE_ALL=1` 让本机连接也分页，UI 用例靠它覆盖翻页那条路（见 history-ui / history-paths-ui）。
+   */
+  const pageAll = process.env.PI_WEB_PAGE_ALL === "1";
+  const pagedFor = (client: WebSocket): boolean => pageAll || Boolean((client as ClientSocket).publicReq);
+
+  /**
+   * 一帧整页历史按**连接**成形：分页连接是末尾一页，其余整段。`session`（单播）与 `items`（广播）
+   * 共用这一处 —— 形状跟着连接走，不跟着会话走，否则同一条会话在两个标签页里只能二选一。
+   */
+  const frameFor = (client: WebSocket, payload: any): any => {
+    if (pagedFor(client) || !payload?.history) return payload;
+    if (payload.type !== "session" && payload.type !== "items") return payload;
+    const session = sessions.get(String(payload.sessionId ?? ""));
+    if (!session) return payload;
+    return { ...payload, ...session.frame({ full: true }) };
+  };
+
+  /**
+   * 一条会话的 `session` 帧：subscribe / claim / create / reload 四条路径共用这一处，
+   * `trust` 由调用方补 —— 形状（隧道一页 / 本机整段）交给 `frameFor`（D215）。
+   */
+  const sessionFrameOf = (snap: { state: { id: string } }) => ({ type: "session", sessionId: snap.state.id, ...snap });
+
   const broadcast = (payload: any) => {
-    const data = JSON.stringify(payload);
+    // 整页帧只会有两种形状（隧道一页 / 本机整段），每份只序列化一次；其余帧所有连接共用一份字节。
+    const cache = new Map<"paged" | "full", string>();
     for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN) client.send(data);
+      if (client.readyState !== WebSocket.OPEN) continue;
+      const shaped = frameFor(client as WebSocket, payload);
+      const key = shaped === payload ? "paged" : "full";
+      let data = cache.get(key);
+      if (data === undefined) cache.set(key, (data = JSON.stringify(shaped)));
+      client.send(data);
     }
   };
 
@@ -1228,7 +1429,7 @@ async function main(): Promise<void> {
    * D120: the panel stays live without a timer of its own, but only pages that actually asked for
    * the numbers get the tick's broadcast — a 60 s push to every idle tab is nobody's feature.
    */
-  const broadcastRuntime = (stats: object) => {
+  const broadcastRuntime = (stats: RuntimeStats) => {
     const data = JSON.stringify({ type: "runtime.stats", ...stats });
     for (const client of wss.clients) {
       if (client.readyState === WebSocket.OPEN && (client as any).wantsRuntime) client.send(data);
@@ -1293,6 +1494,9 @@ async function main(): Promise<void> {
       public: (ws as any).publicReq,
       ui: readUiPrefs(),
       notes: listNotes(),
+      // #278：页面据此决定 ＋ 是「挑目录建组」还是退回「空壳组 + 就地改名」（旧桥没有这项）；
+      // `ws.resolve.dir` = 对话框能问「这个目录折回到哪个组」（子目录 / worktree）。
+      caps: ["ws.create.dir", "ws.resolve.dir"],
     });
     // 先用 1–2 s 的快清单打招呼，带扩展的完整清单十几秒后自己补上（D150）。
     void pushCatalog(ws, { resend: true });
@@ -1447,7 +1651,7 @@ async function main(): Promise<void> {
           case "subscribe": {
             const snap = sessions.pagedSnapshot(msg.sessionId);
             (ws as any).watching = String(msg.sessionId);
-            send({ type: "session", sessionId: msg.sessionId, ...snap, trust: await trustFor(snap.state.cwd) });
+            send(frameFor(ws, { ...sessionFrameOf(snap), trust: await trustFor(snap.state.cwd) }));
             return;
           }
           /**
@@ -1480,7 +1684,7 @@ async function main(): Promise<void> {
             if (!(await requireStepUp())) return;
             const session = await sessions.claim(String(msg.sessionId));
             (ws as any).watching = session.state.id;
-            send({ type: "session", sessionId: session.state.id, ...session.pagedSnapshot(), trust: await trustFor(session.state.cwd) });
+            send(frameFor(ws, { ...sessionFrameOf(session.pagedSnapshot()), trust: await trustFor(session.state.cwd) }));
             return;
           }
           case "prompt": {
@@ -1592,7 +1796,7 @@ async function main(): Promise<void> {
             // client hears about the arrangement (the strip is a projection of manage.pin).
             if (msg.pin) sessions.pinLast(session.state.id);
             (ws as any).watching = session.state.id;
-            send({ type: "session", sessionId: session.state.id, ...session.pagedSnapshot(), trust: await trustFor(session.state.cwd) });
+            send(frameFor(ws, { ...sessionFrameOf(session.pagedSnapshot()), trust: await trustFor(session.state.cwd) }));
             broadcast({ type: "session.state", session: session.state });
             if (msg.pin) broadcast({ type: "manage", ...manageSnapshot() });
             return;
@@ -1934,7 +2138,7 @@ async function main(): Promise<void> {
             if (!(await requireStepUp())) return;
             const session = await sessions.reload(String(msg.sessionId ?? ""));
             (ws as any).watching = session.state.id;
-            send({ type: "session", sessionId: session.state.id, ...session.pagedSnapshot(), trust: await trustFor(session.state.cwd) });
+            send(frameFor(ws, { ...sessionFrameOf(session.pagedSnapshot()), trust: await trustFor(session.state.cwd) }));
             send({ type: "notice", sessionId: session.state.id, text: "已重新加载：pi 进程重启，设置、扩展、技能、模板、AGENTS.md 都是最新的了。", level: "info" });
             return;
           }
@@ -2004,7 +2208,12 @@ async function main(): Promise<void> {
           // ------------------------------------------------ 扩展 manager (D81)
           case "ui.set": {
             if (!(await requireStepUp())) return;
-            const prefs = writeUiPrefs({ ...(typeof msg.showExtButton === "boolean" ? { showExtButton: msg.showExtButton } : {}) });
+            // #288：新报文 `{ chrome: { id: boolean|null } }`（null = 删键）；旧的 `{ showExtButton }`
+            // 继续接受，映射进 chrome.ext。白名单过滤在 writeUiPrefs 里。
+            const prefs = writeUiPrefs({
+              chrome: msg.chrome && typeof msg.chrome === "object" && !Array.isArray(msg.chrome) ? (msg.chrome as Record<string, unknown>) : undefined,
+              showExtButton: typeof msg.showExtButton === "boolean" ? msg.showExtButton : undefined,
+            });
             broadcast({ type: "ui", ui: prefs });
             return;
           }
@@ -2590,7 +2799,28 @@ async function main(): Promise<void> {
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
               return;
             }
+            if (action === "ws.resolve") {
+              // #278：只读解析「这个目录折回到哪个组」—— 子目录 / worktree 用；不建组、不广播。
+              const dir = typeof msg.dir === "string" ? msg.dir : "";
+              const group = dir ? await sessions.workspaces.resolveDir(dir) : null;
+              send({ type: "ws.resolved", dir, id: group?.id ?? null });
+              return;
+            }
             if (action === "ws.create") {
+              // #278：带 dir = 按目录建组（目录即组身份，已在列表里就只回 id，不再建第二个）；
+              // 不带 dir = 老规矩，建一个空壳手动组、由页面接着进入改名。
+              const dir = typeof msg.dir === "string" ? msg.dir : "";
+              if (dir) {
+                const result = await sessions.workspaces.createDir(dir);
+                if (!result.ok || !result.group) {
+                  send({ type: "notice", text: result.reason ?? "这个目录没能建成工作区", level: "warn" });
+                  return;
+                }
+                broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+                // 先广播快照、再回执：页面收到回执时树里已经有这一组了（也可能本来就有）。
+                send({ type: "ws.created", id: result.group.id, created: result.created === true });
+                return;
+              }
               sessions.workspaces.create(String(msg.name ?? ""));
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
               return;
@@ -2609,14 +2839,25 @@ async function main(): Promise<void> {
               broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
               return;
             }
+            if (action === "ws.row") {
+              // #276：id 不存在或 inRow 不是布尔就静默忽略（旧页面 / 坏消息不该换来一条 warn）。
+              if (typeof msg.id !== "string" || typeof msg.inRow !== "boolean") return;
+              if (!sessions.workspaces.group(msg.id)) return;
+              sessions.workspaces.setRow(msg.id, msg.inRow);
+              broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+              return;
+            }
             if (action === "ws.drop") {
+              // #279：空组（手动组 / 目录组）都能删；有会话时由 `dropWorkspace()` 拒绝并给原因。
               const id = String(msg.id ?? "");
-              const result = sessions.workspaces.drop(id);
+              const result = sessions.dropWorkspace(id);
               if (!result.ok) {
                 send({ type: "notice", text: result.reason ?? "这个工作区不能删", level: "warn" });
                 return;
               }
               broadcast({ type: "workspaces", workspace: sessions.workspaces.snapshot() });
+              // 删组会顺手清掉还指着它的 override，会话的 `ws` 跟着挪窝 —— 一起广播，别让卡片停在死组里。
+              broadcast({ type: "sessions.list", sessions: sessions.list(), workspace: sessions.workspaces.snapshot() });
               return;
             }
             if (action === "ws.tabs") {
@@ -2657,6 +2898,12 @@ async function main(): Promise<void> {
     // pid 文件：更新器靠它找到并重启「这一个」进程（见 pidfile.ts 的注释）。
     writePidFile(cfg.port);
     log(`listening on http://${cfg.host}:${cfg.port}`);
+    // D209：启动时探一次引擎，排错时第一眼看日志就知道「这台机器能不能站内翻页」。
+    const slidesProbed = slidesProbe();
+    log(
+      `slides: ${slidesProbed.available ? "PowerPoint" : "no PowerPoint"}` +
+        `${slidesProbed.exe ? ` (${slidesProbed.exe})` : ""}`,
+    );
     console.log(`\n  pi-web-client 已启动：http://127.0.0.1:${cfg.port}`);
     if (fresh) console.log(`  口令（首次生成，只显示这一次）：${fresh}\n`);
     else console.log(`  口令在 ${statePath("passphrase.txt")}\n`);

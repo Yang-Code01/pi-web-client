@@ -102,13 +102,13 @@ try {
   await page.locator(".composer textarea").waitFor({ timeout: 20000 });
   await page.locator(".composer textarea").fill("/settings");
   await page.keyboard.press("Enter");
-  await until(() => page.locator(".settings-sheet").count(), 10000, "settings sheet");
-  await page.locator(".settings-tabs .chip", { hasText: "扩展" }).first().click();
+  await until(() => page.locator(".settings-sheet").count(), 30000, "settings sheet");
+  await page.locator(".st-nav__item[data-tab=\"ext\"]").click();
   const box = page.locator(".ext-pi", { hasText: "本项目需要" }).first();
   await box.waitFor({ timeout: 15000 });
   // 第一次进这一页会顺手问 /api/deps：问的那一下不能把整页画成两份（以前会：同步重画一遍，
   // 外层再追加一次开关行与扩展列表）。要在答案回来之前数，回来以后重画会把多的那份抹掉。
-  const hosts = await page.locator(".settings-body .ext-host").count();
+  const hosts = await page.locator(".st-pane .ext-host").count();
   check("第一次进扩展页：只画一份", hosts === 1, String(hosts));
   // 等那一块自己问完（问不到时上面会写「检查中…」）。`pi list` 在 Windows 上要跑 10 秒上下，给足 45 秒。
   await until(async () => !(await box.innerText()).includes("检查中…"), 45000, "deps loaded");
@@ -141,7 +141,7 @@ try {
 
   // 设置 → 子代理 → acp_delegate：billion-context 没装时整片灰掉、保存不可用。
   const bc = report.optional?.find((o) => o.name === "billion-context");
-  await page.locator(".settings-tabs .chip", { hasText: "子代理" }).first().click();
+  await page.locator(".st-nav__item[data-tab=\"subagents\"]").click();
   await page.locator("#subagents-acp .settings-foot").waitFor({ timeout: 15000 });
   const acpText = await page.locator("#subagents-acp").innerText();
   if (bc && !bc.installed) {
@@ -156,8 +156,8 @@ try {
   await page.locator(".composer textarea").waitFor({ timeout: 20000 });
   await page.locator(".composer textarea").fill("/settings");
   await page.keyboard.press("Enter");
-  await until(() => page.locator(".settings-sheet").count(), 10000, "settings sheet (again)");
-  await page.locator(".settings-tabs .chip", { hasText: "子代理" }).first().click();
+  await until(() => page.locator(".settings-sheet").count(), 30000, "settings sheet (again)");
+  await page.locator(".st-nav__item[data-tab=\"subagents\"]").click();
   await page.locator("#subagents-acp .settings-foot").waitFor({ timeout: 15000 });
   const acpFirst = page.locator("#subagents-acp");
   if (bc && !bc.installed) {

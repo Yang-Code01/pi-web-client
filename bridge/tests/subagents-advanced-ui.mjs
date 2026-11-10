@@ -156,14 +156,14 @@ try {
   await page.locator(".composer textarea").fill("/settings");
   await page.keyboard.press("Enter");
   await until(() => page.locator(".settings-sheet").count(), 10000, "settings sheet");
-  await until(async () => (await page.locator(".settings-body .settings-row").count()) > 0, 20000, "global form");
+  await until(async () => (await page.locator(".st-pane .settings-row").count()) > 0, 20000, "global form");
 
   // ---------------------------------------------------------------- B. 进 tab 重问 settings.json
   log("B. 面板开着的时候往磁盘上加 maxThinking，再切到「子代理」");
   const late = readJson(GLOBAL_FILE);
   late.subagents.maxThinking = "low";
   fs.writeFileSync(GLOBAL_FILE, `${JSON.stringify(late, null, 2)}\n`);
-  await page.locator(".settings-tabs .chip", { hasText: "子代理" }).click();
+  await page.locator(".st-nav__item", { hasText: "子代理" }).click();
   await until(() => page.locator(".subagents-page").count(), 20000, "subagents page");
   const maxThinking = page.locator("#subagents-default label.settings-row", { hasText: "maxThinking" }).locator("select");
   await until(async () => (await maxThinking.inputValue()) === "low", 20000, "maxThinking reloaded on tab entry");
@@ -230,7 +230,7 @@ try {
   await page.locator(".composer textarea").fill("/settings");
   await page.keyboard.press("Enter");
   await until(() => page.locator(".settings-sheet").count(), 10000, "settings sheet");
-  await page.locator(".settings-tabs .chip", { hasText: "子代理" }).click();
+  await page.locator(".st-nav__item", { hasText: "子代理" }).click();
   await until(() => page.locator(".subagents-page").count(), 20000, "subagents page");
   await page.locator("details.subagents-advanced summary").click();
   const providerRow2 = page.locator(".subagents-adv-block", { hasText: "按 provider 覆盖" }).locator("tr", { hasText: "wb2api / reviewer" });

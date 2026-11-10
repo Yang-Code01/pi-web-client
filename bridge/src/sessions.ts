@@ -3,13 +3,14 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { RpcChild } from "./rpc.ts";
-import { displayUserText, loadEntries, listSessionFiles, normalizeUserText, readMeta, titleFromUserText, typedSkill, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
+import { displayUserText, loadEntries, loadEntryImage, listSessionFiles, normalizeUserText, readMeta, titleFromUserText, typedSkill, type SessionEntry, type SessionFileMeta } from "./sessionfile.ts";
 import { BASH_KEEP, currentBranch, customMessageItem, entriesToItems, skillItemFor, summarizeToolArgs, withSkillItems, type BashItem, type Item, type ToolItem, type UserItem } from "./items.ts";
 import { fileURLToPath } from "node:url";
 import { piModule } from "./pimods.ts";
 import { describeLaunch, launchArgs, readLaunch, writeLaunch, type LaunchOptions } from "./launch.ts";
 import { lessonFile } from "./lessons.ts";
 import { DELIVERY_HINT } from "./delivery.ts";
+import { forgetSession } from "./artifacts.ts";
 import { ensureDir, scratchCwd, scratchSessionsDir, sessionsRoot, sessionsRootInfo, statePath, readJson, writeJson } from "./paths.ts";
 import { fetchModels, type ModelInfo } from "./pi.ts";
 import { Manage } from "./manage.ts";
@@ -32,6 +33,11 @@ function approvalGatePath(): string {
 /** #224：`open_preview` 只属于网页会话 —— 它做的事就是把文件交给网页的预览面板。 */
 function previewToolPath(): string {
   return process.env.PI_WEB_PREVIEW_TOOL ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "open-preview.ts");
+}
+
+/** D208：写入前留原文。和预览工具一样只在网页会话里挂 —— 终端里的 pi 没有这个弹窗。 */
+function artifactToolPath(): string {
+  return process.env.PI_WEB_ARTIFACT_TOOL ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "artifact-snapshot.ts");
 }
 
 export interface ApprovalRequest {
@@ -781,6 +787,11 @@ export class Session extends EventEmitter {
   private draftId: string | null = null;
   private userCounter = 0;
   /**
+   * 刚发出、pi 还没写进会话文件的用户图片（`user:N` → 原图）。文件里的 `user` 消息是 pi 展开过的
+   * 明文版，气泡要能立刻点开看原图，就只能在这儿留一份；只留最近 40 条。
+   */
+  private promptImages = new Map<string, { data: string; mimeType: string }[]>();
+  /**
    * Open while pi is compacting (ours or its own threshold/overflow run). pi throws on any prompt
    * submitted in that window (agent-session.js: "Cannot submit a prompt while compaction is in
    * progress"), so prompt() waits on it instead of bouncing the user's message.
@@ -983,7 +994,7 @@ export class Session extends EventEmitter {
       const prefix = before.length <= this.items.length && before.every((it, i) => it.id === this.items[i].id);
       if (!prefix) {
         // #221: 分支切换换掉的是整条对话 —— 与首帧同一个规矩，只推末尾一页 + `history`。
-        this.emitWs({ type: "items", sessionId: this.state.id, ...this.tailFrame() });
+        this.emitWs({ type: "items", sessionId: this.state.id, ...this.frame() });
       } else {
         // Same ids can still carry new content: a tool card gets its result from a later line.
         for (let i = 0; i < before.length; i++) {
@@ -1079,6 +1090,7 @@ export class Session extends EventEmitter {
     if (process.env.PI_WEB_NO_EXT === "1") args.push("-ne");
     args.push("-e", approvalGatePath());
     args.push("-e", previewToolPath());
+    args.push("-e", artifactToolPath());
     const cwd = opts.cwd || this.state.cwd || process.cwd();
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
     const launch = readLaunch(id);
@@ -1178,7 +1190,7 @@ export class Session extends EventEmitter {
     // A resumed session starts with the transcript pi already wrote to disk.
     if (opts.resume) this.loadFromFile();
     // #221: 唤醒续接同样只推末尾一页，不然休眠一个大会话再叫醒，页面又要等整段。
-    this.emitWs({ type: "items", sessionId: id, ...this.tailFrame() });
+    this.emitWs({ type: "items", sessionId: id, ...this.frame() });
     void this.refreshStats();
   }
 
@@ -1772,6 +1784,14 @@ export class Session extends EventEmitter {
       ts: new Date().toISOString(),
     };
     this.upsert(userItem);
+    if (images?.length) {
+      this.promptImages.set(userId, images);
+      while (this.promptImages.size > 40) {
+        const oldest = this.promptImages.keys().next().value;
+        if (oldest === undefined) break;
+        this.promptImages.delete(oldest);
+      }
+    }
     // Other pages watching this session (phone + desktop) only learn about the message from here.
     this.emitWs({ type: "item.add", sessionId: this.state.id, item: userItem, ...(clientId ? { clientId } : {}) });
     // A web-born session has no title until it says something; the terminal would show the first
@@ -1786,6 +1806,17 @@ export class Session extends EventEmitter {
       }
     }
     return userId;
+  }
+
+  /**
+   * 一枚用户消息图片的字节（`itemId` 里第 `index` 张图片）。刚发出的气泡还在内存里（`user:N`，
+   * 文件里暂时只有 pi 的明文版），先查那份；老会话的条目 id 则直接流式读文件。
+   */
+  async imageOf(itemId: string, index: number): Promise<{ mimeType: string; data: Buffer } | null> {
+    const own = this.promptImages.get(itemId)?.[index];
+    if (own) return { mimeType: own.mimeType, data: Buffer.from(own.data, "base64") };
+    if (!this.state.file) return null;
+    return loadEntryImage(this.state.file, itemId, index);
   }
 
   /**
@@ -2206,7 +2237,7 @@ export class Session extends EventEmitter {
     this.items = [];
     this.autoCompactUsed = false;
     this.setState({ file, truncated: false }, { touch: false });
-    this.emitWs({ type: "items", sessionId: this.state.id, items: [], history: { hasMore: false, total: 0 } });
+    this.emitWs({ type: "items", sessionId: this.state.id, items: [], history: { hasMore: false, total: 0, turns: [] } });
     this.touch();
     if (before && before !== file) {
       try {
@@ -2466,20 +2497,22 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * #219：`session` 帧只带末尾一页。`items` 仍然是这一页的原文，同帧用 `history` 说清
-   * 还有没有更早的、整段一共多少条 —— 老前端不认 `history`，照旧只画这一页。
+   * #219：隧道连接的 `session` 帧只带末尾一页（本机 / 内网由 `frameFor` 换成整段，D215）。
+   * `items` 仍然是这一页的原文，同帧用 `history` 说清还有没有更早的、整段一共多少条
+   * —— 老前端不认 `history`，照旧只画这一页。
    * 随手问例外：它没有「载入更早」，整段下发（`itemsFrame`）。
    */
   pagedSnapshot(): SessionSnapshot & { history: SessionHistory } {
-    return { ...this.snapshot(), ...this.tailFrame() };
+    return { ...this.snapshot(), ...this.frame() };
   }
-
   /**
-   * 三处整页帧（分支切换 / 唤醒续接 / 快照）共用的正文：普通会话是末尾一页，随手问整段。
-   * 随手问若也切页，累积超过一页后前面的话会在下一次唤醒时静默消失 —— 界面上没有入口能取回来。
+   * 一帧整页历史的正文（`session` / `items` 帧共用的那两项）：默认末尾一页，`full` 要整段。
+   * 分页只是隧道上的传输优化（D215），所以「这一帧要哪种形状」由调用方按**连接**决定；
+   * 随手问永远整段 —— 它没有「载入更早」，切了页前面的话会在下一次唤醒时静默消失。
+   * 三处整页帧（分支切换 / 唤醒续接 / 快照）与桥的 `frameFor` 都从这里取，别各拼一份。
    */
-  private tailFrame(): { items: Item[]; history: SessionHistory } {
-    return itemsFrame(this.items, { full: Boolean(this.state.scratch) });
+  frame(opts: { full?: boolean } = {}): { items: Item[]; history: SessionHistory } {
+    return itemsFrame(this.items, { full: Boolean(opts.full) || Boolean(this.state.scratch) });
   }
 
   idleFor(): number {
@@ -2490,6 +2523,7 @@ export class Session extends EventEmitter {
     this.clearApprovals();
     this.clearAsks();
     this.stopTail();
+    this.promptImages.clear();
     // D170: runner 是 pi 的子进程，跟着它走；表留着只会在重开的会话里挂一堆假任务。
     this.bgRuns.reset();
     if (this.rpc) {
@@ -3256,6 +3290,16 @@ export class SessionManager extends EventEmitter {
     return this.workspaces.resolve(cwds);
   }
 
+  /**
+   * 删工作区（#279）：页面按左栏的空组放行，桥这里是权威 —— 组里还有会话就拒绝，空的才真删。
+   *
+   * 会话数只能从 `list()` 数：组里的会话可能来自 override，也可能来自 cwd 派生，只看 `overrides`
+   * 会漏掉后者。归档的也算 —— 它们不在左栏里，但组被删掉之后它们就没了归属。
+   */
+  dropWorkspace(id: string): { ok: boolean; reason?: string } {
+    return this.workspaces.drop(id, this.list().filter((s) => s.ws === id).length);
+  }
+
   /** Q-022: 置顶横条的 ＋ 建出来的会话，落到 pin 列表末尾。 */
   pinLast(id: string): void {
     this.manage.pinLast(id);
@@ -3408,6 +3452,8 @@ export class SessionManager extends EventEmitter {
       purged.push(it.id);
       // D162: 永久删除才丢完成标记；trash() 有意保留，restore() 后「完成」还在。
       forgetFinished(it.id);
+      // D208: 产物基线跟着会话一起走，别在状态目录里留一堆没人认领的 .orig。
+      forgetSession(it.id);
     }
     if (purged.length) {
       const gone = new Set(purged);
@@ -3421,6 +3467,17 @@ export class SessionManager extends EventEmitter {
     // D162: handing a snapshot to a client no longer clears 完成 —— 打开只是看，不是新的一轮。
     const session = this.ensure(id);
     return session.snapshot();
+  }
+
+  /**
+   * 会话里一枚图片的字节。会话已打开走 `Session.imageOf`（含刚发出的内存兜底）；没打开就直接按
+   * 元数据里的文件流式读 —— 点一下缩略图不该把整个会话拉起来。
+   */
+  async image(id: string, itemId: string, index: number): Promise<{ mimeType: string; data: Buffer } | null> {
+    const session = this.sessions.get(id);
+    if (session) return session.imageOf(itemId, index);
+    const where = this.locate(id);
+    return where?.file ? loadEntryImage(where.file, itemId, index) : null;
   }
 
   /** #219: `session` 帧只带末尾一页，和老前端看到的整段是同一份数据的尾巴。 */

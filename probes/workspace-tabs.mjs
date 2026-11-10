@@ -8,14 +8,26 @@
  * #174 再接上：**每一颗看得见的标签**都能用鼠标拖着换顺序，落点竖线跟手，松手
  * 只发一条 `ws.tabs { order, max }` 把整份 order 写回，刷新后还记得；位移不到 4px 仍算一次点击，
  * 拖回原位一个字都不发，拖完不误切组；`＋N` 里的折叠组没有 DOM，拖不起来。
+ * #276 再接上：横条成员开定 —— 悬停任意可见标签出 ⊙（当前组也有），点掉只是 `ws.row {inRow:false}`；
+ * 组还在左栏，toast 能撤销；当前组被移出后仍占最后一格（虚线 + 名字划掉，名额不涨）；
+ * `＋N` 分两段：装不下（只切组）/ 不在横条里（放回并切组），刷新后成员状态还在。
+ * 旧桥没有 `inRow` 时全部当成员、不画 ⊙、组头菜单也没有「在横条中」。
+ *
  * #175 再接上：标签行末尾、`＋N` 左边多一颗「＋」—— 点一下就是树底的「新建工作区」（同一个
  * `ws.create`）：左栏多一个空组并就地改名；左栏收着时先展开，名字才看得见。名额满了照样能建，
  * 新组按规则追加到 `order` 末尾、收进 `＋N`，页面用一条小提示说明它去哪了。
+ * #279 再接上：空组在组头标「空」，删除边界改成「有会话才拦」—— 空的手动组与空的目录组都能从 ⋯
+ * 里删掉（快照 / order / 左栏一起消失），有会话时仍置灰并说清原因；当前组被删掉（别的客户端删的）
+ * 时页面落到右邻，不留在空白页上。
+ * #277 再接上：双击当前标签就地改名（浮层贴标签、不吃行高、窄窗口不出视口）；非当前组的一次双击里
+ * 第一下只切组、第二下才编辑；Enter / 点别处保存，Esc 不改，留空回落目录名；拖动过的手不许弹浮层；
+ * 桥没收下（桩桥故意不回写）时提示并保留原值。
  *
  * 上一票（#119）的断言留着：A 壳顶栏只有一行、标签紧跟在 ◧ 后面、B/C/D 不画标签、800px 不破版。
  *
- * 桩桥照 #94 的协议发 `workspace` 快照，并像真桥那样把 `ws.tabs`（名额 / 顺序）与 `ws.create`
- * （造空的手动组、追加到 order 末尾）落到内存里再广播 —— 刷新页面拿到的就是「重启后的桥」。
+ * 桩桥照 #94 的协议发 `workspace` 快照，并像真桥那样把 `ws.tabs`（名额 / 顺序）、`ws.create`
+ * （造空的手动组、追加到 order 末尾）与 `ws.drop`（数会话：有就回 notice，空的才真删）落到内存里
+ * 再广播 —— 刷新页面拿到的就是「重启后的桥」。
  * 造 9 个长名组，用显式 `updatedAt` 把组序钉成 01→09（组序 = 待处理 → 最近活动倒序 → 名字），
  * 否则同一毫秒里建出来的 9 个组谁在前全凭运气。
  *
@@ -59,7 +71,7 @@ const state = (id, name, cwd, ws) => ({
 
 const GROUPS = Array.from({ length: 9 }, (_, i) => {
   const n = String(i + 1).padStart(2, "0");
-  return { id: `f:/proj-${n}`, name: `客户 ${n} 号的后台系统`, key: `F:/proj-${n}`, manual: false };
+  return { id: `f:/proj-${n}`, name: `客户 ${n} 号的后台系统`, key: `F:/proj-${n}`, manual: false, inRow: true };
 });
 const SESSIONS = GROUPS.map((g, i) => ({
   ...state(`s-${g.id.slice(-2)}-1`, `工程 ${g.id.slice(-2)} · 会话 1`, g.key, g.id),
@@ -71,6 +83,8 @@ const byId = (id) => SESSIONS.find((s) => s.id === id);
 // #173：一份 order 与名额也持久化 —— 存在内存里，刷新页面就像重启后的桥一样把它们拿回来。
 // 起点就是名字顺序 01→09（#174 的拖动段与 #175 的 ＋ 段都以它为基准）；`ws.create` 往末尾追加。
 let createdGroups = 0;
+/** #277：桩桥故意不收改名，用来核对「拒绝时提示 + 保留原值」。 */
+let RENAME_DROP = false;
 const WS = {
   groups: [...GROUPS],
   overrides: {},
@@ -79,6 +93,28 @@ const WS = {
   max: 3,
 };
 const workspace = () => ({ ...WS, groups: WS.groups.map((g) => ({ ...g })), order: [...WS.order] });
+/** #278：hello 的 `caps` —— 默认空（旧桥）；「按目录新建」那一段再把它打开。 */
+const CAPS = [];
+/**
+ * #278：桩目录树（键 = 小写归一化路径）。真桥的 `/api/dirs` 形状照 `bridge/src/dirs.ts`：
+ * `{ path, parent, dirs, files }`，不存在时带 `error`。只铺页面走到的那几层。
+ */
+const DIRS = new Map([
+  ["", { path: "", parent: null, dirs: ["F:/"] }],
+  ["f:/", { path: "F:/", parent: "", dirs: [] }],
+]);
+/** 归一化：反斜杠→斜杠、去掉尾部分隔符；盘符根补回 `/`（`F:` 与 `F:/` 是同一个地方）。 */
+const normDir = (raw) => {
+  let want = String(raw ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (/^[a-zA-Z]:$/.test(want)) want += "/";
+  return want;
+};
+const stubDirs = (raw) => {
+  const want = normDir(raw);
+  const hit = DIRS.get(want.toLowerCase());
+  if (hit) return { ...hit, files: [] };
+  return { path: want, parent: null, dirs: [], files: [], error: "目录不存在", errCode: "ENOENT" };
+};
 /** 桥广播一份完整快照（真桥每次写盘后都这么干）。 */
 const cast = () => {
   for (const client of wss.clients) {
@@ -101,6 +137,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/healthz") return json(200, { ok: true });
   if (url.pathname === "/api/me") return json(200, ME);
   if (url.pathname === "/api/git") return json(200, { repo: null });
+  if (url.pathname === "/api/dirs") return json(200, stubDirs(url.searchParams.get("path") ?? ""));
   const rel = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\//, "");
   const file = path.join(DIST, rel);
   if (!path.resolve(file).startsWith(path.resolve(DIST)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
@@ -143,17 +180,75 @@ server.on("upgrade", (req, socket, head) => {
           }
           cast();
         }
+        // #276 真桥的 `setRow()`：组存在且 inRow 是布尔才写，写完广播；否则静默忽略。
+        if (msg.action === "ws.row") {
+          const group = WS.groups.find((g) => g.id === msg.id);
+          if (group && typeof msg.inRow === "boolean") {
+            group.inRow = msg.inRow;
+            cast();
+          }
+        }
+        // #277 真桥的 `rename()`：trim + slice(0,80)，组不在 / 同名都静默不写，但照样广播快照。
+        // RENAME_DROP 让桩桥扮演「拒收」：收下动作、不回写名字，页面只能靠下一份快照发现。
+        if (msg.action === "ws.rename") {
+          const group = WS.groups.find((g) => g.id === msg.id);
+          const name = String(msg.name ?? "").trim().slice(0, 80);
+          if (group && !RENAME_DROP && group.name !== name) group.name = name;
+          cast();
+        }
+        // 真桥的 `resolveDir()`（#278）：只读地把目录折回工程根（桩桥按 DIRS 的 parent 链上溯）。
+        if (msg.action === "ws.resolve") {
+          const dir = normDir(msg.dir);
+          let cur = DIRS.get(dir.toLowerCase());
+          let hit = null;
+          while (cur && !hit) {
+            hit = WS.groups.find((g) => !g.manual && g.key && normDir(g.key).toLowerCase() === cur.path.toLowerCase());
+            cur = cur.parent ? DIRS.get(cur.parent.toLowerCase()) : null;
+          }
+          ws.send(JSON.stringify({ type: "ws.resolved", dir, id: hit?.id ?? null }));
+          return;
+        }
         // 真桥的 `workspaces.create()`：造一个空名的手动组，追加到 order 末尾。
+        // #278：带 `dir` 时目录就是组的身份 —— 同目录不重建（回 created:false），`f:/broken` 回拒绝。
+        if (msg.action === "ws.create" && typeof msg.dir === "string" && msg.dir) {
+          const dir = normDir(msg.dir);
+          const key = DIRS.get(dir.toLowerCase())?.path ?? dir;
+          const id = key.toLowerCase();
+          if (id === "f:/broken") {
+            ws.send(JSON.stringify({ type: "notice", text: `打不开这个目录：${key}`, level: "warn" }));
+            return;
+          }
+          const existed = WS.groups.some((g) => g.id === id);
+          if (!existed) WS.groups.push({ id, name: "", key, manual: false, inRow: true });
+          WS.order = existed ? [...WS.order] : [...WS.order, id];
+          WS.keys[dir.toLowerCase()] = key;
+          cast();
+          ws.send(JSON.stringify({ type: "ws.created", id, created: !existed }));
+          return;
+        }
         if (msg.action === "ws.create") {
           createdGroups += 1;
           const id = `manual:stub${createdGroups}`;
-          WS.groups.push({ id, name: String(msg.name ?? ""), key: "", manual: true });
+          WS.groups.push({ id, name: String(msg.name ?? ""), key: "", manual: true, inRow: true });
           WS.order = [...WS.order, id];
           cast();
         }
+        // 真桥的 `dropWorkspace()`（#279）：组里还有会话（归档也算）就回 notice，空的才真删，再广播新快照。
+        if (msg.action === "ws.drop") {
+          const id = String(msg.id ?? "");
+          const n = SESSIONS.filter((x) => x.ws === id).length;
+          if (n > 0) {
+            ws.send(JSON.stringify({ type: "notice", text: `这个工作区里还有 ${n} 个会话，先把它们拖回工程或删掉`, level: "warn" }));
+          } else {
+            WS.groups = WS.groups.filter((g) => g.id !== id);
+            WS.order = WS.order.filter((x) => x !== id);
+            for (const [sid, wid] of Object.entries(WS.overrides)) if (wid === id) delete WS.overrides[sid];
+            cast();
+          }
+        }
       }
     });
-    ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS, manage: MANAGE, trash: [], tunnel: TUNNEL, workspace: workspace() }));
+    ws.send(JSON.stringify({ type: "hello", me: ME, sessions: SESSIONS, manage: MANAGE, trash: [], tunnel: TUNNEL, workspace: workspace(), caps: [...CAPS] }));
   });
 });
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
@@ -329,6 +424,11 @@ for (const id of ["b", "c", "d"]) {
     return Boolean(add && !add.hidden && add.getClientRects().length > 0);
   });
   ok(!addShown, `${id.toUpperCase()}：横条那颗 ＋ 也不出现（#175 只属于 A）`);
+  const rowUi = await page.evaluate(() => ({
+    toggles: document.querySelectorAll(".ws-tab-row-toggle").length,
+    board: document.querySelectorAll(".ws-tabs-board, .ws-tray").length,
+  }));
+  ok(rowUi.toggles === 0 && rowUi.board === 0, `${id.toUpperCase()}：不画 ⊙，也没有两段式托盘（${rowUi.toggles} / ${rowUi.board}）`);
   await page.close();
 }
 
@@ -368,7 +468,7 @@ ok(addBox.add > 0 && addBox.add < addBox.more, `800px：＋ 还在 ＋N 左边�
 await page.screenshot({ path: path.join(REPO, `.scratch/${SHOT}-800.png`), clip: { x: 0, y: 0, width: 800, height: 140 } });
 await page.close();
 
-// 7) #173 组头菜单：只剩重命名 / 移到最前 / 删除，左栏没有额外徽记
+// 7) #173 组头菜单：只剩重命名 / 移到最前 / 删除，左栏没有「已固定」那种额外徽记（#279 的「空」是另一回事）
 page = await open(null);
 const openWsMore = async (id) => {
   await page.locator(`.ws-sec[data-ws="${id}"] .ws-head`).hover();
@@ -384,7 +484,15 @@ const menu = await page.evaluate(() => ({
   text: document.querySelector(".ws-menu")?.textContent ?? "",
   fixed: document.querySelectorAll(".ws-fixed").length,
 }));
-ok(JSON.stringify(menu.acts) === JSON.stringify(["rename", "front", "drop"]), `组头 ⋯ 只剩重命名 / 移到最前 / 删除（${menu.acts.join(" / ")}）`);
+ok(
+  JSON.stringify(menu.acts) === JSON.stringify(["rename", "row", "front", "drop"]),
+  `组头 ⋯ 有重命名 / 在横条中 / 移到最前 / 删除（${menu.acts.join(" / ")}）`,
+);
+const rowItem = await page.evaluate(() => {
+  const n = document.querySelector('.ws-menu .pm-item[data-act="row"]');
+  return n ? { checked: n.getAttribute("aria-checked"), on: n.classList.contains("on"), text: n.textContent ?? "" } : null;
+});
+ok(rowItem?.checked === "true" && rowItem.on && /在横条中/.test(rowItem.text), `组头菜单的「在横条中」是勾上的（${rowItem?.checked ?? "缺"} / ${rowItem?.text ?? ""}）`);
 ok(!/固定/.test(menu.text), `菜单里没有固定入口（${menu.text.replace(/\s+/g, " ").trim()}）`);
 ok(menu.fixed === 0, `左栏没有「已固定」徽记（${menu.fixed} 个）`);
 await page.keyboard.press("Escape");
@@ -477,8 +585,9 @@ const focus = await page.evaluate(() => ({
   extra: document.querySelectorAll(".ws-tabs-row [tabindex]:not(button)").length,
 }));
 ok(
-  focus.buttons.length === 5 && focus.buttons.every((c) => c === "ws-tabs-more" || c === "ws-tabs-add" || /^ws-tab(\s|$)/.test(c)),
-  `拖拽没有多出可聚焦元素（${focus.buttons.join(" / ")}，额外 ${focus.extra} 个）`,
+  focus.buttons.length === 8 &&
+    focus.buttons.every((c) => c === "ws-tabs-more" || c === "ws-tabs-add" || /^ws-tab(\s|$)/.test(c) || /^ws-tab-row-toggle(\s|$)/.test(c)),
+  `可聚焦元素 = 3 颗标签 + 3 个 ⊙ + ＋N + ＋（${focus.buttons.join(" / ")}，额外 ${focus.extra} 个）`,
 );
 
 // 9) 刷新后顺序还在（桥落库了 —— 桩桥在内存里持久化整份 order）
@@ -823,7 +932,710 @@ await page.evaluate(() => {
 });
 await sleep(300);
 
+// ── #276 横条成员开定 ───────────────────────────────────────────────────────
+const rowState = () =>
+  page.evaluate(() => {
+    const cols = [...document.querySelectorAll(".ws-tabs-board .ws-tray-col")];
+    const ids = (col) => [...(col?.querySelectorAll(".pm-item") ?? [])].map((n) => n.dataset.ws ?? "");
+    const off = document.querySelector(".ws-tab.off-row");
+    const name = off?.querySelector(".ws-tab-name");
+    const toggle = document.querySelector(".ws-tab-slot.row .ws-tab-row-toggle");
+    return {
+      visibleIds: [...document.querySelectorAll(".ws-tab")].map((n) => n.dataset.ws ?? ""),
+      toggles: document.querySelectorAll(".ws-tab-row-toggle").length,
+      toggleOpacity: toggle ? getComputedStyle(toggle).opacity : "missing",
+      board: document.querySelectorAll(".ws-tabs-board").length,
+      trayCols: cols.length,
+      leftIds: ids(cols[0]),
+      rightIds: ids(cols[1]),
+      leftCounts: [...(cols[0]?.querySelectorAll(".pm-item .pm-n") ?? [])].map((n) => n.textContent ?? ""),
+      rightCounts: [...(cols[1]?.querySelectorAll(".pm-item .pm-n") ?? [])].map((n) => n.textContent ?? ""),
+      leftTitle: cols[0]?.querySelector(".ws-tray-title")?.textContent ?? "",
+      rightTitle: cols[1]?.querySelector(".ws-tray-title")?.textContent ?? "",
+      rightEmpty: cols[1]?.querySelector(".pm-why")?.textContent ?? "",
+      rows: document.querySelectorAll(".ws-tabs-menu .pm-item").length,
+      offCount: document.querySelectorAll(".ws-tab.off-row").length,
+      offBorder: off ? getComputedStyle(off).borderTopStyle : "missing",
+      offLine: name ? getComputedStyle(name).textDecorationLine : "missing",
+      stray: document.querySelectorAll(".ws-tab-stray").length,
+      moreText: document.querySelector(".ws-tabs-more")?.textContent ?? "",
+      toast: document.querySelector(".fail-toast")?.textContent ?? "",
+      undo: Boolean(document.querySelector(".fail-toast-undo")),
+    };
+  });
+
+const rowCalls = () => CALLS.filter((c) => c.action === "ws.row");
+const lastRowCall = () => rowCalls().at(-1) ?? null;
+const hoverToggle = async (id) => {
+  const tab = page.locator(`.ws-tab[data-ws="${id}"]`);
+  await tab.hover();
+  await tab.locator("xpath=..").locator(".ws-tab-row-toggle").click();
+};
+const openTray = async () => {
+  await page.click(".ws-tabs-more");
+  await sleep(220);
+};
+
+// 回到原始 9 组、order 01→09、名额 3。
+WS.groups = GROUPS.map((g) => ({ ...g }));
+WS.order = GROUPS.map((g) => g.id);
+WS.max = 3;
+cast();
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(600);
+
+s = await rowState();
+ok(s.toggles === 3 && s.toggleOpacity === "0", `A：3 颗可见标签各有一个 ⊙，默认藏着（${s.toggles} / ${s.toggleOpacity}）`);
+const beforeHover = await page.evaluate(() => {
+  const n = document.querySelector(".ws-tab-slot.row .ws-tab-row-toggle");
+  const slot = n?.parentElement;
+  return { opacity: n ? getComputedStyle(n).opacity : "missing", slot: Boolean(slot) };
+});
+await page.locator(".ws-tab.on").hover();
+await sleep(100);
+const currentToggle = await page.evaluate(() => {
+  const n = document.querySelector('.ws-tab-slot:has(.ws-tab.on) .ws-tab-row-toggle');
+  return n ? getComputedStyle(n).opacity : "missing";
+});
+ok(currentToggle === "1", `A：当前组自己也有 ⊙（${currentToggle}）`);
+await page.locator('.ws-tab[data-ws="f:/proj-02"]').hover();
+await sleep(120);
+const afterHover = await page.evaluate(() => {
+  const n = document.querySelector('.ws-tab-slot:has(.ws-tab[data-ws="f:/proj-02"]) .ws-tab-row-toggle');
+  return { opacity: n ? getComputedStyle(n).opacity : "missing", pointer: n ? getComputedStyle(n).pointerEvents : "missing" };
+});
+ok(beforeHover.slot && afterHover.opacity === "1" && afterHover.pointer === "auto", `A：悬停标签才浮出 ⊙（${beforeHover.opacity} → ${afterHover.opacity}）`);
+
+const rowOrderBefore = [...WS.order];
+await hoverToggle("f:/proj-02");
+await sleep(420);
+s = await rowState();
+const removed = lastRowCall();
+ok(removed?.id === "f:/proj-02" && removed?.inRow === false, `A：点 ⊙ 发 ws.row 移出 f:/proj-02（${removed?.id}/${removed?.inRow}）`);
+ok(WS.groups.find((g) => g.id === "f:/proj-02")?.inRow === false, "A：成员状态落到桥里");
+ok(!s.visibleIds.includes("f:/proj-02") && s.visibleIds.length === 3, `A：横条立刻少一颗、只剩 3 颗（${s.visibleIds.join(" / ")}）`);
+ok((await treeOrder()).includes("f:/proj-02"), "A：组还在左栏树里");
+ok(/移出横条/.test(s.toast) && s.undo, `A：toast 说明去哪了，并且有撤销（${s.toast.trim()}）`);
+ok(s.moreText === "＋6", `A：被移出的组收进 ＋N（${s.moreText}）`);
+
+await page.locator(".fail-toast-undo").click();
+await sleep(420);
+s = await rowState();
+const undone = lastRowCall();
+ok(undone?.id === "f:/proj-02" && undone?.inRow === true, `A：撤销发 ws.row 放回（${undone?.id}/${undone?.inRow}）`);
+ok(JSON.stringify(WS.order) === JSON.stringify(rowOrderBefore), "A：撤销没有改 order");
+ok(s.visibleIds[1] === "f:/proj-02" && !s.toast, `A：撤销回到原来的位置（${s.visibleIds.join(" / ")}）`);
+
+// 再移出 02，验两段式托盘。
+await hoverToggle("f:/proj-02");
+await sleep(420);
+await openTray();
+s = await rowState();
+ok(s.board === 1 && s.trayCols === 2, `＋N 是两段式托盘（${s.board} / ${s.trayCols} 列）`);
+ok(s.leftIds.length === 5 && s.leftTitle === "装不下 5", `左段只列装不下的 5 组（${s.leftTitle} / ${s.leftIds.length}）`);
+ok(s.leftCounts.length === 5 && s.leftCounts.every((c) => c === "1"), `托盘左段每行带该组会话数（${s.leftCounts.join(" / ")}）`);
+ok(s.rightIds.length === 1 && s.rightIds[0] === "f:/proj-02" && s.rightTitle === "不在横条里 1", `右段列不在横条里的 1 组（${s.rightTitle} / ${s.rightIds.join(" / ")}）`);
+ok(s.rightCounts.length === 1 && s.rightCounts[0] === "1", `托盘右段也带会话数（${s.rightCounts.join(" / ")}）`);
+
+let rowCount = rowCalls().length;
+await page.locator('.ws-tabs-board .ws-tray-col:nth-child(1) .pm-item[data-ws="f:/proj-05"]').click();
+await sleep(650);
+s = await rowState();
+ok((await barState()).onWs === "f:/proj-05" && rowCalls().length === rowCount, "左段点一行只切组，不发 ws.row");
+ok(s.visibleIds.includes("f:/proj-05"), "左段点的那组顶到最后一格");
+ok(WS.groups.find((g) => g.id === "f:/proj-02")?.inRow === false, "左段点一行没顺手改成员");
+
+await openTray();
+await page.locator('.ws-tabs-board .ws-tray-col:nth-child(2) .pm-item[data-ws="f:/proj-02"]').click();
+await sleep(700);
+s = await rowState();
+ok(lastRowCall()?.id === "f:/proj-02" && lastRowCall()?.inRow === true, "右段点一行先放回横条（ws.row true）");
+ok((await barState()).onWs === "f:/proj-02", `右段点一行还切到它（当前 ${(await barState()).onWs}）`);
+ok(s.visibleIds.includes("f:/proj-02") && s.moreText === "＋6", `放回后横条恢复 3 颗 + ＋6（${s.visibleIds.join(" / ")} / ${s.moreText}）`);
+
+// 切回 01 当前组，再把它移出：仍占最后一格，且 ＋N 不能重复数。
+await page.locator('.ws-tab[data-ws="f:/proj-01"]').click();
+await sleep(500);
+await hoverToggle("f:/proj-01");
+await sleep(450);
+s = await rowState();
+ok(s.visibleIds.length === 3 && s.visibleIds[2] === "f:/proj-01", `当前组被移出仍占最后一格（${s.visibleIds.join(" / ")}）`);
+ok(s.offCount === 1 && s.offBorder === "dashed" && s.offLine === "line-through" && s.stray === 1, `当前组是虚线 + 名字划掉 + ⊘（${s.offBorder} / ${s.offLine} / ${s.stray}）`);
+ok(/当前组/.test(s.toast), `toast 说清它还是当前组（${s.toast.trim()}）`);
+ok(s.moreText === "＋6", `＋N 不把临时占位的当前组重复数（${s.moreText}）`);
+await openTray();
+s = await rowState();
+ok(s.leftIds.length === 6 && s.rightIds.length === 0 && s.rightTitle === "不在横条里 0", `托盘左 6 / 右 0，当前组不算「不在横条里」（${s.leftTitle} / ${s.rightTitle}）`);
+ok(/全都在横条里/.test(s.rightEmpty), `右段空态说全都放回来了（${s.rightEmpty}）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(650);
+s = await rowState();
+ok(WS.groups.find((g) => g.id === "f:/proj-01")?.inRow === false, "刷新后桥里仍记得当前组被移出");
+ok(JSON.stringify(s.visibleIds) === JSON.stringify(["f:/proj-02", "f:/proj-03", "f:/proj-01"]) && s.offCount === 1, `刷新后仍是 3 颗、当前组虚线占最后一格（${s.visibleIds.join(" / ")}）`);
+
+await hoverToggle("f:/proj-01");
+await sleep(450);
+s = await rowState();
+ok(lastRowCall()?.id === "f:/proj-01" && lastRowCall()?.inRow === true && s.offCount === 0, "当前组的 ⊙ 也能把它放回横条");
+
+// 组头 ⋯ 的「在横条中」= 同一颗 ⊙：勾选状态跟着桥走。
+await openWsMore("f:/proj-06");
+let item = await page.evaluate(() => {
+  const n = document.querySelector('.ws-menu .pm-item[data-act="row"]');
+  return n ? { checked: n.getAttribute("aria-checked"), on: n.classList.contains("on") } : null;
+});
+ok(item?.checked === "true" && item.on, "组头菜单「在横条中」对成员是勾上的");
+await page.locator('.ws-menu .pm-item[data-act="row"]').click();
+await sleep(420);
+ok(lastRowCall()?.id === "f:/proj-06" && lastRowCall()?.inRow === false, "点菜单项等于点 ⊙（ws.row false）");
+ok(WS.groups.find((g) => g.id === "f:/proj-06")?.inRow === false, "菜单点击也落到桥里");
+await openWsMore("f:/proj-06");
+item = await page.evaluate(() => {
+  const n = document.querySelector('.ws-menu .pm-item[data-act="row"]');
+  return n ? { checked: n.getAttribute("aria-checked"), on: n.classList.contains("on") } : null;
+});
+ok(item?.checked === "false" && !item.on, "移出后菜单项不勾");
+await page.locator('.ws-menu .pm-item[data-act="row"]').click();
+await sleep(420);
+ok(lastRowCall()?.id === "f:/proj-06" && lastRowCall()?.inRow === true, "再点一下放回横条（ws.row true）");
+
+// 旧桥（组上没有 inRow）：全部当成员、不画 ⊙、菜单里没有这一项，托盘仍是单段。
+for (const g of WS.groups) delete g.inRow;
+cast();
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(600);
+s = await rowState();
+ok(s.toggles === 0, "旧桥：不画任何 ⊙");
+await openWsMore("f:/proj-09");
+const oldActs = await page.evaluate(() => [...document.querySelectorAll(".ws-menu .pm-item")].map((n) => n.dataset.act ?? ""));
+ok(JSON.stringify(oldActs) === JSON.stringify(["rename", "front", "drop"]), `旧桥：组头菜单没有「在横条中」（${oldActs.join(" / ")}）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+await openTray();
+s = await rowState();
+ok(s.board === 0 && s.trayCols === 0 && s.rows === 6, `旧桥：＋N 还是原来那一种单段菜单（${s.board} / ${s.rows} 行）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+for (const g of WS.groups) g.inRow = true;
+cast();
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(500);
+
 await page.close();
+
+// ── #277 横条标签双击改名 ───────────────────────────────────────────────────
+// 浮层是 body 上的 fixed 输入框：贴当前标签下沿、不改标签行高度；Enter / 点别处存，Esc 丢，
+// 空串交给桥回落目录名。非当前组的两下规则、拖动阈值、桥拒收的提示都在这一段里。
+WS.groups = GROUPS.map((g) => ({ ...g }));
+WS.order = GROUPS.map((g) => g.id);
+WS.max = 3;
+RENAME_DROP = false;
+cast();
+page = await open(null);
+await sleep(500);
+
+const renameCalls = () => CALLS.filter((c) => c.action === "ws.rename");
+const lastRenameCall = () => renameCalls().at(-1) ?? null;
+/** 当前标签上那颗改名浮层：在不在、值、焦点、贴在哪儿、有没有出视口，以及提示条。 */
+const tabRenameState = () =>
+  page.evaluate(() => {
+    const input = document.querySelector(".ws-tab-rename-input");
+    const tab = document.querySelector(".ws-tab.on");
+    const row = document.querySelector(".ws-tabs-row");
+    const ir = input?.getBoundingClientRect();
+    const tr = tab?.getBoundingClientRect();
+    const rr = row?.getBoundingClientRect();
+    return {
+      exists: Boolean(input),
+      value: input?.value ?? "",
+      focused: document.activeElement === input,
+      input: ir ? { left: ir.left, top: ir.top, right: ir.right, bottom: ir.bottom, height: ir.height } : null,
+      tabBottom: tr?.bottom ?? null,
+      rowH: rr?.height ?? 0,
+      inViewport: Boolean(ir && ir.left >= 6 && ir.top >= 6 && ir.right <= window.innerWidth - 6 && ir.bottom <= window.innerHeight - 6),
+      gap: ir && tr ? Math.round(ir.top - tr.bottom) : null,
+      onWs: tab?.dataset.ws ?? "",
+      toast: document.querySelector(".fail-toast")?.textContent ?? "",
+    };
+  });
+/** 某一组在横条与左栏同时显示的名字（两处要一起变）。 */
+const shownNames = (id) =>
+  page.evaluate((id) => {
+    const tab = document.querySelector(`.ws-tab[data-ws="${id}"] .ws-tab-name`);
+    const sec = document.querySelector(`.ws-sec[data-ws="${id}"]`);
+    return { tab: tab?.textContent ?? "", tree: sec?.querySelector(".ws-head > .label")?.textContent ?? "" };
+  }, id);
+const dblTab = async (id) => {
+  await page.locator(`.ws-tab[data-ws="${id}"]`).dblclick();
+  await sleep(260);
+};
+
+// A. 双击当前标签：浮层贴在标签下沿，行高不变，值就是原名。
+const rowH0 = await page.evaluate(() => document.querySelector(".ws-tabs-row")?.getBoundingClientRect().height ?? 0);
+await dblTab("f:/proj-01");
+let rn = await tabRenameState();
+ok(rn.exists && rn.focused, "双击当前标签弹出改名输入框并聚焦");
+ok(rn.value === "客户 01 号的后台系统", `浮层里是原来的全名（${rn.value}）`);
+ok(rn.input && Math.abs(rn.input.height - 30) < 1, `浮层高度 30（${rn.input?.height}）`);
+ok(Math.abs(rn.rowH - rowH0) < 1, `浮层不撑高标签行（${rowH0} → ${rn.rowH}）`);
+ok(rn.gap != null && rn.gap >= 2 && rn.gap <= 8, `浮层贴着标签下沿（间距 ${rn.gap}px）`);
+ok(rn.inViewport, "浮层整个落在视口里");
+
+// B. Enter 保存：横条与左栏同时改，刷新后还在。
+await page.locator(".ws-tab-rename-input").fill("客户 01 号 · 改名");
+await page.locator(".ws-tab-rename-input").press("Enter");
+await sleep(450);
+rn = await tabRenameState();
+ok(!rn.exists, "Enter 后浮层收起");
+ok(lastRenameCall()?.id === "f:/proj-01" && lastRenameCall()?.name === "客户 01 号 · 改名", `发出去的是 ws.rename（${lastRenameCall()?.name}）`);
+let names = await shownNames("f:/proj-01");
+ok(names.tab === "客户 01 号 · 改名" && names.tree === "客户 01 号 · 改名", `横条与左栏同时更新（${names.tab} / ${names.tree}）`);
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(600);
+names = await shownNames("f:/proj-01");
+ok(names.tab === "客户 01 号 · 改名" && names.tree === "客户 01 号 · 改名", "刷新后名字仍在（桥里真写了）");
+
+// C. Esc：什么都不发，名字不动。
+let rename0 = renameCalls().length;
+await dblTab("f:/proj-01");
+await page.locator(".ws-tab-rename-input").fill("不要这个名字");
+await page.locator(".ws-tab-rename-input").press("Escape");
+await sleep(300);
+rn = await tabRenameState();
+names = await shownNames("f:/proj-01");
+ok(!rn.exists && renameCalls().length === rename0, "Esc 收起浮层、不发 ws.rename");
+ok(names.tab === "客户 01 号 · 改名" && names.tree === "客户 01 号 · 改名", "Esc 后横条与左栏都还是原值");
+
+// D. 点浮层外面 = 保存。
+await dblTab("f:/proj-01");
+await page.locator(".ws-tab-rename-input").fill("点外面保存");
+await page.mouse.click(620, 220);
+await sleep(450);
+rn = await tabRenameState();
+names = await shownNames("f:/proj-01");
+ok(!rn.exists && lastRenameCall()?.name === "点外面保存", "点别处收起浮层并按当前值保存");
+ok(names.tab === "点外面保存" && names.tree === "点外面保存", "点别处保存后两处一起更新");
+
+// E. 留空：发空串，桥负责回落目录名；这里核对动作本身，显示回落由桥的单测管。
+await dblTab("f:/proj-01");
+await page.locator(".ws-tab-rename-input").fill("");
+await page.locator(".ws-tab-rename-input").press("Enter");
+await sleep(400);
+ok(lastRenameCall()?.id === "f:/proj-01" && lastRenameCall()?.name === "", "留空发出 name:\"\"（交给桥回落目录名）");
+ok(WS.groups.find((g) => g.id === "f:/proj-01")?.name === "", "桩桥收到空名（真桥会换成目录名）");
+WS.groups.find((g) => g.id === "f:/proj-01").name = "客户 01 号的后台系统";
+cast();
+await sleep(350);
+
+// F. 非当前组的两下规则：一次双击里第一下只切组、第二下才进编辑。
+rename0 = renameCalls().length;
+await dblTab("f:/proj-02");
+rn = await tabRenameState();
+ok(rn.exists && rn.onWs === "f:/proj-02" && rn.value === "客户 02 号的后台系统", "双击非当前组：第一下切组、第二下进编辑，浮层出现时组已切过去");
+ok(renameCalls().length === rename0, "只切组的那一下不发 ws.rename");
+await page.locator(".ws-tab-rename-input").fill("客户 02 号 · 改名");
+await page.locator(".ws-tab-rename-input").press("Enter");
+await sleep(400);
+names = await shownNames("f:/proj-02");
+ok(names.tab === "客户 02 号 · 改名" && names.tree === "客户 02 号 · 改名", "第二下改名照常写入");
+
+// G. 拖动 4px 阈值：拖过之后不弹浮层；单击仍然只是切组。
+const dragBox = await page.locator('.ws-tab[data-ws="f:/proj-02"]').boundingBox();
+await page.mouse.move(dragBox.x + dragBox.width / 2, dragBox.y + dragBox.height / 2);
+await page.mouse.down();
+await page.mouse.move(dragBox.x + dragBox.width / 2 + 30, dragBox.y + dragBox.height / 2, { steps: 5 });
+await page.mouse.up();
+await sleep(450);
+rn = await tabRenameState();
+ok(!rn.exists, "拖动超过 4px 不弹改名浮层");
+await page.locator('.ws-tab[data-ws="f:/proj-03"]').click();
+await sleep(450);
+rn = await tabRenameState();
+ok(rn.onWs === "f:/proj-03" && !rn.exists, "拖过之后单击仍是切组，不会误进编辑");
+
+// H. 桥拒收：页面不做乐观改名，靠下一份快照发现没写进去，提示并保留原值。
+RENAME_DROP = true;
+await dblTab("f:/proj-03");
+await page.locator(".ws-tab-rename-input").fill("不会保存的名字");
+await page.locator(".ws-tab-rename-input").press("Enter");
+await sleep(1900);
+rn = await tabRenameState();
+names = await shownNames("f:/proj-03");
+ok(/改名没存下/.test(rn.toast), `桥没收下时提示没存下（${rn.toast}）`);
+ok(names.tab === "客户 03 号的后台系统" && names.tree === "客户 03 号的后台系统", `提示后横条与左栏保留原值（${names.tab}）`);
+RENAME_DROP = false;
+
+await page.close();
+
+// 20) #279 空组：左栏标「空」、能删（手动组 / 目录组都行）；有会话仍然删不掉；删掉当前组落到右邻
+// 桩桥重摆一组「干净」的工作区：两个空组（一个目录组、一个手动组）+ 一个装了会话的手动组 ——
+// #279 的两条边界都得有东西可看：空得掉、非空拦得住。
+const IDLE = { id: "f:/idle", name: "空工程", key: "F:/idle", manual: false };
+const EMPTY = { id: "manual:empty", name: "空的手动组", key: "", manual: true };
+const BUSY = { id: "manual:busy", name: "有会话的手动组", key: "", manual: true };
+WS.groups = [...GROUPS.map((g) => ({ ...g })), IDLE, EMPTY, BUSY];
+WS.order = WS.groups.map((g) => g.id);
+WS.max = 10;
+byId("s-09-1").ws = BUSY.id; // 手动组装了会话之后，跟目录组一样删不掉
+cast();
+page = await open(null);
+await sleep(600);
+
+/** 某一组在左栏的样子：在不在、有没有「空」徽标、空态那句话、组头的会话数。 */
+const groupState = (id) =>
+  page.evaluate((id) => {
+    const sec = document.querySelector(`.ws-sec[data-ws="${id}"]`);
+    return {
+      exists: Boolean(sec),
+      badge: sec?.querySelector(".ws-head .ws-empty-badge")?.textContent ?? "",
+      emptyCard: sec?.querySelector(".ws-empty")?.textContent ?? "",
+      count: sec?.querySelector(".ws-head .n")?.textContent ?? "",
+    };
+  }, id);
+/** 组头 ⋯ 里删除那一项：能不能点、悬停说明、置灰时的原因行。 */
+const menuState = () =>
+  page.evaluate(() => {
+    const drop = document.querySelector('.ws-menu .pm-item[data-act="drop"]');
+    return {
+      disabled: Boolean(drop?.disabled),
+      aria: drop?.getAttribute("aria-disabled") ?? "",
+      title: drop?.title ?? "",
+      why: document.querySelector('.ws-menu .pm-why[data-for="drop"]')?.textContent ?? "",
+    };
+  });
+const dropCalls = () => CALLS.filter((c) => c.action === "ws.drop");
+
+let gs = await groupState(IDLE.id);
+ok(gs.exists && gs.badge === "空", `空目录组在左栏标「空」（${gs.badge || "没有徽标"}）`);
+ok(gs.emptyCard.includes("这个工作区里还没有会话"), `「空」徽标与空态那句话并存（${gs.emptyCard}）`);
+ok(gs.count === "0", `空组的会话数是 0（${gs.count}）`);
+gs = await groupState(EMPTY.id);
+ok(gs.badge === "空" && gs.emptyCard.includes("这个工作区里还没有会话"), "空的手动组一样标「空」、一样有空态");
+gs = await groupState("f:/proj-01");
+ok(gs.exists && gs.badge === "" && gs.emptyCard === "", `有会话的组没有「空」徽标（${gs.badge || "没有徽标"}）`);
+gs = await groupState(BUSY.id);
+ok(gs.badge === "" && gs.count === "1", `装了会话的手动组也没有「空」（${gs.count} 个会话）`);
+
+// 20a) 有会话：目录组与手动组都拒绝，原因沿用原文案，点了也不发 ws.drop
+const dropCalls0 = dropCalls().length;
+await openWsMore("f:/proj-01");
+let ms = await menuState();
+ok(ms.disabled && ms.aria === "true", "有会话的目录组：删除项置灰");
+ok(/跟着目录走/.test(ms.why), `原因还是「跟着目录走」（${ms.why}）`);
+await page.locator('.ws-menu .pm-item[data-act="drop"]').click({ force: true });
+await sleep(250);
+ok(dropCalls().length === dropCalls0, `点灰掉的删除项没发 ws.drop（${dropCalls().length - dropCalls0} 条）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+
+await openWsMore(BUSY.id);
+ms = await menuState();
+ok(ms.disabled && /还有 1 个会话/.test(ms.why), `有会话的手动组：删不掉，原因是「还有 1 个会话」（${ms.why}）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+
+// 20b) 空的手动组：能删，说明写的是「只删这个空组」，删掉后快照 / order / 左栏同时少一项
+await openWsMore(EMPTY.id);
+ms = await menuState();
+ok(!ms.disabled && ms.aria === "", "空的手动组：删除项可点");
+ok(/只删这个空组/.test(ms.title), `手动组的删除说明分得清删的是组（${ms.title}）`);
+await page.locator('.ws-menu .pm-item[data-act="drop"]').click();
+await sleep(600);
+ok(dropCalls().at(-1)?.id === EMPTY.id, `发出去的是 ws.drop ${dropCalls().at(-1)?.id}（期望 ${EMPTY.id}）`);
+ok(!WS.groups.some((g) => g.id === EMPTY.id) && !WS.order.includes(EMPTY.id), "桥的快照与 order 里都没它了");
+ok(!(await treeOrder()).includes(EMPTY.id) && !(await groupState(EMPTY.id)).exists, "左栏里那块整个不见了");
+
+// 20c) 空的目录组：同样能删，说明写的是「只把这个目录移出列表」
+await openWsMore(IDLE.id);
+ms = await menuState();
+ok(!ms.disabled, "空的目录组：删除项可点");
+ok(/移出列表/.test(ms.title), `目录组的删除说明只说把这一项移出列表（${ms.title}）`);
+await page.locator('.ws-menu .pm-item[data-act="drop"]').click();
+await sleep(600);
+ok(dropCalls().at(-1)?.id === IDLE.id, `发出去的是 ws.drop ${dropCalls().at(-1)?.id}（期望 ${IDLE.id}）`);
+ok(!(await groupState(IDLE.id)).exists && !(await treeOrder()).includes(IDLE.id), "空的目录组从快照 / order / 左栏一起消失");
+
+// 删完刷新：桥那边真删了，两个组都不会自己长回来
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(700);
+const afterReload = await treeOrder();
+ok(!afterReload.includes(EMPTY.id) && !afterReload.includes(IDLE.id), `刷新后两个空组也没回来（${afterReload.length} 组）`);
+
+// 20d) 删掉的要是当前组：页面落到相邻组（右邻优先），不留在空白页
+//      页面上删不掉自己的组（有会话就拦），所以这里模拟「别的客户端 / 上一秒的快照」把它删了：
+//      桩桥直接广播一份没有它的快照，和真桥 `ws.drop` 的广播同一个形状（keys 不动，会话因此没了归属）。
+await page.goto(`${BASE}/#/s/s-04-1`, { waitUntil: "networkidle" });
+await sleep(700);
+s = await barState();
+ok(s.onWs === "f:/proj-04", `先站到 proj-04（当前 ${s.onWs}）`);
+WS.groups = WS.groups.filter((g) => g.id !== "f:/proj-04");
+WS.order = WS.order.filter((id) => id !== "f:/proj-04");
+cast();
+await sleep(900);
+s = await barState();
+ok(s.onWs === "f:/proj-05", `当前组没了：落到右邻 proj-05（当前 ${s.onWs}）`);
+ok((await page.evaluate(() => location.hash)) === "#/s/s-05-1", "落点是右邻那颗会话");
+ok((await page.locator(".session-card").count()) > 0, "页面上有卡片，不是空白页");
+
+await page.close();
+
+// 21) #278 按目录新建：对话框两栏、这里徽标、已有目录「带你过去」、新目录就地建组并切过去
+// 摆回一份干净快照（#279 段删过组、挪过会话），再给每个目录组补一层「空目录」的桩。
+for (const g of GROUPS) g.inRow = true;
+WS.groups = GROUPS.map((g) => ({ ...g }));
+WS.order = GROUPS.map((g) => g.id);
+WS.max = 10;
+byId("s-01-1").ws = "f:/proj-01";
+byId("s-09-1").ws = "f:/proj-09";
+DIRS.set("f:/", { path: "F:/", parent: "", dirs: [...GROUPS.map((g) => g.key.split("/").pop()), "fresh-app", "broken"] });
+for (const g of GROUPS) DIRS.set(g.key.toLowerCase(), { path: g.key, parent: "F:/", dirs: [] });
+DIRS.set("f:/fresh-app", { path: "F:/fresh-app", parent: "F:/", dirs: [] });
+DIRS.set("f:/broken", { path: "F:/broken", parent: "F:/", dirs: [] });
+// 新桥才有的能力：hello 的 `caps` 带上 `ws.create.dir` 之后，＋ 才走「挑目录」。
+CAPS.push("ws.create.dir");
+cast();
+page = await open(null);
+await sleep(700);
+
+const toastText = () => page.evaluate(() => document.querySelector(".fail-toast")?.textContent ?? "");
+/** 对话框此刻的样子：标题、左栏每一行（带不带「这里」）、脚注、按钮、面包屑、目录行。 */
+const wsNewState = () =>
+  page.evaluate(() => {
+    const sheet = document.querySelector(".ws-new-sheet");
+    if (!sheet) return null;
+    return {
+      title: sheet.querySelector(".sheet-title")?.textContent ?? "",
+      side: [...sheet.querySelectorAll(".ws-new-side .ws-new-pick")].map((n) => ({
+        id: n.dataset.ws ?? "",
+        name: n.querySelector(".m-name")?.textContent ?? "",
+        here: n.querySelector(".ws-here")?.textContent ?? "",
+      })),
+      note: sheet.querySelector(".ws-new-note")?.textContent ?? "",
+      primary: sheet.querySelector(".sheet-foot .btn.primary")?.textContent ?? "",
+      disabled: Boolean(sheet.querySelector(".sheet-foot .btn.primary")?.disabled),
+      crumbs: [...sheet.querySelectorAll(".ws-new-dir .crumb")].map((n) => n.textContent ?? ""),
+      rows: [...sheet.querySelectorAll(".ws-new-dir .dir-row")].map((n) => (n.textContent ?? "").replace(/^\u{1F4C1}/u, "").trim()),
+    };
+  });
+
+const createsA = createCalls();
+await page.click(".ws-tabs-add");
+await sleep(600);
+let ns = await wsNewState();
+ok(Boolean(ns), "新桥：点 ＋ 打开「按目录新建」对话框");
+ok(ns?.title === "新建工作区 · 选一个目录", `标题是「${ns?.title}」`);
+ok(ns?.side.length === 9, `左栏列出 9 个已有工作区（${ns?.side.length} 行）`);
+ok(
+  ns?.side[0].here === "这里" && ns.side.slice(1).every((r) => r.here === ""),
+  `当前工作区标「这里」，别的不标（${ns?.side.map((r) => r.here || "-").join(" ")}）`,
+);
+ok(/这个目录已经在列表里：proj-01/.test(ns?.note ?? ""), `起点就是当前目录：说明会带你过去（${ns?.note}）`);
+ok(ns?.primary === "带你过去" && !ns?.disabled, `已有目录时按钮是「${ns?.primary}」`);
+ok((await page.locator(".ws-new-dir .dir-filter").count()) === 1, "右侧是真目录浏览（筛选框在）");
+ok(createCalls() === createsA, "只是打开对话框，没发 ws.create");
+
+// 21a) 左栏点一行 = 目录跳过去；已有目录只「带你过去」，不发创建
+await page.click('.ws-new-side .ws-new-pick[data-ws="f:/proj-02"]');
+await sleep(600);
+ns = await wsNewState();
+ok(ns?.crumbs.includes("proj-02"), `点左栏那一行，目录跳到 proj-02（${ns?.crumbs.join(" / ")}）`);
+ok(/这个目录已经在列表里：proj-02/.test(ns?.note ?? "") && ns?.primary === "带你过去", "还是已有目录：按钮仍「带你过去」");
+await page.click(".ws-new-sheet .sheet-foot .btn.primary");
+await sleep(700);
+s = await barState();
+ok(createCalls() === createsA, `「带你过去」不发 ws.create（${createCalls() - createsA} 条）`);
+ok((await wsNewState()) === null, "对话框关掉");
+ok(/这个工作区已经在列表里/.test(await toastText()), `提示「这个工作区已经在列表里」（${(await toastText()).trim()}）`);
+ok(s.onWs === "f:/proj-02" && (await page.evaluate(() => location.hash)) === "#/s/s-02-1", `切到了 proj-02（${s.onWs}）`);
+
+// 21b) 选新目录：按钮变「就在这里新建」，建完直接切过去、不进改名态
+await page.click(".ws-tabs-add");
+await sleep(600);
+ns = await wsNewState();
+ok(ns?.crumbs.includes("proj-02") && ns?.primary === "带你过去", "再打开：从当前目录 proj-02 起步");
+await page.click('.ws-new-dir .crumb:has-text("F:")');
+await sleep(500);
+ns = await wsNewState();
+ok(ns?.rows.includes("fresh-app") && ns?.rows.includes("broken"), `F:/ 下面看得见 fresh-app 与 broken（${ns?.rows.join(" / ")}）`);
+const createsB = createCalls();
+await page.click('.ws-new-dir .dir-row:has-text("fresh-app")');
+await sleep(500);
+ns = await wsNewState();
+ok(/将新建：fresh-app/.test(ns?.note ?? ""), `新目录：说明将新建（${ns?.note}）`);
+ok(ns?.primary === "就在这里新建" && !ns?.disabled, `按钮变成「${ns?.primary}」`);
+await page.click(".ws-new-sheet .sheet-foot .btn.primary");
+await sleep(900);
+s = await barState();
+const dirMsg = CALLS.filter((c) => c.action === "ws.create").at(-1);
+ok(
+  createCalls() === createsB + 1 && String(dirMsg?.dir ?? "").toLowerCase() === "f:/fresh-app",
+  `发一条带 dir 的 ws.create（${dirMsg?.dir ?? "没有 dir"}）`,
+);
+ok((await wsNewState()) === null, "建完对话框关掉");
+ok(WS.order.at(-1) === "f:/fresh-app", `新组追加到 order 末尾（${WS.order.at(-1)}）`);
+const freshGroup = WS.groups.find((g) => g.id === "f:/fresh-app");
+ok(freshGroup?.inRow === true && freshGroup?.name === "", "新组在横条里、名字留给目录名");
+ok((await page.locator(".ws-rename-input").count()) === 0, "没有进改名态");
+ok(s.onWs === "f:/proj-02", `空组没有会话可开，当前会话不变（${s.onWs}）`);
+const freshRow = await page.evaluate(() => {
+  const sec = document.querySelector('.ws-sec[data-ws="f:/fresh-app"]');
+  if (!sec) return null;
+  const r = sec.getBoundingClientRect();
+  return { top: r.top, bottom: r.bottom, inView: r.top >= 0 && r.bottom <= window.innerHeight };
+});
+ok(freshRow?.inView === true, `左栏把新组那一行滚到眼前（${freshRow ? `${Math.round(freshRow.top)}–${Math.round(freshRow.bottom)}px` : "没找到"}）`);
+ok((await page.locator('.ws-sec[data-ws="f:/fresh-app"] .ws-empty').count()) === 1, "左栏看得见这个空组");
+
+// 21c) 别的客户端刚建过同一个目录：本页快照还旧，按下去桥只回 created:false —— 带 id 切过去，别说又建了一个
+const stale = workspace();
+stale.groups = stale.groups.filter((g) => g.id !== "f:/fresh-app");
+stale.order = stale.order.filter((id) => id !== "f:/fresh-app");
+for (const client of wss.clients) {
+  if (client.readyState === 1) client.send(JSON.stringify({ type: "workspaces", workspace: stale }));
+}
+await sleep(400);
+await page.goto(`${BASE}/#/s/s-09-1`, { waitUntil: "networkidle" });
+await sleep(500);
+await page.click(".ws-tabs-add");
+await sleep(600);
+ns = await wsNewState();
+ok(Boolean(ns) && ns.side.every((r) => r.id !== "f:/fresh-app"), "旧快照：对话框左栏里还没有 fresh-app");
+await page.click('.ws-new-dir .crumb:has-text("F:")');
+await sleep(500);
+const createsC = createCalls();
+await page.click('.ws-new-dir .dir-row:has-text("fresh-app")');
+await sleep(500);
+await page.click(".ws-new-sheet .sheet-foot .btn.primary");
+await sleep(900);
+ok(createCalls() === createsC + 1, "旧快照下会发 ws.create（客户端不知道它已经存在）");
+ok(/这个工作区已经在列表里/.test(await toastText()), "桥回 created:false：提示「这个工作区已经在列表里」");
+ok(WS.groups.filter((g) => g.id === "f:/fresh-app").length === 1, "桥里仍然只有一个 fresh-app");
+ok((await wsNewState()) === null, "created:false 也把对话框关掉");
+
+// 21d) 桥拒绝：只在对话框里说一声 —— 不建半个组、不切走、按钮能重试
+await page.click(".ws-tabs-add");
+await sleep(600);
+await page.click('.ws-new-dir .crumb:has-text("F:")');
+await sleep(500);
+await page.click('.ws-new-dir .dir-row:has-text("broken")');
+await sleep(500);
+ns = await wsNewState();
+ok(/将新建：broken/.test(ns?.note ?? ""), "broken 也能选（页面不替桥做主）");
+const createsD = createCalls();
+const groupsBefore = WS.groups.length;
+await page.click(".ws-new-sheet .sheet-foot .btn.primary");
+await sleep(900);
+ns = await wsNewState();
+ok(Boolean(ns), "失败后对话框还开着（不把人踢走）");
+ok(/打不开这个目录/.test(await toastText()), `提示说清原因（${(await toastText()).trim()}）`);
+ok(createCalls() === createsD + 1 && WS.groups.length === groupsBefore, "发了 ws.create，但桥里没多出半个组");
+ok(WS.groups.every((g) => g.id !== "f:/broken"), "broken 没进快照");
+ok((await barState()).onWs === "f:/proj-09", "当前工作区没变");
+ok(ns?.primary === "就在这里新建" && ns?.disabled === false, "按钮回到可点（可以重试）");
+
+// 21e) 旧桥（hello 里没有 caps）：＋ 退回「空壳组 + 就地改名」，不摆一张点了会坏的对话框
+await page.click(".ws-new-sheet .sheet-foot .btn.ghost");
+await sleep(300);
+ok((await wsNewState()) === null, "取消关掉对话框");
+CAPS.length = 0;
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(600);
+const createsE = createCalls();
+await page.click(".ws-tabs-add");
+await sleep(800);
+ok((await wsNewState()) === null, "旧桥：点 ＋ 不打开目录对话框");
+const oldMsg = CALLS.filter((c) => c.action === "ws.create").at(-1);
+ok(createCalls() === createsE + 1 && oldMsg?.name === "" && oldMsg?.dir === undefined, "旧桥：还是发空名 ws.create（没有 dir）");
+a = await addState();
+ok(a.editing && a.placeholder === "新工作区", "旧桥：新组照样就地改名");
+await page.keyboard.press("Escape");
+await sleep(300);
+await page.close();
+
+// 22) P1/P2：组里只剩归档会话 —— 页面数的口径与桥 `dropWorkspace()` 一致（归档也算）。
+// `buildTree()` 的 `count` 就是这个口径；「空」徽标、删除项、托盘里的 N 都用它。
+const RETIRED = { id: "manual:retired", name: "只剩归档", key: "", manual: true, inRow: true };
+const EMPTY2 = { id: "manual:empty", name: "真的空组", key: "", manual: true, inRow: true };
+SESSIONS.push(state("s-retired-1", "已经归档的会话", "F:/retired", RETIRED.id));
+MANAGE.archived.push("s-retired-1");
+WS.groups.push({ ...RETIRED }, { ...EMPTY2 });
+WS.order = [...WS.order, RETIRED.id, EMPTY2.id];
+CAPS.push("ws.create.dir", "ws.resolve.dir");
+cast();
+page = await open(null, "s-01-1");
+await sleep(500);
+
+gs = await groupState(RETIRED.id);
+ok(gs.exists && gs.badge === "", `只有归档会话的组不标「空」（${gs.badge || "没有徽标"}）`);
+ok(gs.count === "1", `会话数按含归档口径算（${gs.count}）`);
+ok(gs.emptyCard.includes("这个工作区里的会话都归档了"), `空态说清会话都归档了（${gs.emptyCard}）`);
+
+const dropCallsA = dropCalls().length;
+await openWsMore(RETIRED.id);
+ms = await menuState();
+ok(ms.disabled && ms.aria === "true", "只有归档会话的组：删除项置灰（点了必被桥拒）");
+ok(ms.why === "这个工作区里还有 1 个会话，先把它们拖回工程或删掉", `原因与桥的拒绝句逐字一致（${ms.why}）`);
+await page.locator('.ws-menu .pm-item[data-act="drop"]').click({ force: true });
+await sleep(250);
+ok(dropCalls().length === dropCallsA, `点灰掉的删除项没发 ws.drop（${dropCalls().length - dropCallsA} 条）`);
+await page.keyboard.press("Escape");
+await sleep(150);
+
+// 22a) P2：＋N 托盘每行带会话数；空组给 0（灰一档），归档的组数 1
+await page.click(".ws-tabs-more");
+await sleep(350);
+const trayN = await page.evaluate(() => {
+  const n = (id) => document.querySelector(`.ws-tabs-board .pm-item[data-ws="${id}"] .pm-n`);
+  const t = document.querySelector('.ws-tabs-board .pm-item[data-ws="manual:retired"] .pm-text');
+  const cs = t ? getComputedStyle(t) : null;
+  return {
+    retired: n("manual:retired")?.textContent ?? "",
+    empty: n("manual:empty")?.textContent ?? "",
+    emptyZero: n("manual:empty")?.classList.contains("zero") ?? false,
+    nameClipped: Boolean(cs && cs.textOverflow === "ellipsis" && cs.overflow === "hidden"),
+  };
+});
+ok(trayN.retired === "1", `托盘里归档会话的组显示 1（${trayN.retired}）`);
+ok(trayN.empty === "0" && trayN.emptyZero, `托盘里空组显示灰色的 0（${trayN.empty} / zero=${trayN.emptyZero}）`);
+ok(trayN.nameClipped, "托盘行名字用省略号收尾，数量不被挤出去");
+await page.keyboard.press("Escape");
+await sleep(150);
+
+// 22b) 真的空组（手动组）仍可删：页面放行、桥也真的删
+await openWsMore(EMPTY2.id);
+ms = await menuState();
+ok(!ms.disabled, "真的空组：删除项仍然可点");
+await page.locator('.ws-menu .pm-item[data-act="drop"]').click();
+await sleep(600);
+ok(dropCalls().at(-1)?.id === EMPTY2.id && !WS.groups.some((g) => g.id === EMPTY2.id), "真空组删得掉（快照里也没了）");
+
+// 23) P2 #278：选到已有组的子目录 —— 桥 `ws.resolve` 折回之后，主按钮改口「带你过去」
+DIRS.set("f:/proj-01", { path: "F:/proj-01", parent: "F:/", dirs: ["web"] });
+DIRS.set("f:/proj-01/web", { path: "F:/proj-01/web", parent: "F:/proj-01", dirs: [] });
+await page.goto(`${BASE}/#/s/s-01-1`, { waitUntil: "networkidle" });
+await sleep(600);
+await page.click(".ws-tabs-add");
+await sleep(600);
+let ns2 = await wsNewState();
+ok(ns2?.primary === "带你过去", `起点 proj-01 仍「带你过去」（${ns2?.primary}）`);
+await page.click('.ws-new-dir .dir-row:has-text("web")');
+await sleep(700); // 防抖 180ms + 一次 ws.resolve 往返
+ns2 = await wsNewState();
+ok(ns2?.crumbs.includes("web"), `进到子目录（${ns2?.crumbs.join(" / ")}）`);
+ok(/这个目录已经在列表里：web/.test(ns2?.note ?? ""), `桥折回工程根：说明已在列表里（${ns2?.note}）`);
+ok(ns2?.primary === "带你过去" && !ns2?.disabled, `子目录上主按钮也是「${ns2?.primary}」，不会按了才发现 created:false`);
+await page.click(".ws-new-sheet .sheet-foot .btn.ghost");
+await sleep(200);
 
 await browser.close();
 await new Promise((r) => server.close(r));

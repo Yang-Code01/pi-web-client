@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { gitRoot } from "./git.ts";
 import { statePath } from "./paths.ts";
 import { StateFile, type StateFailure } from "./statefile.ts";
@@ -23,13 +24,15 @@ export interface WsGroup {
   key: string;
   /** 用户手建的组：可以删（空的时候），派生组跟着目录走。 */
   manual: boolean;
+  /** #276：是否参加横条（标签行）。缺字段的旧状态按 true 读。 */
+  inRow: boolean;
 }
 
 export interface WorkspaceState {
   groups: WsGroup[];
   /** sessionId → groupId：拖过就钉死，优先于 cwd 推导；「放回工程」= 删掉这一条。 */
   overrides: Record<string, string>;
-  /** 归一化 cwd 的小写 → 工程根。缓存，只由 `resolve()` 写。 */
+  /** 归一化 cwd 的小写 → 工程根。缓存，只由 `resolve()` / `createDir()` 写。 */
   keys: Record<string, string>;
   /**
    * #173 一份顺序：全量组 id（含被折叠的），顺序即左栏 / 标签行顺序。存量文件没有这条 →
@@ -43,6 +46,15 @@ export interface WorkspaceState {
 export interface WorkspacesOptions {
   /** Test seam: count or stub the git call. Defaults to `gitRoot` from git.ts. */
   root?: (dir: string) => Promise<string | null>;
+}
+
+/** #278 `createDir()` 的结果：成功时带组，`created:false` = 这个目录原来就在列表里。 */
+export interface WsCreateResult {
+  ok: boolean;
+  group?: WsGroup;
+  created?: boolean;
+  /** ok=false 时给人看的一句话（桥原样回 notice）。 */
+  reason?: string;
 }
 
 /**
@@ -124,7 +136,14 @@ function readGroups(value: unknown): WsGroup[] {
     const manual = g.manual === true;
     const id = manual ? g.id : groupId(g.id);
     if (!id || out.some((x) => x.id === id)) continue;
-    out.push({ id, name: typeof g.name === "string" ? g.name : "", key: manual ? "" : normalizePath(g.key ?? g.id), manual });
+    out.push({
+      id,
+      name: typeof g.name === "string" ? g.name : "",
+      key: manual ? "" : normalizePath(g.key ?? g.id),
+      manual,
+      // #276：存量文件没有 inRow，读成成员；只有明确的 false 才算移出横条。
+      inRow: g.inRow !== false,
+    });
   }
   return out;
 }
@@ -245,7 +264,7 @@ export class Workspaces {
     const id = groupId(key);
     const existing = this.group(id);
     if (existing) return existing;
-    const created: WsGroup = { id, name: "", key, manual: false };
+    const created: WsGroup = { id, name: "", key, manual: false, inRow: true };
     this.state.update((d) => {
       if (!d.groups.some((g) => g.id === id)) d.groups.push({ ...created });
       // #173 新出现的组追加到末尾：ensure 是「补一个」，不能插队改用户顺序。
@@ -299,16 +318,90 @@ export class Workspaces {
     return true;
   }
 
+  /**
+   * #276：把组放进 / 移出横条。只改成员标记，不动 `order` / `max`（成员是过滤器，不是排序）。
+   * 组不存在或值没变化返回 false；调用方据此决定要不要广播。
+   */
+  setRow(id: string, inRow: boolean): boolean {
+    const group = this.group(id);
+    if (!group || group.inRow === inRow) return false;
+    this.state.update((d) => {
+      const g = d.groups.find((x) => x.id === id);
+      if (g) g.inRow = inRow;
+    });
+    return true;
+  }
+
   /** 手建一个组（比如「客户 A 的三个仓库」）：v1 里它只是会话的集合，不绑工程根。 */
   create(name: string): WsGroup {
     const id = `manual:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    const group: WsGroup = { id, name: String(name ?? "").trim().slice(0, 80), key: "", manual: true };
+    const group: WsGroup = { id, name: String(name ?? "").trim().slice(0, 80), key: "", manual: true, inRow: true };
     this.state.update((d) => {
       d.groups.push({ ...group });
       // #173 新组排到末尾，不按显示名插队。
       d.order = readOrder(d.order, d.groups);
     });
     return { ...group };
+  }
+
+  /**
+   * #278：按目录建一个工作区。目录就是组的身份，所以先问 `root`（git 工程根 / worktree 并回主仓），
+   * 归一化后拿 id 与已有组比 —— 同一个目录永远只有一个组，第二次点只回已有的那个（`created:false`）。
+   *
+   * 失败（没选、打不开、不是目录）不落任何东西，只回一句给人看的原因。
+   */
+  async createDir(dir: string): Promise<WsCreateResult> {
+    const picked = normalizePath(dir);
+    if (!picked) return { ok: false, reason: "没有选目录" };
+    let info;
+    try {
+      info = await stat(picked);
+    } catch {
+      return { ok: false, reason: `打不开这个目录：${picked}` };
+    }
+    if (!info.isDirectory()) return { ok: false, reason: `这不是一个目录：${picked}` };
+
+    let root: string | null = null;
+    try {
+      root = await this.root(picked);
+    } catch {
+      root = null;
+    }
+    const key = normalizePath(root ?? picked);
+    const id = groupId(key);
+    const group: WsGroup = { id, name: "", key, manual: false, inRow: true };
+    // 「建没建」由写锁里的查重决定，不是查完再建：两次并发点按也只能建一个。
+    // `update` 会先在缓存上跑一遍、读盘后再重放一遍，所以这里每遍都按「现在有没有」重算 ——
+    // 重放那遍看到的才是盘上的真相。
+    let created = false;
+    this.state.update((d) => {
+      created = !d.groups.some((g) => g.id === id);
+      if (created) d.groups.push({ ...group });
+      // 手指点的那个目录（可能是 worktree / 子目录）也记一笔，下次 groupFor 直接命中真工程根。
+      d.keys[picked.toLowerCase()] = key;
+      d.order = readOrder(d.order, d.groups);
+    });
+    return { ok: true, group: { ...(this.group(id) ?? group) }, created };
+  }
+
+  /**
+   * #278：只读地问一句「这个目录折回工程根之后，命中列表里的哪个组？」—— 子目录 / worktree 也算。
+   * 不建组、不写缓存（`ensure` / `resolve` / `createDir` 才写），只给对话框改主按钮文案用。
+   */
+  async resolveDir(dir: string): Promise<WsGroup | null> {
+    const picked = normalizePath(dir);
+    if (!picked) return null;
+    // `createDir()` 过后同一个目录已经记了折叠结果：先查缓存，省一次 git。
+    const cached = this.state.value().keys[picked.toLowerCase()];
+    let key = cached ? normalizePath(cached) : "";
+    if (!key) {
+      try {
+        key = normalizePath((await this.root(picked)) ?? picked);
+      } catch {
+        key = picked;
+      }
+    }
+    return this.group(groupId(key)) ?? null;
   }
 
   /** 拖动落点：写 overrides。`wsId` 为空 = 放回工程（删 override，重新跟 cwd 走）。 */
@@ -332,15 +425,30 @@ export class Workspaces {
     return changed;
   }
 
-  /** 只允许删空的手动组：派生组是 cwd 派生的，删了下次又回来，那是假动作。 */
-  drop(id: string): { ok: boolean; reason?: string } {
+  /**
+   * 删工作区（#279）：只拦有会话的组 —— 空的手动组与空的目录组都能删。
+   *
+   * 会话数由调用方数（`Sessions.dropWorkspace`）传进来：组里的会话可能来自 override，也可能来自 cwd
+   * 派生，只看 `overrides` 会漏掉后者 —— 带着会话删掉一个派生组，下一次 `groupFor` 又把它建回来。
+   * 有会话时仍说原来的那句话（手动组「还有 N 个会话」，目录组「跟着目录走」）——
+   * 手动组那句与页面 `dropBlocker()` 逐字一致（#279 review：别让置灰理由和桥的拒绝说出两套话）。
+   */
+  drop(id: string, sessions: number): { ok: boolean; reason?: string } {
     const group = this.group(id);
-    if (!group) return { ok: false, reason: "找不到这个工作区" };
-    if (!group.manual) return { ok: false, reason: "这个工作区跟着目录走，不能删" };
-    if (Object.values(this.state.value().overrides).includes(id)) return { ok: false, reason: "这个工作区里还有会话" };
+    if (!group) return { ok: false, reason: "这个工作区不在了" };
+    if (sessions > 0) {
+      return {
+        ok: false,
+        reason: group.manual
+          ? `这个工作区里还有 ${sessions} 个会话，先把它们拖回工程或删掉`
+          : "这个工作区跟着目录走，不能删",
+      };
+    }
     this.state.update((d) => {
       d.groups = d.groups.filter((g) => g.id !== id);
       pruneOrder(d);
+      // 顺手清掉还指着它的 override：那些会话已经不在列表里了，留着就是悬空指向。
+      for (const [sessionId, wsId] of Object.entries(d.overrides)) if (wsId === id) delete d.overrides[sessionId];
     });
     return { ok: true };
   }

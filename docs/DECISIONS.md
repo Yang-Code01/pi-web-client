@@ -3427,7 +3427,419 @@ D
 
 **验证：** `node probes/skill-group.mjs`（20 项，真实 Chromium + 手写会话文件）：两轮各一组 / 默认折叠 / 摘要点名 3 个技能且按到达顺序 / 徽标 / tooltip 全文 / 组里 3 张完整卡（描述、`SKILL.md` 出口、线索）/ 模型说过话用最近那句 / 没说话退回用户消息 / 第二轮另起一组 / 折叠时摘要一行高 / 展开 3 张卡 / chevron 转 90° / 收回后详情不占高度。`npm --prefix web run typecheck`（含 i18n-check：1779 键 × 3 语）与 `npm run test:skill`（14 项）都过。
 
-## D201 部署时一次把依赖备齐：`npm install` 顺手装 pi 与三个扩展（用户要求）
+## D201 点未载入的刻度自己把那一轮翻回来：索引随帧走、淡一档占位、用户一动手就停（#241 3/3）
+
+**问题：** 刻度带（D60 / #243）已经把整段会话画成一根根刻度，没载入的淡一档占位。但那些淡刻度只是「看得见的占位」：点它什么也不发生，想回到第 1 轮还得滚到顶、一页页按「载入更早」。用户要的是「点哪儿就带我去哪儿」—— 界面自己往回要页，直到那一轮到货，再滚过去、高亮它；中途他自己动手了就停下，别把他拽走。三个决定绕不开：整段历史怎么让前端知道（正文还是索引）、没载入的怎么显示（藏还是淡）、自动翻页什么时候算被用户接管。
+
+**决定：**
+
+1. **整段轮次索引随帧下发，正文仍按页取。** `session` / `items` 帧的 `history.turns?: { id, text, images }[]` 是**整段会话**的轮次索引（#242），前端拿它画刻度带、算「第几轮」。正文不动：一页 30 轮约 200KB 级，而索引一帧 2–3KB（实测 120 轮 / 60 items 的 `session` 帧 17.7KB，其中索引约 2.5KB）。要正文就发 `history.before` 一页一页取。
+2. **坐标一律靠 id，不靠下标。** 往前翻会把新轮次插到 `turns` 前面，任何数字下标在下一次 `prepend` 之后就失效。所以 `ChatView.turns` 带 `id`（`noteTurn` 用 `item.id`，`prepend` 的 staging 路径也带；`adopt` 把本地 id 换成服务器 id），刻度带的 ghost 段也带 id（`setGhosts({ id, label }[])`），ghost 的点击只回 id（`TurnRailOpts.onPickGhost(id)`）；已载入的刻度/行仍是原来的下标坐标（`onPick(loadedIndex)` / `setCurrent` / `onHover`），那段实现没变。
+3. **淡一档占位，而不是把没载入的藏起来。** 刻度带的高度就是「这段会话有多长」；藏掉未载入的那 90 根，翻一页带子就会长一截，位置也跟着跳，用户没法靠它判断自己在哪儿、还能往回多少。淡色占位 + 从尾部吃掉（`prepend` 把等量的 ghost 换成实线）保证总高度、总根数从头到尾不变。
+4. **一次跳转 = 一个 `pendingJump: { id, n }`，串行翻页。** `jumpToTurnId(id)` 先在 `turns` 里找：找到就 `jumpToTurn(index)` + `flashTurn(index, 1200)`（跟点已载入刻度同一套观感）；找不到就记下 `pendingJump`（`n` 是它在全量索引里的第几轮，失败文案要用），立刻 `loadOlder()` 走**同一条**手动翻页的路（同一颗按钮、同一个 `loadingOlder` 禁用态）。每页到了（`prepend` 末尾的 `afterOlderPage(advanced)`）先查 id 到没到：到了就收尾（清 `pendingJump` → `jumpToTurn` + 高亮），没到且 `hasMore` 就 `setTimeout(…, 0)` 排下一轮（不递归、不并发 —— 每页一次请求，`before` 游标是上一页的顶），`hasMore` 为假或空页（`advanced === false`）就失败收尾。
+5. **「用户一动手就停」是取消边界。** `holdUp()`（上滚 / 键盘）、`stopFollowing()`（touch / 跳转）、点任何已载入的刻度或行、`reset()`（切会话 / 重连换了内容）都在开头清掉 `pendingJump`；已经发出的那一次请求不回退、到货的页照常插入，但**不 follow() 也不 jumpToTurn()**，滚动位置不动。用户自己点「载入更早」等于「我接管了」：清掉 pending，但这次手动翻页照常进行。
+6. **反馈都在带子上，不在会话里插条目。** 载入中沿用顶部那一行（按钮 `disabled` + 「载入中…」），另给刻度带 `setBusy(true)` 挂 `.busy`，`.turn-tick.ghost` 轻脉动（`prefers-reduced-motion` 下不动）—— 「那一带在动」得在刻度带上看得见，因为用户点的就是带子。失败也写两处：正文顶部那一行 `moreNote`（3 秒后自清）优先于「载入更早」、**即使没有更早的也要显示**（`hasOlder === false` 时那一行本来是藏的），**并且同一句挂到带子顶端**（`.turn-note`，`role="status"`，3 秒后自清）—— 带子固定在右缘、不随滚动走，而顶部那一行在自动翻页期间早就在视口上方几千像素外，只写那一行等于没反馈（评审提的 P1，已补断言：提示的 bounding box 必须落在视口内）。文案 `没翻到第 {p1} 轮`（i18n 三语）。不往会话里插 notice 条目：那是记录，翻页失败是当下的一次操作结果。
+
+**为什么「用户动手就停」：** 自动翻页是替用户跑腿，不是接管视口。翻三页要几次往返，这段时间里他可能自己滚上去了、点了别的轮次、切了会话 —— 这些都说明他改主意了。停的粒度只到「不再往前要页」：已经发出的请求照收（取消它反而让 `loadingOlder` 卡住，或者白丢一页已经付出的等待），已经取回的页留着（下次往上滚就是现成的），**唯一不许的是把他从当前位置拽走**。失败同理：到头了也没有那一轮，说明索引与正文不一致（桥那边删过/改过），再翻只会无限空转，所以停下并说清楚「没翻到第 N 轮」。
+
+**代价 / 可改：**
+
+- 每帧多 2–3KB：`session` / `items` 帧都带整段索引，轮次越多越大（120 轮 ≈ 2.5KB，1000 轮就 ≈ 20KB）。嫌大可以让桥按「最近 N 轮 + 更早的只给条数」裁，刻度带就得改成两段画法。
+- 协议多一个可选字段：老桥不下发 `history.turns` 时前端 `history?.turns ?? []` → ghost 段为空，刻度带退回「只有已载入的、还不知道后面有多少」的旧行为，按钮和手动翻页不受影响。
+- 前端多维护一段 ghost 坐标：id → 第几轮（`turnOrdinal`）、ghost 段整体替换、`prepend` 从尾部吃掉等量的 ghost。id 与正文对不上时（见失败那条）只能靠「翻到头」兜底。
+- 翻页次数多时是连续请求：每页一次、串行（不并发，`before` 游标就是链条），从第 30 轮跳回第 1 轮要 3 个往返。想快就得让桥支持「按 id 直接给一页」（`history.at` 之类），这次没做。
+- 跳转会把还在排队的锚点补偿作废（`anchorPinRun`）：往前插一页后的三次钉（立刻 / 下一帧 / 150ms）会把平滑滚动按回原处，所以跳转推进代数、让剩下的钉自己让路。
+
+- 刻度受版面限制仍挨 D60 采样：`fit = floor((0.7×视口高 + 4) / 6)`（844px 约 99 根、900px 约 105 根），所以「120 轮 = 120 根刻度」只在能装下时成立；**行是全量的**（120 行）。票面那句话要当「轮次都画上了、能装下就一根不少」读。
+
+**验证：** `node --experimental-strip-types bridge/tests/history-ui.mjs`（63 项）：G. 点最上面那根淡刻度 → 期间按钮 `disabled` + 「载入中…」、刻度带 `.busy`，正好 3 个 `history.before`，翻完定位到第 1 轮并带 `.turn-flash`、按钮收起、`.busy` 撤掉；H. 起跳后同一拍派发上滚 `wheel` → 只取回已在飞的那一页（1 个请求）、不高亮、第 1 轮仍在视口上方很远、按钮回「载入更早」；I. 假桥在 `session` 帧的 `history.turns` 前插一条正文里不存在的轮次 → 点那一**行**（行与刻度共用回调）翻到头就停（3 个请求）、顶部那行是「没翻到第 1 轮」且可见（行不隐藏、钮不可点）、**带子上那句提示的 bounding box 落在视口内**、不跳不高亮、800ms 后不再发请求、3 秒后两处提示都自己收。另有「ghost 行的 aria-label 写着未载入」。已载入的刻度点击照旧即时定位（E 段原断言）。两边 typecheck（`npm --prefix web run typecheck` 含 i18n-check、`npm --prefix bridge run typecheck`）与 `bridge/tests/history-page-unit.mjs` 都过。
+## D202 Jira 连接：凭据留在桥里，页面只见掩码；隧道只读（工单 #248）
+
+**问题：** 网页客户端要连 Jira（#247 第一张单：入口 + 连接 + 个人信息）。Jira Cloud 的 REST API 用 Basic 认证（邮箱 + API token），token 等于账号的完全权限；页面是可能被隧道带出去的，凭证存哪、谁能读、能对哪里发请求，都得先定下来。
+
+**决定：**
+
+1. **凭据由桥保管，明文 0600 写 `statePath("jira", "config.json")`（`{ siteUrl, email, apiKey }`）。** 页面只能 `GET /api/jira/config`，拿到的是 `{ configured, siteUrl, email, keyMask }`——token 只回 `••••` + 后 4 位。错误文本、日志也不含 token。代价：本机任何读到这个文件的人就有完整权限；页面被 XSS 也拿不到 token，但拦不住本机同用户的进程。要再加一层，可将来接系统钥匙串（Windows Credential Manager），目前不做。
+2. **保存先验证，再落盘。** `PUT /api/jira/config` 用这组凭据真打 `GET /rest/api/3/myself`，2xx 才写文件；非 2xx / 网络错一律 400 + `{ error, code }`，状态目录里不出现新文件，页面保留用户已填的值。代价：保存慢一个往返（15 秒超时封顶），且 Jira 抖动时保存不了——这正是要暴露的事。
+3. **单站点，只发配置站点。** 站点地址必须 https、无 userinfo、无路径/查询/片段、不是 IP 字面量、不是 `localhost` / `*.local` / `*.internal`；出站只有 `new URL("/rest/api/3/…", siteUrl)`，并在 `fetch` 前断言目标 origin 与配置站点相同（重定向 `redirect: "manual"`，不跟）。桥不做开放代理：没有任何接口接受用户给的 URL。代价：不支持自建 Server/Data Center（http + 内网域名），也不支持同一账号连多个站点——要连就退出重连。
+4. **头像多信一个 Atlassian 域名。** 头像字节由桥去取（`GET /api/jira/me/avatar`），但 Cloud 的 `avatarUrls` 实际落在 `*.atl-paas.net` CDN 上，只认「同站 origin」会让所有人的头像都取不到。所以允许名单 = 同站 origin 或 host 以 `.atl-paas.net` 结尾，两者都要求 https、无 userinfo、端口为空或 443、无 fragment；仍不接受任意 URL（页面没有入口传 URL），不跟随重定向，取不到就 502 `jira_avatar`、界面退回首字母。代价：放行了一个第三方域名——它由 Atlassian 控制、且只用于取图；若哪天 CDN 换域名，按这份名单会取不到头像，改一处常量即可。
+5. **隧道只读。** `publicReq`（隧道来的请求）下 `PUT` / `DELETE /api/jira/config` 一律 403 `{ error: "回本机操作", code: "tunnel_readonly" }`；`GET config` / `GET me` 照常。代价：在外面用手机改 token 得回本机——写凭据这件事不该让一条隧道代劳。
+6. **不探测 Jira MCP。** 面板底部只放一行提示「读描述和评论要用 Jira MCP：在设置 → 扩展与 MCP 里安装」+ 一颗跳过去的按钮。查 MCP 有没有装要读设置、猜服务器名，提示反而更容易说错。代价：用户装没装、装得对不对，面板不知道；点进去自己看。
+
+**为什么由桥代理而不是浏览器直连：** token 一旦进了浏览器就能被页面脚本、扩展、隧道读到；由桥保管，页面拿不到原始 token，出站地址也只由桥决定（上面第 3 条），顺手把 CORS 与「站点地址由用户填」的 SSRF 面收在一处。代价是桥多两个上游请求路径与一个凭据文件。
+
+**代价 / 可改：** 明文 0600 在 Windows 上 `chmod` 基本无效（ACL 仍按用户目录继承，同用户进程可读）；换钥匙串是一次独立改动，接口形状不用变。掩码只露后 4 位，用户据此分辨「是不是换过 token」，看不到全串——这是有意的。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（9 项，假 Jira + 临时 `PI_WEB_STATE`）：未配置 `configured:false` / 错 token 400 + `jira_auth` + 原话 + **文件不存在** / 正确凭据落盘且 GET 响应全文不含 token / `GET me` 401→401、403→403 / 未配置 `jira_not_configured` / DELETE 后回未配置 / 隧道 PUT·DELETE 403 `tunnel_readonly` 而 GET 200 / 白名单外头像 502 `jira_avatar` / `avatarUrlAllowed` 正反例。`node web/tests/jira-unit.mjs`（7 项，纯函数在 `web/src/jira-shared.ts`，不经 `chat.ts`，Node 26 直接跑）：`siteUrlProblem` 的 http·IP·localhost·`.local`·path·query 全拒、正常 Cloud 站点（含结尾 `/`、无 scheme）通过；`keyMask` 只露后 4 位。`npm --prefix web run typecheck`（含 i18n-check：1807 键 × 3 语）与 `npm run build:web` 都过。
+
+## D203 Jira 列表：桥固定查询 + 60 秒内存缓存（工单 #249）
+
+**问题：** 连上 Jira 之后，面板要显示「我的未完成」和「可访问项目」。这两段都是上游实时数据，但面板开关频繁（每次 `open()` 都重新问桥，D202），Jira Cloud 又按账号限流；同时页面不该有能力对 Jira 发起任意查询。
+
+**决定：**
+
+1. **查询由桥写死，页面没有查询面。** `GET /api/jira/issues` 固定 `jql = "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC"`、`maxResults=20`、`fields=summary,issuetype,priority,status,updated`，打新的 `GET /rest/api/3/search/jql`（老的 `/rest/api/3/search` 正被 Atlassian 下线）；`GET /api/jira/projects` 固定 `GET /rest/api/3/project/search?maxResults=20`，只取 `values` 的 `key`/`name`。除了 `refresh=1`，页面传来的其它 query（`jql`、`fields`、`startAt`、`maxResults`…）一律忽略。代价：本单只能看「分配给我 + 未解决」这一种列表，想换查询条件得改桥——这正是 #249 要的边界，任意 JQL 入口是另一个产品决定。
+2. **60 秒内存缓存，按当前配置分键。** issues / projects 各一条，键是 `产物 + siteUrl + email + keyMask(apiKey)`；只缓存整理后的 `JiraIssue[]` / `JiraProject[]`（不缓存上游响应对象），过期即弃。`GET …?refresh=1` 跳过读取、取到后覆盖缓存；只有成功的 2xx 结果会进缓存，401/403/网络错不缓存，下次照旧重试。代价：两个标签页共享同一份缓存（它们本来就在同一台桥后面），换账号后 60 秒内看到旧列表的窗口最多一个 TTL。
+3. **为什么不落盘。** 列表是易变数据，缓存的目的只是省请求、避开限流；进程重启后重取一次的成本远低于维护一份可能过期的文件，也少一处要跟着「清除凭据」清理的磁盘状态。代价：桥一重启就冷启动，第一打开面板必然打两次上游。
+4. **保存 / 清除凭据时清空缓存。** `writeJiraConfig` / `clearJiraConfig` 都调用 `clearListCache()`：换了站点或 token 还读旧缓存，等于把上一个账号能看的列表展示给下一个人。键里已经带了配置，清空是双保险，也顺手回收内存。代价：重连后的第一次打开一定等一个往返（本来也要验证凭据）。
+5. **错误码沿用 `me` 的口径。** 未配置 400 `jira_not_configured`；上游 401 → 401 `jira_auth`；403 → 403 `jira_forbidden`；其它非 2xx / 网络错 502 `jira_upstream` / `jira_network`；响应永远 `{ error, code }`，不回 token。前端据此把 401/403 整块换成「凭据失效 + 去改 token」，其它错误只在列表位置留一行字。
+
+**为什么缓存放在桥而不是页面：** 页面缓存跨不过标签页、也挡不住刷新页面，而限流是账号级的；桥是唯一知道当前凭据的地方，缓存键能跟着配置走，保存/清除凭据时也能一致地失效。代价：桥多一份进程内状态，多实例部署时各自一份（本工具就是单机进程，不做共享缓存）。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（17 项，假 Jira 加 `search/jql` 与 `project/search` + 命中计数器）：固定 JQL/字段（含页面传 `jql`、`fields`、`startAt` 被忽略）、字段映射（priority 为空回 `null`）、空列表、401/403 映射、两次读取只打一次上游、`refresh=1` 再打一次、`projects` 的映射与缓存、重新保存凭据清空缓存、未配置 400。`node web/tests/jira-unit.mjs`（10 项）：`browseUrl` / `formatUpdated` / `issueMeta`。`npm --prefix web run typecheck`（含 i18n-check：1814 键 × 3 语）与 `npm run build:web` 都过。
+
+## D204 Jira 详情：ADF 在页面端解释、评论只为附件而取、详情不缓存（工单 #250）
+
+**问题：** 「我的未完成」里点一行要就地展开详情：描述（Jira Cloud 存的是 ADF）+ 两段附件清单（issue 附件、评论附件）。描述要不要桥先转成文本、评论正文要不要一起返回、详情要不要缓存，三件事都会影响接口边界与将来的下载（#251）。
+
+**决定：**
+
+1. **描述 ADF → 纯文本在页面端做，桥原样透传。** `GET /api/jira/issues/:key` 的 `issue.description` 就是上游 `fields.description`（可能是 `null` 或 ADF 对象），桥不解析、不裁剪；`web/src/jira-shared.ts` 的 `adfToText()` 把段落 / 标题 / 列表 / 代码块 / 表格 / 引用 / 分隔线转成可读文本，`media` 节点变成 `[图片]` / `[附件]` 占位，超过 800 字截断并给「在新窗口打开」。代价：页面多一层要跟着 ADF 演进维护的转换器（认不出的节点类型会退化成丢格式的纯文本）；好处是桥保持「只做认证与转发」的单一职责，将来别的界面（预览、摘要）能复用同一份 ADF。
+2. **评论只为附件而取：只挖 `media` / `mediaSingle` 节点的 `attrs.id`。** 详情固定打一次 `GET /rest/api/3/issue/<KEY>/comment?maxResults=100`，遍历每条评论的 ADF body 收集 media id，映射成 `{ id, filename: attrs.alt || attrs.title || "附件", size: null, author: comment.author.displayName, created: comment.created }`，按 id 去重；评论正文、body 原样、其它字段都不进响应（e2e 用哨兵字符串断言全文不含）。代价：评论附件拿不到真实大小（media 节点里没有），界面显示 `—`；这条评论接口失败时整个详情按该错误码失败，而不是静默少一段附件——宁可让用户看见「读不到」，也不假装「没有评论附件」。
+3. **详情不缓存，只记在面板实例内存里。** 详情是点开才要的数据，桥端没有 TTL 缓存（与 D203 的列表缓存分开）；页面用 `Map<key, {open, state}>` 记住已经取到的结果，收起再展开、多行同时展开都不重请求，面板关闭 / 重连 / 换账号即丢弃。代价：同一工单在两个标签页里各请求一次；页面刷新后重新取；换来的是不会把上一个账号的工单详情留在内存里，也少一份要跟凭据失效同步的缓存。
+
+**接口形状：** `GET /api/jira/issues/:key` → `{ issue: { key, summary, type, priority, status, updated, description }, attachments: { issue: [...], comments: [...] } }`。key 先过形状校验 `^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`（不匹配 400 `jira_key`），大写化后拼 URL；这只是形状校验，能不能看由固定站点与用户 token 决定。上游 404 → 404 `jira_not_found`（「Jira 上没有这个工单」），401/403 沿用 `jira_auth` / `jira_forbidden`。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（23 项，新增 6 项）：详情字段映射与 description 原样透传、两段附件映射（未知 size → `null`、未知 author → 空串、评论 media 按 id 去重）、响应全文不含 `SENTINEL_COMMENT_TEXT`、key 大写化与形状校验、404/401/403 映射、详情不缓存与未配置 400。`node web/tests/jira-unit.mjs`（18 项，新增 8 项）：`adfToText` 的段落 / 标题 / 嵌套无序与有序列表 / 代码块 / 表格 / media 占位 / mention / hardBreak / 链接 / 空输入，`formatBytes` 的 B/KB/MB 与未知值。`npm --prefix web run typecheck`（含 i18n-check：1821 键 × 3 语）与 `npm run build:web` 都过。
+
+## D205 Jira 下载全部附件：根目录独立成文件、评论 media 探测 uuid、100 MB 上限与串行（工单 #251）
+
+**问题：** 详情块里的两段附件（issue 附件 + 评论附件）要能一键收下来。落盘到哪、评论里那些 media 的 id 与 attachment id 不是一回事、跳转是签名 URL、超大文件与并发、公网隧道下的写权限，五件事都要在桥这边定清楚。
+
+**决定：**
+
+1. **根目录存独立文件，不进 `config.json`。** `statePath("jira", "attachments.json")` 里只有 `{ "root": "<绝对路径>" }`；接口 `GET /api/jira/attachments/root` → `{ root: string | null }`，`PUT` 收 `{ root }`，按 `^[A-Za-z]:[\\/]`、`^\\\\`（UNC）、`^/`（POSIX）认绝对路径，`fs.mkdirSync(root, { recursive: true })` 不抛错才写盘，否则 400 `jira_root`；隧道访客 PUT 403 `tunnel_readonly`（「回本机操作」），GET 照常。代价：桥多一份状态文件，而且「退出连接」不清它（目录不是凭据，重连不该丢）；好处是含 token 的那份文件（chmod 0600）里不会多出一个用户可重复编辑的路径字段。
+
+2. **`POST /api/jira/issues/:key/download` 是批量语义，单项失败不整单失败。** 没设根目录 → 400 `need_root`（「还没设置附件目录」），而且在拉详情之前就返回，一个字节都不写；有目录时拉与详情同一套数据（issue 字段 + 评论 media），落 `<root>/<KEY>/`（KEY 大写），回 `{ dir, items: [{ id, filename, path, status: "saved" | "skipped" | "failed", reason? }] }`，HTTP 仍是 200。`reason` 是中文短句（超限 / 取不到内容 / 找不到对应附件 / 跳转到不允许的地址…）。代价：前端要分「整单错误」（400/403，显示在按钮下）与「单项失败」（逐行显示）两层。
+
+3. **评论 media 的 uuid 不是 attachment id，按需探测。** ADF 里 `attrs.id` 是 media services 的 UUID，直接当 `/rest/api/3/attachment/content/{uuid}` 用会 404。做法：先按 uuid 取；404 时对这张工单的 issue 附件逐个 `GET /rest/api/3/attachment/content/{attachmentId}`（手动不跟随跳转），从 302 的 `Location` 里取 `/file/{uuid}/binary` 的 uuid 反查，命中即重试；探测结果（含失败）记在进程内 `Map`，只有「这张工单有评论 media 且按 uuid 取不到」时才发生。代价：最坏情况每单多 N 次（N = issue 附件数）探测请求；缓存不落盘、桥重启重来。
+
+4. **单文件 100 MB 上限、全程串行。** `MAX_DOWNLOAD = 100 * 1024 * 1024`；`Content-Length` 超限直接 `skipped`（不建文件、不发请求体读取）；没有长度就边写边数，超限立刻中断、删掉半截文件、记 `skipped`。一个文件 `await` 完再下一个，不并发。代价：上限写死，要改得动代码；整单耗时是各文件之和，换来的是不需要并发池、限速与部分失败回收。
+
+5. **跳转只认站点自己或 `*.atl-paas.net` 的 https，第二跳不带 Authorization。** 第一跳 `redirect:"manual"`，`Location` 必须 https、无 userinfo、无 hash、端口空或 443，且 host 等于配置站点或 `atl-paas.net` / `*.atl-paas.net`；跟随那一跳走同一套超时与代理缝，但**不带** Authorization（签名 URL 自带凭据）；别的 host 一律 `failed`。代价：Atlassian 换域名 / 改端口 / 换 CDN 时下载会整体 `failed`，要跟着改白名单这一处；放宽成「任意 https」等于让上游指定主机拿到我们的 Basic 头（SSRF + 凭据外泄）。
+
+6. **文件名清洗是一层纯函数，重名靠附件 id、重下覆盖。** 导出 `safeFileName(name, id)`：`\ / : * ? " < > |` 与控制字符换成 `_`，去首尾空白与结尾的点，Windows 保留名（CON / PRN / AUX / NUL / COM1-9 / LPT1-9，带扩展名也算）前加 `_`，空名回落 `attachment-<id>`，截到 120 字符且保留扩展名；同批内重名 → `name-<id>.ext`；磁盘上已有同名文件就是覆盖（重下不堆副本）。代价：只差非法字符的两个附件会在磁盘上撞名，靠 id 后缀区分；`_CON.txt` 这类改名对用户可见，但比在 Windows 上写失败好。
+
+**接口形状：** `GET /api/jira/attachments/root` → `{ root: string | null }`；`PUT …/attachments/root` body `{ root }` → `{ ok: true, root }`（不合法 400 `jira_root`；隧道 403 `tunnel_readonly`）；`POST /api/jira/issues/:key/download` → `{ dir, items: [{ id, filename, path, status, reason? }] }`（没设目录 400 `need_root`；隧道 403 `tunnel_readonly`；key 形状校验同 `GET /api/jira/issues/:key`，大写化）。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（33 项，新增 10 项：root 的 null / 相对路径 400 / 建目录 / 不写进 config.json、隧道 PUT 403 而 GET 200、`need_root` 不拉详情、完整下载的目录结构与清洗 / 同批重名 / 超限 / 评论 media 探测 / 白名单外跳转 / 第二跳 `authorization` 为 null、重下覆盖、隧道 POST 403、`safeFileName` 与 `attachmentRootProblem` 与 `attachmentRedirectAllowed` 的单测）。`node web/tests/jira-unit.mjs`（19 项，新增 `downloadMark`）、`node web/tests/commands-unit.mjs` 通过；`npm --prefix web run typecheck`（含 i18n-check：1831 键 × 3 语）与 `npm run build:web` 都过。
+
+**偏移点（未在真实租户上核实）：** 白名单按工单原文只收 `*.atl-paas.net`；Atlassian Media 的真实主机若是 `api.media.atlassian.com` 之类，跳转会整体 `failed`。实机确认后只改 `attachmentRedirectAllowed` 一处；先把「拒绝未知主机」定下来，比先放行再看发生了什么安全。
+
+## D206 Jira「交给 agent」：提示词在页面拼、附件行由桥端的 downloaded 事实决定、浮层照抄笔记面板（工单 #252）
+
+**问题：** 列表每一行和展开的详情里都要有一颗「交给 agent ▾」，两个出口（预填当前会话 / 新开会话）与笔记面板一致。要定清楚的是：提示词在哪拼、附件路径那一行凭什么出现、浮层是抽共用件还是复制。
+
+**决定：**
+
+1. **提示词是纯函数，在页面端拼。** `web/src/jira-shared.ts` 的 `handoffPrompt(input)` 把工单号 / 标题 / 链接（复用 `browseUrl`）/ 状态 / 优先级 / 类型与固定指令拼成一段文本；`type` 与 `status` 缺省就省略那一段，`priority: null` 写「优先级：未设置」。它**不走 `tr()`**——这是给 agent 的指令，不是界面文案，切英文界面也不该改变指令内容；`web/i18n-check.mjs` 为此加了 `// i18n-ignore-start <理由>` … `// i18n-ignore-end` 行区间（用法记在 `docs/I18N.md`），区间内既不报漏翻也不进词典。代价：改提示词得动代码、且没有多语言版本；换来的是指令稳定、可单测（`node web/tests/jira-unit.mjs` 直接 import，不经 `chat.ts`）。
+
+2. **附件那一行只在确实下载过时出现，事实由桥端给。** 新增只读 `GET /api/jira/issues/:key/downloaded` → `{ dir: string | null, count: number }`：没设根目录、目录不存在、目录里没有普通文件都回 `{ dir: null, count: 0 }`；否则 `dir = <root>/<KEY>`、`count` 只数 `readdirSync(..., { withFileTypes: true })` 里的普通文件（子目录不算）。它不建目录、不拉 Jira、隧道访客也能读。页面点击交接时：详情里刚下载过就复用 `download.dir`，否则问桥，桥问不到按「没下过」处理，不阻断交接。代价：每次交接多一次本地往返（详情刚下载过时省掉），换来的是提示词不会骗 agent「附件在这个目录」——空目录/没下过时宁可不写这一行。
+
+3. **浮层从笔记面板复制一份，不抽共用件。** `web/src/jira.ts` 的 `openHandoffMenu()` 照抄 `notesheet.ts` 的 `handoffMenu()`：同样两颗按钮、同一批 `tr` 键（`预填到当前会话` / `写进输入框，Enter 才发`、`新开一个会话` / `建好后填进那个会话的输入框，不自动发送`），点外面、`Esc`、滚动、改尺寸都关。额外补了两点：上下翻转（下方放不下且上方更宽裕就翻到锚点上方）与夹进窗口边（左右 12px、上下 12px），因为验收要求「展开位置不超出窗口」，而笔记那份只是贴着按钮往下开。`prefill` / `newSessionWith` 抛错或没接上时，在浮层里显示一行中文错误，不静默。代价：两份约五十行浮层代码要同步维护，改交互得改两处；换来笔记面板零风险，Jira 这边的布局与错误态能独立演进（用户明确要求不抽共用件）。
+
+4. **交接完只收浮层，不关 Jira 面板。** 预填只把提示词放进当前输入框（发不发由人按 Enter）；新开会话沿用既有出口——设 `prefillNext` 再开会话，建好后填进输入框，不自动发送。关掉整个 Jira 面板会让用户丢失列表与展开状态，而预填完往往还要看别的工单。代价：面板与输入框同时在场，用户要自己切走；这是「预填」这个动作本来的语义。
+
+**接口形状：** `GET /api/jira/issues/:key/downloaded` → `{ dir: string | null, count: number }`；key 先过与详情相同的形状校验（不匹配 400 `jira_key`），非 GET 405 `bad_method`；隧道 GET 200（只读）。`handoffPrompt(input: { key, summary, siteUrl, status?, priority?: string | null, type?, dir?: string | null })`：`dir` 为空（`null` / 缺省 / 空白）不出现附件行，有值时补一个与目录同风格的结尾分隔符（Windows 根的 `C:\…\<KEY>` 补 `\`，POSIX 补 `/`）。
+
+**验证：** `node bridge/tests/jira-e2e.mjs`（36 项，新增 3 项：没设根目录 `{null,0}` 且不拉 Jira、`<root>/<KEY>/` 两个文件加一个子目录 → `{dir, count: 2}`、目录不存在与空目录都是 `{null,0}` 且隧道访客写了一个文件后读到 `{dir, count: 1}`）。`node web/tests/jira-unit.mjs`（23 项，新增 4 项：全文逐字、附件行有/无与结尾分隔符、优先级 `null` 与缺省、空标题只留工单号）。`node web/tests/commands-unit.mjs`（13 项）通过；`npm --prefix web run typecheck`（含 i18n-check：1833 键 × 3 语）与 `npm run build:web` 都过。
+
+**偏移点：**
+
+- 笔记面板的 `handoffMenu()` 实际没有上下翻转（固定开在按钮下方）；本单按验收要求自行加了翻转与窗口内夹取，所以两份浮层代码不完全一样。
+- 附件目录的结尾分隔符跟随目录本身（Windows 上是 `\`），不使用固定的 `/`；这与工单原文的 `<根目录>/<KEY>/` 在 Windows 上不是逐字相同，但避免了 `C:\…\ACME-12/` 这种混搭。
+- 为了让「中文但不翻译」的字面量过门禁，改了 `web/i18n-check.mjs`：新增行区间标记，只跳过区间内的字面量，其余检查逻辑未动。
+
+## D207 Jira 搜索：第二颗 tab、结构化条件只由桥拼 JQL、人员选择器带无权限降级（工单 #256–#259）
+
+**问题：** v1 只能看「分配给我 + 未解决」（D203）；要按人（含别人的）、项目、状态、类型、优先级查，得离开面板去 Jira 网站。开放查询能力会把「页面能对 Jira 发什么」这条边界（D202/D203）重新打开：原始 JQL 一旦从页面进来，桥就成了任意查询代理；人员字段还牵着「找不到人」与「没有看关注者权限」两种常见失败。
+
+**决定：**
+
+1. **形态选 A：面板内两颗 tab**（我的未完成 / 搜索），各自滚动、各自保留状态；默认列表，首次进搜索自动跑一次记忆条件（没有就跑全部未解决）。B（同屏折叠）与 C（按钮切块）在原型里对比过，不入库。代价：搜索不能与列表同屏对照；换来的是两个入口平权、互不挤位置。
+2. **页面只传结构化条件，JQL 仍由桥拼。** 白名单参数、长度/枚举/互斥校验、`escJql` 转义都在桥端；页面没有 `jql` 参数入口，未知参数忽略。这与 D203「页面没有查询面」一致，只是把条件集从一条固定 JQL 扩到一张受控表单。代价：新增一种条件要改桥；换来的是注入面收敛在一处。
+3. **人员是选择器，账号 ID 优先、自由文本兜底。** 输入 ≥2 字走 `GET /api/jira/users`（代理 `/rest/api/3/user/search`），选中存 `accountId`；该接口要 `Browse users and groups`，401/403 时回 `unavailable` 而不是报错，页面退化成手输邮箱/accountId。三个关系勾（经办人/报告人/关注者）默认全选、OR 语义；`未分配` 与人员互斥。代价：名字重名时以选中的 accountId 为准，自由文本可能被 Jira 判为找不到人；换来的是没有权限的人仍能查。
+4. **关注者被拒时自动降级，而不是整单失败。** 带 `watcher` 的查询遇到上游 400/403，桥去掉 watcher 重试一次；成功则回 `degraded: { watchers: true }`，页面在结果上方说明。**只剩 watcher 一项时不重试**（去掉就变成无条件，结果会悄悄变宽），直接 403 并提示改选经办人 / 报告人。代价：真正的 JQL 错误会多打一次上游；换来的是大多数人不至于因为一个勾选就看不到任何结果。
+5. **分页 20 + `nextPageToken`，没有总数。** 新版 `/rest/api/3/search/jql` 不返回 total，界面只说「已显示 N 条」，`isLast` 后说「已全部加载」；不为了一个数字再打一次估算接口。代价：用户不知道总共多少条；换来的是不做假数字、不增加请求。
+6. **元数据单独取、短期缓存；搜索结果不缓存。** `GET /api/jira/meta?project=` 给类型/优先级/项目内状态，5 分钟内存缓存（键含配置与项目），失败不缓存；`status` 必须带 `project`（否则状态名跨项目歧义），桥端 400。搜索是用户主动动作且条件多变，缓存收益低、串条件风险高，故不缓存；D203 的列表缓存不动。代价：搜索每次一个往返；换来的是结果永远对应当前条件。
+7. **边界不变：单站点、只读、隧道 GET 可查。** 搜索只发配置站点的 `/rest/api/3/*`；隧道访客能查（读），没有任何写路径。
+
+**接口形状：** 细节见 `docs/JIRA-SEARCH.md`。`GET /api/jira/search` → `{ ok, issues, nextPageToken?, isLast, degraded? }`；`GET /api/jira/meta?project=` → `{ ok, statusCategories, types, priorities, statuses, partial? }`；`GET /api/jira/users?q=` → `{ ok, users, unavailable? }`；错误沿用 `jira_not_configured` / `jira_auth` / `jira_forbidden` / `jira_upstream` / `jira_network`，参数错误新增 `jira_query`（带 `field`）。
+
+**验证：** 本 PR 只落设计与实现单（#256–#259）。实现门槛：`node bridge/tests/jira-search-unit.mjs`（条件→JQL 与校验）、`node bridge/tests/jira-e2e.mjs`（三条路由、watcher 重试、meta 缓存、隧道）、`node web/tests/jira-unit.mjs`（query 组装与本地记忆）、`npm --prefix web run typecheck`（含 i18n-check）、`npm run build:web`；界面按 `docs/JIRA-SEARCH.md` 的手点清单验收。
+
+## D208 产物弹窗：会话级基线快照判「新增 / 修改 / 删除」，改动放进独立 diff 弹窗
+
+产物弹窗过去只记「哪个工具写过这个路径」：`write` 覆盖已有文件也显示「写入」，同一路径写了两次只有一行，改了多少完全不知道。根因是「新增还是修改」是**文件事实**，而弹窗当时拿到的是**工具事实**——pi 的 `write` 返回值只有一句 `Successfully wrote to <path>`（`dist/core/tools/write.js:50`），`edit` 才带 `details.diff`，所以靠工具结果猜不出覆盖还是新建。
+
+**决定**
+
+1. **基线在写入前抓，抓在 pi 的 `tool_call` 钩子里。** 新增 `bridge/ext/artifact-snapshot.ts` 扩展，由 `sessions.ts` 与既有两个扩展一起 `-e` 注入；钩子里把路径回打给桥（`POST /api/artifacts/snapshot`，回环 + 会话 token），桥读磁盘存下**第一次**碰它时的字节。`tool_call` 在执行前且被 await，这是唯一零竞态的位置。替代方案（桥在 `tool_execution_start` 抢读）是毫秒级竞速，新建文件大概率读成「修改」、diff 恒空，否决。
+2. **快照是会话级的，不是全局的。** 存 `statePath("artifacts", <sessionId>)`：`index.json` + `<sha256(abs)>.orig`。单文件 2 MB、单会话 500 个文件封顶；到顶之后的新文件不再拍快照，那些行只能走 git 估算或标「未知」——宁可少一条基线，也不无限长。会话被彻底删除时（`sessions.purge`）一并清掉。
+3. **状态有五档，缺基线时不猜。** `new` / `modified` / `same` / `deleted` / `unknown`。没有基线时先问 git（`git show <root-relative>` 能否解出会话开始时的 blob），能给就标「按 git 估算」，否则明说「未知」——不把猜测画成事实。判断「没变」用的是 `diffTexts` 的 `added === removed === 0`，不是字节相等，否则 CRLF ↔ LF 会被算成整文件重写。
+4. **改动呈现选独立弹窗（C）。** 产物弹窗只留徽章 + `+N −M` + `工具×次数`；点一行开 `diff-sheet`：左栏换文件、右边左右对照、`j / k` 换文件 `← / →` 换 hunk `Esc` 关。否决了「行内展开」（弹窗要变高、只能塞前 60 行）与「查看器加变更页」（得为同一个文件开关两次查看器）；代价是多了第三套浮窗，但它只在产物弹窗里可达，不进查看器的导航。
+5. **只认 write 系工具。** `bash` / `apply_patch` 之外的方式写文件不触发钩子，P0/P1 不追（`WRITE_TOOLS` 与既有 approval-gate 同名不同源，将来若要合并再抽公共常量）。二进制只给大小变化，`>2MB` 或 `>5000 行` 或改动超过 3000 行只给原因不给逐行；`diffTexts` 对前两种回 `added=removed=0`，那只是「没比」，状态必须是 `unknown` 而不是 `same`。
+
+**接口形状**
+
+`POST /api/artifacts/list {sessionId, items}` → `{items, summary, baseline}`；`POST /api/artifacts/diff {sessionId, path}` → `{path, abs, status, estimate, binary, added, removed, hunks, truncated, reason?, sizeBefore, sizeAfter}`（没基线也是 200 + `reason: "no-baseline"`，不是错误）；`POST /api/artifacts/snapshot {token, path}` 只给扩展（回环 + token，失败也回 200，记账不能挡写入）。清单的 `items` 由页面从自己的工具条目里算（`chat.ts` 的 `written` 现在带 `writes` 计数），桥只负责「拿这些路径和磁盘比」——会话历史重放是免费的。
+
+界面文案不由桥拼：`why` 是码（`no-baseline` / `git-head-missing` / `snapshot-too-big` / `size-only` / `binary-size-only` / `built-then-deleted` / `diff-too-large` / `diff-rewrite`），句子在 `app.ts` 的 `artifactWhyText()` 里经 `tr()` 取，否则 `i18n-check` 扫不到桥端，三种语言里两种会缺。
+
+**验证**
+
+`node bridge/tests/artifacts-unit.mjs`（新增/修改/没变含 CRLF/已删除/二进制/无基线/相对与绝对路径去重/清理）、`node bridge/tests/artifacts-e2e.mjs`（临时桥：snapshot 无 token 与假 token 都 403、未知会话 404、`/api/git` 未被闸到）、`npm run typecheck`（含 i18n-check，新增 24 条文案 ×3 语）、`npm run build`。界面用原型页先对齐过三个候选的观感，真机手验留给测试环境（一条真模型回合写两个文件）。
+
+## D209 幻灯片支持：能打开文件的地方都要能开 .pptx，翻页走 PowerPoint → PDF（#265）
+
+「用户或 agent 能直接打开一个本地文件」的入口有四条：预览面板 / 文件管理器、聊天里的附件与路径 chip、Jira 面板的附件行、内网通收到的文件。它们过去只认「文本 / 图片 / 表格 / 其它二进制」四类，`.pptx` 落进最后一类——页面明写「这个格式这里不支持」，而且只有 xlsx 家族才配一颗「用默认程序打开」。结果是：能看见文件，打不开它；客户发来的季度汇报在网页里就是一行字。
+
+还有一处更早就错位的地方：`bridge/src/delivery.ts` 一直告诉模型「预览打不了的就指向客户端里已有的『用本机程序打开』出口」，可那颗按钮只对 `WORKBOOK` 家族出现。对 pdf/docx/ppt 来说是句空话，模型顺着这句话让用户去点，用户找不到。
+
+**决定**
+
+1. **两步走，先本机能开、再站内翻页。** 第一步（便宜、立刻可用）把「用本机程序打开」从 xlsx 家族扩到**所有会落到 binary 支线、且有桌面程序认领的格式**：`.pptx .pptm .ppsx .potx .ppt .pps .pdf .doc .docx`（加上原有 `.xlsx .xlsm .xlsb .xls .ods`）。判定在桥（`OPENS_ON_DESKTOP` 那张表），前端只问 `kind` 与扩展名，不再各自维护正则。第二步才是站内翻页。代价：`.pdf`、`.docx` 从「只能下载」变成「能交给本机」，多一条启动外部程序的路径；这与 D69 当年担心的「网页启动任意关联程序」是同一类风险，区别在于现在只对**用户亲手点开的那个文件**、且只在回环页面（`/api/open` 本来就是回环 + token）。
+
+2. **扩展名分家族，伪装包退 binary，老二进制直接认。** `.pptx .pptm .ppsx .potx` 必须是 zip 包（`isZipPackage` 沿用表格那边的判定），不是就退 binary 并给「用本机程序打开」；`.ppt .pps` 是 97-2003 的 OLE 二进制，没有可靠的结构判据，直接认。改了扩展名的 pptx（比如改名成 `.doc`）按扩展名走，仍是 binary —— 但 grant 在，本机照样能开。**不做内容嗅探**：那是给「打开就崩」开了个口子，而「点了打不开」是可解释的。
+
+3. **站内翻页 = PowerPoint COM 转 PDF，塞进 iframe，放在独立的幻灯片浮窗里。** 不复用 `viewer` 面板：它固定 `min(760px,55vw)`（D121），一页 16:9 的幻灯片塞进去只剩半张；也不复用 `/raw`——它的 `content-security-policy: sandbox` 会让浏览器内建 PDF 查看器白屏（D166 已经因此给表格单开了 `/api/sheet/pdf`）。所以照抄 D166 的形状，另开 `/api/slides/pdf`：POST 换状态、GET 取字节，`content-disposition: inline`，`nosniff`，`no-store`。iframe 不带 `sandbox`（要 PDF 查看器自己的 origin），这是 D166 已接受的取舍。
+
+4. **把「文件 → PDF」抽成共用设施，`sheet/pdf.ts` 降级成 wrapper。** 新 `bridge/src/docpdf/service.ts` 收排队、缓存键（`sha256(abs\0mtime)`）、两阶段状态、失败记忆、超时、临时目录、`%PDF-` 校验、清理；`engine` 是唯一的变量。表格的 driver 仍是 LibreOffice（行为、错误码 `sheet_pdf_failed/_timeout/_soffice`、`PI_SOFFICE` 全部不变），幻灯片的是 COM。**不顺手改 sheet-pdf 的旧行为**（它至今不清理缓存），只给新目录加 `retain: {count: 50, days: 7}`——旧坑单独修，别混在一次变更里。
+
+5. **页数上限要在启动 PowerPoint 之前判。** `200` 页：先只读 zip 中央目录数 `ppt/slides/slideN.xml`（读尾 66 KB 找 EOCD，不整包进内存），超了直接 `slides_pdf_pages`。认不出结构（加密包、Zip64）就不数，只靠 50 MB 体积上限——认输比吃内存好。为什么不转完再判：一次 PowerPoint 启动 8 秒起步，转完再拒不但是白等，还会在磁盘上留一份没人要的 PDF。
+
+6. **COM 只读、无窗口、强制禁宏、超时杀进程树。** `Presentations.Open($Src, ReadOnly:=$true, Untitled:=$false, WithWindow:=$false)`、`AutomationSecurity = 3`（`msoAutomationSecurityForceDisable`）、`SaveAs(..., 32 = ppSaveAsPDF)`、`Close()` + `Quit()`。PowerShell 脚本**只写 ASCII**、`param()` 必须是第一句：Windows PowerShell 5.1 按 ANSI 读无 BOM 的 UTF-8，一句中文注释就能让整个脚本炸。超时 180 秒，先 `taskkill` 掉这次新出现的 `POWERPNT.EXE` 再抛 `slides_pdf_timeout`。代价：**接受 PowerPoint 窗口闪一下**（`WithWindow:=$false` 也拦不住进程启动那一下）；换来的是不依赖装载项、不写用户模板。
+
+7. **打开即转、直出页面；关掉浮窗不取消转换。** 不做「先信息页再点按钮」（那要多一次点击和一次状态机），浮窗一开就轮询 `POST /api/slides/pdf`，`ready` 直接挂 iframe。用户提前关窗，转换继续跑完落缓存——下次打开直接 `ready`（实测缓存命中 0.5 秒，首次 8.1 秒）。失败记进 `failures`，只有页面上的「重试」带 `retry: true` 才重转，避免一次坏文件把 PowerPoint 反复拉起来。
+
+8. **可信根：Jira 附件目录与内网通收件箱，每次请求现读配置。** 这两处的文件不在会话 cwd 下，工具和页面都够不着。`previewPins()` 每个请求调 `readAttachmentRoot()` 与 `peer.view().status?.config?.inbox`，命中就把 token 的 `root` 钉在那个目录上（不是 cwd）——页面拿到的读权不多于它刚才列出的那份清单。**只信当前配置值**：用户改掉附件根，旧目录立刻不再是可信根。`open_preview` 工具走 `isTrustedPreviewPath(session, abs, pins)`，所以 agent 也能开这两处的文件。
+
+9. **内网通点卡片 = 用本机程序打开（与原计划的偏差）。** 原定「点卡片 = 站内预览」，落地时发现 `web/peer.html` 是独立页面、自己的 bundle，不加载 `app.ts`，也没有会话上下文；而 `/api/preview` 必须 `sessions.locate(sessionId)`，SPA 启动时又不会自动选会话，深链预览会 404。所以改为：卡片点击 → `POST /api/peer/open` → 桥问 peer 守护进程要收件目录里的**真路径**（新增回环 `/files/meta`）→ `openWithApp`。「另存」小链接保留。`.pptx` 由 PowerPoint 打开，仍然满足「能打开」；代价是没了站内翻页。
+
+10. **公网不给演示文稿内容，也不给路径。** 与表格同一条口径（US 46）：`/api/preview` 在隧道请求上一律 403 `slides_public`「通过公网访问时不提供演示文稿内容，回本机操作」，页面根本拿不到 token。`/api/peer/open` 同样拒绝公网。
+
+**接口形状**
+
+`POST /api/preview {sessionId, path}` 的 `kind` 新增 `"slides"`，并带 `slides: {pages: number|null, engine: boolean}`（页数与「这台机器有没有 PowerPoint」提前告诉页面，别让它轮询一场注定失败的转换）。`POST /api/slides/pdf {token, retry?}` → `{id, status: "ready"|"pending"|"failed", error?, code?}`；`GET /api/slides/pdf?id=&token=` → 200 `application/pdf`（完成）/ 202 text/plain「幻灯片还在生成」/ 404 `slides_pdf_gone`（id 与当前 grant 的 key 不符）。错误码：`slides_pdf_failed`、`slides_pdf_timeout`、`slides_pdf_powerpoint`（未安装 / COM 未注册，HTTP 503）、`slides_pdf_pages`；公网 403 `slides_public`。`POST /api/peer/open {id}` → `{ok, message}`；peer 守护进程新增 `GET /files/meta?id=` → `{ok, path, name, size, mime}`（只回环）。
+
+**验证**
+
+`node --experimental-strip-types bridge/tests/slides-unit.mjs`（`npm run test:slides`）—— 共用设施的排队/缓存/失败记忆/`retry`/超时+kill/页数粗筛/体积上限/清理各一组，`countSlides` 的 3 / 0 / null / null，以及分类与 pinRoots；`npm run test:preview` 不回归；`npm run typecheck`（含 i18n-check，14 条新文案 ×3 语）、`npm run build`。真机另验（本机 PowerPoint 16，未提交脚本）：3 页真 pptx → 首次 8.1s 出 PDF、缓存命中 0.5s、`/api/open` 能交给桌面程序；Playwright + 真桥 + Edge 通道截图确认浮窗里渲染出「Slide 1 / 1 of 3」，拖拽缩放后几何落 `pi.slidesGeom`，重开保留。Playwright 自带 Chromium 没有 PDF 插件，headless 里是白框——那不是这套实现的问题。
+## D210 行 2 的「本区」不拿全量置顶兜底：没有当前会话就只剩 ＋
+
+**问题：** 用户在只有 1 个会话的「月报」工作区里，看到行 2 铺着 13 颗别组的 ★ 胶囊（截图里是 9 颗 + `＋5`），括弧里那句「我明明只在这组」就是 D145 留下的两条兜底造成的：`starredRow()` 在**没有当前会话**、以及**反查不到当前会话属于哪个组**时都返回 `manage.pin` 全量。全量置顶与当前组无关，于是左栏越干净，这条越像串组。
+
+**决定：** 行 2 的「本区」只在有当前会话时才有定义。**取代 D145 决定第 3 条的后半句**（「有快照时显示当前会话所属组的会话（★ 优先），并排除当前那颗」）：D145 只说了「有快照时有本区」，没说没有当前会话时算什么，那处空白就是本条的来源。
+
+1. 没有当前会话 → 返回空，`PillBar` 只剩尾巴那颗 ＋（不传 `empty` 文案，所以连提示都没有）。
+2. 有当前会话但 `wsOf()` 反查不到组（脏快照 / 过滤把组滤掉）→ 同样返回空，**不**猜一个组、也不退回全量。
+3. 旧桥 / 桩桥根本不发 `workspace` 快照时仍退回 `manage.pin`：那种桥里「本区」这个概念不存在，置顶是它唯一能给的集合。这条**比第 1 条先判** —— 旧桥 + 没有当前会话也一样铺置顶，跟开没开会话无关。
+
+实现：`web/src/app.ts` 的 `starredRow()` 三条出口（旧桥 → `pins`；没有当前会话 → `[]`；否则本区会话交给 `starredSessions`）+ `web/src/pillbar.ts` 的 `starredSessions(zone | null | undefined, stars)`：`zone` 为空（本区没定义）直接得 `[]`，于是「不猜」这条可以脱离 DOM 单测。
+
+**为什么：** 行 2 的职责是「我在这个工程里，这个工程里有什么事」。没有当前会话时它答不了第一问，退回全量置顶等于用「所有工程」回答「这个工程」——用户看到的就是别组的会话。空态至少不会指错组；左栏与顶栏标签仍然在，要找会话不缺入口。
+
+**代价 / 可改：** 没有当前会话时行 2 只剩一颗 ＋，一屏之内看不出「有哪些置顶」（要开左栏）；这是有意的：置顶的作用是「在本区里排前」，不是全局收藏夹。若以后想要「全局收藏」，应该是另一个入口（比如左栏的「已置顶」分区），而不是让行 2 兼职。
+
+**验证：** `node web/tests/pillbar-unit.mjs`（新增 2 项：本区未定义（`null` / `undefined`）为 `[]`、本区有定义时仍只留本区 ★）；`probes/workspace-tree.mjs`（新增 2 项：没打开会话时行 2 零胶囊、只剩 ＋）；`probes/workspace-shells.mjs`（A 壳新增 2 项：没打开会话时别组 ★ 不进行 2；打开 proj-01 的会话后行 2 只留本区那颗 `s-01-2`）；`probes/pin-auto-open.mjs`（22 项全绿；新增 1 项：旧桥 + 没有当前会话时行 2 仍铺满全部置顶，旧桥回退的行为未变）。`npm --prefix web run typecheck`（含 i18n-check）与 `npm run build:web` 通过。
+
+## D211 diff 弹窗右边被裁：`.sheet` 是 grid 却没钉列，隐式列按 max-content 长过自己的 width
+
+**现象：** 产物弹窗打开某个文件的 diff 之后，右上角的「关闭」整颗看不见、只露一条边；`j / k 换文件` 那行提示和白字计数的 `按 git 估算` 粘在一起；路径栏的「在查看器里打开」和路径文本叠在一起；没有基线时的说明文字从右侧被切掉半句（`F:/pi-web-client/.scratch/shots/bug-diff-overlap.jpg`）。
+
+**根因（仿真实 DOM 的 harness 复现，不是推测）：** `.sheet` 是 `display: grid`，只写了 `grid-template-rows`（`web/src/styles.css:1485`），**没写 `grid-template-columns`** —— 那条隐式列按 `max-content` 定宽，标题栏的内容宽（title 333 + hint 240 + 关闭 60 ≈ 633）把列撑到 594px，比 `.sheet` 自己的 `width: min(560px, 100%)` 还宽，再被同一元素上的 `overflow: hidden` 从右边裁掉。实测：sheet 560 / head 594.1（右 955.1 vs sheet 右 920），`.sheet-head > .btn` 被 flex 收缩到 58.9×58.3（两字标签折成两行）。同类先例：D60 的 `.turn-list`、`.dir-list` 都是这个坑。
+
+**修法：** ① `.sheet` 补 `grid-template-columns: minmax(0, 1fr)`；② `.sheet-head` 补 `gap: 8px`（title 与 `margin-left: auto` 的 hint 之间原来零间距）；③ `.sheet-head > .btn { flex: none }` —— 按钮按内容宽排，要收的是标题和提示，不让按钮折行长高；④ `.diff-hint` 补 `min-width: 0; overflow: hidden; text-overflow: ellipsis`，让它可收、收的时候出省略号而不是被裁。
+
+**顺带把 diff 弹窗开到 920px（独立、可回退）：** 560px 扣掉 208px 左栏后每边只剩 ~130px，48px 行号 + 80px 代码，而 `.diff-text` 是 `white-space: pre` + `overflow: hidden`（不横滚）—— 左右对照在那个宽度下不成立，一行只能看十来个字。`@media (min-width: 760px)` 里给 `width: min(920px, calc(var(--vw1) * 94))`，窄屏仍是原来的全宽单列（`.diff-row` 在 ≤760 有 `min-width: 560px` 横滚）。用 `--vw1` 是为了跟 `#app { zoom }` 下的 UI 缩放对齐（同 `.ext-sheet` / `.mgr-sheet`）。
+
+**验证：** harness `F:/pi-web-client-wt/fix-diff-sheet-overflow/.scratch/diff-overlap/repro.html`（链接真 `web/src/styles.css`，DOM 照 `web/src/app.ts:5744-5820` 拼）+ `check.mjs`（Playwright）：修前 1280 宽下 head 594.1 > 560、close 58.9×58.3、`在查看器里打开` 右缘 943.1 > 920；修后 360 / 420 / 560 / 640 / 760 / 800 / 900 / 1100 / 1280 / 1600 十个宽度全过 —— 关闭恒 60×38.1、head 不溢出不折行、按钮全在 sheet 内，<760 仍是 `x=0` 全宽。`node bridge/tests/whatsnew-ui.mjs` 全绿（设置页也是 `.sheet`，确认基础规则的改动没伤到别的抽屉）；`npm run build` 与 `npm run typecheck`（含 i18n-check）通过。
+
+**可改：** 920 / 94vw 两个数是按「两列各 356px 能读 48 列左右」定的；hint 在窄一点的窗口会先出省略号，如果更想让它换行就换成两行 grid。
+
+
+## D212 本机管理：独立控制台，读走 REST、DNS 写走 UAC 助手，公网只读打码
+
+「pi 设置」旁边要能看这台机器，并且切 DNS，但不能再做成一页 pi 配置。DNS 是整机状态，改错会影响域登录、内网域名和 Jira；桥又常年以普通权限跑着。这个功能的关键不是把 `ipconfig` 画出来，而是把「谁能改、改之前存什么、失败怎么退」定死。
+
+**决定**
+
+1. **独立控制台，四个分区，C 布局。** 不从设置 sheet 里长 tab：DNS 影响整台机器，不该藏在「某个项目的 pi 设置」里。左栏概况 / 网络与 DNS / 端口与服务 / 服务，右栏内容；入口是「pi 设置」旁边的按钮 + `/sysmanage`。原型阶段比较过设置式页签、单页体检报告、双栏控制台，选 C 是因为它把「网卡列表」和「DNS 编辑」放在同一屏，切网卡不用滚动。代价是比设置页多一层导航；换来的是 DNS 的当前值、预设、应用按钮始终同屏。
+2. **读走 REST，不新增 WS 协议。** 四个分区各自 `GET /api/sys?section=`，前端按 tab 懒加载。理由是这些是请求-响应式快照，没有服务端推送需求；WS 那条 `onMessage` 的 `switch` 已经很长，再塞四种子协议只会增加状态。缓存：network 30s、ports 10s、services 30s；DNS 改动后只清 network。
+3. **采集选快路径，慢的靠缓存。** 概况用 Node 的 `os` + `fs.statfsSync` + 一次注册表（`DisplayVersion` / `CurrentBuild` / `UBR`）；网卡用 `Win32_NetworkAdapter` + `Win32_NetworkAdapterConfiguration`（冷 ~2.2s、热 ~0.9s），不用 `Get-NetAdapter`（1.4s）叠 `Get-NetIPConfiguration`（2.3s）；端口用 `netstat -ano`（123ms）+ `Win32_Process`（~1.1s）；服务用 `Win32_Service`（~1.5s，含 PathName）；防火墙读注册表三档 `EnableFirewall`（~0.4s），不用 2.5–4.7s 的 `Get-NetFirewallProfile`。网卡按 GUID 定位用 `Win32_NetworkAdapter -Filter "GUID='{...}'"`——`Get-NetAdapter` 没有 `-InterfaceGuid`，这条踩过。
+4. **DNS 只改 IPv4，按网卡记原值，绝不自动回滚。** 预设 = 公司 172.28.1.23 / 阿里 / 腾讯 / 114 / Google / Cloudflare / 自定义；首次应用前把原值写进 `statePath("sysmanage.json")`（键是 InterfaceGuid），页顶常驻「原值已保存 + 恢复」。原值是 DHCP 时恢复用 `-ResetServerAddresses`，静态则写回保存的数组。不做「N 分钟后自动恢复」：改 DNS 的人通常要的就是一直用下去，倒计时会在开会/跑构建时突然把网断掉；也不做启动时自动回滚，只在页面上给一键恢复。代价是桥崩了原值仍在文件里，但不会自己动。
+5. **写操作走一次性 UAC 助手，桥不常驻管理员。** 桥用校验过的值（GUID 正则、InterfaceIndex 整数、`node:net` 的 IPv4 校验、最多 3 个）生成固定 `.ps1` + 回执路径，`Start-Process powershell -Verb RunAs -Wait` 拉起；助手执行 `Set-DnsClientServerAddress` + `Clear-DnsClientCache`，把 `{ok, error, after}` 写成无 BOM UTF-8 JSON；桥 120s 超时，UAC 取消记 `uac_denied`。**不 detached**：Windows 的 `detached: true` 是 `DETACHED_PROCESS`，`Start-Process -Verb RunAs` 需要桌面会话，D52 已经踩过「静默成功但什么都没做」。每次应用都弹 UAC 是刻意的：DNS 是整机改动，必须有人在主机前点「是」。
+6. **权限边界在桥端，不在 UI。** 本机/局域网沿用现有 WS 升级的预授权（`publicReq` 为 false 时 `stepUntil` 已给满）；公网（`cf-connecting-ip` / `x-forwarded-proto: https`）读也打码：主机名前 2 位、IP/MAC/网关/DNS、进程名/服务名与路径，桥在返回前就抹掉，不指望前端隐藏；DNS 写直接 403。公网端口/服务只回数量，不回明细。这样即使有人绕过页面直接打 API，拿到的也只是打码后的摘要。
+7. **非 Windows 降级为只读。** macOS/Linux 只回概况与网卡（能读多少读多少），`supported: false`；DNS/端口/服务在界面上说明「暂不支持」，不伪造空表。第一版不写 systemd/networkd，也不碰 `/etc/resolv.conf`。
+8. **「服务」单独一页，默认只看非 Microsoft 且运行中。** 端口页放对外监听 + 防火墙三档；服务页放可搜索的全量列表，带「显示 Microsoft / 含已停止」开关。Microsoft 判定看路径（`\Windows\`、`\Microsoft\`、`\WindowsApps\` 之外的 `microsoft shared`）与显示名前缀；没路径的当 Microsoft，避免默认列表被系统服务淹没。
+
+**接口形状**
+
+`GET /api/sys?section=overview|network|ports|services` → 对应的 `SysOverview` / `SysNetwork` / `SysPorts` / `SysServices`；公网时 `public: true`，字段已打码。`POST /api/sys/dns {guid, servers}` → `{ok, before, after, unchanged, saved, dhcp}`；同值回 `unchanged: true` 且不弹 UAC。`POST /api/sys/dns/restore {guid}` → `{ok, dhcp, before, after}`；没有原值回 404 `no_saved_dns`。错误统一 `{error, code}`：`dns_guid` / `dns_servers` / `adapter_not_found` / `uac_denied` / `uac_timeout` / `no_receipt` / `dns_failed` / `dns_state` / `public_dns` / `dns_busy`。
+
+**验证**
+
+`npm run test:sysmanage`（netstat 解析、网卡合并/掩码/默认路由、服务归类、DNS 预设与解析、端口/服务过滤、格式化）；`npm run typecheck`（含 i18n-check，新增文案 ×3 语）；`npm run build`；测试实例上四页签真数据 + 公网头打码 + 同值不弹 UAC；真实改 DNS 的 UAC 与恢复留本机手验（会动整机网络，不在自动化里跑）。
+
+## D213 会话 / 待发图片都能点开看原图：快照只带 mimeType，字节按需走 `/api/session/image`
+
+**问题：** 用户气泡里的图片只有一行「附 N 张图片」；待发弹层的缩略图是死图，想看大一点只能先发出去。会话快照里的 `images` 只有 `{mimeType}`（`bridge/src/items.ts` 的 `entriesToItems` 故意不带 base64），所以页面没有可显示的源。
+
+**决定：**
+
+1. **快照不塞图片字节。** 一个 4 MB 的截图变成 base64 会撑大每一页 `session` 帧，也会让 localStorage 草稿爆掉；只保留 `mimeType`，点开时单独请求。
+2. **新 `GET /api/session/image?id=&item=&n=`**：`n` 必须是 ≥0 的整数（否则 400 `bad_image_index`）；`id` 找不到 404 `session_not_found`；条目/序号取不到 404 `image_not_found`；成功 200 带原始 `content-type`、`content-length`、`cache-control: private, max-age=31536000, immutable`、`x-content-type-options: nosniff`。
+3. **读字节两条路。** 本次进程里发出去的 `user:N` 气泡，原图还留在 `Session.promptImages`（上限 40 条用户消息，`close()` 清掉），不必回读文件；落盘条目走 `loadEntryImage(file, id, n)`，用 `readline` 逐行扫、先 `line.includes(entryId)` 再 `JSON.parse`，不整文件进内存。
+4. **页面**：`chat.ts` 的 `buildUserBody` 给每张图画 `.msg-image` 按钮（`loading="lazy"`），源由 `app.ts` 注入的 `setImageSource` 拼；点击派 `pi-image` 事件，`app.ts` 的 `openImage()` 在 `#app` 上盖一层 `.image-view` 灯箱（Esc / 点背景 / × 关闭，`z-index` 高于待发弹层）。待发弹层的 `.image-open` 按钮同样调 `openImage()`。
+5. **取不到图的降级**：`<img onerror>` 移除按钮、回落到原来的「附 N 张图片」灰字；`imageSource` 返回空时也不画破图。
+
+**为什么：** 图片是会话文件里最大的一块，快照的职责是「列出有什么」，不是「把所有字节送到页面」；按需接口还能让只读的休眠会话在没被打开时也看图（`locate(id)` 直接拿文件，不拉起 pi）。
+
+**验证：** `npm run test:image`（`session-image-unit.mjs` 6 项 + `session-image.mjs` 9 项：列表、两序号字节/mime、越界 404、负序号 400、幽灵会话/条目 404、缓存头）；`npm run test:image:ui`（Playwright 11 项：气泡缩略图源是接口、点开 1×1 原图解码成功、Esc 关闭；合成 paste 后待发角标、弹层缩略图按钮、data URL 灯箱、× 关闭；真发出去后 `user:N` 从桥内存取图并解码；无页面异常）。`npm run typecheck`、`npm run build` 通过。
+
+## D214 diff 弹窗：单边改动单栏铺满，hunk 头不再漏行
+
+**问题：** 新建文件（整份都是 `+`）在左右对照里等于把右半屏复制成两半：左列只剩 48px 行号和一大片空白，代码挤在半屏，998 行每行只看得见十来个字。另外往下滚时，代码会从 hunk 头**上方**那条缝里露出来 —— `@@ -0,0 +1,998 @@` 头顶压着半行代码（穿模）。
+
+**原因（穿模）：** `.diff-scroll { padding: 8px 0 24px }` 撞上 `.diff-hunk { position: sticky; top: 0 }`。sticky 的吸附矩形是**滚动容器自己的 padding box**，容器带内边距，头就停在 +8px，那一条 8px 永远露着下滚的行。跟 `backdrop-filter`、合成层都无关（都摘掉复现页照样漏）。
+
+**决定：**
+
+1. **整份改动只有一种行**（全是 `+`，或全是 `-`）时改单栏：一行「号 + 代码」，`grid-template-columns: 48px minmax(0, 1fr)`；号取存在的那一边（全新增用 `newNo`，全删除用 `oldNo`）。混着改的照旧左右对照 —— 有可比内容时才值得占两列。
+2. **上下留白从滚动容器挪到内层 `.diff-pad`**：`.diff-scroll { padding: 0 }`，`.diff-pad { padding: 8px 0 24px }`。滚动容器没有内边距，sticky 头就贴着滚动口顶边，缝没了；静止时那 8px 呼吸感由内层给。
+
+**为什么单栏按文件、不按 hunk：** 同一个文件里一半单栏一半对照，滚动时版面会跳；而「整份只有一种行」正好是唯一**没有对比内容**的情形（新建、纯追加、纯删除）。
+
+**代价：** 单栏时行的横向空间比对照模式多一倍，长行省略号的位置随窗口变（本来就是 `overflow: hidden` 不横滚）；窄屏（≤760px）那条 `.diff-row{min-width:560px}` 横滚规则对单栏不再适用，显式 `min-width: 0` 取消，免得手机上每行都要横拖。
+
+**验证：** 静态复现页（真 `web/src/styles.css`，900 / 1280 / 420 宽、`--ui-scale: 2`、`.diff-scroll.scrollTop = 140`）量 `hunk.top − scroll.top`：改前 8 / 改后 0，顶部不再有行露出；单栏文本宽度 636 里占 588（对照模式 270）；420 宽 `scrollWidth == clientWidth`（不横滚）；`npm --prefix web run typecheck`（含 i18n-check）、`npm --prefix web run build`。
+
+## D215 历史分页只跟隧道连接走：本机 / 内网仍整段下发
+
+**问题：** #218 为公网隧道把首帧切成末尾一页（`HISTORY_PAGE_SIZE = 60`）。#219–#221（2026-11-08，PR #228）把这条规矩扩展到分支切换、唤醒续接与重连，并且 `items` 帧整页替换，页面收到就 `chat.reset()`。结果本机也被切了页：切走会话再切回来，历史回到第一页，「载入更早」重新出现、还得再点一遍（#220 的验收项本来就这么写）。而本机实测一条 1267 条 / 2.6 MB 的会话：收帧 143 ms、DOM 稳定 1.3 s、最长一次任务 501 ms —— 本来就不慢，分页在那里只带来副作用。
+
+**决定：**
+
+1. **分页形状跟着连接走，不跟着会话走。** 认证层早就逐条判定过「这条连接是不是从隧道来的」（`isTunnelRequest`：`cf-connecting-ip` 或 `x-forwarded-proto: https`，结果记在 `publicReq`），`frameFor(client, payload)` 就照它整形：隧道连接原样（末尾一页 + `history`），其余把 `session` / `items` 帧的 `items` 换成整段、`history` 换成 `{hasMore:false, total}`。
+2. **单播与广播同一处成形。** subscribe / claim / create / reload 四个 `session` 帧与分支切换那条 `items` 帧都过 `frameFor`；`broadcast()` 只序列化「整段」和「原样」两份字节，逐连接挑一份发，不按连接重复序列化。
+3. **`PI_WEB_PAGE_ALL=1` 强制本机也分页**，给分页的两套 UI 用例（`test:history:ui`、`test:loadolder:ui`）和复现隧道行为用。
+4. **前端一行不用改。** `hasMore:false` + 全量 `items` 就是 #219 之前的老形状，「载入更早」自然不出现；隧道上的分页、刻度带 ghost 刻度与点刻度自动往回翻（#242–#244）全部照旧。
+
+**为什么按连接、不按配置 / UA：** 同一个人常同时开着本机标签页和公网手机；配置是全局的，而连接头是逐条的，认证层本来也依赖它判定公网请求。
+
+**代价：** 本机的大会话仍是 1.3 s 的 DOM 稳定与一次 501 ms 长任务（用户接受：卡的不是网络）；`frameFor` 给每帧多一次会话查找，命中时是常数开销。
+
+**验证：** `npm run test:paging`（`bridge/tests/paging-scope.mjs` 14 项：本机订阅 220 条整段 + `hasMore:false`、隧道 60 条 + `hasMore:true` + total 220、同一会话两帧 21 083 B vs 43 764 B、分支切换广播按连接分形状、本机任何帧都不出现 `hasMore:true`、隧道的 `history.before` 照旧翻页）；`npm run test:paging:ui`（`bridge/tests/paging-local-ui.mjs` 15 项，从页面这一层：开关不设 `PI_WEB_PAGE_ALL`，打开一条 220 条的会话帧里就是 220 条、110 轮一次画完、切走再切回仍整段且没有 `.chat-more`、断线重连不翻倍、全程 0 帧说「还有更早」）；`npm run test:history:ui`（28 项，`PI_WEB_PAGE_ALL=1`）；`npm run test:loadolder:ui`（63 项，同）；`npm --prefix bridge run typecheck`。`claim` / `reload` 两条单播起点是拉起 pi（`sessions.claim` / `sessions.reload` → `openLive`），不另起 pi 验；形状与 subscribe 共用 `sessionFrameOf` + `frameFor` 两处，subscribe 那条已盖到。
+
+## D216 设置面板改成本机管理同构的 C3 控制台：表单为主、对照只读、保存走 diff（#282–#287）
+
+**问题：** 老设置是 720px 弹层里 11 颗会换行的 chip，下面一长串表单；「全局」和「项目」是两个独立页，想看一个值现在从哪来要来回切页；默认值只以「（默认：…）」挤在标签里，项目没设置时输入框是空的，看不出会继承全局还是 pi 默认；窗口一窄，chip 换行、表单被压得很窄。旁边的本机管理已经是分组控制台，两个入口像两个产品（#282）。
+
+**决定**
+
+1. **选 C3 控制台，不选 C1 / C2。** 弹层换成 `.st-console`：顶部 eyebrow「pi 设置」+ 标题 + 当前设置文件路径 + badge，左栏两组（设置 / 系统）九项，右侧内容区，底部一行说明；「全局 | 项目」是设置页里的分段，不再是两个平级 tab。C1（表格里就地编辑）每改一格都要处理一次保存/确认，点得更多，而且表格本来是用来「看」的；C2（每行一个独立表单）多一层进出导航，也丢掉了旧表单的手感。C3 保留旧表单的肌肉记忆、迁移最小，用只读的对照表回答「谁在生效」；代价是改之前要先点回表单，但「点行回表单并聚焦」把这一步压成一次点击。
+2. **表单为主，一行一个字段。** 每行标「覆盖 / 未设置」（全局页是「已设置 / 未设置」）；项目未设置时选项里写「继承全局 · X」或「继承 pi 默认 · X」，默认值灰字「默认 · X」；列表字段标「与全局合并」，全局独有的标「仅全局」，复杂对象提示用 JSON 编辑；高级项收进折叠的「高级」。JSON 编辑器一直保留，切到复杂对象时仍是唯一入口。
+3. **对照只读。** 三列「设置 / 全局 / 项目」；生效格高亮并标「全局生效 / 项目生效」，未设置格 dashed；「只看项目覆盖」只把没有项目覆盖的行变暗（不删行），再点恢复；点任意行退出对照、回到表单、展开对应的「高级」、滚到中间并聚焦输入。对照是设置页的模式，换页或换 tab 就退出，不在别的页面上残留。
+4. **保存单位是当前作用域的整张表单，实际只发 diff。** 打开/刷新时留一份快照，`diffPatch()` 只把与快照不同的键放进 `settings.set` 的 `patch`；模型是 provider + model 一对，任一边变了两个键一起发；清空写成 `null`（桥按删除处理），没动过的键一个都不写；没有 diff 时保存按钮就是 disabled（不再点了只闪「已保存」），有 diff 才可点。这取代了更早的「每格保存」偏好：用户接受「整表单 + 一次保存」，diff 是安全阀——表单动作只有一个，但不会把没碰过的键、以及别人并发改的无关键一起盖掉。代价是改一格也要走一次表单保存；同一个键被两边同时改仍是后写者赢，所以才有下面的外部更新提示。
+5. **草稿与异常都按「不丢用户输入」处理。** 切全局/项目保留草稿；有脏草稿时外部推来 `settings.view` 不覆盖草稿，只提示「设置已从别处更新，保存会覆盖这些键」；`settings.set` 失败保留草稿并给红字；项目未信任时表单只读、保存 disabled、黄条给「去项目信任」，对照仍可看；settings.json 解析失败时红条 + 只留 JSON 编辑器，修好刷新回表单。刷新只重读、不写盘。
+6. **导航合并但旧入口都还在。** 九项覆盖旧的 11 个 tab：设置组「全局与项目 / 项目信任」，系统组「登录·凭据 / 口令 / 扩展与 MCP / 子代理 / 通知 / 运行时 / 更新日志」；pi 更新日志与项目更新日志合成一个入口，页内用分段切。tab id 不动，所以命令面板、`/settings`、`/whatsnew` 和 `#/settings?tab=trust` 这类深链仍落到原来的页。
+7. **窄窗口横排、Esc/关闭/刷新不变。** 900px 左栏变一行横排且内容区不横溢，640px 占满屏幕；`Escape`、关闭按钮、刷新按钮沿用旧行为。
+
+**接口形状**
+
+没有新的桥接口或 WS 命令：仍是 `settings.get` / `settings.set {scope, cwd?, patch?}` / `settings.error` 与 `trust.*`。新增的是前端纯函数 `web/src/settings-matrix.ts`（分组、生效值、placeholder、`diffPatch`）、`web/src/settings-console.css` 和 `web/src/app.ts` 里的控制台渲染；所有新文案走 `web/src/i18n/` 的 `tr("中文原文")`，en / ja 各一条。
+
+**验证**
+
+`npm run build`；`npm --prefix web run typecheck`（含 i18n-check，2003 keys × 3 langs）；`node web/tests/settings-console-unit.mjs`（19 项：分组、覆盖计数、生效值、placeholder、模型对、列表合并、diffPatch）；`node bridge/tests/settings-console-ui.mjs`（A–H：壳与九项、全局只写一个键、项目继承 + 覆盖、对照生效/过滤/点行聚焦、未信任只读、坏 JSON 只读、900px 横排、更新日志分段、Escape/关闭、外部更新与保存失败保留草稿、无 pageerror）；根脚本 `npm run test:settings`、`npm run test:settings:ui` 与上面两条单测同源。截图 `.scratch/shots/settings-console-form.png`、`settings-console-compare.png`、`settings-console-untrusted.png` 只给 PR 看，`.scratch` 不进产品包。
+
+## D217 横条成员是 `inRow` 过滤器，空组可删（含目录组）；按目录新建时目录就是组的身份；双击标签就地改名
+
+**问题：** 组多了以后横条放不下。只靠 `max` + `＋N` 能防爆，但用户没法把「最近不看、也不想它总占名额」的组从横条里拿掉；把组从 `order` 里删掉又会让左栏和横条的共用顺序失真。左栏这边，删除边界原本是「只有手建的空组能删，派生组一律不给删」—— 理由是派生组由 cwd 推出来，删了下次 `groupFor()` 又建回来，那是假动作。但只要会话都搬走了，一个空的目录组留在左栏里就是个死格子：点进去没有东西，也删不掉，只能等它自己消失（而它不会）。#274 要把这条边界改成「有会话才拦」。
+
+**决定：**
+
+1. **每组多一个 `inRow: boolean`，缺省 true。** 桥端 `WsGroup` 落库并在快照里下发；旧状态文件没有这个字段时读成 true，旧桥完全不发这个字段时网页按「全员都在横条里」处理。成员只是 `order` 上的过滤器，`order` / `max` 的语义不变。
+2. **新消息 `ws.row { id, inRow }`。** 组不存在或 `inRow` 不是布尔就静默忽略；有效时写盘并广播整份 workspace 快照（与 `ws.rename` 同一条路）。页面不本地猜，等广播回来重画。
+3. **模型多出两份输出：** `more`（成员里装不下的）+ `offRow`（不在横条里且没有临时占位的）+ `currentOffRow`（当前组自己不在横条里）。当前组被移出后仍占最后一格，横条总数永远不超过 `max`；它画虚线与名字划掉，和「装不下」区分开。因为这一格已经算 visible，`offRow` 不再收它，否则 `＋N` 会重复数。
+4. **`＋N` 两段：** 左「装不下」点一行只切组，成员不变；右「不在横条里」点一行先 `ws.row true` 再切过去。当前组被移出后不进右段，用标签上的 ⊙ 放回。
+5. **⊙ 是唯一主入口：** 悬停任意可见标签（包括当前组）出 ⊙，点一下移出横条并给带「撤销」的 toast；撤销只把成员放回，不改 `order`，所以回到原位置。左栏组头 ⋯ 的「在横条中」是同一动作的第二入口，只有新桥才出现（旧桥不画，不置灰）。
+6. **拖拽只重排成员。** 带 `offRow` 时把可见段的新次序按原位置替换回整份 `order`，不在横条里的组一格都不动，避免拖一下把非成员从顺序里丢掉。
+7. **`dropBlocker(group, sessions)` 只看会话数**（`web/src/wsmanage.ts`）：组不存在 → 「这个工作区不在了」（快照过期兜底）；有会话 → 拒绝；空组 → `null`，手动组与目录组一样。顺序是「不存在 → 有会话 → 空」，先说的那个才是真正的理由。
+8. **拒绝原因按组类型分开**：手动组「这个工作区里还有 N 个会话，先把它们拖回工程或删掉」，目录组「这个工作区跟着目录走，不能删」。后一句从此不再是「空了也不给删」，而是解释「为什么带着会话删不掉」—— 派生组的归属由 cwd 决定，删了它，那些会话下一次还是会回来。
+9. **会话数由桥数，页面只做投影。** `Sessions.dropWorkspace(id)` 用 `list()` 数 `ws === id` 的会话，再交给 `Workspaces.drop(id, sessions)`。不再用 `Object.values(overrides).includes(id)`：override 只覆盖「拖过的」会话，cwd 派生来的会话不在里面 —— 只看 override，带着会话删掉一个派生组，下一次 `groupFor()` 又把它建回来。归档的也算（它们不在左栏里，但组没了它们就没归属）。删成功时顺手清掉指向它的 override，不留悬空指向；`index.ts` 的 `ws.drop` 成功后除了 `workspaces` 快照，也广播一条 `sessions.list`（会话的 `ws` 可能跟着挪窝）。
+10. **空组在组头标「空」**（`.ws-empty-badge`），与组里的「这个工作区里还没有会话。」那句话并存：一个是组头上的状态，一个是组里的解释。有会话时徽标根本不画，不需要额外同步。
+11. **删除说明分手动组 / 目录组两句**（`dropHint()`）：手动组「只删这个空组，组里的东西一概不动」，目录组「只把这个目录移出列表，目录里的文件一概不动」。删组永远不动文件，这两句话得在点下去之前说清。
+12. **删掉当前组就落到右邻**（`wsNeighborsAfterDrop(order, id)`：右邻在前、再左邻反过来，近的优先）。落点只认「这一组里有会话可开」的邻居；邻居全是空的就把左栏亮出来，至少别让人对着一个不属于任何组的会话发愣。当前会话要是已经跟着目录落进了别的组（`currentWsId()` 还答得出），页面本来就有归属，不硬切。
+13. **`ws.create` 可带 `dir`，目录就是组的身份**（#278）：桥端 `Workspaces.createDir(dir)` 先 `stat`（读不了 / 不是目录 → 拒绝并说清路径），再把目录交给 `root` 缝（默认 `gitRoot`）解析工程根 —— git 仓库里的子目录与 worktree 都折进同一个主仓库，非 git 目录用自己的绝对路径。身份直接用现成的 `groupId(root)` 与快照里的组比，不另存一张「目录 → 组」的表：同目录永远不建第二个组；对着已有的组再建一次就把那组原样回给你（`created:false`）。大小写 / 双斜杠 / 尾斜杠由 `normalizePath` 归一，跳过这一层就等着出两个 `F:/app` 吧。
+14. **新组 `inRow:true`、追加到 `order` 末尾、名字留空**（与 `create()` 一致）：名字空着就显示目录名，重命名照旧走 `ws.rename` —— 建组时不把目录名写死成一个改不掉的名字。
+15. **`hello.caps` 下发能力表**（目前只有 `ws.create.dir`）：页面看到这条能力才把 ＋ 变成「挑目录」；旧桥没有 `caps` 就还是「空壳组 + 就地改名」，绝不摆一张按下去会坏的对话框。用能力表而不是版本号：桥以后可以只加能力。
+16. **`ws.created { id, created }` 回执**：快照照旧先广播（所有客户端都看得见新组），这一条只回给发起者 —— 页面凭它切组，`created:false` 时补一句「这个工作区已经在列表里」。失败（目录读不了 / 桥拒绝）只回 `notice`：不广播、不落半个组、页面不切走。
+17. **对话框两栏（原型 B）**：左栏=已有工作区（当前那个标「这里」，点一行 = 右侧目录跳过去），右栏=真目录浏览（复用 `mountDirPicker`，不再写第二套目录实现）。选到已有目录按钮变「带你过去」，不发创建；否则「就在这里新建」，建完直接切过去、不进改名态；脚注一句话说清这一下会发生什么。空组没有会话可开，切过去的表现是左栏展开并把那一行滚到眼前。
+18. **`wsCreateAction()` / `groupAtDir()` / `cleanDirPath()` 放在 `web/src/wsmanage.ts`**（纯函数、可单测）：页面先用快照自己判断「这个目录是不是已经有组」，省掉一次注定被拒的往返；桥端仍然做最终去重 —— 客户端的快照随时可能过期。
+19. **双击标签就地改名**（#277）：输入框是挂在 `body` 上的 `position: fixed` 浮层（`.ws-tab-rename-input`），几何由纯函数 `tabRenameBox()` 算 —— 贴当前标签下沿 4px，左右/上下都 clamp 进视口，最窄 160px。浮层不进标签槽，所以不推走整行、也不改行高；横条重画时按新标签位置再贴一次。
+20. **两下规则**：一次双击里第一下照常切组，第二下才进编辑 —— 双击当前组时第一下是原地切组，直接进编辑；双击非当前组时第一下已经切过去，浮层出现时组一定已经是它。判定用 click 的 `detail` 加「上一次点击落在哪颗、隔了多久」，不另绑 `dblclick`：拖动过的那一下仍由 `tabDragMoved` 吞掉，4px 以内的点击照旧只切组。
+21. **复用左栏的改名提交路径**：`renameIntent()` 判「没变 / 空串回落目录名」，`ws.rename` 走同一个 `act()` 队列；页面不做乐观改名，快照是唯一来源。桥对 `ws.rename` 没有回执，所以发出后等 1.5s 内的下一份快照：组没了 → toast「这个工作区不在了，名字没改」；组还在但名字不是请求值 → toast「改名没存下 · 还是原来的名字」。两种情况横条和左栏都保持原值。
+22. **入口只在有横条的壳里**：B/C/D 不画横条，也就没有横条改名；左栏组头的改名与 `⋯` 菜单那条 rename 都保留，两条都发同一种 `ws.rename`。
+
+**为什么：** 成员是「横条收哪些组」的过滤条件，不是第二套排序；把被移出的组留在 `order` 里，放回时才能回到原位置，左栏也不会因为横条开关而重排。左栏则是「我有哪些工程」的清点区，空着的格子要么能删、要么得说明为什么不能删；「派生组不许删」在会话都搬走之后就没有依据了 —— 用户要的是把这一项从列表里拿掉，而不是删目录。反过来，有会话的组一律拦在桥端：页面置灰只是提示，真正的边界不能靠 UI 自觉。
+
+按目录新建同样踩在「组是从 cwd 推出来的」这条老地基上：`ensure()` / `resolve()` / `prune()` 都认 `groupId`，所以建组也用同一个身份函数，而不是另立一张映射（多一张表就多一处会不同步的真相）。对话框把「选已有组」和「选目录」摆在一屏，是因为用户此刻只需要回答一个问题：这个目录是新建，还是已经在了。
+
+双击改名不改模型：名字仍住在组的 `name` 上，横条只是同一个 `ws.rename` 的第二入口；浮层挂在 `body` 上、不进标签槽，是「改个名字不该把整行标签挤走」的直接做法。两下规则判在 click 上而不是另绑 `dblclick`，是因为拖动也走同一条 pointerdown/click 链，再挂一个 `dblclick` 只会和拖动抢同一串事件。
+
+**验证：** `node --experimental-transform-types bridge/tests/workspace-unit.mjs`（旧文件缺字段读 true、快照带字段、setRow 落盘/跨重启/不改 order/max；空目录组删掉后快照与 `order` 一起少一项、有会话的目录组仍拒且状态不动、删组顺手清 override）；`node --experimental-transform-types web/tests/wstabs-unit.mjs`（四份输出、当前组被移出仍 ≤ max、名额 0、旧桥 members 缺省、带 offRow 的拖拽保留非成员原格）；`node --experimental-transform-types web/tests/wsmanage-unit.mjs`（`dropBlocker` 四种组合与新旧桥识别、`wsNeighborsAfterDrop` 的顺序、`dropHint` 分得开手动组与目录组）；`probes/workspace-tabs.mjs`（悬停 ⊙、移出/撤销、两段托盘、当前组虚线占最后一格且 ＋N 不重复、刷新持久化、B/C/D 无 ⊙/托盘、旧桥回退；「空」徽标与空态并存 / 有会话时没有徽标、拒绝删有会话的组且不发 `ws.drop`、删空的手动组与空的目录组、刷新后不复活、删掉当前组落到右邻且不留空白页；#277 双击当前标签、浮层贴标签且不改行高、Enter/点别处保存、Esc 不改、空串发空名、非当前组两下规则、拖动不误开、桥拒收提示且保留原值）；`npm --prefix web run typecheck`（含 i18n-check）、`npm --prefix bridge run typecheck`、`npm run build` 通过；`probes/workspace-manage.mjs` 与 `probes/workspace-tree.mjs` 照旧全绿。#278 之后再加：`bridge/tests/workspace-unit.mjs` 的按目录建组段（大小写 / 双斜杠 / 尾斜杠去重、跨重启不新建、worktree 折回主仓库、非 git 目录的身份与追加 `order` 末尾、失败不动状态、并发只建一个）；`web/tests/wsmanage-unit.mjs`（`cleanDirPath` / `dirBaseName` / `groupAtDir` / `wsCreateAction`）；`probes/workspace-tabs.mjs`（两栏与「这里」、已有目录「带你过去」且不发创建、新目录建组后追加 order 并在横条里、不进改名态、`created:false` 的提示、失败只在对话框里说一声、旧桥退回空壳组）。#277 之后再加：`web/tests/wstabs-unit.mjs` 的 `tabRenameBox()` 五个落点（贴标签下沿、靠右往左挪、窄窗口缩宽、贴底翻到上方、极矮窗口仍留边）。
+
+**代价 / 可改：** 桥侧的删除现在要先数一遍会话（`list()` 本来就每页都在跑，多这一次不贵）。派生组删掉之后目录还在，下一次有会话落进那个目录，组会重新出现 —— 这是刻意的，删的是列表项不是目录，也不做「删过的组记仇」那种黑名单。按目录建组多一次 `stat` + `root` 解析（可能起一个 git 子进程），只在用户按下按钮之后发生，不预热、不缓存目录身份。双击改名的浮层挂在 `body` 上、只在横条重画时重新贴位（单独缩放窗口要等下一次重画才对齐），换来的是它永远不参与 `.ws-tabs` 的布局；桥对 `ws.rename` 没有回执，页面只能盯着下一份快照，最坏 1.5s 才知道名字没存下 —— 这是不新增一条确认消息换来的。
+
+## D218 顶栏 / 下沿 11 颗按钮可单独关掉：`chrome` 三态存桥端，`true` 是「显式显示」（#281）
+
+**问题：** 顶栏常驻七颗（产物、终端、文件管理器、bug、内网通、随手问、Jira），输入框下沿常驻四颗（技能、扩展、文件、模型），今天没有任何减法手段。窄屏 390px 顶栏 `scrollWidth 400 > clientWidth 390`（D138）的解法是 560px 以下用 CSS 把「文件管理器」直接藏掉——用户既不能选择，也不能推翻。选择也不跟人走：换浏览器、换手机就从头开始。而「我每天用哪几颗按钮」和「我说什么语言、用多大字」是同一种东西——是「我是谁」，不是当前这一屏的临时状态。
+
+**决定：**
+
+1. **11 个稳定 id，写进状态、不是文案。** 顶栏 `artifacts` / `terminal` / `files` / `notes` / `peer` / `scratch` / `jira`；下沿 `skills` / `ext` / `attach` / `model`。`look`（Aa）与左右栏折叠**锁死**——Aa 是这张表的唯一入口，关了没有路回来。
+2. **存储是一个三态字段，用「键在不在」表达第三态。** `ui.json` 里 `{ "chrome": { "terminal": false, "files": true } }`：键缺失 = 默认行为（11 颗全显示；560px 以下 `files` 照 D138 被 CSS 藏掉）；`false` = 隐藏；`true` = **显式显示**，窄屏也显示。这一条是整份设计的支点。
+3. **不用「隐藏列表」。** `{ hidden: [...] }` 里 `true` 与「从没碰过」是同一种状态，于是「用户显式打开的按钮顶开窄屏」与「没人动过时行为不变」不可能同时成立。三态把「默认」本身变成可表达的状态，也让「全部显示」有一个正确写法：**删掉该组的键**，而不是写成 `true`（否则窄屏会被永久顶开）。未知 id 忽略、非布尔忽略、新按钮默认可见——以后加按钮不用同步改偏好文件。
+4. **状态存桥端（`ui.json`），不放 localStorage。** `hello` 带 `ui`，改动走 `ui.set` 落盘后广播 `ui`，页面不本地猜。理由是这三态描述的是「我是谁」，刷新、换浏览器、换手机、局域网里另一台机器都该看到同一份。代价是**全桥一份**：局域网里任何人改了，所有客户端一起变，删掉 `ui.json` 就回默认——这是买「换设备跟着我」付的钱，不是缺陷。语言 / 字号继续留在浏览器本地 `pi.prefs`：那是「这台设备看着舒服」，与「我每天用哪几颗」不是同一层；本次不把语言 / 字号搬上桥。
+5. **协议按 11 个 id 白名单。** `ui.set` 接受 `{ chrome: { [id]: boolean } }`：丢弃未知 id 与非布尔值，`undefined` 视为删除该键（所以「全部显示」与「回默认」能用同一条消息表达）。仍接受 `{ showExtButton }` 并映射进 `chrome.ext`；`hello.ui.showExtButton = chrome.ext !== false` 作为派生值，现有消费者不动。step-up 仍是 `ui.set` 的第一行：本机 / 局域网零摩擦，公网要口令。
+6. **「开关优先」窄屏：D138 的 CSS 不动，只被覆盖。** 当且仅当某颗是显式 `true` 时，页面根元素带一个标记，样式表在那条 560px media **之后**追加一条覆盖规则把它顶回来。没人动过 → 根元素没有标记 → D138 原样。这样 390px 下 `files` 仍是「默认消失」，但用户在 sheet 里点亮它（写 `true`）之后就会留下。
+7. **旧布尔偏好只迁移一次，之后不再落盘。** 读盘时 `chrome` 键存在（哪怕是 `{}`）就完全忽略 `showExtButton`；只有完全没有 `chrome` 的旧文件才把 `showExtButton: false` 读成 `chrome.ext = false`。写盘只写 `chrome`——否则旧键会像僵尸一样在用户重新打开扩展后又被读回来。**何时能删：** 等确认没有比新字段更老的桥在跑（`hello` 里没有 `chrome` 就是老桥），届时删掉派生值与迁移分支。
+8. **可见性只有一份定义：一个纯函数。** 输入 `(id, chrome, ctx)`，`ctx` 只带「是否有当前会话」「是否窄屏」两件事实；顶栏装配、下沿装配、壳重画、sheet 的预览与方块都只问它，不各自拼条件。没开会话时产物 / 文件管理器不显示，与现有的「没会话不显示」叠加而不是替换。
+9. **隐藏是真移除，不是禁用。** 不渲染、不占宽度、`title` 与 `aria` 不残留；不出现「⋯」兜底菜单，省下的宽度还给标题与 now-chip。手滑关掉仍有找回入口：`/terminal`、`/files`、`/artifacts` 三条斜杠命令；「外观与语言」底部的「恢复默认」**不碰** `chrome`（理由同它保住语言），回默认靠分组头的「全部显示」。
+
+**被否掉的替代方案：**
+
+- **隐藏列表 + 布尔「显示」**：见第 3 条，无法区分「显式显示」与「默认」，窄屏那条规则只能二选一。
+- **存 localStorage / `pi.prefs`**：换浏览器、换手机就丢，正好违背这个功能要解决的问题；也做不到「一台改了另一台立刻跟着变」。
+- **把语言、字号一起搬上桥**：那是更大的一次改动，而且语言 / 字号是「这台设备看着舒服」，与「我每天用哪几颗」不是同一层；本次只搬按钮可见性。
+- **窄屏继续 CSS 硬藏 / 改成禁用**：CSS 硬藏是没有选择；禁用仍然占宽度，也没解决「想极简」和「手机上要留文件管理器」两种诉求。
+- **收进「⋯」溢出菜单**：只是把拥挤换个地方，而且隐藏按钮的 `title` / `aria` 还会被焦点撞上。
+- **排序 / 拖拽、预设档（极简 / 全开）、「全部隐藏」**：排序散在装配代码与四套壳的重画逻辑里，要先换成一张真正的顺序表才谈得上，是另一个量级，本次不做。
+
+**验证（随 #281 的 #288–#293 落地）：** 纯函数表格（11 个 id 默认可见 / `false` 全藏 / `true` 覆盖窄屏 / 未知 id 与非布尔忽略 / 无会话时产物与文件管理器不可见 / `chrome.ext` 与派生值一致）；桥的 WS 协议（`hello.ui` 默认、`ui.set {chrome}` 落盘并广播、白名单、`undefined` 删键、旧 `showExtButton: false` 迁移、写过之后文件里不再有 `showExtButton`、公网 step-up）；页面探针（11 颗逐个关掉后 DOM 里不存在且 `scrollWidth` 变小、四套壳一致、预览与方块、390px 下 `files` 的默认 / 显式两档、三条斜杠命令、断桥置灰）。尺寸口径沿用 D138：390 / 560 / 620 / 1440 四档 `documentElement.scrollWidth == 视口宽`。
+## D219 商店页重画：请求从渲染里挪出来，重画保存滚动与焦点（#310）
+
+**问题：** 扩展商店与 MCP 商店的列表是「重画 = 重建整块 DOM」，而请求写在渲染函数里（`paintExtStore` / `paintMcpStore` 末尾 `if (items === null) send(...)`）。一次 tab 切换、每段库存推送、每次回包都会重画，于是：一次搜索发两个 `ext.store`，进一次 MCP 商店发五个 `mcp.store`；`storeHeader` 每次重画都用「上次发请求时」的文本覆盖输入框，在途时打的字被吞、光标被夹回旧位置；设置页那个宿主更彻底——`paintExtIfOpen` 对它只调 `paintSettings()`，滚动位置归零。另外 `checkPiUpdate()` 在 `paintPiUpdate → paintExtSettings` 内部同步调 `paintExtIfOpen()`，重入 `paintSettings` 之后外层继续往已脱离的节点 append，首帧出现两份开关与两份管理器。桥端 `searchMcp` 与 `mcpIndex` 各自 `readJson` 一遍索引（11.4MB / 21,108 条），每个查询两次同步解析，约 170ms 卡住事件循环。
+
+**决定**
+
+1. **渲染不发请求。** 请求只从一个地方出：`requestExtStore()` / `requestMcpStore()`，按 `(查询, 条数)` 在途去重，回包到达时清标记（清在 query 守卫之前——旧查询的回包也得结束它自己的请求）。渲染里的兜底变成调这个方法，语义是「打开时还没有东西可看」，不再每次重画都发一次。
+2. **重画保存并恢复滚动、焦点与光标，两个宿主一起。** 弹窗滚在 `.settings-body`、控制台滚在 `.st-pane`（`.ext-host` 自己不滚），恢复顺序是**先 `focus({preventScroll:true})` 再设 `scrollTop`**——`focus()` 会把输入框滚进视口，反过来会把页面拉回顶部。这是「设置页以前完全没存」的补齐，不是新交互。
+3. **请求期间不清空列表。** 清空后中间态只剩「查询中…」，面板变矮，浏览器的 `scrollTop` 被钳到 0；等到列表回来再恢复已经晚了（这正是旧实现恢复不了的根因）。代价是新查询的头几百毫秒里还看得见上一批结果——商店列表本来就是这个手感，比闪一下白屏好。
+4. **paint 内部的重画断在微任务里。** `checkPiUpdate()` 里的 `paintExtIfOpen()` 改成 `queueMicrotask(...)`：调用栈上的那层 paint 先画完，再重画，就不会两次 append 到同一父节点。没有改成「不要再画」——`piChecking` 的状态徽标需要立刻反映。
+5. **索引一次解析。** `readIndexDisk()` 按 `mtime + size` 记住解析结果，`mcpIndex` 接受调用方已经读过的索引（`preloaded`），写盘后失效；10 分钟没人用就丢掉，免得桥长期驻留 ~30MB 解析后的条目。
+6. **「已安装」按 pi 记下的出处整词匹配。** 用 `version.identifier`（npx / uvx / docker 跑的那个包）与 `transport`，正则两侧要求词边界（前导集合里**没有** `/`，否则 `pkg` 会命中 `@scope/pkg`）。旧写法 `服务器名 + includes(identifier)` 靠 transport 里带着包名侥幸命中，同时会把 `exa` 认成 `exa-search` 装过。
+
+**接口形状**
+
+没有新桥命令：仍是 `ext.store` / `mcp.store` / `ext.inventory`。前端新增 `requestExtStore` / `requestMcpStore` / `mcpInstalled(identifier, haystack)`；`extStore`、`mcpStore` 各多一个 `inflight` 字段（不在 WS 消息里传）。桥端 `mcpIndex(force, preloaded?)` 多一个可选参数与 `readIndexDisk()` 缓存，`searchMcp` 不再自己 `readJson`。
+
+**验证**
+
+`npm run typecheck`（三个包 + i18n-check 2005 keys × 3 langs）；`npm run test:settings`（19 项）；`npm run test:settings:ui`（全绿）；新增 `npm run probe:extstore`（`probes/ext-store-paint.mjs`，桩桥 + 真 Chromium，商店回包故意延迟 700ms）：T6 边加载边打字、T1 在途打字、T7 一次搜索一个 `ext.store`、T3 进店一个 `mcp.store`、T4 装过的仍显示「已安装」、T8 弹窗滚动、T5 设置页首帧一份、T2 设置页输入/滚动/光标。同一探针在旧代码上跑出 5 条红（`agh` 吞字、2 个、5 个、两份管理器、滚动 60→0），新代码 11 条全绿；索引实测改后首次 267ms、之后 9–12ms。
+
+## D220 部署时一次把依赖备齐：`npm install` 顺手装 pi 与三个扩展（用户要求）
 
 **问题：** 这个网页有三块能力不在仓库里：设置→子代理直接读 `pi-subagents` 的会话目录（`bridge/src/subagents.ts`、`bridge/src/bgruns.ts`），网页问卷按 `@juicesharp/rpiv-ask-user-question` 的 rpc-fallback 对话框格式回填（`bridge/src/questionnaire.ts`），随手问的联网工具由 `pi-web-access` 提供。它们住在 pi 自己的全局目录（`~/.pi/agent`），clone 下来 `npm install` 拿不到 —— 于是同一份代码在两个人的机器上表现不同，而缺的那块通常只是**静默少一个工具**，不报错，也不在界面上说。
 

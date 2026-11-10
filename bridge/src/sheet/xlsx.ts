@@ -5,8 +5,8 @@
  * 扫过 r1 就停——不把整张表 XML 解出来，更不把整表发给前端。
  */
 import { entryBytes, entryStream, zipIndex, type ZipEntry } from "./zip.ts";
-import { formatCode, formatValue } from "./numfmt.js";
-import { buildCf, readDxfs, type CellFx, type SheetCf } from "./cf.js";
+import { formatCode, formatValue } from "./numfmt.ts";
+import { buildCf, readDxfs, type CellFx, type SheetCf } from "./cf.ts";
 
 export type CellKind = "n" | "s" | "b" | "e";
 

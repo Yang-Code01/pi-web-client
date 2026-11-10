@@ -61,6 +61,19 @@ test("在别组置顶的会话不串进来：本区列表里没有的 ★ id 一
   assert.deepEqual(rowIds(["a"], ["x", "y"]), []);
 });
 
+// D210：本区没定义（没有当前会话 / 反查不到组）时一颗都不画，**不**退到全量置顶。
+const zoneIds = (ids, stars) =>
+  starredSessions(ids?.map((id) => ({ ...session, id })), stars).map((s) => s.id);
+
+test("没有当前会话 → 行 2 清空（不拿全量置顶顶上去）", () => {
+  assert.deepEqual(zoneIds(null, ["a", "b", "c"]), []);
+  assert.deepEqual(zoneIds(undefined, ["a"]), []);
+});
+
+test("本区有定义时，仍然只留本区里的 ★", () => {
+  assert.deepEqual(zoneIds(["a"], ["c", "a"]), ["a"]);
+});
+
 // #188 / #189 / #190：归档当前会话之后该切到哪一颗 —— ★ 行从左到右的 id 序列 + 被归档的 id，
 // 规则只有这一个纯函数：右邻 → 左邻 → null（空态）。
 const row = ["a", "b", "c", "d"];

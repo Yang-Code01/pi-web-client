@@ -6,7 +6,8 @@
  * 顺序。D146 因此废掉这条 —— 打开 ≠ 置顶 ≠ 解归档，横栏只显示真正 ☆ 过的会话，当前在哪个会话
  * 由顶栏那颗 NowChip（#96）负责说。
  *
- * 断言六件事：
+ * 断言七件事：
+ *   0. 旧桥（hello 里没有 workspace 快照）+ 没有当前会话 → 行 2 仍铺置顶列表（D210 决定 3）；
  *   1. 深链 `#/s/<id>` 打开一个没置顶过的会话 → pin / order 一个都不动（会话确实打开了）；
  *   2. 左栏点开另一个没置顶的会话 → 同样不动，而且前端不再发 `opened` 这条消息；
  *   3. 从「已归档」点开归档会话 → 会话能打开，但它仍然留在归档里；
@@ -138,6 +139,21 @@ const strip = () =>
       })),
     };
   });
+
+// 0) 旧桥 + 没有当前会话：行 2 仍铺置顶（D210 决定 3 —— 旧桥那条腿比「没有当前会话」先判）
+await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
+if (await page.locator('input[type="password"]').count()) {
+  await page.fill('input[type="password"]', "probe");
+  await page.click('button:has-text("进入")');
+}
+await page.waitForSelector(".session-card", { timeout: 15000 });
+await sleep(800);
+const home = await strip();
+ok(!home.chips.some((c) => c.cur), "旧桥首屏没有当前会话时，没有胶囊是「当前」");
+ok(
+  home.chips.length === MANAGE.pin.length,
+  `……但行 2 仍铺满全部 ${MANAGE.pin.length} 颗置顶（实际 ${home.chips.length}）`,
+);
 
 // 1) 深链首屏：`#/s/st-deep` 是一个从没置顶过的会话
 await page.goto(`${BASE}/#/s/${DEEP}`, { waitUntil: "networkidle" });

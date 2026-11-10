@@ -8,7 +8,19 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanGroupName, dropBlocker, renameIntent } from "../src/wsmanage.ts";
+import {
+  cleanDirPath,
+  cleanGroupName,
+  dirBaseName,
+  dropBlocker,
+  dropHint,
+  groupAtDir,
+  groupAtResolvedDir,
+  hasRowMembership,
+  renameIntent,
+  wsCreateAction,
+  wsNeighborsAfterDrop,
+} from "../src/wsmanage.ts";
 
 const LIB = { id: "f:/pi-web-client", name: "", key: "F:/pi-web-client", manual: false };
 const MANUAL = { id: "manual:abc", name: "客户 A", key: "", manual: true };
@@ -51,25 +63,149 @@ test("改了名字就发洗过的那个", () => {
 
 // ---------------------------------------------------------------- 能不能删
 
-test("手建的空组可以删", () => {
+// #279 边界改成「有会话才拦」：空的手动组与空的目录组都能删。
+
+ test("空组能删，手动组与目录组一样", () => {
   assert.equal(dropBlocker(MANUAL, 0), null);
+  assert.equal(dropBlocker(LIB, 0), null);
 });
 
-test("有会话的组删不掉，原因里带上会话数", () => {
+test("手动组有会话：删不掉，原因里带上会话数", () => {
   const blocker = dropBlocker(MANUAL, 3);
   assert.ok(blocker && blocker.includes("3"), `原因要说清还有几个会话：${blocker}`);
+  assert.equal(blocker, "这个工作区里还有 3 个会话，先把它们拖回工程或删掉", "与桥 drop() 的拒绝句逐字一致");
 });
 
-test("跟着目录走的组删不掉：删了下次又回来", () => {
-  const blocker = dropBlocker(LIB, 0);
+test("目录组有会话：删不掉，原因还是「跟着目录走」", () => {
+  const blocker = dropBlocker(LIB, 3);
   assert.ok(blocker && blocker.includes("目录"), `派生组的拒绝原因要说明它跟着目录走：${blocker}`);
 });
 
 test("组没了也删不掉（快照过期时的兜底）", () => {
   assert.ok(dropBlocker(undefined, 0));
+  assert.ok(dropBlocker(undefined, 3));
 });
 
-test("派生组即使空了也不给删 —— 拒绝先于「空不空」判断", () => {
-  assert.ok(dropBlocker(LIB, 0));
-  assert.equal(dropBlocker({ ...LIB, manual: true }, 0), null);
+// ---------------------------------------------------------------- 删掉当前组之后落到哪
+
+test("删掉中间的组：先右邻、再左邻", () => {
+  assert.deepEqual(wsNeighborsAfterDrop(["a", "b", "c"], "b"), ["c", "a"]);
+});
+
+test("删掉最后一组：没有右邻就退到左邻，近的在前", () => {
+  assert.deepEqual(wsNeighborsAfterDrop(["a", "b", "c"], "c"), ["b", "a"]);
+});
+
+test("删掉第一个组：只剩右邻", () => {
+  assert.deepEqual(wsNeighborsAfterDrop(["a", "b", "c"], "a"), ["b", "c"]);
+});
+
+test("要删的组不在组序里（快照已经变了）：没有落点", () => {
+  assert.deepEqual(wsNeighborsAfterDrop(["a", "b"], "z"), []);
+});
+
+test("能删时，删除项底下那句说明分得清手动组与目录组", () => {
+  const manual = dropHint(MANUAL);
+  const dir = dropHint(LIB);
+  assert.match(manual, /组/, `手动组要说清删的是组：${manual}`);
+  assert.match(dir, /目录/, `目录组要说清删的是列表里的这一项：${dir}`);
+  assert.notEqual(manual, dir);
+});
+
+// ---------------------------------------------------------------- #276 桥是否支持横条成员
+
+
+test("#276 每组都带布尔 inRow 才算支持横条成员（新桥）", () => {
+  assert.equal(hasRowMembership([{ ...LIB, inRow: true }, { ...MANUAL, inRow: false }]), true);
+});
+
+test("#276 旧桥的快照没有 inRow 字段：整份按「都在横条里」处理，不画成员入口", () => {
+  assert.equal(hasRowMembership([LIB, MANUAL]), false);
+  assert.equal(hasRowMembership([{ ...LIB, inRow: true }, MANUAL]), false, "缺一颗也不冒充新桥");
+});
+
+test("#276 空快照没有可判断的组：不当作支持", () => {
+  assert.equal(hasRowMembership([]), false);
+});
+
+// ---------------------------------------------------------------- #278 按目录建组
+
+test("#278 路径归一化与桥同一套：反斜杠 / 重复斜杠 / 尾斜杠 / 盘符根", () => {
+  assert.equal(cleanDirPath("F:\\work\\app\\"), "F:/work/app");
+  assert.equal(cleanDirPath("F://work///app"), "F:/work/app");
+  assert.equal(cleanDirPath("  F:/work/app/  "), "F:/work/app");
+  assert.equal(cleanDirPath("F:\\"), "F:/", "盘符根保留斜杠");
+  assert.equal(cleanDirPath(""), "");
+  assert.equal(cleanDirPath(null), "");
+});
+
+test("#278 目录名取最后一段，空路径给空串", () => {
+  assert.equal(dirBaseName("F:/work/app/"), "app");
+  assert.equal(dirBaseName("F:\\work\\app"), "app");
+  assert.equal(dirBaseName("/srv/repo"), "repo");
+  assert.equal(dirBaseName(""), "");
+});
+
+test("#278 找已在列表里的组：忽略大小写、正反斜杠、尾斜杠", () => {
+  const groups = [LIB, MANUAL, { id: "f:/work/app", name: "", key: "F:/work/app", manual: false }];
+  assert.equal(groupAtDir(groups, "f:/PI-WEB-CLIENT")?.id, LIB.id);
+  assert.equal(groupAtDir(groups, "f:\\pi-web-client\\")?.id, LIB.id);
+  assert.equal(groupAtDir(groups, "F:/work/app")?.id, "f:/work/app");
+  assert.equal(groupAtDir(groups, "F:/work/other"), undefined);
+  assert.equal(groupAtDir([MANUAL], ""), undefined, "手动组没有目录，不能被「空目录」撞上");
+});
+
+test("#278 已经在列表里 → 按钮说「带你过去」，不会建第二个", () => {
+  const groups = [LIB, MANUAL];
+  const action = wsCreateAction(groups, "f:/PI-WEB-CLIENT/");
+  assert.equal(action.dir, "f:/PI-WEB-CLIENT", "发出去的是归一化后的路径");
+  assert.equal(action.existing?.id, LIB.id);
+  assert.equal(action.label, "带你过去");
+  assert.equal(action.create, false, "已有目录不发送创建");
+});
+
+test("#278 新目录 → 按钮说「就在这里新建」，发送归一化后的路径", () => {
+  const action = wsCreateAction([LIB, MANUAL], "F:\\work\\new\\");
+  assert.equal(action.dir, "F:/work/new");
+  assert.equal(action.existing, undefined);
+  assert.equal(action.label, "就在这里新建");
+  assert.equal(action.create, true);
+});
+
+test("#278 没选目录：不建、按钮也不冒充能建", () => {
+  const action = wsCreateAction([LIB], "   ");
+  assert.equal(action.dir, "");
+  assert.equal(action.create, false);
+  assert.equal(action.existing, undefined);
+});
+
+// ---------------------------------------------------------------- #278 桥解析折回目录
+
+// 子目录 / worktree 逐字比 `key` 比不出来，但桥的 `ws.resolve` 会折回工程根。
+
+test("#278 子目录：桥说折回这个组 → 按钮跟着改口，不再「就在这里新建」", () => {
+  const action = wsCreateAction([LIB, MANUAL], "F:/pi-web-client/web", { dir: "F:/pi-web-client/web", id: LIB.id });
+  assert.equal(action.existing?.id, LIB.id);
+  assert.equal(action.label, "带你过去");
+  assert.equal(action.create, false);
+});
+
+test("#278 worktree：桥折回主仓那个组，按钮同样改口", () => {
+  const action = wsCreateAction([LIB], "F:/pi-web-client/.worktrees/a", { dir: "F:/pi-web-client/.worktrees/a", id: LIB.id });
+  assert.equal(action.existing?.id, LIB.id);
+  assert.equal(action.create, false);
+});
+
+test("#278 桥说没有 / 回答的是别的目录：退回本地逐字比较（旧桥行为不变）", () => {
+  const fresh = wsCreateAction([LIB], "F:/work/new", { dir: "F:/work/new", id: null });
+  assert.equal(fresh.existing, undefined);
+  assert.equal(fresh.create, true);
+
+  const stale = wsCreateAction([LIB], "F:/pi-web-client/web", { dir: "F:/work/old", id: "f:/work/old" });
+  assert.equal(stale.existing, undefined, "旧回答不许算到新目录头上");
+  assert.equal(stale.create, true);
+});
+
+test("#278 回答指向快照里没有的组：退回逐字比较，不把按钮留在死路上", () => {
+  assert.equal(groupAtResolvedDir([LIB], "F:/pi-web-client", { dir: "F:/pi-web-client", id: "f:/gone" })?.id, LIB.id);
 });

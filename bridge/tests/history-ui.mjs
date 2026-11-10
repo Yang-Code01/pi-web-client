@@ -9,8 +9,13 @@
  *   B. 顶部 / 中部 / 底部三种位置各翻一页，锚点（视口最上沿那块内容）位移 ≤ 2px；
  *   C. 连点两下只发一个 `history.before`，加载中按钮是灰的；
  *   D. 翻到最早一页后那一行整个消失；
- *   E. 刻度带向上补轮（`.turn-row` 30 → 60 → 90 → 120），点第一根刻度能定位到最早那轮；
- *   F. 切到别的会话再切回来：回到第一页，没有残留的预置内容。
+ *   E. 刻度带按整段历史画（#243）：一开始就是 120 行（30 实 + 90 个 `.ghost` 占位），
+ *      翻一页后实/淡边界从 90 上移到 60、总高度不变，点第一根刻度能定位到最早那轮；
+ *   F. 切到别的会话再切回来：回到第一页，刻度带重新按全量索引摆好（没有残留的已载入轮）；
+ *   G. 点最上面那根淡色刻度（#244）：自己连翻 3 页，最后滚到第 1 轮并高亮，中途不需要再点，
+ *      按钮按手动翻页的样子变灰、刻度带 `busy`；
+ *   H. 翻页途中用户上滚：跳转停下，已经取回的那一页留着，滚动位置不被拽到第 1 轮；
+ *   I. 索引里有、正文里没有的那一轮：翻到头就停，顶部那一行说「没翻到第 N 轮」，不再发请求。
  *
  * 桥侧形状（#218 定的）：`session` 帧只带末页 + `history:{hasMore,total}`；
  * `{type:"history.before", sessionId, before, limit?}` → `{type:"history", sessionId, before, items, hasMore}`，
@@ -94,6 +99,8 @@ const env = {
   PI_WEB_TUNNEL: "0",
   PI_WEB_HOST: "127.0.0.1",
   PI_WEB_ROOT: path.join(REPO, "web", "dist"),
+  // 分页只对隧道连接生效（#218 补）：这两套用例验的就是分页，本机起的桥要显式打开。
+  PI_WEB_PAGE_ALL: "1",
   PI_AGENT_DIR: AGENT,
   PI_BIN: path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs"),
   FAKE_PI_LOG: path.join(ROOT, "fake-pi.jsonl"),
@@ -209,12 +216,53 @@ await ctx.addInitScript(() => {
   };
 });
 const page = await ctx.newPage();
-page.on("pageerror", (e) => log("pageerror:", e.message));
+const pageErrors = [];
+page.on("pageerror", (e) => {
+  pageErrors.push(e.message);
+  log("pageerror:", e.message);
+});
 await page.goto(`${BASE}/#/s/${A}`);
 await page.waitForSelector(".chat-more .more-btn", { timeout: 20000 });
 
 const users = () => page.evaluate(() => document.querySelectorAll(".chat-scroll .msg.user").length);
 const rows = () => page.evaluate(() => document.querySelectorAll(".turn-row").length);
+const ghostRows = () => page.evaluate(() => document.querySelectorAll(".turn-row.ghost").length);
+const rail = () =>
+  page.evaluate(() => {
+    const el = document.querySelector(".turn-rail");
+    // 窄版（这个 390px 的视口）CSS 把带子藏了；量高度时临时展开一下（高度只取决于刻度数和间距）。
+    const prev = el.style.display;
+    el.style.display = "flex";
+    const h = Math.round(el.getBoundingClientRect().height);
+    el.style.display = prev;
+    return { h, ticks: document.querySelectorAll(".turn-tick").length, ghosts: document.querySelectorAll(".turn-tick.ghost").length };
+  });
+/** 实/淡分界线的位置：第一行已载入的轮次在整条带子里的下标（ghost 排在它前面）。 */
+const boundary = () =>
+  page.evaluate(() => {
+    const first = document.querySelector(".turn-row:not(.ghost)");
+    return first ? Number(first.dataset.i) : null;
+  });
+/** 等刻度带画完（paint 是一次 rAF）。 */
+const settleRail = () =>
+  page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+/**
+ * 等视口稳住：连续两次采到的 `scrollTop` 一样、且至少等了 250ms 才算（翻页后输入区会再定一次高、
+ * 跟流时还会被贴回底部，早量的那一瞬不是最终落点）。不要求中间「动过」——没滚动也是稳的。
+ */
+const settleScroll = async () => {
+  const start = Date.now();
+  let last = null;
+  let stable = 0;
+  while (Date.now() - start < 4000) {
+    await sleep(60);
+    const top = await page.evaluate(() => Math.round(document.querySelector(".chat-scroll").scrollTop));
+    stable = top === last ? stable + 1 : 0;
+    last = top;
+    if (stable >= 2 && Date.now() - start >= 250) return top;
+  }
+  return last;
+};
 const moreLabel = () =>
   page.evaluate(() => {
     const row = document.querySelector(".chat-more");
@@ -222,9 +270,57 @@ const moreLabel = () =>
     return { hidden: row?.hidden === true, text: btn?.textContent ?? "", disabled: btn?.disabled === true };
   });
 
+await settleRail();
 check("首页 30 条用户消息", (await users()) === PAGE_TURNS, `users=${await users()}`);
 check("按钮在、写着「载入更早」", (await moreLabel()).text === "载入更早" && !(await moreLabel()).hidden, JSON.stringify(await moreLabel()));
-check("刻度带 30 行", (await rows()) === PAGE_TURNS, `rows=${await rows()}`);
+// #243：全量索引一到手，未载入的 90 轮先占位；行的总数一开始就是 120。
+check("刻度带一开始就是 120 行", (await rows()) === TURNS, `rows=${await rows()}`);
+check("其中 90 行是 ghost（未载入）、30 行已载入", (await ghostRows()) === TURNS - PAGE_TURNS && (await rows()) - (await ghostRows()) === PAGE_TURNS, `ghost=${await ghostRows()}`);
+check("实/淡分界线在 90", (await boundary()) === TURNS - PAGE_TURNS, `boundary=${await boundary()}`);
+const rail0 = await rail();
+check("刻度带里也有 ghost 刻度", rail0.ghosts > 0 && rail0.ghosts < rail0.ticks && rail0.h > 0, JSON.stringify(rail0));
+
+// ghost 的说明文字：能看出是哪一轮，并且标着「未载入」
+const ghostText = await page.evaluate(() => {
+  const tick = document.querySelector(".turn-tick.ghost");
+  const row = document.querySelector(".turn-row.ghost");
+  return { tickTitle: tick?.title ?? "", tickAria: tick?.getAttribute("aria-label") ?? "", rowTitle: row?.title ?? "" };
+});
+check(
+  "未载入刻度的 title / aria-label 写着哪一轮 + 「未载入」",
+  ghostText.tickTitle.includes("未载入") && ghostText.tickTitle.includes("问 1") && ghostText.tickAria.includes("未载入"),
+  JSON.stringify(ghostText),
+);
+check("未载入的行也标着「未载入」", ghostText.rowTitle.includes("未载入") && ghostText.rowTitle.includes("问 1"), ghostText.rowTitle);
+
+// 颜色：ghost 行用 --faint 那一档，比已载入的那一行淡；刻度同理
+const tones = await page.evaluate(() => {
+  const probe = document.createElement("span");
+  probe.style.color = "var(--faint)";
+  document.body.append(probe);
+  const faint = getComputedStyle(probe).color;
+  probe.remove();
+  const ghostRow = document.querySelector(".turn-row.ghost");
+  const solidRow = document.querySelector(".turn-row:not(.ghost)");
+  const ghostTick = document.querySelector(".turn-tick.ghost");
+  const solidTick = document.querySelector(".turn-tick:not(.ghost)");
+  return {
+    faint,
+    row: ghostRow ? getComputedStyle(ghostRow).color : null,
+    solidRow: solidRow ? getComputedStyle(solidRow).color : null,
+    tick: ghostTick ? getComputedStyle(ghostTick).backgroundColor : null,
+    solidTick: solidTick ? getComputedStyle(solidTick).backgroundColor : null,
+  };
+});
+check("未载入的行用 --faint 那一档（比已载入的淡）", tones.row === tones.faint && tones.row !== tones.solidRow, JSON.stringify(tones));
+check("未载入的刻度颜色比已载入的淡一档", tones.tick !== null && tones.tick !== tones.solidTick, JSON.stringify(tones));
+check(
+  "未载入的行可及名里也写着「未载入」（读屏听得出它还没载入）",
+  (await page.evaluate(() => document.querySelector(".turn-row.ghost")?.getAttribute("aria-label") ?? "")).includes("未载入"),
+);
+check("「当前」不会落在 ghost 刻度上", (await page.evaluate(() => document.querySelectorAll(".turn-tick.ghost.cur").length)) === 0);
+
+// 点 ghost：见下面的 G（#244）—— 那张票让它不再只是看得见的占位。
 
 /** Viewport-top content node: the one the eye uses as an anchor. Skips the more row and the jump button. */
 const setAnchor = () =>
@@ -258,7 +354,7 @@ async function clickMore({ settle = true } = {}) {
   if (settle) {
     await page.waitForFunction((n) => document.querySelectorAll(".chat-scroll .msg.user").length > n, had, { timeout: 15000 });
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-    await sleep(320);
+    await settleScroll();
   }
 }
 
@@ -275,6 +371,9 @@ async function pageFrom(where) {
 }
 
 // B（顶部）+ C（连点只发一次）—— 两下同步点击
+// 先像往上读的人那样滚一格：把跟流关掉。否则翻页之后输入区再定一次高度（实测 3px）时，
+// 那颗 ResizeObserver 会在「跟流」时把视口贴回底部，量到的就不是翻页的位移了。
+await page.evaluate(() => document.querySelector(".chat-scroll").dispatchEvent(new WheelEvent("wheel", { deltaY: -160, bubbles: true })));
 await scrollTo("top");
 await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
 const topAnchor = await setAnchor();
@@ -288,7 +387,7 @@ const during = await page.evaluate(() => {
 });
 await page.waitForFunction((n) => document.querySelectorAll(".chat-scroll .msg.user").length > n, PAGE_TURNS, { timeout: 15000 });
 await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-await sleep(320);
+await settleScroll();
 check("加载中按钮是灰的、写「载入中…」", during.disabled && during.text === "载入中…", JSON.stringify(during));
 check(
   "连点两下只发一个 history.before",
@@ -298,19 +397,28 @@ check(
 check("一页 = +30 条用户消息", (await users()) === PAGE_TURNS * 2, `users=${await users()}`);
 const topShift = Math.abs((await anchorTop()) - topAnchor);
 check("顶部翻页锚点位移 ≤ 2px", topShift <= 2, `shift=${topShift.toFixed(2)}px`);
-check("刻度带 60 行", (await rows()) === PAGE_TURNS * 2, `rows=${await rows()}`);
+check("翻一页后还是 120 行", (await rows()) === TURNS, `rows=${await rows()}`);
+check("那 30 个 ghost 变成实线：实 60 / 淡 60", (await rows()) - (await ghostRows()) === PAGE_TURNS * 2 && (await ghostRows()) === TURNS - PAGE_TURNS * 2, `ghost=${await ghostRows()}`);
+check("实/淡分界线上移到 60", (await boundary()) === TURNS - PAGE_TURNS * 2, `boundary=${await boundary()}`);
+const rail1 = await rail();
+check("翻页前后刻度带总高度不变、刻度数不变", rail1.h === rail0.h && rail1.ticks === rail0.ticks, `${JSON.stringify(rail0)} → ${JSON.stringify(rail1)}`);
+check("ghost 刻度变少", rail1.ghosts < rail0.ghosts, `${rail0.ghosts} → ${rail1.ghosts}`);
 
 const mid = await pageFrom("mid");
 check("中部翻页锚点位移 ≤ 2px", mid.shift !== null && mid.shift <= 2, `shift=${mid.shift?.toFixed(2)}px`);
 check("中部翻页只发一个请求", mid.requests === 1, `requests=${mid.requests}`);
 check("再翻一页 → 90 条", (await users()) === PAGE_TURNS * 3, `users=${await users()}`);
+check("实/淡分界线上移到 30", (await boundary()) === TURNS - PAGE_TURNS * 3, `boundary=${await boundary()}`);
+check("刻度带总高度仍然不变", (await rail()).h === rail0.h && (await rail()).ticks === rail0.ticks, JSON.stringify(await rail()));
 
 const bottom = await pageFrom("bottom");
 check("底部翻页锚点位移 ≤ 2px", bottom.shift !== null && bottom.shift <= 2, `shift=${bottom.shift?.toFixed(2)}px`);
 check("底部翻页只发一个请求", bottom.requests === 1, `requests=${bottom.requests}`);
 check("翻到底 → 120 条用户消息", (await users()) === TURNS, `users=${await users()}`);
 check("翻到底那一行消失", (await moreLabel()).hidden, JSON.stringify(await moreLabel()));
-check("刻度带 120 行（向上补轮）", (await rows()) === TURNS, `rows=${await rows()}`);
+check("翻到底：120 行全是实线，没有 ghost", (await rows()) === TURNS && (await ghostRows()) === 0, `rows=${await rows()} ghost=${await ghostRows()}`);
+check("刻度带总高度从头到尾不变", (await rail()).h === rail0.h && (await rail()).ticks === rail0.ticks, JSON.stringify(await rail()));
+check("ghost 刻度全部消失", (await rail()).ghosts === 0, JSON.stringify(await rail()));
 check("三次翻页一共只发了 3 个请求", (await page.evaluate(() => window.__before)) === 3, `requests=${await page.evaluate(() => window.__before)}`);
 
 // 不重不漏：120 条、文本各不相同、顺序是 1..120
@@ -322,7 +430,7 @@ check("顺序仍是 1..120", texts[0] === "问 1" && texts.at(-1) === `问 ${TUR
 
 // E. 刻度带点第一根 → 定位到最早那轮
 await page.evaluate(() => document.querySelector('.turn-tick[data-i="0"]').click());
-await sleep(900);
+await settleScroll();
 const firstTurnTop = await page.evaluate(() => {
   const sc = document.querySelector(".chat-scroll");
   const node = document.querySelector(".chat-scroll .msg.user");
@@ -340,7 +448,212 @@ await page.waitForFunction((n) => document.querySelectorAll(".chat-scroll .msg.u
 await sleep(200);
 check("切走再回来回到第一页", (await users()) === PAGE_TURNS, `users=${await users()}`);
 check("切走再回来按钮又出现", !(await moreLabel()).hidden, JSON.stringify(await moreLabel()));
-check("切走再回来刻度带也是 30 行（没残留预置轮）", (await rows()) === PAGE_TURNS, `rows=${await rows()}`);
+check("切走再回来：120 行重新按全量索引摆好（30 实 + 90 淡）", (await rows()) === TURNS && (await ghostRows()) === TURNS - PAGE_TURNS, `rows=${await rows()} ghost=${await ghostRows()}`);
+
+// ---- G. #244：点最上面那根淡色刻度 → 自己连翻 3 页，最后滚到第 1 轮并高亮 --------------------
+await settleRail();
+const jumpBase = await page.evaluate(() => window.__before);
+const jumpStart = await page.evaluate(() => {
+  document.querySelector(".turn-tick.ghost").click();
+  const btn = document.querySelector(".chat-more .more-btn");
+  return {
+    disabled: btn.disabled,
+    text: btn.textContent ?? "",
+    busy: document.querySelector(".turn-rail").classList.contains("busy"),
+  };
+});
+check(
+  "自动翻页起手：按钮灰了、写「载入中…」，刻度带在忙",
+  jumpStart.disabled && jumpStart.text === "载入中…" && jumpStart.busy,
+  JSON.stringify(jumpStart),
+);
+// 三页都是一瞬间的事，等「那一轮到了并高亮」比等条数稳（高亮是自己消失的）。
+await page.waitForFunction(() => document.querySelector(".chat-scroll .msg.user")?.classList.contains("turn-flash") === true, null, { timeout: 20000 });
+const jumped = await page.evaluate(() => {
+  const node = document.querySelector(".chat-scroll .msg.user");
+  return { text: node?.querySelector(".body")?.textContent?.trim() ?? "", users: document.querySelectorAll(".chat-scroll .msg.user").length };
+});
+check("自动翻页翻到第 1 轮并高亮它", jumped.text === "问 1" && jumped.users === TURNS, JSON.stringify(jumped));
+check(
+  "自动翻页正好发了 3 个请求（每页一次，中间不需要再点）",
+  (await page.evaluate(() => window.__before)) - jumpBase === 3,
+  `requests=${(await page.evaluate(() => window.__before)) - jumpBase}`,
+);
+const jumpSettled = {
+  more: await moreLabel(),
+  busy: await page.evaluate(() => document.querySelector(".turn-rail").classList.contains("busy")),
+};
+check("翻完按钮收起、刻度带不忙了", jumpSettled.more.hidden && !jumpSettled.busy, JSON.stringify(jumpSettled));
+await settleScroll();
+const jumpLanded = await page.evaluate(() => {
+  const sc = document.querySelector(".chat-scroll");
+  const node = document.querySelector(".chat-scroll .msg.user");
+  return { delta: node.getBoundingClientRect().top - sc.getBoundingClientRect().top, text: node.querySelector(".body")?.textContent?.trim() };
+});
+check("自动翻完滚到第 1 轮（对齐视口顶）", jumpLanded.text === "问 1" && Math.abs(jumpLanded.delta) < 120, JSON.stringify(jumpLanded));
+
+// ---- H. #244：翻页途中用户上滚 → 跳转停下，已取回的页留着，位置不被拽走 --------------------
+// 回到第一页（切走再切回来），上一段已经把 120 轮全载入了。
+await page.evaluate((id) => (location.hash = `#/s/${id}`), B);
+await page.waitForFunction(() => document.querySelectorAll(".chat-scroll .msg.user").length === 2, null, { timeout: 15000 });
+await page.evaluate((id) => (location.hash = `#/s/${id}`), A);
+await page.waitForFunction((n) => document.querySelectorAll(".chat-scroll .msg.user").length === n, PAGE_TURNS, { timeout: 15000 });
+await settleRail();
+await scrollTo("mid");
+await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+const cancelBase = await page.evaluate(() => window.__before);
+// 点完同一个 tick 里就上滚：请求已在飞，取消得跟上「用户自己动手」。
+await page.evaluate(() => {
+  document.querySelector(".turn-tick.ghost").click();
+  document.querySelector(".chat-scroll").dispatchEvent(new WheelEvent("wheel", { deltaY: -160, bubbles: true }));
+});
+await page.waitForFunction((n) => document.querySelectorAll(".chat-scroll .msg.user").length > n, PAGE_TURNS, { timeout: 15000 });
+await sleep(700); // 再等一会儿：不该有第二页、第三页跟上来
+const cancelled = {
+  users: await users(),
+  requests: (await page.evaluate(() => window.__before)) - cancelBase,
+  flashing: await page.evaluate(() => document.querySelectorAll(".msg.user.turn-flash").length),
+  firstAway: await page.evaluate(() => {
+    const sc = document.querySelector(".chat-scroll");
+    // 第 1 轮该在视口上方很远的地方（没被拽过去）；负得不够就是跳了。
+    return Math.round(document.querySelector(".chat-scroll .msg.user").getBoundingClientRect().top - sc.getBoundingClientRect().top);
+  }),
+  more: await moreLabel(),
+};
+check(
+  "上滚取消：只取回已经发出的那一页，不再接着翻",
+  cancelled.users === PAGE_TURNS * 2 && cancelled.requests === 1,
+  JSON.stringify(cancelled),
+);
+check(
+  "上滚取消：不跳、不高亮，滚动没被拽到第 1 轮",
+  cancelled.flashing === 0 && cancelled.firstAway < -200,
+  JSON.stringify(cancelled),
+);
+check(
+  "上滚取消：按钮回到「载入更早」、刻度带不忙了",
+  !cancelled.more.hidden && cancelled.more.text === "载入更早" && !cancelled.more.disabled && !(await page.evaluate(() => document.querySelector(".turn-rail").classList.contains("busy"))),
+  JSON.stringify(cancelled.more),
+);
+
+// ---- I. #244：索引里有、正文里没有的那一轮 → 翻到头就停，并说「没翻到第 N 轮」 --------------------
+// 这一段的假桥在页面侧：把 session 帧的 history.turns 前面塞一个正文里永远翻不到的轮次。
+const ctx2 = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "zh-CN" });
+await ctx2.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
+await ctx2.addInitScript(() => {
+  window.__before = 0;
+  const send = WebSocket.prototype.send;
+  WebSocket.prototype.send = function (data) {
+    try {
+      if (JSON.parse(data)?.type === "history.before") window.__before += 1;
+    } catch {
+      /* 非 JSON 帧 */
+    }
+    return send.call(this, data);
+  };
+  // 改 `onmessage` 这一路就够了（ws.ts 用的是 ws.onmessage），没必要接管整个 socket。
+  const desc = Object.getOwnPropertyDescriptor(WebSocket.prototype, "onmessage");
+  Object.defineProperty(WebSocket.prototype, "onmessage", {
+    configurable: true,
+    get() {
+      return desc.get.call(this);
+    },
+    set(fn) {
+      desc.set.call(this, function (ev) {
+        let out = ev;
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "session" && Array.isArray(msg.history?.turns)) {
+            msg.history.turns = [{ id: "phantom-turn", text: "问 0", images: [] }, ...msg.history.turns];
+            out = new MessageEvent("message", { data: JSON.stringify(msg) });
+          }
+        } catch {
+          /* 非 JSON / 结构不对：原样交给页面 */
+        }
+        fn.call(this, out);
+      });
+    },
+  });
+});
+const page2 = await ctx2.newPage();
+page2.on("pageerror", (e) => log("pageerror(ctx2):", e.message));
+await page2.goto(`${BASE}/#/s/${A}`);
+await page2.waitForSelector(".chat-more .more-btn", { timeout: 20000 });
+await page2.waitForFunction(() => document.querySelectorAll(".chat-scroll .msg.user").length === 30, null, { timeout: 15000 });
+// 这一段的「可见」得有带子：窄版（`<html data-compact>`, <900px）下 `.turn-rail` 整个 display:none，
+// 量出来全是 0 的 rect。把窗口拉到桌面宽度再点。
+await page2.setViewportSize({ width: 1200, height: 844 });
+await page2.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+const phantomRows = await page2.evaluate(() => document.querySelectorAll(".turn-row").length);
+check("索引里多了那条不存在的轮次（121 行，91 淡）", phantomRows === TURNS + 1, `rows=${phantomRows}`);
+// 这里点的是**行**（不是刻度）：两种形状共用一个回调，行这条腿由这一段覆盖。
+const phantomStart = await page2.evaluate(() => {
+  const row = document.querySelector(".turn-row.ghost");
+  row.click();
+  return { ghost: row.title, busy: document.querySelector(".turn-rail").classList.contains("busy") };
+});
+check("点的就是那条不存在的第 1 轮（点的是行）", phantomStart.ghost.includes("问 0") && phantomStart.busy, JSON.stringify(phantomStart));
+await page2.waitForFunction(() => document.querySelector(".chat-more .more-btn")?.textContent === "没翻到第 1 轮", null, { timeout: 20000 });
+const stuck = await page2.evaluate(() => {
+  const row = document.querySelector(".chat-more");
+  const btn = row.querySelector(".more-btn");
+  return {
+    users: document.querySelectorAll(".chat-scroll .msg.user").length,
+    noteHidden: row.hidden === true,
+    noteDisabled: btn.disabled === true,
+    requests: window.__before,
+    ghostRows: document.querySelectorAll(".turn-row.ghost").length,
+    busy: document.querySelector(".turn-rail").classList.contains("busy"),
+    flashing: document.querySelectorAll(".msg.user.turn-flash").length,
+  };
+});
+check(
+  "翻到尽头也没有那一轮：停下、不跳、不忙了",
+  stuck.users === TURNS && stuck.flashing === 0 && !stuck.busy && stuck.ghostRows === 1,
+  JSON.stringify(stuck),
+);
+check("失败那行是可见的（没更早的了也要露出来）", !stuck.noteHidden && stuck.noteDisabled, JSON.stringify(stuck));
+// 正文顶部那行这时在视口上方几千像素外；带子固定在右缘，同一句话得真落在视口里（#244 的「可见」）。
+const noteBox = await page2.evaluate(() => {
+  const note = document.querySelector(".turn-note");
+  if (!note || note.hidden) return null;
+  const box = note.getBoundingClientRect();
+  return {
+    text: note.textContent ?? "",
+    top: Math.round(box.top),
+    bottom: Math.round(box.bottom),
+    right: Math.round(box.right),
+    width: Math.round(box.width),
+    height: Math.round(box.height),
+    h: window.innerHeight,
+    w: window.innerWidth,
+  };
+});
+check(
+  "失败那句挂在刻度带上、真在视口里",
+  noteBox !== null &&
+    noteBox.text === "没翻到第 1 轮" &&
+    noteBox.width > 0 &&
+    noteBox.height > 0 &&
+    noteBox.top >= 0 &&
+    noteBox.bottom <= noteBox.h &&
+    noteBox.right <= noteBox.w,
+  JSON.stringify(noteBox),
+);
+check("翻到头一共 3 个请求（每页一次）", stuck.requests === 3, `requests=${stuck.requests}`);
+await sleep(800);
+check(
+  "失败之后不再继续发请求",
+  (await page2.evaluate(() => window.__before)) === 3 && (await page2.evaluate(() => document.querySelectorAll(".chat-scroll .msg.user").length)) === TURNS,
+  `requests=${await page2.evaluate(() => window.__before)}`,
+);
+await sleep(2400);
+const cleared = await page2.evaluate(() => ({
+  note: document.querySelector(".turn-note")?.hidden === true,
+  more: document.querySelector(".chat-more")?.hidden === true,
+}));
+check("三秒后失败提示自己收了（带子上和正文那行都收）", cleared.note && cleared.more, JSON.stringify(cleared));
+await ctx2.close();
 
 await browser.close();
 bridge.kill();

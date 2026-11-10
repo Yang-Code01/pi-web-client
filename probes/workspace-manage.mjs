@@ -134,10 +134,11 @@ server.on("upgrade", (req, socket, head) => {
       }
       if (msg.action === "ws.drop") {
         const g = WORKSPACE.groups.find((x) => x.id === msg.id);
+        const n = Object.values(WORKSPACE.overrides).filter((x) => x === msg.id).length;
         let reason = null;
-        if (!g) reason = "找不到这个工作区";
+        if (!g) reason = "这个工作区不在了";
         else if (!g.manual) reason = "这个工作区跟着目录走，不能删";
-        else if (Object.values(WORKSPACE.overrides).includes(msg.id)) reason = "这个工作区里还有会话";
+        else if (n > 0) reason = `这个工作区里还有 ${n} 个会话，先把它们拖回工程或删掉`;
         if (reason) {
           cast({ type: "notice", text: reason, level: "warn" });
           return;
