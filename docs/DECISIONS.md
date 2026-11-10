@@ -3752,3 +3752,21 @@ D
 **验证**
 
 `npm run build`；`npm --prefix web run typecheck`（含 i18n-check，2003 keys × 3 langs）；`node web/tests/settings-console-unit.mjs`（19 项：分组、覆盖计数、生效值、placeholder、模型对、列表合并、diffPatch）；`node bridge/tests/settings-console-ui.mjs`（A–H：壳与九项、全局只写一个键、项目继承 + 覆盖、对照生效/过滤/点行聚焦、未信任只读、坏 JSON 只读、900px 横排、更新日志分段、Escape/关闭、外部更新与保存失败保留草稿、无 pageerror）；根脚本 `npm run test:settings`、`npm run test:settings:ui` 与上面两条单测同源。截图 `.scratch/shots/settings-console-form.png`、`settings-console-compare.png`、`settings-console-untrusted.png` 只给 PR 看，`.scratch` 不进产品包。
+
+## D217 MCP 商店认的是「服务器实际跑什么」，不再是名字字符串（#299 #300）
+
+**问题：** 商店里两件事都靠猜名字。一是默认服务名：`slug()` 把 registry 名去掉 `mcp` / `mcp-server` 后缀再剥 `mcp-` 前缀，而索引里 20 668 条有 2 103 条剥完就叫 `mcp`（`site` 354、`server` 272；6 812 条、33% 的人默认名与别人重复）。而 pi 那边 `mcp add` 撞名是**替换**：`Replaced user MCP server "x" in …`，不报错。于是装第二个撞名的服务器，第一个的 command / env / headers 全被静默换掉。二是「已安装」标记：页面拿 `name + transport` 拼成一段文本去 `includes(option.identifier)`，而 identifier 是 npm / pypi 包名或完整 URL —— 一个 URL 永远不会是 `"名字 传输方式"` 的子串，远程项装完仍显示「安装」，用户会再装一遍。
+
+**决定**
+
+1. **默认名取 registry 名的最后一段，泛称才借命名空间。** `web/src/mcpstore.ts` 的 `serverNameFor()`：`com.browser-use/browser-use` → `browser-use`；`app.worldmonitor/mcp` → `worldmonitor`；`com.puter/mcp-server` → `puter`；泛称表（mcp / server / site / catalog / api / app / cli / tool / agent / service / gateway / proxy …）命中时，取 `/` 前最后一段（`io.github.BuilderIO/mcp` → `builderio`）。owner 比主题名更不容易撞。
+2. **撞车就追加序号，而不是让用户先自己编。** `freeName(base, installed)` → `base`、`base-2`、`base-3`……。安装按钮打开表单时就用它（`web/src/app.ts:11025`）：表单里还可以改，但默认值直接是可装的名字。
+3. **已安装判定下推到「实际跑什么」。** `bridge/src/extmgr.ts` 的 `InstalledMcp` 现在带 `command` / `args` / `url`（`extmgr.ts:102-104`，直接取自 mcp.json 条目，versionStage 也从这三个字段拿，`extmgr.ts:132`，不再另存一份 `commands` map）；页面 `matchInstalled()`（`web/src/app.ts:11009`）按 URL 等价比（去尾斜杠），再按参数里的包名比（`@scope/pkg`、`pkg@1.2`、`pkg==1.2`、`pkg:1.2`）—— 也就是 `npx -y @modelcontextprotocol/server-everything` 装过的，对应 npm 选项就算已安装。
+4. **老桥不发这三个字段时退回按名字比。** 公网隧道那头可能还是旧桥（`PI_WEB_STATE` 之外还有 `dist/` 没换），`args` 读成 `[]` 时只认名字，**宁可不认也不假认**：旧桥上的已安装标记偶尔仍失效，但不会把没装的标成装了、也不会把「安装」按钮藏掉。
+5. **撞名当场说清楚。** 表单里输入撞上已有服务器：红字「已有同名服务器：这次安装会替换它的配置。」、按钮改「替换安装」（`web/src/app.ts:11103` 起的 `refreshName()`）；名字为空同样红字并禁用按钮。以前这两件事都要等 `pi` 的输出回来说「Replaced」。
+
+**为什么不下推给 pi 一个 `--if-exists`：** pi 的 `mcp add` 已经把「同名 = 替换」定成语义（`Replaced …` 是成功路径，退出码 0），桥里再包一层开关会让「商店安装」和「手敲 pi mcp add」行为分叉；改的应该是页面对这件事的说法，而不是命令语义。
+
+**代价：** 每次 `ext.inventory` 的每个 MCP 行多三个字段（`args` 是数组，通常 2–4 个字符串）；判定是启发式的 —— 手动装的服务器如果名字不像、参数里也没有包名，仍然只按名字认。序号命名是本地约定，两次不同机器装同一个条目可能得到不同名字（不影响安装，只影响人们对名字的预期）。
+
+**验证：** `npm run test:mcpstore`（`web/tests/mcpstore-unit.mjs`，9 组：六个真实条目的默认名、泛称借 owner、撞名 `-2` / `-3`、URL 去尾斜杠、npm / pypi / oci 三种包名形态、老桥退化）；`npm run test:mcpstore:ui`（`bridge/tests/mcpstore-ui.mjs`，桩桥 + 真页面 14 项：命令行里有包名 ↔ 已安装、URL 只差尾斜杠也认、没装的不给已安装标、默认名撞名加序号、手输撞名红字 + 按钮改「替换安装」、空名禁用、0 个 pageerror）；`npm --prefix web run typecheck`（含 i18n-check，2009 keys × 3 langs）；`npm --prefix bridge run typecheck`；`node bridge/tests/ext-manager.mjs` PASS（「MCP version check reached npm for the pinned server」说明版本仍从新字段拿到）。没做真机覆盖实验：`mcp add` 同名替换的语义读的是 pi 的 `cli.js`（`addMcpServerConfig` 后打 `Replaced`），没在用户的 mcp.json 上试装。

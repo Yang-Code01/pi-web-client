@@ -50,6 +50,8 @@
     "test:tunnel": "node --experimental-transform-types bridge/tests/tunnel-unit.mjs && node --experimental-transform-types web/tests/tunnel-snapshot-unit.mjs",
     "test:tunnel:ui": "node bridge/tests/tunnel-ui.mjs",
     "test:extwidgets": "node --experimental-transform-types bridge/tests/extwidgets-unit.mjs",
+    "test:mcpstore": "node --experimental-transform-types web/tests/mcpstore-unit.mjs",
+    "test:mcpstore:ui": "node bridge/tests/mcpstore-ui.mjs",
     "test:failures": "node --experimental-transform-types web/tests/failures-unit.mjs",
     "test:failcta:ui": "node bridge/tests/fail-cta-ui.mjs",
     "test:continue:ui": "node bridge/tests/continue-ui.mjs",

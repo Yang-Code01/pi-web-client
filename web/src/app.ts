@@ -30,6 +30,7 @@ import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./s
 import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
+import { freeName, matchInstalled, sameName, serverNameFor } from "./mcpstore.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, tabHitTest, tabModel, tabReorder, type TabHit, type TabModel, type TabRect } from "./wstabs.ts";
@@ -10986,7 +10987,7 @@ export class App {
     else if (!store.items) list.append(el("div", "empty", tr("查询中…")));
     else if (!store.items.length) list.append(el("div", "empty", tr("没有找到")));
     const ro = Boolean(this.me.public);
-    const installedText = (this.extInv?.mcp ?? []).map((m) => `${m.name} ${m.transport ?? ""}`).join("\n");
+    const invMcp = this.extInv?.mcp ?? [];
     (store.items ?? []).forEach((m, i) => {
       const row = el("div", "login-row");
       const name = el("div", "login-name");
@@ -11004,9 +11005,14 @@ export class App {
         a.rel = "noopener";
         acts.append(a);
       }
-      const already = m.options.some((o) => installedText.includes(o.identifier));
+      // #300: 比 URL、比参数里的包名 —— 以前是拿「名字 + transport」去包含包名 / URL，永远认不出。
+      const match = m.options.map((o) => matchInstalled(o, invMcp)).find((x): x is ExtMcp => Boolean(x)) ?? null;
       for (const o of m.options) acts.append(el("span", `ext-kind${o.unavailable ? " off" : ""}`, o.label));
-      if (already) acts.append(el("span", "login-status ok", tr("已安装")));
+      if (match) {
+        const done = el("span", "login-status ok", tr("已安装"));
+        done.title = tr("已安装为 {p1}", { p1: match.name });
+        acts.append(done);
+      }
       else if (this.mcpForm?.item === m.name) acts.append(this.mcpInstallForm(m));
       else {
         const usable = m.options.some((o) => !o.unavailable);
@@ -11016,7 +11022,7 @@ export class App {
         b.title = usable ? "" : m.options.map((o) => o.unavailable).filter(Boolean).join(tr("；"));
         b.onclick = () => {
           const first = Math.max(0, m.options.findIndex((o) => !o.unavailable));
-          this.mcpForm = { item: m.name, name: this.slug(m), option: first, values: {}, exposure: "", description: "", local: this.extScope === "project" };
+          this.mcpForm = { item: m.name, name: freeName(serverNameFor(m.name, m.title), invMcp), option: first, values: {}, exposure: "", description: "", local: this.extScope === "project" };
           this.paintExtIfOpen();
         };
         acts.append(b);
@@ -11026,11 +11032,6 @@ export class App {
       list.append(row);
     });
     host.append(list);
-  }
-
-  private slug(m: StoreMcpItem): string {
-    const base = (m.name.split("/").pop() || m.title).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-    return base.replace(/-mcp(-server)?$/, "").replace(/^mcp-/, "") || "mcp";
   }
 
   /** Name, required fields (secrets become ${VAR}), scope; advanced: exposure, description. */
@@ -11053,10 +11054,12 @@ export class App {
       box.append(this.formRow(tr("运行方式"), pick));
     }
     const opt = m.options[f.option];
+    const invMcp = this.extInv?.mcp ?? [];
     const name = el("input", "ns-input mono") as HTMLInputElement;
     name.value = f.name;
-    name.oninput = () => (f.name = name.value.trim());
-    box.append(this.formRow(tr("服务名"), name));
+    // #299: 同名在 pi 那边是替换，不是报错 —— 撞上已有服务器时必须当场说清楚。
+    const warn = el("div", "settings-hint");
+    box.append(this.formRow(tr("服务名"), name), warn);
     const field = (key: string, fd: McpFieldView) => {
       if (fd.secret) {
         const v = key.startsWith("env:") ? fd.name : `${f.name}_${fd.name}`.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
@@ -11095,8 +11098,23 @@ export class App {
       this.mcpForm = null;
       this.paintExtIfOpen();
     };
-    const go = el("button", "btn primary", this.opLabel(`mcpadd:${f.item}`, tr("安装中…")) ?? tr("安装到{p1}", { p1: this.extScope === "project" ? tr("当前项目") : tr("全局") })) as HTMLButtonElement;
-    go.disabled = Boolean(this.me.public) || Boolean(this.opFor(`mcpadd:${f.item}`)) || Boolean(opt.unavailable);
+    const idleLabel = tr("安装到{p1}", { p1: this.extScope === "project" ? tr("当前项目") : tr("全局") });
+    const go = el("button", "btn primary", this.opLabel(`mcpadd:${f.item}`, tr("安装中…")) ?? idleLabel) as HTMLButtonElement;
+    const refreshName = () => {
+      const taken = sameName(f.name, invMcp);
+      const bad = Boolean(taken) || !f.name.trim();
+      warn.hidden = !bad;
+      warn.classList.toggle("bad", bad);
+      warn.textContent = taken ? tr("已有同名服务器：这次安装会替换它的配置。") : tr("名字不能为空。");
+      name.classList.toggle("bad", bad);
+      if (!this.opFor(`mcpadd:${f.item}`)) go.textContent = taken ? tr("替换安装") : idleLabel;
+      go.disabled = Boolean(this.me.public) || Boolean(this.opFor(`mcpadd:${f.item}`)) || Boolean(opt.unavailable) || !f.name.trim();
+    };
+    name.oninput = () => {
+      f.name = name.value.trim();
+      refreshName();
+    };
+    refreshName();
     go.onclick = () => {
       this.piCli(
         { type: "mcp.install", option: opt, name: f.name, values: f.values, local: this.extScope === "project", exposure: f.exposure, description: f.description },
@@ -14418,6 +14436,10 @@ interface ExtMcp {
   enabled: boolean;
   exposure: string | null;
   transport: string | null;
+  /** 下面三个用来认「商店里这条是不是已经装过」（#300）；老桥不发，读成 null。 */
+  command: string | null;
+  args: string[];
+  url: string | null;
   state: string | null;
   tools: string[];
   error: string | null;

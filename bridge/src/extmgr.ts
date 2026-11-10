@@ -17,6 +17,10 @@ export interface InstalledMcp {
   enabled: boolean;
   exposure: string | null;
   transport: string | null;
+  /** What the server actually runs (its mcp.json entry): the store's 「已安装」 check compares against these (#300). */
+  command: string | null;
+  args: string[];
+  url: string | null;
   state: string | null;
   tools: string[];
   error: string | null;
@@ -78,8 +82,8 @@ export async function inventory(cliPath: string, cwd: string | null, check: bool
   };
   snapshot();
 
-  // What each server runs, kept for the version stage (the mcp stage itself stays off the network).
-  const commands = new Map<string, { command?: string; args?: string[] }>();
+  // What each server runs is carried on its row (`command` / `args`) so the page can tell a store
+  // entry from an installed server without guessing by name (#300).
   const mcpStage = (async () => {
     const mcpList = await cli(cliPath, { op: "mcp.list", cwd: cwd ?? undefined });
     const servers = Array.isArray((mcpList.data as any)?.servers) ? ((mcpList.data as any).servers as any[]) : [];
@@ -87,7 +91,7 @@ export async function inventory(cliPath: string, cwd: string | null, check: bool
     inv.mcpNote = typeof (mcpList.data as any)?.note === "string" ? String((mcpList.data as any).note) : null;
     inv.mcp = servers.map((s) => {
       const entry = s.source ? mcpEntry(String(s.source), String(s.name)) : null;
-      commands.set(String(s.name), { command: entry?.command as string | undefined, args: entry?.args as string[] | undefined });
+      const text = (v: unknown) => (typeof v === "string" && v ? v : null);
       return {
         name: String(s.name),
         scope: String(s.scope ?? ""),
@@ -95,6 +99,9 @@ export async function inventory(cliPath: string, cwd: string | null, check: bool
         enabled: s.enabled !== false,
         exposure: s.exposure ?? null,
         transport: s.transport ?? null,
+        command: text(entry?.command),
+        args: Array.isArray(entry?.args) ? (entry!.args as unknown[]).map(String) : [],
+        url: text(entry?.url),
         state: s.state ?? null,
         tools: Array.isArray(s.tools) ? s.tools.map(String) : [],
         error: s.error ? String(s.error) : null,
@@ -122,10 +129,7 @@ export async function inventory(cliPath: string, cwd: string | null, check: bool
     await mcpStage;
     inv.packages = await pkgStage;
     const bumped = await Promise.all(
-      inv.mcp.map(async (m) => {
-        const c = commands.get(m.name);
-        return { ...m, version: await mcpVersion(c?.command, c?.args, true) };
-      }),
+      inv.mcp.map(async (m) => ({ ...m, version: await mcpVersion(m.command ?? undefined, m.args, true) })),
     );
     inv.mcp = bumped;
     inv.versionsChecked = true;
