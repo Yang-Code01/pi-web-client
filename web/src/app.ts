@@ -5,7 +5,7 @@ import "./settings-console.css";
 import { api } from "./api.ts";
 import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
-import { filterCommands, type CommandItem } from "./commands.ts";
+import { filterCommands, PANEL_COMMANDS, type CommandItem } from "./commands.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { renderMarkdown } from "./md.ts";
@@ -30,6 +30,7 @@ import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./s
 import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
+import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { Socket } from "./ws.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
@@ -181,6 +182,15 @@ function bgTookText(ms: number): string {
   const s = String(secs % 60).padStart(2, "0");
   const clock = m < 60 ? `${m}:${s}` : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${s}`;
   return tr("用了 {p1}", { p1: clock });
+}
+
+/**
+ * 「📂 产物」在第一个空格处拆成图标与名字。宽按钮（`setWideLabel`）与 Aa 里的预览胶囊共用
+ * 这一份，不然同一套文案在两处各按各的规则拆，改一处忘另一处。
+ */
+function splitWideLabel(label: string): [string, string] {
+  const cut = label.indexOf(" ");
+  return cut > 0 ? [label.slice(0, cut), label.slice(cut + 1)] : ["", label];
 }
 
 export class App {
@@ -387,8 +397,8 @@ export class App {
   /** #30: is the terminal session-lock extension in pi's global extensions? */
   private lockExt: { installed: boolean; path: string } | null = null;
   /** #33 扩展与 MCP: package rows, MCP servers, and the console of the last pi command. */
-  /** D81 扩展 manager state. */
-  private uiPrefs: { showExtButton: boolean } = { showExtButton: true };
+  /** D81 扩展 manager state. #290: 只有 `chrome` 一份真源（扩展开关就是 `chrome.ext`），没有旧布尔。 */
+  private uiPrefs: { chrome: ChromeState } = { chrome: {} };
   private extUpdates = 0;
   private extTab: "installed" | "ext" | "mcp" = "installed";
   private extInv: ExtInventory | null = null;
@@ -405,6 +415,10 @@ export class App {
   private mcpForm: { name: string; option: number; values: Record<string, string>; exposure: string; description: string; local: boolean; item: string } | null = null;
   private extVars: string[] = [];
   private extButton: HTMLButtonElement | null = null;
+  /** #290：下沿那一行与另外三颗，`paintComposerChrome()` 只改它们的 `hidden`，不重建。 */
+  private hintTools: HTMLElement | null = null;
+  private skillButton: HTMLButtonElement | null = null;
+  private attachButton: HTMLButtonElement | null = null;
   private cliRun: { runId: string | null; op: string; out: string; code: number | null | undefined; error?: string } | null = null;
   /**
    * D113: the writes this page started and has not seen finish, keyed by the `reqId` it sent. Each one
@@ -496,6 +510,13 @@ export class App {
   private wsNewResolveTimer: ReturnType<typeof setTimeout> | null = null;
   /** #123 设置面板的「标签行」那块（名额步进器）；快照回来时只重画这一个小面。 */
   private wsPane: HTMLElement | null = null;
+  /** #291 设置面板的「预览 + 开关墙」那块；`ui` 回执与断线时只重画这一个小面。 */
+  private chromePane: HTMLElement | null = null;
+  /**
+   * #291 预览的观察档（桌面 / 手机 390）。它只是这张画的宽度，不是偏好：不写盘、不进 `chrome`，
+   * 也不改真窗口 —— 方块的两态拿它判，才不会在 1440 的表里「切了手机却什么都没变」。
+   */
+  private chromePreviewNarrow = false;
   /** Sidebar arrangement owned by the user: pin / manual order / archive (D46). */
   private manage: ManageState = { pin: [], order: [], archived: [] };
   private archivedOpen = false;
@@ -644,9 +665,9 @@ export class App {
 
   /** 同一颗宽按钮的字会换（终端跑起来之后是「>_ 终端 2」），所以拆开这件事得能重做一遍。 */
   private setWideLabel(btn: HTMLElement, label: string): void {
-    const cut = label.indexOf(" ");
-    btn.replaceChildren(el("span", "ic", cut > 0 ? label.slice(0, cut) : label));
-    if (cut > 0) btn.append(el("span", "lb", label.slice(cut + 1)));
+    const [ic, name] = splitWideLabel(label);
+    btn.replaceChildren(el("span", "ic", ic || name));
+    if (ic) btn.append(el("span", "lb", name));
   }
 
   // ---------------------------------------------------------------- layout
@@ -1233,6 +1254,8 @@ export class App {
       if (this.connected) this.reportPresence();
       this.renderTop();
       this.renderSessions();
+      // #291：断桥时开关墙整块置灰，连上再亮回来 —— 这块的重画点跟着连接状态走。
+      if (this.sheetKind === "display") this.paintChromePane();
       // A shell outlives the page: ask the bridge what is still running and rebuild a tab per shell.
       if (this.connected) this.socket.send({ type: "term.list" });
     });
@@ -1291,6 +1314,8 @@ export class App {
         paneFrame = 0;
         this.syncCompact();
         this.renderPanes();
+        // D138 的 560 断点看的是视口宽度：窗口一拖，文件管理器那颗的默认就得重算。
+        this.paintChrome();
         // 右栏宽度是按布局宽算的 px（D189），跨过断点或改窗口大小都得重算。
         if (this.asks.length) this.syncAskDock();
       });
@@ -1481,7 +1506,7 @@ export class App {
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         // #278：旧桥不带 caps —— 缺这一项就当它不会按目录建组。
         this.bridgeCaps = Array.isArray(msg.caps) ? (msg.caps as unknown[]).filter((c): c is string => typeof c === "string") : [];
-        if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
+        if (msg.ui) this.uiPrefs = { chrome: chromeFrom(msg.ui.chrome) };
         // D154：桥上的 build 换了，页面里的 JS 还是旧的 —— 提示刷新，不自动 reload。
         if (typeof msg.buildId === "string") this.checkBuild(msg.buildId);
         // D113: a dropped socket mid-stream would leave the ⟳ spinning forever (the flags gate the
@@ -2001,8 +2026,11 @@ export class App {
         break;
       }
       case "ui":
-        if (msg.ui) this.uiPrefs = { showExtButton: msg.ui.showExtButton !== false };
+        if (msg.ui) this.uiPrefs = { chrome: chromeFrom(msg.ui.chrome) };
+        // 可见性只认桥的回执：不本地先猜，否则广播与自己的补丁会打架。
+        this.paintChrome();
         this.renderChat();
+        if (this.sheetKind === "display") this.paintChromePane();
         if (this.sheetKind === "settings" && this.settingsTab === "ext") this.paintSettings();
         break;
       case "ext.updates":
@@ -2467,6 +2495,8 @@ export class App {
     }
     this.renderTop();
     this.renderSessions();
+    // #289：接管会把 owned 翻过来（当前会话没变，但接管按钮与顶栏都该在同一个点重画）。
+    this.paintChrome();
   }
 
   /**
@@ -2736,6 +2766,12 @@ export class App {
       case "logout":
         this.authFilter = arg;
         this.openSettingsSheet("login");
+        return done();
+      // #293: 顶栏按钮可以关掉，这三条是找回来的路 —— 走快捷键同一张动作表，不另写打开逻辑。
+      case "terminal":
+      case "files":
+      case "artifacts":
+        this.runAction(name);
         return done();
       case "reload":
         if (!owned) {
@@ -3199,6 +3235,8 @@ export class App {
     // 构造里 `applyPrefs()` 先跑一次（那时 DOM 还没搭）：只落 `<html data-layout>`，别去碰 els。
     if (!this.nowBtn) return;
     this.renderPanes();
+    // #289：换壳也走同一个重画点 —— 壳决定某些颗挂在哪，可见性不跟着壳分叉。
+    this.paintChrome();
   }
 
   /**
@@ -3499,6 +3537,14 @@ export class App {
     sheet.append(wsTabsBox);
     this.paintWsTabsPane();
 
+    // #291：预览 + 开关墙。预览是「点一下就能关掉」的那张画，开关墙是找不到按钮时的兜底；
+    // 两处写的是同一份 `chrome`，都走 `ui.set`，等桥的广播回来再重画。
+    const chromeBox = el("div", "levels");
+    this.chromePane = el("div", "chrome-pane");
+    chromeBox.append(this.chromePane);
+    sheet.append(chromeBox);
+    this.paintChromePane();
+
     const foot = el("div", "sheet-foot");
     const reset = el("button", "btn ghost", tr("恢复默认"));
     reset.onclick = () => {
@@ -3515,6 +3561,187 @@ export class App {
     back.append(sheet);
     this.overlay(back);
     this.sheet = back;
+  }
+
+  /**
+   * #291：「外观与语言」里的实时预览 + 开关墙。
+   *
+   * 预览是顶栏 / 下沿的一张缩略画：胶囊亮不亮、方块实线还是虚线，全问 `isChromeVisible()`；
+   * 宽度用**这张画自己的**档（桌面 / 手机 390），不是真窗口 —— 否则在 1440 的表里点「手机」，
+   * 文件管理器不会退场。写状态只走 `ui.set`（`null` = 删键，回默认），等桥的 `ui` 广播回来再重画，
+   * 本地不留副本。
+   *
+   * 预览活在「开了会话」的假设里：没开会话时产物 / 文件管理器本来就不长，跟着灭会让人以为点不亮，
+   * 所以把原因写进方块的 title。断桥时整块置灰、按钮真 `disabled`。
+   */
+  private paintChromePane(): void {
+    const pane = this.chromePane;
+    if (!pane) return;
+    // 重画会把刚按的那颗换掉：按 data-act 把焦点找回去，键盘用户不至于掉回 body。
+    const active = document.activeElement;
+    const key = active instanceof HTMLElement && pane.contains(active) ? active.dataset.act ?? "" : "";
+    const focusable = new Map<string, HTMLElement>();
+    const keep = (node: HTMLElement): HTMLElement => {
+      if (node.dataset.act) focusable.set(node.dataset.act, node);
+      return node;
+    };
+    pane.replaceChildren();
+    const offline = !this.connected;
+    pane.classList.toggle("offline", offline);
+    // 会话事实照实给：没开会话时产物 / 文件管理器在真顶栏里也不画，预览不该比真顶栏多一颗。
+    const ctx: ChromeContext = { hasSession: !!this.currentId, narrow: this.chromePreviewNarrow };
+    const chrome = this.uiPrefs.chrome;
+    const lit = (id: ChromeId): boolean => isChromeVisible(id, chrome, ctx);
+    const set = (id: ChromeId, on: boolean): void => {
+      if (!this.connected) return;
+      this.act(() => this.socket.send({ type: "ui.set", chrome: { [id]: on } }));
+    };
+    const head = el("div", "chrome-head");
+    head.append(el("span", "levels-label", tr("顶栏 / 下沿预览")));
+    pane.append(head);
+
+    // ---- 上半：实时预览。点胶囊就是关掉那颗，和真顶栏同一个 `hidden` 语义。
+    const pv = el("div", `chrome-pv${this.chromePreviewNarrow ? " narrow" : ""}`);
+    const pvTop = el("div", "chrome-pv-top");
+    pvTop.append(el("span", "chrome-pv-title", tr("会话名")));
+    const topItems: [ChromeId, string][] = [
+      ["artifacts", tr("📂 产物")],
+      ["terminal", tr(">_ 终端")],
+      ["files", tr("📁 文件管理器")],
+      ["notes", "🐞 bug"],
+      ["peer", tr("🌐 内网通")],
+      ["scratch", tr("💭 随手问")],
+      ["jira", tr("🔷 Jira")],
+    ];
+    for (const [id, label] of topItems) {
+      const [ic, name] = splitWideLabel(label);
+      const btn = el("button", "chrome-pv-btn") as HTMLButtonElement;
+      btn.type = "button";
+      btn.dataset.chrome = id;
+      btn.dataset.act = `pv-${id}`;
+      if (ic) btn.append(el("span", "ic", ic));
+      btn.append(el("span", "pv-name", name));
+      btn.hidden = !lit(id);
+      btn.disabled = offline;
+      btn.title = tr("点一下隐藏「{p1}」", { p1: name });
+      btn.setAttribute("aria-label", btn.title);
+      btn.onclick = () => set(id, false);
+      pvTop.append(keep(btn));
+    }
+    // `Aa` 就在这颗位置上，但它不在 `CHROME_IDS` 里：这张表靠它进来，关掉就再也打不开了。
+    const aa = el("button", "chrome-pv-btn chrome-pv-aa", "Aa") as HTMLButtonElement;
+    aa.type = "button";
+    aa.disabled = true;
+    aa.title = tr("Aa 关不掉：这张表靠它进来");
+    pvTop.append(aa);
+    pv.append(pvTop);
+
+    const bottomItems: [ChromeId, string][] = [
+      ["skills", tr("技能")],
+      ["ext", tr("扩展")],
+      ["attach", tr("文件")],
+      ["model", tr("模型")],
+    ];
+    const pvComp = el("div", "chrome-pv-comp");
+    pvComp.append(el("span", "chrome-pv-in"));
+    for (const [id, name] of bottomItems) {
+      const btn = el("button", `chrome-pv-tool${id === "model" ? " chrome-pv-model" : ""}`, name) as HTMLButtonElement;
+      btn.type = "button";
+      btn.dataset.chrome = id;
+      btn.dataset.act = `pv-${id}`;
+      btn.hidden = !lit(id);
+      btn.disabled = offline;
+      btn.title = tr("点一下隐藏「{p1}」", { p1: name });
+      btn.setAttribute("aria-label", btn.title);
+      btn.onclick = () => set(id, false);
+      pvComp.append(keep(btn));
+    }
+    pv.append(pvComp);
+    pane.append(pv);
+
+    const bar = el("div", "chrome-pv-bar");
+    bar.append(el("span", "chrome-pv-bar-label", tr("预览宽度")));
+    const seg = el("span", "chrome-seg");
+    for (const [width, label] of [["wide", tr("桌面")], ["narrow", tr("手机 390")]] as ["wide" | "narrow", string][]) {
+      const btn = el("button", (width === "narrow") === this.chromePreviewNarrow ? "on" : "", label) as HTMLButtonElement;
+      btn.type = "button";
+      btn.dataset.width = width;
+      btn.dataset.act = `width-${width}`;
+      btn.setAttribute("aria-pressed", String((width === "narrow") === this.chromePreviewNarrow));
+      btn.onclick = () => {
+        if (this.chromePreviewNarrow === (width === "narrow")) return;
+        this.chromePreviewNarrow = width === "narrow";
+        this.paintChromePane();
+      };
+      seg.append(keep(btn));
+    }
+    bar.append(seg, el("span", "chrome-pv-hint", tr("点预览里的按钮可以直接关掉")));
+    pane.append(bar);
+    if (this.chromePreviewNarrow) {
+      pane.append(el("div", "chrome-note", tr("手机宽度下「文件管理器」默认收起；想留着就点亮下面的方块")));
+    }
+
+    // ---- 下半：开关墙。每块「全部显示」= 把这组键删掉（回默认），不是写 true。
+    const wall = el("div", "chrome-wall");
+    wall.append(el("div", "levels-label", tr("点一下就收起来，再点一下放回来")));
+    const groups: [string, string, [ChromeId, string, string][]][] = [
+      ["top", tr("顶栏按钮"), topItems.map(([id, label]) => { const [ic, name] = splitWideLabel(label); return [id, ic, name]; })],
+      ["bottom", tr("输入框下沿"), bottomItems.map(([id, name]) => [id, "·", name] as [ChromeId, string, string])],
+    ];
+    for (const [group, label, items] of groups) {
+      const box = el("div", "chrome-group");
+      const ghead = el("div", "chrome-head");
+      ghead.append(el("span", "levels-label", label));
+      const all = el("button", "chrome-all", tr("全部显示")) as HTMLButtonElement;
+      all.type = "button";
+      all.dataset.group = group;
+      all.dataset.act = `all-${group}`;
+      all.disabled = offline;
+      all.title = tr("把这组按钮全部放回来（回到默认）");
+      all.onclick = () => {
+        if (!this.connected) return;
+        const patch: Record<string, null> = {};
+        for (const [id] of items) patch[id] = null;
+        this.act(() => this.socket.send({ type: "ui.set", chrome: patch }));
+      };
+      ghead.append(keep(all));
+      box.append(ghead);
+
+      const tiles = el("div", "chrome-tiles");
+      for (const [id, ic, name] of items) {
+        const on = lit(id);
+        const tile = el("button", `chrome-tile${on ? "" : " off"}`) as HTMLButtonElement;
+        tile.type = "button";
+        tile.dataset.chrome = id;
+        tile.dataset.act = `tile-${id}`;
+        tile.disabled = offline;
+        tile.setAttribute("aria-pressed", String(on));
+        tile.append(
+          el("span", "chrome-tile-ic", ic || "·"),
+          el("span", "chrome-tile-name", name),
+          el("span", "chrome-tile-eye", on ? "●" : "○"),
+        );
+        // 虚着的方块要说清「为什么虚」：会话限定与窄档默认都不在 `chrome` 里，光看键看不出来。
+        const why: string[] = [];
+        if (isSessionOnly(id)) why.push(tr("没开会话时不显示"));
+        if (id === "files" && ctx.narrow && chrome[id] === undefined) why.push(tr("手机上默认收起"));
+        const hint = on
+          ? tr("点一下隐藏「{p1}」", { p1: name })
+          : tr("点一下显示「{p1}」", { p1: name });
+        tile.title = [hint, ...why].join(" · ");
+        tile.setAttribute("aria-label", tile.title);
+        tile.onclick = () => set(id, !on);
+        tiles.append(keep(tile));
+      }
+      box.append(tiles);
+      wall.append(box);
+    }
+    pane.append(wall);
+
+    if (offline) {
+      pane.append(el("div", "chrome-offline", tr("连上桥才能改可见性：现在点了不会有反应")));
+    }
+    if (key) focusable.get(key)?.focus();
   }
 
   /**
@@ -3583,7 +3810,6 @@ export class App {
     applyLang(next);
     // 推送标题跟界面语言走：bridge 只在内存里记这一个值。
     this.socket.send({ type: "lang", lang: next });
-    this.paintChrome();
     this.renderAll();
     // #86：随手问是独立 dialog，不在 renderAll 的覆盖范围里。
     this.scratch.refreshLang();
@@ -3593,39 +3819,93 @@ export class App {
   }
 
   /**
-   * Retranslate the bits that are built once and never re-rendered: the topbar's fixed four
-   * buttons, the new-session button and the two filter placeholders. `renderTop()` only repaints
-   * the session list, `renderSessions()` the chips — neither touches these.
+   * #288：判断按钮可见性只需要这两件事实。560 是 D138 的窄屏断点，跟 `compact()` 一样按缩放后的
+   * 有效宽度算 —— `@media` 看的是视口宽度，2.0 字号下会漏判（D158）。
+   */
+  private chromeCtx(): ChromeContext {
+    return { hasSession: !!this.currentId, narrow: window.innerWidth / this.uiScale() < 560 };
+  }
+
+  /**
+   * #290：下沿那一行的显隐。四颗各自 `hidden`；整行跟着还有没有可见的子节点 —— `release-btn`
+   * （释放 / 让回终端）不归 `chrome` 管，不能跟着一起藏。判断只走 `isChromeVisible`，和顶栏同源。
+   * `renderChat()` 拼完 composer 也会调这里，所以重建后不需要再经过 `paintChrome()`。
+   */
+  private paintComposerChrome(): void {
+    const tools = this.hintTools;
+    if (!tools) return;
+    const ctx = this.chromeCtx();
+    const show = (btn: HTMLButtonElement | null, id: ChromeId): void => {
+      if (btn) btn.hidden = !isChromeVisible(id, this.uiPrefs.chrome, ctx);
+    };
+    show(this.skillButton, "skills");
+    show(this.extButton, "ext");
+    show(this.attachButton, "attach");
+    show(this.modelChip, "model");
+    tools.hidden = !Array.from(tools.children).some((child) => !(child as HTMLElement).hidden);
+  }
+
+  /**
+   * #289：顶栏七颗的文字与可见性**只在这一处**写。切语言、换壳、收到 `ui`、建 / 关 / 接管会话
+   * 最后都落回这里；可见性问纯函数 `isChromeVisible()`（web/src/chrome.ts），不在别处再拼条件。
+   * `renderTop()` 只画会话名与连接状态，`renderSessions()` 只画左栏卡片 —— 都不碰这七颗。
    */
   private paintChrome(): void {
     const { look, files, term, fs, notes, peer, scratch, jira, manageBtn, binBtn, tabs } = this.els;
     const newBtn = this.els.newBtn as HTMLButtonElement;
     const sessFilter = this.els.sessFilter as HTMLInputElement;
+    const ctx = this.chromeCtx();
+    const chrome = this.uiPrefs.chrome;
+    /**
+     * #292「开关优先」：D138 的窄屏规则不动，只被顶开 —— 根元素带 `data-chrome-narrow`（值是按
+     * 空格分隔的 id），样式表里 560px 之内排在 D138 之后的那条规则认它。标记只表达「显式 true」
+     * 这一件事，不含会话事实：没开会话时按钮仍带 `hidden`，覆盖规则的 `:not([hidden])` 不让它复活。
+     */
+    const forcedNarrow = narrowForcedVisible(chrome);
+    const root = document.documentElement;
+    if (forcedNarrow.length) root.dataset.chromeNarrow = forcedNarrow.join(" ");
+    else delete root.dataset.chromeNarrow;
+    const noSessionWhy = tr("没开会话，先不显示");
+    /**
+     * 一颗按钮：`hidden` 是唯一开关（样式表里 `.icon-btn[hidden]{display:none!important}`），
+     * 关掉不留空位。产物 / 文件管理器是「会话里才有内容」的两颗：显式打开也换不来一个会话，
+     * 那就照藏，把原因写进 title —— 不是另起一条规则。
+     */
+    const show = (id: ChromeId, btn: HTMLElement, title: string, sessionBound = false): void => {
+      const visible = isChromeVisible(id, chrome, ctx);
+      btn.hidden = !visible;
+      btn.title = sessionBound && !visible && chrome[id] === true ? `${title} · ${noSessionWhy}` : title;
+    };
     look.title = tr("外观与语言");
     look.setAttribute("aria-label", tr("外观与语言"));
     this.setWideLabel(files, tr("📂 产物"));
-    files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
+    show("artifacts", files, tr("本会话写过的文件（md / html / 图片…点开预览）"), true);
     this.setWideLabel(term, tr(">_ 终端"));
     term.setAttribute("aria-label", tr("终端"));
-    term.title = tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）");
+    show("terminal", term, tr("在这台电脑上开一个真的 shell（本机 / 局域网可用，公网隧道下禁用）"));
     this.setWideLabel(fs, tr("📁 文件管理器"));
-    fs.title = tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件");
-    // 记录与内网通是顶栏常显的两颗（#45 / D108），标题也要跟着换；
-    // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写。
-    if (notes) this.paintNotesBadge();
+    show("files", fs, tr("文件资源管理器：浏览这台电脑的盘符与目录，打开或直接编辑文本文件"), true);
+    // 记录的 title 带未处理计数，交给 paintNotesBadge() 统一写；这里只按它的结果决定画不画。
+    if (notes) {
+      this.paintNotesBadge();
+      show("notes", notes, notes.title);
+    }
     if (peer) {
       this.setWideLabel(peer, tr("🌐 内网通"));
-      peer.title = tr("内网通：发现同一内网里的人，直接对话、传文件");
+      show("peer", peer, tr("内网通：发现同一内网里的人，直接对话、传文件"));
     }
     if (scratch) {
       this.setWideLabel(scratch, tr("💭 随手问"));
-      scratch.title = tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog");
+      show("scratch", scratch, tr("随手问：不进会话列表、不带上下文、不改本机的一个 dialog"));
     }
     if (jira) {
       this.setWideLabel(jira, tr("🔷 Jira"));
-      jira.title = tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP");
       jira.setAttribute("aria-label", tr("Jira"));
+      show("jira", jira, tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP"));
     }
+    // #290：下沿四颗是在拼 composer 时一次建好的，重画 composer 时不经过这里 —— 它自己也会调
+    // `paintComposerChrome()`，两处共用同一份判断。
+    this.paintComposerChrome();
     newBtn.textContent = tr("开新会话");
     sessFilter.placeholder = tr("过滤名字 / 目录");
     manageBtn.textContent = tr("管理");
@@ -3703,12 +3983,13 @@ export class App {
     this.mgrRefresh = null;
     this.imageSheetPaint = null;
     this.wsPane = null;
+    this.chromePane = null;
     // #278：按目录新建的对话框关掉 = 这一次不建了；还挂着的「请求在飞」与重画钩子一起摘掉。
     this.wsNewBusy = false;
     this.wsNewPaint = null;
     this.wsNewPicked = "";
     this.wsNewResolve = null;
-    if (this.wsNewResolveTimer !== null) window.clearTimeout(this.wsNewResolveTimer);
+    if (this.wsNewResolveTimer !== null) clearTimeout(this.wsNewResolveTimer);
     this.wsNewResolveTimer = null;
     // D170: 详情弹层关掉就停轮询，别让一个看不见的弹层一直读盘。
     if (this.bgTimer !== null) window.clearInterval(this.bgTimer);
@@ -4822,6 +5103,8 @@ export class App {
   // ---------------------------------------------------------------- render
   private renderAll(): void {
     this.renderTop();
+    // #289：偏好、壳、语言、当前会话任何一样变了都重画；顶栏七颗的可见性只由 paintChrome() 算。
+    this.paintChrome();
     this.renderSessions();
     this.renderChat();
     this.renderApprovals();
@@ -4836,8 +5119,7 @@ export class App {
     const running = this.session?.running;
     dot.className = `dot ${!this.connected ? "bad" : running ? "busy" : this.session?.owned ? "live" : ""}`;
     title.textContent = this.session ? this.session.name : "pi";
-    this.els.files.hidden = !this.currentId;
-    this.els.fs.hidden = !this.currentId;
+    // 产物 / 文件管理器画不画由 paintChrome() 按 isChromeVisible() 一处决定，这里不再按 currentId 另写一份。
     const bits: string[] = [];
     if (this.me.public) bits.push(tr("公网"));
     if (this.tunnel.status === "up" && this.tunnel.url) bits.push(this.tunnel.url.replace("https://", ""));
@@ -5567,8 +5849,8 @@ export class App {
       if (!this.bridgeCaps.includes(WS_RESOLVE_DIR_CAP)) return;
       const dir = cleanDirPath(picked);
       if (!dir) return;
-      if (this.wsNewResolveTimer !== null) window.clearTimeout(this.wsNewResolveTimer);
-      this.wsNewResolveTimer = window.setTimeout(() => {
+      if (this.wsNewResolveTimer !== null) clearTimeout(this.wsNewResolveTimer);
+      this.wsNewResolveTimer = setTimeout(() => {
         this.wsNewResolveTimer = null;
         if (this.sheetKind !== "wsnew") return;
         this.act(() => this.socket.send({ type: "manage", action: "ws.resolve", dir }));
@@ -6062,6 +6344,8 @@ export class App {
    */
   private async openArtifactsSheet(): Promise<void> {
     if (!this.currentId) return;
+    // 已经开着就别重建：会把筛选与滚动位置打回去（`/artifacts` 与那颗按钮都走这里）。
+    if (this.sheet?.querySelector(".art-sheet")) return;
     const sessionId = this.currentId;
     this.closeSheet();
     this.sheetKind = "display";
@@ -9135,6 +9419,10 @@ export class App {
     this.hintStatus = null;
     this.cwdChip = null;
     this.modelChip = null;
+    this.hintTools = null;
+    this.skillButton = null;
+    this.attachButton = null;
+    this.extButton = null;
     this.textarea = null;
     this.continueBtn = null;
     this.bgBar = null;
@@ -9230,28 +9518,27 @@ export class App {
     this.fillHintStatus();
     hint.append(status);
     const tools = el("div", "hint-tools");
+    this.hintTools = tools;
     const skillBtn = el("button", "btn ghost", tr("技能"));
     skillBtn.dataset.act = "skills";
     skillBtn.title = tr("搜索并插入技能命令（/skill:name）");
     skillBtn.onclick = () => this.openSkillPalette();
+    this.skillButton = skillBtn;
     const pathBtn = el("button", "btn ghost", tr("文件"));
     pathBtn.dataset.act = "attach";
     pathBtn.title = tr("选文件：图片直接附加，其他文件插入完整路径（pi 会自己去读）。截图或资源管理器里复制的文件也可以 {p1}", { p1: PASTE_KEY });
     pathBtn.onclick = () => this.openFilePicker();
+    this.attachButton = pathBtn;
     const chip = el("button", "model-chip");
     chip.onclick = () => this.openModelSheet();
     chip.append(el("span", "chip-model", ""), el("span", "chip-ctx", ""), el("span", "chip-rate", ""), el("span", "chip-level", ""));
     this.modelChip = chip;
-    tools.append(skillBtn);
-    if (this.uiPrefs.showExtButton) {
-      const extBtn = el("button", "btn ghost ext-btn", tr("扩展")) as HTMLButtonElement;
-      extBtn.title = tr("已安装的扩展与 MCP、扩展商店、MCP 商店（可在 pi 设置 → 扩展与 MCP 里隐藏这个按钮）");
-      extBtn.onclick = () => this.openExtManager();
-      this.extButton = extBtn;
-      tools.append(extBtn);
-      this.paintExtButton();
-    } else this.extButton = null;
-    tools.append(pathBtn, chip);
+    const extBtn = el("button", "btn ghost ext-btn", tr("扩展")) as HTMLButtonElement;
+    extBtn.title = tr("已安装的扩展与 MCP、扩展商店、MCP 商店（可在 pi 设置 → 扩展与 MCP 里隐藏这个按钮）");
+    extBtn.onclick = () => this.openExtManager();
+    this.extButton = extBtn;
+    this.paintExtButton();
+    tools.append(skillBtn, extBtn, pathBtn, chip);
     if (s?.owned) {
       // The explanation lives in the tooltip so it no longer costs the composer a whole row.
       const fromWeb = s.origin === "web";
@@ -9264,6 +9551,7 @@ export class App {
     }
     hint.append(tools);
     this.fillModelChip();
+    this.paintComposerChrome();
 
     const extAbove = el("div", "ext-widgets above");
     const extBelow = el("div", "ext-widgets below");
@@ -10805,8 +11093,9 @@ export class App {
     const row = el("label", "ns-adv-flag ext-switch");
     const box = el("input") as HTMLInputElement;
     box.type = "checkbox";
-    box.checked = this.uiPrefs.showExtButton;
-    box.onchange = () => this.act(() => this.socket.send({ type: "ui.set", showExtButton: box.checked }));
+    // #290：勾选状态就是 `chrome.ext`（与下沿那颗同一个判断），改动写的也是同一个字段。
+    box.checked = isChromeVisible("ext", this.uiPrefs.chrome, this.chromeCtx());
+    box.onchange = () => this.act(() => this.socket.send({ type: "ui.set", chrome: { ext: box.checked } }));
     row.append(box, el("span", "", tr("在输入框下方显示「扩展」按钮（点开就是下面这套管理界面）")));
     body.append(row);
     const host = el("div", "ext-host");
@@ -14898,6 +15187,7 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ["bug", tr("给 pi 开发者提交 bug 报告（/bug 描述）")],
   ["login", tr("登录模型 provider（API key / OAuth）")],
   ["logout", tr("登出某个 provider")],
+  ...PANEL_COMMANDS.map((c): [string, string] => [c.id, tr(c.desc)]),
 ];
 
 type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "runtime" | "changelog" | "whatsnew";

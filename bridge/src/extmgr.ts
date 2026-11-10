@@ -211,18 +211,65 @@ export function bumpMcp(file: string, name: string, version: string): void {
 
 // ------------------------------------------------------------------ web UI preferences
 
+/**
+ * 顶栏 7 颗、输入框下沿 4 颗（#281 / #288）。写进 `ui.json` 的是这些稳定 id，不是文案。
+ * 页面那份「哪颗该画」的纯函数在 `web/src/chrome.ts`，两边白名单要一致。
+ */
+export const CHROME_IDS = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira", "skills", "ext", "attach", "model"] as const;
+export type ChromeId = (typeof CHROME_IDS)[number];
+/** 三态：键缺失 = 默认行为，false = 隐藏，true = 显式显示（窄屏也显示）。 */
+export type ChromeState = Partial<Record<ChromeId, boolean>>;
+
 export interface UiPrefs {
   /** The 扩展 button under the composer (D81): on unless turned off in settings. */
   showExtButton: boolean;
+  /** #288：按钮可见性。`showExtButton` 是它的派生值（`chrome.ext !== false`），不落盘。 */
+  chrome: ChromeState;
+}
+
+/** `ui.set` 的一份补丁：只认白名单 id；`null` / `undefined` 表示删键（回到默认行为）。 */
+export interface UiPatch {
+  chrome?: Record<string, unknown>;
+  showExtButton?: boolean;
+}
+
+/** 文件里那份 `chrome` 只留白名单里的布尔值，脏数据不进内存。 */
+function pickChrome(value: unknown): ChromeState {
+  const out: ChromeState = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+  for (const id of CHROME_IDS) {
+    const choice = (value as Record<string, unknown>)[id];
+    if (typeof choice === "boolean") out[id] = choice;
+  }
+  return out;
 }
 
 export function readUiPrefs(): UiPrefs {
-  const raw = readJson<Partial<UiPrefs>>(statePath("ui.json"), {});
-  return { showExtButton: raw.showExtButton !== false };
+  const raw = readJson<Record<string, unknown>>(statePath("ui.json"), {});
+  // 旧文件（只有 showExtButton）迁移一次：关掉的扩展按钮变成 chrome.ext = false。
+  // 新字典一旦出现（哪怕是 `{}`），旧字段就完全不再是数据源。
+  const chrome = Object.prototype.hasOwnProperty.call(raw, "chrome")
+    ? pickChrome(raw.chrome)
+    : raw.showExtButton === false
+      ? { ext: false }
+      : {};
+  return { showExtButton: chrome.ext !== false, chrome };
 }
 
-export function writeUiPrefs(patch: Partial<UiPrefs>): UiPrefs {
-  const next = { ...readUiPrefs(), ...patch };
-  writeJson(statePath("ui.json"), next);
-  return next;
+/**
+ * 读-合并-整份写。只写 `chrome`：`showExtButton` 是派生值，落盘会让旧值像僵尸一样被读回来。
+ */
+export function writeUiPrefs(patch: UiPatch): UiPrefs {
+  const chrome: ChromeState = { ...readUiPrefs().chrome };
+  if (typeof patch.showExtButton === "boolean") chrome.ext = patch.showExtButton;
+  if (patch.chrome) {
+    for (const id of CHROME_IDS) {
+      if (!Object.prototype.hasOwnProperty.call(patch.chrome, id)) continue;
+      const choice = patch.chrome[id];
+      if (choice === undefined || choice === null) delete chrome[id];
+      else if (typeof choice === "boolean") chrome[id] = choice;
+    }
+  }
+  writeJson(statePath("ui.json"), { chrome });
+  return { showExtButton: chrome.ext !== false, chrome };
 }

@@ -32,6 +32,10 @@ const ALL = [
   "workspace-drag",
   "a11y-workspace",
   "round16-pin",
+  "chrome-topbar",
+  "chrome-bottom",
+  "chrome-sheet",
+  "chrome-narrow",
 ];
 
 const argv = process.argv.slice(2);

@@ -268,7 +268,7 @@ try {
 
   // preference
   const pref = await a.ask({ type: "ui.set", showExtButton: false }, (m) => m.type === "ui", "ui.set");
-  check(pref.ui.showExtButton === false && JSON.parse(fs.readFileSync(path.join(STATE, "ui.json"), "utf8")).showExtButton === false, "button preference saved in the bridge");
+  check(pref.ui.showExtButton === false && pref.ui.chrome?.ext === false && JSON.parse(fs.readFileSync(path.join(STATE, "ui.json"), "utf8")).chrome.ext === false, "button preference saved in the bridge (#288: as chrome.ext, not the old field)");
 
   // tunnel: read-only
   const pub = await page(cookie, { "cf-connecting-ip": "203.0.113.9" });
