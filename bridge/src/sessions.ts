@@ -24,6 +24,7 @@ import { defaultPermission } from "./permissiondefault.ts";
 import { BgRuns, type BgRun, type BgRunView, type BgView } from "./bgruns.ts";
 import { isProtocolWidgetLines } from "./extwidgets.ts";
 import { itemsFrame, type SessionHistory } from "./history.ts";
+import { planReplayFromEntries, planFromToolResult, type PlanSnapshot } from "./execplan.ts";
 
 /** The approval gate ships next to the bridge sources, not inside dist. */
 function approvalGatePath(): string {
@@ -724,11 +725,13 @@ export interface SessionSnapshot {
   budget: number | null;
   ext: ExtUiState;
   queue: { steering: string[]; followUp: string[] };
+  plan: PlanSnapshot | null;
 }
 
 export class Session extends EventEmitter {
   readonly state: SessionState;
   items: Item[] = [];
+  plan: PlanSnapshot | null = null;
   /** 技能清单按 cwd 缓存：会话文件变一次就要重放一遍，不能每次再扫一次盘。 */
   private skillScanCache: { cwd: string | null; at: number; list: SkillEntry[] } | null = null;
   rpc: RpcChild | null = null;
@@ -782,6 +785,17 @@ export class Session extends EventEmitter {
   /** D170 详情：这个会话的后台任务（含刚跑完的）。没接过手的会话返回空。 */
   bgList(): BgRunView[] {
     return this.bgRuns.list();
+  }
+
+  /** Internal child-session subscription data; never send `sessionFile` to the browser. */
+  bgChildSession(runId: string): { run: Pick<BgRun, "id" | "toolCallId" | "agent" | "task" | "state">; sessionFile?: string } | undefined {
+    const run = this.bgRuns.get(runId);
+    if (!run) return undefined;
+    const sessionFile = this.bgRuns.childSessionFile(runId);
+    return {
+      run: { id: run.id, toolCallId: run.toolCallId, agent: run.agent, task: run.task, state: run.state },
+      ...(sessionFile ? { sessionFile } : {}),
+    };
   }
 
   /** D170 详情：一个 run 的活动记录尾 + 最终答复（只读临时目录里的痕迹文件）。 */
@@ -957,8 +971,10 @@ export class Session extends EventEmitter {
     if (!this.state.file) return true;
     try {
       const res = loadEntries(this.state.file);
-      // 隐式触发只在工具参数里留了痕迹（`read …\SKILL.md`），回放时把技能卡补上（D199）。
-      this.items = this.keepUnsentBubbles(withSkillItems(entriesToItems(res.entries), this.skillsHere(), this.state.cwd || undefined));
+      // 回放计划快照供当前计划区与每条 todo 卡片的历史快照共用。
+      const planReplay = planReplayFromEntries(res.entries);
+      this.plan = planReplay.plan;
+      this.items = this.keepUnsentBubbles(withSkillItems(entriesToItems(res.entries, planReplay.toolResults), this.skillsHere(), this.state.cwd || undefined));
       this.state.truncated = res.truncated;
       this.readError = null;
       return true;
@@ -986,8 +1002,12 @@ export class Session extends EventEmitter {
       // 之后文件真变了才 touch；终端里继续写也意味着上一轮完成状态过期了。
       const first = !this.tailSig;
       const before = this.items;
+      const previousPlan = this.plan;
       // 读失败就不推进 tailSig：下一 tick 拿同一个签名再比一次、再读一次，文件恢复的那一刻自己接上。
       if (!this.loadFromFile()) return;
+      if (JSON.stringify(previousPlan) !== JSON.stringify(this.plan)) {
+        this.emitWs({ type: "plan", sessionId: this.state.id, plan: this.plan });
+      }
       this.tailSig = sig;
       if (first) {
         this.state.updatedAt = Math.round(stat.mtimeMs);
@@ -1203,8 +1223,8 @@ export class Session extends EventEmitter {
     void this.refreshStats();
   }
 
-  /** Token/context numbers for the composer HUD; best effort, never throws. */
-  private async refreshStats(): Promise<void> {
+  /** Token/context numbers for the composer HUD and new subscribers; best effort, never throws. */
+  async refreshStats(): Promise<void> {
     if (!this.rpc?.alive) return;
     try {
       const stats = await this.rpc.request<any>("get_session_stats", {}, 15000);
@@ -1399,6 +1419,16 @@ export class Session extends EventEmitter {
         this.closeQuestionnaire(String(ev.toolCallId ?? ""));
         const at = this.items.findIndex((it) => it.kind === "tool" && it.toolCallId === String(ev.toolCallId));
         const seen = at >= 0 ? (this.items[at] as ToolItem) : undefined;
+        const resultDetails = (ev.result as any)?.details;
+        this.plan = planFromToolResult(
+          this.plan,
+          ev.toolName ?? seen?.name,
+          resultDetails,
+          [...this.items].reverse().find((item) => item.kind === "user")?.id ?? null,
+        );
+        if (ev.toolName === "todo" || seen?.name === "todo") {
+          this.emitWs({ type: "plan", sessionId: this.state.id, plan: this.plan });
+        }
         // D170: pi 只在结果里承认一次「有这么个 run」（`details.runId`）。
         // D172: `args` 里是模型写的那份原文（pi-subagents 落盘时把 task 打成 [prompt redacted]）。
         this.bgRuns.noteToolEnd(
@@ -1418,6 +1448,7 @@ export class Session extends EventEmitter {
               isError: Boolean(ev.isError),
               result: contentText(ev.result).slice(0, 20000),
               durationMs: ev.durationMs,
+              ...(prev.name === "todo" ? { plan: this.plan } : {}),
             };
             this.items[at] = next;
             this.emitWs({ type: "item.replace", sessionId: this.state.id, id: prev.id, item: next });
@@ -2502,6 +2533,7 @@ export class Session extends EventEmitter {
       budget: this.contextBudget,
       ext: this.extUi(),
       queue: this.queue,
+      plan: this.plan,
     };
   }
 

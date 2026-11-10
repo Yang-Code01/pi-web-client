@@ -155,6 +155,7 @@ function compactArgs(args: unknown): string {
 
 export class ChatView {
   private cards = new Map<string, HTMLElement>();
+  private loaded: Item[] = [];
   private toolCards = new Map<string, HTMLElement>();
   /**
    * #197 / D178: 用户气泡在这张表里（节点 + 桥发来的那条 item），好给最后一枚挂「处理中…」——
@@ -188,6 +189,8 @@ export class ChatView {
    * 同一张卡会在 live 事件、item.replace、reset 重放里各建一次，聊天区只画一张，账本也只能算一次。
    */
   onFail: ((f: { id: string; tool: string; cmd: string; out: string; at?: string; live?: boolean }) => void) | null = null;
+  /** Set by the app: compact plan cards open the execution pane. */
+  onTodoClick: (() => void) | null = null;
   /**
    * assistant 说完一段（D164 延伸）：复盘那一轮的结尾里可能带着「规矩」行，由 app 解析后交给桥。
    * add / replace 各会走到一次，app 那边靠同键覆盖去重，重放历史也不会多写。
@@ -578,7 +581,22 @@ export class ChatView {
     this.renderMore();
   }
 
-  /** 悬停预览：正文里给对应那条用户消息描一圈边（`ms` > 0 时自己消失，用于点击后的短暂标记）。 */
+  /** Scroll to a loaded transcript item and briefly mark its chat card. */
+  jumpToItem(itemId: string): boolean {
+    const item = this.loaded.find((loaded) => loaded.id === itemId);
+    const node = this.cards.get(itemId) ?? (item?.kind === "tool" ? this.toolCards.get(item.toolCallId) : undefined);
+    if (!node?.isConnected) return false;
+    const module = node.closest<HTMLDetailsElement>("details.ops");
+    if (module) module.open = true;
+    const skillGroup = node.closest<HTMLDetailsElement>("details.skillgroup");
+    if (skillGroup) skillGroup.open = true;
+    this.stopFollowing();
+    node.scrollIntoView({ behavior: "smooth", block: "center" });
+    node.classList.add("exec-flash");
+    window.setTimeout(() => node.classList.remove("exec-flash"), 1200);
+    return true;
+  }
+
   private flashTurn(index: number | null, ms = 0): void {
     clearTimeout(this.flashTimer);
     if (this.flashNode) {
@@ -651,6 +669,7 @@ export class ChatView {
   }
 
   reset(items: Item[], history?: SessionHistory): void {
+    this.loaded = [];
     // #244: 换会话 / 重连换了内容 —— 那个「要去的轮次」已经不在这份记录里了。
     this.cancelPendingJump();
     clearTimeout(this.moreNoteTimer);
@@ -725,6 +744,9 @@ export class ChatView {
       this.staging = null;
       this.releaseTurnState(held);
     }
+    const olderIds = new Set(items.map((item) => item.id));
+    const olderCalls = new Set(items.flatMap((item) => item.kind === "tool" ? [item.toolCallId] : []));
+    this.loaded = [...items, ...this.loaded.filter((item) => !olderIds.has(item.id) && !(item.kind === "tool" && olderCalls.has(item.toolCallId)))];
     this.topId = items[0].id;
     this.hasOlder = hasMore;
     this.renderMore();
@@ -858,7 +880,19 @@ export class ChatView {
     return this.live;
   }
 
+  /** The execution view is deliberately limited to items already present in the transcript. */
+  loadedItems(): Item[] {
+    return [...this.loaded];
+  }
+
+  private remember(item: Item): void {
+    const index = this.loaded.findIndex((loaded) => loaded.id === item.id || (loaded.kind === "tool" && item.kind === "tool" && loaded.toolCallId === item.toolCallId));
+    if (index < 0) this.loaded.push(item);
+    else this.loaded[index] = item;
+  }
+
   add(item: Item): void {
+    this.remember(item);
     // a user message opens a new turn: its tool calls get their own module
     if (item.kind === "user") {
       this.closeOps();
@@ -900,7 +934,7 @@ export class ChatView {
     }
     if (item.kind === "tool") {
       this.toolCards.set(item.toolCallId, node);
-      if (this.isAskTool(item.name)) this.push(node);
+      if (this.isAskTool(item.name) || this.isTodoTool(item.name)) this.push(node);
       else {
         this.ensureOps().append(node);
         this.refreshOps();
@@ -924,6 +958,7 @@ export class ChatView {
    * node (the turn rail points at it) and only re-key it. Pages that never drew it just add it.
    */
   adopt(localId: string, item: Item): void {
+    this.remember(item);
     const node = this.cards.get(localId);
     if (!node) {
       this.add(item);
@@ -963,6 +998,7 @@ export class ChatView {
   }
 
   replace(id: string, item: Item): void {
+    this.remember(item);
     const node = this.cards.get(id);
     this.draftBuffers.delete(id);
     if (!node) {
@@ -976,7 +1012,7 @@ export class ChatView {
       return;
     }
     const rebuilt = this.build(item);
-    if (item.kind === "tool" && this.isAskTool(item.name)) {
+    if (item.kind === "tool" && (this.isAskTool(item.name) || this.isTodoTool(item.name))) {
       node.remove();
       this.push(rebuilt);
     } else node.replaceWith(rebuilt);
@@ -1090,6 +1126,29 @@ export class ChatView {
   toolEvent(phase: "start" | "update" | "end", data: any): void {
     const key = String(data.toolCallId ?? "");
     if (!key) return;
+    const prior = this.loaded.find((item): item is ToolItem => item.kind === "tool" && item.toolCallId === key);
+    if (phase === "start") {
+      this.remember({
+        id: `live-tool:${key}`,
+        ts: new Date().toISOString(),
+        kind: "tool",
+        toolCallId: key,
+        name: String(data.name ?? "tool"),
+        args: data.args,
+        status: "running",
+      });
+    } else if (prior) {
+      this.remember({
+        ...prior,
+        ...(phase === "update" && data.partial ? { partialResult: String(data.partial) } : {}),
+        ...(phase === "end" ? {
+          result: String(data.result ?? ""),
+          durationMs: Number(data.durationMs ?? 0),
+          isError: Boolean(data.isError),
+          status: data.isError ? "error" : "ok",
+        } : {}),
+      });
+    }
     let card = this.toolCards.get(key);
     if (!card && phase === "start") {
       card = this.buildTool({
@@ -1697,6 +1756,8 @@ export class ChatView {
 
   /** Bubbles of queued messages that were pulled back into the editor (#9, #14). */
   remove(ids: string[]): void {
+    const removed = new Set(ids);
+    this.loaded = this.loaded.filter((item) => !removed.has(item.id));
     let droppedUser = false;
     for (const id of ids) {
       this.cards.get(id)?.remove();
@@ -1712,6 +1773,7 @@ export class ChatView {
 
   private buildTool(item: ToolItem): HTMLElement {
     if (this.isAskTool(item.name)) return this.buildAsk(item);
+    if (this.isTodoTool(item.name)) return this.buildTodo(item);
     const card = el("div", "tool");
     card.dataset.running = item.status === "running" ? "1" : "0";
     if (item.isError || item.status === "error") card.classList.add("err");
@@ -1750,10 +1812,43 @@ export class ChatView {
    * `question` / `questionnaire` are the one tool whose transcript entry *is* the content: show each
    * question and the answer that came back. Pending cards open the drawer when tapped.
    */
+  private buildTodo(item: ToolItem): HTMLButtonElement {
+    const card = el("button", "tool todo-tool") as HTMLButtonElement;
+    card.type = "button";
+    card.dataset.running = item.status === "running" ? "1" : "0";
+    if (item.isError || item.status === "error") card.classList.add("err");
+    const tasks = item.plan?.tasks.filter((task) => task.status !== "deleted") ?? [];
+    const done = tasks.filter((task) => task.status === "completed").length;
+    const args = item.args && typeof item.args === "object" ? item.args as Record<string, unknown> : {};
+    const task = item.plan?.tasks.find((candidate) => candidate.id === Number(args.id));
+    const subject = typeof args.subject === "string" ? args.subject : task?.subject ?? "";
+    const action = String(args.action ?? "");
+    const status = String(args.status ?? task?.status ?? "");
+    const actionText = action === "clear"
+      ? tr("清空计划")
+      : action === "create" || action === "add"
+        ? tr("新增「{p1}」", { p1: subject || tr("计划项") })
+        : status === "in_progress"
+          ? tr("开始「{p1}」", { p1: subject || tr("计划项") })
+          : status === "completed"
+            ? tr("完成「{p1}」", { p1: subject || tr("计划项") })
+            : tr("更新计划");
+    const summary = tr("计划 {p1}/{p2} · {p3}", { p1: done, p2: tasks.length, p3: actionText });
+    card.setAttribute("aria-label", summary);
+    card.title = tr("点击查看执行面板计划");
+    card.append(el("span", "todo-icon", "📋"), el("span", "todo-summary", summary));
+    card.onclick = () => this.onTodoClick?.();
+    return card;
+  }
+
   /** The two tools whose transcript entry is a question card, not an entry of the ops module. */
   private isAskTool(name: unknown): boolean {
     const n = String(name ?? "");
     return n === "question" || n === "questionnaire";
+  }
+
+  private isTodoTool(name: unknown): boolean {
+    return String(name ?? "").toLowerCase() === "todo";
   }
 
   private buildAsk(item: ToolItem): HTMLElement {

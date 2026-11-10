@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 一条命令备齐这个项目要的东西（D220）：pi 本体 → 三个 pi 扩展 → bridge / peer / web 的依赖。
+ * 一条命令备齐这个项目要的东西（D220）：pi 本体 → 四个 pi 扩展 → bridge / peer / web 的依赖。
  *
  * 为什么不是桥启动时自己装：装东西要写用户的全局目录（`~/.pi/agent`），那是用户的地盘，桥每天
  * 开开关关不该在后台偷偷改它；`npm install` 是用户自己按下的一次性动作，放在这里最诚实。
@@ -8,7 +8,7 @@
  * 三件事按顺序做，每件都先查再动：
  *   1. pi 本体：找不到、或低于清单里的最低版本，才 `npm i -g @earendil-works/pi-coding-agent@latest`。
  *      机器上已经有更新的版本就一动不动 —— 不降级、不替用户决定。
- *   2. 三个扩展：问 `pi list` 用户级装了哪些包，按包名对（npm / git / 本地路径装的都算），
+ *   2. 四个扩展：问 `pi list` 用户级装了哪些包，按包名对（npm / git / 本地路径装的都算），
  *      有就不动（哪怕版本旧），缺的才 `pi install`。和页面上「本项目需要」用的是同一个判据。
  *   3. 子包依赖：bridge / peer / web 各跑一次 `npm --prefix … install`（node_modules 已在时也跑，
  *      它自己会判断要不要动）。
@@ -73,6 +73,7 @@ const NPM_CLI = (() => {
  *  两边都按 id 取，不共用中文 —— 一个给终端，一个给 tr()。 */
 const FEATURE = {
   subagents: "设置→子代理、后台卡、subagent 工具",
+  todo: "执行面板计划区（@juicesharp/rpiv-todo）",
   questionnaire: "网页问卷（ask_user_question）",
   "web-access": "web_search / fetch_content / source_check 等联网工具",
 };
@@ -135,7 +136,7 @@ function installPi() {
   return `pi 装不上：${why}`;
 }
 
-// ---------------------------------------------------------------- 2. 三个扩展
+// ---------------------------------------------------------------- 2. 四个扩展
 
 /**
  * 用户级已装的包。和页面同一个判据（`foundPackages`，D220）：问 `pi list`，包名读各包自己的

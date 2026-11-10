@@ -366,9 +366,38 @@ rmSync(fgRoot, { recursive: true, force: true });
 
 // ---------------------------------------------------------------- 读痕迹
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+const childSessionRoot = mkdtempSync(join(tmpdir(), "pi-subagents-child-session-"));
+const childRunDir = join(childSessionRoot, "async-subagent-runs", "child");
+const outsideSessionRoot = mkdtempSync(join(tmpdir(), "child-session-outside-"));
+mkdirSync(childRunDir, { recursive: true });
+const outsideSession = join(outsideSessionRoot, "session.jsonl");
+writeFileSync(outsideSession, "outside transcript\n");
+const linkedSession = join(childRunDir, "outside-link");
+let linkedOutside = true;
+try {
+  symlinkSync(outsideSessionRoot, linkedSession, process.platform === "win32" ? "junction" : "dir");
+} catch (error) {
+  linkedOutside = false;
+  console.log(`SKIP child session symlink containment check: ${error.message}`);
+}
+if (linkedOutside) {
+  const childRunId = "22222222-3333-4444-5555-666666666666";
+  writeFileSync(join(childSessionRoot, "status.json"), JSON.stringify({ steps: [{ sessionFile: join(linkedSession, "session.jsonl") }] }));
+  const childSessionRuns = new BgRuns(() => {});
+  childSessionRuns.noteToolEnd("subagent", { runId: childRunId, asyncDir: childSessionRoot }, `Async: worker [${childRunId}]`, { agent: "worker", task: "check child transcript" });
+  assert.equal(childSessionRuns.childSessionFile(childRunId), undefined, "a junction/symlink to a transcript outside the subagent root is refused");
+
+  const containedSession = join(childRunDir, "session.jsonl");
+  writeFileSync(containedSession, "inside transcript\n");
+  writeFileSync(join(childSessionRoot, "status.json"), JSON.stringify({ steps: [{ sessionFile: containedSession }] }));
+  assert.equal(childSessionRuns.childSessionFile(childRunId), realpathSync.native(containedSession), "a contained transcript resolves to its canonical path");
+}
+rmSync(childSessionRoot, { recursive: true, force: true });
+rmSync(outsideSessionRoot, { recursive: true, force: true });
 
 const acpDir = join(tmpdir(), "acp-delegate");
 mkdirSync(acpDir, { recursive: true });

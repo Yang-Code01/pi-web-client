@@ -73,6 +73,7 @@ const FAKE_MODELS = [
 ];
 let currentModel = FAKE_MODELS[0];
 let thinkingLevel = "off";
+let sessionStats = { tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cost: 0.01, contextUsage: { tokens: 1000, contextWindow: 200000, percent: 0.5 } };
 
 let running = false;
 let compacting = false;
@@ -174,6 +175,75 @@ async function turn(text) {
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
+  if (text.startsWith("BGCHILD")) {
+    const runId = process.env.FAKE_PI_CHILD_RUN_ID || `del_fake_${process.pid}`;
+    const root = path.join(os.tmpdir(), "acp-delegate");
+    const activity = path.join(root, `${runId}.activity`);
+    const session = path.join(root, `${runId}.session.jsonl`);
+    const newline = String.fromCharCode(10);
+    const tick = String.fromCharCode(96);
+    const at = () => new Date().toISOString();
+    const usage = (totalTokens, totalCost) => ({
+      input: totalTokens - 5,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens,
+      cost: { input: totalCost, output: 0, cacheRead: 0, cacheWrite: 0, total: totalCost },
+    });
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(activity, "child session fixture");
+    const planTasks = [
+      { id: 1, subject: "Inspect child session", status: "completed" },
+      { id: 2, subject: "Summarize findings", activeForm: "Summarizing findings", status: "in_progress", blockedBy: [1] },
+    ];
+    const entries = [
+      { type: "session", id: `child-${process.pid}`, timestamp: at(), cwd: process.cwd() },
+      { type: "message", id: "child-u1", parentId: null, timestamp: at(), message: { role: "user", content: [{ type: "text", text: "child task" }] } },
+      { type: "message", id: "child-plan-call", parentId: "child-u1", timestamp: at(), message: { role: "assistant", content: [{ type: "toolCall", id: "child-call-plan", name: "todo", arguments: { action: "create", tasks: planTasks } }] } },
+      { type: "message", id: "child-plan-result", parentId: "child-plan-call", timestamp: at(), message: { role: "toolResult", toolCallId: "child-call-plan", toolName: "todo", content: [{ type: "text", text: "Plan updated" }], details: { action: "create", tasks: planTasks } } },
+      { type: "message", id: "child-a1", parentId: "child-plan-result", timestamp: at(), message: { role: "assistant", content: [{ type: "text", text: "child-first" }, { type: "toolCall", id: "child-call-live", name: "child_lookup", arguments: { query: "current step" } }], usage: usage(15, 0.01) } },
+    ];
+    fs.writeFileSync(session, `${entries.map((entry) => JSON.stringify(entry)).join(newline)}${newline}`);
+    const append = (id, parentId, answer, count, cost) => fs.appendFileSync(session, `${JSON.stringify({
+      type: "message", id, parentId, timestamp: at(), message: { role: "assistant", content: [{ type: "text", text: answer }], usage: usage(count, cost) },
+    })}${newline}`);
+    const updatedPlanTasks = [
+      { id: 1, subject: "Inspect child session", status: "completed" },
+      { id: 2, subject: "Summarize findings", status: "completed", blockedBy: [1] },
+    ];
+    setTimeout(() => fs.appendFileSync(session, `${JSON.stringify({
+      type: "custom", id: "child-plan-state", parentId: "child-a1", timestamp: at(), customType: "rpiv-todo-state", data: { action: "update", tasks: updatedPlanTasks },
+    })}${newline}`), 550);
+    setTimeout(() => append("child-a2", "child-plan-state", "child-second", 15, 0.01), 1200);
+    setTimeout(() => append("child-a3", "child-a2", "child-third", 15, 0.01), 3200);
+    const quotedRunId = [tick, runId, tick].join("");
+    const resultText = [
+      `Delegated to **researcher** (runId ${quotedRunId}).`,
+      "Task: inspect child updates",
+      `Running in the background at ${tick}${root}${tick}.`,
+      `Live activity is streaming to ${tick}${activity}${tick}.`,
+    ].join(newline);
+    const callId = `call-${runId}`;
+    const args = { agent: "researcher", task: "inspect child updates" };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: callId, name: "acp_delegate", arguments: args }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: callId, toolName: "acp_delegate", args });
+    out({
+      type: "tool_execution_end",
+      toolCallId: callId,
+      toolName: "acp_delegate",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: resultText }],
+        details: { kind: "delegate", runId, agent: "researcher", task: "inspect child updates" },
+      },
+    });
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("子代理已启动。", { stopReason: "stop" }) });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   if (text.startsWith("BGSTART")) {
     // D170: 派一个后台子代理，这一轮正常收尾 —— 会话自己 settle 了，runner 还在跑。
     // 形状照真 pi 来：`result` 是 `{ content, details }`（pi docs/json.md），活动路径在结果文本的
@@ -266,6 +336,82 @@ async function turn(text) {
     out({ type: "message_end", message: assistant("", { stopReason: "error", errorMessage: "401 invalid api key" }) });
     out({ type: "agent_end", messages: [], willRetry: false });
     out({ type: "auto_retry_end", success: false, attempt: 2, finalError: "401 invalid api key" });
+    return;
+  }
+  if (text.startsWith("PLAN")) {
+    const tasks = [
+      { id: 1, subject: "检查现有实现", status: "completed" },
+      { id: 2, subject: "实现计划快照", activeForm: "实现计划快照", status: "in_progress" },
+      { id: 3, subject: "验证回放", status: "pending", blockedBy: [2] },
+      { id: 4, subject: "已移除任务", status: "deleted" },
+    ];
+    const initial = { action: "create", params: {}, tasks: tasks.map((task) => ({ ...task, status: "pending" })), nextId: 5 };
+    const details = { action: "update", params: { id: 2, status: "in_progress" }, tasks, nextId: 5 };
+    if (sessionFile) {
+      touchSessionFile();
+      let parentId = null;
+      try {
+        const lines = fs.readFileSync(sessionFile, "utf8").trim().split("\n");
+        parentId = JSON.parse(lines.at(-1)).id ?? null;
+      } catch { /* a new fake session only has its header */ }
+      const addEntry = (type, fields) => {
+        const entry = { type, id: `fake-plan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, parentId, timestamp: new Date().toISOString(), ...fields };
+        fs.appendFileSync(sessionFile, `${JSON.stringify(entry)}\n`);
+        parentId = entry.id;
+        return entry.id;
+      };
+      for (let round = 1; round <= 70; round += 1) {
+        const userId = addEntry("message", { message: { role: "user", content: [{ type: "text", text: `earlier round ${round}` }] } });
+        const assistantId = addEntry("message", { parentId: userId, message: assistant(`earlier answer ${round}`) });
+        parentId = assistantId;
+        if (round === 2) addEntry("custom", { customType: "rpiv-todo-state", data: initial });
+      }
+      const userId = addEntry("message", { message: { role: "user", content: [{ type: "text", text }] } });
+      const callId = "call-plan-snapshot";
+      const assistantId = addEntry("message", {
+        parentId: userId,
+        message: assistant("", { content: [{ type: "toolCall", id: callId, name: "todo", arguments: { action: "update", id: 2, status: "in_progress" } }], stopReason: "toolUse" }),
+      });
+      const resultId = addEntry("message", {
+        parentId: assistantId,
+        message: { role: "toolResult", toolCallId: callId, toolName: "todo", content: [{ type: "text", text: "Updated #2" }], details },
+      });
+      parentId = resultId;
+      addEntry("custom", { customType: "rpiv-todo-state", data: details });
+    }
+
+    const beforeStepId = "call-plan-before";
+    const beforeStepArgs = { path: "context.md" };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: beforeStepId, name: "read", arguments: beforeStepArgs }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: beforeStepId, toolName: "read", args: beforeStepArgs });
+    out({ type: "tool_execution_end", toolCallId: beforeStepId, toolName: "read", isError: false, result: "Prior to plan update" });
+    const callId = "call-plan-snapshot";
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: callId, name: "todo", arguments: { action: "update", id: 2, status: "in_progress" } }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: callId, toolName: "todo", args: { action: "update", id: 2, status: "in_progress" } });
+    out({ type: "tool_execution_end", toolCallId: callId, toolName: "todo", isError: false, result: { content: [{ type: "text", text: "Updated #2" }], details } });
+    const stepId = "call-plan-step";
+    const stepArgs = { path: "plan.md" };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: stepId, name: "read", arguments: stepArgs }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: stepId, toolName: "read", args: stepArgs });
+    out({ type: "tool_execution_end", toolCallId: stepId, toolName: "read", isError: false, result: "Plan step evidence" });
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("Plan snapshot updated.") });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
+  if (text.startsWith("METRICS")) {
+    // Two assistant message-end stats frames in one run let the browser smoke verify live cost growth.
+    sessionStats = { tokens: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, total: 30 }, cost: 0.02, contextUsage: { tokens: 2000, contextWindow: 200000, percent: 1 } };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("first update") });
+    await sleep(800);
+    sessionStats = { tokens: { input: 40, output: 20, cacheRead: 0, cacheWrite: 0, total: 60 }, cost: 0.05, contextUsage: { tokens: 5000, contextWindow: 200000, percent: 2.5 } };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("second update") });
+    out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
   // #86：pi 每调一次工具都会先发一条「文字为空、只有工具调用」的 assistant 消息。
@@ -402,7 +548,7 @@ async function handle(cmd) {
       note({ t: "set_thinking_level", pid: process.pid, level: thinkingLevel });
       return ok(id, type);
     case "get_session_stats":
-      return ok(id, type, { tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cost: 0.01, contextUsage: { tokens: 1000, contextWindow: 200000, percent: 0.5 } });
+      return ok(id, type, sessionStats);
     case "get_available_models": {
       const LEVEL_MAP = { off: "off", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
       return ok(id, type, { models: FAKE_MODELS.map((m) => ({ ...m, reasoning: true, thinkingLevelMap: LEVEL_MAP, input: ["text"], contextWindow: 200000 })) });

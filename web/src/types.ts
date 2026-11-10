@@ -27,11 +27,25 @@ export interface AssistantItem extends ItemBase {
   /** Set by pi when stopReason is "error": the provider's own message (401, rate limit, overflow…). */
   errorMessage?: string;
 }
+export type ToolPlanStatus = "pending" | "in_progress" | "completed" | "deleted";
+export interface ToolPlanTask {
+  id: number;
+  subject: string;
+  activeForm?: string;
+  status: ToolPlanStatus;
+  blockedBy?: number[];
+}
+export interface ToolPlanSnapshot {
+  tasks: ToolPlanTask[];
+  listedRound: string | null;
+}
 export interface ToolItem extends ItemBase {
   kind: "tool";
   toolCallId: string;
   name: string;
   args: unknown;
+  /** Snapshot after a todo update; null explicitly records a cleared plan. */
+  plan?: ToolPlanSnapshot | null;
   partialResult?: string;
   result?: string;
   isError?: boolean;
@@ -117,6 +131,7 @@ export interface BgView {
 /** D170 详情的线上形状（桥 `bg.list` 的 `runs[]`）；路径不出桥，只说有没有可看的。 */
 export interface BgRunView {
   id: string;
+  toolCallId?: string;
   source: "acp" | "subagents";
   agent: string;
   task: string;

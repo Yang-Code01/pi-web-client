@@ -32,6 +32,7 @@ import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroup
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { Socket } from "./ws.ts";
+import { execView, type ExecChildRunInput, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
@@ -69,6 +70,7 @@ import type { AcpDelegatePatch, AcpDelegateView } from "./subagents-acp.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
+type QueueTab = "needs" | "exec";
 
 /**
  * 面板等目录的两个时间窗（D150）：过了 REASK 就当「刚问的那次没结果」，自己再问一遍；
@@ -95,6 +97,7 @@ const CONTINUE_TEXT = "继续";
 const WS_CREATE_DIR_CAP = "ws.create.dir";
 /** #278：桥的 hello `caps` 里表示「ws.resolve 能把子目录 / worktree 折回已有组」。旧桥没有这项。 */
 const WS_RESOLVE_DIR_CAP = "ws.resolve.dir";
+const WS_EXEC_CHILD_CAP = "exec.child.subscribe";
 
 /** One place for "what is this session doing right now" — left card, manager row and pin chip all use it. */
 type BadgeKind = "ask" | "approve" | "locked" | "run" | "bg" | "done";
@@ -118,6 +121,14 @@ interface SessionBadge {
  */
 /** D170 详情的线上形状。见 `web/src/types.ts`（与左栏那份 `SessionState` 摆在一起）。 */
 type BgRunDto = BgRunView;
+
+interface ExecChildState {
+  items: Item[];
+  plan: ExecPlanSnapshot | null;
+  stats: ExecStatsSnapshot | null;
+  state: "running" | "done" | "failed";
+  pending: boolean;
+}
 
 /** 详情里的一屏：一卡片 + 它三块会变的字。 */
 interface BgRunNode {
@@ -233,6 +244,24 @@ export class App {
   private askWidthBefore: string | null = null;
   private connected = false;
   private tab: Tab = "sessions";
+  private queueTab: QueueTab = readQueueTab();
+  private execSelectedRound: string | null = null;
+  private execSelectedPlanTaskId: number | null = null;
+  private execPlan: ExecPlanSnapshot | null = null;
+  private execPlanRounds: ExecRound[] = [];
+  private execRoundStats: Record<string, ExecRoundStats> = {};
+  private execRuns: BgRunDto[] = [];
+  private execChildStates = new Map<string, ExecChildState>();
+  private execChildErrors = new Map<string, string>();
+  private execChildExpanded = new Set<string>();
+  private execChildDetails = new Set<string>();
+  private execChildSubscribed = new Set<string>();
+  private execChildTimer: number | null = null;
+  private execChildSessionId: string | null = null;
+  private publicAccess = false;
+  private execPhase: ExecPhase = "idle";
+  private execStreamChars = 0;
+  private execStreamText = "";
   private chat!: ChatView;
   private pending: (() => void)[] = [];
   /** Local-clock end of the step-up window; 0 = must verify before the next write (public only). */
@@ -404,7 +433,7 @@ export class App {
   private extTab: "installed" | "ext" | "mcp" = "installed";
   private extInv: ExtInventory | null = null;
   private extInvLoading = false;
-  /** “本项目需要”那一块（/api/deps）：pi 版本 + 三个扩展。null = 还没问到。 */
+  /** “本项目需要”那一块（/api/deps）：pi 版本 + 四个扩展。null = 还没问到。 */
   private deps: DepsReport | null = null;
   private depsLoading = false;
   /** 问不到 /api/deps 的原因（桥太旧或断了）：页面上说实话，不假装「都齐了」。 */
@@ -918,6 +947,7 @@ export class App {
     this.chat.onFork = (item, index) => this.forkAt({ entryId: item.id, index, text: item.text });
     // 账本要的是「这次会话里所有失败」，聊天区只画本轮的红卡：两边各收各的，按 toolCallId 去重。
     this.chat.onFail = (f) => this.recordFail(f);
+    this.chat.onTodoClick = () => this.openExecPlanFromChat();
     // 复盘那一轮的回写（D164 延伸）：模型把规矩写在回答末尾，这里捡出来交给桥。
     this.chat.onAnswer = (text) => this.takeRules(text);
     // #200: 失败气泡旁的「重试」，动作就是接管 —— 桥那边会先拉起 pi，再按原顺序补发没发出去的那几条。
@@ -1238,6 +1268,7 @@ export class App {
         node.textContent = bgElapsedText(Number(node.dataset.bgSince));
       }
       if (this.session?.running) this.fillHintStatus();
+      this.refreshExecClock();
       // 刻度尺也养在这个闹钟里：只改 DOM 的格子数，不重画整个列表。
       for (const node of document.querySelectorAll<HTMLElement>(".sc-ruler[data-since]")) {
         drawRuler(node, Number(node.dataset.since));
@@ -1414,6 +1445,13 @@ export class App {
    * D162: 打开只是看 —— 不清完成；bridge 也一样（snapshot 不再 markSeen）。
    */
   private resetSessionView(): void {
+    this.stopExecChildWatches();
+    this.execChildSessionId = null;
+    this.execRuns = [];
+    this.execChildStates.clear();
+    this.execChildErrors.clear();
+    this.execChildExpanded.clear();
+    this.execChildDetails.clear();
     this.approvals = [];
     this.asks = [];
     this.pendingFresh = false;
@@ -1523,6 +1561,8 @@ export class App {
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         // #278：旧桥不带 caps —— 缺这一项就当它不会按目录建组。
         this.bridgeCaps = Array.isArray(msg.caps) ? (msg.caps as unknown[]).filter((c): c is string => typeof c === "string") : [];
+        this.publicAccess = msg.public === true;
+        this.execChildSubscribed.clear();
         if (msg.ui) this.uiPrefs = { chrome: chromeFrom(msg.ui.chrome) };
         // D154：桥上的 build 换了，页面里的 JS 还是旧的 —— 提示刷新，不自动 reload。
         if (typeof msg.buildId === "string") this.checkBuild(msg.buildId);
@@ -1565,10 +1605,21 @@ export class App {
         this.creating?.finish();
         // bridge sends the snapshot as {sessionId, state, items, approvals, budget}
         if (msg.sessionId) {
-          // A freshly created session arrives here without openSession(): give it its own (empty) draft.
-          if (String(msg.sessionId) !== this.currentId) this.switchDraft(String(msg.sessionId));
-          this.currentId = String(msg.sessionId);
+          const nextId = String(msg.sessionId);
+          if (nextId !== this.currentId) {
+            this.stopExecChildWatches();
+            this.execChildSessionId = null;
+            this.execRuns = [];
+            this.execChildStates.clear();
+            this.execChildErrors.clear();
+            this.execChildExpanded.clear();
+            this.execChildDetails.clear();
+            // A freshly created session arrives here without openSession(): give it its own (empty) draft.
+            this.switchDraft(nextId);
+          }
+          this.currentId = nextId;
         }
+        this.execRoundStats = this.currentId ? readExecRoundStats(this.currentId) : {};
         this.usage = { contextTokens: null, contextWindow: null };
         this.rate = 0;
         this.turnAt = null;
@@ -1579,6 +1630,10 @@ export class App {
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
         if ("trust" in msg) this.trust = (msg.trust as TrustState | null) ?? null;
         this.queue = msg.queue ? { steering: msg.queue.steering ?? [], followUp: msg.queue.followUp ?? [] } : { steering: [], followUp: [] };
+        this.execPlan = msg.plan && typeof msg.plan === "object" ? msg.plan as ExecPlanSnapshot : null;
+        this.execPlanRounds = Array.isArray((msg.history as SessionHistory | undefined)?.turns)
+          ? (msg.history as SessionHistory).turns!.map((turn, index) => ({ id: turn.id, ordinal: index + 1 }))
+          : [];
         this.stats = { tokens: null, cost: null };
         // 换了会话：上一份「见过的失败」不能带过来，否则按钮会按别人的失败亮着。
         this.sessionFails.clear();
@@ -1589,6 +1644,10 @@ export class App {
         this.failRules = this.failRulesWs && this.failRulesWs === (this.session?.ws ?? "") ? this.failRules : null;
         this.chat.reset((msg.items ?? []) as Item[], msg.history as SessionHistory | undefined);
         this.chat.setRunning(this.session?.running === true);
+        this.execSelectedRound = null;
+        this.execStreamChars = 0;
+        this.execStreamText = "";
+        this.setExecPhase(this.session?.running ? "waiting" : "idle");
         if (this.currentWs()) {
           this.socket.send({ type: "failures.get", ws: this.currentWs() });
           this.socket.send({ type: "rules.get", ws: this.currentWs() });
@@ -1629,10 +1688,18 @@ export class App {
         // 永远整页替换；「载入更早」走的是另一条 `history` 帧，不从这里插进旧内容前面。
         // `history` 仍然要传：整页替换完，顶端那一行才知道后面还有没有更早的（#220）。
         // 这是 #221 的既定取舍：整页替换意味着重连后回到最后一页，已经翻出来的更早内容不保留。
+        const turns = (msg.history as SessionHistory | undefined)?.turns;
+        if (Array.isArray(turns)) this.execPlanRounds = turns.map((turn, index) => ({ id: turn.id, ordinal: index + 1 }));
         this.chat.reset((msg.items ?? []) as Item[], msg.history as SessionHistory | undefined);
+        if (this.queueTab === "exec") this.renderQueue();
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
         this.syncContinueButton();
+        break;
+      case "plan":
+        if (msg.sessionId !== this.currentId) break;
+        this.execPlan = msg.plan && typeof msg.plan === "object" ? msg.plan as ExecPlanSnapshot : null;
+        if (this.queueTab === "exec") this.renderQueue();
         break;
       case "history":
         // #220: 一页更早的内容。归属由 ChatView 认（`before` 是否等于它当前的 `topId`）；
@@ -1640,29 +1707,86 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         if (typeof msg.before !== "string") break;
         this.chat.prepend(msg.before, (msg.items ?? []) as Item[], msg.hasMore === true);
+        if (this.queueTab === "exec") this.renderQueue();
         break;
       case "item.add":
         if (msg.sessionId !== this.currentId) break;
-        if (typeof msg.clientId === "string") this.chat.adopt(msg.clientId, msg.item as Item);
-        else this.chat.add(msg.item as Item);
+        const item = msg.item as Item;
+        const latestRoundBefore = [...this.chat.loadedItems()].reverse().find(
+          (loaded) => loaded.kind === "user" && loaded.id !== item.id && loaded.id !== msg.clientId,
+        );
+        if (item.kind === "user" && (this.execSelectedRound === null || this.execSelectedRound === latestRoundBefore?.id)) {
+          this.execSelectedRound = null;
+          this.execSelectedPlanTaskId = null;
+        }
+        if (typeof msg.clientId === "string") this.chat.adopt(msg.clientId, item);
+        else this.chat.add(item);
+        if (item.kind === "user" && !this.execPlanRounds.some((round) => round.id === item.id)) {
+          const ordinal = this.execPlanRounds.reduce((last, round) => Math.max(last, round.ordinal), 0) + 1;
+          this.execPlanRounds = [...this.execPlanRounds, { id: item.id, ordinal }];
+        }
+        this.beginExecRound(item);
         // #199: 启动期的「撤回」只在真有排队消息时才有位置，气泡来去都得重画这一行。
         if (this.session?.starting) this.fillHintStatus();
+        if (this.queueTab === "exec") this.renderQueue();
         break;
       case "item.remove":
         if (msg.sessionId !== this.currentId) break;
         this.chat.remove(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
         if (this.session?.starting) this.fillHintStatus();
+        if (this.queueTab === "exec") this.renderQueue();
         break;
       case "bash.delta":
         if (msg.sessionId !== this.currentId) break;
         this.chat.bashDelta(String(msg.id ?? ""), String(msg.text ?? ""));
         break;
-      case "bg.list":
-        if (!this.bgSheet || msg.sessionId !== this.bgSheet.sessionId) break;
-        // 桥只发错误码（文案在这边翻了再显示），目前只有一种：公网那只手看不到后台任务。
-        const why = msg.error === "public" ? tr("公网访问时看不到后台任务") : "";
-        this.paintBgSheet(Array.isArray(msg.runs) ? (msg.runs as BgRunDto[]) : [], why);
+      case "bg.list": {
+        const runs = Array.isArray(msg.runs) ? (msg.runs as BgRunDto[]) : [];
+        if (msg.sessionId === this.currentId) {
+          const runsChanged = JSON.stringify(this.execRuns) !== JSON.stringify(runs);
+          this.execRuns = runs;
+          this.syncExecChildWatches();
+          if (runsChanged && this.queueTab === "exec") this.renderQueue();
+        }
+        if (this.bgSheet && msg.sessionId === this.bgSheet.sessionId) {
+          // 桥只发错误码（文案在这边翻了再显示），目前只有一种：公网那只手看不到后台任务。
+          const why = msg.error === "public" ? tr("公网访问时看不到后台任务") : "";
+          this.paintBgSheet(runs, why);
+        }
         break;
+      }
+      case "exec.child.snapshot":
+      case "exec.child.delta": {
+        if (msg.sessionId !== this.currentId) break;
+        const runId = String(msg.runId ?? "");
+        const incoming = Array.isArray(msg.items) ? (msg.items as Item[]) : [];
+        const previous = this.execChildStates.get(runId);
+        const items = msg.type === "exec.child.snapshot" || msg.reset === true
+          ? incoming
+          : [...new Map([...(previous?.items ?? []), ...incoming].map((item) => [item.id, item])).values()];
+        this.execChildErrors.delete(runId);
+        this.execChildStates.set(runId, {
+          items,
+          plan: msg.plan === undefined
+            ? previous?.plan ?? null
+            : msg.plan && typeof msg.plan === "object" ? msg.plan as ExecPlanSnapshot : null,
+          stats: msg.stats && typeof msg.stats === "object" ? msg.stats as ExecStatsSnapshot : null,
+          state: msg.state === "done" || msg.state === "failed" ? msg.state : "running",
+          pending: msg.pending === true,
+        });
+        if (this.queueTab === "exec") this.renderQueue();
+        break;
+      }
+      case "exec.child.unavailable": {
+        if (msg.sessionId !== this.currentId) break;
+        const runId = String(msg.runId ?? "");
+        this.execChildSubscribed.delete(runId);
+        this.execChildErrors.set(runId, String(msg.error ?? "unavailable"));
+        const previous = this.execChildStates.get(runId);
+        if (previous) this.execChildStates.set(runId, { ...previous, pending: false });
+        if (this.queueTab === "exec") this.renderQueue();
+        break;
+      }
       case "bg.log":
         if (msg.sessionId !== this.bgSheet?.sessionId) break;
         this.fillBgRun(String(msg.runId ?? ""), msg.log, msg.out);
@@ -1676,12 +1800,19 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.chat.replace(msg.id, msg.item as Item);
         if (this.session?.starting) this.fillHintStatus();
+        if (this.queueTab === "exec") this.renderQueue();
         break;
       case "delta":
         if (msg.sessionId !== this.currentId) break;
         this.trackChars(msg.field, msg.text);
         this.chat.delta(msg.id, msg.field, msg.text);
-        this.setActivity(msg.field === "thinking" ? tr("思考中") : tr("正在写回复"));
+        const field = msg.field === "thinking" ? "thinking" : "writing";
+        this.setExecPhase(field);
+        const text = String(msg.text ?? "");
+        this.execStreamChars += Array.from(text).length;
+        this.execStreamText = (this.execStreamText + text).slice(-2000);
+        this.setActivity(field === "thinking" ? tr("思考中") : tr("正在写回复"));
+        this.refreshExecClock();
         break;
       case "usage":
         if (msg.sessionId !== this.currentId) break;
@@ -1695,7 +1826,9 @@ export class App {
           contextTokens: typeof msg.context?.tokens === "number" ? msg.context.tokens : null,
           contextWindow: typeof msg.context?.contextWindow === "number" ? msg.context.contextWindow : this.usage.contextWindow,
         };
+        this.updateExecRoundStats();
         this.fillModelChip();
+        if (this.queueTab === "exec") this.renderQueue();
         break;
       case "budget":
         if (msg.sessionId !== this.currentId) break;
@@ -1706,12 +1839,17 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.chat.toolEvent(msg.phase, msg);
         if (msg.phase === "start") {
+          this.setExecPhase("tool");
           // Q-024: the line under the composer names the tool and stops there. A bash command used to
           // be pasted after it (up to 120 chars, usually cut mid-path) while the hover card (Q-017)
           // already carries the full summary, args, output and thinking — the line was pure noise.
           this.stepCount += 1;
           this.setActivity(tr("正在执行 {p1}", { p1: msg.name ?? "工具" }));
-        } else if (msg.phase === "end") this.setActivity(tr("思考中"));
+        } else if (msg.phase === "end") {
+          this.setExecPhase("waiting");
+          this.setActivity(tr("思考中"));
+        }
+        if (msg.phase !== "update" && this.queueTab === "exec") this.renderQueue();
         break;
       case "approval.add":
         // D156：当前会话也照加 —— 列表里的计数和本地队列是两份账，只给「不在看的会话」加会让
@@ -2247,10 +2385,16 @@ export class App {
         if (msg.sessionId === this.currentId) {
           if (msg.running) {
             this.runSince = Date.now();
+            this.setExecPhase("waiting");
+            this.execStreamChars = 0;
+            this.execStreamText = "";
             this.activity = tr("思考中");
             // Q-024: the hover card says "本轮第 N 次工具调用", so N is per run and starts over here.
             this.stepCount = 0;
-          } else this.activity = "";
+          } else {
+            this.setExecPhase("idle");
+            this.activity = "";
+          }
           this.fillHintStatus();
           // 跑着 ↔ 空闲是「继续」按钮亮/灰的翻转点（D159）。
           this.syncContinueButton();
@@ -2261,6 +2405,8 @@ export class App {
         if (!msg.running) this.turnAt = null;
         this.renderTop();
         this.renderSessions();
+        this.renderQueue();
+        this.renderTabs();
         this.fillModelChip();
         break;
       case "manage": {
@@ -2927,6 +3073,14 @@ export class App {
   private startTurn(): void {
     this.turnAt = performance.now();
     this.turnChars = { cjk: 0, other: 0 };
+  }
+
+  private setExecPhase(phase: ExecPhase): void {
+    if (phase !== this.execPhase && (phase === "thinking" || phase === "writing")) {
+      this.execStreamChars = 0;
+      this.execStreamText = "";
+    }
+    this.execPhase = phase;
   }
 
   private setActivity(text: string): void {
@@ -11320,6 +11474,8 @@ export class App {
         return tr("设置→子代理、后台卡、subagent 工具");
       case "questionnaire":
         return tr("网页问卷（ask_user_question）");
+      case "todo":
+        return tr("执行面板计划区（@juicesharp/rpiv-todo）");
       case "web-access":
         return tr("web_search / fetch_content / source_check 等联网工具");
       default:
@@ -11328,7 +11484,7 @@ export class App {
   }
 
   /**
-   * 「本项目需要」：pi 版本 + 三个扩展。这些不在这个仓库里，也不会跟 `npm install` 一起下来，
+   * 「本项目需要」：pi 版本 + 四个扩展。这些不在这个仓库里，也不会跟 `npm install` 一起下来，
    * 缺了往往只是**静默少一个工具** —— 所以摆在这一页最上面，缺了就写清楚缺什么、怎么补。
    */
   private paintDepsNeeded(body: HTMLElement): void {
@@ -11426,6 +11582,7 @@ export class App {
         this.depsAt = Date.now();
         this.depsLoading = false;
         this.paintDepsSurface();
+        if (this.queueTab === "exec") this.renderQueue();
       });
   }
 
@@ -13799,6 +13956,504 @@ export class App {
     this.renderTabs();
   }
 
+  private selectQueueTab(tab: QueueTab): void {
+    if (this.queueTab === "exec" && tab !== "exec") this.stopExecChildWatches();
+    this.queueTab = tab;
+    try {
+      localStorage.setItem("pi.queueTab", tab);
+    } catch {
+      // Private browsing may disable storage; the current page still remembers the selection.
+    }
+    this.renderQueue();
+  }
+
+  private openExecPlanFromChat(): void {
+    this.execSelectedPlanTaskId = null;
+    this.selectQueueTab("exec");
+    requestAnimationFrame(() => {
+      const box = this.els.queueInner?.querySelector<HTMLElement>(".exec-plan");
+      if (!box) return;
+      box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      box.classList.add("exec-flash");
+      window.setTimeout(() => box.classList.remove("exec-flash"), 1200);
+    });
+  }
+
+  private execStatsSnapshot(): ExecStatsSnapshot {
+    return {
+      tokens: this.stats.tokens ? { ...this.stats.tokens } : null,
+      cost: this.stats.cost,
+      contextTokens: this.usage.contextTokens,
+      contextWindow: this.usage.contextWindow,
+    };
+  }
+
+  private beginExecRound(item: Item): void {
+    if (item.kind !== "user") return;
+    const snapshot = this.execStatsSnapshot();
+    const hasSnapshot = snapshot.tokens !== null || snapshot.cost !== null || snapshot.contextTokens !== null || snapshot.contextWindow !== null;
+    this.execRoundStats[item.id] = { baseline: hasSnapshot ? snapshot : null, final: hasSnapshot ? snapshot : null };
+    if (this.currentId) saveExecRoundStats(this.currentId, this.execRoundStats);
+  }
+
+  private updateExecRoundStats(): void {
+    const items = this.chat.loadedItems();
+    const latestRound = [...items].reverse().find((item) => item.kind === "user");
+    if (!latestRound || latestRound.kind !== "user") return;
+    const existing = this.execRoundStats[latestRound.id];
+    this.execRoundStats[latestRound.id] = { baseline: existing?.baseline ?? null, final: this.execStatsSnapshot() };
+    if (this.currentId) saveExecRoundStats(this.currentId, this.execRoundStats);
+  }
+
+  private execChildAvailable(): boolean {
+    return this.bridgeCaps.includes(WS_EXEC_CHILD_CAP) && !this.publicAccess;
+  }
+
+  private ensureExecRuns(): void {
+    if (!this.currentId || this.queueTab !== "exec" || !this.execChildAvailable()) return;
+    if (this.execChildTimer !== null && this.execChildSessionId === this.currentId) return;
+    this.stopExecChildWatches();
+    this.execChildSessionId = this.currentId;
+    const refresh = () => {
+      if (this.currentId === this.execChildSessionId && this.queueTab === "exec") {
+        this.socket.send({ type: "bg.list", sessionId: this.execChildSessionId });
+      }
+    };
+    refresh();
+    this.execChildTimer = window.setInterval(refresh, 1500);
+  }
+
+  private subscribeExecChild(runId: string): void {
+    if (!this.currentId || !this.execChildAvailable() || this.execChildSubscribed.has(runId)) return;
+    this.execChildSessionId = this.currentId;
+    this.execChildSubscribed.add(runId);
+    this.execChildErrors.delete(runId);
+    const current = this.execChildStates.get(runId);
+    this.execChildStates.set(runId, current
+      ? { ...current, pending: true }
+      : { items: [], plan: null, stats: null, state: "running", pending: true });
+    this.socket.send({ type: "exec.child.subscribe", sessionId: this.currentId, runId });
+  }
+
+  private unsubscribeExecChild(runId: string): void {
+    if (this.execChildSubscribed.delete(runId) && this.execChildSessionId) {
+      this.socket.send({ type: "exec.child.unsubscribe", sessionId: this.execChildSessionId, runId });
+    }
+  }
+
+  private stopExecChildWatches(): void {
+    if (this.execChildTimer !== null) window.clearInterval(this.execChildTimer);
+    this.execChildTimer = null;
+    for (const runId of this.execChildSubscribed) {
+      if (this.execChildSessionId) this.socket.send({ type: "exec.child.unsubscribe", sessionId: this.execChildSessionId, runId });
+    }
+    this.execChildSubscribed.clear();
+  }
+
+  private syncExecChildWatches(): void {
+    const active = new Set(this.execRuns.map((run) => run.id));
+    for (const runId of this.execChildSubscribed) {
+      if (!active.has(runId) || !this.execChildExpanded.has(runId)) this.unsubscribeExecChild(runId);
+    }
+    for (const runId of this.execChildExpanded) {
+      if (active.has(runId)) this.subscribeExecChild(runId);
+    }
+  }
+
+  private toggleExecChild(runId: string): void {
+    if (!this.execChildAvailable()) return;
+    if (this.execChildExpanded.has(runId)) {
+      this.execChildExpanded.delete(runId);
+      this.unsubscribeExecChild(runId);
+    } else {
+      this.execChildExpanded.add(runId);
+      this.subscribeExecChild(runId);
+    }
+    this.renderQueue();
+  }
+
+  private execModel(): ExecViewModel {
+    const running = this.session?.running === true;
+    return execView({
+      items: this.chat.loadedItems(),
+      childRuns: this.execRuns.map((run): ExecChildRunInput => ({
+        runId: run.id,
+        toolCallId: run.toolCallId ?? "",
+        agent: run.agent,
+        task: run.task,
+        state: run.state,
+        items: this.execChildExpanded.has(run.id) ? this.execChildStates.get(run.id)?.items ?? [] : [],
+        plan: this.execChildStates.get(run.id)?.plan ?? null,
+        stats: this.execChildStates.get(run.id)?.stats ?? null,
+      })),
+      childSessionsAvailable: this.bridgeCaps.includes(WS_EXEC_CHILD_CAP),
+      publicAccess: this.publicAccess,
+      phase: running ? (this.execPhase === "idle" ? "waiting" : this.execPhase) : "idle",
+      streamChars: this.execStreamChars,
+      streamSummary: this.execSummary(),
+      selectedRound: this.execSelectedRound,
+      plan: this.execPlan,
+      planRounds: this.execPlanRounds,
+      now: Date.now(),
+      stats: this.execStatsSnapshot(),
+      roundStats: this.execRoundStats,
+    });
+  }
+
+  private execSummary(): string {
+    const sentences = this.execStreamText.split(/[.!?。！？\n]+/).map((part) => part.trim()).filter(Boolean);
+    return (sentences.at(-1) ?? "").slice(-120);
+  }
+
+  private execDuration(ms: number | null): string {
+    if (ms === null) return "";
+    const seconds = ms / 1000;
+    return tr("{p1} 秒", { p1: seconds < 10 ? seconds.toFixed(1) : Math.round(seconds) });
+  }
+
+  private execPlanBox(plan: ExecPlanView | null, mini = false): HTMLElement {
+    const box = el("section", `exec-plan${mini ? " mini" : ""}`);
+    if (!mini) box.dataset.execPlanBox = "1";
+    if (!plan) {
+      if (mini) return box;
+      const todo = this.deps?.packages.find((pkg) => pkg.id === "todo");
+      box.append(el(
+        "div",
+        "exec-plan-empty",
+        todo && !todo.installed
+          ? tr("未安装计划扩展；请到设置 → 扩展安装 {p1}", { p1: "@juicesharp/rpiv-todo" })
+          : tr("本任务没有列计划"),
+      ));
+      return box;
+    }
+
+    if (!mini && !plan.tasks.some((task) => task.id === this.execSelectedPlanTaskId)) this.execSelectedPlanTaskId = null;
+    const heading = el("div", "exec-plan-heading");
+    heading.append(el("strong", "", tr("计划 {p1}/{p2}", { p1: plan.done, p2: plan.total })));
+    if (!mini && plan.listedRoundOrdinal !== null) {
+      heading.append(el("span", "exec-plan-listed", tr("第 {p1} 轮列出", { p1: plan.listedRoundOrdinal })));
+    }
+    if (!mini && this.execSelectedPlanTaskId !== null) {
+      const clear = el("button", "exec-plan-clear", tr("取消高亮")) as HTMLButtonElement;
+      clear.type = "button";
+      clear.onclick = () => {
+        this.execSelectedPlanTaskId = null;
+        this.renderQueue();
+      };
+      heading.append(clear);
+    }
+    box.append(heading);
+
+    const progress = el("div", "exec-plan-progress");
+    progress.setAttribute("role", "progressbar");
+    progress.setAttribute("aria-label", tr("计划进度"));
+    progress.setAttribute("aria-valuemin", "0");
+    progress.setAttribute("aria-valuemax", String(plan.total));
+    progress.setAttribute("aria-valuenow", String(plan.done));
+    const fill = el("div", "exec-plan-progress-fill");
+    fill.style.width = `${plan.total ? Math.round((plan.done / plan.total) * 100) : 0}%`;
+    progress.append(fill);
+    box.append(progress);
+
+    const tasks = el("div", "exec-plan-tasks");
+    for (const task of plan.tasks) {
+      const selected = !mini && this.execSelectedPlanTaskId === task.id;
+      const row = mini
+        ? el("div", `exec-plan-task ${task.status}`)
+        : el("button", `exec-plan-task ${task.status}${selected ? " picked" : ""}`) as HTMLButtonElement;
+      if (!mini) {
+        (row as HTMLButtonElement).type = "button";
+        row.dataset.planTaskId = String(task.id);
+        row.setAttribute("aria-pressed", String(selected));
+      }
+      row.title = task.subject;
+      const marker = task.status === "completed" ? "✓" : task.status === "in_progress" ? "◌" : "○";
+      const markerNode = el("span", "exec-plan-state", marker);
+      const statusLabel = task.status === "completed" ? tr("已完成") : task.status === "in_progress" ? tr("进行中") : tr("待做");
+      markerNode.setAttribute("aria-label", statusLabel);
+      const copy = el("div", "exec-plan-copy");
+      copy.append(el("span", "exec-plan-subject", task.subject));
+      if (task.status === "in_progress" && task.activeForm) copy.append(el("span", "exec-plan-active", task.activeForm));
+      for (const id of task.waitingOn) copy.append(el("span", "exec-plan-waiting", tr("等 #{p1}", { p1: id })));
+      row.append(markerNode, copy, el("span", "exec-plan-step-count", tr("{p1} 步", { p1: task.stepCount })));
+      if (!mini) {
+        (row as HTMLButtonElement).onclick = () => {
+          this.execSelectedPlanTaskId = selected ? null : task.id;
+          this.renderQueue();
+        };
+      }
+      tasks.append(row);
+    }
+    box.append(tasks);
+    return box;
+  }
+
+  private execNowCard(view: ExecViewModel): HTMLElement {
+    const card = el("section", `exec-now${view.now.kind === "idle" ? " idle" : ""}`);
+    const activeTask = view.plan?.tasks.find((task) => task.id === view.plan?.activeTaskId);
+    const title = activeTask && view.plan
+      ? tr("现在 · 计划 {p1}/{p2} · {p3}", { p1: view.plan.done + 1, p2: view.plan.total, p3: activeTask.subject })
+      : tr("现在");
+    card.append(el("h2", "", title));
+    if (view.now.kind === "thinking" || view.now.kind === "writing") {
+      const label = view.now.kind === "thinking" ? tr("思考中") : tr("正在写回复");
+      card.append(el("div", "exec-now-line", tr("{p1} · 已 {p2} 字", { p1: label, p2: view.now.characters })));
+      if (view.now.summary) card.append(el("div", "exec-now-summary", `“${view.now.summary}”`));
+      for (const active of view.now.activeTools) card.append(this.execActiveTool(active));
+    } else if (view.now.kind === "tool") {
+      for (const active of view.now.activeTools) card.append(this.execActiveTool(active));
+    } else if (view.now.kind === "waiting") {
+      card.append(el("div", "exec-now-line", tr("等待模型响应…")));
+    } else if (view.now.kind === "idle") {
+      const result = view.now.succeeded === null ? "" : view.now.succeeded ? tr("全部成功") : tr("有失败步骤");
+      const duration = view.now.previousDurationMs === null ? "" : this.execDuration(view.now.previousDurationMs);
+      const message = duration
+        ? tr("空闲 · 上一轮 {p1} · {p2}", { p1: duration, p2: result })
+        : result ? tr("空闲 · {p1}", { p1: result }) : tr("空闲");
+      card.append(el("div", "exec-now-line", message));
+    }
+    for (const child of view.runningChildren) {
+      const line = el("div", "exec-now-line exec-now-child");
+      line.append(el("b", "", child.agent), el("span", "", child.step));
+      card.append(line);
+    }
+    return card;
+  }
+
+  private execActiveTool(active: { name: string; args: unknown; elapsedMs: number }): HTMLElement {
+    const line = el("div", "exec-now-line");
+    line.append(el("b", "", active.name), el("span", "exec-args", this.execArgs(active.args)), el("span", "exec-elapsed", this.execDuration(active.elapsedMs)));
+    return line;
+  }
+
+  private execArgs(args: unknown): string {
+    if (typeof args === "string") return args;
+    try {
+      return args == null ? "" : JSON.stringify(args);
+    } catch {
+      return String(args);
+    }
+  }
+
+  private execMetricNumber(value: number | null): string {
+    return value === null ? "–" : new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
+  }
+
+  private execMetricCost(value: number | null): string {
+    return value === null ? "–" : `$${value.toFixed(4)}`;
+  }
+
+  private execMetricsCard(model: ExecViewModel): HTMLElement {
+    const metrics = model.metrics;
+    const card = el("section", "exec-metrics");
+    card.setAttribute("aria-label", tr("数字"));
+    const grid = el("div", "exec-metric-grid");
+    const metric = (label: string, value: string, duration = false) => {
+      const box = el("div", "exec-metric");
+      box.append(el("span", "exec-metric-label", label));
+      const number = el("b", "exec-metric-value", value);
+      if (duration) number.dataset.execDuration = "1";
+      box.append(number);
+      return box;
+    };
+    const costMetric = metric(tr("本轮费用"), this.execMetricCost(metrics.cost));
+    costMetric.dataset.execMetric = "cost";
+    grid.append(
+      metric(tr("本轮耗时"), metrics.durationMs === null ? "–" : this.execDuration(metrics.durationMs), true),
+      metric(tr("工具 / 失败"), `${metrics.toolCount} / ${metrics.failureCount}`),
+      costMetric,
+    );
+    card.append(grid);
+
+    const subtotal = (label: string, totals: { cost: number | null; tokens: number | null }) => {
+      const row = el("div", "exec-metric-subtotal");
+      row.append(el("span", "exec-metric-label", label));
+      const tokenLabel = tr("Token 数");
+      row.append(el("span", "exec-metric-total", `${this.execMetricNumber(totals.tokens)} ${tokenLabel} · ${this.execMetricCost(totals.cost)}`));
+      return row;
+    };
+    const subtotals = el("div", "exec-metric-subtotals");
+    subtotals.append(subtotal(tr("主会话"), metrics.main), subtotal(tr("子代理"), metrics.subagents));
+    card.append(subtotals);
+
+    const context = el("div", "exec-context");
+    const percent = metrics.contextPercent;
+    const percentText = percent === null ? "–" : `${percent.toFixed(1).replace(/\.0$/, "")}%`;
+    context.append(el("div", "exec-context-label", tr("上下文 {p1} / {p2} · {p3}", {
+      p1: this.execMetricNumber(metrics.contextTokens),
+      p2: this.execMetricNumber(metrics.contextWindow),
+      p3: percentText,
+    })));
+    const bar = el("div", "exec-context-bar");
+    bar.setAttribute("role", "progressbar");
+    bar.setAttribute("aria-label", tr("上下文占用"));
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", "100");
+    if (percent === null) {
+      bar.setAttribute("aria-valuetext", "–");
+      bar.classList.add("unknown");
+    } else {
+      bar.setAttribute("aria-valuenow", String(Math.max(0, Math.min(100, percent))));
+      bar.setAttribute("aria-valuetext", percentText);
+      const fill = el("span", "exec-context-fill");
+      fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+      bar.append(fill);
+    }
+    context.append(bar);
+    card.append(context);
+    return card;
+  }
+
+  private execChildStep(step: ExecSubagentRow["steps"][number], runId: string): HTMLElement {
+    const key = `${runId}:${step.id}`;
+    const expanded = this.execChildDetails.has(key);
+    const wrap = el("div", "exec-child-step-wrap");
+    const button = el("button", "exec-child-step") as HTMLButtonElement;
+    button.type = "button";
+    button.setAttribute("aria-expanded", String(expanded));
+    const state = el("span", `exec-state ${step.status}`);
+    state.textContent = step.status === "running" ? "◌" : step.status === "error" ? "✗" : step.status === "success" ? "✓" : "•";
+    const summary = typeof step.args === "string" ? step.args : this.execArgs(step.args);
+    button.append(state, el("span", "exec-step-name", step.kind === "skill" ? tr("技能 · {p1}", { p1: step.label }) : step.label), el("span", "exec-step-args", summary));
+    button.onclick = () => {
+      if (expanded) this.execChildDetails.delete(key);
+      else this.execChildDetails.add(key);
+      this.renderQueue();
+    };
+    wrap.append(button);
+    if (expanded) {
+      const details = el("div", "exec-child-step-detail");
+      if (step.args != null && summary) details.append(el("span", "exec-child-detail-label", tr("参数")), el("pre", "", this.execArgs(step.args)));
+      if (step.result) {
+        const result = step.result.length > 1200 ? `${step.result.slice(0, 1200)}…` : step.result;
+        details.append(el("span", "exec-child-detail-label", tr("结果摘要")), el("pre", "", result));
+      }
+      if (details.childNodes.length) wrap.append(details);
+    }
+    return wrap;
+  }
+
+  private execSubagentNode(row: NonNullable<ExecViewModel["timeline"][number]["subagent"]>): HTMLElement {
+    const wrap = el("section", "exec-subagent");
+    const toggle = el("button", "exec-subagent-toggle") as HTMLButtonElement;
+    const expanded = this.execChildExpanded.has(row.runId);
+    const childState = this.execChildStates.get(row.runId);
+    const unavailable = this.execChildErrors.has(row.runId);
+    toggle.type = "button";
+    toggle.disabled = row.locked;
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.setAttribute("aria-label", expanded ? tr("折叠子代理") : tr("展开子代理"));
+    const identity = row.agent ? tr("子代理 · {p1}", { p1: row.agent }) : tr("子代理");
+    toggle.append(el("span", "exec-subagent-caret", expanded ? "▾" : "▸"), el("span", "exec-subagent-title", identity));
+    if (row.plan) toggle.append(el("span", "exec-subagent-plan", tr("计划 {p1}/{p2}", { p1: row.plan.done, p2: row.plan.total })));
+    const statusText = row.status === "running" ? tr("运行中") : row.status === "done" ? tr("已完成") : row.status === "failed" ? tr("失败") : tr("等待状态");
+    toggle.append(el("span", `exec-subagent-status ${row.status}`, statusText));
+    const totals = el("span", "exec-subagent-totals");
+    totals.append(this.execMetricNumber(row.stats.tokens), document.createTextNode(" "), el("span", "", tr("Token 数")), document.createTextNode(" · "), this.execMetricCost(row.stats.cost));
+    toggle.append(totals);
+    toggle.onclick = () => this.toggleExecChild(row.runId);
+    wrap.append(toggle);
+    if (row.task) wrap.append(el("div", "exec-subagent-task", row.task));
+    if (row.locked) {
+      wrap.append(el("div", "exec-subagent-note", this.publicAccess ? tr("公网访问时子代理详情已锁定") : tr("当前桥不支持子代理会话订阅")));
+      return wrap;
+    }
+    if (!expanded) return wrap;
+    if (unavailable) {
+      wrap.append(el("div", "exec-empty", tr("子代理会话暂不可用")));
+      return wrap;
+    }
+    if (row.plan) wrap.append(this.execPlanBox(row.plan, true));
+    if (childState?.pending && !row.steps.length) {
+      wrap.append(el("div", "exec-empty", tr("等待子代理会话…")));
+      return wrap;
+    }
+    if (!row.steps.length) {
+      wrap.append(el("div", "exec-empty", tr("暂无子代理步骤")));
+      return wrap;
+    }
+    const steps = el("div", "exec-child-steps");
+    for (const step of row.steps) steps.append(this.execChildStep(step, row.runId));
+    wrap.append(steps);
+    return wrap;
+  }
+
+  private renderExecPanel(): HTMLElement {
+    this.ensureExecRuns();
+    const model = this.execModel();
+    this.execSelectedRound = model.selectedRound;
+    const panel = el("div", "exec-panel");
+    if (!this.deps && !this.depsLoading && Date.now() - this.depsAt > 30_000) this.loadDeps(false);
+    panel.append(this.execPlanBox(model.plan));
+    const now = this.execNowCard(model);
+    now.classList.add("exec-now-slot");
+    panel.append(now, this.execMetricsCard(model));
+    const heading = el("div", "exec-heading");
+    heading.append(el("h2", "", tr("步骤")));
+    const select = el("select", "exec-rounds") as HTMLSelectElement;
+    select.setAttribute("aria-label", tr("回看轮次"));
+    for (const round of model.rounds) {
+      const option = el("option", "", tr("第 {p1} 轮", { p1: round.ordinal })) as HTMLOptionElement;
+      option.value = round.id;
+      option.selected = round.id === model.selectedRound;
+      select.append(option);
+    }
+    select.onchange = () => {
+      this.execSelectedRound = select.value || null;
+      this.execSelectedPlanTaskId = null;
+      this.renderQueue();
+    };
+    select.hidden = model.rounds.length < 2;
+    heading.append(select);
+    panel.append(heading);
+    const list = el("div", "exec-timeline");
+    for (const row of model.timeline) {
+      const selectedPlanTaskId = this.execSelectedPlanTaskId;
+      const selected = selectedPlanTaskId !== null && row.planTaskId === selectedPlanTaskId;
+      const button = el("button", `exec-step${selectedPlanTaskId === null ? "" : selected ? " selected" : " dimmed"}`) as HTMLButtonElement;
+      button.type = "button";
+      button.dataset.itemId = row.id;
+      button.dataset.planTaskId = row.planTaskId === null ? "" : String(row.planTaskId);
+      button.title = tr("点击跳到聊天里的这一步");
+      const state = el("span", `exec-state ${row.status}`);
+      state.textContent = row.status === "running" ? "◌" : row.status === "error" ? "✗" : row.status === "success" ? "✓" : "•";
+      const name = row.kind === "skill" ? tr("技能 · {p1}", { p1: row.label }) : row.label;
+      button.append(state, el("span", "exec-step-name", name), el("span", "exec-step-args", this.execArgs(row.args)));
+      const duration = el("span", "exec-step-duration", this.execDuration(row.durationMs));
+      if (row.status === "running") {
+        const item = this.chat.loadedItems().find((loaded) => loaded.id === row.id);
+        if (item?.ts) duration.dataset.startedAt = item.ts;
+      }
+      button.append(duration);
+      button.onclick = () => {
+        if (!this.chat.jumpToItem(row.id)) this.flashToast(tr("这一步不在已加载的聊天里"), false, 1800);
+      };
+      const entry = el("div", "exec-step-entry");
+      entry.append(button);
+      if (row.subagent) entry.append(this.execSubagentNode(row.subagent));
+      list.append(entry);
+    }
+    if (!model.timeline.length) list.append(el("div", "exec-empty", tr("本轮还没有步骤")));
+    panel.append(list);
+    return panel;
+  }
+
+  private refreshExecClock(): void {
+    if (this.queueTab !== "exec") return;
+    const slot = this.els.queueInner?.querySelector<HTMLElement>(".exec-now-slot");
+    if (slot) {
+      const next = this.execNowCard(this.execModel());
+      next.classList.add("exec-now-slot");
+      slot.replaceWith(next);
+    }
+    const duration = this.els.queueInner?.querySelector<HTMLElement>("[data-exec-duration]");
+    if (duration) duration.textContent = this.execDuration(this.execModel().metrics.durationMs) || "–";
+    for (const node of this.els.queueInner?.querySelectorAll<HTMLElement>(".exec-step-duration[data-started-at]") ?? []) {
+      const at = Date.parse(node.dataset.startedAt ?? "");
+      if (Number.isFinite(at)) node.textContent = this.execDuration(Math.max(0, Date.now() - at));
+    }
+  }
+
   private approvalNode(): HTMLElement {
     const slot = el("div", "approval-slot");
     for (const a of this.approvals) slot.append(this.approvalCard(a));
@@ -13837,6 +14492,30 @@ export class App {
     // 答一份问卷会重画整栏；把阅读位置留着，别让人每点一次选项就回到顶部。
     const kept = this.els.queuePane.scrollTop;
     host.replaceChildren();
+    const tabs = el("div", "exec-tabs");
+    const needs = el("button", this.queueTab === "needs" ? "on" : "", tr("需要你")) as HTMLButtonElement;
+    needs.type = "button";
+    needs.dataset.execTab = "needs";
+    needs.setAttribute("aria-selected", String(this.queueTab === "needs"));
+    needs.onclick = () => this.selectQueueTab("needs");
+    const execution = el("button", this.queueTab === "exec" ? "on" : "", tr("执行")) as HTMLButtonElement;
+    execution.type = "button";
+    execution.dataset.execTab = "exec";
+    execution.setAttribute("aria-selected", String(this.queueTab === "exec"));
+    execution.onclick = () => this.selectQueueTab("exec");
+    if (this.queueTab === "needs" && this.session?.running) {
+      const pip = el("span", "exec-pip");
+      pip.title = tr("执行中");
+      pip.setAttribute("aria-label", tr("执行中"));
+      execution.append(pip);
+    }
+    tabs.append(needs, execution);
+    host.append(tabs);
+    if (this.queueTab === "exec") {
+      host.append(this.renderExecPanel());
+      this.els.queuePane.scrollTop = kept;
+      return;
+    }
     const pending = this.approvals;
     if (!pending.length && !this.asks.length) {
       host.append(el("div", "empty", tr("没有等你的事。")));
@@ -15503,11 +16182,59 @@ function setToggle(btn: HTMLElement, collapsed: boolean, label: string): void {
   btn.setAttribute("aria-pressed", String(collapsed));
 }
 
+function readQueueTab(): QueueTab {
+  try {
+    return localStorage.getItem("pi.queueTab") === "exec" ? "exec" : "needs";
+  } catch {
+    return "needs";
+  }
+}
+
 function readFlag(key: string): boolean {
   try {
     return localStorage.getItem(key) === "1";
   } catch {
     return false;
+  }
+}
+
+function isExecStatsSnapshot(value: unknown): value is ExecStatsSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const snapshot = value as Record<string, unknown>;
+  const finiteOrNull = (number: unknown) => number === null || (typeof number === "number" && Number.isFinite(number));
+  if (!finiteOrNull(snapshot.cost) || !finiteOrNull(snapshot.contextTokens) || !finiteOrNull(snapshot.contextWindow)) return false;
+  if (snapshot.tokens === null) return true;
+  if (!snapshot.tokens || typeof snapshot.tokens !== "object" || Array.isArray(snapshot.tokens)) return false;
+  return ["input", "output", "cacheRead", "cacheWrite", "total"].every((key) => {
+    const number = (snapshot.tokens as Record<string, unknown>)[key];
+    return number === undefined || (typeof number === "number" && Number.isFinite(number));
+  });
+}
+
+function readExecRoundStats(sessionId: string): Record<string, ExecRoundStats> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(`pi.execRoundStats.${encodeURIComponent(sessionId)}`) ?? "null") as unknown;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const records: Record<string, ExecRoundStats> = {};
+    for (const [id, value] of Object.entries(raw)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const record = value as Record<string, unknown>;
+      const baseline = record.baseline === null || isExecStatsSnapshot(record.baseline) ? record.baseline as ExecStatsSnapshot | null : null;
+      const final = record.final === null || isExecStatsSnapshot(record.final) ? record.final as ExecStatsSnapshot | null : null;
+      if ("baseline" in record || "final" in record) records[id] = { baseline, final };
+    }
+    return records;
+  } catch {
+    return {};
+  }
+}
+
+function saveExecRoundStats(sessionId: string, records: Record<string, ExecRoundStats>): void {
+  if (!sessionId) return;
+  try {
+    localStorage.setItem(`pi.execRoundStats.${encodeURIComponent(sessionId)}`, JSON.stringify(records));
+  } catch {
+    // Quota/private mode can disable persistence; in-memory metrics still work.
   }
 }
 

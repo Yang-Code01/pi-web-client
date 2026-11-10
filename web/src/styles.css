@@ -758,6 +758,11 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .tool.err { border-color: var(--danger-dim); }
 .tool .status { font-size: 11px; color: var(--faint); }
 .tool.err .status { color: var(--danger); }
+.todo-tool { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 7px 10px; color: var(--dim); text-align: left; cursor: pointer; }
+.todo-tool:hover { border-color: var(--accent-dim); background: var(--accent-bg); }
+.todo-icon { flex: none; }
+.todo-summary { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+.todo-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* 隐式技能（D199）：模型自己读了 SKILL.md，本轮就多一张卡 —— 一句话是什么 + 为什么是它。
    虚线徽标说的是「没人让你用它」：它挑的，不是你点的。 */
 .skillcard { border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); background: var(--panel); border-radius: 12px; padding: 10px 12px; min-width: 0; }
@@ -1471,6 +1476,100 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 
 /* ---------------------------------------------------------------- queue */
 .queue { padding: 12px 12px 20px; display: grid; gap: 0; }
+.exec-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line-soft); margin: 0 0 12px; }
+.exec-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--faint); padding: 7px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+.exec-tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.exec-pip { display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: var(--warn); vertical-align: 1px; }
+.exec-panel { display: grid; gap: 10px; min-width: 0; }
+.exec-plan { min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); }
+.exec-plan.mini { padding: 5px 7px; border-radius: 6px; background: var(--panel); }
+.exec-plan-empty { overflow: hidden; color: var(--faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.exec-plan-heading { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
+.exec-plan-heading strong { color: var(--text); font-size: 13px; }
+.exec-plan.mini .exec-plan-heading { font-size: 10px; }
+.exec-plan.mini .exec-plan-heading strong { font-size: 11px; }
+.exec-plan-listed { overflow: hidden; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; }
+.exec-plan-clear { margin-left: auto; padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px; background: transparent; color: var(--faint); font: inherit; font-size: 11px; cursor: pointer; }
+.exec-plan-clear:hover { color: var(--text); border-color: var(--accent-dim); }
+.exec-plan-progress { overflow: hidden; height: 4px; margin: 7px 0; border-radius: 4px; background: var(--line); }
+.exec-plan.mini .exec-plan-progress { height: 3px; margin: 4px 0; }
+.exec-plan-progress-fill { height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }
+.exec-plan-tasks { display: grid; gap: 4px; }
+.exec-plan.mini .exec-plan-tasks { gap: 2px; }
+.exec-plan-task { display: flex; align-items: flex-start; gap: 7px; width: 100%; min-width: 0; padding: 3px 4px; border: 0; border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.exec-plan-task:hover, .exec-plan-task.picked { background: var(--accent-bg); }
+.exec-plan.mini .exec-plan-task { padding: 2px 3px; font-size: 10px; cursor: default; }
+.exec-plan.mini .exec-plan-task:hover { background: transparent; }
+.exec-plan-task:focus-visible, .exec-plan-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.exec-plan-state { flex: none; width: 14px; color: var(--faint); text-align: center; }
+.exec-plan-task.completed .exec-plan-state { color: var(--ok); }
+.exec-plan-task.in_progress .exec-plan-state { color: var(--accent); animation: exec-plan-spin 1.4s linear infinite; }
+.exec-plan-task.completed .exec-plan-subject { color: var(--faint); text-decoration: line-through; }
+.exec-plan-copy { display: flex; flex-wrap: wrap; gap: 2px 7px; min-width: 0; }
+.exec-plan-subject { overflow-wrap: anywhere; }
+.exec-plan-active, .exec-plan-waiting { color: var(--faint); font-size: 11px; }
+.exec-plan-step-count { flex: none; margin-left: auto; color: var(--faint); font-size: 10px; white-space: nowrap; }
+@keyframes exec-plan-spin { to { transform: rotate(360deg); } }
+.exec-now { border: 1px solid var(--accent-dim); background: linear-gradient(180deg, var(--accent-bg), var(--panel-2)); border-radius: var(--r); padding: 10px 12px; min-width: 0; }
+.exec-now.idle { border-color: var(--line); background: var(--panel-2); }
+.exec-now h2 { margin: 0 0 8px; padding: 0; border: 0; color: var(--text); font-size: 13px; }
+.exec-now-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
+.exec-metrics { display: grid; gap: 9px; min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); }
+.exec-metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.exec-metric { display: grid; gap: 3px; min-width: 0; }
+.exec-metric-label { color: var(--faint); font-size: 10px; }
+.exec-metric-value { overflow: hidden; color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.exec-metric-subtotals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.exec-metric-subtotal { display: grid; gap: 2px; min-width: 0; }
+.exec-metric-total { overflow: hidden; color: var(--text); font-size: 11px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.exec-context { display: grid; gap: 5px; }
+.exec-context-label { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+.exec-context-bar { height: 5px; overflow: hidden; border-radius: 999px; background: var(--line); }
+.exec-context-bar.unknown { background: var(--line-soft); }
+.exec-context-fill { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }
+.exec-now-summary { overflow: hidden; margin-top: 4px; color: var(--faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.exec-args, .exec-step-args { overflow: hidden; min-width: 0; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; }
+.exec-elapsed { flex: none; margin-left: auto; color: var(--accent); font-variant-numeric: tabular-nums; }
+.exec-heading { display: flex; align-items: center; gap: 8px; }
+.exec-heading h2 { margin: 8px 0 0; padding: 0; border: 0; color: var(--text); font-size: 12px; }
+.exec-rounds { max-width: 140px; margin-left: auto; padding: 4px 6px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 11px; }
+.exec-timeline { display: grid; gap: 3px; }
+.exec-step { display: grid; grid-template-columns: 18px minmax(70px, auto) minmax(0, 1fr) auto; align-items: center; gap: 6px; width: 100%; padding: 7px 5px; border: 0; border-radius: 6px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.exec-step:hover { background: var(--panel-2); }
+.exec-step.selected { background: var(--accent-bg); }
+.exec-step.dimmed { opacity: .38; }
+.exec-state { text-align: center; font-size: 12px; }
+.exec-state.running { color: var(--accent); }
+.exec-state.success { color: var(--ok); }
+.exec-state.error { color: var(--danger); }
+.exec-step-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.exec-step-duration { flex: none; color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.exec-step-args { font-size: 11px; }
+.exec-empty { padding: 8px 4px; color: var(--faint); font-size: 12px; }
+.exec-flash { outline: 2px solid var(--accent); outline-offset: 2px; animation: exec-flash 1.2s ease-out forwards; }
+.exec-step-entry { display: grid; min-width: 0; }
+.exec-subagent { display: grid; gap: 5px; min-width: 0; margin: 0 4px 6px 24px; padding: 6px 7px; border-left: 2px solid var(--line); border-radius: 0 6px 6px 0; background: var(--panel-2); }
+.exec-subagent-toggle { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto auto; align-items: center; gap: 5px; width: 100%; padding: 2px 0; border: 0; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.exec-subagent-toggle:disabled { cursor: default; opacity: .7; }
+.exec-subagent-caret { color: var(--accent); }
+.exec-subagent-title { overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.exec-subagent-plan { padding: 1px 5px; border-radius: 8px; color: var(--accent); background: var(--accent-bg); font-size: 9px; white-space: nowrap; }
+.exec-subagent-status { color: var(--faint); font-size: 10px; white-space: nowrap; }
+.exec-subagent-status.running { color: var(--accent); }
+.exec-subagent-status.failed { color: var(--danger); }
+.exec-subagent-totals { grid-column: 2 / -1; overflow: hidden; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.exec-subagent-task { overflow: hidden; color: var(--faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.exec-subagent-note { color: var(--faint); font-size: 10px; }
+.exec-child-steps { display: grid; gap: 2px; min-width: 0; padding-top: 3px; border-top: 1px solid var(--line-soft); }
+.exec-child-step-wrap { min-width: 0; }
+.exec-child-step { display: grid; grid-template-columns: 14px minmax(0, auto) minmax(0, 1fr); align-items: center; gap: 5px; width: 100%; padding: 4px 2px; border: 0; border-radius: 4px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.exec-child-step:hover { background: var(--panel); }
+.exec-child-step .exec-step-name { font-size: 10px; }
+.exec-child-step .exec-step-args { font-size: 10px; }
+.exec-child-step-detail { display: grid; gap: 4px; min-width: 0; padding: 2px 4px 5px 19px; }
+.exec-child-detail-label { color: var(--faint); font-size: 10px; }
+.exec-child-step-detail pre { max-height: 180px; overflow: auto; margin: 0; color: var(--faint); font: 10px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+@keyframes exec-flash { 0%, 45% { background-color: var(--accent-bg); } 100% { background-color: transparent; outline-color: transparent; } }
 /* 这一栏是「待办 / 通道 / 快捷键 / 关于」四组，每组一个标题加一组控件。以前它们只靠 grid 的 8px
    gap 排着，按钮各浮各的，标题像是另一块的。发丝线 + 16/8 的上下节奏把它们连成组：
    标题上面 14px 线、下面 8px 才是控件。 */
