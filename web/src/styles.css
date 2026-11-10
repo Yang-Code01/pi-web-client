@@ -892,6 +892,17 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .takeover > .btn { flex: none; }
 .takeover.warn { border-color: var(--warn-dim); background: var(--warn-bg); color: var(--text); }
 
+/* D228: 工作目录没了 —— 说明一段 + 路径输入框 + 两颗钮；
+   窄屏上输入框自己换一行（flex-wrap），不把气泡撑出滚动条。 */
+.cwd-fix { flex-wrap: wrap; row-gap: 6px; }
+.cwd-fix .cwd-fix-text { flex: 1 1 100%; min-width: 0; }
+.cwd-fix .cwd-fix-row { display: flex; flex: 1 1 100%; gap: 8px; align-items: center; flex-wrap: wrap; }
+.cwd-fix .cwd-fix-input {
+  flex: 1 1 240px; min-width: 0; padding: 6px 10px; border-radius: 8px;
+  border: 1px solid var(--line-strong); background: var(--sunken); color: var(--text); font: 12px/1.4 var(--mono);
+}
+.cwd-fix .cwd-fix-input:focus { outline: none; border-color: var(--accent-dim); box-shadow: 0 0 0 2px var(--accent-bg); }
+
 /*
  * D170: 后台子代理的那条提示。会话自己 settle 之后 pi 再也不会发 running ——— 这里是页面上
  * 唯一能看出「它还在后台干活」的地方，所以它用强调色而不是告警色：这不是要你处理的事。

@@ -3955,3 +3955,18 @@ D
 **代价：** `piCandidates()` 多了一个可选入参（`PiProbe`），测试可以喂假环境，不用真 fork npm、真读 bundle。POSIX 上 `bin/node_modules` 那条候选去掉了（本来就只在便携版 Windows 有意义）。
 
 **验证：** `npm run test:pi`（POSIX 前缀、nvm 多版本、`npm root -g` 不重复拼、软链启动器、`pi.cmd` 里的路径、`PI_BIN` 优先、`readVersion` 上溯三层）；本机（macOS + nvm）`resolvePi()` 由抛异常变成 `1.5.2`；`node scripts/bootstrap.mjs --check` 从「找不到 pi」变成「✓ pi 1.5.2」；`tsc -p bridge/tsconfig.json --noEmit` 通过。
+## D228 会话的工作目录没了：不 spawn，把它复制到新目录成新会话（pi 1.5.2 的第三种做法）
+
+**问题：** pi 1.5.2 改了「会话记录里的工作目录已经不存在」时的行为（项目文件夹被改名 / 删掉）：终端里给 `Continue` / `Fork` / `Cancel`，`Continue` 是「就在当前目录跑完这次，下次再问」，`Fork` 是「复制成当前目录里的新会话」。网页这边原来什么都不做——桥拿着那个已经没了的 cwd 去 spawn，node 直接 `ENOENT`，用户看到的只有一句「pi 进程意外退出了（可能有别的终端占着这个会话）」，完全对不上事实。
+
+**决定：**
+
+- **桥先问磁盘，再决定 spawn 不 spawn。** `startLive()` 头一件事是看会话文件里的 cwd 还在不在（`list()` 也会标，按目录缓存 30 秒，侧栏不必先点开一次才发现）。不在就不 spawn：不发 `starting`、不拿写锁，把 `state.cwdMissing` 交给页面。
+- **只给 pi 也推荐的那一条：复制。** RPC 模式下 `Continue` 根本不存在——`dist/main.js` 的非交互分支遇到 `MissingSessionCwdError` 是 `process.exit(1)`，没有任何覆盖 cwd 的入口（`SessionManager.open(path, dir, cwdOverride)` 只有 TUI 用得上）。所以网页能做的就是 pi 自己那个「Fork into …（新 ID，原会话保留）」：复制用 pi 的 `SessionManager.forkFrom()`，桥不自己拼文件。
+- **目标是用户选的目录，不是「当前目录」。** 网页里没有「pi 是在哪儿启动的」这个概念（每个会话有自己的 cwd），而改名这种情况最常见的是「还是原来那个父目录」。所以卡片里给一个输入框，默认填原来 cwd 的上一级，必须是一个已经存在的目录才让点。
+- **排队等启动的消息标红，不挂着。** 目录没了 pi 永远不会起来，`bootQueue` 里那几条（发消息 = 自动接管那条路径）当场 `failed` 并说明为什么，而不是让气泡一直显示「处理中」。
+- **顺手补掉一个一直存在的坑：** `openLiveNow()` 的 D8 护卫（「文件 20 秒前还在被写 → 终端里的 pi 可能还开着」）会把桥自己刚分叉 / 复制 / 导入出来的会话当成外人——刚写完的文件当然「一秒前还在被写」。现在桥自己写出来的文件在 `markOwnWrite()` 里记一分钟，护卫就认得出。
+
+**代价：** 网页比终端少一个选项（`Continue`），这是 RPC 模式的限制，不是选择；真要做只能改 pi。`state.cwdMissing` 按目录缓存 30 秒，目录被改名后侧栏最多慢半分钟才反映。复制出来的新会话落在目标目录的会话文件夹里、带新 ID，原会话的历史与文件一个字节都不动——所以「复制」不会顺带清理那份指向空气的旧记录，要不要清还是用户自己在会话管理里删。
+
+**验证：** `npm run test:cwd`（`bridge/tests/missing-cwd.mjs`，真 pi 的 session-manager + 假 pi：列表里就标出 cwdMissing、点开与接管都不起 pi、排队消息被标红且错误说得出来、`forkCwd` 之后新文件落在目标目录且会话头是「新 ID + 新 cwd + 历史照旧」、原文件字节不变、新会话能打开且这时 pi 才被拉起）；`npm run probe:cwd`（真 Chromium + 桩桥 12 项：卡片写着那个没了的路径、输入框默认上一级、按下去发的 `forkCwd` 带的是输入框里的值、失败后按钮回到可点、成功后页面订阅新会话、新会话没有这张卡片、「先不管」收得起来、控制台无报错）；回归 `node bridge/tests/branch-ops.mjs`（分叉 / 复制 / 导入 / @ 文件 / 命令表）PASS、`node bridge/tests/default-permission.mjs` 全绿；截图 `.scratch/missing-cwd/shots/`。

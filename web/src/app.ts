@@ -43,6 +43,7 @@ import {
   WS_NAME_MAX,
   cleanDirPath,
   dirBaseName,
+  dirParent,
   dropBlocker,
   dropHint,
   hasRowMembership,
@@ -355,6 +356,10 @@ export class App {
   private mkWaits = new Map<string, (res: { path?: string; error?: string }) => void>();
   /** Session whose claim is in flight: spawning pi takes a few seconds. */
   private claiming: string | null = null;
+  /** D228：「工作目录没了」那条提示卡上填的目标目录，按会话记（重画时不丢）。 */
+  private cwdFixDirs = new Map<string, string>();
+  /** D228：用户点了「先不管」的会话，这次打开页面不再打扰。 */
+  private cwdFixDismissed = new Set<string>();
   private usage: { contextTokens: number | null; contextWindow: number | null } = { contextTokens: null, contextWindow: null };
   /** Context budget chosen in the model sheet (bridge enforces it); null = window size. */
   private budget: number | null = null;
@@ -2374,6 +2379,20 @@ export class App {
           id,
           text: msg.type === "import.result" ? tr("已导入，这是导入的会话。") : msg.text ? tr("已分叉成新会话，原来那条消息放回了输入框。") : tr("已复制成新会话。"),
         };
+        break;
+      }
+      // D228：会话的工作目录没了 → 复制到用户选的目录后直接打开新会话。
+      case "forkCwd.result": {
+        if (msg.error) {
+          // 重画一次就够：按钮回到可点，输入框里的路径还在（cwdFixDirs）。
+          this.chat.add({ id: `n:${Date.now()}`, kind: "notice", text: tr("复制失败：{p1}", { p1: String(msg.error) }), level: "error" });
+          this.renderChat();
+          break;
+        }
+        const id = String(msg.sessionId ?? "");
+        if (!id) break;
+        this.openSession(id);
+        this.afterOpen = { id, text: tr("已复制成新会话（原会话保留）。") };
         break;
       }
       case "queue.restore": {
@@ -9811,8 +9830,52 @@ export class App {
     return claim;
   }
 
-  private startClaim(): void {
-    const id = this.currentId;
+  /**
+   * D228: 会话的工作目录没了。终端里的 pi 会给 Continue / Fork / Cancel，网页里 pi 不能「原地
+   * 继续」（RPC 模式下 pi 直接以 MissingSessionCwdError 退出），所以这里只给 pi 也推荐的那条：
+   * 把历史复制到一个新目录，成一个新会话（新 ID，原会话与文件不动）。
+   */
+  private cwdMissingBar(s: SessionState): HTMLElement {
+    const bar = el("div", "takeover warn cwd-fix");
+    bar.append(
+      el(
+        "div",
+        "cwd-fix-text",
+        tr("这个会话的工作目录已经不在了：{p1}。终端里的 pi 会让你选「原地继续 / 复制到别处 / 取消」；网页里的 pi 不能原地继续，只能把历史复制到一个已经存在的目录，变成一个新会话（原会话与文件不动）。", { p1: s.cwd }),
+      ),
+    );
+    const input = el("input", "cwd-fix-input") as HTMLInputElement;
+    input.type = "text";
+    input.spellcheck = false;
+    input.placeholder = tr("复制到哪个目录（必须已经存在；默认是原来目录的上一级）");
+    input.value = this.cwdFixDirs.get(s.id) ?? dirParent(s.cwd);
+    input.oninput = () => this.cwdFixDirs.set(s.id, input.value);
+    input.onkeydown = (ev) => {
+      if (ev.key === "Enter") go.click();
+    };
+    const go = el("button", "btn primary", tr("复制成新会话")) as HTMLButtonElement;
+    go.onclick = () => {
+      const cwd = input.value.trim();
+      if (!cwd) {
+        input.focus();
+        return;
+      }
+      go.disabled = true;
+      go.append(el("span", "act-spin"), el("span", "", tr("复制中…")));
+      this.socket.send({ type: "forkCwd", reqId: `fc${Date.now()}`, sessionId: s.id, cwd });
+    };
+    const skip = el("button", "btn ghost", tr("先不管")) as HTMLButtonElement;
+    skip.onclick = () => {
+      this.cwdFixDismissed.add(s.id);
+      this.renderChat();
+    };
+    const row = el("div", "cwd-fix-row");
+    row.append(input, go, skip);
+    bar.append(row);
+    return bar;
+  }
+
+  private startClaim(): void {    const id = this.currentId;
     if (!id || this.claiming) return;
     this.act(() => {
       this.socket.send({ type: "claim", sessionId: id });
@@ -9870,12 +9933,15 @@ export class App {
       host.append(bar);
     }
 
-    if (s && !s.owned) {
+    // D228: 目录没了的会话，「接管」按下去也没有意义（pi 起不来），下面那张卡片才是出口。
+    if (s && !s.owned && !s.cwdMissing) {
       const bar = el("div", "takeover warn");
       bar.append(el("span", "", tr("这个会话来自磁盘（只读预览）。发消息会自动接管；终端里如果有 pi 在写同一个文件，先退出那边。")));
       bar.append(this.claimButton());
       host.append(bar);
     }
+    // D228: 工作目录没了就不能直接打开（pi 在 RPC 模式下会因此退出），只能把历史复制走。
+    if (s?.cwdMissing && !this.cwdFixDismissed.has(s.id)) host.append(this.cwdMissingBar(s));
 
     const row = el("div", "row");
     const box = el("div", "composer-input");

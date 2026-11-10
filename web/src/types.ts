@@ -180,6 +180,8 @@ export interface SessionState {
   /** First user message, for searching in the manager. */
   preview?: string;
   permission?: PermissionMode;
+  /** D228：会话记录里的工作目录已经不在了（项目文件夹被改名 / 删了）—— 不能直接打开，只能复制走。 */
+  cwdMissing?: boolean;
   /** Sidebar arrangement from the bridge (state/manage.json). */
   pinned?: boolean;
   archived?: boolean;

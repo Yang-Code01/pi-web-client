@@ -195,6 +195,12 @@ export interface SessionState {
   ws?: string;
   /** Tool permission mode the approval gate enforces (state/allow/<id>.json `mode`). */
   permission?: PermissionMode;
+  /**
+   * D228（pi 1.5.2）：会话记录里的工作目录已经不在了（项目文件夹被改名 / 删了）。
+   * 终端里 pi 会让用户选 Continue / Fork / Cancel；RPC 模式没有这个选项（pi 直接带着
+   * `MissingSessionCwdError` 退出），所以桥不 spawn、把事实交给页面，页面给「复制到新目录」。
+   */
+  cwdMissing?: boolean;
   /** Another process (the pi terminal) holds the lock, so this one is read-only and undeletable. */
   locked?: boolean;
   /**
@@ -319,6 +325,41 @@ export function readHeader(file: string): { type?: string; version?: number; id?
 
 export function encodeCwd(cwd: string): string {
   return `--${path.resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+}
+
+/** 目录真的在吗（不抛：不存在、权限、网络盘掉线都只是「不在」）。 */
+function isDirectory(dir: string): boolean {
+  try {
+    return fs.statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * D228: 哪些会话文件是桥自己刚刚写出来的（分叉 / 复制 / 导入 / 新建）。
+ *
+ * `openLiveNow()` 有一道 D8 的护卫：「文件 20 秒前还在被写 → 终端里的 pi 可能还开着」。分叉出来
+ * 的新会话一秒前刚被我们写完，会撞上这道护卫，看着跟「从别的终端把新会话抢过来」一模一样。
+ */
+const ownWrites = new Map<string, number>();
+
+function markOwnWrite(file: string): void {
+  if (!file) return;
+  const key = path.resolve(file);
+  ownWrites.set(key, Date.now());
+  // 只留一分钟：过了护卫的窗口就没用了，积着只是泄漏。
+  for (const [k, at] of ownWrites) if (Date.now() - at > 60_000) ownWrites.delete(k);
+}
+
+function wasOwnWrite(file: string, mtime: number): boolean {
+  const at = ownWrites.get(path.resolve(file));
+  if (!at) return false;
+  if (Date.now() - at > 60_000) {
+    ownWrites.delete(path.resolve(file));
+    return false;
+  }
+  return mtime <= at + 1000;
 }
 
 export function isPermissionMode(v: unknown): v is PermissionMode {
@@ -1098,6 +1139,26 @@ export class Session extends EventEmitter {
   // ---------------------------------------------------------------- live (RPC)
   async startLive(opts: { resume: boolean; cwd?: string; name?: string; ws?: string }): Promise<void> {
     if (this.live) return;
+    // D228: pi 1.5.2 在 RPC 模式下遇到「会话的工作目录没了」会直接带 MissingSessionCwdError 退
+    // 出，而把我们这边 spawn 的 cwd 设成一个不存在的目录只会得到一句 ENOENT。所以在这里先问
+    // 磁盘：不在就不 spawn，把事实发给页面 —— 那边给「复制到新目录成新会话」。
+    const wanted = opts.cwd || this.state.cwd || "";
+    if (wanted && this.state.file && !isDirectory(wanted)) {
+      if (!this.state.cwdMissing) this.setState({ cwdMissing: true, running: false, starting: false }, { touch: false });
+      // 已经排进来、等着「pi 起来就发」的消息：目录没了 pi 永远不会起来，不能把它们挂在「处理中」。
+      const lost = this.bootQueue.splice(0);
+      for (const entry of lost) this.markUserPending(entry.id, "failed");
+      if (lost.length) {
+        this.emitWs({
+          type: "notice",
+          sessionId: this.state.id,
+          level: "error",
+          text: "这个会话的工作目录已经不存在了，消息没有发出去。把它复制到一个存在的目录（下面那个输入框）再发。",
+        });
+      }
+      return;
+    }
+    if (this.state.cwdMissing) this.setState({ cwdMissing: false }, { touch: false });
     // A pi we are just spawning counts as activity on this session's clock: the watermark's
     // protection window (#79) starts here, whether or not pi has said anything yet.
     this.touch();
@@ -2835,6 +2896,21 @@ export class SessionManager extends EventEmitter {
     return this.metas().filter((m) => !readLock(m.id));
   }
 
+  /**
+   * D228: 这个会话的工作目录还在吗。`list()` 每次都会问一遍（侧栏要先看出「目录没了」），所以
+   * 结果按目录记 30 秒 —— 200 个会话不该每次都去 stat，而目录被人改名之后最多慢半分钟才反映。
+   */
+  private dirCache = new Map<string, { at: number; ok: boolean }>();
+  private cwdGone(cwd: string | undefined): boolean {
+    if (!cwd) return false;
+    const hit = this.dirCache.get(cwd);
+    if (hit && Date.now() - hit.at < 30_000) return !hit.ok;
+    const ok = isDirectory(cwd);
+    this.dirCache.set(cwd, { at: Date.now(), ok });
+    if (this.dirCache.size > 500) this.dirCache.delete(this.dirCache.keys().next().value as string);
+    return !ok;
+  }
+
   list(): SessionState[] {
     const seen = new Set<string>();
     const out: SessionState[] = [];
@@ -2848,7 +2924,7 @@ export class SessionManager extends EventEmitter {
       if (s.state.scratch) continue;
       const lock = readLock(s.state.id);
       // Copy: these flags must not leak into the live state a session broadcasts.
-      out.push({ ...s.state, ...flag(s.state.id, s.state.cwd), locked: Boolean((lock && lock.pid !== process.pid) || (!s.live && readTtyLock(s.state.id))) });
+      out.push({ ...s.state, ...flag(s.state.id, s.state.cwd), ...(this.cwdGone(s.state.cwd) ? { cwdMissing: true } : {}), locked: Boolean((lock && lock.pid !== process.pid) || (!s.live && readTtyLock(s.state.id))) });
     }
     for (const meta of this.discover()) {
       if (seen.has(meta.id)) continue;
@@ -2869,6 +2945,7 @@ export class SessionManager extends EventEmitter {
         origin: originOf(meta.id),
         permission: readPermission(meta.id),
         ...(meta.firstUserText ? { preview: meta.firstUserText } : {}),
+        ...(this.cwdGone(meta.cwd) ? { cwdMissing: true } : {}),
         ...flag(meta.id, meta.cwd),
         ...(readTtyLock(meta.id) ? { locked: true } : {}),
       });
@@ -3083,6 +3160,7 @@ export class SessionManager extends EventEmitter {
     if (targetLeafId) {
       const file = sm.createBranchedSession(targetLeafId);
       if (file && fs.existsSync(file)) {
+        markOwnWrite(file);
         this.cache = null;
         const meta = readMeta(file);
         this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
@@ -3107,6 +3185,38 @@ export class SessionManager extends EventEmitter {
     return piModule(this.cli, "core/session-manager.js");
   }
 
+  /** 某个工作目录的会话文件夹（pi 的布局：默认 / 指定 agent 目录下按 cwd 分一层，自定义目录是平展的）。 */
+  private sessionDirFor(cwd: string): string {
+    const root = sessionsRootInfo();
+    return root.source === "default" || root.source === "PI_AGENT_DIR" ? path.join(root.dir, encodeCwd(cwd)) : root.dir;
+  }
+
+  /**
+   * D228 / pi 1.5.2：把「工作目录已经没了」的会话复制到另一个目录，变成一个**新会话**（新 ID，
+   * 原会话与它的文件一个字节都不动）。
+   *
+   * 终端里 pi 对这种情况会问 Continue / Fork / Cancel；RPC 模式没有 Continue —— pi 那边是
+   * `process.exit(1)` + MissingSessionCwdError（`dist/main.js` 的非交互分支），所以网页能给的
+   * 就是 pi 自己那个「Fork into …（新 ID，原会话保留）」：复制用的也是 pi 的
+   * `SessionManager.forkFrom()`，不自己拼文件。
+   */
+  async forkIntoDir(id: string, targetDir: string): Promise<{ sessionId: string }> {
+    const where = this.locate(id);
+    if (!where?.file || !fs.existsSync(where.file)) throw new Error("这个会话还没有写到磁盘，没有可以复制的历史");
+    const target = path.resolve(String(targetDir ?? "").trim().replace(/^"(.*)"$/, "$1"));
+    if (!isDirectory(target)) throw new Error(`目标目录不存在：${target}`);
+    const newId = crypto.randomUUID();
+    const sm = await this.piSessionModule();
+    // forkFrom 会把会话头里的 cwd 换掉、给新 ID、保留原历史与标签。
+    const manager = sm.SessionManager.forkFrom(where.file, target, this.sessionDirFor(target), { id: newId });
+    const file = typeof manager?.getSessionFile === "function" ? manager.getSessionFile() : null;
+    if (!file || !fs.existsSync(file)) throw new Error("pi 没有写出复制后的会话文件");
+    markOwnWrite(file);
+    this.cache = null;
+    this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
+    return { sessionId: newId };
+  }
+
   /**
    * `/import <path>`: what pi's importFromJsonl does — copy the file (never move, never overwrite)
    * into the session folder for its cwd, then it is an ordinary session on the list.
@@ -3117,14 +3227,14 @@ export class SessionManager extends EventEmitter {
     const meta = readMeta(src);
     if (!meta) throw new Error("文件第一行不是 pi 的会话头（type: session），不能导入");
     if (this.metas().some((m) => m.id === meta.id)) throw new Error(`会话 ${meta.id} 已经在列表里了`);
-    const root = sessionsRootInfo();
     // pi's layout: a custom session dir is flat; the default one has a folder per cwd.
-    const dir = root.source === "default" || root.source === "PI_AGENT_DIR" ? path.join(root.dir, encodeCwd(meta.cwd)) : root.dir;
+    const dir = this.sessionDirFor(meta.cwd);
     fs.mkdirSync(dir, { recursive: true });
     const { name, ext } = path.parse(path.basename(src));
     let dest = path.join(dir, `${name}${ext}`);
     for (let n = 1; fs.existsSync(dest); n++) dest = path.join(dir, `${name}-${n}${ext}`);
     fs.copyFileSync(src, dest, fs.constants.COPYFILE_EXCL);
+    markOwnWrite(dest);
     this.cache = null;
     this.emit("ws", { type: "sessions.list", sessions: this.list(), workspace: this.workspaces.snapshot() });
     return { sessionId: meta.id };
@@ -3291,7 +3401,7 @@ export class SessionManager extends EventEmitter {
       try {
         const mtime = fs.statSync(file).mtimeMs;
         const ageMs = Date.now() - mtime;
-        const ours = session.ownExitAt > 0 && mtime <= session.ownExitAt + 1000;
+        const ours = (session.ownExitAt > 0 && mtime <= session.ownExitAt + 1000) || wasOwnWrite(file, mtime);
         if (ageMs < 20000 && !ours) {
           throw new Error("这个会话 20 秒前还在被写入——终端里的 pi 可能还开着。先退出那边的会话，再在这里继续。");
         }
@@ -3302,6 +3412,8 @@ export class SessionManager extends EventEmitter {
     await session.pinPermission();
     await session.startLive({ resume: Boolean(session.state.file), ws: this.workspaces.groupFor(id, session.state.cwd ?? "") });
     this.emit("ws", { type: "session.state", session: session.state });
+    // D228: 工作目录没了就不 spawn（pi 在 RPC 模式也会因此退出），页面拿 cwdMissing 去问用户。
+    if (!session.live) return session;
     if (session.state.origin !== "web") {
       // pi's TUI reads the session file once at startup: an open terminal will not see what the web adds.
       this.emit("ws", {

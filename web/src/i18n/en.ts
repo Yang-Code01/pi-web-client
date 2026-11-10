@@ -2295,4 +2295,12 @@ export const en: Dict = {
   "版本": "Version",
   "点一下复制": "Click to copy",
   "⚙ 关不掉：这张表靠它进来": "⚙ Can't be hidden: it's the way into this sheet",
+  "这个会话的工作目录已经不在了：{p1}。终端里的 pi 会让你选「原地继续 / 复制到别处 / 取消」；网页里的 pi 不能原地继续，只能把历史复制到一个已经存在的目录，变成一个新会话（原会话与文件不动）。":
+    "This session's working directory is gone: {p1}. In the terminal pi offers continue / fork / cancel; the web cannot continue in place, so it copies the history into an existing directory as a new session (the original stays untouched).",
+  "复制到哪个目录（必须已经存在；默认是原来目录的上一级）": "Directory to copy into (must exist; defaults to the parent of the old one)",
+  "复制成新会话": "Copy as new session",
+  "复制中…": "Copying…",
+  "先不管": "Not now",
+  "已复制成新会话（原会话保留）。": "Copied into a new session (the original is kept).",
+  "复制失败：{p1}": "Copy failed: {p1}",
 };

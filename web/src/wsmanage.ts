@@ -120,6 +120,17 @@ export function dirBaseName(raw: unknown): string {
   return parts[parts.length - 1] ?? "";
 }
 
+/** D228：上一级目录（`F:/work/app` → `F:/work`，根目录 / 空串给空串）。 */
+export function dirParent(raw: unknown): string {
+  const clean = cleanDirPath(raw);
+  if (!clean || /^[a-zA-Z]:\/$/.test(clean) || clean === "/") return "";
+  const cut = clean.lastIndexOf("/");
+  if (cut < 0) return "";
+  const parent = clean.slice(0, cut);
+  if (!parent) return "";
+  return /^[a-zA-Z]:$/.test(parent) ? `${parent}/` : parent;
+}
+
 /** #278：这个目录已经在列表里了吗 —— 组身份是 `key`，忽略大小写 / 正反斜杠 / 尾斜杠后比较。 */
 export function groupAtDir(groups: readonly WsGroupLike[], dir: unknown): WsGroupLike | undefined {
   const want = cleanDirPath(dir).toLowerCase();

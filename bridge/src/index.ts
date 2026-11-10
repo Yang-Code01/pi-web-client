@@ -1947,6 +1947,20 @@ async function main(): Promise<void> {
             }
             return;
           }
+          case "forkCwd": {
+            // D228：会话的工作目录没了，把它复制到用户选的目录（新会话，原会话不动）。
+            if (!(await requireStepUp())) return;
+            const reqId = String(msg.reqId ?? "");
+            const sessionId = String(msg.sessionId ?? "");
+            try {
+              const out = await writeLock("sessions", () => sessions.forkIntoDir(sessionId, String(msg.cwd ?? "")));
+              log(`forkCwd ${sessionId} → ${out.sessionId} (${msg.cwd})`);
+              send({ type: "forkCwd.result", reqId, from: sessionId, ...out });
+            } catch (err: any) {
+              send({ type: "forkCwd.result", reqId, from: sessionId, error: String(err?.message ?? err) });
+            }
+            return;
+          }
           case "clearQueue": {
             // The queue bar's 撤回: pi's queue back into the editor, like Alt+Up in the terminal (#14).
             if (!(await requireStepUp())) return;
