@@ -381,8 +381,8 @@ export class App {
   private extCheckLoading = false;
   /** An inventory was asked for while one was still streaming; re-ask when it lands. */
   private extReloadPending = false;
-  private extStore: { query: string; limit: number; items: StorePkg[] | null; error?: string } = { query: "", limit: 20, items: null };
-  private mcpStore: { query: string; limit: number; items: StoreMcpItem[] | null; error?: string; building?: boolean; starsComplete?: boolean; hasToken?: boolean; truncated?: boolean } = { query: "", limit: 20, items: null };
+  private extStore: { query: string; limit: number; items: StorePkg[] | null; error?: string; inflight?: string | null } = { query: "", limit: 20, items: null };
+  private mcpStore: { query: string; limit: number; items: StoreMcpItem[] | null; error?: string; building?: boolean; starsComplete?: boolean; hasToken?: boolean; truncated?: boolean; inflight?: string | null } = { query: "", limit: 20, items: null };
   private extScope: "global" | "project" = "global";
   private extArm: { key: string; until: number } | null = null;
   private extDirty = false;
@@ -2025,6 +2025,8 @@ export class App {
         this.paintExtIfOpen();
         break;
       case "ext.store":
+        // #308: cleared before the guard — a reply for the previous query still ends that request.
+        this.extStore.inflight = null;
         if (String(msg.query ?? "") !== this.extStore.query) break;
         this.extStore.items = Array.isArray(msg.items) ? msg.items : [];
         this.extStore.error = msg.error ? errText(msg) : msg.error;
@@ -2035,6 +2037,7 @@ export class App {
         // what the tab switch would show later) so the next paint re-asks. Unranked registry results
         // become the ranking without a retype. `paintMcpStore` sends `mcp.store` itself when `items` is null.
         this.mcpStore.items = null;
+        this.mcpStore.inflight = null;
         this.mcpStore.building = false;
         // A failed first search left `error` set; `paintMcpStore` only re-asks when there is no error, so
         // keeping it would pin the page on 「没读出来」 forever and the index would never show up.
@@ -2042,6 +2045,7 @@ export class App {
         if (this.extTab === "mcp" && (this.sheetKind === "ext" || (this.sheetKind === "settings" && this.settingsTab === "ext"))) this.paintExtIfOpen();
         break;
       case "mcp.store":
+        this.mcpStore.inflight = null;
         if (String(msg.query ?? "") !== this.mcpStore.query) break;
         this.mcpStore = { ...this.mcpStore, items: Array.isArray(msg.items) ? msg.items : [], error: msg.error ? errText(msg) : msg.error, building: Boolean(msg.building), starsComplete: Boolean(msg.starsComplete), hasToken: Boolean(msg.hasToken), truncated: Boolean(msg.truncated) };
         this.paintExtIfOpen();
@@ -4218,7 +4222,8 @@ export class App {
     q.spellcheck = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     q.oninput = () => {
-      store.query = q.value.trim();
+      // #308: same as the extension store — a repaint restores `q.value` from `store.query`.
+      store.query = q.value;
       if (timer) clearTimeout(timer);
       timer = setTimeout(run, 350);
     };
@@ -9361,7 +9366,7 @@ export class App {
    * #285：global / project 仍是同一个 tab，头部这个分段切的是作用域。
    * 没有 cwd 时「项目」照样能点：切过去是「先打开一个会话」的空态，而不是一颗点不动的按钮。
    */
-  private paintSettingsScopeBar(consoleNode: HTMLElement, cwd: string): void {
+  private paintSettingsScopeBar(consoleNode: HTMLElement, _cwd: string): void {
     const host = consoleNode.querySelector<HTMLElement>('[data-role="scope"]');
     if (!host) return;
     host.replaceChildren();
@@ -10320,24 +10325,32 @@ export class App {
   }
 
   private paintExtIfOpen(): void {
-    if (this.sheetKind === "settings" && this.settingsTab === "ext") this.paintSettings();
-    else if (this.sheetKind === "ext") {
-      const host = this.sheet?.querySelector<HTMLElement>(".ext-host");
-      if (host) {
-        // Keep the scroll position and the focused search box across repaints.
-        const body = host.parentElement;
-        const top = body?.scrollTop ?? 0;
-        const focused = document.activeElement instanceof HTMLInputElement && host.contains(document.activeElement) ? document.activeElement.placeholder : null;
-        const caret = focused ? (document.activeElement as HTMLInputElement).selectionStart : null;
-        this.paintExtManager(host);
-        if (body) body.scrollTop = top;
-        if (focused) {
-          const again = [...host.querySelectorAll<HTMLInputElement>("input")].find((i) => i.placeholder === focused);
-          again?.focus();
-          if (again && caret !== null) again.setSelectionRange(caret, caret);
-        }
-      }
+    const dialog = this.sheetKind === "ext";
+    if (!dialog && !(this.sheetKind === "settings" && this.settingsTab === "ext")) return;
+    // #308: both hosts are rebuilt from scratch below, so the scroll position, the focused search box
+    // and its caret are saved here and restored after the paint. The settings pane used to repaint
+    // bare — every inventory stage or search reply threw the page back to the top and dropped focus.
+    // `.ext-host` itself does not scroll: the dialog scrolls in `.settings-body`, the console in `.st-pane`.
+    const host = this.sheet?.querySelector<HTMLElement>(".ext-host") ?? null;
+    const scrollerOf = () => (dialog ? (this.sheet?.querySelector<HTMLElement>(".ext-host")?.parentElement ?? null) : (this.sheet?.querySelector<HTMLElement>(".st-pane") ?? null));
+    const before = scrollerOf();
+    const top = before?.scrollTop ?? 0;
+    const active = document.activeElement;
+    const focused = active instanceof HTMLInputElement && host?.contains(active) ? active : null;
+    const placeholder = focused?.placeholder ?? null;
+    const caret = focused?.selectionStart ?? null;
+    if (dialog) {
+      if (!host) return;
+      this.paintExtManager(host);
+    } else this.paintSettings();
+    const after = scrollerOf();
+    // Restore focus first: `focus()` scrolls the input into view, so the scroll must be re-applied after.
+    if (placeholder) {
+      const again = after ? [...after.querySelectorAll<HTMLInputElement>("input")].find((i) => i.placeholder === placeholder) : undefined;
+      again?.focus({ preventScroll: true });
+      if (again && caret !== null) again.setSelectionRange(caret, caret);
     }
+    if (after) after.scrollTop = top;
   }
 
   /**
@@ -10480,7 +10493,10 @@ export class App {
     if (this.piChecking) return;
     this.piChecking = true;
     this.socket.send({ type: "pi.update.check", ...(force ? { force: true } : {}) });
-    this.paintExtIfOpen();
+    // #308: this runs *inside* paintPiUpdate → paintExtSettings → paintSettings. Repainting here would
+    // replace the pane synchronously and let the outer frame keep appending to the detached node —
+    // two switches and two managers on the first paint. One microtask later the outer paint is done.
+    queueMicrotask(() => this.paintExtIfOpen());
   }
 
   /** The update replaces the globally installed pi: say what that costs before running it. */
@@ -10893,11 +10909,12 @@ export class App {
     q.value = store.query;
     let timer: ReturnType<typeof setTimeout> | null = null;
     q.oninput = () => {
+      // #308: keep the store in step with every keystroke. A repaint restores `q.value` from
+      // `store.query`, so syncing only after the debounce let a repaint mid-typing put the old text
+      // back (and pin the caret at the old offset).
+      store.query = q.value;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        store.query = q.value.trim();
-        run();
-      }, 350);
+      timer = setTimeout(run, 350);
     };
     const scope = el("select", "ns-input") as HTMLSelectElement;
     scope.append(new Option(tr("装到全局"), "global"), new Option(tr("装到当前项目"), "project"));
@@ -10924,14 +10941,37 @@ export class App {
     });
   }
 
+  /**
+   * #308: the one place that asks for a store page. One request per (query, limit) in flight: the
+   * painters run on every repaint, and before this the tab switch, each inventory stage and the
+   * search itself each fired their own request (five `mcp.store` calls for one tab switch).
+   */
+  private requestExtStore(): void {
+    const store = this.extStore;
+    const key = `${store.query}\u0000${store.limit}`;
+    if (store.inflight === key) return;
+    store.inflight = key;
+    store.error = undefined;
+    this.socket.send({ type: "ext.store", query: store.query, limit: store.limit });
+  }
+
+  private requestMcpStore(): void {
+    const store = this.mcpStore;
+    const key = `${store.query}\u0000${store.limit}`;
+    if (store.inflight === key) return;
+    store.inflight = key;
+    store.error = undefined;
+    this.socket.send({ type: "mcp.store", query: store.query, limit: store.limit });
+  }
+
   private paintExtStore(host: HTMLElement): void {
     const store = this.extStore;
     const run = () => {
-      store.items = null;
-      this.socket.send({ type: "ext.store", query: store.query, limit: store.limit });
+      this.requestExtStore();
       this.paintExtIfOpen();
     };
-    if (store.items === null && !store.error) this.socket.send({ type: "ext.store", query: store.query, limit: store.limit });
+    // Painting never sends by itself; this is the same 「opened with nothing to show yet」 case.
+    if (store.items === null && !store.error) this.requestExtStore();
     this.storeHeader(host, store, tr("搜索 pi 扩展（npm 上带 pi-package 关键字的包）"), run);
     host.append(el("div", "settings-hint", tr("来源是 npm（和 pi.dev/packages 画廊同一批包），按月下载量排序。装包等于让它的代码在这台电脑上运行，只装你信得过的。")));
     const list = el("div", "login-list");
@@ -10969,12 +11009,11 @@ export class App {
   private paintMcpStore(host: HTMLElement): void {
     const store = this.mcpStore;
     const run = () => {
-      store.items = null;
       this.mcpForm = null;
-      this.socket.send({ type: "mcp.store", query: store.query, limit: store.limit });
+      this.requestMcpStore();
       this.paintExtIfOpen();
     };
-    if (store.items === null && !store.error) this.socket.send({ type: "mcp.store", query: store.query, limit: store.limit });
+    if (store.items === null && !store.error) this.requestMcpStore();
     this.storeHeader(host, store, tr("搜索 MCP 服务（官方 MCP Registry）"), run);
     const notes: string[] = [tr("来源是官方 MCP Registry，按仓库的 GitHub star 排序。")];
     if (store.building) notes.push(tr("排行数据正在后台建立（第一次要几分钟，取决于网络），现在显示的是 Registry 的直接搜索结果，没有 star；建好后这里会自动换成排行。"));
@@ -10986,7 +11025,14 @@ export class App {
     else if (!store.items) list.append(el("div", "empty", tr("查询中…")));
     else if (!store.items.length) list.append(el("div", "empty", tr("没有找到")));
     const ro = Boolean(this.me.public);
-    const installedText = (this.extInv?.mcp ?? []).map((m) => `${m.name} ${m.transport ?? ""}`).join("\n");
+    // #308: match the provenance pi recorded for each installed server — the resolved package
+    // identifier and the transport command / url — not `name + transport`. A server whose *name* is
+    // `exa` used to make the package `exa-mcp-server` count as installed, and `includes` let `exa`
+    // match `exa-search`.
+    const installedText = (this.extInv?.mcp ?? [])
+      .flatMap((m) => [m.version?.identifier ?? "", m.transport ?? ""])
+      .filter(Boolean)
+      .join("\n");
     (store.items ?? []).forEach((m, i) => {
       const row = el("div", "login-row");
       const name = el("div", "login-name");
@@ -11004,7 +11050,7 @@ export class App {
         a.rel = "noopener";
         acts.append(a);
       }
-      const already = m.options.some((o) => installedText.includes(o.identifier));
+      const already = m.options.some((o) => Boolean(o.identifier) && this.mcpInstalled(o.identifier, installedText));
       for (const o of m.options) acts.append(el("span", `ext-kind${o.unavailable ? " off" : ""}`, o.label));
       if (already) acts.append(el("span", "login-status ok", tr("已安装")));
       else if (this.mcpForm?.item === m.name) acts.append(this.mcpInstallForm(m));
@@ -11026,6 +11072,12 @@ export class App {
       list.append(row);
     });
     host.append(list);
+  }
+
+  /** #308: whole-token match, so `exa` never counts as installed because `exa-search` is. */
+  private mcpInstalled(identifier: string, haystack: string): boolean {
+    const esc = identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?:^|[\\s="'([{])${esc}(?=$|[\\s@/"'\\]),:])`).test(haystack);
   }
 
   private slug(m: StoreMcpItem): string {
@@ -11052,7 +11104,11 @@ export class App {
       };
       box.append(this.formRow(tr("运行方式"), pick));
     }
+    // #308: a reindex or a new search can replace the row under an open form; a stale index must not
+    // make this throw on `opt.env` and take the whole manager down with it.
+    if (!m.options[f.option]) f.option = 0;
     const opt = m.options[f.option];
+    if (!opt) return box;
     const name = el("input", "ns-input mono") as HTMLInputElement;
     name.value = f.name;
     name.oninput = () => (f.name = name.value.trim());
