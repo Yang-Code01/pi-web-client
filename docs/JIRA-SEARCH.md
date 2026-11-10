@@ -301,6 +301,7 @@ GET /api/jira/search?title=登录&project=ACME&statusCategory=indeterminate
 9. 隧道访问 → 搜索照常。
 10. 窄屏 1 列，不横向溢出。
 11. 结果行展开详情、下载、交给 agent 与列表一致。
+12. 搜索结果行的 meta 显示经办人；未分配或上游不给名字时显示「未分配」；「我的未完成」列表不显示经办人。
 
 ## 10. 已知偏移 / 待实机确认
 
@@ -309,4 +310,4 @@ GET /api/jira/search?title=登录&project=ACME&statusCategory=indeterminate
 - **类型 / 优先级列表是全局的**：可能包含当前项目不用的类型；选中后查不到结果，不是错误。
 - **没有 total**：`search/jql` 不返回；如果将来上游给了近似数，再加字段，不改现有形状。
 - **状态类别用英文名拼 JQL**（`"To Do"` 等），与界面语言无关；上游若改类别名，只改 `STATUS_CATEGORIES` 一处。
-- **`assignee` 加进 `JiraIssue`** 会让列表响应多一个字段；页面在 v1 列表里暂不显示它。
+- **`assignee` 加进 `JiraIssue`** 会让列表响应多一个字段；「我的未完成」列表暂不显示它，搜索结果行显示；空串（未分配或上游按隐私策略不给名字）统一显示「未分配」。
