@@ -11,7 +11,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_STORAGE_KEY } from "../src/jira-shared.ts";
+import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, mergeSearchPage, normalizeSearch, readSavedSearch, searchQuery, searchCountNote, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_STORAGE_KEY } from "../src/jira-shared.ts";
 
 const bad = (raw) => {
   const problem = siteUrlProblem(raw);
@@ -78,14 +78,31 @@ test("更新时间按本地时区格式化，解不出时间给空串", () => {
 
 const issue = { key: "ACME-9", summary: "x", type: "Task", priority: null, status: "To Do", updated: "2026-11-05T14:02:11.000Z" };
 
-test("工单元信息：用 · 连类型 / 优先级 / 状态 / 时间，空优先级显示 —", () => {
+test("工单元信息：用 · 连类型 / 优先级 / 状态 / 时间，空优先级显示 —，搜索模式带经办人", () => {
   const meta = issueMeta(issue);
   assert.ok(meta.startsWith("Task · — · To Do · "), meta);
   assert.equal(meta.split(" · ").length, 4);
   assert.ok(!issueMeta({ ...issue, updated: "" }).includes("·  "), "时间空时不留下多余的 ·");
   assert.equal(issueMeta({ ...issue, type: "", priority: "", status: "", updated: "" }), "—");
-  assert.ok(issueMeta(issue, "Ada").includes(" · Ada · "), "有经办人时插在时间前面");
-  assert.ok(!issueMeta(issue).includes("Ada"), "列表模式不显示经办人");
+  const ada = { ...issue, assignee: "Ada" };
+  assert.ok(issueMeta(ada, true).includes(" · Ada · "), "有经办人时插在时间前面");
+  assert.ok(!issueMeta(ada).includes("Ada"), "列表模式不显示经办人");
+  assert.ok(issueMeta({ ...issue, assignee: "" }, true).includes(" · 未分配 · "), "空经办人显示未分配");
+  assert.ok(!issueMeta({ ...issue, assignee: "" }, true).includes("·  ·"), "空经办人不留下多余的 ·");
+});
+
+test("分页合并：过期序号整页丢弃，同序号按 key 去重追加", () => {
+  const a = { ...issue, key: "ACME-1" };
+  const b = { ...issue, key: "ACME-2" };
+  const c = { ...issue, key: "ACME-3" };
+  assert.equal(mergeSearchPage([a], [b], 1, 2), null, "旧请求的页必须整页丢弃");
+  assert.deepEqual(mergeSearchPage([a], [a, b], 2, 2).map((i) => i.key), ["ACME-1", "ACME-2"]);
+  assert.deepEqual(mergeSearchPage([a], [b, c], 2, 2).map((i) => i.key), ["ACME-1", "ACME-2", "ACME-3"]);
+});
+
+test("结果脚注：未加载完只报条数，加载完补「已全部加载」", () => {
+  assert.equal(searchCountNote(20, false), "已显示 20 条");
+  assert.equal(searchCountNote(23, true), "已显示 23 条 · 已全部加载");
 });
 
 // ---------------------------------------------------------------- #250 ADF → 纯文本

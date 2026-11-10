@@ -12,7 +12,7 @@ import { createEl as el } from "./chat.ts";
 import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
-import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
+import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, mergeSearchPage, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
 import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
 
@@ -1222,12 +1222,9 @@ export class JiraPanel {
       const res = await api.jiraSearch(params.toString());
       if (seq !== this.searchSeq || !this.root) return;
       // 桥端是游标分页，理论上不重；去重仍按 key 兜一层，重复工单比少一页更刺眼。
-      const seen = new Set(this.searchItems.map((i) => i.key));
-      for (const issue of res.issues) {
-        if (seen.has(issue.key)) continue;
-        seen.add(issue.key);
-        this.searchItems.push(issue);
-      }
+      const merged = mergeSearchPage(this.searchItems, res.issues, seq, this.searchSeq);
+      if (!merged) return;
+      this.searchItems = merged;
       this.searchNext = res.nextPageToken;
       this.searchIsLast = res.isLast || !res.nextPageToken;
       this.searchDegraded = this.searchDegraded || res.degraded?.watchers === true;
@@ -1294,13 +1291,13 @@ export class JiraPanel {
     const foot = el("div", "jira-result-foot");
     if (this.searchMoreError) foot.append(el("span", "jira-hint bad", this.searchMoreError));
     if (this.searchIsLast) {
-      foot.append(el("span", "jira-result-note", tr("已显示 {p1} 条 · 已全部加载", { p1: this.searchItems.length })));
+      foot.append(el("span", "jira-result-note", searchCountNote(this.searchItems.length, true)));
     } else {
       const more = el("button", "btn ghost jira-more", tr("加载更多")) as HTMLButtonElement;
       more.type = "button";
       more.disabled = this.searchLoadingMore;
       more.onclick = () => void this.loadMore();
-      foot.append(more, el("span", "jira-result-note", tr("已显示 {p1} 条", { p1: this.searchItems.length })));
+      foot.append(more, el("span", "jira-result-note", searchCountNote(this.searchItems.length, false)));
     }
     box.append(foot);
   }
@@ -1363,7 +1360,10 @@ export class JiraPanel {
     return sec;
   }
 
-  /** 点一行就地展开 / 收起详情（#250）：不重画列表，滚动位置自然不动。 */
+  /**
+   * 点一行就地展开 / 收起详情（#250）：不重画列表，滚动位置自然不动。
+   * `showAssignee` 只给搜索结果用（#259）；列表是「我的」，meta 不重复经办人。
+   */
   private issueEl(siteUrl: string, issue: JiraIssue, showAssignee = false): HTMLElement {
     const wrap = el("div", "jira-issue-wrap");
     const line = el("div", "jira-issue");
@@ -1375,7 +1375,7 @@ export class JiraPanel {
     top.append(key, el("span", "jira-issue-summary", issue.summary || tr("（没有标题）")));
     top.append(this.handoffButton(issue, siteUrl));
     line.append(top);
-    const meta = showAssignee ? issueMeta(issue, issue.assignee || tr("未分配")) : issueMeta(issue);
+    const meta = issueMeta(issue, showAssignee);
     if (meta) line.append(el("div", "jira-issue-meta", meta));
 
     const entry = this.details.get(issue.key);

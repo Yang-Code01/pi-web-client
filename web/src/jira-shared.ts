@@ -98,11 +98,43 @@ export function formatUpdated(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** 工单第二行：类型 · 优先级 · 状态（· 经办人）· 更新时间。优先级空显示 `—`，时间空就省略。 */
-export function issueMeta(issue: JiraIssue, assignee?: string): string {
+/**
+ * 工单第二行：类型 · 优先级 · 状态（· 经办人）· 更新时间。优先级空显示 `—`，时间空就省略。
+ * `withAssignee` 只给搜索结果用：列表是「我的未完成」，人人都是自己，不必重复。
+ */
+export function issueMeta(issue: JiraIssue, withAssignee = false): string {
+  const assignee = withAssignee ? issue.assignee || tr("未分配") : "";
   return [issue.type, issue.priority || "—", issue.status, assignee, formatUpdated(issue.updated)]
     .filter(Boolean)
     .join(" · ");
+}
+
+/**
+ * 合并下一页搜索结果：序号不是最新就整页丢弃（慢请求先到也没用），否则按 key 去重追加。
+ * 返回 `null` 表示这页已过期；顺序保持「旧行在前、新行按上游顺序」。
+ */
+export function mergeSearchPage(
+  current: readonly JiraIssue[],
+  page: readonly JiraIssue[],
+  seq: number,
+  latestSeq: number,
+): JiraIssue[] | null {
+  if (seq !== latestSeq) return null;
+  const seen = new Set(current.map((issue) => issue.key));
+  const merged = [...current];
+  for (const issue of page) {
+    if (seen.has(issue.key)) continue;
+    seen.add(issue.key);
+    merged.push(issue);
+  }
+  return merged;
+}
+
+/** 结果区脚注：全部加载完就说明「已全部加载」，否则只报已显示条数。 */
+export function searchCountNote(shown: number, isLast: boolean): string {
+  return isLast
+    ? tr("已显示 {p1} 条 · 已全部加载", { p1: shown })
+    : tr("已显示 {p1} 条", { p1: shown });
 }
 
 /** 未知大小显示 `—`，其余按 1024 进位；`1.0 KB` 写成 `1 KB`。 */
