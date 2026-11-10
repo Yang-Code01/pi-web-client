@@ -109,6 +109,11 @@ npm install   # 一条就够：postinstall 跑 scripts/bootstrap.mjs，补 pi / 
 npm start     # tsc 编译 bridge + 打包 peer 与 web/dist，再跑 dist/index.js（约 2 秒）
 ```
 
+以后每次启动只要 `npm start`，它每次都会重新编译，所以 `git pull` 之后只改了代码时也直接 `npm start`。
+pull 进来的改动如果动了子包的依赖（`bridge/` `peer/` `web/` 的 `package-lock.json`），`npm start` 会在编译前拦下来，
+列出对不上的包并让你先跑 `npm install`。拿不准的时候就每次 pull 后都 `npm install` 一次：已经齐了的东西它都跳过，
+只多花十几秒（主要是 `pi list`）。「本项目需要」的扩展清单变了也靠这一步补上。
+
 首次启动会打印一次口令（也写在状态目录的 `passphrase.txt`）：
 
 ```text

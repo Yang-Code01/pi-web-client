@@ -3439,6 +3439,7 @@ D
 4. **装到用户全局**，效果等同用户自己 `pi install`；不写项目里的 `.pi/settings.json`（它只对 cwd 所在项目生效，桥会开任意工程的会话）。
 5. **能关掉。** `PI_WEB_NO_AUTOINSTALL=1`、`--deps-only`、`CI` 三种情形只装子包的 `node_modules`，一行都不往全局写。
 6. **缺了要看得见。** `/api/deps` 报「pi 够不够新 + 三个在不在 + 上次 `npm install` 的结果」，设置→「扩展与 MCP」顶部列出来并给一条可复制的命令；没装 `billion-context` 时设置→子代理的 `acp_delegate` 整片灰掉并说装法。
+7. **pull 之后依赖变了，`npm start` 先拦下。** 日常启动只跑 `npm start`（每次都重新编译），不会再经过 `npm install`。所以 `scripts/build.mjs` 编译前把三个子包的 `package-lock.json` 和 `node_modules/.package-lock.json` 对一遍（可选依赖不算），对不上就列出来并让人先跑 `npm install`，而不是让 tsc / vite 报一句看不懂的 `Cannot find module`。
 
 **为什么不在 spawn 时注入 `-e`：** 那条路要先判断包在不在、再拼路径，缺了就静默退化成「没有这些工具」，而且每个会话都要判一次；用户要的是「装一次，以后不管」。
 
