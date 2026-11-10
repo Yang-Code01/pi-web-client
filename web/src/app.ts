@@ -1319,6 +1319,10 @@ export class App {
         paneFrame = 0;
         this.syncCompact();
         this.renderPanes();
+        // #316: the composer's cap switched between half and 40% of the pane. A width-only change
+        // does not resize the pane, so the pane's ResizeObserver never fires and the box would keep
+        // the old cap.
+        this.fitComposer();
         // D138 的 560 断点看的是视口宽度：窗口一拖，文件管理器那颗的默认就得重算。
         this.paintChrome();
         // 右栏宽度是按布局宽算的 px（D189），跨过断点或改窗口大小都得重算。
@@ -12678,10 +12682,14 @@ export class App {
     if (!input) return;
     // Measure first: only with `height: auto` does `scrollHeight` report what the text needs.
     input.style.height = "auto";
-    // The cap is half of the whole chat pane — not of `.chat-scroll`, which this box itself shrinks
-    // (#313). A hidden pane measures 0: leave the height to the text until it is shown again.
+    // The cap is a share of the whole chat pane — not of `.chat-scroll`, which this box itself
+    // shrinks (#313). A hidden pane measures 0: leave the height to the text until it is shown again.
+    // #316: on a narrow screen the pane is the whole window, so the box may only take 40% and the
+    // conversation keeps the rest; wide screens get half. `clientHeight` is layout px, so
+    // `#app { zoom }` scales the rendered box once, never twice (D123 — no vh/vw here).
     const pane = this.els.chatPane;
-    const limit = pane && pane.clientHeight > 0 ? Math.min(520, pane.clientHeight / 2) : 0;
+    const share = this.compact() ? 0.4 : 0.5;
+    const limit = pane && pane.clientHeight > 0 ? Math.min(520, pane.clientHeight * share) : 0;
     // `height` is border-box, `scrollHeight` leaves the border out — add it back or we clip a pixel.
     const border = input.offsetHeight - input.clientHeight;
     input.style.height = limit > 0 ? `${Math.min(limit, input.scrollHeight + border)}px` : "auto";
