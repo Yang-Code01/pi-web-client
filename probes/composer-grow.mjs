@@ -19,6 +19,11 @@
  * maxed draft is typed at (caret on the last line, the box's bottom inset still below the fold) —
  * never below the cap, and a wheel inside the box scrolls the box without moving the transcript.
  *
+ * #318 adds the paste fold: a 30-line paste arrives folded, expanding it splits the composer's cap
+ * in half (the fold takes the other half), the fold scrolls inside itself past its half, a real
+ * corner drag stops at that half, collapsing gives the composer the whole cap back, and the narrow
+ * layout still leaves the composer a line.
+ *
  * Run: node probes/composer-grow.mjs   (needs `npm run build:web` first)
  */
 import fs from "node:fs";
@@ -57,7 +62,10 @@ const until = async (fn, ms, what) => {
 };
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
-const SESSION = { id: "probe-grow", name: "输入框探针", cwd: REPO, file: null, owned: false, origin: "disk", running: false, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "量输入框高度" };
+// #318: owned, so the composer carries no disk-preview takeover bar (55px) — that bar is a
+// property of this probe's fixture, and the transcript-band check below must measure the product,
+// not the fixture.
+const SESSION = { id: "probe-grow", name: "输入框探针", cwd: REPO, file: null, owned: true, origin: "disk", running: false, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "量输入框高度" };
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "probe", pi: "probe", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "probe" };
 const HISTORY = [
@@ -513,6 +521,167 @@ try {
   assert(underCap.overflow <= 1, `20 lines stay under the cap (overflow ${underCap.overflow}px)`);
   assert(underCap.mask === "none", `under the cap there is no fade (mask ${underCap.mask})`);
   log("20 lines, under the cap: no fade");
+
+  // 10. #318. A long paste folds into its own block; while that block is open the composer and the
+  //     fold split the same cap in half, so the transcript keeps its share of the pane. The fold
+  //     scrolls inside itself past its half, and a real drag of its corner stops at that half.
+  /** Layout px of the composer, the fold and the transcript, plus the fold's own scroll state. */
+  const budget = () =>
+    page.evaluate(() => {
+      const pane = document.querySelector(".chat-pane");
+      const input = document.querySelector(".composer-input > textarea");
+      const scroll = document.querySelector(".chat-scroll");
+      const body = document.querySelector(".paste-body");
+      const cs = body ? getComputedStyle(body) : null;
+      const r = body ? body.getBoundingClientRect() : null;
+      return {
+        paneHeight: pane.clientHeight,
+        inputBox: input.offsetHeight,
+        scrollBox: scroll.clientHeight,
+        visibleMsgs: (() => {
+          const view = scroll.getBoundingClientRect();
+          return [...scroll.querySelectorAll(".msg")].filter((m) => {
+            const r = m.getBoundingClientRect();
+            return r.height > 0 && r.top >= view.top - 1 && r.bottom <= view.bottom + 1;
+          }).length;
+        })(),
+        compact: document.documentElement.dataset.compact === "true",
+        folds: document.querySelectorAll(".paste-block").length,
+        openFolds: document.querySelectorAll(".paste-block.open").length,
+        body: body
+          ? {
+              box: body.offsetHeight,
+              scrollHeight: body.scrollHeight,
+              clientHeight: body.clientHeight,
+              maxHeight: cs.maxHeight === "none" ? null : parseFloat(cs.maxHeight),
+              overflowY: cs.overflowY,
+              resize: cs.resize,
+              rect: { left: r.left, top: r.top, width: r.width, height: r.height },
+            }
+          : null,
+      };
+    });
+
+  await field.fill("");
+  await sleep(80);
+  assert((await budget()).folds === 0, "no paste fold before the paste");
+
+  const pasteText = Array.from({ length: 30 }, (_, i) => `粘贴的第 ${i + 1} 行，这一行够长，让块里装不下全部内容`).join("\n");
+  await page.evaluate((text) => {
+    const t = document.querySelector(".composer-input > textarea");
+    const dt = new DataTransfer();
+    dt.setData("text/plain", text);
+    t.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, pasteText);
+  await until(async () => (await page.locator(".paste-block").count()) === 1, 4000, "paste fold");
+  const folded = await budget();
+  assert(folded.openFolds === 0, `a 30-line paste starts folded (${folded.openFolds} open)`);
+  assert(folded.body === null, "a folded paste has no editor");
+
+  // A folded paste must cost the composer nothing: the whole cap is still its own.
+  const mainField = page.locator(".composer-input > textarea");
+  await mainField.fill(lines(40));
+  await sleep(100);
+  const withFold = await budget();
+  assert(!withFold.compact, `the wide half-cap checks run wide (compact ${withFold.compact})`);
+  const fullCap = Math.min(520, withFold.paneHeight * 0.5);
+  assert(
+    Math.abs(withFold.inputBox - fullCap) <= 2,
+    `a folded paste leaves the composer its whole cap (${withFold.inputBox}px, want ${fullCap.toFixed(1)})`,
+  );
+  log("folded paste, composer at the whole cap", withFold.inputBox, "px");
+
+  await page.locator(".paste-toggle").first().click();
+  await until(async () => (await page.locator(".paste-body").count()) === 1, 4000, "paste editor");
+  await sleep(150);
+  const opened = await budget();
+  const halfCap = fullCap / 2;
+  assert(
+    Math.abs(opened.inputBox - halfCap) <= 2,
+    `with the fold open the composer keeps half the cap (${opened.inputBox}px, want ${halfCap.toFixed(1)})`,
+  );
+  assert(
+    opened.body.maxHeight !== null && Math.abs(opened.body.maxHeight - halfCap) <= 1,
+    `the fold's cap is the other half (max-height ${opened.body.maxHeight}, want ${halfCap.toFixed(1)})`,
+  );
+  assert(opened.body.resize === "vertical", `the fold can still be dragged by hand (resize ${opened.body.resize})`);
+  assert(opened.body.box <= halfCap + 1, `the fold is no taller than its half (${opened.body.box}px <= ${halfCap.toFixed(1)})`);
+  assert(
+    opened.body.scrollHeight > opened.body.clientHeight + 20,
+    `30 lines overflow the fold and scroll inside it (${opened.body.scrollHeight} vs ${opened.body.clientHeight})`,
+  );
+  assert(opened.body.overflowY === "auto", `and the overflow is its own scrollbar (overflow-y ${opened.body.overflowY})`);
+  log("fold open", `composer ${opened.inputBox}px, fold ${opened.body.box}px of ${opened.body.scrollHeight}px`);
+
+  // A real drag of the native corner: it must stop at the half, not at the pointer's 260px below.
+  const grip = {
+    x: opened.body.rect.left + opened.body.rect.width - 7,
+    y: opened.body.rect.top + opened.body.rect.height - 7,
+  };
+  await page.mouse.move(grip.x, grip.y);
+  await page.mouse.down();
+  await page.mouse.move(grip.x, grip.y + 260, { steps: 12 });
+  await sleep(120);
+  await page.mouse.up();
+  await sleep(250);
+  const dragged = await budget();
+  assert(
+    dragged.body.box >= halfCap - 2,
+    `the drag really moved the fold — it reached its half (${dragged.body.box}px vs ${halfCap.toFixed(1)})`,
+  );
+  assert(dragged.body.box <= halfCap + 1, `a drag past the half stops at it (${dragged.body.box}px <= ${halfCap.toFixed(1)})`);
+  assert(
+    Math.abs(dragged.body.maxHeight - halfCap) <= 1,
+    `the browser clamps against the inline cap (max-height ${dragged.body.maxHeight})`,
+  );
+  assert(dragged.body.scrollHeight > dragged.body.clientHeight + 20, "the taller fold still scrolls inside itself");
+
+  // Both boxes at their halves: the transcript still owns the rest of the pane. The composer's own
+  // fixed chrome (hint 53 + padding 24 + grid gap 16) sits outside the split, so the transcript is
+  // `pane − two halves − chrome`, not a fixed share of the pane: what matters is that it keeps a
+  // real band of conversation, so assert the band and whole messages, not a pixel ratio.
+  const both = await budget();
+  log(
+    "both at half",
+    `composer ${both.inputBox}px, fold ${both.body.box}px, chat ${both.scrollBox}px of ${both.paneHeight}`,
+    `(${((both.scrollBox / both.paneHeight) * 100).toFixed(1)}%), ${both.visibleMsgs} whole messages`,
+  );
+  assert(both.scrollBox >= 300, `both open still leaves the transcript a 300px band (${both.scrollBox}px)`);
+  assert(both.visibleMsgs >= 2, `and whole messages stay readable (${both.visibleMsgs})`);
+  await page.screenshot({ path: path.join(OUT, "11-paste-expanded.png") });
+
+  // Collapsing gives the composer the whole cap back — the split only exists while a fold is open.
+  await page.locator(".paste-toggle").first().click();
+  await sleep(200);
+  const collapsed = await budget();
+  assert(collapsed.body === null, "collapsing removes the fold editor");
+  assert(
+    Math.abs(collapsed.inputBox - fullCap) <= 2,
+    `closing the fold gives the composer the whole cap back (${collapsed.inputBox}px, want ${fullCap.toFixed(1)})`,
+  );
+  log("fold closed", "composer back at", collapsed.inputBox, "px");
+
+  // Narrow: the same split, and it must not squeeze the composer below one line.
+  await page.setViewportSize({ width: 390, height: 720 });
+  await sleep(400);
+  await page.locator(".paste-toggle").first().click();
+  await until(async () => (await page.locator(".paste-body").count()) === 1, 4000, "paste editor on narrow");
+  await sleep(200);
+  const narrowFold = await budget();
+  assert(narrowFold.compact, `390×720 is the narrow layout (${narrowFold.compact})`);
+  const narrowHalf = Math.min(520, narrowFold.paneHeight * 0.4) / 2;
+  assert(
+    Math.abs(narrowFold.inputBox - narrowHalf) <= 2,
+    `narrow: the composer takes half of the 40% cap (${narrowFold.inputBox}px, want ${narrowHalf.toFixed(1)} from pane ${narrowFold.paneHeight})`,
+  );
+  assert(
+    narrowFold.inputBox >= oneLine - 1,
+    `narrow: the composer still fits a line (${narrowFold.inputBox}px vs one line ${oneLine.toFixed(1)})`,
+  );
+  assert(narrowFold.body.box <= narrowHalf + 1, `narrow: the fold stays within its half (${narrowFold.body.box}px)`);
+  assert(narrowFold.scrollBox >= 120, `narrow: the transcript keeps a visible band (${narrowFold.scrollBox} of ${narrowFold.paneHeight})`);
+  await page.screenshot({ path: path.join(OUT, "12-paste-narrow.png") });
+  log("narrow fold", `composer ${narrowFold.inputBox}px, fold ${narrowFold.body.box}px, chat ${narrowFold.scrollBox}px`);
 
   log("ALL OK");
 } finally {
