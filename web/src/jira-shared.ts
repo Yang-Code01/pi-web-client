@@ -328,3 +328,212 @@ export function handoffPrompt(input: HandoffPromptInput): string {
   // i18n-ignore-end
   return lines.join("\n");
 }
+
+// ---------------------------------------------------------------- #258 搜索条件
+
+export const SEARCH_RELATIONS = ["assignee", "reporter", "watcher"] as const;
+export type SearchRelation = (typeof SEARCH_RELATIONS)[number];
+
+export const SEARCH_SORTS = ["updated", "created", "priority"] as const;
+export type SearchSort = (typeof SEARCH_SORTS)[number];
+
+export const SEARCH_ORDERS = ["asc", "desc"] as const;
+export type SearchOrder = (typeof SEARCH_ORDERS)[number];
+
+export const STATUS_CATEGORY_KEYS = ["new", "indeterminate", "done"] as const;
+export type StatusCategoryKey = (typeof STATUS_CATEGORY_KEYS)[number];
+
+/** 和桥端 `bridge/src/jira-search.ts` 的常量同口径；改一边就要改另一边。 */
+export const SEARCH_STORAGE_KEY = "pi.jira.search.last";
+
+export interface JiraUserOption {
+  accountId: string;
+  displayName: string;
+  emailAddress: string;
+}
+
+export interface JiraSearchMeta {
+  statusCategories: string[];
+  types: { id: string; name: string }[];
+  priorities: { id: string; name: string }[];
+  statuses: { id: string; name: string }[];
+  /** 项目状态没取到（项目无权限 / 上游 4xx）：类型与优先级照常可用。 */
+  partial: boolean;
+}
+
+/** 搜索表单的全部条件。空串 = 不限；人员要么是选中的 accountId，要么是自由文本。 */
+export interface SearchState {
+  title: string;
+  text: string;
+  project: string;
+  statusCategory: "" | StatusCategoryKey;
+  status: string;
+  type: string;
+  priority: string;
+  sort: SearchSort;
+  order: SearchOrder;
+  person: { accountId: string; displayName: string } | null;
+  personText: string;
+  relations: SearchRelation[];
+  unassigned: boolean;
+  includeResolved: boolean;
+}
+
+export function emptySearch(): SearchState {
+  return {
+    title: "",
+    text: "",
+    project: "",
+    statusCategory: "",
+    status: "",
+    type: "",
+    priority: "",
+    sort: "updated",
+    order: "desc",
+    person: null,
+    personText: "",
+    relations: [...SEARCH_RELATIONS],
+    unassigned: false,
+    includeResolved: false,
+  };
+}
+
+function textOf(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function pickOne<T extends string>(raw: string, allowed: readonly T[], fallback: T): T {
+  return (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback;
+}
+
+/**
+ * 把表单值收成可提交的形状：去空白、未知枚举回默认、项目没选就不带具体状态。
+ *
+ * 未分配**不清**已选的人与关系——取消勾选时要能恢复；提交时由 `searchQuery` 忽略。
+ */
+export function normalizeSearch(state: SearchState): SearchState {
+  const project = state.project.trim().toUpperCase();
+  const accountId = state.person?.accountId.trim() ?? "";
+  const displayName = state.person?.displayName.trim() ?? "";
+  const person = accountId
+    ? { accountId, displayName: displayName || accountId }
+    : displayName
+      ? { accountId: "", displayName }
+      : null;
+  const relations = [...new Set(state.relations.filter((item) => (SEARCH_RELATIONS as readonly string[]).includes(item)))] as SearchRelation[];
+  const personText = state.personText.trim();
+  // 有人但一个关系都没勾：桥会 400，这里回到默认三项（表单也拦着取消最后一个）。
+  if ((person || personText) && relations.length === 0) relations.push(...SEARCH_RELATIONS);
+  const category = (STATUS_CATEGORY_KEYS as readonly string[]).includes(state.statusCategory)
+    ? (state.statusCategory as StatusCategoryKey)
+    : "";
+  return {
+    title: state.title.trim(),
+    text: state.text.trim(),
+    project,
+    statusCategory: project ? category : "",
+    status: project ? state.status.trim() : "",
+    type: state.type.trim(),
+    priority: state.priority.trim(),
+    sort: pickOne(state.sort, SEARCH_SORTS, "updated"),
+    order: pickOne(state.order, SEARCH_ORDERS, "desc"),
+    person: person && person.accountId ? person : null,
+    personText: person?.accountId ? "" : personText,
+    relations,
+    unassigned: state.unassigned === true,
+    includeResolved: state.includeResolved === true,
+  };
+}
+
+/**
+ * 条件 → query 参数：空值不带；未分配时不带人员与关系；选了人就用 accountId，
+ * 只有自由文本时才带 `person`。`nextPageToken` 由调用方自己加（它不属于条件）。
+ */
+export function searchQuery(state: SearchState): URLSearchParams {
+  const s = normalizeSearch(state);
+  const q = new URLSearchParams();
+  const put = (key: string, value: string) => {
+    if (value) q.set(key, value);
+  };
+  put("title", s.title);
+  put("text", s.text);
+  put("project", s.project);
+  if (s.statusCategory) q.set("statusCategory", s.statusCategory);
+  put("status", s.status);
+  put("type", s.type);
+  put("priority", s.priority);
+  if (s.unassigned) {
+    q.set("unassigned", "1");
+  } else if (s.person) {
+    q.set("personAccountId", s.person.accountId);
+  } else {
+    put("person", s.personText);
+  }
+  if (!s.unassigned && (s.person || s.personText)) q.set("relations", s.relations.join(","));
+  if (s.includeResolved) q.set("includeResolved", "1");
+  q.set("sort", s.sort);
+  q.set("order", s.order);
+  return q;
+}
+
+/** 只存条件与选中的人，不存 token / 结果；坏 JSON 或版本不对返回 null。 */
+export function serializeSearch(state: SearchState): string {
+  const s = normalizeSearch(state);
+  return JSON.stringify({
+    v: 1,
+    title: s.title,
+    text: s.text,
+    project: s.project,
+    statusCategory: s.statusCategory,
+    status: s.status,
+    type: s.type,
+    priority: s.priority,
+    person: s.person,
+    personText: s.personText,
+    relations: s.relations,
+    unassigned: s.unassigned,
+    includeResolved: s.includeResolved,
+    sort: s.sort,
+    order: s.order,
+  });
+}
+
+/**
+ * 读回上次的条件：坏 JSON / 非对象 / v 不是 1 → null；单个字段类型不对或枚举不认识 →
+ * 丢这个字段用默认值，不抛错也不整条丢掉。
+ */
+export function readSavedSearch(raw: string | null | undefined): SearchState | null {
+  if (!raw) return null;
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const o = data as Record<string, unknown>;
+  if (o.v !== 1) return null;
+  const personRaw = o.person && typeof o.person === "object" ? (o.person as Record<string, unknown>) : null;
+  const accountId = textOf(personRaw?.accountId).trim();
+  const displayName = textOf(personRaw?.displayName).trim();
+  const relations = Array.isArray(o.relations)
+    ? (o.relations.filter((item) => typeof item === "string" && (SEARCH_RELATIONS as readonly string[]).includes(item)) as SearchRelation[])
+    : [...SEARCH_RELATIONS];
+  const state: SearchState = {
+    title: textOf(o.title),
+    text: textOf(o.text),
+    project: textOf(o.project),
+    statusCategory: textOf(o.statusCategory) as SearchState["statusCategory"],
+    status: textOf(o.status),
+    type: textOf(o.type),
+    priority: textOf(o.priority),
+    sort: textOf(o.sort) as SearchSort,
+    order: textOf(o.order) as SearchOrder,
+    person: accountId ? { accountId, displayName: displayName || accountId } : null,
+    personText: textOf(o.personText),
+    relations,
+    unassigned: o.unassigned === true,
+    includeResolved: o.includeResolved === true,
+  };
+  return normalizeSearch(state);
+}

@@ -1,5 +1,5 @@
 import type { ArtifactDiff, ArtifactList, GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
-import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
+import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
 import type { DnsResult, SysNetwork, SysOverview, SysPorts, SysServices } from "./sysmanage-types.ts";
 
 /**
@@ -174,6 +174,19 @@ export const api = {
   /** #249：桥固定查「分配给我 + 未解决」；refresh 绕过桥的 60 秒缓存（D203）。 */
   jiraIssues: (refresh = false) => req<{ issues: JiraIssue[] }>(`/api/jira/issues${refresh ? "?refresh=1" : ""}`),
   jiraProjects: (refresh = false) => req<{ projects: JiraProject[] }>(`/api/jira/projects${refresh ? "?refresh=1" : ""}`),
+  /** #257：结构化条件由页面拼 query，桥端负责校验、拼 JQL 与关注者降级。 */
+  jiraSearch: (params: string) =>
+    req<{ issues: JiraIssue[]; nextPageToken?: string; isLast: boolean; degraded?: { watchers: boolean } }>(
+      `/api/jira/search${params ? `?${params}` : ""}`,
+    ),
+  /** #257：类型 / 优先级 / 项目内状态。`project` 为空时 `statuses` 也是空的。 */
+  jiraSearchMeta: (project?: string) =>
+    req<JiraSearchMeta>(
+      `/api/jira/meta${project ? `?project=${encodeURIComponent(project)}` : ""}`,
+    ),
+  /** #257：人员选择器的候选。桥端 403 时回 `{users: [], unavailable: true}`。 */
+  jiraUsers: (q: string) =>
+    req<{ users: JiraUserOption[]; unavailable?: boolean }>(`/api/jira/users?q=${encodeURIComponent(q)}`),
   /** #250：单工单详情。key 只做形状校验（桥端权威）；description 是 ADF，由页面转文本（D204）。 */
   jiraIssue: (key: string) =>
     req<JiraIssueDetail>(`/api/jira/issues/${encodeURIComponent(key)}`),

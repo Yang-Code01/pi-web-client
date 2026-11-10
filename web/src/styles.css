@@ -4195,6 +4195,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-sheet { grid-template-rows: auto 1fr auto; }
 .jira-head { gap: 8px; }
 .jira-body { overflow: auto; padding: 14px 16px 4px; min-height: 0; }
+/* #258：ready 之后 body 本身不再滚，滚动交给两个 pane（各自记住位置）。 */
+.jira-body-ready { overflow: hidden; padding: 0; display: flex; flex-direction: column; }
 .jira-loading { color: var(--dim); font-size: 13px; padding: 18px 0; }
 
 .jira-form { display: grid; gap: 14px; }
@@ -4244,6 +4246,100 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-k { color: var(--dim); flex: none; min-width: 5.5em; }
 .jira-v { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jira-disconnect { color: var(--danger); }
+
+/* #258：「我的未完成 / 搜索」两颗 tab 与两个各自滚动的 pane。 */
+.jira-ready { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.jira-tabs { display: flex; gap: 4px; flex: none; padding: 8px 16px 0; border-bottom: 1px solid var(--line-soft); }
+.jira-tab {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 6px 10px 8px;
+  font: 13px var(--sans, inherit);
+  color: var(--dim);
+  cursor: pointer;
+}
+.jira-tab:hover { color: var(--text); }
+.jira-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+.jira-tab:focus-visible { outline: 1px solid var(--line-lit); outline-offset: 2px; }
+.jira-panes { flex: 1; min-height: 0; display: flex; }
+.jira-pane { flex: 1; min-width: 0; overflow: auto; padding: 14px 16px 4px; }
+.jira-pane[hidden] { display: none; }
+
+/* #258：搜索表单 4/2/1 列；标题和全文各占两格。 */
+.jira-search { display: grid; gap: 12px; min-width: 0; }
+.jira-search-intro { display: grid; gap: 4px; }
+.jira-search-hint { font-size: 12px; color: var(--dim); }
+.jira-search-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; align-items: end; }
+.jira-search-field { display: grid; gap: 5px; min-width: 0; }
+.jira-search-field.span-2 { grid-column: span 2; }
+.jira-search-field .jira-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jira-search-people { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px 16px; align-items: start; }
+.jira-search-toggles { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+.jira-search-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; }
+.jira-search-note { flex: 1; min-width: 0; font-size: 12px; color: var(--dim); text-align: right; }
+.jira-search-note.bad { color: var(--danger); }
+.jira-checks { display: flex; flex-wrap: wrap; gap: 6px 14px; padding-top: 5px; }
+.jira-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
+.jira-check input { accent-color: var(--accent); }
+
+/* 人员输入 + 下拉：浮层贴在输入框下方，最多 8 条左右的高度。 */
+.jira-person { position: relative; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.jira-person-input { flex: 1 1 160px; width: auto; min-width: 0; }
+.jira-person-input:disabled { opacity: 0.55; }
+.jira-person-hint { font-size: 12px; color: var(--dim); min-height: 0; }
+.jira-person-hint.bad { color: var(--danger); }
+.jira-person-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 6px 4px 10px;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 12px;
+}
+.jira-person-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jira-person-x { appearance: none; background: none; border: 0; padding: 0 2px; color: var(--accent); font-size: 14px; line-height: 1; cursor: pointer; }
+.jira-user-pop {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  max-height: 260px;
+  overflow: auto;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-lit);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+}
+.jira-user-pop[hidden] { display: none; }
+.jira-user-opt { display: grid; gap: 2px; padding: 6px 8px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.jira-user-opt.on { background: var(--sunken); }
+.jira-user-mail { font-size: 11px; color: var(--dim); }
+.jira-user-note { padding: 8px; font-size: 12px; color: var(--dim); }
+.jira-user-note.bad { color: var(--danger); }
+
+/* 结果：行视觉完全复用 #249/#250，这里只管列表与底部的加载更多。 */
+.jira-search-results { display: grid; gap: 10px; min-width: 0; }
+.jira-results { display: grid; gap: 10px; min-width: 0; }
+.jira-result-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 4px; }
+.jira-result-note { font-size: 12px; color: var(--dim); }
+.jira-empty { display: grid; justify-items: center; gap: 10px; padding: 22px 0; }
+.jira-empty-text { font-size: 13px; color: var(--dim); }
+
+@media (max-width: 980px) {
+  .jira-search-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .jira-search-people { grid-template-columns: 1fr; }
+}
+@media (max-width: 620px) {
+  .jira-search-grid { grid-template-columns: 1fr; }
+  .jira-search-field.span-2 { grid-column: auto; }
+}
 /* #251：附件目录一行 —— 路径可省略，右边的按钮不跟着挤。 */
 .jira-root .jira-v { flex: 1; min-width: 0; }
 .jira-root .jira-v.mono { font-family: var(--mono); }

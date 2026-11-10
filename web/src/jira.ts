@@ -12,9 +12,8 @@ import { createEl as el } from "./chat.ts";
 import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
-import { adfToText, browseUrl, downloadMark, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, siteUrlProblem } from "./jira-shared.ts";
-import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject } from "./jira-shared.ts";
-
+import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
+import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
 
 export interface JiraHandoff {
@@ -123,6 +122,63 @@ export class JiraPanel {
   /** #252：交给 agent 的浮层；`off` 摘掉浮层自己的全局监听（外点 / 滚动 / 尺寸变化）。 */
   private handoffPop: { el: HTMLElement; timer: number; off: () => void } | null = null;
 
+  // #258：搜索 tab。列表与搜索各占一个 pane，切 tab 只改 hidden，不重建 DOM。
+  private tab: "list" | "search" = "list";
+  private search: SearchState = emptySearch();
+  /** 每个面板实例最多自动跑一次（首次切到搜索）。 */
+  private searchAutoRan = false;
+  private projectOptions: JiraProject[] = [];
+  private meta: JiraSearchMeta | null = null;
+  private metaProject = "";
+  private metaSeq = 0;
+  private metaLoading = false;
+  private metaError = "";
+  private searchKind: "idle" | "loading" | "ready" | "error" = "idle";
+  private searchItems: JiraIssue[] = [];
+  private searchNext: string | undefined;
+  private searchIsLast = true;
+  private searchLoadingMore = false;
+  private searchMoreError = "";
+  private searchErrorText = "";
+  private searchErrorCode = "";
+  private searchDegraded = false;
+  private searchSeq = 0;
+  private users: JiraUserOption[] = [];
+  private usersLoading = false;
+  private usersUnavailable = false;
+  private usersError = "";
+  private userSeq = 0;
+  private userTimer = 0;
+  private userOpen = false;
+  private userActive = -1;
+  /** 搜索表单控件；meta 到货 / 未分配切换时就地更新，不整块重画。 */
+  private fields: {
+    title?: HTMLInputElement;
+    text?: HTMLInputElement;
+    project?: HTMLSelectElement;
+    category?: HTMLSelectElement;
+    status?: HTMLSelectElement;
+    type?: HTMLSelectElement;
+    priority?: HTMLSelectElement;
+    sort?: HTMLSelectElement;
+    order?: HTMLSelectElement;
+    unassigned?: HTMLInputElement;
+    resolved?: HTMLInputElement;
+    relations: HTMLInputElement[];
+  } = { relations: [] };
+  private listPane: HTMLElement | null = null;
+  private searchPane: HTMLElement | null = null;
+  private tabs: HTMLButtonElement[] = [];
+  private personBox: HTMLElement | null = null;
+  private personInput: HTMLInputElement | null = null;
+  private personPop: HTMLElement | null = null;
+  private personHint: HTMLElement | null = null;
+  private searchBtn: HTMLButtonElement | null = null;
+  private resultsBox: HTMLElement | null = null;
+  private metaNote: HTMLElement | null = null;
+  /** 站点根地址：搜索结果复用 v1 的行（行里的浏览器链接要用它）。 */
+  private siteUrl = "";
+
   constructor(host: JiraHost) {
     this.host = host;
   }
@@ -131,6 +187,42 @@ export class JiraPanel {
     if (this.root) this.close();
     // 每次重开都从干净的详情开始：换账号 / 换站点后旧工单的详情不该继续显示。
     this.details.clear();
+    // #258：每次开面板回到列表 tab，重新读上次的条件；搜索结果不跨面板复用。
+    this.tab = "list";
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem(SEARCH_STORAGE_KEY);
+    } catch {
+      // 隐私模式 / 存储被禁：没有记忆也能用。
+    }
+    this.search = readSavedSearch(saved) ?? emptySearch();
+    this.searchAutoRan = false;
+    this.meta = null;
+    this.metaProject = "";
+    this.metaError = "";
+    this.metaLoading = false;
+    this.metaSeq += 1;
+    this.searchKind = "idle";
+    this.searchItems = [];
+    this.searchNext = undefined;
+    this.searchIsLast = true;
+    this.searchLoadingMore = false;
+    this.searchMoreError = "";
+    this.searchErrorText = "";
+    this.searchErrorCode = "";
+    this.searchDegraded = false;
+    this.searchSeq += 1;
+    this.users = [];
+    this.usersLoading = false;
+    this.usersUnavailable = false;
+    this.usersError = "";
+    this.userOpen = false;
+    this.userActive = -1;
+    this.userSeq += 1;
+    window.clearTimeout(this.userTimer);
+    this.listPane = null;
+    this.searchPane = null;
+    this.tabs = [];
     this.lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.state = { kind: "loading" };
     this.esc = (ev) => {
@@ -160,8 +252,18 @@ export class JiraPanel {
     if (this.esc) document.removeEventListener("keydown", this.esc, true);
     this.esc = null;
     this.seq += 1;
+    this.searchSeq += 1;
+    this.metaSeq += 1;
+    window.clearTimeout(this.userTimer);
     this.root?.remove();
     this.root = null;
+    this.listPane = null;
+    this.searchPane = null;
+    this.tabs = [];
+    this.resultsBox = null;
+    this.personBox = null;
+    this.personInput = null;
+    this.personPop = null;
     const back = this.lastFocus;
     this.lastFocus = null;
     back?.focus();
@@ -314,6 +416,8 @@ export class JiraPanel {
   // -------------------------------------------------------------- 渲染
 
   private render(): void {
+    const listTop = this.listPane?.scrollTop ?? 0;
+    const searchTop = this.searchPane?.scrollTop ?? 0;
     const back = el("div", "sheet-back jira-back");
     back.onclick = (ev) => {
       if (ev.target === back) this.close();
@@ -331,7 +435,7 @@ export class JiraPanel {
     close.onclick = () => this.close();
     head.append(close);
 
-    const body = el("div", "jira-body");
+    const body = el("div", this.state.kind === "ready" ? "jira-body jira-body-ready" : "jira-body");
     if (this.state.kind === "loading") body.append(el("div", "jira-loading", tr("正在问桥…")));
     else if (this.state.kind === "form") body.append(this.formEl(this.state));
     else if (this.state.kind === "ready") body.append(this.readyEl(this.state));
@@ -344,6 +448,9 @@ export class JiraPanel {
     if (this.root) this.root.replaceWith(back);
     else (document.getElementById("app") ?? document.body).append(back);
     this.root = back;
+    // 整块重画（语言切换 / 刷新列表）后把两个 pane 的滚动位置放回原处。
+    if (this.listPane) this.listPane.scrollTop = listTop;
+    if (this.searchPane) this.searchPane.scrollTop = searchTop;
   }
 
   private formEl(state: { note: string; bad: boolean }): HTMLElement {
@@ -462,6 +569,53 @@ export class JiraPanel {
   }
 
   private readyEl(state: ReadyState): HTMLElement {
+    this.siteUrl = state.siteUrl;
+    const box = el("div", "jira-ready");
+    const tabs = el("div", "jira-tabs");
+    tabs.setAttribute("role", "tablist");
+    const make = (id: "list" | "search", label: string): HTMLButtonElement => {
+      const btn = el("button", "jira-tab", label) as HTMLButtonElement;
+      btn.type = "button";
+      btn.setAttribute("role", "tab");
+      btn.id = `jira-tab-${id}`;
+      btn.setAttribute("aria-controls", `jira-pane-${id}`);
+      btn.onclick = () => this.switchTab(id);
+      btn.onkeydown = (ev) => {
+        if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+        ev.preventDefault();
+        const next = this.tab === "list" ? "search" : "list";
+        this.switchTab(next);
+        this.tabs[next === "list" ? 0 : 1]?.focus();
+      };
+      return btn;
+    };
+    const listTab = make("list", tr("我的未完成"));
+    const searchTab = make("search", tr("搜索"));
+    tabs.append(listTab, searchTab);
+
+    const panes = el("div", "jira-panes");
+    const listPane = el("div", "jira-pane");
+    listPane.id = "jira-pane-list";
+    listPane.setAttribute("role", "tabpanel");
+    listPane.setAttribute("aria-labelledby", "jira-tab-list");
+    listPane.append(this.listEl(state));
+
+    const searchPane = el("div", "jira-pane jira-search-pane");
+    searchPane.id = "jira-pane-search";
+    searchPane.setAttribute("role", "tabpanel");
+    searchPane.setAttribute("aria-labelledby", "jira-tab-search");
+    searchPane.append(this.searchEl(state));
+
+    panes.append(listPane, searchPane);
+    box.append(tabs, panes);
+    this.tabs = [listTab, searchTab];
+    this.listPane = listPane;
+    this.searchPane = searchPane;
+    this.applyTab();
+    return box;
+  }
+
+  private listEl(state: ReadyState): HTMLElement {
     const me = state.me;
     const box = el("div", "jira-profile");
     const card = el("div", "jira-card");
@@ -496,6 +650,659 @@ export class JiraPanel {
     actions.append(out);
     box.append(actions);
     return box;
+  }
+
+  private switchTab(tab: "list" | "search"): void {
+    this.tab = tab;
+    this.applyTab();
+    if (tab === "search") this.onEnterSearch();
+  }
+
+  private applyTab(): void {
+    const isList = this.tab === "list";
+    this.listPane?.toggleAttribute("hidden", !isList);
+    this.searchPane?.toggleAttribute("hidden", isList);
+    for (const btn of this.tabs) {
+      const on = btn.id === `jira-tab-${this.tab}`;
+      btn.classList.toggle("on", on);
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+      btn.tabIndex = on ? 0 : -1;
+    }
+  }
+
+  /** 首次切到搜索：拉选项；有保存的条件就回填并自动跑一次（空条件也跑，给个「什么都能看到」的起点）。 */
+  private onEnterSearch(): void {
+    void this.loadMeta();
+    if (this.searchAutoRan) return;
+    this.searchAutoRan = true;
+    this.fillSearchForm();
+    void this.runSearch();
+  }
+
+  private searchEl(state: ReadyState): HTMLElement {
+    this.projectOptions = state.projects.kind === "ready" ? state.projects.items : [];
+    const box = el("div", "jira-search");
+    const intro = el("div", "jira-search-intro");
+    intro.append(
+      el("div", "jira-section-title", tr("搜索工单")),
+      el("div", "jira-search-hint", tr("按条件查这个站点里你能看到的工单，不限经办人。")),
+    );
+
+    const form = el("form", "jira-search-form") as HTMLFormElement;
+    form.onsubmit = (ev) => {
+      ev.preventDefault();
+      void this.runSearch();
+    };
+
+    const grid = el("div", "jira-search-grid");
+    grid.append(
+      this.searchInput("title", tr("标题关键字")),
+      this.searchInput("text", tr("全文本")),
+      this.searchSelectField("project", tr("项目")),
+      this.searchSelectField("category", tr("状态类别")),
+      this.searchSelectField("status", tr("具体状态")),
+      this.searchSelectField("type", tr("类型")),
+      this.searchSelectField("priority", tr("优先级")),
+      this.searchSelectField("sort", tr("排序")),
+      this.searchSelectField("order", tr("方向")),
+    );
+
+    const people = el("div", "jira-search-people");
+    people.append(this.personField(), this.relationsField());
+    grid.append(people);
+
+    const toggles = el("div", "jira-search-toggles");
+    toggles.append(this.checkField("unassigned", tr("未分配")), this.checkField("resolved", tr("含已解决")));
+    grid.append(toggles);
+
+    const actions = el("div", "jira-search-actions");
+    const submit = el("button", "btn primary", tr("搜索")) as HTMLButtonElement;
+    submit.type = "submit";
+    this.searchBtn = submit;
+    submit.disabled = this.searchKind === "loading";
+    const clear = el("button", "btn ghost", tr("清空条件")) as HTMLButtonElement;
+    clear.type = "button";
+    clear.onclick = () => this.clearSearch();
+    this.metaNote = el("div", "jira-search-note");
+    actions.append(submit, clear, this.metaNote);
+    grid.append(actions);
+    form.append(grid);
+
+    this.resultsBox = el("div", "jira-search-results");
+    box.append(intro, form, this.resultsBox);
+    this.paintMetaOptions();
+    this.paintPerson();
+    this.syncSearchControls();
+    this.paintResults();
+    return box;
+  }
+
+  private searchInput(key: "title" | "text", label: string): HTMLElement {
+    const wrap = el("div", "jira-search-field span-2");
+    const id = `jira-search-${key}`;
+    const lab = el("label", "jira-label", label);
+    lab.htmlFor = id;
+    const input = el("input", "jira-input") as HTMLInputElement;
+    input.id = id;
+    input.placeholder = tr("输入关键字");
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.value = this.search[key];
+    input.oninput = () => {
+      this.search[key] = input.value;
+    };
+    this.fields[key] = input;
+    wrap.append(lab, input);
+    return wrap;
+  }
+
+  private searchSelectField(
+    key: "project" | "category" | "status" | "type" | "priority" | "sort" | "order",
+    label: string,
+  ): HTMLElement {
+    const wrap = el("div", "jira-search-field");
+    const id = `jira-search-${key}`;
+    const lab = el("label", "jira-label", label);
+    lab.htmlFor = id;
+    const sel = el("select", "jira-input jira-select") as HTMLSelectElement;
+    sel.id = id;
+    sel.onchange = () => this.onSearchSelect(key, sel);
+    this.fields[key] = sel;
+    wrap.append(lab, sel);
+    return wrap;
+  }
+
+  private onSearchSelect(
+    key: "project" | "category" | "status" | "type" | "priority" | "sort" | "order",
+    sel: HTMLSelectElement,
+  ): void {
+    if (key === "project") {
+      this.search.project = sel.value;
+      this.search.status = "";
+      this.search.statusCategory = "";
+      this.meta = null;
+      this.metaProject = "";
+      this.metaError = "";
+      void this.loadMeta();
+      return;
+    }
+    if (key === "category") this.search.statusCategory = sel.value as SearchState["statusCategory"];
+    else if (key === "status") this.search.status = sel.value;
+    else if (key === "type") this.search.type = sel.value;
+    else if (key === "priority") this.search.priority = sel.value;
+    else if (key === "sort") this.search.sort = sel.value as SearchSort;
+    else if (key === "order") this.search.order = sel.value as SearchState["order"];
+  }
+
+  private personField(): HTMLElement {
+    const wrap = el("div", "jira-search-field");
+    const id = "jira-search-person";
+    const lab = el("label", "jira-label", tr("人员"));
+    lab.htmlFor = id;
+    const box = el("div", "jira-person");
+    const input = el("input", "jira-input jira-person-input") as HTMLInputElement;
+    input.id = id;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-expanded", "false");
+    input.oninput = () => {
+      // 一旦开始改字，之前选定的人就不算数了：留下旧 accountId 会和输入框里的名字打架。
+      if (this.search.person) this.search.person = null;
+      this.search.personText = input.value;
+      this.paintPerson();
+      this.scheduleUsers(input.value);
+    };
+    input.onfocus = () => {
+      if (input.value.trim().length >= 2) this.scheduleUsers(input.value);
+    };
+    input.onblur = () => {
+      window.setTimeout(() => this.closeUserPop(), 120);
+    };
+    input.onkeydown = (ev) => {
+      if (ev.key === "Escape" && this.userOpen) {
+        ev.preventDefault();
+        this.closeUserPop();
+        return;
+      }
+      if ((ev.key === "ArrowDown" || ev.key === "ArrowUp") && this.userOpen && this.users.length) {
+        ev.preventDefault();
+        const step = ev.key === "ArrowDown" ? 1 : -1;
+        this.userActive = (this.userActive + step + this.users.length) % this.users.length;
+        this.paintUserPop();
+        return;
+      }
+      if (ev.key === "Enter" && this.userOpen && this.userActive >= 0) {
+        const user = this.users[this.userActive];
+        if (user) {
+          ev.preventDefault();
+          this.selectUser(user);
+        }
+        return;
+      }
+      if (ev.key === "Tab") this.closeUserPop();
+    };
+    this.personInput = input;
+
+    const pop = el("div", "jira-user-pop");
+    pop.hidden = true;
+    this.personPop = pop;
+    box.append(input, pop);
+    const hint = el("div", "jira-person-hint");
+    hint.setAttribute("aria-live", "polite");
+    this.personHint = hint;
+    this.personBox = box;
+    wrap.append(lab, box, hint);
+    return wrap;
+  }
+
+  private relationsField(): HTMLElement {
+    const wrap = el("div", "jira-search-field");
+    wrap.append(el("div", "jira-label", tr("关系")));
+    const row = el("div", "jira-checks");
+    this.fields.relations = [];
+    for (const rel of SEARCH_RELATIONS) {
+      const label = el("label", "jira-check");
+      const cb = el("input") as HTMLInputElement;
+      cb.type = "checkbox";
+      cb.value = rel;
+      cb.checked = this.search.relations.includes(rel);
+      cb.onchange = () => {
+        if (cb.checked) {
+          if (!this.search.relations.includes(rel)) this.search.relations.push(rel);
+        } else {
+          const hasPerson = Boolean(this.search.person) || Boolean(this.search.personText.trim());
+          // 按人查时至少留一个关系，否则「填了人却什么都没过滤」比报错更难懂。
+          if (hasPerson && this.search.relations.length <= 1) {
+            cb.checked = true;
+            return;
+          }
+          this.search.relations = this.search.relations.filter((r) => r !== rel);
+        }
+      };
+      label.append(cb, el("span", "", relationName(rel)));
+      row.append(label);
+      this.fields.relations.push(cb);
+    }
+    wrap.append(row);
+    return wrap;
+  }
+
+  private checkField(key: "unassigned" | "resolved", label: string): HTMLElement {
+    const wrap = el("label", "jira-check");
+    const cb = el("input") as HTMLInputElement;
+    cb.type = "checkbox";
+    cb.checked = key === "unassigned" ? this.search.unassigned : this.search.includeResolved;
+    cb.onchange = () => {
+      if (key === "unassigned") {
+        this.search.unassigned = cb.checked;
+        if (cb.checked) this.closeUserPop();
+      } else {
+        this.search.includeResolved = cb.checked;
+      }
+      this.syncSearchControls();
+      this.paintPerson();
+    };
+    this.fields[key] = cb;
+    wrap.append(cb, el("span", "", label));
+    return wrap;
+  }
+
+  private scheduleUsers(raw: string): void {
+    window.clearTimeout(this.userTimer);
+    const q = raw.trim();
+    // 取消上一轮：请求序号一变，在途的响应就不许再画进来。
+    this.userSeq += 1;
+    if (this.usersUnavailable || q.length < 2) {
+      this.users = [];
+      this.closeUserPop();
+      return;
+    }
+    this.userTimer = window.setTimeout(() => void this.loadUsers(q), 250);
+  }
+
+  private async loadUsers(raw: string): Promise<void> {
+    const q = raw.trim();
+    if (q.length < 2) return;
+    const seq = ++this.userSeq;
+    this.usersLoading = true;
+    this.usersError = "";
+    this.userOpen = true;
+    this.userActive = -1;
+    this.paintUserPop();
+    try {
+      const res = await api.jiraUsers(q);
+      if (seq !== this.userSeq || !this.root) return;
+      this.users = res.users;
+      if (res.unavailable === true) {
+        // 用户搜索没权限：后面的输入都按自由文本走，不要再每敲一个字打一次 403。
+        this.usersUnavailable = true;
+        this.users = [];
+        this.search.person = null;
+        this.userOpen = false;
+      } else {
+        this.usersUnavailable = false;
+      }
+    } catch (err) {
+      if (seq !== this.userSeq || !this.root) return;
+      this.usersError = errText(err);
+    } finally {
+      if (seq === this.userSeq) this.usersLoading = false;
+    }
+    if (seq !== this.userSeq || !this.root) return;
+    this.userActive = this.users.length ? 0 : -1;
+    this.paintUserPop();
+    this.paintPerson();
+  }
+
+  private selectUser(user: JiraUserOption): void {
+    this.search.person = { accountId: user.accountId, displayName: user.displayName || user.emailAddress || user.accountId };
+    this.search.personText = "";
+    this.userOpen = false;
+    this.users = [];
+    this.usersError = "";
+    if (this.personInput) this.personInput.value = "";
+    this.paintPerson();
+    this.paintUserPop();
+    this.personInput?.focus();
+  }
+
+  private closeUserPop(): void {
+    this.userOpen = false;
+    this.userActive = -1;
+    this.paintUserPop();
+  }
+
+  private paintPerson(): void {
+    const box = this.personBox;
+    const input = this.personInput;
+    if (!box || !input) return;
+    box.querySelector(".jira-person-chip")?.remove();
+    input.placeholder = this.usersUnavailable ? tr("邮箱或 accountId") : tr("姓名或邮箱");
+    if (this.search.person) {
+      const chip = el("div", "jira-person-chip");
+      chip.append(el("span", "jira-person-name", this.search.person.displayName));
+      chip.title = this.search.person.accountId;
+      const clear = el("button", "jira-person-x", "×") as HTMLButtonElement;
+      clear.type = "button";
+      clear.title = tr("清除");
+      clear.setAttribute("aria-label", tr("清除"));
+      clear.onclick = () => {
+        this.search.person = null;
+        this.search.personText = "";
+        this.users = [];
+        this.closeUserPop();
+        this.paintPerson();
+        this.personInput?.focus();
+      };
+      chip.append(clear);
+      box.insertBefore(chip, input);
+      input.value = "";
+    }
+    if (this.personHint) {
+      let hint = "";
+      if (this.search.unassigned) hint = tr("未分配时不会按人员过滤。");
+      else if (this.usersUnavailable) hint = tr("用户搜索不可用，可手输邮箱或 accountId");
+      else if (this.search.person) hint = tr("已选定一个人，按此过滤；点 × 可清除。");
+      this.personHint.textContent = hint;
+      this.personHint.classList.toggle("bad", this.usersUnavailable);
+    }
+  }
+
+  private paintUserPop(): void {
+    const pop = this.personPop;
+    if (!pop) return;
+    pop.replaceChildren();
+    pop.hidden = !this.userOpen;
+    this.personInput?.setAttribute("aria-expanded", this.userOpen ? "true" : "false");
+    if (!this.userOpen) {
+      this.personInput?.removeAttribute("aria-activedescendant");
+      return;
+    }
+    if (this.usersLoading) {
+      pop.append(el("div", "jira-user-note", tr("正在搜索…")));
+      return;
+    }
+    if (this.usersUnavailable) {
+      pop.append(el("div", "jira-user-note", tr("用户搜索不可用，可手输邮箱或 accountId")));
+      return;
+    }
+    if (this.usersError) {
+      pop.append(el("div", "jira-user-note bad", this.usersError));
+      return;
+    }
+    if (!this.users.length) {
+      pop.append(el("div", "jira-user-note", tr("未找到匹配的人")));
+      return;
+    }
+    this.users.forEach((user, i) => {
+      const row = el("div", "jira-user-opt", user.displayName || user.emailAddress || user.accountId);
+      row.setAttribute("role", "option");
+      row.id = `jira-user-opt-${i}`;
+      row.classList.toggle("on", i === this.userActive);
+      row.setAttribute("aria-selected", i === this.userActive ? "true" : "false");
+      if (user.emailAddress && user.emailAddress !== user.displayName) {
+        row.append(el("span", "jira-user-mail", user.emailAddress));
+      }
+      // mousedown 阻止默认，别让输入框先 blur 把下拉关掉再轮到 click。
+      row.onmousedown = (ev) => {
+        ev.preventDefault();
+        this.selectUser(user);
+      };
+      pop.append(row);
+    });
+    if (this.userActive >= 0) this.personInput?.setAttribute("aria-activedescendant", `jira-user-opt-${this.userActive}`);
+    else this.personInput?.removeAttribute("aria-activedescendant");
+  }
+
+  private async loadMeta(): Promise<void> {
+    if (!this.root) return;
+    const project = this.search.project;
+    // 同一项目已经有结果就不重复问；换项目 / 强制刷新才重来。
+    if (this.meta && this.metaProject === project && !this.metaError) return;
+    const seq = ++this.metaSeq;
+    this.metaLoading = true;
+    this.metaError = "";
+    this.paintMetaOptions();
+    try {
+      const meta = await api.jiraSearchMeta(project || undefined);
+      if (seq !== this.metaSeq || !this.root) return;
+      this.meta = meta;
+      this.metaProject = project;
+    } catch (err) {
+      if (seq !== this.metaSeq || !this.root) return;
+      this.metaError = errText(err);
+      this.meta = null;
+    } finally {
+      if (seq === this.metaSeq) this.metaLoading = false;
+    }
+    if (seq !== this.metaSeq || !this.root) return;
+    this.paintMetaOptions();
+    this.syncSearchControls();
+    this.paintResults();
+  }
+
+  private paintMetaOptions(): void {
+    const f = this.fields;
+    if (f.project) {
+      const keep = this.search.project;
+      const options = [option("", tr("全部项目"))];
+      for (const p of this.projectOptions) options.push(option(p.key, p.name ? `${p.key} · ${p.name}` : p.key));
+      // 上次存的项目可能不在这页（桥只取前 20 个）：保留成一项，别静默改成「全部项目」。
+      if (keep && !this.projectOptions.some((p) => p.key === keep)) options.push(option(keep, keep));
+      f.project.replaceChildren(...options);
+      f.project.value = keep;
+    }
+    if (f.category) {
+      f.category.replaceChildren(option("", tr("全部类别")), ...STATUS_CATEGORY_KEYS.map((k) => option(k, categoryName(k))));
+      f.category.value = this.search.statusCategory;
+    }
+    if (f.type) {
+      const keep = this.search.type;
+      const options = [option("", tr("全部类型"))];
+      for (const t of this.meta?.types ?? []) options.push(option(t.name, t.name));
+      if (keep && !options.some((o) => o.value === keep)) options.push(option(keep, keep));
+      f.type.replaceChildren(...options);
+      f.type.value = keep;
+    }
+    if (f.priority) {
+      const keep = this.search.priority;
+      const options = [option("", tr("全部优先级"))];
+      for (const p of this.meta?.priorities ?? []) options.push(option(p.name, p.name));
+      if (keep && !options.some((o) => o.value === keep)) options.push(option(keep, keep));
+      f.priority.replaceChildren(...options);
+      f.priority.value = keep;
+    }
+    if (f.status) {
+      const keep = this.search.status;
+      f.status.replaceChildren();
+      if (this.search.project) {
+        f.status.disabled = this.metaLoading || (Boolean(this.metaError) && !(this.meta?.statuses ?? []).length);
+        f.status.append(option("", tr("全部状态")));
+        for (const s of this.meta?.statuses ?? []) f.status.append(option(s.name, s.name));
+        if (keep && !(this.meta?.statuses ?? []).some((s) => s.name === keep)) f.status.append(option(keep, keep));
+        f.status.value = keep;
+      } else {
+        f.status.append(option("", tr("先选项目")));
+        f.status.disabled = true;
+        f.status.value = "";
+      }
+    }
+    if (f.sort) {
+      f.sort.replaceChildren(...SEARCH_SORTS.map((s) => option(s, sortName(s))));
+      f.sort.value = this.search.sort;
+    }
+    if (f.order) {
+      f.order.replaceChildren(option("desc", tr("降序")), option("asc", tr("升序")));
+      f.order.value = this.search.order;
+    }
+    if (this.metaNote) {
+      let note = "";
+      if (this.search.project && this.metaLoading) note = tr("正在读取选项…");
+      else if (this.search.project && this.metaError) note = tr("选项读取失败：{p1}", { p1: this.metaError });
+      else if (this.search.project && this.meta?.partial) note = tr("项目状态没取到，其他条件仍可用。");
+      this.metaNote.textContent = note;
+      this.metaNote.classList.toggle("bad", Boolean(this.search.project && this.metaError));
+    }
+  }
+
+  private syncSearchControls(): void {
+    if (this.fields.unassigned) this.fields.unassigned.checked = this.search.unassigned;
+    if (this.fields.resolved) this.fields.resolved.checked = this.search.includeResolved;
+    for (const cb of this.fields.relations) cb.disabled = this.search.unassigned;
+    if (this.personInput) this.personInput.disabled = this.search.unassigned;
+  }
+
+  private fillSearchForm(): void {
+    const f = this.fields;
+    if (f.title) f.title.value = this.search.title;
+    if (f.text) f.text.value = this.search.text;
+    this.paintMetaOptions();
+    if (f.category) f.category.value = this.search.statusCategory;
+    if (f.status) f.status.value = this.search.status;
+    if (f.type) f.type.value = this.search.type;
+    if (f.priority) f.priority.value = this.search.priority;
+    if (f.sort) f.sort.value = this.search.sort;
+    if (f.order) f.order.value = this.search.order;
+    for (const cb of f.relations) cb.checked = this.search.relations.includes(cb.value as SearchRelation);
+    if (f.unassigned) f.unassigned.checked = this.search.unassigned;
+    if (f.resolved) f.resolved.checked = this.search.includeResolved;
+    if (this.personInput) this.personInput.value = this.search.person ? "" : this.search.personText;
+    this.paintPerson();
+    this.syncSearchControls();
+  }
+
+  private async runSearch(): Promise<void> {
+    this.search = normalizeSearch(this.search);
+    this.fillSearchForm();
+    try {
+      localStorage.setItem(SEARCH_STORAGE_KEY, serializeSearch(this.search));
+    } catch {
+      // 存储被禁：搜索照旧，只是下次不记得。
+    }
+    const seq = ++this.searchSeq;
+    this.searchKind = "loading";
+    this.searchErrorText = "";
+    this.searchErrorCode = "";
+    this.searchItems = [];
+    this.searchNext = undefined;
+    this.searchIsLast = true;
+    this.searchLoadingMore = false;
+    this.searchMoreError = "";
+    if (this.searchBtn) this.searchBtn.disabled = true;
+    this.paintResults();
+    try {
+      const res = await api.jiraSearch(searchQuery(this.search).toString());
+      if (seq !== this.searchSeq || !this.root) return;
+      this.searchItems = res.issues;
+      this.searchNext = res.nextPageToken;
+      this.searchIsLast = res.isLast || !res.nextPageToken;
+      this.searchDegraded = res.degraded?.watchers === true;
+      this.searchKind = "ready";
+    } catch (err) {
+      if (seq !== this.searchSeq || !this.root) return;
+      this.searchKind = "error";
+      this.searchErrorText = errText(err);
+      this.searchErrorCode = codeOf(err);
+    }
+    if (this.searchBtn) this.searchBtn.disabled = false;
+    this.paintResults();
+  }
+
+  private async loadMore(): Promise<void> {
+    if (this.searchLoadingMore || this.searchIsLast || !this.searchNext) return;
+    const seq = this.searchSeq;
+    this.searchLoadingMore = true;
+    this.searchMoreError = "";
+    this.paintResults();
+    try {
+      const params = searchQuery(this.search);
+      params.set("nextPageToken", this.searchNext);
+      const res = await api.jiraSearch(params.toString());
+      if (seq !== this.searchSeq || !this.root) return;
+      // 桥端是游标分页，理论上不重；去重仍按 key 兜一层，重复工单比少一页更刺眼。
+      const seen = new Set(this.searchItems.map((i) => i.key));
+      for (const issue of res.issues) {
+        if (seen.has(issue.key)) continue;
+        seen.add(issue.key);
+        this.searchItems.push(issue);
+      }
+      this.searchNext = res.nextPageToken;
+      this.searchIsLast = res.isLast || !res.nextPageToken;
+      this.searchDegraded = this.searchDegraded || res.degraded?.watchers === true;
+    } catch (err) {
+      if (seq !== this.searchSeq || !this.root) return;
+      this.searchMoreError = errText(err);
+    } finally {
+      if (seq === this.searchSeq) this.searchLoadingMore = false;
+    }
+    if (seq === this.searchSeq && this.root) this.paintResults();
+  }
+
+  private clearSearch(): void {
+    this.search = emptySearch();
+    this.users = [];
+    this.usersUnavailable = false;
+    this.usersError = "";
+    this.userOpen = false;
+    this.fillSearchForm();
+    void this.runSearch();
+  }
+
+  private paintResults(): void {
+    const box = this.resultsBox;
+    if (!box) return;
+    box.replaceChildren();
+    if (this.searchKind === "idle") return;
+    if (this.searchKind === "loading") {
+      box.append(el("div", "jira-loading", tr("正在查询…")));
+      return;
+    }
+    if (this.searchKind === "error") {
+      const err = el("div", "jira-error");
+      err.append(el("div", "jira-error-text", this.searchErrorText));
+      const actions = el("div", "jira-actions");
+      if (isAuthCode(this.searchErrorCode)) {
+        const fix = el("button", "btn primary", tr("去改 token"));
+        fix.onclick = () => this.showForm(this.searchErrorText, true);
+        actions.append(fix);
+      } else {
+        const again = el("button", "btn ghost", tr("重试"));
+        again.onclick = () => void this.runSearch();
+        actions.append(again);
+      }
+      err.append(actions);
+      box.append(err);
+      return;
+    }
+    if (this.searchDegraded) {
+      box.append(el("div", "jira-note", tr("关注者权限不足，本次只查了经办人和报告人。")));
+    }
+    if (!this.searchItems.length) {
+      const empty = el("div", "jira-empty");
+      empty.append(el("div", "jira-empty-text", tr("没有符合条件的工单")));
+      const clear = el("button", "btn ghost", tr("清空条件"));
+      clear.onclick = () => this.clearSearch();
+      empty.append(clear);
+      box.append(empty);
+      return;
+    }
+    const list = el("div", "jira-results");
+    for (const issue of this.searchItems) list.append(this.issueEl(this.siteUrl, issue));
+    box.append(list);
+    const foot = el("div", "jira-result-foot");
+    if (this.searchMoreError) foot.append(el("span", "jira-hint bad", this.searchMoreError));
+    if (this.searchIsLast) {
+      foot.append(el("span", "jira-result-note", tr("已显示 {p1} 条 · 已全部加载", { p1: this.searchItems.length })));
+    } else {
+      const more = el("button", "btn ghost jira-more", tr("加载更多")) as HTMLButtonElement;
+      more.type = "button";
+      more.disabled = this.searchLoadingMore;
+      more.onclick = () => void this.loadMore();
+      foot.append(more, el("span", "jira-result-note", tr("已显示 {p1} 条", { p1: this.searchItems.length })));
+    }
+    box.append(foot);
   }
 
   private issuesEl(state: ReadyState): HTMLElement {
@@ -657,9 +1464,7 @@ export class JiraPanel {
     const data = state.data;
     const desc = el("div", "jira-desc");
     const text = adfToText(data.issue.description);
-    if (!text) {
-      desc.append(el("div", "jira-desc-empty", tr("没有描述")));
-    } else {
+    if (text) {
       const cut = text.length > DESC_LIMIT;
       desc.append(el("div", "jira-desc-text", cut ? `${text.slice(0, DESC_LIMIT)}…` : text));
       if (cut) {
@@ -669,6 +1474,8 @@ export class JiraPanel {
         more.rel = "noopener noreferrer";
         desc.append(more);
       }
+    } else {
+      desc.append(el("div", "jira-desc-empty", tr("没有描述")));
     }
     box.append(desc);
 
@@ -1021,4 +1828,29 @@ export class JiraPanel {
     foot.append(go);
     return foot;
   }
+}
+
+function option(value: string, label: string): HTMLOptionElement {
+  const opt = document.createElement("option");
+  opt.value = value;
+  opt.textContent = label;
+  return opt;
+}
+
+function relationName(rel: SearchRelation): string {
+  if (rel === "assignee") return tr("经办人");
+  if (rel === "reporter") return tr("报告人");
+  return tr("关注者");
+}
+
+function categoryName(key: StatusCategoryKey): string {
+  if (key === "new") return tr("待办");
+  if (key === "indeterminate") return tr("进行中");
+  return tr("已完成");
+}
+
+function sortName(sort: SearchSort): string {
+  if (sort === "updated") return tr("最近更新");
+  if (sort === "created") return tr("最近创建");
+  return tr("优先级");
 }
