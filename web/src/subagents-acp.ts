@@ -41,6 +41,10 @@ export interface AcpDelegateSection {
   view: AcpDelegateView | null;
   /** 连文件都没读到（RPC 自己失败）：给路径 + 原因，与 view.error（文件读不懂）不是一回事。 */
   loadError: { path: string; message: string } | null;
+  /** 这台机器的 pi 里有没有装 billion-context（桥的 `/api/deps` 说的）；false = 整片灰掉。 */
+  providerInstalled?: boolean;
+  /** 装它用的参数（`npm:billion-context`）：来源在 bridge/src/deps.ts 的 OPTIONAL_PACKAGES 里，别手抄。 */
+  providerSource?: string;
   saving: boolean;
   /** 上一次保存的失败原因；成功保存由 app 的 settings-note 播报。 */
   saveError: string | null;
@@ -67,6 +71,8 @@ export function paintAcpDelegateSection(box: HTMLElement, page: AcpDelegateSecti
     return;
   }
 
+  /** 包都不在的话，这里的开关存下去也没人读：灰掉，并说清怎么补。 */
+  const off = page.providerInstalled === false;
   box.append(el("div", "subagents-path", tr("这个文件：{p1}", { p1: view.path })));
   box.append(
     el(
@@ -76,6 +82,13 @@ export function paintAcpDelegateSection(box: HTMLElement, page: AcpDelegateSecti
     ),
   );
   box.append(el("p", "subagents-hint", tr("对还没开始的会话生效：子代理启动时才注册 acp_delegate，正在跑的会话不会跟着变。")));
+  if (off) {
+    // 包不在时，这里的开关存得下、但没人读：说清楚，并把控件灰掉（下面的 refresh 会把保存也禁了）。
+    box.append(el("p", "note warn", tr("这台机器上没有装 billion-context，acp_delegate 现在用不了 —— 下面的开关存了也不会生效。")));
+    box.append(
+      el("p", "subagents-hint", tr("装法：在终端里跑 pi install {p1}，然后重开 pi。", { p1: page.providerSource ?? "npm:billion-context" })),
+    );
+  }
   if (!view.exists) box.append(el("p", "subagents-hint", tr("（还没有这个文件，保存时创建）")));
 
   const locked = view.error !== null;
@@ -166,7 +179,7 @@ export function paintAcpDelegateSection(box: HTMLElement, page: AcpDelegateSecti
       hint.hidden = !bad;
     }
     // 没改动也禁用：保存发的是 patch，空 patch 桥侧什么也不写，不如让用户看得见「没事可做」。
-    save.disabled = locked || page.saving || badDepth || badConcurrent || patchOf() === null;
+    save.disabled = locked || off || page.saving || badDepth || badConcurrent || patchOf() === null;
   };
 
   depth.oninput = refresh;
@@ -186,6 +199,10 @@ export function paintAcpDelegateSection(box: HTMLElement, page: AcpDelegateSecti
   if (page.saveError) foot.append(el("span", "settings-hint bad", tr("没存上：{p1}", { p1: page.saveError })));
   if (locked) foot.append(el("span", "subagents-hint", tr("这个文件读不懂，保存不可用。")));
 
+  // 包不在就一个控件都不留活的：改了一半发现存不了比不让改更气人。
+  if (off) {
+    for (const control of form.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input,select,textarea")) control.disabled = true;
+  }
   box.append(form, foot);
   refresh();
 }
