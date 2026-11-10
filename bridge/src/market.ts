@@ -560,8 +560,8 @@ export function setIndexListener(fn: ((idx: McpIndex) => void) | null): void {
 }
 
 /** Every active latest registry entry, with GitHub stars; rebuilt once a day in the background. */
-export function mcpIndex(force = false): Promise<{ at: number; items: StoreMcp[]; starsComplete: boolean; building?: boolean; truncated?: boolean }> {
-  const disk = readJson<{ at?: number; items?: StoreMcp[]; starsComplete?: boolean; truncated?: boolean } | null>(INDEX_FILE(), null);
+export function mcpIndex(force = false, preloaded?: McpIndex | null): Promise<{ at: number; items: StoreMcp[]; starsComplete: boolean; building?: boolean; truncated?: boolean }> {
+  const disk = preloaded === undefined ? readIndexDisk() : preloaded;
   const fresh = disk?.at && Date.now() - disk.at < INDEX_TTL && Array.isArray(disk.items);
   if (fresh && !force) return Promise.resolve({ at: disk!.at!, items: disk!.items!, starsComplete: Boolean(disk!.starsComplete), truncated: Boolean(disk!.truncated) });
   // A stale index is still useful while the new one builds.
@@ -571,6 +571,7 @@ export function mcpIndex(force = false): Promise<{ at: number; items: StoreMcp[]
       .then((idx) => {
         ensureDir(path.dirname(INDEX_FILE()));
         writeJson(INDEX_FILE(), idx);
+        indexCache = null;
         indexListener?.(idx);
         return idx;
       })
@@ -586,6 +587,32 @@ export function mcpIndex(force = false): Promise<{ at: number; items: StoreMcp[]
   if (building) return building;
   // Cooling down after a failed walk with nothing on disk: the caller falls back to the live search.
   return Promise.resolve({ at: 0, items: [], starsComplete: false, building: true });
+}
+
+/**
+ * #308: the index file is ~16 MB of JSON and `readJson` parses all of it. Every search read it twice
+ * (once here, once inside `mcpIndex`), which is ~170 ms of blocked bridge event loop per keystroke.
+ * One parse per file version: the cache key is the file's mtime + size. An idle cache is dropped after
+ * ten minutes so a bridge that stopped browsing the store does not sit on ~30 MB of parsed entries.
+ */
+let indexCache: { key: string; value: McpIndex | null; used: number } | null = null;
+const INDEX_CACHE_IDLE = 10 * 60_000;
+
+function readIndexDisk(): McpIndex | null {
+  const file = INDEX_FILE();
+  try {
+    const st = fs.statSync(file);
+    const key = `${st.mtimeMs}:${st.size}`;
+    if (indexCache?.key === key && Date.now() - indexCache.used < INDEX_CACHE_IDLE) {
+      indexCache.used = Date.now();
+      return indexCache.value;
+    }
+    const value = readJson<McpIndex | null>(file, null);
+    indexCache = { key, value, used: Date.now() };
+    return value;
+  } catch {
+    return null;
+  }
 }
 
 async function buildIndex(): Promise<McpIndex> {
@@ -693,7 +720,7 @@ async function liveSearch(query: string, limit: number): Promise<StoreMcp[]> {
 }
 
 export async function searchMcp(query: string, limit: number): Promise<{ items: StoreMcp[]; at: number; starsComplete: boolean; building: boolean; hasToken: boolean; truncated?: boolean }> {
-  const disk = readJson<{ at?: number } | null>(INDEX_FILE(), null);
+  const disk = readIndexDisk();
   let items: StoreMcp[];
   let at = 0;
   let starsComplete = false;
@@ -706,7 +733,7 @@ export async function searchMcp(query: string, limit: number): Promise<{ items: 
     items = await liveSearch(query, limit);
     isBuilding = true;
   } else {
-    const idx = await mcpIndex();
+    const idx = await mcpIndex(false, disk);
     truncated = Boolean(idx.truncated);
     const q = query.trim().toLowerCase();
     const terms = q.split(/\s+/).filter(Boolean);

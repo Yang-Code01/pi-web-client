@@ -63,6 +63,7 @@
     "probe:workspace": "node probes/run-all.mjs",
     "probe:chrome": "node probes/run-all.mjs --only chrome-topbar,chrome-bottom,chrome-sheet,chrome-narrow",
     "probe:preview": "node probes/preview-open.mjs",
+    "probe:extstore": "node probes/ext-store-paint.mjs",
     "test:history": "node --experimental-strip-types bridge/tests/history-page-unit.mjs",
     "test:paging": "node bridge/tests/paging-scope.mjs",
     "test:paging:ui": "node bridge/tests/paging-local-ui.mjs",
