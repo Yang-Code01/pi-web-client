@@ -611,6 +611,23 @@ export class ChatView {
     this.queueRailSync();
   }
 
+  /**
+   * #319: the composer under the transcript just changed height by `delta` px (grew > 0, shrank < 0).
+   * The root's own `ResizeObserver` can only report *that* the band changed size — it has no direction,
+   * so it cannot tell “the composer squeezed the band” from “the reader scrolled away” — and it fires
+   * after layout, one frame later, when the last line has already been painted under the box. The
+   * composer knows both the cause and the amount, so it says so and we pin in the same task.
+   *
+   * Growing pulls the bottom out of view: re-pin right away, before the next frame, while following.
+   * A reader up in the history keeps the position they chose; nothing here touches `following`.
+   * A shrink needs no pin: the band got taller and the browser's own clamp keeps the bottom at the bottom.
+   */
+  noteComposerShift(delta: number): void {
+    if (delta <= 0 || !this.following || this.touching) return;
+    // The new height is already written to the style, so this read lays the band out at its new size.
+    this.root.scrollTop = this.root.scrollHeight;
+  }
+
   private scheduleScroll(): void {
     if (this.pendingScroll) return;
     this.pendingScroll = requestAnimationFrame(() => {

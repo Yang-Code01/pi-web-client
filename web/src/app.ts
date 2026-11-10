@@ -12820,6 +12820,12 @@ export class App {
   private fitComposer(): void {
     const input = this.textarea;
     if (!input) return;
+    // #319: the transcript holds the bottom by itself, but it has to be told *why* the band changed
+    // size — its own size observer has no direction and lands a frame late (see
+    // `chat.noteComposerShift`). Measure the whole composer: an open paste fold grows it too, without
+    // touching the textarea's height.
+    const host = this.els.composerHost;
+    const before = host.offsetHeight;
     // Measure first: only with `height: auto` does `scrollHeight` report what the text needs.
     input.style.height = "auto";
     // The cap is a share of the whole chat pane — not of `.chat-scroll`, which this box itself
@@ -12840,6 +12846,10 @@ export class App {
     input.style.height = limit > 0 ? `${Math.min(limit, input.scrollHeight + border)}px` : "auto";
     this.fitPastes(openFold ? cap / 2 : 0);
     this.syncComposerFade();
+    // Read the host back after the write: that layout is what lets the transcript pin before the
+    // next frame paints. Nothing to report when the box stayed the same size.
+    const delta = host.offsetHeight - before;
+    if (delta !== 0) this.chat.noteComposerShift(delta);
   }
 
   /**
