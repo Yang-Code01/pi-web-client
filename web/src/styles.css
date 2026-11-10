@@ -333,6 +333,19 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   font-size: 14px;
 }
 .rename-input:focus { outline: 2px solid var(--accent-dim); outline-offset: 0; }
+/* #277：横条标签改名浮层挂在 body 上，用 fixed 坐标贴住标签（几何在 `tabRenameBox()`）。
+   高度要和 `TAB_RENAME_HEIGHT` 一致；不占标签行的布局，所以整行既不变高也不被推走。 */
+.ws-tab-rename-input {
+  position: fixed;
+  z-index: 45;
+  box-sizing: border-box;
+  height: 30px;
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: 7px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  font-size: 12.5px;
+}
 .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
 .badge.wait { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
 .badge.run { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }
@@ -404,6 +417,11 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   padding: 2px 4px; border-radius: 4px;
 }
 .ws-head .n { margin-left: auto; font: 11px/1 var(--mono); color: var(--faint); }
+/* #279：空组徽标 —— 不抢名字的位置，只多一个小方框；有会话时它根本不会被画出来。 */
+.ws-head .ws-empty-badge {
+  flex: none; padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px;
+  font: 10px/1.4 var(--mono); color: var(--faint);
+}
 .ws-head.folded { color: var(--faint); }
 .ws-head.folded .label { color: var(--faint); font-weight: 500; }
 /* #100：组头就地改名 + 那颗 ⋯。⋯ 跟会话卡片的 card-act 一个脾气：指着组头才出来，别的时候把位置让给名字。 */
@@ -1061,6 +1079,36 @@ html[data-layout="a"] .topbar > .dot { display: none; }
   border-bottom-color: var(--accent);
   background: linear-gradient(to top, rgba(125, 211, 252, 0.1), transparent);
 }
+/* #276：标签槽让 ⊙ 可以浮在标签右边，而不是塞进按钮里（按钮不能套按钮）。 */
+.ws-tab-slot { position: relative; display: flex; flex: 0 0 auto; min-width: 0; }
+.ws-tab-slot.row .ws-tab { padding-right: 24px; }
+.ws-tab-row-toggle {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--faint);
+  font: 10px/1 var(--sans);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+.ws-tab-slot:hover .ws-tab-row-toggle,
+.ws-tab-row-toggle:focus-visible { opacity: 1; pointer-events: auto; }
+.ws-tab-row-toggle:hover { color: var(--text); border-color: var(--line); }
+/* 当前组被移出横条：仍占最后一格，但虚线 + 名字划掉，和「装不下」那颗区分开。 */
+.ws-tab.off-row { border: 1px dashed var(--line-lit); border-radius: 7px; color: var(--dim); }
+.ws-tab.off-row.on { border-color: var(--accent-dim); background: linear-gradient(to top, rgba(125, 211, 252, 0.08), transparent); }
+.ws-tab.off-row .ws-tab-name { text-decoration: line-through; text-decoration-color: var(--line-lit); }
+.ws-tab-stray { flex: none; color: var(--faint); font-size: 10px; }
 .ws-tab-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; }
 .ws-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-tab-todo { flex: none; width: 6px; height: 6px; border-radius: 999px; background: var(--warn); box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.14); }
@@ -1106,6 +1154,20 @@ body.ws-tab-dragging .ws-tab:hover:not(.on) { color: var(--dim); background: non
 .ws-tabs-add[hidden] { display: none; }
 /* #121：`＋N` 的下拉 —— 外壳沿用 `.pin-menu` / `.pm-item`（同一张卡，用户不用学第二套）。 */
 .ws-tabs-menu { overflow-y: auto; max-width: min(320px, calc(100vw - 16px)); }
+/* #276：横条外两段（装不下 / 不在横条里）并排；两列都能滚，窄屏也不折成一条长菜单。 */
+.ws-tabs-menu.ws-tabs-board { max-width: min(560px, calc(100vw - 16px)); overflow: hidden; }
+.ws-tray { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr); gap: 2px; padding: 4px; }
+/* #279：托盘每行末尾带该组会话数（归档也算）。行宽固定，名字让位、省略号收尾。 */
+.ws-tray .pm-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-tray .pm-n { flex: none; margin-left: auto; font: 10.5px/1 var(--mono); color: var(--faint); }
+.ws-tray .pm-n.zero { opacity: 0.55; }
+.ws-tray-col { display: flex; flex-direction: column; min-width: 0; max-height: min(420px, calc(100vh - 80px)); overflow-y: auto; }
+.ws-tray-col + .ws-tray-col { border-left: 1px solid var(--line-soft); }
+.ws-tray-head { display: grid; gap: 1px; padding: 4px 8px 6px; }
+.ws-tray-title { color: var(--text); font-size: 11px; }
+.ws-tray-why { color: var(--faint); font-size: 10.5px; line-height: 1.4; }
+.ws-menu .pm-item.on { color: var(--text); }
+.ws-menu .pm-item.on .pm-ico { color: var(--accent); }
 .ws-session-row { grid-area: pins; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); }
 /* #98：B/C/D 里这一行整行不占地方（display:flex 会盖掉 UA 的 [hidden]）。 */
 .ws-session-row[hidden] { display: none; }
@@ -4368,6 +4430,43 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sld-error { display: grid; gap: 10px; justify-items: center; max-width: 560px; }
 .sld-acts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
 
+/* #278：按目录新建工作区 —— 左「已经在列表里」、右真目录浏览；窄屏堆成一列。 */
+.ws-new-sheet { width: min(760px, calc(100vw - 16px)); }
+.ws-new-body {
+  display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+  min-height: 0; overflow: hidden;
+}
+.ws-new-side {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px;
+  overflow-y: auto; max-height: min(420px, calc(100vh - 220px));
+  border-right: 1px solid var(--line-soft);
+}
+.ws-new-side-title { font-size: 12px; color: var(--dim); padding: 4px 8px 6px; }
+.ws-new-pick { grid-template-columns: auto minmax(0, 1fr) auto; }
+.ws-new-pick .ws-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; background: var(--slate); }
+.ws-here {
+  font-size: 11px; color: var(--accent-ink); background: var(--accent);
+  border-radius: 999px; padding: 1px 7px;
+}
+.ws-new-dir {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  padding: 8px 12px 0; max-height: min(420px, calc(100vh - 220px));
+}
+.ws-new-dir .dirpicker { min-height: 0; }
+.ws-new-dir .dir-list { flex: 1; min-height: 0; overflow-y: auto; }
+.ws-new-note {
+  flex: 1; min-width: 0; font-size: 12px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@media (max-width: 720px) {
+  .ws-new-body { grid-template-columns: minmax(0, 1fr); }
+  .ws-new-side {
+    flex-direction: row; overflow-x: auto; overflow-y: hidden;
+    max-height: none; border-right: 0; border-bottom: 1px solid var(--line-soft);
+  }
+  .ws-new-side-title { display: none; }
+  .ws-new-pick { flex: none; }
+}
 /* 模型选择：在用的钉在最上面，其余按来源（provider）分组 */
 .model-group-head { position: sticky; top: 0; z-index: 1; display: block; width: 100%; text-align: left; border: 0; cursor: pointer; padding: 6px 4px 2px; background: var(--panel); color: var(--faint); font: 600 11px/1.4 var(--sans); letter-spacing: .02em; }
 .model-group-head:hover { color: var(--fg, inherit); }

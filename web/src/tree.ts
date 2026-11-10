@@ -63,6 +63,11 @@ export interface TreeGroup<T extends TreeSession = TreeSession> {
   /** 组头那颗色点的颜色：稳定取自既有调色板。 */
   color: string;
   sessions: T[];
+  /**
+   * 组里的会话总数，**含已归档**：归档在左栏不进屋，但桥删组时照样数它们（#279），
+   * 于是「空不空 / 能不能删」只能看这个数，不能看 `sessions.length`。
+   */
+  count: number;
   /** 组里在等你的会话数（待回答 / 待确认），组头上那个角标。 */
   pending: number;
 }
@@ -129,11 +134,11 @@ export function buildTree<T extends TreeSession>(
   const known = new Map((workspace?.groups ?? []).map((g) => [g.id, g]));
 
   // 归组：先按会话自己的 ws，`ws` 查不到（旧桥 / 桩桥 / 脏会话）就按 cwd 兜底。
-  const buckets = new Map<string, { info?: TreeGroupInfo; key: string; sessions: T[] }>();
+  const buckets = new Map<string, { info?: TreeGroupInfo; key: string; sessions: T[]; count: number }>();
   const bucket = (id: string, key: string) => {
     let found = buckets.get(id);
     if (!found) {
-      found = { info: known.get(id), key, sessions: [] };
+      found = { info: known.get(id), key, sessions: [], count: 0 };
       buckets.set(id, found);
     }
     return found;
@@ -141,19 +146,18 @@ export function buildTree<T extends TreeSession>(
   // 快照里声明的组都先占位：手建的空组也要能显示空态。
   for (const info of known.values()) bucket(info.id, info.key);
 
-  for (const session of sessions) {
-    if (archived.has(session.id)) continue; // 归档是全局分区，不进任何工作区
+  // 归属规则只写一处：归档与可见会话都按它落到组里，只是归档的不进 `sessions`。
+  const bucketFor = (session: T) => {
     const declared = session.ws ? known.get(session.ws) : undefined;
-    if (declared) {
-      bucket(declared.id, declared.key).sessions.push(session);
-      continue;
-    }
+    if (declared) return bucket(declared.id, declared.key);
     const key = normalizePath(session.cwd);
-    if (!key) {
-      bucket(UNGROUPED, "").sessions.push(session);
-      continue;
-    }
-    bucket(key.toLowerCase(), key).sessions.push(session);
+    return key ? bucket(key.toLowerCase(), key) : bucket(UNGROUPED, "");
+  };
+  for (const session of sessions) {
+    const found = bucketFor(session);
+    found.count += 1;
+    if (archived.has(session.id)) continue; // 归档是全局分区，不进任何工作区
+    found.sessions.push(session);
   }
 
   const rank = (list: string[], id: string) => {
@@ -192,6 +196,7 @@ export function buildTree<T extends TreeSession>(
       manual: found.info?.manual === true,
       color: wsColor(id),
       sessions: list,
+      count: found.count,
       pending: list.filter(pendingOf).length,
     });
   }
