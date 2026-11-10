@@ -4,7 +4,7 @@
  *   node --experimental-transform-types bridge/tests/sysmanage-unit.mjs
  */
 import assert from "node:assert/strict";
-import { normalizeAdapters, normalizeNodeInterfaces, normalizeServices, parseNetstat } from "../src/sysmanage.ts";
+import { normalizeAdapters, normalizeNodeInterfaces, normalizeServices, normalizeWinnat, parseNetstat } from "../src/sysmanage.ts";
 
 // ------------------------------------------------- ① netstat 解析
 
@@ -165,5 +165,12 @@ assert.equal(nodeAdapters[0].status, "up");
 assert.equal(nodeAdapters[0].dhcp, false, "非 Windows 不猜 DHCP");
 assert.equal(nodeAdapters[1].mac, "", "全零 MAC 不显示");
 assert.equal(nodeAdapters[1].status, "up");
+
+// ------------------------------------------------- WinNAT 状态
+
+assert.deepEqual(normalizeWinnat({ status: "Running", start: "Manual" }), { status: "Running", start: "Manual" });
+assert.deepEqual(normalizeWinnat({ status: "Stopped" }), { status: "Stopped", start: "" }, "缺启动类型就空串");
+assert.equal(normalizeWinnat(null), null, "没有 winnat 服务 → null");
+assert.equal(normalizeWinnat({ status: 4 }), null, "枚举数字不收（脚本必须转字符串）");
 
 console.log(`sysmanage-unit: ok — ${ports.length} 个端口 / ${adapters.length} 张网卡 / ${services.length} 个服务`);

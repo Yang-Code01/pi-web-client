@@ -533,6 +533,25 @@
   border-radius: 12px;
 }
 
+.sys-winnat {
+  margin-top: 16px;
+  padding: 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.sys-winnat__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.sys-winnat__title {
+  font-weight: 600;
+}
+
 .sys-dns__head {
   display: flex;
   align-items: baseline;

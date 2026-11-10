@@ -46,7 +46,20 @@ export interface SysNetwork {
   supported: boolean;
   adapters: SysAdapter[];
   saved: DnsSaved[];
+  /** WinNAT 服务状态；非 Windows 或读不到时为 null。 */
+  winnat: WinnatInfo | null;
   updatedAt: number;
+}
+
+export interface WinnatInfo {
+  status: string;
+  start: string;
+}
+
+export interface WinnatResult {
+  ok: true;
+  stopWarning: string;
+  winnat: WinnatInfo;
 }
 
 export interface SysPort {

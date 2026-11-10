@@ -54,6 +54,7 @@ interface State {
   showStopped: boolean;
   serviceQuery: string;
   busyDns: boolean;
+  busyWinnat: boolean;
   notice: Notice | null;
 }
 
@@ -97,6 +98,7 @@ class SysPanel {
     showStopped: false,
     serviceQuery: "",
     busyDns: false,
+    busyWinnat: false,
     notice: null,
   };
   private root: HTMLElement | null = null;
@@ -178,7 +180,7 @@ class SysPanel {
 
     const foot = el("footer", "sys-foot");
     foot.append(
-      el("span", "sys-foot__hint", tr("DNS 改动会在主机桌面弹 UAC，点「是」才生效。")),
+      el("span", "sys-foot__hint", tr("DNS 改动与重启 WinNAT 会在主机桌面弹 UAC，点「是」才生效。")),
       el("span", "sys-foot__meta", "pi-web-client"),
     );
 
@@ -453,6 +455,62 @@ class SysPanel {
     this.paintDnsEditor(editor, data);
     layout.append(list, editor);
     pane.append(layout);
+    if (data.winnat) pane.append(this.winnatCard(data));
+  }
+
+  /** 重启 WinNAT（原桌面 netweb_restar.bat）：端口被 Hyper-V / WSL 保留占住时用。 */
+  private winnatCard(data: SysNetwork): HTMLElement {
+    const winnat = data.winnat!;
+    const card = el("div", "sys-winnat");
+    const head = el("div", "sys-winnat__head");
+    head.append(el("span", "sys-winnat__title", tr("WinNAT 服务")));
+    const running = winnat.status === "Running";
+    head.append(el("span", `sys-tag${running ? " sys-tag--accent" : ""}`, running ? tr("运行中") : winnat.status));
+    if (winnat.start) head.append(el("span", "sys-tag", winnat.start));
+    card.append(head);
+    card.append(
+      el(
+        "div",
+        "sys-hint",
+        tr("端口被占用或绑定报「访问权限不允许」时，重启 WinNAT 可以释放 Hyper-V / WSL 保留的端口。会短暂断开 WSL / Docker 的 NAT 网络。"),
+      ),
+    );
+    const actions = el("div", "sys-dns__actions");
+    const busy = this.state.busyWinnat;
+    const button = el("button", "btn", busy ? tr("等待 UAC…") : tr("重启 WinNAT"));
+    button.type = "button";
+    button.disabled = busy || this.state.busyDns || data.public || !data.supported;
+    button.onclick = () => void this.restartWinnat();
+    actions.append(button);
+    card.append(actions);
+    if (data.public) card.append(el("div", "sys-hint", tr("公网只读：重启 WinNAT 请回本机操作。")));
+    if (busy) card.append(el("div", "sys-busy", tr("正在等主机桌面确认…")));
+    return card;
+  }
+
+  private async restartWinnat(): Promise<void> {
+    if (this.state.busyWinnat || this.state.busyDns) return;
+    if (!confirm(tr("重启 WinNAT？WSL / Docker / Hyper-V 虚拟机的网络会断开几秒，主机桌面会弹 UAC。"))) return;
+    this.state.busyWinnat = true;
+    this.state.notice = null;
+    this.render();
+    try {
+      const result = await api.sysWinnatRestart();
+      const status = result.winnat.status === "Running" ? tr("运行中") : result.winnat.status;
+      this.setNotice(
+        "ok",
+        result.stopWarning
+          ? tr("WinNAT 已启动（{p1}）。停止时提示：{p2}", { p1: status, p2: result.stopWarning })
+          : tr("WinNAT 已重启（{p1}）。", { p1: status }),
+      );
+      this.state.busyWinnat = false;
+      await this.load("network", true);
+    } catch (err) {
+      this.setNotice("bad", errText(err));
+    } finally {
+      this.state.busyWinnat = false;
+      this.render();
+    }
   }
 
   private adapterRow(adapter: SysAdapter): HTMLElement {
@@ -509,7 +567,7 @@ class SysPanel {
     const current = adapter.dhcp && !adapter.dns.length ? [] : adapter.dns;
     const draft = this.state.draft;
     const chosen = draft ?? current;
-    const disabled = this.state.busyDns || data.public || !data.supported;
+    const disabled = this.state.busyDns || this.state.busyWinnat || data.public || !data.supported;
 
     const head = el("div", "sys-dns__head");
     const title = el("div", "sys-dns__title", tr("DNS"));
