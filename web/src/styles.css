@@ -1471,6 +1471,34 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 
 /* ---------------------------------------------------------------- queue */
 .queue { padding: 12px 12px 20px; display: grid; gap: 0; }
+.exec-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line-soft); margin: 0 0 12px; }
+.exec-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--faint); padding: 7px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+.exec-tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.exec-pip { display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: var(--warn); vertical-align: 1px; }
+.exec-panel { display: grid; gap: 10px; min-width: 0; }
+.exec-now { border: 1px solid var(--accent-dim); background: linear-gradient(180deg, var(--accent-bg), var(--panel-2)); border-radius: var(--r); padding: 10px 12px; min-width: 0; }
+.exec-now.idle { border-color: var(--line); background: var(--panel-2); }
+.exec-now h2 { margin: 0 0 8px; padding: 0; border: 0; color: var(--text); font-size: 13px; }
+.exec-now-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
+.exec-now-summary { overflow: hidden; margin-top: 4px; color: var(--faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.exec-args, .exec-step-args { overflow: hidden; min-width: 0; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; }
+.exec-elapsed { flex: none; margin-left: auto; color: var(--accent); font-variant-numeric: tabular-nums; }
+.exec-heading { display: flex; align-items: center; gap: 8px; }
+.exec-heading h2 { margin: 8px 0 0; padding: 0; border: 0; color: var(--text); font-size: 12px; }
+.exec-rounds { max-width: 140px; margin-left: auto; padding: 4px 6px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 11px; }
+.exec-timeline { display: grid; gap: 3px; }
+.exec-step { display: grid; grid-template-columns: 18px minmax(70px, auto) minmax(0, 1fr) auto; align-items: center; gap: 6px; width: 100%; padding: 7px 5px; border: 0; border-radius: 6px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.exec-step:hover { background: var(--panel-2); }
+.exec-state { text-align: center; font-size: 12px; }
+.exec-state.running { color: var(--accent); }
+.exec-state.success { color: var(--ok); }
+.exec-state.error { color: var(--danger); }
+.exec-step-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.exec-step-duration { flex: none; color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.exec-step-args { font-size: 11px; }
+.exec-empty { padding: 8px 4px; color: var(--faint); font-size: 12px; }
+.exec-flash { outline: 2px solid var(--accent); outline-offset: 2px; animation: exec-flash 1.2s ease-out forwards; }
+@keyframes exec-flash { 0%, 45% { background-color: var(--accent-bg); } 100% { background-color: transparent; outline-color: transparent; } }
 /* 这一栏是「待办 / 通道 / 快捷键 / 关于」四组，每组一个标题加一组控件。以前它们只靠 grid 的 8px
    gap 排着，按钮各浮各的，标题像是另一块的。发丝线 + 16/8 的上下节奏把它们连成组：
    标题上面 14px 线、下面 8px 才是控件。 */

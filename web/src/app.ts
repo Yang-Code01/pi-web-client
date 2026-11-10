@@ -32,6 +32,7 @@ import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroup
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { Socket } from "./ws.ts";
+import { execView, type ExecPhase, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
 import { TABS_DEFAULT, TABS_MAX, TABS_MIN, clampMax, moveToFront, newTabFold, rowModel, tabHitTest, tabRenameBox, tabReorder, type TabHit, type TabModel, type TabRect, type TabRowModel } from "./wstabs.ts";
 import { armFocus, consumeFocus, type PendingFocusState } from "./focusfollow.ts";
@@ -69,6 +70,7 @@ import type { AcpDelegatePatch, AcpDelegateView } from "./subagents-acp.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
+type QueueTab = "needs" | "exec";
 
 /**
  * 面板等目录的两个时间窗（D150）：过了 REASK 就当「刚问的那次没结果」，自己再问一遍；
@@ -233,6 +235,11 @@ export class App {
   private askWidthBefore: string | null = null;
   private connected = false;
   private tab: Tab = "sessions";
+  private queueTab: QueueTab = readQueueTab();
+  private execSelectedRound: string | null = null;
+  private execPhase: ExecPhase = "idle";
+  private execStreamChars = 0;
+  private execStreamText = "";
   private chat!: ChatView;
   private pending: (() => void)[] = [];
   /** Local-clock end of the step-up window; 0 = must verify before the next write (public only). */
@@ -1238,6 +1245,7 @@ export class App {
         node.textContent = bgElapsedText(Number(node.dataset.bgSince));
       }
       if (this.session?.running) this.fillHintStatus();
+      this.refreshExecClock();
       // 刻度尺也养在这个闹钟里：只改 DOM 的格子数，不重画整个列表。
       for (const node of document.querySelectorAll<HTMLElement>(".sc-ruler[data-since]")) {
         drawRuler(node, Number(node.dataset.since));
@@ -1589,6 +1597,10 @@ export class App {
         this.failRules = this.failRulesWs && this.failRulesWs === (this.session?.ws ?? "") ? this.failRules : null;
         this.chat.reset((msg.items ?? []) as Item[], msg.history as SessionHistory | undefined);
         this.chat.setRunning(this.session?.running === true);
+        this.execSelectedRound = null;
+        this.execStreamChars = 0;
+        this.execStreamText = "";
+        this.setExecPhase(this.session?.running ? "waiting" : "idle");
         if (this.currentWs()) {
           this.socket.send({ type: "failures.get", ws: this.currentWs() });
           this.socket.send({ type: "rules.get", ws: this.currentWs() });
@@ -1630,6 +1642,7 @@ export class App {
         // `history` 仍然要传：整页替换完，顶端那一行才知道后面还有没有更早的（#220）。
         // 这是 #221 的既定取舍：整页替换意味着重连后回到最后一页，已经翻出来的更早内容不保留。
         this.chat.reset((msg.items ?? []) as Item[], msg.history as SessionHistory | undefined);
+        if (this.queueTab === "exec") this.renderQueue();
         // 刷新 / 换设备回来：快照里那些失败的条目也要能被「总结」到，不然按钮永远不亮。
         // 整条记录被换掉：有没有用户消息可能变了（D159 的「灰」就是看这个）。
         this.syncContinueButton();
@@ -1640,6 +1653,7 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         if (typeof msg.before !== "string") break;
         this.chat.prepend(msg.before, (msg.items ?? []) as Item[], msg.hasMore === true);
+        if (this.queueTab === "exec") this.renderQueue();
         break;
       case "item.add":
         if (msg.sessionId !== this.currentId) break;
@@ -1647,11 +1661,13 @@ export class App {
         else this.chat.add(msg.item as Item);
         // #199: 启动期的「撤回」只在真有排队消息时才有位置，气泡来去都得重画这一行。
         if (this.session?.starting) this.fillHintStatus();
+        if (this.queueTab === "exec") this.renderQueue();
         break;
       case "item.remove":
         if (msg.sessionId !== this.currentId) break;
         this.chat.remove(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
         if (this.session?.starting) this.fillHintStatus();
+        if (this.queueTab === "exec") this.renderQueue();
         break;
       case "bash.delta":
         if (msg.sessionId !== this.currentId) break;
@@ -1676,12 +1692,19 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.chat.replace(msg.id, msg.item as Item);
         if (this.session?.starting) this.fillHintStatus();
+        if (this.queueTab === "exec") this.renderQueue();
         break;
       case "delta":
         if (msg.sessionId !== this.currentId) break;
         this.trackChars(msg.field, msg.text);
         this.chat.delta(msg.id, msg.field, msg.text);
-        this.setActivity(msg.field === "thinking" ? tr("思考中") : tr("正在写回复"));
+        const field = msg.field === "thinking" ? "thinking" : "writing";
+        this.setExecPhase(field);
+        const text = String(msg.text ?? "");
+        this.execStreamChars += Array.from(text).length;
+        this.execStreamText = (this.execStreamText + text).slice(-2000);
+        this.setActivity(field === "thinking" ? tr("思考中") : tr("正在写回复"));
+        this.refreshExecClock();
         break;
       case "usage":
         if (msg.sessionId !== this.currentId) break;
@@ -1706,12 +1729,17 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.chat.toolEvent(msg.phase, msg);
         if (msg.phase === "start") {
+          this.setExecPhase("tool");
           // Q-024: the line under the composer names the tool and stops there. A bash command used to
           // be pasted after it (up to 120 chars, usually cut mid-path) while the hover card (Q-017)
           // already carries the full summary, args, output and thinking — the line was pure noise.
           this.stepCount += 1;
           this.setActivity(tr("正在执行 {p1}", { p1: msg.name ?? "工具" }));
-        } else if (msg.phase === "end") this.setActivity(tr("思考中"));
+        } else if (msg.phase === "end") {
+          this.setExecPhase("waiting");
+          this.setActivity(tr("思考中"));
+        }
+        if (msg.phase !== "update" && this.queueTab === "exec") this.renderQueue();
         break;
       case "approval.add":
         // D156：当前会话也照加 —— 列表里的计数和本地队列是两份账，只给「不在看的会话」加会让
@@ -2247,10 +2275,16 @@ export class App {
         if (msg.sessionId === this.currentId) {
           if (msg.running) {
             this.runSince = Date.now();
+            this.setExecPhase("waiting");
+            this.execStreamChars = 0;
+            this.execStreamText = "";
             this.activity = tr("思考中");
             // Q-024: the hover card says "本轮第 N 次工具调用", so N is per run and starts over here.
             this.stepCount = 0;
-          } else this.activity = "";
+          } else {
+            this.setExecPhase("idle");
+            this.activity = "";
+          }
           this.fillHintStatus();
           // 跑着 ↔ 空闲是「继续」按钮亮/灰的翻转点（D159）。
           this.syncContinueButton();
@@ -2261,6 +2295,8 @@ export class App {
         if (!msg.running) this.turnAt = null;
         this.renderTop();
         this.renderSessions();
+        this.renderQueue();
+        this.renderTabs();
         this.fillModelChip();
         break;
       case "manage": {
@@ -2927,6 +2963,14 @@ export class App {
   private startTurn(): void {
     this.turnAt = performance.now();
     this.turnChars = { cjk: 0, other: 0 };
+  }
+
+  private setExecPhase(phase: ExecPhase): void {
+    if (phase !== this.execPhase && (phase === "thinking" || phase === "writing")) {
+      this.execStreamChars = 0;
+      this.execStreamText = "";
+    }
+    this.execPhase = phase;
   }
 
   private setActivity(text: string): void {
@@ -13771,6 +13815,141 @@ export class App {
     this.renderTabs();
   }
 
+  private selectQueueTab(tab: QueueTab): void {
+    this.queueTab = tab;
+    try {
+      localStorage.setItem("pi.queueTab", tab);
+    } catch {
+      // Private browsing may disable storage; the current page still remembers the selection.
+    }
+    this.renderQueue();
+  }
+
+  private execModel(): ExecViewModel {
+    const running = this.session?.running === true;
+    return execView({
+      items: this.chat.loadedItems(),
+      phase: running ? (this.execPhase === "idle" ? "waiting" : this.execPhase) : "idle",
+      streamChars: this.execStreamChars,
+      streamSummary: this.execSummary(),
+      selectedRound: this.execSelectedRound,
+      now: Date.now(),
+    });
+  }
+
+  private execSummary(): string {
+    const sentences = this.execStreamText.split(/[.!?。！？\n]+/).map((part) => part.trim()).filter(Boolean);
+    return (sentences.at(-1) ?? "").slice(-120);
+  }
+
+  private execDuration(ms: number | null): string {
+    if (ms === null) return "";
+    const seconds = ms / 1000;
+    return tr("{p1} 秒", { p1: seconds < 10 ? seconds.toFixed(1) : Math.round(seconds) });
+  }
+
+  private execNowCard(view: ExecViewModel): HTMLElement {
+    const card = el("section", `exec-now${view.now.kind === "idle" ? " idle" : ""}`);
+    card.append(el("h2", "", tr("现在")));
+    if (view.now.kind === "thinking" || view.now.kind === "writing") {
+      const label = view.now.kind === "thinking" ? tr("思考中") : tr("正在写回复");
+      card.append(el("div", "exec-now-line", tr("{p1} · 已 {p2} 字", { p1: label, p2: view.now.characters })));
+      if (view.now.summary) card.append(el("div", "exec-now-summary", `“${view.now.summary}”`));
+      for (const active of view.now.activeTools) card.append(this.execActiveTool(active));
+    } else if (view.now.kind === "tool") {
+      for (const active of view.now.activeTools) card.append(this.execActiveTool(active));
+    } else if (view.now.kind === "waiting") {
+      card.append(el("div", "exec-now-line", tr("等待模型响应…")));
+    } else if (view.now.kind === "idle") {
+      const result = view.now.succeeded === null ? "" : view.now.succeeded ? tr("全部成功") : tr("有失败步骤");
+      const duration = view.now.previousDurationMs === null ? "" : this.execDuration(view.now.previousDurationMs);
+      const message = duration
+        ? tr("空闲 · 上一轮 {p1} · {p2}", { p1: duration, p2: result })
+        : result ? tr("空闲 · {p1}", { p1: result }) : tr("空闲");
+      card.append(el("div", "exec-now-line", message));
+    }
+    return card;
+  }
+
+  private execActiveTool(active: { name: string; args: unknown; elapsedMs: number }): HTMLElement {
+    const line = el("div", "exec-now-line");
+    line.append(el("b", "", active.name), el("span", "exec-args", this.execArgs(active.args)), el("span", "exec-elapsed", this.execDuration(active.elapsedMs)));
+    return line;
+  }
+
+  private execArgs(args: unknown): string {
+    if (typeof args === "string") return args;
+    try {
+      return args == null ? "" : JSON.stringify(args);
+    } catch {
+      return String(args);
+    }
+  }
+
+  private renderExecPanel(): HTMLElement {
+    const model = this.execModel();
+    this.execSelectedRound = model.selectedRound;
+    const panel = el("div", "exec-panel");
+    const now = this.execNowCard(model);
+    now.classList.add("exec-now-slot");
+    panel.append(now);
+    const heading = el("div", "exec-heading");
+    heading.append(el("h2", "", tr("步骤")));
+    const select = el("select", "exec-rounds") as HTMLSelectElement;
+    select.setAttribute("aria-label", tr("回看轮次"));
+    for (const round of model.rounds) {
+      const option = el("option", "", tr("第 {p1} 轮", { p1: round.ordinal })) as HTMLOptionElement;
+      option.value = round.id;
+      option.selected = round.id === model.selectedRound;
+      select.append(option);
+    }
+    select.onchange = () => {
+      this.execSelectedRound = select.value || null;
+      this.renderQueue();
+    };
+    select.hidden = model.rounds.length < 2;
+    heading.append(select);
+    panel.append(heading);
+    const list = el("div", "exec-timeline");
+    for (const row of model.timeline) {
+      const button = el("button", "exec-step") as HTMLButtonElement;
+      button.type = "button";
+      button.dataset.itemId = row.id;
+      button.title = tr("点击跳到聊天里的这一步");
+      const state = el("span", `exec-state ${row.status}`);
+      state.textContent = row.status === "running" ? "◌" : row.status === "error" ? "✗" : row.status === "success" ? "✓" : "•";
+      const name = row.kind === "skill" ? tr("技能 · {p1}", { p1: row.label }) : row.label;
+      button.append(state, el("span", "exec-step-name", name), el("span", "exec-step-args", this.execArgs(row.args)));
+      const duration = el("span", "exec-step-duration", this.execDuration(row.durationMs));
+      if (row.status === "running") {
+        const item = this.chat.loadedItems().find((loaded) => loaded.id === row.id);
+        if (item?.ts) duration.dataset.startedAt = item.ts;
+      }
+      button.append(duration);
+      button.onclick = () => {
+        if (!this.chat.jumpToItem(row.id)) this.flashToast(tr("这一步不在已加载的聊天里"), false, 1800);
+      };
+      list.append(button);
+    }
+    if (!model.timeline.length) list.append(el("div", "exec-empty", tr("本轮还没有步骤")));
+    panel.append(list);
+    return panel;
+  }
+
+  private refreshExecClock(): void {
+    if (this.queueTab !== "exec") return;
+    const slot = this.els.queueInner?.querySelector<HTMLElement>(".exec-now-slot");
+    if (slot) {
+      const next = this.execNowCard(this.execModel());
+      next.classList.add("exec-now-slot");
+      slot.replaceWith(next);
+    }
+    for (const node of this.els.queueInner?.querySelectorAll<HTMLElement>(".exec-step-duration[data-started-at]") ?? []) {
+      const at = Date.parse(node.dataset.startedAt ?? "");
+      if (Number.isFinite(at)) node.textContent = this.execDuration(Math.max(0, Date.now() - at));
+    }
+  }
+
   private approvalNode(): HTMLElement {
     const slot = el("div", "approval-slot");
     for (const a of this.approvals) slot.append(this.approvalCard(a));
@@ -13809,6 +13988,30 @@ export class App {
     // 答一份问卷会重画整栏；把阅读位置留着，别让人每点一次选项就回到顶部。
     const kept = this.els.queuePane.scrollTop;
     host.replaceChildren();
+    const tabs = el("div", "exec-tabs");
+    const needs = el("button", this.queueTab === "needs" ? "on" : "", tr("需要你")) as HTMLButtonElement;
+    needs.type = "button";
+    needs.dataset.execTab = "needs";
+    needs.setAttribute("aria-selected", String(this.queueTab === "needs"));
+    needs.onclick = () => this.selectQueueTab("needs");
+    const execution = el("button", this.queueTab === "exec" ? "on" : "", tr("执行")) as HTMLButtonElement;
+    execution.type = "button";
+    execution.dataset.execTab = "exec";
+    execution.setAttribute("aria-selected", String(this.queueTab === "exec"));
+    execution.onclick = () => this.selectQueueTab("exec");
+    if (this.queueTab === "needs" && this.session?.running) {
+      const pip = el("span", "exec-pip");
+      pip.title = tr("执行中");
+      pip.setAttribute("aria-label", tr("执行中"));
+      execution.append(pip);
+    }
+    tabs.append(needs, execution);
+    host.append(tabs);
+    if (this.queueTab === "exec") {
+      host.append(this.renderExecPanel());
+      this.els.queuePane.scrollTop = kept;
+      return;
+    }
     const pending = this.approvals;
     if (!pending.length && !this.asks.length) {
       host.append(el("div", "empty", tr("没有等你的事。")));
@@ -15473,6 +15676,14 @@ function setToggle(btn: HTMLElement, collapsed: boolean, label: string): void {
   btn.textContent = collapsed ? (right ? "«" : "»") : (right ? "»" : "«");
   btn.title = collapsed ? tr("展开{p1}", { p1: label }) : tr("收起{p1}", { p1: label });
   btn.setAttribute("aria-pressed", String(collapsed));
+}
+
+function readQueueTab(): QueueTab {
+  try {
+    return localStorage.getItem("pi.queueTab") === "exec" ? "exec" : "needs";
+  } catch {
+    return "needs";
+  }
 }
 
 function readFlag(key: string): boolean {

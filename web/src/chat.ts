@@ -155,6 +155,7 @@ function compactArgs(args: unknown): string {
 
 export class ChatView {
   private cards = new Map<string, HTMLElement>();
+  private loaded: Item[] = [];
   private toolCards = new Map<string, HTMLElement>();
   /**
    * #197 / D178: 用户气泡在这张表里（节点 + 桥发来的那条 item），好给最后一枚挂「处理中…」——
@@ -578,7 +579,22 @@ export class ChatView {
     this.renderMore();
   }
 
-  /** 悬停预览：正文里给对应那条用户消息描一圈边（`ms` > 0 时自己消失，用于点击后的短暂标记）。 */
+  /** Scroll to a loaded transcript item and briefly mark its chat card. */
+  jumpToItem(itemId: string): boolean {
+    const item = this.loaded.find((loaded) => loaded.id === itemId);
+    const node = this.cards.get(itemId) ?? (item?.kind === "tool" ? this.toolCards.get(item.toolCallId) : undefined);
+    if (!node?.isConnected) return false;
+    const module = node.closest<HTMLDetailsElement>("details.ops");
+    if (module) module.open = true;
+    const skillGroup = node.closest<HTMLDetailsElement>("details.skillgroup");
+    if (skillGroup) skillGroup.open = true;
+    this.stopFollowing();
+    node.scrollIntoView({ behavior: "smooth", block: "center" });
+    node.classList.add("exec-flash");
+    window.setTimeout(() => node.classList.remove("exec-flash"), 1200);
+    return true;
+  }
+
   private flashTurn(index: number | null, ms = 0): void {
     clearTimeout(this.flashTimer);
     if (this.flashNode) {
@@ -651,6 +667,7 @@ export class ChatView {
   }
 
   reset(items: Item[], history?: SessionHistory): void {
+    this.loaded = [];
     // #244: 换会话 / 重连换了内容 —— 那个「要去的轮次」已经不在这份记录里了。
     this.cancelPendingJump();
     clearTimeout(this.moreNoteTimer);
@@ -725,6 +742,9 @@ export class ChatView {
       this.staging = null;
       this.releaseTurnState(held);
     }
+    const olderIds = new Set(items.map((item) => item.id));
+    const olderCalls = new Set(items.flatMap((item) => item.kind === "tool" ? [item.toolCallId] : []));
+    this.loaded = [...items, ...this.loaded.filter((item) => !olderIds.has(item.id) && !(item.kind === "tool" && olderCalls.has(item.toolCallId)))];
     this.topId = items[0].id;
     this.hasOlder = hasMore;
     this.renderMore();
@@ -858,7 +878,19 @@ export class ChatView {
     return this.live;
   }
 
+  /** The execution view is deliberately limited to items already present in the transcript. */
+  loadedItems(): Item[] {
+    return [...this.loaded];
+  }
+
+  private remember(item: Item): void {
+    const index = this.loaded.findIndex((loaded) => loaded.id === item.id || (loaded.kind === "tool" && item.kind === "tool" && loaded.toolCallId === item.toolCallId));
+    if (index < 0) this.loaded.push(item);
+    else this.loaded[index] = item;
+  }
+
   add(item: Item): void {
+    this.remember(item);
     // a user message opens a new turn: its tool calls get their own module
     if (item.kind === "user") {
       this.closeOps();
@@ -924,6 +956,7 @@ export class ChatView {
    * node (the turn rail points at it) and only re-key it. Pages that never drew it just add it.
    */
   adopt(localId: string, item: Item): void {
+    this.remember(item);
     const node = this.cards.get(localId);
     if (!node) {
       this.add(item);
@@ -963,6 +996,7 @@ export class ChatView {
   }
 
   replace(id: string, item: Item): void {
+    this.remember(item);
     const node = this.cards.get(id);
     this.draftBuffers.delete(id);
     if (!node) {
@@ -1090,6 +1124,29 @@ export class ChatView {
   toolEvent(phase: "start" | "update" | "end", data: any): void {
     const key = String(data.toolCallId ?? "");
     if (!key) return;
+    const prior = this.loaded.find((item): item is ToolItem => item.kind === "tool" && item.toolCallId === key);
+    if (phase === "start") {
+      this.remember({
+        id: `live-tool:${key}`,
+        ts: new Date().toISOString(),
+        kind: "tool",
+        toolCallId: key,
+        name: String(data.name ?? "tool"),
+        args: data.args,
+        status: "running",
+      });
+    } else if (prior) {
+      this.remember({
+        ...prior,
+        ...(phase === "update" && data.partial ? { partialResult: String(data.partial) } : {}),
+        ...(phase === "end" ? {
+          result: String(data.result ?? ""),
+          durationMs: Number(data.durationMs ?? 0),
+          isError: Boolean(data.isError),
+          status: data.isError ? "error" : "ok",
+        } : {}),
+      });
+    }
     let card = this.toolCards.get(key);
     if (!card && phase === "start") {
       card = this.buildTool({
@@ -1697,6 +1754,8 @@ export class ChatView {
 
   /** Bubbles of queued messages that were pulled back into the editor (#9, #14). */
   remove(ids: string[]): void {
+    const removed = new Set(ids);
+    this.loaded = this.loaded.filter((item) => !removed.has(item.id));
     let droppedUser = false;
     for (const id of ids) {
       this.cards.get(id)?.remove();
