@@ -3881,6 +3881,9 @@ export class SessionManager extends EventEmitter {
       if (s.approvals.size || s.asks.size) {
         // A pending approval means its turn is in flight, so this branch has to sit before the
         // `running` guard: that turn is exactly what sits there waiting on nobody (#82).
+        // 随手问 is the exception (#365): a question parked in its dialog is not a reason to take
+        // the process down — only the person pressing 暂停 ends it.
+        if (s.state.scratch) continue;
         if (unattended > cfg.idleMs) s.expireUnattended(cfg);
         continue;
       }

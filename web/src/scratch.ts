@@ -164,6 +164,9 @@ export class ScratchChat {
   reconnect(): void {
     this.asked = false;
     this.id = null;
+    // The queued sentence stays in the input box; it must not keep the composer locked while the
+    // id it was aimed at is gone (the snapshot resend path only knows "same id, same sentence").
+    this.releasePending();
     this.items = [];
     this.rows.clear();
     this.tokens = null;

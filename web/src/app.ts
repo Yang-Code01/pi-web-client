@@ -836,7 +836,8 @@ export class App {
     reclaimAction.onclick = () => {
       const id = this.sessionReclaimId;
       if (!id || id !== this.currentId) return;
-      this.dismissedReclaimIds.add(id);
+      // Do not mark it dismissed here: if the server still does not know the id, the next
+      // session_not_found brings the banner straight back instead of leaving a silent failure.
       reclaim.hidden = true;
       this.startClaim();
     };
