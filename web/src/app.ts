@@ -15,7 +15,7 @@ import { parseRules, type RuleBook } from "./rules.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
-import { askQuestionCount, badgeText, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
+import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
@@ -1071,7 +1071,7 @@ export class App {
       this.placeWsTabs();
     }
     const previousQueueTab = this.queueTab;
-    this.syncQueueTabMemory();
+    if (changed) this.syncQueueTabMemory(true);
     if (this.queueTab !== previousQueueTab && this.els.queueInner) this.renderQueue();
     return changed;
   }
@@ -1083,8 +1083,8 @@ export class App {
     if (previous === "exec" && this.queueTab !== "exec") this.stopExecChildWatches();
   }
 
-  private syncQueueTabMemory(): void {
-    this.applyQueueTabEvent({ type: "asks", count: this.asks.length });
+  private syncQueueTabMemory(asksArrived: boolean): void {
+    this.applyQueueTabEvent({ type: "asks", count: this.asks.length, arrived: asksArrived });
     this.applyQueueTabEvent({ type: "approvals", count: this.approvals.length });
   }
 
@@ -1484,7 +1484,7 @@ export class App {
     this.execChildExpanded.clear();
     this.approvals = [];
     this.asks = [];
-    this.syncQueueTabMemory();
+    this.syncQueueTabMemory(false);
     this.pendingFresh = false;
     this.usage = { contextTokens: null, contextWindow: null };
     this.rate = 0;
@@ -1688,7 +1688,7 @@ export class App {
         }
         this.approvals = (msg.approvals ?? []) as ApprovalRequest[];
         this.asks = (msg.asks ?? []) as AskRequest[];
-        this.syncQueueTabMemory();
+        this.syncQueueTabMemory(true);
         // 快照里的队列是权威值：顺手把列表里那条累加值对齐，曾经算歪的会话打开一次就回到真值（D156）。
         syncPending(this.sessions, String(msg.sessionId ?? this.currentId ?? ""), this.localCounts());
         this.pendingFresh = true;
@@ -1917,7 +1917,7 @@ export class App {
           break;
         }
         this.asks = [...this.asks.filter((a) => a.id !== ask.id), ask];
-        this.applyQueueTabEvent({ type: "asks", count: this.asks.length });
+        this.applyQueueTabEvent({ type: "asks", count: this.asks.length, arrived: true });
         this.askFolded = false;
         this.askAutoFolded = false;
         // 新的这一份是新的「这一次」：上一道题时用户收起过右栏，不该连带着压下这一道。
@@ -1935,7 +1935,7 @@ export class App {
         const gone = this.asks.find((a) => a.id === msg.id);
         const mine = msg.sessionId === this.currentId;
         this.asks = this.asks.filter((a) => a.id !== msg.id);
-        if (mine) this.applyQueueTabEvent({ type: "asks", count: this.asks.length });
+        if (mine) this.applyQueueTabEvent({ type: "asks", count: this.asks.length, arrived: false });
         // 答完 / 被取消都走这条：计数必须跟着回落（D156）。
         this.countPending(msg.sessionId, "asks", -1);
         if (gone && mine && gone.id !== this.lastAnsweredAsk) this.keepLostAsk(gone, String(msg.reason ?? tr("问卷已关闭")));
@@ -14667,8 +14667,7 @@ export class App {
     this.execSelectedRound = model.selectedRound;
     const panel = el("div", "exec-panel");
     if (!this.deps && !this.depsLoading && Date.now() - this.depsAt > 30_000) this.loadDeps(false);
-    const questionCount = askQuestionCount(this.asks);
-    const questionBadge = badgeText(questionCount);
+    const { text: questionBadge } = askBadge(this.asks);
     if (questionBadge) {
       const hint = el("button", "exec-ask-hint", tr("{p1} 道题等你回答 →", { p1: questionBadge })) as HTMLButtonElement;
       hint.type = "button";
@@ -14789,8 +14788,7 @@ export class App {
     needs.dataset.execTab = "needs";
     needs.setAttribute("aria-selected", String(this.queueTab === "needs"));
     needs.onclick = () => this.selectQueueTab("needs");
-    const questionCount = askQuestionCount(this.asks);
-    const text = badgeText(questionCount);
+    const { count: questionCount, text } = askBadge(this.asks);
     if (text && this.queueTab !== "needs") {
       const pip = el("span", "pip", text);
       pip.title = tr("{p1} 道题待回答", { p1: questionCount });

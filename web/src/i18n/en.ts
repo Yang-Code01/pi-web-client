@@ -1200,7 +1200,7 @@ export const en: Dict = {
   "隧道启动中…": "Starting tunnel…",
   "隧道异常": "Tunnel error",
   "需要你": "Needs you",
-  "{p1} 道题待回答": "{p1} questions awaiting your answer",
+  "{p1} 道题待回答": "Questions awaiting your answer: {p1}",
   "{p1} 道题等你回答 →": "Questions to answer ({p1}) →",
   "需要你回答": "Needs your answer",
   "需要你回答 · {p1} 题": "Needs your answer · {p1} questions",
