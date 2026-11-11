@@ -618,7 +618,7 @@ export interface GitInfo {
   dirty: number;
 }
 
-/** 分支历史弹窗的一行：`set` 是桥算好的「你独有 / 对面独有 / 两边相同」。 */
+/** 分支操作工作台「历史」tab 的一行：`set` 是桥算好的「你独有 / 对面独有 / 两边相同」。 */
 export interface GitCommit {
   h: string;
   s: string;
@@ -626,6 +626,69 @@ export interface GitCommit {
   at: number;
   merge: boolean;
   set: "left" | "right" | "common";
+}
+
+/**
+ * D234: 工作台从 `/api/git/*` 拿到的形状，和 bridge/src/gitops.ts 的同名接口一一对应。
+ * 前端不 import 桥的源码，所以这里抄一份（与 DepPackageId / sysmanage-types.ts 同样做法）。
+ */
+export type GitPending = "merge" | "rebase" | "cherry-pick" | "revert" | "bisect" | "am";
+export interface GitFile { path: string; status: string; old?: string }
+export interface GitWorktreeState {
+  repo: string;
+  head: string;
+  branch: string;
+  detached: boolean;
+  empty: boolean;
+  dirty: number;
+  upstream: string;
+  ahead: number;
+  behind: number;
+  staged: GitFile[];
+  unstaged: GitFile[];
+  untracked: GitFile[];
+  conflicts: string[];
+  pending: GitPending | null;
+}
+export interface GitRefs {
+  repo: string;
+  head: string;
+  defaultBase: string;
+  groups: { name: string; refs: { name: string; at: number; current: boolean; upstream?: string; ahead?: number; behind?: number }[] }[];
+}
+export interface GitDiffFile {
+  path: string;
+  old?: string;
+  status: string;
+  kind: "text" | "image" | "pdf" | "sheet" | "binary" | "missing";
+  binary: boolean;
+  size: number;
+  additions: number;
+  deletions: number;
+  truncated: boolean;
+  lines: { left: string; right: string; tag: "same" | "add" | "del" | "mod" }[];
+  images?: { base: string | null; target: string | null };
+  note: string;
+}
+export interface GitDiff {
+  repo: string;
+  base: string;
+  target: string;
+  files: GitDiffFile[];
+  limit: { lines: number; bytes: number };
+}
+export interface GitOpParams { [key: string]: string | boolean | string[] | undefined }
+export interface GitExecResult {
+  ok: boolean;
+  exitCode: number;
+  argv: string[];
+  stdout: string;
+  stderr: string;
+  state: GitWorktreeState;
+  conflicts: string[];
+  pending: GitPending | null;
+  refresh: boolean;
+  code?: string;
 }
 
 /** `/api/git/history` 的应答（只在 `repo` 非空时存在）。 */

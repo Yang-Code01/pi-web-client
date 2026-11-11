@@ -1,4 +1,4 @@
-import type { ArtifactDiff, ArtifactList, GitHistory, GitInfo, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
+import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
 import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
 import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices } from "./sysmanage-types.ts";
 
@@ -20,6 +20,15 @@ async function failOf(res: Response, text: string): Promise<Error & { code?: str
     /* keep raw text */
   }
   return Object.assign(new Error(message || `HTTP ${res.status}`), { status: res.status, code, params });
+}
+
+/** Small helper for the JSON POST routes; keeps the body shape in one place. */
+function postJson<T>(path: string, body: unknown): Promise<T> {
+  return req<T>(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -124,8 +133,8 @@ export const api = {
     return { repo: out.repo, branch: out.branch ?? "", detached: out.detached === true, empty: out.empty === true, dirty: out.dirty ?? 0 };
   },
   /**
-   * D193: 分支历史弹窗的两列。桥回 `{repo:null, code}` 时抛错（`empty` / `base_unknown` / 读不到），
-   * 界面用 `errText()` 翻成人话。`fresh` 只在 fetch 之后用一次。
+   * D234: 分支操作工作台「历史」tab 的两列。桥回 `{repo:null, code}` 时抛错
+   * （`empty` / `base_unknown` / 读不到），界面用 `errText()` 翻成人话。`fresh` 在 fetch 或写操作之后用一次。
    */
   gitHistory: async (dir: string, base = "", n = 80, fresh = false): Promise<GitHistory> => {
     const out = await req<GitHistory & { repo: string | null; code?: string; error?: string }>(
@@ -134,7 +143,7 @@ export const api = {
     if (!out.repo) throw Object.assign(new Error(out.error ?? "读不了分支历史"), { code: out.code });
     return out;
   },
-  /** D193: 弹窗里那个手动 fetch。失败也回 200 + `{ok:false, code, error}`，这里统一抛。 */
+  /** D234: 工作台里那个手动 fetch。失败也回 200 + `{ok:false, code, error}`，这里统一抛。 */
   gitFetch: async (dir: string): Promise<{ at: number; remote: string }> => {
     const out = await req<{ ok: boolean; at?: number; remote?: string; code?: string; error?: string }>("/api/git/fetch", {
       method: "POST",
@@ -144,6 +153,20 @@ export const api = {
     if (!out.ok) throw Object.assign(new Error(out.error ?? "git fetch 失败"), { code: out.code });
     return { at: out.at ?? Date.now(), remote: out.remote ?? "origin" };
   },
+  /** D234: 工作台的仓库状态（逐文件暂存/改动/冲突）。 */
+  gitState: (dir: string) => postJson<GitWorktreeState>("/api/git/state", { dir }),
+  /** D234: 本地 + 远程分组的分支列表，给切换、合并和对照检索用。 */
+  gitRefs: (dir: string) => postJson<GitRefs>("/api/git/refs", { dir }),
+  /** D234: 当前分支 vs 对照 / 单条提交 vs 父提交的并排富视图。 */
+  gitDiff: (dir: string, base = "", target = "HEAD", commit = "") =>
+    postJson<GitDiff>("/api/git/diff", { dir, base, target, commit }),
+  /**
+   * D234: 只发 id + 结构化 params，真正的 argv 由桥端白名单拼。
+   * git 自己失败时也回 200 + 完整结果（退出码/stderr/state），界面据此画失败卡；
+   * 只有 HTTP 层的错误才由 req() 抛出。
+   */
+  gitOp: (dir: string, id: string, params: GitOpParams = {}) =>
+    postJson<GitExecResult>("/api/git/op", { dir, id, params }),
   /** Bytes of an image on the bridge machine, as a File the composer can attach. */
   image: async (path: string): Promise<File> => {
     const res = await fetch(`/api/image?path=${encodeURIComponent(path)}`, { credentials: "same-origin" });

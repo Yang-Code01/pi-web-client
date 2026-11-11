@@ -4071,3 +4071,26 @@ D
 **代价 / 可改：** 一个常驻 pi 进程（省掉冷启，占着内存）；`state.scratch` 的对象在桥的生命周期内不再回收；暂停态不持久化（重启后是全新随手问，与「重启即清空」一致）；默认 0 意味着忘了关的随手问会一直在，这是有意的。
 
 **验证：** `npm run test:scratch`（桩 pi，A–E 组：默认不睡、正数阈值恢复、休眠后复用同一 id、GC 不驱逐、重启清空）、`npm run test:scratch:ui`（真 Chromium：暂停/开始闭环、暂停只读不唤醒、清空保持暂停、404 自动重开、主会话与随手问横幅互不影响、中/英/日三语）、`npm run typecheck`（含 i18n 键检查）。
+
+## D234 分支 chip 从「只读历史」升级成「分支操作工作台」（用户要求）
+
+**问题：** D193 的弹窗只读、是快照、对照分支只有一个纯下拉、看不到 diff，也不让 cherry-pick。用户从「聊天框的分支功能很简单，想追加功能」开始，九轮逼问定下全集写操作的边界，再做四份真实 HTML 样张（`.scratch/git-ops-dialog/prototype/`）选定**样张 D · 居中操作卡**，第二轮又补了三条：全部动词要看得见、加一个「选分支 + 写要求 → 交给 AI」的独立入口、对照分支要能输入检索。
+
+**决定：**
+
+1. **落点不变**：仍是输入框状态行的 `⎇ 分支` chip → `BranchSheet`；消息气泡的 `⑂` 分叉是另一条线，不动。
+2. **明确覆盖 D193 的第 6 条「只读」与「弹窗是快照」**：写操作成功后立刻 `invalidateGitCache(dir)`（清 `bridge/src/git.ts` 的 5s TTL）并以 `fresh` 重拉 history / info / refs / diff，状态行的分支与 dirty 数跟着变；弹窗不再自称「只读」。
+3. **版面按样张 D**：三 tab「历史 / 差异 / 图解手册」+ 右上写操作按钮 + **740px 居中操作卡**（背景遮暗是用户选定并接受的代价）。标题栏常驻 commit / switch / merge / **cherry-pick / revert / tag** / fetch / 红色操作，另有「▦ 全部动词 · 24」分组选择器与「🤖 交给 AI 操作…」。
+4. **对照分支改成可输入检索**：关键词过滤本地 + 远程分组候选，回车或「用输入的 ref 对照」接受任意 ref；历史右列、差异文件栏、并排 diff 标题同步。D193 的纯 `<select class="bc-base">` 与「只列 refs/remotes」一并作废。
+5. **差异富视图**：默认「当前分支 vs 对照」，点提交切「该提交 vs 父提交」（根提交用空树 `4b825dc…` 当左侧）；文本逐行并排（tag `same`/`add`/`del`/`mod` 分别上色）、图片两栏缩略、PDF / 表格 / 二进制占位、超 200 行或 400 KB 截断并明说。
+6. **桥端执行通道**（新文件 `bridge/src/gitops.ts`）：只收 `id + 结构化 params`，24 个 id 由 `OP_BUILDERS` 逐条显式拼 argv，**绝不执行网页传来的 argv**；`ref` 拒绝 `-` 开头与 `[\s~^:?*\[\\]`、`paths` 限 200 条且拒 `..`、`message` 去 NUL；统一 `GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS=echo` + `credential.interactive=never`（否则缺凭据的仓库会挂在等密码）；按 `dir` 串行排队防 `index.lock` 互踩；返回 `GitExecResult` 带 `exitCode` / 原 argv / 原始 stdout+stderr / 新 state / 冲突文件 / pending / `refresh` / 稳定 `code`（`auth`/`identity`/`conflict`/`dirty`/`op_failed`）。D193 那个把失败吞成 `null` 的私有 `git()` 不复用。
+7. **双闸，写入只在真本机放行**：`isLoopbackPeer(req.socket.remoteAddress) && !isTunnelRequest(headers)`，LAN 直连与公网隧道一律 403 `op_public`。两个判据缺一不可：cloudflared 在本机起，隧道请求的 `remoteAddress` 天然是回环；LAN 直连不带 cf 头，`publicReq` 又判不出来。
+8. **保护与失败可见**：会覆盖工作区且当前 dirty 的操作先弹「stash / 逐文件 restore / 取消」；冲突态只放行「中止 / 继续 / 交给 agent」，继续要逐文件勾完「已解决」才启用；8 个红色动词（`reset --hard` / `clean -fd` / `push --force` / 删分支 / `stash drop` / `tag -d` / rebase / restore）给确认卡（会丢什么 + 可复制回退命令），但 **restore 特判**：逐文件勾选清单本身就是确认，不叠第二张卡；鉴权与提交身份失败给结构化失败卡 + 系统 credential helper / `user.name` 指引 + handoff，网页不收集账号密码、不自动兜底。
+9. **交给 agent 两个出口**：`buildHandoffPrompt()` 打包仓库 / 当前分支 / 选中分支 / ahead·behind / dirty 数 / 可用分支 / 失败时的 argv+exit+stderr / 用户要求；复用 `web/src/app.ts` 的 `prefill(text)` 与 `newSessionWith(text)`（JiraPanel 已接过同一对回调），**只填不发**。提示词字面保持中文、不随界面语言变（`i18n-ignore`）。
+10. **前端单一注册表**（新文件 `web/src/git-ops.ts`）：24 条 `GitOpDef` 各带两帧纯内联 SVG 图解（离线可用）、结构化字段、具名开关（`--force-with-lease` / `--no-ff` / `-u` / `--include-untracked`）、命令预览、风险、红色 lose / rollback；界面文案全走 `tr()`。
+
+**为什么：** 让新手在网页里就能把「看差了什么 → 想清楚要不要动 → 动完立刻看到新状态 → 出事把原始 stderr 交给 agent」闭成一条链，而不用回终端；把「能连上 bridge 就能写」收紧成只认真本机，是因为隧道的回环地址是个假象；把 argv 拼装收进 id 白名单，是因为网页一旦能传任意参数，红色确认卡就形同虚设。
+
+**代价 / 可改：** 样张 D 的已知代价（每次操作都离开上下文、普通动作也显得重）随选择一并接受；不收 submodule / worktree / bisect / blame / remote 管理 / config / gc；`--graph` 仍未画；大文件与非文本只给占位；鉴权失败只能在系统侧配好后重试；`ref` 的字符黑名单会挡掉极少数合法但罕见的分支名。24 个 id 与字段在 `web/src/git-ops.ts`，桥端白名单在 `bridge/src/gitops.ts`，两边要一起改。
+
+**验证：** `npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check`）；`npm run test:githist` 扩成裸库写操作集成（switch / stage+commit / merge 冲突 / 非法 ref / 未知 id / force 拒绝 / 隧道拒绝）；`npm run test:githist:ui` 用 Playwright 断言三 tab、24 动词选择器、AI 入口、对照检索、居中卡、红色确认、失败卡、冲突逐文件、handoff 与 chip 刷新。样张阶段的四版截图与 100+ 条 linkedom 交互断言留在 `.scratch/git-ops-dialog/prototype/`。
