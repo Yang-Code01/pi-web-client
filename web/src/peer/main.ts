@@ -173,6 +173,7 @@ const S = {
   view: null as PeerView | null,
   threads: [] as Thread[],
   contacts: [] as Contact[],
+  ignored: [] as string[],
   transfers: [] as Transfer[],
   free: 0,
   msgs: [] as Entry[],
@@ -357,7 +358,18 @@ async function loadThreads(): Promise<void> {
   }
 }
 
+/** 独立落盘的忽略名单：页面只用它挡住在线表兜底合并，不改状态 / 找人接口。 */
+async function loadIgnored(): Promise<void> {
+  try {
+    const data = await getJson<{ nodeIds?: string[] }>("/api/peer/ignored");
+    S.ignored = Array.isArray(data.nodeIds) ? data.nodeIds.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    S.ignored = [];
+  }
+}
+
 async function loadContacts(): Promise<void> {
+  await loadIgnored();
   try {
     const data = await getJson<{ contacts: Contact[] }>("/api/peer/contacts");
     S.contacts = data.contacts ?? [];
@@ -366,11 +378,12 @@ async function loadContacts(): Promise<void> {
   }
   // 在线名单兜底：通讯录那边没把在线的人合并进来时（例如接口是旧版或被代理替换），
   // 页面自己补一行，这样「附近的人」只依赖当前在线表。已有关系行一律不覆盖，
-  // 每轮轮询重新构造，不会累积重复。
+  // 被移除的人不再补回来，每轮轮询重新构造，不会累积重复。
   const me = S.view?.status?.nodeId;
   const known = new Set(S.contacts.map((c) => c.nodeId));
+  const ignored = new Set(S.ignored);
   for (const p of S.view?.status?.online ?? []) {
-    if (p.nodeId === me || known.has(p.nodeId)) continue;
+    if (p.nodeId === me || known.has(p.nodeId) || ignored.has(p.nodeId)) continue;
     known.add(p.nodeId);
     S.contacts.push({
       nodeId: p.nodeId,
@@ -1195,6 +1208,13 @@ function renderContactDetail(): void {
     if (!c.online) add.title = tr("对方离线，等上线再申请");
     add.addEventListener("click", () => void friendAction(c.nodeId, "request", true));
     acts.append(add);
+    // 只给「附近的人」里由在线表合并出来的无关系行：移除后写忽略名单，下一轮轮询不再补回来。
+    if (!c.quick && !c.outgoing && c.online) {
+      const hide = h("button", "btn", tr("从附近移除"));
+      hide.type = "button";
+      hide.addEventListener("click", () => void friendAction(c.nodeId, "remove"));
+      acts.append(hide);
+    }
   }
   const fav = h("button", "btn", c.favorite ? tr("取消收藏") : tr("收藏"));
   fav.type = "button";
@@ -1406,7 +1426,32 @@ function renderMe(): void {
   net.append(nacts, h("div", "note", st.config.manual.length ? tr("手动地址：{p1}", { p1: st.config.manual.join(", ") }) : tr("同一内网的人打开 pi 就会互相出现；组播被挡时用「+」手动加地址。")));
   detail.append(net);
 
+  const ig = h("div", "card");
+  ig.append(h("h3", "", tr("忽略名单")));
+  const iacts = h("div", "acts");
+  iacts.style.padding = "12px 13px";
+  const clear = h("button", "btn", tr("清空忽略名单"));
+  clear.type = "button";
+  clear.disabled = S.ignored.length === 0;
+  clear.addEventListener("click", () => void clearIgnored());
+  iacts.append(clear);
+  ig.append(
+    h("div", "note", tr("已忽略 {p1} 人。清空后，仍在线的人会重新出现在「附近的人」里。", { p1: String(S.ignored.length) })),
+    iacts,
+  );
+  detail.append(ig);
+
   mainEl.append(detail);
+}
+
+async function clearIgnored(): Promise<void> {
+  try {
+    await postJson("/api/peer/ignored/clear");
+    await loadContacts();
+    renderAll();
+  } catch (err) {
+    toast((err as Error).message);
+  }
 }
 
 function toggle(name: string, sub: string, on: boolean, run: (on: boolean) => void): HTMLElement {
@@ -1497,6 +1542,9 @@ function contactMenu(x: number, y: number, c: Contact): void {
       : []),
     ...(c.friend ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(c.nodeId, true) }] : []),
     { label: c.favorite ? tr("取消收藏") : tr("收藏"), icon: "star", run: () => void friendAction(c.nodeId, "favorite", !c.favorite) },
+    ...(!c.friend && !c.quick && !c.incoming && !c.outgoing && c.online
+      ? [{ label: tr("从附近移除"), icon: "trash", danger: true, run: () => void friendAction(c.nodeId, "remove") }]
+      : []),
     { label: tr("复制 nodeId"), icon: "copy", run: () => void copyText(c.nodeId) },
     ...(c.friend
       ? [{ label: tr("删除好友"), icon: "trash", danger: true, run: () => void friendAction(c.nodeId, "remove") }]

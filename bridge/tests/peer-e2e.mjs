@@ -246,6 +246,90 @@ try {
   }
   log("ok 旧版未知控制消息 400 不可重试（只丢不补投）");
 
+  // ---- #383：移除在线的人 → 忽略名单独立落盘，通讯录不再合并，但状态 / 找人不变 ----
+  const removed = await fetch("http://127.0.0.1:17965/friend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sc, action: "remove" }),
+  });
+  if (!removed.ok) throw new Error(`移除应 200，实际 ${removed.status} ${await removed.text()}`);
+  const gone = await until(
+    "移除后通讯录不再合并 C",
+    async () => {
+      const [contacts, live, ignoredList, found] = await Promise.all([
+        (await fetch("http://127.0.0.1:17965/contacts")).json(),
+        status(17965),
+        (await fetch("http://127.0.0.1:17965/ignored")).json(),
+        (await fetch("http://127.0.0.1:17965/tools/find?q=" + encodeURIComponent("丙"))).json(),
+      ]);
+      const inContacts = contacts.contacts?.some((x) => x.nodeId === sc);
+      const inOnline = live?.online?.some((x) => x.nodeId === sc);
+      const inIgnored = ignoredList.nodeIds?.includes(sc);
+      const inFind = found.peers?.some((x) => x.nodeId === sc && x.friend === false);
+      return !inContacts && inOnline && inIgnored && inFind ? { contacts, live, ignoredList, found } : false;
+    },
+    8000,
+  );
+  void gone;
+  log("ok 移除有关系的人：关系被清、通讯录不再合并，状态 / 找人仍能看到");
+
+  // 忽略名单只挡「由在线表合并出来的无关系行」：重新建立关系后，关系行照样列出来。
+  const backQuick = await fetch("http://127.0.0.1:17965/friend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sc, action: "quick" }),
+  });
+  if (!backQuick.ok) throw new Error(`忽略名单里重新快捷添加应 200，实际 ${backQuick.status} ${await backQuick.text()}`);
+  const kept = await until(
+    "已有 quick 关系不被忽略名单吞掉",
+    async () => {
+      const body = await (await fetch("http://127.0.0.1:17965/contacts")).json();
+      const row = body.contacts?.find((x) => x.nodeId === sc);
+      return row?.quick === true && row?.ignored === true && row?.friend === false ? row : false;
+    },
+    8000,
+  );
+  void kept;
+  log("ok 忽略名单只过滤无关系合并行，不吞已有关系");
+
+  const cleared = await fetch("http://127.0.0.1:17965/ignored/clear", { method: "POST" });
+  if (!cleared.ok) throw new Error(`清空忽略名单应 200，实际 ${cleared.status} ${await cleared.text()}`);
+  const restored = await until(
+    "清空忽略名单后恢复",
+    async () => {
+      const [contacts, ignoredList] = await Promise.all([
+        (await fetch("http://127.0.0.1:17965/contacts")).json(),
+        (await fetch("http://127.0.0.1:17965/ignored")).json(),
+      ]);
+      const row = contacts.contacts?.find((x) => x.nodeId === sc);
+      return row && row.ignored === false && ignoredList.nodeIds?.length === 0 ? row : false;
+    },
+    8000,
+  );
+  void restored;
+  log("ok 清空忽略名单后恢复，已有关系行不再标忽略");
+
+  // 忽略名单跨重启：单独一份 X（独立端口 / 独立 state），杀掉后用同一 state 目录重启。
+  const ghost = "00000000-0000-4000-8000-00000000ffff";
+  const X = start("x", 17972, 17971, "戊");
+  const sx = await until("X 起来", async () => (await status(17972))?.nodeId);
+  const ghostRemove = await fetch("http://127.0.0.1:17972/friend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: ghost, action: "remove" }),
+  });
+  if (!ghostRemove.ok) throw new Error(`X 写忽略名单应 200，实际 ${ghostRemove.status}`);
+  X.kill();
+  await until("X 退出", async () => (await status(17972)) === null, 8000);
+  await new Promise((r) => setTimeout(r, 300));
+  const X2 = start("x", 17972, 17971, "戊");
+  const sx2 = await until("X 重启", async () => (await status(17972))?.nodeId);
+  if (sx2 !== sx) throw new Error(`重启后 nodeId 变了：${sx} → ${sx2}`);
+  const persisted = await (await fetch("http://127.0.0.1:17972/ignored")).json();
+  if (!persisted.nodeIds?.includes(ghost)) throw new Error(`忽略名单没跨重启保留：${JSON.stringify(persisted)}`);
+  X2.kill();
+  log("ok 忽略名单独立落盘，跨重启保留");
+
   // ---- 隐身（D99）：隐身的 peer 一条 announce 都不许发，也不许透露身份。 ----
   // 嗅探器在 D 起来之后才绑：启动时那一包已经过去了，这里只看 /peer/refresh 触发的那一包
   // （定时器和 /peer/refresh 走的是同一个 announce()）。
