@@ -15,7 +15,7 @@ import { parseRules, type RuleBook } from "./rules.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
-import { badgeText, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
+import { askQuestionCount, badgeText, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
@@ -14606,6 +14606,14 @@ export class App {
     this.execSelectedRound = model.selectedRound;
     const panel = el("div", "exec-panel");
     if (!this.deps && !this.depsLoading && Date.now() - this.depsAt > 30_000) this.loadDeps(false);
+    const questionCount = askQuestionCount(this.asks);
+    const questionBadge = badgeText(questionCount);
+    if (questionBadge) {
+      const hint = el("button", "exec-ask-hint", tr("{p1} 道题等你回答 →", { p1: questionBadge })) as HTMLButtonElement;
+      hint.type = "button";
+      hint.onclick = () => this.selectQueueTab("needs");
+      panel.append(hint);
+    }
     panel.append(this.execPlanBox(model.plan));
     const now = this.execNowCard(model);
     now.classList.add("exec-now-slot");
@@ -14720,7 +14728,7 @@ export class App {
     needs.dataset.execTab = "needs";
     needs.setAttribute("aria-selected", String(this.queueTab === "needs"));
     needs.onclick = () => this.selectQueueTab("needs");
-    const questionCount = this.asks.reduce((n, ask) => n + ask.questions.length, 0);
+    const questionCount = askQuestionCount(this.asks);
     const text = badgeText(questionCount);
     if (text && this.queueTab !== "needs") {
       const pip = el("span", "pip", text);

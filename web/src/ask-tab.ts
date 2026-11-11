@@ -1,5 +1,9 @@
 export type QueueTab = "needs" | "exec";
 
+export function askQuestionCount(asks: readonly { questions: readonly unknown[] }[]): number {
+  return asks.reduce((total, ask) => total + ask.questions.length, 0);
+}
+
 export function badgeText(count: number): string {
   if (count <= 0) return "";
   return count > 9 ? "9+" : String(count);
