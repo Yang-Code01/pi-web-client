@@ -4020,3 +4020,11 @@ D
 
 **验证：** `node bridge/tests/plan-nudge-unit.mjs`（30 项：开关各种读不到都算关；没计划 / 全关 / 不到门槛 / 已提醒 / 中断 / 出错 / 不能续跑都不续跑；条件满足时追加 `display:false` 提醒、`continue:true`、保留前面处理器的 entries；桥的 `sinceUpdate` 回放与实时计数）；`web/tests/exec-view-unit.mjs` 新增过期判定（门槛、全关、运行中、历史轮都不报）。
 
+## D231 问卷到达时自动切到「需要你」标签，答完还原（#359）
+
+**决定：** 当前会话收到 `ask.add`，或快照恢复出待答问卷时，若当前不是窄屏且内层标签不在「需要你」，自动切到「需要你」并记住切换前的标签。用户手动点任一内层标签就清除这次自动切换记忆；最后一份问卷结束后，且没有待批准项时，自动还原记住的标签。内层标签状态是内存状态，自动切换不写 `localStorage["pi.queueTab"]`，该存储仍只记录用户点击。窄屏不自动切换，也不自动还原；跨回宽屏后按当前待办数量重算。
+
+**状态机：** `web/src/ask-tab.ts` 以纯 reducer 管理 `tab`、`recall`、`auto` 及当前 `asksCount` / `approvalsCount`；问卷到达自动切换，审批到达本身不切换。还原统一要求 `asksCount === 0 && approvalsCount === 0 && recall !== null`。因此问卷先结束但仍有批准时先留在「需要你」，最后一张批准卡也结束后才还原，避免把用户留在已空的「需要你」页。
+
+**验证：** `npm run test:ask-tab`（纯状态机：到达、手动切换、清空、待批准、窄屏、快照重放、多份问卷 recall）；`npm run test:ask-tab:ui`（隔离 bridge + fake pi + Chromium，DOM 检查自动切换、作答还原、手动选择不被抢回）。
+
