@@ -93,6 +93,14 @@ const CONTINUE_GUARD_MS = 1500;
  */
 const CONTINUE_TEXT = "继续";
 
+/**
+ * #346：计划可能过期时「让 agent 同步计划」发出去的**字面**文本，同 CONTINUE_TEXT 不翻译。
+ * 措辞与 bridge/ext/plan-nudge.ts 的自动核对同一个意思：只对齐事实，不借机接着干、不为交差打勾。
+ */
+// i18n-ignore-start 给模型的指令，不是界面文案
+const PLAN_SYNC_TEXT = "用 todo 把执行面板上的计划同步成实际进度：确实做完的标 completed，不再需要的 delete，整份作废就 clear；没做完的保持原状。只做这一件事，做完回一句「计划已同步」。";
+// i18n-ignore-end
+
 /** #278：桥的 hello `caps` 里表示「ws.create 带 dir 能按目录建组」。旧桥没有这项。 */
 const WS_CREATE_DIR_CAP = "ws.create.dir";
 /** #278：桥的 hello `caps` 里表示「ws.resolve 能把子目录 / worktree 折回已有组」。旧桥没有这项。 */
@@ -13127,7 +13135,8 @@ export class App {
    * 发「继续」。**不清草稿**：它跟 Enter 不同 —— 这是「接着刚才那件事」，不是「把我写的发出去」。
    * 乐观气泡照 `sendPrompt()` 带 `clientId`，桥回灌时这一页认自己那条（#19）。
    */
-  private sendContinue(): void {
+  /** `text` 缺省就是「继续」；#346 的「让 agent 同步计划」也走这条（同一套连点保护）。 */
+  private sendContinue(text: string = CONTINUE_TEXT): void {
     const id = this.currentId;
     if (!id || continueState(this.session, this.chat.hasUserTurns()) !== "ready") return;
     // 连点保护：`pi.status(running)` 回来之前按钮还亮着，按会话只认第一次。
@@ -13135,7 +13144,6 @@ export class App {
     if (this.continueAt.id === id && now - this.continueAt.at < CONTINUE_GUARD_MS) return;
     this.continueAt = { id, at: now };
     // 字面「继续」就发这两个字（用户定的），不做 i18n：模型读到的东西不该跟着界面语言变。
-    const text = CONTINUE_TEXT;
     const clientId = `local:${now}:${Math.random().toString(36).slice(2, 8)}`;
     // 重画会重建 textarea，草稿文字会从 `composerText` 填回去，但光标位置和焦点不会 —— 收回来。
     const caret = this.textarea?.selectionStart ?? null;
@@ -14304,6 +14312,20 @@ export class App {
     progress.append(fill);
     box.append(progress);
 
+    // #346：模型上次 update 之后又干了一大堆活，面板上的状态多半已经不对了 —— 照实说，给一个让它补的出口。
+    if (!mini && plan.staleTools !== null) {
+      box.classList.add("stale");
+      const stale = el("div", "exec-plan-stale");
+      stale.append(el("span", "", tr("可能过期：上次更新计划后又调用了 {p1} 次工具", { p1: plan.staleTools })));
+      const sync = el("button", "exec-plan-sync", tr("让 agent 同步计划")) as HTMLButtonElement;
+      sync.type = "button";
+      sync.disabled = continueState(this.session, this.chat.hasUserTurns()) !== "ready";
+      sync.title = tr("发一句话请 agent 只用 todo 把计划对齐实际进度");
+      sync.onclick = () => this.sendContinue(PLAN_SYNC_TEXT);
+      stale.append(sync);
+      box.append(stale);
+    }
+
     const tasks = el("div", "exec-plan-tasks");
     for (const task of plan.tasks) {
       const selected = !mini && this.execSelectedPlanTaskId === task.id;
@@ -14340,9 +14362,12 @@ export class App {
   private execNowCard(view: ExecViewModel): HTMLElement {
     const card = el("section", `exec-now${view.now.kind === "idle" ? " idle" : ""}`);
     const activeTask = view.plan?.tasks.find((task) => task.id === view.plan?.activeTaskId);
-    const title = activeTask && view.plan
-      ? tr("现在 · 计划 {p1}/{p2} · {p3}", { p1: view.plan.done + 1, p2: view.plan.total, p3: activeTask.subject })
-      : tr("现在");
+    // #346：计划可能过期时别再说「现在在做第 N 步」—— 那只是最后一次记录。
+    let title = tr("现在");
+    if (activeTask && view.plan) {
+      const parts = { p1: view.plan.done + 1, p2: view.plan.total, p3: activeTask.subject };
+      title = view.plan.staleTools === null ? tr("现在 · 计划 {p1}/{p2} · {p3}", parts) : tr("最后记录 · 计划 {p1}/{p2} · {p3}", parts);
+    }
     card.append(el("h2", "", title));
     if (view.now.kind === "thinking" || view.now.kind === "writing") {
       const label = view.now.kind === "thinking" ? tr("思考中") : tr("正在写回复");
@@ -16650,6 +16675,15 @@ function settingFields(): SettingField[] {
     ],
     defaultText: tr("危险时确认"),
     hint: tr("新会话第一次打开时用它，之后在这里改也不影响老会话；手动改过权限的会话永远不动"),
+  },
+  // #346: 桥自有键。只认全局：扩展在 pi 子进程里每次停下都现读这份文件，项目级还要过信任，不值得。
+  {
+    key: "web.planNudge",
+    label: tr("停下前核对计划"),
+    kind: "bool",
+    globalOnly: true,
+    defaultText: tr("关"),
+    hint: tr("agent 停下前，计划还有没关的项、且上次更新后又调用了 5 次以上工具，就让它多跑一小步只用 todo 对齐计划（用户看不到这句提醒，会多花一次请求）。改了立即生效"),
   },
   { key: "defaultTools", label: tr("默认工具"), kind: "list", group: tr("工具与脚本"), hint: tr("逗号分隔；普通名字＝只用这些，+x / -x＝在默认基础上增减"), placeholder: tr("例如 read, bash, +codemode") },
   { key: "codemode.mode", label: tr("codemode 工具模式"), kind: "select", options: ["on", "only"], hint: tr("on = 已声明的工具照常直接调；only = 只留 codemode，所有工具都从脚本里调") },

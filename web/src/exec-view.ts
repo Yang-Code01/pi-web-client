@@ -110,7 +110,15 @@ export interface ExecPlanView {
   listedRoundOrdinal: number | null;
   activeTaskId: number | null;
   tasks: ExecPlanTaskView[];
+  /**
+   * #346：计划可能过期 —— 会话空闲、计划还有没关的项、上次 todo 之后又调用了至少
+   * PLAN_STALE_TOOLS 次别的工具。值是那个次数，不过期就是 null。只对当前计划判（看历史轮不判）。
+   */
+  staleTools: number | null;
 }
+
+/** #346：「计划可能过期」的门槛，与 bridge/ext/plan-nudge.ts 的 NUDGE_MIN_TOOLS 一致。 */
+export const PLAN_STALE_TOOLS = 5;
 
 export interface ExecMetricsView {
   durationMs: number | null;
@@ -276,14 +284,18 @@ function planView(
   plan: ExecPlanSnapshot | null | undefined,
   rounds: ExecRound[] = [],
   stepCounts: Map<number, number> = new Map(),
+  judgeStale = false,
 ): ExecPlanView | null {
   if (!plan || !Array.isArray(plan.tasks)) return null;
   const tasks = plan.tasks.filter((task) => task && task.status !== "deleted");
   if (!tasks.length) return null;
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const active = tasks.find((task) => task.status === "in_progress");
+  const done = tasks.filter((task) => task.status === "completed").length;
+  const since = typeof plan.sinceUpdate === "number" ? plan.sinceUpdate : 0;
   return {
-    done: tasks.filter((task) => task.status === "completed").length,
+    staleTools: judgeStale && done < tasks.length && since >= PLAN_STALE_TOOLS ? since : null,
+    done,
     total: tasks.length,
     listedRound: typeof plan.listedRound === "string" ? plan.listedRound : null,
     listedRoundOrdinal: rounds.find((round) => round.id === plan.listedRound)?.ordinal ?? null,
@@ -459,7 +471,8 @@ export function execView(input: ExecViewInput): ExecViewModel {
     timeline,
     rounds: roundOptions,
     selectedRound: selected?.id ?? null,
-    plan: planView(selectedPlan, input.planRounds, stepCounts),
+    // #346：只在会话真空闲、看的又是当前计划时判过期；跑着的时候一步很长是正常的。
+    plan: planView(selectedPlan, input.planRounds, stepCounts, input.phase === "idle" && selectedIsCurrent && input.plan !== undefined),
     metrics,
   };
 }

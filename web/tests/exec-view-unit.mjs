@@ -356,6 +356,7 @@ test("child plan snapshots count attributed steps without making todo calls into
     listedRound: "child-u1",
     listedRoundOrdinal: null,
     activeTaskId: 2,
+    staleTools: null,
     tasks: [
       { id: 1, subject: "检查输入", activeForm: undefined, status: "completed", waitingOn: [], stepCount: 1 },
       { id: 2, subject: "写结论", activeForm: "正在写结论", status: "in_progress", waitingOn: [], stepCount: 1 },
@@ -413,6 +414,7 @@ test("plan progress excludes deleted tasks and resolves its listing round across
     listedRound: "u2",
     listedRoundOrdinal: 2,
     activeTaskId: 2,
+    staleTools: null,
     tasks: [
       { id: 1, subject: "已完成", status: "completed", activeForm: undefined, waitingOn: [], stepCount: 0 },
       { id: 2, subject: "正在写", status: "in_progress", activeForm: "正在写测试", waitingOn: [], stepCount: 0 },
@@ -491,4 +493,19 @@ test("a missing or empty plan snapshot degrades to no plan", () => {
   const items = [user("u1", "2025-01-01T00:00:00Z")];
   assert.equal(execView({ ...base, items }).plan, null);
   assert.equal(execView({ ...base, items, plan: { listedRound: "u1", tasks: [] } }).plan, null);
+});
+
+test("#346: an idle current plan with many tool calls since its last update is flagged stale", () => {
+  const items = [user("u1", "2025-01-01T00:00:00Z"), tool("t1", "2025-01-01T00:00:01Z", "ok")];
+  const open = { listedRound: "u1", tasks: [{ id: 1, subject: "a", status: "completed" }, { id: 2, subject: "b", status: "in_progress" }] };
+  assert.equal(execView({ ...base, items, plan: { ...open, sinceUpdate: 7 } }).plan.staleTools, 7);
+  // 门槛以下、计划已全关、正在跑、没有这个字段：都不算过期
+  assert.equal(execView({ ...base, items, plan: { ...open, sinceUpdate: 4 } }).plan.staleTools, null);
+  assert.equal(execView({ ...base, items, plan: { ...open } }).plan.staleTools, null);
+  assert.equal(execView({ ...base, items, phase: "tool", plan: { ...open, sinceUpdate: 9 } }).plan.staleTools, null);
+  const closed = { listedRound: "u1", sinceUpdate: 9, tasks: [{ id: 1, subject: "a", status: "completed" }] };
+  assert.equal(execView({ ...base, items, plan: closed }).plan.staleTools, null);
+  // 看历史轮：判的不是当前计划，不报
+  const two = [...items, user("u2", "2025-01-01T00:00:02Z")];
+  assert.equal(execView({ ...base, items: two, selectedRound: "u1", plan: { ...open, sinceUpdate: 9 } }).plan?.staleTools ?? null, null);
 });
