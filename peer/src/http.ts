@@ -187,8 +187,9 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       // 设置页整体清空忽略名单：只动这份名单，不动关系记录，也不碰状态 / 找人接口。
       if (url.pathname === "/ignored/clear" && req.method === "POST") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const cleared = ignored.size();
         ignored.clear();
-        return json(res, 200, { ok: true, ignored: 0 });
+        return json(res, 200, { ok: true, cleared });
       }
 
       if (url.pathname === "/peer/hello" && req.method === "POST") {
@@ -355,7 +356,8 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             return json(res, 200, { ok: true, contact: relations.get(peerId) });
           }
           if (action === "favorite") {
-            const known = relations.get(peerId);
+            // 由在线表合并出来的「附近的人」还没有关系记录：收藏时当场建一行本机备注。
+            const known = relations.get(peerId) ?? who;
             if (!known) return json(res, 400, { error: "不在通讯录里" });
             relations.favorite({ nodeId: peerId, nickname: known.nickname, hostname: known.hostname, port: known.port }, Boolean(body?.on));
             return json(res, 200, { ok: true, contact: relations.get(peerId) });

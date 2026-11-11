@@ -90,10 +90,6 @@ export class Relations {
     return this.touch(who, { quick: true });
   }
 
-  isQuick(nodeId: string): boolean {
-    return Boolean(this.map[nodeId]?.quick);
-  }
-
   /** 我点「加好友」：先记 outgoing，等对方 accept。 */
   request(who: PeerIdentity): Contact {
     const prev = this.map[who.nodeId];

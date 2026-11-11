@@ -1,4 +1,4 @@
-import { applyLang, bootLang, fmtDate, fmtRelative, fmtTime, tr } from "../i18n/index.ts";
+import { applyLang, bootLang, fmtDate, fmtNum, fmtRelative, fmtTime, tr } from "../i18n/index.ts";
 
 /**
  * `peer.html` 的脚本：只跟 bridge 说话（cookie + `/api/peer*`），从不直接连 7865。
@@ -66,9 +66,8 @@ interface Contact {
   nickname: string;
   hostname: string;
   port: number;
-  // #381 先把响应形状备齐；后续两张票填真值，旧记录/测试桩缺字段时按未设置处理。
+  // 老关系记录 / 测试桩没有 quick 字段时按 false 处理。
   quick?: boolean;
-  ignored?: boolean;
   friend: boolean;
   favorite: boolean;
   incoming: boolean;
@@ -395,7 +394,6 @@ async function loadContacts(): Promise<void> {
       favorite: false,
       incoming: false,
       outgoing: false,
-      ignored: false,
       at: p.lastSeen,
       online: true,
       addr: p.addr,
@@ -1231,15 +1229,21 @@ function renderContactDetail(): void {
   const card = h("div", "card");
   card.append(h("h3", "", tr("资料")));
   const kv = h("div", "kv");
+  let relation = tr("还没加好友");
+  if (c.friend) relation = tr("好友");
+  else if (c.outgoing) relation = tr("已发申请");
+  else if (c.incoming) relation = tr("对方申请中");
+  else if (c.quick) relation = tr("快捷联系人");
   const rows: [string, string][] = [
     [tr("nodeId"), c.nodeId],
     [tr("地址"), `${c.addr || "?"}:${c.livePort || c.port}`],
     [tr("主机名"), c.hostname || "?"],
     [tr("状态"), c.online ? tr("在线") : tr("离线")],
-    [tr("关系"), c.friend ? tr("好友") : c.quick ? tr("快捷联系人") : c.outgoing ? tr("已发申请") : c.incoming ? tr("对方申请中") : tr("还没加好友")],
+    [tr("关系"), relation],
   ];
   for (const [k, v] of rows) kv.append(h("span", "k", k), h("span", "v", v));
   card.append(kv, h("div", "note", tr("在线的人会自动出现在「附近的人」里；快捷添加只放行文字，文件只能发给好友。")));
+  if (!c.online && !c.friend) card.append(h("div", "note", tr("对方已离线，等他上线再试")));
   detail.append(card);
   mainEl.append(detail);
 }
@@ -1436,7 +1440,7 @@ function renderMe(): void {
   clear.addEventListener("click", () => void clearIgnored());
   iacts.append(clear);
   ig.append(
-    h("div", "note", tr("已忽略 {p1} 人。清空后，仍在线的人会重新出现在「附近的人」里。", { p1: String(S.ignored.length) })),
+    h("div", "note", tr("已忽略 {p1} 人。清空后，仍在线的人会重新出现在「附近的人」里。", { p1: fmtNum(S.ignored.length) })),
     iacts,
   );
   detail.append(ig);

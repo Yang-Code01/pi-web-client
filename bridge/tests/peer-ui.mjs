@@ -294,11 +294,30 @@ try {
   const quickDoneDisabled = await zh.p.locator('#main button:has-text("已是快捷联系人")').isDisabled();
   const addFriendBtn = await zh.p.locator('#main button:has-text("加为好友（可传文件）")').count();
   const quickFileBtn = await exactFile(zh.p);
+  const quickPending = await zh.p.locator('#main .note:has-text("已发申请")').count();
   check(
     "已 quick 的人：禁用快捷按钮、仍可加好友、不给传文件",
-    zhRel === "快捷联系人" && quickDone === 1 && quickDoneDisabled && addFriendBtn === 1 && quickFileBtn === 0,
-    `关系=${zhRel}，已快捷=${quickDone}/禁用=${quickDoneDisabled}，加好友=${addFriendBtn}，传文件=${quickFileBtn}`,
+    zhRel === "快捷联系人" && quickDone === 1 && quickDoneDisabled && addFriendBtn === 1 && quickFileBtn === 0 && quickPending === 0,
+    `关系=${zhRel}，已快捷=${quickDone}/禁用=${quickDoneDisabled}，加好友=${addFriendBtn}，传文件=${quickFileBtn}，待处理=${quickPending}`,
   );
+
+  // 已 quick 又点了「加为好友」后，资料卡必须显示「已发申请」而不是被 quick 遮住。
+  const pendingFixture = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+  const pp = await pendingFixture.newPage();
+  await pp.route("**/api/**", async (route) => {
+    const path2 = new URL(route.request().url()).pathname;
+    let body = {};
+    if (path2 === "/api/peer") body = { enabled: true, running: true, reason: "", status: quickStatus };
+    else if (path2 === "/api/peer/contacts") body = { contacts: [{ ...row(QUICK, "小陈"), quick: true, outgoing: true }] };
+    else body = { threads: [], contacts: [], entries: [], transfers: [], nodeIds: [], ok: true, free: 1e12 };
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+  });
+  await pp.goto(`${BASE}/peer.html`);
+  await pp.click("#rail button:nth-child(2)");
+  await pp.click('.listbox .row:has-text("小陈")');
+  const pendingRel = (await relationOf(pp)).trim();
+  check("quick + 已发申请：资料卡优先显示待处理", pendingRel === "已发申请", `关系=${pendingRel}`);
+  await pendingFixture.close();
 
   await zh.p.click('.listbox .row:has-text("小赵")');
   const twoButtons = await zh.p.locator('#main button:has-text("快捷添加（可聊天）")').count();
@@ -319,10 +338,11 @@ try {
   const offQuickDisabled = await offQuick.isDisabled();
   const offQuickTitle = await offQuick.getAttribute("title");
   const offAddDisabled = await offAdd.isDisabled();
+  const offVisibleNote = await zh.p.locator('#main .note:has-text("对方已离线，等他上线再试")').count();
   check(
     "离线的人两颗按钮都禁用且提示等上线",
-    offQuickDisabled && offAddDisabled && offQuickTitle === "对方已离线，等他上线再试",
-    `快捷禁用=${offQuickDisabled}/title=${offQuickTitle}，加好友禁用=${offAddDisabled}`,
+    offQuickDisabled && offAddDisabled && offQuickTitle === "对方已离线，等他上线再试" && offVisibleNote === 1,
+    `快捷禁用=${offQuickDisabled}/title=${offQuickTitle}，加好友禁用=${offAddDisabled}，可见提示=${offVisibleNote}`,
   );
 
   await zh.p.click('.listbox .row:has-text("小王")');
@@ -367,7 +387,7 @@ try {
       else if (path2 === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
       else if (path2 === "/api/peer/messages") body = { entries: [] };
       else if (path2 === "/api/peer/ignored") body = { ok: true, nodeIds: cleared ? [] : [STRANGER] };
-      else if (path2 === "/api/peer/ignored/clear") { cleared = true; clearedIgnored += 1; body = { ok: true, ignored: 0 }; }
+      else if (path2 === "/api/peer/ignored/clear") { cleared = true; clearedIgnored += 1; body = { ok: true, cleared: 1 }; }
       else if (path2 === "/api/peer/friend") { friendCalls.push(JSON.parse(req.postData() ?? "{}")); body = { ok: true }; }
       else if (path2 === "/api/peer/send") body = { ok: true, id: "sent-by-ui" };
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});

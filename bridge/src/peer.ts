@@ -175,7 +175,7 @@ export class PeerHost {
   }
 
   /** 设置页整体清空忽略名单：只动那份独立名单，不改关系记录。 */
-  clearIgnored(): Promise<{ ok: boolean; ignored: number }> {
+  clearIgnored(): Promise<{ ok: boolean; cleared: number }> {
     return this.request("POST", "/ignored/clear");
   }
 

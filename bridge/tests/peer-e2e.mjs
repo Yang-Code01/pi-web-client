@@ -98,6 +98,38 @@ try {
   await until("B 看到 A（组播）", seenBy(17966, sa));
   log("ok 组播互见");
 
+  // 组播自动发现到的人（不是手动地址加进来的）也必须进通讯录。
+  const auto = await until(
+    "组播发现的人合并进通讯录",
+    async () => {
+      const [contacts, live] = await Promise.all([
+        (await fetch("http://127.0.0.1:17965/contacts")).json(),
+        status(17965),
+      ]);
+      const c = contacts.contacts?.find((x) => x.nodeId === sb);
+      const p = live?.online?.find((x) => x.nodeId === sb);
+      return c && p && c.quick === false && c.friend === false && c.incoming === false && c.outgoing === false && c.online === true && c.livePort === p.port ? c : false;
+    },
+    8000,
+  );
+  void auto;
+  log("ok 组播自动发现的人也出现在通讯录里");
+
+  // 合并出来的「附近的人」没有被写进关系记录，但收藏应当从在线表取身份、当场建备注。
+  const autoFav = await fetch("http://127.0.0.1:17965/friend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sb, action: "favorite", on: true }),
+  });
+  const autoFavBody = await autoFav.json();
+  if (!autoFav.ok || !autoFavBody.contact?.favorite) {
+    throw new Error(`在线表合并的人应能收藏，实际 ${autoFav.status} ${JSON.stringify(autoFavBody)}`);
+  }
+  // 收藏是本地偏好，不该发给对端、更不该变成好友。
+  const bAfterAutoFav = await (await fetch("http://127.0.0.1:17966/contacts")).json();
+  if (bAfterAutoFav.contacts?.find((x) => x.nodeId === sa)?.friend) throw new Error("收藏把对端变成了好友");
+  log("ok 在线表合并的人可收藏，且不会变成好友");
+
   const add = await fetch("http://127.0.0.1:17965/peer/add", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -161,6 +193,36 @@ try {
   );
   void quickBoth;
   log("ok 快捷添加双方立刻是 quick，且没有待接受申请");
+
+  // 接收侧只写 quick，绝不回 friend-accept：等一会儿两侧都不会变成好友 / 待处理，也不写历史。
+  await new Promise((r) => setTimeout(r, 900));
+  const [aAfterQuick, cAfterQuick] = await Promise.all([
+    (await fetch("http://127.0.0.1:17965/contacts")).json(),
+    (await fetch("http://127.0.0.1:17968/contacts")).json(),
+  ]);
+  const cOnA = aAfterQuick.contacts?.find((x) => x.nodeId === sc);
+  const aOnC = cAfterQuick.contacts?.find((x) => x.nodeId === sa);
+  const cHistory = await (await fetch(`http://127.0.0.1:17968/messages?peer=${sa}`)).json();
+  if (
+    !cOnA?.quick || !aOnC?.quick ||
+    cOnA?.friend || cOnA?.incoming || cOnA?.outgoing ||
+    aOnC?.friend || aOnC?.incoming || aOnC?.outgoing ||
+    (cHistory.entries ?? []).length > 0
+  ) {
+    throw new Error(`接收 friend-quick 不该回 friend-accept / 产生待处理 / 写历史：A=${JSON.stringify(cOnA)} C=${JSON.stringify(aOnC)} 历史=${JSON.stringify(cHistory.entries)}`);
+  }
+  log("ok 接收 friend-quick 不回 friend-accept、不写待处理、不写对话历史");
+
+  const quickFav = await fetch("http://127.0.0.1:17965/friend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sc, action: "favorite", on: true }),
+  });
+  const quickFavBody = await quickFav.json();
+  if (!quickFav.ok || !quickFavBody.contact?.favorite || quickFavBody.contact?.friend) {
+    throw new Error(`快捷联系人应能收藏且仍非好友，实际 ${quickFav.status} ${JSON.stringify(quickFavBody)}`);
+  }
+  log("ok 快捷联系人可以照常收藏（story 23）");
 
   const quickAgain = await fetch("http://127.0.0.1:17965/friend", {
     method: "POST",
@@ -293,7 +355,10 @@ try {
   log("ok 忽略名单只过滤无关系合并行，不吞已有关系");
 
   const cleared = await fetch("http://127.0.0.1:17965/ignored/clear", { method: "POST" });
-  if (!cleared.ok) throw new Error(`清空忽略名单应 200，实际 ${cleared.status} ${await cleared.text()}`);
+  const clearedBody = await cleared.json();
+  if (!cleared.ok || typeof clearedBody.cleared !== "number" || clearedBody.cleared < 1) {
+    throw new Error(`清空忽略名单应 200 并回报清掉的人数，实际 ${cleared.status} ${JSON.stringify(clearedBody)}`);
+  }
   const restored = await until(
     "清空忽略名单后恢复",
     async () => {
@@ -309,16 +374,27 @@ try {
   void restored;
   log("ok 清空忽略名单后恢复，已有关系行不再标忽略");
 
-  // 忽略名单跨重启：单独一份 X（独立端口 / 独立 state），杀掉后用同一 state 目录重启。
+  // 忽略名单跨重启：单独一份 X（独立端口 / 独立 state），另起一份同组播端口的 Y 作真正在线的人。
   const ghost = "00000000-0000-4000-8000-00000000ffff";
   const X = start("x", 17972, 17971, "戊");
+  const Y = start("y", 17973, 17971, "己");
   const sx = await until("X 起来", async () => (await status(17972))?.nodeId);
+  const sy = await until("Y 起来", async () => (await status(17973))?.nodeId);
+  await until("X 看到 Y（同组播）", seenBy(17972, sy), 15000);
+  await until("Y 看到 X（同组播）", seenBy(17973, sx), 15000);
   const ghostRemove = await fetch("http://127.0.0.1:17972/friend", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ peer: ghost, action: "remove" }),
   });
   if (!ghostRemove.ok) throw new Error(`X 写忽略名单应 200，实际 ${ghostRemove.status}`);
+  // 真正由在线表合并出来的 Y：点「移除」后不能再被合并回来。
+  const yRemove = await fetch("http://127.0.0.1:17972/friend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sy, action: "remove" }),
+  });
+  if (!yRemove.ok) throw new Error(`移除在线的 Y 应 200，实际 ${yRemove.status}`);
   X.kill();
   await until("X 退出", async () => (await status(17972)) === null, 8000);
   await new Promise((r) => setTimeout(r, 300));
@@ -326,7 +402,31 @@ try {
   const sx2 = await until("X 重启", async () => (await status(17972))?.nodeId);
   if (sx2 !== sx) throw new Error(`重启后 nodeId 变了：${sx} → ${sx2}`);
   const persisted = await (await fetch("http://127.0.0.1:17972/ignored")).json();
-  if (!persisted.nodeIds?.includes(ghost)) throw new Error(`忽略名单没跨重启保留：${JSON.stringify(persisted)}`);
+  if (!persisted.nodeIds?.includes(ghost) || !persisted.nodeIds?.includes(sy)) {
+    throw new Error(`忽略名单没跨重启保留：${JSON.stringify(persisted)}`);
+  }
+  // Y 还活着、X 重启后又重新发现了他：仍不能被合并回通讯录，但状态在线表与找人结果照旧。
+  await until("X 重启后重新看到 Y", seenBy(17972, sy), 15000);
+  const stayed = await until(
+    "真正在线的人重启后仍不回来",
+    async () => {
+      const [contacts, live, ignoredList, found] = await Promise.all([
+        (await fetch("http://127.0.0.1:17972/contacts")).json(),
+        status(17972),
+        (await fetch("http://127.0.0.1:17972/ignored")).json(),
+        (await fetch("http://127.0.0.1:17972/tools/find?q=" + encodeURIComponent("己"))).json(),
+      ]);
+      const inContacts = contacts.contacts?.some((x) => x.nodeId === sy);
+      const inOnline = live?.online?.some((x) => x.nodeId === sy);
+      const inIgnored = ignoredList.nodeIds?.includes(sy);
+      const inFind = found.peers?.some((x) => x.nodeId === sy && x.friend === false);
+      return !inContacts && inOnline && inIgnored && inFind ? { contacts, live, ignoredList, found } : false;
+    },
+    8000,
+  );
+  void stayed;
+  log("ok 真在线的人移除后，刷新与重启都不再进通讯录（仍在在线表 / 找人结果里）");
+  Y.kill();
   X2.kill();
   log("ok 忽略名单独立落盘，跨重启保留");
 
