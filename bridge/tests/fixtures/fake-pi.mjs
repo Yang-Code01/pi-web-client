@@ -91,6 +91,7 @@ let settleWaiters = [];
 let bashAborted = false;
 /** Resolver of the turn's pending confirm (#82): answered by `extension_ui_response` or `abort`. */
 let pendingConfirm = null;
+let pendingSelect = null;
 /** The command the stub claims it is about to run, so the approval card has something to show. */
 const CONFIRM_MESSAGE = "rm -rf build/";
 // What the bridge started us with (launch options, #28), plus the PI_WEB_* vars it let through:
@@ -172,6 +173,35 @@ async function turn(text) {
     out({ type: "tool_execution_start", toolCallId: "call-hang", toolName: "bash", args: { command: "npm install" } });
     while (!abortRequested) await sleep(100);
     out({ type: "tool_execution_end", toolCallId: "call-hang", isError: false, result: "ok" });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
+  if (text.startsWith("ASKTAB")) {
+    const callId = `call-ask-tab-${Date.now()}`;
+    const args = {
+      questions: [
+        { id: "q1", header: "标签切换", question: "你要选哪一种？", options: [{ label: "方案甲" }, { label: "方案乙" }] },
+        { id: "q2", header: "问卷验证", question: "第二个选择是什么？", options: [{ label: "答案一" }, { label: "答案二" }] },
+      ],
+    };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: callId, name: "ask_user_question", arguments: args }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: callId, toolName: "ask_user_question", args });
+    for (const [index, question] of args.questions.entries()) {
+      const id = `ask-tab-ui-${index}-${Date.now()}`;
+      await new Promise((resolve) => {
+        pendingSelect = resolve;
+        out({
+          type: "extension_ui_request",
+          id,
+          method: "select",
+          title: `[${question.header}] ${question.question}`,
+          options: [`1. ${question.options[0].label}`, `2. ${question.options[1].label}`],
+        });
+      });
+      pendingSelect = null;
+    }
+    out({ type: "tool_execution_end", toolCallId: callId, toolName: "ask_user_question", isError: false, result: "answered" });
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
@@ -651,6 +681,7 @@ async function handle(cmd) {
       note({ t: "abort", pid: process.pid, queued: steering.length + followUp.length });
       // The turn cannot settle while it waits on a dialog, so abort answers it (pi does this too).
       pendingConfirm?.("aborted");
+      pendingSelect?.(null);
       if (!running) return ok(id, type);
       abortRequested = true;
       await new Promise((r) => settleWaiters.push(r));
@@ -722,6 +753,7 @@ process.stdin.on("data", (chunk) => {
       if (cmd.cancelled) reply = "cancelled";
       else if (cmd.confirmed === true) reply = "approved";
       pendingConfirm?.(reply);
+      if (pendingSelect && (cmd.value !== undefined || cmd.cancelled)) pendingSelect(cmd.cancelled ? null : cmd.value);
       continue;
     }
     void handle(cmd);
