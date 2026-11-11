@@ -8,8 +8,8 @@ export interface Queued {
   peerId: string;
   addr: string;
   port: number;
-  /** 信封类型：`text` 要收据，好友请求/接受不要。 */
-  kind: "text" | "friend-request" | "friend-accept";
+  /** 信封类型：`text` 要收据，好友/快捷控制消息不要。 */
+  kind: "text" | "friend-request" | "friend-accept" | "friend-quick";
   /** text 时是整条 Entry，其余是控制消息体。 */
   payload: unknown;
   at: number;

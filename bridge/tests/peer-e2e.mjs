@@ -138,6 +138,114 @@ try {
   void merged;
   log("ok 在线陌生人进通讯录且关系字段全假");
 
+  // ---- #382：一键快捷添加。quick 与好友正交：双方立刻可聊，但不产生待接受申请、不放开文件。 ----
+  const quickRes = await fetch("http://127.0.0.1:17965/friend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sc, action: "quick" }),
+  });
+  if (!quickRes.ok) throw new Error(`快捷添加应 200，实际 ${quickRes.status} ${await quickRes.text()}`);
+  const quickBoth = await until(
+    "两边都记成 quick（不是好友、也没有待处理）",
+    async () => {
+      const [a, c] = await Promise.all([
+        (await fetch("http://127.0.0.1:17965/contacts")).json(),
+        (await fetch("http://127.0.0.1:17968/contacts")).json(),
+      ]);
+      const onA = a.contacts?.filter((x) => x.nodeId === sc) ?? [];
+      const onC = c.contacts?.filter((x) => x.nodeId === sa) ?? [];
+      const ok = (row) => row?.quick === true && row.friend === false && row.incoming === false && row.outgoing === false;
+      return onA.length === 1 && onC.length === 1 && ok(onA[0]) && ok(onC[0]) ? { onA, onC } : false;
+    },
+    8000,
+  );
+  void quickBoth;
+  log("ok 快捷添加双方立刻是 quick，且没有待接受申请");
+
+  const quickAgain = await fetch("http://127.0.0.1:17965/friend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sc, action: "quick" }),
+  });
+  if (!quickAgain.ok) throw new Error(`重复快捷添加应 200，实际 ${quickAgain.status} ${await quickAgain.text()}`);
+  await new Promise((r) => setTimeout(r, 900));
+  const dedupQuick = await (await fetch("http://127.0.0.1:17965/contacts")).json();
+  if ((dedupQuick.contacts ?? []).filter((x) => x.nodeId === sc).length !== 1) throw new Error("重复快捷添加写出了两行关系");
+  log("ok 重复快捷添加不产生重复关系");
+
+  const quickText = await fetch("http://127.0.0.1:17965/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sc, text: "快捷联系人也能聊" }),
+  });
+  if (!quickText.ok) throw new Error(`quick 发文字应成功，实际 ${quickText.status} ${await quickText.text()}`);
+  await until(
+    "C 收到 quick 文字",
+    async () => {
+      const body = await (await fetch(`http://127.0.0.1:17968/messages?peer=${sa}`)).json();
+      return body.entries?.some((e) => e.kind === "text" && e.text === "快捷联系人也能聊") ? body : false;
+    },
+    8000,
+  );
+  await until(
+    "A 拿到 quick 文字的 delivered 回执",
+    async () => {
+      const body = await (await fetch(`http://127.0.0.1:17965/messages?peer=${sc}`)).json();
+      return body.entries?.some((e) => e.kind === "receipt" && e.ack?.status === "delivered") ? body : false;
+    },
+    8000,
+  );
+  log("ok quick 文字送到对端且有送达回执");
+
+  // 文件三道闸仍然只认 friend：本机发不出去，对端也不会为 quick 的人写盘。
+  const quickProbe = path.join(ROOT, "quick-probe.bin");
+  fs.writeFileSync(quickProbe, Buffer.from("quick"));
+  const quickFile = await fetch("http://127.0.0.1:17965/files/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: sc, path: quickProbe }),
+  });
+  if (quickFile.status !== 403) throw new Error(`quick 发文件应 403，实际 ${quickFile.status} ${await quickFile.text()}`);
+  const quickBegin = await fetch("http://127.0.0.1:17968/peer/file/begin", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      from: { nodeId: sa, nickname: "甲", hostname: os.hostname(), port: 17965 },
+      messageId: "00000000-0000-4000-8000-0000000000ff",
+      name: "quick.bin",
+      size: 5,
+      sha256: "0".repeat(64),
+    }),
+  });
+  const quickBeginBody = await quickBegin.json();
+  if (quickBegin.status !== 403 || quickBeginBody.retryable !== false) {
+    throw new Error(`quick 收件端应 403 且不可重试，实际 ${quickBegin.status} ${JSON.stringify(quickBeginBody)}`);
+  }
+  log("ok quick 不放开文件：发出去 403，收件端拒写 403");
+
+  const offlineQuick = await fetch("http://127.0.0.1:17965/friend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ peer: "not-online", action: "quick" }),
+  });
+  const offlineQuickBody = await offlineQuick.json();
+  if (offlineQuick.status !== 400 || offlineQuickBody.error !== "对方已离线，等他上线再试") {
+    throw new Error(`离线快捷添加应 400 明确拒绝，实际 ${offlineQuick.status} ${JSON.stringify(offlineQuickBody)}`);
+  }
+  log("ok 离线快捷添加被接口拒绝，不进补投");
+
+  // 混合版本：旧版收到不认识的 kind 回 400 + retryable:false，新版 Outbox 直接丢、不无限补投。
+  const oldKind = await fetch("http://127.0.0.1:17968/peer/inbox", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ proto: 1, kind: "friend-quick-from-old", control: { from: { nodeId: sa, port: 17965 } } }),
+  });
+  const oldKindBody = await oldKind.json();
+  if (oldKind.status !== 400 || oldKindBody.error !== "unknown kind" || oldKindBody.retryable !== false) {
+    throw new Error(`未知控制消息应 400 且不可重试，实际 ${oldKind.status} ${JSON.stringify(oldKindBody)}`);
+  }
+  log("ok 旧版未知控制消息 400 不可重试（只丢不补投）");
+
   // ---- 隐身（D99）：隐身的 peer 一条 announce 都不许发，也不许透露身份。 ----
   // 嗅探器在 D 起来之后才绑：启动时那一包已经过去了，这里只看 /peer/refresh 触发的那一包
   // （定时器和 /peer/refresh 走的是同一个 announce()）。

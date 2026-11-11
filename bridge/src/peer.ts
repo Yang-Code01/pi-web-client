@@ -181,7 +181,7 @@ export class PeerHost {
     return this.request("GET", "/contacts");
   }
 
-  friend(peer: string, action: "request" | "accept" | "favorite" | "remove", on?: boolean): Promise<unknown> {
+  friend(peer: string, action: "request" | "quick" | "accept" | "favorite" | "remove", on?: boolean): Promise<unknown> {
     return this.request("POST", "/friend", { peer, action, on });
   }
 
