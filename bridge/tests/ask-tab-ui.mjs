@@ -124,6 +124,50 @@ try {
   await beginQuestionnaire("ASKTAB second", true);
   check("a manual tab choice is retained after answering", await selected("needs") === "true");
   check("page has no active questionnaire after submit", (await page.locator(".queue .ask-slot").count()) === 0);
+
+  await page.locator('[data-exec-tab="exec"]').click();
+  const badgeTurn = frames.length;
+  socket.send(JSON.stringify({ type: "prompt", sessionId, text: "ASKTAB_BADGE_PAIR" }));
+  await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"]')?.getAttribute("aria-selected") === "true", null, { timeout: 20000 });
+  await page.locator('[data-exec-tab="exec"]').click();
+  const badge = page.locator('[data-exec-tab="needs"] .pip');
+  await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"] .pip')?.textContent === "3", null, { timeout: 10000 });
+  check("a three-question questionnaire shows badge 3", await badge.textContent() === "3");
+  check("badge title and accessible name describe three pending questions", await badge.getAttribute("title") === "3 道题待回答" && await badge.getAttribute("aria-label") === "3 道题待回答");
+  await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"]')?.getAttribute("aria-selected") === "true", null, { timeout: 10000 });
+  await page.locator('[data-exec-tab="exec"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"] .pip')?.textContent === "6", null, { timeout: 10000 });
+  check("a second three-question questionnaire raises the badge to 6", await badge.textContent() === "6");
+  await page.locator('[data-exec-tab="needs"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"] .pip') === null, null, { timeout: 5000 });
+  check("badge disappears while needs is selected", (await page.locator('[data-exec-tab="needs"] .pip').count()) === 0);
+
+  const answerBadgeQuestionnaire = async (name, nextName = "") => {
+    await page.waitForFunction((prefix) => document.querySelector(".queue .ask-tab")?.textContent?.startsWith(prefix), name, { timeout: 10000 });
+    const tabs = page.locator(".queue .ask-tab");
+    const count = await tabs.count();
+    for (let i = 0; i < count; i += 1) {
+      await tabs.nth(i).click();
+      await page.locator(".queue .ask-opt").first().click();
+    }
+    await page.locator(".queue .ask-foot .btn.primary").click();
+    await page.waitForFunction(({ current, next }) => {
+      const labels = [...document.querySelectorAll(".queue .ask-tab")].map((tab) => tab.textContent ?? "");
+      if (labels.some((label) => label.startsWith(current))) return false;
+      return next ? labels.some((label) => label.startsWith(next)) : document.querySelectorAll(".queue .ask-slot").length === 0;
+    }, { current: name, next: nextName }, { timeout: 10000 });
+  };
+  await answerBadgeQuestionnaire("第一份 1", "第二份 1");
+  await answerBadgeQuestionnaire("第二份 1");
+  await waitTurnEnd(badgeTurn, "badge pair");
+
+  await page.locator('[data-exec-tab="exec"]').click();
+  socket.send(JSON.stringify({ type: "prompt", sessionId, text: "ASKTAB_BADGE_TEN" }));
+  await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"]')?.getAttribute("aria-selected") === "true", null, { timeout: 20000 });
+  await page.locator('[data-exec-tab="exec"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"] .pip')?.textContent === "9+", null, { timeout: 10000 });
+  check("a ten-question questionnaire is capped at 9+", await page.locator('[data-exec-tab="needs"] .pip').textContent() === "9+");
+  check("capped badge keeps the full question count in its accessible name", await page.locator('[data-exec-tab="needs"] .pip').getAttribute("aria-label") === "10 道题待回答");
   console.log("All ask-tab UI checks passed.");
 } finally {
   if (browser) await browser.close();
