@@ -72,6 +72,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return node;
 }
 
+/** #375：Anthropic 拒绝被改动的 thinking 块时的报错。 */
+const THINKING_MODIFIED_RE = /`?(?:redacted_)?thinking`? or `?redacted_thinking`? blocks .*cannot be modified/i;
+
 /** Tools whose summary is a shell command — those get coloured. */
 const SHELL_TOOLS = new Set(["bash", "shell", "powershell", "pwsh", "run_command", "exec", "execute", "cmd", "sh"]);
 
@@ -1478,6 +1481,16 @@ export class ChatView {
       // and the reason (bad key, rate limit, context overflow…) is invisible.
       if (item.stopReason === "error") {
         wrap.append(el("div", "msg-error", tr("模型调用出错：{p1}", { p1: item.errorMessage?.trim() || tr("pi 没有给出原因") })));
+        // #375：这条 400 几乎都是 billion-context 压缩拆开了签名 thinking，重试不会好；说清怎么办。
+        if (THINKING_MODIFIED_RE.test(item.errorMessage ?? "")) {
+          wrap.append(
+            el(
+              "div",
+              "msg-error-hint",
+              tr("装了 billion-context 的话，这是它的已知问题：压缩拆开了带签名的思考块，重试不会好。换个模型就能接着聊；到「设置 → 子代理 → acp_delegate」点「应用绕法」可以避免以后再出现。"),
+            ),
+          );
+        }
         this.onFail?.({ id: item.id, tool: "model", cmd: item.modelName ?? item.model ?? "", out: item.errorMessage ?? "", at: item.ts });
       } else if (item.stopReason === "aborted") {
         // 用户按停止也算一次「没跑完」：进账本但折叠在「已中断」里，不计待修（D164）。

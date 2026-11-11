@@ -2393,11 +2393,18 @@ export class App {
           exists: Boolean(msg.exists),
           error: msg.error == null ? null : String(msg.error),
           config: (msg.config ?? { enabled: null, maxDepth: null, maxConcurrent: null, thinkingLevel: null }) as AcpDelegateView["config"],
+          neverPreserveRecentTools: Array.isArray(msg.neverPreserveRecentTools) ? msg.neverPreserveRecentTools.map(String) : null,
         };
         this.subagentsAcpLoadError = null;
         this.subagentsAcpSaving = false;
         this.subagentsAcpSaveError = null;
-        if (msg.saved) this.flashSettings(tr("acp_delegate 已保存（写的是 billion-context 的配置文件，对新会话生效）"));
+        if (msg.saved === "thinkingFix") {
+          this.flashSettings(
+            this.subagentsAcp.neverPreserveRecentTools?.length === 0
+              ? tr("绕法已应用：下一次压缩起生效，不用重启")
+              : tr("绕法已撤销，回到 billion-context 的默认"),
+          );
+        } else if (msg.saved) this.flashSettings(tr("acp_delegate 已保存（写的是 billion-context 的配置文件，对新会话生效）"));
         if (this.sheetKind === "settings" && this.settingsTab === "subagents") this.paintSettings();
         break;
       }
@@ -10693,6 +10700,12 @@ export class App {
           this.subagentsAcpSaving = true;
           this.subagentsAcpSaveError = null;
           this.act(() => this.socket.send({ type: "subagents.acp.set", patch }));
+          this.paintSettings();
+        },
+        onThinkingFix: (apply: boolean) => {
+          this.subagentsAcpSaving = true;
+          this.subagentsAcpSaveError = null;
+          this.act(() => this.socket.send({ type: "subagents.acp.thinkingFix", apply }));
           this.paintSettings();
         },
         onReload: () => this.requestSubagentsAcp(),
