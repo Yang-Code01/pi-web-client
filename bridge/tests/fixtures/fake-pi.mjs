@@ -41,6 +41,11 @@ const fail = (id, command, error) => out({ type: "response", command, success: f
 /** #86: this stub owns a pretend session file when --session-dir is passed, so a test can watch
  * `new_session` move it and the bridge delete the old one. */
 const ARGV = process.argv.slice(2);
+/** `pi list`：测试要让桥认为某个包「已装」（/api/deps）时设 FAKE_PI_LIST=原样输出，打印完就退。 */
+if (ARGV[0] === "list" && process.env.FAKE_PI_LIST !== undefined) {
+  process.stdout.write(process.env.FAKE_PI_LIST);
+  process.exit(0);
+}
 const argOf = (name) => {
   const i = ARGV.indexOf(name);
   return i >= 0 ? ARGV[i + 1] ?? "" : "";

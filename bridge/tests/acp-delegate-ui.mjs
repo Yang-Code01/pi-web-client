@@ -14,6 +14,7 @@ import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { WebSocket } from "ws";
 import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
 
@@ -56,6 +57,8 @@ const env = {
   PI_BIN: FAKE_PI,
   FAKE_PI_LOG: path.join(ROOT, "fake-pi.jsonl"),
   BILI_CONFIG_FILE: CFG,
+  // 让 /api/deps 认为 billion-context 已装：没装时整片灰掉（那条路径归 deps-ui.mjs 管）。
+  FAKE_PI_LIST: "User packages:\n  npm:billion-context\n",
 };
 execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
 const bridge = spawn(process.execPath, [DIST], { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -85,17 +88,32 @@ try {
   await ctx.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
   const page = await ctx.newPage();
   page.on("pageerror", (e) => console.error("  pageerror:", e.message));
-  await page.goto(BASE);
-  await page.waitForSelector(".app", { timeout: 20000 });
-
-  // 没有会话时 composer 不存在；先开一个（桩 pi，不花模型调用），再用 `/settings` 打开设置。
-  await page.locator('[data-act="new"]').first().click();
-  await page.waitForSelector(".new-sheet", { timeout: 20000 });
-  await page.locator(".new-sheet .dir-foot .btn.primary").click();
-  await page.waitForSelector(".composer-input textarea", { timeout: 40000 });
-  await page.locator(".composer-input textarea").fill("/settings");
-  await page.locator(".composer-input textarea").press("Enter");
-  await page.waitForSelector(".settings-sheet", { timeout: 20000 });
+  // 设置页要一个会话才有 composer：经 WS 建一个（桩 pi，不花模型调用），再按它的地址打开网页。
+  // （原先点「新建」再点 dir-foot 主按钮的流程在新建面板改版后走不通了。）
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie: `${cookieName}=${cookieValue}` } });
+  const seen = [];
+  ws.on("message", (b) => seen.push(JSON.parse(b.toString())));
+  await new Promise((r, j) => {
+    ws.on("open", r);
+    ws.on("error", j);
+  });
+  const until = async (pred, ms, what) => {
+    for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) {
+      const hit = pred();
+      if (hit) return hit;
+    }
+    throw new Error(`等不到 ${what}`);
+  };
+  await until(() => seen.some((m) => m.type === "hello"), 10000, "hello");
+  fs.mkdirSync(path.join(ROOT, "project"), { recursive: true });
+  ws.send(JSON.stringify({ type: "create", cwd: path.join(ROOT, "project"), name: "acp-delegate-ui" }));
+  const created = await until(() => seen.find((m) => m.type === "session" && m.sessionId), 20000, "create");
+  ws.close();
+  await page.goto(`${BASE}/#/s/${created.sessionId}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector(".composer textarea", { timeout: 20000 });
+  await page.locator(".composer textarea").fill("/settings");
+  await page.locator(".composer textarea").press("Enter");
+  await page.waitForSelector(".st-console", { timeout: 20000 });
 
   await page.locator(".st-nav__item", { hasText: "子代理" }).click();
   await page.waitForSelector(".subagents-sheet", { timeout: 20000 });
@@ -199,5 +217,10 @@ if (failed) {
   process.exitCode = 1;
 } else {
   console.log("\n全部通过");
-  fs.rmSync(ROOT, { recursive: true, force: true });
+  // 桥是刚 kill 的，它的桩 pi 子进程可能还占着会话目录（Windows 会 EPERM）：等一下、删不掉就留给系统临时目录。
+  try {
+    fs.rmSync(ROOT, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (err) {
+    console.log(`（临时目录没删掉：${err.code ?? err.message}）`);
+  }
 }
