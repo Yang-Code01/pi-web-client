@@ -1600,13 +1600,15 @@ if (s.idleFor() > IDLE_GC_MS) s.sleep();   // 2 小时
 
 ## D124 随手问：一个不进列表的会话，清空用同进程 `new_session`（`#86`）
 
+> **部分被修订（D233）：** 下面「三条豁免」里的休眠一条已经不成立 —— 随手问现在**默认永不自动休眠**（`scratchIdleMs = 0`），后台回收同样豁免；结束它只有一条路：用户手动按「暂停」。一小时这个数值只在有人显式把 `scratchIdleMs` 填成正数时才回来。其余决定（不进列表、只读工具、同进程清空、重启清空）不变。
+
 **决定：** 顶栏加 `💭 随手问`，打开一个 dialog；它背后是普通 pi 会话，但被一条 `scratch` 标记当成另类处理：
 
 - **不进任何列表**：app 启动时带 `--session-dir` 指到 `state/scratch/sessions`，那个目录不在 pi 的会话根里，扫不到；`list()` 再滤一次（广播的 `session.state` 也不会把它塞回侧栏）。
 - **懒建**：第一次点开才 spawn，`scratch.open` 幂等（没有就建、睡过就唤醒、有就复用）。
 - **清空 = 同进程 `new_session`**：pi 的 RPC 有这个命令，进程不重启，上下文和 token 归零，旧文件当场删掉。桥侧 id 不变（页面所有东西都以它为键），只把 `state.file` 换成 pi 报的新路径。
 - **只读**：`--tools read,grep,find,ls,web_search,fetch_content,source_check,get_search_content`（联网那几个由 `pi-web-access` 扩展提供；实测 pi 对 `--tools` 里不存在的名字只当没写，不会起不来，所以没装扩展时也能降级），并把审批闸的 `/allow` 模式写成 `readonly`（闸那边 `readonly` 是白名单，不是「什么都放行」；联网这组要显式加进白名单）。cwd 是中性空目录。
-- **三条豁免**：休眠用自己的一小时（`lifecycle.json` 的 `scratchIdleMs` / `PI_WEB_SCRATCH_IDLE_MS`）；水位永不收它；`maybeAutoCompact` 跳过它，只发提醒。
+- **三条豁免**：休眠用自己的一小时（`lifecycle.json` 的 `scratchIdleMs` / `PI_WEB_SCRATCH_IDLE_MS`；**已由 D233 改成默认 0 = 永不自动睡**）；水位永不收它；`maybeAutoCompact` 跳过它，只发提醒。
 - **提醒线不是固定百分比**：pi 在 `contextTokens > contextWindow - reserveTokens`（默认 16384）处自动压缩，200k 窗口是 92%、32k 只有 50%。所以提醒按 `(contextWindow - reserveTokens)` 的 75% / 92% 算。
 - **落地范围**：`state/scratch/` 整个目录由桥启动时（`ensureStateDirs()` 之后、任何 spawn 之前）无条件清空重建，退出时再清一次；`PI_WEB_STATE` 已经把多开的第二份桥隔开，所以不需要实例 id 或 pid 文件。
 
@@ -4033,3 +4035,27 @@ D
 **代价 / 可改：** 展开状态不再被记住（关掉就是关掉）——D228 那个按「名字 + 参数全文」记忆的 `execNowExpanded` 一并删掉。80 字符阈值保留；面板宽度 `min(760px, 100%)`、`max-height: min(80vh, 720px)` 可改。焦点循环写死了两个按钮，以后正文里要是出现可聚焦内容（链接、输入框）得同步改那里。
 
 **验证：** `npm run test:exec-panel:ui` 的 NOWARGS 场景（在途 `ask_user_question`，参数是 24 次重复的长文本）：默认一行且溢出、行是 `button` + `aria-haspopup=dialog` + `⤢`、没有 `.exec-now-args`；点开后 `.argdialog-text` 全文 >120 字，期间「现在」卡高度不变；`✕` 与 Esc 都能关掉且面板还在。BGCHILD 场景里点一条子代理步骤，对话框里出现「参数」和该步骤的参数原文，栏里不再有 `.exec-child-step-detail`。（fixture 里子会话那条 `child_lookup` 只有 toolCall、没有 toolResult，所以「结果摘要」这一块没有 UI 断言；往 fixture 里补 toolResult 会把子会话的 parent 链改成冲突分支、计划更新就收不到了，不值得。）技能行的「技能说明」由 `web/tests/exec-view-unit.mjs` 的单元断言覆盖（`description` / `why` / `path` 拼成 `note`，空技能不带 `note`）。
+
+## D233 随手问默认常驻：不自动休眠、不被回收，结束只能由用户按「暂停」（`#365`）
+
+**问题：** 用户报「随手问没有长驻，还是会被后台杀掉」——开着隔一段时间再问，中间冒出「找不到这个会话」，字发不出去。根因不是休眠：GC 每 10 分钟扫一次，过了 `IDLE_EVICT_MS` 就 `sessions.delete(id)`；而离开主会话视图时 `unsubscribe` 已经把 `isWatched` 清掉，随手问的文件又不在 pi 的会话根里（`known()` 不认它），于是「对象还在内存里」并不等于「活得下来」。删掉之后 `scratchSession()` 只会新建一条空会话，旧转录留在磁盘上再也接不回来。
+
+**决定：**
+
+- **默认不睡**：`DEFAULT_SCRATCH_IDLE_MS = 0`，0 明确表示「永不自动休眠」。配置层为此加了 `nonNegative()`（`positive()` 把 0 当没填），闲置 tick 里 `idleMs > 0 && …` 才睡。`lifecycle.json` 的 `scratchIdleMs` 与 `PI_WEB_SCRATCH_IDLE_MS` 都留着，填正数恢复旧行为，不上面板。
+- **回收豁免**：`startGc()` 里 `if (s.state.scratch) continue;`，连「已休眠、对象还在」的那份也不删——它是这条转录在桥里唯一的入口。
+- **「全部休眠」跳过它**：`sleepAll()` 同样的判断，回执里既不把它列成已睡、也不列成跳过。
+- **结束只有一条路**：dialog 头部的「暂停 / 开始」toggle，服务端 `state.paused` 是唯一真相（两个标签页、后开的标签页都以它为准）。暂停 = 关 pi、保留转录与文件、**不开启 tail**（不再把冻结的转录读活）；开始 = 唤醒**同一个**会话文件。暂停态下 `openLive()` 直接拒绝，所以打开 dialog、自动重开都拉不起来；跑着一轮时按钮禁用（「这一轮跑完才能暂停」）。暂停中「清空」只清内存、删文件，仍然保持暂停。
+- **不做落盘指针**：不写「上次随手问是哪个 id」。桥重启照样 `resetScratchDir()` 清空，已经失联的旧转录不救——界面上写明「桥重启会清空随手问」，让失忆有解释而不是莫名其妙。
+- **失败一律可见**（`#368`）：失效时那句话留在输入框并排队，重开成功后自动发到新会话；桥的 404 变成会话顶部一条可关闭横幅 +「重新接管」，不再当 notice 落进聊天记录；主会话与随手问的横幅各管各的。
+
+**为什么：**
+
+- 把一小时调大只是把问题推后：用户要的是「它一直在，直到我说停」，不是「它撑得久一点」。
+- 指针文件只解决「找回旧转录」，不解决「别丢」；随手问的价值是「现在还能接着问」，接回一条三天前的转录反而像在假装记得。
+- 暂停必须独立于休眠：两者都关进程，但休眠是系统判定、暂停是用户意图——暂停要挡住**所有**自动唤醒路径，否则「我按了暂停它还偷偷起来」比不暂停更糟。
+- 状态放在服务端而不是页面：多标签、刷新、重连之后页面各记一套，只有桥里的 `paused` 能一句话说清。
+
+**代价 / 可改：** 一个常驻 pi 进程（省掉冷启，占着内存）；`state.scratch` 的对象在桥的生命周期内不再回收；暂停态不持久化（重启后是全新随手问，与「重启即清空」一致）；默认 0 意味着忘了关的随手问会一直在，这是有意的。
+
+**验证：** `npm run test:scratch`（桩 pi，A–E 组：默认不睡、正数阈值恢复、休眠后复用同一 id、GC 不驱逐、重启清空）、`npm run test:scratch:ui`（真 Chromium：暂停/开始闭环、暂停只读不唤醒、清空保持暂停、404 自动重开、主会话与随手问横幅互不影响、中/英/日三语）、`npm run typecheck`（含 i18n 键检查）。
