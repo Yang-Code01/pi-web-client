@@ -6,6 +6,17 @@
 <!-- 写到 2e5fe3c · 2026-11-10 -->
 <!-- 下一批从这里往后读：git log --first-parent 2e5fe3c..origin/main；只读已合进 main 的，没合的不写。 -->
 
+## 未发布 · 登录 Radius 顺手把 Radius MCP 接上
+
+### 新增
+
+- 登录 Radius 成功后，登录面板里多一句「要把 Radius MCP 写进 mcp.json 吗？」：点`配上`就写进去（服务名与内容由 pi 自己算），点`不用`就不动 D229
+
+### 设计决定
+
+- 页面只说「要」：写什么由桥重新调 pi 的 `planRadiusMcpServer()` 算，配置文件走 pi 的 `addMcpServerConfig()`，页面不传 url / 名字 / auth D229
+- 正在跑的会话不会重读 mcp.json（pi 只在启动时读），所以提示里写明要「重新加载」 D229
+
 ## 未发布 · macOS 上 `npm install` 装不起来
 
 ### 修复

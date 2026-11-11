@@ -166,6 +166,39 @@ export function cancel(loginId: string): boolean {
   return true;
 }
 
+/**
+ * D229 / pi 1.5.1：登录 Radius 之后，把 Radius MCP 接到这份登录上。
+ *
+ * 终端里 `/login radius` 成功后会展一个 `Configure Radius MCP in <mcp.json>?`（`offerRadiusMcpServer`
+ * → `planRadiusMcpServer`），网页这边同样问，只是以一条提示出现在登录面板里 —— 写文件的判断与
+ * 内容都用 pi 自己的两个函数，桥不自己拼 mcp.json，也不从页面收配置。
+ */
+export const RADIUS_PROVIDER = "radius";
+
+export interface RadiusMcpPlan {
+  /** 要写的 mcp.json（pi 的全局那份）。 */
+  mcpPath: string;
+  /** 服务名（`radius` / `radius-mcp`…），由 pi 按现有命名空间挑的。 */
+  name: string;
+}
+
+/** 要不要问：全局 mcp.json 里已经有一个用这份登录的 Radius 服务时 pi 返回 undefined。 */
+export async function radiusMcpPlan(cli: string, cwd: string): Promise<RadiusMcpPlan | null> {
+  const mod = await piModule(cli, "core/radius-mcp.js");
+  const plan = mod.planRadiusMcpServer(RADIUS_PROVIDER, agentDir(), cwd) as { mcpPath: string; name: string; config: unknown } | undefined;
+  return plan ? { mcpPath: plan.mcpPath, name: plan.name } : null;
+}
+
+/** 用户点了「配上」：重新解一遍计划（页面不参与内容），再交给 pi 的 `addMcpServerConfig()`。 */
+export async function addRadiusMcp(cli: string, cwd: string): Promise<RadiusMcpPlan> {
+  const mod = await piModule(cli, "core/radius-mcp.js");
+  const plan = mod.planRadiusMcpServer(RADIUS_PROVIDER, agentDir(), cwd) as { mcpPath: string; name: string; config: unknown } | undefined;
+  if (!plan) throw new Error("全局 mcp.json 里已经有一个用这份登录的 Radius 服务了");
+  const mcp = await piModule(cli, "extensions/mcp/config.js");
+  mcp.addMcpServerConfig(plan.mcpPath, plan.name, plan.config);
+  return { mcpPath: plan.mcpPath, name: plan.name };
+}
+
 export async function logout(cli: string, provider: string): Promise<void> {
   const rt = await runtime(cli);
   await rt.logout(provider);

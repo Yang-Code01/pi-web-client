@@ -3955,3 +3955,16 @@ D
 **代价：** `piCandidates()` 多了一个可选入参（`PiProbe`），测试可以喂假环境，不用真 fork npm、真读 bundle。POSIX 上 `bin/node_modules` 那条候选去掉了（本来就只在便携版 Windows 有意义）。
 
 **验证：** `npm run test:pi`（POSIX 前缀、nvm 多版本、`npm root -g` 不重复拼、软链启动器、`pi.cmd` 里的路径、`PI_BIN` 优先、`readVersion` 上溯三层）；本机（macOS + nvm）`resolvePi()` 由抛异常变成 `1.5.2`；`node scripts/bootstrap.mjs --check` 从「找不到 pi」变成「✓ pi 1.5.2」；`tsc -p bridge/tsconfig.json --noEmit` 通过。
+## D229 登录 Radius 之后问一句要不要把 Radius MCP 接上（跟终端一样，写什么由桥算）
+
+**问题：** pi 1.5.1 起，`/login radius` 与 `pi auth login radius` 成功之后还会问一句 `Configure Radius MCP in <mcp.json>?`，答「是」就把 Radius 网关的 MCP 服务写进全局 `mcp.json`、`auth` 绑到这份登录 —— 也就是说登录 Radius 顺带把 Radius 的 MCP 工具也接上了。网页的登录走的是 `ModelRuntime.login()`（`bridge/src/pilogin.ts`），登录本身没问题，但这一段没有，于是同一台机器上终端登录过的人有 Radius MCP，只在网页登录的人没有，而且看不出来差在哪。
+
+**决定：**
+
+- **问，不替用户决定。** 登录成功（`ok`）之后，桥用 pi 的 `planRadiusMcpServer()` 算一遍：有计划才在登录面板里多一张卡「要把 Radius MCP 写进 <mcp.json> 吗？服务名 <name>」，`配上` / `不用` 两颗钮。终端那边也是问一句，网页不该更自动。
+- **写什么由桥算，页面只说「要」。** 页面发的是 `{type:"mcp.radius.add"}`，桥重新调一次 `planRadiusMcpServer()` 再交给 pi 的 `addMcpServerConfig()` 写盘 —— 页面不传 url / 名字 / auth，跟 `mcp.toggle` 那条路同一个原则（D81 的写入口径）。写盘走 `writeLock("mcp:global")`，和 `pi mcp add` 互斥。
+- **不新增协议面。** 复用登录面板：`auth.radiusMcp` 只是登录事件之后的一帧消息，`mcp.radius.added` 是一帧回执；两者都是可选帧，旧桥不发就没有卡片，旧页面不认识就忽略。
+
+**代价：** 正在跑的 pi 进程不会重读 `mcp.json`（它只在启动时读），所以写完的提示里写明「正在跑的会话要『重新加载』」—— 网页不去替用户重启一堆会话。`planRadiusMcpServer()` 的判据是「全局 mcp.json 里有没有一个用这份登录的 Radius 服务」：已经有就什么都不问（那是终端那边配好的），有别的登录的就把 `auth` 改成现在这份、不新增一个服务。
+
+**验证：** `npm run test:radius`（`bridge/tests/radius-mcp.mjs`，真 pi 的 radius-mcp / mcp 模块：空配置时计划落在全局 mcp.json、名字是 `radius`；写出来 `url` 以 `/mcp` 结尾、`auth.provider === "radius"`、`oauth` 被去掉；写完就不再问；`radius` 这个名字被别人的服务占了就换 `radius-mcp…` 且不覆盖人家；已经有一个别的登录的 Radius 服务时改 `auth` 而不新增）；`npm run probe:radius`（真 Chromium + 桩桥 11 项：登录成功后出现那张卡且写着路径与服务名、点「配上」发的 `mcp.radius.add` 带的是当前会话目录、回执后卡片收起并提示已写入、点「不用」收起且不会第二次发、控制台无报错）；`npm run typecheck`（i18n 2205 键 × 3 语言）干净；截图 `.scratch/radius-mcp/shots/`。

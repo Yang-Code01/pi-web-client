@@ -2295,4 +2295,11 @@ export const en: Dict = {
   "版本": "Version",
   "点一下复制": "Click to copy",
   "⚙ 关不掉：这张表靠它进来": "⚙ Can't be hidden: it's the way into this sheet",
+  "要把 Radius MCP 写进 {p1} 吗？服务名 {p2}。写了以后新会话起来就会连它。":
+    "Add the Radius MCP server to {p1}? Server name: {p2}. New sessions will connect to it.",
+  "配上": "Add it",
+  "已把 Radius MCP 写进 mcp.json（{p1}）。新会话起来就会连它，正在跑的会话要「重新加载」。":
+    "Wrote the Radius MCP server to mcp.json ({p1}). New sessions connect to it; running sessions need a reload.",
+  "写 mcp.json 失败：{p1}": "Could not write mcp.json: {p1}",
+  "不用": "Not now",
 };

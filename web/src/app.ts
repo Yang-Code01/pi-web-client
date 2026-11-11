@@ -478,7 +478,7 @@ export class App {
   private piChecking = false;
   private piUpdRun: "running" | "ok" | "fail" | null = null;
   private authFilter = "";
-  private login: { loginId: string | null; provider: string; method: string; events: AuthEventView[]; prompt: { promptId: string; prompt: AuthPromptView } | null; result: string | null; ok: boolean } | null = null;
+  private login: { loginId: string | null; provider: string; method: string; events: AuthEventView[]; prompt: { promptId: string; prompt: AuthPromptView } | null; result: string | null; ok: boolean; radiusMcp?: { mcpPath: string; name: string } | null } | null = null;
   private afterOpen: { id: string; text: string } | null = null;
   /** Shells the bridge can open (term.list), for the ＋ menu (#23). */
   private termShells: { id: string; label: string }[] = [];
@@ -2309,6 +2309,19 @@ export class App {
           this.login.ok = Boolean(msg.ok);
           this.login.result = msg.ok ? tr("已登录 {p1}，凭据由 pi 存进 auth.json。正在运行的会话「重新加载」后用上新凭据。", { p1: msg.provider }) : tr("没有登录成功：{p1}", { p1: msg.error ?? "未知原因" });
         } else if (!msg.ok && msg.error) this.flashSettings(String(msg.error), true);
+        this.paintLoginIfOpen();
+        break;
+      // D229 / pi 1.5.1：登录 Radius 之后问一句要不要把 Radius MCP 接上（终端里也会问）。
+      case "auth.radiusMcp":
+        if (this.login && this.login.loginId === msg.loginId) this.login.radiusMcp = { mcpPath: String(msg.mcpPath ?? ""), name: String(msg.name ?? "") };
+        this.paintLoginIfOpen();
+        break;
+      case "mcp.radius.added":
+        if (msg.error) this.flashSettings(tr("写 mcp.json 失败：{p1}", { p1: String(msg.error) }), true);
+        else {
+          if (this.login) this.login.radiusMcp = null;
+          this.flashSettings(tr("已把 Radius MCP 写进 mcp.json（{p1}）。新会话起来就会连它，正在跑的会话要「重新加载」。", { p1: String(msg.name ?? "radius") }));
+        }
         this.paintLoginIfOpen();
         break;
       case "settings.error":
@@ -12500,6 +12513,26 @@ export class App {
         box.append(form);
       }
       if (run.result) box.append(el("div", `login-result${run.ok ? "" : " bad"}`, run.result));
+      // D229 / pi 1.5.1: 登录 Radius 之后问一句要不要把 Radius MCP 接上（终端里 /login radius 也问）。
+      const radius = run.radiusMcp;
+      if (radius && run.ok) {
+        const card = el("div", "login-prompt");
+        card.append(el("div", "", tr("要把 Radius MCP 写进 {p1} 吗？服务名 {p2}。写了以后新会话起来就会连它。", { p1: radius.mcpPath, p2: radius.name })));
+        const yes = el("button", "btn primary", tr("配上")) as HTMLButtonElement;
+        yes.onclick = () => {
+          yes.disabled = true;
+          this.socket.send({ type: "mcp.radius.add", cwd: this.session?.cwd ?? "" });
+        };
+        const no = el("button", "btn ghost", tr("不用")) as HTMLButtonElement;
+        no.onclick = () => {
+          if (this.login) this.login.radiusMcp = null;
+          this.paintLoginIfOpen();
+        };
+        const row = el("div", "settings-trust-opts");
+        row.append(yes, no);
+        card.append(row);
+        box.append(card);
+      }
       const foot = el("div", "settings-foot");
       if (!run.result) {
         const cancel = el("button", "btn ghost", tr("取消登录")) as HTMLButtonElement;

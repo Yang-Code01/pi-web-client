@@ -74,7 +74,7 @@ import { deleteRule, markReviewed, readRules, setRule } from "./rules.ts";
 import { mcpAddRequest, newer, searchMcp, searchPackages, setIndexListener, type McpInstallOption } from "./market.ts";
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
 import { createWriteLock } from "./writelock.ts";
-import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
+import { addRadiusMcp, answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider, RADIUS_PROVIDER, radiusMcpPlan } from "./pilogin.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { handleSysmanage } from "./sysmanage.ts";
 import { piLatest } from "./piupdate.ts";
@@ -2872,6 +2872,15 @@ async function main(): Promise<void> {
                   send({ type: "auth.providers", providers: await listProviders(pi.cli) });
                   // New credentials can make new models available: refresh everyone's catalog.
                   refreshCatalog(true);
+                  // D229 / pi 1.5.1: 登录 Radius 之后顺手把 Radius MCP 接上（终端里也会问这一句）。
+                  if (provider === RADIUS_PROVIDER) {
+                    try {
+                      const plan = await radiusMcpPlan(pi.cli, String(msg.cwd ?? "") || process.cwd());
+                      if (plan) send({ type: "auth.radiusMcp", loginId, provider, ...plan });
+                    } catch (err: any) {
+                      log(`radius mcp plan: ${String(err?.message ?? err)}`);
+                    }
+                  }
                 })
                 .catch((err: any) => {
                   const message = String(err?.message ?? err);
@@ -2880,6 +2889,22 @@ async function main(): Promise<void> {
                 });
             } catch (err: any) {
               send({ type: "auth.done", loginId: null, provider, ok: false, error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          // D229：把 Radius MCP 写进全局 mcp.json。配置内容由桥重新算（页面只说「要」），
+          // 写文件走 pi 的 addMcpServerConfig()，与 `pi mcp add` 同一条路。
+          case "mcp.radius.add": {
+            if (!(await requireStepUp())) return;
+            const cwd = String(msg.cwd ?? "") || process.cwd();
+            try {
+              const out = await writeLock("mcp:global", () => addRadiusMcp(pi.cli, cwd));
+              log(`radius mcp → ${out.name} in ${out.mcpPath}`);
+              send({ type: "mcp.radius.added", ...out });
+              // 扩展 / MCP 那一页的清单跟着换（下一次打开面板时会重新问一遍，这里只是别让旧列表留着）。
+              broadcast({ type: "mcp.index", building: false });
+            } catch (err: any) {
+              send({ type: "mcp.radius.added", error: String(err?.message ?? err) });
             }
             return;
           }
