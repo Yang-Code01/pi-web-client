@@ -41,9 +41,10 @@ export class PeerHost {
   private timer: NodeJS.Timeout | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
 
-  constructor(
-    private readonly opts: { port: number; entry: string | null; log: (msg: string) => void },
-  ) {
+  private readonly opts: { port: number; entry: string | null; log: (msg: string) => void };
+
+  constructor(opts: { port: number; entry: string | null; log: (msg: string) => void }) {
+    this.opts = opts;
     if (!opts.entry) this.reason = "peer 还没构建：在仓库根目录跑 npm run build:peer";
   }
 

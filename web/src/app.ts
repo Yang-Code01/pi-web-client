@@ -310,6 +310,8 @@ export class App {
   /** D164：AI 出错记录的账本（按工作区），以及这个会话里见过的失败（按 toolCallId 去重）。 */
   private failLedger: FailLedger | null = null;
   private failWs = "";
+  /** 已经按这个组 id 要过账本：`syncFailWs()` 不必为同一个 id 反复发请求。 */
+  private failWsAsked = "";
   private sessionFails = new Map<string, SeenFail>();
   /** 这个会话里已经叫住过的失败类别（keys）：同会话同一类只叫一次（桥那边还有一层节流）。 */
   private failReminded = new Set<string>();
@@ -1709,6 +1711,7 @@ export class App {
         this.execStreamText = "";
         this.setExecPhase(this.session?.running ? "waiting" : "idle");
         if (this.currentWs()) {
+          this.failWsAsked = this.currentWs();
           this.socket.send({ type: "failures.get", ws: this.currentWs() });
           this.socket.send({ type: "rules.get", ws: this.currentWs() });
         }
@@ -2520,6 +2523,8 @@ export class App {
         this.landAfterWsDrop(wsBefore, orderBefore);
         // #123：设置面板开着时，名额也跟着桥的快照对齐（校验发生在桥，页面只是镜子）。
         if (this.sheetKind === "display") this.paintWsTabsPane();
+        // 组 id 可能刚从临时组换成真工程根：账本按组存，得跟着重取（否则 pill 永远不亮）。
+        this.syncFailWs();
         break;
       }
       case "ws.created": {
@@ -2624,6 +2629,8 @@ export class App {
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         this.renderSessions();
         this.mgrRefresh?.();
+        // 同 `workspaces`：组 id 换了就按新 id 重取失败账本。
+        this.syncFailWs();
         break;
       }
       case "session.state":
@@ -8130,6 +8137,21 @@ export class App {
       why: cause,
       n: Math.max(same, old?.count ?? 0),
     });
+  }
+
+  /**
+   * 账本挂在工作区组上，而组 id 会在页面活着的时候变：桥启动后补一次 git 缓存，worktree / 子目录
+   * 的「按 cwd 临时组」就换成真工程根那一组，`currentWs()` 跟着翻一次。
+   *
+   * 翻完如果不重取，`uncommittedFails()` 里 `failWs !== ws` 永远成立 → 「总结本轮错误」再也不亮
+   * （fail-cta-ui 在机器忙时间歇失败就是这个：git 子进程慢到页面先开完）。
+   */
+  private syncFailWs(): void {
+    const ws = this.currentWs();
+    if (!ws || !this.currentId || this.failWs === ws || this.failWsAsked === ws) return;
+    this.failWsAsked = ws;
+    this.socket.send({ type: "failures.get", ws });
+    this.socket.send({ type: "rules.get", ws });
   }
 
   /** 这个会话还有几次失败没进账本：见过的条数 - 上次入账时的条数（点完按钮、账本回包后归零）。 */

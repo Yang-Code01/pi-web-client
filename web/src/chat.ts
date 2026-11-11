@@ -296,7 +296,10 @@ export class ChatView {
   /** #341: toolCallId → 那一行所在的分组。结果帧晚到（用户已经发下一句）时也还能落回原来的卡。 */
   private todoRows = new Map<string, { group: TodoGroup; update: TodoUpdate }>();
 
-  constructor(private root: HTMLElement) {
+  private root: HTMLElement;
+
+  constructor(root: HTMLElement) {
+    this.root = root;
     this.moreRow = el("div", "chat-more");
     this.moreBtn = el("button", "more-btn");
     this.moreBtn.type = "button";

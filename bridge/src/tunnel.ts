@@ -47,11 +47,13 @@ export class Tunnel extends EventEmitter {
   /** D184：连续几次探不通才算死 —— 单次 530 常常是边缘抖动，换地址只会让已经发出去的链接立刻失效。 */
   private healthFails = 0;
 
-  constructor(
-    private port: number,
-    private bin: string,
-  ) {
+  private port: number;
+  private bin: string;
+
+  constructor(port: number, bin: string) {
     super();
+    this.port = port;
+    this.bin = bin;
   }
 
   private setState(patch: Partial<TunnelState>): void {

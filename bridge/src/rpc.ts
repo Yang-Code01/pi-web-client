@@ -38,8 +38,11 @@ export class RpcChild extends EventEmitter {
   private _alive = false;
   private stderrBuf = "";
 
-  constructor(private opts: RpcSpawnOptions) {
+  private opts: RpcSpawnOptions;
+
+  constructor(opts: RpcSpawnOptions) {
     super();
+    this.opts = opts;
   }
 
   get alive(): boolean {

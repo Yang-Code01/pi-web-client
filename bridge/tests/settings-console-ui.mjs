@@ -527,8 +527,13 @@ try {
   page2.on("pageerror", (e) => pageErrors.push(String(e)));
   // 新 context 没有 localStorage，就不会自动接回上一个会话：这是真的「没有 cwd」。
   await page2.goto(`${BASE}/#/q`, { waitUntil: "domcontentloaded" });
-  const entry = page2.locator('button:has-text("pi 设置")').first();
-  await until(async () => (await entry.count()) > 0 && (await entry.isVisible()), 20000, "settings entry in queue rail");
+  // D225 之后「pi 设置」在齿轮抽屉的「连接与设置」页，不在右栏。
+  const gear = page2.locator('[data-act="look"]').first();
+  await until(async () => (await gear.count()) > 0 && (await gear.isVisible()), 20000, "gear button");
+  await gear.click();
+  await page2.locator('.set-tabs .chip[data-tab="conn"]').click();
+  const entry = page2.locator('.set-page[data-page="conn"] button:has-text("pi 设置")').first();
+  await until(async () => (await entry.count()) > 0 && (await entry.isVisible()), 20000, "settings entry in conn page");
   await entry.click();
   await page2.locator(".st-console").waitFor({ timeout: 20000 });
   check(!(await page2.locator('.st-nav__item[data-tab="trust"]').isDisabled()), "没有 cwd 时「项目信任」仍可点");
