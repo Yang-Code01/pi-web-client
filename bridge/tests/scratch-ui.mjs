@@ -164,6 +164,7 @@ try {
   await page.locator(".sc-input").press("Enter");
   await page.waitForFunction(() => /echo: 恢复后继续问/.test(document.querySelector(".scratch-list")?.textContent ?? ""), null, { timeout: 30000 });
   check("失效后自动重开并把原文字发进新对话", true);
+  check("恢复提问只发送一次", await page.locator(".scratch-list .sc-user").filter({ hasText: "恢复后继续问" }).count() === 1);
   check("新随手问里有说明而不是桥 404", /会话没了，已开新的，接着问/.test((await page.locator(".scratch-list").textContent()) ?? ""));
   check("随手问 404 顶部横幅有重新接管和关闭", await page.locator(".scratch-reclaim").isVisible() && (await page.locator(".scratch-reclaim button").allInnerTexts()).some((text) => text.includes("重新接管")));
   check("桥 404 没被追加成错误转录", !/Session not found|找不到这个会话/.test((await page.locator(".scratch-list").textContent()) ?? ""));

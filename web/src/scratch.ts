@@ -119,6 +119,7 @@ export class ScratchChat {
   private starting = false;
   private error = "";
   private pendingText: string | null = null;
+  private pendingSessionId: string | null = null;
   private recovering = false;
   private dismissedReclaimId: string | null = null;
   private tokens: number | null = null;
@@ -199,7 +200,10 @@ export class ScratchChat {
         }
         this.repaint();
         this.paintState();
-        if (this.pendingText && !state?.paused) this.host.send({ type: "prompt", sessionId: this.id, text: this.pendingText });
+        if (this.pendingText && !state?.paused && this.pendingSessionId !== this.id) {
+          this.pendingSessionId = this.id;
+          this.host.send({ type: "prompt", sessionId: this.id, text: this.pendingText });
+        }
         return true;
       }
       case "items":
@@ -213,6 +217,7 @@ export class ScratchChat {
         if (msg.item?.kind === "user" && this.pendingText && String(msg.item.text ?? "").trim() === this.pendingText) {
           if (this.inputEl.value.trim() === this.pendingText) this.inputEl.value = "";
           this.pendingText = null;
+          this.pendingSessionId = null;
           this.paintState();
         }
         this.scroll();
@@ -266,6 +271,7 @@ export class ScratchChat {
             this.error = tr("随手问已暂停，恢复后可以接着问");
           } else {
             this.recovering = true;
+            this.pendingSessionId = null;
             this.id = null;
             this.state = null;
             this.items = [];
@@ -486,6 +492,7 @@ export class ScratchChat {
     const text = this.inputEl.value.trim();
     if (!text || this.pendingText || this.running || this.starting || this.state?.paused || !this.id) return;
     this.pendingText = text;
+    this.pendingSessionId = this.id;
     this.host.send({ type: "prompt", sessionId: this.id, text });
   }
 
