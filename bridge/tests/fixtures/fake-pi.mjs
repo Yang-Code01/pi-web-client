@@ -92,6 +92,7 @@ let settleWaiters = [];
 let bashAborted = false;
 /** Resolver of the turn's pending confirm (#82): answered by `extension_ui_response` or `abort`. */
 let pendingConfirm = null;
+let pendingSelect = null;
 /** The command the stub claims it is about to run, so the approval card has something to show. */
 const CONFIRM_MESSAGE = "rm -rf build/";
 // What the bridge started us with (launch options, #28), plus the PI_WEB_* vars it let through:
@@ -173,6 +174,95 @@ async function turn(text) {
     out({ type: "tool_execution_start", toolCallId: "call-hang", toolName: "bash", args: { command: "npm install" } });
     while (!abortRequested) await sleep(100);
     out({ type: "tool_execution_end", toolCallId: "call-hang", isError: false, result: "ok" });
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
+  if (text.startsWith("ASKTAB_BADGE_")) {
+    const pair = text.startsWith("ASKTAB_BADGE_PAIR");
+    const groups = pair ? [{ name: "第一份", count: 3 }, { name: "第二份", count: 3 }] : [{ name: "十题问卷", count: 10 }];
+    const calls = groups.map(({ name, count }, index) => {
+      const args = {
+        questions: Array.from({ length: count }, (_, questionIndex) => ({
+          id: `${name}-q${questionIndex + 1}`,
+          label: `${name} ${questionIndex + 1}`,
+          header: `${name} ${questionIndex + 1}`,
+          question: `${name}的第 ${questionIndex + 1} 题怎么选？`,
+          options: [{ label: "选项甲" }, { label: "选项乙" }],
+        })),
+      };
+      return { id: `call-ask-tab-badge-${Date.now()}-${index}`, name, args };
+    });
+    const rpcCalls = pair ? calls.slice(0, 1) : calls;
+    out({ type: "message_start", message: assistant("") });
+    out({
+      type: "message_end",
+      message: assistant("", {
+        content: rpcCalls.map((call) => ({ type: "toolCall", id: call.id, name: "ask_user_question", arguments: call.args })),
+        stopReason: "toolUse",
+      }),
+    });
+    out({ type: "tool_execution_start", toolCallId: calls[0].id, toolName: "ask_user_question", args: calls[0].args });
+    let secondQuestionnaire;
+    if (pair) {
+      // A pi RPC turn executes tools serially; use the same loopback question route as the
+      // questionnaire extension to keep a second questionnaire pending alongside this one.
+      await sleep(700);
+      secondQuestionnaire = fetch(new URL("/api/ask", process.env.PI_WEB_LOOPBACK), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: process.env.PI_WEB_LOOPBACK_TOKEN, questions: calls[1].args.questions, tool: "fake-pi" }),
+      }).then(async (response) => {
+        if (!response.ok) throw new Error(`fake ask failed: ${response.status}`);
+        return response.json();
+      });
+    }
+    for (const call of rpcCalls) {
+      for (const question of call.args.questions) {
+        const id = `ask-tab-ui-${question.id}-${Date.now()}`;
+        await new Promise((resolve) => {
+          pendingSelect = resolve;
+          out({
+            type: "extension_ui_request",
+            id,
+            method: "select",
+            title: `[${question.header}] ${question.question}`,
+            options: [`1. ${question.options[0].label}`, `2. ${question.options[1].label}`],
+          });
+        });
+        pendingSelect = null;
+      }
+      out({ type: "tool_execution_end", toolCallId: call.id, toolName: "ask_user_question", isError: false, result: "answered" });
+    }
+    if (secondQuestionnaire) await secondQuestionnaire;
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
+  if (text.startsWith("ASKTAB")) {
+    const callId = `call-ask-tab-${Date.now()}`;
+    const args = {
+      questions: [
+        { id: "q1", header: "标签切换", question: "你要选哪一种？", options: [{ label: "方案甲" }, { label: "方案乙" }] },
+        { id: "q2", header: "问卷验证", question: "第二个选择是什么？", options: [{ label: "答案一" }, { label: "答案二" }] },
+      ],
+    };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: callId, name: "ask_user_question", arguments: args }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: callId, toolName: "ask_user_question", args });
+    for (const [index, question] of args.questions.entries()) {
+      const id = `ask-tab-ui-${index}-${Date.now()}`;
+      await new Promise((resolve) => {
+        pendingSelect = resolve;
+        out({
+          type: "extension_ui_request",
+          id,
+          method: "select",
+          title: `[${question.header}] ${question.question}`,
+          options: [`1. ${question.options[0].label}`, `2. ${question.options[1].label}`],
+        });
+      });
+      pendingSelect = null;
+    }
+    out({ type: "tool_execution_end", toolCallId: callId, toolName: "ask_user_question", isError: false, result: "answered" });
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
@@ -652,6 +742,7 @@ async function handle(cmd) {
       note({ t: "abort", pid: process.pid, queued: steering.length + followUp.length });
       // The turn cannot settle while it waits on a dialog, so abort answers it (pi does this too).
       pendingConfirm?.("aborted");
+      pendingSelect?.(null);
       if (!running) return ok(id, type);
       abortRequested = true;
       await new Promise((r) => settleWaiters.push(r));
@@ -723,6 +814,7 @@ process.stdin.on("data", (chunk) => {
       if (cmd.cancelled) reply = "cancelled";
       else if (cmd.confirmed === true) reply = "approved";
       pendingConfirm?.(reply);
+      if (pendingSelect && (cmd.value !== undefined || cmd.cancelled)) pendingSelect(cmd.cancelled ? null : cmd.value);
       continue;
     }
     void handle(cmd);

@@ -15,6 +15,7 @@ import { parseRules, type RuleBook } from "./rules.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
+import { askBadge, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
@@ -70,7 +71,6 @@ import type { AcpDelegatePatch, AcpDelegateView } from "./subagents-acp.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
 
 type Tab = "sessions" | "chat" | "queue";
-type QueueTab = "needs" | "exec";
 
 /**
  * 面板等目录的两个时间窗（D150）：过了 REASK 就当「刚问的那次没结果」，自己再问一遍；
@@ -257,6 +257,7 @@ export class App {
   private connected = false;
   private tab: Tab = "sessions";
   private queueTab: QueueTab = readQueueTab();
+  private tabMemory = createTabMemory(this.queueTab);
   private execSelectedRound: string | null = null;
   private execSelectedPlanTaskId: number | null = null;
   private execPlan: ExecPlanSnapshot | null = null;
@@ -1087,12 +1088,29 @@ export class App {
     const root = document.documentElement;
     // 跟 `String(compact)` 比，而不是跟 "true" 比：首次调用必须把 "false" 也写下去，
     // 否则属性一直是 undefined，CSS 那边是在碰运气。
-    if (root.dataset.compact === String(compact)) return false;
-    root.dataset.compact = String(compact);
-    // 换壳跟窗口跨过 900px 是同一件事：那颗「当前在哪」和标签行都得挪位置（构造期还没搭 DOM）。
-    this.placeNowChip();
-    this.placeWsTabs();
-    return true;
+    const changed = root.dataset.compact !== String(compact);
+    if (changed) {
+      root.dataset.compact = String(compact);
+      // 换壳跟窗口跨过 900px 是同一件事：那颗「当前在哪」和标签行都得挪位置（构造期还没搭 DOM）。
+      this.placeNowChip();
+      this.placeWsTabs();
+    }
+    const previousQueueTab = this.queueTab;
+    if (changed) this.syncQueueTabMemory(true);
+    if (this.queueTab !== previousQueueTab && this.els.queueInner) this.renderQueue();
+    return changed;
+  }
+
+  private applyQueueTabEvent(event: TabEvent): void {
+    const previous = this.queueTab;
+    this.tabMemory = reduce(this.tabMemory, event, { compact: this.compact() });
+    this.queueTab = this.tabMemory.tab;
+    if (previous === "exec" && this.queueTab !== "exec") this.stopExecChildWatches();
+  }
+
+  private syncQueueTabMemory(asksArrived: boolean): void {
+    this.applyQueueTabEvent({ type: "asks", count: this.asks.length, arrived: asksArrived });
+    this.applyQueueTabEvent({ type: "approvals", count: this.approvals.length });
   }
 
   /** 没存过几何时 dialog 的多大：底部居中，宽高跟着窗口（布局 px，已按缩放折算）。 */
@@ -1496,6 +1514,7 @@ export class App {
     this.execChildExpanded.clear();
     this.approvals = [];
     this.asks = [];
+    this.syncQueueTabMemory(false);
     this.pendingFresh = false;
     this.usage = { contextTokens: null, contextWindow: null };
     this.rate = 0;
@@ -1699,6 +1718,7 @@ export class App {
         }
         this.approvals = (msg.approvals ?? []) as ApprovalRequest[];
         this.asks = (msg.asks ?? []) as AskRequest[];
+        this.syncQueueTabMemory(true);
         // 快照里的队列是权威值：顺手把列表里那条累加值对齐，曾经算歪的会话打开一次就回到真值（D156）。
         syncPending(this.sessions, String(msg.sessionId ?? this.currentId ?? ""), this.localCounts());
         this.pendingFresh = true;
@@ -1896,7 +1916,10 @@ export class App {
         // D156：当前会话也照加 —— 列表里的计数和本地队列是两份账，只给「不在看的会话」加会让
         // 切过去再答的批准永远减不掉；卡片是否重画也跟着这条走。
         this.countPending(msg.sessionId, "approvals", 1);
-        if (msg.sessionId === this.currentId) this.approvals = [...this.approvals, msg.approval];
+        if (msg.sessionId === this.currentId) {
+          this.approvals = [...this.approvals, msg.approval];
+          this.applyQueueTabEvent({ type: "approvals", count: this.approvals.length });
+        }
         this.renderApprovals();
         this.renderQueue();
         this.renderTabs();
@@ -1905,6 +1928,7 @@ export class App {
         break;
       case "approval.remove":
         this.approvals = this.approvals.filter((a) => a.id !== msg.id);
+        if (msg.sessionId === this.currentId) this.applyQueueTabEvent({ type: "approvals", count: this.approvals.length });
         // 和 approval.add 对称：不管这条批准是不是当前会话的，都得减回去，否则卡片上永远「待确认」。
         this.countPending(msg.sessionId, "approvals", -1);
         this.fillHintStatus();
@@ -1923,6 +1947,7 @@ export class App {
           break;
         }
         this.asks = [...this.asks.filter((a) => a.id !== ask.id), ask];
+        this.applyQueueTabEvent({ type: "asks", count: this.asks.length, arrived: true });
         this.askFolded = false;
         this.askAutoFolded = false;
         // 新的这一份是新的「这一次」：上一道题时用户收起过右栏，不该连带着压下这一道。
@@ -1940,6 +1965,7 @@ export class App {
         const gone = this.asks.find((a) => a.id === msg.id);
         const mine = msg.sessionId === this.currentId;
         this.asks = this.asks.filter((a) => a.id !== msg.id);
+        if (mine) this.applyQueueTabEvent({ type: "asks", count: this.asks.length, arrived: false });
         // 答完 / 被取消都走这条：计数必须跟着回落（D156）。
         this.countPending(msg.sessionId, "asks", -1);
         if (gone && mine && gone.id !== this.lastAnsweredAsk) this.keepLostAsk(gone, String(msg.reason ?? tr("问卷已关闭")));
@@ -14165,8 +14191,7 @@ export class App {
   }
 
   private selectQueueTab(tab: QueueTab): void {
-    if (this.queueTab === "exec" && tab !== "exec") this.stopExecChildWatches();
-    this.queueTab = tab;
+    this.applyQueueTabEvent({ type: "user-tab", tab });
     try {
       localStorage.setItem("pi.queueTab", tab);
     } catch {
@@ -14695,6 +14720,13 @@ export class App {
     this.execSelectedRound = model.selectedRound;
     const panel = el("div", "exec-panel");
     if (!this.deps && !this.depsLoading && Date.now() - this.depsAt > 30_000) this.loadDeps(false);
+    const { text: questionBadge } = askBadge(this.asks);
+    if (questionBadge) {
+      const hint = el("button", "exec-ask-hint", tr("{p1} 道题等你回答 →", { p1: questionBadge })) as HTMLButtonElement;
+      hint.type = "button";
+      hint.onclick = () => this.selectQueueTab("needs");
+      panel.append(hint);
+    }
     panel.append(this.execPlanBox(model.plan));
     const now = this.execNowCard(model);
     now.classList.add("exec-now-slot");
@@ -14809,6 +14841,13 @@ export class App {
     needs.dataset.execTab = "needs";
     needs.setAttribute("aria-selected", String(this.queueTab === "needs"));
     needs.onclick = () => this.selectQueueTab("needs");
+    const { count: questionCount, text } = askBadge(this.asks);
+    if (text && this.queueTab !== "needs") {
+      const pip = el("span", "pip", text);
+      pip.title = tr("{p1} 道题待回答", { p1: questionCount });
+      pip.setAttribute("aria-label", tr("{p1} 道题待回答", { p1: questionCount }));
+      needs.append(pip);
+    }
     const execution = el("button", this.queueTab === "exec" ? "on" : "", tr("执行")) as HTMLButtonElement;
     execution.type = "button";
     execution.dataset.execTab = "exec";
