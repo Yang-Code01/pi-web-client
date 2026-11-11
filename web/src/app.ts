@@ -14315,6 +14315,7 @@ export class App {
         agent: run.agent,
         task: run.task,
         state: run.state,
+        startedAt: run.startedAt,
         items: this.execChildExpanded.has(run.id) ? this.execChildStates.get(run.id)?.items ?? [] : [],
         plan: this.execChildStates.get(run.id)?.plan ?? null,
         stats: this.execChildStates.get(run.id)?.stats ?? null,
@@ -14463,8 +14464,29 @@ export class App {
       card.append(el("div", "exec-now-line", message));
     }
     for (const child of view.runningChildren) {
-      const line = el("div", "exec-now-line exec-now-child");
-      line.append(el("b", "", child.agent), el("span", "", child.step));
+      const label = child.agent || child.task;
+      const long = child.step.length > 80 || label.length > 80;
+      const line = el(long ? "button" : "div", "exec-now-line exec-now-child") as HTMLElement;
+      if (long) {
+        const row = line as HTMLButtonElement;
+        row.type = "button";
+        row.title = tr("点开看子代理的完整任务");
+        row.setAttribute("aria-haspopup", "dialog");
+        row.onclick = () => this.openArgsDialog({
+          title: tr("子代理任务"),
+          meta: this.execDuration(child.elapsedMs),
+          blocks: child.step === child.task
+            ? [{ label: tr("任务"), text: child.task }]
+            : [
+              { label: tr("子代理"), text: label },
+              ...(child.task && child.task !== label ? [{ label: tr("任务"), text: child.task }] : []),
+              ...(child.step !== label ? [{ label: tr("当前步骤"), text: child.step }] : []),
+            ],
+        });
+      }
+      line.append(el("b", "", label), el("span", "exec-args", child.step));
+      if (long) line.append(el("span", "exec-now-open", "⤢"));
+      line.append(el("span", "exec-elapsed", this.execDuration(child.elapsedMs)));
       card.append(line);
     }
     return card;
@@ -14702,6 +14724,11 @@ export class App {
     if (row.plan) wrap.append(this.execPlanBox(row.plan, true));
     if (childState?.pending && !row.steps.length) {
       wrap.append(el("div", "exec-empty", tr("等待子代理会话…")));
+      return wrap;
+    }
+    const childDone = childState?.state === "done" || childState?.state === "failed" || row.status === "done" || row.status === "failed";
+    if (childDone && !row.steps.length && !row.plan) {
+      wrap.append(el("div", "exec-empty", tr("子代理已结束，没有可用的会话记录")));
       return wrap;
     }
     if (!row.steps.length) {

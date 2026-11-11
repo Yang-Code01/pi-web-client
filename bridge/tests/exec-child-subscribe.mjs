@@ -21,7 +21,10 @@ const PORT = await new Promise((resolve, reject) => {
 const BASE = `http://127.0.0.1:${PORT}`;
 const PASS = "exec-child-pass";
 const RUN_ID = `del_exec_${process.pid}`;
+const EMPTY_RUN_ID = `del_exec_empty_${process.pid}`;
 const CHILD_FILE = path.join(os.tmpdir(), "acp-delegate", `${RUN_ID}.session.jsonl`);
+const EMPTY_CHILD_FILE = path.join(os.tmpdir(), "acp-delegate", `${EMPTY_RUN_ID}.session.jsonl`);
+const EMPTY_DONE_FILE = path.join(ROOT, "empty-child-done");
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
 const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -66,6 +69,8 @@ try {
     PI_WEB_ROOT: path.join(REPO, "web", "dist"),
     PI_BIN: FAKE_PI,
     FAKE_PI_CHILD_RUN_ID: RUN_ID,
+    FAKE_PI_EMPTY_RUN_ID: EMPTY_RUN_ID,
+    FAKE_PI_EMPTY_DONE_FILE: EMPTY_DONE_FILE,
   };
   execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
   bridge = spawn(process.execPath, [DIST], { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -138,12 +143,28 @@ try {
   const refused = await publicSocket.waitFor((frame) => frame.type === "exec.child.unavailable" && frame.runId === RUN_ID, "public child refusal");
   assert.equal(refused.error, "public");
 
-  console.log("PASS child subscription sends snapshots and incremental item/stats updates, stops on unsubscribe/disconnect, and refuses public access.");
+  // A child that ends without ever writing a transcript must not leave `pending` true forever.
+  local.send({ type: "prompt", sessionId, text: "BGEMPTY" });
+  await local.waitFor((frame) => frame.type === "item.replace" && frame.sessionId === sessionId && frame.item?.toolCallId === "call-empty", "empty child dispatch result");
+  local.send({ type: "exec.child.subscribe", sessionId, runId: EMPTY_RUN_ID });
+  const emptySnapshot = await local.waitFor((frame) => frame.type === "exec.child.snapshot" && frame.runId === EMPTY_RUN_ID, "initial empty child snapshot");
+  assert.equal(emptySnapshot.state, "running");
+  assert.equal(emptySnapshot.pending, true);
+  assert.deepEqual(emptySnapshot.items, []);
+  // 完成通知是同一轮里的 custom 消息：由哨兵文件触发，不再开一条新的用户轮次。
+  fs.writeFileSync(EMPTY_DONE_FILE, "done");
+  const emptyDone = await local.waitFor((frame) => frame.type === "exec.child.delta" && frame.runId === EMPTY_RUN_ID && frame.state === "done", "finished empty child delta", 7000);
+  assert.equal(emptyDone.pending, false, "a finished child without a transcript clears pending");
+  local.send({ type: "exec.child.unsubscribe", sessionId, runId: EMPTY_RUN_ID });
+
+  console.log("PASS child subscription sends snapshots and incremental item/stats updates, stops on unsubscribe/disconnect, refuses public access, and clears a missing transcript when the run ends.");
 } finally {
   for (const ws of [publicSocket?.ws, secondSocket?.ws, socket]) if (ws && ws.readyState < WebSocket.CLOSING) ws.close();
   bridge?.kill();
   await sleep(150);
   try { fs.rmSync(CHILD_FILE, { force: true }); } catch { /* absent if startup failed */ }
+  try { fs.rmSync(EMPTY_CHILD_FILE, { force: true }); } catch { /* absent if startup failed */ }
+  try { fs.rmSync(EMPTY_DONE_FILE, { force: true }); } catch { /* absent if startup failed */ }
   fs.rmSync(ROOT, { recursive: true, force: true });
   if (bridgeLog.includes("Error:")) console.error(bridgeLog.slice(-3000));
 }
