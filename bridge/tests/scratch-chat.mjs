@@ -193,28 +193,115 @@ try {
   check(Boolean(bump?.before) && !fs.existsSync(bump.before), `旧的会话文件被删掉了（${path.basename(bump?.before ?? "")}）`);
   check(cleared.state?.file === bump?.file, "桥跟着换到了新的会话文件");
 
-  // ---------------------------------------------- B. 休眠：它有自己的时间，比普通会话长
-  log("B. 休眠豁免：普通会话 1.5 秒睡，随手问按自己的 60 秒走");
+  // ---------------------------------------------- B. 休眠豁免与全部休眠
+  log("B. 默认不自动休眠；普通会话仍按 1.5 秒睡，全部休眠跳过随手问");
   await stopBridge();
   // 注：Windows 上 kill() 是直接结束进程，SIGTERM 处理器不一定跑得到 —— 所以「关桥即清空」在
   // 这里不做断言，改为在 C 段断言真正兜底的那条：启动时无条件清空。
-  await startBridge({ PI_WEB_IDLE_MS: "1500", PI_WEB_SCRATCH_IDLE_MS: "60000", PI_WEB_GC_TICK_MS: "200" });
+  await startBridge({ PI_WEB_IDLE_MS: "1500", PI_WEB_GC_TICK_MS: "200" });
 
   send({ type: "create", cwd: REPO, name: "普通会话" });
   await waitFor((m) => m.type === "session" && m.state?.name === "普通会话", 30000, "普通会话");
   send({ type: "scratch.open" });
-  await waitFor((m) => m.type === "scratch" && m.sessionId, 30000, "随手问");
+  const scratchBefore = await waitFor((m) => m.type === "scratch" && m.sessionId, 30000, "随手问");
+  const defaultScratchId = scratchBefore.sessionId;
   await until(() => argvWith("普通会话") && argvWith("随手问"), 20000, "两个会话进程的 argv");
   const normalPid = argvWith("普通会话")?.pid;
   const scratchPid = argvWith("随手问")?.pid;
   check(Boolean(normalPid && scratchPid), `两个会话进程都在（普通 ${normalPid} / 随手问 ${scratchPid}）`);
+  send({ type: "prompt", sessionId: defaultScratchId, text: "默认设置后再问" });
+  await waitFor(
+    (m) => m.sessionId === defaultScratchId && /echo: 默认设置后再问/.test(m.text ?? m.item?.text ?? ""),
+    30000,
+    "默认设置下的回答",
+  );
   const exits = () => new Set(piNotes().filter((n) => n.t === "exit").map((n) => n.pid));
   await until(() => exits().has(normalPid), 25000, "普通会话被休眠");
   check(exits().has(normalPid), "普通会话按 1.5 秒的通用阈值睡了");
-  check(!exits().has(scratchPid), "随手问没睡（它按自己那 60 秒的规则走）");
+  check(!exits().has(scratchPid), "默认随手问越过普通会话的闲置年龄仍未休眠");
+  send({ type: "scratch.open" });
+  const resumedDefault = await waitFor(
+    (m) => m.type === "scratch" && m.sessionId === defaultScratchId && (m.items ?? []).some((item) => /默认设置后再问/.test(item.text ?? "")),
+    15000,
+    "默认随手问完整转录",
+  );
+  check(resumedDefault.sessionId === defaultScratchId, "闲置后打开仍是原来的随手问会话");
 
-  // ---------------------------------------------------------------- C. 重启后不留残留
-  log("C. 桥重启：临时目录清空，页面重新问一次就是空的");
+  const sleepable = "手动休眠会话";
+  send({ type: "create", cwd: REPO, name: sleepable });
+  const sleepableCreated = await waitFor((m) => m.type === "session" && m.state?.name === sleepable, 30000, sleepable);
+  await until(() => argvWith(sleepable), 15000, `${sleepable} 的 argv`);
+  const sleepablePid = argvWith(sleepable)?.pid;
+  const sleepMark = seen.length;
+  send({ type: "runtime.sleepAll" });
+  const sleepReceipt = await waitFor(
+    (m) => m.type === "runtime.sleepAll" && seen.indexOf(m) >= sleepMark,
+    20000,
+    "全部休眠回执",
+  );
+  check(sleepReceipt.slept?.includes(sleepableCreated.sessionId), "全部休眠仍然睡掉普通空闲会话");
+  check(!sleepReceipt.slept?.includes(defaultScratchId), "全部休眠回执不把随手问列为已休眠");
+  check(!sleepReceipt.skipped?.some((item) => item.id === defaultScratchId), "全部休眠回执也不把随手问列为跳过项");
+  await until(() => exits().has(sleepablePid), 15000, `${sleepable} 进程退出`);
+  check(!exits().has(scratchPid), "全部休眠之后随手问进程仍然存活");
+
+  log("C. 显式正数闲置阈值恢复自动休眠");
+  await stopBridge();
+  await startBridge({ PI_WEB_IDLE_MS: "60000", PI_WEB_SCRATCH_IDLE_MS: "1500", PI_WEB_GC_TICK_MS: "200" });
+  send({ type: "scratch.open" });
+  const positiveScratch = await waitFor((m) => m.type === "scratch" && m.sessionId, 30000, "显式阈值下的随手问");
+  await until(() => sessionArgv().some((n) => (n.argv ?? []).includes(positiveScratch.sessionId)), 15000, "显式阈值下的桩 pi argv");
+  const positiveLaunch = sessionArgv().find((n) => (n.argv ?? []).includes(positiveScratch.sessionId));
+  const positiveScratchPid = positiveLaunch?.pid;
+  await until(() => piNotes().some((n) => n.t === "exit" && n.pid === positiveScratchPid), 15000, "显式阈值休眠");
+  check(piNotes().some((n) => n.t === "exit" && n.pid === positiveScratchPid), "配置正数阈值后随手问按该阈值休眠");
+
+  log("D. GC 不驱逐已休眠的随手问，普通会话磁盘记录仍可见");
+  await stopBridge();
+  await startBridge({
+    PI_WEB_IDLE_MS: "1500",
+    PI_WEB_SCRATCH_IDLE_MS: "1500",
+    PI_WEB_GC_TICK_MS: "100",
+    PI_WEB_GC_IDLE_MS: "500",
+  });
+  send({ type: "create", cwd: REPO, name: "GC 普通会话" });
+  const gcNormal = await waitFor((m) => m.type === "session" && m.state?.name === "GC 普通会话", 30000, "GC 普通会话");
+  await until(() => sessionArgv().some((row) => (row.argv ?? []).includes(gcNormal.sessionId)), 15000, "GC 普通会话桩 pi");
+  const gcNormalPid = sessionArgv().find((row) => (row.argv ?? []).includes(gcNormal.sessionId))?.pid;
+  send({ type: "scratch.open" });
+  const beforeGc = await waitFor((m) => m.type === "scratch" && m.sessionId, 30000, "GC 前的随手问");
+  send({ type: "prompt", sessionId: beforeGc.sessionId, text: "GC 前保留这段" });
+  await waitFor(
+    (m) => m.sessionId === beforeGc.sessionId && /echo: GC 前保留这段/.test(m.text ?? m.item?.text ?? ""),
+    30000,
+    "GC 前的回答",
+  );
+  // GC only considers an unobserved session; release the scratch view before its process sleeps.
+  send({ type: "unsubscribe", sessionId: beforeGc.sessionId });
+  await until(() => sessionArgv().some((row) => (row.argv ?? []).includes(beforeGc.sessionId)), 15000, "GC 随手问桩 pi");
+  const gcScratchPid = sessionArgv().find((row) => (row.argv ?? []).includes(beforeGc.sessionId))?.pid;
+  await until(() => piNotes().some((n) => n.t === "exit" && n.pid === gcScratchPid), 20000, "随手问按正值阈值休眠");
+  await until(() => piNotes().some((n) => n.t === "exit" && n.pid === gcNormalPid), 20000, "GC 普通会话休眠");
+  check((await listIds()).includes(gcNormal.sessionId), "GC 不删除普通会话的磁盘记录");
+  await sleep(1200);
+  const reopenMark = seen.length;
+  send({ type: "scratch.open" });
+  const afterGc = await waitFor(
+    (m) => m.type === "scratch" && seen.indexOf(m) >= reopenMark,
+    30000,
+    "GC 后重新打开随手问",
+  );
+  check(afterGc.sessionId === beforeGc.sessionId, "超过 GC 年龄后仍复用原随手问 ID");
+  send({ type: "prompt", sessionId: afterGc.sessionId, text: "GC 后继续问" });
+  const continued = await waitFor(
+    (m) => m.sessionId === afterGc.sessionId && /echo: GC 后继续问/.test(m.text ?? m.item?.text ?? ""),
+    30000,
+    "GC 后继续提问",
+  );
+  check(continued.sessionId === beforeGc.sessionId, "GC 后原随手问仍可继续对话");
+
+  // ---------------------------------------------------------------- E. 重启后不留残留
+  log("E. 桥重启：临时目录清空，页面重新问一次就是空的");
   await stopBridge();
   fs.writeFileSync(path.join(SCRATCH, "sessions", "leftover.jsonl"), "{}\n");
   await startBridge();
