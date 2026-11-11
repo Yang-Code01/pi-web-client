@@ -495,7 +495,7 @@ test("a missing or empty plan snapshot degrades to no plan", () => {
   assert.equal(execView({ ...base, items, plan: { listedRound: "u1", tasks: [] } }).plan, null);
 });
 
-test("#346: an idle current plan with many tool calls since its last update is flagged stale", () => {
+test("#357: an idle current plan with many tool calls since its last update is flagged stale", () => {
   const items = [user("u1", "2025-01-01T00:00:00Z"), tool("t1", "2025-01-01T00:00:01Z", "ok")];
   const open = { listedRound: "u1", tasks: [{ id: 1, subject: "a", status: "completed" }, { id: 2, subject: "b", status: "in_progress" }] };
   assert.equal(execView({ ...base, items, plan: { ...open, sinceUpdate: 7 } }).plan.staleTools, 7);

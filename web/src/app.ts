@@ -94,7 +94,7 @@ const CONTINUE_GUARD_MS = 1500;
 const CONTINUE_TEXT = "继续";
 
 /**
- * #346：计划可能过期时「让 agent 同步计划」发出去的**字面**文本，同 CONTINUE_TEXT 不翻译。
+ * #357：计划可能过期时「让 agent 同步计划」发出去的**字面**文本，同 CONTINUE_TEXT 不翻译。
  * 措辞与 bridge/ext/plan-nudge.ts 的自动核对同一个意思：只对齐事实，不借机接着干、不为交差打勾。
  */
 // i18n-ignore-start 给模型的指令，不是界面文案
@@ -13135,7 +13135,7 @@ export class App {
    * 发「继续」。**不清草稿**：它跟 Enter 不同 —— 这是「接着刚才那件事」，不是「把我写的发出去」。
    * 乐观气泡照 `sendPrompt()` 带 `clientId`，桥回灌时这一页认自己那条（#19）。
    */
-  /** `text` 缺省就是「继续」；#346 的「让 agent 同步计划」也走这条（同一套连点保护）。 */
+  /** `text` 缺省就是「继续」；#357 的「让 agent 同步计划」也走这条（同一套连点保护）。 */
   private sendContinue(text: string = CONTINUE_TEXT): void {
     const id = this.currentId;
     if (!id || continueState(this.session, this.chat.hasUserTurns()) !== "ready") return;
@@ -14312,7 +14312,7 @@ export class App {
     progress.append(fill);
     box.append(progress);
 
-    // #346：模型上次 update 之后又干了一大堆活，面板上的状态多半已经不对了 —— 照实说，给一个让它补的出口。
+    // #357：模型上次 update 之后又干了一大堆活，面板上的状态多半已经不对了 —— 照实说，给一个让它补的出口。
     if (!mini && plan.staleTools !== null) {
       box.classList.add("stale");
       const stale = el("div", "exec-plan-stale");
@@ -14362,7 +14362,7 @@ export class App {
   private execNowCard(view: ExecViewModel): HTMLElement {
     const card = el("section", `exec-now${view.now.kind === "idle" ? " idle" : ""}`);
     const activeTask = view.plan?.tasks.find((task) => task.id === view.plan?.activeTaskId);
-    // #346：计划可能过期时别再说「现在在做第 N 步」—— 那只是最后一次记录。
+    // #357：计划可能过期时别再说「现在在做第 N 步」—— 那只是最后一次记录。
     let title = tr("现在");
     if (activeTask && view.plan) {
       const parts = { p1: view.plan.done + 1, p2: view.plan.total, p3: activeTask.subject };
@@ -16676,7 +16676,7 @@ function settingFields(): SettingField[] {
     defaultText: tr("危险时确认"),
     hint: tr("新会话第一次打开时用它，之后在这里改也不影响老会话；手动改过权限的会话永远不动"),
   },
-  // #346: 桥自有键。只认全局：扩展在 pi 子进程里每次停下都现读这份文件，项目级还要过信任，不值得。
+  // #357: 桥自有键。只认全局：扩展在 pi 子进程里每次停下都现读这份文件，项目级还要过信任，不值得。
   {
     key: "web.planNudge",
     label: tr("停下前核对计划"),

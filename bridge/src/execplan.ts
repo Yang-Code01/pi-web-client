@@ -15,7 +15,7 @@ export interface PlanSnapshot {
   tasks: PlanTask[];
   listedRound: string | null;
   /**
-   * #346：这份快照之后又调用了几次**别的**工具（todo 自己不算）。页面拿它判断「计划可能过期」——
+   * #357：这份快照之后又调用了几次**别的**工具（todo 自己不算）。页面拿它判断「计划可能过期」——
    * 模型干了一大堆活却没 update，面板就不该再说「现在 · 第 2 步」。缺省 = 0（刚写下的快照）。
    */
   sinceUpdate?: number;
@@ -89,7 +89,7 @@ export function planReplayFromEntries(entries: SessionEntry[]): {
   return { plan, toolResults };
 }
 
-/** #346：计划之后又跑了一个别的工具 —— 计数加一（没有计划就什么都不记）。 */
+/** #357：计划之后又跑了一个别的工具 —— 计数加一（没有计划就什么都不记）。 */
 export function afterOtherTool(plan: PlanSnapshot | null): PlanSnapshot | null {
   return plan ? { ...plan, sinceUpdate: (plan.sinceUpdate ?? 0) + 1 } : plan;
 }

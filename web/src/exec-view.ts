@@ -111,13 +111,13 @@ export interface ExecPlanView {
   activeTaskId: number | null;
   tasks: ExecPlanTaskView[];
   /**
-   * #346：计划可能过期 —— 会话空闲、计划还有没关的项、上次 todo 之后又调用了至少
+   * #357：计划可能过期 —— 会话空闲、计划还有没关的项、上次 todo 之后又调用了至少
    * PLAN_STALE_TOOLS 次别的工具。值是那个次数，不过期就是 null。只对当前计划判（看历史轮不判）。
    */
   staleTools: number | null;
 }
 
-/** #346：「计划可能过期」的门槛，与 bridge/ext/plan-nudge.ts 的 NUDGE_MIN_TOOLS 一致。 */
+/** #357：「计划可能过期」的门槛，与 bridge/ext/plan-nudge.ts 的 NUDGE_MIN_TOOLS 一致。 */
 export const PLAN_STALE_TOOLS = 5;
 
 export interface ExecMetricsView {
@@ -471,7 +471,7 @@ export function execView(input: ExecViewInput): ExecViewModel {
     timeline,
     rounds: roundOptions,
     selectedRound: selected?.id ?? null,
-    // #346：只在会话真空闲、看的又是当前计划时判过期；跑着的时候一步很长是正常的。
+    // #357：只在会话真空闲、看的又是当前计划时判过期；跑着的时候一步很长是正常的。
     plan: planView(selectedPlan, input.planRounds, stepCounts, input.phase === "idle" && selectedIsCurrent && input.plan !== undefined),
     metrics,
   };

@@ -41,7 +41,7 @@ function artifactToolPath(): string {
   return process.env.PI_WEB_ARTIFACT_TOOL ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "artifact-snapshot.ts");
 }
 
-/** #346：计划收尾核对（`agent_before_settle`），开关在设置里，默认关。 */
+/** #357：计划收尾核对（`agent_before_settle`），开关在设置里，默认关。 */
 function planNudgePath(): string {
   return process.env.PI_WEB_PLAN_NUDGE_EXT ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "plan-nudge.ts");
 }
@@ -1125,7 +1125,7 @@ export class Session extends EventEmitter {
     args.push("-e", approvalGatePath());
     args.push("-e", previewToolPath());
     args.push("-e", artifactToolPath());
-    // #346：计划收尾核对。总是挂上，开不开由它每次自己读全局设置 `web.planNudge`（默认关）。
+    // #357：计划收尾核对。总是挂上，开不开由它每次自己读全局设置 `web.planNudge`（默认关）。
     args.push("-e", planNudgePath());
     const cwd = opts.cwd || this.state.cwd || process.cwd();
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
@@ -1159,7 +1159,7 @@ export class Session extends EventEmitter {
       logPath: statePath("logs", `${id}.log`),
       env: {
         PI_WEB_ALLOW_FILE: allowFile(id),
-        // #346：plan-nudge 扩展读这份全局设置看开关；桥和子进程对 agentDir 的认定以桥为准。
+        // #357：plan-nudge 扩展读这份全局设置看开关；桥和子进程对 agentDir 的认定以桥为准。
         PI_WEB_SETTINGS_FILE: path.join(agentDir(), "settings.json"),
         // The ask-user / preview extensions post here instead of opening a dialog (see PLAN-ask.md).
         ...(this.loopbackUrl ? { PI_WEB_LOOPBACK: this.loopbackUrl, PI_WEB_LOOPBACK_TOKEN: this.loopbackToken } : {}),
@@ -1307,7 +1307,7 @@ export class Session extends EventEmitter {
         this.stuckAbortedAt = null;
         this.stuckNoticed = false;
         this.setState({ running: false, done: true });
-        // #346：这一轮里别的工具带动了「计划之后又调了几次工具」，工具结束时不推（一轮几十次），
+        // #357：这一轮里别的工具带动了「计划之后又调了几次工具」，工具结束时不推（一轮几十次），
         // 停下来这一刻推一次 —— 页面只在空闲时才拿它判「可能过期」。
         if (this.plan?.sinceUpdate) this.emitWs({ type: "plan", sessionId: this.state.id, plan: this.plan });
         // D162: 完成状态跟着会话走：桥重启、GC 回收、换设备都还能看到，直到下一次运行。

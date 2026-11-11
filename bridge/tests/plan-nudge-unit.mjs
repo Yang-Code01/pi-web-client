@@ -1,5 +1,5 @@
 /**
- * Unit: `bridge/ext/plan-nudge.ts`（#346）—— 停下前核对计划。
+ * Unit: `bridge/ext/plan-nudge.ts`（#357）—— 停下前核对计划。
  *
  * 断言：开关默认关（缺文件 / 坏 JSON / 没这个键都算关）；没计划、计划都关了、工具数不到门槛、
  * 这份快照之后已经提醒过、运行被中断，都不续跑；条件都满足时追加一条 display:false 的
