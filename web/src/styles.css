@@ -634,7 +634,10 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* ---------------------------------------------------------------- chat */
 /* 显式的 minmax(0,1fr) 列：隐式列是 `auto`，按内容 max-content 定宽，一条不换行的长命令行
    就能把整个对话栏撑到比窗口宽（手机上右侧被切掉）。 */
-.chat-pane { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; position: relative; }
+.chat-pane { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr auto; min-height: 0; position: relative; }
+/* 「重新接管」横幅平时 hidden（display:none 不占网格格子）。三行模板只在它露出来时才用，
+   否则消息列表会掉进 auto 行、输入框掉进 1fr 行：新会话输入框飘到中间、长会话外层多出一条滚动条。 */
+.chat-pane:has(> .session-reclaim:not([hidden])) { grid-template-rows: auto minmax(0, 1fr) auto; }
 .chat-pane:has(> .composer > .chat-empty):not(:has(> .session-reclaim:not([hidden]))) { grid-template-rows: 1fr; place-items: center; }
 .session-reclaim[hidden] { display: none; }
 .session-reclaim {

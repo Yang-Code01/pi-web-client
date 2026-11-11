@@ -288,9 +288,20 @@ try {
   check("主会话 404 显示独立顶部横幅", await page.locator(".session-reclaim").isVisible() && (await page.locator(".session-reclaim button").allInnerTexts()).some((text) => text.includes("重新接管")));
   check("主会话和随手问横幅同时存在", await page.locator(".scratch-reclaim").isVisible());
   check("主会话 404 没进聊天记录", !/Session not found|找不到这个会话/.test((await page.locator(".chat-scroll").textContent()) ?? ""));
+  // 横幅隐藏时不占网格行：三行模板若常驻，消息列表会落进 auto 行、输入框落进 1fr 行（输入框飘到中间、外层多一条滚动条）。
+  const paneLayout = () => page.evaluate(() => {
+    const pane = document.querySelector(".chat-pane").getBoundingClientRect();
+    const scroll = document.querySelector(".chat-scroll").getBoundingClientRect();
+    const composer = document.querySelector(".chat-pane > .composer").getBoundingClientRect();
+    return { scrollTop: scroll.top - pane.top, composerGap: pane.bottom - composer.bottom, scrollToComposer: composer.top - scroll.bottom, scrollH: scroll.height };
+  });
+  const withBanner = await paneLayout();
+  check("横幅在时输入框仍贴底、消息列表在中间", withBanner.scrollTop > 0 && Math.abs(withBanner.composerGap) < 2 && Math.abs(withBanner.scrollToComposer) < 2, JSON.stringify(withBanner));
   await page.locator(".scratch-close").click();
   await page.locator(".session-reclaim-close").click();
   check("关闭主会话横幅不关闭随手问横幅", !(await page.locator(".session-reclaim").isVisible()) && await page.locator(".scratch-reclaim").evaluate((el) => !el.hidden));
+  const noBanner = await paneLayout();
+  check("横幅隐藏后消息列表顶格、输入框贴底（不飘到中间）", Math.abs(noBanner.scrollTop) < 2 && Math.abs(noBanner.composerGap) < 2 && Math.abs(noBanner.scrollToComposer) < 2 && noBanner.scrollH > 50, JSON.stringify(noBanner));
   await btn.click();
   await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 10000 });
   check("重新打开随手问时其横幅仍独立存在", await page.locator(".scratch-reclaim").isVisible() && !(await page.locator(".session-reclaim").isVisible()));
