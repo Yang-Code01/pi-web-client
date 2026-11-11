@@ -235,11 +235,33 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       // 第 3 片：通讯录。收藏 / 删除 / 接受都在这里改，对方只收到一条控制消息。
       if (url.pathname === "/contacts" && req.method === "GET") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
-        const online = new Map(discovery.online().map((peer) => [peer.nodeId, peer]));
+        const onlinePeers = discovery.online();
+        const online = new Map(onlinePeers.map((peer) => [peer.nodeId, peer]));
+        const known = new Set<string>();
         const contacts = relations.list().map((contact) => {
+          known.add(contact.nodeId);
           const peer = online.get(contact.nodeId);
-          return { ...contact, online: Boolean(peer), addr: peer?.addr ?? "", livePort: peer?.port ?? 0 };
+          return { ...contact, quick: false, ignored: false, online: Boolean(peer), addr: peer?.addr ?? "", livePort: peer?.port ?? 0 };
         });
+        for (const peer of onlinePeers) {
+          if (peer.nodeId === nodeId || known.has(peer.nodeId)) continue;
+          contacts.push({
+            nodeId: peer.nodeId,
+            nickname: peer.nickname,
+            hostname: peer.hostname,
+            port: peer.port,
+            quick: false,
+            friend: false,
+            favorite: false,
+            incoming: false,
+            outgoing: false,
+            ignored: false,
+            at: peer.lastSeen,
+            online: true,
+            addr: peer.addr,
+            livePort: peer.port,
+          });
+        }
         return json(res, 200, { ok: true, contacts });
       }
 

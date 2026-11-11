@@ -1,11 +1,13 @@
 /**
- * 内网通页面的两个前端回归（跑真构建产物 web/dist，API 用 page.route 假造）：
+ * 内网通页面的前端回归（跑真构建产物 web/dist，API 用 page.route 假造）：
  *
  *   1. 没有历史的人（刚加的好友）点「发消息」必须有输入框，且能真的 POST /api/peer/send；
  *      以前 renderChat() 只认 /threads 里有的会话，而 /threads 只列有历史文件的人 → 死路。
  *   2. 快速切会话不能串台：A 的 /messages 慢、B 的快，切到 B 之后不能再画 A 的消息。
+ *   3. #381：通讯录只给 1 人、状态在线表多给一个陌生 nodeId 时，「附近的人」要出现；
+ *      点「发消息」要直接聚焦输入框，发出的第一条消息命中这个陌生 nodeId。
  *
- * 用假 API 是刻意的：这两个 bug 都在「拿到 JSON 之后怎么画」，跟 peer 活着与否无关。
+ * 用假 API 是刻意的：这些都测「拿到 JSON 之后怎么画」，跟 peer 活着与否无关。
  *
  * 用法：node bridge/tests/peer-ui.mjs   （先 npm run build:web）
  */
@@ -46,6 +48,7 @@ const ME = "99999999-8888-4777-8666-555555555555";
 const ZHANG = "aaaaaaaa-1111-4111-8111-111111111111";
 const LI = "bbbbbbbb-2222-4222-8222-222222222222";
 const WANG = "cccccccc-3333-4333-8333-333333333333";
+const STRANGER = "dddddddd-4444-4444-8444-444444444444";
 const at = Date.now() - 30_000;
 
 const msg = (id, text, from, to) => ({ id, at, from, to: { kind: "node", id: to }, kind: "text", text, ack: { id, status: "delivered" } });
@@ -85,6 +88,14 @@ const status = {
     { nodeId: WANG, nickname: "小王", hostname: "小王-pc", addr: "127.0.0.1", port: 7865, lastSeen: at, ips: ["127.0.0.1"] },
   ],
   config: { hidden: false, pauseFiles: false, dnd: false, inbox: "C:/inbox", manual: [] },
+};
+
+const strangerStatus = {
+  ...status,
+  online: [
+    { nodeId: WANG, nickname: "小王", hostname: "小王-pc", addr: "127.0.0.1", port: 7865, lastSeen: at, ips: ["127.0.0.1"] },
+    { nodeId: STRANGER, nickname: "小赵", hostname: "小赵-pc", addr: "127.0.0.1", port: 7865, lastSeen: at, ips: ["127.0.0.1"] },
+  ],
 };
 
 let sent = null;
@@ -155,6 +166,44 @@ try {
     text.slice(0, 90),
   );
   await page.screenshot({ path: path.join(REPO, ".scratch", "shots", "peer-ui.png") });
+
+  // ---- #381：通讯录桩只给 1 人，状态在线名单多给一个陌生 nodeId ----
+  sent = null; // 上一段已经写过一次 sent，这段要重新看
+  const ctx2 = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+  const page2 = await ctx2.newPage();
+  await page2.route("**/api/**", async (route) => {
+    const req = route.request();
+    const p = new URL(req.url()).pathname;
+    let body = {};
+    if (p === "/api/peer") body = { enabled: true, running: true, reason: "", status: strangerStatus };
+    else if (p === "/api/peer/threads") body = { threads: [] };
+    else if (p === "/api/peer/contacts") body = { contacts: [contact(WANG, "小王")] };
+    else if (p === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+    else if (p === "/api/peer/messages") body = { entries: [] };
+    else if (p === "/api/peer/send") {
+      sent = JSON.parse(req.postData() ?? "{}");
+      body = { ok: true, id: "sent-by-ui" };
+    }
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+  });
+  await page2.goto(`${BASE}/peer.html`);
+  await page2.waitForSelector('#rail button[title="联系人"]');
+  await page2.click('#rail button[title="联系人"]');
+  await page2.waitForSelector(".listbox .row");
+  const nearbyGroup = await page2.locator('.group-title:has-text("附近的人")').count();
+  const strangerRow = await page2.locator('.listbox .row:has-text("小赵")').count();
+  check("通讯录只给 1 人时在线陌生人出现在附近的人", nearbyGroup === 1 && strangerRow === 1, `组=${nearbyGroup}，行=${strangerRow}`);
+  await page2.click('.listbox .row:has-text("小赵")');
+  await page2.click('#main button:has-text("发消息")');
+  const focused = await page2.evaluate(() => document.activeElement?.tagName ?? "");
+  const boxes2 = await page2.locator("textarea").count();
+  check("点发消息后输入框拿到焦点", focused === "TEXTAREA" && boxes2 === 1, `active=${focused}，textarea=${boxes2}`);
+  if (boxes2 === 1) {
+    await page2.fill("textarea", "你好小赵");
+    await page2.click('#main button:has-text("发送")');
+    for (let i = 0; i < 40 && !sent; i++) await page2.waitForTimeout(50);
+    check("附近的人发第一条消息命中正确 nodeId", sent?.peer === STRANGER && sent?.text === "你好小赵", JSON.stringify(sent));
+  }
 } catch (err) {
   check("脚本跑完", false, err?.message ?? String(err));
 } finally {
