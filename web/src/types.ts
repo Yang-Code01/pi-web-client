@@ -38,6 +38,8 @@ export interface ToolPlanTask {
 export interface ToolPlanSnapshot {
   tasks: ToolPlanTask[];
   listedRound: string | null;
+  /** #357：这份快照之后又调用了几次别的工具（桥算，见 bridge/src/execplan.ts）。 */
+  sinceUpdate?: number;
 }
 export interface ToolItem extends ItemBase {
   kind: "tool";

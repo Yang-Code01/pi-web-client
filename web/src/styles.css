@@ -4757,3 +4757,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .model-group-body { display: grid; gap: 4px; }
 .model-group.folded > .model-group-body { display: none; }
 .model-group-head.pinned { color: var(--accent); }
+/* #357：计划可能过期 —— 照实说，给一个让 agent 补的出口；进行中那项别再转圈装作在动。 */
+.exec-plan-stale { display: flex; align-items: center; gap: 8px; margin: 0 0 7px; padding: 4px 7px; border: 1px solid var(--warn-dim); border-radius: 5px; background: var(--warn-bg); color: var(--warn); font-size: 11px; }
+.exec-plan-stale > span { flex: 1; min-width: 0; }
+.exec-plan-sync { flex: none; padding: 2px 6px; border: 1px solid var(--warn-dim); border-radius: 5px; background: transparent; color: var(--warn); font: inherit; cursor: pointer; }
+.exec-plan-sync:hover:not(:disabled) { color: var(--text); border-color: var(--warn); }
+.exec-plan-sync:disabled { opacity: .5; cursor: default; }
+.exec-plan.stale .exec-plan-task.in_progress .exec-plan-state { animation: none; }

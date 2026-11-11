@@ -2302,4 +2302,10 @@ export const en: Dict = {
   "版本": "Version",
   "点一下复制": "Click to copy",
   "⚙ 关不掉：这张表靠它进来": "⚙ Can't be hidden: it's the way into this sheet",
+  "可能过期：上次更新计划后又调用了 {p1} 次工具": "May be stale: {p1} tool calls since the plan was last updated",
+  "让 agent 同步计划": "Ask agent to sync plan",
+  "发一句话请 agent 只用 todo 把计划对齐实际进度": "Send one message asking the agent to bring the plan up to date with todo only",
+  "最后记录 · 计划 {p1}/{p2} · {p3}": "Last recorded · Plan {p1}/{p2} · {p3}",
+  "停下前核对计划": "Check plan before stopping",
+  "agent 停下前，计划还有没关的项、且上次更新后又调用了 5 次以上工具，就让它多跑一小步只用 todo 对齐计划（用户看不到这句提醒，会多花一次请求）。改了立即生效": "Before the agent stops, if the plan still has open items and 5+ tool calls ran since its last update, let it take one extra short step that only uses todo to bring the plan up to date (the reminder is hidden from you and costs one more request). Takes effect immediately",
 };
