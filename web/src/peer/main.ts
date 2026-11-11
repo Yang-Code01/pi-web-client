@@ -679,7 +679,9 @@ function contactGroups(): Group[] {
   const pending = take(S.contacts.filter((c) => c.incoming && !c.friend));
   const online = take(S.contacts.filter((c) => c.friend && c.online));
   const offline = take(S.contacts.filter((c) => c.friend && !c.online));
-  const nearby = take(S.contacts.filter((c) => !c.friend && !c.incoming));
+  // quick 与 friend 正交：一键加过的人单独成组，排在好友之后、附近的人之前（D234）。
+  const quickList = take(S.contacts.filter((c) => c.quick && !c.friend));
+  const nearby = take(S.contacts.filter((c) => !c.friend && !c.incoming && !c.quick));
   // 收藏不再单独成组：同一个人会同时出现在「收藏」和「好友·在线」，看着像两个人。
   // 改成收藏的排到组内最前（行上已有 ★），组本身不留空壳。
   const favFirst = (list: Contact[]): Contact[] =>
@@ -688,6 +690,7 @@ function contactGroups(): Group[] {
   if (pending.length) groups.push({ title: tr("待处理"), items: favFirst(pending) });
   groups.push({ title: tr("好友 · 在线"), items: favFirst(online) });
   groups.push({ title: tr("好友 · 离线"), items: favFirst(offline) });
+  if (quickList.length) groups.push({ title: tr("快捷联系人"), items: favFirst(quickList) });
   if (nearby.length) groups.push({ title: tr("附近的人"), items: favFirst(nearby) });
   return groups.filter((g) => g.items.length > 0 || g.title.startsWith(tr("好友")));
 }
@@ -1178,7 +1181,15 @@ function renderContactDetail(): void {
     no.addEventListener("click", () => void friendAction(c.nodeId, "remove"));
     acts.append(ok, no);
   } else if (!c.friend) {
-    const add = h("button", "btn", c.outgoing ? tr("再发一次申请") : tr("加好友"));
+    // 两颗按钮并存：快捷添加（文字即时）、两步加好友（可传文件）。已 quick 时快捷按钮变成不可点的状态标签，
+    // 但「加为好友」要留着，让用户还能升级成真正的好友。
+    const qadd = h("button", "btn pri", c.quick ? tr("已是快捷联系人") : tr("快捷添加（可聊天）"));
+    qadd.type = "button";
+    qadd.disabled = Boolean(c.quick) || !c.online;
+    if (!c.online) qadd.title = tr("对方已离线，等他上线再试");
+    if (!c.quick) qadd.addEventListener("click", () => void friendAction(c.nodeId, "quick", true));
+    acts.append(qadd);
+    const add = h("button", "btn", c.outgoing ? tr("再发一次申请") : tr("加为好友（可传文件）"));
     add.type = "button";
     add.disabled = !c.online;
     if (!c.online) add.title = tr("对方离线，等上线再申请");
@@ -1205,15 +1216,15 @@ function renderContactDetail(): void {
     [tr("地址"), `${c.addr || "?"}:${c.livePort || c.port}`],
     [tr("主机名"), c.hostname || "?"],
     [tr("状态"), c.online ? tr("在线") : tr("离线")],
-    [tr("关系"), c.friend ? tr("好友") : c.outgoing ? tr("已发申请") : c.incoming ? tr("对方申请中") : tr("还没加好友")],
+    [tr("关系"), c.friend ? tr("好友") : c.quick ? tr("快捷联系人") : c.outgoing ? tr("已发申请") : c.incoming ? tr("对方申请中") : tr("还没加好友")],
   ];
   for (const [k, v] of rows) kv.append(h("span", "k", k), h("span", "v", v));
-  card.append(kv, h("div", "note", tr("在线的人会自动出现在「附近的人」里；文件只能发给好友。")));
+  card.append(kv, h("div", "note", tr("在线的人会自动出现在「附近的人」里；快捷添加只放行文字，文件只能发给好友。")));
   detail.append(card);
   mainEl.append(detail);
 }
 
-async function friendAction(peer: string, action: "request" | "accept" | "favorite" | "remove", on?: boolean): Promise<void> {
+async function friendAction(peer: string, action: "request" | "quick" | "accept" | "favorite" | "remove", on?: boolean): Promise<void> {
   try {
     await postJson("/api/peer/friend", { peer, action, on });
     await loadContacts();
@@ -1481,6 +1492,9 @@ function threadMenu(x: number, y: number, t: Thread): void {
 function contactMenu(x: number, y: number, c: Contact): void {
   openMenu(x, y, [
     { label: tr("发消息"), icon: "msg", run: () => openThread(c.nodeId) },
+    ...(!c.friend && !c.incoming && !c.quick && c.online
+      ? [{ label: tr("快捷添加（可聊天）"), icon: "userPlus", run: () => void friendAction(c.nodeId, "quick", true) }]
+      : []),
     ...(c.friend ? [{ label: tr("传文件"), icon: "attach", run: () => void openPicker(c.nodeId, true) }] : []),
     { label: c.favorite ? tr("取消收藏") : tr("收藏"), icon: "star", run: () => void friendAction(c.nodeId, "favorite", !c.favorite) },
     { label: tr("复制 nodeId"), icon: "copy", run: () => void copyText(c.nodeId) },

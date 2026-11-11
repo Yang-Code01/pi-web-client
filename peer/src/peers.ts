@@ -5,14 +5,17 @@ import type { PeerIdentity } from "./history.ts";
 /**
  * 好友关系（第 3 片，决定 7/8/11）。
  *
- * 状态只有三个字段：`friend`（双向已确认）、`favorite`（收藏，一定是好友）、
- * `outgoing`（我发出、还没被接受）。「他请求我」是 `friend === false && incoming === true`。
+ * `friend`（双向已确认）与 `quick`（一键快捷联系人）正交：quick 只放行 1:1 文字，
+ * 不授予文件权限（D106 的闸门只看 friend）。`favorite` 是本机收藏，
+ * `outgoing`（我发出、还没被接受），「他请求我」是 `friend === false && incoming === true`。
  */
 export interface Contact {
   nodeId: string;
   nickname: string;
   hostname: string;
   port: number;
+  /** 老关系记录没有这个字段：读的时候按 false 处理，写入时才补上。 */
+  quick?: boolean;
   friend: boolean;
   favorite: boolean;
   incoming: boolean;
@@ -55,6 +58,7 @@ export class Relations {
       nickname: who.nickname ?? who.nodeId.slice(0, 8),
       hostname: who.hostname ?? "",
       port: who.port ?? 0,
+      quick: false,
       friend: false,
       favorite: false,
       incoming: false,
@@ -79,6 +83,15 @@ export class Relations {
 
   isFriend(nodeId: string): boolean {
     return Boolean(this.map[nodeId]?.friend);
+  }
+
+  /** 一键快捷添加：本机立刻记为 quick，不产生待接受申请。 */
+  quickAdd(who: PeerIdentity): Contact {
+    return this.touch(who, { quick: true });
+  }
+
+  isQuick(nodeId: string): boolean {
+    return Boolean(this.map[nodeId]?.quick);
   }
 
   /** 我点「加好友」：先记 outgoing，等对方 accept。 */
