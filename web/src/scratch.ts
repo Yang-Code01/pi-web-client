@@ -269,6 +269,7 @@ export class ScratchChat {
           if (this.dismissedReclaimId !== this.id) this.reclaimEl.hidden = false;
           if (this.state?.paused) {
             this.error = tr("随手问已暂停，恢复后可以接着问");
+            this.releasePending();
           } else {
             this.recovering = true;
             this.pendingSessionId = null;
@@ -289,6 +290,7 @@ export class ScratchChat {
         if (mine || (this.asked && !msg.sessionId)) {
           this.starting = false;
           this.error = String(msg.message ?? tr("启动失败"));
+          this.releasePending();
           this.paintState();
           return true;
         }
@@ -490,10 +492,24 @@ export class ScratchChat {
 
   private submit(): void {
     const text = this.inputEl.value.trim();
-    if (!text || this.pendingText || this.running || this.starting || this.state?.paused || !this.id) return;
+    if (!text || this.pendingText || this.running || this.state?.paused) return;
     this.pendingText = text;
+    // No id yet (a fresh page, or the 404 reopen has not answered): ask once more; the snapshot
+    // handler sends the queued sentence as soon as it knows which session to send it to.
+    if (!this.id) {
+      this.pendingSessionId = null;
+      this.asked = false;
+      this.open();
+      return;
+    }
     this.pendingSessionId = this.id;
     this.host.send({ type: "prompt", sessionId: this.id, text });
+  }
+
+  /** Give the sentence back to the composer: a terminal failure must not leave it un-sendable. */
+  private releasePending(): void {
+    this.pendingText = null;
+    this.pendingSessionId = null;
   }
 
   private togglePause(): void {
