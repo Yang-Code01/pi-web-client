@@ -77,6 +77,7 @@ let ws = null;
 const seen = [];
 
 async function startBridge(extraEnv = {}) {
+  fs.writeFileSync(PI_LOG, "");
   bridge = spawn(process.execPath, ["bridge/dist/index.js"], {
     cwd: REPO,
     env: {
@@ -192,6 +193,88 @@ try {
   check(sessionArgv().every((n) => n.pid === pid1), "清空没有换进程（pid 不变）");
   check(Boolean(bump?.before) && !fs.existsSync(bump.before), `旧的会话文件被删掉了（${path.basename(bump?.before ?? "")}）`);
   check(cleared.state?.file === bump?.file, "桥跟着换到了新的会话文件");
+
+  log("A2. 用户暂停/开始：不丢转录、不误唤醒，跨标签同步；暂停时清空不启动 pi");
+  send({ type: "prompt", sessionId: sid, text: "暂停前保留这段" });
+  await waitFor(
+(m) => m.sessionId === sid && /echo: 暂停前保留这段/.test(m.text ?? m.item?.text ?? ""),
+30000,
+"暂停前的回答",
+  );
+  const beforePause = seen.filter((m) => m.type === "scratch").at(-1);
+  const savedFile = beforePause?.state?.file;
+  const piBeforePause = sessionArgv().at(-1)?.pid;
+  check(Boolean(savedFile && fs.existsSync(savedFile)), `暂停前有对话文件（${savedFile}）`);
+  const otherSeen = [];
+  const otherWs = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie } });
+  otherWs.on("message", (buf) => otherSeen.push(JSON.parse(buf.toString())));
+  await new Promise((resolve, reject) => {
+    otherWs.once("open", resolve);
+    otherWs.once("error", reject);
+  });
+  const otherSend = (obj) => otherWs.send(JSON.stringify(obj));
+  const waitOther = (pred, ms, label) => until(() => otherSeen.some(pred), ms, label).then(() => otherSeen.find(pred));
+  otherSend({ type: "scratch.open" });
+  const otherInitial = await waitOther((m) => m.type === "scratch" && m.sessionId === sid, 15000, "同时打开的另一标签快照");
+  check(otherInitial.state?.paused !== true, "暂停前第二标签也在观察同一个随手问");
+  send({ type: "scratch.pause" });
+  const paused = await waitFor((m) => m.type === "session.state" && m.session?.id === sid && m.session?.paused === true, 15000, "暂停状态广播");
+  await until(() => piNotes().some((n) => n.t === "exit" && n.pid === piBeforePause), 15000, "暂停进程退出");
+  check(Boolean(paused), "服务端广播暂停状态");
+  check(fs.existsSync(savedFile), "暂停后保留原会话文件");
+  const simultaneousPaused = await waitOther(
+    (m) => m.type === "session.state" && m.session?.id === sid && m.session?.paused === true,
+    15000,
+    "另一标签收到暂停广播",
+  );
+  check(Boolean(simultaneousPaused), "同时打开的第二标签收到暂停广播");
+  const reopenedMark = otherSeen.length;
+  otherSend({ type: "scratch.open" });
+  const reopenedPaused = await waitOther(
+    (m) => m.type === "scratch" && m.sessionId === sid && otherSeen.indexOf(m) >= reopenedMark,
+    15000,
+    "另一标签重新获取暂停快照",
+  );
+  check(reopenedPaused.state?.paused === true, "稍后打开的标签也看到已暂停");
+  check((reopenedPaused.items ?? []).some((item) => /暂停前保留这段/.test(item.text ?? "")), `稍后打开仍能看到暂停前转录（${JSON.stringify((reopenedPaused.items ?? []).map((item) => ({ kind: item.kind, text: item.text })))}）`);
+  check(sessionArgv().length === 1, "打开已暂停的随手问没有拉起 pi");
+
+  const promptMark = seen.length;
+  send({ type: "prompt", sessionId: sid, text: "暂停时不能发" });
+   const pausedPromptNotice = await waitFor(
+     (m) => m.type === "notice" && m.code === "scratch_paused" && m.sessionId === sid && seen.indexOf(m) >= promptMark,
+     10000,
+     "暂停时拒绝提问",
+   );
+   await sleep(250);
+   check(Boolean(pausedPromptNotice) && sessionArgv().length === 1, "服务端拒绝暂停时的提问且不唤醒 pi");
+
+  send({ type: "scratch.resume" });
+  const resumed = await waitFor((m) => m.type === "scratch" && m.sessionId === sid && m.state?.paused === false, 30000, "恢复后的快照");
+  await until(() => sessionArgv().length === 2, 15000, "恢复进程启动");
+  const resumedLaunch = sessionArgv().at(-1);
+  const resumedArg = resumedLaunch?.argv ?? [];
+  check(resumed.state?.file === savedFile, "恢复后仍指向原会话文件");
+  check(resumedArg.includes("--session") && resumedArg.includes(savedFile), "恢复启动显式沿用原会话文件");
+  send({ type: "prompt", sessionId: sid, text: "恢复后继续问" });
+  await waitFor((m) => m.sessionId === sid && /echo: 恢复后继续问/.test(m.text ?? m.item?.text ?? ""), 30000, "恢复后的回答");
+
+   const secondPauseMark = seen.length;
+   send({ type: "scratch.pause" });
+   await waitFor(
+     (m) => m.type === "session.state" && m.session?.id === sid && m.session?.paused === true && seen.indexOf(m) >= secondPauseMark,
+     15000,
+     "再次暂停",
+   );
+   await waitFor((m) => m.type === "scratch" && m.sessionId === sid && m.state?.paused === true && seen.indexOf(m) >= secondPauseMark, 15000, "再次暂停快照");
+  await until(() => piNotes().some((n) => n.t === "exit" && n.pid === resumedLaunch?.pid), 15000, "恢复进程退出");
+  const clearMark = seen.length;
+  send({ type: "scratch.clear" });
+  const pausedClear = await waitFor((m) => m.type === "scratch" && m.sessionId === sid && seen.indexOf(m) >= clearMark, 15000, "暂停状态下清空");
+  check(pausedClear.state?.paused === true && (pausedClear.items ?? []).length === 0, `暂停时清空得到空白暂停对话（paused=${pausedClear.state?.paused} items=${pausedClear.items?.length}）`);
+  check(!savedFile || !fs.existsSync(savedFile), "暂停时清空删除旧会话文件");
+  check(sessionArgv().length === 2, "暂停时清空没有启动 pi");
+  otherWs.close();
 
   // ---------------------------------------------- B. 休眠豁免与全部休眠
   log("B. 默认不自动休眠；普通会话仍按 1.5 秒睡，全部休眠跳过随手问");
