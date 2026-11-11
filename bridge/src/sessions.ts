@@ -46,6 +46,25 @@ function planNudgePath(): string {
   return process.env.PI_WEB_PLAN_NUDGE_EXT ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "plan-nudge.ts");
 }
 
+/** #384：Context 面板的数据源（`context_with_system`），每次 LLM 调用前把六类组成估算落盘。模板里的
+ * `__LOG_DIR__` 占位在 ensureContextLogExt() 里填成真实状态目录，`-e` 指向那个安装副本。 */
+function ensureContextLogExt(): string {
+  const override = process.env.PI_WEB_CONTEXT_LOG_EXT;
+  if (override) return override;
+  const template = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "context-log.ts");
+  const source = fs.readFileSync(template, "utf8");
+  if (!source.includes('"__LOG_DIR__"')) throw new Error("context-log.ts 模板缺少 __LOG_DIR__ 占位");
+  const file = statePath("ext", "context-log.ts");
+  ensureDir(path.dirname(file));
+  fs.writeFileSync(file, source.replace('"__LOG_DIR__"', JSON.stringify(contextLogDir())));
+  return file;
+}
+
+/** #384：context-log 落盘目录（bridge 状态目录），前端若要直读也会用它。 */
+export function contextLogDir(): string {
+  return statePath("ctxlog");
+}
+
 export interface ApprovalRequest {
   id: string;
   sessionId: string;
@@ -742,6 +761,18 @@ export interface SessionSnapshot {
   plan: PlanSnapshot | null;
 }
 
+/** #384：context-log 扩展落盘的一行（见 bridge/ext/context-log.ts）。 */
+export interface CtxLine {
+  v: number;
+  seq: number;
+  ts: number;
+  cwd: string | null;
+  total: number;
+  cats: { sys: number; tools: number; user: number; inject: number; asst: number; toolr: number };
+  messages: number;
+  perMessage: Array<{ role: string; tokens: number; blocks: number; toolCalls: number }>;
+}
+
 export class Session extends EventEmitter {
   readonly state: SessionState;
   items: Item[] = [];
@@ -762,6 +793,8 @@ export class Session extends EventEmitter {
   contextBudget: number | null = readBudget();
   /** Tokens the last get_session_stats reported, used to decide when the budget is blown. */
   private lastContextTokens: number | null = null;
+  /** #384：ctxlog 增量基线（已推给前端的行数；null = 还没推过全量）。 */
+  private ctxBaseline: number | null = null;
   /** One auto-compaction per turn; the next agent_start re-arms it. */
   private autoCompactUsed = false;
   /** get_commands results, refreshed every couple of minutes. */
@@ -1136,6 +1169,8 @@ export class Session extends EventEmitter {
     args.push("-e", artifactToolPath());
     // #357：计划收尾核对。总是挂上，开不开由它每次自己读全局设置 `web.planNudge`（默认关）。
     args.push("-e", planNudgePath());
+    // #384：Context 面板组成数据。每次 LLM 调用前写一行 JSONL（估算），面板读它画六类组成。
+    args.push("-e", ensureContextLogExt());
     const cwd = opts.cwd || this.state.cwd || process.cwd();
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
     const launch = readLaunch(id);
@@ -1243,6 +1278,60 @@ export class Session extends EventEmitter {
     // #221: 唤醒续接同样只推末尾一页，不然休眠一个大会话再叫醒，页面又要等整段。
     this.emitWs({ type: "items", sessionId: id, ...this.frame() });
     void this.refreshStats();
+    void this.emitContextLog(true);
+  }
+
+  // ---------------------------------------------------------------- #384 Context 面板数据
+
+  /** #384：context-log 扩展写的 per-session JSONL；不存在 = 面板没有组成数据可画。 */
+  contextLogFile(): string | null {
+    // 会话 id 由桥分配，扩展落盘时只用它，所以这里拼回同一路径。
+    const id = this.state.id;
+    if (!/^[0-9a-f-]{6,}$/i.test(id)) return null;
+    return path.join(contextLogDir(), id.slice(0, 8), `${id}.ctx.jsonl`);
+  }
+
+  /** 读整个组成日志（启动时/面板全量刷新）；坏行跳过，从不抛。 */
+  readContextLog(): CtxLine[] {
+    const file = this.contextLogFile();
+    if (!file) return [];
+    let text: string;
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      return [];
+    }
+    const out: CtxLine[] = [];
+    for (const line of text.split("\n")) {
+      const s = line.trim();
+      if (!s) continue;
+      try {
+        const obj = JSON.parse(s);
+        if (obj && typeof obj === "object" && typeof obj.seq === "number" && obj.cats) out.push(obj);
+      } catch {
+        /* 半行（正在写）下次再收 */
+      }
+    }
+    return out;
+  }
+
+  /**
+   * #384：把组成日志推给前端（增量）。`full` 时先推全部，供面板初始化。
+   * 在 agent_end / agent_settled 后和 stats 一起走，不用 fs.watch —— 写入节奏和请求一致，够了。
+   */
+  async emitContextLog(full = false): Promise<void> {
+    if (!full && this.ctxBaseline === null) return;
+    const lines = this.readContextLog();
+    const base = this.ctxBaseline ?? 0;
+    if (!full && lines.length <= base) return;
+    this.ctxBaseline = lines.length;
+    this.emitWs({
+      type: "ctxlog",
+      sessionId: this.state.id,
+      full,
+      total: lines.length,
+      lines: full ? lines : lines.slice(base),
+    });
   }
 
   /** Token/context numbers for the composer HUD and new subscribers; best effort, never throws. */
@@ -1306,6 +1395,7 @@ export class Session extends EventEmitter {
         // Not the end of the run: retries, overflow recovery, compaction, steering and follow-ups
         // can all carry on after it (docs/rpc.md "Run lifecycle"). Only agent_settled is idle.
         void this.refreshStats();
+        void this.emitContextLog();
         break;
       case "agent_settled": {
         // Whatever was queued has been delivered or cleared by now.
@@ -1327,6 +1417,7 @@ export class Session extends EventEmitter {
         // 正好没赶上插话），就当下一轮的开头送出去 —— 别让它们等在一条再也不会出现的启动信号上。
         this.flushBootQueue();
         void this.refreshStats();
+        void this.emitContextLog();
         break;
       }
       case "message_start": {

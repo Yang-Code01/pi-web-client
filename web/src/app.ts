@@ -32,6 +32,7 @@ import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
+import { ctxCompRows, ctxEvents, ctxFmt, ctxKpis, ctxTotal, isCompactionDrop, type CtxLine } from "./context.ts";
 import { Socket } from "./ws.ts";
 import { execView, type ExecChildRunInput, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
@@ -362,7 +363,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | "wsnew" | "wsdelete" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | "wsnew" | "wsdelete" | "context" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   /** 新建文件夹 / 新建文件共用一个等待表：两条结果的形状一样（`{ path }` / `{ error }`，D167）。 */
@@ -370,6 +371,10 @@ export class App {
   /** Session whose claim is in flight: spawning pi takes a few seconds. */
   private claiming: string | null = null;
   private usage: { contextTokens: number | null; contextWindow: number | null } = { contextTokens: null, contextWindow: null };
+  /** #384：当前会话的组成日志（ctxlog 消息累积），面板数据源。 */
+  private ctxLogs = new Map<string, CtxLine[]>();
+  /** #384：面板选中的请求下标（null = 最后一轮「当前」）；面板关了不重置，回来还在。 */
+  private ctxPick: number | null = null;
   /** Context budget chosen in the model sheet (bridge enforces it); null = window size. */
   private budget: number | null = null;
   /** Extension status lines / widgets / title for the current session (#18). */
@@ -469,6 +474,8 @@ export class App {
   /** #290：下沿那一行与另外三颗，`paintComposerChrome()` 只改它们的 `hidden`，不重建。 */
   private hintTools: HTMLElement | null = null;
   private skillButton: HTMLButtonElement | null = null;
+  /** #384：下沿「上下文」按钮，`paintComposerChrome()` 只改 `hidden`。 */
+  private contextBtn: HTMLButtonElement | null = null;
   private attachButton: HTMLButtonElement | null = null;
   private cliRun: { runId: string | null; op: string; out: string; code: number | null | undefined; error?: string } | null = null;
   /**
@@ -1890,7 +1897,18 @@ export class App {
         this.updateExecRoundStats();
         this.fillModelChip();
         if (this.queueTab === "exec") this.renderQueue();
+        this.paintContextIfOpen();
         break;
+      case "ctxlog": {
+        // #384：组成日志增量。非当前会话的也存（切换会话时面板要画全量），只重画打开着的面板。
+        if (typeof msg.sessionId !== "string") break;
+        const arr = Array.isArray(msg.lines) ? (msg.lines as CtxLine[]) : [];
+        const cur = this.ctxLogs.get(msg.sessionId) ?? [];
+        const next = msg.full ? arr : [...cur, ...arr.filter((l) => l && typeof l.seq === "number")];
+        this.ctxLogs.set(msg.sessionId, next);
+        if (msg.sessionId === this.currentId) this.paintContextIfOpen();
+        break;
+      }
       case "budget":
         if (msg.sessionId !== this.currentId) break;
         this.budget = typeof msg.budget === "number" ? msg.budget : null;
@@ -4058,6 +4076,7 @@ export class App {
 
     const bottomItems: [ChromeId, string][] = [
       ["skills", tr("技能")],
+      ["context", tr("上下文")],
       ["ext", tr("扩展")],
       ["attach", tr("文件")],
       ["model", tr("模型")],
@@ -4260,6 +4279,7 @@ export class App {
       if (btn) btn.hidden = !isChromeVisible(id, this.uiPrefs.chrome, ctx);
     };
     show(this.skillButton, "skills");
+    show(this.contextBtn, "context");
     show(this.extButton, "ext");
     show(this.attachButton, "attach");
     show(this.modelChip, "model");
@@ -4870,6 +4890,186 @@ export class App {
     };
     bar.append(el("span", "update-bar-text", tr("服务已更新，刷新后生效")), btn, close);
     document.body.append(bar);
+  }
+
+  // ---------------------------------------------------------------- #384 Context 面板
+
+  /** 下沿的「上下文」按钮：和技能同排，点开 Context 面板（D 样张，issue #384）。 */
+  private contextButton(): HTMLButtonElement {
+    const btn = el("button", "btn ghost", tr("上下文")) as HTMLButtonElement;
+    btn.dataset.act = "context";
+    btn.title = tr("上下文组成：六类各占多少、逐请求趋势、压缩事件");
+    btn.onclick = () => this.openContextSheet();
+    this.contextBtn = btn;
+    return btn;
+  }
+
+  /** 面板（sheet，同技能商店形态）：KPI 行 + 组成明细（选中轮）+ 趋势 + 事件。 */
+  private openContextSheet(): void {
+    this.closeSheet();
+    this.sheetKind = "context";
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet settings-sheet context-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("上下文组成")));
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const body = el("div", "settings-body");
+    const host = el("div", "ctx-host");
+    body.append(host);
+    sheet.append(head, body);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    this.paintContextSheet(host);
+  }
+
+  /** ctxlog / stats 到了就重画（面板开着才画）。 */
+  private paintContextIfOpen(): void {
+    if (this.sheetKind !== "context") return;
+    const host = this.sheet?.querySelector<HTMLElement>(".ctx-host");
+    if (!host) return;
+    this.paintContextSheet(host);
+  }
+
+  private paintContextSheet(host: HTMLElement): void {
+    const lines = this.currentId ? (this.ctxLogs.get(this.currentId) ?? []) : [];
+    const win = this.usage.contextWindow;
+    const kpis = ctxKpis(lines, win, this.usage.contextTokens);
+    host.replaceChildren();
+
+    if (!this.session?.owned) {
+      host.append(el("div", "empty", tr("接管会话后可见（组成数据来自正在运行的 pi）")));
+      return;
+    }
+    if (!lines.length) {
+      host.append(el("div", "empty", tr("还没有组成数据：发一条消息，下一轮就有（估算，供参考）")));
+      return;
+    }
+
+    // 选中轮：null = 最后一轮。点趋势柱 / KPI 卡换轮，范围外的新数据到了自动回「当前」。
+    if (this.ctxPick != null && this.ctxPick >= lines.length) this.ctxPick = null;
+    const pick = this.ctxPick == null ? lines.length - 1 : this.ctxPick;
+    const picked = lines[pick] ?? null;
+
+    // ---- KPI 行
+    const krow = el("div", "ctx-kpis");
+    const kpi = (label: string, value: string, sub: string, onClick?: () => void) => {
+      const k = el("div", "ctx-kpi" + (onClick ? " clickable" : ""));
+      k.append(el("div", "k", label), el("div", "v", value), el("div", "s", sub));
+      if (onClick) {
+        k.setAttribute("role", "button");
+        k.onclick = onClick;
+      }
+      return k;
+    };
+    const pct = kpis.window ? `${((kpis.current / kpis.window) * 100).toFixed(1)}%` : "";
+    krow.append(
+      kpi(tr("当前上下文"), ctxFmt(kpis.current), win ? tr("{p1} / {p2}", { p1: pct, p2: ctxFmt(win) }) : pct, () => {
+        this.ctxPick = null;
+        this.paintContextIfOpen();
+      }),
+      kpi(tr("本会话峰值"), ctxFmt(kpis.peak), tr("请求 #{p1}（估算）", { p1: String(kpis.peakSeq) }), () => {
+        const idx = lines.findIndex((l) => l.seq === kpis.peakSeq);
+        if (idx >= 0) {
+          this.ctxPick = idx;
+          this.paintContextIfOpen();
+        }
+      }),
+      kpi(tr("LLM 请求"), String(kpis.requests), tr("均值 {p1} / 次（估算）", { p1: ctxFmt(kpis.avg) })),
+      kpi(tr("距自动压缩"), kpis.tillCompact == null ? "–" : "~" + ctxFmt(kpis.tillCompact), tr("阈值 ≈ 窗口的 92%")),
+    );
+    host.append(krow);
+
+    const grid = el("div", "ctx-grid");
+
+    // ---- 左上：组成明细（选中轮）
+    const comp = el("div", "cardbox ctx-comp");
+    const t = picked ? ctxTotal(picked) : 0;
+    const compTitle = el("div", "ctx-ct");
+    compTitle.append(
+      el("span", "", tr("组成明细")),
+      el("span", "sub", [pick === lines.length - 1 ? tr("当前") : tr("请求 #{p1}", { p1: String(picked?.seq ?? "") }), ctxFmt(t), kpis.window ? `${((t / kpis.window) * 100).toFixed(1)}%` : ""].filter(Boolean).join(" · ")),
+    );
+    comp.append(compTitle);    const cl = el("div", "ctx-catlist");
+    for (const row of ctxCompRows(picked)) {
+      const r = el("div", "ctx-catrow");
+      r.append(
+        el("span", "ctx-cl", `<span class="sw ${row.cls}"></span>${row.label}`),
+        el("span", "ctx-bar", `<span class="seg ${row.cls}" style="width:${row.pct}%"></span>`),
+        el("span", "ctx-cv", `${ctxFmt(row.tokens)}<span class="p">${row.pct.toFixed(1)}%</span>`),
+      );
+      cl.append(r);
+    }
+    comp.append(cl);
+    // 对照窗口的总量条：选中轮在窗口里占的位置
+    if (kpis.window) {
+      const track = el("div", "ctx-window-track");
+      track.title = tr("选中轮总量占窗口的比例（其余是还能涨的空间）");
+      track.append(el("span", "ctx-window-fill", `${((t / kpis.window) * 100).toFixed(1)}%`));
+      comp.append(track);
+    }
+    grid.append(comp);
+
+    // ---- 右上：事件（压缩标记）
+    const ev = el("div", "cardbox ctx-ev");
+    const events = ctxEvents(lines);
+    const evTitle = el("div", "ctx-ct");
+    evTitle.append(el("span", "", tr("事件")), el("span", "sub", tr("{p1} 条", { p1: String(events.length) })));
+    ev.append(evTitle);
+    const evList = el("div", "ctx-inner");
+    if (!events.length) {
+      evList.append(el("div", "ctx-ev-empty", tr("还没有压缩事件")));
+    } else {
+      for (const e of events) {
+        const evRow = el("div", "ctx-ev-row");
+        evRow.append(
+          el("span", "sc", "✂"),
+          el("span", "", tr("请求 #{p1}", { p1: String(e.seq) })),
+          el("span", "sub", `${ctxFmt(e.before)} → ${ctxFmt(e.after)}`),
+          el("span", "sub", new Date(e.ts).toLocaleTimeString()),
+        );
+        evList.append(evRow);
+      }
+    }
+    ev.append(evList);
+    grid.append(ev);
+
+    // ---- 左下：轮次趋势（堆叠条，点选换轮）
+    const trc = el("div", "cardbox ctx-trend");
+    const trTitle = el("div", "ctx-ct");
+    trTitle.append(el("span", "", tr("轮次趋势")), el("span", "sub", tr("{p1} 次请求 · 点选看该轮组成", { p1: String(lines.length) })));
+    trc.append(trTitle);
+    const chart = el("div", "ctx-chart");
+    const maxT = Math.max(...lines.map(ctxTotal), 1);
+    lines.forEach((line, i) => {
+      const prev = lines[i - 1];
+      const col = el("button", "ctx-tcol" + (i === pick ? " picked" : ""));
+      col.type = "button";
+      col.title = [tr("请求 #{p1}", { p1: String(line.seq) }), ctxFmt(ctxTotal(line)), isCompactionDrop(prev, line) ? tr("此轮前压缩") : ""].filter(Boolean).join(" · ");
+      const stack = el("span", "ctx-tstack");
+      stack.style.height = `${(ctxTotal(line) / maxT) * 100}%`;
+      for (const c of ["sys", "tools", "user", "inject", "asst", "toolr"] as const) {
+        const seg = el("span", `seg c-${c}`);
+        seg.style.height = `${((line.cats?.[c] ?? 0) / ctxTotal(line)) * 100}%`;
+        stack.append(seg);
+      }
+      col.append(stack);
+      if (isCompactionDrop(prev, line)) col.append(el("span", "ctx-sc", "✂"));
+      col.onclick = () => {
+        this.ctxPick = i;
+        this.paintContextIfOpen();
+      };
+      chart.append(col);
+    });
+    trc.append(chart);
+    grid.append(trc);
+
+    host.append(grid);
   }
 
   /** Repaint in place, keeping the scroll position and the focused box (as `paintExtIfOpen` does). */
@@ -10050,7 +10250,7 @@ export class App {
     extBtn.onclick = () => this.openExtManager();
     this.extButton = extBtn;
     this.paintExtButton();
-    tools.append(skillBtn, extBtn, pathBtn, chip);
+    tools.append(skillBtn, this.contextButton(), extBtn, pathBtn, chip);
     if (s?.owned) {
       // The explanation lives in the tooltip so it no longer costs the composer a whole row.
       const fromWeb = s.origin === "web";

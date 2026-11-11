@@ -4800,3 +4800,56 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .exec-plan-sync:hover:not(:disabled) { color: var(--text); border-color: var(--warn); }
 .exec-plan-sync:disabled { opacity: .5; cursor: default; }
 .exec-plan.stale .exec-plan-task.in_progress .exec-plan-state { animation: none; }
+/* #384 Context 面板（组成明细 / KPI / 趋势 / 事件）。六类色与原型 shared.css 对齐。 */
+.sheet.context-sheet { width: min(960px, calc(var(--vw1) * 96)); }
+.context-sheet .settings-body { gap: 12px; }
+.ctx-host { display: grid; gap: 12px; min-width: 0; }
+.ctx-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.ctx-kpi { border: 1px solid var(--line-soft); border-radius: 10px; background: var(--panel); padding: 10px 12px; display: grid; gap: 2px; min-width: 0; }
+.ctx-kpi .k { font-size: 11px; color: var(--faint); }
+.ctx-kpi .v { font: 600 20px/1.2 var(--sans); color: var(--text); }
+.ctx-kpi .s { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-kpi.clickable { cursor: pointer; }
+.ctx-kpi.clickable:hover { border-color: var(--accent-dim); background: var(--accent-bg); }
+.ctx-grid { display: grid; grid-template-columns: 1.35fr 1fr; gap: 12px; }
+.ctx-grid .cardbox { border: 1px solid var(--line-soft); border-radius: 10px; background: var(--panel); padding: 10px 12px; min-width: 0; }
+.ctx-ct { font: 600 12px/1.4 var(--sans); color: var(--text); margin-bottom: 8px; }
+.ctx-ct .sub { font-weight: 400; color: var(--faint); margin-left: 8px; }
+/* 组成明细 */
+.ctx-catlist { display: grid; gap: 2px; }
+.ctx-catrow { display: grid; grid-template-columns: 96px 1fr 90px; gap: 8px; align-items: center; padding: 3px 0; font-size: 12.5px; }
+.ctx-cl { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); white-space: nowrap; }
+.ctx-cl .sw, .ctx-tstack .seg { display: inline-block; }
+.ctx-cl .sw { width: 10px; height: 10px; border-radius: 3px; }
+.ctx-bar { position: relative; display: block; height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
+.ctx-bar .seg { position: absolute; inset: 0 auto 0 0; border-radius: 3px; }
+.ctx-cv { text-align: right; font-family: var(--mono); font-size: 12px; color: var(--text); white-space: nowrap; }
+.ctx-cv .p { margin-left: 6px; color: var(--faint); font-size: 11px; }
+.ctx-window-track { margin-top: 10px; position: relative; height: 10px; border-radius: 5px; background: var(--line-soft); overflow: hidden; }
+.ctx-window-fill { position: absolute; inset: 0 auto 0 0; display: flex; align-items: center; padding-left: 6px; border-radius: 5px; background: linear-gradient(90deg, var(--accent-dim), var(--accent)); font: 600 9px/1 var(--sans); color: var(--bg); }
+/* 六类色（深色主题；原型 shared.css 同款） */
+.c-sys { background: #7dd3fc; }
+.c-tools { background: #c4b5fd; }
+.c-user { background: #4ade80; }
+.c-inject { background: #fbbf24; }
+.c-asst { background: #f0abfc; }
+.c-toolr { background: #94a3b8; }
+/* 趋势 */
+.ctx-trend { grid-column: 1; }
+.ctx-chart { display: flex; align-items: flex-end; gap: 3px; height: 140px; padding-top: 14px; }
+.ctx-tcol { position: relative; flex: 1; min-width: 0; height: 100%; display: flex; align-items: flex-end; background: transparent; border: 0; padding: 0; cursor: pointer; border-radius: 3px; }
+.ctx-tstack { display: flex; flex-direction: column-reverse; width: 100%; min-height: 2px; border-radius: 3px; overflow: hidden; }
+.ctx-tstack .seg { width: 100%; min-height: 0; }
+.ctx-tcol.picked { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ctx-tcol:hover .ctx-tstack { filter: brightness(1.25); }
+.ctx-sc { position: absolute; top: -13px; left: 50%; transform: translateX(-50%); font-size: 10px; color: var(--warn); }
+/* 事件 */
+.ctx-inner { max-height: 200px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; display: grid; gap: 2px; }
+.ctx-ev-row { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 12.5px; color: var(--text); }
+.ctx-ev-row .sc { color: var(--warn); }
+.ctx-ev-row .sub { color: var(--faint); font-size: 11px; }
+.ctx-ev-empty { color: var(--faint); font-size: 12px; padding: 8px 0; }
+@media (max-width: 720px) {
+  .ctx-kpis { grid-template-columns: repeat(2, 1fr); }
+  .ctx-grid { grid-template-columns: minmax(0, 1fr); }
+}

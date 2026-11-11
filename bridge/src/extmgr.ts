@@ -215,7 +215,7 @@ export function bumpMcp(file: string, name: string, version: string): void {
  * 顶栏 7 颗、输入框下沿 4 颗（#281 / #288）。写进 `ui.json` 的是这些稳定 id，不是文案。
  * 页面那份「哪颗该画」的纯函数在 `web/src/chrome.ts`，两边白名单要一致。
  */
-export const CHROME_IDS = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira", "skills", "ext", "attach", "model"] as const;
+export const CHROME_IDS = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira", "skills", "context", "ext", "attach", "model"] as const;
 export type ChromeId = (typeof CHROME_IDS)[number];
 /** 三态：键缺失 = 默认行为，false = 隐藏，true = 显式显示（窄屏也显示）。 */
 export type ChromeState = Partial<Record<ChromeId, boolean>>;
