@@ -634,10 +634,18 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* ---------------------------------------------------------------- chat */
 /* 显式的 minmax(0,1fr) 列：隐式列是 `auto`，按内容 max-content 定宽，一条不换行的长命令行
    就能把整个对话栏撑到比窗口宽（手机上右侧被切掉）。 */
-.chat-pane { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr auto; min-height: 0; position: relative; }
+.chat-pane { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; position: relative; }
+.chat-pane:has(> .composer > .chat-empty):not(:has(> .session-reclaim:not([hidden]))) { grid-template-rows: 1fr; place-items: center; }
+.session-reclaim[hidden] { display: none; }
+.session-reclaim {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: var(--warn-bg); border-bottom: 1px solid var(--warn-dim); color: var(--warn); font-size: 12px;
+}
+.session-reclaim-text { flex: 1; min-width: 0; }
+.session-reclaim .btn { flex: 0 0 auto; padding: 4px 9px; font-size: 11px; }
+.session-reclaim-close { min-width: 28px; }
 /* 没打开会话时中栏原本整片空、那句提示贴在底边（它挂在 .composer 里）—— 看着像界面坏了。
    这一刻整块居中成一枚安静的空状态，输入框那块也不再假装可用。 */
-.chat-pane:has(> .composer > .chat-empty) { grid-template-rows: 1fr; place-items: center; }
 .chat-pane:has(> .composer > .chat-empty) > .chat-scroll { display: none; }
 .chat-pane:has(> .composer > .chat-empty) > .composer { border-top: 0; background: none; padding: 0; }
 .chat-empty { display: grid; gap: 8px; justify-items: center; text-align: center; padding: 24px; }
@@ -3751,6 +3759,14 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .scratch-head { gap: 8px; }
 .scratch-state { font: 11px/1 var(--mono); color: var(--faint); }
 .scratch-hint { padding: 4px 16px 8px; font-size: 11px; color: var(--faint); border-bottom: 1px solid var(--line-soft); }
+.scratch-reclaim[hidden] { display: none; }
+.scratch-reclaim {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: var(--warn-bg); border-bottom: 1px solid var(--warn-dim); color: var(--warn); font-size: 12px;
+}
+.scratch-reclaim-text { flex: 1; min-width: 0; }
+.scratch-reclaim .btn { flex: 0 0 auto; padding: 4px 9px; font-size: 11px; }
+.scratch-reclaim-close { min-width: 28px; }
 .scratch-remind {
   display: flex; align-items: center; gap: 8px;
   margin: 8px 16px 0; padding: 8px 8px; border-radius: 8px;

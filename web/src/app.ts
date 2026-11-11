@@ -220,6 +220,10 @@ export class App {
   private tunnel: TunnelState;
   private currentId: string | null = null;
   private session: SessionState | null = null;
+  private sessionReclaimEl: HTMLElement | null = null;
+  private sessionReclaimTextEl: HTMLElement | null = null;
+  private sessionReclaimId: string | null = null;
+  private dismissedReclaimIds = new Set<string>();
   private approvals: ApprovalRequest[] = [];
   /** Questions from the model waiting for an answer (PLAN-ask.md). */
   private asks: AskRequest[] = [];
@@ -825,9 +829,29 @@ export class App {
     sessionsPane.append(sessionsInner);
 
     const chatPane = el("section", "pane chat-pane");
+    const reclaim = el("div", "session-reclaim");
+    reclaim.hidden = true;
+    this.sessionReclaimTextEl = el("span", "session-reclaim-text", tr("当前会话不存在。重新接管后可以继续使用。"));
+    const reclaimAction = el("button", "btn primary", tr("重新接管"));
+    reclaimAction.onclick = () => {
+      const id = this.sessionReclaimId;
+      if (!id || id !== this.currentId) return;
+      this.dismissedReclaimIds.add(id);
+      reclaim.hidden = true;
+      this.startClaim();
+    };
+    const reclaimClose = el("button", "btn ghost session-reclaim-close", "×") as HTMLButtonElement;
+    reclaimClose.title = tr("关闭提示");
+    reclaimClose.setAttribute("aria-label", reclaimClose.title);
+    reclaimClose.onclick = () => {
+      if (this.sessionReclaimId) this.dismissedReclaimIds.add(this.sessionReclaimId);
+      reclaim.hidden = true;
+    };
+    reclaim.append(this.sessionReclaimTextEl, reclaimAction, reclaimClose);
+    this.sessionReclaimEl = reclaim;
     const scroll = el("div", "pane chat-scroll");
     const composerHost = el("div", "composer");
-    chatPane.append(scroll, composerHost);
+    chatPane.append(reclaim, scroll, composerHost);
 
     const queuePane = el("section", "pane");
     const queueInner = el("div", "queue");
@@ -1305,6 +1329,10 @@ export class App {
     });
     document.addEventListener("visibilitychange", () => this.reportPresence());
     this.socket.on((msg) => this.onMessage(msg));
+    window.addEventListener("pi-session-not-found", (ev) => {
+      const id = String((ev as CustomEvent<{ sessionId?: string }>).detail?.sessionId ?? "");
+      if (id && id === this.currentId) this.showSessionReclaim(id);
+    });
     this.socket.onStatus((s) => {
       this.connected = s === "open";
       if (this.connected) this.reportPresence();
@@ -1446,6 +1474,7 @@ export class App {
     if (this.currentId === id) return;
     this.switchDraft(id);
     this.currentId = id;
+    if (this.sessionReclaimId !== id && this.sessionReclaimEl) this.sessionReclaimEl.hidden = true;
     this.session = this.sessions.find((s) => s.id === id) ?? null;
     this.resetSessionView();
     this.socket.send({ type: "subscribe", sessionId: id });
@@ -2566,6 +2595,9 @@ export class App {
       case "session.state":
         this.mergeSession(msg.session);
         break;
+      case "error":
+        if (msg.code === "session_not_found" && msg.sessionId === this.currentId) this.showSessionReclaim(String(msg.sessionId));
+        break;
       case "notice":
         // A failed create comes back as an untargeted error notice: show it in the dialog instead.
         if (this.creating && !msg.sessionId && msg.level === "error") {
@@ -2655,6 +2687,25 @@ export class App {
         break;
       default:
         break;
+    }
+  }
+
+  private showSessionReclaim(id: string): void {
+    if (!this.sessionReclaimEl || id !== this.currentId || this.dismissedReclaimIds.has(id)) return;
+    this.sessionReclaimId = id;
+    this.paintSessionReclaimBanner();
+    this.sessionReclaimEl.hidden = false;
+  }
+
+  private paintSessionReclaimBanner(): void {
+    if (!this.sessionReclaimEl || !this.sessionReclaimTextEl) return;
+    this.sessionReclaimTextEl.textContent = tr("当前会话不存在。重新接管后可以继续使用。");
+    const action = this.sessionReclaimEl.querySelector("button:not(.session-reclaim-close)");
+    if (action) action.textContent = tr("重新接管");
+    const close = this.sessionReclaimEl.querySelector<HTMLButtonElement>(".session-reclaim-close");
+    if (close) {
+      close.title = tr("关闭提示");
+      close.setAttribute("aria-label", close.title);
     }
   }
 
@@ -4153,6 +4204,7 @@ export class App {
     // 推送标题跟界面语言走：bridge 只在内存里记这一个值。
     this.socket.send({ type: "lang", lang: next });
     this.renderAll();
+    this.paintSessionReclaimBanner();
     // #86：随手问是独立 dialog，不在 renderAll 的覆盖范围里。
     this.scratch.refreshLang();
     // #248：Jira 面板同理。

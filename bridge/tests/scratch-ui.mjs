@@ -100,6 +100,20 @@ try {
   await ctx.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
   const page = await ctx.newPage();
   page.on("pageerror", (e) => log("pageerror:", e.message));
+  await page.addInitScript(() => {
+    const nativeSend = WebSocket.prototype.send;
+    window.__failNextScratchPrompt = false;
+    WebSocket.prototype.send = function (data) {
+      let msg;
+      try { msg = JSON.parse(String(data)); } catch { /* not a bridge command */ }
+      if (window.__failNextScratchPrompt && msg?.type === "prompt") {
+        window.__failNextScratchPrompt = false;
+        queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "error", sessionId: msg.sessionId, code: "session_not_found", message: "找不到这个会话" }) })));
+        return;
+      }
+      nativeSend.call(this, data);
+    };
+  });
   await page.goto(BASE);
   await page.waitForSelector(".app", { timeout: 20000 });
 
@@ -111,7 +125,7 @@ try {
   check("点开是一个 dialog", await page.locator(".scratch-sheet").isVisible());
 
   const hint = await page.locator(".scratch-hint").innerText();
-  check("写明它不进列表 / 不改本机", /不进会话列表/.test(hint) && /不改本机/.test(hint), hint);
+  check("写明它不进列表 / 不改本机 / 桥重启会清空", /不进会话列表/.test(hint) && /不改本机/.test(hint) && /桥重启会清空/.test(hint), hint);
 
   // 空态：先有一句「问一句就行」。
   await page.waitForSelector(".sc-empty", { timeout: 10000 }).catch(() => {});
@@ -143,6 +157,16 @@ try {
   // 每段回答的标题上要能看到「真正答这段话的模型」——chip 只是「当前选的」，模型自述不算数。
   const whoText = (await page.locator(".scratch-list .sc-assistant .sc-who").first().textContent()) ?? "";
   check("回答标了实际模型", /fake-model/.test(whoText), whoText.trim());
+
+  // #368：模拟桥为本次提问返回 session_not_found；页面必须自动开新随手问、留住原字并显式说明。
+  await page.evaluate(() => { window.__failNextScratchPrompt = true; });
+  await page.locator(".sc-input").fill("恢复后继续问");
+  await page.locator(".sc-input").press("Enter");
+  await page.waitForFunction(() => /echo: 恢复后继续问/.test(document.querySelector(".scratch-list")?.textContent ?? ""), null, { timeout: 30000 });
+  check("失效后自动重开并把原文字发进新对话", true);
+  check("新随手问里有说明而不是桥 404", /会话没了，已开新的，接着问/.test((await page.locator(".scratch-list").textContent()) ?? ""));
+  check("随手问 404 顶部横幅有重新接管和关闭", await page.locator(".scratch-reclaim").isVisible() && (await page.locator(".scratch-reclaim button").allInnerTexts()).some((text) => text.includes("重新接管")));
+  check("桥 404 没被追加成错误转录", !/Session not found|找不到这个会话/.test((await page.locator(".scratch-list").textContent()) ?? ""));
 
   // 模型：dialog 里要能切，不然它就成了「只能问、不能挑」。
   const chip = page.locator(".scratch-model-chip");
@@ -193,7 +217,7 @@ try {
     };
   });
   // 全场只该有第一个回合那一个「随手问」：工具调用那几步不再各冒一个。
-  check("工具步骤不再冒标签", grouped.labels.length === 1, JSON.stringify(grouped.labels));
+  check("工具步骤不再冒标签", grouped.labels.length === 2, JSON.stringify(grouped.labels));
   check("连续工具调用收成一行", grouped.toolRows.length === 1 && /web_search · fetch_content ×2/.test(grouped.toolRows[0] ?? ""), JSON.stringify(grouped.toolRows));
   check("文字为空的步骤被藏掉", grouped.steps >= 3, `${grouped.steps} 个`);
 
@@ -256,6 +280,21 @@ try {
   await btn.click();
   await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 10000 });
   check("关掉再打开还是那个 dialog", true);
+
+  // #368：主会话的 404 横幅与随手问的横幅各自留在自己的区域，关闭一边不影响另一边。
+  await page.evaluate(() => { location.hash = "#/s/no-main-session"; });
+  await page.waitForSelector(".session-reclaim", { state: "visible", timeout: 10000 });
+  check("主会话 404 显示独立顶部横幅", await page.locator(".session-reclaim").isVisible() && (await page.locator(".session-reclaim button").allInnerTexts()).some((text) => text.includes("重新接管")));
+  check("主会话和随手问横幅同时存在", await page.locator(".scratch-reclaim").isVisible());
+  check("主会话 404 没进聊天记录", !/Session not found|找不到这个会话/.test((await page.locator(".chat-scroll").textContent()) ?? ""));
+  await page.locator(".scratch-close").click();
+  await page.locator(".session-reclaim-close").click();
+  check("关闭主会话横幅不关闭随手问横幅", !(await page.locator(".session-reclaim").isVisible()) && await page.locator(".scratch-reclaim").evaluate((el) => !el.hidden));
+  await btn.click();
+  await page.waitForSelector(".scratch-sheet", { state: "visible", timeout: 10000 });
+  check("重新打开随手问时其横幅仍独立存在", await page.locator(".scratch-reclaim").isVisible() && !(await page.locator(".session-reclaim").isVisible()));
+  await page.locator(".scratch-reclaim-close").click();
+  check("关闭随手问横幅不影响主会话区域", !(await page.locator(".scratch-reclaim").isVisible()) && !(await page.locator(".session-reclaim").isVisible()));
 
   // 语言：dialog 是独立实例，不在 renderAll 的覆盖范围里 —— 切语言后静态文案必须一起变。
   await page.locator(".scratch-close").click();

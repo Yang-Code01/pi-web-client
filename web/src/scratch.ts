@@ -105,6 +105,7 @@ export class ScratchChat {
   private modelEl!: HTMLButtonElement;
   private modelMenu!: HTMLElement;
   private remindEl!: HTMLElement;
+  private reclaimEl!: HTMLElement;
   private sendBtn!: HTMLButtonElement;
   private clearBtn!: HTMLButtonElement;
   private pauseBtn!: HTMLButtonElement;
@@ -117,6 +118,9 @@ export class ScratchChat {
   private running = false;
   private starting = false;
   private error = "";
+  private pendingText: string | null = null;
+  private recovering = false;
+  private dismissedReclaimId: string | null = null;
   private tokens: number | null = null;
   private window: number | null = null;
   private remindDismissed = false;
@@ -189,8 +193,13 @@ export class ScratchChat {
         this.running = Boolean(state?.running);
         this.items = Array.isArray(msg.items) ? (msg.items as Item[]) : [];
         if (state?.paused && (state.file || this.items.length) && (hadPauseNotice || !wasPaused)) this.addPauseNotice();
+        if (this.recovering) {
+          this.recovering = false;
+          this.upsert({ id: `scratch-reopened-${this.id}`, kind: "notice", text: tr("会话没了，已开新的，接着问"), level: "info" });
+        }
         this.repaint();
         this.paintState();
+        if (this.pendingText && !state?.paused) this.host.send({ type: "prompt", sessionId: this.id, text: this.pendingText });
         return true;
       }
       case "items":
@@ -201,6 +210,11 @@ export class ScratchChat {
       case "item.add":
         if (!mine) return false;
         this.upsert(msg.item as Item);
+        if (msg.item?.kind === "user" && this.pendingText && String(msg.item.text ?? "").trim() === this.pendingText) {
+          if (this.inputEl.value.trim() === this.pendingText) this.inputEl.value = "";
+          this.pendingText = null;
+          this.paintState();
+        }
         this.scroll();
         return true;
       case "item.replace":
@@ -246,6 +260,25 @@ export class ScratchChat {
         } as Item);
         return true;
       case "error":
+        if (msg.code === "session_not_found" && mine) {
+          if (this.dismissedReclaimId !== this.id) this.reclaimEl.hidden = false;
+          if (this.state?.paused) {
+            this.error = tr("随手问已暂停，恢复后可以接着问");
+          } else {
+            this.recovering = true;
+            this.id = null;
+            this.state = null;
+            this.items = [];
+            this.rows.clear();
+            this.running = false;
+            this.starting = false;
+            this.asked = false;
+            this.error = "";
+            this.open();
+          }
+          this.paintState();
+          return true;
+        }
         // 与当前会话无关的错误也可能是随手问的启动失败（桥那边 target 不到会话时没有 sessionId）。
         if (mine || (this.asked && !msg.sessionId)) {
           this.starting = false;
@@ -301,8 +334,29 @@ export class ScratchChat {
     sheet.append(this.modelMenu);
 
     // 它是干什么的、不是什么，写在最上面：不然它看起来就像一个普通会话。
-    this.staticHintEl = el("div", "scratch-hint", tr("不进会话列表 · 不带上下文 · 不改本机（能读文件、能联网查）"));
+    this.staticHintEl = el("div", "scratch-hint", this.staticHintText());
     sheet.append(this.staticHintEl);
+
+    this.reclaimEl = el("div", "scratch-reclaim");
+    this.reclaimEl.hidden = true;
+    const reclaimText = el("span", "scratch-reclaim-text", tr("随手问的会话已失效，已重新打开。"));
+    const reclaimAction = el("button", "btn ghost", tr("重新接管"));
+    reclaimAction.onclick = () => {
+      if (this.id) this.host.send({ type: "scratch.open" });
+      else {
+        this.asked = false;
+        this.open();
+      }
+    };
+    const reclaimClose = el("button", "btn ghost scratch-reclaim-close", "×") as HTMLButtonElement;
+    reclaimClose.title = tr("关闭提示");
+    reclaimClose.setAttribute("aria-label", reclaimClose.title);
+    reclaimClose.onclick = () => {
+      this.dismissedReclaimId = this.id;
+      this.reclaimEl.hidden = true;
+    };
+    this.reclaimEl.append(reclaimText, reclaimAction, reclaimClose);
+    sheet.append(this.reclaimEl);
 
     this.remindEl = el("div", "scratch-remind");
     this.remindEl.hidden = true;
@@ -345,7 +399,15 @@ export class ScratchChat {
   refreshLang(): void {
     if (!this.root) return;
     this.titleEl.textContent = tr("随手问");
-    this.staticHintEl.textContent = tr("不进会话列表 · 不带上下文 · 不改本机（能读文件、能联网查）");
+    this.staticHintEl.textContent = this.staticHintText();
+    const reclaimAction = this.reclaimEl.querySelector("button:not(.scratch-reclaim-close)");
+    if (reclaimAction) reclaimAction.textContent = tr("重新接管");
+    const reclaimClose = this.reclaimEl.querySelector<HTMLButtonElement>(".scratch-reclaim-close");
+    if (reclaimClose) {
+      reclaimClose.title = tr("关闭提示");
+      reclaimClose.setAttribute("aria-label", reclaimClose.title);
+    }
+    this.reclaimEl.querySelector(".scratch-reclaim-text")!.textContent = tr("随手问的会话已失效，已重新打开。");
     this.clearBtn.textContent = tr("清空");
     this.clearBtn.title = tr("在同一个进程里换一条新会话：上下文和 token 归零，不等重启");
     this.closeBtn.title = tr("关闭");
@@ -354,6 +416,10 @@ export class ScratchChat {
     this.inputEl.placeholder = tr("想到什么就问什么（Enter 发送，Shift+Enter 换行）");
     this.paintState();
     this.repaint();
+  }
+
+  private staticHintText(): string {
+    return [tr("不进会话列表 · 不带上下文 · 不改本机（能读文件、能联网查）"), tr("桥重启会清空随手问")].join(" · ");
   }
 
   private toggleModels(): void {
@@ -418,8 +484,8 @@ export class ScratchChat {
 
   private submit(): void {
     const text = this.inputEl.value.trim();
-    if (!text || this.running || this.starting || this.state?.paused || !this.id) return;
-    this.inputEl.value = "";
+    if (!text || this.pendingText || this.running || this.starting || this.state?.paused || !this.id) return;
+    this.pendingText = text;
     this.host.send({ type: "prompt", sessionId: this.id, text });
   }
 
