@@ -61,10 +61,27 @@ jobs:
 
       # 仓库刻意不把 playwright 写进依赖（探针按 PW_PATH → 仓库 → npx 缓存找它），
       # 版本钉死在本机跑通的那一版，免得某天新的 1.x 改了什么行为。
-      - name: 装 Playwright 与 Chromium
+      - name: 装 Playwright
         run: |
-          npm i --no-save --no-package-lock --ignore-scripts playwright@1.65.0
-          npx playwright install --with-deps chromium
+          npm i --no-save --no-package-lock --ignore-scripts \
+            playwright@1.65.0
+
+      - name: 缓存 Chromium
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-chromium-1.65.0
+
+      # runner 上 apt 偶尔 DNS 抖动（实测：`temporary failure resolving
+      # archive.ubuntu.com`），装浏览器这一步重试三次，免得整条流水线跟着报假红。
+      - name: 装 Chromium
+        run: |
+          for i in 1 2 3; do
+            npx playwright install --with-deps --only-shell chromium && exit 0
+            echo "第 $i 次装 Chromium 失败，10 秒后重试"
+            sleep 10
+          done
+          exit 1
 
       - name: 中栏几何回归（只有一个滚动条、输入框贴底）
         run: node web/tests/chat-layout-ui.mjs
