@@ -343,6 +343,13 @@ function publicAsk(ask: PendingAsk): AskRequest {
 }
 
 const IDLE_EVICT_MS = 10 * 60 * 1000;
+
+/** Test seam for the age threshold; production keeps the established ten-minute eviction age. */
+function idleEvictionAgeMs(): number {
+  const value = Number(process.env.PI_WEB_GC_IDLE_MS);
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : IDLE_EVICT_MS;
+}
+
 /** 模型目录的缓存寿命：models.json / 装的扩展很少在一次运行中间变，两段各自记一份。 */
 const MODEL_TTL_MS = 10 * 60_000;
 
@@ -3715,7 +3722,7 @@ export class SessionManager extends EventEmitter {
     const skipped: SleepSkipped[] = [];
     const pending: Promise<void>[] = [];
     for (const s of this.sessions.values()) {
-      if (!s.live) continue;
+      if (!s.live || s.state.scratch) continue;
       if (s.state.running) {
         skipped.push({ id: s.state.id, name: s.state.name, why: "running" });
         continue;
@@ -3738,12 +3745,14 @@ export class SessionManager extends EventEmitter {
       this.sweepLocks();
       void this.lifecycleTick();
       for (const [id, s] of this.sessions) {
+        // 随手问只在桥重启时清空；即使已休眠，原会话对象仍是它唯一的转录入口。
+        if (s.state.scratch) continue;
         // D162: done 不再是「未读」，不能拿它当免死金牌 —— 回收后 ensure 会从 finished.json 读回来。
         if (s.live || s.state.running) continue;
         if (s.approvals.size || s.asks.size) continue;
         // A web-born session with no file yet only exists in memory; evicting it would lose it.
         if (!s.state.file) continue;
-        if (isWatched(id) || s.idleFor() < IDLE_EVICT_MS) continue;
+        if (isWatched(id) || s.idleFor() < idleEvictionAgeMs()) continue;
         s.stopTail();
         s.removeAllListeners();
         this.sessions.delete(id);
@@ -3794,8 +3803,9 @@ export class SessionManager extends EventEmitter {
         continue;
       }
       if (s.state.running) continue;
-      // 随手问 gets its own, longer rule (#86): being still there later is the whole point of it.
-      if (s.idleFor() > (s.state.scratch ? cfg.scratchIdleMs : cfg.idleMs)) void s.sleep();
+      // 随手问 gets its own, longer rule (#86): zero explicitly means never auto-sleep.
+      const idleMs = s.state.scratch ? cfg.scratchIdleMs : cfg.idleMs;
+      if (idleMs > 0 && s.idleFor() > idleMs) void s.sleep();
     }
   }
 
