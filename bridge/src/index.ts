@@ -49,7 +49,7 @@ import { listFiles, rankFiles } from "./filesearch.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
 import { selfChangelog } from "./whatsnew.ts";
 import { scanSubagents } from "./subagents.ts";
-import { acpConfigPath, readAcpDelegate, writeAcpDelegate } from "./acpdelegate.ts";
+import { acpConfigPath, readAcpDelegate, writeAcpDelegate, writeThinkingFix } from "./acpdelegate.ts";
 import { cleanLaunch } from "./launch.ts";
 import { depsReport } from "./depsstatus.ts";
 import { isWriteOp, runPiCli } from "./picli.ts";
@@ -2263,6 +2263,18 @@ async function main(): Promise<void> {
               const view = writeAcpDelegate(msg.patch);
               log(`acp_delegate written: ${view.path}`);
               send({ type: "subagents.acp", ...view, saved: true });
+            } catch (err: any) {
+              send({ type: "subagents.acp.error", path: acpConfigPath(), message: String(err?.message ?? err) });
+            }
+            return;
+          }
+          // #375：同一份文件里的 compress.neverPreserveRecentTools 绕法，只有应用 / 撤销两个动作。
+          case "subagents.acp.thinkingFix": {
+            if (!(await requireStepUp())) return;
+            try {
+              const view = writeThinkingFix(msg.apply);
+              log(`billion-context thinking fix ${msg.apply ? "applied" : "removed"}: ${view.path}`);
+              send({ type: "subagents.acp", ...view, saved: "thinkingFix" });
             } catch (err: any) {
               send({ type: "subagents.acp.error", path: acpConfigPath(), message: String(err?.message ?? err) });
             }

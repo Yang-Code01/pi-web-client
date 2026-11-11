@@ -128,6 +128,20 @@ try {
   check("sessions 原样还在", after?.sessions?.compressAt === 0.7);
   check("只多了 pi.subagents 这一支", Object.keys(after).sort().join(",") === "pi,providers,sessions", Object.keys(after).join(","));
 
+  // #375：已知问题的一键绕法。应用 → 磁盘上只多 compress.neverPreserveRecentTools = []；撤销 → 回到原样。
+  const apply = page.locator('#subagents-acp [data-action="thinking-fix-apply"]');
+  check("绕法：未应用时有「应用绕法」且可点", (await apply.count()) === 1 && (await apply.isEnabled()));
+  await apply.click();
+  await page.waitForSelector('#subagents-acp [data-action="thinking-fix-undo"]', { timeout: 20000 });
+  const fixed = JSON.parse(fs.readFileSync(CFG, "utf8"));
+  check("绕法：磁盘上 compress.neverPreserveRecentTools 是 []", JSON.stringify(fixed.compress) === '{"neverPreserveRecentTools":[]}', JSON.stringify(fixed.compress));
+  check("绕法：providers / pi.subagents 原样", fixed?.providers?.openrouter?.apiKey === "sk-keep-me" && fixed?.pi?.subagents?.enabled === false);
+  check("绕法：页面显示已应用", /现在：已应用/.test(await page.locator("#subagents-acp").innerText()));
+  await page.locator('#subagents-acp [data-action="thinking-fix-undo"]').click();
+  await page.waitForSelector('#subagents-acp [data-action="thinking-fix-apply"]', { timeout: 20000 });
+  const undone = JSON.parse(fs.readFileSync(CFG, "utf8"));
+  check("绕法：撤销后 compress 整支消失", !("compress" in undone), JSON.stringify(undone));
+
   // 坏 JSON：页面给错误 + 路径，保存不可用，磁盘一字未改。重新读一遍页面来验。
   const broken = "{ this is not json";
   fs.writeFileSync(CFG, broken, "utf8");

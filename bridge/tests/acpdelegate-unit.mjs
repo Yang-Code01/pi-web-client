@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { acpConfigPath, readAcpDelegate, writeAcpDelegate } from "../src/acpdelegate.ts";
+import { acpConfigPath, readAcpDelegate, writeAcpDelegate, writeThinkingFix } from "../src/acpdelegate.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-acp-"));
 let failures = 0;
@@ -160,6 +160,62 @@ check("默认路径就是调用方传的那个文件（写与读同一处）", (
   assert.equal(view.path, file);
   assert.equal(view.exists, false);
   assert.deepEqual(view.config, { enabled: null, maxDepth: null, maxConcurrent: null, thinkingLevel: null });
+});
+
+// #375：billion-context 已知问题的绕法 —— compress.neverPreserveRecentTools: []
+check("绕法：应用只加 compress.neverPreserveRecentTools = []，其它键原样", () => {
+  const file = target();
+  write(file, {
+    providers: { x: { models: {} } },
+    sessions: { keep: true },
+    pi: { subagents: { maxDepth: 2 } },
+    compress: { protectedTools: ["todo"] },
+  });
+  assert.equal(readAcpDelegate(file).neverPreserveRecentTools, null);
+  const view = writeThinkingFix(true, file);
+  const after = readJson(file);
+  assert.deepEqual(after.compress, { protectedTools: ["todo"], neverPreserveRecentTools: [] });
+  assert.deepEqual(after.providers, { x: { models: {} } });
+  assert.deepEqual(after.sessions, { keep: true });
+  assert.deepEqual(after.pi, { subagents: { maxDepth: 2 } });
+  assert.deepEqual(view.neverPreserveRecentTools, []);
+  assert.equal(view.config.maxDepth, 2);
+});
+
+check("绕法：撤销删键，compress 空了连壳一起删", () => {
+  const file = target();
+  write(file, { providers: {}, compress: { neverPreserveRecentTools: [] } });
+  const view = writeThinkingFix(false, file);
+  assert.deepEqual(readJson(file), { providers: {} });
+  assert.equal(view.neverPreserveRecentTools, null);
+});
+
+check("绕法：自定义的列表照实读出来，应用后改成 []", () => {
+  const file = target();
+  write(file, { compress: { neverPreserveRecentTools: ["bash"] } });
+  assert.deepEqual(readAcpDelegate(file).neverPreserveRecentTools, ["bash"]);
+  assert.deepEqual(writeThinkingFix(true, file).neverPreserveRecentTools, []);
+});
+
+check("绕法：文件不存在时应用 = 只含 compress 的新文件；撤销不建文件", () => {
+  const file = target();
+  writeThinkingFix(false, file);
+  assert.equal(fs.existsSync(file), false);
+  writeThinkingFix(true, file);
+  assert.deepEqual(readJson(file), { compress: { neverPreserveRecentTools: [] } });
+});
+
+check("绕法：坏 JSON / compress 不是对象 / apply 不是布尔 —— 抛错且磁盘不动", () => {
+  const file = target();
+  const bad = '{ "providers": { ,\n';
+  write(file, bad);
+  assert.throws(() => writeThinkingFix(true, file), /JSON/);
+  assert.equal(fs.readFileSync(file, "utf8"), bad);
+  const file2 = target();
+  write(file2, '{"compress": 3}');
+  assert.throws(() => writeThinkingFix(true, file2), /compress/);
+  assert.equal(fs.readFileSync(file2, "utf8"), '{"compress": 3}');
+  assert.throws(() => writeThinkingFix("yes", file2), /apply/);
 });
 
 fs.rmSync(root, { recursive: true, force: true });
