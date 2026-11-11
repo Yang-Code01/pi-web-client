@@ -1,0 +1,96 @@
+# 这个仓库原来一条 CI 都没有：改完靠人自己 `npm run build` + 挑几个 `test:*` 跑。
+# 2026-11-11 的 #368 就是例子 —— 一个纯 CSS 行模板的错位（输入框被压成一行、中栏多一条滚动条）
+# 全绿合进了 main，两天后才有人从截图里看见。这条流水线只做「不需要模型、不需要真 pi」的那一层：
+# 构建 / 类型 / 单测 / 一条量中栏几何的浏览器回归。要真 pi 与模型轮次的 `test:*:ui` 不上 CI。
+#
+# 本地等价做法（不装 GH runner 也能自查）：
+#   npm ci --ignore-scripts
+#   npm ci --ignore-scripts --prefix bridge   （peer / web 同理）
+#   npm run build && npm run typecheck
+#   node tools/test-unit.mjs
+#   node web/tests/chat-layout-ui.mjs
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    # 纯文档改动不跑（PR 上不设 paths：required check 被 paths 跳过会永远 pending）。
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".scratch/**"
+  workflow_dispatch:
+
+# 同一分支连推几次只留最新一轮。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # postinstall（scripts/bootstrap.mjs）会去装全局 pi 与扩展，CI 里不能那么干；
+      # 这里只装子包依赖，等价于 `node scripts/bootstrap.mjs --deps-only`。
+      - name: 装依赖（跳过 postinstall）
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --ignore-scripts --no-audit --no-fund --prefix bridge
+          npm ci --ignore-scripts --no-audit --no-fund --prefix peer
+          npm ci --ignore-scripts --no-audit --no-fund --prefix web
+
+      - name: 构建（bridge / peer / web，共用一个 build id）
+        run: npm run build
+
+      - name: 类型检查（bridge / peer / web，含 i18n 键对齐）
+        run: npm run typecheck
+
+      - name: 单测（不需要模型与浏览器的 *unit.mjs）
+        run: node tools/test-unit.mjs
+
+      # 仓库刻意不把 playwright 写进依赖（探针按 PW_PATH → 仓库 → npx 缓存找它），
+      # 版本钉死在本机跑通的那一版，免得某天新的 1.x 改了什么行为。
+      - name: 装 Playwright
+        run: |
+          npm i --no-save --no-package-lock --ignore-scripts \
+            playwright@1.65.0
+
+      - name: 缓存 Chromium
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-chromium-1.65.0
+
+      # runner 上 apt 偶尔 DNS 抖动（实测：`temporary failure resolving
+      # archive.ubuntu.com`），装浏览器这一步重试三次，免得整条流水线跟着报假红。
+      - name: 装 Chromium
+        run: |
+          for i in 1 2 3; do
+            npx playwright install --with-deps --only-shell chromium && exit 0
+            echo "第 $i 次装 Chromium 失败，10 秒后重试"
+            sleep 10
+          done
+          exit 1
+
+      - name: 中栏几何回归（只有一个滚动条、输入框贴底）
+        run: node web/tests/chat-layout-ui.mjs
+
+      - name: 失败时留下截图
+        if: failure()
+        # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: shots
+          path: .scratch/shots
+          if-no-files-found: ignore
