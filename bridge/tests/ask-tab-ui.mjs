@@ -117,6 +117,7 @@ try {
 
   await page.locator('[data-exec-tab="exec"]').click();
   check("execution tab is the user's starting selection", await selected("exec") === "true");
+  check("execution tab has no questionnaire hint when there are no questions", (await page.locator(".exec-ask-hint").count()) === 0);
   await beginQuestionnaire("ASKTAB first", false);
   await page.waitForFunction(() => document.querySelector('[data-exec-tab="exec"]')?.getAttribute("aria-selected") === "true", null, { timeout: 5000 });
   check("answering the last question restores the remembered tab", await selected("exec") === "true");
@@ -138,7 +139,12 @@ try {
   await page.locator('[data-exec-tab="exec"]').click();
   await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"] .pip')?.textContent === "6", null, { timeout: 10000 });
   check("a second three-question questionnaire raises the badge to 6", await badge.textContent() === "6");
-  await page.locator('[data-exec-tab="needs"]').click();
+  const askHint = page.locator(".exec-ask-hint");
+  await askHint.waitFor({ state: "visible", timeout: 5000 });
+  check("execution hint matches the six-question badge", await askHint.textContent() === "6 道题等你回答 →");
+  await askHint.click();
+  await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"]')?.getAttribute("aria-selected") === "true", null, { timeout: 5000 });
+  check("clicking the hint records needs as the user's tab preference", await page.evaluate(() => localStorage.getItem("pi.queueTab")) === "needs");
   await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"] .pip') === null, null, { timeout: 5000 });
   check("badge disappears while needs is selected", (await page.locator('[data-exec-tab="needs"] .pip').count()) === 0);
 
@@ -162,12 +168,23 @@ try {
   await waitTurnEnd(badgeTurn, "badge pair");
 
   await page.locator('[data-exec-tab="exec"]').click();
+  check("execution hint disappears after the last questionnaire is answered", (await page.locator(".exec-ask-hint").count()) === 0);
   socket.send(JSON.stringify({ type: "prompt", sessionId, text: "ASKTAB_BADGE_TEN" }));
   await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"]')?.getAttribute("aria-selected") === "true", null, { timeout: 20000 });
   await page.locator('[data-exec-tab="exec"]').click();
   await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"] .pip')?.textContent === "9+", null, { timeout: 10000 });
   check("a ten-question questionnaire is capped at 9+", await page.locator('[data-exec-tab="needs"] .pip').textContent() === "9+");
   check("capped badge keeps the full question count in its accessible name", await page.locator('[data-exec-tab="needs"] .pip').getAttribute("aria-label") === "10 道题待回答");
+  await page.locator('[data-exec-tab="exec"]').click();
+  await askHint.waitFor({ state: "visible", timeout: 5000 });
+  check("execution hint uses the same 9+ cap as the badge", await askHint.textContent() === "9+ 道题等你回答 →");
+  await page.setViewportSize({ width: 820, height: 900 });
+  await page.locator('[data-tab="queue"]').click();
+  check("execution hint remains visible at an 820px viewport", await askHint.isVisible());
+  check("narrow viewport hint keeps the 9+ badge cap", await askHint.textContent() === "9+ 道题等你回答 →");
+  await askHint.click();
+  await page.waitForFunction(() => document.querySelector('[data-exec-tab="needs"]')?.getAttribute("aria-selected") === "true", null, { timeout: 5000 });
+  check("narrow viewport hint click records the needs preference", await page.evaluate(() => localStorage.getItem("pi.queueTab")) === "needs");
   console.log("All ask-tab UI checks passed.");
 } finally {
   if (browser) await browser.close();

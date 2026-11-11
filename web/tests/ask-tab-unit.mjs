@@ -5,10 +5,16 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { badgeText, createTabMemory, reduce } from "../src/ask-tab.ts";
+import { askQuestionCount, badgeText, createTabMemory, reduce } from "../src/ask-tab.ts";
 
 const wide = { compact: false };
 const event = (type, count) => ({ type, count });
+
+test("题目数合计所有问卷中的问题", () => {
+  assert.equal(askQuestionCount([]), 0);
+  assert.equal(askQuestionCount([{ questions: [{}, {}, {}] }]), 3);
+  assert.equal(askQuestionCount([{ questions: [{}, {}] }, { questions: [{}, {}, {}] }]), 5);
+});
 
 test("角标数字隐藏零值并截断到 9+", () => {
   assert.equal(badgeText(0), "");
