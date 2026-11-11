@@ -447,7 +447,7 @@ test("#276 新组默认在横条里；setRow 落盘、跨重启保留，且不�
 
 // ---------------------------------------------------------------- #278 按目录建组
 
-test("#278 按目录建组：同一个目录只建一个组（大小写 / 斜杠 / 尾斜杠都算同一个）", async () => {
+test("#278 按目录建组：同一个目录只建一个组（斜杠 / 尾斜杠 / 大小写）", async () => {
   const ws = fresh();
   const first = await ws.createDir(library.root);
   assert.equal(first.ok, true);
@@ -459,11 +459,7 @@ test("#278 按目录建组：同一个目录只建一个组（大小写 / 斜杠
   assert.equal(first.group.name, "", "名字留空，页面按目录名显示");
 
   const slashed = normalizePath(library.root);
-  const variants = [
-    slashed.replace("/library", "/LIBRARY"),
-    slashed.split("/").join("//"),
-    `${slashed}/`,
-  ];
+  const variants = [slashed.split("/").join("//"), `${slashed}/`];
   for (const variant of variants) {
     assert.notEqual(variant, library.root, `${variant} 该和原样不同（否则这条没在测归一化）`);
   }
@@ -473,6 +469,22 @@ test("#278 按目录建组：同一个目录只建一个组（大小写 / 斜杠
     assert.equal(again.created, false, `${variant} 已经在列表里，不许再建`);
     assert.equal(again.group.id, first.group.id, variant);
   }
+
+  // 大小写这一支是文件系统的性质，不是代码的：Windows 的 `/LIBRARY` 就是 `/library`，
+  // Linux 上它根本不存在（`createDir` 先 stat，打不开就拒）。两边都断言，但断的不是同一句 ——
+  // 在区分大小写的磁盘上，"不存在的目录不许悄悄建出一个组" 才是该守的那条。
+  const cased = slashed.replace("/library", "/LIBRARY");
+  assert.notEqual(cased, library.root, "大小写变体该和原样不同");
+  const viaCase = await ws.createDir(cased);
+  if (process.platform === "win32") {
+    assert.equal(viaCase.ok, true, cased);
+    assert.equal(viaCase.created, false, `${cased} 已经在列表里，不许再建`);
+    assert.equal(viaCase.group.id, first.group.id, cased);
+  } else {
+    assert.equal(viaCase.ok, false, `${cased} 在区分大小写的磁盘上不存在`);
+    assert.equal(viaCase.group, undefined, "失败时不许回一个组");
+  }
+
   assert.equal(ws.snapshot().groups.length, 1, "一个目录永远只有一组");
 
   const restarted = fresh({}, process.env.PI_WEB_STATE);
