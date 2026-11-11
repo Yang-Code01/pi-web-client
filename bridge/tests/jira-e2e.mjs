@@ -29,7 +29,7 @@ const { attachmentRedirectAllowed, attachmentRootProblem, avatarUrlAllowed, hand
 
 /** 200 / 401 / 403 由用例改；只实现面板真正会打的那几个口子。 */
 let jiraMode = "ok";
-/** `search/jql` 单独一档：`ok` / `empty` / `403` / `watcher403` / `paged`。 */
+/** `search/jql` 单独一档：`ok` / `empty` / `403` / `watcher403` / `paged` / `ticket`. */
 let searchMode = "ok";
 /** meta 的项目状态单独一档：`ok` / `403`。 */
 let statusesMode = "ok";
@@ -75,6 +75,18 @@ const ISSUES = [
   },
 ];
 
+const TICKET_ISSUE = {
+  key: "CASPH30INC-17967",
+  fields: {
+    summary: "登录故障",
+    issuetype: { name: "Bug" },
+    priority: { name: "High" },
+    status: { name: "In Progress" },
+    assignee: { displayName: "Ada Lovelace" },
+    updated: "2026-11-09T10:00:00.000+0000",
+  },
+};
+
 const jira = http.createServer((req, res) => {
   const url = new URL(req.url, "http://jira.test");
   const send = (status, body) => {
@@ -102,6 +114,14 @@ const jira = http.createServer((req, res) => {
     if (searchMode === "403") return send(403, { errorMessages: ["You do not have permission to view this"] });
     if (searchMode === "watcher403" && (url.searchParams.get("jql") ?? "").includes("watcher")) {
       return send(403, { errorMessages: ["You do not have permission to view watchers"] });
+    }
+    if (searchMode === "ticket") {
+      const jql = url.searchParams.get("jql") ?? "";
+      const matches =
+        jql.includes('summary ~ "登录"') &&
+        jql.includes('workItemKey ~ "*17967*"') &&
+        jql.includes('project = "CASPH30INC"');
+      return send(200, { issues: matches ? [TICKET_ISSUE] : [] });
     }
     if (searchMode === "paged") {
       if (token === null) return send(200, { issues: ISSUES.slice(0, 1), nextPageToken: "tok-2", isLast: false });
@@ -1013,6 +1033,18 @@ test("GET search：条件 → JQL 白名单，页面传的 jql / fields 被忽�
   );
   assert.doesNotMatch(jql, /EVIL/);
   assert.equal(lastSearch.get("fields"), FIXED_FIELDS);
+});
+
+test("GET search：票号子串与标题、项目取交集并返回匹配工单", async () => {
+  await connect();
+  searchMode = "ticket";
+  const out = await call("GET", "/api/jira/search?ticketKey=17967&title=%E7%99%BB%E5%BD%95&project=CASPH30INC");
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.json.issues.map((issue) => issue.key), ["CASPH30INC-17967"]);
+  assert.equal(
+    lastSearch.get("jql"),
+    'resolution = Unresolved AND summary ~ "登录" AND workItemKey ~ "*17967*" AND project = "CASPH30INC" ORDER BY updated DESC',
+  );
 });
 
 test("GET search：默认未解决 / includeResolved / 未分配", async () => {

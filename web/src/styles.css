@@ -4380,6 +4380,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
    骨架复用 `.sheet-back` / `.sheet`（与记录、随手问同一套遮罩与 Esc），这里只管内容。
    颜色 / 圆角 / 字号都用上面那套变量，别在面板里另起一套。 */
 .jira-sheet { grid-template-rows: auto 1fr auto; }
+@media (min-width: 760px) {
+  .jira-sheet { width: min(1200px, 100%); }
+}
 .jira-head { gap: 8px; }
 .jira-body { overflow: auto; padding: 14px 16px 4px; min-height: 0; }
 /* #258：ready 之后 body 本身不再滚，滚动交给两个 pane（各自记住位置）。 */
@@ -4454,17 +4457,20 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-pane { flex: 1; min-width: 0; overflow: auto; padding: 14px 16px 4px; }
 .jira-pane[hidden] { display: none; }
 
-/* #258：搜索表单 4/2/1 列；标题和全文各占两格。 */
+/* #258：宽桌面搜索表单分三行；较窄视口按可用宽度重排。 */
 .jira-search { display: grid; gap: 12px; min-width: 0; }
 .jira-search-intro { display: grid; gap: 4px; }
 .jira-search-hint { font-size: 12px; color: var(--dim); }
-.jira-search-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; align-items: end; }
+.jira-search-grid { display: grid; gap: 10px; min-width: 0; }
+.jira-search-row { display: grid; gap: 10px 12px; align-items: end; min-width: 0; }
+.jira-search-row-primary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.jira-search-row-filters { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.jira-search-row-controls { grid-template-columns: minmax(0, 2.4fr) minmax(220px, 0.7fr) minmax(0, 1.1fr); align-items: center; }
 .jira-search-field { display: grid; gap: 5px; min-width: 0; }
-.jira-search-field.span-2 { grid-column: span 2; }
 .jira-search-field .jira-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.jira-search-people { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px 16px; align-items: start; }
-.jira-search-toggles { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
-.jira-search-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; }
+.jira-search-people { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px 16px; align-items: start; min-width: 0; }
+.jira-search-toggles { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; min-width: 0; }
+.jira-search-actions { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .jira-search-note { flex: 1; min-width: 0; font-size: 12px; color: var(--dim); text-align: right; }
 .jira-search-note.bad { color: var(--danger); }
 .jira-checks { display: flex; flex-wrap: wrap; gap: 6px 14px; padding-top: 5px; }
@@ -4520,12 +4526,15 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-empty-text { font-size: 13px; color: var(--dim); }
 
 @media (max-width: 980px) {
-  .jira-search-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .jira-search-row-primary,
+  .jira-search-row-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .jira-search-row-controls { grid-template-columns: 1fr; align-items: start; }
   .jira-search-people { grid-template-columns: 1fr; }
 }
 @media (max-width: 620px) {
-  .jira-search-grid { grid-template-columns: 1fr; }
-  .jira-search-field.span-2 { grid-column: auto; }
+  .jira-search-row-primary,
+  .jira-search-row-filters,
+  .jira-search-row-controls { grid-template-columns: 1fr; }
 }
 /* #251：附件目录一行 —— 路径可省略，右边的按钮不跟着挤。 */
 .jira-root .jira-v { flex: 1; min-width: 0; }

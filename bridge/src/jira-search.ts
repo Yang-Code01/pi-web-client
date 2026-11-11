@@ -30,6 +30,8 @@ export const SEARCH_PAGE_SIZE = 20;
 
 const MAX_TITLE = 200;
 const MAX_TEXT = 500;
+const MAX_TICKET_KEY = 200;
+const TICKET_KEY_CHARS = /^[A-Za-z0-9_-]+$/;
 const MAX_PERSON = 200;
 const MAX_ACCOUNT_ID = 128;
 const MAX_NAME = 64;
@@ -39,6 +41,7 @@ const PROJECT_KEY = /^[A-Z][A-Z0-9_]{0,9}$/;
 export interface SearchParams {
   title?: string;
   text?: string;
+  ticketKey?: string;
   project?: string;
   statusCategory?: StatusCategoryKey;
   status?: string;
@@ -115,6 +118,7 @@ function parseRelations(query: URLSearchParams, hasPerson: boolean): SearchRelat
 export function parseSearchParams(query: URLSearchParams): SearchParams {
   const title = read(query, "title");
   const text = read(query, "text");
+  const ticketKey = read(query, "ticketKey");
   const project = read(query, "project");
   const status = read(query, "status");
   const type = read(query, "type");
@@ -132,6 +136,10 @@ export function parseSearchParams(query: URLSearchParams): SearchParams {
 
   checkLength(title, MAX_TITLE, "title", "标题关键字");
   checkLength(text, MAX_TEXT, "text", "全文本关键字");
+  checkLength(ticketKey, MAX_TICKET_KEY, "ticketKey", "票号");
+  if (ticketKey !== undefined && !TICKET_KEY_CHARS.test(ticketKey)) {
+    throw new SearchQueryError("ticketKey", "票号只允许字母、数字、下划线和连字符");
+  }
   checkLength(person, MAX_PERSON, "person", "人员");
   checkLength(personAccountId, MAX_ACCOUNT_ID, "personAccountId", "账号 ID");
   checkLength(status, MAX_NAME, "status", "状态名");
@@ -167,6 +175,7 @@ export function parseSearchParams(query: URLSearchParams): SearchParams {
   return {
     title,
     text,
+    ticketKey,
     project,
     statusCategory,
     status,
@@ -203,6 +212,8 @@ export function buildSearchJql(params: SearchParams): string {
   if (title) clauses.push(`summary ~ "${title}"`);
   const text = quote(params.text);
   if (text) clauses.push(`text ~ "${text}"`);
+  const ticketKey = quote(params.ticketKey);
+  if (ticketKey) clauses.push(`workItemKey ~ "*${ticketKey}*"`);
   const project = quote(params.project);
   if (project) clauses.push(`project = "${project}"`);
   if (params.statusCategory) clauses.push(`statusCategory = "${STATUS_CATEGORIES[params.statusCategory]}"`);

@@ -157,6 +157,7 @@ export class JiraPanel {
   private fields: {
     title?: HTMLInputElement;
     text?: HTMLInputElement;
+    ticketKey?: HTMLInputElement;
     project?: HTMLSelectElement;
     category?: HTMLSelectElement;
     status?: HTMLSelectElement;
@@ -698,10 +699,16 @@ export class JiraPanel {
     };
 
     const grid = el("div", "jira-search-grid");
-    grid.append(
+    const primaryRow = el("div", "jira-search-row jira-search-row-primary");
+    primaryRow.append(
+      this.searchInput("ticketKey", tr("票号"), tr("请输入票号")),
       this.searchInput("title", tr("标题关键字")),
       this.searchInput("text", tr("全文本")),
       this.searchSelectField("project", tr("项目")),
+    );
+
+    const filterRow = el("div", "jira-search-row jira-search-row-filters");
+    filterRow.append(
       this.searchSelectField("category", tr("状态类别")),
       this.searchSelectField("status", tr("具体状态")),
       this.searchSelectField("type", tr("类型")),
@@ -710,13 +717,14 @@ export class JiraPanel {
       this.searchSelectField("order", tr("方向")),
     );
 
+    const controlRow = el("div", "jira-search-row jira-search-row-controls");
     const people = el("div", "jira-search-people");
     people.append(this.personField(), this.relationsField());
-    grid.append(people);
+    controlRow.append(people);
 
     const toggles = el("div", "jira-search-toggles");
     toggles.append(this.checkField("unassigned", tr("未分配")), this.checkField("resolved", tr("含已解决")));
-    grid.append(toggles);
+    controlRow.append(toggles);
 
     const actions = el("div", "jira-search-actions");
     const submit = el("button", "btn primary", tr("搜索")) as HTMLButtonElement;
@@ -728,7 +736,8 @@ export class JiraPanel {
     clear.onclick = () => this.clearSearch();
     this.metaNote = el("div", "jira-search-note");
     actions.append(submit, clear, this.metaNote);
-    grid.append(actions);
+    controlRow.append(actions);
+    grid.append(primaryRow, filterRow, controlRow);
     form.append(grid);
 
     this.resultsBox = el("div", "jira-search-results");
@@ -740,14 +749,14 @@ export class JiraPanel {
     return box;
   }
 
-  private searchInput(key: "title" | "text", label: string): HTMLElement {
-    const wrap = el("div", "jira-search-field span-2");
+  private searchInput(key: "title" | "text" | "ticketKey", label: string, placeholder = tr("输入关键字")): HTMLElement {
+    const wrap = el("div", "jira-search-field");
     const id = `jira-search-${key}`;
     const lab = el("label", "jira-label", label);
     lab.htmlFor = id;
     const input = el("input", "jira-input") as HTMLInputElement;
     input.id = id;
-    input.placeholder = tr("输入关键字");
+    input.placeholder = placeholder;
     input.autocomplete = "off";
     input.spellcheck = false;
     input.value = this.search[key];
@@ -1161,6 +1170,7 @@ export class JiraPanel {
     const f = this.fields;
     if (f.title) f.title.value = this.search.title;
     if (f.text) f.text.value = this.search.text;
+    if (f.ticketKey) f.ticketKey.value = this.search.ticketKey;
     this.paintMetaOptions();
     if (f.category) f.category.value = this.search.statusCategory;
     if (f.status) f.status.value = this.search.status;

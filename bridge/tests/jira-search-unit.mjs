@@ -57,7 +57,26 @@ test("每个条件单独出现时拼进固定位置", () => {
   );
 });
 
-test("组合时顺序固定：标题 → 全文本 → 项目 → 状态类别 → 状态 → 类型 → 优先级 → 人员 → 未分配", () => {
+test("票号按 key 任意位置子串匹配，并与其它条件取交集", () => {
+  assert.equal(
+    jql({ ticketKey: "17967" }),
+    'resolution = Unresolved AND workItemKey ~ "*17967*" ORDER BY updated DESC',
+  );
+  assert.equal(
+    jql({ title: "登录", ticketKey: "17967", project: "ACME" }),
+    'resolution = Unresolved AND summary ~ "登录" AND workItemKey ~ "*17967*" AND project = "ACME" ORDER BY updated DESC',
+  );
+});
+
+test("票号空白省略，合法字符与首尾空白按普通值处理", () => {
+  assert.equal(jql({ ticketKey: "   " }), DEFAULT);
+  assert.equal(
+    jql({ ticketKey: " abc-1_X " }),
+    'resolution = Unresolved AND workItemKey ~ "*abc-1_X*" ORDER BY updated DESC',
+  );
+});
+
+test("组合时顺序固定：标题 → 全文本 → 票号 → 项目 → 状态类别 → 状态 → 类型 → 优先级 → 人员 → 未分配", () => {
   assert.equal(
     jql({
       title: "登录",
@@ -207,6 +226,10 @@ test("非法参数逐条报 jira_query 与字段", () => {
   reject({ personAccountId: "x".repeat(129) }, "personAccountId");
   reject({ project: "ACME", status: "x".repeat(65) }, "status");
   reject({ nextPageToken: "x".repeat(2049) }, "nextPageToken");
+  reject({ ticketKey: "x".repeat(201) }, "ticketKey");
+  reject({ ticketKey: "ABC*" }, "ticketKey");
+  reject({ ticketKey: "ABC?" }, "ticketKey");
+  reject({ ticketKey: "ABC 123" }, "ticketKey");
 });
 
 test("项目 key 允许 1–10 位大写字母、数字、下划线", () => {
