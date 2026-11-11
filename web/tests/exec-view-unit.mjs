@@ -261,6 +261,35 @@ test("subagent runs attach to their dispatch and show one child level of steps",
   assert.deepEqual(view.metrics.subagents, { cost: 0.02, tokens: 40 });
 });
 
+test("a skill step carries its description, why and path into the step note", () => {
+  const dispatch = { ...tool("dispatch", "2025-01-01T00:00:02Z", "ok"), toolCallId: "call-delegate", name: "acp_delegate" };
+  const view = execView({
+    ...base,
+    items: [user("u1", "2025-01-01T00:00:00Z"), dispatch],
+    childSessionsAvailable: true,
+    childRuns: [{
+      runId: "del_child",
+      toolCallId: "call-delegate",
+      agent: "researcher",
+      task: "inspect the files",
+      state: "running",
+      items: [
+        { id: "s1", ts: "2025-01-01T00:00:03Z", kind: "skill", name: "review", description: "Review the diff", why: "diff 很大", path: "/skills/review/SKILL.md" },
+        { id: "s2", ts: "2025-01-01T00:00:04Z", kind: "skill", name: "bare", description: "" },
+      ],
+      stats: { tokens: { total: 40 }, cost: 0.02, contextTokens: null, contextWindow: null },
+    }],
+  });
+
+  const steps = view.timeline[0].subagent.steps;
+  const named = steps.find((step) => step.id === "s1");
+  const bare = steps.find((step) => step.id === "s2");
+  assert.equal(named.kind, "skill");
+  assert.equal(named.args, "");
+  assert.equal(named.note, "Review the diff\ndiff 很大\n/skills/review/SKILL.md");
+  assert.equal(bare.note, undefined, "a skill with nothing to say carries no note");
+});
+
 test("running children show subscribed plan steps and fall back to their task", () => {
   const view = execView({
     ...base,

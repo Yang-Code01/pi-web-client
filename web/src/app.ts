@@ -263,9 +263,8 @@ export class App {
   private execChildStates = new Map<string, ExecChildState>();
   private execChildErrors = new Map<string, string>();
   private execChildExpanded = new Set<string>();
-  private execChildDetails = new Set<string>();
-  /** #344: 「现在」卡里展开过参数的工具；key 是「名字 + 参数全文」，同一工具再出现还保持展开。 */
-  private execNowExpanded = new Set<string>();
+  /** D232: 当前打开的参数对话框的关闭句柄（切会话、再开一份时先关掉旧的）。 */
+  private argsDialogClose: (() => void) | null = null;
   private execChildSubscribed = new Set<string>();
   private execChildTimer: number | null = null;
   private execChildSessionId: string | null = null;
@@ -1477,12 +1476,12 @@ export class App {
    */
   private resetSessionView(): void {
     this.stopExecChildWatches();
+    this.argsDialogClose?.();
     this.execChildSessionId = null;
     this.execRuns = [];
     this.execChildStates.clear();
     this.execChildErrors.clear();
     this.execChildExpanded.clear();
-    this.execChildDetails.clear();
     this.approvals = [];
     this.asks = [];
     this.syncQueueTabMemory();
@@ -1645,7 +1644,6 @@ export class App {
             this.execChildStates.clear();
             this.execChildErrors.clear();
             this.execChildExpanded.clear();
-            this.execChildDetails.clear();
             // A freshly created session arrives here without openSession(): give it its own (empty) draft.
             this.switchDraft(nextId);
           }
@@ -14421,31 +14419,98 @@ export class App {
 
   private execActiveTool(active: { name: string; args: unknown; elapsedMs: number }): HTMLElement {
     const full = this.execArgs(active.args);
-    const key = `${active.name}\u0000${full}`;
-    const open = this.execNowExpanded.has(key);
-    const line = el("div", "exec-now-line exec-now-tool");
-    line.append(el("b", "", active.name), el("span", "exec-args", full));
-    // 子代理的任务、ask 的整段 JSON 一次能铺十几行，把「现在」卡撑成正文。长的默认只占一行，点开再看全文。
-    if (full.length > 80) {
-      const toggle = el("button", "exec-now-toggle") as HTMLButtonElement;
-      toggle.type = "button";
-      toggle.textContent = open ? "▴" : "▾";
-      toggle.title = open ? tr("收起参数") : tr("展开参数");
-      toggle.setAttribute("aria-expanded", String(open));
-      toggle.setAttribute("aria-label", open ? tr("收起 {p1} 的参数", { p1: active.name }) : tr("展开 {p1} 的参数", { p1: active.name }));
-      toggle.onclick = () => {
-        if (open) this.execNowExpanded.delete(key);
-        else {
-          if (this.execNowExpanded.size >= 64) this.execNowExpanded.clear();
-          this.execNowExpanded.add(key);
-        }
-        this.renderQueue();
-      };
-      line.append(toggle);
+    // 子代理的任务、ask 的整段 JSON 一次能铺十几行。D232：卡里只留一行，长的点行打开对话框读全文 ——
+    // 就地展开（D228）会把「现在」卡本身撑成正文，滚到哪儿都还是在参数里。
+    const long = full.length > 80;
+    const line = el(long ? "button" : "div", "exec-now-line exec-now-tool") as HTMLElement;
+    if (long) {
+      const row = line as HTMLButtonElement;
+      row.type = "button";
+      row.title = tr("点开看 {p1} 的完整参数", { p1: active.name });
+      row.setAttribute("aria-haspopup", "dialog");
+      row.onclick = () => this.openArgsDialog({
+        title: tr("{p1} 的参数", { p1: active.name }),
+        meta: this.execDuration(active.elapsedMs),
+        blocks: [{ text: full }],
+      });
     }
+    line.append(el("b", "", active.name), el("span", "exec-args", full));
+    if (long) line.append(el("span", "exec-now-open", "⤢"));
     line.append(el("span", "exec-elapsed", this.execDuration(active.elapsedMs)));
-    if (open) line.append(el("pre", "exec-now-args", full));
     return line;
+  }
+
+  /**
+   * D232: 长参数 / 子代理步骤详情走一次模态对话框，读完就关。跟口令框同一层（`.modal`，z-index 50），
+   * Esc、点遮罩、右上角 ✕ 都关；正文可滚动，顶部给「复制」。
+   */
+  private openArgsDialog(opts: { title: string; meta?: string; blocks: { label?: string; text: string }[] }): void {
+    this.argsDialogClose?.();
+    const scrim = el("div", "modal argdialog");
+    scrim.setAttribute("role", "dialog");
+    scrim.setAttribute("aria-modal", "true");
+    scrim.setAttribute("aria-label", opts.title);
+    const panel = el("div", "argdialog-panel");
+    const head = el("div", "argdialog-head");
+    head.append(el("strong", "argdialog-title", opts.title));
+    if (opts.meta) head.append(el("span", "argdialog-meta", opts.meta));
+    const copy = el("button", "argdialog-btn argdialog-copy", tr("复制")) as HTMLButtonElement;
+    copy.type = "button";
+    copy.onclick = () => {
+      const text = opts.blocks.map((block) => block.text).join("\n\n");
+      const done = navigator.clipboard?.writeText(text);
+      done?.then(() => this.flashToast(tr("已复制到剪贴板"), false, 1600), () => this.flashToast(tr("复制失败"), true, 1600));
+    };
+    const close = el("button", "argdialog-btn argdialog-close", "✕") as HTMLButtonElement;
+    close.type = "button";
+    close.setAttribute("aria-label", tr("关闭"));
+    head.append(copy, close);
+    const body = el("div", "argdialog-body");
+    for (const block of opts.blocks) {
+      if (block.label) body.append(el("div", "argdialog-label", block.label));
+      body.append(el("pre", "argdialog-text", block.text));
+    }
+    panel.append(head, body);
+    scrim.append(panel);
+
+    const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // 背景整个 inert：不然读屏 / Tab 还能走到遮罩后面的面板上。要等遮罩挂进 DOM 才知道兄弟是谁。
+    const inerted: Element[] = [];
+    const shut = () => {
+      window.removeEventListener("keydown", onKey, true);
+      for (const node of inerted) node.removeAttribute("inert");
+      scrim.remove();
+      if (this.argsDialogClose === shut) this.argsDialogClose = null;
+      if (back?.isConnected) back.focus();
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Tab") {
+        // 模态就得把焦点关在里面：面板里只有「复制」和「✕」两个 tabbable。
+        const stops = [copy, close];
+        const at = stops.indexOf(document.activeElement as HTMLButtonElement);
+        ev.preventDefault();
+        stops[(at + (ev.shiftKey ? stops.length - 1 : 1)) % stops.length].focus();
+        return;
+      }
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      // 捕获阶段截住：底下的 Esc 归 sheet / 面板管，别关完对话框又顺手关掉一层。
+      ev.stopImmediatePropagation();
+      shut();
+    };
+    scrim.onclick = (ev) => {
+      if (ev.target === scrim) shut();
+    };
+    close.onclick = shut;
+    this.overlay(scrim);
+    for (const node of [...(scrim.parentElement?.children ?? [])]) {
+      if (node === scrim) continue;
+      node.setAttribute("inert", "");
+      inerted.push(node);
+    }
+    window.addEventListener("keydown", onKey, true);
+    this.argsDialogClose = shut;
+    close.focus();
   }
 
   private execArgs(args: unknown): string {
@@ -14526,32 +14591,28 @@ export class App {
     return card;
   }
 
-  private execChildStep(step: ExecSubagentRow["steps"][number], runId: string): HTMLElement {
-    const key = `${runId}:${step.id}`;
-    const expanded = this.execChildDetails.has(key);
+  private execChildStep(step: ExecSubagentRow["steps"][number]): HTMLElement {
     const wrap = el("div", "exec-child-step-wrap");
     const button = el("button", "exec-child-step") as HTMLButtonElement;
     button.type = "button";
-    button.setAttribute("aria-expanded", String(expanded));
     const state = el("span", `exec-state ${step.status}`);
     state.textContent = step.status === "running" ? "◌" : step.status === "error" ? "✗" : step.status === "success" ? "✓" : "•";
     const summary = typeof step.args === "string" ? step.args : this.execArgs(step.args);
     button.append(state, el("span", "exec-step-name", step.kind === "skill" ? tr("技能 · {p1}", { p1: step.label }) : step.label), el("span", "exec-step-args", summary));
-    button.onclick = () => {
-      if (expanded) this.execChildDetails.delete(key);
-      else this.execChildDetails.add(key);
-      this.renderQueue();
-    };
-    wrap.append(button);
-    if (expanded) {
-      const details = el("div", "exec-child-step-detail");
-      if (step.args != null && summary) details.append(el("span", "exec-child-detail-label", tr("参数")), el("pre", "", this.execArgs(step.args)));
-      if (step.result) {
-        const result = step.result.length > 1200 ? `${step.result.slice(0, 1200)}…` : step.result;
-        details.append(el("span", "exec-child-detail-label", tr("结果摘要")), el("pre", "", result));
-      }
-      if (details.childNodes.length) wrap.append(details);
+    // D232: 步骤详情（参数 + 结果摘要）不再就地铺开，点行开对话框 —— 跟「现在」卡的长参数同一套。
+    const blocks: { label?: string; text: string }[] = [];
+    if (step.note) blocks.push({ label: tr("技能说明"), text: step.note });
+    if (step.args != null && summary) blocks.push({ label: tr("参数"), text: summary });
+    if (step.result) {
+      const result = step.result.length > 1200 ? `${step.result.slice(0, 1200)}…` : step.result;
+      blocks.push({ label: tr("结果摘要"), text: result });
     }
+    if (blocks.length) {
+      button.title = tr("点开看这一步的参数与结果");
+      button.setAttribute("aria-haspopup", "dialog");
+      button.onclick = () => this.openArgsDialog({ title: step.label, meta: tr("子代理步骤"), blocks });
+    }
+    wrap.append(button);
     return wrap;
   }
 
@@ -14595,7 +14656,7 @@ export class App {
       return wrap;
     }
     const steps = el("div", "exec-child-steps");
-    for (const step of row.steps) steps.append(this.execChildStep(step, row.runId));
+    for (const step of row.steps) steps.append(this.execChildStep(step));
     wrap.append(steps);
     return wrap;
   }
