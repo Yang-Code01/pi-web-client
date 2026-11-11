@@ -393,6 +393,16 @@ try {
   const fresh = await waitFor((m) => m.type === "scratch" && m.sessionId, 30000, "重启后的随手问");
   check((fresh.items ?? []).length === 0, "重启后的随手问是空的（不装作还记得）");
 
+  const staleMark = seen.length;
+  send({ type: "prompt", sessionId: "gone-scratch-session", text: "重开后不能丢的字" });
+  const staleError = await waitFor(
+    (m) => m.type === "error" && m.code === "session_not_found" && m.sessionId === "gone-scratch-session" && seen.indexOf(m) >= staleMark,
+    10000,
+    "失效会话用结构化错误回应",
+  );
+  check(Boolean(staleError), "找不到会话以 session_not_found 错误帧回应，而不是聊天 notice");
+  check(!seen.some((m, i) => i >= staleMark && m.type === "notice" && /找不到这个会话/.test(m.text ?? "")), "失效会话错误没有作为普通 notice 落进对话");
+
   await stopBridge();
 } catch (err) {
   failed += 1;

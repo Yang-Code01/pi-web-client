@@ -3094,7 +3094,13 @@ async function main(): Promise<void> {
             send({ type: "notice", text: `未知指令 ${msg.type}`, level: "warn" });
         }
       } catch (err: any) {
-        send({ type: "notice", text: String(err?.message ?? err), level: "error" });
+        const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
+        const message = String(err?.message ?? err);
+        if (sessionId && message === "找不到这个会话") {
+          send({ type: "error", sessionId, code: "session_not_found", message });
+          return;
+        }
+        send({ type: "notice", text: message, level: "error" });
       }
     });
   });
