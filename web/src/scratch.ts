@@ -107,6 +107,7 @@ export class ScratchChat {
   private remindEl!: HTMLElement;
   private sendBtn!: HTMLButtonElement;
   private clearBtn!: HTMLButtonElement;
+  private pauseBtn!: HTMLButtonElement;
   private closeBtn!: HTMLButtonElement;
 
   private id: string | null = null;
@@ -178,13 +179,16 @@ export class ScratchChat {
     const mine = typeof msg?.sessionId === "string" && msg.sessionId === this.id;
     switch (msg?.type) {
       case "scratch": {
+        const wasPaused = this.state?.paused === true;
         this.id = String(msg.sessionId ?? "") || null;
         this.starting = false;
         this.error = "";
         const state = msg.state as SessionState | undefined;
+        const hadPauseNotice = this.items.some((item) => item.id === `scratch-paused-${this.id}`);
         this.state = state ?? null;
         this.running = Boolean(state?.running);
         this.items = Array.isArray(msg.items) ? (msg.items as Item[]) : [];
+        if (state?.paused && (state.file || this.items.length) && (hadPauseNotice || !wasPaused)) this.addPauseNotice();
         this.repaint();
         this.paintState();
         return true;
@@ -225,7 +229,9 @@ export class ScratchChat {
         // 结果切了模型名字不变、状态行也不动。
         const st = msg.session as SessionState | undefined;
         if (!st || st.id !== this.id) return false;
+        const wasPaused = this.state?.paused === true;
         this.state = { ...(this.state ?? ({} as SessionState)), ...st };
+        if (st.paused && !wasPaused) this.addPauseNotice();
         if (st.running !== undefined) this.running = Boolean(st.running);
         if (st.starting !== undefined) this.starting = Boolean(st.starting);
         this.paintState();
@@ -233,7 +239,11 @@ export class ScratchChat {
       }
       case "notice":
         if (!mine) return false;
-        this.upsert({ id: `n:${Date.now()}:${Math.random()}`, kind: "notice", text: String(msg.text ?? "") } as Item);
+        this.upsert({
+          id: msg.code === "scratch_paused" ? `scratch-paused-${this.id}` : `n:${Date.now()}:${Math.random()}`,
+          kind: "notice",
+          text: msg.code === "scratch_paused" ? tr("已暂停") : String(msg.text ?? ""),
+        } as Item);
         return true;
       case "error":
         // 与当前会话无关的错误也可能是随手问的启动失败（桥那边 target 不到会话时没有 sessionId）。
@@ -278,10 +288,12 @@ export class ScratchChat {
     this.clearBtn = el("button", "btn ghost scratch-clear", tr("清空")) as HTMLButtonElement;
     this.clearBtn.title = tr("在同一个进程里换一条新会话：上下文和 token 归零，不等重启");
     this.clearBtn.onclick = () => this.clear();
+    this.pauseBtn = el("button", "btn ghost scratch-pause", tr("暂停")) as HTMLButtonElement;
+    this.pauseBtn.onclick = () => this.togglePause();
     this.closeBtn = el("button", "btn ghost scratch-close", "×") as HTMLButtonElement;
     this.closeBtn.title = tr("关闭");
     this.closeBtn.onclick = () => this.close();
-    head.append(this.clearBtn, this.closeBtn);
+    head.append(this.clearBtn, this.pauseBtn, this.closeBtn);
     sheet.append(head);
 
     this.modelMenu = el("div", "scratch-models");
@@ -406,9 +418,19 @@ export class ScratchChat {
 
   private submit(): void {
     const text = this.inputEl.value.trim();
-    if (!text || this.running || this.starting || !this.id) return;
+    if (!text || this.running || this.starting || this.state?.paused || !this.id) return;
     this.inputEl.value = "";
     this.host.send({ type: "prompt", sessionId: this.id, text });
+  }
+
+  private togglePause(): void {
+    if (!this.id || this.running || this.starting) return;
+    this.host.send({ type: this.state?.paused ? "scratch.resume" : "scratch.pause" });
+  }
+
+  private addPauseNotice(): void {
+    if (!this.id) return;
+    this.upsert({ id: `scratch-paused-${this.id}`, kind: "notice", text: tr("随手问已暂停，恢复后可以接着问"), level: "info" });
   }
 
   private clear(): void {
@@ -519,6 +541,7 @@ export class ScratchChat {
 
   /** 状态行：启动中 / 回答中 / 就绪 / 还没打开时不写。 */
   private stateLabel(): string {
+    if (this.state?.paused) return tr("已暂停");
     if (this.starting) return tr("pi 正在启动…");
     if (this.running) return tr("正在回答…");
     return this.id ? tr("就绪") : "";
@@ -527,15 +550,20 @@ export class ScratchChat {
   private paintState(): void {
     if (!this.root) return;
     const busy = this.running || this.starting;
-    this.sendBtn.disabled = busy || !this.id;
+    const paused = Boolean(this.state?.paused);
+    this.sendBtn.disabled = busy || paused || !this.id;
     this.clearBtn.disabled = !this.id || this.running;
-    this.inputEl.disabled = this.starting;
+    const pauseLabel = paused ? tr("开始") : tr("暂停");
+    this.pauseBtn.textContent = pauseLabel;
+    this.pauseBtn.disabled = busy || !this.id;
+    this.pauseBtn.title = this.running ? tr("这一轮跑完才能暂停") : pauseLabel;
+    this.inputEl.disabled = this.starting || paused;
     this.stateEl.textContent = this.stateLabel();
     // 模板串里带中文会被 i18n 检查器当成「没走 tr()」：先算好名字再拼。
     const modelName = this.state?.modelName || this.state?.model || tr("模型");
     const level = this.state?.thinkingLevel;
     this.modelEl.textContent = level ? `${modelName} · ${level} ▾` : `${modelName} ▾`;
-    this.modelEl.disabled = !this.id;
+    this.modelEl.disabled = !this.id || paused;
     this.hintEl.textContent = this.error;
     this.hintEl.hidden = !this.error;
     this.paintReminder();
