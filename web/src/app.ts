@@ -15,7 +15,7 @@ import { parseRules, type RuleBook } from "./rules.ts";
 import { openPinMenu, type PinMenuHandle } from "./pinmenu.ts";
 import { PillBar, neighborAfterArchive, starredSessions } from "./pillbar.ts";
 import { applyPending, badgeSession, syncPending, type PendingCounts, type PendingKind } from "./pending.ts";
-import { createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
+import { badgeText, createTabMemory, reduce, type QueueTab, type TabEvent } from "./ask-tab.ts";
 import { NowChip, normalizeWsPath, nowChipView, wsOf, type NowChipPending } from "./nowchip.ts";
 import { activeLayout, LAYOUTS, layoutPref, layoutSupported, type LayoutId } from "./layout.ts";
 import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts";
@@ -14720,6 +14720,14 @@ export class App {
     needs.dataset.execTab = "needs";
     needs.setAttribute("aria-selected", String(this.queueTab === "needs"));
     needs.onclick = () => this.selectQueueTab("needs");
+    const questionCount = this.asks.reduce((n, ask) => n + ask.questions.length, 0);
+    const text = badgeText(questionCount);
+    if (text && this.queueTab !== "needs") {
+      const pip = el("span", "pip", text);
+      pip.title = tr("{p1} 道题待回答", { p1: questionCount });
+      pip.setAttribute("aria-label", tr("{p1} 道题待回答", { p1: questionCount }));
+      needs.append(pip);
+    }
     const execution = el("button", this.queueTab === "exec" ? "on" : "", tr("执行")) as HTMLButtonElement;
     execution.type = "button";
     execution.dataset.execTab = "exec";

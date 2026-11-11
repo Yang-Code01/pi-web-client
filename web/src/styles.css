@@ -1495,6 +1495,7 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .exec-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line-soft); margin: 0 0 12px; }
 .exec-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--faint); padding: 7px 10px; font: inherit; font-size: 13px; cursor: pointer; }
 .exec-tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.exec-tabs .pip { display: inline-block; min-width: 16px; height: 16px; margin-left: 6px; border-radius: 8px; background: var(--warn); color: var(--warn-ink); font-size: 11px; line-height: 16px; font-weight: 700; text-align: center; vertical-align: 1px; }
 .exec-pip { display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: var(--warn); vertical-align: 1px; }
 .exec-panel { display: grid; gap: 10px; min-width: 0; }
 .exec-plan { min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); }

@@ -1,5 +1,10 @@
 export type QueueTab = "needs" | "exec";
 
+export function badgeText(count: number): string {
+  if (count <= 0) return "";
+  return count > 9 ? "9+" : String(count);
+}
+
 export interface TabMemory {
   tab: QueueTab;
   recall: QueueTab | null;

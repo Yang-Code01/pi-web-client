@@ -5,10 +5,17 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createTabMemory, reduce } from "../src/ask-tab.ts";
+import { badgeText, createTabMemory, reduce } from "../src/ask-tab.ts";
 
 const wide = { compact: false };
 const event = (type, count) => ({ type, count });
+
+test("角标数字隐藏零值并截断到 9+", () => {
+  assert.equal(badgeText(0), "");
+  assert.equal(badgeText(1), "1");
+  assert.equal(badgeText(9), "9");
+  assert.equal(badgeText(10), "9+");
+});
 
 test("问卷到达时从执行切到需要你，并记住原标签", () => {
   const next = reduce(createTabMemory("exec"), event("asks", 1), wide);

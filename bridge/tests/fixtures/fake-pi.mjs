@@ -176,6 +176,66 @@ async function turn(text) {
     out({ type: "agent_end", messages: [], willRetry: false });
     return;
   }
+  if (text.startsWith("ASKTAB_BADGE_")) {
+    const pair = text.startsWith("ASKTAB_BADGE_PAIR");
+    const groups = pair ? [{ name: "第一份", count: 3 }, { name: "第二份", count: 3 }] : [{ name: "十题问卷", count: 10 }];
+    const calls = groups.map(({ name, count }, index) => {
+      const args = {
+        questions: Array.from({ length: count }, (_, questionIndex) => ({
+          id: `${name}-q${questionIndex + 1}`,
+          label: `${name} ${questionIndex + 1}`,
+          header: `${name} ${questionIndex + 1}`,
+          question: `${name}的第 ${questionIndex + 1} 题怎么选？`,
+          options: [{ label: "选项甲" }, { label: "选项乙" }],
+        })),
+      };
+      return { id: `call-ask-tab-badge-${Date.now()}-${index}`, name, args };
+    });
+    const rpcCalls = pair ? calls.slice(0, 1) : calls;
+    out({ type: "message_start", message: assistant("") });
+    out({
+      type: "message_end",
+      message: assistant("", {
+        content: rpcCalls.map((call) => ({ type: "toolCall", id: call.id, name: "ask_user_question", arguments: call.args })),
+        stopReason: "toolUse",
+      }),
+    });
+    out({ type: "tool_execution_start", toolCallId: calls[0].id, toolName: "ask_user_question", args: calls[0].args });
+    let secondQuestionnaire;
+    if (pair) {
+      // A pi RPC turn executes tools serially; use the same loopback question route as the
+      // questionnaire extension to keep a second questionnaire pending alongside this one.
+      await sleep(700);
+      secondQuestionnaire = fetch(new URL("/api/ask", process.env.PI_WEB_LOOPBACK), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: process.env.PI_WEB_LOOPBACK_TOKEN, questions: calls[1].args.questions, tool: "fake-pi" }),
+      }).then(async (response) => {
+        if (!response.ok) throw new Error(`fake ask failed: ${response.status}`);
+        return response.json();
+      });
+    }
+    for (const call of rpcCalls) {
+      for (const question of call.args.questions) {
+        const id = `ask-tab-ui-${question.id}-${Date.now()}`;
+        await new Promise((resolve) => {
+          pendingSelect = resolve;
+          out({
+            type: "extension_ui_request",
+            id,
+            method: "select",
+            title: `[${question.header}] ${question.question}`,
+            options: [`1. ${question.options[0].label}`, `2. ${question.options[1].label}`],
+          });
+        });
+        pendingSelect = null;
+      }
+      out({ type: "tool_execution_end", toolCallId: call.id, toolName: "ask_user_question", isError: false, result: "answered" });
+    }
+    if (secondQuestionnaire) await secondQuestionnaire;
+    out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
   if (text.startsWith("ASKTAB")) {
     const callId = `call-ask-tab-${Date.now()}`;
     const args = {
