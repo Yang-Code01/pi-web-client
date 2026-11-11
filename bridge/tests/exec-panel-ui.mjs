@@ -185,8 +185,13 @@ try {
   await childToggle.click();
   check("child plan badge remains visible when collapsed", (await page.locator(".exec-subagent-plan").last().innerText()) === "计划 2/2");
   socket.send(JSON.stringify({ type: "prompt", sessionId, text: "NOWARGS" }));
-  await page.waitForSelector(".exec-now-tool", { timeout: 20000 });
-  const nowTool = page.locator(".exec-now-tool").first();
+  // 子代理那轮还在推更新，面板会重渲染；等「现在」卡真换上 ask_user_question 那一行再量。
+  await page.waitForFunction(() => {
+    const row = [...document.querySelectorAll(".exec-now-tool")].find((node) => node.textContent?.includes("ask_user_question"));
+    const args = row?.querySelector(".exec-args");
+    return !!args && args.getBoundingClientRect().height > 0;
+  }, null, { timeout: 20000 });
+  const nowTool = page.locator(".exec-now-tool", { hasText: "ask_user_question" }).first();
   const clamped = await nowTool.locator(".exec-args").evaluate((node) => ({ height: node.getBoundingClientRect().height, line: parseFloat(getComputedStyle(node).lineHeight) || 0, over: node.scrollWidth > node.clientWidth + 1 }));
   check("long tool args occupy one line", clamped.line > 0 && clamped.height <= clamped.line * 1.5 && clamped.over, JSON.stringify(clamped));
   check("long tool args get an open affordance, not an inline toggle", await nowTool.evaluate((node) => node.tagName === "BUTTON" && node.getAttribute("aria-haspopup") === "dialog") && (await nowTool.locator(".exec-now-open").isVisible()));
@@ -196,6 +201,14 @@ try {
   await page.waitForSelector(".argdialog", { timeout: 5000 });
   check("the dialog shows the full argument text", (await page.locator(".argdialog-text").first().innerText()).length > 120);
   check("the now card keeps its height while the dialog is up", ((await page.locator(".exec-now").boundingBox())?.height ?? 0) === nowCardHeight);
+  check("everything behind the dialog is inert", await page.evaluate(() => {
+    const scrim = document.querySelector(".argdialog");
+    const peers = [...(scrim?.parentElement?.children ?? [])].filter((node) => node !== scrim);
+    return peers.length > 0 && peers.every((node) => node.hasAttribute("inert"));
+  }));
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  check("Tab stays inside the dialog", await page.evaluate(() => document.querySelector(".argdialog")?.contains(document.activeElement) === true));
   await page.locator(".argdialog-close").click();
   check("the close button dismisses the dialog", (await page.locator(".argdialog").count()) === 0);
   await nowTool.click();

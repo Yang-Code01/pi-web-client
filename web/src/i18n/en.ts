@@ -625,6 +625,7 @@ export const en: Dict = {
   "技能": "Skills",
   "技能列表还没到，稍等一下…": "The skill list hasn't arrived yet, hold on…",
   "技能注册成 /skill:名字": "Register skills as /skill:name",
+  "技能说明": "Skill details",
   "技能面板": "Skills panel",
   "把已填答案放进输入框": "Put the filled-in answer into the input box",
   "把当前这条分支整个复制成一个新会话（/clone）": "Copy this whole branch into a new session (/clone)",

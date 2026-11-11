@@ -14449,13 +14449,24 @@ export class App {
     scrim.append(panel);
 
     const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // 背景整个 inert：不然读屏 / Tab 还能走到遮罩后面的面板上。要等遮罩挂进 DOM 才知道兄弟是谁。
+    const inerted: Element[] = [];
     const shut = () => {
       window.removeEventListener("keydown", onKey, true);
+      for (const node of inerted) node.removeAttribute("inert");
       scrim.remove();
       if (this.argsDialogClose === shut) this.argsDialogClose = null;
       if (back?.isConnected) back.focus();
     };
     const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Tab") {
+        // 模态就得把焦点关在里面：面板里只有「复制」和「✕」两个 tabbable。
+        const stops = [copy, close];
+        const at = stops.indexOf(document.activeElement as HTMLButtonElement);
+        ev.preventDefault();
+        stops[(at + (ev.shiftKey ? stops.length - 1 : 1)) % stops.length].focus();
+        return;
+      }
       if (ev.key !== "Escape") return;
       ev.preventDefault();
       // 捕获阶段截住：底下的 Esc 归 sheet / 面板管，别关完对话框又顺手关掉一层。
@@ -14467,6 +14478,11 @@ export class App {
     };
     close.onclick = shut;
     this.overlay(scrim);
+    for (const node of [...(scrim.parentElement?.children ?? [])]) {
+      if (node === scrim) continue;
+      node.setAttribute("inert", "");
+      inerted.push(node);
+    }
     window.addEventListener("keydown", onKey, true);
     this.argsDialogClose = shut;
     close.focus();
@@ -14560,7 +14576,8 @@ export class App {
     button.append(state, el("span", "exec-step-name", step.kind === "skill" ? tr("技能 · {p1}", { p1: step.label }) : step.label), el("span", "exec-step-args", summary));
     // D232: 步骤详情（参数 + 结果摘要）不再就地铺开，点行开对话框 —— 跟「现在」卡的长参数同一套。
     const blocks: { label?: string; text: string }[] = [];
-    if (step.args != null && summary) blocks.push({ label: tr("参数"), text: this.execArgs(step.args) });
+    if (step.note) blocks.push({ label: tr("技能说明"), text: step.note });
+    if (step.args != null && summary) blocks.push({ label: tr("参数"), text: summary });
     if (step.result) {
       const result = step.result.length > 1200 ? `${step.result.slice(0, 1200)}…` : step.result;
       blocks.push({ label: tr("结果摘要"), text: result });
