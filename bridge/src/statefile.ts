@@ -24,12 +24,16 @@ export class StateFile<T> {
   /** 读不到盘时攒下来的改动：恢复后按顺序叠到盘上的内容之上。 */
   private pending: Array<(data: T) => void> = [];
 
-  constructor(
-    readonly file: string,
-    private readonly fallback: T,
-    private readonly normalize: (raw: unknown) => T,
-    private readonly onError?: (failure: StateFailure) => void,
-  ) {
+  readonly file: string;
+  private readonly fallback: T;
+  private readonly normalize: (raw: unknown) => T;
+  private readonly onError?: (failure: StateFailure) => void;
+
+  constructor(file: string, fallback: T, normalize: (raw: unknown) => T, onError?: (failure: StateFailure) => void) {
+    this.file = file;
+    this.fallback = fallback;
+    this.normalize = normalize;
+    this.onError = onError;
     this.data = fallback;
   }
 
