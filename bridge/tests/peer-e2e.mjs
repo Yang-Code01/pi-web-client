@@ -108,6 +108,36 @@ try {
   await until("手动地址后 C 也看到 A", seenBy(17968, sa), 8000);
   log("ok 手动地址兜底");
 
+  // #381：C 只是被 A 发现、没有任何关系记录，通讯录仍要把它合并出来，且不写任何关系。
+  const merged = await until(
+    "在线陌生人合并进通讯录",
+    async () => {
+      const [contacts, live] = await Promise.all([
+        (await fetch("http://127.0.0.1:17965/contacts")).json(),
+        status(17965),
+      ]);
+      const c = contacts.contacts?.find((x) => x.nodeId === sc);
+      const p = live?.online?.find((x) => x.nodeId === sc);
+      if (!c || !p) return false;
+      return [
+        c.quick === false,
+        c.friend === false,
+        c.favorite === false,
+        c.incoming === false,
+        c.outgoing === false,
+        c.ignored === false,
+        c.online === true,
+        c.nickname === p.nickname,
+        c.hostname === p.hostname,
+        c.addr === p.addr,
+        c.livePort === p.port,
+      ].every(Boolean) ? c : false;
+    },
+    8000,
+  );
+  void merged;
+  log("ok 在线陌生人进通讯录且关系字段全假");
+
   // ---- 隐身（D99）：隐身的 peer 一条 announce 都不许发，也不许透露身份。 ----
   // 嗅探器在 D 起来之后才绑：启动时那一包已经过去了，这里只看 /peer/refresh 触发的那一包
   // （定时器和 /peer/refresh 走的是同一个 announce()）。
