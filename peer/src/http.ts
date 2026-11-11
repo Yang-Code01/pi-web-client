@@ -241,7 +241,7 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const contacts = relations.list().map((contact) => {
           known.add(contact.nodeId);
           const peer = online.get(contact.nodeId);
-          return { ...contact, quick: false, ignored: false, online: Boolean(peer), addr: peer?.addr ?? "", livePort: peer?.port ?? 0 };
+          return { ...contact, quick: contact.quick ?? false, ignored: false, online: Boolean(peer), addr: peer?.addr ?? "", livePort: peer?.port ?? 0 };
         });
         for (const peer of onlinePeers) {
           if (peer.nodeId === nodeId || known.has(peer.nodeId)) continue;
@@ -276,6 +276,14 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           if (action === "request") {
             if (!who) return json(res, 400, { error: "这个人已经不在线了" });
             messages.sendControl(peerId, "friend-request");
+            return json(res, 200, { ok: true, contact: relations.get(peerId) });
+          }
+          // 快捷添加只认 30 秒在线窗口（不是 5 分钟 IP 宽松窗口），离线直接拒、不进补投。
+          if (action === "quick") {
+            if (!discovery.online().some((peer) => peer.nodeId === peerId)) {
+              return json(res, 400, { error: "对方已离线，等他上线再试" });
+            }
+            messages.sendControl(peerId, "friend-quick");
             return json(res, 200, { ok: true, contact: relations.get(peerId) });
           }
           if (action === "accept") {

@@ -733,9 +733,11 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/peer/friend" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       const action = String(body?.action ?? "");
-      if (!["request", "accept", "favorite", "remove"].includes(action)) return json(res, 400, { error: "未知动作" });
+      const actions = ["request", "quick", "accept", "favorite", "remove"] as const;
+      type FriendAction = (typeof actions)[number];
+      if (!(actions as readonly string[]).includes(action)) return json(res, 400, { error: "未知动作" });
       try {
-        return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as "request", Boolean(body?.on)));
+        return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as FriendAction, Boolean(body?.on)));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
