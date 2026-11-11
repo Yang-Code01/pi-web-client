@@ -64,6 +64,8 @@ export interface ExecChildStep {
   status: "running" | "success" | "error" | "unknown";
   durationMs: number | null;
   result?: string;
+  /** 技能行没有工具参数，但它自带 description / why / path —— 对话框里单独一块。 */
+  note?: string;
   planTaskId: number | null;
 }
 
@@ -179,9 +181,9 @@ function dispatchRunId(item: Extract<Item, { kind: "tool" }>): string | null {
 function childPlanAndSteps(run: ExecChildRunInput, now: number): { plan: ExecPlanView | null; steps: ExecChildStep[] } {
   const todoSnapshots = run.items.filter((item) => item.kind === "tool" && item.name.toLowerCase() === "todo" && "plan" in item);
   const latestItemPlan = todoSnapshots.at(-1);
-  const sourcePlan = run.plan !== undefined
-    ? run.plan
-    : latestItemPlan?.kind === "tool" ? latestItemPlan.plan ?? null : null;
+  let sourcePlan: ExecPlanSnapshot | null = null;
+  if (run.plan !== undefined) sourcePlan = run.plan;
+  else if (latestItemPlan?.kind === "tool") sourcePlan = latestItemPlan.plan ?? null;
   const steps = childTimelineRows(run.items, now, todoSnapshots.length ? null : sourcePlan);
   const stepCounts = new Map<number, number>();
   for (const step of steps) {
@@ -260,6 +262,7 @@ function timelineRows(
 function childTimelineRows(items: Item[], now: number, startingPlan: ExecPlanSnapshot | null = null): ExecChildStep[] {
   return timelineRows(items, now, startingPlan).map((row) => {
     const item = items.find((candidate) => candidate.id === row.id);
+    const note = item?.kind === "skill" ? [item.description, item.why, item.path].filter(Boolean).join("\n") : "";
     return {
       id: row.id,
       kind: row.kind,
@@ -268,6 +271,7 @@ function childTimelineRows(items: Item[], now: number, startingPlan: ExecPlanSna
       status: row.status,
       durationMs: row.durationMs,
       ...(item?.kind === "tool" && typeof item.result === "string" ? { result: item.result } : {}),
+      ...(note ? { note } : {}),
       planTaskId: row.planTaskId,
     };
   });

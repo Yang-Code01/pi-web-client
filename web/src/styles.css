@@ -1530,12 +1530,13 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .exec-now.idle { border-color: var(--line); background: var(--panel-2); }
 .exec-now h2 { margin: 0 0 8px; padding: 0; border: 0; color: var(--text); font-size: 13px; }
 .exec-now-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
-/* #344: 长参数默认只占一行，右侧 ▾ 展开全文。子代理的任务描述、ask 的整段 JSON 都属于这一类。 */
+/* D232: 长参数仍然只占一行，但不再就地展开（D228 那一版会把「现在」卡本身撑成正文），点行开对话框。 */
 .exec-now-tool .exec-args { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
-.exec-now-toggle { flex: none; border: 0; background: none; padding: 0 2px; color: var(--faint); font: 11px/1 var(--mono); cursor: pointer; }
-.exec-now-toggle:hover { color: var(--accent); }
-.exec-now-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.exec-now-args { flex-basis: 100%; max-height: 180px; overflow: auto; margin: 2px 0 0; padding: 5px 7px; border-radius: 6px; background: var(--panel-2); color: var(--dim); font: 10px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+button.exec-now-tool { width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+button.exec-now-tool:hover .exec-args { color: var(--text); }
+button.exec-now-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.exec-now-open { flex: none; color: var(--faint); font: 11px/1 var(--mono); }
+button.exec-now-tool:hover .exec-now-open { color: var(--accent); }
 .exec-metrics { display: grid; gap: 9px; min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); }
 .exec-metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .exec-metric { display: grid; gap: 3px; min-width: 0; }
@@ -1588,9 +1589,6 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .exec-child-step:hover { background: var(--panel); }
 .exec-child-step .exec-step-name { font-size: 10px; }
 .exec-child-step .exec-step-args { font-size: 10px; }
-.exec-child-step-detail { display: grid; gap: 4px; min-width: 0; padding: 2px 4px 5px 19px; }
-.exec-child-detail-label { color: var(--faint); font-size: 10px; }
-.exec-child-step-detail pre { max-height: 180px; overflow: auto; margin: 0; color: var(--faint); font: 10px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 @keyframes exec-flash { 0%, 45% { background-color: var(--accent-bg); } 100% { background-color: transparent; outline-color: transparent; } }
 /* 这一栏是「待办 / 通道 / 快捷键 / 关于」四组，每组一个标题加一组控件。以前它们只靠 grid 的 8px
    gap 排着，按钮各浮各的，标题像是另一块的。发丝线 + 16/8 的上下节奏把它们连成组：
@@ -1612,6 +1610,21 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .modal.hi { z-index: 62; }
 .modal form { width: min(360px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: grid; gap: 12px; }
 .modal input { padding: 12px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font-family: var(--mono); }
+
+/* D232: 长参数 / 子代理步骤详情的对话框。遮罩用 .modal（与口令框同一层，z-index 50），
+   面板自己排：标题栏一行（名字 + 耗时 + 复制 + ✕），正文等宽字体、内部滚动。 */
+.argdialog-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(760px, 100%); max-height: min(80vh, 720px); overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.argdialog-head { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.argdialog-title { overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.argdialog-meta { flex: none; color: var(--faint); font: 11px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.argdialog-btn { flex: none; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--faint); font: inherit; font-size: 11px; cursor: pointer; }
+.argdialog-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+.argdialog-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.argdialog-copy { margin-left: auto; }
+.argdialog-body { overflow: auto; padding: 12px; }
+.argdialog-label { margin-bottom: 4px; color: var(--faint); font-size: 11px; }
+.argdialog-text { margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); color: var(--text); font: 11px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.argdialog-text:last-child { margin-bottom: 0; }
 
 /* ---------------------------------------------------------------- desktop */
 /* 桌面三栏。判据不是视口宽度，而是「有效宽度」= 视口 / 字号缩放：`#app` 上挂着 zoom，

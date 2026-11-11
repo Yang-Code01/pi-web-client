@@ -4020,3 +4020,16 @@ D
 
 **验证：** `node bridge/tests/plan-nudge-unit.mjs`（30 项：开关各种读不到都算关；没计划 / 全关 / 不到门槛 / 已提醒 / 中断 / 出错 / 不能续跑都不续跑；条件满足时追加 `display:false` 提醒、`continue:true`、保留前面处理器的 entries；桥的 `sinceUpdate` 回放与实时计数）；`web/tests/exec-view-unit.mjs` 新增过期判定（门槛、全关、运行中、历史轮都不报）。
 
+## D232 「现在」卡的长参数、子代理步骤详情改成点开弹对话框，不在栏里展开（用户要求）
+
+**问题：** D228 给「现在」卡里的长参数加了一行省略号 + `▾`，但点开是把 `<pre>` 铺在行下（`max-height: 180px` 只是内部滚动）。执行面板只有一栏宽，一张 `worker` 行的任务描述展开后整张卡就变成正文，下面的数字、时间线全被顶走；而且这个展开状态没有「这一屏我只是想看一眼」的退路。
+
+**决定：** 参数正文不再进栏。`execActiveTool()` 里参数超过 80 字符时，整行本身变成按钮（`aria-haspopup="dialog"`、行尾一个 `⤢`），点击打开一次模态对话框：标题是「工具名 的参数」+ 耗时，正文等宽字体、内部滚动，顶栏给「复制」，`✕` / Esc / 点遮罩都关。子代理步骤行（`execChildStep()`）同一套：原来就地铺开的「参数 + 结果摘要」改成对话框里的两块（带小标题）；技能行本来没有工具参数，就把技能自己的 `description` / `why` / `path` 拼成「技能说明」一块——否则这类行点了什么也不会发生。
+
+**模态就得真的模态：** 打开时把遮罩以外的兄弟节点全部 `inert`（读屏和 Tab 都进不了背景），`Tab` / `Shift+Tab` 只在「复制」和「✕」之间循环，关掉时恢复。
+
+**为什么是对话框而不是就地折叠：** 用户要读的是一整段任务描述，读的时候执行页不需要同时在场；而就地展开无论如何都要占掉这一栏的高度。遮罩层复用 `.modal`（与口令框同一层 `z-index 50`），Esc 在捕获阶段 `stopImmediatePropagation()`，不会关掉对话框又顺手关掉底下那一层。
+
+**代价 / 可改：** 展开状态不再被记住（关掉就是关掉）——D228 那个按「名字 + 参数全文」记忆的 `execNowExpanded` 一并删掉。80 字符阈值保留；面板宽度 `min(760px, 100%)`、`max-height: min(80vh, 720px)` 可改。焦点循环写死了两个按钮，以后正文里要是出现可聚焦内容（链接、输入框）得同步改那里。
+
+**验证：** `npm run test:exec-panel:ui` 的 NOWARGS 场景（在途 `ask_user_question`，参数是 24 次重复的长文本）：默认一行且溢出、行是 `button` + `aria-haspopup=dialog` + `⤢`、没有 `.exec-now-args`；点开后 `.argdialog-text` 全文 >120 字，期间「现在」卡高度不变；`✕` 与 Esc 都能关掉且面板还在。BGCHILD 场景里点一条子代理步骤，对话框里出现「参数」和该步骤的参数原文，栏里不再有 `.exec-child-step-detail`。（fixture 里子会话那条 `child_lookup` 只有 toolCall、没有 toolResult，所以「结果摘要」这一块没有 UI 断言；往 fixture 里补 toolResult 会把子会话的 parent 链改成冲突分支、计划更新就收不到了，不值得。）技能行的「技能说明」由 `web/tests/exec-view-unit.mjs` 的单元断言覆盖（`description` / `why` / `path` 拼成 `note`，空技能不带 `note`）。
