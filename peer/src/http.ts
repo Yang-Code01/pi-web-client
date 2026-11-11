@@ -12,7 +12,7 @@ import type { Files } from "./files.ts";
 import { listDir } from "./fsbrowse.ts";
 import type { History } from "./history.ts";
 import type { Messages } from "./messages.ts";
-import type { Relations } from "./peers.ts";
+import type { Contact, Relations } from "./peers.ts";
 
 export interface PeerContext {
   cfg: PeerConfig;
@@ -236,10 +236,32 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       if (url.pathname === "/contacts" && req.method === "GET") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
         const online = new Map(discovery.online().map((peer) => [peer.nodeId, peer]));
-        const contacts = relations.list().map((contact) => {
+        const contacts: (Contact & { online: boolean; addr: string; livePort: number })[] = relations.list().map((contact) => {
           const peer = online.get(contact.nodeId);
           return { ...contact, online: Boolean(peer), addr: peer?.addr ?? "", livePort: peer?.port ?? 0 };
         });
+        // 决定 231：在线但还没建立关系的人也列出来。只给 relations.list() 的话，页面上
+        // 「附近的人」永远是空的（会话列表只遍历 history），同网的人和手动加过地址的人都
+        // 没有任何入口可点——点不到就发不出消息。这里补成 friend=false 的条目，前端按
+        // `!friend && !incoming` 分组，正好落进「附近的人」。
+        const known = new Set(contacts.map((contact) => contact.nodeId));
+        for (const peer of online.values()) {
+          if (known.has(peer.nodeId)) continue;
+          contacts.push({
+            nodeId: peer.nodeId,
+            nickname: peer.nickname,
+            hostname: peer.hostname,
+            port: peer.port,
+            friend: false,
+            favorite: false,
+            incoming: false,
+            outgoing: false,
+            at: peer.lastSeen,
+            online: true,
+            addr: peer.addr,
+            livePort: peer.port,
+          });
+        }
         return json(res, 200, { ok: true, contacts });
       }
 

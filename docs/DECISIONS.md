@@ -4020,3 +4020,26 @@ D
 
 **验证：** `node bridge/tests/plan-nudge-unit.mjs`（30 项：开关各种读不到都算关；没计划 / 全关 / 不到门槛 / 已提醒 / 中断 / 出错 / 不能续跑都不续跑；条件满足时追加 `display:false` 提醒、`continue:true`、保留前面处理器的 entries；桥的 `sinceUpdate` 回放与实时计数）；`web/tests/exec-view-unit.mjs` 新增过期判定（门槛、全关、运行中、历史轮都不报）。
 
+
+## D231 通讯录合并在线表：「附近的人」才真的有在线的人；手动地址落盘
+
+**问题：** 2026-11-11 现场（发送端 `10.6.2.27`，对端 `10.6.3.84`）：`/status` 里 online 有 5 台（含对端），`/contacts` 和 `/threads` 都是空数组，页面上一个能点的人都没有，用户只能「+ 添加地址」，加完也没有入口，于是报成「发了消息对方收不到」。
+
+**决定：**
+
+- **`GET /contacts` 合并在线表**（`peer/src/http.ts`）：`relations.list()` 之外，把 `discovery.online()` 里还没有关系记录的人补成条目，`friend` / `incoming` / `outgoing` 全为 `false`、`at` 取 `lastSeen`、`addr` 与 `livePort` 取本次在线地址（不是对端自报的，决定 7 的口径不变）。
+- **手动地址落盘**（`peer/src/discovery.ts` 的 `addManual`）：新增地址时除了塞进 `cfg.manual`，同时 `saveConfig`。
+
+**为什么：**
+
+- 通讯录是「这个人是谁、能不能点开」的唯一数据源，前端 `contactGroups()` 的「附近的人」按 `!friend && !incoming` 从这份数据里筛。只给关系表的话这一组永远是空的，而设计（D151「内网通页面重做：三栏四页」）和页面文案（「在线的人会自动出现在「附近的人」里」）都写的是「在线的自动出现」——是实现漏了，不是设计如此。
+- 会话列表 `/threads` 不跟着合并：它的语义是「聊过的会话」，塞进没聊过的人会让列表失去意义；`threadOf()` 本来就能用通讯录/在线表兜底出会话对象，所以点开「附近的人」直接就能发字。
+- 非好友可发文字是现状（`composeBox` 没有好友门槛，只有发文件要求好友），这次不动：收紧要同时改前端与 `/send`，属于产品决策。
+- 落盘：bridge 重启就是一个新 peer 进程，`manual` 只在内存里的话地址每次重启都消失，表现出来就是「加了地址，过一会儿又找不到人、发送报『这个人已经不在线了』」。
+
+**不管的：**
+
+- `/peer/add` 不写 `peers.json`：填一个地址不等于加了好友/联系人，关系仍由加好友与申请建立。
+- 添加后的可达性探测与提示文案、投递失败可见性（`outbox` 静默重试 24 小时）、收件方未读提示，都不在本次范围。
+
+**验证：** `node bridge/tests/peer-e2e.mjs` 手动地址段新增三项：C 在线但非好友必须出现在 A 的 `/contacts`（`friend/incoming/outgoing` 全假、`addr` 是本次来源地址）、组播看到的人同样以非好友身份出现、`/peer/add` 写出的 `config.json` 带该地址且重启后 `/status.config.manual` 仍在并能重新看见 C。撤掉源码改动跑同一段会停在「C 在线却没进 A 的 /contacts（附近的人会是空的）」。

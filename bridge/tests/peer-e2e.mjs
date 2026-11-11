@@ -108,6 +108,40 @@ try {
   await until("手动地址后 C 也看到 A", seenBy(17968, sa), 8000);
   log("ok 手动地址兜底");
 
+  // 决定 231：在线但没建立关系的人也要出现在通讯录里。以前只给 relations.list()，页面上的
+  // 「附近的人」永远是空的（会话列表只遍历 history），手动加过地址的人也没任何入口可点，
+  // 表现就是「加了地址但发不出消息」。
+  const contactsA = await (await fetch("http://127.0.0.1:17965/contacts")).json();
+  const nearC = contactsA.contacts?.find((c) => c.nodeId === sc);
+  if (!nearC) throw new Error(`C 在线却没进 A 的 /contacts（附近的人会是空的）：${JSON.stringify(contactsA).slice(0, 300)}`);
+  if (nearC.friend || nearC.incoming || nearC.outgoing) {
+    throw new Error(`在线非好友不该被标成好友/申请：${JSON.stringify(nearC)}`);
+  }
+  if (!nearC.online || nearC.addr !== "127.0.0.1" || nearC.livePort !== 17968) {
+    throw new Error(`C 的在线地址不对：${JSON.stringify(nearC)}`);
+  }
+  const nearB = contactsA.contacts?.find((c) => c.nodeId === sb);
+  if (!nearB || nearB.friend) throw new Error(`组播看到的人也该以非好友身份进通讯录：${JSON.stringify(nearB)}`);
+  log("ok 在线非好友进通讯录（附近的人）");
+
+  // 手动地址要落盘：bridge 重启就是一个新 peer 进程，地址丢了页面上的联系人跟着消失。
+  const cfgFile = path.join(ROOT, "a", "config.json");
+  if (!fs.existsSync(cfgFile)) throw new Error("/peer/add 没写 config.json");
+  const cfgA = JSON.parse(fs.readFileSync(cfgFile, "utf8"));
+  if (!cfgA.manual?.includes("127.0.0.1:17968")) throw new Error(`手动地址没落盘：${JSON.stringify(cfgA.manual)}`);
+  A.kill();
+  await new Promise((r) => setTimeout(r, 1200));
+  start("a", 17965, 17967, "甲");
+  const sa2 = await until("A 重启", async () => (await status(17965))?.nodeId);
+  if (sa2 !== sa) throw new Error(`重启换了 nodeId：${sa2}`);
+  const back = await status(17965);
+  if (!back.config?.manual?.includes("127.0.0.1:17968")) {
+    throw new Error(`重启后手动地址丢了：${JSON.stringify(back.config?.manual)}`);
+  }
+  // 重启后 announce 会对手动地址再敲一次 /peer/hello，不需要人工再添一遍。
+  await until("重启后靠手动地址又看见 C", seenBy(17965, sc), 15000);
+  log("ok 手动地址重启后仍在");
+
   // ---- 隐身（D99）：隐身的 peer 一条 announce 都不许发，也不许透露身份。 ----
   // 嗅探器在 D 起来之后才绑：启动时那一包已经过去了，这里只看 /peer/refresh 触发的那一包
   // （定时器和 /peer/refresh 走的是同一个 announce()）。

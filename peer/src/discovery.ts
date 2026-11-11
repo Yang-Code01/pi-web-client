@@ -1,7 +1,7 @@
 import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
 import os from "node:os";
-import { PROTO, type PeerConfig } from "./config.ts";
+import { PROTO, saveConfig, type PeerConfig } from "./config.ts";
 
 /** announce 里带的东西：对端据此渲染在线列表、据此把 `from` 反查成身份（决定 7/10）。 */
 export interface Announce {
@@ -250,7 +250,12 @@ export class Discovery extends EventEmitter {
   addManual(addr: string): void {
     const value = addr.trim();
     if (!/^[^:\s]+:\d+$/.test(value)) throw new Error("地址要写成 ip:port");
-    if (!this.cfg.manual.includes(value)) this.cfg.manual.push(value);
+    // 落盘（决定 231）：以前只塞进内存，peer 一重启这个地址就没了（bridge 一重启就是一个新
+    // peer 进程），页面上的联系人跟着消失，再发消息就只会说「这个人已经不在线了」。
+    if (!this.cfg.manual.includes(value)) {
+      this.cfg.manual.push(value);
+      saveConfig(this.cfg);
+    }
     // 隐身时只记地址、不发包：单播 hello 里同样带 nodeId / nickname / hostname / port，
     // 发出去就把自己报给了这个地址（sendHello 早就早退了，UDP 这一发以前漏在这里）。
     if (this.cfg.hidden) return;
