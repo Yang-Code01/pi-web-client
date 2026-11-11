@@ -173,6 +173,15 @@ try {
   check("child plan badge shows the latest snapshot progress", (await page.locator(".exec-subagent-plan").last().innerText()) === "计划 2/2");
   check("expanded child renders its compact read-only plan", (await page.locator(".exec-plan.mini .exec-plan-task").count()) === 2
     && await page.locator(".exec-plan.mini .exec-plan-task").first().evaluate((row) => row.tagName === "DIV" && row.onclick === null));
+  const childStep = page.locator(".exec-child-step").first();
+  await childStep.click();
+  await page.waitForSelector(".argdialog", { timeout: 5000 });
+  const stepDialog = await page.locator(".argdialog").innerText();
+  check("a child step opens its arguments in the dialog", (await page.locator(".argdialog-text").count()) === 1
+    && stepDialog.includes("参数") && stepDialog.includes("current step"), stepDialog);
+  await page.keyboard.press("Escape");
+  check("the child step no longer expands inside the panel", (await page.locator(".exec-child-step-detail").count()) === 0);
+  check("Escape closes the child step dialog", (await page.locator(".argdialog").count()) === 0);
   await childToggle.click();
   check("child plan badge remains visible when collapsed", (await page.locator(".exec-subagent-plan").last().innerText()) === "计划 2/2");
   socket.send(JSON.stringify({ type: "prompt", sessionId, text: "NOWARGS" }));
@@ -180,13 +189,19 @@ try {
   const nowTool = page.locator(".exec-now-tool").first();
   const clamped = await nowTool.locator(".exec-args").evaluate((node) => ({ height: node.getBoundingClientRect().height, line: parseFloat(getComputedStyle(node).lineHeight) || 0, over: node.scrollWidth > node.clientWidth + 1 }));
   check("long tool args occupy one line", clamped.line > 0 && clamped.height <= clamped.line * 1.5 && clamped.over, JSON.stringify(clamped));
-  check("long tool args get an expand button", await nowTool.locator(".exec-now-toggle").isVisible() && (await nowTool.locator(".exec-now-toggle").getAttribute("aria-expanded")) === "false");
-  check("no expanded args before the click", (await page.locator(".exec-now-args").count()) === 0);
-  await nowTool.locator(".exec-now-toggle").click();
-  await page.waitForSelector(".exec-now-args", { timeout: 5000 });
-  check("expanding shows the full argument text", (await page.locator(".exec-now-args").innerText()).length > 120 && (await page.locator(".exec-now-tool .exec-now-toggle").getAttribute("aria-expanded")) === "true");
-  await page.locator(".exec-now-tool .exec-now-toggle").click();
-  check("collapsing hides it again", (await page.locator(".exec-now-args").count()) === 0);
+  check("long tool args get an open affordance, not an inline toggle", await nowTool.evaluate((node) => node.tagName === "BUTTON" && node.getAttribute("aria-haspopup") === "dialog") && (await nowTool.locator(".exec-now-open").isVisible()));
+  check("no inline expansion before the click", (await page.locator(".exec-now-args").count()) === 0);
+  const nowCardHeight = (await page.locator(".exec-now").boundingBox())?.height ?? 0;
+  await nowTool.click();
+  await page.waitForSelector(".argdialog", { timeout: 5000 });
+  check("the dialog shows the full argument text", (await page.locator(".argdialog-text").first().innerText()).length > 120);
+  check("the now card keeps its height while the dialog is up", ((await page.locator(".exec-now").boundingBox())?.height ?? 0) === nowCardHeight);
+  await page.locator(".argdialog-close").click();
+  check("the close button dismisses the dialog", (await page.locator(".argdialog").count()) === 0);
+  await nowTool.click();
+  await page.waitForSelector(".argdialog", { timeout: 5000 });
+  await page.keyboard.press("Escape");
+  check("Escape dismisses the dialog and leaves the panel on screen", (await page.locator(".argdialog").count()) === 0 && (await page.locator(".exec-now").count()) === 1);
   check("page has no uncaught errors", pageErrors.length === 0, pageErrors.join("; "));
   console.log("All execution-panel smoke checks passed.");
 } finally {
