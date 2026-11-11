@@ -75,8 +75,8 @@ for (let i = 0; i < 300 && !sessionId; i++) {
 check("session created", Boolean(sessionId), String(sessionId));
 log("session", sessionId);
 
-const toolResult = (name) => {
-  const items = seen.filter((m) => m.type === "item.replace" && m.item?.kind === "tool" && String(m.item.name).startsWith(name)).map((m) => m.item);
+const toolResult = (name, from = 0) => {
+  const items = seen.slice(from).filter((m) => m.type === "item.replace" && m.item?.kind === "tool" && String(m.item.name).startsWith(name)).map((m) => m.item);
   return items.at(-1)?.result ?? "";
 };
 
@@ -111,7 +111,7 @@ try {
   ws.send(JSON.stringify({
     type: "prompt",
     sessionId,
-    text: "只调用 question 工具一次，问我「选左边还是右边？」，选项只要「左边」和「右边」。不要做任何别的事。",
+    text: "只调用 ask_user_question 工具一次，问我「选左边还是右边？」，选项只要「左边」和「右边」。不要做任何别的事。",
   }));
   await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
   check("the inline panel opens by itself when a question arrives", true);
@@ -150,15 +150,15 @@ try {
   await page.waitForSelector(".ask-slot", { state: "detached", timeout: 20000 });
   check("answering puts the panel away", true);
   await waitTurnEnd(start1, "question");
-  const r1 = toolResult("question");
-  check("the model got the chosen option", /User selected: 2\. 右边/.test(r1), r1.slice(0, 100));
+  const r1 = toolResult("ask_user_question", start1);
+  check("the model got the chosen option", /="右边"/.test(r1), r1.slice(0, 100));
 
   // -- turn 2: questionnaire, two tabs, explicit submit -------------------
   const start2 = seen.length;
   ws.send(JSON.stringify({
     type: "prompt",
     sessionId,
-    text: "只调用 questionnaire 工具一次，问我两个问题：1) 主题，选项「商务」「休闲」；2) 语气，选项「正式」「轻松」。不要做任何别的事。",
+    text: "只调用 ask_user_question 工具一次，一次问我两个问题：1) 主题，选项「商务」「休闲」；2) 语气，选项「正式」「轻松」。不要做任何别的事。",
   }));
   await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
   const tabs = await page.locator(".ask-tab").count();
@@ -171,23 +171,23 @@ try {
   await submit.click();
   await page.waitForSelector(".ask-slot", { state: "detached", timeout: 20000 });
   await waitTurnEnd(start2, "questionnaire");
-  const r2 = toolResult("questionnaire");
-  check("both answers reached the model", /主题: user selected: 1\. 商务/.test(r2) && /语气: user selected: 2\. 轻松/.test(r2), r2.replace(/\n/g, " | ").slice(0, 140));
+  const r2 = toolResult("ask_user_question", start2);
+  check("both answers reached the model", /="商务"/.test(r2) && /="轻松"/.test(r2), r2.replace(/\n/g, " | ").slice(0, 140));
 
   // -- turn 3: cancel ------------------------------------------------------
   const start3 = seen.length;
   ws.send(JSON.stringify({
     type: "prompt",
     sessionId,
-    text: "只调用 question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
+    text: "只调用 ask_user_question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
   }));
   await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
   await page.locator(".ask-head .btn.danger-text", { hasText: "取消提问" }).click();
   await page.waitForSelector(".ask-slot", { state: "detached", timeout: 20000 });
   check("取消提问 puts the panel away", true);
   await waitTurnEnd(start3, "cancel");
-  const r3 = toolResult("question");
-  check("cancelling tells the model", /cancel/i.test(r3), r3.slice(0, 100));
+  const r3 = toolResult("ask_user_question", start3);
+  check("cancelling tells the model", /cancel|declined/i.test(r3), r3.slice(0, 100));
 
   // -- turn 4: 收起右栏后问题自己把它打开，自己写答案，答完还回收起 ----------
   //  是栏里的内容；隐藏的是它外面那一节 （收起右栏 = 那一节 hidden）。
@@ -202,7 +202,7 @@ try {
   ws.send(JSON.stringify({
     type: "prompt",
     sessionId,
-    text: "只调用 question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
+    text: "只调用 ask_user_question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
   }));
   await page.waitForSelector(".queue .ask-slot .ask-opts", { timeout: ASK_WAIT });
   check("a question re-opens the collapsed column by itself", !(await queueHidden()), "");
@@ -218,8 +218,8 @@ try {
   await sleep(400);
   check("answering puts the column back the way it was", await queueHidden(), "");
   await waitTurnEnd(start4, "free text");
-  const r4 = toolResult("question");
-  check("free text reaches the model as User wrote", /User wrote: 随便写点/.test(r4), r4.slice(0, 100));
+  const r4 = toolResult("ask_user_question", start4);
+  check("free text reaches the model as User wrote", /="随便写点"/.test(r4), r4.slice(0, 100));
 
   // -- phone layout --------------------------------------------------------
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, locale: "zh-CN" });
@@ -231,7 +231,7 @@ try {
   ws.send(JSON.stringify({
     type: "prompt",
     sessionId,
-    text: "只调用 question 工具一次，问我「选左边还是右边？」，选项只要「左边」和「右边」。不要做任何别的事。",
+    text: "只调用 ask_user_question 工具一次，问我「选左边还是右边？」，选项只要「左边」和「右边」。不要做任何别的事。",
   }));
   await p.waitForSelector(".composer .ask-slot .ask-opts", { timeout: ASK_WAIT });
   check("on a phone the panel is above the composer, not in a column", (await p.locator(".queue .ask-slot").count()) === 0);
@@ -247,7 +247,7 @@ try {
   ws.send(JSON.stringify({
     type: "prompt",
     sessionId,
-    text: "只调用 question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
+    text: "只调用 ask_user_question 工具一次，问我「继续吗？」，选项「继续」「停止」。不要做任何别的事。",
   }));
   await page.waitForSelector(".ask-slot .ask-opts", { timeout: ASK_WAIT });
   // 收起右栏 = 题目回落到 composer（D189 的窄屏/收起形态）。
