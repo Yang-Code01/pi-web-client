@@ -36,6 +36,12 @@ const LIVE_LOG = /Live activity is streaming to `([^`]+)`/;
 const SUBAGENTS_PREFIX = "pi-subagents-";
 const SUBAGENTS_TMP = join(tmpdir(), SUBAGENTS_PREFIX);
 /**
+ * 文件系统的时间戳粒度比 `Date.now()` 粗：Linux 的 tmpfs / overlayfs 按 jiffy 截断
+ * （HZ=250 时 4ms），刚写完的 `status.json` 拿到的 mtime 会比派活那一刻早几毫秒。
+ * 判「这之后写过」时留一点余量 —— 真正的区分靠 `parentWorkflowRunId`，不靠这一道。
+ */
+const MTIME_SLACK_MS = 50;
+/**
  * 只有这两个工具会「派一个后台子代理」。别的工具结果里出现同样的句子（读文档、看日志、
  * `grep` 到 D170 自己那段说明）不算 —— D172 的幽灵任务就是这么造出来的。
  */
@@ -450,7 +456,7 @@ function fgChildren(parentId: string, since: number): FgChild[] {
       if (name.startsWith(".")) continue;
       const dir = join(base, name);
       try {
-        if (statSync(join(dir, "status.json")).mtimeMs < since) continue;
+        if (statSync(join(dir, "status.json")).mtimeMs + MTIME_SLACK_MS < since) continue;
       } catch {
         continue;
       }
