@@ -66,6 +66,9 @@ interface Contact {
   nickname: string;
   hostname: string;
   port: number;
+  // #381 先把响应形状备齐；后续两张票填真值，旧记录/测试桩缺字段时按未设置处理。
+  quick?: boolean;
+  ignored?: boolean;
   friend: boolean;
   favorite: boolean;
   incoming: boolean;
@@ -361,6 +364,31 @@ async function loadContacts(): Promise<void> {
   } catch {
     S.contacts = [];
   }
+  // 在线名单兜底：通讯录那边没把在线的人合并进来时（例如接口是旧版或被代理替换），
+  // 页面自己补一行，这样「附近的人」只依赖当前在线表。已有关系行一律不覆盖，
+  // 每轮轮询重新构造，不会累积重复。
+  const me = S.view?.status?.nodeId;
+  const known = new Set(S.contacts.map((c) => c.nodeId));
+  for (const p of S.view?.status?.online ?? []) {
+    if (p.nodeId === me || known.has(p.nodeId)) continue;
+    known.add(p.nodeId);
+    S.contacts.push({
+      nodeId: p.nodeId,
+      nickname: p.nickname,
+      hostname: p.hostname,
+      port: p.port,
+      quick: false,
+      friend: false,
+      favorite: false,
+      incoming: false,
+      outgoing: false,
+      ignored: false,
+      at: p.lastSeen,
+      online: true,
+      addr: p.addr,
+      livePort: p.port,
+    });
+  }
 }
 
 /** 一串消息的指纹：id + 回执状态。轮询拿回来跟上次一样就不必重画。 */
@@ -419,6 +447,9 @@ function openThread(id: string): void {
   app.dataset.page = "msg";
   app.dataset.mview = "chat";
   renderAll();
+  // 从联系人列表点「发消息」就是要马上打字：把焦点直接放进输入框。
+  // renderAll() 里 renderChat() 已经同步建好 textarea（composeBox 会更新 textInput）。
+  textInput?.focus({ preventScroll: true });
   void loadMessages().then(() => renderMain());
 }
 
