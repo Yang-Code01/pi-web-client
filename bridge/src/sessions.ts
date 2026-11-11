@@ -174,6 +174,8 @@ export interface SessionState {
    * read by all four rules, so they cannot drift apart.
    */
   scratch?: boolean;
+  /** User-owned pause for 随手问 (#367); unlike ordinary sleep, opening it never wakes pi. */
+  paused?: boolean;
   /** True while the pi child is still booting (extensions load there: ~8 s with a big set, D122). */
   starting?: boolean;
   running: boolean;
@@ -343,6 +345,13 @@ function publicAsk(ask: PendingAsk): AskRequest {
 }
 
 const IDLE_EVICT_MS = 10 * 60 * 1000;
+
+/** Test seam for the age threshold; production keeps the established ten-minute eviction age. */
+function idleEvictionAgeMs(): number {
+  const value = Number(process.env.PI_WEB_GC_IDLE_MS);
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : IDLE_EVICT_MS;
+}
+
 /** 模型目录的缓存寿命：models.json / 装的扩展很少在一次运行中间变，两段各自记一份。 */
 const MODEL_TTL_MS = 10 * 60_000;
 
@@ -1202,8 +1211,9 @@ export class Session extends EventEmitter {
         console.log(`[exit] ${id} pi 进程退出：${reason}`);
         this.emitWs({ type: "notice", sessionId: id, text: "pi 进程意外退出了（可能有别的终端占着这个会话）。历史留在磁盘，发消息会重新接管。", level: "warn" });
       }
-      // keep reading the file from now on so the transcript stays current
-      this.startTail();
+      // A deliberately paused 随手问 has no external writer and keeps its live transcript snapshot.
+      // Other closed sessions still tail the file so terminal updates remain visible.
+      if (!(this.state.scratch && this.state.paused)) this.startTail();
     });
 
     this.rpc.start();
@@ -2276,9 +2286,25 @@ export class Session extends EventEmitter {
    */
   async scratchClear(): Promise<void> {
     if (!this.state.scratch) throw new Error("这个会话不是随手问");
+    const before = this.state.file;
+    if (this.state.paused) {
+      if (before) {
+        try {
+          fs.rmSync(before, { force: true });
+        } catch {
+          /* the next explicit resume writes a fresh session; no old content is kept in memory */
+        }
+      }
+      this.items = [];
+      this.autoCompactUsed = false;
+      this.setState({ file: null, truncated: false }, { touch: false });
+      this.emitWs({ type: "items", sessionId: this.state.id, items: [], history: { hasMore: false, total: 0, turns: [] } });
+      this.emitWs({ type: "session.state", session: this.state });
+      this.touch();
+      return;
+    }
     const rpc = this.rpc;
     if (!rpc?.alive) throw new Error("随手问没有在运行");
-    const before = this.state.file;
     const res = await rpc.request<any>("new_session", {}, 60_000);
     if (res?.cancelled) throw new Error("pi 取消了新会话");
     let file: string | null = null;
@@ -2745,6 +2771,22 @@ export class Session extends EventEmitter {
     void this.sleepNow();
   }
 
+  setScratchPaused(paused: boolean): void {
+    if (!this.state.scratch) throw new Error("这个会话不是随手问");
+    this.setState({ paused, starting: !paused }, { touch: false });
+  }
+
+  /** Stop 随手问 without discarding its transcript; only an explicit resume may start it again. */
+  async pauseScratch(): Promise<void> {
+    if (!this.state.scratch) throw new Error("这个会话不是随手问");
+    if (this.state.running || this.state.starting) throw new Error("这一轮跑完才能暂停");
+    if (this.state.paused) return;
+    this.setState({ paused: true }, { touch: false });
+    await this.close({ quiet: true });
+    this.ownExitAt = Date.now();
+    this.emitWs({ type: "session.state", session: this.state });
+  }
+
   /** The process goes, messages and session file stay, the next message wakes it (D120). */
   private sleepNow(): Promise<void> {
     // Not re-entrant: the exit takes a while, and a second pass must not emit a second notice
@@ -2975,6 +3017,20 @@ export class SessionManager extends EventEmitter {
 
   /** The one live 随手问. Bridge-side only: nothing is persisted, so a restart forgets it. */
   private scratchId: string | null = null;
+  /** Two tabs may toggle together; serialize lifecycle changes so close and resume cannot cross. */
+  private scratchTransition: Promise<void> = Promise.resolve();
+
+  private async serializeScratch<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.scratchTransition;
+    let release!: () => void;
+    this.scratchTransition = new Promise<void>((resolve) => (release = resolve));
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
 
   /**
    * 随手问 (#86): a session that is on no list, has its own longer idle rule and is never reaped by
@@ -2985,7 +3041,7 @@ export class SessionManager extends EventEmitter {
     if (this.scratchId) {
       const existing = this.sessions.get(this.scratchId);
       if (existing) {
-        if (!existing.live) await this.openLive(this.scratchId);
+        if (!existing.live && !existing.state.paused) await this.openLive(this.scratchId);
         return existing;
       }
       this.scratchId = null;
@@ -2997,11 +3053,43 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
-  /** 「清空」: a fresh session inside the same pi process (#86), no cold start. */
+  /** 「清空」: a fresh session inside the same pi process (#86), or an empty paused one (#367). */
   async clearScratch(): Promise<Session> {
     const session = await this.scratchSession();
     await session.scratchClear();
     return session;
+  }
+
+  async pauseScratch(): Promise<Session> {
+    return this.serializeScratch(async () => {
+      if (!this.scratchId) throw new Error("随手问还没有打开");
+      const session = this.sessions.get(this.scratchId);
+      if (!session) throw new Error("随手问还没有打开");
+      await session.pauseScratch();
+      return session;
+    });
+  }
+
+  async resumeScratch(): Promise<Session> {
+    return this.serializeScratch(async () => {
+      if (!this.scratchId) throw new Error("随手问还没有打开");
+      const session = this.sessions.get(this.scratchId);
+      if (!session) throw new Error("随手问还没有打开");
+      if (!session.state.paused) throw new Error("随手问没有暂停");
+      session.setScratchPaused(false);
+      try {
+        await this.openLive(session.state.id);
+      } catch (err) {
+        session.setScratchPaused(true);
+        throw err;
+      }
+      return session;
+    });
+  }
+
+  isPausedScratch(id: string): boolean {
+    const session = this.sessions.get(id);
+    return Boolean(session?.state.scratch && session.state.paused);
   }
 
   /**
@@ -3295,6 +3383,7 @@ export class SessionManager extends EventEmitter {
   private async openLiveNow(id: string): Promise<Session> {
     if (!this.known(id)) throw new Error("找不到这个会话");
     const session = this.ensure(id);
+    if (session.state.scratch && session.state.paused) throw new Error("随手问已暂停");
     if (session.live) return session;
     // #30: a terminal pi with the session-lock extension says so explicitly — no guessing by mtime.
     const tty = readTtyLock(id);
@@ -3715,7 +3804,7 @@ export class SessionManager extends EventEmitter {
     const skipped: SleepSkipped[] = [];
     const pending: Promise<void>[] = [];
     for (const s of this.sessions.values()) {
-      if (!s.live) continue;
+      if (!s.live || s.state.scratch) continue;
       if (s.state.running) {
         skipped.push({ id: s.state.id, name: s.state.name, why: "running" });
         continue;
@@ -3738,12 +3827,14 @@ export class SessionManager extends EventEmitter {
       this.sweepLocks();
       void this.lifecycleTick();
       for (const [id, s] of this.sessions) {
+        // 随手问只在桥重启时清空；即使已休眠，原会话对象仍是它唯一的转录入口。
+        if (s.state.scratch) continue;
         // D162: done 不再是「未读」，不能拿它当免死金牌 —— 回收后 ensure 会从 finished.json 读回来。
         if (s.live || s.state.running) continue;
         if (s.approvals.size || s.asks.size) continue;
         // A web-born session with no file yet only exists in memory; evicting it would lose it.
         if (!s.state.file) continue;
-        if (isWatched(id) || s.idleFor() < IDLE_EVICT_MS) continue;
+        if (isWatched(id) || s.idleFor() < idleEvictionAgeMs()) continue;
         s.stopTail();
         s.removeAllListeners();
         this.sessions.delete(id);
@@ -3790,12 +3881,16 @@ export class SessionManager extends EventEmitter {
       if (s.approvals.size || s.asks.size) {
         // A pending approval means its turn is in flight, so this branch has to sit before the
         // `running` guard: that turn is exactly what sits there waiting on nobody (#82).
+        // 随手问 is the exception (#365): a question parked in its dialog is not a reason to take
+        // the process down — only the person pressing 暂停 ends it.
+        if (s.state.scratch) continue;
         if (unattended > cfg.idleMs) s.expireUnattended(cfg);
         continue;
       }
       if (s.state.running) continue;
-      // 随手问 gets its own, longer rule (#86): being still there later is the whole point of it.
-      if (s.idleFor() > (s.state.scratch ? cfg.scratchIdleMs : cfg.idleMs)) void s.sleep();
+      // 随手问 gets its own, longer rule (#86): zero explicitly means never auto-sleep.
+      const idleMs = s.state.scratch ? cfg.scratchIdleMs : cfg.idleMs;
+      if (idleMs > 0 && s.idleFor() > idleMs) void s.sleep();
     }
   }
 

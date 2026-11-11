@@ -7,7 +7,7 @@ import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysSer
  * 翻译用的键（`errText()` 拿 `code` + `params` 查词典）。两个字段都挂到 Error 上，认不出 `code`
  * 的地方仍然能用 `err?.message` 显示兜底句。
  */
-async function failOf(res: Response, text: string): Promise<Error> {
+async function failOf(res: Response, text: string): Promise<Error & { code?: string; params?: Record<string, string | number> }> {
   let message = text;
   let code: string | undefined;
   let params: Record<string, string | number> | undefined;
@@ -24,7 +24,21 @@ async function failOf(res: Response, text: string): Promise<Error> {
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "same-origin", ...init });
-  if (!res.ok) throw await failOf(res, await res.text().catch(() => ""));
+  if (!res.ok) {
+    const error = await failOf(res, await res.text().catch(() => ""));
+    if (error.code === "session_not_found" && typeof window !== "undefined") {
+      let sessionId = "";
+      try {
+        const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+        sessionId = typeof body?.sessionId === "string" ? body.sessionId : "";
+      } catch {
+        // Requests without a JSON body can carry the session id in their query string.
+      }
+      if (!sessionId) sessionId = new URL(path, window.location.href).searchParams.get("id") ?? "";
+      window.dispatchEvent(new CustomEvent("pi-session-not-found", { detail: { sessionId } }));
+    }
+    throw error;
+  }
   return (await res.json()) as T;
 }
 

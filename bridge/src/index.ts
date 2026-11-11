@@ -1877,6 +1877,10 @@ async function main(): Promise<void> {
             const images = msg.images as { data: string; mimeType: string }[] | undefined;
             const clientId = typeof msg.clientId === "string" ? msg.clientId.slice(0, 80) : undefined;
             const behavior = msg.behavior === "followUp" ? "followUp" : "steer";
+            if (sessions.isPausedScratch(sessionId)) {
+              send({ type: "notice", sessionId, code: "scratch_paused", text: "已暂停", level: "warn" });
+              return;
+            }
             // #201: 只读会话发消息 = 自动接管，但气泡必须在 `openLive()`（拉起 pi、等 get_state）
             // **之前**广播出去，否则一句刚打的字要等整个握手。消息进的是会话自己的待发队列 —— 与
             // 启动窗口、接管后再打字是同一条，所以撤回/失败/连发都复用同一套。
@@ -1965,6 +1969,18 @@ async function main(): Promise<void> {
           case "scratch.clear": {
             // Same process, fresh session: no cold start, and the token count starts over.
             const session = await sessions.clearScratch();
+            (ws as any).watching = session.state.id;
+            send({ type: "scratch", sessionId: session.state.id, ...session.snapshot(), trust: null });
+            return;
+          }
+          case "scratch.pause": {
+            const session = await sessions.pauseScratch();
+            (ws as any).watching = session.state.id;
+            send({ type: "scratch", sessionId: session.state.id, ...session.snapshot(), trust: null });
+            return;
+          }
+          case "scratch.resume": {
+            const session = await sessions.resumeScratch();
             (ws as any).watching = session.state.id;
             send({ type: "scratch", sessionId: session.state.id, ...session.snapshot(), trust: null });
             return;
@@ -3078,7 +3094,13 @@ async function main(): Promise<void> {
             send({ type: "notice", text: `未知指令 ${msg.type}`, level: "warn" });
         }
       } catch (err: any) {
-        send({ type: "notice", text: String(err?.message ?? err), level: "error" });
+        const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
+        const message = String(err?.message ?? err);
+        if (sessionId && message === "找不到这个会话") {
+          send({ type: "error", sessionId, code: "session_not_found", message });
+          return;
+        }
+        send({ type: "notice", text: message, level: "error" });
       }
     });
   });

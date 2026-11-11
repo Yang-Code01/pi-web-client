@@ -13,10 +13,8 @@ export interface Lifecycle {
   /** A settled session that has seen no pi event for this long sleeps (#76). */
   idleMs: number;
   /**
-   * The same rule for 随手问 (#86): it is the longest-lived thing in the bridge on purpose — the
-   * whole point of it is to still be warm when a thought strikes, so it must outlast an ordinary
-   * session. Not in the panel (yet): D120's two 「可改」 thresholds keep their meaning, and this one
-   * is set through `lifecycle.json` or the env seam.
+   * The same rule for 随手问 (#86): it is disabled by default so the conversation stays warm until
+   * the user ends it. A positive value in `lifecycle.json` or the env seam restores auto-sleep.
    */
   scratchIdleMs: number;
   /** After the watchdog's abort, how long pi gets to settle before the process is ended (#81). */
@@ -27,8 +25,8 @@ export interface Lifecycle {
 
 /** Defaults from D120; all are "可改". */
 export const DEFAULT_IDLE_MS = 30 * 60 * 1000;
-/** 随手问 (#86): longer than an ordinary session on purpose — it exists to still be warm later. */
-export const DEFAULT_SCRATCH_IDLE_MS = 60 * 60 * 1000;
+/** 随手问 (#86): 0 disables auto-sleep; users may opt back in with a positive threshold. */
+export const DEFAULT_SCRATCH_IDLE_MS = 0;
 export const DEFAULT_ABORT_GRACE_MS = 60 * 1000;
 export const DEFAULT_WATERMARK_BYTES = 2.5 * 1024 ** 3;
 
@@ -53,6 +51,13 @@ function positive(raw: unknown): number | null {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
 }
 
+/** A zero scratch threshold explicitly means never auto-sleep. */
+function nonNegative(raw: unknown): number | null {
+  if (typeof raw !== "number" && typeof raw !== "string") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
+}
+
 /** The protection window, squeezed for tests exactly like the tick and the thresholds above. */
 export function capProtectMs(): number {
   return positive(process.env.PI_WEB_CAP_PROTECT_MS) ?? CAP_PROTECT_MS;
@@ -72,7 +77,7 @@ export function lifecycle(): Lifecycle {
   return {
     // Environment first: a test must win over whatever the state dir happens to hold.
     idleMs: positive(process.env.PI_WEB_IDLE_MS) ?? positive(file?.idleMs) ?? DEFAULT_IDLE_MS,
-    scratchIdleMs: positive(process.env.PI_WEB_SCRATCH_IDLE_MS) ?? positive(file?.scratchIdleMs) ?? DEFAULT_SCRATCH_IDLE_MS,
+    scratchIdleMs: nonNegative(process.env.PI_WEB_SCRATCH_IDLE_MS) ?? nonNegative(file?.scratchIdleMs) ?? DEFAULT_SCRATCH_IDLE_MS,
     abortGraceMs: positive(process.env.PI_WEB_ABORT_GRACE_MS) ?? DEFAULT_ABORT_GRACE_MS,
     watermarkBytes: positive(process.env.PI_WEB_WATERMARK_BYTES) ?? positive(file?.watermarkBytes) ?? DEFAULT_WATERMARK_BYTES,
   };

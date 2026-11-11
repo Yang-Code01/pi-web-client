@@ -162,6 +162,8 @@ export interface SessionState {
   origin?: "web" | "disk";
   /** #86：随手问。它不进列表、不受通用休眠时间管，也不会被自动压缩。 */
   scratch?: boolean;
+  /** #367：用户主动暂停的随手问不能因打开或提问而唤醒。 */
+  paused?: boolean;
   /** pi 子进程还在启动（扩展在它内部加载：本机实测约 8 秒）。此时 composer 不许发。 */
   starting?: boolean;
   running: boolean;
