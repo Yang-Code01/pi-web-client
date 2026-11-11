@@ -8,6 +8,7 @@
  *      点「发消息」要直接聚焦输入框，发出的第一条消息命中这个陌生 nodeId。
  *   4. #382：quick 单独成组（在好友之后、附近的人之前），两颗添加按钮并存，
  *      传文件只给好友、离线禁用，以及中 / 英 / 日三种语境的新文案。
+ *   5. #383：忽略名单挡住在线表兜底合并，设置页清空后附近的人重新出现。
  *
  * 用假 API 是刻意的：这些都测「拿到 JSON 之后怎么画」，跟 peer 活着与否无关。
  *
@@ -134,6 +135,7 @@ const quickContacts = [
   row(OFFLINE, "小钱", { online: false }),
 ];
 let friendCalls = [];
+let clearedIgnored = 0;
 
 let sent = null;
 const browser = await chromium.launch();
@@ -346,6 +348,68 @@ try {
     check(`${locale} 语境两颗按钮文案到位`, ql === 1 && al === 1, `快捷=${ql}，加好友=${al}`);
     await fx.c.close();
   }
+
+  // ---- #383：忽略名单挡住在线表兜底，设置页清空后恢复 ----
+  const ignoredFixture = async () => {
+    const c = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+    const p = await c.newPage();
+    const missing = [];
+    p.on("console", (m) => { if (m.text().includes("[i18n] missing")) missing.push(m.text()); });
+    let cleared = false;
+    friendCalls = [];
+    await p.route("**/api/**", async (route) => {
+      const req = route.request();
+      const path2 = new URL(req.url()).pathname;
+      let body = {};
+      if (path2 === "/api/peer") body = { enabled: true, running: true, reason: "", status: strangerStatus };
+      else if (path2 === "/api/peer/threads") body = { threads: [] };
+      else if (path2 === "/api/peer/contacts") body = { contacts: [contact(WANG, "小王")] };
+      else if (path2 === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+      else if (path2 === "/api/peer/messages") body = { entries: [] };
+      else if (path2 === "/api/peer/ignored") body = { ok: true, nodeIds: cleared ? [] : [STRANGER] };
+      else if (path2 === "/api/peer/ignored/clear") { cleared = true; clearedIgnored += 1; body = { ok: true, ignored: 0 }; }
+      else if (path2 === "/api/peer/friend") { friendCalls.push(JSON.parse(req.postData() ?? "{}")); body = { ok: true }; }
+      else if (path2 === "/api/peer/send") body = { ok: true, id: "sent-by-ui" };
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+    });
+    await p.goto(`${BASE}/peer.html`);
+    await p.waitForSelector('#rail button[title="联系人"]');
+    await p.click('#rail button[title="联系人"]');
+    await p.waitForSelector(".listbox .row");
+    return { c, p, missing, cleared: () => cleared };
+  };
+
+  const ig = await ignoredFixture();
+  const ignoredRow = await ig.p.locator('.listbox .row:has-text("小赵")').count();
+  check("忽略名单里的人不再出现在附近的人", ignoredRow === 0, `行=${ignoredRow}`);
+
+  // 设置页：忽略名单卡显示数量，点「清空忽略名单」后仍在线的人重新出现。
+  await ig.p.click('#rail button[title="我"]');
+  await ig.p.waitForSelector('#main button:has-text("清空忽略名单")');
+  const countNote = await ig.p.locator('#main .note:has-text("已忽略 1 人")').count();
+  const clearDisabled = await ig.p.locator('#main button:has-text("清空忽略名单")').isDisabled();
+  check("设置页显示忽略人数且清空按钮可用", countNote === 1 && !clearDisabled, `note=${countNote}，禁用=${clearDisabled}`);
+  await ig.p.click('#main button:has-text("清空忽略名单")');
+  for (let i = 0; i < 40 && clearedIgnored === 0; i++) await ig.p.waitForTimeout(50);
+  check("点清空真的 POST /api/peer/ignored/clear", clearedIgnored === 1 && ig.cleared(), `次数=${clearedIgnored}`);
+
+  await ig.p.click('#rail button[title="联系人"]');
+  await ig.p.waitForSelector(".listbox .row");
+  const backRow = await ig.p.locator('.listbox .row:has-text("小赵")').count();
+  const nearbyBack = await ig.p.locator('.group-title:has-text("附近的人")').count();
+  check("清空忽略名单后附近的人恢复", backRow === 1 && nearbyBack === 1, `行=${backRow}，组=${nearbyBack}`);
+  await ig.p.click('.listbox .row:has-text("小赵")');
+  const removeBtn = await ig.p.locator('#main button:has-text("从附近移除")').count();
+  check("附近的人详情有「从附近移除」入口", removeBtn === 1, `按钮=${removeBtn}`);
+  await ig.p.click('#main button:has-text("从附近移除")');
+  for (let i = 0; i < 40 && !friendCalls.length; i++) await ig.p.waitForTimeout(50);
+  check(
+    "点从附近移除真的发出 action=remove 且 peer 正确",
+    friendCalls.at(-1)?.action === "remove" && friendCalls.at(-1)?.peer === STRANGER,
+    JSON.stringify(friendCalls),
+  );
+  check("#383 中文语境没有缺译文告警", ig.missing.length === 0, ig.missing.join(" | "));
+  await ig.c.close();
 } catch (err) {
   check("脚本跑完", false, err?.message ?? String(err));
 } finally {

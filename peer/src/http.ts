@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { saveConfig, statePath } from "./config.ts";
+import { readJson, saveConfig, statePath, writeJson } from "./config.ts";
 import type { PeerConfig } from "./config.ts";
 import { PROTO, VERSION } from "./config.ts";
 import type { Discovery } from "./discovery.ts";
@@ -22,11 +22,57 @@ export interface PeerContext {
   messages: Messages;
   relations: Relations;
   files: Files;
+  ignored: Ignored;
 }
 
 const MAX_BODY = 1024 * 1024;
 /** 分块请求的体上限：一个 CHUNK 再加一点余量。 */
 const MAX_CHUNK = CHUNK + 64 * 1024;
+
+/**
+ * 被移除的在线 nodeId。独立落盘，不进关系记录，也不进状态 / 找人接口：
+ * 只用来挡住「下一次轮询又把在线的人合并回通讯录」（#383）。
+ */
+export class Ignored {
+  private set = new Set<string>();
+
+  constructor(private readonly log: (msg: string) => void) {
+    const raw = readJson<{ nodeIds?: unknown }>(statePath("ignored.json"), {});
+    this.set = new Set(Array.isArray(raw.nodeIds) ? raw.nodeIds.filter((id): id is string => typeof id === "string") : []);
+  }
+
+  private save(): void {
+    try {
+      writeJson(statePath("ignored.json"), { nodeIds: [...this.set] });
+    } catch (err) {
+      this.log(`忽略名单落盘失败：${(err as Error).message}`);
+    }
+  }
+
+  has(nodeId: string): boolean {
+    return this.set.has(nodeId);
+  }
+
+  add(nodeId: string): void {
+    if (!nodeId || this.set.has(nodeId)) return;
+    this.set.add(nodeId);
+    this.save();
+  }
+
+  clear(): void {
+    if (!this.set.size) return;
+    this.set.clear();
+    this.save();
+  }
+
+  size(): number {
+    return this.set.size;
+  }
+
+  list(): string[] {
+    return [...this.set];
+  }
+}
 
 function isLoopback(req: http.IncomingMessage): boolean {
   const addr = req.socket.remoteAddress ?? "";
@@ -89,7 +135,7 @@ function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
 }
 
 export function createPeerServer(ctx: PeerContext): http.Server {
-  const { cfg, nodeId, discovery, history, messages, relations, files } = ctx;
+  const { cfg, nodeId, discovery, history, messages, relations, files, ignored } = ctx;
   const identity = () => ({ nodeId, nickname: cfg.nickname, hostname: os.hostname(), port: cfg.port, version: VERSION });
 
   return http.createServer(async (req, res) => {
@@ -130,6 +176,19 @@ export function createPeerServer(ctx: PeerContext): http.Server {
           ok: true,
           config: { hidden: cfg.hidden, pauseFiles: cfg.pauseFiles, dnd: cfg.dnd, inbox: cfg.inbox, manual: cfg.manual },
         });
+      }
+
+      // 忽略名单是通讯录自己的读口：状态 / 找人接口不看它，页面只用它挡住在线表兜底合并。
+      if (url.pathname === "/ignored" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        return json(res, 200, { ok: true, nodeIds: ignored.list() });
+      }
+
+      // 设置页整体清空忽略名单：只动这份名单，不动关系记录，也不碰状态 / 找人接口。
+      if (url.pathname === "/ignored/clear" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        ignored.clear();
+        return json(res, 200, { ok: true, ignored: 0 });
       }
 
       if (url.pathname === "/peer/hello" && req.method === "POST") {
@@ -241,10 +300,11 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         const contacts = relations.list().map((contact) => {
           known.add(contact.nodeId);
           const peer = online.get(contact.nodeId);
-          return { ...contact, quick: contact.quick ?? false, ignored: false, online: Boolean(peer), addr: peer?.addr ?? "", livePort: peer?.port ?? 0 };
+          return { ...contact, quick: contact.quick ?? false, ignored: ignored.has(contact.nodeId), online: Boolean(peer), addr: peer?.addr ?? "", livePort: peer?.port ?? 0 };
         });
         for (const peer of onlinePeers) {
-          if (peer.nodeId === nodeId || known.has(peer.nodeId)) continue;
+          // 忽略名单只过滤由在线表合并出来的无关系行：已有关系的人照样列出来。
+          if (peer.nodeId === nodeId || known.has(peer.nodeId) || ignored.has(peer.nodeId)) continue;
           contacts.push({
             nodeId: peer.nodeId,
             nickname: peer.nickname,
@@ -301,7 +361,9 @@ export function createPeerServer(ctx: PeerContext): http.Server {
             return json(res, 200, { ok: true, contact: relations.get(peerId) });
           }
           if (action === "remove") {
+            // 移除有关系的人：先清关系，再写忽略，否则下一轮在线表会把他合并回来。
             relations.remove(peerId);
+            ignored.add(peerId);
             return json(res, 200, { ok: true });
           }
           return json(res, 400, { error: "未知动作" });

@@ -169,6 +169,16 @@ export class PeerHost {
     return this.request("POST", "/config", patch);
   }
 
+  /** 忽略名单是通讯录自己的读口；页面拿它挡住「在线表兜底」把人加回来。 */
+  ignored(): Promise<{ ok: boolean; nodeIds: string[] }> {
+    return this.request("GET", "/ignored");
+  }
+
+  /** 设置页整体清空忽略名单：只动那份独立名单，不改关系记录。 */
+  clearIgnored(): Promise<{ ok: boolean; ignored: number }> {
+    return this.request("POST", "/ignored/clear");
+  }
+
   history(peer: string, limit = 200): Promise<{ entries: unknown[] }> {
     return this.request("GET", `/messages?peer=${encodeURIComponent(peer)}&limit=${limit}`);
   }

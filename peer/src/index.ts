@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { loadConfig, ensureNodeId, stateDir, statePath, PROTO, VERSION } from "./config.ts";
 import { Discovery } from "./discovery.ts";
-import { createPeerServer } from "./http.ts";
+import { createPeerServer, Ignored } from "./http.ts";
 import { History } from "./history.ts";
 import { Outbox } from "./outbox.ts";
 import { Messages, uuidv7 } from "./messages.ts";
@@ -31,6 +31,7 @@ discovery.on("change", (online: unknown[]) => log(`在线 ${online.length} 台`)
 
 const history = new History(log);
 const relations = new Relations(log);
+const ignored = new Ignored(log);
 const messages = new Messages({ cfg, nodeId, discovery, history, outbox: null as never, relations, log });
 // 回环没注入 outbox 之前先建好：`deliver` 只依赖网络，`settled` 才依赖 outbox 本身。
 const outbox = new Outbox({
@@ -58,7 +59,7 @@ messages.attachOutbox(outbox);
 
 const files = new Files({ cfg, nodeId, discovery, history, relations, log });
 
-const server = createPeerServer({ cfg, nodeId, discovery, history, messages, relations, files });
+const server = createPeerServer({ cfg, nodeId, discovery, history, messages, relations, files, ignored });
 
 server.on("error", (err: NodeJS.ErrnoException) => {
   // 端口被占 = 已经有一份 peer 在跑。直接退出而不是自动换端口：bridge 要能看出「没起来」。

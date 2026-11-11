@@ -820,6 +820,20 @@ async function main(): Promise<void> {
         return json(res, 400, { error: (err as Error).message });
       }
     }
+    if (url.pathname === "/api/peer/ignored" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.ignored());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/ignored/clear" && req.method === "POST") {
+      try {
+        return json(res, 200, await peer.clearIgnored());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
     if (url.pathname === "/api/peer/config" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       const patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean } = {};
