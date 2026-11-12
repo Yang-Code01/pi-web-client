@@ -1,3 +1,4 @@
+import { askQuestions, parseAskResult } from "./ask-result.ts";
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
 import { reviewBody, reviewDisplay } from "./failures.ts";
 import { highlightFragment } from "./highlight.ts";
@@ -1962,10 +1963,14 @@ export class ChatView {
     return tr("计划 {p1}/{p2} · {p3}", { p1: done, p2: tasks.length, p3: actionText });
   }
 
-  /** The two tools whose transcript entry is a question card, not an entry of the ops module. */
+  /**
+   * The tools whose transcript entry is a question card, not an entry of the ops module: the two
+   * extensions we used to patch (`question` / `questionnaire`, still in old session files) and the
+   * one that replaced them (`ask_user_question`, `@juicesharp/rpiv-ask-user-question`).
+   */
   private isAskTool(name: unknown): boolean {
     const n = String(name ?? "");
-    return n === "question" || n === "questionnaire";
+    return n === "question" || n === "questionnaire" || n === "ask_user_question";
   }
 
   private isTodoTool(name: unknown): boolean {
@@ -1976,13 +1981,8 @@ export class ChatView {
     const card = el("div", "tool qa-card");
     card.dataset.running = item.status === "running" ? "1" : "0";
 
-    const args = (item.args ?? {}) as any;
-    const single = item.name === "question";
-    const questions: any[] = single
-      ? [{ id: "q1", label: "Q1", prompt: args.question, options: args.options, allowOther: true }]
-      : Array.isArray(args.questions)
-        ? args.questions
-        : [];
+    const questions = askQuestions(item.args);
+    const single = questions.length === 1;
     const pending = item.status === "running";
 
     const head = el("div", "head");
@@ -1990,7 +1990,7 @@ export class ChatView {
     head.append(el("span", "status", pending ? tr("等你回答…") : ""));
     card.append(head);
 
-    const answers = parseAskResult(String(item.result ?? item.partialResult ?? ""), questions, single);
+    const answers = parseAskResult(String(item.result ?? item.partialResult ?? ""), questions);
     const body = el("div", "qa-body");
     questions.forEach((q, i) => {
       const row = el("div", "qa-q");
@@ -1999,7 +1999,7 @@ export class ChatView {
       const hit = answers[i];
       if (hit) row.append(el("div", "qa-a", `✓ ${hit}`));
       else if (!pending) {
-        const cancelled = /cancel|取消/i.test(String(item.result ?? ""));
+        const cancelled = /cancel|declined|取消/i.test(String(item.result ?? ""));
         row.append(el("div", "qa-a pending", cancelled ? tr("已取消") : tr("未回答")));
       }
       body.append(row);
@@ -2109,36 +2109,6 @@ function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
   foot.append(el("span", undefined, meta.join(" · ")), rawBox);
   card.append(foot);
   return card;
-}
-
-/**
- * Answers come back as text, not structured fields: `User selected: 2. Label` / `User wrote: …` for
- * `question`, `Q1: user selected: 2. Label` / `Q1: user wrote: …` for `questionnaire`.
- */
-function parseAskResult(text: string, questions: any[], single: boolean): (string | null)[] {
-  const out: (string | null)[] = questions.map(() => null);
-  const lines = text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  if (single) {
-    const wrote = lines.find((l) => l.startsWith("User wrote: "));
-    const selected = lines.find((l) => l.startsWith("User selected: "));
-    if (wrote) out[0] = tr("（自己写）{p1}", { p1: wrote.slice("User wrote: ".length) });
-    else if (selected) out[0] = selected.replace(/^User selected: \d+\.\s*/, "");
-    return out;
-  }
-  questions.forEach((q, i) => {
-    const label = String(q?.label ?? `Q${i + 1}`);
-    const line = lines.find((l) => l.startsWith(`${label}: `));
-    if (!line) return;
-    const rest = line.slice(label.length + 2);
-    const wrote = rest.match(/^user wrote:\s*(.*)$/);
-    const selected = rest.match(/^user selected:\s*\d+\.\s*(.*)$/);
-    if (wrote) out[i] = tr("（自己写）{p1}", { p1: wrote[1] });
-    else if (selected) out[i] = selected[1];
-  });
-  return out;
 }
 
 const WRITE_TOOLS = new Set(["write", "edit", "multiedit", "multi_edit", "create", "str_replace_editor", "apply_patch"]);

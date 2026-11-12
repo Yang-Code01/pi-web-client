@@ -468,13 +468,17 @@ async function main(): Promise<void> {
 
   log(`${APP_NAME} ${VERSION} — pi ${piVersion} @ ${pi.cli}`);
   // Q-032: 扩展丢了就只剩「模型把表单写成文字」，而那是无声的。启动时把在场情况写进日志。
-  try {
-    const dir = path.join(os.homedir(), ".pi", "agent", "extensions");
-    const seen = ["question.ts", "questionnaire.ts"].map((n) => `${n.replace(/\.ts$/, "")}=${fs.existsSync(path.join(dir, n)) ? "在" : "缺"}`);
-    log(`ask 扩展：${seen.join(" ")}（缺了就只能由模型把表单写成文字）`);
-  } catch {
-    /* 只是诊断信息 */
-  }
+  // D220 的判据是 `pi list`（用户级包），不是磁盘上的文件名 —— ask 从 D90 起是 npm 包
+  // `@juicesharp/rpiv-ask-user-question`，`~/.pi/agent/extensions/question.ts` 那里永远没有它。
+  void depsReport(pi.cli, piVersion)
+    .then((report) => {
+      const ask = report.packages.find((p) => p.id === "questionnaire");
+      const state = ask?.installed ? `在${ask.foundVersion ? ` ${ask.foundVersion}` : ""}${ask.behind ? `（清单钉的是 ${ask.version}，该升级）` : ""}` : "缺";
+      log(`ask 扩展：${ask?.name ?? "@juicesharp/rpiv-ask-user-question"}=${state}（缺了就只能由模型把表单写成文字）`);
+    })
+    .catch(() => {
+      /* 只是诊断信息 */
+    });
 
   // Last line of defence: a single stray stream error used to kill the whole bridge (and with it
   // every connected client). Log it loudly and keep serving — sessions each own their child and

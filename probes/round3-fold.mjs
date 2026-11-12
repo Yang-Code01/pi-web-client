@@ -72,7 +72,33 @@ const rows = [
       content: [{ type: "toolCall", id: "t1", name: "questionnaire", arguments: { questions: [{ id: "q1", label: "Q1", prompt: longPrompt, options: [] }] } }],
     },
   },
-  { type: "session_info", id: "n1", parentId: "m5", timestamp: at, name: "折叠" },
+  {
+    type: "message",
+    id: "m6",
+    parentId: "m5",
+    timestamp: at,
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "D236：现在的工具名是 ask_user_question，不是 questionnaire。" },
+        { type: "toolCall", id: "t2", name: "ask_user_question", arguments: { questions: [{ header: "配置", question: "日志级别调成哪个？", options: [{ label: "左边" }, { label: "右边" }] }] } },
+      ],
+    },
+  },
+  {
+    type: "message",
+    id: "m7",
+    parentId: "m6",
+    timestamp: at,
+    message: {
+      role: "toolResult",
+      toolCallId: "t2",
+      toolName: "ask_user_question",
+      isError: false,
+      content: [{ type: "text", text: 'User has answered your questions: "日志级别调成哪个？"="右边". You can now continue with the user\'s answers in mind.' }],
+    },
+  },
+  { type: "session_info", id: "n1", parentId: "m7", timestamp: at, name: "折叠" },
 ];
 const file = path.join(dir, `${id}.jsonl`);
 fs.writeFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
@@ -150,6 +176,14 @@ try {
   const qa = page.locator(".qa-card .foldable").first();
   assert((await qa.getAttribute("class"))?.includes("has-fold"), "the long question card has a fold control");
   log("ask card folds");
+
+  // D236: 两个工具名都得成卡（旧名字在历史会话里，新名字是现在的）。这里以前只种了
+  // `questionnaire`，所以 `ask_user_question` 退回折叠行一直没人发现。
+  assert((await page.locator(".qa-card").count()) === 2, `both ask tool names render a Q&A card (got ${await page.locator(".qa-card").count()})`);
+  assert((await page.locator(".qa-card", { hasText: "日志级别调成哪个？" }).count()) === 1, "the ask_user_question card shows its prompt");
+  assert((await page.locator(".qa-card .qa-a", { hasText: "右边" }).count()) >= 1, "the ask_user_question card shows the chosen answer");
+  assert((await page.locator("details.ops").count()) === 0, "neither ask call is folded into the ops module");
+  log("both ask names render a card with their answers");
 
   // ---------------------------------------------------------------- resize re-measures
   // Drag the left grip (Q-003) instead of the viewport: the column really does get narrower.

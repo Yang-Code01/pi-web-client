@@ -4121,3 +4121,21 @@ D
 **代价 / 可改：** 样张 D 的已知代价（每次操作都离开上下文、普通动作也显得重）随选择一并接受；不收 submodule / worktree / bisect / blame / remote 管理 / config / gc；`--graph` 仍未画；大文件与非文本只给占位；鉴权失败只能在系统侧配好后重试；`ref` 的字符黑名单会挡掉极少数合法但罕见的分支名。24 个 id 与字段在 `web/src/git-ops.ts`，桥端白名单在 `bridge/src/gitops.ts`，两边要一起改。
 
 **验证：** `npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check`）；`npm run test:githist` 扩成裸库写操作集成（switch / stage+commit / merge 冲突 / 非法 ref / 未知 id / force 拒绝 / 隧道拒绝）；`npm run test:githist:ui` 用 Playwright 断言三 tab、24 动词选择器、AI 入口、对照检索、居中卡、红色确认、失败卡、冲突逐文件、handoff 与 chip 刷新。样张阶段的四版截图与 100+ 条 linkedom 交互断言留在 `.scratch/git-ops-dialog/prototype/`。
+
+## D236 问答卡按「新工具名 + 三套旧文案」一起认（用户要求）
+
+**问题：** D90 把网页提问从自补丁的 `question` / `questionnaire` 换成 `@juicesharp/rpiv-ask-user-question`（工具名 `ask_user_question`）之后，转录里的问答卡（D47 的 `.qa-card`）就没了：`web/src/chat.ts` 的 `isAskTool` 只认两个旧名字，于是用户点完表单，聊天区只剩一行收起的「N 个操作 · ask_user_question ×1」，答案要点开折叠层才看得见。名字和答案文案同时不命中 —— 新包的答案是 `User has answered your questions: "问题"="答案"`，不是旧的 `User selected: 2. 右边`。本机 633 个会话文件里旧工具名出现 0 次、`ask_user_question` 762 次，所以这不是「某天之后偶尔看不到」，而是所有新提问都看不到。
+
+**决定：**
+
+1. `isAskTool` 三个名字都认：`ask_user_question`（现在）+ `question` / `questionnaire`（历史会话里还在）。旧名字不能删，历史会话重放时得画成同一张卡。
+2. 参数先归一成 `{ label, prompt, options }`（新文件 `web/src/ask-result.ts` 的 `askQuestions`）：新工具每题是 `{ header, question, options }`，旧单题是平铺的 `{ question, options }`。以前 `buildAsk` 直接读 `q.prompt`，对新工具永远是空题干。
+3. 结果解析也搬进 `web/src/ask-result.ts`（`parseAskResult`），三套文案都认：新文案用 `"问题"="答案"` 成对解出来并**按问题原文配对**（模型把答案顺序写反也能对上，配不上才按下标），旧问卷按 `<label>: user selected: N. X` / `<label>: user wrote: X`，旧单题按裸的 `User selected:` / `User wrote:`。`User declined…` 与 `cancel` 记成「已取消」。
+4. 启动体检改成走 `depsReport`（`pi list`，D220 的判据）打印安装的 npm 包版本：以前找的是 `~/.pi/agent/extensions/question.ts`，D90 之后那儿永远没有，于是日志天天说「缺」而实际在用。
+5. 回归放两处：`web/tests/ask-card-unit.mjs`（纯函数：三套文案、配对乱序、转义引号、取消、空结果）与 `probes/round3-fold.mjs`（真 `web/dist`：两种工具名都得渲染成 `.qa-card`、都不能掉进 `details.ops`）。原来的探针只种了 `questionnaire`，这正是它漏测的原因。
+
+**为什么：** 工具名是别人的接口，会变；转录渲染是我们自己的约定，不能只按一种拼写写死。旧名字一起认，是为了同一份会话文件昨天看是卡、今天看还是卡 —— 否则每次换扩展都等于把历史记录改坏一遍。答案只能从文本里解析，是因为扩展把结构化结果放在了 `details` 里而工具结果文本另有措辞；按原文配对而不是按位置，是唯一能容忍模型换序的写法。
+
+**代价 / 可改：** 名字清单是手写的，将来再换名字要同步改 `isAskTool` 与单测 fixture，没有自动发现；文案仍是文本匹配，扩展改措辞会退回「未回答」—— 但单测会红，不再静默。历史 `question` 单题卡的头叫「提问」，多题叫「问卷 · N 题」，与 D47 一致。
+
+**验证：** `npm run test:ask-card`；`npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check`）；`node probes/round3-fold.mjs`（含新增的两条 ask 名断言）；同一份种子会话跑 `.scratch/ask-card-probe.mjs`，修前 `qaCards:1 / opsModules:1`，修后 `qaCards:2 / opsModules:0`，截图里两张卡都显示题干与「✓ 右边」。
