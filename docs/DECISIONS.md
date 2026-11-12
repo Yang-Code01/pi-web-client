@@ -4121,3 +4121,11 @@ D
 **代价 / 可改：** 样张 D 的已知代价（每次操作都离开上下文、普通动作也显得重）随选择一并接受；不收 submodule / worktree / bisect / blame / remote 管理 / config / gc；`--graph` 仍未画；大文件与非文本只给占位；鉴权失败只能在系统侧配好后重试；`ref` 的字符黑名单会挡掉极少数合法但罕见的分支名。24 个 id 与字段在 `web/src/git-ops.ts`，桥端白名单在 `bridge/src/gitops.ts`，两边要一起改。
 
 **验证：** `npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check`）；`npm run test:githist` 扩成裸库写操作集成（switch / stage+commit / merge 冲突 / 非法 ref / 未知 id / force 拒绝 / 隧道拒绝）；`npm run test:githist:ui` 用 Playwright 断言三 tab、24 动词选择器、AI 入口、对照检索、居中卡、红色确认、失败卡、冲突逐文件、handoff 与 chip 刷新。样张阶段的四版截图与 100+ 条 linkedom 交互断言留在 `.scratch/git-ops-dialog/prototype/`。
+
+## D236 内网通对话未读与已读位置做了（#395），推翻 D151 的「会话的未读…不做」
+
+**决定：** 内网通每个对话统计「对方发来、晚于已读位置的文字与文件」作为未读数；列表行画数字药丸，导航「消息」与网页图标只画一颗圆点（不写数）。停在对话里时新消息直接已读。
+
+**为什么：** 用户要的是「有消息要知道」。D151 的理由（`/threads` 不带字段、要做就得加索引和迁移）这次不成立：未读只是 `/threads` 的 `unread` 字段，已读位置是一份小 JSON，不改历史格式。
+
+**代价：** `/threads` 多了 `unread` 字段；已读位置存本机 `read.json`（所有浏览器共用一份，不同机器不同步）；未读只扫最近 2000 条，已读位置已滚出这 2000 条时这 2000 条全算未读。不计自己发的消息，也没有已读回执。

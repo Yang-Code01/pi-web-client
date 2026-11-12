@@ -1,5 +1,4 @@
 import { applyLang, bootLang, fmtDate, fmtNum, fmtRelative, fmtTime, tr } from "../i18n/index.ts";
-import { setFaviconDot } from "../favicon-dot.ts";
 
 /**
  * `peer.html` 的脚本：只跟 bridge 说话（cookie + `/api/peer*`），从不直接连 7865。
@@ -358,6 +357,8 @@ async function loadThreads(): Promise<void> {
   } catch {
     S.threads = [];
   }
+  // 正在看的对话来了新未读：这一轮就清零，不等消息轮询（它只在消息变化时才标已读）。
+  if (S.threads.some((t) => t.nodeId === S.thread && t.unread > 0)) markReadIfViewing();
 }
 
 /** 独立落盘的忽略名单：页面只用它挡住在线表兜底合并，不改状态 / 找人接口。 */
@@ -458,11 +459,14 @@ function openThread(id: string): void {
   S.mview = "chat";
   S.msgs = [];
   S.msgsFor = "";
-  // 打开会话永远从最底下开始：不继承上一个会话的滚动位置（它可能是翻到半截的）。
+  // 打开对话永远从最底下开始：不继承上一个对话的滚动位置（它可能是翻到半截的）。
   stickBottom = true;
   prevScroll = 0;
   app.dataset.page = "msg";
   app.dataset.mview = "chat";
+  // renderMain() 会读旧 .stream 的 scrollTop 重算 stickBottom / prevScroll，会把上面两行覆盖掉；
+  // 先清空主区，让它没有旧位置可读，贴底只由上面两行决定。
+  mainEl.replaceChildren();
   renderAll();
   // 从联系人列表点「发消息」就是要马上打字：把焦点直接放进输入框。
   // renderAll() 里 renderChat() 已经同步建好 textarea（composeBox 会更新 textInput）。
@@ -499,7 +503,7 @@ function renderAll(): void {
 
 /**
  * 「消息」导航（rail 与底部导航各一颗）上的未读圆点（#396）：全部对话里有未读就画一颗，只画点不写数。
- * 数据来自 `loadThreads()` 的 unread，所以轮询与标记已读之后都要再调一次。网页图标的红点（#397）也在这里同步。
+ * 数据来自 `loadThreads()` 的 unread，所以轮询与标记已读之后都要再调一次。
  */
 function paintMsgDots(): void {
   const hasUnread = S.threads.some((t) => t.unread > 0);
@@ -507,13 +511,6 @@ function paintMsgDots(): void {
     btn.querySelector(":scope > .dot.unread")?.remove();
     if (hasUnread) btn.append(h("span", "dot unread"));
   }
-  paintPeerFavicon();
-}
-
-/** #397：页面不在前台、有未读、免打扰没开：标签页网页图标画红点，否则是原图标。标题不动。 */
-function paintPeerFavicon(): void {
-  const hasUnread = S.threads.some((t) => t.unread > 0);
-  setFaviconDot(document.hidden && hasUnread && S.view?.status?.config.dnd !== true);
 }
 
 function renderBar(): void {
@@ -908,8 +905,8 @@ function backBtn(): HTMLButtonElement {
 }
 
 /**
- * 当前的会话对象。有历史就从 /threads 里取；刚加的好友还没历史（peer 的 /threads 只遍历
- * history 目录），就用通讯录 / 在线表拼一个，不然聊天区只剩「选一个会话」，第一条消息没法发。
+ * 当前的对话对象。有历史就从 /threads 里取；刚加的好友还没历史（peer 的 /threads 只遍历
+ * history 目录），就用通讯录 / 在线表拼一个，不然聊天区只剩「选一个会话」（界面文案），第一条消息没法发。
  */
 function threadOf(id: string | null): Thread | null {
   if (!id) return null;
@@ -1650,7 +1647,7 @@ function inputEl(placeholder: string): HTMLInputElement {
 // ---------------------------------------------------------------- 文件选择器
 
 async function openPicker(peer: string, direct = false): Promise<void> {
-  // 「传文件」从联系人页直接进来时，先把会话切过去：发完就在聊天里能看到。
+  // 「传文件」从联系人页直接进来时，先把对话切过去：发完就在聊天里能看到。
   if (!S.thread || S.thread !== peer) {
     S.thread = peer;
     await loadMessages();
@@ -1766,7 +1763,6 @@ async function boot(): Promise<void> {
   markReadIfViewing();
   if (S.thread) void loadMessages().then(() => renderMain());
   document.addEventListener("visibilitychange", markReadIfViewing);
-  document.addEventListener("visibilitychange", paintPeerFavicon);
 }
 
 void boot();
@@ -1775,7 +1771,6 @@ window.setInterval(() => {
   void loadStatus().then(() => {
     renderBar();
     renderHint();
-    paintPeerFavicon();
   });
 }, 5000);
 
