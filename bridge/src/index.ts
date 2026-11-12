@@ -1629,7 +1629,7 @@ async function main(): Promise<void> {
         plan,
         stats,
         ...(reset && !initial ? { reset: true } : {}),
-        pending: !file,
+        pending: !file && state === "running",
       });
     };
     send({

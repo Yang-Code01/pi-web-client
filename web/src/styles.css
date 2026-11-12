@@ -1548,12 +1548,13 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .exec-now h2 { margin: 0 0 8px; padding: 0; border: 0; color: var(--text); font-size: 13px; }
 .exec-now-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
 /* D232: 长参数仍然只占一行，但不再就地展开（D228 那一版会把「现在」卡本身撑成正文），点行开对话框。 */
-.exec-now-tool .exec-args { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
-button.exec-now-tool { width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-button.exec-now-tool:hover .exec-args { color: var(--text); }
-button.exec-now-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.exec-now-tool .exec-args, .exec-now-child .exec-args { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+.exec-now-line b { flex: none; min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.exec-now-tool, button.exec-now-child { width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+button.exec-now-tool:hover .exec-args, button.exec-now-child:hover .exec-args { color: var(--text); }
+button.exec-now-tool:focus-visible, button.exec-now-child:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .exec-now-open { flex: none; color: var(--faint); font: 11px/1 var(--mono); }
-button.exec-now-tool:hover .exec-now-open { color: var(--accent); }
+button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now-open { color: var(--accent); }
 .exec-metrics { display: grid; gap: 9px; min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); }
 .exec-metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .exec-metric { display: grid; gap: 3px; min-width: 0; }
