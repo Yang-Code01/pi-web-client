@@ -9,6 +9,7 @@
  *   4. #382：quick 单独成组（在好友之后、附近的人之前），两颗添加按钮并存，
  *      传文件只给好友、离线禁用，以及中 / 英 / 日三种语境的新文案。
  *   5. #383：忽略名单挡住在线表兜底合并，设置页清空后附近的人重新出现。
+ *   6. #395：列表行的未读数；打开即清零；停在对话里时新消息直接已读；另一个浏览器标记后这边同样清零。
  *
  * 用假 API 是刻意的：这些都测「拿到 JSON 之后怎么画」，跟 peer 活着与否无关。
  *
@@ -430,6 +431,86 @@ try {
   );
   check("#383 中文语境没有缺译文告警", ig.missing.length === 0, ig.missing.join(" | "));
   await ig.c.close();
+
+  // #395：未读数。列表行右侧的药丸显示未读条数；打开对话即清零；停在对话里时来的新消息直接已读；两个浏览器共用已读。
+  // 假接口带状态（两个页面共用同一份 unread）：读 /threads 的 unread，POST /read 清零，receive() 模拟对方来信。
+  const unread = {
+    counts: { [ZHANG]: 2, [LI]: 3 },
+    entries: {
+      [ZHANG]: [msg("zhang-1", "小张的旧消息", { nodeId: ZHANG, nickname: "小张" }, ME)],
+      [LI]: [msg("li-1", "小李的旧消息", { nodeId: LI, nickname: "小李" }, ME)],
+    },
+    reads: [],
+  };
+  const receive = (nodeId, text) => {
+    unread.entries[nodeId].push(msg(`recv-${unread.entries[nodeId].length}-${text}`, text, { nodeId, nickname: nodeId === ZHANG ? "小张" : "小李" }, ME));
+    unread.counts[nodeId] += 1;
+  };
+  const unreadPage = async () => {
+    const c = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+    const p = await c.newPage();
+    await p.route("**/api/**", async (route) => {
+      const req = route.request();
+      const url = new URL(req.url());
+      let body = {};
+      if (url.pathname === "/api/peer") body = { enabled: true, running: true, reason: "", status };
+      else if (url.pathname === "/api/peer/threads")
+        body = {
+          threads: [
+            { ...thread(ZHANG, "小张", unread.entries[ZHANG].at(-1)), unread: unread.counts[ZHANG] },
+            { ...thread(LI, "小李", unread.entries[LI].at(-1)), unread: unread.counts[LI] },
+          ],
+        };
+      else if (url.pathname === "/api/peer/contacts") body = { contacts: [contact(ZHANG, "小张"), contact(LI, "小李")] };
+      else if (url.pathname === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+      else if (url.pathname === "/api/peer/messages") body = { entries: unread.entries[url.searchParams.get("peer")] ?? [] };
+      else if (url.pathname === "/api/peer/read") {
+        const { peer } = JSON.parse(req.postData() ?? "{}");
+        unread.reads.push(peer);
+        unread.counts[peer] = 0;
+        body = { ok: true };
+      }
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+    });
+    await p.goto(`${BASE}/peer.html`);
+    await p.waitForSelector(".listbox .row");
+    return { c, p };
+  };
+  const pillOf = (p, name) => p.locator(`.listbox .row:has-text("${name}") .pill.unread`);
+
+  const u = await unreadPage();
+  await pillOf(u.p, "小李").waitFor({ timeout: 6000 });
+  // 宽屏下主区那一条（列表第一条）打开即视为已读：小张的数字清零，小李保留。
+  await u.p.waitForTimeout(600);
+  const liShown = await pillOf(u.p, "小李").innerText();
+  const zhangGone = await pillOf(u.p, "小张").count();
+  check("列表行显示未读条数，主区打开的那条已清零", liShown === "3" && zhangGone === 0 && unread.reads.includes(ZHANG), `小李=${liShown}，小张药丸=${zhangGone}`);
+
+  await u.p.click('.listbox .row:has-text("小李")');
+  await u.p.waitForTimeout(300);
+  const liCleared = await pillOf(u.p, "小李").count();
+  check("点开对话后数字清零并 POST /api/peer/read", liCleared === 0 && unread.reads.includes(LI), `药丸=${liCleared}，reads=${unread.reads.join(",")}`);
+
+  const readsBeforeLive = unread.reads.length;
+  receive(LI, "正在看的时候来的");
+  for (let i = 0; i < 120 && unread.reads.length === readsBeforeLive; i++) await u.p.waitForTimeout(50);
+  await u.p.waitForTimeout(300);
+  const liLive = await pillOf(u.p, "小李").count();
+  check("停在对话里时新消息直接已读（不计未读）", unread.reads.length > readsBeforeLive && unread.counts[LI] === 0 && liLive === 0, `药丸=${liLive}，计数=${unread.counts[LI]}`);
+
+  const readsBeforeAway = unread.reads.length;
+  receive(ZHANG, "没在看的时候来的");
+  await pillOf(u.p, "小张").waitFor({ timeout: 6000 });
+  const zhangAway = await pillOf(u.p, "小张").innerText();
+  check("没在看的对话来消息照常计未读", zhangAway === "1" && unread.reads.length === readsBeforeAway, `小张=${zhangAway}，reads 增量=${unread.reads.length - readsBeforeAway}`);
+
+  // 另一个浏览器（同一份服务端状态）打开小张：这边列表下一轮轮询里数字也要消失。
+  const v = await unreadPage();
+  await pillOf(v.p, "小张").waitFor({ state: "detached", timeout: 6000 });
+  await pillOf(u.p, "小张").waitFor({ state: "detached", timeout: 7000 });
+  check("另一个浏览器标记已读，这边同样清零", unread.counts[ZHANG] === 0, `计数=${unread.counts[ZHANG]}`);
+  await v.c.close();
+  await u.c.close();
 } catch (err) {
   check("脚本跑完", false, err?.message ?? String(err));
 } finally {
