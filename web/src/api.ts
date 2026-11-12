@@ -153,6 +153,19 @@ export const api = {
     if (!out.ok) throw Object.assign(new Error(out.error ?? "git fetch 失败"), { code: out.code });
     return { at: out.at ?? Date.now(), remote: out.remote ?? "origin" };
   },
+  /**
+   * #392 目录与仓库：展开一层时批量问「这些直接子目录里哪些自己是仓库」。
+   * 值只可能是子目录自己的仓库（父仓库里的普通目录回 null）。隧道/公网一律 403，调用方按「全是 null」处理。
+   */
+  gitProbe: async (dir: string, names: string[], fresh = false): Promise<{ probes: Record<string, GitInfo | null>; truncated: boolean }> => {
+    const out = await postJson<{ probes?: Record<string, GitInfo | null>; truncated?: boolean }>("/api/git/probe", { dir, names, fresh });
+    const probes: Record<string, GitInfo | null> = {};
+    for (const name of names) {
+      const info = out.probes?.[name];
+      probes[name] = info && info.repo ? info : null;
+    }
+    return { probes, truncated: out.truncated === true };
+  },
   /** D235: 工作台的仓库状态（逐文件暂存/改动/冲突）。 */
   gitState: (dir: string) => postJson<GitWorktreeState>("/api/git/state", { dir }),
   /** D235: 本地 + 远程分组的分支列表，给切换、合并和对照检索用。 */

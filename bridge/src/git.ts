@@ -135,6 +135,69 @@ export async function gitInfo(dir: string, fresh = false): Promise<GitInfo | nul
   return info;
 }
 
+/* ---------------------------------------------------------------- 目录树批量探测（#392） */
+
+/** 一次探测的名字上限：50 个子目录 × 4 并发已经把 Windows 上的 git 压满，再多只截断不排队。 */
+const PROBE_LIMIT = 64;
+const PROBE_CONCURRENCY = 4;
+
+/** `git rev-parse --show-toplevel` 给的是真实路径；Windows 上盘符大小写可能与入参不同。 */
+function sameDir(a: string, b: string): boolean {
+  const norm = (p: string) => {
+    const abs = path.resolve(p);
+    return process.platform === "win32" ? abs.toLowerCase() : abs;
+  };
+  return norm(a) === norm(b);
+}
+
+/**
+ * #392: 展开一层目录时，一次性问「这些直接子目录里哪些自己是仓库」。
+ *
+ * 每个名字单独走 `gitInfo`（共享 5s 缓存 / `fresh`），但结果只保留**仓库根正好是它自己**的那些：
+ * 父仓库里的普通目录、`node_modules` 都会向上找到父仓库，必须回 null，树上才不会被标成仓库。
+ * 名字只接受直接子目录名，`.`, `..` 与带分隔符的输入直接丢掉（桥端不接受路径拼接）。
+ * 超过上限的部分不探，`truncated` 让界面说「这一层太多，先展开一部分」。
+ */
+export async function probeChildren(
+  dir: string,
+  names: unknown,
+  opts: { fresh?: boolean; limit?: number } = {},
+): Promise<{ probes: Record<string, GitInfo | null>; truncated: boolean }> {
+  const base = path.resolve(dir);
+  const wanted = Math.floor(Number(opts.limit));
+  const limit = Number.isFinite(wanted) && wanted > 0 ? Math.min(wanted, 256) : PROBE_LIMIT;
+  const fresh = opts.fresh === true;
+
+  const seen = new Set<string>();
+  const clean: string[] = [];
+  for (const raw of Array.isArray(names) ? names : []) {
+    const name = typeof raw === "string" ? raw.trim() : "";
+    if (!name || name === "." || name === ".." || /[\\/\0]/.test(name) || seen.has(name)) continue;
+    seen.add(name);
+    clean.push(name);
+  }
+
+  const list = clean.slice(0, limit);
+  const probes: Record<string, GitInfo | null> = {};
+  let next = 0;
+  const worker = async () => {
+    while (next < list.length) {
+      const name = list[next];
+      next += 1;
+      const child = path.join(base, name);
+      let info: GitInfo | null = null;
+      try {
+        info = await gitInfo(child, fresh);
+      } catch {
+        info = null;
+      }
+      probes[name] = info && sameDir(info.repo, child) ? info : null;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PROBE_CONCURRENCY, list.length) }, worker));
+  return { probes, truncated: clean.length > limit };
+}
+
 /* ---------------------------------------------------------------- 分支历史弹窗 */
 
 /**

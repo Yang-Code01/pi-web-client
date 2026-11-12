@@ -25,6 +25,7 @@ import { JiraPanel } from "./jira.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { openSysmanage } from "./sysmanage.ts";
 import { BranchSheet } from "./branchsheet.ts";
+import { ReposSheet } from "./repossheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
@@ -307,6 +308,8 @@ export class App {
   private notesSheet: NotesSheet | null = null;
   /** D235: 分支操作工作台；同时只开一扇，关了才允许再开。 */
   private branchSheet: BranchSheet | null = null;
+  /** #392: 非 git cwd 的「目录与仓库」；同样只开一扇。 */
+  private reposSheet: ReposSheet | null = null;
   /** D164：AI 出错记录的账本（按工作区），以及这个会话里见过的失败（按 toolCallId 去重）。 */
   private failLedger: FailLedger | null = null;
   private failWs = "";
@@ -3213,6 +3216,9 @@ export class App {
       // Don't keep showing the previous session's branch while this answer is in flight.
       this.git = null;
       this.gitCwd = cwd;
+      // #392: 「目录与仓库」属于上一个会话的 cwd，切走就关，别让面板停在前一个项目上。
+      this.reposSheet?.close();
+      this.paintCwdChipTitle();
       this.fillHintStatus();
     }
     let info: GitInfo | null = null;
@@ -3225,6 +3231,8 @@ export class App {
     if ((this.session?.cwd ?? "").trim() !== cwd) return;
     this.git = info;
     this.gitCwd = cwd;
+    // #392: git 到了再定 chip 的语义（复制 vs 浏览子仓库）。
+    this.paintCwdChipTitle();
     this.fillHintStatus();
   }
 
@@ -3276,6 +3284,27 @@ export class App {
     };
     sheet.mount(document.getElementById("app") ?? document.body);
     this.branchSheet = sheet;
+  }
+
+  /**
+   * #392: cwd 不在仓库里时，路径 chip 打开「目录与仓库」：左目录树、中仓库列、右分支面板。
+   * 同时只开一扇；切会话（refreshGit 发现 cwd 变了）也会关掉。
+   */
+  private openReposSheet(cwd: string): void {
+    if (this.reposSheet) {
+      this.reposSheet.close();
+      return;
+    }
+    const sheet = new ReposSheet({
+      cwd,
+      refreshChip: () => { void this.refreshGit(true); },
+      handoff: { prefill: (text) => this.prefill(text), newSessionWith: (text) => this.newSessionWith(text) },
+    });
+    sheet.onClose = () => {
+      if (this.reposSheet === sheet) this.reposSheet = null;
+    };
+    sheet.mount(document.getElementById("app") ?? document.body);
+    this.reposSheet = sheet;
   }
 
   /** The line under the composer: what pi is doing and for how long, or the key hints when idle. */
@@ -15527,13 +15556,33 @@ export class App {
     this.cwdChip.hidden = !(this.collapsed.sessions && !this.compact());
   }
 
+  /** #392：chip 的说明随 git 探测结果更新；键里的 \n 会让 i18n 扫描把 `{p1}` 当成键本身，换行拼在键外。 */
+  private paintCwdChipTitle(): void {
+    const chip = this.cwdChip;
+    const cwd = chip?.dataset.cwd;
+    if (!chip || !cwd) return;
+    const inRepo = this.gitCwd === cwd && this.git !== null;
+    chip.title = cwd + "\n" + (inRepo ? tr("点一下复制路径") : tr("点一下浏览子仓库（复制在窗内）"));
+  }
+
   private cwdChipNode(cwd: string): HTMLElement {
     const btn = el("button", "cwd-chip") as HTMLButtonElement;
     const path = el("span", "cwd-path", cwd);
     btn.append(path);
-    // 键里的 \n 会让 i18n 键扫描把 `{p1}` 当成键本身（既有误报），换行拼在键外。
-    btn.title = cwd + "\n" + tr("点一下复制路径");
+    // #392: cwd 在仓库里时点一下还是复制；不在仓库里（伞形目录）时点开「目录与仓库」，复制放窗内。
+    // git 是异步到的：标题与点击都要现算，不能在建节点时把 inRepo 定死（否则首次渲染总是「浏览子仓库」）。
+    btn.dataset.cwd = cwd;
+    const inRepo = (): boolean => this.gitCwd === cwd && this.git !== null;
+    // 注意：此刻 this.cwdChip 还没指向这个节点（赋值在返回之后），要直接写 btn.title。
+    const paintTitle = (): void => {
+      btn.title = cwd + "\n" + (inRepo() ? tr("点一下复制路径") : tr("点一下浏览子仓库（复制在窗内）"));
+    };
+    paintTitle();
     btn.onclick = () => {
+      if (!inRepo()) {
+        this.openReposSheet(cwd);
+        return;
+      }
       // 和 git chip 一样：`navigator.clipboard` 在局域网 http 下不存在，可选链要包住调用不是属性。
       const copy = navigator.clipboard?.writeText(cwd);
       if (!copy) return;

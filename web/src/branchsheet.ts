@@ -60,11 +60,17 @@ export interface BranchSheetOptions {
   refreshChip?: () => void;
   /** 复用了 JiraPanel / FailPanel 的两个出口：只填不发，不自动发送。 */
   handoff?: { prefill: (text: string) => void; newSessionWith: (text: string) => void };
+  /**
+   * #392：嵌进「目录与仓库」右栏，而不是自己开一扇全屏窗。
+   * 不建背景遮罩、不绑 document 的 Esc、不显示标题与 ✕；分支侧栏收进头部下拉。
+   */
+  embedded?: boolean;
 }
 
 export class BranchSheet {
-  private readonly dir: string;
-  private readonly fallback: string;
+  private dir: string;
+  private fallback: string;
+  private readonly embedded: boolean;
   private readonly refreshChip: (() => void) | null;
   private readonly handoff: { prefill: (text: string) => void; newSessionWith: (text: string) => void } | null;
   private readonly root: HTMLElement;
@@ -77,6 +83,10 @@ export class BranchSheet {
   private readonly hintEl: HTMLElement;
   private readonly fetchBtn: HTMLButtonElement;
   private readonly opLayer: HTMLElement;
+  /** embedded 时「分支 · 本地 + 远程」的浮层（老工作台里仍是常驻 aside）。 */
+  private readonly sidePop: HTMLElement;
+  private readonly sideToggle: HTMLButtonElement;
+  private sideOpen = false;
 
   private data: GitHistory | null = null;
   private state: GitWorktreeState | null = null;
@@ -105,13 +115,15 @@ export class BranchSheet {
     this.selectedBranch = opts.branch;
     this.refreshChip = opts.refreshChip ?? null;
     this.handoff = opts.handoff ?? null;
+    this.embedded = opts.embedded === true;
 
     this.root = el("div", "sheet-back center branch-back");
     this.root.onclick = (ev) => { if (ev.target === this.root) this.close(); };
     this.sheet = el("div", "branch-sheet go-sheet");
-    this.sheet.setAttribute("role", "dialog");
-    this.sheet.setAttribute("aria-modal", "true");
-    this.sheet.setAttribute("aria-label", tr("分支操作工作台"));
+    this.sheet.classList.toggle("go-embedded", this.embedded);
+    this.sheet.setAttribute("role", this.embedded ? "region" : "dialog");
+    if (this.embedded) this.sheet.setAttribute("aria-label", tr("分支操作工作台"));
+    else this.sheet.setAttribute("aria-modal", "true");
     this.sheet.tabIndex = -1;
 
     const head = el("div", "branch-head");
@@ -142,6 +154,15 @@ export class BranchSheet {
     close.setAttribute("aria-label", tr("关闭"));
     close.title = tr("Esc 关闭");
     close.onclick = () => this.close();
+    // embedded：外窗已有标题与 ✕，这里只留工具行；分支侧栏改成一个下拉。
+    this.sideToggle = btn(tr("分支 · 本地 + 远程"), "btn ghost go-side-toggle");
+    this.sideToggle.dataset.sideToggle = "1";
+    this.sideToggle.onclick = () => { this.sideOpen = !this.sideOpen; this.paintSideVisibility(); };
+    if (this.embedded) {
+      title.hidden = true;
+      close.hidden = true;
+      row.append(this.sideToggle);
+    }
     tools.append(row, copy, close);
     head.append(title, tools);
 
@@ -163,12 +184,20 @@ export class BranchSheet {
     this.opLayer = el("div", "go-op-layer");
     this.opLayer.hidden = true;
     this.opLayer.onclick = (ev) => { if (ev.target === this.opLayer) this.closeOp(); };
-    this.sheet.append(head, this.cmpEl, this.tabsEl, this.colsEl, foot, this.opLayer);
+    this.sidePop = el("div", "go-side-pop");
+    this.sidePop.hidden = true;
+    this.sheet.append(head, this.cmpEl, this.tabsEl, this.colsEl, foot, this.sidePop, this.opLayer);
     this.root.append(this.sheet);
     this.paintLoading();
   }
 
   mount(parent: HTMLElement): void {
+    if (this.embedded) {
+      // 外窗负责 Esc 链与焦点：这里只把自己挂进右栏，不注册 document 监听。
+      parent.append(this.sheet);
+      void this.load(false);
+      return;
+    }
     parent.append(this.root);
     this.esc = (ev: KeyboardEvent): void => {
       if (ev.key !== "Escape") return;
@@ -184,8 +213,50 @@ export class BranchSheet {
 
   close(): void {
     if (this.esc) document.removeEventListener("keydown", this.esc, true);
-    this.root.remove();
+    if (this.embedded) this.sheet.remove();
+    else this.root.remove();
     this.onClose?.();
+  }
+
+  /** #392：换仓库。在途请求靠 ticket 丢弃，旧 diff / 分支 / 侧栏一律不沿用。 */
+  setDir(dir: string, branch = ""): void {
+    this.dir = dir;
+    this.fallback = branch;
+    this.selectedBranch = branch;
+    this.base = "";
+    this.limit = PAGE;
+    this.diff = null;
+    this.diffFile = -1;
+    this.data = null;
+    this.state = null;
+    this.refs = null;
+    this.ticket += 1;
+    this.sideOpen = false;
+    this.paintSideVisibility();
+    this.repoEl.textContent = shortDir(dir);
+    this.repoEl.title = dir;
+    this.paintLoading();
+    void this.load(false);
+  }
+
+  /** #392：外窗的 Esc 链先用这一层（操作卡 → 分支浮层），返回 true 表示它收掉了。 */
+  closeLayer(): boolean {
+    if (!this.opLayer.hidden) {
+      this.closeOp();
+      return true;
+    }
+    if (this.embedded && this.sideOpen) {
+      this.sideOpen = false;
+      this.paintSideVisibility();
+      return true;
+    }
+    return false;
+  }
+
+  private paintSideVisibility(): void {
+    this.sidePop.hidden = !(this.embedded && this.sideOpen);
+    this.sideToggle.classList.toggle("on", this.embedded && this.sideOpen);
+    this.sideToggle.setAttribute("aria-expanded", String(this.embedded && this.sideOpen));
   }
 
   // ---------------------------------------------------------------- data
@@ -438,6 +509,24 @@ export class BranchSheet {
     cols.append(left, right);
     wrap.append(sideTabs, cols);
 
+    if (this.embedded) {
+      // #392：新窗口里没有常驻右栏，列表进头部下拉；侧栏内容与两颗 CTA 与老工作台一致。
+      this.sidePop.replaceChildren(this.branchSideEl(data));
+      this.sideToggle.textContent = tr("分支 · 本地 + 远程 · {p1}", { p1: this.branchLocalCount(data) });
+    } else {
+      wrap.append(this.branchSideEl(data));
+    }
+    this.colsEl.replaceChildren(wrap);
+  }
+
+  private branchLocalCount(data: GitHistory): number {
+    const groups = this.refs?.groups;
+    if (!groups) return data.branches.length;
+    return groups.reduce((n, g) => n + g.refs.length, 0);
+  }
+
+  /** 老工作台的常驻 aside，也供 embedded 的分支浮层复用。 */
+  private branchSideEl(data: GitHistory): HTMLElement {
     const side = el("aside", "go-branch-side");
     side.append(el("div", "go-side-title", tr("分支 · 本地 + 远程")));
     for (const g of this.refs?.groups ?? [{ name: tr("历史"), refs: data.branches.map((b) => ({ name: b.name, at: b.at, current: b.name === data.head })) }]) {
@@ -476,8 +565,7 @@ export class BranchSheet {
     ai.dataset.ai = "1";
     ai.onclick = () => this.openAi();
     side.append(ai);
-    wrap.append(side);
-    this.colsEl.replaceChildren(wrap);
+    return side;
   }
 
   private column(side: "left" | "right", name: string, tag: string, count: string, rows: GitCommit[], more: boolean): HTMLElement {

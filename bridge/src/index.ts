@@ -44,7 +44,7 @@ import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, resetScratchDir
 import { BUILD_ID } from "./build-id.ts";
 import { removePidFile, writePidFile } from "./pidfile.ts";
 import { clipboardFiles, listDirs, makeDir, makeFile, statFiles, statPath } from "./dirs.ts";
-import { gitFetch, gitHistory, GitHistoryError, gitInfo } from "./git.ts";
+import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
 import { executeGitOp, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
@@ -953,7 +953,7 @@ async function main(): Promise<void> {
     // D235: 分支操作工作台。写操作与仓库数据只在「本机回环 + 非隧道」放行：
     // cloudflared 是本机起的，隧道请求的 remoteAddress 天然是 loopback，只看地址会把写权限漏给公网；
     // 局域网直连不带 cf 头，只看 publicReq 也会漏，所以两道闸都要过。
-    if (url.pathname.startsWith("/api/git/") && ["/api/git/state", "/api/git/refs", "/api/git/diff", "/api/git/op"].includes(url.pathname) && req.method === "POST") {
+    if (url.pathname.startsWith("/api/git/") && ["/api/git/state", "/api/git/refs", "/api/git/diff", "/api/git/op", "/api/git/probe"].includes(url.pathname) && req.method === "POST") {
       const peer = req.socket.remoteAddress ?? "";
       if (!isLoopbackPeer(peer) || publicReq) {
         return fail(res, 403, "op_public", "只允许本机回环访问时操作 git（公网/局域网一律拒绝）");
@@ -963,6 +963,10 @@ async function main(): Promise<void> {
       if (!dir) return fail(res, 400, "dir_empty", "dir 不能为空");
       if (!path.isAbsolute(dir)) return fail(res, 400, "dir_not_absolute", "dir 必须是绝对路径");
       try {
+        // #392 目录与仓库：展开一层时批量问「哪些直接子目录自己是仓库」。只读，但同样只给本机回环。
+        if (url.pathname === "/api/git/probe") {
+          return json(res, 200, await probeChildren(dir, body?.names, { fresh: body?.fresh === true }));
+        }
         if (url.pathname === "/api/git/state") return json(res, 200, await gitState(dir));
         if (url.pathname === "/api/git/refs") return json(res, 200, await gitRefs(dir));
         if (url.pathname === "/api/git/diff") {

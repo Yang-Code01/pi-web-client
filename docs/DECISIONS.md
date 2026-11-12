@@ -4139,3 +4139,23 @@ D
 **代价 / 可改：** 名字清单是手写的，将来再换名字要同步改 `isAskTool` 与单测 fixture，没有自动发现；文案仍是文本匹配，扩展改措辞会退回「未回答」—— 但单测会红，不再静默。历史 `question` 单题卡的头叫「提问」，多题叫「问卷 · N 题」，与 D47 一致。
 
 **验证：** `npm run test:ask-card`；`npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check`）；`node probes/round3-fold.mjs`（含新增的两条 ask 名断言）；同一份种子会话跑 `.scratch/ask-card-probe.mjs`，修前 `qaCards:1 / opsModules:1`，修后 `qaCards:2 / opsModules:0`，截图里两张卡都显示题干与「✓ 右边」。
+
+## D237 非 git 工作目录：chip 改成「目录与仓库」三栏窗（#392）
+
+**问题：** 左下角的路径 chip 只会复制路径，⎇ 分支 chip 只在 cwd 本身是仓库时出现。可实际项目常是伞形目录：`erp/api`、`erp/ui` 各自是仓库、彼此联动，cwd 却是 `erp`（不在任何仓库里），于是「看/切/合并子仓库的分支」在网页里没有入口，而把每个子仓库都开一个会话又割裂了上下文。
+
+**决定：**
+
+1. **点击按 cwd 分叉，chip 的显隐规则不动。** cwd 在仓库里时 chip 仍复制路径、⎇ 仍开老「分支操作工作台」；cwd 不在仓库里（`gitCwd !== cwd` 或 `git === null`）时点 chip 换成打开「目录与仓库」窗。判据在点击时现算，并在每次 `refreshGit()` 后刷新 title —— git 是异步到的，建节点时定死会让标题永远停在「浏览子仓库」。chip 仍然只在左栏收起时出现（可达性是既有问题，不在本 ticket 里改）。
+2. **三栏：目录树 224px + 仓库列 214px + 面板。** 标题栏是路径、当前仓库分支、dirty、复制路径、关闭；底部是提示与 Esc。目录树根 = cwd，带「↑ 上级」与路径输入（可越出子树）；只列目录，隐藏 `.` 开头与 `node_modules`，懒加载。仓库列随展开累积：卡片 = 仓库名 + dirty + 分支 + ↑ahead ↓behind + 最近提交，点卡片选中。面板首次选中仓库才懒建，把 `BranchSheet` 以 `embedded` 模式挂进去。
+3. **两列都可折叠成 26px 竖条**（竖排「目录」「仓库」+ 仓库数），列宽走容器 CSS 变量 `--rw-tree` / `--rw-rail`，窄屏（≤720px）目录树收成抽屉、仓库列隐藏；Esc 顺序 = 面板操作卡 → 抽屉 → 窗口。
+4. **批量探测只读接口。** 50 个子目录逐个 `api.git()` 会起 150+ 个 git 进程，新增 POST `/api/git/probe`：入参父目录 + 子目录名列表（上限 64，可 `fresh`），4 并发，且只保留 `rev-parse --show-toplevel` 等于该子目录本身的结果（父仓库里的普通目录回 null）；复用 `gitInfo` 的 5s TTL，异常一律 null 不 500。写操作完全沿用老工作台，不新增任何写能力。
+5. **右栏按「选中目录所在仓库」取数**：选 `api/src` 也显示 `api`，标题标明解析出的仓库根、深于根时标「选中：src」；切目录调 `BranchSheet.setDir()` 重置 base/diff/limit 并用 ticket 丢弃迟到响应；写成功后同时刷右栏与树上的标记。
+6. **记住位置**：按 cwd 持久化「选中目录 + 展开节点（≤40）+ 折叠状态」到 `localStorage.pi.reposSheet`（最多 12 个 cwd），`statPath` 校验失败静默回落；切会话关窗。
+7. **老工作台零外观变化**：`embedded` 只换外壳（无遮罩、无 ✕、无 Esc 绑定、标题隐藏），DOM 顺序与类名不变；历史 tab 的 `aside` 在嵌入时搬进头部「分支 · 本地 + 远程」浮层，两颗 CTA 原样保留。
+
+**为什么：** 伞形目录是真实工作方式，让人为了切分支去开八个会话等于把项目结构从界面里抹掉；把面板做成老工作台的嵌入模式而不是第二套实现，是因为 24 个动词、冲突/脏工作区保护、handoff 这些语义已经有一份，复制一份必然走偏。批量探测在桥端做，是因为「每目录一次 HTTP + 3 个 git 进程」在 50 个目录时肉眼可见地卡，而父目录一次往返能把整层标记一起拿回来。
+
+**代价 / 可改：** 仓库列卡片没有 ahead/behind 与最近提交（`GitInfo` 只有 repo/branch/dirty/empty/空/游离，加这两项会让每个子仓库多 3 个 git 进程）——首版按「仓库名 + 分支 + dirty」收敛，已在 issue 记录；探测上限 64，超出不探（界面给提示而不是分批续探）；不跟随文件系统变化（写操作后主动 fresh 重探已展开层）；不支持 submodule / worktree 内部的仓库；折叠状态是「按 cwd」而不是「按窗」，同时开多窗会互相覆盖。
+
+**验证：** `npm run typecheck`；`npm run test:githist`（含新增 `bridge/tests/git-probe-unit.mjs`：真 git 的子仓库/普通目录/空仓/游离 HEAD/非法名/截断/缓存+fresh）；`npm run test:repos:ui`（真 bridge + Playwright：伞形目录、隐藏目录、子仓库分支标记、内嵌工作台、浮层、折叠、Esc、重开回原位、窄屏抽屉、仓库会话仍复制）；`npm run test:githist:ui` 原样通过（老工作台外观回归）。原型三变体与选型记录在分支 `proto/repos-dialog`（`web/prototype/repos-dialog.html`）。
