@@ -57,6 +57,7 @@ export class History {
     } catch (err) {
       this.log(`history 目录建不出来：${(err as Error).message}`);
     }
+    this.migrateReadMarks();
   }
 
   private file(nodeId: string): string {
@@ -98,6 +99,25 @@ export class History {
       }
     }
     return out.slice(-limit);
+  }
+
+  /**
+   * 升级基线（决定：升级时全部标为已读）：没有 read.json 时，每个已有对话（有文字或文件历史的）
+   * 的已读位置记为它的最后一条，之后收到的才计未读。写出 {} 也算迁移过，之后不再运行。
+   */
+  private migrateReadMarks(): void {
+    if (fs.existsSync(statePath("read.json"))) return;
+    const marks: Record<string, string> = {};
+    for (const nodeId of this.peerIds()) {
+      const recent = this.read(nodeId, 2000);
+      const last = recent.at(-1);
+      if (last && recent.some((entry) => entry.kind === "text" || entry.kind === "file")) marks[nodeId] = last.id;
+    }
+    try {
+      writeJson(statePath("read.json"), marks);
+    } catch (err) {
+      this.log(`写已读位置失败（升级基线）：${(err as Error).message}`);
+    }
   }
 
   /** 已读位置：每个对话记「读到的最后一条」的 id，存本机 read.json（所有浏览器共用这一份）。 */

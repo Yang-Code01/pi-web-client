@@ -1,6 +1,8 @@
 /**
  * 会话列表的昵称回退（P3）：对方离线、最后一条是我发的时，名字要从通讯录取。
  *
+ * 升级基线：没有 read.json 时，启动就把已有对话全部标为已读；之后收到的新消息才计未读。
+ *
  * 以前 `History.threads()` 只看「在线表」和「最后一条的 from」——最后一条是我发的，
  * `from` 就是 null，于是昵称变成 nodeId 前 8 位，主机名和端口也丢了。
  *
@@ -37,6 +39,15 @@ const theirs = {
   kind: "text",
   text: "他先说的",
 };
+// 升级前就在的对方文件：第一次启动时也要标为已读。
+const theirsFile = {
+  id: "00000000-0000-4000-8000-000000000003",
+  at: at + 500,
+  from: { nodeId: PEER, nickname: "小王", hostname: "xiaowang-pc", port: 7865 },
+  to: { kind: "node", id: ME },
+  kind: "file",
+  file: { name: "旧文件.txt", size: 3, mime: "text/plain" },
+};
 // 最后一条是我发的：`from` 是我，所以 threads() 里那个「最后一条的 from」回退取不到名字。
 const mine = {
   id: "00000000-0000-4000-8000-000000000002",
@@ -46,7 +57,10 @@ const mine = {
   kind: "text",
   text: "我回的最后一句",
 };
-fs.writeFileSync(path.join(state, "history", `${PEER}.jsonl`), `${JSON.stringify(theirs)}\n${JSON.stringify(mine)}\n`);
+fs.writeFileSync(
+  path.join(state, "history", `${PEER}.jsonl`),
+  `${JSON.stringify(theirs)}\n${JSON.stringify(theirsFile)}\n${JSON.stringify(mine)}\n`,
+);
 // 通讯录里记着他：离线也要能用这个名字。
 fs.writeFileSync(
   path.join(state, "peers.json"),
@@ -90,7 +104,22 @@ try {
   if (t.online !== false) throw new Error("他离线，online 应为 false");
   if (t.count !== 2) throw new Error(`文字条数应为 2，实际 ${t.count}`);
   if (t.last?.text !== "我回的最后一句") throw new Error(`最后一条不对：${JSON.stringify(t.last)}`);
+  if (t.unread !== 0) throw new Error(`升级前已有的对话应全部标为已读，未读应为 0，实际 ${t.unread}`);
   log(`ok 会话名「${t.nickname}」（${t.hostname}:${t.port}），最后一条是我发的也不掉成 uuid`);
+
+  // 升级之后收到的对方新消息：只计这一条。
+  const later = {
+    id: "00000000-0000-4000-8000-000000000004",
+    at: at + 2000,
+    from: { nodeId: PEER, nickname: "小王", hostname: "xiaowang-pc", port: 7865 },
+    to: { kind: "node", id: ME },
+    kind: "text",
+    text: "升级后收到的",
+  };
+  fs.appendFileSync(path.join(state, "history", `${PEER}.jsonl`), `${JSON.stringify(later)}\n`);
+  const after = (await (await fetch(`http://127.0.0.1:${PORT}/threads`)).json()).threads[0];
+  if (after.unread !== 1) throw new Error(`升级后新收到的 1 条应计未读，实际 ${after.unread}`);
+  log("ok 升级前的对话全部已读，之后新来的消息计 1 条未读");
 } catch (err) {
   failed = err;
   console.error(`失败：${err?.message ?? err}`);
