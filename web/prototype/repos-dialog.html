@@ -84,7 +84,26 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 .btn.icon{width:26px;height:26px;justify-content:center;padding:0;font-size:13px}
 .sbody{flex:1;min-height:0;display:grid}
 .sbody.cols2{grid-template-columns:252px minmax(0,1fr)}
-.sbody.cols3{grid-template-columns:224px 214px minmax(0,1fr)}
+.sbody.cols3{grid-template-columns:var(--tw,224px) var(--rw,214px) minmax(0,1fr)}
+
+/* 折叠后的三种样子（C 变体） */
+.stripcol{display:flex;flex-direction:column;align-items:center;gap:8px;padding:8px 0;background:var(--sunken);border-right:1px solid var(--line);cursor:pointer;user-select:none}
+.stripcol:hover{background:var(--panel-2)}
+.stripcol .sic{color:var(--faint);font-size:10px}
+.stripcol .svl{writing-mode:vertical-rl;letter-spacing:.14em;font-size:11px;color:var(--dim)}
+.stripcol .sdot{font-size:9.5px;color:var(--faint);border:1px solid var(--line);border-radius:999px;padding:0 4px}
+.edge{display:flex;align-items:center;justify-content:center;background:var(--sunken);border-right:1px solid var(--line);cursor:pointer}
+.edge span{color:transparent;font-size:10px;transition:color .12s}
+.edge:hover{background:var(--panel-2)}
+.edge:hover span{color:var(--accent)}
+.iconcol{display:flex;flex-direction:column;background:var(--sunken);border-right:1px solid var(--line);overflow:hidden}
+.iche{height:26px;color:var(--faint);font-size:10px;display:grid;place-items:center}
+.iche:hover{background:var(--panel-2);color:var(--text)}
+.irows{overflow:hidden}
+.irow{position:relative;height:24px;display:grid;place-items:center;font-family:var(--mono);font-size:11px;color:var(--dim);cursor:pointer;overflow:hidden}
+.irow:hover{background:var(--panel-2);color:var(--text)}
+.irow.repo{color:var(--text)}
+.irow .d{position:absolute;right:3px;top:3px;width:4px;height:4px;border-radius:50%;background:var(--warn)}
 .sbody.rows2{grid-template-rows:auto minmax(0,1fr)}
 
 /* 目录树 */
@@ -215,6 +234,12 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 .vbar{display:flex;align-items:center;gap:4px;background:rgba(18,21,26,.96);border:1px solid var(--line-strong);border-radius:999px;padding:4px 6px;box-shadow:0 10px 30px rgba(0,0,0,.5);pointer-events:auto}
 .vbtn{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;color:var(--dim);font-size:14px}
 .vbtn:hover{background:var(--panel-3);color:var(--text)}
+.vsep{width:1px;height:16px;background:var(--line-strong);margin:0 2px}
+.vfold{display:inline-flex;gap:2px;padding-right:2px}
+.vfold[hidden],.vsep[hidden]{display:none}
+.vfold button{font-size:11px;color:var(--faint);border-radius:999px;padding:2px 7px}
+.vfold button:hover{color:var(--text);background:var(--panel-3)}
+.vfold button.on{color:var(--text);background:var(--panel-3);box-shadow:inset 0 0 0 1px var(--line-lit)}
 .vname{min-width:190px;text-align:center;font-size:12px;color:var(--text);padding:0 4px}
 .vmeta{font-size:10.5px;color:var(--faint);background:rgba(18,21,26,.9);border:1px solid var(--line);border-radius:999px;padding:1px 10px;max-width:min(90vw,880px);text-align:center;pointer-events:auto}
 .vstate{font-family:var(--mono);font-size:10px;color:var(--faint);background:rgba(10,14,19,.9);border:1px solid var(--line-soft);border-radius:8px;padding:2px 8px;max-width:min(90vw,880px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:auto}
@@ -226,7 +251,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 @media (max-width:1020px){
   .sheet{width:100%;height:100%}
   .sbody.cols2,.sbody.cols3{grid-template-columns:minmax(0,1fr)}
-  .tree,.rail{display:none}
+  .tree,.rail,.stripcol,.edge,.iconcol{display:none}
   .sheet.drawer .tree{display:flex;position:absolute;top:46px;bottom:0;left:0;width:290px;z-index:7;box-shadow:16px 0 40px rgba(0,0,0,.5)}
   .hgrid{grid-template-columns:minmax(0,1fr)}
   .ccol + .ccol{border-left:0;border-top:1px solid var(--line-soft);padding-left:0;padding-top:8px}
@@ -283,6 +308,12 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
     <button class="vbtn" data-act="prev" title="上一个变体（←）">‹</button>
     <span class="vname" id="vname"></span>
     <button class="vbtn" data-act="next" title="下一个变体（→）">›</button>
+    <span class="vsep" id="vsep"></span>
+    <span class="vfold" id="vfold">
+      <button data-act="fold" data-fold="strip" title="收起后留竖窄条">竖条</button>
+      <button data-act="fold" data-fold="handle" title="收起后只留边缘细把手">把手</button>
+      <button data-act="fold" data-fold="icon" title="收起后压成图标列">图标列</button>
+    </span>
   </div>
   <div class="vstate" id="vstate"></div>
 </div>
@@ -345,6 +376,8 @@ const S = {
   expanded: new Set([ROOT, "E:/yqm/erp/api"]),
   probed: new Set([ROOT, "E:/yqm/erp/api"]),
   loading: new Set(),
+  fold: "strip",                                  // C 的折叠样式：竖条 / 把手 / 图标列
+  collapsed: { tree: false, rail: false },        // 两列各自独立折叠
 };
 const VARIANTS = {
   A: ["A · IDE 双栏", "左列常驻目录树 + 右侧工作台（三列：当前 / 对照 / 分支栏）", "最像编辑器：树一直在，切目录成本最低；左列永久占 252px。"],
@@ -436,11 +469,13 @@ function treeRows() {
 }
 
 function treePane() {
+  if (S.collapsed.tree) return collapsedCol("tree");
   return `<div class="tree">
     <div class="tree-head">
       <button class="mini" data-act="up" title="上一级（可以越出 cwd 的子树）">↑ 上级</button>
       <span class="spacer"></span>
       <span class="faint small">目录</span>
+      <button class="mini" data-act="foldcol" data-col="tree" title="折叠目录列">«</button>
     </div>
     <div class="tree-scroll">${treeRows()}</div>
     <div class="tree-foot">隐藏 . 开头 与 node_modules · 展开一层批量探测</div>
@@ -547,6 +582,75 @@ function branchPop(repo) {
     </div>` : ""}</span>`;
 }
 
+function visibleRows() {
+  const out = [];
+  const walk = (dir, depth) => {
+    out.push({ dir, depth });
+    if (S.expanded.has(dir) && S.probed.has(dir)) children(dir).forEach((c) => walk(c, depth + 1));
+  };
+  walk(ROOT, 0);
+  return out;
+}
+
+function iconRows(col) {
+  if (col === "tree") {
+    return visibleRows().map(({ dir }) => {
+      const r = REPOS[dir];
+      const label = base(dir);
+      return `<div class="irow${r ? " repo" : ""}" data-act="sel" data-dir="${dir}" title="${label}${r ? " · ⎇ " + r.branch : ""}">${r ? "⎇" : label.slice(0, 1)}${r && r.dirty ? `<span class="d"></span>` : ""}</div>`;
+    }).join("");
+  }
+  return Object.keys(REPOS).map((r) => {
+    const i = REPOS[r];
+    return `<div class="irow repo" data-act="sel" data-dir="${r}" title="${rel(r, ROOT)} · ⎇ ${i.branch}${i.dirty ? " · ●" + i.dirty : ""}">${rel(r, ROOT).slice(0, 1)}${i.dirty ? `<span class="d"></span>` : ""}</div>`;
+  }).join("");
+}
+
+function collapsedCol(col) {
+  const label = col === "tree" ? "目录" : "仓库";
+  if (S.fold === "handle") {
+    return `<div class="edge" data-act="unfold" data-col="${col}" title="展开${label}"><span>›</span></div>`;
+  }
+  if (S.fold === "icon") {
+    return `<div class="iconcol">
+      <button class="iche" data-act="unfold" data-col="${col}" title="展开${label}">▸</button>
+      <div class="irows">${iconRows(col)}</div>
+    </div>`;
+  }
+  return `<div class="stripcol" data-act="unfold" data-col="${col}" title="展开${label}">
+    <span class="sic">▸</span>
+    <span class="svl">${label}</span>
+    ${col === "rail" ? `<span class="sdot">${Object.keys(REPOS).length}</span>` : ""}
+  </div>`;
+}
+
+function railPane() {
+  if (S.collapsed.rail) return collapsedCol("rail");
+  const repos = Object.keys(REPOS);
+  const cur = repoOf(S.dir);
+  return `<div class="rail">
+    <div class="rail-head">仓库 <span class="faint">${repos.length}</span><span class="spacer"></span>
+      <button class="mini" data-act="foldcol" data-col="rail" title="折叠仓库列">«</button>
+    </div>
+    <div class="rail-scroll">
+      ${repos.map((r) => {
+        const i = REPOS[r];
+        return `<div class="rcard${cur === r ? " on" : ""}" data-act="sel" data-dir="${r}" title="${r}">
+          <div class="top"><b>${rel(r, ROOT)}</b>${i.dirty ? `<span class="d" title="${i.dirty} 个改动"></span>` : ""}</div>
+          <div class="b">⎇ ${i.branch}${i.ahead ? ` ↑${i.ahead}` : ""}${i.behind ? ` ↓${i.behind}` : ""}</div>
+          <div class="m">${i.last}</div>
+        </div>`;
+      }).join("")}
+    </div>
+    <div class="rail-foot">只列判过是仓库的目录 · 由批量探测填充</div>
+  </div>`;
+}
+
+function colWidths() {
+  const collapsedW = S.fold === "strip" ? 26 : S.fold === "icon" ? 34 : 8;
+  return `--tw:${S.collapsed.tree ? collapsedW : 224}px;--rw:${S.collapsed.rail ? collapsedW : 214}px`;
+}
+
 function panel(opts) {
   const repo = repoOf(S.dir);
   if (!repo) return `<div class="panel">${emptyPane()}</div>`;
@@ -610,26 +714,11 @@ function variantB() {
   </div>`;
 }
 function variantC() {
-  const repos = Object.keys(REPOS);
-  const cur = repoOf(S.dir);
   return `<div class="sheet${S.drawer ? " drawer" : ""}" data-v="C">
     ${sheetHead()}
-    <div class="sbody cols3">
+    <div class="sbody cols3" style="${colWidths()}">
       ${treePane()}
-      <div class="rail">
-        <div class="rail-head">仓库 <span class="faint">${repos.length}</span> <span class="spacer"></span></div>
-        <div class="rail-scroll">
-          ${repos.map((r) => {
-            const i = REPOS[r];
-            return `<div class="rcard${cur === r ? " on" : ""}" data-act="sel" data-dir="${r}" title="${r}">
-              <div class="top"><b>${rel(r, ROOT)}</b>${i.dirty ? `<span class="d" title="${i.dirty} 个改动"></span>` : ""}</div>
-              <div class="b">⎇ ${i.branch}${i.ahead ? ` ↑${i.ahead}` : ""}${i.behind ? ` ↓${i.behind}` : ""}</div>
-              <div class="m">${i.last}</div>
-            </div>`;
-          }).join("")}
-        </div>
-        <div class="rail-foot">只列判过是仓库的目录 · 由批量探测填充</div>
-      </div>
+      ${railPane()}
       ${panel({ aside: false, popover: true })}
     </div>
   </div>`;
@@ -653,10 +742,14 @@ function render() {
   // 原型说明：这些模板全是本文件的字面量，没有任何外部输入；S.q 走属性赋值，不拼进 HTML。
   // pi-lens-ignore: no-inner-html-js
   stage.innerHTML = S.closed ? "" : `<div class="back" data-act="backdrop">${({ A: variantA, B: variantB, C: variantC })[v]()}</div>`;
+  const isC = v === "C";
+  document.getElementById("vsep").hidden = !isC;
+  document.getElementById("vfold").hidden = !isC;
+  document.querySelectorAll("#vfold button").forEach((b) => b.classList.toggle("on", b.dataset.fold === S.fold));
   document.getElementById("vname").textContent = VARIANTS[v][0];
   document.getElementById("vmeta").textContent = VARIANTS[v][2];
   document.getElementById("vstate").textContent =
-    `variant=${v} sel=${S.dir || "—"} repo=${repoOf(S.dir) || "—"} tab=${S.tab} exp=[${[...S.expanded].map((d) => rel(d, ROOT) || "root").join(",")}] closed=${S.closed}`;
+    `variant=${v} sel=${S.dir || "—"} repo=${repoOf(S.dir) || "—"} tab=${S.tab} exp=[${[...S.expanded].map((d) => rel(d, ROOT) || "root").join(",")}] closed=${S.closed} fold=${S.fold} collapsed=[${S.collapsed.tree ? "tree" : ""}${S.collapsed.rail ? ",rail" : ""}]`;
   if (S.overlay && S.variant === "B") {
     const q = document.getElementById("q");
     if (q) {
@@ -706,6 +799,14 @@ stage.addEventListener("click", (e) => {
   if (act === "backdrop") { if (e.target === t) { S.closed = true; render(); } return; }
   if (act === "tab") { S.tab = t.dataset.tab; S.pop = false; render(); return; }
   if (act === "pop") { S.pop = !S.pop; render(); return; }
+  if (act === "foldcol") { S.collapsed[t.dataset.col] = true; render(); return; }
+  if (act === "unfold") { S.collapsed[t.dataset.col] = false; render(); return; }
+  if (act === "fold") {
+    S.fold = t.dataset.fold;
+    S.collapsed = { tree: true, rail: true };   // 换样式时同时收起，好比较
+    render();
+    return;
+  }
   if (act === "drawer") { S.drawer = !S.drawer; render(); return; }
   if (act === "overlay") { S.overlay = true; S.q = ""; render(); return; }
   if (act === "overlay-close") { S.overlay = false; S.q = ""; render(); return; }
@@ -733,6 +834,11 @@ document.querySelector(".vswitch").addEventListener("click", (e) => {
   if (!t) return;
   if (t.dataset.act === "prev") setVariant(vKeys[(vKeys.indexOf(S.variant) + vKeys.length - 1) % vKeys.length]);
   if (t.dataset.act === "next") setVariant(vKeys[(vKeys.indexOf(S.variant) + 1) % vKeys.length]);
+  if (t.dataset.act === "fold") {
+    S.fold = t.dataset.fold;
+    S.collapsed = { tree: true, rail: true };
+    render();
+  }
 });
 
 document.addEventListener("keydown", (e) => {
@@ -750,8 +856,11 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "ArrowRight") { setVariant(vKeys[(vKeys.indexOf(S.variant) + 1) % vKeys.length]); }
 });
 
-const want = new URLSearchParams(location.search).get("variant");
+const qs = new URLSearchParams(location.search);
+const want = qs.get("variant");
 if (want && VARIANTS[want]) S.variant = want;
+const wantFold = qs.get("fold");
+if (["strip", "handle", "icon"].includes(wantFold)) { S.fold = wantFold; S.collapsed = { tree: true, rail: true }; }
 render();
 </script>
 </body>
