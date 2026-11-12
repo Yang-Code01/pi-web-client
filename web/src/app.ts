@@ -66,6 +66,7 @@ import {
   type MatrixRow,
   type SettingsJson,
 } from "./settings-matrix.ts";
+import { setFaviconDot } from "./favicon-dot.ts";
 import { paintSubagentsPage, type SubagentScan } from "./subagents.ts";
 import type { AcpDelegatePatch, AcpDelegateView } from "./subagents-acp.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
@@ -349,6 +350,8 @@ export class App {
   private bgTimer: number | null = null;
   /** #396：顶栏「内网通」上的未读圆点（有未读才画，不写数字）；`pollPeerUnread()` 每 5 秒写一次。 */
   private peerUnread = 0;
+  /** #397：免打扰开着时标签页不画红点（顶栏圆点照常）；`pollPeerUnread()` 与 `/api/peer` 一起读。 */
+  private peerDnd = false;
   /** 上一次点「继续」的会话与时刻（D159）：`pi.status` 回来之前按钮还亮着，连点会排两条。 */
   private continueAt: { id: string; at: number } = { id: "", at: 0 };
   /** Skill palette state (the popover above the composer). */
@@ -4376,13 +4379,16 @@ export class App {
   private startPeerUnread(): void {
     void this.pollPeerUnread();
     window.setInterval(() => void this.pollPeerUnread(), 5000);
+    document.addEventListener("visibilitychange", () => this.paintPeerFavicon());
   }
 
   private async pollPeerUnread(): Promise<void> {
     let total = 0;
+    let dnd = false;
     try {
       const view = await fetch("/api/peer", { credentials: "same-origin" }).then((r) => (r.ok ? r.json() : null));
       if (view?.running) {
+        dnd = view.status?.config?.dnd === true;
         const res = await fetch("/api/peer/unread", { credentials: "same-origin" });
         if (res.ok) total = Number((await res.json()).total) || 0;
       }
@@ -4390,7 +4396,14 @@ export class App {
       total = 0;
     }
     this.peerUnread = total;
+    this.peerDnd = dnd;
     this.paintPeerDot();
+    this.paintPeerFavicon();
+  }
+
+  /** #397：页面不在前台、有未读、免打扰没开：网页图标画红点；其余时候是原图标。标题不动。 */
+  private paintPeerFavicon(): void {
+    setFaviconDot(document.hidden && this.peerUnread > 0 && !this.peerDnd);
   }
 
   /** 圆点挂在按钮末尾。`setWideLabel()` 会整个换掉按钮的子节点，所以 `paintChrome()` 在它之后也要调一次。 */
