@@ -1,7 +1,7 @@
 /**
  * #397 网页图标红点探针：页面不在前台（document.hidden）且有未读、免打扰没开时，标签页的 <link rel=icon>
  * 换成「原图标 + 右上角红点」的画布图；切回前台立即还原原 href；标题文字不随未读变化。
- * 主界面（/）与独立内网通页面（/peer）各测一遍；免打扰开启时红点不出现，顶栏圆点与列表数字照常。
+ * 主界面（/）测红点、切回恢复、免打扰；独立内网通页面（/peer）不换标签图标、不画标签红点（用户决定），只看组件上的圆点与列表数字。
  *
  * 真 bridge（PI_PEER=0，不拉起 peer 子进程），页面里 page.route 假造 /api/peer、/api/peer/unread、
  * /api/peer/threads 等。「离开页面」用 init script 覆盖 document.hidden / visibilityState，再派发 visibilitychange。
@@ -186,35 +186,16 @@ try {
   page.on("pageerror", (e) => pageErrors.push(`内网通页面: ${e.message}`));
   await page.addInitScript(hiddenInit(true));
   await page.goto(`${BASE}/peer`, { waitUntil: "domcontentloaded" });
-  const peerBase = await page.getAttribute('link[rel~="icon"]', "href", { timeout: 5000 }).catch(() => null);
-  check("内网通页面有网页图标可替换", !!peerBase);
-  await until(async () => (await iconState(page)).red, 9000, "内网通页面后台红点");
-  check("后台有未读时内网通页面网页图标出现红点", true);
+  // 独立页不换标签图标（用户决定）：没有 <link rel=icon>，后台有未读也不画标签红点；未读只看组件上的圆点。
+  await until(async () => (await page.locator("#rail .dot.unread, #mobnav .dot.unread").count()) >= 1, 9000, "内网通页面消息圆点");
+  const peerIconLinks = await page.locator('link[rel~="icon"]').count();
+  check("独立内网通页面没有标签图标", peerIconLinks === 0, `link=${peerIconLinks}`);
+  const peerIcon = await iconState(page);
+  check("后台有未读时独立内网通页面不画标签红点", !peerIcon.red, `href=「${peerIcon.href}」`);
   check("内网通页面标题文字不随未读变化", (await page.title()) === "内网通 · pi", `标题=「${await page.title()}」`);
 
-  await setHidden(page, false);
-  await until(async () => !(await iconState(page)).red && (await iconState(page)).href === peerBase, 2000, "内网通页面恢复");
-  check("切回前台后内网通页面恢复原图标", (await page.getAttribute('link[rel~="icon"]', "href")) === peerBase);
-
-  // 切回前台时页面会把打开的对话标记已读（mock 的 /api/peer/read 把 unread 清零），这里重新造一条未读。
-  peer.unread = 2;
-  await setHidden(page, true);
-  await until(async () => (await iconState(page)).red, 9000, "内网通页面后台红点（再次）");
-  peer.unread = 0;
-  await until(async () => !(await iconState(page)).red, 9000, "内网通页面读完后红点消失");
-  check("后台读完后内网通页面红点消失", true);
-
-  peer.unread = 2;
-  await until(async () => (await iconState(page)).red, 9000, "内网通页面新未读红点");
-  peer.dnd = true;
-  await until(async () => !(await iconState(page)).red, 9000, "内网通页面免打扰下红点消失");
-  check("免打扰开启时内网通页面不出现红点", true);
-  const railDots = await page.locator("#rail .dot.unread, #mobnav .dot.unread").count();
   const pill = await page.locator(".pill.unread").first().textContent().catch(() => "");
-  check("免打扰开启时内网通页面「消息」圆点与列表数字照常", railDots >= 1 && pill.trim() === "2", `导航圆点=${railDots}，列表数字=「${pill.trim()}」`);
-  peer.dnd = false;
-  await until(async () => (await iconState(page)).red, 9000, "内网通页面关免打扰后红点回来");
-  check("关免打扰后内网通页面红点回来", true);
+  check("未读时内网通页面列表数字照常", pill.trim() === "2", `列表数字=「${pill.trim()}」`);
 
   check("两个页面都没有运行时错误", pageErrors.length === 0, pageErrors.join(" | "));
 

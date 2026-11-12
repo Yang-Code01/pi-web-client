@@ -1,5 +1,4 @@
 import { applyLang, bootLang, fmtDate, fmtNum, fmtRelative, fmtTime, tr } from "../i18n/index.ts";
-import { setFaviconDot } from "../favicon-dot.ts";
 
 /**
  * `peer.html` 的脚本：只跟 bridge 说话（cookie + `/api/peer*`），从不直接连 7865。
@@ -502,7 +501,7 @@ function renderAll(): void {
 
 /**
  * 「消息」导航（rail 与底部导航各一颗）上的未读圆点（#396）：全部对话里有未读就画一颗，只画点不写数。
- * 数据来自 `loadThreads()` 的 unread，所以轮询与标记已读之后都要再调一次。网页图标的红点（#397）也在这里同步。
+ * 数据来自 `loadThreads()` 的 unread，所以轮询与标记已读之后都要再调一次。
  */
 function paintMsgDots(): void {
   const hasUnread = S.threads.some((t) => t.unread > 0);
@@ -510,13 +509,6 @@ function paintMsgDots(): void {
     btn.querySelector(":scope > .dot.unread")?.remove();
     if (hasUnread) btn.append(h("span", "dot unread"));
   }
-  paintPeerFavicon();
-}
-
-/** #397：页面不在前台、有未读、免打扰没开：标签页网页图标画红点，否则是原图标。标题不动。 */
-function paintPeerFavicon(): void {
-  const hasUnread = S.threads.some((t) => t.unread > 0);
-  setFaviconDot(document.hidden && hasUnread && S.view?.status?.config.dnd !== true);
 }
 
 function renderBar(): void {
@@ -1769,7 +1761,6 @@ async function boot(): Promise<void> {
   markReadIfViewing();
   if (S.thread) void loadMessages().then(() => renderMain());
   document.addEventListener("visibilitychange", markReadIfViewing);
-  document.addEventListener("visibilitychange", paintPeerFavicon);
 }
 
 void boot();
@@ -1778,7 +1769,6 @@ window.setInterval(() => {
   void loadStatus().then(() => {
     renderBar();
     renderHint();
-    paintPeerFavicon();
   });
 }, 5000);
 
