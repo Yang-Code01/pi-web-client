@@ -102,6 +102,11 @@ export interface SessionHistory {
   hasMore: boolean;
   total: number;
   /**
+   * 会话文件太大，`items` 不是从头开始的（桥上 `loadEntries()` 丢了前面的条目）。
+   * 老桥没这个字段 —— 当作没丢。
+   */
+  truncated?: boolean;
+  /**
    * #243: 整段会话的轮次索引（不只这一页）。`text` 已在桥上折成一行并截短。
    * 老桥没有这个字段 —— 那就只画已载入的轮次，一个 ghost 都不出现。
    */

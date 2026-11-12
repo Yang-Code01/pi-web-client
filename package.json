@@ -75,6 +75,7 @@
     "probe:preview": "node probes/preview-open.mjs",
     "probe:extstore": "node probes/ext-store-paint.mjs",
     "test:history": "node --experimental-strip-types bridge/tests/history-page-unit.mjs",
+    "test:head": "node --experimental-strip-types bridge/tests/session-head-unit.mjs",
     "test:paging": "node bridge/tests/paging-scope.mjs",
     "test:paging:ui": "node bridge/tests/paging-local-ui.mjs",
     "test:history:ui": "node bridge/tests/history-paths-ui.mjs",

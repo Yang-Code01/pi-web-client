@@ -461,6 +461,7 @@ export const en: Dict = {
   "回到底部": "Back to bottom",
   "载入更早": "Load earlier",
   "载入中…": "Loading…",
+  "会话文件太大，只载入了最后一段": "This session file is very large, so only the last part is loaded",
   "回到表单": "Back to the form",
   "在当前目录下新建一个文件夹": "New folder in this directory",
   "在当前目录下新建文件夹": "Create a folder in the current directory",

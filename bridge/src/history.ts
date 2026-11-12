@@ -20,6 +20,12 @@ export interface SessionHistory {
   hasMore: boolean;
   total: number;
   /**
+   * 会话文件大到 `loadEntries()` 丢了前面的条目 —— `items` 不是从第一句话开始的。
+   * 界面据此在最上面说一句「只载入了最后一段」，免得看起来像「开头的话被删了」。
+   * 可选：「新前端连老桥」时没有这个字段。
+   */
+  truncated?: boolean;
+  /**
    * 整段会话的轮次索引（#242），不只是这一页的。声明成可选是为了「新前端连老桥」：
    * 老桥没有这个字段；桥上永远填，没有轮次就是 `[]`。
    */
@@ -82,10 +88,12 @@ export function tailPage(items: Item[], limit = HISTORY_PAGE_SIZE): HistoryPage 
  * 整页帧的正文。普通会话是末尾一页；`full` 是随手问 —— 它没有「载入更早」的入口
  * （spec #218 Out of Scope），超过一页也只能整段下发，否则前面的话会静默消失。
  */
-export function itemsFrame(items: Item[], opts: { full?: boolean } = {}): HistoryFrame {
-  if (opts.full) return { items, history: { hasMore: false, total: items.length, turns: turnIndex(items) } };
+export function itemsFrame(items: Item[], opts: { full?: boolean; truncated?: boolean } = {}): HistoryFrame {
+  // 只在真丢了头部时才有这个字段：常见情形下帧的字节与以前一字节不差（UI 用例、快照都靠这个）。
+  const cut = opts.truncated ? { truncated: true as const } : {};
+  if (opts.full) return { items, history: { hasMore: false, total: items.length, ...cut, turns: turnIndex(items) } };
   const page = tailPage(items);
-  return { items: page.items, history: { hasMore: page.hasMore, total: page.total, turns: page.turns } };
+  return { items: page.items, history: { hasMore: page.hasMore, total: page.total, ...cut, turns: page.turns } };
 }
 
 /**
