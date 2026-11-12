@@ -480,6 +480,7 @@ function markReadIfViewing(): void {
   if (t && t.unread > 0) {
     t.unread = 0;
     renderList();
+    paintMsgDots();
   }
   // 失败就算了：下一轮轮询会把数字再画出来，用户能看到没清掉。
   void postJson("/api/peer/read", { peer: S.thread }).catch(() => {});
@@ -492,6 +493,19 @@ function renderAll(): void {
   renderList();
   renderMain();
   renderMobnav();
+  paintMsgDots();
+}
+
+/**
+ * 「消息」导航（rail 与底部导航各一颗）上的未读圆点（#396）：全部对话里有未读就画一颗，只画点不写数。
+ * 数据来自 `loadThreads()` 的 unread，所以轮询与标记已读之后都要再调一次。
+ */
+function paintMsgDots(): void {
+  const hasUnread = S.threads.some((t) => t.unread > 0);
+  for (const btn of document.querySelectorAll<HTMLElement>('#rail button[data-page="msg"], #mobnav button[data-page="msg"]')) {
+    btn.querySelector(":scope > .dot.unread")?.remove();
+    if (hasUnread) btn.append(h("span", "dot unread"));
+  }
 }
 
 function renderBar(): void {
@@ -562,6 +576,7 @@ function renderRail(): void {
   for (const p of PAGES) {
     const b = h("button", S.page === p.id ? "on" : "");
     b.type = "button";
+    b.dataset.page = p.id;
     b.title = tr(p.label);
     b.setAttribute("aria-label", tr(p.label));
     b.style.setProperty("--c", p.color);
@@ -576,6 +591,7 @@ function renderMobnav(): void {
   for (const p of PAGES) {
     const b = h("button", S.page === p.id ? "on" : "");
     b.type = "button";
+    b.dataset.page = p.id;
     b.style.setProperty("--c", p.color);
     b.append(ic(p.icon), h("span", "", tr(p.label)));
     b.addEventListener("click", () => go(p.id));
@@ -1755,6 +1771,7 @@ window.setInterval(() => {
 
 window.setInterval(() => {
   void loadThreads().then(() => {
+    paintMsgDots();
     if (S.page === "msg") renderList();
   });
 }, 4000);

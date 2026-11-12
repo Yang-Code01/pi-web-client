@@ -181,6 +181,8 @@ a { color: var(--accent); text-decoration: none; }
 .dot.live { background: var(--ok); }
 .dot.busy { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
 .dot.bad { background: var(--danger); }
+/* #396：顶栏「内网通」有未读时按钮末尾的一颗点（复用 .dot，只定颜色）。 */
+.dot.unread { background: var(--accent); }
 /* 有会话时状态点已经在「当前在哪」那颗 chip 里（它自带同一套优先级的 live 点），
    顶栏再挂一颗就是两个并排的圆点，说同一件事。没有会话时这颗照旧。 */
 .topbar:has(.now-chip:not([hidden])) > .dot { display: none; }

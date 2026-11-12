@@ -100,6 +100,8 @@ body.embedded .brand .nm { display: none; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
 .dot.up { background: var(--ok); box-shadow: 0 0 0 3px rgb(74 222 128 / 12%); }
 .dot.down { background: var(--danger); box-shadow: 0 0 0 3px rgb(251 113 133 / 12%); }
+/* #396：「消息」导航右上角的未读圆点（复用 .dot，只定颜色与位置；rail 按钮本身已是 relative）。 */
+.dot.unread { position: absolute; top: 7px; right: 9px; background: var(--accent); }
 
 /* 顶部提示条（peer 没跑 / 隐身 / 免打扰） */
 .hint {
@@ -660,6 +662,7 @@ body.embedded .brand .nm { display: none; }
   }
   .mobnav button {
     --c: var(--accent);
+    position: relative;
     flex: 1;
     display: grid;
     place-items: center;
