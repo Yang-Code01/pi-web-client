@@ -761,16 +761,15 @@ export interface SessionSnapshot {
   plan: PlanSnapshot | null;
 }
 
-/** #384：context-log 扩展落盘的一行（见 bridge/ext/context-log.ts）。 */
+/** #384：context-log 扩展落盘的一行（见 bridge/ext/context-log.ts）。三类行共用一个 seq：
+ *  request（六类组成估算）/ event（压缩、换模型）/ activity（文件、命令）。这里只负责搬运，
+ *  字段按 kind 取用，向前兼容 PR #386 初版只有 cats 的旧行。 */
 export interface CtxLine {
-  v: number;
   seq: number;
-  ts: number;
-  cwd: string | null;
-  total: number;
-  cats: { sys: number; tools: number; user: number; inject: number; asst: number; toolr: number };
-  messages: number;
-  perMessage: Array<{ role: string; tokens: number; blocks: number; toolCalls: number }>;
+  ts?: number;
+  v?: number;
+  kind?: string;
+  [key: string]: any;
 }
 
 export class Session extends EventEmitter {
@@ -1306,7 +1305,10 @@ export class Session extends EventEmitter {
       if (!s) continue;
       try {
         const obj = JSON.parse(s);
-        if (obj && typeof obj === "object" && typeof obj.seq === "number" && obj.cats) out.push(obj);
+        if (obj && typeof obj === "object" && typeof obj.seq === "number" && (typeof obj.kind === "string" || obj.cats)) {
+          if (!obj.kind && obj.cats) obj.kind = "request"; // PR #386 初版的日志没有 kind
+          out.push(obj);
+        }
       } catch {
         /* 半行（正在写）下次再收 */
       }

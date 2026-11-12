@@ -34,7 +34,7 @@ import { ScratchChat } from "./scratch.ts";
 import { appendModelOptions, groupModels, modelGroupSection } from "./modelgroups.ts";
 import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
-import { ctxCompRows, ctxEvents, ctxFmt, ctxKpis, ctxTotal, isCompactionDrop, type CtxLine } from "./context.ts";
+import { ctxCommandRows, ctxCompactAfterSeq, ctxCompRows, ctxEvents, ctxFileRows, ctxFmt, ctxKpis, ctxRequests, ctxTotal, type CtxLine } from "./context.ts";
 import { Socket } from "./ws.ts";
 import { execView, type ExecChildRunInput, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
@@ -1920,6 +1920,7 @@ export class App {
         if (msg.sessionId !== this.currentId) break;
         this.budget = typeof msg.budget === "number" ? msg.budget : null;
         this.fillModelChip();
+        this.paintContextIfOpen();
         break;
       case "tool":
         if (msg.sessionId !== this.currentId) break;
@@ -4953,7 +4954,7 @@ export class App {
     return btn;
   }
 
-  /** 面板（sheet，同技能商店形态）：KPI 行 + 组成明细（选中轮）+ 趋势 + 事件。 */
+  /** 面板（sheet，同技能商店形态）：KPI + 组成 / 事件 / 趋势 / 文件 / 命令 / provider 计量。 */
   private openContextSheet(): void {
     this.closeSheet();
     this.sheetKind = "context";
@@ -4986,16 +4987,20 @@ export class App {
   }
 
   private paintContextSheet(host: HTMLElement): void {
-    const lines = this.currentId ? (this.ctxLogs.get(this.currentId) ?? []) : [];
+    // ctxlog 有三类行（request / event / activity）：KPI、组成、趋势只吃 request。
+    const all = this.currentId ? (this.ctxLogs.get(this.currentId) ?? []) : [];
+    const lines = ctxRequests(all);
     const win = this.usage.contextWindow;
-    const kpis = ctxKpis(lines, win, this.usage.contextTokens);
+    const kpis = ctxKpis(lines, win, this.usage.contextTokens, this.budget);
     host.replaceChildren();
 
     if (!this.session?.owned) {
       host.append(el("div", "empty", tr("接管会话后可见（组成数据来自正在运行的 pi）")));
       return;
     }
-    if (!lines.length) {
+    // 只有 event / activity、还没有 request 时也要画卡片：扩展可能已经记了换模型、
+    // 压缩或文件操作，整块提前 return 会把这些数据藏起来。
+    if (!all.length) {
       host.append(el("div", "empty", tr("还没有组成数据：发一条消息，下一轮就有（估算，供参考）")));
       return;
     }
@@ -5022,7 +5027,7 @@ export class App {
         this.ctxPick = null;
         this.paintContextIfOpen();
       }),
-      kpi(tr("本会话峰值"), ctxFmt(kpis.peak), tr("请求 #{p1}（估算）", { p1: String(kpis.peakSeq) }), () => {
+      kpi(tr("本会话峰值"), ctxFmt(kpis.peak), kpis.requests ? tr("请求 #{p1}（估算）", { p1: String(kpis.peakSeq) }) : "–", () => {
         const idx = lines.findIndex((l) => l.seq === kpis.peakSeq);
         if (idx >= 0) {
           this.ctxPick = idx;
@@ -5030,7 +5035,11 @@ export class App {
         }
       }),
       kpi(tr("LLM 请求"), String(kpis.requests), tr("均值 {p1} / 次（估算）", { p1: ctxFmt(kpis.avg) })),
-      kpi(tr("距自动压缩"), kpis.tillCompact == null ? "–" : "~" + ctxFmt(kpis.tillCompact), tr("阈值 ≈ 窗口的 92%")),
+      kpi(
+        tr("距自动压缩"),
+        kpis.tillCompact == null ? "–" : "~" + ctxFmt(kpis.tillCompact),
+        kpis.budget ? tr("上下文预算 {p1}：超了就自动压缩", { p1: ctxFmt(kpis.budget) }) : tr("未设预算"),
+      ),
     );
     host.append(krow);
 
@@ -5063,6 +5072,7 @@ export class App {
       r.append(label, bar, cv);
       cl.append(r);
     }
+    if (!picked) cl.append(el("div", "ctx-ev-empty", tr("还没有组成数据：发一条消息，下一轮就有（估算，供参考）")));
     comp.append(cl);
     // 对照窗口的总量条：选中轮在窗口里占的位置
     if (kpis.window) {
@@ -5071,24 +5081,30 @@ export class App {
       track.append(el("span", "ctx-window-fill", `${((t / kpis.window) * 100).toFixed(1)}%`));
       comp.append(track);
     }
+    comp.append(el("div", "ctx-note", tr("组成是本地估算（CJK÷1.5 / 其他÷4），不等于 provider 计费 token")));
     grid.append(comp);
 
-    // ---- 右上：事件（压缩标记）
+    // ---- 右上：事件（扩展写的显式压缩 / 换模型事件，不再从总量骤降猜）
     const ev = el("div", "cardbox ctx-ev");
-    const events = ctxEvents(lines);
+    const events = ctxEvents(all);
     const evTitle = el("div", "ctx-ct");
     evTitle.append(el("span", "", tr("事件")), el("span", "sub", tr("{p1} 条", { p1: String(events.length) })));
     ev.append(evTitle);
     const evList = el("div", "ctx-inner");
     if (!events.length) {
-      evList.append(el("div", "ctx-ev-empty", tr("还没有压缩事件")));
+      evList.append(el("div", "ctx-ev-empty", tr("还没有事件")));
     } else {
+      const icon = { compact: "✂", compact_failed: "⚠", model: "⇄" } as const;
       for (const e of events) {
-        const evRow = el("div", "ctx-ev-row");
+        const evRow = el("div", "ctx-ev-row" + (e.kind === "compact_failed" ? " failed" : ""));
+        const name = e.kind === "compact" ? tr("压缩上下文") : e.kind === "compact_failed" ? tr("压缩失败") : tr("切换模型");
+        const detail = e.kind === "model"
+          ? `${e.previous || "–"} → ${e.model || "–"}`
+          : [e.before == null ? "" : `${ctxFmt(e.before)} token`, e.reason].filter(Boolean).join(" · ");
         evRow.append(
-          el("span", "sc", "✂"),
-          el("span", "", tr("请求 #{p1}", { p1: String(e.seq) })),
-          el("span", "sub", `${ctxFmt(e.before)} → ${ctxFmt(e.after)}`),
+          el("span", "sc", icon[e.kind]),
+          el("span", "name", name),
+          el("span", "sub", detail),
           el("span", "sub", new Date(e.ts).toLocaleTimeString()),
         );
         evList.append(evRow);
@@ -5104,11 +5120,11 @@ export class App {
     trc.append(trTitle);
     const chart = el("div", "ctx-chart");
     const maxT = Math.max(...lines.map(ctxTotal), 1);
+    const scissors = ctxCompactAfterSeq(all);
     lines.forEach((line, i) => {
-      const prev = lines[i - 1];
       const col = el("button", "ctx-tcol" + (i === pick ? " picked" : ""));
       col.type = "button";
-      col.title = [tr("请求 #{p1}", { p1: String(line.seq) }), ctxFmt(ctxTotal(line)), isCompactionDrop(prev, line) ? tr("此轮前压缩") : ""].filter(Boolean).join(" · ");
+      col.title = [tr("请求 #{p1}", { p1: String(line.seq) }), ctxFmt(ctxTotal(line)), scissors.has(line.seq) ? tr("此轮前压缩") : ""].filter(Boolean).join(" · ");
       const stack = el("span", "ctx-tstack");
       stack.style.height = `${(ctxTotal(line) / maxT) * 100}%`;
       for (const c of ["sys", "tools", "user", "inject", "asst", "toolr"] as const) {
@@ -5117,15 +5133,83 @@ export class App {
         stack.append(seg);
       }
       col.append(stack);
-      if (isCompactionDrop(prev, line)) col.append(el("span", "ctx-sc", "✂"));
+      if (scissors.has(line.seq)) col.append(el("span", "ctx-sc", "✂"));
       col.onclick = () => {
         this.ctxPick = i;
         this.paintContextIfOpen();
       };
       chart.append(col);
     });
-    trc.append(chart);
+    if (lines.length) trc.append(chart);
+    else trc.append(el("div", "ctx-ev-empty", tr("还没有组成数据：发一条消息，下一轮就有（估算，供参考）")));
     grid.append(trc);
+
+    // ---- 文件活动（按路径聚合；扩展只落元数据，没有文件内容）
+    const files = ctxFileRows(all);
+    const fc = el("div", "cardbox ctx-files");
+    const fTitle = el("div", "ctx-ct");
+    fTitle.append(el("span", "", tr("文件活动")), el("span", "sub", tr("读 / 写 / 检索 · +新增 / −删除")));
+    fc.append(fTitle);
+    const fList = el("div", "ctx-inner");
+    if (!files.length) {
+      fList.append(el("div", "ctx-ev-empty", tr("还没有活动记录")));
+    } else {
+      for (const r of files.slice(0, 40)) {
+        const row = el("div", "ctx-ev-row" + (r.failed ? " failed" : ""));
+        const path = el("span", "name", r.path);
+        path.title = r.path;
+        row.append(
+          el("span", "sc", r.writes ? "✎" : "·"),
+          path,
+          el("span", "sub", `${r.reads}/${r.writes}/${r.searches} · +${r.added} −${r.removed}${r.failed ? ` · !${r.failed}` : ""}`),
+        );
+        fList.append(row);
+      }
+    }
+    fc.append(fList);
+    grid.append(fc);
+
+    // ---- 命令执行（按程序名聚合；扩展不落命令行正文）
+    const cmds = ctxCommandRows(all);
+    const cc = el("div", "cardbox ctx-cmds");
+    const cTitle = el("div", "ctx-ct");
+    cTitle.append(el("span", "", tr("命令执行")), el("span", "sub", String(cmds.length)));
+    cc.append(cTitle);
+    const cList = el("div", "ctx-inner");
+    if (!cmds.length) {
+      cList.append(el("div", "ctx-ev-empty", tr("还没有活动记录")));
+    } else {
+      for (const r of cmds.slice(0, 40)) {
+        const row = el("div", "ctx-ev-row" + (r.failed ? " failed" : ""));
+        row.append(
+          el("span", "sc", "›"),
+          el("span", "name", r.program),
+          el("span", "sub", `${r.runs} × · !${r.failed} · ${r.avgMs == null ? "–" : `${r.avgMs} ms`}`),
+        );
+        cList.append(row);
+      }
+    }
+    cc.append(cList);
+    grid.append(cc);
+
+    // ---- provider 计量：与六类估算并列，口径不同，不混算
+    const pc = el("div", "cardbox ctx-provider");
+    pc.append(el("div", "ctx-ct", tr("Provider 计量（实测）")));
+    const st = this.stats.tokens;
+    const pList = el("div", "ctx-stat");
+    const put = (k: string, v: string) => pList.append(el("span", "k", k), el("span", "v", v));
+    put(tr("累计 token"), st?.total == null ? "–" : ctxFmt(st.total));
+    put(tr("累计费用"), this.stats.cost == null ? "–" : `$${this.stats.cost.toFixed(4)}`);
+    put(tr("当前上下文（实测）"), this.usage.contextTokens == null ? tr("–（压缩后要等下一轮才有数）") : ctxFmt(this.usage.contextTokens));
+    put("window", win == null ? "–" : ctxFmt(win));
+    pc.append(
+      pList,
+      el("div", "ctx-note", tr("输入 {p1} · 输出 {p2} · 缓存读 {p3} · 缓存写 {p4}", {
+        p1: ctxFmt(st?.input ?? 0), p2: ctxFmt(st?.output ?? 0), p3: ctxFmt(st?.cacheRead ?? 0), p4: ctxFmt(st?.cacheWrite ?? 0),
+      })),
+      el("div", "ctx-note", tr("pi 按模型价格表算的估计值（get_session_stats）")),
+    );
+    grid.append(pc);
 
     host.append(grid);
   }
