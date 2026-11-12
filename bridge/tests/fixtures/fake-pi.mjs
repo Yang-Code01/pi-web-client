@@ -731,7 +731,19 @@ async function handle(cmd) {
       return ok(id, type, sessionStats);
     case "get_available_models": {
       const LEVEL_MAP = { off: "off", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
-      return ok(id, type, { models: FAKE_MODELS.map((m) => ({ ...m, reasoning: true, thinkingLevelMap: LEVEL_MAP, input: ["text"], contextWindow: 200000 })) });
+      // #402：默认两个模型都只收文字（models-unit 钉着 supportsImages === false、模型数 2）。
+      // 要验「能看图 / 看不了图」两种模型并存的用例把 FAKE_PI_VISION 设成 1：
+      // 第一个模型收图，第二个仍然只收文字 —— 同一个进程里就能两边都试。
+      const vision = process.env.FAKE_PI_VISION === "1";
+      return ok(id, type, {
+        models: FAKE_MODELS.map((m, i) => ({
+          ...m,
+          reasoning: true,
+          thinkingLevelMap: LEVEL_MAP,
+          input: vision && i === 0 ? ["text", "image"] : ["text"],
+          contextWindow: 200000,
+        })),
+      });
     }
     case "get_commands":
       return ok(id, type, { commands: [] });
