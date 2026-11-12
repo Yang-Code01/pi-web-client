@@ -4176,3 +4176,23 @@ D
 **代价 / 可改：** 打开大会话要整段读一遍（70 MB ≈ 200 ms，以前读 16 MB 尾巴）；`loadEntries()` 现在会持有一段整文件的字符串，峰值随文件涨到 256 MB 上限；抹掉的是内存里的副本，文件本身一个字节不动（归属规则：pi 拥有会话文件）。没有做的：`loadEntryImage()` 每次仍扫全文件取像素（未改）；分页 API 依然只切内存里的 items，所以「丢过头」的文件翻不回更早的（只是现在会说明原因）。
 
 **验证：** 新增 `bridge/tests/session-head-unit.mjs`（26 张 800 KB 截图 + 开头一条用户消息：不截断、首条仍是用户消息、`data` 已抹空、`mimeType` 还在、`loadEntryImage` 仍取得到像素；正文超预算时从头部丢且条目连续；`itemsFrame` 只在截断时带字段）；`npm run typecheck`（bridge / peer / web + `i18n-check`）；`npm run test:history`、`npm run test:image`、`npm run test:tail` 原样通过；对真实会话跑 `loadEntries()` + `entriesToItems()`：`truncated:false`、529 条、`items[0].kind === "user"`（修前 `users: 0`）。
+
+## D239 随手问也能贴图：图和文字走同一条管线，回显改成按 `clientId` 配
+
+**问题：** 随手问（`.scratch-*` 那套只读工具的轻量会话）只有一个纯文字 textarea。贴图时粘贴落在主输入框的 window 级处理器上，图会跑进主聊天；就算把它接进随手问，回显也配不上——会话里用「文字逐字相等」认领自己刚发的那条，而纯图片消息的 `text` 是空串。
+
+**决定：**
+
+1. 抽出 `web/src/images.ts`（`PendingImage`、`pastedFilesFrom`、`splitImages`、`ATTACH_IMAGE`、`rasterizeSvg`、`downscale`、`readImageFile`、`imagesFromFiles`），主输入框与随手问共用一份；压缩参数不分叉（长边 2048、JPEG 0.86）。
+2. 三个入口都收：textarea 上的 paste（焦点落进来才归随手问，页面别处仍归主输入框）、dialog 上的 drop（`stopPropagation` 挡掉 window 上的主输入框处理器）、📎 文件选择。
+3. 待发图是输入框上方一条缩略图横条（每张带 ×），不是模态预览；发送那一刻清空。
+4. 允许纯图片消息；非图片文件拒收并明说，不把文件名塞进消息。
+5. 只有模型明确 `supportsImages === false` 才拦（置灰发送 + 一行说明 + 模型 chip 警示色），`undefined` 视为未知不拦；不自动换模型。
+6. 回显配对从文字相等改成桥回带的 `clientId`（`item.add` 本来就带它，见 `bridge/src/sessions.ts`）。
+7. 图的开销跟文字一致：清空一起清、关窗与暂停保留、桥重启/404 之后跟着那句话自动重发。
+
+**为什么：** 图的处理（粘贴取文件、SVG 光栅化、降采样、编码）在主输入框已有一份，随手问再写一份必然在「同一张图两边贴出来不一样大」这种地方分叉；而用文字认领自己发的那条是历史遗留的权宜，纯图片消息一进来就从「偶尔配不上」变成「永远配不上」。至于非视觉模型，默默放行等于让人贴完图、发出去、再被后端拒一次，不如发送前就说清楚。
+
+**代价 / 可改：** 只支持图片，文档与 PDF 要另一次决定；`downscale` 一律 re-encode 成 JPEG（透明通道会丢，主输入框本来也如此）；模型目录缺 `supportsImages` 时按未知放行，遇到真不认图的后端会发过去再被拒；缩略图横条在窄屏换行，占两行高度。
+
+**验证：** `web/tests/images-unit.mjs` 9 例；`bridge/tests/scratch-ui.mjs` 五段（贴图→发送→气泡缩略图可点开且 pi 真收到 `image/jpeg`、看不了图的模型拦截、非图片拒收、清空连图一起清、404 重开后图跟着重发），靠 `FAKE_PI_VISION=1` 让桩模型的第一个能看图、第二个仍只收文字；`npm --prefix web run typecheck`（含 `i18n-check` 2547 keys × 3 langs）。
