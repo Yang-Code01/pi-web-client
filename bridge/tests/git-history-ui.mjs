@@ -80,6 +80,8 @@ git(dir, "checkout", "-q", "main");
 put(dir, "a.txt", "from-main");
 git(dir, "checkout", "-q", "feat/x");
 check("测试仓库干净且有远程对照", git(dir, "status", "--porcelain") === "" && Boolean(git(dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main")));
+// 分支多的时候右栏要能滚动，不能被 flex 压扁（实测 122 个分支时行高从 24px 掉到 10px，文字只剩中间一条）。
+for (let i = 0; i < 40; i += 1) git(dir, "branch", `bulk/${i}`);
 
 fs.mkdirSync(STATE, { recursive: true });
 const env = {
@@ -147,6 +149,15 @@ try {
   for (const id of ["history", "diff", "manual"]) {
     check(`tab ${id} 存在`, await page.locator(`.go-tabs [data-tab="${id}"]`).count() === 1);
   }
+  await page.waitForSelector(".go-branch-side .go-branch-row", { timeout: 20000 });
+  const rowBox = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll(".go-branch-side .go-branch-row")];
+    const heights = rows.map((n) => Math.round(n.getBoundingClientRect().height));
+    return { count: heights.length, min: Math.min(...heights), names: rows.slice(0, 4).map((n) => n.textContent) };
+  });
+  // 行里有 overflow:hidden，flex 的自动最小尺寸是 0；子项不认 flex:none 时会一起压成几像素，文字只剩中间一条。
+  check(`右栏 ${rowBox.count} 个分支行没被 flex 压扁`, rowBox.count > 30 && rowBox.min >= 18);
+  check("右栏分支行文字完整", rowBox.names.every((t) => /^●? ?[\w./-]+$/.test(t)));
   check("stamp 不再谎称只读", /操作后会刷新/.test(await page.textContent(".branch-stamp") ?? ""));
   check("↑↓ 计数还在", await page.locator(".bc-pill").count() === 2);
   check("cherry-pick 常驻标题栏（m00401 反馈 1）", await page.locator('.go-tool-row [data-op="cherry_pick"]').count() === 1);
