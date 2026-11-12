@@ -4982,3 +4982,93 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .go-frame svg { height: 62px; }
   .go-cmp-input { width: min(170px, 44vw); }
 }
+
+/* ---------------------------------------------------------------- 目录与仓库（#392） */
+/* 伞形工作目录：左边目录树、中间已找到的仓库、右边是原封不动的分支工作台（embedded）。
+   三块都是 grid 轨，列宽在 JS 里显式写；折叠成 26px 竖条，和原型 C 的定案一致。 */
+.repos-sheet {
+  width: min(1240px, 96vw); height: min(84vh, 820px);
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55); overflow: hidden;
+  animation: branch-in var(--dur-2) var(--ease);
+}
+.repos-sheet:focus { outline: none; }
+.repos-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); flex: none; min-width: 0; }
+.repos-titles { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.repos-title { font-size: 14px; font-weight: 500; color: var(--text); }
+.repos-sub { font: 11px var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repos-actions { display: flex; gap: 6px; flex: none; align-items: center; }
+.repos-x { appearance: none; border: 1px solid transparent; background: transparent; color: var(--dim); width: 30px; height: 28px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+.repos-x:hover { background: var(--panel-2); color: var(--text); border-color: var(--line); }
+.repos-crumb { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 0 1 auto; max-width: 46%; padding: 4px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); font: 11.5px var(--mono); color: var(--faint); }
+.repos-crumb:empty { display: none; }
+.repos-crumb-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.repos-crumb-branch { display: flex; gap: 4px; color: var(--accent); white-space: nowrap; }
+.repos-crumb-dirty { color: var(--warn); white-space: nowrap; }
+.repos-crumb-tag { border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 10px; color: var(--dim); white-space: nowrap; }
+.repos-crumb-sub { color: var(--faint); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.repos-drawerbtn { display: none; }
+
+.repos-body { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--rw-tree, 224px) var(--rw-rail, 214px) minmax(0, 1fr); }
+.repos-col { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line-soft); }
+.repos-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.repos-tree-top { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line-soft); flex: none; }
+.repos-up, .repos-fold { width: 26px; height: 26px; padding: 0; font: 12px var(--mono); flex: none; }
+.repos-path { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); color: var(--text); font: 11px var(--mono); padding: 4px 7px; }
+.repos-path:focus { outline: none; border-color: var(--accent-dim); }
+.repos-tree-list, .repos-rail-list { flex: 1; min-height: 0; overflow: auto; padding: 6px; }
+.repos-row, .repos-card { appearance: none; text-align: left; border: 1px solid transparent; background: transparent; color: var(--dim); cursor: pointer; }
+.repos-row { display: flex; align-items: center; gap: 4px; width: 100%; height: 26px; border-radius: 6px; padding-right: 7px; font: 11.5px var(--mono); }
+.repos-row:hover, .repos-card:hover { background: var(--panel-2); color: var(--text); }
+.repos-row.on, .repos-card.on { background: var(--panel-2); color: var(--text); border-color: var(--line); }
+.repos-caret { flex: none; width: 14px; text-align: center; color: var(--faint); font-size: 9.5px; }
+.repos-caret.leaf { opacity: 0.35; }
+.repos-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repos-thinking { color: var(--accent); opacity: 0.6; }
+.repos-git { flex: none; display: flex; align-items: center; gap: 4px; color: var(--faint); font-size: 10.5px; max-width: 58%; }
+.repos-branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repos-git .branch-glyph { font-size: 10px; }
+.repos-dot, .repos-card-dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--warn); }
+.repos-dirty { color: var(--warn); }
+.repos-rail-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); font-size: 11px; color: var(--faint); flex: none; }
+.repos-rail-title { font: 11px var(--mono); color: var(--dim); }
+.repos-card { display: grid; gap: 3px; width: 100%; border-radius: 8px; padding: 7px 8px; border-color: var(--line-soft); margin-bottom: 5px; font: 11.5px var(--mono); }
+.repos-card-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.repos-card-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.repos-card-dirty { color: var(--warn); font-size: 10px; }
+.repos-card-branch { display: flex; align-items: center; gap: 4px; color: var(--accent); font-size: 10.5px; min-width: 0; }
+.repos-card-branch > span:not(.branch-glyph):not(.repos-crumb-tag) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repos-rail-empty, .repos-rail-note { padding: 8px 10px; font-size: 10.5px; color: var(--faint); line-height: 1.6; }
+.repos-rail-note { color: var(--warn); flex: none; }
+.repos-empty { flex: 1; display: grid; place-items: center; padding: 24px; }
+.repos-empty-text { color: var(--faint); font-size: 12px; text-align: center; line-height: 1.8; }
+.repos-empty-hint { color: var(--dim); font-size: 11.5px; text-align: center; margin-top: 6px; }
+.repos-more { appearance: none; border: 0; background: none; color: var(--accent); cursor: pointer; font: 11px var(--mono); text-align: left; padding: 5px 10px; opacity: .82; }
+.repos-more:hover { opacity: 1; text-decoration: underline; }
+.repos-foot { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-top: 1px solid var(--line-soft); flex: none; font-size: 11px; color: var(--faint); }
+.repos-esc { font-size: 10.5px; color: var(--faint); }
+.repos-strip { appearance: none; border: 0; border-right: 1px solid var(--line-soft); background: var(--panel-2); color: var(--faint); cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 0; font: 11px var(--mono); }
+.repos-strip:hover { background: var(--panel-3); color: var(--text); }
+.repos-strip-label { writing-mode: vertical-rl; letter-spacing: 2px; }
+.repos-strip-count { font-size: 9.5px; color: var(--accent-dim); }
+.repos-strip-caret { font-size: 9px; }
+
+/* embedded：工作台不再是一片遮罩上的弹窗，而是右栏里的一整块。舞台自己撑满，边框交还给宿主。 */
+.branch-sheet.go-embedded { width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; animation: none; background: transparent; }
+.branch-sheet.go-embedded .go-body { border-radius: 0; }
+.go-side-toggle { white-space: nowrap; }
+/* pane：分支 aside 在 embedded 下收进下拉，历史占满宽（老工作台仍然用左 aside）。 */
+.go-side-pop { flex: none; max-height: 42%; overflow: auto; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); background: var(--panel-2); }
+.go-side-pop .go-side-group { margin: 4px 0; }
+.pane-side-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.chg-all { flex: none; margin-left: 8px; }
+
+@media (max-width: 720px) {
+  .repos-sheet { width: 100%; height: 100%; border-radius: 0; border: 0; }
+  .repos-body { grid-template-columns: minmax(0, 1fr); position: relative; }
+  .repos-rail, .repos-strip, .repos-tree { display: none; }
+  .repos-body.drawer-open .repos-tree { display: flex; position: absolute; inset: 0; z-index: 2; background: var(--panel); border-right: 0; }
+  .repos-drawerbtn { display: inline-flex; }
+  .repos-crumb { display: none; }
+}
