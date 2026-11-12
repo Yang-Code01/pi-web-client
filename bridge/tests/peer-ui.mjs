@@ -11,6 +11,7 @@
  *   5. #383：忽略名单挡住在线表兜底合并，设置页清空后附近的人重新出现。
  *   6. #394：对话打开 / 切换 / 收到新消息停在最底部；翻到中间时收到新消息保位。
  *   7. #395：列表行的未读数；打开即清零；停在对话里时新消息直接已读；另一个浏览器标记后这边同样清零。
+ *   8. #396：「消息」导航（宽屏 rail / 窄屏底部）有未读时画一颗圆点、不写数字，读完后消失。
  *
  * 用假 API 是刻意的：这些都测「拿到 JSON 之后怎么画」，跟 peer 活着与否无关。
  *
@@ -579,6 +580,60 @@ try {
   const midAfter = await streamTop();
   check("翻到中间时收到新消息位置不变", Math.abs(midBefore - midAfter) <= 2, `scrollTop ${midBefore} -> ${midAfter}`);
   await sc.close();
+
+  // ---- #396：「消息」导航上的未读圆点。有未读就出现，只画点不写数字；全部读完后消失。宽屏 rail 与窄屏底部导航都要。 ----
+  // 小张排第一、开机即主区打开即已读（宽屏）；小李 2 条未读，所以两种宽度下都有一颗要画的点。
+  const navCounts = { [ZHANG]: 0, [LI]: 2 };
+  const navFixture = async (viewport) => {
+    const c = await browser.newContext({ locale: "zh-CN", viewport });
+    const p = await c.newPage();
+    const pageErrors = [];
+    p.on("pageerror", (e) => pageErrors.push(e.message));
+    await p.route("**/api/**", async (route) => {
+      const req = route.request();
+      const url = new URL(req.url());
+      let body = {};
+      if (url.pathname === "/api/peer") body = { enabled: true, running: true, reason: "", status };
+      else if (url.pathname === "/api/peer/threads")
+        body = {
+          threads: [
+            { ...thread(ZHANG, "小张", msg("nav-z", "小张的话", { nodeId: ZHANG, nickname: "小张" }, ME)), unread: navCounts[ZHANG] },
+            { ...thread(LI, "小李", msg("nav-l", "小李的话", { nodeId: LI, nickname: "小李" }, ME)), unread: navCounts[LI] },
+          ],
+        };
+      else if (url.pathname === "/api/peer/contacts") body = { contacts: [contact(ZHANG, "小张"), contact(LI, "小李")] };
+      else if (url.pathname === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+      else if (url.pathname === "/api/peer/messages") body = { entries: [] };
+      else if (url.pathname === "/api/peer/read") navCounts[JSON.parse(req.postData() ?? "{}").peer] = 0;
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+    });
+    await p.goto(`${BASE}/peer.html`);
+    await p.waitForSelector(".listbox .row");
+    return { c, p, pageErrors };
+  };
+  const railMsgDot = '#rail button[title="消息"] .dot';
+  const mobMsgDot = '#mobnav button:has-text("消息") .dot';
+
+  const desk = await navFixture({ width: 1240, height: 820 });
+  await desk.p.locator(railMsgDot).waitFor({ state: "attached", timeout: 6000 }).catch(() => {});
+  const railDots = await desk.p.locator(railMsgDot).count();
+  const railText = railDots ? (await desk.p.locator(railMsgDot).first().textContent()).trim() : "";
+  check("宽屏「消息」导航有未读时出现圆点，且不写数字", railDots === 1 && railText === "", `圆点=${railDots}，文字=「${railText}」`);
+
+  const mob = await navFixture({ width: 390, height: 800 });
+  await mob.p.locator(mobMsgDot).waitFor({ state: "attached", timeout: 6000 }).catch(() => {});
+  const mobDots = await mob.p.locator(mobMsgDot).count();
+  check("窄屏底部「消息」导航有未读时出现圆点", mobDots === 1, `圆点=${mobDots}`);
+
+  navCounts[LI] = 0;
+  await desk.p.locator(railMsgDot).waitFor({ state: "detached", timeout: 7000 }).catch(() => {});
+  await mob.p.locator(mobMsgDot).waitFor({ state: "detached", timeout: 7000 }).catch(() => {});
+  const railLeft = await desk.p.locator(railMsgDot).count();
+  const mobLeft = await mob.p.locator(mobMsgDot).count();
+  check("全部读完后两处圆点都消失", railLeft === 0 && mobLeft === 0, `宽屏=${railLeft}，窄屏=${mobLeft}`);
+  check("圆点相关渲染没有页面错误", desk.pageErrors.length + mob.pageErrors.length === 0, [...desk.pageErrors, ...mob.pageErrors].join(" | "));
+  await desk.c.close();
+  await mob.c.close();
 } catch (err) {
   check("脚本跑完", false, err?.message ?? String(err));
 } finally {

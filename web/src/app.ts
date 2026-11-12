@@ -347,6 +347,8 @@ export class App {
   /** D170 详情弹层：正在看的那一屏，和它 1.5 秒一次的轮询。关掉就 null。 */
   private bgSheet: { sessionId: string; body: HTMLElement; runs: Map<string, BgRunNode> } | null = null;
   private bgTimer: number | null = null;
+  /** #396：顶栏「内网通」上的未读圆点（有未读才画，不写数字）；`pollPeerUnread()` 每 5 秒写一次。 */
+  private peerUnread = 0;
   /** 上一次点「继续」的会话与时刻（D159）：`pi.status` 回来之前按钮还亮着，连点会排两条。 */
   private continueAt: { id: string; at: number } = { id: "", at: 0 };
   /** Skill palette state (the popover above the composer). */
@@ -700,6 +702,7 @@ export class App {
       if (d?.src) this.openImage(d.src, d.alt ?? "");
     });
     this.startClock();
+    this.startPeerUnread();
     this.socket.connect();
     this.routeFromHash();
   }
@@ -4332,6 +4335,7 @@ export class App {
     }
     if (peer) {
       this.setWideLabel(peer, tr("🌐 内网通"));
+      this.paintPeerDot();
       show("peer", peer, tr("内网通：发现同一内网里的人，直接对话、传文件"));
     }
     if (scratch) {
@@ -4362,6 +4366,39 @@ export class App {
       if (head && head.nodeType === Node.TEXT_NODE) head.textContent = next;
       else btn.prepend(next);
     }
+  }
+
+  // ---------------------------------------------------------------- peer unread dot (#396)
+  /**
+   * 每 5 秒问一次未读。先问 `/api/peer`（永远 200，`running` 说明在不在跑）：没在跑就不碰 `/api/peer/unread`，
+   * 那个接口在 peer 没起来时回 400，浏览器会把它记成控制台红字。任何失败都当成「没有未读」。
+   */
+  private startPeerUnread(): void {
+    void this.pollPeerUnread();
+    window.setInterval(() => void this.pollPeerUnread(), 5000);
+  }
+
+  private async pollPeerUnread(): Promise<void> {
+    let total = 0;
+    try {
+      const view = await fetch("/api/peer", { credentials: "same-origin" }).then((r) => (r.ok ? r.json() : null));
+      if (view?.running) {
+        const res = await fetch("/api/peer/unread", { credentials: "same-origin" });
+        if (res.ok) total = Number((await res.json()).total) || 0;
+      }
+    } catch {
+      total = 0;
+    }
+    this.peerUnread = total;
+    this.paintPeerDot();
+  }
+
+  /** 圆点挂在按钮末尾。`setWideLabel()` 会整个换掉按钮的子节点，所以 `paintChrome()` 在它之后也要调一次。 */
+  private paintPeerDot(): void {
+    const btn = this.els.peer;
+    if (!btn) return;
+    btn.querySelector(":scope > .dot.unread")?.remove();
+    if (this.peerUnread > 0) btn.append(el("span", "dot unread"));
   }
 
   // ---------------------------------------------------------------- peer sheet (#45)
