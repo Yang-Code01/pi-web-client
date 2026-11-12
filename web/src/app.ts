@@ -4995,14 +4995,23 @@ export class App {
       el("span", "", tr("组成明细")),
       el("span", "sub", [pick === lines.length - 1 ? tr("当前") : tr("请求 #{p1}", { p1: String(picked?.seq ?? "") }), ctxFmt(t), kpis.window ? `${((t / kpis.window) * 100).toFixed(1)}%` : ""].filter(Boolean).join(" · ")),
     );
-    comp.append(compTitle);    const cl = el("div", "ctx-catlist");
+    comp.append(compTitle);
+    const cl = el("div", "ctx-catlist");
     for (const row of ctxCompRows(picked)) {
       const r = el("div", "ctx-catrow");
-      r.append(
-        el("span", "ctx-cl", `<span class="sw ${row.cls}"></span>${row.label}`),
-        el("span", "ctx-bar", `<span class="seg ${row.cls}" style="width:${row.pct}%"></span>`),
-        el("span", "ctx-cv", `${ctxFmt(row.tokens)}<span class="p">${row.pct.toFixed(1)}%</span>`),
-      );
+      // el() 的第三参是 textContent（纯文本）：塞 HTML 串会被转义成字面量（实测踩过）。
+      // 色块和百分比要自己 createElement 再 append。
+      const sw = el("span", `sw ${row.cls}`);
+      const label = el("span", "ctx-cl");
+      label.append(sw, document.createTextNode(row.label));
+      const bar = el("span", "ctx-bar");
+      const fill = el("span", `seg ${row.cls}`);
+      fill.style.width = `${row.pct}%`;
+      bar.append(fill);
+      const cv = el("span", "ctx-cv");
+      const p = el("span", "p", `${row.pct.toFixed(1)}%`);
+      cv.append(document.createTextNode(ctxFmt(row.tokens)), p);
+      r.append(label, bar, cv);
       cl.append(r);
     }
     comp.append(cl);
