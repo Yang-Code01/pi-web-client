@@ -741,6 +741,76 @@ try {
   }
   log("ok 没有 token 写不进盘（410）");
 
+  // ---- #395：未读数。文字与文件计入；自己发的与回执不计；非好友与「忽略」过的人照常计；标记已读清零；已读只存本机。 ----
+  const unreadBody = async (port) => (await fetch(`http://127.0.0.1:${port}/unread`)).json();
+  const unreadOf = (body, nodeId) => body.threads?.find((t) => t.nodeId === nodeId)?.unread ?? 0;
+  const postBody = (port, p, body) =>
+    fetch(`http://127.0.0.1:${port}${p}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const hasText = (port, peer, text) => async () => {
+    const body = await (await fetch(`http://127.0.0.1:${port}/messages?peer=${peer}`)).json();
+    return body.entries?.some((e) => e.text === text) ? body : false;
+  };
+
+  // B 从 A 收到 2 条文字 + 2 个文件（其中一个是 0 字节）。
+  const bUnread = await unreadBody(17966);
+  if (bUnread.total !== 4 || unreadOf(bUnread, sa) !== 4) {
+    throw new Error(`B 收到 A 的 2 条文字 + 2 个文件，未读应为 4，实际 ${JSON.stringify(bUnread)}`);
+  }
+  log("ok 文字与文件都计入未读（4）");
+
+  // A 只发出过东西（自己的消息与回执），没收到任何人的消息。
+  const aUnread0 = await unreadBody(17965);
+  if (aUnread0.total !== 0) throw new Error(`A 没收到消息，未读应为 0，实际 ${JSON.stringify(aUnread0)}`);
+
+  // B 回一条：B 自己发的消息与 A 给它的回执都不计入 B 的未读。
+  const reply = await postBody(17966, "/send", { peer: sa, text: "乙回复" });
+  if (!reply.ok) throw new Error(`B 发消息失败：${reply.status}`);
+  await until("A 收到乙的回复", hasText(17965, sb, "乙回复"), 8000);
+  await until(
+    "B 拿到自己这条的送达回执",
+    async () => {
+      const body = await (await fetch(`http://127.0.0.1:17966/messages?peer=${sa}`)).json();
+      return body.entries?.some((e) => e.kind === "receipt" && e.ack?.status === "delivered") ? body : false;
+    },
+    8000,
+  );
+  if (unreadOf(await unreadBody(17966), sa) !== 4) throw new Error("B 自己发的消息和回执不该计入未读");
+  log("ok 自己发出的消息与回执不计入未读");
+
+  // A 收到的是 B 的那条：只算这 1 条。
+  const aUnread1 = await unreadBody(17965);
+  if (aUnread1.total !== 1 || unreadOf(aUnread1, sb) !== 1) throw new Error(`A 收到 B 的 1 条，未读应为 1，实际 ${JSON.stringify(aUnread1)}`);
+
+  // C 把 A 当快捷联系人（非好友）：A 发来的文字照常计未读。
+  const cUnread = await unreadBody(17968);
+  if (unreadOf(cUnread, sa) !== 1) throw new Error(`非好友发来的文字应计入未读，实际 ${JSON.stringify(cUnread)}`);
+  log("ok 非好友（快捷联系人）发来的文字计入未读");
+
+  // A 在好友申请里点「忽略」（= 移除 C）之后，C 再来的消息照常计未读。
+  const ignoredByA = await postBody(17965, "/friend", { peer: sc, action: "remove" });
+  if (!ignoredByA.ok) throw new Error(`A 忽略 C 应 200，实际 ${ignoredByA.status}`);
+  const fromIgnored = await postBody(17968, "/send", { peer: sa, text: "被忽略的人也要计" });
+  if (!fromIgnored.ok) throw new Error(`C 发消息失败：${fromIgnored.status}`);
+  await until("A 收到被忽略的人的消息", hasText(17965, sc, "被忽略的人也要计"), 8000);
+  if (unreadOf(await unreadBody(17965), sc) !== 1) throw new Error("被忽略（移除）的人发来的消息应计入未读");
+  log("ok 「忽略」过的人发来的消息计入未读");
+
+  // 标记已读：B 对 A 清零；只影响 B 这台机器，A 那边的未读不动。
+  const marked = await postBody(17966, "/read", { peer: sa });
+  if (!marked.ok) throw new Error(`标记已读应 200，实际 ${marked.status}`);
+  const bCleared = await unreadBody(17966);
+  if (bCleared.total !== 0 || unreadOf(bCleared, sa) !== 0) throw new Error(`标记已读后应清零，实际 ${JSON.stringify(bCleared)}`);
+  if (unreadOf(await unreadBody(17965), sb) !== 1) throw new Error("B 标记已读不该影响 A 那边的未读");
+  log("ok 标记已读后清零，且只影响本机");
+
+  // 已读之后再来的消息：只计新的这一条（按历史先后，不按时间戳）。
+  const afterMark = await postBody(17965, "/send", { peer: sb, text: "标记之后的新消息" });
+  if (!afterMark.ok) throw new Error(`A 发消息失败：${afterMark.status}`);
+  await until("B 收到标记之后的新消息", hasText(17966, sa, "标记之后的新消息"), 8000);
+  const bNew = await unreadBody(17966);
+  if (bNew.total !== 1 || unreadOf(bNew, sa) !== 1) throw new Error(`标记之后的新消息应只计 1 条，实际 ${JSON.stringify(bNew)}`);
+  log("ok 已读之后的新消息只计新的那条");
+
   // 离线超时：B 关掉后 30 秒内必须从 A 的列表里消失（这里只验「关了就不是 online 了」，
   // 30 秒本身等不起，所以直接杀掉再看一轮 —— 真实超时逻辑由 prune 的 OFFLINE_MS 保证）。
   B.kill();
@@ -749,6 +819,13 @@ try {
     return s === null;
   }, 8000);
   log("ok 进程能干净退出");
+
+  // 重启：B 的已读位置与未读数都要保留（只剩标记之后的那 1 条）。
+  start("b", 17966, 17967, "乙");
+  await until("B 重启", async () => (await status(17966))?.nodeId, 15000);
+  const bRestarted = await unreadBody(17966);
+  if (bRestarted.total !== 1 || unreadOf(bRestarted, sa) !== 1) throw new Error(`重启后未读应保持为 1，实际 ${JSON.stringify(bRestarted)}`);
+  log("ok 重启后未读数保持");
 
   // 端口被占：再起一份抢 17968，必须退出码 2（bridge 靠它判断「另一份在跑」，不会无限重启）。
   const dup = spawn(process.execPath, [ENTRY], {

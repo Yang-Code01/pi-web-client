@@ -253,6 +253,22 @@ export function createPeerServer(ctx: PeerContext): http.Server {
         return json(res, 200, { ok: true, threads: history.threads(discovery.online(), relations.list()) });
       }
 
+      // 未读（#395）：「查未读」只列有未读的对话；「标记已读」把这个对话的已读位置挪到最后一条。
+      if (url.pathname === "/unread" && req.method === "GET") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const threads = history.unreadThreads();
+        return json(res, 200, { ok: true, total: threads.reduce((sum, thread) => sum + thread.unread, 0), threads });
+      }
+
+      if (url.pathname === "/read" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        const body = await readBody(req).catch(() => ({}));
+        const peerId = String(body?.peer ?? "");
+        if (!peerId) return json(res, 400, { error: "缺 peer" });
+        history.markRead(peerId);
+        return json(res, 200, { ok: true });
+      }
+
       if (url.pathname === "/messages" && req.method === "GET") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
         const peerId = url.searchParams.get("peer") ?? "";

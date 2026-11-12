@@ -232,6 +232,7 @@ body.embedded .brand .nm { display: none; }
   font-size: 10px;
 }
 .pill.pi { color: var(--accent); background: var(--accent-bg); }
+.pill.unread { color: var(--accent); background: var(--accent-dim); }
 .pill.failed { color: var(--danger); background: rgb(251 113 133 / 10%); }
 
 /* 头像 */

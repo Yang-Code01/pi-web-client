@@ -161,6 +161,16 @@ export class PeerHost {
     return this.request("GET", "/threads");
   }
 
+  /** 查未读（#395）：只列有未读的对话，total 是它们的和。 */
+  unread(): Promise<{ ok: boolean; total: number; threads: { nodeId: string; unread: number }[] }> {
+    return this.request("GET", "/unread");
+  }
+
+  /** 标记已读（#395）：只挪本机 peer 的已读位置，不影响对方那台。 */
+  markRead(peer: string): Promise<{ ok: boolean }> {
+    return this.request("POST", "/read", { peer });
+  }
+
   /** 隐身 / 免打扰 / 暂停收文件：改 peer 的 cfg 并落盘到 `~/.pi-peer/config.json`。 */
   setConfig(patch: { hidden?: boolean; dnd?: boolean; pauseFiles?: boolean }): Promise<{
     ok: boolean;

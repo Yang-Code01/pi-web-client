@@ -706,6 +706,21 @@ async function main(): Promise<void> {
         return json(res, 400, { error: (err as Error).message });
       }
     }
+    if (url.pathname === "/api/peer/unread" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.unread());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/read" && req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        return json(res, 200, await peer.markRead(String(body?.peer ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
     if (url.pathname === "/api/peer/messages" && req.method === "GET") {
       const who = url.searchParams.get("peer") ?? "";
       if (!who) return json(res, 400, { error: "缺 peer" });
