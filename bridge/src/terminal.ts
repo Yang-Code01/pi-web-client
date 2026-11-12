@@ -106,7 +106,11 @@ export class Terminals {
   private terms = new Map<string, Term>();
   private seq = 0;
 
-  constructor(private hooks: TermHooks) {}
+  private hooks: TermHooks;
+
+  constructor(hooks: TermHooks) {
+    this.hooks = hooks;
+  }
 
   list(): OpenedTerm[] {
     return [...this.terms].map(([id, term]) => ({ id, shell: term.shell, cwd: term.cwd, cols: 0, rows: 0 }));

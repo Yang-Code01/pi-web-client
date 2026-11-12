@@ -20,6 +20,7 @@ const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
 const PORT = Number(process.env.EXEC_UI_PORT ?? 7913);
 const BASE = `http://127.0.0.1:${PORT}`;
 const PASS = "exec-ui-pass";
+const DONE_FILE = path.join(ROOT, "empty-child-done");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const check = (name, ok, detail = "") => {
   console.log(`${ok ? "  ok   " : " FAIL "} ${name}${detail ? ` — ${detail}` : ""}`);
@@ -36,6 +37,7 @@ const env = {
   PI_WEB_TUNNEL: "0",
   PI_WEB_ROOT: path.join(REPO, "web", "dist"),
   PI_BIN: FAKE_PI,
+  FAKE_PI_EMPTY_DONE_FILE: DONE_FILE,
 };
 execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
 const bridge = spawn(process.execPath, [DIST], { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -160,6 +162,37 @@ try {
   await loopCard.locator(".todo-tool").click();
   await page.waitForFunction(() => document.querySelector('[data-exec-tab="exec"]')?.getAttribute("aria-selected") === "true" && document.querySelector(".exec-plan.exec-flash"), null, { timeout: 5000 });
   check("a todo card in the fold still opens the execution plan", (await page.locator(".exec-plan.exec-flash").count()) === 1);
+
+  // 图 1：派活任务很长、又没有会话记录时，「现在」卡只留一行，全文点开对话框读。
+  socket.send(JSON.stringify({ type: "prompt", sessionId, text: "BGEMPTY" }));
+  await page.waitForFunction(() => {
+    const row = document.querySelector(".exec-now-child");
+    const args = row?.querySelector(".exec-args");
+    return !!args && args.textContent?.includes("只读勘察") && args.getBoundingClientRect().height > 0;
+  }, null, { timeout: 20000 });
+  const emptyChild = page.locator(".exec-now-child").first();
+  const childClamped = await emptyChild.locator(".exec-args").evaluate((node) => ({ height: node.getBoundingClientRect().height, line: parseFloat(getComputedStyle(node).lineHeight) || 0, over: node.scrollWidth > node.clientWidth + 1 }));
+  check("a long delegated task occupies one line in the now card", childClamped.line > 0 && childClamped.height <= childClamped.line * 1.5 && childClamped.over, JSON.stringify(childClamped));
+  check("a long delegated task opens a dialog instead of expanding inline", await emptyChild.evaluate((node) => node.tagName === "BUTTON" && node.getAttribute("aria-haspopup") === "dialog") && (await emptyChild.locator(".exec-now-open").isVisible()));
+  const emptyCardHeight = (await page.locator(".exec-now").boundingBox())?.height ?? 0;
+  await emptyChild.click();
+  await page.waitForSelector(".argdialog", { timeout: 5000 });
+  check("the dialog shows the full delegated task exactly once", (await page.locator(".argdialog-text").count()) === 1 && (await page.locator(".argdialog-text").first().innerText()).length > 120);
+  check("the now card keeps its height while the child task dialog is up", ((await page.locator(".exec-now").boundingBox())?.height ?? 0) === emptyCardHeight);
+  await page.keyboard.press("Escape");
+  check("Escape closes the child task dialog", (await page.locator(".argdialog").count()) === 0);
+
+  // 图 2：转录文件迟迟不出现时不要停在「等待」，跑完给明确终态。
+  const emptySubagent = page.locator(".exec-subagent").filter({ hasText: "只读勘察" });
+  await emptySubagent.locator(".exec-subagent-toggle").click();
+  await page.waitForFunction(() => [...document.querySelectorAll(".exec-subagent .exec-empty")].some((node) => node.textContent?.includes("等待子代理会话…")), null, { timeout: 20000 });
+  check("a running child without a transcript says it is waiting", (await emptySubagent.locator(".exec-empty").innerText()).includes("等待子代理会话…"));
+  // 完成通知由扩展以 custom 消息注入本轮，不是又发一条用户 prompt；写哨兵让 fixture 发它。
+  fs.writeFileSync(DONE_FILE, "done");
+  await page.waitForFunction(() => [...document.querySelectorAll(".exec-subagent .exec-empty")].some((node) => node.textContent?.includes("没有可用的会话记录")), null, { timeout: 20000 });
+  check("a finished child without a transcript gets a terminal empty state", (await emptySubagent.locator(".exec-empty").innerText()).includes("子代理已结束，没有可用的会话记录"));
+  await page.waitForFunction(() => ![...document.querySelectorAll(".exec-now-child")].some((node) => node.textContent?.includes("只读勘察")), null, { timeout: 20000 });
+  check("the now card drops the finished child", (await page.locator(".exec-now-child").filter({ hasText: "只读勘察" }).count()) === 0);
 
   socket.send(JSON.stringify({ type: "prompt", sessionId, text: "BGCHILD" }));
   await page.waitForFunction(() => [...document.querySelectorAll(".exec-subagent-task")].some((row) => row.textContent?.includes("inspect child updates")), null, { timeout: 20000 });

@@ -41,6 +41,11 @@ const fail = (id, command, error) => out({ type: "response", command, success: f
 /** #86: this stub owns a pretend session file when --session-dir is passed, so a test can watch
  * `new_session` move it and the bridge delete the old one. */
 const ARGV = process.argv.slice(2);
+/** `pi list`：测试要让桥认为某个包「已装」（/api/deps）时设 FAKE_PI_LIST=原样输出，打印完就退。 */
+if (ARGV[0] === "list" && process.env.FAKE_PI_LIST !== undefined) {
+  process.stdout.write(process.env.FAKE_PI_LIST);
+  process.exit(0);
+}
 const argOf = (name) => {
   const i = ARGV.indexOf(name);
   return i >= 0 ? ARGV[i + 1] ?? "" : "";
@@ -345,6 +350,57 @@ async function turn(text) {
     out({ type: "message_start", message: assistant("") });
     out({ type: "message_end", message: assistant("子代理已启动。", { stopReason: "stop" }) });
     out({ type: "agent_end", messages: [], willRetry: false });
+    return;
+  }
+  if (text.startsWith("BGEMPTY")) {
+    // 派活任务很长、却自始至终没有会话记录：「现在」卡要压成一行，展开的子代理要给明确空态。
+    const runId = process.env.FAKE_PI_EMPTY_RUN_ID || `del_empty_${process.pid}`;
+    const root = path.join(os.tmpdir(), "acp-delegate");
+    const tick = String.fromCharCode(96);
+    const newline = String.fromCharCode(10);
+    fs.mkdirSync(root, { recursive: true });
+    fs.rmSync(path.join(root, `${runId}.session.jsonl`), { force: true });
+    const longTask = "只读勘察，不要改任何文件。请逐项核对分支功能入口、当前行为、关键文件行号、后端 API 与已知限制，并把明确决定不做的点列出来；输出紧凑报告，不贴大段源码。".repeat(2);
+    const resultText = [
+      `Delegated to **researcher** (runId ${tick}${runId}${tick}).`,
+      `Task: ${longTask}`,
+      `Running in the background at ${tick}${root}${tick}.`,
+    ].join(newline);
+    const callId = "call-empty";
+    const args = { agent: "researcher", task: longTask };
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("", { content: [{ type: "toolCall", id: callId, name: "acp_delegate", arguments: args }], stopReason: "toolUse" }) });
+    out({ type: "tool_execution_start", toolCallId: callId, toolName: "acp_delegate", args });
+    out({
+      type: "tool_execution_end",
+      toolCallId: callId,
+      toolName: "acp_delegate",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: resultText }],
+        details: { kind: "delegate", runId, agent: "researcher", task: longTask },
+      },
+    });
+    out({ type: "message_start", message: assistant("") });
+    out({ type: "message_end", message: assistant("子代理已启动。", { stopReason: "stop" }) });
+    // 完成通知是扩展注入的 custom 消息，不是又一条用户 prompt：留在同一轮里，执行面板才不会切轮。
+    const doneNotice = {
+      role: "custom",
+      content: [{ type: "text", text: `[acp_delegate completed] **researcher** (runId ${tick}${runId}${tick}, exit 0)\n没有留下会话记录。` }],
+      display: true,
+    };
+    // 由测试写哨兵文件触发，避免定时器与 UI 断言抢跑；完成通知留在同一轮里。
+    const doneFile = process.env.FAKE_PI_EMPTY_DONE_FILE;
+    if (doneFile) {
+      fs.rmSync(doneFile, { force: true });
+      const timer = setInterval(() => {
+        if (!fs.existsSync(doneFile)) return;
+        clearInterval(timer);
+        fs.rmSync(doneFile, { force: true });
+        out({ type: "message_start", message: doneNotice });
+        out({ type: "message_end", message: doneNotice });
+      }, 50);
+    }
     return;
   }
   if (text.startsWith("BGSTART")) {

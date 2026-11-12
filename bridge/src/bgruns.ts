@@ -36,6 +36,12 @@ const LIVE_LOG = /Live activity is streaming to `([^`]+)`/;
 const SUBAGENTS_PREFIX = "pi-subagents-";
 const SUBAGENTS_TMP = join(tmpdir(), SUBAGENTS_PREFIX);
 /**
+ * 扫前台孩子时按 mtime 跳过旧目录的宽容量（毫秒）。Windows 上文件 mtime 用的是系统滔答时钟，
+ * 实测比写前的 `Date.now()` 落后最多六七毫秒；不留余量，派活那一瞬间落盘的 status.json 会被当成历史跳过。
+ * 这个过滤只是少解析几个文件的优化，真正认孩子靠 `parentWorkflowRunId`，所以宽一点不会认错。
+ */
+const FG_MTIME_SLACK_MS = 2000;
+/**
  * 只有这两个工具会「派一个后台子代理」。别的工具结果里出现同样的句子（读文档、看日志、
  * `grep` 到 D170 自己那段说明）不算 —— D172 的幽灵任务就是这么造出来的。
  */
@@ -450,7 +456,7 @@ function fgChildren(parentId: string, since: number): FgChild[] {
       if (name.startsWith(".")) continue;
       const dir = join(base, name);
       try {
-        if (statSync(join(dir, "status.json")).mtimeMs < since) continue;
+        if (statSync(join(dir, "status.json")).mtimeMs < since - FG_MTIME_SLACK_MS) continue;
       } catch {
         continue;
       }
@@ -539,7 +545,11 @@ export class BgRuns {
   private readonly runs = new Map<string, BgRun>();
   private sweep: NodeJS.Timeout | null = null;
 
-  constructor(private readonly onChange: () => void) {}
+  private readonly onChange: () => void;
+
+  constructor(onChange: () => void) {
+    this.onChange = onChange;
+  }
 
   /**
    * 工具开始。前台并行/工作流（`async:false`）不会在 `tool_execution_end` 的 `details` 里承认

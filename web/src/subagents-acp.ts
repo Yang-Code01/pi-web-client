@@ -26,6 +26,8 @@ export interface AcpDelegateView {
   exists: boolean;
   error: string | null;
   config: AcpDelegateConfig;
+  /** #375：`compress.neverPreserveRecentTools`；`null` = 没写（它的默认），`[]` = 已应用绕法。 */
+  neverPreserveRecentTools: string[] | null;
 }
 
 /** 只带用户真改过的键；`null` = 删键。 */
@@ -49,6 +51,8 @@ export interface AcpDelegateSection {
   /** 上一次保存的失败原因；成功保存由 app 的 settings-note 播报。 */
   saveError: string | null;
   onSave(patch: AcpDelegatePatch): void;
+  /** #375：应用（true）/ 撤销（false）billion-context 压缩拆开签名 thinking 的绕法。 */
+  onThinkingFix(apply: boolean): void;
   onReload(): void;
 }
 
@@ -92,6 +96,7 @@ export function paintAcpDelegateSection(box: HTMLElement, page: AcpDelegateSecti
   if (!view.exists) box.append(el("p", "subagents-hint", tr("（还没有这个文件，保存时创建）")));
 
   const locked = view.error !== null;
+  if (!off) box.append(thinkingFixBlock(view, page, locked));
   if (view.error) {
     box.append(el("p", "note warn", tr("这个文件读不了：{p1}", { p1: view.error })));
     box.append(el("p", "subagents-hint", tr("修好 {p1} 再点「重新读取」；这里不会在读不懂的文件上写盘，那会把 providers 一起抹掉。", { p1: view.path })));
@@ -205,6 +210,47 @@ export function paintAcpDelegateSection(box: HTMLElement, page: AcpDelegateSecti
   }
   box.append(form, foot);
   refresh();
+}
+
+/**
+ * #375：billion-context ≤ 0.1.213 的已知问题。它的压缩会把同一条回复里的签名 thinking 和工具调用拆开，
+ * Claude 5.x 之后整个会话永久回 400。绕法是同一份文件里的 `compress.neverPreserveRecentTools: []`。
+ * 上游修好（ranxianglei/billion-context#4885）之前一直显示。
+ */
+function thinkingFixBlock(view: AcpDelegateView, page: AcpDelegateSection, locked: boolean): HTMLElement {
+  const box = el("div", "acp-known-issue");
+  box.append(el("h4", "", tr("已知问题：Claude 5.x 压缩后永久 400")));
+  box.append(
+    el(
+      "p",
+      "subagents-hint",
+      tr("用 Claude 5.x（Opus / Sonnet 5.5、Fable、Mythos）时，billion-context 的一次压缩可能把同一条回复里的思考块和工具调用拆开，之后这个会话每次都报「thinking blocks … cannot be modified」，只能换模型。下面的绕法把 compress.neverPreserveRecentTools 设为 []：压缩不再挖进最近保护区，代价是刚读的 bash / read 结果要晚几轮才能被压缩。已经报错的会话修不回来，换模型或开新会话。"),
+    ),
+  );
+  const link = el("a", "", "billion-context#4885");
+  link.href = "https://github.com/ranxianglei/billion-context/issues/4885";
+  link.target = "_blank";
+  link.rel = "noopener";
+  const upstream = el("p", "subagents-hint", tr("上游问题："));
+  upstream.append(link);
+  box.append(upstream);
+
+  const value = view.neverPreserveRecentTools;
+  const applied = value !== null && value.length === 0;
+  const status =
+    value === null
+      ? tr("现在：未应用（用 billion-context 的默认）")
+      : applied
+        ? tr("现在：已应用")
+        : tr("现在：文件里自定义为 {p1}，点「应用」会改成 []", { p1: JSON.stringify(value) });
+  box.append(el("p", applied ? "subagents-hint" : "note warn", status));
+
+  const button = el("button", applied ? "btn ghost" : "btn primary", applied ? tr("撤销绕法") : tr("应用绕法"));
+  button.dataset.action = applied ? "thinking-fix-undo" : "thinking-fix-apply";
+  button.disabled = locked || page.saving;
+  button.onclick = () => page.onThinkingFix(!applied);
+  box.append(button);
+  return box;
 }
 
 /** 空 = null（删键）；合法整数 = 数字；填了但不是 ≥ 1 的整数 = undefined（无效）。 */

@@ -179,11 +179,11 @@ export interface GitHistory {
 
 /** 找不到仓库 / 没有提交 / 指定的对照分支不存在：给路由翻成 `code`，别让它变成 500。 */
 export class GitHistoryError extends Error {
-  constructor(
-    readonly code: "not_repo" | "empty" | "base_unknown",
-    message: string,
-  ) {
+  readonly code: "not_repo" | "empty" | "base_unknown";
+
+  constructor(code: "not_repo" | "empty" | "base_unknown", message: string) {
     super(message);
+    this.code = code;
   }
 }
 

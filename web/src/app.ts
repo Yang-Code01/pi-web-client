@@ -310,6 +310,8 @@ export class App {
   /** D164：AI 出错记录的账本（按工作区），以及这个会话里见过的失败（按 toolCallId 去重）。 */
   private failLedger: FailLedger | null = null;
   private failWs = "";
+  /** 已经按这个组 id 要过账本：`syncFailWs()` 不必为同一个 id 反复发请求。 */
+  private failWsAsked = "";
   private sessionFails = new Map<string, SeenFail>();
   /** 这个会话里已经叫住过的失败类别（keys）：同会话同一类只叫一次（桥那边还有一层节流）。 */
   private failReminded = new Set<string>();
@@ -1709,6 +1711,7 @@ export class App {
         this.execStreamText = "";
         this.setExecPhase(this.session?.running ? "waiting" : "idle");
         if (this.currentWs()) {
+          this.failWsAsked = this.currentWs();
           this.socket.send({ type: "failures.get", ws: this.currentWs() });
           this.socket.send({ type: "rules.get", ws: this.currentWs() });
         }
@@ -2393,11 +2396,18 @@ export class App {
           exists: Boolean(msg.exists),
           error: msg.error == null ? null : String(msg.error),
           config: (msg.config ?? { enabled: null, maxDepth: null, maxConcurrent: null, thinkingLevel: null }) as AcpDelegateView["config"],
+          neverPreserveRecentTools: Array.isArray(msg.neverPreserveRecentTools) ? msg.neverPreserveRecentTools.map(String) : null,
         };
         this.subagentsAcpLoadError = null;
         this.subagentsAcpSaving = false;
         this.subagentsAcpSaveError = null;
-        if (msg.saved) this.flashSettings(tr("acp_delegate 已保存（写的是 billion-context 的配置文件，对新会话生效）"));
+        if (msg.saved === "thinkingFix") {
+          this.flashSettings(
+            this.subagentsAcp.neverPreserveRecentTools?.length === 0
+              ? tr("绕法已应用：下一次压缩起生效，不用重启")
+              : tr("绕法已撤销，回到 billion-context 的默认"),
+          );
+        } else if (msg.saved) this.flashSettings(tr("acp_delegate 已保存（写的是 billion-context 的配置文件，对新会话生效）"));
         if (this.sheetKind === "settings" && this.settingsTab === "subagents") this.paintSettings();
         break;
       }
@@ -2513,6 +2523,8 @@ export class App {
         this.landAfterWsDrop(wsBefore, orderBefore);
         // #123：设置面板开着时，名额也跟着桥的快照对齐（校验发生在桥，页面只是镜子）。
         if (this.sheetKind === "display") this.paintWsTabsPane();
+        // 组 id 可能刚从临时组换成真工程根：账本按组存，得跟着重取（否则 pill 永远不亮）。
+        this.syncFailWs();
         break;
       }
       case "ws.created": {
@@ -2617,6 +2629,8 @@ export class App {
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         this.renderSessions();
         this.mgrRefresh?.();
+        // 同 `workspaces`：组 id 换了就按新 id 重取失败账本。
+        this.syncFailWs();
         break;
       }
       case "session.state":
@@ -8130,6 +8144,21 @@ export class App {
     });
   }
 
+  /**
+   * 账本挂在工作区组上，而组 id 会在页面活着的时候变：桥启动后补一次 git 缓存，worktree / 子目录
+   * 的「按 cwd 临时组」就换成真工程根那一组，`currentWs()` 跟着翻一次。
+   *
+   * 翻完如果不重取，`uncommittedFails()` 里 `failWs !== ws` 永远成立 → 「总结本轮错误」再也不亮
+   * （fail-cta-ui 在机器忙时间歇失败就是这个：git 子进程慢到页面先开完）。
+   */
+  private syncFailWs(): void {
+    const ws = this.currentWs();
+    if (!ws || !this.currentId || this.failWs === ws || this.failWsAsked === ws) return;
+    this.failWsAsked = ws;
+    this.socket.send({ type: "failures.get", ws });
+    this.socket.send({ type: "rules.get", ws });
+  }
+
   /** 这个会话还有几次失败没进账本：见过的条数 - 上次入账时的条数（点完按钮、账本回包后归零）。 */
   private uncommittedFails(): number {
     const ws = this.currentWs();
@@ -10698,6 +10727,12 @@ export class App {
           this.subagentsAcpSaving = true;
           this.subagentsAcpSaveError = null;
           this.act(() => this.socket.send({ type: "subagents.acp.set", patch }));
+          this.paintSettings();
+        },
+        onThinkingFix: (apply: boolean) => {
+          this.subagentsAcpSaving = true;
+          this.subagentsAcpSaveError = null;
+          this.act(() => this.socket.send({ type: "subagents.acp.thinkingFix", apply }));
           this.paintSettings();
         },
         onReload: () => this.requestSubagentsAcp(),
@@ -14320,6 +14355,7 @@ export class App {
         agent: run.agent,
         task: run.task,
         state: run.state,
+        startedAt: run.startedAt,
         items: this.execChildExpanded.has(run.id) ? this.execChildStates.get(run.id)?.items ?? [] : [],
         plan: this.execChildStates.get(run.id)?.plan ?? null,
         stats: this.execChildStates.get(run.id)?.stats ?? null,
@@ -14468,8 +14504,29 @@ export class App {
       card.append(el("div", "exec-now-line", message));
     }
     for (const child of view.runningChildren) {
-      const line = el("div", "exec-now-line exec-now-child");
-      line.append(el("b", "", child.agent), el("span", "", child.step));
+      const label = child.agent || child.task;
+      const long = child.step.length > 80 || label.length > 80;
+      const line = el(long ? "button" : "div", "exec-now-line exec-now-child") as HTMLElement;
+      if (long) {
+        const row = line as HTMLButtonElement;
+        row.type = "button";
+        row.title = tr("点开看子代理的完整任务");
+        row.setAttribute("aria-haspopup", "dialog");
+        row.onclick = () => this.openArgsDialog({
+          title: tr("子代理任务"),
+          meta: this.execDuration(child.elapsedMs),
+          blocks: child.step === child.task
+            ? [{ label: tr("任务"), text: child.task }]
+            : [
+              { label: tr("子代理"), text: label },
+              ...(child.task && child.task !== label ? [{ label: tr("任务"), text: child.task }] : []),
+              ...(child.step !== label ? [{ label: tr("当前步骤"), text: child.step }] : []),
+            ],
+        });
+      }
+      line.append(el("b", "", label), el("span", "exec-args", child.step));
+      if (long) line.append(el("span", "exec-now-open", "⤢"));
+      line.append(el("span", "exec-elapsed", this.execDuration(child.elapsedMs)));
       card.append(line);
     }
     return card;
@@ -14707,6 +14764,11 @@ export class App {
     if (row.plan) wrap.append(this.execPlanBox(row.plan, true));
     if (childState?.pending && !row.steps.length) {
       wrap.append(el("div", "exec-empty", tr("等待子代理会话…")));
+      return wrap;
+    }
+    const childDone = childState?.state === "done" || childState?.state === "failed" || row.status === "done" || row.status === "failed";
+    if (childDone && !row.steps.length && !row.plan) {
+      wrap.append(el("div", "exec-empty", tr("子代理已结束，没有可用的会话记录")));
       return wrap;
     }
     if (!row.steps.length) {
