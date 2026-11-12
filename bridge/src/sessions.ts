@@ -2593,7 +2593,7 @@ export class Session extends EventEmitter {
    * 三处整页帧（分支切换 / 唤醒续接 / 快照）与桥的 `frameFor` 都从这里取，别各拼一份。
    */
   frame(opts: { full?: boolean } = {}): { items: Item[]; history: SessionHistory } {
-    return itemsFrame(this.items, { full: Boolean(opts.full) || Boolean(this.state.scratch) });
+    return itemsFrame(this.items, { full: Boolean(opts.full) || Boolean(this.state.scratch), truncated: this.state.truncated === true });
   }
 
   idleFor(): number {

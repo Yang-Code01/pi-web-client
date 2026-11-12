@@ -274,6 +274,11 @@ export class ChatView {
   private moreRow: HTMLElement;
   private moreBtn: HTMLButtonElement;
   private hasOlder = false;
+  /**
+   * 桥上读会话文件时丢了前面的条目（文件太大，`history.truncated`）。没有更早的可翻，
+   * 这一行就变成一句说明：别让人以为开头那几句话被删了。
+   */
+  private headCut = false;
   private loadingOlder = false;
   /** 列表最上面那条的 id —— 往前翻的游标。`cards` 是 Map，插入序不一定是对话序，所以单独记。 */
   private topId: string | null = null;
@@ -713,6 +718,7 @@ export class ChatView {
     this.flashTurn(null);
     this.staging = null;
     this.hasOlder = history?.hasMore === true;
+    this.headCut = history?.truncated === true;
     this.loadingOlder = false;
     this.topId = items[0]?.id ?? null;
     // Chrome first: `push()` inserts before the jump button, so it has to be in the DOM already.
@@ -794,14 +800,18 @@ export class ChatView {
 
   /**
    * 那一行在「还有更早的 / 正在载入 / 刚翻输了一轮」时都在。优先级：
-   * 载入中 → 失败那句（此时可能已经没有更早了，也要露出来）→ 「载入更早」。
+   * 载入中 → 失败那句（此时可能已经没有更早了，也要露出来）→「载入更早」。
+   * 没有更早可翻、但桥说过文件头部没载入（`headCut`）时，这一行改成一句说明（钮不可点）。
    */
   private renderMore(): void {
     const note = this.moreNote;
-    this.moreRow.hidden = !this.hasOlder && !this.loadingOlder && note === null;
+    const cut = this.headCut && !this.hasOlder && !this.loadingOlder && note === null;
+    this.moreRow.hidden = !this.hasOlder && !this.loadingOlder && note === null && !cut;
     // 那句失败提示不是一颗能点的钮（点了也没有更早的可要），三秒后自然回到「载入更早」。
-    this.moreBtn.disabled = this.loadingOlder || note !== null;
-    this.moreBtn.textContent = this.loadingOlder ? tr("载入中…") : (note ?? tr("载入更早"));
+    this.moreBtn.disabled = this.loadingOlder || note !== null || cut;
+    this.moreBtn.textContent = this.loadingOlder
+      ? tr("载入中…")
+      : (note ?? (cut ? tr("会话文件太大，只载入了最后一段") : tr("载入更早")));
   }
 
   /**

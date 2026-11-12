@@ -4159,3 +4159,20 @@ D
 **代价 / 可改：** 仓库列卡片没有 ahead/behind 与最近提交（`GitInfo` 只有 repo/branch/dirty/empty/空/游离，加这两项会让每个子仓库多 3 个 git 进程）——首版按「仓库名 + 分支 + dirty」收敛，已在 issue 记录；探测上限 64，超出不探（界面给提示而不是分批续探）；不跟随文件系统变化（写操作后主动 fresh 重探已展开层）；不支持 submodule / worktree 内部的仓库；折叠状态是「按 cwd」而不是「按窗」，同时开多窗会互相覆盖。
 
 **验证：** `npm run typecheck`；`npm run test:githist`（含新增 `bridge/tests/git-probe-unit.mjs`：真 git 的子仓库/普通目录/空仓/游离 HEAD/非法名/截断/缓存+fresh）；`npm run test:repos:ui`（真 bridge + Playwright：伞形目录、隐藏目录、子仓库分支标记、内嵌工作台、浮层、折叠、Esc、重开回原位、窄屏抽屉、仓库会话仍复制）；`npm run test:githist:ui` 原样通过（老工作台外观回归）。原型三变体与选型记录在分支 `proto/repos-dialog`（`web/prototype/repos-dialog.html`）。
+
+## D238 会话读取预算按「正文」算：图片 base64 读完就抹掉，开头的用户消息不再被截图挤掉（用户报 bug）
+
+**问题：** 用户看到「最上面我发的第一句话没了」。真实会话（70.6 MB、529 条）里第一条用户消息整条消失，界面上顶部没有气泡、没有「载入更早」、刻度带 0 轮 —— 像是被删了。根因不在文件：`loadEntries()` 按**文件字节**只留末尾 16 MB，窗口起点落在 57.3 MB 处，06:56 那条用户消息在 08:32 起的第一条之前，整条没进 entries。体积 98% 是模型截图的 base64（50 张 ≈ 69 MB，正文 1.4 MB），每贴一张窗口就前移，越过那条消息后它静默消失；而 `truncated` 只写进 `session.state`，`web/src` 没人读，翻页又只切内存里的 items（`index.ts:1874` 的 `pageBefore`），所以既没提示也翻不回去。
+
+**决定：**
+
+1. **预算算内容字节。** `loadEntries()` 读进条目后立刻把 `image` 部件的 `data` 抹成空串（`stripImageData()`），预算按抹完之后的字节算；`mimeType` 留着，像素仍由 `loadEntryImage()` 按需从盘上流式读 —— 渲染层本来也只用 `mimeType`（`entriesToItems()` 折成「[图片]」）。正文自己超预算才从头部丢条目，此时才 `truncated = true`。
+2. **读取本身仍有上限，但放宽到 256 MB**（`MAX_READ_BYTES`）：再大就是病态输入（读一次要几秒、瞬时吃几百 MB 堆），退回「只读尾部」，剩下的交给上面的内容预算。真实案例在新规则下 529 条一条不丢，读取 ~200 ms。
+3. **`truncated` 上帧、界面说清楚。** `itemsFrame()` 在真丢过头部时才带 `history.truncated`，web 在聊天区顶部那行（`chat-more`）把「载入更早」换成不可点的「会话文件太大，只载入了最后一段」。没截断时字段不出现 —— 帧的字节与以前一致，老 UI 用例、快照都不用改。
+4. **顺手修同一文件里的一条 lint 阻塞**：`scanFirstUserText()` 的 `while ((nl = buf.indexOf(10)) >= 0)` 改成 `for (;;)` + `break`（no-assign-in-expr），语义不变。
+
+**为什么：** 16 MB 的意义是「别把几百 MB 拖进内存」，而截图字节恰恰是渲染层一个字节都不用、却最占体积的那种。按文件字节裁，等于让「贴了多少图」决定「你还看得见多久以前的话」—— 用户没有任何线索，只能以为记录丢了。另一端（真的超大文件）宁可读慢一次也不要静默丢历史，丢的时候必须有话说。
+
+**代价 / 可改：** 打开大会话要整段读一遍（70 MB ≈ 200 ms，以前读 16 MB 尾巴）；`loadEntries()` 现在会持有一段整文件的字符串，峰值随文件涨到 256 MB 上限；抹掉的是内存里的副本，文件本身一个字节不动（归属规则：pi 拥有会话文件）。没有做的：`loadEntryImage()` 每次仍扫全文件取像素（未改）；分页 API 依然只切内存里的 items，所以「丢过头」的文件翻不回更早的（只是现在会说明原因）。
+
+**验证：** 新增 `bridge/tests/session-head-unit.mjs`（26 张 800 KB 截图 + 开头一条用户消息：不截断、首条仍是用户消息、`data` 已抹空、`mimeType` 还在、`loadEntryImage` 仍取得到像素；正文超预算时从头部丢且条目连续；`itemsFrame` 只在截断时带字段）；`npm run typecheck`（bridge / peer / web + `i18n-check`）；`npm run test:history`、`npm run test:image`、`npm run test:tail` 原样通过；对真实会话跑 `loadEntries()` + `entriesToItems()`：`truncated:false`、529 条、`items[0].kind === "user"`（修前 `users: 0`）。
