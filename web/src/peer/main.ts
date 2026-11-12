@@ -463,6 +463,9 @@ function openThread(id: string): void {
   prevScroll = 0;
   app.dataset.page = "msg";
   app.dataset.mview = "chat";
+  // renderMain() 会读旧 .stream 的 scrollTop 重算 stickBottom / prevScroll，会把上面两行覆盖掉；
+  // 先清空主区，让它没有旧位置可读，贴底只由上面两行决定。
+  mainEl.replaceChildren();
   renderAll();
   // 从联系人列表点「发消息」就是要马上打字：把焦点直接放进输入框。
   // renderAll() 里 renderChat() 已经同步建好 textarea（composeBox 会更新 textInput）。

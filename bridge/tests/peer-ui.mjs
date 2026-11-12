@@ -581,6 +581,43 @@ try {
   check("翻到中间时收到新消息位置不变", Math.abs(midBefore - midAfter) <= 2, `scrollTop ${midBefore} -> ${midAfter}`);
   await sc.close();
 
+  // ---- #394 补：长对话 A 翻到中间后切到长对话 B，B 必须贴底，不继承 A 的滚动位置（两边都 120 条，所以两边都有可滚的 .stream）。 ----
+  const longHistory = (tag, nodeId, nickname) =>
+    Array.from({ length: 120 }, (_, i) => {
+      const text = `${tag} 第 ${i} 条：内网通贴底测试文字，会换行，`.repeat(2 + (i % 4));
+      return i % 2 ? msg(`${tag}-${i}`, text, me, nodeId) : msg(`${tag}-${i}`, text, { nodeId, nickname }, ME);
+    });
+  const longA = longHistory("甲", ZHANG, "小张");
+  const longB = longHistory("乙", LI, "小李");
+  const lc = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+  const lp = await lc.newPage();
+  await lp.route("**/api/**", async (route) => {
+    const req = route.request();
+    const p2 = new URL(req.url()).pathname;
+    let body = {};
+    if (p2 === "/api/peer") body = { enabled: true, running: true, reason: "", status };
+    else if (p2 === "/api/peer/threads") body = { threads: [thread(ZHANG, "小张", longA.at(-1)), thread(LI, "小李", longB.at(-1))] };
+    else if (p2 === "/api/peer/contacts") body = { contacts: [] };
+    else if (p2 === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+    else if (p2 === "/api/peer/messages") body = { entries: new URL(req.url()).searchParams.get("peer") === ZHANG ? longA : longB };
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+  });
+  await lp.goto(`${BASE}/peer.html`);
+  await lp.waitForSelector(".listbox .row");
+  await lp.click('#rail button[title="消息"]');
+  await lp.click('.listbox .row:has-text("小张")');
+  await lp.waitForTimeout(1500);
+  await lp.evaluate(() => { document.querySelector("#main .stream").scrollTop = 300; });
+  await lp.waitForTimeout(1500);
+  await lp.click('.listbox .row:has-text("小李")');
+  await lp.waitForTimeout(1500);
+  const longSwitchGap = await lp.evaluate(() => {
+    const s = document.querySelector("#main .stream");
+    return s ? Math.round(s.scrollHeight - s.scrollTop - s.clientHeight) : -1;
+  });
+  check("长对话翻到中间后切到另一个长对话仍停在底部", longSwitchGap === 0, `离底 ${longSwitchGap}px`);
+  await lc.close();
+
   // ---- #396：「消息」导航上的未读圆点。有未读就出现，只画点不写数字；全部读完后消失。宽屏 rail 与窄屏底部导航都要。 ----
   // 小张排第一、开机即主区打开即已读（宽屏）；小李 2 条未读，所以两种宽度下都有一颗要画的点。
   const navCounts = { [ZHANG]: 0, [LI]: 2 };
