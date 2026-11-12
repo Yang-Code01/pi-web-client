@@ -1,11 +1,16 @@
 /**
- * 内网通页面的两个前端回归（跑真构建产物 web/dist，API 用 page.route 假造）：
+ * 内网通页面的前端回归（跑真构建产物 web/dist，API 用 page.route 假造）：
  *
  *   1. 没有历史的人（刚加的好友）点「发消息」必须有输入框，且能真的 POST /api/peer/send；
  *      以前 renderChat() 只认 /threads 里有的会话，而 /threads 只列有历史文件的人 → 死路。
  *   2. 快速切会话不能串台：A 的 /messages 慢、B 的快，切到 B 之后不能再画 A 的消息。
+ *   3. #381：通讯录只给 1 人、状态在线表多给一个陌生 nodeId 时，「附近的人」要出现；
+ *      点「发消息」要直接聚焦输入框，发出的第一条消息命中这个陌生 nodeId。
+ *   4. #382：quick 单独成组（在好友之后、附近的人之前），两颗添加按钮并存，
+ *      传文件只给好友、离线禁用，以及中 / 英 / 日三种语境的新文案。
+ *   5. #383：忽略名单挡住在线表兜底合并，设置页清空后附近的人重新出现。
  *
- * 用假 API 是刻意的：这两个 bug 都在「拿到 JSON 之后怎么画」，跟 peer 活着与否无关。
+ * 用假 API 是刻意的：这些都测「拿到 JSON 之后怎么画」，跟 peer 活着与否无关。
  *
  * 用法：node bridge/tests/peer-ui.mjs   （先 npm run build:web）
  */
@@ -46,6 +51,9 @@ const ME = "99999999-8888-4777-8666-555555555555";
 const ZHANG = "aaaaaaaa-1111-4111-8111-111111111111";
 const LI = "bbbbbbbb-2222-4222-8222-222222222222";
 const WANG = "cccccccc-3333-4333-8333-333333333333";
+const STRANGER = "dddddddd-4444-4444-8444-444444444444";
+const QUICK = "eeeeeeee-5555-4555-8555-555555555555";
+const OFFLINE = "ffffffff-6666-4666-8666-666666666666";
 const at = Date.now() - 30_000;
 
 const msg = (id, text, from, to) => ({ id, at, from, to: { kind: "node", id: to }, kind: "text", text, ack: { id, status: "delivered" } });
@@ -86,6 +94,48 @@ const status = {
   ],
   config: { hidden: false, pauseFiles: false, dnd: false, inbox: "C:/inbox", manual: [] },
 };
+
+const strangerStatus = {
+  ...status,
+  online: [
+    { nodeId: WANG, nickname: "小王", hostname: "小王-pc", addr: "127.0.0.1", port: 7865, lastSeen: at, ips: ["127.0.0.1"] },
+    { nodeId: STRANGER, nickname: "小赵", hostname: "小赵-pc", addr: "127.0.0.1", port: 7865, lastSeen: at, ips: ["127.0.0.1"] },
+  ],
+};
+
+// #382 的通讯录行：显式带上 online / quick，避免默认桩把好友全画到「好友 · 离线」。
+const row = (nodeId, nickname, patch = {}) => ({
+  nodeId,
+  nickname,
+  hostname: `${nickname}-pc`,
+  port: 7865,
+  friend: false,
+  favorite: false,
+  incoming: false,
+  outgoing: false,
+  online: true,
+  addr: "127.0.0.1",
+  livePort: 7865,
+  at,
+  ...patch,
+});
+const quickStatus = {
+  ...status,
+  online: [
+    { nodeId: WANG, nickname: "小王", hostname: "小王-pc", addr: "127.0.0.1", port: 7865, lastSeen: at, ips: ["127.0.0.1"] },
+    { nodeId: QUICK, nickname: "小陈", hostname: "小陈-pc", addr: "127.0.0.1", port: 7865, lastSeen: at, ips: ["127.0.0.1"] },
+    { nodeId: STRANGER, nickname: "小赵", hostname: "小赵-pc", addr: "127.0.0.1", port: 7865, lastSeen: at, ips: ["127.0.0.1"] },
+  ],
+};
+// 小赵只出现在在线表里、不出现在通讯录里 → 由页面合并进「附近的人」。
+const quickContacts = [
+  row(WANG, "小王", { friend: true, online: true }),
+  row(ZHANG, "小张", { friend: true, online: false }),
+  row(QUICK, "小陈", { quick: true }),
+  row(OFFLINE, "小钱", { online: false }),
+];
+let friendCalls = [];
+let clearedIgnored = 0;
 
 let sent = null;
 const browser = await chromium.launch();
@@ -155,6 +205,231 @@ try {
     text.slice(0, 90),
   );
   await page.screenshot({ path: path.join(REPO, ".scratch", "shots", "peer-ui.png") });
+
+  // ---- #381：通讯录桩只给 1 人，状态在线名单多给一个陌生 nodeId ----
+  sent = null; // 上一段已经写过一次 sent，这段要重新看
+  const ctx2 = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+  const page2 = await ctx2.newPage();
+  await page2.route("**/api/**", async (route) => {
+    const req = route.request();
+    const p = new URL(req.url()).pathname;
+    let body = {};
+    if (p === "/api/peer") body = { enabled: true, running: true, reason: "", status: strangerStatus };
+    else if (p === "/api/peer/threads") body = { threads: [] };
+    else if (p === "/api/peer/contacts") body = { contacts: [contact(WANG, "小王")] };
+    else if (p === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+    else if (p === "/api/peer/messages") body = { entries: [] };
+    else if (p === "/api/peer/send") {
+      sent = JSON.parse(req.postData() ?? "{}");
+      body = { ok: true, id: "sent-by-ui" };
+    }
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+  });
+  await page2.goto(`${BASE}/peer.html`);
+  await page2.waitForSelector('#rail button[title="联系人"]');
+  await page2.click('#rail button[title="联系人"]');
+  await page2.waitForSelector(".listbox .row");
+  const nearbyGroup = await page2.locator('.group-title:has-text("附近的人")').count();
+  const strangerRow = await page2.locator('.listbox .row:has-text("小赵")').count();
+  check("通讯录只给 1 人时在线陌生人出现在附近的人", nearbyGroup === 1 && strangerRow === 1, `组=${nearbyGroup}，行=${strangerRow}`);
+  await page2.click('.listbox .row:has-text("小赵")');
+  await page2.click('#main button:has-text("发消息")');
+  const focused = await page2.evaluate(() => document.activeElement?.tagName ?? "");
+  const boxes2 = await page2.locator("textarea").count();
+  check("点发消息后输入框拿到焦点", focused === "TEXTAREA" && boxes2 === 1, `active=${focused}，textarea=${boxes2}`);
+  if (boxes2 === 1) {
+    await page2.fill("textarea", "你好小赵");
+    await page2.click('#main button:has-text("发送")');
+    for (let i = 0; i < 40 && !sent; i++) await page2.waitForTimeout(50);
+    check("附近的人发第一条消息命中正确 nodeId", sent?.peer === STRANGER && sent?.text === "你好小赵", JSON.stringify(sent));
+  }
+
+  // ---- #382：quick 分组 / 两颗按钮 / 文件权限 / 离线禁用 / 三语文案 ----
+  const quickFixture = async (locale) => {
+    const c = await browser.newContext({ locale, viewport: { width: 1240, height: 820 } });
+    const p = await c.newPage();
+    const missing = [];
+    p.on("console", (m) => { if (m.text().includes("[i18n] missing")) missing.push(m.text()); });
+    await p.route("**/api/**", async (route) => {
+      const req = route.request();
+      const path2 = new URL(req.url()).pathname;
+      let body = {};
+      if (path2 === "/api/peer") body = { enabled: true, running: true, reason: "", status: quickStatus };
+      else if (path2 === "/api/peer/threads") body = { threads: [] };
+      else if (path2 === "/api/peer/contacts") body = { contacts: quickContacts };
+      else if (path2 === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+      else if (path2 === "/api/peer/messages") body = { entries: [] };
+      else if (path2 === "/api/peer/send") body = { ok: true, id: "sent-by-ui" };
+      else if (path2 === "/api/peer/friend") {
+        friendCalls.push(JSON.parse(req.postData() ?? "{}"));
+        body = { ok: true };
+      }
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+    });
+    await p.goto(`${BASE}/peer.html`);
+    await p.waitForSelector("#rail button:nth-child(2)");
+    await p.click("#rail button:nth-child(2)");
+    await p.waitForSelector(".listbox .row");
+    return { c, p, missing };
+  };
+  const titlesOf = (p) => p.locator(".group-title").evaluateAll((els) => els.map((el) => el.firstChild?.textContent?.trim() ?? ""));
+  const relationOf = (p) => p.locator("#main .kv .v").nth(4).innerText();
+  // 按钮「加为好友（可传文件）」也含「传文件」三个字，必须用精确文本找真正的传文件按钮。
+  const exactFile = (p) => p.locator("#main button").filter({ hasText: /^传文件$/ }).count();
+
+  friendCalls = [];
+  const zh = await quickFixture("zh-CN");
+  const zhTitles = await titlesOf(zh.p);
+  check(
+    "quick 单独成组且在好友之后、附近的人之前",
+    JSON.stringify(zhTitles) === JSON.stringify(["好友 · 在线", "好友 · 离线", "快捷联系人", "附近的人"]),
+    JSON.stringify(zhTitles),
+  );
+  const quickRow = await zh.p.locator('.listbox .row:has-text("小陈")').count();
+  check("快捷联系人行出现在列表里", quickRow === 1, `行=${quickRow}`);
+
+  await zh.p.click('.listbox .row:has-text("小陈")');
+  const zhRel = (await relationOf(zh.p)).trim();
+  const quickDone = await zh.p.locator('#main button:has-text("已是快捷联系人")').count();
+  const quickDoneDisabled = await zh.p.locator('#main button:has-text("已是快捷联系人")').isDisabled();
+  const addFriendBtn = await zh.p.locator('#main button:has-text("加为好友（可传文件）")').count();
+  const quickFileBtn = await exactFile(zh.p);
+  const quickPending = await zh.p.locator('#main .note:has-text("已发申请")').count();
+  check(
+    "已 quick 的人：禁用快捷按钮、仍可加好友、不给传文件",
+    zhRel === "快捷联系人" && quickDone === 1 && quickDoneDisabled && addFriendBtn === 1 && quickFileBtn === 0 && quickPending === 0,
+    `关系=${zhRel}，已快捷=${quickDone}/禁用=${quickDoneDisabled}，加好友=${addFriendBtn}，传文件=${quickFileBtn}，待处理=${quickPending}`,
+  );
+
+  // 已 quick 又点了「加为好友」后，资料卡必须显示「已发申请」而不是被 quick 遮住。
+  const pendingFixture = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+  const pp = await pendingFixture.newPage();
+  await pp.route("**/api/**", async (route) => {
+    const path2 = new URL(route.request().url()).pathname;
+    let body = {};
+    if (path2 === "/api/peer") body = { enabled: true, running: true, reason: "", status: quickStatus };
+    else if (path2 === "/api/peer/contacts") body = { contacts: [{ ...row(QUICK, "小陈"), quick: true, outgoing: true }] };
+    else body = { threads: [], contacts: [], entries: [], transfers: [], nodeIds: [], ok: true, free: 1e12 };
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+  });
+  await pp.goto(`${BASE}/peer.html`);
+  await pp.click("#rail button:nth-child(2)");
+  await pp.click('.listbox .row:has-text("小陈")');
+  const pendingRel = (await relationOf(pp)).trim();
+  check("quick + 已发申请：资料卡优先显示待处理", pendingRel === "已发申请", `关系=${pendingRel}`);
+  await pendingFixture.close();
+
+  await zh.p.click('.listbox .row:has-text("小赵")');
+  const twoButtons = await zh.p.locator('#main button:has-text("快捷添加（可聊天）")').count();
+  const twoButtons2 = await zh.p.locator('#main button:has-text("加为好友（可传文件）")').count();
+  const strangerFile = await exactFile(zh.p);
+  check("在线陌生人详情两颗添加按钮并存且不给传文件", twoButtons === 1 && twoButtons2 === 1 && strangerFile === 0, `快捷=${twoButtons}，加好友=${twoButtons2}，传文件=${strangerFile}`);
+  await zh.p.click('#main button:has-text("快捷添加（可聊天）")');
+  for (let i = 0; i < 40 && !friendCalls.length; i++) await zh.p.waitForTimeout(50);
+  check(
+    "点快捷添加真的发出 action=quick 且 peer 正确",
+    friendCalls.at(-1)?.action === "quick" && friendCalls.at(-1)?.peer === STRANGER,
+    JSON.stringify(friendCalls),
+  );
+
+  await zh.p.click('.listbox .row:has-text("小钱")');
+  const offQuick = zh.p.locator('#main button:has-text("快捷添加（可聊天）")');
+  const offAdd = zh.p.locator('#main button:has-text("加为好友（可传文件）")');
+  const offQuickDisabled = await offQuick.isDisabled();
+  const offQuickTitle = await offQuick.getAttribute("title");
+  const offAddDisabled = await offAdd.isDisabled();
+  const offVisibleNote = await zh.p.locator('#main .note:has-text("对方已离线，等他上线再试")').count();
+  check(
+    "离线的人两颗按钮都禁用且提示等上线",
+    offQuickDisabled && offAddDisabled && offQuickTitle === "对方已离线，等他上线再试" && offVisibleNote === 1,
+    `快捷禁用=${offQuickDisabled}/title=${offQuickTitle}，加好友禁用=${offAddDisabled}，可见提示=${offVisibleNote}`,
+  );
+
+  await zh.p.click('.listbox .row:has-text("小王")');
+  const friendFile = await exactFile(zh.p);
+  const friendQuick = await zh.p.locator('#main button:has-text("快捷添加（可聊天）")').count();
+  check("好友有传文件、没有快捷添加按钮", friendFile === 1 && friendQuick === 0, `传文件=${friendFile}，快捷=${friendQuick}`);
+  const detailAfterSwitch = (await zh.p.locator("#main .detail .hero").innerText().catch(() => "")).replace(/\s+/g, " ");
+  check("连续切人不串台（详情跟着最后点的人走）", detailAfterSwitch.includes("小王") && !detailAfterSwitch.includes("小钱"), detailAfterSwitch.slice(0, 80));
+  check("中文语境没有缺译文告警", zh.missing.length === 0, zh.missing.join(" | "));
+  await zh.c.close();
+
+  for (const [locale, group, quickLabel, addLabel] of [
+    ["en", "Quick contacts", "Quick add (chat only)", "Add as friend (files allowed)"],
+    ["ja", "クイック連絡先", "クイック追加（チャットのみ）", "友だちに追加（ファイル送信可）"],
+  ]) {
+    const fx = await quickFixture(locale);
+    const ts = await titlesOf(fx.p);
+    check(`${locale} 语境 quick 分组名已翻译`, ts.includes(group), JSON.stringify(ts));
+    check(`${locale} 语境没有缺译文告警`, fx.missing.length === 0, fx.missing.join(" | "));
+    await fx.p.click(`.listbox .row:has-text("小赵")`);
+    const ql = await fx.p.locator(`#main button:has-text("${quickLabel}")`).count();
+    const al = await fx.p.locator(`#main button:has-text("${addLabel}")`).count();
+    check(`${locale} 语境两颗按钮文案到位`, ql === 1 && al === 1, `快捷=${ql}，加好友=${al}`);
+    await fx.c.close();
+  }
+
+  // ---- #383：忽略名单挡住在线表兜底，设置页清空后恢复 ----
+  const ignoredFixture = async () => {
+    const c = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+    const p = await c.newPage();
+    const missing = [];
+    p.on("console", (m) => { if (m.text().includes("[i18n] missing")) missing.push(m.text()); });
+    let cleared = false;
+    friendCalls = [];
+    await p.route("**/api/**", async (route) => {
+      const req = route.request();
+      const path2 = new URL(req.url()).pathname;
+      let body = {};
+      if (path2 === "/api/peer") body = { enabled: true, running: true, reason: "", status: strangerStatus };
+      else if (path2 === "/api/peer/threads") body = { threads: [] };
+      else if (path2 === "/api/peer/contacts") body = { contacts: [contact(WANG, "小王")] };
+      else if (path2 === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+      else if (path2 === "/api/peer/messages") body = { entries: [] };
+      else if (path2 === "/api/peer/ignored") body = { ok: true, nodeIds: cleared ? [] : [STRANGER] };
+      else if (path2 === "/api/peer/ignored/clear") { cleared = true; clearedIgnored += 1; body = { ok: true, cleared: 1 }; }
+      else if (path2 === "/api/peer/friend") { friendCalls.push(JSON.parse(req.postData() ?? "{}")); body = { ok: true }; }
+      else if (path2 === "/api/peer/send") body = { ok: true, id: "sent-by-ui" };
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+    });
+    await p.goto(`${BASE}/peer.html`);
+    await p.waitForSelector('#rail button[title="联系人"]');
+    await p.click('#rail button[title="联系人"]');
+    await p.waitForSelector(".listbox .row");
+    return { c, p, missing, cleared: () => cleared };
+  };
+
+  const ig = await ignoredFixture();
+  const ignoredRow = await ig.p.locator('.listbox .row:has-text("小赵")').count();
+  check("忽略名单里的人不再出现在附近的人", ignoredRow === 0, `行=${ignoredRow}`);
+
+  // 设置页：忽略名单卡显示数量，点「清空忽略名单」后仍在线的人重新出现。
+  await ig.p.click('#rail button[title="我"]');
+  await ig.p.waitForSelector('#main button:has-text("清空忽略名单")');
+  const countNote = await ig.p.locator('#main .note:has-text("已忽略 1 人")').count();
+  const clearDisabled = await ig.p.locator('#main button:has-text("清空忽略名单")').isDisabled();
+  check("设置页显示忽略人数且清空按钮可用", countNote === 1 && !clearDisabled, `note=${countNote}，禁用=${clearDisabled}`);
+  await ig.p.click('#main button:has-text("清空忽略名单")');
+  for (let i = 0; i < 40 && clearedIgnored === 0; i++) await ig.p.waitForTimeout(50);
+  check("点清空真的 POST /api/peer/ignored/clear", clearedIgnored === 1 && ig.cleared(), `次数=${clearedIgnored}`);
+
+  await ig.p.click('#rail button[title="联系人"]');
+  await ig.p.waitForSelector(".listbox .row");
+  const backRow = await ig.p.locator('.listbox .row:has-text("小赵")').count();
+  const nearbyBack = await ig.p.locator('.group-title:has-text("附近的人")').count();
+  check("清空忽略名单后附近的人恢复", backRow === 1 && nearbyBack === 1, `行=${backRow}，组=${nearbyBack}`);
+  await ig.p.click('.listbox .row:has-text("小赵")');
+  const removeBtn = await ig.p.locator('#main button:has-text("从附近移除")').count();
+  check("附近的人详情有「从附近移除」入口", removeBtn === 1, `按钮=${removeBtn}`);
+  await ig.p.click('#main button:has-text("从附近移除")');
+  for (let i = 0; i < 40 && !friendCalls.length; i++) await ig.p.waitForTimeout(50);
+  check(
+    "点从附近移除真的发出 action=remove 且 peer 正确",
+    friendCalls.at(-1)?.action === "remove" && friendCalls.at(-1)?.peer === STRANGER,
+    JSON.stringify(friendCalls),
+  );
+  check("#383 中文语境没有缺译文告警", ig.missing.length === 0, ig.missing.join(" | "));
+  await ig.c.close();
 } catch (err) {
   check("脚本跑完", false, err?.message ?? String(err));
 } finally {

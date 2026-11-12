@@ -629,7 +629,7 @@ export interface GitCommit {
 }
 
 /**
- * D234: 工作台从 `/api/git/*` 拿到的形状，和 bridge/src/gitops.ts 的同名接口一一对应。
+ * D235: 工作台从 `/api/git/*` 拿到的形状，和 bridge/src/gitops.ts 的同名接口一一对应。
  * 前端不 import 桥的源码，所以这里抄一份（与 DepPackageId / sysmanage-types.ts 同样做法）。
  */
 export type GitPending = "merge" | "rebase" | "cherry-pick" | "revert" | "bisect" | "am";

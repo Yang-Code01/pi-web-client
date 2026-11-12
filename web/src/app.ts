@@ -305,7 +305,7 @@ export class App {
   private modelsAsked = 0;
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
-  /** D234: 分支操作工作台；同时只开一扇，关了才允许再开。 */
+  /** D235: 分支操作工作台；同时只开一扇，关了才允许再开。 */
   private branchSheet: BranchSheet | null = null;
   /** D164：AI 出错记录的账本（按工作区），以及这个会话里见过的失败（按 toolCallId 去重）。 */
   private failLedger: FailLedger | null = null;
@@ -3255,7 +3255,7 @@ export class App {
   }
 
   /**
-   * D234: 分支 chip 单击打开「分支操作工作台」（看历史 / 差异 / 图解手册 + 写操作）。
+   * D235: 分支 chip 单击打开「分支操作工作台」（看历史 / 差异 / 图解手册 + 写操作）。
    * 同时只开一扇，再点一下等于关，不给第二层模态。
    */
   private openBranchWorkbench(git: GitInfo): void {

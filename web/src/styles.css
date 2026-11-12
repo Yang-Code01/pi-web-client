@@ -4324,7 +4324,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 
 .subagents-sheet .subagents-adv-block + .subagents-adv-block { margin-top: 10px; }
 
-/* ---------------------------------------------------------------- 分支操作工作台（D193 布局 / D234 扩展） */
+/* ---------------------------------------------------------------- 分支操作工作台（D193 布局 / D235 扩展） */
 /* 两列是「同一段历史的两条时间线」，所以行高、字号、留白必须完全一致 —— 两列对不齐，读者会开始
    逐行数，而不是扫一眼。宽度固定 1000，窄屏（720）叠成单列 + 顶部 tab。 */
 .branch-sheet {
@@ -4809,7 +4809,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .exec-plan.stale .exec-plan-task.in_progress .exec-plan-state { animation: none; }
 
 
-/* ---------------------------------------------------------------- D234 分支操作工作台
+/* ---------------------------------------------------------------- D235 分支操作工作台
    沿用 D193 的 .branch-sheet 尺寸 / 遮罩 / 令牌，只补三 tab、居中操作卡（样张 D）、
    对照分支检索、逐文件清单与结果卡。操作卡是 740px 居中模态，背景变暗是刻意选的代价。 */
 .go-sheet { position: relative; }

@@ -734,9 +734,11 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/peer/friend" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       const action = String(body?.action ?? "");
-      if (!["request", "accept", "favorite", "remove"].includes(action)) return json(res, 400, { error: "未知动作" });
+      const actions = ["request", "quick", "accept", "favorite", "remove"] as const;
+      type FriendAction = (typeof actions)[number];
+      if (!(actions as readonly string[]).includes(action)) return json(res, 400, { error: "未知动作" });
       try {
-        return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as "request", Boolean(body?.on)));
+        return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as FriendAction, Boolean(body?.on)));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
@@ -815,6 +817,20 @@ async function main(): Promise<void> {
       const body = await readBody(req).catch(() => ({}));
       try {
         return json(res, 200, await peer.addManual(String(body?.addr ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/ignored" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.ignored());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/ignored/clear" && req.method === "POST") {
+      try {
+        return json(res, 200, await peer.clearIgnored());
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
@@ -930,7 +946,7 @@ async function main(): Promise<void> {
       }
     }
 
-    // D234: 分支操作工作台。写操作与仓库数据只在「本机回环 + 非隧道」放行：
+    // D235: 分支操作工作台。写操作与仓库数据只在「本机回环 + 非隧道」放行：
     // cloudflared 是本机起的，隧道请求的 remoteAddress 天然是 loopback，只看地址会把写权限漏给公网；
     // 局域网直连不带 cf 头，只看 publicReq 也会漏，所以两道闸都要过。
     if (url.pathname.startsWith("/api/git/") && ["/api/git/state", "/api/git/refs", "/api/git/diff", "/api/git/op"].includes(url.pathname) && req.method === "POST") {

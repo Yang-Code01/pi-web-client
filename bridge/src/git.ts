@@ -94,7 +94,7 @@ export async function gitRoot(dir: string): Promise<string | null> {
 }
 
 /**
- * D234: 写操作改了仓库之后，5s TTL 里的旧分支/dirty 数不能继续骗状态行。
+ * D235: 写操作改了仓库之后，5s TTL 里的旧分支/dirty 数不能继续骗状态行。
  * 清掉这个 dir 的 gitInfo 条目与它名下所有 (base,n) 的历史条目；下一次读会重新 probe。
  * 定义在 historyCache 之前没关系：调用发生在写操作返回时，那时模块早已初始化完。
  */
