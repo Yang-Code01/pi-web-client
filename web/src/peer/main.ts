@@ -457,6 +457,9 @@ function openThread(id: string): void {
   S.mview = "chat";
   S.msgs = [];
   S.msgsFor = "";
+  // 打开会话永远从最底下开始：不继承上一个会话的滚动位置（它可能是翻到半截的）。
+  stickBottom = true;
+  prevScroll = 0;
   app.dataset.page = "msg";
   app.dataset.mview = "chat";
   renderAll();
@@ -946,10 +949,11 @@ function renderChat(): void {
     stream.append(h("div", "empty", tr("还没有消息，说点什么吧")));
   }
   mainEl.append(stream);
-  stream.scrollTop = stickBottom ? stream.scrollHeight : prevScroll;
-
+  // 输入区必须先挂上去再定位：它和消息流同在 .main 的 flex 列里，挂之前量到的视口高度
+  // 比最终的高 ~121px，scrollTop = scrollHeight 之后输入区一挂，最后一屏就被顶到视口底下。
   const compose = composeBox(t);
   mainEl.append(compose);
+  stream.scrollTop = stickBottom ? stream.scrollHeight : prevScroll;
 }
 
 function entryNode(e: Entry, t: Thread): HTMLElement {
