@@ -3803,6 +3803,24 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sc-input::placeholder { color: var(--faint); }
 .sc-input:focus { outline: none; border-color: var(--accent-dim); }
 .sc-hint { font-size: 11px; color: var(--danger); width: 100%; }
+/* #402：待发图横条 + 一行说明 + 底部那排（📎 / 错误 / 发送）。 */
+.scratch-attach { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+.scratch-attach[hidden], .scratch-note[hidden] { display: none; }
+.sc-shot { position: relative; border: 1px solid var(--line); border-radius: 8px; padding: 2px; background: var(--panel-2); }
+.sc-shot img { display: block; width: 56px; height: 56px; object-fit: cover; border-radius: 6px; }
+.sc-shot-del {
+  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0;
+  display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--panel); color: var(--text); font-size: 12px; line-height: 1; cursor: pointer;
+}
+.sc-shot-del:hover { border-color: var(--danger); color: var(--danger); }
+.scratch-note { width: 100%; font-size: 11px; color: var(--faint); }
+.scratch-note.warn { color: var(--warn); }
+.sc-actions { display: flex; align-items: center; gap: 8px; width: 100%; }
+.sc-actions .sc-hint { flex: 1; text-align: right; }
+.sc-attach { padding: 4px 8px; font-size: 14px; line-height: 1.2; }
+.sc-shots { margin-top: 6px; }
+.scratch-model-chip.warn { border-color: var(--warn); color: var(--warn); }
 .scratch-model-chip { padding: 4px 8px; font-size: 11px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scratch-models {
   max-height: calc(var(--vh1) * 42); overflow-y: auto; margin: 8px 16px 0; padding: 4px;

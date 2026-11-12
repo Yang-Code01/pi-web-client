@@ -2150,7 +2150,7 @@ function openPreview(path: string): void {
 }
 
 /** 点开一张会话图片：手风琴交给 app 的灯箱，聊天区只管把事件递出去。 */
-function openImage(src: string, alt: string): void {
+export function openImage(src: string, alt: string): void {
   window.dispatchEvent(new CustomEvent("pi-image", { detail: { src, alt } }));
 }
 

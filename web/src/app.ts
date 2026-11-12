@@ -8,6 +8,7 @@ import { BUILD_ID } from "./build.ts";
 import { filterCommands, PANEL_COMMANDS, type CommandItem } from "./commands.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
+import { ATTACH_IMAGE, imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
 import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type ComposerChild, type FailLedger, type SeenFail } from "./failures.ts";
@@ -13528,16 +13529,9 @@ export class App {
   private async addImages(files: FileList | readonly File[] | null): Promise<void> {
     const list = files ? Array.from(files) : [];
     if (!list.length) return;
-    for (const file of list) {
-      const isSvg = file.type === "image/svg+xml" || /\.svg$/i.test(file.name);
-      const bitmap = isSvg ? await rasterizeSvg(file) : await createImageBitmap(file).catch(() => null);
-      if (isSvg && !bitmap) {
-        this.warn(tr("SVG「{p1}」渲染失败，没有附加", { p1: file.name }));
-        continue;
-      }
-      const data = await downscale(file, bitmap);
-      this.images.push(data);
-    }
+    const { images, failed } = await imagesFromFiles(list);
+    for (const name of failed) this.warn(tr("SVG「{p1}」渲染失败，没有附加", { p1: name }));
+    this.images.push(...images);
     this.updateImageBadge();
     this.imageSheetPaint?.();
   }
@@ -17369,7 +17363,6 @@ function permMode(id: string): PermMode {
   return { id: "ask", icon: "🛡", label: tr("危险时确认"), desc: "" };
 }
 
-type PendingImage = { data: string; mimeType: string };
 type PasteBlock = { text: string; open: boolean };
 type Draft = { text: string; images: PendingImage[]; pastes: PasteBlock[] };
 
@@ -17652,80 +17645,8 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
 /** "⌘V" on Apple hardware, "Ctrl+V" everywhere else. */
 const PASTE_KEY = /Mac|iPhone|iPad|iPod/.test(`${navigator.platform} ${navigator.userAgent}`) ? "⌘V" : "Ctrl+V";
 
-/**
- * 从剪贴板里抖出文件（截图、从资源管理器复制的文件）。截图粘贴在 Chrome/Safari/Firefox 上都以
- * file item 出现，但 Safari 有时只给 files 不给 items，所以两条路都试。
- */
-function pastedFilesFrom(data: DataTransfer | null): File[] {
-  if (!data) return [];
-  const out: File[] = [];
-  for (const item of Array.from(data.items ?? [])) {
-    if (item.kind !== "file") continue;
-    const file = item.getAsFile();
-    if (file) out.push(file);
-  }
-  if (!out.length) out.push(...Array.from(data.files ?? []));
-  return out;
-}
-
-/** Images keep going to the model as pixels; every other file is referenced by path. */
-function splitImages(files: File[]): { images: File[]; others: File[] } {
-  const images: File[] = [];
-  const others: File[] = [];
-  for (const f of files) (f.type.startsWith("image/") ? images : others).push(f);
-  return { images, others };
-}
-
-/** Picked files with these extensions get attached like a pasted image instead of inserted as a path. */
-const ATTACH_IMAGE = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
-
 /** #106: 表格类文件即使读不了（.xls/.ods/加密包），也用「这个格式这里不支持」而不是通用二进制文案。 */
 const DESKTOP_OPEN = /\.(xlsx|xlsm|xlsb|xls|ods|pptx|pptm|ppsx|potx|ppt|pps|pdf|doc|docx)$/i;
-
-/** SVG has no pixels: render it through an <img> (scripts never run there) onto a canvas. */
-async function rasterizeSvg(file: File): Promise<ImageBitmap | null> {
-  const url = URL.createObjectURL(file.type ? file : new Blob([file], { type: "image/svg+xml" }));
-  try {
-    const img = new Image();
-    img.src = url;
-    await img.decode();
-    let w = img.naturalWidth;
-    let h = img.naturalHeight;
-    if (!w || !h) {
-      w = 1024;
-      h = 1024;
-    }
-    const scale = Math.max(1, 1024 / Math.max(w, h));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(w * scale);
-    canvas.height = Math.round(h * scale);
-    const ctx = canvas.getContext("2d")!;
-    ctx.fillStyle = "#fff"; // jpeg has no alpha; transparent svg strokes would vanish on black
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    return await createImageBitmap(canvas);
-  } catch {
-    return null;
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-async function downscale(file: File, bitmap: ImageBitmap | null): Promise<{ data: string; mimeType: string }> {
-  const max = 2048;
-  if (!bitmap) {
-    const buf = await file.arrayBuffer();
-    return { data: btoa(String.fromCharCode(...new Uint8Array(buf))), mimeType: file.type || "image/png" };
-  }
-  const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  const ctx = canvas.getContext("2d")!;
-  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.86);
-  return { data: dataUrl.split(",")[1], mimeType: "image/jpeg" };
-}
 
 /** "Deepseek-V4.1-Flash · x0.11 · 1M" -> "Deepseek-V4.1-Flash": the chip has no room for pricing. */
 function shortModelName(name: string): string {

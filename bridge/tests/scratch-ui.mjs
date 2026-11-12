@@ -54,6 +54,9 @@ const env = {
   PI_WEB_ROOT: path.join(REPO, "web", "dist"),
   PI_BIN: FAKE_PI,
   FAKE_PI_LOG: path.join(REPO, ".scratch", "scratch-ui-fake-pi.jsonl"),
+  // #402: 桩模型默认只收文字；这里让「Fake Model」能看图、「Fake Model 2」不能，
+  // 同一轮里既能验发图，也能验看不了图时的拦截。
+  FAKE_PI_VISION: "1",
 };
 execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
 const bridge = spawn(process.execPath, [DIST], { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -261,6 +264,104 @@ try {
   check("清空后对话变空", true);
   check("清空后还能接着输入", await page.locator(".sc-input").isEnabled());
 
+  // #402：随手问贴图片。剪贴板里的图走和主输入框同一条管线（web/src/images.ts），
+  // 只是这里还要多管两件事：模型看不看得见图，以及图跟着哪条提问走。
+  const pasteFiles = (specs) =>
+    page.evaluate(async (list) => {
+      const dt = new DataTransfer();
+      for (const spec of list) {
+        let blob;
+        if (spec.kind === "text") {
+          blob = new Blob([spec.body ?? "hello"], { type: spec.type });
+        } else {
+          const canvas = document.createElement("canvas");
+          canvas.width = 40;
+          canvas.height = 24;
+          const ctx = canvas.getContext("2d");
+          ctx.fillStyle = spec.color ?? "#4a90d9";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          blob = await new Promise((resolve) => canvas.toBlob((b) => resolve(b), "image/png"));
+        }
+        dt.items.add(new File([blob], spec.name, { type: spec.type }));
+      }
+      const ev = new ClipboardEvent("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, "clipboardData", { value: dt });
+      document.querySelector(".sc-input").dispatchEvent(ev);
+    }, specs);
+  const pickModel = async (hasText, misses) => {
+    await page.locator(".scratch-model-chip").click();
+    const row = page.locator(".scratch-model").filter({ hasText });
+    if (!(await row.first().isVisible())) await page.locator(".scratch-models .model-group-head").last().click();
+    await row.first().click();
+    await page
+      .waitForFunction(
+        (miss) => !new RegExp(miss).test(document.querySelector(".scratch-model-chip")?.textContent ?? ""),
+        misses,
+        { timeout: 15000 },
+      )
+      .catch(() => {});
+  };
+  const imagePrompts = () => piNotes().filter((n) => n.t === "prompt" && Array.isArray(n.images) && n.images.length > 0);
+  const strip = page.locator(".scratch-attach");
+  const sendBtn = page.locator(".scratch-sheet .btn.primary");
+  const noteEl = page.locator(".scratch-note");
+
+  // ① 模型看不了图：图能贴上，但发送得先停下来说清楚。
+  await pickModel(/Fake Model 2/, "Fake Model 2");
+  await pasteFiles([{ kind: "image", name: "shot.png", type: "image/png" }]);
+  await page.waitForSelector(".scratch-attach .sc-shot img", { timeout: 15000 });
+  check("贴图后待发条里出现缩略图", (await page.locator(".scratch-attach .sc-shot").count()) === 1);
+  check("看不了图的模型把发送置灰", await sendBtn.isDisabled());
+  check("看不了图时说明写清楚", /看不了图/.test((await noteEl.textContent()) ?? "") && (await noteEl.isVisible()), (await noteEl.textContent()) ?? "");
+  check("看不了图时模型 chip 换成警示色", /warn/.test((await page.locator(".scratch-model-chip").getAttribute("class")) ?? ""));
+  await page.locator(".scratch-attach .sc-shot-del").click();
+  await page.waitForFunction(() => document.querySelector(".scratch-attach")?.hidden === true, null, { timeout: 5000 });
+  check("点 × 把待发图去掉", (await page.locator(".scratch-attach .sc-shot").count()) === 0 && !(await noteEl.isVisible()));
+  check("去掉图后又能发送", !(await sendBtn.isDisabled()));
+
+  // ② 换成能看图的模型：纯图片也能发出去，气泡里点得开。
+  await pickModel(/Fake Model(?! 2)/, "Fake Model 2");
+  const sentBefore = imagePrompts().length;
+  await pasteFiles([{ kind: "image", name: "photo.png", type: "image/png", color: "#d94a90" }]);
+  await page.waitForSelector(".scratch-attach .sc-shot img", { timeout: 15000 });
+  check("能看图的模型不置灰", !(await sendBtn.isDisabled()));
+  await page.locator(".sc-input").press("Enter");
+  await page.waitForSelector(".scratch-list .sc-user .msg-image img", { timeout: 30000 });
+  const thumb = await page.evaluate(() => {
+    const img = document.querySelector(".scratch-list .sc-user .msg-image img");
+    return { src: img?.getAttribute("src") ?? "", alt: img?.getAttribute("alt") ?? "" };
+  });
+  check("气泡里的缩略图走会话图片接口", /\/api\/session\/image\?.*item=/.test(thumb.src), thumb.src);
+  check("缩略图有无障碍文案", thumb.alt.length > 0, thumb.alt);
+  check("纯图片提问进了转录", (await page.locator(".scratch-list .sc-user .msg-image").count()) === 1);
+  check("图跟着那条提问一起到了 pi", (await waitUntil(() => imagePrompts().length > sentBefore, 10000)) && imagePrompts().at(-1)?.images?.[0] === "image/jpeg");
+  check("发送后待发条收起来", await strip.evaluate((el) => el.hidden));
+
+  // ③ 非图片文件：不收，也不当成路径塞进去。
+  await pasteFiles([{ kind: "text", name: "notes.txt", type: "text/plain", body: "hello" }]);
+  await page.waitForFunction(() => /只收图片/.test(document.querySelector(".scratch-note")?.textContent ?? ""), null, { timeout: 5000 }).catch(() => {});
+  check("非图片拒收并说明", /只收图片/.test((await noteEl.textContent()) ?? "") && (await noteEl.isVisible()));
+  check("非图片不会进待发条", (await page.locator(".scratch-attach .sc-shot").count()) === 0);
+
+  // ④ 清空连没发出去的图一起清。
+  await pasteFiles([{ kind: "image", name: "temp.png", type: "image/png" }]);
+  await page.waitForSelector(".scratch-attach .sc-shot img", { timeout: 15000 });
+  await page.locator(".scratch-clear").click();
+  await page.waitForFunction(() => !document.querySelector(".sc-user") && document.querySelector(".scratch-attach")?.hidden === true, null, { timeout: 20000 });
+  check("清空连待发图一起清", (await page.locator(".scratch-attach .sc-shot").count()) === 0);
+  check("清空后说明行也收起来", !(await noteEl.isVisible()));
+
+  // ⑤ 会话失效（404）时新开一条，图得跟着原文字一起重发。
+  const beforeReopen = imagePrompts().length;
+  await page.evaluate(() => { window.__failNextScratchPrompt = true; });
+  await pasteFiles([{ kind: "image", name: "keep.png", type: "image/png", color: "#3ac06b" }]);
+  await page.waitForSelector(".scratch-attach .sc-shot img", { timeout: 15000 });
+  await page.locator(".sc-input").press("Enter");
+  await page.waitForFunction(() => /会话没了，已开新的，接着问/.test(document.querySelector(".scratch-list")?.textContent ?? ""), null, { timeout: 30000 });
+  await page.waitForSelector(".scratch-list .sc-user .msg-image img", { timeout: 30000 });
+  check("404 重开时图跟着那句话一起发", await waitUntil(() => imagePrompts().length > beforeReopen, 10000));
+  check("404 重开后只有一条带图的提问", (await page.locator(".scratch-list .sc-user .msg-image").count()) === 1);
+
   await pauseBtn.click();
   await page.waitForFunction(() => document.querySelector(".scratch-state")?.textContent === "已暂停", null, { timeout: 15000 });
   const launchesBeforePausedClear = sessionArgv().length;
@@ -350,7 +451,16 @@ try {
   await page.locator(".sc-input").fill("STAY 日文暂停提示");
   await page.locator(".sc-input").press("Enter");
   await page.waitForFunction(() => document.querySelector(".scratch-pause")?.disabled === true, null, { timeout: 10000 });
-  check("日文轮次中的禁用原因跟着变", (await page.locator(".scratch-pause").getAttribute("title")) === "このターンが終わるまで一時停止できません");
+  check(
+    "日文轮次中的禁用原因跟着变",
+    (await page.locator(".scratch-pause").getAttribute("title")) === "このターンが終わるまで一時停止できません",
+    JSON.stringify(await page.evaluate(() => ({
+      title: document.querySelector(".scratch-pause")?.getAttribute("title"),
+      disabled: document.querySelector(".scratch-pause")?.disabled,
+      state: document.querySelector(".scratch-state")?.textContent,
+      hint: document.querySelector(".scratch-hint")?.textContent,
+    }))),
+  );
   await page.waitForFunction(() => document.querySelector(".scratch-pause")?.disabled === false, null, { timeout: 15000 });
   await page.locator(".scratch-pause").click();
   await page.waitForFunction(() => document.querySelector(".scratch-state")?.textContent === "一時停止", null, { timeout: 15000 });
@@ -429,7 +539,16 @@ try {
   await page.locator(".sc-input").fill("STAY English pause tooltip");
   await page.locator(".sc-input").press("Enter");
   await page.waitForFunction(() => document.querySelector(".scratch-pause")?.disabled === true, null, { timeout: 10000 });
-  check("英文轮次中的禁用原因跟着变", (await page.locator(".scratch-pause").getAttribute("title")) === "Wait for this turn to finish before pausing");
+  check(
+    "英文轮次中的禁用原因跟着变",
+    (await page.locator(".scratch-pause").getAttribute("title")) === "Wait for this turn to finish before pausing",
+    JSON.stringify(await page.evaluate(() => ({
+      title: document.querySelector(".scratch-pause")?.getAttribute("title"),
+      disabled: document.querySelector(".scratch-pause")?.disabled,
+      state: document.querySelector(".scratch-state")?.textContent,
+      hint: document.querySelector(".scratch-hint")?.textContent,
+    }))),
+  );
   await page.waitForFunction(() => document.querySelector(".scratch-pause")?.disabled === false, null, { timeout: 15000 });
   await page.locator(".scratch-pause").click();
   await page.waitForFunction(() => document.querySelector(".scratch-state")?.textContent === "Paused", null, { timeout: 15000 });
