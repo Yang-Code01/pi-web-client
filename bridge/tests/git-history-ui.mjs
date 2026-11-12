@@ -4,7 +4,7 @@
  * 这个测试自己起一份 bridge（临时口令 / 临时 state / fake pi），再在临时 git 仓库里开一个会话，
  * 用真实浏览器点一遍：三 tab、全部动词、cherry-pick 常驻、交给 AI 两出口、对照分支输入检索、
  * 居中操作卡、红色确认、真实写操作后 chip 刷新、结构化失败卡、冲突态只放行中止 / 继续、
- * 隧道 403、窄屏单列。
+ * 公网 / 局域网可读写、窄屏单列。
  *
  * 先 `npm run build`（bridge/dist + web/dist 都是这里的输入），再：
  *   npm run test:githist:ui
@@ -89,7 +89,7 @@ const env = {
   PI_WEB_STATE: STATE,
   PI_AGENT_DIR: path.join(ROOT, "agent"),
   PI_WEB_PORT: String(PORT),
-  PI_WEB_HOST: "127.0.0.1",
+  PI_WEB_HOST: "0.0.0.0", // D240: 让局域网非回环地址也能连回来，验「不再只认 127.0.0.1」。
   PI_WEB_TUNNEL: "0",
   PI_WEB_ROOT: path.join(REPO, "web", "dist"),
   PI_BIN: FAKE_PI,
@@ -336,21 +336,52 @@ try {
   await page.click(".git-chip");
   await page.waitForSelector(".bc-row", { timeout: 20000 });
 
-  // 双闸：隧道头即使来自回环，写操作也必须 403。
-  const tunnel = await fetch(`${BASE}/api/git/op`, {
-    method: "POST",
-    headers: { cookie, "content-type": "application/json", "x-forwarded-proto": "https" },
-    body: JSON.stringify({ dir, id: "tag", params: { name: "should-not-exist" } }),
+  // D240: 双闸已拆。cookie 闸之后，公网隧道头与非回环（局域网）对端都必须能读写。
+  // 这里不真打标签：unknown_op 让 gitops 在跑 git 之前就结构化返回，验证的是「路由放不放行」。
+  const remoteBodies = [
+    { name: "公网隧道头", base: BASE, headers: { cookie, "content-type": "application/json", "x-forwarded-proto": "https" } },
+  ];
+  // 让桥听 0.0.0.0 后，用本机一张非回环网卡地址连回去：socket.remoteAddress 就不再是 127.0.0.1。
+  // 一张张试到能连通为止（Hyper-V / WSL 的虚拟网卡经常在那但连不上），全连不上就明说，不静默跳过。
+  const lanIps = Object.values(os.networkInterfaces()).flat()
+    .filter((net) => net && net.family === "IPv4" && !net.internal)
+    .map((net) => net.address);
+  let lanBase = null;
+  for (const ip of lanIps) {
+    const candidate = `http://${ip}:${PORT}`;
+    try { if ((await fetch(`${candidate}/healthz`, { signal: AbortSignal.timeout(1200) })).ok) { lanBase = candidate; break; } } catch { /* 试下一张网卡 */ }
+  }
+  check("有可用的局域网地址做非回环测试", Boolean(lanBase), lanIps.join(",") || "无");
+  if (lanBase) remoteBodies.push({ name: "局域网非回环", base: lanBase, headers: { cookie, "content-type": "application/json" } });
+  const opBody = JSON.stringify({ dir, id: "no-such-op", params: {} });
+  for (const entry of remoteBodies) {
+    const read = await fetch(`${entry.base}/api/git/state`, {
+      method: "POST", headers: entry.headers, body: JSON.stringify({ dir }),
+    });
+    const readBody = await read.json();
+    check(`${entry.name}读仓库状态 200`, read.status === 200 && typeof readBody.repo === "string" && readBody.repo.toLowerCase() === dir.replace(/\\/g, "/").toLowerCase() && readBody.branch === "feat/ui-test", `HTTP ${read.status} ${JSON.stringify(readBody).slice(0, 160)}`);
+    const op = await fetch(`${entry.base}/api/git/op`, { method: "POST", headers: entry.headers, body: opBody });
+    const opJson = await op.json();
+    check(`${entry.name}写操作放行到白名单`, op.status === 200 && opJson.code === "unknown_op", `HTTP ${op.status} ${JSON.stringify(opJson).slice(0, 160)}`);
+  }
+  // 只读 REST 的 publicReq 早退也拆了：带隧道头仍要拿到真实分支，fetch 仍走本地 origin。
+  const tunnelGit = await fetch(`${BASE}/api/git?dir=${encodeURIComponent(dir)}&fresh=1`, { headers: { cookie, "x-forwarded-proto": "https" } });
+  const tunnelGitBody = await tunnelGit.json();
+  check("隧道头读分支 chip 数据", tunnelGit.status === 200 && tunnelGitBody.repo !== null && tunnelGitBody.branch === "feat/ui-test", JSON.stringify(tunnelGitBody).slice(0, 160));
+  const tunnelHistory = await fetch(`${BASE}/api/git/history?dir=${encodeURIComponent(dir)}&n=10&fresh=1`, { headers: { cookie, "x-forwarded-proto": "https" } });
+  const tunnelHistoryBody = await tunnelHistory.json();
+  check("隧道头读提交历史", tunnelHistory.status === 200 && tunnelHistoryBody.repo !== null && Array.isArray(tunnelHistoryBody.left), `HTTP ${tunnelHistory.status}`);
+  const tunnelFetch = await fetch(`${BASE}/api/git/fetch`, {
+    method: "POST", headers: { cookie, "content-type": "application/json", "x-forwarded-proto": "https" },
+    body: JSON.stringify({ dir }),
   });
-  const tunnelBody = await tunnel.json();
-  check("隧道写操作 403", tunnel.status === 403, `HTTP ${tunnel.status}`);
-  check("隧道写操作码 op_public", tunnelBody.code === "op_public", JSON.stringify(tunnelBody));
-  const local = await fetch(`${BASE}/api/git/state`, {
+  const tunnelFetchBody = await tunnelFetch.json();
+  check("隧道头 fetch 不再 403", tunnelFetch.status === 200 && tunnelFetchBody.ok === true, `HTTP ${tunnelFetch.status} ${JSON.stringify(tunnelFetchBody).slice(0, 160)}`);
+  check("本机回环读仓库状态 200", (await (await fetch(`${BASE}/api/git/state`, {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify({ dir }),
-  });
-  check("本机回环读仓库状态 200", local.ok && (await local.json()).repo !== undefined);
+  })).json()).repo !== undefined);
 
   // Esc 逐层收起：先操作卡，再整个弹窗。
   await page.click('.go-tool-row [data-op="fetch"]');
@@ -372,7 +403,7 @@ try {
   check("窄屏只显示一列", await small.locator(".bc-col:visible").count() === 1);
   await narrow.close();
 
-  console.log("gitops-ui: ok — 三 tab / 24 动词 / AI 两出口 / 对照检索 / 操作卡 / 红色确认 / chip 刷新 / 失败卡 / 冲突态 / 隧道 403 / 窄屏");
+  console.log("gitops-ui: ok — 三 tab / 24 动词 / AI 两出口 / 对照检索 / 操作卡 / 红色确认 / chip 刷新 / 失败卡 / 冲突态 / 公网·局域网可读写 / 窄屏");
 } finally {
   try { await browser?.close(); } catch { /* ignore */ }
   try { if (socket?.readyState === WebSocket.OPEN) socket.close(); } catch { /* ignore */ }

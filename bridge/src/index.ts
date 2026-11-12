@@ -902,10 +902,9 @@ async function main(): Promise<void> {
       return json(res, 200, await statPath(url.searchParams.get("path") ?? ""));
     }
 
-    // Q-021: the branch under the composer. A branch name is this machine's working state, so a
-    // tunnel visitor neither needs it nor may have it (same call as /api/clipboard-files).
+    // Q-021: the branch under the composer. D240: 登录口令是唯一边界，公网 / 局域网访客
+    // 和本机一样能读分支名（不再按 publicReq / 回环地址分流）。
     if (url.pathname === "/api/git" && req.method === "GET") {
-      if (publicReq) return json(res, 200, { repo: null });
       const dir = (url.searchParams.get("dir") ?? "").trim();
       if (!dir) return fail(res, 400, "dir_empty", "dir 不能为空", undefined, { repo: null });
       if (!path.isAbsolute(dir)) return fail(res, 400, "dir_not_absolute", "dir 必须是绝对路径", undefined, { repo: null });
@@ -918,9 +917,8 @@ async function main(): Promise<void> {
       }
     }
 
-    // 分支历史弹窗（D193）：两列提交 + ahead/behind，只读；走隧道时不给（分支名是本机工作状态）。
+    // 分支历史弹窗（D193）：两列提交 + ahead/behind，只读。D240: 公网 / 局域网同样可读。
     if (url.pathname === "/api/git/history" && req.method === "GET") {
-      if (publicReq) return json(res, 200, { repo: null });
       const dir = (url.searchParams.get("dir") ?? "").trim();
       if (!dir) return fail(res, 400, "dir_empty", "dir 不能为空", undefined, { repo: null });
       if (!path.isAbsolute(dir)) return fail(res, 400, "dir_not_absolute", "dir 必须是绝对路径", undefined, { repo: null });
@@ -934,9 +932,9 @@ async function main(): Promise<void> {
       }
     }
 
-    // 弹窗里那个「⧗ Fetch origin」：本机唯一会出网的 git 调用，公网访问一律拒绝。
+    // 弹窗里那个「⧗ Fetch origin」。D240: 公网 / 局域网同样能发起；gitFetch 自己仍带
+    // 45 秒超时与 GIT_TERMINAL_PROMPT=0 / GIT_ASKPASS=echo / credential.interactive=never 三件套。
     if (url.pathname === "/api/git/fetch" && req.method === "POST") {
-      if (publicReq) return fail(res, 403, "fetch_public", "通过公网访问时不能在你的电脑上跑 git fetch");
       const body = await readBody(req).catch(() => ({}));
       const dir = String(body?.dir ?? "").trim();
       if (!dir) return fail(res, 400, "dir_empty", "dir 不能为空");
@@ -950,20 +948,15 @@ async function main(): Promise<void> {
       }
     }
 
-    // D235: 分支操作工作台。写操作与仓库数据只在「本机回环 + 非隧道」放行：
-    // cloudflared 是本机起的，隧道请求的 remoteAddress 天然是 loopback，只看地址会把写权限漏给公网；
-    // 局域网直连不带 cf 头，只看 publicReq 也会漏，所以两道闸都要过。
+    // D235: 分支操作工作台。D240: 不再按 publicReq / 回环地址分流 —— cookie 闸（上面 `ok`）
+    // 是唯一边界，登录后的公网隧道与局域网访客和本机同样能读状态、执行白名单动词。
     if (url.pathname.startsWith("/api/git/") && ["/api/git/state", "/api/git/refs", "/api/git/diff", "/api/git/op", "/api/git/probe"].includes(url.pathname) && req.method === "POST") {
-      const peer = req.socket.remoteAddress ?? "";
-      if (!isLoopbackPeer(peer) || publicReq) {
-        return fail(res, 403, "op_public", "只允许本机回环访问时操作 git（公网/局域网一律拒绝）");
-      }
       const body = await readBody(req).catch(() => ({}));
       const dir = String(body?.dir ?? "").trim();
       if (!dir) return fail(res, 400, "dir_empty", "dir 不能为空");
       if (!path.isAbsolute(dir)) return fail(res, 400, "dir_not_absolute", "dir 必须是绝对路径");
       try {
-        // #392 目录与仓库：展开一层时批量问「哪些直接子目录自己是仓库」。只读，但同样只给本机回环。
+        // #392 目录与仓库：展开一层时批量问「哪些直接子目录自己是仓库」。只读，公网 / 局域网同样可问。
         if (url.pathname === "/api/git/probe") {
           return json(res, 200, await probeChildren(dir, body?.names, { fresh: body?.fresh === true }));
         }
