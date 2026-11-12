@@ -149,6 +149,18 @@ try {
   for (const id of ["history", "diff", "manual"]) {
     check(`tab ${id} 存在`, await page.locator(`.go-tabs [data-tab="${id}"]`).count() === 1);
   }
+  await page.waitForSelector(".go-branch-side [data-group]", { timeout: 20000 });
+  const groups = await page.evaluate(() => {
+    const heads = [...document.querySelectorAll(".go-branch-side [data-group]")];
+    return {
+      names: heads.map((n) => n.dataset.group),
+      expanded: heads.map((n) => n.getAttribute("aria-expanded")),
+      rows: document.querySelectorAll(".go-branch-side .go-branch-row").length,
+    };
+  });
+  check("右栏两组都在（本地 + 远程）", groups.names.join() === "本地,远程");
+  check("右栏两组首次全部折叠", groups.rows === 0 && groups.expanded.every((v) => v === "false"));
+  await page.click('.go-branch-side [data-group="本地"]');
   await page.waitForSelector(".go-branch-side .go-branch-row", { timeout: 20000 });
   const rowBox = await page.evaluate(() => {
     const rows = [...document.querySelectorAll(".go-branch-side .go-branch-row")];
@@ -158,6 +170,13 @@ try {
   // 行里有 overflow:hidden，flex 的自动最小尺寸是 0；子项不认 flex:none 时会一起压成几像素，文字只剩中间一条。
   check(`右栏 ${rowBox.count} 个分支行没被 flex 压扁`, rowBox.count > 30 && rowBox.min >= 18);
   check("右栏分支行文字完整", rowBox.names.every((t) => /^●? ?[\w./-]+$/.test(t)));
+  check("展开只影响本地组", (await page.locator('.go-branch-side [data-group="远程"]').getAttribute("aria-expanded")) === "false");
+  check("折叠状态记进 localStorage", /"本地":false/.test((await page.evaluate(() => localStorage.getItem("pi.goGroupsFolded"))) ?? ""));
+  await page.click('.go-branch-side [data-group="本地"]');
+  await page.waitForSelector(".go-branch-side .go-branch-row", { state: "detached", timeout: 20000 });
+  check("再点一次收起", await page.locator(".go-branch-side .go-branch-row").count() === 0);
+  await page.click('.go-branch-side [data-group="本地"]');
+  await page.waitForSelector(".go-branch-side .go-branch-row", { timeout: 20000 });
   check("stamp 不再谎称只读", /操作后会刷新/.test(await page.textContent(".branch-stamp") ?? ""));
   check("↑↓ 计数还在", await page.locator(".bc-pill").count() === 2);
   check("cherry-pick 常驻标题栏（m00401 反馈 1）", await page.locator('.go-tool-row [data-op="cherry_pick"]').count() === 1);

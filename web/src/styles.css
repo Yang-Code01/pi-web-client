@@ -4841,7 +4841,11 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .go-body { flex: 1; min-height: 0; overflow: hidden; border-top: 1px solid var(--line-soft); }
 .go-body > .branch-skeleton, .go-body > .branch-note { height: 100%; }
 .go-side-title { font-size: 11px; letter-spacing: .02em; color: var(--faint); padding: 9px 12px; border-bottom: 1px solid var(--line-soft); }
-.go-side-group { font-size: 10.5px; color: var(--accent); padding: 8px 12px 3px; }
+.go-side-group { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; border: 0; background: transparent; font-size: 10.5px; color: var(--accent); padding: 8px 12px 3px; cursor: pointer; }
+.go-side-group:hover { color: var(--text); }
+.go-side-caret { width: 9px; font-size: 9px; color: var(--faint); }
+.go-side-name { flex: 1; }
+.go-side-count { font: 10px var(--mono); color: var(--faint); }
 .go-note { font-size: 11px; color: var(--faint); line-height: 1.55; padding: 6px 0; }
 .go-note, .go-explain { overflow-wrap: anywhere; }
 .go-cap { font: 10.5px var(--mono); color: var(--faint); padding: 4px 0; text-align: center; }

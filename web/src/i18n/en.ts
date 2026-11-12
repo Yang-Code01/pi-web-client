@@ -2545,6 +2545,7 @@ export const en: Dict = {
   "② 输入要求": "2 · Describe what you want",
   "✎ 选分支 + 写要求 → 交给 AI 操作": "✎ Pick a branch + write a request → hand to AI",
   "分支 · 本地 + 远程": "Branches · local + remote",
+  "展开或收起这一组分支": "Expand or collapse this branch group",
   "分支操作工作台": "Git branch workbench",
   "全部动词 · {p1}": "All verbs · {p1}",
   "交给 AI 操作…": "Hand to AI…",
