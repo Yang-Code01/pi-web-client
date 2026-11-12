@@ -299,8 +299,13 @@ export function opFrames(op: GitOpDef): [string, string] {
     return a + line(33, 22, 61, 22) + b + line(79, 22, 99, 22) + c + (after ? fork : "") +
       '<text class="cap" x="20" y="72">' + cap + '</text>';
   };
-  const style = '<style>.n{fill:var(--accent)}.n.new{fill:var(--ok)}.gone{opacity:.25;fill:var(--danger)}.e{stroke:var(--line-strong);stroke-width:2}.e.new,.curve{stroke:var(--accent);stroke-width:2;fill:none}.box{fill:none;stroke:var(--line-strong);stroke-width:2}.box.accent{stroke:var(--accent);fill:var(--accent-bg)}.lbl{fill:var(--panel);font:700 9px var(--mono);text-anchor:middle}.cap{fill:var(--faint);font:10px var(--sans)}</style>';
+  // 样式全挂在 .go-ill 下：SVG 里的 <style> 是**整篇文档**生效，而下面的类名只有一两个字母
+  // （.n / .e / .box / .cap），不加作用域迟早撞到页面上的同名类。
+  const style = '<style>.go-ill .n{fill:var(--accent)}.go-ill .n.new{fill:var(--ok)}.go-ill .gone{opacity:.25;fill:var(--danger)}.go-ill .e{stroke:var(--line-strong);stroke-width:2}.go-ill .e.new,.go-ill .curve{stroke:var(--accent);stroke-width:2;fill:none}.go-ill .box{fill:none;stroke:var(--line-strong);stroke-width:2}.go-ill .box.accent{stroke:var(--accent);fill:var(--accent-bg)}.go-ill .lbl{fill:var(--panel);font:700 9px var(--mono);text-anchor:middle}.go-ill .cap{fill:var(--faint);font:10px var(--sans)}</style>';
+  // xmlns 不能省：`branchsheet.ts` 的 svgNode() 用 DOMParser 以 image/svg+xml 解析这段字符串，
+  // XML 解析不会替 `<svg>` 补默认命名空间；少了它整棵树落在**无命名空间**里，`<style>` 的
+  // 文字就被当正文画进卡片（满屏 `.n{fill:var(--accent)}`），圆、线也都不渲染。
   const wrap = (inner: string): string =>
-    '<svg viewBox="0 0 128 80" role="img" aria-label="' + tr("操作图解") + '">' + style + inner + '</svg>';
+    '<svg class="go-ill" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 80" role="img" aria-label="' + tr("操作图解") + '">' + style + inner + '</svg>';
   return [wrap(base(op.kind, false)), wrap(base(op.kind, true))];
 }

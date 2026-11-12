@@ -39,7 +39,12 @@ function pre(text: string): HTMLElement {
 function shortDir(dir: string): string {
   return dir.length > 52 ? `…${dir.slice(-49)}` : dir;
 }
-/** opFrames() 是纯常量 SVG；用 DOMParser 转成节点再挂，避开 innerHTML。 */
+/**
+ * opFrames() 是纯常量 SVG；用 DOMParser 转成节点再挂，避开 innerHTML。
+ * 字符串里的 `<svg>` **必须带 xmlns**：XML 解析不会补默认命名空间，少了它整棵树落在
+ * 无命名空间里，`<style>` 的文字就按正文画出来、圆和线也不渲染（app.ts 的 iconNodes()
+ * 也是同一个坑的另一半，那里靠 HTML 片段解析器补命名空间）。
+ */
 function svgNode(svg: string): Node {
   const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
   if (doc.documentElement.nodeName === "parsererror") return document.createTextNode("");
@@ -184,7 +189,7 @@ export class BranchSheet {
   /** 一次把历史、仓库状态、分支表都拉齐；写成功后 fresh=true 让 chip 与 5s 缓存一起更新。 */
   private async load(fresh: boolean): Promise<void> {
     const ticket = ++this.ticket;
-    this.busy = true;
+    this.setBusy(true);
     this.paintBusy();
     try {
       const [data, state, refs] = await Promise.all([
@@ -206,7 +211,7 @@ export class BranchSheet {
       if (ticket !== this.ticket) return;
       this.paintError(err, this.data);
     } finally {
-      if (ticket === this.ticket) this.busy = false;
+      if (ticket === this.ticket) this.setBusy(false);
     }
   }
 
@@ -901,7 +906,13 @@ export class BranchSheet {
   // ---------------------------------------------------------------- 执行 / 结果
 
   private async runOp(op: GitOpDef, params: GitOpParams): Promise<void> {
-    if (this.busy) return;
+    // 上一个动作还在收尾（paintResult 之后的 load() 刷新）：这一下不能静默扔掉，否则用户
+    // 看到的就是「点了执行没反应」。执行按钮同时被 data-busy 压成不可点，键盘回车走到
+    // 这里也会得到一句回话。
+    if (this.busy) {
+      this.say(tr("上一步还在收尾，稍等一下再点"), true);
+      return;
+    }
     // 脏区且会覆盖工作区：弹三选一，不直接跑。
     if (op.covers && this.state?.dirty && !params.__skipDirty) {
       this.openDirty(op, params);
@@ -909,7 +920,7 @@ export class BranchSheet {
     }
     const clean: GitOpParams = { ...params };
     delete clean.__skipDirty;
-    this.busy = true;
+    this.setBusy(true);
     this.say(tr("正在执行 {p1}…", { p1: op.title }));
     const card = this.opLayer.firstElementChild as HTMLElement | null;
     if (card?.querySelector<HTMLElement>("[data-result]")) {
@@ -930,8 +941,18 @@ export class BranchSheet {
       box.replaceChildren(el("div", "go-result-card bad", errText(err)));
       this.say(errText(err), true);
     } finally {
-      this.busy = false;
+      this.setBusy(false);
     }
+  }
+
+  /**
+   * 「忙着」对用户可见：执行卡上的 run / force 按钮在 data-busy 下置灰且不可点，
+   * 自动化和真人点击都会等它过去，而不是被一声不响地吞掉（详见 runOp 的短路）。
+   */
+  private setBusy(on: boolean): void {
+    this.busy = on;
+    if (on) this.opLayer.dataset.busy = "1";
+    else delete this.opLayer.dataset.busy;
   }
 
   private openDirty(op: GitOpDef, params: GitOpParams): void {

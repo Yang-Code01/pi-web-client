@@ -2570,6 +2570,7 @@ export const en: Dict = {
   "两边没有差异": "No differences between the two sides",
   "正在读差异…": "Reading diff…",
   "正在读仓库状态…": "Reading repository state…",
+  "上一步还在收尾，稍等一下再点": "Still wrapping up the last step; try again in a moment",
   "正在执行 {p1}…": "Running {p1}…",
   "已放进输入框，没有自动发送": "Put in the input box; not sent",
   "这个面板没接上输入框，提示词已留在卡里": "This panel is not wired to the input box; the prompt stays in the card",
