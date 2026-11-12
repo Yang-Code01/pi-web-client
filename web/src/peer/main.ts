@@ -357,6 +357,8 @@ async function loadThreads(): Promise<void> {
   } catch {
     S.threads = [];
   }
+  // 正在看的对话来了新未读：这一轮就清零，不等消息轮询（它只在消息变化时才标已读）。
+  if (S.threads.some((t) => t.nodeId === S.thread && t.unread > 0)) markReadIfViewing();
 }
 
 /** 独立落盘的忽略名单：页面只用它挡住在线表兜底合并，不改状态 / 找人接口。 */

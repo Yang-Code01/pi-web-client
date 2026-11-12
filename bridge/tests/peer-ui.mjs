@@ -513,6 +513,38 @@ try {
   check("另一个浏览器标记已读，这边同样清零", unread.counts[ZHANG] === 0, `计数=${unread.counts[ZHANG]}`);
   await v.c.close();
   await u.c.close();
+  // #395 补：正在看的对话收到新消息，即使这一轮消息列表没刷新（消息轮询失败 / 尚未拉到），列表的圆点与数字也要在 4.5 秒内消失（由列表轮询直接标已读）。
+  const liveRead = { unread: 0, reads: 0 };
+  const lv = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+  const lvp = await lv.newPage();
+  await lvp.route("**/api/**", async (route) => {
+    const req = route.request();
+    const p2 = new URL(req.url()).pathname;
+    let body = {};
+    if (p2 === "/api/peer") body = { enabled: true, running: true, reason: "", status };
+    else if (p2 === "/api/peer/threads") body = { threads: [{ ...thread(LI, "小李", msg("lv-1", "小李的话", { nodeId: LI, nickname: "小李" }, ME)), unread: liveRead.unread }] };
+    else if (p2 === "/api/peer/contacts") body = { contacts: [contact(LI, "小李")] };
+    else if (p2 === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+    else if (p2 === "/api/peer/messages") body = { entries: [msg("lv-1", "小李的话", { nodeId: LI, nickname: "小李" }, ME)] };
+    else if (p2 === "/api/peer/read") {
+      liveRead.reads += 1;
+      liveRead.unread = 0;
+      body = { ok: true };
+    }
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+  });
+  await lvp.goto(`${BASE}/peer.html`);
+  await lvp.waitForSelector(".listbox .row");
+  await lvp.click('#rail button[title="消息"]');
+  await lvp.click('.listbox .row:has-text("小李")');
+  await lvp.waitForTimeout(300);
+  const readsBeforeList = liveRead.reads;
+  liveRead.unread = 1;
+  for (let i = 0; i < 90 && liveRead.reads === readsBeforeList; i++) await lvp.waitForTimeout(50);
+  await lvp.waitForTimeout(200);
+  const liveDot = await lvp.locator('.listbox .row:has-text("小李") .pill.unread').count();
+  check("正在看的对话收到新消息后 4.5 秒内圆点与数字消失", liveRead.reads > readsBeforeList && liveDot === 0, `reads 增量=${liveRead.reads - readsBeforeList}，药丸=${liveDot}`);
+  await lv.close();
   // ---- #394：对话贴底。小张 120 条消息；轮询 2.5 秒一次，等 3 秒看新消息；平滑滚动要等 1.5 秒才落定。 ----
   const scrollHistory = {
     entries: Array.from({ length: 120 }, (_, i) => {
