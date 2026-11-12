@@ -58,6 +58,8 @@ interface Thread {
   port: number;
   last: Entry | null;
   count: number;
+  /** 对方发来、还没标记已读的条数（#395）；列表行右侧画成药丸。 */
+  unread: number;
   online: boolean;
 }
 
@@ -455,13 +457,32 @@ function openThread(id: string): void {
   S.mview = "chat";
   S.msgs = [];
   S.msgsFor = "";
+  // 打开会话永远从最底下开始：不继承上一个会话的滚动位置（它可能是翻到半截的）。
+  stickBottom = true;
+  prevScroll = 0;
   app.dataset.page = "msg";
   app.dataset.mview = "chat";
   renderAll();
   // 从联系人列表点「发消息」就是要马上打字：把焦点直接放进输入框。
   // renderAll() 里 renderChat() 已经同步建好 textarea（composeBox 会更新 textInput）。
   textInput?.focus({ preventScroll: true });
+  markReadIfViewing();
   void loadMessages().then(() => renderMain());
+}
+
+/**
+ * 停在对话里且看得见（消息页、主区可见、页面在前台）时，这个对话的未读直接清零：本地数字先清，
+ * 再告诉 peer（已读位置只存在本机，所有浏览器共用）。窄屏在列表页时主区隐藏，不算看见。
+ */
+function markReadIfViewing(): void {
+  if (S.page !== "msg" || !S.thread || document.hidden || mainEl.getClientRects().length === 0) return;
+  const t = S.threads.find((x) => x.nodeId === S.thread);
+  if (t && t.unread > 0) {
+    t.unread = 0;
+    renderList();
+  }
+  // 失败就算了：下一轮轮询会把数字再画出来，用户能看到没清掉。
+  void postJson("/api/peer/read", { peer: S.thread }).catch(() => {});
 }
 
 function renderAll(): void {
@@ -659,6 +680,7 @@ function renderThreadList(): void {
     tbox.append(name, sub);
     const right = h("div", "r");
     right.append(h("span", "tm", t.last ? ago(t.last.at) : ""));
+    if (t.unread > 0) right.append(h("span", "pill unread", String(t.unread)));
     row.append(tbox, right);
     row.addEventListener("click", () => openThread(t.nodeId));
     row.addEventListener("contextmenu", (ev) => {
@@ -880,6 +902,7 @@ function threadOf(id: string | null): Thread | null {
     port: contact?.port ?? online?.port ?? 0,
     last: null,
     count: 0,
+    unread: 0,
     online: Boolean(online),
   };
 }
@@ -926,10 +949,11 @@ function renderChat(): void {
     stream.append(h("div", "empty", tr("还没有消息，说点什么吧")));
   }
   mainEl.append(stream);
-  stream.scrollTop = stickBottom ? stream.scrollHeight : prevScroll;
-
+  // 输入区必须先挂上去再定位：它和消息流同在 .main 的 flex 列里，挂之前量到的视口高度
+  // 比最终的高 ~121px，scrollTop = scrollHeight 之后输入区一挂，最后一屏就被顶到视口底下。
   const compose = composeBox(t);
   mainEl.append(compose);
+  stream.scrollTop = stickBottom ? stream.scrollHeight : prevScroll;
 }
 
 function entryNode(e: Entry, t: Thread): HTMLElement {
@@ -1715,7 +1739,9 @@ async function boot(): Promise<void> {
   app.dataset.page = S.page;
   app.dataset.mview = S.mview;
   renderAll();
+  markReadIfViewing();
   if (S.thread) void loadMessages().then(() => renderMain());
+  document.addEventListener("visibilitychange", markReadIfViewing);
 }
 
 void boot();
@@ -1747,7 +1773,10 @@ window.setInterval(() => {
   // 没有新消息就不重画：整块换 DOM 会把输入框、选区、滚动都拽一遍，2.5 秒一次太贵了。
   const before = msgSig();
   void loadMessages().then(() => {
-    if (S.page === "msg" && msgSig() !== before) renderMain();
+    if (S.page === "msg" && msgSig() !== before) {
+      renderMain();
+      markReadIfViewing();
+    }
   });
 }, 2500);
 

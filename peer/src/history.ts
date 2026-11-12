@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { statePath } from "./config.ts";
+import { readJson, statePath, writeJson } from "./config.ts";
 
 /**
  * 一条消息 / 一条回执，就是 JSONL 里的一行（D97）。
@@ -39,6 +39,8 @@ export interface ThreadSummary {
   port: number;
   last: Entry | null;
   count: number;
+  /** 对方发来、还没标记已读的文字与文件条数（见 History.unreadOf）。 */
+  unread: number;
   online: boolean;
 }
 
@@ -98,6 +100,51 @@ export class History {
     return out.slice(-limit);
   }
 
+  /** 已读位置：每个对话记「读到的最后一条」的 id，存本机 read.json（所有浏览器共用这一份）。 */
+  private marks(): Record<string, string> {
+    return readJson<Record<string, string>>(statePath("read.json"), {});
+  }
+
+  /**
+   * 未读 = 对方发来的文字与文件，从已读位置之后数（按历史先后，不比时间戳）。
+   * 自己发的消息、回执都不算；非好友、被忽略的人照常算，这里不看关系。
+   * 已读位置不在 recent 里（已经滚出最近 2000 条）时，recent 里的全部都算未读。
+   */
+  unreadOf(nodeId: string, recent = this.read(nodeId, 2000)): number {
+    const mark = this.marks()[nodeId];
+    const from = mark ? recent.findIndex((entry) => entry.id === mark) + 1 : 0;
+    return recent
+      .slice(from)
+      .filter((entry) => entry.from.nodeId === nodeId && (entry.kind === "text" || entry.kind === "file")).length;
+  }
+
+  /** 标记已读：已读位置挪到这个对话的最后一条；没有消息就不动。 */
+  markRead(nodeId: string): void {
+    const last = this.read(nodeId, 1).at(-1);
+    if (!last) return;
+    const marks = this.marks();
+    if (marks[nodeId] === last.id) return;
+    writeJson(statePath("read.json"), { ...marks, [nodeId]: last.id });
+  }
+
+  /** 有未读的对话（只列 unread > 0 的），给「查未读」接口用。 */
+  unreadThreads(): { nodeId: string; unread: number }[] {
+    return this.peerIds()
+      .map((nodeId) => ({ nodeId, unread: this.unreadOf(nodeId) }))
+      .filter((thread) => thread.unread > 0);
+  }
+
+  private peerIds(): string[] {
+    try {
+      return fs
+        .readdirSync(statePath("history"))
+        .filter((name) => name.endsWith(".jsonl"))
+        .map((name) => name.slice(0, -".jsonl".length));
+    } catch {
+      return [];
+    }
+  }
+
   /** 补投前查重：最近 2000 条就够了，不需要单独的状态文件（决定 3）。 */
   recentIds(nodeId: string, count = 2000): Set<string> {
     return new Set(this.read(nodeId, count).map((entry) => entry.id));
@@ -110,15 +157,8 @@ export class History {
   ): ThreadSummary[] {
     const byId = new Map(online.map((peer) => [peer.nodeId, peer]));
     const byContact = new Map(contacts.map((contact) => [contact.nodeId, contact]));
-    let files: string[] = [];
-    try {
-      files = fs.readdirSync(statePath("history")).filter((name) => name.endsWith(".jsonl"));
-    } catch {
-      return [];
-    }
     const out: ThreadSummary[] = [];
-    for (const name of files) {
-      const nodeId = name.slice(0, -".jsonl".length);
+    for (const nodeId of this.peerIds()) {
       const tail = this.read(nodeId, 20);
       const last = tail.at(-1) ?? null;
       let lastText = last;
@@ -136,7 +176,8 @@ export class History {
         byId.get(last?.from.nodeId ?? "") ??
         byContact.get(last?.from.nodeId ?? "");
       const from = last?.from.nodeId === nodeId ? last.from : null;
-      const all = this.read(nodeId, 2000).filter((entry) => entry.kind === "text");
+      const recent = this.read(nodeId, 2000);
+      const all = recent.filter((entry) => entry.kind === "text");
       out.push({
         nodeId,
         nickname: known?.nickname || from?.nickname || nodeId.slice(0, 8),
@@ -144,6 +185,7 @@ export class History {
         port: known?.port ?? from?.port ?? 0,
         last: lastText,
         count: all.length,
+        unread: this.unreadOf(nodeId, recent),
         online: byId.has(nodeId),
       });
     }

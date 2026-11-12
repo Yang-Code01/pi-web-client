@@ -9,6 +9,8 @@
  *   4. #382：quick 单独成组（在好友之后、附近的人之前），两颗添加按钮并存，
  *      传文件只给好友、离线禁用，以及中 / 英 / 日三种语境的新文案。
  *   5. #383：忽略名单挡住在线表兜底合并，设置页清空后附近的人重新出现。
+ *   6. #394：对话打开 / 切换 / 收到新消息停在最底部；翻到中间时收到新消息保位。
+ *   7. #395：列表行的未读数；打开即清零；停在对话里时新消息直接已读；另一个浏览器标记后这边同样清零。
  *
  * 用假 API 是刻意的：这些都测「拿到 JSON 之后怎么画」，跟 peer 活着与否无关。
  *
@@ -430,6 +432,153 @@ try {
   );
   check("#383 中文语境没有缺译文告警", ig.missing.length === 0, ig.missing.join(" | "));
   await ig.c.close();
+
+  // #395：未读数。列表行右侧的药丸显示未读条数；打开对话即清零；停在对话里时来的新消息直接已读；两个浏览器共用已读。
+  // 假接口带状态（两个页面共用同一份 unread）：读 /threads 的 unread，POST /read 清零，receive() 模拟对方来信。
+  const unread = {
+    counts: { [ZHANG]: 2, [LI]: 3 },
+    entries: {
+      [ZHANG]: [msg("zhang-1", "小张的旧消息", { nodeId: ZHANG, nickname: "小张" }, ME)],
+      [LI]: [msg("li-1", "小李的旧消息", { nodeId: LI, nickname: "小李" }, ME)],
+    },
+    reads: [],
+  };
+  const receive = (nodeId, text) => {
+    unread.entries[nodeId].push(msg(`recv-${unread.entries[nodeId].length}-${text}`, text, { nodeId, nickname: nodeId === ZHANG ? "小张" : "小李" }, ME));
+    unread.counts[nodeId] += 1;
+  };
+  const unreadPage = async () => {
+    const c = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+    const p = await c.newPage();
+    await p.route("**/api/**", async (route) => {
+      const req = route.request();
+      const url = new URL(req.url());
+      let body = {};
+      if (url.pathname === "/api/peer") body = { enabled: true, running: true, reason: "", status };
+      else if (url.pathname === "/api/peer/threads")
+        body = {
+          threads: [
+            { ...thread(ZHANG, "小张", unread.entries[ZHANG].at(-1)), unread: unread.counts[ZHANG] },
+            { ...thread(LI, "小李", unread.entries[LI].at(-1)), unread: unread.counts[LI] },
+          ],
+        };
+      else if (url.pathname === "/api/peer/contacts") body = { contacts: [contact(ZHANG, "小张"), contact(LI, "小李")] };
+      else if (url.pathname === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+      else if (url.pathname === "/api/peer/messages") body = { entries: unread.entries[url.searchParams.get("peer")] ?? [] };
+      else if (url.pathname === "/api/peer/read") {
+        const { peer } = JSON.parse(req.postData() ?? "{}");
+        unread.reads.push(peer);
+        unread.counts[peer] = 0;
+        body = { ok: true };
+      }
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+    });
+    await p.goto(`${BASE}/peer.html`);
+    await p.waitForSelector(".listbox .row");
+    return { c, p };
+  };
+  const pillOf = (p, name) => p.locator(`.listbox .row:has-text("${name}") .pill.unread`);
+
+  const u = await unreadPage();
+  await pillOf(u.p, "小李").waitFor({ timeout: 6000 });
+  // 宽屏下主区那一条（列表第一条）打开即视为已读：小张的数字清零，小李保留。
+  await u.p.waitForTimeout(600);
+  const liShown = await pillOf(u.p, "小李").innerText();
+  const zhangGone = await pillOf(u.p, "小张").count();
+  check("列表行显示未读条数，主区打开的那条已清零", liShown === "3" && zhangGone === 0 && unread.reads.includes(ZHANG), `小李=${liShown}，小张药丸=${zhangGone}`);
+
+  await u.p.click('.listbox .row:has-text("小李")');
+  await u.p.waitForTimeout(300);
+  const liCleared = await pillOf(u.p, "小李").count();
+  check("点开对话后数字清零并 POST /api/peer/read", liCleared === 0 && unread.reads.includes(LI), `药丸=${liCleared}，reads=${unread.reads.join(",")}`);
+
+  const readsBeforeLive = unread.reads.length;
+  receive(LI, "正在看的时候来的");
+  for (let i = 0; i < 120 && unread.reads.length === readsBeforeLive; i++) await u.p.waitForTimeout(50);
+  await u.p.waitForTimeout(300);
+  const liLive = await pillOf(u.p, "小李").count();
+  check("停在对话里时新消息直接已读（不计未读）", unread.reads.length > readsBeforeLive && unread.counts[LI] === 0 && liLive === 0, `药丸=${liLive}，计数=${unread.counts[LI]}`);
+
+  const readsBeforeAway = unread.reads.length;
+  receive(ZHANG, "没在看的时候来的");
+  await pillOf(u.p, "小张").waitFor({ timeout: 6000 });
+  const zhangAway = await pillOf(u.p, "小张").innerText();
+  check("没在看的对话来消息照常计未读", zhangAway === "1" && unread.reads.length === readsBeforeAway, `小张=${zhangAway}，reads 增量=${unread.reads.length - readsBeforeAway}`);
+
+  // 另一个浏览器（同一份服务端状态）打开小张：这边列表下一轮轮询里数字也要消失。
+  const v = await unreadPage();
+  await pillOf(v.p, "小张").waitFor({ state: "detached", timeout: 6000 });
+  await pillOf(u.p, "小张").waitFor({ state: "detached", timeout: 7000 });
+  check("另一个浏览器标记已读，这边同样清零", unread.counts[ZHANG] === 0, `计数=${unread.counts[ZHANG]}`);
+  await v.c.close();
+  await u.c.close();
+  // ---- #394：对话贴底。小张 120 条消息；轮询 2.5 秒一次，等 3 秒看新消息；平滑滚动要等 1.5 秒才落定。 ----
+  const scrollHistory = {
+    entries: Array.from({ length: 120 }, (_, i) => {
+      const text = `第 ${i} 条：内网通贴底测试文字，会换行，`.repeat(2 + (i % 4));
+      return i % 2 ? msg(`s-${i}`, text, me, ZHANG) : msg(`s-${i}`, text, { nodeId: ZHANG, nickname: "小张" }, ME);
+    }),
+  };
+  const liMsg = msg("cccccccc-0000-4000-8000-000000000001", "小李的一句话", { ...me, nodeId: LI, nickname: "小李" }, ME);
+  const sc = await browser.newContext({ locale: "zh-CN", viewport: { width: 1240, height: 820 } });
+  const sp = await sc.newPage();
+  await sp.route("**/api/**", async (route) => {
+    const req = route.request();
+    const p2 = new URL(req.url()).pathname;
+    let body = {};
+    if (p2 === "/api/peer") body = { enabled: true, running: true, reason: "", status };
+    else if (p2 === "/api/peer/threads") body = { threads: [thread(ZHANG, "小张", scrollHistory.entries.at(-1)), thread(LI, "小李", liMsg)] };
+    else if (p2 === "/api/peer/contacts") body = { contacts: [] };
+    else if (p2 === "/api/peer/transfers") body = { transfers: [], free: 1e12 };
+    else if (p2 === "/api/peer/messages") {
+      const who = new URL(req.url()).searchParams.get("peer");
+      body = { entries: who === ZHANG ? scrollHistory.entries : [liMsg] };
+    }
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) }).catch(() => {});
+  });
+  await sp.goto(`${BASE}/peer.html`);
+  await sp.waitForSelector(".listbox .row");
+  await sp.click('#rail button[title="消息"]');
+  const streamGap = () =>
+    sp.evaluate(() => {
+      const s = document.querySelector("#main .stream");
+      return s ? Math.round(s.scrollHeight - s.scrollTop - s.clientHeight) : -1;
+    });
+  const streamTop = () => sp.evaluate(() => document.querySelector("#main .stream")?.scrollTop ?? -1);
+  const pushNew = (id, text) => {
+    scrollHistory.entries = [...scrollHistory.entries, msg(id, text, { ...me, nodeId: ZHANG, nickname: "小张" }, ME)];
+  };
+
+  await sp.click('.listbox .row:has-text("小张")');
+  await sp.waitForTimeout(300);
+  const openInstant = await streamGap();
+  check("打开后 300ms 已贴底（没有平滑动画半路停住）", openInstant === 0, `离底 ${openInstant}px`);
+  await sp.waitForTimeout(1500);
+  const openGap = await streamGap();
+  check("打开 120 条消息的对话停在底部", openGap === 0, `离底 ${openGap}px`);
+
+  await sp.evaluate(() => { document.querySelector("#main .stream").scrollTop = 0; });
+  await sp.waitForTimeout(1500);
+  await sp.click('.listbox .row:has-text("小李")');
+  await sp.waitForTimeout(1500);
+  await sp.click('.listbox .row:has-text("小张")');
+  await sp.waitForTimeout(1500);
+  const switchGap = await streamGap();
+  check("切走再切回停在底部，不继承翻到顶的位置", switchGap === 0, `离底 ${switchGap}px`);
+
+  pushNew("s-new-bottom", "停在底部时收到的新消息");
+  await sp.waitForTimeout(3000);
+  const newAtBottom = await streamGap();
+  check("停在底部时收到新消息仍贴底", newAtBottom === 0, `离底 ${newAtBottom}px`);
+
+  await sp.evaluate(() => { document.querySelector("#main .stream").scrollTop = 300; });
+  await sp.waitForTimeout(1500);
+  const midBefore = await streamTop();
+  pushNew("s-new-middle", "翻到中间时收到的新消息");
+  await sp.waitForTimeout(3000);
+  const midAfter = await streamTop();
+  check("翻到中间时收到新消息位置不变", Math.abs(midBefore - midAfter) <= 2, `scrollTop ${midBefore} -> ${midAfter}`);
+  await sc.close();
 } catch (err) {
   check("脚本跑完", false, err?.message ?? String(err));
 } finally {
