@@ -247,8 +247,9 @@ function scanFirstUserText(file: string, size: number): string | null {
       if (n <= 0) break;
       pos += n;
       let buf = Buffer.concat([rest, chunk.subarray(0, n)]);
-      let nl: number;
-      while ((nl = buf.indexOf(10)) >= 0) {
+      for (;;) {
+        const nl = buf.indexOf(10);
+        if (nl < 0) break;
         const line = buf.subarray(0, nl);
         buf = buf.subarray(nl + 1);
         if (line.indexOf(USER_ROLE) < 0) continue;
@@ -339,9 +340,9 @@ export interface LoadResult {
  * One image part of a `message` entry, by entry id and index among that message's image parts.
  *
  * The transcript view only carries image metadata (`mimeType`), so a thumbnail asks for the bytes
- * here. Streaming, not `loadEntries()`: that one keeps just the tail window (16 MB) while a pasted
- * image can be several MB and the entry may sit far before it. The line prefilter is cheap — entry
- * ids are uuids and base64 never contains a `-`.
+ * here. Streaming, not `loadEntries()`: that one empties every image's base64 as it reads (the
+ * budget counts text, see `stripImageData()`) and may drop the head of a huge file. The line
+ * prefilter is cheap — entry ids are uuids and base64 never contains a `-`.
  */
 export async function loadEntryImage(file: string, entryId: string, index: number): Promise<{ mimeType: string; data: Buffer } | null> {
   if (!entryId || !Number.isInteger(index) || index < 0) return null;
@@ -369,13 +370,40 @@ export async function loadEntryImage(file: string, entryId: string, index: numbe
 }
 
 /**
- * Reads entries from a session file. Never writes to it (ownership rule: pi owns
- * the file). When the file is larger than maxBytes we keep only the tail and mark
- * the result truncated, because the viewer only needs the recent turns.
+ * 一次最多读进内存多少原始字节。正常会话文件远小于它；再大就是病态输入（读一次要几秒、
+ * 瞬时吃几百 MB 堆），退回「只读尾部」，剩下的交给 `loadEntries()` 的内容预算去裁。
+ */
+const MAX_READ_BYTES = 256 * 1024 * 1024;
+
+/**
+ * 把 `image` 部件的 base64 抹掉，返回省下的字节数。像素不参与正文渲染：`entriesToItems()`
+ * 只把图片折成「[图片]」，真要像素由 `loadEntryImage()` 现从盘上取。
+ */
+function stripImageData(entry: any): number {
+  const parts = entry?.message?.content;
+  if (!Array.isArray(parts)) return 0;
+  let freed = 0;
+  for (const part of parts) {
+    if (!part || part.type !== "image" || typeof part.data !== "string") continue;
+    freed += part.data.length;
+    part.data = "";
+  }
+  return freed;
+}
+
+/**
+ * Reads entries from a session file. Never writes to it (ownership rule: pi owns the file).
+ *
+ * 预算（`maxBytes`）算的是**正文**字节，不是文件字节：图片读进来立刻抹掉（`stripImageData()`），
+ * 一个字节都不占预算。按文件字节算的后果是「贴几张截图 = 开头那句话整条不见」—— 截图全在工具
+ * 结果的 `image` 部件里，渲染层一个字都不用，却能把 16 MB 吃光（真实案例：70 MB 文件里 69 MB 是
+ * base64，正文只有 1.4 MB，于是文件头部那条用户消息被无声丢掉，界面上连「还有更早的」都没有）。
+ *
+ * 正文也超预算时仍从尾部留够为止、头部整条丢掉，`truncated` 只在这时才是 true。
  */
 export function loadEntries(file: string, maxBytes = 16 * 1024 * 1024): LoadResult {
   const stat = fs.statSync(file);
-  const start = stat.size > maxBytes ? stat.size - maxBytes : 0;
+  const start = stat.size > MAX_READ_BYTES ? stat.size - MAX_READ_BYTES : 0;
   const length = stat.size - start;
   const fd = fs.openSync(file, "r");
   let raw: string;
@@ -389,19 +417,38 @@ export function loadEntries(file: string, maxBytes = 16 * 1024 * 1024): LoadResu
   if (start > 0) raw = raw.slice(raw.indexOf("\n") + 1); // drop the partial first line
 
   const entries: SessionEntry[] = [];
-  for (const line of raw.split("\n")) {
+  /** 与 `entries` 一一对应的正文字节数（抹掉图片之后），供下面的从头部裁剪用。 */
+  const sizes: number[] = [];
+  let total = 0;
+  // 逐行走 indexOf 而不是 `split("\n")`：不复制整份文件（几十 MB 的字符串会再多占一份）。
+  let at = 0;
+  while (at < raw.length) {
+    let nl = raw.indexOf("\n", at);
+    if (nl < 0) nl = raw.length;
+    const line = raw.slice(at, nl);
+    at = nl + 1;
     if (!line.trim()) continue;
+    let entry: any;
     try {
-      const entry = JSON.parse(line);
-      if (entry && typeof entry === "object" && entry.type !== "session") entries.push(entry as SessionEntry);
+      entry = JSON.parse(line);
     } catch {
-      /* skip unparseable line */
+      continue; /* skip unparseable line */
     }
+    if (!entry || typeof entry !== "object" || entry.type === "session") continue;
+    const size = Buffer.byteLength(line) - stripImageData(entry);
+    entries.push(entry as SessionEntry);
+    sizes.push(size);
+    total += size;
   }
+
+  // 从头部丢到预算以里；至少留最后一条，否则界面上一片空白比截断更糟。
+  let head = 0;
+  while (head < entries.length - 1 && total > maxBytes) total -= sizes[head++];
+  const kept = head ? entries.slice(head) : entries;
   return {
-    entries,
-    truncated: start > 0,
-    leafId: entries.length ? entries[entries.length - 1].id : null,
+    entries: kept,
+    truncated: start > 0 || head > 0,
+    leafId: kept.length ? kept[kept.length - 1].id : null,
     size: stat.size,
     mtime: stat.mtimeMs,
   };

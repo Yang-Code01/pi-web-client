@@ -187,6 +187,15 @@ function pruneOrder(d: WorkspaceState): void {
   if (next.length !== (d.order ?? []).length) d.order = next;
 }
 
+/** 工程根 `key` 的组不在就补一个（名字留空，显示时取目录名）。在一次 `state.update` 里调。 */
+function ensureIn(d: WorkspaceState, key: string): void {
+  const id = groupId(key);
+  if (d.groups.some((g) => g.id === id)) return;
+  d.groups.push({ id, name: "", key, manual: false, inRow: true });
+  // #173 新出现的组追加到末尾：这是「补一个」，不能插队改用户顺序。
+  d.order = readOrder(d.order, d.groups);
+}
+
 /**
  * 缓存缺失时按 cwd 建的组是临时的：真工程根一出现（worktree 并回主仓就是这种），它就没用了。
  * 还被 override 指着的组留着（用户拖进去的东西不能因为一次探测就消失）。
@@ -264,18 +273,17 @@ export class Workspaces {
     const id = groupId(key);
     const existing = this.group(id);
     if (existing) return existing;
-    const created: WsGroup = { id, name: "", key, manual: false, inRow: true };
-    this.state.update((d) => {
-      if (!d.groups.some((g) => g.id === id)) d.groups.push({ ...created });
-      // #173 新出现的组追加到末尾：ensure 是「补一个」，不能插队改用户顺序。
-      d.order = readOrder(d.order, d.groups);
-    });
-    return created;
+    this.state.update((d) => ensureIn(d, key));
+    return this.group(id) ?? { id, name: "", key, manual: false, inRow: true };
   }
 
   /**
    * 补缓存：只对没见过的 cwd 跑 git，写回 `keys`，顺手清掉「真工程根出现后已经没人指向」的临时组。
    * 返回是否有改动 —— 有改动调用方必须广播新快照，否则页面还停在按 cwd 分的临时组上。
+   *
+   * 清掉临时组的同一次写里把真工程根的组也建好：快照里不能出现「这个 cwd 的组被删了、新组还没有」的中间态。
+   * 以前新组要等下一次 `list()` 调 `groupFor()` 才被动补，而 `index.ts` 先广播 `workspaces` 再算 `list()`：
+   * 页面拿到那份快照时当前会话的组找不到了，按「当前组被删」（#279）跳到邻组的会话去。
    */
   async resolve(cwds: string[]): Promise<boolean> {
     const known = this.state.value().keys;
@@ -301,6 +309,7 @@ export class Workspaces {
     this.state.update((d) => {
       for (const [key, value] of found) d.keys[key] = value;
       prune(d);
+      for (const value of found.values()) ensureIn(d, value);
     });
     return true;
   }

@@ -335,9 +335,9 @@ test("running children show subscribed plan steps and fall back to their task", 
   });
 
   assert.deepEqual(view.runningChildren, [
-    { runId: "child-plan", agent: "researcher", step: "Summarizing findings" },
-    { runId: "child-tool", agent: "runner", step: "bash" },
-    { runId: "child-unsubscribed", agent: "writer", step: "write the report" },
+    { runId: "child-plan", agent: "researcher", step: "Summarizing findings", elapsedMs: null, task: "inspect and summarize" },
+    { runId: "child-tool", agent: "runner", step: "bash", elapsedMs: null, task: "inspect the files" },
+    { runId: "child-unsubscribed", agent: "writer", step: "write the report", elapsedMs: null, task: "write the report" },
   ]);
 });
 

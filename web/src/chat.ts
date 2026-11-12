@@ -1,3 +1,4 @@
+import { askQuestions, parseAskResult } from "./ask-result.ts";
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
 import { reviewBody, reviewDisplay } from "./failures.ts";
 import { highlightFragment } from "./highlight.ts";
@@ -71,6 +72,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   if (text !== undefined) node.textContent = text;
   return node;
 }
+
+/** #375：Anthropic 拒绝被改动的 thinking 块时的报错。 */
+const THINKING_MODIFIED_RE = /`?(?:redacted_)?thinking`? or `?redacted_thinking`? blocks .*cannot be modified/i;
 
 /** Tools whose summary is a shell command — those get coloured. */
 const SHELL_TOOLS = new Set(["bash", "shell", "powershell", "pwsh", "run_command", "exec", "execute", "cmd", "sh"]);
@@ -270,6 +274,11 @@ export class ChatView {
   private moreRow: HTMLElement;
   private moreBtn: HTMLButtonElement;
   private hasOlder = false;
+  /**
+   * 桥上读会话文件时丢了前面的条目（文件太大，`history.truncated`）。没有更早的可翻，
+   * 这一行就变成一句说明：别让人以为开头那几句话被删了。
+   */
+  private headCut = false;
   private loadingOlder = false;
   /** 列表最上面那条的 id —— 往前翻的游标。`cards` 是 Map，插入序不一定是对话序，所以单独记。 */
   private topId: string | null = null;
@@ -293,7 +302,10 @@ export class ChatView {
   /** #341: toolCallId → 那一行所在的分组。结果帧晚到（用户已经发下一句）时也还能落回原来的卡。 */
   private todoRows = new Map<string, { group: TodoGroup; update: TodoUpdate }>();
 
-  constructor(private root: HTMLElement) {
+  private root: HTMLElement;
+
+  constructor(root: HTMLElement) {
+    this.root = root;
     this.moreRow = el("div", "chat-more");
     this.moreBtn = el("button", "more-btn");
     this.moreBtn.type = "button";
@@ -706,6 +718,7 @@ export class ChatView {
     this.flashTurn(null);
     this.staging = null;
     this.hasOlder = history?.hasMore === true;
+    this.headCut = history?.truncated === true;
     this.loadingOlder = false;
     this.topId = items[0]?.id ?? null;
     // Chrome first: `push()` inserts before the jump button, so it has to be in the DOM already.
@@ -787,14 +800,18 @@ export class ChatView {
 
   /**
    * 那一行在「还有更早的 / 正在载入 / 刚翻输了一轮」时都在。优先级：
-   * 载入中 → 失败那句（此时可能已经没有更早了，也要露出来）→ 「载入更早」。
+   * 载入中 → 失败那句（此时可能已经没有更早了，也要露出来）→「载入更早」。
+   * 没有更早可翻、但桥说过文件头部没载入（`headCut`）时，这一行改成一句说明（钮不可点）。
    */
   private renderMore(): void {
     const note = this.moreNote;
-    this.moreRow.hidden = !this.hasOlder && !this.loadingOlder && note === null;
+    const cut = this.headCut && !this.hasOlder && !this.loadingOlder && note === null;
+    this.moreRow.hidden = !this.hasOlder && !this.loadingOlder && note === null && !cut;
     // 那句失败提示不是一颗能点的钮（点了也没有更早的可要），三秒后自然回到「载入更早」。
-    this.moreBtn.disabled = this.loadingOlder || note !== null;
-    this.moreBtn.textContent = this.loadingOlder ? tr("载入中…") : (note ?? tr("载入更早"));
+    this.moreBtn.disabled = this.loadingOlder || note !== null || cut;
+    this.moreBtn.textContent = this.loadingOlder
+      ? tr("载入中…")
+      : (note ?? (cut ? tr("会话文件太大，只载入了最后一段") : tr("载入更早")));
   }
 
   /**
@@ -1478,6 +1495,16 @@ export class ChatView {
       // and the reason (bad key, rate limit, context overflow…) is invisible.
       if (item.stopReason === "error") {
         wrap.append(el("div", "msg-error", tr("模型调用出错：{p1}", { p1: item.errorMessage?.trim() || tr("pi 没有给出原因") })));
+        // #375：这条 400 几乎都是 billion-context 压缩拆开了签名 thinking，重试不会好；说清怎么办。
+        if (THINKING_MODIFIED_RE.test(item.errorMessage ?? "")) {
+          wrap.append(
+            el(
+              "div",
+              "msg-error-hint",
+              tr("装了 billion-context 的话，这是它的已知问题：压缩拆开了带签名的思考块，重试不会好。换个模型就能接着聊；到「设置 → 子代理 → acp_delegate」点「应用绕法」可以避免以后再出现。"),
+            ),
+          );
+        }
         this.onFail?.({ id: item.id, tool: "model", cmd: item.modelName ?? item.model ?? "", out: item.errorMessage ?? "", at: item.ts });
       } else if (item.stopReason === "aborted") {
         // 用户按停止也算一次「没跑完」：进账本但折叠在「已中断」里，不计待修（D164）。
@@ -1946,10 +1973,14 @@ export class ChatView {
     return tr("计划 {p1}/{p2} · {p3}", { p1: done, p2: tasks.length, p3: actionText });
   }
 
-  /** The two tools whose transcript entry is a question card, not an entry of the ops module. */
+  /**
+   * The tools whose transcript entry is a question card, not an entry of the ops module: the two
+   * extensions we used to patch (`question` / `questionnaire`, still in old session files) and the
+   * one that replaced them (`ask_user_question`, `@juicesharp/rpiv-ask-user-question`).
+   */
   private isAskTool(name: unknown): boolean {
     const n = String(name ?? "");
-    return n === "question" || n === "questionnaire";
+    return n === "question" || n === "questionnaire" || n === "ask_user_question";
   }
 
   private isTodoTool(name: unknown): boolean {
@@ -1960,13 +1991,8 @@ export class ChatView {
     const card = el("div", "tool qa-card");
     card.dataset.running = item.status === "running" ? "1" : "0";
 
-    const args = (item.args ?? {}) as any;
-    const single = item.name === "question";
-    const questions: any[] = single
-      ? [{ id: "q1", label: "Q1", prompt: args.question, options: args.options, allowOther: true }]
-      : Array.isArray(args.questions)
-        ? args.questions
-        : [];
+    const questions = askQuestions(item.args);
+    const single = questions.length === 1;
     const pending = item.status === "running";
 
     const head = el("div", "head");
@@ -1974,7 +2000,7 @@ export class ChatView {
     head.append(el("span", "status", pending ? tr("等你回答…") : ""));
     card.append(head);
 
-    const answers = parseAskResult(String(item.result ?? item.partialResult ?? ""), questions, single);
+    const answers = parseAskResult(String(item.result ?? item.partialResult ?? ""), questions);
     const body = el("div", "qa-body");
     questions.forEach((q, i) => {
       const row = el("div", "qa-q");
@@ -1983,7 +2009,7 @@ export class ChatView {
       const hit = answers[i];
       if (hit) row.append(el("div", "qa-a", `✓ ${hit}`));
       else if (!pending) {
-        const cancelled = /cancel|取消/i.test(String(item.result ?? ""));
+        const cancelled = /cancel|declined|取消/i.test(String(item.result ?? ""));
         row.append(el("div", "qa-a pending", cancelled ? tr("已取消") : tr("未回答")));
       }
       body.append(row);
@@ -2095,36 +2121,6 @@ function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
   return card;
 }
 
-/**
- * Answers come back as text, not structured fields: `User selected: 2. Label` / `User wrote: …` for
- * `question`, `Q1: user selected: 2. Label` / `Q1: user wrote: …` for `questionnaire`.
- */
-function parseAskResult(text: string, questions: any[], single: boolean): (string | null)[] {
-  const out: (string | null)[] = questions.map(() => null);
-  const lines = text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  if (single) {
-    const wrote = lines.find((l) => l.startsWith("User wrote: "));
-    const selected = lines.find((l) => l.startsWith("User selected: "));
-    if (wrote) out[0] = tr("（自己写）{p1}", { p1: wrote.slice("User wrote: ".length) });
-    else if (selected) out[0] = selected.replace(/^User selected: \d+\.\s*/, "");
-    return out;
-  }
-  questions.forEach((q, i) => {
-    const label = String(q?.label ?? `Q${i + 1}`);
-    const line = lines.find((l) => l.startsWith(`${label}: `));
-    if (!line) return;
-    const rest = line.slice(label.length + 2);
-    const wrote = rest.match(/^user wrote:\s*(.*)$/);
-    const selected = rest.match(/^user selected:\s*\d+\.\s*(.*)$/);
-    if (wrote) out[i] = tr("（自己写）{p1}", { p1: wrote[1] });
-    else if (selected) out[i] = selected[1];
-  });
-  return out;
-}
-
 const WRITE_TOOLS = new Set(["write", "edit", "multiedit", "multi_edit", "create", "str_replace_editor", "apply_patch"]);
 
 function toolPath(args: unknown): string {
@@ -2154,7 +2150,7 @@ function openPreview(path: string): void {
 }
 
 /** 点开一张会话图片：手风琴交给 app 的灯箱，聊天区只管把事件递出去。 */
-function openImage(src: string, alt: string): void {
+export function openImage(src: string, alt: string): void {
   window.dispatchEvent(new CustomEvent("pi-image", { detail: { src, alt } }));
 }
 

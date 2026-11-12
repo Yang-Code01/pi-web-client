@@ -86,8 +86,13 @@ page.on("pageerror", (e) => pageErrors.push(String(e)));
 await page.goto(BASE, { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(800);
 
-const open = page.getByRole("button", { name: "本机管理", exact: true }).first();
-check("「pi 设置」旁边有本机管理按钮", (await open.count()) > 0);
+// D225 之后「本机管理」不在右栏，在齿轮抽屉的「连接与设置」页：先开抽屉、再切页。
+await page.locator('[data-act="look"]').first().click();
+await page.locator('.set-tabs .chip[data-tab="conn"]').click();
+const connPage = page.locator('.set-page[data-page="conn"]');
+await connPage.waitFor({ timeout: 10_000 });
+const open = connPage.getByRole("button", { name: "本机管理", exact: true }).first();
+check("「连接与设置」页有本机管理按钮（pi 设置旁边）", (await open.count()) > 0);
 await open.click();
 await page.locator(".sys-console").waitFor({ timeout: 10_000 });
 check("控制台打开", (await page.locator(".sys-console").count()) === 1);

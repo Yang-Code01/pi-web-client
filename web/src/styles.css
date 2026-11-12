@@ -720,6 +720,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .msg .body pre code { background: none; padding: 0; }
 .msg.assistant.no-text { display: none; }
 .msg .msg-error { margin-top: 6px; padding: 8px 12px; border: 1px solid var(--danger-dim); border-radius: 8px; background: var(--danger-bg); color: var(--danger); font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+/* #375：已知原因的报错下面补一句怎么办 */
+.msg .msg-error-hint { margin-top: 4px; padding: 0 12px; color: var(--dim); font-size: 12px; line-height: 1.55; }
 /* every tool call of a turn collapses into one module: the transcript stays prose-only */
 .ops {
   border: 1px solid var(--line-soft);
@@ -1546,12 +1548,13 @@ body.pin-dragging { cursor: grabbing; user-select: none; }
 .exec-now h2 { margin: 0 0 8px; padding: 0; border: 0; color: var(--text); font-size: 13px; }
 .exec-now-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
 /* D232: 长参数仍然只占一行，但不再就地展开（D228 那一版会把「现在」卡本身撑成正文），点行开对话框。 */
-.exec-now-tool .exec-args { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
-button.exec-now-tool { width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-button.exec-now-tool:hover .exec-args { color: var(--text); }
-button.exec-now-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.exec-now-tool .exec-args, .exec-now-child .exec-args { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+.exec-now-line b { flex: none; min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.exec-now-tool, button.exec-now-child { width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+button.exec-now-tool:hover .exec-args, button.exec-now-child:hover .exec-args { color: var(--text); }
+button.exec-now-tool:focus-visible, button.exec-now-child:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .exec-now-open { flex: none; color: var(--faint); font: 11px/1 var(--mono); }
-button.exec-now-tool:hover .exec-now-open { color: var(--accent); }
+button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now-open { color: var(--accent); }
 .exec-metrics { display: grid; gap: 9px; min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); }
 .exec-metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .exec-metric { display: grid; gap: 3px; min-width: 0; }
@@ -3800,6 +3803,24 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sc-input::placeholder { color: var(--faint); }
 .sc-input:focus { outline: none; border-color: var(--accent-dim); }
 .sc-hint { font-size: 11px; color: var(--danger); width: 100%; }
+/* #402：待发图横条 + 一行说明 + 底部那排（📎 / 错误 / 发送）。 */
+.scratch-attach { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+.scratch-attach[hidden], .scratch-note[hidden] { display: none; }
+.sc-shot { position: relative; border: 1px solid var(--line); border-radius: 8px; padding: 2px; background: var(--panel-2); }
+.sc-shot img { display: block; width: 56px; height: 56px; object-fit: cover; border-radius: 6px; }
+.sc-shot-del {
+  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0;
+  display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--panel); color: var(--text); font-size: 12px; line-height: 1; cursor: pointer;
+}
+.sc-shot-del:hover { border-color: var(--danger); color: var(--danger); }
+.scratch-note { width: 100%; font-size: 11px; color: var(--faint); }
+.scratch-note.warn { color: var(--warn); }
+.sc-actions { display: flex; align-items: center; gap: 8px; width: 100%; }
+.sc-actions .sc-hint { flex: 1; text-align: right; }
+.sc-attach { padding: 4px 8px; font-size: 14px; line-height: 1.2; }
+.sc-shots { margin-top: 6px; }
+.scratch-model-chip.warn { border-color: var(--warn); color: var(--warn); }
 .scratch-model-chip { padding: 4px 8px; font-size: 11px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scratch-models {
   max-height: calc(var(--vh1) * 42); overflow-y: auto; margin: 8px 16px 0; padding: 4px;
@@ -4225,6 +4246,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .subagents-sheet .subagents-hint { margin: 0; font-size: 11px; line-height: 1.55; color: var(--faint); }
 .subagents-sheet .note { border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px 10px; font-size: 11.5px; line-height: 1.55; background: var(--sunken); color: var(--dim); }
 .subagents-sheet .note.warn { border-color: var(--warn-dim); background: var(--warn-bg); color: var(--warn); }
+/* #375：billion-context 已知问题 + 一键绕法 */
+.subagents-sheet .acp-known-issue { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 10px 0; padding: 10px 12px; border: 1px solid var(--warn-dim); border-radius: 10px; }
+.subagents-sheet .acp-known-issue h4 { margin: 0; font-size: 12.5px; color: var(--warn); }
+.subagents-sheet .acp-known-issue a { color: var(--accent); }
 .subagents-sheet .subagents-split {
   flex: 1; min-height: 0; max-height: min(64vh, 600px);
   display: grid; grid-template-columns: 150px minmax(0, 1fr);
@@ -4317,7 +4342,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 
 .subagents-sheet .subagents-adv-block + .subagents-adv-block { margin-top: 10px; }
 
-/* ---------------------------------------------------------------- 分支历史弹窗（D193） */
+/* ---------------------------------------------------------------- 分支操作工作台（D193 布局 / D235 扩展） */
 /* 两列是「同一段历史的两条时间线」，所以行高、字号、留白必须完全一致 —— 两列对不齐，读者会开始
    逐行数，而不是扫一眼。宽度固定 1000，窄屏（720）叠成单列 + 顶部 tab。 */
 .branch-sheet {
@@ -4852,4 +4877,269 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 @media (max-width: 720px) {
   .ctx-kpis { grid-template-columns: repeat(2, 1fr); }
   .ctx-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+
+/* ---------------------------------------------------------------- D235 分支操作工作台
+   沿用 D193 的 .branch-sheet 尺寸 / 遮罩 / 令牌，只补三 tab、居中操作卡（样张 D）、
+   对照分支检索、逐文件清单与结果卡。操作卡是 740px 居中模态，背景变暗是刻意选的代价。 */
+.go-sheet { position: relative; }
+.go-tool-row { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+.go-tool-row .btn { padding: 3px 8px; font-size: 11px; white-space: nowrap; }
+.go-tool-row .go-danger { color: var(--danger); border-color: var(--danger-bg); }
+.go-tool-row .go-ai { color: var(--accent); }
+.go-tool-row .go-all { color: var(--dim); }
+.branch-tools { flex-wrap: wrap; justify-content: flex-end; }
+
+/* 对照分支：可输入检索的下拉，替代 D193 的纯 .bc-base 下拉。 */
+.go-cmp-picker { position: relative; flex-wrap: wrap; }
+.go-cmp-input { appearance: none; width: min(190px, 18vw); font: 12.5px var(--mono); color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 3px 8px; }
+.go-cmp-input:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
+.go-cmp-toggle { padding: 3px 7px; }
+.go-cmp-tag { max-width: 13rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.go-cmp-menu { position: absolute; top: calc(100% + 5px); right: 0; z-index: 9; width: min(340px, 80vw); max-height: 270px; overflow: auto; padding: 6px; background: var(--panel-3); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 18px 42px rgba(0, 0, 0, .5); }
+.go-cmp-menu[hidden] { display: none; }
+.go-cmp-list { display: grid; gap: 2px; }
+.go-cmp-pick, .go-cmp-use { display: block; width: 100%; text-align: left; border: 0; border-radius: 6px; background: transparent; color: var(--dim); font: 11.5px var(--mono); padding: 5px 8px; cursor: pointer; }
+.go-cmp-pick:hover, .go-cmp-use:hover { background: var(--panel-2); color: var(--text); }
+.go-cmp-pick.on { color: var(--accent); background: var(--accent-bg); }
+.go-cmp-use { margin-top: 5px; border-top: 1px solid var(--line); border-radius: 0; color: var(--accent); padding-top: 8px; }
+
+/* 三 tab 与内容区：内容区必须能滚，卡才有地方叠。 */
+.go-tabs { display: flex; gap: 4px; padding: 8px 14px 0; flex: none; border-top: 1px solid var(--line-soft); }
+.go-tabs button { border: 1px solid var(--line); background: var(--panel-2); color: var(--dim); border-radius: 8px 8px 0 0; padding: 6px 14px; font-size: 12px; cursor: pointer; }
+.go-tabs button.on { color: var(--text); border-color: var(--accent-dim); background: var(--accent-bg); border-bottom-color: var(--accent-bg); }
+.go-body { flex: 1; min-height: 0; overflow: hidden; border-top: 1px solid var(--line-soft); }
+.go-body > .branch-skeleton, .go-body > .branch-note { height: 100%; }
+.go-side-title { font-size: 11px; letter-spacing: .02em; color: var(--faint); padding: 9px 12px; border-bottom: 1px solid var(--line-soft); }
+.go-side-group { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; border: 0; background: transparent; font-size: 10.5px; color: var(--accent); padding: 8px 12px 3px; cursor: pointer; }
+.go-side-group:hover { color: var(--text); }
+.go-side-caret { width: 9px; font-size: 9px; color: var(--faint); }
+.go-side-name { flex: 1; }
+.go-side-count { font: 10px var(--mono); color: var(--faint); }
+.go-note { font-size: 11px; color: var(--faint); line-height: 1.55; padding: 6px 0; }
+.go-note, .go-explain { overflow-wrap: anywhere; }
+.go-cap { font: 10.5px var(--mono); color: var(--faint); padding: 4px 0; text-align: center; }
+.go-pre { margin: 0; padding: 8px 10px; max-height: 170px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 var(--mono); color: var(--dim); background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 8px; }
+
+/* 历史：两列 + 右侧分支栏；窄屏沿用 .branch-cols[data-show] 的单列 tab。 */
+.go-history { display: grid; grid-template-columns: minmax(0, 1fr) 208px; height: 100%; min-height: 0; }
+.go-side-tabs { display: none; gap: 4px; padding: 7px 10px 0; }
+.go-side-tabs button { flex: 1; border: 1px solid var(--line); background: var(--panel-2); color: var(--dim); border-radius: 7px; padding: 5px; font-size: 11px; }
+.go-side-tabs button.on { color: var(--text); background: var(--accent-bg); border-color: var(--accent-dim); }
+.go-branch-side { border-left: 1px solid var(--line-soft); overflow: auto; display: flex; flex-direction: column; }
+/* 列里的子项一律不收缩：行带着 overflow:hidden（省略号），flex 的自动最小尺寸就是 0，
+   分支一多整列会被一起压扁（24px → 10px），文字只剩中间一条，看着像乱码。 */
+.go-branch-side > * { flex: none; }
+.go-branch-row { width: 100%; text-align: left; border: 0; background: transparent; color: var(--dim); font: 11.5px var(--mono); padding: 5px 12px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.go-branch-row:hover { background: var(--panel-2); color: var(--text); }
+.go-branch-row.on { color: var(--accent); background: var(--accent-bg); }
+.go-side-cta { display: block; margin: 8px 10px; padding: 6px 8px; font-size: 11px; white-space: normal; text-align: left; line-height: 1.4; }
+.go-side-ai { border-style: dashed; color: var(--accent); }
+
+/* 差异：文件列表 + 并排 diff / 图片缩略 / 非文本占位。 */
+.go-diff { display: grid; grid-template-columns: 226px minmax(0, 1fr); height: 100%; min-height: 0; }
+.go-diff-files { border-right: 1px solid var(--line-soft); overflow: auto; }
+.go-diff-row { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line-soft); background: transparent; color: var(--dim); font: 11px var(--mono); padding: 6px 11px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.go-diff-row:hover { background: var(--panel-2); color: var(--text); }
+.go-diff-row.on { color: var(--accent); background: var(--accent-bg); }
+.go-diff-detail { overflow: auto; padding: 10px 14px; }
+.go-diff-empty { padding: 30px 10px; color: var(--faint); font-size: 12px; text-align: center; }
+.go-file-head { font: 11.5px var(--mono); color: var(--dim); padding-bottom: 8px; overflow-wrap: anywhere; }
+.go-codegrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border: 1px solid var(--line-soft); border-radius: 8px; overflow: hidden; }
+.go-code { min-width: 0; padding: 2px 8px; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 var(--mono); color: var(--dim); border-bottom: 1px solid var(--line-soft); }
+.go-code:nth-child(odd) { border-right: 1px solid var(--line-soft); }
+.go-code.add { color: var(--ok); background: var(--ok-bg); }
+.go-code.del { color: var(--danger); background: var(--danger-bg); }
+.go-code.mod { color: var(--warn); background: var(--warn-bg); }
+.go-img-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.go-img-cell { min-width: 0; }
+.go-img { display: block; max-width: 100%; max-height: 260px; object-fit: contain; border: 1px solid var(--line); border-radius: 8px; background: var(--sunken); }
+.go-ph { display: grid; place-items: center; min-height: 130px; padding: 16px; text-align: center; font-size: 12px; color: var(--faint); border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--sunken); }
+.go-trunc { margin-top: 8px; font-size: 11px; color: var(--warn); }
+
+/* 图解手册：六组筛选 + 卡片网格，红组单独标色。 */
+.go-manual { height: 100%; overflow: auto; padding: 10px 14px 20px; }
+.go-filters { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
+.go-filter { border: 1px solid var(--line); background: var(--panel-2); color: var(--dim); border-radius: 999px; padding: 4px 10px; font-size: 11px; cursor: pointer; }
+.go-filter.on { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }
+.go-manual-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(216px, 1fr)); gap: 10px; }
+.go-mcard { display: flex; flex-direction: column; gap: 4px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+.go-mcard.red { border-color: var(--danger-bg); }
+.go-mcard-head { font-size: 12.5px; color: var(--text); }
+.go-mcard.red .go-mcard-head { color: var(--danger); }
+.go-mcard-sub, .go-mcard-ex { font-size: 11px; line-height: 1.5; color: var(--faint); }
+.go-mcard-ill { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.go-ill-cell, .go-frame-cell { min-width: 0; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--sunken); }
+.go-ill-cell svg, .go-frame svg { display: block; width: 100%; height: 46px; }
+.go-mcard .btn { margin-top: auto; align-self: flex-start; }
+
+/* 居中操作卡（样张 D）：背景遮暗 + 740px 卡 + 卡内滚动。 */
+.go-op-layer { position: absolute; inset: 0; z-index: 12; display: grid; place-items: center; padding: 18px; background: rgba(5, 8, 11, .68); backdrop-filter: blur(2px); }
+.go-op-layer[hidden] { display: none; }
+.go-card { width: min(740px, 96%); max-height: min(88%, 720px); min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--panel-2); border: 1px solid var(--line-strong); border-radius: 14px; box-shadow: 0 28px 76px rgba(0, 0, 0, .62); animation: branch-in var(--dur-2) var(--ease); }
+.go-card.wide { width: min(860px, 97%); }
+.go-card-head { display: flex; align-items: center; gap: 10px; flex: none; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+.go-card-head.red { border-bottom-color: var(--danger-bg); background: var(--danger-bg); }
+.go-card-glyph { font: 17px var(--mono); color: var(--accent); }
+.go-card-head.red .go-card-glyph { color: var(--danger); }
+.go-card-titles { flex: 1; min-width: 0; }
+.go-card-title { font-size: 13.5px; color: var(--text); }
+.go-card-sub { font-size: 11px; color: var(--faint); margin-top: 2px; }
+.go-card-x { border: 0; background: transparent; color: var(--dim); font-size: 14px; cursor: pointer; }
+.go-card-x:hover { color: var(--text); }
+.go-card-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; display: grid; gap: 8px; align-content: start; }
+.go-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line-soft); font-size: 11px; color: var(--faint); }
+.go-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding-top: 6px; }
+.go-acts .btn { padding: 5px 11px; font-size: 11.5px; }
+.go-acts .primary { color: var(--bg); }
+.go-acts .danger { background: var(--danger); border-color: var(--danger); color: var(--bg); }
+.go-acts .btn:disabled { opacity: .45; cursor: default; }
+/* 上一个动作还在收尾时（data-busy）：执行 / 强制执行不可点，点击会等它过去而不是被静默吞掉。 */
+.go-op-layer[data-busy] [data-run],
+.go-op-layer[data-busy] [data-force] { opacity: .45; pointer-events: none; cursor: default; }
+.go-explain { font-size: 12px; color: var(--dim); line-height: 1.6; }
+.go-risk { font-size: 11px; color: var(--warn); padding: 6px 9px; border: 1px solid var(--warn-bg); border-radius: 7px; background: var(--warn-bg); }
+.go-frames { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; }
+.go-frame svg { height: 96px; }
+.go-arrow { font: 18px var(--mono); color: var(--accent); }
+.go-form { display: grid; gap: 5px; }
+.go-label { font-size: 10.5px; color: var(--faint); margin-top: 3px; }
+.go-input, .go-textarea, .go-select { width: 100%; box-sizing: border-box; font: 12px var(--mono); color: var(--text); background: var(--sunken); border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; }
+.go-input:focus-visible, .go-textarea:focus-visible, .go-select:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
+.go-textarea { resize: vertical; min-height: 52px; font-family: var(--sans); }
+.go-switches { display: flex; flex-wrap: wrap; gap: 5px 14px; padding: 4px 0; }
+.go-switch { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dim); cursor: pointer; }
+.go-switch-hint { color: var(--faint); font-size: 10px; }
+.go-files { max-height: 178px; overflow: auto; padding: 5px 8px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--sunken); }
+.go-files-group { font-size: 10.5px; color: var(--accent); padding: 5px 0 2px; }
+.go-file-check { display: flex; align-items: center; gap: 7px; font: 11px var(--mono); color: var(--dim); padding: 2px 0; cursor: pointer; }
+.go-file-check span:first-of-type { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.go-file-status { color: var(--faint); }
+.go-verbs-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 14px; }
+.go-verbs-group { margin-bottom: 10px; }
+.go-verbs-title { font-size: 10.5px; color: var(--accent); padding: 4px 0; }
+.go-verbs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 5px; }
+.go-verb { text-align: left; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--dim); font: 11.5px var(--mono); padding: 6px 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.go-verb:hover { color: var(--text); border-color: var(--accent-dim); }
+.go-verb.red { color: var(--danger); border-color: var(--danger-bg); }
+.go-danger-title { font-size: 11.5px; color: var(--danger); }
+.go-lose { margin: 0; padding-left: 20px; font-size: 11.5px; line-height: 1.7; color: var(--dim); }
+.go-result { flex: none; max-height: 44%; overflow: auto; padding: 0 14px 12px; }
+.go-result:empty { display: none; }
+.go-result-card { display: grid; gap: 5px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+.go-result-card.ok { border-color: var(--ok-dim); }
+.go-result-card.warn { border-color: var(--warn-dim); }
+.go-result-card.bad { border-color: var(--danger-bg); }
+.go-result-title { font-size: 12px; color: var(--text); }
+.go-result-card.ok .go-result-title { color: var(--ok); }
+.go-result-card.bad .go-result-title { color: var(--danger); }
+.go-conflicts { padding: 8px 0; }
+.go-conflict-row { font: 11px var(--mono); color: var(--warn); padding: 2px 0; overflow-wrap: anywhere; }
+.go-ai-card .go-card-body, .go-handoff .go-card-body { gap: 6px; }
+
+@media (max-width: 720px) {
+  .go-tool-row { justify-content: flex-start; }
+  .go-side-tabs { display: flex; }
+  .go-history { grid-template-columns: minmax(0, 1fr); }
+  .go-branch-side { border-left: 0; border-top: 1px solid var(--line-soft); max-height: 190px; }
+  .go-diff { grid-template-columns: minmax(0, 1fr); }
+  .go-diff-files { border-right: 0; border-bottom: 1px solid var(--line-soft); max-height: 150px; }
+  .go-img-pair, .go-codegrid { grid-template-columns: minmax(0, 1fr); }
+  .go-code:nth-child(odd) { border-right: 0; }
+  .go-frames { grid-template-columns: minmax(0, 1fr); }
+  .go-arrow { text-align: center; transform: rotate(90deg); }
+  .go-card, .go-card.wide { width: 98%; max-height: 94%; }
+  .go-frame svg { height: 62px; }
+  .go-cmp-input { width: min(170px, 44vw); }
+}
+
+/* ---------------------------------------------------------------- 目录与仓库（#392） */
+/* 伞形工作目录：左边目录树、中间已找到的仓库、右边是原封不动的分支工作台（embedded）。
+   三块都是 grid 轨，列宽在 JS 里显式写；折叠成 26px 竖条，和原型 C 的定案一致。 */
+.repos-sheet {
+  width: min(1240px, 96vw); height: min(84vh, 820px);
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55); overflow: hidden;
+  animation: branch-in var(--dur-2) var(--ease);
+}
+.repos-sheet:focus { outline: none; }
+.repos-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); flex: none; min-width: 0; }
+.repos-titles { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.repos-title { font-size: 14px; font-weight: 500; color: var(--text); }
+.repos-sub { font: 11px var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repos-actions { display: flex; gap: 6px; flex: none; align-items: center; }
+.repos-x { appearance: none; border: 1px solid transparent; background: transparent; color: var(--dim); width: 30px; height: 28px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+.repos-x:hover { background: var(--panel-2); color: var(--text); border-color: var(--line); }
+.repos-crumb { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 0 1 auto; max-width: 46%; padding: 4px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); font: 11.5px var(--mono); color: var(--faint); }
+.repos-crumb:empty { display: none; }
+.repos-crumb-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.repos-crumb-branch { display: flex; gap: 4px; color: var(--accent); white-space: nowrap; }
+.repos-crumb-dirty { color: var(--warn); white-space: nowrap; }
+.repos-crumb-tag { border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 10px; color: var(--dim); white-space: nowrap; }
+.repos-crumb-sub { color: var(--faint); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.repos-drawerbtn { display: none; }
+
+.repos-body { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--rw-tree, 224px) var(--rw-rail, 214px) minmax(0, 1fr); }
+.repos-col { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line-soft); }
+.repos-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.repos-tree-top { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line-soft); flex: none; }
+.repos-up, .repos-fold { width: 26px; height: 26px; padding: 0; font: 12px var(--mono); flex: none; }
+.repos-path { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); color: var(--text); font: 11px var(--mono); padding: 4px 7px; }
+.repos-path:focus { outline: none; border-color: var(--accent-dim); }
+.repos-tree-list, .repos-rail-list { flex: 1; min-height: 0; overflow: auto; padding: 6px; }
+.repos-row, .repos-card { appearance: none; text-align: left; border: 1px solid transparent; background: transparent; color: var(--dim); cursor: pointer; }
+.repos-row { display: flex; align-items: center; gap: 4px; width: 100%; height: 26px; border-radius: 6px; padding-right: 7px; font: 11.5px var(--mono); }
+.repos-row:hover, .repos-card:hover { background: var(--panel-2); color: var(--text); }
+.repos-row.on, .repos-card.on { background: var(--panel-2); color: var(--text); border-color: var(--line); }
+.repos-caret { flex: none; width: 14px; text-align: center; color: var(--faint); font-size: 9.5px; }
+.repos-caret.leaf { opacity: 0.35; }
+.repos-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repos-thinking { color: var(--accent); opacity: 0.6; }
+.repos-git { flex: none; display: flex; align-items: center; gap: 4px; color: var(--faint); font-size: 10.5px; max-width: 58%; }
+.repos-branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repos-git .branch-glyph { font-size: 10px; }
+.repos-dot, .repos-card-dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--warn); }
+.repos-dirty { color: var(--warn); }
+.repos-rail-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); font-size: 11px; color: var(--faint); flex: none; }
+.repos-rail-title { font: 11px var(--mono); color: var(--dim); }
+.repos-card { display: grid; gap: 3px; width: 100%; border-radius: 8px; padding: 7px 8px; border-color: var(--line-soft); margin-bottom: 5px; font: 11.5px var(--mono); }
+.repos-card-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.repos-card-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.repos-card-dirty { color: var(--warn); font-size: 10px; }
+.repos-card-branch { display: flex; align-items: center; gap: 4px; color: var(--accent); font-size: 10.5px; min-width: 0; }
+.repos-card-branch > span:not(.branch-glyph):not(.repos-crumb-tag) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repos-rail-empty, .repos-rail-note { padding: 8px 10px; font-size: 10.5px; color: var(--faint); line-height: 1.6; }
+.repos-rail-note { color: var(--warn); flex: none; }
+.repos-empty { flex: 1; display: grid; place-items: center; padding: 24px; }
+.repos-empty-text { color: var(--faint); font-size: 12px; text-align: center; line-height: 1.8; }
+.repos-empty-hint { color: var(--dim); font-size: 11.5px; text-align: center; margin-top: 6px; }
+.repos-more { appearance: none; border: 0; background: none; color: var(--accent); cursor: pointer; font: 11px var(--mono); text-align: left; padding: 5px 10px; opacity: .82; }
+.repos-more:hover { opacity: 1; text-decoration: underline; }
+.repos-foot { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-top: 1px solid var(--line-soft); flex: none; font-size: 11px; color: var(--faint); }
+.repos-esc { font-size: 10.5px; color: var(--faint); }
+.repos-strip { appearance: none; border: 0; border-right: 1px solid var(--line-soft); background: var(--panel-2); color: var(--faint); cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 0; font: 11px var(--mono); }
+.repos-strip:hover { background: var(--panel-3); color: var(--text); }
+.repos-strip-label { writing-mode: vertical-rl; letter-spacing: 2px; }
+.repos-strip-count { font-size: 9.5px; color: var(--accent-dim); }
+.repos-strip-caret { font-size: 9px; }
+
+/* embedded：工作台不再是一片遮罩上的弹窗，而是右栏里的一整块。舞台自己撑满，边框交还给宿主。 */
+.branch-sheet.go-embedded { width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; animation: none; background: transparent; }
+.branch-sheet.go-embedded .go-body { border-radius: 0; }
+.go-side-toggle { white-space: nowrap; }
+/* pane：分支 aside 在 embedded 下收进下拉，历史占满宽（老工作台仍然用左 aside）。 */
+.go-side-pop { flex: none; max-height: 42%; overflow: auto; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); background: var(--panel-2); }
+.go-side-pop .go-side-group { margin: 4px 0; }
+.pane-side-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.chg-all { flex: none; margin-left: 8px; }
+
+@media (max-width: 720px) {
+  .repos-sheet { width: 100%; height: 100%; border-radius: 0; border: 0; }
+  .repos-body { grid-template-columns: minmax(0, 1fr); position: relative; }
+  .repos-rail, .repos-strip, .repos-tree { display: none; }
+  .repos-body.drawer-open .repos-tree { display: flex; position: absolute; inset: 0; z-index: 2; background: var(--panel); border-right: 0; }
+  .repos-drawerbtn { display: inline-flex; }
+  .repos-crumb { display: none; }
 }

@@ -143,6 +143,9 @@ test("worktree 的临时组在补齐后消失，会话落到主仓那一组", as
   await ws.resolve([tree]);
   const snapshot = ws.snapshot();
   assert.ok(!snapshot.groups.some((g) => g.id === provisional), "worktree 的临时组要让位");
+  // 临时组让位的同一份快照里，主仓那组必须已经在：不然页面收到这份快照时会把「我的组没了」误当成组被删，
+  // 跳到邻组的会话去（fail-cta-ui 在机器忙时间歇失败就是这个）。
+  assert.ok(snapshot.groups.some((g) => g.id === id(library.root)), "补齐后的快照里主仓组已经在，不等 groupFor 再建");
   assert.equal(ws.groupFor("s-tree", tree), id(library.root));
 });
 
@@ -406,10 +409,11 @@ test("#173 临时组被回收时从 order 里消失，真工程根成为新组�
   assert.deepEqual(ws.snapshot().order, [provisional]);
 
   await ws.resolve([tree]);
-  assert.deepEqual(ws.snapshot().order, [], "被回收的组不许留在 order 里");
-
-  const real = ws.groupFor("s-tree", tree);
-  assert.deepEqual(ws.snapshot().order, [real], "真工程根成为新组，追加进 order");
+  const real = id(library.root);
+  // 回收临时组和补真工程根的组是同一次写：不留「旧组没了、新组还没有」的中间态。
+  assert.deepEqual(ws.snapshot().order, [real], "被回收的组不许留在 order 里；真工程根同时追加进来");
+  assert.equal(ws.groupFor("s-tree", tree), real);
+  assert.deepEqual(ws.snapshot().order, [real], "再问一次不重复建组");
 });
 
 // ---------------------------------------------------------------- #276 横条成员

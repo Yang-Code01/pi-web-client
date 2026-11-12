@@ -909,12 +909,11 @@ export class Session extends EventEmitter {
   private extWidgets = new Map<string, { lines: string[]; placement: "aboveEditor" | "belowEditor" }>();
   private extTitle: string | null = null;
 
-  constructor(
-    private cli: string,
-    meta: SessionFileMeta | null,
-    opts: { id?: string; name?: string } = {},
-  ) {
+  private cli: string;
+
+  constructor(cli: string, meta: SessionFileMeta | null, opts: { id?: string; name?: string } = {}) {
     super();
+    this.cli = cli;
     const id = opts.id ?? meta?.id ?? "";
     const onDiskName = preferredName(id, meta?.name ?? null, meta?.nameAt ?? null);
     const finished = readFinishedAt(id);
@@ -2685,7 +2684,7 @@ export class Session extends EventEmitter {
    * 三处整页帧（分支切换 / 唤醒续接 / 快照）与桥的 `frameFor` 都从这里取，别各拼一份。
    */
   frame(opts: { full?: boolean } = {}): { items: Item[]; history: SessionHistory } {
-    return itemsFrame(this.items, { full: Boolean(opts.full) || Boolean(this.state.scratch) });
+    return itemsFrame(this.items, { full: Boolean(opts.full) || Boolean(this.state.scratch), truncated: this.state.truncated === true });
   }
 
   idleFor(): number {
@@ -2904,12 +2903,14 @@ export class SessionManager extends EventEmitter {
   /** 工作区 = 工程（一级分组），由 cwd 推导、拖过的用 override 钉死（#94）。 */
   readonly workspaces = new Workspaces();
 
-  constructor(
-    private cli: string,
-    /** Loopback origin the child posts to; null disables the whole loopback channel. */
-    private loopbackUrl: string | null = null,
-  ) {
+  private cli: string;
+  /** Loopback origin the child posts to; null disables the whole loopback channel. */
+  private loopbackUrl: string | null;
+
+  constructor(cli: string, loopbackUrl: string | null = null) {
     super();
+    this.cli = cli;
+    this.loopbackUrl = loopbackUrl;
   }
 
   /** Resolve the child that owns this token. Returns null for anything we did not spawn. */

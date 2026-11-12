@@ -51,6 +51,7 @@ export interface ExecChildRunInput {
   agent: string;
   task: string;
   state: "running" | "done" | "failed";
+  startedAt?: number;
   items: Item[];
   plan?: ExecPlanSnapshot | null;
   stats?: ExecStatsSnapshot | null;
@@ -139,6 +140,8 @@ interface ExecNowChild {
   runId: string;
   agent: string;
   step: string;
+  elapsedMs: number | null;
+  task: string;
 }
 
 export interface ExecViewModel {
@@ -202,6 +205,8 @@ function activeChildLines(childRuns: ExecChildRunInput[], now: number): ExecNowC
       runId: run.runId,
       agent: run.agent || run.task,
       step: activeTask?.activeForm || activeTask?.subject || activeStep?.label || run.task,
+      elapsedMs: run.startedAt === undefined ? null : Math.max(0, now - run.startedAt),
+      task: run.task,
     }];
   });
 }

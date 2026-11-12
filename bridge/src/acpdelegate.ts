@@ -34,6 +34,11 @@ export interface AcpDelegateView {
   /** 读不懂这个文件的原因；非 null 时页面禁用保存 —— 在这种文件上写会抹掉 providers / sessions。 */
   error: string | null;
   config: AcpDelegateConfig;
+  /**
+   * #375：`compress.neverPreserveRecentTools` 的现值；`null` = 没写（用 billion-context 内置的
+   * `["decompress","search_context","read","bash"]`）。`[]` = 已应用绕法。
+   */
+  neverPreserveRecentTools: string[] | null;
 }
 
 /** 只带用户真改过的那几个键；`null` 表示删键。 */
@@ -64,13 +69,53 @@ export function readAcpDelegate(file: string = acpConfigPath()): AcpDelegateView
     text = fs.readFileSync(file, "utf8");
   } catch (err) {
     const missing = (err as NodeJS.ErrnoException).code === "ENOENT";
-    return { path: file, exists: !missing, error: missing ? null : message(err), config: { ...EMPTY } };
+    return { path: file, exists: !missing, error: missing ? null : message(err), config: { ...EMPTY }, neverPreserveRecentTools: null };
   }
   try {
-    return { path: file, exists: true, error: null, config: readConfig(parseRoot(text, file)) };
+    const root = parseRoot(text, file);
+    return { path: file, exists: true, error: null, config: readConfig(root), neverPreserveRecentTools: readRecentTools(root) };
   } catch (err) {
-    return { path: file, exists: true, error: message(err), config: { ...EMPTY } };
+    return { path: file, exists: true, error: message(err), config: { ...EMPTY }, neverPreserveRecentTools: null };
   }
+}
+
+/**
+ * #375：billion-context ≤ 0.1.213 在 Claude 5.x（签名 thinking）上的已知问题的绕法。
+ *
+ * 它的「最近保护区」默认把 bash / read 的工具对排除在外，同一条回复里的 thinking 却受保护；
+ * 压缩范围伸进保护区时会留下 thinking、折掉同回复的工具调用，相邻几轮的 thinking 被拼成一条
+ * assistant 消息，Anthropic 就永久回 400（thinking blocks … cannot be modified）。上游：
+ * ranxianglei/billion-context#4885。把 `compress.neverPreserveRecentTools` 设成 `[]` 让保护区
+ * 连续，压缩只会在保护区前整段截断。
+ *
+ * `apply: true` 写 `[]`；`false` 删掉这个键（回到它的默认），`compress` 删空了连壳一起删。
+ * 与 writeAcpDelegate 同一套规矩：读不懂就抛错、不写；其它键原样。
+ */
+export function writeThinkingFix(apply: unknown, file: string = acpConfigPath()): AcpDelegateView {
+  if (typeof apply !== "boolean") throw new Error("apply 只能是 true / false");
+  let root: Record<string, unknown> = {};
+  let text = "";
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`${file} 读不了：${message(err)}`);
+  }
+  if (text.trim()) root = { ...parseRoot(text, file) };
+  if (!apply && !text.trim()) return readAcpDelegate(file);
+
+  const compress: Record<string, unknown> = { ...asRecord(root.compress) };
+  if (apply) compress.neverPreserveRecentTools = [];
+  else delete compress.neverPreserveRecentTools;
+  if (Object.keys(compress).length) root.compress = compress;
+  else delete root.compress;
+
+  writeJson(file, root);
+  return readAcpDelegate(file);
+}
+
+function readRecentTools(root: Record<string, unknown>): string[] | null {
+  const list = asRecord(root.compress)?.neverPreserveRecentTools;
+  return Array.isArray(list) && list.every((t) => typeof t === "string") ? [...list] : null;
 }
 
 /** 深合并写一条 patch。文件读不懂 / patch 不合法时抛错，磁盘保持原样。 */
@@ -121,6 +166,8 @@ function parseRoot(text: string, file: string): Record<string, unknown> {
   if (sub !== undefined && sub !== null && typeof sub !== "boolean" && !asRecord(sub)) {
     throw new Error(`${file} 里的 pi.subagents 不是对象也不是布尔值`);
   }
+  const compress = root.compress;
+  if (compress !== undefined && compress !== null && !asRecord(compress)) throw new Error(`${file} 里的 compress 不是对象`);
   return root;
 }
 

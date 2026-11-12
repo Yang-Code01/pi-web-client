@@ -123,7 +123,9 @@ check("workspaces：文件修好后，下一次写把排队的改动叠在盘上
     saved.groups.map((g) => g.name),
     ["旧组", "排队的组", "第二组"],
   );
-  assert.deepEqual(saved.pinned, ["g1"], "盘上的固定列表原样保留");
+  // #173 之后 `pinned` 退役、迁成 `order`：旧文件的固定顺序要原样打头。
+  assert.equal(saved.order[0], "g1", "盘上旧 pinned 迁进 order 后仍打头");
+  assert.equal(saved.pinned, undefined, "不再回写退役的 pinned 字段");
   assert.equal(saved.max, 2, "盘上的名额原样保留");
 });
 check("workspaces：没有文件（首次运行）照常写", () => {

@@ -118,6 +118,8 @@ export class Messages {
     if (kind === "receipt") return this.acceptReceipt(body.receipt);
     if (kind === "friend-request") return this.acceptFriendRequest(fromAddr, body.control);
     if (kind === "friend-accept") return this.acceptFriendAccept(fromAddr, body.control);
+    // 老版本不认识这个 kind，回 400 + retryable:false：新版照写本机 quick，旧版只丢这一条。
+    if (kind === "friend-quick") return this.acceptFriendQuick(fromAddr, body.control);
     return { status: 400, body: { error: "unknown kind", retryable: false } };
   }
 
@@ -151,10 +153,10 @@ export class Messages {
   }
 
   /**
-   * 好友请求 / 接受（第 3 片）。和文字走同一条 inbox + outbox：补投、去重、IP 校验都白捡。
+   * 好友请求 / 接受 / 一键快捷添加（第 3 片）。和文字走同一条 inbox + outbox：补投、去重、IP 校验都白捡。
    * 只是不产生历史行 —— 通讯录里「他请求我」是个状态，不是一段对话。
    */
-  sendControl(peerId: string, kind: "friend-request" | "friend-accept"): { ok: true } {
+  sendControl(peerId: string, kind: "friend-request" | "friend-accept" | "friend-quick"): { ok: true } {
     const peer = this.ctx.discovery.byId(peerId);
     if (!peer) throw new Error("这个人已经不在线了：刷新在线列表再试");
     const who = this.ctx.relations.get(peerId);
@@ -165,6 +167,7 @@ export class Messages {
       port: who?.port || peer.port,
     };
     if (kind === "friend-request") this.ctx.relations.request(identity);
+    else if (kind === "friend-quick") this.ctx.relations.quickAdd(identity);
     else this.ctx.relations.accepted(identity);
     const at = Date.now();
     const id = uuidv7(at);
@@ -193,6 +196,17 @@ export class Messages {
     if (check) return check;
     this.ctx.relations.accepted(claimed);
     this.ctx.log(`对方接受了你的好友请求：${claimed.nickname ?? claimed.nodeId.slice(0, 8)}`);
+    return { status: 200, body: { ok: true } };
+  }
+
+  /** 一键快捷添加：只写 quick，不写 incoming，也不回 friend-accept（D234）。 */
+  private async acceptFriendQuick(fromAddr: string, control: any): Promise<InboxResult> {
+    const claimed = control?.from as PeerIdentity | undefined;
+    if (!claimed?.nodeId) return { status: 400, body: { error: "bad control", retryable: false } };
+    const check = await this.verifySource(fromAddr, claimed);
+    if (check) return check;
+    this.ctx.relations.quickAdd(claimed);
+    this.ctx.log(`快捷联系人：${claimed.nickname ?? claimed.nodeId.slice(0, 8)}`);
     return { status: 200, body: { ok: true } };
   }
 

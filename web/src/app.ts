@@ -8,6 +8,7 @@ import { BUILD_ID } from "./build.ts";
 import { filterCommands, PANEL_COMMANDS, type CommandItem } from "./commands.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
+import { ATTACH_IMAGE, imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
 import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type ComposerChild, type FailLedger, type SeenFail } from "./failures.ts";
@@ -25,6 +26,7 @@ import { JiraPanel } from "./jira.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { openSysmanage } from "./sysmanage.ts";
 import { BranchSheet } from "./branchsheet.ts";
+import { ReposSheet } from "./repossheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
 import { SlidesDialog } from "./slides/dialog.ts";
 import { CSV_MAX_BYTES, csvWindow, readCsv, reparseCsv, type CsvData } from "./sheet/csv.ts";
@@ -306,11 +308,15 @@ export class App {
   private modelsAsked = 0;
   /** D95：记录面板（🐞 bug）打开时的那一份；关掉就置 null。 */
   private notesSheet: NotesSheet | null = null;
-  /** D193: 分支历史弹窗；同时只开一扇，关了才允许再开。 */
+  /** D235: 分支操作工作台；同时只开一扇，关了才允许再开。 */
   private branchSheet: BranchSheet | null = null;
+  /** #392: 非 git cwd 的「目录与仓库」；同样只开一扇。 */
+  private reposSheet: ReposSheet | null = null;
   /** D164：AI 出错记录的账本（按工作区），以及这个会话里见过的失败（按 toolCallId 去重）。 */
   private failLedger: FailLedger | null = null;
   private failWs = "";
+  /** 已经按这个组 id 要过账本：`syncFailWs()` 不必为同一个 id 反复发请求。 */
+  private failWsAsked = "";
   private sessionFails = new Map<string, SeenFail>();
   /** 这个会话里已经叫住过的失败类别（keys）：同会话同一类只叫一次（桥那边还有一层节流）。 */
   private failReminded = new Set<string>();
@@ -1716,6 +1722,7 @@ export class App {
         this.execStreamText = "";
         this.setExecPhase(this.session?.running ? "waiting" : "idle");
         if (this.currentWs()) {
+          this.failWsAsked = this.currentWs();
           this.socket.send({ type: "failures.get", ws: this.currentWs() });
           this.socket.send({ type: "rules.get", ws: this.currentWs() });
         }
@@ -2411,11 +2418,18 @@ export class App {
           exists: Boolean(msg.exists),
           error: msg.error == null ? null : String(msg.error),
           config: (msg.config ?? { enabled: null, maxDepth: null, maxConcurrent: null, thinkingLevel: null }) as AcpDelegateView["config"],
+          neverPreserveRecentTools: Array.isArray(msg.neverPreserveRecentTools) ? msg.neverPreserveRecentTools.map(String) : null,
         };
         this.subagentsAcpLoadError = null;
         this.subagentsAcpSaving = false;
         this.subagentsAcpSaveError = null;
-        if (msg.saved) this.flashSettings(tr("acp_delegate 已保存（写的是 billion-context 的配置文件，对新会话生效）"));
+        if (msg.saved === "thinkingFix") {
+          this.flashSettings(
+            this.subagentsAcp.neverPreserveRecentTools?.length === 0
+              ? tr("绕法已应用：下一次压缩起生效，不用重启")
+              : tr("绕法已撤销，回到 billion-context 的默认"),
+          );
+        } else if (msg.saved) this.flashSettings(tr("acp_delegate 已保存（写的是 billion-context 的配置文件，对新会话生效）"));
         if (this.sheetKind === "settings" && this.settingsTab === "subagents") this.paintSettings();
         break;
       }
@@ -2531,6 +2545,8 @@ export class App {
         this.landAfterWsDrop(wsBefore, orderBefore);
         // #123：设置面板开着时，名额也跟着桥的快照对齐（校验发生在桥，页面只是镜子）。
         if (this.sheetKind === "display") this.paintWsTabsPane();
+        // 组 id 可能刚从临时组换成真工程根：账本按组存，得跟着重取（否则 pill 永远不亮）。
+        this.syncFailWs();
         break;
       }
       case "ws.created": {
@@ -2635,6 +2651,8 @@ export class App {
         if (msg.workspace) this.workspaces = msg.workspace as WorkspaceState;
         this.renderSessions();
         this.mgrRefresh?.();
+        // 同 `workspaces`：组 id 换了就按新 id 重取失败账本。
+        this.syncFailWs();
         break;
       }
       case "session.state":
@@ -3217,6 +3235,9 @@ export class App {
       // Don't keep showing the previous session's branch while this answer is in flight.
       this.git = null;
       this.gitCwd = cwd;
+      // #392: 「目录与仓库」属于上一个会话的 cwd，切走就关，别让面板停在前一个项目上。
+      this.reposSheet?.close();
+      this.paintCwdChipTitle();
       this.fillHintStatus();
     }
     let info: GitInfo | null = null;
@@ -3229,6 +3250,8 @@ export class App {
     if ((this.session?.cwd ?? "").trim() !== cwd) return;
     this.git = info;
     this.gitCwd = cwd;
+    // #392: git 到了再定 chip 的语义（复制 vs 浏览子仓库）。
+    this.paintCwdChipTitle();
     this.fillHintStatus();
   }
 
@@ -3252,29 +3275,55 @@ export class App {
     const lines = [tr("⎇ {p1}{p2}", { p1: label, p2: git.dirty ? tr(" · {p1} 个未提交改动", { p1: git.dirty }) : "" })];
     if (git.detached) lines.push(tr("detached HEAD：不在任何分支上"));
     if (git.empty) lines.push(tr("仓库里还没有提交"));
-    lines.push(git.repo, "", tr("Enter 发送 · Shift+Enter 换行 · {p1} 粘贴截图", { p1: PASTE_KEY }), tr("点一下看分支历史"));
+    lines.push(git.repo, "", tr("Enter 发送 · Shift+Enter 换行 · {p1} 粘贴截图", { p1: PASTE_KEY }), tr("点一下打开分支操作工作台"));
     chip.title = lines.join("\n");
-    chip.onclick = () => this.openBranchHistory(git);
+    chip.onclick = () => this.openBranchWorkbench(git);
     return chip;
   }
 
   /**
-   * D193: 分支 chip 单击从「复制」改成「看历史」——复制搬进弹窗的工具条，单击只做一件事，而这件事
-   * 现在有信息量。已经开着就关掉（再点一下等于关），不给第二层模态。
+   * D235: 分支 chip 单击打开「分支操作工作台」（看历史 / 差异 / 图解手册 + 写操作）。
+   * 同时只开一扇，再点一下等于关，不给第二层模态。
    */
-  private openBranchHistory(git: GitInfo): void {
+  private openBranchWorkbench(git: GitInfo): void {
     if (this.branchSheet) {
       this.branchSheet.close();
       return;
     }
     const cwd = (this.session?.cwd ?? "").trim();
     if (!cwd) return;
-    const sheet = new BranchSheet({ dir: cwd, branch: git.branch });
+    const sheet = new BranchSheet({
+      dir: cwd,
+      branch: git.branch,
+      refreshChip: () => { void this.refreshGit(true); },
+      handoff: { prefill: (text) => this.prefill(text), newSessionWith: (text) => this.newSessionWith(text) },
+    });
     sheet.onClose = () => {
       if (this.branchSheet === sheet) this.branchSheet = null;
     };
     sheet.mount(document.getElementById("app") ?? document.body);
     this.branchSheet = sheet;
+  }
+
+  /**
+   * #392: cwd 不在仓库里时，路径 chip 打开「目录与仓库」：左目录树、中仓库列、右分支面板。
+   * 同时只开一扇；切会话（refreshGit 发现 cwd 变了）也会关掉。
+   */
+  private openReposSheet(cwd: string): void {
+    if (this.reposSheet) {
+      this.reposSheet.close();
+      return;
+    }
+    const sheet = new ReposSheet({
+      cwd,
+      refreshChip: () => { void this.refreshGit(true); },
+      handoff: { prefill: (text) => this.prefill(text), newSessionWith: (text) => this.newSessionWith(text) },
+    });
+    sheet.onClose = () => {
+      if (this.reposSheet === sheet) this.reposSheet = null;
+    };
+    sheet.mount(document.getElementById("app") ?? document.body);
+    this.reposSheet = sheet;
   }
 
   /** The line under the composer: what pi is doing and for how long, or the key hints when idle. */
@@ -8334,6 +8383,21 @@ export class App {
     });
   }
 
+  /**
+   * 账本挂在工作区组上，而组 id 会在页面活着的时候变：桥启动后补一次 git 缓存，worktree / 子目录
+   * 的「按 cwd 临时组」就换成真工程根那一组，`currentWs()` 跟着翻一次。
+   *
+   * 翻完如果不重取，`uncommittedFails()` 里 `failWs !== ws` 永远成立 → 「总结本轮错误」再也不亮
+   * （fail-cta-ui 在机器忙时间歇失败就是这个：git 子进程慢到页面先开完）。
+   */
+  private syncFailWs(): void {
+    const ws = this.currentWs();
+    if (!ws || !this.currentId || this.failWs === ws || this.failWsAsked === ws) return;
+    this.failWsAsked = ws;
+    this.socket.send({ type: "failures.get", ws });
+    this.socket.send({ type: "rules.get", ws });
+  }
+
   /** 这个会话还有几次失败没进账本：见过的条数 - 上次入账时的条数（点完按钮、账本回包后归零）。 */
   private uncommittedFails(): number {
     const ws = this.currentWs();
@@ -10902,6 +10966,12 @@ export class App {
           this.subagentsAcpSaving = true;
           this.subagentsAcpSaveError = null;
           this.act(() => this.socket.send({ type: "subagents.acp.set", patch }));
+          this.paintSettings();
+        },
+        onThinkingFix: (apply: boolean) => {
+          this.subagentsAcpSaving = true;
+          this.subagentsAcpSaveError = null;
+          this.act(() => this.socket.send({ type: "subagents.acp.thinkingFix", apply }));
           this.paintSettings();
         },
         onReload: () => this.requestSubagentsAcp(),
@@ -13668,16 +13738,9 @@ export class App {
   private async addImages(files: FileList | readonly File[] | null): Promise<void> {
     const list = files ? Array.from(files) : [];
     if (!list.length) return;
-    for (const file of list) {
-      const isSvg = file.type === "image/svg+xml" || /\.svg$/i.test(file.name);
-      const bitmap = isSvg ? await rasterizeSvg(file) : await createImageBitmap(file).catch(() => null);
-      if (isSvg && !bitmap) {
-        this.warn(tr("SVG「{p1}」渲染失败，没有附加", { p1: file.name }));
-        continue;
-      }
-      const data = await downscale(file, bitmap);
-      this.images.push(data);
-    }
+    const { images, failed } = await imagesFromFiles(list);
+    for (const name of failed) this.warn(tr("SVG「{p1}」渲染失败，没有附加", { p1: name }));
+    this.images.push(...images);
     this.updateImageBadge();
     this.imageSheetPaint?.();
   }
@@ -14524,6 +14587,7 @@ export class App {
         agent: run.agent,
         task: run.task,
         state: run.state,
+        startedAt: run.startedAt,
         items: this.execChildExpanded.has(run.id) ? this.execChildStates.get(run.id)?.items ?? [] : [],
         plan: this.execChildStates.get(run.id)?.plan ?? null,
         stats: this.execChildStates.get(run.id)?.stats ?? null,
@@ -14672,8 +14736,29 @@ export class App {
       card.append(el("div", "exec-now-line", message));
     }
     for (const child of view.runningChildren) {
-      const line = el("div", "exec-now-line exec-now-child");
-      line.append(el("b", "", child.agent), el("span", "", child.step));
+      const label = child.agent || child.task;
+      const long = child.step.length > 80 || label.length > 80;
+      const line = el(long ? "button" : "div", "exec-now-line exec-now-child") as HTMLElement;
+      if (long) {
+        const row = line as HTMLButtonElement;
+        row.type = "button";
+        row.title = tr("点开看子代理的完整任务");
+        row.setAttribute("aria-haspopup", "dialog");
+        row.onclick = () => this.openArgsDialog({
+          title: tr("子代理任务"),
+          meta: this.execDuration(child.elapsedMs),
+          blocks: child.step === child.task
+            ? [{ label: tr("任务"), text: child.task }]
+            : [
+              { label: tr("子代理"), text: label },
+              ...(child.task && child.task !== label ? [{ label: tr("任务"), text: child.task }] : []),
+              ...(child.step !== label ? [{ label: tr("当前步骤"), text: child.step }] : []),
+            ],
+        });
+      }
+      line.append(el("b", "", label), el("span", "exec-args", child.step));
+      if (long) line.append(el("span", "exec-now-open", "⤢"));
+      line.append(el("span", "exec-elapsed", this.execDuration(child.elapsedMs)));
       card.append(line);
     }
     return card;
@@ -14911,6 +14996,11 @@ export class App {
     if (row.plan) wrap.append(this.execPlanBox(row.plan, true));
     if (childState?.pending && !row.steps.length) {
       wrap.append(el("div", "exec-empty", tr("等待子代理会话…")));
+      return wrap;
+    }
+    const childDone = childState?.state === "done" || childState?.state === "failed" || row.status === "done" || row.status === "failed";
+    if (childDone && !row.steps.length && !row.plan) {
+      wrap.append(el("div", "exec-empty", tr("子代理已结束，没有可用的会话记录")));
       return wrap;
     }
     if (!row.steps.length) {
@@ -15669,13 +15759,33 @@ export class App {
     this.cwdChip.hidden = !(this.collapsed.sessions && !this.compact());
   }
 
+  /** #392：chip 的说明随 git 探测结果更新；键里的 \n 会让 i18n 扫描把 `{p1}` 当成键本身，换行拼在键外。 */
+  private paintCwdChipTitle(): void {
+    const chip = this.cwdChip;
+    const cwd = chip?.dataset.cwd;
+    if (!chip || !cwd) return;
+    const inRepo = this.gitCwd === cwd && this.git !== null;
+    chip.title = cwd + "\n" + (inRepo ? tr("点一下复制路径") : tr("点一下浏览子仓库（复制在窗内）"));
+  }
+
   private cwdChipNode(cwd: string): HTMLElement {
     const btn = el("button", "cwd-chip") as HTMLButtonElement;
     const path = el("span", "cwd-path", cwd);
     btn.append(path);
-    // 键里的 \n 会让 i18n 键扫描把 `{p1}` 当成键本身（既有误报），换行拼在键外。
-    btn.title = cwd + "\n" + tr("点一下复制路径");
+    // #392: cwd 在仓库里时点一下还是复制；不在仓库里（伞形目录）时点开「目录与仓库」，复制放窗内。
+    // git 是异步到的：标题与点击都要现算，不能在建节点时把 inRepo 定死（否则首次渲染总是「浏览子仓库」）。
+    btn.dataset.cwd = cwd;
+    const inRepo = (): boolean => this.gitCwd === cwd && this.git !== null;
+    // 注意：此刻 this.cwdChip 还没指向这个节点（赋值在返回之后），要直接写 btn.title。
+    const paintTitle = (): void => {
+      btn.title = cwd + "\n" + (inRepo() ? tr("点一下复制路径") : tr("点一下浏览子仓库（复制在窗内）"));
+    };
+    paintTitle();
     btn.onclick = () => {
+      if (!inRepo()) {
+        this.openReposSheet(cwd);
+        return;
+      }
       // 和 git chip 一样：`navigator.clipboard` 在局域网 http 下不存在，可选链要包住调用不是属性。
       const copy = navigator.clipboard?.writeText(cwd);
       if (!copy) return;
@@ -17462,7 +17572,6 @@ function permMode(id: string): PermMode {
   return { id: "ask", icon: "🛡", label: tr("危险时确认"), desc: "" };
 }
 
-type PendingImage = { data: string; mimeType: string };
 type PasteBlock = { text: string; open: boolean };
 type Draft = { text: string; images: PendingImage[]; pastes: PasteBlock[] };
 
@@ -17745,80 +17854,8 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
 /** "⌘V" on Apple hardware, "Ctrl+V" everywhere else. */
 const PASTE_KEY = /Mac|iPhone|iPad|iPod/.test(`${navigator.platform} ${navigator.userAgent}`) ? "⌘V" : "Ctrl+V";
 
-/**
- * 从剪贴板里抖出文件（截图、从资源管理器复制的文件）。截图粘贴在 Chrome/Safari/Firefox 上都以
- * file item 出现，但 Safari 有时只给 files 不给 items，所以两条路都试。
- */
-function pastedFilesFrom(data: DataTransfer | null): File[] {
-  if (!data) return [];
-  const out: File[] = [];
-  for (const item of Array.from(data.items ?? [])) {
-    if (item.kind !== "file") continue;
-    const file = item.getAsFile();
-    if (file) out.push(file);
-  }
-  if (!out.length) out.push(...Array.from(data.files ?? []));
-  return out;
-}
-
-/** Images keep going to the model as pixels; every other file is referenced by path. */
-function splitImages(files: File[]): { images: File[]; others: File[] } {
-  const images: File[] = [];
-  const others: File[] = [];
-  for (const f of files) (f.type.startsWith("image/") ? images : others).push(f);
-  return { images, others };
-}
-
-/** Picked files with these extensions get attached like a pasted image instead of inserted as a path. */
-const ATTACH_IMAGE = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
-
 /** #106: 表格类文件即使读不了（.xls/.ods/加密包），也用「这个格式这里不支持」而不是通用二进制文案。 */
 const DESKTOP_OPEN = /\.(xlsx|xlsm|xlsb|xls|ods|pptx|pptm|ppsx|potx|ppt|pps|pdf|doc|docx)$/i;
-
-/** SVG has no pixels: render it through an <img> (scripts never run there) onto a canvas. */
-async function rasterizeSvg(file: File): Promise<ImageBitmap | null> {
-  const url = URL.createObjectURL(file.type ? file : new Blob([file], { type: "image/svg+xml" }));
-  try {
-    const img = new Image();
-    img.src = url;
-    await img.decode();
-    let w = img.naturalWidth;
-    let h = img.naturalHeight;
-    if (!w || !h) {
-      w = 1024;
-      h = 1024;
-    }
-    const scale = Math.max(1, 1024 / Math.max(w, h));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(w * scale);
-    canvas.height = Math.round(h * scale);
-    const ctx = canvas.getContext("2d")!;
-    ctx.fillStyle = "#fff"; // jpeg has no alpha; transparent svg strokes would vanish on black
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    return await createImageBitmap(canvas);
-  } catch {
-    return null;
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-async function downscale(file: File, bitmap: ImageBitmap | null): Promise<{ data: string; mimeType: string }> {
-  const max = 2048;
-  if (!bitmap) {
-    const buf = await file.arrayBuffer();
-    return { data: btoa(String.fromCharCode(...new Uint8Array(buf))), mimeType: file.type || "image/png" };
-  }
-  const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  const ctx = canvas.getContext("2d")!;
-  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.86);
-  return { data: dataUrl.split(",")[1], mimeType: "image/jpeg" };
-}
 
 /** "Deepseek-V4.1-Flash · x0.11 · 1M" -> "Deepseek-V4.1-Flash": the chip has no room for pricing. */
 function shortModelName(name: string): string {

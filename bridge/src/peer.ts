@@ -41,9 +41,10 @@ export class PeerHost {
   private timer: NodeJS.Timeout | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
 
-  constructor(
-    private readonly opts: { port: number; entry: string | null; log: (msg: string) => void },
-  ) {
+  private readonly opts: { port: number; entry: string | null; log: (msg: string) => void };
+
+  constructor(opts: { port: number; entry: string | null; log: (msg: string) => void }) {
+    this.opts = opts;
     if (!opts.entry) this.reason = "peer 还没构建：在仓库根目录跑 npm run build:peer";
   }
 
@@ -168,6 +169,16 @@ export class PeerHost {
     return this.request("POST", "/config", patch);
   }
 
+  /** 忽略名单是通讯录自己的读口；页面拿它挡住「在线表兜底」把人加回来。 */
+  ignored(): Promise<{ ok: boolean; nodeIds: string[] }> {
+    return this.request("GET", "/ignored");
+  }
+
+  /** 设置页整体清空忽略名单：只动那份独立名单，不改关系记录。 */
+  clearIgnored(): Promise<{ ok: boolean; cleared: number }> {
+    return this.request("POST", "/ignored/clear");
+  }
+
   history(peer: string, limit = 200): Promise<{ entries: unknown[] }> {
     return this.request("GET", `/messages?peer=${encodeURIComponent(peer)}&limit=${limit}`);
   }
@@ -180,7 +191,7 @@ export class PeerHost {
     return this.request("GET", "/contacts");
   }
 
-  friend(peer: string, action: "request" | "accept" | "favorite" | "remove", on?: boolean): Promise<unknown> {
+  friend(peer: string, action: "request" | "quick" | "accept" | "favorite" | "remove", on?: boolean): Promise<unknown> {
     return this.request("POST", "/friend", { peer, action, on });
   }
 

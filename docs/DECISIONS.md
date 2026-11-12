@@ -4071,3 +4071,128 @@ D
 **代价 / 可改：** 一个常驻 pi 进程（省掉冷启，占着内存）；`state.scratch` 的对象在桥的生命周期内不再回收；暂停态不持久化（重启后是全新随手问，与「重启即清空」一致）；默认 0 意味着忘了关的随手问会一直在，这是有意的。
 
 **验证：** `npm run test:scratch`（桩 pi，A–E 组：默认不睡、正数阈值恢复、休眠后复用同一 id、GC 不驱逐、重启清空）、`npm run test:scratch:ui`（真 Chromium：暂停/开始闭环、暂停只读不唤醒、清空保持暂停、404 自动重开、主会话与随手问横幅互不影响、中/英/日三语）、`npm run typecheck`（含 i18n 键检查）。
+
+## D234 内网通「快捷联系人」与好友正交：一键可聊，文件仍只给确认过的好友（#376 / #382）
+
+**问题：** 内网通添加一个人原先只能手输 IP，而且「加好友」要走 `friend-request` → `friend-accept` 两步、对方还得在线点「接受」。用户要「广播看到所有在线的人、一键添加、一键发消息」。但若直接把一键添加写成 `friend: true`，就等于把 D106 的三道文件闸（发端 `/files/send`、剪贴板 `/files/upload`、收端 `files.begin()`）一起放行 —— 写盘是不可撤销的，陌生人也能往收件箱写文件；若走既有 `friend-request`，对端又必然出现「待接受」，不算一键完成。
+
+**决定：**
+
+- **通讯录先合并在线表**：`/contacts` = 已有关系记录 ∪ 当前在线、未忽略、无任何关系的人；合并出来的行只用于展示与发文字，不落 `peers.json`。在线名单、状态接口、找人接口与 pi 三个工具都不改（D98/D99/D103 一字不动）。**与 D104 / D105 的冲突在这里显式记一笔**：D104 决定 1 把 `/peer/inbox` 的信封限定为 `friend-request` / `friend-accept` 两种 `kind`，且「都可能因为对方离线、IP 漂移、组播被挡而要重试」；本条把 `friend-quick` 作为第三种 `kind` 复用了同一信封与 Outbox，`quick` 动作又只认 30 秒在线窗口、不命中直接 400，D105「接受时对方要在线」的规则也不适用于它。握手去重（D98）、隐身（D99）、来源校验（D103）与两步好友流程本身不改；D234 只在「控制消息多一种 `kind`」「离线目标直接拒、不补投」这两点上取代 D104 决定 1 与 D105 的适用范围，不重写那两条。
+- **`quick` 是与 `friend` 正交的字段**：老记录缺字段按 `false`；`isFriend()` 仍只看 `friend`，所以 quick 只放行 1:1 文字，文件权限不变（D106）。一键添加沿用好友接口新增 `quick` 动作，本机立即写 `quick` 并经既有 Outbox 发新控制消息 `friend-quick`；接收侧 `acceptFriendQuick()` 只 `verifySource` + 写 `quick`，**不写 `incoming`、不回 `friend-accept`**，既有两步确认制原样保留。
+- **离线即拒**：`quick` 动作只认 `discovery.online()` 的 30 秒窗口，不命中回 400，不用 5 分钟 IP 宽松窗口、不塞补投；页面按钮同步禁用并提示等上线。**实现取舍**：「不进补投」指接口在发起前就拒绝离线目标；一旦已通过在线检查并 `outbox.add()`，控制消息仍走既有 Outbox —— 旧版 400 `retryable: false` 会被直接 `settle`，但 IP 漂移的 409 / 网络抖动仍按 D104 重试。因此 story 21「失败时不进补投、不静默重试」只在「旧版明确拒绝」这一支严格成立，不为 `friend-quick` 单造一条不重试的旁路（spec 的 Implementation Decisions 也明写「经既有 Outbox 发」）。
+- **混合版本尽力而为**：旧版对未知 `kind` 回 400 `unknown kind` 且 `retryable: false`，Outbox 直接丢这一条、不重投、不提示、不协商，不改 `PROTO`、不加能力位；新版本机 `quick` 照写、文字照发，旧版仍在「附近的人」看到新版。
+- **忽略名单优先于合并行**（第三片实现）：移除一个由在线表合并出来的人时写本地 `ignored`，`/contacts` 不再合并他，但状态在线表与找人结果照旧；`ignored` 只吞「在线合并且无任何关系」的行，好友 / quick / 待处理 / 已发出申请 / 收藏都不受影响。
+- **避免零点击自动互加**：列表每行一颗按钮，点一下才生效。
+
+**为什么：**
+
+- 文字与文件的风险不是一个量级：文字可删可忽略，文件是替对方往磁盘写东西。把「能看见、能聊」和「能传文件」拆成两个关系，用户看到的「一键添加」才不会悄悄放大权限。
+- 复用 inbox + Outbox + `verifySource` 而不是另开通道：补投、去重、IP 校验都是已有的，新控制消息只是多一个 `kind`，旧版天然把它当 `unknown kind` 丢掉。
+- 不做版本协商、不改协议号：内网通是去中心、无中心的，靠组播互认；一个「你支持 quick 吗」的往返反而会让双方都依赖对方在线，且给每个旧版都背上兼容分支。
+- 忽略名单独立持久化、只作用于合并行：否则 `/contacts` 每 6 秒重新合并一次，按「移除」的人刷新就回来；而把已有关系的人一起吞掉会破坏收藏与好友语义。
+- 术语「快捷联系人」「忽略名单」已写进 `GLOSSARY.md`，`好友` 条目也补上「两者都不等于好友」；按 `docs/agents/domain.md`，新决定不改写旧决定，只在这里点名 D104 / D105 的冲突。
+
+**代价 / 可改：** 一个额外的 `quick` 字段与一种控制消息；旧版升上来之前，单向 quick 不会同步到对端（对端仍把你看作附近的人，文字照常收发）。按钮文案「快捷添加（可聊天）」/「加为好友（可传文件）」/「已是快捷联系人」、分组名「快捷联系人」及其 en/ja 译文都是默认值，可改；quick 组位置（好友之后、附近的人之前）也可改。忽略名单只在设置页整体清空，不做单条编辑。
+
+**验证：** `npm run test:peer`（后端真实多进程：在线陌生人进通讯录且关系字段全假、一键添加后双方 `quick` 且无 `incoming`、重复添加不重复、quick 发文字成功有回执、quick 发文件仍 403 且收件端拒写、离线 `quick` 被拒、既有两步好友流程与文件仅好友不回退、旧版 400 只丢不补投）、`npm run test:peer:ui`（真 `web/dist` + 桩 API：quick 单独成组且位置正确、两颗按钮并存、传文件仅好友、离线禁用并显示可见提示、发消息聚焦输入框、中文语境的新文案与 en/ja 两种 locale 下的译文）、`npm run typecheck`（含 i18n 三语言键检查）。
+
+## D235 分支 chip 从「只读历史」升级成「分支操作工作台」（用户要求）
+
+**编号说明：** 本决定在分支开发时暂记 D234；同期合入 main 的「内网通快捷联系人」（#376 / #382）已占用 D234。按「不改写已合入的决定」，本决定顺延为 **D235**，D234 的内容一字不动。
+
+**问题：** D193 的弹窗只读、是快照、对照分支只有一个纯下拉、看不到 diff，也不让 cherry-pick。用户从「聊天框的分支功能很简单，想追加功能」开始，九轮逼问定下全集写操作的边界，再做四份真实 HTML 样张（`.scratch/git-ops-dialog/prototype/`）选定**样张 D · 居中操作卡**，第二轮又补了三条：全部动词要看得见、加一个「选分支 + 写要求 → 交给 AI」的独立入口、对照分支要能输入检索。
+
+**决定：**
+
+1. **落点不变**：仍是输入框状态行的 `⎇ 分支` chip → `BranchSheet`；消息气泡的 `⑂` 分叉是另一条线，不动。
+2. **明确覆盖 D193 的第 6 条「只读」与「弹窗是快照」**：写操作成功后立刻 `invalidateGitCache(dir)`（清 `bridge/src/git.ts` 的 5s TTL）并以 `fresh` 重拉 history / info / refs / diff，状态行的分支与 dirty 数跟着变；弹窗不再自称「只读」。
+3. **版面按样张 D**：三 tab「历史 / 差异 / 图解手册」+ 右上写操作按钮 + **740px 居中操作卡**（背景遮暗是用户选定并接受的代价）。标题栏常驻 commit / switch / merge / **cherry-pick / revert / tag** / fetch / 红色操作，另有「▦ 全部动词 · 24」分组选择器与「🤖 交给 AI 操作…」。
+4. **对照分支改成可输入检索**：关键词过滤本地 + 远程分组候选，回车或「用输入的 ref 对照」接受任意 ref；历史右列、差异文件栏、并排 diff 标题同步。D193 的纯 `<select class="bc-base">` 与「只列 refs/remotes」一并作废。
+5. **差异富视图**：默认「当前分支 vs 对照」，点提交切「该提交 vs 父提交」（根提交用空树 `4b825dc…` 当左侧）；文本逐行并排（tag `same`/`add`/`del`/`mod` 分别上色）、图片两栏缩略、PDF / 表格 / 二进制占位、超 200 行或 400 KB 截断并明说。
+6. **桥端执行通道**（新文件 `bridge/src/gitops.ts`）：只收 `id + 结构化 params`，24 个 id 由 `OP_BUILDERS` 逐条显式拼 argv，**绝不执行网页传来的 argv**；`ref` 拒绝 `-` 开头与 `[\s~^:?*\[\\]`、`paths` 限 200 条且拒 `..`、`message` 去 NUL；统一 `GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS=echo` + `credential.interactive=never`（否则缺凭据的仓库会挂在等密码）；按 `dir` 串行排队防 `index.lock` 互踩；返回 `GitExecResult` 带 `exitCode` / 原 argv / 原始 stdout+stderr / 新 state / 冲突文件 / pending / `refresh` / 稳定 `code`（`auth`/`identity`/`conflict`/`dirty`/`op_failed`）。D193 那个把失败吞成 `null` 的私有 `git()` 不复用。
+7. **双闸，写入只在真本机放行**：`isLoopbackPeer(req.socket.remoteAddress) && !isTunnelRequest(headers)`，LAN 直连与公网隧道一律 403 `op_public`。两个判据缺一不可：cloudflared 在本机起，隧道请求的 `remoteAddress` 天然是回环；LAN 直连不带 cf 头，`publicReq` 又判不出来。
+8. **保护与失败可见**：会覆盖工作区且当前 dirty 的操作先弹「stash / 逐文件 restore / 取消」；冲突态只放行「中止 / 继续 / 交给 agent」，继续要逐文件勾完「已解决」才启用；8 个红色动词（`reset --hard` / `clean -fd` / `push --force` / 删分支 / `stash drop` / `tag -d` / rebase / restore）给确认卡（会丢什么 + 可复制回退命令），但 **restore 特判**：逐文件勾选清单本身就是确认，不叠第二张卡；鉴权与提交身份失败给结构化失败卡 + 系统 credential helper / `user.name` 指引 + handoff，网页不收集账号密码、不自动兜底。
+9. **交给 agent 两个出口**：`buildHandoffPrompt()` 打包仓库 / 当前分支 / 选中分支 / ahead·behind / dirty 数 / 可用分支 / 失败时的 argv+exit+stderr / 用户要求；复用 `web/src/app.ts` 的 `prefill(text)` 与 `newSessionWith(text)`（JiraPanel 已接过同一对回调），**只填不发**。提示词字面保持中文、不随界面语言变（`i18n-ignore`）。
+10. **前端单一注册表**（新文件 `web/src/git-ops.ts`）：24 条 `GitOpDef` 各带两帧纯内联 SVG 图解（离线可用）、结构化字段、具名开关（`--force-with-lease` / `--no-ff` / `-u` / `--include-untracked`）、命令预览、风险、红色 lose / rollback；界面文案全走 `tr()`。
+
+**为什么：** 让新手在网页里就能把「看差了什么 → 想清楚要不要动 → 动完立刻看到新状态 → 出事把原始 stderr 交给 agent」闭成一条链，而不用回终端；把「能连上 bridge 就能写」收紧成只认真本机，是因为隧道的回环地址是个假象；把 argv 拼装收进 id 白名单，是因为网页一旦能传任意参数，红色确认卡就形同虚设。
+
+**代价 / 可改：** 样张 D 的已知代价（每次操作都离开上下文、普通动作也显得重）随选择一并接受；不收 submodule / worktree / bisect / blame / remote 管理 / config / gc；`--graph` 仍未画；大文件与非文本只给占位；鉴权失败只能在系统侧配好后重试；`ref` 的字符黑名单会挡掉极少数合法但罕见的分支名。24 个 id 与字段在 `web/src/git-ops.ts`，桥端白名单在 `bridge/src/gitops.ts`，两边要一起改。
+
+**验证：** `npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check`）；`npm run test:githist` 扩成裸库写操作集成（switch / stage+commit / merge 冲突 / 非法 ref / 未知 id / force 拒绝 / 隧道拒绝）；`npm run test:githist:ui` 用 Playwright 断言三 tab、24 动词选择器、AI 入口、对照检索、居中卡、红色确认、失败卡、冲突逐文件、handoff 与 chip 刷新。样张阶段的四版截图与 100+ 条 linkedom 交互断言留在 `.scratch/git-ops-dialog/prototype/`。
+
+## D236 问答卡按「新工具名 + 三套旧文案」一起认（用户要求）
+
+**问题：** D90 把网页提问从自补丁的 `question` / `questionnaire` 换成 `@juicesharp/rpiv-ask-user-question`（工具名 `ask_user_question`）之后，转录里的问答卡（D47 的 `.qa-card`）就没了：`web/src/chat.ts` 的 `isAskTool` 只认两个旧名字，于是用户点完表单，聊天区只剩一行收起的「N 个操作 · ask_user_question ×1」，答案要点开折叠层才看得见。名字和答案文案同时不命中 —— 新包的答案是 `User has answered your questions: "问题"="答案"`，不是旧的 `User selected: 2. 右边`。本机 633 个会话文件里旧工具名出现 0 次、`ask_user_question` 762 次，所以这不是「某天之后偶尔看不到」，而是所有新提问都看不到。
+
+**决定：**
+
+1. `isAskTool` 三个名字都认：`ask_user_question`（现在）+ `question` / `questionnaire`（历史会话里还在）。旧名字不能删，历史会话重放时得画成同一张卡。
+2. 参数先归一成 `{ label, prompt, options }`（新文件 `web/src/ask-result.ts` 的 `askQuestions`）：新工具每题是 `{ header, question, options }`，旧单题是平铺的 `{ question, options }`。以前 `buildAsk` 直接读 `q.prompt`，对新工具永远是空题干。
+3. 结果解析也搬进 `web/src/ask-result.ts`（`parseAskResult`），三套文案都认：新文案用 `"问题"="答案"` 成对解出来并**按问题原文配对**（模型把答案顺序写反也能对上，配不上才按下标），旧问卷按 `<label>: user selected: N. X` / `<label>: user wrote: X`，旧单题按裸的 `User selected:` / `User wrote:`。`User declined…` 与 `cancel` 记成「已取消」。
+4. 启动体检改成走 `depsReport`（`pi list`，D220 的判据）打印安装的 npm 包版本：以前找的是 `~/.pi/agent/extensions/question.ts`，D90 之后那儿永远没有，于是日志天天说「缺」而实际在用。
+5. 回归放两处：`web/tests/ask-card-unit.mjs`（纯函数：三套文案、配对乱序、转义引号、取消、空结果）与 `probes/round3-fold.mjs`（真 `web/dist`：两种工具名都得渲染成 `.qa-card`、都不能掉进 `details.ops`）。原来的探针只种了 `questionnaire`，这正是它漏测的原因。
+
+**为什么：** 工具名是别人的接口，会变；转录渲染是我们自己的约定，不能只按一种拼写写死。旧名字一起认，是为了同一份会话文件昨天看是卡、今天看还是卡 —— 否则每次换扩展都等于把历史记录改坏一遍。答案只能从文本里解析，是因为扩展把结构化结果放在了 `details` 里而工具结果文本另有措辞；按原文配对而不是按位置，是唯一能容忍模型换序的写法。
+
+**代价 / 可改：** 名字清单是手写的，将来再换名字要同步改 `isAskTool` 与单测 fixture，没有自动发现；文案仍是文本匹配，扩展改措辞会退回「未回答」—— 但单测会红，不再静默。历史 `question` 单题卡的头叫「提问」，多题叫「问卷 · N 题」，与 D47 一致。
+
+**验证：** `npm run test:ask-card`；`npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check`）；`node probes/round3-fold.mjs`（含新增的两条 ask 名断言）；同一份种子会话跑 `.scratch/ask-card-probe.mjs`，修前 `qaCards:1 / opsModules:1`，修后 `qaCards:2 / opsModules:0`，截图里两张卡都显示题干与「✓ 右边」。
+
+## D237 非 git 工作目录：chip 改成「目录与仓库」三栏窗（#392）
+
+**问题：** 左下角的路径 chip 只会复制路径，⎇ 分支 chip 只在 cwd 本身是仓库时出现。可实际项目常是伞形目录：`erp/api`、`erp/ui` 各自是仓库、彼此联动，cwd 却是 `erp`（不在任何仓库里），于是「看/切/合并子仓库的分支」在网页里没有入口，而把每个子仓库都开一个会话又割裂了上下文。
+
+**决定：**
+
+1. **点击按 cwd 分叉，chip 的显隐规则不动。** cwd 在仓库里时 chip 仍复制路径、⎇ 仍开老「分支操作工作台」；cwd 不在仓库里（`gitCwd !== cwd` 或 `git === null`）时点 chip 换成打开「目录与仓库」窗。判据在点击时现算，并在每次 `refreshGit()` 后刷新 title —— git 是异步到的，建节点时定死会让标题永远停在「浏览子仓库」。chip 仍然只在左栏收起时出现（可达性是既有问题，不在本 ticket 里改）。
+2. **三栏：目录树 224px + 仓库列 214px + 面板。** 标题栏是路径、当前仓库分支、dirty、复制路径、关闭；底部是提示与 Esc。目录树根 = cwd，带「↑ 上级」与路径输入（可越出子树）；只列目录，隐藏 `.` 开头与 `node_modules`，懒加载。仓库列随展开累积：卡片 = 仓库名 + dirty + 分支 + ↑ahead ↓behind + 最近提交，点卡片选中。面板首次选中仓库才懒建，把 `BranchSheet` 以 `embedded` 模式挂进去。
+3. **两列都可折叠成 26px 竖条**（竖排「目录」「仓库」+ 仓库数），列宽走容器 CSS 变量 `--rw-tree` / `--rw-rail`，窄屏（≤720px）目录树收成抽屉、仓库列隐藏；Esc 顺序 = 面板操作卡 → 抽屉 → 窗口。
+4. **批量探测只读接口。** 50 个子目录逐个 `api.git()` 会起 150+ 个 git 进程，新增 POST `/api/git/probe`：入参父目录 + 子目录名列表（上限 64，可 `fresh`），4 并发，且只保留 `rev-parse --show-toplevel` 等于该子目录本身的结果（父仓库里的普通目录回 null）；复用 `gitInfo` 的 5s TTL，异常一律 null 不 500。写操作完全沿用老工作台，不新增任何写能力。
+5. **右栏按「选中目录所在仓库」取数**：选 `api/src` 也显示 `api`，标题标明解析出的仓库根、深于根时标「选中：src」；切目录调 `BranchSheet.setDir()` 重置 base/diff/limit 并用 ticket 丢弃迟到响应；写成功后同时刷右栏与树上的标记。
+6. **记住位置**：按 cwd 持久化「选中目录 + 展开节点（≤40）+ 折叠状态」到 `localStorage.pi.reposSheet`（最多 12 个 cwd），`statPath` 校验失败静默回落；切会话关窗。
+7. **老工作台零外观变化**：`embedded` 只换外壳（无遮罩、无 ✕、无 Esc 绑定、标题隐藏），DOM 顺序与类名不变；历史 tab 的 `aside` 在嵌入时搬进头部「分支 · 本地 + 远程」浮层，两颗 CTA 原样保留。
+
+**为什么：** 伞形目录是真实工作方式，让人为了切分支去开八个会话等于把项目结构从界面里抹掉；把面板做成老工作台的嵌入模式而不是第二套实现，是因为 24 个动词、冲突/脏工作区保护、handoff 这些语义已经有一份，复制一份必然走偏。批量探测在桥端做，是因为「每目录一次 HTTP + 3 个 git 进程」在 50 个目录时肉眼可见地卡，而父目录一次往返能把整层标记一起拿回来。
+
+**代价 / 可改：** 仓库列卡片没有 ahead/behind 与最近提交（`GitInfo` 只有 repo/branch/dirty/empty/空/游离，加这两项会让每个子仓库多 3 个 git 进程）——首版按「仓库名 + 分支 + dirty」收敛，已在 issue 记录；探测上限 64，超出不探（界面给提示而不是分批续探）；不跟随文件系统变化（写操作后主动 fresh 重探已展开层）；不支持 submodule / worktree 内部的仓库；折叠状态是「按 cwd」而不是「按窗」，同时开多窗会互相覆盖。
+
+**验证：** `npm run typecheck`；`npm run test:githist`（含新增 `bridge/tests/git-probe-unit.mjs`：真 git 的子仓库/普通目录/空仓/游离 HEAD/非法名/截断/缓存+fresh）；`npm run test:repos:ui`（真 bridge + Playwright：伞形目录、隐藏目录、子仓库分支标记、内嵌工作台、浮层、折叠、Esc、重开回原位、窄屏抽屉、仓库会话仍复制）；`npm run test:githist:ui` 原样通过（老工作台外观回归）。原型三变体与选型记录在分支 `proto/repos-dialog`（`web/prototype/repos-dialog.html`）。
+
+## D238 会话读取预算按「正文」算：图片 base64 读完就抹掉，开头的用户消息不再被截图挤掉（用户报 bug）
+
+**问题：** 用户看到「最上面我发的第一句话没了」。真实会话（70.6 MB、529 条）里第一条用户消息整条消失，界面上顶部没有气泡、没有「载入更早」、刻度带 0 轮 —— 像是被删了。根因不在文件：`loadEntries()` 按**文件字节**只留末尾 16 MB，窗口起点落在 57.3 MB 处，06:56 那条用户消息在 08:32 起的第一条之前，整条没进 entries。体积 98% 是模型截图的 base64（50 张 ≈ 69 MB，正文 1.4 MB），每贴一张窗口就前移，越过那条消息后它静默消失；而 `truncated` 只写进 `session.state`，`web/src` 没人读，翻页又只切内存里的 items（`index.ts:1874` 的 `pageBefore`），所以既没提示也翻不回去。
+
+**决定：**
+
+1. **预算算内容字节。** `loadEntries()` 读进条目后立刻把 `image` 部件的 `data` 抹成空串（`stripImageData()`），预算按抹完之后的字节算；`mimeType` 留着，像素仍由 `loadEntryImage()` 按需从盘上流式读 —— 渲染层本来也只用 `mimeType`（`entriesToItems()` 折成「[图片]」）。正文自己超预算才从头部丢条目，此时才 `truncated = true`。
+2. **读取本身仍有上限，但放宽到 256 MB**（`MAX_READ_BYTES`）：再大就是病态输入（读一次要几秒、瞬时吃几百 MB 堆），退回「只读尾部」，剩下的交给上面的内容预算。真实案例在新规则下 529 条一条不丢，读取 ~200 ms。
+3. **`truncated` 上帧、界面说清楚。** `itemsFrame()` 在真丢过头部时才带 `history.truncated`，web 在聊天区顶部那行（`chat-more`）把「载入更早」换成不可点的「会话文件太大，只载入了最后一段」。没截断时字段不出现 —— 帧的字节与以前一致，老 UI 用例、快照都不用改。
+4. **顺手修同一文件里的一条 lint 阻塞**：`scanFirstUserText()` 的 `while ((nl = buf.indexOf(10)) >= 0)` 改成 `for (;;)` + `break`（no-assign-in-expr），语义不变。
+
+**为什么：** 16 MB 的意义是「别把几百 MB 拖进内存」，而截图字节恰恰是渲染层一个字节都不用、却最占体积的那种。按文件字节裁，等于让「贴了多少图」决定「你还看得见多久以前的话」—— 用户没有任何线索，只能以为记录丢了。另一端（真的超大文件）宁可读慢一次也不要静默丢历史，丢的时候必须有话说。
+
+**代价 / 可改：** 打开大会话要整段读一遍（70 MB ≈ 200 ms，以前读 16 MB 尾巴）；`loadEntries()` 现在会持有一段整文件的字符串，峰值随文件涨到 256 MB 上限；抹掉的是内存里的副本，文件本身一个字节不动（归属规则：pi 拥有会话文件）。没有做的：`loadEntryImage()` 每次仍扫全文件取像素（未改）；分页 API 依然只切内存里的 items，所以「丢过头」的文件翻不回更早的（只是现在会说明原因）。
+
+**验证：** 新增 `bridge/tests/session-head-unit.mjs`（26 张 800 KB 截图 + 开头一条用户消息：不截断、首条仍是用户消息、`data` 已抹空、`mimeType` 还在、`loadEntryImage` 仍取得到像素；正文超预算时从头部丢且条目连续；`itemsFrame` 只在截断时带字段）；`npm run typecheck`（bridge / peer / web + `i18n-check`）；`npm run test:history`、`npm run test:image`、`npm run test:tail` 原样通过；对真实会话跑 `loadEntries()` + `entriesToItems()`：`truncated:false`、529 条、`items[0].kind === "user"`（修前 `users: 0`）。
+
+## D239 随手问也能贴图：图和文字走同一条管线，回显改成按 `clientId` 配
+
+**问题：** 随手问（`.scratch-*` 那套只读工具的轻量会话）只有一个纯文字 textarea。贴图时粘贴落在主输入框的 window 级处理器上，图会跑进主聊天；就算把它接进随手问，回显也配不上——会话里用「文字逐字相等」认领自己刚发的那条，而纯图片消息的 `text` 是空串。
+
+**决定：**
+
+1. 抽出 `web/src/images.ts`（`PendingImage`、`pastedFilesFrom`、`splitImages`、`ATTACH_IMAGE`、`rasterizeSvg`、`downscale`、`readImageFile`、`imagesFromFiles`），主输入框与随手问共用一份；压缩参数不分叉（长边 2048、JPEG 0.86）。
+2. 三个入口都收：textarea 上的 paste（焦点落进来才归随手问，页面别处仍归主输入框）、dialog 上的 drop（`stopPropagation` 挡掉 window 上的主输入框处理器）、📎 文件选择。
+3. 待发图是输入框上方一条缩略图横条（每张带 ×），不是模态预览；发送那一刻清空。
+4. 允许纯图片消息；非图片文件拒收并明说，不把文件名塞进消息。
+5. 只有模型明确 `supportsImages === false` 才拦（置灰发送 + 一行说明 + 模型 chip 警示色），`undefined` 视为未知不拦；不自动换模型。
+6. 回显配对从文字相等改成桥回带的 `clientId`（`item.add` 本来就带它，见 `bridge/src/sessions.ts`）。
+7. 图的开销跟文字一致：清空一起清、关窗与暂停保留、桥重启/404 之后跟着那句话自动重发。
+
+**为什么：** 图的处理（粘贴取文件、SVG 光栅化、降采样、编码）在主输入框已有一份，随手问再写一份必然在「同一张图两边贴出来不一样大」这种地方分叉；而用文字认领自己发的那条是历史遗留的权宜，纯图片消息一进来就从「偶尔配不上」变成「永远配不上」。至于非视觉模型，默默放行等于让人贴完图、发出去、再被后端拒一次，不如发送前就说清楚。
+
+**代价 / 可改：** 只支持图片，文档与 PDF 要另一次决定；`downscale` 一律 re-encode 成 JPEG（透明通道会丢，主输入框本来也如此）；模型目录缺 `supportsImages` 时按未知放行，遇到真不认图的后端会发过去再被拒；缩略图横条在窄屏换行，占两行高度。
+
+**验证：** `web/tests/images-unit.mjs` 9 例；`bridge/tests/scratch-ui.mjs` 五段（贴图→发送→气泡缩略图可点开且 pi 真收到 `image/jpeg`、看不了图的模型拦截、非图片拒收、清空连图一起清、404 重开后图跟着重发），靠 `FAKE_PI_VISION=1` 让桩模型的第一个能看图、第二个仍只收文字；`npm --prefix web run typecheck`（含 `i18n-check` 2547 keys × 3 langs）。

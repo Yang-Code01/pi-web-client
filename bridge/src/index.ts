@@ -44,12 +44,13 @@ import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, resetScratchDir
 import { BUILD_ID } from "./build-id.ts";
 import { removePidFile, writePidFile } from "./pidfile.ts";
 import { clipboardFiles, listDirs, makeDir, makeFile, statFiles, statPath } from "./dirs.ts";
-import { gitFetch, gitHistory, GitHistoryError, gitInfo } from "./git.ts";
+import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
+import { executeGitOp, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
 import { changelog, installLockExt, lockExtStatus, readSettings, setTrust, trustInfo, uninstallLockExt, writeSettings } from "./pisettings.ts";
 import { selfChangelog } from "./whatsnew.ts";
 import { scanSubagents } from "./subagents.ts";
-import { acpConfigPath, readAcpDelegate, writeAcpDelegate } from "./acpdelegate.ts";
+import { acpConfigPath, readAcpDelegate, writeAcpDelegate, writeThinkingFix } from "./acpdelegate.ts";
 import { cleanLaunch } from "./launch.ts";
 import { depsReport } from "./depsstatus.ts";
 import { isWriteOp, runPiCli } from "./picli.ts";
@@ -467,13 +468,17 @@ async function main(): Promise<void> {
 
   log(`${APP_NAME} ${VERSION} — pi ${piVersion} @ ${pi.cli}`);
   // Q-032: 扩展丢了就只剩「模型把表单写成文字」，而那是无声的。启动时把在场情况写进日志。
-  try {
-    const dir = path.join(os.homedir(), ".pi", "agent", "extensions");
-    const seen = ["question.ts", "questionnaire.ts"].map((n) => `${n.replace(/\.ts$/, "")}=${fs.existsSync(path.join(dir, n)) ? "在" : "缺"}`);
-    log(`ask 扩展：${seen.join(" ")}（缺了就只能由模型把表单写成文字）`);
-  } catch {
-    /* 只是诊断信息 */
-  }
+  // D220 的判据是 `pi list`（用户级包），不是磁盘上的文件名 —— ask 从 D90 起是 npm 包
+  // `@juicesharp/rpiv-ask-user-question`，`~/.pi/agent/extensions/question.ts` 那里永远没有它。
+  void depsReport(pi.cli, piVersion)
+    .then((report) => {
+      const ask = report.packages.find((p) => p.id === "questionnaire");
+      const state = ask?.installed ? `在${ask.foundVersion ? ` ${ask.foundVersion}` : ""}${ask.behind ? `（清单钉的是 ${ask.version}，该升级）` : ""}` : "缺";
+      log(`ask 扩展：${ask?.name ?? "@juicesharp/rpiv-ask-user-question"}=${state}（缺了就只能由模型把表单写成文字）`);
+    })
+    .catch(() => {
+      /* 只是诊断信息 */
+    });
 
   // Last line of defence: a single stray stream error used to kill the whole bridge (and with it
   // every connected client). Log it loudly and keep serving — sessions each own their child and
@@ -733,9 +738,11 @@ async function main(): Promise<void> {
     if (url.pathname === "/api/peer/friend" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       const action = String(body?.action ?? "");
-      if (!["request", "accept", "favorite", "remove"].includes(action)) return json(res, 400, { error: "未知动作" });
+      const actions = ["request", "quick", "accept", "favorite", "remove"] as const;
+      type FriendAction = (typeof actions)[number];
+      if (!(actions as readonly string[]).includes(action)) return json(res, 400, { error: "未知动作" });
       try {
-        return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as "request", Boolean(body?.on)));
+        return json(res, 200, await peer.friend(String(body?.peer ?? ""), action as FriendAction, Boolean(body?.on)));
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
@@ -814,6 +821,20 @@ async function main(): Promise<void> {
       const body = await readBody(req).catch(() => ({}));
       try {
         return json(res, 200, await peer.addManual(String(body?.addr ?? "")));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/ignored" && req.method === "GET") {
+      try {
+        return json(res, 200, await peer.ignored());
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    if (url.pathname === "/api/peer/ignored/clear" && req.method === "POST") {
+      try {
+        return json(res, 200, await peer.clearIgnored());
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
@@ -925,6 +946,43 @@ async function main(): Promise<void> {
       } catch (err: any) {
         // gitFetch 的失败走 Object.assign(…, {code:"fetch_failed"})，和 GitHistoryError 是两种错，统一取 code 再兜一层。
         const code = err instanceof GitHistoryError ? err.code : (err?.code ?? "fetch_failed");
+        return json(res, 200, { ok: false, code, error: String(err?.message ?? err).slice(0, 300) });
+      }
+    }
+
+    // D235: 分支操作工作台。写操作与仓库数据只在「本机回环 + 非隧道」放行：
+    // cloudflared 是本机起的，隧道请求的 remoteAddress 天然是 loopback，只看地址会把写权限漏给公网；
+    // 局域网直连不带 cf 头，只看 publicReq 也会漏，所以两道闸都要过。
+    if (url.pathname.startsWith("/api/git/") && ["/api/git/state", "/api/git/refs", "/api/git/diff", "/api/git/op", "/api/git/probe"].includes(url.pathname) && req.method === "POST") {
+      const peer = req.socket.remoteAddress ?? "";
+      if (!isLoopbackPeer(peer) || publicReq) {
+        return fail(res, 403, "op_public", "只允许本机回环访问时操作 git（公网/局域网一律拒绝）");
+      }
+      const body = await readBody(req).catch(() => ({}));
+      const dir = String(body?.dir ?? "").trim();
+      if (!dir) return fail(res, 400, "dir_empty", "dir 不能为空");
+      if (!path.isAbsolute(dir)) return fail(res, 400, "dir_not_absolute", "dir 必须是绝对路径");
+      try {
+        // #392 目录与仓库：展开一层时批量问「哪些直接子目录自己是仓库」。只读，但同样只给本机回环。
+        if (url.pathname === "/api/git/probe") {
+          return json(res, 200, await probeChildren(dir, body?.names, { fresh: body?.fresh === true }));
+        }
+        if (url.pathname === "/api/git/state") return json(res, 200, await gitState(dir));
+        if (url.pathname === "/api/git/refs") return json(res, 200, await gitRefs(dir));
+        if (url.pathname === "/api/git/diff") {
+          return json(res, 200, await gitDiff(
+            dir,
+            String(body?.base ?? ""),
+            String(body?.target ?? "HEAD"),
+            String(body?.commit ?? ""),
+          ));
+        }
+        const id = String(body?.id ?? "").trim();
+        const params = (body?.params && typeof body.params === "object" && !Array.isArray(body.params) ? body.params : {}) as GitOpParams;
+        if (!id) return fail(res, 400, "op_id_empty", "操作 id 不能为空");
+        return json(res, 200, await executeGitOp(dir, id, params));
+      } catch (err: any) {
+        const code = err?.code ?? "op_failed";
         return json(res, 200, { ok: false, code, error: String(err?.message ?? err).slice(0, 300) });
       }
     }
@@ -1629,7 +1687,7 @@ async function main(): Promise<void> {
         plan,
         stats,
         ...(reset && !initial ? { reset: true } : {}),
-        pending: !file,
+        pending: !file && state === "running",
       });
     };
     send({
@@ -2263,6 +2321,18 @@ async function main(): Promise<void> {
               const view = writeAcpDelegate(msg.patch);
               log(`acp_delegate written: ${view.path}`);
               send({ type: "subagents.acp", ...view, saved: true });
+            } catch (err: any) {
+              send({ type: "subagents.acp.error", path: acpConfigPath(), message: String(err?.message ?? err) });
+            }
+            return;
+          }
+          // #375：同一份文件里的 compress.neverPreserveRecentTools 绕法，只有应用 / 撤销两个动作。
+          case "subagents.acp.thinkingFix": {
+            if (!(await requireStepUp())) return;
+            try {
+              const view = writeThinkingFix(msg.apply);
+              log(`billion-context thinking fix ${msg.apply ? "applied" : "removed"}: ${view.path}`);
+              send({ type: "subagents.acp", ...view, saved: "thinkingFix" });
             } catch (err: any) {
               send({ type: "subagents.acp.error", path: acpConfigPath(), message: String(err?.message ?? err) });
             }

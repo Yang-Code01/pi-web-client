@@ -10,7 +10,8 @@
  * - 上下文一路累积、只提醒不自动清：提醒线按「离 pi 自动压缩还有多远」算，不用固定百分比
  *   （32k 窗口的模型上，固定 60% 已经晚了）。
  */
-import { createEl as el } from "./chat.ts";
+import { createEl as el, openImage } from "./chat.ts";
+import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
 import { fillUserBody } from "./skill.ts";
 import { tr } from "./i18n/index.ts";
@@ -48,13 +49,50 @@ function textOf(item: Item): string {
   return "";
 }
 
+/**
+ * 一条消息里的图：缩略图 + 点开大图，画法与聊天区一致（chat.ts 的 buildUserBody）。
+ * 图读不到（老会话被裁过尾）就退成一行「附 N 张图片」，至少不是一块碎图。
+ */
+function imageStrip(item: Item, src: (index: number) => string | null): HTMLElement | null {
+  const count = item.kind === "user" ? (item.images?.length ?? 0) : 0;
+  if (!count) return null;
+  const box = el("div", "msg-images");
+  const fallback = el("div", "sc-twoline", tr("附 {p1} 张图片", { p1: count }));
+  for (let index = 0; index < count; index += 1) {
+    const url = src(index);
+    if (!url) continue;
+    const thumb = el("img") as HTMLImageElement;
+    thumb.src = url;
+    thumb.alt = tr("消息里的图片 {p1}", { p1: index + 1 });
+    thumb.loading = "lazy";
+    thumb.decoding = "async";
+    const btn = el("button", "msg-image") as HTMLButtonElement;
+    btn.type = "button";
+    btn.title = tr("点击查看大图");
+    btn.append(thumb);
+    btn.onclick = () => openImage(url, thumb.alt);
+    thumb.addEventListener("error", () => {
+      btn.remove();
+      if (!box.querySelector(".msg-image")) fallback.hidden = false;
+    });
+    box.append(btn);
+  }
+  if (!box.children.length) return fallback;
+  fallback.hidden = true;
+  const shots = el("div", "sc-shots");
+  shots.append(box, fallback);
+  return shots;
+}
+
 /** One row in the transcript. Tools and notices get a one-liner; only prose is rendered as markdown. */
-function row(item: Item): HTMLElement {
+function row(item: Item, src: (index: number) => string | null = () => null): HTMLElement {
   const wrap = el("div", `sc-row sc-${item.kind}`);
   if (item.kind === "user") {
     // 与聊天区同一套画法：技能调用的命令是药丸，自己写的话跟在后面（skill.ts）。
     const text = el("div", "sc-text");
     fillUserBody(text, item);
+    const shots = imageStrip(item, src);
+    if (shots) text.append(shots);
     wrap.append(el("div", "sc-who", tr("我")), text);
     return wrap;
   }
@@ -99,6 +137,12 @@ export class ScratchChat {
   private listEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
   private hintEl!: HTMLElement;
+  /** 待发图的横条（输入框上方）。 */
+  private attachEl!: HTMLElement;
+  /** 「只收图片」「当前模型看不了图」那一行。 */
+  private noteEl!: HTMLElement;
+  private attachBtn!: HTMLButtonElement;
+  private fileEl!: HTMLInputElement;
   private stateEl!: HTMLElement;
   private staticHintEl!: HTMLElement;
   private titleEl!: HTMLElement;
@@ -118,8 +162,13 @@ export class ScratchChat {
   private running = false;
   private starting = false;
   private error = "";
-  private pendingText: string | null = null;
+  /** 贴上来还没发出去的图：发送那一刻清空，副本留在 pending 里等回声。 */
+  private images: PendingImage[] = [];
+  /** 已发出、还没等回声的那条。桥把 clientId 原样带回，纯图片（文字为空）也配得上。 */
+  private pending: { text: string; images: PendingImage[]; clientId: string } | null = null;
   private pendingSessionId: string | null = null;
+  /** 一行临时说明：只收图片 / SVG 渲染失败。 */
+  private note = "";
   private recovering = false;
   private dismissedReclaimId: string | null = null;
   private tokens: number | null = null;
@@ -203,9 +252,15 @@ export class ScratchChat {
         }
         this.repaint();
         this.paintState();
-        if (this.pendingText && !state?.paused && this.pendingSessionId !== this.id) {
+        if (this.pending && !state?.paused && this.pendingSessionId !== this.id) {
           this.pendingSessionId = this.id;
-          this.host.send({ type: "prompt", sessionId: this.id, text: this.pendingText });
+          this.host.send({
+            type: "prompt",
+            sessionId: this.id,
+            text: this.pending.text,
+            images: this.pending.images,
+            clientId: this.pending.clientId,
+          });
         }
         return true;
       }
@@ -217,9 +272,10 @@ export class ScratchChat {
       case "item.add":
         if (!mine) return false;
         this.upsert(msg.item as Item);
-        if (msg.item?.kind === "user" && this.pendingText && String(msg.item.text ?? "").trim() === this.pendingText) {
-          if (this.inputEl.value.trim() === this.pendingText) this.inputEl.value = "";
-          this.pendingText = null;
+        // 桥把发送时带的 clientId 原样带回：纯图片那条 text 是空的，按文字比根本配不上。
+        if (msg.item?.kind === "user" && this.pending && typeof msg.clientId === "string" && msg.clientId === this.pending.clientId) {
+          if (this.pending.text && this.inputEl.value.trim() === this.pending.text) this.inputEl.value = "";
+          this.pending = null;
           this.pendingSessionId = null;
           this.paintState();
         }
@@ -310,6 +366,17 @@ export class ScratchChat {
     back.onclick = (ev) => {
       if (ev.target === back) this.close();
     };
+    // 拖到 dialog 上：只认文件。stopPropagation 挡掉 window 上主输入框那个 drop（不然两边都收）。
+    const dropping = (ev: DragEvent) => Boolean(ev.dataTransfer?.types.includes("Files"));
+    back.ondragover = (ev) => {
+      if (dropping(ev)) ev.preventDefault();
+    };
+    back.ondrop = (ev) => {
+      if (!dropping(ev)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      void this.attach(Array.from(ev.dataTransfer?.files ?? []));
+    };
     const sheet = el("div", "sheet scratch-sheet");
     sheet.onkeydown = (ev) => {
       if (ev.key !== "Escape") return;
@@ -377,6 +444,13 @@ export class ScratchChat {
     sheet.append(this.listEl);
 
     const foot = el("div", "scratch-foot");
+    // 待发图排在输入框上方，一张一个 ×；发送那一刻清空。
+    this.attachEl = el("div", "scratch-attach");
+    this.attachEl.hidden = true;
+    this.noteEl = el("div", "scratch-note");
+    this.noteEl.hidden = true;
+    foot.append(this.attachEl, this.noteEl);
+
     this.inputEl = el("textarea", "sc-input") as HTMLTextAreaElement;
     this.inputEl.rows = 3;
     this.inputEl.placeholder = tr("想到什么就问什么（Enter 发送，Shift+Enter 换行）");
@@ -386,10 +460,36 @@ export class ScratchChat {
         this.submit();
       }
     };
+    // 截图直接贴：挂在这个 textarea 上，就只在焦点落在这里时算随手问的
+    //（页面别处贴图仍归主输入框的 window 监听）。带文字时文字照常粘进去。
+    this.inputEl.onpaste = (ev) => {
+      const files = pastedFilesFrom(ev.clipboardData);
+      if (!files.length) return;
+      const text = ev.clipboardData?.getData("text/plain") ?? "";
+      if (!text.trim()) ev.preventDefault();
+      void this.attach(files);
+    };
+
+    const actions = el("div", "sc-actions");
+    this.attachBtn = el("button", "btn ghost sc-attach", "📎") as HTMLButtonElement;
+    this.attachBtn.title = tr("添加图片");
+    this.attachBtn.setAttribute("aria-label", this.attachBtn.title);
+    this.fileEl = el("input") as HTMLInputElement;
+    this.fileEl.type = "file";
+    this.fileEl.accept = "image/*";
+    this.fileEl.multiple = true;
+    this.fileEl.hidden = true;
+    this.attachBtn.onclick = () => this.fileEl.click();
+    this.fileEl.onchange = () => {
+      const files = Array.from(this.fileEl.files ?? []);
+      this.fileEl.value = "";
+      if (files.length) void this.attach(files);
+    };
     this.sendBtn = el("button", "btn primary", tr("发送")) as HTMLButtonElement;
     this.sendBtn.onclick = () => this.submit();
     this.hintEl = el("div", "sc-hint", "");
-    foot.append(this.inputEl, this.sendBtn, this.hintEl);
+    actions.append(this.attachBtn, this.fileEl, this.hintEl, this.sendBtn);
+    foot.append(this.inputEl, actions);
     sheet.append(foot);
 
     back.append(sheet);
@@ -425,6 +525,9 @@ export class ScratchChat {
     this.modelEl.title = tr("切模型");
     this.sendBtn.textContent = tr("发送");
     this.inputEl.placeholder = tr("想到什么就问什么（Enter 发送，Shift+Enter 换行）");
+    this.attachBtn.title = tr("添加图片");
+    this.attachBtn.setAttribute("aria-label", this.attachBtn.title);
+    this.paintStrip();
     this.paintState();
     this.repaint();
   }
@@ -495,24 +598,106 @@ export class ScratchChat {
 
   private submit(): void {
     const text = this.inputEl.value.trim();
-    if (!text || this.pendingText || this.running || this.state?.paused) return;
-    this.pendingText = text;
+    const images = this.images;
+    // 光有图也算一条消息（主输入框同理）：pi 收得下 image-only 的 prompt。
+    if ((!text && !images.length) || this.pending || this.running || this.state?.paused) return;
+    // 看不了图的模型：发送口就挡住（按钮也置灰），别把图塞过去再让 pi 报错。
+    if (images.length && this.noVision()) {
+      this.paintState();
+      return;
+    }
+    const clientId = `scratch:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    this.pending = { text, images, clientId };
+    this.pendingSessionId = null;
+    this.images = [];
+    this.note = "";
+    this.paintStrip();
     // No id yet (a fresh page, or the 404 reopen has not answered): ask once more; the snapshot
     // handler sends the queued sentence as soon as it knows which session to send it to.
     if (!this.id) {
-      this.pendingSessionId = null;
       this.asked = false;
       this.open();
       return;
     }
     this.pendingSessionId = this.id;
-    this.host.send({ type: "prompt", sessionId: this.id, text });
+    this.host.send({ type: "prompt", sessionId: this.id, text, images, clientId });
+    this.paintState();
   }
 
   /** Give the sentence back to the composer: a terminal failure must not leave it un-sendable. */
   private releasePending(): void {
-    this.pendingText = null;
+    const pending = this.pending;
+    this.pending = null;
     this.pendingSessionId = null;
+    // 文字本来就没清（只在回声时清），图却已经在发送时从横条拿走了：放回去才算「还给我」。
+    if (pending?.images.length) {
+      this.images.push(...pending.images);
+      this.paintStrip();
+    }
+  }
+
+  /** 当前模型明确看不了图（目录里 `supportsImages === false`）。`undefined` = 未知，不拦。 */
+  private noVision(): boolean {
+    const model = this.host.models().find((m) => m.id === this.state?.model);
+    return model?.supportsImages === false;
+  }
+
+  private attachBlocked(): boolean {
+    return this.images.length > 0 && this.noVision();
+  }
+
+  private imageUrl(item: Item, index: number): string | null {
+    const id = this.id;
+    if (!id) return null;
+    return `/api/session/image?id=${encodeURIComponent(id)}&item=${encodeURIComponent(item.id)}&n=${index}`;
+  }
+
+  /** 粘贴 / 拖拽 / 📎 交来的文件：图进待发条，别的一律拒收（这里拿不到绝对路径，塞文件名只会误导）。 */
+  private async attach(files: readonly File[]): Promise<void> {
+    if (!files.length) return;
+    const { images, others } = splitImages(Array.from(files));
+    this.note = others.length ? tr("随手问只收图片") : "";
+    if (images.length) {
+      const { images: ready, failed } = await imagesFromFiles(images);
+      for (const name of failed) this.note = tr("SVG「{p1}」渲染失败，没有附加", { p1: name });
+      this.images.push(...ready);
+    }
+    this.paintStrip();
+    this.paintState();
+  }
+
+  private paintStrip(): void {
+    if (!this.root) return;
+    this.attachEl.textContent = "";
+    this.attachEl.hidden = !this.images.length;
+    this.images.forEach((img, index) => {
+      const box = el("div", "sc-shot");
+      const thumb = el("img") as HTMLImageElement;
+      thumb.src = `data:${img.mimeType};base64,${img.data}`;
+      thumb.alt = tr("待发图片 {p1}", { p1: index + 1 });
+      const del = el("button", "sc-shot-del", "×") as HTMLButtonElement;
+      del.type = "button";
+      del.title = tr("去掉这张图");
+      del.setAttribute("aria-label", del.title);
+      del.onclick = () => {
+        this.images.splice(index, 1);
+        this.paintStrip();
+        this.paintState();
+      };
+      box.append(thumb, del);
+      this.attachEl.append(box);
+    });
+  }
+
+  private paintNote(): void {
+    if (!this.root) return;
+    const blocked = this.attachBlocked();
+    const text = blocked ? tr("当前模型看不了图，换一个能看图的模型") : this.note;
+    this.noteEl.textContent = text;
+    this.noteEl.hidden = !text;
+    this.noteEl.classList.toggle("warn", blocked);
+    // chip 也标一下：看不了图的模型不是错误，只是这张图发不出去，得先换模型。
+    this.modelEl.classList.toggle("warn", blocked);
   }
 
   private togglePause(): void {
@@ -527,6 +712,12 @@ export class ScratchChat {
 
   private clear(): void {
     if (!this.id) return;
+    // 「清空」连没发出去的图一起清：留着它们，下一条就问进新会话里了。
+    this.pending = null;
+    this.images = [];
+    this.note = "";
+    this.paintStrip();
+    this.paintNote();
     this.host.send({ type: "scratch.clear" });
   }
 
@@ -577,7 +768,7 @@ export class ScratchChat {
     if (at >= 0) this.items[at] = item;
     else this.items.push(item);
     this.rows.get(item.id)?.remove();
-    const node = row(item);
+    const node = row(item, (index) => this.imageUrl(item, index));
     this.rows.set(item.id, node);
     this.listEl.append(node);
     this.paintLabels();
@@ -619,7 +810,7 @@ export class ScratchChat {
       return;
     }
     for (const item of this.items) {
-      const node = row(item);
+      const node = row(item, (index) => this.imageUrl(item, index));
       this.rows.set(item.id, node);
       this.listEl.append(node);
     }
@@ -643,7 +834,7 @@ export class ScratchChat {
     if (!this.root) return;
     const busy = this.running || this.starting;
     const paused = Boolean(this.state?.paused);
-    this.sendBtn.disabled = busy || paused || !this.id;
+    this.sendBtn.disabled = busy || paused || !this.id || this.attachBlocked();
     this.clearBtn.disabled = !this.id || this.running;
     const pauseLabel = paused ? tr("开始") : tr("暂停");
     this.pauseBtn.textContent = pauseLabel;
@@ -658,6 +849,7 @@ export class ScratchChat {
     this.modelEl.disabled = !this.id || paused;
     this.hintEl.textContent = this.error;
     this.hintEl.hidden = !this.error;
+    this.paintNote();
     this.paintReminder();
   }
 
