@@ -94,6 +94,24 @@ export async function gitRoot(dir: string): Promise<string | null> {
 }
 
 /**
+ * D235: 写操作改了仓库之后，5s TTL 里的旧分支/dirty 数不能继续骗状态行。
+ * 清掉这个 dir 的 gitInfo 条目与它名下所有 (base,n) 的历史条目；下一次读会重新 probe。
+ * 定义在 historyCache 之前没关系：调用发生在写操作返回时，那时模块早已初始化完。
+ */
+export function invalidateGitCache(dir: string): void {
+  const key = path.resolve(dir);
+  cache.delete(key);
+  // 写操作可能在 `dir` 子目录上跑，历史缓存的键是仓库根：两个方向都清一遍。
+  for (const k of [...cache.keys(), ...historyCache.keys()]) {
+    const root = k.includes("|") ? k.slice(0, k.indexOf("|")) : k;
+    if (root === key || key.startsWith(`${root}${path.sep}`) || root.startsWith(`${key}${path.sep}`)) {
+      cache.delete(k);
+      historyCache.delete(k);
+    }
+  }
+}
+
+/**
  * Branch (or detached SHA) of the repository containing `dir`, or `null` when it is not in one.
  * Cached for TTL_MS per absolute path; `fresh` bypasses the cache (window focus, 一轮结束).
  */

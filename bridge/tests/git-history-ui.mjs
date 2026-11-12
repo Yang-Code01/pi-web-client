@@ -1,190 +1,326 @@
 /**
- * D193 验收：在隔离实例上真开一次弹窗 —— 点 chip 出弹窗、两列有行、胶囊有数、挪窄变单列、
- * Esc 关得掉、fetch 失败时说人话（不是转一辈子）。
+ * D235: 分支 chip 已经从「只读历史」升级成「分支操作工作台」。
  *
- *   PI_WEB_BASE=http://127.0.0.1:17864 PI_WEB_DIR=<仓库> node bridge/tests/git-history-ui.mjs
+ * 这个测试自己起一份 bridge（临时口令 / 临时 state / fake pi），再在临时 git 仓库里开一个会话，
+ * 用真实浏览器点一遍：三 tab、全部动词、cherry-pick 常驻、交给 AI 两出口、对照分支输入检索、
+ * 居中操作卡、红色确认、真实写操作后 chip 刷新、结构化失败卡、冲突态只放行中止 / 继续、
+ * 隧道 403、窄屏单列。
+ *
+ * 先 `npm run build`（bridge/dist + web/dist 都是这里的输入），再：
+ *   npm run test:githist:ui
  */
+import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
+import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
 
-const BASE = process.env.PI_WEB_BASE ?? "http://127.0.0.1:17864";
-const DIR = process.env.PI_WEB_DIR ?? process.cwd();
-const OUT = process.env.PI_WEB_OUT ?? path.join(DIR, ".scratch/git-history-dialog/shots");
-fs.mkdirSync(OUT, { recursive: true });
-const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
-
-const login = await fetch(`${BASE}/api/login`, {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({ passphrase: "test" }),
-});
-const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
-const name = `分支弹窗 ${Date.now().toString().slice(-6)}`;
-const sessionId = await new Promise((resolve, reject) => {
-  const ws = new WebSocket(`${BASE.replace("http", "ws")}/ws`, { headers: { cookie } });
-  ws.on("open", () => ws.send(JSON.stringify({ type: "create", cwd: DIR, name })));
-  ws.on("message", (b) => {
-    let m = {};
-    try {
-      m = JSON.parse(b.toString());
-    } catch {
-      return;
-    }
-    if (m.type === "session.state" && m.session?.name === name) {
-      resolve(m.session.id);
-      ws.close();
-    }
-    if (m.type === "error") reject(new Error(m.message));
-  });
-  setTimeout(() => reject(new Error("create timeout")), 60000);
-});
-log("session", sessionId.slice(0, 8));
-
-// 直接看一眼接口，省得把桥的错误当成页面的错误。
-const api = await fetch(`${BASE}/api/git/history?dir=${encodeURIComponent(DIR)}&n=20`, { headers: { cookie } }).then((r) => r.json());
-log("api:", JSON.stringify({ head: api.head, base: api.base, ahead: api.ahead, behind: api.behind, left: api.left?.length, right: api.right?.length, branches: api.branches?.length }));
-
 const { chromium } = await loadPlaywright();
-const browser = await chromium.launch();
-const problems = [];
-const fails = [];
-/** 验收要能拒绝：不写断言的话这套东西只是把页面拍下来，Review 已经点过一次了。 */
-const ok = (cond, msg) => {
-  if (!cond) fails.push(msg);
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-gitops-ui-"));
+const STATE = path.join(ROOT, "state");
+const DIST = path.join(REPO, "bridge", "dist", "index.js");
+const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
+const PORT = Number(process.env.GITOPS_UI_PORT ?? 7927);
+const BASE = `http://127.0.0.1:${PORT}`;
+const PASS = "gitops-ui-pass";
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const check = (name, ok, detail = "") => {
+  console.log(`${ok ? "  ok   " : " FAIL "} ${name}${detail ? ` — ${detail}` : ""}`);
+  if (!ok) throw new Error(`gitops-ui failed: ${name}${detail ? ` — ${detail}` : ""}`);
 };
 
-async function open(width, height, tag) {
-  const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 2, locale: "zh-CN" });
-  await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: BASE });
-  const page = await ctx.newPage();
-  page.on("pageerror", (e) => problems.push(`[${tag}] pageerror: ${e.message}`));
-  page.on("response", (r) => {
-    if (r.status() === 401) problems.push(`[${tag}] 401 ${r.url()}`);
-  });
-  page.on("console", (m) => {
-    if (m.type() === "error") problems.push(`[${tag}] console: ${m.text().slice(0, 200)}`);
-  });
-  await page.goto(BASE, { waitUntil: "domcontentloaded" });
-  if (await page.locator('input[type="password"]').count()) {
-    await page.fill('input[type="password"]', "test");
-    await page.click('button:has-text("进入")');
+/** 所有 git 调用固定身份与时间，免得依赖跑这台机器的 ~/.gitconfig。 */
+const git = (cwd, ...args) =>
+  execFileSync(
+    "git",
+    ["-C", cwd, "-c", "core.fsmonitor=false", "-c", "user.name=Test", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args],
+    { encoding: "utf8" },
+  ).trim();
+
+const put = (cwd, file, text) => {
+  fs.writeFileSync(path.join(cwd, file), text);
+  git(cwd, "add", file);
+  git(cwd, "commit", "-q", "-m", `ui: ${file}`);
+};
+
+// 会话的 cwd 必须是真仓库：有 origin/main、两条以上提交、且 main 与 feat/x 改了同一个文件（后面造冲突）。
+const bare = path.join(ROOT, "origin.git");
+const dir = path.join(ROOT, "work");
+execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare], { encoding: "utf8" });
+execFileSync("git", ["init", "-q", "-b", "main", dir], { encoding: "utf8" });
+git(dir, "remote", "add", "origin", bare);
+put(dir, "a.txt", "one");
+put(dir, "b.txt", "two");
+git(dir, "push", "-q", "-u", "origin", "main");
+git(dir, "remote", "set-head", "origin", "-a");
+git(dir, "checkout", "-q", "-b", "feat/x");
+put(dir, "a.txt", "from-feat");
+git(dir, "checkout", "-q", "main");
+put(dir, "a.txt", "from-main");
+git(dir, "checkout", "-q", "feat/x");
+check("测试仓库干净且有远程对照", git(dir, "status", "--porcelain") === "" && Boolean(git(dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main")));
+
+fs.mkdirSync(STATE, { recursive: true });
+const env = {
+  ...process.env,
+  PI_WEB_STATE: STATE,
+  PI_AGENT_DIR: path.join(ROOT, "agent"),
+  PI_WEB_PORT: String(PORT),
+  PI_WEB_HOST: "127.0.0.1",
+  PI_WEB_TUNNEL: "0",
+  PI_WEB_ROOT: path.join(REPO, "web", "dist"),
+  PI_BIN: FAKE_PI,
+};
+execFileSync(process.execPath, [DIST, "--passphrase", PASS], { env, stdio: "ignore" });
+const bridge = spawn(process.execPath, [DIST], { env, stdio: ["ignore", "pipe", "pipe"] });
+let bridgeLog = "";
+bridge.stdout.on("data", (chunk) => (bridgeLog += chunk.toString()));
+bridge.stderr.on("data", (chunk) => (bridgeLog += chunk.toString()));
+let browser;
+let socket;
+
+try {
+  let healthy = false;
+  for (let i = 0; i < 100; i += 1) {
+    try { healthy = (await fetch(`${BASE}/healthz`)).ok; if (healthy) break; } catch { /* starting */ }
+    await sleep(200);
   }
-  await page.waitForSelector(".session-list", { timeout: 20000 });
-  await page.locator(`.session-card:has-text("${name}")`).first().click().catch(() => {});
+  check("自建 bridge 起来了", healthy);
+
+  const login = await fetch(`${BASE}/api/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ passphrase: PASS }),
+  });
+  check("登录成功", login.ok, `HTTP ${login.status}`);
+  const [cookieName, cookieValue] = (login.headers.get("set-cookie") ?? "").split(";")[0].split("=");
+  const cookie = `${cookieName}=${cookieValue}`;
+
+  socket = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie } });
+  const frames = [];
+  socket.on("message", (chunk) => frames.push(JSON.parse(chunk.toString())));
+  await new Promise((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
+  socket.send(JSON.stringify({ type: "create", cwd: dir, name: "gitops-ui" }));
+  let sessionId = null;
+  for (let i = 0; i < 100 && !sessionId; i += 1) {
+    sessionId = frames.find((f) => f.type === "session" && f.state?.id)?.state.id ?? null;
+    if (!sessionId) await sleep(100);
+  }
+  check("临时仓库上的会话建好了", Boolean(sessionId));
+
+  browser = await chromium.launch();
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "zh-CN" });
+  await context.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
+  const page = await context.newPage();
+  await page.goto(`${BASE}/#/s/${sessionId}`);
+  await page.waitForSelector(".app", { timeout: 20000 });
   await page.waitForSelector(".git-chip", { timeout: 20000 });
-  return { ctx, page };
-}
+  check("状态行显示分支 chip", (await page.textContent(".git-chip .git-branch"))?.includes("feat/x") === true);
 
-// ---------------------------------------------------------------- 桌面
-{
-  const { ctx, page } = await open(1280, 820, "wide");
-  await page.locator(".git-chip").first().click();
-  await page.waitForSelector(".branch-sheet", { timeout: 15000 });
-  await page.waitForSelector(".bc-row", { timeout: 15000 });
-  await page.waitForTimeout(300);
-  const info = await page.evaluate(() => {
-    const q = (s) => [...document.querySelectorAll(s)].map((n) => n.textContent.trim());
-    return {
-      title: document.querySelector(".branch-title")?.textContent?.trim(),
-      pills: q(".bc-pill"),
-      fork: document.querySelector(".bc-fork")?.textContent?.trim(),
-      counts: q(".bc-counts span"),
-      headL: document.querySelector(".bc-col[data-side='left'] .bc-name")?.textContent,
-      headR: document.querySelector(".bc-col[data-side='right'] .bc-name")?.textContent,
-      rowsL: document.querySelectorAll(".bc-col[data-side='left'] .bc-row").length,
-      rowsR: document.querySelectorAll(".bc-col[data-side='right'] .bc-row").length,
-      common: document.querySelectorAll(".bc-row.common").length,
-      only: document.querySelectorAll(".bc-row.only").length,
-      onlyR: document.querySelectorAll(".bc-row.onlyR").length,
-      stamp: document.querySelector(".branch-stamp")?.textContent?.trim(),
-      options: q(".bc-base option").slice(0, 6),
-    };
-  });
-  log("弹窗:", JSON.stringify(info));
-  ok(info.pills.length === 2, "缺少领先/落后胶囊");
-  ok(info.rowsL > 0 && info.rowsR > 0, "两列都得有行");
-  ok(info.common > 0, "同一仓库里两列一定有公共历史");
-  ok(info.options[0] === "自动 · 跟随 origin/HEAD", `下拉第一项应是「自动」，实际 ${info.options[0]}`);
-  ok(/^数据来自 .+ · 只读$/.test(info.stamp ?? ""), `底部数据时间格式不对：${info.stamp}`);
-  await page.screenshot({ path: `${OUT}/dialog-wide.png` });
-
-  // 换对照分支 → 数字要变（选下拉里第二个）
-  const opts = await page.locator(".bc-base option").count();
-  if (opts > 1) {
-    // 挑一个真不一样的：第 0 个是裸 `origin`，第 1 个通常就是 origin/main。
-    const values = await page.locator(".bc-base option").evaluateAll((ns) => ns.map((n) => n.value));
-    const value = values.find((v) => v !== "origin" && v !== "origin/main") ?? values[1];
-    await page.selectOption(".bc-base", value);
-    await page.waitForTimeout(1200);
-    log("换对照 →", await page.locator(".bc-pill").first().textContent(), "/", await page.locator(".bc-base").inputValue());
-    await page.screenshot({ path: `${OUT}/dialog-other-base.png` });
+  await page.click(".git-chip");
+  await page.waitForSelector(".branch-sheet.go-sheet", { timeout: 20000 });
+  await page.waitForSelector(".go-tabs [data-tab]", { timeout: 20000 });
+  await page.waitForSelector(".bc-row", { timeout: 20000 });
+  check("弹窗标题是操作工作台", (await page.textContent(".branch-title"))?.includes("分支操作工作台") === true);
+  check("三 tab", await page.locator(".go-tabs [data-tab]").count() === 3);
+  for (const id of ["history", "diff", "manual"]) {
+    check(`tab ${id} 存在`, await page.locator(`.go-tabs [data-tab="${id}"]`).count() === 1);
+  }
+  check("stamp 不再谎称只读", /操作后会刷新/.test(await page.textContent(".branch-stamp") ?? ""));
+  check("↑↓ 计数还在", await page.locator(".bc-pill").count() === 2);
+  check("cherry-pick 常驻标题栏（m00401 反馈 1）", await page.locator('.go-tool-row [data-op="cherry_pick"]').count() === 1);
+  for (const id of ["revert", "tag", "switch", "merge"]) {
+    check(`快捷入口 ${id}`, await page.locator(`.go-tool-row [data-op="${id}"]`).count() === 1);
   }
 
-  // fetch：成功最好；失败也必须把话说清楚、按钮恢复可点（没有代理时 github 直连不通）
-  const before = await page.locator(".branch-stamp").textContent();
-  await page.locator(".branch-fetch").first().click();
-  await page.waitForFunction(() => !document.querySelector(".branch-fetch")?.hasAttribute("disabled"), null, { timeout: 60000 }).catch(() => problems.push("fetch 按钮 60 秒没恢复"));
-  await page.waitForTimeout(300);
-  log("fetch →", JSON.stringify({ hint: (await page.locator(".branch-hint").textContent()).trim(), stamp: (await page.locator(".branch-stamp").textContent()).trim(), was: before }));
-  await page.screenshot({ path: `${OUT}/dialog-after-fetch.png` });
-
-  // 复制没被删掉，只是搬进来了：点一下「已复制」，0.9 秒后自己换回来
-  await page.locator(".branch-tools .btn").first().click();
-  await page.waitForTimeout(150);
-  const copied = (await page.locator(".branch-tools .btn").first().textContent()).trim();
-  ok(copied === "已复制", `复制按钮没反馈，文字是 ${copied}`);
-  await page.waitForTimeout(1100);
-  const restored = (await page.locator(".branch-tools .btn").first().textContent()).trim();
-  ok(restored === "复制分支名", `复制按钮没换回原名，文字是 ${restored}`);
-  log("复制:", JSON.stringify({ copied, restored }));
-
-  // 分页封顶：桥端 300 封顶，按钮到顶要换成一句说明，不能再点出「点了没反应」
-  for (let i = 0; i < 4; i++) {
-    if (!(await page.locator(".bc-more").count())) break;
-    await page.locator(".bc-more").first().click();
-    await page.waitForTimeout(1500);
+  // 全部动词：24 个一个不少，红色组也列得出来。
+  await page.click(".go-tool-row [data-verbs='1']");
+  await page.waitForSelector(".go-verbs-grid [data-op]");
+  check("全部动词 · 24", await page.locator(".go-verbs-grid [data-op]").count() === 24);
+  for (const id of ["cherry_pick", "revert", "tag", "stash", "rebase", "reset_hard", "restore", "abort", "continue"]) {
+    check(`动词表里有 ${id}`, await page.locator(`.go-verbs-grid [data-op="${id}"]`).count() === 1);
   }
-  const cap = await page.evaluate(() => ({
-    rows: document.querySelectorAll(".bc-row").length,
-    more: document.querySelectorAll(".bc-more").length,
-    note: [...document.querySelectorAll(".bc-empty")].map((n) => n.textContent.trim()).filter((t) => t.startsWith("只显示最近")),
-  }));
-  ok(cap.rows <= 600, `封顶后两列共 ${cap.rows} 行，超过 300×2`);
-  if (cap.note.length) ok(cap.more === 0, "到了 300 封顶还留着「再加载」按钮");
-  log("封顶:", JSON.stringify(cap));
+  check("红色动词分组可见", await page.locator(".go-verbs-grid .go-verb.red").count() === 8);
+  await page.click(".go-verbs [data-cancel='1']");
 
-  // Esc 关闭
+  // 交给 AI：选分支 + 写要求 → 实时预览 → 只预填到当前会话，不自动发送。
+  await page.click(".go-tool-row [data-ai='1']");
+  await page.waitForSelector(".go-ai-card .go-textarea");
+  check("AI 入口有分支下拉", await page.locator(".go-ai-card select.go-select").count() === 1);
+  check("AI 入口有两个出口", await page.locator(".go-ai-card [data-ai-go]").count() === 2);
+  await page.fill(".go-ai-card .go-textarea", "先别动 git，告诉我该不该合并 main");
+  const preview = await page.textContent(".go-ai-card pre");
+  check("提示词含用户要求", preview?.includes("先别动 git，告诉我该不该合并 main") === true);
+  check("提示词打包了仓库与分支", preview?.includes("仓库：") === true && preview?.includes("选中的分支：") === true);
+  await page.click(".go-ai-card [data-ai-go='current']");
+  await page.waitForSelector(".composer-input textarea");
+  const filled = await page.inputValue(".composer-input textarea");
+  check("提示词预填进输入框", filled.includes("先别动 git，告诉我该不该合并 main"));
+  check("没有自动发送（提示词还在输入框里）", filled.length > 40);
+  check("给了「已放进输入框」回执", /已放进输入框/.test(await page.textContent(".branch-hint") ?? ""));
+
+  // 对照分支：关键词检索 + 直接输入任意 ref（HEAD~1）+ 回车生效。
+  await page.fill(".go-cmp-input", "main");
+  await page.waitForSelector(".go-cmp-menu:not([hidden]) [data-cmp-pick]");
+  check("检索出 origin/main", await page.locator('.go-cmp-menu [data-cmp-pick="origin/main"]').count() === 1);
+  check("检索有「用输入的 ref 对照」", await page.locator(".go-cmp-menu [data-cmp-use='1']").count() === 1);
+  await page.fill(".go-cmp-input", "HEAD~1");
+  await page.press(".go-cmp-input", "Enter");
+  await page.waitForFunction(() => {
+    const el = document.querySelector(".go-cmp-input");
+    return el instanceof HTMLInputElement && el.value === "HEAD~1";
+  }, null, { timeout: 20000 });
+  await page.waitForSelector(".bc-row", { timeout: 20000 });
+  check("任意 ref 对照没被吞掉", await page.inputValue(".go-cmp-input") === "HEAD~1");
+  check("任意 ref 对照没进错误态", !/读取失败/.test(await page.textContent(".branch-stamp") ?? ""));
+  await page.fill(".go-cmp-input", "origin/main");
+  await page.press(".go-cmp-input", "Enter");
+  await page.waitForFunction(() => {
+    const el = document.querySelector(".go-cmp-input");
+    return el instanceof HTMLInputElement && el.value === "origin/main";
+  }, null, { timeout: 20000 });
+
+  // 差异 tab：文件列表 + 并排文本行。
+  await page.click('.go-tabs [data-tab="diff"]');
+  await page.waitForSelector(".go-diff-files [data-file]", { timeout: 20000 });
+  check("差异列出变更文件", await page.locator(".go-diff-files [data-file]").count() >= 1);
+  await page.click('.go-diff-files [data-file="0"]');
+  await page.waitForSelector(".go-codegrid .go-code", { timeout: 20000 });
+  check("并排 diff 有行", await page.locator(".go-codegrid .go-code").count() >= 2);
+  check("差异文件栏标注当前对照", /origin\/main/.test(await page.textContent(".go-diff-files") ?? ""));
+
+  // 图解手册：24 张卡、红色筛选 8 张、每卡有前后两帧 SVG。
+  await page.click('.go-tabs [data-tab="manual"]');
+  await page.waitForSelector(".go-manual-grid .go-mcard", { timeout: 20000 });
+  check("手册列全 24 个动词", await page.locator(".go-manual-grid .go-mcard").count() === 24);
+  check("每张卡有两帧图解", await page.locator(".go-manual-grid .go-mcard").first().locator(".go-ill-cell svg").count() === 2);
+  await page.locator(".go-filters button").nth(1).click();
+  check("只看红色筛出 8 个", await page.locator(".go-manual-grid .go-mcard.red").count() === 8);
+  await page.locator(".go-filters button").first().click();
+  await page.waitForSelector('.go-manual-grid [data-op="cherry_pick"]', { timeout: 20000 });
+
+  // 普通操作卡：cherry-pick 有字段、命令预览、两帧图解。
+  await page.click('.go-manual-grid [data-op="cherry_pick"]');
+  await page.waitForSelector('[data-op-card="cherry_pick"]');
+  check("cherry-pick 卡居中打开", await page.locator('.go-op-layer:not([hidden]) [data-op-card="cherry_pick"]').count() === 1);
+  check("cherry-pick 卡有哈希字段", await page.locator('[data-op-card="cherry_pick"] [data-field="hashes"]').count() === 1);
+  check("cherry-pick 卡有命令预览", /cherry-pick/.test(await page.textContent('[data-op-card="cherry_pick"] pre') ?? ""));
+  check("操作卡有两帧图解", await page.locator('[data-op-card="cherry_pick"] .go-frame svg').count() === 2);
+  await page.click('[data-op-card="cherry_pick"] [data-cancel="1"]');
+
+  // 红色动作：先出确认卡（丢失清单 + 回退命令），不点执行。
+  await page.click('.go-manual-grid [data-op="reset_hard"]');
+  await page.waitForSelector('[data-op-card="reset_hard"]');
+  check("红色按钮写「查看确认卡」", (await page.textContent('[data-op-card="reset_hard"] [data-run="1"]'))?.includes("查看确认卡") === true);
+  await page.click('[data-op-card="reset_hard"] [data-run="1"]');
+  await page.waitForSelector('[data-confirm="reset_hard"]');
+  check("红色确认卡列出会丢什么", await page.locator('[data-confirm="reset_hard"] .go-lose li').count() >= 1);
+  check("红色确认卡给可复制回退命令", /git reset --hard ORIG_HEAD/.test(await page.textContent('[data-confirm="reset_hard"] pre') ?? ""));
+  check("真执行按钮是 data-force", await page.locator('[data-confirm="reset_hard"] [data-force="1"]').count() === 1);
+  await page.click('[data-confirm="reset_hard"] [data-cancel="1"]');
+
+  // 真实写操作：新建并切到 feat/ui-test，成功后状态行 chip 跟着刷新。
+  await page.click('.go-tool-row [data-op="switch"]');
+  await page.waitForSelector('[data-op-card="switch"]');
+  await page.fill('[data-op-card="switch"] [data-field="branch"]', "feat/ui-test");
+  await page.check('[data-op-card="switch"] [data-switch="create"]');
+  await page.click('[data-op-card="switch"] [data-run="1"]');
+  await page.waitForSelector(".go-result-card.ok", { timeout: 20000 });
+  check("写操作给成功卡", /执行成功/.test(await page.textContent(".go-result-card.ok") ?? ""));
+  await page.waitForFunction(() => {
+    const el = document.querySelector(".git-chip .git-branch");
+    return el?.textContent?.includes("feat/ui-test") === true;
+  }, null, { timeout: 20000 });
+  check("chip 刷新到新分支", (await page.textContent(".git-chip .git-branch"))?.includes("feat/ui-test") === true);
+  await page.keyboard.press("Escape"); // 收起结果卡
+
+  // 结构化失败卡：干净仓库上 commit 必然失败，卡里要有 exit / argv / handoff。
+  await page.click('.go-tool-row [data-op="commit"]');
+  await page.waitForSelector('[data-op-card="commit"]');
+  await page.fill('[data-op-card="commit"] [data-field="message"]', "nothing staged");
+  await page.click('[data-op-card="commit"] [data-run="1"]');
+  await page.waitForSelector(".go-result-card.bad", { timeout: 20000 });
+  check("失败卡写 exit 码", /执行失败 · exit/.test(await page.textContent(".go-result-card.bad") ?? ""));
+  check("失败卡列出已执行命令", /\$ git .*/.test(await page.textContent(".go-result-card.bad") ?? ""));
+  check("失败卡有交给 agent", await page.locator('.go-result-card.bad [data-agent="result"]').count() === 1);
   await page.keyboard.press("Escape");
-  await page.waitForSelector(".branch-sheet", { state: "detached", timeout: 5000 });
-  log("Esc 关掉:", true);
-  await ctx.close();
-}
 
-// ---------------------------------------------------------------- 窄屏
-{
-  const { ctx, page } = await open(430, 860, "narrow");
-  await page.locator(".git-chip").first().click();
-  await page.waitForSelector(".branch-sheet", { timeout: 15000 });
-  await page.waitForSelector(".bc-row", { timeout: 15000 });
-  await page.waitForTimeout(400);
-  const tabs = await page.locator(".branch-tabs button").count();
-  const visible = await page.locator(".bc-col:visible").count();
-  await page.screenshot({ path: `${OUT}/dialog-narrow-left.png` });
-  if (tabs === 2) {
-    await page.locator(".branch-tabs button").nth(1).click();
-    await page.waitForTimeout(200);
-    log("窄屏 tab 切换后可见列:", await page.locator(".bc-col:visible").count());
-  }
-  await page.screenshot({ path: `${OUT}/dialog-narrow-right.png` });
-  log("窄屏:", JSON.stringify({ tabs, visible }));
-  ok(tabs === 2, `窄屏应有 2 个 tab，实际 ${tabs}`);
-  ok(visible === 1, `窄屏只应显示 1 列，实际 ${visible}`);
-  await ctx.close();
-}
+  // 冲突态：merge main 撞 a.txt → 只放行中止 / 继续、逐文件勾完才让继续。
+  await page.click('.go-tool-row [data-op="merge"]');
+  await page.waitForSelector('[data-op-card="merge"]');
+  await page.fill('[data-op-card="merge"] [data-field="branch"]', "main");
+  await page.click('[data-op-card="merge"] [data-run="1"]');
+  await page.waitForSelector(".go-result-card.warn", { timeout: 20000 });
+  check("冲突结果卡", /仓库停在冲突状态/.test(await page.textContent(".go-result-card.warn") ?? ""));
+  check("冲突卡列冲突文件", await page.locator(".go-conflict-row").count() >= 1);
+  check("冲突卡的中止按钮", await page.locator('.go-result-card.warn [data-op="abort"]').count() === 1);
+  check("冲突卡的继续按钮", await page.locator('.go-result-card.warn [data-op="continue"]').count() === 1);
+  // 继续按钮直接打开逐文件标记卡，别先按 Esc（那会把结果卡连同状态一起收掉）。
+  await page.click('.go-result-card.warn [data-op="continue"]');
+  await page.waitForSelector(".go-conflict [data-continue='1']", { timeout: 20000 });
+  check("逐文件勾完才能继续", await page.locator('.go-conflict [data-continue="1"]').isDisabled());
+  await page.check('.go-conflict [data-conflict="a.txt"]');
+  check("勾完一个冲突文件后放行", !(await page.locator('.go-conflict [data-continue="1"]').isDisabled()));
+  await page.click('.go-conflict [data-cancel="1"]');
+  await page.click('.go-tool-row [data-op="commit"]');
+  check("冲突态拒绝普通动词", /仓库停在冲突状态/.test(await page.textContent(".branch-hint") ?? ""));
+  // 用 HTTP 收口冲突，避免把测试仓库留在 merge 态。
+  const abort = await fetch(`${BASE}/api/git/op`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ dir, id: "abort", params: {} }),
+  });
+  check("冲突已收口", (await abort.json()).ok === true);
+  // 关掉并重新打开弹窗，让 UI 重新读到「没有 pending」的状态。
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".branch-sheet.go-sheet", { state: "detached", timeout: 20000 });
+  await page.click(".git-chip");
+  await page.waitForSelector(".bc-row", { timeout: 20000 });
 
-await browser.close();
-if (fails.length) problems.push(...fails.map((f) => `assert: ${f}`));
-console.log(problems.length ? `problem:\n  ${problems.join("\n  ")}` : "accept: ok — 没有 pageerror / console error");
-process.exitCode = fails.length ? 1 : 0;
+  // 双闸：隧道头即使来自回环，写操作也必须 403。
+  const tunnel = await fetch(`${BASE}/api/git/op`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json", "x-forwarded-proto": "https" },
+    body: JSON.stringify({ dir, id: "tag", params: { name: "should-not-exist" } }),
+  });
+  const tunnelBody = await tunnel.json();
+  check("隧道写操作 403", tunnel.status === 403, `HTTP ${tunnel.status}`);
+  check("隧道写操作码 op_public", tunnelBody.code === "op_public", JSON.stringify(tunnelBody));
+  const local = await fetch(`${BASE}/api/git/state`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ dir }),
+  });
+  check("本机回环读仓库状态 200", local.ok && (await local.json()).repo !== undefined);
+
+  // Esc 逐层收起：先操作卡，再整个弹窗。
+  await page.click('.go-tool-row [data-op="fetch"]');
+  await page.waitForSelector('[data-op-card="fetch"]');
+  await page.keyboard.press("Escape");
+  check("Esc 先收起操作卡", await page.locator(".go-op-layer:not([hidden])").count() === 0);
+  await page.keyboard.press("Escape");
+  check("再按 Esc 关掉弹窗", await page.locator(".branch-sheet.go-sheet").count() === 0);
+
+  // 窄屏：历史两列退化成单列 tab。
+  const narrow = await browser.newContext({ viewport: { width: 430, height: 860 }, locale: "zh-CN" });
+  await narrow.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
+  const small = await narrow.newPage();
+  await small.goto(`${BASE}/#/s/${sessionId}`);
+  await small.waitForSelector(".git-chip", { timeout: 20000 });
+  await small.click(".git-chip");
+  await small.waitForSelector(".bc-row", { timeout: 20000 });
+  check("窄屏出现两列切换 tab", await small.locator(".go-side-tabs button").count() === 2);
+  check("窄屏只显示一列", await small.locator(".bc-col:visible").count() === 1);
+  await narrow.close();
+
+  console.log("gitops-ui: ok — 三 tab / 24 动词 / AI 两出口 / 对照检索 / 操作卡 / 红色确认 / chip 刷新 / 失败卡 / 冲突态 / 隧道 403 / 窄屏");
+} finally {
+  try { await browser?.close(); } catch { /* ignore */ }
+  try { if (socket?.readyState === WebSocket.OPEN) socket.close(); } catch { /* ignore */ }
+  bridge.kill();
+  await sleep(150);
+  fs.rmSync(ROOT, { recursive: true, force: true });
+  if (bridgeLog.includes("Error:")) console.error(bridgeLog.slice(-3000));
+}
