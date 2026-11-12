@@ -459,7 +459,7 @@ function openThread(id: string): void {
   S.mview = "chat";
   S.msgs = [];
   S.msgsFor = "";
-  // 打开会话永远从最底下开始：不继承上一个会话的滚动位置（它可能是翻到半截的）。
+  // 打开对话永远从最底下开始：不继承上一个对话的滚动位置（它可能是翻到半截的）。
   stickBottom = true;
   prevScroll = 0;
   app.dataset.page = "msg";
@@ -905,8 +905,8 @@ function backBtn(): HTMLButtonElement {
 }
 
 /**
- * 当前的会话对象。有历史就从 /threads 里取；刚加的好友还没历史（peer 的 /threads 只遍历
- * history 目录），就用通讯录 / 在线表拼一个，不然聊天区只剩「选一个会话」，第一条消息没法发。
+ * 当前的对话对象。有历史就从 /threads 里取；刚加的好友还没历史（peer 的 /threads 只遍历
+ * history 目录），就用通讯录 / 在线表拼一个，不然聊天区只剩「选一个会话」（界面文案），第一条消息没法发。
  */
 function threadOf(id: string | null): Thread | null {
   if (!id) return null;
@@ -1647,7 +1647,7 @@ function inputEl(placeholder: string): HTMLInputElement {
 // ---------------------------------------------------------------- 文件选择器
 
 async function openPicker(peer: string, direct = false): Promise<void> {
-  // 「传文件」从联系人页直接进来时，先把会话切过去：发完就在聊天里能看到。
+  // 「传文件」从联系人页直接进来时，先把对话切过去：发完就在聊天里能看到。
   if (!S.thread || S.thread !== peer) {
     S.thread = peer;
     await loadMessages();
