@@ -90,6 +90,10 @@ export class BranchSheet {
   private manualFilter = MANUAL_FILTERS[0];
   private selectedBranch = "";
   private busy = false;
+  /** 右栏「本地 / 远程」两组的折叠状态，key 是桥端给的组名；没记过的一律折叠。 */
+  private foldedGroups: Record<string, boolean> = (() => {
+    try { return (JSON.parse(localStorage.getItem("pi.goGroupsFolded") ?? "null") as Record<string, boolean> | null) ?? {}; } catch { return {}; }
+  })();
   /** 只要最新那次请求的答案：换对照分支拉得快时，旧答案不许盖新的。 */
   private ticket = 0;
   private esc: ((ev: KeyboardEvent) => void) | null = null;
@@ -259,6 +263,10 @@ export class BranchSheet {
   private say(text: string, bad = false): void {
     this.hintEl.textContent = text;
     this.hintEl.classList.toggle("bad", bad);
+  }
+
+  private saveFoldedGroups(): void {
+    try { localStorage.setItem("pi.goGroupsFolded", JSON.stringify(this.foldedGroups)); } catch { /* 隐私模式之类：不记也行 */ }
   }
 
   // ---------------------------------------------------------------- paint
@@ -433,7 +441,24 @@ export class BranchSheet {
     const side = el("aside", "go-branch-side");
     side.append(el("div", "go-side-title", tr("分支 · 本地 + 远程")));
     for (const g of this.refs?.groups ?? [{ name: tr("历史"), refs: data.branches.map((b) => ({ name: b.name, at: b.at, current: b.name === data.head })) }]) {
-      side.append(el("div", "go-side-group", tr(g.name)));
+      // 组头可折叠：分支一多，两组全展开会把右栏撑成一条望不到头的列表。默认折叠。
+      const folded = this.foldedGroups[g.name] ?? true;
+      const head = btn("", "go-side-group");
+      head.dataset.group = g.name;
+      head.setAttribute("aria-expanded", String(!folded));
+      head.title = tr("展开或收起这一组分支");
+      head.append(
+        el("span", "go-side-caret", folded ? "▸" : "▾"),
+        el("span", "go-side-name", tr(g.name)),
+        el("span", "go-side-count", String(g.refs.length)),
+      );
+      head.onclick = () => {
+        this.foldedGroups[g.name] = !folded;
+        this.saveFoldedGroups();
+        this.paintHistory();
+      };
+      side.append(head);
+      if (folded) continue;
       for (const r of g.refs) {
         const b = btn(`${r.current ? "● " : ""}${r.name}`, "go-branch-row");
         b.dataset.branch = r.name;
