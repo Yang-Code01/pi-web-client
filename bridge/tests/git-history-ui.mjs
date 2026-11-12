@@ -30,6 +30,25 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "  ok   " : " FAIL "} ${name}${detail ? ` — ${detail}` : ""}`);
   if (!ok) throw new Error(`gitops-ui failed: ${name}${detail ? ` — ${detail}` : ""}`);
 };
+/**
+ * 图解帧必须真的按 SVG 画出来。`opFrames()` 返回的字符串由 `branchsheet.ts` 里 `svgNode()`
+ * 用 DOMParser 以 `image/svg+xml` 解析：`<svg>` 少了 `xmlns` 就落进**无命名空间**，于是
+ * `<style>` 的文字被当正文画进卡片（满屏 `.n{fill:var(--accent)}`）、圆和线也不渲染。
+ * 一把量一簇帧：命名空间、CSS 文本有没有漏成可见文字、形状有没有真占面积。
+ */
+const framesState = (page, sel, boxSel) =>
+  page.evaluate(([s, b]) => {
+    const svgs = [...document.querySelectorAll(s)];
+    return {
+      total: svgs.length,
+      badNs: svgs.filter((svg) => svg.namespaceURI !== "http://www.w3.org/2000/svg").length,
+      leaked: /fill:var\(/.test(document.querySelector(b)?.innerText ?? ""),
+      tiny: svgs.filter((svg) => {
+        const shape = svg.querySelector("rect, circle");
+        return !shape || Math.round(shape.getBoundingClientRect().width) <= 1;
+      }).length,
+    };
+  }, [sel, boxSel]);
 
 /** 所有 git 调用固定身份与时间，免得依赖跑这台机器的 ~/.gitconfig。 */
 const git = (cwd, ...args) =>
@@ -196,6 +215,12 @@ try {
   await page.waitForSelector(".go-manual-grid .go-mcard", { timeout: 20000 });
   check("手册列全 24 个动词", await page.locator(".go-manual-grid .go-mcard").count() === 24);
   check("每张卡有两帧图解", await page.locator(".go-manual-grid .go-mcard").first().locator(".go-ill-cell svg").count() === 2);
+  const ill = await framesState(page, ".go-manual-grid .go-mcard .go-ill-cell svg", ".go-manual-grid");
+  // 24 张卡 × 2 帧；三种图形（文件/丢弃/分支）都要走到，所以整簇量一遍，不只量第一张。
+  check("手册 24 张卡共 48 帧", ill.total === 48, `total=${ill.total}`);
+  check("图解帧都在 SVG 命名空间里", ill.badNs === 0, JSON.stringify(ill));
+  check("图解帧没把 CSS 文本画成字", ill.leaked === false);
+  check("图解帧的图形真有尺寸", ill.tiny === 0, `tiny=${ill.tiny}`);
   await page.locator(".go-filters button").nth(1).click();
   check("只看红色筛出 8 个", await page.locator(".go-manual-grid .go-mcard.red").count() === 8);
   await page.locator(".go-filters button").first().click();
@@ -208,6 +233,8 @@ try {
   check("cherry-pick 卡有哈希字段", await page.locator('[data-op-card="cherry_pick"] [data-field="hashes"]').count() === 1);
   check("cherry-pick 卡有命令预览", /cherry-pick/.test(await page.textContent('[data-op-card="cherry_pick"] pre') ?? ""));
   check("操作卡有两帧图解", await page.locator('[data-op-card="cherry_pick"] .go-frame svg').count() === 2);
+  const cardFrame = await framesState(page, '[data-op-card="cherry_pick"] .go-frame svg', '[data-op-card="cherry_pick"] .go-frame');
+  check("操作卡图解也按 SVG 渲染", cardFrame.total === 2 && cardFrame.badNs === 0 && !cardFrame.leaked && cardFrame.tiny === 0, JSON.stringify(cardFrame));
   await page.click('[data-op-card="cherry_pick"] [data-cancel="1"]');
 
   // 红色动作：先出确认卡（丢失清单 + 回退命令），不点执行。
