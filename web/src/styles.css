@@ -4853,6 +4853,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .go-side-tabs button { flex: 1; border: 1px solid var(--line); background: var(--panel-2); color: var(--dim); border-radius: 7px; padding: 5px; font-size: 11px; }
 .go-side-tabs button.on { color: var(--text); background: var(--accent-bg); border-color: var(--accent-dim); }
 .go-branch-side { border-left: 1px solid var(--line-soft); overflow: auto; display: flex; flex-direction: column; }
+/* 列里的子项一律不收缩：行带着 overflow:hidden（省略号），flex 的自动最小尺寸就是 0，
+   分支一多整列会被一起压扁（24px → 10px），文字只剩中间一条，看着像乱码。 */
+.go-branch-side > * { flex: none; }
 .go-branch-row { width: 100%; text-align: left; border: 0; background: transparent; color: var(--dim); font: 11.5px var(--mono); padding: 5px 12px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .go-branch-row:hover { background: var(--panel-2); color: var(--text); }
 .go-branch-row.on { color: var(--accent); background: var(--accent-bg); }
