@@ -290,15 +290,17 @@ test("emptySearch：默认关系三个都勾，排序最近更新降序", () => 
   assert.equal(SEARCH_STORAGE_KEY, "pi.jira.search.last");
 });
 
-test("searchQuery：空值不带，标题去空白，项目大写", () => {
-  const q = searchQuery({ ...emptySearch(), title: " 登录 ", text: "", project: "acme", priority: "" });
+test("searchQuery：空值不带，标题与票号去空白，项目大写", () => {
+  const q = searchQuery({ ...emptySearch(), title: " 登录 ", text: "", ticketKey: " 17967 ", project: "acme", priority: "" });
   assert.equal(q.get("title"), "登录");
+  assert.equal(q.get("ticketKey"), "17967");
   assert.equal(q.has("text"), false);
   assert.equal(q.has("priority"), false);
   assert.equal(q.get("project"), "ACME");
   assert.equal(q.get("sort"), "updated");
   assert.equal(q.get("order"), "desc");
   assert.equal(q.has("includeResolved"), false);
+  assert.equal(searchQuery({ ...emptySearch(), ticketKey: "   " }).has("ticketKey"), false);
 });
 
 test("searchQuery / normalizeSearch：未分配不带人员与关系，但不清表单里选的人", () => {
@@ -336,6 +338,7 @@ test("serializeSearch / readSavedSearch：条件往返，坏 JSON / 版本不对
   const saved = serializeSearch({
     ...emptySearch(),
     title: "白屏",
+    ticketKey: "17967",
     project: "acme",
     statusCategory: "done",
     person: { accountId: "acc-9", displayName: "Ada" },
@@ -343,6 +346,7 @@ test("serializeSearch / readSavedSearch：条件往返，坏 JSON / 版本不对
   });
   const back = readSavedSearch(saved);
   assert.equal(back.title, "白屏");
+  assert.equal(back.ticketKey, "17967");
   assert.equal(back.project, "ACME");
   assert.equal(back.statusCategory, "done");
   assert.equal(back.person.accountId, "acc-9");

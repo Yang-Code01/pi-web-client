@@ -1,6 +1,6 @@
 # Jira 搜索
 
-状态：设计已定（D207），实现拆在 #256–#259。
+状态：设计已定（D207）；本文同步记录票号查询与宽桌面搜索布局的实现行为。
 原型：`.scratch/jira-search-prototype/index.html`（不入库，只用于形态对比）。
 
 ## 1. 范围
@@ -18,10 +18,9 @@ v1 面板只有一条固定查询「分配给我 + 未解决」（D203）。本�
 │  我的未完成   │   搜索                     │  tablist
 ├───────────────────────────────────────────┤
 │ 搜索工单                     已显示 20 条 │
-│ [标题关键字] [全文本] [项目] [状态类别]   │
-│ [具体状态] [类型] [优先级] [排序]         │
-│ 某个人 [combobox……………] □经办 □报告 □关注 │
-│ □未分配  □含已解决      [搜索]  Enter 也能搜│
+│ [票号] [标题关键字] [全文本] [项目]        │
+│ [状态类别] [具体状态] [类型] [优先级] [排序] [方向] │
+│ 人员 [combobox…] 关系 □未分配 □已解决 [搜索] [清空] │
 │ ── 关注者条件未生效：没有查看关注者的权限 ──│
 │ ACME-412 登录页在 Safari 17 上白屏  [交给 agent]│
 │ …                                         │
@@ -41,6 +40,7 @@ v1 面板只有一条固定查询「分配给我 + 未解决」（D203）。本�
 | --- | --- | --- | --- |
 | 标题关键字 | `title` | ≤ 200 字符 | `summary ~ "…"` |
 | 全文本 | `text` | ≤ 500 字符 | `text ~ "…"` |
+| 票号 | `ticketKey` | ≤ 200 字符；仅字母、数字、`_`、`-` | `workItemKey ~ "*…*"`（任意位置子串） |
 | 项目 | `project` | `^[A-Z][A-Z0-9_]{0,9}$` | `project = "ACME"` |
 | 状态类别 | `statusCategory` | `new` / `indeterminate` / `done` | `statusCategory = "To Do"` / `"In Progress"` / `"Done"` |
 | 具体状态 | `status` | ≤ 64 字符，**必须带 project** | `status = "In Progress"` |
@@ -64,6 +64,7 @@ v1 面板只有一条固定查询「分配给我 + 未解决」（D203）。本�
 [resolution = Unresolved AND]
 [summary ~ "…" AND]
 [text ~ "…" AND]
+[workItemKey ~ "*…*" AND]
 [project = "…" AND]
 [statusCategory = "…" AND]
 [status = "…" AND]
@@ -80,6 +81,7 @@ ORDER BY <sort> <order>[, updated DESC]
 - `status` 必须有 `project`：状态名可跨项目重名，未选项目时页面也无法列出全量状态。
 - `sort=priority` 时补 `updated DESC` 作次序；`sort=updated` 不重复。
 - 关键字不拆词、不加通配符，整串交给 Jira 的 `~`。
+- 票号按 key 任意位置子串匹配，并与其他已填写条件按 AND 组合；例如输入 `17967` 可命中 `CASPH30INC-17967`。票号去除首尾空白后为空时按未填写处理，非法字符或超过 200 字符时拒绝；不把 `*` / `?` 当作通配符。
 
 ### 3.3 转义与长度
 
@@ -202,6 +204,7 @@ GET /api/jira/search?title=登录&project=ACME&statusCategory=indeterminate
 ### 表单
 
 - 4 / 2 / 1 列响应式；具体状态在未选项目时置灰，placeholder「先选项目」；清空项目时连带清空状态。
+- 宽桌面 Jira 弹窗最大宽度 1200px，搜索条件按三行排列：票号 / 标题 / 全文本 / 项目；状态类别 / 具体状态 / 类型 / 优先级 / 排序 / 方向；人员与关系 / 开关 / 操作。窄屏按现有断点重排，手机保持全屏，非 Jira 弹窗不变。
 - 类型 / 优先级选项全部来自 `/api/jira/meta`；不在前端硬编码。
 - 「搜索」按钮 + Enter 提交；改条件不自动搜。
 - 勾「未分配」→ 人员输入与三个关系勾置灰；取消恢复原选择。
@@ -280,7 +283,7 @@ GET /api/jira/search?title=登录&project=ACME&statusCategory=indeterminate
 
 ### bridge（#256 / #257）
 
-- `node bridge/tests/jira-search-unit.mjs`：每个条件、组合顺序、默认未解决、includeResolved、unassigned、关系 OR、排序、转义正反例、校验错误、token 透传；断言拼出的 JQL 逐字。
+- `node bridge/tests/jira-search-unit.mjs`：每个条件（含票号子串匹配与输入校验）、组合顺序、默认未解决、includeResolved、unassigned、关系 OR、排序、转义正反例、校验错误、token 透传；断言拼出的 JQL 逐字。
 - `node bridge/tests/jira-e2e.mjs`：假 Jira 上断言收到的 JQL 与 fields、分页、watcher 重试 / 不再重试（只勾 watcher）、meta 缓存与 partial、users 403 → unavailable、隧道 GET、未配置、搜索结果不缓存。
 
 ### web（#258 / #259）
@@ -299,7 +302,7 @@ GET /api/jira/search?title=登录&project=ACME&statusCategory=indeterminate
 7. 加载更多直到「已全部加载」。
 8. 关面板重开 → 条件回填；首次进搜索只自动跑一次。
 9. 隧道访问 → 搜索照常。
-10. 窄屏 1 列，不横向溢出。
+10. 宽桌面三行布局及 1200px 上限；窄屏按断点重排、不横向溢出，手机保持全屏。
 11. 结果行展开详情、下载、交给 agent 与列表一致。
 12. 搜索结果行的 meta 显示经办人；未分配或上游不给名字时显示「未分配」；「我的未完成」列表不显示经办人。
 

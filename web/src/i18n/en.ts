@@ -2280,6 +2280,8 @@ export const en: Dict = {
   "未分配时不会按人员过滤。": "People filters are off while “Unassigned” is selected.",
   "未找到匹配的人": "No matching people",
   "标题关键字": "Title keyword",
+  "票号": "Ticket key",
+  "请输入票号": "Enter a ticket key or fragment",
   "正在搜索…": "Searching…",
   "正在查询…": "Searching…",
   "正在读取选项…": "Loading options…",

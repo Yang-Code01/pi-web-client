@@ -399,6 +399,7 @@ export interface JiraSearchMeta {
 export interface SearchState {
   title: string;
   text: string;
+  ticketKey: string;
   project: string;
   statusCategory: "" | StatusCategoryKey;
   status: string;
@@ -417,6 +418,7 @@ export function emptySearch(): SearchState {
   return {
     title: "",
     text: "",
+    ticketKey: "",
     project: "",
     statusCategory: "",
     status: "",
@@ -464,6 +466,7 @@ export function normalizeSearch(state: SearchState): SearchState {
   return {
     title: state.title.trim(),
     text: state.text.trim(),
+    ticketKey: state.ticketKey.trim(),
     project,
     statusCategory: project ? category : "",
     status: project ? state.status.trim() : "",
@@ -491,6 +494,7 @@ export function searchQuery(state: SearchState): URLSearchParams {
   };
   put("title", s.title);
   put("text", s.text);
+  put("ticketKey", s.ticketKey);
   put("project", s.project);
   if (s.statusCategory) q.set("statusCategory", s.statusCategory);
   put("status", s.status);
@@ -517,6 +521,7 @@ export function serializeSearch(state: SearchState): string {
     v: 1,
     title: s.title,
     text: s.text,
+    ticketKey: s.ticketKey,
     project: s.project,
     statusCategory: s.statusCategory,
     status: s.status,
@@ -556,6 +561,7 @@ export function readSavedSearch(raw: string | null | undefined): SearchState | n
   const state: SearchState = {
     title: textOf(o.title),
     text: textOf(o.text),
+    ticketKey: textOf(o.ticketKey),
     project: textOf(o.project),
     statusCategory: textOf(o.statusCategory) as SearchState["statusCategory"],
     status: textOf(o.status),
