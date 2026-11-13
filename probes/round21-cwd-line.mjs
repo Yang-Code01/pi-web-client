@@ -1,7 +1,8 @@
 /**
- * Probe: D61 — with the left column collapsed the current working directory comes back as one faint
- * line under the composer. With the list open it must stay out of the way (the selected card already
- * carries the same path), and on narrow screens the pane is a tab, not a collapse, so it stays hidden.
+ * Probe: D61 / D244 — the current working directory sits as one faint chip under the composer, and since
+ * D244 it stays there whether the left column is open or collapsed (before it was collapse-only, because
+ * the selected card carried the same path). On narrow screens the pane is a tab, not a collapse, so it
+ * stays hidden.
  *
  * Run: npm run build:web && node probes/round21-cwd-line.mjs
  */
@@ -162,12 +163,13 @@ try {
   await until(async () => (await page.locator(".chat-scroll .msg.user").count()) === 3, 8000, "3 user messages");
   await sleep(400);
 
-  // 1) 左栏展开：路径必须藏着（选中的卡片上写着同一个 cwd），也不能另起一行
+  // 1) 左栏展开：路径也在（D244）—— 不另起一行，就在状态行里
   const opened = await shown(page);
   log("left open:", opened);
   assert(opened.exists, "the path chip is mounted in the status row");
   assert(opened.strayRows === 0, "no separate cwd row is rendered any more");
-  assert(!opened.visible, `with the left column open the path must stay hidden (got visible=${opened.visible}, display=${opened.display})`);
+  assert(opened.visible, `with the left column open the path shows too (got visible=${opened.visible}, display=${opened.display})`);
+  assert(opened.text === CWD_A, `path is the open session's cwd ${CWD_A} (got ${JSON.stringify(opened.text)})`);
   await page.screenshot({ path: `${OUT}/1-open.png` });
 
   // 2) 收起左栏：出现，且写的正是当前会话的目录
@@ -207,15 +209,17 @@ try {
   await sleep(1000);
   assert((await page.evaluate(() => document.querySelector(".cwd-path")?.textContent)) === CWD_A, "the label comes back after the flash");
 
-  // 4) 换一个会话：左栏得先展开才能点卡片，再收起来 → 那一行换成 B 的目录
+  // 4) 换一个会话：展开左栏后它照样在（D244），点另一张卡就换成 B 的目录
   await toggle.click();
-  await until(async () => !(await shown(page)).visible, 4000, "the path to hide again when the list opens");
+  await until(async () => !(await page.evaluate(() => document.querySelector(".pane")?.hidden ?? true)), 4000, "the session list to reopen");
+  const openAgain = await shown(page);
+  log("left reopened:", openAgain);
+  assert(openAgain.visible, "opening the list keeps the path visible (D244)");
   await page.locator('.session-card[data-id="probe-b"]').click();
   await until(async () => (await page.locator(".chat-scroll .msg.user").count()) === 2, 8000, "session B transcript");
-  await toggle.click();
-  await until(async () => (await shown(page)).visible, 4000, "the path to come back with B open");
   const afterSwitch = await shown(page);
   log("after switch:", afterSwitch);
+  assert(afterSwitch.visible, "the path stays visible after switching sessions with the list open");
   assert(afterSwitch.text === CWD_B, `switching sessions swaps the path to ${CWD_B} (got ${JSON.stringify(afterSwitch.text)})`);
   await page.screenshot({ path: `${OUT}/3-session-b.png` });
 
@@ -226,7 +230,7 @@ try {
   log("narrow:", narrow);
   assert(!narrow.visible, `below 900px the path stays hidden (got visible=${narrow.visible})`);
 
-  // 6) 回到桌面宽度：折叠状态还在，那一行也回来
+  // 6) 回到桌面宽度：那一行也回来（左栏此刻是展开的）
   await page.setViewportSize({ width: 1400, height: 900 });
   await sleep(500);
   const back = await shown(page);
