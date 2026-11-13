@@ -95,10 +95,16 @@ export class TranslateJobs {
         this.persist(job);
       },
     })
-      .then(({ sections: all, warnings }) => {
+      .then(({ sections: all, warnings, failures }) => {
         job.doc.sections = all;
         job.doc.warnings = warnings;
-        job.status = job.signal.aborted ? "cancelled" : "done";
+        // 模型没翻成的块不能算「翻完了」：状态标 error，把原始原因递给页面，
+        // 已经翻好的节照旧留在缓存里（失败的节带 failed，点「更新」会重翻）。
+        if (job.signal.aborted) job.status = "cancelled";
+        else if (failures.length) {
+          job.status = "error";
+          job.error = `已完成 ${all.length}/${job.total} 节，${failures.length} 块没翻成：${failures[0]}`;
+        } else job.status = "done";
         job.finishedAt = Date.now();
         this.persist(job);
       })

@@ -530,6 +530,8 @@ export interface TrSection {
   gen: string;
   /** 现在这一版，可能是人改过的。 */
   out: string;
+  /** 机器这一节没翻成：out 里摆的是原文，点「更新」时要重翻。 */
+  failed?: boolean;
 }
 
 /** 一份文件的译文缓存，落在桥的状态目录里，不碰源文件。 */
