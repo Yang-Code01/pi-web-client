@@ -7,7 +7,11 @@ export const VERSION = "0.1.0";
 
 export function stateDir(): string {
   const base = process.env.PI_WEB_STATE || path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), ".local", "share"), APP_NAME);
-  return base;
+  // pi 子进程的 cwd 不一定是 bridge 的（scratch 会话有自己的中性 cwd），而 `--session-dir`、
+  // `-e` 这类路径参数 pi 都拿自己的 cwd 解析。状态目录如果因 PI_WEB_STATE 传了相对路径而
+  // 相对，spawn 出去就会指错地方（#384 实测：context-log 的安装副本被解析到 scratch cwd 下）。
+  // 这里归一成绝对路径，所有 statePath() 的消费者（含写进扩展文件的 LOG_DIR）都不再踩这个坑。
+  return path.resolve(base);
 }
 
 /**

@@ -12,17 +12,17 @@ import assert from "node:assert/strict";
 import { CHROME_IDS, chromeFrom, isChromeVisible, narrowForcedVisible } from "../src/chrome.ts";
 
 const TOP = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira"];
-const BOTTOM = ["skills", "ext", "attach", "model"];
+const BOTTOM = ["skills", "context", "ext", "attach", "model"];
 const DESK = { hasSession: true, narrow: false };
 const MOBILE = { hasSession: true, narrow: true };
 const EMPTY = { hasSession: false, narrow: false };
 const EMPTY_MOBILE = { hasSession: false, narrow: true };
 
-test("11 个稳定 id，顶栏 7 颗、下沿 4 颗", () => {
+test("12 个稳定 id，顶栏 7 颗、下沿 5 颗", () => {
   assert.deepEqual([...CHROME_IDS], [...TOP, ...BOTTOM]);
 });
 
-test("键缺失 = 默认：开了会话、桌面宽，11 颗全画", () => {
+test("键缺失 = 默认：开了会话、桌面宽，12 颗全画", () => {
   for (const id of CHROME_IDS) assert.equal(isChromeVisible(id, {}, DESK), true, id);
 });
 

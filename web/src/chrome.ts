@@ -9,7 +9,7 @@
  */
 
 /** 写进状态 / 协议里的稳定 id（不是文案）。顶栏 7 颗、下沿 4 颗。 */
-export const CHROME_IDS = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira", "skills", "ext", "attach", "model"] as const;
+export const CHROME_IDS = ["artifacts", "terminal", "files", "notes", "peer", "scratch", "jira", "skills", "context", "ext", "attach", "model"] as const;
 export type ChromeId = (typeof CHROME_IDS)[number];
 
 /** 只有三种状态：键缺失 / `false` / `true`。 */
