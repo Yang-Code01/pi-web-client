@@ -245,6 +245,50 @@ try {
   const after = fs.readFileSync(DOC, "utf8");
   check("源文件里换成了改后的说法", after.includes("改过"));
   check("没动的地方原样留着", after.includes("## 発注単位") && after.includes("```ts"));
+
+  // ---- 5. 设置 → 系统 → 预览与翻译：默认模型记住、恢复默认
+  // 对照是全屏的，侧栏被盖住：先关掉预览再点设置。
+  await page.locator('.viewer-tools button[title="关闭（Esc）"]').click();
+  await page.waitForTimeout(400);
+  await page.locator(".set-btn").click();
+  await page.locator('.display-sheet .chip', { hasText: "连接与设置" }).click();
+  await page.getByRole("button", { name: "pi 设置" }).click();
+  await page.locator('.st-nav__item[data-tab="preview"]').click();
+  const pane = page.locator(".st-pane");
+  await pane.locator("select.tr-modelsel").waitFor({ timeout: 10000 });
+  const headTitle = await page.locator('.st-console [data-role="title"]').innerText();
+  check("设置页标题跟着切到「预览与翻译」", headTitle.includes("预览与翻译"), headTitle);
+  const psel = pane.locator("select.tr-modelsel");
+  const opts = await psel.locator("option").evaluateAll((os) => os.map((o) => o.value).filter(Boolean));
+  // 偏好是异步读的（一进页面先画一遍，读到再重画）：等到下拉变成刚才翻译用的那个。
+  const prefShown = await page
+    .waitForFunction(() => document.querySelector(".st-pane select.tr-modelsel")?.value === "stub/fake-model", null, { timeout: 10000 })
+    .then(() => true)
+    .catch(() => false);
+  check("设置页显示上次用的模型（翻一次就记住）", prefShown, await psel.inputValue());
+  check("下拉退回目录里第一项", (await psel.inputValue()) === opts[0], await psel.inputValue());
+  // 选一个别的 → 写进桥的偏好（prefs.json 在状态目录里，不是 settings.json）
+  await psel.selectOption(opts[opts.length - 1]);
+  const prefsFile = path.join(STATE, "translate", "prefs.json");
+  await new Promise((r) => setTimeout(r, 800));
+  let prefModel = "";
+  try {
+    prefModel = JSON.parse(fs.readFileSync(prefsFile, "utf8")).model;
+  } catch {
+    prefModel = "<没读到>";
+  }
+  check("选了就记住（写 prefs.json）", prefModel === opts[opts.length - 1], prefModel);
+  await pane.getByRole("button", { name: /恢复默认/ }).click();
+  await new Promise((r) => setTimeout(r, 800));
+  check("恢复默认回到 copilot/gpt-6-luna", JSON.parse(fs.readFileSync(prefsFile, "utf8")).model === "copilot/gpt-6-luna");
+  // 桩目录里没有 luna：正好验「默认模型找不到时让人重挑」那一行提示。
+  const lunaWarn = await page
+    .waitForFunction(() => (document.querySelector(".st-pane .hint.warn")?.textContent ?? "").includes("不在模型目录里"), null, { timeout: 10000 })
+    .then(() => true)
+    .catch(() => false);
+  check("目录里没有默认模型时提示重挑", lunaWarn);
+  await page.screenshot({ path: path.join(OUT, "4-settings.png"), fullPage: false });
+
   check("没有页面报错", errs.length === 0, errs.join(" | "));
   await page.screenshot({ path: path.join(OUT, "3-after-apply.png"), fullPage: false });
   code = 0;

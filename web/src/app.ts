@@ -10932,6 +10932,8 @@ export class App {
         return tr("子代理");
       case "notify":
         return tr("通知");
+      case "preview":
+        return tr("预览与翻译");
       case "runtime":
         return tr("运行时");
       default:
