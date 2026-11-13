@@ -75,6 +75,7 @@
 | **解锁记录 / 解锁事件** | 上下班分区的基本数据，一条 `{t, k, src}`：`k` 是 `unlock`/`lock`，`src` 说明怎么知道的（`event` 记录器收到会话事件 / `poll` 轮询 LogonUI / `log` Security 4800-4801 回填 / `start` 记录器启动兜底）。文件是状态目录的 `workclock/agent.jsonl`。 |
 | **记录器** | 那个常驻的每用户计划任务（`pi-web-client-workclock` → `workclock-agent.ps1`，D246）：跑在用户会话里收 `SessionSwitch` 事件、每 15 秒轮询兜底、写心跳。装/卸不需要管理员，装它是「日常零 UAC 拿到准解锁时间」的代价。 |
 | **工时** | 上下班里用户设的每日上班时长（0.5–24 小时，默认 9）：从**当天第一次解锁**起算的**墙上时间**，午休照走；不是「累计在线时长」。 |
+| **测试书** | `/pi-web-test-html` 跑出来的一份验收结果：`spec.json`（每步预期/实际/判定 + 截图路径）→ xlsx（一 case 一 sheet）→ 1:1 复刻该 xlsx 的单文件 HTML。原始截图在 `.scratch/testbook/<用例集>/shots/`，不进版本库（D247）。 |
 
 ## 相关文档
 
