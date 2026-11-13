@@ -13,7 +13,7 @@ import "./jira-console.css";
 import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
-import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, mergeSearchPage, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_MAX_KEYS, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
+import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, mergeSearchPage, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
 
@@ -871,7 +871,8 @@ export class JiraPanel {
   }
 
   private searchInput(key: "key" | "title" | "text", label: string): HTMLElement {
-    const wrap = el("div", "jira-search-field span-2");
+    // 工单号与标题各占两格（第一行刚好四格）；全文本占一格，剩下的下拉正好排成两行。
+    const wrap = el("div", key === "text" ? "jira-search-field" : "jira-search-field span-2");
     const id = `jira-search-${key}`;
     const lab = el("label", "jira-label", label);
     lab.htmlFor = id;
