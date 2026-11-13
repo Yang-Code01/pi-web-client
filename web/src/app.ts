@@ -10,6 +10,7 @@ import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPicke
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { ATTACH_IMAGE, imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
+import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, type TrAct, type TrView } from "./translateview.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
 import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type ComposerChild, type FailLedger, type SeenFail } from "./failures.ts";
 import { parseRules, type RuleBook } from "./rules.ts";
@@ -407,6 +408,9 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /** D245: 翻译用的默认模型（`provider/id`）与出厂默认，来自桥的偏好；还没读过时为空串。 */
+  private trModelPref = "";
+  private trDefaultModel = "";
   /** #285: the form's two scopes share one tab id; this is what the segment and the form follow. */
   private settingsScope: "global" | "project" = "global";
   /** #285: flattened drafts + the on-disk snapshot they diff against, kept per scope while the sheet is open. */
@@ -7605,6 +7609,8 @@ export class App {
       this.pushStep({ path }, sessionId);
     }
     const v = this.ensureViewer();
+    // 换了一份文件：上一个文件的译文状态（含轮询）跟着走。得在改 v.path 之前问，否则永远相等。
+    const switched = v.sessionId !== sessionId || v.path !== path;
     // 刚打开 / 换了一份文件：它该在终端上面（否则点了链接却看不见内容）。
     this.raiseWindow(v.root);
     v.sessionId = sessionId;
@@ -7618,6 +7624,11 @@ export class App {
     v.error = "";
     v.text = null;
     v.mode = "render";
+    // 换了一份文件：上一个文件的译文状态（含轮询）跟着走。
+    if (switched) {
+      this.stopTrPoll(v);
+      v.tr = null;
+    }
     this.paintViewer();
     try {
       v.info = await api.preview(sessionId, path);
@@ -7893,6 +7904,8 @@ export class App {
       frameToken: "",
       ext: null,
       pendingScroll: 0,
+      tr: null,
+      trTimer: null,
     };
     return this.viewer;
   }
@@ -7915,6 +7928,8 @@ export class App {
       return;
     }
     if (this.winFront === v.root) this.winFront = null;
+    this.stopTrPoll(v);
+    v.tr = null;
     v.root.remove();
     this.viewer = null;
   }
@@ -8164,6 +8179,7 @@ export class App {
       ["browse", tr("浏览")],
       ["preview", tr("预览")],
       ["edit", tr("编辑")],
+      ["translate", tr("对照")],
     ] as const) {
       const b = el("button", v.pane === p ? "on" : "", label) as HTMLButtonElement;
       if (p === "edit" && !this.editable(v)) {
@@ -8177,10 +8193,29 @@ export class App {
               : tr("只有 md / text 能编辑");
       }
       if (p === "preview" && !info) b.disabled = true;
+      if (p === "translate" && !this.translatable(v)) {
+        b.disabled = true;
+        b.title = !info
+          ? tr("先预览一个文本文件")
+          : info.kind !== "markdown" && info.kind !== "text"
+            ? tr("只有 md / text 能翻译")
+            : tr("超过 512 KB，不在预览里翻");
+      }
       b.onclick = () => void this.setPane(p);
       panes.append(b);
     }
     tools.append(panes);
+    if (this.translatable(v)) {
+      tbtn(
+        tr("译"),
+        tr("翻译对照：翻成别的语言，左右对着看"),
+        () => {
+          if (v.tr?.doc || v.pane === "translate") void this.openTrPane(v);
+          else this.trPicker(v);
+        },
+        v.pane === "translate",
+      );
+    }
     if (info && (info.kind === "markdown" || info.kind === "html") && v.pane === "preview") {
       const seg = el("div", "viewer-seg");
       for (const [m, label] of [["render", tr("渲染")], ["source", tr("源码")]] as const) {
@@ -8219,6 +8254,14 @@ export class App {
     if (v.pane === "edit") {
       v.frame = null;
       this.mountEditor(v);
+      return;
+    }
+    if (v.pane === "translate") {
+      // 对照态自己管滚动与列宽：不要留着 browse/edit 那几层类。
+      v.frame = null;
+      body.removeAttribute("data-edit-path");
+      body.className = "viewer-body tr-body";
+      paintTranslate(body, this.trOf(v), this.trAct(v));
       return;
     }
     body.removeAttribute("data-edit-path");
@@ -9277,6 +9320,13 @@ export class App {
       v.conflict = null;
       v.dirty = false;
     }
+    if (pane === "translate") {
+      v.pane = "translate";
+      void this.openTrPane(v);
+      return;
+    }
+    // 离开对照态就停下轮询：任务在桥那边照跑，回来接着看（openTrPane 会重新接上）。
+    this.stopTrPoll(v);
     v.pane = pane;
     if (pane === "browse" && !v.lastDir) v.lastDir = localStorage.getItem("pi.fsDir") ?? this.session?.cwd ?? "";
     this.paintViewer();
@@ -9514,6 +9564,288 @@ export class App {
       }
       this.toastInEditor(v, errText(err));
       return false;
+    }
+  }
+
+  // ---------------------------------------------------------------- 翻译对照（D245）
+
+  /** 只有 md / text 且在大小上限内能翻：跟「编辑」同一个门槛，只是卡在 512 KB。 */
+  private translatable(v: Viewer): boolean {
+    const info = v.info;
+    if (!info) return false;
+    if (info.kind !== "markdown" && info.kind !== "text") return false;
+    return info.size <= MAX_TRANSLATE_BYTES;
+  }
+
+  private trOf(v: Viewer): TrView {
+    if (!v.tr) v.tr = { lang: "", doc: null, job: null, busy: false, editing: false, draft: null, dirty: false, stale: false, error: "", msg: "" };
+    return v.tr;
+  }
+
+  private trAct(v: Viewer): TrAct {
+    return {
+      start: () => this.trPicker(v),
+      update: (force) => {
+        const t = this.trOf(v);
+        const doc = t.doc;
+        if (!doc) {
+          this.trPicker(v);
+          return;
+        }
+        void this.startTr(v, t.lang, doc.provider, doc.model, force);
+      },
+      cancel: () => {
+        const t = this.trOf(v);
+        const job = t.job;
+        if (!job) return;
+        void api.trCancel(job.id).catch(() => undefined);
+        this.stopTrPoll(v);
+        t.job = { ...job, status: "cancelled" };
+        t.msg = tr("停下了，已经翻好的节留着");
+        this.paintViewer();
+      },
+      edit: (on) => {
+        const t = this.trOf(v);
+        if (!on && t.dirty && !confirm(tr("译文还没保存，放弃这些改动？"))) return;
+        t.editing = on;
+        t.draft = null;
+        t.dirty = false;
+        this.paintViewer();
+      },
+      save: (text) => void this.saveTr(v, text),
+      sync: () => void this.syncTr(v),
+      picker: () => this.trPicker(v),
+      back: () => void this.setPane("preview"),
+    };
+  }
+
+  /** 进对照态：先读缓存（有就立刻显示），再把源文当前的样子跟它比一下。 */
+  private async openTrPane(v: Viewer, lang = ""): Promise<void> {
+    const info = v.info;
+    if (!info) return;
+    const t = this.trOf(v);
+    if (lang) t.lang = lang;
+    if (!t.lang) t.lang = guessTrLang(v.text ?? "");
+    v.pane = "translate";
+    // 对照要宽度：进来自动全屏，但不持久化（关掉面板回到原来的宽度）。
+    v.full = true;
+    this.paintViewer();
+    try {
+      const res = await api.trDoc(v.sessionId, info.abs, t.lang);
+      if (this.viewer !== v) return;
+      t.doc = res.doc;
+      t.stale = res.stale;
+      t.job = res.job;
+      t.error = "";
+      this.trModelPref = res.prefs?.model ?? this.trModelPref;
+      this.trDefaultModel = res.defaultModel ?? this.trDefaultModel;
+      if (res.job?.status === "running") this.pollTr(v);
+    } catch (err: any) {
+      if (this.viewer !== v) return;
+      t.error = errText(err);
+    }
+    this.paintViewer();
+  }
+
+  /** 语言 + 模型的选择器：模型目录是会话里那份（便宜的也在一起）。 */
+  private trPicker(v: Viewer): void {
+    const t = this.trOf(v);
+    // D245: 默认模型是桥那边记的偏好（copilot/gpt-6-luna），没有就退到当前会话的模型。
+    const sessionModel = this.models.find((m) => m.id === this.session?.model);
+    const pref = this.trModelPref || (t.doc ? `${t.doc.provider}/${t.doc.model}` : "") || this.trDefaultModel;
+    const values = this.models.map((m) => `${m.provider}/${m.id}`);
+    openTrPicker(
+      {
+        lang: t.lang,
+        fallbackLang: guessTrLang(v.text ?? ""),
+        pref,
+        models: values,
+        fillModels: (sel, model) => {
+          appendModelOptions(sel, this.models, undefined, (m) => shortModelName(m.name), tr("当前使用"));
+          const guess = model || (sessionModel ? `${sessionModel.provider}/${sessionModel.id}` : "");
+          const hit = guess && [...sel.options].find((o) => o.value === guess);
+          if (hit) sel.value = hit.value;
+          else if (sel.options.length) sel.value = sel.options[0].value;
+        },
+        onStart: (lang, provider, model) => void this.startTr(v, lang, provider, model, false),
+      },
+      (node) => this.overlay(node),
+    );
+  }
+
+  private async startTr(v: Viewer, lang: string, provider: string, model: string, force: boolean): Promise<void> {
+    const info = v.info;
+    if (!info) return;
+    const t = this.trOf(v);
+    t.lang = lang;
+    t.busy = true;
+    t.error = "";
+    t.msg = "";
+    t.editing = false;
+    v.pane = "translate";
+    v.full = true;
+    this.paintViewer();
+    try {
+      const { job } = await api.trStart(v.sessionId, { path: info.abs, lang, provider, model, force });
+      // 选过一次就记住，下次直接用它（设置页里能改回去）。
+      this.rememberTrModel(`${provider}/${model}`);
+      if (this.viewer !== v) return;
+      t.job = job;
+      t.busy = false;
+      this.pollTr(v);
+    } catch (err: any) {
+      if (this.viewer !== v) return;
+      t.busy = false;
+      t.error = errText(err);
+    }
+    this.paintViewer();
+  }
+
+  /** 进度轮询：只刷条上的字；新的一节到了才重画（重画会重建 DOM，保住滚动位置）。 */
+  private pollTr(v: Viewer): void {
+    this.stopTrPoll(v);
+    const t = v.tr;
+    if (!t?.job || t.job.status !== "running") return;
+    const id = t.job.id;
+    const tick = async (): Promise<void> => {
+      if (this.viewer !== v || v.tr !== t) return;
+      try {
+        const { job } = await api.trJob(id);
+        if (this.viewer !== v || v.tr !== t) return;
+        const wasDone = t.job?.done ?? -1;
+        const wasStatus = t.job?.status;
+        t.job = job;
+        if (job.status === "running") {
+          if (job.done !== wasDone) await this.refreshTr(v);
+          else this.paintTrLive(v);
+          v.trTimer = window.setTimeout(() => void tick(), 1200);
+          return;
+        }
+        if (job.status === "done") t.msg = tr("翻完了，可以直接改译文");
+        else if (job.status === "error") t.error = job.error || tr("翻译失败了");
+        if (v.pane === "translate") await this.refreshTr(v);
+        else if (wasStatus === "running") this.paintViewer();
+      } catch (err: any) {
+        if (this.viewer !== v || v.tr !== t) return;
+        t.error = errText(err);
+        if (v.pane === "translate") this.paintViewer();
+      }
+    };
+    v.trTimer = window.setTimeout(() => void tick(), 700);
+  }
+
+  private stopTrPoll(v: Viewer): void {
+    if (v.trTimer == null) return;
+    window.clearTimeout(v.trTimer);
+    v.trTimer = null;
+  }
+
+  /** 只把进度那几行改掉：重画整块会把滚动位置和展开的东西都弄丢。 */
+  private paintTrLive(v: Viewer): void {
+    const t = v.tr;
+    const job = t?.job;
+    if (!t || !job) return;
+    const brief = v.body.querySelector(".tr-brief");
+    if (brief) {
+      brief.textContent = job.status === "running" ? tr("翻译中 {done}/{total}", { done: job.done, total: job.total || "?" }) : job.note || brief.textContent;
+    }
+    const note = v.body.querySelector(".tr-note");
+    if (note && job.note) note.textContent = job.note;
+    const fill = v.body.querySelector<HTMLElement>(".tr-prog-fill");
+    if (fill && job.total) fill.style.width = `${Math.round((job.done / job.total) * 100)}%`;
+  }
+
+  /** 重画时保住滚动位置：每翻完一节都会重画一遍。 */
+  private repaintKeepScroll(v: Viewer): void {
+    const y = v.body.scrollTop;
+    this.paintViewer();
+    v.body.scrollTop = y;
+  }
+
+  private async refreshTr(v: Viewer): Promise<void> {
+    const info = v.info;
+    const t = v.tr;
+    if (!info || !t) return;
+    try {
+      const res = await api.trDoc(v.sessionId, info.abs, t.lang);
+      if (this.viewer !== v || v.tr !== t) return;
+      t.doc = res.doc;
+      t.stale = res.stale;
+      if (res.job) t.job = res.job;
+    } catch {
+      /* 下一轮再试 */
+    }
+    if (v.pane === "translate") this.repaintKeepScroll(v);
+  }
+
+  /** 改译文只写缓存（`out`），不碰原文 —— 写回原文是另一颗按钮。 */
+  private async saveTr(v: Viewer, text: string): Promise<void> {
+    const info = v.info;
+    const t = v.tr;
+    if (!info || !t) return;
+    t.busy = true;
+    this.paintViewer();
+    try {
+      const { doc } = await api.trSave(v.sessionId, { path: info.abs, lang: t.lang, text });
+      if (this.viewer !== v || v.tr !== t) return;
+      t.doc = doc;
+      t.draft = null;
+      t.dirty = false;
+      t.editing = false;
+      t.error = "";
+      t.msg = tr("译文已保存（只改缓存，原文没动）");
+    } catch (err: any) {
+      if (this.viewer !== v || v.tr !== t) return;
+      t.error = errText(err);
+      t.busy = false;
+      this.paintViewer();
+      return;
+    }
+    t.busy = false;
+    this.paintViewer();
+  }
+
+  /** 同步回原文：先让桥算一遍（调模型把改动折回去），再把差异给人确认。 */
+  private async syncTr(v: Viewer): Promise<void> {
+    const info = v.info;
+    const t = v.tr;
+    if (!info || !t?.doc || t.busy) return;
+    t.busy = true;
+    t.error = "";
+    t.msg = tr("正在把改动折回原文…");
+    this.paintViewer();
+    try {
+      const res = await api.trSync(v.sessionId, { path: info.abs, lang: t.lang, provider: t.doc.provider, model: t.doc.model });
+      if (this.viewer !== v || v.tr !== t) return;
+      t.busy = false;
+      t.msg = "";
+      this.paintViewer();
+      openSyncReview(res, info.abs, () => void this.applyTr(v, res.id), (node) => this.overlay(node));
+    } catch (err: any) {
+      if (this.viewer !== v || v.tr !== t) return;
+      t.busy = false;
+      t.msg = "";
+      t.error = errText(err);
+      this.paintViewer();
+    }
+  }
+
+  private async applyTr(v: Viewer, id: string): Promise<void> {
+    const t = v.tr;
+    try {
+      const res = await api.trApply(id);
+      if (this.viewer !== v || !t) return;
+      t.error = "";
+      t.msg = tr("已写回原文，备份在 {p1}", { p1: res.backup });
+      if (v.info) v.info = { ...v.info, mtime: res.mtime, size: res.size };
+      // 原文变了：预览正文重新读一遍，译文缓存跟着重算 stale。
+      v.text = null;
+      await this.loadViewerText();
+      await this.refreshTr(v);
+    } catch (err: any) {
+      if (this.viewer !== v || !t) return;
+      t.error = errText(err);
+      this.paintViewer();
     }
   }
 
@@ -10600,6 +10932,8 @@ export class App {
         return tr("子代理");
       case "notify":
         return tr("通知");
+      case "preview":
+        return tr("预览与翻译");
       case "runtime":
         return tr("运行时");
       default:
@@ -10741,6 +11075,19 @@ export class App {
     this.settingsOnlyOverrides = false;
     this.flashSettings("");
     if (tab === "runtime") this.socket.send({ type: "runtime.stats" });
+    // D245: 翻译偏好（默认模型）在桥那边，进这一页时读一遍再画。
+    if (tab === "preview") {
+      void api
+        .trPrefs()
+        .then((res) => {
+          this.trModelPref = res.prefs.model;
+          this.trDefaultModel = res.defaultModel;
+          this.paintSettings();
+        })
+        .catch(() => {
+          /* 读不到就按目录第一项显示 */
+        });
+    }
     if (tab === "passphrase") this.askPassphrase();
     if (tab === "subagents") {
       // 进 tab 时把 settings.json 也重问一遍：路径与字段不能是开 panel 那一刻的旧值。
@@ -10779,6 +11126,7 @@ export class App {
     if (tab === "passphrase") return this.paintPassphrase(pane);
     if (tab === "ext") return this.paintExtSettings(pane);
     if (tab === "notify") return this.paintNotify(pane);
+    if (tab === "preview") return this.paintPreviewSettings(pane);
     if (tab === "runtime") return this.paintRuntime(pane);
     if (tab === "changelog" || tab === "whatsnew") return this.paintSettingsChangelog(pane);
     if (tab === "subagents") return this.paintSubagents(pane);
@@ -10902,6 +11250,7 @@ export class App {
           ["ext", tr("扩展与 MCP"), extCount],
           ["subagents", tr("子代理"), agentCount],
           ["notify", tr("通知"), 0],
+          ["preview", tr("预览与翻译"), 0],
           ["runtime", tr("运行时"), 0],
           ["changelog", tr("更新日志"), 0],
         ],
@@ -11189,6 +11538,67 @@ export class App {
   }
 
   /** D91: one switch for both channels; the page in front never gets pinged anyway. */
+  /** D245: 记住翻译用的模型（存在桥的状态目录里，不进 settings.json）。 */
+  private rememberTrModel(model: string): void {
+    if (!model) return;
+    this.trModelPref = model;
+    void api
+      .trPrefs(model)
+      .then((res) => {
+        this.trModelPref = res.prefs.model;
+        this.trDefaultModel = res.defaultModel;
+      })
+      .catch(() => {
+        /* 记不住不影响这一次翻译 */
+      });
+  }
+
+  /**
+   * D245: 预览里的翻译默认用哪个模型。出厂默认是 copilot/gpt-6-luna，这里选的会记住；
+   * 不写进 settings.json，免得跟「本机才有这份模型目录」的事实对不上。
+   */
+  private paintPreviewSettings(pane: HTMLElement): void {
+    const want = this.trModelPref || this.trDefaultModel;
+    const resolved = resolveTrModel(
+      this.models.map((m) => `${m.provider}/${m.id}`),
+      want,
+    );
+    const row = el("label", "settings-row");
+    row.append(el("span", "settings-label", tr("翻译用的默认模型")));
+    const sel = el("select", "tr-modelsel") as HTMLSelectElement;
+    appendModelOptions(sel, this.models, undefined, (m) => shortModelName(m.name), tr("当前使用"));
+    if (resolved) sel.value = resolved;
+    else if (sel.options.length) sel.value = sel.options[0].value;
+    sel.onchange = () => {
+      this.rememberTrModel(sel.value);
+      this.flashSettings(tr("以后翻译默认用 {p1}", { p1: sel.options[sel.selectedIndex]?.textContent ?? sel.value }));
+    };
+    row.append(sel);
+    pane.append(row);
+
+    const tools = el("div", "queue-tools");
+    const reset = el("button", "btn", tr("恢复默认（{p1}）", { p1: this.trDefaultModel || "copilot/gpt-6-luna" })) as HTMLButtonElement;
+    reset.onclick = () => {
+      this.rememberTrModel(this.trDefaultModel || "copilot/gpt-6-luna");
+      this.flashSettings(tr("已恢复默认模型"));
+      this.paintSettings();
+    };
+    tools.append(reset);
+    pane.append(tools);
+
+    if (want && !resolved) {
+      pane.append(el("div", "hint warn", tr("这个模型现在不在模型目录里（{p1}），下次翻译会先让你挑一个。", { p1: want })));
+    }
+    pane.append(
+      el(
+        "div",
+        "hint",
+        tr("预览右上角的「译」会用这里选的模型：另起一个 pi 子进程翻，不占当前对话的上下文。译文只存在本机，原文不动；在对照里改的译文可以再写回原文。"),
+      ),
+    );
+    pane.append(el("div", "hint", tr("换模型不会重翻已有的译文：点「更新」时才按新模型整篇重来。")));
+  }
+
   private paintNotify(body: HTMLElement): void {
     const on = this.me.notify !== false;
     const row = el("label", "settings-row");
@@ -17015,7 +17425,7 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ...PANEL_COMMANDS.map((c): [string, string] => [c.id, tr(c.desc)]),
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "runtime" | "changelog" | "whatsnew";
+type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "preview" | "runtime" | "changelog" | "whatsnew";
 
 interface ExtPackage {
   scope: "user" | "project";
@@ -17566,7 +17976,10 @@ function savePrefs(prefs: Prefs): void {
   }
 }
 
-type ViewerPane = "browse" | "preview" | "edit";
+type ViewerPane = "browse" | "preview" | "edit" | "translate";
+
+/** 预览里的翻译：和 2 MB 的手改上限不同，翻一份只到 512 KB（桥的 `MAX_TRANSLATE_BYTES`）。 */
+const MAX_TRANSLATE_BYTES = 512 * 1024;
 
 /** D70: one open shell — its xterm, its body, its tab button. */
 interface TermTab {
@@ -17628,6 +18041,10 @@ interface Viewer {
   ext: { url: string; label: string } | null;
   /** 回到一步 html 预览时要回放的滚动位置，等 iframe load 再发（D63）。 */
   pendingScroll: number;
+  /** 这一份的翻译状态（D245）；没翻过是 null，换文件就丢。 */
+  tr: TrView | null;
+  /** 轮询翻译进度的定时器。 */
+  trTimer: number | null;
 }
 
 /** 预览历史里的一步（D63）。`path` 为空表示「外链 / 越界」这种应用里打不开的地方。 */

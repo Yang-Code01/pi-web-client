@@ -320,6 +320,39 @@ function sniffEncoding(file: string): "utf8" | "gbk" {
   }
 }
 
+export interface TextFile {
+  text: string;
+  enc: "utf8" | "gbk";
+  bom: boolean;
+}
+
+/** 按文件自己的编码读文本：GBK 的文档读成 UTF-8 会整篇乱码（#113 的反向）。 */
+export function readTextFile(file: string): TextFile {
+  const buf = fs.readFileSync(file);
+  const enc = utf8Bytes(buf) ? "utf8" : "gbk";
+  const text = new TextDecoder(enc).decode(buf);
+  return { text: text.charCodeAt(0) === 0xfeff ? text.slice(1) : text, enc, bom: hasBom(file) };
+}
+
+/** 按文件原来的编码与 BOM 写回；GBK 存不下的字直接拒绝，别写成半篇问号。 */
+export function writeTextFile(file: string, text: string, enc: "utf8" | "gbk", bom: boolean): void {
+  const encoded = enc === "gbk" ? gbkEncode(text) : { buf: Buffer.from(text, "utf8"), lost: [] };
+  if (encoded.lost.length) fail(400, `这个文件是 GBK 编码，这些字存不进去：${encoded.lost.slice(0, 8).join(" ")}`);
+  const payload = bom && enc === "utf8" ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), encoded.buf]) : encoded.buf;
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmp, payload);
+  try {
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* the rename already moved it */
+    }
+    throw err;
+  }
+}
+
 const canEdit = (info: PreviewInfo): boolean => (info.kind === "markdown" || info.kind === "text") && info.size <= MAX_EDIT_BYTES;
 
 /** Remember a file as writable for this session, so `/api/save` has something to check against. */
@@ -396,24 +429,7 @@ export function savePreviewFile(
     }
   }
   // 编码与分隔符都保持原样：GBK 的表按 GBK 写回，BOM 只配 UTF-8（#113）。
-  const encoded = grant.enc === "gbk" ? gbkEncode(text) : { buf: Buffer.from(text, "utf8"), lost: [] };
-  if (encoded.lost.length) {
-    fail(400, `这个文件是 GBK 编码，这些字存不进去：${encoded.lost.slice(0, 8).join(" ")}`);
-  }
-  const payload =
-    grant.bom && grant.enc === "utf8" ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), encoded.buf]) : encoded.buf;
-  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmp, payload);
-  try {
-    fs.renameSync(tmp, target);
-  } catch (err) {
-    try {
-      fs.unlinkSync(tmp);
-    } catch {
-      /* the rename already moved it */
-    }
-    throw err;
-  }
+  writeTextFile(target, text, grant.enc, grant.bom);
   const after = fs.statSync(target);
   editable.get(sessionId)!.set(norm(target), {
     real: target,
