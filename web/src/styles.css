@@ -4557,6 +4557,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 @media (max-width: 980px) {
   .jira-search-people { grid-template-columns: 1fr; }
 }
+@media (max-width: 640px) {
+  .jira-search-grid { grid-template-columns: 1fr; }
+  .jira-search-field.span-2 { grid-column: auto; }
+}
 /* #251：附件目录一行 —— 路径可省略，右边的按钮不跟着挤。 */
 .jira-root .jira-v { flex: 1; min-width: 0; }
 .jira-root .jira-v.mono { font-family: var(--mono); }

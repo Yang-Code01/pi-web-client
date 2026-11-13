@@ -390,7 +390,7 @@ async function upstreamJson(config: JiraConfig, ctx: JiraCtx, path: string, notF
     if (res.status === 401) throw new JiraError("jira_auth", 401, `Jira 不认这组凭据（401）${tail}`);
     if (res.status === 403) throw new JiraError("jira_forbidden", 403, `这组凭据没有权限（403）${tail}`);
     if (res.status === 404 && notFound) throw new JiraError("jira_not_found", 404, notFound);
-    throw new JiraError("jira_upstream", 502, `Jira 回了 ${res.status}${tail}`);
+    throw new JiraError("jira_upstream", 502, `Jira 回了 ${res.status}${tail}`, res.status);
   }
   return res.json().catch(() => null);
 }
@@ -493,6 +493,7 @@ async function searchOnce(config: JiraConfig, ctx: JiraCtx, params: SearchParams
 }
 
 /**
+<<<<<<< HEAD
  * 工单号：完整键精确查（`key =` / `key IN`）；半截号由 `buildSearchJql` 拼成
  * `workItemKey ~ "<token>*"` 前缀匹配 —— 一条请求就能拿到真正的工单行，可翻页，
  * 没有 picker 那套「先取候选键再 IN」的 20 条上限与松匹配（D243）。
@@ -507,12 +508,95 @@ async function searchIssues(config: JiraConfig, ctx: JiraCtx, params: SearchPara
   const retry = await withWatcherFallback(config, ctx, { ...params, key: { kind: "fuzzy", token: keys[0] } });
   if (retry.issues.length === 0) return out;
   return { ...retry, fuzzy: { token: keys[0], fallback: true } };
+=======
+ * 工单号模糊：picker 按「号」匹配（完整键、半截键、纯数字都行，大小写不敏感），
+ * 但它只回当前搜索的前 ~20 条、不能翻页，也不返回完整的工单字段 —— 所以只拿 key，
+ * 再回到 `search/jql` 按 `key IN (...)` 拉完整行（D241）。
+ *
+ * `currentJql` 传其它条件（不带工单号、也不带默认的未解决过滤）：picker 会按它排序/收窄，
+ * 与最终查询保持一致。错误口径按 `lenient` 分：
+ * - 403 一律当没找到（picker 的权限比 search 窄，常有但查得到）；
+ * - `lenient`（完整号查空后的自动退回）连 5xx 也吞：本来就要回一串空结果，别把新增的失败盖上去；
+ * - 其余（显式模糊时的 5xx、400/429）照常抛，免得把限流或坏 JQL 显示成「没找到」。
+ */
+async function pickIssueKeys(
+  config: JiraConfig,
+  ctx: JiraCtx,
+  token: string,
+  currentJql: string,
+  lenient: boolean,
+): Promise<string[]> {
+  const query = new URLSearchParams({ query: token });
+  if (currentJql) query.set("currentJQL", currentJql);
+  let raw: any;
+  try {
+    raw = await upstreamJson(config, ctx, `${PICKER}?${query}`);
+  } catch (err) {
+    if (err instanceof JiraError) {
+      const upstream = err.upstreamStatus ?? 0;
+      if (err.code === "jira_forbidden") return [];
+      if (lenient && err.code === "jira_upstream" && upstream >= 500) return [];
+    }
+    throw err;
+  }
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  for (const section of Array.isArray(raw?.sections) ? raw.sections : []) {
+    // 只认「当前搜索」（id=cs）：hs 是最近浏览过的工单，与这个号毫无关系。
+    if (section?.id !== "cs") continue;
+    for (const issue of Array.isArray(section?.issues) ? section.issues : []) {
+      const key = typeof issue?.key === "string" ? issue.key.toUpperCase() : "";
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      keys.push(key);
+    }
+  }
+  return keys.slice(0, SEARCH_MAX_KEYS);
+>>>>>>> eb54342 (fix(jira): 按 code review 收口工单号检索的边界（#407）)
 }
 
 /**
  * 关注者降级：只有 watcher 被 400/403 拒绝时才去掉重试一次；只剩 watcher 就不重试
  * （去掉会变成无条件查询，结果悄悄变宽）。重试仍失败按第二次的错误往上抛。
  */
+<<<<<<< HEAD
+=======
+async function searchIssues(config: JiraConfig, ctx: JiraCtx, params: SearchParams): Promise<SearchOutcome> {
+  // 工单号：完整键直接精确查；半截号先问 picker，再按候选键 IN，其它条件照常 AND。
+  if (params.key?.kind === "fuzzy") return fuzzyOutcome(config, ctx, params, params.key.token, false);
+
+  const out = await withWatcherFallback(config, ctx, params);
+  // 单个完整号查空（号码记错或只记得前半段）：自动退回模糊，别让人对着空结果发呆。
+  const keys = params.key?.kind === "exact" ? params.key.keys : [];
+  if (out.issues.length > 0 || keys.length !== 1) return out;
+  const near = await fuzzyOutcome(config, ctx, params, keys[0], true);
+  if (near.fuzzy?.total === 0) return out;
+  return { ...near, fuzzy: { ...near.fuzzy!, fallback: true } };
+}
+
+/**
+ * 「拿这个 token 去 picker 换候选键，再按 `key IN (...)` 拉完整行」—— 显式模糊与自动退回共用一段，
+ * 差别只在 picker 的错误口径（`lenient`，见 `pickIssueKeys`）。
+ */
+async function fuzzyOutcome(
+  config: JiraConfig,
+  ctx: JiraCtx,
+  params: SearchParams,
+  token: string,
+  lenient: boolean,
+): Promise<SearchOutcome> {
+  const keys = await pickIssueKeys(config, ctx, token, contextOf(params), lenient);
+  if (keys.length === 0) return { issues: [], isLast: true, fuzzy: { token, total: 0 } };
+  const out = await withWatcherFallback(config, ctx, { ...params, key: { kind: "exact", keys } });
+  return { ...out, fuzzy: { token, total: keys.length } };
+}
+
+/** picker 的 currentJQL：只要「其它条件」——不带工单号，也不带默认的未解决过滤（D241）。 */
+function contextOf(params: SearchParams): string {
+  return buildSearchJql({ ...params, key: undefined, includeResolved: true });
+}
+
+>>>>>>> eb54342 (fix(jira): 按 code review 收口工单号检索的边界（#407）)
 async function withWatcherFallback(
   config: JiraConfig,
   ctx: JiraCtx,
@@ -1262,6 +1346,8 @@ export async function handleJira(
           siteUrl: config?.siteUrl ?? "",
           email: config?.email ?? "",
           keyMask: config ? keyMask(config.apiKey) : "",
+          // 隧道访客只能读（D202）：页面据此挂「公网只读」徽章与横幅。
+          readonly: ctx.publicReq,
         });
         return true;
       }

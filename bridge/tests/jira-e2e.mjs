@@ -35,6 +35,13 @@ let searchMode = "ok";
 let statusesMode = "ok";
 /** 人员搜索：`ok` / `403` / `401` / `500`。 */
 let usersMode = "ok";
+<<<<<<< HEAD
+=======
+/** #407 工单号模糊用的 picker：`ok` / `empty` / `403` / `500`；`ok` 时 cs 段给 ACME-7 / ACME-77，hs 段故意给无关的 ZZZ-1。 */
+let pickerMode = "ok";
+/** 上游收到的最后一个 picker 查询串。 */
+let lastPicker = null;
+>>>>>>> eb54342 (fix(jira): 按 code review 收口工单号检索的边界（#407）)
 /** `search/jql` 被命中几次（`emptyOnce` 用例用：第一次空，第二次才给数据）。 */
 let searchHits = 0;
 /** 每次 search/jql 收到的 nextPageToken（断言分页透传）。 */
@@ -107,6 +114,23 @@ const jira = http.createServer((req, res) => {
     return false;
   };
 
+<<<<<<< HEAD
+=======
+  if (url.pathname === "/rest/api/3/issue/picker") {
+    hits.picker++;
+    lastPicker = url.searchParams;
+    if (deny()) return;
+    if (pickerMode === "403") return send(403, { errorMessages: ["no permission"] });
+    if (pickerMode === "500") return send(500, { errorMessages: ["boom"] });
+    const matches = pickerMode === "empty" ? [] : [{ key: "ACME-7" }, { key: "ACME-77" }];
+    return send(200, {
+      sections: [
+        { id: "hs", label: "History", issues: [{ key: "ZZZ-1" }] },
+        { id: "cs", label: "Current", issues: matches },
+      ],
+    });
+  }
+>>>>>>> eb54342 (fix(jira): 按 code review 收口工单号检索的边界（#407）)
   if (url.pathname === "/rest/api/3/search/jql") {
     hits.search++;
     searchHits++;
@@ -427,7 +451,7 @@ test("未配置时 GET config 回 configured:false", async () => {
   freshState();
   const out = await call("GET", "/api/jira/config");
   assert.equal(out.status, 200);
-  assert.deepEqual(out.json, { configured: false, siteUrl: "", email: "", keyMask: "" });
+  assert.deepEqual(out.json, { configured: false, siteUrl: "", email: "", keyMask: "", readonly: false });
 });
 
 test("PUT 错 token：400、原话照回、不落盘", async () => {
@@ -456,7 +480,7 @@ test("PUT 正确凭据：真验证过才落盘，GET 只回掩码", async () => 
   assert.deepEqual(saved, { siteUrl: SITE, email: EMAIL, apiKey: TOKEN });
 
   const got = await call("GET", "/api/jira/config");
-  assert.deepEqual(got.json, { configured: true, siteUrl: SITE, email: EMAIL, keyMask: "••••cdef" });
+  assert.deepEqual(got.json, { configured: true, siteUrl: SITE, email: EMAIL, keyMask: "••••cdef", readonly: false });
   assert.ok(!got.text.includes(TOKEN), "GET config 只能回掩码");
 });
 
@@ -1284,4 +1308,33 @@ test("GET search：工单号超长 / 非法参数照样 400，码是 jira_query"
   const out = await call("GET", `/api/jira/search?key=${"x".repeat(501)}`);
   assert.equal(out.status, 400);
   assert.equal(out.json.code, "jira_query");
+});
+
+test("GET search：显式模糊遇到 picker 5xx 照常报错（不冒充成没找到）", async () => {
+  await connect();
+  pickerMode = "500";
+  const out = await call("GET", "/api/jira/search?key=7");
+  pickerMode = "ok";
+  assert.equal(out.status, 502);
+  assert.equal(out.json.code, "jira_upstream");
+});
+
+test("GET search：自动退回时 picker 5xx 静默，仍回原本的空结果", async () => {
+  await connect();
+  searchMode = "emptyOnce";
+  searchHits = 0;
+  pickerMode = "500";
+  const out = await call("GET", "/api/jira/search?key=ACME-12");
+  pickerMode = "ok";
+  searchMode = "ok";
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.json.issues, []);
+  assert.equal(out.json.fuzzy, undefined);
+});
+
+test("GET config：隧道访客带 readonly，本机不带", async () => {
+  const local = await call("GET", "/api/jira/config");
+  assert.equal(local.json.readonly, false);
+  const tunnel = await call("GET", "/api/jira/config", undefined, { "x-test-tunnel": "1" });
+  assert.equal(tunnel.json.readonly, true);
 });

@@ -13,7 +13,7 @@ import "./jira-console.css";
 import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
-import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, mergeSearchPage, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
+import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, mergeSearchPage, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_MAX_KEYS, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
 import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
 
@@ -46,6 +46,8 @@ interface JiraConfigView {
   siteUrl: string;
   email: string;
   keyMask: string;
+  /** 隧道访客只有读权限（D202）：桥在 GET /api/jira/config 里如实告知。 */
+  readonly: boolean;
 }
 
 type ListState<T> =
@@ -66,6 +68,8 @@ type PanelState =
       refreshing: boolean;
       /** 刷新失败时的一行错误；旧列表留着，不清空。 */
       refreshNote: string;
+      /** 公网（隧道）只读：徽章与横幅都靠它，写操作仍由桥回 403 `tunnel_readonly`。 */
+      readonly: boolean;
     }
   | { kind: "error"; text: string; code: string; retry: boolean };
 
@@ -334,6 +338,7 @@ export class JiraPanel {
       projects: { kind: "loading" },
       refreshing: false,
       refreshNote: "",
+      readonly: this.config?.readonly === true,
     };
   }
 
@@ -383,7 +388,13 @@ export class JiraPanel {
       });
       if (!this.root) return;
       const mask = keyMask(this.form.apiKey);
-      this.config = { configured: true, siteUrl: this.form.siteUrl.trim(), email: this.form.email.trim(), keyMask: mask };
+      this.config = {
+        configured: true,
+        siteUrl: this.form.siteUrl.trim(),
+        email: this.form.email.trim(),
+        keyMask: mask,
+        readonly: this.config?.readonly === true,
+      };
       this.details.clear();
       await this.loadAttachRoot();
       this.state = this.listsPending(out.me, mask);
@@ -686,6 +697,7 @@ export class JiraPanel {
       } else if (this.state.issues.kind === "error" && isAuthCode(this.state.issues.code)) {
         out.push({ text: tr("凭据失效"), tone: "warn" });
       }
+      if (this.state.readonly) out.push({ text: tr("公网只读"), tone: "warn" });
       if (this.state.mask) out.push({ text: this.state.mask });
     } else if (this.state.kind === "form") {
       out.push({ text: tr("未连接") });
@@ -701,6 +713,13 @@ export class JiraPanel {
     if (this.state.kind === "ready") {
       if (this.state.refreshNote) out.push({ id: "refresh", tone: "warn", text: this.state.refreshNote });
       const issues = this.state.issues;
+      if (this.state.readonly) {
+        out.push({
+          id: "readonly",
+          tone: "warn",
+          text: tr("公网访问只能看：改连接、换附件目录要回本机。"),
+        });
+      }
       if (issues.kind === "error" && isAuthCode(issues.code)) {
         out.push({
           id: "auth",
@@ -867,7 +886,7 @@ export class JiraPanel {
     };
     this.fields[key] = input;
     wrap.append(lab, input);
-    // 工单号怎么看：形状判定在桥里（D210），这里只把规则写给人看。
+    // 工单号怎么看：形状判定在桥里（D241），这里只把规则写给人看。
     if (key === "key") {
       wrap.append(el("div", "jira-search-hint", tr("完整工单号精确查；多个用逗号分开；半截号按号段前缀匹配。")));
     }

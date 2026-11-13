@@ -253,7 +253,9 @@ export const api = {
     req<{ tunnel: TunnelState }>("/api/tunnel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) }),
   /** #248：Jira 面板。token 只在桥那边，这里拿到的是掩码；保存失败会抛带 `code` 的错。 */
   jiraConfig: () =>
-    req<{ configured: boolean; siteUrl: string; email: string; keyMask: string }>("/api/jira/config"),
+    req<{ configured: boolean; siteUrl: string; email: string; keyMask: string; readonly: boolean }>(
+      "/api/jira/config",
+    ),
   jiraSave: (body: { siteUrl: string; email: string; apiKey: string }) =>
     req<{ ok: true; me: { accountId: string; displayName: string; email: string; timezone: string; avatarUrl: string } }>(
       "/api/jira/config",

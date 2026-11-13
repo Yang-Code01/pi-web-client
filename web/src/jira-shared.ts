@@ -378,6 +378,9 @@ export const STATUS_CATEGORY_KEYS = ["new", "indeterminate", "done"] as const;
 export type StatusCategoryKey = (typeof STATUS_CATEGORY_KEYS)[number];
 
 /** 和桥端 `bridge/src/jira-search.ts` 的常量同口径；改一边就要改另一边。 */
+/** 工单号模糊一次最多认的候选键（与 `bridge/src/jira-search.ts` 的 `SEARCH_MAX_KEYS` 对齐）。 */
+export const SEARCH_MAX_KEYS = 20;
+
 export const SEARCH_STORAGE_KEY = "pi.jira.search.last";
 
 export interface JiraUserOption {
@@ -397,7 +400,11 @@ export interface JiraSearchMeta {
 
 /** 搜索表单的全部条件。空串 = 不限；人员要么是选中的 accountId，要么是自由文本。 */
 export interface SearchState {
+<<<<<<< HEAD
   /** 工单号：完整键、多个键（逗号/空格分隔）或半截号；形状由桥判（D241、D243）。 */
+=======
+  /** 工单号：完整键、多个键（逗号/空格分隔）或半截号；形状由桥判（D241）。 */
+>>>>>>> eb54342 (fix(jira): 按 code review 收口工单号检索的边界（#407）)
   key: string;
   title: string;
   text: string;
