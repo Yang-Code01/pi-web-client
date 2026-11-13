@@ -456,6 +456,7 @@ function go(page: Page): void {
 }
 
 function openThread(id: string): void {
+  rememberCurrentScroll();
   S.thread = id;
   S.page = "msg";
   S.mview = "chat";
@@ -886,6 +887,7 @@ function paintMain(): void {
 
 function backBtn(): HTMLButtonElement {
   const b = iconBtn("back", tr("返回列表"), () => {
+    rememberCurrentScroll();
     S.mview = "list";
     app.dataset.mview = "list";
     renderAll();
@@ -967,6 +969,14 @@ function renderChat(): void {
   const saved = scrollMemo.get(t.nodeId);
   stream.scrollTop = saved && !saved.atBottom ? saved.scrollTop : stream.scrollHeight;
   stream.addEventListener("scroll", () => rememberScroll(t.nodeId, stream));
+}
+
+/**
+ * 离开当前对话前记下它的位置：只靠 scroll 事件记的 atBottom 会在内容变高后过期，切回时要用离开那一刻的位置。
+ */
+function rememberCurrentScroll(): void {
+  const stream = mainEl.querySelector<HTMLElement>(".stream");
+  if (stream && S.thread) rememberScroll(S.thread, stream);
 }
 
 /**

@@ -9,7 +9,7 @@
  *   4. #382：quick 单独成组（在好友之后、附近的人之前），两颗添加按钮并存，
  *      传文件只给好友、离线禁用，以及中 / 英 / 日三种语境的新文案。
  *   5. #383：忽略名单挡住在线表兜底合并，设置页清空后附近的人重新出现。
- *   6. #394：对话打开 / 切换 / 收到新消息停在最底部；翻到中间时收到新消息保位。
+ *   6. #394：对话打开 / 收到新消息停在最底部；切回对话按 #409 记忆位置（见第 9 条）。
  *   7. #395：列表行的未读数；打开即清零；停在对话里时新消息直接已读；另一个浏览器标记后这边同样清零。
  *   8. #396：「消息」导航（宽屏 rail / 窄屏底部）有未读时画一颗圆点、不写数字，读完后消失。
  *   9. #409：对话滚动记忆。第一次打开贴底；离开时在底部的回来仍贴底；离开时翻到中间的回来保持原位；每个对话各自记；窄屏列表 ↔ 对话同样；刷新后重新贴底。
@@ -573,12 +573,12 @@ try {
   await sp.goto(`${BASE}/peer.html`);
   await sp.waitForSelector(".listbox .row");
   await sp.click('#rail button[title="消息"]');
-  const streamGap = () =>
-    sp.evaluate(() => {
+  const streamGap = (page = sp) =>
+    page.evaluate(() => {
       const s = document.querySelector("#main .stream");
       return s ? Math.round(s.scrollHeight - s.scrollTop - s.clientHeight) : -1;
     });
-  const streamTop = () => sp.evaluate(() => document.querySelector("#main .stream")?.scrollTop ?? -1);
+  const streamTop = (page = sp) => page.evaluate(() => document.querySelector("#main .stream")?.scrollTop ?? -1);
   const pushNew = (id, text) => {
     scrollHistory.entries = [...scrollHistory.entries, msg(id, text, { ...me, nodeId: ZHANG, nickname: "小张" }, ME)];
   };
@@ -674,70 +674,78 @@ try {
     if (viewport.width > 560) await p.click('#rail button[title="消息"]');
     return { c, p, history };
   };
-  const memoGap = (p) =>
-    p.evaluate(() => {
-      const s = document.querySelector("#main .stream");
-      return s ? Math.round(s.scrollHeight - s.scrollTop - s.clientHeight) : -1;
-    });
-  const memoTop = (p) => p.evaluate(() => document.querySelector("#main .stream")?.scrollTop ?? -1);
-  const setMemoTop = (p, y) => p.evaluate((v) => { document.querySelector("#main .stream").scrollTop = v; }, y);
-  const memoPick = async (p, name) => {
+  const setStreamTop = (p, y) => p.evaluate((v) => { document.querySelector("#main .stream").scrollTop = v; }, y);
+  const pickThread = async (p, name) => {
     await p.click(`.listbox .row:has-text("${name}")`);
     await p.waitForTimeout(900);
   };
-  const memoText = (p) => p.evaluate(() => document.querySelector("#main .stream")?.innerText ?? "");
+  const streamText = (p) => p.evaluate(() => document.querySelector("#main .stream")?.innerText ?? "");
 
-  const md = await memoFixture();
-  await memoPick(md.p, "小张");
-  const firstGap = await memoGap(md.p);
+  const desktop = await memoFixture();
+  await pickThread(desktop.p, "小张");
+  const firstGap = await streamGap(desktop.p);
   check("#409：本页加载后第一次打开对话停在底部", firstGap === 0, `离底 ${firstGap}px`);
 
-  md.history[ZHANG].push(msg("memo-away-bottom", "离开期间到达的新消息（底部）", { ...me, nodeId: ZHANG, nickname: "小张" }, ME));
-  await memoPick(md.p, "小李");
-  await memoPick(md.p, "小张");
-  const bottomBack = await memoGap(md.p);
-  const bottomText = (await memoText(md.p)).includes("离开期间到达的新消息（底部）");
-  check("#409：离开时在底部，切回仍贴底且看到期间新消息", bottomBack === 0 && bottomText, `离底 ${bottomBack}px，新消息可见=${bottomText}`);
+  desktop.history[ZHANG].push(msg("memo-away-bottom", "离开期间到达的新消息（底部）", { ...me, nodeId: ZHANG, nickname: "小张" }, ME));
+  await pickThread(desktop.p, "小李");
+  await pickThread(desktop.p, "小张");
+  const bottomGapBack = await streamGap(desktop.p);
+  const bottomText = (await streamText(desktop.p)).includes("离开期间到达的新消息（底部）");
+  check("#409：离开时在底部，切回仍贴底且看到期间新消息", bottomGapBack === 0 && bottomText, `离底 ${bottomGapBack}px，新消息可见=${bottomText}`);
 
-  await setMemoTop(md.p, 300);
-  await md.p.waitForTimeout(300);
-  await memoPick(md.p, "小李");
-  md.history[ZHANG].push(msg("memo-away-middle", "离开期间到达的新消息（中间）", { ...me, nodeId: ZHANG, nickname: "小张" }, ME));
-  await memoPick(md.p, "小张");
-  const midBack = await memoTop(md.p);
-  check("#409：离开时翻到中间，切回 scrollTop 不变，新消息不拽走", Math.abs(midBack - 300) <= 2, `scrollTop ${midBack}`);
+  await setStreamTop(desktop.p, 300);
+  await desktop.p.waitForTimeout(300);
+  await pickThread(desktop.p, "小李");
+  desktop.history[ZHANG].push(msg("memo-away-middle", "离开期间到达的新消息（中间）", { ...me, nodeId: ZHANG, nickname: "小张" }, ME));
+  await pickThread(desktop.p, "小张");
+  const midScrollBack = await streamTop(desktop.p);
+  check("#409：离开时翻到中间，切回 scrollTop 不变，新消息不拽走", Math.abs(midScrollBack - 300) <= 2, `scrollTop ${midScrollBack}`);
 
-  await memoPick(md.p, "小李");
-  await setMemoTop(md.p, 600);
-  await md.p.waitForTimeout(300);
-  await memoPick(md.p, "小张");
-  const aStill = await memoTop(md.p);
-  await memoPick(md.p, "小李");
-  const bBack = await memoTop(md.p);
-  check("#409：两个对话各自保留自己的位置", Math.abs(aStill - 300) <= 2 && Math.abs(bBack - 600) <= 2, `小张 ${aStill}，小李 ${bBack}`);
+  await pickThread(desktop.p, "小李");
+  await setStreamTop(desktop.p, 600);
+  await desktop.p.waitForTimeout(300);
+  await pickThread(desktop.p, "小张");
+  const zhangScrollKept = await streamTop(desktop.p);
+  await pickThread(desktop.p, "小李");
+  const liScrollKept = await streamTop(desktop.p);
+  check("#409：两个对话各自保留自己的位置", Math.abs(zhangScrollKept - 300) <= 2 && Math.abs(liScrollKept - 600) <= 2, `小张 ${zhangScrollKept}，小李 ${liScrollKept}`);
 
-  await memoPick(md.p, "小张");
-  await setMemoTop(md.p, 300);
-  await md.p.waitForTimeout(300);
-  await md.p.reload();
-  await md.p.waitForSelector(".listbox .row");
-  await md.p.click('#rail button[title="消息"]');
-  await memoPick(md.p, "小张");
-  const reloadGap = await memoGap(md.p);
+  // 切走前内容变高（离底超过 32px）但没有滚动事件：切回必须按离开时的位置，不能按最后一次滚动记下的「在底部」。
+  const grown = await memoFixture();
+  await pickThread(grown.p, "小张");
+  const grownBefore = await streamTop(grown.p);
+  await grown.p.addStyleTag({ content: "#main .stream .msg { margin-bottom: 40px; }" });
+  await grown.p.waitForTimeout(300);
+  const grownLeaveGap = await streamGap(grown.p);
+  await pickThread(grown.p, "小李");
+  await pickThread(grown.p, "小张");
+  const grownBack = await streamTop(grown.p);
+  const grownBackGap = await streamGap(grown.p);
+  check("#409：切走前内容变高使离底超过 32px，切回按离开时的位置恢复而不是旧的在底部记录", Math.abs(grownBack - grownBefore) <= 2 && grownBackGap > 32, `离开时离底 ${grownLeaveGap}px，scrollTop ${grownBefore} -> ${grownBack}，切回离底 ${grownBackGap}px`);
+  await grown.c.close();
+
+  await pickThread(desktop.p, "小张");
+  await setStreamTop(desktop.p, 300);
+  await desktop.p.waitForTimeout(300);
+  await desktop.p.reload();
+  await desktop.p.waitForSelector(".listbox .row");
+  await desktop.p.click('#rail button[title="消息"]');
+  await pickThread(desktop.p, "小张");
+  const reloadGap = await streamGap(desktop.p);
   check("#409：刷新页面后对话重新从底部开始", reloadGap === 0, `离底 ${reloadGap}px`);
-  await md.c.close();
+  await desktop.c.close();
 
   // 窄屏：列表 → 对话 → 列表 → 对话，位置保持（列表页时主区隐藏，离开前的位置要先记住）。
-  const mn = await memoFixture({ width: 390, height: 800 });
-  await memoPick(mn.p, "小张");
-  await setMemoTop(mn.p, 300);
-  await mn.p.waitForTimeout(300);
-  await mn.p.click("#main .back-btn");
-  await mn.p.waitForTimeout(300);
-  await memoPick(mn.p, "小张");
-  const narrowBack = await memoTop(mn.p);
-  check("#409：窄屏列表 → 对话 → 列表 → 对话位置保持", Math.abs(narrowBack - 300) <= 2, `scrollTop ${narrowBack}`);
-  await mn.c.close();
+  const narrow = await memoFixture({ width: 390, height: 800 });
+  await pickThread(narrow.p, "小张");
+  await setStreamTop(narrow.p, 300);
+  await narrow.p.waitForTimeout(300);
+  await narrow.p.click("#main .back-btn");
+  await narrow.p.waitForTimeout(300);
+  await pickThread(narrow.p, "小张");
+  const narrowScrollBack = await streamTop(narrow.p);
+  check("#409：窄屏列表 → 对话 → 列表 → 对话位置保持", Math.abs(narrowScrollBack - 300) <= 2, `scrollTop ${narrowScrollBack}`);
+  await narrow.c.close();
 
   // ---- #396：「消息」导航上的未读圆点。有未读就出现，只画点不写数字；全部读完后消失。宽屏 rail 与窄屏底部导航都要。 ----
   // 小张排第一、开机即主区打开即已读（宽屏）；小李 2 条未读，所以两种宽度下都有一颗要画的点。
