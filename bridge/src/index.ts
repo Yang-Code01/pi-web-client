@@ -79,7 +79,9 @@ import { answer as answerLogin, cancel as cancelLogin, listProviders, login as s
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { handleSysmanage } from "./sysmanage.ts";
 import { piLatest } from "./piupdate.ts";
-import { isTrustedPreviewPath, openPreview, readAttachableImage, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw } from "./preview.ts";
+import { isTrustedPreviewPath, kindOf, openPreview, readAttachableImage, readTextFile, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw, writeTextFile } from "./preview.ts";
+import { MAX_TRANSLATE_BYTES, TR_LANGS, applySync, isTrLang, planSync, readDoc, runPiTranslate, splitSections, writeDoc, type TrSection } from "./translate.ts";
+import { TranslateJobs } from "./translatejob.ts";
 import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
@@ -289,6 +291,19 @@ function isLoopbackPeer(addr: string): boolean {
  * 键是 reqId —— 一次请求可能投给多个页签，每份一个 reqId；页面在**自己那条 ws** 上回
  * `{type:"preview.open.done", reqId, ok, reason?, text?}`。
  */
+/**
+ * D241 「同步回原文」的待写内容：/sync 算好放在这里，/apply 只认这个 id 写盘。
+ * 页面拿不到全文，也就没法把别的内容塞进写路径；10 分钟没用就丢（文件可能早被改了）。
+ */
+const pendingApply = new Map<
+  string,
+  { abs: string; mtime: number; size: number; text: string; enc: "utf8" | "gbk"; bom: boolean; at: number }
+>();
+
+function dropStaleApplies(): void {
+  for (const [k, v] of pendingApply) if (Date.now() - v.at > 10 * 60_000) pendingApply.delete(k);
+}
+
 const pendingPreview = new Map<string, { ws: WebSocket; settle: (ack: PreviewAck) => void }>();
 
 interface PreviewAck {
@@ -440,6 +455,7 @@ async function main(): Promise<void> {
     }
   };
   const sessions = new SessionManager(pi.cli, `http://127.0.0.1:${cfg.port}`);
+  const translateJobs = new TranslateJobs();
   /** D113: one writer per shared resource (`npm` root, each settings scope, each mcp.json). */
   const writeLock = createWriteLock();
   /**
@@ -1222,6 +1238,211 @@ async function main(): Promise<void> {
       } catch (err: any) {
         const status = Number(err?.status) || 400;
         return json(res, status, { error: String(err?.message ?? err) });
+      }
+    }
+
+    /* ── D241 预览里的翻译对照 ──────────────────────────────────────────
+     * 译文不进仓库：缓存在状态目录（`statePath("translate", …)`）。翻译跑在独立的 pi 子进程里，
+     * 不占当前会话的上下文；写回原文必须走 /sync + /apply，且只改人改过的那几块。
+     */
+    const trFail = (res: http.ServerResponse, err: any) => {
+      const status = Number(err?.status) || 400;
+      return fail(res, status, String(err?.code ?? "translate_failed"), String(err?.message ?? err));
+    };
+    /** 会话 + 路径 → 可翻译的文本文件。公网一律不给：译文也是内容。 */
+    const trFile = (body: any) => {
+      const sessionId = String(body.sessionId ?? "");
+      const where = sessions.locate(sessionId);
+      if (!where) throw Object.assign(new Error("找不到这个会话"), { status: 404, code: "session_not_found" });
+      const abs = resolvePreviewPath(where, String(body.path ?? ""));
+      const kind = kindOf(abs);
+      if (kind !== "markdown" && kind !== "text") {
+        throw Object.assign(new Error("预览里的翻译只支持 Markdown 和纯文本"), { status: 400, code: "translate_kind" });
+      }
+      const st = fs.statSync(abs);
+      if (!st.isFile()) throw Object.assign(new Error(`不是文件：${abs}`), { status: 400, code: "translate_kind" });
+      if (st.size > MAX_TRANSLATE_BYTES) {
+        const kb = Math.round(st.size / 1024);
+        throw Object.assign(new Error(`文件 ${kb} KB，超过 ${MAX_TRANSLATE_BYTES / 1024} KB 就不在预览里翻了`), {
+          status: 400,
+          code: "translate_too_large",
+        });
+      }
+      return { sessionId, where, abs, st };
+    };
+
+    if (url.pathname === "/api/translate/doc" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "translate_public", "通过公网访问时不提供翻译，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const { abs, st } = trFile(body);
+        const lang = isTrLang(body.lang) ? body.lang : null;
+        if (!lang) return fail(res, 400, "translate_lang", `不支持的语言：${String(body.lang ?? "")}`);
+        const doc = readDoc(abs, lang);
+        const stale = !doc || Math.abs(doc.mtime - st.mtimeMs) > 0.5 || doc.size !== st.size;
+        return json(res, 200, { doc, stale, langs: TR_LANGS, mtime: st.mtimeMs, size: st.size, job: translateJobs.active(abs, lang) });
+      } catch (err: any) {
+        return trFail(res, err);
+      }
+    }
+
+    if (url.pathname === "/api/translate/start" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "translate_public", "通过公网访问时不提供翻译，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const { where, abs, st } = trFile(body);
+        const lang = isTrLang(body.lang) ? body.lang : null;
+        if (!lang) return fail(res, 400, "translate_lang", `不支持的语言：${String(body.lang ?? "")}`);
+        const provider = String(body.provider ?? "").trim();
+        const model = String(body.model ?? "").trim();
+        if (!provider || !model) return fail(res, 400, "translate_model", "先选一个模型");
+        const { text } = readTextFile(abs);
+        if (!text.trim()) return fail(res, 400, "translate_empty", "这个文件是空的");
+        // 同一个模型下「更新」只补翻变了的节；换了模型就整篇重来（不同模型的译文不该混在一起）。
+        const cached = readDoc(abs, lang);
+        const reuse = !!cached && cached.provider === provider && cached.model === model && body.force !== true;
+        const fast = await sessions.modelsFast().catch(() => []);
+        const run = {
+          cli: resolvePi().cli,
+          cwd: where.cwd,
+          lang,
+          provider,
+          model,
+          fast: fast.some((m) => m.provider === provider && m.id === model),
+        };
+        const job = translateJobs.start({
+          text,
+          abs,
+          rel: String(body.path ?? ""),
+          lang,
+          run,
+          runner: runPiTranslate,
+          keep: reuse ? cached.sections : [],
+        });
+        translateJobs.stamp(job.id, st.mtimeMs, st.size);
+        log(`translate ${path.basename(abs)} → ${lang} via ${provider}/${model}${reuse ? " (update)" : ""}`);
+        return json(res, 200, { job });
+      } catch (err: any) {
+        return trFail(res, err);
+      }
+    }
+
+    if (url.pathname === "/api/translate/job" && req.method === "GET") {
+      const job = translateJobs.get(url.searchParams.get("id") ?? "");
+      if (!job) return fail(res, 404, "translate_job", "这个翻译任务已经不在表里了");
+      return json(res, 200, { job });
+    }
+
+    if (url.pathname === "/api/translate/cancel" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "translate_public", "通过公网访问时不提供翻译，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      return json(res, 200, { ok: translateJobs.cancel(String(body.id ?? "")) });
+    }
+
+    // 手改译文只落在缓存里（`out` 与机器基线 `gen` 分开存），所以随时能看出「哪几节是人改的」。
+    if (url.pathname === "/api/translate/save" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "translate_public", "通过公网访问时不提供翻译，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const { abs } = trFile(body);
+        const lang = isTrLang(body.lang) ? body.lang : null;
+        if (!lang) return fail(res, 400, "translate_lang", `不支持的语言：${String(body.lang ?? "")}`);
+        if (typeof body.text !== "string") return fail(res, 400, "translate_text", "译文必须是字符串");
+        const doc = readDoc(abs, lang);
+        if (!doc) return fail(res, 404, "translate_doc", "还没有译文，先翻一次");
+        const cuts = splitSections(body.text);
+        if (cuts.length !== doc.sections.length) {
+          return fail(
+            res,
+            400,
+            "translate_shape",
+            `译文的分节对不上了：原文 ${doc.sections.length} 节，现在 ${cuts.length} 节。标题行别删，不然同步回原文没法定位`,
+          );
+        }
+        const next: TrSection[] = doc.sections.map((sec, i) => ({ ...sec, out: cuts[i] }));
+        const out = { ...doc, sections: next };
+        writeDoc(out);
+        translateJobs.patch(abs, lang, next);
+        return json(res, 200, { doc: out });
+      } catch (err: any) {
+        return trFail(res, err);
+      }
+    }
+
+    /* 同步回原文分两步：/sync 只算（调模型、给差异），/apply 才写盘。
+     * 中间那份待写内容留在桥的内存里，页面拿不到全文，也就没法把别的内容塞进写路径。 */
+
+    if (url.pathname === "/api/translate/sync" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "translate_public", "通过公网访问时不提供翻译，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      try {
+        const { where, abs, st } = trFile(body);
+        const lang = isTrLang(body.lang) ? body.lang : null;
+        if (!lang) return fail(res, 400, "translate_lang", `不支持的语言：${String(body.lang ?? "")}`);
+        const doc = readDoc(abs, lang);
+        if (!doc) return fail(res, 404, "translate_doc", "还没有译文，先翻一次");
+        if (doc.sections.every((sec) => sec.out === sec.gen)) return fail(res, 400, "translate_clean", "译文还没改过，没有要同步的内容");
+        const provider = String(body.provider ?? doc.provider).trim();
+        const model = String(body.model ?? doc.model).trim();
+        const fast = await sessions.modelsFast().catch(() => []);
+        const run = {
+          cli: resolvePi().cli,
+          cwd: where.cwd,
+          lang,
+          provider,
+          model,
+          fast: fast.some((m) => m.provider === provider && m.id === model),
+        };
+        const plan = await planSync(doc, run, runPiTranslate);
+        const file = readTextFile(abs);
+        const applied = applySync(file.text, plan.edits);
+        if (!applied.applied.length) {
+          const why = plan.warnings.slice(0, 3).join("；") || "原文已经变了，找不到要改的那一块";
+          return fail(res, 400, "translate_sync_empty", `一处也没写回去：${why}`);
+        }
+        dropStaleApplies();
+        const id = randomUUID();
+        pendingApply.set(id, { abs, mtime: st.mtimeMs, size: st.size, text: applied.text, enc: file.enc, bom: file.bom, at: Date.now() });
+        // 页面只给个「改了哪几块」的预览：整篇 before/after 可能有几百 KB，没必要来回搬。
+        const clip = (t: string): string => {
+          const lines = t.split("\n");
+          const kept = lines.length > 8 ? [...lines.slice(0, 8), "…"] : lines;
+          const one = kept.join("\n");
+          return one.length > 800 ? `${one.slice(0, 800)}…` : one;
+        };
+        return json(res, 200, {
+          id,
+          edits: applied.applied.length,
+          missing: applied.missing.length,
+          warnings: plan.warnings,
+          preview: applied.applied.slice(0, 20).map((e) => ({ before: clip(e.before), after: clip(e.after) })),
+        });
+      } catch (err: any) {
+        return trFail(res, err);
+      }
+    }
+
+    if (url.pathname === "/api/translate/apply" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "translate_public", "通过公网访问时不提供翻译，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      const plan = pendingApply.get(String(body.id ?? ""));
+      if (!plan) return fail(res, 404, "translate_apply", "这次同步已经过期了，重新点一次「同步」");
+      try {
+        const st = fs.statSync(plan.abs);
+        if (Math.abs(st.mtimeMs - plan.mtime) > 0.5 || st.size !== plan.size) {
+          return fail(res, 409, "translate_conflict", "文件在你同步期间被改过了，重新点一次「同步」");
+        }
+        // 写前留一份原文备份：同步是机器改人的文件，比手动保存更该能退回去。
+        const bak = statePath("translate", "backup", `${path.basename(plan.abs)}.${Date.now()}.bak`);
+        fs.mkdirSync(path.dirname(bak), { recursive: true });
+        fs.copyFileSync(plan.abs, bak);
+        writeTextFile(plan.abs, plan.text, plan.enc, plan.bom);
+        pendingApply.delete(String(body.id ?? ""));
+        const after = fs.statSync(plan.abs);
+        log(`translate sync → ${plan.abs} (backup ${bak})`);
+        return json(res, 200, { path: plan.abs, mtime: after.mtimeMs, size: after.size, backup: bak });
+      } catch (err: any) {
+        return trFail(res, err);
       }
     }
 

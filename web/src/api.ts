@@ -1,4 +1,4 @@
-import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
+import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TrDoc, TrDocResp, TrJob, TrSyncResp, TunnelState } from "./types.ts";
 import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
 import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices } from "./sysmanage-types.ts";
 
@@ -246,6 +246,17 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sessionId, ...body }),
     }),
+  /** 预览里的翻译对照：翻一份、缓存在桥的状态目录、可改译文、可把改动写回原文。 */
+  trDoc: (sessionId: string, path: string, lang: string) => postJson<TrDocResp>("/api/translate/doc", { sessionId, path, lang }),
+  trStart: (sessionId: string, body: { path: string; lang: string; provider: string; model: string; force?: boolean }) =>
+    postJson<{ job: TrJob }>("/api/translate/start", { sessionId, ...body }),
+  trJob: (id: string) => req<{ job: TrJob }>(`/api/translate/job?id=${encodeURIComponent(id)}`),
+  trCancel: (id: string) => postJson<{ ok: boolean }>("/api/translate/cancel", { id }),
+  trSave: (sessionId: string, body: { path: string; lang: string; text: string }) =>
+    postJson<{ doc: TrDoc }>("/api/translate/save", { sessionId, ...body }),
+  trSync: (sessionId: string, body: { path: string; lang: string; provider?: string; model?: string }) =>
+    postJson<TrSyncResp>("/api/translate/sync", { sessionId, ...body }),
+  trApply: (id: string) => postJson<{ path: string; mtime: number; size: number; backup: string }>("/api/translate/apply", { id }),
   /** D69: open the folder holding this file in the desktop's own file manager (local / LAN only). */
   reveal: (path: string) =>
     req<{ ok: boolean; message: string }>("/api/reveal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) }),

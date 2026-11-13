@@ -521,6 +521,64 @@ export interface PreviewInfo {
   slides?: { pages: number | null; engine: boolean };
 }
 
+/** 译文里的一节：跟着原文的 `#`/`##` 标题走，左右对照按它对位（节数两边必须一样）。 */
+export interface TrSection {
+  heading: string;
+  /** 原文这一节：左栏直接用它，不再切一遍文件。 */
+  src: string;
+  /** 机器翻出来的那一版 —— 同步回原文时拿它当「人改了哪儿」的基线。 */
+  gen: string;
+  /** 现在这一版，可能是人改过的。 */
+  out: string;
+}
+
+/** 一份文件的译文缓存，落在桥的状态目录里，不碰源文件。 */
+export interface TrDoc {
+  abs: string;
+  lang: string;
+  provider: string;
+  model: string;
+  /** 翻的时候源文件的 mtime / size：对不上就是「原文改过了」。 */
+  mtime: number;
+  size: number;
+  startedAt: number;
+  warnings: string[];
+  sections: TrSection[];
+}
+
+export interface TrJob {
+  id: string;
+  status: "running" | "done" | "error" | "cancelled";
+  lang: string;
+  provider: string;
+  model: string;
+  done: number;
+  total: number;
+  note: string;
+  error?: string;
+  startedAt: number;
+  finishedAt?: number;
+}
+
+export interface TrDocResp {
+  doc: TrDoc | null;
+  /** 源文件在译文之后被改过：只重翻变了的节。 */
+  stale: boolean;
+  langs: string[];
+  mtime: number;
+  size: number;
+  job: TrJob | null;
+}
+
+export interface TrSyncResp {
+  id: string;
+  edits: number;
+  missing: number;
+  warnings: string[];
+  /** 每一处要写回去的改动（已截断）：确认框只给看这几块。 */
+  preview: { before: string; after: string }[];
+}
+
 /** D166 表格预览：格子只带显示串，有数字格式的按格式显示。 */
 export type SheetCellKind = "n" | "s" | "b" | "e";
 

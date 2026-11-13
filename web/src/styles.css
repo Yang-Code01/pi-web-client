@@ -2384,6 +2384,78 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .md-doc pre.md-front { color: var(--faint); border-style: dashed; }
 .md-doc a { color: var(--accent); }
 
+/* ------------------------------------------------------------------ 翻译对照
+   一行一节：左原文右译文，两列同一行内等高，整块跟着 `.viewer-body` 一起滚（单滚动条）。
+   各自滚动会让两边错位，所以这里刻意不做双滚动条。 */
+.tr-body { overflow: auto; }
+.tr-bar {
+  position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line-soft);
+}
+.tr-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.tr-chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); white-space: nowrap; }
+.tr-chip.lang { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-bg); }
+.tr-chip.model { font: 11px var(--mono); }
+.tr-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1 1 180px; min-width: 0; font-size: 12px; }
+.tr-brief { color: var(--dim); white-space: nowrap; }
+.tr-note { color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-warn { border: 0; background: none; color: var(--warn); font-size: 12px; padding: 0; cursor: pointer; }
+.tr-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; }
+.tr-btn { font-size: 12px; padding: 4px 10px; }
+.tr-msg { padding: 24px 16px; color: var(--dim); font-size: 13px; }
+.tr-msg.err { color: var(--danger); }
+.tr-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 44px 20px; color: var(--dim); font-size: 13px; text-align: center; }
+.tr-empty p { max-width: 46em; margin: 0; line-height: 1.7; }
+.tr-spin {
+  width: 16px; height: 16px; border-radius: 50%; border: 2px solid currentColor;
+  border-right-color: transparent; animation: act-spin 0.8s linear infinite;
+}
+.tr-prog { width: min(360px, 80%); height: 3px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.tr-prog-fill { height: 100%; width: 0; background: var(--accent); transition: width var(--dur-2) var(--ease); }
+.tr-cmp { display: block; }
+.tr-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border-bottom: 1px solid var(--line-soft); }
+.tr-row > .md-doc { max-width: none; margin: 0; padding: 16px 20px; }
+.tr-src { color: var(--dim); }
+.tr-out { position: relative; border-left: 1px solid var(--line-soft); }
+/* 模型没翻出来的那节：译文位置上摆的是原文，得让人一眼看出来，别当成译文读。 */
+.tr-out.raw { color: var(--faint); }
+.tr-out .tr-dot { position: absolute; right: 10px; top: 8px; font-size: 11px; color: var(--warn); }
+.tr-editing { display: flex; overflow: hidden; }
+.tr-edwrap { flex: 1; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
+.tr-edmark { padding: 6px 12px; font-size: 11px; color: var(--faint); border-bottom: 1px solid var(--line-soft); }
+.tr-ed {
+  width: 100%; height: 100%; resize: none; border: 0; outline: none; background: var(--sunken); color: var(--text);
+  font: 12px/1.6 var(--mono); padding: 12px 16px; white-space: pre; overflow: auto; tab-size: 2; caret-color: var(--accent);
+}
+.tr-ed::selection { background: var(--accent-dim); }
+.tr-edfoot {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px;
+  border-top: 1px solid var(--line-soft); background: var(--panel);
+}
+.tr-edmsg { flex: 1 1 auto; min-width: 0; font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-pick { width: min(460px, 92vw); }
+.tr-langs { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 8px; }
+.tr-langbtn {
+  font-size: 12px; padding: 5px 14px; border-radius: 999px; border: 1px solid var(--line);
+  background: transparent; color: var(--dim); cursor: pointer;
+}
+.tr-langbtn:hover { background: var(--panel-2); color: var(--text); }
+.tr-langbtn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 500; }
+.tr-modelsel {
+  width: 100%; margin: 2px 0 6px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel-2); color: var(--text); font-size: 12px;
+}
+.tr-tip { font-size: 11px; line-height: 1.6; color: var(--faint); }
+.tr-review { width: min(760px, 94vw); }
+.tr-diffs { max-height: min(56vh, 520px); overflow: auto; display: grid; gap: 8px; padding: 4px 0 8px; }
+.tr-diff { display: grid; gap: 4px; }
+.tr-diff pre {
+  margin: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--sunken);
+  font: 12px/1.55 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow: auto;
+}
+.tr-diff pre.del { border-color: rgba(251, 113, 133, 0.3); background: var(--danger-bg); color: var(--dim); }
+.tr-diff pre.ins { border-color: var(--ok-dim); background: var(--ok-bg); color: var(--text); }
+
 .art-list { overflow-y: auto; padding: 4px 8px; display: grid; gap: 2px; align-content: start; }
 .art-list .empty { padding: 16px 8px; color: var(--faint); font-size: 13px; }
 /* D207 产物弹窗：状态徽章 / 汇总 / 筛选 —— 状态是「和写入前的原文比出来的」，不是工具名。 */
