@@ -315,8 +315,8 @@ body.embedded .brand .nm { display: none; }
   min-height: 0;
   overflow-y: auto;
   padding: 16px 18px 8px;
-  /* 不要 smooth：renderChat 的贴底是程序化赋值，平滑动画会半路停住，下一次重画读到的是
-     半路的位置，stickBottom 就被误判成「翻历史」，于是不再贴底。 */
+  /* 不要 smooth：renderChat 的贴底是程序化赋值，平滑动画会半路停住，scroll 事件记下的
+     就是半路的位置，回来时会停在半截而不是底部。 */
 }
 
 .day { margin: 14px 0 10px; text-align: center; font: 10.5px var(--mono); color: var(--faint); }
