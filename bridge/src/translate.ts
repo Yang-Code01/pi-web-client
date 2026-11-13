@@ -1,5 +1,5 @@
 /**
- * 预览里的翻译对照（D241）。
+ * 预览里的翻译对照（D245）。
  *
  * 一次翻译 = 一次 `/api/translate/start`。桥把正文按 `^#{1,2}` 切成「节」——节是左右对照的
  * 对齐锚点；节里的围栏代码原样跳过，其余正文按空行打包成 ~4k 字符的块，逐块交给一个**独立**
@@ -654,7 +654,7 @@ export function writeDoc(doc: TrDoc): void {
 
 
 /**
- * 默认拿哪个模型翻（D241）：用户没设过就用 `copilot/gpt-6-luna` —— 翻译这种活，便宜快就够。
+ * 默认拿哪个模型翻（D245）：用户没设过就用 `copilot/gpt-6-luna` —— 翻译这种活，便宜快就够。
  * 只存 `provider/id`，找不到这个模型时页面会让人重挑，并把选择写回这里。
  */
 export const TR_DEFAULT_MODEL = "copilot/gpt-6-luna";

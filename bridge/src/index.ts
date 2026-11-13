@@ -292,7 +292,7 @@ function isLoopbackPeer(addr: string): boolean {
  * `{type:"preview.open.done", reqId, ok, reason?, text?}`。
  */
 /**
- * D241 「同步回原文」的待写内容：/sync 算好放在这里，/apply 只认这个 id 写盘。
+ * D245 「同步回原文」的待写内容：/sync 算好放在这里，/apply 只认这个 id 写盘。
  * 页面拿不到全文，也就没法把别的内容塞进写路径；10 分钟没用就丢（文件可能早被改了）。
  */
 const pendingApply = new Map<
@@ -1241,7 +1241,7 @@ async function main(): Promise<void> {
       }
     }
 
-    /* ── D241 预览里的翻译对照 ──────────────────────────────────────────
+    /* ── D245 预览里的翻译对照 ──────────────────────────────────────────
      * 译文不进仓库：缓存在状态目录（`statePath("translate", …)`）。翻译跑在独立的 pi 子进程里，
      * 不占当前会话的上下文；写回原文必须走 /sync + /apply，且只改人改过的那几块。
      */
@@ -1295,7 +1295,7 @@ async function main(): Promise<void> {
       }
     }
 
-    // 默认用哪个模型翻（D241）：只存本机偏好，跟具体文件无关。
+    // 默认用哪个模型翻（D245）：只存本机偏好，跟具体文件无关。
     if (url.pathname === "/api/translate/prefs" && (req.method === "GET" || req.method === "POST")) {
       if (publicReq) return fail(res, 403, "translate_public", "通过公网访问时不提供翻译，回本机操作");
       try {

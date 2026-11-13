@@ -4,7 +4,7 @@ import { renderMarkdown } from "./md.ts";
 import type { TrDoc, TrJob, TrSyncResp } from "./types.ts";
 
 /**
- * 预览里的翻译对照（D241）。这一层只管画：译文从哪来、任务进度、写回原文都归 app.ts 管，
+ * 预览里的翻译对照（D245）。这一层只管画：译文从哪来、任务进度、写回原文都归 app.ts 管，
  * 所以这里没有 fetch，只有回调。
  */
 
@@ -21,7 +21,7 @@ export function trLangLabel(id: string): string {
 }
 
 /**
- * 按偏好挑一个真在目录里的模型（D241）。偏好存的是 `provider/id`，但同一个模型可能同时挂在
+ * 按偏好挑一个真在目录里的模型（D245）。偏好存的是 `provider/id`，但同一个模型可能同时挂在
  * `copilot` 与 `github-copilot` 下：同 id 换个 provider 也算找到了。一个都没有 → 空串，
  * 由调用方提示用户重挑。
  */

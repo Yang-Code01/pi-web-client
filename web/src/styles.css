@@ -3056,9 +3056,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 @media (hover: none) { .turn-rail { display: none; } }
 :where(html[data-compact="true"]) .turn-rail { display: none; }
 
-/* ---------------------------------------------------------------- 左栏收起时的路径（D61）
-   会话卡片上写着 cwd，左栏一收就没处看；这时路径接到状态行最前面、分支 chip 旁边（见 app.ts 的
-   syncCwdChip / fillHintStatus）。左栏展开时不显示 —— 选中的那张卡片上就是同一个路径。 */
+/* ---------------------------------------------------------------- 状态行最前面的路径（D61 / D244）
+   当前会话的 cwd 常驻在状态行最前面、分支 chip 旁边（见 app.ts 的 syncCwdChip / fillHintStatus）。
+   D244 起左栏展开也显示；窄屏（左栏是一页 tab）仍由 syncCwdChip 藏起来。 */
 .cwd-chip {
   flex: 0 1 auto; min-width: 0; max-width: 42ch;
   display: inline-flex; align-items: center;
@@ -4507,14 +4507,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .branch-esc { display: none; }
 }
 
-/* #248 Jira 面板：连接表单 + 当前账号。
-   骨架复用 `.sheet-back` / `.sheet`（与记录、随手问同一套遮罩与 Esc），这里只管内容。
+/* #248 Jira 面板的内容件：#407 把外壳换成了「本机管理」同款控制台（web/src/jira-console.css，`.jc-*`），
+   这里只剩表单、账号卡、搜索、工单行、详情、下载这些内件。
    颜色 / 圆角 / 字号都用上面那套变量，别在面板里另起一套。 */
-.jira-sheet { grid-template-rows: auto 1fr auto; }
-.jira-head { gap: 8px; }
-.jira-body { overflow: auto; padding: 14px 16px 4px; min-height: 0; }
-/* #258：ready 之后 body 本身不再滚，滚动交给两个 pane（各自记住位置）。 */
-.jira-body-ready { overflow: hidden; padding: 0; display: flex; flex-direction: column; }
 .jira-loading { color: var(--dim); font-size: 13px; padding: 18px 0; }
 
 .jira-form { display: grid; gap: 14px; }
@@ -4565,37 +4560,17 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-v { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jira-disconnect { color: var(--danger); }
 
-/* #258：「我的未完成 / 搜索」两颗 tab 与两个各自滚动的 pane。 */
-.jira-ready { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.jira-tabs { display: flex; gap: 4px; flex: none; padding: 8px 16px 0; border-bottom: 1px solid var(--line-soft); }
-.jira-tab {
-  appearance: none;
-  background: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  padding: 6px 10px 8px;
-  font: 13px var(--sans, inherit);
-  color: var(--dim);
-  cursor: pointer;
-}
-.jira-tab:hover { color: var(--text); }
-.jira-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
-.jira-tab:focus-visible { outline: 1px solid var(--line-lit); outline-offset: 2px; }
-.jira-panes { flex: 1; min-height: 0; display: flex; }
-.jira-pane { flex: 1; min-width: 0; overflow: auto; padding: 14px 16px 4px; }
-.jira-pane[hidden] { display: none; }
-
-/* #258：搜索表单 4/2/1 列；标题和全文各占两格。 */
+/* 搜索表单 4 列；标题和全文各占两格。 */
 .jira-search { display: grid; gap: 12px; min-width: 0; }
 .jira-search-intro { display: grid; gap: 4px; }
 .jira-search-hint { font-size: 12px; color: var(--dim); }
-.jira-search-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; align-items: end; }
+.jira-search-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; align-items: end; min-width: 0; }
 .jira-search-field { display: grid; gap: 5px; min-width: 0; }
 .jira-search-field.span-2 { grid-column: span 2; }
 .jira-search-field .jira-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.jira-search-people { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px 16px; align-items: start; }
-.jira-search-toggles { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
-.jira-search-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; }
+.jira-search-people { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px 16px; align-items: start; min-width: 0; }
+.jira-search-toggles { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; min-width: 0; }
+.jira-search-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .jira-search-note { flex: 1; min-width: 0; font-size: 12px; color: var(--dim); text-align: right; }
 .jira-search-note.bad { color: var(--danger); }
 .jira-checks { display: flex; flex-wrap: wrap; gap: 6px 14px; padding-top: 5px; }
@@ -4654,7 +4629,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .jira-search-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .jira-search-people { grid-template-columns: 1fr; }
 }
-@media (max-width: 620px) {
+@media (max-width: 640px) {
   .jira-search-grid { grid-template-columns: 1fr; }
   .jira-search-field.span-2 { grid-column: auto; }
 }
@@ -4678,11 +4653,14 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-issue-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .jira-issue-key { flex: none; font-family: var(--mono); font-size: 12px; color: var(--accent); text-decoration: none; }
 .jira-issue-key:hover { text-decoration: underline; }
-.jira-issue-summary { min-width: 0; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jira-issue-summary { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* #407：行尾两颗动作按钮一组靠右，窄屏换行时一起下去，不拆开。 */
+.jira-issue-acts { display: flex; align-items: center; gap: 6px; flex: none; margin-left: auto; }
+.jira-issue-acts .jira-row-dl-btn { white-space: nowrap; }
 .jira-issue-meta { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* #252：「交给 agent ▾」—— 行尾一颗、详情底部一颗；标题照旧可省略，按钮不被挤掉。 */
 .jira-handoff { flex: none; padding: 0 6px; line-height: 20px; font-size: 11px; white-space: nowrap; }
-.jira-issue-top .jira-handoff { margin-left: auto; }
+.jira-issue-top .jira-handoff { margin-left: 0; }
 .jira-handoff-bar { display: flex; justify-content: flex-end; }
 /* 浮层视觉与笔记面板的 .note-handoff 一致（代码是复制的一份，样式也照抄）。 */
 .jira-handoff-pop {
@@ -4780,6 +4758,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-dl-path { font-family: var(--mono); font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jira-dl-reason { font-size: 11px; color: var(--dim); }
 .jira-dl-item.saved .jira-dl-mark { color: var(--accent); }
+/* #407：同名文件已在目录里，这次没动 —— 和「没下的」区分开，提醒可覆盖。 */
+.jira-dl-item.exists .jira-dl-mark,
+.jira-dl-item.exists .jira-dl-reason { color: var(--warn, #f8d48b); }
 .jira-dl-item.skipped .jira-dl-mark,
 .jira-dl-item.skipped .jira-dl-name { color: var(--dim); }
 .jira-dl-item.failed .jira-dl-mark,
@@ -4813,21 +4794,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-picker-foot { display: flex; align-items: center; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid var(--line-soft); }
 .jira-picker-foot .jira-note { flex: 1; min-width: 0; }
 
-.jira-foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px 12px;
-  border-top: 1px solid var(--line-soft);
-  font-size: 12px;
-  color: var(--dim);
-}
-.jira-mcp { min-width: 0; flex: 1; }
-
 @media (max-width: 620px) {
-  /* 手机上表单要铺满：键盘一弹，半屏 dialog 只剩两行可看。 */
-  .jira-back { align-items: stretch; padding: 0; }
-  .jira-sheet { width: 100%; height: 100%; max-height: none; border-radius: 0; border: 0; }
   /* 窄屏上工单标题折行：一行装不下 key + 标题 + 省略号时宁可多一层，也不横向溢出。 */
   .jira-issue-summary { white-space: normal; }
   /* 详情块的缩进在窄屏上收一半，给正文留宽度。 */

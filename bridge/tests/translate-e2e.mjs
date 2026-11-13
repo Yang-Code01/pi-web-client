@@ -1,5 +1,5 @@
 /**
- * 预览里的翻译对照（D241）—— 从外面走一遍：起真的桥、桩 pi 翻、改译文、同步回原文。
+ * 预览里的翻译对照（D245）—— 从外面走一遍：起真的桥、桩 pi 翻、改译文、同步回原文。
  *
  * 不看桥的内部字段：只走 /api/translate/*，最后读磁盘上的源文件与状态目录里的备份。
  *
@@ -174,7 +174,7 @@ try {
   check(before.body.stale === true, "标着「过期」（没有译文）");
   check((before.body.langs ?? []).length === 4, `四种目标语言（${(before.body.langs ?? []).map((l) => String(l)).join(",")}）`);
 
-  // D241: 默认模型是这台机器上的偏好，出厂值 copilot/gpt-6-luna，和 settings.json 无关。
+  // D245: 默认模型是这台机器上的偏好，出厂值 copilot/gpt-6-luna，和 settings.json 无关。
   check(before.body.prefs?.model === "", "偏好里还没记模型");
   check(before.body.defaultModel === "copilot/gpt-6-luna", `出厂默认模型 copilot/gpt-6-luna（${before.body.defaultModel}）`);
 

@@ -294,7 +294,8 @@ export function adfToText(adf: unknown): string {
 }
 
 /** #251：桥回的一批下载结果。单项失败不整单失败（HTTP 仍是 200），所以状态挂在每一项上。 */
-export type JiraDownloadStatus = "saved" | "skipped" | "failed";
+/** `exists` = 同名文件已经在目录里，这次没碰它（#407 的「覆盖 / 跳过」询问后落成这个）。 */
+export type JiraDownloadStatus = "saved" | "exists" | "skipped" | "failed";
 
 export interface JiraDownloadItem {
   id: string;
@@ -315,8 +316,22 @@ export interface JiraDownloadResult {
  */
 export function downloadMark(status: JiraDownloadStatus): string {
   if (status === "saved") return "✓";
+  if (status === "exists") return "=";
   if (status === "skipped") return "·";
   return "✗";
+}
+
+/** #407：`GET .../download` 只算不写的计划 —— 每个附件的目标路径，以及它是不是已经躺在那儿。 */
+export interface JiraDownloadPlanItem {
+  id: string;
+  filename: string;
+  path: string;
+  exists: boolean;
+}
+
+export interface JiraDownloadPlan {
+  dir: string;
+  items: JiraDownloadPlanItem[];
 }
 
 // ---------------------------------------------------------------- #252 交给 agent
@@ -331,6 +346,8 @@ export interface HandoffPromptInput {
   type?: string;
   /** 桥回的本机附件目录（`<root>/<KEY>`）；空 = 没下载过，提示词里不出现附件那一行。 */
   dir?: string | null;
+  /** #407：已经落在本机的附件（绝对路径来自桥的下载计划）；有就逐个列出来。 */
+  files?: { name: string; path: string }[];
 }
 
 /**
@@ -357,6 +374,11 @@ export function handoffPrompt(input: HandoffPromptInput): string {
   const dir = input.dir?.trim().replace(/[\\/]+$/, "");
   // 结尾用目录自己的分隔符风格（Windows 根目录回的是 `C:\\…`，加个 `/` 会变成混搭）。
   if (dir) lines.push(`- 已经下载到本机的附件在：${dir}${dir.includes("\\") ? "\\" : "/"}`);
+  const files = (input.files ?? []).filter((file) => file.path?.trim());
+  if (files.length) {
+    lines.push("- 已经下好的附件（直接用绝对路径读，不要再问我）：");
+    for (const file of files) lines.push(`  - ${file.path.trim()}`);
+  }
   lines.push("");
   lines.push("如果你的工具里没有可用的 Jira，先直接告诉我，不要猜内容。需要我确认的地方先问，不要直接改代码。");
   // i18n-ignore-end
@@ -377,7 +399,6 @@ export type SearchOrder = (typeof SEARCH_ORDERS)[number];
 export const STATUS_CATEGORY_KEYS = ["new", "indeterminate", "done"] as const;
 export type StatusCategoryKey = (typeof STATUS_CATEGORY_KEYS)[number];
 
-/** 和桥端 `bridge/src/jira-search.ts` 的常量同口径；改一边就要改另一边。 */
 export const SEARCH_STORAGE_KEY = "pi.jira.search.last";
 
 export interface JiraUserOption {
@@ -397,6 +418,8 @@ export interface JiraSearchMeta {
 
 /** 搜索表单的全部条件。空串 = 不限；人员要么是选中的 accountId，要么是自由文本。 */
 export interface SearchState {
+  /** 工单号：完整键、多个键（逗号/空格分隔）或半截号；形状由桥判（D241、D243）。 */
+  key: string;
   title: string;
   text: string;
   project: string;
@@ -415,6 +438,7 @@ export interface SearchState {
 
 export function emptySearch(): SearchState {
   return {
+    key: "",
     title: "",
     text: "",
     project: "",
@@ -462,6 +486,7 @@ export function normalizeSearch(state: SearchState): SearchState {
     ? (state.statusCategory as StatusCategoryKey)
     : "";
   return {
+    key: state.key.trim(),
     title: state.title.trim(),
     text: state.text.trim(),
     project,
@@ -489,6 +514,7 @@ export function searchQuery(state: SearchState): URLSearchParams {
   const put = (key: string, value: string) => {
     if (value) q.set(key, value);
   };
+  put("key", s.key);
   put("title", s.title);
   put("text", s.text);
   put("project", s.project);
@@ -515,6 +541,7 @@ export function serializeSearch(state: SearchState): string {
   const s = normalizeSearch(state);
   return JSON.stringify({
     v: 1,
+    key: s.key,
     title: s.title,
     text: s.text,
     project: s.project,
@@ -554,6 +581,7 @@ export function readSavedSearch(raw: string | null | undefined): SearchState | n
     ? (o.relations.filter((item) => typeof item === "string" && (SEARCH_RELATIONS as readonly string[]).includes(item)) as SearchRelation[])
     : [...SEARCH_RELATIONS];
   const state: SearchState = {
+    key: textOf(o.key),
     title: textOf(o.title),
     text: textOf(o.text),
     project: textOf(o.project),

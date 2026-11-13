@@ -9,11 +9,12 @@
  */
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
+import "./jira-console.css";
 import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
 import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, mergeSearchPage, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
-import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
+import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
 
 export interface JiraHandoff {
@@ -45,6 +46,8 @@ interface JiraConfigView {
   siteUrl: string;
   email: string;
   keyMask: string;
+  /** 隧道访客只有读权限（D202）：桥在 GET /api/jira/config 里如实告知。 */
+  readonly: boolean;
 }
 
 type ListState<T> =
@@ -65,10 +68,15 @@ type PanelState =
       refreshing: boolean;
       /** 刷新失败时的一行错误；旧列表留着，不清空。 */
       refreshNote: string;
+      /** 公网（隧道）只读：徽章与横幅都靠它，写操作仍由桥回 403 `tunnel_readonly`。 */
+      readonly: boolean;
     }
   | { kind: "error"; text: string; code: string; retry: boolean };
 
 type ReadyState = Extract<PanelState, { kind: "ready" }>;
+
+/** #407：左导航三页；未连接时只有「连接」这一页，不在这个联合里。 */
+type JiraSection = "issues" | "search" | "account";
 
 type DetailState =
   | { kind: "loading" }
@@ -124,8 +132,8 @@ export class JiraPanel {
   /** #252：交给 agent 的浮层；`off` 摘掉浮层自己的全局监听（外点 / 滚动 / 尺寸变化）。 */
   private handoffPop: { el: HTMLElement; timer: number; off: () => void } | null = null;
 
-  // #258：搜索 tab。列表与搜索各占一个 pane，切 tab 只改 hidden，不重建 DOM。
-  private tab: "list" | "search" = "list";
+  // #407：本机管理同款三页导航（我的未完成 / 搜索 / 账号与附件）；切页只重画 pane。
+  private section: JiraSection = "issues";
   private search: SearchState = emptySearch();
   /** 每个面板实例最多自动跑一次（首次切到搜索）。 */
   private searchAutoRan = false;
@@ -145,6 +153,8 @@ export class JiraPanel {
   private searchErrorCode = "";
   private searchDegraded = false;
   private searchSeq = 0;
+  /** 工单号走了模糊（桥用 picker 找的）：回包里有 `fuzzy` 时才非空，只用于结果区提示。 */
+  private searchFuzzy: { token: string; fallback?: boolean } | null = null;
   private users: JiraUserOption[] = [];
   private usersLoading = false;
   private usersUnavailable = false;
@@ -155,6 +165,7 @@ export class JiraPanel {
   private userActive = -1;
   /** 搜索表单控件；meta 到货 / 未分配切换时就地更新，不整块重画。 */
   private fields: {
+    key?: HTMLInputElement;
     title?: HTMLInputElement;
     text?: HTMLInputElement;
     project?: HTMLSelectElement;
@@ -168,9 +179,12 @@ export class JiraPanel {
     resolved?: HTMLInputElement;
     relations: HTMLInputElement[];
   } = { relations: [] };
-  private listPane: HTMLElement | null = null;
-  private searchPane: HTMLElement | null = null;
-  private tabs: HTMLButtonElement[] = [];
+  private pane: HTMLElement | null = null;
+  /** 上一次画的是哪一页：换页前把 pane 的滚动位置存进 `scrollBySection`。 */
+  private renderedSection: string | null = null;
+  private scrollBySection = new Map<string, number>();
+  /** 用户手动关掉的横幅；重开面板时清空。 */
+  private dismissed = new Set<string>();
   private personBox: HTMLElement | null = null;
   private personInput: HTMLInputElement | null = null;
   private personPop: HTMLElement | null = null;
@@ -189,8 +203,11 @@ export class JiraPanel {
     if (this.root) this.close();
     // 每次重开都从干净的详情开始：换账号 / 换站点后旧工单的详情不该继续显示。
     this.details.clear();
-    // #258：每次开面板回到列表 tab，重新读上次的条件；搜索结果不跨面板复用。
-    this.tab = "list";
+    // #407：每次开面板回到「我的未完成」，重新读上次的条件；搜索结果不跨面板复用。
+    this.section = "issues";
+    this.dismissed.clear();
+    this.scrollBySection.clear();
+    this.renderedSection = null;
     let saved: string | null = null;
     try {
       saved = localStorage.getItem(SEARCH_STORAGE_KEY);
@@ -222,9 +239,7 @@ export class JiraPanel {
     this.userActive = -1;
     this.userSeq += 1;
     window.clearTimeout(this.userTimer);
-    this.listPane = null;
-    this.searchPane = null;
-    this.tabs = [];
+    this.pane = null;
     this.lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.state = { kind: "loading" };
     this.esc = (ev) => {
@@ -259,9 +274,8 @@ export class JiraPanel {
     window.clearTimeout(this.userTimer);
     this.root?.remove();
     this.root = null;
-    this.listPane = null;
-    this.searchPane = null;
-    this.tabs = [];
+    this.pane = null;
+    this.renderedSection = null;
     this.resultsBox = null;
     this.personBox = null;
     this.personInput = null;
@@ -324,6 +338,7 @@ export class JiraPanel {
       projects: { kind: "loading" },
       refreshing: false,
       refreshNote: "",
+      readonly: this.config?.readonly === true,
     };
   }
 
@@ -373,7 +388,13 @@ export class JiraPanel {
       });
       if (!this.root) return;
       const mask = keyMask(this.form.apiKey);
-      this.config = { configured: true, siteUrl: this.form.siteUrl.trim(), email: this.form.email.trim(), keyMask: mask };
+      this.config = {
+        configured: true,
+        siteUrl: this.form.siteUrl.trim(),
+        email: this.form.email.trim(),
+        keyMask: mask,
+        readonly: this.config?.readonly === true,
+      };
       this.details.clear();
       await this.loadAttachRoot();
       this.state = this.listsPending(out.me, mask);
@@ -418,41 +439,99 @@ export class JiraPanel {
   // -------------------------------------------------------------- 渲染
 
   private render(): void {
-    const listTop = this.listPane?.scrollTop ?? 0;
-    const searchTop = this.searchPane?.scrollTop ?? 0;
-    const back = el("div", "sheet-back jira-back");
-    back.onclick = (ev) => {
+    if (this.renderedSection && this.pane) this.scrollBySection.set(this.renderedSection, this.pane.scrollTop);
+    // 这一轮重画会换掉搜索页的全部引用；先清空，免得后续请求把结果写进已经离开文档的节点。
+    this.resultsBox = null;
+    this.metaNote = null;
+    this.personBox = null;
+    this.personInput = null;
+    this.personPop = null;
+    this.personHint = null;
+    this.searchBtn = null;
+    this.fields = { relations: [] };
+    if (this.state.kind === "ready") this.siteUrl = this.state.siteUrl;
+
+    const back = el("div", "jc-back");
+    back.addEventListener("mousedown", (ev) => {
       if (ev.target === back) this.close();
-    };
-    const sheet = el("div", "sheet jira-sheet");
-    sheet.setAttribute("role", "dialog");
-    sheet.setAttribute("aria-modal", "true");
-    sheet.setAttribute("aria-label", tr("Jira"));
+    });
+    const shell = el("section", "jc-console");
+    shell.setAttribute("role", "dialog");
+    shell.setAttribute("aria-modal", "true");
+    shell.setAttribute("aria-label", tr("Jira"));
 
-    const head = el("div", "sheet-head jira-head");
-    head.append(el("div", "sheet-title", tr("🔷 Jira")));
-    const close = el("button", "btn ghost jira-close", "×");
-    close.title = tr("关闭");
-    close.setAttribute("aria-label", tr("关闭"));
+    const head = el("header", "jc-head");
+    const main = el("div", "jc-head__main");
+    main.append(el("div", "jc-eyebrow", "Jira"));
+    main.append(el("h2", "jc-title", this.headerTitle()));
+    main.append(el("div", "jc-sub", this.headerSub()));
+    const badges = el("div", "jc-badges");
+    for (const badge of this.headerBadges()) {
+      badges.append(el("span", badge.tone ? `jc-badge jc-badge--${badge.tone}` : "jc-badge", badge.text));
+    }
+    main.append(badges);
+
+    const actions = el("div", "jc-head__actions");
+    const refresh = el("button", "btn ghost", tr("刷新")) as HTMLButtonElement;
+    refresh.type = "button";
+    refresh.disabled = this.state.kind === "loading" || (this.state.kind === "ready" && (this.state.refreshing || this.state.issues.kind === "loading"));
+    refresh.onclick = () => void this.refreshAll();
+    const close = el("button", "btn ghost jc-close", tr("关闭")) as HTMLButtonElement;
+    close.type = "button";
     close.onclick = () => this.close();
-    head.append(close);
+    actions.append(refresh, close);
+    head.append(main, actions);
 
-    const body = el("div", this.state.kind === "ready" ? "jira-body jira-body-ready" : "jira-body");
-    if (this.state.kind === "loading") body.append(el("div", "jira-loading", tr("正在问桥…")));
-    else if (this.state.kind === "form") body.append(this.formEl(this.state));
-    else if (this.state.kind === "ready") body.append(this.readyEl(this.state));
-    else body.append(this.errorEl(this.state));
+    const banners = el("div", "jc-banners");
+    for (const row of this.bannerRows()) {
+      const line = el("div", `jc-banner jc-banner--${row.tone}`);
+      line.append(el("span", "jc-banner__text", row.text));
+      if (row.action) {
+        const go = el("button", "btn ghost jc-banner__action", row.action.label) as HTMLButtonElement;
+        go.type = "button";
+        go.onclick = () => row.action?.run();
+        line.append(go);
+      }
+      const x = el("button", "jc-banner__close", "×") as HTMLButtonElement;
+      x.type = "button";
+      x.title = tr("关闭提示");
+      x.setAttribute("aria-label", tr("关闭提示"));
+      x.onclick = () => {
+        this.dismissed.add(row.id);
+        this.render();
+      };
+      line.append(x);
+      banners.append(line);
+    }
 
-    sheet.append(head, body, this.footEl());
-    back.append(sheet);
+    const body = el("div", "jc-main");
+    const nav = el("nav", "jc-nav");
+    nav.setAttribute("aria-label", tr("Jira 分区"));
+    const active = this.activeSection();
+    for (const item of this.navItems()) {
+      const on = item.id === active;
+      const btn = el("button", `jc-nav__item${on ? " on" : ""}`) as HTMLButtonElement;
+      btn.type = "button";
+      if (on) btn.setAttribute("aria-current", "page");
+      btn.onclick = () => this.select(item.id);
+      btn.append(el("span", "jc-nav__label", item.label));
+      if (item.count) btn.append(el("span", "jc-nav__count", item.count));
+      nav.append(btn);
+    }
+    const pane = el("div", "jc-pane");
+    pane.append(this.paneEl(this.state));
+    body.append(nav, pane);
+
+    shell.append(head, banners, body, this.footEl());
+    back.append(shell);
     // 挂 `#app` 里，不挂 `document.body`：外观「字号」是 `#app { zoom: var(--ui-scale) }`，
     // 挂 body 上的弹层不跟它缩（与 notesheet / scratch 同一条理由）。
     if (this.root) this.root.replaceWith(back);
     else (document.getElementById("app") ?? document.body).append(back);
     this.root = back;
-    // 整块重画（语言切换 / 刷新列表）后把两个 pane 的滚动位置放回原处。
-    if (this.listPane) this.listPane.scrollTop = listTop;
-    if (this.searchPane) this.searchPane.scrollTop = searchTop;
+    this.pane = pane;
+    this.renderedSection = active;
+    pane.scrollTop = this.scrollBySection.get(active) ?? 0;
   }
 
   private formEl(state: { note: string; bad: boolean }): HTMLElement {
@@ -571,54 +650,123 @@ export class JiraPanel {
     await this.loadLists(this.seq, true);
   }
 
-  private readyEl(state: ReadyState): HTMLElement {
-    this.siteUrl = state.siteUrl;
-    const box = el("div", "jira-ready");
-    const tabs = el("div", "jira-tabs");
-    tabs.setAttribute("role", "tablist");
-    const make = (id: "list" | "search", label: string): HTMLButtonElement => {
-      const btn = el("button", "jira-tab", label) as HTMLButtonElement;
-      btn.type = "button";
-      btn.setAttribute("role", "tab");
-      btn.id = `jira-tab-${id}`;
-      btn.setAttribute("aria-controls", `jira-pane-${id}`);
-      btn.onclick = () => this.switchTab(id);
-      btn.onkeydown = (ev) => {
-        if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
-        ev.preventDefault();
-        const next = this.tab === "list" ? "search" : "list";
-        this.switchTab(next);
-        this.tabs[next === "list" ? 0 : 1]?.focus();
-      };
-      return btn;
-    };
-    const listTab = make("list", tr("我的未完成"));
-    const searchTab = make("search", tr("搜索"));
-    tabs.append(listTab, searchTab);
-
-    const panes = el("div", "jira-panes");
-    const listPane = el("div", "jira-pane");
-    listPane.id = "jira-pane-list";
-    listPane.setAttribute("role", "tabpanel");
-    listPane.setAttribute("aria-labelledby", "jira-tab-list");
-    listPane.append(this.listEl(state));
-
-    const searchPane = el("div", "jira-pane jira-search-pane");
-    searchPane.id = "jira-pane-search";
-    searchPane.setAttribute("role", "tabpanel");
-    searchPane.setAttribute("aria-labelledby", "jira-tab-search");
-    searchPane.append(this.searchEl(state));
-
-    panes.append(listPane, searchPane);
-    box.append(tabs, panes);
-    this.tabs = [listTab, searchTab];
-    this.listPane = listPane;
-    this.searchPane = searchPane;
-    this.applyTab();
-    return box;
+  /** 左导航：三页；未连接时只有「连接」这一页（那会儿别的页都没有数据可看）。 */
+  private navItems(): { id: string; label: string; count: string }[] {
+    if (this.state.kind !== "ready") return [{ id: "connect", label: tr("连接"), count: "" }];
+    const issues = this.state.issues;
+    return [
+      { id: "issues", label: tr("我的未完成"), count: issues.kind === "ready" ? String(issues.items.length) : "" },
+      { id: "search", label: tr("搜索"), count: "" },
+      { id: "account", label: tr("账号与附件"), count: "" },
+    ];
   }
 
-  private listEl(state: ReadyState): HTMLElement {
+  private activeSection(): string {
+    return this.state.kind === "ready" ? this.section : "connect";
+  }
+
+  /** 站点域名当标题（决策：标题 = 站点域名，副行 = 登录邮箱）。 */
+  private siteHost(): string {
+    const raw = this.state.kind === "ready" ? this.state.siteUrl : this.config?.siteUrl || this.form.siteUrl;
+    try {
+      return new URL(raw.trim()).host;
+    } catch {
+      return "";
+    }
+  }
+
+  private headerTitle(): string {
+    if (this.state.kind !== "ready") return tr("连接 Jira");
+    return this.siteHost() || "Jira";
+  }
+
+  private headerSub(): string {
+    if (this.state.kind === "ready") return this.state.me.email || tr("已连接");
+    if (this.state.kind === "form") return this.state.note || tr("填站点、邮箱与 API token 就能连上");
+    if (this.state.kind === "error") return this.state.text;
+    return tr("正在问桥…");
+  }
+
+  private headerBadges(): { text: string; tone?: "warn" }[] {
+    const out: { text: string; tone?: "warn" }[] = [];
+    if (this.state.kind === "ready") {
+      const me = this.state.me;
+      out.push({ text: me.displayName || me.email || tr("已连接") });
+      if (this.state.issues.kind === "ready") {
+        out.push({ text: tr("{p1} 条未完成", { p1: this.state.issues.items.length }) });
+      } else if (this.state.issues.kind === "error" && isAuthCode(this.state.issues.code)) {
+        out.push({ text: tr("凭据失效"), tone: "warn" });
+      }
+      if (this.state.readonly) out.push({ text: tr("公网只读"), tone: "warn" });
+      if (this.state.mask) out.push({ text: this.state.mask });
+    } else if (this.state.kind === "form") {
+      out.push({ text: tr("未连接") });
+    } else if (this.state.kind === "error") {
+      out.push({ text: tr("出错"), tone: "warn" });
+    }
+    return out;
+  }
+
+  /** 横幅：刷新失败、凭据失效、关注者降级。每条都能单独关掉（重开面板时清空）。 */
+  private bannerRows(): { id: string; tone: "warn" | "bad"; text: string; action?: { label: string; run: () => void } }[] {
+    const out: { id: string; tone: "warn" | "bad"; text: string; action?: { label: string; run: () => void } }[] = [];
+    if (this.state.kind === "ready") {
+      if (this.state.refreshNote) out.push({ id: "refresh", tone: "warn", text: this.state.refreshNote });
+      const issues = this.state.issues;
+      if (this.state.readonly) {
+        out.push({
+          id: "readonly",
+          tone: "warn",
+          text: tr("公网访问只能看：改连接、换附件目录要回本机。"),
+        });
+      }
+      if (issues.kind === "error" && isAuthCode(issues.code)) {
+        out.push({
+          id: "auth",
+          tone: "bad",
+          text: tr("凭据失效，改一下 token 再试"),
+          action: { label: tr("去改 token"), run: () => this.showForm(tr("重新填一次 token"), true) },
+        });
+      }
+    }
+    if (this.searchDegraded) {
+      out.push({ id: "degraded", tone: "warn", text: tr("关注者权限不足，本次只查了经办人和报告人。") });
+    }
+    return out.filter((row) => !this.dismissed.has(row.id));
+  }
+
+  private paneEl(state: PanelState): HTMLElement {
+    if (state.kind === "loading") return el("div", "jira-loading", tr("正在问桥…"));
+    if (state.kind === "form") return this.formEl(state);
+    if (state.kind === "error") return this.errorEl(state);
+    if (this.section === "search") return this.searchEl(state);
+    if (this.section === "account") return this.accountEl(state);
+    return this.issuesEl(state);
+  }
+
+  /** 顶部「刷新」：已连接就重拉两段列表，未连接就重新问一次桥。 */
+  private async refreshAll(): Promise<void> {
+    if (this.state.kind === "ready") {
+      await this.refreshLists();
+      return;
+    }
+    this.state = { kind: "loading" };
+    this.render();
+    await this.reload();
+  }
+
+  /** 切页：重画一次（数据都在字段里）；首次进搜索页顺带拉选项、跑一次。 */
+  private select(id: string): void {
+    if (this.state.kind !== "ready") return;
+    if (id !== "issues" && id !== "search" && id !== "account") return;
+    if (this.section === id) return;
+    this.section = id;
+    this.render();
+    if (id === "search") this.onEnterSearch();
+  }
+
+  /** 「账号与附件」：账号卡、时区 / token / 附件目录、可访问项目、退出连接。 */
+  private accountEl(state: ReadyState): HTMLElement {
     const me = state.me;
     const box = el("div", "jira-profile");
     const card = el("div", "jira-card");
@@ -642,7 +790,6 @@ export class JiraPanel {
     rows.append(this.attachRootRow());
     box.append(rows);
 
-    box.append(this.issuesEl(state));
     const projects = this.projectsEl(state);
     if (projects) box.append(projects);
 
@@ -653,24 +800,6 @@ export class JiraPanel {
     actions.append(out);
     box.append(actions);
     return box;
-  }
-
-  private switchTab(tab: "list" | "search"): void {
-    this.tab = tab;
-    this.applyTab();
-    if (tab === "search") this.onEnterSearch();
-  }
-
-  private applyTab(): void {
-    const isList = this.tab === "list";
-    this.listPane?.toggleAttribute("hidden", !isList);
-    this.searchPane?.toggleAttribute("hidden", isList);
-    for (const btn of this.tabs) {
-      const on = btn.id === `jira-tab-${this.tab}`;
-      btn.classList.toggle("on", on);
-      btn.setAttribute("aria-selected", on ? "true" : "false");
-      btn.tabIndex = on ? 0 : -1;
-    }
   }
 
   /** 首次切到搜索：拉选项；有保存的条件就回填并自动跑一次（空条件也跑，给个「什么都能看到」的起点）。 */
@@ -699,6 +828,7 @@ export class JiraPanel {
 
     const grid = el("div", "jira-search-grid");
     grid.append(
+      this.searchInput("key", tr("工单号")),
       this.searchInput("title", tr("标题关键字")),
       this.searchInput("text", tr("全文本")),
       this.searchSelectField("project", tr("项目")),
@@ -740,14 +870,15 @@ export class JiraPanel {
     return box;
   }
 
-  private searchInput(key: "title" | "text", label: string): HTMLElement {
-    const wrap = el("div", "jira-search-field span-2");
+  private searchInput(key: "key" | "title" | "text", label: string): HTMLElement {
+    // 工单号与标题各占两格（第一行刚好四格）；全文本占一格，剩下的下拉正好排成两行。
+    const wrap = el("div", key === "text" ? "jira-search-field" : "jira-search-field span-2");
     const id = `jira-search-${key}`;
     const lab = el("label", "jira-label", label);
     lab.htmlFor = id;
     const input = el("input", "jira-input") as HTMLInputElement;
     input.id = id;
-    input.placeholder = tr("输入关键字");
+    input.placeholder = key === "key" ? tr("CASPH30BUG-123，或只写 1235") : tr("输入关键字");
     input.autocomplete = "off";
     input.spellcheck = false;
     input.value = this.search[key];
@@ -756,6 +887,10 @@ export class JiraPanel {
     };
     this.fields[key] = input;
     wrap.append(lab, input);
+    // 工单号怎么看：形状判定在桥里（D241），这里只把规则写给人看。
+    if (key === "key") {
+      wrap.append(el("div", "jira-search-hint", tr("完整工单号精确查；多个用逗号分开；半截号按号段前缀匹配。")));
+    }
     return wrap;
   }
 
@@ -1159,6 +1294,7 @@ export class JiraPanel {
 
   private fillSearchForm(): void {
     const f = this.fields;
+    if (f.key) f.key.value = this.search.key;
     if (f.title) f.title.value = this.search.title;
     if (f.text) f.text.value = this.search.text;
     this.paintMetaOptions();
@@ -1193,6 +1329,7 @@ export class JiraPanel {
     this.searchIsLast = true;
     this.searchLoadingMore = false;
     this.searchMoreError = "";
+    this.searchFuzzy = null;
     if (this.searchBtn) this.searchBtn.disabled = true;
     this.paintResults();
     try {
@@ -1202,6 +1339,7 @@ export class JiraPanel {
       this.searchNext = res.nextPageToken;
       this.searchIsLast = res.isLast || !res.nextPageToken;
       this.searchDegraded = res.degraded?.watchers === true;
+      this.searchFuzzy = res.fuzzy ?? null;
       this.searchKind = "ready";
     } catch (err) {
       if (seq !== this.searchSeq || !this.root) return;
@@ -1279,9 +1417,18 @@ export class JiraPanel {
     if (this.searchDegraded) {
       box.append(el("div", "jira-note", tr("关注者权限不足，本次只查了经办人和报告人。")));
     }
+    if (this.searchFuzzy?.fallback) {
+      box.append(el("div", "jira-note", tr("没有这个工单号，下面是按号段模糊找到的")));
+    }
     if (!this.searchItems.length) {
       const empty = el("div", "jira-empty");
-      empty.append(el("div", "jira-empty-text", tr("没有符合条件的工单")));
+      empty.append(
+        el(
+          "div",
+          "jira-empty-text",
+          this.searchFuzzy || this.search.key.trim() ? tr("没有匹配这个工单号的工单") : tr("没有符合条件的工单"),
+        ),
+      );
       const clear = el("button", "btn ghost", tr("清空条件"));
       clear.onclick = () => this.clearSearch();
       empty.append(clear);
@@ -1376,13 +1523,18 @@ export class JiraPanel {
     key.target = "_blank";
     key.rel = "noopener noreferrer";
     top.append(key, el("span", "jira-issue-summary", issue.summary || tr("（没有标题）")));
-    top.append(this.handoffButton(issue, siteUrl));
+    // #407：行尾两颗动作按钮同一组靠右，摘要占剩余宽度（否则窄屏下按钮会被挤成两行）。
+    const acts = el("div", "jira-issue-acts");
+    acts.append(this.downloadButton(issue, siteUrl), this.handoffButton(issue, siteUrl));
+    top.append(acts);
     line.append(top);
     const meta = issueMeta(issue, showAssignee);
     if (meta) line.append(el("div", "jira-issue-meta", meta));
 
     const entry = this.details.get(issue.key);
     const detail = el("div", "jira-detail");
+    const dlStrip = el("div", "jira-row-dl");
+    wrap.dataset.key = issue.key;
     line.classList.toggle("open", entry?.open === true);
     line.tabIndex = 0;
     line.setAttribute("role", "button");
@@ -1400,7 +1552,8 @@ export class JiraPanel {
       toggle();
     };
 
-    wrap.append(line, detail);
+    wrap.append(line, dlStrip, detail);
+    this.paintRowDl(wrap, issue.key);
     if (entry) {
       entry.el = detail;
       this.paintDetail(entry, siteUrl, issue.key);
@@ -1517,14 +1670,31 @@ export class JiraPanel {
     box.append(bar);
   }
 
+  /** #407：行尾那颗「下载附件」——不展开详情也能用。 */
+  private downloadButton(issue: JiraIssue, siteUrl: string): HTMLButtonElement {
+    const btn = el("button", "btn ghost jira-row-dl-btn", tr("下载附件"));
+    btn.type = "button";
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      void this.startDownload(issue.key, siteUrl);
+    };
+    return btn;
+  }
+
   /** #251：下载按钮 + 结果就地显示，不再弹第二层结果窗。 */
   private downloadEl(entry: DetailEntry, key: string, siteUrl: string): HTMLElement {
     const box = el("div", "jira-download");
     const bar = el("div", "jira-actions");
     const btn = el("button", "btn primary jira-dl-btn", entry.busy ? tr("正在下载…（一次一个）") : tr("下载全部")) as HTMLButtonElement;
     btn.disabled = entry.busy;
-    btn.onclick = () => void this.downloadAll(key, siteUrl, entry);
+    btn.onclick = () => void this.startDownload(key, siteUrl);
     bar.append(btn);
+    if (entry.download?.items.some((item) => item.status === "exists")) {
+      const over = el("button", "btn ghost", tr("覆盖已存在的")) as HTMLButtonElement;
+      over.disabled = entry.busy;
+      over.onclick = () => void this.overwriteDownload(key, siteUrl);
+      bar.append(over);
+    }
     box.append(bar);
     if (entry.dlError) box.append(el("div", "jira-note bad", entry.dlError));
     const result = entry.download;
@@ -1547,34 +1717,175 @@ export class JiraPanel {
     return box;
   }
 
-  /** #251：整单一次 POST；桥那边串行落盘，单项失败只失败那一项。 */
-  private async downloadAll(key: string, siteUrl: string, entry: DetailEntry, retried = false): Promise<void> {
+  /** 没展开过详情也可能点下载：先建一份只带下载状态的 entry。 */
+  private ensureEntry(key: string): DetailEntry {
+    const existing = this.details.get(key);
+    if (existing) return existing;
+    const created: DetailEntry = { open: false, state: null, el: null, busy: false, download: null, dlError: "" };
+    this.details.set(key, created);
+    return created;
+  }
+
+  /** 同一份下载状态有两个落点：行下方的一行小结，和展开后的详情块。 */
+  private repaintDownloads(key: string, siteUrl: string): void {
+    const wrap = this.pane?.querySelector<HTMLElement>(`.jira-issue-wrap[data-key="${key}"]`);
+    if (wrap) this.paintRowDl(wrap, key);
+    const entry = this.details.get(key);
+    if (entry?.el) this.paintDetail(entry, siteUrl, key);
+  }
+
+  /** 行里的下载小结：只有真的下过东西才出现，不占没附件那几行的地方。 */
+  private paintRowDl(wrap: HTMLElement, key: string): void {
+    const btn = wrap.querySelector<HTMLButtonElement>(".jira-row-dl-btn");
+    const strip = wrap.querySelector<HTMLElement>(".jira-row-dl");
+    if (!btn || !strip) return;
+    const entry = this.details.get(key);
+    const busy = entry?.busy === true;
+    btn.textContent = busy ? tr("下载中…") : tr("下载附件");
+    btn.disabled = busy;
+    strip.replaceChildren();
+    if (!entry) return;
+    if (entry.dlError) strip.append(el("div", "jira-note bad", entry.dlError));
+    const result = entry.download;
+    if (!result) return;
+    const count = (status: string) => result.items.filter((item) => item.status === status).length;
+    const bits = [tr("已下载 {p1} 个", { p1: count("saved") })];
+    if (count("exists")) bits.push(tr("{p1} 个同名文件没动", { p1: count("exists") }));
+    if (count("failed")) bits.push(tr("{p1} 个失败", { p1: count("failed") }));
+    const note = el("div", "jira-row-dl-note", `${bits.join(" · ")} · ${result.dir}`);
+    note.title = result.dir;
+    strip.append(note);
+    if (count("exists")) {
+      const over = el("button", "btn ghost jira-row-dl-over", tr("覆盖已存在的")) as HTMLButtonElement;
+      over.onclick = (ev) => {
+        ev.stopPropagation();
+        void this.overwriteDownload(key, "");
+      };
+      strip.append(over);
+    }
+  }
+
+  /**
+   * #407：先问桥「会落到哪、有没有同名」，再决定问不问覆盖；确认之后才真写盘。
+   * 取消就什么都不动；「跳过已存在的」其余照下（用户选的收场方式）。
+   */
+  private async startDownload(key: string, siteUrl: string): Promise<void> {
+    const entry = this.ensureEntry(key);
     if (entry.busy) return;
     entry.busy = true;
     entry.dlError = "";
-    this.paintDetail(entry, siteUrl, key);
+    this.repaintDownloads(key, siteUrl);
+    let plan: JiraDownloadPlan;
     try {
-      const out = await api.jiraDownload(key);
-      const current = this.details.get(key) ?? entry;
-      current.download = out;
-      current.dlError = "";
+      plan = await api.jiraDownloadPlan(key);
     } catch (err) {
-      const current = this.details.get(key) ?? entry;
-      current.download = null;
-      // 第一次点还没设目录：弹选择器，选完自动重试一次（只一次，不再弹）。
-      if (codeOf(err) === "need_root" && !retried) {
-        current.busy = false;
-        this.paintDetail(current, siteUrl, key);
-        this.openRootPicker(() => void this.downloadAll(key, siteUrl, current, true));
+      entry.busy = false;
+      // 还没设目录：弹一次选择器，选完自动重来（只一次，不无限弹）。
+      if (codeOf(err) === "need_root") {
+        this.openRootPicker(() => void this.startDownload(key, siteUrl));
+        this.repaintDownloads(key, siteUrl);
         return;
       }
-      current.dlError = errText(err);
-    } finally {
-      const current = this.details.get(key) ?? entry;
-      current.busy = false;
+      entry.dlError = errText(err);
+      this.repaintDownloads(key, siteUrl);
+      return;
     }
-    const current = this.details.get(key) ?? entry;
-    this.paintDetail(current, siteUrl, key);
+    const clash = plan.items.filter((item) => item.exists);
+    let conflict: "skip" | "overwrite" = "skip";
+    if (clash.length > 0) {
+      const pick = await this.ask({
+        title: tr("有 {p1} 个同名附件已经在这个目录里", { p1: clash.length }),
+        text: tr("覆盖会用 Jira 上的版本重写这几个文件；跳过则只下还没有的。"),
+        buttons: [
+          { label: tr("跳过已存在的"), value: "skip", primary: true },
+          { label: tr("覆盖"), value: "overwrite" },
+        ],
+        cancel: tr("取消下载"),
+      });
+      if (!pick) {
+        entry.busy = false;
+        this.repaintDownloads(key, siteUrl);
+        return;
+      }
+      conflict = pick === "overwrite" ? "overwrite" : "skip";
+    }
+    await this.runDownload(key, siteUrl, conflict);
+  }
+
+  /** 已经看过清单、只差覆盖：不再问第二遍（行里那颗「覆盖已存在的」走这条）。 */
+  private async overwriteDownload(key: string, siteUrl: string): Promise<void> {
+    const entry = this.ensureEntry(key);
+    if (entry.busy) return;
+    entry.busy = true;
+    entry.dlError = "";
+    this.repaintDownloads(key, siteUrl);
+    await this.runDownload(key, siteUrl, "overwrite");
+  }
+
+  private async runDownload(key: string, siteUrl: string, conflict: "skip" | "overwrite"): Promise<void> {
+    const entry = this.ensureEntry(key);
+    try {
+      const out = await api.jiraDownload(key, conflict);
+      entry.download = out;
+      entry.dlError = "";
+    } catch (err) {
+      entry.download = null;
+      entry.dlError = errText(err);
+    } finally {
+      entry.busy = false;
+    }
+    this.repaintDownloads(key, siteUrl);
+  }
+
+  /** 面板里的一层小确认（下载冲突、交接前问要不要先下附件）。Esc / 点空白 = 取消。 */
+  private ask(opts: {
+    title: string;
+    text?: string;
+    buttons: { label: string; value: string; primary?: boolean }[];
+    cancel?: string;
+  }): Promise<string | null> {
+    return new Promise((resolve) => {
+      const host = this.pane?.closest<HTMLElement>(".jc-console") ?? document.body;
+      const back = el("div", "jira-ask-back");
+      const card = el("div", "jira-ask");
+      card.setAttribute("role", "dialog");
+      card.setAttribute("aria-modal", "true");
+      card.append(el("div", "jira-ask-title", opts.title));
+      if (opts.text) card.append(el("div", "jira-ask-text", opts.text));
+      const row = el("div", "jira-ask-actions");
+      let done = false;
+      const finish = (value: string | null) => {
+        if (done) return;
+        done = true;
+        document.removeEventListener("keydown", onKey, true);
+        back.remove();
+        resolve(value);
+      };
+      const onKey = (ev: KeyboardEvent) => {
+        if (ev.key !== "Escape") return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        finish(null);
+      };
+      for (const button of opts.buttons) {
+        const b = el("button", button.primary ? "btn primary" : "btn ghost", button.label) as HTMLButtonElement;
+        b.onclick = () => finish(button.value);
+        row.append(b);
+      }
+      if (opts.cancel) {
+        const b = el("button", "btn ghost jira-ask-cancel", opts.cancel) as HTMLButtonElement;
+        b.onclick = () => finish(null);
+        row.append(b);
+      }
+      card.append(row);
+      back.append(card);
+      back.onmousedown = (ev) => {
+        if (ev.target === back) finish(null);
+      };
+      document.addEventListener("keydown", onKey, true);
+      host.append(back);
+      card.querySelector<HTMLElement>("button")?.focus();
+    });
   }
 
   // -------------------------------------------------------------- 交给 agent（#252）
@@ -1602,17 +1913,14 @@ export class JiraPanel {
     pop.style.left = `${Math.max(12, Math.min(r.right - 260, innerWidth - 274))}px`;
     pop.style.top = `${r.bottom + 6}px`;
     pop.style.visibility = "hidden";
-    const err = el("div", "jira-handoff-err");
-    err.hidden = true;
     const add = (label: string, hint: string, run: () => void) => {
       const b = el("button");
       b.append(el("span", "handoff-label", label), el("span", "handoff-hint", hint));
       b.onclick = () => run();
       pop.append(b);
     };
-    add(tr("预填到当前会话"), tr("写进输入框，Enter 才发"), () => void this.handoffRun(pop, err, issue, siteUrl, "prefill"));
-    add(tr("新开一个会话"), tr("建好后填进那个会话的输入框，不自动发送"), () => void this.handoffRun(pop, err, issue, siteUrl, "new"));
-    pop.append(err);
+    add(tr("预填到当前会话"), tr("写进输入框，Enter 才发"), () => void this.handoffRun(issue, siteUrl, "prefill"));
+    add(tr("新开一个会话"), tr("建好后填进那个会话的输入框，不自动发送"), () => void this.handoffRun(issue, siteUrl, "new"));
     document.body.append(pop);
     // 下方放不下且上方更宽裕就翻上去；上下都窄就贴窗口顶，不让浮层探出窗口。
     const h = pop.offsetHeight;
@@ -1664,14 +1972,59 @@ export class JiraPanel {
     }
   }
 
-  private async handoffRun(
-    pop: HTMLElement,
-    err: HTMLElement,
-    issue: JiraIssue,
-    siteUrl: string,
-    kind: "prefill" | "new",
-  ): Promise<void> {
-    const dir = await this.downloadedDir(issue.key);
+  private handoffRun(issue: JiraIssue, siteUrl: string, kind: "prefill" | "new"): Promise<void> {
+    // 选了菜单项就先把浮层收掉：后面可能弹「还有 N 个附件没下载」的对话框，别让两层叠在一起。
+    this.closeHandoff();
+    return this.promptAndHandoff(issue, siteUrl, kind);
+  }
+
+  /** 交接失败用同一个对话框说明：浮层已经关了，写进浮层里等于没写（#407）。 */
+  private async tell(text: string): Promise<void> {
+    await this.ask({
+      title: tr("没法交给 agent"),
+      text,
+      buttons: [{ label: tr("知道了"), value: "ok", primary: true }],
+    });
+  }
+
+  private async promptAndHandoff(issue: JiraIssue, siteUrl: string, kind: "prefill" | "new"): Promise<void> {
+    // #407：先把「这单还有多少附件没下」弄清楚；没下完就先问，而不是把缺口埋进提示词。
+    let plan: JiraDownloadPlan | null = null;
+    try {
+      plan = await api.jiraDownloadPlan(issue.key);
+    } catch {
+      plan = null; // 问不到就当没下过，不阻断交接（D206 的老口径）。
+    }
+    const missing = plan?.items.filter((item) => !item.exists).length ?? 0;
+    if (missing > 0) {
+      const pick = await this.ask({
+        title: tr("这张票还有 {p1} 个附件没下载", { p1: missing }),
+        text: tr("下载完会把每个附件的绝对路径一起写进提示词；也可以先不下，稍后自己点「下载附件」。"),
+        buttons: [
+          { label: tr("立即下载"), value: "download", primary: true },
+          { label: tr("就先用现有的"), value: "keep" },
+        ],
+        cancel: tr("取消"),
+      });
+      if (!pick) return;
+      if (pick === "download") {
+        await this.startDownload(issue.key, siteUrl);
+        const entry = this.details.get(issue.key);
+        if (entry?.dlError) {
+          await this.tell(entry.dlError);
+          return;
+        }
+        try {
+          plan = await api.jiraDownloadPlan(issue.key);
+        } catch {
+          // 重问不到就用旧计划：能列几个是几个。
+        }
+      }
+    }
+    const files = (plan?.items ?? [])
+      .filter((item) => item.exists)
+      .map((item) => ({ name: item.filename, path: item.path }));
+    const dir = files.length > 0 ? plan!.dir : await this.downloadedDir(issue.key);
     const text = handoffPrompt({
       key: issue.key,
       summary: issue.summary,
@@ -1680,17 +2033,15 @@ export class JiraPanel {
       priority: issue.priority,
       type: issue.type,
       dir,
+      files,
     });
     try {
       const handoff = this.host.handoff;
       if (!handoff) throw new Error(tr("没有可用的会话出口"));
       if (kind === "prefill") handoff.prefill(text);
       else handoff.newSessionWith(text);
-      this.closeHandoff();
     } catch (e) {
-      if (this.handoffPop?.el !== pop) return;
-      err.textContent = tr("交给 agent 失败：{p1}", { p1: errText(e) });
-      err.hidden = false;
+      await this.tell(tr("交给 agent 失败：{p1}", { p1: errText(e) }));
     }
   }
 
@@ -1821,8 +2172,8 @@ export class JiraPanel {
 
   /** 底部固定一行 MCP 提示：本单不探测 MCP 装没装，只把人送到设置页（D202）。 */
   private footEl(): HTMLElement {
-    const foot = el("div", "jira-foot");
-    foot.append(el("span", "jira-mcp", tr("读工单描述和评论要用 Jira MCP：在「设置 → 扩展与 MCP」里安装。")));
+    const foot = el("footer", "jc-foot");
+    foot.append(el("span", "jc-foot__hint", tr("读工单描述和评论要用 Jira MCP：在「设置 → 扩展与 MCP」里安装。")));
     const go = el("button", "btn ghost", tr("打开设置"));
     go.onclick = () => {
       this.host.settings("ext");

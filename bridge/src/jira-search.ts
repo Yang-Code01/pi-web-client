@@ -28,13 +28,48 @@ export const STATUS_CATEGORIES: Record<StatusCategoryKey, string> = {
 /** 页面传的 `maxResults` 一律忽略。 */
 export const SEARCH_PAGE_SIZE = 20;
 
+/** 一次最多用多少个工单号查（`key IN (...)` 太长会撑爆 URL）。 */
+export const SEARCH_MAX_KEYS = 20;
+
 const MAX_TITLE = 200;
 const MAX_TEXT = 500;
 const MAX_PERSON = 200;
 const MAX_ACCOUNT_ID = 128;
 const MAX_NAME = 64;
 const MAX_TOKEN = 2048;
+/** 20 个完整键（每个最长 20 字）+ 分隔符，留一点余量。 */
+const MAX_KEY = 500;
 const PROJECT_KEY = /^[A-Z][A-Z0-9_]{0,9}$/;
+/** 完整工单号：项目 key + 数字（Jira 的 key 字段不支持 `~`，只能精确或 IN）。 */
+const FULL_KEY = /^[A-Za-z][A-Za-z0-9_]*-\d{1,9}$/;
+
+/** 工单号输入判定：空 / 一个或多个完整号 / 半截号（交给 `workItemKey ~` 模糊查）。 */
+export type KeyQuery =
+  | { kind: "none" }
+  | { kind: "exact"; keys: string[] }
+  | { kind: "fuzzy"; token: string };
+
+/**
+ * 工单号框的输入按形状自动分流，不做实时请求（服务端一次判完）：
+ * - 全是完整工单号（逗号 / 空格 / 顿号分隔）→ `key IN (...)`；
+ * - 其余（纯数字、半截号、号后面还跟着标题词）→ 取第一个 token 走 `workItemKey ~ "<token>*"`。
+ * `workItemKey` 与 `key IN` 都大小写不敏感。
+ */
+export function parseKeyQuery(raw: string | undefined): KeyQuery {
+  const text = (raw ?? "").trim();
+  if (!text) return { kind: "none" };
+  const tokens = text
+    .split(/[\s,，、]+/)
+    .map((token) => token.replace(/^#+/, "").trim())
+    .filter(Boolean);
+  if (tokens.length === 0) return { kind: "none" };
+  if (tokens.every((token) => FULL_KEY.test(token))) {
+    const keys = [...new Set(tokens.map((token) => token.toUpperCase()))].slice(0, SEARCH_MAX_KEYS);
+    return { kind: "exact", keys };
+  }
+  // 半截号交给 `workItemKey ~ "<token>*"`；通配符由这里剥掉，用户输入不能自己带 `*` / `?`。
+  return { kind: "fuzzy", token: tokens[0].replace(/[*?]/g, "") };
+}
 
 export interface SearchParams {
   title?: string;
@@ -47,6 +82,8 @@ export interface SearchParams {
   /** 自由文本（名字 / 邮箱），`personAccountId` 优先。 */
   person?: string;
   personAccountId?: string;
+  /** 工单号：`key` 精确 / IN，或 `workItemKey ~` 前缀模糊（见 `parseKeyQuery`）。 */
+  key?: KeyQuery;
   relations: SearchRelation[];
   unassigned: boolean;
   includeResolved: boolean;
@@ -121,6 +158,7 @@ export function parseSearchParams(query: URLSearchParams): SearchParams {
   const priority = read(query, "priority");
   const person = read(query, "person");
   const personAccountId = read(query, "personAccountId");
+  const rawKey = read(query, "key");
   const rawToken = query.get("nextPageToken");
   // 原样透传：不 trim、不改写，只有空串算没给。
   const nextPageToken = rawToken === null || rawToken === "" ? undefined : rawToken;
@@ -138,6 +176,7 @@ export function parseSearchParams(query: URLSearchParams): SearchParams {
   checkLength(type, MAX_NAME, "type", "类型名");
   checkLength(priority, MAX_NAME, "priority", "优先级名");
   checkLength(nextPageToken, MAX_TOKEN, "nextPageToken", "分页 token");
+  checkLength(rawKey, MAX_KEY, "key", "工单号");
 
   if (project !== undefined && !PROJECT_KEY.test(project)) {
     throw new SearchQueryError("project", "项目 key 只能是大写字母开头的 1–10 位大写字母、数字或下划线");
@@ -167,6 +206,7 @@ export function parseSearchParams(query: URLSearchParams): SearchParams {
   return {
     title,
     text,
+    key: parseKeyQuery(rawKey),
     project,
     statusCategory,
     status,
@@ -193,12 +233,25 @@ export function escJql(raw: string): string {
 }
 
 /**
- * 固定顺序：默认未解决 → 项目 → 状态类别 → 具体状态 → 类型 → 优先级 → 人员 OR 组 → 未分配 → ORDER BY。
- * 简单条件不套括号；人员组必须括号，否则 OR 会把整条查询拆开。
+ * 子句顺序：工单号 / 默认未解决 → 标题 → 全文 → 项目 → 状态类别 → 具体状态 → 类型 → 优先级 →
+ * 人员 OR 组 → 未分配 → ORDER BY。简单条件不套括号；人员组必须括号，否则 OR 会把整条查询拆开。
+ *
+ * 工单号非空时**不加**「未解决」过滤（D210）：查号就是要那一条，状态与它无关；
+ * 精确与模糊两条路一致。
  */
 export function buildSearchJql(params: SearchParams): string {
   const clauses: string[] = [];
-  if (!params.includeResolved) clauses.push("resolution = Unresolved");
+  const keyQuery = params.key;
+  const keys = keyQuery?.kind === "exact" ? keyQuery.keys : [];
+  const hasKey = keyQuery !== undefined && keyQuery.kind !== "none";
+  if (keys.length === 1) clauses.push(`key = "${escJql(keys[0])}"`);
+  else if (keys.length > 1) clauses.push(`key IN (${keys.map((key) => `"${escJql(key)}"`).join(", ")})`);
+  else if (keyQuery?.kind === "fuzzy") {
+    // 模糊走 `workItemKey`（Jira 云上的「工作项编号」，支持 `~`；`key` 字段不支持）。
+    // 前缀而不是包含：输 `2135` 应该先给 2135 / 21352，不是把所有带 2135 的号都倒出来（D243）。
+    clauses.push(`workItemKey ~ "${escJql(keyQuery.token)}*"`);
+  }
+  if (!hasKey && !params.includeResolved) clauses.push("resolution = Unresolved");
   const title = quote(params.title);
   if (title) clauses.push(`summary ~ "${title}"`);
   const text = quote(params.text);

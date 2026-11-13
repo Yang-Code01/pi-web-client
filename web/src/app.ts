@@ -408,7 +408,7 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
-  /** D241: 翻译用的默认模型（`provider/id`）与出厂默认，来自桥的偏好；还没读过时为空串。 */
+  /** D245: 翻译用的默认模型（`provider/id`）与出厂默认，来自桥的偏好；还没读过时为空串。 */
   private trModelPref = "";
   private trDefaultModel = "";
   /** #285: the form's two scopes share one tab id; this is what the segment and the form follow. */
@@ -9567,7 +9567,7 @@ export class App {
     }
   }
 
-  // ---------------------------------------------------------------- 翻译对照（D241）
+  // ---------------------------------------------------------------- 翻译对照（D245）
 
   /** 只有 md / text 且在大小上限内能翻：跟「编辑」同一个门槛，只是卡在 512 KB。 */
   private translatable(v: Viewer): boolean {
@@ -9650,7 +9650,7 @@ export class App {
   /** 语言 + 模型的选择器：模型目录是会话里那份（便宜的也在一起）。 */
   private trPicker(v: Viewer): void {
     const t = this.trOf(v);
-    // D241: 默认模型是桥那边记的偏好（copilot/gpt-6-luna），没有就退到当前会话的模型。
+    // D245: 默认模型是桥那边记的偏好（copilot/gpt-6-luna），没有就退到当前会话的模型。
     const sessionModel = this.models.find((m) => m.id === this.session?.model);
     const pref = this.trModelPref || (t.doc ? `${t.doc.provider}/${t.doc.model}` : "") || this.trDefaultModel;
     const values = this.models.map((m) => `${m.provider}/${m.id}`);
@@ -11075,7 +11075,7 @@ export class App {
     this.settingsOnlyOverrides = false;
     this.flashSettings("");
     if (tab === "runtime") this.socket.send({ type: "runtime.stats" });
-    // D241: 翻译偏好（默认模型）在桥那边，进这一页时读一遍再画。
+    // D245: 翻译偏好（默认模型）在桥那边，进这一页时读一遍再画。
     if (tab === "preview") {
       void api
         .trPrefs()
@@ -11538,7 +11538,7 @@ export class App {
   }
 
   /** D91: one switch for both channels; the page in front never gets pinged anyway. */
-  /** D241: 记住翻译用的模型（存在桥的状态目录里，不进 settings.json）。 */
+  /** D245: 记住翻译用的模型（存在桥的状态目录里，不进 settings.json）。 */
   private rememberTrModel(model: string): void {
     if (!model) return;
     this.trModelPref = model;
@@ -11554,7 +11554,7 @@ export class App {
   }
 
   /**
-   * D241: 预览里的翻译默认用哪个模型。出厂默认是 copilot/gpt-6-luna，这里选的会记住；
+   * D245: 预览里的翻译默认用哪个模型。出厂默认是 copilot/gpt-6-luna，这里选的会记住；
    * 不写进 settings.json，免得跟「本机才有这份模型目录」的事实对不上。
    */
   private paintPreviewSettings(pane: HTMLElement): void {
@@ -16244,13 +16244,14 @@ export class App {
   }
 
   /**
-   * 左栏收起后就没人报「现在在哪个目录」了 —— 会话卡片连同它的 cwd 一起被藏起来。这时把路径接到状态行
-   * 最前面、分支 chip 旁边，并且只在这时接：左栏展开时选中的那张卡片上写着同一个路径，再摆一个是重复。
-   * 窄屏不走「折叠」这条逻辑（左栏是一页 tab），也不显示。
+   * 路径 chip 常驻（D244，改自 D61）：桌面宽度下不管左栏收没收起，都把当前会话的 cwd 接到状态行最前面、
+   * 分支 chip 旁边 ——「现在在哪个目录」不该取决于旁边那一列收没收起来。左栏展开时会话卡片上也写着同一个
+   * 路径，那是两处不同用途：卡片是列表里的一条，这颗是「当前」的那一颗。
+   * 窄屏仍不显示：左栏是一页 tab、没有折叠这回事，状态行本来就挤。
    */
   private syncCwdChip(): void {
     if (!this.cwdChip) return;
-    this.cwdChip.hidden = !(this.collapsed.sessions && !this.compact());
+    this.cwdChip.hidden = this.compact();
   }
 
   /** #392：chip 的说明随 git 探测结果更新；键里的 \n 会让 i18n 扫描把 `{p1}` 当成键本身，换行拼在键外。 */
@@ -18040,7 +18041,7 @@ interface Viewer {
   ext: { url: string; label: string } | null;
   /** 回到一步 html 预览时要回放的滚动位置，等 iframe load 再发（D63）。 */
   pendingScroll: number;
-  /** 这一份的翻译状态（D241）；没翻过是 null，换文件就丢。 */
+  /** 这一份的翻译状态（D245）；没翻过是 null，换文件就丢。 */
   tr: TrView | null;
   /** 轮询翻译进度的定时器。 */
   trTimer: number | null;
