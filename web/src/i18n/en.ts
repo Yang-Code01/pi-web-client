@@ -2291,13 +2291,8 @@ export const en: Dict = {
   "关注者权限不足，本次只查了经办人和报告人。": "You can't view watchers, so this search only used assignee and reporter.",
   "工单号": "Issue key",
   "CASPH30BUG-123，或只写 1235": "CASPH30BUG-123, or just 1235",
-<<<<<<< HEAD
   "完整工单号精确查；多个用逗号分开；半截号按号段前缀匹配。": "A full issue key matches exactly; separate several with commas; a partial key is matched by number prefix.",
-=======
-  "完整工单号精确查；多个用逗号分开；半截号或纯数字走模糊匹配。": "A full issue key matches exactly; separate several with commas; a partial key or a plain number is matched loosely.",
-  "工单号按模糊匹配：最多 {p2} 个候选号，这次找到 {p1} 个": "Issue key matched loosely: at most {p2} candidate keys, {p1} found",
   "公网访问只能看：改连接、换附件目录要回本机。": "Public access is view-only: change the connection or the attachment folder from the host machine.",
->>>>>>> eb54342 (fix(jira): 按 code review 收口工单号检索的边界（#407）)
   "没有匹配这个工单号的工单": "No issue matches that issue key",
   "没有这个工单号，下面是按号段模糊找到的": "No such issue key; these share its number prefix",
   "具体状态": "Status",

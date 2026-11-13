@@ -4228,14 +4228,14 @@ D
 3. **头部用站点域名当标题**（`kaigit.atlassian.net`），副行是登录邮箱，徽章是显示名 / 未完成条数 / token 掩码；刷新失败、凭据失效、关注者降级、**公网只读**走横条，可单条关掉（`dismissed` 集合只在打开期间有效）。只读这件事由桥告知：`GET /api/jira/config` 多回一个 `readonly: ctx.publicReq`，页面据此挂「公网只读」徽章与「改连接、换附件目录要回本机」的横幅 —— 写操作本来就会被桥回 403 `tunnel_readonly`，但人得先知道，而不是点下去才撞墙。
 4. **工单号一格，形状由桥判**：`parseKeyQuery` 去 `#`、按空格/逗号切段；每段都像完整键（`^[A-Za-z][A-Za-z0-9_]*-\d{1,9}$`）→ `exact`（大写去重，最多 `SEARCH_MAX_KEYS = 20`）；否则 `fuzzy`，只拿第一段当 token。页面上不多一颗「模糊」开关，也不做实时下拉 —— 用户明确要「只在提交时模糊」。
 5. **工单号非空时不加 `resolution = Unresolved`**：精确、多个、模糊一致。查指定号就该看到它的真实状态；「含已解决」对号查询不再起作用（保持不变会让「查 CASPH30BUG-12 却什么都没有」变成常见困惑）。
-6. **模糊在桥里两级完成，页面只发一次请求**：先 `GET /rest/api/3/issue/picker?query=<token>&currentJQL=<其它条件 + ORDER BY>`，只收 `sections[id=cs]`（当前搜索）的 key，再 `key IN ("…")` 拉完整行，响应带 `fuzzy: { token, total }`。`currentJQL` 永远带 —— 不给时 Jira 只回「历史搜索」（`hs`），与号无关；`hs` 段一律不收。0 候选直接回空、不再打第二次 search。错误口径按入口分：picker 的 403 一律当没找到；显式模糊时 5xx / 400 / 429 照常报错（限流不能冒充「没找到」）；自动退回时连 5xx 也吞（那里本来就要回空结果）。
-7. **完整号查空自动退回模糊**：只有一个键、`key =` 查回 0 行时，拿这个键再问一次 picker；有相近号就用 `key IN` 再查，响应标 `fuzzy.fallback = true`，页面写「没有这个工单号，下面是相近的 N 个」。
+6. **模糊直接拼进 JQL**：`workItemKey ~ "<token>*"` 前缀匹配，一条查询由 Jira 执行、可翻页，响应带 `fuzzy: { token }`（D243 取代了原先「picker 找候选 → key IN 拉行」的两级做法）。
+7. **完整号查空自动退回模糊**：只有一个键、`key =` 查回 0 行时，用这个键再发一次 `workItemKey ~ "<key>*"`；有结果就采用，响应标 `fuzzy.fallback = true`，页面写「没有这个工单号，下面是按号段模糊找到的」。
 
 **为什么：** 外壳换成控制台不是为了好看，是因为面板的条目数已经超出「一个 sheet 塞得下」的量级：账号/凭据/附件属于设置，搜索与列表属于日常，混在一个滚动区里必然互相挤。选「照抄 sysmanage」而不是抽象出通用控制台，是因为三个控制台（设置、本机管理、Jira）布局相似但内容密度不同，先复制数值（1120×800、214px、断点 900/640），等第四个出现再抽。工单号这一格之所以不拆成「精确/模糊」两个开关，是因为用户输入的形状本身已经说明了意图（带项目键的整串 vs 半截数字），让桥判比让人再选一次更省事；而「只在提交时模糊」把 picker 的 20 条上限、无分页这些毛病留在提交之后，不污染输入过程。
 
-**代价 / 可改：** 模糊结果受 picker 限制，最多约 20 个候选，且它按首词匹配（`2135` 会带出 `CASPH30BUG-17233` 这种），所以「相近」不等于「包含」；真要全量搜号得等 Jira 提供 `key ~`。`fallback` 只在「一个完整键查空」时触发，多键查空不退回（避免把 N 个键的语义混成一个）。`SEARCH_MAX_KEYS = 20` 与 picker 的上限一致，多给的键会被静默截断。控制台外壳与 sysmanage 各存一份 CSS，改视觉要改两处 —— 已知，等第三个控制台出现再谈抽象。
+**代价 / 可改：** 前缀匹配是「号段从头对」，输入 `2135` 不会命中 `12135`（要包含就得自己多打几位），这是有意的取舍（D243）。`fallback` 只在「一个完整键查空」时触发，多键查空不退回（避免把 N 个键的语义混成一个）。`SEARCH_MAX_KEYS = 20` 是 `key IN` 的上限，多给的键会被静默截断。控制台外壳与 sysmanage 各存一份 CSS，改视觉要改两处 —— 已知，等第三个控制台出现再谈抽象。
 
-**验证：** `web/tests/jira-unit.mjs` 35 例（含 `key` 的 normalize / serialize / read 往返）；`bridge/tests/jira-search-unit.mjs` 23 例（精确 / IN / `#` 前缀 / 20 键截断 / 判模糊 / 超长 400）；`bridge/tests/jira-e2e.mjs` 57 例（假 Jira 的 picker：cs 与 hs 分流、picker 空/403、`emptyOnce` 触发 fallback、`key IN` 与其它条件同时拼）；`npm --prefix web run typecheck`（`i18n-check` 2599 keys × 3 langs）；`npm run build:web`；隔离实例（jira1，真凭据）手点：`2135` → 4 行 +「工单号按模糊匹配：找到 4 个候选号」，`CASPH30BUG-21352` → 1 行无提示，`CASPH30BUG-99999` → 「没有匹配这个工单号的工单」，520 宽输入框可见不溢出。
+**验证：** `web/tests/jira-unit.mjs` 35 例（含 `key` 的 normalize / serialize / read 往返）；`bridge/tests/jira-search-unit.mjs` 25 例（精确 / IN / `#` 前缀 / 20 键截断 / 判模糊 / 前缀 JQL / 超长 400）；`bridge/tests/jira-e2e.mjs` 58 例（`workItemKey` 前缀 JQL、与标题同时生效、模糊查空、上游 403 照实报、`emptyOnce` 触发 fallback）；`npm --prefix web run typecheck`（`i18n-check` 2597 keys × 3 langs）；`npm run build:web`；真 Jira 探针见 D243；隔离实例（jira1，真凭据）手点：`2135` → 4 行，`CASPH30BUG-21352` → 1 行无提示，`CASPH30BUG-99999` → 「没有匹配这个工单号的工单」，520 宽输入框可见不溢出。
 
 ## D242 附件一键下载：行尾一颗按钮、按工单号建目录、撞同名先问；附件内容认 `api.media.atlassian.com`（#407）
 
@@ -4254,3 +4254,20 @@ D
 **代价 / 可改：** 冲突询问把一次点击变成两次，全量重下老目录时会多点一次「跳过」；`exists` 只比文件名、不比大小或 mtime，Jira 上换了同名文件不会自动重下（要么「覆盖」，要么先删目录）。计划接口与下载接口各读一次详情，单票会打两次 Jira；附件多时能感到延迟，可改成 409 之后复用同一份 plan。行下方那行小结会随目录变长而省略，路径靠 hover 标题看全。
 
 **验证：** `bridge/tests/jira-e2e.mjs` 61 例（409 清单与磁盘一致、`skip` 不重写、`overwrite` 同名覆盖、`GET download` 只算不写、隧道 403、`attachmentRedirectAllowed` 认 `api.media.atlassian.com` 但不认 `media.atlassian.com` 与后缀伪装）；`web/tests/jira-unit.mjs` 36 例（`downloadMark("exists")`、`handoffPrompt` 逐条列路径）；隔离实例（jira1，真凭据）探针：行尾按钮 → 建 `CASPH30INC-17971/` 并下了 1 个 xlsx、再点弹「有 1 个同名附件」选跳过 → 文件字节不变、换一张没下过的票点「交给 agent」→ 先问「还有 2 个附件没下载」→ 立即下载 → 目录出现且计划接口给出绝对路径。
+
+## D243 工单号模糊从 picker 两级改成 `workItemKey ~ "<token>*"` 前缀匹配（#407）
+
+**问题：** D241 选的「picker 找候选 → `key IN` 拉行」在真站点上毛病很硬：picker 只回约 17–20 条、不能翻页，匹配还松（`query=2135` 会把 `CASPH30BUG-17233` 一起带出来），所以我们只能在结果上方写「最多 20 个候选」，用户还得自己判断哪几条真是他要的。
+
+**决定：** 模糊这一级不再调 picker，直接拼 `workItemKey ~ "<token>*"`：
+
+- `parseKeyQuery` 判出 `fuzzy` 后，token 先剥掉 `*` / `?`（用户不能自带通配符），再由 `buildSearchJql` 拼前缀表达式，和其它条件照常 AND。
+- 一条查询拿到真正的工单行，`nextPageToken` 照常翻页，没有条数上限，也不再需要「最多 N 条」的提示。
+- 完整号查空后的自动退回保留，只是退到这条前缀查询，标 `fuzzy.fallback = true`，文案「没有这个工单号，下面是按号段模糊找到的」。
+- picker 相关的桥代码（`pickIssueKeys` / `contextOf` / `PICKER` 常量 / `fuzzy.total`）整段删除；`fuzzy` 只剩 `{ token, fallback? }`。
+
+**为什么：** 真 Jira 探针（本机凭据，只读 GET）比出来的：`workItemKey ~ "2135"` 只回号段正好是 2135 的两条；`~ "*2135*"` 会把 `12135` 也带出来；`~ "*213*"` 直接 20+ 条；`~ "casph30bug-2135*"` 回 `CASPH30BUG-21352` + `CASPH30BUG-2135`，正是要的前缀语义；`project = "..." AND workItemKey ~ "*21*"` 也照常 AND。前缀比包含准、比 picker 全，而且服务端执行、能翻页 —— 三个毛病一次解决，代码还更短。
+
+**代价 / 可改：** 前缀语义意味着 `12135` 里含的 `2135` 不会被搜到（要包含得自己多打几位）；这符合「按号段」的直觉，但如果以后有人要「任意位置包含」，改成 `workItemKey ~ "*<token>*"` 只是一行，代价是结果明显变宽。`workItemKey` 是 Jira Cloud 的字段，其它部署形态（DC/Server）不一定有，桥没有做能力探测 —— 真遇到会以 400 `jira_query` 冒出来。
+
+**验证：** `bridge/tests/jira-search-unit.mjs` 25 例（含「半截号走 `workItemKey ~`」与用户自带 `*`/`?` 被剥掉）；`bridge/tests/jira-e2e.mjs` 58 例（前缀 JQL 逐字断言、模糊与标题同时生效、模糊查空仍回 `fuzzy`、上游 403 照实报 403 `jira_forbidden`、`emptyOnce` 触发一次 fallback）；真 Jira 探针 `.scratch/workitemkey-probe.mjs` 六种输入逐条核对；`npm --prefix web run typecheck` + `i18n-check` 2597 keys × 3 langs。

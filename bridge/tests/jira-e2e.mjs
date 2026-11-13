@@ -35,13 +35,6 @@ let searchMode = "ok";
 let statusesMode = "ok";
 /** 人员搜索：`ok` / `403` / `401` / `500`。 */
 let usersMode = "ok";
-<<<<<<< HEAD
-=======
-/** #407 工单号模糊用的 picker：`ok` / `empty` / `403` / `500`；`ok` 时 cs 段给 ACME-7 / ACME-77，hs 段故意给无关的 ZZZ-1。 */
-let pickerMode = "ok";
-/** 上游收到的最后一个 picker 查询串。 */
-let lastPicker = null;
->>>>>>> eb54342 (fix(jira): 按 code review 收口工单号检索的边界（#407）)
 /** `search/jql` 被命中几次（`emptyOnce` 用例用：第一次空，第二次才给数据）。 */
 let searchHits = 0;
 /** 每次 search/jql 收到的 nextPageToken（断言分页透传）。 */
@@ -114,23 +107,6 @@ const jira = http.createServer((req, res) => {
     return false;
   };
 
-<<<<<<< HEAD
-=======
-  if (url.pathname === "/rest/api/3/issue/picker") {
-    hits.picker++;
-    lastPicker = url.searchParams;
-    if (deny()) return;
-    if (pickerMode === "403") return send(403, { errorMessages: ["no permission"] });
-    if (pickerMode === "500") return send(500, { errorMessages: ["boom"] });
-    const matches = pickerMode === "empty" ? [] : [{ key: "ACME-7" }, { key: "ACME-77" }];
-    return send(200, {
-      sections: [
-        { id: "hs", label: "History", issues: [{ key: "ZZZ-1" }] },
-        { id: "cs", label: "Current", issues: matches },
-      ],
-    });
-  }
->>>>>>> eb54342 (fix(jira): 按 code review 收口工单号检索的边界（#407）)
   if (url.pathname === "/rest/api/3/search/jql") {
     hits.search++;
     searchHits++;
@@ -154,8 +130,12 @@ const jira = http.createServer((req, res) => {
       if (token === null) return send(200, { issues: ISSUES.slice(0, 1), nextPageToken: "tok-2", isLast: false });
       return send(200, { issues: ISSUES.slice(1), isLast: true });
     }
-    // #407 自动退回模糊：第一次空，第二次（key IN 之后）才给数据。
+    // #407 自动退回模糊：第一次空，第二次（workItemKey 之后）才给数据。
     if (searchMode === "emptyOnce") return send(200, { issues: searchHits === 1 ? [] : ISSUES });
+    // 自动退回的第二次自己失败：退回是尽力而为，桥应当仍回第一次的空结果。
+    if (searchMode === "emptyThen500") {
+      return searchHits === 1 ? send(200, { issues: [] }) : send(500, { errorMessages: ["boom"] });
+    }
     return send(200, { issues: searchMode === "empty" ? [] : ISSUES });
   }
   if (url.pathname === "/rest/api/3/issue/ACME-12") {
@@ -1351,22 +1331,11 @@ test("GET search：工单号超长 / 非法参数照样 400，码是 jira_query"
   assert.equal(out.json.code, "jira_query");
 });
 
-test("GET search：显式模糊遇到 picker 5xx 照常报错（不冒充成没找到）", async () => {
+test("GET search：自动退回的第二次查询失败时，仍回第一次的空结果", async () => {
   await connect();
-  pickerMode = "500";
-  const out = await call("GET", "/api/jira/search?key=7");
-  pickerMode = "ok";
-  assert.equal(out.status, 502);
-  assert.equal(out.json.code, "jira_upstream");
-});
-
-test("GET search：自动退回时 picker 5xx 静默，仍回原本的空结果", async () => {
-  await connect();
-  searchMode = "emptyOnce";
+  searchMode = "emptyThen500";
   searchHits = 0;
-  pickerMode = "500";
   const out = await call("GET", "/api/jira/search?key=ACME-12");
-  pickerMode = "ok";
   searchMode = "ok";
   assert.equal(out.status, 200);
   assert.deepEqual(out.json.issues, []);

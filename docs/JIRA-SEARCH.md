@@ -113,7 +113,7 @@ ORDER BY <sort> <order>[, updated DESC]
 
 未知 query 参数一律忽略（向前兼容）；页面没有 `jql` 参数入口。
 
-### 3.5 工单号：自动判定 + 模糊两级查询
+### 3.5 工单号：自动判定 + 号段前缀模糊
 
 界面上只有一格「工单号」，怎么查由桥判（`parseKeyQuery`），页面不猜：
 
@@ -121,23 +121,20 @@ ORDER BY <sort> <order>[, updated DESC]
 type KeyQuery =
   | { kind: "none" }
   | { kind: "exact"; keys: string[] }   // 完整键：key = / key IN
-  | { kind: "fuzzy"; token: string };   // 其余：先问 picker 换成候选键
+  | { kind: "fuzzy"; token: string };   // 其余：workItemKey ~ "<token>*"
 ```
 
 - 先去掉每段开头的 `#`，按空格 / 逗号（含全角）/ 顿号切段。
-- 每段都长得像完整键（`^[A-Za-z][A-Za-z0-9_]*-\d{1,9}$`）→ `exact`，大写去重，最多 `SEARCH_MAX_KEYS = 20` 个。
-- 否则 `fuzzy`，只拿**第一段**当 token（`CASPH30BUG-21352 白屏` → `CASPH30BUG-21352`，跟 picker 自己只看首词的行为一致）。
-- 走 `exact` 但一行都没查到、且只有一个键时，自动退回这一级（`fuzzy.fallback = true`），结果上方注明「没有这个工单号，下面是相近的 N 个」。
+- 每段都长得像完整键（`^[A-Za-z][A-Za-z0-9_]*-d{1,9}$`）→ `exact`，大写去重，最多 `SEARCH_MAX_KEYS = 20` 个（`key IN` 的上限）。
+- 否则 `fuzzy`，只拿**第一段**当 token（`CASPH30BUG-21352 白屏` → `CASPH30BUG-21352`）；token 里的 `*` / `?` 会被剥掉，用户不能自带通配符。
+- 走 `exact` 但一行都没查到、且只有一个键时，自动退回一次 `fuzzy`（`fallback: true`），结果上方注明「没有这个工单号，下面是按号段模糊找到的」。
 
-模糊这一级在桥里做，页面只发一次请求：
+模糊就是一条普通查询，不多打一次请求：
 
-1. `GET /rest/api/3/issue/picker?query=<token>&currentJQL=<其它条件 + ORDER BY>`。`currentJQL` 永远带（不给时 Jira 只回「历史搜索」，与本号无关）；它就是 `buildSearchJql({...params, key: undefined, includeResolved: true})`。
-2. 只收 `sections[id=cs]`（当前搜索）的 `issue.key`，大写去重，最多 20 个；`hs`（历史搜索）不参与。
-3. 有候选就再查一次 `key IN ("…")` + 其它条件，页面拿到的是正常结果行，只是多了 `fuzzy: { token, total }`。
-4. 0 个候选直接回空结果，不再打第二次 search。错误口径按入口分：picker 的 403 一律当「没找到」（它的权限比 search 窄，很常见）；**显式模糊**时 5xx / 400 / 429 照常报错，别把限流或坏 JQL 显示成「没找到」；**完整号查空后的自动退回**连 5xx 也吞 —— 那里本来就要回一串空结果，不该再叠一条新失败。
-5. 结果上方写清上限（`SEARCH_MAX_KEYS = 20`）：「最多 20 个候选号，这次找到 N 个」；自动退回时写「没有这个工单号，下面是相近的 N 个」。
-
-为什么不用 JQL 自己模糊：`key` 字段不支持 `~`（Atlassian 的 unsupported operators 里就有它，JRACLOUD-61197 同样结论）；`text ~ "21352"` / `summary ~ "21352"` 也不命中工单号。picker 是唯一官方按号子串查的口子，它的毛病是只回约 17–20 条、没有分页、只按首词匹配 —— 所以它是「找候选」，最终结果仍由 `key IN` 拉全行。
+- `key` 字段不支持 `~`（Atlassian 的 unsupported operators 里就有它，JRACLOUD-61197 同样结论），`text ~` / `summary ~` 也不命中工单号；Jira Cloud 的 `workItemKey` 支持 `~`，所以拼 `workItemKey ~ "<token>*"`。
+- 用**前缀**而不是包含：`2135` 该命中 `CASPH30BUG-2135` / `CASPH30BUG-21352`，不该把 `CASPH30BUG-12135` 一起倒出来（实测 `*2135*` 会）。
+- 服务端执行，`nextPageToken` 照常翻页，没有条数上限，也不需要「最多显示 N 条」的提示。
+- 回包带 `fuzzy: { token, fallback? }`，页面只在 `fallback` 时加那行说明。
 
 ## 4. 接口
 

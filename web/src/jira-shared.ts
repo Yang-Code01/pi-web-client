@@ -422,11 +422,7 @@ export interface JiraSearchMeta {
 
 /** 搜索表单的全部条件。空串 = 不限；人员要么是选中的 accountId，要么是自由文本。 */
 export interface SearchState {
-<<<<<<< HEAD
   /** 工单号：完整键、多个键（逗号/空格分隔）或半截号；形状由桥判（D241、D243）。 */
-=======
-  /** 工单号：完整键、多个键（逗号/空格分隔）或半截号；形状由桥判（D241）。 */
->>>>>>> eb54342 (fix(jira): 按 code review 收口工单号检索的边界（#407）)
   key: string;
   title: string;
   text: string;
