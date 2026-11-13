@@ -927,7 +927,9 @@ test("GET downloaded：只数 <root>/<KEY>/ 里的普通文件，key 大小写�
 
   const out = await call("GET", "/api/jira/issues/acme-12/downloaded");
   assert.equal(out.status, 200);
-  assert.deepEqual(out.json, { dir, count: 2 });
+  assert.equal(out.json.dir, dir);
+  assert.equal(out.json.count, 2);
+  assert.deepEqual(out.json.files.map((file) => file.name).sort(), ["a.txt", "b.png"]);
   assert.equal(hits.issue, 0, "只读目录，不拉详情");
 });
 
@@ -948,7 +950,9 @@ test("GET downloaded：目录不存在 / 为空都说没下过，隧道访客也
   fs.writeFileSync(path.join(dir, "only.txt"), "x");
   const after = await call("GET", "/api/jira/issues/ACME-31/downloaded", undefined, tunnel);
   assert.equal(after.status, 200);
-  assert.deepEqual(after.json, { dir, count: 1 });
+  assert.equal(after.json.dir, dir);
+  assert.equal(after.json.count, 1);
+  assert.deepEqual(after.json.files.map((file) => file.name), ["only.txt"]);
 });
 
 test("safeFileName：非法字符 / 保留名 / 空名 / 结尾点 / 长度", () => {
