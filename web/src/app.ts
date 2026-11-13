@@ -66,7 +66,6 @@ import {
   type MatrixRow,
   type SettingsJson,
 } from "./settings-matrix.ts";
-import { setFaviconDot } from "./favicon-dot.ts";
 import { paintSubagentsPage, type SubagentScan } from "./subagents.ts";
 import type { AcpDelegatePatch, AcpDelegateView } from "./subagents-acp.ts";
 import { applyLang, detectLang, errText, fmtDate, fmtNum, fmtRelative, fmtTime, isLang, LANGS, type Lang } from "./i18n/index.ts";
@@ -350,8 +349,10 @@ export class App {
   private bgTimer: number | null = null;
   /** #396：顶栏「内网通」上的未读圆点（有未读才画，不写数字）；`pollPeerUnread()` 每 5 秒写一次。 */
   private peerUnread = 0;
-  /** #397：免打扰开着时标签页不画红点（顶栏圆点照常）；`pollPeerUnread()` 与 `/api/peer` 一起读。 */
+  /** #397：免打扰开着时标签页不加圆点（顶栏圆点照常）；`pollPeerUnread()` 与 `/api/peer` 一起读。 */
   private peerDnd = false;
+  /** #409：`fillExt()` 写下的页面标题（不含「● 」前缀）；前缀只由 `paintDocumentTitle()` 加减。 */
+  private baseTitle = "pi";
   /** 上一次点「继续」的会话与时刻（D159）：`pi.status` 回来之前按钮还亮着，连点会排两条。 */
   private continueAt: { id: string; at: number } = { id: "", at: 0 };
   /** Skill palette state (the popover above the composer). */
@@ -4379,7 +4380,7 @@ export class App {
   private startPeerUnread(): void {
     void this.pollPeerUnread();
     window.setInterval(() => void this.pollPeerUnread(), 5000);
-    document.addEventListener("visibilitychange", () => this.paintPeerFavicon());
+    document.addEventListener("visibilitychange", () => this.paintDocumentTitle());
   }
 
   private async pollPeerUnread(): Promise<void> {
@@ -4398,12 +4399,13 @@ export class App {
     this.peerUnread = total;
     this.peerDnd = dnd;
     this.paintPeerDot();
-    this.paintPeerFavicon();
+    this.paintDocumentTitle();
   }
 
-  /** #397：页面不在前台、有未读、免打扰没开：网页图标画红点；其余时候是原图标。标题不动。 */
-  private paintPeerFavicon(): void {
-    setFaviconDot(document.hidden && this.peerUnread > 0 && !this.peerDnd);
+  /** #409：页面不在前台、有未读、免打扰没开：标题前加「● 」；其余时候是原标题。标签图标不动（#397 的红点已撤）。 */
+  private paintDocumentTitle(): void {
+    const unread = document.hidden && this.peerUnread > 0 && !this.peerDnd;
+    document.title = unread ? `● ${this.baseTitle}` : this.baseTitle;
   }
 
   /** 圆点挂在按钮末尾。`setWideLabel()` 会整个换掉按钮的子节点，所以 `paintChrome()` 在它之后也要调一次。 */
@@ -13069,7 +13071,8 @@ export class App {
   /** Extension widgets above / below the editor, status lines below, title on the browser tab. */
   private fillExt(): void {
     const ext = this.currentId ? this.ext : { status: [], widgets: [], title: null };
-    document.title = ext.title ? `${ext.title} · pi` : "pi";
+    this.baseTitle = ext.title ? `${ext.title} · pi` : "pi";
+    this.paintDocumentTitle();
     const block = (lines: string[], cls: string, title: string) => {
       const node = el("pre", cls, lines.join("\n"));
       node.title = title;

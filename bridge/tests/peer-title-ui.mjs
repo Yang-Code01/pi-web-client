@@ -1,12 +1,12 @@
 /**
- * #397 网页图标红点探针：页面不在前台（document.hidden）且有未读、免打扰没开时，标签页的 <link rel=icon>
- * 换成「原图标 + 右上角红点」的画布图；切回前台立即还原原 href；标题文字不随未读变化。
- * 主界面（/）测红点、切回恢复、免打扰；独立内网通页面（/peer）不换标签图标、不画标签红点（用户决定），只看组件上的圆点与列表数字。
+ * #409 标题圆点探针：主界面（/）页面不在前台（document.hidden）且有未读、免打扰没开时，标题前加「● 」；
+ * 切回前台立即去掉；免打扰开启时不加。主界面的标签图标始终是原图标（#397 的红点已撤）。
+ * 独立内网通页面（/peer）标题与图标都不变，只看组件上的圆点与列表数字。
  *
  * 真 bridge（PI_PEER=0，不拉起 peer 子进程），页面里 page.route 假造 /api/peer、/api/peer/unread、
  * /api/peer/threads 等。「离开页面」用 init script 覆盖 document.hidden / visibilityState，再派发 visibilitychange。
  *
- *   npm run build:bridge && npm run build:web && node bridge/tests/peer-favicon-ui.mjs
+ *   npm run build:bridge && npm run build:web && node bridge/tests/peer-title-ui.mjs
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -15,10 +15,11 @@ import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
 
 const PORT = 7934;
-const ROOT = path.join(REPO, ".scratch", "peer-favicon-ui");
+const ROOT = path.join(REPO, ".scratch", "peer-title-ui");
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const BASE = `http://127.0.0.1:${PORT}`;
+const DOT = "● ";
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const results = [];
 const check = (name, ok, detail = "") => {
@@ -141,44 +142,49 @@ try {
     await main.click('button:has-text("进入")');
   }
   await main.locator('.topbar [data-act="peer"]').waitFor({ state: "visible", timeout: 20000 });
-  const mainBase = await main.getAttribute('link[rel~="icon"]', "href", { timeout: 5000 }).catch(() => null);
+  const mainIconBase = await main.getAttribute('link[rel~="icon"]', "href", { timeout: 5000 }).catch(() => null);
   const mainTitle = await main.title();
+  const iconIsBase = async () => (await main.getAttribute('link[rel~="icon"]', "href")) === mainIconBase;
+  const mainTitleDotted = async () => (await main.title()).startsWith(DOT);
 
-  // 前台有未读：不画红点（轮询完成后再看一次）。
+  // 前台有未读：标题不带圆点，图标不变（轮询完成后再看一次）。
   await until(async () => (await main.locator('.topbar [data-act="peer"] .dot').count()) === 1, 7000, "主界面顶栏圆点");
-  check("前台有未读时主界面不画红点", !(await iconState(main)).red, `href 是否原样=${(await iconState(main)).href === mainBase}`);
+  check("前台有未读时主界面标题没有圆点", mainTitle === (await main.title()) && !(await mainTitleDotted()), `标题=「${await main.title()}」`);
+  check("前台有未读时主界面图标是原图标", (await iconState(main)).red === false && (await iconIsBase()));
 
-  // 切到后台：红点出现，标题不变。
+  // 切到后台：标题前出现「● 」，原标题文字不变；图标仍是原图标、没有红点。
   await setHidden(main, true);
-  await until(async () => (await iconState(main)).red, 4000, "主界面后台红点");
-  check("后台有未读时主界面网页图标出现红点", true);
-  check("主界面标题文字不随未读变化", (await main.title()) === mainTitle, `标题=「${await main.title()}」`);
+  await until(async () => mainTitleDotted(), 4000, "主界面后台标题圆点");
+  check("后台有未读时主界面标题以「● 」开头", (await main.title()) === DOT + mainTitle, `标题=「${await main.title()}」`);
+  check("后台有未读时主界面图标不画红点", !(await iconState(main)).red && (await iconIsBase()));
 
-  // 切回前台：立即恢复原 href。
+  // 切回前台：标题前缀立即去掉，原标题文字不变。
   await setHidden(main, false);
-  await until(async () => (await iconState(main)).href === mainBase && !(await iconState(main)).red, 2000, "主界面恢复");
-  check("切回前台后主界面恢复原图标", (await main.getAttribute('link[rel~="icon"]', "href")) === mainBase);
+  await until(async () => !(await mainTitleDotted()), 2000, "主界面切回去掉圆点");
+  check("切回前台后主界面标题恢复原样", (await main.title()) === mainTitle, `标题=「${await main.title()}」`);
+  check("切回前台后主界面图标仍是原图标", (await iconIsBase()) && !(await iconState(main)).red);
 
-  // 后台 + 读完：红点消失。
+  // 后台 + 读完：圆点不出现。
   await setHidden(main, true);
-  await until(async () => (await iconState(main)).red, 4000, "主界面后台红点（再次）");
+  await until(async () => mainTitleDotted(), 4000, "主界面后台圆点（再次）");
   peer.total = 0;
-  await until(async () => !(await iconState(main)).red, 9000, "主界面读完后红点消失");
-  check("后台读完后主界面红点消失", true);
+  await until(async () => !(await mainTitleDotted()), 9000, "主界面读完后圆点消失");
+  check("后台读完后主界面标题没有圆点", (await main.title()) === mainTitle, `标题=「${await main.title()}」`);
 
-  // 又有未读：红点回来；免打扰开启：红点不出现，顶栏圆点照常。
+  // 又有未读：圆点回来；免打扰开启：标题不出现圆点，顶栏圆点照常。
   peer.total = 2;
-  await until(async () => (await iconState(main)).red, 9000, "主界面新未读红点");
-  check("后台又有未读时主界面红点回来", true);
+  await until(async () => mainTitleDotted(), 9000, "主界面新未读圆点");
+  check("后台又有未读时主界面标题圆点回来", true);
   peer.dnd = true;
-  await until(async () => !(await iconState(main)).red, 9000, "主界面免打扰下红点消失");
-  check("免打扰开启时主界面不出现红点", true);
+  await until(async () => !(await mainTitleDotted()), 9000, "主界面免打扰下圆点消失");
+  check("免打扰开启时主界面标题不出现圆点", (await main.title()) === mainTitle, `标题=「${await main.title()}」`);
   const mainDotsDnd = await main.locator('.topbar [data-act="peer"] .dot.unread').count();
   check("免打扰开启时主界面顶栏圆点照常", mainDotsDnd === 1, `圆点=${mainDotsDnd}`);
+  check("免打扰开启时主界面图标不画红点", !(await iconState(main)).red && (await iconIsBase()));
   peer.dnd = false;
-  await until(async () => (await iconState(main)).red, 9000, "主界面关免打扰后红点回来");
+  await until(async () => mainTitleDotted(), 9000, "主界面关免打扰后圆点回来");
   await setHidden(main, false);
-  await until(async () => !(await iconState(main)).red, 2000, "主界面切回前台");
+  await until(async () => !(await mainTitleDotted()), 2000, "主界面切回前台");
   await main.close();
 
   // ---- 独立内网通页面（/peer）：一开始就在后台，模拟「后台标签页里有未读」 ----
@@ -186,13 +192,13 @@ try {
   page.on("pageerror", (e) => pageErrors.push(`内网通页面: ${e.message}`));
   await page.addInitScript(hiddenInit(true));
   await page.goto(`${BASE}/peer`, { waitUntil: "domcontentloaded" });
-  // 独立页不换标签图标（用户决定）：没有 <link rel=icon>，后台有未读也不画标签红点；未读只看组件上的圆点。
+  // 独立页不改标题、不换标签图标：没有 <link rel=icon>，后台有未读也不画标签红点；未读只看组件上的圆点。
   await until(async () => (await page.locator("#rail .dot.unread, #mobnav .dot.unread").count()) >= 1, 9000, "内网通页面消息圆点");
   const peerIconLinks = await page.locator('link[rel~="icon"]').count();
   check("独立内网通页面没有标签图标", peerIconLinks === 0, `link=${peerIconLinks}`);
   const peerIcon = await iconState(page);
   check("后台有未读时独立内网通页面不画标签红点", !peerIcon.red, `href=「${peerIcon.href}」`);
-  check("内网通页面标题文字不随未读变化", (await page.title()) === "内网通 · pi", `标题=「${await page.title()}」`);
+  check("后台有未读时独立内网通页面标题不加圆点", (await page.title()) === "内网通 · pi", `标题=「${await page.title()}」`);
 
   const pill = await page.locator(".pill.unread").first().textContent().catch(() => "");
   check("未读时内网通页面列表数字照常", pill.trim() === "2", `列表数字=「${pill.trim()}」`);
@@ -211,8 +217,8 @@ try {
 
 const bad = results.filter((r) => !r.ok);
 if (bad.length) {
-  console.error(`\npeer-favicon-ui：${bad.length} 项失败`);
+  console.error(`\npeer-title-ui：${bad.length} 项失败`);
   process.exit(1);
 }
-log("peer-favicon-ui 全过");
+log("peer-title-ui 全过");
 process.exit(0);
