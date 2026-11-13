@@ -206,9 +206,11 @@ let pickerParent: string | null = null;
 let picked: BrowseEntry | null = null;
 let composeEl: HTMLElement | null = null;
 let composeFor = "";
-/** 消息列重画前的滚动位置：贴着底就继续贴底，翻历史就停在原处。 */
-let stickBottom = true;
-let prevScroll = 0;
+/**
+ * 每个对话（nodeId）离开时的消息列位置，只在本页面内存里（刷新即清空）。没有记录的对话第一次打开就贴底。
+ * atBottom 按离底 32 像素以内算；翻到中间的只记 scrollTop。
+ */
+const scrollMemo = new Map<string, { atBottom: boolean; scrollTop: number }>();
 let textInput: HTMLTextAreaElement | null = null;
 let sendBtn: HTMLButtonElement | null = null;
 
@@ -459,14 +461,8 @@ function openThread(id: string): void {
   S.mview = "chat";
   S.msgs = [];
   S.msgsFor = "";
-  // 打开对话永远从最底下开始：不继承上一个对话的滚动位置（它可能是翻到半截的）。
-  stickBottom = true;
-  prevScroll = 0;
   app.dataset.page = "msg";
   app.dataset.mview = "chat";
-  // renderMain() 会读旧 .stream 的 scrollTop 重算 stickBottom / prevScroll，会把上面两行覆盖掉；
-  // 先清空主区，让它没有旧位置可读，贴底只由上面两行决定。
-  mainEl.replaceChildren();
   renderAll();
   // 从联系人列表点「发消息」就是要马上打字：把焦点直接放进输入框。
   // renderAll() 里 renderChat() 已经同步建好 textarea（composeBox 会更新 textInput）。
@@ -868,12 +864,6 @@ function emptyState(icon: string, title: string, sub: string): HTMLElement {
 // ---------------------------------------------------------------- 主区
 
 function renderMain(): void {
-  // 重新画聊天会把消息列清空重排，滚到哪儿要自己记住：翻历史的时侯别把人拽回底。
-  const prev = mainEl.querySelector<HTMLElement>(".stream");
-  if (prev) {
-    stickBottom = prev.scrollTop + prev.clientHeight >= prev.scrollHeight - 32;
-    prevScroll = prev.scrollTop;
-  }
   rerender(paintMain);
 }
 
@@ -974,7 +964,20 @@ function renderChat(): void {
   // 比最终的高 ~121px，scrollTop = scrollHeight 之后输入区一挂，最后一屏就被顶到视口底下。
   const compose = composeBox(t);
   mainEl.append(compose);
-  stream.scrollTop = stickBottom ? stream.scrollHeight : prevScroll;
+  const saved = scrollMemo.get(t.nodeId);
+  stream.scrollTop = saved && !saved.atBottom ? saved.scrollTop : stream.scrollHeight;
+  stream.addEventListener("scroll", () => rememberScroll(t.nodeId, stream));
+}
+
+/**
+ * 记下对话的消息列位置。消息列隐藏时（窄屏在列表页，clientHeight 为 0）量不出位置，不记，保留离开前的记录。
+ */
+function rememberScroll(id: string, stream: HTMLElement): void {
+  if (stream.clientHeight === 0) return;
+  scrollMemo.set(id, {
+    atBottom: stream.scrollTop + stream.clientHeight >= stream.scrollHeight - 32,
+    scrollTop: stream.scrollTop,
+  });
 }
 
 function entryNode(e: Entry, t: Thread): HTMLElement {
