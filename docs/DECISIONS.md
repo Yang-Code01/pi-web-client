@@ -4307,3 +4307,87 @@ D
 **代价 / 可改：** 翻译质量取决于模型，桥只做结构校验（表格 / 回声 / 长度），做不了语义校验；每节一次 spawn，几十节的文档要一分多钟（进度按节报，可取消）；反向同步是「模型改写原文」，改不动的块会跳过并告警，不是逐字节 diff 回放；同步只给前 20 处对照，超出部分照样写回但不显示；译文只在 `markdown` / `text` 且 ≤ 512 KB 的预览里有入口（表格/幻灯片/PDF 不做）；多标签页同时改同一份译文，后写的覆盖前者（`out` 没有版本号）。
 
 **验证：** `bridge/tests/translate-unit.mjs` 38 例（分节/围栏/分块/表格校验/清洗/整篇翻译/`keep` 复用只翻改过的节/`planSync` 只挑出改动的那块/`applySync` 只替换那一块/找不到位置/照抄与语言跑偏告警/脏标题写回日文）；`bridge/tests/translate-e2e.mjs` 41 项（桩 pi 跑通 start→save→sync→apply，含公网 403、409 冲突、备份）；`probes/translate-ui.mjs` 30 项（真 Chromium：译按钮、选择器、两栏对照、逐节编辑、同步确认、写回后左栏刷新）；`npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check` 2641 keys × 3 langs）。真机（`github-copilot/gpt-6-luna`）：1.7 KB 日文文档翻中文 36 s；小文档改一处 7 s 翻完、44 s 折回；日文文档里被写坏的中文标题改一次即写回「# 私の父は徐藤恩です」，20.5 s。
+
+## D246 局域网共享市场（skill / 扩展 / MCP）：P2P 公告 + 镜像字节的设计共识（用户要求 / 设计评审）
+
+**问题：** 用户（2026-11-13）：「局域网内基于公司、项目的共享skill、插件、mcp服务的市场。 只要用户部署了本程序，因此有局域网连接功能。现在想要在扩展按钮里面追加这样的功能。 每个用户都能上传skill、扩展、mcp服务。」本条只记设计共识（grilling R1~R7 共 25 项决策），**不改功能代码**；实施计划另见 `.scratch/lan-market/PLAN.md`。
+
+**现状事实（只读勘察）：**
+
+- 扩展面板 `web/src/app.ts:10737-10739` → `openExtManager()` `web/src/app.ts:12657-12685`，`div.sheet.settings-sheet.ext-sheet` 三 tab「已安装 / 扩展商店 / MCP 商店」`web/src/app.ts:12668-12670,12730-12745`；技能商店是另一套独立 dialog `openSkillStore` `web/src/app.ts:4893-4896`。入口是「扩展按钮」，不是独立页面。
+- `bridge/src/market.ts:1-9` 头注释 `Nothing here installs anything`：现有商店只做公网目录 + 缓存；WS 注册 `bridge/src/index.ts:2758-2774`，写操作 `bridge/src/index.ts:2666-2717,2776-2841`。
+- 三套安装器互不相通：skill 从 GitHub 下载文件夹写 `.pi-store.json`（`bridge/src/skillstore.ts:635-713,715-726`，配额 `bridge/src/skillstore.ts:588-590` 为 16 MB / 64 MB / 400 文件）；扩展走 `pi install`（`bridge/src/picli.ts:39-97`，`case "pkg.install"` 在 `bridge/src/picli.ts:44-45`）；MCP 走 `pi mcp add` 只写配置片段、secret 只写 `${VAR}`（`bridge/src/market.ts:389-404,769-803`、`bridge/src/picli.ts:57-87`）。三套都没有签名 / 白名单 / 沙箱 / 内容审查。
+- peer：组播 `239.255.42.99:7866`、HTTP `7865`、bind `0.0.0.0`（`peer/src/config.ts:10-12,69-71`），`PROTO = 1`（`peer/src/config.ts:6`），hello 只带身份（`peer/src/discovery.ts:7-15,113-123`），无广播 / 订阅 / 签名（`docs/DECISIONS.md:1146`）。`peer/src/http.ts:137-144` 是单 `createServer` 连续 `if` 分发，目前**没有任何** `/market/*` 端点，兜底 `peer/src/http.ts:453-456` 返 404；`/files` 只对回环开放（`peer/src/http.ts:418-419`），LAN 上唯一文件通道要求互为好友（`peer/src/files.ts:164-167`）；原始 upload 上限 64 MB（`peer/src/http.ts:402`），`GET /status` 在 `peer/src/http.ts:146-159`。
+- 鉴权：单机单口令 + cookie（`bridge/src/auth.ts:5-6,36-42,77-103,125-129`），公网隧道 `stepUntil = 0`、本机 / 局域网放行（`bridge/src/index.ts:1682-1683`），`skill.install` 已明确拒公网隧道（`bridge/src/index.ts:2481-2484`），`web/src/app.ts:13095` 按 `me.public` 把商店转只读；无用户 / 角色 / 管理员、无 company / org / tenant / team 领域模型，只有按目录分的 `scope: "user" | "project"`（`bridge/src/market.ts:189,207`、`bridge/src/skills.ts:65`）与按 cwd / git 根分组的 workspace（`bridge/src/workspaces.ts:31-44`）。
+- 浏览器只经 bridge 转发（`web/src/peer/main.ts:3-4`）；`bridge/src/peer.ts:106-125` 每 5 秒只拉本机 `/status`，`bridge/src/peer.ts:130-155` 已有 GET/POST 转发基础，`bridge/src/peer.ts:204-215` 的 `upload` 走 64 MB 原始字节。全仓无 `multipart/form-data`；`bridge/package.json:18` 已有 `fflate ^0.8.3`，zip 读写不需新增依赖。
+
+**决定（R1~R7 共 25 项，问卷逐项确认）：**
+
+*R1 架构与形态*
+
+1. **P2P 自发现，零中心部署**：每台自己发布 + 托管，复用组播在线节点表，不新增 registry 服务。
+2. **「公司 / 项目」只是用户自建的分类路径**，无成员身份、无租户；分类示例「公司 / 项目 / 其他」可改。
+3. **自包含包，市场托管字节**（边界由第 22 项按类型细化）。
+4. **开放发布 + 安装前明示**：人人可发布、可安装，不设审批；确认页列原发布者、镜像主机、清单与风险。
+
+*R2 目录与镜像*
+
+5. **浏览时按需拉取**：打开市场 tab 时逐个在线节点 GET 一次清单再合并，本机 JSON 缓存；零后台同步。
+6. **分类归属各人本地自建**：发布者写分类路径字符串，浏览者并入自己的树，不推全局分类表。
+7. **完整清单字段**：`id` / 类型 `skill|extension|mcp` / 名称 / 描述 / 版本 / 分类路径 / 发布者 `nodeId` + `nickname` / 宿主 `hostname` / 字节大小 / 内容 `sha256` / 上传时间 / 依赖或启动说明。
+8. **自动互为镜像**：安装成功即成为该版本字节的提供者；原发布者离线仍可从镜像安装（此选择覆盖了早期「离线即灰色不可装」的假设）。
+
+*R3 权限、MCP、安装*
+
+9. **仅原发布者可改删**：原发布者 `nodeId` 为唯一权威，镜像只提供字节。
+10. **安装成功即成为镜像**（与第 8 项同一条，落点在安装流程）。
+11. **MCP 只分享配置片段**：`mcp.json` 片段 + 依赖 / 启动说明 + 需填变量清单，不内置运行时代码；secret 由各人自己填。
+12. **统一落包 + 按类型分派**：下载 → 校验 sha256 / 大小 / 路径穿越 → 解临时区 → 展示清单 → 按类型安装。
+
+*R4 删除、字节、发布、版本*
+
+13. **墓碑随清单收敛**：删除写带原发布者 `nodeId` + 时间戳的墓碑，各节点浏览拉清单时见到就隐藏并删本地镜像；原发布者离线期间镜像仍可装，等其上线才最终收敛。
+14. **新增 `GET /market/blob?id=&sha256=` 对 LAN 开放、不要求好友**；下载后按清单 sha256 + 大小强校验，不符拒装；确认页同时列「原发布者」与「当前镜像主机」。
+15. **两种发布入口都支持**：从「已安装」一键发布 + 上传手工 zip（内含 `manifest.json`）；共用同一 `manifest.json` 规范。
+16. **同 id 只展示最新版**：id 稳定、版本号递增，列表只显示最高版本，安装与镜像自动替换成最新。
+
+*R5 协议与落盘*
+
+17. **公告（published）与可得性（blobs）解耦**：清单拆两层 —— `published` 只由原发布者产出、镜像原样转发（保留发布者 `nodeId` + `version` + 时间戳，合并取最高 `version`，旧镜像盖不掉新版）；`blobs` 列本节点实际持有的 `(id, version, sha256)`。安装时对目标版本从 `blobs` 挑在线节点拉。
+18. **`(发布者 nodeId, 本地 id)` 复合主键**：id 只需发布者本机唯一，全局靠 `nodeId` 消歧；合并 / 版本 / 墓碑全按复合键；去中心无需协调，改昵称或 hostname 不影响历史。
+19. **市场自管落盘、与现有来源标记隔离**：统一市场安装器 —— skill 解到技能目录并写 `.market-meta.json`；扩展按形态放文件 / 目录并登记 settings（或本地路径 `pi install`）；MCP 生成片段转 `mcp.add`，`${VAR}` 在确认页填；卸载走市场自己删目录 + 撤登记，不污染现有卸载 / 更新语义。
+20. **独立缓存目录 + 软上限淘汰**：缓存放 `~/.pi-peer/market/`，单包沿用 64 MB，总缓存软上限 2 GB（可改），超限时优先淘汰「最久未被本地安装、且非本机原创发布」的镜像字节；本地原创发布优先保留。
+
+*R6 信任与曝光*
+
+21. **不加签名，明确「局域网可信」**：公告 / 墓碑按 `(nodeId, id)` 明文合并，sha256 只负责字节不被传输偷换；「仅原发布者可改删」定性为协作约定而非密码学保证，风险写进安装确认页。
+22. **按类型约定托管边界**：skill 与 loose 扩展托管实体文件，但不含 `node_modules` / 站点包 / 大二进制，依赖写进清单由各人本机环境或在线补；pi 包只存来源引用（`npm:${p.name}`，`web/src/app.ts:13113`）、装时在线拉、条目标「需联网」；MCP 只配置片段。
+23. **全量公开 blobs**：只含 id / 版本 / sha256 / 大小 / 分类，不含本机绝对路径或配置内容。
+
+*R7 收敛*
+
+24. **镜像转发见过的全部公告与墓碑**：原发布者离线后新节点仍能从任一在线镜像学到条目，仅字节可得性受 `blobs` 限制。
+25. **时间戳单调裁决，谁新谁赢**：墓碑压掉所有更早公告，更晚公告或新墓碑又能盖过它；删后可同 id 重发、`version` 继续递增，旧镜像与历史快照无需清理。
+
+**协议与包格式（按约定由我定下的可改默认值）：**
+
+- peer 7865 新增三个端点：`GET /market/manifest`（对 LAN 开放）、`GET /market/blob?publisher=<nodeId>&id=<local id>&sha256=<hex>`（对 LAN 开放；R4 先写 `id=&sha256=`，R5 的复合主键补 `publisher`，落地规范见 `docs/lan-market-protocol.md`）、`POST /market/publish`（限回环，bridge 用原始字节调）；沿用 `peer/src/http.ts:402` 的 64 MB 单包上限。
+- `PROTO` 保持 1；旧节点对 `/market/*` 返 404 时当「不支持市场」跳过，不把它从在线表剔除。hello 加自定义字段旧节点会忽略（`peer/src/discovery.ts:125-132,172-216`），故无需升级协议号。
+- 公网隧道下市场 tab 只读，写操作在 bridge 侧拒掉（与 `bridge/src/index.ts:2481-2484` 的 `skill.install` 同口径）。
+- 市场不复用 `cfg.hidden`（那是内网通通讯录的隐身），维持第 23 项的全量公开。
+- 墓碑只隐藏条目并删镜像缓存、不动已安装；新版只在条目上提示，不静默升级（第 5 项无后台同步）。
+- 手工 zip 与一键发布共用同一 `manifest.json`；默认分类示例「公司 / 项目 / 其他」；沿用现有「全局 / 当前项目」下拉（`web/src/app.ts:13032-13038`）；MCP 的 `${VAR}` 在确认页填写。
+- 文案走 `tr("中文原文")` 并补 `web/src/i18n/en.ts` / `web/src/i18n/ja.ts`（`npm --prefix web run typecheck` 会跑 `web/i18n-check.mjs`）；Playwright `newContext()` 带 `locale: "zh-CN"`。
+- 本轮只落设计文档、不改功能代码；实施另起分支，按 `AGENTS.md` 的 worktree 流程走，合并等用户明确指令。
+
+**为什么：**
+
+- 拆 `published` / `blobs` 两层是第 5 + 8 + 14 项的必然：原发布者一发新版，`version` 与 `sha256` 同时变，镜像手里只有旧版字节，按新 sha256 请求 `GET /market/blob?id=&sha256=` 必然拿不到；而 `peer/src/http.ts:137-144` 是单 server 分发、没有广播 / 订阅 / 后台同步，只有「公告与可得性解耦」能让离线发布者不拖死镜像。
+- 复合主键 + 不加签名，是第 1 项「零中心部署」+ 第 4 项「开放发布」+ 现状（`peer/src/config.ts:98-111` 的 `nodeId` 是裸 uuid、可手改；`peer/src/discovery.ts:113-132` 的 hello 无凭据）共同决定的：引入密钥体系会推翻这两项前提，故把风险显性化写进确认页，而不是假装解决。
+- 自管落盘是因为复用三套安装器会连踩三处：`skill.install` 本地分支把 `marker.local` 写成临时解包目录（`bridge/src/skillstore.ts:640-653`），卸载 / 更新指向已删目录；扩展同时有 loose 文件 / 目录与 pi 包两种形态（`bridge/src/market.ts:241-271`）；MCP 片段须转成 `mcp.add` 的强校验形状（`bridge/src/picli.ts:57-87`）。
+- 单包 64 MB + 2 GB 软上限 + 按类型边界，是因为 `bridge/src/skillstore.ts:588-590` 的配额只管 skill，市场要同时扛 skill / 扩展 / MCP 三种包；pi 包只存来源引用是为了不把 `node_modules` 塞进 LAN 字节通道。
+- 先把协议与包格式钉在纸上：清单协议一旦写进 7865，所有节点都要跟着改；用户在收口问卷里选「只写设计共识文档」，理由是先把协议与包格式钉在纸上成本最低，本轮因此不碰功能代码。
+
+**代价 / 可改：** 已接受的残留风险 ——（1）无签名 → 同网段可冒名发布或伪造墓碑藏条目；（2）原发布者离线期间镜像仍可装、墓碑等其上线才收敛；（3）pi 包离线装不了，互为镜像对它打折；（4）时钟回拨会让时间戳裁决反常；（5）blobs 全量公开意味着同网段能看出这台装过哪些包；（6）2 GB 软上限会淘汰最久未用的镜像字节。可改默认值全部集中在上面的「协议与包格式」段：端点路径、`PROTO`、404 降级策略、分类示例、2 GB、`tr()` 文案 —— 改任一项都不动 25 项决策的前提。另：手工 zip 与一键发布两套打包 / 校验 / 表单，第一版工作量约翻倍（第 15 项用户覆盖了推荐项）。
+
+**验证：** 本条是设计共识，不是实现。设计验证 = R1~R7 共 7 轮问卷 25 项选择 + 最后一轮「达成共识，可以收口」「只写设计共识文档」的确认（2026-11-13）。可进版本库、给所有节点参照的协议与包格式钉在 `docs/lan-market-protocol.md`；逐文件施工清单、测试矩阵与验收步骤写在 `.scratch/lan-market/PLAN.md`（`.gitignore:7` 忽略 `.scratch/`，不进提交）。
