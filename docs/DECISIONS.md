@@ -4329,3 +4329,30 @@ D
 **代价 / 可改：** 记录器是常驻 powershell 进程（约 40–60 MB），停掉后当天的后续解锁只能靠日志回填；Security 日志默认只留 20 MB（约 1–2 周），回填封顶 90 天且页面写明实际覆盖；工时是墙上时间，早退/加班只有「已下班 +X」一个反馈；事件驱动的锁屏/解锁依赖 `SystemEvents`（无桌面会话时收不到，例如 RDP 断连），那种情况靠轮询。
 
 **验证：** `node bridge/tests/workclock-unit.mjs` 22 例（换行/去重/来源优先级/当日推进/休息日/夹取工时/覆盖统计）；`node web/tests/sysmanage-unit.mjs` 13 pass（倒计时格式/工时解析/星期换算）；`node bridge/tests/sysmanage-ui.mjs` 真 Chromium 48 项（五个分区、倒计时每秒在走、七日 chip、记录器卡片、公网 403 三条、改工时 8.5 落盘、工时 99 回 400、布局不穿模）；真机装了记录器后 `agent.jsonl` 有 `{"k":"unlock","src":"start"}`、心跳新鲜、`Get-ScheduledTask` State `Running`，卸载后任务与进程都不残留。
+
+## D247 验收跑成「测试书」：`/pi-web-test-html` + 随仓库发布的技能
+
+**问题：** 上下班模块验收时临时写了四个脚本（`run.mjs` 驱动、`build_xlsx.py`、`build_html.mjs`、`reset.sh`），跑出 12 条用例 + 18 张截图的 xlsx 与 1:1 复刻的 HTML。它们只活在那次会话的 `.scratch` 里：换模块要重写，换个会话没人知道有过这套流程，而且 `git worktree remove` 顺手把它们删了个干净（见 D246 的代价段）。要的是「下次任何模块，一条命令跑出同一格式的书」。
+
+**决定：**
+
+1. **项目技能** `.pi/skills/pi-web-test-html/`：`SKILL.md` 是流程（定对象 → `env.sh fresh` 起隔离实例 → `run-book.mjs` 跑用例 → `build-xlsx.py` → `build-html.mjs` → 交付 → `env.sh down`），`bin/` 放四个可单独运行的脚本，`cases/` 放用例集（首份是 `workclock.mjs`），`setup/` 放模块自己的系统级清场，`references/` 放「用例怎么写」与「踩过的坑」。带 `disable-model-invocation: true`，只由命令唤醒。
+2. **命令** `.pi/prompts/pi-web-test-html.md`（提示词模板），`argument-hint` 收用例集与补充要求；模板只指向 `SKILL.md` 并交代边界（不改产品代码、失败如实记录、跑完关环境），流程不复制第二份。
+3. **驱动与用例分离**：`bin/run-book.mjs` 管浏览器、登录、截图落盘、`spec.json`（含 `summary`、`env`、`pageErrors`），用例只写 `h.openCase / h.step / h.ok / h.fail / h.shot` 四件套。判定三态：通过 / 失败 / 人工（人工步骤要写清怎么补）。
+4. **产物落在主检出的 `.scratch/testbook/<用例集>/`**，即使命令是在 worktree 里跑的 —— 用 `git rev-parse --git-common-dir` 反推主检出。这是被删过一次之后的硬约束。
+5. **HTML 是交付物、xlsx 是下载物**：HTML 把 18 张截图与 xlsx 全部内联成 data URI（单文件 2.5 MB），页内有「下载 xlsx」按钮；两者都由 `layout.json` 同一份表格模型渲染，观感与 xlsx 一致。
+
+**为什么：**
+
+- **流程必须固化在仓库里**：这套步骤里有太多「不看就忘」的细节（A 列要 9 宽、`fitToPage` 不设会被 A4 切列、LO 重算公式缓存、sticky 三轨 z 序、data URI 内联），写进 `references/pitfalls.md` 比每次靠记忆靠谱。
+- **驱动与用例分离**：换模块只写用例，不重写浏览器样板；判定口径、截图命名、`spec.json` 结构也就不会漂。
+- **显式触发**：跑一本书要起实例、装计划任务、跑几分钟，模型不该自己决定。
+
+**代价 / 可改：**
+
+- **只对仓库里跑的 pi 可见**（项目级技能与模板，换目录就没了，和 `pi-web-client-test-dev` / `whatsnew-write` 同一边界）。
+- **用例集与模块强绑定**：`workclock.mjs` 里写死了分区序号（第 5 个）、按钮文案、接口路径；产品改这些，用例得跟着改（跑失败先怀疑用例，其次才是产品）。
+- **`fresh` 会清空该实例的状态目录**：要保留上一轮数据就用 `env.sh up`。
+- **人工用例不能自动点**：TC-03（真锁屏）、TC-10（UAC 读 Security 日志）在书里标「人工」，`ConsentPromptBehaviorAdmin=5` 的机器上 UAC 必须人来点。
+
+**验证：** 用技能自己的脚本重跑一遍完整链路：`bash bin/env.sh fresh F:/pi-web-client wk workclock` → `node bin/run-book.mjs --case workclock` → 12 条（通过 10 / 失败 0 / 人工 2，21 步 18 张截图，`pageErrors` 0，产物 `F:\pi-web-client\.scratch\testbook\workclock`）→ `python bin/build-xlsx.py` → 14 sheet、902 KB、LO 重算过 → `node bin/build-html.mjs` → 2521 KB、18 处 `data:image/png;base64`、0 处 `src="shots/`、xlsx 已内联；`bash bin/env.sh down wk` 后 `Get-ScheduledTask -TaskName 'pi-web-client-workclock'` 为 `GONE`。
