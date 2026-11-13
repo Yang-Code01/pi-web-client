@@ -15,15 +15,13 @@ import http from "node:http";
 import { isIP } from "node:net";
 import os from "node:os";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { readJsonChecked, statePath, writeJson } from "./paths.ts";
+import { parseJson, psQuote, runElevated, runPowerShell } from "./ps.ts";
+import { handleWorkclockAction, readWorkclock } from "./workclock.ts";
 
 const MAX_BODY = 8 * 1024;
-const PS_TIMEOUT = 30_000;
-/** 一次 UAC 提权（等人点「是」+ 助手跑完）的总时限。 */
-const UAC_TIMEOUT = 120_000;
 
-export type SysSection = "overview" | "network" | "ports" | "services";
+export type SysSection = "overview" | "network" | "ports" | "services" | "workclock";
 export type NetStatus = "up" | "disconnected" | "not_present" | "unknown";
 
 export interface SysOverview {
@@ -154,72 +152,7 @@ class SysError extends Error {
   }
 }
 
-// ---------------------------------------------------------------- 进程 / JSON 小件
-
-interface PsResult {
-  code: number;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-}
-
-/**
- * 跑一段 Windows PowerShell。脚本从 stdin 进（`-Command -`），避免命令行长度与引号问题。
- * 不 detached：D52 的教训是 Windows 上 detached 会变成 DETACHED_PROCESS，Start-Process 提权
- * 拿不到桌面会话，UAC 静默失败。
- */
-function runPowerShell(script: string, timeoutMs = PS_TIMEOUT): Promise<PsResult> {
-  return new Promise((resolve) => {
-    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-"], {
-      windowsHide: true,
-    });
-    let stdout = "";
-    let stderr = "";
-    let done = false;
-    const finish = (result: PsResult) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      resolve(result);
-    };
-    const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        /* already gone */
-      }
-      finish({ code: -1, stdout, stderr, timedOut: true });
-    }, timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("error", (err) => finish({ code: -1, stdout, stderr: err.message, timedOut: false }));
-    child.on("close", (code) => finish({ code: code ?? -1, stdout, stderr, timedOut: false }));
-    child.stdin.end(
-      `$ErrorActionPreference='Stop'\n$ProgressPreference='SilentlyContinue'\n[Console]::OutputEncoding=[Text.Encoding]::UTF8\n${script}\n`,
-    );
-  });
-}
-
-function parseJson<T>(stdout: string): T | null {
-  const text = stdout.trim();
-  if (!text) return null;
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    // 有的 PowerShell 会在 JSON 前打一行警告；取最后一个完整对象再试一次。
-    const start = text.lastIndexOf("{");
-    if (start < 0) return null;
-    try {
-      return JSON.parse(text.slice(start)) as T;
-    } catch {
-      return null;
-    }
-  }
-}
+// ---------------------------------------------------------------- JSON 小件
 
 function asArray<T>(value: T | T[] | null | undefined): T[] {
   if (value === null || value === undefined) return [];
@@ -764,72 +697,11 @@ function normalizeServers(input: unknown): string[] {
   return out;
 }
 
-function psQuote(text: string): string {
-  return `'${text.replace(/'/g, "''")}'`;
-}
-
 interface ElevatedResult {
   ok: boolean;
   code?: string;
   error?: string;
   after: string[];
-}
-
-type Receipt = Record<string, unknown> & { ok?: boolean; code?: string; error?: string };
-
-/**
- * 用 UAC 提权跑一段助手脚本。脚本只由校验过的值拼成；`body` 里调 `Write-Receipt` 写成功回执，
- * 抛错时包装成 `{ok:false,code:failCode}`。取消 UAC 时 Start-Process 抛 1223，写成 `uac_denied`。
- * 回执是 JSON，桥再读回来；读不到就是 `no_receipt`。
- */
-async function runElevated(kind: string, body: string, failCode: string): Promise<Receipt> {
-  const token = randomUUID();
-  const helper = statePath(`sysmanage-${kind}-${token}.ps1`);
-  const receipt = statePath(`sysmanage-${kind}-${token}.json`);
-  const helperScript =
-    `$ErrorActionPreference='Stop'\n$ProgressPreference='SilentlyContinue'\n` +
-    `$receipt=${psQuote(receipt)}\n` +
-    `function Write-Receipt([object]$o){[IO.File]::WriteAllText($receipt,($o|ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($false)))}\n` +
-    `try{\n${body}\n` +
-    `}catch{Write-Receipt ([pscustomobject]@{ok=$false;code=${psQuote(failCode)};error=$_.Exception.Message});exit 1}\n`;
-  // -ArgumentList 这里必须是一整条字符串：Start-Process 用空格拼接数组，路径带空格会断。
-  const argLine = `-NoProfile -ExecutionPolicy Bypass -File "${helper}"`;
-  const wrapperScript =
-    `$ErrorActionPreference='Stop'\n` +
-    `$receipt=${psQuote(receipt)}\n` +
-    `try{\n` +
-    `$p=Start-Process -FilePath 'powershell.exe' -ArgumentList ${psQuote(argLine)} -Verb RunAs -Wait -PassThru\n` +
-    `exit $p.ExitCode\n` +
-    `}catch{\n` +
-    `$m=$_.Exception.Message\n` +
-    `[IO.File]::WriteAllText($receipt,(@{ok=$false;code='uac_denied';error=$m}|ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($false)))\n` +
-    `exit 1\n}\n`;
-  try {
-    fs.writeFileSync(helper, helperScript, "utf8");
-    const result = await runPowerShell(wrapperScript, UAC_TIMEOUT);
-    if (result.timedOut) {
-      return { ok: false, code: "uac_timeout", error: "等了 120 秒还没有回执：UAC 可能还开着，或者提权助手还在跑" };
-    }
-    let data: Receipt | null = null;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(receipt, "utf8")) as unknown;
-      data = parsed && typeof parsed === "object" ? (parsed as Receipt) : null;
-    } catch {
-      data = null;
-    }
-    if (!data) {
-      return { ok: false, code: "no_receipt", error: result.stderr.trim() || "提权助手没有留下回执" };
-    }
-    return data;
-  } finally {
-    for (const file of [helper, receipt]) {
-      try {
-        fs.rmSync(file, { force: true });
-      } catch {
-        /* 留在状态目录里也不影响下一次 */
-      }
-    }
-  }
 }
 
 /** 提权失败回执 → SysError：取消 UAC 是 403，其余 500。 */
@@ -1102,9 +974,22 @@ export async function handleSysmanage(
           json(res, 200, await readServices(ctx));
           return true;
         }
+        case "workclock": {
+          json(res, 200, await readWorkclock(ctx.publicReq));
+          return true;
+        }
         default:
           fail(res, 400, "sys_section", `没有这个 section：${section}`);
           return true;
+      }
+    }
+
+    if (url.pathname.startsWith("/api/sys/workclock")) {
+      const body = req.method === "POST" ? await readJsonBody(req).catch(() => null) : null;
+      const reply = await handleWorkclockAction(url, req.method ?? "GET", body, ctx.publicReq);
+      if (reply) {
+        json(res, reply.status, reply.body);
+        return true;
       }
     }
 
