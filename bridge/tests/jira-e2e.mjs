@@ -35,6 +35,8 @@ let searchMode = "ok";
 let statusesMode = "ok";
 /** 人员搜索：`ok` / `403` / `401` / `500`。 */
 let usersMode = "ok";
+/** `search/jql` 被命中几次（`emptyOnce` 用例用：第一次空，第二次才给数据）。 */
+let searchHits = 0;
 /** 每次 search/jql 收到的 nextPageToken（断言分页透传）。 */
 const searchTokens = [];
 /** 上游每被命中一次就 +1：用来断言缓存命中与 `refresh=1` 绕过。#251 再加按附件 id 计数的 content。 */
@@ -107,6 +109,7 @@ const jira = http.createServer((req, res) => {
 
   if (url.pathname === "/rest/api/3/search/jql") {
     hits.search++;
+    searchHits++;
     lastSearch = url.searchParams;
     const token = url.searchParams.get("nextPageToken");
     searchTokens.push(token);
@@ -119,7 +122,7 @@ const jira = http.createServer((req, res) => {
       const jql = url.searchParams.get("jql") ?? "";
       const matches =
         jql.includes('summary ~ "登录"') &&
-        jql.includes('workItemKey ~ "*17967*"') &&
+        jql.includes('workItemKey ~ "17967*"') &&
         jql.includes('project = "CASPH30INC"');
       return send(200, { issues: matches ? [TICKET_ISSUE] : [] });
     }
@@ -127,6 +130,8 @@ const jira = http.createServer((req, res) => {
       if (token === null) return send(200, { issues: ISSUES.slice(0, 1), nextPageToken: "tok-2", isLast: false });
       return send(200, { issues: ISSUES.slice(1), isLast: true });
     }
+    // #407 自动退回模糊：第一次空，第二次（key IN 之后）才给数据。
+    if (searchMode === "emptyOnce") return send(200, { issues: searchHits === 1 ? [] : ISSUES });
     return send(200, { issues: searchMode === "empty" ? [] : ISSUES });
   }
   if (url.pathname === "/rest/api/3/issue/ACME-12") {
@@ -1039,16 +1044,17 @@ test("GET search：条件 → JQL 白名单，页面传的 jql / fields 被忽�
   assert.equal(lastSearch.get("fields"), FIXED_FIELDS);
 });
 
-test("GET search：票号子串与标题、项目取交集并返回匹配工单", async () => {
+test("GET search：工单号前缀模糊与标题、项目取交集并返回匹配工单", async () => {
   await connect();
   searchMode = "ticket";
-  const out = await call("GET", "/api/jira/search?ticketKey=17967&title=%E7%99%BB%E5%BD%95&project=CASPH30INC");
+  const out = await call("GET", "/api/jira/search?key=17967&title=%E7%99%BB%E5%BD%95&project=CASPH30INC");
   assert.equal(out.status, 200);
   assert.deepEqual(out.json.issues.map((issue) => issue.key), ["CASPH30INC-17967"]);
   assert.equal(
     lastSearch.get("jql"),
-    'resolution = Unresolved AND summary ~ "登录" AND workItemKey ~ "*17967*" AND project = "CASPH30INC" ORDER BY updated DESC',
+    'workItemKey ~ "17967*" AND summary ~ "登录" AND project = "CASPH30INC" ORDER BY updated DESC',
   );
+  assert.deepEqual(out.json.fuzzy, { token: "17967" });
 });
 
 test("GET search：默认未解决 / includeResolved / 未分配", async () => {
@@ -1203,4 +1209,79 @@ test("GET users：映射；空 q 不打上游；403 unavailable；401 jira_auth�
 
   const tunnel = await call("GET", "/api/jira/users?q=x", undefined, { "x-test-tunnel": "1" });
   assert.equal(tunnel.status, 502);
+});
+
+// ---------------------------------------------------------------- #407 工单号
+
+test("GET search：完整工单号走 key =，不再加未解决过滤", async () => {
+  await connect();
+  const out = await call("GET", "/api/jira/search?key=acme-12");
+  assert.equal(out.status, 200);
+  assert.equal(lastSearch.get("jql"), 'key = "ACME-12" ORDER BY updated DESC');
+  assert.equal(lastSearch.get("fields"), FIXED_FIELDS);
+  assert.equal(out.json.fuzzy, undefined);
+});
+
+test("GET search：多个工单号用 key IN", async () => {
+  await connect();
+  const out = await call("GET", `/api/jira/search?key=${encodeURIComponent("ACME-7, ACME-77")}`);
+  assert.equal(out.status, 200);
+  assert.equal(lastSearch.get("jql"), 'key IN ("ACME-7", "ACME-77") ORDER BY updated DESC');
+});
+
+test("GET search：半截号走 workItemKey 前缀模糊，一条请求拿到工单", async () => {
+  await connect();
+  const out = await call("GET", "/api/jira/search?key=7");
+  assert.equal(out.status, 200);
+  assert.equal(lastSearch.get("jql"), 'workItemKey ~ "7*" ORDER BY updated DESC');
+  assert.deepEqual(out.json.fuzzy, { token: "7" });
+  assert.ok(out.json.issues.length > 0);
+});
+
+test("GET search：模糊与其它条件取交集", async () => {
+  await connect();
+  const out = await call("GET", `/api/jira/search?key=7&title=${encodeURIComponent("白屏")}`);
+  assert.equal(out.status, 200);
+  assert.equal(lastSearch.get("jql"), 'workItemKey ~ "7*" AND summary ~ "白屏" ORDER BY updated DESC');
+  assert.deepEqual(out.json.fuzzy, { token: "7" });
+});
+
+test("GET search：模糊查空仍然回 fuzzy，页面好说「没有匹配这个工单号」", async () => {
+  await connect();
+  searchMode = "empty";
+  const out = await call("GET", "/api/jira/search?key=7");
+  searchMode = "ok";
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.json.issues, []);
+  assert.equal(out.json.isLast, true);
+  assert.deepEqual(out.json.fuzzy, { token: "7" });
+});
+
+test("GET search：模糊查询的上游 403 照实报，不再当成没找到", async () => {
+  await connect();
+  searchMode = "403";
+  const out = await call("GET", "/api/jira/search?key=7");
+  searchMode = "ok";
+  assert.equal(out.status, 403);
+  assert.equal(out.json.code, "jira_forbidden");
+});
+
+test("GET search：完整号查空时自动退回前缀模糊，并标 fallback", async () => {
+  await connect();
+  searchMode = "emptyOnce";
+  searchHits = 0;
+  const out = await call("GET", "/api/jira/search?key=ACME-12");
+  searchMode = "ok";
+  assert.equal(out.status, 200);
+  assert.equal(searchHits, 2, "第一次 key = 为空，第二次才走 workItemKey");
+  assert.equal(lastSearch.get("jql"), 'workItemKey ~ "ACME-12*" ORDER BY updated DESC');
+  assert.deepEqual(out.json.fuzzy, { token: "ACME-12", fallback: true });
+  assert.ok(out.json.issues.length > 0);
+});
+
+test("GET search：工单号超长 / 非法参数照样 400，码是 jira_query", async () => {
+  await connect();
+  const out = await call("GET", `/api/jira/search?key=${"x".repeat(501)}`);
+  assert.equal(out.status, 400);
+  assert.equal(out.json.code, "jira_query");
 });

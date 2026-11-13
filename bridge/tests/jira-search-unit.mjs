@@ -57,22 +57,22 @@ test("每个条件单独出现时拼进固定位置", () => {
   );
 });
 
-test("票号按 key 任意位置子串匹配，并与其它条件取交集", () => {
+test("票号按 workItemKey 前缀匹配，并与其它条件取交集", () => {
   assert.equal(
-    jql({ ticketKey: "17967" }),
-    'resolution = Unresolved AND workItemKey ~ "*17967*" ORDER BY updated DESC',
+    jql({ key: "17967" }),
+    'workItemKey ~ "17967*" ORDER BY updated DESC',
   );
   assert.equal(
-    jql({ title: "登录", ticketKey: "17967", project: "ACME" }),
-    'resolution = Unresolved AND summary ~ "登录" AND workItemKey ~ "*17967*" AND project = "ACME" ORDER BY updated DESC',
+    jql({ title: "登录", key: "17967", project: "ACME" }),
+    'workItemKey ~ "17967*" AND summary ~ "登录" AND project = "ACME" ORDER BY updated DESC',
   );
 });
 
-test("票号空白省略，合法字符与首尾空白按普通值处理", () => {
-  assert.equal(jql({ ticketKey: "   " }), DEFAULT);
+test("票号空白省略；通配符由解析层剥掉，用户不能自带 `*` / `?`", () => {
+  assert.equal(jql({ key: "   " }), DEFAULT);
   assert.equal(
-    jql({ ticketKey: " abc-1_X " }),
-    'resolution = Unresolved AND workItemKey ~ "*abc-1_X*" ORDER BY updated DESC',
+    jql({ key: " 17*96?7 " }),
+    'workItemKey ~ "17967*" ORDER BY updated DESC',
   );
 });
 
@@ -226,10 +226,7 @@ test("非法参数逐条报 jira_query 与字段", () => {
   reject({ personAccountId: "x".repeat(129) }, "personAccountId");
   reject({ project: "ACME", status: "x".repeat(65) }, "status");
   reject({ nextPageToken: "x".repeat(2049) }, "nextPageToken");
-  reject({ ticketKey: "x".repeat(201) }, "ticketKey");
-  reject({ ticketKey: "ABC*" }, "ticketKey");
-  reject({ ticketKey: "ABC?" }, "ticketKey");
-  reject({ ticketKey: "ABC 123" }, "ticketKey");
+  reject({ key: "x".repeat(501) }, "key");
 });
 
 test("项目 key 允许 1–10 位大写字母、数字、下划线", () => {
@@ -241,4 +238,65 @@ test("项目 key 允许 1–10 位大写字母、数字、下划线", () => {
     jql({ project: "ABCDEFGHIJ" }),
     'resolution = Unresolved AND project = "ABCDEFGHIJ" ORDER BY updated DESC',
   );
+});
+
+// ---------------------------------------------------------------- #407 工单号
+
+test("工单号：完整键走精确，单个用 =，多个用 IN，且不再加未解决过滤", () => {
+  assert.equal(jql({ key: "CASPH30BUG-21352" }), 'key = "CASPH30BUG-21352" ORDER BY updated DESC');
+  // 大小写随用户写：Jira 的 key 本身大小写不敏感，这里统一转大写再拼。
+  assert.equal(jql({ key: "casph30bug-21352" }), 'key = "CASPH30BUG-21352" ORDER BY updated DESC');
+  assert.equal(
+    jql({ key: "CASPH30BUG-1, CASPH30BUG-2、CASPH30BUG-3" }),
+    'key IN ("CASPH30BUG-1", "CASPH30BUG-2", "CASPH30BUG-3") ORDER BY updated DESC',
+  );
+  // 同一个号写两遍只查一次。
+  assert.equal(jql({ key: "CASPH30BUG-2 CASPH30BUG-2" }), 'key = "CASPH30BUG-2" ORDER BY updated DESC');
+  // 工单号与其它条件 AND，顺序上工单号排最前。
+  assert.equal(
+    jql({ key: "CASPH30BUG-9", project: "CASPH30BUG", title: "白屏" }),
+    'key = "CASPH30BUG-9" AND summary ~ "白屏" AND project = "CASPH30BUG" ORDER BY updated DESC',
+  );
+  // 勾了「含已解决」也不影响：本来就没有未解决过滤。
+  assert.equal(jql({ key: "A-1", includeResolved: "1" }), 'key = "A-1" ORDER BY updated DESC');
+});
+
+test("工单号：# 前缀会被去掉，尾部空白无碍", () => {
+  assert.equal(jql({ key: "  #CASPH30BUG-7 " }), 'key = "CASPH30BUG-7" ORDER BY updated DESC');
+});
+
+test("工单号：半截号 / 纯数字 / 带标题词都判成模糊，走 `workItemKey ~`", () => {
+  assert.deepEqual(parse({ key: "2135" }).key, { kind: "fuzzy", token: "2135" });
+  // 形如「项目-数字」哪怕号不存在也算完整键（先精确查，查空再退回模糊）。
+  assert.deepEqual(parse({ key: "casph30bug-2135" }).key, { kind: "exact", keys: ["CASPH30BUG-2135"] });
+  // 只写项目、或者号后面跟着标题词：只拿第一个 token。
+  assert.deepEqual(parse({ key: "CASPH30BUG" }).key, { kind: "fuzzy", token: "CASPH30BUG" });
+  assert.deepEqual(parse({ key: "21352 白屏" }).key, { kind: "fuzzy", token: "21352" });
+  assert.deepEqual(parse({ key: "CASPH30BUG-21352 白屏" }).key, {
+    kind: "fuzzy",
+    token: "CASPH30BUG-21352",
+  });
+  // 模糊直接拼进 JQL（D243）：前缀而不是包含，`2135` 不该把 `12135` 一起倒出来。
+  assert.equal(jql({ key: "2135" }), 'workItemKey ~ "2135*" ORDER BY updated DESC');
+});
+
+test("工单号：空值 / 只有分隔符视为没填", () => {
+  assert.deepEqual(parse({ key: "   " }).key, { kind: "none" });
+  assert.deepEqual(parse({ key: " , , " }).key, { kind: "none" });
+  assert.equal(jql({ key: "" }), DEFAULT);
+});
+
+test("工单号：超过 500 字整条查询拒掉", () => {
+  assert.throws(() => parse({ key: "x".repeat(501) }), (err) => {
+    assert.ok(err instanceof SearchQueryError);
+    assert.equal(err.field, "key");
+    return true;
+  });
+});
+
+test("工单号：一次最多 20 个（`key IN` 的上限）", () => {
+  const keys = Array.from({ length: 30 }, (_, i) => `ACME-${i + 1}`).join(",");
+  const parsed = parse({ key: keys });
+  assert.equal(parsed.key.kind, "exact");
+  assert.equal(parsed.key.keys.length, 20);
 });

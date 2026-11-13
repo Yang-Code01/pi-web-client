@@ -460,6 +460,8 @@ interface SearchOutcome {
   nextPageToken?: string;
   isLast: boolean;
   degraded?: { watchers: true };
+  /** 工单号按号段模糊查（`workItemKey ~`）时为块；`fallback` = 完整号查空后自动退回的（D243）。 */
+  fuzzy?: { token: string; fallback?: true };
 }
 
 /** 上游状态 → 桥的错误码；`upstreamStatus` 留给关注者降级判断。 */
@@ -491,10 +493,31 @@ async function searchOnce(config: JiraConfig, ctx: JiraCtx, params: SearchParams
 }
 
 /**
+ * 工单号：完整键精确查（`key =` / `key IN`）；半截号由 `buildSearchJql` 拼成
+ * `workItemKey ~ "<token>*"` 前缀匹配 —— 一条请求就能拿到真正的工单行，可翻页，
+ * 没有 picker 那套「先取候选键再 IN」的 20 条上限与松匹配（D243）。
+ */
+async function searchIssues(config: JiraConfig, ctx: JiraCtx, params: SearchParams): Promise<SearchOutcome> {
+  const out = await withWatcherFallback(config, ctx, params);
+  if (params.key?.kind === "fuzzy") return { ...out, fuzzy: { token: params.key.token } };
+
+  // 单个完整号查空（号码记错，或只记得前半段）：按号段模糊再查一次，别让人对着空结果发呆。
+  const keys = params.key?.kind === "exact" ? params.key.keys : [];
+  if (out.issues.length > 0 || keys.length !== 1) return out;
+  const retry = await withWatcherFallback(config, ctx, { ...params, key: { kind: "fuzzy", token: keys[0] } });
+  if (retry.issues.length === 0) return out;
+  return { ...retry, fuzzy: { token: keys[0], fallback: true } };
+}
+
+/**
  * 关注者降级：只有 watcher 被 400/403 拒绝时才去掉重试一次；只剩 watcher 就不重试
  * （去掉会变成无条件查询，结果悄悄变宽）。重试仍失败按第二次的错误往上抛。
  */
-async function searchIssues(config: JiraConfig, ctx: JiraCtx, params: SearchParams): Promise<SearchOutcome> {
+async function withWatcherFallback(
+  config: JiraConfig,
+  ctx: JiraCtx,
+  params: SearchParams,
+): Promise<SearchOutcome> {
   const watcher = params.person !== undefined && params.relations.includes("watcher");
   try {
     return await searchOnce(config, ctx, params);

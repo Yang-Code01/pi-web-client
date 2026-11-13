@@ -397,9 +397,10 @@ export interface JiraSearchMeta {
 
 /** 搜索表单的全部条件。空串 = 不限；人员要么是选中的 accountId，要么是自由文本。 */
 export interface SearchState {
+  /** 工单号：完整键、多个键（逗号/空格分隔）或半截号；形状由桥判（D241、D243）。 */
+  key: string;
   title: string;
   text: string;
-  ticketKey: string;
   project: string;
   statusCategory: "" | StatusCategoryKey;
   status: string;
@@ -416,9 +417,9 @@ export interface SearchState {
 
 export function emptySearch(): SearchState {
   return {
+    key: "",
     title: "",
     text: "",
-    ticketKey: "",
     project: "",
     statusCategory: "",
     status: "",
@@ -464,9 +465,9 @@ export function normalizeSearch(state: SearchState): SearchState {
     ? (state.statusCategory as StatusCategoryKey)
     : "";
   return {
+    key: state.key.trim(),
     title: state.title.trim(),
     text: state.text.trim(),
-    ticketKey: state.ticketKey.trim(),
     project,
     statusCategory: project ? category : "",
     status: project ? state.status.trim() : "",
@@ -492,9 +493,9 @@ export function searchQuery(state: SearchState): URLSearchParams {
   const put = (key: string, value: string) => {
     if (value) q.set(key, value);
   };
+  put("key", s.key);
   put("title", s.title);
   put("text", s.text);
-  put("ticketKey", s.ticketKey);
   put("project", s.project);
   if (s.statusCategory) q.set("statusCategory", s.statusCategory);
   put("status", s.status);
@@ -519,9 +520,9 @@ export function serializeSearch(state: SearchState): string {
   const s = normalizeSearch(state);
   return JSON.stringify({
     v: 1,
+    key: s.key,
     title: s.title,
     text: s.text,
-    ticketKey: s.ticketKey,
     project: s.project,
     statusCategory: s.statusCategory,
     status: s.status,
@@ -559,9 +560,9 @@ export function readSavedSearch(raw: string | null | undefined): SearchState | n
     ? (o.relations.filter((item) => typeof item === "string" && (SEARCH_RELATIONS as readonly string[]).includes(item)) as SearchRelation[])
     : [...SEARCH_RELATIONS];
   const state: SearchState = {
+    key: textOf(o.key),
     title: textOf(o.title),
     text: textOf(o.text),
-    ticketKey: textOf(o.ticketKey),
     project: textOf(o.project),
     statusCategory: textOf(o.statusCategory) as SearchState["statusCategory"],
     status: textOf(o.status),

@@ -290,17 +290,17 @@ test("emptySearch：默认关系三个都勾，排序最近更新降序", () => 
   assert.equal(SEARCH_STORAGE_KEY, "pi.jira.search.last");
 });
 
-test("searchQuery：空值不带，标题与票号去空白，项目大写", () => {
-  const q = searchQuery({ ...emptySearch(), title: " 登录 ", text: "", ticketKey: " 17967 ", project: "acme", priority: "" });
+test("searchQuery：空值不带，标题与工单号去空白，项目大写", () => {
+  const q = searchQuery({ ...emptySearch(), title: " 登录 ", text: "", key: " 17967 ", project: "acme", priority: "" });
   assert.equal(q.get("title"), "登录");
-  assert.equal(q.get("ticketKey"), "17967");
+  assert.equal(q.get("key"), "17967");
   assert.equal(q.has("text"), false);
   assert.equal(q.has("priority"), false);
   assert.equal(q.get("project"), "ACME");
   assert.equal(q.get("sort"), "updated");
   assert.equal(q.get("order"), "desc");
   assert.equal(q.has("includeResolved"), false);
-  assert.equal(searchQuery({ ...emptySearch(), ticketKey: "   " }).has("ticketKey"), false);
+  assert.equal(searchQuery({ ...emptySearch(), key: "   " }).has("key"), false);
 });
 
 test("searchQuery / normalizeSearch：未分配不带人员与关系，但不清表单里选的人", () => {
@@ -338,7 +338,7 @@ test("serializeSearch / readSavedSearch：条件往返，坏 JSON / 版本不对
   const saved = serializeSearch({
     ...emptySearch(),
     title: "白屏",
-    ticketKey: "17967",
+    key: "17967",
     project: "acme",
     statusCategory: "done",
     person: { accountId: "acc-9", displayName: "Ada" },
@@ -346,7 +346,7 @@ test("serializeSearch / readSavedSearch：条件往返，坏 JSON / 版本不对
   });
   const back = readSavedSearch(saved);
   assert.equal(back.title, "白屏");
-  assert.equal(back.ticketKey, "17967");
+  assert.equal(back.key, "17967");
   assert.equal(back.project, "ACME");
   assert.equal(back.statusCategory, "done");
   assert.equal(back.person.accountId, "acc-9");
@@ -366,4 +366,22 @@ test("readSavedSearch：单个字段类型/枚举不对只丢该字段", () => {
   assert.deepEqual(s.relations, []);
   assert.equal(s.project, "ACME");
   assert.equal(s.status, "Done");
+});
+
+// ---------------------------------------------------------------- #407 工单号
+
+test("searchQuery：工单号去掉首尾空白后带上，空着就不带", () => {
+  assert.equal(searchQuery({ ...emptySearch(), key: "  CASPH30BUG-1 " }).get("key"), "CASPH30BUG-1");
+  assert.equal(searchQuery(emptySearch()).has("key"), false);
+  assert.equal(searchQuery({ ...emptySearch(), key: "   " }).has("key"), false);
+});
+
+test("搜索条件往返：工单号存进 localStorage，读回来还在", () => {
+  const saved = serializeSearch({ ...emptySearch(), key: "21352 白屏" });
+  const back = readSavedSearch(saved);
+  assert.equal(back.key, "21352 白屏");
+  // 老版本没有 key 字段：读成空串，不报错。
+  const legacy = readSavedSearch(JSON.stringify({ v: 1, title: "登录" }));
+  assert.equal(legacy.key, "");
+  assert.equal(legacy.title, "登录");
 });

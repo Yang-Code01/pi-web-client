@@ -265,11 +265,15 @@ export const api = {
   /** #249：桥固定查「分配给我 + 未解决」；refresh 绕过桥的 60 秒缓存（D203）。 */
   jiraIssues: (refresh = false) => req<{ issues: JiraIssue[] }>(`/api/jira/issues${refresh ? "?refresh=1" : ""}`),
   jiraProjects: (refresh = false) => req<{ projects: JiraProject[] }>(`/api/jira/projects${refresh ? "?refresh=1" : ""}`),
-  /** #257：结构化条件由页面拼 query，桥端负责校验、拼 JQL 与关注者降级。 */
+  /** #257：结构化条件由页面拼 query，桥端负责校验、拼 JQL 与关注者降级。#407：工单号模糊时回 `fuzzy`（D243）。 */
   jiraSearch: (params: string) =>
-    req<{ issues: JiraIssue[]; nextPageToken?: string; isLast: boolean; degraded?: { watchers: boolean } }>(
-      `/api/jira/search${params ? `?${params}` : ""}`,
-    ),
+    req<{
+      issues: JiraIssue[];
+      nextPageToken?: string;
+      isLast: boolean;
+      degraded?: { watchers: boolean };
+      fuzzy?: { token: string; fallback?: boolean };
+    }>(`/api/jira/search${params ? `?${params}` : ""}`),
   /** #257：类型 / 优先级 / 项目内状态。`project` 为空时 `statuses` 也是空的。 */
   jiraSearchMeta: (project?: string) =>
     req<JiraSearchMeta>(

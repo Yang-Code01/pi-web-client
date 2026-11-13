@@ -149,6 +149,8 @@ export class JiraPanel {
   private searchErrorCode = "";
   private searchDegraded = false;
   private searchSeq = 0;
+  /** 工单号走了模糊（桥用 picker 找的）：回包里有 `fuzzy` 时才非空，只用于结果区提示。 */
+  private searchFuzzy: { token: string; fallback?: boolean } | null = null;
   private users: JiraUserOption[] = [];
   private usersLoading = false;
   private usersUnavailable = false;
@@ -159,9 +161,9 @@ export class JiraPanel {
   private userActive = -1;
   /** 搜索表单控件；meta 到货 / 未分配切换时就地更新，不整块重画。 */
   private fields: {
+    key?: HTMLInputElement;
     title?: HTMLInputElement;
     text?: HTMLInputElement;
-    ticketKey?: HTMLInputElement;
     project?: HTMLSelectElement;
     category?: HTMLSelectElement;
     status?: HTMLSelectElement;
@@ -173,7 +175,6 @@ export class JiraPanel {
     resolved?: HTMLInputElement;
     relations: HTMLInputElement[];
   } = { relations: [] };
-  private nav: HTMLElement | null = null;
   private pane: HTMLElement | null = null;
   /** 上一次画的是哪一页：换页前把 pane 的滚动位置存进 `scrollBySection`。 */
   private renderedSection: string | null = null;
@@ -235,7 +236,6 @@ export class JiraPanel {
     this.userSeq += 1;
     window.clearTimeout(this.userTimer);
     this.pane = null;
-    this.nav = null;
     this.lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.state = { kind: "loading" };
     this.esc = (ev) => {
@@ -271,7 +271,6 @@ export class JiraPanel {
     this.root?.remove();
     this.root = null;
     this.pane = null;
-    this.nav = null;
     this.renderedSection = null;
     this.resultsBox = null;
     this.personBox = null;
@@ -499,8 +498,10 @@ export class JiraPanel {
     nav.setAttribute("aria-label", tr("Jira 分区"));
     const active = this.activeSection();
     for (const item of this.navItems()) {
-      const btn = el("button", `jc-nav__item${item.id === active ? " on" : ""}`) as HTMLButtonElement;
+      const on = item.id === active;
+      const btn = el("button", `jc-nav__item${on ? " on" : ""}`) as HTMLButtonElement;
       btn.type = "button";
+      if (on) btn.setAttribute("aria-current", "page");
       btn.onclick = () => this.select(item.id);
       btn.append(el("span", "jc-nav__label", item.label));
       if (item.count) btn.append(el("span", "jc-nav__count", item.count));
@@ -517,7 +518,6 @@ export class JiraPanel {
     if (this.root) this.root.replaceWith(back);
     else (document.getElementById("app") ?? document.body).append(back);
     this.root = back;
-    this.nav = nav;
     this.pane = pane;
     this.renderedSection = active;
     pane.scrollTop = this.scrollBySection.get(active) ?? 0;
@@ -808,16 +808,11 @@ export class JiraPanel {
     };
 
     const grid = el("div", "jira-search-grid");
-    const primaryRow = el("div", "jira-search-row jira-search-row-primary");
-    primaryRow.append(
-      this.searchInput("ticketKey", tr("票号"), tr("请输入票号")),
+    grid.append(
+      this.searchInput("key", tr("工单号")),
       this.searchInput("title", tr("标题关键字")),
       this.searchInput("text", tr("全文本")),
       this.searchSelectField("project", tr("项目")),
-    );
-
-    const filterRow = el("div", "jira-search-row jira-search-row-filters");
-    filterRow.append(
       this.searchSelectField("category", tr("状态类别")),
       this.searchSelectField("status", tr("具体状态")),
       this.searchSelectField("type", tr("类型")),
@@ -826,14 +821,13 @@ export class JiraPanel {
       this.searchSelectField("order", tr("方向")),
     );
 
-    const controlRow = el("div", "jira-search-row jira-search-row-controls");
     const people = el("div", "jira-search-people");
     people.append(this.personField(), this.relationsField());
-    controlRow.append(people);
+    grid.append(people);
 
     const toggles = el("div", "jira-search-toggles");
     toggles.append(this.checkField("unassigned", tr("未分配")), this.checkField("resolved", tr("含已解决")));
-    controlRow.append(toggles);
+    grid.append(toggles);
 
     const actions = el("div", "jira-search-actions");
     const submit = el("button", "btn primary", tr("搜索")) as HTMLButtonElement;
@@ -845,8 +839,7 @@ export class JiraPanel {
     clear.onclick = () => this.clearSearch();
     this.metaNote = el("div", "jira-search-note");
     actions.append(submit, clear, this.metaNote);
-    controlRow.append(actions);
-    grid.append(primaryRow, filterRow, controlRow);
+    grid.append(actions);
     form.append(grid);
 
     this.resultsBox = el("div", "jira-search-results");
@@ -858,14 +851,14 @@ export class JiraPanel {
     return box;
   }
 
-  private searchInput(key: "title" | "text" | "ticketKey", label: string, placeholder = tr("输入关键字")): HTMLElement {
-    const wrap = el("div", "jira-search-field");
+  private searchInput(key: "key" | "title" | "text", label: string): HTMLElement {
+    const wrap = el("div", "jira-search-field span-2");
     const id = `jira-search-${key}`;
     const lab = el("label", "jira-label", label);
     lab.htmlFor = id;
     const input = el("input", "jira-input") as HTMLInputElement;
     input.id = id;
-    input.placeholder = placeholder;
+    input.placeholder = key === "key" ? tr("CASPH30BUG-123，或只写 1235") : tr("输入关键字");
     input.autocomplete = "off";
     input.spellcheck = false;
     input.value = this.search[key];
@@ -874,6 +867,10 @@ export class JiraPanel {
     };
     this.fields[key] = input;
     wrap.append(lab, input);
+    // 工单号怎么看：形状判定在桥里（D210），这里只把规则写给人看。
+    if (key === "key") {
+      wrap.append(el("div", "jira-search-hint", tr("完整工单号精确查；多个用逗号分开；半截号按号段前缀匹配。")));
+    }
     return wrap;
   }
 
@@ -1277,9 +1274,9 @@ export class JiraPanel {
 
   private fillSearchForm(): void {
     const f = this.fields;
+    if (f.key) f.key.value = this.search.key;
     if (f.title) f.title.value = this.search.title;
     if (f.text) f.text.value = this.search.text;
-    if (f.ticketKey) f.ticketKey.value = this.search.ticketKey;
     this.paintMetaOptions();
     if (f.category) f.category.value = this.search.statusCategory;
     if (f.status) f.status.value = this.search.status;
@@ -1312,6 +1309,7 @@ export class JiraPanel {
     this.searchIsLast = true;
     this.searchLoadingMore = false;
     this.searchMoreError = "";
+    this.searchFuzzy = null;
     if (this.searchBtn) this.searchBtn.disabled = true;
     this.paintResults();
     try {
@@ -1321,6 +1319,7 @@ export class JiraPanel {
       this.searchNext = res.nextPageToken;
       this.searchIsLast = res.isLast || !res.nextPageToken;
       this.searchDegraded = res.degraded?.watchers === true;
+      this.searchFuzzy = res.fuzzy ?? null;
       this.searchKind = "ready";
     } catch (err) {
       if (seq !== this.searchSeq || !this.root) return;
@@ -1398,9 +1397,18 @@ export class JiraPanel {
     if (this.searchDegraded) {
       box.append(el("div", "jira-note", tr("关注者权限不足，本次只查了经办人和报告人。")));
     }
+    if (this.searchFuzzy?.fallback) {
+      box.append(el("div", "jira-note", tr("没有这个工单号，下面是按号段模糊找到的")));
+    }
     if (!this.searchItems.length) {
       const empty = el("div", "jira-empty");
-      empty.append(el("div", "jira-empty-text", tr("没有符合条件的工单")));
+      empty.append(
+        el(
+          "div",
+          "jira-empty-text",
+          this.searchFuzzy || this.search.key.trim() ? tr("没有匹配这个工单号的工单") : tr("没有符合条件的工单"),
+        ),
+      );
       const clear = el("button", "btn ghost", tr("清空条件"));
       clear.onclick = () => this.clearSearch();
       empty.append(clear);
