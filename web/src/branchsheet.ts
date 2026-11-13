@@ -782,8 +782,11 @@ export class BranchSheet {
     this.openCard(card, true);
   }
 
-  private branchPrompt(branch = this.selectedBranch, requirement = ""): string {
-    const refs = this.refs?.groups.flatMap((g) => g.refs.map((r) => r.name)) ?? this.data?.branches.map((b) => b.name) ?? [];
+  private branchPrompt(
+    branch = this.selectedBranch,
+    requirement = "",
+    failure?: { argv: string[]; exitCode: number; stderr: string; code?: string },
+  ): string {
     return buildHandoffPrompt({
       repo: this.data?.repo ?? this.dir,
       branch: this.state?.branch ?? this.fallback,
@@ -791,8 +794,8 @@ export class BranchSheet {
       ahead: this.data?.ahead,
       behind: this.data?.behind,
       dirty: this.state?.dirty,
-      refs,
       requirement,
+      failure,
     });
   }
 
@@ -1106,10 +1109,11 @@ export class BranchSheet {
     const acts = el("div", "go-acts");
     const agent = btn(tr("交给 agent 看这个失败"));
     agent.dataset.agent = "result";
-    agent.onclick = () => this.openHandoff(this.branchPrompt(this.selectedBranch, tr("{p1}：{p2}", { p1: op.title, p2: op.sample })) + "\n\n" + buildHandoffPrompt({
-      repo: this.data?.repo ?? this.dir, branch: this.state?.branch ?? this.fallback,
-      failure: { argv: out.argv, exitCode: out.exitCode, stderr: out.stderr, code: out.code },
-    }));
+    agent.onclick = () => this.openHandoff(this.branchPrompt(
+      this.selectedBranch,
+      tr("{p1}：{p2}", { p1: op.title, p2: op.sample }),
+      { argv: out.argv, exitCode: out.exitCode, stderr: out.stderr, code: out.code },
+    ));
     acts.append(agent);
     if (out.pending) {
       const abort = btn(tr("中止冲突操作"));
