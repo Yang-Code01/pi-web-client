@@ -165,6 +165,23 @@ tries = 0;
 const flaky = async () => (++tries === 1 ? "追加注号，务必。" : "注番を必ず追加する。");
 const folded = await reverseBlock(pair, run, flaky);
 check("第一次不合格会带着理由再问一次", tries === 2 && folded.includes("注番を必ず"), `${tries} ${folded}`);
+
+// 真事：标题早先被写成了中文，之后每次改标题都把中文再写回去一遍（源里的标题已经脏了，
+// 单块的假名检查就失效了）。整篇是日文时标题必须写回日文——顺带把脏标题修好。
+const dirtyHead = { src: "# 我在学习日语", gen: "# 我在学习日语", out: "# 我是徐藤恩的父亲", docJa: true };
+const alwaysZh = async () => "# 我是徐藤恩的父亲";
+tries = 0;
+blocked = "";
+try {
+  await reverseBlock(dirtyHead, run, alwaysZh);
+} catch (e) {
+  blocked = e.message;
+}
+check("日文稿件里的中文标题写回会被拦下", /日文/.test(blocked), blocked);
+tries = 0;
+const zhThenJa = async () => (++tries === 1 ? "# 我是徐藤恩的父亲" : "# 私は徐藤恩の父です");
+const jpHead = await reverseBlock(dirtyHead, run, zhThenJa);
+check("重问一次就拿到日文标题", jpHead.includes("私") && tries === 2, `${tries} ${jpHead}`);
 check("正文其余部分没被动", applied.text.startsWith("# 変更一覧") && applied.text.includes("注番を追加する。"));
 check("改的是表格行不是整篇", applied.text.split("\n").length === DOC.split("\n").length);
 

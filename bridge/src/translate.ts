@@ -218,10 +218,12 @@ export function cleanOut(raw: string): string {
   return s.trim();
 }
 
+/** 假名个数：判断一段文本是不是日文的最省事的办法。 */
+const kana = (s: string) => (s.match(/[\u3040-\u30ff]/g) ?? []).length;
+
 /** 日文源翻成别的语言时，译文里不该再出现假名（出现多半是模型偷懒原样抄了）。 */
 function looksUntranslated(lang: TrLang, src: string, out: string): string | null {
   if (lang === "ja") return null;
-  const kana = (s: string) => (s.match(/[\u3040-\u30ff]/g) ?? []).length;
   const srcKana = kana(src);
   if (srcKana < 20) return null;
   if (kana(out) > srcKana * 0.8) return "译文几乎照抄了原文";
@@ -470,6 +472,8 @@ export interface ReverseIn {
   gen: string;
   /** 现在展示的译文（可能被人改过）。 */
   out: string;
+  /** 整篇原文是日文（靠全文假名判断）：写回的标题也得是日文。 */
+  docJa?: boolean;
 }
 
 /** 结果是模型给的但内容不对（不是调用失败）：这种才值得重试一次。 */
@@ -480,20 +484,22 @@ class BadOutput extends Error {}
  * 原文里却混进了译文的语言（中文标题盖到日文原文上）。只校验结构拦不住，
  * 还得看「结果是不是原文那一套字」。
  */
-function reverseDrift(src: string, gen: string, out: string, nextOut: string): string | null {
+function reverseDrift(src: string, gen: string, nextText: string, editedOut: string, docJa = false): string | null {
   // 「把译文抄回去」只在原文与基线译文本来就不同时才算错：同语言（或本来就是照抄回原文）时抄了也对。
-  if (out.trim() === nextOut.trim() && src.trim() !== gen.trim()) return "模型直接抄了改后的译文";
-  const kana = (s: string) => (s.match(/[\u3040-\u30ff]/g) ?? []).length;
+  if (editedOut.trim() === nextText.trim() && src.trim() !== gen.trim()) return "模型直接抄了改后的译文";
   const latin = (s: string) => (s.match(/[A-Za-z]/g) ?? []).length;
   const chars = (s: string) => s.replace(/\s+/g, "").length || 1;
   const srcKana = kana(src);
+  // 标题没有代码也没有 ID，永远是原文那一套字：整篇是日文就写日文。
+  // 这一条专门拦「标题被改成中文、又被原样写回文件」——源里的标题已经被人写坏了也能救回来。
+  if (docJa && /^#{1,6}\s/.test(src) && kana(nextText) < 2) return "写回的是中文，这一篇原文是日文：标题也得写成日文";
   if (srcKana >= 3) {
     // 原文是日文：结果必须还是日文。纯汉字或一大片拉丁字母都算跑偏。
-    if (kana(out) < Math.max(2, Math.floor(srcKana * 0.3))) return "写回的不是日文（几乎没有假名）";
+    if (kana(nextText) < Math.max(2, Math.floor(srcKana * 0.3))) return "写回的不是日文（几乎没有假名）";
     return null;
   }
-  if (kana(out) > 4) return "写回的是日文，原文不是";
-  if (latin(src) / chars(src) > 0.6 && latin(out) / chars(out) < 0.3) return "写回的不是原文的语言（英文字母没了）";
+  if (kana(nextText) > 4) return "写回的是日文，原文不是";
+  if (latin(src) / chars(src) > 0.6 && latin(nextText) / chars(nextText) < 0.3) return "写回的不是原文的语言（英文字母没了）";
   return null;
 }
 
@@ -515,6 +521,7 @@ async function reverseAttempt(input: ReverseIn, o: TrRun, run: TrRunner, extra: 
     ? "把改过的地方体现回原文，只输出结果。"
     : "把【改后的译文】里改过的地方体现回【原文】，其余部分照抄【原文】，只输出结果。";
   const body = [
+    input.docJa ? "【说明】整篇原文是日文，写回结果必须也是日文（标题、表格、列表都一样）。" : "",
     `【原文】\n${src}`,
     oldOut && oldOut !== nextOut ? `【原译文】\n${oldOut}` : "",
     `【改后的译文】\n${nextOut}`,
@@ -527,7 +534,7 @@ async function reverseAttempt(input: ReverseIn, o: TrRun, run: TrRunner, extra: 
   if (!text.trim()) throw new BadOutput("模型没有给出可用的原文");
   const bad = tableDiff(src, text);
   if (bad) throw new BadOutput(`${bad}；这一块没有写回`);
-  const drift = reverseDrift(src, oldOut, text, nextOut);
+  const drift = reverseDrift(src, oldOut, text, nextOut, input.docJa);
   if (drift) throw new BadOutput(`${drift}；这一块没有写回`);
   return text;
 }
@@ -557,6 +564,8 @@ export async function planSync(
   const edits: SyncEdit[] = [];
   const warnings: string[] = [];
   const todo: { sec: TrSection; i: number }[] = [];
+  // 整篇的语言：日文文稿里，标题这类不该出现别的语言的地方要按日文校验。
+  const docJa = kana(doc.sections.map((s) => s.src).join("\n")) >= 3;
 
   for (const sec of doc.sections) {
     if (sec.out === sec.gen) continue;
@@ -565,7 +574,7 @@ export async function planSync(
     const out = splitBlocks(sec.out);
     if (src.length !== gen.length || gen.length !== out.length) {
       warnings.push(`${sec.heading || "开头"}：段落结构变了，这一节整节重译`);
-      edits.push({ before: sec.src, after: await reverseWhole({ src: sec.src, gen: sec.gen, out: sec.out }, o, run) });
+      edits.push({ before: sec.src, after: await reverseWhole({ src: sec.src, gen: sec.gen, out: sec.out, docJa }, o, run) });
       continue;
     }
     for (let i = 0; i < out.length; i++) if (out[i] !== gen[i]) todo.push({ sec, i });
@@ -579,7 +588,7 @@ export async function planSync(
       const before = splitBlocks(sec.src)[i];
       const gen = splitBlocks(sec.gen)[i];
       const out = splitBlocks(sec.out)[i];
-      edits.push({ before, after: await reverseBlock({ src: before, gen, out }, o, run) });
+      edits.push({ before, after: await reverseBlock({ src: before, gen, out, docJa }, o, run) });
     } catch (e) {
       warnings.push(`${sec.heading || "开头"}：${(e as Error).message}`);
     }
