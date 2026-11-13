@@ -2986,9 +2986,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 @media (hover: none) { .turn-rail { display: none; } }
 :where(html[data-compact="true"]) .turn-rail { display: none; }
 
-/* ---------------------------------------------------------------- 左栏收起时的路径（D61）
-   会话卡片上写着 cwd，左栏一收就没处看；这时路径接到状态行最前面、分支 chip 旁边（见 app.ts 的
-   syncCwdChip / fillHintStatus）。左栏展开时不显示 —— 选中的那张卡片上就是同一个路径。 */
+/* ---------------------------------------------------------------- 状态行最前面的路径（D61 / D244）
+   当前会话的 cwd 常驻在状态行最前面、分支 chip 旁边（见 app.ts 的 syncCwdChip / fillHintStatus）。
+   D244 起左栏展开也显示；窄屏（左栏是一页 tab）仍由 syncCwdChip 藏起来。 */
 .cwd-chip {
   flex: 0 1 auto; min-width: 0; max-width: 42ch;
   display: inline-flex; align-items: center;
