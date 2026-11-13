@@ -1,6 +1,6 @@
 import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TrDoc, TrDocResp, TrJob, TrPrefsResp, TrSyncResp, TunnelState } from "./types.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
-import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices } from "./sysmanage-types.ts";
+import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -336,6 +336,23 @@ export const api = {
   sysDnsRestore: (guid: string) =>
     req<DnsResult>("/api/sys/dns/restore", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ guid }) }),
   sysWinnatRestart: () => req<WinnatResult>("/api/sys/winnat/restart", { method: "POST" }),
+  /** 上下班：读只列最近 30 天；写（工时、工作日、记录器开关、回填）公网 403。 */
+  sysWorkclock: () => req<SysWorkclock>("/api/sys?section=workclock"),
+  sysWorkclockSettings: (patch: Partial<Pick<WorkclockSettings, "hours" | "workdays" | "notify">>) =>
+    req<WorkclockSettings>("/api/sys/workclock/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  /** 装 / 卸常驻记录器（注册计划任务，不要管理员）。 */
+  sysWorkclockAgent: (action: "install" | "uninstall") =>
+    req<WorkclockAgentResult>("/api/sys/workclock/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action }),
+    }),
+  /** 提权读 Security 4800/4801 回填历史，一次 UAC。 */
+  sysWorkclockBackfill: () => req<WorkclockBackfill>("/api/sys/workclock/backfill", { method: "POST" }),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),

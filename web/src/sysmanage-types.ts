@@ -1,5 +1,5 @@
 /** #266：桥端 `/api/sys*` 的响应形状（与 bridge/src/sysmanage.ts 对齐）。 */
-export type SysSection = "overview" | "network" | "ports" | "services";
+export type SysSection = "overview" | "network" | "ports" | "services" | "workclock";
 export type NetStatus = "up" | "disconnected" | "not_present" | "unknown";
 export type PortScope = "all" | "nic" | "loopback";
 
@@ -110,4 +110,91 @@ export interface DnsResult {
   after: string[];
   saved: DnsSaved | null;
   dhcp: boolean;
+}
+
+/** 上下班模块：哪天第一次解锁算上班、每天目标工时、下班倒计时。 */
+export type WorkclockSource = "event" | "poll" | "log";
+
+export interface WorkclockEvent {
+  t: number;
+  k: "unlock" | "lock";
+  src: "event" | "start" | "poll" | "log";
+}
+
+export interface WorkclockSettings {
+  hours: number;
+  workdays: number[];
+  notify: boolean;
+  updatedAt: number;
+}
+
+export interface WorkclockDay {
+  /** 本地日期 YYYY-MM-DD。 */
+  date: string;
+  firstUnlock: number | null;
+  lastEnd: number | null;
+  workedMs: number;
+  source: WorkclockSource | null;
+  workday: boolean;
+  met: boolean;
+  unlocks: number;
+  ongoing: boolean;
+}
+
+export interface WorkclockToday extends WorkclockDay {
+  target: number | null;
+  remainingMs: number | null;
+  events: WorkclockEvent[];
+}
+
+export interface WorkclockAgent {
+  installed: boolean;
+  running: boolean;
+  autostart: boolean;
+  pid: number | null;
+  startedAt: number | null;
+  lastEventAt: number | null;
+  lastEventKind: string;
+  lastLockSeen: number | null;
+  locksSeen: number;
+  heartbeatAt: number | null;
+  scriptPath: string;
+  taskName: string;
+  taskState: string;
+  error: string | null;
+}
+
+export interface WorkclockCoverage {
+  days: number;
+  agentDays: number;
+  logDays: number;
+  from: number | null;
+  to: number | null;
+}
+
+export interface SysWorkclock {
+  public: boolean;
+  platform: string;
+  supported: boolean;
+  settings: WorkclockSettings;
+  today: WorkclockToday;
+  days: WorkclockDay[];
+  agent: WorkclockAgent;
+  coverage: WorkclockCoverage;
+  updatedAt: number;
+}
+
+export interface WorkclockAgentResult {
+  ok?: boolean;
+  error?: string;
+  code?: string;
+  agent: WorkclockAgent;
+}
+
+export interface WorkclockBackfill {
+  ok: boolean;
+  count?: number;
+  from?: number | null;
+  to?: number | null;
+  state?: SysWorkclock;
 }

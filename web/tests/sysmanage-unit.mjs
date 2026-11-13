@@ -7,15 +7,24 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   DNS_PRESETS,
+  clockText,
+  countdownOf,
   filterServices,
   formatBytes,
+  formatCountdown,
+  formatDuration,
   parseDnsInput,
+  parseHours,
   presetOf,
   sameServers,
   serviceStartLabel,
   serviceStatusLabel,
+  targetText,
   uptimeParts,
   visiblePorts,
+  weekdayOf,
+  workdayName,
+  workedPercent,
 } from "../src/sysmanage-model.ts";
 
 test("DNS 预设：公司在前，全部是 IPv4", () => {
@@ -127,4 +136,63 @@ test("WinNAT 状态文案：认得的翻译，认不出的原样", () => {
   assert.equal(serviceStatusLabel("Weird"), "Weird");
   assert.equal(serviceStartLabel("Manual"), "手动");
   assert.equal(serviceStartLabel(""), "");
+});
+
+test("上下班：倒计时大字 `HH:MM:SS`，过点加 `+`", () => {
+  assert.equal(formatCountdown(2 * 3_600_000 + 13 * 60_000 + 7_000), "02:13:07");
+  assert.equal(formatCountdown(0), "00:00:00");
+  assert.equal(formatCountdown(-65_000), "+00:01:05");
+  assert.equal(formatCountdown(-3_600_000), "+01:00:00");
+  assert.deepEqual(countdownOf(1_500), { hours: 0, minutes: 0, seconds: 1, overtime: false });
+  assert.equal(countdownOf(-1).overtime, true);
+});
+
+test("上下班：已工作工时先说小时，不足一小时说分秒", () => {
+  assert.equal(formatDuration(0), "0 秒");
+  assert.equal(formatDuration(-5), "0 秒");
+  assert.equal(formatDuration(90_000), "1 分 30 秒");
+  assert.equal(formatDuration(10 * 3_600_000), "10 小时 00 分");
+  assert.equal(formatDuration(3_600_000 + 5 * 60_000 + 59_000), "1 小时 05 分");
+});
+
+test("上下班：进度条按目标工时算，封顶 100、不倒扣", () => {
+  assert.equal(workedPercent(4.5 * 3_600_000, 9), 50);
+  assert.equal(workedPercent(20 * 3_600_000, 9), 100);
+  assert.equal(workedPercent(-1, 9), 0);
+  assert.equal(workedPercent(3_600_000, 0), 0);
+});
+
+test("上下班：工时输入夹在 0.5–24，取 0.5 步长，逗号也认", () => {
+  assert.equal(parseHours("9"), 9);
+  assert.equal(parseHours(" 8,5 "), 8.5);
+  assert.equal(parseHours("8.24"), 8);
+  assert.equal(parseHours("7.26"), 7.5);
+  assert.equal(parseHours("0.4"), null);
+  assert.equal(parseHours("24.4"), null);
+  assert.equal(parseHours(""), null);
+  assert.equal(parseHours("abc"), null);
+  assert.equal(parseHours("24"), 24);
+  assert.equal(parseHours("0.5"), 0.5);
+});
+
+test("上下班：日期键换星期用本地分量，不受 UTC 偏移影响", () => {
+  assert.equal(weekdayOf("2026-11-13"), "周五");
+  assert.equal(weekdayOf("2026-11-15"), "周日");
+  assert.equal(weekdayOf(""), "");
+  assert.equal(weekdayOf("2026-13-40"), "");
+  assert.equal(workdayName(1), "周一");
+  assert.equal(workdayName(0), "周日");
+  assert.equal(workdayName(7), "");
+});
+
+test("上下班：时刻文本带前导零", () => {
+  assert.equal(clockText(new Date(2026, 10, 13, 9, 7).getTime()), "09:07");
+  assert.equal(clockText(new Date(2026, 10, 13, 18, 0).getTime()), "18:00");
+});
+
+test("上下班：目标时刻跨过零点就标「明天」", () => {
+  const now = new Date(2026, 10, 13, 23, 37).getTime();
+  assert.equal(targetText(new Date(2026, 10, 13, 18, 0).getTime(), now), "18:00");
+  assert.equal(targetText(new Date(2026, 10, 14, 5, 37).getTime(), now), "明天 05:37");
+  assert.equal(targetText(new Date(2026, 10, 15, 1, 0).getTime(), now), "明天 01:00");
 });
