@@ -251,7 +251,19 @@ try {
   const after = fs.readFileSync(DOC, "utf8");
   check("源文件里换成了改后的说法", after.includes("改过"));
   check("没动的地方原样留着", after.includes("## 発注単位") && after.includes("```ts"));
-
+  // 写回后左边立刻是新的原文：缓存里的 src 没跟着换时，这里读到的还是翻译那一刻的旧句子。
+  await page.waitForFunction(
+    () => (document.querySelector(".tr-cmp .tr-row .tr-src")?.textContent ?? "").includes("改过"),
+    null,
+    { timeout: 15000 },
+  );
+  const leftNow = await page.locator(".tr-cmp .tr-row").first().locator(".tr-src").innerText();
+  check("写回后左边换成了新原文", leftNow.includes("改过"));
+  check(
+    "写回后没「改过」标记",
+    (await page.locator(".tr-cmp .tr-row.edited").count()) === 0,
+  );
+  await page.screenshot({ path: path.join(OUT, "3-after-apply.png"), fullPage: false });
   // ---- 5. 设置 → 系统 → 预览与翻译：默认模型记住、恢复默认
   // 对照是全屏的，侧栏被盖住：先关掉预览再点设置。
   await page.locator('.viewer-tools button[title="关闭（Esc）"]').click();

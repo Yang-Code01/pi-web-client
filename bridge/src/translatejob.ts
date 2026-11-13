@@ -144,7 +144,10 @@ export class TranslateJobs {
   patch(abs: string, lang: TrLang, sections: TrSection[]): void {
     for (const job of this.jobs.values()) {
       if (job.doc.abs !== abs || job.lang !== lang) continue;
-      job.doc.sections = sections;
+      // 以磁盘上那份为准：译完到用户改译文之间，文件可能已经被「同步写回」换过一版，
+      // 拿 job 里翻译那一刻的 mtime/size 写回去，页面会立刻显示「译文过期」。
+      const cur = readDoc(abs, lang) ?? job.doc;
+      job.doc = { ...cur, sections };
       writeDoc(job.doc);
     }
   }

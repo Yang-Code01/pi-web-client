@@ -262,6 +262,17 @@ try {
   check(Boolean(apply.body.backup) && fs.existsSync(apply.body.backup), `原文备份在（${path.basename(String(apply.body.backup))}）`);
   check(fs.readFileSync(apply.body.backup, "utf8") === SRC, "备份就是写之前的原文");
 
+  // 写回以后缓存里的 src 必须换成新原文：不换的话对照页左边还挂着翻译那一刻的快照，
+  // 用户看到的就是「提示写回了，左边没变」。
+  const docAfter = (await post("doc", { sessionId, path: SLUG, lang: "zh" })).body;
+  check(docAfter.stale === false, `写回后译文不再算过期（stale ${docAfter.stale}，doc ${docAfter.doc?.mtime}/${docAfter.doc?.size}，磁盘 ${fs.statSync(DOC).mtimeMs}/${fs.statSync(DOC).size}，路由 ${docAfter.mtime}/${docAfter.size}）`);
+  check(docAfter.doc.sections[0].src.includes(MARK), "写回后缓存里的原文跟着换了");
+  check(
+    docAfter.doc.sections[0].src.split("\n")[0] === written.split("\n")[0],
+    "缓存里的原文与磁盘第一行一致",
+  );
+  check(docAfter.doc.sections.every((sx) => sx.gen === sx.out), "写回后没有「改过」的标记了");
+
   const again = await post("apply", { id: sync.body.id });
   check(again.status === 404 && again.body.code === "translate_apply", `同一个 id 不能写两次（${again.status}）`);
 

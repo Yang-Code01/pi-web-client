@@ -80,7 +80,7 @@ import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { handleSysmanage } from "./sysmanage.ts";
 import { piLatest } from "./piupdate.ts";
 import { isTrustedPreviewPath, kindOf, openPreview, readAttachableImage, readTextFile, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw, writeTextFile } from "./preview.ts";
-import { MAX_TRANSLATE_BYTES, TR_DEFAULT_MODEL, TR_LANGS, applySync, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, writeDoc, writeTrPrefs, type TrSection } from "./translate.ts";
+import { MAX_TRANSLATE_BYTES, TR_DEFAULT_MODEL, TR_LANGS, applySync, cutSections, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, writeDoc, writeTrPrefs, type TrLang, type TrSection } from "./translate.ts";
 import { TranslateJobs } from "./translatejob.ts";
 import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
@@ -297,7 +297,7 @@ function isLoopbackPeer(addr: string): boolean {
  */
 const pendingApply = new Map<
   string,
-  { abs: string; mtime: number; size: number; text: string; enc: "utf8" | "gbk"; bom: boolean; at: number }
+  { abs: string; lang: TrLang; mtime: number; size: number; text: string; enc: "utf8" | "gbk"; bom: boolean; at: number }
 >();
 
 function dropStaleApplies(): void {
@@ -1424,7 +1424,7 @@ async function main(): Promise<void> {
         }
         dropStaleApplies();
         const id = randomUUID();
-        pendingApply.set(id, { abs, mtime: st.mtimeMs, size: st.size, text: applied.text, enc: file.enc, bom: file.bom, at: Date.now() });
+        pendingApply.set(id, { abs, lang, mtime: st.mtimeMs, size: st.size, text: applied.text, enc: file.enc, bom: file.bom, at: Date.now() });
         // 页面只给个「改了哪几块」的预览：整篇 before/after 可能有几百 KB，没必要来回搬。
         const clip = (t: string): string => {
           const lines = t.split("\n");
@@ -1461,6 +1461,22 @@ async function main(): Promise<void> {
         writeTextFile(plan.abs, plan.text, plan.enc, plan.bom);
         pendingApply.delete(String(body.id ?? ""));
         const after = fs.statSync(plan.abs);
+        // 写回之后原文就是这份译文里「有改动的地方」了：把缓存里的 src 换成新原文，gen 归到当前
+        // 译文。不更新的话对照页左边还挂着翻译那一刻的快照，用户看到的是「提示写回了，左边没变」。
+        const doc = readDoc(plan.abs, plan.lang);
+        if (doc) {
+          const cuts = cutSections(plan.text);
+          let note = "";
+          if (cuts.length === doc.sections.length) {
+            const next = doc.sections.map((sec, i) => ({ heading: cuts[i].heading, src: cuts[i].text, gen: sec.out, out: sec.out }));
+            writeDoc({ ...doc, mtime: after.mtimeMs, size: after.size, sections: next });
+            translateJobs.patch(plan.abs, plan.lang, next);
+          } else {
+            // 结构对不齐（模型在写回时多/少写了标题行）：译文按新原文重翻，别拿旧快照冒充。
+            note = `写回后分节变了（${doc.sections.length} → ${cuts.length}），译文要重翻一次`;
+            writeDoc({ ...doc, mtime: after.mtimeMs, size: after.size, warnings: [...doc.warnings, note] });
+          }
+        }
         log(`translate sync → ${plan.abs} (backup ${bak})`);
         return json(res, 200, { path: plan.abs, mtime: after.mtimeMs, size: after.size, backup: bak });
       } catch (err: any) {
