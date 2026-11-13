@@ -80,7 +80,7 @@ import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { handleSysmanage } from "./sysmanage.ts";
 import { piLatest } from "./piupdate.ts";
 import { isTrustedPreviewPath, kindOf, openPreview, readAttachableImage, readTextFile, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw, writeTextFile } from "./preview.ts";
-import { MAX_TRANSLATE_BYTES, TR_LANGS, applySync, isTrLang, planSync, readDoc, runPiTranslate, splitSections, writeDoc, type TrSection } from "./translate.ts";
+import { MAX_TRANSLATE_BYTES, TR_DEFAULT_MODEL, TR_LANGS, applySync, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, writeDoc, writeTrPrefs, type TrSection } from "./translate.ts";
 import { TranslateJobs } from "./translatejob.ts";
 import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
@@ -1280,7 +1280,29 @@ async function main(): Promise<void> {
         if (!lang) return fail(res, 400, "translate_lang", `不支持的语言：${String(body.lang ?? "")}`);
         const doc = readDoc(abs, lang);
         const stale = !doc || Math.abs(doc.mtime - st.mtimeMs) > 0.5 || doc.size !== st.size;
-        return json(res, 200, { doc, stale, langs: TR_LANGS, mtime: st.mtimeMs, size: st.size, job: translateJobs.active(abs, lang) });
+        return json(res, 200, {
+          doc,
+          stale,
+          langs: TR_LANGS,
+          mtime: st.mtimeMs,
+          size: st.size,
+          job: translateJobs.active(abs, lang),
+          prefs: readTrPrefs(),
+          defaultModel: TR_DEFAULT_MODEL,
+        });
+      } catch (err: any) {
+        return trFail(res, err);
+      }
+    }
+
+    // 默认用哪个模型翻（D241）：只存本机偏好，跟具体文件无关。
+    if (url.pathname === "/api/translate/prefs" && (req.method === "GET" || req.method === "POST")) {
+      if (publicReq) return fail(res, 403, "translate_public", "通过公网访问时不提供翻译，回本机操作");
+      try {
+        // GET 只读（设置页打开时看一眼）；POST 带 `model` 就写，不带就只回显。
+        const body = req.method === "POST" ? await readBody(req).catch(() => ({})) : {};
+        const prefs = typeof body.model === "string" ? writeTrPrefs({ model: body.model }) : readTrPrefs();
+        return json(res, 200, { prefs, defaultModel: TR_DEFAULT_MODEL });
       } catch (err: any) {
         return trFail(res, err);
       }

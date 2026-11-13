@@ -603,5 +603,35 @@ export function writeDoc(doc: TrDoc): void {
   writeJson(cacheFile(doc.abs, doc.lang), doc);
 }
 
+
+/**
+ * 默认拿哪个模型翻（D241）：用户没设过就用 `copilot/gpt-6-luna` —— 翻译这种活，便宜快就够。
+ * 只存 `provider/id`，找不到这个模型时页面会让人重挑，并把选择写回这里。
+ */
+export const TR_DEFAULT_MODEL = "copilot/gpt-6-luna";
+
+export interface TrPrefs {
+  /** "provider/id"；空串表示「还没设过」，页面按 TR_DEFAULT_MODEL 去解析。 */
+  model: string;
+}
+
+const PREFS_FILE = (): string => statePath("translate", "prefs.json");
+
+export function readTrPrefs(): TrPrefs {
+  const raw = readJson<TrPrefs | null>(PREFS_FILE(), null);
+  const model = typeof raw?.model === "string" ? raw.model.trim() : "";
+  return { model };
+}
+
+/** 只认 `provider/id` 这一种形状：别的写法存进去只会让下次解析不出来。 */
+export function writeTrPrefs(patch: { model?: string }): TrPrefs {
+  const cur = readTrPrefs();
+  const model = typeof patch.model === "string" ? patch.model.trim() : cur.model;
+  const ok = /^[^/\s]+\/[^/\s]+$/.test(model);
+  const next: TrPrefs = { model: ok ? model : cur.model };
+  writeJson(PREFS_FILE(), next);
+  return next;
+}
+
 // 两份译文/原文都不变时不算变化；同步回原文只关心这台机器。
 export const __test = { cutSections, looksUntranslated };

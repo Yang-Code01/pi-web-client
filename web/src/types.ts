@@ -568,6 +568,20 @@ export interface TrDocResp {
   mtime: number;
   size: number;
   job: TrJob | null;
+  /** 本机偏好（默认拿哪个模型翻）。 */
+  prefs?: TrPrefs;
+  /** 出厂默认模型；设置页用它做「恢复默认」。 */
+  defaultModel?: string;
+}
+
+export interface TrPrefs {
+  /** `provider/id`；空串 = 还没设过。 */
+  model: string;
+}
+
+export interface TrPrefsResp {
+  prefs: TrPrefs;
+  defaultModel: string;
 }
 
 export interface TrSyncResp {

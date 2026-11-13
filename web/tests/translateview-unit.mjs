@@ -6,7 +6,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { guessTrLang, trLangLabel, trText, TR_LANGS } from "../src/translateview.ts";
+import { guessTrLang, resolveTrModel, trLangLabel, trText, TR_LANGS } from "../src/translateview.ts";
 
 // ---------------------------------------------------------------- 默认翻成什么
 
@@ -50,4 +50,21 @@ test("语言 id 显示成自称，不认识的 id 原样返回", () => {
 test("译文按节用一个空行拼回去，没有 doc 时是空串", () => {
   assert.equal(trText({ sections: [{ heading: "", out: "A" }, { heading: "## x", out: "B" }] }), "A\n\nB");
   assert.equal(trText(null), "");
+});
+
+// ---------------------------------------------------------------- 默认模型怎么找
+
+test("默认模型：精确命中、同 id 换个 provider、彻底没有", () => {
+  const cat = ["copilot/gpt-6-luna", "github-copilot/gpt-6-luna", "copilot/gpt-6"];
+  // 精确命中
+  assert.equal(resolveTrModel(cat, "copilot/gpt-6-luna"), "copilot/gpt-6-luna");
+  // 同一个模型挂在另一个命名空间下也算找到了（优先 copilot/）
+  assert.equal(resolveTrModel(["github-copilot/gpt-6-luna"], "copilot/gpt-6-luna"), "github-copilot/gpt-6-luna");
+  // 两个都有时先挑 copilot/
+  assert.equal(resolveTrModel(cat.slice().reverse(), "github-copilot/gpt-6"), "copilot/gpt-6");
+  // 没设过、已经下架，都退回空串（由调用方提示重挑）
+  assert.equal(resolveTrModel(cat, ""), "");
+  assert.equal(resolveTrModel(cat, "copilot/gone"), "");
+  // 只有裸 id 的旧偏好也能救回来，但返回的一定是目录里的全名（带 provider）
+  assert.equal(resolveTrModel(cat, "gpt-6"), "copilot/gpt-6");
 });

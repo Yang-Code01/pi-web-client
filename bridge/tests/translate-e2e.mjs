@@ -174,6 +174,21 @@ try {
   check(before.body.stale === true, "标着「过期」（没有译文）");
   check((before.body.langs ?? []).length === 4, `四种目标语言（${(before.body.langs ?? []).map((l) => String(l)).join(",")}）`);
 
+  // D241: 默认模型是这台机器上的偏好，出厂值 copilot/gpt-6-luna，和 settings.json 无关。
+  check(before.body.prefs?.model === "", "偏好里还没记模型");
+  check(before.body.defaultModel === "copilot/gpt-6-luna", `出厂默认模型 copilot/gpt-6-luna（${before.body.defaultModel}）`);
+
+  const prefs0 = await post("prefs", {});
+  check(prefs0.status === 200 && prefs0.body.defaultModel === "copilot/gpt-6-luna", "不带 model 只读偏好");
+  const prefsSet = await post("prefs", { model: "stub/fake-model" });
+  check(prefsSet.status === 200 && prefsSet.body.prefs.model === "stub/fake-model", `记住选过的模型（${prefsSet.body.prefs.model}）`);
+  const prefsBad = await post("prefs", { model: "no-slash" });
+  check(prefsBad.body.prefs.model === "stub/fake-model", "不像 provider/id 的值被忽略，不覆盖已记住的");
+  const prefsGet = await get("/api/translate/prefs");
+  check(prefsGet.status === 200 && prefsGet.body.prefs.model === "stub/fake-model", "GET 也能读（设置页一进来就读一遍）");
+  const prefsAgain = await post("doc", { sessionId, path: SLUG, lang: "zh" });
+  check(prefsAgain.body.prefs?.model === "stub/fake-model", "记下来的模型下次带着 doc 一起回来");
+
   const badLang = await post("doc", { sessionId, path: SLUG, lang: "fr" });
   check(badLang.status === 400 && badLang.body.code === "translate_lang", `不支持的语言被拒（${badLang.body.code}）`);
 

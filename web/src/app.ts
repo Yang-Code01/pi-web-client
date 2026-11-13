@@ -10,7 +10,7 @@ import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPicke
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { ATTACH_IMAGE, imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
-import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, type TrAct, type TrView } from "./translateview.ts";
+import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, type TrAct, type TrView } from "./translateview.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
 import { classify, ctaHost, entryKey, normalizeSig, reviewClasses, sameFail, toCommit, type ComposerChild, type FailLedger, type SeenFail } from "./failures.ts";
 import { parseRules, type RuleBook } from "./rules.ts";
@@ -408,6 +408,9 @@ export class App {
   /** #26: last settings read per scope, and which tab the settings sheet shows. */
   private settingsView: { global?: SettingsView; project?: SettingsView } = {};
   private settingsTab: SettingsTab = "global";
+  /** D241: 翻译用的默认模型（`provider/id`）与出厂默认，来自桥的偏好；还没读过时为空串。 */
+  private trModelPref = "";
+  private trDefaultModel = "";
   /** #285: the form's two scopes share one tab id; this is what the segment and the form follow. */
   private settingsScope: "global" | "project" = "global";
   /** #285: flattened drafts + the on-disk snapshot they diff against, kept per scope while the sheet is open. */
@@ -9634,6 +9637,8 @@ export class App {
       t.stale = res.stale;
       t.job = res.job;
       t.error = "";
+      this.trModelPref = res.prefs?.model ?? this.trModelPref;
+      this.trDefaultModel = res.defaultModel ?? this.trDefaultModel;
       if (res.job?.status === "running") this.pollTr(v);
     } catch (err: any) {
       if (this.viewer !== v) return;
@@ -9645,30 +9650,22 @@ export class App {
   /** 语言 + 模型的选择器：模型目录是会话里那份（便宜的也在一起）。 */
   private trPicker(v: Viewer): void {
     const t = this.trOf(v);
+    // D241: 默认模型是桥那边记的偏好（copilot/gpt-6-luna），没有就退到当前会话的模型。
     const sessionModel = this.models.find((m) => m.id === this.session?.model);
-    let remembered = "";
-    try {
-      remembered = localStorage.getItem("pi.trModel") ?? "";
-    } catch {
-      /* 隐私模式 */
-    }
+    const pref = this.trModelPref || (t.doc ? `${t.doc.provider}/${t.doc.model}` : "") || this.trDefaultModel;
+    const values = this.models.map((m) => `${m.provider}/${m.id}`);
     openTrPicker(
       {
         lang: t.lang,
         fallbackLang: guessTrLang(v.text ?? ""),
-        fillModels: (sel) => {
+        pref,
+        models: values,
+        fillModels: (sel, model) => {
           appendModelOptions(sel, this.models, undefined, (m) => shortModelName(m.name), tr("当前使用"));
-          const guess = remembered || (sessionModel ? `${sessionModel.provider}/${sessionModel.id}` : "");
+          const guess = model || (sessionModel ? `${sessionModel.provider}/${sessionModel.id}` : "");
           const hit = guess && [...sel.options].find((o) => o.value === guess);
           if (hit) sel.value = hit.value;
           else if (sel.options.length) sel.value = sel.options[0].value;
-          sel.onchange = () => {
-            try {
-              localStorage.setItem("pi.trModel", sel.value);
-            } catch {
-              /* 记不住就算 */
-            }
-          };
         },
         onStart: (lang, provider, model) => void this.startTr(v, lang, provider, model, false),
       },
@@ -9690,6 +9687,8 @@ export class App {
     this.paintViewer();
     try {
       const { job } = await api.trStart(v.sessionId, { path: info.abs, lang, provider, model, force });
+      // 选过一次就记住，下次直接用它（设置页里能改回去）。
+      this.rememberTrModel(`${provider}/${model}`);
       if (this.viewer !== v) return;
       t.job = job;
       t.busy = false;
@@ -11074,6 +11073,19 @@ export class App {
     this.settingsOnlyOverrides = false;
     this.flashSettings("");
     if (tab === "runtime") this.socket.send({ type: "runtime.stats" });
+    // D241: 翻译偏好（默认模型）在桥那边，进这一页时读一遍再画。
+    if (tab === "preview") {
+      void api
+        .trPrefs()
+        .then((res) => {
+          this.trModelPref = res.prefs.model;
+          this.trDefaultModel = res.defaultModel;
+          this.paintSettings();
+        })
+        .catch(() => {
+          /* 读不到就按目录第一项显示 */
+        });
+    }
     if (tab === "passphrase") this.askPassphrase();
     if (tab === "subagents") {
       // 进 tab 时把 settings.json 也重问一遍：路径与字段不能是开 panel 那一刻的旧值。
@@ -11112,6 +11124,7 @@ export class App {
     if (tab === "passphrase") return this.paintPassphrase(pane);
     if (tab === "ext") return this.paintExtSettings(pane);
     if (tab === "notify") return this.paintNotify(pane);
+    if (tab === "preview") return this.paintPreviewSettings(pane);
     if (tab === "runtime") return this.paintRuntime(pane);
     if (tab === "changelog" || tab === "whatsnew") return this.paintSettingsChangelog(pane);
     if (tab === "subagents") return this.paintSubagents(pane);
@@ -11235,6 +11248,7 @@ export class App {
           ["ext", tr("扩展与 MCP"), extCount],
           ["subagents", tr("子代理"), agentCount],
           ["notify", tr("通知"), 0],
+          ["preview", tr("预览与翻译"), 0],
           ["runtime", tr("运行时"), 0],
           ["changelog", tr("更新日志"), 0],
         ],
@@ -11522,6 +11536,67 @@ export class App {
   }
 
   /** D91: one switch for both channels; the page in front never gets pinged anyway. */
+  /** D241: 记住翻译用的模型（存在桥的状态目录里，不进 settings.json）。 */
+  private rememberTrModel(model: string): void {
+    if (!model) return;
+    this.trModelPref = model;
+    void api
+      .trPrefs(model)
+      .then((res) => {
+        this.trModelPref = res.prefs.model;
+        this.trDefaultModel = res.defaultModel;
+      })
+      .catch(() => {
+        /* 记不住不影响这一次翻译 */
+      });
+  }
+
+  /**
+   * D241: 预览里的翻译默认用哪个模型。出厂默认是 copilot/gpt-6-luna，这里选的会记住；
+   * 不写进 settings.json，免得跟「本机才有这份模型目录」的事实对不上。
+   */
+  private paintPreviewSettings(pane: HTMLElement): void {
+    const want = this.trModelPref || this.trDefaultModel;
+    const resolved = resolveTrModel(
+      this.models.map((m) => `${m.provider}/${m.id}`),
+      want,
+    );
+    const row = el("label", "settings-row");
+    row.append(el("span", "settings-label", tr("翻译用的默认模型")));
+    const sel = el("select", "tr-modelsel") as HTMLSelectElement;
+    appendModelOptions(sel, this.models, undefined, (m) => shortModelName(m.name), tr("当前使用"));
+    if (resolved) sel.value = resolved;
+    else if (sel.options.length) sel.value = sel.options[0].value;
+    sel.onchange = () => {
+      this.rememberTrModel(sel.value);
+      this.flashSettings(tr("以后翻译默认用 {p1}", { p1: sel.options[sel.selectedIndex]?.textContent ?? sel.value }));
+    };
+    row.append(sel);
+    pane.append(row);
+
+    const tools = el("div", "queue-tools");
+    const reset = el("button", "btn", tr("恢复默认（{p1}）", { p1: this.trDefaultModel || "copilot/gpt-6-luna" })) as HTMLButtonElement;
+    reset.onclick = () => {
+      this.rememberTrModel(this.trDefaultModel || "copilot/gpt-6-luna");
+      this.flashSettings(tr("已恢复默认模型"));
+      this.paintSettings();
+    };
+    tools.append(reset);
+    pane.append(tools);
+
+    if (want && !resolved) {
+      pane.append(el("div", "hint warn", tr("这个模型现在不在模型目录里（{p1}），下次翻译会先让你挑一个。", { p1: want })));
+    }
+    pane.append(
+      el(
+        "div",
+        "hint",
+        tr("预览右上角的「译」会用这里选的模型：另起一个 pi 子进程翻，不占当前对话的上下文。译文只存在本机，原文不动；在对照里改的译文可以再写回原文。"),
+      ),
+    );
+    pane.append(el("div", "hint", tr("换模型不会重翻已有的译文：点「更新」时才按新模型整篇重来。")));
+  }
+
   private paintNotify(body: HTMLElement): void {
     const on = this.me.notify !== false;
     const row = el("label", "settings-row");
@@ -17347,7 +17422,7 @@ const BUILTIN_COMMANDS: [string, string][] = [
   ...PANEL_COMMANDS.map((c): [string, string] => [c.id, tr(c.desc)]),
 ];
 
-type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "runtime" | "changelog" | "whatsnew";
+type SettingsTab = "global" | "project" | "trust" | "login" | "passphrase" | "ext" | "subagents" | "notify" | "preview" | "runtime" | "changelog" | "whatsnew";
 
 interface ExtPackage {
   scope: "user" | "project";

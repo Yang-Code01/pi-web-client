@@ -21,6 +21,25 @@ export function trLangLabel(id: string): string {
 }
 
 /**
+ * 按偏好挑一个真在目录里的模型（D241）。偏好存的是 `provider/id`，但同一个模型可能同时挂在
+ * `copilot` 与 `github-copilot` 下：同 id 换个 provider 也算找到了。一个都没有 → 空串，
+ * 由调用方提示用户重挑。
+ */
+export function resolveTrModel(models: string[], want: string): string {
+  if (!want) return "";
+  if (models.includes(want)) return want;
+  const idOf = (v: string): string => (v.includes("/") ? v.slice(v.indexOf("/") + 1) : v);
+  const id = idOf(want);
+  const same = models.filter((m) => idOf(m) === id);
+  if (!same.length) return "";
+  for (const p of ["copilot/", "github-copilot/"]) {
+    const hit = same.find((m) => m.startsWith(p));
+    if (hit) return hit;
+  }
+  return same[0] ?? "";
+}
+
+/**
  * 默认翻成什么：源文是日文就翻中文，是中文就翻英文，其余（英文、代码、空文）兜底翻中文 ——
  * 这个界面的使用者读中文。只数假名与汉字，够用了：猜错了用户在下拉里改一下就好。
  */
@@ -235,7 +254,11 @@ export interface PickerOpts {
   lang: string;
   /** 默认语言：第一次打开时由源文猜。 */
   fallbackLang: string;
-  /** 让 app 用自己的模型目录填这个 select（值是 `provider/id`）。 */
+  /** 记住的默认模型（`provider/id`，可能是空的或已经不在了）。 */
+  pref: string;
+  /** 目录里现有的模型（`provider/id`），用来判断 `pref` 还在不在。 */
+  models: string[];
+  /** 让 app 用自己的模型目录填这个 select（值是 `provider/id`）；`model` 是预选值。 */
   fillModels(select: HTMLSelectElement, model: string): void;
   onStart(lang: string, provider: string, model: string): void;
 }
@@ -264,17 +287,17 @@ export function openTrPicker(o: PickerOpts, mount: (node: HTMLElement) => void):
   box.append(langRow);
 
   const sel = el("select", "tr-modelsel") as HTMLSelectElement;
-  sel.onchange = () => {
-    try {
-      localStorage.setItem("pi.trModel", sel.value);
-    } catch {
-      /* 隐私模式：记不住就算了 */
-    }
-  };
-  o.fillModels(sel, "");
+  const preset = resolveTrModel(o.models, o.pref);
+  o.fillModels(sel, preset);
   box.append(sel);
 
-  box.append(el("div", "tr-tip", tr("默认用一个便宜的模型就够了：翻文档不需要最强的那个。译文只存在本机。")));
+  // 记着的那个模型不在了（换 provider、没订阅、被下架）：说清楚，并且这次选的会变成新的默认。
+  if (o.pref && !preset) {
+    box.append(el("div", "tr-tip warn", tr("没找到默认的翻译模型 {p1}，挑一个：以后就用这个。", { p1: o.pref })));
+  }
+  box.append(
+    el("div", "tr-tip", preset ? tr("默认用便宜的模型就够了：翻文档不需要最强的那个。这次选的会记住。") : tr("默认用一个便宜的模型就够了：翻文档不需要最强的那个。译文只存在本机。")),
+  );
 
   const row = el("div", "choose-row");
   const go = el("button", "btn primary", tr("开始")) as HTMLButtonElement;
