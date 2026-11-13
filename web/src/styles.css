@@ -4437,17 +4437,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   .branch-esc { display: none; }
 }
 
-/* #248 Jira 面板：连接表单 + 当前账号。
-   骨架复用 `.sheet-back` / `.sheet`（与记录、随手问同一套遮罩与 Esc），这里只管内容。
+/* #248 Jira 面板的内容件：#407 把外壳换成了「本机管理」同款控制台（web/src/jira-console.css，`.jc-*`），
+   这里只剩表单、账号卡、搜索、工单行、详情、下载这些内件。
    颜色 / 圆角 / 字号都用上面那套变量，别在面板里另起一套。 */
-.jira-sheet { grid-template-rows: auto 1fr auto; }
-@media (min-width: 760px) {
-  .jira-sheet { width: min(1200px, 100%); }
-}
-.jira-head { gap: 8px; }
-.jira-body { overflow: auto; padding: 14px 16px 4px; min-height: 0; }
-/* #258：ready 之后 body 本身不再滚，滚动交给两个 pane（各自记住位置）。 */
-.jira-body-ready { overflow: hidden; padding: 0; display: flex; flex-direction: column; }
 .jira-loading { color: var(--dim); font-size: 13px; padding: 18px 0; }
 
 .jira-form { display: grid; gap: 14px; }
@@ -4498,35 +4490,11 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-v { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jira-disconnect { color: var(--danger); }
 
-/* #258：「我的未完成 / 搜索」两颗 tab 与两个各自滚动的 pane。 */
-.jira-ready { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.jira-tabs { display: flex; gap: 4px; flex: none; padding: 8px 16px 0; border-bottom: 1px solid var(--line-soft); }
-.jira-tab {
-  appearance: none;
-  background: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  padding: 6px 10px 8px;
-  font: 13px var(--sans, inherit);
-  color: var(--dim);
-  cursor: pointer;
-}
-.jira-tab:hover { color: var(--text); }
-.jira-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
-.jira-tab:focus-visible { outline: 1px solid var(--line-lit); outline-offset: 2px; }
-.jira-panes { flex: 1; min-height: 0; display: flex; }
-.jira-pane { flex: 1; min-width: 0; overflow: auto; padding: 14px 16px 4px; }
-.jira-pane[hidden] { display: none; }
-
-/* #258：宽桌面搜索表单分三行；较窄视口按可用宽度重排。 */
+/* 搜索表单 4 列；标题和全文各占两格。 */
 .jira-search { display: grid; gap: 12px; min-width: 0; }
 .jira-search-intro { display: grid; gap: 4px; }
 .jira-search-hint { font-size: 12px; color: var(--dim); }
 .jira-search-grid { display: grid; gap: 10px; min-width: 0; }
-.jira-search-row { display: grid; gap: 10px 12px; align-items: end; min-width: 0; }
-.jira-search-row-primary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.jira-search-row-filters { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-.jira-search-row-controls { grid-template-columns: minmax(0, 2.4fr) minmax(220px, 0.7fr) minmax(0, 1.1fr); align-items: center; }
 .jira-search-field { display: grid; gap: 5px; min-width: 0; }
 .jira-search-field .jira-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jira-search-people { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px 16px; align-items: start; min-width: 0; }
@@ -4587,15 +4555,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-empty-text { font-size: 13px; color: var(--dim); }
 
 @media (max-width: 980px) {
-  .jira-search-row-primary,
-  .jira-search-row-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .jira-search-row-controls { grid-template-columns: 1fr; align-items: start; }
   .jira-search-people { grid-template-columns: 1fr; }
-}
-@media (max-width: 620px) {
-  .jira-search-row-primary,
-  .jira-search-row-filters,
-  .jira-search-row-controls { grid-template-columns: 1fr; }
 }
 /* #251：附件目录一行 —— 路径可省略，右边的按钮不跟着挤。 */
 .jira-root .jira-v { flex: 1; min-width: 0; }
@@ -4752,21 +4712,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-picker-foot { display: flex; align-items: center; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid var(--line-soft); }
 .jira-picker-foot .jira-note { flex: 1; min-width: 0; }
 
-.jira-foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px 12px;
-  border-top: 1px solid var(--line-soft);
-  font-size: 12px;
-  color: var(--dim);
-}
-.jira-mcp { min-width: 0; flex: 1; }
-
 @media (max-width: 620px) {
-  /* 手机上表单要铺满：键盘一弹，半屏 dialog 只剩两行可看。 */
-  .jira-back { align-items: stretch; padding: 0; }
-  .jira-sheet { width: 100%; height: 100%; max-height: none; border-radius: 0; border: 0; }
   /* 窄屏上工单标题折行：一行装不下 key + 标题 + 省略号时宁可多一层，也不横向溢出。 */
   .jira-issue-summary { white-space: normal; }
   /* 详情块的缩进在窄屏上收一半，给正文留宽度。 */

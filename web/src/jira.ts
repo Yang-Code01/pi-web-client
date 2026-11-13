@@ -9,6 +9,7 @@
  */
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
+import "./jira-console.css";
 import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
@@ -70,6 +71,9 @@ type PanelState =
 
 type ReadyState = Extract<PanelState, { kind: "ready" }>;
 
+/** #407：左导航三页；未连接时只有「连接」这一页，不在这个联合里。 */
+type JiraSection = "issues" | "search" | "account";
+
 type DetailState =
   | { kind: "loading" }
   | { kind: "ready"; data: JiraIssueDetail }
@@ -124,8 +128,8 @@ export class JiraPanel {
   /** #252：交给 agent 的浮层；`off` 摘掉浮层自己的全局监听（外点 / 滚动 / 尺寸变化）。 */
   private handoffPop: { el: HTMLElement; timer: number; off: () => void } | null = null;
 
-  // #258：搜索 tab。列表与搜索各占一个 pane，切 tab 只改 hidden，不重建 DOM。
-  private tab: "list" | "search" = "list";
+  // #407：本机管理同款三页导航（我的未完成 / 搜索 / 账号与附件）；切页只重画 pane。
+  private section: JiraSection = "issues";
   private search: SearchState = emptySearch();
   /** 每个面板实例最多自动跑一次（首次切到搜索）。 */
   private searchAutoRan = false;
@@ -169,9 +173,13 @@ export class JiraPanel {
     resolved?: HTMLInputElement;
     relations: HTMLInputElement[];
   } = { relations: [] };
-  private listPane: HTMLElement | null = null;
-  private searchPane: HTMLElement | null = null;
-  private tabs: HTMLButtonElement[] = [];
+  private nav: HTMLElement | null = null;
+  private pane: HTMLElement | null = null;
+  /** 上一次画的是哪一页：换页前把 pane 的滚动位置存进 `scrollBySection`。 */
+  private renderedSection: string | null = null;
+  private scrollBySection = new Map<string, number>();
+  /** 用户手动关掉的横幅；重开面板时清空。 */
+  private dismissed = new Set<string>();
   private personBox: HTMLElement | null = null;
   private personInput: HTMLInputElement | null = null;
   private personPop: HTMLElement | null = null;
@@ -190,8 +198,11 @@ export class JiraPanel {
     if (this.root) this.close();
     // 每次重开都从干净的详情开始：换账号 / 换站点后旧工单的详情不该继续显示。
     this.details.clear();
-    // #258：每次开面板回到列表 tab，重新读上次的条件；搜索结果不跨面板复用。
-    this.tab = "list";
+    // #407：每次开面板回到「我的未完成」，重新读上次的条件；搜索结果不跨面板复用。
+    this.section = "issues";
+    this.dismissed.clear();
+    this.scrollBySection.clear();
+    this.renderedSection = null;
     let saved: string | null = null;
     try {
       saved = localStorage.getItem(SEARCH_STORAGE_KEY);
@@ -223,9 +234,8 @@ export class JiraPanel {
     this.userActive = -1;
     this.userSeq += 1;
     window.clearTimeout(this.userTimer);
-    this.listPane = null;
-    this.searchPane = null;
-    this.tabs = [];
+    this.pane = null;
+    this.nav = null;
     this.lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.state = { kind: "loading" };
     this.esc = (ev) => {
@@ -260,9 +270,9 @@ export class JiraPanel {
     window.clearTimeout(this.userTimer);
     this.root?.remove();
     this.root = null;
-    this.listPane = null;
-    this.searchPane = null;
-    this.tabs = [];
+    this.pane = null;
+    this.nav = null;
+    this.renderedSection = null;
     this.resultsBox = null;
     this.personBox = null;
     this.personInput = null;
@@ -419,41 +429,98 @@ export class JiraPanel {
   // -------------------------------------------------------------- 渲染
 
   private render(): void {
-    const listTop = this.listPane?.scrollTop ?? 0;
-    const searchTop = this.searchPane?.scrollTop ?? 0;
-    const back = el("div", "sheet-back jira-back");
-    back.onclick = (ev) => {
+    if (this.renderedSection && this.pane) this.scrollBySection.set(this.renderedSection, this.pane.scrollTop);
+    // 这一轮重画会换掉搜索页的全部引用；先清空，免得后续请求把结果写进已经离开文档的节点。
+    this.resultsBox = null;
+    this.metaNote = null;
+    this.personBox = null;
+    this.personInput = null;
+    this.personPop = null;
+    this.personHint = null;
+    this.searchBtn = null;
+    this.fields = { relations: [] };
+    if (this.state.kind === "ready") this.siteUrl = this.state.siteUrl;
+
+    const back = el("div", "jc-back");
+    back.addEventListener("mousedown", (ev) => {
       if (ev.target === back) this.close();
-    };
-    const sheet = el("div", "sheet jira-sheet");
-    sheet.setAttribute("role", "dialog");
-    sheet.setAttribute("aria-modal", "true");
-    sheet.setAttribute("aria-label", tr("Jira"));
+    });
+    const shell = el("section", "jc-console");
+    shell.setAttribute("role", "dialog");
+    shell.setAttribute("aria-modal", "true");
+    shell.setAttribute("aria-label", tr("Jira"));
 
-    const head = el("div", "sheet-head jira-head");
-    head.append(el("div", "sheet-title", tr("🔷 Jira")));
-    const close = el("button", "btn ghost jira-close", "×");
-    close.title = tr("关闭");
-    close.setAttribute("aria-label", tr("关闭"));
+    const head = el("header", "jc-head");
+    const main = el("div", "jc-head__main");
+    main.append(el("div", "jc-eyebrow", "Jira"));
+    main.append(el("h2", "jc-title", this.headerTitle()));
+    main.append(el("div", "jc-sub", this.headerSub()));
+    const badges = el("div", "jc-badges");
+    for (const badge of this.headerBadges()) {
+      badges.append(el("span", badge.tone ? `jc-badge jc-badge--${badge.tone}` : "jc-badge", badge.text));
+    }
+    main.append(badges);
+
+    const actions = el("div", "jc-head__actions");
+    const refresh = el("button", "btn ghost", tr("刷新")) as HTMLButtonElement;
+    refresh.type = "button";
+    refresh.disabled = this.state.kind === "loading" || (this.state.kind === "ready" && (this.state.refreshing || this.state.issues.kind === "loading"));
+    refresh.onclick = () => void this.refreshAll();
+    const close = el("button", "btn ghost jc-close", tr("关闭")) as HTMLButtonElement;
+    close.type = "button";
     close.onclick = () => this.close();
-    head.append(close);
+    actions.append(refresh, close);
+    head.append(main, actions);
 
-    const body = el("div", this.state.kind === "ready" ? "jira-body jira-body-ready" : "jira-body");
-    if (this.state.kind === "loading") body.append(el("div", "jira-loading", tr("正在问桥…")));
-    else if (this.state.kind === "form") body.append(this.formEl(this.state));
-    else if (this.state.kind === "ready") body.append(this.readyEl(this.state));
-    else body.append(this.errorEl(this.state));
+    const banners = el("div", "jc-banners");
+    for (const row of this.bannerRows()) {
+      const line = el("div", `jc-banner jc-banner--${row.tone}`);
+      line.append(el("span", "jc-banner__text", row.text));
+      if (row.action) {
+        const go = el("button", "btn ghost jc-banner__action", row.action.label) as HTMLButtonElement;
+        go.type = "button";
+        go.onclick = () => row.action?.run();
+        line.append(go);
+      }
+      const x = el("button", "jc-banner__close", "×") as HTMLButtonElement;
+      x.type = "button";
+      x.title = tr("关闭提示");
+      x.setAttribute("aria-label", tr("关闭提示"));
+      x.onclick = () => {
+        this.dismissed.add(row.id);
+        this.render();
+      };
+      line.append(x);
+      banners.append(line);
+    }
 
-    sheet.append(head, body, this.footEl());
-    back.append(sheet);
+    const body = el("div", "jc-main");
+    const nav = el("nav", "jc-nav");
+    nav.setAttribute("aria-label", tr("Jira 分区"));
+    const active = this.activeSection();
+    for (const item of this.navItems()) {
+      const btn = el("button", `jc-nav__item${item.id === active ? " on" : ""}`) as HTMLButtonElement;
+      btn.type = "button";
+      btn.onclick = () => this.select(item.id);
+      btn.append(el("span", "jc-nav__label", item.label));
+      if (item.count) btn.append(el("span", "jc-nav__count", item.count));
+      nav.append(btn);
+    }
+    const pane = el("div", "jc-pane");
+    pane.append(this.paneEl(this.state));
+    body.append(nav, pane);
+
+    shell.append(head, banners, body, this.footEl());
+    back.append(shell);
     // 挂 `#app` 里，不挂 `document.body`：外观「字号」是 `#app { zoom: var(--ui-scale) }`，
     // 挂 body 上的弹层不跟它缩（与 notesheet / scratch 同一条理由）。
     if (this.root) this.root.replaceWith(back);
     else (document.getElementById("app") ?? document.body).append(back);
     this.root = back;
-    // 整块重画（语言切换 / 刷新列表）后把两个 pane 的滚动位置放回原处。
-    if (this.listPane) this.listPane.scrollTop = listTop;
-    if (this.searchPane) this.searchPane.scrollTop = searchTop;
+    this.nav = nav;
+    this.pane = pane;
+    this.renderedSection = active;
+    pane.scrollTop = this.scrollBySection.get(active) ?? 0;
   }
 
   private formEl(state: { note: string; bad: boolean }): HTMLElement {
@@ -572,54 +639,115 @@ export class JiraPanel {
     await this.loadLists(this.seq, true);
   }
 
-  private readyEl(state: ReadyState): HTMLElement {
-    this.siteUrl = state.siteUrl;
-    const box = el("div", "jira-ready");
-    const tabs = el("div", "jira-tabs");
-    tabs.setAttribute("role", "tablist");
-    const make = (id: "list" | "search", label: string): HTMLButtonElement => {
-      const btn = el("button", "jira-tab", label) as HTMLButtonElement;
-      btn.type = "button";
-      btn.setAttribute("role", "tab");
-      btn.id = `jira-tab-${id}`;
-      btn.setAttribute("aria-controls", `jira-pane-${id}`);
-      btn.onclick = () => this.switchTab(id);
-      btn.onkeydown = (ev) => {
-        if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
-        ev.preventDefault();
-        const next = this.tab === "list" ? "search" : "list";
-        this.switchTab(next);
-        this.tabs[next === "list" ? 0 : 1]?.focus();
-      };
-      return btn;
-    };
-    const listTab = make("list", tr("我的未完成"));
-    const searchTab = make("search", tr("搜索"));
-    tabs.append(listTab, searchTab);
-
-    const panes = el("div", "jira-panes");
-    const listPane = el("div", "jira-pane");
-    listPane.id = "jira-pane-list";
-    listPane.setAttribute("role", "tabpanel");
-    listPane.setAttribute("aria-labelledby", "jira-tab-list");
-    listPane.append(this.listEl(state));
-
-    const searchPane = el("div", "jira-pane jira-search-pane");
-    searchPane.id = "jira-pane-search";
-    searchPane.setAttribute("role", "tabpanel");
-    searchPane.setAttribute("aria-labelledby", "jira-tab-search");
-    searchPane.append(this.searchEl(state));
-
-    panes.append(listPane, searchPane);
-    box.append(tabs, panes);
-    this.tabs = [listTab, searchTab];
-    this.listPane = listPane;
-    this.searchPane = searchPane;
-    this.applyTab();
-    return box;
+  /** 左导航：三页；未连接时只有「连接」这一页（那会儿别的页都没有数据可看）。 */
+  private navItems(): { id: string; label: string; count: string }[] {
+    if (this.state.kind !== "ready") return [{ id: "connect", label: tr("连接"), count: "" }];
+    const issues = this.state.issues;
+    return [
+      { id: "issues", label: tr("我的未完成"), count: issues.kind === "ready" ? String(issues.items.length) : "" },
+      { id: "search", label: tr("搜索"), count: "" },
+      { id: "account", label: tr("账号与附件"), count: "" },
+    ];
   }
 
-  private listEl(state: ReadyState): HTMLElement {
+  private activeSection(): string {
+    return this.state.kind === "ready" ? this.section : "connect";
+  }
+
+  /** 站点域名当标题（决策：标题 = 站点域名，副行 = 登录邮箱）。 */
+  private siteHost(): string {
+    const raw = this.state.kind === "ready" ? this.state.siteUrl : this.config?.siteUrl || this.form.siteUrl;
+    try {
+      return new URL(raw.trim()).host;
+    } catch {
+      return "";
+    }
+  }
+
+  private headerTitle(): string {
+    if (this.state.kind !== "ready") return tr("连接 Jira");
+    return this.siteHost() || "Jira";
+  }
+
+  private headerSub(): string {
+    if (this.state.kind === "ready") return this.state.me.email || tr("已连接");
+    if (this.state.kind === "form") return this.state.note || tr("填站点、邮箱与 API token 就能连上");
+    if (this.state.kind === "error") return this.state.text;
+    return tr("正在问桥…");
+  }
+
+  private headerBadges(): { text: string; tone?: "warn" }[] {
+    const out: { text: string; tone?: "warn" }[] = [];
+    if (this.state.kind === "ready") {
+      const me = this.state.me;
+      out.push({ text: me.displayName || me.email || tr("已连接") });
+      if (this.state.issues.kind === "ready") {
+        out.push({ text: tr("{p1} 条未完成", { p1: this.state.issues.items.length }) });
+      } else if (this.state.issues.kind === "error" && isAuthCode(this.state.issues.code)) {
+        out.push({ text: tr("凭据失效"), tone: "warn" });
+      }
+      if (this.state.mask) out.push({ text: this.state.mask });
+    } else if (this.state.kind === "form") {
+      out.push({ text: tr("未连接") });
+    } else if (this.state.kind === "error") {
+      out.push({ text: tr("出错"), tone: "warn" });
+    }
+    return out;
+  }
+
+  /** 横幅：刷新失败、凭据失效、关注者降级。每条都能单独关掉（重开面板时清空）。 */
+  private bannerRows(): { id: string; tone: "warn" | "bad"; text: string; action?: { label: string; run: () => void } }[] {
+    const out: { id: string; tone: "warn" | "bad"; text: string; action?: { label: string; run: () => void } }[] = [];
+    if (this.state.kind === "ready") {
+      if (this.state.refreshNote) out.push({ id: "refresh", tone: "warn", text: this.state.refreshNote });
+      const issues = this.state.issues;
+      if (issues.kind === "error" && isAuthCode(issues.code)) {
+        out.push({
+          id: "auth",
+          tone: "bad",
+          text: tr("凭据失效，改一下 token 再试"),
+          action: { label: tr("去改 token"), run: () => this.showForm(tr("重新填一次 token"), true) },
+        });
+      }
+    }
+    if (this.searchDegraded) {
+      out.push({ id: "degraded", tone: "warn", text: tr("关注者权限不足，本次只查了经办人和报告人。") });
+    }
+    return out.filter((row) => !this.dismissed.has(row.id));
+  }
+
+  private paneEl(state: PanelState): HTMLElement {
+    if (state.kind === "loading") return el("div", "jira-loading", tr("正在问桥…"));
+    if (state.kind === "form") return this.formEl(state);
+    if (state.kind === "error") return this.errorEl(state);
+    if (this.section === "search") return this.searchEl(state);
+    if (this.section === "account") return this.accountEl(state);
+    return this.issuesEl(state);
+  }
+
+  /** 顶部「刷新」：已连接就重拉两段列表，未连接就重新问一次桥。 */
+  private async refreshAll(): Promise<void> {
+    if (this.state.kind === "ready") {
+      await this.refreshLists();
+      return;
+    }
+    this.state = { kind: "loading" };
+    this.render();
+    await this.reload();
+  }
+
+  /** 切页：重画一次（数据都在字段里）；首次进搜索页顺带拉选项、跑一次。 */
+  private select(id: string): void {
+    if (this.state.kind !== "ready") return;
+    if (id !== "issues" && id !== "search" && id !== "account") return;
+    if (this.section === id) return;
+    this.section = id;
+    this.render();
+    if (id === "search") this.onEnterSearch();
+  }
+
+  /** 「账号与附件」：账号卡、时区 / token / 附件目录、可访问项目、退出连接。 */
+  private accountEl(state: ReadyState): HTMLElement {
     const me = state.me;
     const box = el("div", "jira-profile");
     const card = el("div", "jira-card");
@@ -643,7 +771,6 @@ export class JiraPanel {
     rows.append(this.attachRootRow());
     box.append(rows);
 
-    box.append(this.issuesEl(state));
     const projects = this.projectsEl(state);
     if (projects) box.append(projects);
 
@@ -654,24 +781,6 @@ export class JiraPanel {
     actions.append(out);
     box.append(actions);
     return box;
-  }
-
-  private switchTab(tab: "list" | "search"): void {
-    this.tab = tab;
-    this.applyTab();
-    if (tab === "search") this.onEnterSearch();
-  }
-
-  private applyTab(): void {
-    const isList = this.tab === "list";
-    this.listPane?.toggleAttribute("hidden", !isList);
-    this.searchPane?.toggleAttribute("hidden", isList);
-    for (const btn of this.tabs) {
-      const on = btn.id === `jira-tab-${this.tab}`;
-      btn.classList.toggle("on", on);
-      btn.setAttribute("aria-selected", on ? "true" : "false");
-      btn.tabIndex = on ? 0 : -1;
-    }
   }
 
   /** 首次切到搜索：拉选项；有保存的条件就回填并自动跑一次（空条件也跑，给个「什么都能看到」的起点）。 */
@@ -1831,8 +1940,8 @@ export class JiraPanel {
 
   /** 底部固定一行 MCP 提示：本单不探测 MCP 装没装，只把人送到设置页（D202）。 */
   private footEl(): HTMLElement {
-    const foot = el("div", "jira-foot");
-    foot.append(el("span", "jira-mcp", tr("读工单描述和评论要用 Jira MCP：在「设置 → 扩展与 MCP」里安装。")));
+    const foot = el("footer", "jc-foot");
+    foot.append(el("span", "jc-foot__hint", tr("读工单描述和评论要用 Jira MCP：在「设置 → 扩展与 MCP」里安装。")));
     const go = el("button", "btn ghost", tr("打开设置"));
     go.onclick = () => {
       this.host.settings("ext");
