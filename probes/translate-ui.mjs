@@ -211,10 +211,16 @@ try {
   check("标题行左右对得上", outText.includes("対象ツール"));
   await page.screenshot({ path: path.join(OUT, "1-compare.png"), fullPage: false });
 
-  // ---- 3. 改一句译文，只落缓存
+  // ---- 3. 改一句译文，只落缓存（左边留着原文，右边按节一个编辑框）
   await page.locator(".tr-tools button", { hasText: "改译文" }).click();
-  const ta = page.locator("textarea.tr-ed");
-  await ta.waitFor({ timeout: 10000 });
+  const tas = page.locator("textarea.tr-sed");
+  await tas.first().waitFor({ timeout: 10000 });
+  check("编辑态也是左右两栏", (await page.locator(".tr-cmp-edit .tr-row").count()) === 2);
+  const editSrc = await page.locator(".tr-cmp-edit .tr-row").first().locator(".tr-src").innerText();
+  check("改译文时左边还看得见原文", editSrc.includes("対象は") && editSrc.includes("msg_order_submitted"));
+  check("每节一个编辑框", (await tas.count()) === 2, (await tas.count()).toString());
+  await page.screenshot({ path: path.join(OUT, "1b-edit.png"), fullPage: false });
+  const ta = tas.first();
   const draft = (await ta.inputValue()).replace("译 ", "译 改过 ");
   await ta.fill(draft);
   await page.keyboard.press("Control+s");

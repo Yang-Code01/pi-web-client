@@ -2718,7 +2718,6 @@ export const en: Dict = {
   "翻完了，可以直接改译文": "Done — you can edit the translation now",
   "译文已保存（只改缓存，原文没动）": "Translation saved (cache only; the source is untouched)",
   "译文还没保存，放弃这些改动？": "The translation isn't saved yet — discard these changes?",
-  "改译文：标题行别删（左右靠它对位）。Ctrl+S 保存": "Editing the translation: keep the heading lines (they align the two sides). Ctrl+S saves",
   "保存译文（Ctrl+S）": "Save translation (Ctrl+S)",
   "看对照": "Side by side",
   "正在把改动折回原文…": "Folding the edits back into the source…",
@@ -2741,4 +2740,8 @@ export const en: Dict = {
   "换模型不会重翻已有的译文：点「更新」时才按新模型整篇重来。": "Switching the model does not re-translate existing output; press Update to redo the whole document with the new model.",
   "没找到默认的翻译模型 {p1}，挑一个：以后就用这个。": "The default translation model {p1} was not found here; pick one — it becomes the default.",
   "默认用便宜的模型就够了：翻文档不需要最强的那个。这次选的会记住。": "A cheap model is enough: translating documents does not need the strongest one. This choice will be remembered.",
+  "回到只读的左右对照": "Back to the read-only side-by-side view",
+  "存进本机缓存，原文不动；改完再点「同步原文」写回": "Saved to this machine only — the source stays untouched; press Write back when you're done",
+  "左边是原文，右边按节改译文：标题行别删、也别加，Ctrl+S 保存": "Source on the left, edit the translation section by section on the right: don't remove or add heading lines. Ctrl+S saves",
+  "第 {n} 节的译文": "Translation of section {n}",
 };

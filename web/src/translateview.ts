@@ -96,7 +96,6 @@ function modelName(doc: TrDoc | null, job: TrJob | null): string {
 export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   body.replaceChildren();
   body.classList.add("tr-body");
-  if (v.editing) body.classList.add("tr-editing");
 
   const running = v.job?.status === "running";
   const bar = el("div", "tr-bar");
@@ -147,12 +146,25 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
     tools.append(b);
     return b;
   };
+  // 编辑态要能就地保存：把按钮递给下面的每一节 textarea（Ctrl+S 也走这里）。
+  let readAll: (() => string) | null = null;
+  let saveBtn: HTMLButtonElement | null = null;
   if (running) {
     btn(tr("取消"), tr("停下这个任务，已经翻好的节留着"), () => act.cancel(), "danger");
   } else if (v.doc) {
-    btn(v.editing ? tr("看对照") : tr("改译文"), tr("直接编辑译文；存了只改缓存，不碰原文"), () => act.edit(!v.editing), v.editing ? "on" : "");
-    btn(tr("同步原文"), tr("把你在译文里改的地方写回原文文件（会先给你看差异）"), () => act.sync());
-    btn(tr("更新"), tr("重翻：一个字没动的节跳过，只翻变了的"), () => act.update(false));
+    if (v.editing) {
+      saveBtn = btn(
+        tr("保存译文（Ctrl+S）"),
+        tr("存进本机缓存，原文不动；改完再点「同步原文」写回"),
+        () => act.save(readAll?.() ?? trText(v.doc)),
+        v.dirty ? "primary" : "",
+      );
+      btn(tr("看对照"), tr("回到只读的左右对照"), () => act.edit(false));
+    } else {
+      btn(tr("改译文"), tr("直接编辑译文；存了只改缓存，不碰原文"), () => act.edit(true));
+      btn(tr("同步原文"), tr("把你在译文里改的地方写回原文文件（会先给你看差异）"), () => act.sync());
+      btn(tr("更新"), tr("重翻：一个字没动的节跳过，只翻变了的"), () => act.update(false));
+    }
   } else {
     btn(tr("开始翻译"), tr("选语言和模型"), () => act.start(), "primary");
   }
@@ -167,7 +179,11 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   }
 
   if (v.editing && v.doc) {
-    mountEditor(body, v, act);
+    const ed = mountEditor(body, v, act, (dirty) => {
+      v.dirty = dirty;
+      saveBtn?.classList.toggle("primary", dirty);
+    });
+    readAll = ed.text;
     return;
   }
 
@@ -217,36 +233,70 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   body.append(cmp);
 }
 
-function mountEditor(body: HTMLElement, v: TrView, act: TrAct): void {
-  const wrap = el("div", "tr-edwrap");
-  const mark = el("div", "tr-edmark", tr("改译文：标题行别删（左右靠它对位）。Ctrl+S 保存"));
-  const ta = el("textarea", "tr-ed") as HTMLTextAreaElement;
-  ta.value = v.draft ?? trText(v.doc);
-  ta.spellcheck = false;
-  ta.oninput = () => {
-    v.draft = ta.value;
-    v.dirty = ta.value !== trText(v.doc);
-    save.classList.toggle("primary", v.dirty);
-  };
-  const foot = el("div", "tr-edfoot");
-  const save = el("button", "btn", tr("保存译文（Ctrl+S）")) as HTMLButtonElement;
-  save.onclick = () => act.save(ta.value);
-  const back = el("button", "btn", tr("看对照"));
-  back.onclick = () => {
-    if (v.dirty && !confirm(tr("译文还没保存，放弃这些改动？"))) return;
-    act.edit(false);
-  };
-  const hint = el("div", "tr-edmsg", v.msg);
-  foot.append(save, back, hint);
-  ta.addEventListener("keydown", (ev) => {
-    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") {
-      ev.preventDefault();
-      act.save(ta.value);
-    }
+interface TrEditor {
+  /** 每一节的 textarea 按原顺序用空行拼回整篇（桥按同样的规则切节）。 */
+  text(): string;
+}
+
+/**
+ * 改译文：**左边留着原文**，右边按节给一个 textarea。以前是一整块 textarea 盖住两栏，
+ * 左边空了、长行也不折行 —— 改的时候看不到对的是哪一句，所以改成按行对齐的逐节编辑。
+ */
+function mountEditor(
+  body: HTMLElement,
+  v: TrView,
+  act: TrAct,
+  onDirty: (dirty: boolean) => void,
+): TrEditor {
+  const doc = v.doc;
+  if (!doc) return { text: () => "" };
+  const hint = el("div", "tr-edit-hint", tr("左边是原文，右边按节改译文：标题行别删、也别加，Ctrl+S 保存"));
+  const cmp = el("div", "tr-cmp tr-cmp-edit");
+  const areas: HTMLTextAreaElement[] = [];
+  const fits: (() => void)[] = [];
+
+  doc.sections.forEach((sec, i) => {
+    const row = el("div", "tr-row");
+    row.dataset.sec = String(i);
+    const src = el("div", "tr-src md-doc");
+    src.append(renderMarkdown(sec.src, { doc: true }));
+    const ta = el("textarea", "tr-sed") as HTMLTextAreaElement;
+    ta.value = sec.out;
+    ta.spellcheck = false;
+    ta.setAttribute("wrap", "soft");
+    ta.setAttribute("aria-label", tr("第 {n} 节的译文", { n: i + 1 }));
+    // textarea 不会自己长高：把它撑到内容的实际高度，两栏才在同一行上（不出现内部滚动条）。
+    const fit = (): void => {
+      ta.style.height = "auto";
+      ta.style.height = `${ta.scrollHeight + 2}px`;
+    };
+    ta.oninput = () => {
+      fit();
+      onDirty(areas.some((a, k) => a.value !== doc.sections[k].out));
+    };
+    ta.addEventListener("keydown", (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") {
+        ev.preventDefault();
+        act.save(areas.map((a) => a.value).join("\n\n"));
+      }
+    });
+    areas.push(ta);
+    fits.push(fit);
+    row.append(src, ta);
+    cmp.append(row);
   });
-  wrap.append(mark, ta, foot);
-  body.append(wrap);
-  ta.focus();
+
+  body.append(hint, cmp);
+  // 进 DOM 才有布局：先量一遍，字体与图片排好后再量一遍。
+  requestAnimationFrame(() => {
+    for (const f of fits) f();
+    areas[0]?.focus({ preventScroll: true });
+  });
+  setTimeout(() => {
+    for (const f of fits) f();
+  }, 120);
+
+  return { text: () => areas.map((a) => a.value).join("\n\n") };
 }
 
 export interface PickerOpts {
