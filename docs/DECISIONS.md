@@ -3173,7 +3173,8 @@ D
 2. **两列是两段 `git log`，不是一列砍开**：左 = `log -n N HEAD`，右 = `log -n N <base>`，每行的 `set` 由桥端判（`left`/`right`/`common`）。页面只认这个标签去淡显和描边，不自己比对哈希 —— 两边各算一套必然漂（同一行在一列算独有、另一列算公共）。
 3. **自己判独有/公共，不信 `--left-right` 的位置**：`rev-list -n N HEAD ^base` 与 `base ^HEAD` 各拿一份集合做成员表；`rev-list --left-right --count HEAD...<base>` 只负责两个数字。N 就是这一页的行数（10..300，默认 80），所以集合与列表同深，不会出现「行在列表里却没有标签」。
 4. **默认对照分支 = `origin/HEAD`**：`symbolic-ref refs/remotes/origin/HEAD` → `origin/main` → 第一个远程分支，三级兜底；`baseAuto` 记下是不是自己猜的，下拉换一个就变 false。当前分支自己当对照（ahead=behind=0）不报错，比例条收成一条安静的底色线。
-5. **不自动 fetch，给一颗按钮**：打开只用本地 remote-tracking ref（八个 git 进程、毫秒级）。fetch 是唯一出网的调用，单列 `/api/git/fetch`：POST、拒绝公网（`fetch_public` 403）、45 秒超时、`GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS=echo` + `credential.interactive=never` 三件套（缺一件，缺凭据的仓库会挂在等密码，而桥在等它退出）。底部那行「数据来自 12 分钟前」读的是 `.git/FETCH_HEAD` 的 mtime，读不到就明说「不知道」。
+5. **不自动 fetch，给一颗按钮**：打开只用本地 remote-tracking ref（八个 git 进程、毫秒级）。fetch 是唯一出网的调用，单列 `/api/git/fetch`：POST、45 秒超时、`GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS=echo` + `credential.interactive=never` 三件套（缺一件，缺凭据的仓库会挂在等密码，而桥在等它退出）。底部那行「数据来自 12 分钟前」读的是 `.git/FETCH_HEAD` 的 mtime，读不到就明说「不知道」。
+> **D240 修订（2026-11-13）：** 这条里「拒绝公网（`fetch_public` 403）」已作废 —— fetch 与其余分支管理接口一样，登录后的公网 / 局域网访客都能发起。超时与三件套不变。
 6. **只读**：不 checkout、不 merge、不 pull。连对照分支都只读 ref。
 7. **窄屏单列**：<720px 把两列压成一列，顶上多两颗 tab「当前 · x」/「对照 · y」，靠 `.branch-cols[data-show]` 互斥。
 8. **底部分页而不是全量**：一页 80 条，到底给「再加载 80 条」；`more` 由 `rev-list --count` 与当前行数比出来（不是「恰好 80 条就当还有」）。
@@ -4111,16 +4112,17 @@ D
 4. **对照分支改成可输入检索**：关键词过滤本地 + 远程分组候选，回车或「用输入的 ref 对照」接受任意 ref；历史右列、差异文件栏、并排 diff 标题同步。D193 的纯 `<select class="bc-base">` 与「只列 refs/remotes」一并作废。
 5. **差异富视图**：默认「当前分支 vs 对照」，点提交切「该提交 vs 父提交」（根提交用空树 `4b825dc…` 当左侧）；文本逐行并排（tag `same`/`add`/`del`/`mod` 分别上色）、图片两栏缩略、PDF / 表格 / 二进制占位、超 200 行或 400 KB 截断并明说。
 6. **桥端执行通道**（新文件 `bridge/src/gitops.ts`）：只收 `id + 结构化 params`，24 个 id 由 `OP_BUILDERS` 逐条显式拼 argv，**绝不执行网页传来的 argv**；`ref` 拒绝 `-` 开头与 `[\s~^:?*\[\\]`、`paths` 限 200 条且拒 `..`、`message` 去 NUL；统一 `GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS=echo` + `credential.interactive=never`（否则缺凭据的仓库会挂在等密码）；按 `dir` 串行排队防 `index.lock` 互踩；返回 `GitExecResult` 带 `exitCode` / 原 argv / 原始 stdout+stderr / 新 state / 冲突文件 / pending / `refresh` / 稳定 `code`（`auth`/`identity`/`conflict`/`dirty`/`op_failed`）。D193 那个把失败吞成 `null` 的私有 `git()` 不复用。
-7. **双闸，写入只在真本机放行**：`isLoopbackPeer(req.socket.remoteAddress) && !isTunnelRequest(headers)`，LAN 直连与公网隧道一律 403 `op_public`。两个判据缺一不可：cloudflared 在本机起，隧道请求的 `remoteAddress` 天然是回环；LAN 直连不带 cf 头，`publicReq` 又判不出来。
+7. **D240 已推翻（2026-11-13）：双闸，写入只在真本机放行**：`isLoopbackPeer(req.socket.remoteAddress) && !isTunnelRequest(headers)`，LAN 直连与公网隧道一律 403 `op_public`。两个判据缺一不可：cloudflared 在本机起，隧道请求的 `remoteAddress` 天然是回环；LAN 直连不带 cf 头，`publicReq` 又判不出来。**现改为**：cookie 闸是唯一边界，登录后的公网 / 局域网访客与本机同样可读写，理由与范围见 D240。
 8. **保护与失败可见**：会覆盖工作区且当前 dirty 的操作先弹「stash / 逐文件 restore / 取消」；冲突态只放行「中止 / 继续 / 交给 agent」，继续要逐文件勾完「已解决」才启用；8 个红色动词（`reset --hard` / `clean -fd` / `push --force` / 删分支 / `stash drop` / `tag -d` / rebase / restore）给确认卡（会丢什么 + 可复制回退命令），但 **restore 特判**：逐文件勾选清单本身就是确认，不叠第二张卡；鉴权与提交身份失败给结构化失败卡 + 系统 credential helper / `user.name` 指引 + handoff，网页不收集账号密码、不自动兜底。
 9. **交给 agent 两个出口**：`buildHandoffPrompt()` 打包仓库 / 当前分支 / 选中分支 / ahead·behind / dirty 数 / 可用分支 / 失败时的 argv+exit+stderr / 用户要求；复用 `web/src/app.ts` 的 `prefill(text)` 与 `newSessionWith(text)`（JiraPanel 已接过同一对回调），**只填不发**。提示词字面保持中文、不随界面语言变（`i18n-ignore`）。
 10. **前端单一注册表**（新文件 `web/src/git-ops.ts`）：24 条 `GitOpDef` 各带两帧纯内联 SVG 图解（离线可用）、结构化字段、具名开关（`--force-with-lease` / `--no-ff` / `-u` / `--include-untracked`）、命令预览、风险、红色 lose / rollback；界面文案全走 `tr()`。
 
-**为什么：** 让新手在网页里就能把「看差了什么 → 想清楚要不要动 → 动完立刻看到新状态 → 出事把原始 stderr 交给 agent」闭成一条链，而不用回终端；把「能连上 bridge 就能写」收紧成只认真本机，是因为隧道的回环地址是个假象；把 argv 拼装收进 id 白名单，是因为网页一旦能传任意参数，红色确认卡就形同虚设。
+**为什么：** 让新手在网页里就能把「看差了什么 → 想清楚要不要动 → 动完立刻看到新状态 → 出事把原始 stderr 交给 agent」闭成一条链，而不用回终端；把 argv 拼装收进 id 白名单，是因为网页一旦能传任意参数，红色确认卡就形同虚设。
+> **D240 修订（2026-11-13）：** 「把『能连上 bridge 就能写』收紧成只认真本机，是因为隧道的回环地址是个假象」这一句不再成立；真实边界改回 D3 的登录口令，见 D240。
 
 **代价 / 可改：** 样张 D 的已知代价（每次操作都离开上下文、普通动作也显得重）随选择一并接受；不收 submodule / worktree / bisect / blame / remote 管理 / config / gc；`--graph` 仍未画；大文件与非文本只给占位；鉴权失败只能在系统侧配好后重试；`ref` 的字符黑名单会挡掉极少数合法但罕见的分支名。24 个 id 与字段在 `web/src/git-ops.ts`，桥端白名单在 `bridge/src/gitops.ts`，两边要一起改。
 
-**验证：** `npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check`）；`npm run test:githist` 扩成裸库写操作集成（switch / stage+commit / merge 冲突 / 非法 ref / 未知 id / force 拒绝 / 隧道拒绝）；`npm run test:githist:ui` 用 Playwright 断言三 tab、24 动词选择器、AI 入口、对照检索、居中卡、红色确认、失败卡、冲突逐文件、handoff 与 chip 刷新。样张阶段的四版截图与 100+ 条 linkedom 交互断言留在 `.scratch/git-ops-dialog/prototype/`。
+**验证：** `npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check`）；`npm run test:githist` 扩成裸库写操作集成（switch / stage+commit / merge 冲突 / 非法 ref / 未知 id / force 拒绝）；`npm run test:githist:ui` 用 Playwright 断言三 tab、24 动词选择器、AI 入口、对照检索、居中卡、红色确认、失败卡、冲突逐文件、handoff、chip 刷新与公网 / 局域网可读写（D240）。样张阶段的四版截图与 100+ 条 linkedom 交互断言留在 `.scratch/git-ops-dialog/prototype/`。
 
 ## D236 问答卡按「新工具名 + 三套旧文案」一起认（用户要求）
 
@@ -4196,3 +4198,21 @@ D
 **代价 / 可改：** 只支持图片，文档与 PDF 要另一次决定；`downscale` 一律 re-encode 成 JPEG（透明通道会丢，主输入框本来也如此）；模型目录缺 `supportsImages` 时按未知放行，遇到真不认图的后端会发过去再被拒；缩略图横条在窄屏换行，占两行高度。
 
 **验证：** `web/tests/images-unit.mjs` 9 例；`bridge/tests/scratch-ui.mjs` 五段（贴图→发送→气泡缩略图可点开且 pi 真收到 `image/jpeg`、看不了图的模型拦截、非图片拒收、清空连图一起清、404 重开后图跟着重发），靠 `FAKE_PI_VISION=1` 让桩模型的第一个能看图、第二个仍只收文字；`npm --prefix web run typecheck`（含 `i18n-check` 2547 keys × 3 langs）。
+
+## D240 分支管理放开公网 / 局域网访问（用户要求）
+
+**问题：** 用户直说「现在分支管理，不支持公网和局域网访问了，修改掉，允许访问」。D235 第 7 条给 `/api/git/*` 加了双闸（`isLoopbackPeer(remoteAddress) && !isTunnelRequest(headers)`），D193 第 5 条让 `/api/git/fetch` 拒绝公网，Q-021 让 `/api/git` 与 `/api/git/history` 对隧道访客直接答 `{repo:null}`，`/api/git/probe` 也只认本机回环。结果是：手机走 trycloudflare 隧道、或家里另一台机器走局域网直连打开网页，登录后分支 chip 变空、历史弹窗空、工作台所有动词 403 `op_public`、fetch 403 `fetch_public` —— 而用户明确要把这套功能带出本机。
+
+**决定：**
+
+1. **拆掉双闸，边界统一回到 D3 的登录口令**：`bridge/src/index.ts` 里 `/api/git`、`/api/git/history` 的 `publicReq → {repo:null}` 早退、`/api/git/fetch` 的 `fetch_public` 403、`/api/git/{state,refs,diff,op,probe}` 的 `!isLoopbackPeer(peer) || publicReq → op_public 403` 全部删除。所有 `/api/git/*` 仍在那道 `authorized(cookieHeader)` 闸之后，无口令一律 401（`/api/` 前缀）；口令验的是 HMAC 签名 + 过期时间，与请求从哪来无关。`isLoopbackPeer()` 保留给 `/api/ask`、`/api/preview/open`、`/api/artifacts/snapshot`、`/api/peer` 四处 —— 那些要打开本机程序或回表单，仍只认回环。
+2. **只动入口闸，不动执行层**：`bridge/src/gitops.ts` 的 24 个 `OP_BUILDERS` 白名单、`ref` / `paths` / `message` 参数清洗、按 `dir` 串行排队、`GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS=echo` + `credential.interactive=never` 三件套、`gitFetch` 的 45 秒超时、红色动词的前端确认卡与冲突态收口，一字不改。网页依旧传不了任意 argv。
+3. **目录校验与错误兜底照旧**：`dir` 空 / 非绝对路径仍 400，读不到仓库仍回 `{repo:null}`，写失败仍是 200 + `{ok:false, code, ...}` 的结构化失败卡。`bridge/src/index.ts` 里 `publicReq` 变量本身保留（`/api/me`、sysmanage、jira、`/healthz` 还要用），只是不再拿它拦 git。
+4. **口径同步**：`GLOSSARY.md` 的「分支操作工作台」去掉「写操作只对本机回环放行」；`web/src/api.ts` 两处注释去掉「隧道不给 / 一律 403」；`docs/DECISIONS.md` 的 D193 第 5 条、D235 第 7 条与「为什么」段加 D240 修订标注（历史决定不改写，只标被推翻）；`CHANGELOG.md` 记一条。
+5. **回归改断言**：`bridge/tests/git-history-ui.mjs` 原来断言「隧道写操作 403 / op_public」，改成三条来源都能读写 —— 带 `x-forwarded-proto: https` 的隧道头、桥听 `0.0.0.0` 后用本机非回环网卡地址连回去的局域网对端、以及原来的本机回环。写操作用 `id:"no-such-op"` 换 `unknown_op` 结构化返回（不真打标签、不碰仓库），只验「路由放不放行」；另外补 `/api/git`、`/api/git/history`、`/api/git/fetch` 带隧道头仍能拿到真实分支 / 历史 / fetch 成功。
+
+**为什么：** D3 早就定了「公网上唯一屏障是登录口令」，而 cookie 闸对所有 `/api/git/*` 已经生效 —— 双闸是在口令之外又叠了一层来源判断，等于把「已登录」这个事实按访问路径打折。用户要的就是已登录后不论从哪来都能用分支管理，所以不需要再判 `publicReq` 或 `remoteAddress`；删掉它们还顺带消掉「cloudflared 的回环地址是假象」这个一直要两边一起维护的坑。保留执行层白名单与三件套，是因为「谁能连桥」和「连上之后能动什么」是两件事：前者放行到已登录用户，后者仍由 24 个 id 与确认卡兜底。真终端（D89）在公网下继续禁用，不在本次范围内 —— 它是开一个真 shell，和这里读 git 状态 / 跑白名单动词不同量级。
+
+**代价 / 可改：** 拿到口令的公网访客现在也能 `push --force` / `reset --hard` / `clean -fd`（前提是过了那张红色确认卡）—— 这是用户要的可用性的直接代价，口令丢了后果比从前大；真要收紧，应给写操作单独加 step-up 或在设置里加开关，而不是退回「只认回环」。局域网测试依赖跑测试那台机器有非回环 IPv4 网卡，没网卡时该条会失败并明说「无」（不静默跳过）。`CHANGELOG.md` 这批的 PR 编号在开好 #404 后补进标题。
+
+**验证：** `npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check`）；`npm run test:githist`（裸库写操作集成）；`npm run build` 后 `npm run test:githist:ui`（真 Chromium，三 tab / 24 动词 / 红色确认 / 冲突态 / 公网头·局域网·回环三来源可读写 / 窄屏）；`npm run test:repos:ui`（目录与仓库面板，probe 不再 403）。

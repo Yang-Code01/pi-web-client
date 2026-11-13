@@ -121,8 +121,8 @@ export const api = {
   statPath: (path: string) => req<PathInfo>(`/api/stat?path=${encodeURIComponent(path)}`),
   clipboardFiles: () => req<{ paths: string[] }>("/api/clipboard-files"),
   /**
-   * Q-021: branch of the repo containing `dir`, or null when it is not in one (or the bridge is
-   * on the far side of a tunnel). `fresh` skips the bridge's 5s cache.
+   * Q-021: branch of the repo containing `dir`, or null when it is not in one.
+   * D240: 公网 / 局域网访客登录后也能读，不再按来源回 null。`fresh` skips the bridge's 5s cache.
    */
   git: async (dir: string, fresh = false): Promise<GitInfo | null> => {
     if (!dir) return null;
@@ -155,7 +155,7 @@ export const api = {
   },
   /**
    * #392 目录与仓库：展开一层时批量问「这些直接子目录里哪些自己是仓库」。
-   * 值只可能是子目录自己的仓库（父仓库里的普通目录回 null）。隧道/公网一律 403，调用方按「全是 null」处理。
+   * 值只可能是子目录自己的仓库（父仓库里的普通目录回 null）。D240: 公网 / 局域网同样可问。
    */
   gitProbe: async (dir: string, names: string[], fresh = false): Promise<{ probes: Record<string, GitInfo | null>; truncated: boolean }> => {
     const out = await postJson<{ probes?: Record<string, GitInfo | null>; truncated?: boolean }>("/api/git/probe", { dir, names, fresh });
