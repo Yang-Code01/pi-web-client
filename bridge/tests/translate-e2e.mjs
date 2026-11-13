@@ -250,7 +250,7 @@ try {
   const sync = await post("sync", { sessionId, path: SLUG, lang: "zh" });
   check(sync.status === 200 && sync.body.edits === 1, `只挑出改过的那一处（edits ${sync.body.edits}）`);
   const diff = sync.body.preview?.[0];
-  check(diff && diff.before !== diff.after, "预览里能看到改动前后两块原文");
+  check(diff && diff.before !== diff.after, `预览里能看到改动前后两块原文（${JSON.stringify(sync.body).slice(0, 500)}）`);
   check(fs.readFileSync(DOC, "utf8") === SRC, "还没点写回，源文件一个字节没动");
 
   const apply = await post("apply", { id: sync.body.id });

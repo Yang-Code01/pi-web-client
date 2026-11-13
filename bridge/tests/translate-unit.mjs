@@ -10,6 +10,7 @@ import {
   joinSections,
   packChunks,
   planSync,
+  reverseBlock,
   splitBlocks,
   splitCode,
   splitSections,
@@ -96,6 +97,11 @@ const fake = async (chunk) => {
 const first = await translateDoc(DOC, run, fake);
 check("每节都翻了", first.sections.length === 3);
 check("代码块原样保留", first.sections[0].out.includes("# not a heading\nclass A {}"), first.sections[0].out);
+check(
+  "围栏前后空行原样留住（代码块不粘到上一段）",
+  splitBlocks(first.sections[0].out).length === splitBlocks(first.sections[0].src).length,
+  `${splitBlocks(first.sections[0].src).length} → ${splitBlocks(first.sections[0].out).length}`,
+);
 check("表格行被翻译但结构没变", tableDiff(first.sections[1].src, first.sections[1].out) === null);
 check("gen 与 out 初始相同", first.sections.every((s) => s.gen === s.out));
 
@@ -120,9 +126,45 @@ doc.sections[1].out = doc.sections[1].out.replace("中止してください。",
 const reverse = async (body) =>
   body.split("【原文】\n")[1].split("\n\n【")[0].replace("中止してください。", "中止してください（改）。");
 const plan = await planSync(doc, run, reverse);
-check("只产生 1 处改动", plan.edits.length === 1, JSON.stringify(plan.edits.map((e) => e.before.slice(0, 30))));
+check("只产生 1 处改动", plan.edits.length === 1, `${JSON.stringify(plan.edits.map((e) => e.before.slice(0, 30)))} warnings=${JSON.stringify(plan.warnings)}`);
 const applied = applySync(DOC, plan.edits);
 check("写回只动了表格那一块", applied.text.includes("中止してください（改）。") && applied.applied.length === 1);
+
+/* ── 反向写回的语言护栏 ───────────────────────────────────────────────── */
+// 真事：日文文档的译文标题被改成中文，写回时模型把中文标题整行抄进了原文。
+const pair = { src: "注番を追加する。", gen: "追加注号。", out: "追加注号，务必。" };
+let tries = 0;
+const copyBack = async () => {
+  tries++;
+  return "追加注号，务必。";
+};
+let blocked = "";
+try {
+  await reverseBlock(pair, run, copyBack);
+} catch (e) {
+  blocked = e.message;
+}
+check("把改后的译文抄回去会被拦下", /抄/.test(blocked), blocked);
+check("内容不合格才重试（问两次）", tries === 2, `tries ${tries}`);
+
+const noKana = async () => {
+  tries++;
+  // 跟改后的译文不一样（躲开「照抄」那条），但就是没假名：中文写进日文原文。
+  return "务必追加。";
+};
+tries = 0;
+blocked = "";
+try {
+  await reverseBlock(pair, run, noKana);
+} catch (e) {
+  blocked = e.message;
+}
+check("原文是日文时，写回不许几乎没有假名", /日文/.test(blocked), blocked);
+
+tries = 0;
+const flaky = async () => (++tries === 1 ? "追加注号，务必。" : "注番を必ず追加する。");
+const folded = await reverseBlock(pair, run, flaky);
+check("第一次不合格会带着理由再问一次", tries === 2 && folded.includes("注番を必ず"), `${tries} ${folded}`);
 check("正文其余部分没被动", applied.text.startsWith("# 変更一覧") && applied.text.includes("注番を追加する。"));
 check("改的是表格行不是整篇", applied.text.split("\n").length === DOC.split("\n").length);
 

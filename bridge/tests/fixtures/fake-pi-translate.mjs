@@ -20,14 +20,33 @@ if (!textMode) {
   const child = spawn(process.execPath, [path.join(here, "fake-pi.mjs"), ...argv], { stdio: "inherit" });
   child.on("exit", (code) => process.exit(code ?? 0));
 } else {
-  /** 反向同步那一段：桩模型的行为就是「照抄【改后的译文】」。 */
+  /** 反向同步：像个体面的模型那样「把改动折回【原文】」——【原文】原样拿回来，
+   *  把改后的译文里多出来的那句用原文语言（假名还在）附在后面，而不是把译文整段抄回去。
+   *  桥有语言护栏（D241）：照抄译文会被拦下、这一块就不写回了。 */
   const reverse = (input) => {
-    const mark = "【改后的译文】";
-    const at = input.indexOf(mark);
-    if (at < 0) return input.trim();
-    const body = input.slice(at + mark.length);
-    const cut = body.search(/\n\s*\n\s*把/);
-    return (cut >= 0 ? body.slice(0, cut) : body).replace(/^\n+|\s+$/g, "");
+    const srcMark = "【原文】";
+    const genMark = "【原译文】";
+    const outMark = "【改后的译文】";
+    const srcAt = input.indexOf(srcMark);
+    if (srcAt < 0) return input.trim();
+    const after = input.slice(srcAt + srcMark.length);
+    const stop = after.search(/\n\s*\n\s*【/);
+    const src = (stop >= 0 ? after.slice(0, stop) : after).replace(/^\n+|\s+$/g, "");
+    const genAt = input.indexOf(genMark);
+    const outAt = input.indexOf(outMark);
+    if (genAt < 0 || outAt < 0) return src;
+    const oldOut = input.slice(genAt + genMark.length, outAt);
+    const rest = input.slice(outAt + outMark.length);
+    const cut = rest.search(/\n\s*\n\s*把/);
+    const newOut = cut >= 0 ? rest.slice(0, cut) : rest;
+    const changed = newOut
+      .split("\n")
+      .filter((line) => line.trim() && !oldOut.includes(line))
+      .map((line) => line.replace(/^\|/, "").replace(/\|$/, "").trim())
+      .filter(Boolean)
+      .join("、");
+    // 附着的那句不能以 | 开头：那会多出一行表格。
+    return changed ? `${src}\n\n${changed} についても中止してください。` : src;
   };
   /** 正向：逐行加前缀、去假名，标题与代码围栏原样。
    *  表格行不能加行首前缀 —— 桥按「行首是不是 | 」数表格行，加了就成了一张没有表格的译文。

@@ -267,6 +267,7 @@ const SYS_REVERSE = (lang: TrLang) =>
     "2. 保留 Markdown 结构：标题级别、列表符号与缩进、表格的行数与每行的 `|` 数量、链接、图片、HTML 标签、行内代码。",
     "3. 代码、命令、变量名、类名、消息 ID、文件路径、URL、占位符（如 {番号}）原样保留。",
     "4. 如果给的原文也一并附上，就以原文为准：只把译文里被改过的地方体现回去，措辞、标点、换行尽量跟原文一致。",
+    "5. 输出必须用【原文】的语言写：原文是日文就写日文（假名不能少），是中文就写中文，是英文就写英文。【改后的译文】只用来判断「意思改在哪里」，绝不能整段抄进结果。",
   ].join("\n");
 
 export function translateArgs(o: TrRun, kind: "forward" | "reverse" = "forward"): string[] {
@@ -375,6 +376,10 @@ export async function translateSection(
       hooks.onChunk?.();
       continue;
     }
+    // 代码段是独立 part，文本 part 的首尾空行要原样留住，否则围栏会粘到上一段上
+    // （后果：块的划分和原文对不上，同步时会退化成整节重译）。
+    const lead = /^\s*/.exec(part.text)?.[0] ?? "";
+    const trail = /\s*$/.exec(part.text)?.[0] ?? "";
     const chunks = packChunks(splitBlocks(part.text));
     const done: string[] = [];
     for (const chunk of chunks) {
@@ -396,7 +401,7 @@ export async function translateSection(
       done.push(got || chunk);
       hooks.onChunk?.();
     }
-    res.push(done.join("\n\n"));
+    res.push(lead + done.join("\n\n") + trail);
   }
   return { out: res.join("\n"), warnings };
 }
@@ -467,42 +472,77 @@ export interface ReverseIn {
   out: string;
 }
 
+/** 结果是模型给的但内容不对（不是调用失败）：这种才值得重试一次。 */
+class BadOutput extends Error {}
+
 /**
- * 一块译文 → 原文。把「原文这一块」和「改后的译文这一块」一起给模型，
- * 并要求它只把改过的地方体现回原文：表里改了一个单元格，就只有那一格变，
- * 其余措辞、标点、换行照抄原文 —— 写回去的 diff 才小到能读。
+ * 反向写回最常见的翻车：模型把「改后的译文」整段抄回去 —— 看着写成功了，
+ * 原文里却混进了译文的语言（中文标题盖到日文原文上）。只校验结构拦不住，
+ * 还得看「结果是不是原文那一套字」。
  */
+function reverseDrift(src: string, gen: string, out: string, nextOut: string): string | null {
+  // 「把译文抄回去」只在原文与基线译文本来就不同时才算错：同语言（或本来就是照抄回原文）时抄了也对。
+  if (out.trim() === nextOut.trim() && src.trim() !== gen.trim()) return "模型直接抄了改后的译文";
+  const kana = (s: string) => (s.match(/[\u3040-\u30ff]/g) ?? []).length;
+  const latin = (s: string) => (s.match(/[A-Za-z]/g) ?? []).length;
+  const chars = (s: string) => s.replace(/\s+/g, "").length || 1;
+  const srcKana = kana(src);
+  if (srcKana >= 3) {
+    // 原文是日文：结果必须还是日文。纯汉字或一大片拉丁字母都算跑偏。
+    if (kana(out) < Math.max(2, Math.floor(srcKana * 0.3))) return "写回的不是日文（几乎没有假名）";
+    return null;
+  }
+  if (kana(out) > 4) return "写回的是日文，原文不是";
+  if (latin(src) / chars(src) > 0.6 && latin(out) / chars(out) < 0.3) return "写回的不是原文的语言（英文字母没了）";
+  return null;
+}
+
+/** 一块译文 → 原文。把「原文这一块」和「改后的译文这一块」一起给模型，
+ * 并要求它只把改过的地方体现回原文：表里改了一个单元格，就只有那一格变，
+ * 其余措辞、标点、换行照抄原文 —— 写回去的 diff 才小到能读。 */
 export async function reverseBlock(input: ReverseIn, o: TrRun, run: TrRunner): Promise<string> {
-  const { src: srcBlock, gen: oldOut, out: nextOut } = input;
-  const body = [
-    `【原文】\n${srcBlock}`,
-    oldOut && oldOut !== nextOut ? `【原译文】\n${oldOut}` : "",
-    `【改后的译文】\n${nextOut}`,
-    "",
-    "把【改后的译文】里改过的地方体现回【原文】，其余部分照抄【原文】，只输出结果。",
-  ]
-    .filter((s) => s !== "")
-    .join("\n\n");
-  const out = cleanOut(await run(body, o, "reverse"));
-  const bad = tableDiff(srcBlock, out);
-  if (bad) throw new Error(`${bad}；这一块没有写回`);
-  if (!out.trim()) throw new Error("模型没有给出可用的原文");
-  return out;
+  return reverseWithGuard(input, o, run, false);
 }
 
 /** 结构对不齐时的退路：整节重译。 */
 async function reverseWhole(input: ReverseIn, o: TrRun, run: TrRunner): Promise<string> {
-  const { src, gen: oldOut, out: newOut } = input;
-  const out = cleanOut(
-    await run(
-      [`【原文】\n${src}`, `【原译文】\n${oldOut}`, `【改后的译文】\n${newOut}`, "", "把改过的地方体现回原文，只输出结果。"].join("\n\n"),
-      o,
-      "reverse",
-    ),
-  );
-  if (!out.trim()) throw new Error("模型没有给出可用的原文");
-  return out;
+  return reverseWithGuard(input, o, run, true);
 }
+
+async function reverseAttempt(input: ReverseIn, o: TrRun, run: TrRunner, extra: string, whole: boolean): Promise<string> {
+  const { src, gen: oldOut, out: nextOut } = input;
+  const ask = whole
+    ? "把改过的地方体现回原文，只输出结果。"
+    : "把【改后的译文】里改过的地方体现回【原文】，其余部分照抄【原文】，只输出结果。";
+  const body = [
+    `【原文】\n${src}`,
+    oldOut && oldOut !== nextOut ? `【原译文】\n${oldOut}` : "",
+    `【改后的译文】\n${nextOut}`,
+    "",
+    ask,
+  ]
+    .filter((s) => s !== "")
+    .join("\n\n");
+  const text = cleanOut(await run(body + extra, o, "reverse"));
+  if (!text.trim()) throw new BadOutput("模型没有给出可用的原文");
+  const bad = tableDiff(src, text);
+  if (bad) throw new BadOutput(`${bad}；这一块没有写回`);
+  const drift = reverseDrift(src, oldOut, text, nextOut);
+  if (drift) throw new BadOutput(`${drift}；这一块没有写回`);
+  return text;
+}
+
+/** 内容不合格就带着理由再问一次；还不行就把错误抛上去（上层保留原文并告警，不写脏东西）。 */
+async function reverseWithGuard(input: ReverseIn, o: TrRun, run: TrRunner, whole: boolean): Promise<string> {
+  try {
+    return await reverseAttempt(input, o, run, "", whole);
+  } catch (e) {
+    if (!(e instanceof BadOutput)) throw e;
+    const extra = `\n\n（上一次的结果被退回：${e.message}。结果必须用【原文】的语言写，不要把【改后的译文】照抄过来。）`;
+    return await reverseAttempt(input, o, run, extra, whole);
+  }
+}
+
 
 /**
  * 译文 → 原文的改动清单。只处理「译文 ≠ 机器基线」的块；
