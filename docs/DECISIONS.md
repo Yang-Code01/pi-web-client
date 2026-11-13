@@ -4216,3 +4216,58 @@ D
 **代价 / 可改：** 拿到口令的公网访客现在也能 `push --force` / `reset --hard` / `clean -fd`（前提是过了那张红色确认卡）—— 这是用户要的可用性的直接代价，口令丢了后果比从前大；真要收紧，应给写操作单独加 step-up 或在设置里加开关，而不是退回「只认回环」。局域网测试依赖跑测试那台机器有非回环 IPv4 网卡，没网卡时该条会失败并明说「无」（不静默跳过）。`CHANGELOG.md` 这批的 PR 编号在开好 #404 后补进标题。
 
 **验证：** `npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check`）；`npm run test:githist`（裸库写操作集成）；`npm run build` 后 `npm run test:githist:ui`（真 Chromium，三 tab / 24 动词 / 红色确认 / 冲突态 / 公网头·局域网·回环三来源可读写 / 窄屏）；`npm run test:repos:ui`（目录与仓库面板，probe 不再 403）。
+
+## D241 Jira 面板换成「本机管理」同款控制台；搜索加工单号，模糊由桥内两级查询兜底（#407）
+
+**问题：** Jira 面板一直是「一个 sheet + 两颗 tab」的弹窗形态：标题只有一行「🔷 Jira」，账号信息、站点、token 掩码挤在列表页顶上，搜索页和列表页共享一个 14px 内边距的滚动区。工单越积越多之后，「我的未完成」和「搜索」都变长，谁在滚、滚到哪全靠猜；窗口一窄，头部那点信息先被挤掉。同时搜索缺了最常用的入口——**按工单号查**。用户在聊天里贴的、邮件里抄的、会被念成「那个 21352」的，都是号；而 JQL 的 `key` 字段不支持 `~`（Atlassian 的 unsupported operators 里就有它，JRACLOUD-61197 同结论），`text ~ "21352"` / `summary ~ "21352"` 也不命中工单号，所以「模糊查号」在面板里必须自己实现。
+
+**决定：**
+
+1. **外壳照抄「本机管理」**：`web/src/jira-console.css`（`.jc-*`）独立成文件，遮罩 + `min(1120px,96vw) × min(800px,90vh)` 控制台 + 头部 eyebrow/标题/副行/徽章 + 横幅 + `214px` 左导航 + 内容区 + 页脚；面板外壳是 `.jc-*`，工单行/表单/详情这些内件继续用 `.jira-*`，互不覆盖（与 `.sys-*` / `.st-*` 同一套做法）。横幅行在网格里**钉死 `grid-row`**，否则空横幅会把内容区和页脚前挪一行 —— 这个坑 sysmanage 已经踩过两次。
+2. **三个分区取代两颗 tab**：我的未完成（默认）/ 搜索 / 账号与附件；未连接时只有「连接」。左导航是 `button` 列表（`aria-current="page"`，不假装 tablist），内容区唯一滚动，切分区各自记住滚动位置；账号、token 掩码、附件目录、退出连接、可访问项目都收进「账号与附件」。
+3. **头部用站点域名当标题**（`kaigit.atlassian.net`），副行是登录邮箱，徽章是显示名 / 未完成条数 / token 掩码；刷新失败、凭据失效、关注者降级、**公网只读**走横条，可单条关掉（`dismissed` 集合只在打开期间有效）。只读这件事由桥告知：`GET /api/jira/config` 多回一个 `readonly: ctx.publicReq`，页面据此挂「公网只读」徽章与「改连接、换附件目录要回本机」的横幅 —— 写操作本来就会被桥回 403 `tunnel_readonly`，但人得先知道，而不是点下去才撞墙。
+4. **工单号一格，形状由桥判**：`parseKeyQuery` 去 `#`、按空格/逗号切段；每段都像完整键（`^[A-Za-z][A-Za-z0-9_]*-\d{1,9}$`）→ `exact`（大写去重，最多 `SEARCH_MAX_KEYS = 20`）；否则 `fuzzy`，只拿第一段当 token。页面上不多一颗「模糊」开关，也不做实时下拉 —— 用户明确要「只在提交时模糊」。
+5. **工单号非空时不加 `resolution = Unresolved`**：精确、多个、模糊一致。查指定号就该看到它的真实状态；「含已解决」对号查询不再起作用（保持不变会让「查 CASPH30BUG-12 却什么都没有」变成常见困惑）。
+6. **模糊直接拼进 JQL**：`workItemKey ~ "<token>*"` 前缀匹配，一条查询由 Jira 执行、可翻页，响应带 `fuzzy: { token }`（D243 取代了原先「picker 找候选 → key IN 拉行」的两级做法）。
+7. **完整号查空自动退回模糊**：只有一个键、`key =` 查回 0 行时，用这个键再发一次 `workItemKey ~ "<key>*"`；有结果就采用，响应标 `fuzzy.fallback = true`，页面写「没有这个工单号，下面是按号段模糊找到的」。
+
+**为什么：** 外壳换成控制台不是为了好看，是因为面板的条目数已经超出「一个 sheet 塞得下」的量级：账号/凭据/附件属于设置，搜索与列表属于日常，混在一个滚动区里必然互相挤。选「照抄 sysmanage」而不是抽象出通用控制台，是因为三个控制台（设置、本机管理、Jira）布局相似但内容密度不同，先复制数值（1120×800、214px、断点 900/640），等第四个出现再抽。工单号这一格之所以不拆成「精确/模糊」两个开关，是因为用户输入的形状本身已经说明了意图（带项目键的整串 vs 半截数字），让桥判比让人再选一次更省事；而「只在提交时模糊」把 picker 的 20 条上限、无分页这些毛病留在提交之后，不污染输入过程。
+
+**代价 / 可改：** 前缀匹配是「号段从头对」，输入 `2135` 不会命中 `12135`（要包含就得自己多打几位），这是有意的取舍（D243）。`fallback` 只在「一个完整键查空」时触发，多键查空不退回（避免把 N 个键的语义混成一个）。`SEARCH_MAX_KEYS = 20` 是 `key IN` 的上限，多给的键会被静默截断。控制台外壳与 sysmanage 各存一份 CSS，改视觉要改两处 —— 已知，等第三个控制台出现再谈抽象。
+
+**验证：** `web/tests/jira-unit.mjs` 35 例（含 `key` 的 normalize / serialize / read 往返）；`bridge/tests/jira-search-unit.mjs` 25 例（精确 / IN / `#` 前缀 / 20 键截断 / 判模糊 / 前缀 JQL / 超长 400）；`bridge/tests/jira-e2e.mjs` 58 例（`workItemKey` 前缀 JQL、与标题同时生效、模糊查空、上游 403 照实报、`emptyOnce` 触发 fallback）；`npm --prefix web run typecheck`（`i18n-check` 2597 keys × 3 langs）；`npm run build:web`；真 Jira 探针见 D243；隔离实例（jira1，真凭据）手点：`2135` → 4 行，`CASPH30BUG-21352` → 1 行无提示，`CASPH30BUG-99999` → 「没有匹配这个工单号的工单」，520 宽输入框可见不溢出。
+
+## D242 附件一键下载：行尾一颗按钮、按工单号建目录、撞同名先问；附件内容认 `api.media.atlassian.com`（#407）
+
+**问题：** D205 只做了单票详情里的「下载全部」，两个缺口在日常里都暴露出来：一是下载入口藏在展开的详情底部，列表上十几张票要逐个展开；二是 Jira Cloud 把附件内容的中转地址搬到了 `https://api.media.atlassian.com/file/<uuid>/binary?...`，而 `attachmentRedirectAllowed` 只认站点自己与 `*.atl-paas.net`，于是每一张票的每个附件都以「附件跳转到不允许的地址」失败 —— 用户看到的正是「下载按钮像是不见了」。另外「交给 agent」的提示词只说「已经下载到本机的附件在 <目录>」，agent 还得自己列目录猜哪个是哪个。
+
+**决定：**
+
+1. **行尾一颗「下载附件」**：与「交给 agent」同组靠右（`.jira-issue-acts`），摘要占剩余宽度并省略，窄屏下按钮整组换行、不拆成两行。首次点击直接在 `<附件根>/<KEY>/` 落盘；下完在行下方留一行 `已下载 N 个 · M 个同名文件没动 · K 个失败 · <目录>`。
+2. **冲突先问再写**：`POST /api/jira/issues/:key/download` 不带 `conflict` 时，只要目标目录里已有同名文件就回 **409 `jira_conflict`** + 清单，一个字节都不写；页面弹出「有 N 个同名附件已经在这个目录里」+ 三个出口：**跳过已存在的**（其余照下，主按钮）/ **覆盖** / **取消下载**。`?conflict=skip` / `?conflict=overwrite` 是同一套服务端语义，行的「覆盖已存在的」直接复用 `overwrite`。
+3. **多一个只读计划接口**：`GET /api/jira/issues/:key/download` 只算不写，回 `{ dir, items: [{ id, filename, path, exists }] }`。页面用它既判断「还有几个没下」，也判断「哪些会撞同名」——先问后写的代价是多一次请求，换来「409 之前不碰磁盘」这个可验证的性质。隧道访客能读这个接口（只读），POST 仍是 403 `tunnel_readonly`。
+4. **提示词逐个列绝对路径**：`handoffPrompt` 在目录行之后追加「已经下好的附件（直接用绝对路径读，不要再问我）：」+ 每行 `  - <绝对路径>`。点了「交给 agent」但还有附件没下时，先问「这张票还有 N 个附件没下载」：**立即下载**（下完再拼提示词，接着走原来的预填 / 新会话）/ **就先用现有的** / **取消**。
+5. **认 `api.media.atlassian.com`**：`attachmentRedirectAllowed` 的 host 白名单加上它（仍是 https、无 userinfo、443、无 fragment，跟随时不带 `Authorization`）。这是 Jira Cloud 自己的文件域名，签名 URL 自带一次性 token，放开它不扩大 SSRF 面 —— 真正的护栏是「只认这三个来源」而不是「只认哪些后缀」。
+
+**为什么：** 「下载」这件事的主体是票，不是详情面板，所以入口必须回到行上；而「同名」是唯一会毁掉已有文件的时刻，因此默认动作必须是「先问」而不是「覆盖」——用户明确选了「只跳过冲突的，其余照下」这个收场方式，主按钮顺着它排。多一个 GET 计划接口不是过度设计：没有它，页面无法在不写盘的前提下说清「有几个没下」，也就没法在交接前发问。路径逐条写进提示词，是因为 agent 拿到「目录」也只能自己列、自己猜文件名，而在 Windows 上文件名还可能被 `safeFileName` 改过；给绝对路径是把这层猜测消掉。
+
+**代价 / 可改：** 冲突询问把一次点击变成两次，全量重下老目录时会多点一次「跳过」；`exists` 只比文件名、不比大小或 mtime，Jira 上换了同名文件不会自动重下（要么「覆盖」，要么先删目录）。计划接口与下载接口各读一次详情，单票会打两次 Jira；附件多时能感到延迟，可改成 409 之后复用同一份 plan。行下方那行小结会随目录变长而省略，路径靠 hover 标题看全。
+
+**验证：** `bridge/tests/jira-e2e.mjs` 61 例（409 清单与磁盘一致、`skip` 不重写、`overwrite` 同名覆盖、`GET download` 只算不写、隧道 403、`attachmentRedirectAllowed` 认 `api.media.atlassian.com` 但不认 `media.atlassian.com` 与后缀伪装）；`web/tests/jira-unit.mjs` 36 例（`downloadMark("exists")`、`handoffPrompt` 逐条列路径）；隔离实例（jira1，真凭据）探针：行尾按钮 → 建 `CASPH30INC-17971/` 并下了 1 个 xlsx、再点弹「有 1 个同名附件」选跳过 → 文件字节不变、换一张没下过的票点「交给 agent」→ 先问「还有 2 个附件没下载」→ 立即下载 → 目录出现且计划接口给出绝对路径。
+
+## D243 工单号模糊从 picker 两级改成 `workItemKey ~ "<token>*"` 前缀匹配（#407）
+
+**问题：** D241 选的「picker 找候选 → `key IN` 拉行」在真站点上毛病很硬：picker 只回约 17–20 条、不能翻页，匹配还松（`query=2135` 会把 `CASPH30BUG-17233` 一起带出来），所以我们只能在结果上方写「最多 20 个候选」，用户还得自己判断哪几条真是他要的。
+
+**决定：** 模糊这一级不再调 picker，直接拼 `workItemKey ~ "<token>*"`：
+
+- `parseKeyQuery` 判出 `fuzzy` 后，token 先剥掉 `*` / `?`（用户不能自带通配符），再由 `buildSearchJql` 拼前缀表达式，和其它条件照常 AND。
+- 一条查询拿到真正的工单行，`nextPageToken` 照常翻页，没有条数上限，也不再需要「最多 N 条」的提示。
+- 完整号查空后的自动退回保留，只是退到这条前缀查询，标 `fuzzy.fallback = true`，文案「没有这个工单号，下面是按号段模糊找到的」。
+- picker 相关的桥代码（`pickIssueKeys` / `contextOf` / `PICKER` 常量 / `fuzzy.total`）整段删除；`fuzzy` 只剩 `{ token, fallback? }`。
+
+**为什么：** 真 Jira 探针（本机凭据，只读 GET）比出来的：`workItemKey ~ "2135"` 只回号段正好是 2135 的两条；`~ "*2135*"` 会把 `12135` 也带出来；`~ "*213*"` 直接 20+ 条；`~ "casph30bug-2135*"` 回 `CASPH30BUG-21352` + `CASPH30BUG-2135`，正是要的前缀语义；`project = "..." AND workItemKey ~ "*21*"` 也照常 AND。前缀比包含准、比 picker 全，而且服务端执行、能翻页 —— 三个毛病一次解决，代码还更短。
+
+**代价 / 可改：** 前缀语义意味着 `12135` 里含的 `2135` 不会被搜到（要包含得自己多打几位）；这符合「按号段」的直觉，但如果以后有人要「任意位置包含」，改成 `workItemKey ~ "*<token>*"` 只是一行，代价是结果明显变宽。`workItemKey` 是 Jira Cloud 的字段，其它部署形态（DC/Server）不一定有，桥没有做能力探测 —— 真遇到会以 400 `jira_query` 冒出来。
+
+**验证：** `bridge/tests/jira-search-unit.mjs` 25 例（含「半截号走 `workItemKey ~`」与用户自带 `*`/`?` 被剥掉）；`bridge/tests/jira-e2e.mjs` 58 例（前缀 JQL 逐字断言、模糊与标题同时生效、模糊查空仍回 `fuzzy`、上游 403 照实报 403 `jira_forbidden`、`emptyOnce` 触发一次 fallback）；真 Jira 探针 `.scratch/workitemkey-probe.mjs` 六种输入逐条核对；`npm --prefix web run typecheck` + `i18n-check` 2597 keys × 3 langs。

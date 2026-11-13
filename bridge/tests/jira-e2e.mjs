@@ -35,6 +35,8 @@ let searchMode = "ok";
 let statusesMode = "ok";
 /** 人员搜索：`ok` / `403` / `401` / `500`。 */
 let usersMode = "ok";
+/** `search/jql` 被命中几次（`emptyOnce` 用例用：第一次空，第二次才给数据）。 */
+let searchHits = 0;
 /** 每次 search/jql 收到的 nextPageToken（断言分页透传）。 */
 const searchTokens = [];
 /** 上游每被命中一次就 +1：用来断言缓存命中与 `refresh=1` 绕过。#251 再加按附件 id 计数的 content。 */
@@ -107,6 +109,7 @@ const jira = http.createServer((req, res) => {
 
   if (url.pathname === "/rest/api/3/search/jql") {
     hits.search++;
+    searchHits++;
     lastSearch = url.searchParams;
     const token = url.searchParams.get("nextPageToken");
     searchTokens.push(token);
@@ -119,13 +122,19 @@ const jira = http.createServer((req, res) => {
       const jql = url.searchParams.get("jql") ?? "";
       const matches =
         jql.includes('summary ~ "登录"') &&
-        jql.includes('workItemKey ~ "*17967*"') &&
+        jql.includes('workItemKey ~ "17967*"') &&
         jql.includes('project = "CASPH30INC"');
       return send(200, { issues: matches ? [TICKET_ISSUE] : [] });
     }
     if (searchMode === "paged") {
       if (token === null) return send(200, { issues: ISSUES.slice(0, 1), nextPageToken: "tok-2", isLast: false });
       return send(200, { issues: ISSUES.slice(1), isLast: true });
+    }
+    // #407 自动退回模糊：第一次空，第二次（workItemKey 之后）才给数据。
+    if (searchMode === "emptyOnce") return send(200, { issues: searchHits === 1 ? [] : ISSUES });
+    // 自动退回的第二次自己失败：退回是尽力而为，桥应当仍回第一次的空结果。
+    if (searchMode === "emptyThen500") {
+      return searchHits === 1 ? send(200, { issues: [] }) : send(500, { errorMessages: ["boom"] });
     }
     return send(200, { issues: searchMode === "empty" ? [] : ISSUES });
   }
@@ -422,7 +431,7 @@ test("未配置时 GET config 回 configured:false", async () => {
   freshState();
   const out = await call("GET", "/api/jira/config");
   assert.equal(out.status, 200);
-  assert.deepEqual(out.json, { configured: false, siteUrl: "", email: "", keyMask: "" });
+  assert.deepEqual(out.json, { configured: false, siteUrl: "", email: "", keyMask: "", readonly: false });
 });
 
 test("PUT 错 token：400、原话照回、不落盘", async () => {
@@ -451,7 +460,7 @@ test("PUT 正确凭据：真验证过才落盘，GET 只回掩码", async () => 
   assert.deepEqual(saved, { siteUrl: SITE, email: EMAIL, apiKey: TOKEN });
 
   const got = await call("GET", "/api/jira/config");
-  assert.deepEqual(got.json, { configured: true, siteUrl: SITE, email: EMAIL, keyMask: "••••cdef" });
+  assert.deepEqual(got.json, { configured: true, siteUrl: SITE, email: EMAIL, keyMask: "••••cdef", readonly: false });
   assert.ok(!got.text.includes(TOKEN), "GET config 只能回掩码");
 });
 
@@ -882,17 +891,53 @@ test("POST download：落到 <root>/<KEY>/，清洗 / 重名 / 超限 / 跳转�
   ]);
 });
 
-test("POST download：重下同一工单是覆盖，不堆副本", async () => {
+test("POST download：重下同一工单先撞 409 确认，不悄悄覆盖", async () => {
   await connect();
   const root = path.join(tmp, "attach-root-again");
   await call("PUT", "/api/jira/attachments/root", { root });
   const dir = path.join(root, "ACME-77");
   await call("POST", "/api/jira/issues/ACME-77/download");
   const first = fs.readdirSync(dir).sort();
+  // #407：不带 conflict 时，撞到同名文件一个字节都不写，回 409 + 清单。
   const again = await call("POST", "/api/jira/issues/ACME-77/download");
-  assert.equal(again.status, 200);
+  assert.equal(again.status, 409);
+  assert.equal(again.json.code, "jira_conflict");
+  // 超 100MB / 取不到的那两个本来就没落盘，别拿它们当「已存在」。
+  const onDisk = new Set(fs.readdirSync(dir));
+  assert.ok(again.json.items.every((it) => it.exists === onDisk.has(path.basename(it.path))));
   assert.deepEqual(fs.readdirSync(dir).sort(), first);
   assert.equal(fs.readFileSync(path.join(dir, "same.pdf"), "utf8"), "first");
+
+  // 跳过：不重写，逐项标 exists。
+  const skip = await call("POST", "/api/jira/issues/ACME-77/download?conflict=skip");
+  assert.equal(skip.status, 200);
+  assert.ok(skip.json.items.filter((it) => it.status === "exists").length >= 3);
+  assert.ok(!skip.json.items.some((it) => it.status === "saved" && onDisk.has(path.basename(it.path)) && it.filename === "same.pdf"));
+  assert.deepEqual(fs.readdirSync(dir).sort(), first);
+
+  // 覆盖：仍是同一批文件名，内容被重写。
+  const over = await call("POST", "/api/jira/issues/ACME-77/download?conflict=overwrite");
+  assert.equal(over.status, 200);
+  assert.deepEqual(fs.readdirSync(dir).sort(), first);
+  assert.ok(over.json.items.some((it) => it.status === "saved"));
+});
+
+test("GET download：只算计划不写盘，逐项说清 exists", async () => {
+  await connect();
+  const root = path.join(tmp, "attach-root-plan");
+  await call("PUT", "/api/jira/attachments/root", { root });
+  const before = await call("GET", "/api/jira/issues/ACME-77/download");
+  assert.equal(before.status, 200);
+  assert.ok(before.json.dir.endsWith("ACME-77"));
+  assert.ok(before.json.items.length > 0);
+  assert.ok(before.json.items.every((it) => it.exists === false));
+  assert.ok(!fs.existsSync(before.json.dir), "算计划不该建目录");
+  assert.ok(before.json.items.every((it) => path.isAbsolute(it.path)));
+
+  await call("POST", "/api/jira/issues/ACME-77/download");
+  const after = await call("GET", "/api/jira/issues/ACME-77/download");
+  const written = new Set(fs.readdirSync(before.json.dir));
+  assert.ok(after.json.items.every((it) => it.exists === written.has(path.basename(it.path))));
 });
 
 test("POST download：隧道访客 403 tunnel_readonly，不碰磁盘", async () => {
@@ -927,7 +972,9 @@ test("GET downloaded：只数 <root>/<KEY>/ 里的普通文件，key 大小写�
 
   const out = await call("GET", "/api/jira/issues/acme-12/downloaded");
   assert.equal(out.status, 200);
-  assert.deepEqual(out.json, { dir, count: 2 });
+  assert.equal(out.json.dir, dir);
+  assert.equal(out.json.count, 2);
+  assert.deepEqual(out.json.files.map((file) => file.name).sort(), ["a.txt", "b.png"]);
   assert.equal(hits.issue, 0, "只读目录，不拉详情");
 });
 
@@ -948,7 +995,9 @@ test("GET downloaded：目录不存在 / 为空都说没下过，隧道访客也
   fs.writeFileSync(path.join(dir, "only.txt"), "x");
   const after = await call("GET", "/api/jira/issues/ACME-31/downloaded", undefined, tunnel);
   assert.equal(after.status, 200);
-  assert.deepEqual(after.json, { dir, count: 1 });
+  assert.equal(after.json.dir, dir);
+  assert.equal(after.json.count, 1);
+  assert.deepEqual(after.json.files.map((file) => file.name), ["only.txt"]);
 });
 
 test("safeFileName：非法字符 / 保留名 / 空名 / 结尾点 / 长度", () => {
@@ -976,9 +1025,14 @@ test("attachmentRootProblem：只认绝对路径（盘符 / UNC / POSIX）", () 
   assert.equal(attachmentRootProblem("/home/me/jira"), null);
 });
 
-test("attachmentRedirectAllowed：只认站点自己与 *.atl-paas.net 的 https", () => {
+test("attachmentRedirectAllowed：只认站点自己、*.atl-paas.net 与 api.media.atlassian.com 的 https", () => {
   const site = "https://acme.atlassian.net";
   assert.equal(attachmentRedirectAllowed("https://acme.atlassian.net/file/u1/binary", site), true);
+  // D242：Jira Cloud 现在 303 到 api.media.atlassian.com（签名 URL）。
+  assert.equal(attachmentRedirectAllowed("https://api.media.atlassian.com/file/u1/binary?token=x", site), true);
+  assert.equal(attachmentRedirectAllowed("https://API.MEDIA.ATLASSIAN.COM/file/u1/binary", site), true);
+  assert.equal(attachmentRedirectAllowed("https://api.media.atlassian.com.evil.example/f", site), false);
+  assert.equal(attachmentRedirectAllowed("https://media.atlassian.com/file/u1/binary", site), false);
   assert.equal(attachmentRedirectAllowed("https://media.atl-paas.net/file/u1/binary", site), true);
   assert.equal(attachmentRedirectAllowed("https://media.atl-paas.net:443/file/u1/binary", site), true);
   assert.equal(attachmentRedirectAllowed("https://atl-paas.net/file/u1/binary", site), true);
@@ -1035,16 +1089,17 @@ test("GET search：条件 → JQL 白名单，页面传的 jql / fields 被忽�
   assert.equal(lastSearch.get("fields"), FIXED_FIELDS);
 });
 
-test("GET search：票号子串与标题、项目取交集并返回匹配工单", async () => {
+test("GET search：工单号前缀模糊与标题、项目取交集并返回匹配工单", async () => {
   await connect();
   searchMode = "ticket";
-  const out = await call("GET", "/api/jira/search?ticketKey=17967&title=%E7%99%BB%E5%BD%95&project=CASPH30INC");
+  const out = await call("GET", "/api/jira/search?key=17967&title=%E7%99%BB%E5%BD%95&project=CASPH30INC");
   assert.equal(out.status, 200);
   assert.deepEqual(out.json.issues.map((issue) => issue.key), ["CASPH30INC-17967"]);
   assert.equal(
     lastSearch.get("jql"),
-    'resolution = Unresolved AND summary ~ "登录" AND workItemKey ~ "*17967*" AND project = "CASPH30INC" ORDER BY updated DESC',
+    'workItemKey ~ "17967*" AND summary ~ "登录" AND project = "CASPH30INC" ORDER BY updated DESC',
   );
+  assert.deepEqual(out.json.fuzzy, { token: "17967" });
 });
 
 test("GET search：默认未解决 / includeResolved / 未分配", async () => {
@@ -1199,4 +1254,97 @@ test("GET users：映射；空 q 不打上游；403 unavailable；401 jira_auth�
 
   const tunnel = await call("GET", "/api/jira/users?q=x", undefined, { "x-test-tunnel": "1" });
   assert.equal(tunnel.status, 502);
+});
+
+// ---------------------------------------------------------------- #407 工单号
+
+test("GET search：完整工单号走 key =，不再加未解决过滤", async () => {
+  await connect();
+  const out = await call("GET", "/api/jira/search?key=acme-12");
+  assert.equal(out.status, 200);
+  assert.equal(lastSearch.get("jql"), 'key = "ACME-12" ORDER BY updated DESC');
+  assert.equal(lastSearch.get("fields"), FIXED_FIELDS);
+  assert.equal(out.json.fuzzy, undefined);
+});
+
+test("GET search：多个工单号用 key IN", async () => {
+  await connect();
+  const out = await call("GET", `/api/jira/search?key=${encodeURIComponent("ACME-7, ACME-77")}`);
+  assert.equal(out.status, 200);
+  assert.equal(lastSearch.get("jql"), 'key IN ("ACME-7", "ACME-77") ORDER BY updated DESC');
+});
+
+test("GET search：半截号走 workItemKey 前缀模糊，一条请求拿到工单", async () => {
+  await connect();
+  const out = await call("GET", "/api/jira/search?key=7");
+  assert.equal(out.status, 200);
+  assert.equal(lastSearch.get("jql"), 'workItemKey ~ "7*" ORDER BY updated DESC');
+  assert.deepEqual(out.json.fuzzy, { token: "7" });
+  assert.ok(out.json.issues.length > 0);
+});
+
+test("GET search：模糊与其它条件取交集", async () => {
+  await connect();
+  const out = await call("GET", `/api/jira/search?key=7&title=${encodeURIComponent("白屏")}`);
+  assert.equal(out.status, 200);
+  assert.equal(lastSearch.get("jql"), 'workItemKey ~ "7*" AND summary ~ "白屏" ORDER BY updated DESC');
+  assert.deepEqual(out.json.fuzzy, { token: "7" });
+});
+
+test("GET search：模糊查空仍然回 fuzzy，页面好说「没有匹配这个工单号」", async () => {
+  await connect();
+  searchMode = "empty";
+  const out = await call("GET", "/api/jira/search?key=7");
+  searchMode = "ok";
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.json.issues, []);
+  assert.equal(out.json.isLast, true);
+  assert.deepEqual(out.json.fuzzy, { token: "7" });
+});
+
+test("GET search：模糊查询的上游 403 照实报，不再当成没找到", async () => {
+  await connect();
+  searchMode = "403";
+  const out = await call("GET", "/api/jira/search?key=7");
+  searchMode = "ok";
+  assert.equal(out.status, 403);
+  assert.equal(out.json.code, "jira_forbidden");
+});
+
+test("GET search：完整号查空时自动退回前缀模糊，并标 fallback", async () => {
+  await connect();
+  searchMode = "emptyOnce";
+  searchHits = 0;
+  const out = await call("GET", "/api/jira/search?key=ACME-12");
+  searchMode = "ok";
+  assert.equal(out.status, 200);
+  assert.equal(searchHits, 2, "第一次 key = 为空，第二次才走 workItemKey");
+  assert.equal(lastSearch.get("jql"), 'workItemKey ~ "ACME-12*" ORDER BY updated DESC');
+  assert.deepEqual(out.json.fuzzy, { token: "ACME-12", fallback: true });
+  assert.ok(out.json.issues.length > 0);
+});
+
+test("GET search：工单号超长 / 非法参数照样 400，码是 jira_query", async () => {
+  await connect();
+  const out = await call("GET", `/api/jira/search?key=${"x".repeat(501)}`);
+  assert.equal(out.status, 400);
+  assert.equal(out.json.code, "jira_query");
+});
+
+test("GET search：自动退回的第二次查询失败时，仍回第一次的空结果", async () => {
+  await connect();
+  searchMode = "emptyThen500";
+  searchHits = 0;
+  const out = await call("GET", "/api/jira/search?key=ACME-12");
+  searchMode = "ok";
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.json.issues, []);
+  assert.equal(out.json.fuzzy, undefined);
+});
+
+test("GET config：隧道访客带 readonly，本机不带", async () => {
+  const local = await call("GET", "/api/jira/config");
+  assert.equal(local.json.readonly, false);
+  const tunnel = await call("GET", "/api/jira/config", undefined, { "x-test-tunnel": "1" });
+  assert.equal(tunnel.json.readonly, true);
 });

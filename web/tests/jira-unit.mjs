@@ -222,6 +222,7 @@ test("formatBytes：B / KB / MB 进位，未知显示 —", () => {
 
 test("downloadMark：对勾只给真落盘的那项", () => {
   assert.equal(downloadMark("saved"), "✓");
+  assert.equal(downloadMark("exists"), "=");
   assert.equal(downloadMark("skipped"), "·");
   assert.equal(downloadMark("failed"), "✗");
 });
@@ -268,6 +269,24 @@ test("handoffPrompt：下载过才有附件行，路径以结尾斜杠收尾", (
   }
 });
 
+test("handoffPrompt：#407 已下载的附件逐个列出绝对路径", () => {
+  const text = handoffPrompt({
+    ...handoff,
+    dir: "C:\\jira\\ACME-12",
+    files: [
+      { name: "a.png", path: "C:\\jira\\ACME-12\\a.png" },
+      { name: "b.pdf", path: "C:\\jira\\ACME-12\\b.pdf" },
+      { name: "", path: "  " },
+    ],
+  });
+  assert.ok(text.includes("- 已经下好的附件（直接用绝对路径读，不要再问我）："));
+  assert.ok(text.includes("  - C:\\jira\\ACME-12\\a.png"));
+  assert.ok(text.includes("  - C:\\jira\\ACME-12\\b.pdf"));
+  assert.ok(!text.includes("  -  \n"));
+  // 没有 files 时连标题都不出现。
+  assert.ok(!handoffPrompt({ ...handoff, dir: "C:\\jira\\ACME-12" }).includes("已经下好的附件"));
+});
+
 test("handoffPrompt：优先级 null 写「未设置」，缺省就省略那一段", () => {
   assert.ok(handoffPrompt({ ...handoff, priority: null }).includes("状态：待办 · 优先级：未设置 · 类型：Bug"));
   assert.ok(handoffPrompt({ ...handoff, priority: undefined }).includes("状态：待办 · 类型：Bug"));
@@ -290,17 +309,17 @@ test("emptySearch：默认关系三个都勾，排序最近更新降序", () => 
   assert.equal(SEARCH_STORAGE_KEY, "pi.jira.search.last");
 });
 
-test("searchQuery：空值不带，标题与票号去空白，项目大写", () => {
-  const q = searchQuery({ ...emptySearch(), title: " 登录 ", text: "", ticketKey: " 17967 ", project: "acme", priority: "" });
+test("searchQuery：空值不带，标题与工单号去空白，项目大写", () => {
+  const q = searchQuery({ ...emptySearch(), title: " 登录 ", text: "", key: " 17967 ", project: "acme", priority: "" });
   assert.equal(q.get("title"), "登录");
-  assert.equal(q.get("ticketKey"), "17967");
+  assert.equal(q.get("key"), "17967");
   assert.equal(q.has("text"), false);
   assert.equal(q.has("priority"), false);
   assert.equal(q.get("project"), "ACME");
   assert.equal(q.get("sort"), "updated");
   assert.equal(q.get("order"), "desc");
   assert.equal(q.has("includeResolved"), false);
-  assert.equal(searchQuery({ ...emptySearch(), ticketKey: "   " }).has("ticketKey"), false);
+  assert.equal(searchQuery({ ...emptySearch(), key: "   " }).has("key"), false);
 });
 
 test("searchQuery / normalizeSearch：未分配不带人员与关系，但不清表单里选的人", () => {
@@ -338,7 +357,7 @@ test("serializeSearch / readSavedSearch：条件往返，坏 JSON / 版本不对
   const saved = serializeSearch({
     ...emptySearch(),
     title: "白屏",
-    ticketKey: "17967",
+    key: "17967",
     project: "acme",
     statusCategory: "done",
     person: { accountId: "acc-9", displayName: "Ada" },
@@ -346,7 +365,7 @@ test("serializeSearch / readSavedSearch：条件往返，坏 JSON / 版本不对
   });
   const back = readSavedSearch(saved);
   assert.equal(back.title, "白屏");
-  assert.equal(back.ticketKey, "17967");
+  assert.equal(back.key, "17967");
   assert.equal(back.project, "ACME");
   assert.equal(back.statusCategory, "done");
   assert.equal(back.person.accountId, "acc-9");
@@ -366,4 +385,22 @@ test("readSavedSearch：单个字段类型/枚举不对只丢该字段", () => {
   assert.deepEqual(s.relations, []);
   assert.equal(s.project, "ACME");
   assert.equal(s.status, "Done");
+});
+
+// ---------------------------------------------------------------- #407 工单号
+
+test("searchQuery：工单号去掉首尾空白后带上，空着就不带", () => {
+  assert.equal(searchQuery({ ...emptySearch(), key: "  CASPH30BUG-1 " }).get("key"), "CASPH30BUG-1");
+  assert.equal(searchQuery(emptySearch()).has("key"), false);
+  assert.equal(searchQuery({ ...emptySearch(), key: "   " }).has("key"), false);
+});
+
+test("搜索条件往返：工单号存进 localStorage，读回来还在", () => {
+  const saved = serializeSearch({ ...emptySearch(), key: "21352 白屏" });
+  const back = readSavedSearch(saved);
+  assert.equal(back.key, "21352 白屏");
+  // 老版本没有 key 字段：读成空串，不报错。
+  const legacy = readSavedSearch(JSON.stringify({ v: 1, title: "登录" }));
+  assert.equal(legacy.key, "");
+  assert.equal(legacy.title, "登录");
 });

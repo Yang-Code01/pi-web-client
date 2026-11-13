@@ -1,6 +1,6 @@
 # Jira 搜索
 
-状态：设计已定（D207）；本文同步记录票号查询与宽桌面搜索布局的实现行为。
+状态：设计已定（D207）；本文同步记录工单号查询（D241 / D243）与控制台骨架（D241）的实现行为。
 原型：`.scratch/jira-search-prototype/index.html`（不入库，只用于形态对比）。
 
 ## 1. 范围
@@ -11,26 +11,34 @@ v1 面板只有一条固定查询「分配给我 + 未解决」（D203）。本�
 
 **不做：** 原始 JQL、Jira 写操作、多站点、评论正文、总数统计、保存多组筛选、看板 / 自定义字段。
 
-## 2. 形态（A：面板内两颗 tab）
+## 2. 形态（#407 起：本机管理同款控制台，左导航三个分区）
 
 ```
-┌ Jira ───────────────────────────────── × ┐
-│  我的未完成   │   搜索                     │  tablist
-├───────────────────────────────────────────┤
-│ 搜索工单                     已显示 20 条 │
-│ [票号] [标题关键字] [全文本] [项目]        │
-│ [状态类别] [具体状态] [类型] [优先级] [排序] [方向] │
-│ 人员 [combobox…] 关系 □未分配 □已解决 [搜索] [清空] │
-│ ── 关注者条件未生效：没有查看关注者的权限 ──│
-│ ACME-412 登录页在 Safari 17 上白屏  [交给 agent]│
-│ …                                         │
-│                [加载更多]                 │
-└───────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│ JIRA                                                       │
+│ kaigit.atlassian.net                        [刷新] [关闭]  │
+│ xyang.qingmin@…                                             │
+│ [Qingmin Yang] [9 条未完成] [••••••47D9]                    │
+├──────────────┬────────────────────────────────────────────┤
+│ 我的未完成 9 │ 搜索工单                                    │
+│ 搜索         │ 按条件查这个站点里你能看到的工单…            │
+│ 账号与附件   │ [工单号（跨两列）…] [标题关键字] [全文本]    │
+│              │ [项目] [状态类别] [具体状态] [类型]          │
+│              │ [优先级] [排序] [方向]                      │
+│              │ 人员 [combobox………]  □经办 □报告 □关注       │
+│              │ □未分配 □含已解决        [搜索] [清空条件]   │
+│              │ ── 关注者条件未生效：没有查看关注者的权限 ──  │
+│              │ ACME-412 登录页在 Safari 17 上白屏 [交给 agent]│
+│              │ …                        [加载更多]          │
+├──────────────┴────────────────────────────────────────────┤
+│ 读工单描述和评论要用 Jira MCP：…              [打开设置]   │
+└───────────────────────────────────────────────────────────┘
 ```
 
-- 两颗 tab 平权；两个 pane 各自是滚动容器，切回不丢滚动位置与展开状态。默认落在「我的未完成」。
-- 搜索区沿用 v1 的视觉语言（`.jira-section`、`.jira-issue`、`.btn`），不引入新的设计系统。
-- 结果行与列表行是同一套渲染：同样的 key 链接、meta 行、展开详情、「交给 agent」。
+- 外壳照「本机管理」（`web/src/jira-console.css`，`.jc-*`）：遮罩 + 1120×800 控制台 + 头部 eyebrow / 标题 / 副行 / 徽章 + 横幅 + 214px 左导航 + 内容区 + 页脚；窄屏与主区域断点同 sysmanage（900 / 640）。
+- 分区三页：**我的未完成**（默认）、**搜索**、**账号与附件**；未连接时只有一页「连接」。分区切换不重建面板，只换内容区，滚动位置按分区各自记住。
+- 头部标题是站点域名，副行是登录邮箱，徽章是显示名 / 未完成条数（或「凭据失效」）/ token 掩码；刷新失败、凭据失效、关注者降级走横条，可单条关掉。
+- 搜索区沿用 v1 的视觉语言（`.jira-section`、`.jira-issue`、`.btn`）；结果行与列表行是同一套渲染。
 
 ## 3. 条件模型
 
@@ -38,9 +46,9 @@ v1 面板只有一条固定查询「分配给我 + 未解决」（D203）。本�
 
 | 界面 | 参数 | 取值 / 上限 | 拼进 JQL |
 | --- | --- | --- | --- |
+| 工单号 | `key` | ≤ 500 字符 | `key = "ACME-12"` / `key IN ("…", "…")`；半截号 → `workItemKey ~ "<token>*"` |
 | 标题关键字 | `title` | ≤ 200 字符 | `summary ~ "…"` |
 | 全文本 | `text` | ≤ 500 字符 | `text ~ "…"` |
-| 票号 | `ticketKey` | ≤ 200 字符；仅字母、数字、`_`、`-` | `workItemKey ~ "*…*"`（任意位置子串） |
 | 项目 | `project` | `^[A-Z][A-Z0-9_]{0,9}$` | `project = "ACME"` |
 | 状态类别 | `statusCategory` | `new` / `indeterminate` / `done` | `statusCategory = "To Do"` / `"In Progress"` / `"Done"` |
 | 具体状态 | `status` | ≤ 64 字符，**必须带 project** | `status = "In Progress"` |
@@ -61,10 +69,10 @@ v1 面板只有一条固定查询「分配给我 + 未解决」（D203）。本�
 固定顺序，简单条件不加括号，人员组整体加括号：
 
 ```
+[key = "…" | key IN ("…", …) | workItemKey ~ "<token>*" AND]
 [resolution = Unresolved AND]
 [summary ~ "…" AND]
 [text ~ "…" AND]
-[workItemKey ~ "*…*" AND]
 [project = "…" AND]
 [statusCategory = "…" AND]
 [status = "…" AND]
@@ -76,12 +84,13 @@ ORDER BY <sort> <order>[, updated DESC]
 ```
 
 - 默认（无条件）：`resolution = Unresolved ORDER BY updated DESC`。
+- **工单号非空时不加 `resolution = Unresolved`**（精确、多个、模糊都一样）：查指定号就该看到它的真实状态，「含已解决」对号查询不再起作用。
 - `person` 给定时 `relations` 至少一项；默认三项全选，组内 OR。
 - `unassigned` 与人员条件互斥；勾了未分配就不提交人。
 - `status` 必须有 `project`：状态名可跨项目重名，未选项目时页面也无法列出全量状态。
 - `sort=priority` 时补 `updated DESC` 作次序；`sort=updated` 不重复。
 - 关键字不拆词、不加通配符，整串交给 Jira 的 `~`。
-- 票号按 key 任意位置子串匹配，并与其他已填写条件按 AND 组合；例如输入 `17967` 可命中 `CASPH30INC-17967`。票号去除首尾空白后为空时按未填写处理，非法字符或超过 200 字符时拒绝；不把 `*` / `?` 当作通配符。
+- 工单号：完整号（可多个，逗号 / 空格 / 顿号分隔）→ `key =` / `key IN`；其余（纯数字、半截号、号后面跟着标题词）→ 取第一个 token 走 `workItemKey ~ "<token>*"` **前缀**匹配（可翻页、无条数上限），例如 `2135` 可命中 `CASPH30BUG-2135` 与 `CASPH30BUG-21352`，不会把 `12135` 一起倒出来。输入里的 `*` / `?` 会被剥掉，不能被当通配符（D243）。
 
 ### 3.3 转义与长度
 
@@ -103,6 +112,29 @@ ORDER BY <sort> <order>[, updated DESC]
 | 上游对 JQL 回 400 | 400 `jira_query` | —（带可读上游消息） |
 
 未知 query 参数一律忽略（向前兼容）；页面没有 `jql` 参数入口。
+
+### 3.5 工单号：自动判定 + 号段前缀模糊
+
+界面上只有一格「工单号」，怎么查由桥判（`parseKeyQuery`），页面不猜：
+
+```ts
+type KeyQuery =
+  | { kind: "none" }
+  | { kind: "exact"; keys: string[] }   // 完整键：key = / key IN
+  | { kind: "fuzzy"; token: string };   // 其余：workItemKey ~ "<token>*"
+```
+
+- 先去掉每段开头的 `#`，按空格 / 逗号（含全角）/ 顿号切段。
+- 每段都长得像完整键（`^[A-Za-z][A-Za-z0-9_]*-d{1,9}$`）→ `exact`，大写去重，最多 `SEARCH_MAX_KEYS = 20` 个（`key IN` 的上限）。
+- 否则 `fuzzy`，只拿**第一段**当 token（`CASPH30BUG-21352 白屏` → `CASPH30BUG-21352`）；token 里的 `*` / `?` 会被剥掉，用户不能自带通配符。
+- 走 `exact` 但一行都没查到、且只有一个键时，自动退回一次 `fuzzy`（`fallback: true`），结果上方注明「没有这个工单号，下面是按号段模糊找到的」。
+
+模糊就是一条普通查询，不多打一次请求：
+
+- `key` 字段不支持 `~`（Atlassian 的 unsupported operators 里就有它，JRACLOUD-61197 同样结论），`text ~` / `summary ~` 也不命中工单号；Jira Cloud 的 `workItemKey` 支持 `~`，所以拼 `workItemKey ~ "<token>*"`。
+- 用**前缀**而不是包含：`2135` 该命中 `CASPH30BUG-2135` / `CASPH30BUG-21352`，不该把 `CASPH30BUG-12135` 一起倒出来（实测 `*2135*` 会）。
+- 服务端执行，`nextPageToken` 照常翻页，没有条数上限，也不需要「最多显示 N 条」的提示。
+- 回包带 `fuzzy: { token, fallback? }`，页面只在 `fallback` 时加那行说明。
 
 ## 4. 接口
 
@@ -134,12 +166,14 @@ GET /api/jira/search?title=登录&project=ACME&statusCategory=indeterminate
   ],
   "nextPageToken": "…",
   "isLast": false,
-  "degraded": { "watchers": true }
+  "degraded": { "watchers": true },
+  "fuzzy": { "token": "2135", "total": 4 }
 }
 ```
 
 - `assignee` 是显示名；未分配为 `""`。`JiraIssue` 增加这个字段，列表接口同一映射、同一字段集合（多一个只读字段，向后兼容）。
 - 新版 `search/jql` 不返回 total，所以没有 `total`；`isLast` 缺失时按 `!nextPageToken` 推断。
+- `fuzzy` 只在工单号走了模糊（或精确查空后自动退回）时出现：`token` 是提交的那一段，`total` 是候选键个数；`fallback: true` 表示「完整号没查到，下面是相近的」。
 - 结果**不缓存**。
 
 ### 4.2 `GET /api/jira/meta?project=ACME`
@@ -195,16 +229,15 @@ GET /api/jira/search?title=登录&project=ACME&statusCategory=indeterminate
 
 ## 6. 页面行为
 
-### tab 与状态
+### 分区与状态
 
-- `role=tablist` / `role=tab` / `role=tabpanel`，`aria-selected`；左右方向键可切（可选，不阻塞验收）。
-- 每个 pane 自己 `overflow: auto`；切换只改 `hidden`，不重建 DOM。
-- 默认 list。首次切到 search：有保存的条件就回填并自动跑一次；没有就跑空条件（全部未解决）。**每个面板实例最多自动跑一次**，之后切 tab 不重跑。
+- 左导航是 `button` 列表（不假装 tablist），当前项带 `aria-current="page"` 与 `.on`；未连接时只渲染「连接」。
+- 内容区是唯一滚动容器，切分区时把滚动位置存进 `scrollBySection`、换内容后再恢复。
+- 默认「我的未完成」。首次进「搜索」：有保存的条件就回填并自动跑一次；没有就跑空条件（全部未解决）。**每个面板实例最多自动跑一次**，之后来回切不重跑。
 
 ### 表单
 
-- 4 / 2 / 1 列响应式；具体状态在未选项目时置灰，placeholder「先选项目」；清空项目时连带清空状态。
-- 宽桌面 Jira 弹窗最大宽度 1200px，搜索条件按三行排列：票号 / 标题 / 全文本 / 项目；状态类别 / 具体状态 / 类型 / 优先级 / 排序 / 方向；人员与关系 / 开关 / 操作。窄屏按现有断点重排，手机保持全屏，非 Jira 弹窗不变。
+- 4 / 2 / 1 列响应式：工单号与标题各跨两列；具体状态在未选项目时置灰，placeholder「先选项目」；清空项目时连带清空状态。
 - 类型 / 优先级选项全部来自 `/api/jira/meta`；不在前端硬编码。
 - 「搜索」按钮 + Enter 提交；改条件不自动搜。
 - 勾「未分配」→ 人员输入与三个关系勾置灰；取消恢复原选择。
@@ -283,7 +316,7 @@ GET /api/jira/search?title=登录&project=ACME&statusCategory=indeterminate
 
 ### bridge（#256 / #257）
 
-- `node bridge/tests/jira-search-unit.mjs`：每个条件（含票号子串匹配与输入校验）、组合顺序、默认未解决、includeResolved、unassigned、关系 OR、排序、转义正反例、校验错误、token 透传；断言拼出的 JQL 逐字。
+- `node bridge/tests/jira-search-unit.mjs`：每个条件（含工单号完整 / IN / 前缀模糊）、组合顺序、默认未解决、includeResolved、unassigned、关系 OR、排序、转义正反例、校验错误、token 透传；断言拼出的 JQL 逐字。
 - `node bridge/tests/jira-e2e.mjs`：假 Jira 上断言收到的 JQL 与 fields、分页、watcher 重试 / 不再重试（只勾 watcher）、meta 缓存与 partial、users 403 → unavailable、隧道 GET、未配置、搜索结果不缓存。
 
 ### web（#258 / #259）

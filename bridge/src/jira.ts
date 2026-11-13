@@ -390,7 +390,7 @@ async function upstreamJson(config: JiraConfig, ctx: JiraCtx, path: string, notF
     if (res.status === 401) throw new JiraError("jira_auth", 401, `Jira 不认这组凭据（401）${tail}`);
     if (res.status === 403) throw new JiraError("jira_forbidden", 403, `这组凭据没有权限（403）${tail}`);
     if (res.status === 404 && notFound) throw new JiraError("jira_not_found", 404, notFound);
-    throw new JiraError("jira_upstream", 502, `Jira 回了 ${res.status}${tail}`);
+    throw new JiraError("jira_upstream", 502, `Jira 回了 ${res.status}${tail}`, res.status);
   }
   return res.json().catch(() => null);
 }
@@ -460,6 +460,8 @@ interface SearchOutcome {
   nextPageToken?: string;
   isLast: boolean;
   degraded?: { watchers: true };
+  /** 工单号按号段模糊查（`workItemKey ~`）时为块；`fallback` = 完整号查空后自动退回的（D243）。 */
+  fuzzy?: { token: string; fallback?: true };
 }
 
 /** 上游状态 → 桥的错误码；`upstreamStatus` 留给关注者降级判断。 */
@@ -491,10 +493,37 @@ async function searchOnce(config: JiraConfig, ctx: JiraCtx, params: SearchParams
 }
 
 /**
+ * 工单号：完整键精确查（`key =` / `key IN`）；半截号由 `buildSearchJql` 拼成
+ * `workItemKey ~ "<token>*"` 前缀匹配 —— 一条请求就能拿到真正的工单行，可翻页，
+ * 没有 picker 那套「先取候选键再 IN」的 20 条上限与松匹配（D243）。
+ */
+async function searchIssues(config: JiraConfig, ctx: JiraCtx, params: SearchParams): Promise<SearchOutcome> {
+  const out = await withWatcherFallback(config, ctx, params);
+  if (params.key?.kind === "fuzzy") return { ...out, fuzzy: { token: params.key.token } };
+
+  // 单个完整号查空（号码记错，或只记得前半段）：按号段模糊再查一次，别让人对着空结果发呆。
+  const keys = params.key?.kind === "exact" ? params.key.keys : [];
+  if (out.issues.length > 0 || keys.length !== 1) return out;
+  // 退回是尽力而为：第二次查询自己出错（限流、坏 JQL）时，宁可回原来的空结果，也别把新失败盖上去。
+  let retry: SearchOutcome;
+  try {
+    retry = await withWatcherFallback(config, ctx, { ...params, key: { kind: "fuzzy", token: keys[0] } });
+  } catch {
+    return out;
+  }
+  if (retry.issues.length === 0) return out;
+  return { ...retry, fuzzy: { token: keys[0], fallback: true } };
+}
+
+/**
  * 关注者降级：只有 watcher 被 400/403 拒绝时才去掉重试一次；只剩 watcher 就不重试
  * （去掉会变成无条件查询，结果悄悄变宽）。重试仍失败按第二次的错误往上抛。
  */
-async function searchIssues(config: JiraConfig, ctx: JiraCtx, params: SearchParams): Promise<SearchOutcome> {
+async function withWatcherFallback(
+  config: JiraConfig,
+  ctx: JiraCtx,
+  params: SearchParams,
+): Promise<SearchOutcome> {
   const watcher = params.person !== undefined && params.relations.includes("watcher");
   try {
     return await searchOnce(config, ctx, params);
@@ -872,8 +901,9 @@ async function attachmentIdForMedia(
 }
 
 /**
- * 第二跳（附件内容 302 到 Media 签名 URL）：只认 https 且 host 是配置站点或 `*.atl-paas.net`，
- * 且不带 userinfo / 非 443 端口 / fragment；跟随时**不带 Authorization**（D205）。
+ * 第二跳（附件内容 302/303 到 Media 签名 URL）：只认 https 且 host 是配置站点、`*.atl-paas.net`
+ * 或 `api.media.atlassian.com`（2024 之后 Jira Cloud 把附件内容搬到这里，带一次性 token），
+ * 且不带 userinfo / 非 443 端口 / fragment；跟随时**不带 Authorization**（D205、D242）。
  */
 export function attachmentRedirectAllowed(raw: string, siteUrl: string): boolean {
   let target: URL;
@@ -890,6 +920,7 @@ export function attachmentRedirectAllowed(raw: string, siteUrl: string): boolean
   if (target.hash) return false;
   if (target.origin === site.origin) return true;
   const host = target.hostname.toLowerCase();
+  if (host === "api.media.atlassian.com") return true;
   return host === "atl-paas.net" || host.endsWith(".atl-paas.net");
 }
 
@@ -1002,7 +1033,8 @@ export interface JiraDownloadItem {
   id: string;
   filename: string;
   path: string;
-  status: "saved" | "skipped" | "failed";
+  /** `exists` = 同名文件已经在目录里，这次没动它（#407 的覆盖询问）。 */
+  status: "saved" | "exists" | "skipped" | "failed";
   reason?: string;
 }
 
@@ -1019,6 +1051,7 @@ async function saveOne(
   fromComments: boolean,
   issueAttachments: JiraAttachment[],
   used: Map<string, string>,
+  overwrite: boolean,
 ): Promise<JiraDownloadItem> {
   const name = uniqueName(safeFileName(att.filename, att.id), att.id, used);
   const file = join(dir, name);
@@ -1026,6 +1059,8 @@ async function saveOne(
     reason
       ? { id: att.id, filename: name, path: file, status, reason }
       : { id: att.id, filename: name, path: file, status };
+  // #407：目录里已经有同名文件就先问，别悄悄盖掉别人手上那份。确认覆盖走 overwrite。
+  if (!overwrite && fs.existsSync(file)) return item("exists", "同名文件已存在，没有覆盖");
   if (typeof att.size === "number" && att.size > MAX_DOWNLOAD) {
     return item("skipped", `超过 ${MAX_DOWNLOAD / 1024 / 1024} MB，跳过`);
   }
@@ -1040,11 +1075,37 @@ async function saveOne(
   return saved.status === "saved" ? item("saved") : item(saved.status, saved.reason);
 }
 
+/** 每个附件最终会落到哪个文件名：同批重名加 id 后缀，和真正下载时用的是同一套。 */
+interface DownloadTarget {
+  att: JiraAttachment;
+  fromComments: boolean;
+  filename: string;
+  path: string;
+  exists: boolean;
+}
+
+function targetsFor(detail: JiraIssueDetail, dir: string): DownloadTarget[] {
+  const used = new Map<string, string>();
+  const queue = [
+    ...detail.attachments.issue.map((att) => ({ att, fromComments: false })),
+    ...detail.attachments.comments.map((att) => ({ att, fromComments: true })),
+  ];
+  return queue.map(({ att, fromComments }) => {
+    const filename = uniqueName(safeFileName(att.filename, att.id), att.id, used);
+    const file = join(dir, filename);
+    return { att, fromComments, filename, path: file, exists: fs.existsSync(file) };
+  });
+}
+
+function planOf(targets: DownloadTarget[]) {
+  return targets.map((t) => ({ id: t.att.id, filename: t.filename, path: t.path, exists: t.exists }));
+}
+
 /**
- * `POST /api/jira/issues/:key/download`：串行落盘到 `<root>/<KEY>/`。没设根目录就直接 400，
- * 一个字节都不写；批量里单项失败不影响整单 200（D205）。
+ * `GET /api/jira/issues/:key/download`：这一单会下到哪些文件、哪些已经在目录里（#407）。
+ * 只算不写：页面拿它先问「要不要覆盖」，也拿它判断「还有几个附件没下」。
  */
-async function downloadIssueAttachments(res: http.ServerResponse, ctx: JiraCtx, rawKey: string): Promise<void> {
+async function downloadPlan(res: http.ServerResponse, ctx: JiraCtx, rawKey: string): Promise<void> {
   const config = listConfig(res);
   if (!config) return;
   if (!ISSUE_KEY.test(rawKey)) return fail(res, 400, "jira_key", "工单号看起来不对（应为 ACME-123 这种）");
@@ -1053,20 +1114,38 @@ async function downloadIssueAttachments(res: http.ServerResponse, ctx: JiraCtx, 
   if (!root) return fail(res, 400, "need_root", "还没设置附件目录");
   const detail = await loadDetail(config, ctx, key);
   const dir = join(root, key);
+  return json(res, 200, { dir, items: planOf(targetsFor(detail, dir)) });
+}
+
+/**
+ * `POST /api/jira/issues/:key/download`：串行落盘到 `<root>/<KEY>/`。没设根目录就直接 400，
+ * 一个字节都不写（D205）。`conflict` 决定撞到同名文件怎么办（#407）：
+ * 缺省 → 409 带清单，让页面先问；`skip` → 跳过已存在的、其余照下；`overwrite` → 全部重写。
+ */
+async function downloadIssueAttachments(res: http.ServerResponse, ctx: JiraCtx, rawKey: string, conflict: "ask" | "skip" | "overwrite"): Promise<void> {
+  const config = listConfig(res);
+  if (!config) return;
+  if (!ISSUE_KEY.test(rawKey)) return fail(res, 400, "jira_key", "工单号看起来不对（应为 ACME-123 这种）");
+  const key = rawKey.toUpperCase();
+  const root = readAttachmentRoot();
+  if (!root) return fail(res, 400, "need_root", "还没设置附件目录");
+  const detail = await loadDetail(config, ctx, key);
+  const dir = join(root, key);
+  const targets = targetsFor(detail, dir);
+  if (conflict === "ask" && targets.some((t) => t.exists)) {
+    // 先问再写：这一趟不落地任何文件，页面据此弹「覆盖 / 跳过」。
+    return json(res, 409, { code: "jira_conflict", message: "有同名附件已经在这个目录里了", dir, items: planOf(targets) });
+  }
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch (err) {
     return fail(res, 400, "jira_root", `附件目录建不出来：${(err as Error)?.message ?? err}`);
   }
   const used = new Map<string, string>();
-  const queue = [
-    ...detail.attachments.issue.map((att) => ({ att, fromComments: false })),
-    ...detail.attachments.comments.map((att) => ({ att, fromComments: true })),
-  ];
   const items: JiraDownloadItem[] = [];
   // 串行：一次一个文件，别把桥与 Jira 的连接池打满。
-  for (const { att, fromComments } of queue) {
-    items.push(await saveOne(config, ctx, dir, att, fromComments, detail.attachments.issue, used));
+  for (const target of targets) {
+    items.push(await saveOne(config, ctx, dir, target.att, target.fromComments, detail.attachments.issue, used, conflict === "overwrite"));
   }
   json(res, 200, { dir, items });
 }
@@ -1239,6 +1318,8 @@ export async function handleJira(
           siteUrl: config?.siteUrl ?? "",
           email: config?.email ?? "",
           keyMask: config ? keyMask(config.apiKey) : "",
+          // 隧道访客只能读（D202）：页面据此挂「公网只读」徽章与横幅。
+          readonly: ctx.publicReq,
         });
         return true;
       }
@@ -1318,8 +1399,15 @@ export async function handleJira(
         getDownloaded(res, rest.slice(0, -"/downloaded".length));
         return true;
       }
-      // #251：`POST /api/jira/issues/<KEY>/download`。写磁盘，隧道访客同样 403。
+      // #251 / #407：`/api/jira/issues/<KEY>/download`。
+      // GET 只算计划（只读，隧道访客也能看，交接前用它判断「还有几个没下」）；
+      // POST 真写盘，隧道访客 403；`conflict=skip|overwrite` 决定撞到同名文件时怎么办。
       if (rest.endsWith("/download")) {
+        const key = rest.slice(0, -"/download".length);
+        if (method === "GET") {
+          await downloadPlan(res, ctx, key);
+          return true;
+        }
         if (method !== "POST") {
           fail(res, 405, "bad_method", "不支持这个请求方法");
           return true;
@@ -1328,7 +1416,9 @@ export async function handleJira(
           fail(res, 403, "tunnel_readonly", "回本机操作");
           return true;
         }
-        await downloadIssueAttachments(res, ctx, rest.slice(0, -"/download".length));
+        const raw = url.searchParams.get("conflict");
+        const conflict = raw === "overwrite" ? "overwrite" : raw === "skip" ? "skip" : "ask";
+        await downloadIssueAttachments(res, ctx, key, conflict);
         return true;
       }
       if (method !== "GET") {
