@@ -1,5 +1,5 @@
 import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TunnelState } from "./types.ts";
-import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
+import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
 import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices } from "./sysmanage-types.ts";
 
 /**
@@ -295,9 +295,15 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ root }),
     }),
-  /** #251：把这一单的附件全收下来；桥端串行，一次一个文件，超 100 MB 的跳过。 */
-  jiraDownload: (key: string) =>
-    req<JiraDownloadResult>(`/api/jira/issues/${encodeURIComponent(key)}/download`, { method: "POST" }),
+  /** #251 / #407：把这单的附件收下来。`conflict` = 撞到同名文件时怎么办：不带 → 409 带清单（先问），`skip` 跳过已存在的、其余照下，`overwrite` 全部重写。 */
+  jiraDownload: (key: string, conflict?: "skip" | "overwrite") =>
+    req<JiraDownloadResult>(
+      `/api/jira/issues/${encodeURIComponent(key)}/download${conflict ? `?conflict=${conflict}` : ""}`,
+      { method: "POST" },
+    ),
+  /** #407：只算不写 —— 每个附件会落到哪、是不是已经在目录里；交接前判断「还缺几个」也用它。只读，隧道也允许。 */
+  jiraDownloadPlan: (key: string) =>
+    req<JiraDownloadPlan>(`/api/jira/issues/${encodeURIComponent(key)}/download`),
   /** #252/D209：这单在本机已经下过几个文件；没下过时 `{ dir: null, count: 0 }`。只读磁盘，隧道也允许。
    *  file 级的 `path` 是桥拼好的绝对路径（页面不该自己拼分隔符）。 */
   jiraDownloaded: (key: string) =>

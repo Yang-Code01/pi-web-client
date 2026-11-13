@@ -979,8 +979,9 @@ async function attachmentIdForMedia(
 }
 
 /**
- * 第二跳（附件内容 302 到 Media 签名 URL）：只认 https 且 host 是配置站点或 `*.atl-paas.net`，
- * 且不带 userinfo / 非 443 端口 / fragment；跟随时**不带 Authorization**（D205）。
+ * 第二跳（附件内容 302/303 到 Media 签名 URL）：只认 https 且 host 是配置站点、`*.atl-paas.net`
+ * 或 `api.media.atlassian.com`（2024 之后 Jira Cloud 把附件内容搬到这里，带一次性 token），
+ * 且不带 userinfo / 非 443 端口 / fragment；跟随时**不带 Authorization**（D205、D242）。
  */
 export function attachmentRedirectAllowed(raw: string, siteUrl: string): boolean {
   let target: URL;
@@ -997,6 +998,7 @@ export function attachmentRedirectAllowed(raw: string, siteUrl: string): boolean
   if (target.hash) return false;
   if (target.origin === site.origin) return true;
   const host = target.hostname.toLowerCase();
+  if (host === "api.media.atlassian.com") return true;
   return host === "atl-paas.net" || host.endsWith(".atl-paas.net");
 }
 
@@ -1109,7 +1111,8 @@ export interface JiraDownloadItem {
   id: string;
   filename: string;
   path: string;
-  status: "saved" | "skipped" | "failed";
+  /** `exists` = 同名文件已经在目录里，这次没动它（#407 的覆盖询问）。 */
+  status: "saved" | "exists" | "skipped" | "failed";
   reason?: string;
 }
 
@@ -1126,6 +1129,7 @@ async function saveOne(
   fromComments: boolean,
   issueAttachments: JiraAttachment[],
   used: Map<string, string>,
+  overwrite: boolean,
 ): Promise<JiraDownloadItem> {
   const name = uniqueName(safeFileName(att.filename, att.id), att.id, used);
   const file = join(dir, name);
@@ -1133,6 +1137,8 @@ async function saveOne(
     reason
       ? { id: att.id, filename: name, path: file, status, reason }
       : { id: att.id, filename: name, path: file, status };
+  // #407：目录里已经有同名文件就先问，别悄悄盖掉别人手上那份。确认覆盖走 overwrite。
+  if (!overwrite && fs.existsSync(file)) return item("exists", "同名文件已存在，没有覆盖");
   if (typeof att.size === "number" && att.size > MAX_DOWNLOAD) {
     return item("skipped", `超过 ${MAX_DOWNLOAD / 1024 / 1024} MB，跳过`);
   }
@@ -1147,11 +1153,37 @@ async function saveOne(
   return saved.status === "saved" ? item("saved") : item(saved.status, saved.reason);
 }
 
+/** 每个附件最终会落到哪个文件名：同批重名加 id 后缀，和真正下载时用的是同一套。 */
+interface DownloadTarget {
+  att: JiraAttachment;
+  fromComments: boolean;
+  filename: string;
+  path: string;
+  exists: boolean;
+}
+
+function targetsFor(detail: JiraIssueDetail, dir: string): DownloadTarget[] {
+  const used = new Map<string, string>();
+  const queue = [
+    ...detail.attachments.issue.map((att) => ({ att, fromComments: false })),
+    ...detail.attachments.comments.map((att) => ({ att, fromComments: true })),
+  ];
+  return queue.map(({ att, fromComments }) => {
+    const filename = uniqueName(safeFileName(att.filename, att.id), att.id, used);
+    const file = join(dir, filename);
+    return { att, fromComments, filename, path: file, exists: fs.existsSync(file) };
+  });
+}
+
+function planOf(targets: DownloadTarget[]) {
+  return targets.map((t) => ({ id: t.att.id, filename: t.filename, path: t.path, exists: t.exists }));
+}
+
 /**
- * `POST /api/jira/issues/:key/download`：串行落盘到 `<root>/<KEY>/`。没设根目录就直接 400，
- * 一个字节都不写；批量里单项失败不影响整单 200（D205）。
+ * `GET /api/jira/issues/:key/download`：这一单会下到哪些文件、哪些已经在目录里（#407）。
+ * 只算不写：页面拿它先问「要不要覆盖」，也拿它判断「还有几个附件没下」。
  */
-async function downloadIssueAttachments(res: http.ServerResponse, ctx: JiraCtx, rawKey: string): Promise<void> {
+async function downloadPlan(res: http.ServerResponse, ctx: JiraCtx, rawKey: string): Promise<void> {
   const config = listConfig(res);
   if (!config) return;
   if (!ISSUE_KEY.test(rawKey)) return fail(res, 400, "jira_key", "工单号看起来不对（应为 ACME-123 这种）");
@@ -1160,20 +1192,38 @@ async function downloadIssueAttachments(res: http.ServerResponse, ctx: JiraCtx, 
   if (!root) return fail(res, 400, "need_root", "还没设置附件目录");
   const detail = await loadDetail(config, ctx, key);
   const dir = join(root, key);
+  return json(res, 200, { dir, items: planOf(targetsFor(detail, dir)) });
+}
+
+/**
+ * `POST /api/jira/issues/:key/download`：串行落盘到 `<root>/<KEY>/`。没设根目录就直接 400，
+ * 一个字节都不写（D205）。`conflict` 决定撞到同名文件怎么办（#407）：
+ * 缺省 → 409 带清单，让页面先问；`skip` → 跳过已存在的、其余照下；`overwrite` → 全部重写。
+ */
+async function downloadIssueAttachments(res: http.ServerResponse, ctx: JiraCtx, rawKey: string, conflict: "ask" | "skip" | "overwrite"): Promise<void> {
+  const config = listConfig(res);
+  if (!config) return;
+  if (!ISSUE_KEY.test(rawKey)) return fail(res, 400, "jira_key", "工单号看起来不对（应为 ACME-123 这种）");
+  const key = rawKey.toUpperCase();
+  const root = readAttachmentRoot();
+  if (!root) return fail(res, 400, "need_root", "还没设置附件目录");
+  const detail = await loadDetail(config, ctx, key);
+  const dir = join(root, key);
+  const targets = targetsFor(detail, dir);
+  if (conflict === "ask" && targets.some((t) => t.exists)) {
+    // 先问再写：这一趟不落地任何文件，页面据此弹「覆盖 / 跳过」。
+    return json(res, 409, { code: "jira_conflict", message: "有同名附件已经在这个目录里了", dir, items: planOf(targets) });
+  }
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch (err) {
     return fail(res, 400, "jira_root", `附件目录建不出来：${(err as Error)?.message ?? err}`);
   }
   const used = new Map<string, string>();
-  const queue = [
-    ...detail.attachments.issue.map((att) => ({ att, fromComments: false })),
-    ...detail.attachments.comments.map((att) => ({ att, fromComments: true })),
-  ];
   const items: JiraDownloadItem[] = [];
   // 串行：一次一个文件，别把桥与 Jira 的连接池打满。
-  for (const { att, fromComments } of queue) {
-    items.push(await saveOne(config, ctx, dir, att, fromComments, detail.attachments.issue, used));
+  for (const target of targets) {
+    items.push(await saveOne(config, ctx, dir, target.att, target.fromComments, detail.attachments.issue, used, conflict === "overwrite"));
   }
   json(res, 200, { dir, items });
 }
@@ -1427,8 +1477,15 @@ export async function handleJira(
         getDownloaded(res, rest.slice(0, -"/downloaded".length));
         return true;
       }
-      // #251：`POST /api/jira/issues/<KEY>/download`。写磁盘，隧道访客同样 403。
+      // #251 / #407：`/api/jira/issues/<KEY>/download`。
+      // GET 只算计划（只读，隧道访客也能看，交接前用它判断「还有几个没下」）；
+      // POST 真写盘，隧道访客 403；`conflict=skip|overwrite` 决定撞到同名文件时怎么办。
       if (rest.endsWith("/download")) {
+        const key = rest.slice(0, -"/download".length);
+        if (method === "GET") {
+          await downloadPlan(res, ctx, key);
+          return true;
+        }
         if (method !== "POST") {
           fail(res, 405, "bad_method", "不支持这个请求方法");
           return true;
@@ -1437,7 +1494,9 @@ export async function handleJira(
           fail(res, 403, "tunnel_readonly", "回本机操作");
           return true;
         }
-        await downloadIssueAttachments(res, ctx, rest.slice(0, -"/download".length));
+        const raw = url.searchParams.get("conflict");
+        const conflict = raw === "overwrite" ? "overwrite" : raw === "skip" ? "skip" : "ask";
+        await downloadIssueAttachments(res, ctx, key, conflict);
         return true;
       }
       if (method !== "GET") {

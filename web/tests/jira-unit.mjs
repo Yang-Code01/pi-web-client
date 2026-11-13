@@ -222,6 +222,7 @@ test("formatBytes：B / KB / MB 进位，未知显示 —", () => {
 
 test("downloadMark：对勾只给真落盘的那项", () => {
   assert.equal(downloadMark("saved"), "✓");
+  assert.equal(downloadMark("exists"), "=");
   assert.equal(downloadMark("skipped"), "·");
   assert.equal(downloadMark("failed"), "✗");
 });
@@ -266,6 +267,24 @@ test("handoffPrompt：下载过才有附件行，路径以结尾斜杠收尾", (
   for (const dir of [null, undefined, "  "]) {
     assert.ok(!handoffPrompt({ ...handoff, dir }).includes("已经下载到本机的附件在"), `dir=${dir}`);
   }
+});
+
+test("handoffPrompt：#407 已下载的附件逐个列出绝对路径", () => {
+  const text = handoffPrompt({
+    ...handoff,
+    dir: "C:\\jira\\ACME-12",
+    files: [
+      { name: "a.png", path: "C:\\jira\\ACME-12\\a.png" },
+      { name: "b.pdf", path: "C:\\jira\\ACME-12\\b.pdf" },
+      { name: "", path: "  " },
+    ],
+  });
+  assert.ok(text.includes("- 已经下好的附件（直接用绝对路径读，不要再问我）："));
+  assert.ok(text.includes("  - C:\\jira\\ACME-12\\a.png"));
+  assert.ok(text.includes("  - C:\\jira\\ACME-12\\b.pdf"));
+  assert.ok(!text.includes("  -  \n"));
+  // 没有 files 时连标题都不出现。
+  assert.ok(!handoffPrompt({ ...handoff, dir: "C:\\jira\\ACME-12" }).includes("已经下好的附件"));
 });
 
 test("handoffPrompt：优先级 null 写「未设置」，缺省就省略那一段", () => {

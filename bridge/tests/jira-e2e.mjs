@@ -911,17 +911,53 @@ test("POST download：落到 <root>/<KEY>/，清洗 / 重名 / 超限 / 跳转�
   ]);
 });
 
-test("POST download：重下同一工单是覆盖，不堆副本", async () => {
+test("POST download：重下同一工单先撞 409 确认，不悄悄覆盖", async () => {
   await connect();
   const root = path.join(tmp, "attach-root-again");
   await call("PUT", "/api/jira/attachments/root", { root });
   const dir = path.join(root, "ACME-77");
   await call("POST", "/api/jira/issues/ACME-77/download");
   const first = fs.readdirSync(dir).sort();
+  // #407：不带 conflict 时，撞到同名文件一个字节都不写，回 409 + 清单。
   const again = await call("POST", "/api/jira/issues/ACME-77/download");
-  assert.equal(again.status, 200);
+  assert.equal(again.status, 409);
+  assert.equal(again.json.code, "jira_conflict");
+  // 超 100MB / 取不到的那两个本来就没落盘，别拿它们当「已存在」。
+  const onDisk = new Set(fs.readdirSync(dir));
+  assert.ok(again.json.items.every((it) => it.exists === onDisk.has(path.basename(it.path))));
   assert.deepEqual(fs.readdirSync(dir).sort(), first);
   assert.equal(fs.readFileSync(path.join(dir, "same.pdf"), "utf8"), "first");
+
+  // 跳过：不重写，逐项标 exists。
+  const skip = await call("POST", "/api/jira/issues/ACME-77/download?conflict=skip");
+  assert.equal(skip.status, 200);
+  assert.ok(skip.json.items.filter((it) => it.status === "exists").length >= 3);
+  assert.ok(!skip.json.items.some((it) => it.status === "saved" && onDisk.has(path.basename(it.path)) && it.filename === "same.pdf"));
+  assert.deepEqual(fs.readdirSync(dir).sort(), first);
+
+  // 覆盖：仍是同一批文件名，内容被重写。
+  const over = await call("POST", "/api/jira/issues/ACME-77/download?conflict=overwrite");
+  assert.equal(over.status, 200);
+  assert.deepEqual(fs.readdirSync(dir).sort(), first);
+  assert.ok(over.json.items.some((it) => it.status === "saved"));
+});
+
+test("GET download：只算计划不写盘，逐项说清 exists", async () => {
+  await connect();
+  const root = path.join(tmp, "attach-root-plan");
+  await call("PUT", "/api/jira/attachments/root", { root });
+  const before = await call("GET", "/api/jira/issues/ACME-77/download");
+  assert.equal(before.status, 200);
+  assert.ok(before.json.dir.endsWith("ACME-77"));
+  assert.ok(before.json.items.length > 0);
+  assert.ok(before.json.items.every((it) => it.exists === false));
+  assert.ok(!fs.existsSync(before.json.dir), "算计划不该建目录");
+  assert.ok(before.json.items.every((it) => path.isAbsolute(it.path)));
+
+  await call("POST", "/api/jira/issues/ACME-77/download");
+  const after = await call("GET", "/api/jira/issues/ACME-77/download");
+  const written = new Set(fs.readdirSync(before.json.dir));
+  assert.ok(after.json.items.every((it) => it.exists === written.has(path.basename(it.path))));
 });
 
 test("POST download：隧道访客 403 tunnel_readonly，不碰磁盘", async () => {
@@ -1009,9 +1045,14 @@ test("attachmentRootProblem：只认绝对路径（盘符 / UNC / POSIX）", () 
   assert.equal(attachmentRootProblem("/home/me/jira"), null);
 });
 
-test("attachmentRedirectAllowed：只认站点自己与 *.atl-paas.net 的 https", () => {
+test("attachmentRedirectAllowed：只认站点自己、*.atl-paas.net 与 api.media.atlassian.com 的 https", () => {
   const site = "https://acme.atlassian.net";
   assert.equal(attachmentRedirectAllowed("https://acme.atlassian.net/file/u1/binary", site), true);
+  // D242：Jira Cloud 现在 303 到 api.media.atlassian.com（签名 URL）。
+  assert.equal(attachmentRedirectAllowed("https://api.media.atlassian.com/file/u1/binary?token=x", site), true);
+  assert.equal(attachmentRedirectAllowed("https://API.MEDIA.ATLASSIAN.COM/file/u1/binary", site), true);
+  assert.equal(attachmentRedirectAllowed("https://api.media.atlassian.com.evil.example/f", site), false);
+  assert.equal(attachmentRedirectAllowed("https://media.atlassian.com/file/u1/binary", site), false);
   assert.equal(attachmentRedirectAllowed("https://media.atl-paas.net/file/u1/binary", site), true);
   assert.equal(attachmentRedirectAllowed("https://media.atl-paas.net:443/file/u1/binary", site), true);
   assert.equal(attachmentRedirectAllowed("https://atl-paas.net/file/u1/binary", site), true);

@@ -14,7 +14,7 @@ import { mountDirPicker } from "./dirpicker.ts";
 import type { DirPicker } from "./dirpicker.ts";
 import { errText, tr } from "./i18n/index.ts";
 import { adfToText, browseUrl, downloadMark, emptySearch, formatBytes, formatUpdated, handoffPrompt, issueMeta, keyMask, mergeSearchPage, searchCountNote, normalizeSearch, readSavedSearch, searchQuery, serializeSearch, siteUrlProblem, SEARCH_MAX_KEYS, SEARCH_RELATIONS, SEARCH_SORTS, SEARCH_STORAGE_KEY, STATUS_CATEGORY_KEYS } from "./jira-shared.ts";
-import type { JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
+import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption, SearchRelation, SearchSort, SearchState, StatusCategoryKey } from "./jira-shared.ts";
 // 纯函数单独一层，`web/tests/jira-unit.mjs` 才能绕开 chat.ts 直接跑（见 jira-shared.ts 头注释）。
 
 export interface JiraHandoff {
@@ -1522,13 +1522,18 @@ export class JiraPanel {
     key.target = "_blank";
     key.rel = "noopener noreferrer";
     top.append(key, el("span", "jira-issue-summary", issue.summary || tr("（没有标题）")));
-    top.append(this.handoffButton(issue, siteUrl));
+    // #407：行尾两颗动作按钮同一组靠右，摘要占剩余宽度（否则窄屏下按钮会被挤成两行）。
+    const acts = el("div", "jira-issue-acts");
+    acts.append(this.downloadButton(issue, siteUrl), this.handoffButton(issue, siteUrl));
+    top.append(acts);
     line.append(top);
     const meta = issueMeta(issue, showAssignee);
     if (meta) line.append(el("div", "jira-issue-meta", meta));
 
     const entry = this.details.get(issue.key);
     const detail = el("div", "jira-detail");
+    const dlStrip = el("div", "jira-row-dl");
+    wrap.dataset.key = issue.key;
     line.classList.toggle("open", entry?.open === true);
     line.tabIndex = 0;
     line.setAttribute("role", "button");
@@ -1546,7 +1551,8 @@ export class JiraPanel {
       toggle();
     };
 
-    wrap.append(line, detail);
+    wrap.append(line, dlStrip, detail);
+    this.paintRowDl(wrap, issue.key);
     if (entry) {
       entry.el = detail;
       this.paintDetail(entry, siteUrl, issue.key);
@@ -1663,14 +1669,31 @@ export class JiraPanel {
     box.append(bar);
   }
 
+  /** #407：行尾那颗「下载附件」——不展开详情也能用。 */
+  private downloadButton(issue: JiraIssue, siteUrl: string): HTMLButtonElement {
+    const btn = el("button", "btn ghost jira-row-dl-btn", tr("下载附件"));
+    btn.type = "button";
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      void this.startDownload(issue.key, siteUrl);
+    };
+    return btn;
+  }
+
   /** #251：下载按钮 + 结果就地显示，不再弹第二层结果窗。 */
   private downloadEl(entry: DetailEntry, key: string, siteUrl: string): HTMLElement {
     const box = el("div", "jira-download");
     const bar = el("div", "jira-actions");
     const btn = el("button", "btn primary jira-dl-btn", entry.busy ? tr("正在下载…（一次一个）") : tr("下载全部")) as HTMLButtonElement;
     btn.disabled = entry.busy;
-    btn.onclick = () => void this.downloadAll(key, siteUrl, entry);
+    btn.onclick = () => void this.startDownload(key, siteUrl);
     bar.append(btn);
+    if (entry.download?.items.some((item) => item.status === "exists")) {
+      const over = el("button", "btn ghost", tr("覆盖已存在的")) as HTMLButtonElement;
+      over.disabled = entry.busy;
+      over.onclick = () => void this.overwriteDownload(key, siteUrl);
+      bar.append(over);
+    }
     box.append(bar);
     if (entry.dlError) box.append(el("div", "jira-note bad", entry.dlError));
     const result = entry.download;
@@ -1693,34 +1716,175 @@ export class JiraPanel {
     return box;
   }
 
-  /** #251：整单一次 POST；桥那边串行落盘，单项失败只失败那一项。 */
-  private async downloadAll(key: string, siteUrl: string, entry: DetailEntry, retried = false): Promise<void> {
+  /** 没展开过详情也可能点下载：先建一份只带下载状态的 entry。 */
+  private ensureEntry(key: string): DetailEntry {
+    const existing = this.details.get(key);
+    if (existing) return existing;
+    const created: DetailEntry = { open: false, state: null, el: null, busy: false, download: null, dlError: "" };
+    this.details.set(key, created);
+    return created;
+  }
+
+  /** 同一份下载状态有两个落点：行下方的一行小结，和展开后的详情块。 */
+  private repaintDownloads(key: string, siteUrl: string): void {
+    const wrap = this.pane?.querySelector<HTMLElement>(`.jira-issue-wrap[data-key="${key}"]`);
+    if (wrap) this.paintRowDl(wrap, key);
+    const entry = this.details.get(key);
+    if (entry?.el) this.paintDetail(entry, siteUrl, key);
+  }
+
+  /** 行里的下载小结：只有真的下过东西才出现，不占没附件那几行的地方。 */
+  private paintRowDl(wrap: HTMLElement, key: string): void {
+    const btn = wrap.querySelector<HTMLButtonElement>(".jira-row-dl-btn");
+    const strip = wrap.querySelector<HTMLElement>(".jira-row-dl");
+    if (!btn || !strip) return;
+    const entry = this.details.get(key);
+    const busy = entry?.busy === true;
+    btn.textContent = busy ? tr("下载中…") : tr("下载附件");
+    btn.disabled = busy;
+    strip.replaceChildren();
+    if (!entry) return;
+    if (entry.dlError) strip.append(el("div", "jira-note bad", entry.dlError));
+    const result = entry.download;
+    if (!result) return;
+    const count = (status: string) => result.items.filter((item) => item.status === status).length;
+    const bits = [tr("已下载 {p1} 个", { p1: count("saved") })];
+    if (count("exists")) bits.push(tr("{p1} 个同名文件没动", { p1: count("exists") }));
+    if (count("failed")) bits.push(tr("{p1} 个失败", { p1: count("failed") }));
+    const note = el("div", "jira-row-dl-note", `${bits.join(" · ")} · ${result.dir}`);
+    note.title = result.dir;
+    strip.append(note);
+    if (count("exists")) {
+      const over = el("button", "btn ghost jira-row-dl-over", tr("覆盖已存在的")) as HTMLButtonElement;
+      over.onclick = (ev) => {
+        ev.stopPropagation();
+        void this.overwriteDownload(key, "");
+      };
+      strip.append(over);
+    }
+  }
+
+  /**
+   * #407：先问桥「会落到哪、有没有同名」，再决定问不问覆盖；确认之后才真写盘。
+   * 取消就什么都不动；「跳过已存在的」其余照下（用户选的收场方式）。
+   */
+  private async startDownload(key: string, siteUrl: string): Promise<void> {
+    const entry = this.ensureEntry(key);
     if (entry.busy) return;
     entry.busy = true;
     entry.dlError = "";
-    this.paintDetail(entry, siteUrl, key);
+    this.repaintDownloads(key, siteUrl);
+    let plan: JiraDownloadPlan;
     try {
-      const out = await api.jiraDownload(key);
-      const current = this.details.get(key) ?? entry;
-      current.download = out;
-      current.dlError = "";
+      plan = await api.jiraDownloadPlan(key);
     } catch (err) {
-      const current = this.details.get(key) ?? entry;
-      current.download = null;
-      // 第一次点还没设目录：弹选择器，选完自动重试一次（只一次，不再弹）。
-      if (codeOf(err) === "need_root" && !retried) {
-        current.busy = false;
-        this.paintDetail(current, siteUrl, key);
-        this.openRootPicker(() => void this.downloadAll(key, siteUrl, current, true));
+      entry.busy = false;
+      // 还没设目录：弹一次选择器，选完自动重来（只一次，不无限弹）。
+      if (codeOf(err) === "need_root") {
+        this.openRootPicker(() => void this.startDownload(key, siteUrl));
+        this.repaintDownloads(key, siteUrl);
         return;
       }
-      current.dlError = errText(err);
-    } finally {
-      const current = this.details.get(key) ?? entry;
-      current.busy = false;
+      entry.dlError = errText(err);
+      this.repaintDownloads(key, siteUrl);
+      return;
     }
-    const current = this.details.get(key) ?? entry;
-    this.paintDetail(current, siteUrl, key);
+    const clash = plan.items.filter((item) => item.exists);
+    let conflict: "skip" | "overwrite" = "skip";
+    if (clash.length > 0) {
+      const pick = await this.ask({
+        title: tr("有 {p1} 个同名附件已经在这个目录里", { p1: clash.length }),
+        text: tr("覆盖会用 Jira 上的版本重写这几个文件；跳过则只下还没有的。"),
+        buttons: [
+          { label: tr("跳过已存在的"), value: "skip", primary: true },
+          { label: tr("覆盖"), value: "overwrite" },
+        ],
+        cancel: tr("取消下载"),
+      });
+      if (!pick) {
+        entry.busy = false;
+        this.repaintDownloads(key, siteUrl);
+        return;
+      }
+      conflict = pick === "overwrite" ? "overwrite" : "skip";
+    }
+    await this.runDownload(key, siteUrl, conflict);
+  }
+
+  /** 已经看过清单、只差覆盖：不再问第二遍（行里那颗「覆盖已存在的」走这条）。 */
+  private async overwriteDownload(key: string, siteUrl: string): Promise<void> {
+    const entry = this.ensureEntry(key);
+    if (entry.busy) return;
+    entry.busy = true;
+    entry.dlError = "";
+    this.repaintDownloads(key, siteUrl);
+    await this.runDownload(key, siteUrl, "overwrite");
+  }
+
+  private async runDownload(key: string, siteUrl: string, conflict: "skip" | "overwrite"): Promise<void> {
+    const entry = this.ensureEntry(key);
+    try {
+      const out = await api.jiraDownload(key, conflict);
+      entry.download = out;
+      entry.dlError = "";
+    } catch (err) {
+      entry.download = null;
+      entry.dlError = errText(err);
+    } finally {
+      entry.busy = false;
+    }
+    this.repaintDownloads(key, siteUrl);
+  }
+
+  /** 面板里的一层小确认（下载冲突、交接前问要不要先下附件）。Esc / 点空白 = 取消。 */
+  private ask(opts: {
+    title: string;
+    text?: string;
+    buttons: { label: string; value: string; primary?: boolean }[];
+    cancel?: string;
+  }): Promise<string | null> {
+    return new Promise((resolve) => {
+      const host = this.pane?.closest<HTMLElement>(".jc-console") ?? document.body;
+      const back = el("div", "jira-ask-back");
+      const card = el("div", "jira-ask");
+      card.setAttribute("role", "dialog");
+      card.setAttribute("aria-modal", "true");
+      card.append(el("div", "jira-ask-title", opts.title));
+      if (opts.text) card.append(el("div", "jira-ask-text", opts.text));
+      const row = el("div", "jira-ask-actions");
+      let done = false;
+      const finish = (value: string | null) => {
+        if (done) return;
+        done = true;
+        document.removeEventListener("keydown", onKey, true);
+        back.remove();
+        resolve(value);
+      };
+      const onKey = (ev: KeyboardEvent) => {
+        if (ev.key !== "Escape") return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        finish(null);
+      };
+      for (const button of opts.buttons) {
+        const b = el("button", button.primary ? "btn primary" : "btn ghost", button.label) as HTMLButtonElement;
+        b.onclick = () => finish(button.value);
+        row.append(b);
+      }
+      if (opts.cancel) {
+        const b = el("button", "btn ghost jira-ask-cancel", opts.cancel) as HTMLButtonElement;
+        b.onclick = () => finish(null);
+        row.append(b);
+      }
+      card.append(row);
+      back.append(card);
+      back.onmousedown = (ev) => {
+        if (ev.target === back) finish(null);
+      };
+      document.addEventListener("keydown", onKey, true);
+      host.append(back);
+      card.querySelector<HTMLElement>("button")?.focus();
+    });
   }
 
   // -------------------------------------------------------------- 交给 agent（#252）
@@ -1748,17 +1912,14 @@ export class JiraPanel {
     pop.style.left = `${Math.max(12, Math.min(r.right - 260, innerWidth - 274))}px`;
     pop.style.top = `${r.bottom + 6}px`;
     pop.style.visibility = "hidden";
-    const err = el("div", "jira-handoff-err");
-    err.hidden = true;
     const add = (label: string, hint: string, run: () => void) => {
       const b = el("button");
       b.append(el("span", "handoff-label", label), el("span", "handoff-hint", hint));
       b.onclick = () => run();
       pop.append(b);
     };
-    add(tr("预填到当前会话"), tr("写进输入框，Enter 才发"), () => void this.handoffRun(pop, err, issue, siteUrl, "prefill"));
-    add(tr("新开一个会话"), tr("建好后填进那个会话的输入框，不自动发送"), () => void this.handoffRun(pop, err, issue, siteUrl, "new"));
-    pop.append(err);
+    add(tr("预填到当前会话"), tr("写进输入框，Enter 才发"), () => void this.handoffRun(issue, siteUrl, "prefill"));
+    add(tr("新开一个会话"), tr("建好后填进那个会话的输入框，不自动发送"), () => void this.handoffRun(issue, siteUrl, "new"));
     document.body.append(pop);
     // 下方放不下且上方更宽裕就翻上去；上下都窄就贴窗口顶，不让浮层探出窗口。
     const h = pop.offsetHeight;
@@ -1810,14 +1971,59 @@ export class JiraPanel {
     }
   }
 
-  private async handoffRun(
-    pop: HTMLElement,
-    err: HTMLElement,
-    issue: JiraIssue,
-    siteUrl: string,
-    kind: "prefill" | "new",
-  ): Promise<void> {
-    const dir = await this.downloadedDir(issue.key);
+  private handoffRun(issue: JiraIssue, siteUrl: string, kind: "prefill" | "new"): Promise<void> {
+    // 选了菜单项就先把浮层收掉：后面可能弹「还有 N 个附件没下载」的对话框，别让两层叠在一起。
+    this.closeHandoff();
+    return this.promptAndHandoff(issue, siteUrl, kind);
+  }
+
+  /** 交接失败用同一个对话框说明：浮层已经关了，写进浮层里等于没写（#407）。 */
+  private async tell(text: string): Promise<void> {
+    await this.ask({
+      title: tr("没法交给 agent"),
+      text,
+      buttons: [{ label: tr("知道了"), value: "ok", primary: true }],
+    });
+  }
+
+  private async promptAndHandoff(issue: JiraIssue, siteUrl: string, kind: "prefill" | "new"): Promise<void> {
+    // #407：先把「这单还有多少附件没下」弄清楚；没下完就先问，而不是把缺口埋进提示词。
+    let plan: JiraDownloadPlan | null = null;
+    try {
+      plan = await api.jiraDownloadPlan(issue.key);
+    } catch {
+      plan = null; // 问不到就当没下过，不阻断交接（D206 的老口径）。
+    }
+    const missing = plan?.items.filter((item) => !item.exists).length ?? 0;
+    if (missing > 0) {
+      const pick = await this.ask({
+        title: tr("这张票还有 {p1} 个附件没下载", { p1: missing }),
+        text: tr("下载完会把每个附件的绝对路径一起写进提示词；也可以先不下，稍后自己点「下载附件」。"),
+        buttons: [
+          { label: tr("立即下载"), value: "download", primary: true },
+          { label: tr("就先用现有的"), value: "keep" },
+        ],
+        cancel: tr("取消"),
+      });
+      if (!pick) return;
+      if (pick === "download") {
+        await this.startDownload(issue.key, siteUrl);
+        const entry = this.details.get(issue.key);
+        if (entry?.dlError) {
+          await this.tell(entry.dlError);
+          return;
+        }
+        try {
+          plan = await api.jiraDownloadPlan(issue.key);
+        } catch {
+          // 重问不到就用旧计划：能列几个是几个。
+        }
+      }
+    }
+    const files = (plan?.items ?? [])
+      .filter((item) => item.exists)
+      .map((item) => ({ name: item.filename, path: item.path }));
+    const dir = files.length > 0 ? plan!.dir : await this.downloadedDir(issue.key);
     const text = handoffPrompt({
       key: issue.key,
       summary: issue.summary,
@@ -1826,17 +2032,15 @@ export class JiraPanel {
       priority: issue.priority,
       type: issue.type,
       dir,
+      files,
     });
     try {
       const handoff = this.host.handoff;
       if (!handoff) throw new Error(tr("没有可用的会话出口"));
       if (kind === "prefill") handoff.prefill(text);
       else handoff.newSessionWith(text);
-      this.closeHandoff();
     } catch (e) {
-      if (this.handoffPop?.el !== pop) return;
-      err.textContent = tr("交给 agent 失败：{p1}", { p1: errText(e) });
-      err.hidden = false;
+      await this.tell(tr("交给 agent 失败：{p1}", { p1: errText(e) }));
     }
   }
 

@@ -357,3 +357,70 @@
     font-size: 21px;
   }
 }
+
+/* #407：行尾的「下载附件」与它下面的一行结果小结。没有结果时整块不占位 */
+.jira-row-dl {
+  display: grid;
+  gap: 4px;
+  padding: 0 10px 2px;
+}
+
+.jira-row-dl:empty {
+  display: none;
+}
+
+.jira-row-dl-note {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jira-row-dl-over {
+  justify-self: start;
+}
+
+/* #407：面板里的确认层（覆盖同名附件 / 交接前问要不要先下附件） */
+.jira-ask-back {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(4, 6, 9, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.jira-ask {
+  display: grid;
+  gap: 10px;
+  width: min(440px, 92vw);
+  padding: 16px 18px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+}
+
+.jira-ask-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.jira-ask-text {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--dim);
+}
+
+.jira-ask-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 2px;
+}

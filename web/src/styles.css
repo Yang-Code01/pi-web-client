@@ -4581,11 +4581,14 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-issue-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .jira-issue-key { flex: none; font-family: var(--mono); font-size: 12px; color: var(--accent); text-decoration: none; }
 .jira-issue-key:hover { text-decoration: underline; }
-.jira-issue-summary { min-width: 0; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jira-issue-summary { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* #407：行尾两颗动作按钮一组靠右，窄屏换行时一起下去，不拆开。 */
+.jira-issue-acts { display: flex; align-items: center; gap: 6px; flex: none; margin-left: auto; }
+.jira-issue-acts .jira-row-dl-btn { white-space: nowrap; }
 .jira-issue-meta { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* #252：「交给 agent ▾」—— 行尾一颗、详情底部一颗；标题照旧可省略，按钮不被挤掉。 */
 .jira-handoff { flex: none; padding: 0 6px; line-height: 20px; font-size: 11px; white-space: nowrap; }
-.jira-issue-top .jira-handoff { margin-left: auto; }
+.jira-issue-top .jira-handoff { margin-left: 0; }
 .jira-handoff-bar { display: flex; justify-content: flex-end; }
 /* 浮层视觉与笔记面板的 .note-handoff 一致（代码是复制的一份，样式也照抄）。 */
 .jira-handoff-pop {
@@ -4683,6 +4686,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .jira-dl-path { font-family: var(--mono); font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jira-dl-reason { font-size: 11px; color: var(--dim); }
 .jira-dl-item.saved .jira-dl-mark { color: var(--accent); }
+/* #407：同名文件已在目录里，这次没动 —— 和「没下的」区分开，提醒可覆盖。 */
+.jira-dl-item.exists .jira-dl-mark,
+.jira-dl-item.exists .jira-dl-reason { color: var(--warn, #f8d48b); }
 .jira-dl-item.skipped .jira-dl-mark,
 .jira-dl-item.skipped .jira-dl-name { color: var(--dim); }
 .jira-dl-item.failed .jira-dl-mark,

@@ -4236,3 +4236,21 @@ D
 **代价 / 可改：** 模糊结果受 picker 限制，最多约 20 个候选，且它按首词匹配（`2135` 会带出 `CASPH30BUG-17233` 这种），所以「相近」不等于「包含」；真要全量搜号得等 Jira 提供 `key ~`。`fallback` 只在「一个完整键查空」时触发，多键查空不退回（避免把 N 个键的语义混成一个）。`SEARCH_MAX_KEYS = 20` 与 picker 的上限一致，多给的键会被静默截断。控制台外壳与 sysmanage 各存一份 CSS，改视觉要改两处 —— 已知，等第三个控制台出现再谈抽象。
 
 **验证：** `web/tests/jira-unit.mjs` 35 例（含 `key` 的 normalize / serialize / read 往返）；`bridge/tests/jira-search-unit.mjs` 23 例（精确 / IN / `#` 前缀 / 20 键截断 / 判模糊 / 超长 400）；`bridge/tests/jira-e2e.mjs` 57 例（假 Jira 的 picker：cs 与 hs 分流、picker 空/403、`emptyOnce` 触发 fallback、`key IN` 与其它条件同时拼）；`npm --prefix web run typecheck`（`i18n-check` 2599 keys × 3 langs）；`npm run build:web`；隔离实例（jira1，真凭据）手点：`2135` → 4 行 +「工单号按模糊匹配：找到 4 个候选号」，`CASPH30BUG-21352` → 1 行无提示，`CASPH30BUG-99999` → 「没有匹配这个工单号的工单」，520 宽输入框可见不溢出。
+
+## D242 附件一键下载：行尾一颗按钮、按工单号建目录、撞同名先问；附件内容认 `api.media.atlassian.com`（#407）
+
+**问题：** D205 只做了单票详情里的「下载全部」，两个缺口在日常里都暴露出来：一是下载入口藏在展开的详情底部，列表上十几张票要逐个展开；二是 Jira Cloud 把附件内容的中转地址搬到了 `https://api.media.atlassian.com/file/<uuid>/binary?...`，而 `attachmentRedirectAllowed` 只认站点自己与 `*.atl-paas.net`，于是每一张票的每个附件都以「附件跳转到不允许的地址」失败 —— 用户看到的正是「下载按钮像是不见了」。另外「交给 agent」的提示词只说「已经下载到本机的附件在 <目录>」，agent 还得自己列目录猜哪个是哪个。
+
+**决定：**
+
+1. **行尾一颗「下载附件」**：与「交给 agent」同组靠右（`.jira-issue-acts`），摘要占剩余宽度并省略，窄屏下按钮整组换行、不拆成两行。首次点击直接在 `<附件根>/<KEY>/` 落盘；下完在行下方留一行 `已下载 N 个 · M 个同名文件没动 · K 个失败 · <目录>`。
+2. **冲突先问再写**：`POST /api/jira/issues/:key/download` 不带 `conflict` 时，只要目标目录里已有同名文件就回 **409 `jira_conflict`** + 清单，一个字节都不写；页面弹出「有 N 个同名附件已经在这个目录里」+ 三个出口：**跳过已存在的**（其余照下，主按钮）/ **覆盖** / **取消下载**。`?conflict=skip` / `?conflict=overwrite` 是同一套服务端语义，行的「覆盖已存在的」直接复用 `overwrite`。
+3. **多一个只读计划接口**：`GET /api/jira/issues/:key/download` 只算不写，回 `{ dir, items: [{ id, filename, path, exists }] }`。页面用它既判断「还有几个没下」，也判断「哪些会撞同名」——先问后写的代价是多一次请求，换来「409 之前不碰磁盘」这个可验证的性质。隧道访客能读这个接口（只读），POST 仍是 403 `tunnel_readonly`。
+4. **提示词逐个列绝对路径**：`handoffPrompt` 在目录行之后追加「已经下好的附件（直接用绝对路径读，不要再问我）：」+ 每行 `  - <绝对路径>`。点了「交给 agent」但还有附件没下时，先问「这张票还有 N 个附件没下载」：**立即下载**（下完再拼提示词，接着走原来的预填 / 新会话）/ **就先用现有的** / **取消**。
+5. **认 `api.media.atlassian.com`**：`attachmentRedirectAllowed` 的 host 白名单加上它（仍是 https、无 userinfo、443、无 fragment，跟随时不带 `Authorization`）。这是 Jira Cloud 自己的文件域名，签名 URL 自带一次性 token，放开它不扩大 SSRF 面 —— 真正的护栏是「只认这三个来源」而不是「只认哪些后缀」。
+
+**为什么：** 「下载」这件事的主体是票，不是详情面板，所以入口必须回到行上；而「同名」是唯一会毁掉已有文件的时刻，因此默认动作必须是「先问」而不是「覆盖」——用户明确选了「只跳过冲突的，其余照下」这个收场方式，主按钮顺着它排。多一个 GET 计划接口不是过度设计：没有它，页面无法在不写盘的前提下说清「有几个没下」，也就没法在交接前发问。路径逐条写进提示词，是因为 agent 拿到「目录」也只能自己列、自己猜文件名，而在 Windows 上文件名还可能被 `safeFileName` 改过；给绝对路径是把这层猜测消掉。
+
+**代价 / 可改：** 冲突询问把一次点击变成两次，全量重下老目录时会多点一次「跳过」；`exists` 只比文件名、不比大小或 mtime，Jira 上换了同名文件不会自动重下（要么「覆盖」，要么先删目录）。计划接口与下载接口各读一次详情，单票会打两次 Jira；附件多时能感到延迟，可改成 409 之后复用同一份 plan。行下方那行小结会随目录变长而省略，路径靠 hover 标题看全。
+
+**验证：** `bridge/tests/jira-e2e.mjs` 61 例（409 清单与磁盘一致、`skip` 不重写、`overwrite` 同名覆盖、`GET download` 只算不写、隧道 403、`attachmentRedirectAllowed` 认 `api.media.atlassian.com` 但不认 `media.atlassian.com` 与后缀伪装）；`web/tests/jira-unit.mjs` 36 例（`downloadMark("exists")`、`handoffPrompt` 逐条列路径）；隔离实例（jira1，真凭据）探针：行尾按钮 → 建 `CASPH30INC-17971/` 并下了 1 个 xlsx、再点弹「有 1 个同名附件」选跳过 → 文件字节不变、换一张没下过的票点「交给 agent」→ 先问「还有 2 个附件没下载」→ 立即下载 → 目录出现且计划接口给出绝对路径。
