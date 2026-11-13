@@ -399,10 +399,6 @@ export type SearchOrder = (typeof SEARCH_ORDERS)[number];
 export const STATUS_CATEGORY_KEYS = ["new", "indeterminate", "done"] as const;
 export type StatusCategoryKey = (typeof STATUS_CATEGORY_KEYS)[number];
 
-/** 和桥端 `bridge/src/jira-search.ts` 的常量同口径；改一边就要改另一边。 */
-/** 工单号模糊一次最多认的候选键（与 `bridge/src/jira-search.ts` 的 `SEARCH_MAX_KEYS` 对齐）。 */
-export const SEARCH_MAX_KEYS = 20;
-
 export const SEARCH_STORAGE_KEY = "pi.jira.search.last";
 
 export interface JiraUserOption {
