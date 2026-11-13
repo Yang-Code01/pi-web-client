@@ -4120,6 +4120,7 @@ D
 10. **前端单一注册表**（新文件 `web/src/git-ops.ts`）：24 条 `GitOpDef` 各带两帧纯内联 SVG 图解（离线可用）、结构化字段、具名开关（`--force-with-lease` / `--no-ff` / `-u` / `--include-untracked`）、命令预览、风险、红色 lose / rollback；界面文案全走 `tr()`。
 
 **为什么：** 让新手在网页里就能把「看差了什么 → 想清楚要不要动 → 动完立刻看到新状态 → 出事把原始 stderr 交给 agent」闭成一条链，而不用回终端；把 argv 拼装收进 id 白名单，是因为网页一旦能传任意参数，红色确认卡就形同虚设。
+> **修订（2026-11-13）：** 第 9 条的「可用分支」清单已删除：本机 `F:/pi-web-client` 实测 105 条 ref 拼成 2735 字符，占提示词九成以上；agent 自己跑 `git branch -a` 拿到的是更新更准的列表，网页塞一份全量快照只会把上下文挤掉。失败卡也从「`branchPrompt` + 另一份 `buildHandoffPrompt` 用空行拼两份」收成一次 `buildHandoffPrompt()`（第二份原本还丢选中分支 / ahead·behind / dirty）；其余字段与「只填不发」「提示词固定中文」不变。历史决定原文不改写，只在这里标被推翻。
 > **D240 修订（2026-11-13）：** 「把『能连上 bridge 就能写』收紧成只认真本机，是因为隧道的回环地址是个假象」这一句不再成立；真实边界改回 D3 的登录口令，见 D240。
 
 **代价 / 可改：** 样张 D 的已知代价（每次操作都离开上下文、普通动作也显得重）随选择一并接受；不收 submodule / worktree / bisect / blame / remote 管理 / config / gc；`--graph` 仍未画；大文件与非文本只给占位；鉴权失败只能在系统侧配好后重试；`ref` 的字符黑名单会挡掉极少数合法但罕见的分支名。24 个 id 与字段在 `web/src/git-ops.ts`，桥端白名单在 `bridge/src/gitops.ts`，两边要一起改。

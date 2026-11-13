@@ -203,6 +203,9 @@ try {
   const preview = await page.textContent(".go-ai-card pre");
   check("提示词含用户要求", preview?.includes("先别动 git，告诉我该不该合并 main") === true);
   check("提示词打包了仓库与分支", preview?.includes("仓库：") === true && preview?.includes("选中的分支：") === true);
+  // 回归：全量分支清单会把 105 条 ref / 2735 字符塞进上下文，已整行删掉。
+  check("提示词不列可用分支", preview?.includes("可用分支") === false);
+  check("提示词保持十几行短", (preview?.length ?? 0) < 400, `len=${preview?.length}`);
   await page.click(".go-ai-card [data-ai-go='current']");
   await page.waitForSelector(".composer-input textarea");
   const filled = await page.inputValue(".composer-input textarea");
@@ -302,6 +305,16 @@ try {
   check("失败卡写 exit 码", /执行失败 · exit/.test(await page.textContent(".go-result-card.bad") ?? ""));
   check("失败卡列出已执行命令", /\$ git .*/.test(await page.textContent(".go-result-card.bad") ?? ""));
   check("失败卡有交给 agent", await page.locator('.go-result-card.bad [data-agent="result"]').count() === 1);
+  // 失败卡曾经把两份完整提示词用空行拼成一条；现在只产出一份，且字段不丢。
+  await page.click('.go-result-card.bad [data-agent="result"]');
+  await page.waitForSelector(".go-handoff pre");
+  const failedPrompt = await page.textContent(".go-handoff pre") ?? "";
+  check("失败提示词只有一份", failedPrompt.split("请帮我判断下一步 git 操作，先别直接执行。").length - 1 === 1);
+  check("失败提示词不列可用分支", !failedPrompt.includes("可用分支"));
+  // 桥端返回的 argv 带 `-C <dir> -c …` 前缀（paintResult 里补 `git` 展示），这里只校验关键片段。
+  const failedHasParts = failedPrompt.includes("刚才这条命令失败了：") && /\$ .*commit -m nothing staged/.test(failedPrompt) && /exit 1/.test(failedPrompt);
+  check("失败提示词带原始命令与退出码", failedHasParts, failedHasParts ? "" : JSON.stringify(failedPrompt.slice(0, 600)));
+  check("失败提示词仍带选中分支与要求", failedPrompt.includes("选中的分支：") && failedPrompt.includes("我的要求："));
   await page.keyboard.press("Escape");
 
   // 冲突态：merge main 撞 a.txt → 只放行中止 / 继续、逐文件勾完才让继续。

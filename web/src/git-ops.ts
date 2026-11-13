@@ -237,7 +237,6 @@ export function buildHandoffPrompt(input: {
   ahead?: number;
   behind?: number;
   dirty?: number;
-  refs?: string[];
   requirement?: string;
   failure?: { argv: string[]; exitCode: number; stderr: string; code?: string };
 }): string {
@@ -250,7 +249,6 @@ export function buildHandoffPrompt(input: {
     ...(input.ahead !== undefined || input.behind !== undefined
       ? [`领先 / 落后：↑${input.ahead ?? 0} ↓${input.behind ?? 0}`] : []),
     ...(input.dirty !== undefined ? [`未提交改动：${input.dirty} 个文件`] : []),
-    ...(input.refs?.length ? [`可用分支：${input.refs.join(", ")}`] : []),
     ...(input.failure ? [
       "", "刚才这条命令失败了：",
       `$ ${input.failure.argv.join(" ")}`,
