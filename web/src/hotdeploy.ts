@@ -82,6 +82,8 @@ class HotdeployPanel {
   private countdown: number | null = null;
   /** 点下去那一刻的毫秒数：只有这一轮（`startedAt` 不早于它）跑完才自动刷新。 */
   private mineAt = 0;
+  /** 请求还在路上：先当「部署中」画出来，别让人以为按钮没反应。 */
+  private pending = false;
   private notice: Notice | null = null;
   private forceTarget = "";
   private branchSig = "";
@@ -241,8 +243,9 @@ class HotdeployPanel {
 
   private paint(): void {
     const snap = this.snap;
-    const run = this.runOf();
-    const phase = run?.phase ?? "idle";
+    // 请求没回来之前不认旧结果：否则上一轮的 ok 横幅会一直挂着，看着像又部署了一次。
+    const run = this.pending ? null : this.runOf();
+    const phase = this.pending ? "running" : run?.phase ?? "idle";
     if (phase !== this.lastPhase) {
       this.lastPhase = phase;
       // 主检出可能被留在别的分支上：让顶栏那颗提醒就着这一刻重问一次。
@@ -575,13 +578,17 @@ class HotdeployPanel {
     this.countdown = null;
     window.clearInterval(this.countdownTimer);
     this.runBtn.disabled = true;
+    this.pending = true;
+    this.paint();
     try {
       const out = await api.hotdeployRun(branch);
       this.mineAt = Date.now();
+      this.pending = false;
       if (out.run && this.snap) this.snap.run = out.run;
       this.paint();
       void this.load();
     } catch (err) {
+      this.pending = false;
       this.mineAt = 0;
       this.notice = { kind: "err", text: errText(err) };
       this.paintStatus(this.runOf(), "fail");
