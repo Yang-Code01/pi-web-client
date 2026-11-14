@@ -4545,3 +4545,22 @@ D
 **代价 / 可改：** 顶栏 pill 只在连上桥之后才出现（离线时不知道分支）；`run` 会切断正在跑的会话，对话框里只写一行提示、不做二次确认（用户选的）；worker 写死了端口来自 `--port`，改端口部署要重启整个 bridge；`/run` 的 409 分支必须靠前端把 hint 写清楚，否则用户只会看到按钮是灰的。分支列表 110 条里远端默认折起来（`showRemote`），要展开才看得到。worktree 守卫留了个 `PI_HOTDEPLOY_ALLOW_WORKTREE=1` 的逃生口，只给 UI 自动化驱动真跑用 —— 正常部署别设它。
 
 **验证：** `node bridge/tests/hotdeploy-unit.mjs`（worktree/track/refs 解析、占用判定、路径归一、日志尾）；`npx tsc -p bridge --noEmit` 与 `npm --prefix web run typecheck`（i18n 2863 keys × 3）绿；worktree 的桥起在 7999 上用手工假 state.json 走完 idle / running / ok / fail 四种渲染（截图 `.scratch/hot-deploy/shots/hd-*.png`），设置页四颗按钮、24 条本地分支 / 15 颗「收掉它」/ 远端 86 条折叠、列表与进度块不重叠。
+
+## D254 「热部署」落地后的四处行为修正 + 两处口径追平 D253（review 后 2026-11-15）
+
+**问题：** D253 是动手前写的，落地时有两处走了别的路（轮询 900ms→1200ms、换进程 `npm run start:nobuild`→直接跑 node），review 又翻出四件真的会咬人的事：桥在 spawn 之后自己写 `state.json`、`收掉它` 的任何失败都被当成「有未提交改动」、自动刷新按时间窗而不是按进程认领、`GET /api/hotdeploy` 与日志在公网也发。按 `docs/agents/domain.md` 的规矩，旧条目不改写，重开一条覆盖。
+
+**决定：**
+
+- 轮询写死 **1200ms**（`POLL_MS`），因为单次快照要 3–4 秒、900ms 会互相叠着排队；D253 里的 900ms 作废。
+- 换进程用 `Start-Process powershell -File start-bridge.ps1`，脚本里**直接 `& <process.execPath> bridge\dist\index.js`**，不走 npm —— `npm.cmd` 会把窗口标题改回 `PowerShell`，「关窗即停」那扇窗就认不出来了。D253 里的 `npm run start:nobuild` 作废。
+- **`state.json` 只归 worker 写**：桥 spawn 完只在内存里记一份 `spawned`（worker 还没落盘的那几秒顶一下），`currentRun()` 一旦看到 state 里同一个 pid 就以文件为准。原写法会把 worker 抢先记下的 step/失败盖回 `step:0, running`，随后 `stomped()` 把快速失败报成 `crashed`。
+- `收掉它` 失败后由桥跑一次 `git -C <path> status --porcelain`，只有真有未提交改动才回 `dirty: true` 让前端给「确认强删」；锁着、路径没了、`TARGET MISSING` 之类只报错不给强删。退出码 2（worktree 删了但外链目标丢了）算成功 + 一条提醒。
+- 自动刷新认 **pid**：`POST /run` 回来的 `run.pid` 存成 `minePid`，只有 `runOf().pid === minePid` 才倒计时。原来的 `startedAt ≥ mineAt - 3000` 会误认别的标签页刚点的那一轮。
+- `GET /api/hotdeploy` 与 `GET /api/hotdeploy/log` 也加 `publicReq` 403 —— D253 写的是「公网请求全拒」，之前只拦了 POST，快照里的仓库路径和分支表会露出去。
+
+**为什么：** 这四条都不会在 happy path 上现形，但每条都会在最需要它准的时候骗人：失败被显示成「崩了」、用户被引去强删一个干净的 worktree、别的标签页把当前页面刷掉、公网能读到本机路径。D253 的两处口径是写的当时的打算，代码改了就该让文档追上，而不是让下一个人照文档去改代码。
+
+**代价 / 可改：** `spawned` 只在进程内存里，桥自己重启就丢（那一刻 state.json 已经有 worker 写的了，所以只影响「spawn 完立刻重启桥」的极端情况）；`dirty` 检测多花一次 `git status`（只在失败路径上）；`minePid` 要求 `/run` 的返回里有 pid，`run.pid` 缺失时不会自动刷新（只会停在那条成功横幅上，手动点「刷新页面」）。
+
+**验证：** `node bridge/tests/hotdeploy-unit.mjs`、`npx tsc -p bridge --noEmit`、`npm --prefix web run typecheck`（i18n-check 2877 keys × 3）绿；7999 测试桥上重跑一轮真部署（切分支→build→换进程→healthz 的 buildId 对上），以及审查后逐条手验：假 state.json 里 pre-write 的 step/error 不再被盖、脏 worktree 与 `TARGET MISSING` 两种失败分别给出不同弹法、面板打开时上一轮的 ok 不触发倒计时、公网头下两个 GET 都是 403。

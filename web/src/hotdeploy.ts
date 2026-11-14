@@ -9,7 +9,7 @@
  */
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
-import type { HotdeployBranch, HotdeployRun, HotdeploySnapshot } from "./hotdeploy-types.ts";
+import type { HotdeployBranch, HotdeployPhase, HotdeployRun, HotdeploySnapshot } from "./hotdeploy-types.ts";
 import { errText, tr } from "./i18n/index.ts";
 import "./hotdeploy.css";
 
@@ -56,6 +56,8 @@ interface Notice {
   acts?: { label: string; run: () => void }[];
 }
 
+type Phase = HotdeployPhase | "idle";
+
 class HotdeployPanel {
   private root!: HTMLDivElement;
   private console!: HTMLElement;
@@ -80,8 +82,8 @@ class HotdeployPanel {
   private clockTimer = 0;
   private countdownTimer = 0;
   private countdown: number | null = null;
-  /** 点下去那一刻的毫秒数：只有这一轮（`startedAt` 不早于它）跑完才自动刷新。 */
-  private mineAt = 0;
+  /** 点下去那一个 worker 的 pid：只有它跑完才自动刷新，别的标签页起点的不算。 */
+  private minePid = 0;
   /** 请求还在路上：先当「部署中」画出来，别让人以为按钮没反应。 */
   private pending = false;
   private notice: Notice | null = null;
@@ -128,6 +130,8 @@ class HotdeployPanel {
     document.documentElement.classList.remove("hot-open");
     this.root.remove();
     if (current === this) current = null;
+    // 面板里可能刚收掉一个 worktree：让顶栏那颗 chip 重问一句。
+    window.dispatchEvent(new CustomEvent("pi-hotdeploy-closed"));
   }
 
   // ---------------------------------------------------------------- 骨架
@@ -196,7 +200,7 @@ class HotdeployPanel {
   // ---------------------------------------------------------------- 数据
 
   private async load(): Promise<void> {
-    // 一次快照要跑几条 git（本仓库 30+ worktree，实测 3–4s）；900ms 一枪会互相叠着排队。
+    // 一次快照要跑几条 git（本仓库 30+ worktree，实测 3–4s）；间隔短了只会互相叠着排队。
     if (this.closed || this.loading) return;
     this.loading = true;
     try {
@@ -279,7 +283,7 @@ class HotdeployPanel {
     if (run?.phase === "running") this.nowBox.append(el("span", "hot-down", tr("（部署中）")));
   }
 
-  private paintBranches(snap: HotdeploySnapshot | null, phase: string): void {
+  private paintBranches(snap: HotdeploySnapshot | null, phase: Phase): void {
     const all = snap?.branches ?? [];
     const locals = all.filter((b) => !b.remoteOnly);
     const remotes = all.filter((b) => b.remoteOnly);
@@ -355,7 +359,7 @@ class HotdeployPanel {
     return row;
   }
 
-  private paintSteps(run: HotdeployRun | null, phase: string): void {
+  private paintSteps(run: HotdeployRun | null, phase: Phase): void {
     const step = typeof run?.step === "number" ? run.step : 0;
     const stamps = run?.stamps ?? [];
     const at = (i: number) => stamps.find((s) => s.step === i)?.at ?? 0;
@@ -394,7 +398,7 @@ class HotdeployPanel {
     }
   }
 
-  private paintStatus(run: HotdeployRun | null, phase: string): void {
+  private paintStatus(run: HotdeployRun | null, phase: Phase): void {
     this.statusBox.textContent = "";
     const banners: HTMLElement[] = [];
     if (this.notice) {
@@ -498,7 +502,7 @@ class HotdeployPanel {
     return el("div", `hot-banner ${kind}`);
   }
 
-  private paintFoot(run: HotdeployRun | null, phase: string): void {
+  private paintFoot(run: HotdeployRun | null, phase: Phase): void {
     const snap = this.snap;
     this.hint.textContent = tr("切分支会连同 web/dist、bridge/dist 一起换");
     this.hint.classList.remove("hot-bad");
@@ -551,9 +555,7 @@ class HotdeployPanel {
   // ---------------------------------------------------------------- 动作
 
   private mine(): boolean {
-    // 上一轮成功的横幅也在 RESULT_TTL 里活着 —— 不认「我这一轮」，打开的瞬间就会倒计时。
-    const started = Date.parse(this.runOf()?.startedAt ?? "");
-    return this.mineAt > 0 && Number.isFinite(started) && started >= this.mineAt - 3000;
+    return this.minePid > 0 && this.runOf()?.pid === this.minePid;
   }
 
   private startCountdown(): void {
@@ -582,17 +584,16 @@ class HotdeployPanel {
     this.paint();
     try {
       const out = await api.hotdeployRun(branch);
-      this.mineAt = Date.now();
+      this.minePid = out.run?.pid ?? 0;
       this.pending = false;
       if (out.run && this.snap) this.snap.run = out.run;
       this.paint();
       void this.load();
     } catch (err) {
       this.pending = false;
-      this.mineAt = 0;
+      this.minePid = 0;
       this.notice = { kind: "err", text: errText(err) };
-      this.paintStatus(this.runOf(), "fail");
-      this.runBtn.disabled = false;
+      this.paint();
     }
   }
 
@@ -601,7 +602,12 @@ class HotdeployPanel {
     try {
       const out = await api.hotdeployRemoveWorktree(target, force);
       if (out.ok) {
-        this.notice = { kind: "warn", text: tr("已收掉 {path}", { path: target }) };
+        this.notice = {
+          kind: out.code === 2 ? "err" : "warn",
+          text: out.code === 2
+            ? tr("{path} 已删掉，但外链里有路径不见了 —— 看日志确认一下", { path: target })
+            : tr("已收掉 {path}", { path: target }),
+        };
         this.forceTarget = "";
         this.branchSig = "";
         await this.load();
@@ -609,7 +615,7 @@ class HotdeployPanel {
         return;
       }
       const why = (out.stderr || out.stdout || "").trim().slice(-600);
-      if (!force) {
+      if (!force && out.dirty) {
         this.forceTarget = target;
         this.notice = {
           kind: "err",
@@ -617,8 +623,13 @@ class HotdeployPanel {
           acts: [{ label: tr("看 git 怎么说"), run: () => this.showDetail(why) }],
         };
       } else {
-        this.notice = { kind: "err", text: tr("收 {path} 失败：{why}", { path: target, why }) };
+        // 不是脏（锁着、路径不对、目标没了……）就不给强删的按钮：那把刀只切脏。
         this.forceTarget = "";
+        this.notice = {
+          kind: "err",
+          text: tr("收 {path} 失败：{why}", { path: target, why }),
+          acts: [{ label: tr("看日志"), run: () => this.showDetail(why) }],
+        };
       }
       this.paint();
     } catch (err) {

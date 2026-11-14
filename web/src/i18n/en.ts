@@ -2956,6 +2956,8 @@ export const en: Dict = {
   "热部署": "Hot deploy",
   "用时 {s}s": "{s}s elapsed",
   "看 git 怎么说": "See what git says",
+  "看日志": "See the log",
+  "{path} 已删掉，但外链里有路径不见了 —— 看日志确认一下": "{path} is gone, but some link targets are missing — check the log",
   "确认强删": "Force remove",
   "等新进程…": "Waiting for the new process…",
   "编译前端与桥": "Build web and bridge",

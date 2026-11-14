@@ -109,7 +109,7 @@ function git(args: string[], cwd = REPO): Promise<{ ok: boolean; out: string; er
   });
 }
 
-const NUL = String.fromCharCode(9);
+const TAB = String.fromCharCode(9);
 
 /** `git worktree list --porcelain` → 行。空行分隔，「branch refs/heads/x」是检出引用。 */
 export function parseWorktrees(porcelain: string): WorktreeRow[] {
@@ -158,7 +158,7 @@ export function parseRefLines(out: string): RefLine[] {
   const rows: RefLine[] = [];
   for (const line of out.split(/\r?\n/)) {
     if (!line.trim()) continue;
-    const [ref, sha, track = "", at = ""] = line.split(NUL);
+    const [ref, sha, track = "", at = ""] = line.split(TAB);
     if (!ref || !sha) continue;
     if (ref.startsWith("refs/heads/")) {
       rows.push({ name: ref.slice("refs/heads/".length), sha, track, at: at || null, remote: false });
@@ -269,6 +269,25 @@ async function inLinkedWorktree(): Promise<{ linked: boolean; dir: string | null
   return { linked: a !== b && !ALLOW_WORKTREE, dir: a !== b ? REPO : null };
 }
 
+/** 刚起、state.json 还没落盘的那几秒：桥在内存里记一份，别让界面闪回上一轮的结果。 */
+let spawned: RunState | null = null;
+
+/**
+ * 这里只读 worker 写的状态：桥自己写 state.json 会把 worker 抢先记下的 step/失败盖掉。
+ * 唯一例外是刚 spawn 完、worker 还没来得及落盘的空窗。
+ */
+function currentRun(): RunState | null {
+  const state = stomped(readState());
+  if (!spawned) return state;
+  if (state && state.pid === spawned.pid) {
+    if (state.phase !== "running") spawned = null;
+    return state;
+  }
+  if (pidAlive(spawned.pid)) return spawned;
+  spawned = null;
+  return state;
+}
+
 export async function snapshot(ctx: HotdeployCtx): Promise<Record<string, unknown>> {
   const [branchRes, headRes, statusRes, refsRes, wtRes] = await Promise.all([
     git(["rev-parse", "--abbrev-ref", "HEAD"]),
@@ -285,7 +304,7 @@ export async function snapshot(ctx: HotdeployCtx): Promise<Record<string, unknow
     .filter(Boolean);
   const refs = parseRefLines(refsRes.out);
   const rows = buildBranchRows(refs, parseWorktrees(wtRes.out), detached ? "" : branch, REPO);
-  const state = stomped(readState());
+  const state = currentRun();
   const worktree = await inLinkedWorktree();
   return {
     repo: REPO,
@@ -355,10 +374,7 @@ async function startRun(req: http.IncomingMessage, res: http.ServerResponse, ctx
   } catch (err) {
     return fail(res, 500, "hotdeploy_spawn", `起不来 worker：${(err as Error).message}`);
   }
-  try {
-    fs.writeFileSync(`${STATE}.tmp`, JSON.stringify(run, null, 2));
-    fs.renameSync(`${STATE}.tmp`, STATE);
-  } catch {}
+  spawned = run;
   return json(res, 202, { ok: true, run });
 }
 
@@ -380,7 +396,21 @@ async function removeWorktree(req: http.IncomingMessage, res: http.ServerRespons
       resolve({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
     });
   });
-  return json(res, 200, { ok: out.code === 0, code: out.code, stdout: out.stdout.slice(-4000), stderr: out.stderr.slice(-4000) });
+  const removed = !fs.existsSync(known.path);
+  // 退出码只能说「失败」，说不清为什么：脏是唯一值得让用户再点一次强删的那种。
+  let dirty = false;
+  if (out.code !== 0 && !removed) {
+    const st = await git(["-C", known.path, "status", "--porcelain", "--untracked-files=normal"]);
+    dirty = st.ok && st.out.trim().length > 0;
+  }
+  return json(res, 200, {
+    ok: out.code === 0 || (out.code === 2 && removed),
+    code: out.code,
+    removed,
+    dirty,
+    stdout: out.stdout.slice(-4000),
+    stderr: out.stderr.slice(-4000),
+  });
 }
 
 export async function handleHotdeploy(
@@ -393,10 +423,13 @@ export async function handleHotdeploy(
   if (p !== "/api/hotdeploy" && !p.startsWith("/api/hotdeploy/")) return false;
   try {
     if (p === "/api/hotdeploy" && req.method === "GET") {
+      // 快照里有仓库路径、分支表、会话数：跟 /run 一样只给本机看。
+      if (ctx.publicReq) return fail(res, 403, "hotdeploy_public", "公网不能看本机的部署状态；请回本机操作"), true;
       json(res, 200, await snapshot(ctx));
       return true;
     }
     if (p === "/api/hotdeploy/log" && req.method === "GET") {
+      if (ctx.publicReq) return fail(res, 403, "hotdeploy_public", "公网不能看本机的部署日志；请回本机操作"), true;
       const n = Math.max(20, Math.min(400, Number(url.searchParams.get("lines") ?? 160) || 160));
       json(res, 200, { lines: tailLines(LOG, n) });
       return true;

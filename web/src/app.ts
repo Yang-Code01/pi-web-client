@@ -1397,6 +1397,7 @@ export class App {
     this.socket.on((msg) => this.onMessage(msg));
     // 热部署跑完（成功或失败）都可能把主检出留在别的分支上：就着这一刻刷新那颗提醒。
     window.addEventListener("pi-hotdeploy-done", () => void this.refreshHotBranch());
+    window.addEventListener("pi-hotdeploy-closed", () => void this.refreshHotBranch());
     window.addEventListener("pi-session-not-found", (ev) => {
       const id = String((ev as CustomEvent<{ sessionId?: string }>).detail?.sessionId ?? "");
       if (id && id === this.currentId) this.showSessionReclaim(id);
@@ -5971,6 +5972,7 @@ export class App {
   private hotChip!: HTMLButtonElement;
   private hotBranch = "";
   private hotDetached = false;
+  private hotPort = 7864;
 
   /** 问一次桥：主检出停在哪条分支。只在连上、以及热部署跑完时问，不轮询。 */
   private async refreshHotBranch(): Promise<void> {
@@ -5981,6 +5983,7 @@ export class App {
       if (snap.branch === this.hotBranch && snap.detached === this.hotDetached && off === !this.hotChip.hidden) return;
       this.hotBranch = snap.branch;
       this.hotDetached = snap.detached;
+      this.hotPort = snap.port;
       this.paintHotChip();
     } catch {
       /* 桥正在换进程：下一次连上再问 */
@@ -5992,7 +5995,7 @@ export class App {
     this.hotChip.hidden = !off;
     if (!off) return;
     this.hotChip.textContent = tr("主检出在 {branch}", { branch: this.hotBranch });
-    this.hotChip.title = tr("主检出的源码在这条分支上（不是 main）。点开热部署，把 {port} 放回去。", { port: 7864 });
+    this.hotChip.title = tr("主检出的源码在这条分支上（不是 main）。点开热部署，把 {port} 放回去。", { port: this.hotPort });
   }
 
   private renderTop(): void {

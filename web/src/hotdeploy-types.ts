@@ -53,6 +53,10 @@ export interface HotdeploySnapshot {
 export interface HotdeployRemoveResult {
   ok: boolean;
   code: number;
+  /** worktree 目录还在不在：code=2（外链目标丢了）时仍然算删掉了。 */
+  removed?: boolean;
+  /** 失败是因为里面有未提交的改动 —— 只有这种才值得再点一次强删。 */
+  dirty?: boolean;
   stdout: string;
   stderr: string;
 }
