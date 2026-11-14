@@ -12,11 +12,9 @@
  */
 import { createEl as el } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
-import { MailConfirmQueue, type MailConfirmAck, type MailConfirmRequest } from "./mail-shared.ts";
+import { MAIL_CONFIRM_PAGE_MS, MailConfirmQueue, type MailConfirmAck, type MailConfirmRequest } from "./mail-shared.ts";
+import { mountOverlay, trapEscape } from "./modal.ts";
 import "./mail-console.css";
-
-/** 桥等 5 分钟（`PI_WEB_MAIL_CONFIRM_MS`）；这里提前 20 秒收摊，别让两边同时超时。 */
-export const CONFIRM_MS = 280_000;
 
 export interface MailConfirmHost {
   send(ack: MailConfirmAck): void;
@@ -27,7 +25,7 @@ export class MailConfirmDialog {
   private root: HTMLElement | null = null;
   private timer = 0;
   private lastFocus: HTMLElement | null = null;
-  private esc: ((ev: KeyboardEvent) => void) | null = null;
+  private untrap: (() => void) | null = null;
 
   constructor(host: MailConfirmHost) {
     this.queue = new MailConfirmQueue(
@@ -61,8 +59,8 @@ export class MailConfirmDialog {
   private teardown(): void {
     if (this.timer) window.clearTimeout(this.timer);
     this.timer = 0;
-    if (this.esc) document.removeEventListener("keydown", this.esc, true);
-    this.esc = null;
+    this.untrap?.();
+    this.untrap = null;
     this.root?.remove();
     this.root = null;
     const back = this.lastFocus;
@@ -122,23 +120,18 @@ export class MailConfirmDialog {
     back.append(box);
 
     // Esc = 不发（和「关闭面板」是两回事：这里不能装作点了发送）。
-    if (this.esc) document.removeEventListener("keydown", this.esc, true);
-    this.esc = (ev) => {
-      if (ev.key !== "Escape") return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      this.answer(false, "declined", tr("你按了 Esc，这封信没有发出去。"));
-    };
-    document.addEventListener("keydown", this.esc, true);
+    this.untrap?.();
+    this.untrap = trapEscape(() => this.answer(false, "declined", tr("你按了 Esc，这封信没有发出去。")));
 
     this.root?.remove();
     this.root = back;
-    document.body.append(back);
+    // 挂进 #app（跟「本机管理」同一个挂法）：浮层跟着外观「字号」一起缩放（D123 / D263）。
+    mountOverlay(back);
     yes.focus();
 
     if (this.timer) window.clearTimeout(this.timer);
     this.timer = window.setTimeout(() => {
-      this.answer(false, "timeout", tr("放了 5 分钟没点确认，这封信没有发出去。"));
-    }, CONFIRM_MS);
+      this.answer(false, "confirm-timeout", tr("放了 5 分钟没点确认，这封信没有发出去。"));
+    }, MAIL_CONFIRM_PAGE_MS);
   }
 }

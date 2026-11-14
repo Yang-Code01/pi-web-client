@@ -4795,7 +4795,7 @@ D
 3. **翻页**：`listMessages` 加 `offset`，`mail_list` 加同名参数；面板底部「看更早的」按偏移往后接。
 4. **补上确认框**（`web/src/mailconfirm.ts`）：收件人/抄送/主题/正文前 800 字/附件摊开，只有点「发送」才回 `ok:true`；Esc、点遮罩、5 分钟不点都回 `ok:false` + 一句给人看的话。排队与回执抽成无 DOM 的 `MailConfirmQueue`（一次只摊一封、回执只认当前那封的 `reqId`）。`no-ack` / `timeout` 补进工具的 `NEXT_STEP`，别再让模型把「没回音」当临时故障重试。
 5. **地址口径收到 `bridge/src/mailaddr.ts`**：`Name <a@b.com>` 与 `a@b.com` 是同一个人；校验、白名单比对、SMTP 收件人都走它；参数错给 `bad-input`（400），不再混成 500。`splitRecipients` 也不再切引号/尖括号里的逗号。
-6. **权限只管 AI。** `performSend` 里策略判定、白名单、日上限、发送前确认都进 `by === "agent"` 分支；页面路由不再过 `policyDenial`（隧道访客仍然 403、停用的账号仍然不列）。`sentToday()` 只数 `by === "agent"` 的审计行。`mutate` 从工具提示与 `mail_accounts` 回包里拿掉（v1 没有对应动作，面板本来也不给这个开关）。
+6. **权限只管 AI。** `performSend` 里策略判定、白名单、日上限、发送前确认都进 `by === "agent"` 分支；页面路由不再过 `policyDenial`，**但页面口自己判 `account.enabled`**（停用的账号人也不给用，`pageAccount()` 回 409 `account-disabled`）—— 两边各拦各的，别只在一边拦。`sentToday()` 只数 `by === "agent"` **且不是草稿**的审计行（草稿写在同一个文件里，但它没发出去）。`mutate` 从工具提示**与 `mail_accounts` 的回包**里都拿掉（`agentPolicyView()`；v1 没有对应动作，面板本来也不给这个开关）。
 7. **坏配置拒写，不拿默认值盖。** `readMailConfigChecked()` 把「文件读不出来」交出去；`/api/mail/config` 带 `configError` + `configPath`，面板顶一条横幅指路；账号/权限/test/repair 这些写操作一律 409 `config-corrupt`，一个字节都不动。**人自己修或删文件再刷新** —— 这条宁可挡住，也不要静默丢凭据。
 8. 小的照旧各修：`mail_reply` 带附件（复用 `normalizeAttachments`）；`html` 不再受「取附件」管、纯 HTML 的信在扩展侧扒标签；`fetchRaw` 先问 `size` 再拉 `source`；面板不再伪造已读；列表/详情各带自己的请求代号（切文件夹就作废在飞的请求）；`asInt` 把 `null/undefined/""` 当「没给」；删账号顺手清 `policy.accountIds`；导航角标去掉「当前列了几条」那个假数字；删账号两步确认；TLS 由端口算（`secureForPort`）；每日上限输入非数字时不保存并回填。
 
@@ -4805,12 +4805,13 @@ D
 - 上限 2000 封的扫描预算：一封 2000+ 的邮箱如果时间序乱到 2000 封都盖不住，仍然会退化成「按到达顺序的前 2000 封里挑最新的」。未读超过 2000 时同理（取到达得最晚的那批）。
 - 确认框 5 分钟内不点 = 不发；AI 那头拿到的是 `timeout`，要重新发起。宁可多问一次，也不替人点头。
 - 页面不再受「AI 权限」管，意味着**关掉「读邮件」并不会阻止你自己看信**（这才是文案的意思），也不再是一个「隐私开关」：想真的断掉，去删账号或停用它。
-- 前端多一个模块（`mailconfirm.ts`）+ 一段 CSS，占 10 条 body 浮层豁免之外的常规挂载（`.mc-back --confirm` 挂在 body 上但**不写** vh/vw，宽高跟遮罩自己的格子走）。
+- 前端多一个模块（`mailconfirm.ts`）+ 一段 CSS。确认框**挂进 `#app`**（跟「本机管理」同一个挂法 `(document.getElementById("app") ?? document.body).append(…)`），跟别的弹层一起吃 `zoom`；宽高用 `min(px, 100%)` 跟着遮罩扣完 padding 的可用格走、不写 vh/vw（D263 明说别往 body 浮层那个豁口里塞）。
 
 **验证：**
 
-- `npm run test:mail`：`bridge/tests/mail-unit.mjs` 44 → **62**（新增 18 条：读权限关着页面照样能读、缺 uid 才 400、页面发信不看 AI 权限、AI 仍被 `policy-denied:send` 拦、白名单只拦 AI、日上限只数 AI、删账号清 `accountIds`、停用的默认账号不报、坏配置 409 且磁盘不动）；新增 `bridge/tests/mail-list-unit.mjs` **34** 条（序号窗口、按时间挑、翻页、地址解析、`bad-input`、附件口径、HTML 扒标签）；`web/tests/mail-unit.mjs` 5 → **9**（`secureForPort`/`portOf` 与 `MailConfirmQueue` 的排队与回执）。
+- `npm run test:mail`：`bridge/tests/mail-unit.mjs` 44 → **65**（新增 21 条：读权限关着页面照样能读、缺 uid 才 400、页面发信不看 AI 权限、AI 仍被 `policy-denied:send` 拦、白名单只拦 AI、日上限只数 AI、草稿不占上限、停用账号页面也 409、删账号清 `accountIds`、默认账号停了不报、`mail_accounts` 不报 `mutate`、坏配置 409 且磁盘不动）；新增 `bridge/tests/mail-list-unit.mjs` **34** 条（序号窗口、按时间挑、翻页、地址解析、`bad-input`、附件口径、HTML 扒标签）；`web/tests/mail-unit.mjs` 5 → **10**（`secureForPort`/`portOf`、`MailConfirmQueue` 的排队与回执、`MAIL_ERROR_TEXT` 的说法）。
 - 真信箱（1304049579@qq.com，INBOX 1092 封）：改前 `limit=20` 最新 **2022-01-31**、未读 6 封；改后最新 **2026-11-14**、未读 100+；`offset=300` 能翻到 2025-03，与「整箱排序后第 301–320 封」逐条一致；`📎` 只为最终那几封补，不再整箱取 `bodyStructure`。
 - 假桥（临时 `PI_WEB_STATE` + 指向 `127.0.0.1:9` 的账号）：坏配置 → 409 且 `REALSECRET` 原封不动；页面发信不看 `policy.send`；AI 发信仍被拦；白名单只拦 AI。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（tsc + i18n-check 3040 键 × 3 + `test:viewport`）全绿。
+- **复审（两轴：标准 / 需求）之后补的一轮**，对着 `git diff main...HEAD` 逐条核：页面口补上 `account.enabled`（以前停用账号在面板里照样能读能发，CHANGELOG 那句「页面只受账号停用限制」才成立）；草稿不再占 AI 的日上限；`mutate` 真的从 `mail_accounts` 回包里去掉（不只是文案）；审计失败改成「错误码 → 人话」的映射（`MAIL_ERROR_TEXT`，认不出来的码只说「失败」）；详情的 `finally` 也比 `detailSeq`（先发的慢详情不会提前收掉后发请求的「正在读」）；确认框挂进 `#app`；超时只留一份 `MAIL_CONFIRM_PAGE_MS`；删掉没人读的 `downloadable`、页面上的「附件（取附件权限关着）」死分支与 `MailConfirmFrame` 的 `as any`；`normalizeAccount` 改用 `mailaddr.isEmailAddress`；`mailconfig.ts` 头部注释改成「`policyDenial` 是给 AI 的唯一判据」；GLOSSARY 补「邮箱面板 / AI 权限 / 发送前确认」、README 补邮箱一条与 `test:mail`。
 - **没做的：** 确认框只有 `MailConfirmQueue` 的单测，没有 playwright 的点击用例（这台机器上要临时装 chromium）；`mail_send` 真发一封的路径仍靠肉眼。

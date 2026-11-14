@@ -27,6 +27,7 @@ import { ACCENTS } from "./palette.ts";
 import { JiraPanel } from "./jira.ts";
 import { MailPanel } from "./mail.ts";
 import { MailConfirmDialog } from "./mailconfirm.ts";
+import type { MailConfirmFrame } from "./mail-shared.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { openSysmanage } from "./sysmanage.ts";
 import { openHotdeploy } from "./hotdeploy.ts";
@@ -2059,13 +2060,14 @@ export class App {
       case "mail.confirm": {
         // AI 调了 mail_send / mail_reply，桥在等都看这个会话的页签点头。只有真的点「发送」才回
         // ok:true；不在看这个会话的页签回 stale，让接住的那一页说了算（同 preview.open）。
-        const reqId = String(msg.reqId ?? "");
-        if (msg.sessionId !== this.currentId) {
+        const frame = msg as unknown as MailConfirmFrame;
+        const reqId = String(frame.reqId ?? "");
+        if (frame.sessionId !== this.currentId) {
           this.socket.send({ type: "mail.confirm.done", reqId, ok: false, reason: "stale" });
           break;
         }
         if (!this.mailConfirm) this.mailConfirm = new MailConfirmDialog({ send: (ack) => this.socket.send({ type: "mail.confirm.done", ...ack }) });
-        this.mailConfirm.ask(reqId, msg.mail as any);
+        this.mailConfirm.ask(reqId, frame.mail);
         break;
       }
       case "preview.open": {

@@ -55,6 +55,8 @@ const NEXT_STEP: Record<string, string> = {
   "no-page": "没有页面在看这个会话，没法确认发送；把邮件内容写出来，让用户自己发或回到网页里再试。",
   // 页面在 5 分钟内没回执（弹窗没画出来 / 页签关了）：同样是「没发出去」，别重试。
   "no-ack": "确认弹窗没有回音，这封信没发出去。把内容写出来，让用户回到网页里自己发。",
+  // 弹窗画出来了，但一直没人点：人不在，别重试。
+  "confirm-timeout": "确认弹窗放了 5 分钟没人点，这封信没发出去。等用户在的时候再发。",
   "rate-limited": "今天的额度用完了，别重试；把情况告诉用户。",
   recipients: "收件人不在白名单里，别换个写法重试；告诉用户被拦了。",
   "auth-failed": "授权码或服务开关有问题，让用户在邮箱设置里重新验证。",
@@ -192,7 +194,9 @@ const mailReadTool = {
       const body = plain || fromHtml || "";
       const head = `主题：${m.subject}\n发件人：${m.from}\n收件人：${(m.to ?? []).join(", ") || "(无)"}\n时间：${dateText(m.date)}`;
       const note = fromHtml ? "\n\n（这封信只有 HTML 正文，下面是扒掉标签的纯文本）" : "";
-      return textResult(`${head}\n\n${body || "(没有可读正文)"}${note}${attach}`, { ok: true, message: m, attachmentsAllowed: reply.attachmentsAllowed });
+      // 附件清单照样给，但「落盘」要用户开过「取附件」：说清，别让人以为点了就能下。
+      const lock = (m.attachments ?? []).length && reply.attachmentsAllowed === false ? "\n（要存到本机得让用户在邮箱设置里打开「取附件」。）" : "";
+      return textResult(`${head}\n\n${body || "(没有可读正文)"}${note}${attach}${lock}`, { ok: true, message: m, attachmentsAllowed: reply.attachmentsAllowed });
     } catch (err: any) {
       return textResult(`没读出来：${String(err?.message ?? err)}`, { ok: false, code: "channel" });
     }

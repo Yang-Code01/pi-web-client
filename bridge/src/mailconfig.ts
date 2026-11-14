@@ -4,7 +4,8 @@
  * 三件事分开：
  *   1. `MailConfig` 落 `<状态目录>/mail/config.json`，照 Jira 的惯例存明文凭据 —— 页面只拿掩码，
  *      日志不带凭据（`bridge/src/jira.ts` 同一口径）。想换成 DPAPI 加密是后续的事，别在路由里散着判。
- *   2. `policyDenial()` 是权限的唯一判据：HTTP 路由和 agent 工具都走它，不在别处另写一套「能不能发」。
+ *   2. `policyDenial()` 是**给 AI 的唯一判据**（agent 工具走它）。页面口是人自己动手，不过它 ——
+ *      两边各拦各的：AI 看策略与白名单，人只看「账号停用 / 隧道访客」（D264）。
  *   3. 审计只追加、不进模型上下文 —— 它存在的理由是「谁在什么时候用哪个账号发了什么」能事后查，
  *      顺便当日发信上限的计数来源。
  */
@@ -12,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, readJsonChecked, statePath } from "./paths.ts";
-import { bareAddress } from "./mailaddr.ts";
+import { bareAddress, isEmailAddress } from "./mailaddr.ts";
 
 export type MailPreset =
   | "163"
@@ -463,7 +464,8 @@ export function sentToday(accountId: string, now = Date.now(), by: "agent" | "pa
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line);
-      if (row?.ok && row?.d === want && row?.account === accountId && row?.by === by) n++;
+      // 草稿也写在同一个审计文件里（`messageId: "draft"`）：它没发出去，不该占日上限。
+      if (row?.ok && row?.d === want && row?.account === accountId && row?.by === by && row?.messageId !== "draft") n++;
     } catch {
       // 半截行（正好切在尾部窗口边界）跳过。
     }
@@ -521,7 +523,8 @@ export interface AccountInput {
 export function normalizeAccount(input: AccountInput, prev?: MailAccount | null): { account?: MailAccount; error?: string } {
   const preset = presetOf(input.preset ?? prev?.preset);
   const address = str(input.address) || prev?.address || "";
-  if (!address || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) return { error: "邮箱地址不像一个地址（例如 you@163.com）" };
+  // 地址口径只有 `mailaddr.ts` 一份（带显示名 / 引号都由它判）。
+  if (!isEmailAddress(address)) return { error: "邮箱地址不像一个地址（例如 you@163.com）" };
   const secretRaw = str(input.secret);
   const masked = prev ? maskSecret(prev.secret) : "";
   const keepSecret = !secretRaw || (masked && (secretRaw === masked || secretRaw.includes("****")));

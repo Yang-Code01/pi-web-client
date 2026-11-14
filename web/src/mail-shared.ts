@@ -220,7 +220,7 @@ export function sizeText(n: number): string {
  * 这些明文（STARTTLS 升级）的端口永远连不上。
  */
 export function secureForPort(port: number, kind: "imap" | "smtp"): boolean {
-  if (port === 993 || port === 995 || port === 465) return true;
+  if (port === 993 || port === 465) return true;
   if (port === 143 || port === 25 || port === 110 || port === 587) return false;
   return kind === "imap";
 }
@@ -273,3 +273,37 @@ export class MailConfirmQueue {
     this.onChange();
   }
 }
+
+/**
+ * 审计行里的失败原因：桥给的是稳定错误码，**别把 `smtp-error` 这种码铺到用户脸上**（B20 / D264）。
+ * 键是错误码，值是中文原文（使用处 `tr()`）。认不出来的码一律显示「失败」，不露原文。
+ */
+export const MAIL_ERROR_TEXT: Record<string, string> = {
+  "smtp-error": "发送失败：服务器拒收",
+  "auth-failed": "授权码不对，或者没开 IMAP/SMTP",
+  "imap-id": "邮箱把这次登录当成不安全客户端",
+  "imap-error": "邮箱服务器出错了",
+  net: "连不上邮箱服务器",
+  timeout: "邮箱服务器没有及时回应",
+  "not-found": "这封信已经不在了",
+  "too-large": "邮件太大，超过了 25MB",
+  "bad-input": "参数不对",
+  recipients: "收件人不在白名单里",
+  "rate-limited": "当天发信额度用完了",
+  declined: "没有确认，没发出去",
+  "no-page": "没有页面能确认，没发出去",
+  "no-ack": "确认弹窗没有回音，没发出去",
+  // 页面 5 分钟没点，和「服务器没回应」不是一回事，别混成一个。
+  "confirm-timeout": "放了 5 分钟没点确认，没发出去",
+};
+
+/** 认不出来的码只回空串，调用方用「失败」。 */
+export function mailErrorText(code: unknown): string {
+  return MAIL_ERROR_TEXT[String(code ?? "").trim()] ?? "";
+}
+
+/**
+ * 页面等用户点「发送」的上限。桥那边默认等 300 秒（`PI_WEB_MAIL_CONFIRM_MS`），这里提前 20 秒
+ * 收摊，别让两边同时超时。**只此一份** —— 以前桥里 300_000、页面里 280_000 各写一通。
+ */
+export const MAIL_CONFIRM_PAGE_MS = 280_000;

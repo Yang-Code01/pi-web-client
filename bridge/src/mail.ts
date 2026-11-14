@@ -105,6 +105,23 @@ function writeGuard(res: http.ServerResponse): boolean {
   return false;
 }
 
+/**
+ * 页面口取账号：**停用的账号连人也不给用**（面板那边会显示「已停用」，并给出 no-account 的说明）。
+ * 工具口走 `policyDenial`，停用同样被拦 —— 两边都拦，别只在一边。
+ */
+function pageAccount(res: http.ServerResponse, config: MailConfig, id?: string | null): MailAccount | null {
+  const account = findAccount(config, id ?? null);
+  if (!account) {
+    fail(res, 404, "no-account", "没有这个账号");
+    return null;
+  }
+  if (!account.enabled) {
+    fail(res, 409, "account-disabled", "这个账号被停用了：邮箱面板「账号」页勾上「启用」再用。");
+    return null;
+  }
+  return account;
+}
+
 function readJsonBody(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -229,23 +246,23 @@ async function performSend(opts: {
         return { ok: false, code: "rate-limited", error: `今天这个账号已经发了 ${used} 封，到上限了（设置里「每日发信上限」）。明天再发，或者把上限调高。` };
       }
     }
-  }
 
-  // 人自己点的发送不再二次确认：他眼前就是收件人和正文。AI 发才要。
-  if (by === "agent" && !opts.asDraft && config.policy.confirmSend) {
-    if (!opts.sessionId || !opts.confirm) return { ok: false, code: "no-page", error: "这封邮件要人确认后才能发，但请求没有带上会话，没法在页面上问。" };
-    const ack = await opts.confirm(opts.sessionId, {
-      account: account.label,
-      from: account.address,
-      to: mail.to,
-      cc: [...(mail.cc ?? []), ...(mail.bcc ?? [])],
-      subject: mail.subject,
-      text: (mail.text || "").slice(0, 800),
-      attachments: (mail.attachments ?? []).map((a) => a.filename),
-    });
-    if (!ack.ok) {
-      const code = ack.reason ?? "declined";
-      return { ok: false, code, error: ack.text ?? (code === "no-page" ? "没有页面在看这个会话，没法确认，这封信没有发。" : "用户没有确认发送。") };
+    // 人自己点的发送不再二次确认：他眼前就是收件人和正文。AI 发才要。
+    if (!opts.asDraft && config.policy.confirmSend) {
+      if (!opts.sessionId || !opts.confirm) return { ok: false, code: "no-page", error: "这封邮件要人确认后才能发，但请求没有带上会话，没法在页面上问。" };
+      const ack = await opts.confirm(opts.sessionId, {
+        account: account.label,
+        from: account.address,
+        to: mail.to,
+        cc: [...(mail.cc ?? []), ...(mail.bcc ?? [])],
+        subject: mail.subject,
+        text: (mail.text || "").slice(0, 800),
+        attachments: (mail.attachments ?? []).map((a) => a.filename),
+      });
+      if (!ack.ok) {
+        const code = ack.reason ?? "declined";
+        return { ok: false, code, error: ack.text ?? (code === "no-page" ? "没有页面在看这个会话，没法确认，这封信没有发。" : "用户没有确认发送。") };
+      }
     }
   }
 
@@ -416,22 +433,16 @@ export async function handleMail(req: http.IncomingMessage, res: http.ServerResp
     // 唯一还拦的是「账号被停用」与隧道访客（上面已经 403）。
     if (url.pathname === "/api/mail/folders") {
       const config = readMailConfig();
-      const account = findAccount(config, url.searchParams.get("account"));
-      if (!account) {
-        fail(res, 404, "no-account", "没有这个账号");
-        return true;
-      }
+      const account = pageAccount(res, config, url.searchParams.get("account"));
+      if (!account) return true;
       json(res, 200, { folders: await listFolders(account) });
       return true;
     }
 
     if (url.pathname === "/api/mail/messages") {
       const config = readMailConfig();
-      const account = findAccount(config, url.searchParams.get("account"));
-      if (!account) {
-        fail(res, 404, "no-account", "没有这个账号");
-        return true;
-      }
+      const account = pageAccount(res, config, url.searchParams.get("account"));
+      if (!account) return true;
       const folder = url.searchParams.get("folder") || "INBOX";
       const messages = await listMessages(account, folder, {
         limit: asInt(url.searchParams.get("limit"), 20),
@@ -444,11 +455,8 @@ export async function handleMail(req: http.IncomingMessage, res: http.ServerResp
 
     if (url.pathname === "/api/mail/message") {
       const config = readMailConfig();
-      const account = findAccount(config, url.searchParams.get("account"));
-      if (!account) {
-        fail(res, 404, "no-account", "没有这个账号");
-        return true;
-      }
+      const account = pageAccount(res, config, url.searchParams.get("account"));
+      if (!account) return true;
       const folder = url.searchParams.get("folder") || "INBOX";
       const uid = asInt(url.searchParams.get("uid"), -1);
       if (uid < 0) {
@@ -466,11 +474,8 @@ export async function handleMail(req: http.IncomingMessage, res: http.ServerResp
 
     if (url.pathname === "/api/mail/attachment") {
       const config = readMailConfig();
-      const account = findAccount(config, url.searchParams.get("account"));
-      if (!account) {
-        fail(res, 404, "no-account", "没有这个账号");
-        return true;
-      }
+      const account = pageAccount(res, config, url.searchParams.get("account"));
+      if (!account) return true;
       const folder = url.searchParams.get("folder") || "INBOX";
       const uid = asInt(url.searchParams.get("uid"), -1);
       const index = asInt(url.searchParams.get("index"), 0);
@@ -492,15 +497,13 @@ export async function handleMail(req: http.IncomingMessage, res: http.ServerResp
     if (url.pathname === "/api/mail/send" && method === "POST") {
       const body = (await readJsonBody(req)) ?? {};
       const config = readMailConfig();
-      const account = findAccount(config, body?.account);
-      if (!account) {
-        fail(res, 404, "no-account", "没有这个账号");
-        return true;
-      }
+      const account = pageAccount(res, config, body?.account);
+      if (!account) return true;
       const mail = normalizeMail(body);
       const out = await performSend({ config, account, mail, by: "page", asDraft: Boolean(body?.draft), confirm: ctx.confirm });
       if (!out.ok) {
-        fail(res, out.code === "policy-denied" || out.code?.startsWith("policy-denied") ? 403 : 400, out.code ?? "send_failed", out.error ?? "发送失败");
+        // 页面发信不过 AI 权限，所以这里不会再有 policy-denied（D264）。
+        fail(res, 400, out.code ?? "send_failed", out.error ?? "发送失败");
         return true;
       }
       json(res, 200, out);
@@ -537,6 +540,13 @@ export async function handleMail(req: http.IncomingMessage, res: http.ServerResp
 
 function toolFail(code: string, error: string) {
   return { ok: false, code, error };
+}
+
+/** 报给模型的策略视图：去掉 v1 没有任何动作的 `mutate`（D264）。 */
+function agentPolicyView(policy: MailPolicy): Omit<MailPolicy, "mutate"> {
+  const { mutate: _unused, ...rest } = policy;
+  void _unused;
+  return rest;
 }
 
 /** 长正文截断并注明（工具口专用：上下文有限）。 */
@@ -580,7 +590,8 @@ export async function handleMailTool(req: http.IncomingMessage, res: http.Server
           ok: true,
           accounts: allowed.map((a) => ({ id: a.id, label: a.label, address: a.address, verifiedAt: a.verifiedAt })),
           defaultAccount: wantDefault,
-          policy: config.policy,
+          // `mutate` 在 v1 没有对应动作、面板也不给这个开关：别把「改状态」报成一个可调的权限（D264）。
+          policy: agentPolicyView(config.policy),
         }), true;
       }
 
@@ -614,7 +625,8 @@ export async function handleMailTool(req: http.IncomingMessage, res: http.Server
             // 正文太长会把上下文吃满：留 20000 字，多的截断并说清楚。
             text: clip(detail.text, 20000, "正文"),
             html: clip(detail.html ?? "", 20000, "HTML 正文") || null,
-            attachments: canAttach ? detail.attachments : detail.attachments.map((a) => ({ ...a, downloadable: false })),
+            // 附件能不能落盘由 `attachmentsAllowed` 一个信号说清，别每项再塞一个没人读的字段。
+            attachments: detail.attachments,
           },
           attachmentsAllowed: canAttach,
         }), true;

@@ -14,6 +14,7 @@
  */
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
+import { mountOverlay, trapEscape } from "./modal.ts";
 import "./mail-console.css";
 import { errText, tr } from "./i18n/index.ts";
 import type {
@@ -26,7 +27,7 @@ import type {
   MailPolicyView,
   MailSummary,
 } from "./mail-shared.ts";
-import { auditOutcome, MAIL_POLICY_LABELS, parseRecipients, portOf, secureForPort, sizeText, whenText } from "./mail-shared.ts";
+import { auditOutcome, MAIL_POLICY_LABELS, mailErrorText, parseRecipients, portOf, secureForPort, sizeText, whenText } from "./mail-shared.ts";
 
 export interface MailHandoff {
   prefill(text: string): void;
@@ -126,11 +127,10 @@ function failText(what: string, err: unknown): string {
 /** 列表一页多少封（底部「看更早的」按这个往后翻）。 */
 const LIST_PAGE = 30;
 
-/** 审计行里的失败：桥给的是稳定错误码，别把 `smtp-error` 这种原样铺给用户。 */
+/** 审计行里的失败：桥给的是稳定错误码，翻成人话再显示（认不出来的只说「失败」，不露原文）。 */
 function auditFailText(code: string | undefined): string {
-  const raw = String(code ?? "").trim();
-  if (!raw) return tr("失败");
-  return tr("失败（{code}）", { code: raw });
+  const hit = mailErrorText(code);
+  return hit ? tr(hit) : tr("失败");
 }
 
 const SECTIONS: { id: Section; label: string }[] = [
@@ -146,7 +146,7 @@ export class MailPanel {
   private readonly host: MailHost;
   private root: HTMLElement | null = null;
   private lastFocus: HTMLElement | null = null;
-  private esc: ((ev: KeyboardEvent) => void) | null = null;
+  private untrap: (() => void) | null = null;
   /** 面板「代」：开/关/刷新时 +1。整块重画靠它，**不是**用来判列表/详情过期的。 */
   private seq = 0;
   /** 列表与详情各自的请求代号：切文件夹/账号、重新取数时 +1，回来对不上就丢掉。
@@ -174,7 +174,6 @@ export class MailPanel {
   private detailUid = -1;
   private detailLoading = false;
   private detailError = "";
-  private attachmentsAllowed = true;
 
   private compose: Compose | null = null;
   private form: AccountForm | null = null;
@@ -217,20 +216,14 @@ export class MailPanel {
     this.testing = "";
     this.confirmDeleteId = "";
     this.lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    this.esc = (ev) => {
-      if (ev.key !== "Escape") return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      this.close();
-    };
-    document.addEventListener("keydown", this.esc, true);
+    this.untrap = trapEscape(() => this.close());
     this.render();
     void this.reload();
   }
 
   close(): void {
-    if (this.esc) document.removeEventListener("keydown", this.esc, true);
-    this.esc = null;
+    this.untrap?.();
+    this.untrap = null;
     this.seq += 1;
     this.listSeq += 1;
     this.detailSeq += 1;
@@ -353,7 +346,6 @@ export class MailPanel {
       const res = await api.mailMessage({ account: account.id, folder, uid });
       if (seq !== this.seq || token !== this.detailSeq || !this.root) return;
       this.detail = res.message;
-      this.attachmentsAllowed = res.attachmentsAllowed;
       // 这里**不**把本地那条标成已读（以前会）：读信用 PEEK，服务器上的 \Seen 根本没动，
       // 改本地列表只是骗人 —— 刷一下又变回未读，人却以为自己处理过了。
     } catch (err) {
@@ -361,7 +353,8 @@ export class MailPanel {
       this.detail = null;
       this.detailError = failText(tr("这封信读不出来"), err);
     } finally {
-      if (seq === this.seq) {
+      // 代号也要比：先发的慢详情回来不能把后发请求的「正在读」提前收掉（内容不盖、状态会错）。
+      if (seq === this.seq && token === this.detailSeq) {
         this.detailLoading = false;
         this.render();
       }
@@ -489,7 +482,7 @@ export class MailPanel {
     back.append(shell);
     this.root?.remove();
     this.root = back;
-    document.body.append(back);
+    mountOverlay(back);
   }
 
   private headEl(): HTMLElement {
@@ -787,12 +780,9 @@ export class MailPanel {
 
     if (m.attachments.length) {
       const att = el("div", "mc-attach");
-      att.append(el("div", "mc-attach__title", this.attachmentsAllowed ? tr("附件") : tr("附件（取附件权限关着）")));
+      // 页面上的附件是**人自己**在下载：不受「取附件」（那是 AI 的开关）管，永远给直链（D264）。
+      att.append(el("div", "mc-attach__title", tr("附件")));
       for (const a of m.attachments) {
-        if (!this.attachmentsAllowed) {
-          att.append(el("div", "mc-attach__row", `${a.filename} · ${sizeText(a.size)}`));
-          continue;
-        }
         const link = el("a", "mc-attach__row", `${a.filename} · ${sizeText(a.size)}`) as HTMLAnchorElement;
         link.href = api.mailAttachmentUrl({
           account: this.activeAccount()?.id,

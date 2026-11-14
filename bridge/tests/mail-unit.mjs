@@ -205,6 +205,9 @@ await call("POST", "/api/mail/policy", { recipients: [] });
 
 mc.appendAudit({ t: Date.now(), account: "m1", from: "a@163.com", to: ["b@x.com"], subject: "手发", by: "page", ok: true });
 check("日上限只数 AI 发的（页面自己发的不算）", mc.sentToday("m1") === 1 && mc.sentToday("m1", Date.now(), "page") === 1, `${mc.sentToday("m1")}/${mc.sentToday("m1", Date.now(), "page")}`);
+// 草稿写在同一个审计文件里，但它没发出去：不能占日上限（B8 的延伸）。
+mc.appendAudit({ t: Date.now(), account: "m1", from: "a@163.com", to: ["b@x.com"], subject: "草稿", by: "agent", tool: "mail_draft", ok: true, messageId: "draft" });
+check("草稿不占 AI 的日上限", mc.sentToday("m1") === 1, String(mc.sentToday("m1")));
 
 // ---------------------------------------------------------------- 删账号要清掉白名单里的 id
 await call("POST", "/api/mail/policy", { accountIds: [deadId] });
@@ -216,6 +219,9 @@ check("删账号顺手把它从「AI 能用哪些账号」里去掉", Array.isAr
 // ---------------------------------------------------------------- 默认账号给个能用的
 r = await call("POST", "/api/mail/accounts", { id: accId, address: "me@163.com", preset: "163", secret: "abcdefghijklmnop", enabled: false });
 check("停用默认账号", r.status === 200, `${r.status} ${r.body?.code ?? ""}`);
+// 停用的账号连人也不给用：以前页面口只 findAccount、不看 enabled，CHANGELOG 那句「页面只受账号停用限制」不成立。
+r = await call("GET", `/api/mail/message?account=${accId}&folder=INBOX`);
+check("停用的账号页面也读不了（409 account-disabled）", r.status === 409 && r.body?.code === "account-disabled", `${r.status} ${r.body?.code}`);
 {
   const { res, out } = fakeRes();
   await mail.handleMailTool(fakeReq("POST", { token: "t1", args: {} }), res, new URL("http://127.0.0.1:7864/api/mail/tool/mail_accounts"), {
@@ -224,6 +230,8 @@ check("停用默认账号", r.status === 200, `${r.status} ${r.body?.code ?? ""}
     confirm: async () => ({ ok: true }),
   });
   check("默认账号停了就不报它（返回 null 而不是一个必定被拒的 id）", out.body?.defaultAccount === null, JSON.stringify(out.body?.defaultAccount));
+  // B21：v1 没有任何「改邮箱状态」的动作，面板也不给那个开关，别向模型报一个不存在的权限。
+  check("mail_accounts 不再把 mutate 报给模型", !("mutate" in (out.body?.policy ?? {})), JSON.stringify(Object.keys(out.body?.policy ?? {})));
 }
 await call("POST", "/api/mail/accounts", { id: accId, address: "me@163.com", preset: "163", secret: "abcdefghijklmnop", enabled: true });
 

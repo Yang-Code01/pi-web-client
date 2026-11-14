@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { auditOutcome, MAIL_POLICY_LABELS, MailConfirmQueue, parseRecipients, portOf, secureForPort, sizeText, whenText } from "../src/mail-shared.ts";
+import { auditOutcome, MAIL_ERROR_TEXT, MAIL_POLICY_LABELS, MailConfirmQueue, mailErrorText, parseRecipients, portOf, secureForPort, sizeText, whenText } from "../src/mail-shared.ts";
 
 test("权限表覆盖六个开关，键与桥端一致", () => {
   assert.deepEqual(
@@ -67,7 +67,7 @@ test("审计结果：存草稿不能显示成「已发出」", () => {
 
 test("自定义服务器：TLS 由端口算，不再靠「字符串里有没有 587」", () => {
   // 隐式 TLS
-  for (const port of [993, 995, 465]) {
+  for (const port of [993, 465]) {
     assert.equal(secureForPort(port, "imap"), true, `imap ${port}`);
     assert.equal(secureForPort(port, "smtp"), true, `smtp ${port}`);
   }
@@ -79,6 +79,8 @@ test("自定义服务器：TLS 由端口算，不再靠「字符串里有没有 
   // 认不出来的端口：IMAP 默认开、SMTP 默认关（和预设表同一口径）
   assert.equal(secureForPort(1433, "imap"), true);
   assert.equal(secureForPort(1433, "smtp"), false);
+  // 995 是 POP3S：本仓库只说 IMAP/SMTP，别顺手认一个用不上的端口
+  assert.equal(secureForPort(995, "imap"), true, "认不出来的端口对 IMAP 默认开");
 });
 
 test("端口输入框：空 / 非数字 / 越界都回落到预设", () => {
@@ -134,4 +136,20 @@ test("发信确认：队列变化会通知重画（有当前那封 / 收摊）",
   assert.equal(paints, 2, "结掉之后要再收一次（队列空了就收摊）");
   queue.push("", mail);
   assert.equal(paints, 2, "空 reqId 不算一条");
+});
+
+test("审计里的失败原因：翻译成人话，认不出来的码不往外露", () => {
+  // B20：以前直接把 `smtp-error` 这种稳定错误码铺在用户眼前。
+  assert.equal(mailErrorText("smtp-error"), "发送失败：服务器拒收");
+  assert.equal(mailErrorText(" rate-limited "), "当天发信额度用完了");
+  assert.equal(mailErrorText("no-ack"), "确认弹窗没有回音，没发出去");
+  // 页面自己 5 分钟没点，和「服务器没回应」不是一回事
+  assert.notEqual(mailErrorText("confirm-timeout"), mailErrorText("timeout"));
+  // 认不出来的：回空串，调用方显示「失败」，不把码亮出来
+  assert.equal(mailErrorText("weird-code-xyz"), "");
+  assert.equal(mailErrorText(undefined), "");
+  // 表里每一条都得是中文原文（使用处 tr()），否则英文界面会漏成码
+  for (const [code, text] of Object.entries(MAIL_ERROR_TEXT)) {
+    assert.match(text, /[\u4e00-\u9fa5]/, `${code} 的文案不像中文原文`);
+  }
 });
