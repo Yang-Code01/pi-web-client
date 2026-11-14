@@ -501,7 +501,14 @@ export class ChatView {
     });
   }
 
-  /** 点缩略图里的一行：把那一轮滚到视口顶部（最后一轮则直接回到底部继续跟流）。 */
+  /**
+   * 点缩略图里的一行：把那一轮滚到视口顶部 —— **最后一轮也一样**。
+   *
+   * D60 原本把最后一轮特判成「直接回到底部并继续跟流」，可点那一行的意思就是「回到我那句输入」：
+   * 回答一长，人就被甩到几千像素外的末尾，看到的是答案的尾巴，不是自己点的那一轮（用户报的 bug）。
+   * 唯一保留「回到底部」的情形是**滚不过去**：那一轮的开头本来就落在最后一屏里（`top >= maxScroll`），
+   * 顶到视口顶部也只能贴到底 —— 像素一模一样，那就顺手把跟流留住（正在流的长回答不会断在半截）。
+   */
   private jumpToTurn(index: number): void {
     // #244: 点已载入的轮次 = 用户自己找了去处，自动翻页让道（它自己的收尾也会走到这里，先清过再走的）。
     this.cancelPendingJump();
@@ -510,7 +517,11 @@ export class ChatView {
     const turn = this.turns[index];
     if (!turn || !turn.node.isConnected) return;
     this.flashTurn(index, 1200);
-    if (index === this.turns.length - 1) {
+    /** 那一轮的用户气泡「顶到视口顶部」要滚到的位置（留 6px 呼吸）。 */
+    const startTop = (): number =>
+      turn.node.getBoundingClientRect().top - this.root.getBoundingClientRect().top + this.root.scrollTop - 6;
+    const maxScroll = this.root.scrollHeight - this.root.clientHeight;
+    if (startTop() >= maxScroll - 1) {
       this.follow();
       return;
     }
@@ -519,8 +530,8 @@ export class ChatView {
     this.pendingScroll = 0;
     // 从底部往上跳的第一帧 scroll 事件里，视口其实还没离开底部；不挡住它就会立刻 resumeFollowing。
     this.holdFollow = performance.now() + 900;
-    const top = turn.node.getBoundingClientRect().top - this.root.getBoundingClientRect().top + this.root.scrollTop - 6;
-    this.root.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    // 停跟流会把「回到底部」那颗钮也点亮/收起，量之前重算一次，别滚到几像素外。
+    this.root.scrollTo({ top: Math.max(0, startTop()), behavior: "smooth" });
   }
 
   /**

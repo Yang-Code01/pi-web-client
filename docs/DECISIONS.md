@@ -430,6 +430,8 @@
 
 ## D60 对话右缘一条「轮次刻度带」，悬停展开每轮输入的列表
 
+> **修订（D249，2026-11-14，用户报告）：** 下面那句「点一行/一根刻度 → 那一轮滚到视口顶部（最后一轮则回到底部并继续跟流）」的前半段不变、**后半段作废** —— 点最后一轮也落在它自己那次输入上（顶对齐、停跟流）；只有「那一轮本来就落在最后一屏里、顶到顶部也只能贴底」时才回到底部。理由、判据与代价见 D249。
+
 **决定**：`web/src/turns.ts` 的 `mountTurnRail(host, opts)` 在 `.chat-pane` 上挂一条宽 14px 的刻度带（`right: 12px`，即滚动条左边那 16px 走廊里；桌面端 `.chat-scroll` 的右内边距从 26px 加到 34px 给它腾地方）。一根刻度 = 一轮用户输入（2px 高、间距 4px），轮次多于版面时**按比例抽样**（首尾必留，最后一轮永远在带上）。悬停展开左侧小列表：每行一轮、单行右对齐、超出打点、行尾一短横（10px）；当前这一轮（视口顶部翻过去的最后一轮）整行微微提亮、那根短横拉长到 24px 并转白。**弹层的右缘直接落在刻度那一列上**（`right: 0` 相对刻度带，即面板右缘 = 刻度右缘，再往右 2px 是滚动条），展开时刻度 `opacity: 0` 让位给行尾那列短横 —— 观感是「刻度带被拉宽成一块面板」，而不是框外面还挂着一列刻度（用户口径：「要和 chat 融合到同一个框里面」）。鼠标扫过某行 → 那行与正文里对应那条 `.msg.user` 同时描边（`.turn-flash`，点完会自己亮 1.2s）；点一行/一根刻度 → 那一轮滚到视口顶部（最后一轮则回到底部并继续跟流）。
 
 **为什么**：用户要的是「一眼看出这次对话有几轮、现在在第几轮，然后一下跳过去」。整套只在 `web/src/` 里加，桥和协议零改动 —— 轮次从已经渲染出来的 user 项里数出来，不引入新状态。刻度带只在 `(hover: hover) and (min-width: 900px)` 下显示：手机上它挡内容，又没有悬停可言。
@@ -4451,6 +4453,22 @@ D
 - 测试书：`F:/pi-web-client-wt/feat/lan-market/.scratch/lan-market/局域网共享市场-测试书.xlsx`（15 sheet = 总览 + TC01~TC14，40 张内嵌真实截图，0 公式 / 0 错误）与一比一复刻的 `F:/pi-web-client-wt/feat/lan-market/.scratch/lan-market/局域网共享市场-测试书.html`（15 个 sheet 标签、点击 / 方向键切换、`#TC14` hash 恢复、40 张内嵌图、`SELFCHECK_OK`、0 console error）。两者都在 `.scratch/` 下，不进提交；三份测试环境已由 TC14 关闭。
 - 编号：代码注释、协议文档与 PLAN 中原本写的 D246 全部机械改为 D248；main 的 D246 / D247 在合并冲突解决时原样保留。
 
+## D249 点最后一轮也落在它自己那句输入上（修订 D60）
+
+**问题：** 用户报：「选择其他用户输入计入，能自动跳转，但是选择最后一个记录，跳到的末尾，并不是我最后一次输入的记录」。截图里刻度带展开列表停在最后一行（「我现在 pi cli 装了很多扩展后，启动会很慢，能否优化，」），正文却停在那一轮长回答的末尾、输入框就在脚下 —— 他点的是「我那句输入」，看到的是「答案的尾巴」。
+
+**根因：** `web/src/chat.ts` 的 `jumpToTurn(index)` 里有一句特判 `if (index === this.turns.length - 1) { this.follow(); return; }`：最后一轮直接回到底部并继续跟流。这是 D60 当时定的口径（「最后一轮则回到底部」），但它只在「最后一轮就是最末尾」这个前提下说得通 —— 回答一长，最后一次输入离末尾几千像素，跳过去就等于没跳。
+
+**决定：** 删掉这条特判，最后一轮与其它轮走同一条路：`startTop()` 算出「把这一轮的用户气泡顶到视口顶部」该滚到的位置，`stopFollowing()` → 挡一帧 `holdFollow` → `scrollTo({ behavior: "smooth" })`。唯一保留「回到底部」的情形是**滚不过去**：`startTop() >= scrollHeight - clientHeight - 1`，也就是这一轮的开头本来就落在最后一屏里 —— 那时顶对齐与贴底是同一个像素，顺手把跟流留住（正在流的长回答不会断在半截，`回到底部`按钮也不会白闪一下）。
+
+**为什么不是「永远顶对齐」：** 最后一轮短于一屏时（`probes/round20-turns.mjs` 里的 200 轮会话），顶对齐只能被浏览器夹到 `maxScroll`，位置与回到底部完全一致，却会把跟流关掉 —— 用户什么也没看见变，失去的却是「回答继续往下流我会跟着」这件事。判据用 `startTop() >= maxScroll - 1` 而不是「这一轮多高」，因为真正决定「能不能顶到顶部」的是「它后面还有没有一屏的内容」，不是它自己多高。
+
+**坑：** `.chat-jump`（回到底部那颗钮）是 `position: sticky` + `margin: -36px 0 0`，显隐会改变 `scrollHeight` 约 6px。所以滚动目标要在 `stopFollowing()` **之后**再量一次（`startTop()` 调用两次），否则偶尔会差几像素停不正。
+
+**代价：** 最后一轮也要先 `stopFollowing()`，所以点完最后一轮后新来的流不会自动跟（想跟就点一下「回到底部」）。这是「用户自己找了去处」的一致语义：其它轮一直如此，最后一轮不再特殊。
+
+**验证：** `npm run build:web && node probes/round20-turns.mjs`（会话 A 的最后一轮故意做成一屏放不下：点最后一行 → 顶对齐、下方 gap > 200、`.chat-jump` 出现；会话 B 每轮都短：点最后一根刻度 → 仍贴底、跟流保留、最后一次输入在视口内）；另有 `probes/turn-rail-last.mjs` 单独盯这条 bug（4 轮 × 长回答，最后一根刻度 / 最后一行 / 中间一行三条路各量一次）。修前红：`last tick: round 4 top -884.3 pane 96.4 gap below 0`。
+
 ## D250 转录「自己跳到最底部」：滚动条槽位常驻，进场不再重排（用户报障 2026-11-14）
 
 **问题：** 用户（2026-11-14，附截图）：「我点击展开操作记录时，会自动展开，并且展开后自动移动到最底部。但是有时候又不会。」截图里折叠块是「31 个操作 · bash ×25 · read ×6」，展开后视口停在转录末尾。
@@ -4458,7 +4476,7 @@ D
 **事实（探针实测，真 Edge 量宽度）：**
 
 - `.chat-scroll` 的滚动条是 `web/src/styles.css:83` 的 `::-webkit-scrollbar { width: 10px }` 画的，**占 10px 布局宽度**：`probes/ops-expand-scroll.mjs` 记的 `gutter = offsetWidth - clientWidth` 在真 Edge 里溢出前 1、溢出后 10。headless 的 chromium-headless-shell 是 overlay 滚动条（`gutter` 恒为 1），**这条复现不出来** —— 必须 `PI_PROBE_BROWSER=msedge` 跑真 Edge。
-- 转录第一次从「装得下」变成「溢出」时，内容盒当场窄 10px，root 的 `ResizeObserver`（改动前在 `web/src/chat.ts:381`，今 `web/src/chat.ts:387`）无条件 `if (this.following) this.scheduleScroll()`，而 `scheduleScroll()` 就是 `scrollTop = scrollHeight` —— 视口翻到转录末尾：探针 before `{top:0, sh:600, gutter:1}` → after `{top:6482, sh:7082, gutter:10}`，滚动写入落在 `.chat-scroll` 上（调用栈是 `scheduleScroll` 的 rAF）。
+- 转录第一次从「装得下」变成「溢出」时，内容盒当场窄 10px，root 的 `ResizeObserver`（`web/src/chat.ts:381`）无条件 `if (this.following) this.scheduleScroll()`，而 `scheduleScroll()` 就是 `scrollTop = scrollHeight` —— 视口翻到转录末尾：探针 before `{top:0, sh:600, gutter:1}` → after `{top:6482, sh:7082, gutter:10}`，滚动写入落在 `.chat-scroll` 上（调用栈是 `scheduleScroll` 的 rAF）。
 - 为什么「有时候又不会」：滚动条只在**第一次溢出**时进场。转录本来就溢出、用户又用滚轮上滚过（`following === false`，D94 / D168）时，RO 只走 `renderJump()`，一个像素都不动，槽宽也不再变。
 - 为什么短会话必跳：D168 让 `stopFollowing()` / `holdUp()` 在 `!hasRoomBelow()` 时提前 return，所以**装得下的会话里 `following` 恒为 true**，没有「你已经上滚了」这个状态能救场。
 
