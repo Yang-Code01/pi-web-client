@@ -9,16 +9,24 @@ import { createEl as el } from "./chat.ts";
 import { errText, fmtTime, tr } from "./i18n/index.ts";
 import {
   DNS_PRESETS,
+  clockText,
   filterServices,
   formatBytes,
+  formatCountdown,
+  formatDuration,
   parseDnsInput,
+  parseHours,
   presetOf,
   sameServers,
   serviceStartLabel,
   serviceStatusLabel,
   statusTone,
+  targetText,
   uptimeParts,
   visiblePorts,
+  weekdayOf,
+  workdayName,
+  workedPercent,
 } from "./sysmanage-model.ts";
 import type {
   DnsResult,
@@ -30,7 +38,11 @@ import type {
   SysPorts,
   SysSection,
   SysServices,
+  SysWorkclock,
   WinnatInfo,
+  WorkclockDay,
+  WorkclockSource,
+  WorkclockToday,
 } from "./sysmanage-types.ts";
 import "./sysmanage.css";
 
@@ -47,6 +59,7 @@ interface State {
   network: SysNetwork | null;
   ports: SysPorts | null;
   services: SysServices | null;
+  workclock: SysWorkclock | null;
   loading: Record<SysSection, boolean>;
   error: Record<SysSection, string>;
   selectedGuid: string;
@@ -59,6 +72,10 @@ interface State {
   busyDns: boolean;
   busyWinnat: boolean;
   notice: Notice | null;
+  /** 工时输入框里的草稿；保存成功后被服务端值覆盖。 */
+  wkHours: string;
+  /** 空串表示没有正在跑的写入；装记录器、回填可能慢，得把按钮禁掉。 */
+  wkBusy: "" | "save" | "install" | "uninstall" | "backfill";
 }
 
 const EMPTY_LOADING: Record<SysSection, boolean> = {
@@ -66,6 +83,7 @@ const EMPTY_LOADING: Record<SysSection, boolean> = {
   network: false,
   ports: false,
   services: false,
+  workclock: false,
 };
 
 const EMPTY_ERROR: Record<SysSection, string> = {
@@ -73,6 +91,7 @@ const EMPTY_ERROR: Record<SysSection, string> = {
   network: "",
   ports: "",
   services: "",
+  workclock: "",
 };
 
 let current: SysPanel | null = null;
@@ -91,6 +110,7 @@ class SysPanel {
     network: null,
     ports: null,
     services: null,
+    workclock: null,
     loading: { ...EMPTY_LOADING },
     error: { ...EMPTY_ERROR },
     selectedGuid: "",
@@ -103,6 +123,8 @@ class SysPanel {
     busyDns: false,
     busyWinnat: false,
     notice: null,
+    wkHours: "9",
+    wkBusy: "",
   };
   private root: HTMLElement | null = null;
   private headerSub = "";
@@ -112,6 +134,10 @@ class SysPanel {
   private pane: HTMLElement | null = null;
   private customInput: HTMLInputElement | null = null;
   private noticeTimer: number | null = null;
+  private countdownTimer: number | null = null;
+  private countdownNodes: { digits: HTMLElement; caption: HTMLElement; worked: HTMLElement; bar: HTMLElement } | null = null;
+  /** 已经提醒过哪天，别每秒重复 toast 同一个下班点。 */
+  private notifiedDate = "";
   private renderedSection: SysSection | null = null;
   private scrollBySection = new Map<SysSection, number>();
   private keyHandler = (ev: KeyboardEvent): void => {
@@ -133,6 +159,7 @@ class SysPanel {
   close(): void {
     document.removeEventListener("keydown", this.keyHandler, true);
     if (this.noticeTimer !== null) window.clearTimeout(this.noticeTimer);
+    this.stopCountdown();
     this.root?.remove();
     this.root = null;
     if (current === this) current = null;
@@ -194,7 +221,7 @@ class SysPanel {
 
   // ---------------------------------------------------------------- 数据
 
-  private data(section: SysSection): SysOverview | SysNetwork | SysPorts | SysServices | null {
+  private data(section: SysSection): SysOverview | SysNetwork | SysPorts | SysServices | SysWorkclock | null {
     return this.state[section];
   }
 
@@ -208,13 +235,15 @@ class SysPanel {
     this.state.error[section] = "";
     this.render();
     try {
-      let value: SysOverview | SysNetwork | SysPorts | SysServices;
+      let value: SysOverview | SysNetwork | SysPorts | SysServices | SysWorkclock;
       if (section === "overview") value = await api.sysOverview();
       else if (section === "network") value = await api.sysNetwork();
       else if (section === "ports") value = await api.sysPorts();
-      else value = await api.sysServices();
+      else if (section === "services") value = await api.sysServices();
+      else value = await api.sysWorkclock();
       this.state[section] = value as never;
       if (section === "network") this.ensureSelection();
+      if (section === "workclock") this.state.wkHours = String(this.state.workclock?.settings.hours ?? 9);
     } catch (err) {
       this.state.error[section] = errText(err);
     } finally {
@@ -330,15 +359,17 @@ class SysPanel {
       network: net ? String(net.adapters.length) : "",
       ports: ports ? String(ports.summary.external) : "",
       services: services ? String(services.summary.nonMicrosoft) : "",
+      workclock: this.state.workclock ? `${this.state.workclock.settings.hours}h` : "",
     };
     const labels: Record<SysSection, string> = {
       overview: tr("概况"),
       network: tr("网络与 DNS"),
       ports: tr("端口与服务"),
       services: tr("服务"),
+      workclock: tr("上下班"),
     };
     this.nav.replaceChildren();
-    (["overview", "network", "ports", "services"] as SysSection[]).forEach((section) => {
+    (["overview", "network", "ports", "services", "workclock"] as SysSection[]).forEach((section) => {
       const button = el("button", `sys-nav__item${this.state.section === section ? " on" : ""}`);
       button.type = "button";
       button.onclick = () => this.select(section);
@@ -352,6 +383,7 @@ class SysPanel {
   private paintPane(): void {
     if (!this.pane) return;
     const section = this.state.section;
+    this.stopCountdown();
     if (this.renderedSection !== null) this.scrollBySection.set(this.renderedSection, this.pane.scrollTop);
     this.pane.replaceChildren();
     this.renderedSection = section;
@@ -365,8 +397,10 @@ class SysPanel {
       this.paintNetwork();
     } else if (section === "ports") {
       this.paintPorts();
-    } else {
+    } else if (section === "services") {
       this.paintServices();
+    } else {
+      this.paintWorkclock();
     }
     this.pane.scrollTop = this.scrollBySection.get(section) ?? 0;
   }
@@ -929,7 +963,344 @@ class SysPanel {
     pane.append(table);
   }
 
+  // ---------------------------------------------------------------- 上下班
+
+  /**
+   * 样张 A：左边大数字倒计时，右边四个指标，下面是工时设置、今日明细 + 记录器、近 30 天。
+   * 倒计时不走 re-render —— 每秒重建整个面板会把滚动位置和输入框光标打掉，只改几个节点。
+   */
+  private paintWorkclock(): void {
+    const pane = this.pane!;
+    const data = this.state.workclock;
+    if (!data) return;
+    if (!data.supported) {
+      pane.append(this.note(tr("这个系统没有上下班统计：解锁时间要从 Windows 的会话事件和 Security 日志里读。")));
+      return;
+    }
+    const today = data.today;
+    const now = Date.now();
+    pane.append(this.sectionHead(tr("上下班"), tr("近 {p1} 天", { p1: data.days.length })));
+
+    const grid = el("div", "sys-wk-grid");
+    const hero = el("div", "sys-wk-hero");
+    const caption = el("div", "sys-wk-hero__caption", this.countdownCaption(today, now));
+    const digits = el("div", "sys-wk-hero__digits", today.target === null ? "--:--:--" : formatCountdown(today.target - now));
+    if (today.target !== null && today.target <= now) digits.classList.add("is-overtime");
+    const sub = el("div", "sys-wk-hero__sub");
+    sub.append(el("span", "sys-wk-hero__kv", tr("第一次解锁 {p1}", { p1: today.firstUnlock === null ? "—" : clockText(today.firstUnlock) })));
+    sub.append(el("span", "sys-wk-hero__dot", "·"));
+    const worked = el("span", "sys-wk-hero__worked", formatDuration(today.firstUnlock === null ? 0 : now - today.firstUnlock));
+    const workedKv = el("span", "sys-wk-hero__kv");
+    workedKv.append(tr("已工作"), "\u00a0", worked);
+    sub.append(workedKv);
+    const bar = this.bar(today.firstUnlock === null ? 0 : workedPercent(now - today.firstUnlock, data.settings.hours), "accent");
+    hero.append(caption, digits, sub, bar);
+
+    const stats = el("div", "sys-wk-stats");
+    stats.append(
+      this.card(tr("上班"), today.firstUnlock === null ? "—" : clockText(today.firstUnlock), today.source ? this.sourceLabel(today.source) : tr("没有记录")),
+    );
+    stats.append(this.card(tr("目标下班"), today.target === null ? "—" : targetText(today.target, now), tr("每天 {p1} 小时", { p1: data.settings.hours })));
+    stats.append(this.card(tr("今日解锁"), tr("{p1} 次", { p1: today.unlocks }), today.workday ? tr("工作日") : tr("休息日")));
+    const met = data.days.filter((d) => d.met).length;
+    const workdays = data.days.filter((d) => d.workday).length;
+    stats.append(this.card(tr("达标"), `${met}/${workdays}`, tr("近 {p1} 天里的工作日", { p1: data.days.length })));
+    grid.append(hero, stats);
+    pane.append(grid);
+
+    const settings = el("div", "sys-wk-panel");
+    settings.append(this.sectionHead(tr("每天工时"), tr("改完立刻重算倒计时")));
+    const form = el("div", "sys-wk-form");
+    form.append(el("span", "sys-wk-form__label", tr("每天工时")));
+    const hourInput = document.createElement("input");
+    hourInput.type = "number";
+    hourInput.className = "sys-wk-input";
+    hourInput.min = "0.5";
+    hourInput.max = "24";
+    hourInput.step = "0.5";
+    hourInput.value = this.state.wkHours;
+    hourInput.disabled = this.state.wkBusy !== "";
+    hourInput.oninput = () => {
+      this.state.wkHours = hourInput.value;
+    };
+    form.append(hourInput, el("span", "sys-wk-form__unit", tr("小时")));
+    const save = el("button", "btn ghost", this.state.wkBusy === "save" ? tr("保存中…") : tr("保存"));
+    save.type = "button";
+    save.disabled = this.state.wkBusy !== "";
+    save.onclick = () => void this.saveWorkclock(hourInput.value);
+    form.append(save);
+
+    const weekdays = el("div", "sys-wk-days");
+    weekdays.append(el("span", "sys-wk-form__label", tr("算上班的星期")));
+    for (let i = 0; i < 7; i += 1) {
+      const on = data.settings.workdays.includes(i);
+      const chip = el("button", `sys-wk-chip${on ? " on" : ""}`, workdayName(i));
+      chip.type = "button";
+      chip.disabled = this.state.wkBusy !== "";
+      chip.setAttribute("aria-pressed", on ? "true" : "false");
+      chip.onclick = () => void this.toggleWorkday(i);
+      weekdays.append(chip);
+    }
+    settings.append(form, weekdays);
+    pane.append(settings);
+
+    const cols = el("div", "sys-wk-cols");
+    cols.append(this.todayPanel(data), this.agentPanel(data));
+    pane.append(cols);
+    pane.append(this.historyTable(data.days));
+    pane.append(this.note(tr("上班 = 当天第一次解锁；倒计时是墙上时间，午休照走；再解锁几次不重置。")));
+
+    this.startCountdown({ digits, caption, worked, bar });
+  }
+
+  private todayPanel(data: SysWorkclock): HTMLElement {
+    const panel = el("div", "sys-wk-panel");
+    const today = data.today;
+    panel.append(this.sectionHead(tr("今日明细"), today.ongoing ? tr("还在工作") : tr("已收工")));
+    const list = el("div", "sys-wk-events");
+    if (!today.events.length) list.append(this.note(tr("今天还没有解锁记录；记录器没装的话，要靠日志回填。")));
+    for (const ev of today.events) {
+      const row = el("div", "sys-wk-event");
+      row.append(el("span", "sys-wk-event__time", clockText(ev.t)));
+      row.append(el("span", `sys-wk-event__kind sys-wk-event__kind--${ev.k}`, ev.k === "unlock" ? tr("解锁") : tr("锁屏")));
+      row.append(el("span", "sys-wk-event__src", this.sourceLabel(ev.src === "start" ? "event" : ev.src)));
+      list.append(row);
+    }
+    panel.append(list);
+    return panel;
+  }
+
+  private agentPanel(data: SysWorkclock): HTMLElement {
+    const panel = el("div", "sys-wk-panel");
+    const agent = data.agent;
+    panel.append(this.sectionHead(tr("记录器"), tr("零权限，跟着你登录")));
+    const line = el("div", "sys-wk-agent");
+    line.append(this.toneDot(agent.running ? "ok" : agent.installed ? "warn" : "dim"));
+    line.append(el("span", "sys-wk-agent__state", agent.running ? tr("运行中") : agent.installed ? tr("已安装但没有心跳") : tr("未安装")));
+    if (agent.pid !== null && agent.running) line.append(el("span", "sys-wk-agent__meta", `pid ${agent.pid}`));
+    panel.append(line);
+    const facts = el("div", "sys-wk-facts");
+    facts.append(this.fact(tr("登录时自启"), agent.autostart ? tr("已注册") : tr("未注册")));
+    facts.append(this.fact(tr("见过锁屏"), tr("{p1} 次", { p1: agent.locksSeen })));
+    let lastEvent = "—";
+    if (agent.lastEventAt !== null) {
+      const kind = agent.lastEventKind === "lock" ? tr("锁屏") : tr("解锁");
+      lastEvent = `${clockText(agent.lastEventAt)} ${kind}`;
+    }
+    facts.append(this.fact(tr("最后事件"), lastEvent));
+    panel.append(facts);
+    const coverage = data.coverage;
+    panel.append(
+      this.note(
+        coverage.days
+          ? tr("历史覆盖 {p1} 天：记录器 {p2} 天，日志回填 {p3} 天", { p1: coverage.days, p2: coverage.agentDays, p3: coverage.logDays })
+          : tr("还没有历史：先装记录器，或者导入历史"),
+      ),
+    );
+    const actions = el("div", "sys-wk-actions");
+    const install = el("button", "btn", this.state.wkBusy === "install" ? tr("启动中…") : agent.installed ? tr("重新启动记录器") : tr("装上记录器"));
+    install.type = "button";
+    install.disabled = this.state.wkBusy !== "";
+    install.onclick = () => void this.runAgent("install");
+    actions.append(install);
+    if (agent.installed) {
+      const stop = el("button", "btn ghost", this.state.wkBusy === "uninstall" ? tr("正在移除…") : tr("停止并移除"));
+      stop.type = "button";
+      stop.disabled = this.state.wkBusy !== "";
+      stop.onclick = () => void this.runAgent("uninstall");
+      actions.append(stop);
+    }
+    const backfill = el("button", "btn ghost", this.state.wkBusy === "backfill" ? tr("等 UAC 点是…") : tr("导入历史（需管理员）"));
+    backfill.type = "button";
+    backfill.disabled = this.state.wkBusy !== "" || data.public;
+    backfill.onclick = () => void this.runBackfill();
+    actions.append(backfill);
+    panel.append(actions);
+    return panel;
+  }
+
+  private historyTable(days: WorkclockDay[]): HTMLElement {
+    const panel = el("div", "sys-wk-panel");
+    panel.append(this.sectionHead(tr("最近 {p1} 天", { p1: days.length })));
+    const table = el("table", "sys-table sys-wk-table");
+    const thead = el("thead");
+    const head = el("tr");
+    for (const label of [tr("日期"), tr("上班"), tr("下班"), tr("工时"), tr("来源"), tr("状态")]) {
+      head.append(el("th", "", label));
+    }
+    thead.append(head);
+    table.append(thead);
+    const tbody = el("tbody");
+    for (const day of days) {
+      const row = el("tr", day.workday ? "" : "is-rest");
+      row.append(el("td", "sys-wk-table__date", `${day.date.slice(5)} ${weekdayOf(day.date)}`));
+      row.append(el("td", "sys-table__mono", day.firstUnlock === null ? "—" : clockText(day.firstUnlock)));
+      row.append(el("td", "sys-table__mono", day.lastEnd === null ? "—" : clockText(day.lastEnd)));
+      row.append(el("td", "sys-table__mono", day.firstUnlock === null ? "—" : formatDuration(day.workedMs)));
+      const source = el("td");
+      if (day.source) source.append(el("span", `sys-wk-tag sys-wk-tag--${day.source}`, this.sourceLabel(day.source)));
+      else source.append(el("span", "sys-wk-tag", "—"));
+      row.append(source);
+      const state = el("td");
+      state.append(this.dayTag(day));
+      row.append(state);
+      tbody.append(row);
+    }
+    table.append(tbody);
+    panel.append(table);
+    return panel;
+  }
+
+  private dayTag(day: WorkclockDay): HTMLElement {
+    if (day.firstUnlock === null) return el("span", "sys-wk-tag", tr("没有记录"));
+    if (day.ongoing) return el("span", "sys-wk-tag sys-wk-tag--ok", tr("进行中"));
+    if (day.met) return el("span", "sys-wk-tag sys-wk-tag--ok", tr("达标"));
+    if (!day.workday) return el("span", "sys-wk-tag", tr("休息日"));
+    return el("span", "sys-wk-tag sys-wk-tag--warn", tr("未满"));
+  }
+
+  private sourceLabel(source: WorkclockSource): string {
+    if (source === "log") return tr("日志");
+    if (source === "poll") return tr("估计");
+    return tr("事件");
+  }
+
+  private countdownCaption(today: WorkclockToday, now: number): string {
+    if (today.firstUnlock === null) return tr("还没有今天的上班记录");
+    if (today.target !== null && today.target <= now) return tr("已过下班点");
+    return tr("距离下班");
+  }
+
+  /** 每秒只改四个节点（大字、标题、已工作、进度条），不重建 DOM。 */
+  private startCountdown(nodes: { digits: HTMLElement; caption: HTMLElement; worked: HTMLElement; bar: HTMLElement }): void {
+    this.stopCountdown();
+    this.countdownNodes = nodes;
+    this.updateCountdown();
+    this.countdownTimer = window.setInterval(() => this.updateCountdown(), 1000);
+  }
+
+  private stopCountdown(): void {
+    if (this.countdownTimer !== null) window.clearInterval(this.countdownTimer);
+    this.countdownTimer = null;
+    this.countdownNodes = null;
+  }
+
+  private updateCountdown(): void {
+    const nodes = this.countdownNodes;
+    const data = this.state.workclock;
+    if (!nodes || !data) return;
+    const today = data.today;
+    const now = Date.now();
+    const target = today.target;
+    const first = today.firstUnlock;
+    if (target === null || first === null) {
+      nodes.digits.textContent = "--:--:--";
+      nodes.caption.textContent = tr("还没有今天的上班记录");
+      nodes.worked.textContent = "—";
+      return;
+    }
+    nodes.digits.textContent = formatCountdown(target - now);
+    nodes.digits.classList.toggle("is-overtime", target <= now);
+    nodes.caption.textContent = target <= now ? tr("已过下班点") : tr("距离下班");
+    const worked = Math.max(0, now - first);
+    nodes.worked.textContent = formatDuration(worked);
+    const fill = nodes.bar.firstElementChild;
+    if (fill instanceof HTMLElement) fill.style.width = `${workedPercent(worked, data.settings.hours)}%`;
+    if (data.settings.notify && target <= now && target > now - 60_000 && this.notifiedDate !== today.date) {
+      this.notifiedDate = today.date;
+      this.setNotice("ok", tr("到点了：今天的 {p1} 小时满了", { p1: data.settings.hours }));
+    }
+  }
+
+  private async saveWorkclock(text: string): Promise<void> {
+    if (this.state.wkBusy) return;
+    const hours = parseHours(text);
+    if (hours === null) {
+      this.setNotice("bad", tr("工时要在 0.5–24 小时之间"));
+      return;
+    }
+    this.state.wkBusy = "save";
+    this.render();
+    try {
+      await api.sysWorkclockSettings({ hours });
+      await this.load("workclock", true);
+      this.setNotice("ok", tr("工时改成每天 {p1} 小时", { p1: hours }));
+    } catch (err) {
+      this.setNotice("bad", errText(err));
+    } finally {
+      this.state.wkBusy = "";
+      this.render();
+    }
+  }
+
+  private async toggleWorkday(day: number): Promise<void> {
+    const data = this.state.workclock;
+    if (!data || this.state.wkBusy) return;
+    const current = data.settings.workdays;
+    const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day].sort((a, b) => a - b);
+    if (!next.length) {
+      this.setNotice("bad", tr("至少要留一天算上班"));
+      return;
+    }
+    this.state.wkBusy = "save";
+    this.render();
+    try {
+      await api.sysWorkclockSettings({ workdays: next });
+      await this.load("workclock", true);
+    } catch (err) {
+      this.setNotice("bad", errText(err));
+    } finally {
+      this.state.wkBusy = "";
+      this.render();
+    }
+  }
+
+  private async runAgent(action: "install" | "uninstall"): Promise<void> {
+    if (this.state.wkBusy) return;
+    this.state.wkBusy = action;
+    this.render();
+    try {
+      const res = await api.sysWorkclockAgent(action);
+      if (res.ok === false) this.setNotice("bad", res.error ?? tr("记录器操作失败"));
+      else this.setNotice("ok", action === "install" ? tr("记录器已启动") : tr("记录器已移除"));
+      await this.load("workclock", true);
+    } catch (err) {
+      this.setNotice("bad", errText(err));
+    } finally {
+      this.state.wkBusy = "";
+      this.render();
+    }
+  }
+
+  private async runBackfill(): Promise<void> {
+    if (this.state.wkBusy) return;
+    this.state.wkBusy = "backfill";
+    this.render();
+    try {
+      const res = await api.sysWorkclockBackfill();
+      if (res.ok) this.setNotice("ok", tr("导入了 {p1} 条解锁记录", { p1: res.count ?? 0 }));
+      else this.setNotice("bad", tr("导入历史失败"));
+      await this.load("workclock", true);
+    } catch (err) {
+      this.setNotice("bad", errText(err));
+    } finally {
+      this.state.wkBusy = "";
+      this.render();
+    }
+  }
+
   // ---------------------------------------------------------------- 小件
+
+  private toneDot(tone: "ok" | "warn" | "dim"): HTMLElement {
+    return el("span", `sys-dot sys-dot--${tone}`);
+  }
+
+  private fact(label: string, value: string): HTMLElement {
+    const box = el("div", "sys-wk-fact");
+    box.append(el("span", "sys-wk-fact__label", label));
+    box.append(el("span", "sys-wk-fact__value", value));
+    return box;
+  }
 
   private badge(text: string, tone?: "warn"): HTMLElement {
     return el("span", `sys-badge${tone ? ` sys-badge--${tone}` : ""}`, text);

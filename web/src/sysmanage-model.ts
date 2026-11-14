@@ -142,3 +142,87 @@ export function serviceStartLabel(start: string): string {
   const label = SERVICE_START_LABELS[start];
   return label ? tr(label) : start;
 }
+
+// ---------------------------------------------------------------- 上下班
+
+/** 工时文本：`8 小时 12 分`；不足一分钟给秒，别显示成 `0 分`。 */
+export function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3_600);
+  const minutes = Math.floor((total % 3_600) / 60);
+  if (hours > 0) return tr("{p1} 小时 {p2} 分", { p1: hours, p2: String(minutes).padStart(2, "0") });
+  if (minutes > 0) return tr("{p1} 分 {p2} 秒", { p1: minutes, p2: String(total % 60).padStart(2, "0") });
+  return tr("{p1} 秒", { p1: total });
+}
+
+/** 时刻文本 `09:12`（本地时区）。 */
+export function clockText(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** 目标下班时刻：跨过本地零点就写成「明天 05:37」，不然 23:37 看到「05:37」会以为是今天。 */
+export function targetText(targetMs: number, nowMs: number): string {
+  const a = new Date(targetMs);
+  const b = new Date(nowMs);
+  const sameDay =
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  return sameDay ? clockText(targetMs) : tr("明天 {p1}", { p1: clockText(targetMs) });
+}
+
+export interface Countdown {
+  hours: number;
+  minutes: number;
+  seconds: number;
+  /** 已经过了下班点，数字要换个颜色，读作「加班」。 */
+  overtime: boolean;
+}
+
+export function countdownOf(remainingMs: number): Countdown {
+  const overtime = remainingMs < 0;
+  const total = Math.floor(Math.abs(remainingMs) / 1000);
+  return {
+    hours: Math.floor(total / 3_600),
+    minutes: Math.floor((total % 3_600) / 60),
+    seconds: total % 60,
+    overtime,
+  };
+}
+
+/** 仪表盘上的大字：`02:13:07`；加班时前面加 `+`。 */
+export function formatCountdown(remainingMs: number): string {
+  const c = countdownOf(remainingMs);
+  const body = `${String(c.hours).padStart(2, "0")}:${String(c.minutes).padStart(2, "0")}:${String(c.seconds).padStart(2, "0")}`;
+  return c.overtime ? `+${body}` : body;
+}
+
+const WEEKDAY_KEYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+export function workdayName(day: number): string {
+  const key = WEEKDAY_KEYS[day] ?? "";
+  return key ? tr(key) : "";
+}
+
+/** `2026-11-13` → 周五。用本地分量拼日期，避免 `new Date("2026-11-13")` 被当 UTC。 */
+export function weekdayOf(dateKey: string): string {
+  const [y, m, d] = dateKey.split("-").map((part) => Number(part));
+  if (!y || !m || !d) return "";
+  const date = new Date(y, m - 1, d);
+  // 2026-13-40 / 2026-02-30 这种会被 Date 滚到下个月，键本身不合法。
+  if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) return "";
+  return workdayName(date.getDay());
+}
+
+/** 进度条百分比：已工作 / 目标工时，封顶 100。 */
+export function workedPercent(workedMs: number, hours: number): number {
+  const target = hours * 3_600_000;
+  if (target <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((workedMs / target) * 100)));
+}
+
+/** 设置里的工时输入：`9`、`8.5` 都认，夹在 0.5–24 并取 0.5 步长。 */
+export function parseHours(text: string): number | null {
+  const value = Number(text.trim().replace(",", "."));
+  if (!Number.isFinite(value) || value < 0.5 || value > 24) return null;
+  return Math.round(value * 2) / 2;
+}

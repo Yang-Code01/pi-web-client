@@ -4,6 +4,10 @@
  *
  *   node --experimental-strip-types bridge/tests/translate-unit.mjs
  */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import {
   applySync,
   cleanOut,
@@ -17,6 +21,12 @@ import {
   tableDiff,
   translateDoc,
 } from "../src/translate.ts";
+import { TranslateJobs } from "../src/translatejob.ts";
+import { piChildEnv } from "../src/paths.ts";
+
+// 翻译任务会往状态目录写缓存：指到临时目录，绝不碰用户真实的翻译缓存。
+const STATE = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tr-unit-"));
+process.env.PI_WEB_STATE = STATE;
 
 const results = [];
 const check = (name, ok, detail = "") => {
@@ -85,12 +95,25 @@ check("剥掉「译文：」", cleanOut("译文：\n# 标题") === "# 标题");
 /* ── 整篇翻译（假模型） ───────────────────────────────────────────────── */
 const run = { cli: "x.js", cwd: ".", lang: "zh", provider: "p", model: "m", fast: true };
 let calls = 0;
-/** 假模型：把每行原文加前缀「译:」，代码段不动（反正代码段不会送到这里）。 */
+/** 假模型：把每行原文加前缀「译:」，代码段不动（反正代码段不会送到这里）。
+ *  表格行不能在行首加前缀 —— 桥按「行首是不是 |」数表格行，加了就成了一张没有表格的译文
+ *  （tableDiff 判不合格 → 节标 failed → 缓存不复用，后面复用用例会假失败）。标记落在单元格尾巴上。 */
 const fake = async (chunk) => {
   calls++;
   return chunk
     .split("\n")
-    .map((l) => (l.trim() ? `译:${l}` : l))
+    .map((l) => {
+      if (!l.trim()) return l;
+      if (/^\s*\|/.test(l)) {
+        const cells = l.split("|");
+        return cells
+          .map((cell, i) =>
+            i === 0 || i === cells.length - 1 || !cell.trim() || /^[\s:-]+$/.test(cell) ? cell : `${cell.trimEnd()} 译`,
+          )
+          .join("|");
+      }
+      return `译:${l}`;
+    })
     .join("\n");
 };
 
@@ -192,6 +215,78 @@ check("找不到的块报 missing", gone.missing.length === 1 && gone.applied.le
 const echo = async (chunk) => chunk;
 const lazy = await translateDoc("## 見出し\n\n連携種別がDIASに切り替える場合、オフラインで受領した納品書を中止してください。\n", run, echo);
 check("照抄原文被拦下只告警不崩", lazy.sections[0].out.includes("連携種別") && lazy.warnings.length >= 0);
+
+/* ── 模型调用失败：绝不把「原文」当「译文」摆成翻完了 ──────────────── */
+const boom = async () => {
+  throw new Error("pi 退出码 1：Connection error.");
+};
+const jpOne = "## 見出し\n\n注番を追加する。\n";
+const dead = await translateDoc(jpOne, run, boom);
+check("调用失败时保留原文", dead.sections[0].out === dead.sections[0].src, dead.sections[0].out.slice(0, 30));
+check("调用失败时这节标 failed", dead.sections[0].failed === true);
+check("调用失败时 failures 带原始原因", dead.failures.length === 1 && /Connection error/.test(dead.failures[0]), JSON.stringify(dead.failures));
+check("调用失败也算告警", dead.warnings.some((w) => /Connection error/.test(w)), JSON.stringify(dead.warnings));
+
+// 一篇里只挂了一节：失败的那节标 failed、保留原文，翻好的那节照常出译文、不算失败。
+const jpTwo = "## A\n\n注番を追加する。\n\n## B\n\n納品書を中止してください。\n";
+const halfDead = async (c) => {
+  if (c.includes("注番")) throw new Error("pi 退出码 1：Connection error.");
+  return fake(c);
+};
+const partial = await translateDoc(jpTwo, run, halfDead);
+check("部分失败：一共两节", partial.sections.length === 2);
+check("部分失败：只给失败节标 failed", partial.sections[0].failed === true && !partial.sections[1].failed);
+check("部分失败：失败节保留原文", partial.sections[0].out === partial.sections[0].src);
+check("部分失败：成功节是真译文", partial.sections[1].out !== partial.sections[1].src);
+check("部分失败：failures 只记挂掉的那块", partial.failures.length === 1 && /Connection error/.test(partial.failures[0]), JSON.stringify(partial.failures));
+
+// 旧坏缓存（out === src、没有 failed 字段，就是用户截图里那份）点「更新」必须真重翻。
+const badKeep = new Map(dead.sections.map((s) => [s.heading || "\u0000preamble", s]));
+const beforeBad = calls;
+const refetched = await translateDoc(jpOne, run, fake, { keep: badKeep });
+check("坏缓存 out===src 不被复用", calls > beforeBad, `calls +${calls - beforeBad}`);
+check("重翻后不再是原文", refetched.sections[0].out !== refetched.sections[0].src);
+check("重翻成功后不标 failed", !refetched.sections[0].failed);
+
+// 失败节人已经接手改好译文：以人写的为准，别在「更新」时再让机器覆盖掉。
+const handFixed = new Map(dead.sections.map((s) => [s.heading || "\u0000preamble", { ...s, out: "追加注号。" }]));
+const beforeFixed = calls;
+const keptFixed = await translateDoc(jpOne, run, fake, { keep: handFixed });
+check("手改过的失败节不再重翻", calls === beforeFixed, `calls +${calls - beforeFixed}`);
+check("手改过的失败节保留人写的内容", keptFixed.sections[0].out === "追加注号。", keptFixed.sections[0].out);
+
+// 失败任务的状态要是 error，页面才不会写「翻完了」。
+const jobs = new TranslateJobs();
+const jv = jobs.start({
+  text: jpOne,
+  abs: path.join(STATE, "doc.md"),
+  rel: "doc.md",
+  lang: "zh",
+  run,
+  runner: boom,
+});
+let jview = jobs.get(jv.id);
+for (let i = 0; i < 200 && jview?.status === "running"; i++) {
+  await new Promise((r) => setTimeout(r, 5));
+  jview = jobs.get(jv.id);
+}
+check("翻译任务失败标 error 不是 done", jview?.status === "error", jview?.status);
+check("error 里能看到原始原因", /Connection error/.test(jview?.error ?? ""), jview?.error);
+
+// pi 子进程要绕过本机代理访问 loopback 网关（环境变量层面的防御）。
+const savedUpper = process.env.NO_PROXY;
+const savedLower = process.env.no_proxy;
+delete process.env.NO_PROXY;
+delete process.env.no_proxy;
+const childEnv = piChildEnv();
+check(
+  "pi 子进程 NO_PROXY 含 loopback",
+  ["127.0.0.1", "localhost", "::1"].every((h) => (childEnv.NO_PROXY ?? "").includes(h) && (childEnv.no_proxy ?? "").includes(h)),
+  childEnv.NO_PROXY,
+);
+if (savedUpper === undefined) delete process.env.NO_PROXY; else process.env.NO_PROXY = savedUpper;
+if (savedLower === undefined) delete process.env.no_proxy; else process.env.no_proxy = savedLower;
+fs.rmSync(STATE, { recursive: true, force: true });
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} passed`);

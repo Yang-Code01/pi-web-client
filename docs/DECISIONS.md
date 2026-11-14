@@ -4120,6 +4120,7 @@ D
 10. **前端单一注册表**（新文件 `web/src/git-ops.ts`）：24 条 `GitOpDef` 各带两帧纯内联 SVG 图解（离线可用）、结构化字段、具名开关（`--force-with-lease` / `--no-ff` / `-u` / `--include-untracked`）、命令预览、风险、红色 lose / rollback；界面文案全走 `tr()`。
 
 **为什么：** 让新手在网页里就能把「看差了什么 → 想清楚要不要动 → 动完立刻看到新状态 → 出事把原始 stderr 交给 agent」闭成一条链，而不用回终端；把 argv 拼装收进 id 白名单，是因为网页一旦能传任意参数，红色确认卡就形同虚设。
+> **修订（2026-11-13）：** 第 9 条的「可用分支」清单已删除：本机 `F:/pi-web-client` 实测 105 条 ref 拼成 2735 字符，占提示词九成以上；agent 自己跑 `git branch -a` 拿到的是更新更准的列表，网页塞一份全量快照只会把上下文挤掉。失败卡也从「`branchPrompt` + 另一份 `buildHandoffPrompt` 用空行拼两份」收成一次 `buildHandoffPrompt()`（第二份原本还丢选中分支 / ahead·behind / dirty）；其余字段与「只填不发」「提示词固定中文」不变。历史决定原文不改写，只在这里标被推翻。
 > **D240 修订（2026-11-13）：** 「把『能连上 bridge 就能写』收紧成只认真本机，是因为隧道的回环地址是个假象」这一句不再成立；真实边界改回 D3 的登录口令，见 D240。
 
 **代价 / 可改：** 样张 D 的已知代价（每次操作都离开上下文、普通动作也显得重）随选择一并接受；不收 submodule / worktree / bisect / blame / remote 管理 / config / gc；`--graph` 仍未画；大文件与非文本只给占位；鉴权失败只能在系统侧配好后重试；`ref` 的字符黑名单会挡掉极少数合法但罕见的分支名。24 个 id 与字段在 `web/src/git-ops.ts`，桥端白名单在 `bridge/src/gitops.ts`，两边要一起改。
@@ -4287,6 +4288,8 @@ D
 **验证：** `npm run build:web && node probes/round21-cwd-line.mjs`（左栏展开时在且是当前会话 cwd / 收起后仍在、与分支 chip 同一行且紧挨其左 / 不再有独立 cwd 行 / 点击复制 / 展开左栏换会话跟着换 / 窄屏消失 / 拉回桌面宽度又出现；截图落在 `.scratch/round21-cwd-line/shots/`）。
 ## D245 预览里的翻译对照：另起 pi 子进程翻，译文可改、可写回原文
 
+> **D245 修订（2026-11-14）：** 下文第 5 条「更新只重翻变了的节」的判据不再只看 `old.src === 新节文本 && old.out`。机器没翻成的节（模型调用失败 / 输出不合格重试耗尽）带 `failed?: boolean`，`out` 里摆的是原文；旧缓存里没这个字段但 `out === src` 的坏结果同样按坏结果处理 —— 这些节点「更新」必须真重翻，否则一份日文源、选中文的对照会一直停在左右都是日文。但人已经接手改过的译文（`out !== gen`）以人写的为准，别再让机器覆盖掉。整篇只要有一块没翻成，`TranslateJobs` 就把 job 记成 `error` 并带上原始原因，前端不再写「翻完了，可以直接改译文」；`piChildEnv()` 给 pi 子进程补 loopback `NO_PROXY`，免得本机外部代理把 `127.0.0.1:7863` 上的网关请求截走。其余（分节 / 代码不翻 / 表格校验 / 缓存位置 / 同步回原文）不变。
+
 **问题：** 用户要求「文件预览加翻译对照：1、加入翻译对照 2、直接修改翻译后的文档，同步更新（任务简单可以交给便宜模型，用户可选，不占用当前对话上下文）」。预览面板（D50/D63）此前只能看原文、改原文，遇到日文文档只能整段贴进对话让模型翻 —— 那就把几 KB 原文灌进正在用的会话上下文，翻完也拿不到「左右对着看、改一处译文只动那一处」的体验。
 
 **决定：**
@@ -4307,6 +4310,55 @@ D
 **代价 / 可改：** 翻译质量取决于模型，桥只做结构校验（表格 / 回声 / 长度），做不了语义校验；每节一次 spawn，几十节的文档要一分多钟（进度按节报，可取消）；反向同步是「模型改写原文」，改不动的块会跳过并告警，不是逐字节 diff 回放；同步只给前 20 处对照，超出部分照样写回但不显示；译文只在 `markdown` / `text` 且 ≤ 512 KB 的预览里有入口（表格/幻灯片/PDF 不做）；多标签页同时改同一份译文，后写的覆盖前者（`out` 没有版本号）。
 
 **验证：** `bridge/tests/translate-unit.mjs` 38 例（分节/围栏/分块/表格校验/清洗/整篇翻译/`keep` 复用只翻改过的节/`planSync` 只挑出改动的那块/`applySync` 只替换那一块/找不到位置/照抄与语言跑偏告警/脏标题写回日文）；`bridge/tests/translate-e2e.mjs` 41 项（桩 pi 跑通 start→save→sync→apply，含公网 403、409 冲突、备份）；`probes/translate-ui.mjs` 30 项（真 Chromium：译按钮、选择器、两栏对照、逐节编辑、同步确认、写回后左栏刷新）；`npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check` 2641 keys × 3 langs）。真机（`github-copilot/gpt-6-luna`）：1.7 KB 日文文档翻中文 36 s；小文档改一处 7 s 翻完、44 s 折回；日文文档里被写坏的中文标题改一次即写回「# 私の父は徐藤恩です」，20.5 s。
+
+## D246 上下班：解锁时间三级取证，从第一次解锁起算墙上 N 小时
+
+**问题：** 用户要求「想要在本机管理里面 加一个上下班管理的模块。显示的是每一天打开屏幕输入密码解锁的时间。然后用户可以设定每天工作的时间，默认 9 小时，用户可设置。然后显示下班倒计时」。核心难点不是倒计时，是**解锁时间从哪来**：用户第一轮就否掉了「只看系统日志」的方案（原话「我一定要的是解锁时间。要准确。」），而准确的历史解锁时间在本机只有 Security 日志 4800/4801 一条路，非管理员读不到。
+
+**决定：**
+
+1. **三级取证，页面上逐条标来源。** ① 常驻记录器实时收 `SystemEvents.SessionSwitch`（事件）；② 记录器里每 15 s 一次 `Get-Process LogonUI` 兜底（估计）；③ 页面上一颗「导入历史（需管理员）」按钮，走一次 UAC 读 Security 4800/4801 回填（日志）。三点都不是摆设：事件最准但只有装了记录器之后才有；轮询 13 ms 但只能判「锁屏界面在不在」；日志最全但要 UAC。
+2. **记录器是每用户计划任务，日常零 UAC。** `Register-ScheduledTask -TaskName pi-web-client-workclock -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME) -Settings (… -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable)` —— 不传 `-User/-Password` 就不需要管理员（实测 Principal 落在 `Interactive/<user>`、`Start-ScheduledTask` 立刻起、卸载干净）。脚本落在状态目录 `workclock/workclock-agent.ps1`，页内开关直接注册/开停/卸载。
+3. **一天只认第一次解锁，倒计时不重置。** 工时口径是**墙上时间**（午休照走），不是「累计在线时长」—— 用户要的是「几点能走」。再解锁几次只进今日明细（`unlocks` 计数）。目标时刻 `target = firstUnlock + hours`，`remainingMs` 可以为负，归零后变「已下班 +X」。
+4. **来源优先级：真实事件 > 轮询估计 > 日志回填 > 记录器启动时刻。** 中途才装上记录器时它写的 `start` 事件最弱 —— 否则 15:00 装的记录器会把上班时间顶成 15:00，盖掉回填出来的真 09:00。
+5. **工作日可改，休息日只记解锁不算倒计时**（`met` 恒 false、不显示倒计时）。默认周一–周五、默认 9 小时，`saveSettings` 只接受 0.5–24 之间的数（越界回 400，不静默夹到 24）。
+6. **公网只读：** `/api/sys?section=workclock` 在隧道下照常返回但 `public:true`；`/api/sys/workclock/{settings,agent,backfill}` 一律 403 —— 装记录器、导入历史都是本机才能做的事。
+7. **提醒分两条：** 页面 toast 默认开（`settings.notify`）；系统通知要用户点一下「允许系统通知」（浏览器权限必须手势）。
+
+**为什么：** 轮询做不到「准确」——15 s 的采样丢掉的正是用户输密码那几秒；事件驱动能拿到精确时刻但不能追历史；Security 日志能追 90 天却要 UAC。三条合起来才对得上用户那句「要准确」：日常靠事件，漏了靠轮询，历史靠一次性 UAC。至于「从第一次解锁起算 N 小时」而不是累计在线，是因为用户问的是「几点下班」，累计口径一午休就答不上来。
+
+**踩到的坑（都在真机端到端才暴露，单测看不见）：** ① PS 里 `$line + "\n"` 得到字面反斜杠 n，`agent.jsonl` 全是坏行 —— 改 `[IO.File]::AppendAllLines($path, [string[]]@($line), $utf8)`；② PowerShell 5.1 按 ANSI 读无 BOM 的 `.ps1`，脚本里一加中文注释就 `缺少右「}」` —— 落盘统一 `\ufeff` 前缀；③ `String.raw` 模板里写反引号会截断模板块（报 537 个假 TS 错误），PS 正文与注释里都不出现反引号；④ `Add-Event 'start' 'event'` 写成 `k="start"` 被解析器丢掉，今天直接没有上班时间 —— 改成 `k="unlock" src="start"`；⑤ bash 里拼 `Get-CimInstance … | ForEach-Object { $_… }` 会被 MSYS 吃掉 `$_` 报 127，复杂 PS 一律走 `.ps1` 或 `-EncodedCommand`。
+
+**代价 / 可改：** 记录器是常驻 powershell 进程（约 40–60 MB），停掉后当天的后续解锁只能靠日志回填；Security 日志默认只留 20 MB（约 1–2 周），回填封顶 90 天且页面写明实际覆盖；工时是墙上时间，早退/加班只有「已下班 +X」一个反馈；事件驱动的锁屏/解锁依赖 `SystemEvents`（无桌面会话时收不到，例如 RDP 断连），那种情况靠轮询。
+
+**验证：** `node bridge/tests/workclock-unit.mjs` 22 例（换行/去重/来源优先级/当日推进/休息日/夹取工时/覆盖统计）；`node web/tests/sysmanage-unit.mjs` 13 pass（倒计时格式/工时解析/星期换算）；`node bridge/tests/sysmanage-ui.mjs` 真 Chromium 48 项（五个分区、倒计时每秒在走、七日 chip、记录器卡片、公网 403 三条、改工时 8.5 落盘、工时 99 回 400、布局不穿模）；真机装了记录器后 `agent.jsonl` 有 `{"k":"unlock","src":"start"}`、心跳新鲜、`Get-ScheduledTask` State `Running`，卸载后任务与进程都不残留。
+
+## D247 验收跑成「测试书」：`/pi-web-test-html` + 随仓库发布的技能
+
+**问题：** 上下班模块验收时临时写了四个脚本（`run.mjs` 驱动、`build_xlsx.py`、`build_html.mjs`、`reset.sh`），跑出 12 条用例 + 18 张截图的 xlsx 与 1:1 复刻的 HTML。它们只活在那次会话的 `.scratch` 里：换模块要重写，换个会话没人知道有过这套流程，而且 `git worktree remove` 顺手把它们删了个干净（见 D246 的代价段）。要的是「下次任何模块，一条命令跑出同一格式的书」。
+
+**决定：**
+
+1. **项目技能** `.pi/skills/pi-web-test-html/`：`SKILL.md` 是流程（定对象 → `env.sh fresh` 起隔离实例 → `run-book.mjs` 跑用例 → `build-xlsx.py` → `build-html.mjs` → 交付 → `env.sh down`），`bin/` 放四个可单独运行的脚本，`cases/` 放用例集（首份是 `workclock.mjs`），`setup/` 放模块自己的系统级清场，`references/` 放「用例怎么写」与「踩过的坑」。带 `disable-model-invocation: true`，只由命令唤醒。
+2. **命令** `.pi/prompts/pi-web-test-html.md`（提示词模板），`argument-hint` 收用例集与补充要求；模板只指向 `SKILL.md` 并交代边界（不改产品代码、失败如实记录、跑完关环境），流程不复制第二份。
+3. **驱动与用例分离**：`bin/run-book.mjs` 管浏览器、登录、截图落盘、`spec.json`（含 `summary`、`env`、`pageErrors`），用例只写 `h.openCase / h.step / h.ok / h.fail / h.shot` 四件套。判定三态：通过 / 失败 / 人工（人工步骤要写清怎么补）。
+4. **产物落在主检出的 `.scratch/testbook/<用例集>/`**，即使命令是在 worktree 里跑的 —— 用 `git rev-parse --git-common-dir` 反推主检出。这是被删过一次之后的硬约束。
+5. **HTML 是交付物、xlsx 是下载物**：HTML 把 18 张截图与 xlsx 全部内联成 data URI（单文件 2.5 MB），页内有「下载 xlsx」按钮；两者都由 `layout.json` 同一份表格模型渲染，观感与 xlsx 一致。
+
+**为什么：**
+
+- **流程必须固化在仓库里**：这套步骤里有太多「不看就忘」的细节（A 列要 9 宽、`fitToPage` 不设会被 A4 切列、LO 重算公式缓存、sticky 三轨 z 序、data URI 内联），写进 `references/pitfalls.md` 比每次靠记忆靠谱。
+- **驱动与用例分离**：换模块只写用例，不重写浏览器样板；判定口径、截图命名、`spec.json` 结构也就不会漂。
+- **显式触发**：跑一本书要起实例、装计划任务、跑几分钟，模型不该自己决定。
+
+**代价 / 可改：**
+
+- **只对仓库里跑的 pi 可见**（项目级技能与模板，换目录就没了，和 `pi-web-client-test-dev` / `whatsnew-write` 同一边界）。
+- **用例集与模块强绑定**：`workclock.mjs` 里写死了分区序号（第 5 个）、按钮文案、接口路径；产品改这些，用例得跟着改（跑失败先怀疑用例，其次才是产品）。
+- **`fresh` 会清空该实例的状态目录**：要保留上一轮数据就用 `env.sh up`。
+- **人工用例不能自动点**：TC-03（真锁屏）、TC-10（UAC 读 Security 日志）在书里标「人工」，`ConsentPromptBehaviorAdmin=5` 的机器上 UAC 必须人来点。
+
+**验证：** 用技能自己的脚本重跑一遍完整链路：`bash bin/env.sh fresh F:/pi-web-client wk workclock` → `node bin/run-book.mjs --case workclock` → 12 条（通过 10 / 失败 0 / 人工 2，21 步 18 张截图，`pageErrors` 0，产物 `F:\pi-web-client\.scratch\testbook\workclock`）→ `python bin/build-xlsx.py` → 14 sheet、902 KB、LO 重算过 → `node bin/build-html.mjs` → 2521 KB、18 处 `data:image/png;base64`、0 处 `src="shots/`、xlsx 已内联；`bash bin/env.sh down wk` 后 `Get-ScheduledTask -TaskName 'pi-web-client-workclock'` 为 `GONE`。
 
 ## D248 局域网共享市场（skill / 扩展 / MCP）：P2P 公告 + 镜像字节的设计共识与首版实现（用户要求 / 设计评审）
 

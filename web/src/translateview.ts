@@ -118,8 +118,8 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
   else if (v.msg) brief = v.msg;
   else if (v.stale && v.doc) brief = tr("原文改过了，点「更新」只重翻变了的节");
   else if (v.doc) {
-    const n = v.doc.sections.filter((s) => s.out === s.src).length;
-    brief = n ? tr("{n} 节没翻干净（原文留下了）", { n }) : tr("译文是 {p1} 生成的", { p1: modelName(v.doc, null) });
+    const n = v.doc.sections.filter((s) => s.failed || s.out === s.src).length;
+    brief = n ? tr("{n} 节没翻成，点「更新」重翻", { n }) : tr("译文是 {p1} 生成的", { p1: modelName(v.doc, null) });
   }
   status.append(el("span", "tr-brief", brief));
   if (running && v.job?.note) {
@@ -218,9 +218,10 @@ export function paintTranslate(body: HTMLElement, v: TrView, act: TrAct): void {
     src.append(renderMarkdown(sec.src, { doc: true }));
     const out = el("div", "tr-out md-doc");
     out.append(renderMarkdown(sec.out, { doc: true }));
-    if (sec.out === sec.src) {
+    if (sec.failed || sec.out === sec.src) {
       out.classList.add("raw");
-      out.title = tr("这一节没翻（模型这次没给出来），原文留下了");
+      if (sec.failed) out.classList.add("failed");
+      out.title = tr("这一节没翻成，原文留下了；点「更新」重翻");
     } else if (sec.out !== sec.gen) {
       out.classList.add("edited");
       const dot = el("span", "tr-dot", "✎");

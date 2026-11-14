@@ -25,6 +25,13 @@ const PASS = "sysmanage-ui-pass";
 fs.mkdirSync(OUT, { recursive: true });
 fs.rmSync(ROOT, { recursive: true, force: true });
 fs.mkdirSync(STATE, { recursive: true });
+// 上下班分区要看到「已经在走」的倒计时：种一条三小时前的解锁（记录器此刻没装，源标事件）。
+const wkDir = path.join(STATE, "workclock");
+fs.mkdirSync(wkDir, { recursive: true });
+fs.writeFileSync(
+  path.join(wkDir, "agent.jsonl"),
+  `${JSON.stringify({ t: Date.now() - 3 * 3600_000, k: "unlock", src: "event" })}\n`,
+);
 fs.mkdirSync(AGENT, { recursive: true });
 
 const env = {
@@ -96,7 +103,7 @@ check("「连接与设置」页有本机管理按钮（pi 设置旁边）", (awa
 await open.click();
 await page.locator(".sys-console").waitFor({ timeout: 10_000 });
 check("控制台打开", (await page.locator(".sys-console").count()) === 1);
-check("四个分区", (await page.locator(".sys-nav__item").count()) === 4, String(await page.locator(".sys-nav__item").count()));
+check("五个分区", (await page.locator(".sys-nav__item").count()) === 5, String(await page.locator(".sys-nav__item").count()));
 
 await page.locator(".sys-card").first().waitFor({ timeout: 20_000 });
 await page.locator(".sys-adapter").first().waitFor({ timeout: 20_000 });
@@ -155,6 +162,26 @@ await page.locator(".sys-table--services tbody tr").first().waitFor({ timeout: 2
 check("服务表有行", (await page.locator(".sys-table--services tbody tr").count()) > 0);
 await page.screenshot({ path: path.join(OUT, "sysmanage-ui.png") });
 
+// 上下班：种的那条解锁在 3 小时前，默认 9 小时 → 倒计时该每秒往下走。
+await page.getByRole("button", { name: /上下班/ }).first().click();
+await page.locator(".sys-wk-hero").waitFor({ timeout: 20_000 });
+const digits = page.locator(".sys-wk-hero__digits");
+const d1 = (await digits.innerText()).trim();
+check("倒计时是 HH:MM:SS", /^\d{2}:\d{2}:\d{2}$/.test(d1), d1);
+await page.waitForTimeout(1300);
+const d2 = (await digits.innerText()).trim();
+check("倒计时每秒在走", d1 !== d2, `${d1} → ${d2}`);
+check("七日 chip", (await page.locator(".sys-wk-chip").count()) === 7, String(await page.locator(".sys-wk-chip").count()));
+check("今日明细有解锁行", (await page.locator(".sys-wk-event").count()) >= 1);
+check("30 天表有行", (await page.locator(".sys-wk-table tbody tr").count()) >= 1);
+const agentText = (await page.locator(".sys-wk-agent").innerText()).trim();
+check("记录器卡片说未安装", agentText.includes("未安装"), agentText.replace(/\s+/g, " ").slice(0, 80));
+const hoursInput = page.locator(".sys-wk-input").first();
+check("工时输入默认 9", (await hoursInput.inputValue()).trim() === "9", await hoursInput.inputValue());
+await checkLayout("上下班");
+await page.locator(".sys-wk-grid").screenshot({ path: path.join(OUT, "sysmanage-workclock.png") });
+await page.locator(".sys-main").screenshot({ path: path.join(OUT, "sysmanage-workclock-full.png") });
+
 await page.keyboard.press("Escape");
 await page.waitForTimeout(300);
 check("Escape 关闭", (await page.locator(".sys-console").count()) === 0);
@@ -180,6 +207,37 @@ const pubWinnat = await ctx.request.post(`${BASE}/api/sys/winnat/restart`, {
   headers: { "cf-connecting-ip": "203.0.113.9" },
 });
 check("公网重启 WinNAT 403", pubWinnat.status() === 403, `HTTP ${pubWinnat.status()}`);
+
+// 上下班：公网只读；装/卸记录器和导入历史都是本机才有的事。
+const pubWk = await (await ctx.request.get(`${BASE}/api/sys?section=workclock`, {
+  headers: { "cf-connecting-ip": "203.0.113.9" },
+})).json();
+check("公网 workclock 只读", pubWk.public === true, JSON.stringify(pubWk.public));
+const pubAgent = await ctx.request.post(`${BASE}/api/sys/workclock/agent`, {
+  headers: { "cf-connecting-ip": "203.0.113.9", "content-type": "application/json" },
+  data: { action: "install" },
+});
+check("公网装记录器 403", pubAgent.status() === 403, `HTTP ${pubAgent.status()}`);
+const pubBackfill = await ctx.request.post(`${BASE}/api/sys/workclock/backfill`, {
+  headers: { "cf-connecting-ip": "203.0.113.9" },
+});
+check("公网导入历史 403", pubBackfill.status() === 403, `HTTP ${pubBackfill.status()}`);
+
+// 本机改工时：8.5 落盘、倒计时跟着变短。
+const saveHours = await ctx.request.post(`${BASE}/api/sys/workclock/settings`, {
+  headers: { "content-type": "application/json" },
+  data: { hours: 8.5 },
+});
+check("改工时为 8.5", saveHours.status() === 200, `HTTP ${saveHours.status()}`);
+const afterHours = await (await ctx.request.get(`${BASE}/api/sys?section=workclock`)).json();
+check("工时落盘为 8.5", afterHours.settings?.hours === 8.5, String(afterHours.settings?.hours));
+check("目标时刻仍从第一次解锁算", afterHours.today?.target === afterHours.today?.firstUnlock + 8.5 * 3600_000, `${afterHours.today?.firstUnlock} + 8.5h`);
+const badHours = await ctx.request.post(`${BASE}/api/sys/workclock/settings`, {
+  headers: { "content-type": "application/json" },
+  data: { hours: 99 },
+});
+const badBody = await badHours.json();
+check("工时 99 被拒或夹到上限", badHours.status() !== 200 || badBody.settings?.hours <= 24, `HTTP ${badHours.status()} ${JSON.stringify(badBody).slice(0, 80)}`);
 
 // 同值 DNS 必须走 unchanged，不弹 UAC。
 const net = await (await ctx.request.get(`${BASE}/api/sys?section=network`)).json();

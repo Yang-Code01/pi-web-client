@@ -25,6 +25,16 @@ export function piChildEnv(): NodeJS.ProcessEnv {
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && !key.startsWith("PI_WEB_")) env[key] = value;
   }
+  // wb2api 网关跑在 127.0.0.1:7863。外部代理（HTTP_PROXY/HTTPS_PROXY）常把 loopback
+  // 请求也一起截走：代理一挂，翻译子进程就报 "Connection error."，页面只看到日文原文。
+  // 本地地址永远不该走代理，这里统一给 pi 子进程补上白名单（已有的值原样保留）。
+  const loopback = ["127.0.0.1", "localhost", "::1"];
+  for (const key of ["NO_PROXY", "no_proxy"]) {
+    if (env[key] === "*") continue;
+    const merged = (env[key] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    for (const host of loopback) if (!merged.includes(host)) merged.push(host);
+    env[key] = merged.join(",");
+  }
   return env;
 }
 
