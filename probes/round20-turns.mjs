@@ -1,10 +1,11 @@
 /**
- * Probe: Q-028 — the turn rail on the right edge of the transcript. One tick per user turn; hovering
- * the rail opens a list of every round's user input (single line, right aligned), the current round
- * highlighted; hovering a row highlights that round in the transcript; clicking a row jumps there.
+ * Probe: Q-028 / D264 — the turn rail on the right edge of the transcript. One dash per user turn;
+ * hovering the rail opens a list of every round's user input (single line, right aligned), the current
+ * round highlighted; hovering a row highlights that round in the transcript; clicking a row jumps there.
  *
  * Stands in for the bridge with two seeded sessions: A has 12 rounds (the interaction under test),
- * B has 90 (ticks must be sampled down to what fits, and the last tick must still be the last round).
+ * B has 200 (the rail must stay inside the transcript, the list must scroll instead of growing, and
+ * the newest round must still come up as the current one).
  *
  * Run: npm run build:web && node probes/round20-turns.mjs
  */
@@ -162,6 +163,15 @@ const rect = (page, sel, i = 0) =>
     const r = node.getBoundingClientRect();
     return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height };
   }, [sel, i]);
+/** 悬停那块透明的 .turn-hit，等面板真的展开并落定（`.open` + `.settled`）——
+ *  `.turn-list` 的 isVisible() 只看元素有没有尺寸，被 clip-path 裁掉时也是 true，靠不住；
+ *  已经展开时再 hover .turn-hit 会撞上 pointer-events:none —— 它被自己的面板盖住了。 */
+async function openPanel(page) {
+  if (await page.evaluate(() => document.querySelector(".turn-rail").classList.contains("open"))) return;
+  await page.locator(".turn-hit").hover();
+  await until(async () => page.evaluate(() => document.querySelector(".turn-rail").classList.contains("open")), 4000, "the list opens");
+  await until(async () => page.evaluate(() => document.querySelector(".turn-rail").classList.contains("settled")), 4000, "the expansion settles");
+}
 const scrollTop = (page) => page.evaluate(() => document.querySelector(".chat-scroll").scrollTop);
 const maxScroll = (page) => page.evaluate(() => {
   const s = document.querySelector(".chat-scroll");
@@ -181,11 +191,11 @@ try {
   await until(async () => (await page.locator(".chat-scroll .msg.user").count()) === 12, 8000, "12 user messages");
   await sleep(400);
 
-  // 1) 带子出现了，一根刻度一轮；首尾那根一定是第一轮和最后一轮。
+  // 1) 带子出现了，一根短横一轮。
   const rail = page.locator(".turn-rail");
   assert(await rail.isVisible(), "a session with 12 rounds shows the turn rail");
-  const ticks = page.locator(".turn-tick");
-  assert((await ticks.count()) === 12, `12 rounds = 12 ticks (got ${await ticks.count()})`);
+  const ticks = page.locator(".turn-row");
+  assert((await ticks.count()) === 12, `12 rounds = 12 dashes (got ${await ticks.count()})`);
   const railBox = await rect(page, ".turn-rail");
   const paneBox = await rect(page, ".chat-pane");
   const scrollBox = await rect(page, ".chat-scroll");
@@ -194,10 +204,10 @@ try {
   assert(railBox.top >= scrollBox.top && railBox.bottom <= scrollBox.bottom - 4, `the rail stays inside the transcript viewport (rail ${railBox.top}..${railBox.bottom}, view ${scrollBox.top}..${scrollBox.bottom})`);
   await page.screenshot({ path: path.join(OUT, "1-rail.png") });
 
-  // 2) 滚到底 = 最后一轮是当前轮（它自己那根刻度用 cur 标出来）。
+  // 2) 滚到底 = 最后一轮是当前轮（它自己那根短横用 cur 标出来）。
   await until(async () => (await scrollTop(page)) > 100, 5000, "transcript is scrollable");
   const bottomState = await page.evaluate(() => {
-    const ticks = [...document.querySelectorAll(".turn-tick")];
+    const ticks = [...document.querySelectorAll(".turn-row")];
     const cur = ticks.findIndex((t) => t.classList.contains("cur"));
     return { cur, last: ticks.length - 1 };
   });
@@ -205,8 +215,8 @@ try {
   assert(bottomState.cur === bottomState.last, `at the bottom the last tick is current (got ${JSON.stringify(bottomState)})`);
 
   // 3) 悬停带子 → 小列表展开：每行一轮，末行＝当前轮，行是单行右对齐的。
-  await page.locator(".turn-rail").hover();
-  await until(async () => page.locator(".turn-list").isVisible(), 4000, "turn list opens on hover");
+  //    收起时接指针的是那块透明的 .turn-hit（带子本身 pointer-events:none）。
+  await openPanel(page);
   const rows = page.locator(".turn-row");
   assert((await rows.count()) === 12, `one row per round (got ${await rows.count()})`);
   const curIdx = await page.evaluate(() => [...document.querySelectorAll(".turn-row")].findIndex((r) => r.classList.contains("cur")));
@@ -219,10 +229,17 @@ try {
   log("row h:", rowBox.height, "list:", JSON.stringify(listBox));
   assert(rowBox.height < 34, `rows are one line tall (got ${rowBox.height}px)`);
   assert(listBox.left > 0 && listBox.right <= paneBox.right, "the list stays inside the chat column");
-  // 融合：弹层的右缘就是刻度那一列的右缘，刻度同时隐去 —— 一个框，不是框外挂一列刻度
+  // 融合：弹层的右缘就是带子那一列的右缘 —— 一个框，不是框外挂一列刻度
   assert(Math.abs(listBox.right - railBox.right) < 1.5, `the panel's right edge lands on the tick column (panel ${listBox.right}, rail ${railBox.right})`);
-  const tickOpacity = await page.locator(".turn-tick").first().evaluate((e) => getComputedStyle(e).opacity);
-  assert(tickOpacity === "0", `ticks give way to the panel's own dashes (opacity ${tickOpacity})`);
+  // 展开后短横往面板里收 8px（收起时贴在外侧 16px 处）：同一批节点，只是换了一套坐标。
+  const dashCol = await page.evaluate(() => {
+    const panel = document.querySelector(".turn-panel").getBoundingClientRect();
+    const dash = document.querySelector(".turn-row:not(.ghost) .dash").getBoundingClientRect();
+    return { inside: panel.right - dash.right, clip: getComputedStyle(document.querySelector(".turn-panel")).clipPath };
+  });
+  log("dash column:", JSON.stringify(dashCol));
+  assert(Math.abs(dashCol.inside - 8) < 1, `the dashes sit 8px inside the open panel (got ${dashCol.inside})`);
+  assert(/inset\(0px/.test(dashCol.clip), `the panel is unclipped once open (clip ${dashCol.clip})`);
   const dashes = await page.evaluate(() => {
     const rows = [...document.querySelectorAll(".turn-row")];
     const dash = (r) => r.querySelector(".dash").getBoundingClientRect();
@@ -271,9 +288,14 @@ try {
   assert(hot.hot === 4, `the hovered row carries .hot (got ${hot.hot})`);
   assert(hot.flash === 4, `the matching user message is highlighted (got ${hot.flash})`);
   assert(hot.fliques === 1, `only one thing flashes at a time (got ${hot.fliques})`);
-  // 对应那根刻度也亮
-  const hotTick = await page.evaluate(() => [...document.querySelectorAll(".turn-tick")].findIndex((t) => t.classList.contains("hot")));
-  assert(hotTick === 4, `the 5th tick lights up with the row (got ${hotTick})`);
+  // 那一行的短横跟着变长（扫到哪根就是哪根）
+  const hotDash = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll(".turn-row")];
+    const w = (r) => r.querySelector(".dash").getBoundingClientRect().width;
+    return { hot: w(rows[4]), other: w(rows[0]) };
+  });
+  log("hovered dash:", JSON.stringify(hotDash));
+  assert(hotDash.hot > hotDash.other + 4, `the hovered row's dash grows (${hotDash.hot} vs ${hotDash.other})`);
   await page.screenshot({ path: path.join(OUT, "2-popover.png") });
 
   // 5) 点第 5 行 → 滚到那一轮，且顶部对齐；此后不再跟流（「回到底部」出现）。
@@ -301,25 +323,30 @@ try {
   log("jump:", JSON.stringify(jumpState));
   assert(await page.locator(".chat-jump").isVisible(), "jumping up stops following, so 回到底部 comes back");
   await page.mouse.move(40, 40);
-  await until(async () => !(await page.locator(".turn-list").isVisible()), 3000, "the list closes when the pointer leaves");
+  await until(async () => !(await page.evaluate(() => document.querySelector(".turn-rail").classList.contains("open"))), 3000, "the list closes when the pointer leaves");
   log("list closed after the pointer left");
   await page.screenshot({ path: path.join(OUT, "3-jumped.png") });
 
-  // 5b) 键盘也能用：Tab 到刻度上，列表照样展开（:focus-visible），失焦就收起。
+  // 5b) 键盘也能用：焦点进到某一行上，面板照样展开（:focus-visible），失焦就收起。
   await page.keyboard.press("Tab");
-  await page.evaluate(() => document.querySelectorAll(".turn-tick")[2].focus());
-  await until(async () => page.locator(".turn-list").isVisible(), 3000, "keyboard focus opens the list");
+  await page.evaluate(() => document.querySelectorAll(".turn-row")[2].focus());
+  await until(async () => page.evaluate(() => document.querySelector(".turn-rail").classList.contains("open")), 3000, "keyboard focus opens the list");
   assert(
-    await page.locator(".turn-tick").nth(2).evaluate((e) => e.matches(":focus-visible")),
-    "the focused tick takes the keyboard focus ring",
+    await page.locator(".turn-row").nth(2).evaluate((e) => e.matches(":focus-visible")),
+    "the focused row takes the keyboard focus ring",
   );
-  await page.evaluate(() => document.activeElement.blur());
-  await until(async () => !(await page.locator(".turn-list").isVisible()), 3000, "blur closes the list");
+  // 焦点移到带子外面（不是 blur 到 body：焦点掉回 body 的那一下多半是窗口化删掉了拿焦点的那行，
+  // 按「用户走了」处理会让键盘用户滚一下面板就闪一次，见 turns.ts 的 focusout）。
+  await page.evaluate(() => {
+    const outside = [...document.querySelectorAll("button, input, textarea")]
+      .find((node) => !node.closest(".turn-rail") && node.offsetParent !== null);
+    outside?.focus();
+  });
+  await until(async () => !(await page.evaluate(() => document.querySelector(".turn-rail").classList.contains("open"))), 3000, "focus leaving the rail closes the list");
   log("keyboard path ok");
 
   // 6) 点最后一行 → 落在最后一次输入上（不是页面末尾），并且同样停住跟流（D60 修订）。
-  await page.locator(".turn-rail").hover();
-  await until(async () => page.locator(".turn-list").isVisible(), 4000, "list again");
+  await openPanel(page);
   const paneTopLast = (await rect(page, ".chat-scroll")).top;
   await page.locator(".turn-row").nth(11).click();
   await until(async () => {
@@ -337,26 +364,26 @@ try {
   assert(gapLast > 200, `the last input is not parked at the end of the answer (gap ${gapLast})`);
   assert(await page.locator(".chat-jump").isVisible(), "jumping to the last round stops following too");
 
-  // 7) 200 轮的会话：刻度会被抽样，但最后一根刻度仍然是最后一轮。
+  // 7) 200 轮的会话：带子只在正文视口内长（短横到 28 根为止，再长就在那一条带子里滚），
+  //    行也不是全画出来（超过 120 轮只画看得见的那一段）。最后一根短横仍然是最后一轮。
   //    B 的每一轮都比一屏短，最后一轮的开头本来就落在最后一屏里 —— 顶对齐与贴底是同一个像素，
   //    所以这里点完仍停在底部、跟流不被打断（jumpToTurn 里那条 startTop >= maxScroll 的分支）。
-  //    刻度本身点不到：指针扫过去时列表会展开并盖住刻度那一列。
+  //    短横本身点不到：指针扫过去时列表会展开并盖住那一列。
   await page.locator('.session-card[data-id="probe-b"]').click();
   await until(async () => (await page.locator(".chat-scroll .msg.user").count()) === 200, 15000, "200 user messages");
   await sleep(500);
-  const ticks200 = await page.locator(".turn-tick").count();
+  const ticks200 = await page.locator(".turn-row").count();
   const railH = (await rect(page, ".turn-rail")).height;
   const railTop = (await rect(page, ".turn-rail")).top;
-  log("200 rounds → ticks:", ticks200, "rail height:", railH, "top:", railTop);
-  assert(ticks200 > 3 && ticks200 < 200, `ticks are sampled down (got ${ticks200})`);
+  log("200 rounds → rendered rows:", ticks200, "rail height:", railH, "top:", railTop);
   const scroll2 = await rect(page, ".chat-scroll");
   const rail2 = await rect(page, ".turn-rail");
   log("long rail:", JSON.stringify(rail2), "view:", JSON.stringify(scroll2));
   assert(rail2.top >= scroll2.top && rail2.bottom <= scroll2.bottom - 4, `200 rounds: the rail stops at the transcript, not under the composer (rail ${rail2.top}..${rail2.bottom}, view ${scroll2.top}..${scroll2.bottom})`);
-  // 抽样不能把最后一轮漏掉：最后一根刻度点的就是最新那一轮
+  // 窗口化不能把最后一轮漏掉：最后一根短横点的就是最新那一轮
   await page.evaluate(() => {
-    const ticks = [...document.querySelectorAll(".turn-tick")];
-    ticks[ticks.length - 1].click();
+    const latest = [...document.querySelectorAll(".turn-row")].find((r) => r.classList.contains("cur")) ?? null;
+    (latest ?? [...document.querySelectorAll(".turn-row")].pop()).click();
   });
   await until(async () => Math.abs((await scrollTop(page)) - (await maxScroll(page))) < 4, 6000, "last tick settles at the bottom");
   const lastRoundSeen = await page.evaluate(() => {
@@ -369,22 +396,26 @@ try {
   assert(lastRoundSeen.top >= lastRoundSeen.paneTop - 2 && lastRoundSeen.bottom <= lastRoundSeen.paneBottom + 2, "the last tick brings the last input into view");
   assert(await page.locator(".chat-jump").isHidden(), "no room to scroll up → following is kept");
   log("last tick → last input at the end of the transcript: ok");
-  await page.locator(".turn-rail").hover();
-  await until(async () => page.locator(".turn-list").isVisible(), 4000, "list on the long session");
-  assert((await page.locator(".turn-row").count()) === 200, "the list still holds every round");
+  await openPanel(page);
   const listScrollable = await page.evaluate(() => {
     const l = document.querySelector(".turn-list");
-    return { sh: l.scrollHeight, ch: l.clientHeight, atBottom: l.scrollHeight - l.scrollTop - l.clientHeight < 2 };
+    const box = l.getBoundingClientRect();
+    const last = [...document.querySelectorAll(".turn-row")].pop().getBoundingClientRect();
+    return { sh: l.scrollHeight, ch: l.clientHeight, lastTop: last.top, lastBottom: last.bottom, boxTop: box.top, boxBottom: box.bottom };
   });
   log("list scroll:", JSON.stringify(listScrollable));
-  assert(listScrollable.sh > listScrollable.ch, "200 rows scroll inside the list instead of growing the popover");
-  assert(listScrollable.atBottom, "the list opens at the newest round");
+  assert(listScrollable.sh > listScrollable.ch, "200 rounds scroll inside the list instead of growing the popover");
+  // 展开时「当前那一轮」落在原来那条视线上（不是硬贴到底），所以判据是「看得见」，不是「滚到底」。
+  assert(
+    listScrollable.lastTop >= listScrollable.boxTop - 1 && listScrollable.lastBottom <= listScrollable.boxBottom + 1,
+    `the list opens with the newest round in view (${listScrollable.lastTop.toFixed(1)}..${listScrollable.lastBottom.toFixed(1)} in ${listScrollable.boxTop.toFixed(1)}..${listScrollable.boxBottom.toFixed(1)})`,
+  );
   const lastTickCur = await page.evaluate(() => {
-    const tiles = [...document.querySelectorAll(".turn-tick")];
-    return tiles[tiles.length - 1].classList.contains("cur");
+    const rows = [...document.querySelectorAll(".turn-row")];
+    return rows[rows.length - 1].classList.contains("cur");
   });
-  assert(lastTickCur, "the last tick is still the current one on a long session");
-  await page.locator(".turn-row").nth(199).hover();
+  assert(lastTickCur, "the newest round is still the current one on a long session");
+  await page.locator(".turn-row").last().hover();
   await page.screenshot({ path: path.join(OUT, "4-long.png") });
 
   // 8) 只有一轮时不出现带子（缩略图对一个回合没有意义）。
