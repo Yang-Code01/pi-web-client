@@ -136,8 +136,8 @@ export interface MailConfirmRequest {
 }
 
 export const MAIL_POLICY_LABELS: { key: keyof MailPolicyView; label: string; hint: string }[] = [
-  { key: "read", label: "读邮件", hint: "列文件夹、读正文；关掉后 AI 只能看到「有几封未读」" },
-  { key: "send", label: "发邮件", hint: "关掉后 AI 写好的信只能当草稿给你自己发" },
+  { key: "read", label: "读邮件", hint: "关掉后 AI 读不到任何信，也列不了文件夹" },
+  { key: "send", label: "发邮件", hint: "关掉后 AI 发不出去；存草稿由下一项单独管" },
   { key: "draft", label: "存草稿", hint: "允许 AI 往草稿箱里写，但不真的发出去" },
   { key: "attachments", label: "取附件", hint: "允许把附件下载到本机（会写磁盘）" },
   { key: "mutate", label: "改邮箱状态", hint: "已读/未读、归档、移动、删除；默认关" },

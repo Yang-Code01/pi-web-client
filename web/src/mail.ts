@@ -1,5 +1,9 @@
 /**
- * 邮箱面板：顶栏「📮 邮箱」打开的那扇 dialog。
+ * 邮箱面板：顶栏「📮 邮箱」打开的那扇控制台。
+ *
+ * 版式照「设置 → 本机管理」：中间一块 1120×800 的对话框，左边分区导航（邮件 / 写邮件 /
+ * 账号 / AI 权限 / 发送记录），右边是当前分区；顶栏放账号与策略摘要，底栏一句口径。
+ * 邮箱的「账号」和「权限」本来就是两张要反复调的设置页，塞进一个滚动长页每次都要找。
  *
  * 两条边界（和 JiraPanel 一样）：
  * - 授权码只在桥那边，这里拿到的永远是掩码；页面不拼任何 IMAP/SMTP 连接。
@@ -33,7 +37,7 @@ export interface MailHost {
   handoff: MailHandoff;
 }
 
-type Tab = "inbox" | "settings";
+type Section = "inbox" | "compose" | "accounts" | "policy" | "audit";
 
 interface Compose {
   /** 回复原信时记下来源，发出去之后可以回到阅读区。 */
@@ -97,6 +101,14 @@ function failText(what: string, err: unknown): string {
   return tr("{what}：{why}", { what, why: errText(err) });
 }
 
+const SECTIONS: { id: Section; label: string }[] = [
+  { id: "inbox", label: "邮件" },
+  { id: "compose", label: "写邮件" },
+  { id: "accounts", label: "账号" },
+  { id: "policy", label: "AI 权限" },
+  { id: "audit", label: "发送记录" },
+];
+
 export class MailPanel {
   private readonly host: MailHost;
   private root: HTMLElement | null = null;
@@ -106,8 +118,9 @@ export class MailPanel {
 
   private config: MailConfigView | null = null;
   private loadError = "";
+  private notice = "";
 
-  private tab: Tab = "inbox";
+  private section: Section = "inbox";
   /** 当前选中的账号 id；null = 用桥那边的默认账号。 */
   private account: string | null = null;
   private folders: MailFolderView[] = [];
@@ -138,7 +151,8 @@ export class MailPanel {
     this.seq += 1;
     this.config = null;
     this.loadError = "";
-    this.tab = "inbox";
+    this.notice = "";
+    this.section = "inbox";
     this.account = null;
     this.folders = [];
     this.folder = "INBOX";
@@ -200,8 +214,8 @@ export class MailPanel {
       this.config = config;
       this.loadError = "";
       if (!config.accounts.length) {
-        // 一个账号都没有：直接摊开设置页的新增表单，别让人先找按钮。
-        this.tab = "settings";
+        // 一个账号都没有：直接摊开账号页的新增表单，别让人先找按钮。
+        this.section = "accounts";
         this.form = emptyForm(config.presetIds[0] ?? "163", ...this.presetEndpoints(config, config.presetIds[0] ?? "163"));
         this.render();
         this.focusFirst();
@@ -308,6 +322,7 @@ export class MailPanel {
       busy: false,
       error: "",
     };
+    this.section = "compose";
     this.render();
     window.setTimeout(() => {
       const box = this.root?.querySelector<HTMLTextAreaElement>(".mc-compose__text");
@@ -317,6 +332,7 @@ export class MailPanel {
 
   private startNewMail(): void {
     this.compose = { replyToUid: -1, to: "", cc: "", subject: "", text: "", draft: false, busy: false, error: "" };
+    this.section = "compose";
     this.render();
   }
 
@@ -346,6 +362,7 @@ export class MailPanel {
       if (seq !== this.seq || !this.root) return;
       this.compose = null;
       this.notice = draft ? tr("已存进草稿箱") : tr("已发出：{id}", { id: out.messageId ?? "" });
+      this.section = "inbox";
       void this.loadMessages(this.seq);
     } catch (err) {
       if (seq !== this.seq) return;
@@ -355,13 +372,27 @@ export class MailPanel {
     }
   }
 
-  /** 一行性的结果提示，重画后两秒自己消失。 */
-  private notice = "";
-
-  private askAi(what: "analyze" | "reply"): void {
-    const m = this.detail;
+  private askAi(what: "analyze" | "reply" | "compose"): void {
     const account = this.activeAccount();
-    if (!m || !account) return;
+    if (!account) return;
+    if (what === "compose") {
+      const c = this.compose;
+      if (!c) return;
+      const lines = [
+        tr("帮我写一封邮件，用 {account} 这个账号。", { account: account.address }),
+        c.to ? tr("收件人：{v}", { v: c.to }) : "",
+        c.cc ? tr("抄送：{v}", { v: c.cc }) : "",
+        c.subject ? tr("主题：{v}", { v: c.subject }) : "",
+        c.text ? tr("我的开头：{v}", { v: c.text }) : "",
+        tr("写好之后用 mail_draft 存进草稿箱，先别发。"),
+      ].filter(Boolean);
+      this.host.handoff.prefill(lines.join("\n"));
+      this.notice = tr("已放进输入框，回车前可以再改");
+      this.render();
+      return;
+    }
+    const m = this.detail;
+    if (!m) return;
     const where = tr("{account} 的 {folder} 文件夹", { account: account.address, folder: this.folder });
     const head = tr("用 mail_read 读一下 {where} 里 uid={uid} 这封邮件（主题：{subject}）。", {
       where,
@@ -377,7 +408,7 @@ export class MailPanel {
     this.render();
   }
 
-  // -------------------------------------------------------------- 画
+  // -------------------------------------------------------------- 外壳
 
   private render(): void {
     const back = el("div", "mc-back");
@@ -389,82 +420,140 @@ export class MailPanel {
     shell.setAttribute("aria-modal", "true");
     shell.setAttribute("aria-label", tr("邮箱"));
 
-    const head = el("header", "mc-head");
-    head.append(el("div", "mc-eyebrow", tr("邮箱")));
-    head.append(el("h2", "mc-title", tr("我的邮箱")));
-    const sub = el("div", "mc-sub", this.config ? this.headSub() : tr("正在读设置…"));
-    head.append(sub);
-    const headRight = el("div", "mc-head__right");
-    if (this.config) {
-      for (const [id, label] of [
-        ["inbox", tr("邮件")],
-        ["settings", tr("设置")],
-      ] as [Tab, string][]) {
-        const btn = el("button", this.tab === id ? "mc-tab is-on" : "mc-tab", label) as HTMLButtonElement;
-        btn.type = "button";
-        btn.onclick = () => {
-          this.tab = id;
-          this.render();
-          if (id === "inbox" && !this.messages.length && this.folders.length === 0) void this.loadFolders(this.seq);
-        };
-        headRight.append(btn);
-      }
-    }
-    const close = el("button", "mc-x", "×") as HTMLButtonElement;
-    close.type = "button";
-    close.title = tr("关闭");
-    close.setAttribute("aria-label", tr("关闭"));
-    close.onclick = () => this.close();
-    headRight.append(close);
-    head.append(headRight);
-    shell.append(head);
-
-    if (this.notice) shell.append(el("div", "mc-notice", this.notice));
-
-    const body = el("div", "mc-body");
-    if (!this.config && this.loadError) {
-      const box = el("div", "mc-empty");
-      box.append(el("p", "", this.loadError));
-      const retry = el("button", "mc-btn", tr("重试")) as HTMLButtonElement;
-      retry.type = "button";
-      retry.onclick = () => {
-        this.loadError = "";
-        this.render();
-        void this.reload();
-      };
-      box.append(retry);
-      body.append(box);
-    } else if (!this.config) {
-      body.append(el("div", "mc-empty", tr("正在读设置…")));
-    } else if (this.tab === "settings") {
-      body.append(this.settingsEl());
-    } else {
-      body.append(this.inboxEl());
-    }
-    shell.append(body);
+    shell.append(this.headEl(), this.bannerEl(), this.mainEl(), this.footEl());
     back.append(shell);
     this.root?.remove();
     this.root = back;
     document.body.append(back);
   }
 
+  private headEl(): HTMLElement {
+    const head = el("header", "mc-head");
+    const main = el("div", "mc-head__main");
+    main.append(el("div", "mc-eyebrow", tr("邮箱")));
+    main.append(el("h2", "mc-title", tr("我的邮箱")));
+    main.append(el("div", "mc-sub", this.config ? this.headSub() : tr("正在读设置…")));
+
+    const badges = el("div", "mc-badges");
+    if (this.config) {
+      const n = this.config.accounts.length;
+      badges.append(this.badge(tr("{n} 个账号", { n: String(n) }), n ? "" : "warn"));
+      const unverified = this.config.accounts.filter((a) => !a.verifiedAt).length;
+      if (unverified) badges.append(this.badge(tr("{n} 个未验证", { n: String(unverified) }), "warn"));
+      badges.append(this.badge(this.policyBadge(), this.config.policy.send ? "" : "warn"));
+      for (const a of this.config.accounts.slice(0, 3)) if (a.label) badges.append(this.badge(a.label, ""));
+    }
+    main.append(badges);
+
+    const actions = el("div", "mc-head__actions");
+    const refresh = el("button", "btn ghost", tr("刷新")) as HTMLButtonElement;
+    refresh.type = "button";
+    refresh.onclick = () => {
+      this.notice = "";
+      void this.reload();
+    };
+    const close = el("button", "btn ghost mc-close", tr("关闭")) as HTMLButtonElement;
+    close.type = "button";
+    close.onclick = () => this.close();
+    actions.append(refresh, close);
+
+    head.append(main, actions);
+    return head;
+  }
+
+  private badge(text: string, tone: "" | "warn"): HTMLElement {
+    return el("span", tone ? "mc-badge mc-badge--warn" : "mc-badge", text);
+  }
+
+  private policyBadge(): string {
+    const p = this.config?.policy;
+    if (!p) return "";
+    if (!p.send) return tr("AI 只能读");
+    return p.confirmSend ? tr("AI 发信前会问你") : tr("AI 可以直接发");
+  }
+
+  private bannerEl(): HTMLElement {
+    const box = el("div", "mc-banners");
+    if (this.loadError) box.append(el("div", "mc-banner mc-banner--bad", this.loadError));
+    if (this.notice) box.append(el("div", "mc-banner mc-banner--ok", this.notice));
+    return box;
+  }
+
+  private mainEl(): HTMLElement {
+    const main = el("div", "mc-main");
+    const nav = el("nav", "mc-nav");
+    nav.setAttribute("aria-label", tr("邮箱分区"));
+    const counts: Partial<Record<Section, number>> = {
+      accounts: this.config?.accounts.length ?? 0,
+      inbox: this.messages.length,
+      audit: this.config?.audit.length ?? 0,
+    };
+    for (const item of SECTIONS) {
+      const btn = el("button", this.section === item.id ? "mc-nav__item on" : "mc-nav__item") as HTMLButtonElement;
+      btn.type = "button";
+      btn.append(el("span", "", tr(item.label)));
+      const n = counts[item.id];
+      if (n) btn.append(el("span", "mc-nav__count", String(n)));
+      btn.onclick = () => {
+        if (this.section === item.id) return;
+        this.section = item.id;
+        this.notice = "";
+        if (item.id === "compose" && !this.compose) this.compose = { replyToUid: -1, to: "", cc: "", subject: "", text: "", draft: false, busy: false, error: "" };
+        this.render();
+        if (item.id === "inbox" && this.config?.accounts.length && !this.folders.length) void this.loadFolders(this.seq);
+      };
+      nav.append(btn);
+    }
+
+    const pane = el("div", "mc-pane");
+    if (!this.config && this.loadError) pane.append(this.loadFailEl());
+    else if (!this.config) pane.append(el("div", "mc-empty", tr("正在读设置…")));
+    else if (this.section === "inbox") pane.append(this.inboxEl());
+    else if (this.section === "compose") pane.append(this.composeEl());
+    else if (this.section === "accounts") pane.append(this.accountsEl());
+    else if (this.section === "policy") pane.append(this.policyEl());
+    else pane.append(this.auditEl());
+
+    main.append(nav, pane);
+    return main;
+  }
+
+  private footEl(): HTMLElement {
+    const foot = el("footer", "mc-foot");
+    foot.append(el("span", "mc-foot__hint", tr("授权码只存在本机，页面看到的是掩码；发信的权限在「AI 权限」里。" )));
+    foot.append(el("span", "mc-foot__meta", "pi-web-client"));
+    return foot;
+  }
+
+  private loadFailEl(): HTMLElement {
+    const box = el("div", "mc-empty");
+    box.append(el("p", "", this.loadError));
+    const retry = el("button", "btn", tr("重试")) as HTMLButtonElement;
+    retry.type = "button";
+    retry.onclick = () => {
+      this.loadError = "";
+      this.render();
+      void this.reload();
+    };
+    box.append(retry);
+    return box;
+  }
+
   private headSub(): string {
     const accounts = this.config?.accounts ?? [];
     const me = this.activeAccount();
     if (!accounts.length) return tr("还没有账号 —— 先加一个");
-    const policy = this.config?.policy;
     const bits: string[] = [];
     if (me) bits.push(me.address + (me.verifiedAt ? "" : tr("（未验证）")));
-    if (policy) {
-      if (!policy.send) bits.push(tr("AI 只能读"));
-      else bits.push(policy.confirmSend ? tr("AI 发信前会问你") : tr("AI 可以直接发"));
-    }
+    if (me) bits.push(`${me.imap.host} / ${me.smtp.host}`);
     return bits.join(" · ");
   }
 
+  // -------------------------------------------------------------- 邮件
+
   private inboxEl(): HTMLElement {
     const wrap = el("div", "mc-inbox");
-    const left = el("aside", "mc-left");
+    const bar = el("div", "mc-toolbar");
     const me = this.activeAccount();
     const accounts = this.config?.accounts ?? [];
 
@@ -486,16 +575,15 @@ export class MailPanel {
         this.render();
         void this.loadFolders(this.seq);
       };
-      left.append(pick);
+      bar.append(pick);
     }
 
-    const folderBox = el("div", "mc-folders");
+    const chips = el("div", "mc-chips");
     for (const f of this.folders) {
-      const row = el("button", f.path === this.folder ? "mc-folder is-on" : "mc-folder") as HTMLButtonElement;
-      row.type = "button";
-      row.append(el("span", "mc-folder__name", f.name));
-      if (f.kind === "inbox") row.append(el("span", "mc-folder__kind", tr("收件箱")));
-      row.onclick = () => {
+      const chip = el("button", f.path === this.folder ? "mc-chip on" : "mc-chip") as HTMLButtonElement;
+      chip.type = "button";
+      chip.append(el("span", "", f.name));
+      chip.onclick = () => {
         if (f.path === this.folder) return;
         this.folder = f.path;
         this.detail = null;
@@ -504,12 +592,14 @@ export class MailPanel {
         this.messages = [];
         void this.loadMessages(this.seq);
       };
-      folderBox.append(row);
+      chips.append(chip);
     }
-    if (!this.folders.length && !this.listError) folderBox.append(el("div", "mc-hint", tr("正在读邮件夹…")));
-    left.append(folderBox);
+    if (!this.folders.length && !this.listError) chips.append(el("span", "mc-hint", tr("正在读邮件夹…")));
+    bar.append(chips);
 
-    const tools = el("div", "mc-listtools");
+    const spacer = el("div", "mc-toolbar__spacer");
+    bar.append(spacer);
+
     const unread = el("label", "mc-check");
     const cb = el("input") as HTMLInputElement;
     cb.type = "checkbox";
@@ -519,21 +609,35 @@ export class MailPanel {
       void this.loadMessages(this.seq);
     };
     unread.append(cb, el("span", "", tr("只看未读")));
-    tools.append(unread);
+    bar.append(unread);
+
     const refresh = el("button", "mc-mini", tr("刷新")) as HTMLButtonElement;
     refresh.type = "button";
     refresh.onclick = () => void this.loadMessages(this.seq);
-    tools.append(refresh);
     const write = el("button", "mc-mini mc-mini--primary", tr("写邮件")) as HTMLButtonElement;
     write.type = "button";
     write.onclick = () => this.startNewMail();
-    tools.append(write);
-    left.append(tools);
+    bar.append(refresh, write);
 
+    const split = el("div", "mc-split");
+    split.append(this.listEl(), this.readEl());
+    wrap.append(bar, split);
+    return wrap;
+  }
+
+  private listEl(): HTMLElement {
     const list = el("div", "mc-list");
-    if (this.listError) list.append(el("div", "mc-hint mc-hint--bad", this.listError));
-    else if (this.listLoading && !this.messages.length) list.append(el("div", "mc-hint", tr("正在读邮件…")));
-    else if (this.messages.length === 0) list.append(el("div", "mc-hint", this.unreadOnly ? tr("没有未读邮件") : tr("这个文件夹是空的")));
+    if (this.listError) {
+      const box = el("div", "mc-empty mc-empty--bad");
+      box.append(el("p", "", this.listError));
+      const retry = el("button", "mc-mini", tr("重试")) as HTMLButtonElement;
+      retry.type = "button";
+      retry.onclick = () => void this.loadFolders(this.seq);
+      box.append(retry);
+      list.append(box);
+    } else if (this.listLoading && !this.messages.length) list.append(el("div", "mc-hint", tr("正在读邮件…")));
+    else if (this.messages.length === 0)
+      list.append(el("div", "mc-hint", this.unreadOnly ? tr("没有未读邮件") : tr("这个文件夹是空的")));
     else {
       for (const m of this.messages) {
         const row = el("button", m.uid === this.detailUid ? "mc-row is-on" : "mc-row") as HTMLButtonElement;
@@ -551,39 +655,39 @@ export class MailPanel {
         list.append(row);
       }
     }
-    left.append(list);
+    return list;
+  }
 
-    const right = el("div", "mc-right");
-    if (this.compose) right.append(this.composeEl());
-    else if (this.detailLoading) right.append(el("div", "mc-empty", tr("正在读这封信…")));
+  private readEl(): HTMLElement {
+    const right = el("div", "mc-read");
+    if (this.detailLoading) right.append(el("div", "mc-empty", tr("正在读这封信…")));
     else if (this.detailError) right.append(el("div", "mc-empty mc-empty--bad", this.detailError));
     else if (this.detail) right.append(this.detailEl(this.detail));
     else right.append(el("div", "mc-empty", tr("选一封邮件读，或者写一封新的")));
-    wrap.append(left, right);
-    return wrap;
+    return right;
   }
 
   private detailEl(m: MailDetailView): HTMLElement {
-    const box = el("article", "mc-read");
-    box.append(el("h3", "mc-read__subject", m.subject || tr("（无主题）")));
-    const meta = el("div", "mc-read__meta");
+    const box = el("article", "mc-letter");
+    box.append(el("h3", "mc-letter__subject", m.subject || tr("（无主题）")));
+    const meta = el("div", "mc-letter__meta");
     meta.append(el("span", "", tr("发件人：{v}", { v: m.from })));
     if (m.to.length) meta.append(el("span", "", tr("收件人：{v}", { v: m.to.join(", ") })));
     if (m.cc.length) meta.append(el("span", "", tr("抄送：{v}", { v: m.cc.join(", ") })));
     meta.append(el("span", "", whenText(m.date)));
     box.append(meta);
 
-    const acts = el("div", "mc-read__acts");
-    const reply = el("button", "mc-btn", tr("回复")) as HTMLButtonElement;
+    const acts = el("div", "mc-acts");
+    const reply = el("button", "mc-mini", tr("回复")) as HTMLButtonElement;
     reply.type = "button";
     reply.onclick = () => this.startReply("reply");
-    const draft = el("button", "mc-btn", tr("写草稿")) as HTMLButtonElement;
+    const draft = el("button", "mc-mini", tr("写草稿")) as HTMLButtonElement;
     draft.type = "button";
     draft.onclick = () => this.startReply("draft");
-    const analyze = el("button", "mc-btn", tr("让 AI 分析")) as HTMLButtonElement;
+    const analyze = el("button", "mc-mini", tr("让 AI 分析")) as HTMLButtonElement;
     analyze.type = "button";
     analyze.onclick = () => this.askAi("analyze");
-    const aiReply = el("button", "mc-btn", tr("让 AI 起草回复")) as HTMLButtonElement;
+    const aiReply = el("button", "mc-mini", tr("让 AI 起草回复")) as HTMLButtonElement;
     aiReply.type = "button";
     aiReply.onclick = () => this.askAi("reply");
     acts.append(reply, draft, analyze, aiReply);
@@ -610,15 +714,26 @@ export class MailPanel {
       box.append(att);
     }
 
-    box.append(el("pre", "mc-read__text", m.text || tr("（没有纯文本正文）")));
+    box.append(el("pre", "mc-letter__text", m.text || tr("（没有纯文本正文）")));
     return box;
   }
 
+  // -------------------------------------------------------------- 写信
+
   private composeEl(): HTMLElement {
-    const c = this.compose!;
+    if (!this.compose) {
+      const empty = el("div", "mc-empty");
+      empty.append(el("p", "", tr("还没有要写的信")));
+      const start = el("button", "btn", tr("写一封新的")) as HTMLButtonElement;
+      start.type = "button";
+      start.onclick = () => this.startNewMail();
+      empty.append(start);
+      return empty;
+    }
+    const c = this.compose;
     const box = el("form", "mc-compose");
     box.addEventListener("submit", (ev) => ev.preventDefault());
-    box.append(el("h3", "mc-read__subject", c.replyToUid >= 0 ? tr("回复") : tr("新邮件")));
+    box.append(el("h3", "mc-letter__subject", c.replyToUid >= 0 ? tr("回复") : tr("新邮件")));
 
     const field = (label: string, value: string, key: "to" | "cc" | "subject"): HTMLElement => {
       const row = el("label", "mc-field");
@@ -632,11 +747,13 @@ export class MailPanel {
       row.append(input);
       return row;
     };
-    box.append(field(tr("收件人"), c.to, "to"), field(tr("抄送"), c.cc, "cc"), field(tr("主题"), c.subject, "subject"));
+    const grid = el("div", "mc-form__grid");
+    grid.append(field(tr("收件人"), c.to, "to"), field(tr("抄送"), c.cc, "cc"));
+    box.append(grid, field(tr("主题"), c.subject, "subject"));
 
     const ta = el("textarea", "mc-compose__text") as HTMLTextAreaElement;
     ta.value = c.text;
-    ta.rows = 12;
+    ta.rows = 14;
     ta.setAttribute("aria-label", tr("正文"));
     ta.oninput = () => {
       c.text = ta.value;
@@ -644,7 +761,7 @@ export class MailPanel {
     box.append(ta);
     if (c.error) box.append(el("div", "mc-hint mc-hint--bad", c.error));
 
-    const acts = el("div", "mc-read__acts");
+    const acts = el("div", "mc-acts");
     const send = el("button", "mc-btn mc-btn--primary", c.busy ? tr("发送中…") : tr("发送")) as HTMLButtonElement;
     send.type = "button";
     send.disabled = c.busy;
@@ -653,154 +770,102 @@ export class MailPanel {
     save.type = "button";
     save.disabled = c.busy;
     save.onclick = () => void this.sendCompose(true);
+    const ai = el("button", "mc-btn", tr("让 AI 帮我写")) as HTMLButtonElement;
+    ai.type = "button";
+    ai.onclick = () => this.askAi("compose");
     const cancel = el("button", "mc-btn", tr("取消")) as HTMLButtonElement;
     cancel.type = "button";
     cancel.onclick = () => {
       this.compose = null;
+      this.section = "inbox";
       this.render();
     };
-    acts.append(send, save, cancel);
+    acts.append(send, save, ai, cancel);
     box.append(acts);
     return box;
   }
 
-  private settingsEl(): HTMLElement {
-    const wrap = el("div", "mc-settings");
+  // -------------------------------------------------------------- 账号
+
+  private accountsEl(): HTMLElement {
     const cfg = this.config!;
+    const wrap = el("div", "mc-stack");
 
-    // ---------------------------------------------------------- 账号
-    const accBox = el("section", "mc-card");
-    accBox.append(el("h3", "mc-card__title", tr("账号")));
-    if (!cfg.accounts.length) accBox.append(el("div", "mc-hint", tr("加一个邮箱账号，AI 才有邮可读")));
-    for (const a of cfg.accounts) {
-      const row = el("div", "mc-acct");
-      const info = el("div", "mc-acct__info");
-      info.append(el("div", "mc-acct__addr", a.address));
-      const line = el("div", "mc-acct__meta");
-      const badge = a.verifiedAt
-        ? el("span", "mc-badge mc-badge--ok", tr("已验证"))
-        : el("span", "mc-badge", a.lastError ? tr("连接失败") : tr("未验证"));
-      line.append(badge, el("span", "", a.label));
-      line.append(el("span", "", `${a.imap.host}:${a.imap.port} / ${a.smtp.host}:${a.smtp.port}`));
-      if (a.lastError) line.append(el("span", "mc-acct__err", a.lastError));
-      info.append(line);
-      row.append(info);
+    const sec = el("section", "mc-section");
+    const head = el("div", "mc-section__head");
+    head.append(el("div", "mc-section__label", tr("账号")));
+    head.append(el("div", "mc-section__meta", tr("授权码只存本机；页面只拿掩码")));
+    sec.append(head);
 
-      const acts = el("div", "mc-acct__acts");
-      const test = el("button", "mc-mini", this.testing === a.id ? tr("正在连…") : tr("验证")) as HTMLButtonElement;
-      test.type = "button";
-      test.disabled = this.testing === a.id;
-      test.onclick = () => void this.testAccount(a.id);
-      const edit = el("button", "mc-mini", tr("改")) as HTMLButtonElement;
-      edit.type = "button";
-      edit.onclick = () => {
-        this.form = formOf(a);
-        this.formError = "";
-        this.render();
-      };
-      const del = el("button", "mc-mini mc-mini--bad", tr("删")) as HTMLButtonElement;
-      del.type = "button";
-      del.onclick = () => void this.deleteAccount(a.id);
-      acts.append(test, edit, del);
-      row.append(acts);
-      accBox.append(row);
+    if (!cfg.accounts.length) sec.append(el("div", "mc-empty", tr("加一个邮箱账号，AI 才有邮可读")));
+    else {
+      const table = el("table", "mc-table");
+      const thead = el("thead");
+      const thr = el("tr");
+      for (const h of [tr("邮箱"), tr("显示名"), tr("服务器"), tr("状态"), tr("操作")]) thr.append(el("th", "", h));
+      thead.append(thr);
+      table.append(thead);
+      const tbody = el("tbody");
+      for (const a of cfg.accounts) {
+        const tr1 = el("tr");
+        tr1.append(el("td", "mc-table__mono", a.address));
+        tr1.append(el("td", "", a.label));
+        tr1.append(el("td", "mc-table__mono", `${a.imap.host}:${a.imap.port} / ${a.smtp.host}:${a.smtp.port}`));
+        const status = el("td", "");
+        status.append(
+          a.verifiedAt
+            ? el("span", "mc-tag mc-tag--ok", tr("已验证"))
+            : el("span", "mc-tag", a.lastError ? tr("连接失败") : tr("未验证")),
+        );
+        if (a.lastError) status.append(el("div", "mc-table__err", a.lastError));
+        tr1.append(status);
+        const ops = el("td", "mc-table__ops");
+        const test = el("button", "mc-mini", this.testing === a.id ? tr("正在连…") : tr("验证")) as HTMLButtonElement;
+        test.type = "button";
+        test.disabled = this.testing === a.id;
+        test.onclick = () => void this.testAccount(a.id);
+        const edit = el("button", "mc-mini", tr("改")) as HTMLButtonElement;
+        edit.type = "button";
+        edit.onclick = () => {
+          this.form = formOf(a);
+          this.formError = "";
+          this.render();
+          this.focusFirst();
+        };
+        const del = el("button", "mc-mini mc-mini--bad", tr("删")) as HTMLButtonElement;
+        del.type = "button";
+        del.onclick = () => void this.deleteAccount(a.id);
+        ops.append(test, edit, del);
+        tr1.append(ops);
+        tbody.append(tr1);
+      }
+      table.append(tbody);
+      sec.append(table);
     }
+
     if (!this.form) {
-      const add = el("button", "mc-btn", tr("添加账号")) as HTMLButtonElement;
+      const add = el("button", "btn mc-section__action", tr("添加账号")) as HTMLButtonElement;
       add.type = "button";
       add.onclick = () => {
         this.form = emptyForm(cfg.presetIds[0] ?? "163", ...this.presetEndpoints(cfg, cfg.presetIds[0] ?? "163"));
         this.formError = "";
         this.render();
+        this.focusFirst();
       };
-      accBox.append(add);
+      sec.append(add);
     }
-    wrap.append(accBox);
-
+    wrap.append(sec);
     if (this.form) wrap.append(this.formEl(this.form));
-
-    // ---------------------------------------------------------- 权限
-    const policy = el("section", "mc-card");
-    policy.append(el("h3", "mc-card__title", tr("AI 能做什么")));
-    for (const item of MAIL_POLICY_LABELS) {
-      const row = el("label", "mc-check mc-check--block");
-      const cb = el("input") as HTMLInputElement;
-      cb.type = "checkbox";
-      cb.checked = Boolean(cfg.policy[item.key]);
-      cb.onchange = () => void this.savePolicy({ [item.key]: cb.checked } as Partial<MailPolicyView>);
-      const text = el("span", "mc-check__body");
-      text.append(el("span", "mc-check__label", tr(item.label)));
-      text.append(el("span", "mc-check__hint", tr(item.hint)));
-      row.append(cb, text);
-      policy.append(row);
-    }
-
-    const limitRow = el("label", "mc-field");
-    limitRow.append(el("span", "mc-field__label", tr("每天最多发几封")));
-    const limit = el("input", "mc-input") as HTMLInputElement;
-    limit.type = "number";
-    limit.min = "0";
-    limit.value = String(cfg.policy.dailySendLimit);
-    limit.onchange = () => {
-      const n = Number(limit.value);
-      void this.savePolicy({ dailySendLimit: Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0 });
-    };
-    limitRow.append(limit);
-    policy.append(limitRow);
-    policy.append(el("div", "mc-hint", tr("0 表示不限；只算 AI 发的，你自己点的不算")));
-
-    const rcptRow = el("label", "mc-field");
-    rcptRow.append(el("span", "mc-field__label", tr("只允许发给（一行一个，留空=谁都能发）")));
-    const rcpt = el("textarea", "mc-input") as HTMLTextAreaElement;
-    rcpt.rows = 3;
-    rcpt.value = cfg.policy.recipients.join("\n");
-    rcpt.onchange = () =>
-      void this.savePolicy({ recipients: parseRecipients(rcpt.value) });
-    rcptRow.append(rcpt);
-    policy.append(rcptRow);
-
-    if (cfg.accounts.length > 1) {
-      const accRow = el("div", "mc-field");
-      accRow.append(el("span", "mc-field__label", tr("AI 能用哪些账号（都不勾 = 全部）")));
-      for (const a of cfg.accounts) {
-        const label = el("label", "mc-check");
-        const cb = el("input") as HTMLInputElement;
-        cb.type = "checkbox";
-        cb.checked = cfg.policy.accountIds.includes(a.id);
-        cb.onchange = () => {
-          const next = new Set(cfg.policy.accountIds);
-          if (cb.checked) next.add(a.id);
-          else next.delete(a.id);
-          void this.savePolicy({ accountIds: [...next] });
-        };
-        label.append(cb, el("span", "", `${a.label} · ${a.address}`));
-        accRow.append(label);
-      }
-      policy.append(accRow);
-    }
-    wrap.append(policy);
-
-    // ---------------------------------------------------------- 审计
-    const audit = el("section", "mc-card");
-    audit.append(el("h3", "mc-card__title", tr("最近发出去的")));
-    if (!cfg.audit.length) audit.append(el("div", "mc-hint", tr("还没有记录")));
-    for (const row of cfg.audit) {
-      const line = el("div", row.ok ? "mc-audit" : "mc-audit mc-audit--bad");
-      line.append(el("span", "mc-audit__when", whenText(row.t)));
-      line.append(el("span", "mc-audit__to", (row.to ?? []).join(", ")));
-      line.append(el("span", "mc-audit__subj", row.subject));
-      line.append(el("span", "mc-audit__by", row.by === "agent" ? tr("AI") : tr("我")));
-      if (!row.ok) line.append(el("span", "mc-audit__err", row.error ?? tr("失败")));
-      audit.append(line);
-    }
-    wrap.append(audit);
     return wrap;
   }
 
   private formEl(f: AccountForm): HTMLElement {
     const cfg = this.config!;
-    const box = el("section", "mc-card mc-card--form");
-    box.append(el("h3", "mc-card__title", f.id ? tr("改账号") : tr("新账号")));
+    const box = el("section", "mc-section mc-section--form");
+    const head = el("div", "mc-section__head");
+    head.append(el("div", "mc-section__label", f.id ? tr("改账号") : tr("新账号")));
+    head.append(el("div", "mc-section__meta", tr("授权码不是登录密码")));
+    box.append(head);
 
     const input = (label: string, value: string, type = "text", oninput?: (v: string) => void): HTMLElement => {
       const row = el("label", "mc-field");
@@ -813,14 +878,16 @@ export class MailPanel {
       return row;
     };
 
-    box.append(input(tr("邮箱地址"), f.address, "email", (v) => (f.address = v)));
-    box.append(input(tr("显示名"), f.label, "text", (v) => (f.label = v)));
+    const grid = el("div", "mc-form__grid");
+    grid.append(input(tr("邮箱地址"), f.address, "email", (v) => (f.address = v)));
+    grid.append(input(tr("显示名"), f.label, "text", (v) => (f.label = v)));
+    box.append(grid);
 
     const presetRow = el("label", "mc-field");
     presetRow.append(el("span", "mc-field__label", tr("邮箱类型")));
     const pick = el("select", "mc-select") as HTMLSelectElement;
     for (const id of cfg.presetIds) {
-      const opt = el("option", "", cfg.presets[id]?.label ?? id) as HTMLOptionElement;
+      const opt = el("option", "", id === "custom" ? tr("自定义（手动填服务器）") : (cfg.presets[id]?.label ?? id)) as HTMLOptionElement;
       opt.value = id;
       opt.selected = f.preset === id;
       pick.append(opt);
@@ -833,14 +900,17 @@ export class MailPanel {
       f.smtpHost = smtp.host;
       f.smtpPort = String(smtp.port);
       this.render();
+      this.focusFirst();
     };
     presetRow.append(pick);
     box.append(presetRow);
 
-    box.append(
+    const creds = el("div", "mc-form__grid");
+    creds.append(
       input(tr("登录账号（多数就是地址全称）"), f.user, "text", (v) => (f.user = v)),
       input(tr("客户端授权码"), f.secret, "password", (v) => (f.secret = v)),
     );
+    box.append(creds);
     box.append(
       el(
         "div",
@@ -859,14 +929,18 @@ export class MailPanel {
     };
     box.append(adv);
     if (f.advanced) {
-      box.append(input(tr("IMAP 服务器"), f.imapHost, "text", (v) => (f.imapHost = v)));
-      box.append(input(tr("IMAP 端口"), f.imapPort, "number", (v) => (f.imapPort = v)));
-      box.append(input(tr("SMTP 服务器"), f.smtpHost, "text", (v) => (f.smtpHost = v)));
-      box.append(input(tr("SMTP 端口"), f.smtpPort, "number", (v) => (f.smtpPort = v)));
+      const advGrid = el("div", "mc-form__grid");
+      advGrid.append(
+        input(tr("IMAP 服务器"), f.imapHost, "text", (v) => (f.imapHost = v)),
+        input(tr("IMAP 端口"), f.imapPort, "number", (v) => (f.imapPort = v)),
+        input(tr("SMTP 服务器"), f.smtpHost, "text", (v) => (f.smtpHost = v)),
+        input(tr("SMTP 端口"), f.smtpPort, "number", (v) => (f.smtpPort = v)),
+      );
+      box.append(advGrid);
     }
 
     if (this.formError) box.append(el("div", "mc-hint mc-hint--bad", this.formError));
-    const acts = el("div", "mc-read__acts");
+    const acts = el("div", "mc-acts");
     const save = el("button", "mc-btn mc-btn--primary", this.saving ? tr("保存中…") : tr("保存")) as HTMLButtonElement;
     save.type = "button";
     save.disabled = this.saving;
@@ -883,9 +957,124 @@ export class MailPanel {
     return box;
   }
 
+  // -------------------------------------------------------------- 权限
+
+  private policyEl(): HTMLElement {
+    const cfg = this.config!;
+    const wrap = el("div", "mc-stack");
+
+    const switches = el("section", "mc-section");
+    const head = el("div", "mc-section__head");
+    head.append(el("div", "mc-section__label", tr("AI 能做什么")));
+    head.append(el("div", "mc-section__meta", tr("改一下就存，不用点保存")));
+    switches.append(head);
+    // 「改邮箱状态」桥端有字段，但 v1 还没有对应动作（标已读、归档、删除都没做）。
+    // 放一个按了却什么也不变的开关，比不放更糟，所以这里先不给它位置。
+    for (const item of MAIL_POLICY_LABELS.filter((one) => one.key !== "mutate")) {
+      const row = el("label", "mc-switch");
+      const cb = el("input") as HTMLInputElement;
+      cb.type = "checkbox";
+      cb.checked = Boolean(cfg.policy[item.key]);
+      cb.onchange = () => void this.savePolicy({ [item.key]: cb.checked } as Partial<MailPolicyView>);
+      const text = el("span", "mc-switch__body");
+      text.append(el("span", "mc-switch__label", tr(item.label)));
+      text.append(el("span", "mc-switch__hint", tr(item.hint)));
+      row.append(cb, text);
+      switches.append(row);
+    }
+    wrap.append(switches);
+
+    const send = el("section", "mc-section");
+    const shead = el("div", "mc-section__head");
+    shead.append(el("div", "mc-section__label", tr("发信范围")));
+    shead.append(el("div", "mc-section__meta", tr("只约束 AI；你自己点的不受限")));
+    send.append(shead);
+
+    const limitRow = el("label", "mc-field");
+    limitRow.append(el("span", "mc-field__label", tr("每天最多发几封")));
+    const limit = el("input", "mc-input") as HTMLInputElement;
+    limit.type = "number";
+    limit.min = "0";
+    limit.value = String(cfg.policy.dailySendLimit);
+    limit.onchange = () => {
+      const n = Number(limit.value);
+      void this.savePolicy({ dailySendLimit: Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0 });
+    };
+    limitRow.append(limit);
+    send.append(limitRow);
+    send.append(el("div", "mc-hint", tr("0 表示不限；只算 AI 发的，你自己点的不算")));
+
+    const rcptRow = el("label", "mc-field");
+    rcptRow.append(el("span", "mc-field__label", tr("只允许发给（一行一个，留空=谁都能发）")));
+    const rcpt = el("textarea", "mc-input mc-input--area") as HTMLTextAreaElement;
+    rcpt.rows = 3;
+    rcpt.value = cfg.policy.recipients.join("\n");
+    rcpt.onchange = () => void this.savePolicy({ recipients: parseRecipients(rcpt.value) });
+    rcptRow.append(rcpt);
+    send.append(rcptRow);
+
+    if (cfg.accounts.length > 1) {
+      const accRow = el("div", "mc-field");
+      accRow.append(el("span", "mc-field__label", tr("AI 能用哪些账号（都不勾 = 全部）")));
+      const list = el("div", "mc-checklist");
+      for (const a of cfg.accounts) {
+        const label = el("label", "mc-check");
+        const cb = el("input") as HTMLInputElement;
+        cb.type = "checkbox";
+        cb.checked = cfg.policy.accountIds.includes(a.id);
+        cb.onchange = () => {
+          const next = new Set(cfg.policy.accountIds);
+          if (cb.checked) next.add(a.id);
+          else next.delete(a.id);
+          void this.savePolicy({ accountIds: [...next] });
+        };
+        label.append(cb, el("span", "", `${a.label} · ${a.address}`));
+        list.append(label);
+      }
+      accRow.append(list);
+      send.append(accRow);
+    }
+    wrap.append(send);
+    return wrap;
+  }
+
+  // -------------------------------------------------------------- 记录
+
+  private auditEl(): HTMLElement {
+    const cfg = this.config!;
+    const sec = el("section", "mc-section");
+    const head = el("div", "mc-section__head");
+    head.append(el("div", "mc-section__label", tr("最近发出去的")));
+    head.append(el("div", "mc-section__meta", tr("只留发出与失败的记录，不进模型上下文")));
+    sec.append(head);
+
+    if (!cfg.audit.length) sec.append(el("div", "mc-empty", tr("还没有记录")));
+    else {
+      const table = el("table", "mc-table");
+      const thead = el("thead");
+      const thr = el("tr");
+      for (const h of [tr("时间"), tr("收件人"), tr("主题"), tr("发起者"), tr("结果")]) thr.append(el("th", "", h));
+      thead.append(thr);
+      table.append(thead);
+      const tbody = el("tbody");
+      for (const row of cfg.audit) {
+        const tr1 = el("tr", row.ok ? "" : "is-bad");
+        tr1.append(el("td", "mc-table__mono", whenText(row.t)));
+        tr1.append(el("td", "", (row.to ?? []).join(", ")));
+        tr1.append(el("td", "", row.subject));
+        tr1.append(el("td", "", row.by === "agent" ? tr("AI") : tr("我")));
+        tr1.append(el("td", "", row.ok ? tr("已发出") : (row.error ?? tr("失败"))));
+        tbody.append(tr1);
+      }
+      table.append(tbody);
+      sec.append(table);
+    }
+    return sec;
+  }
+
   private focusFirst(): void {
     window.setTimeout(() => {
-      this.root?.querySelector<HTMLInputElement>(".mc-card--form .mc-input")?.focus();
+      this.root?.querySelector<HTMLInputElement>(".mc-section--form .mc-input")?.focus();
     }, 0);
   }
 
@@ -908,7 +1097,7 @@ export class MailPanel {
       user: f.user.trim() || f.address.trim(),
       secret: f.secret,
       imap: { host: f.imapHost.trim(), port: Number(f.imapPort) || 993, secure: true },
-      smtp: { host: f.smtpHost.trim(), port: Number(f.smtpPort) || 465, secure: true },
+      smtp: { host: f.smtpHost.trim(), port: Number(f.smtpPort) || 465, secure: !f.smtpPort.startsWith("587") },
     };
     if (f.id) body.id = f.id;
     try {

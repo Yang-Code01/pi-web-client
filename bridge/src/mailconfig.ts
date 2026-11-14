@@ -13,7 +13,24 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, readJsonChecked, statePath } from "./paths.ts";
 
-export type MailPreset = "163" | "126" | "yeah" | "qiye163" | "custom";
+export type MailPreset =
+  | "163"
+  | "126"
+  | "yeah"
+  | "qiye163"
+  | "qq"
+  | "exmail"
+  | "aliyun"
+  | "aliyunqy"
+  | "sina"
+  | "189"
+  | "gmail"
+  | "outlook"
+  | "icloud"
+  | "yahoo"
+  | "zoho"
+  | "yandex"
+  | "custom";
 
 export interface MailEndpoint {
   host: string;
@@ -73,7 +90,13 @@ export const DEFAULT_POLICY: MailPolicy = {
   accountIds: [],
 };
 
-/** 网易四套服务器。`custom` 不给默认值 —— 填错了要人说，不要猜。 */
+/**
+ * 常见邮箱的服务器。网易排在最前（这一栏最常填的就是它），后面按国内、国外分。
+ * `custom` 不给默认值 —— 填错了要人说，不要猜。
+ *
+ * 只列 993/465 这两组「隐式 TLS」的端口，唯一例外是 Outlook 与 iCloud：它们把 587 留给
+ * STARTTLS，`secure: false` 时 nodemailer 会自己升级。
+ */
 export const PRESETS: Record<Exclude<MailPreset, "custom">, { label: string; imap: MailEndpoint; smtp: MailEndpoint }> = {
   "163": {
     label: "163 邮箱",
@@ -95,9 +118,91 @@ export const PRESETS: Record<Exclude<MailPreset, "custom">, { label: string; ima
     imap: { host: "imap.qiye.163.com", port: 993, secure: true },
     smtp: { host: "smtp.qiye.163.com", port: 465, secure: true },
   },
+  qq: {
+    label: "QQ 邮箱",
+    imap: { host: "imap.qq.com", port: 993, secure: true },
+    smtp: { host: "smtp.qq.com", port: 465, secure: true },
+  },
+  exmail: {
+    label: "腾讯企业邮",
+    imap: { host: "imap.exmail.qq.com", port: 993, secure: true },
+    smtp: { host: "smtp.exmail.qq.com", port: 465, secure: true },
+  },
+  aliyun: {
+    label: "阿里云邮箱",
+    imap: { host: "imap.aliyun.com", port: 993, secure: true },
+    smtp: { host: "smtp.aliyun.com", port: 465, secure: true },
+  },
+  aliyunqy: {
+    label: "阿里企业邮",
+    imap: { host: "imap.qiye.aliyun.com", port: 993, secure: true },
+    smtp: { host: "smtp.qiye.aliyun.com", port: 465, secure: true },
+  },
+  sina: {
+    label: "新浪邮箱",
+    imap: { host: "imap.sina.com", port: 993, secure: true },
+    smtp: { host: "smtp.sina.com", port: 465, secure: true },
+  },
+  "189": {
+    label: "天翼邮箱",
+    imap: { host: "imap.189.cn", port: 993, secure: true },
+    smtp: { host: "smtp.189.cn", port: 465, secure: true },
+  },
+  gmail: {
+    label: "Gmail",
+    imap: { host: "imap.gmail.com", port: 993, secure: true },
+    smtp: { host: "smtp.gmail.com", port: 465, secure: true },
+  },
+  outlook: {
+    label: "Outlook / Hotmail",
+    imap: { host: "outlook.office365.com", port: 993, secure: true },
+    smtp: { host: "smtp.office365.com", port: 587, secure: false },
+  },
+  icloud: {
+    label: "iCloud 邮箱",
+    imap: { host: "imap.mail.me.com", port: 993, secure: true },
+    smtp: { host: "smtp.mail.me.com", port: 587, secure: false },
+  },
+  yahoo: {
+    label: "Yahoo 邮箱",
+    imap: { host: "imap.mail.yahoo.com", port: 993, secure: true },
+    smtp: { host: "smtp.mail.yahoo.com", port: 465, secure: true },
+  },
+  zoho: {
+    label: "Zoho 邮箱",
+    imap: { host: "imap.zoho.com", port: 993, secure: true },
+    smtp: { host: "smtp.zoho.com", port: 465, secure: true },
+  },
+  yandex: {
+    label: "Yandex 邮箱",
+    imap: { host: "imap.yandex.com", port: 993, secure: true },
+    smtp: { host: "smtp.yandex.com", port: 465, secure: true },
+  },
 };
 
-export const PRESET_IDS = [...Object.keys(PRESETS), "custom"] as MailPreset[];
+/**
+ * 下拉框里的顺序。不用 `Object.keys(PRESETS)`：`"126"` / `"163"` / `"189"` 是数字样字符串，
+ * 会被当成整数键排到最前面，于是 163 落到第二位、天翼跑到 yean 前面。顺序要自己写。
+ */
+export const PRESET_IDS: MailPreset[] = [
+  "163",
+  "126",
+  "yeah",
+  "qiye163",
+  "qq",
+  "exmail",
+  "aliyun",
+  "aliyunqy",
+  "sina",
+  "189",
+  "gmail",
+  "outlook",
+  "icloud",
+  "yahoo",
+  "zoho",
+  "yandex",
+  "custom",
+];
 
 function configFile(): string {
   return statePath("mail", "config.json");
