@@ -4455,22 +4455,42 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 
 /* ---------------------------------------------------------------- 分支操作工作台（D193 布局 / D235 扩展） */
 /* 两列是「同一段历史的两条时间线」，所以行高、字号、留白必须完全一致 —— 两列对不齐，读者会开始
-   逐行数，而不是扫一眼。宽度固定 1000，窄屏（720）叠成单列 + 顶部 tab。 */
+   逐行数，而不是扫一眼。宽度固定 1000，窄屏（720）叠成单列 + 顶部 tab。
+   尺寸写 `--vh1` / `--vw1`，不写 `vh` / `vw`：这张卡挂在 `#app` 里，`#app` 上有 `zoom: var(--ui-scale)`，
+   裸的 `82vh` 会被再乘一次缩放 —— 字号 125% 下卡片高 923px（视口才 900），底栏那颗「拉取最新」
+   直接被推到屏幕外面去（用户报的原话：「分支管理里面的拉取最新，在我现在这缩放下看不见了」）。*/
 .branch-sheet {
-  width: min(1000px, 94vw); height: min(82vh, 780px);
+  width: min(1000px, calc(var(--vw1) * 94)); height: min(calc(var(--vh1) * 82), 780px); max-height: calc(var(--vh1) * 82);
   display: flex; flex-direction: column; min-height: 0;
   background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55); overflow: hidden;
   animation: branch-in var(--dur-2) var(--ease);
+  /* 头行要不要让位，看的是**这张卡**多宽 —— 字号缩放会把卡的布局宽度压到 900 以下，而 @media
+     看的是视口宽度（1440），永远触发不了。跟 `.viewer` 的 @container 同一个理由。 */
+  container-type: inline-size;
 }
 .branch-sheet:focus { outline: none; }
 @keyframes branch-in { from { transform: translateY(10px) scale(0.995); opacity: 0.5; } }
-.branch-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line-soft); flex: none; }
-.branch-title { display: flex; align-items: baseline; gap: 8px; font-size: 14px; font-weight: 500; min-width: 0; flex: 1; }
+/* 头行放不下「标题 + 一整排动词」时把工具行换到下一行，而不是让它顶出卡片。 */
+.branch-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line-soft); flex: none; flex-wrap: wrap; }
+/* overflow: hidden 是兜底：标题里那几段 nowrap 文字撑着自己的 min-content，盒子被挤到内容以下时
+   它们会直接画到动词按钮身上（穿模）。 */
+.branch-title { display: flex; align-items: baseline; gap: 8px; font-size: 14px; font-weight: 500; min-width: 0; flex: 1; overflow: hidden; }
 .branch-title > span:not(.branch-repo) { flex: none; white-space: nowrap; }
 .branch-glyph { color: var(--accent); font-family: var(--mono); }
 .branch-repo { color: var(--faint); font: 11.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .branch-tools { display: flex; align-items: center; gap: 6px; flex: none; }
+/* 卡窄到放不下「标题 + 一整排动词」时（字号 150% ⇒ 卡 900 宽，一排动词要 800），标题整段让位只
+   留 ⎇ —— 仓库名 cmp 行与左栏都写着，而动词 / 复制 / 关闭必须完整可见。让位比缩短更干净：只剩
+   40px 时把路径断成「/Us…」比不显示更像 bug。再窄（字号 200% ⇒ 677；嵌入在「目录与仓库」
+   右栏时是 800，不收）就把常驻动词也收进「全部动词 · 24」，那一页本来就有全部 24 条。
+   两个阈值都是「卡的布局宽度」，不是视口宽度。 */
+@container (max-width: 960px) {
+  .branch-title > span:not(.branch-glyph) { display: none; }
+}
+@container (max-width: 720px) {
+  .go-tool-row .btn[data-op] { display: none; }
+}
 .branch-x { appearance: none; border: 1px solid transparent; background: transparent; color: var(--dim); width: 30px; height: 28px; border-radius: 8px; cursor: pointer; font-size: 13px; }
 .branch-x:hover { background: var(--panel-2); color: var(--text); border-color: var(--line); }
 
@@ -4534,18 +4554,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .branch-fetch-glyph { color: var(--accent); }
 .branch-esc { font-family: var(--mono); }
 
+/* 手机上卡片快铺满视口，这时候换成 96vw：卡片自己的尺寸只能用 @media（`@container` 不能给容器
+   自己写样式）；卡内部怎么排一律看容器宽度，见下面 D235 段里那条 `@container (max-width: 720px)`。 */
 @media (max-width: 720px) {
-  .branch-sheet { width: 96vw; height: min(86vh, 780px); }
-  .branch-cmp { grid-template-columns: minmax(0, 1fr) auto; }
-  .bc-end.right { grid-column: 1 / -1; justify-content: flex-start; }
-  .branch-tabs { display: flex; }
-  .branch-cols { grid-template-columns: 1fr; }
-  .bc-col + .bc-col { border-left: 0; }
-  .branch-cols[data-show="left"] .bc-col[data-side="right"] { display: none; }
-  .branch-cols[data-show="right"] .bc-col[data-side="left"] { display: none; }
-  .bc-row { grid-template-columns: 4.2rem minmax(0, 1fr); }
-  .bc-row .bc-meta { display: none; }
-  .branch-esc { display: none; }
+  .branch-sheet { width: calc(var(--vw1) * 96); height: min(calc(var(--vh1) * 86), 780px); max-height: calc(var(--vh1) * 86); }
 }
 
 /* #248 Jira 面板的内容件：#407 把外壳换成了「本机管理」同款控制台（web/src/jira-console.css，`.jc-*`），
@@ -5127,7 +5139,21 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .go-conflict-row { font: 11px var(--mono); color: var(--warn); padding: 2px 0; overflow-wrap: anywhere; }
 .go-ai-card .go-card-body, .go-handoff .go-card-body { gap: 6px; }
 
-@media (max-width: 720px) {
+/* 窄版一律按**卡片自己的宽度**判，不按视口：嵌进「目录与仓库」右栏时卡只有 800（字号 150% 时
+   482），而视口还是 1440 —— @media 不触发，于是对照行里那颗 origin/main 输入框直接压在
+   「领先 / 落后」上、两列挤压到只剩省略号（穿模）。@container 才是这里该用的判据（同 `.viewer`）。 */
+@container (max-width: 720px) {
+  .branch-cmp { grid-template-columns: minmax(0, 1fr) auto; }
+  .bc-end.right { grid-column: 1 / -1; justify-content: flex-start; }
+  .branch-tabs { display: flex; }
+  .branch-cols { grid-template-columns: 1fr; }
+  .bc-col + .bc-col { border-left: 0; }
+  .branch-cols[data-show="left"] .bc-col[data-side="right"] { display: none; }
+  .branch-cols[data-show="right"] .bc-col[data-side="left"] { display: none; }
+  .bc-row { grid-template-columns: 4.2rem minmax(0, 1fr); }
+  .bc-row .bc-meta { display: none; }
+  .branch-esc { display: none; }
+
   .go-tool-row { justify-content: flex-start; }
   .go-side-tabs { display: flex; }
   .go-history { grid-template-columns: minmax(0, 1fr); }
@@ -5147,7 +5173,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* 伞形工作目录：左边目录树、中间已找到的仓库、右边是原封不动的分支工作台（embedded）。
    三块都是 grid 轨，列宽在 JS 里显式写；折叠成 26px 竖条，和原型 C 的定案一致。 */
 .repos-sheet {
-  width: min(1240px, 96vw); height: min(84vh, 820px);
+  width: min(1240px, calc(var(--vw1) * 96)); height: min(calc(var(--vh1) * 84), 820px); max-height: calc(var(--vh1) * 84);
   display: flex; flex-direction: column; min-height: 0;
   background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55); overflow: hidden;
