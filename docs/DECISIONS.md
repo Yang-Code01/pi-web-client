@@ -4592,34 +4592,36 @@ D
 **代价 / 可改：** `spawned` 只在进程内存里，桥自己重启就丢（那一刻 state.json 已经有 worker 写的了，所以只影响「spawn 完立刻重启桥」的极端情况）；`dirty` 检测多花一次 `git status`（只在失败路径上）；`minePid` 要求 `/run` 的返回里有 pid，`run.pid` 缺失时不会自动刷新（只会停在那条成功横幅上，手动点「刷新页面」）。
 
 **验证：** `node bridge/tests/hotdeploy-unit.mjs`、`npx tsc -p bridge --noEmit`、`npm --prefix web run typecheck`（i18n-check 2877 keys × 3）绿；7999 测试桥上重跑一轮真部署（切分支→build→换进程→healthz 的 buildId 对上），以及审查后逐条手验：假 state.json 里 pre-write 的 step/error 不再被盖、脏 worktree 与 `TARGET MISSING` 两种失败分别给出不同弹法、面板打开时上一轮的 ok 不触发倒计时、公网头下两个 GET 都是 403。
-## D256 分支工作台 / 目录与仓库的尺寸走 `--vh1` / `--vw1`，窄版判据换成容器查询（用户报障 2026-11-15）
 
-**问题：** 用户报「chat 框下面的分支点开，现在是穿模的」；追问后落在一句具体的话上：**「分支管理里面的拉取最新，在我现在这缩放下看不见了」**。复现：外观「字号」调到 125% 以上，点状态行的 `⎇main`，卡片底栏（`拉取最新` / `Esc 关闭`）整条掉到视口外面；150% 起头行的「分支操作工作台」几个字压在「提交」按钮身上。
+## D256 `#app` 里不写裸 `vh` / `vw`：分支工作台掉出屏幕的修复 + 一条守门用例（用户报障 2026-11-15）
+
+**问题：** 用户报「chat 框下面的分支点开，现在是穿模的」，追问后落在一句具体的话上：**「分支管理里面的拉取最新，在我现在这缩放下看不见了」**。复现：外观「字号」调到 125% 以上，点状态行的 `⎇main`，卡片底栏（`拉取最新` / `Esc 关闭`）整条掉到视口外面；150% 起头行的「分支操作工作台」几个字压在「提交」身上。
+
+更让用户火大的是这**不是新坑**：`--vh1` / `--vw1` 就是为它起的，`.sys-console` / `.mail-console` / `.jc-console` 三处文件头都写着「不写 96vw / 90vh」，预览面板的 `.viewer.full` 也留着一整段注释。前几次都是「哪里炸了补哪里」，于是同一个错误换一个弹层就复发一次。这一轮按**类**收口。
 
 **原因：**
 
-1. `.branch-sheet` 写的是裸 `82vh` / `94vw`，`.repos-sheet` 是 `84vh` / `96vw`。两张卡都挂在 `#app` 里，`#app { zoom: var(--ui-scale) }` 会把 `vh` / `vw` **再乘一遍缩放**：125% 卡高 923（视口 900）、150% 高 1107、200% 宽 2000（视口 1440）。文件头 `--vh1` / `--vw1` 那两条注释（D123 的坑）就是为这个写的，底部 sheet 与预览面板早就改用它们，这两张卡漏了。
-2. 卡一窄，`.branch-tools { flex: none }` 不让位，`.branch-title` 里那几段 `nowrap` 文字又撑着自己的 min-content —— 只给 `min-width: 0` 不够，盒子被挤到内容以下后文字**直接画到动词按钮身上**（穿模）。
-3. 分支工作台的窄版规则挂的是 `@media (max-width: 720px)`，看的是**视口**宽度。嵌进「目录与仓库」右栏时面板只有 800（150% 时 482），视口还是 1440，窄版永远不触发：对照行里 `origin/main` 输入框压在「领先 / 落后」上、两列历史挤成省略号。
+1. `#app { zoom: var(--ui-scale) }`（外观「字号」）会把子树里的长度整体缩放一遍，而 `vw` / `vh` 解析的是**视口**尺寸、不认 zoom —— 同一个值被乘第二次。字号 125% 下 `height: 82vh` 的卡就是 923px（视口 900），150% 是 1107px，200% 下 `94vw` 宽的卡 2000px（视口 1440）。
+2. 卡一窄，`.branch-tools { flex: none }` 不让位，`.branch-title` 里那几段 `nowrap` 文字又撑着自己的 min-content（`min-width: 0` 不够）—— 盒子被挤到内容以下后文字**直接画到动词按钮身上**。
+3. 分支工作台的窄版规则挂的是 `@media (max-width: 720px)`，看的是**视口**宽度。嵌进「目录与仓库」右栏时面板只有 800（150% 时 482），视口还是 1440 → 窄版永远不触发：对照行里 `origin/main` 输入框压在「领先 / 落后」上、两列历史挤成省略号。
 
 **决定：**
 
-1. **两张卡的宽高一律 `min(…, calc(var(--vw1) * N))` / `min(…, calc(var(--vh1) * N))` + 对应 `max-height`**，跟 `.sheet`、预览面板同一个口径；`96vw` / `86vh` 那条 `@media` 分支同样换算。
-2. **头行两级降级，触发条件是卡自己的宽度**（`.branch-sheet { container-type: inline-size }` + `@container`）：
-   - 卡宽 < 960：标题整段让位，只留 `⎇`。仓库名 cmp 行与左栏都写着，动词 / 复制 / 关闭必须完整。让位而不是缩短，是因为只剩 40px 时把路径断成 `/Us…` 比不显示更像 bug。
-   - 卡宽 < 720：常驻那排动词（`提交 / 切换分支 / …`）收进「全部动词 · 24」，那一页本来就是全部 24 条。阈值定在 720 而不是 820，是因为嵌入右栏时面板是 800 —— 那里抖一抖就能容下，不该收。
-   - `.branch-title { overflow: hidden }` 兜底、`.branch-head { flex-wrap: wrap }` 兜底，任何一步都不许再画到按钮上。
-3. **分支工作台的窄版规则整套从 `@media (max-width: 720px)` 搬进 `@container (max-width: 720px)`**（cmp 两列、单列历史 / 差异、侧栏下移、动词左对齐、藏 Esc 提示）。`.branch-sheet` 自己的尺寸仍留在 `@media`：容器查询不能给容器自己写样式。判据用容器宽度而不是视口，跟 `.viewer`（D123 那条注释）同一个理由。
+1. **`web/src/*.css` 里一律不写裸 `vh` / `vw`**，要写几成视口就写 `calc(var(--vh1) * N)` / `calc(var(--vw1) * N)`（`--vh1` = 1vh ÷ zoom，跟 `.sheet`、预览面板同一个口径）。这轮把 `styles.css` 里剩下的 **33 处**声明全换了：分支工作台、目录与仓库、diff 弹窗、参数对话框、翻译对照、终端浮窗、背景任务、Jira 选择器、随手问、新建工作区、回合列表、消息图片、模型 chip、`.bg-sheet` 等。
+2. **挂在 `document.body` 上的浮层例外**：它们不在 `#app` 里、没有 zoom，裸单位本来就是对的（位置也是用 `getBoundingClientRect()` 的视觉 px 夹的）。这类规则**行尾标一条「不在 #app」注释**，守卫认这个标记；目前 10 条（`.pin-menu` / `.pin-menu.pin-list` / `.ws-tabs-menu` ×2 / `.ws-tray-col` / `.ws-pop` ×2 / `.perm-menu` / `.update-bar` / `.fail-toast`）。新东西不要往这个豁口里塞 —— 浮层本来就该跟着字号缩放，请挂进 `#app`；守卫对豁免条数有上限（12），涨爆了就说明又有人在往 body 上挂。
+3. **加守门用例** `web/tests/viewport-units-unit.mjs`（挂进 `npm --prefix web run typecheck`，也可单跑 `npm run test:viewport`）：扫 `web/src/*.css`（`web/src/peer/` 是另一张没有 zoom 的页面，不在范围内），除了 `--vh1` / `--vw1` 那两行定义和带豁免标记的行，出现裸 `vh` / `vw` / `dvh` / `svh` / `lvh` / `dvw` 就红并指出文件行号。**这条是整个决定里真正管用的部分** —— 前三次都写了文档没写守卫，所以第四次还是发生了。
+4. **分支工作台 / 目录与仓库的窄版判据从 `@media` 换成 `@container`**（`.branch-sheet { container-type: inline-size }`，同 `.viewer` 的理由）：窄版规则（cmp 两列、单列历史 / 差异、侧栏下移、动词左对齐、藏 Esc 提示）整套搬进 `@container (max-width: 720px)`；头行两级降级 —— 卡宽 < 960 标题让位只留 `⎇`，< 720 常驻动词收进「全部动词 · 24」（那一页本来就有全部 24 条）。`.branch-title { overflow: hidden }` 与 `.branch-head { flex-wrap: wrap }` 兜底，任何一步都不许再画到按钮上。`.branch-sheet` 自己的宽高仍留在 `@media`：容器查询不能给容器自己写样式。
 
-**不做的：** 没把 `.diff-sheet`（86vh）、`.argdialog-panel`（80vh）、`.st-console` 一族等其它裸 `vh` 的弹层一起改 —— 这轮只覆盖用户点到的那两张卡，剩下的按需要另开票，免得一次改几十处没人验。
+**没做的（已知仍属同一类，另开票）：** `app.ts` 里还有几处 `menu.style.left = innerWidth - 220` 之类直接拿**视觉 px** 往 `#app` 里的 fixed 元素上写坐标的零散落位（`stickMenu` 那套已经除过 scale，零散这几处没有）；`.repos-*` / 工具权限浮层之外，仍有一些面板用 `@media` 判窄版而不是 `@container`。
 
-**代价：** 150% 缩放下嵌在右栏的常驻动词要收起来，得多点一下「全部动词 · 24」；200% 时独立的卡也进窄版（单列 + 顶部 tab），一屏只看得到两三行提交 —— 仍可滚，也仍能关。
+**代价：** 字号 150% 下嵌在右栏的常驻动词要收起来，得多点一下「全部动词 · 24」；200% 时独立的卡也进窄版（单列 + 顶部 tab），一屏只看得到两三行提交 —— 仍可滚、仍能关；只当上限用的 `max-width: Nvw`（模型 chip、消息图片）现在按「面板宽度的 N%」算而不是「视口的 N%」，高字号下会比以前更早出现省略号 —— 那才是它本该有的意思。
 
-**验证（真 Chrome：playwright-core + Chrome for Testing，走真桥点开 chip，1440×900）**
+**验证（真 Chrome：playwright-core + Chrome for Testing；走真桥点开 chip，1440×900）**
 
-- `.branch-fetch` 的 bottom（视口 900）：改前 100 / 125 / 150 / 175 / 200% = 808 / **929** / **1115** / **1301** / **1486**；改后 = 808 / 806 / 803 / 801 / 797。卡片底边 738 高，底栏回到屏幕内。
-- 100% 下卡 1000×738、head 63、title 146、tools 808、body 473 —— 与改前**逐项相同**（桌面观感零变化，避免为了修缩放把主力尺寸也改了）。
-- 700×800（走 `@media` 窄版路径）、390×844（手机，卡 374×726）、1440×700 + 150%（卡 1354×574）都在视口内。
-- 嵌在「目录与仓库」右栏（`ReposSheet({ cwd: "~/…" })` 点第一个仓库，面板 800）：100 / 150 / 175% 下 foot 底 792 / 775 / 766；150% 下对照行不再重叠，历史改单列；100% 下常驻动词 7 颗仍在（阈值 720 没误伤）。
-- `npm --prefix web run typecheck`（含 i18n-check 3008 键 × 3 语）、`node scripts/build.mjs --only web` 通过。
-- `bridge/tests/git-history-ui.mjs` **没加用例**：这台机器没装 playwright（`tools/playwright.mjs` 找不到可用安装，只有 chromium-1254 缓存 + 一份 playwright-core），加一条跑不起来的用例不如不加；补用例要先有能跑 `npm run test:githist:ui` 的环境。
+- `.branch-fetch` 的 bottom（视口 900）：改前 100 / 125 / 150 / 175 / 200% = 808 / **929** / **1115** / **1301** / **1486**；改后 = 808 / 806 / 803 / 801 / 797。
+- 100% 下分支工作台 1000×738、head 63、title 146、tools 808、body 473 —— 与改前**逐项相同**（`--vh1` 在 scale=1 时就是 `1vh`，这轮换单位对主力尺寸零影响）。
+- 嵌在「目录与仓库」右栏（面板 800）100 / 150 / 175%：foot 底 792 / 775 / 766；150% 下对照行不再重叠、历史改单列；100% 下常驻动词 7 颗仍在（阈值 720 没误伤）。
+- 静态 A/B（同一个 harness，只换 CSS，`--ui-scale: 1.5`）：`.diff-sheet` 高 774 → 516（本地 px，乘 1.5 后是 1161 → 774，视口 900），`.term-dock` 宽 1080 → 928（1620 → 1392，视口 1440）。
+- 700×800（`@media` 窄版路径）、390×844（手机）、1440×700 + 150% 全在视口内；新建会话 / 随手问两张 sheet 在 150% 下无溢出。
+- `npm --prefix web run typecheck`（`tsc` + i18n-check 3008 键 × 3 + 新守卫 8 项）、`node scripts/build.mjs --only web` 通过；守卫反向验过（往 `sysmanage.css` 塞一行 `height: 42vh` 立刻红，删掉恢复绿）。
+- `bridge/tests/git-history-ui.mjs` 没加用例：这台机器没装 playwright（`tools/playwright.mjs` 找不到可用安装，只有 chromium-1254 缓存 + 一份 playwright-core），加一条跑不起来的用例不如不加。
