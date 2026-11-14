@@ -391,12 +391,15 @@ try {
   check("有可用的局域网地址做非回环测试", Boolean(lanBase), lanIps.join(",") || "无");
   if (lanBase) remoteBodies.push({ name: "局域网非回环", base: lanBase, headers: { cookie, "content-type": "application/json" } });
   const opBody = JSON.stringify({ dir, id: "no-such-op", params: {} });
+  // macOS 的 tmpdir 是 `/var/folders/…`，git 报回来的根目录是 `/private/var/folders/…` —— 同一个地方、
+  // 两条路径。拉平到 realpath 再比，否则这条断言只在 Windows 上成立（本机第一次跑就红在这）。
+  const dirAlts = new Set([dir, fs.realpathSync(dir)].map((p) => p.replace(/\\/g, "/").toLowerCase()));
   for (const entry of remoteBodies) {
     const read = await fetch(`${entry.base}/api/git/state`, {
       method: "POST", headers: entry.headers, body: JSON.stringify({ dir }),
     });
     const readBody = await read.json();
-    check(`${entry.name}读仓库状态 200`, read.status === 200 && typeof readBody.repo === "string" && readBody.repo.toLowerCase() === dir.replace(/\\/g, "/").toLowerCase() && readBody.branch === "feat/ui-test", `HTTP ${read.status} ${JSON.stringify(readBody).slice(0, 160)}`);
+    check(`${entry.name}读仓库状态 200`, read.status === 200 && typeof readBody.repo === "string" && dirAlts.has(readBody.repo.toLowerCase()) && readBody.branch === "feat/ui-test", `HTTP ${read.status} ${JSON.stringify(readBody).slice(0, 160)}`);
     const op = await fetch(`${entry.base}/api/git/op`, { method: "POST", headers: entry.headers, body: opBody });
     const opJson = await op.json();
     check(`${entry.name}写操作放行到白名单`, op.status === 200 && opJson.code === "unknown_op", `HTTP ${op.status} ${JSON.stringify(opJson).slice(0, 160)}`);
@@ -439,6 +442,47 @@ try {
   check("窄屏出现两列切换 tab", await small.locator(".go-side-tabs button").count() === 2);
   check("窄屏只显示一列", await small.locator(".bc-col:visible").count() === 1);
   await narrow.close();
+
+  // 字号缩放（D256）：`#app` 上挂着 zoom，样式里写裸 vh / vw 会被乘第二次 —— 底栏曾经整条被推到
+  // 屏幕外，「拉取最新」点不到。这里按 150% / 200% 各点一次 chip，量的都是**真实 rect**：
+  // 卡在不在视口里、底栏那颗按钮在不在、头行标题有没有画到动词按钮身上。
+  // 150% 的卡 902 宽（宽版），200% 的卡 677 宽（容器查询判窄版）：两个状态都得撑得住。
+  for (const scale of [1.5, 2]) {
+    const zoomed = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "zh-CN" });
+    await zoomed.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
+    await zoomed.addInitScript((s) => localStorage.setItem("pi.prefs", JSON.stringify({ scale: s })), scale);
+    const zpage = await zoomed.newPage();
+    await zpage.goto(`${BASE}/#/s/${sessionId}`);
+    await zpage.waitForSelector(".git-chip", { timeout: 20000 });
+    await zpage.click(".git-chip");
+    await zpage.waitForSelector(".bc-row", { timeout: 20000 });
+    const zoomBox = await zpage.evaluate(() => {
+      const rect = (el) => el?.getBoundingClientRect().toJSON() ?? null;
+      const verble = [...document.querySelectorAll(".go-tool-row .btn")].filter((b) => getComputedStyle(b).display !== "none");
+      return {
+        vw: innerWidth,
+        vh: innerHeight,
+        sheet: rect(document.querySelector(".branch-sheet")),
+        fetch: rect(document.querySelector(".branch-fetch")),
+        title: rect(document.querySelector(".branch-title")),
+        firstVerb: rect(verble[0]),
+      };
+    });
+    const label = `${Math.round(scale * 100)}% 字号`;
+    const s = zoomBox.sheet;
+    check(`${label}：卡片整张落在视口里`, s.left >= -1 && s.top >= -1 && s.right <= zoomBox.vw + 1 && s.bottom <= zoomBox.vh + 1,
+      `${Math.round(s.width)}x${Math.round(s.height)} @ ${Math.round(s.left)},${Math.round(s.top)}，视口 ${zoomBox.vw}x${zoomBox.vh}`);
+    check(`${label}：「拉取最新」还在视口内`, zoomBox.fetch.top >= 0 && zoomBox.fetch.bottom <= zoomBox.vh + 1,
+      `y ${Math.round(zoomBox.fetch.top)}–${Math.round(zoomBox.fetch.bottom)}，视口高 ${zoomBox.vh}`);
+    check(`${label}：头行标题没画到动词按钮上`, zoomBox.title.right <= zoomBox.firstVerb.left + 1,
+      `title.right=${Math.round(zoomBox.title.right)} ⇄ 第一颗动词 left=${Math.round(zoomBox.firstVerb.left)}`);
+    // 24 条动词的入口永远要在：卡窄了收进「全部动词 · 24」，宽了就在头行常驻。
+    check(`${label}：「全部动词」入口可见`, await zpage.locator('[data-verbs="1"]').isVisible());
+    // 卡宽 < 720 时才该进窄版（容器查询，D256）：200% 的卡 677 宽 → 两列退化成顶部 tab。
+    const sideTabsVisible = await zpage.locator(".go-side-tabs button").first().isVisible();
+    check(`${label}：窄版判据跟的是卡自己的宽度`, sideTabsVisible === scale >= 1.9, `sideTabs=${sideTabsVisible}`);
+    await zoomed.close();
+  }
 
   console.log("gitops-ui: ok — 三 tab / 24 动词 / AI 两出口 / 对照检索 / 操作卡 / 红色确认 / chip 刷新 / 失败卡 / 冲突态 / 公网·局域网可读写 / 窄屏");
 } finally {

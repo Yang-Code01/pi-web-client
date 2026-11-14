@@ -4611,10 +4611,13 @@ D
 2. **挂在 `document.body` 上的浮层例外**：它们不在 `#app` 里、没有 zoom，裸单位本来就是对的（位置也是用 `getBoundingClientRect()` 的视觉 px 夹的）。这类规则**行尾标一条「不在 #app」注释**，守卫认这个标记；目前 10 条（`.pin-menu` / `.pin-menu.pin-list` / `.ws-tabs-menu` ×2 / `.ws-tray-col` / `.ws-pop` ×2 / `.perm-menu` / `.update-bar` / `.fail-toast`）。新东西不要往这个豁口里塞 —— 浮层本来就该跟着字号缩放，请挂进 `#app`；守卫对豁免条数有上限（12），涨爆了就说明又有人在往 body 上挂。
 3. **加守门用例** `web/tests/viewport-units-unit.mjs`（挂进 `npm --prefix web run typecheck`，也可单跑 `npm run test:viewport`）：扫 `web/src/*.css`（`web/src/peer/` 是另一张没有 zoom 的页面，不在范围内），除了 `--vh1` / `--vw1` 那两行定义和带豁免标记的行，出现裸 `vh` / `vw` / `dvh` / `svh` / `lvh` / `dvw` 就红并指出文件行号。**这条是整个决定里真正管用的部分** —— 前三次都写了文档没写守卫，所以第四次还是发生了。
 4. **分支工作台 / 目录与仓库的窄版判据从 `@media` 换成 `@container`**（`.branch-sheet { container-type: inline-size }`，同 `.viewer` 的理由）：窄版规则（cmp 两列、单列历史 / 差异、侧栏下移、动词左对齐、藏 Esc 提示）整套搬进 `@container (max-width: 720px)`；头行两级降级 —— 卡宽 < 960 标题让位只留 `⎇`，< 720 常驻动词收进「全部动词 · 24」（那一页本来就有全部 24 条）。`.branch-title { overflow: hidden }` 与 `.branch-head { flex-wrap: wrap }` 兜底，任何一步都不许再画到按钮上。`.branch-sheet` 自己的宽高仍留在 `@media`：容器查询不能给容器自己写样式。
+   同一轮顺手把**预览面板**头部那组窄版规则也换了（`.viewer` 早就有 `container-type: inline-size`，
+   却把 `display: none` / 换行那几条挂在 `@media (max-width: 760px)` 上）：宽屏上把面板拖到 400px，
+   以前一声不响，头部就照着「#79 的教训」那条注释继续往视口外溢。
 
 **顺带审过、结论是没问题：** `app.ts` 那几处 `menu.style.left = innerWidth - 220` / `menu.style.right = innerWidth - r.right`（右键菜单、终端菜单、工具权限浮层）与 `menuplace.ts#stickMenu` —— 它们全都 `document.body.append`，不在 zoom 子树里，用视觉 px 定位是对的。**不是**每一处 `innerWidth` 都要除 scale：先看它是不是挂在 `#app` 里。
 
-**没做的（已知仍属同一类，另开票）：** 还有一批面板用 `@media` 判窄版而不是 `@container`（`.repos-*` 一族、部分工具浮层）—— 它们是「嵌在栏里时窄版不触发」的下一个候选，这轮只覆盖了分支工作台与目录与仓库。
+**没做的（已知仍属同一类，另开票）：** `.repos-*` 一族与部分工具浮层仍用 `@media` 判窄版（`.repos-sheet` 的三列 / 单列切换看的是视口，拖宽左栏时右栏变窄不会响应）—— 本轮覆盖了分支工作台、目录与仓库、预览面板三处。
 
 **代价：** 字号 150% 下嵌在右栏的常驻动词要收起来，得多点一下「全部动词 · 24」；200% 时独立的卡也进窄版（单列 + 顶部 tab），一屏只看得到两三行提交 —— 仍可滚、仍能关；只当上限用的 `max-width: Nvw`（模型 chip、消息图片）现在按「面板宽度的 N%」算而不是「视口的 N%」，高字号下会比以前更早出现省略号 —— 那才是它本该有的意思。
 
@@ -4626,4 +4629,6 @@ D
 - 静态 A/B（同一个 harness，只换 CSS，`--ui-scale: 1.5`）：`.diff-sheet` 高 774 → 516（本地 px，乘 1.5 后是 1161 → 774，视口 900），`.term-dock` 宽 1080 → 928（1620 → 1392，视口 1440）。
 - 700×800（`@media` 窄版路径）、390×844（手机）、1440×700 + 150% 全在视口内；新建会话 / 随手问两张 sheet 在 150% 下无溢出。
 - `npm --prefix web run typecheck`（`tsc` + i18n-check 3008 键 × 3 + 新守卫 8 项）、`node scripts/build.mjs --only web` 通过；守卫反向验过（往 `sysmanage.css` 塞一行 `height: 42vh` 立刻红，删掉恢复绿）。
-- `bridge/tests/git-history-ui.mjs` 没加用例：这台机器没装 playwright（`tools/playwright.mjs` 找不到可用安装，只有 chromium-1254 缓存 + 一份 playwright-core），加一条跑不起来的用例不如不加。
+- **`npm run test:githist:ui` 加了 10 条**（150% / 200% 各五条）：卡片整张落在视口里、「拉取最新」在视口内、头行标题没画到动词按钮上、「全部动词」入口可见、窄版判据跟的是卡自己的宽度。跑法见 `docs/agents`（这台机器上 `npm i --no-save playwright && npx playwright install chromium` 之后 `loadPlaywright()` 就找得到了）。整套 116 条全绿、0 失败；**把 `.branch-sheet` 退回 `94vw` / `82vh` 再跑，这组立刻红**（`1500x1107 @ 24,24，视口 1440x900`），改回来恢复绿 —— 用例确实咬得住这次的事故。
+- 同一轮顺手修了 `bridge/tests/git-history-ui.mjs` 的一处环境假设：`/api/git/state` 回来的 repo 是 `/private/var/…` 而 tmpdir 是 `/var/…`（macOS 同一个地方两条路径），断言改成比 realpath，否则这条用例在 macOS 上第一跑就红。
+- 预览面板那组容器查询用真样式表验的：面板 420 宽时 `.viewer-path` 隐藏、900 宽时显示；同一张页面对照旧 CSS，420 宽下路径**没**隐藏（就是被修掉的那个静默失败）。
