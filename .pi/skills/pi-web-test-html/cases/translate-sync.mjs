@@ -67,7 +67,7 @@ export const meta = {
 };
 
 export default async function translateSync(h) {
-  const { page, openCase, step, ok, fail, shot, log } = h;
+  const { page, openCase, step, ok, fail, shot, pause, log } = h;
 
   const cwd = h.session?.cwd ?? (await h.openSession(path.resolve(".scratch/testbook/translate-sync/work"), "translate-sync")).cwd;
   const doc = path.join(cwd, NAME);
@@ -93,6 +93,7 @@ export default async function translateSync(h) {
   await page.locator(".viewer-body .md-doc").waitFor({ timeout: 15_000 });
   await page.waitForFunction((n) => document.querySelector(".viewer-name")?.textContent === n, NAME, { timeout: 15_000 });
   ok(s, "打开了 " + NAME);
+  await pause(900);
   const viewerShot = await shot(s, ".viewer", "opened");
 
   // ---- TC-02 翻译：左日右中
@@ -105,10 +106,13 @@ export default async function translateSync(h) {
   });
   s = step("点「译」→ 选中文 → 开始", "自动全屏，左右两栏都出来");
   await page.locator(".viewer-tools button.viewer-btn", { hasText: "译" }).first().click();
+  await pause(800);
   const pick = page.locator(".tr-pick");
   await pick.waitFor({ timeout: 10_000 });
   await pick.locator(".tr-langbtn", { hasText: "中文" }).click();
+  await pause(900);
   await pick.locator(".choose-row button.primary", { hasText: "开始" }).click();
+  await pause(600);
   await page.locator(".tr-cmp .tr-row").first().waitFor({ timeout: 60_000 });
   await page.waitForFunction(() => document.querySelectorAll(".tr-cmp .tr-row").length === 2, null, { timeout: 30_000 });
   ok(s, "两栏对照已渲染");
@@ -118,7 +122,7 @@ export default async function translateSync(h) {
   else fail(s, "左栏不像日文");
   if (kana(right0) === 0) ok(s, "右栏译文里没有假名");
   else fail(s, `右栏还留着 ${kana(right0)} 个假名`);
-  await page.waitForTimeout(800);
+  await pause(1200);
   await shot(s, ".viewer", "compared");
 
   // ---- TC-03 改一节标题的译文
@@ -131,6 +135,7 @@ export default async function translateSync(h) {
   });
   s = step("点「改译文」：改两处——第 2 节的标题译文改成「## 附录：本文的中文译文」，第 1 节的段落补一句「（补一句）」", "回执「译文已保存」，磁盘原文一字没动");
   await page.locator(".tr-tools button", { hasText: "改译文" }).click();
+  await pause(900);
   const tas = page.locator("textarea.tr-sed");
   await tas.first().waitFor({ timeout: 10_000 });
   const n = await tas.count();
@@ -145,8 +150,16 @@ export default async function translateSync(h) {
   if (hit < 0) hit = n - 1;
   // 只改标题那一行：整框替掉会连同段落一起删，那属于「结构变了」，是另一条路。
   const before = await tas.nth(hit).inputValue();
+  ok(s, `改前这一节开头：${before.split("\n")[0]}`);
   await tas.nth(hit).click();
-  await tas.nth(hit).fill(before.replace(/^(#{1,6}\s+).*$/m, EDIT_TO));
+  await pause(700);
+  // 用键盘逐字敲标题：录屏里能看清改的是哪一行；整框 fill 是一瞬间换掉，看不出来。
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.press("Shift+End");
+  await page.keyboard.type(EDIT_TO, { delay: 80 });
+  const headNow = (await tas.nth(hit).inputValue()).split("\n")[0].trim();
+  if (headNow === EDIT_TO) ok(s, `标题逐字敲成了「${EDIT_TO}」`);
+  else fail(s, `标题没改对：${headNow}`);
   // 第 1 节也动一处：模型把它那个 `---` 吞了，这一节才会进块级比对（验分隔块过滤）。
   const first = 0;
   const v0 = await tas.nth(first).inputValue();
@@ -156,6 +169,7 @@ export default async function translateSync(h) {
   lines0[lastBody] = `${lines0[lastBody]}（补一句）`;
   await tas.nth(first).click();
   await tas.nth(first).fill(lines0.join("\n"));
+  await pause(700);
   await page.keyboard.press("Control+s");
   await page.waitForFunction(() => (document.querySelector(".tr-brief")?.textContent ?? "").includes("译文已保存"), null, {
     timeout: 20_000,
@@ -163,7 +177,7 @@ export default async function translateSync(h) {
   ok(s, `第 ${hit + 1} 节已保存到缓存`);
   if (fs.readFileSync(doc, "utf8") === SRC) ok(s, "源文件没被改");
   else fail(s, "保存译文时碰了源文件");
-  await page.waitForTimeout(600);
+  await pause(1200);
   await shot(s, ".viewer", "edited");
 
   // ---- TC-04 同步原文：差异预览不误判
@@ -176,6 +190,7 @@ export default async function translateSync(h) {
   });
   s = step("点「同步原文」", "确认页列出改动块，且不含误判告警");
   await page.locator(".tr-tools button", { hasText: "同步原文" }).click();
+  await pause(900);
   const review = page.locator(".tr-review");
   await review.waitFor({ timeout: 60_000 });
   const diffs = await review.locator(".tr-diff").count();
@@ -187,7 +202,7 @@ export default async function translateSync(h) {
   else fail(s, `确认页里出现：${offenders.join("、")}`);
   const del = await review.locator(".tr-diff pre.del").first().innerText();
   ok(s, `原文侧：${del.split("\n")[0]}`);
-  await page.waitForTimeout(1200);
+  await pause(1600);
   await shot(s, ".tr-review", "review");
 
   // ---- TC-05 写回：左栏换回日文
@@ -200,13 +215,15 @@ export default async function translateSync(h) {
   });
   s = step("点「写回原文」", "回执「已写回原文」，左栏标题变成日文");
   // 写回前先把两栏拍一张：跟写回后那张并排看，改了哪一行一眼能对上。
+  await pause(1400);
   await shot(s, ".tr-cmp", "before-apply");
+  await pause(500);
   await review.locator(".choose-row button.primary", { hasText: "写回原文" }).click();
   await page.waitForFunction(() => (document.querySelector(".tr-brief")?.textContent ?? "").includes("已写回原文"), null, {
     timeout: 30_000,
   });
   ok(s, "已写回");
-  await page.waitForTimeout(1400);
+  await pause(2200);
   const left1 = await page.locator(".tr-cmp .tr-row").nth(hit).locator(".tr-src").innerText();
   if (kana(left1) > 0 && left1.includes("ご案内")) ok(s, `左栏标题已是日文：${left1.split("\n")[0]}`);
   else fail(s, `左栏标题不是写回的日文：${left1.slice(0, 60)}`);
@@ -254,7 +271,7 @@ export default async function translateSync(h) {
   if (rendered.includes("についてのご案内") && rendered.includes("この件についても中止してください。"))
     ok(s, "预览里渲染出来的也是新文字");
   else fail(s, "预览里还是旧文字");
-  await page.waitForTimeout(600);
+  await pause(1200);
   await shot(s, ".viewer", "disk");
   h.sortCases(meta.order);
   void viewerShot;

@@ -53,6 +53,8 @@ fs.mkdirSync(SHOTS, { recursive: true });
 
 /** 录像：默认关（头less 跑不吃这个开销），--video 才录，产物是 <out>/run.mp4。 */
 const VIDEO = argv.includes("--video");
+/** 节奇：`--pace 3` 把所有停顿乘 3。录屏给人看时用，默认 1（不拖慢回归）。 */
+const PACE = Math.max(0.25, Number(arg("pace", "1")) || 1);
 const VIDEO_DIR = path.join(OUT, "video");
 if (VIDEO) fs.mkdirSync(VIDEO_DIR, { recursive: true });
 const [VW, VH] = (arg("size", "1440x940").split("x").map(Number));
@@ -158,6 +160,11 @@ function ok(s, actual) {
   s.actual = s.actual ? `${s.actual}；${actual}` : actual;
 }
 
+/** 给人看的停顿：真机回归不需要，录屏时用 `--pace 3` 把所有停顿拉长，画面才跟得上。 */
+async function pause(ms = 700) {
+  await page.waitForTimeout(Math.round(ms * PACE));
+}
+
 /** 截元素而不是视口：测试书里贴的是「这一步看到的那块界面」。元素会在重渲染中换掉，所以重试。 */
 async function shot(s, selector, name) {
   const file = path.join(SHOTS, `${cur.id}-${s.no}-${name}.png`);
@@ -204,6 +211,7 @@ const h = {
   ok,
   fail,
   shot,
+  pause,
   cases,
   get cur() {
     return cur;
