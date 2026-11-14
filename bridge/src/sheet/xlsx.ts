@@ -773,6 +773,12 @@ class BookCalc implements CalcCtx {
   private busy = new Set<string>();
   private buf: Uint8Array;
   private book: Book;
+  /** 正在算哪一格：ROW() / COLUMN() 用它。 */
+  at?: { r: number; c: number };
+  /** 1904 日期系统（老 Mac 文件）：日期函数和 TEXT 要按它算。 */
+  get date1904(): boolean {
+    return this.book.date1904 === true;
+  }
 
   constructor(buf: Uint8Array, book: Book) {
     this.buf = buf;
@@ -805,7 +811,11 @@ class BookCalc implements CalcCtx {
     let val: EvalVal;
     if (cell.f && cell.noCache) {
       this.busy.add(key);
+      // ROW() / COLUMN() 不带参数时要知道自己在哪一格（跨表算的时候也要对）
+      const prev = this.at;
+      this.at = { r, c };
       val = evalFormula(cell.f, name, this);
+      this.at = prev;
       this.busy.delete(key);
     } else val = rawOf(cell);
     this.memo.set(key, val);

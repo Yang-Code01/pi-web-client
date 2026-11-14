@@ -17,6 +17,7 @@
  */
 import { tr, errText } from "../i18n/index.ts";
 import { chartNode } from "./chart.ts";
+import { formatLocal } from "./fmt.ts";
 import { clampNum } from "../floatwin.ts";
 import type {
   SheetCell,
@@ -87,12 +88,45 @@ export interface SheetGridHost {
   onResize?: (kind: "col" | "row", index: number, size: number) => void;
   /** #436 表头筛选：value 为 null 表示清掉这一列的筛选。 */
   onFilter?: (c: number, value: string | null) => void;
+  /** #437 选区统计（WPS 底栏那条「求和 / 平均值 / 计数」）；单格或没数字时给 null。 */
+  onStats?: (stats: { sum: number; count: number; num: number } | null) => void;
 }
 
 /** 四个绘制层：主体、冻结行、冻结列、冻结角。 */
 const L_MAIN = 0;
 const L_TOP = 1;
 const L_LEFT = 2;
+
+/** 内置数字格式 id → 代码（本地预览用；桥端的表在 bridge/src/sheet/numfmt.ts）。 */
+const NUMBER_CODES: Record<number, string> = {
+  0: "General",
+  1: "0",
+  2: "0.00",
+  3: "#,##0",
+  4: "#,##0.00",
+  9: "0%",
+  10: "0.00%",
+  11: "0.00E+00",
+  12: "# ?/?",
+  14: "m/d/yy",
+  20: "h:mm",
+  49: "@",
+};
+
+function codeOfNumberFormat(nf: number | string): string | null {
+  if (typeof nf === "string") return nf.trim() || null;
+  return NUMBER_CODES[nf] ?? null;
+}
+
+/** 填充柄用：`Q1` 往下拖变 `Q2`，纯数字文本（`001`）也自增；别的返回 null（原样复制）。 */
+function seriesValue(text: string, step: number): string | null {
+  const m = /^(.*?)(\d+)$/.exec(text);
+  if (!m) return null;
+  const digits = m[2]!;
+  const next = Number(digits) + step;
+  if (!Number.isFinite(next)) return null;
+  return `${m[1]}${String(next).padStart(digits.length, "0")}`;
+}
 
 function colName(c: number): string {
   let out = "";
@@ -257,6 +291,8 @@ export class SheetGrid {
   private edits = new Map<string, SheetCell | null>();
   /** #433：只改样式、没改内容的格子（保存时并进 editOps）。 */
   private styleOver = new Map<string, SheetStylePatch>();
+  /** #437：本地改过的数字格式（代码），画格子时立刻按它显示，不用等存盘。 */
+  private fmtOver = new Map<string, string>();
   /** #433：功能区「冻结窗格」改的冻结位置，优先于文件里的。 */
   private freezeOver: { rows: number; cols: number } | null = null;
   /** #433：公式视图——格子里显示 `=SUM(...)` 而不是结果。 */
@@ -682,6 +718,11 @@ export class SheetGrid {
       for (let c = s.c0; c <= s.c1; c++) {
         const key = `${r}:${c}`;
         this.styleOver.set(key, { ...this.styleOver.get(key), ...patch });
+        if (patch.nf !== undefined) {
+          const code = codeOfNumberFormat(patch.nf);
+          if (code) this.fmtOver.set(key, code);
+          else this.fmtOver.delete(key);
+        }
       }
     }
     this.notifyDirty();
@@ -690,7 +731,7 @@ export class SheetGrid {
 
   /** #433：焦点格的样式（功能区按它亮按钮）。 */
   get activeStyle(): SheetStyle | undefined {
-    return this.styleOf(this.cellAt(this.focus.r, this.focus.c));
+    return this.styleOf(this.focus.r, this.focus.c);
   }
 
   /** #433：网格线开关（和文件里的 `showGridLines` 是两回事，临时视图用）。 */
@@ -926,7 +967,7 @@ export class SheetGrid {
     const r1 = span ? span.r1 : r;
     const c1 = span ? span.c1 : c;
     const cell = this.cellAt(r0, c0);
-    const st = this.styleOf(cell);
+    const st = this.styleOf(r0, c0);
     const node = el("textarea", "sd-edit");
     node.value = initial ?? (cell?.f ? `=${cell.f}` : (cell?.t ?? ""));
     node.spellcheck = false;
@@ -970,6 +1011,16 @@ export class SheetGrid {
     if (ev.key === "Tab") {
       ev.preventDefault();
       this.commitEdit(ev.shiftKey ? "left" : "right");
+      return;
+    }
+    if (ev.key === "Enter" && ev.altKey) {
+      // Alt+Enter：格子里换行（Excel/WPS 的同一个手法），不提交
+      ev.preventDefault();
+      const node = ev.target as HTMLTextAreaElement;
+      const at = node.selectionStart ?? node.value.length;
+      node.value = `${node.value.slice(0, at)}\n${node.value.slice(at)}`;
+      node.setSelectionRange(at + 1, at + 1);
+      return;
     }
   }
 
@@ -1200,7 +1251,17 @@ export class SheetGrid {
       this.redo();
       return;
     }
-    if (ev.altKey || mod) return;
+    if (ev.altKey || mod) {
+      if (mod && !ev.altKey && (ev.key === "a" || ev.key === "A")) {
+        // Ctrl+A：选中光标所在的那块连续区（再按一次是全表，Excel 的两段式我们只做第一段）
+        ev.preventDefault();
+        this.selectBlock(this.focus);
+        this.afterSelect();
+        return;
+      }
+      if (mod && !ev.altKey && this.onJumpKey(ev)) return;
+      return;
+    }
     if (ev.key === "F2") {
       ev.preventDefault();
       this.beginEdit();
@@ -1248,6 +1309,12 @@ export class SheetGrid {
       case "PageDown":
         r += page;
         break;
+      case "Enter":
+        r += ev.shiftKey ? -1 : 1;
+        break;
+      case "Tab":
+        c += ev.shiftKey ? -1 : 1;
+        break;
       default:
         return;
     }
@@ -1265,6 +1332,65 @@ export class SheetGrid {
     this.notify();
     void this.ensure();
   };
+
+  /** #437：Ctrl/Cmd + 方向键跳到边界（Excel 的口径：先跳过空格，再走到连续区的尽头）。 */
+  private onJumpKey(ev: KeyboardEvent): boolean {
+    const map: Record<string, [number, number]> = {
+      ArrowUp: [-1, 0],
+      ArrowDown: [1, 0],
+      ArrowLeft: [0, -1],
+      ArrowRight: [0, 1],
+    };
+    const step = map[ev.key];
+    if (!step) return false;
+    const info = this.info();
+    if (!info.rows || !info.cols) return false;
+    ev.preventDefault();
+    const target = this.edgeOf(this.focus, step[0], step[1]);
+    if (ev.shiftKey) this.focus = target;
+    else {
+      this.anchor = target;
+      this.focus = target;
+    }
+    this.hitAt = -1;
+    this.reveal(target.r, target.c);
+    this.syncHeads();
+    this.render();
+    this.notify();
+    void this.ensure();
+    return true;
+  }
+
+  /** 从一格出发按方向找边界：下一格是空的就跳到下一个有内容的格，否则走到连续区的尽头。 */
+  private edgeOf(from: { r: number; c: number }, dr: number, dc: number): { r: number; c: number } {
+    const info = this.info();
+    const maxR = info.rows - 1;
+    const maxC = info.cols - 1;
+    const filled = (r: number, c: number): boolean => {
+      if (r < 0 || c < 0 || r > maxR || c > maxC) return false;
+      const cell = this.cellAt(r, c);
+      return !!cell && (cell.f !== undefined || (cell.t !== undefined && cell.t !== "") || typeof cell.v === "number");
+    };
+    let { r, c } = from;
+    const inside = (rr: number, cc: number): boolean => rr >= 0 && cc >= 0 && rr <= maxR && cc <= maxC;
+    if (!filled(r + dr, c + dc)) {
+      // 前面是空的：一直走到第一个有内容的格
+      while (inside(r + dr, c + dc) && !filled(r + dr, c + dc)) {
+        r += dr;
+        c += dc;
+      }
+      if (inside(r + dr, c + dc)) {
+        r += dr;
+        c += dc;
+      }
+      return { r, c };
+    }
+    while (inside(r + dr, c + dc) && filled(r + dr, c + dc)) {
+      r += dr;
+      c += dc;
+    }
+    return { r, c };
+  }
 
   /** #107：Ctrl/Cmd+C 出去的是纯文本 TSV（只有选区里的显示值）。 */
   private onCopy = (ev: ClipboardEvent): void => {
@@ -1369,6 +1495,29 @@ export class SheetGrid {
     const cell = this.cellAt(sel.r, sel.c);
     const text = cell?.f ? `=${cell.f}` : (cell?.t ?? "");
     this.host.onSelect?.({ ref: this.selectionRef, text });
+    this.host.onStats?.(this.selectionStats());
+  }
+
+  /** #437：选区的求和 / 计数（WPS 底栏那条）。只统计数值格，超过 5 万格就不算。 */
+  selectionStats(): { sum: number; count: number; num: number } | null {
+    const s = this.rect();
+    if (s.r0 === s.r1 && s.c0 === s.c1) return null;
+    if ((s.r1 - s.r0 + 1) * (s.c1 - s.c0 + 1) > 50000) return null;
+    let sum = 0;
+    let count = 0;
+    let num = 0;
+    for (let r = s.r0; r <= s.r1; r++) {
+      for (let c = s.c0; c <= s.c1; c++) {
+        const cell = this.cellAt(r, c);
+        if (!cell) continue;
+        if (cell.f || (cell.t !== undefined && cell.t !== "")) count++;
+        if (typeof cell.v === "number") {
+          sum += cell.v;
+          num++;
+        }
+      }
+    }
+    return count ? { sum, count, num } : null;
   }
 
   private visible(): Range | null {
@@ -1762,14 +1911,123 @@ export class SheetGrid {
     if (nodes.length) this.cells.append(...nodes);
   }
 
-  /** 选区右下角那个小方块（Excel 的填充柄）。 */
+  /** 选区右下角那个小方块（Excel 的填充柄）：按住能往四个方向拖，松手就把选区填出去。 */
   private drawHandle(): void {
     const sel = this.rect();
     if (sel.r1 >= this.info().rows || sel.c1 >= this.info().cols) return;
+    if (!this.editMode) return;
     const handle = el("div", "sd-fill");
     handle.style.left = `${this.leftOf(sel.c1 + 1) - 3}px`;
     handle.style.top = `${this.topOf(sel.r1 + 1) - 3}px`;
+    handle.title = tr("拖动填充");
+    handle.addEventListener("pointerdown", (ev) => this.startFill(ev));
     this.cells.append(handle);
+  }
+
+  /**
+   * #437 填充柄：拖动时只画一个虚框预告，松手才落账（进同一条撤销记录）。
+   * 规则照 Excel 的常用部分：数字两格以上按等差、其余按循环复制；带尾号的文本（Q1）自增。
+   */
+  private startFill(ev: PointerEvent): void {
+    if (!this.editMode || this.editor) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const start = this.rect();
+    const view = this.view;
+    const origin = view.getBoundingClientRect();
+    const preview = el("div", "sd-fillprev");
+    this.cells.append(preview);
+    let plan: { dir: "down" | "up" | "right" | "left"; extent: number; box: Range } | null = null;
+
+    const show = (box: Range): void => {
+      preview.style.left = `${this.leftOf(box.c0)}px`;
+      preview.style.top = `${this.topOf(box.r0)}px`;
+      preview.style.width = `${this.leftOf(box.c1 + 1) - this.leftOf(box.c0)}px`;
+      preview.style.height = `${this.topOf(box.r1 + 1) - this.topOf(box.r0)}px`;
+    };
+
+    const move = (e: PointerEvent): void => {
+      const y = e.clientY - origin.top + view.scrollTop;
+      const x = e.clientX - origin.left + view.scrollLeft;
+      const r = this.rowAt(y);
+      const c = this.colAt(x);
+      const vSpan = r - start.r1;
+      const hSpan = c - start.c1;
+      const upSpan = start.r0 - r;
+      const leftSpan = start.c0 - c;
+      if (vSpan > 0 && vSpan >= hSpan) plan = { dir: "down", extent: vSpan, box: { ...start, r1: r } };
+      else if (hSpan > 0) plan = { dir: "right", extent: hSpan, box: { ...start, c1: c } };
+      else if (upSpan > 0) plan = { dir: "up", extent: upSpan, box: { ...start, r0: r } };
+      else if (leftSpan > 0) plan = { dir: "left", extent: leftSpan, box: { ...start, c0: c } };
+      else plan = null;
+      if (plan) {
+        preview.hidden = false;
+        show(plan.box);
+      } else preview.hidden = true;
+    };
+
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      preview.remove();
+      if (plan) this.fillCells(start, plan.dir, plan.extent);
+    };
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  /** 把选区按方向填出去 `extent` 行 / 列。 */
+  private fillCells(start: Range, dir: "down" | "up" | "right" | "left", extent: number): void {
+    if (!this.editMode || extent <= 0) return;
+    const info = this.info();
+    const vertical = dir === "down" || dir === "up";
+    const span = vertical ? start.r1 - start.r0 + 1 : start.c1 - start.c0 + 1;
+    const lines = vertical ? start.c1 - start.c0 + 1 : start.r1 - start.r0 + 1;
+    const batch: EditEntry[] = [];
+    for (let line = 0; line < lines; line++) {
+      // 一条「线」上的源格（竖着填就是一列）
+      const srcKeys: string[] = [];
+      const srcs: (SheetCell | undefined)[] = [];
+      for (let k = 0; k < span; k++) {
+        const sr = vertical ? start.r0 + k : start.r0 + line;
+        const sc = vertical ? start.c0 + line : start.c0 + k;
+        srcKeys.push(`${sr}:${sc}`);
+        srcs.push(this.cellAt(sr, sc));
+      }
+      const nums = srcs.map((cell) => (cell && cell.k === "n" && typeof cell.v === "number" ? cell.v : null));
+      const series = nums.every((x) => x !== null) && span >= 2;
+      const step = series ? nums[span - 1]! - nums[span - 2]! : 1;
+      for (let i = 1; i <= extent; i++) {
+        const r = vertical ? (dir === "down" ? start.r1 + i : start.r0 - i) : start.r0 + line;
+        const c = vertical ? start.c0 + line : dir === "right" ? start.c1 + i : start.c0 - i;
+        if (r < 0 || c < 0 || r >= info.rows || c >= info.cols) continue;
+        const at = (i - 1) % span;
+        const src = srcs[at];
+        let cell: SheetCell | null;
+        if (series) {
+          const v = nums[span - 1]! + step * i;
+          cell = { r, c, k: "n", t: String(Math.round(v * 1e10) / 1e10), v };
+        } else if (src) {
+          const t = src.t ?? "";
+          const tail = seriesValue(t, i);
+          cell = src.f ? { r, c, k: "s", t: `=${src.f}`, f: src.f } : { r, c, k: src.k, t: tail ?? t, v: tail !== null ? undefined : src.v };
+        } else cell = null;
+        batch.push(this.setEdit(r, c, cell));
+        const style = this.styleOver.get(srcKeys[at]!);
+        if (style) this.styleOver.set(`${r}:${c}`, { ...style });
+      }
+    }
+    this.commitBatch(batch);
+    const last = vertical
+      ? { r: dir === "down" ? start.r1 + extent : start.r0 - extent, c: start.c1 }
+      : { r: start.r1, c: dir === "right" ? start.c1 + extent : start.c0 - extent };
+    this.anchor = vertical ? { r: start.r0, c: start.c0 } : { r: start.r0, c: start.c0 };
+    this.focus = {
+      r: clampNum(last.r, 0, info.rows - 1),
+      c: clampNum(last.c, 0, info.cols - 1),
+    };
+    this.afterSelect();
   }
 
   private applyGrow(): boolean {
@@ -1810,7 +2068,7 @@ export class SheetGrid {
         if (this.layerOf(r1, c1) !== layer) continue;
 
         const cell = this.cellAt(r0, c0);
-        const st = this.styleOf(cell);
+        const st = this.styleOf(r0, c0);
         const width = this.leftOf(c1 + 1) - this.leftOf(c0);
         const height = this.topOf(r1 + 1) - this.topOf(r0);
 
@@ -1890,10 +2148,14 @@ export class SheetGrid {
     }
   }
 
-  private styleOf(cell: SheetCell | undefined): SheetStyle | undefined {
-    if (!cell) return undefined;
-    const base = cell.s == null ? undefined : this.host.meta.styles?.[cell.s];
-    const over = this.styleOver.get(`${cell.r}:${cell.c}`);
+  /**
+   * 某格现在的样式：文件里的样式 + 本地改动。
+   * 空格子也算——Excel 里给空单元格设边框/底色是很常见的用法，不能因为「没内容」就丢掉。
+   */
+  private styleOf(r: number, c: number): SheetStyle | undefined {
+    const cell = this.cellAt(r, c);
+    const base = cell?.s == null ? undefined : this.host.meta.styles?.[cell.s];
+    const over = this.styleOver.get(`${r}:${c}`);
     if (!over) return base;
     return mergeStyle(base, over);
   }
@@ -1901,7 +2163,7 @@ export class SheetGrid {
   /** 某格（合并区按左上角算）的样式。 */
   private styleAt(r: number, c: number): SheetStyle | undefined {
     const span = this.spans.get(`${r}:${c}`);
-    return this.styleOf(this.cellAt(span ? span.r0 : r, span ? span.c0 : c));
+    return this.styleOf(span ? span.r0 : r, span ? span.c0 : c);
   }
 
   /**
@@ -1978,7 +2240,10 @@ export class SheetGrid {
     node.style.paddingRight = `${padX}px`;
     node.style.paddingBottom = `${Math.round(1.5 * z)}px`;
 
-    const text = this.showFormulas && cell?.f ? `=${cell.f}` : (cell?.t ?? "");
+    const localCode = cell ? this.fmtOver.get(`${r0}:${c0}`) : undefined;
+    const localText =
+      localCode && cell && typeof cell.v === "number" && !this.showFormulas ? formatLocal(cell.v, localCode) : null;
+    const text = this.showFormulas && cell?.f ? `=${cell.f}` : (localText ?? cell?.t ?? "");
     if (fx?.bar) {
       const bar = el("span", "sd-bar");
       bar.style.width = `${Math.round(fx.bar[0] * 1000) / 10}%`;

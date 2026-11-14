@@ -10,114 +10,13 @@
  * 宁可显示错误，也不显示一个看起来像对的错数。
  */
 
-export type Val = number | string | boolean | null;
-export interface ErrVal {
-  k: "err";
-  v: string;
-}
-export interface Matrix {
-  k: "mx";
-  m: EvalVal[][];
-}
-export type EvalVal = Val | ErrVal | Matrix;
+import { criteria, cmp, err, firstErr, flatten, isErr, isMx, numbers, scalar, serialToday, serialToDate, toBool, toNum, toStr, type CalcCtx, type EvalVal, type ErrVal, type Matrix, type Val } from "./value.ts";
+import { EXTRA_FNS } from "./functions.ts";
 
-export interface CalcCtx {
-  /** 取一格的值。sheet 为 null 表示当前表。 */
-  cell(sheet: string | null, r: number, c: number): EvalVal;
-  /** 取一片区域。 */
-  range(sheet: string | null, r0: number, c0: number, r1: number, c1: number): Matrix;
-}
+export { err, isErr } from "./value.ts";
+export type { CalcCtx, ErrVal, EvalVal, Matrix, Val } from "./value.ts";
 
-export const err = (v: string): ErrVal => ({ k: "err", v });
-export const isErr = (v: EvalVal): v is ErrVal => typeof v === "object" && v !== null && (v as ErrVal).k === "err";
-const isMx = (v: EvalVal): v is Matrix => typeof v === "object" && v !== null && (v as Matrix).k === "mx";
-
-/** 单格引用在运算里就是标量；区域取左上角（Excel 的隐式交叉我们不支持）。 */
-function scalar(v: EvalVal): Val | ErrVal {
-  if (isMx(v)) return (v.m[0]?.[0] as Val | ErrVal | undefined) ?? null;
-  return v;
-}
-
-function toNum(v: EvalVal): number | ErrVal {
-  const s = scalar(v);
-  if (isErr(s)) return s;
-  if (s === null) return 0;
-  if (typeof s === "number") return s;
-  if (typeof s === "boolean") return s ? 1 : 0;
-  const t = s.trim();
-  if (t === "") return 0;
-  const n = Number(t);
-  if (!Number.isFinite(n)) return err("#VALUE!");
-  return n;
-}
-
-function toStr(v: EvalVal): string | ErrVal {
-  const s = scalar(v);
-  if (isErr(s)) return s;
-  if (s === null) return "";
-  if (typeof s === "string") return s;
-  if (typeof s === "boolean") return s ? "TRUE" : "FALSE";
-  // 数字转文本：整数不带小数点，其余按 JS 的最短表示。
-  return Number.isInteger(s) ? String(s) : String(s);
-}
-
-function toBool(v: EvalVal): boolean | ErrVal {
-  const s = scalar(v);
-  if (isErr(s)) return s;
-  if (s === null) return false;
-  if (typeof s === "boolean") return s;
-  if (typeof s === "number") return s !== 0;
-  const t = s.trim().toUpperCase();
-  if (t === "TRUE") return true;
-  if (t === "FALSE") return false;
-  return err("#VALUE!");
-}
-
-/** 把若干参数摊平成标量数组（区域会被展开，错误值保留）。 */
-function flatten(args: EvalVal[]): (Val | ErrVal)[] {
-  const out: (Val | ErrVal)[] = [];
-  for (const a of args) {
-    if (isMx(a)) {
-      for (const row of a.m) for (const v of row) if (!isMx(v)) out.push(v);
-    } else out.push(a);
-  }
-  return out;
-}
-
-/** SUM / AVERAGE 这类只要数字：文本、空、布尔都跳过（跟 Excel 一样）。 */
-function numbers(args: EvalVal[]): number[] {
-  const out: number[] = [];
-  for (const v of flatten(args)) {
-    if (typeof v === "number" && Number.isFinite(v)) out.push(v);
-    else if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) out.push(Number(v));
-  }
-  return out;
-}
-
-function firstErr(args: EvalVal[]): ErrVal | null {
-  for (const v of flatten(args)) if (isErr(v)) return v;
-  return null;
-}
-
-/** 比较：数字比数字、文本比文本（不区分大小写），不同类型按 Excel 的次序排。 */
-function cmp(a: Val, b: Val): number {
-  if (typeof a === "number" && typeof b === "number") {
-    if (a < b) return -1;
-    return a > b ? 1 : 0;
-  }
-  if (typeof a === "boolean" || typeof b === "boolean") {
-    const x = typeof a === "boolean" ? (a ? 1 : 0) : Number(a);
-    const y = typeof b === "boolean" ? (b ? 1 : 0) : Number(b);
-    if (x < y) return -1;
-    return x > y ? 1 : 0;
-  }
-  if (typeof a === "number") return -1;
-  if (typeof b === "number") return 1;
-  const x = String(a).toLowerCase();
-  const y = String(b).toLowerCase();
-  if (x < y) return -1;
-  return x > y ? 1 : 0;
-}
+const fromSerial = (n: number): Date => serialToDate(n, false);
 
 /* ---------------------------------------------------------------- 词法 */
 
@@ -131,7 +30,7 @@ type Tok =
   | { t: "p"; s: string };
 
 // 表名可以是中文、可以带引号，也可能是 `Sheet1`；不带 `!` 的一律不是引用。
-const REF_RE = /^(?:(?:'(?:[^']|'')+'|[^\s!()+\-*/^&<>=,:%"]+)!)?\$?[A-Za-z]{1,3}\$?\d+/;
+const REF_RE = /^(?:(?:'(?:[^']|'')+'|[^\s!()+\-*/^&<>=,:%"]+)!)?\$?[A-Za-z]{1,3}\$?\d+(?![A-Za-z0-9_(])/;
 const OPS = ["<=", ">=", "<>", "=", "<", ">", "&", "+", "-", "*", "/", "^", "%"];
 
 function tokenize(src: string): Tok[] | null {
@@ -182,7 +81,9 @@ function tokenize(src: string): Tok[] | null {
       continue;
     }
     // 先按引用试（表名可能是中文），再退回函数名 / 布尔名。
-    const ref = REF_RE.exec(src.slice(i));
+    // 但「名字后面紧跟 (」一定是函数调用：LOG10(、DEC2BIN(、SUMX2MY2( 都会被引用规则误吞。
+    const callAhead = /^[A-Za-z_][A-Za-z0-9_.]*\s*\(/.test(src.slice(i));
+    const ref = callAhead ? null : REF_RE.exec(src.slice(i));
     if (ref) {
       out.push({ t: "ref", s: ref[0].replace(/^'((?:[^']|'')+)'!/, (_, n: string) => `${n.replace(/''/g, "'")}!`) });
       i += ref[0].length;
@@ -473,61 +374,10 @@ function evalNode(n: Node, ctx: CalcCtx, sheet: string | null): EvalVal {
 
 /* ---------------------------------------------------------------- 函数 */
 
-function criteria(re: string): (v: Val) => boolean {
-  const m = /^(<=|>=|<>|=|<|>)?(.*)$/.exec(re.trim())!;
-  const op = m[1] ?? "=";
-  const raw = m[2] ?? "";
-  const num = Number(raw);
-  const isnum = raw !== "" && Number.isFinite(num);
-  return (v: Val) => {
-    if (op === "<>" && raw === "") return v !== null && v !== "";
-    if (isnum && typeof v === "number") {
-      switch (op) {
-        case "=":
-          return v === num;
-        case "<>":
-          return v !== num;
-        case "<":
-          return v < num;
-        case ">":
-          return v > num;
-        case "<=":
-          return v <= num;
-        case ">=":
-          return v >= num;
-      }
-    }
-    const a = typeof v === "string" ? v.toLowerCase() : v === null ? "" : String(v).toLowerCase();
-    const b = raw.toLowerCase();
-    switch (op) {
-      case "=":
-        return a === b;
-      case "<>":
-        return a !== b;
-      case "<":
-        return a < b;
-      case ">":
-        return a > b;
-      case "<=":
-        return a <= b;
-      case ">=":
-        return a >= b;
-    }
-    return false;
-  };
-}
 
-function serialToday(): number {
-  const now = new Date();
-  const days = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) - Date.UTC(1899, 11, 30);
-  return Math.floor(days / 86400000);
-}
 
-function fromSerial(n: number): Date {
-  return new Date(Date.UTC(1899, 11, 30) + Math.round(n) * 86400000);
-}
 
-type Fn = (args: EvalVal[], ctx: CalcCtx, sheet: string | null) => EvalVal;
+import type { Fn, FnNode } from "./functions.ts";
 
 const FNS: Record<string, Fn> = {
   SUM: (a) => numbers(a).reduce((x, y) => x + y, 0),
@@ -801,6 +651,8 @@ const FNS: Record<string, Fn> = {
   },
 };
 
+Object.assign(FNS, EXTRA_FNS);
+
 function roundTo(a: EvalVal[], mode: number): EvalVal {
   const x = toNum(a[0] ?? null);
   const d = a.length > 1 ? toNum(a[1]!) : 0;
@@ -809,8 +661,10 @@ function roundTo(a: EvalVal[], mode: number): EvalVal {
   const p = Math.pow(10, Math.trunc(d));
   const scaled = x * p;
   let r = Math.floor(scaled);
-  if (mode === 0) r = Math.round(scaled + Number.EPSILON);
-  else if (mode > 0) r = Math.ceil(scaled);
+  if (mode === 0) {
+    const abs = Math.abs(scaled);
+    r = Math.sign(scaled) * Math.round(abs + abs * 1e-12 + 1e-12);
+  } else if (mode > 0) r = Math.ceil(scaled);
   return r / p;
 }
 
@@ -820,8 +674,9 @@ function callFn(n: Node & { k: "fn" }, ctx: CalcCtx, sheet: string | null): Eval
   const args = n.args.map((a) => evalNode(a, ctx, sheet));
   const bad = firstErr(args);
   // IF / IFERROR 要看得到错误值自己决定，不能在这里统一短路。
-  if (bad && n.name !== "IF" && n.name !== "IFERROR" && n.name !== "IFNA" && n.name !== "ISERROR") return bad;
-  return fn(args, ctx, sheet);
+  const selfHandled = new Set(["IF", "IFERROR", "IFNA", "ISERROR", "ISERR", "ISNA", "TYPE", "ERROR.TYPE", "AGGREGATE", "IFS", "SWITCH", "N", "T", "TEXT", "COUNTIF", "COUNTIFS", "SUMIF", "SUMIFS", "AVERAGEIF", "AVERAGEIFS", "MAXIFS", "MINIFS", "ISLOGICAL", "ISNUMBER", "ISTEXT", "ISNONTEXT", "ISBLANK", "ISEVEN", "ISODD"]);
+  if (bad && !selfHandled.has(n.name)) return bad;
+  return fn(args, ctx, sheet, n as unknown as FnNode);
 }
 
 /* ---------------------------------------------------------------- 入口 */

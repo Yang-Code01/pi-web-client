@@ -4408,7 +4408,22 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-cell.hit-on { background-image: linear-gradient(rgba(214, 158, 0, 0.34), rgba(214, 158, 0, 0.34)); outline: 1.5px solid #c99700; outline-offset: -2px; z-index: 4; }
 .sd-cell.is-nc { outline: 1px dashed #d92d20; outline-offset: -1px; }
 /* 填充柄：选区右下角的小方块。 */
-.sd-fill { position: absolute; width: 6px; height: 6px; background: #0f766e; border: 1px solid #fff; z-index: 4; pointer-events: none; }
+.sd-fill { position: absolute; width: 7px; height: 7px; background: #0f766e; border: 1px solid #fff; z-index: 5; cursor: crosshair; touch-action: none; pointer-events: auto; }
+/* #437 功能区的下拉菜单：挂在 ribbon 根上（`#app` 里有 zoom，坐标按 CSS px 算） */
+.sd-rb-dd { position: relative; display: inline-flex; align-items: stretch; }
+.sd-rb-caret-b { border: 1px solid transparent; background: none; color: #6b7280; font-size: 9px; line-height: 1; padding: 0 2px; border-radius: 3px; cursor: pointer; }
+.sd-rb-caret-b:hover { background: #eef2f6; border-color: #dde3ea; }
+.sd-rb-menu { position: absolute; z-index: 30; min-width: 148px; max-height: calc(var(--vh1) * 60); overflow-y: auto; background: #fff; border: 1px solid #d8dde5; border-radius: 6px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16); padding: 4px; }
+.sd-rb-mg + .sd-rb-mg { border-top: 1px solid #eef1f5; margin-top: 4px; padding-top: 4px; }
+.sd-rb-msep { height: 1px; background: #eef1f5; margin: 4px 2px; }
+.sd-rb-mi { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: none; text-align: left; font: inherit; font-size: 12px; color: #1f2937; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+.sd-rb-mi:hover { background: #eef6f4; }
+.sd-rb-swatch { width: 12px; height: 12px; border-radius: 2px; border: 1px solid #cbd5e1; flex: none; }
+.sd-rb-sample { color: #64748b; font-size: 11px; flex: none; }
+.sd-rb-mlabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sd-rb-mtick { color: #0f766e; font-weight: 700; }
+.sd-rb-painter.on { background: #e3f3ef; }
+.sd-fillprev { position: absolute; border: 1.5px dashed #0f766e; background: rgba(15, 118, 110, 0.06); z-index: 3; pointer-events: none; }
 
 /* 冻结窗格：行/列各画一层贴在边上，滚动时不动（#108）。 */
 .sd-colhead-frz {

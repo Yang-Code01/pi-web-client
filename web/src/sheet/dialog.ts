@@ -108,6 +108,8 @@ export class SheetDialog {
   private truncated = false;
   /** #111：底栏那条「N 格无缓存值」。 */
   private readonly status: HTMLElement;
+  /** #437：选区统计（求和 / 平均值 / 计数），WPS 底栏那条。 */
+  private readonly stat: HTMLElement = el("span", "sd-stat");
   private tab: Tab = "grid";
   private sheets: SheetInfo[] = [];
   private meta: SheetMeta | null = null;
@@ -267,7 +269,7 @@ export class SheetDialog {
     if (!opts.onQuote) quote.hidden = true;
 
     this.footBar = this.foot(opts);
-    this.footBar.prepend(this.wsTabs, this.tier, this.status, this.wsHint, this.cfHint);
+    this.footBar.prepend(this.wsTabs, this.tier, this.status, this.wsHint, this.cfHint, this.stat);
     // 有页面视图时格子挂在 .sd-panes 里，工具条要插在那一层之前。
     const anchor = this.panes && this.panes.parentElement === this.body ? this.panes : this.pane;
     this.body.insertBefore(this.ribbonSlot, anchor);
@@ -718,12 +720,14 @@ export class SheetDialog {
       },
       onResize: (kind, index, size) => void this.resize(kind, index, size),
       onFilter: (c, value) => void this.filterBy(c, value),
+      onStats: (st) => this.showStats(st),
     });
     this.grid = grid;
     this.pane.replaceChildren(grid.root);
     if (!this.ribbon) {
       this.ribbon = new Ribbon(() => this.grid, this.acts, {
         find: () => this.openFind(),
+        insertFormula: (text) => this.insertFormulaText(text),
         struct: (op) => void this.applyStruct(op),
         filter: (col, value) => void this.filterBy(col, value),
         page: this.page
@@ -744,6 +748,34 @@ export class SheetDialog {
    * ——行列数和合并区都变了，网格只能重建。没保存的格子改动先拦住，不然坐标会错位。
    */
   private pendingMeta: SheetMeta | null = null;
+
+  /** #437：函数库点一条就把 `=SUM(` 放进公式栏，回车写入当前格（跟 WPS 一路）。 */
+  private insertFormulaText(text: string): void {
+    if (!this.grid) return;
+    if (!this.grid.editing) this.toggleEdit();
+    this.fxBody.readOnly = false;
+    this.fxBody.value = text;
+    this.fxBody.focus();
+    this.fxBody.setSelectionRange(text.length, text.length);
+  }
+
+  /** #437：底栏的选区统计，跟 WPS 一样只报「求和 / 平均值 / 计数」。 */
+  private showStats(st: { sum: number; count: number; num: number } | null): void {
+    if (!st || st.num < 1) {
+      this.stat.hidden = true;
+      this.stat.textContent = "";
+      return;
+    }
+    const fmt = (n: number): string => {
+      const fixed = Number.isInteger(n) ? String(n) : n.toFixed(2);
+      return fixed.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    };
+    const bits = [tr("求和: {p1}", { p1: fmt(st.sum) })];
+    if (st.num > 1) bits.push(tr("平均值: {p1}", { p1: fmt(st.sum / st.num) }));
+    bits.push(tr("计数: {p1}", { p1: String(st.count) }));
+    this.stat.textContent = bits.join("   ");
+    this.stat.hidden = false;
+  }
 
   /** #436 表头筛选：col 为 null 是清掉整片筛选。 */
   private async filterBy(col: number | null, value: string | null): Promise<void> {

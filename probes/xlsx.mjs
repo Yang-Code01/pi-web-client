@@ -782,6 +782,111 @@ try {
   await page.locator(".sd-close").first().click();
   await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
 
+
+  // ---------------------------------------------------------------- 功能补齐（D264）
+  // 数字格式菜单（含 WPS 的特殊格式）、色板、边框、清除、填充柄、Ctrl+方向键、选区统计、
+  // 函数库——都是「点了就真生效」的，最后再存一次盘证明自定义格式写回了文件。
+  // 干活用的空地在 H 列第 6 行以下（fixture 只填到第 5 行）。
+  await openSheet("plain.xlsx");
+  await page.locator(".sd-editbtn").click();
+  await page.locator('.sd-rb-tab[data-pane="home"]').click();
+
+  // 填充柄：1、2 选中后往下拖，Excel 的等差序列
+  await page.locator('.sd-cell[data-r="5"][data-c="7"]').click();
+  await page.keyboard.type("1");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("2");
+  await page.keyboard.press("Enter");
+  await page.locator('.sd-cell[data-r="5"][data-c="7"]').click();
+  await page.keyboard.down("Shift");
+  await page.locator('.sd-cell[data-r="6"][data-c="7"]').click();
+  await page.keyboard.up("Shift");
+  await page.waitForTimeout(150);
+  const fillBox = await page.locator(".sd-fill").boundingBox();
+  const rowBox = await page.locator('.sd-cell[data-r="6"][data-c="7"]').boundingBox();
+  if (fillBox && rowBox) {
+    await page.mouse.move(fillBox.x + fillBox.width / 2, fillBox.y + fillBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(fillBox.x + fillBox.width / 2, fillBox.y + fillBox.height / 2 + rowBox.height - 3, { steps: 4 });
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+  }
+  check("填充柄拖出等差序列", (await cellText(7, 7)) === "3", `${await cellText(7, 7)} / ${await cellText(8, 7)}`);
+
+  // Ctrl+方向键：从序列头一路跳到连续区的最后一行
+  await page.locator('.sd-cell[data-r="5"][data-c="7"]').click();
+  await page.keyboard.press("Control+ArrowDown");
+  await page.waitForTimeout(150);
+  check("Ctrl+↓ 跳到连续区末尾", (await page.locator(".sd-fx-ref").inputValue()) === "H8", await page.locator(".sd-fx-ref").inputValue());
+
+  // 选区统计（WPS 底栏那条）
+  await page.locator('.sd-cell[data-r="5"][data-c="7"]').click();
+  await page.keyboard.down("Shift");
+  await page.locator('.sd-cell[data-r="7"][data-c="7"]').click();
+  await page.keyboard.up("Shift");
+  await page.waitForTimeout(200);
+  const statText = (await page.locator(".sd-stat").textContent()) ?? "";
+  check("底栏报求和 / 计数", /求和: 6/.test(statText) && /计数: 3/.test(statText), statText);
+
+  // 清除菜单
+  await page.locator('.sd-rb-dd:has(.sd-rb-b[title="清除内容 / 格式 / 条件格式"]) .sd-rb-caret-b').click();
+  await page.locator('.sd-rb-menu .sd-rb-mi', { hasText: "清除内容" }).first().click();
+  await page.waitForTimeout(200);
+  check("清除内容把三格都清空", (await cellText(6, 7)) === "" && (await cellText(7, 7)) === "", `${await cellText(6, 7)}/${await cellText(7, 7)}`);
+
+  // 边框菜单
+  await page.locator('.sd-cell[data-r="6"][data-c="7"]').click();
+  await page.locator('.sd-rb-dd:has(.sd-rb-b[title="给选区加细边框（四周 + 网格）"]) .sd-rb-caret-b').click();
+  await page.locator('.sd-rb-menu .sd-rb-mi', { hasText: "下边框" }).first().click();
+  await page.waitForTimeout(200);
+  const bdCss = await page.evaluate(() => {
+    const self = getComputedStyle(document.querySelector('.sd-cell[data-r="6"][data-c="7"]'));
+    const below = getComputedStyle(document.querySelector('.sd-cell[data-r="7"][data-c="7"]'));
+    return `${self.borderBottomStyle}|${below.borderTopStyle}`;
+  });
+  // 每格只画左/上边，右边和下边由邻居来画——所以「下边框」可能落在下面那格的 border-top 上
+  check("边框菜单：只加下边框", bdCss.split("|").includes("solid"), bdCss);
+
+  // 色板
+  await page.locator('.sd-rb-dd:has(.sd-rb-b[title="填充：黄 / 无 切换"]) .sd-rb-caret-b').click();
+  const swatches = await page.locator(".sd-rb-menu .sd-rb-swatch").count();
+  check("色板铺出了主题色 + 标准色", swatches >= 20, String(swatches));
+  await page.locator('.sd-rb-menu .sd-rb-mi', { hasText: "#C00000" }).first().click();
+  await page.waitForTimeout(200);
+  const bgPick = await page.evaluate(() => getComputedStyle(document.querySelector('.sd-cell[data-r="6"][data-c="7"]')).backgroundColor);
+  check("点色板立刻换底色", bgPick === "rgb(192, 0, 0)", bgPick);
+
+  // 数字格式菜单：WPS 的特殊格式（中文大写数字）
+  await page.locator('.sd-cell[data-r="6"][data-c="7"]').click();
+  await page.keyboard.type("1.5");
+  await page.keyboard.press("Enter");
+  await page.locator('.sd-cell[data-r="6"][data-c="7"]').click();
+  await page.locator('.sd-rb-dd:has(.sd-rb-b[title*="数字格式"]) .sd-rb-caret-b').click();
+  await page.locator('.sd-rb-menu .sd-rb-mi', { hasText: "中文大写数字" }).first().click();
+  await page.waitForTimeout(250);
+  check("数字格式菜单：中文大写数字（立刻改样子，不等存盘）", (await cellText(6, 7)) === "壹点伍", String(await cellText(6, 7)));
+
+  // 函数库：点 SUM 就把 =SUM( 放进公式栏
+  await page.locator('.sd-rb-tab[data-pane="formula"]').click();
+  await page.locator('.sd-rb-dd:has(.sd-rb-b[title="数学与三角函数"]) .sd-rb-caret-b').click();
+  await page.locator('.sd-rb-menu .sd-rb-mi', { hasText: /^SUM$/ }).first().click();
+  await page.waitForTimeout(200);
+  const fxValue = await page.locator(".sd-fx-body").inputValue();
+  check("函数库把 =SUM( 填进公式栏", fxValue === "=SUM(", fxValue);
+  await page.locator(".sd-fx-body").blur();
+  await page.locator('.sd-rb-tab[data-pane="home"]').click();
+
+  // 存盘 → 重开：自定义数字格式（中文大写）真的写进了 styles.xml
+  await page.locator(".sd-save-grid").click();
+  await until(async () => page.locator(".sd-save-grid").isHidden(), 20000, "saved");
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+  await openSheet("plain.xlsx");
+  check("重开后中文大写数字还在", (await cellText(6, 7)) === "壹点伍", String(await cellText(6, 7)));
+  await page.screenshot({ path: path.join(OUT, "14-wps-parity.png") });
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+
   // ---------------------------------------------------------------- 图表 + 结构（#434）
   // 图表要按 drawing 的锚点摆在格子上；合并 / 插行要真的写进文件再重读。
   await openSheet("chart.xlsx");

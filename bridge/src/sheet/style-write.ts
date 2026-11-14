@@ -36,11 +36,21 @@ export interface CellStylePatch {
   h?: "l" | "c" | "r" | null;
   v?: "t" | "m" | "b" | null;
   w?: boolean;
-  /** 内置数字格式 id（0 常规 / 2 0.00 / 3 #,##0 / 4 #,##0.00 / 9 0% / 10 0.00% / 14 日期）。 */
-  nf?: number;
+  /**
+   * 数字格式：内置 id（0 常规 / 2 0.00 / 3 #,##0 / 4 #,##0.00 / 9 0% / 10 0.00% / 14 日期），
+   * 或者一条自定义格式代码（`[DBNum2][$-804]G/通用格式` 这种，WPS 的「中文大写数字」）。
+   */
+  nf?: number | string;
 }
 
+import { builtinFormatId } from "./numfmt.ts";
+
 const ARGB = /^[0-9a-fA-F]{6}$/;
+
+/** 格式代码进 XML 属性前的转义（`"` 一定要转，代码里常有引号）。 */
+function escaped(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
 
 function argb(color: string | null | undefined): string | null {
   if (!color) return null;
@@ -129,6 +139,9 @@ export class StyleBook {
   private fills: string[];
   private borders: string[];
   private xfs: string[];
+  /** `<numFmt>` 自定义格式表：文件里常常没有这一段，第一次要新格式时才补出来。 */
+  private numFmts: string[] = [];
+  private numFmtsSection: Section | null = null;
   private sections: Section[] = [];
   private xml: string | null;
   private dirty = false;
@@ -140,6 +153,18 @@ export class StyleBook {
     this.borders = [];
     this.xfs = [];
     if (!xml) return;
+    const nf = /<numFmts\b([^>]*)>([\s\S]*?)<\/numFmts>/.exec(xml);
+    if (nf) {
+      this.numFmts = entries(nf[2], "numFmt");
+      this.numFmtsSection = {
+        tag: "numFmts",
+        open: nf[0].slice(0, nf[0].indexOf(">") + 1),
+        close: "</numFmts>",
+        start: nf.index,
+        end: nf.index + nf[0].length,
+        items: this.numFmts,
+      };
+    }
     for (const tag of ["fonts", "fills", "borders", "cellXfs"] as const) {
       const re = new RegExp(`<${tag}\\b([^>]*)>([\\s\\S]*?)</${tag}>`);
       const m = re.exec(xml);
@@ -219,8 +244,11 @@ export class StyleBook {
       open = setAttr(open, "applyBorder", "1");
     }
 
-    if (patch.nf !== undefined && Number.isFinite(patch.nf)) {
+    if (typeof patch.nf === "number" && Number.isFinite(patch.nf)) {
       numFmtId = Math.max(0, Math.round(patch.nf));
+      open = setAttr(open, "applyNumberFormat", "1");
+    } else if (typeof patch.nf === "string" && patch.nf.trim()) {
+      numFmtId = this.pushNumFmt(patch.nf.trim());
       open = setAttr(open, "applyNumberFormat", "1");
     }
 
@@ -265,6 +293,28 @@ export class StyleBook {
     return this.fills.length - 1;
   }
 
+  /** 自定义格式代码 → numFmtId：已有的复用，内置的用内置 id，都没有就新造一条（从 164 起）。 */
+  private pushNumFmt(code: string): number {
+    const builtin = builtinFormatId(code);
+    if (builtin !== null) return builtin;
+    const want = escaped(code);
+    for (const entry of this.numFmts) {
+      if ((attr(entry, "formatCode") ?? "") === want) {
+        const id = Number(attr(entry, "numFmtId") ?? 0);
+        if (Number.isFinite(id)) return Math.max(0, id);
+      }
+    }
+    let max = 163;
+    for (const entry of this.numFmts) {
+      const id = Number(attr(entry, "numFmtId") ?? 0);
+      if (Number.isFinite(id) && id > max) max = id;
+    }
+    const id = max + 1;
+    this.numFmts.push(`<numFmt numFmtId="${id}" formatCode="${want}"/>`);
+    this.dirty = true;
+    return id;
+  }
+
   private pushXf(entry: string): number {
     const at = this.xfs.indexOf(entry);
     if (at >= 0) return at;
@@ -282,6 +332,16 @@ export class StyleBook {
         section.tag === "fonts" ? this.fonts : section.tag === "fills" ? this.fills : section.tag === "borders" ? this.borders : this.xfs;
       const open = setAttr(section.open, "count", String(items.length));
       out = out.slice(0, section.start) + open + items.join("") + section.close + out.slice(section.end);
+    }
+    if (this.numFmts.length) {
+      const body = `<numFmts count="${this.numFmts.length}">${this.numFmts.join("")}</numFmts>`;
+      if (this.numFmtsSection) {
+        out = out.slice(0, this.numFmtsSection.start) + body + out.slice(this.numFmtsSection.end);
+      } else {
+        // `<numFmts>` 在 styleSheet 里必须排在最前面（schema 顺序），插在开标签后面
+        const m = /<styleSheet\b[^>]*>/.exec(out);
+        if (m) out = out.slice(0, m.index + m[0].length) + body + out.slice(m.index + m[0].length);
+      }
     }
     return out;
   }
