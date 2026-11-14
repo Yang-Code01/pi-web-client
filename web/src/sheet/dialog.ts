@@ -86,8 +86,8 @@ export class SheetDialog {
   private readonly cfHint: HTMLElement;
   /** #111：选中格的公式栏（Excel 顶上那条），只在表格面显示。 */
   private readonly fx: HTMLElement;
-  private readonly fxRef: HTMLElement;
-  private readonly fxBody: HTMLElement;
+  private readonly fxRef: HTMLInputElement;
+  private readonly fxBody: HTMLInputElement;
   /** #107：工具条（查找 / 引用给 pi），只在表格面显示。 */
   private readonly tools: HTMLElement;
   private readonly findBar: HTMLElement;
@@ -178,9 +178,32 @@ export class SheetDialog {
 
     this.fx = el("div", "sd-fx");
     this.fx.hidden = true;
-    this.fxRef = el("span", "sd-fx-ref");
-    this.fxBody = el("span", "sd-fx-body");
+    this.fxRef = el("input", "sd-fx-ref") as HTMLInputElement;
+    this.fxBody = el("input", "sd-fx-body") as HTMLInputElement;
+    this.fxRef.spellcheck = false;
+    this.fxBody.spellcheck = false;
+    this.fxBody.readOnly = true;
+    this.fxRef.title = tr("名称框：输入 A1 或 A1:C5 跳过去");
+    this.fxBody.title = tr("公式栏：编辑态可以直接改，回车写入");
     this.fx.append(this.fxRef, this.fxBody);
+    this.fxRef.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      this.grid?.jumpTo(this.fxRef.value);
+      this.fxBody.focus();
+    });
+    this.fxBody.addEventListener("keydown", (ev) => {
+      if (!this.grid?.editing) return;
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        this.grid.writeAt(this.fxBody.value);
+        this.fxBody.blur();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        if (this.grid) this.showFormula({ ref: this.grid.selectionRef, text: "" });
+        this.fxBody.blur();
+      }
+    });
     this.status = el("span", "sd-status");
     this.status.hidden = true;
     this.roChip = el("span", "sd-ro", tr("只读"));
@@ -530,9 +553,11 @@ export class SheetDialog {
       this.fx.hidden = true;
       return;
     }
-    this.fxRef.textContent = sel.ref;
-    this.fxBody.textContent = sel.text;
-    this.fxBody.title = sel.text;
+    this.fxRef.value = sel.ref;
+    if (document.activeElement !== this.fxBody) {
+      this.fxBody.value = sel.text;
+      this.fxBody.readOnly = !this.grid?.editing;
+    }
     this.syncFx();
   }
 
@@ -690,6 +715,7 @@ export class SheetDialog {
       onEditing: (state) => {
         if (state) this.showFormula(state);
       },
+      onResize: (kind, index, size) => void this.resize(kind, index, size),
     });
     this.grid = grid;
     this.pane.replaceChildren(grid.root);
@@ -716,6 +742,19 @@ export class SheetDialog {
    * ——行列数和合并区都变了，网格只能重建。没保存的格子改动先拦住，不然坐标会错位。
    */
   private pendingMeta: SheetMeta | null = null;
+
+  /** #435 拖完列宽/行高：网格本地已经画好了，这里只负责写回文件。 */
+  private async resize(kind: "col" | "row", index: number, size: number): Promise<void> {
+    const grid = this.grid;
+    if (!grid || !this.opts.saveStruct || !grid.editing) return;
+    const op = kind === "col" ? { t: "colWidth" as const, c: index, w: size } : { t: "rowHeight" as const, r: index, h: size };
+    try {
+      await this.opts.saveStruct(grid.activeSheet, op);
+      this.status.textContent = tr("尺寸已保存");
+    } catch (err) {
+      this.status.textContent = errText(err);
+    }
+  }
 
   private async applyStruct(op: SheetStructOp): Promise<void> {
     const grid = this.grid;

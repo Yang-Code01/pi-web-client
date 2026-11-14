@@ -23,7 +23,10 @@ export type StructOp =
   /** 按某一列的值筛（`value: null` = 清除筛选）。Excel 里就是把不匹配的行藏起来。 */
   | { t: "filter"; c: number; value: string | null }
   /** 抹掉选中区域上的条件格式（只删规则，不动底色/字色这些静态样式）。 */
-  | { t: "clearCf"; r1: number; c1: number; r2: number; c2: number };
+  | { t: "clearCf"; r1: number; c1: number; r2: number; c2: number }
+  /** 拖列宽（`w` 是字符数）/ 拖行高（`h` 是磅）。 */
+  | { t: "colWidth"; c: number; w: number }
+  | { t: "rowHeight"; r: number; h: number };
 
 const MAX_EDIT_BYTES = 64 * 1024 * 1024;
 const utf8 = new TextDecoder("utf-8");
@@ -241,9 +244,89 @@ function sortRange(rows: Row[], op: Extract<StructOp, { t: "sort" }>, sst: strin
   return rows;
 }
 
+/** 数字属性：去掉浮点尾巴（18.0000 → 18）。 */
+function num(v: number): string {
+  return String(Math.round(v * 10000) / 10000);
+}
+
+/**
+ * 列宽：Excel 按「字符数」存。把目标列从已有区间里拆出来，再补一条自定义宽。
+ * 区间不能被别的 `<col>` 盖住，否则 Excel 读到的还是旧的那条。
+ */
+function setColWidth(xml: string, c: number, chars: number): string {
+  const n = c + 1;
+  const block = /<cols\b[^>]*>([\s\S]*?)<\/cols>/.exec(xml);
+  const spans: { min: number; max: number; attrs: string }[] = [];
+  if (block) {
+    for (const m of (block[1] ?? "").matchAll(/<col\b([^>]*?)\/>/g)) {
+      const a = m[1] ?? "";
+      const min = Number(attrOf(`<col ${a}`, "min") ?? "0");
+      const max = Number(attrOf(`<col ${a}`, "max") ?? "0");
+      if (min > 0 && max >= min) spans.push({ min, max, attrs: a });
+    }
+  }
+  const out: { min: number; max: number; attrs: string }[] = [];
+  for (const s of spans) {
+    if (n < s.min || n > s.max) {
+      out.push(s);
+      continue;
+    }
+    if (s.min < n) out.push({ min: s.min, max: n - 1, attrs: s.attrs });
+    if (s.max > n) out.push({ min: n + 1, max: s.max, attrs: s.attrs });
+  }
+  out.push({ min: n, max: n, attrs: `width="${num(Math.max(0, Math.min(255, chars)))}" customWidth="1"` });
+  out.sort((a, b) => a.min - b.min);
+  const body = out
+    .map((s) => {
+      const rest = s.attrs
+        .replace(/\bmin="[^"]*"/g, "")
+        .replace(/\bmax="[^"]*"/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      const own = s.min === n && s.max === n ? s.attrs : rest;
+      return `<col min="${s.min}" max="${s.max}"${own ? ` ${own}` : ""}/>`;
+    })
+    .join("");
+  const cols = `<cols>${body}</cols>`;
+  if (block) return xml.replace(block[0], cols);
+  return xml.replace(/<sheetData\b/, `${cols}<sheetData`);
+}
+
+/** 行高：写在 `<row r="n" ht="…" customHeight="1">` 上；行不存在就补一条空行。 */
+function setRowHeight(xml: string, r: number, pt: number): string {
+  const n = r + 1;
+  const ht = num(Math.max(0, Math.min(409, pt)));
+  let hit = false;
+  const out = xml.replace(/<row\b([^>]*?)(\/?)>/g, (all, attrs: string) => {
+    if (hit || Number(attrOf(`<row ${attrs}`, "r") ?? "0") !== n) return all;
+    hit = true;
+    let a = ` ${attrs.trim()}`;
+    a = /\bht="[^"]*"/.test(a) ? a.replace(/\bht="[^"]*"/, `ht="${ht}"`) : `${a} ht="${ht}"`;
+    a = /\bcustomHeight="[^"]*"/.test(a) ? a.replace(/\bcustomHeight="[^"]*"/, `customHeight="1"`) : `${a} customHeight="1"`;
+    return `<row${a}>`;
+  });
+  if (hit) return out;
+  // 新行要插在按 r 升序的位置上，不能一律甩到末尾（Excel 对乱序的 row 会挑食）。
+  const mk = `<row r="${n}" ht="${ht}" customHeight="1"/>`;
+  let done = false;
+  const placed = out.replace(/<row\b([^>]*?)>/, (all, attrs: string) => {
+    if (done) return all;
+    const rn = Number(attrOf(`<row ${attrs}`, "r") ?? "0");
+    if (rn > n) {
+      done = true;
+      return `${mk}${all}`;
+    }
+    return all;
+  });
+  return done ? placed : out.replace(/<\/sheetData>/, `${mk}</sheetData>`);
+}
+
 export function applyStruct(xml: string, op: StructOp, sst: string[] = []): string {
   // 条件格式不在 sheetData 里，先办它，免得被「没有格子」挡回去。
   if (op.t === "clearCf") return clearCf(xml, op);
+  // 列宽 / 行高也是独立段落，不必解析整张表。
+  if (op.t === "colWidth") return setColWidth(xml, op.c, op.w);
+  if (op.t === "rowHeight") return setRowHeight(xml, op.r, op.h);
   const data = /<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/.exec(xml);
   if (!data) return xml;
   let rows = parseRows(data[1]);

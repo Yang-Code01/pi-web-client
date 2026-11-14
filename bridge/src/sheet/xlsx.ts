@@ -8,6 +8,7 @@ import { entryBytes, entryStream, zipIndex, type ZipEntry } from "./zip.ts";
 import { formatValue } from "./numfmt.ts";
 import { buildCf, readDxfs, type CellFx, type SheetCf } from "./cf.ts";
 import { readStyles, type StyleTable, type WireStyle } from "./styles.ts";
+import { readSheetRefs, type SheetRefs } from "./refs.ts";
 import { readSheetImages, type WireImage } from "./media.ts";
 import { rangeRef, readSheetCharts, type RangeValues, type WireChart } from "./chart.ts";
 
@@ -27,6 +28,10 @@ export interface WireCell {
   a?: "l" | "c" | "r";
   /** D167：cellXfs 下标去重后的样式下标；0 / 缺省就是默认样式（前端只收一张小表）。 */
   s?: number;
+  /** #435 这格挂了超链接（原样给前端，点的时候自己判断能不能开）。 */
+  lnk?: string;
+  /** #435 这格有批注（正文拼成一行）。 */
+  note?: string;
   /** #109 条件格式算出来的样式：底色 / 字色 / 加粗 / 数据条 / 图标。 */
   fx?: CellFx;
   /** 公式原文（不带 `=`）。共享公式的子格只有 `si` 下标、没有正文，就不带这个。 */
@@ -153,6 +158,8 @@ export interface Book {
   /** 共享字符串与样式按需加载（只有取窗口 / 建 CF 时才需要）。 */
   strings?: string[];
   styles?: StyleTable;
+  /** #435 超链接 / 批注，按表名缓存。 */
+  refs?: Map<string, SheetRefs>;
 }
 
 import { attr, refOf, texts, unescapeXml } from "./xml.ts";
@@ -549,6 +556,20 @@ export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: numbe
   };
   const cf = tier === "full" ? book.cf.get(sheet) ?? null : null;
   const { rows, bytes } = scanRows(buf, entry, r0, r1, c0, c1, ctx, cf);
+  // #435 超链接与批注不在 sheetData 里，等这页的行解完再贴上去（只碰窗口内的格）。
+  const refs = book.refs?.get(sheet) ?? readSheetRefs(buf, book.dir, part);
+  (book.refs ??= new Map()).set(sheet, refs);
+  if (refs.links.size || refs.notes.size) {
+    for (const row of rows) {
+      for (const cell of row.cells) {
+        const key = `${cell.r}:${cell.c}`;
+        const lnk = refs.links.get(key);
+        const note = refs.notes.get(key);
+        if (lnk) cell.lnk = lnk;
+        if (note) cell.note = note;
+      }
+    }
+  }
   return { sheet, r0, r1, c0, c1, rows, bytes, partBytes: entry.size };
 }
 

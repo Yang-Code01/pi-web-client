@@ -328,7 +328,7 @@ export class Ribbon {
       this.sep(),
       this.grp("插图", [
         this.disabled("图片", "内置图片是只读显示的，暂不支持插新图"),
-        this.disabled("图表", "预览不画图表对象"),
+        this.disabled("图表", "文件里已有的图表是只读显示的，暂不支持插新图"),
         this.disabled("符号", "用输入法打符号即可"),
       ]),
     );

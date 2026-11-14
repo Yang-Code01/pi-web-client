@@ -668,6 +668,10 @@ export interface SheetCell {
   noCache?: boolean;
   /** #429：样式下标（meta.styles 的索引）。 */
   s?: number;
+  /** #435：超链接地址（`#表!A1` 表示页内）。 */
+  lnk?: string;
+  /** #435：批注正文。 */
+  note?: string;
 }
 
 /**
@@ -719,7 +723,9 @@ export type SheetStructOp =
   | { t: "insRow" | "delRow" | "insCol" | "delCol"; at: number; n: number }
   | { t: "sort"; r1: number; c1: number; r2: number; c2: number; key: number; desc: boolean }
   | { t: "filter"; c: number; value: string | null }
-  | { t: "clearCf"; r1: number; c1: number; r2: number; c2: number };
+  | { t: "clearCf"; r1: number; c1: number; r2: number; c2: number }
+  | { t: "colWidth"; c: number; w: number }
+  | { t: "rowHeight"; r: number; h: number };
 
 /** #434：表里的图表对象（柱/条、折线、饼、面积、散点）。 */
 export interface SheetSeries {

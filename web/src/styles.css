@@ -4060,13 +4060,16 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .sd-fx[hidden] { display: none; }
 .sd-fx-ref {
-  flex: none; min-width: 42px; padding: 0 4px; border-radius: 4px; background: #eef1f5;
+  flex: none; width: 84px; padding: 0 4px; border: 0; border-radius: 4px; background: #eef1f5;
   color: #5b6472; font: 600 11.5px/1.6 var(--sans); text-align: center;
 }
+.sd-fx-ref:focus { outline: 1px solid #0f766e; background: #fff; }
 .sd-fx-body {
-  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  user-select: text;
+  flex: 1 1 auto; min-width: 0; border: 0; padding: 0 4px; background: transparent;
+  color: #1f2430; font: 12px/1.6 var(--sans); text-overflow: ellipsis;
 }
+.sd-fx-body[readonly] { cursor: default; }
+.sd-fx-body:not([readonly]):focus { outline: 1px solid #0f766e; background: #fff; }
 .sd-src {
   flex: 1 1 auto; min-width: 0; min-height: 0; width: 100%; box-sizing: border-box; resize: none;
   border: 0; outline: none; padding: 10px 12px; background: #fff; color: #1f2430;
@@ -4277,6 +4280,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   border-right: 1px solid #dbdbdb; box-sizing: border-box;
 }
 .sd-col.sel { color: #0f766e; font-weight: 600; }
+/* #435 拖动列宽/行高的握把：只在编辑态出现，压住表头那条分隔线。 */
+.sd-grip-v { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 2; }
+.sd-grip-h { position: absolute; left: 0; bottom: -3px; height: 6px; width: 100%; cursor: row-resize; z-index: 2; }
 .sd-rowno {
   position: absolute; left: 0; right: 0; display: flex; align-items: center; justify-content: center;
   box-sizing: border-box; color: #4a4a4a; font-size: 11.5px;
@@ -4285,6 +4291,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-rowno.sel { color: #0f766e; font-weight: 600; }
 .sd-viewwrap { position: relative; min-width: 0; min-height: 0; }
 .sd-view { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
+/* #435 超链接 / 批注。链接只在悬停或按住 Ctrl 时听话，避免拖选误触。 */
+.sd-cell.is-lnk > .sd-txt { color: #0b57d0; text-decoration: underline; text-underline-offset: 2px; }
+.sd-cell.is-note::after {
+  content: ""; position: absolute; top: 0; right: 0; border: 5px solid transparent;
+  border-top-color: #d93025; border-right-color: #d93025; pointer-events: none;
+}
 /* #107：网格自己吃键盘；焦点环不画在滚动容器上（格子里的描边已经说明在哪）。 */
 .sd-view:focus { outline: none; }
 .sd-view:focus-visible { outline: 1px solid #c3d5e4; outline-offset: -1px; }

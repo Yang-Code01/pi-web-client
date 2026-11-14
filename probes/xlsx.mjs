@@ -827,6 +827,63 @@ try {
   await page.locator(".sd-close").first().click();
   await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
 
+  // ---------------------------------------------------------------- 编辑增强：拖列宽 / 名称框 / 公式栏（#435）
+  {
+    await openSheet("styled.xlsx");
+    await page.locator(".sd-editbtn").first().click();
+    await page.waitForTimeout(150);
+    const colB = page.locator(".sd-col", { hasText: /^B$/ }).first();
+    const w0 = (await colB.boundingBox())?.width ?? 0;
+    const grip = page.locator('.sd-grip-v[data-c="1"]').first();
+    check("编辑态有列宽握把", (await grip.count()) === 1);
+    const gb = await grip.boundingBox();
+    if (gb) {
+      await page.mouse.move(gb.x + 2, gb.y + 6);
+      await page.mouse.down();
+      await page.mouse.move(gb.x + 42, gb.y + 6, { steps: 6 });
+      await page.mouse.up();
+    }
+    await page.waitForTimeout(400);
+    const w1 = (await page.locator(".sd-col", { hasText: /^B$/ }).first().boundingBox())?.width ?? 0;
+    check("拖一下 B 列变宽", w1 > w0 + 20, `${Math.round(w0)} → ${Math.round(w1)}`);
+
+    const ref = page.locator(".sd-fx-ref");
+    await ref.fill("C5");
+    await ref.press("Enter");
+    await page.waitForTimeout(200);
+    const sel = await page.evaluate(() => {
+      const el = document.querySelector(".sd-cell.sel");
+      return el ? { r: Number(el.dataset.r), c: Number(el.dataset.c) } : null;
+    });
+    check("名称框跳转按 A1 语法", sel?.r === 4 && sel?.c === 2, JSON.stringify(sel));
+
+    const body = page.locator(".sd-fx-body");
+    await body.fill("123");
+    await body.press("Enter");
+    await page.waitForTimeout(300);
+    check("公式栏回车写进格子", (await page.locator('.sd-cell[data-r="4"][data-c="2"]').innerText()).trim() === "123");
+    await page.screenshot({ path: path.join(OUT, "14-editplus.png") });
+    await page.locator(".sd-close").first().click();
+    await page.waitForTimeout(200);
+  }
+
+  // ---------------------------------------------------------------- 超链接与批注（#435）
+  {
+    await openSheet("refs.xlsx");
+    const link = page.locator('.sd-cell[data-r="0"][data-c="0"]');
+    check("超链接格子带 is-lnk", (await link.getAttribute("class"))?.includes("is-lnk") === true);
+    const color = await link.locator(".sd-txt").evaluate((el) => getComputedStyle(el).color);
+    check("超链接是蓝色下划线", color === "rgb(11, 87, 208)", color);
+    const note = page.locator('.sd-cell[data-r="2"][data-c="2"]');
+    check("批注格子带 is-note", (await note.getAttribute("class"))?.includes("is-note") === true);
+    check("批注正文在 title 上", (await note.getAttribute("title")) === "第一段 第二段", await note.getAttribute("title"));
+    const inner = page.locator('.sd-cell[data-r="1"][data-c="1"]');
+    check("页内跳转保留 # 前缀", (await inner.getAttribute("title")) === "#'链接'!A1:B2", await inner.getAttribute("title"));
+    await page.screenshot({ path: path.join(OUT, "13-refs.png") });
+    await page.locator(".sd-close").first().click();
+    await page.waitForTimeout(200);
+  }
+
   // ---------------------------------------------------------------- 条件格式（#109）
   // 五类规则都在桥端求值，前端只吃结果：底色、字色、加粗、数据条宽度、图标等级。
   await openSheet("cf.xlsx");
@@ -949,8 +1006,8 @@ try {
       const ref = document.querySelector(".sd-fx-ref");
       if (!bar || !body) return null;
       return {
-        text: (body.textContent ?? "").trim(),
-        ref: (ref?.textContent ?? "").trim(),
+        text: (body instanceof HTMLInputElement ? body.value : body.textContent ?? "").trim(),
+        ref: (ref instanceof HTMLInputElement ? ref.value : ref?.textContent ?? "").trim(),
         hidden: bar.hidden || getComputedStyle(bar).display === "none",
         above: Math.round(bar.getBoundingClientRect().bottom) <= Math.round(document.querySelector(".sd-view").getBoundingClientRect().top) + 1,
         h: Math.round(bar.getBoundingClientRect().height),
@@ -1593,7 +1650,10 @@ if (SKIP_PDF) {
       return {
         r: cur ? Number(cur.dataset.r) : null,
         c: cur ? Number(cur.dataset.c) : null,
-        ref: (document.querySelector(".sd-fx-ref")?.textContent ?? "").trim(),
+        ref: (() => {
+          const el = document.querySelector(".sd-fx-ref");
+          return (el instanceof HTMLInputElement ? el.value : el?.textContent ?? "").trim();
+        })(),
         count: ids.length,
         ids: ids.sort(),
       };

@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { zipSync, strToU8, Zip, ZipDeflate } from "fflate";
+import { buildRefsXlsx } from "./refs-xlsx.mjs";
 
 const HEADER = ["地区", "产品", "单价", "数量", "金额", "备注", "编号", "错误"];
 
@@ -729,6 +730,8 @@ export function buildPicXlsx() {
 
 export function makeFixtures(outDir) {
   fs.mkdirSync(outDir, { recursive: true });
+  const refs = path.join(outDir, "refs.xlsx");
+  fs.writeFileSync(refs, buildRefsXlsx());
   const file = path.join(outDir, "plain.xlsx");
   fs.writeFileSync(file, buildXlsx());
   const report = path.join(outDir, "report.xlsx");
@@ -744,7 +747,7 @@ export function makeFixtures(outDir) {
   const pic = path.join(outDir, "pic.xlsx");
   fs.writeFileSync(pic, buildPicXlsx());
   const csv = makeCsvFixtures(outDir);
-  return { plain: file, report, chart, cf, formula, styled, pic, csv, files: [file, report, chart, cf, formula, styled, pic, ...csv.files] };
+  return { plain: file, report, chart, cf, formula, styled, pic, refs, csv, files: [file, report, chart, cf, formula, styled, pic, refs, ...csv.files] };
 }
 
 /** OLE2 复合文档头：老式 .xls，以及加密过的 OOXML 包（CFB 包着加密流）都以它开头。 */

@@ -82,6 +82,8 @@ export interface SheetGridHost {
   onDirty?: (count: number) => void;
   /** #432：开始在格子里敲字 / 结束编辑（公式栏跟着切）。 */
   onEditing?: (state: { ref: string; text: string } | null) => void;
+  /** #435 拖列宽 / 行高松手后回调：col 的 size 是字符数，row 是磅。 */
+  onResize?: (kind: "col" | "row", index: number, size: number) => void;
 }
 
 /** 四个绘制层：主体、冻结行、冻结列、冻结角。 */
@@ -210,6 +212,10 @@ export class SheetGrid {
   private base: number[] = [];
   private widths: number[] = [];
 
+  /** #435 拖出来的列宽 / 行高：先盖在文件值上，保存成功后由 meta 接管。 */
+  private colOver = new Map<number, number>();
+  private rowOver = new Map<number, number>();
+
   /** 行：默认行高 + 文件指定行高 + 换行量出来的行高（都是未缩放的 px）。 */
   private defH = ROW_H;
   private fileH = new Map<number, number>();
@@ -309,6 +315,7 @@ export class SheetGrid {
     this.view.setAttribute("role", "grid");
     this.view.setAttribute("aria-label", tr("表格"));
     this.view.addEventListener("pointerdown", this.onPointerDown);
+    this.root.addEventListener("pointerdown", this.onHeadDown);
     this.view.addEventListener("pointermove", this.onPointerMove);
     this.view.addEventListener("pointerup", this.onPointerUp);
     this.view.addEventListener("pointercancel", this.onPointerUp);
@@ -361,6 +368,7 @@ export class SheetGrid {
     if (this.frame) cancelAnimationFrame(this.frame);
     this.view.removeEventListener("scroll", this.onScroll);
     this.view.removeEventListener("pointerdown", this.onPointerDown);
+    this.root.removeEventListener("pointerdown", this.onHeadDown);
     this.view.removeEventListener("pointermove", this.onPointerMove);
     this.view.removeEventListener("pointerup", this.onPointerUp);
     this.view.removeEventListener("pointercancel", this.onPointerUp);
@@ -395,6 +403,7 @@ export class SheetGrid {
     // 没有 colWidths 的是 CSV：文件本身没有列宽可言，给宽一点更好读。
     this.base = Array.from({ length: cols }, (_, c) => fileWidths?.[c] ?? COL_W);
     if (!fileWidths) this.base = this.base.map(() => CSV_COL_W);
+    for (const [k, v] of this.colOver) if (k < cols) this.base[k] = v;
     const offsets = [0];
     this.widths = [];
     for (let c = 0; c < cols; c++) {
@@ -410,6 +419,7 @@ export class SheetGrid {
     for (const [k, v] of Object.entries(info.rowH ?? {})) this.fileH.set(Number(k), v);
     // 桥端已经把 hidden 折成高度 0，这里再兜一层：老数据只给 hiddenRows 也能显示对。
     for (const r of info.hiddenRows ?? []) if (!this.fileH.has(r)) this.fileH.set(r, 0);
+    for (const [k, v] of this.rowOver) this.fileH.set(k, v);
     this.rebuildH();
 
     this.spans = new Map();
@@ -631,6 +641,8 @@ export class SheetGrid {
     this.editMode = on;
     if (!on) this.commitEdit(null);
     this.root.classList.toggle("is-editing", on);
+    // 列宽/行高的握把只在编辑态出现，切模式要立刻重画表头。
+    this.render();
   }
 
   /** 元数据（功能区要拿它列字体名）。 */
@@ -678,6 +690,26 @@ export class SheetGrid {
 
   get gridShown(): boolean {
     return this.showGrid;
+  }
+
+  /** #435：名称框里输 `A1` / `A1:C5` 就跳过去，顺便选中。 */
+  jumpTo(text: string): void {
+    const m = /^\$?([A-Za-z]{1,3})\$?(\d+)(?::\$?([A-Za-z]{1,3})\$?(\d+))?$/.exec(text.trim());
+    if (!m) return;
+    const idx = (name: string): number => {
+      let n = 0;
+      for (const ch of name.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
+      return n - 1;
+    };
+    const info = this.info();
+    const c0 = Math.max(0, Math.min(info.cols - 1, idx(m[1] ?? "A")));
+    const r0 = Math.max(0, Math.min(info.rows - 1, Number(m[2]) - 1));
+    const c1 = m[3] ? Math.max(c0, Math.min(info.cols - 1, idx(m[3]))) : c0;
+    const r1 = m[4] ? Math.max(r0, Math.min(info.rows - 1, Number(m[4]) - 1)) : r0;
+    this.anchor = { r: r0, c: c0 };
+    this.focus = { r: r1, c: c1 };
+    this.afterSelect();
+    this.reveal(r0, c0);
   }
 
   /** #433：往焦点格写一段文本或公式（功能区按钮用，不弹编辑框）。 */
@@ -975,6 +1007,15 @@ export class SheetGrid {
     const pos = this.pointCell(ev.clientX, ev.clientY);
     if (!pos) return;
     const anchor = this.snap(pos);
+    // #435 Ctrl/Cmd + 点超链接：只开外链；页内 `#表!A1` 不跳（跨表要重载，留给下一步）。
+    if (ev.ctrlKey || ev.metaKey) {
+      const cell = this.cellAt(pos.r, pos.c);
+      if (cell?.lnk && !cell.lnk.startsWith("#")) {
+        ev.preventDefault();
+        window.open(cell.lnk, "_blank", "noopener");
+        return;
+      }
+    }
     const now = Date.now();
     // 自己认双击：pointer capture 下浏览器不派 dblclick（踩过）。
     const again = now - this.lastTap.t < 400 && this.lastTap.r === pos.r && this.lastTap.c === pos.c;
@@ -1447,6 +1488,11 @@ export class SheetGrid {
       node.style.left = `${this.leftOf(c)}px`;
       node.style.width = `${this.widthOf(c)}px`;
       if (c >= sel.c0 && c <= sel.c1) node.classList.add("sel");
+      if (this.editMode) {
+        const grip = el("div", "sd-grip-v");
+        grip.dataset.c = String(c);
+        node.append(grip);
+      }
       (c < f.cols ? frzCols : cols).push(node);
     }
     this.colheadIn.replaceChildren(...cols);
@@ -1464,6 +1510,11 @@ export class SheetGrid {
       node.style.top = `${this.topOf(r)}px`;
       node.style.height = `${h}px`;
       if (r >= sel.r0 && r <= sel.r1) node.classList.add("sel");
+      if (this.editMode) {
+        const grip = el("div", "sd-grip-h");
+        grip.dataset.r = String(r);
+        node.append(grip);
+      }
       (r < f.rows ? frzRows : rowheads).push(node);
     }
     this.rowheadIn.replaceChildren(...rowheads);
@@ -1503,6 +1554,57 @@ export class SheetGrid {
    * 文件里的图片：按锚点算出 px 位置，只挂与视口（含一屏余量）相交的那几张。
    * 图片压在格子背景之上、选区框之下（CSS 的 z-index），所以点选/拖选照旧靠下面的格子。
    */
+  /**
+   * #435 拖列宽 / 行高：只在编辑态挂握把；拖动时就地重排（松手才写回文件）。
+   * 用未缩放的 base 算，100% 和 150% 拖出来的宽度一致。
+   */
+  private onHeadDown = (ev: PointerEvent): void => {
+    const t = ev.target as HTMLElement | null;
+    const gv = t?.closest<HTMLElement>(".sd-grip-v") ?? null;
+    const gh = t?.closest<HTMLElement>(".sd-grip-h") ?? null;
+    if (!gv && !gh) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const z = this.zoomLevel;
+    const c = gv ? Number(gv.dataset.c) : -1;
+    const r = gh ? Number(gh.dataset.r) : -1;
+    const x0 = ev.clientX;
+    const y0 = ev.clientY;
+    const w0 = gv ? (this.base[c] ?? COL_W) * z : 0;
+    const h0 = gh ? this.heightOf(r) : 0;
+    let moved = false;
+    const move = (e: PointerEvent): void => {
+      moved = true;
+      if (gv) this.dragCol(c, (w0 + e.clientX - x0) / z);
+      else this.dragRow(r, h0 + e.clientY - y0);
+    };
+    // 拖动过程中会重画表头（握把节点被换掉），所以监听挂在 window 上，别挂在握把上。
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      if (!moved) return;
+      if (gv) this.host.onResize?.("col", c, Math.max(0, ((this.colOver.get(c) ?? 0) - 5) / 7));
+      else this.host.onResize?.("row", r, (this.rowOver.get(r) ?? 0) * 0.75);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+
+  /** 拖动中的临时尺寸（px，未缩放）；不改文件，松手由 onResize 决定写不写。 */
+  private dragCol(c: number, px: number): void {
+    this.colOver.set(c, Math.max(8, Math.round(px)));
+    this.measure();
+    this.render();
+  }
+
+  private dragRow(r: number, px: number): void {
+    this.rowOver.set(r, Math.max(4, Math.round(px)));
+    this.measure();
+    this.render();
+  }
+
   private drawImages(): void {
     const imgs = this.info().images;
     const url = this.host.mediaUrl;
@@ -1655,6 +1757,15 @@ export class SheetGrid {
           if (need > prev) this.grow.set(r0, need);
         }
 
+        // #435 超链接与批注：链接画成蓝色下划线（Ctrl/Cmd 点开），批注画右上角小红角。
+        if (cell?.lnk) {
+          node.classList.add("is-lnk");
+          node.title = cell.lnk;
+        }
+        if (cell?.note) {
+          node.classList.add("is-note");
+          node.title = cell.note;
+        }
         // #111：只有公式、没存结果的格子：显空 + 红虚线；原文和「去 Excel 重算」放在悬停里。
         if (cell?.noCache) {
           node.classList.add("is-nc");

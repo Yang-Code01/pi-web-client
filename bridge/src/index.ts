@@ -1162,7 +1162,7 @@ async function main(): Promise<void> {
       const grant = await resolveSheetGrant(res, token);
       if (!grant) return;
       const op = (body.op ?? null) as StructOp | null;
-      const known = ["merge", "unmerge", "insRow", "delRow", "insCol", "delCol", "sort", "filter", "clearCf"];
+      const known = ["merge", "unmerge", "insRow", "delRow", "insCol", "delCol", "sort", "filter", "clearCf", "colWidth", "rowHeight"];
       if (!op || !known.includes(String(op.t))) return fail(res, 400, "sheet_struct", "不认识的表结构改动");
       try {
         const out = await saveSheetStruct(grant.abs, String(body.sheet ?? ""), op, grant.mtimeMs);
