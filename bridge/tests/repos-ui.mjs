@@ -234,7 +234,7 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.keyboard.press("Escape");
 
-  // 窄版判据是**卡自己**多宽，不是视口（D256）：把卡拨窄到 600、视口仍是 1280，抽屉就该出来。
+  // 窄版判据是**卡自己**多宽，不是视口（D262）：把卡拨窄到 600、视口仍是 1280，抽屉就该出来。
   // 换成 @media 的话这里一条都过不了 —— 1280 的视口永远不会触发 720 的断点。
   await page.click(".cwd-chip");
   await page.waitForSelector(".repos-sheet", { timeout: 15000 });

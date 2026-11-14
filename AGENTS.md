@@ -49,10 +49,10 @@ Issues and specs live as GitHub issues in `Yang-Code01/pi-web-client`, driven wi
 
 `#app { zoom: var(--ui-scale) }`（外观「字号」）会把子树里的长度整体缩放一遍，而 `vw` / `vh` 解析的是**视口**、不认 zoom —— 同一个值被乘第二次。所以视口几成就写 `calc(var(--vh1) * N)` / `calc(var(--vw1) * N)`：
 
-- 往 CSS 里写 `82vh`、`94vw`、`calc(100vw - 16px)` 这种，字号 125% 以上就会把弹层与它的底栏推出屏幕（D123、D256，已经复发四次）。
+- 往 CSS 里写 `82vh`、`94vw`、`calc(100vw - 16px)` 这种，字号 125% 以上就会把弹层与它的底栏推出屏幕（D123、D262，已经复发四次）。
 - 只有 `document.body.append()` 上去、压根不在 `#app` 里的浮层可以写裸的，行尾必须标 `/* 不在 #app */`；守卫只认这个标记，**别拿它当顺手豁免** —— 浮层本来就该跟着字号缩放，请挂进 `#app`。
 - 守卫：`npm run test:viewport`（已挂在 web 的 typecheck 里）。新写/改弹层后跑一次，顺便在字号 150% 下看一眼底栏还在不在。
-- 判「窄版」用 `@container`（卡 / 面板自己的宽度），不要用 `@media`（视口宽度）：嵌在左栏右栏里的面板永远等不到 `@media` 触发（D256）。
+- 判「窄版」用 `@container`（卡 / 面板自己的宽度），不要用 `@media`（视口宽度）：嵌在左栏右栏里的面板永远等不到 `@media` 触发（D262）。
 
 ### Running the bridge
 

@@ -443,7 +443,7 @@ try {
   check("窄屏只显示一列", await small.locator(".bc-col:visible").count() === 1);
   await narrow.close();
 
-  // 字号缩放（D256）：`#app` 上挂着 zoom，样式里写裸 vh / vw 会被乘第二次 —— 底栏曾经整条被推到
+  // 字号缩放（D262）：`#app` 上挂着 zoom，样式里写裸 vh / vw 会被乘第二次 —— 底栏曾经整条被推到
   // 屏幕外，「拉取最新」点不到。这里按 150% / 200% 各点一次 chip，量的都是**真实 rect**：
   // 卡在不在视口里、底栏那颗按钮在不在、头行标题有没有画到动词按钮身上。
   // 150% 的卡 902 宽（宽版），200% 的卡 677 宽（容器查询判窄版）：两个状态都得撑得住。
@@ -478,7 +478,7 @@ try {
       `title.right=${Math.round(zoomBox.title.right)} ⇄ 第一颗动词 left=${Math.round(zoomBox.firstVerb.left)}`);
     // 24 条动词的入口永远要在：卡窄了收进「全部动词 · 24」，宽了就在头行常驻。
     check(`${label}：「全部动词」入口可见`, await zpage.locator('[data-verbs="1"]').isVisible());
-    // 卡宽 < 720 时才该进窄版（容器查询，D256）：200% 的卡 677 宽 → 两列退化成顶部 tab。
+    // 卡宽 < 720 时才该进窄版（容器查询，D262）：200% 的卡 677 宽 → 两列退化成顶部 tab。
     const sideTabsVisible = await zpage.locator(".go-side-tabs button").first().isVisible();
     check(`${label}：窄版判据跟的是卡自己的宽度`, sideTabsVisible === scale >= 1.9, `sideTabs=${sideTabsVisible}`);
     await zoomed.close();

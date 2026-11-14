@@ -4593,7 +4593,112 @@ D
 
 **验证：** `node bridge/tests/hotdeploy-unit.mjs`、`npx tsc -p bridge --noEmit`、`npm --prefix web run typecheck`（i18n-check 2877 keys × 3）绿；7999 测试桥上重跑一轮真部署（切分支→build→换进程→healthz 的 buildId 对上），以及审查后逐条手验：假 state.json 里 pre-write 的 step/error 不再被盖、脏 worktree 与 `TARGET MISSING` 两种失败分别给出不同弹法、面板打开时上一轮的 ok 不触发倒计时、公网头下两个 GET 都是 403。
 
-## D256 `#app` 里不写裸 `vh` / `vw`：分支工作台掉出屏幕的修复 + 一条守门用例（用户报障 2026-11-15）
+## D256 表格网格按 WPS 的排法重写：样式表整链下传，行高/列宽/换行按 font metrics 排（`#427`，修订 D166 的「格子只画数字格式 + 对齐」）
+
+**问题：** D166 落地时为了先把「数和图都在」做完，`readStyles()` 只读 `numFmt` 与 `<alignment horizontal>`，`<fonts>` / `<fills>` / `<borders>` / `<row ht>` / 隐藏行列 / `wrapText` 全部丢掉；前端把每格钉成 `nowrap; overflow:hidden; 28px 行高; 13px #1f2430`。结果是：文件里排好的表（深色表头、隔行底纹、合计行、标题行加高、备注列换行）在我们的网格里全变成一堵同样大小的字墙，用户的原话是「效果不是很好」。
+
+**怎么定的：** 用户指名「用 REA 解构 WPS 的 Excel 预览，按它的写法设计模式」。实测本机 WPS 12.1.0.29690：`et.exe` 只是启动器，窗口由 `wps.exe` 承载，引擎是 Qt5 + Skia（`Qt5CoreKso.dll` / `skia.dll`），没有独立的轻量网页渲染器；注册的 `.xlsx` 预览处理器 CLSID `{E260F96C-8EF4-4C24-A2B9-455F1D116531}` 只登记了 `ole32.dll`，拿不到实现模块。**所以「写法」只能从屏幕像素里反推**：用 `PrintWindow` 抓窗口（150% 缩放下行高 = pt×2、列宽 = (chars×7+5)×1.5），再逐点探针取色（网格线 `#E6E6E6`、表头 `#F0F0F0`、选中青绿、数字右对齐、放不下出 `###`、文本溢出到右空格、隐藏行在行号上直接跳过）。
+
+**决定：**
+
+- **样式在桥端解析成扁平表，整本一次下发。** 新文件 `bridge/src/sheet/styles.ts`：`readFonts/readFills/readBorders/readStyles`，加 `INDEXED`（64 项老式索引色）、theme 色槽 + `tint()`（RGB→HLS→RGB），输出 `WireStyle { f/bg/bd/h/v/w/ind/sh/rot }`，相同样式按 `JSON.stringify` 去重、0 号恒为默认样式；`WorkbookMeta.styles` 下发，`SheetCell.s` 只带下标。这样前端拿 `styles[cell.s]` 就够，不再猜。
+- **列宽/行高/隐藏/网格线开关都从文件读**：`sheetExtras()` 读 `<sheetFormatPr defaultColWidth|defaultRowHeight>`、`<col width|customWidth|hidden>`、`<row ht|customHeight|hidden>`、`<sheetView showGridLines="0">`；`heightPx(pt) = round(pt*4/3)` 与浏览器一致（WPS 在 150% 屏上是 ×2，等于 CSS 的 ×4/3）。
+- **默认尺寸改成 Excel 的**：`ROW_H = 20`（15pt）、`COL_W = 64`（8.43 字符）、`HEAD_W = 40`、`HEAD_H = 24`；CSV（`colWidths === undefined`）仍用 110px，CSV 没有列宽语义。
+- **只画左/上边**：Excel 的边框归属是「格子负责自己的左/上」，右/下由邻居的左/上画；我们照抄——自己的 `bd.l/bd.t` → 左/上邻居的 `bd.r/bd.b` → 网格线 `1px solid #E6E6E6`（`showGridLines=0` 时 none）；只有窗口边缘才补右/下，避免相邻两格把同一条线叠成 2px。
+- **数字放不下出 `###`**（量 `#` 宽度、按可用宽度重复），不裁剪也不溢出；文本默认左对齐、可溢出到右侧连续空列（`roomFor()` 上限 8 列、遇有内容的格子停），`wrapText` 用 `pre-wrap` 并在**节点上树之后**量真实高度回填行高（离屏量尺会被 `font` 简写和可用宽度算错，实测差 5–8px）。
+- **行高/列宽不再用「整表前缀数组」**：`fileH`/`autoH` 两张稀疏 map + 排序键 + 前缀和（`dsum`）做 `topOf()` 二分，百万行的 light 档也不会建出百万长度数组。
+- **交互全部保留**：四层冻结、键盘走位、Shift 扩选、Ctrl+C 的 TSV、查找命中、`setZoom`（同时作用行高列宽字号）、`selectionRef`；`SheetGrid` 与 `ZOOM_*` 的导出签名不变，`dialog.ts` 不用改。
+- **表里的图片照 drawing 的锚点摆**（重写后发现旧网格从来没画过图，用户报「图片没法正常显示」）：新文件 `bridge/src/sheet/media.ts` 读 `xl/worksheets/_rels/sheetN.xml.rels` → `xl/drawings/drawingN.xml`，`twoCellAnchor` 用 from/to 的行列+偏移，`oneCellAnchor` 用 `<xdr:ext>` 的固定 EMU（÷9525 换 px）；只认 `a:blip` 指向的 media part，图表（graphicFrame）跳过。字节走新的 `GET /api/sheet/media?token&sheet&id`：id 必须是这张表 meta 里登记过的 zip 路径，伪造的一律 404，绝不按前端给的路径去读 zip。前端 `drawImages()` 把图片按 `leftOf/widthOf/topOf/heightOf` 算成绝对定位的 `<img class="sd-img">`，只挂视口上下左右各一屏以内的，`z-index: 2` 压在格子之上、选区之下，`pointer-events: none` 不吃点选。
+
+**代价 / 可改：** 样式解析在桥端多一次 `<styles.xml>` + `<theme1.xml>` 的解析（整本缓存，窗口请求不再付）；pattern 填充只做近似（深色花纹取 fg、其余取 bg）；行内富文本 run、旋转文字按像素旋转（只认 90/180 的倍数）、渐变/图片填充都不做。选中框颜色取 `#0f766e`（WPS 的绿有青有蓝，实测采样被文字抗锯齿污染），要改只动 `grid.ts` 的 `SEL_COLOR`。
+
+**验证：** `bridge/tests/fixtures/make-xlsx.mjs` 新增 `buildStyledXlsx()`（两张表、6 字体、5 填充、4 边框、货币/日期/百分比/负数红字、indent、wrap、隐藏行、冻结、`showGridLines=0`），`probes/xlsx.mjs` 加「富样式」一组 17 条断言（行高 20/44/46、隐藏行跳过、表头底 #1F4E79 白字、细边框 1px 不叠、`¥1,234.50` 右对齐、负数 `(400.00)`、`###`、`pre-wrap`、溢出、缩进、合计行黄底、无网格线页）＋「换行内容不被行高截断」一条＋「图片」一组（两张图都挂上、字节取到、一格锚点 120×80、两格锚点铺满 B2:E7）；整轮 **290 项 ok / 全部通过**，截图 `.scratch/xlsx-probe` 与 WPS 同屏对照。
+
+## D257 表格预览就地编辑：改的是 sheet XML 里的那几格，原文件其余字节照抄（`#432`，D166 / D256 的「只读」到此为止）
+
+**问题：** D166 定的是「只读格子 + 纸面 PDF」，理由是「预览只要看清」。真用起来不是：核对表里改一个数、补一行备注，都得跳到 WPS 里改完再切回来，一个几十行的表来回十几次。用户要的是「打开 excel 的窗口里加一个编辑按钮，能实现编辑」。
+
+**决定：**
+
+- **写回原文件，不另存。** 新文件 `bridge/src/sheet/write.ts`：`unzipSync` 拿整包 → 只重写被改到的那几个 `<sheetData>/<row>`（`cellXml` 按需生成 `<c r t s>`，字符串写 `inlineStr`、数字写 `<v>`、公式写 `<f>`，**样式下标 `s` 原样保留**）→ `zipSync(level 6)` → 写同目录临时文件 → `rename` 覆盖；第一次保存前把原文件拷成 `<文件名>.bak`（只留一份，覆盖上一次的）。
+- **不重写共享字符串表**：新写的文本走 `t="inlineStr"`，既不用改 `sharedStrings.xml`、也不会把别人还在引用的字符串挤掉；Excel/WPS 都认。
+- **公式改动打 `fullCalcOnLoad`**：在 `workbook.xml` 的 `<calcPr>` 上置 `fullCalcOnLoad="1"`，下次用 Excel/WPS 打开会重算；我们自己仍然只显示缓存值（和只读预览的约定一致，见 D166）。
+- **并发只看 mtime**：请求带 `mtime`，桥端 `stat` 对不上就 `sheet_stale` 拒绝写（不覆盖别人刚改的文件）；写成功后重新 `registerFileGrant` 把新 mtime 记进凭据，同一扇窗可以接着改，不用重开。
+- **只走这一条路**：`POST /api/sheet/edit` 与其它 sheet 端点同样 `publicReq → 403`，凭据就是打开这扇窗时拿到的 token；`ops` 上限 20000 格、整包上限 64 MB，超了直接拒。
+- **前端是「覆盖层」不是改数据源**：`grid.ts` 用 `edits: Map<"r:c", SheetCell | null>` 叠在 `cellsByKey` 之上（`cellAt()` 是唯一读口），保存成功才 `clearEdits()` + 重取窗口；撤销/重做是 `EditEntry[]` 两摞栈（一次提交 = 一批）。
+- **交互照 Excel 的肌肉记忆**：只读态点格子只用于复制；「编辑」按钮切进编辑态后，选格直接敲字 = 覆盖、F2 / 双击进原地 `textarea`（光标在末尾）、Enter 下移 / Tab 右移 / Shift 反向 / Esc 取消、Delete 清空、Ctrl+Z / Ctrl+Y、Ctrl+V 按 TSV 从当前格铺开、Ctrl+S 保存；改过几格就在「保存」上写几格，没改就藏着；关闭时问一句。
+- **双击自己认**：`pointer capture` 下浏览器不派 `dblclick`（踩过），所以在第二次 `pointerdown` 里判定 400ms 内同格再按；编辑态下延迟一帧再开编辑框（否则 mousedown 的默认聚焦会把刚出来的 `textarea` blur 掉）。
+
+**代价 / 可改：** 只支持**单格**改动（多选只用于复制/清空），不做列宽拖拽、插入/删除行列、区域整体填充；合并格写到左上角，不拆合并；行内富文本 run 会退化成纯文本；`zipSync` 是整本重打包，几十 MB 的工作簿保存要一两秒（前端有「保存中…」）；`.bak` 只留一份，没有版本历史。
+
+**验证：** `bridge/tests/fixtures/make-xlsx.mjs` 的 `buildStyledXlsx()` 作靶子，`probes/xlsx.mjs` 新增「编辑」一组：按钮出现/只读无保存、切「完成」+ 底栏「编辑中」、直接敲字覆盖、Esc 不动原文、Enter 提交并亮「保存 1」、Ctrl+Z/Y 来回、双击进编辑框、Ctrl+A 改数、Shift 选两格 Delete 清空、保存后 mtime 变 + `.bak` 在 + 按钮收起、关掉重开新值还在且底色没丢、C5 保留货币格式显示 `¥7.50`；整轮 **310 项 ok / 全部通过**。
+
+## D258 表格浮窗顶上换成 WPS 那条功能区：六个页签，样式补丁回写 styles.xml（`#433`，D256 / D257 的延伸）
+
+**问题：** D256 把格子画对了、D257 让人能改字，但「改样子」还得回 WPS：加粗一行、给合计行涂个黄底、把一列数字改成百分比，这些在预览里都只能看不能动。用户要求把顶部那两颗「网格 / 页面视图」按钮去掉，照着 WPS 复刻「开始 / 插入 / 页面 / 公式 / 数据 / 视图」六个页签，并且常用命令要真的能改到表上。
+
+**决定：**
+
+- **去掉视图切换按钮，纸面收进功能区。** `.sd-viewtabs` 那两颗不建了；`SheetDialog` 仍然构造 `.sd-panes`（宽窗并排、窄窗单面），入口改成「页面 → 纸张视图」开关。`showView()` 保留，`activeView` 仍然驱动 `applyView()`。
+- **功能区是一张声明式的表。** 新文件 `web/src/sheet/ribbon.ts`：六个页签各一个 `.sd-rb-pane`，开始页分「剪贴板 / 字体 / 对齐 / 数字 / 编辑」五组，组标题 10px 灰字压在按钮下面（WPS 的排法）；按钮的亮灭由 `update()` 按 `grid.activeStyle` 现算，选区一动就刷。
+- **只放真能生效的命令。** 粘贴、插图、图表、排序、筛选做成 `disabled` 并在 `title` 里说清原因（不读系统剪贴板 / 预览不画图表对象 / 不改行序），不做假按钮。命令名照 WPS 的中文写（`// i18n-ignore-start` 有理由：用户按 WPS 的肌肉记忆找按钮，翻译反而找不到）。
+- **样式改动走「补丁」而不是整份样式。** 前端 `grid.styleOver: Map<"r:c", SheetStylePatch>` 叠在 `styleOf()` 上（`mergeStyle()` 只覆盖补丁里出现的键，所以「只加粗」不会把原来的底色冲掉），渲染立刻生效；保存时并进 `editOps()`，只改样式、没改内容的格子也发。
+- **桥端克隆 xf，不新建样式体系。** 新文件 `bridge/src/sheet/style-write.ts`：`StyleBook` 读 `xl/styles.xml` 的四段（fonts / fills / borders / cellXfs），`alloc(base, patch)` 拿原 `xf` 和它指的 `font` / `fill` 复制一份改属性，按字符串去重后追加；`toXml()` 从后往前替换四段并更新 `count`。`write.ts` 在 `applyEdits` 里算好每格的新 `s`，只有 `styles.changed` 时才替换 `xl/styles.xml`，别的字节照抄。
+- **视图类命令不碰文件。** 网格线（`setGrid`）、公式视图（`setShowFormulas`，格子里显示 `=原文`）、冻结窗格（`freezeOver`，按焦点上方/左侧冻）都只改内存里的画法；保存不会把它们写进 xlsx（Excel 的冻结是 `<pane>`，这次不做）。
+- **自动求和照 WPS 的默认行为**：`autoSum(kind)` 先往上数连续的数字，没有再往左右找，框成 `A1:A5` 写 `=SUM(...)`；「插入 → 今天 / 现在」直接往焦点格写日期/时间字符串。
+
+**代价 / 可改：** 样式补丁只覆盖字体开关 / 字号 / 字色 / 纯色填充 / 水平垂直对齐 / 换行 / 内置数字格式 id；不做边框描边、合并单元格、条件格式编辑、插入删除行列、排序筛选、图表。字体名与字号框只**显示**当前值（真下拉要枚举工作簿的字体集合，留待以后）。纸张视图仍是 LibreOffice 转的 PDF（D166），只是入口换了地方。
+
+**验证：** `probes/xlsx.mjs` 新增「功能区」一组 9 条：六个页签文字、旧 `.sd-viewtab` 为 0、加粗后计算样式 `font-weight: 700` 且按钮亮、填充后 `rgb(255, 242, 204)`、插入页有自动求和、保存后重开加粗与填充都还在；整轮 **319 项 ok / 全部通过**。另外用 WPS 打开写回后的 `styled.xlsx`，B5 的加粗与黄底都在（`docs/shots/xlsx-ribbon.png` 是预览侧的样子）。
+
+## D259 表格浮窗把「改样子」和「改结构」补齐：样式补丁加边框字体名，结构化改动单独走一条写回（`#434`，D257 / D258 的延伸）
+
+**问题：** D258 的功能区只能改字体的开关、字号、颜色、填充和对齐；边框、合并单元格、插入/删除行列、排序、筛选、图表都还是「看得见摸不着」，而这些恰恰是拿到一张别人的表最先想动的地方。
+
+**决定：**
+
+- **样式补丁加两样：边框与字体名。** `CellStylePatch` 增 `bd?: { t?, r?, b?, l? }`（值取 `thin / medium / thick / double / dashed / dotted / none`）与 `fn?: string`。`style-write.ts` 里克隆原 `border` 后按「左/右/上/下」重排，`none` 写成空的 `<left/>` 而不是删掉元素（Excel 对「无边框」和「没定义」是两种意思）；改边框时顺带把 `xf` 的 `applyBorder="1"` 打上。字体名改 `<name val>`。
+- **结构化改动不由前端拍坐标，交给桥端重排 XML。** 新文件 `bridge/src/sheet/struct.ts`：把 `<sheetData>` 解析成 `Row{ r, attrs, cells }`，按操作重写（合并区跟着插删行列平移、排序时样式跟着内容走、筛选写 `hidden="1"`、清条件格式改 `sqref`），再拼回原 XML；`saveStruct` 与 `saveBook` 共用同一套 mtime 闸 / 64MB 上限 / `.bak` / 临时文件改名。
+- **结构化改动单独走 `POST /api/sheet/struct`，并且必须「先存再改结构」。** 前端有未保存的格子改动时直接拦住（提示「先保存改动，再改结构」）——结构一动，`edits` 里那些 `r:c` 就全错位了。成功后重新取 `meta`、重建网格（行列数与合并区都变了），编辑态保持。
+- **图表按锚点画成 SVG，不转图片。** 新 `bridge/src/sheet/chart.ts` 读 drawing → chart part，认柱/条/折线/饼/面积/散点，值优先回读单元格（`readWindow`），取不到时退回 `<c:numCache>`；新 `web/src/sheet/chart.ts` 把值画成内联 SVG（Office 主题色、参考线、标签过密自动抽稀）。缩放/滚动时跟着格子走，不额外存像素。
+- **条件格式只做「清」不做「建」。** 建规则要一套编辑 UI（规则类型、阈值、色阶端点），收益低于成本；「清掉别人留下的红绿灯」是预览场景里更常见的诉求，所以只加 `clearCf`：按 `sqref` 与选区求交，整块没了就删 `<conditionalFormatting>`，还剩一部分就摘掉对应范围。
+
+**代价 / 可改：** 排序只按一列、不认表头是否参与；筛选是「值相等」的精确过滤，不做多选/包含/颜色筛选；插入删除行列会让公式的相对引用错位（我们只搬格子，不重算引用）；图表只画值，不读标题格式、图例位置、次坐标轴；条件格式的 `x14` 扩展（数据条渐变、图标集自定义）不处理。结构化改动对整个文件重打包，几十 MB 的表要一两秒。
+
+**验证：** `probes/xlsx.mjs` 新增「图表 + 结构」与条件格式清理共 6 条：图表 SVG 出现且柱子数 > 3、标题在图上、选区合并后一格占三列（实测 288px）、插行后状态栏「已更新」、清条件格式后色阶消失而数据条还在；整轮 **325 项 ok / 全部通过**。桥端另有 `.scratch/t-style2.mjs`（边框/字体名写回后 21 条样式，读回 `2px solid` 下边框与「微软雅黑」）、`.scratch/t-struct.mjs`（合并/插删行列/排序/筛选的 XML 级验证）。
+
+## D260 表格编辑器再补四样：拖列宽行高、名称框、可编辑公式栏、超链接与批注（`#435`，D258 / D259 的延伸）
+
+**问题：** D259 之后，改动能力基本齐了，但「怎么改」还很别扭：列宽行高只能靠文件里的值，名称框是个只读标签，公式栏只能看不能改，而真实工作簿里最常见的两样东西——超链接和批注——在预览里完全看不见。
+
+**决定：**
+
+- **列宽/行高拖动只在编辑态出现，拖的是「未缩放的像素」。** 列头与行号右侧各挂一个 6px 握把（`.sd-grip-v` / `.sd-grip-h`），`pointerdown` 在 `root` 上委托，`pointermove/up` 挂在 `window` 上——拖动过程中表头会重画，握把节点会被换掉，监听挂在握把上只能收到第一下（踩过）。拖动时先改 `colOver`/`rowOver` 两张本地覆盖表就地重排，**松手才写回**：`colWidth` 的 `w` 是字符数（`(px-5)/7`），`rowHeight` 的 `h` 是磅（`px*0.75`），跟 Excel 的换算一致。保存失败也不回滚，重开时以文件为准。
+- **名称框是可编辑的 `<input>`，认 `A1` 与 `A1:C5`。** 回车后 `jumpTo()` 解析成行列号、设 anchor/focus、`afterSelect()` + `reveal()` 滚到可见；非法输入直接不响应（不报错、不跳）。
+- **公式栏在编辑态可改，回车写入焦点格。** 只读态仍只显示；`readOnly` 随 `setEditMode` 切换；正在输入时不被选区变化覆盖（`document.activeElement` 判断），Esc 还原。
+- **超链接与批注只读展示，不写回。** 两者都不在 `<sheetData>` 里：超链接是 `<hyperlinks>` + sheet rels，批注是单独的 `xl/commentsN.xml`（靠同一份 rels 的 `Type` 结尾 `/comments` 找）。新 `bridge/src/sheet/refs.ts` 一次读完、按 `"r:c"` 贴到窗口内的格子上（`lnk` / `note`），`readWindow` 里缓存整表结果。前端：链接格画成蓝色下划线，**Ctrl/Cmd + 点击**才开（拖选不会误触），页内 `#表!A1` 只挂在 `title` 上不跳（跨表要重载）；批注格右上角画红色小三角，正文进 `title`。
+- **这几样都不进撤销栈。** 尺寸拖动直接落盘，超链接与批注不可改——只有格子内容和样式走 `edits` / `styleOver` 那套撤销。
+
+**代价 / 可改：** 拖出来的尺寸没有「双击自适应」与「按内容最佳宽度」；批注只读，批注框/作者/时间不展示；超链接只开 `http(s)/mailto` 这类外链，页内跳转与 `file://` 不处理；名称框不支持命名区域与多选区（`A1,B2`）；公式栏只写不显示函数提示。这些都不影响「能改一张表」的主路径。
+
+**验证：** `probes/xlsx.mjs` 新增「编辑增强」3 条（握把出现、拖 40px 后 B 列 117→157、名称框跳 C5、公式栏回车写入）与「超链接与批注」5 条（`is-lnk`/`is-note` 类、蓝色 `rgb(11, 87, 208)`、批注 title、页内 `#` 前缀），整轮 **334 项 ok / 全部通过**；桥端另有 `.scratch/t-refs.mjs`（自造的 refs.xlsx：A1 外链、B2 页内跳转、C3 两段批注，读回逐格正确）。
+
+## D261 表格编辑器补「一格多字体」「从列表里选」「表头筛选」（`#436`，D259 / D260 的延伸）
+
+**问题：** D260 之后还能一眼看出的三处不像 WPS：一格里的字有粗有细多色时我们只画一种字体；文件里写好的数据验证（下拉）完全没显示；表头上没有筛选箭头，只能靠功能区「筛选」按当前格的值硬筛。
+
+**决定：**
+
+- **富文本按 `<si><r>` 的段画，整串仍留一份。** 共享字符串里带 `<r>` 的，`readRichRuns()` 把每段的文本与 `rPr`（字体名、字号、粗斜下划线、删除线、`rgb` 颜色）拆出来，作为 `WireCell.rt` 跟格子一起下线；`t` 仍是拼好的整串（复制、查找、编辑、`###` 判宽都用它，只有绘制走 `rt`）。宽度按段累加 `textW`，所以「前半粗体后半普通」的溢出判断跟 WPS 一致。主题色不解析（只认文件里写死的 `rgb`），拿不到就继承格子样式。
+- **数据验证只做「列表」这一种的下拉，其它类型记住规则但不拦。** `valid.ts` 读 `<dataValidations>`：`<formula1>"是,否,待定"</formula1>` 直接拆，`<formula1>$D$1:$D$3</formula1>` 用同一份 sheet XML 就地取值（`valuesInXml`，去重、上限 200），跨表的引用先不解析。编辑态在有选项的格子右侧挂一个 ▾，点开是 `.sd-list`，选一条走 `writeAtCell()`（进撤销栈、算脏）。`whole/decimal/date/textLength/custom` 只保留 `kind` 与提示语，**不做输入拦截**——预览不是数据录入系统，拦错了比不拦更烦人。
+- **表头筛选：只读去重值，筛选动作仍走 `struct.ts` 的写回。** `filter.ts` 读 `<autoFilter ref>` 与已有 `<filterColumn>` 的 `val`，算出每列的去重值（上限 300）放进 meta；编辑态在筛选区的列头右侧画 ▾（`.sd-fbtn`，跟拖宽握把分居两侧），点开第一条是「（全部）」，其余是候选值。选中后走 `applyStruct({t:"filter", c, value, r1,c1,r2,c2})`：**只藏筛选区内的行**（`row.r <= r1 || row.r > r2` 直接跳过，第一版把表头也藏了），同时把 `<autoFilter>` 换成当前状态（清筛选就整块删掉），这样 Excel 打开时看到的是同一份筛选。
+- **不用 LibreOffice，也不用任何外部进程。** 这三样都是「读 XML + 画」与「改 XML 的那几格」，跟 D256–D260 一条路；公式重算也打算照这个路子自己算，不引外部二进制。
+
+**代价 / 可改：** 富文本只认 `rPr` 里写死的 `rgb`，主题色、字符间距、上标下标不还原；数据验证不支持跨表引用、`showDropDown="1"`（Excel 里意思是「隐藏箭头」）与输入拦截；筛选只支持「等于某个值」的单列筛选，不支持多选、颜色筛选、数值区间、`top10`，也不画「已筛掉多少行」的提示。这些都不挡主路径。
+
+**验证：** 新增 `bridge/tests/fixtures/valid-xlsx.mjs`（写死列表 / 区域引用 / 整数规则三种）与 `filter-xlsx.mjs`（两列六行 + `autoFilter`），`make-xlsx.mjs` 一并产出；`.scratch/t-rich.mjs` 读回分段字体（微软雅黑 14 粗体 `#C00000` + 11 号）、`.scratch/t-valid.mjs` 读回两列选项、`.scratch/t-filter.mjs` 确认只藏区内三行且 `autoFilter` 写成 `<filterColumn colId="0">`；`probes/xlsx.mjs` 新增 5 条（下拉箭头、选项数、选中写入、区域引用选项、筛选后行消失/清筛选后回来），整轮 **343 项 ok / 全部通过**。
+
+## D262 `#app` 里不写裸 `vh` / `vw`：分支工作台掉出屏幕的修复 + 一条守门用例（用户报障 2026-11-15）
 
 **问题：** 用户报「chat 框下面的分支点开，现在是穿模的」，追问后落在一句具体的话上：**「分支管理里面的拉取最新，在我现在这缩放下看不见了」**。复现：外观「字号」调到 125% 以上，点状态行的 `⎇main`，卡片底栏（`拉取最新` / `Esc 关闭`）整条掉到视口外面；150% 起头行的「分支操作工作台」几个字压在「提交」身上。
 
