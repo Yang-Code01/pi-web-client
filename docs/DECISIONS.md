@@ -4543,7 +4543,8 @@ D
 - **数字放不下出 `###`**（量 `#` 宽度、按可用宽度重复），不裁剪也不溢出；文本默认左对齐、可溢出到右侧连续空列（`roomFor()` 上限 8 列、遇有内容的格子停），`wrapText` 用 `pre-wrap` 并在**节点上树之后**量真实高度回填行高（离屏量尺会被 `font` 简写和可用宽度算错，实测差 5–8px）。
 - **行高/列宽不再用「整表前缀数组」**：`fileH`/`autoH` 两张稀疏 map + 排序键 + 前缀和（`dsum`）做 `topOf()` 二分，百万行的 light 档也不会建出百万长度数组。
 - **交互全部保留**：四层冻结、键盘走位、Shift 扩选、Ctrl+C 的 TSV、查找命中、`setZoom`（同时作用行高列宽字号）、`selectionRef`；`SheetGrid` 与 `ZOOM_*` 的导出签名不变，`dialog.ts` 不用改。
+- **表里的图片照 drawing 的锚点摆**（重写后发现旧网格从来没画过图，用户报「图片没法正常显示」）：新文件 `bridge/src/sheet/media.ts` 读 `xl/worksheets/_rels/sheetN.xml.rels` → `xl/drawings/drawingN.xml`，`twoCellAnchor` 用 from/to 的行列+偏移，`oneCellAnchor` 用 `<xdr:ext>` 的固定 EMU（÷9525 换 px）；只认 `a:blip` 指向的 media part，图表（graphicFrame）跳过。字节走新的 `GET /api/sheet/media?token&sheet&id`：id 必须是这张表 meta 里登记过的 zip 路径，伪造的一律 404，绝不按前端给的路径去读 zip。前端 `drawImages()` 把图片按 `leftOf/widthOf/topOf/heightOf` 算成绝对定位的 `<img class="sd-img">`，只挂视口上下左右各一屏以内的，`z-index: 2` 压在格子之上、选区之下，`pointer-events: none` 不吃点选。
 
 **代价 / 可改：** 样式解析在桥端多一次 `<styles.xml>` + `<theme1.xml>` 的解析（整本缓存，窗口请求不再付）；pattern 填充只做近似（深色花纹取 fg、其余取 bg）；行内富文本 run、旋转文字按像素旋转（只认 90/180 的倍数）、渐变/图片填充都不做。选中框颜色取 `#0f766e`（WPS 的绿有青有蓝，实测采样被文字抗锯齿污染），要改只动 `grid.ts` 的 `SEL_COLOR`。
 
-**验证：** `bridge/tests/fixtures/make-xlsx.mjs` 新增 `buildStyledXlsx()`（两张表、6 字体、5 填充、4 边框、货币/日期/百分比/负数红字、indent、wrap、隐藏行、冻结、`showGridLines=0`），`probes/xlsx.mjs` 加「富样式」一组 17 条断言（行高 20/44/46、隐藏行跳过、表头底 #1F4E79 白字、细边框 1px 不叠、`¥1,234.50` 右对齐、负数 `(400.00)`、`###`、`pre-wrap`、溢出、缩进、合计行黄底、无网格线页）＋「换行内容不被行高截断」一条；整轮 **285 项 ok / 全部通过**，截图 `.scratch/xlsx-probe` 与 WPS 同屏对照。
+**验证：** `bridge/tests/fixtures/make-xlsx.mjs` 新增 `buildStyledXlsx()`（两张表、6 字体、5 填充、4 边框、货币/日期/百分比/负数红字、indent、wrap、隐藏行、冻结、`showGridLines=0`），`probes/xlsx.mjs` 加「富样式」一组 17 条断言（行高 20/44/46、隐藏行跳过、表头底 #1F4E79 白字、细边框 1px 不叠、`¥1,234.50` 右对齐、负数 `(400.00)`、`###`、`pre-wrap`、溢出、缩进、合计行黄底、无网格线页）＋「换行内容不被行高截断」一条＋「图片」一组（两张图都挂上、字节取到、一格锚点 120×80、两格锚点铺满 B2:E7）；整轮 **290 项 ok / 全部通过**，截图 `.scratch/xlsx-probe` 与 WPS 同屏对照。
