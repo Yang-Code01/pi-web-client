@@ -4957,6 +4957,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .go-cmp-pick:hover, .go-cmp-use:hover { background: var(--panel-2); color: var(--text); }
 .go-cmp-pick.on { color: var(--accent); background: var(--accent-bg); }
 .go-cmp-use { margin-top: 5px; border-top: 1px solid var(--line); border-radius: 0; color: var(--accent); padding-top: 8px; }
+/* 检索把列表筛短后补的一折「全部 N 个分支」：默认收起，样式贴着组头那条（.go-side-group）。 */
+.go-cmp-fold { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--dim); font: 10.5px var(--mono); padding: 7px 8px 4px; margin-top: 4px; cursor: pointer; }
+.go-cmp-fold:hover { color: var(--text); background: var(--panel-2); }
+.go-cmp-caret { width: 9px; font-size: 9px; color: var(--faint); }
+.go-cmp-fold-name { flex: 1; }
+.go-cmp-fold-count { font: 10px var(--mono); color: var(--faint); }
 
 /* 三 tab 与内容区：内容区必须能滚，卡才有地方叠。 */
 .go-tabs { display: flex; gap: 4px; padding: 8px 14px 0; flex: none; border-top: 1px solid var(--line-soft); }
