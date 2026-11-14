@@ -263,6 +263,52 @@ export class PeerHost {
   refresh(): Promise<any> {
     return this.call("/peer/refresh");
   }
+
+  /** 局域网市场：本机 peer 的公告 / 墓碑 / 可得性清单（GET 对 LAN 开放）。 */
+  marketManifestLocal(): Promise<any> {
+    return this.request("GET", "/market/manifest");
+  }
+
+  /** 打开市场 tab 时逐个在线节点拉一次；404 = 旧节点，不支持市场但仍算在线。 */
+  async marketManifestRemote(addr: string, port: number): Promise<any> {
+    const res = await fetch(`http://${peerHost(addr)}:${port}/market/manifest`, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      let message = `peer 回 ${res.status}`;
+      try { message = (JSON.parse(body) as { error?: string }).error || message; } catch { /* plain text */ }
+      throw new Error(message);
+    }
+    return await res.json();
+  }
+
+  /** 只按 sha256 取字节；下载方自己按清单的 sha256 + size 强校验。 */
+  async marketBlobRemote(addr: string, port: number, sha256: string): Promise<Buffer> {
+    const res = await fetch(`http://${peerHost(addr)}:${port}/market/blob?sha256=${encodeURIComponent(sha256)}`, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) throw new Error(`peer 回 ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  /** POST /market/publish 只对本机回环开放，bridge 把自描述帧原样交给 peer。 */
+  async marketPublishLocal(frame: Buffer): Promise<any> {
+    const res = await fetch(`http://127.0.0.1:${this.opts.port}/market/publish`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: frame,
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      let message = `peer 回 ${res.status}`;
+      try { message = (JSON.parse(body) as { error?: string }).error || message; } catch { /* plain text */ }
+      throw new Error(message);
+    }
+    return await res.json();
+  }
+}
+
+/** IPv6 字面量要套方括号才能拼进 URL；IPv4 / 主机名原样。 */
+function peerHost(addr: string): string {
+  return addr.includes(":") && !addr.startsWith("[") ? `[${addr}]` : addr;
 }
 
 /** `peer/dist/index.js`，从 bridge 的 dist 与 src 都指得对。 */

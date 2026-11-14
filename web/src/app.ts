@@ -459,7 +459,7 @@ export class App {
   /** D81 扩展 manager state. #290: 只有 `chrome` 一份真源（扩展开关就是 `chrome.ext`），没有旧布尔。 */
   private uiPrefs: { chrome: ChromeState } = { chrome: {} };
   private extUpdates = 0;
-  private extTab: "installed" | "ext" | "mcp" = "installed";
+  private extTab: "installed" | "ext" | "mcp" | "market" = "installed";
   private extInv: ExtInventory | null = null;
   private extInvLoading = false;
   /** “本项目需要”那一块（/api/deps）：pi 版本 + 四个扩展。null = 还没问到。 */
@@ -481,6 +481,12 @@ export class App {
   private mcpForm: { name: string; option: number; values: Record<string, string>; exposure: string; description: string; local: boolean; item: string } | null = null;
   private extVars: string[] = [];
   private extButton: HTMLButtonElement | null = null;
+  /** D248: 局域网市场的列表 / 发布来源 / 写操作回执。 */
+  private lanMarket: { items: LanMarketItem[]; peers: LanMarketPeer[]; self: { nodeId: string; nickname: string; hostname: string } | null; generatedAt: number; truncated?: boolean; error?: string; loading?: boolean; inflight?: string | null } = { items: [], peers: [], self: null, generatedAt: 0 };
+  private lanSources: { skills: LanMarketSource[]; extensions: LanMarketSource[]; mcp: LanMarketSource[]; loaded?: boolean; inflight?: string | null } = { skills: [], extensions: [], mcp: [] };
+  private lanPublish: { kind: "installed" | "zip"; source: string; id: string; name: string; category: string; description: string; version: number; scope: "global" | "project"; file: File | null } | null = null;
+  private lanBusy: string | null = null;
+  private lanProgress: string | null = null;
   /** #290：下沿那一行与另外三颗，`paintComposerChrome()` 只改它们的 `hidden`，不重建。 */
   private hintTools: HTMLElement | null = null;
   private skillButton: HTMLButtonElement | null = null;
@@ -2376,6 +2382,51 @@ export class App {
         break;
       case "ext.error":
         this.flashSettings(String(msg.message ?? tr("操作失败")), true);
+        break;
+      case "market.list": {
+        const rid = typeof msg.reqId === "string" ? msg.reqId : null;
+        if (rid && this.lanMarket.inflight !== rid) break;
+        this.lanMarket = {
+          items: Array.isArray(msg.items) ? (msg.items as LanMarketItem[]) : [],
+          peers: Array.isArray(msg.peers) ? (msg.peers as LanMarketPeer[]) : [],
+          self: msg.self && typeof msg.self === "object" ? (msg.self as { nodeId: string; nickname: string; hostname: string }) : null,
+          generatedAt: Number(msg.generatedAt) || 0,
+          truncated: Boolean(msg.truncated),
+          error: msg.error ? String(msg.error) : undefined,
+        };
+        this.paintExtIfOpen();
+        break;
+      }
+      case "market.sources": {
+        const rid = typeof msg.reqId === "string" ? msg.reqId : null;
+        if (rid && this.lanSources.inflight !== rid) break;
+        this.lanSources = {
+          skills: Array.isArray(msg.skills) ? (msg.skills as LanMarketSource[]) : [],
+          extensions: Array.isArray(msg.extensions) ? (msg.extensions as LanMarketSource[]) : [],
+          mcp: Array.isArray(msg.mcp) ? (msg.mcp as LanMarketSource[]) : [],
+          loaded: true,
+        };
+        this.paintExtIfOpen();
+        break;
+      }
+      case "market.progress":
+        this.lanProgress = String(msg.text ?? "");
+        this.paintExtIfOpen();
+        break;
+      case "market.op": {
+        const rid = typeof msg.reqId === "string" ? msg.reqId : null;
+        if (rid) this.lanBusy = this.lanBusy === rid ? null : this.lanBusy;
+        else this.lanBusy = null;
+        this.lanProgress = null;
+        const ok = Boolean(msg.ok);
+        this.flashSettings(ok ? tr("已保存") : String(msg.error ?? tr("操作失败")), !ok);
+        if (ok && String(msg.op) === "market.publish") this.lanPublish = null;
+        this.requestLanMarket();
+        this.paintExtIfOpen();
+        break;
+      }
+      case "market.changed":
+        this.requestLanMarket();
         break;
       case "auth.providers":
         this.authProviders = Array.isArray(msg.providers) ? msg.providers : [];
@@ -12371,6 +12422,274 @@ export class App {
     });
   }
 
+  private lanReqId(): string {
+    return `lm_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  }
+
+  /** D248: 打开局域网市场 tab 时才拉一次在线节点清单，不新增后台同步。 */
+  private requestLanMarket(): void {
+    if (this.extTab !== "market") return;
+    const reqId = this.lanReqId();
+    this.lanMarket.inflight = reqId;
+    this.lanMarket.loading = true;
+    this.socket.send({ type: "market.list", reqId, ...(this.session?.cwd ? { cwd: this.session.cwd } : {}) });
+  }
+
+  private requestLanSources(): void {
+    const reqId = this.lanReqId();
+    this.lanSources.inflight = reqId;
+    this.socket.send({ type: "market.sources", reqId, ...(this.session?.cwd ? { cwd: this.session.cwd } : {}) });
+  }
+
+  private lanOp(req: Record<string, unknown>): void {
+    const reqId = this.lanReqId();
+    this.lanBusy = reqId;
+    this.lanProgress = null;
+    this.act(() => {
+      this.socket.send({ ...req, reqId, ...(this.session?.cwd ? { cwd: this.session.cwd } : {}) });
+      this.paintExtIfOpen();
+    });
+  }
+
+  private lanBytes(n: number): string {
+    const v = Number(n) || 0;
+    if (v < 1024) return `${v} B`;
+    if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`;
+    return `${(v / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  /** D248 第四 tab：公告与 blobs 解耦，确认页分列原发布者与提供字节的镜像。 */
+  private paintLanMarket(host: HTMLElement): void {
+    const ro = Boolean(this.me.public);
+    const state = this.lanMarket;
+    if (!this.lanSources.loaded && !this.lanSources.inflight) this.requestLanSources();
+    const bar = el("div", "settings-foot");
+    const refresh = el("button", "btn", state.loading ? tr("查询中…") : tr("刷新")) as HTMLButtonElement;
+    refresh.disabled = Boolean(state.loading || this.lanBusy);
+    refresh.onclick = () => this.requestLanMarket();
+    const self = state.self;
+    bar.append(el("span", "settings-hint", self ? tr("本机：{p1}", { p1: `${self.nickname || self.hostname} · ${self.nodeId.slice(0, 8)}` }) : tr("正在连接局域网…")), el("span", "spacer"), refresh);
+    host.append(bar);
+    if (self) {
+      const peers = state.peers.filter((p) => !p.self);
+      const good = peers.filter((p) => p.ok && !p.unsupported).length;
+      const old = peers.filter((p) => p.unsupported).length;
+      host.append(el("div", "settings-hint", tr("在线节点 {p1} 个，其中 {p2} 个支持市场、{p3} 个是旧节点。", { p1: peers.length, p2: good, p3: old })));
+    }
+    if (state.error) host.append(el("div", "takeover warn", state.error));
+    if (this.lanProgress) host.append(el("div", "settings-hint", this.lanProgress));
+    if (state.truncated) host.append(el("div", "takeover warn", tr("有节点的清单太长被截断了，旧条目可能没显示。")));
+    if (!state.items.length) {
+      host.append(el("div", "settings-hint", state.loading ? tr("查询中…") : tr("没有找到")));
+    } else {
+      const list = el("div", "login-list");
+      for (const it of state.items) list.append(this.lanMarketRow(it, ro));
+      host.append(list);
+    }
+    this.lanPublishForm(host, ro);
+  }
+
+  private lanMarketRow(it: LanMarketItem, ro: boolean): HTMLElement {
+    const row = el("div", "login-row");
+    const name = el("div", "login-name");
+    const tags: string[] = [it.type === "skill" ? tr("技能") : it.type === "extension" ? tr("扩展") : tr("MCP 服务"), `v${it.version}`];
+    if (it.needsNetwork) tags.push(tr("需联网"));
+    if (it.needsVars) tags.push(tr("需填变量"));
+    if (it.installed) tags.push(it.hasUpdate ? tr("有新版本") : tr("已安装"));
+    name.append(el("strong", "", it.name || it.id), el("span", "ext-kind", ` · ${tags.join(" · ")}`));
+    name.append(el("div", "ext-desc", [it.description, it.category ? tr("分类：{p1}", { p1: it.category }) : "", it.delivery === "archive" ? this.lanBytes(it.size) : tr("无实体包")].filter(Boolean).join(" · ")));
+    name.append(el("div", "ext-desc", tr("原发布者：{p1} · 提供字节：{p2} · sha256 {p3}", { p1: `${it.nickname || it.hostname} · ${it.publisher.slice(0, 8)}`, p2: it.providerLabel || tr("本机"), p3: it.sha256.slice(0, 12) })));
+    if (it.dependencies) name.append(el("div", "ext-desc", tr("依赖：{p1}", { p1: it.dependencies })));
+    if (it.notes) name.append(el("div", "ext-desc", tr("备注：{p1}", { p1: it.notes })));
+    const acts = el("div", "login-acts");
+    const install = el("button", it.installed && !it.hasUpdate ? "btn" : "btn primary", it.installed && it.hasUpdate ? tr("更新") : tr("安装")) as HTMLButtonElement;
+    install.disabled = ro || Boolean(this.lanBusy) || (it.delivery === "archive" && !it.providers.length);
+    install.onclick = () => this.openLanInstall(it);
+    acts.append(install);
+    if (it.installed) {
+      const rm = el("button", "btn ghost", tr("卸载")) as HTMLButtonElement;
+      rm.disabled = ro || Boolean(this.lanBusy);
+      rm.onclick = () => {
+        if (!this.extArmed(`market-uninstall:${it.key}`)) { this.paintExtIfOpen(); return; }
+        this.lanOp({ type: "market.uninstall", publisher: it.publisher, id: it.id });
+      };
+      acts.append(rm);
+    }
+    if (this.lanMarket.self?.nodeId === it.publisher) {
+      const del = el("button", "btn ghost", tr("删除")) as HTMLButtonElement;
+      del.disabled = ro || Boolean(this.lanBusy);
+      del.onclick = () => {
+        if (!this.extArmed(`market-delete:${it.key}`)) { this.paintExtIfOpen(); return; }
+        this.lanOp({ type: "market.delete", publisher: it.publisher, id: it.id });
+      };
+      acts.append(del);
+    }
+    row.append(name, acts);
+    return row;
+  }
+
+  /** D248 安装前明示：原发布者 / 镜像主机 / 风险 / MCP 要自己填的变量。 */
+  private openLanInstall(it: LanMarketItem): void {
+    if (document.querySelector(".modal")) return;
+    const modal = el("div", "modal hi");
+    const form = el("form");
+    form.onsubmit = (ev) => { ev.preventDefault(); go(); };
+    const title = el("h2", "", tr("确认安装「{p1}」", { p1: it.name || it.id }));
+    title.style.margin = "0";
+    title.style.fontSize = "16px";
+    const facts = [
+      tr("原发布者：{p1}", { p1: `${it.nickname || it.hostname} · ${it.publisher}` }),
+      tr("提供字节：{p1}", { p1: it.providerLabel || tr("本机") }),
+      tr("版本：{p1} · 类型：{p2} · 校验：{p3}", { p1: it.version, p2: it.type, p3: it.sha256.slice(0, 16) }),
+      tr("风险：局域网内没有签名验证，包字节只用清单里的 sha256 与大小核对。只装你信得过的。"),
+    ];
+    if (it.dependencies) facts.push(tr("依赖：{p1}", { p1: it.dependencies }));
+    if (it.notes) facts.push(tr("备注：{p1}", { p1: it.notes }));
+    if (it.needsNetwork) facts.push(tr("这个条目要联网安装包，镜像不提供字节。"));
+    form.append(title, ...facts.map((t) => el("p", "settings-hint", t)));
+    const vars: Record<string, string> = {};
+    for (const v of it.requiredVars ?? []) {
+      const input = el("input") as HTMLInputElement;
+      input.type = "text";
+      input.placeholder = tr("{p1}（只写进本机的配置）", { p1: v });
+      input.oninput = () => (vars[v] = input.value);
+      form.append(this.formRow(v, input));
+    }
+    const err = el("div", "err");
+    const foot = el("div", "settings-foot");
+    const cancel = el("button", "btn ghost", tr("取消")) as HTMLButtonElement;
+    cancel.type = "button";
+    cancel.onclick = () => modal.remove();
+    const goBtn = el("button", "btn primary", tr("确认安装")) as HTMLButtonElement;
+    goBtn.type = "submit";
+    const go = () => {
+      for (const v of it.requiredVars ?? []) {
+        if (!vars[v]?.trim()) { err.textContent = tr("请填完所有变量再安装。"); return; }
+      }
+      goBtn.disabled = true;
+      modal.remove();
+      this.lanOp({ type: "market.install", publisher: it.publisher, id: it.id, scope: this.extScope, vars });
+    };
+    foot.append(err, el("span", "spacer"), cancel, goBtn);
+    form.append(foot);
+    modal.append(form);
+    this.overlay(modal);
+  }
+
+  /** D248 两种发布入口：从已安装一键发布 + 上传手工 zip（共用 manifest.json）。 */
+  private lanPublishForm(host: HTMLElement, ro: boolean): void {
+    const wrap = el("details", "ext-form");
+    wrap.open = true;
+    wrap.append(el("summary", "", tr("发布到局域网市场")));
+    const hint = el("div", "settings-hint", tr("每个用户都能上传技能、扩展、MCP 服务。分类只是各人本地自建的归类路径，不校验成员身份。"));
+    wrap.append(hint);
+    const p = this.lanPublish ?? { kind: "installed" as const, source: "", id: "", name: "", category: tr("其他"), description: "", version: 1, scope: this.extScope, file: null };
+    const kind = el("select", "ns-input") as HTMLSelectElement;
+    kind.append(new Option(tr("从已安装发布"), "installed"), new Option(tr("上传手工 zip"), "zip"));
+    kind.value = p.kind;
+    wrap.append(this.formRow(tr("发布方式"), kind));
+    const source = el("select", "ns-input") as HTMLSelectElement;
+    const id = el("input", "ns-input") as HTMLInputElement;
+    const name = el("input", "ns-input") as HTMLInputElement;
+    const category = el("input", "ns-input") as HTMLInputElement;
+    const description = el("input", "ns-input") as HTMLInputElement;
+    const version = el("input", "ns-input") as HTMLInputElement;
+    const file = el("input") as HTMLInputElement;
+    const scope = el("select", "ns-input") as HTMLSelectElement;
+    const sync = () => {
+      this.lanPublish = {
+        kind: kind.value === "zip" ? "zip" : "installed", source: source.value, id: id.value.trim(), name: name.value.trim(),
+        category: category.value.trim(), description: description.value.trim(), version: Number(version.value) || 1,
+        scope: scope.value === "project" ? "project" : "global", file: file.files?.[0] ?? p.file,
+      };
+    };
+    const fillSources = () => {
+      source.replaceChildren();
+      if (kind.value === "zip") {
+        source.append(new Option(tr("zip 根目录要有 manifest.json，文件放 payload/"), ""));
+        return;
+      }
+      const groups: [string, LanMarketSource[]][] = [[tr("技能"), this.lanSources.skills], [tr("扩展"), this.lanSources.extensions], [tr("MCP 服务"), this.lanSources.mcp]];
+      for (const [label, list] of groups) for (const s of list) {
+        const suffix = s.scope === "project" ? " · " + tr("当前项目") : "";
+        source.append(new Option(label + " · " + s.name + suffix, label + ":" + s.path));
+      }
+      if (!source.options.length) source.append(new Option(tr("没有找到"), ""));
+    };
+    kind.onchange = () => { sync(); fillSources(); this.paintExtIfOpen(); };
+    scope.append(new Option(tr("装到全局"), "global"), new Option(tr("装到当前项目"), "project"));
+    scope.value = p.scope;
+    scope.disabled = !this.session?.cwd;
+    scope.onchange = () => { sync(); this.extScope = scope.value === "project" ? "project" : "global"; };
+    id.placeholder = tr("标识（同一发布者内唯一）");
+    name.placeholder = tr("名称");
+    category.placeholder = tr("分类（例：公司 / 项目 / 其他）");
+    description.placeholder = tr("描述（可选）");
+    version.type = "number";
+    version.min = "1";
+    version.value = String(p.version);
+    file.type = "file";
+    file.accept = ".zip,application/zip";
+    id.value = p.id;
+    name.value = p.name;
+    category.value = p.category;
+    description.value = p.description;
+    for (const input of [id, name, category, description, version, file, source]) input.onchange = () => sync();
+    fillSources();
+    source.value = p.source;
+    if (kind.value === "installed") {
+      const chosen = this.lanSources.skills.concat(this.lanSources.extensions, this.lanSources.mcp).find((s) => p.source.endsWith(s.path));
+      if (chosen && !p.name) { name.value = chosen.name; id.value = chosen.id; }
+      wrap.append(this.formRow(tr("来源"), source), this.formRow(tr("标识"), id), this.formRow(tr("名称"), name), this.formRow(tr("分类"), category), this.formRow(tr("描述"), description), this.formRow(tr("版本"), version));
+    } else {
+      wrap.append(this.formRow(tr("zip 文件"), file), el("div", "settings-hint", tr("手工 zip 的发布者、昵称、主机名、时间以本机为准。")));
+    }
+    wrap.append(this.formRow(tr("装到"), scope));
+    const submit = el("button", "btn primary", tr("发布")) as HTMLButtonElement;
+    submit.disabled = ro || Boolean(this.lanBusy);
+    submit.onclick = () => { sync(); this.submitLanPublish(); };
+    const foot = el("div", "settings-foot");
+    foot.append(el("span", "spacer"), submit);
+    wrap.append(foot);
+    host.append(wrap);
+  }
+
+  private async submitLanPublish(): Promise<void> {
+    const p = this.lanPublish;
+    if (!p) return;
+    const reqId = this.lanReqId();
+    this.lanBusy = reqId;
+    if (p.kind === "zip") {
+      if (!p.file) { this.flashSettings(tr("请先选一个 zip 文件。"), true); this.lanBusy = null; return; }
+      try {
+        const res = await fetch("/api/market/publish-zip", { method: "POST", headers: { "content-type": "application/octet-stream" }, body: p.file });
+        const out = await res.json().catch(() => ({})) as { ok?: boolean; error?: string };
+        this.lanBusy = null;
+        this.flashSettings(out.ok ? tr("已保存") : String(out.error ?? tr("操作失败")), !out.ok);
+        if (out.ok) this.lanPublish = null;
+        this.requestLanMarket();
+        this.paintExtIfOpen();
+      } catch (err: any) {
+        this.lanBusy = null;
+        this.flashSettings(String(err?.message ?? err), true);
+        this.paintExtIfOpen();
+      }
+      return;
+    }
+    const [label, ...rest] = p.source.split(":");
+    const sourcePath = rest.join(":");
+    if (!sourcePath) { this.flashSettings(tr("请先选一个来源。"), true); this.lanBusy = null; return; }
+    const sk = label === tr("技能"), mcp = label === tr("MCP 服务");
+    this.lanOp({
+      type: "market.publish",
+      input: {
+        item: { id: p.id || p.name, name: p.name, type: sk ? "skill" : mcp ? "mcp" : "extension", delivery: mcp ? "config-fragment" : "archive", category: p.category, description: p.description, version: p.version },
+        source: { kind: sk ? "skill" : mcp ? "mcp" : "extension", path: sourcePath, name: p.name },
+        scope: p.scope, cwd: this.session?.cwd ?? null,
+      },
+    });
+  }
+
   /** The write this page started for this row, if any (only its own buttons wait for it). */
   private opFor(key: string): { key: string; op: string; state: "queued" | "running" } | undefined {
     for (const op of this.cliOps.values()) if (op.key === key) return op;
@@ -12655,7 +12974,7 @@ export class App {
   }
 
   /** The dialog the composer's 扩展 button opens. */
-  private openExtManager(tab: "installed" | "ext" | "mcp" = "installed"): void {
+  private openExtManager(tab: "installed" | "ext" | "mcp" | "market" = "installed"): void {
     this.closeSheet();
     this.sheetKind = "ext";
     this.extTab = tab;
@@ -12730,15 +13049,17 @@ export class App {
   private paintExtManager(host: HTMLElement): void {
     host.replaceChildren();
     const tabs = el("div", "settings-tabs ext-tabs");
-    const def: ["installed" | "ext" | "mcp", string][] = [
+    const def: ["installed" | "ext" | "mcp" | "market", string][] = [
       ["installed", this.extUpdates ? tr("已安装（{p1} 个可更新）", { p1: this.extUpdates }) : tr("已安装")],
       ["ext", tr("扩展商店")],
       ["mcp", tr("MCP 商店")],
+      ["market", tr("局域网市场")],
     ];
     for (const [id, label] of def) {
       const b = el("button", `chip${this.extTab === id ? " on" : ""}`, label) as HTMLButtonElement;
       b.onclick = () => {
         this.extTab = id;
+        if (id === "market") this.requestLanMarket();
         this.paintExtIfOpen();
       };
       tabs.append(b);
@@ -12770,7 +13091,8 @@ export class App {
     }
     if (this.extTab === "installed") this.paintExtInstalled(host);
     else if (this.extTab === "ext") this.paintExtStore(host);
-    else this.paintMcpStore(host);
+    else if (this.extTab === "mcp") this.paintMcpStore(host);
+    else this.paintLanMarket(host);
     // console of the last command
     const run = this.cliRun;
     if (run && run.op !== "pkg.list" && run.op !== "mcp.list") {
@@ -17495,6 +17817,59 @@ function mergeInventory(prev: ExtInventory | null, next: ExtInventory): ExtInven
       return old && old.version.version === m.version.version ? { ...m, version: old.version } : m;
     }),
   };
+}
+/** D248：局域网共享市场。公告（published）与字节可得性（blobs）在 bridge 侧合并后发到页面。 */
+interface LanMarketProvider {
+  nodeId: string;
+  nickname: string;
+  hostname: string;
+  addr: string;
+  port: number;
+}
+interface LanMarketPeer extends LanMarketProvider {
+  ok: boolean;
+  self: boolean;
+  unsupported: boolean;
+  error?: string;
+}
+interface LanMarketItem {
+  key: string;
+  schema: string;
+  action: "publish";
+  publisher: string;
+  id: string;
+  type: "skill" | "extension" | "mcp";
+  name: string;
+  description: string;
+  version: number;
+  category: string;
+  nickname: string;
+  hostname: string;
+  at: number;
+  delivery: "archive" | "source-ref" | "config-fragment";
+  size: number;
+  sha256: string;
+  dependencies?: string;
+  notes?: string;
+  source?: string;
+  requiresNetwork?: boolean;
+  config?: { mcpServers?: Record<string, Record<string, unknown>> };
+  requiredVars?: string[];
+  providers: LanMarketProvider[];
+  providerLabel: string;
+  installed: boolean;
+  installedVersion: number | null;
+  hasUpdate: boolean;
+  needsNetwork: boolean;
+  needsVars: boolean;
+}
+interface LanMarketSource {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+  scope: "global" | "project";
+  kind: string;
 }
 interface StorePkg {
   name: string;
