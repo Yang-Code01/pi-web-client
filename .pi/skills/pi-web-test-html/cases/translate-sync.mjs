@@ -199,17 +199,22 @@ export default async function translateSync(h) {
     fix: "D245 修订",
   });
   s = step("点「写回原文」", "回执「已写回原文」，左栏标题变成日文");
+  // 写回前先把两栏拍一张：跟写回后那张并排看，改了哪一行一眼能对上。
+  await shot(s, ".tr-cmp", "before-apply");
   await review.locator(".choose-row button.primary", { hasText: "写回原文" }).click();
   await page.waitForFunction(() => (document.querySelector(".tr-brief")?.textContent ?? "").includes("已写回原文"), null, {
     timeout: 30_000,
   });
   ok(s, "已写回");
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(1400);
   const left1 = await page.locator(".tr-cmp .tr-row").nth(hit).locator(".tr-src").innerText();
   if (kana(left1) > 0 && left1.includes("ご案内")) ok(s, `左栏标题已是日文：${left1.split("\n")[0]}`);
   else fail(s, `左栏标题不是写回的日文：${left1.slice(0, 60)}`);
   if ((await page.locator(".tr-cmp .tr-row.edited").count()) === 0) ok(s, "没有残留「改过」标记");
   else fail(s, "写回后仍标着「改过」");
+  ok(s, `对照写回前那张：标题 \`本文の中国語訳\` → \`${left1.split("\n")[0]}\`，第 1 节末尾多出一句日文`);
+  ok(s, "右栏还是你手改的译文——写回只改原文，不重翻；要重翻点「更新」");
+  await shot(s, ".tr-cmp", "after-apply");
   await shot(s, ".viewer", "applied");
 
   // ---- TC-06 磁盘复核
@@ -222,6 +227,16 @@ export default async function translateSync(h) {
   });
   s = step("读磁盘上的 md", "标题行变日文；`---` 与正文原样保留");
   const after = fs.readFileSync(doc, "utf8");
+  // 行级差异：光靠「包含某字符串」看不出「到底改了几处」，人容易怀疑没写回。
+  const linesOf = (t) => t.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim());
+  const oldLines = linesOf(SRC);
+  const newLines = linesOf(after);
+  const gone = oldLines.filter((l) => !newLines.includes(l));
+  const came = newLines.filter((l) => !oldLines.includes(l));
+  if (gone.length === 1 && came.length === 2) ok(s, "整篇只动一处：改 1 行标题、加 1 句日文");
+  else fail(s, `改动面不对：删 ${gone.length} 行、加 ${came.length} 行`);
+  ok(s, `改：${gone.map((l) => `\`${l}\``).join("、") || "—"}`);
+  ok(s, `成：${came.map((l) => `\`${l}\``).join("、") || "—"}`);
   if (after.includes("についてのご案内")) ok(s, "标题写回成日文");
   else fail(s, "磁盘上的标题没变成日文");
   if (!after.includes("附录")) ok(s, "中文标题没漏到磁盘");
@@ -232,7 +247,14 @@ export default async function translateSync(h) {
   else fail(s, "正文被动过");
   if (after.includes("この件についても中止してください。")) ok(s, "第 1 节改的那块写回了日文");
   else fail(s, "第 1 节的改动没写回");
-  await page.locator(".viewer-tools button, .tr-tools button").first().waitFor({ timeout: 5_000 }).catch(() => {});
+  // 再从界面确认一遍：切回「预览」，渲染的就是磁盘上那份 md。
+  await page.locator(".tr-tools button", { hasText: "返回预览" }).click().catch(() => {});
+  await page.locator(".viewer-body .md-doc").waitFor({ timeout: 10_000 }).catch(() => {});
+  const rendered = await page.locator(".viewer-body .md-doc").innerText().catch(() => "");
+  if (rendered.includes("についてのご案内") && rendered.includes("この件についても中止してください。"))
+    ok(s, "预览里渲染出来的也是新文字");
+  else fail(s, "预览里还是旧文字");
+  await page.waitForTimeout(600);
   await shot(s, ".viewer", "disk");
   h.sortCases(meta.order);
   void viewerShot;
