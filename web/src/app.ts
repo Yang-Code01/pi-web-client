@@ -25,6 +25,7 @@ import { railModel, shellParts, tabsAddShown, type RailItem } from "./shells.ts"
 import { bgBusy, continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { JiraPanel } from "./jira.ts";
+import { MailPanel } from "./mail.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { openSysmanage } from "./sysmanage.ts";
 import { BranchSheet } from "./branchsheet.ts";
@@ -304,6 +305,7 @@ export class App {
   private readonly scratch = new ScratchChat({ send: (msg) => this.socket.send(msg), models: () => this.models });
   /** #248：Jira 面板。第一次点才建；关闭后整块移除，下次打开重新问桥。 */
   private jira: JiraPanel | null = null;
+  private mail: MailPanel | null = null;
   private models: ModelInfo[] = [];
   /** D150：目录是两段式（快的先到、带扩展的补上），所以记住最近一次失败原因与「什么时候问过」。 */
   private modelsError = "";
@@ -821,9 +823,15 @@ export class App {
     jira.dataset.act = "jira";
     jira.onclick = () => this.openJira();
     this.els.jira = jira;
+    // 邮箱：跟「随手问」一样是顶栏常驻的 dialog 入口（窄屏只留 📮）。
+    const mail = this.wideBtn(tr("📮 邮箱"));
+    mail.title = tr("邮箱：读信、发信、存草稿；AI 能不能动手由设置里的权限管");
+    mail.dataset.act = "mail";
+    mail.onclick = () => this.openMail();
+    this.els.mail = mail;
     // #96：「当前在哪」那颗自己是一个挂载点，不绑死在 topbar 的结构里（#97 / #98 换布局时
     // 只要把它挪到别处）。A 里它在行 2 的最左，B/C/D 里挪进顶栏（见 `paintShell()`）。
-    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, files, term, fs, notes, peer, scratch, jira, look, collapseRight);
+    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, files, term, fs, notes, peer, scratch, jira, mail, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -4175,6 +4183,7 @@ export class App {
       ["peer", tr("🌐 内网通")],
       ["scratch", tr("💭 随手问")],
       ["jira", tr("🔷 Jira")],
+      ["mail", tr("📮 邮箱")],
     ];
     for (const [id, label] of topItems) {
       const [ic, name] = splitWideLabel(label);
@@ -4380,6 +4389,8 @@ export class App {
     this.scratch.refreshLang();
     // #248：Jira 面板同理。
     this.jira?.refreshLang();
+    // 邮箱面板没有 canvas 要重画，但文案全在 render 里拼。
+    this.mail?.refreshLang();
     if (this.sheetKind === "display") this.openDisplaySheet();
   }
 
@@ -4412,12 +4423,12 @@ export class App {
   }
 
   /**
-   * #289：顶栏七颗的文字与可见性**只在这一处**写。切语言、换壳、收到 `ui`、建 / 关 / 接管会话
+   * #289：顶栏八颗的文字与可见性**只在这一处**写。切语言、换壳、收到 `ui`、建 / 关 / 接管会话
    * 最后都落回这里；可见性问纯函数 `isChromeVisible()`（web/src/chrome.ts），不在别处再拼条件。
-   * `renderTop()` 只画会话名与连接状态，`renderSessions()` 只画左栏卡片 —— 都不碰这七颗。
+   * `renderTop()` 只画会话名与连接状态，`renderSessions()` 只画左栏卡片 —— 都不碰这八颗。
    */
   private paintChrome(): void {
-    const { look, files, term, fs, notes, peer, scratch, jira, manageBtn, binBtn, tabs } = this.els;
+    const { look, files, term, fs, notes, peer, scratch, jira, mail, manageBtn, binBtn, tabs } = this.els;
     const newBtn = this.els.newBtn as HTMLButtonElement;
     const sessFilter = this.els.sessFilter as HTMLInputElement;
     const ctx = this.chromeCtx();
@@ -4468,6 +4479,11 @@ export class App {
       this.setWideLabel(jira, tr("🔷 Jira"));
       jira.setAttribute("aria-label", tr("Jira"));
       show("jira", jira, tr("连上 Jira：看当前账号；读描述和评论要装 Jira MCP"));
+    }
+    if (mail) {
+      this.setWideLabel(mail, tr("📮 邮箱"));
+      mail.setAttribute("aria-label", tr("邮箱"));
+      show("mail", mail, tr("邮箱：读信、发信、存草稿；AI 能不能动手由设置里的权限管"));
     }
     // #290：下沿四颗是在拼 composer 时一次建好的，重画 composer 时不经过这里 —— 它自己也会调
     // `paintComposerChrome()`，两处共用同一份判断。
@@ -8922,6 +8938,16 @@ export class App {
         openFile: (path) => void this.openPreview(path),
       });
     this.jira.open();
+  }
+
+  /** 邮箱：顶栏 📮。与 Jira 同一套懒建 + 每次重问桥，不信内存里的旧状态。 */
+  private openMail(): void {
+    if (!this.mail)
+      this.mail = new MailPanel({
+        // #252：与笔记 / Jira 同一套出口（预填只填、新会话不自动发）。
+        handoff: { prefill: (text) => this.prefill(text), newSessionWith: (text) => this.newSessionWith(text) },
+      });
+    this.mail.open();
   }
 
   /** 顶栏 🐞：本地随手记，不跟会话走，所以没有 currentId 也能开。 */
