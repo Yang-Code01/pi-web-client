@@ -1,0 +1,382 @@
+/* #421 附件控制台：外壳照「设置 → 本机管理」（.sys-*），这里只补右栏与行内动作。 */
+
+.fc-console .sys-pane {
+  padding: 14px 18px 16px;
+}
+
+.fc-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+/* 左栏：快速位置 / 最近 / 当前目录。分组标题只在宽版出现，窄版由 sysmanage.css 把 .sys-nav 折成横条。 */
+.fc-nav-group {
+  padding: 9px 11px 2px;
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.fc-nav-main {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fc-nav-ico {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  opacity: 0.8;
+}
+
+.fc-nav .sys-nav__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fc-sub {
+  padding-left: 22px;
+  font-size: 12px;
+}
+
+.fc-sub .fc-nav-ico {
+  width: 14px;
+}
+
+.fc-nav-empty {
+  padding: 6px 11px 6px 33px;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+/* 右栏：dirpicker 的控制台式版式。 */
+.fc-pane .dirpicker {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.fc-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fc-bar .dir-path {
+  flex: 1 1 100%;
+  min-width: 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+.fc-bar .btn,
+.fc-tool {
+  flex: none;
+  padding: 4px 9px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.fc-find {
+  display: flex;
+  gap: 8px;
+}
+
+.fc-find .dir-jump {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.fc-find .dir-jump-err:empty {
+  display: none;
+}
+
+.fc-input {
+  min-width: 0;
+  padding: 7px 10px;
+  background: var(--sunken);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: 12px var(--mono);
+}
+
+.fc-input::placeholder {
+  color: var(--faint);
+}
+
+.fc-input:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.fc-find .dir-jump-input {
+  width: 100%;
+}
+
+.fc-filter {
+  flex: 0 0 208px;
+  font-family: var(--sans);
+}
+
+.fc-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* 表格：列宽固定，名称拿到剩下的全部；表头跟着滚动区一起滚，所以 sticky 在 th 上。 */
+.fc-table {
+  width: 100%;
+  font-size: 12.5px;
+}
+
+.fc-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 7px 10px;
+  background: var(--panel);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.fc-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  vertical-align: middle;
+}
+
+.fc-table th.num,
+.fc-table td.num {
+  text-align: right;
+  font: 11px var(--mono);
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.fc-table th.num {
+  color: var(--dim);
+}
+
+.fc-table th.fc-ops,
+.fc-table td.fc-ops {
+  width: 136px;
+  text-align: right;
+}
+
+.fc-table .fc-col-size {
+  width: 96px;
+}
+
+.fc-table .fc-col-time {
+  width: 124px;
+}
+
+.fc-table tbody tr.file-row {
+  /* styles.css 的 `.file-row { display:flex }` 是给行列表的；落到 <tr> 上会把表格拆成 flex，四列不再对齐。 */
+  display: table-row;
+}
+
+.fc-table tbody tr {
+  cursor: pointer;
+}
+
+.fc-table tbody tr:hover td {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.fc-table tbody tr.hit td {
+  background: var(--accent-bg);
+}
+
+.fc-table tbody tr.hit:hover td {
+  background: var(--accent-bg);
+}
+
+.fc-table .fc-dim {
+  color: var(--faint);
+}
+
+.fc-table .fc-empty {
+  padding: 28px 10px;
+  text-align: center;
+  color: var(--faint);
+}
+
+.fc-table tr.fc-up td {
+  padding: 10px;
+  color: var(--dim);
+}
+
+.fc-table td.fc-volcell {
+  padding: 4px 6px;
+}
+
+.fc-table .vol-row {
+  width: 100%;
+}
+
+.fc-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fc-name .ico {
+  flex: none;
+  width: 16px;
+  text-align: center;
+}
+
+.fc-name .nm,
+.fc-pick {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: 12.5px var(--mono);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fc-pick {
+  cursor: pointer;
+}
+
+.fc-pick:focus-visible {
+  outline: 2px solid var(--accent-dim);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* 两颗动作按钮：平时压低，行 hover / 键盘进入时抬起来。 */
+.fc-acts {
+  display: inline-flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.fc-act {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.fc-act:hover {
+  border-color: var(--line-strong);
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.fc-act:active {
+  transform: translateY(1px);
+}
+
+.fc-act.quote:hover {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.fc-table tbody tr .fc-act,
+.file-row .fc-act {
+  opacity: 0.72;
+  transition: opacity 0.12s ease;
+}
+
+.fc-table tbody tr:hover .fc-act,
+.fc-table tbody tr:focus-within .fc-act,
+.file-row:hover .fc-act,
+.file-row:focus-within .fc-act {
+  opacity: 1;
+}
+
+/* 文件管理器（行列表）里的两颗按钮：名字让出宽度，按钮不参与压缩。 */
+.file-row {
+  cursor: pointer;
+}
+
+.file-row .nm {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.file-row .fc-acts {
+  flex: none;
+  margin-left: 4px;
+}
+
+.file-row.busy {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- 窄版 */
+
+html[data-console-narrow="true"] .fc-nav-group,
+html[data-console-narrow="true"] .fc-sub,
+html[data-console-narrow="true"] .fc-nav-empty {
+  display: none;
+}
+
+html[data-console-narrow="true"] .fc-nav {
+  flex-wrap: wrap;
+}
+
+html[data-console-narrow="true"] .sys-nav__item {
+  flex: 0 0 auto;
+}
+
+html[data-console-narrow="true"] .fc-bar {
+  flex-wrap: wrap;
+}
+
+html[data-console-narrow="true"] .fc-bar .dir-path {
+  flex: 1 1 100%;
+}
+
+html[data-console-narrow="true"] .fc-find {
+  flex-wrap: wrap;
+}
+
+html[data-console-mid="true"] .fc-col-time {
+  display: none;
+}
+
+html[data-console-tight="true"] .fc-col-size {
+  display: none;
+}
+
+html[data-console-tight="true"] .fc-filter {
+  flex: 1 1 100%;
+}
+
+html[data-console-tight="true"] .fc-table th.fc-ops,
+html[data-console-tight="true"] .fc-table td.fc-ops {
+  width: 118px;
+}

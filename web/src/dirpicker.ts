@@ -130,10 +130,22 @@ export interface DirPickerOpts {
   pathBox?: boolean;
   /** Extra nodes between the path row and the list (e.g. the mkdir row). */
   beforeList?: HTMLElement[];
+  /**
+   * 附件控制台（#421）的表格版式：名称 / 大小 / 修改时间 / 操作 四列。
+   * 只有控制台用它；文件管理器仍是行列表。
+   */
+  tableView?: boolean;
+  /** 控制台式版式：面包屑与动作条一行，跳转框与筛选框一行。 */
+  layout?: "stack" | "console";
+  /**
+   * 每行右侧的动作按钮（引用 / 打开）。给了它，文件行就从 `<button>` 换成 `div` ——
+   * 按钮里不能再嵌按钮。
+   */
+  actions?: (abs: string, name: string) => HTMLElement[];
   /** Called after every successful listing, and on entering a directory. */
   onState?: (state: DirPickerState) => void;
   /** A file was clicked; the row is handed over so the caller can show a busy state. */
-  onPick?: (abs: string, name: string, row: HTMLButtonElement) => void;
+  onPick?: (abs: string, name: string, row: HTMLElement) => void;
   /** A file row that must not be picked (it is attached, not referenced). */
   isAttach?: (name: string) => boolean;
   /** Right-click on a file row (Q-008: 用 PowerShell 运行 / 以管理员运行). */
@@ -184,10 +196,29 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
   const dirHead = el("div", "dir-head");
   dirHead.append(where, ...(opts.head ?? []));
   const listFiles = opts.files === true;
+  const table = opts.tableView === true;
+  const consoleLayout = opts.layout === "console";
   const showFilter = opts.filter ?? listFiles;
   const filter = el("input", "ns-input dir-filter") as HTMLInputElement;
   filter.placeholder = tr("筛选当前目录…");
-  const list = el("div", "model-list dir-list");
+  // 表格版式的滚动容器：表头要跟着列表一起滚出去，所以滚动区包住 <table> 而不是 tbody。
+  const list = table ? el("div", "fc-body dir-table-wrap") : el("div", "model-list dir-list");
+  const tbody = el("tbody");
+  if (table) {
+    const tableEl = el("table", "sys-table fc-table");
+    const thead = el("thead");
+    const headRow = el("tr");
+    headRow.append(
+      el("th", "", tr("名称")),
+      el("th", "num fc-col-size", tr("大小")),
+      el("th", "num fc-col-time", tr("修改时间")),
+      el("th", "fc-ops", tr("操作")),
+    );
+    thead.append(headRow);
+    tableEl.append(thead, tbody);
+    list.append(tableEl);
+  }
+  const rowsHost: HTMLElement = table ? tbody : list;
   /** 输入路径就跳（pathBox）：文件夹进去、文件跳到父目录并高亮那一行。 */
   const jump = opts.pathBox === true ? el("div", "dir-jump") : null;
   const jumpInput = el("input", "dir-jump-input") as HTMLInputElement;
@@ -201,9 +232,20 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     jumpErr.setAttribute("role", "status");
     jump.append(jumpInput, jumpErr);
   }
-  root.append(dirHead, ...(jump ? [jump] : []));
-  if (showFilter) root.append(filter);
-  root.append(...(opts.beforeList ?? []), list);
+  if (consoleLayout) {
+    root.classList.add("console");
+    dirHead.classList.add("fc-bar");
+    jumpInput.classList.add("fc-input");
+    filter.classList.add("fc-input", "fc-filter");
+    const find = el("div", "fc-find");
+    if (jump) find.append(jump);
+    if (showFilter) find.append(filter);
+    root.append(dirHead, ...(find.childElementCount ? [find] : []), ...(opts.beforeList ?? []), list);
+  } else {
+    root.append(dirHead, ...(jump ? [jump] : []));
+    if (showFilter) root.append(filter);
+    root.append(...(opts.beforeList ?? []), list);
+  }
   host.append(root);
 
   let current = "";
@@ -217,6 +259,20 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
   const fileRows = new Map<string, { size: HTMLElement; time: HTMLElement }>();
   /** Drive letters have no drive to letter, so join with the separator the path already uses. */
   const join = (name: string): string => joinPath(current, name);
+
+  const clearRows = (): void => {
+    rowsHost.replaceChildren();
+    fileRows.clear();
+  };
+  /** 空态 / 读取中：列表版是一行 `.empty`，表格版得是一条跨四列的 `<tr>`。 */
+  const message = (text: string): HTMLElement => {
+    if (!table) return el("div", "empty", text);
+    const row = el("tr");
+    const cell = el("td", "fc-empty", text);
+    cell.colSpan = 4;
+    row.append(cell);
+    return row;
+  };
 
   /** D62: a drive row carries its own fill bar, since a bare `C:\` says nothing about "够不够用". */
   const volumeRow = (vol: Volume, label: string): HTMLElement => {
@@ -263,15 +319,23 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     const dirs = res.dirs.filter(hit);
     const files = (res.files ?? []).filter(hit);
     const volumes = new Map((res.volumes ?? []).map((v) => [v.root, v]));
-    list.replaceChildren();
-    fileRows.clear();
+    clearRows();
     if (res.parent !== null) {
-      const up = el("button", "model-row dir-row", tr("↑ 上一级"));
-      up.onclick = () => void go(res?.parent ?? "");
-      list.append(up);
+      if (table) {
+        const up = el("tr", "fc-up");
+        const cell = el("td", "fc-dim", tr("↑ 上一级"));
+        cell.colSpan = 4;
+        up.append(cell);
+        up.onclick = () => void go(res?.parent ?? "");
+        rowsHost.append(up);
+      } else {
+        const up = el("button", "model-row dir-row", tr("↑ 上一级"));
+        up.onclick = () => void go(res?.parent ?? "");
+        rowsHost.append(up);
+      }
     }
     if (res.error) {
-      list.append(el("div", "empty", res.error));
+      rowsHost.append(message(res.error));
       return;
     }
     // 上一跳要标的那个名字：先按原样找（Linux 上 A.md 与 a.md 是两行），找不到再忽略大小写。
@@ -283,41 +347,122 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
     };
     const markedDir = markedName(dirs);
     const markedFile = markedName(files);
-    for (const name of dirs) {
-      const vol = current === "" ? volumes.get(name) : undefined;
-      if (vol) {
-        list.append(volumeRow(vol, name.replace(/[\\/]+$/, "")));
-        continue;
+
+    const addVolume = (vol: Volume, label: string): void => {
+      const row = volumeRow(vol, label);
+      if (!table) {
+        rowsHost.append(row);
+        return;
       }
-      const row = el("button", "model-row dir-row", `📁 ${name}`);
+      const tr = el("tr", "vol-tr");
+      const cell = el("td", "fc-volcell");
+      cell.colSpan = 4;
+      cell.append(row);
+      tr.append(cell);
+      rowsHost.append(tr);
+    };
+
+    const addDir = (name: string): void => {
+      if (!table) {
+        const row = el("button", "model-row dir-row", `📁 ${name}`);
+        if (name === markedDir) row.classList.add("hit");
+        row.onclick = () => void go(join(name));
+        rowsHost.append(row);
+        return;
+      }
+      const row = el("tr", "dir-row dir");
       if (name === markedDir) row.classList.add("hit");
+      const nameCell = el("td");
+      const wrap = el("div", "fc-name");
+      wrap.append(el("span", "ico", "📁"), el("span", "nm", name));
+      nameCell.append(wrap);
+      row.append(nameCell, el("td", "num fc-col-size fc-dim", tr("文件夹")), el("td", "num fc-col-time fc-dim", "–"), el("td", "fc-ops"));
+      row.title = join(name);
+      row.tabIndex = 0;
       row.onclick = () => void go(join(name));
-      list.append(row);
-    }
-    for (const name of files) {
-      const row = el("button", "model-row dir-row file-row");
-      if (name === markedFile) row.classList.add("hit");
-      const size = el("span", "size");
-      const time = el("span", "mtime");
+      row.onkeydown = (ev) => {
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        ev.preventDefault();
+        void go(join(name));
+      };
+      rowsHost.append(row);
+    };
+
+    const pickFile = (name: string, row: HTMLElement): void => {
+      opts.onPick?.(join(name), name, row);
+    };
+
+    const addFile = (name: string): void => {
+      const actions = opts.actions?.(join(name), name) ?? [];
+      const size = (table ? el("td", "num fc-col-size") : el("span", "size")) as HTMLElement;
+      const time = (table ? el("td", "num fc-col-time") : el("span", "mtime")) as HTMLElement;
       const st = stats.get(name);
       if (st) {
         size.textContent = formatBytes(st.size);
         time.textContent = formatTime(st.mtime);
       }
       fileRows.set(name, { size, time });
-      row.append(el("span", "ico", fileIcon(name)), el("span", "nm", name), size, time);
+      // <button> 里不能再放 <button>：带动作按钮的行整个改成 div（role/tabindex 补回键盘语义）。
+      let row: HTMLElement;
+      if (table) row = el("tr", "file-row");
+      else if (actions.length) {
+        row = el("div", "model-row dir-row file-row");
+        row.tabIndex = 0;
+        row.setAttribute("role", "button");
+      } else row = el("button", "model-row dir-row file-row");
+      if (name === markedFile) row.classList.add("hit");
+      if (table) {
+        const nameCell = el("td");
+        const wrap = el("div", "fc-name");
+        const pick = el("button", "fc-pick", name) as HTMLButtonElement;
+        pick.type = "button";
+        pick.title = join(name);
+        pick.onclick = (ev) => {
+          ev.stopPropagation();
+          pickFile(name, row);
+        };
+        wrap.append(el("span", "ico", fileIcon(name)), pick);
+        nameCell.append(wrap);
+        row.append(nameCell, size, time, el("td", "fc-ops"));
+      } else {
+        row.append(el("span", "ico", fileIcon(name)), el("span", "nm", name), size, time);
+      }
+      if (actions.length) {
+        const acts = el("span", "fc-acts");
+        for (const act of actions) {
+          act.addEventListener("click", (ev) => ev.stopPropagation());
+          acts.append(act);
+        }
+        if (table) (row.lastElementChild as HTMLElement | null)?.append(acts);
+        else row.append(acts);
+      }
       row.title = join(name);
-      row.onclick = () => opts.onPick?.(join(name), name, row);
+      row.onclick = () => pickFile(name, row);
+      if (!table && actions.length) {
+        row.onkeydown = (ev) => {
+          if (ev.key !== "Enter" && ev.key !== " ") return;
+          if ((ev.target as HTMLElement | null)?.closest(".fc-act")) return;
+          ev.preventDefault();
+          pickFile(name, row);
+        };
+      }
       if (opts.onContext) {
         row.oncontextmenu = (ev) => {
           ev.preventDefault();
           opts.onContext?.(join(name), name, ev);
         };
       }
-      list.append(row);
+      rowsHost.append(row);
+    };
+
+    for (const name of dirs) {
+      const vol = current === "" ? volumes.get(name) : undefined;
+      if (vol) addVolume(vol, name.replace(/[\\/]+$/, ""));
+      else addDir(name);
     }
+    for (const name of files) addFile(name);
     if (!dirs.length && !files.length) {
-      list.append(el("div", "empty", res.dirs.length || (res.files ?? []).length ? tr("没有匹配项") : tr("空目录")));
+      rowsHost.append(message(res.dirs.length || (res.files ?? []).length ? tr("没有匹配项") : tr("空目录")));
     }
     // 标过了就算用掉：之后再画（在筛选框里打字）不该又亮一遍 —— 高亮只说明「刚跳/刚建的是这一行」。
     pendingReveal = "";
@@ -331,7 +476,8 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
   const navigate = async (rawTarget: string, revealName = "", allowFallback = true): Promise<{ ok: true } | { ok: false; error: string }> => {
     // D163: 兜底一次，任何调用方传裸 `D:` 都当成那颗盘的根，而不是桥端 cwd 上的「D 盘相对路径」。
     const target = BARE_DRIVE.test(rawTarget.trim()) ? `${rawTarget.trim()}\\` : rawTarget;
-    list.replaceChildren(el("div", "empty", tr("读取中…")));
+    clearRows();
+    rowsHost.append(message(tr("读取中…")));
     // Leaving the folder: drop its sizes and any answer still in flight for it.
     stats = new Map();
     statToken += 1;
@@ -342,7 +488,10 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       // 请求根本没到：上一跳的高亮属于别的目录，别留着。
       pendingReveal = "";
       const said = tr("读取失败：{p1}", { p1: ex?.message ?? ex });
-      if (root.isConnected) list.replaceChildren(el("div", "empty", said));
+      if (root.isConnected) {
+        clearRows();
+        rowsHost.append(message(said));
+      }
       return { ok: false, error: said };
     }
     if (!root.isConnected) return { ok: false, error: "" };
@@ -421,7 +570,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
         if (went.error) showJump(went.error);
         return;
       }
-      const row = list.querySelector<HTMLButtonElement>(".file-row.hit");
+      const row = list.querySelector<HTMLElement>(".file-row.hit");
       if (!row) {
         // 列表本身就被过滤与截断过（1000 目录 / 2000 文件），别断言「不存在」。
         showJump(tr("列表里没有 {p1}（目录过大时只列出一部分）", { p1: name }));
@@ -429,7 +578,7 @@ export function mountDirPicker(host: HTMLElement, opts: DirPickerOpts): DirPicke
       }
       jumpInput.value = "";
       row.scrollIntoView({ block: "center" });
-      row.focus({ preventScroll: true });
+      (row.querySelector<HTMLElement>(".fc-pick") ?? row).focus({ preventScroll: true });
     } catch (ex: any) {
       if (root.isConnected) showJump(tr("定位失败：{p1}", { p1: ex?.message ?? ex }));
     } finally {

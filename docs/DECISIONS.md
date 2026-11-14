@@ -4510,3 +4510,20 @@ D
 - 残留没修：`following` 只在 wheel / touch / 键盘手势里关闭，**拖滚动条上滚**（不产生这些手势）之后 `following` 仍是 true，一到内容增量就回到底部。修它要动 D94 的重入条件，另开一条。
 
 **验证：** `probes/ops-expand-scroll.mjs` 五个 case —— A 装得下的短会话点开 ops（视口不动 + 槽宽不变）、A2 同一会话点开**小**一块（增量不到一屏，视口同样不动）、B 已溢出且上滚过再点开（视口不动，别为了修 A 把跟流一起关掉）、C 跟流中视口被顶矮 60px（仍贴底）、D 跟流中右栏拉开 136px（仍贴底）。去掉那一行 CSS：A 红（`top 0 → 6482`）、A2 红（`top 0 → 294`）、B/C/D 绿；加上后 A/A2/B/C/D 全绿，headless 与 `PI_PROBE_BROWSER=msedge` 各跑一遍（A 的槽宽断言只有 msedge 才有意义）。相邻探针 `jump-nothing-below`（D168）/ `composer-grow`（#319）/ `scroll-race` 全绿；`round10-scroll` 判「↓ 在正中」原来拿 border-box 宽度当中心，滚动条一占位就差 9px —— 改成按 `clientWidth`（内容盒）算，本条目之前之后都成立。
+
+## D252 附件弹层换成「本机管理」式控制台，文件行加「引用 / 打开」（用户要求 2026-11-14）
+
+**问题：** 下沿「文件」弹层是个 560px 窄抽屉：文件行整行点击 = 引用路径（图片 = 直接附加），没有第二种动作；文件管理器点行 = 预览；产物 chip 点整颗 = 预览。用户要求「以设置里的本机管理 UI 为模板改下沿文件按钮」，并且「给每个文件的右侧加两个按钮：引用、打开」。
+
+**决定：**
+
+- 新增 `web/src/fileconsole.ts` + `web/src/fileconsole.css`：附件弹层用本机管理的外壳（`.sys-back` / `.sys-console` 1120×800 / 10px 眉毛 + 25px 标题 / 214px 左栏 / 页脚）。左栏 = 快速位置（工作目录、此电脑、最近目录）+ 当前目录的子文件夹；右栏 = 面包屑工具条、跳到路径、筛选、四列表格（名称 / 大小 / 修改时间 / 操作）。
+- `web/src/dirpicker.ts` 增 `tableView`、`layout: "console"`、`actions(abs, name)`：表格版把文件行改成 `<tr>`，行内放 `button.fc-pick` + 操作列；列表版在带 actions 时把行从 `<button>` 改成 `div[role=button]`（button 不能嵌套 button）。
+- 三处入口的「点行」语义保持各自原样，两颗按钮只提供另一种动作：附件弹层点行 = 引用（图片行第一颗按钮改叫「附加」，行为 = 附加成待发图片）；文件管理器点行 = 打开预览，「引用」= 插路径并关掉 viewer（全屏 viewer 会盖住输入框）；产物 chip 变成 `[图标][名称][引用][打开]`，chip 主体不再可点。
+- 引用统一走 `pi-quote` 事件（聊天区没有 app 引用）；「打开」仍走既有 `openPreview` / `pi-preview`。
+
+**为什么：** 本机管理外壳已有成熟令牌与窄屏降级（D123 的 `data-console-narrow/tight`），D241 的 Jira 面板也照抄过这一套，视觉不用另起一套；`button` 里不能再放 `button`，表格化顺带把「大小 / 修改时间」变成列，操作列才有稳定位置。
+
+**代价 / 可改：** 文件管理器的整行可点区域被两颗按钮占掉约 90px；产物 chip 比原来宽，一行能放的 chip 变少；620px 以下隐藏大小与修改时间两列（只留名称 + 操作）。左栏「最近」按会话存 `localStorage["pi.attachRecent:<sessionId>"]`（最多 8 条），换设备/清缓存就没了。
+
+**验证：** `npm --prefix web run typecheck`（tsc + `i18n-check`，2801 keys × 3 语言）与 `npm --prefix web run build` 绿；测试实例（17876）手动全链路：附件弹层引用/附加/打开、文件管理器引用（viewer 关闭、路径进输入框）/点行预览、产物 chip 引用/打开；620 / 880 / 1440 三档 `scrollWidth == innerWidth`，无横向溢出。
