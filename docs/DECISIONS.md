@@ -4548,3 +4548,22 @@ D
 **代价 / 可改：** 样式解析在桥端多一次 `<styles.xml>` + `<theme1.xml>` 的解析（整本缓存，窗口请求不再付）；pattern 填充只做近似（深色花纹取 fg、其余取 bg）；行内富文本 run、旋转文字按像素旋转（只认 90/180 的倍数）、渐变/图片填充都不做。选中框颜色取 `#0f766e`（WPS 的绿有青有蓝，实测采样被文字抗锯齿污染），要改只动 `grid.ts` 的 `SEL_COLOR`。
 
 **验证：** `bridge/tests/fixtures/make-xlsx.mjs` 新增 `buildStyledXlsx()`（两张表、6 字体、5 填充、4 边框、货币/日期/百分比/负数红字、indent、wrap、隐藏行、冻结、`showGridLines=0`），`probes/xlsx.mjs` 加「富样式」一组 17 条断言（行高 20/44/46、隐藏行跳过、表头底 #1F4E79 白字、细边框 1px 不叠、`¥1,234.50` 右对齐、负数 `(400.00)`、`###`、`pre-wrap`、溢出、缩进、合计行黄底、无网格线页）＋「换行内容不被行高截断」一条＋「图片」一组（两张图都挂上、字节取到、一格锚点 120×80、两格锚点铺满 B2:E7）；整轮 **290 项 ok / 全部通过**，截图 `.scratch/xlsx-probe` 与 WPS 同屏对照。
+
+## D254 表格预览就地编辑：改的是 sheet XML 里的那几格，原文件其余字节照抄（`#432`，D166 / D253 的「只读」到此为止）
+
+**问题：** D166 定的是「只读格子 + 纸面 PDF」，理由是「预览只要看清」。真用起来不是：核对表里改一个数、补一行备注，都得跳到 WPS 里改完再切回来，一个几十行的表来回十几次。用户要的是「打开 excel 的窗口里加一个编辑按钮，能实现编辑」。
+
+**决定：**
+
+- **写回原文件，不另存。** 新文件 `bridge/src/sheet/write.ts`：`unzipSync` 拿整包 → 只重写被改到的那几个 `<sheetData>/<row>`（`cellXml` 按需生成 `<c r t s>`，字符串写 `inlineStr`、数字写 `<v>`、公式写 `<f>`，**样式下标 `s` 原样保留**）→ `zipSync(level 6)` → 写同目录临时文件 → `rename` 覆盖；第一次保存前把原文件拷成 `<文件名>.bak`（只留一份，覆盖上一次的）。
+- **不重写共享字符串表**：新写的文本走 `t="inlineStr"`，既不用改 `sharedStrings.xml`、也不会把别人还在引用的字符串挤掉；Excel/WPS 都认。
+- **公式改动打 `fullCalcOnLoad`**：在 `workbook.xml` 的 `<calcPr>` 上置 `fullCalcOnLoad="1"`，下次用 Excel/WPS 打开会重算；我们自己仍然只显示缓存值（和只读预览的约定一致，见 D166）。
+- **并发只看 mtime**：请求带 `mtime`，桥端 `stat` 对不上就 `sheet_stale` 拒绝写（不覆盖别人刚改的文件）；写成功后重新 `registerFileGrant` 把新 mtime 记进凭据，同一扇窗可以接着改，不用重开。
+- **只走这一条路**：`POST /api/sheet/edit` 与其它 sheet 端点同样 `publicReq → 403`，凭据就是打开这扇窗时拿到的 token；`ops` 上限 20000 格、整包上限 64 MB，超了直接拒。
+- **前端是「覆盖层」不是改数据源**：`grid.ts` 用 `edits: Map<"r:c", SheetCell | null>` 叠在 `cellsByKey` 之上（`cellAt()` 是唯一读口），保存成功才 `clearEdits()` + 重取窗口；撤销/重做是 `EditEntry[]` 两摞栈（一次提交 = 一批）。
+- **交互照 Excel 的肌肉记忆**：只读态点格子只用于复制；「编辑」按钮切进编辑态后，选格直接敲字 = 覆盖、F2 / 双击进原地 `textarea`（光标在末尾）、Enter 下移 / Tab 右移 / Shift 反向 / Esc 取消、Delete 清空、Ctrl+Z / Ctrl+Y、Ctrl+V 按 TSV 从当前格铺开、Ctrl+S 保存；改过几格就在「保存」上写几格，没改就藏着；关闭时问一句。
+- **双击自己认**：`pointer capture` 下浏览器不派 `dblclick`（踩过），所以在第二次 `pointerdown` 里判定 400ms 内同格再按；编辑态下延迟一帧再开编辑框（否则 mousedown 的默认聚焦会把刚出来的 `textarea` blur 掉）。
+
+**代价 / 可改：** 只支持**单格**改动（多选只用于复制/清空），不做列宽拖拽、插入/删除行列、区域整体填充；合并格写到左上角，不拆合并；行内富文本 run 会退化成纯文本；`zipSync` 是整本重打包，几十 MB 的工作簿保存要一两秒（前端有「保存中…」）；`.bak` 只留一份，没有版本历史。
+
+**验证：** `bridge/tests/fixtures/make-xlsx.mjs` 的 `buildStyledXlsx()` 作靶子，`probes/xlsx.mjs` 新增「编辑」一组：按钮出现/只读无保存、切「完成」+ 底栏「编辑中」、直接敲字覆盖、Esc 不动原文、Enter 提交并亮「保存 1」、Ctrl+Z/Y 来回、双击进编辑框、Ctrl+A 改数、Shift 选两格 Delete 清空、保存后 mtime 变 + `.bak` 在 + 按钮收起、关掉重开新值还在且底色没丢、C5 保留货币格式显示 `¥7.50`；整轮 **310 项 ok / 全部通过**。
