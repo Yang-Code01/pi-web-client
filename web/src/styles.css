@@ -5147,9 +5147,14 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* 窄版一律按**卡片自己的宽度**判，不按视口：嵌进「目录与仓库」右栏时卡只有 800（字号 150% 时
    482），而视口还是 1440 —— @media 不触发，于是对照行里那颗 origin/main 输入框直接压在
    「领先 / 落后」上、两列挤压到只剩省略号（穿模）。@container 才是这里该用的判据（同 `.viewer`）。 */
-@container (max-width: 720px) {
+/* 对照行换两列的门槛比「单列」更低：卡还有 600 上下时三列（当前 | 领先落后 | 对照）排得下，
+   换掉反而多占一行 —— 而竖直空间在字号 200% 时是最紧的东西。 */
+@container (max-width: 520px) {
   .branch-cmp { grid-template-columns: minmax(0, 1fr) auto; }
   .bc-end.right { grid-column: 1 / -1; justify-content: flex-start; }
+}
+
+@container (max-width: 720px) {
   .branch-tabs { display: flex; }
   .branch-cols { grid-template-columns: 1fr; }
   .bc-col + .bc-col { border-left: 0; }
@@ -5183,7 +5188,16 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55); overflow: hidden;
   animation: branch-in var(--dur-2) var(--ease);
+  /* 三列还是单列 + 「目录」抽屉，看的是**这张卡**多宽：字号 200% 时卡只有 691，`@media` 眼里
+     视口还是 1440，于是三列（224 树 + 214 仓库列）硬挤进 691，右栏只剩 253。判据换成容器宽度。 */
+  container-type: inline-size;
 }
+/* 有效宽度窄（手机 / 字号 200%）时这两张卡再高一点：`#app` 的 zoom 把 84vh / 82vh 变成 378 / 369
+   之后，头行 + 对照行 + tab + 底栏就把高度吃干，列表被压成 1px（量过：200% 时 `.go-body` 只有 1px）。
+   判据用 `data-compact`（app.ts 按「视口 ÷ 字号」算，`.term-dock` 的窄版早就这么用了），跟容器查询
+   管的是两件事：容器管「里面怎么排」，这里管「卡自己能占多大」。位置必须在两张卡的 base 之后。 */
+:where(html[data-compact="true"]) .branch-sheet,
+:where(html[data-compact="true"]) .repos-sheet { height: calc(var(--vh1) * 94); max-height: calc(var(--vh1) * 94); }
 .repos-sheet:focus { outline: none; }
 .repos-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); flex: none; min-width: 0; }
 .repos-titles { display: grid; gap: 2px; min-width: 0; flex: 1; }
@@ -5255,8 +5269,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .pane-side-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .chg-all { flex: none; margin-left: 8px; }
 
+/* 手机上铺满整屏（卡片自己的尺寸只能用 @media）；卡内部怎么排看容器宽度，见下一条。 */
 @media (max-width: 720px) {
   .repos-sheet { width: 100%; height: 100%; border-radius: 0; border: 0; }
+}
+/* 卡窄到放不下三列（手机、或字号 200% 时 691）：目录列变抽屉，仓库列让位给分支面板。
+   两个阈值必须与 `repossheet.ts#paintDrawer` 用同一个数（720），否则「选中后自动收起」会对不上。 */
+@container (max-width: 720px) {
   .repos-body { grid-template-columns: minmax(0, 1fr); position: relative; }
   .repos-rail, .repos-strip, .repos-tree { display: none; }
   .repos-body.drawer-open .repos-tree { display: flex; position: absolute; inset: 0; z-index: 2; background: var(--panel); border-right: 0; }

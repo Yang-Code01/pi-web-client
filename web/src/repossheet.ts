@@ -616,7 +616,10 @@ export class ReposSheet {
         return;
       }
       this.select(dir);
-      if (window.matchMedia("(max-width: 860px)").matches) {
+      // 抽屉只在窄版存在，而窄版判据是「这张卡自己多宽」（`styles.css` 里 `.repos-sheet` 的
+      // `@container (max-width: 720px)`）—— 用 `@media` 看视口会和它对不上：字号 200% 时卡 691（窄版），
+      // 视口还是 1440（不窄）。`clientWidth` 是布局 px，跟容器查询同一个量纲。
+      if (this.sheet.clientWidth <= 720) {
         this.drawerOpen = false;
         this.paintDrawer();
       }
