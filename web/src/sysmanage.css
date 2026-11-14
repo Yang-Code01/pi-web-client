@@ -12,8 +12,10 @@
 }
 
 .sys-console {
-  width: min(1120px, 96vw);
-  height: min(800px, 90vh);
+  /* 不写 96vw / 90vh：#app 上的 zoom 会把视口单位再乘一次（D123）。
+     100% 是 .sys-back 扣掉 padding 后的可用格，天然跟着缩放走；上限仍夹在固定 px。 */
+  width: min(1120px, 100%);
+  height: min(800px, 100%);
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
@@ -1077,7 +1079,7 @@
   margin-top: 6px;
   color: var(--text);
   font-family: var(--mono);
-  font-size: clamp(38px, 5.4vw, 58px);
+  font-size: clamp(38px, calc(var(--vw1) * 5.4), 58px);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -1373,116 +1375,115 @@
 
 /* ---------------------------------------------------------------- 响应式 */
 
-@media (max-width: 900px) {
-  .sys-back {
-    padding: 10px;
-  }
-
-  .sys-console {
-    width: 98vw;
-    height: 94vh;
-  }
-
-  .sys-main {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  .sys-nav {
-    flex-direction: row;
-    gap: 4px;
-    padding: 8px 10px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    overflow-x: auto;
-  }
-
-  .sys-nav__item {
-    width: auto;
-    flex: none;
-    padding: 6px 9px;
-    font-size: 11.5px;
-  }
-
-  .sys-nav__item.on {
-    box-shadow: inset 0 -2px 0 var(--accent);
-  }
-
-  .sys-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .sys-wk-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .sys-wk-stats {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .sys-net {
-    grid-template-columns: 1fr;
-  }
-
-  .sys-pane {
-    padding: 14px;
-  }
+/* D158：#app 的 zoom 只缩放布局 px，媒体查询看的仍是视口宽度。
+   控制台折叠改读 app.ts 按有效宽度落下的 data-console-*；:where() 保留原 @media 的选择器优先级。 */
+:where(html[data-console-narrow="true"]) .sys-back {
+  padding: 10px;
 }
 
-@media (max-width: 640px) {
-  .sys-console {
-    width: 100vw;
-    height: 100vh;
-    border-radius: 0;
-    border: 0;
-  }
+:where(html[data-console-narrow="true"]) .sys-console {
+  /* 窄屏只把上限放到 100%，视口单位仍交给 .sys-back 的 content box。 */
+  width: 100%;
+  height: 100%;
+}
 
-  .sys-head {
-    padding: 14px;
-  }
+:where(html[data-console-narrow="true"]) .sys-main {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+}
 
-  .sys-title {
-    font-size: 21px;
-  }
+:where(html[data-console-narrow="true"]) .sys-nav {
+  flex-direction: row;
+  gap: 4px;
+  padding: 8px 10px;
+  border-right: 0;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
 
-  .sys-grid {
-    grid-template-columns: 1fr;
-  }
+:where(html[data-console-narrow="true"]) .sys-nav__item {
+  width: auto;
+  flex: none;
+  padding: 6px 9px;
+  font-size: 11.5px;
+}
 
-  .sys-wk-stats,
-  .sys-wk-cols {
-    grid-template-columns: 1fr;
-  }
+:where(html[data-console-narrow="true"]) .sys-nav__item.on {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
 
-  .sys-wk-facts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+:where(html[data-console-narrow="true"]) .sys-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
 
-  .sys-wk-hero__digits {
-    font-size: 40px;
-  }
+:where(html[data-console-narrow="true"]) .sys-wk-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
 
-  .sys-wk-event {
-    grid-template-columns: 48px minmax(0, 1fr) auto;
-  }
+:where(html[data-console-narrow="true"]) .sys-wk-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
 
-  .sys-presets {
-    grid-template-columns: 1fr;
-  }
+:where(html[data-console-narrow="true"]) .sys-net {
+  grid-template-columns: 1fr;
+}
 
-  .sys-disk {
-    grid-template-columns: 24px minmax(60px, 1fr);
-  }
+:where(html[data-console-narrow="true"]) .sys-pane {
+  padding: 14px;
+}
 
-  .sys-disk__text {
-    grid-column: 2;
-  }
+:where(html[data-console-tight="true"]) .sys-console {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  border: 0;
+}
 
-  .sys-toolbar__meta {
-    margin-left: 0;
-  }
+:where(html[data-console-tight="true"]) .sys-head {
+  padding: 14px;
+}
 
-  .sys-svc__path {
-    max-width: 120px;
-  }
+:where(html[data-console-tight="true"]) .sys-title {
+  font-size: 21px;
+}
+
+:where(html[data-console-tight="true"]) .sys-grid {
+  grid-template-columns: 1fr;
+}
+
+:where(html[data-console-tight="true"]) .sys-wk-stats,
+:where(html[data-console-tight="true"]) .sys-wk-cols {
+  grid-template-columns: 1fr;
+}
+
+:where(html[data-console-tight="true"]) .sys-wk-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+:where(html[data-console-tight="true"]) .sys-wk-hero__digits {
+  font-size: 40px;
+}
+
+:where(html[data-console-tight="true"]) .sys-wk-event {
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+}
+
+:where(html[data-console-tight="true"]) .sys-presets {
+  grid-template-columns: 1fr;
+}
+
+:where(html[data-console-tight="true"]) .sys-disk {
+  grid-template-columns: 24px minmax(60px, 1fr);
+}
+
+:where(html[data-console-tight="true"]) .sys-disk__text {
+  grid-column: 2;
+}
+
+:where(html[data-console-tight="true"]) .sys-toolbar__meta {
+  margin-left: 0;
+}
+
+:where(html[data-console-tight="true"]) .sys-svc__path {
+  max-width: 120px;
 }

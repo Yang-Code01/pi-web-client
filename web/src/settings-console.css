@@ -23,8 +23,9 @@
 .st-console {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  width: min(1080px, 96vw);
-  height: min(840px, 90vh);
+  /* 同 .sys-console：用遮罩的 content box 做上限，别让 #app 的 zoom 把 vw/vh 再乘一次。 */
+  width: min(1080px, 100%);
+  height: min(840px, 100%);
   overflow: hidden;
   color: var(--text);
   font-family: var(--sans);
@@ -360,72 +361,69 @@
 }
 
 /* ---------------------------------------------------------------- 窄屏：左栏横过去 */
-@media (max-width: 900px) {
-  .st-back {
-    padding: 10px;
-  }
-
-  .st-console {
-    width: 96vw;
-    height: 94vh;
-  }
-
-  .st-main {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  .st-nav {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    overflow: visible;
-    border-right: 0;
-    border-bottom: 1px solid var(--line-soft);
-  }
-
-  .st-nav__group,
-  .st-nav__count {
-    display: none;
-  }
-
-  .st-nav__item {
-    width: auto;
-    padding: 7px 11px;
-  }
-
-  .st-nav__item.on {
-    box-shadow: none;
-  }
+/* D158：控制台按有效宽度折叠，#app 放大字号时原生 @media 不会跟着翻（见 app.ts syncCompact）。 */
+:where(html[data-console-narrow="true"]) .st-back {
+  padding: 10px;
 }
 
-@media (max-width: 640px) {
-  .st-back {
-    padding: 0;
-  }
+:where(html[data-console-narrow="true"]) .st-console {
+  width: 100%;
+  height: 100%;
+}
 
-  .st-console {
-    width: 100vw;
-    height: 100vh;
-    border: 0;
-    border-radius: 0;
-  }
+:where(html[data-console-narrow="true"]) .st-main {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
 
-  .st-head {
-    padding: 14px;
-  }
+:where(html[data-console-narrow="true"]) .st-nav {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  overflow: visible;
+  border-right: 0;
+  border-bottom: 1px solid var(--line-soft);
+}
 
-  .st-title {
-    font-size: 20px;
-  }
+:where(html[data-console-narrow="true"]) .st-nav__group,
+:where(html[data-console-narrow="true"]) .st-nav__count {
+  display: none;
+}
 
-  .st-badges {
-    display: none;
-  }
+:where(html[data-console-narrow="true"]) .st-nav__item {
+  width: auto;
+  padding: 7px 11px;
+}
 
-  .st-pane {
-    padding: 14px;
-  }
+:where(html[data-console-narrow="true"]) .st-nav__item.on {
+  box-shadow: none;
+}
+
+:where(html[data-console-tight="true"]) .st-back {
+  padding: 0;
+}
+
+:where(html[data-console-tight="true"]) .st-console {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+:where(html[data-console-tight="true"]) .st-head {
+  padding: 14px;
+}
+
+:where(html[data-console-tight="true"]) .st-title {
+  font-size: 20px;
+}
+
+:where(html[data-console-tight="true"]) .st-badges {
+  display: none;
+}
+
+:where(html[data-console-tight="true"]) .st-pane {
+  padding: 14px;
 }
 
 /* ---------------------------------------------------------------- #286 compare table */
@@ -571,15 +569,13 @@
   }
 }
 
-@media (max-width: 720px) {
-  .st-cmp-head,
-  .st-cmp-row {
-    grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.2fr) minmax(0, 1.2fr);
-    gap: 6px;
-    padding: 6px 8px;
-  }
+:where(html[data-console-mid="true"]) .st-cmp-head,
+:where(html[data-console-mid="true"]) .st-cmp-row {
+  grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.2fr) minmax(0, 1.2fr);
+  gap: 6px;
+  padding: 6px 8px;
+}
 
-  .st-cmp-note {
-    font-size: 10px;
-  }
+:where(html[data-console-mid="true"]) .st-cmp-note {
+  font-size: 10px;
 }

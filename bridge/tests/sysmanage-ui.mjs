@@ -5,6 +5,8 @@
  *
  * 自带丢弃式 bridge（端口 7893），不碰 7864；只读本机数据，不真的改 DNS / 重启 WinNAT——
  * 两者都会弹 UAC 并动整机网络，留本机手验。截图落在 .scratch/shots/sysmanage-ui.png。
+ * 末尾另开几个放大字号的上下文，验三套控制台都不会被 #app 的 zoom 顶出视口，
+ * 本机管理五个分区及概况跳转也不会横向穿出面板。
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -130,6 +132,124 @@ async function checkLayout(label) {
   const ok = within(r.head) && within(r.main) && within(r.foot) && r.main.bottom <= r.foot.top + 1;
   check(`${label}：头/主体/页脚都在控制台框内`, Boolean(ok), JSON.stringify(r));
 }
+/**
+ * 框本身也要留在视口里：`#app` 挂着 `zoom: var(--ui-scale)`，CSS 里写 `96vw / 90vh`
+ * 会被再乘一次缩放，1.5 倍字号下 800px 高的控制台变成 1200px，页脚被裁、背后页面从两侧露出。
+ * 三套控制台外壳（本机管理 / 设置 / Jira）同构，用遮罩的 content box 夹住就好。
+ */
+const CONSOLE_KINDS = {
+  本机管理: { back: ".sys-back", shell: ".sys-console", head: ".sys-head", main: ".sys-main", foot: ".sys-foot", open: async (page) => {
+    await page.locator('[data-act="look"]').first().click();
+    await page.locator('.set-tabs .chip[data-tab="conn"]').click();
+    await page.locator('.set-page[data-page="conn"]').waitFor({ timeout: 10_000 });
+    await page.getByRole("button", { name: "本机管理", exact: true }).first().click();
+    await page.locator(".sys-console").waitFor({ timeout: 10_000 });
+    await page.locator(".sys-card").first().waitFor({ timeout: 20_000 });
+  } },
+  设置: { back: ".st-back", shell: ".st-console", head: ".st-head", main: ".st-main", foot: ".st-foot", open: async (page) => {
+    await page.locator('[data-act="look"]').first().click();
+    await page.locator('.set-tabs .chip[data-tab="conn"]').click();
+    await page.locator('.set-page[data-page="conn"]').waitFor({ timeout: 10_000 });
+    await page.getByRole("button", { name: "pi 设置", exact: true }).first().click();
+    await page.locator(".st-console").waitFor({ timeout: 10_000 });
+  } },
+  Jira: { back: ".jc-back", shell: ".jc-console", head: ".jc-head", main: ".jc-main", foot: ".jc-foot", open: async (page) => {
+    await page.locator('[data-act="jira"]').first().click();
+    await page.locator(".jc-console").waitFor({ timeout: 10_000 });
+  } },
+};
+async function checkZoomLayout(scale, width, height) {
+  const zoomCtx = await browser.newContext({ locale: "zh-CN", viewport: { width, height } });
+  await zoomCtx.addInitScript((s) => {
+    localStorage.setItem("pi.prefs", JSON.stringify({ scale: s }));
+  }, scale);
+  const zoomLogin = await zoomCtx.request.post(`${BASE}/api/login`, { data: { passphrase: PASS } });
+  check(`字号 ${scale} 登录自检`, zoomLogin.status() === 200, `HTTP ${zoomLogin.status()}`);
+  const zoomPage = await zoomCtx.newPage();
+  const zoomErrors = [];
+  zoomPage.on("pageerror", (e) => zoomErrors.push(String(e)));
+  await zoomPage.goto(BASE, { waitUntil: "domcontentloaded" });
+  await zoomPage.waitForTimeout(400);
+  for (const [name, k] of Object.entries(CONSOLE_KINDS)) {
+    await k.open(zoomPage);
+    const sel = { back: k.back, shell: k.shell, head: k.head, main: k.main, foot: k.foot };
+    const g = await zoomPage.evaluate((sel) => {
+      const box = (s) => {
+        const e = document.querySelector(s);
+        if (!e || getComputedStyle(e).display === "none") return null;
+        const b = e.getBoundingClientRect();
+        return { top: +b.top.toFixed(1), bottom: +b.bottom.toFixed(1), left: +b.left.toFixed(1), right: +b.right.toFixed(1), width: +b.width.toFixed(1), height: +b.height.toFixed(1) };
+      };
+      return {
+        vp: { width: innerWidth, height: innerHeight },
+        uiScale: getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim(),
+        back: box(sel.back), console: box(sel.shell), head: box(sel.head), main: box(sel.main), foot: box(sel.foot),
+      };
+    }, sel);
+    const onScreen = (x) => x && x.left >= -1 && x.top >= -1 && x.right <= g.vp.width + 1 && x.bottom <= g.vp.height + 1;
+    const inConsole = (x) => x && g.console && x.top >= g.console.top - 1 && x.bottom <= g.console.bottom + 1;
+    check(
+      `字号 ${scale} @${width}×${height} ${name}：遮罩/控制台/页脚都在视口内`,
+      Boolean(onScreen(g.back) && onScreen(g.console) && onScreen(g.foot) && inConsole(g.head) && inConsole(g.main) && inConsole(g.foot) && g.main.bottom <= g.foot.top + 1),
+      JSON.stringify(g),
+    );
+    if (name === "本机管理") {
+      // 外壳没顶出视口还不够：五个分区各自有网格/表格，放大字号后布局 px 变少，
+      // 原生 @media 看的是视口宽度（D158），不触发窄版折叠时内容会横向穿出 .sys-pane。
+      const nav = zoomPage.locator(".sys-nav__item");
+      const SECTIONS = [
+        { wait: ".sys-card" },
+        { wait: ".sys-dns" },
+        { wait: ".sys-table tbody tr" },
+        { wait: ".sys-table--services tbody tr" },
+        { wait: ".sys-wk-hero" },
+      ];
+      const paneGeometry = () => zoomPage.evaluate(() => {
+        const pane = document.querySelector(".sys-pane");
+        const b = pane.getBoundingClientRect();
+        const offenders = [...pane.querySelectorAll("*")]
+          .filter((e) => {
+            const r = e.getBoundingClientRect();
+            return r.width > 0 && (r.right > b.right + 1 || r.left < b.left - 1);
+          })
+          .slice(0, 5)
+          .map((e) => `${e.className || e.tagName}@${e.getBoundingClientRect().right.toFixed(1)}`);
+        return {
+          clientWidth: pane.clientWidth,
+          scrollWidth: pane.scrollWidth,
+          paneRight: +b.right.toFixed(1),
+          offenders,
+        };
+      });
+      for (let i = 0; i < SECTIONS.length; i += 1) {
+        const label = (await nav.nth(i).innerText()).trim().replace(/\s+/g, " ");
+        await nav.nth(i).click();
+        await zoomPage.locator(SECTIONS[i].wait).first().waitFor({ timeout: 20_000 });
+        const p = await paneGeometry();
+        check(
+          `字号 ${scale} @${width}×${height} ${label}：内容不横向穿出面板`,
+          p.scrollWidth <= p.clientWidth + 1 && p.offenders.length === 0,
+          JSON.stringify(p),
+        );
+      }
+      // 概况里的「查看网络与 DNS」也是一条入口，跳过去后同样不能横向溢出。
+      await nav.nth(0).click();
+      await zoomPage.locator(".sys-more").first().waitFor({ timeout: 20_000 });
+      await zoomPage.locator(".sys-more").first().click();
+      await zoomPage.locator(".sys-dns").first().waitFor({ timeout: 20_000 });
+      const jump = await paneGeometry();
+      check(
+        `字号 ${scale} @${width}×${height} 概况跳转网络与 DNS：内容不横向穿出面板`,
+        jump.scrollWidth <= jump.clientWidth + 1 && jump.offenders.length === 0,
+        JSON.stringify(jump),
+      );
+    }
+    await zoomPage.keyboard.press("Escape");
+    await zoomPage.waitForTimeout(150);
+  }
+  check(`字号 ${scale} 没有 pageerror`, zoomErrors.length === 0, zoomErrors.slice(0, 3).join(" | "));
+  await zoomCtx.close();
+}
 await checkLayout("概况");
 
 await page.getByRole("button", { name: /网络与 DNS/ }).first().click();
@@ -253,5 +373,10 @@ if (target) {
 } else {
   console.log("  skip  同值 DNS（当前网卡是 DHCP / 没有 DNS）");
 }
+
+// D123 同一个坑：vw/vh 在 zoom 子树里会被再乘一次，1.5 倍字号下 800px 高的控制台变成 1200px。
+await checkZoomLayout(1.5, 2000, 1185);
+await checkZoomLayout(1.5, 1280, 720);
+await checkZoomLayout(2, 1440, 940);
 
 done(0);

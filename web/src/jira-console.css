@@ -14,8 +14,9 @@
 }
 
 .jc-console {
-  width: min(1120px, 96vw);
-  height: min(800px, 90vh);
+  /* 同 .sys-console：用遮罩的 content box 做上限，别让 #app 的 zoom 把 vw/vh 再乘一次。 */
+  width: min(1120px, 100%);
+  height: min(800px, 100%);
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
@@ -302,60 +303,57 @@
 
 /* ---------------------------------------------------------------- 窄屏 */
 
-@media (max-width: 900px) {
-  .jc-back {
-    padding: 10px;
-  }
-
-  .jc-console {
-    width: 98vw;
-    height: 94vh;
-  }
-
-  .jc-main {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  .jc-nav {
-    flex-direction: row;
-    padding: 8px 10px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    overflow-x: auto;
-  }
-
-  .jc-nav__item {
-    width: auto;
-    flex: none;
-    padding: 6px 9px;
-    font-size: 11.5px;
-  }
-
-  .jc-nav__item.on {
-    box-shadow: inset 0 -2px 0 var(--accent);
-  }
-
-  .jc-pane {
-    padding: 14px;
-  }
+/* D158：控制台按有效宽度折叠，#app 放大字号时原生 @media 不会跟着翻（见 app.ts syncCompact）。 */
+:where(html[data-console-narrow="true"]) .jc-back {
+  padding: 10px;
 }
 
-@media (max-width: 640px) {
-  .jc-console {
-    width: 100vw;
-    height: 100vh;
-    border-radius: 0;
-    border: 0;
-  }
+:where(html[data-console-narrow="true"]) .jc-console {
+  width: 100%;
+  height: 100%;
+}
 
-  .jc-head {
-    padding: 14px;
-  }
+:where(html[data-console-narrow="true"]) .jc-main {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+}
 
-  .jc-title {
-    font-size: 21px;
-  }
+:where(html[data-console-narrow="true"]) .jc-nav {
+  flex-direction: row;
+  padding: 8px 10px;
+  border-right: 0;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+:where(html[data-console-narrow="true"]) .jc-nav__item {
+  width: auto;
+  flex: none;
+  padding: 6px 9px;
+  font-size: 11.5px;
+}
+
+:where(html[data-console-narrow="true"]) .jc-nav__item.on {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+:where(html[data-console-narrow="true"]) .jc-pane {
+  padding: 14px;
+}
+
+:where(html[data-console-tight="true"]) .jc-console {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  border: 0;
+}
+
+:where(html[data-console-tight="true"]) .jc-head {
+  padding: 14px;
+}
+
+:where(html[data-console-tight="true"]) .jc-title {
+  font-size: 21px;
 }
 
 /* #407：行尾的「下载附件」与它下面的一行结果小结。没有结果时整块不占位 */
@@ -398,7 +396,7 @@
 .jira-ask {
   display: grid;
   gap: 10px;
-  width: min(440px, 92vw);
+  width: min(440px, calc(var(--vw1) * 92));
   padding: 16px 18px 14px;
   background: var(--panel);
   border: 1px solid var(--line);
