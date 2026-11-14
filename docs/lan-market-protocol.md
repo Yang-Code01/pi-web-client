@@ -1,7 +1,7 @@
 # 局域网共享市场协议 v1（`pi-lan-market/1`）
 
-> 状态：**设计共识，尚未实现。** 决策依据 `docs/DECISIONS.md` D246（R1~R7 共 25 项决策）。
-> 本文是可进版本库、可给所有节点参照的协议规范；逐文件施工清单见 `.scratch/lan-market/PLAN.md`（被 `.gitignore:7` 忽略）。
+> 状态：**首版已实现并验收（2026-11-14，schema `pi-lan-market/1`）。** 决策依据 `docs/DECISIONS.md` D248（R1~R7 共 25 项决策 + 实施补记）。
+> 本文是可进版本库、可给所有节点参照的协议规范与实现约定；逐文件施工清单见 `.scratch/lan-market/PLAN.md`（被 `.gitignore:7` 忽略）。
 > 标「可改」的字段是可逆默认值，改动不动 25 项决策的前提。
 
 ## 1. 范围与传输

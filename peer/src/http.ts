@@ -13,6 +13,7 @@ import { listDir } from "./fsbrowse.ts";
 import type { History } from "./history.ts";
 import type { Messages } from "./messages.ts";
 import type { Relations } from "./peers.ts";
+import { MAX_MARKET_FRAME, ingest, manifestResponse, parseFrame, touchBlob } from "./market.ts";
 
 export interface PeerContext {
   cfg: PeerConfig;
@@ -448,6 +449,42 @@ export function createPeerServer(ctx: PeerContext): http.Server {
       if (url.pathname === "/transfers" && req.method === "GET") {
         if (!loopback) return json(res, 403, { error: "只对回环开放" });
         return json(res, 200, { ok: true, transfers: files.transfers_(), free: files.free() });
+      }
+
+      // 局域网市场：清单与字节对 LAN 开放，发布/镜像/删除只认本机 bridge（D248）。
+      if (url.pathname === "/market/manifest" && req.method === "GET") {
+        return json(res, 200, manifestResponse(nodeId, cfg.nickname, os.hostname()));
+      }
+
+      if (url.pathname === "/market/blob" && req.method === "GET") {
+        const sha = (url.searchParams.get("sha256") ?? "").toLowerCase();
+        const file = touchBlob(sha);
+        if (!file) return json(res, 404, { error: "本机没有这个包字节" });
+        const stat = fs.statSync(file);
+        res.writeHead(200, {
+          "content-type": "application/octet-stream",
+          "content-length": stat.size,
+          "cache-control": "no-store",
+        });
+        return void fs.createReadStream(file).pipe(res);
+      }
+
+      if (url.pathname === "/market/publish" && req.method === "POST") {
+        if (!loopback) return json(res, 403, { error: "只对回环开放" });
+        let frame: Buffer;
+        try {
+          frame = await readRaw(req, MAX_MARKET_FRAME);
+        } catch {
+          return json(res, 413, { error: "太大了（上限 64 MB）" });
+        }
+        try {
+          const parsed = parseFrame(frame);
+          const out = ingest(parsed.manifest, parsed.zip, nodeId);
+          if (!out.ok) return json(res, 400, { error: out.error });
+          return json(res, 200, { ok: true });
+        } catch (err) {
+          return json(res, 400, { error: (err as Error).message });
+        }
       }
 
       return json(res, 404, { error: "not found" });

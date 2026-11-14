@@ -74,6 +74,7 @@ import { allowRemind, reminderText, reviewPrompt } from "./lessons.ts";
 import { deleteRule, markReviewed, readRules, setRule } from "./rules.ts";
 import { mcpAddRequest, newer, searchMcp, searchPackages, setIndexListener, type McpInstallOption } from "./market.ts";
 import { bumpMcp, inventory, readUiPrefs, toggleExtension, toggleMcp, updateCount, writeUiPrefs } from "./extmgr.ts";
+import { marketDelete, marketInstall, marketList, marketPublish, marketSources, marketUninstall, type PublishInput } from "./market-lan.ts";
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
@@ -768,6 +769,23 @@ async function main(): Promise<void> {
       const body = await readBody(req).catch(() => ({}));
       try {
         return json(res, 200, await peer.sendFile(String(body?.peer ?? ""), String(body?.path ?? ""), body?.name ? String(body.name) : undefined));
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+    // 手工上传 zip：和 /api/peer/upload 一样走原始字节，不把 64 MB 塞进 base64 的 WS 帧。
+    if (url.pathname === "/api/market/publish-zip" && req.method === "POST") {
+      const raw = await readRaw(req, 64 * 1024 * 1024).catch(() => null);
+      if (!raw) return json(res, 413, { error: "太大了（上限 64 MB）" });
+      if (!authorized(req.headers.cookie)) return json(res, 401, { error: "要登录" });
+      if (isTunnelRequest(req.headers)) return json(res, 403, { error: "通过公网访问时局域网市场只能查看" });
+      try {
+        const out = await marketPublish(peer, {
+          item: { type: "skill", delivery: "archive", category: "其他", description: "", name: "", version: 0 },
+          source: { kind: "zip", zipB64: raw.toString("base64") },
+          scope: "global", cwd: null,
+        } as PublishInput);
+        return json(res, out.ok ? 200 : 400, out);
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
@@ -2753,6 +2771,66 @@ async function main(): Promise<void> {
           case "ext.updates": {
             const cwd = msg.cwd ? String(msg.cwd) : null;
             send({ type: "ext.updates", count: await updateCount(pi.cli, cwd).catch(() => 0) });
+            return;
+          }
+          // D248：局域网共享市场。列清单 / 列本机可发布来源只读；发布 / 安装 / 删除 / 卸载全部拒公网。
+          case "market.list": {
+            const cwd = msg.cwd ? String(msg.cwd) : null;
+            const reqId = typeof msg.reqId === "string" ? msg.reqId.slice(0, 60) : null;
+            try {
+              send({ type: "market.list", reqId, ...(await marketList(peer, cwd)) });
+            } catch (err: any) {
+              send({ type: "market.list", reqId, items: [], peers: [], error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "market.sources": {
+            const cwd = msg.cwd ? String(msg.cwd) : null;
+            const reqId = typeof msg.reqId === "string" ? msg.reqId.slice(0, 60) : null;
+            try {
+              send({ type: "market.sources", reqId, ...(marketSources(cwd)) });
+            } catch (err: any) {
+              send({ type: "market.sources", reqId, skills: [], extensions: [], mcp: [], error: String(err?.message ?? err) });
+            }
+            return;
+          }
+          case "market.publish":
+          case "market.delete":
+          case "market.install":
+          case "market.uninstall": {
+            const op = String(msg.type ?? "");
+            const reqId = typeof msg.reqId === "string" ? msg.reqId.slice(0, 60) : null;
+            const cwd = msg.cwd ? String(msg.cwd) : null;
+            const done = (out: { ok: boolean; error?: string; [k: string]: unknown }) => {
+              send({ type: "market.op", reqId, op, ...out });
+              if (out.ok) broadcast({ type: "market.changed" });
+              else send({ type: "notice", text: String(out.error ?? "市场操作失败"), level: "error" });
+            };
+            if ((ws as any).publicReq) {
+              done({ ok: false, error: "通过公网访问时局域网市场只能查看" });
+              return;
+            }
+            if (!(await requireStepUp())) {
+              done({ ok: false, error: "要重新输入口令才能改局域网市场" });
+              return;
+            }
+            try {
+              const publisher = String(msg.publisher ?? "");
+              const id = String(msg.id ?? "");
+              const scope = msg.scope === "project" ? "project" : "global";
+              if (op === "market.publish") done(await marketPublish(peer, (msg.input ?? {}) as PublishInput));
+              else if (op === "market.delete") done(await marketDelete(peer, cwd, publisher, id));
+              else if (op === "market.uninstall") done(await marketUninstall(cwd, publisher, id));
+              else {
+                const vars = msg.vars && typeof msg.vars === "object" && !Array.isArray(msg.vars)
+                  ? Object.fromEntries(Object.entries(msg.vars as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
+                  : {};
+                send({ type: "market.progress", reqId, text: "正在读取在线节点的清单…" });
+                done(await marketInstall(peer, pi, cwd, publisher, id, scope, vars, (text) => send({ type: "market.progress", reqId, text })));
+              }
+            } catch (err: any) {
+              done({ ok: false, error: String(err?.message ?? err) });
+            }
             return;
           }
           case "ext.store": {

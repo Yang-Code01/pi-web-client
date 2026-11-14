@@ -4308,9 +4308,9 @@ D
 
 **验证：** `bridge/tests/translate-unit.mjs` 38 例（分节/围栏/分块/表格校验/清洗/整篇翻译/`keep` 复用只翻改过的节/`planSync` 只挑出改动的那块/`applySync` 只替换那一块/找不到位置/照抄与语言跑偏告警/脏标题写回日文）；`bridge/tests/translate-e2e.mjs` 41 项（桩 pi 跑通 start→save→sync→apply，含公网 403、409 冲突、备份）；`probes/translate-ui.mjs` 30 项（真 Chromium：译按钮、选择器、两栏对照、逐节编辑、同步确认、写回后左栏刷新）；`npm run typecheck`（bridge / peer / web 三份 tsc + `i18n-check` 2641 keys × 3 langs）。真机（`github-copilot/gpt-6-luna`）：1.7 KB 日文文档翻中文 36 s；小文档改一处 7 s 翻完、44 s 折回；日文文档里被写坏的中文标题改一次即写回「# 私の父は徐藤恩です」，20.5 s。
 
-## D246 局域网共享市场（skill / 扩展 / MCP）：P2P 公告 + 镜像字节的设计共识（用户要求 / 设计评审）
+## D248 局域网共享市场（skill / 扩展 / MCP）：P2P 公告 + 镜像字节的设计共识与首版实现（用户要求 / 设计评审）
 
-**问题：** 用户（2026-11-13）：「局域网内基于公司、项目的共享skill、插件、mcp服务的市场。 只要用户部署了本程序，因此有局域网连接功能。现在想要在扩展按钮里面追加这样的功能。 每个用户都能上传skill、扩展、mcp服务。」本条只记设计共识（grilling R1~R7 共 25 项决策），**不改功能代码**；实施计划另见 `.scratch/lan-market/PLAN.md`。
+**问题：** 用户（2026-11-13）：「局域网内基于公司、项目的共享skill、插件、mcp服务的市场。 只要用户部署了本程序，因此有局域网连接功能。现在想要在扩展按钮里面追加这样的功能。 每个用户都能上传skill、扩展、mcp服务。」本条先记设计共识（grilling R1~R7 共 25 项决策），随后在 2026-11-14 于 `feat/lan-market` 完成首版实现并验收。编号顺延到 D248：本分支写文档时 main 还没有 D246，合并时 main 已先占用 D246（上下班）/ D247（测试书技能），不能覆盖别人的条目。逐文件施工清单见 `.scratch/lan-market/PLAN.md`（被 `.gitignore:7` 忽略，不进提交）。
 
 **现状事实（只读勘察）：**
 
@@ -4378,7 +4378,7 @@ D
 - 墓碑只隐藏条目并删镜像缓存、不动已安装；新版只在条目上提示，不静默升级（第 5 项无后台同步）。
 - 手工 zip 与一键发布共用同一 `manifest.json`；默认分类示例「公司 / 项目 / 其他」；沿用现有「全局 / 当前项目」下拉（`web/src/app.ts:13032-13038`）；MCP 的 `${VAR}` 在确认页填写。
 - 文案走 `tr("中文原文")` 并补 `web/src/i18n/en.ts` / `web/src/i18n/ja.ts`（`npm --prefix web run typecheck` 会跑 `web/i18n-check.mjs`）；Playwright `newContext()` 带 `locale: "zh-CN"`。
-- 本轮只落设计文档、不改功能代码；实施另起分支，按 `AGENTS.md` 的 worktree 流程走，合并等用户明确指令。
+- 首版实现与验收同在 `feat/lan-market` worktree 完成，按 `AGENTS.md` 的流程提交、开 PR，合并等用户明确指令（2026-11-14）；实现细节见 `docs/lan-market-protocol.md` 与下方「实施补记」。
 
 **为什么：**
 
@@ -4386,8 +4386,15 @@ D
 - 复合主键 + 不加签名，是第 1 项「零中心部署」+ 第 4 项「开放发布」+ 现状（`peer/src/config.ts:98-111` 的 `nodeId` 是裸 uuid、可手改；`peer/src/discovery.ts:113-132` 的 hello 无凭据）共同决定的：引入密钥体系会推翻这两项前提，故把风险显性化写进确认页，而不是假装解决。
 - 自管落盘是因为复用三套安装器会连踩三处：`skill.install` 本地分支把 `marker.local` 写成临时解包目录（`bridge/src/skillstore.ts:640-653`），卸载 / 更新指向已删目录；扩展同时有 loose 文件 / 目录与 pi 包两种形态（`bridge/src/market.ts:241-271`）；MCP 片段须转成 `mcp.add` 的强校验形状（`bridge/src/picli.ts:57-87`）。
 - 单包 64 MB + 2 GB 软上限 + 按类型边界，是因为 `bridge/src/skillstore.ts:588-590` 的配额只管 skill，市场要同时扛 skill / 扩展 / MCP 三种包；pi 包只存来源引用是为了不把 `node_modules` 塞进 LAN 字节通道。
-- 先把协议与包格式钉在纸上：清单协议一旦写进 7865，所有节点都要跟着改；用户在收口问卷里选「只写设计共识文档」，理由是先把协议与包格式钉在纸上成本最低，本轮因此不碰功能代码。
+- 先把协议与包格式钉在纸上：清单协议一旦写进 7865，所有节点都要跟着改；收口问卷先选「只写设计共识文档」，随后在同一分支按文档实现，协议规范没有变成空头承诺。
 
 **代价 / 可改：** 已接受的残留风险 ——（1）无签名 → 同网段可冒名发布或伪造墓碑藏条目；（2）原发布者离线期间镜像仍可装、墓碑等其上线才收敛；（3）pi 包离线装不了，互为镜像对它打折；（4）时钟回拨会让时间戳裁决反常；（5）blobs 全量公开意味着同网段能看出这台装过哪些包；（6）2 GB 软上限会淘汰最久未用的镜像字节。可改默认值全部集中在上面的「协议与包格式」段：端点路径、`PROTO`、404 降级策略、分类示例、2 GB、`tr()` 文案 —— 改任一项都不动 25 项决策的前提。另：手工 zip 与一键发布两套打包 / 校验 / 表单，第一版工作量约翻倍（第 15 项用户覆盖了推荐项）。
 
-**验证：** 本条是设计共识，不是实现。设计验证 = R1~R7 共 7 轮问卷 25 项选择 + 最后一轮「达成共识，可以收口」「只写设计共识文档」的确认（2026-11-13）。可进版本库、给所有节点参照的协议与包格式钉在 `docs/lan-market-protocol.md`；逐文件施工清单、测试矩阵与验收步骤写在 `.scratch/lan-market/PLAN.md`（`.gitignore:7` 忽略 `.scratch/`，不进提交）。
+**验证（设计，2026-11-13）：** R1~R7 共 7 轮问卷 25 项选择 + 最后一轮「达成共识，可以收口」「只写设计共识文档」的确认。可进版本库、给所有节点参照的协议与包格式钉在 `docs/lan-market-protocol.md`；逐文件施工清单、测试矩阵与验收步骤写在 `.scratch/lan-market/PLAN.md`（`.gitignore:7` 忽略 `.scratch/`，不进提交）。
+
+**实施补记（2026-11-14）：**
+
+- 落点：peer `peer/src/market.ts`（350 行，帧解析 / 公告与墓碑快照 / blobs 落盘 / 2 GB 软淘汰）与 `peer/src/http.ts`（`/market/manifest`、`/market/blob`、`/market/publish` 三个端点，`POST` 仅回环）；bridge `bridge/src/market-lan.ts`（705 行，清单并发拉取与 `(version, at)` 裁决、sha256 强校验、按类型安装 / 卸载、安装成功即转镜像）与 `bridge/src/index.ts` / `bridge/src/peer.ts`（WS 五个 op，写操作拒公网隧道）；web `web/src/app.ts`（扩展面板第四 tab、确认页分列原发布者与镜像主机、MCP `${VAR}` 输入框）+ `web/src/i18n/en.ts` / `ja.ts`（各 40 条文案，走 `tr()`）。`PROTO` 仍为 1，旧节点 404 按 `unsupported` 跳过。
+- 三实例 e2e（`F:/pi-web-client-wt/feat/lan-market/.scratch/lan-market/e2e/results.json`）：14 个 case / 40 步，`failedSteps=0`、`failedCases=0`，覆盖手工 zip 发布、跨节点发现与安装、自动互为镜像、原发布者离线仍可从镜像装、扩展实体包、MCP 变量填写、墓碑在离线期间收敛、同 id 重发复活、从「已安装」一键发布、公网只读、旧节点降级、收尾关环境。
+- 测试书：`F:/pi-web-client-wt/feat/lan-market/.scratch/lan-market/局域网共享市场-测试书.xlsx`（15 sheet = 总览 + TC01~TC14，40 张内嵌真实截图，0 公式 / 0 错误）与一比一复刻的 `F:/pi-web-client-wt/feat/lan-market/.scratch/lan-market/局域网共享市场-测试书.html`（15 个 sheet 标签、点击 / 方向键切换、`#TC14` hash 恢复、40 张内嵌图、`SELFCHECK_OK`、0 console error）。两者都在 `.scratch/` 下，不进提交；三份测试环境已由 TC14 关闭。
+- 编号：代码注释、协议文档与 PLAN 中原本写的 D246 全部机械改为 D248；main 的 D246 / D247 在合并冲突解决时原样保留。
