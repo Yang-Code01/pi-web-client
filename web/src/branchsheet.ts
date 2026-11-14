@@ -104,6 +104,9 @@ export class BranchSheet {
   private foldedGroups: Record<string, boolean> = (() => {
     try { return (JSON.parse(localStorage.getItem("pi.goGroupsFolded") ?? "null") as Record<string, boolean> | null) ?? {}; } catch { return {}; }
   })();
+  /** 对照下拉里「全部 N 个分支」这一折的展开状态；默认收起，换检索词就收回。 */
+  private cmpAllOpen = false;
+  private cmpFoldKey = "";
   /** 只要最新那次请求的答案：换对照分支拉得快时，旧答案不许盖新的。 */
   private ticket = 0;
   private esc: ((ev: KeyboardEvent) => void) | null = null;
@@ -433,9 +436,11 @@ export class BranchSheet {
 
   /** 候选 = 自动 + 本地/远程两组；输入是子串检索，也能直接回车用任意 ref。 */
   private paintCmpMenu(menu: HTMLElement, query: string, forceOpen = false): void {
-    if (forceOpen && !menu.hidden) { menu.hidden = true; return; }
+    if (forceOpen && !menu.hidden) { menu.hidden = true; this.cmpAllOpen = false; this.cmpFoldKey = ""; return; }
     menu.hidden = false;
     const q = query.trim().toLowerCase();
+    // 输入变了就收回「全部」：检索是主线，折叠区只是给「想挑别的分支」留的出口。
+    if (query.trim() !== this.cmpFoldKey) { this.cmpFoldKey = query.trim(); this.cmpAllOpen = false; }
     const all = [
       { name: "", label: tr("自动 · 跟随 origin/HEAD"), group: tr("自动") },
       ...(this.refs?.groups.flatMap((g) => g.refs.map((r) => ({ name: r.name, label: r.name, group: tr(g.name) }))) ?? []),
@@ -443,7 +448,24 @@ export class BranchSheet {
     ];
     const hit = all.filter((r) => !q || r.label.toLowerCase().includes(q) || r.group.toLowerCase().includes(q));
     const list = el("div", "go-cmp-list");
-    for (const r of hit) {
+    // 有检索词时列表会被筛短（图里只剩当前对照那一条），想挑别的分支就得先清空输入。
+    // 于是补一折「全部 N 个分支」：默认收起，点开才铺全量；检索词一改又收回。
+    const branchTotal = all.filter((r) => r.name !== "").length;
+    const folded = Boolean(q) && all.some((r) => r.name !== "" && !hit.includes(r));
+    if (folded) {
+      const head = btn("", "go-cmp-fold");
+      head.dataset.cmpFold = "1";
+      head.setAttribute("aria-expanded", String(this.cmpAllOpen));
+      head.title = tr("展开看所有分支");
+      head.append(
+        el("span", "go-cmp-caret", this.cmpAllOpen ? "▾" : "▸"),
+        el("span", "go-cmp-fold-name", tr("全部 {p1} 个分支", { p1: branchTotal })),
+        el("span", "go-cmp-fold-count", tr("匹配 {p1}", { p1: hit.filter((r) => r.name !== "").length })),
+      );
+      head.onclick = () => { this.cmpAllOpen = !this.cmpAllOpen; this.paintCmpMenu(menu, query); };
+      list.append(head);
+    }
+    for (const r of folded && this.cmpAllOpen ? all : hit) {
       const b = btn(`${r.label} · ${r.group}`, "go-cmp-pick");
       b.dataset.cmpPick = r.name;
       b.classList.toggle("on", r.name === this.base);

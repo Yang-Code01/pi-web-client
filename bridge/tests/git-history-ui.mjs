@@ -218,6 +218,20 @@ try {
   await page.waitForSelector(".go-cmp-menu:not([hidden]) [data-cmp-pick]");
   check("检索出 origin/main", await page.locator('.go-cmp-menu [data-cmp-pick="origin/main"]').count() === 1);
   check("检索有「用输入的 ref 对照」", await page.locator(".go-cmp-menu [data-cmp-use='1']").count() === 1);
+  // 报告的那条：输入框里有分支名时列表只剩一两条，想挑别的分支得先清空输入。
+  // 补一折「全部 N 个分支」：默认收起，点开铺全量，再点收回。
+  const foldedPicks = await page.locator(".go-cmp-menu [data-cmp-pick]").count();
+  check("检索后列表被筛短", foldedPicks < 5, `picks=${foldedPicks}`);
+  check("底部有一折「全部」", await page.locator(".go-cmp-menu [data-cmp-fold='1']").count() === 1);
+  check("折叠默认收起", await page.getAttribute(".go-cmp-menu [data-cmp-fold='1']", "aria-expanded") === "false");
+  const foldText = (await page.textContent(".go-cmp-menu [data-cmp-fold='1']")) ?? "";
+  check("折头写着总数与匹配数", /全部 \d+ 个分支/.test(foldText) && /匹配 \d+/.test(foldText), foldText.trim());
+  await page.click(".go-cmp-menu [data-cmp-fold='1']");
+  const allPicks = await page.locator(".go-cmp-menu [data-cmp-pick]").count();
+  check("展开后铺全量（含 40 条 bulk）", allPicks >= 43, `picks=${allPicks}`);
+  check("展开态 aria 说得对", await page.getAttribute(".go-cmp-menu [data-cmp-fold='1']", "aria-expanded") === "true");
+  await page.click(".go-cmp-menu [data-cmp-fold='1']");
+  check("再点收回", await page.locator(".go-cmp-menu [data-cmp-pick]").count() === foldedPicks);
   await page.fill(".go-cmp-input", "HEAD~1");
   await page.press(".go-cmp-input", "Enter");
   await page.waitForFunction(() => {
@@ -233,6 +247,16 @@ try {
     const el = document.querySelector(".go-cmp-input");
     return el instanceof HTMLInputElement && el.value === "origin/main";
   }, null, { timeout: 20000 });
+  // 报告里的原样复现：已选好对照，再点 ▾ 打开下拉。重载完 menu 会换成收起的新元素，
+  // 先等它收起来再点，否则点的是旧菜单（看到「打开」其实是把它关了）。
+  await page.waitForFunction(() => document.querySelector(".go-cmp-menu")?.hidden === true, null, { timeout: 20000 });
+  await page.click(".go-cmp-toggle");
+  await page.waitForSelector(".go-cmp-menu:not([hidden]) [data-cmp-fold='1']");
+  const picked = await page.locator(".go-cmp-menu [data-cmp-pick]").count();
+  check("已选对照后点 ▾ 也只有匹配项 + 一折", picked <= 3, `picks=${picked}`);
+  await page.click(".go-cmp-menu [data-cmp-fold='1']");
+  check("这一折也能铺全量", await page.locator(".go-cmp-menu [data-cmp-pick]").count() >= 43);
+  await page.click(".go-cmp-toggle");
 
   // 差异 tab：文件列表 + 并排文本行。
   await page.click('.go-tabs [data-tab="diff"]');
