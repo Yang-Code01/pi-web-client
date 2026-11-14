@@ -646,6 +646,10 @@ try {
   const pic = await imgs();
   check("两张图都挂上了", pic.length === 2, JSON.stringify(pic));
   check("图片字节真的取到了", pic.every((i) => i.nw > 0), JSON.stringify(pic));
+  const positioned = await page.evaluate(() =>
+    [...document.querySelectorAll(".sd-img")].every((n) => getComputedStyle(n).position === "absolute"),
+  );
+  check("图片是绝对定位（不占文档流）", positioned, String(positioned));
   const fixed = pic.find((i) => i.w === 120 && i.h === 80);
   check("一格锚点按固定尺寸放（120×80）", !!fixed, JSON.stringify(pic));
   const spanned = pic.find((i) => i.w > 120);

@@ -49,7 +49,9 @@ const BUILTIN: Record<number, string> = {
 /** 数字格式代码：内置 id 或自定义代码。null 表示 General。 */
 export function formatCode(numFmtId: number, custom: Map<number, string>): string | null {
   const own = custom.get(numFmtId);
-  if (own !== undefined) return own;
+  // 有的生成器把 General 存成自定义格式（164 "General"）：它还是 General，不能当字面量
+  // 拼到数字前面，否则 2 会显示成 General2。
+  if (own !== undefined) return own.trim().toLowerCase() === "general" ? null : own;
   const builtin = BUILTIN[numFmtId];
   return builtin && builtin !== "General" ? builtin : null;
 }
@@ -217,7 +219,6 @@ function formatDateShape(value: number, code: string, date1904: boolean): string
     const lower = ch.toLowerCase();
     if ("ymdhs".includes(lower)) {
       const len = tokLen(i);
-      const raw = text.slice(i, i + len).toLowerCase();
       if (lower === "y") out += len >= 3 ? pad(p.y, 4) : pad(p.y % 100);
       else if (lower === "d") {
         if (len >= 4) out += DAYS[p.wd];
