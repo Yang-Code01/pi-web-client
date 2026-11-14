@@ -177,6 +177,29 @@ const gapBelow = (page) => page.evaluate(() => {
   return s.scrollHeight - s.scrollTop - s.clientHeight;
 });
 const userCount = (page) => page.locator(".chat-scroll .msg.user").count();
+/** 展开面板：收起时悬停那块透明的 .turn-hit，等它真的展开并落定（`.open` + `.settled`）。
+ *  已经展开时再 hover .turn-hit 会撞上 pointer-events:none —— 它被自己的面板盖住了。 */
+async function openPanel(page) {
+  if (await page.evaluate(() => document.querySelector(".turn-rail").classList.contains("open"))) return;
+  await page.locator(".turn-hit").hover();
+  await until(async () => page.evaluate(() => document.querySelector(".turn-rail").classList.contains("open")), 4000, "the list opens");
+  await until(async () => page.evaluate(() => document.querySelector(".turn-rail").classList.contains("settled")), 4000, "the expansion settles");
+}
+/** 把面板滚到最下面（最新那一轮）。 */
+async function listToBottom(page) {
+  await page.evaluate(() => {
+    const l = document.querySelector(".turn-list");
+    l.scrollTop = l.scrollHeight;
+  });
+  await sleep(250);
+}
+/** 把面板滚到最上面（ghost 那一段在顶上）：窗口化只画看得见的那几行，不滚过去 DOM 里就没有它们。 */
+async function listToTop(page) {
+  await page.evaluate(() => {
+    document.querySelector(".turn-list").scrollTop = 0;
+  });
+  await sleep(250);
+}
 
 let browser;
 try {
@@ -191,27 +214,43 @@ try {
   await until(async () => (await userCount(page)) === 20, 8000, "20 loaded rounds");
   await sleep(300);
 
-  // 1) 未载入的那一段以 ghost 行占位；总数是整段会话的轮数。
+  // 1) 未载入的那一段以 ghost 行占位（320 轮里 300 轮还没载入）。行是窗口化的，只画看得见的
+  //    那几行 —— 所以这里先把面板展开、滚到最上面，再看最前面那几条是不是 ghost。
+  await openPanel(page);
+  await listToTop(page);
+  const total320 = await page.evaluate(() => {
+    const l = document.querySelector(".turn-list");
+    return Math.round(Number(getComputedStyle(document.querySelector(".turn-rail")).getPropertyValue("--turn-rows-h").replace("px", "")) / 28);
+  });
   const rows = page.locator(".turn-row");
   const ghosts = await page.locator(".turn-row.ghost").count();
-  log("rows:", await rows.count(), "ghosts:", ghosts);
-  assert((await rows.count()) === 320, `the list holds every round (got ${await rows.count()})`);
-  assert(ghosts === 300, `the older 300 rounds are ghosts (got ${ghosts})`);
+  log("rendered rows:", await rows.count(), "ghosts on screen:", ghosts, "rounds (rows-h/28 ≈):", total320);
+  assert((await rows.count()) > 3 && (await rows.count()) < 320, `the rows are windowed (got ${await rows.count()})`);
+  assert(ghosts > 0, `the top of the list is ghost rows (got ${ghosts})`);
 
   // 2) 点第 4 轮（未载入）→ 自动往回翻页，直到它到货、顶到视口、闪一下。
-  await page.locator(".turn-rail").hover();
-  await until(async () => page.locator(".turn-list").isVisible(), 4000, "the list opens");
-  const target = await page.evaluate(() => document.querySelectorAll(".turn-row")[3].textContent.trim());
+  // 行的 DOM 顺序不等于轮次顺序（窗口化会复用节点、新节点补在末尾），一律按 data-i 找。
+  const target = await page.evaluate(() => document.querySelector('.turn-row[data-i="3"]')?.textContent?.trim() ?? null);
   log("target row:", JSON.stringify(target));
-  await page.locator(".turn-row").nth(3).click();
+  assert(target !== null && target.includes("第 4 轮"), `the 4th row is the 4th round (got ${JSON.stringify(target)})`);
+  await page.locator('.turn-row[data-i="3"]').click();
   await until(async () => (await userCount(page)) > 20, 20000, "older pages arrive");
+  // 高亮只亮 1200ms，而平滑滚动要飞一阵 —— 在等落点的同时记下「它闪过了没有」。
+  let flashed = false;
   await until(async () => {
-    const r = await rect(page, ".chat-scroll .msg.user", 3);
-    return r !== null && Math.abs(r.top - (await paneTop(page)) - 6) < 20;
+    const state = await page.evaluate(() => {
+      const users = [...document.querySelectorAll(".chat-scroll .msg.user")];
+      const pane = document.querySelector(".chat-scroll").getBoundingClientRect();
+      const hit = users.findIndex((m) => m.classList.contains("turn-flash"));
+      const target = users[3];
+      return { flash: hit, top: target ? target.getBoundingClientRect().top - pane.top : null };
+    });
+    if (state.flash === 3) flashed = true;
+    return state.top !== null && Math.abs(state.top - 6) < 20;
   }, 20000, "the 4th round reaches the top");
   const landed = await rect(page, ".chat-scroll .msg.user", 3);
   log("round 4 top:", landed.top.toFixed(1), "pane:", (await paneTop(page)).toFixed(1), "gap below:", await gapBelow(page), "requests:", olderRequests, "loaded:", await userCount(page));
-  assert(await page.locator(".chat-scroll .msg.user").nth(3).evaluate((e) => e.classList.contains("turn-flash")), "the target round flashes");
+  assert(flashed, "the target round flashes while the jump lands");
   assert(await page.locator(".chat-jump").isVisible(), "auto-paging jump stops following");
   // `.turn-note` 是常驻节点（turns.ts 建一次，setNote(null) 只把它 hidden 起来），所以看可见性。
   assert(!(await page.locator(".turn-note").isVisible()), "no failure note on a successful jump");
@@ -220,10 +259,13 @@ try {
 
   // 2b) 跳完以后「你在哪一轮」得对得上 —— 行上的 cur 与刻度上的 cur 都指向第 4 轮。
   const curRow = await page.evaluate(() => document.querySelector(".turn-row.cur")?.textContent?.trim() ?? null);
-  const curTicks = await page.evaluate(() => [...document.querySelectorAll(".turn-tick.cur")].map((t) => t.dataset.i));
-  log("cur row:", JSON.stringify(curRow), "cur ticks:", JSON.stringify(curTicks));
+  const curDash = await page.evaluate(() => {
+    const row = document.querySelector(".turn-row.cur");
+    return row ? row.querySelector(".dash").getBoundingClientRect().width : 0;
+  });
+  log("cur row:", JSON.stringify(curRow), "cur dash width:", curDash);
   assert(curRow !== null && curRow.includes("第 4 轮"), `the current row is the round we landed on (got ${JSON.stringify(curRow)})`);
-  assert(curTicks.length > 0, "at least one tick is marked current");
+  assert(curDash > 10, `the current dash is the long one (got ${curDash})`);
 
   // 2b2) 「你在哪」跟着视口顶部走：滚到第 200 轮，行上的 cur 必须正好是第 200 轮（320 轮已全载入）。
   const at200 = await page.evaluate(() => {
@@ -238,9 +280,13 @@ try {
   log("scrolled to round 200 (scrollTop", Math.round(at200), ") → cur row:", JSON.stringify(cur200?.slice(0, 10)));
   assert(cur200 !== null && cur200.startsWith("第 200 轮"), `the current row follows the viewport top (got ${JSON.stringify(cur200)}`);
 
-  // 2c) 键盘这条路：Tab 进带子、Enter 落在那一轮的顶上（列表盖着刻度列，鼠标够不着刻度本身）。
-  const tickRound = await page.evaluate(() => Number(document.querySelectorAll(".turn-tick")[8].dataset.i));
-  await page.evaluate(() => document.querySelectorAll(".turn-tick")[8].focus());
+  // 2c) 键盘这条路：焦点进到某一行上（面板自己会展开），Enter 落在那一轮的顶上。
+  await openPanel(page);
+  const tickRound = await page.evaluate(() => {
+    const row = [...document.querySelectorAll(".turn-row")].sort((a, b) => Number(a.dataset.i) - Number(b.dataset.i))[8];
+    row.focus();
+    return Number(row.dataset.i);
+  });
   await page.keyboard.press("Enter");
   await sleep(50);
   const kbFlash = await page.evaluate(() => document.querySelector(".chat-scroll .msg.user.turn-flash")?.textContent?.slice(0, 12) ?? null);
@@ -249,9 +295,9 @@ try {
   await sleep(600);
 
   // 3) 中途换会话：平滑滚动半路切到另一条，新会话不能被带偏（仍停在底部、仍在跟流）。
-  await page.locator(".turn-rail").hover();
-  await until(async () => page.locator(".turn-list").isVisible(), 4000, "the list opens again");
-  await page.locator(".turn-row").nth(319).click();   // 最后一轮：从第 4 轮跳过去，平滑滚动要飞一阵
+  await openPanel(page);
+  await listToBottom(page);
+  await page.locator(".turn-row").last().click();   // 最后一轮：从第 4 轮跳过去，平滑滚动要飞一阵
   await sleep(80);
   await page.locator('.session-card[data-id="probe-odd"]').click();
   await until(async () => (await userCount(page)) === 4, 8000, "switched to the 4-round session");
@@ -262,9 +308,10 @@ try {
   // 4) 索引里有一条正文没有的轮次：点了就说一声，3 秒后自己消失，不把带子卡在 busy。
   const busy = await page.locator(".turn-rail.busy").count();
   assert(busy === 0, "the rail is not left spinning");
-  await page.locator(".turn-rail").hover();
-  await until(async () => page.locator(".turn-list").isVisible(), 4000, "the list opens on the odd session");
+  await openPanel(page);
+  await listToTop(page);
   const ghostRows = page.locator(".turn-row.ghost");
+  await until(async () => (await ghostRows.count()) === 1, 4000, "the not-loaded round shows up as a ghost row");
   log("odd session ghost rows:", await ghostRows.count());
   assert((await ghostRows.count()) === 1, `one round is missing from the transcript index (got ${await ghostRows.count()})`);
   await ghostRows.first().click();

@@ -1,5 +1,5 @@
 /**
- * Probe: 轮次刻度带 —— 点**最后一行/最后一根刻度**，也要落在「这一轮的输入」上。
+ * Probe: 轮次刻度带 —— 点**最后一行/最后一根短横**，也要落在「这一轮的输入」上。
  *
  * 老行为（D60）把最后一轮特判成「回到底部并继续跟流」：回答一长，人就被甩到几千像素外的末尾，
  * 看不到自己点的那句输入。这里用一条 4 轮的假会话验两件事：
@@ -160,6 +160,17 @@ const paneTop = async (page) => (await rect(page, ".chat-scroll")).top;
 const lastUserSel = ".chat-scroll .msg.user";
 const userCount = (page) => page.locator(lastUserSel).count();
 
+/** 展开面板：收起时悬停那块透明的 .turn-hit，等它真的展开并落定（`.open` + `.settled`）。
+ *  `.turn-list` 的 isVisible() 只看元素有没有尺寸，被 clip-path 裁掉时也是 true，靠不住；
+ *  已经展开时再 hover .turn-hit 会撞上 pointer-events:none —— 它被自己的面板盖住了。 */
+async function openPanel(page) {
+  if (await page.evaluate(() => document.querySelector(".turn-rail").classList.contains("open"))) return;
+  await page.locator(".turn-hit").hover();
+  await until(async () => page.evaluate(() => document.querySelector(".turn-rail").classList.contains("open")), 4000, "the list opens");
+  await until(async () => page.evaluate(() => document.querySelector(".turn-rail").classList.contains("settled")), 4000, "the expansion settles");
+}
+
+
 /** 点一行/刻度之后量「那一轮的用户气泡在哪」。`i` 是用户消息在正文里的序号。 */
 async function checkLandsOn(page, i, label, flash) {
   const top = await paneTop(page);
@@ -187,24 +198,23 @@ try {
   await until(async () => (await gapBelow(page)) < 4, 5000, "the transcript follows to the bottom");
   await sleep(400);
 
-  const ticks = await page.locator(".turn-tick").count();
-  assert(ticks === 4, `4 rounds = 4 ticks (got ${ticks})`);
+  const rows = await page.locator(".turn-row").count();
+  assert(rows === 4, `4 rounds = 4 rows (got ${rows})`);
 
-  // 1) 最后一根刻度 → 落在最后一轮的输入上（不是末尾）。
-  //    指针扫到带子上时列表会盖住刻度那一列（D60 的「融合同一个框」），所以鼠标点不到刻度；
+  // 1) 最后一根短横 → 落在最后一轮的输入上（不是末尾）。
+  //    收起时那一列短横只是它的「影子」形态（指针落上去就会展开成面板，见 D264），
   //    这里用 evaluate 直接触发它的 click（键盘聚焦 + Enter 是同一条路），点的仍是那个处理器。
   await page.mouse.move(40, 40);
-  await page.evaluate(() => document.querySelectorAll(".turn-tick")[document.querySelectorAll(".turn-tick").length - 1].click());
+  await page.evaluate(() => document.querySelectorAll(".turn-row")[document.querySelectorAll(".turn-row").length - 1].click());
   const flash1 = await flashing(page, 3);
-  await checkLandsOn(page, 3, "last tick", flash1);
-  await page.screenshot({ path: path.join(OUT, "1-last-tick.png") });
+  await checkLandsOn(page, 3, "last dash", flash1);
+  await page.screenshot({ path: path.join(OUT, "1-last-dash.png") });
 
   // 2) 回到末尾，再从展开的列表里点最后一行 → 同样落在最后一轮的输入上。
   await page.locator(".chat-jump").click();
   await until(async () => (await gapBelow(page)) < 4, 5000, "back at the bottom");
   await sleep(300);
-  await page.locator(".turn-rail").hover();
-  await until(async () => page.locator(".turn-list").isVisible(), 4000, "the list opens");
+  await openPanel(page);
   const cur = await page.evaluate(() => [...document.querySelectorAll(".turn-row")].findIndex((r) => r.classList.contains("cur")));
   assert(cur === 3, `at the bottom the last row is current (got ${cur})`);
   await page.locator(".turn-row").last().click();
@@ -213,8 +223,7 @@ try {
   await page.screenshot({ path: path.join(OUT, "2-last-row.png") });
 
   // 3) 中间一行照旧：别为了最后一轮把普通行带坏。
-  await page.locator(".turn-rail").hover();
-  await until(async () => page.locator(".turn-list").isVisible(), 4000, "the list opens again");
+  await openPanel(page);
   await page.locator(".turn-row").nth(1).click();
   const flash3 = await flashing(page, 1);
   await checkLandsOn(page, 1, "middle row", flash3);
