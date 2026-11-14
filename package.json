@@ -39,6 +39,7 @@
     "test:dirpath": "node --experimental-strip-types web/tests/dirpath-unit.mjs",
     "test:commands": "node --experimental-strip-types web/tests/commands-unit.mjs",
     "test:jira": "node bridge/tests/jira-search-unit.mjs && node bridge/tests/jira-e2e.mjs && node web/tests/jira-unit.mjs",
+    "test:mail": "node --experimental-strip-types bridge/tests/mail-unit.mjs && node --experimental-strip-types web/tests/mail-unit.mjs",
     "test:skill": "node bridge/tests/skill-implicit.mjs",
     "test:models": "node bridge/tests/models-unit.mjs",
     "test:stat": "node bridge/tests/stat-path.mjs",

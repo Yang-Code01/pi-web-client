@@ -78,6 +78,7 @@ import { marketDelete, marketInstall, marketList, marketPublish, marketSources, 
 import { createWriteLock } from "./writelock.ts";
 import { answer as answerLogin, cancel as cancelLogin, listProviders, login as startLogin, logout as logoutProvider } from "./pilogin.ts";
 import { handleJira, readAttachmentRoot } from "./jira.ts";
+import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
 import { handleSysmanage } from "./sysmanage.ts";
 import { handleHotdeploy } from "./hotdeploy.ts";
 
@@ -318,13 +319,16 @@ function dropStaleApplies(): void {
   for (const [k, v] of pendingApply) if (Date.now() - v.at > 10 * 60_000) pendingApply.delete(k);
 }
 
-const pendingPreview = new Map<string, { ws: WebSocket; settle: (ack: PreviewAck) => void }>();
+const pendingPageAck = new Map<string, { ws: WebSocket; settle: (ack: PageAck) => void }>();
 
-interface PreviewAck {
+/** 页面回执的通用形状：`preview.open.done` 与 `mail.confirm.done` 共用同一张 reqId 结算表。 */
+interface PageAck {
   ok: boolean;
   reason?: string;
   text?: string;
 }
+
+type PreviewAck = PageAck;
 
 /** 页面回执的等待上限：15 秒够一个慢标签页把弹窗画出来，也不至于让模型干等太久。 */
 const PREVIEW_ACK_MS = (() => {
@@ -333,24 +337,56 @@ const PREVIEW_ACK_MS = (() => {
 })();
 
 /** 投一帧给一个页签，等它的回执；超时或那条 ws 关掉都算 `no-ack`（结算一次，别泄漏）。 */
-function askPreviewAck(client: WebSocket, paint: (reqId: string) => void): Promise<PreviewAck> {
+function askPageAck(client: WebSocket, paint: (reqId: string) => void, timeoutMs: number): Promise<PageAck> {
   return new Promise((resolve) => {
     if (client.readyState !== WebSocket.OPEN) {
       resolve({ ok: false, reason: "no-ack" });
       return;
     }
     const reqId = randomUUID();
-    const settle = (ack: PreviewAck) => {
-      const entry = pendingPreview.get(reqId);
+    const settle = (ack: PageAck) => {
+      const entry = pendingPageAck.get(reqId);
       if (!entry) return;
-      pendingPreview.delete(reqId);
+      pendingPageAck.delete(reqId);
       clearTimeout(timer);
       resolve(ack);
     };
-    const timer = setTimeout(() => settle({ ok: false, reason: "no-ack" }), PREVIEW_ACK_MS);
-    pendingPreview.set(reqId, { ws: client, settle });
+    const timer = setTimeout(() => settle({ ok: false, reason: "no-ack" }), timeoutMs);
+    pendingPageAck.set(reqId, { ws: client, settle });
     paint(reqId);
   });
+}
+
+/** 预览的闸口：页面有 15 秒把面板画出来并回执。 */
+function askPreviewAck(client: WebSocket, paint: (reqId: string) => void): Promise<PageAck> {
+  return askPageAck(client, paint, PREVIEW_ACK_MS);
+}
+
+/** 邮件「发送前确认」的闸口要比预览宽松得多：用户得读收件人、主题、正文才敢点。 */
+const MAIL_CONFIRM_MS = (() => {
+  const n = Number(process.env.PI_WEB_MAIL_CONFIRM_MS ?? 300_000);
+  return Number.isFinite(n) && n > 0 ? n : 300_000;
+})();
+
+/**
+ * 问「正在看这个会话」的页面：「这封信发不发？」
+ * 一个页面都没有就是 `no-page` —— 桥从不替用户点确认，也不把「没人看见」当成「发了」。
+ */
+async function askMailConfirm(sessionId: string, req: MailConfirmRequest, wss: WebSocketServer): Promise<PageAck> {
+  const pages: WebSocket[] = [];
+  for (const client of wss.clients) {
+    if ((client as any).watching === sessionId && client.readyState === WebSocket.OPEN) pages.push(client);
+  }
+  if (!pages.length) return { ok: false, reason: "no-page" };
+  return firstPreviewAck(
+    pages.map((client) =>
+      askPageAck(
+        client,
+        (reqId) => client.send(JSON.stringify({ type: "mail.confirm", sessionId, reqId, mail: req })),
+        MAIL_CONFIRM_MS,
+      ),
+    ),
+  );
 }
 
 /** 第一个「有结论」的回执说了算：`stale`（这张页签没在看）要跳过，否则它会盖掉真正接住的那页。 */
@@ -685,6 +721,24 @@ async function main(): Promise<void> {
       return json(res, 200, { ok: false, reason: "no-ack", text: "页面没有回应这次打开（可能刚关掉会话或在处理别的操作）。" });
     }
 
+    // ------------------------------------------------------------ 邮箱工具口 (loopback only)
+    // `mail_*` 工具跑在子进程里，没有 cookie：和 /api/ask、/api/preview/open 一样站在 cookie 闸之前，
+    // 只认回环对端 + 会话级 token。策略、凭据、发送全在桥这一侧，扩展只负责转发。
+    if (url.pathname.startsWith("/api/mail/tool/") && req.method === "POST") {
+      if (publicReq) return json(res, 403, { ok: false, code: "tunnel", error: "邮箱工具口只接受本机回环的请求（公网隧道进不来）。" });
+      const peer = req.socket.remoteAddress ?? "";
+      if (!isLoopbackPeer(peer)) return json(res, 403, { ok: false, code: "non-loopback", error: "邮箱工具口只接受本机回环的请求。" });
+      const handled = await handleMailTool(req, res, url, {
+        publicReq,
+        byToken: (t) => {
+          const session = sessions.byLoopbackToken(t);
+          return session ? { id: session.state.id } : null;
+        },
+        confirm: (sid, mail) => askMailConfirm(sid, mail, wss),
+      });
+      if (handled) return;
+    }
+
     // ------------------------------------------------------------ 产物基线 (loopback only, D208)
     // `artifact-snapshot` 扩展在 `tool_call` 里等这个请求，回去以后 pi 才真正写文件 —— 所以这里读到的
     // 一定是写入前的字节。和 /api/ask、/api/preview/open 一样：只认回环 + 会话级 token，没有 cookie。
@@ -930,6 +984,7 @@ async function main(): Promise<void> {
       return;
 
     // #248 Jira 面板：单站点、只读、凭据不出桥。路由都在 jira.ts 里，这里只接线。
+    if (await handleMail(req, res, url, { publicReq, confirm: (sid, mail) => askMailConfirm(sid, mail, wss) })) return;
     if (await handleJira(req, res, url, { publicReq })) return;
 
     if (url.pathname === "/api/me") {
@@ -2037,7 +2092,7 @@ async function main(): Promise<void> {
       stopChildWatches();
       dropClient(ws);
       // 这条链接上还没回执的投递再也不会有人接：结算成 no-ack，别把 HTTP 请求挂到超时。
-      for (const entry of pendingPreview.values()) {
+      for (const entry of pendingPageAck.values()) {
         if (entry.ws === ws) entry.settle({ ok: false, reason: "no-ack" });
       }
       for (const id of ((ws as any).logins ?? []) as string[]) cancelLogin(id);
@@ -2204,9 +2259,20 @@ async function main(): Promise<void> {
              if ((ws as any).watching === sid) (ws as any).watching = null;
              return;
            }
+          case "mail.confirm.done": {
+            // 页面对一条「这封信发不发」的回答：只认投给**这条 ws** 的 reqId。
+            const entry = pendingPageAck.get(String(msg.reqId ?? ""));
+            if (!entry || entry.ws !== ws) return;
+            entry.settle({
+              ok: msg.ok === true,
+              reason: msg.ok === true ? undefined : String(msg.reason ?? ""),
+              text: msg.text ? String(msg.text) : undefined,
+            });
+            return;
+          }
           case "preview.open.done": {
             // 页面对一条 `preview.open` 的回应（#224 复审）：只有投给**这条 ws** 的 reqId 才认。
-            const entry = pendingPreview.get(String(msg.reqId ?? ""));
+            const entry = pendingPageAck.get(String(msg.reqId ?? ""));
             if (!entry || entry.ws !== ws) return;
             entry.settle({
               ok: msg.ok === true,
