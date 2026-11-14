@@ -1,4 +1,4 @@
-import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetEditOp, SheetMatches, SheetMeta, SheetWindow, TrDoc, TrDocResp, TrJob, TrPrefsResp, TrSyncResp, TunnelState } from "./types.ts";
+import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetEditOp, SheetMatches, SheetMeta, SheetStructOp, SheetWindow, TrDoc, TrDocResp, TrJob, TrPrefsResp, TrSyncResp, TunnelState } from "./types.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
 import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
 
@@ -242,6 +242,13 @@ export const api = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token, sheet, ops }),
+    }),
+  /** #434: 合并 / 插入删除行列 / 排序，立刻写回。 */
+  sheetStruct: (token: string, sheet: string, op: SheetStructOp) =>
+    req<{ mtime: number; size: number; rows: number }>("/api/sheet/struct", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, sheet, op }),
     }),
   /** #427: one image from the workbook, addressed by its zip part inside this sheet's meta. */
   sheetMediaUrl: (token: string, sheet: string, id: string) =>

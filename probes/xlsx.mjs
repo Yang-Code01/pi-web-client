@@ -782,6 +782,51 @@ try {
   await page.locator(".sd-close").first().click();
   await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
 
+  // ---------------------------------------------------------------- 图表 + 结构（#434）
+  // 图表要按 drawing 的锚点摆在格子上；合并 / 插行要真的写进文件再重读。
+  await openSheet("chart.xlsx");
+  const chartBox = await page.evaluate(() => {
+    const n = document.querySelector(".sd-chart");
+    if (!n) return null;
+    const r = n.getBoundingClientRect();
+    return {
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      svg: !!n.querySelector("svg"),
+      rects: n.querySelectorAll("rect").length,
+      title: (n.textContent ?? "").slice(0, 12),
+    };
+  });
+  check("图表画出来了", !!chartBox?.svg && chartBox.w > 120 && chartBox.h > 80, JSON.stringify(chartBox));
+  check("柱形图有柱子", (chartBox?.rects ?? 0) > 3, String(chartBox?.rects));
+  check("图表标题画在图上", (chartBox?.title ?? "").includes("月度销量"), String(chartBox?.title));
+  await page.screenshot({ path: path.join(OUT, "11-chart.png") });
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+
+  await openSheet("styled.xlsx");
+  await page.locator(".sd-editbtn").click();
+  await page.locator('.sd-cell[data-r="2"][data-c="1"]').click();
+  await page.keyboard.down("Shift");
+  await page.locator('.sd-cell[data-r="2"][data-c="3"]').click();
+  await page.keyboard.up("Shift");
+  await page.locator(".sd-rb-tab[data-pane=\"home\"]").click();
+  await page.locator('.sd-rb-b[title="把选中区域合并成一格"]').click();
+  await until(async () => (await page.locator('.sd-cell[data-r="2"][data-c="2"]').count()) === 0, 20000, "merged");
+  const mergedW = await page.evaluate(() =>
+    Math.round(document.querySelector('.sd-cell[data-r="2"][data-c="1"]').getBoundingClientRect().width),
+  );
+  check("合并后一格占三列", mergedW > 150, String(mergedW));
+  await page.evaluate(() => document.querySelector(".sd-view")?.scrollTo(0, 0));
+  await page.locator('.sd-cell[data-r="1"][data-c="0"]').click();
+  await page.locator('.sd-rb-tab[data-pane="insert"]').click();
+  await page.locator('.sd-rb-b[title="在当前行上方插入一行"]').click();
+  await until(async () => /已更新/.test((await page.locator(".sd-foot").textContent()) ?? ""), 20000, "row inserted");
+  check("插行后状态栏确认", true);
+  await page.screenshot({ path: path.join(OUT, "12-struct.png") });
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+
   // ---------------------------------------------------------------- 条件格式（#109）
   // 五类规则都在桥端求值，前端只吃结果：底色、字色、加粗、数据条宽度、图标等级。
   await openSheet("cf.xlsx");
@@ -877,6 +922,20 @@ try {
   const cfHint = await page.evaluate(() => document.querySelector(".sd-cfhint")?.textContent ?? "");
   check("状态条报一条暂不支持", /1\s*条条件格式暂不支持/.test(cfHint), cfHint.trim());
   await page.screenshot({ path: path.join(OUT, "10-cf-bars-icons.png") });
+  // 清条件格式：只删规则，格子自己的底色/字色不动（写回 xl/worksheets/sheetN.xml 的 sqref）。
+  await page.locator(".sd-editbtn").click();
+  await page.locator('.sd-cell[data-r="1"][data-c="1"]').click();
+  await page.keyboard.down("Shift");
+  await page.locator('.sd-cell[data-r="10"][data-c="1"]').click();
+  await page.keyboard.up("Shift");
+  await page.locator(".sd-rb-tab[data-pane=\"home\"]").click();
+  await page.locator('.sd-rb-b[title="清除选中区域的条件格式"]').click();
+  await until(async () => {
+    const bg = await page.evaluate(() => getComputedStyle(document.querySelector('.sd-cell[data-r="1"][data-c="1"]')).backgroundColor);
+    return bg === "rgb(255, 255, 255)";
+  }, 20000, "cf cleared");
+  const cfBar = await page.evaluate(() => document.querySelectorAll('.sd-bar').length);
+  check("清条件格式只清了那一列，数据条还在", cfBar > 0, String(cfBar));
   // ---------------------------------------------------------------- 公式与缺缓存值（#111）
   // 公式只用文件里存的结果；没存结果的格子显空（不猜 0），公式原文留给公式栏 / 悬停 / 状态条。
   await page.locator(".sd-close").first().click();

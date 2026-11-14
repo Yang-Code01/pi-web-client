@@ -7,6 +7,7 @@
  * 悬停说明原因，不做假的按钮。
  */
 import type { SheetGrid } from "./grid.ts";
+import type { SheetStructOp } from "../types.ts";
 
 // i18n-ignore-start 功能区的命令名照 WPS 的中文写法（开始/插入/页面/公式/数据/视图、加粗、冻结窗格…），
 // 用户就是按 WPS 的肌肉记忆找按钮，翻译成英文反而找不到；术语一致性优先于多语言。
@@ -34,6 +35,8 @@ export class Ribbon {
   private readonly tabs = new Map<string, HTMLButtonElement>();
   private readonly items: Item[] = [];
   private readonly pageOpts: { on: () => boolean; toggle: () => void } | null;
+  private readonly structFn: ((op: SheetStructOp) => void) | null;
+  private readonly filterFn: ((col: number | null, value: string | null) => void) | null;
   private current = "home";
 
   /** 浮窗挂上网格之后才能用；按钮只会在那之后被点到。 */
@@ -46,10 +49,17 @@ export class Ribbon {
   constructor(
     grid: () => SheetGrid | null,
     right: HTMLElement[],
-    opts: { find: () => void; page?: { on: () => boolean; toggle: () => void } },
+    opts: {
+      find: () => void;
+      page?: { on: () => boolean; toggle: () => void };
+      struct?: (op: SheetStructOp) => void;
+      filter?: (col: number | null, value: string | null) => void;
+    },
   ) {
     this.getGrid = grid;
     this.pageOpts = opts.page ?? null;
+    this.structFn = opts.struct ?? null;
+    this.filterFn = opts.filter ?? null;
     this.el = el("div", "sd-ribbon");
 
     const head = el("div", "sd-rb-head");
@@ -146,7 +156,7 @@ export class Ribbon {
 
   // ---------------------------------------------------------------- 开始
 
-  private buildHome(opts: { find: () => void }): void {
+  private buildHome(opts: { find: () => void; struct?: (op: SheetStructOp) => void }): void {
     const pane = this.panes.get("home")!;
     const g = this.grid;
 
@@ -167,8 +177,8 @@ export class Ribbon {
       ]),
       this.sep(),
       this.grp("字体", [
-        this.combo("字体名", () => this.grid.activeStyle?.f?.n ?? "Calibri", "sd-rb-fname"),
-        this.combo("字号", () => String(this.grid.activeStyle?.f?.s ?? 11), "sd-rb-fsize"),
+        this.selectFont(),
+        this.selectSize(),
         this.btn("A−", "字号小一号", () => this.stepFont(-1)),
         this.btn("A+", "字号大一号", () => this.stepFont(1)),
         this.toggle("B", "加粗", () => g.applyStyleToSelection({ b: !g.activeStyle?.f?.b }), () => !!g.activeStyle?.f?.b),
@@ -176,6 +186,9 @@ export class Ribbon {
         this.toggle("U", "下划线", () => g.applyStyleToSelection({ u: !g.activeStyle?.f?.u }), () => !!g.activeStyle?.f?.u),
         this.btn("A", "字色：红 / 黑 切换", () => g.applyStyleToSelection({ fc: g.activeStyle?.f?.c === "#C00000" ? "#000000" : "#C00000" }), "sd-rb-fc"),
         this.btn("▨", "填充：黄 / 无 切换", () => g.applyStyleToSelection({ bg: g.activeStyle?.bg === "#FFF2CC" ? null : "#FFF2CC" }), "sd-rb-bg"),
+        this.btn("田", "给选区加细边框（四周 + 网格）", () => g.applyStyleToSelection({ bd: { t: "thin", r: "thin", b: "thin", l: "thin" } }), "sd-rb-bd"),
+        this.btn("▁", "只加下边框", () => g.applyStyleToSelection({ bd: { b: "thin" } }), "sd-rb-bd"),
+        this.btn("◻", "去掉选区边框", () => g.applyStyleToSelection({ bd: { t: "none", r: "none", b: "none", l: "none" } }), "sd-rb-bd"),
       ]),
       this.sep(),
       this.grp("对齐", [
@@ -186,8 +199,22 @@ export class Ribbon {
         this.toggle("↕", "垂直居中", () => g.applyStyleToSelection({ v: "m" }), () => g.activeStyle?.v === "m"),
         this.toggle("下", "底端对齐", () => g.applyStyleToSelection({ v: "b" }), () => g.activeStyle?.v === "b"),
         this.toggle("换行", "自动换行", () => g.applyStyleToSelection({ w: !g.activeStyle?.w }), () => !!g.activeStyle?.w),
+        this.btn("合并", "把选中区域合并成一格", () => {
+          const s = g.selectionBox;
+          opts.struct?.({ t: "merge", r1: s.r0, c1: s.c0, r2: s.r1, c2: s.c1 });
+        }),
+        this.btn("拆", "取消选中区域里的合并", () => {
+          const s = g.selectionBox;
+          opts.struct?.({ t: "unmerge", r1: s.r0, c1: s.c0, r2: s.r1, c2: s.c1 });
+        }),
       ]),
       this.sep(),
+      this.grp("样式", [
+        this.btn("清格式", "清除选中区域的条件格式", () => {
+          const s = g.selectionBox;
+          opts.struct?.({ t: "clearCf", r1: s.r0, c1: s.c0, r2: s.r1, c2: s.c1 });
+        }),
+      ]),
       this.grp("数字", [
         this.btn("常规", "常规格式", () => g.applyStyleToSelection({ nf: 0 })),
         this.btn("¥", "货币（两位小数）", () => g.applyStyleToSelection({ nf: 4 })),
@@ -205,14 +232,56 @@ export class Ribbon {
     );
   }
 
-  /** 字体名 / 字号那种「框」：只显示当前值，点了弹提示（WPS 里是下拉，这里不假装有下拉）。 */
-  private combo(title: string, value: () => string, cls: string): HTMLElement {
-    const box = el("div", `sd-rb-combo ${cls}`.trim());
-    const text = el("span", "", "");
-    const caret = el("span", "sd-rb-caret", "▾");
-    box.title = title;
-    box.append(text, caret);
-    this.items.push({ node: box, refresh: () => (text.textContent = value()) });
+  /** 字体名：真下拉，选项 = 这份表用到的字体 + 常见字体。 */
+  private selectFont(): HTMLElement {
+    const box = el("select", "sd-rb-sel sd-rb-fname");
+    box.title = "字体";
+    const current = (): string => this.grid.activeStyle?.f?.n ?? "Calibri";
+    const fill = (): void => {
+      const used = (this.grid.meta.styles ?? []).map((s) => s.f?.n).filter((x): x is string => !!x);
+      const common = ["Calibri", "Arial", "Times New Roman", "宋体", "微软雅黑", "等线", "黑体", "楷体"];
+      const names = [...new Set([current(), ...used, ...common])];
+      box.replaceChildren(...names.map((n) => {
+        const opt = el("option", "", n);
+        opt.value = n;
+        return opt;
+      }));
+    };
+    fill();
+    this.items.push({
+      node: box,
+      refresh: () => {
+        const v = current();
+        if (![...box.options].some((o) => o.value === v)) fill();
+        if (box.value !== v) box.value = v;
+      },
+    });
+    box.onchange = () => this.grid.applyStyleToSelection({ fn: box.value });
+    return box;
+  }
+
+  /** 字号：真下拉（WPS 的常用档位）。 */
+  private selectSize(): HTMLElement {
+    const box = el("select", "sd-rb-sel sd-rb-fsize");
+    box.title = "字号";
+    const current = (): string => String(this.grid.activeStyle?.f?.s ?? 11);
+    const sizes = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 48];
+    this.items.push({
+      node: box,
+      refresh: () => {
+        const v = current();
+        const all = [...new Set([...sizes.map(String), v])].sort((a, b) => Number(a) - Number(b));
+        if (box.options.length !== all.length) {
+          box.replaceChildren(...all.map((n) => {
+            const opt = el("option", "", n);
+            opt.value = n;
+            return opt;
+          }));
+        }
+        if (box.value !== v) box.value = v;
+      },
+    });
+    box.onchange = () => this.grid.applyStyleToSelection({ fs: Number(box.value) });
     return box;
   }
 
@@ -248,6 +317,13 @@ export class Ribbon {
           const pad = (n: number) => String(n).padStart(2, "0");
           g.writeAt(`${pad(d.getHours())}:${pad(d.getMinutes())}`);
         }),
+      ]),
+      this.sep(),
+      this.grp("行和列", [
+        this.btn("插入行", "在当前行上方插入一行", () => this.structFn?.({ t: "insRow", at: g.cursor.r, n: 1 })),
+        this.btn("插入列", "在当前列左侧插入一列", () => this.structFn?.({ t: "insCol", at: g.cursor.c, n: 1 })),
+        this.btn("删除行", "删掉当前这一行", () => this.structFn?.({ t: "delRow", at: g.cursor.r, n: 1 })),
+        this.btn("删除列", "删掉当前这一列", () => this.structFn?.({ t: "delCol", at: g.cursor.c, n: 1 })),
       ]),
       this.sep(),
       this.grp("插图", [
@@ -319,11 +395,20 @@ export class Ribbon {
         this.btn("取消冻结", "回到文件里的冻结设置", () => g.setFreeze(null)),
       ]),
       this.sep(),
-      this.grp("编辑", [
-        this.btn("查找", "查找 Ctrl+F", opts.find),
-        this.disabled("排序", "预览里不改行序"),
-        this.disabled("筛选", "预览里不做筛选"),
+      this.grp("排序和筛选", [
+        this.btn("升序", "按当前列把选中区域从小到大排", () => {
+          const s = g.selectionBox;
+          this.structFn?.({ t: "sort", r1: s.r0, c1: s.c0, r2: s.r1, c2: s.c1, key: g.cursor.c, desc: false });
+        }),
+        this.btn("降序", "按当前列把选中区域从大到小排", () => {
+          const s = g.selectionBox;
+          this.structFn?.({ t: "sort", r1: s.r0, c1: s.c0, r2: s.r1, c2: s.c1, key: g.cursor.c, desc: true });
+        }),
+        this.btn("筛选", "只显示当前列里和这格相同的行", () => this.filterFn?.(g.cursor.c, g.selectionText)),
+        this.btn("清除筛选", "把筛选出来的行都放回来", () => this.filterFn?.(null, null)),
       ]),
+      this.sep(),
+      this.grp("编辑", [this.btn("查找", "查找 Ctrl+F", opts.find)]),
     );
   }
 

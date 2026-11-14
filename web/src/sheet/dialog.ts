@@ -5,7 +5,7 @@
  * 拖标题栏移动、拖右下角改宽高、拖顶边只改高、双击复原、打开时 clamp 回可视区。
  */
 import { tr, errText, fmtTime, fmtNum } from "../i18n/index.ts";
-import type { SheetEditOp, SheetInfo, SheetMatches, SheetMeta, SheetWindow } from "../types.ts";
+import type { SheetEditOp, SheetStructOp, SheetInfo, SheetMatches, SheetMeta, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
 import { SheetGrid, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP } from "./grid.ts";
 import { Ribbon } from "./ribbon.ts";
@@ -42,6 +42,8 @@ export interface SheetDialogOpts {
   findSheet?: (sheet: string, q: string) => Promise<SheetMatches>;
   /** #427：表里图片的字节地址（`/api/sheet/media?...`）。没有就不画图。 */
   mediaUrl?: (sheet: string, id: string) => string;
+  /** #434：合并 / 插入删除行列 / 排序 / 筛选，立刻落盘（不给就保持只读）。 */
+  saveStruct?: (sheet: string, op: SheetStructOp) => Promise<{ mtime: number; size: number; rows: number }>;
   /** #432：把编辑过的格子写回原文件；不给就保持只读。 */
   saveSheet?: (sheet: string, ops: SheetEditOp[]) => Promise<{ mtime: number; size: number; cells: number }>;
   /** #107：把「文件路径 + A1:C9」交给对话框（只插入，不发送）。 */
@@ -694,6 +696,8 @@ export class SheetDialog {
     if (!this.ribbon) {
       this.ribbon = new Ribbon(() => this.grid, this.acts, {
         find: () => this.openFind(),
+        struct: (op) => void this.applyStruct(op),
+        filter: (col, value) => void this.applyStruct({ t: "filter", c: col ?? 0, value }),
         page: this.page
           ? {
               on: () => this.activeView === "page",
@@ -707,10 +711,36 @@ export class SheetDialog {
     this.ribbon.update();
   }
 
+  /**
+   * #434：结构改动（合并 / 插删行列 / 排序 / 筛选）当场写回文件，然后把元数据重新取一遍
+   * ——行列数和合并区都变了，网格只能重建。没保存的格子改动先拦住，不然坐标会错位。
+   */
+  private pendingMeta: SheetMeta | null = null;
+
+  private async applyStruct(op: SheetStructOp): Promise<void> {
+    const grid = this.grid;
+    if (!grid || !this.opts.saveStruct) return;
+    if (!grid.editing) return;
+    if (grid.dirty) {
+      this.status.textContent = tr("先保存改动，再改结构");
+      return;
+    }
+    try {
+      const out = await this.opts.saveStruct(grid.activeSheet, op);
+      const meta = this.pendingMeta ?? (await this.opts.loadMeta());
+      this.pendingMeta = null;
+      await this.setData(meta, this.opts.fetchWindow);
+      if (this.editOn) this.grid?.setEditMode(true);
+      this.status.textContent = tr("已更新（{p1} 行）", { p1: out.rows });
+    } catch (err) {
+      this.status.textContent = errText(err);
+    }
+  }
+
   /** 源码改过并保存之后换一份数据：行列数都可能变，网格整个重建。 */
   async setData(meta: SheetMeta, fetchWindow: SheetDialogOpts["fetchWindow"]): Promise<void> {
     this.opts.fetchWindow = fetchWindow;
-    this.opts.loadMeta = async () => meta;
+    this.pendingMeta = meta;
     this.grid?.destroy();
     this.grid = null;
     await this.load();
@@ -843,7 +873,8 @@ export class SheetDialog {
   private async load(): Promise<void> {
     this.showMessage(tr("正在读取…"));
     try {
-      const meta = await this.opts.loadMeta();
+      const meta = this.pendingMeta ?? (await this.opts.loadMeta());
+      this.pendingMeta = null;
       if (this.closed) return;
       this.meta = meta;
       // 打开时落在第一张看得见的表上（文件名那格传给 meta.name 的不一定是它）。

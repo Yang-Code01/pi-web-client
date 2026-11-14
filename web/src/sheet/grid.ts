@@ -16,9 +16,11 @@
  * Ctrl+C 出去的是 TSV 纯文本；缩放把行高与列宽同乘一个系数；查找的命中只存坐标。
  */
 import { tr, errText } from "../i18n/index.ts";
+import { chartNode } from "./chart.ts";
 import { clampNum } from "../floatwin.ts";
 import type {
   SheetCell,
+  SheetEdge,
   SheetEditOp,
   SheetInfo,
   SheetMerge,
@@ -126,16 +128,43 @@ function fontPx(st: SheetStyle | undefined, zoom: number): number {
  * #433：把一条补丁叠到原样式上（不修改原对象——原对象是 meta.styles 里的共享值）。
  * 只处理补丁里出现的键，其余原样带过来，所以「只加粗」不会把底色冲掉。
  */
+/** #434：补丁里的边框档位 → CSS（和桥端 style-write 的档位一一对应）。 */
+const EDGE_CSS: Record<SheetEdge, string> = {
+  thin: "1px solid #000000",
+  medium: "2px solid #000000",
+  thick: "3px solid #000000",
+  double: "3px double #000000",
+  dashed: "1px dashed #000000",
+  dotted: "1px dotted #000000",
+  none: "none",
+};
+
 function mergeStyle(base: SheetStyle | undefined, patch: SheetStylePatch): SheetStyle {
   const out: SheetStyle = { ...base };
-  if (patch.b !== undefined || patch.i !== undefined || patch.u !== undefined || patch.fs !== undefined || patch.fc !== undefined) {
+  if (
+    patch.b !== undefined ||
+    patch.i !== undefined ||
+    patch.u !== undefined ||
+    patch.fs !== undefined ||
+    patch.fc !== undefined ||
+    patch.fn !== undefined
+  ) {
     const f = { ...out.f };
     if (patch.b !== undefined) f.b = patch.b ? 1 : undefined;
     if (patch.i !== undefined) f.i = patch.i ? 1 : undefined;
     if (patch.u !== undefined) f.u = patch.u ? 1 : undefined;
     if (patch.fs !== undefined) f.s = patch.fs;
     if (patch.fc !== undefined) f.c = patch.fc;
+    if (patch.fn !== undefined) f.n = patch.fn;
     out.f = f;
+  }
+  if (patch.bd) {
+    const bd = { ...out.bd };
+    for (const side of ["t", "r", "b", "l"] as const) {
+      const edge = patch.bd[side];
+      if (edge !== undefined) bd[side] = EDGE_CSS[edge];
+    }
+    out.bd = bd;
   }
   if (patch.bg !== undefined) {
     if (patch.bg === null) delete out.bg;
@@ -602,6 +631,16 @@ export class SheetGrid {
     this.editMode = on;
     if (!on) this.commitEdit(null);
     this.root.classList.toggle("is-editing", on);
+  }
+
+  /** 元数据（功能区要拿它列字体名）。 */
+  get meta(): SheetMeta {
+    return this.host.meta;
+  }
+
+  /** #434：光标格（排序按这一列排，筛选按这一列的值筛）。 */
+  get cursor(): { r: number; c: number } {
+    return { r: this.focus.r, c: this.focus.c };
   }
 
   /** #433：选区矩形（给功能区做「当前这格是什么状态」）。 */
@@ -1453,6 +1492,7 @@ export class SheetGrid {
     // 编辑框是 cells 的子节点，重建时会被 replaceChildren 冲掉：放回原处继续用。
     if (this.editor) this.cells.append(this.editor.node);
     this.drawImages();
+    this.drawCharts();
     this.drawHandle();
 
     // 换行量出来的行高要在这一帧末尾回填：一次 rebuild，别每格重排一遍。
@@ -1500,6 +1540,43 @@ export class SheetGrid {
       img.style.width = w + "px";
       img.style.height = h + "px";
       nodes.push(img);
+    }
+    if (nodes.length) this.cells.append(...nodes);
+  }
+
+  /**
+   * #434 图表：锚点和图片一样（`from` + `to`），只是内容换成按值画的 SVG。
+   * 不给纸张视图当背景图用——图表是数据，不是像素。
+   */
+  private drawCharts(): void {
+    const charts = this.info().charts;
+    if (!charts?.length) return;
+    const z = this.zoomLevel;
+    const info = this.info();
+    const vx0 = this.view.scrollLeft - this.view.clientWidth;
+    const vx1 = this.view.scrollLeft + this.view.clientWidth * 2;
+    const vy0 = this.view.scrollTop - this.view.clientHeight;
+    const vy1 = this.view.scrollTop + this.view.clientHeight * 2;
+    const nodes: HTMLElement[] = [];
+    for (const ch of charts) {
+      if (ch.c0 >= info.cols || ch.r0 >= info.rows) continue;
+      const left = this.leftOf(ch.c0) + ch.ox * z;
+      const top = this.topOf(ch.r0) + ch.oy * z;
+      let w: number;
+      let h: number;
+      if (ch.c1 !== undefined && ch.r1 !== undefined) {
+        w = this.leftOf(Math.min(ch.c1, info.cols)) + (ch.ox1 ?? 0) * z - left;
+        h = this.topOf(Math.min(ch.r1, info.rows)) + (ch.oy1 ?? 0) * z - top;
+      } else {
+        w = 480 * z;
+        h = 300 * z;
+      }
+      if (!(w > 24 && h > 24)) continue;
+      if (left + w < vx0 || left > vx1 || top + h < vy0 || top > vy1) continue;
+      const node = chartNode(ch, Math.round(w), Math.round(h));
+      node.style.left = left + "px";
+      node.style.top = top + "px";
+      nodes.push(node);
     }
     if (nodes.length) this.cells.append(...nodes);
   }

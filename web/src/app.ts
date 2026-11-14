@@ -7826,6 +7826,8 @@ export class App {
       mediaUrl: (sheet, id) => api.sheetMediaUrl(info.token, sheet, id),
       // #432：改过的格子写回原文件（桥端只认这张表的凭据）。
       saveSheet: (sheet, ops) => api.sheetEdit(info.token, sheet, ops),
+      // #434：合并 / 插删行列 / 排序，当场落盘再重读元数据。
+      saveStruct: (sheet, op) => api.sheetStruct(info.token, sheet, op),
       onQuote: (text) => this.quoteInto(text),
       // #112：有图表的文件自动转一次 PDF；没有的也能手动切过去看打印版式。
       page: { token: info.token },

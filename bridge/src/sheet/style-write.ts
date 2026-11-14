@@ -9,10 +9,24 @@
  * 内置数字格式 id。不碰边框、字体名、主题色、富文本 run。
  */
 
+export type EdgeStyle = "thin" | "medium" | "thick" | "double" | "dashed" | "dotted" | "none";
+
+/** 四边描边：`none` = 擦掉那条线，`undefined` = 不动。 */
+export interface BorderPatch {
+  t?: EdgeStyle;
+  r?: EdgeStyle;
+  b?: EdgeStyle;
+  l?: EdgeStyle;
+}
+
 export interface CellStylePatch {
   b?: boolean;
   i?: boolean;
   u?: boolean;
+  /** 字体名（写在 `<name val="…"/>` 上）。 */
+  fn?: string;
+  /** 四边描边。 */
+  bd?: BorderPatch;
   /** 字号（pt）。 */
   fs?: number;
   /** 字色 `#RRGGBB`。 */
@@ -63,6 +77,29 @@ function setChild(inner: string, tag: string, piece: string | null): string {
   const re = new RegExp(`<${tag}\\b[^>]*/>`, "g");
   const cleaned = inner.replace(re, "");
   return piece ? piece + cleaned : cleaned;
+}
+
+const SIDES = { t: "top", r: "right", b: "bottom", l: "left" } as const;
+
+function edgePiece(side: string, style: EdgeStyle): string {
+  return style === "none" ? `<${side}/>` : `<${side} style="${style}"><color rgb="FF000000"/></${side}>`;
+}
+
+/** 重排一条 `<border>`：左/右/上/下按补丁换，剩下的（diagonal 等）原样留着。 */
+function rebuildBorder(entry: string, patch: BorderPatch): string {
+  const inner = innerOf(entry, "border");
+  const find = (side: string): string => {
+    const re = new RegExp(`<${side}\\b[^>]*/>|<${side}\\b[^>]*>[\\s\\S]*?</${side}>`);
+    return re.exec(inner)?.[0] ?? `<${side}/>`;
+  };
+  const parts: string[] = [];
+  for (const key of ["t", "r", "b", "l"] as const) {
+    const side = SIDES[key];
+    const want = patch[key];
+    parts.push(want === undefined ? find(side) : edgePiece(side, want));
+  }
+  const diagonal = /<diagonal\b[^>]*\/>|<diagonal\b[^>]*>[\s\S]*?<\/diagonal>/.exec(inner)?.[0];
+  return `<border>${parts.join("")}${diagonal ?? ""}</border>`;
 }
 
 function setAttr(tag: string, name: string, value: string | null): string {
@@ -131,13 +168,14 @@ export class StyleBook {
     let fontId = Number(attr(baseXf, "fontId") ?? 0) || 0;
     let fillId = Number(attr(baseXf, "fillId") ?? 0) || 0;
     let numFmtId = Number(attr(baseXf, "numFmtId") ?? 0) || 0;
+    let borderId = Number(attr(baseXf, "borderId") ?? 0) || 0;
     let open = baseXf.slice(0, baseXf.indexOf(">") + 1);
     const body = baseXf.slice(open.length);
     const childInner = body.endsWith("</xf>") ? body.slice(0, -"</xf>".length) : "";
     let align = /<alignment\b[^>]*\/>/.exec(childInner)?.[0] ?? null;
 
     // 字体：克隆原字体再改开关 / 字号 / 字色。
-    if (patch.b !== undefined || patch.i !== undefined || patch.u !== undefined || patch.fs !== undefined || patch.fc !== undefined) {
+    if (patch.b !== undefined || patch.i !== undefined || patch.u !== undefined || patch.fs !== undefined || patch.fc !== undefined || patch.fn !== undefined) {
       let inner = innerOf(this.fonts[fontId] ?? "<font/>", "font");
       inner = toggle(inner, "b", patch.b);
       inner = toggle(inner, "i", patch.i);
@@ -150,6 +188,7 @@ export class StyleBook {
         const color = argb(patch.fc);
         if (color) inner = setChild(inner, "color", `<color rgb="${color}"/>`);
       }
+      if (patch.fn) inner = setChild(inner, "name", `<name val="${patch.fn.replace(/[<>&"']/g, "")}"/>`);
       if (!inner.includes("<name")) inner += '<name val="Calibri"/>';
       fontId = this.pushFont(wrap("font", inner));
       open = setAttr(open, "applyFont", "1");
@@ -164,6 +203,20 @@ export class StyleBook {
           : `<fill><patternFill patternType="none"/></fill>`,
       );
       open = setAttr(open, "applyFill", "1");
+    }
+
+    if (patch.bd) {
+      let borderId0 = Number(attr(baseXf, "borderId") ?? 0) || 0;
+      const base = this.borders[borderId0] ?? "<border><left/><right/><top/><bottom/><diagonal/></border>";
+      const at = this.borders.indexOf(rebuildBorder(base, patch.bd));
+      if (at >= 0) borderId0 = at;
+      else {
+        this.borders.push(rebuildBorder(base, patch.bd));
+        this.dirty = true;
+        borderId0 = this.borders.length - 1;
+      }
+      borderId = borderId0;
+      open = setAttr(open, "applyBorder", "1");
     }
 
     if (patch.nf !== undefined && Number.isFinite(patch.nf)) {
@@ -191,7 +244,7 @@ export class StyleBook {
       }
     }
 
-    open = setAttr(setAttr(setAttr(open, "fontId", String(fontId)), "fillId", String(fillId)), "numFmtId", String(numFmtId));
+    open = setAttr(setAttr(setAttr(setAttr(open, "fontId", String(fontId)), "fillId", String(fillId)), "numFmtId", String(numFmtId)), "borderId", String(borderId));
     const xf = align ? `${open}${align}</xf>` : `${open.replace(/>$/, "/>")}`;
     return this.pushXf(xf);
   }

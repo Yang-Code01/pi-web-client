@@ -4172,6 +4172,22 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-rb-fname { width: 92px; }
 .sd-rb-fname > span:first-child { overflow: hidden; text-overflow: ellipsis; }
 .sd-rb-fsize { width: 44px; justify-content: space-between; }
+.sd-rb-sel {
+  height: 25px;
+  max-width: 132px;
+  border: 1px solid #d6dae1;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f2430;
+  font: 12px/1.2 inherit;
+  padding: 0 4px;
+}
+
+.sd-rb-sel.sd-rb-fname { width: 118px; }
+.sd-rb-sel.sd-rb-fsize { width: 56px; }
+.sd-rb-sel:focus-visible { outline: 2px solid #0f766e; outline-offset: 1px; }
+.sd-rb-b.sd-rb-bd { font-size: 15px; }
+
 .sd-rb-caret { color: #98a1b0; font-size: 9px; }
 .sd-rb-fc { color: #c00000; font-weight: 700; }
 .sd-rb-bg { color: #a37f00; }
@@ -4272,7 +4288,8 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* #107：网格自己吃键盘；焦点环不画在滚动容器上（格子里的描边已经说明在哪）。 */
 .sd-view:focus { outline: none; }
 .sd-view:focus-visible { outline: 1px solid #c3d5e4; outline-offset: -1px; }
-.sd-space { position: relative; background: #fff; }
+/* 空白的垫层只负责撑出滚动范围，永远不该抢格子/冻结带的点击（#434：重建后它一度盖住了格子）。 */
+.sd-space { position: relative; background: #fff; pointer-events: none; }
 .sd-cells { position: absolute; left: 0; top: 0; }
 /* #429 格子的字号、底色、四边框、内边距都由 grid.ts 内联给：同一屏里每格的行高/列宽都可能不同。 */
 .sd-cell {
@@ -4280,6 +4297,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   display: flex; overflow: hidden;
   background: #fff; color: #1f2430; cursor: default; user-select: none; white-space: nowrap;
 }
+.sd-cell { pointer-events: auto; }
 .sd-cell > .sd-txt { min-width: 0; overflow: hidden; text-overflow: clip; }
 .sd-cell.is-n { font-variant-numeric: tabular-nums; }
 .sd-cell[data-span] { z-index: 1; }
@@ -4294,6 +4312,15 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   box-shadow: 0 0 0 1px #fff;
 }
 /* #427：文件里钉在格子上的图片。压在格子之上、选区之下，不吃指针事件。 */
+.sd-chart {
+  position: absolute;
+  z-index: 2;
+  background: #fff;
+  pointer-events: none;
+  user-select: none;
+  overflow: hidden;
+}
+
 .sd-img {
   position: absolute; z-index: 2; object-fit: fill;
   pointer-events: none; user-select: none;

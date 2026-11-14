@@ -86,6 +86,7 @@ import { TranslateJobs } from "./translatejob.ts";
 import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
 import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow, readMedia as readSheetMedia, registerFileGrant } from "./sheet/index.ts";
 import { saveBook as saveSheetBook, type EditOp } from "./sheet/write.ts";
+import { saveStruct as saveSheetStruct, type StructOp } from "./sheet/struct.ts";
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
 import { countSlides, slidesAvailable, slidesPdfFile, slidesPdfKey, slidesPdfStatus, slidesProbe } from "./slides/index.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
@@ -1146,6 +1147,25 @@ async function main(): Promise<void> {
       try {
         const out = await saveSheetBook(grant.abs, String(body.sheet ?? ""), ops, grant.mtimeMs);
         // 存完文件就是新版了：刷新凭据的 mtime，接着编辑/翻页都还能用。
+        registerFileGrant(token, grant.abs, out.mtime);
+        return json(res, 200, out);
+      } catch (err: any) {
+        return fail(res, 400, String(err?.code ?? "sheet_write"), String(err?.message ?? err));
+      }
+    }
+
+    // #434：合并 / 插入删除行列 / 排序 —— 要动整张表的坐标，所以单独一条，立刻落盘。
+    if (url.pathname === "/api/sheet/struct" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      const token = String(body.token ?? "");
+      const grant = await resolveSheetGrant(res, token);
+      if (!grant) return;
+      const op = (body.op ?? null) as StructOp | null;
+      const known = ["merge", "unmerge", "insRow", "delRow", "insCol", "delCol", "sort", "filter", "clearCf"];
+      if (!op || !known.includes(String(op.t))) return fail(res, 400, "sheet_struct", "不认识的表结构改动");
+      try {
+        const out = await saveSheetStruct(grant.abs, String(body.sheet ?? ""), op, grant.mtimeMs);
         registerFileGrant(token, grant.abs, out.mtime);
         return json(res, 200, out);
       } catch (err: any) {

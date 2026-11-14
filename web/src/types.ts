@@ -674,11 +674,24 @@ export interface SheetCell {
  * #433 样式补丁：只带「要改的那几项」，桥端会克隆原来的 xf 再改，
  * 所以同格底色、字号这些没提的属性不会被抹掉。
  */
+export type SheetEdge = "thin" | "medium" | "thick" | "double" | "dashed" | "dotted" | "none";
+
+export interface SheetBorderPatch {
+  t?: SheetEdge;
+  r?: SheetEdge;
+  b?: SheetEdge;
+  l?: SheetEdge;
+}
+
 export interface SheetStylePatch {
   /** 加粗 / 斜体 / 下划线。 */
   b?: boolean;
   i?: boolean;
   u?: boolean;
+  /** 字体名。 */
+  fn?: string;
+  /** 四边描边。 */
+  bd?: SheetBorderPatch;
   /** 字号（pt）。 */
   fs?: number;
   /** 字色 `#RRGGBB`。 */
@@ -698,6 +711,37 @@ export interface SheetEditOp {
   r: number;
   c: number;
   cell: { k: "s" | "n" | "b" | "e" | "f"; t?: string; v?: number; f?: string; style?: SheetStylePatch } | null;
+}
+
+/** #434: 结构改动，要动整张表的坐标，提交后立刻落盘。 */
+export type SheetStructOp =
+  | { t: "merge" | "unmerge"; r1: number; c1: number; r2: number; c2: number }
+  | { t: "insRow" | "delRow" | "insCol" | "delCol"; at: number; n: number }
+  | { t: "sort"; r1: number; c1: number; r2: number; c2: number; key: number; desc: boolean }
+  | { t: "filter"; c: number; value: string | null }
+  | { t: "clearCf"; r1: number; c1: number; r2: number; c2: number };
+
+/** #434：表里的图表对象（柱/条、折线、饼、面积、散点）。 */
+export interface SheetSeries {
+  name: string;
+  values: (number | null)[];
+}
+
+export interface SheetChart {
+  id: string;
+  kind: "bar" | "line" | "pie" | "area" | "scatter";
+  horizontal?: 1;
+  title?: string;
+  cats: string[];
+  series: SheetSeries[];
+  c0: number;
+  r0: number;
+  ox: number;
+  oy: number;
+  c1?: number;
+  r1?: number;
+  ox1?: number;
+  oy1?: number;
 }
 
 /** 合并区，0 基闭区间。 */
@@ -736,6 +780,8 @@ export interface SheetInfo {
   gridLines?: false;
   /** #427：钉在格子上的图片（两格锚点给右下坐标，一格锚点给固定宽高）。 */
   images?: SheetImage[];
+  /** #434：图表对象，坐标和图片同一套锚点。 */
+  charts?: SheetChart[];
 }
 
 /** #427：xlsx drawing 里的一张图，坐标是 0 基行列 + 格内偏移（px）。 */

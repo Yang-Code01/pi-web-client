@@ -325,6 +325,8 @@ export const en: Dict = {
   "编辑中": "Editing",
   "编辑（双击格子或直接敲字；Ctrl+S 保存）": "Edit (double-click a cell or just type; Ctrl+S saves)",
   "已保存（{p1} 格）": "Saved ({p1} cells)",
+  "先保存改动，再改结构": "Save your edits first, then change the sheet",
+  "已更新（{p1} 行）": "Updated ({p1} rows)",
   "保存 {p1}": "Save {p1}",
   "保存": "Save",
   "保存失败": "Save failed",

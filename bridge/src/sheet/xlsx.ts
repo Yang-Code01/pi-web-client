@@ -9,6 +9,7 @@ import { formatValue } from "./numfmt.ts";
 import { buildCf, readDxfs, type CellFx, type SheetCf } from "./cf.ts";
 import { readStyles, type StyleTable, type WireStyle } from "./styles.ts";
 import { readSheetImages, type WireImage } from "./media.ts";
+import { rangeRef, readSheetCharts, type RangeValues, type WireChart } from "./chart.ts";
 
 export type { WireStyle, WireImage };
 
@@ -80,6 +81,8 @@ export interface SheetInfo {
   gridLines?: false;
   /** 钉在格子上的图片（drawing 里的 twoCellAnchor / oneCellAnchor）：坐标为格内偏移，宽高按行列走。 */
   images?: WireImage[];
+  /** #434：表里的图表对象（柱/折线/饼/面积/散点），坐标与图片同一套锚点。 */
+  charts?: WireChart[];
   freeze?: FreezePane | null;
   /** #109：认不出的条件格式规则条数（状态条据此提示）。 */
   cfUnsupported?: number;
@@ -317,6 +320,25 @@ export function readBook(buf: Uint8Array): Book {
   const parts = new Map<string, string>();
   const tiers = new Map<string, SheetTier>();
   const book = { cf: new Map<string, SheetCf | null>() } as Book;
+  // 图表里的系列引用是 `表名!$B$2:$B$5`：等 meta 建好之后按同一套窗口读回来。
+  const chartValues: RangeValues = (ref) => {
+    const box = rangeRef(ref);
+    if (!box) return null;
+    const where = box.sheet || "";
+    try {
+      const win = readWindow(buf, book, where, box.r0, box.r1, box.c0, box.c1);
+      return win.rows.map((row) => {
+        const out: (string | number | null)[] = [];
+        for (let c = box.c0; c <= box.c1; c++) {
+          const cell = row.cells.find((x) => x.c === c);
+          out.push(cell ? (cell.v ?? cell.t ?? null) : null);
+        }
+        return out;
+      });
+    } catch {
+      return null;
+    }
+  };
   // 样式是工作簿级的：解析一次，所有表共用（meta 只发一张去重后的小表）。
   book.styles = readStyles(partText(buf, dir, "xl/styles.xml"), partText(buf, dir, "xl/theme/theme1.xml"));
   for (const m of workbook.matchAll(/<sheet\b[^>]*>/g)) {
@@ -384,6 +406,13 @@ export function readBook(buf: Uint8Array): Book {
   book.dir = dir;
   book.tiers = tiers;
   book.date1904 = date1904;
+  // 图表要按「表名!$B$2:$B$5」回读数值，得等 parts/meta 都建好之后再解（这里才认得出表名）。
+  for (const [name, part] of parts) {
+    const info = sheets.find((s) => s.name === name);
+    if (!info || info.tier === "none") continue;
+    const list = readSheetCharts(buf, dir, part, chartValues);
+    if (list.length) info.charts = list;
+  }
   return book;
 }
 

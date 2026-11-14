@@ -71,7 +71,7 @@ export function colName(c: number): string {
   return out;
 }
 
-function attrOf(tag: string, name: string): string | null {
+export function attrOf(tag: string, name: string): string | null {
   const m = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`).exec(tag);
   return m ? m[1] : null;
 }
@@ -217,7 +217,7 @@ function growDimension(xml: string, ops: EditOp[]): string {
 }
 
 /** sheet 名 → zip 里的 part 路径（`xl/worksheets/sheet1.xml`）。 */
-function partOf(dir: Map<string, unknown>, buf: Uint8Array, sheet: string): string | null {
+export function partOf(dir: Map<string, unknown>, buf: Uint8Array, sheet: string): string | null {
   const read = (name: string): string | null => {
     const entry = zipIndex(buf)?.get(name);
     if (!entry) return null;
