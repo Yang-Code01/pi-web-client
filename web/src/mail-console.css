@@ -828,3 +828,68 @@ a.mc-attach__row:hover {
     grid-template-rows: minmax(140px, 40%) minmax(0, 1fr);
   }
 }
+
+/* ---------------------------------------------------------------- AI 发信确认（D264）
+
+   桥把 `mail.confirm` 投给正在看这个会话的页签，这里摊开收件人 / 主题 / 正文前 800 字。
+   挂在 document.body 上（跟 .mc-back 一样不在 #app 里），但**不写** vh / vw：
+   宽高用 min(px, 100%) 跟着遮罩的可用格走，字号放大也不会溢出（D123 / D263）。 */
+
+.mc-back--confirm {
+  z-index: 82;
+}
+
+.mc-confirm {
+  width: min(680px, 100%);
+  max-height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  color: var(--text);
+  font-family: var(--sans);
+}
+
+.mc-confirm__head {
+  padding: 16px 18px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mc-confirm__body {
+  padding: 12px 18px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.mc-confirm__body .mc-letter__text {
+  margin: 10px 0 0;
+}
+
+.mc-confirm__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.mc-confirm__foot .mc-foot__hint {
+  margin-right: auto;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+/* 「看更早的」与「真删？」：一个是列表末尾的出口，一个是两步删除的第二步（D264）。 */
+.mc-list > .mc-more {
+  margin: 8px 10px 10px;
+  width: calc(100% - 20px);
+}
+
+.mc-mini--bad.on {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+  font-weight: 600;
+}

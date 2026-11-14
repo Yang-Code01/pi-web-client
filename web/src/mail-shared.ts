@@ -101,6 +101,10 @@ export interface MailConfigView {
   presets: Record<string, MailPresetView>;
   presetIds: string[];
   audit: MailAuditRow[];
+  /** config.json 读不出来时的原因（此时 `accounts` 是空的，且桥会拒写）。 */
+  configError?: string | null;
+  /** 配置文件的本机路径，横幅里给人指路。 */
+  configPath?: string;
 }
 
 export interface MailAccountInput {
@@ -123,6 +127,21 @@ export interface MailSendInput {
   subject: string;
   text: string;
   draft?: boolean;
+}
+
+/** 确认弹窗要回答的东西：桥端的 `mail.confirm` 帧带 `reqId` + `mail`。 */
+export interface MailConfirmFrame {
+  reqId: string;
+  sessionId?: string;
+  mail: MailConfirmRequest;
+}
+
+/** 页面对一条确认请求的回答，走同一条 ws 回给桥。 */
+export interface MailConfirmAck {
+  reqId: string;
+  ok: boolean;
+  reason?: string;
+  text?: string;
 }
 
 /** 桥推给页面的「这封信发不发」。正文只带前 800 字，够认出来是哪封。 */
@@ -187,4 +206,70 @@ export function whenText(ms: number, now = Date.now()): string {
  */
 export function sizeText(n: number): string {
   return formatBytes(n);
+}
+
+/*************************************************************** 自定义服务器的端口与 TLS
+
+   以前面板里写死 `secure: !port.startsWith("587")`（SMTP）与恒 `true`（IMAP）：自定义服务器填 143
+   / 25 / 110 这些走 STARTTLS 的端口永远连不上。判据收到这里，能单测（D264）。 */
+
+/**
+ * 自定义服务器时 TLS 怎么算：先看端口，认不出来再用 IMAP 默认开、SMTP 默认关。
+ *
+ * 以前是 `secure: !port.startsWith("587")` 一句拍了 SMTP、IMAP 恒 true —— 143 / 25 / 110
+ * 这些明文（STARTTLS 升级）的端口永远连不上。
+ */
+export function secureForPort(port: number, kind: "imap" | "smtp"): boolean {
+  if (port === 993 || port === 995 || port === 465) return true;
+  if (port === 143 || port === 25 || port === 110 || port === 587) return false;
+  return kind === "imap";
+}
+
+/** 端口输入框的值 → 端口号：空 / 非数字就用预设的默认值。 */
+export function portOf(text: string, fallback: number): number {
+  const n = Number(String(text ?? "").trim());
+  return Number.isFinite(n) && n > 0 && n < 65536 ? Math.floor(n) : fallback;
+}
+
+/**
+ * 「这封发不发」的排队与回执 —— 不带任何 DOM，面板画不画都归它说了算。
+ *
+ * 桥一封一个 `reqId`，同时可能压着两封（AI 连着发两封）。规则：
+ *   1. 一次只摊开一封，按到达顺序来；
+ *   2. 结掉当前那封（点发送 / 不发 / Esc / 超时）之后自动进入下一封；
+ *   3. 回执只回给**当前**那封的 `reqId` —— 迟到的点击不会替另一封点头。
+ */
+export class MailConfirmQueue {
+  private readonly send: (ack: MailConfirmAck) => void;
+  private readonly onChange: () => void;
+  private items: { reqId: string; mail: MailConfirmRequest }[] = [];
+
+  constructor(send: (ack: MailConfirmAck) => void, onChange: () => void = () => {}) {
+    this.send = send;
+    this.onChange = onChange;
+  }
+
+  push(reqId: string, mail: MailConfirmRequest): void {
+    if (!reqId || !mail) return;
+    this.items.push({ reqId, mail });
+    this.onChange();
+  }
+
+  /** 正在等回答的那封。 */
+  get current(): { reqId: string; mail: MailConfirmRequest } | null {
+    return this.items[0] ?? null;
+  }
+
+  /** 还压着几封（含当前那封）。 */
+  get size(): number {
+    return this.items.length;
+  }
+
+  /** 结掉当前那封。队列空了 `current` 就是 null。 */
+  settle(ok: boolean, reason?: string, text?: string): void {
+    const cur = this.items.shift();
+    if (!cur) return;
+    this.send({ reqId: cur.reqId, ok, reason, text });
+    this.onChange();
+  }
 }

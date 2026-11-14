@@ -143,15 +143,89 @@ check("改完读回来是新的", r.body?.policy?.send === false);
 
 r = await call("POST", "/api/mail/policy", { read: false });
 check("关掉读权限 200", r.body?.policy?.read === false);
-r = await call("GET", "/api/mail/folders");
-check("读权限关着时不连邮箱、回 policy-denied", r.status === 403 && String(r.body?.code).startsWith("policy-denied"), `${r.status} ${r.body?.code} ${r.body?.error}`);
+// D264：「AI 权限」只管 AI。页面自己看信不该被它拦住 —— 以前这里直接 403 policy-denied:read，
+// 把「读邮件」一关，连人自己在面板里都看不了信。现在过了闸、落到参数校验（缺 uid）。
+r = await call("GET", "/api/mail/message");
+check("读权限关着，页面也照样能读（只是参数不对）", r.status === 400 && r.body?.code === "bad_input", `${r.status} ${r.body?.code}`);
 await call("POST", "/api/mail/policy", { read: true });
+
+r = await call("GET", "/api/mail/message?folder=INBOX");
+check("缺 uid 才回 400（以前 Number(null)=0 会漏过去）", r.status === 400 && r.body?.code === "bad_input", `${r.status} ${r.body?.code}`);
 
 r = await call("GET", "/api/mail/config", undefined, { publicReq: true });
 check("隧道访客 403", r.status === 403 && r.body?.code === "tunnel_readonly", String(r.body?.code));
 
 r = await call("GET", "/api/mail/nope");
 check("未知路径也认领（不回落到别的路由）", r.handled === true);
+
+// ---------------------------------------------------------------- 权限只管 AI（D264）
+//
+// 不发真的信：靠「参数错」与「连不上」两种短路。第二条用一个指向 127.0.0.1:9 的账号，
+// ECONNREFUSED 立刻回来，不会真的上网。
+
+r = await call("POST", "/api/mail/accounts", {
+  address: "nobody@example.com",
+  preset: "custom",
+  secret: "abcdefghijklmnop",
+  label: "打不通的",
+  imap: { host: "127.0.0.1", port: 9, secure: false },
+  smtp: { host: "127.0.0.1", port: 9, secure: false },
+});
+const deadId = r.body?.account?.id;
+check("加一个连不上的账号", r.status === 200 && !!deadId, `${r.status} ${r.body?.code ?? ""}`);
+
+r = await call("POST", "/api/mail/policy", { send: false });
+check("关掉发信权限", r.body?.policy?.send === false);
+r = await call("POST", "/api/mail/send", { account: deadId, to: "nope", subject: "x", text: "y" });
+check("页面发信不看 AI 权限（落到参数错，不是 403）", r.status === 400 && r.body?.code === "bad-input", `${r.status} ${r.body?.code}`);
+{
+  const { res, out } = fakeRes();
+  await mail.handleMailTool(
+    fakeReq("POST", { token: "t1", args: { account: deadId, to: "a@b.com", subject: "x", text: "y" } }),
+    res,
+    new URL("http://127.0.0.1:7864/api/mail/tool/mail_send"),
+    { publicReq: false, byToken: () => ({ id: "s1" }), confirm: async () => ({ ok: true }) },
+  );
+  check("AI 发信仍然被 policy-denied:send 拦住", out.body?.code === "policy-denied:send", String(out.body?.code));
+}
+await call("POST", "/api/mail/policy", { send: true, recipients: ["boss@corp.com"] });
+{
+  const { res, out } = fakeRes();
+  await mail.handleMailTool(
+    fakeReq("POST", { token: "t1", args: { account: deadId, to: "x@evil.com", subject: "x", text: "y" } }),
+    res,
+    new URL("http://127.0.0.1:7864/api/mail/tool/mail_send"),
+    { publicReq: false, byToken: () => ({ id: "s1" }), confirm: async () => ({ ok: true }) },
+  );
+  check("白名单只拦 AI", out.body?.code === "recipients", String(out.body?.code));
+}
+r = await call("POST", "/api/mail/send", { account: deadId, to: "x@evil.com", subject: "x", text: "y" });
+check("页面发给名单外的人不被拦（它自己去连、连不上）", r.body?.code !== "recipients" && r.status === 400, `${r.status} ${r.body?.code}`);
+await call("POST", "/api/mail/policy", { recipients: [] });
+
+mc.appendAudit({ t: Date.now(), account: "m1", from: "a@163.com", to: ["b@x.com"], subject: "手发", by: "page", ok: true });
+check("日上限只数 AI 发的（页面自己发的不算）", mc.sentToday("m1") === 1 && mc.sentToday("m1", Date.now(), "page") === 1, `${mc.sentToday("m1")}/${mc.sentToday("m1", Date.now(), "page")}`);
+
+// ---------------------------------------------------------------- 删账号要清掉白名单里的 id
+await call("POST", "/api/mail/policy", { accountIds: [deadId] });
+r = await call("DELETE", `/api/mail/accounts/${deadId}`);
+check("删掉第二个账号", r.status === 200, String(r.status));
+r = await call("GET", "/api/mail/config");
+check("删账号顺手把它从「AI 能用哪些账号」里去掉", Array.isArray(r.body?.policy?.accountIds) && r.body.policy.accountIds.length === 0, JSON.stringify(r.body?.policy?.accountIds));
+
+// ---------------------------------------------------------------- 默认账号给个能用的
+r = await call("POST", "/api/mail/accounts", { id: accId, address: "me@163.com", preset: "163", secret: "abcdefghijklmnop", enabled: false });
+check("停用默认账号", r.status === 200, `${r.status} ${r.body?.code ?? ""}`);
+{
+  const { res, out } = fakeRes();
+  await mail.handleMailTool(fakeReq("POST", { token: "t1", args: {} }), res, new URL("http://127.0.0.1:7864/api/mail/tool/mail_accounts"), {
+    publicReq: false,
+    byToken: () => ({ id: "s1" }),
+    confirm: async () => ({ ok: true }),
+  });
+  check("默认账号停了就不报它（返回 null 而不是一个必定被拒的 id）", out.body?.defaultAccount === null, JSON.stringify(out.body?.defaultAccount));
+}
+await call("POST", "/api/mail/accounts", { id: accId, address: "me@163.com", preset: "163", secret: "abcdefghijklmnop", enabled: true });
 
 r = await call("DELETE", `/api/mail/accounts/${accId}`);
 check("删账号 200", r.status === 200 && r.body?.ok === true, String(r.status));
@@ -179,6 +253,24 @@ check("删不存在的 404", r.status === 404, String(r.status));
   );
   check("工具口 mail_accounts 有回包", handled === true && out.body?.ok === true, JSON.stringify(out.body).slice(0, 120));
   check("工具回包不含授权码", !JSON.stringify(out.body ?? {}).includes("abcdefghijklmnop"));
+}
+
+// ---------------------------------------------------------------- 配置文件读坏了不许盖掉（D264）
+{
+  const file = mc.mailConfigFile();
+  const good = fs.readFileSync(file, "utf8");
+  fs.writeFileSync(file, '{"version":1,"accounts":[{"id":"m1","address":"me@163.com","secret":"REALSECRET123456"');
+  r = await call("GET", "/api/mail/config");
+  check("读坏了要报出来（不是默默当没有账号）", typeof r.body?.configError === "string" && r.body.configError.length > 0, JSON.stringify(r.body?.configError));
+  check("横幅能指路到文件", typeof r.body?.configPath === "string" && r.body.configPath.length > 0);
+  r = await call("POST", "/api/mail/policy", { read: true });
+  check("写操作被拒（409 config-corrupt）", r.status === 409 && r.body?.code === "config-corrupt", `${r.status} ${r.body?.code}`);
+  check("磁盘上那份原封不动（授权码还在）", fs.readFileSync(file, "utf8").includes("REALSECRET123456"));
+  r = await call("POST", "/api/mail/repair");
+  check("repair 也不许盖", r.status === 409 && r.body?.code === "config-corrupt", `${r.status} ${r.body?.code}`);
+  fs.writeFileSync(file, good);
+  r = await call("GET", "/api/mail/config");
+  check("修回去就恢复正常", !r.body?.configError && Array.isArray(r.body?.accounts));
 }
 
 // ---------------------------------------------------------------- 收尾

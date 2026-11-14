@@ -295,11 +295,12 @@ export const api = {
   mailSavePolicy: (patch: Partial<MailPolicyView>) => postJson<{ ok: true; policy: MailPolicyView }>("/api/mail/policy", patch),
   mailFolders: (account?: string) =>
     req<{ folders: MailFolderView[] }>(`/api/mail/folders${account ? `?account=${encodeURIComponent(account)}` : ""}`),
-  mailMessages: (p: { account?: string; folder?: string; limit?: number; unread?: boolean }) => {
+  mailMessages: (p: { account?: string; folder?: string; limit?: number; offset?: number; unread?: boolean }) => {
     const q = new URLSearchParams();
     if (p.account) q.set("account", p.account);
     if (p.folder) q.set("folder", p.folder);
     if (p.limit) q.set("limit", String(p.limit));
+    if (p.offset) q.set("offset", String(p.offset));
     if (p.unread) q.set("unread", "1");
     const qs = q.toString();
     return req<{ folder: string; messages: MailSummary[] }>(`/api/mail/messages${qs ? `?${qs}` : ""}`);
@@ -312,7 +313,7 @@ export const api = {
   },
   /** 发送与存草稿走同一条路：`draft: true` 时桥只往草稿箱里写。 */
   mailSend: (body: MailSendInput) => postJson<{ ok: true; messageId?: string; draftUid?: number }>("/api/mail/send", body),
-  /** 附件直链（浏览器自己下载；权限关着时桥回 403）。 */
+  /** 附件直链（浏览器自己下载）。人自己点的不看「取附件」那个 AI 开关（D264）。 */
   mailAttachmentUrl: (p: { account?: string; folder?: string; uid: number; index: number }) => {
     const q = new URLSearchParams({ uid: String(p.uid), index: String(p.index) });
     if (p.account) q.set("account", p.account);

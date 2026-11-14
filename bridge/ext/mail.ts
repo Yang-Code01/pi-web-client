@@ -50,10 +50,11 @@ const NEXT_STEP: Record<string, string> = {
   "policy-denied:send": "让用户在邮箱面板设置里打开「发邮件」。",
   "policy-denied:draft": "让用户在邮箱面板设置里打开「存草稿」。",
   "policy-denied:attachments": "让用户在邮箱面板设置里打开「取附件」。",
-  "policy-denied:mutate": "让用户在邮箱面板设置里打开「改邮箱状态」。",
   "policy-denied:account": "这个账号没有开放给 AI，让用户在设置里勾上它。",
   declined: "用户没有确认发送。把这封信的内容写给他看，等他改完再说。",
   "no-page": "没有页面在看这个会话，没法确认发送；把邮件内容写出来，让用户自己发或回到网页里再试。",
+  // 页面在 5 分钟内没回执（弹窗没画出来 / 页签关了）：同样是「没发出去」，别重试。
+  "no-ack": "确认弹窗没有回音，这封信没发出去。把内容写出来，让用户回到网页里自己发。",
   "rate-limited": "今天的额度用完了，别重试；把情况告诉用户。",
   recipients: "收件人不在白名单里，别换个写法重试；告诉用户被拦了。",
   "auth-failed": "授权码或服务开关有问题，让用户在邮箱设置里重新验证。",
@@ -84,6 +85,23 @@ function dateText(ms: number): string {
 const accountParam = { type: "string", description: "账号 id（不填就用默认账号）。先用 mail_accounts 看有哪些" };
 const folderParam = { type: "string", description: "文件夹路径，默认 INBOX" };
 
+/** 纯 HTML 的信没有纯文本部分：把标签剥了给模型看，总比「没有正文」强。导出去是为了单测。 */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 const mailAccountsTool = {
   name: "mail_accounts",
   label: "看邮箱账号",
@@ -100,7 +118,8 @@ const mailAccountsTool = {
       const lines = accounts.map((a) => `- ${a.id} · ${a.label} · ${a.address}${a.id === reply.defaultAccount ? "（默认）" : ""}`);
       const p = (reply.policy as any) ?? {};
       const on = (v: boolean) => (v ? "开" : "关");
-      const policy = `读 ${on(p.read)} / 发 ${on(p.send)} / 草稿 ${on(p.draft)} / 附件 ${on(p.attachments)} / 改状态 ${on(p.mutate)} / 发送前确认 ${on(p.confirmSend)} / 日上限 ${p.dailySendLimit || "不限"}`;
+      // 「改邮箱状态」（mutate）在 v1 里没有对应动作，面板也不给那个开关：别向模型报一个不存在的项。
+      const policy = `读 ${on(p.read)} / 发 ${on(p.send)} / 草稿 ${on(p.draft)} / 附件 ${on(p.attachments)} / 发送前确认 ${on(p.confirmSend)} / 日上限 ${p.dailySendLimit || "不限"}`;
       return textResult(`账号：\n${lines.join("\n")}\n\n权限：${policy}`, { ok: true, accounts: reply.accounts, policy: reply.policy });
     } catch (err: any) {
       return textResult(`没拿到账号：${String(err?.message ?? err)}`, { ok: false, code: "channel" });
@@ -112,14 +131,15 @@ const mailListTool = {
   name: "mail_list",
   label: "列邮件",
   description:
-    "列出某个文件夹里最近的邮件（默认 INBOX、20 封、按时间倒序）。每项给 uid / 时间 / 发件人 / 主题 / 是否未读 / 是否有附件。想读正文用 mail_read（带 uid）。",
-  promptSnippet: "mail_list(account?, folder?, limit?, unread?) → 最近邮件的摘要列表（不含正文）",
+    "列出某个文件夹里最近的邮件（默认 INBOX、20 封、按时间倒序）。每项给 uid / 时间 / 发件人 / 主题 / 是否未读 / 是否有附件。想读正文用 mail_read（带 uid）。更早的信用 `offset` 往后翻（offset=20 就是跳过最近的 20 封），别以为列表就是全部。",
+  promptSnippet: "mail_list(account?, folder?, limit?, offset?, unread?) → 最近邮件的摘要列表（不含正文）",
   parameters: {
     type: "object",
     properties: {
       account: accountParam,
       folder: folderParam,
       limit: { type: "number", description: "最多几封，默认 20，上限 100" },
+      offset: { type: "number", description: "跳过最近几封（按时间倒序），用来翻更早的邮件；默认 0" },
       unread: { type: "boolean", description: "只看未读" },
     },
     additionalProperties: false,
@@ -129,12 +149,13 @@ const mailListTool = {
       const reply = await callTool("mail_list", params ?? {}, READ_MS);
       if (!reply.ok) return textResult(`没列出来：${explain(reply, "原因不明")}`, { ok: false, code: reply.code });
       const rows = (reply.messages as any[]) ?? [];
-      if (!rows.length) return textResult(`${reply.folder} 里没有${params?.unread ? "未读" : ""}邮件。`, { ok: true, messages: [] });
+      if (!rows.length) return textResult(`${reply.folder} 里没有${params?.unread ? "未读" : params?.offset ? "更早的" : ""}邮件。`, { ok: true, messages: [] });
       const lines = rows.map(
         (m) =>
           `- uid=${m.uid} · ${dateText(m.date)} · ${m.unread ? "未读 · " : ""}${m.hasAttachments ? "📎 · " : ""}${m.from || "(未知发件人)"} — ${m.subject}`,
       );
-      return textResult(`${reply.folder}（${rows.length} 封）：\n${lines.join("\n")}`, { ok: true, folder: reply.folder, messages: rows });
+      const more = rows.length >= Number(params?.limit ?? 20) ? `\n（可能还有更早的：再调一次带 offset=${Number(params?.offset ?? 0) + rows.length}）` : "";
+      return textResult(`${reply.folder}（${rows.length} 封）：\n${lines.join("\n")}${more}`, { ok: true, folder: reply.folder, messages: rows });
     } catch (err: any) {
       return textResult(`没列出来：${String(err?.message ?? err)}`, { ok: false, code: "channel" });
     }
@@ -145,7 +166,7 @@ const mailReadTool = {
   name: "mail_read",
   label: "读邮件",
   description:
-    "读一封信的完整内容：发件人 / 收件人 / 时间 / 纯文本正文 / 附件清单。默认不改「已读」标记（用 PEEK 读）。正文超过 20000 字会被截断并注明。附件要落盘用 mail_attachment。",
+    "读一封信的完整内容：发件人 / 收件人 / 时间 / 纯文本正文 / 附件清单。默认不改「已读」标记（用 PEEK 读）。正文超过 20000 字会被截断并注明；只有 HTML 正文的信会把标签剥掉给你看。附件要落盘用 mail_attachment。",
   promptSnippet: "mail_read(account?, uid, folder?) → 一封信的正文与附件清单",
   parameters: {
     type: "object",
@@ -165,8 +186,13 @@ const mailReadTool = {
       const attach = (m.attachments ?? []).length
         ? `\n\n附件（${m.attachments.length}）：\n${m.attachments.map((a: any) => `- #${a.index} ${a.filename}（${Math.round((a.size ?? 0) / 1024)}KB，${a.contentType}）`).join("\n")}`
         : "";
+      // 纯 HTML 的信以前到这里就只剩「(没有纯文本正文)」—— 扒标签给模型看一眼。
+      const plain = String(m.text ?? "").trim();
+      const fromHtml = !plain && m.html ? htmlToText(String(m.html)) : "";
+      const body = plain || fromHtml || "";
       const head = `主题：${m.subject}\n发件人：${m.from}\n收件人：${(m.to ?? []).join(", ") || "(无)"}\n时间：${dateText(m.date)}`;
-      return textResult(`${head}\n\n${m.text || "(没有纯文本正文)"}${attach}`, { ok: true, message: m, attachmentsAllowed: reply.attachmentsAllowed });
+      const note = fromHtml ? "\n\n（这封信只有 HTML 正文，下面是扒掉标签的纯文本）" : "";
+      return textResult(`${head}\n\n${body || "(没有可读正文)"}${note}${attach}`, { ok: true, message: m, attachmentsAllowed: reply.attachmentsAllowed });
     } catch (err: any) {
       return textResult(`没读出来：${String(err?.message ?? err)}`, { ok: false, code: "channel" });
     }
