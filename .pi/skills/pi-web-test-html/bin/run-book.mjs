@@ -14,6 +14,9 @@
  *   --pass <口令>   登录口令，默认 test
  *   --out <dir>     产物目录，默认 <主检出>/.scratch/testbook/<case>
  *   --root <dir>    仓库根（默认按 cwd 推断）
+ *   --cwd <dir>     先建一个工作目录指向它的会话再开始（用例要开文件预览时用）
+ *   --video         全程录屏：跑完转成 <out>/run.mp4，每步的时间点进 spec.video.marks
+ *   --size WxH      录屏尺寸，默认 1440x940（必须 ≤ 视口）
  *
  * 产物目录默认落在**主检出**的 .scratch 下，即使当前在某个 worktree 里跑：
  * 产物是未跟踪文件，worktree 一删就跟着没了（本项目真出过这种事）。
@@ -48,6 +51,15 @@ const OUT = path.resolve(arg("out", path.join(mainRoot(repoRoot), ".scratch/test
 const SHOTS = path.join(OUT, "shots");
 fs.mkdirSync(SHOTS, { recursive: true });
 
+/** 录像：默认关（头less 跑不吃这个开销），--video 才录，产物是 <out>/run.mp4。 */
+const VIDEO = argv.includes("--video");
+const VIDEO_DIR = path.join(OUT, "video");
+if (VIDEO) fs.mkdirSync(VIDEO_DIR, { recursive: true });
+const [VW, VH] = (arg("size", "1440x940").split("x").map(Number));
+const SESSION_CWD = arg("cwd", "");
+const marks = [];
+let t0 = Date.now();
+
 const localStamp = (d = new Date()) => {
   const p = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
@@ -64,7 +76,12 @@ const ps = (command) => {
 const { loadPlaywright } = await import(pathToFileURL(path.join(mainRoot(repoRoot), "tools/playwright.mjs")).href);
 const { chromium } = await loadPlaywright();
 const browser = await chromium.launch();
-const ctx = await browser.newContext({ locale: "zh-CN", viewport: { width: 1440, height: 940 } });
+t0 = Date.now();
+const ctx = await browser.newContext({
+  locale: "zh-CN",
+  viewport: { width: 1440, height: 940 },
+  ...(VIDEO ? { recordVideo: { dir: VIDEO_DIR, size: { width: VW, height: VH } } } : {}),
+});
 const page = await ctx.newPage();
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(String(e)));
@@ -72,12 +89,51 @@ page.on("pageerror", (e) => pageErrors.push(String(e)));
 const login = await ctx.request.post(`${BASE}/api/login`, { data: { passphrase: PASS } });
 if (login.status() !== 200) throw new Error(`登录失败 HTTP ${login.status()}（口令 ${PASS}，先确认 ${BASE} 是测试实例）`);
 
+/** 用例要开「文件」预览时，得有个 cwd 指向夹具目录的会话：走 WS create，和界面上新建会话等价。 */
+let session = null;
+async function openSession(cwd, name) {
+  fs.mkdirSync(cwd, { recursive: true });
+  const { WebSocket } = await import("ws");
+  const cookie = (await ctx.cookies()).map((c) => `${c.name}=${c.value}`).join("; ");
+  const ws = new WebSocket(`${BASE.replace(/^http/, "ws")}/ws`, { headers: { cookie } });
+  const seen = [];
+  ws.on("message", (b) => seen.push(JSON.parse(b.toString())));
+  await new Promise((r, j) => {
+    ws.once("open", r);
+    ws.once("error", j);
+  });
+  ws.send(JSON.stringify({ type: "create", cwd, name }));
+  let id = null;
+  for (let i = 0; i < 300 && !id; i += 1) {
+    id = seen.find((m) => m.type === "session" && m.state?.id)?.state?.id ?? null;
+    if (!id) await new Promise((r) => setTimeout(r, 100));
+  }
+  ws.close();
+  if (!id) throw new Error("建会话超时：WS 没回 session");
+  session = { id, cwd };
+  await page.goto(`${BASE}/#/s/${id}`, { waitUntil: "networkidle" });
+  await page.locator(".topbar .icon-btn").first().waitFor({ timeout: 20_000 });
+  return session;
+}
+if (SESSION_CWD) await openSession(path.resolve(SESSION_CWD), `testbook-${caseName}`);
+
+let SET_META = {};
 const cases = [];
 let cur = null;
 let stepNo = 0;
 
 function openCase(meta) {
-  cur = { ...meta, startedAt: localStamp(), steps: [], verdict: "通过", note: "" };
+  // 用例集级别的模块名/优先级当默认值：用例只写自己变的那点。
+  cur = {
+    module: "",
+    priority: "",
+    ...meta,
+    startedAt: localStamp(),
+    steps: [],
+    verdict: "通过",
+    note: "",
+  };
+  cur.module ||= SET_META.module ?? "";
   cases.push(cur);
   stepNo = 0;
   return cur;
@@ -87,6 +143,7 @@ function step(action, expected) {
   stepNo += 1;
   const s = { no: stepNo, action, expected, actual: "", verdict: "通过", shot: null, shots: [], evidence: [] };
   cur.steps.push(s);
+  if (VIDEO) marks.push({ case: cur.id, no: stepNo, label: action, t: (Date.now() - t0) / 1000 });
   return s;
 }
 
@@ -97,7 +154,8 @@ function fail(s, why) {
 }
 
 function ok(s, actual) {
-  s.actual = actual;
+  // 一步里可能有好几条断言：一条覆盖一条会把前一条的证据（尤其失败原因）抹掉。
+  s.actual = s.actual ? `${s.actual}；${actual}` : actual;
 }
 
 /** 截元素而不是视口：测试书里贴的是「这一步看到的那块界面」。元素会在重渲染中换掉，所以重试。 */
@@ -135,6 +193,9 @@ const h = {
   ctx,
   browser,
   base: BASE,
+  session,
+  openSession,
+  video: { on: VIDEO },
   api,
   apiPost,
   ps,
@@ -153,9 +214,41 @@ const h = {
 
 const mod = await import(pathToFileURL(path.join(SKILL, "cases", `${caseName}.mjs`)).href);
 const meta = mod.meta ?? {};
-console.log(`用例集 ${caseName} → ${BASE}`);
+SET_META = meta;
+console.log(`用例集 ${caseName} → ${BASE}${VIDEO ? "（录屏中）" : ""}`);
 const startedAt = Date.now();
 await mod.default(h);
+
+/** 录像要等页面/上下文关掉才落盘；转 mp4 是为了任何浏览器、任何预览器都放得动。 */
+async function finishVideo() {
+  if (!VIDEO) return null;
+  const webm = await (async () => {
+    await page.close();
+    const p = await page.video().path();
+    await ctx.close();
+    return p;
+  })();
+  const mp4 = path.join(OUT, "run.mp4");
+  const poster = path.join(SHOTS, "poster.png");
+  try {
+    execFileSync("ffmpeg", ["-y", "-i", webm, "-an", "-vf", `scale=${VW}:${VH}:flags=lanczos`, "-c:v", "libx264", "-preset", "medium", "-crf", "30", "-pix_fmt", "yuv420p", "-movflags", "+faststart", mp4], { stdio: "ignore" });
+    execFileSync("ffmpeg", ["-y", "-ss", "1", "-i", mp4, "-frames:v", "1", poster], { stdio: "ignore" });
+  } catch (err) {
+    console.warn(`  转 mp4 失败（${err.message}），保留 webm：${webm}`);
+    return { file: path.relative(OUT, webm).split(path.sep).join("/"), poster: null, w: VW, h: VH, seconds: 0, bytes: fs.statSync(webm).size, marks };
+  }
+  const probe = execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", mp4], { encoding: "utf8" }).trim();
+  return {
+    file: "run.mp4",
+    poster: fs.existsSync(poster) ? path.relative(OUT, poster).split(path.sep).join("/") : null,
+    w: VW,
+    h: VH,
+    seconds: Math.round(Number(probe) * 10) / 10,
+    bytes: fs.statSync(mp4).size,
+    marks,
+  };
+}
+const video = await finishVideo();
 
 const countOf = (verdict) => cases.filter((c) => c.verdict === verdict).length;
 const summary = {
@@ -173,6 +266,8 @@ const spec = {
   branch: meta.branch ?? "",
   pr: meta.pr ?? "",
   decision: meta.decision ?? "",
+  // 用例集可以带自己的结论段/复跑步骤（xlsx 的「总览」「环境与准备」用它，缺省才用内置文案）。
+  ...(meta.spec ?? {}),
   output: meta.output ?? meta.module ?? caseName,
   runAt: localStamp(),
   durationMs: Date.now() - startedAt,
@@ -185,7 +280,7 @@ const spec = {
     bridge: BASE,
     passphrase: PASS,
     pageLocale: "zh-CN",
-    viewport: "1440×940",
+    viewport: `${VW}×${VH}`,
     powershell: ps("$PSVersionTable.PSVersion.ToString()"),
     pwsh5: ps("[System.Environment]::OSVersion.Version.Build"),
     gitHead: (() => {
@@ -198,6 +293,7 @@ const spec = {
     ...(meta.extraEnv ?? {}),
   },
   pageErrors,
+  ...(video ? { video } : {}),
   summary,
   cases,
 };
@@ -212,6 +308,7 @@ const shotCount = summary.shots;
 
 console.log(`\n用例 ${cases.length} 条：通过 ${pass}、失败 ${failed}、人工 ${manual}（${steps} 步，${shotCount} 张截图）`);
 for (const c of cases) console.log(`  ${c.verdict.padEnd(2)}  ${c.id} ${c.title}`);
+if (video) console.log(`录像 ${video.seconds}s / ${(video.bytes / 1048576).toFixed(1)} MB → ${path.join(OUT, video.file)}`);
 console.log(`\n产物 ${OUT}`);
 await browser.close();
 if (summary.fail > 0) process.exitCode = 1;
