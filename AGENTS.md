@@ -45,6 +45,15 @@ Issues and specs live as GitHub issues in `Yang-Code01/pi-web-client`, driven wi
 
 给容器写多轨 `grid-template-rows` 时，先看它的直接子元素里有没有会 `hidden` / `display:none` 的（横幅、提示条、菜单）。有就三选一：每个子元素钉死 `grid-row` / `grid-area`；只在它可见时才切到多一行的模板（`:has(> .x:not([hidden]))`）；或整块改 flex 列。隐藏的子元素不占格子，后面的会整体前挪一行：主体掉进 `auto` 行不再自己滚、底栏被拉进 `1fr`。已经踩过三次：随手问面板、系统管理页（`0eebbeb`）、对话栏（`b8149a9` → #372）。加了这类元素的 UI 测试顺手断言它隐藏时底栏仍贴底。
 
+### 尺寸：`#app` 里不许写裸 `vh` / `vw`
+
+`#app { zoom: var(--ui-scale) }`（外观「字号」）会把子树里的长度整体缩放一遍，而 `vw` / `vh` 解析的是**视口**、不认 zoom —— 同一个值被乘第二次。所以视口几成就写 `calc(var(--vh1) * N)` / `calc(var(--vw1) * N)`：
+
+- 往 CSS 里写 `82vh`、`94vw`、`calc(100vw - 16px)` 这种，字号 125% 以上就会把弹层与它的底栏推出屏幕（D123、D263，已经复发四次）。
+- 只有 `document.body.append()` 上去、压根不在 `#app` 里的浮层可以写裸的，行尾必须标 `/* 不在 #app */`；守卫只认这个标记，**别拿它当顺手豁免** —— 浮层本来就该跟着字号缩放，请挂进 `#app`。
+- 守卫：`npm run test:viewport`（已挂在 web 的 typecheck 里）。新写/改弹层后跑一次，顺便在字号 150% 下看一眼底栏还在不在。
+- 判「窄版」用 `@container`（卡 / 面板自己的宽度），不要用 `@media`（视口宽度）：嵌在左栏右栏里的面板永远等不到 `@media` 触发（D263）。
+
 ### Running the bridge
 
 The bridge (`http://127.0.0.1:7864`) is normally started by hand in a terminal; its `pi --mode rpc` children die with it. A restart goes through the skill below (stop + `npm start` by hand still works, it just skips the build check). To tell whether you are a descendant of some pid, ask the human or print your own ancestor chain with `pwsh` (`Get-Process(...).Parent`). See `docs/agents/running-the-bridge.md`.

@@ -4713,3 +4713,56 @@ D
 **代价 / 可改：** 不支持数组公式、动态数组、迭代计算、外部工作簿引用、`INDIRECT/OFFSET` 这类会改引用范围的函数，也不解析 `1904` 之外的日期系统差异；文本比较按 `localeCompare` 的近似语义，跟 Excel 的排序规则不是逐字一致；单表 40 万格、单窗口 2 万格是拍的阈值，超了宁可不算。要真做到「和 Excel 一模一样」，就得把函数表补全并引入日期/精度细节，那是另一个量级的事。
 
 **验证：** 新增 `bridge/tests/fixtures/calc-xlsx.mjs`（12 个公式格全部只有 `<f>`，含 SUM / IF / ROUND / VLOOKUP / 跨表 / 除零 / 未知函数 / 环引用 / 带货币格式的公式），`make-xlsx.mjs` 一并产出；`.scratch/t-calc2.mjs` 逐格核对显示值。`probes/xlsx.mjs` 新增 14 条（9 个值 + 底栏计数 + 编辑态现写公式、保存后刷新、重开仍在），并把原来「缺缓存值格显空 / 红虚线 / 需重算」三条改成新行为；整轮 **356 项 ok / 全部通过**。
+
+## D263 `#app` 里不写裸 `vh` / `vw`：分支工作台掉出屏幕的修复 + 一条守门用例（用户报障 2026-11-15）
+
+**问题：** 用户报「chat 框下面的分支点开，现在是穿模的」，追问后落在一句具体的话上：**「分支管理里面的拉取最新，在我现在这缩放下看不见了」**。复现：外观「字号」调到 125% 以上，点状态行的 `⎇main`，卡片底栏（`拉取最新` / `Esc 关闭`）整条掉到视口外面；150% 起头行的「分支操作工作台」几个字压在「提交」身上。
+
+更让用户火大的是这**不是新坑**：`--vh1` / `--vw1` 就是为它起的，`.sys-console` / `.mail-console` / `.jc-console` 三处文件头都写着「不写 96vw / 90vh」，预览面板的 `.viewer.full` 也留着一整段注释。前几次都是「哪里炸了补哪里」，于是同一个错误换一个弹层就复发一次。这一轮按**类**收口。
+
+**原因：**
+
+1. `#app { zoom: var(--ui-scale) }`（外观「字号」）会把子树里的长度整体缩放一遍，而 `vw` / `vh` 解析的是**视口**尺寸、不认 zoom —— 同一个值被乘第二次。字号 125% 下 `height: 82vh` 的卡就是 923px（视口 900），150% 是 1107px，200% 下 `94vw` 宽的卡 2000px（视口 1440）。
+2. 卡一窄，`.branch-tools { flex: none }` 不让位，`.branch-title` 里那几段 `nowrap` 文字又撑着自己的 min-content（`min-width: 0` 不够）—— 盒子被挤到内容以下后文字**直接画到动词按钮身上**。
+3. 分支工作台的窄版规则挂的是 `@media (max-width: 720px)`，看的是**视口**宽度。嵌进「目录与仓库」右栏时面板只有 800（150% 时 482），视口还是 1440 → 窄版永远不触发：对照行里 `origin/main` 输入框压在「领先 / 落后」上、两列历史挤成省略号。
+
+**决定：**
+
+1. **`web/src/*.css` 里一律不写裸 `vh` / `vw`**，要写几成视口就写 `calc(var(--vh1) * N)` / `calc(var(--vw1) * N)`（`--vh1` = 1vh ÷ zoom，跟 `.sheet`、预览面板同一个口径）。这轮把 `styles.css` 里剩下的 **33 处**声明全换了：分支工作台、目录与仓库、diff 弹窗、参数对话框、翻译对照、终端浮窗、背景任务、Jira 选择器、随手问、新建工作区、回合列表、消息图片、模型 chip、`.bg-sheet` 等。
+2. **挂在 `document.body` 上的浮层例外**：它们不在 `#app` 里、没有 zoom，裸单位本来就是对的（位置也是用 `getBoundingClientRect()` 的视觉 px 夹的）。这类规则**行尾标一条「不在 #app」注释**，守卫认这个标记；目前 10 条（`.pin-menu` / `.pin-menu.pin-list` / `.ws-tabs-menu` ×2 / `.ws-tray-col` / `.ws-pop` ×2 / `.perm-menu` / `.update-bar` / `.fail-toast`）。新东西不要往这个豁口里塞 —— 浮层本来就该跟着字号缩放，请挂进 `#app`；守卫对豁免条数有上限（12），涨爆了就说明又有人在往 body 上挂。
+3. **加守门用例** `web/tests/viewport-units-unit.mjs`（挂进 `npm --prefix web run typecheck`，也可单跑 `npm run test:viewport`）：扫 `web/src/*.css`（`web/src/peer/` 是另一张没有 zoom 的页面，不在范围内），除了 `--vh1` / `--vw1` 那两行定义和带豁免标记的行，出现裸 `vh` / `vw` / `dvh` / `svh` / `lvh` / `dvw` 就红并指出文件行号。**这条是整个决定里真正管用的部分** —— 前三次都写了文档没写守卫，所以第四次还是发生了。
+4. **分支工作台 / 目录与仓库的窄版判据从 `@media` 换成 `@container`**（`.branch-sheet { container-type: inline-size }`，同 `.viewer` 的理由）：窄版规则（cmp 两列、单列历史 / 差异、侧栏下移、动词左对齐、藏 Esc 提示）整套搬进 `@container (max-width: 720px)`；头行两级降级 —— 卡宽 < 960 标题让位只留 `⎇`，< 720 常驻动词收进「全部动词 · 24」（那一页本来就有全部 24 条）。`.branch-title { overflow: hidden }` 与 `.branch-head { flex-wrap: wrap }` 兜底，任何一步都不许再画到按钮上。`.branch-sheet` 自己的宽高仍留在 `@media`：容器查询不能给容器自己写样式。
+   **「目录与仓库」同样处理**：`.repos-sheet { container-type: inline-size }`，三列 / 单列 + 「目录」抽屉的
+   切换搬进 `@container (max-width: 720px)`（`.repos-sheet` 自己的 `width/height` 仍留在 `@media`），
+   `repossheet.ts` 里「选中后自动收起抽屉」的判据从 `matchMedia("(max-width: 860px)")` 改成
+   `this.sheet.clientWidth <= 720` —— 两处必须是同一个数，否则抽屉会开着不关。
+   同一轮顺手把**预览面板**头部那组窄版规则也换了（`.viewer` 早就有 `container-type: inline-size`，
+   却把 `display: none` / 换行那几条挂在 `@media (max-width: 760px)` 上）：宽屏上把面板拖到 400px，
+   以前一声不响，头部就照着「#79 的教训」那条注释继续往视口外溢。
+
+5. **极窄时别再让卡片自己吃掉纵向空间**（这一条是量的过程中冒出来的新坑）：字号 200% 时有效视口 720×450，`.repos-sheet` 的 84vh 只剩 378，头行 + 对照行 + 两个 tab 条 + 底栏就把高度吃干，内嵌工作台的 `.go-body` 被压成 **1px**（列表整块看不见）。三处改动：
+   - `:where(html[data-compact="true"]) .branch-sheet, … .repos-sheet { height: calc(var(--vh1) * 94) }`：有效宽度窄时这两张卡多占一点高度（`data-compact` 是 app.ts 按「视口 ÷ 字号」算的既有判据，`.term-dock` 早就这么用）。84vh → 94vh 在 200% 下是 378 → 423。
+   - 对照行换两列的门槛从 720 降到 **520**：卡还有 600 上下时三列（当前 | 领先/落后 | 对照）排得下，换两列反而多占一行 —— 200% 时那 70px 就是列表的全部。
+   - 位置顺序有讲究：这两条必须写在两张卡的 base 规则**之后**，`:where()` 的权重是 0、只赢在同权重靠后。
+
+**顺带审过、结论是没问题：** `app.ts` 那几处 `menu.style.left = innerWidth - 220` / `menu.style.right = innerWidth - r.right`（右键菜单、终端菜单、工具权限浮层）与 `menuplace.ts#stickMenu` —— 它们全都 `document.body.append`，不在 zoom 子树里，用视觉 px 定位是对的。**不是**每一处 `innerWidth` 都要除 scale：先看它是不是挂在 `#app` 里。
+
+**挖出来的、留给你拍板的事：** 「目录与仓库」在 `compact()`（有效宽度 < 900，也就是手机、或字号 175% 以上）下**根本打不开** —— `syncCwdChip()` 里 `cwdChip.hidden = compact()`，而它唯一的入口就是那颗 chip（`openReposSheet` 只有这一个调用点）。也就是说这一轮给 `.repos-sheet` 加的窄版容器查询，在真机上暂时没有触达路径（只有「卡被拨窄」这种合成情况能走到）。要修得先定：手机/高字号下这颗 chip 放哪（状态行挤得下吗、还是收进左栏抽屉）。**没动**，等产品口径。
+
+**没做的：** 部分工具浮层仍用 `@media` 判窄版（`.notes-*`、`.fail-*` 等挂在满屏 sheet 里的那些，它们的宽度本来就跟着视口走，优先级低）。
+
+**代价：** 字号 150% 下嵌在右栏的常驻动词要收起来，得多点一下「全部动词 · 24」；200% 时独立的卡也进窄版（单列 + 顶部 tab），一屏只看得到两三行提交 —— 仍可滚、仍能关；只当上限用的 `max-width: Nvw`（模型 chip、消息图片）现在按「面板宽度的 N%」算而不是「视口的 N%」，高字号下会比以前更早出现省略号 —— 那才是它本该有的意思。
+
+**验证（真 Chrome：playwright-core + Chrome for Testing；走真桥点开 chip，1440×900）**
+
+- `.branch-fetch` 的 bottom（视口 900）：改前 100 / 125 / 150 / 175 / 200% = 808 / **929** / **1115** / **1301** / **1486**；改后 = 808 / 806 / 803 / 801 / 797。
+- 100% 下分支工作台 1000×738、head 63、title 146、tools 808、body 473 —— 与改前**逐项相同**（`--vh1` 在 scale=1 时就是 `1vh`，这轮换单位对主力尺寸零影响）。
+- 嵌在「目录与仓库」右栏（面板 800）100 / 150 / 175%：foot 底 792 / 775 / 766；150% 下对照行不再重叠、历史改单列；100% 下常驻动词 7 颗仍在（阈值 720 没误伤）。
+- 静态 A/B（同一个 harness，只换 CSS，`--ui-scale: 1.5`）：`.diff-sheet` 高 774 → 516（本地 px，乘 1.5 后是 1161 → 774，视口 900），`.term-dock` 宽 1080 → 928（1620 → 1392，视口 1440）。
+- 700×800（`@media` 窄版路径）、390×844（手机）、1440×700 + 150% 全在视口内；新建会话 / 随手问两张 sheet 在 150% 下无溢出。
+- `npm --prefix web run typecheck`（`tsc` + i18n-check 3008 键 × 3 + 新守卫 8 项）、`node scripts/build.mjs --only web` 通过；守卫反向验过（往 `sysmanage.css` 塞一行 `height: 42vh` 立刻红，删掉恢复绿）。
+- **`npm run test:githist:ui` 加了 10 条**（150% / 200% 各五条）：卡片整张落在视口里、「拉取最新」在视口内、头行标题没画到动词按钮上、「全部动词」入口可见、窄版判据跟的是卡自己的宽度。跑法见 `docs/agents`（这台机器上 `npm i --no-save playwright && npx playwright install chromium` 之后 `loadPlaywright()` 就找得到了）。整套 116 条全绿、0 失败；**把 `.branch-sheet` 退回 `94vw` / `82vh` 再跑，这组立刻红**（`1500x1107 @ 24,24，视口 1440x900`），改回来恢复绿 —— 用例确实咬得住这次的事故。
+- 同一轮顺手修了 `bridge/tests/git-history-ui.mjs` 的一处环境假设：`/api/git/state` 回来的 repo 是 `/private/var/…` 而 tmpdir 是 `/var/…`（macOS 同一个地方两条路径），断言改成比 realpath，否则这条用例在 macOS 上第一跑就红。
+- `test:repos:ui` 从「这条机器上跑不过」修成绿：`ROOT` 拉平到 `fs.realpathSync`（macOS 的 `/var` → `/private/var`，否则 `data-dir` 永远匹配不上、卡在第一条 `waitForFunction`），清理换成带重试的 `rmSync`（ENOTEMPTY 会把真正的失败盖掉）。另加 4 条容器判据：卡 1240 宽三列照旧、把卡拨到 600（视口仍 1280）就换「目录」抽屉、同一时刻目录列/仓库列/面包屑都让位、拨回来自动还原。
+- 预览面板那组容器查询用真样式表验的：面板 420 宽时 `.viewer-path` 隐藏、900 宽时显示；同一张页面对照旧 CSS，420 宽下路径**没**隐藏（就是被修掉的那个静默失败）。
+- 同族回归：`test:scratch:ui`、`test:settings:ui`、`test:repos:ui`、`test:githist:ui` 全绿。（`test:repos:ui` 原先在这台机器上跑到「只列目录…」就 timeout —— main 上未改动的构建同样跑不过，是本轮顺手修掉的 macOS 路径问题，见上。）

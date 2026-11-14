@@ -18,7 +18,10 @@ import { REPO } from "../../tools/paths.mjs";
 import { loadPlaywright } from "../../tools/playwright.mjs";
 
 const { chromium } = await loadPlaywright();
-const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-repos-ui-"));
+// macOS 的 tmpdir 是 `/var/folders/…`，而桥/git 报回来的路径是 `/private/var/folders/…`（同一个地方两条
+// 路径，`/var` 是指向 `/private/var` 的软链）。造目录时先把 ROOT 拉平到 realpath，后面拼出来的 cwd
+// 才和桥返回的一字不差 —— 否则 `data-dir` 永远匹配不上，用例就卡在第一条 `waitForFunction` 上。
+const ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-web-repos-ui-")));
 const STATE = path.join(ROOT, "state");
 const DIST = path.join(REPO, "bridge", "dist", "index.js");
 const FAKE_PI = path.join(REPO, "bridge", "tests", "fixtures", "fake-pi.mjs");
@@ -231,6 +234,28 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.keyboard.press("Escape");
 
+  // 窄版判据是**卡自己**多宽，不是视口（D263）：把卡拨窄到 600、视口仍是 1280，抽屉就该出来。
+  // 换成 @media 的话这里一条都过不了 —— 1280 的视口永远不会触发 720 的断点。
+  await page.click(".cwd-chip");
+  await page.waitForSelector(".repos-sheet", { timeout: 15000 });
+  const wideState = await page.evaluate(() => {
+    const shown = (sel) => { const n = document.querySelector(sel); return n ? getComputedStyle(n).display !== "none" : false; };
+    return { drawer: shown(".repos-drawerbtn"), rail: shown(".repos-rail"), sheetW: Math.round(parseFloat(getComputedStyle(document.querySelector(".repos-sheet")).width)) };
+  });
+  check("宽卡（1240）时三列照旧", wideState.sheetW >= 1000 && wideState.drawer === false && wideState.rail === true, JSON.stringify(wideState));
+  await page.evaluate(() => { document.querySelector(".repos-sheet").style.width = "600px"; });
+  await page.waitForTimeout(250);
+  const narrowState = await page.evaluate(() => {
+    const shown = (sel) => { const n = document.querySelector(sel); return n ? getComputedStyle(n).display !== "none" : false; };
+    return { drawer: shown(".repos-drawerbtn"), rail: shown(".repos-rail"), tree: shown(".repos-tree"), crumb: shown(".repos-crumb"), vw: innerWidth };
+  });
+  check("卡拨到 600（视口还是 1280）：换「目录」抽屉", narrowState.drawer === true && narrowState.vw > 720, JSON.stringify(narrowState));
+  check("同一时刻目录列与仓库列让位", narrowState.rail === false && narrowState.tree === false && narrowState.crumb === false);
+  await page.evaluate(() => { document.querySelector(".repos-sheet").style.width = ""; });
+  await page.waitForTimeout(200);
+  check("拨回来自动还原三列", await page.evaluate(() => getComputedStyle(document.querySelector(".repos-rail")).display !== "none"));
+  await page.keyboard.press("Escape");
+
   // 仓库会话：chip 还是复制，不弹窗。
   await page.goto(`${BASE}/#/s/${apiId}`);
   await page.waitForSelector(".git-chip", { timeout: 20000 });
@@ -249,5 +274,6 @@ try {
   await browser?.close();
   socket?.close();
   bridge.kill();
-  fs.rmSync(ROOT, { recursive: true, force: true });
+  // 子进程（fake pi / git）可能还在往 STATE 里写，直接 rm 会 ENOTEMPTY 把真正的失败盖掉。重试几次。
+  fs.rmSync(ROOT, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

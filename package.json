@@ -48,6 +48,7 @@
     "test:exec-view": "node --experimental-strip-types web/tests/exec-view-unit.mjs",
     "test:wsmanage": "node --experimental-strip-types web/tests/wsmanage-unit.mjs",
     "test:menuplace": "node --experimental-strip-types web/tests/menuplace-unit.mjs",
+    "test:viewport": "node web/tests/viewport-units-unit.mjs",
     "test:defaults": "node --experimental-strip-types bridge/tests/settings-defaults.mjs",
     "test:permission": "node bridge/tests/default-permission.mjs",
     "test:pending": "node --experimental-strip-types web/tests/pending-unit.mjs",
