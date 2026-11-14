@@ -359,6 +359,8 @@ export interface TrSection {
   out: string;
   /** 这一节的原文快照，用来判断「原文变了没有」。 */
   src: string;
+  /** 机器这一节没翻成（调用失败，或输出不合格）：out 里摆的是原文，「更新」时要重翻。 */
+  failed?: boolean;
 }
 
 /** 翻一节：代码段原样拼回，正文分块翻。 */
@@ -366,7 +368,7 @@ export async function translateSection(
   text: string,
   o: TrRun,
   run: TrRunner,
-  hooks: { onChunk?: () => void } = {},
+  hooks: { onChunk?: () => void; onFailure?: (msg: string) => void } = {},
 ): Promise<{ out: string; warnings: string[] }> {
   const warnings: string[] = [];
   const parts = splitCode(text);
@@ -387,16 +389,26 @@ export async function translateSection(
     for (const chunk of chunks) {
       let got = "";
       for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
+        got = "";
+        const last = attempt === MAX_RETRY;
         try {
           got = cleanOut(await run(chunk, o, "forward"));
         } catch (e) {
-          warnings.push((e as Error).message);
-          break;
+          const msg = (e as Error).message;
+          warnings.push(msg);
+          // 连接抖动这类瞬时错误值得再问一次；重试也耗尽了才把这一块记成「没翻成」。
+          if (last) {
+            hooks.onFailure?.(msg);
+            got = "";
+          }
+          continue;
         }
         const bad = tableDiff(chunk, got) ?? looksUntranslated(o.lang, chunk, got);
         if (!bad) break;
-        if (attempt === MAX_RETRY) {
-          warnings.push(`${bad}；这一段保留原文`);
+        if (last) {
+          const msg = `${bad}；这一段保留原文`;
+          warnings.push(msg);
+          hooks.onFailure?.(msg);
           got = "";
         }
       }
@@ -421,33 +433,41 @@ export async function translateDoc(
   o: TrRun,
   run: TrRunner,
   hooks: TranslateHooks & { keep?: Map<string, TrSection> } = {},
-): Promise<{ sections: TrSection[]; warnings: string[] }> {
+): Promise<{ sections: TrSection[]; warnings: string[]; failures: string[] }> {
   const cuts = cutSections(text);
   const total = cuts.length;
   const sections: TrSection[] = [];
   const warnings: string[] = [];
+  const failures: string[] = [];
   let done = 0;
 
   for (const cut of cuts) {
     if (hooks.signal?.aborted) throw new Error("已取消");
     const old = hooks.keep?.get(keyOf(cut));
-    if (old && old.src === cut.text && old.out) {
+    // 失败节（含旧缓存里 out === src 的坏结果）绝不复用，否则「更新」会一直把原文摆回来；
+    // 但人已经接手改过的译文（out !== gen）以人写的为准，别再让机器覆盖掉。
+    if (old && old.src === cut.text && old.out && old.out !== old.src && (!old.failed || old.out !== old.gen)) {
       sections.push({ ...old, heading: cut.heading });
       done++;
       hooks.onSection?.(sections);
       hooks.onProgress?.(done, total, cut.heading || "开头");
       continue;
     }
+    const secFailures: string[] = [];
     const { out, warnings: w } = await translateSection(cut.text, o, run, {
       onChunk: () => hooks.onProgress?.(done, total, cut.heading || "开头"),
+      onFailure: (msg) => secFailures.push(msg),
     });
     warnings.push(...w);
-    sections.push({ heading: cut.heading, gen: out, out, src: cut.text });
+    failures.push(...secFailures);
+    const sec: TrSection = { heading: cut.heading, gen: out, out, src: cut.text };
+    if (secFailures.length) sec.failed = true;
+    sections.push(sec);
     done++;
     hooks.onSection?.(sections);
     hooks.onProgress?.(done, total, cut.heading || "开头");
   }
-  return { sections, warnings };
+  return { sections, warnings, failures };
 }
 
 const keyOf = (c: Cut) => c.heading || "\u0000preamble";

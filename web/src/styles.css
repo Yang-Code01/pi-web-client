@@ -2419,6 +2419,7 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .tr-out { position: relative; border-left: 1px solid var(--line-soft); }
 /* 模型没翻出来的那节：译文位置上摆的是原文，得让人一眼看出来，别当成译文读。 */
 .tr-out.raw { color: var(--faint); }
+.tr-out.failed { color: var(--danger); }
 .tr-out .tr-dot { position: absolute; right: 10px; top: 8px; font-size: 11px; color: var(--warn); }
 .tr-edit-hint { padding: 6px 12px; font-size: 11px; color: var(--faint); border-bottom: 1px solid var(--line-soft); }
 /* 改译文：左原文右编辑框，两栏同一行对齐（高度由脚本撑到内容高度）。 */
