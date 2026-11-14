@@ -159,7 +159,7 @@ class HotdeployPanel {
     this.logBox.addEventListener("toggle", () => {
       if (this.logBox.open) void this.loadLog();
     });
-    progress.append(progressCap, this.stepsBox, this.logBox);
+    progress.append(progressCap, this.stepsBox);
     body.append(picker, progress);
 
     this.statusBox = el("div", "hot-status");
@@ -171,7 +171,8 @@ class HotdeployPanel {
     this.runBtn.onclick = () => void this.run();
     foot.append(this.hint, grow, this.runBtn);
 
-    this.console.append(head, body, this.statusBox, foot);
+    // 日志尾钉在正文外面、状态条上面：正文滚起来它也一直在，份量不占正文高度。
+    this.console.append(head, body, this.logBox, this.statusBox, foot);
   }
 
   // ---------------------------------------------------------------- 数据
