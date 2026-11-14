@@ -671,7 +671,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .chat-more .more-btn:hover:not(:disabled) { color: var(--fg); border-color: var(--dim); }
 .chat-more .more-btn:disabled { cursor: default; opacity: .6; }
-/* 这个列容器有确定高度且 overflow-y:auto；子项若自带 overflow:hidden（如 .fcard），
+/* 这个列容器有确定高度且 overflow-y:auto；子项若自带 overflow:hidden（如 .ops），
    min-height:auto 会退化成 0，于是长会话里被 flex 压缩成 2px 细线。统一禁止收缩。 */
 .chat-scroll > * { flex: 0 0 auto; min-width: 0; }
 /* 「回到底部」：滚动视口底部正中一颗圆钮，只有一枚向下箭头（Q-027：原来是一整条写着「回到底部 /
@@ -824,70 +824,100 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .skillgroup:not([open]) > .skillgroup-body { display: none; }
 .skillgroup-body .skillcard { border: 0; background: none; padding: 0; }
 .skillgroup-body .skillcard + .skillcard { border-top: 1px solid var(--line-soft); padding-top: 8px; }
-/* A failure buried in a collapsed module is invisible and, once the card is open, a 40-line
-   traceback still does not say what went wrong. So each failure gets its own card right after the
-   module: conclusion first, then only the key lines, raw log folded. Rules live in diagnose.ts. */
-.fcard {
-  border: 1px solid var(--danger-dim);
-  background: linear-gradient(180deg, var(--panel), var(--panel));
-  border-radius: 12px;
-  overflow: hidden;
+/* 一轮是**一块**：工具行在第一页（「操作」），失败诊断在第二页（「AI 执行失败」）。
+   页签只在真有第二页时出现 —— 没失败的一轮连这条控件都不长，模块和从前一模一样。 */
+.ops-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: fit-content;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.25);
 }
-.fcard.calm { border-color: var(--line-soft); background: var(--panel); }
-.fcard > summary.top {
-  display: flex; gap: 8px; align-items: center; padding: 8px 12px; min-width: 0;
-  cursor: pointer; list-style: none;
+/* display:flex 会把 hidden 属性顶掉，这里得自己让路。 */
+.ops-tabs[hidden] { display: none; }
+.ops-tab {
+  appearance: none;
+  margin: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 7px;
+  color: var(--dim);
+  font: 12px/1.4 var(--mono);
+  transition: color 0.12s ease, background 0.12s ease;
 }
-.fcard > summary.top::-webkit-details-marker { display: none; }
-.fcard[open] > summary.top { border-bottom: 1px solid var(--line-soft); }
-.fcard.calm[open] > summary.top { border-bottom-color: var(--line-soft); }
-.fcard .top .chev { flex: none; color: var(--faint); font-size: 11px; transition: transform 0.15s ease; }
-.fcard[open] .top .chev { transform: rotate(90deg); }
-.fcard .top .sum-cmd {
-  flex: 0 1 45%; min-width: 0; font: 12px/1.5 var(--mono); color: var(--faint);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right;
+.ops-tab:hover { color: var(--text); }
+.ops-tab.is-on {
+  color: var(--text);
+  background: var(--panel-3);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.35);
 }
-.fcard[open] .top .sum-cmd { display: none; }
-.fcard .badge {
+.ops-tab .cnt { font: 10.5px/1 var(--mono); font-weight: 600; color: var(--faint); }
+.ops-tab[data-panel="fail"] { color: var(--danger); }
+/* 计数跟着失败走：灰数字嵌在红字旁边会读成「已读/未读」那种计数，不是「几条出事」。 */
+.ops-tab[data-panel="fail"] .cnt { color: var(--danger); }
+.ops-tab[data-panel="fail"].is-on { background: var(--danger-bg); }
+/* 面板也是一列网格：隐式的 `auto` 列会按 max-content 定宽，一条不换行的长命令能把它撑成几万像素。 */
+.ops-panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }
+.ops-panel[hidden] { display: none; }
+/* 失败页靠分隔线分区，块与块之间不再叠一层 gap。 */
+.ops-panel[data-panel="fail"] { gap: 0; }
+
+/* 一条失败：结论行（徽标 + 一句话 + 哪条命令）先给，细节和原文往下排；
+   外框由模块提供，这里只有一条分隔线，一串失败读起来是一张清单而不是一叠卡。 */
+.fitem + .fitem { margin-top: 10px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+.fhead { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 0 12px 2px; }
+.fhead .badge {
   font: 11px/1.6 var(--mono); padding: 1px 8px; border-radius: 6px;
   background: var(--danger-bg); color: var(--danger); letter-spacing: 0.04em; flex: none;
 }
-.fcard.calm .badge { background: var(--panel-3); color: var(--dim); }
-.fcard .ttl { flex: 1; min-width: 0; font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fcard[open] .ttl { white-space: normal; }
-.fcard.calm .ttl { font-weight: 500; color: var(--dim); }
-.fcard .grid { display: grid; grid-template-columns: 64px 1fr; gap: 4px 12px; padding: 12px 12px 8px; font-size: 13px; }
-.fcard .k { font: 11px/1.7 var(--mono); color: var(--faint); text-align: right; padding-top: 2px; }
-.fcard .v { color: var(--accent); }
-.fcard.calm .v { color: var(--dim); }
-.fcard .cmdbar { display: flex; gap: 8px; align-items: baseline; padding: 0 12px 8px; font: 12px/1.5 var(--mono); color: var(--faint); }
-.fcard .cmdbar .c { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fitem.calm .fhead .badge { background: var(--panel-3); color: var(--dim); }
+.fhead .fttl {
+  flex: 0 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fitem.calm .fttl { font-weight: 500; color: var(--dim); }
+.fhead .fwho {
+  flex: 0 1 45%; margin-left: auto; min-width: 0;
+  font: 11px/1.5 var(--mono); color: var(--faint); text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fitem .grid { display: grid; grid-template-columns: 64px 1fr; gap: 4px 12px; padding: 10px 12px 8px; font-size: 13px; }
+.fitem .k { font: 11px/1.7 var(--mono); color: var(--faint); text-align: right; padding-top: 2px; }
+.fitem .v { color: var(--accent); }
+.fitem.calm .v { color: var(--dim); }
 /* key lines: line numbers, non-matching lines dropped, gaps named by their size */
-.fcard .ex { border-top: 1px solid var(--line-soft); background: var(--sunken); font: 12px/1.5 var(--mono); }
-.fcard.calm .ex { border-top-color: var(--line-soft); }
-.fcard .ex .body { padding: 8px 0 8px; }
-.fcard .ln { display: flex; gap: 8px; padding: 1px 12px; white-space: pre-wrap; word-break: break-word; }
-.fcard .ln .no { flex: none; width: 26px; text-align: right; color: var(--accent); user-select: none; }
-.fcard .ln .tx { color: var(--accent); }
-.fcard .ln.hit { background: var(--danger-bg); box-shadow: inset 2px 0 0 var(--danger); }
-.fcard .ln.hit .tx { color: var(--danger); }
-.fcard.calm .ln.hit { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--line-strong); }
-.fcard.calm .ln.hit .tx { color: var(--dim); }
-.fcard .gap { padding: 2px 12px; color: var(--accent); font-size: 11px; }
-.fcard .foot {
+.fitem .ex { border-top: 1px solid var(--line-soft); background: var(--panel); font: 12px/1.5 var(--mono); }
+.fitem .ex .body { padding: 8px 0 8px; }
+.fitem .ln { display: flex; gap: 8px; padding: 1px 12px; white-space: pre-wrap; word-break: break-word; }
+.fitem .ln .no { flex: none; width: 26px; text-align: right; color: var(--accent); user-select: none; }
+.fitem .ln .tx { color: var(--accent); }
+.fitem .ln.hit { background: var(--danger-bg); box-shadow: inset 2px 0 0 var(--danger); }
+.fitem .ln.hit .tx { color: var(--danger); }
+.fitem.calm .ln.hit { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--line-strong); }
+.fitem.calm .ln.hit .tx { color: var(--dim); }
+.fitem .gap { padding: 2px 12px; color: var(--accent); font-size: 11px; }
+.fitem .foot {
   display: flex; gap: 8px; align-items: center; justify-content: space-between;
   padding: 8px 12px; border-top: 1px solid var(--line-soft); font: 11px/1.5 var(--mono); color: var(--faint);
 }
-.fcard.calm .foot { border-top-color: var(--line-soft); }
-.fcard .foot details.raw { border: 0; flex: none; }
-.fcard .foot details.raw > summary.raw-top { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.fitem .foot details.raw { border: 0; flex: none; }
+.fitem .foot details.raw > summary.raw-top { display: flex; align-items: center; gap: 4px; cursor: pointer; }
 .raw .chev { font-size: 11px; color: var(--faint); transition: transform 0.15s ease; }
 .raw[open] .chev { transform: rotate(90deg); }
-.fcard .foot details.raw > summary {
+.fitem .foot details.raw > summary {
   cursor: pointer; list-style: none; padding: 0; color: var(--dim); border-bottom: 1px dashed var(--line-strong);
 }
-.fcard .foot details.raw > summary::-webkit-details-marker { display: none; }
-.fcard .foot details.raw pre {
+.fitem .foot details.raw > summary::-webkit-details-marker { display: none; }
+.fitem .foot details.raw pre {
   margin: 8px 0 0; padding: 0; white-space: pre-wrap; word-break: break-word;
   font: 12px/1.45 var(--mono); color: var(--accent); max-height: 220px; overflow: auto;
 }

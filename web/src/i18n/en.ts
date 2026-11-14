@@ -523,6 +523,7 @@ export const en: Dict = {
   "工具 --tools": "Tools --tools",
   "工具报了 isError，输出里没有可识别的错误行": "The tool reported isError, but the output has no recognizable error line",
   "工具操作": "Tool actions",
+  "AI 执行失败": "AI failures",
   "工具权限（只对这个会话）": "Tool permissions (this session only)",
   "工具（{p1}）": "Tools ({p1})",
   "还没有打开会话": "No session open yet",

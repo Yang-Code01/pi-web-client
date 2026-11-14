@@ -221,11 +221,11 @@
 
 **浏览器验证：** `probes/rename-ui.mjs`（隔离桥 + 两个手工会话 + Chromium）：输入框自动聚焦全选 → Enter 改名 → 刷新后仍在（`names.json` 持久化）→ Esc 不保存 → 失焦提交 → 卡片仍能点开聊天。**桥端验证：** `node bridge/tests/rename-check.mjs`：只读改名后文件字节数与 mtime 都不变；手写更新的 `session_info` 5 秒内夺回卡片；claim 后续接 live 会话改名，名字真的追加进了 `.jsonl`；空名得到 error notice。**可改**
 
-## D44 失败的工具调用在折叠模块之外再钉一条失败条（画法已被 D49 取代，位置与「不折进模块」的结论仍有效）
+## D44 失败的工具调用在折叠模块之外再钉一条失败条（画法与位置均已被 D253 取代：失败条目现在在模块内的第二页）
 
 **决定：** 一轮里的工具调用照旧折进一个 `<details class="ops">`（标题 `19 个操作 · bash ×19 · 1 失败`）。新增的是：任何失败的工具调用**同时**在模块后面钉一条独立 `.failbar`（`web/src/chat.ts` 的 `failureBar()`），默认展开，内容是「✕ 工具名 + 完整命令」一行、「首条错误行」一行（收起时才显示，`firstErrorLine()` 优先挑 `fatal|error|failed|cannot|denied|not found|timed out|ENOENT|EACCES|Traceback|✗`，跳过 `$ ` 开头的命令回显）、`失败 · 21.4s` 元信息、以及 `<pre>` 里的完整输出（`max-height: 240px` 自己滚）。失败条按 `toolCommitId` 存进 `failBars` 映射，live（`toolEvent("end")`）和历史回放（`add()`/`replace()`/`mergeTool()`）走同一个方法，所以刷新页面后样式一致。
 
-**为什么不在标题旁边就地展开模块（样张 B）：** 19 条操作全铺开会把整整一屏的正文顶走，而失败通常在列表最末，还是要滚；长会话每次失败都撑一次版面。
+**为什么不在标题旁边就地展开模块（样张 B）（这条结论已被 D253 推翻，留作历史）：** 19 条操作全铺开会把整整一屏的正文顶走，而失败通常在列表最末，还是要滚；长会话每次失败都撑一次版面。
 
 **为什么不把失败卡从模块里拎出来当独立红卡（样张 C）：** 会打断「一轮 = 一个模块」的结构（这条结构就是 D 系列之前把工具卡收进模块的理由），且多次失败会堆一叠红卡。
 
@@ -320,6 +320,8 @@
 **为什么卡片整张不折叠（`<details>` 只在原始输出上）：** 卡片的全部价值是「不点开也能下判断」。为了裁圆角它必须带 `overflow: hidden`，而 D46 已经踩过这个坑 —— `.chat-scroll` 是有确定高度的 flex 列，带 `overflow: hidden` 的子项 `min-height: auto` 会退化成 0 被压成 2px。现有那条 `.chat-scroll > * { flex: 0 0 auto; }` 覆盖到 `.fcard`，探针实测 8 张卡 h=172–268px、`scrollH 2111 > clientH 1100`，没有再被压。
 
 > **后续修订：** 用户反馈失败卡片太占地方，改为整张 `<details class="fcard">`，**默认折叠**。摘要行保留 `EXIT n` + 标题 + 命令（展开后命令行隐藏，避免重复），结论仍然不用点开就能看到；重建时沿用用户的展开状态。
+>
+> **再修订（D253）：** 整张卡搬进模块的「AI 执行失败」页，`<details class="fcard">` 换成 `<section class="fitem">`（不再自成一张卡、也不再默认折叠 —— 它只出现在第二页里），诊断 grid 与 `完整输出` 折层原样保留，`failAnchor` 一并删除。
 
 **验证：** 临时探针（`web/probe-cards.html` + 真 `ChatView`，跑完即删）把 build.mjs 里那 8 条真实失败原文喂给 `reset()`，另加一条 live 路径（`toolEvent("start")` → `end`（`result` 为空，触发「输出为空，只有退出码」）→ `replace()` 补上 `rg: no matches`，卡片变成 1 行关键行）。桌面 900px 与手机 390px 两轮截图：`.scratch/ops-failure/shots/cards.png`、`cards-top.png`、`cards-390.png`。`npm --prefix web run typecheck` 与 `npm --prefix web run build` 通过，新产物 `index-CKACbq4a.js` + `index-Dov9_1hg.css`，7864 端口已在引用（`curl -s http://127.0.0.1:7864/ | grep index-`），用户 Ctrl+F5 即生效。
 
@@ -4527,3 +4529,28 @@ D
 **代价 / 可改：** 文件管理器的整行可点区域被两颗按钮占掉约 90px；产物 chip 比原来宽，一行能放的 chip 变少；620px 以下隐藏大小与修改时间两列（只留名称 + 操作）。左栏「最近」按会话存 `localStorage["pi.attachRecent:<sessionId>"]`（最多 8 条），换设备/清缓存就没了。
 
 **验证：** `npm --prefix web run typecheck`（tsc + `i18n-check`，2801 keys × 3 语言）与 `npm --prefix web run build` 绿；测试实例（17876）手动全链路：附件弹层引用/附加/打开、文件管理器引用（viewer 关闭、路径进输入框）/点行预览、产物 chip 引用/打开；620 / 880 / 1440 三档 `scrollWidth == innerWidth`，无横向溢出。
+
+## D253 失败诊断搬进「操作」模块的第二页，入口是两枚字按钮（用户要求 2026-11-15，取代 D44 的位置结论 / D49 的「模块外一张卡」）
+
+**需求（m00001 原话，附截图）：** 「现在 chat 历史里面的失败信息，是专门一个栏目的。现在想要把它融入到上面的操作里面。」先按四套画法出样张（A 摘要行给结论 / B 模块脚注 / C 纯就地 / D 失败聚顶，`.scratch/ops-failure-merge/`），用户全部否掉（m00217 原话）：「一个折叠框，里面有两个字按钮，分别叫做操作，和AI执行失败。」→ 再出四套字按钮样张（E 体内下划线页签 / F 页签长在摘要行 / G 连体分段控件 / H 等宽方括号，`.scratch/ops-failure-tabs/`，生成器 `build.mjs`，共享外壳 `prototype/shared.css`），用户选 **G**。
+
+**决定：**
+
+- `.ops` 的 body 变成「页签条 + 两块页」：`div.ops-tabs[role=tablist]` 里两枚 `button.ops-tab`（`操作` / `AI 执行失败` + `b.cnt` 计数），`div.ops-panel[data-panel="ops"]` 装工具行（`this.opsBody` 指向它），`div.ops-panel[data-panel="fail"]` 装失败条目、初始 `hidden`。点页签走 `showOpsPanel()`（切 `is-on` / `aria-selected` / `hidden`，末尾 `renderJump()`），**不**碰 `details.open`。
+- 失败条目从「模块后面独立的 `<details class="fcard">`」变成模块里的 `<section class="fitem">`（`buildFailureCard()` → `buildFailureItem()`）：不再是一张卡（无边框 / 无圆角 / 无底色），头部是 `EXIT n` 徽标 + 一句话结论 + 右侧 `tool · cmd`；下方诊断 grid、红色关键行、`完整输出（N 字符）` 折层原样保留。
+- 一条失败都没有时页签条整条 `hidden`（`syncOpsTabs()` 里 `tabs.hidden = n === 0`）：没出事的一轮，界面与以前完全一样。
+- `failAnchor` 整套删除（`TurnState` 字段，`reset()` / `holdTurnState()` / `releaseTurnState()` / `closeOps()` / `noteWrite()` 里的搬运）：失败条目一律 `append` 进第二页，顺序天然等于发生顺序；重建时 `prev.replaceWith(next)` 原地替换并沿用 `details.raw` 的展开态。
+
+**为什么认这个形状：** 用户点名要的；顺带把 D44 惦记的「一轮 = 一块」结构彻底保住 —— 模块外的兄弟元素从「0～N 张红卡」变成 0 个，失败再多也不会把后面的正文越推越远。代价是三处信息挪位：折叠态只剩标题里的 `· 4 失败`，看不到「找不到文件 / 目录」这句结论，定位一次失败要多点一次（展开模块 → 切页签）。
+
+**四处容易踩的细节：**
+
+- `.ops-tabs[hidden]{display:none}` 必须显式写：`.ops-tabs` 是 `display:flex`，flex 会顶掉 `hidden` 的默认 `display:none`，不写这条，没失败的一轮也露一条空轨道。
+- 页签条自己带 `--panel` 底 + 1px `--line` 边框 + 3px padding：模块底是 `--sunken`（最深一档），轨道要「提一层」才分得清激活段（原型里试过纯文字页签，1x 截图里看不出哪边是激活态，要 `--force-device-scale-factor=2` 才勉强看见）。
+- 失败条目的 `.ex` 背景从 `--sunken` 改成 `--panel`：原来在 `.fcard`（`--panel` 底）里 `--sunken` 是凹进去的，搬进 `--sunken` 底的模块里再凹就糊成一片。
+- **不做**原型右侧的小结 `共 6 个 · 21.6s`：时长要在卡上额外记 `data-ms`，而卡片重建时机不固定；「共 N 个」与标题重复，「N 个失败」与页签计数重复。
+- 失败页签的**计数要自己染红**：`.ops-tab .cnt` 自带 `color: var(--faint)`，只给按钮染红，数字还是灰的（代码评审抓到的）；两枚页签**建的时候**就写 `aria-selected`，别等到第一次点击才补上选中态。
+
+**代价 / 可改：** ① 折叠时看不到失败结论，见上；② 失败多的一轮第二页更密也更长，滚动距离没变少；③ `AI 执行失败` 是按用户原话定的，想换文字只改 `web/src/chat.ts` 里那处 `tr("AI 执行失败")` 与 `en.ts` / `ja.ts`；④ 页签没做键盘左右切换（原生 `button` 的 Tab / Enter 够用），要加时只动 `ensureOps()` 里那段。
+
+**验证：** `bridge/tests/ops-tabs-ui.mjs`（端口 7897，自带丢弃式 bridge + `tests/fixtures/fake-pi.mjs`）19 项：没失败的一轮无页签；4 条失败时标题 `4 个操作 · bash ×3 · edit ×1 · 4 失败`；体内两枚页签、失败那枚计数 4；点页签模块不跟着合上（`details.open === true`）；操作页让位、四条失败都在第二页；首条给结论 + 诊断键齐全；完整原文能展开；没有任何 `.fitem` 落在模块外；切回操作页高亮跟着走。截图 `.scratch/shots/ops-tabs-{clean,tabs,fail}.png`。`npm --prefix web run typecheck`（i18n-check 2805 keys × 3 语言）与 `npm run build` 绿。
