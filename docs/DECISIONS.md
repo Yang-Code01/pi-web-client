@@ -4632,3 +4632,4 @@ D
 - **`npm run test:githist:ui` 加了 10 条**（150% / 200% 各五条）：卡片整张落在视口里、「拉取最新」在视口内、头行标题没画到动词按钮上、「全部动词」入口可见、窄版判据跟的是卡自己的宽度。跑法见 `docs/agents`（这台机器上 `npm i --no-save playwright && npx playwright install chromium` 之后 `loadPlaywright()` 就找得到了）。整套 116 条全绿、0 失败；**把 `.branch-sheet` 退回 `94vw` / `82vh` 再跑，这组立刻红**（`1500x1107 @ 24,24，视口 1440x900`），改回来恢复绿 —— 用例确实咬得住这次的事故。
 - 同一轮顺手修了 `bridge/tests/git-history-ui.mjs` 的一处环境假设：`/api/git/state` 回来的 repo 是 `/private/var/…` 而 tmpdir 是 `/var/…`（macOS 同一个地方两条路径），断言改成比 realpath，否则这条用例在 macOS 上第一跑就红。
 - 预览面板那组容器查询用真样式表验的：面板 420 宽时 `.viewer-path` 隐藏、900 宽时显示；同一张页面对照旧 CSS，420 宽下路径**没**隐藏（就是被修掉的那个静默失败）。
+- 另外跑了同族的 `test:scratch:ui`、`test:settings:ui`、`test:repos:ui`：前两个绿；`test:repos:ui` 在这台机器上跑到「只列目录…」就 timeout —— **main 上未改动的构建同样跑不过**，与本轮无关（顺带记一笔，别下次当成回归）。
