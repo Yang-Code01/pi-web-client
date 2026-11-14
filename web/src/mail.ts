@@ -26,7 +26,7 @@ import type {
   MailPolicyView,
   MailSummary,
 } from "./mail-shared.ts";
-import { MAIL_POLICY_LABELS, parseRecipients, sizeText, whenText } from "./mail-shared.ts";
+import { auditOutcome, MAIL_POLICY_LABELS, parseRecipients, sizeText, whenText } from "./mail-shared.ts";
 
 export interface MailHandoff {
   prefill(text: string): void;
@@ -38,6 +38,28 @@ export interface MailHost {
 }
 
 type Section = "inbox" | "compose" | "accounts" | "policy" | "audit";
+
+/**
+ * 邮件夹的显示名：收件箱/已发送/草稿箱/已删除/垃圾邮件按 `kind` 本地化，其余（自定义目录、
+ * 服务器自己的别名）原样显示。IMAP 回的是 `INBOX` / `Sent Messages` 这种协议名，直接铺在
+ * 中文界面里就是中英混杂；英文界面下这里照样落到英文词，因为译法本来就在 en.ts。
+ */
+function folderLabel(f: MailFolderView): string {
+  switch (f.kind) {
+    case "inbox":
+      return tr("收件箱");
+    case "sent":
+      return tr("已发送");
+    case "drafts":
+      return tr("草稿箱");
+    case "trash":
+      return tr("已删除");
+    case "junk":
+      return tr("垃圾邮件");
+    default:
+      return f.name;
+  }
+}
 
 interface Compose {
   /** 回复原信时记下来源，发出去之后可以回到阅读区。 */
@@ -582,7 +604,7 @@ export class MailPanel {
     for (const f of this.folders) {
       const chip = el("button", f.path === this.folder ? "mc-chip on" : "mc-chip") as HTMLButtonElement;
       chip.type = "button";
-      chip.append(el("span", "", f.name));
+      chip.append(el("span", "", folderLabel(f)));
       chip.onclick = () => {
         if (f.path === this.folder) return;
         this.folder = f.path;
@@ -1044,8 +1066,8 @@ export class MailPanel {
     const cfg = this.config!;
     const sec = el("section", "mc-section");
     const head = el("div", "mc-section__head");
-    head.append(el("div", "mc-section__label", tr("最近发出去的")));
-    head.append(el("div", "mc-section__meta", tr("只留发出与失败的记录，不进模型上下文")));
+    head.append(el("div", "mc-section__label", tr("发送与草稿")));
+    head.append(el("div", "mc-section__meta", tr("发送、存草稿与失败各记一笔，不进模型上下文")));
     sec.append(head);
 
     if (!cfg.audit.length) sec.append(el("div", "mc-empty", tr("还没有记录")));
@@ -1063,7 +1085,11 @@ export class MailPanel {
         tr1.append(el("td", "", (row.to ?? []).join(", ")));
         tr1.append(el("td", "", row.subject));
         tr1.append(el("td", "", row.by === "agent" ? tr("AI") : tr("我")));
-        tr1.append(el("td", "", row.ok ? tr("已发出") : (row.error ?? tr("失败"))));
+        // 草稿也走这个审计文件（桥端 `mail_draft` 记的是 ok + messageId="draft"），只看 `ok`
+        // 会把「存进草稿箱」显示成「已发出」——用户以为发出去了，其实信还在草稿箱里。
+        const outcome = auditOutcome(row);
+        const result = outcome === "draft" ? tr("已存草稿") : outcome === "sent" ? tr("已发出") : (row.error ?? tr("失败"));
+        tr1.append(el("td", "", result));
         tbody.append(tr1);
       }
       table.append(tbody);

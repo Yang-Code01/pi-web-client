@@ -3,6 +3,7 @@
  *
  * 单独一份而不是塞进 `types.ts`：面板、api、测试三处都要用，而 `types.ts` 已经很大了。
  */
+import { formatBytes } from "./bytes.ts";
 
 export interface MailEndpoint {
   host: string;
@@ -152,6 +153,18 @@ export function parseRecipients(text: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * 审计行的结果：`draft` / `sent` / `failed`。
+ *
+ * 桥端把「存草稿」也写进同一个审计文件（`tool: "mail_draft"`、`messageId: "draft"`，见
+ * `bridge/src/mail.ts`），所以不能只看 `ok`：只看 `ok` 会把「存进草稿箱」显示成「已发出」，
+ * 用户以为信已经寄出去了，实际上还在草稿箱里。
+ */
+export function auditOutcome(row: { tool?: string; ok: boolean }): "draft" | "sent" | "failed" {
+  if (row.tool === "mail_draft") return row.ok ? "draft" : "failed";
+  return row.ok ? "sent" : "failed";
+}
+
 /** 邮件时间：今天只给 `HH:MM`，其余给日期（列表行很窄）。`0` 表示拿不到时间。 */
 export function whenText(ms: number, now = Date.now()): string {
   if (!ms) return "";
@@ -163,10 +176,12 @@ export function whenText(ms: number, now = Date.now()): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** 附件大小：与 Jira 面板的 `formatBytes` 同一口径（B / KB / MB，KB 起不进位小数）。 */
+/**
+ * 附件大小：和「设置 → 本机管理」的文件表同一口径（`512 B` / `1.5 KB` / `2 MB`，见 `bytes.ts`）。
+ *
+ * 以前这里自己算一套（`2KB`、`1.0MB`，KB 档还四舍五入成整数）：同一个文件在邮箱面板和本机管理里
+ * 显示的位数、空格、单位都不一样，看着像两个值。名字留着，免得三个调用点跟着改。
+ */
 export function sizeText(n: number): string {
-  if (!n || n < 0) return "0B";
-  if (n < 1024) return `${n}B`;
-  if (n < 1024 * 1024) return `${Math.round(n / 1024)}KB`;
-  return `${(n / 1024 / 1024).toFixed(1)}MB`;
+  return formatBytes(n);
 }

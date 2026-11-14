@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MAIL_POLICY_LABELS, parseRecipients, sizeText, whenText } from "../src/mail-shared.ts";
+import { auditOutcome, MAIL_POLICY_LABELS, parseRecipients, sizeText, whenText } from "../src/mail-shared.ts";
 
 test("权限表覆盖六个开关，键与桥端一致", () => {
   assert.deepEqual(
@@ -41,11 +41,24 @@ test("时间：今天给 HH:MM，别的日子给日期", () => {
   assert.equal(whenText(Number.NaN, now), "");
 });
 
-test("大小：B / KB / MB 三档，负数与 0 归 0B", () => {
-  assert.equal(sizeText(0), "0B");
-  assert.equal(sizeText(-5), "0B");
-  assert.equal(sizeText(512), "512B");
-  assert.equal(sizeText(2048), "2KB");
-  assert.equal(sizeText(1024 * 1024), "1.0MB");
-  assert.equal(sizeText(1024 * 1024 * 2.5), "2.5MB");
+test("大小：与「设置 → 本机管理」同一口径（空格 + 最多一位小数，`.0` 不写）", () => {
+  assert.equal(sizeText(0), "0 B");
+  assert.equal(sizeText(-5), "0 B");
+  assert.equal(sizeText(512), "512 B");
+  assert.equal(sizeText(2048), "2 KB");
+  assert.equal(sizeText(1536), "1.5 KB");
+  // KB 档不再四舍五入成整数：1.4 KB 以前显示成 1KB，和本机管理里的 1.4 KB 对不上。
+  assert.equal(sizeText(1434), "1.4 KB");
+  assert.equal(sizeText(1024 * 1024), "1 MB");
+  assert.equal(sizeText(1024 * 1024 * 2.5), "2.5 MB");
+  assert.equal(sizeText(1024 ** 3 * 3), "3 GB");
+});
+
+test("审计结果：存草稿不能显示成「已发出」", () => {
+  assert.equal(auditOutcome({ tool: "mail_draft", ok: true }), "draft");
+  assert.equal(auditOutcome({ tool: "mail_send", ok: true }), "sent");
+  assert.equal(auditOutcome({ tool: "mail_send", ok: false }), "failed");
+  assert.equal(auditOutcome({ tool: "mail_draft", ok: false }), "failed");
+  // 老记录没有 tool 字段：只能按 ok 判，别抛错。
+  assert.equal(auditOutcome({ ok: true }), "sent");
 });
