@@ -64,8 +64,8 @@ class HotdeployPanel {
   private clockTimer = 0;
   private countdownTimer = 0;
   private countdown: number | null = null;
-  /** 这页见过 running：只有自己看着它跑完，才自动刷新。 */
-  private sawRunning = false;
+  /** 点下去那一刻的毫秒数：只有这一轮（`startedAt` 不早于它）跑完才自动刷新。 */
+  private mineAt = 0;
   private notice: Notice | null = null;
   private forceTarget = "";
   private branchSig = "";
@@ -226,7 +226,6 @@ class HotdeployPanel {
     const snap = this.snap;
     const run = this.runOf();
     const phase = run?.phase ?? "idle";
-    if (phase === "running") this.sawRunning = true;
     if (phase !== this.lastPhase) {
       this.lastPhase = phase;
       // 主检出可能被留在别的分支上：让顶栏那颗提醒就着这一刻重问一次。
@@ -419,7 +418,7 @@ class HotdeployPanel {
       body.append(line, acts);
       box.append(body);
       banners.push(box);
-      if (this.sawRunning && this.countdown === null) this.startCountdown();
+      if (this.mine() && this.countdown === null) this.startCountdown();
     } else if (phase === "fail") {
       const box = this.banner("err");
       const body = el("div", "hot-banner__body");
@@ -521,6 +520,12 @@ class HotdeployPanel {
 
   // ---------------------------------------------------------------- 动作
 
+  private mine(): boolean {
+    // 上一轮成功的横幅也在 RESULT_TTL 里活着 —— 不认「我这一轮」，打开的瞬间就会倒计时。
+    const started = Date.parse(this.runOf()?.startedAt ?? "");
+    return this.mineAt > 0 && Number.isFinite(started) && started >= this.mineAt - 3000;
+  }
+
   private startCountdown(): void {
     this.countdown = 5;
     // 不能在这里直接 paint()：这趟 paint 还没把横幅挂上去，重入会画出两条一样的。
@@ -544,11 +549,13 @@ class HotdeployPanel {
     window.clearInterval(this.countdownTimer);
     this.runBtn.disabled = true;
     try {
-      await api.hotdeployRun(branch);
-      this.sawRunning = true;
+      const out = await api.hotdeployRun(branch);
+      this.mineAt = Date.now();
+      if (out.run && this.snap) this.snap.run = out.run;
       this.paint();
       void this.load();
     } catch (err) {
+      this.mineAt = 0;
       this.notice = { kind: "err", text: errText(err) };
       this.paintStatus(this.runOf(), "fail");
       this.runBtn.disabled = false;
