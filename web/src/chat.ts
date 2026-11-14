@@ -488,15 +488,18 @@ export class ChatView {
       const last = this.turns.length - 1;
       if (last < 0) return;
       // 「你在哪一轮」= 视口顶部已经翻过去的最后一轮；已经在底部就是最后一轮。
-      let at = 0;
-      if (!this.nearBottom()) {
+      let at = last;
+      if (this.nearBottom()) {
+        at = last;
+      } else {
+        at = 0;
         const base = this.root.getBoundingClientRect().top + 72;
         for (let i = 0; i <= last; i++) {
           const node = this.turns[i].node;
           if (node.isConnected && node.getBoundingClientRect().top > base) break;
           at = i;
         }
-      } else at = last;
+      }
       this.turnRail.setCurrent(at);
     });
   }
@@ -1109,8 +1112,10 @@ export class ChatView {
     for (const entry of entries) {
       const who = entry.node.querySelector<HTMLElement>(".who");
       if (!who) continue;
-      const state =
-        entry.item.pending === "booting" ? "booting" : entry.item.pending === "failed" ? "failed" : entry === last && this.running ? "running" : "";
+      let state = "";
+      if (entry.item.pending === "booting") state = "booting";
+      else if (entry.item.pending === "failed") state = "failed";
+      else if (entry === last && this.running) state = "running";
       let badge = who.querySelector<HTMLElement>(".msg-pending");
       if (!state) {
         badge?.remove();
@@ -1428,7 +1433,12 @@ export class ChatView {
 
     const reminded = item.kind === "user" ? reminderBody(item.text) : null;
     const reviewed = item.kind === "user" ? reviewBody(item.text) : null;
-    const wrap = el("div", `msg ${reminded !== null ? "remind" : reviewed !== null ? "review" : item.kind}`);
+    const wrapKind = (): string => {
+      if (reminded !== null) return "remind";
+      if (reviewed !== null) return "review";
+      return item.kind;
+    };
+    const wrap = el("div", `msg ${wrapKind()}`);
     if (item.kind === "assistant") (wrap as HTMLElement & { _raw?: string })._raw = item.text;
     // 桥注入的自动提醒（D169）：它是一条真正的 user 消息（pi 只有 prompt 通道），但说这话的不是人，
     // 所以不画成气泡、不给复制/分叉，抬头用界面语言，正文才是桥写的那段（内容本身来自账本/诊断，是中文数据）。
@@ -1564,11 +1574,20 @@ export class ChatView {
     }
     const files = this.opsFiles;
     if ([...files.querySelectorAll<HTMLElement>(".file-chip")].some((c) => c.dataset.path === path)) return;
-    const chip = el("button", "file-chip");
+    // #421：chip 主体不再可点，动作拆成右边两颗按钮（引用 / 打开）——套 <button> 里不能再嵌按钮，所以容器是 span。
+    const chip = el("span", "file-chip");
     chip.dataset.path = path;
-    chip.title = tr("预览 {p1}", { p1: path });
-    chip.append(el("span", "ico", fileIcon(path)), el("span", "nm", baseName(path)));
-    chip.onclick = () => openPreview(path);
+    chip.title = path;
+    chip.append(el("span", "ico", fileIcon(path)), el("span", "nm fc-chip-name", baseName(path)));
+    const quote = el("button", "fc-chip-act quote", tr("引用")) as HTMLButtonElement;
+    quote.type = "button";
+    quote.title = tr("把路径引用到输入框");
+    quote.onclick = () => window.dispatchEvent(new CustomEvent("pi-quote", { detail: { path } }));
+    const open = el("button", "fc-chip-act", tr("打开")) as HTMLButtonElement;
+    open.type = "button";
+    open.title = tr("在预览里打开");
+    open.onclick = () => openPreview(path);
+    chip.append(quote, open);
     files.append(chip);
   }
 
@@ -1858,7 +1877,10 @@ export class ChatView {
     const cmdSpan = el("span", "cmd");
     setCommand(cmdSpan, toolSummary(item), item.name);
     head.append(cmdSpan);
-    head.append(el("span", "status", item.status === "running" ? tr("运行中…") : item.isError ? tr("失败") : ""));
+    let status = "";
+    if (item.status === "running") status = tr("运行中…");
+    else if (item.isError) status = tr("失败");
+    head.append(el("span", "status", status));
     const path = toolPath(item.args);
     if (path) {
       const view = el("button", "tool-preview", tr("预览"));
@@ -1972,15 +1994,11 @@ export class ChatView {
     const subject = typeof args.subject === "string" ? args.subject : task?.subject ?? "";
     const action = String(args.action ?? "");
     const status = String(args.status ?? task?.status ?? "");
-    const actionText = action === "clear"
-      ? tr("清空计划")
-      : action === "create" || action === "add"
-        ? tr("新增「{p1}」", { p1: subject || tr("计划项") })
-        : status === "in_progress"
-          ? tr("开始「{p1}」", { p1: subject || tr("计划项") })
-          : status === "completed"
-            ? tr("完成「{p1}」", { p1: subject || tr("计划项") })
-            : tr("更新计划");
+    let actionText = tr("更新计划");
+    if (action === "clear") actionText = tr("清空计划");
+    else if (action === "create" || action === "add") actionText = tr("新增「{p1}」", { p1: subject || tr("计划项") });
+    else if (status === "in_progress") actionText = tr("开始「{p1}」", { p1: subject || tr("计划项") });
+    else if (status === "completed") actionText = tr("完成「{p1}」", { p1: subject || tr("计划项") });
     return tr("计划 {p1}/{p2} · {p3}", { p1: done, p2: tasks.length, p3: actionText });
   }
 

@@ -2261,11 +2261,17 @@ button.exec-now-tool:hover .exec-now-open, button.exec-now-child:hover .exec-now
 .ops-files { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 8px; }
 .ops-files .ops-files-label { font-size: 11px; color: var(--faint); margin-right: 2px; }
 .file-chip {
-  display: inline-flex; align-items: center; gap: 4px; max-width: 260px; padding: 4px 8px; border-radius: 999px;
-  border: 1px solid var(--line); background: var(--panel); color: var(--text); font: 12px/1.2 var(--mono); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px; max-width: 320px; padding: 4px 5px 4px 8px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text); font: 12px/1.2 var(--mono);
 }
-.file-chip span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-chip:hover { border-color: var(--accent-dim); color: var(--accent); }
+.file-chip .fc-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip:hover { border-color: var(--accent-dim); }
+.fc-chip-act {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border: 0; border-radius: 999px;
+  background: transparent; color: var(--faint); font: 11px/1 var(--sans); cursor: pointer;
+}
+.fc-chip-act:hover { background: var(--panel-3); color: var(--text); }
+.fc-chip-act.quote:hover { color: var(--accent); background: var(--accent-bg); }
 
 .msg .body .md-table, .md-doc .md-table { overflow-x: auto; margin: 8px 0; }
 .msg .body table, .md-doc table { border-collapse: collapse; font-size: 13px; }

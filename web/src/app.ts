@@ -7,8 +7,9 @@ import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { filterCommands, PANEL_COMMANDS, type CommandItem } from "./commands.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
+import { openFileConsole, type FileConsoleHandle } from "./fileconsole.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
-import { ATTACH_IMAGE, imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
+import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
 import { guessTrLang, openSyncReview, openTrPicker, paintTranslate, resolveTrModel, type TrAct, type TrView } from "./translateview.ts";
 import { diagnose, exitCodeOf, setKnownPlugins } from "./diagnose.ts";
@@ -719,6 +720,11 @@ export class App {
     window.addEventListener("pi-image", (ev) => {
       const d = (ev as CustomEvent<{ src?: string; alt?: string }>).detail;
       if (d?.src) this.openImage(d.src, d.alt ?? "");
+    });
+    // 聊天区与 dirpicker 都没有 app 的引用：产物 chip 的「引用」走这个事件。
+    window.addEventListener("pi-quote", (ev) => {
+      const path = (ev as CustomEvent<{ path?: string }>).detail?.path;
+      if (path) this.insertPaths([path]);
     });
     this.startClock();
     this.socket.connect();
@@ -9315,6 +9321,8 @@ export class App {
         v.lastDir = s.path;
         localStorage.setItem("pi.fsDir", s.path);
       },
+      // #421：浏览页的行仍然「点 = 预览」，右侧两颗按钮补上另一种动作（引用 / 打开）。
+      actions: (abs, name) => this.browserFileActions(v, abs, name),
       onPick: (abs) => void this.pickFromBrowser(v, abs),
       onContext: (abs, name, ev) => this.fileMenu(v, abs, name, ev),
     });
@@ -14626,98 +14634,88 @@ export class App {
   /** Browse this machine (where pi runs) and insert the chosen file's absolute path. */
   private openFilePicker(): void {
     this.closeSheet();
-    const back = el("div", "sheet-back");
-    back.onclick = (ev) => {
-      if (ev.target === back) this.closeSheet();
-    };
-    const sheet = el("div", "sheet file-picker");
-    const head = el("div", "sheet-head");
-    head.append(el("div", "sheet-title", tr("选择文件 · 图片直接附加，其他插入路径")));
-    // The list browses the machine pi runs on; a phone needs its own gallery for photos.
-    const deviceInput = el("input") as HTMLInputElement;
-    deviceInput.type = "file";
-    deviceInput.accept = "image/*";
-    deviceInput.multiple = true;
-    deviceInput.style.display = "none";
-    deviceInput.onchange = () => {
-      const files = Array.from(deviceInput.files ?? []);
-      this.closeSheet();
-      void this.addImages(files);
-    };
-    const device = el("button", "btn ghost", tr("从本设备选图片"));
-    device.title = tr("从当前浏览器所在的设备（例如手机相册）选图片附加");
-    device.onclick = () => deviceInput.click();
-    head.append(deviceInput, device);
-    const close = el("button", "btn ghost", tr("关闭"));
-    close.onclick = () => this.closeSheet();
-    head.append(close);
-    const host = el("div", "file-picker-body");
-    sheet.append(head, host);
-    back.append(sheet);
-    this.overlay(back);
-    this.sheet = back;
-
+    const cwd = (this.session?.cwd ?? "").trim();
+    // #421：外壳照「设置 → 本机管理」，左栏快速位置 + 最近目录，右栏是带「引用 / 打开」两列的表格。
+    let handle: FileConsoleHandle | null = null;
+    let pickerPath = (): string => handle?.picker.path() ?? "";
     const home = this.dirHome(() => this.session?.cwd ?? "");
     // D163: 这个弹层按会话记着上次浏览到哪儿；pick 走闭包，所以要等 picker 建好再接上。
-    let pickerPath = (): string => "";
     const ref = this.dirRef(() => pickerPath());
     // D167: 附件弹层也能就地建 —— 建完停在原地、高亮新行，点它才算附加。
     const mk = this.mkControls({
       parent: () => pickerPath(),
-      made: (abs) => this.revealMade(picker, abs),
+      made: (abs) => {
+        if (handle) this.revealMade(handle.picker, abs);
+      },
     });
     // 第一次落到一个能读的目录才算数：之后再出错（目录被删、盘拔了）不再自动把人拽走。
     let landed = false;
-    const picker = mountDirPicker(host, {
+    handle = openFileConsole({
       start: this.attachStart(),
-      files: true,
-      fallback: true,
+      cwd,
+      sessionId: this.currentId ?? "",
+      onQuote: (abs) => this.insertPaths([abs]),
+      onAttach: (abs) => {
+        this.closeSheet();
+        this.attachImage(abs);
+      },
+      onOpen: (abs) => void this.openPreview(abs),
+      onClose: () => this.closeSheet(),
+      onDeviceImages: (files) => {
+        this.closeSheet();
+        void this.addImages(files);
+      },
       head: [home.node, ref.node, mk.dirBtn, mk.fileBtn],
       beforeList: [mk.row],
-      // 和文件管理器同一套「输入路径就跳」：附件也常常已经在手上了（终端里复制来的）。
-      pathBox: true,
       onState: (state) => {
         mk.sync(state);
         ref.bind();
         if (state.path) {
           landed = true;
-          this.rememberAttachDir(state.path);
           return;
         }
         // 盘符页：记忆的目录没了（worktree 被删、换了机器）就直接落到这里了，错过 cwd 那一级。
         // 补一次 cwd 再任由用户挑盘；cwd 也读不了时 landed 已经立住，不会再绕。
-        const cwd = (this.session?.cwd ?? "").trim();
         if (!landed && !state.error && cwd) {
           landed = true;
-          void picker.go(cwd);
+          void handle?.picker.go(cwd);
         }
       },
-      onPick: (abs, name, row) => {
-        // 图片直接附加成待发图片；其他文件只把路径插进输入框（pi 自己去读）。
-        if (!ATTACH_IMAGE.test(name)) {
-          this.closeSheet();
-          this.insertPaths([abs]);
-          return;
-        }
-        row.disabled = true;
-        row.classList.add("busy");
-        void api
-          .image(abs)
-          .then(async (file) => {
-            await this.addImages([file]);
-            if (this.sheet === back) this.closeSheet();
-          })
-          .catch((ex: any) => {
-            row.disabled = false;
-            row.classList.remove("busy");
-            this.warn(tr("附加图片失败：{p1}", { p1: ex?.message ?? ex }));
-          });
-      },
+      rememberDir: (path) => this.rememberAttachDir(path),
     });
-    pickerPath = () => picker.path();
-    home.bind(picker);
+    pickerPath = () => handle.picker.path();
+    home.bind(handle.picker);
     ref.bind();
-    host.querySelector<HTMLInputElement>(".dir-filter")?.focus();
+    this.overlay(handle.root);
+    this.sheet = handle.root;
+    handle.focus();
+  }
+
+  /** 图片附加成待发图片（附件弹层 / 手机相册都走这里）。 */
+  private attachImage(abs: string): void {
+    void api
+      .image(abs)
+      .then((file) => this.addImages([file]))
+      .catch((ex: any) => this.warn(tr("附加图片失败：{p1}", { p1: ex?.message ?? ex })));
+  }
+
+  /** 文件管理器行内的「引用」：插路径、收起面板，把焦点还给输入框。 */
+  private quoteFromViewer(abs: string): void {
+    this.insertPaths([abs]);
+    if (this.viewer) this.closeViewer();
+  }
+
+  /** #421：浏览页行内的两颗按钮（行本身仍然 = 打开预览）。 */
+  private browserFileActions(v: Viewer, abs: string, name: string): HTMLElement[] {
+    const quote = el("button", "fc-act quote", tr("引用")) as HTMLButtonElement;
+    quote.type = "button";
+    quote.title = tr("把 {p1} 的路径引用到输入框", { p1: name });
+    quote.onclick = () => this.quoteFromViewer(abs);
+    const open = el("button", "fc-act", tr("打开")) as HTMLButtonElement;
+    open.type = "button";
+    open.title = tr("在预览里打开 {p1}", { p1: name });
+    open.onclick = () => void this.openPreview(abs, v.sessionId);
+    return [quote, open];
   }
 
   /** 待发图片的入口：点一下看缩略图、单张删。 */
