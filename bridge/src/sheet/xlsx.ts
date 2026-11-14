@@ -5,8 +5,11 @@
  * 扫过 r1 就停——不把整张表 XML 解出来，更不把整表发给前端。
  */
 import { entryBytes, entryStream, zipIndex, type ZipEntry } from "./zip.ts";
-import { formatCode, formatValue } from "./numfmt.ts";
+import { formatValue } from "./numfmt.ts";
 import { buildCf, readDxfs, type CellFx, type SheetCf } from "./cf.ts";
+import { readStyles, type StyleTable, type WireStyle } from "./styles.ts";
+
+export type { WireStyle };
 
 export type CellKind = "n" | "s" | "b" | "e";
 
@@ -18,8 +21,10 @@ export interface WireCell {
   t: string;
   /** 数值原始值（无显示格式的原数）：数字格才有，复制粘贴用它，粘回去还是数而不是「￥1,234」。 */
   v?: number;
-  /** 文件里指定的对齐（合并格标题居中这类）；没写就不带。 */
+  /** 文件里指定的对齐（合并格标题居中这类）；没写就不带。历史字段，保留给旧的调用方。 */
   a?: "l" | "c" | "r";
+  /** D167：cellXfs 下标去重后的样式下标；0 / 缺省就是默认样式（前端只收一张小表）。 */
+  s?: number;
   /** #109 条件格式算出来的样式：底色 / 字色 / 加粗 / 数据条 / 图标。 */
   fx?: CellFx;
   /** 公式原文（不带 `=`）。共享公式的子格只有 `si` 下标、没有正文，就不带这个。 */
@@ -62,6 +67,16 @@ export interface SheetInfo {
   merges?: MergedRange[];
   /** 每列宽度（px），长度等于 cols；文件没写就是默认宽度。 */
   colWidths?: number[];
+  /** 默认行高（px）：文件 `<sheetFormatPr defaultRowHeight>`，没写就是 20px（15pt）。 */
+  defaultRowH?: number;
+  /** 文件里写死行高的行（0 基 → px）。没列到的行用默认行高，前端不必拿到整张表。 */
+  rowH?: Record<number, number>;
+  /** 藏起来的行（0 基，升序）：高度按 0 算，行号也不画。 */
+  hiddenRows?: number[];
+  /** 藏起来的列（0 基，升序）：宽度按 0 算，列头也不画。 */
+  hiddenCols?: number[];
+  /** `showGridLines="0"` 的表：不画网格线。 */
+  gridLines?: false;
   freeze?: FreezePane | null;
   /** #109：认不出的条件格式规则条数（状态条据此提示）。 */
   cfUnsupported?: number;
@@ -76,6 +91,8 @@ export interface WorkbookMeta {
   sheets: SheetInfo[];
   /** 包里有图表部件（xl/charts/chartN.xml）：页面视图能把它一起印到纸上。 */
   charts: boolean;
+  /** D167：整份工作簿共用的一张样式表（去重后），格子用 `s` 下标引用。 */
+  styles?: WireStyle[];
 }
 
 export interface SheetWindow {
@@ -129,7 +146,7 @@ export interface Book {
   tiers: Map<string, SheetTier>;
   /** 共享字符串与样式按需加载（只有取窗口 / 建 CF 时才需要）。 */
   strings?: string[];
-  xfs?: Xf[];
+  styles?: StyleTable;
 }
 
 import { attr, refOf, texts, unescapeXml } from "./xml.ts";
@@ -182,42 +199,30 @@ function sheetPrefix(buf: Uint8Array, entry: ZipEntry, limit = 256 * 1024): stri
   return out;
 }
 
-/** 一个单元格样式（按 cellXfs 下标）：数字格式代码 + 对齐。 */
-interface Xf {
-  code: string | null;
-  align: "l" | "c" | "r" | null;
-}
-
-function readStyles(buf: Uint8Array, dir: Map<string, ZipEntry>): Xf[] {
-  const xml = partText(buf, dir, "xl/styles.xml");
-  if (!xml) return [];
-  const custom = new Map<number, string>();
-  for (const m of xml.matchAll(/<numFmt\b[^>]*>/g)) {
-    const id = Number(attr(m[0], "numFmtId"));
-    const code = attr(m[0], "formatCode");
-    if (Number.isFinite(id) && code) custom.set(id, code);
-  }
-  const block = /<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/.exec(xml)?.[1] ?? "";
-  const xfs: Xf[] = [];
-  for (const m of block.matchAll(/<xf\b([^>]*?)(?:\/>|>([\s\S]*?)<\/xf>)/g)) {
-    const attrs = m[1] ?? "";
-    const inner = m[2] ?? "";
-    const id = Number(attr(attrs, "numFmtId") ?? "0");
-    const horiz = /<alignment\b[^>]*>/.exec(inner)?.[0];
-    const h = horiz ? attr(horiz, "horizontal") : null;
-    const align = h === "left" || h === "center" || h === "right" ? (h[0] as "l" | "c" | "r") : null;
-    xfs.push({ code: Number.isFinite(id) ? formatCode(id, custom) : null, align });
-  }
-  return xfs;
-}
-
 /** 字符宽度 → 像素：Excel 的默认字宽 7px + 5px 边距。 */
 function widthPx(chars: number): number {
   return Math.max(24, Math.min(600, Math.round(chars * 7) + 5));
 }
 
-/** 表级结构：合并区、列宽、冻结窗格。 */
-function sheetExtras(xml: string): { merges: MergedRange[]; widths: Map<number, number>; defaultW: number; freeze: FreezePane | null } {
+/** pt → px：Excel 的 96dpi 换算（1pt = 4/3 px），行高与字号都走它。 */
+function heightPx(pt: number): number {
+  return Math.max(0, Math.round(pt * (4 / 3)));
+}
+
+/** 表级结构：合并区、列宽、行高、隐藏行列、冻结窗格、网格线开关。 */
+interface Extras {
+  merges: MergedRange[];
+  widths: Map<number, number>;
+  defaultW: number;
+  defaultH: number;
+  rowH: Record<number, number>;
+  hiddenRows: number[];
+  hiddenCols: number[];
+  gridLines: boolean;
+  freeze: FreezePane | null;
+}
+
+function sheetExtras(xml: string): Extras {
   const merges: MergedRange[] = [];
   for (const m of xml.matchAll(/<mergeCell\b[^>]*\bref\s*=\s*"([^"]*)"/g)) {
     const [a, b] = (m[1] ?? "").split(":");
@@ -232,17 +237,46 @@ function sheetExtras(xml: string): { merges: MergedRange[]; widths: Map<number, 
     });
   }
 
-  const def = Number(attr(/<sheetFormatPr\b[^>]*>/.exec(xml)?.[0] ?? "", "defaultColWidth") ?? "8.43");
-  const defaultW = widthPx(Number.isFinite(def) && def > 0 ? def : 8.43);
+  const fmt = /<sheetFormatPr\b[^>]*>/.exec(xml)?.[0] ?? "";
+  const defW = Number(attr(fmt, "defaultColWidth") ?? "8.43");
+  const defH = Number(attr(fmt, "defaultRowHeight") ?? "15");
+  const defaultW = widthPx(Number.isFinite(defW) && defW > 0 ? defW : 8.43);
+  const defaultH = heightPx(Number.isFinite(defH) && defH > 0 ? defH : 15);
+
   const colWidths = new Map<number, number>();
+  const hiddenCols: number[] = [];
   for (const m of xml.matchAll(/<col\b[^>]*>/g)) {
     const min = Number(attr(m[0], "min") ?? "0");
     const max = Number(attr(m[0], "max") ?? "0");
     const w = Number(attr(m[0], "width") ?? attr(m[0], "customWidth") ?? "");
+    const hidden = /^(1|true)$/i.test(attr(m[0], "hidden") ?? "");
     if (!Number.isFinite(min) || !Number.isFinite(max) || min < 1 || max < min) continue;
-    const px = Number.isFinite(w) && w > 0 ? widthPx(w) : defaultW;
-    for (let c = min - 1; c <= Math.min(max - 1, 999); c++) colWidths.set(c, px);
+    const px = hidden ? 0 : Number.isFinite(w) && w > 0 ? widthPx(w) : defaultW;
+    for (let c = min - 1; c <= Math.min(max - 1, 999); c++) {
+      colWidths.set(c, px);
+      if (hidden) hiddenCols.push(c);
+    }
   }
+
+  // 行高：Excel 会把算好的高度（自动换行撑高也算）写进 `ht`，直接照用；`hidden` 行按 0 高。
+  const rowH: Record<number, number> = {};
+  const hiddenRows: number[] = [];
+  for (const m of xml.matchAll(/<row\b([^>]*?)\/?>/g)) {
+    const attrs = m[1] ?? "";
+    const r = Number(attr(attrs, "r") ?? "");
+    if (!Number.isFinite(r) || r < 1) continue;
+    const hidden = /^(1|true)$/i.test(attr(attrs, "hidden") ?? "");
+    if (hidden) {
+      hiddenRows.push(r - 1);
+      rowH[r - 1] = 0;
+      continue;
+    }
+    const ht = Number(attr(attrs, "ht") ?? "");
+    if (Number.isFinite(ht) && ht > 0) rowH[r - 1] = heightPx(ht);
+  }
+
+  const view = /<sheetView\b[^>]*>/.exec(xml)?.[0] ?? "";
+  const gridLines = !/^(0|false)$/i.test(attr(view, "showGridLines") ?? "");
 
   const pane = /<pane\b[^>]*>/.exec(xml)?.[0];
   let freeze: FreezePane | null = null;
@@ -252,7 +286,7 @@ function sheetExtras(xml: string): { merges: MergedRange[]; widths: Map<number, 
     if (rows > 0 || cols > 0) freeze = { rows: Math.max(0, rows), cols: Math.max(0, cols) };
   }
 
-  return { merges, widths: colWidths, defaultW, freeze };
+  return { merges, widths: colWidths, defaultW, defaultH, rowH, hiddenRows, hiddenCols, gridLines, freeze };
 }
 
 /** Reject a package we cannot show, with a code the page can turn into its own sentence. */
@@ -280,6 +314,8 @@ export function readBook(buf: Uint8Array): Book {
   const parts = new Map<string, string>();
   const tiers = new Map<string, SheetTier>();
   const book = { cf: new Map<string, SheetCf | null>() } as Book;
+  // 样式是工作簿级的：解析一次，所有表共用（meta 只发一张去重后的小表）。
+  book.styles = readStyles(partText(buf, dir, "xl/styles.xml"), partText(buf, dir, "xl/theme/theme1.xml"));
   for (const m of workbook.matchAll(/<sheet\b[^>]*>/g)) {
     const name = attr(m[0], "name");
     const rid = attr(m[0], "r:id") ?? attr(m[0], "id");
@@ -294,7 +330,7 @@ export function readBook(buf: Uint8Array): Book {
     const cells = Math.max(0, size.rows) * Math.max(0, size.cols);
     const tier = tierOf(cells);
     tiers.set(name, tier);
-    let extras: ReturnType<typeof sheetExtras> = { merges: [], widths: new Map(), defaultW: widthPx(8.43), freeze: null };
+    let extras: Extras = { merges: [], widths: new Map(), defaultW: widthPx(8.43), defaultH: heightPx(15), rowH: {}, hiddenRows: [], hiddenCols: [], gridLines: true, freeze: null };
     let cfUnsupported = 0;
     let noCache = 0;
     if (tier !== "none") {
@@ -322,6 +358,11 @@ export function readBook(buf: Uint8Array): Book {
       ...(state === "hidden" || state === "veryHidden" ? { hidden: true } : {}),
       ...(extras.merges.length ? { merges: extras.merges } : {}),
       colWidths: Array.from({ length: Math.max(size.cols, ...[...extras.widths.keys()].map((c) => c + 1)) }, (_, c) => extras.widths.get(c) ?? extras.defaultW),
+      defaultRowH: extras.defaultH,
+      ...(Object.keys(extras.rowH).length ? { rowH: extras.rowH } : {}),
+      ...(extras.hiddenRows.length ? { hiddenRows: extras.hiddenRows } : {}),
+      ...(extras.hiddenCols.length ? { hiddenCols: extras.hiddenCols } : {}),
+      ...(extras.gridLines ? {} : { gridLines: false as const }),
       ...(extras.freeze ? { freeze: extras.freeze } : {}),
       ...(cfUnsupported > 0 ? { cfUnsupported } : {}),
       ...(noCache ? { noCache } : {}),
@@ -332,7 +373,7 @@ export function readBook(buf: Uint8Array): Book {
   const first = sheets[0];
   const pr = /<workbookPr\b[^>]*>/.exec(workbook)?.[0] ?? "";
   const date1904 = /^(1|true)$/i.test(attr(pr, "date1904") ?? "");
-  book.meta = { name: first.name, rows: first.rows, cols: first.cols, sheets, charts: hasChartParts(dir) };
+  book.meta = { name: first.name, rows: first.rows, cols: first.cols, sheets, charts: hasChartParts(dir), styles: book.styles.styles };
   book.parts = parts;
   book.dir = dir;
   book.tiers = tiers;
@@ -383,7 +424,7 @@ function countNoCache(xml: string): number {
 
 interface SheetCtx {
   strings: string[];
-  xfs: Xf[];
+  styles: StyleTable;
   date1904: boolean;
 }
 
@@ -406,8 +447,11 @@ function cellsOfRow(
     const cached = v.trim() !== "";
     const formula = formulaOf(inner);
     const sIdx = Number(attr(attrs, "s") ?? "");
-    const xf = Number.isFinite(sIdx) ? ctx.xfs[sIdx] : undefined;
-    const align = xf?.align ?? undefined;
+    const styled = Number.isFinite(sIdx) && sIdx <= 4095 ? sIdx : -1;
+    const styleAt = styled >= 0 ? ctx.styles.index[styled] : undefined;
+    const horiz = styleAt === undefined ? undefined : ctx.styles.styles[styleAt]?.h;
+    const align = horiz === "l" || horiz === "c" || horiz === "r" ? horiz : undefined;
+    const code = styled >= 0 ? ctx.styles.codes[styled] ?? null : null;
     let cell: WireCell | null = null;
     if (kind === "s" && cached) {
       const text = ctx.strings[Number(v)];
@@ -428,7 +472,7 @@ function cellsOfRow(
       const raw = unescapeXml(v.trim());
       const num = Number(raw);
       let shown = raw;
-      if (xf?.code && Number.isFinite(num)) shown = formatValue(num, xf.code, ctx.date1904);
+      if (code && Number.isFinite(num)) shown = formatValue(num, code, ctx.date1904);
       cell = { r: pos.r, c: pos.c, k: "n", t: shown, v: Number.isFinite(num) ? num : undefined };
     }
     // 公式格可以带着上次算出的值（就是上面那个 cell），也可以什么都没有（#111）。
@@ -437,6 +481,9 @@ function cellsOfRow(
     // 只有 `<f>`、没 `<v>`（或 `<v></v>`）：Excel 没存结果。显空，等用户去 Excel 重算。
     if (cell && formula && !cached) cell.noCache = true;
     if (cell && align) cell.a = align;
+    // 有样式没值的格子也得发：否则底色、边框就丢了（真文件里大片带边框的空区域）。
+    if (!cell && styleAt !== undefined && styleAt > 0) cell = { r: pos.r, c: pos.c, k: "s", t: "" };
+    if (cell && styleAt !== undefined) cell.s = styleAt;
     if (cell) {
       const fx = cf?.at(pos.r, pos.c);
       if (fx) cell.fx = fx;
@@ -462,7 +509,7 @@ export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: numbe
   if (!entry) throw new Error("这个工作表是空的");
   const ctx: SheetCtx = {
     strings: (book.strings ??= sharedStrings(buf, book.dir)),
-    xfs: (book.xfs ??= readStyles(buf, book.dir)),
+    styles: (book.styles ??= readStyles(null, null)),
     date1904: book.date1904,
   };
   const cf = tier === "full" ? book.cf.get(sheet) ?? null : null;
@@ -585,7 +632,7 @@ export function findInSheet(buf: Uint8Array, book: Book, sheet: string, query: s
   if (!q) return { sheet, matches, truncated: false };
   const ctx: SheetCtx = {
     strings: (book.strings ??= sharedStrings(buf, book.dir)),
-    xfs: (book.xfs ??= readStyles(buf, book.dir)),
+    styles: (book.styles ??= readStyles(null, null)),
     date1904: book.date1904,
   };
   forEachRow(buf, entry, {
