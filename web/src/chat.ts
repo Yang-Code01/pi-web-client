@@ -17,7 +17,7 @@ const BASH_SHOW = 20000;
 const BOTTOM_SLACK = 24;
 
 /**
- * 「这一轮」在聊天区里的现场：工具模块（`details` + 标题 + 产物行）与这一轮的失败卡片。
+ * 「这一轮」在聊天区里的现场：工具模块（`details` + 标题 + 产物行 + 「AI 执行失败」那一页）。
  * #220 往前插一页时要先收起来、插完再放回去 —— 插进来的历史条目会自己开关模块、记失败，
  * 那些属于老的那一轮，不能算到用户正在看的这一轮头上。
  */
@@ -26,7 +26,6 @@ interface TurnState {
   opsTitle: HTMLElement | null;
   opsBox: HTMLDetailsElement | null;
   opsFiles: HTMLElement | null;
-  failAnchor: HTMLElement | null;
   turnFails: Array<{ key: string; input: FailureInput }>;
   /** 本轮已经建出来的技能组；翻页插历史时指针也得一起收走，否则老条目会被追加进来。 */
   skillGroup: SkillGroup | null;
@@ -180,9 +179,8 @@ export class ChatView {
   private opsBox: HTMLDetailsElement | null = null;
   /** 本轮自动加载的技能组（见 `SkillGroup`）；换轮、重置、翻页插历史时清空。 */
   private skillGroup: SkillGroup | null = null;
-  /** Failures also get a card right after the module, keyed by toolCallId. */
+  /** Each failure's item on the module's 「AI 执行失败」page, keyed by toolCallId. */
   private failCards = new Map<string, HTMLElement>();
-  private failAnchor: HTMLElement | null = null;
   /**
    * 本轮已经出过失败的卡片（toolCallId → 输入）。同一轮里后续只要有工具跑通，就给对应卡片补一句
    * 「后来它怎么绕过去的」——人关心的是任务最终有没有成，不是那一步本身亮不亮红。
@@ -720,7 +718,6 @@ export class ChatView {
     this.todoGroup = null;
     this.todoRows.clear();
     this.failCards.clear();
-    this.failAnchor = null;
     this.turnFails = [];
     this.written.clear();
     this.opsFiles = null;
@@ -879,7 +876,6 @@ export class ChatView {
       opsTitle: this.opsTitle,
       opsBox: this.opsBox,
       opsFiles: this.opsFiles,
-      failAnchor: this.failAnchor,
       turnFails: this.turnFails,
       skillGroup: this.skillGroup,
     };
@@ -895,7 +891,6 @@ export class ChatView {
     this.opsTitle = held.opsTitle;
     this.opsBox = held.opsBox;
     this.opsFiles = held.opsFiles;
-    this.failAnchor = held.failAnchor;
     this.turnFails = held.turnFails;
     this.skillGroup = held.skillGroup;
   }
@@ -1355,7 +1350,7 @@ export class ChatView {
   }
 
   /**
-   * 同一轮里后续有工具跑通时，给前面那些失败卡补一句事实：「后来它改用 X 拿了结果」。
+   * 同一轮里后续有工具跑通时，给前面那些失败条目补一句事实：「后来它改用 X 拿了结果」。
    * 只补第一次跑通的那一步（再往后的过程对读者是噪声），并且对同一张卡只补一次。
    */
   private noteAfter(item: ToolItem): void {
@@ -1386,30 +1381,26 @@ export class ChatView {
   }
 
   /**
-   * A failure is useless when it is buried inside a collapsed module: each one also gets its own
-   * card right after the module — what happened, why, what next, and the few lines that prove it.
-   * Keyed by toolCallId so a live run and a replayed session render identically; a repeat call
-   * rebuilds the card in place (the store may fill in the result after the error is reported).
+   * A failure goes on the module's own second page (「AI 执行失败」) — what happened, why, what
+   * next, and the few lines that prove it. Nothing is added to the transcript itself: one turn
+   * stays one block. Keyed by toolCallId so a live run and a replayed session render identically;
+   * a repeat call rebuilds the item in place (the store may fill in the result after the error is
+   * reported) without collapsing the raw log the reader just opened.
    */
   private failureCard(key: string, input: FailureInput, ms?: number): void {
-    const next = buildFailureCard(input, ms);
+    this.ensureOps();
+    const panel = this.opsPanelEl("fail");
+    if (!panel) return;
+    const next = buildFailureItem(input, ms);
     const prev = this.failCards.get(key);
-    // A rebuild must not slam the card or the raw log shut under the cursor: carry the user's expand over.
-    if (prev?.hasAttribute("open")) next.setAttribute("open", "");
+    // A rebuild must not slam the raw log shut under the cursor: carry the user's expand over.
     if (prev?.querySelector("details.raw")?.hasAttribute("open")) {
       next.querySelector("details.raw")?.setAttribute("open", "");
     }
-    if (prev && prev.parentNode) {
-      prev.replaceWith(next);
-    } else {
-      const anchor = this.failAnchor && this.failAnchor.parentNode === this.root ? this.failAnchor : null;
-      const box = this.opsBox;
-      if (anchor) anchor.after(next);
-      else if (box && box.parentNode === this.root) box.after(next);
-      else this.push(next);
-    }
+    if (prev && prev.parentNode) prev.replaceWith(next);
+    else panel.append(next);
     this.failCards.set(key, next);
-    this.failAnchor = next;
+    this.refreshOps();
     this.scrollToEnd();
   }
 
@@ -1540,7 +1531,6 @@ export class ChatView {
     this.opsBody = null;
     this.opsTitle = null;
     this.opsBox = null;
-    this.failAnchor = null;
     this.opsFiles = null;
   }
 
@@ -1570,7 +1560,6 @@ export class ChatView {
       this.opsFiles = el("div", "ops-files");
       this.opsFiles.append(el("span", "ops-files-label", tr("产物")));
       box.after(this.opsFiles);
-      if (this.failAnchor === null) this.failAnchor = this.opsFiles;
     }
     const files = this.opsFiles;
     if ([...files.querySelectorAll<HTMLElement>(".file-chip")].some((c) => c.dataset.path === path)) return;
@@ -1591,7 +1580,16 @@ export class ChatView {
     files.append(chip);
   }
 
-  /** Lazily create the `<details>` that collects this turn's tool calls. */
+  /** Where a module page lives: 「操作」holds the tool rows, 「AI 执行失败」the diagnostics. */
+  private opsPanelEl(name: "ops" | "fail"): HTMLElement | null {
+    return this.opsBox?.querySelector<HTMLElement>(`.ops-panel[data-panel="${name}"]`) ?? null;
+  }
+
+  /**
+   * Lazily create the `<details>` that collects this turn: one block, two pages (「操作」 /
+   * 「AI 执行失败」). The tab bar only shows up once there is a second page — a turn where nothing
+   * failed looks exactly like it used to. Nothing about this turn escapes the block.
+   */
   private ensureOps(): HTMLElement {
     if (this.opsBody) return this.opsBody;
     const box = el("details", "ops");
@@ -1599,35 +1597,91 @@ export class ChatView {
     const title = el("span", "ops-title", tr("工具操作"));
     summary.append(el("span", "chev", "▸"), title);
     const body = el("div", "ops-body");
+    const tabs = el("div", "ops-tabs");
+    tabs.setAttribute("role", "tablist");
+    tabs.hidden = true;
+    const tab = (id: "ops" | "fail", label: string): HTMLButtonElement => {
+      const btn = el("button", "ops-tab") as HTMLButtonElement;
+      btn.type = "button";
+      btn.dataset.panel = id;
+      btn.setAttribute("role", "tab");
+      btn.append(document.createTextNode(label));
+      btn.onclick = () => this.showOpsPanel(id);
+      tabs.append(btn);
+      return btn;
+    };
+    tab("ops", tr("操作")).classList.add("is-on");
+    tab("fail", tr("AI 执行失败")).append(el("b", "cnt", "0"));
+    const opsPanel = el("div", "ops-panel");
+    opsPanel.dataset.panel = "ops";
+    const failPanel = el("div", "ops-panel");
+    failPanel.dataset.panel = "fail";
+    failPanel.hidden = true;
+    body.append(tabs, opsPanel, failPanel);
     box.append(summary, body);
     this.push(box);
-    this.opsBody = body;
+    this.opsBody = opsPanel;
     this.opsTitle = title;
     this.opsBox = box;
-    return body;
+    return opsPanel;
+  }
+
+  /** Switch pages. The module's own open/closed state is the user's, not ours — never touched here. */
+  private showOpsPanel(name: "ops" | "fail"): void {
+    const box = this.opsBox;
+    if (!box) return;
+    for (const tab of box.querySelectorAll<HTMLElement>(".ops-tab")) {
+      const on = tab.dataset.panel === name;
+      tab.classList.toggle("is-on", on);
+      tab.setAttribute("aria-selected", String(on));
+    }
+    for (const panel of box.querySelectorAll<HTMLElement>(".ops-panel")) {
+      panel.hidden = panel.dataset.panel !== name;
+    }
+    this.renderJump();
+  }
+
+  /**
+   * The tab bar is a switch, so it only earns its row when there is something to switch to: the
+   * second page exists exactly when this turn has at least one failure.
+   */
+  private syncOpsTabs(): void {
+    const box = this.opsBox;
+    const panel = this.opsPanelEl("fail");
+    if (!box || !panel) return;
+    const n = panel.childElementCount;
+    const tabs = box.querySelector<HTMLElement>(".ops-tabs");
+    const failTab = box.querySelector<HTMLElement>(".ops-tab[data-panel=\"fail\"]");
+    if (!tabs || !failTab) return;
+    const cnt = failTab.querySelector(".cnt");
+    if (cnt) cnt.textContent = String(n);
+    tabs.hidden = n === 0;
+    if (!n && failTab.classList.contains("is-on")) this.showOpsPanel("ops");
   }
 
   /** Recount the module title from the cards actually in the DOM. */
   private refreshOps(): void {
+    this.syncOpsTabs();
     const body = this.opsBody;
     const title = this.opsTitle;
     if (!body || !title) return;
     const cards = Array.from(body.children).filter(
       (n): n is HTMLElement => n instanceof HTMLElement && n.classList.contains("tool"),
     );
-    if (!cards.length) return;
+    const fails = this.opsPanelEl("fail")?.childElementCount ?? 0;
+    if (!cards.length && !fails) return;
     const counts = new Map<string, number>();
-    let errors = 0;
     let running = 0;
     for (const card of cards) {
       const name = card.querySelector(".name")?.textContent?.trim() || "tool";
       counts.set(name, (counts.get(name) ?? 0) + 1);
-      if (card.classList.contains("err")) errors += 1;
       if (card.dataset.running === "1") running += 1;
     }
     const parts = [...counts].map(([name, n]) => `${name} ×${n}`);
-    title.replaceChildren(document.createTextNode(tr("{p1} 个操作 · {p2}", { p1: cards.length, p2: parts.join(" · ") })));
-    if (errors) title.append(el("span", "ops-flag err", tr(" · {p1} 失败", { p1: errors })));
+    if (cards.length) {
+      title.replaceChildren(document.createTextNode(tr("{p1} 个操作 · {p2}", { p1: cards.length, p2: parts.join(" · ") })));
+    }
+    if (fails) title.append(el("span", "ops-flag err", tr(" · {p1} 失败", { p1: fails })));
     if (running) title.append(el("span", "ops-flag live", tr(" · 运行中")));
   }
 
@@ -2089,23 +2143,25 @@ function durationText(ms?: number): string {
 }
 
 /**
- * The failure card: `EXIT n` + one-sentence title, then why / next, then only the key lines of
- * the output (see `excerpt`), with the raw text folded underneath. Folded by default: the summary
- * row (exit code, title, command) is the conclusion, the rest is one click away — a long run of
- * failures must not push the conversation off screen. `benign` / `abort` failures fade to a gray
- * card so a run of grep misses does not read like an emergency.
+ * One failure on the module's 「AI 执行失败」page: `EXIT n` + one-sentence title + which command,
+ * then why / next, then only the key lines of the output (see `excerpt`), with the raw text folded
+ * underneath. No box of its own — the module is the box, so a run of failures reads as one list
+ * instead of a stack of cards. `benign` / `abort` failures fade to gray so a run of grep misses
+ * does not look like an emergency.
  */
-function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
+function buildFailureItem(input: FailureInput, ms?: number): HTMLElement {
   const d = diagnose(input);
   const calm = d.level === "benign" || d.level === "abort";
-  const card = el("details", calm ? "fcard calm" : "fcard");
+  const card = el("section", calm ? "fitem calm" : "fitem");
 
-  const top = el("summary", "top");
+  const who = input.cmd ? `${input.tool} · ${input.cmd}` : input.tool;
+  const top = el("div", "fhead");
+  const whoSpan = el("span", "fwho", who);
+  whoSpan.title = who;
   top.append(
-    el("span", "chev", "▸"),
-    el("span", "badge", d.exit === null ? LEVEL_LABEL[d.level] : `EXIT ${d.exit}`),
-    el("span", "ttl", d.title),
-    el("span", "sum-cmd", input.cmd ? `${input.tool} · ${input.cmd}` : input.tool),
+    el("span", calm ? "badge calm" : "badge", d.exit === null ? LEVEL_LABEL[d.level] : `EXIT ${d.exit}`),
+    el("span", "fttl", d.title),
+    whoSpan,
   );
   const grid = el("div", "grid");
   grid.append(el("span", "k", tr("为什么没成")), el("span", "v", d.cause || "—"));
@@ -2118,9 +2174,7 @@ function buildFailureCard(input: FailureInput, ms?: number): HTMLElement {
   const impact = [d.effect, d.improve].filter(Boolean).join(tr("；"));
   grid.append(el("span", "k", tr("影响 / 改进")), el("span", "v", impact || "—"));
   if (d.needsYou) grid.append(el("span", "k", tr("要你做")), el("span", "v", d.needsYou));
-  const cmdbar = el("div", "cmdbar");
-  cmdbar.append(el("span", "dot", "▪"), el("span", "c", input.cmd ? `${input.tool} · ${input.cmd}` : input.tool));
-  card.append(top, grid, cmdbar);
+  card.append(top, grid);
 
   const { lines, keep } = excerpt(input.out);
   if (keep.length) {
