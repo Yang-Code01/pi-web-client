@@ -4766,3 +4766,52 @@ D
 - `test:repos:ui` 从「这条机器上跑不过」修成绿：`ROOT` 拉平到 `fs.realpathSync`（macOS 的 `/var` → `/private/var`，否则 `data-dir` 永远匹配不上、卡在第一条 `waitForFunction`），清理换成带重试的 `rmSync`（ENOTEMPTY 会把真正的失败盖掉）。另加 4 条容器判据：卡 1240 宽三列照旧、把卡拨到 600（视口仍 1280）就换「目录」抽屉、同一时刻目录列/仓库列/面包屑都让位、拨回来自动还原。
 - 预览面板那组容器查询用真样式表验的：面板 420 宽时 `.viewer-path` 隐藏、900 宽时显示；同一张页面对照旧 CSS，420 宽下路径**没**隐藏（就是被修掉的那个静默失败）。
 - 同族回归：`test:scratch:ui`、`test:settings:ui`、`test:repos:ui`、`test:githist:ui` 全绿。（`test:repos:ui` 原先在这台机器上跑到「只列目录…」就 timeout —— main 上未改动的构建同样跑不过，是本轮顺手修掉的 macOS 路径问题，见上。）
+
+## D264 邮箱：按时间取信、AI 权限只管 AI、坏配置别拿默认值盖掉（用户报障 2026-11-15）
+
+**问题：** 用户报「邮箱有 bug，邮件不全，只能看到 2022 年的邮件」。拉开看，这不是一个 bug，是**一批口径没照文档办**：面板上写的一句话（「只约束 AI」「发送前确认」「取附件」）和代码里的实现不是同一件事，而三处碰巧都落在同一条链上（列表取数 → 权限判定 → 配置读写）。
+
+对着真信箱（1092 封的 QQ 邮箱）和一份假桥逐个量出来的是：
+
+1. **列表按「序号最后 N 条」取，而序号不是时间。** `listMessages` 取 `exists-limit+1 : *` 再按时间排。序号是「进这个文件夹的先后」：这箱里 uid 1410–1429 是 **2021-09/10** 的信（从别处搬回来 / 恢复过，最后才落地），uid 1330 附近才是 2026-11 的信。于是默认 20 封里最新的一封是 **2022-01-31**，2021-11~2022-03 整段看不到；实际这箱最新是 **2026-11-14**。`limit=100` 也只能到 2022-03-25。
+2. **未读是在那个窗口里本地筛的**：同一箱「只看未读」`limit=20` 给 **6 封**，`limit=100` 给 **23 封**，真数 100+。
+3. **列表没有翻页出口**：`limit` 夹 100、没有 `offset`，页面写死 30 且没有「看更早的」。第 100 封以前的历史读不到。
+4. **AI 永远发不出信。** 桥会发 `{type:"mail.confirm"}` 并等页面点头（默认 `confirmSend: true`），而 `web/src` 里**根本没有处理这一帧的地方**（只有 `preview.open.done`）。每封都干等 300 秒 → 回 `no-ack`，而这个码既不在工具的 `NEXT_STEP` 里也没写进描述，模型当成临时故障又试一次。
+5. **面板「回复」对有显示名的发件人 100% 失败。** `startReply` 把 `m.from`（`PlayStation <email@…>`）整串填进 `to`，而 `normalizeMail` 拿 `^[^\s@]+@…$` 怼整串 → 回 **500** smtp-error「收件人不像地址」。真实邮件九成带显示名。
+6. **「AI 权限」其实也拦人。** 关掉「读邮件」连人自己在面板里都看不了信（`/api/mail/folders|messages|message` 走同一份 `policyDenial`），附件权限默认关着连自己的附件都下不了；日上限与收件人白名单还算上你自己点的那些 —— 而设置页写着「只约束 AI；你自己点的不受限」「只算 AI 发的」。
+7. **配置文件读坏一次就把账号与授权码永久清空。** `readMailConfig` 丢掉 `readJsonChecked` 的 `ok`，坏文件按「没有账号」处理；紧接着任何一次写（点一下权限开关、`/api/mail/repair`）就把 `accounts: []` 落盘。实测：截断 config.json → 读 0 个账号 → `POST /api/mail/policy` → 文件里的 `REALSECRET` 没了。
+8. 一串小的：`mail_reply` 把 `attachments` 硬写成 `[]`（schema 声明了）；纯 HTML 的信 AI 读到「(没有纯文本正文)」且 `html` 被「取附件」开关连坐；25MB 的闸门在 `source` 拉完之后才判（等于没挡）；面板读完信把本地那条标成已读（服务器上 PEEK 没改）；切文件夹/账号时先点的慢响应会盖掉后点的；`asInt(null,20)` 让 `/api/mail/messages` 不带 `limit` 只回 1 封；删账号不清 `policy.accountIds`（删完谁都不许用）；`mutate` 在工具提示与 `mail_accounts` 回包里有、面板里没有。
+
+**原因：**
+
+1. IMAP 的**序号 / UID 是「到达顺序」，不是邮件时间**。个人信箱通常两者一致，所以按序号取「最近的」看不出问题；一旦从备份恢复过、或把信从回收站/别的文件夹搬回来，这批信的 uid 会变成最新的而时间是老的 —— 以前那套「取最后 N 个序号再按时间排」在这种信箱上给出的是一个**既不是最近、内部还错位**的窗口。而「未读」在窗口内过滤，等于「窗口外的未读不存在」。
+2. 「AI 权限」的**唯一入口是 `policyDenial`**，页面路由和工具口共用。共用是对的，共用同一份**开关语义**就错了：这六个开关的文案都是对 AI 说话，页面（人自己）不该被它挡住。
+3. 配置读写的默认值**兜底兜到了写路径**：读不出来 → 空配置 → 照样写回，等于把「读失败」翻译成「用户没有账号」。
+
+**决定：**
+
+1. **列表按时间挑，不按序号挑。** 从最新到达的一批往回扫信封，扫到「按时间的前 `limit+offset` 封」能被证明找全为止：拿第 `want` 封的时间当 cutoff，`SEARCH SINCE cutoff` 一次 —— 比 cutoff 新的信全都已经在手里就算收手，否则再往回扫一批（每批 200，上限 2000 封）。信封只取 envelope/flags/uid/size/internalDate，`bodyStructure`（`📎`）只为最终要显示的那几封补。纯函数 `seqWindows` / `orderByDateDesc` / `takeWindow` 拆出来单测。
+2. **未读走 `SEARCH UNSEEN`**：先在服务器上把未读的 uid 全找出来再取信封（`limit` 之内完全准确），不再「取窗口再本地筛」。
+3. **翻页**：`listMessages` 加 `offset`，`mail_list` 加同名参数；面板底部「看更早的」按偏移往后接。
+4. **补上确认框**（`web/src/mailconfirm.ts`）：收件人/抄送/主题/正文前 800 字/附件摊开，只有点「发送」才回 `ok:true`；Esc、点遮罩、5 分钟不点都回 `ok:false` + 一句给人看的话。排队与回执抽成无 DOM 的 `MailConfirmQueue`（一次只摊一封、回执只认当前那封的 `reqId`）。`no-ack` / `timeout` 补进工具的 `NEXT_STEP`，别再让模型把「没回音」当临时故障重试。
+5. **地址口径收到 `bridge/src/mailaddr.ts`**：`Name <a@b.com>` 与 `a@b.com` 是同一个人；校验、白名单比对、SMTP 收件人都走它；参数错给 `bad-input`（400），不再混成 500。`splitRecipients` 也不再切引号/尖括号里的逗号。
+6. **权限只管 AI。** `performSend` 里策略判定、白名单、日上限、发送前确认都进 `by === "agent"` 分支；页面路由不再过 `policyDenial`，**但页面口自己判 `account.enabled`**（停用的账号人也不给用，`pageAccount()` 回 409 `account-disabled`）—— 两边各拦各的，别只在一边拦。`sentToday()` 只数 `by === "agent"` **且不是草稿**的审计行（草稿写在同一个文件里，但它没发出去）。`mutate` 从工具提示**与 `mail_accounts` 的回包**里都拿掉（`agentPolicyView()`；v1 没有对应动作，面板本来也不给这个开关）。
+7. **坏配置拒写，不拿默认值盖。** `readMailConfigChecked()` 把「文件读不出来」交出去；`/api/mail/config` 带 `configError` + `configPath`，面板顶一条横幅指路；账号/权限/test/repair 这些写操作一律 409 `config-corrupt`，一个字节都不动。**人自己修或删文件再刷新** —— 这条宁可挡住，也不要静默丢凭据。
+8. 小的照旧各修：`mail_reply` 带附件（复用 `normalizeAttachments`）；`html` 不再受「取附件」管、纯 HTML 的信在扩展侧扒标签；`fetchRaw` 先问 `size` 再拉 `source`；面板不再伪造已读；列表/详情各带自己的请求代号（切文件夹就作废在飞的请求）；`asInt` 把 `null/undefined/""` 当「没给」；删账号顺手清 `policy.accountIds`；导航角标去掉「当前列了几条」那个假数字；删账号两步确认；TLS 由端口算（`secureForPort`）；每日上限输入非数字时不保存并回填。
+
+**代价：**
+
+- 列表首次取数从「一次 FETCH，< 1s」变成 **2–5s**（1092 封的信箱实测：limit=20 2.5s、limit=100 4.6s、offset=300 3.7s）。多出来的是扫信封 + 一次 SEARCH。还没做的是**按 (账号, 文件夹) 缓存排序结果**（30 秒足够），真要提速再说 —— 现在先保证对。
+- 上限 2000 封的扫描预算：一封 2000+ 的邮箱如果时间序乱到 2000 封都盖不住，仍然会退化成「按到达顺序的前 2000 封里挑最新的」。未读超过 2000 时同理（取到达得最晚的那批）。
+- 确认框 5 分钟内不点 = 不发；AI 那头拿到的是 `timeout`，要重新发起。宁可多问一次，也不替人点头。
+- 页面不再受「AI 权限」管，意味着**关掉「读邮件」并不会阻止你自己看信**（这才是文案的意思），也不再是一个「隐私开关」：想真的断掉，去删账号或停用它。
+- 前端多一个模块（`mailconfirm.ts`）+ 一段 CSS。确认框**挂进 `#app`**（跟「本机管理」同一个挂法 `(document.getElementById("app") ?? document.body).append(…)`），跟别的弹层一起吃 `zoom`；宽高用 `min(px, 100%)` 跟着遮罩扣完 padding 的可用格走、不写 vh/vw（D263 明说别往 body 浮层那个豁口里塞）。
+
+**验证：**
+
+- `npm run test:mail`：`bridge/tests/mail-unit.mjs` 44 → **65**（新增 21 条：读权限关着页面照样能读、缺 uid 才 400、页面发信不看 AI 权限、AI 仍被 `policy-denied:send` 拦、白名单只拦 AI、日上限只数 AI、草稿不占上限、停用账号页面也 409、删账号清 `accountIds`、默认账号停了不报、`mail_accounts` 不报 `mutate`、坏配置 409 且磁盘不动）；新增 `bridge/tests/mail-list-unit.mjs` **34** 条（序号窗口、按时间挑、翻页、地址解析、`bad-input`、附件口径、HTML 扒标签）；`web/tests/mail-unit.mjs` 5 → **10**（`secureForPort`/`portOf`、`MailConfirmQueue` 的排队与回执、`MAIL_ERROR_TEXT` 的说法）。
+- 真信箱（1304049579@qq.com，INBOX 1092 封）：改前 `limit=20` 最新 **2022-01-31**、未读 6 封；改后最新 **2026-11-14**、未读 100+；`offset=300` 能翻到 2025-03，与「整箱排序后第 301–320 封」逐条一致；`📎` 只为最终那几封补，不再整箱取 `bodyStructure`。
+- 假桥（临时 `PI_WEB_STATE` + 指向 `127.0.0.1:9` 的账号）：坏配置 → 409 且 `REALSECRET` 原封不动；页面发信不看 `policy.send`；AI 发信仍被拦；白名单只拦 AI。
+- `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（tsc + i18n-check 3040 键 × 3 + `test:viewport`）全绿。
+- **复审（两轴：标准 / 需求）之后补的一轮**，对着 `git diff main...HEAD` 逐条核：页面口补上 `account.enabled`（以前停用账号在面板里照样能读能发，CHANGELOG 那句「页面只受账号停用限制」才成立）；草稿不再占 AI 的日上限；`mutate` 真的从 `mail_accounts` 回包里去掉（不只是文案）；审计失败改成「错误码 → 人话」的映射（`MAIL_ERROR_TEXT`，认不出来的码只说「失败」）；详情的 `finally` 也比 `detailSeq`（先发的慢详情不会提前收掉后发请求的「正在读」）；确认框挂进 `#app`；超时只留一份 `MAIL_CONFIRM_PAGE_MS`；删掉没人读的 `downloadable`、页面上的「附件（取附件权限关着）」死分支与 `MailConfirmFrame` 的 `as any`；`normalizeAccount` 改用 `mailaddr.isEmailAddress`；`mailconfig.ts` 头部注释改成「`policyDenial` 是给 AI 的唯一判据」；GLOSSARY 补「邮箱面板 / AI 权限 / 发送前确认」、README 补邮箱一条与 `test:mail`。
+- **没做的：** 确认框只有 `MailConfirmQueue` 的单测，没有 playwright 的点击用例（这台机器上要临时装 chromium）；`mail_send` 真发一封的路径仍靠肉眼。

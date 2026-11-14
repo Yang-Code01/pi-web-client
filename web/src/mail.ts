@@ -14,6 +14,7 @@
  */
 import { api } from "./api.ts";
 import { createEl as el } from "./chat.ts";
+import { mountOverlay, trapEscape } from "./modal.ts";
 import "./mail-console.css";
 import { errText, tr } from "./i18n/index.ts";
 import type {
@@ -26,7 +27,7 @@ import type {
   MailPolicyView,
   MailSummary,
 } from "./mail-shared.ts";
-import { auditOutcome, MAIL_POLICY_LABELS, parseRecipients, sizeText, whenText } from "./mail-shared.ts";
+import { auditOutcome, MAIL_POLICY_LABELS, mailErrorText, parseRecipients, portOf, secureForPort, sizeText, whenText } from "./mail-shared.ts";
 
 export interface MailHandoff {
   prefill(text: string): void;
@@ -123,6 +124,15 @@ function failText(what: string, err: unknown): string {
   return tr("{what}：{why}", { what, why: errText(err) });
 }
 
+/** 列表一页多少封（底部「看更早的」按这个往后翻）。 */
+const LIST_PAGE = 30;
+
+/** 审计行里的失败：桥给的是稳定错误码，翻成人话再显示（认不出来的只说「失败」，不露原文）。 */
+function auditFailText(code: string | undefined): string {
+  const hit = mailErrorText(code);
+  return hit ? tr(hit) : tr("失败");
+}
+
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "inbox", label: "邮件" },
   { id: "compose", label: "写邮件" },
@@ -136,8 +146,13 @@ export class MailPanel {
   private readonly host: MailHost;
   private root: HTMLElement | null = null;
   private lastFocus: HTMLElement | null = null;
-  private esc: ((ev: KeyboardEvent) => void) | null = null;
+  private untrap: (() => void) | null = null;
+  /** 面板「代」：开/关/刷新时 +1。整块重画靠它，**不是**用来判列表/详情过期的。 */
   private seq = 0;
+  /** 列表与详情各自的请求代号：切文件夹/账号、重新取数时 +1，回来对不上就丢掉。
+   *  以前两处都比 `seq`，而切文件夹并不动 `seq`，于是先点的慢响应会盖掉后点的（选中的是 B、列表是 A）。 */
+  private listSeq = 0;
+  private detailSeq = 0;
 
   private config: MailConfigView | null = null;
   private loadError = "";
@@ -152,18 +167,22 @@ export class MailPanel {
   private listLoading = false;
   private listError = "";
   private unreadOnly = false;
+  /** 最后一页是不是取满了：取满就说明后面可能还有，底部给一个「看更早的」。 */
+  private listHasMore = false;
 
   private detail: MailDetailView | null = null;
   private detailUid = -1;
   private detailLoading = false;
   private detailError = "";
-  private attachmentsAllowed = true;
 
   private compose: Compose | null = null;
   private form: AccountForm | null = null;
   private saving = false;
   private formError = "";
   private testing = "";
+  /** 「删」的第一下：等第二下才算数（空串 = 没有待确认的）。 */
+  private confirmDeleteId = "";
+  private deleteTimer = 0;
 
   constructor(host: MailHost) {
     this.host = host;
@@ -183,6 +202,9 @@ export class MailPanel {
     this.listLoading = false;
     this.listError = "";
     this.unreadOnly = false;
+    this.listHasMore = false;
+    this.listSeq += 1;
+    this.detailSeq += 1;
     this.detail = null;
     this.detailUid = -1;
     this.detailLoading = false;
@@ -192,22 +214,22 @@ export class MailPanel {
     this.saving = false;
     this.formError = "";
     this.testing = "";
+    this.confirmDeleteId = "";
     this.lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    this.esc = (ev) => {
-      if (ev.key !== "Escape") return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      this.close();
-    };
-    document.addEventListener("keydown", this.esc, true);
+    this.untrap = trapEscape(() => this.close());
     this.render();
     void this.reload();
   }
 
   close(): void {
-    if (this.esc) document.removeEventListener("keydown", this.esc, true);
-    this.esc = null;
+    this.untrap?.();
+    this.untrap = null;
     this.seq += 1;
+    this.listSeq += 1;
+    this.detailSeq += 1;
+    this.confirmDeleteId = "";
+    if (this.deleteTimer) window.clearTimeout(this.deleteTimer);
+    this.deleteTimer = 0;
     this.root?.remove();
     this.root = null;
     const back = this.lastFocus;
@@ -276,22 +298,33 @@ export class MailPanel {
     }
   }
 
-  private async loadMessages(seq: number): Promise<void> {
+  private async loadMessages(seq: number, append = false): Promise<void> {
     const account = this.activeAccount();
     if (!account) return;
+    const token = ++this.listSeq;
+    const folder = this.folder;
     this.listLoading = true;
     this.render();
     try {
-      const { messages } = await api.mailMessages({ account: account.id, folder: this.folder, limit: 30, unread: this.unreadOnly });
-      if (seq !== this.seq || !this.root) return;
-      this.messages = messages;
+      const { messages } = await api.mailMessages({
+        account: account.id,
+        folder,
+        limit: LIST_PAGE,
+        offset: append ? this.messages.length : 0,
+        unread: this.unreadOnly,
+      });
+      // 过期判定两道：面板还在（seq） + 没有更新的请求（listSeq）。
+      if (seq !== this.seq || token !== this.listSeq || !this.root) return;
+      const merged = append ? [...this.messages, ...messages.filter((m) => !this.messages.some((old) => old.uid === m.uid))] : messages;
+      this.messages = merged;
+      this.listHasMore = messages.length >= LIST_PAGE;
       this.listError = "";
     } catch (err) {
-      if (seq !== this.seq) return;
-      this.messages = [];
+      if (seq !== this.seq || token !== this.listSeq) return;
+      if (!append) this.messages = [];
       this.listError = failText(tr("邮件列表拿不到"), err);
     } finally {
-      if (seq === this.seq) {
+      if (seq === this.seq && token === this.listSeq) {
         this.listLoading = false;
         this.render();
       }
@@ -302,24 +335,26 @@ export class MailPanel {
     const account = this.activeAccount();
     if (!account) return;
     const seq = this.seq;
+    const token = ++this.detailSeq;
+    const folder = this.folder;
     this.detailUid = uid;
     this.detailLoading = true;
     this.detailError = "";
     this.compose = null;
     this.render();
     try {
-      const res = await api.mailMessage({ account: account.id, folder: this.folder, uid });
-      if (seq !== this.seq || !this.root) return;
+      const res = await api.mailMessage({ account: account.id, folder, uid });
+      if (seq !== this.seq || token !== this.detailSeq || !this.root) return;
       this.detail = res.message;
-      this.attachmentsAllowed = res.attachmentsAllowed;
-      // 打开即已读是邮箱客户端的行为；本地列表跟着变一下，别等下一次刷新。
-      this.messages = this.messages.map((m) => (m.uid === uid ? { ...m, unread: false } : m));
+      // 这里**不**把本地那条标成已读（以前会）：读信用 PEEK，服务器上的 \Seen 根本没动，
+      // 改本地列表只是骗人 —— 刷一下又变回未读，人却以为自己处理过了。
     } catch (err) {
-      if (seq !== this.seq) return;
+      if (seq !== this.seq || token !== this.detailSeq) return;
       this.detail = null;
       this.detailError = failText(tr("这封信读不出来"), err);
     } finally {
-      if (seq === this.seq) {
+      // 代号也要比：先发的慢详情回来不能把后发请求的「正在读」提前收掉（内容不盖、状态会错）。
+      if (seq === this.seq && token === this.detailSeq) {
         this.detailLoading = false;
         this.render();
       }
@@ -447,7 +482,7 @@ export class MailPanel {
     back.append(shell);
     this.root?.remove();
     this.root = back;
-    document.body.append(back);
+    mountOverlay(back);
   }
 
   private headEl(): HTMLElement {
@@ -498,6 +533,17 @@ export class MailPanel {
   private bannerEl(): HTMLElement {
     const box = el("div", "mc-banners");
     if (this.loadError) box.append(el("div", "mc-banner mc-banner--bad", this.loadError));
+    if (this.config?.configError)
+      box.append(
+        el(
+          "div",
+          "mc-banner mc-banner--bad",
+          tr("配置文件读不出来（{why}），账号列表是空的。为了不覆盖掉里面的账号和授权码，保存和改设置都停了：修好或删掉 {path} 再刷新。", {
+            why: this.config.configError,
+            path: this.config.configPath ?? "mail/config.json",
+          }),
+        ),
+      );
     if (this.notice) box.append(el("div", "mc-banner mc-banner--ok", this.notice));
     return box;
   }
@@ -508,7 +554,6 @@ export class MailPanel {
     nav.setAttribute("aria-label", tr("邮箱分区"));
     const counts: Partial<Record<Section, number>> = {
       accounts: this.config?.accounts.length ?? 0,
-      inbox: this.messages.length,
       audit: this.config?.audit.length ?? 0,
     };
     for (const item of SECTIONS) {
@@ -593,6 +638,9 @@ export class MailPanel {
         this.account = pick.value;
         this.folders = [];
         this.messages = [];
+        this.listHasMore = false;
+        this.listSeq += 1;
+        this.detailSeq += 1;
         this.detail = null;
         this.detailUid = -1;
         this.render();
@@ -613,6 +661,10 @@ export class MailPanel {
         this.detailUid = -1;
         this.compose = null;
         this.messages = [];
+        this.listHasMore = false;
+        // 切文件夹要作废在飞的请求：以前不比代号，慢的那个回来会盖掉新文件夹的列表。
+        this.listSeq += 1;
+        this.detailSeq += 1;
         void this.loadMessages(this.seq);
       };
       chips.append(chip);
@@ -677,6 +729,16 @@ export class MailPanel {
         row.onclick = () => void this.openMessage(m.uid);
         list.append(row);
       }
+      // 一页取满就说明后面可能还有：邮箱不只这几十封，以前这里没有任何出口（D264）。
+      if (this.listHasMore) {
+        const more = el("button", "mc-mini mc-more", this.listLoading ? tr("正在读…") : tr("看更早的")) as HTMLButtonElement;
+        more.type = "button";
+        more.disabled = this.listLoading;
+        more.onclick = () => void this.loadMessages(this.seq, true);
+        list.append(more);
+      } else if (this.messages.length >= LIST_PAGE && !this.listLoading) {
+        list.append(el("div", "mc-hint", tr("到这个文件夹的开头了")));
+      }
     }
     return list;
   }
@@ -718,12 +780,9 @@ export class MailPanel {
 
     if (m.attachments.length) {
       const att = el("div", "mc-attach");
-      att.append(el("div", "mc-attach__title", this.attachmentsAllowed ? tr("附件") : tr("附件（取附件权限关着）")));
+      // 页面上的附件是**人自己**在下载：不受「取附件」（那是 AI 的开关）管，永远给直链（D264）。
+      att.append(el("div", "mc-attach__title", tr("附件")));
       for (const a of m.attachments) {
-        if (!this.attachmentsAllowed) {
-          att.append(el("div", "mc-attach__row", `${a.filename} · ${sizeText(a.size)}`));
-          continue;
-        }
         const link = el("a", "mc-attach__row", `${a.filename} · ${sizeText(a.size)}`) as HTMLAnchorElement;
         link.href = api.mailAttachmentUrl({
           account: this.activeAccount()?.id,
@@ -855,9 +914,27 @@ export class MailPanel {
           this.render();
           this.focusFirst();
         };
-        const del = el("button", "mc-mini mc-mini--bad", tr("删")) as HTMLButtonElement;
+        const del = el("button", this.confirmDeleteId === a.id ? "mc-mini mc-mini--bad on" : "mc-mini mc-mini--bad", this.confirmDeleteId === a.id ? tr("真删？") : tr("删")) as HTMLButtonElement;
         del.type = "button";
-        del.onclick = () => void this.deleteAccount(a.id);
+        // 一点就没（连同授权码）太狠：第一下只是「真删？」，6 秒内再点才删。
+        del.onclick = () => {
+          if (this.confirmDeleteId === a.id) {
+            this.confirmDeleteId = "";
+            if (this.deleteTimer) window.clearTimeout(this.deleteTimer);
+            this.deleteTimer = 0;
+            void this.deleteAccount(a.id);
+            return;
+          }
+          this.confirmDeleteId = a.id;
+          if (this.deleteTimer) window.clearTimeout(this.deleteTimer);
+          this.deleteTimer = window.setTimeout(() => {
+            this.deleteTimer = 0;
+            if (!this.confirmDeleteId) return;
+            this.confirmDeleteId = "";
+            this.render();
+          }, 6000);
+          this.render();
+        };
         ops.append(test, edit, del);
         tr1.append(ops);
         tbody.append(tr1);
@@ -1020,8 +1097,16 @@ export class MailPanel {
     limit.min = "0";
     limit.value = String(cfg.policy.dailySendLimit);
     limit.onchange = () => {
-      const n = Number(limit.value);
-      void this.savePolicy({ dailySendLimit: Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0 });
+      const raw = limit.value.trim();
+      const n = Number(raw);
+      // 以前非数字会变成 NaN → 存成 0 = 不限：手一拙就把上限拆了。
+      if (!raw || !Number.isFinite(n) || n < 0) {
+        limit.value = String(cfg.policy.dailySendLimit);
+        this.notice = tr("上限要填 0 或正整数，这次没改");
+        this.render();
+        return;
+      }
+      void this.savePolicy({ dailySendLimit: Math.floor(n) });
     };
     limitRow.append(limit);
     send.append(limitRow);
@@ -1089,7 +1174,8 @@ export class MailPanel {
         // 草稿也走这个审计文件（桥端 `mail_draft` 记的是 ok + messageId="draft"），只看 `ok`
         // 会把「存进草稿箱」显示成「已发出」——用户以为发出去了，其实信还在草稿箱里。
         const outcome = auditOutcome(row);
-        const result = outcome === "draft" ? tr("已存草稿") : outcome === "sent" ? tr("已发出") : (row.error ?? tr("失败"));
+        const result =
+          outcome === "draft" ? tr("已存草稿") : outcome === "sent" ? tr("已发出") : auditFailText(row.error);
         tr1.append(el("td", "", result));
         tbody.append(tr1);
       }
@@ -1123,8 +1209,9 @@ export class MailPanel {
       preset: f.preset,
       user: f.user.trim() || f.address.trim(),
       secret: f.secret,
-      imap: { host: f.imapHost.trim(), port: Number(f.imapPort) || 993, secure: true },
-      smtp: { host: f.smtpHost.trim(), port: Number(f.smtpPort) || 465, secure: !f.smtpPort.startsWith("587") },
+      // TLS 由端口算（以前 IMAP 恒 true、SMTP 就看字符串里有没有 587，143 / 25 永远连不上）。
+      imap: { host: f.imapHost.trim(), port: portOf(f.imapPort, 993), secure: secureForPort(portOf(f.imapPort, 993), "imap") },
+      smtp: { host: f.smtpHost.trim(), port: portOf(f.smtpPort, 465), secure: secureForPort(portOf(f.smtpPort, 465), "smtp") },
     };
     if (f.id) body.id = f.id;
     try {

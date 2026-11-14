@@ -13,7 +13,17 @@ import nodemailer from "nodemailer";
 import { simpleParser } from "mailparser";
 import type { MailAccount } from "./mailconfig.ts";
 
-export type MailErrorCode = "auth-failed" | "imap-id" | "imap-error" | "smtp-error" | "net" | "timeout" | "not-found" | "too-large";
+export type MailErrorCode =
+  | "auth-failed"
+  | "imap-id"
+  | "imap-error"
+  | "smtp-error"
+  | "net"
+  | "timeout"
+  | "not-found"
+  | "too-large"
+  /** 参数不对（收件人不是地址、缺 uid 这种）—— 路由按 400 回，别混进 500。 */
+  | "bad-input";
 
 export class MailError extends Error {
   code: MailErrorCode;
@@ -31,6 +41,14 @@ const CONNECT_MS = 20_000;
 const OP_MS = 45_000;
 /** 单封邮件超过这个大小就不一次拉全文（面板与工具都只拿得到头与摘要）。 */
 const MAX_RAW_BYTES = 25 * 1024 * 1024;
+/** 列表一次最多给几封（`limit` 的上限）。 */
+const LIST_LIMIT_MAX = 100;
+/** 为了挑出「最近的 N 封」而愿意翻多少封信封（见 D264：序号序不一定等于时间序）。 */
+const SCAN_BUDGET = 2000;
+/** 一次 FETCH 拿多少封（太大服务器会掐，QQ 对长区间不友好）。 */
+const SCAN_CHUNK = 200;
+/** 按 uid 列表取的时候每条命令带几个 uid。 */
+const UID_BATCH = 200;
 
 function classify(err: any): MailError {
   const text = String(err?.responseText ?? err?.message ?? err ?? "");
@@ -169,35 +187,167 @@ function countParts(node: any): number {
 
 export interface ListOptions {
   limit?: number;
+  /** 跳过最近几封（按时间倒序），用来翻页。 */
+  offset?: number;
   unreadOnly?: boolean;
 }
 
+/** 信封查询：**不要** bodyStructure —— 扫描时它又大又用不上，选定之后再补。 */
+const ENVELOPE_QUERY = { envelope: true, flags: true, uid: true, size: true, internalDate: true } as const;
+
+/**
+ * 从「最后一封」往回切序号区间，按从新到旧返回，总共不超过 budget 封。
+ *
+ * 纯函数，方便单测：`exists=450, budget=2000, chunk=200` → `{251:450}` 一段；
+ * `exists=450, budget=300` → `{151:450}`（第二段只要 250:450 里剩下的 300 封，就从 251 开始往回数）。
+ */
+export function seqWindows(exists: number, budget: number, chunk: number): { start: number; end: number }[] {
+  const total = Math.max(0, Math.min(Math.floor(exists), Math.max(0, Math.floor(budget))));
+  const size = Math.max(1, Math.floor(chunk));
+  const out: { start: number; end: number }[] = [];
+  let end = Math.floor(exists);
+  let left = total;
+  while (left > 0 && end >= 1) {
+    const take = Math.min(size, left);
+    const start = Math.max(1, end - take + 1);
+    out.push({ start, end });
+    left -= end - start + 1;
+    end = start - 1;
+  }
+  return out;
+}
+
+/** 时间倒序（拿不到时间的排最后）。纯函数。 */
+export function orderByDateDesc<T extends { date: number }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => (b.date || 0) - (a.date || 0));
+}
+
+/** 翻页：跳过 offset 封，取 limit 封。纯函数。 */
+export function takeWindow<T>(rows: T[], limit: number, offset: number): T[] {
+  const from = Math.max(0, Math.floor(offset) || 0);
+  const size = Math.max(1, Math.floor(limit) || 1);
+  return rows.slice(from, from + size);
+}
+
+function summaryOf(msg: any, unread: boolean): MailSummary {
+  const from = msg.envelope?.from?.[0];
+  const stamp = msg.internalDate ? new Date(msg.internalDate).getTime() : new Date(msg.envelope?.date ?? 0).getTime();
+  return {
+    uid: Number(msg.uid),
+    subject: String(msg.envelope?.subject ?? "(无主题)"),
+    from: addrText(from),
+    fromAddress: String(from?.address ?? ""),
+    date: Number.isFinite(stamp) ? stamp || 0 : 0,
+    unread,
+    hasAttachments: false,
+    size: Number(msg.size ?? 0),
+  };
+}
+
+/**
+ * internalDate ≥ `cutoff` 的信，是不是都已经在 `seen` 里了？
+ *
+ * 这是「扫描窗口够不够」的证明：只要比我们第 want 封更新的信全都扫到了，那按时间排出来的前 want
+ * 封就是真的前 want 封 —— 不必把整箱信封都拉下来（D264）。一次 SEARCH 比多扫几百封信封便宜得多。
+ */
+async function noNewerOutside(client: ImapFlow, seen: Set<number>, cutoff: number): Promise<boolean> {
+  // SINCE 只认到「天」，而且 imapflow 按 UTC 拼日期、服务器按自己的时区比 —— 两边差一天是常事。
+  // 往回退一天，让检查偏「宽」：只会多扫，不会少扫（少扫才是错的）。
+  const since = new Date(cutoff - 24 * 60 * 60 * 1000);
+  const hit = (await client.search({ since }, { uid: true })) as number[] | false;
+  if (!Array.isArray(hit)) return false;
+  for (const uid of hit) if (!seen.has(Number(uid))) return false;
+  return true;
+}
+
+/**
+ * 从最新到达的一批往回扫，直到「按时间的前 want 封」能被证明找全了（或到预算上限）。
+ *
+ * 为什么不一次拉全：1092 封的信封在这台服务器上要约 6 秒，面板每次刷新都吃这一下受不了。
+ * 现在常见的信箱一批（200 封）就够，一次 SEARCH 验完就收手；只有序号序和时间序真的乱到
+ * 少数批之外（从备份恢复过的信箱）才会继续往回扫，最坏也就 SCAN_BUDGET 封。
+ */
+async function scanByDate(client: ImapFlow, exists: number, want: number): Promise<MailSummary[]> {
+  const out: MailSummary[] = [];
+  const seen = new Set<number>();
+  let scanned = 0;
+  for (const win of seqWindows(exists, SCAN_BUDGET, SCAN_CHUNK)) {
+    for await (const msg of client.fetch(`${win.start}:${win.end}`, ENVELOPE_QUERY)) {
+      const row = summaryOf(msg, !msg.flags?.has?.("\\Seen"));
+      out.push(row);
+      seen.add(row.uid);
+    }
+    scanned += win.end - win.start + 1;
+    const sorted = orderByDateDesc(out);
+    if (sorted.length >= Math.max(1, want)) {
+      const cutoff = sorted[Math.max(1, want) - 1].date;
+      // 少于一批的信箱一次就到底了（end 已经 < 1），不必再问服务器。
+      if (!cutoff || win.start <= 1 || (await noNewerOutside(client, seen, cutoff))) break;
+    }
+    if (scanned >= SCAN_BUDGET) break;
+  }
+  return out;
+}
+
+/**
+ * 未读：**先在服务器上 SEARCH UNSEEN**，再只取那些信。
+ *
+ * 以前是「取最近 N 封，再在本地滤掉已读」—— 未读藏在窗口外面就永远看不到（实测 6 封 vs 23 封）。
+ * 未读多到超过扫描预算时取 uid 最大的那批（到达得最晚），代价写在 D264。
+ */
+async function scanUnseen(client: ImapFlow): Promise<MailSummary[]> {
+  const uids = ((await client.search({ seen: false }, { uid: true })) as number[] | false) || [];
+  if (!Array.isArray(uids) || !uids.length) return [];
+  // 未读多到超过预算时只能取「到达得最晚」的那一批（默认 2000 封之内都是全的）。
+  const picked = uids.slice(-SCAN_BUDGET);
+  const out: MailSummary[] = [];
+  for (let i = 0; i < picked.length; i += UID_BATCH) {
+    const batch = picked.slice(i, i + UID_BATCH);
+    for await (const msg of client.fetch(batch.join(","), ENVELOPE_QUERY, { uid: true })) {
+      out.push(summaryOf(msg, true));
+    }
+  }
+  return out;
+}
+
+/** 只为最终要显示的那几封补 bodyStructure（`hasAttachments`）。失败就当没有附件，不拖垮列表。 */
+async function fillHasAttachments(client: ImapFlow, rows: MailSummary[]): Promise<void> {
+  if (!rows.length) return;
+  const uids = rows.map((r) => r.uid);
+  const hit = new Map<number, boolean>();
+  try {
+    for (let i = 0; i < uids.length; i += UID_BATCH) {
+      const batch = uids.slice(i, i + UID_BATCH);
+      for await (const msg of client.fetch(batch.join(","), { bodyStructure: true, uid: true }, { uid: true })) {
+        hit.set(Number(msg.uid), countParts(msg.bodyStructure) > 0);
+      }
+    }
+  } catch {
+    return;
+  }
+  for (const row of rows) row.hasAttachments = hit.get(row.uid) ?? false;
+}
+
+/**
+ * 列邮件：**按时间挑最近的，不按序号挑**。
+ *
+ * 序号（`1:*` 的顺序）是「进这个文件夹的先后」，不是邮件时间：从别处搬回来 / 从备份恢复过的信箱里，
+ * 两回事。以前「取最后 limit 个序号再按时间排」在这种信箱上会给出一个既不是最近、又互相错位的窗口
+ * （用户报的「邮件不全，只看到 2022 年」就是这么来的，见 D264）。现在的做法：往回扫到预算为止，
+ * 按时间排好，再 `slice(offset, offset+limit)`。
+ */
 export async function listMessages(account: MailAccount, folder: string, opts: ListOptions = {}): Promise<MailSummary[]> {
-  const limit = Math.min(Math.max(Math.floor(opts.limit ?? 20), 1), 100);
+  const limit = Math.min(Math.max(Math.floor(opts.limit ?? 20) || 1, 1), LIST_LIMIT_MAX);
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0) || 0);
   return withImap(account, async (client) => {
     const lock = await client.getMailboxLock(folder);
     try {
       const exists = Number((client.mailbox as any)?.exists ?? 0);
       if (!exists) return [];
-      // 按序号取最后 limit 封：网易的 UID 不保证连续，序号范围最省事。
-      const start = Math.max(1, exists - limit + 1);
-      const out: MailSummary[] = [];
-      for await (const msg of client.fetch(`${start}:*`, { envelope: true, flags: true, uid: true, bodyStructure: true, size: true, internalDate: true })) {
-        const unread = !msg.flags?.has?.("\\Seen");
-        if (opts.unreadOnly && !unread) continue;
-        const from = msg.envelope?.from?.[0];
-        out.push({
-          uid: Number(msg.uid),
-          subject: String(msg.envelope?.subject ?? "(无主题)"),
-          from: addrText(from),
-          fromAddress: String(from?.address ?? ""),
-          date: (msg.internalDate ? new Date(msg.internalDate).getTime() : new Date(msg.envelope?.date ?? 0).getTime()) || 0,
-          unread,
-          hasAttachments: countParts(msg.bodyStructure) > 0,
-          size: Number(msg.size ?? 0),
-        });
-      }
-      return out.sort((a, b) => b.date - a.date);
+      const rows = opts.unreadOnly ? await scanUnseen(client) : await scanByDate(client, exists, limit + offset);
+      const picked = takeWindow(orderByDateDesc(rows), limit, offset);
+      await fillHasAttachments(client, picked);
+      return picked;
     } finally {
       lock.release();
     }
@@ -231,12 +381,20 @@ async function fetchRaw(account: MailAccount, folder: string, uid: number): Prom
   return withImap(account, async (client) => {
     const lock = await client.getMailboxLock(folder);
     try {
-      const one: any = await client.fetchOne(String(uid), { source: true, size: true }, { uid: true });
-      if (!one || !one.source) throw new MailError("not-found", `找不到 uid=${uid} 这封信`, "邮件可能已经被移动或删除，刷新一下列表。");
-      if (Number(one.size ?? 0) > MAX_RAW_BYTES) {
-        throw new MailError("too-large", `这封信 ${Math.round(Number(one.size) / 1024 / 1024)}MB，太大了`, "超过 25MB 的邮件请在邮箱客户端里看。");
+      // 先只问大小、再决定要不要拉正文：以前是 source + size 一起要，25MB 的闸门在**下载完之后**
+      // 才判，等于没挡（D264）。
+      const meta: any = await client.fetchOne(String(uid), { size: true }, { uid: true });
+      if (!meta) throw new MailError("not-found", `找不到 uid=${uid} 这封信`, "邮件可能已经被移动或删除，刷新一下列表。");
+      if (Number(meta.size ?? 0) > MAX_RAW_BYTES) {
+        throw new MailError("too-large", `这封信 ${Math.round(Number(meta.size) / 1024 / 1024)}MB，太大了`, "超过 25MB 的邮件请在邮箱客户端里看。");
       }
-      return Buffer.isBuffer(one.source) ? one.source : Buffer.from(one.source);
+      const one: any = await client.fetchOne(String(uid), { source: true }, { uid: true });
+      if (!one || !one.source) throw new MailError("not-found", `找不到 uid=${uid} 这封信`, "邮件可能已经被移动或删除，刷新一下列表。");
+      const raw = Buffer.isBuffer(one.source) ? one.source : Buffer.from(one.source);
+      if (raw.length > MAX_RAW_BYTES) {
+        throw new MailError("too-large", `这封信 ${Math.round(raw.length / 1024 / 1024)}MB，太大了`, "超过 25MB 的邮件请在邮箱客户端里看。");
+      }
+      return raw;
     } finally {
       lock.release();
     }
@@ -328,9 +486,31 @@ export interface OutgoingMail {
   attachments?: { filename: string; path: string }[];
 }
 
+/**
+ * 收件人串 → 数组。逗号 / 分号 / 换行都算分隔符，**但不切引号和尖括号里的**：
+ * `"Doe, John" <j@x.com>, a@y.com` 是两个人，不是一个半。
+ */
 export function splitRecipients(raw: unknown): string[] {
-  const items = Array.isArray(raw) ? raw : String(raw ?? "").split(/[,;，；\n]/);
-  return items.map((x) => String(x ?? "").trim()).filter(Boolean);
+  const items = Array.isArray(raw) ? raw.map((x) => String(x ?? "")) : [String(raw ?? "")];
+  const out: string[] = [];
+  for (const item of items) {
+    let buf = "";
+    let quoted = false;
+    let angle = 0;
+    for (const ch of item) {
+      if (ch === '"') quoted = !quoted;
+      else if (!quoted && ch === "<") angle += 1;
+      else if (!quoted && ch === ">" && angle > 0) angle -= 1;
+      if (!quoted && angle === 0 && /[,;，；\n]/.test(ch)) {
+        out.push(buf);
+        buf = "";
+        continue;
+      }
+      buf += ch;
+    }
+    out.push(buf);
+  }
+  return out.map((x) => x.trim()).filter(Boolean);
 }
 
 function transportFor(account: MailAccount) {

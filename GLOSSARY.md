@@ -78,6 +78,10 @@
 | **工时** | 上下班里用户设的每日上班时长（0.5–24 小时，默认 9）：从**当天第一次解锁**起算的**墙上时间**，午休照走；不是「累计在线时长」。 |
 | **测试书** | `/pi-web-test-html` 跑出来的一份验收结果：`spec.json`（每步预期/实际/判定 + 截图路径）→ xlsx（一 case 一 sheet）→ 1:1 复刻该 xlsx 的单文件 HTML。原始截图在 `.scratch/testbook/<用例集>/shots/`，不进版本库（D247）。 |
 
+| **邮箱面板** | 顶栏 `📮 邮箱` 打开的控制台（页面 `web/src/mail.ts`，桥端 `bridge/src/mail.ts`，网络层 `mailtransport.ts`）：邮件 / 写邮件 / 账号 / AI 权限 / 发送与草稿五页。账号的**凭据**只存桥那边（状态目录 `mail/config.json`），页面拿到的永远是掩码。 |
+| **AI 权限** | 邮箱面板「AI 权限」页那组开关（`read` / `send` / `draft` / `attachments` / `confirmSend` + 收件人白名单 + 每日上限 + 「AI 能用哪些账号」）：**只约束 agent 工具**。页面口是人自己动手，不受它拦，只受「账号停用」与隧道访客限制（D264）。`mutate`（改邮箱状态）v1 没有对应动作，配置里有这个字段但对模型不报。 |
+| **发送前确认 / 确认框** | AI 调 `mail_send` / `mail_reply` 时桥投给「正在看这个会话」的页签的 `mail.confirm` 帧，以及页面弹出来等人点头的那个框（`web/src/mailconfirm.ts`，排队与回执在 `MailConfirmQueue`）：只有点「发送」才回 `ok:true`；Esc / 点遮罩 = 不发；5 分钟不点回 `confirm-timeout`；页面没接住 / 没页面在看这个会话回 `no-ack` / `no-page`，一律当没发出去（D264）。 |
+
 ## 相关文档
 
 - 决策与理由：`docs/DECISIONS.md`（`D1`…`Dn`，「决定 + 为什么」）

@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { auditOutcome, MAIL_POLICY_LABELS, parseRecipients, sizeText, whenText } from "../src/mail-shared.ts";
+import { auditOutcome, MAIL_ERROR_TEXT, MAIL_POLICY_LABELS, MailConfirmQueue, mailErrorText, parseRecipients, portOf, secureForPort, sizeText, whenText } from "../src/mail-shared.ts";
 
 test("权限表覆盖六个开关，键与桥端一致", () => {
   assert.deepEqual(
@@ -63,4 +63,93 @@ test("审计结果：存草稿不能显示成「已发出」", () => {
   assert.equal(auditOutcome({ tool: "mail_draft", ok: false, messageId: "draft" }), "failed");
   // 老记录没有 tool、也没有 messageId：只能按 ok 判，别抛错。
   assert.equal(auditOutcome({ ok: true }), "sent");
+});
+
+test("自定义服务器：TLS 由端口算，不再靠「字符串里有没有 587」", () => {
+  // 隐式 TLS
+  for (const port of [993, 465]) {
+    assert.equal(secureForPort(port, "imap"), true, `imap ${port}`);
+    assert.equal(secureForPort(port, "smtp"), true, `smtp ${port}`);
+  }
+  // STARTTLS 升级：以前 IMAP 恒 true、SMTP 只认 587 那个字符串，143 / 25 / 110 永远连不上
+  for (const port of [143, 25, 110, 587]) {
+    assert.equal(secureForPort(port, "imap"), false, `imap ${port}`);
+    assert.equal(secureForPort(port, "smtp"), false, `smtp ${port}`);
+  }
+  // 认不出来的端口：IMAP 默认开、SMTP 默认关（和预设表同一口径）
+  assert.equal(secureForPort(1433, "imap"), true);
+  assert.equal(secureForPort(1433, "smtp"), false);
+  // 995 是 POP3S：本仓库只说 IMAP/SMTP，别顺手认一个用不上的端口
+  assert.equal(secureForPort(995, "imap"), true, "认不出来的端口对 IMAP 默认开");
+});
+
+test("端口输入框：空 / 非数字 / 越界都回落到预设", () => {
+  assert.equal(portOf("993", 465), 993);
+  assert.equal(portOf(" 587 ", 465), 587);
+  assert.equal(portOf("", 465), 465);
+  assert.equal(portOf("   ", 465), 465);
+  assert.equal(portOf("abc", 465), 465);
+  assert.equal(portOf("0", 465), 465);
+  assert.equal(portOf("-1", 465), 465);
+  assert.equal(portOf("70000", 465), 465);
+});
+
+test("发信确认：一次只问一封，回执只认当前那封", () => {
+  const acks = [];
+  const queue = new MailConfirmQueue((ack) => acks.push(ack));
+  const mail = (subject) => ({ account: "工作", from: "me@qq.com", to: ["a@b.com"], cc: [], subject, text: "hi", attachments: [] });
+
+  queue.push("r1", mail("第一封"));
+  queue.push("r2", mail("第二封"));
+  assert.equal(queue.current.reqId, "r1", "先来先问");
+  assert.equal(queue.size, 2);
+
+  queue.settle(true);
+  assert.deepEqual(acks, [{ reqId: "r1", ok: true, reason: undefined, text: undefined }]);
+  assert.equal(queue.current.reqId, "r2", "结掉一封自动进下一封");
+
+  // 用户拒掉：回 ok:false + 给人看的一句话，桥那边按 declined 处理
+  queue.settle(false, "declined", "你选了不发，这封信没有发出去。");
+  assert.equal(acks[1].ok, false);
+  assert.equal(acks[1].reason, "declined");
+  assert.ok(acks[1].text.includes("没有发"));
+  assert.equal(queue.current, null, "队列空了就没有当前那封");
+
+  // 空了再回执什么都不发生（迟到的点击不能凭空造一封）
+  queue.settle(true);
+  assert.equal(acks.length, 2);
+});
+
+test("发信确认：队列变化会通知重画（有当前那封 / 收摊）", () => {
+  let paints = 0;
+  const queue = new MailConfirmQueue(
+    () => {},
+    () => {
+      paints += 1;
+    },
+  );
+  const mail = { account: "工作", from: "me@qq.com", to: [], cc: [], subject: "x", text: "", attachments: [] };
+  assert.equal(paints, 0);
+  queue.push("r1", mail);
+  assert.equal(paints, 1, "进来一封就该画");
+  queue.settle(true);
+  assert.equal(paints, 2, "结掉之后要再收一次（队列空了就收摊）");
+  queue.push("", mail);
+  assert.equal(paints, 2, "空 reqId 不算一条");
+});
+
+test("审计里的失败原因：翻译成人话，认不出来的码不往外露", () => {
+  // B20：以前直接把 `smtp-error` 这种稳定错误码铺在用户眼前。
+  assert.equal(mailErrorText("smtp-error"), "发送失败：服务器拒收");
+  assert.equal(mailErrorText(" rate-limited "), "当天发信额度用完了");
+  assert.equal(mailErrorText("no-ack"), "确认弹窗没有回音，没发出去");
+  // 页面自己 5 分钟没点，和「服务器没回应」不是一回事
+  assert.notEqual(mailErrorText("confirm-timeout"), mailErrorText("timeout"));
+  // 认不出来的：回空串，调用方显示「失败」，不把码亮出来
+  assert.equal(mailErrorText("weird-code-xyz"), "");
+  assert.equal(mailErrorText(undefined), "");
+  // 表里每一条都得是中文原文（使用处 tr()），否则英文界面会漏成码
+  for (const [code, text] of Object.entries(MAIL_ERROR_TEXT)) {
+    assert.match(text, /[\u4e00-\u9fa5]/, `${code} 的文案不像中文原文`);
+  }
 });
