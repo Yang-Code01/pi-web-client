@@ -4450,3 +4450,31 @@ D
 - 三实例 e2e（`F:/pi-web-client-wt/feat/lan-market/.scratch/lan-market/e2e/results.json`）：14 个 case / 40 步，`failedSteps=0`、`failedCases=0`，覆盖手工 zip 发布、跨节点发现与安装、自动互为镜像、原发布者离线仍可从镜像装、扩展实体包、MCP 变量填写、墓碑在离线期间收敛、同 id 重发复活、从「已安装」一键发布、公网只读、旧节点降级、收尾关环境。
 - 测试书：`F:/pi-web-client-wt/feat/lan-market/.scratch/lan-market/局域网共享市场-测试书.xlsx`（15 sheet = 总览 + TC01~TC14，40 张内嵌真实截图，0 公式 / 0 错误）与一比一复刻的 `F:/pi-web-client-wt/feat/lan-market/.scratch/lan-market/局域网共享市场-测试书.html`（15 个 sheet 标签、点击 / 方向键切换、`#TC14` hash 恢复、40 张内嵌图、`SELFCHECK_OK`、0 console error）。两者都在 `.scratch/` 下，不进提交；三份测试环境已由 TC14 关闭。
 - 编号：代码注释、协议文档与 PLAN 中原本写的 D246 全部机械改为 D248；main 的 D246 / D247 在合并冲突解决时原样保留。
+
+## D249 转录「自己跳到最底部」：滚动条槽位常驻，进场不再重排（用户报障 2026-11-14）
+
+**问题：** 用户（2026-11-14，附截图）：「我点击展开操作记录时，会自动展开，并且展开后自动移动到最底部。但是有时候又不会。」截图里折叠块是「31 个操作 · bash ×25 · read ×6」，展开后视口停在转录末尾。
+
+**事实（探针实测，真 Edge 量宽度）：**
+
+- `.chat-scroll` 的滚动条是 `web/src/styles.css:83` 的 `::-webkit-scrollbar { width: 10px }` 画的，**占 10px 布局宽度**：`probes/ops-expand-scroll.mjs` 记的 `gutter = offsetWidth - clientWidth` 在真 Edge 里溢出前 1、溢出后 10。headless 的 chromium-headless-shell 是 overlay 滚动条（`gutter` 恒为 1），**这条复现不出来** —— 必须 `PI_PROBE_BROWSER=msedge` 跑真 Edge。
+- 转录第一次从「装得下」变成「溢出」时，内容盒当场窄 10px，root 的 `ResizeObserver`（改动前在 `web/src/chat.ts:381`，今 `web/src/chat.ts:387`）无条件 `if (this.following) this.scheduleScroll()`，而 `scheduleScroll()` 就是 `scrollTop = scrollHeight` —— 视口翻到转录末尾：探针 before `{top:0, sh:600, gutter:1}` → after `{top:6482, sh:7082, gutter:10}`，滚动写入落在 `.chat-scroll` 上（调用栈是 `scheduleScroll` 的 rAF）。
+- 为什么「有时候又不会」：滚动条只在**第一次溢出**时进场。转录本来就溢出、用户又用滚轮上滚过（`following === false`，D94 / D168）时，RO 只走 `renderJump()`，一个像素都不动，槽宽也不再变。
+- 为什么短会话必跳：D168 让 `stopFollowing()` / `holdUp()` 在 `!hasRoomBelow()` 时提前 return，所以**装得下的会话里 `following` 恒为 true**，没有「你已经上滚了」这个状态能救场。
+
+**决定：** 给 `.chat-scroll` 加一行 `scrollbar-gutter: stable`（`web/src/styles.css:660`）。槽位常驻，滚动条进场/退场不再改变内容盒宽度，ResizeObserver 也就不会被这一下叫醒。`web/src/chat.ts` 不动。
+
+**为什么不让 ResizeObserver 自己分辨宽度/高度（先试过，有洞）：**
+
+1. RO 在**重排之后**才醒，量到的 `gap` 已经包含重排自己的增量，分不清「本来就贴着底、内容被挤高了」和「刚展开一块」。
+2. 放宽到 `gap <= clientHeight` 会漏掉小增量：装得下的会话里点开一小块（增量不到一屏），重排后 gap = 300px < 一屏 → 仍被当成「贴着底」→ 照样跳（探针 A2：修复前 `top 0 → 294`）。用户报的就是「点开之后自己滚」，不因为它滚得少就不算。
+3. 反过来收紧到 `gap <= BOTTOM_SLACK` 又会误伤右栏开合（跟流中一开右栏就掉队）。触发源是渲染产物，不该让重排有资格决定视口在哪；把触发源掐掉，三个方向都不用赌。
+
+**代价 / 可改：**
+
+- 内容列常驻窄 10px —— 装得下的会话里也留着那条空槽（真 Edge 里槽位 10px；headless 也照样留 11px，所以两种跑法下 A 的槽宽断言都成立）。10px 在 1240px 宽的转录里看不出来，但要改回「只在溢出时占位」就得回到上面那个有洞的启发式。
+- Safari < 18.2 不支持 `scrollbar-gutter`：那边的行为退回修复前（而且只在真非 overlay 滚动条上才有这个病）。
+- 右栏开合、输入框长高这类**真重排**该不该贴底？本条目没改它们，沿用 D94 的行为（跟流中照旧贴底）—— A 之所以能修好，只是那个触发源没了。
+- 残留没修：`following` 只在 wheel / touch / 键盘手势里关闭，**拖滚动条上滚**（不产生这些手势）之后 `following` 仍是 true，一到内容增量就回到底部。修它要动 D94 的重入条件，另开一条。
+
+**验证：** `probes/ops-expand-scroll.mjs` 五个 case —— A 装得下的短会话点开 ops（视口不动 + 槽宽不变）、A2 同一会话点开**小**一块（增量不到一屏，视口同样不动）、B 已溢出且上滚过再点开（视口不动，别为了修 A 把跟流一起关掉）、C 跟流中视口被顶矮 60px（仍贴底）、D 跟流中右栏拉开 136px（仍贴底）。去掉那一行 CSS：A 红（`top 0 → 6482`）、A2 红（`top 0 → 294`）、B/C/D 绿；加上后 A/A2/B/C/D 全绿，headless 与 `PI_PROBE_BROWSER=msedge` 各跑一遍（A 的槽宽断言只有 msedge 才有意义）。相邻探针 `jump-nothing-below`（D168）/ `composer-grow`（#319）/ `scroll-race` 全绿；`round10-scroll` 判「↓ 在正中」原来拿 border-box 宽度当中心，滚动条一占位就差 9px —— 改成按 `clientWidth`（内容盒）算，本条目之前之后都成立。

@@ -657,7 +657,11 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* #220: 翻页后的 scrollTop 是手算回填的（按节点锚定）。浏览器的 scroll anchoring 会在同一帧里再
    改一遍 scrollTop，两边互相拽（Safari 根本没有这个特性，所以也不能靠它）—— 关掉，锚定只由
    ChatView.prepend() 说了算。 */
-.chat-scroll { padding: 16px 16px 8px; display: flex; flex-direction: column; gap: 12px; overflow-anchor: none; }
+/* scrollbar-gutter: stable —— 滚动条自己出现/消失不许改变内容盒宽度（D249）。
+   `::-webkit-scrollbar` 画的条子占 10px 布局宽度，转录第一次溢出时它进场，整块内容当场窄
+   10px 重排；root 的 ResizeObserver 把这一下当成「视口变了」，跟流中就地贴底 —— 用户点开
+   「31 个操作」把转录撑出滚动条的那一刻，视口翻到那 31 条的最末尾。槽位常驻，进场不再重排。 */
+.chat-scroll { padding: 16px 16px 8px; display: flex; flex-direction: column; gap: 12px; overflow-anchor: none; scrollbar-gutter: stable; }
 /* #220: 顶端那一行「载入更早」。它是列表的第一块内容 —— 翻出来的老内容插在它**下面**，不是顶上。 */
 .chat-more { display: flex; justify-content: center; }
 .chat-more[hidden] { display: none; }
