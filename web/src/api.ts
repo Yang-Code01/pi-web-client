@@ -1,5 +1,6 @@
 import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TrDoc, TrDocResp, TrJob, TrPrefsResp, TrSyncResp, TunnelState } from "./types.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
+import type { MailAccountInput, MailAccountView, MailConfigView, MailDetailView, MailFolderView, MailPolicyView, MailSendInput, MailSummary } from "./mail-shared.ts";
 import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
 
 /**
@@ -264,6 +265,42 @@ export const api = {
     req<{ ok: boolean; message: string }>("/api/reveal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) }),
   tunnel: (action: "start" | "stop") =>
     req<{ tunnel: TunnelState }>("/api/tunnel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) }),
+  /** 邮箱面板。授权码只存桥那边，这里从来看不到它。 */
+  mailConfig: () => req<MailConfigView>("/api/mail/config"),
+  mailSaveAccount: (body: MailAccountInput) => postJson<{ ok: true; account: MailAccountView }>("/api/mail/accounts", body),
+  mailDeleteAccount: (id: string) => req<{ ok: true }>(`/api/mail/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  mailTestAccount: (id: string) =>
+    postJson<{ ok: boolean; imap: { ok: boolean; error?: string }; smtp: { ok: boolean; error?: string } }>(
+      `/api/mail/accounts/${encodeURIComponent(id)}/test`,
+      {},
+    ),
+  mailSavePolicy: (patch: Partial<MailPolicyView>) => postJson<{ ok: true; policy: MailPolicyView }>("/api/mail/policy", patch),
+  mailFolders: (account?: string) =>
+    req<{ folders: MailFolderView[] }>(`/api/mail/folders${account ? `?account=${encodeURIComponent(account)}` : ""}`),
+  mailMessages: (p: { account?: string; folder?: string; limit?: number; unread?: boolean }) => {
+    const q = new URLSearchParams();
+    if (p.account) q.set("account", p.account);
+    if (p.folder) q.set("folder", p.folder);
+    if (p.limit) q.set("limit", String(p.limit));
+    if (p.unread) q.set("unread", "1");
+    const qs = q.toString();
+    return req<{ folder: string; messages: MailSummary[] }>(`/api/mail/messages${qs ? `?${qs}` : ""}`);
+  },
+  mailMessage: (p: { account?: string; folder?: string; uid: number }) => {
+    const q = new URLSearchParams({ uid: String(p.uid) });
+    if (p.account) q.set("account", p.account);
+    if (p.folder) q.set("folder", p.folder);
+    return req<{ message: MailDetailView; attachmentsAllowed: boolean }>(`/api/mail/message?${q.toString()}`);
+  },
+  /** 发送与存草稿走同一条路：`draft: true` 时桥只往草稿箱里写。 */
+  mailSend: (body: MailSendInput) => postJson<{ ok: true; messageId?: string; draftUid?: number }>("/api/mail/send", body),
+  /** 附件直链（浏览器自己下载；权限关着时桥回 403）。 */
+  mailAttachmentUrl: (p: { account?: string; folder?: string; uid: number; index: number }) => {
+    const q = new URLSearchParams({ uid: String(p.uid), index: String(p.index) });
+    if (p.account) q.set("account", p.account);
+    if (p.folder) q.set("folder", p.folder);
+    return `/api/mail/attachment?${q.toString()}`;
+  },
   /** #248：Jira 面板。token 只在桥那边，这里拿到的是掩码；保存失败会抛带 `code` 的错。 */
   jiraConfig: () =>
     req<{ configured: boolean; siteUrl: string; email: string; keyMask: string; readonly: boolean }>(
