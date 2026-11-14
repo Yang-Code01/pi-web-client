@@ -6,6 +6,8 @@
  */
 import fs from "node:fs";
 import { readBook, findInSheet, readWindow as readWindowFrom, type Book, type SheetMatches, type SheetWindow, type WorkbookMeta } from "./xlsx.ts";
+import { entryBytes } from "./zip.ts";
+import { imageType } from "./media.ts";
 
 interface Grant {
   abs: string;
@@ -113,4 +115,14 @@ export async function readWindow(
 export async function findSheet(abs: string, sheet: string, query: string): Promise<SheetMatches> {
   const { book, buf } = await loadBook(abs);
   return findInSheet(buf, book, sheet, query);
+}
+
+/** #427：表里的图片字节。只认 meta 里登记过的 id，不让前端拿任意 zip 路径换东西。 */
+export async function readMedia(abs: string, sheet: string, id: string): Promise<{ bytes: Uint8Array; type: string }> {
+  const { book, buf } = await loadBook(abs);
+  const info = book.meta.sheets.find((s) => s.name === sheet);
+  const hit = info?.images?.find((img) => img.id === id);
+  const entry = hit ? book.dir.get(id) : null;
+  if (!entry) throw Object.assign(new Error("这张表里没有这张图"), { code: "sheet_media_missing" });
+  return { bytes: entryBytes(buf, entry), type: imageType(id) };
 }

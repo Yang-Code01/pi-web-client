@@ -5,8 +5,21 @@
  * 扫过 r1 就停——不把整张表 XML 解出来，更不把整表发给前端。
  */
 import { entryBytes, entryStream, zipIndex, type ZipEntry } from "./zip.ts";
-import { formatCode, formatValue } from "./numfmt.ts";
+import { formatValue } from "./numfmt.ts";
 import { buildCf, readDxfs, type CellFx, type SheetCf } from "./cf.ts";
+import { readStyles, type StyleTable, type WireStyle } from "./styles.ts";
+import { readSheetRefs, type SheetRefs } from "./refs.ts";
+import { readRichRuns, type WireRun } from "./rich.ts";
+import { readValidations, valuesInXml, type WireValid } from "./valid.ts";
+import { readFilter, type WireFilter } from "./filter.ts";
+import { evaluate as evalFormula, err as calcErr, isErr, type CalcCtx, type EvalVal, type Matrix } from "./calc.ts";
+export type { WireFilter } from "./filter.ts";
+export type { WireValid } from "./valid.ts";
+export type { WireRun } from "./rich.ts";
+import { readSheetImages, type WireImage } from "./media.ts";
+import { rangeRef, readSheetCharts, type RangeValues, type WireChart } from "./chart.ts";
+
+export type { WireStyle, WireImage };
 
 export type CellKind = "n" | "s" | "b" | "e";
 
@@ -18,14 +31,24 @@ export interface WireCell {
   t: string;
   /** 数值原始值（无显示格式的原数）：数字格才有，复制粘贴用它，粘回去还是数而不是「￥1,234」。 */
   v?: number;
-  /** 文件里指定的对齐（合并格标题居中这类）；没写就不带。 */
+  /** 文件里指定的对齐（合并格标题居中这类）；没写就不带。历史字段，保留给旧的调用方。 */
   a?: "l" | "c" | "r";
+  /** D167：cellXfs 下标去重后的样式下标；0 / 缺省就是默认样式（前端只收一张小表）。 */
+  s?: number;
+  /** #435 这格挂了超链接（原样给前端，点的时候自己判断能不能开）。 */
+  lnk?: string;
+  /** #435 这格有批注（正文拼成一行）。 */
+  note?: string;
+  /** #436 富文本分段（一格多字体）：只有共享字符串里的 `<r>` 才带。 */
+  rt?: WireRun[];
   /** #109 条件格式算出来的样式：底色 / 字色 / 加粗 / 数据条 / 图标。 */
   fx?: CellFx;
   /** 公式原文（不带 `=`）。共享公式的子格只有 `si` 下标、没有正文，就不带这个。 */
   f?: string;
   /** #111：只有公式、文件里没存上次的结果。这种格子显示为空，绝不猜 0。 */
   noCache?: boolean;
+  /** 公式格用的数字格式代码：算完结果要按它显示（不上屏，算完就删）。 */
+  nf?: string;
 }
 
 export interface WireRow {
@@ -62,6 +85,24 @@ export interface SheetInfo {
   merges?: MergedRange[];
   /** 每列宽度（px），长度等于 cols；文件没写就是默认宽度。 */
   colWidths?: number[];
+  /** 默认行高（px）：文件 `<sheetFormatPr defaultRowHeight>`，没写就是 20px（15pt）。 */
+  defaultRowH?: number;
+  /** 文件里写死行高的行（0 基 → px）。没列到的行用默认行高，前端不必拿到整张表。 */
+  rowH?: Record<number, number>;
+  /** 藏起来的行（0 基，升序）：高度按 0 算，行号也不画。 */
+  hiddenRows?: number[];
+  /** 藏起来的列（0 基，升序）：宽度按 0 算，列头也不画。 */
+  hiddenCols?: number[];
+  /** `showGridLines="0"` 的表：不画网格线。 */
+  gridLines?: false;
+  /** 钉在格子上的图片（drawing 里的 twoCellAnchor / oneCellAnchor）：坐标为格内偏移，宽高按行列走。 */
+  images?: WireImage[];
+  /** #434：表里的图表对象（柱/折线/饼/面积/散点），坐标与图片同一套锚点。 */
+  charts?: WireChart[];
+  /** #436 数据验证：下拉选项与规则。 */
+  valid?: WireValid[];
+  /** #436 自动筛选：范围、每列去重值、当前筛选。 */
+  filter?: WireFilter;
   freeze?: FreezePane | null;
   /** #109：认不出的条件格式规则条数（状态条据此提示）。 */
   cfUnsupported?: number;
@@ -76,6 +117,8 @@ export interface WorkbookMeta {
   sheets: SheetInfo[];
   /** 包里有图表部件（xl/charts/chartN.xml）：页面视图能把它一起印到纸上。 */
   charts: boolean;
+  /** D167：整份工作簿共用的一张样式表（去重后），格子用 `s` 下标引用。 */
+  styles?: WireStyle[];
 }
 
 export interface SheetWindow {
@@ -129,7 +172,15 @@ export interface Book {
   tiers: Map<string, SheetTier>;
   /** 共享字符串与样式按需加载（只有取窗口 / 建 CF 时才需要）。 */
   strings?: string[];
-  xfs?: Xf[];
+  styles?: StyleTable;
+  /** #435 超链接 / 批注，按表名缓存。 */
+  refs?: Map<string, SheetRefs>;
+  /** #436 共享字符串的分段表，整本一次。 */
+  rich?: Map<number, WireRun[]>;
+  /** #436 数据验证（含下拉选项），按表名缓存。 */
+  valid?: Map<string, WireValid[]>;
+  /** #435 公式求值器：只有「有公式没缓存值」的表才用，按需建。 */
+  calc?: BookCalc;
 }
 
 import { attr, refOf, texts, unescapeXml } from "./xml.ts";
@@ -182,42 +233,30 @@ function sheetPrefix(buf: Uint8Array, entry: ZipEntry, limit = 256 * 1024): stri
   return out;
 }
 
-/** 一个单元格样式（按 cellXfs 下标）：数字格式代码 + 对齐。 */
-interface Xf {
-  code: string | null;
-  align: "l" | "c" | "r" | null;
-}
-
-function readStyles(buf: Uint8Array, dir: Map<string, ZipEntry>): Xf[] {
-  const xml = partText(buf, dir, "xl/styles.xml");
-  if (!xml) return [];
-  const custom = new Map<number, string>();
-  for (const m of xml.matchAll(/<numFmt\b[^>]*>/g)) {
-    const id = Number(attr(m[0], "numFmtId"));
-    const code = attr(m[0], "formatCode");
-    if (Number.isFinite(id) && code) custom.set(id, code);
-  }
-  const block = /<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/.exec(xml)?.[1] ?? "";
-  const xfs: Xf[] = [];
-  for (const m of block.matchAll(/<xf\b([^>]*?)(?:\/>|>([\s\S]*?)<\/xf>)/g)) {
-    const attrs = m[1] ?? "";
-    const inner = m[2] ?? "";
-    const id = Number(attr(attrs, "numFmtId") ?? "0");
-    const horiz = /<alignment\b[^>]*>/.exec(inner)?.[0];
-    const h = horiz ? attr(horiz, "horizontal") : null;
-    const align = h === "left" || h === "center" || h === "right" ? (h[0] as "l" | "c" | "r") : null;
-    xfs.push({ code: Number.isFinite(id) ? formatCode(id, custom) : null, align });
-  }
-  return xfs;
-}
-
 /** 字符宽度 → 像素：Excel 的默认字宽 7px + 5px 边距。 */
 function widthPx(chars: number): number {
   return Math.max(24, Math.min(600, Math.round(chars * 7) + 5));
 }
 
-/** 表级结构：合并区、列宽、冻结窗格。 */
-function sheetExtras(xml: string): { merges: MergedRange[]; widths: Map<number, number>; defaultW: number; freeze: FreezePane | null } {
+/** pt → px：Excel 的 96dpi 换算（1pt = 4/3 px），行高与字号都走它。 */
+function heightPx(pt: number): number {
+  return Math.max(0, Math.round(pt * (4 / 3)));
+}
+
+/** 表级结构：合并区、列宽、行高、隐藏行列、冻结窗格、网格线开关。 */
+interface Extras {
+  merges: MergedRange[];
+  widths: Map<number, number>;
+  defaultW: number;
+  defaultH: number;
+  rowH: Record<number, number>;
+  hiddenRows: number[];
+  hiddenCols: number[];
+  gridLines: boolean;
+  freeze: FreezePane | null;
+}
+
+function sheetExtras(xml: string): Extras {
   const merges: MergedRange[] = [];
   for (const m of xml.matchAll(/<mergeCell\b[^>]*\bref\s*=\s*"([^"]*)"/g)) {
     const [a, b] = (m[1] ?? "").split(":");
@@ -232,17 +271,46 @@ function sheetExtras(xml: string): { merges: MergedRange[]; widths: Map<number, 
     });
   }
 
-  const def = Number(attr(/<sheetFormatPr\b[^>]*>/.exec(xml)?.[0] ?? "", "defaultColWidth") ?? "8.43");
-  const defaultW = widthPx(Number.isFinite(def) && def > 0 ? def : 8.43);
+  const fmt = /<sheetFormatPr\b[^>]*>/.exec(xml)?.[0] ?? "";
+  const defW = Number(attr(fmt, "defaultColWidth") ?? "8.43");
+  const defH = Number(attr(fmt, "defaultRowHeight") ?? "15");
+  const defaultW = widthPx(Number.isFinite(defW) && defW > 0 ? defW : 8.43);
+  const defaultH = heightPx(Number.isFinite(defH) && defH > 0 ? defH : 15);
+
   const colWidths = new Map<number, number>();
+  const hiddenCols: number[] = [];
   for (const m of xml.matchAll(/<col\b[^>]*>/g)) {
     const min = Number(attr(m[0], "min") ?? "0");
     const max = Number(attr(m[0], "max") ?? "0");
     const w = Number(attr(m[0], "width") ?? attr(m[0], "customWidth") ?? "");
+    const hidden = /^(1|true)$/i.test(attr(m[0], "hidden") ?? "");
     if (!Number.isFinite(min) || !Number.isFinite(max) || min < 1 || max < min) continue;
-    const px = Number.isFinite(w) && w > 0 ? widthPx(w) : defaultW;
-    for (let c = min - 1; c <= Math.min(max - 1, 999); c++) colWidths.set(c, px);
+    const px = hidden ? 0 : Number.isFinite(w) && w > 0 ? widthPx(w) : defaultW;
+    for (let c = min - 1; c <= Math.min(max - 1, 999); c++) {
+      colWidths.set(c, px);
+      if (hidden) hiddenCols.push(c);
+    }
   }
+
+  // 行高：Excel 会把算好的高度（自动换行撑高也算）写进 `ht`，直接照用；`hidden` 行按 0 高。
+  const rowH: Record<number, number> = {};
+  const hiddenRows: number[] = [];
+  for (const m of xml.matchAll(/<row\b([^>]*?)\/?>/g)) {
+    const attrs = m[1] ?? "";
+    const r = Number(attr(attrs, "r") ?? "");
+    if (!Number.isFinite(r) || r < 1) continue;
+    const hidden = /^(1|true)$/i.test(attr(attrs, "hidden") ?? "");
+    if (hidden) {
+      hiddenRows.push(r - 1);
+      rowH[r - 1] = 0;
+      continue;
+    }
+    const ht = Number(attr(attrs, "ht") ?? "");
+    if (Number.isFinite(ht) && ht > 0) rowH[r - 1] = heightPx(ht);
+  }
+
+  const view = /<sheetView\b[^>]*>/.exec(xml)?.[0] ?? "";
+  const gridLines = !/^(0|false)$/i.test(attr(view, "showGridLines") ?? "");
 
   const pane = /<pane\b[^>]*>/.exec(xml)?.[0];
   let freeze: FreezePane | null = null;
@@ -252,7 +320,7 @@ function sheetExtras(xml: string): { merges: MergedRange[]; widths: Map<number, 
     if (rows > 0 || cols > 0) freeze = { rows: Math.max(0, rows), cols: Math.max(0, cols) };
   }
 
-  return { merges, widths: colWidths, defaultW, freeze };
+  return { merges, widths: colWidths, defaultW, defaultH, rowH, hiddenRows, hiddenCols, gridLines, freeze };
 }
 
 /** Reject a package we cannot show, with a code the page can turn into its own sentence. */
@@ -280,6 +348,27 @@ export function readBook(buf: Uint8Array): Book {
   const parts = new Map<string, string>();
   const tiers = new Map<string, SheetTier>();
   const book = { cf: new Map<string, SheetCf | null>() } as Book;
+  // 图表里的系列引用是 `表名!$B$2:$B$5`：等 meta 建好之后按同一套窗口读回来。
+  const chartValues: RangeValues = (ref) => {
+    const box = rangeRef(ref);
+    if (!box) return null;
+    const where = box.sheet || "";
+    try {
+      const win = readWindow(buf, book, where, box.r0, box.r1, box.c0, box.c1);
+      return win.rows.map((row) => {
+        const out: (string | number | null)[] = [];
+        for (let c = box.c0; c <= box.c1; c++) {
+          const cell = row.cells.find((x) => x.c === c);
+          out.push(cell ? (cell.v ?? cell.t ?? null) : null);
+        }
+        return out;
+      });
+    } catch {
+      return null;
+    }
+  };
+  // 样式是工作簿级的：解析一次，所有表共用（meta 只发一张去重后的小表）。
+  book.styles = readStyles(partText(buf, dir, "xl/styles.xml"), partText(buf, dir, "xl/theme/theme1.xml"));
   for (const m of workbook.matchAll(/<sheet\b[^>]*>/g)) {
     const name = attr(m[0], "name");
     const rid = attr(m[0], "r:id") ?? attr(m[0], "id");
@@ -294,13 +383,25 @@ export function readBook(buf: Uint8Array): Book {
     const cells = Math.max(0, size.rows) * Math.max(0, size.cols);
     const tier = tierOf(cells);
     tiers.set(name, tier);
-    let extras: ReturnType<typeof sheetExtras> = { merges: [], widths: new Map(), defaultW: widthPx(8.43), freeze: null };
+    let extras: Extras = { merges: [], widths: new Map(), defaultW: widthPx(8.43), defaultH: heightPx(15), rowH: {}, hiddenRows: [], hiddenCols: [], gridLines: true, freeze: null };
     let cfUnsupported = 0;
     let noCache = 0;
+    let images: WireImage[] = [];
+    let valid: WireValid[] = [];
+    let filter: WireFilter | null = null;
     if (tier !== "none") {
       const xml = partText(buf, dir, part) ?? "";
       extras = sheetExtras(xml);
       noCache = countNoCache(xml);
+      images = readSheetImages(buf, dir, part);
+      if (/<autoFilter[\s>]/.test(xml)) {
+        book.strings ??= sharedStrings(buf, dir);
+        filter = readFilter(xml, book.strings ?? []);
+      }
+      if (/<dataValidations[\s>]/.test(xml)) {
+        book.strings ??= sharedStrings(buf, dir);
+        valid = readValidations(xml, (ref) => valuesInXml(xml, ref, book.strings ?? []));
+      }
       if (tier === "full") {
         book.strings ??= sharedStrings(buf, dir);
         const dxfs = readDxfs(partText(buf, dir, "xl/styles.xml"));
@@ -322,7 +423,15 @@ export function readBook(buf: Uint8Array): Book {
       ...(state === "hidden" || state === "veryHidden" ? { hidden: true } : {}),
       ...(extras.merges.length ? { merges: extras.merges } : {}),
       colWidths: Array.from({ length: Math.max(size.cols, ...[...extras.widths.keys()].map((c) => c + 1)) }, (_, c) => extras.widths.get(c) ?? extras.defaultW),
+      defaultRowH: extras.defaultH,
+      ...(Object.keys(extras.rowH).length ? { rowH: extras.rowH } : {}),
+      ...(extras.hiddenRows.length ? { hiddenRows: extras.hiddenRows } : {}),
+      ...(extras.hiddenCols.length ? { hiddenCols: extras.hiddenCols } : {}),
+      ...(extras.gridLines ? {} : { gridLines: false as const }),
       ...(extras.freeze ? { freeze: extras.freeze } : {}),
+      ...(images.length ? { images } : {}),
+      ...(valid.length ? { valid } : {}),
+      ...(filter ? { filter } : {}),
       ...(cfUnsupported > 0 ? { cfUnsupported } : {}),
       ...(noCache ? { noCache } : {}),
     });
@@ -332,11 +441,18 @@ export function readBook(buf: Uint8Array): Book {
   const first = sheets[0];
   const pr = /<workbookPr\b[^>]*>/.exec(workbook)?.[0] ?? "";
   const date1904 = /^(1|true)$/i.test(attr(pr, "date1904") ?? "");
-  book.meta = { name: first.name, rows: first.rows, cols: first.cols, sheets, charts: hasChartParts(dir) };
+  book.meta = { name: first.name, rows: first.rows, cols: first.cols, sheets, charts: hasChartParts(dir), styles: book.styles.styles };
   book.parts = parts;
   book.dir = dir;
   book.tiers = tiers;
   book.date1904 = date1904;
+  // 图表要按「表名!$B$2:$B$5」回读数值，得等 parts/meta 都建好之后再解（这里才认得出表名）。
+  for (const [name, part] of parts) {
+    const info = sheets.find((s) => s.name === name);
+    if (!info || info.tier === "none") continue;
+    const list = readSheetCharts(buf, dir, part, chartValues);
+    if (list.length) info.charts = list;
+  }
   return book;
 }
 
@@ -383,7 +499,8 @@ function countNoCache(xml: string): number {
 
 interface SheetCtx {
   strings: string[];
-  xfs: Xf[];
+  rich: Map<number, WireRun[]>;
+  styles: StyleTable;
   date1904: boolean;
 }
 
@@ -406,12 +523,19 @@ function cellsOfRow(
     const cached = v.trim() !== "";
     const formula = formulaOf(inner);
     const sIdx = Number(attr(attrs, "s") ?? "");
-    const xf = Number.isFinite(sIdx) ? ctx.xfs[sIdx] : undefined;
-    const align = xf?.align ?? undefined;
+    const styled = Number.isFinite(sIdx) && sIdx <= 4095 ? sIdx : -1;
+    const styleAt = styled >= 0 ? ctx.styles.index[styled] : undefined;
+    const horiz = styleAt === undefined ? undefined : ctx.styles.styles[styleAt]?.h;
+    const align = horiz === "l" || horiz === "c" || horiz === "r" ? horiz : undefined;
+    const code = styled >= 0 ? ctx.styles.codes[styled] ?? null : null;
     let cell: WireCell | null = null;
     if (kind === "s" && cached) {
       const text = ctx.strings[Number(v)];
-      if (text !== undefined) cell = { r: pos.r, c: pos.c, k: "s", t: text };
+      if (text !== undefined) {
+        cell = { r: pos.r, c: pos.c, k: "s", t: text };
+        const runs = ctx.rich?.get(Number(v));
+        if (runs) cell.rt = runs;
+      }
     } else if (kind === "inlineStr") {
       const is = /<is\b[^>]*>([\s\S]*?)<\/is>/.exec(inner)?.[1] ?? "";
       cell = { r: pos.r, c: pos.c, k: "s", t: texts(is) };
@@ -428,15 +552,21 @@ function cellsOfRow(
       const raw = unescapeXml(v.trim());
       const num = Number(raw);
       let shown = raw;
-      if (xf?.code && Number.isFinite(num)) shown = formatValue(num, xf.code, ctx.date1904);
+      if (code && Number.isFinite(num)) shown = formatValue(num, code, ctx.date1904);
       cell = { r: pos.r, c: pos.c, k: "n", t: shown, v: Number.isFinite(num) ? num : undefined };
     }
     // 公式格可以带着上次算出的值（就是上面那个 cell），也可以什么都没有（#111）。
     if (formula && !cell) cell = { r: pos.r, c: pos.c, k: "n", t: "" };
     if (cell && formula) cell.f = formula;
     // 只有 `<f>`、没 `<v>`（或 `<v></v>`）：Excel 没存结果。显空，等用户去 Excel 重算。
-    if (cell && formula && !cached) cell.noCache = true;
+    if (cell && formula && !cached) {
+      cell.noCache = true;
+      if (code) cell.nf = code;
+    }
     if (cell && align) cell.a = align;
+    // 有样式没值的格子也得发：否则底色、边框就丢了（真文件里大片带边框的空区域）。
+    if (!cell && styleAt !== undefined && styleAt > 0) cell = { r: pos.r, c: pos.c, k: "s", t: "" };
+    if (cell && styleAt !== undefined) cell.s = styleAt;
     if (cell) {
       const fx = cf?.at(pos.r, pos.c);
       if (fx) cell.fx = fx;
@@ -452,7 +582,7 @@ function cellsOfRow(
  * 只解析 [r0,r1] 的行；深表也不用先把整张表 XML 解成字符串。`bytes` 是这次
  * 实际解出来的表 XML 字节，用来验收「解压字节远小于整表」。
  */
-export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: number, r1: number, c0: number, c1: number): SheetWindow {
+export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: number, r1: number, c0: number, c1: number, calc = true): SheetWindow {
   const info = book.meta.sheets.find((s) => s.name === sheet);
   const tier = info?.tier ?? book.tiers.get(sheet) ?? "full";
   if (tier === "none") throw Object.assign(new Error("这张表太大，不在这里滚"), { code: "sheet_too_big" });
@@ -462,11 +592,28 @@ export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: numbe
   if (!entry) throw new Error("这个工作表是空的");
   const ctx: SheetCtx = {
     strings: (book.strings ??= sharedStrings(buf, book.dir)),
-    xfs: (book.xfs ??= readStyles(buf, book.dir)),
+    rich: (book.rich ??= readRichRuns(partText(buf, book.dir, "xl/sharedStrings.xml") ?? "")),
+    styles: (book.styles ??= readStyles(null, null)),
     date1904: book.date1904,
   };
   const cf = tier === "full" ? book.cf.get(sheet) ?? null : null;
   const { rows, bytes } = scanRows(buf, entry, r0, r1, c0, c1, ctx, cf);
+  // #435 超链接与批注不在 sheetData 里，等这页的行解完再贴上去（只碰窗口内的格）。
+  const refs = book.refs?.get(sheet) ?? readSheetRefs(buf, book.dir, part);
+  (book.refs ??= new Map()).set(sheet, refs);
+  if (refs.links.size || refs.notes.size) {
+    for (const row of rows) {
+      for (const cell of row.cells) {
+        const key = `${cell.r}:${cell.c}`;
+        const lnk = refs.links.get(key);
+        const note = refs.notes.get(key);
+        if (lnk) cell.lnk = lnk;
+        if (note) cell.note = note;
+      }
+    }
+  }
+  // #435 有公式没结果（Excel 没存缓存值）就自己算：预览不该显示空格子。
+  if (calc && info?.noCache) fillFormulaValues(buf, book, sheet, rows);
   return { sheet, r0, r1, c0, c1, rows, bytes, partBytes: entry.size };
 }
 
@@ -585,7 +732,8 @@ export function findInSheet(buf: Uint8Array, book: Book, sheet: string, query: s
   if (!q) return { sheet, matches, truncated: false };
   const ctx: SheetCtx = {
     strings: (book.strings ??= sharedStrings(buf, book.dir)),
-    xfs: (book.xfs ??= readStyles(buf, book.dir)),
+    rich: (book.rich ??= readRichRuns(partText(buf, book.dir, "xl/sharedStrings.xml") ?? "")),
+    styles: (book.styles ??= readStyles(null, null)),
     date1904: book.date1904,
   };
   forEachRow(buf, entry, {
@@ -598,4 +746,113 @@ export function findInSheet(buf: Uint8Array, book: Book, sheet: string, query: s
     },
   });
   return { sheet, matches, truncated: matches.length >= limit };
+}
+
+/* ---------------------------------------------------------------- 公式（#435） */
+
+/** 一格里能参与计算的原值：数字取 `v`（没格式化过的），文本取 `t`。 */
+function rawOf(cell: WireCell): EvalVal {
+  if (cell.k === "n") {
+    const n = cell.v ?? Number(cell.t);
+    return Number.isFinite(n) ? n : 0;
+  }
+  if (cell.k === "b") return cell.t === "TRUE";
+  if (cell.k === "e") return calcErr(cell.t);
+  return cell.t === "" ? null : cell.t;
+}
+
+/**
+ * 按表懒建「整表小网格」的求值上下文。
+ *
+ * 只在真的遇到没缓存值的公式时才建；一张表最多 40 万格，再大就不算（宁可显示空，
+ * 也不把几百兆的表解出来）。跨表引用会顺带把那张表也建起来。
+ */
+class BookCalc implements CalcCtx {
+  private grids = new Map<string, Map<string, WireCell>>();
+  private memo = new Map<string, EvalVal>();
+  private busy = new Set<string>();
+  private buf: Uint8Array;
+  private book: Book;
+
+  constructor(buf: Uint8Array, book: Book) {
+    this.buf = buf;
+    this.book = book;
+  }
+
+  private grid(sheet: string): Map<string, WireCell> | null {
+    const hit = this.grids.get(sheet);
+    if (hit) return hit;
+    const info = this.book.meta.sheets.find((s) => s.name === sheet);
+    if (!info) return null;
+    if (info.rows * info.cols > 400_000) return null;
+    const win = readWindow(this.buf, this.book, sheet, 0, Math.max(0, info.rows - 1), 0, Math.max(0, info.cols - 1), false);
+    const grid = new Map<string, WireCell>();
+    for (const row of win.rows) for (const cell of row.cells) grid.set(`${cell.r}:${cell.c}`, cell);
+    this.grids.set(sheet, grid);
+    return grid;
+  }
+
+  cell(sheet: string | null, r: number, c: number): EvalVal {
+    const name = sheet ?? this.book.meta.name;
+    const key = `${name}!${r}:${c}`;
+    const done = this.memo.get(key);
+    if (done !== undefined) return done;
+    if (this.busy.has(key)) return calcErr("#CIRC!");
+    const grid = this.grid(name);
+    if (!grid) return calcErr("#REF!");
+    const cell = grid.get(`${r}:${c}`);
+    if (!cell) return null;
+    let val: EvalVal;
+    if (cell.f && cell.noCache) {
+      this.busy.add(key);
+      val = evalFormula(cell.f, name, this);
+      this.busy.delete(key);
+    } else val = rawOf(cell);
+    this.memo.set(key, val);
+    return val;
+  }
+
+  range(sheet: string | null, r0: number, c0: number, r1: number, c1: number): Matrix {
+    const m: EvalVal[][] = [];
+    const lastR = Math.min(r1, r0 + 4999);
+    const lastC = Math.min(c1, c0 + 499);
+    for (let r = r0; r <= lastR; r++) {
+      const row: EvalVal[] = [];
+      for (let c = c0; c <= lastC; c++) row.push(this.cell(sheet, r, c));
+      m.push(row);
+    }
+    return { k: "mx", m };
+  }
+}
+
+/** 把窗口里「有公式没缓存值」的格子算出来，就地写回显示串。 */
+function fillFormulaValues(buf: Uint8Array, book: Book, sheet: string, rows: WireRow[]): void {
+  const calc = (book.calc ??= new BookCalc(buf, book));
+  let budget = 20000;
+  for (const row of rows) {
+    for (const cell of row.cells) {
+      if (!cell.noCache || !cell.f) continue;
+      if (budget-- <= 0) return;
+      const v = calc.cell(sheet, cell.r, cell.c);
+      delete cell.noCache;
+      if (typeof v === "number") {
+        cell.k = "n";
+        cell.v = v;
+        cell.t = cell.nf ? formatValue(v, cell.nf, book.date1904) : String(v);
+      } else if (typeof v === "boolean") {
+        cell.k = "b";
+        cell.t = v ? "TRUE" : "FALSE";
+      } else if (v === null) {
+        cell.k = "n";
+        cell.t = "";
+      } else if (typeof v === "string") {
+        cell.k = "s";
+        cell.t = v;
+      } else if (isErr(v)) {
+        cell.k = "e";
+        cell.t = v.v;
+      }
+      delete cell.nf;
+    }
+  }
 }
