@@ -1389,7 +1389,8 @@ export class ChatView {
    */
   private failureItem(key: string, input: FailureInput, ms?: number): void {
     this.ensureOps();
-    const panel = this.opsPanelEl("fail");
+    const box = this.opsBox;
+    const panel = box ? this.opsPanelEl(box, "fail") : null;
     if (!panel) return;
     const next = buildFailureItem(input, ms);
     const prev = this.failItems.get(key);
@@ -1580,9 +1581,13 @@ export class ChatView {
     files.append(chip);
   }
 
-  /** Where a module page lives: 「操作」holds the tool rows, 「AI 执行失败」the diagnostics. */
-  private opsPanelEl(name: "ops" | "fail"): HTMLElement | null {
-    return this.opsBox?.querySelector<HTMLElement>(`.ops-panel[data-panel="${name}"]`) ?? null;
+  /**
+   * Where a module page lives: 「操作」holds the tool rows, 「AI 执行失败」the diagnostics.
+   * The module comes from the caller — a page is always the one whose tab was clicked, and only
+   * `this.opsBox` (the turn being appended to) may answer "which module is current".
+   */
+  private opsPanelEl(box: HTMLDetailsElement, name: "ops" | "fail"): HTMLElement | null {
+    return box.querySelector<HTMLElement>(`.ops-panel[data-panel="${name}"]`);
   }
 
   /**
@@ -1608,7 +1613,9 @@ export class ChatView {
       // 第一页就是初始选中页：建的时候就写死，别等到第一次点击才补 aria-selected。
       btn.setAttribute("aria-selected", String(id === "ops"));
       btn.append(document.createTextNode(label));
-      btn.onclick = () => this.showOpsPanel(id);
+      // 页签认自己那块模块，不认「当前这一轮」的指针：`opsBox` 指向最后那一轮，翻回去点前面
+      // 几轮的页签会切成最后那一轮（在屏幕外），看着就是点了没反应。
+      btn.onclick = () => this.showOpsPanel(box, id);
       tabs.append(btn);
       return btn;
     };
@@ -1629,9 +1636,7 @@ export class ChatView {
   }
 
   /** Switch pages. The module's own open/closed state is the user's, not ours — never touched here. */
-  private showOpsPanel(name: "ops" | "fail"): void {
-    const box = this.opsBox;
-    if (!box) return;
+  private showOpsPanel(box: HTMLDetailsElement, name: "ops" | "fail"): void {
     for (const tab of box.querySelectorAll<HTMLElement>(".ops-tab")) {
       const on = tab.dataset.panel === name;
       tab.classList.toggle("is-on", on);
@@ -1647,30 +1652,30 @@ export class ChatView {
    * The tab bar is a switch, so it only earns its row when there is something to switch to: the
    * second page exists exactly when this turn has at least one failure.
    */
-  private syncOpsTabs(): void {
-    const box = this.opsBox;
-    const panel = this.opsPanelEl("fail");
-    if (!box || !panel) return;
-    const n = panel.childElementCount;
+  private syncOpsTabs(box: HTMLDetailsElement): void {
+    const panel = this.opsPanelEl(box, "fail");
     const tabs = box.querySelector<HTMLElement>(".ops-tabs");
     const failTab = box.querySelector<HTMLElement>(".ops-tab[data-panel=\"fail\"]");
-    if (!tabs || !failTab) return;
+    if (!panel || !tabs || !failTab) return;
+    const n = panel.childElementCount;
     const cnt = failTab.querySelector(".cnt");
     if (cnt) cnt.textContent = String(n);
     tabs.hidden = n === 0;
-    if (!n && failTab.classList.contains("is-on")) this.showOpsPanel("ops");
+    if (!n && failTab.classList.contains("is-on")) this.showOpsPanel(box, "ops");
   }
 
   /** Recount the module title from the cards actually in the DOM. */
   private refreshOps(): void {
-    this.syncOpsTabs();
+    const box = this.opsBox;
+    if (!box) return;
+    this.syncOpsTabs(box);
     const body = this.opsBody;
     const title = this.opsTitle;
     if (!body || !title) return;
     const cards = Array.from(body.children).filter(
       (n): n is HTMLElement => n instanceof HTMLElement && n.classList.contains("tool"),
     );
-    const fails = this.opsPanelEl("fail")?.childElementCount ?? 0;
+    const fails = this.opsPanelEl(box, "fail")?.childElementCount ?? 0;
     if (!cards.length && !fails) return;
     const counts = new Map<string, number>();
     let running = 0;

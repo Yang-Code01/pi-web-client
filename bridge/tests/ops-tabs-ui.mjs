@@ -10,7 +10,9 @@
  *   C. 点「AI 执行失败」→ 工具行让位、四条失败在原来那块里，模块**不跟着合上**（页签不是 summary）；
  *   D. 失败页里的「为什么没成」与完整原文都在，且没有任何 `.fitem` 落在 `.ops` 外面 ——
  *      模块外不再有第二张卡（这正是这次改东西的理由）；
- *   E. 没有失败时切不出去：只有一页就不该有页签。
+ *   E. 没有失败时切不出去：只有一页就不该有页签；
+ *   F. **老一轮**的页签也得点得动：翻回去点前面那几轮，切的是它自己那块，最后那一轮纹丝不动
+ *      （`aria-selected` 与 `details.open` 一起验 —— 用户报障：前面几轮点了没反应）。
  *
  * 端口默认 7897，可用 OPS_TABS_UI_PORT 改。截图落在 .scratch/shots/ops-tabs-*.png。
  */
@@ -111,6 +113,15 @@ async function turn(text) {
 }
 
 const text = (loc) => loc.innerText().then((s) => s.replace(/\s+/g, " ").trim());
+/** 轮询到条件成立为止（替掉固定 waitForTimeout）：等的是「那一刻的状态」，不是机器快慢。 */
+const until = async (fn, ms = 3000) => {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (await fn()) return true;
+    await sleep(100);
+  }
+  return false;
+};
 const shot = async (name) => {
   await page.screenshot({ path: path.join(OUT, `ops-tabs-${name}.png`), fullPage: false });
 };
@@ -177,6 +188,29 @@ try {
   check("切回操作页，工具行回来", await box.locator(".ops-panel[data-panel='ops']").isVisible());
   check("切回操作页，失败页收起", !(await box.locator(".ops-panel[data-panel='fail']").isVisible()));
   check("页签高亮跟着走", /操作/.test(await text(box.locator(".ops-tab.is-on"))) && !/AI 执行失败/.test(await text(box.locator(".ops-tab.is-on"))), await text(box.locator(".ops-tab.is-on")));
+
+  // -- F. 老一轮的页签：点谁切谁（用户报障：翻回去点前面几轮的页签没反应）----
+  // 页签的 onclick 以前读的是「当前这一轮」的模块指针，只有最后一轮的模块点得动；
+  // 前面几轮的页签点了，动的是最后一轮（在屏幕外，所以看着像没反应）。
+  await turn("FAILS 再跑一轮，凑出两个带页签的模块");
+  // 倒数第二块：不写死下标，上面再多跑几轮也不会静默指错模块。
+  const olderBox = page.locator(".ops").nth(-2);
+  const newestBox = page.locator(".ops").last();
+  await newestBox.waitFor({ timeout: 20000 });
+  // 上一段已经把它点开了，这里再点一下就合上 —— 先把状态问清楚，别盲目 toggle。
+  if (!(await olderBox.evaluate((n) => n.open))) await olderBox.locator(".ops-summary").click();
+  const hidden = (loc, name) => loc.locator(`.ops-panel[data-panel='${name}']`).evaluate((n) => n.hidden);
+  const sel = (loc, name) => loc.locator(`.ops-tab[data-panel='${name}']`).getAttribute("aria-selected");
+  check("两个模块都长出两枚页签", (await olderBox.locator(".ops-tab").count()) === 2 && (await newestBox.locator(".ops-tab").count()) === 2);
+  await olderBox.locator(".ops-tab[data-panel='fail']").click();
+  check("点老一轮的「AI 执行失败」，那一轮自己切过去", await until(async () => (await hidden(olderBox, "ops")) === true && (await hidden(olderBox, "fail")) === false), JSON.stringify({ ops: await hidden(olderBox, "ops"), fail: await hidden(olderBox, "fail") }));
+  check("老一轮的 is-on 与 aria-selected 都落在失败页", (await olderBox.locator(".ops-tab.is-on").getAttribute("data-panel")) === "fail" && (await sel(olderBox, "fail")) === "true" && (await sel(olderBox, "ops")) === "false", JSON.stringify({ on: await olderBox.locator(".ops-tab.is-on").getAttribute("data-panel"), ops: await sel(olderBox, "ops"), fail: await sel(olderBox, "fail") }));
+  check("老一轮切页时最后那一轮不动", (await hidden(newestBox, "ops")) === false && (await hidden(newestBox, "fail")) === true, JSON.stringify({ ops: await hidden(newestBox, "ops"), fail: await hidden(newestBox, "fail") }));
+  check("最后那一轮的高亮与 aria-selected 没被抢", (await newestBox.locator(".ops-tab.is-on").getAttribute("data-panel")) === "ops" && (await sel(newestBox, "ops")) === "true" && (await sel(newestBox, "fail")) === "false");
+  check("点页签不碰模块的开合（老那一轮还是展开的）", (await olderBox.evaluate((n) => n.open)) === true);
+  await shot("older-turn");
+  await olderBox.locator(".ops-tab[data-panel='ops']").click();
+  check("老一轮点回「操作」也是它自己回去", await until(async () => (await hidden(olderBox, "ops")) === false && (await hidden(olderBox, "fail")) === true));
 } catch (err) {
   check(`场景跑完（${String(err?.message ?? err).split("\n")[0]}）`, false);
   await shot("failed").catch(() => {});
