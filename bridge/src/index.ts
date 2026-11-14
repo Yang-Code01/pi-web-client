@@ -80,6 +80,19 @@ import { answer as answerLogin, cancel as cancelLogin, listProviders, login as s
 import { handleJira, readAttachmentRoot } from "./jira.ts";
 import { handleMail, handleMailTool, type MailConfirmRequest } from "./mail.ts";
 import { handleSysmanage } from "./sysmanage.ts";
+import { handleHotdeploy } from "./hotdeploy.ts";
+
+/**
+ * 热部署对话框上的「会话 N 个在跑」。sessions.list() 会顺带刷新各会话状态（几百个会话时秒级），
+ * 900ms 一枪的轮询扛不住 —— 缓存 5 秒，够用。
+ */
+let sessCountCache = { at: 0, n: 0 };
+function runningSessions(sessions: { list(): { running: boolean }[] }): number {
+  if (Date.now() - sessCountCache.at > 5000) {
+    sessCountCache = { at: Date.now(), n: sessions.list().filter((s) => s.running).length };
+  }
+  return sessCountCache.n;
+}
 import { piLatest } from "./piupdate.ts";
 import { isTrustedPreviewPath, kindOf, openPreview, readAttachableImage, readTextFile, rememberEditable, resolvePreviewPath, savePreviewFile, serveRaw, writeTextFile } from "./preview.ts";
 import { MAX_TRANSLATE_BYTES, TR_DEFAULT_MODEL, TR_LANGS, applySync, cutSections, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, writeDoc, writeTrPrefs, type TrLang, type TrSection } from "./translate.ts";
@@ -958,6 +971,17 @@ async function main(): Promise<void> {
 
     // #266 本机管理：读本机信息；DNS 改动只有本机/局域网能发起，公网在模块里 403。
     if (await handleSysmanage(req, res, url, { publicReq, port: cfg.port, version: VERSION, log })) return;
+
+    // 热部署：换分支 → 编译 → 换进程；写接口公网 403（模块里判）。
+    if (
+      await handleHotdeploy(req, res, url, {
+        publicReq,
+        port: cfg.port,
+        log,
+        sessionCount: () => runningSessions(sessions),
+      })
+    )
+      return;
 
     // #248 Jira 面板：单站点、只读、凭据不出桥。路由都在 jira.ts 里，这里只接线。
     if (await handleMail(req, res, url, { publicReq, confirm: (sid, mail) => askMailConfirm(sid, mail, wss) })) return;

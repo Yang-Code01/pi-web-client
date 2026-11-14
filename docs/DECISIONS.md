@@ -4554,3 +4554,39 @@ D
 **代价 / 可改：** ① 折叠时看不到失败结论，见上；② 失败多的一轮第二页更密也更长，滚动距离没变少；③ `AI 执行失败` 是按用户原话定的，想换文字只改 `web/src/chat.ts` 里那处 `tr("AI 执行失败")` 与 `en.ts` / `ja.ts`；④ 页签没做键盘左右切换（原生 `button` 的 Tab / Enter 够用），要加时只动 `ensureOps()` 里那段。
 
 **验证：** `bridge/tests/ops-tabs-ui.mjs`（端口 7897，自带丢弃式 bridge + `tests/fixtures/fake-pi.mjs`）19 项：没失败的一轮无页签；4 条失败时标题 `4 个操作 · bash ×3 · edit ×1 · 4 失败`；体内两枚页签、失败那枚计数 4；点页签模块不跟着合上（`details.open === true`）；操作页让位、四条失败都在第二页；首条给结论 + 诊断键齐全；完整原文能展开；没有任何 `.fitem` 落在模块外；切回操作页高亮跟着走。截图 `.scratch/shots/ops-tabs-{clean,tabs,fail}.png`。`npm --prefix web run typecheck`（i18n-check 2805 keys × 3 语言）与 `npm run build` 绿。
+## D254 设置里加「热部署」：面向用户的分支切换 + 重启，不复用开发用的 skill 脚本（用户要求 2026-11-14）
+
+**问题：** 这个工程自己天天在改，改完要让 7864 上跑的桥换成新构建，每次都靠 `.pi/skills/bridge-update/`（拉 main → build → 杀进程 → 开新窗口）。那是给开发用的、写死 main 的脚本；用户要的是设置在「本机管理」旁边的一颗按钮，点开选一条分支、编译、换进程，一步到位，前端顺带自动刷新。用户原话：「和skill 无关，skill 只是开发者用来测试的，这个按钮，是给用户用的， 只是让你参考skill」。
+
+**决定：**
+
+- 新模块 `bridge/src/hotdeploy.ts` + 独立 worker `scripts/hotdeploy.mjs`，**不 import 也不 shell 出 skill 里的 `restart.mjs`**：端点挂在 `/api/hotdeploy`（`GET` 快照 / `GET log?lines=` / `POST run {branch}` / `POST remove-worktree {path,force}`），worker 是 detached 的一次性脚本，状态写 `.scratch/hot-deploy/state.json`，日志写同目录 `worker.log`，前端每 900ms 轮询快照。
+- 分支可切但**不新建 worktree**：`git switch <branch>`（只在本地的走 `--track`，落后远端就 `merge --ff-only`），在 .gitignore 掉的 `.scratch` 里工作，不碰用户主检出目录以外的任何东西。
+- 被别的 worktree 检出的分支显示成不可选，行内给「收掉它」（走 `tools/worktree-remove.mjs`，脏的要点两次才带 `--force`）；顶栏在非 main 分支时挂 `主检出在 {branch}` pill，提醒当前源码在哪条分支上。
+- 换进程要在**可见的 PowerShell 窗口**里做（用户选「可见窗口」）：worker 先按 `/healthz` 的 pid / pidfile 找旧桥，先杀它的 `pi` 子进程再杀它自己（不用 `taskkill /T`，那会连别的会话一起带走），然后 `Start-Process powershell` 跑 `npm run start:nobuild`；健康检查必须等到 `buildId` 与本次构建一致，否则报 `stale-health`。
+- 自我保护：worker 在 linked worktree 里拒绝跑（`hotdeploy_worktree`）、源码脏了拒绝跑（`hotdeploy_dirty`）、同端口已有 worker 跑着拒绝跑（`hotdeploy_busy`）、公网请求全拒（`hotdeploy_public`）。D154 的启动横幅照旧不管这件事：它只管「build 落后」，热部署管「换分支」。
+
+**为什么：** ① skill 是开发工具，写死 main 且假定调用者是 agent；给用户的按钮要能选分支、要给进度和失败原因，两者不该共用一个入口 —— 一旦复用，skill 改流程会悄悄改掉用户看到的按钮行为。② 不新建 worktree 是因为用户就是要「让 7864 跑这条分支」，worktree 反而会多出一份不认识的主检出，且构建产物与 node_modules 都得重装。③ 换进程必须让用户看见：窗口一闪而过、桥起不来时至少要有一处能读的日志（窗口标题固定 `pi bridge`）。④ 拒绝脏树 / 拒绝 worktree 是本地实测出来的：脏树上 `git switch` 会把改动直接带过去，worktree 里跑等于把**那个**检出换成新构建、而 7864 上什么也没变。
+
+**代价 / 可改：** 顶栏 pill 只在连上桥之后才出现（离线时不知道分支）；`run` 会切断正在跑的会话，对话框里只写一行提示、不做二次确认（用户选的）；worker 写死了端口来自 `--port`，改端口部署要重启整个 bridge；`/run` 的 409 分支必须靠前端把 hint 写清楚，否则用户只会看到按钮是灰的。分支列表 110 条里远端默认折起来（`showRemote`），要展开才看得到。worktree 守卫留了个 `PI_HOTDEPLOY_ALLOW_WORKTREE=1` 的逃生口，只给 UI 自动化驱动真跑用 —— 正常部署别设它。
+
+**验证：** `node bridge/tests/hotdeploy-unit.mjs`（worktree/track/refs 解析、占用判定、路径归一、日志尾）；`npx tsc -p bridge --noEmit` 与 `npm --prefix web run typecheck`（i18n 2863 keys × 3）绿；worktree 的桥起在 7999 上用手工假 state.json 走完 idle / running / ok / fail 四种渲染（截图 `.scratch/hot-deploy/shots/hd-*.png`），设置页四颗按钮、24 条本地分支 / 15 颗「收掉它」/ 远端 86 条折叠、列表与进度块不重叠。
+
+## D255 「热部署」落地后的四处行为修正 + 两处口径追平 D254（review 后 2026-11-15）
+
+**问题：** D254 是动手前写的，落地时有两处走了别的路（轮询 900ms→1200ms、换进程 `npm run start:nobuild`→直接跑 node），review 又翻出四件真的会咬人的事：桥在 spawn 之后自己写 `state.json`、`收掉它` 的任何失败都被当成「有未提交改动」、自动刷新按时间窗而不是按进程认领、`GET /api/hotdeploy` 与日志在公网也发。按 `docs/agents/domain.md` 的规矩，旧条目不改写，重开一条覆盖。
+
+**决定：**
+
+- 轮询写死 **1200ms**（`POLL_MS`），因为单次快照要 3–4 秒、900ms 会互相叠着排队；D254 里的 900ms 作废。
+- 换进程用 `Start-Process powershell -File start-bridge.ps1`，脚本里**直接 `& <process.execPath> bridge\dist\index.js`**，不走 npm —— `npm.cmd` 会把窗口标题改回 `PowerShell`，「关窗即停」那扇窗就认不出来了。D254 里的 `npm run start:nobuild` 作废。
+- **`state.json` 只归 worker 写**：桥 spawn 完只在内存里记一份 `spawned`（worker 还没落盘的那几秒顶一下），`currentRun()` 一旦看到 state 里同一个 pid 就以文件为准。原写法会把 worker 抢先记下的 step/失败盖回 `step:0, running`，随后 `stomped()` 把快速失败报成 `crashed`。
+- `收掉它` 失败后由桥跑一次 `git -C <path> status --porcelain`，只有真有未提交改动才回 `dirty: true` 让前端给「确认强删」；锁着、路径没了、`TARGET MISSING` 之类只报错不给强删。退出码 2（worktree 删了但外链目标丢了）算成功 + 一条提醒。
+- 自动刷新认 **pid**：`POST /run` 回来的 `run.pid` 存成 `minePid`，只有 `runOf().pid === minePid` 才倒计时。原来的 `startedAt ≥ mineAt - 3000` 会误认别的标签页刚点的那一轮。
+- `GET /api/hotdeploy` 与 `GET /api/hotdeploy/log` 也加 `publicReq` 403 —— D254 写的是「公网请求全拒」，之前只拦了 POST，快照里的仓库路径和分支表会露出去。
+
+**为什么：** 这四条都不会在 happy path 上现形，但每条都会在最需要它准的时候骗人：失败被显示成「崩了」、用户被引去强删一个干净的 worktree、别的标签页把当前页面刷掉、公网能读到本机路径。D254 的两处口径是写的当时的打算，代码改了就该让文档追上，而不是让下一个人照文档去改代码。
+
+**代价 / 可改：** `spawned` 只在进程内存里，桥自己重启就丢（那一刻 state.json 已经有 worker 写的了，所以只影响「spawn 完立刻重启桥」的极端情况）；`dirty` 检测多花一次 `git status`（只在失败路径上）；`minePid` 要求 `/run` 的返回里有 pid，`run.pid` 缺失时不会自动刷新（只会停在那条成功横幅上，手动点「刷新页面」）。
+
+**验证：** `node bridge/tests/hotdeploy-unit.mjs`、`npx tsc -p bridge --noEmit`、`npm --prefix web run typecheck`（i18n-check 2877 keys × 3）绿；7999 测试桥上重跑一轮真部署（切分支→build→换进程→healthz 的 buildId 对上），以及审查后逐条手验：假 state.json 里 pre-write 的 step/error 不再被盖、脏 worktree 与 `TARGET MISSING` 两种失败分别给出不同弹法、面板打开时上一轮的 ok 不触发倒计时、公网头下两个 GET 都是 403。

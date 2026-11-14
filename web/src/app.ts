@@ -28,6 +28,7 @@ import { JiraPanel } from "./jira.ts";
 import { MailPanel } from "./mail.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { openSysmanage } from "./sysmanage.ts";
+import { openHotdeploy } from "./hotdeploy.ts";
 import { BranchSheet } from "./branchsheet.ts";
 import { ReposSheet } from "./repossheet.ts";
 import { SheetDialog } from "./sheet/dialog.ts";
@@ -779,6 +780,11 @@ export class App {
     look.setAttribute("aria-label", look.title);
     look.dataset.act = "look";
     look.onclick = () => this.openDisplaySheet();
+    // 主检出停在非 main 分支时顶栏挂一枚提醒（agent 下次开 worktree 会从它拉），点开就是热部署。
+    this.hotChip = el("button", "branch-chip") as HTMLButtonElement;
+    this.hotChip.hidden = true;
+    this.hotChip.dataset.act = "hotdeploy";
+    this.hotChip.onclick = () => openHotdeploy();
     const files = this.wideBtn(tr("📂 产物"));
     files.title = tr("本会话写过的文件（md / html / 图片…点开预览）");
     files.dataset.act = "artifacts";
@@ -831,7 +837,7 @@ export class App {
     this.els.mail = mail;
     // #96：「当前在哪」那颗自己是一个挂载点，不绑死在 topbar 的结构里（#97 / #98 换布局时
     // 只要把它挪到别处）。A 里它在行 2 的最左，B/C/D 里挪进顶栏（见 `paintShell()`）。
-    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, files, term, fs, notes, peer, scratch, jira, mail, look, collapseRight);
+    topbar.append(collapseLeft, dot, nowSlotTop, title, sub, files, term, fs, notes, peer, scratch, jira, mail, this.hotChip, look, collapseRight);
     const main = el("div", "main");
 
     const sessionsPane = el("section", "pane");
@@ -1397,6 +1403,9 @@ export class App {
     });
     document.addEventListener("visibilitychange", () => this.reportPresence());
     this.socket.on((msg) => this.onMessage(msg));
+    // 热部署跑完（成功或失败）都可能把主检出留在别的分支上：就着这一刻刷新那颗提醒。
+    window.addEventListener("pi-hotdeploy-done", () => void this.refreshHotBranch());
+    window.addEventListener("pi-hotdeploy-closed", () => void this.refreshHotBranch());
     window.addEventListener("pi-session-not-found", (ev) => {
       const id = String((ev as CustomEvent<{ sessionId?: string }>).detail?.sessionId ?? "");
       if (id && id === this.currentId) this.showSessionReclaim(id);
@@ -1404,6 +1413,7 @@ export class App {
     this.socket.onStatus((s) => {
       this.connected = s === "open";
       if (this.connected) this.reportPresence();
+      if (this.connected) void this.refreshHotBranch();
       this.renderTop();
       this.renderSessions();
       // #291：断桥时开关墙整块置灰，连上再亮回来 —— 这块的重画点跟着连接状态走。
@@ -4075,7 +4085,7 @@ export class App {
     page.append(chan);
 
     const keys = el("div", "levels");
-    keys.append(el("div", "levels-label", tr("快捷键")));
+    keys.append(el("div", "levels-label", tr("工具")));
     const keysTools = el("div", "set-tools");
     const keysBtn = el("button", "btn", Object.keys(this.keys).length ? tr("快捷键（已设 {p1} 个）", { p1: Object.keys(this.keys).length }) : tr("设置快捷键"));
     keysBtn.onclick = () => this.openKeysSheet();
@@ -4088,7 +4098,13 @@ export class App {
       this.closeSheet();
       openSysmanage();
     };
-    keysTools.append(keysBtn, piSettings, sysmanage);
+    const hotdeploy = el("button", "btn", tr("热部署")) as HTMLButtonElement;
+    hotdeploy.title = tr("把这条桥换成某条分支上的构建：编译、换进程、等健康检查（会切断正在跑的会话）");
+    hotdeploy.onclick = () => {
+      this.closeSheet();
+      openHotdeploy();
+    };
+    keysTools.append(keysBtn, piSettings, sysmanage, hotdeploy);
     keys.append(keysTools);
     page.append(keys);
 
@@ -5969,6 +5985,35 @@ export class App {
     this.renderTabs();
   }
 
+  private hotChip!: HTMLButtonElement;
+  private hotBranch = "";
+  private hotDetached = false;
+  private hotPort = 7864;
+
+  /** 问一次桥：主检出停在哪条分支。只在连上、以及热部署跑完时问，不轮询。 */
+  private async refreshHotBranch(): Promise<void> {
+    if (!this.connected) return;
+    try {
+      const snap = await api.hotdeploy();
+      const off = snap.branch !== "main" && !snap.detached;
+      if (snap.branch === this.hotBranch && snap.detached === this.hotDetached && off === !this.hotChip.hidden) return;
+      this.hotBranch = snap.branch;
+      this.hotDetached = snap.detached;
+      this.hotPort = snap.port;
+      this.paintHotChip();
+    } catch {
+      /* 桥正在换进程：下一次连上再问 */
+    }
+  }
+
+  private paintHotChip(): void {
+    const off = Boolean(this.hotBranch) && this.hotBranch !== "main" && !this.hotDetached;
+    this.hotChip.hidden = !off;
+    if (!off) return;
+    this.hotChip.textContent = tr("主检出在 {branch}", { branch: this.hotBranch });
+    this.hotChip.title = tr("主检出的源码在这条分支上（不是 main）。点开热部署，把 {port} 放回去。", { port: this.hotPort });
+  }
+
   private renderTop(): void {
     const { dot, title, sub, collapseLeft, collapseRight } = this.els;
     const running = this.session?.running;
@@ -5984,6 +6029,7 @@ export class App {
     if (!this.connected) bits.push(tr("离线"));
     sub.textContent = bits.join(" · ");
 
+    this.paintHotChip();
     setToggle(collapseLeft, this.collapsed.sessions, tr("会话列表"));
     setToggle(collapseRight, this.collapsed.queue, tr("待办队列"));
     collapseRight.classList.toggle("alert", this.collapsed.queue && (this.approvals.length > 0 || this.asks.length > 0));
