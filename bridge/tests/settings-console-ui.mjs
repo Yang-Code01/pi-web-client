@@ -1,6 +1,6 @@
 /**
  * #283 设置控制台壳：真界面里验的是「壳」本身，不是哪一页的字段 ——
- * 左栏两组九项、标题跟着页走、更新日志两本账合成一页用分段切、每个 nav 都有内容、
+ * 左栏两组十项、标题跟着页走、更新日志两本账合成一页用分段切、每个 nav 都有内容、
  * 900px 横排、Escape 关闭。自带丢弃式 bridge（fake pi，不花模型 turn），不碰 7864。
  *
  *   npm run build && node bridge/tests/settings-console-ui.mjs
@@ -174,11 +174,11 @@ try {
   const groups = (await page.locator(".st-nav__group").allInnerTexts()).map((s) => s.trim());
   check(groups.length === 2 && groups[0] === "设置" && groups[1] === "系统", `左栏两组（${groups.join(" / ")}）`);
   const navCount = await page.locator(".st-nav__item").count();
-  check(navCount === 9, `左栏 9 项（${navCount}）`);
+  check(navCount === 10, `左栏 10 项（${navCount}）`);
   const labels = (await page.locator(".st-nav__label").allInnerTexts()).map((s) => s.trim());
   check(
-    labels.join("/") === "全局与项目/项目信任/登录·凭据/口令/扩展与 MCP/子代理/通知/运行时/更新日志",
-    `九项文案（${labels.join(" / ")}）`,
+    labels.join("/") === "全局与项目/项目信任/登录·凭据/口令/扩展与 MCP/子代理/通知/预览与翻译/运行时/更新日志",
+    `十项文案（${labels.join(" / ")}）`,
   );
   await page.locator('.st-head__actions button', { hasText: "关闭" }).click();
   await until(async () => (await page.locator(".st-console").count()) === 0, 5000, "close button");
@@ -408,7 +408,7 @@ try {
   check((await compareBtn().innerText()).trim() === "对照", "换页后对照关闭");
 
   // ---------------------------------------------------------------- B. 每一页都能打开、都有内容
-  log("B. 逐个点开九项");
+  log("B. 逐个点开十项");
   const pages = [
     ["global", "设置 · 全局", "全局与项目", "settings"],
     ["trust", "项目信任", "项目信任", "信任"],
@@ -417,6 +417,7 @@ try {
     ["ext", "扩展与 MCP", "扩展与 MCP", ""],
     ["subagents", "子代理", "子代理", "子代理"],
     ["notify", "通知", "通知", "通知"],
+    ["preview", "预览与翻译", "预览与翻译", "翻译"],
     ["runtime", "运行时", "运行时", "运行"],
     ["changelog", "更新日志", "更新日志", ""],
   ];

@@ -12,8 +12,10 @@
 }
 
 .sys-console {
-  width: min(1120px, 96vw);
-  height: min(800px, 90vh);
+  /* 不写 96vw / 90vh：#app 上的 zoom 会把视口单位再乘一次（D123）。
+     100% 是 .sys-back 扣掉 padding 后的可用格，天然跟着缩放走；上限仍夹在固定 px。 */
+  width: min(1120px, 100%);
+  height: min(800px, 100%);
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
@@ -1077,7 +1079,7 @@
   margin-top: 6px;
   color: var(--text);
   font-family: var(--mono);
-  font-size: clamp(38px, 5.4vw, 58px);
+  font-size: clamp(38px, calc(var(--vw1) * 5.4), 58px);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -1379,8 +1381,9 @@
   }
 
   .sys-console {
-    width: 98vw;
-    height: 94vh;
+    /* 窄屏只把上限放到 100%，视口单位仍交给 .sys-back 的 content box。 */
+    width: 100%;
+    height: 100%;
   }
 
   .sys-main {
@@ -1431,8 +1434,8 @@
 
 @media (max-width: 640px) {
   .sys-console {
-    width: 100vw;
-    height: 100vh;
+    width: 100%;
+    height: 100%;
     border-radius: 0;
     border: 0;
   }
