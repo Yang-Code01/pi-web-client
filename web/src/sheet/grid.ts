@@ -56,6 +56,8 @@ export interface SheetGridHost {
   fetchWindow: (sheet: string, r0: number, r1: number, c0: number, c1: number) => Promise<SheetWindow>;
   /** #106：文件在预览之后被改过，桥端不认旧凭据了。 */
   onStale?: () => void;
+  /** #427：表里的图片（`/api/sheet/media` 的地址由浮窗拼，网格只负责摆位置）。 */
+  mediaUrl?: (sheet: string, id: string) => string;
   /** #111：选中格变了（公式栏跟着走）：`ref` 是 A1 式坐标，`text` 是公式原文或显示值。 */
   onSelect?: (sel: { ref: string; text: string } | null) => void;
 }
@@ -986,10 +988,56 @@ export class SheetGrid {
     this.frzH.style.top = `${frzH}px`;
     this.frzH.hidden = !f.rows;
 
+    this.drawImages();
     this.drawHandle();
 
     // 换行量出来的行高要在这一帧末尾回填：一次 rebuild，别每格重排一遍。
     if (this.applyGrow()) this.render();
+  }
+
+  /**
+   * 文件里的图片：按锚点算出 px 位置，只挂与视口（含一屏余量）相交的那几张。
+   * 图片压在格子背景之上、选区框之下（CSS 的 z-index），所以点选/拖选照旧靠下面的格子。
+   */
+  private drawImages(): void {
+    const imgs = this.info().images;
+    const url = this.host.mediaUrl;
+    if (!imgs?.length || !url) return;
+    const z = this.zoomLevel;
+    const info = this.info();
+    const vx0 = this.view.scrollLeft - this.view.clientWidth;
+    const vx1 = this.view.scrollLeft + this.view.clientWidth * 2;
+    const vy0 = this.view.scrollTop - this.view.clientHeight;
+    const vy1 = this.view.scrollTop + this.view.clientHeight * 2;
+    const nodes: HTMLElement[] = [];
+    for (const im of imgs) {
+      if (im.c0 >= info.cols || im.r0 >= info.rows) continue;
+      const left = this.leftOf(im.c0) + im.ox * z;
+      const top = this.topOf(im.r0) + im.oy * z;
+      let w: number;
+      let h: number;
+      if (im.c1 !== undefined && im.r1 !== undefined) {
+        w = this.leftOf(Math.min(im.c1, info.cols)) + (im.ox1 ?? 0) * z - left;
+        h = this.topOf(Math.min(im.r1, info.rows)) + (im.oy1 ?? 0) * z - top;
+      } else {
+        w = (im.w ?? 0) * z;
+        h = (im.h ?? 0) * z;
+      }
+      if (!(w > 1 && h > 1)) continue;
+      if (left + w < vx0 || left > vx1 || top + h < vy0 || top > vy1) continue;
+      const img = el("img", "sd-img");
+      img.src = url(this.sheet, im.id);
+      img.alt = "";
+      img.draggable = false;
+      img.decoding = "async";
+      img.loading = "lazy";
+      img.style.left = left + "px";
+      img.style.top = top + "px";
+      img.style.width = w + "px";
+      img.style.height = h + "px";
+      nodes.push(img);
+    }
+    if (nodes.length) this.cells.append(...nodes);
   }
 
   /** 选区右下角那个小方块（Excel 的填充柄）。 */

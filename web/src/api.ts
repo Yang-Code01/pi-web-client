@@ -236,6 +236,9 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token, sheet, q }),
     }),
+  /** #427: one image from the workbook, addressed by its zip part inside this sheet's meta. */
+  sheetMediaUrl: (token: string, sheet: string, id: string) =>
+    `/api/sheet/media?token=${encodeURIComponent(token)}&sheet=${encodeURIComponent(sheet)}&id=${encodeURIComponent(id)}`,
   /** D166/#106 出口: hand the previewed workbook to this desktop's own program (Excel). */
   openFile: (token: string) =>
     req<{ ok: boolean; message: string }>("/api/open", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) }),

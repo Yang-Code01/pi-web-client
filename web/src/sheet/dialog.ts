@@ -39,6 +39,8 @@ export interface SheetDialogOpts {
   source?: SheetSource;
   /** #107：整表查找。前端手里只有可视窗口，所以整表扫描只能落在桥端；不给就不出查找入口。 */
   findSheet?: (sheet: string, q: string) => Promise<SheetMatches>;
+  /** #427：表里图片的字节地址（`/api/sheet/media?...`）。没有就不画图。 */
+  mediaUrl?: (sheet: string, id: string) => string;
   /** #107：把「文件路径 + A1:C9」交给对话框（只插入，不发送）。 */
   onQuote?: (text: string) => void;
   /** #112：页面视图；xlsx 都有，CSV 没有。有它才出并排 / 两个标签页。 */
@@ -605,6 +607,7 @@ export class SheetDialog {
       meta,
       sheet,
       fetchWindow: this.opts.fetchWindow,
+      mediaUrl: (sheet, id) => this.opts.mediaUrl?.(sheet, id) ?? "",
       onSelect: (sel) => this.showFormula(sel),
       onStale: () => this.stale(),
     });

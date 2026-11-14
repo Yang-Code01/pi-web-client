@@ -675,6 +675,58 @@ export function buildStyledXlsx() {
   );
 }
 
+// 1×1 红点：够小，也好认（自然宽高 > 0 就说明字节真的取到了）。
+const PIC_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/**
+ * #427：带图片的表。一张两格锚点（B2 → E7，铺满这片），一张一格锚点（固定 120×80 贴在 G2）。
+ * 图片走 drawing + media 两个 part，和 Excel 存出来的结构一致。
+ */
+export function buildPicXlsx() {
+  const NS = 'xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
+  const pic = (id, name, blip) =>
+    `<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${id}" name="${esc(name)}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="${blip}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="9525" cy="9525"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>`;
+  const from = (c, r) => `<xdr:from><xdr:col>${c}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${r}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>`;
+  const to = (c, r) => `<xdr:to><xdr:col>${c}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${r}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>`;
+  const drawing = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr ${NS}><xdr:twoCellAnchor editAs="oneCell">${from(1, 1)}${to(4, 6)}${pic(2, "两格锚点", "rId1")}<xdr:clientData/></xdr:twoCellAnchor><xdr:oneCellAnchor>${from(6, 1)}<xdr:ext cx="1143000" cy="762000"/>${pic(3, "一格锚点", "rId1")}<xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>`;
+
+  const rows = [];
+  rows.push(`<row r="1"><c r="A1" t="inlineStr"><is><t>图片放置</t></is></c></row>`);
+  rows.push(`<row r="2"><c r="A2" t="inlineStr"><is><t>两格锚点</t></is></c></row>`);
+  rows.push(`<row r="7"><c r="A7" t="inlineStr"><is><t>一格锚点</t></is></c></row>`);
+  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="A1:J10"/><sheetData>${rows.join("")}</sheetData><drawing r:id="rId1"/></worksheet>`;
+
+  return zipSync(
+    {
+      "[Content_Types].xml": strToU8(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>`,
+      ),
+      "_rels/.rels": strToU8(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+      ),
+      "xl/workbook.xml": strToU8(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="图片" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+      ),
+      "xl/_rels/workbook.xml.rels": strToU8(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+      ),
+      "xl/styles.xml": strToU8(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>`,
+      ),
+      "xl/worksheets/sheet1.xml": strToU8(sheet),
+      "xl/worksheets/_rels/sheet1.xml.rels": strToU8(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>`,
+      ),
+      "xl/drawings/drawing1.xml": strToU8(drawing),
+      "xl/drawings/_rels/drawing1.xml.rels": strToU8(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/></Relationships>`,
+      ),
+      "xl/media/image1.png": Buffer.from(PIC_PNG, "base64"),
+    },
+    { level: 6 },
+  );
+}
+
 export function makeFixtures(outDir) {
   fs.mkdirSync(outDir, { recursive: true });
   const file = path.join(outDir, "plain.xlsx");
@@ -689,8 +741,10 @@ export function makeFixtures(outDir) {
   fs.writeFileSync(formula, buildFormulaXlsx());
   const styled = path.join(outDir, "styled.xlsx");
   fs.writeFileSync(styled, buildStyledXlsx());
+  const pic = path.join(outDir, "pic.xlsx");
+  fs.writeFileSync(pic, buildPicXlsx());
   const csv = makeCsvFixtures(outDir);
-  return { plain: file, report, chart, cf, formula, styled, csv, files: [file, report, chart, cf, formula, styled, ...csv.files] };
+  return { plain: file, report, chart, cf, formula, styled, pic, csv, files: [file, report, chart, cf, formula, styled, pic, ...csv.files] };
 }
 
 /** OLE2 复合文档头：老式 .xls，以及加密过的 OOXML 包（CFB 包着加密流）都以它开头。 */

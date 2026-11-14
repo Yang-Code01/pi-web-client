@@ -702,8 +702,26 @@ export interface SheetInfo {
   rowH?: Record<number, number>;
   hiddenRows?: number[];
   hiddenCols?: number[];
-  /** #429：文件里要求不显示网格线（`showGridLines="0"`）。 */
+  /** #427：文件里要求不显示网格线（`showGridLines="0"`）。 */
   gridLines?: false;
+  /** #427：钉在格子上的图片（两格锚点给右下坐标，一格锚点给固定宽高）。 */
+  images?: SheetImage[];
+}
+
+/** #427：xlsx drawing 里的一张图，坐标是 0 基行列 + 格内偏移（px）。 */
+export interface SheetImage {
+  /** zip 内路径（`xl/media/image3.png`）：换字节的凭据，也是浏览器缓存键。 */
+  id: string;
+  c0: number;
+  r0: number;
+  ox: number;
+  oy: number;
+  c1?: number;
+  r1?: number;
+  ox1?: number;
+  oy1?: number;
+  w?: number;
+  h?: number;
 }
 
 /** #110 显示档：full 全量；light 只值（不涂条件格式）；none 不给（只给清单 + 尺寸）。 */

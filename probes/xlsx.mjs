@@ -18,7 +18,16 @@ const { chromium } = await loadPlaywright();
 const modp = (p) => pathToFileURL(p).href;
 
 const PORT = Number(process.env.PI_WEB_PORT ?? 7867);
-const ROOT = path.join(REPO, ".scratch/xlsx-probe");
+/** 上一轮的工作目录可能还被 WPS / 文件预览占着（Windows 上就是 EBUSY）：清不掉就换个带 pid 的目录接着跑。 */
+function freshRoot(base) {
+  try {
+    fs.rmSync(base, { recursive: true, force: true });
+    return base;
+  } catch {
+    return `${base}-${process.pid}`;
+  }
+}
+const ROOT = freshRoot(path.join(REPO, ".scratch/xlsx-probe"));
 const STATE = path.join(ROOT, "state");
 const AGENT = path.join(ROOT, "agent");
 const SESSIONS = path.join(AGENT, "sessions");
@@ -27,7 +36,6 @@ const OUT = path.join(REPO, "probes/out/xlsx");
 const BASE = `http://127.0.0.1:${PORT}`;
 const SID = "zz-xlsx-105";
 
-fs.rmSync(ROOT, { recursive: true, force: true });
 for (const d of [STATE, SESSIONS, WORK, OUT]) fs.mkdirSync(d, { recursive: true });
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -621,6 +629,29 @@ try {
   log(`关闭键 ${JSON.stringify(closeDbg)}`);
   await page.locator(".sd-close").first().click({ timeout: 5000 }).catch((e) => log(`关闭键点不动 ${e.message.split("\n")[0]}`));
   if (await page.locator(".sd").count()) await page.evaluate(() => document.querySelector(".sd-close")?.click());
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+
+  // ---------------------------------------------------------------- 图片（#427）
+  // xlsx 里钉在格子上的图（drawing + media）：字节从 /api/sheet/media 取，位置按锚点算。
+  await openSheet("pic.xlsx");
+  const imgs = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll(".sd-img")].map((n) => {
+        const r = n.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height), nw: n.naturalWidth, done: n.complete };
+      }),
+    );
+  await until(async () => (await imgs()).length >= 2, 8000, "images mounted");
+  await until(async () => (await imgs()).every((i) => i.done && i.nw > 0), 8000, "images decoded");
+  const pic = await imgs();
+  check("两张图都挂上了", pic.length === 2, JSON.stringify(pic));
+  check("图片字节真的取到了", pic.every((i) => i.nw > 0), JSON.stringify(pic));
+  const fixed = pic.find((i) => i.w === 120 && i.h === 80);
+  check("一格锚点按固定尺寸放（120×80）", !!fixed, JSON.stringify(pic));
+  const spanned = pic.find((i) => i.w > 120);
+  check("两格锚点铺满 B2:E7", !!spanned && spanned.w === 192 && spanned.h === 100, JSON.stringify(spanned));
+  await page.screenshot({ path: path.join(OUT, "09-pic.png") });
+  await page.locator(".sd-close").first().click();
   await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
 
   // ---------------------------------------------------------------- 条件格式（#109）

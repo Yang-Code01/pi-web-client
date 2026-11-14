@@ -8,8 +8,9 @@ import { entryBytes, entryStream, zipIndex, type ZipEntry } from "./zip.ts";
 import { formatValue } from "./numfmt.ts";
 import { buildCf, readDxfs, type CellFx, type SheetCf } from "./cf.ts";
 import { readStyles, type StyleTable, type WireStyle } from "./styles.ts";
+import { readSheetImages, type WireImage } from "./media.ts";
 
-export type { WireStyle };
+export type { WireStyle, WireImage };
 
 export type CellKind = "n" | "s" | "b" | "e";
 
@@ -77,6 +78,8 @@ export interface SheetInfo {
   hiddenCols?: number[];
   /** `showGridLines="0"` 的表：不画网格线。 */
   gridLines?: false;
+  /** 钉在格子上的图片（drawing 里的 twoCellAnchor / oneCellAnchor）：坐标为格内偏移，宽高按行列走。 */
+  images?: WireImage[];
   freeze?: FreezePane | null;
   /** #109：认不出的条件格式规则条数（状态条据此提示）。 */
   cfUnsupported?: number;
@@ -333,10 +336,12 @@ export function readBook(buf: Uint8Array): Book {
     let extras: Extras = { merges: [], widths: new Map(), defaultW: widthPx(8.43), defaultH: heightPx(15), rowH: {}, hiddenRows: [], hiddenCols: [], gridLines: true, freeze: null };
     let cfUnsupported = 0;
     let noCache = 0;
+    let images: WireImage[] = [];
     if (tier !== "none") {
       const xml = partText(buf, dir, part) ?? "";
       extras = sheetExtras(xml);
       noCache = countNoCache(xml);
+      images = readSheetImages(buf, dir, part);
       if (tier === "full") {
         book.strings ??= sharedStrings(buf, dir);
         const dxfs = readDxfs(partText(buf, dir, "xl/styles.xml"));
@@ -364,6 +369,7 @@ export function readBook(buf: Uint8Array): Book {
       ...(extras.hiddenCols.length ? { hiddenCols: extras.hiddenCols } : {}),
       ...(extras.gridLines ? {} : { gridLines: false as const }),
       ...(extras.freeze ? { freeze: extras.freeze } : {}),
+      ...(images.length ? { images } : {}),
       ...(cfUnsupported > 0 ? { cfUnsupported } : {}),
       ...(noCache ? { noCache } : {}),
     });

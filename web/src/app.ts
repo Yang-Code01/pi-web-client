@@ -7822,6 +7822,8 @@ export class App {
       fetchWindow: (sheet, r0, r1, c0, c1) => api.sheetWindow(info.token, sheet, r0, r1, c0, c1),
       // #107：整表查找在桥端扫（前端只拿着一个可视窗口）。
       findSheet: (sheet, q) => api.sheetFind(info.token, sheet, q),
+      // #427：表里的图片走独立的字节端点，凭据还是这扇窗的 token。
+      mediaUrl: (sheet, id) => api.sheetMediaUrl(info.token, sheet, id),
       onQuote: (text) => this.quoteInto(text),
       // #112：有图表的文件自动转一次 PDF；没有的也能手动切过去看打印版式。
       page: { token: info.token },

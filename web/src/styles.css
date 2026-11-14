@@ -4229,7 +4229,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-cell.is-n { font-variant-numeric: tabular-nums; }
 .sd-cell[data-span] { z-index: 1; }
 /* 文本溢出到右边的空格子里：只让字溢出，节点自己的底色/边框还留在本格。 */
-.sd-cell.sd-ovf { overflow: visible; z-index: 2; pointer-events: none; }
+.sd-cell/* #427：文件里钉在格子上的图片。压在格子之上、选区之下，不吃指针事件。 */
+.sd-img {
+  position: absolute; z-index: 2; object-fit: fill;
+  pointer-events: none; user-select: none;
+}
+
+.sd-ovf { overflow: visible; z-index: 2; pointer-events: none; }
 .sd-cell.sd-ovf > .sd-txt { flex: none; overflow: visible; }
 .sd-cell.k-e { color: #b42318; }
 /* #109 条件格式：数据条垫在文字下面，图标和文字同一行，宽度由服务端算好的比例给。 */

@@ -84,7 +84,7 @@ import { isTrustedPreviewPath, kindOf, openPreview, readAttachableImage, readTex
 import { MAX_TRANSLATE_BYTES, TR_DEFAULT_MODEL, TR_LANGS, applySync, cutSections, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, writeDoc, writeTrPrefs, type TrLang, type TrSection } from "./translate.ts";
 import { TranslateJobs } from "./translatejob.ts";
 import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
-import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow } from "./sheet/index.ts";
+import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow, readMedia as readSheetMedia } from "./sheet/index.ts";
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
 import { countSlides, slidesAvailable, slidesPdfFile, slidesPdfKey, slidesPdfStatus, slidesProbe } from "./slides/index.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
@@ -1146,6 +1146,27 @@ async function main(): Promise<void> {
       }
     }
 
+
+    // #427: 表里的图片（drawing 锚点 + media 字节）。前端 <img src> 直接指过来，
+    // 凭据还是 /api/preview 发的那一个；id 只认这张表 meta 里登记过的。
+    if (url.pathname === "/api/sheet/media" && req.method === "GET") {
+      if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
+      const grant = await resolveSheetGrant(res, url.searchParams.get("token") ?? "");
+      if (!grant) return;
+      try {
+        const media = await readSheetMedia(grant.abs, url.searchParams.get("sheet") ?? "", url.searchParams.get("id") ?? "");
+        res.writeHead(200, {
+          "content-type": media.type,
+          "content-length": String(media.bytes.byteLength),
+          "cache-control": "private, max-age=600",
+          "x-content-type-options": "nosniff",
+        });
+        res.end(Buffer.from(media.bytes));
+        return;
+      } catch (err: any) {
+        return fail(res, 404, String(err?.code ?? "sheet_media_missing"), String(err?.message ?? err));
+      }
+    }
 
     // #112: the page view is a PDF LibreOffice lays out once per path+mtime. Two-stage contract
     // (spec): POST returns a `ready` | `pending` id and kicks conversion off in the background; GET
