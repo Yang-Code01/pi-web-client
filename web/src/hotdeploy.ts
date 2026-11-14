@@ -15,6 +15,22 @@ import "./hotdeploy.css";
 
 /** 步骤名与 worker 的 step 序号一一对应；中文原文就是 i18n 键。 */
 const STEPS = ["检查更新", "拉取所选分支", "编译前端与桥", "换进程", "健康检查"];
+/** worker 写回来的 error 是稳定代号（D110），界面上得说人话。 */
+const FAIL_WHY: Record<string, string> = {
+  "bad-args": "参数不对：多半是端口没给或占着。",
+  "bad-repo": "这个目录不是本仓库。",
+  busy: "已经有一轮在跑了。",
+  dirty: "主检出有未提交的改动。",
+  "fetch-failed": "拉不到远端：网络或代理不通。",
+  "no-branch": "远端没有这条分支。",
+  occupied: "这条分支被别的 worktree 占着。",
+  "switch-failed": "git switch 没成功，日志里有它的原话。",
+  "merge-failed": "快进合并没有成功，日志里有它的原话。",
+  "build-failed": "编译没过，日志尾部有 tsc / vite 的报错。",
+  "start-failed": "新进程没起来，看那扇 pi bridge 窗口。",
+  "stale-health": "新进程报的构建号不对：旧进程可能还占着端口。",
+  crashed: "worker 被中途杀掉了。",
+};
 const POLL_MS = 1200;
 /** 结束很久的老结果不该再弹出来：超过这么久就当没跑过。 */
 const RESULT_TTL_MS = 10 * 60_000;
@@ -427,14 +443,24 @@ class HotdeployPanel {
       const head = el("div", "");
       head.append(el("b", "", tr("{step}失败", { step: stepName })));
       if (run?.exitCode) head.append(el("span", "", tr("（退出码 {code}）", { code: run.exitCode })));
-      head.append(el("span", "", tr("。源码已在 {branch}，但 {port} 上仍是 {oldBranch} {oldSha} 的旧构建。", {
-        branch: run?.branch ?? "",
-        port: this.snap?.port ?? 7864,
-        oldBranch: run?.fromBranch ?? "",
-        oldSha: run?.fromSha ?? "",
-      })));
+      const same = !run?.fromBranch || run.fromBranch === run.branch;
+      head.append(el("span", "", same
+        ? tr("。源码没动（还在 {branch}），{port} 上仍是 {oldSha} 的旧构建。", {
+          branch: run?.branch ?? "",
+          port: this.snap?.port ?? 7864,
+          oldSha: run?.fromSha ?? "",
+        })
+        : tr("。源码已在 {branch}，但 {port} 上仍是 {oldBranch} {oldSha} 的旧构建。", {
+          branch: run?.branch ?? "",
+          port: this.snap?.port ?? 7864,
+          oldBranch: run?.fromBranch ?? "",
+          oldSha: run?.fromSha ?? "",
+        })));
       body.append(head);
-      if (run?.error) body.append(el("pre", "hot-errpre", String(run.error).slice(-900)));
+      if (run?.error) {
+        const why = FAIL_WHY[run.error];
+        body.append(el("div", "hot-why", why ? tr(why) : String(run.error).slice(-900)));
+      }
       const acts = el("div", "hot-acts");
       const logs = el("button", "btn tiny", tr("展开日志")) as HTMLButtonElement;
       logs.onclick = () => {

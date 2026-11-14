@@ -237,7 +237,8 @@ export function tailLines(file: string, max = 160): string[] {
     const text = fs.readFileSync(file, "utf8");
     const lines = text.split(/\r?\n/);
     if (lines.length && lines[lines.length - 1] === "") lines.pop();
-    return lines.slice(-max);
+    // vite 把 ✓/✗ 染成 ANSI 色再写进日志；<pre> 里会变成一堆 [32m。
+    return lines.slice(-max).map((line) => line.replace(/\u001b\[[0-9;]*m/g, ""));
   } catch {
     return [];
   }

@@ -284,18 +284,11 @@
 }
 .hot-acts .btn:hover { background: rgba(0, 0, 0, 0.4); opacity: 1; }
 .hot-count { font-size: 11.5px; opacity: 0.8; }
-.hot-errpre {
-  margin: 0;
-  padding: 8px 10px;
-  max-height: 120px;
-  overflow: auto;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.28);
-  font-family: var(--mono);
-  font-size: 11px;
+.hot-why {
+  margin-top: 2px;
+  font-size: 12px;
   line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-all;
+  opacity: 0.85;
 }
 
 /* ---------------------------------------------------------------- 底栏 */
