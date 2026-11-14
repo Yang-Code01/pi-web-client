@@ -4450,3 +4450,17 @@ D
 - 三实例 e2e（`F:/pi-web-client-wt/feat/lan-market/.scratch/lan-market/e2e/results.json`）：14 个 case / 40 步，`failedSteps=0`、`failedCases=0`，覆盖手工 zip 发布、跨节点发现与安装、自动互为镜像、原发布者离线仍可从镜像装、扩展实体包、MCP 变量填写、墓碑在离线期间收敛、同 id 重发复活、从「已安装」一键发布、公网只读、旧节点降级、收尾关环境。
 - 测试书：`F:/pi-web-client-wt/feat/lan-market/.scratch/lan-market/局域网共享市场-测试书.xlsx`（15 sheet = 总览 + TC01~TC14，40 张内嵌真实截图，0 公式 / 0 错误）与一比一复刻的 `F:/pi-web-client-wt/feat/lan-market/.scratch/lan-market/局域网共享市场-测试书.html`（15 个 sheet 标签、点击 / 方向键切换、`#TC14` hash 恢复、40 张内嵌图、`SELFCHECK_OK`、0 console error）。两者都在 `.scratch/` 下，不进提交；三份测试环境已由 TC14 关闭。
 - 编号：代码注释、协议文档与 PLAN 中原本写的 D246 全部机械改为 D248；main 的 D246 / D247 在合并冲突解决时原样保留。
+
+## D250 按回车 /「继续」之后落到自己那条气泡上（无票，用户口头报了别的 bug 时顺带发现）
+
+**问题：** 读着几屏前的旧文按回车发一条（或点「继续」），视口纹丝不动，自己刚发的那条在视口下方一千多像素，只在右下角长出一颗「有新内容」。要看见自己发的东西，得再点一次那颗钮 —— 而随后的回答也一直待在下面。
+
+**根因：** 两条发送路径（`web/src/app.ts` 的 `sendPrompt()` / `sendContinue()`）只把乐观气泡 `chat.add()` 进 DOM。`add()` 末尾调 `scrollToEnd()`（未 force），跟流早已被用户上滚关掉，于是走 `this.unread = true; renderJump()` 分支，一个像素都不动。而 `web/src/chat.ts` 的 `follow()` 注释早写着它被「the button, `reset()`, and **I just sent a message**」用到 —— 最后那一项从来没接线（`git log -S "scrollToEnd(true)"`：force 参数在 974a38d 引入时只给 `reset()` 用，a81a429 把它换成 `follow()` 之后仍然只有 `reset()` 叫）。
+
+**决定：** 两处乐观气泡 `add()` + `renderChat()` 之后各调一次 `this.chat.follow()`。`follow()` 是瞬移（`scrollTop = scrollHeight`），顺带清 `unread`、藏回底钮、通知队列面板展开（`onSettleBottom`）。
+
+**为什么不是「继续不拽你」：** 上滚不拽的前提是来的内容**不是他发的**（D68 / D94 / D168 保护的都是「在读历史的人」）。按回车这一刻是他本人要发东西，等的是随后的回答；自己那条看不见，等于发送没有回显。另一端没有被牵连：桥回灌、多端来的消息仍然走 `add()` → 未跟流时只亮「有新内容」，不拽人。
+
+**代价：** 发送 = 瞬移到底部。想边读旧文边排队发几条的人，每发一条都会被拉回来一次；「继续」同理。换来的是发送一定有回显，且之后的流式输出照常钉底。
+
+**验证：** `probes/send-while-reading.mjs`（桩桥、6 轮长回答；真滚轮上滚 1600px 再按回车）。修前：`sent bubble top 2322.5`（视口 96.4–718.8）、`gap below 1682`、`.chat-jump.has-new` 可见；修后：`top 646.5 / bottom 710.4`、`gap 0`、钮隐藏，随后推一条助手回答仍然 `gap 0`。`round10-scroll` / `scroll-race` / `composer-grow` / `jump-nothing-below` 四条不回归；`npm --prefix web run typecheck`（含 `i18n-check`）绿。
