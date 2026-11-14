@@ -4527,3 +4527,23 @@ D
 **代价 / 可改：** 文件管理器的整行可点区域被两颗按钮占掉约 90px；产物 chip 比原来宽，一行能放的 chip 变少；620px 以下隐藏大小与修改时间两列（只留名称 + 操作）。左栏「最近」按会话存 `localStorage["pi.attachRecent:<sessionId>"]`（最多 8 条），换设备/清缓存就没了。
 
 **验证：** `npm --prefix web run typecheck`（tsc + `i18n-check`，2801 keys × 3 语言）与 `npm --prefix web run build` 绿；测试实例（17876）手动全链路：附件弹层引用/附加/打开、文件管理器引用（viewer 关闭、路径进输入框）/点行预览、产物 chip 引用/打开；620 / 880 / 1440 三档 `scrollWidth == innerWidth`，无横向溢出。
+
+## D253 表格网格按 WPS 的排法重写：样式表整链下传，行高/列宽/换行按 font metrics 排（`#427`，修订 D166 的「格子只画数字格式 + 对齐」）
+
+**问题：** D166 落地时为了先把「数和图都在」做完，`readStyles()` 只读 `numFmt` 与 `<alignment horizontal>`，`<fonts>` / `<fills>` / `<borders>` / `<row ht>` / 隐藏行列 / `wrapText` 全部丢掉；前端把每格钉成 `nowrap; overflow:hidden; 28px 行高; 13px #1f2430`。结果是：文件里排好的表（深色表头、隔行底纹、合计行、标题行加高、备注列换行）在我们的网格里全变成一堵同样大小的字墙，用户的原话是「效果不是很好」。
+
+**怎么定的：** 用户指名「用 REA 解构 WPS 的 Excel 预览，按它的写法设计模式」。实测本机 WPS 12.1.0.29690：`et.exe` 只是启动器，窗口由 `wps.exe` 承载，引擎是 Qt5 + Skia（`Qt5CoreKso.dll` / `skia.dll`），没有独立的轻量网页渲染器；注册的 `.xlsx` 预览处理器 CLSID `{E260F96C-8EF4-4C24-A2B9-455F1D116531}` 只登记了 `ole32.dll`，拿不到实现模块。**所以「写法」只能从屏幕像素里反推**：用 `PrintWindow` 抓窗口（150% 缩放下行高 = pt×2、列宽 = (chars×7+5)×1.5），再逐点探针取色（网格线 `#E6E6E6`、表头 `#F0F0F0`、选中青绿、数字右对齐、放不下出 `###`、文本溢出到右空格、隐藏行在行号上直接跳过）。
+
+**决定：**
+
+- **样式在桥端解析成扁平表，整本一次下发。** 新文件 `bridge/src/sheet/styles.ts`：`readFonts/readFills/readBorders/readStyles`，加 `INDEXED`（64 项老式索引色）、theme 色槽 + `tint()`（RGB→HLS→RGB），输出 `WireStyle { f/bg/bd/h/v/w/ind/sh/rot }`，相同样式按 `JSON.stringify` 去重、0 号恒为默认样式；`WorkbookMeta.styles` 下发，`SheetCell.s` 只带下标。这样前端拿 `styles[cell.s]` 就够，不再猜。
+- **列宽/行高/隐藏/网格线开关都从文件读**：`sheetExtras()` 读 `<sheetFormatPr defaultColWidth|defaultRowHeight>`、`<col width|customWidth|hidden>`、`<row ht|customHeight|hidden>`、`<sheetView showGridLines="0">`；`heightPx(pt) = round(pt*4/3)` 与浏览器一致（WPS 在 150% 屏上是 ×2，等于 CSS 的 ×4/3）。
+- **默认尺寸改成 Excel 的**：`ROW_H = 20`（15pt）、`COL_W = 64`（8.43 字符）、`HEAD_W = 40`、`HEAD_H = 24`；CSV（`colWidths === undefined`）仍用 110px，CSV 没有列宽语义。
+- **只画左/上边**：Excel 的边框归属是「格子负责自己的左/上」，右/下由邻居的左/上画；我们照抄——自己的 `bd.l/bd.t` → 左/上邻居的 `bd.r/bd.b` → 网格线 `1px solid #E6E6E6`（`showGridLines=0` 时 none）；只有窗口边缘才补右/下，避免相邻两格把同一条线叠成 2px。
+- **数字放不下出 `###`**（量 `#` 宽度、按可用宽度重复），不裁剪也不溢出；文本默认左对齐、可溢出到右侧连续空列（`roomFor()` 上限 8 列、遇有内容的格子停），`wrapText` 用 `pre-wrap` 并在**节点上树之后**量真实高度回填行高（离屏量尺会被 `font` 简写和可用宽度算错，实测差 5–8px）。
+- **行高/列宽不再用「整表前缀数组」**：`fileH`/`autoH` 两张稀疏 map + 排序键 + 前缀和（`dsum`）做 `topOf()` 二分，百万行的 light 档也不会建出百万长度数组。
+- **交互全部保留**：四层冻结、键盘走位、Shift 扩选、Ctrl+C 的 TSV、查找命中、`setZoom`（同时作用行高列宽字号）、`selectionRef`；`SheetGrid` 与 `ZOOM_*` 的导出签名不变，`dialog.ts` 不用改。
+
+**代价 / 可改：** 样式解析在桥端多一次 `<styles.xml>` + `<theme1.xml>` 的解析（整本缓存，窗口请求不再付）；pattern 填充只做近似（深色花纹取 fg、其余取 bg）；行内富文本 run、旋转文字按像素旋转（只认 90/180 的倍数）、渐变/图片填充都不做。选中框颜色取 `#0f766e`（WPS 的绿有青有蓝，实测采样被文字抗锯齿污染），要改只动 `grid.ts` 的 `SEL_COLOR`。
+
+**验证：** `bridge/tests/fixtures/make-xlsx.mjs` 新增 `buildStyledXlsx()`（两张表、6 字体、5 填充、4 边框、货币/日期/百分比/负数红字、indent、wrap、隐藏行、冻结、`showGridLines=0`），`probes/xlsx.mjs` 加「富样式」一组 17 条断言（行高 20/44/46、隐藏行跳过、表头底 #1F4E79 白字、细边框 1px 不叠、`¥1,234.50` 右对齐、负数 `(400.00)`、`###`、`pre-wrap`、溢出、缩进、合计行黄底、无网格线页）＋「换行内容不被行高截断」一条；整轮 **285 项 ok / 全部通过**，截图 `.scratch/xlsx-probe` 与 WPS 同屏对照。
