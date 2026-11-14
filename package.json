@@ -54,6 +54,7 @@
     "test:bgruns": "node --experimental-strip-types bridge/tests/bgruns-unit.mjs",
     "test:whatsnew": "node --experimental-strip-types bridge/tests/whatsnew-unit.mjs",
     "test:sysmanage": "node bridge/tests/sysmanage-unit.mjs && node bridge/tests/workclock-unit.mjs && node web/tests/sysmanage-unit.mjs",
+    "test:hotdeploy": "node bridge/tests/hotdeploy-unit.mjs",
     "test:sysmanage:ui": "node bridge/tests/sysmanage-ui.mjs",
     "test:settings": "node web/tests/settings-console-unit.mjs",
     "test:settings:ui": "node bridge/tests/settings-console-ui.mjs",

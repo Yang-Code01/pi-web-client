@@ -1,6 +1,7 @@
 import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TrDoc, TrDocResp, TrJob, TrPrefsResp, TrSyncResp, TunnelState } from "./types.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
 import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
+import type { HotdeployRemoveResult, HotdeployRun, HotdeploySnapshot } from "./hotdeploy-types.ts";
 
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
@@ -353,6 +354,12 @@ export const api = {
     }),
   /** 提权读 Security 4800/4801 回填历史，一次 UAC。 */
   sysWorkclockBackfill: () => req<WorkclockBackfill>("/api/sys/workclock/backfill", { method: "POST" }),
+  /** 热部署：换分支 → 编译 → 换进程。写接口只在桥端本机/局域网放行，公网 403。 */
+  hotdeploy: () => req<HotdeploySnapshot>("/api/hotdeploy"),
+  hotdeployLog: (lines = 160) => req<{ lines: string[] }>(`/api/hotdeploy/log?lines=${lines}`),
+  hotdeployRun: (branch: string) => postJson<{ ok: boolean; run: HotdeployRun }>("/api/hotdeploy/run", { branch }),
+  hotdeployRemoveWorktree: (path: string, force = false) =>
+    postJson<HotdeployRemoveResult>("/api/hotdeploy/remove-worktree", { path, force }),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
   subscribe: (sub: PushSubscriptionJSON) =>
     req<{ ok: true }>("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sub) }),

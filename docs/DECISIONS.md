@@ -4527,3 +4527,21 @@ D
 **代价 / 可改：** 文件管理器的整行可点区域被两颗按钮占掉约 90px；产物 chip 比原来宽，一行能放的 chip 变少；620px 以下隐藏大小与修改时间两列（只留名称 + 操作）。左栏「最近」按会话存 `localStorage["pi.attachRecent:<sessionId>"]`（最多 8 条），换设备/清缓存就没了。
 
 **验证：** `npm --prefix web run typecheck`（tsc + `i18n-check`，2801 keys × 3 语言）与 `npm --prefix web run build` 绿；测试实例（17876）手动全链路：附件弹层引用/附加/打开、文件管理器引用（viewer 关闭、路径进输入框）/点行预览、产物 chip 引用/打开；620 / 880 / 1440 三档 `scrollWidth == innerWidth`，无横向溢出。
+
+## D253 设置里加「热部署」：面向用户的分支切换 + 重启，不复用开发用的 skill 脚本（用户要求 2026-11-14）
+
+**问题：** 这个工程自己天天在改，改完要让 7864 上跑的桥换成新构建，每次都靠 `.pi/skills/bridge-update/`（拉 main → build → 杀进程 → 开新窗口）。那是给开发用的、写死 main 的脚本；用户要的是设置在「本机管理」旁边的一颗按钮，点开选一条分支、编译、换进程，一步到位，前端顺带自动刷新。用户原话：「和skill 无关，skill 只是开发者用来测试的，这个按钮，是给用户用的， 只是让你参考skill」。
+
+**决定：**
+
+- 新模块 `bridge/src/hotdeploy.ts` + 独立 worker `scripts/hotdeploy.mjs`，**不 import 也不 shell 出 skill 里的 `restart.mjs`**：端点挂在 `/api/hotdeploy`（`GET` 快照 / `GET log?lines=` / `POST run {branch}` / `POST remove-worktree {path,force}`），worker 是 detached 的一次性脚本，状态写 `.scratch/hot-deploy/state.json`，日志写同目录 `worker.log`，前端每 900ms 轮询快照。
+- 分支可切但**不新建 worktree**：`git switch <branch>`（只在本地的走 `--track`，落后远端就 `merge --ff-only`），在 .gitignore 掉的 `.scratch` 里工作，不碰用户主检出目录以外的任何东西。
+- 被别的 worktree 检出的分支显示成不可选，行内给「收掉它」（走 `tools/worktree-remove.mjs`，脏的要点两次才带 `--force`）；顶栏在非 main 分支时挂 `主检出在 {branch}` pill，提醒当前源码在哪条分支上。
+- 换进程要在**可见的 PowerShell 窗口**里做（用户选「可见窗口」）：worker 先按 `/healthz` 的 pid / pidfile 找旧桥，先杀它的 `pi` 子进程再杀它自己（不用 `taskkill /T`，那会连别的会话一起带走），然后 `Start-Process powershell` 跑 `npm run start:nobuild`；健康检查必须等到 `buildId` 与本次构建一致，否则报 `stale-health`。
+- 自我保护：worker 在 linked worktree 里拒绝跑（`hotdeploy_worktree`）、源码脏了拒绝跑（`hotdeploy_dirty`）、同端口已有 worker 跑着拒绝跑（`hotdeploy_busy`）、公网请求全拒（`hotdeploy_public`）。D154 的启动横幅照旧不管这件事：它只管「build 落后」，热部署管「换分支」。
+
+**为什么：** ① skill 是开发工具，写死 main 且假定调用者是 agent；给用户的按钮要能选分支、要给进度和失败原因，两者不该共用一个入口 —— 一旦复用，skill 改流程会悄悄改掉用户看到的按钮行为。② 不新建 worktree 是因为用户就是要「让 7864 跑这条分支」，worktree 反而会多出一份不认识的主检出，且构建产物与 node_modules 都得重装。③ 换进程必须让用户看见：窗口一闪而过、桥起不来时至少要有一处能读的日志（窗口标题固定 `pi bridge`）。④ 拒绝脏树 / 拒绝 worktree 是本地实测出来的：脏树上 `git switch` 会把改动直接带过去，worktree 里跑等于把**那个**检出换成新构建、而 7864 上什么也没变。
+
+**代价 / 可改：** 顶栏 pill 只在连上桥之后才出现（离线时不知道分支）；`run` 会切断正在跑的会话，对话框里只写一行提示、不做二次确认（用户选的）；worker 写死了端口来自 `--port`，改端口部署要重启整个 bridge；`/run` 的 409 分支必须靠前端把 hint 写清楚，否则用户只会看到按钮是灰的。分支列表 110 条里远端默认折起来（`showRemote`），要展开才看得到。worktree 守卫留了个 `PI_HOTDEPLOY_ALLOW_WORKTREE=1` 的逃生口，只给 UI 自动化驱动真跑用 —— 正常部署别设它。
+
+**验证：** `node bridge/tests/hotdeploy-unit.mjs`（worktree/track/refs 解析、占用判定、路径归一、日志尾）；`npx tsc -p bridge --noEmit` 与 `npm --prefix web run typecheck`（i18n 2863 keys × 3）绿；worktree 的桥起在 7999 上用手工假 state.json 走完 idle / running / ok / fail 四种渲染（截图 `.scratch/hot-deploy/shots/hd-*.png`），设置页四颗按钮、24 条本地分支 / 15 颗「收掉它」/ 远端 86 条折叠、列表与进度块不重叠。
