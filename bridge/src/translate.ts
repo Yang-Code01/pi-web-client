@@ -149,6 +149,26 @@ export function splitBlocks(text: string): string[] {
     .filter((b) => b.length);
 }
 
+/** 只起分隔作用、模型翻译时经常被整个吞掉的块（`---`、`***` 这类）。 */
+function isSeparator(block: string): boolean {
+  return /^\s*([-*_])(\s*\1){2,}\s*$/.test(block);
+}
+
+/** 整篇是不是日文：看正文（去掉围栏代码）里的假名密度。
+ * 只数绝对值（≥3）会被代码里的一句日文、或几个 `・` 带跑 —— 中文稿里夹一段日文引文就整篇被当成日文，
+ * 标题写回反被误判。日文正文假名密度通常 ≥30%，夹引文的中文稿远低于此。 */
+function isJapaneseDoc(text: string): boolean {
+  const prose = splitCode(text)
+    .filter((p) => !p.code)
+    .map((p) => p.text)
+    .join("\n");
+  const chars = prose.replace(/\s+/g, "").length;
+  return chars > 0 && kana(prose) / chars >= 0.12;
+}
+
+/** 尾部空行不算改动：在编辑器里打开再保存一次，这一节就会多出几个换行。 */
+const sameSection = (a: string, b: string) => a.replace(/\s+$/, "") === b.replace(/\s+$/, "");
+
 /** 把块打包装进不超过 maxChars 的请求里；单个块超长就按行切。 */
 export function packChunks(blocks: string[], maxChars = CHUNK_CHARS): string[] {
   const out: string[] = [];
@@ -510,15 +530,28 @@ function reverseDrift(src: string, gen: string, nextText: string, editedOut: str
   const latin = (s: string) => (s.match(/[A-Za-z]/g) ?? []).length;
   const chars = (s: string) => s.replace(/\s+/g, "").length || 1;
   const srcKana = kana(src);
+  const outKana = kana(nextText);
+  const strongJa = srcKana >= 3;
+  // 「这一块是不是日文」看整篇：日文文稿里的短块（假名只有一两个）也是日文。
+  // 只按这一块的假名数判断，会把「## 本文の中国語訳」「## 練習」这类短块当成中文，
+  // 于是写回的日文反被判成「写回的是日文，原文不是」。
+  const srcJa = strongJa || (docJa && srcKana >= 1);
   // 标题没有代码也没有 ID，永远是原文那一套字：整篇是日文就写日文。
   // 这一条专门拦「标题被改成中文、又被原样写回文件」——源里的标题已经被人写坏了也能救回来。
-  if (docJa && /^#{1,6}\s/.test(src) && kana(nextText) < 2) return "写回的是中文，这一篇原文是日文：标题也得写成日文";
-  if (srcKana >= 3) {
-    // 原文是日文：结果必须还是日文。纯汉字或一大片拉丁字母都算跑偏。
-    if (kana(nextText) < Math.max(2, Math.floor(srcKana * 0.3))) return "写回的不是日文（几乎没有假名）";
+  // 但「写回的跟原文一模一样」只是没改动，不算跑偏（全汉字日文标题本来就没有假名），
+  // 判完标题也要就此返回，别再落进下面「原文不是日文」那条分支。
+  if (docJa && /^#{1,6}\s/.test(src)) {
+    if (nextText.trim() === src.trim()) return null;
+    if (outKana < 1) return "写回的是中文，这一篇原文是日文：标题也得写成日文";
     return null;
   }
-  if (kana(nextText) > 4) return "写回的是日文，原文不是";
+  if (srcJa) {
+    // 原文是日文：结果必须还是日文。纯汉字或一大片拉丁字母都算跑偏。
+    const minKana = strongJa ? Math.max(2, Math.floor(srcKana * 0.3)) : 1;
+    if (outKana < minKana) return "写回的不是日文（几乎没有假名）";
+    return null;
+  }
+  if (outKana > 4) return "写回的是日文，原文不是";
   if (latin(src) / chars(src) > 0.6 && latin(nextText) / chars(nextText) < 0.3) return "写回的不是原文的语言（英文字母没了）";
   return null;
 }
@@ -583,34 +616,39 @@ export async function planSync(
 ): Promise<SyncResult> {
   const edits: SyncEdit[] = [];
   const warnings: string[] = [];
-  const todo: { sec: TrSection; i: number }[] = [];
+  const todo: { sec: TrSection; before: string; gen: string; out: string }[] = [];
   // 整篇的语言：日文文稿里，标题这类不该出现别的语言的地方要按日文校验。
-  const docJa = kana(doc.sections.map((s) => s.src).join("\n")) >= 3;
+  const docJa = isJapaneseDoc(doc.sections.map((s) => s.src).join("\n"));
 
   for (const sec of doc.sections) {
-    if (sec.out === sec.gen) continue;
-    const src = splitBlocks(sec.src);
-    const gen = splitBlocks(sec.gen);
-    const out = splitBlocks(sec.out);
+    if (sameSection(sec.out, sec.gen)) continue;
+    // 模型翻译时会把 `---` 这类分隔块吞掉（有时又留着），那不算「段落结构变了」：
+    // 三边都把分隔块摘掉再比对，否则每次同步都会把整节拎去重译（又贵又容易漂移）。
+    const src = splitBlocks(sec.src).filter((b) => !isSeparator(b));
+    const gen = splitBlocks(sec.gen).filter((b) => !isSeparator(b));
+    const out = splitBlocks(sec.out).filter((b) => !isSeparator(b));
     if (src.length !== gen.length || gen.length !== out.length) {
-      warnings.push(`${sec.heading || "开头"}：段落结构变了，这一节整节重译`);
-      edits.push({ before: sec.src, after: await reverseWhole({ src: sec.src, gen: sec.gen, out: sec.out, docJa }, o, run) });
+      // 整节重译是最后的手段，也可能失败：别让一节抛错把已经算好的块级改动全丢掉。
+      try {
+        const after = await reverseWhole({ src: sec.src, gen: sec.gen, out: sec.out, docJa }, o, run);
+        warnings.push(`${sec.heading || "开头"}：段落结构变了，这一节整节重译`);
+        edits.push({ before: sec.src, after });
+      } catch (e) {
+        warnings.push(`${sec.heading || "开头"}：${(e as Error).message}`);
+      }
       continue;
     }
-    for (let i = 0; i < out.length; i++) if (out[i] !== gen[i]) todo.push({ sec, i });
+    for (let i = 0; i < out.length; i++) if (out[i] !== gen[i]) todo.push({ sec, before: src[i], gen: gen[i], out: out[i] });
   }
 
   let done = 0;
-  for (const { sec, i } of todo) {
+  for (const t of todo) {
     done++;
     hooks.onProgress?.(done, todo.length);
     try {
-      const before = splitBlocks(sec.src)[i];
-      const gen = splitBlocks(sec.gen)[i];
-      const out = splitBlocks(sec.out)[i];
-      edits.push({ before, after: await reverseBlock({ src: before, gen, out, docJa }, o, run) });
+      edits.push({ before: t.before, after: await reverseBlock({ src: t.before, gen: t.gen, out: t.out, docJa }, o, run) });
     } catch (e) {
-      warnings.push(`${sec.heading || "开头"}：${(e as Error).message}`);
+      warnings.push(`${t.sec.heading || "开头"}：${(e as Error).message}`);
     }
   }
   return { edits, warnings };

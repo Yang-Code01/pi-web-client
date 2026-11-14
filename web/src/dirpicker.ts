@@ -1,4 +1,5 @@
 import { api } from "./api.ts";
+import { formatBytes } from "./bytes.ts";
 import { createEl as el, fileIcon } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 
@@ -14,20 +15,6 @@ const BARE_DRIVE = /^[A-Za-z]:$/;
 
 type Volume = { root: string; total: number; free: number };
 type FileStat = { name: string; size: number; mtime: number };
-
-const UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
-
-/** Sizes sit in a column, so they get one decimal at most and never a trailing ".0". */
-export function formatBytes(n: number): string {
-  let value = Number.isFinite(n) && n > 0 ? n : 0;
-  let unit = 0;
-  while (value >= 1024 && unit < UNITS.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  const text = unit === 0 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/, "");
-  return `${text} ${UNITS[unit]}`;
-}
 
 /** Today → 18:37, this year → 11-01, older → 2025-12-31 (same idea as the composer's activity peek). */
 export function formatTime(ms: number): string {

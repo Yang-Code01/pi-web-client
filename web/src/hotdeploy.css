@@ -1,0 +1,333 @@
+/* 热部署 · 设置 →「工具」里那颗按钮打开的对话框（原型 A：单栏 880px）。
+   外壳沿用 sysmanage.css 的 .sys-back / .sys-console / .sys-head，
+   这里只管对话框内部。 */
+
+/* 壳子：比本机管理窄一档。直接子元素各自钉死 grid-row —— 中间任何一块
+   变成 display:none（状态条没横幅时就是），不许把底栏整体前挪一行。 */
+.sys-console.hot {
+  width: min(880px, 100%);
+  height: min(760px, 100%);
+  grid-template-rows: auto minmax(0, 1fr) auto auto auto;
+}
+.sys-console.hot > .sys-head { grid-row: 1; }
+.sys-console.hot > .hot-body { grid-row: 2; }
+.sys-console.hot > .hot-log { grid-row: 3; }
+.sys-console.hot > .hot-status { grid-row: 4; }
+.sys-console.hot > .hot-foot { grid-row: 5; }
+
+.hot .btn.tiny {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+/* ---------------------------------------------------------------- 主体 */
+
+/* 子块不许被 flex 压扁：压扁了内容照旧溢出，会画到下一块身上（进度条盖住分支列表）。 */
+.hot-body > * { flex: none; }
+
+.hot-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 20px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.hot-now {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.hot-k { font-size: 11.5px; color: var(--dim); }
+.hot-mono { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.hot-sep { width: 1px; height: 12px; background: var(--line-strong); }
+.hot-down { font-size: 11.5px; color: var(--warn); }
+
+.hot-block { min-height: 0; }
+
+.hot-label {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--dim);
+}
+.hot-right {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+.hot-clock.hot { color: var(--warn); }
+
+/* ---------------------------------------------------------------- 分支列表 */
+
+.hot-branches {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  max-height: 120px;
+  overflow: auto;
+  background: var(--panel);
+}
+
+/* 远端分支默认折在底下这颗里 */
+.hot-more {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.hot-more:hover { background: var(--panel-2); color: var(--text); }
+
+.hot-brow {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line-soft);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.hot-brow:first-child { border-top: 0; }
+.hot-brow:hover { background: var(--panel-2); }
+.hot-brow.sel {
+  background: var(--accent-bg);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.hot-brow.off { opacity: 0.45; cursor: default; }
+.hot-brow.off:hover { background: transparent; }
+.hot-brow.sel.off { background: var(--accent-bg); }
+
+.hot-radio {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--line-lit);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.hot-brow.sel .hot-radio {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 3px var(--panel), inset 0 0 0 8px var(--accent);
+}
+
+.hot-mid { min-width: 0; }
+
+.hot-bname {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.hot-brow.sel .hot-bname { color: var(--accent); }
+
+.hot-bmeta {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hot-path { color: var(--faint); }
+
+.hot-badge {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  line-height: 16px;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--dim);
+}
+.hot-badge.now { color: var(--accent); border-color: var(--accent-dim); }
+.hot-badge.ahead { color: var(--ok); border-color: var(--ok-dim); background: var(--ok-bg); }
+.hot-badge.lag { color: var(--warn); border-color: var(--warn-dim); background: var(--warn-bg); }
+.hot-badge.occ { color: var(--danger); border-color: var(--danger-dim); background: var(--danger-bg); }
+
+.hot-empty { padding: 18px 12px; text-align: center; font-size: 12px; color: var(--dim); }
+
+/* ---------------------------------------------------------------- 进度 */
+
+.hot-steps {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.hot-step {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 12.5px;
+  color: var(--dim);
+}
+.hot-step:first-child { border-top: 0; }
+.hot-ico { font-family: var(--mono); font-size: 12px; color: var(--faint); text-align: center; }
+.hot-name { color: var(--dim); }
+.hot-info { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+
+.hot-step.ok .hot-ico { color: var(--ok); }
+.hot-step.ok .hot-name { color: var(--text); }
+.hot-step.ok .hot-info { color: var(--dim); }
+.hot-step.run { background: var(--accent-bg); }
+.hot-step.run .hot-ico,
+.hot-step.run .hot-name { color: var(--accent); }
+.hot-step.fail { background: var(--danger-bg); }
+.hot-step.fail .hot-ico,
+.hot-step.fail .hot-name,
+.hot-step.fail .hot-info { color: var(--danger); }
+.hot-step.skip { opacity: 0.4; }
+
+.hot-spin {
+  display: inline-block;
+  animation: hot-spin 1s linear infinite;
+}
+@keyframes hot-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ---------------------------------------------------------------- 日志尾 */
+
+.hot-log {
+  margin: 0 20px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.hot-log > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+  list-style: none;
+}
+.hot-log > summary::-webkit-details-marker { display: none; }
+.hot-caret { font-family: var(--mono); font-size: 10px; transition: transform 0.12s; }
+.hot-log[open] .hot-caret { transform: rotate(90deg); }
+.hot-log__pre {
+  margin: 0;
+  padding: 0 12px 12px;
+  max-height: 160px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--dim);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ---------------------------------------------------------------- 状态条
+   固定压在底栏上方：滚分支列表时警告与结果都还在眼前。 */
+
+.hot-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.hot-status:not(.on) { display: none; }
+
+.hot-banner {
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.hot-banner.warn { color: #f5cf7a; border-color: var(--warn-dim); background: var(--warn-bg); }
+.hot-banner.ok { color: #9be9b8; border-color: var(--ok-dim); background: var(--ok-bg); }
+.hot-banner.err { color: #ffa3b2; border-color: var(--danger-dim); background: var(--danger-bg); }
+.hot-banner b { font-weight: 600; }
+.hot-banner__body { display: flex; flex-direction: column; gap: 8px; }
+.hot-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hot-acts .btn {
+  background: rgba(0, 0, 0, 0.25);
+  border-color: currentColor;
+  color: inherit;
+  opacity: 0.85;
+}
+.hot-acts .btn:hover { background: rgba(0, 0, 0, 0.4); opacity: 1; }
+.hot-count { font-size: 11.5px; opacity: 0.8; }
+.hot-why {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+
+/* ---------------------------------------------------------------- 底栏 */
+
+.hot-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--line);
+}
+.hot-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.hot-bad { color: var(--warn); }
+.hot-grow { flex: 1; }
+
+/* ---------------------------------------------------------------- 顶栏提示
+   主检出停在非 main 分支时挂一枚，点开就是热部署。 */
+
+.branch-chip {
+  flex: none;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border: 1px solid var(--warn-dim);
+  border-radius: 999px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.branch-chip:hover { border-color: var(--warn); }

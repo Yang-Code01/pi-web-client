@@ -46,6 +46,11 @@ function planNudgePath(): string {
   return process.env.PI_WEB_PLAN_NUDGE_EXT ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "plan-nudge.ts");
 }
 
+/** 邮箱工具（`mail_*`）：和预览工具一样只挂网页会话 —— 终端里的 pi 没有邮箱面板可确认。 */
+function mailToolPath(): string {
+  return process.env.PI_WEB_MAIL_TOOL ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "ext", "mail.ts");
+}
+
 /** #384：Context 面板的数据源（`context_with_system`），每次 LLM 调用前把六类组成估算落盘。模板里的
  * `__LOG_DIR__` 占位在 ensureContextLogExt() 里填成真实状态目录，`-e` 指向那个安装副本。 */
 function ensureContextLogExt(): string {
@@ -1169,6 +1174,8 @@ export class Session extends EventEmitter {
     args.push("-e", planNudgePath());
     // #384：Context 面板组成数据。每次 LLM 调用前写一行 JSONL（估算），面板读它画六类组成。
     args.push("-e", ensureContextLogExt());
+    // 邮箱：读、写、发用户的邮箱。发送前的确认由桥推给正在看这个会话的页面，不走审批弹窗。
+    args.push("-e", mailToolPath());
     const cwd = opts.cwd || this.state.cwd || process.cwd();
     // #28: the flags chosen at creation, every time this session's pi starts (resume included).
     const launch = readLaunch(id);

@@ -48,6 +48,9 @@ const READ_ONLY_TOOLS = new Set([
   // #86：随手问要能查天气/查文档。这几个只往网上看，不碰本地磁盘；代价是它们会把参数
   // （可能是从本机文件里读到的内容）发给外部服务 —— 这是「联网」本身的含义，不是漏洞。
   "web_search", "fetch_content", "source_check", "get_search_content",
+  // 邮箱的「看」：列账号、列信、读一封。它们不往本地写东西，只把远端内容拉进来，
+  // 和 web_search 同类。取附件会落盘、发信会对外说话，都不在这张白名单里。
+  "mail_accounts", "mail_list", "mail_read",
 ]);
 /**
  * 给内网通里的人发文字（#45 第 5 片，决定 33）：它不写本地磁盘，所以严格模式下放行，
@@ -249,7 +252,6 @@ export default function approvalGate(pi: any): void {
     const cwd = String(ctx.cwd ?? process.cwd());
     const { patterns, mode } = readAllow();
     const lower = toolName.toLowerCase();
-    const acts = SHELL_TOOLS.has(lower) || WRITE_TOOLS.has(lower);
     const looksOnly = READ_ONLY_TOOLS.has(lower) || ASK_TOOLS.has(lower) || readOnlyHint(pi, toolName);
 
     if (mode === "auto") return undefined;
