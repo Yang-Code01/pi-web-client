@@ -17,7 +17,16 @@
  */
 import { tr, errText } from "../i18n/index.ts";
 import { clampNum } from "../floatwin.ts";
-import type { SheetCell, SheetEditOp, SheetInfo, SheetMerge, SheetMeta, SheetStyle, SheetWindow } from "../types.ts";
+import type {
+  SheetCell,
+  SheetEditOp,
+  SheetInfo,
+  SheetMerge,
+  SheetMeta,
+  SheetStyle,
+  SheetStylePatch,
+  SheetWindow,
+} from "../types.ts";
 
 /** 默认行高（px）：Excel 15pt。 */
 export const ROW_H = 20;
@@ -113,6 +122,40 @@ function fontPx(st: SheetStyle | undefined, zoom: number): number {
   return pt2px(st?.f?.s ?? 11) * zoom;
 }
 
+/**
+ * #433：把一条补丁叠到原样式上（不修改原对象——原对象是 meta.styles 里的共享值）。
+ * 只处理补丁里出现的键，其余原样带过来，所以「只加粗」不会把底色冲掉。
+ */
+function mergeStyle(base: SheetStyle | undefined, patch: SheetStylePatch): SheetStyle {
+  const out: SheetStyle = { ...base };
+  if (patch.b !== undefined || patch.i !== undefined || patch.u !== undefined || patch.fs !== undefined || patch.fc !== undefined) {
+    const f = { ...out.f };
+    if (patch.b !== undefined) f.b = patch.b ? 1 : undefined;
+    if (patch.i !== undefined) f.i = patch.i ? 1 : undefined;
+    if (patch.u !== undefined) f.u = patch.u ? 1 : undefined;
+    if (patch.fs !== undefined) f.s = patch.fs;
+    if (patch.fc !== undefined) f.c = patch.fc;
+    out.f = f;
+  }
+  if (patch.bg !== undefined) {
+    if (patch.bg === null) delete out.bg;
+    else out.bg = patch.bg;
+  }
+  if (patch.h !== undefined) {
+    if (patch.h === null) delete out.h;
+    else out.h = patch.h;
+  }
+  if (patch.v !== undefined) {
+    if (patch.v === null) delete out.v;
+    else out.v = patch.v;
+  }
+  if (patch.w !== undefined) {
+    if (patch.w) out.w = 1;
+    else delete out.w;
+  }
+  return out;
+}
+
 export class SheetGrid {
   readonly root: HTMLElement;
   private readonly host: SheetGridHost;
@@ -174,6 +217,12 @@ export class SheetGrid {
 
   /** #432：改过但还没保存的格子（key = "r:c"）。null 表示「清空」，跟「没这格」区分开。 */
   private edits = new Map<string, SheetCell | null>();
+  /** #433：只改样式、没改内容的格子（保存时并进 editOps）。 */
+  private styleOver = new Map<string, SheetStylePatch>();
+  /** #433：功能区「冻结窗格」改的冻结位置，优先于文件里的。 */
+  private freezeOver: { rows: number; cols: number } | null = null;
+  /** #433：公式视图——格子里显示 `=SUM(...)` 而不是结果。 */
+  private showFormulas = false;
   private undoStack: EditEntry[][] = [];
   private redoStack: EditEntry[][] = [];
   private editor: { r: number; c: number; node: HTMLTextAreaElement; original: string } | null = null;
@@ -393,7 +442,18 @@ export class SheetGrid {
   }
 
   private freeze(): { rows: number; cols: number } {
-    return this.info().freeze ?? { rows: 0, cols: 0 };
+    return this.freezeOver ?? this.info().freeze ?? { rows: 0, cols: 0 };
+  }
+
+  /** #433：照当前焦点冻结（从焦点格往上、往左都冻住）；`null` = 取消，回到文件里的设置。 */
+  setFreeze(at: { rows: number; cols: number } | null): void {
+    this.freezeOver = at;
+    this.render();
+    this.notify();
+  }
+
+  get frozen(): { rows: number; cols: number } {
+    return this.freeze();
   }
 
   private leftOf(c: number): number {
@@ -533,6 +593,10 @@ export class SheetGrid {
   }
 
   /** 开关编辑模式（浮窗的「编辑」按钮）；关掉时把正在编辑的那格收尾。 */
+  get editing(): boolean {
+    return this.editMode;
+  }
+
   setEditMode(on: boolean): void {
     if (this.editMode === on) return;
     this.editMode = on;
@@ -540,26 +604,120 @@ export class SheetGrid {
     this.root.classList.toggle("is-editing", on);
   }
 
+  /** #433：选区矩形（给功能区做「当前这格是什么状态」）。 */
+  get selectionBox(): { r0: number; c0: number; r1: number; c1: number } {
+    return this.rect();
+  }
+
+  /** #433：把样式补丁刷到选中的每一格（只记在本地，保存时才写文件）。 */
+  applyStyleToSelection(patch: SheetStylePatch): void {
+    if (!this.editMode) return;
+    const s = this.rect();
+    const cells = (s.r1 - s.r0 + 1) * (s.c1 - s.c0 + 1);
+    if (cells > 20000) return;
+    for (let r = s.r0; r <= s.r1; r++) {
+      for (let c = s.c0; c <= s.c1; c++) {
+        const key = `${r}:${c}`;
+        this.styleOver.set(key, { ...this.styleOver.get(key), ...patch });
+      }
+    }
+    this.notifyDirty();
+    this.render();
+  }
+
+  /** #433：焦点格的样式（功能区按它亮按钮）。 */
+  get activeStyle(): SheetStyle | undefined {
+    return this.styleOf(this.cellAt(this.focus.r, this.focus.c));
+  }
+
+  /** #433：网格线开关（和文件里的 `showGridLines` 是两回事，临时视图用）。 */
+  setGrid(on: boolean): void {
+    if (this.showGrid === on) return;
+    this.showGrid = on;
+    this.render();
+  }
+
+  get gridShown(): boolean {
+    return this.showGrid;
+  }
+
+  /** #433：往焦点格写一段文本或公式（功能区按钮用，不弹编辑框）。 */
+  writeAt(text: string): void {
+    if (!this.editMode) return;
+    const { r, c } = this.focus;
+    const cell = this.parseInput(text, r, c);
+    this.commitBatch([this.setEdit(r, c, cell)]);
+  }
+
+  /**
+   * #433：自动求和——把焦点上方连续的数字框进来；上面没有就往左边找。
+   * 这是 WPS / Excel 的「Σ」默认行为，找不到就落一个空的 `=SUM()`。
+   */
+  autoSum(fn: "SUM" | "AVERAGE" | "COUNT" | "MAX" | "MIN"): void {
+    const { r, c } = this.focus;
+    const num = (rr: number, cc: number) => this.cellAt(rr, cc)?.k === "n";
+    let r0 = r;
+    while (r0 > 0 && num(r0 - 1, c)) r0--;
+    let c0 = c;
+    let c1 = c;
+    if (r0 === r) {
+      while (c0 > 0 && num(r, c0 - 1)) c0--;
+      while (c1 < this.info().cols - 1 && num(r, c1 + 1)) c1++;
+    }
+    const empty = r0 === r && c0 === c;
+    const ref = empty ? "" : `${colName(c0)}${r0 + 1}:${colName(c1)}${r + 1}`;
+    this.writeAt(`=${fn}(${ref})`);
+  }
+
+  /** #433：功能区「剪切」用——清空选中内容（和 Delete 走同一套撤销栈）。 */
+  clearSelectionForRibbon(): void {
+    this.clearSelection();
+  }
+
+  /** #433：公式视图开关。 */
+  setShowFormulas(on: boolean): void {
+    if (this.showFormulas === on) return;
+    this.showFormulas = on;
+    this.render();
+  }
+
+  get formulasShown(): boolean {
+    return this.showFormulas;
+  }
+
   /** 有没保存的改动。 */
   get dirty(): boolean {
-    return this.edits.size > 0;
+    return this.edits.size > 0 || this.styleOver.size > 0;
   }
 
   get editCount(): number {
-    return this.edits.size;
+    return this.dirtyKeys().length;
+  }
+
+  /** 改过内容或只改过样式的格子，去重。 */
+  private dirtyKeys(): string[] {
+    return [...new Set([...this.edits.keys(), ...this.styleOver.keys()])];
   }
 
   /** 把改动整理成桥端要的形状。公式只发正文，别的按格子的实际类型发。 */
   editOps(): SheetEditOp[] {
     const out: SheetEditOp[] = [];
-    for (const [key, cell] of this.edits) {
+    for (const key of this.dirtyKeys()) {
       const [r, c] = key.split(":").map(Number);
-      if (!cell) out.push({ r, c, cell: null });
-      else if (cell.f) out.push({ r, c, cell: { k: "f", f: cell.f } });
-      else if (cell.k === "n") out.push({ r, c, cell: { k: "n", v: Number(cell.v ?? cell.t) } });
-      else if (cell.k === "b") out.push({ r, c, cell: { k: "b", v: cell.t.toUpperCase() === "TRUE" ? 1 : 0 } });
-      else if (cell.k === "e") out.push({ r, c, cell: { k: "e", t: cell.t } });
-      else out.push({ r, c, cell: { k: "s", t: cell.t } });
+      const cell = this.cellAt(r, c);
+      const style = this.styleOver.get(key);
+      let write: SheetEditOp["cell"] = null;
+      if (cell) {
+        if (cell.f) write = { k: "f", f: cell.f };
+        else if (cell.k === "n") write = { k: "n", v: Number(cell.v ?? cell.t) };
+        else if (cell.k === "b") write = { k: "b", v: cell.t.toUpperCase() === "TRUE" ? 1 : 0 };
+        else if (cell.k === "e") write = { k: "e", t: cell.t };
+        else write = { k: "s", t: cell.t };
+      }
+      // 只改样式、格子本来是空的：发个空串，桥端会写成「带样式的空格」。
+      if (!write && style) write = { k: "s", t: "" };
+      if (write && style) write.style = style;
+      out.push({ r, c, cell: write });
     }
     return out;
   }
@@ -567,6 +725,7 @@ export class SheetGrid {
   /** 保存成功后清账：改动已经落盘，接着从文件里重新取。 */
   clearEdits(): void {
     this.edits.clear();
+    this.styleOver.clear();
     this.undoStack = [];
     this.redoStack = [];
     this.notifyDirty();
@@ -574,7 +733,7 @@ export class SheetGrid {
   }
 
   private notifyDirty(): void {
-    this.host.onDirty?.(this.edits.size);
+    this.host.onDirty?.(this.editCount);
   }
 
   private setEdit(r: number, c: number, cell: SheetCell | null): EditEntry {
@@ -1450,8 +1609,11 @@ export class SheetGrid {
   }
 
   private styleOf(cell: SheetCell | undefined): SheetStyle | undefined {
-    if (!cell || cell.s == null) return undefined;
-    return this.host.meta.styles?.[cell.s];
+    if (!cell) return undefined;
+    const base = cell.s == null ? undefined : this.host.meta.styles?.[cell.s];
+    const over = this.styleOver.get(`${cell.r}:${cell.c}`);
+    if (!over) return base;
+    return mergeStyle(base, over);
   }
 
   /** 某格（合并区按左上角算）的样式。 */
@@ -1534,7 +1696,7 @@ export class SheetGrid {
     node.style.paddingRight = `${padX}px`;
     node.style.paddingBottom = `${Math.round(1.5 * z)}px`;
 
-    const text = cell?.t ?? "";
+    const text = this.showFormulas && cell?.f ? `=${cell.f}` : (cell?.t ?? "");
     if (fx?.bar) {
       const bar = el("span", "sd-bar");
       bar.style.width = `${Math.round(fx.bar[0] * 1000) / 10}%`;

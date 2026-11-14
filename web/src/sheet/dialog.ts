@@ -8,6 +8,7 @@ import { tr, errText, fmtTime, fmtNum } from "../i18n/index.ts";
 import type { SheetEditOp, SheetInfo, SheetMatches, SheetMeta, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
 import { SheetGrid, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP } from "./grid.ts";
+import { Ribbon } from "./ribbon.ts";
 import { SheetPage } from "./page.ts";
 
 const KEY = "pi.sheetGeom";
@@ -71,8 +72,9 @@ export class SheetDialog {
   private readonly pane: HTMLElement;
   private readonly panes: HTMLElement | null = null;
   private readonly split: HTMLElement | null = null;
-  private readonly viewTabs: HTMLElement | null = null;
-  private readonly viewTabBtns: HTMLButtonElement[] = [];
+  private readonly ribbonSlot: HTMLElement;
+  private ribbon: Ribbon | null = null;
+  private readonly acts: HTMLElement[] = [];
   private page: SheetPage | null = null;
   private readonly footBar: HTMLElement;
   /** #108：底部的工作表标签与「N 个隐藏工作表」提示（`.sd-tab` 是 CSV 的表格/源码，别混）。 */
@@ -89,7 +91,6 @@ export class SheetDialog {
   private readonly findBar: HTMLElement;
   private readonly findIn: HTMLInputElement;
   private readonly findAt: HTMLElement;
-  private readonly findBtn: HTMLButtonElement;
   /** #107：底栏的定位信息（只读 / 行列数）与缩放。 */
   private readonly roChip: HTMLElement;
   private readonly dims: HTMLElement;
@@ -153,24 +154,11 @@ export class SheetDialog {
       this.split.title = tr("拖动调整左右比例（双击复原）");
       this.split.setAttribute("role", "separator");
       this.split.setAttribute("aria-orientation", "vertical");
+      // #433：原来那两颗「网格 / 页面视图」按钮按用户要求去掉了；
+      // 纸面还留着，改从功能区「页面 → 纸张视图」进出。
       this.page = new SheetPage(opts.page.token);
-      this.viewTabs = el("nav", "sd-viewtabs");
-      this.viewTabs.setAttribute("role", "tablist");
-      this.viewTabs.setAttribute("aria-label", tr("页面视图"));
-      for (const [id, label] of [
-        ["grid", tr("网格")],
-        ["page", tr("页面视图")],
-      ] as const) {
-        const btn = el("button", "sd-viewtab", label);
-        btn.type = "button";
-        btn.dataset.view = id;
-        btn.setAttribute("role", "tab");
-        btn.onclick = () => this.showView(id);
-        this.viewTabBtns.push(btn);
-        this.viewTabs.append(btn);
-      }
       this.panes.append(this.pane, this.split, this.page.root);
-      this.body.append(this.viewTabs, this.panes);
+      this.body.append(this.panes);
       this.wirePage();
     } else {
       this.body.append(this.pane);
@@ -198,12 +186,11 @@ export class SheetDialog {
     this.tier = el("span", "sd-tier");
     this.tier.hidden = true;
 
-    // #107：查找 / 引用那条工具条（盖在公式栏上面，只在表格面显示）。
-    this.tools = el("div", "sd-tools");
-    this.findBtn = el("button", "sd-find-btn", tr("查找"));
-    this.findBtn.type = "button";
-    this.findBtn.title = tr("查找（Ctrl+F）");
-    this.findBtn.onclick = () => this.openFind();
+    // #433：功能区（开始/插入/页面/公式/数据/视图）占掉原来那条工具条；
+    // 查找输入框单独一行，点「查找」才展开。
+    this.ribbonSlot = el("div", "sd-rbslot");
+    this.tools = el("div", "sd-findrow");
+    this.tools.hidden = true;
     this.findBar = el("div", "sd-find");
     this.findBar.hidden = true;
     this.findIn = el("input", "sd-find-in");
@@ -230,12 +217,11 @@ export class SheetDialog {
     next.onclick = () => this.step(1);
     this.findBar.append(this.findIn, this.findAt, prev, next);
 
-    const spacer = el("span", "sd-spacer");
     const quote = el("button", "sd-act sd-quote", tr("引用给 pi"));
     quote.type = "button";
     quote.title = tr("把选区（文件路径 + A1:C9）插进对话框，不发送");
     quote.onclick = () => this.quote();
-    this.tools.append(this.findBtn, this.findBar, spacer);
+    this.tools.append(this.findBar);
     if (opts.saveSheet) {
       const edit = el("button", "sd-act sd-editbtn", tr("编辑"));
       edit.type = "button";
@@ -248,20 +234,18 @@ export class SheetDialog {
       save.hidden = true;
       save.onclick = () => void this.saveGrid();
       this.gridSave = save;
-      this.tools.append(edit, save);
+      this.acts.push(edit, save);
     }
-    this.tools.append(quote);
+    this.acts.push(quote);
     // CSV 没有源码面以外的查找（本地内存里已经有全文，但本票只做 .xlsx）。
-    if (!opts.findSheet) {
-      this.findBtn.hidden = true;
-      this.findBar.hidden = true;
-    }
+    if (!opts.findSheet) this.findBar.hidden = true;
     if (!opts.onQuote) quote.hidden = true;
 
     this.footBar = this.foot(opts);
     this.footBar.prepend(this.wsTabs, this.tier, this.status, this.wsHint, this.cfHint);
     // 有页面视图时格子挂在 .sd-panes 里，工具条要插在那一层之前。
     const anchor = this.panes && this.panes.parentElement === this.body ? this.panes : this.pane;
+    this.body.insertBefore(this.ribbonSlot, anchor);
     this.body.insertBefore(this.tools, anchor);
     this.root.append(grip, this.head, this.body, this.footBar, resize);
     this.root.addEventListener("keydown", this.onKeyDown);
@@ -279,6 +263,16 @@ export class SheetDialog {
       this.openFind();
       return;
     }
+    // #433：功能区的快捷键，和 WPS 一样（加粗/斜体/下划线）。
+    if (mod && this.grid?.editing && (ev.key === "b" || ev.key === "i" || ev.key === "u")) {
+      ev.preventDefault();
+      const cur = this.grid.activeStyle?.f;
+      const patch =
+        ev.key === "b" ? { b: !cur?.b } : ev.key === "i" ? { i: !cur?.i } : { u: !cur?.u };
+      this.grid.applyStyleToSelection(patch);
+      this.ribbon?.update();
+      return;
+    }
     // #432：Excel 的肌肉记忆——Ctrl+S 存编辑，不用去点按钮。
     if (mod && (ev.key === "s" || ev.key === "S") && this.opts.saveSheet) {
       ev.preventDefault();
@@ -294,6 +288,7 @@ export class SheetDialog {
   private openFind(): void {
     if (this.closed || !this.grid || !this.opts.findSheet) return;
     this.findBar.hidden = false;
+    this.tools.hidden = false;
     this.findIn.focus();
     this.findIn.select();
     if (this.findIn.value.trim()) void this.runFind(this.findIn.value);
@@ -301,6 +296,7 @@ export class SheetDialog {
 
   private closeFind(): void {
     this.findBar.hidden = true;
+    this.tools.hidden = true;
     this.hits = [];
     this.hitAt = 0;
     this.truncated = false;
@@ -683,7 +679,10 @@ export class SheetDialog {
       sheet,
       fetchWindow: this.opts.fetchWindow,
       mediaUrl: (sheet, id) => this.opts.mediaUrl?.(sheet, id) ?? "",
-      onSelect: (sel) => this.showFormula(sel),
+      onSelect: (sel) => {
+        this.showFormula(sel);
+        this.ribbon?.update();
+      },
       onStale: () => this.stale(),
       onDirty: (n) => this.setDirty(n),
       onEditing: (state) => {
@@ -692,7 +691,20 @@ export class SheetDialog {
     });
     this.grid = grid;
     this.pane.replaceChildren(grid.root);
+    if (!this.ribbon) {
+      this.ribbon = new Ribbon(() => this.grid, this.acts, {
+        find: () => this.openFind(),
+        page: this.page
+          ? {
+              on: () => this.activeView === "page",
+              toggle: () => this.showView(this.activeView === "page" ? "grid" : "page"),
+            }
+          : undefined,
+      });
+      this.ribbonSlot.replaceChildren(this.ribbon.el);
+    }
     await grid.start();
+    this.ribbon.update();
   }
 
   /** 源码改过并保存之后换一份数据：行列数都可能变，网格整个重建。 */
@@ -793,12 +805,8 @@ export class SheetDialog {
 
   private showView(view: "grid" | "page"): void {
     this.activeView = view;
-    for (const btn of this.viewTabBtns) {
-      const on = btn.dataset.view === view;
-      btn.classList.toggle("on", on);
-      btn.setAttribute("aria-selected", on ? "true" : "false");
-    }
     this.applyView();
+    this.ribbon?.update();
     if (view === "page") this.page?.reveal();
     else this.grid?.refresh();
   }

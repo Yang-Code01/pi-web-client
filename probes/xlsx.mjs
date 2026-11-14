@@ -739,6 +739,49 @@ try {
   await page.locator(".sd-close").first().click();
   await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
 
+  // ---------------------------------------------------------------- 功能区（#433）
+  // 照 WPS 的六个页签排；常用命令要真的改到格子上（样式补丁 → styles.xml）。
+  await openSheet("styled.xlsx");
+  const rbTabs = (await page.locator(".sd-rb-tab").allTextContents()).join("/");
+  check("功能区六个页签", rbTabs === "开始/插入/页面/公式/数据/视图", rbTabs);
+  check("原来的网格/页面视图两颗按钮没了", (await page.locator(".sd-viewtab").count()) === 0);
+  check("工具栏在编辑模式下出现「完成」", (await page.locator(".sd-editbtn").count()) === 1);
+  await page.locator(".sd-editbtn").click();
+  await page.locator('.sd-cell[data-r="4"][data-c="1"]').click();
+  await page.locator('.sd-rb-b[title="加粗"]').click();
+  await page.waitForTimeout(200);
+  const rbBold = await page.evaluate(() => {
+    const n = document.querySelector('.sd-cell[data-r="4"][data-c="1"]');
+    return { w: getComputedStyle(n).fontWeight, on: !!document.querySelector('.sd-rb-b[title="加粗"].on') };
+  });
+  check("加粗立刻画到格子上", rbBold.w === "700", JSON.stringify(rbBold));
+  check("加粗按钮亮着", rbBold.on);
+  await page.locator('.sd-rb-b[title="填充：黄 / 无 切换"]').click();
+  await page.waitForTimeout(200);
+  const rbFill = await page.evaluate(() => {
+    const n = document.querySelector('.sd-cell[data-r="4"][data-c="1"]');
+    return getComputedStyle(n).backgroundColor;
+  });
+  check("填充色立刻生效", rbFill === "rgb(255, 242, 204)", rbFill);
+  await page.locator('.sd-rb-tab[data-pane="insert"]').click();
+  check("插入页签有自动求和", (await page.locator('.sd-rb-b[title*="自动求和"]').count()) >= 1);
+  await page.locator('.sd-rb-tab[data-pane="home"]').click();
+  // 存下去，重开看样式是不是真的写进文件了。
+  await page.locator(".sd-save-grid").click();
+  await until(async () => page.locator(".sd-save-grid").isHidden(), 20000, "saved");
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+  await openSheet("styled.xlsx");
+  const rbStyle = await page.evaluate(() => {
+    const n = document.querySelector('.sd-cell[data-r="4"][data-c="1"]');
+    const cs = getComputedStyle(n);
+    return { w: cs.fontWeight, bg: cs.backgroundColor };
+  });
+  check("重开后加粗还在", rbStyle.w === "700", JSON.stringify(rbStyle));
+  check("重开后填充还在", rbStyle.bg === "rgb(255, 242, 204)", JSON.stringify(rbStyle));
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+
   // ---------------------------------------------------------------- 条件格式（#109）
   // 五类规则都在桥端求值，前端只吃结果：底色、字色、加粗、数据条宽度、图标等级。
   await openSheet("cf.xlsx");
@@ -1061,6 +1104,12 @@ try {
 
   // ---------------------------------------------------------------- #110 大表三档
   // 先把 xlsx 那扇关掉：文件管理器是在 viewer 里，浮窗留着会与下面的断言撞车。
+  /** #433：「网格 / 页面视图」两颗按钮按用户要求去掉了，纸面改从功能区「页面 → 纸张视图」切。 */
+  const togglePaper = async () => {
+    await page.locator('.sd-rb-tab[data-pane="page"]').click();
+    await page.locator('.sd-rb-b', { hasText: "纸张视图" }).click();
+  };
+
   const closeSheet = async () => {
     const close = page.locator(".sd-close").first();
     if (await close.count()) await close.click();
@@ -1256,7 +1305,7 @@ if (SKIP_PDF) {
   // 没有 LibreOffice：转换必然失败，但「失败只影响页面视图」仍然可验。
   await openSheet("chart.xlsx");
   check("没有 LibreOffice 时网格仍可用", (await cellText(0, 0)) === "地区", String(await cellText(0, 0)));
-  await page.locator('.sd-viewtab[data-view="page"]').click();
+  await togglePaper();
   await page.locator(".sd-pg-error").waitFor({ timeout: 20000 });
   const reason = await page.locator(".sd-pg-error").innerText();
   check("没有 LibreOffice 时页面视图说原因", reason.includes("LibreOffice"), reason);
@@ -1286,12 +1335,21 @@ if (SKIP_PDF) {
     const st = await splitState();
     return st.grid && st.paper ? st.grid.w / (st.grid.w + st.paper.w) : 0;
   };
+  /** #433：纸面现在是功能区里的一个开关，不是两个标签，所以按「目标状态」点，别数次数。 */
+  const setPaper = async (on) => {
+    for (let i = 0; i < 5; i++) {
+      const st = await splitState();
+      if (st.paperShown === on) return;
+      await togglePaper();
+      await page.waitForTimeout(250);
+    }
+  };
 
   const getBefore = pdfResponses.filter((r) => r.method === "GET").length;
   await openSheet("chart.xlsx");
   check("图表文件打开先出格子", (await splitState()).gridShown && !(await splitState()).paperShown, JSON.stringify(await splitState()));
   // 后台已把转换跑起来（#112：先出格子，页面视图在后台生成）；点「页面视图」标签切过去，等 iframe 出来。
-  await page.locator('.sd-viewtab[data-view="page"]').click();
+  await togglePaper();
   await page.locator(".sd-pg-frame").waitFor({ timeout: 90000 });
   check("宽窗两栏都在", (await splitState()).gridShown && (await splitState()).paperShown, JSON.stringify(await splitState()));
   await page.waitForTimeout(2500);
@@ -1332,7 +1390,7 @@ if (SKIP_PDF) {
   const getBeforeReopen = pdfResponses.filter((r) => r.method === "GET").length;
   const tOpen0 = Date.now();
   await openSheet("chart.xlsx");
-  await page.locator('.sd-viewtab[data-view="page"]').click();
+  await togglePaper();
   await page.locator(".sd-pg-frame").waitFor({ timeout: 15000 });
   const reopenMs = Date.now() - tOpen0;
   check("第二次打开直接出来", reopenMs < 6000, `${reopenMs}ms`);
@@ -1340,28 +1398,30 @@ if (SKIP_PDF) {
   const reopenedRatio = await splitRatio();
   check("重开后分界比例还在", Math.abs(reopenedRatio - wide1) < 0.03, `${reopenedRatio.toFixed(2)} vs ${wide1.toFixed(2)}`);
 
-  // 缩到 900 以下：两栏退成两个标签页，只有一个面可见。
+  // 缩到 900 以下：只剩一个面，靠功能区的「纸张视图」切。
   await drag(".sd-resize", -400, 0);
+  await setPaper(false);
   let st = await splitState();
-  check("窄窗出现两个标签页", st.tabs, JSON.stringify(st));
+  check("窄窗不再有网格/页面视图标签", !st.tabs, JSON.stringify(st));
   check("窄窗分界线消失", !st.divider);
-  check("窄窗只显示一个面", st.gridShown !== st.paperShown, JSON.stringify(st));
-  await page.locator('.sd-viewtab[data-view="page"]').click();
+  check("窄窗只剩网格", st.gridShown && !st.paperShown, JSON.stringify(st));
+  await setPaper(true);
   st = await splitState();
-  check("切到页面视图标签", !st.gridShown && st.paperShown && (await page.locator(".sd-pg-frame").count()) === 1, JSON.stringify(st));
+  check("窄窗切到纸面", !st.gridShown && st.paperShown && (await page.locator(".sd-pg-frame").count()) === 1, JSON.stringify(st));
   await page.screenshot({ path: path.join(OUT, "09-page-view-narrow.png") });
-  await page.locator('.sd-viewtab[data-view="grid"]').click();
+  await setPaper(false);
   st = await splitState();
-  check("切回网格标签", st.gridShown && !st.paperShown, JSON.stringify(st));
+  check("窄窗切回网格", st.gridShown && !st.paperShown, JSON.stringify(st));
 
   await drag(".sd-resize", 400, 0);
+  await setPaper(false);
   st = await splitState();
   check("拉宽后回到整幅网格", st.gridShown && !st.paperShown && !st.divider && st.grid.w > 1000, JSON.stringify(st));
-  await page.locator('.sd-viewtab[data-view="page"]').click();
+  await setPaper(true);
   st = await splitState();
   check("宽窗切页面视图回到并排", st.gridShown && st.paperShown && st.divider, JSON.stringify(st));
   check("拉宽后比例仍是记住的那份", Math.abs((await splitRatio()) - wide1) < 0.03);
-  await page.locator('.sd-viewtab[data-view="grid"]').click();
+  await setPaper(false);
   st = await splitState();
   check("宽窗切回网格收起纸面", st.gridShown && !st.paperShown, JSON.stringify(st));
   await closeSheet();
@@ -1371,8 +1431,8 @@ if (SKIP_PDF) {
   await openSheet("report.xlsx");
   check("无图表默认整幅网格", (await splitState()).grid.w > 1000 && !(await splitState()).paperShown, JSON.stringify(await splitState()));
   check("无图表文件不自动转", pdfResponses.filter((r) => r.method === "GET").length === getBeforeManual);
-  check("宽窗也有页面视图标签", (await splitState()).tabs);
-  await page.locator('.sd-viewtab[data-view="page"]').click();
+  check("宽窗没有网格/页面视图标签", !(await splitState()).tabs);
+  await setPaper(true);
   check("无图表给出「生成页面视图」按钮", (await page.locator(".sd-pg-idle .sd-act").count()) === 1);
   await page.locator(".sd-pg-idle .sd-act").click();
   await page.locator(".sd-pg-frame").waitFor({ timeout: 90000 });
@@ -1392,7 +1452,7 @@ if (SKIP_PDF) {
   await openSheet("chart.xlsx");
   // 先出格子，失败只影响页面视图：网格照常能滚。
   check("转换失败时网格仍可用", (await cellText(0, 0)) === "地区", String(await cellText(0, 0)));
-  await page.locator('.sd-viewtab[data-view="page"]').click();
+  await togglePaper();
   await page.locator(".sd-pg-error").waitFor({ timeout: 20000 });
   const failText = await page.locator(".sd-pg-error").innerText();
   check("转换失败显示原因", failText.includes("LibreOffice 不在"), failText);

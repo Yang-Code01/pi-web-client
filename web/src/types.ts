@@ -670,11 +670,34 @@ export interface SheetCell {
   s?: number;
 }
 
+/**
+ * #433 样式补丁：只带「要改的那几项」，桥端会克隆原来的 xf 再改，
+ * 所以同格底色、字号这些没提的属性不会被抹掉。
+ */
+export interface SheetStylePatch {
+  /** 加粗 / 斜体 / 下划线。 */
+  b?: boolean;
+  i?: boolean;
+  u?: boolean;
+  /** 字号（pt）。 */
+  fs?: number;
+  /** 字色 `#RRGGBB`。 */
+  fc?: string;
+  /** 填充色；null = 去掉填充。 */
+  bg?: string | null;
+  h?: "l" | "c" | "r" | null;
+  v?: "t" | "m" | "b" | null;
+  /** 自动换行。 */
+  w?: boolean;
+  /** 内置数字格式 id（0 常规 / 2 0.00 / 3 #,##0 / 4 #,##0.00 / 9 0% / 10 0.00% / 14 日期）。 */
+  nf?: number;
+}
+
 /** #432：保存时提交给桥端的一条改动；`cell` 为 null 表示清空这一格。 */
 export interface SheetEditOp {
   r: number;
   c: number;
-  cell: { k: "s" | "n" | "b" | "e" | "f"; t?: string; v?: number; f?: string } | null;
+  cell: { k: "s" | "n" | "b" | "e" | "f"; t?: string; v?: number; f?: string; style?: SheetStylePatch } | null;
 }
 
 /** 合并区，0 基闭区间。 */

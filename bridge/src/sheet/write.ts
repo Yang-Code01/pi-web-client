@@ -11,6 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { strToU8, unzipSync, zipSync } from "fflate";
 import { entryBytes, zipIndex } from "./zip.ts";
+import { StyleBook, type CellStylePatch } from "./style-write.ts";
 
 export interface CellWrite {
   k: "s" | "n" | "b" | "e" | "f";
@@ -20,6 +21,8 @@ export interface CellWrite {
   v?: number;
   /** 公式正文；`k === "f"` 时用它。 */
   f?: string;
+  /** #433：顺手改这格的样式（字体开关 / 填充 / 对齐 / 数字格式）。 */
+  style?: CellStylePatch;
 }
 
 export interface EditOp {
@@ -74,8 +77,8 @@ function attrOf(tag: string, name: string): string | null {
 }
 
 /** 把一条改动写成 `<c>`；`s` 是原来那格的样式下标（有就留着）。 */
-function cellXml(r: number, c: number, cell: CellWrite | null, style: string | null): string {
-  if (!cell) return "";
+function cellXml(r: number, c: number, cell: CellWrite | null, style: string | null, keep = false): string {
+  if (!cell) return keep && style && style !== "0" ? `<c r="${colName(c)}${r + 1}" s="${style}"/>` : "";
   const ref = `${colName(c)}${r + 1}`;
   const s = style && /^\d+$/.test(style) && style !== "0" ? ` s="${style}"` : "";
   if (cell.k === "f") {
@@ -111,7 +114,7 @@ const CELL_RE = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
 /**
  * 把改动合并进一张表的 XML。只重写动到的行：没动的行连字节都不变（保留原格式与公式）。
  */
-export function applyEdits(xml: string, ops: EditOp[]): string {
+export function applyEdits(xml: string, ops: EditOp[], styles: StyleBook | null = null): string {
   const data = /<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/.exec(xml);
   if (!data) return xml;
 
@@ -169,8 +172,13 @@ export function applyEdits(xml: string, ops: EditOp[]): string {
       const op = edits.get(c);
       if (op) {
         const old = row.cells.get(c) ?? "";
-        const s = old ? attrOf(`<c ${old.slice(2, old.indexOf(">"))}`, "s") : null;
-        const next = cellXml(rn, c, op.cell, s);
+        let s = old ? attrOf(`<c ${old.slice(2, old.indexOf(">"))}`, "s") : null;
+        // #433：先按补丁分配新的 xf 下标，再把这格写出来。
+        if (op.cell?.style && styles) {
+          const base = s && /^\d+$/.test(s) ? Number(s) : 0;
+          s = String(styles.alloc(base, op.cell.style));
+        }
+        const next = cellXml(rn, c, op.cell, s, !!op.cell?.style);
         if (next) out.push(next);
         continue;
       }
@@ -268,7 +276,10 @@ export async function saveBook(abs: string, sheet: string, ops: EditOp[], expect
   const raw = files[part];
   if (!raw) throw Object.assign(new Error("找不到这个工作表"), { code: "sheet_write" });
   const xml = utf8.decode(raw);
-  const next = applyEdits(xml, ops);
+  const styleXml = files["xl/styles.xml"] ? utf8.decode(files["xl/styles.xml"]) : null;
+  const styles = StyleBook.read(styleXml);
+  const next = applyEdits(xml, ops, styles);
+  if (styles.changed) files["xl/styles.xml"] = strToU8(styles.toXml());
   if (next !== xml) files[part] = strToU8(next);
   // 公式改过：让打开它的程序重算，别拿旧缓存当真。
   const wb = files["xl/workbook.xml"];
