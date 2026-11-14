@@ -2990,6 +2990,8 @@ export class App {
         this.pastes = [];
         this.chat.add({ id: clientId, kind: "user", text: text || tr("（图片）"), images: [], ...(skill ? { skill } : {}), ts: new Date().toISOString() });
         this.renderChat();
+        // D250: 按回车的是他本人 —— 读完旧文发一条，自己那条不能落在视口外面等一颗「有新内容」。
+        this.chat.follow();
       }
       if (payload.sessionId) this.drafts.delete(payload.sessionId);
       this.persistDrafts();
@@ -14323,6 +14325,8 @@ export class App {
       if (this.currentId === id) {
         this.chat.add({ id: clientId, kind: "user", text, images: [], ts: new Date().toISOString() });
         this.renderChat();
+        // D250: 「继续」也是他按的，跟 Enter 一样落到自己这条气泡上。
+        this.chat.follow();
         const ta = this.textarea;
         if (ta && caret != null) {
           ta.focus();

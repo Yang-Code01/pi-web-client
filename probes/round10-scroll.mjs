@@ -233,7 +233,7 @@ try {
   assert(!(await jump.first().locator(".jump-new").isVisible()), "with nothing new there is no badge");
   assert((await jump.first().innerText()).trim() === "↓", `its text is the arrow alone (got ${JSON.stringify(await jump.first().innerText())})`);
   const mid = circle.x + circle.width / 2 - vp.x;
-  // 中心按内容盒（clientWidth）算，不按 border-box：滚动条、以及 D250 给它留的常驻槽位，都不是
+  // 中心按内容盒（clientWidth）算，不按 border-box：滚动条、以及 D251 给它留的常驻槽位，都不是
   // 「转录的横面」——拿 vp.width 当中心，滚动条一占位就差 9px，判据本身先偏了。
   const inner = await page.evaluate(() => document.querySelector(".chat-scroll").clientWidth);
   assert(Math.abs(mid - inner / 2) <= 8, `it sits in the middle of the transcript (${Math.round(mid)} vs ${Math.round(inner / 2)})`);
