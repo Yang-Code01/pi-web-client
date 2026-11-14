@@ -416,7 +416,8 @@ export async function testAccount(account: MailAccount): Promise<TestResult> {
     out.smtp = { ok: true };
   } catch (err: any) {
     const e = classify(err);
-    out.smtp = { ok: false, error: String(err?.message ?? err), code: e.code };
+    // SMTP 的失败给 SMTP 的码，别让页面以为 IMAP 坏了（`sendOutgoing` 同一条规矩）。
+    out.smtp = { ok: false, error: String(err?.message ?? err), code: e.code === "imap-error" ? "smtp-error" : e.code };
   }
   out.ok = out.imap.ok && out.smtp.ok;
   return out;
