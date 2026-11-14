@@ -1,5 +1,5 @@
 /**
- * Probe: Q-028 / D264 — the turn rail on the right edge of the transcript. One dash per user turn;
+ * Probe: Q-028 / D265 — the turn rail on the right edge of the transcript. One dash per user turn;
  * hovering the rail opens a list of every round's user input (single line, right aligned), the current
  * round highlighted; hovering a row highlights that round in the transcript; clicking a row jumps there.
  *

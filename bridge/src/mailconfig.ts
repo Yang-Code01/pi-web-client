@@ -4,7 +4,8 @@
  * 三件事分开：
  *   1. `MailConfig` 落 `<状态目录>/mail/config.json`，照 Jira 的惯例存明文凭据 —— 页面只拿掩码，
  *      日志不带凭据（`bridge/src/jira.ts` 同一口径）。想换成 DPAPI 加密是后续的事，别在路由里散着判。
- *   2. `policyDenial()` 是权限的唯一判据：HTTP 路由和 agent 工具都走它，不在别处另写一套「能不能发」。
+ *   2. `policyDenial()` 是**给 AI 的唯一判据**（agent 工具走它）。页面口是人自己动手，不过它 ——
+ *      两边各拦各的：AI 看策略与白名单，人只看「账号停用 / 隧道访客」（D264）。
  *   3. 审计只追加、不进模型上下文 —— 它存在的理由是「谁在什么时候用哪个账号发了什么」能事后查，
  *      顺便当日发信上限的计数来源。
  */
@@ -12,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, readJsonChecked, statePath } from "./paths.ts";
+import { bareAddress, isEmailAddress } from "./mailaddr.ts";
 
 export type MailPreset =
   | "163"
@@ -249,7 +251,18 @@ function presetOf(raw: unknown): MailPreset {
 
 /** 坏文件（半截 / 非 JSON / 字段丢失）当「没有这个账号」丢掉，别把面板卡在错误态。 */
 export function readMailConfig(): MailConfig {
-  const { ok, value } = readJsonChecked<Partial<MailConfig> | null>(configFile(), null);
+  return readMailConfigChecked().config;
+}
+
+/**
+ * 读配置，并且**把「文件读不出来」这件事交出去**。
+ *
+ * 以前读坏了就当空配置，下一次任何写入（改个权限开关、`/api/mail/repair`）都把 `accounts: []`
+ * 落盘，账号与授权码永久消失（实测：截断一份 config.json，再点一下开关，文件里的授权码没了）。
+ * 现在写操作先看这里：文件坏了就拒写，让用户自己去修/删，别拿默认值盖掉他的东西（D264）。
+ */
+export function readMailConfigChecked(): { config: MailConfig; error: string | null } {
+  const { ok, value, error } = readJsonChecked<Partial<MailConfig> | null>(configFile(), null);
   const raw = ok && value && typeof value === "object" ? value : {};
   const accounts: MailAccount[] = [];
   for (const item of Array.isArray(raw.accounts) ? raw.accounts : []) {
@@ -289,10 +302,14 @@ export function readMailConfig(): MailConfig {
   };
   const wanted = str(raw.defaultAccount);
   return {
-    version: 1,
-    accounts,
-    policy,
-    defaultAccount: wanted && accounts.some((a) => a.id === wanted) ? wanted : (accounts[0]?.id ?? null),
+    config: {
+      version: 1,
+      accounts,
+      policy,
+      defaultAccount: wanted && accounts.some((a) => a.id === wanted) ? wanted : (accounts[0]?.id ?? null),
+    },
+    // 解析失败与「文件不存在」不是一回事：前者要人管，后者就是还没配。
+    error: ok ? null : String(error ?? "config.json 读不出来"),
   };
 }
 
@@ -369,15 +386,16 @@ export function denialText(code: string): string {
   return "被邮箱设置里的权限挡住了。";
 }
 
-/** 白名单校验：`@域名` 后缀匹配，或整串相等（不分大小写）。空白名单 = 不限。 */
+/** 白名单校验：`@域名` 后缀匹配，或整串相等（不分大小写）。空白名单 = 不限。
+ *  `Name <a@b.com>` 按裸地址算 —— 带显示名的收件人不能绕过名单，也不该因为带了名字被拦。 */
 export function recipientsDenied(config: MailConfig, addrs: string[]): string[] {
   const list = config.policy.recipients.map((x) => x.toLowerCase());
   if (!list.length) return [];
   return addrs.filter((raw) => {
-    const addr = String(raw ?? "").trim().toLowerCase();
+    const addr = bareAddress(raw).toLowerCase();
     if (!addr) return false;
     if (!addr.includes("@")) return true;
-    return !list.some((rule) => rule.startsWith("@") ? addr.endsWith(rule) : addr === rule);
+    return !list.some((rule) => (rule.startsWith("@") ? addr.endsWith(bareAddress(rule)) : addr === bareAddress(rule)));
   });
 }
 
@@ -417,8 +435,13 @@ export function appendAudit(entry: AuditEntry): void {
   }
 }
 
-/** 当天某账号成功发出的封数。只读尾部 64KB —— 审计文件是只追加的，越老的行越用不着。 */
-export function sentToday(accountId: string, now = Date.now()): number {
+/**
+ * 当天某账号成功发出的封数。只读尾部 64KB —— 审计文件是只追加的，越老的行越用不着。
+ *
+ * **只数 AI 发的**（`by === "agent"`）：日上限是「AI 一天能替你发几封」，你自己在面板里点的那些
+ * 不算 —— 这句话设置页里写着，以前这里没照办（D264）。
+ */
+export function sentToday(accountId: string, now = Date.now(), by: "agent" | "page" = "agent"): number {
   let text = "";
   try {
     const file = auditFile();
@@ -441,7 +464,8 @@ export function sentToday(accountId: string, now = Date.now()): number {
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line);
-      if (row?.ok && row?.d === want && row?.account === accountId) n++;
+      // 草稿也写在同一个审计文件里（`messageId: "draft"`）：它没发出去，不该占日上限。
+      if (row?.ok && row?.d === want && row?.account === accountId && row?.by === by && row?.messageId !== "draft") n++;
     } catch {
       // 半截行（正好切在尾部窗口边界）跳过。
     }
@@ -499,7 +523,8 @@ export interface AccountInput {
 export function normalizeAccount(input: AccountInput, prev?: MailAccount | null): { account?: MailAccount; error?: string } {
   const preset = presetOf(input.preset ?? prev?.preset);
   const address = str(input.address) || prev?.address || "";
-  if (!address || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) return { error: "邮箱地址不像一个地址（例如 you@163.com）" };
+  // 地址口径只有 `mailaddr.ts` 一份（带显示名 / 引号都由它判）。
+  if (!isEmailAddress(address)) return { error: "邮箱地址不像一个地址（例如 you@163.com）" };
   const secretRaw = str(input.secret);
   const masked = prev ? maskSecret(prev.secret) : "";
   const keepSecret = !secretRaw || (masked && (secretRaw === masked || secretRaw.includes("****")));

@@ -26,6 +26,8 @@ import { bgBusy, continueState } from "./continue-state.ts";
 import { ACCENTS } from "./palette.ts";
 import { JiraPanel } from "./jira.ts";
 import { MailPanel } from "./mail.ts";
+import { MailConfirmDialog } from "./mailconfirm.ts";
+import type { MailConfirmFrame } from "./mail-shared.ts";
 import { NotesSheet, type NotesHost } from "./notesheet.ts";
 import { openSysmanage } from "./sysmanage.ts";
 import { openHotdeploy } from "./hotdeploy.ts";
@@ -307,6 +309,8 @@ export class App {
   /** #248：Jira 面板。第一次点才建；关闭后整块移除，下次打开重新问桥。 */
   private jira: JiraPanel | null = null;
   private mail: MailPanel | null = null;
+  /** D264：AI 发信前的确认框。跟 MailPanel 分开：没开邮箱面板也得能弹。 */
+  private mailConfirm: MailConfirmDialog | null = null;
   private models: ModelInfo[] = [];
   /** D150：目录是两段式（快的先到、带扩展的补上），所以记住最近一次失败原因与「什么时候问过」。 */
   private modelsError = "";
@@ -2053,6 +2057,19 @@ export class App {
         this.ext = (msg.ext as ExtUi | undefined) ?? { status: [], widgets: [], title: null };
         this.fillExt();
         break;
+      case "mail.confirm": {
+        // AI 调了 mail_send / mail_reply，桥在等都看这个会话的页签点头。只有真的点「发送」才回
+        // ok:true；不在看这个会话的页签回 stale，让接住的那一页说了算（同 preview.open）。
+        const frame = msg as unknown as MailConfirmFrame;
+        const reqId = String(frame.reqId ?? "");
+        if (frame.sessionId !== this.currentId) {
+          this.socket.send({ type: "mail.confirm.done", reqId, ok: false, reason: "stale" });
+          break;
+        }
+        if (!this.mailConfirm) this.mailConfirm = new MailConfirmDialog({ send: (ack) => this.socket.send({ type: "mail.confirm.done", ...ack }) });
+        this.mailConfirm.ask(reqId, frame.mail);
+        break;
+      }
       case "preview.open": {
         // #224: `open_preview` 工具 → 桥 → 正在看这个会话的页面，在这里落到 viewer 上。
         // 桥现在要回执才算打开（复审）：页面接住了回 ok:true，被编辑器拦下回 declined，

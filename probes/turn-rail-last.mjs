@@ -202,7 +202,7 @@ try {
   assert(rows === 4, `4 rounds = 4 rows (got ${rows})`);
 
   // 1) 最后一根短横 → 落在最后一轮的输入上（不是末尾）。
-  //    收起时那一列短横只是它的「影子」形态（指针落上去就会展开成面板，见 D264），
+  //    收起时那一列短横只是它的「影子」形态（指针落上去就会展开成面板，见 D265），
   //    这里用 evaluate 直接触发它的 click（键盘聚焦 + Enter 是同一条路），点的仍是那个处理器。
   await page.mouse.move(40, 40);
   await page.evaluate(() => document.querySelectorAll(".turn-row")[document.querySelectorAll(".turn-row").length - 1].click());
