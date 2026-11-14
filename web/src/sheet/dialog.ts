@@ -534,7 +534,7 @@ export class SheetDialog {
       const out = await this.opts.saveSheet(grid.activeSheet, grid.editOps());
       grid.clearEdits();
       this.setDirty(0);
-      grid.refresh();
+      grid.reload();
       save.textContent = tr("已保存");
       window.setTimeout(() => this.setDirty(0), 1200);
       this.status.textContent = tr("已保存（{p1} 格）", { p1: out.cells });
@@ -572,8 +572,9 @@ export class SheetDialog {
   private paintStatus(sheets: SheetInfo[], sheet: string): void {
     this.paintMeta(sheets, sheet);
     const n = sheets.find((s) => s.name === sheet)?.noCache ?? 0;
-    this.status.textContent = n ? tr("{p1} 格无缓存值", { p1: n }) : "";
-    this.status.title = n ? tr("需用表格软件重算") : "";
+    // #435 这些格子以前是空的（文件没存公式结果），现在预览自己算出来了。
+    this.status.textContent = n ? tr("{p1} 格公式已补算", { p1: n }) : "";
+    this.status.title = n ? tr("文件里没存这些公式的结果，预览时按当前数据算的") : "";
     this.status.hidden = !n;
   }
 

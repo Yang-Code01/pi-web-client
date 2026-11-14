@@ -933,6 +933,62 @@ try {
     await page.waitForTimeout(200);
   }
 
+  // ---------------------------------------------------------------- 公式补算（#435）
+  // 文件里只存 <f> 不存 <v>（Excel 没算过的表），预览要自己算出来，而不是给空格子。
+  await openSheet("calc.xlsx");
+  const calcText = (r, c) => cellText(r, c);
+  const sums = await Promise.all([
+    calcText(0, 1),
+    calcText(0, 2),
+    calcText(0, 3),
+    calcText(0, 5),
+    calcText(0, 6),
+    calcText(1, 1),
+    calcText(1, 3),
+    calcText(1, 4),
+    calcText(2, 0),
+  ]);
+  const [calcSum, calcIf, calcRound, calcVlook, calcCross, calcMoney, calcDiv, calcName, calcCirc] = sums;
+  check("SUM 补算成 3", calcSum === "3", calcSum);
+  check("IF 走了真的分支", calcIf === "大", calcIf);
+  check("ROUND(10/3,2) = 3.33", calcRound === "3.33", calcRound);
+  check("VLOOKUP 命中第二行", calcVlook === "2", calcVlook);
+  check("跨表引用算得出", calcCross === "42", calcCross);
+  check("公式结果按数字格式显示", calcMoney === "¥3.00", calcMoney);
+  check("除零给 #DIV/0!", calcDiv === "#DIV/0!", calcDiv);
+  check("不认识的函数给 #NAME?", calcName === "#NAME?", calcName);
+  check("循环引用给 #CIRC!", calcCirc === "#CIRC!", calcCirc);
+  const calcHint = await page.locator(".sd-status").textContent();
+  check("底栏说明补算了多少格", (calcHint ?? "").includes("公式已补算"), calcHint ?? "");
+
+  // 在预览里现写一条公式，存下去重开也得算得出来（不然写回的是个空壳）。
+  await page.locator(".sd-editbtn").click();
+  await page.locator('.sd-cell[data-r="3"][data-c="1"]').click();
+  await page.keyboard.type("=A1*10");
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(200);
+  check("公式先按原文显示", (await calcText(3, 1)) === "=A1*10", await calcText(3, 1));
+  await page.locator(".sd-save-grid").click();
+  await until(async () => page.locator(".sd-save-grid").isHidden(), 20000, "saved");
+  await page.waitForTimeout(1500);
+  const calcDbg = await page.evaluate(() => {
+    const el = document.querySelector('.sd-cell[data-r="3"][data-c="1"]');
+    return {
+      text: el?.textContent ?? null,
+      status: document.querySelector(".sd-status")?.textContent ?? "",
+      saveVisible: !document.querySelector(".sd-save-grid")?.hasAttribute("hidden"),
+      hasEdits: document.querySelectorAll(".sd-cell.is-nc").length,
+    };
+  });
+  check("保存刷新后算出 10", calcDbg.text === "10", JSON.stringify(calcDbg));
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+  await openSheet("calc.xlsx");
+  check("重开后公式还算得出 10", (await calcText(3, 1)) === "10", await calcText(3, 1));
+  await page.screenshot({ path: path.join(OUT, "13-calc.png") });
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+
   // ---------------------------------------------------------------- 条件格式（#109）
   // 五类规则都在桥端求值，前端只吃结果：底色、字色、加粗、数据条宽度、图标等级。
   await openSheet("cf.xlsx");
@@ -1123,9 +1179,10 @@ try {
       };
     });
   const nc = await ncInfo();
-  check("缺缓存值格显空", nc?.text === "" && (await cellText(2, 3)) !== "0", JSON.stringify(nc?.text));
-  check("缺缓存值格是红虚线", nc?.outline === "dashed" && parseFloat(nc.outlineWidth) >= 1 && red(nc.outlineColor), JSON.stringify({ outline: nc?.outline, width: nc?.outlineWidth, color: nc?.outlineColor }));
-  check("缺缓存值格悬停给公式和解释", /B3\*C3/.test(nc?.title ?? "") && /需用表格软件重算/.test(nc?.title ?? ""), nc?.title);
+  // #435 起这些格子不再显空：文件没存结果就自己算（10 × 3.5 = 35）。
+  check("缺缓存值的公式算出了 35", nc?.text === "35", JSON.stringify(nc?.text));
+  check("算出来的格子不再画红虚线", nc?.outline !== "dashed", JSON.stringify({ outline: nc?.outline, width: nc?.outlineWidth, color: nc?.outlineColor }));
+  check("悬停给公式本身", /B3\*C3/.test(nc?.title ?? ""), JSON.stringify({ title: nc?.title, text: nc?.text }));
 
   await clickCell(2, 3);
   const ncSel = await ncInfo();
@@ -1137,11 +1194,11 @@ try {
     return { style: cs.boxShadow, width: cs.outlineWidth, color: cs.outlineColor };
   });
   check("选中格边框画出来了", /inset/.test(selRing.style ?? "") && /15, 118, 110/.test(selRing.style ?? ""), JSON.stringify(selRing));
-  check("缺缓存值格还是空的", (await cellText(2, 3)) === "", String(await cellText(2, 3)));
+  check("选中之后值还在", (await cellText(2, 3)) === "35", String(await cellText(2, 3)));
 
   const st1 = await status();
-  check("状态条累计无缓存值格数", !st1?.hidden && st1?.text.includes("3 格无缓存值"), JSON.stringify(st1));
-  check("状态条解释了要重算", /重算/.test(st1?.title ?? ""), st1?.title);
+  check("状态条报补算了几格", !st1?.hidden && st1?.text.includes("3 格公式已补算"), JSON.stringify(st1));
+  check("状态条解释了是自己算的", /没存这些公式的结果/.test(st1?.title ?? ""), st1?.title);
   await page.screenshot({ path: path.join(OUT, "09-formula.png") });
 
   // 换到没有公式的表：计数与红虚线都不该跟过去。
@@ -1153,7 +1210,7 @@ try {
   await page.locator(".sd-wstab", { hasText: "销量" }).first().click();
   await until(async () => (await cellText(0, 0)) === "项目", 5000, "formula sheet 1");
   await until(async () => !(await status())?.hidden, 5000, "status back");
-  check("切回来计数还在", (await status())?.text.includes("3 格无缓存值"), (await status())?.text);
+  check("切回来计数还在", (await status())?.text.includes("3 格公式已补算"), (await status())?.text);
   // 后面几段（#106 出口 / #113 CSV）测的是原来那份 plain.xlsx，换回去再往下走。
   await page.locator(".sd-close").first().click();
   await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
