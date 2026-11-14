@@ -205,6 +205,68 @@ tries = 0;
 const zhThenJa = async () => (++tries === 1 ? "# 我是徐藤恩的父亲" : "# 私は徐藤恩の父です");
 const jpHead = await reverseBlock(dirtyHead, run, zhThenJa);
 check("重问一次就拿到日文标题", jpHead.includes("私") && tries === 2, `${tries} ${jpHead}`);
+
+// 真事：整篇是日文，但这一块自己假名很少（「## 本文の中国語訳」「## 練習」这种），
+// 写回的确是日文，却被单块假名检查判成「原文不是日文」，于是整次同步被退。
+const thin = { src: "# 納期遅延の報・連・相", gen: "# 交期延迟的报・联・商", out: "# 我的田中客户", docJa: true };
+const jaHead = await reverseBlock(thin, run, async () => "# 私の田中顧客");
+check("整篇日文时假名很少的块写回日文不会被判错", jaHead.includes("私"), jaHead);
+// 同一类误判出现在正文块上：原文假名只有一两个、写回的日文假名多一些。
+const thinPara = { src: "本文の要約", gen: "本文的概要", out: "本文的摘要", docJa: true };
+const jaPara = await reverseBlock(thinPara, run, async () => "本文の要点をまとめたもの");
+check("日文稿里假名很少的正文块写回日文也不会被判错", jaPara.includes("要点"), jaPara);
+// 反向：整篇不是日文时（中文稿里只夹了一段日文引文），中文标题写回不能当成跑偏。
+const zhBody = "今天读了一段日本客户来信，里面写着自己最近在忙交付的事情，还提到下周会来上海出差，让我们提前把会议室和资料准备好。".repeat(2);
+const zhDoc = {
+  sections: [{
+    heading: "# 学习笔记",
+    src: `# 学习笔记\n\n今天读了一段「ありがとうございます」，意思是谢谢。\n\n${zhBody}\n`,
+    gen: `# 学习笔记\n\n今天读了一句感谢。\n\n${zhBody}\n`,
+    out: `# 学习笔记（二）\n\n今天读了一句感谢。\n\n${zhBody}\n`,
+  }],
+};
+const zhPlan = await planSync(zhDoc, run, async () => "# 学习笔记 二");
+check(
+  "中文稿里夹日文引文时，中文标题写回不被当成跑偏",
+  zhPlan.edits.length === 1 && zhPlan.warnings.length === 0,
+  `edits=${zhPlan.edits.length} warnings=${JSON.stringify(zhPlan.warnings)}`,
+);
+const kanjiHead = { src: "## 練習", gen: "## 练一练", out: "## 练习题", docJa: true };
+const kept = await reverseBlock(kanjiHead, run, async () => "## 練習");
+check("全汉字日文标题写回同款不会被当成中文", kept.trim() === "## 練習", kept);
+// 反过来也要留个底线：日文稿里确实是中文的块，写回日文仍然得退回。
+const zhPara = { src: "这是中文段落。", gen: "这是中文段落。", out: "这是改过的中文段落。", docJa: true };
+tries = 0;
+blocked = "";
+try {
+  await reverseBlock(zhPara, run, async () => "これは日本語の段落です。");
+} catch (e) {
+  blocked = e.message;
+}
+check("日文稿里确实是中文的块，写回日文仍然被拦", /日文/.test(blocked), blocked);
+
+// 真事：每节末尾的 `---` 被模型吞掉（有时又留着），加上编辑器保存一次多出的尾部空行，
+// 都曾让「这一节结构变了」成立 —— 改一个标题，五个节全被拎去整节重译。
+const sepPlan = await planSync(
+  {
+    sections: [
+      { heading: "# 見出し", src: "# 見出し\n\n本文です。\n\n---\n", gen: "# 标题\n\n这是正文。\n\n---\n", out: "# 我的标题\n\n这是正文。\n\n---\n" },
+      // `---` 被吞 + 尾部多了空行：一处真改动都没有。
+      { heading: "## 二", src: "## 二\n\n本文です。\n\n---\n", gen: "## 二\n\n这是正文。\n\n---\n", out: "## 二\n\n这是正文。\n\n---\n\n\n" },
+    ],
+  },
+  run,
+  reverse,
+);
+check("尾部空行与 `---` 被吞都不算结构变了", sepPlan.edits.length === 1 && sepPlan.warnings.length === 0, `edits=${sepPlan.edits.length} warnings=${JSON.stringify(sepPlan.warnings)}`);
+check("改写的是标题那一块", sepPlan.edits[0].before === "# 見出し", JSON.stringify(sepPlan.edits[0]));
+// 真的合并了段落（块数对不上）还是要退回整节重译。
+const merged = await planSync(
+  { sections: [{ heading: "## 二", src: "## 二\n\nAです。\n\nBです。\n", gen: "## 二\n\nA。\n\nB。\n", out: "## 二\n\nA。B。\n" }] },
+  run,
+  reverse,
+);
+check("块数真对不上时仍然整节重译", merged.warnings.length === 1 && merged.edits.length === 1, JSON.stringify(merged.warnings));
 check("正文其余部分没被动", applied.text.startsWith("# 変更一覧") && applied.text.includes("注番を追加する。"));
 check("改的是表格行不是整篇", applied.text.split("\n").length === DOC.split("\n").length);
 
