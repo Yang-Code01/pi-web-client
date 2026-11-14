@@ -1,22 +1,31 @@
 /**
- * 只读网格（#105 骨架 + #108 结构保真 + #107 交互）：行号列 + 列头 + 可视范围的格子。
+ * 只读网格（#105 骨架 + #108 结构保真 + #107 交互 + #427 渲染）。
  *
  * 取数只按可视窗口（window fetch）：滚动时带上 r0/r1/c0/c1 向桥端要这一片，
- * 不把整表拉下来。列宽、合并区、冻结窗格都取文件里的值；冻结的行列画在独立的
- * 覆盖层里，滚动时位置不动，所以标题行不会跟着内容跑掉。
+ * 不把整表拉下来。列宽、行高、合并区、冻结窗格都取文件里的值；冻结的行列画在
+ * 独立的覆盖层里，滚动时位置不动，所以标题行不会跟着内容跑掉。
+ *
+ * #427 按 WPS / Excel 的排法重写渲染：
+ * - 行高来自 `<sheetFormatPr defaultRowHeight>` 与 `<row ht customHeight>`，隐藏行高度 0；
+ * - 列宽来自 `<col width customWidth>`（字符数 × 7 + 5）与 `<col hidden>`；
+ * - 每格贴 fonts / fills / borders / alignment（换行、缩进、缩小填充、旋转）；
+ * - 边框按 Excel 的算法只画「左/上」边，右/下边留给邻居，避免同一条线叠成 2px；
+ * - 数字放不下显示 `###`（Excel 行为），文本能溢出到右边的空格子里。
  *
  * #107 的交互都在这一层：选区是个矩形（anchor + focus），方向键/Shift/拖选/双击改它；
  * Ctrl+C 出去的是 TSV 纯文本；缩放把行高与列宽同乘一个系数；查找的命中只存坐标。
  */
 import { tr, errText } from "../i18n/index.ts";
 import { clampNum } from "../floatwin.ts";
-import type { SheetCell, SheetInfo, SheetMerge, SheetMeta, SheetWindow } from "../types.ts";
+import type { SheetCell, SheetInfo, SheetMerge, SheetMeta, SheetStyle, SheetWindow } from "../types.ts";
 
-export const ROW_H = 28;
-export const COL_W = 110;
-export const HEAD_W = 44;
-export const HEAD_H = 28;
-/** #107：缩放的上下限与步长（从 100% 起，一次 ±10%）。 */
+/** 默认行高（px）：Excel 15pt。 */
+export const ROW_H = 20;
+/** 默认列宽（px）：Excel 8.43 字符 ≈ 64px。 */
+export const COL_W = 64;
+export const HEAD_W = 40;
+export const HEAD_H = 24;
+
 export const ZOOM_MIN = 0.5;
 export const ZOOM_MAX = 2;
 export const ZOOM_STEP = 0.1;
@@ -25,6 +34,14 @@ export const ZOOM_STEP = 0.1;
 const PREFETCH_SCREENS = 3;
 /** 桥端单次窗口上限（与 bridge/src/sheet/index.ts 的 400 行一致）。 */
 const MAX_WINDOW_ROWS = 400;
+/** 没有列宽信息的表（CSV）：给个比 Excel 默认宽的舒服值。 */
+const CSV_COL_W = 110;
+
+const GRID_LINE = "1px solid #e6e6e6";
+const SEL_COLOR = "#0f766e";
+const FONT_STACK = 'Calibri, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif';
+const MLINE = "1.15";
+const MLINE_WRAP = "1.25";
 
 interface Range {
   r0: number;
@@ -66,6 +83,23 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return node;
 }
 
+/** pt → CSS px（96dpi）。 */
+function pt2px(pt: number): number {
+  return (pt * 4) / 3;
+}
+
+function fontCss(st: SheetStyle | undefined, zoom: number): string {
+  const f = st?.f;
+  const size = pt2px(f?.s ?? 11) * zoom;
+  const fam = f?.n ? `"${f.n}", ${FONT_STACK}` : FONT_STACK;
+  return `${f?.i ? "italic " : ""}${f?.b ? "700" : "400"} ${size.toFixed(2)}px ${fam}`;
+}
+
+/** 该格用什么字体大小（px，已乘缩放）。 */
+function fontPx(st: SheetStyle | undefined, zoom: number): number {
+  return pt2px(st?.f?.s ?? 11) * zoom;
+}
+
 export class SheetGrid {
   readonly root: HTMLElement;
   private readonly host: SheetGridHost;
@@ -85,16 +119,26 @@ export class SheetGrid {
   private readonly msg: HTMLElement;
   private readonly cellsByKey = new Map<string, SheetCell>();
   private spans = new Map<string, SheetMerge>();
-  /** 每列的左边界（px），长度 cols+1。 */
+
+  /** 列：每列宽度（已乘缩放）与左边界表（长度 cols + 1）。 */
   private offsets: number[] = [0];
-  /** 文件里的列宽（未缩放）。 */
   private base: number[] = [];
-  /** 缩放之后的列宽（px）。 */
   private widths: number[] = [];
+
+  /** 行：默认行高 + 文件指定行高 + 换行量出来的行高（都是未缩放的 px）。 */
+  private defH = ROW_H;
+  private fileH = new Map<number, number>();
+  private autoH = new Map<number, number>();
+  private keys: number[] = [];
+  private dsum: number[] = [];
+  private grow = new Map<number, number>();
+  private showGrid = true;
+  private growPass = 0;
+
   private sheet: string;
-  /** #110：已经拿到的窗口段（可能有多段，滚动时逐段补）。 */
+
   private chunks: Range[] = [];
-  /** #110：换表/销毁时 +1，旧请求回来就对不上号，不再往新表里写。 */
+
   private epoch = 0;
   private loading = false;
   private again = false;
@@ -102,21 +146,22 @@ export class SheetGrid {
   private frame = 0;
   private error = "";
   private stale = false;
-  /**
-   * #111/#107：选区是个矩形。`anchor` 是起点（按 Shift 时它不动），`focus` 是活动格
-   * （公式栏显示它，复制不用它——复制拿整个矩形）。打开时落在 A1，跟 Excel 一样。
-   */
+
   private anchor: { r: number; c: number } = { r: 0, c: 0 };
   private focus: { r: number; c: number } = { r: 0, c: 0 };
-  /** #107：缩放系数（1 = 100%）。行高与列宽同乘它，字体大小靠 CSS 变量 `--sd-z`。 */
+
   private zoomLevel = 1;
-  /** #107：正在拖选（pointerdown 之后、pointerup 之前）。 */
+
   private dragging = false;
-  /** #107：查找命中（只存坐标）与当前那一处；-1 表示只高亮不指。 */
+
   private hits: { r: number; c: number }[] = [];
   private hitAt = -1;
-  /** 上一次按下的格子（毫秒），用来自己认双击。 */
+
   private lastTap = { t: 0, r: -1, c: -1 };
+
+  /** 量文字宽用的画布（建一次，量上千格也不抖）。 */
+  private mctx: CanvasRenderingContext2D | null = null;
+  private readonly tw = new Map<string, number>();
 
   constructor(host: SheetGridHost) {
     this.host = host;
@@ -193,6 +238,7 @@ export class SheetGrid {
     this.error = "";
     this.hits = [];
     this.hitAt = -1;
+    this.autoH = new Map();
     this.anchor = { r: 0, c: 0 };
     this.focus = { r: 0, c: 0 };
     this.view.scrollTop = 0;
@@ -240,23 +286,30 @@ export class SheetGrid {
     };
   }
 
-  /** 列宽 / 合并区 / 冻结窗格按当前表重算。列宽先取文件值，再乘缩放。 */
+  /** 列宽 / 行高 / 合并区 / 冻结窗格按当前表重算。宽度先取文件值，再乘缩放。 */
   private measure(): void {
     const info = this.info();
     const cols = Math.max(0, info.cols);
-    const fileWidths = info.colWidths ?? [];
-    this.base = Array.from({ length: cols }, (_, c) => fileWidths[c] ?? COL_W);
+    const fileWidths = info.colWidths;
+    // 没有 colWidths 的是 CSV：文件本身没有列宽可言，给宽一点更好读。
+    this.base = Array.from({ length: cols }, (_, c) => fileWidths?.[c] ?? COL_W);
+    if (!fileWidths) this.base = this.base.map(() => CSV_COL_W);
     const offsets = [0];
     this.widths = [];
     for (let c = 0; c < cols; c++) {
-      // 缩放之后仍留得住格子：再窄也要放得下一两个字符。
-      const w = Math.max(28, Math.round(this.base[c] * this.zoomLevel));
+      const w = Math.max(0, Math.round(this.base[c] * this.zoomLevel));
       this.widths.push(w);
       offsets.push(offsets[c] + w);
     }
     this.offsets = offsets;
-    this.space.style.width = `${offsets[cols] ?? 0}px`;
-    this.space.style.height = `${(info.rows || 0) * this.rowH()}px`;
+
+    this.defH = info.defaultRowH && info.defaultRowH > 0 ? info.defaultRowH : ROW_H;
+    this.showGrid = info.gridLines !== false;
+    this.fileH = new Map();
+    for (const [k, v] of Object.entries(info.rowH ?? {})) this.fileH.set(Number(k), v);
+    // 桥端已经把 hidden 折成高度 0，这里再兜一层：老数据只给 hiddenRows 也能显示对。
+    for (const r of info.hiddenRows ?? []) if (!this.fileH.has(r)) this.fileH.set(r, 0);
+    this.rebuildH();
 
     this.spans = new Map();
     for (const m of info.merges ?? []) {
@@ -266,6 +319,54 @@ export class SheetGrid {
         for (let c = m.c0; c <= m.c1; c++) this.spans.set(`${r}:${c}`, m);
       }
     }
+    this.syncSize();
+  }
+
+  private syncSize(): void {
+    const info = this.info();
+    this.space.style.width = `${this.offsets[info.cols] ?? 0}px`;
+    this.space.style.height = `${this.topOf(info.rows || 0)}px`;
+  }
+
+  /** 合并「文件行高」与「换行量出来的行高」，做成排序键 + 前缀和（不建整表数组）。 */
+  private rebuildH(): void {
+    const set = new Set<number>(this.fileH.keys());
+    for (const r of this.autoH.keys()) if (!this.fileH.has(r)) set.add(r);
+    this.keys = [...set].sort((a, b) => a - b);
+    this.dsum = [];
+    let acc = 0;
+    for (let i = 0; i < this.keys.length; i++) {
+      acc += this.heightBase(this.keys[i]) - this.defH;
+      this.dsum.push(acc);
+    }
+  }
+
+  private heightBase(r: number): number {
+    const file = this.fileH.get(r);
+    if (file !== undefined) return file;
+    return this.autoH.get(r) ?? this.defH;
+  }
+
+  private rawTop(r: number): number {
+    if (!this.keys.length) return r * this.defH;
+    let lo = 0;
+    let hi = this.keys.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.keys[mid] < r) lo = mid + 1;
+      else hi = mid;
+    }
+    return r * this.defH + (lo ? this.dsum[lo - 1] : 0);
+  }
+
+  /** 第 r 行的顶边（px，已乘缩放）。 */
+  private topOf(r: number): number {
+    return Math.round(this.rawTop(r) * this.zoomLevel);
+  }
+
+  /** 第 r 行的高度（px，已乘缩放）；0 = 隐藏。 */
+  private heightOf(r: number): number {
+    return this.topOf(r + 1) - this.topOf(r);
   }
 
   private freeze(): { rows: number; cols: number } {
@@ -280,16 +381,34 @@ export class SheetGrid {
     return this.widths[c] ?? COL_W;
   }
 
-  /** 内容 x 落在第几列。 */
+  /** 内容 y 落在第几行；落在隐藏行上就往后找到下一个可见行。 */
+  private rowAt(y: number): number {
+    const rows = this.info().rows || 0;
+    if (rows <= 0) return 0;
+    let lo = 0;
+    let hi = rows - 1;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (this.topOf(mid) <= y) lo = mid;
+      else hi = mid - 1;
+    }
+    while (lo < rows - 1 && this.heightOf(lo) <= 0) lo++;
+    return lo;
+  }
+
+  /** 内容 x 落在第几列；落在隐藏列上就往后找到下一个可见列。 */
   private colAt(x: number): number {
     const info = this.info();
+    const cols = Math.max(0, info.cols);
+    if (cols <= 0) return 0;
     let lo = 0;
-    let hi = Math.max(0, info.cols - 1);
+    let hi = cols - 1;
     while (lo < hi) {
       const mid = Math.ceil((lo + hi) / 2);
       if (this.leftOf(mid) <= x) lo = mid;
       else hi = mid - 1;
     }
+    while (lo < cols - 1 && this.widthOf(lo) <= 0) lo++;
     return lo;
   }
 
@@ -314,11 +433,6 @@ export class SheetGrid {
     });
   };
 
-  /** 行高（px）：缩放之后格子、行号、冻结带都用这个。 */
-  private rowH(): number {
-    return Math.max(16, Math.round(ROW_H * this.zoomLevel));
-  }
-
   /** #107：缩放系数（1 = 100%）。 */
   get zoom(): number {
     return this.zoomLevel;
@@ -338,11 +452,10 @@ export class SheetGrid {
     this.zoomLevel = next;
     this.root.style.setProperty("--sd-z", String(next));
     this.measure();
-    v.scrollLeft = Math.max(0, cx * k - v.clientWidth / 2);
-    v.scrollTop = Math.max(0, cy * k - v.clientHeight / 2);
+    v.scrollLeft = cx * k - v.clientWidth / 2;
+    v.scrollTop = cy * k - v.clientHeight / 2;
     this.syncHeads();
     this.render();
-    this.notify();
     void this.ensure();
   }
 
@@ -379,7 +492,7 @@ export class SheetGrid {
       for (let c = s.c0; c <= s.c1; c++) {
         const cell = this.cellsByKey.get(`${r}:${c}`);
         // 数字格复制原始值（粘回去还是数，不是「￥1,234」），其余复制显示串。
-        row.push(cell?.v != null ? String(cell.v) : cell?.t ?? "");
+        row.push(cell?.v != null ? String(cell.v) : (cell?.t ?? ""));
       }
       lines.push(row.join("\t"));
     }
@@ -454,23 +567,37 @@ export class SheetGrid {
     void this.ensure();
   }
 
-  /** 就地换 `.sel` / `.in-sel`，不动 DOM 结构。 */
+  /** 就地换 `.sel` / `.in-sel` / 选区四边的描边，不动 DOM 结构。 */
   private paintSelection(): void {
     const sel = this.rect();
     for (const node of this.root.querySelectorAll<HTMLElement>(".sd-cell[data-r]")) {
       const r = Number(node.dataset.r);
       const c = Number(node.dataset.c);
-      const cur = r === this.focus.r && c === this.focus.c;
-      const inside = !cur && r >= sel.r0 && r <= sel.r1 && c >= sel.c0 && c <= sel.c1;
-      node.classList.toggle("sel", cur);
-      node.classList.toggle("in-sel", inside);
+      const inside = r >= sel.r0 && r <= sel.r1 && c >= sel.c0 && c <= sel.c1;
+      node.classList.toggle("sel", r === this.focus.r && c === this.focus.c);
+      node.classList.toggle("in-sel", inside && !(r === this.focus.r && c === this.focus.c));
+      node.style.boxShadow = inside ? this.ring(r, c) : "";
     }
+  }
+
+  /** 选区四边的描边（用 inset 阴影，跟边框正交，不会互相顶掉）。 */
+  private ring(r: number, c: number): string {
+    const sel = this.rect();
+    const out: string[] = [];
+    if (r === sel.r0) out.push(`inset 0 2px 0 ${SEL_COLOR}`);
+    if (r === sel.r1) out.push(`inset 0 -2px 0 ${SEL_COLOR}`);
+    if (c === sel.c0) out.push(`inset 2px 0 0 ${SEL_COLOR}`);
+    if (c === sel.c1) out.push(`inset -2px 0 0 ${SEL_COLOR}`);
+    return out.join(", ");
   }
 
   /** #107：从一格往四个方向扩一块连续区（碰空格就停，和 Excel 一个意思）。 */
   private selectBlock(at: { r: number; c: number }): void {
     const info = this.info();
-    const filled = (r: number, c: number): boolean => this.cellsByKey.has(`${r}:${c}`);
+    const filled = (r: number, c: number): boolean => {
+      const cell = this.cellsByKey.get(`${r}:${c}`);
+      return !!cell && (cell.t !== "" || cell.v != null);
+    };
     let { r0, r1, c0, c1 } = { r0: at.r, r1: at.r, c0: at.c, c1: at.c };
     if (filled(at.r, at.c)) {
       while (r0 > 0 && filled(r0 - 1, at.c)) r0--;
@@ -487,7 +614,8 @@ export class SheetGrid {
     if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
     const info = this.info();
     if (!info.rows || !info.cols) return;
-    const page = Math.max(1, Math.floor(this.view.clientHeight / this.rowH()) - 1);
+    const rowH = Math.max(12, this.heightOf(this.focus.r) || ROW_H);
+    const page = Math.max(1, Math.floor(this.view.clientHeight / rowH) - 1);
     let r = this.focus.r;
     let c = this.focus.c;
     switch (ev.key) {
@@ -545,9 +673,9 @@ export class SheetGrid {
   private reveal(r: number, c: number): void {
     const v = this.view;
     const f = this.freeze();
-    const h = this.rowH();
-    const top = r * h;
-    const frzH = f.rows * h;
+    const h = this.heightOf(r) || ROW_H;
+    const top = this.topOf(r);
+    const frzH = this.topOf(f.rows);
     if (r >= f.rows) {
       if (top < v.scrollTop + frzH) v.scrollTop = Math.max(0, top - frzH);
       else if (top + h > v.scrollTop + v.clientHeight) v.scrollTop = top + h - v.clientHeight;
@@ -564,12 +692,12 @@ export class SheetGrid {
   private centre(r: number, c: number): void {
     const v = this.view;
     const f = this.freeze();
-    const h = this.rowH();
-    const frzH = f.rows * h;
+    const h = this.heightOf(r) || ROW_H;
+    const frzH = this.topOf(f.rows);
     const frzW = this.leftOf(f.cols);
     const viewH = Math.max(1, v.clientHeight - frzH);
     const viewW = Math.max(1, v.clientWidth - frzW);
-    if (r >= f.rows) v.scrollTop = Math.max(0, r * h - frzH - viewH / 2 + h / 2);
+    if (r >= f.rows) v.scrollTop = Math.max(0, this.topOf(r) - frzH - viewH / 2 + h / 2);
     if (c >= f.cols) v.scrollLeft = Math.max(0, this.leftOf(c) - frzW - viewW / 2 + this.widthOf(c) / 2);
   }
 
@@ -615,13 +743,15 @@ export class SheetGrid {
     // 用 clientWidth/Height 判界：滚动条那条缝不该被当成格子。
     const left = rect.left + this.view.clientLeft;
     const top = rect.top + this.view.clientTop;
-    if (clientX < left || clientY < top || clientX > left + this.view.clientWidth || clientY > top + this.view.clientHeight) return null;
+    if (clientX < left || clientY < top || clientX > left + this.view.clientWidth || clientY > top + this.view.clientHeight) {
+      return null;
+    }
     const f = this.freeze();
     let x = clientX - left;
     let y = clientY - top;
     if (x >= this.leftOf(f.cols)) x += this.view.scrollLeft;
-    if (y >= f.rows * this.rowH()) y += this.view.scrollTop;
-    const r = Math.floor(y / this.rowH());
+    if (y >= this.topOf(f.rows)) y += this.view.scrollTop;
+    const r = this.rowAt(Math.max(0, y));
     const c = this.colAt(Math.max(0, x));
     if (r < 0 || r >= info.rows || c < 0 || c >= info.cols) return null;
     return { r, c };
@@ -632,7 +762,7 @@ export class SheetGrid {
     if (this.destroyed) return;
     const sel = this.focus;
     const cell = this.cellsByKey.get(`${sel.r}:${sel.c}`);
-    const text = cell?.f ? `=${cell.f}` : cell?.t ?? "";
+    const text = cell?.f ? `=${cell.f}` : (cell?.t ?? "");
     this.host.onSelect?.({ ref: this.selectionRef, text });
   }
 
@@ -643,9 +773,8 @@ export class SheetGrid {
     if (!rows || !cols) return null;
     const top = this.view.scrollTop;
     const left = this.view.scrollLeft;
-    const h = this.rowH();
-    const r0 = Math.max(0, Math.min(rows - 1, Math.floor(top / h)));
-    const r1 = Math.max(r0, Math.min(rows - 1, Math.ceil((top + this.view.clientHeight) / h) - 1));
+    const r0 = Math.max(0, Math.min(rows - 1, this.rowAt(top)));
+    const r1 = Math.max(r0, Math.min(rows - 1, this.rowAt(top + this.view.clientHeight)));
     const c0 = Math.max(0, Math.min(cols - 1, this.colAt(left)));
     const c1 = Math.max(c0, Math.min(cols - 1, this.colAt(left + this.view.clientWidth)));
     return { r0, r1, c0, c1 };
@@ -656,7 +785,8 @@ export class SheetGrid {
     const info = this.info();
     const rows = info.rows || 0;
     const f = this.freeze();
-    const screen = Math.max(1, Math.ceil(this.view.clientHeight / ROW_H));
+    const avg = Math.max(10, Math.round(this.defH * this.zoomLevel));
+    const screen = Math.max(1, Math.ceil(this.view.clientHeight / avg));
     const pad = screen * PREFETCH_SCREENS;
     let r0 = Math.max(0, visible.r0 - pad);
     let r1 = Math.min(rows - 1, visible.r1 + pad);
@@ -694,7 +824,8 @@ export class SheetGrid {
   private prune(): void {
     const visible = this.visible();
     if (!visible) return;
-    const screen = Math.max(1, Math.ceil(this.view.clientHeight / ROW_H));
+    const avg = Math.max(10, Math.round(this.defH * this.zoomLevel));
+    const screen = Math.max(1, Math.ceil(this.view.clientHeight / avg));
     const lo = Math.max(0, visible.r0 - 12 * screen);
     const hi = visible.r1 + 12 * screen;
     const f = this.freeze();
@@ -799,17 +930,20 @@ export class SheetGrid {
     if (!want) return;
     this.syncHeads();
     const f = this.freeze();
+    const info = this.info();
     const frzW = this.leftOf(f.cols);
-    const rowH = this.rowH();
-    const frzH = f.rows * rowH;
+    const frzH = this.topOf(f.rows);
+    const sel = this.rect();
 
     const cols: HTMLElement[] = [];
     const frzCols: HTMLElement[] = [];
-    for (let c = want.c0; c <= want.c1; c++) {
+    for (let c = want.c0; c <= want.c1 && c < info.cols; c++) {
+      if (this.widthOf(c) <= 0) continue;
       const node = el("div", "sd-col", colName(c));
       node.dataset.c = String(c);
       node.style.left = `${this.leftOf(c)}px`;
       node.style.width = `${this.widthOf(c)}px`;
+      if (c >= sel.c0 && c <= sel.c1) node.classList.add("sel");
       (c < f.cols ? frzCols : cols).push(node);
     }
     this.colheadIn.replaceChildren(...cols);
@@ -819,11 +953,14 @@ export class SheetGrid {
 
     const rowheads: HTMLElement[] = [];
     const frzRows: HTMLElement[] = [];
-    for (let r = want.r0; r <= want.r1; r++) {
+    for (let r = want.r0; r <= want.r1 && r < info.rows; r++) {
+      const h = this.heightOf(r);
+      if (h <= 0) continue;
       const node = el("div", "sd-rowno", String(r + 1));
       node.dataset.r = String(r);
-      node.style.top = `${r * rowH}px`;
-      node.style.height = `${rowH}px`;
+      node.style.top = `${this.topOf(r)}px`;
+      node.style.height = `${h}px`;
+      if (r >= sel.r0 && r <= sel.r1) node.classList.add("sel");
       (r < f.rows ? frzRows : rowheads).push(node);
     }
     this.rowheadIn.replaceChildren(...rowheads);
@@ -832,6 +969,7 @@ export class SheetGrid {
     this.rowheadFrz.style.height = `${frzH}px`;
 
     // 冻结层要画「整条冻结带」，不只是可视范围：滚到第 15 行时第 1 行仍然得在。
+    this.grow.clear();
     this.paint(this.cells, L_MAIN, want);
     this.paint(this.frzTopIn, L_TOP, { r0: 0, r1: Math.max(0, f.rows - 1), c0: 0, c1: Math.max(want.c1, f.cols) });
     this.paint(this.frzLeftIn, L_LEFT, { r0: want.r0, r1: want.r1, c0: 0, c1: Math.max(0, f.cols - 1) });
@@ -847,6 +985,37 @@ export class SheetGrid {
     this.frzV.hidden = !f.cols;
     this.frzH.style.top = `${frzH}px`;
     this.frzH.hidden = !f.rows;
+
+    this.drawHandle();
+
+    // 换行量出来的行高要在这一帧末尾回填：一次 rebuild，别每格重排一遍。
+    if (this.applyGrow()) this.render();
+  }
+
+  /** 选区右下角那个小方块（Excel 的填充柄）。 */
+  private drawHandle(): void {
+    const sel = this.rect();
+    if (sel.r1 >= this.info().rows || sel.c1 >= this.info().cols) return;
+    const handle = el("div", "sd-fill");
+    handle.style.left = `${this.leftOf(sel.c1 + 1) - 3}px`;
+    handle.style.top = `${this.topOf(sel.r1 + 1) - 3}px`;
+    this.cells.append(handle);
+  }
+
+  private applyGrow(): boolean {
+    if (!this.grow.size || this.growPass >= 2) return false;
+    let changed = false;
+    for (const [r, h] of this.grow) {
+      if (this.fileH.has(r)) continue;
+      if ((this.autoH.get(r) ?? 0) >= h) continue;
+      this.autoH.set(r, h);
+      changed = true;
+    }
+    this.growPass++;
+    if (!changed) return false;
+    this.rebuildH();
+    this.syncSize();
+    return true;
   }
 
   /** 往某一层里画格子：被合并区盖住的格子不单独画，合并区只画左上角那一个。 */
@@ -856,10 +1025,12 @@ export class SheetGrid {
     const sel = this.rect();
     const hitKeys = new Set(this.hits.map((h) => `${h.r}:${h.c}`));
     const curKey = this.hitAt >= 0 ? `${this.hits[this.hitAt].r}:${this.hits[this.hitAt].c}` : "";
-    const rowH = this.rowH();
-    for (let r = want.r0; r <= want.r1; r++) {
-      for (let c = want.c0; c <= want.c1; c++) {
-        const cell = this.cellsByKey.get(`${r}:${c}`);
+    const info = this.info();
+
+    for (let r = want.r0; r <= want.r1 && r < info.rows; r++) {
+      if (this.heightOf(r) <= 0) continue;
+      for (let c = want.c0; c <= want.c1 && c < info.cols; c++) {
+        if (this.widthOf(c) <= 0) continue;
         const span = this.spans.get(`${r}:${c}`);
         if (span && (span.r0 !== r || span.c0 !== c)) continue;
         const r0 = span ? span.r0 : r;
@@ -867,58 +1038,242 @@ export class SheetGrid {
         const r1 = span ? span.r1 : r;
         const c1 = span ? span.c1 : c;
         if (this.layerOf(r1, c1) !== layer) continue;
+
+        const cell = this.cellsByKey.get(`${r0}:${c0}`);
+        const st = this.styleOf(cell);
+        const width = this.leftOf(c1 + 1) - this.leftOf(c0);
+        const height = this.topOf(r1 + 1) - this.topOf(r0);
+
         // 空格子也画一层底：不然整列空着会露出底下的白，网格线断成一段一段。
-        const node = el("div", cell ? `sd-cell k-${cell.k}` : "sd-cell is-void", cell?.t);
-        // #109 条件格式：只能贴服务端算好的结果，不在前端重算规则。
-        if (cell?.fx) {
-          const fx = cell.fx;
-          if (fx.bg) node.style.backgroundColor = fx.bg;
-          if (fx.fg) node.style.color = fx.fg;
-          if (fx.b) node.style.fontWeight = "600";
-          if (fx.bar) {
-            node.textContent = "";
-            const bar = el("span", "sd-bar");
-            bar.style.width = `${Math.round(fx.bar[0] * 1000) / 10}%`;
-            bar.style.backgroundColor = fx.bar[1];
-            node.append(bar, el("span", "sd-txt", cell.t));
-          } else if (fx.icon) {
-            node.textContent = "";
-            const icon = el("span", "sd-icon", fx.icon.g);
-            icon.dataset.set = fx.icon.s;
-            icon.dataset.level = String(fx.icon.l);
-            icon.style.color = fx.icon.c;
-            node.style.justifyContent = "flex-start";
-            node.append(icon, el("span", "sd-txt", cell.t));
-          }
-        }
+        const node = el("div", cell ? `sd-cell k-${cell.k}` : "sd-cell is-void");
         node.dataset.r = String(r0);
         node.dataset.c = String(c0);
         if (c1 > c0) node.dataset.span = `${c0}-${c1}`;
+
+        const openR = c1 === info.cols - 1 || c1 + 1 > want.c1;
+        const openB = r1 === info.rows - 1 || r1 + 1 > want.r1;
         node.style.left = `${this.leftOf(c0)}px`;
-        node.style.top = `${r0 * rowH}px`;
-        node.style.width = `${this.leftOf(c1 + 1) - this.leftOf(c0)}px`;
-        node.style.height = `${(r1 - r0 + 1) * rowH}px`;
-        if (cell?.k === "n") node.classList.add("is-n");
+        node.style.top = `${this.topOf(r0)}px`;
+        node.style.height = `${height}px`;
+        this.paintBox(node, st, cell, r0, c0, r1, c1, openR, openB);
+
+        // 文本溢出到右边的空格子里（Excel 行为）：数字不溢出，换行的不管。
+        node.style.width = `${width}px`;
+
+        const need = this.paintContent(node, cell, st, width, r0, c0, c1);
+        if (need > 0 && !span && !this.fileH.has(r0)) {
+          const prev = this.grow.get(r0) ?? 0;
+          if (need > prev) this.grow.set(r0, need);
+        }
+
         // #111：只有公式、没存结果的格子：显空 + 红虚线；原文和「去 Excel 重算」放在悬停里。
         if (cell?.noCache) {
           node.classList.add("is-nc");
           node.title = [cell.f ? `=${cell.f}` : "", tr("需用表格软件重算")].filter(Boolean).join("\n");
         }
+        const inside = r0 >= sel.r0 && r0 <= sel.r1 && c0 >= sel.c0 && c0 <= sel.c1;
         if (this.focus.r === r0 && this.focus.c === c0) node.classList.add("sel");
-        // 合并区按左上角算：选到块里任何一格，整块都该亮。
-        if (r0 >= sel.r0 && r0 <= sel.r1 && c0 >= sel.c0 && c0 <= sel.c1) node.classList.add("in-sel");
+        if (inside) node.classList.add("in-sel");
+        if (inside) node.style.boxShadow = this.ring(r0, c0);
         const key = `${r0}:${c0}`;
         if (hitKeys.has(key)) {
           node.classList.add("hit");
           if (key === curKey) node.classList.add("hit-on");
         }
-        if (cell?.a) {
-          node.style.justifyContent = cell.a === "c" ? "center" : cell.a === "r" ? "flex-end" : "flex-start";
-          if (cell.a !== "r") node.classList.remove("is-n");
-        }
         nodes.push(node);
       }
     }
     target.replaceChildren(...nodes);
+    // 换行格的行高：用真实渲染高度量（字体、行高、可用宽度都跟画面一致），比离屏量尺准。
+    for (const node of nodes) {
+      if (node.dataset.wrap !== "1") continue;
+      const span = node.querySelector(".sd-txt");
+      if (!span) continue;
+      const need = Math.ceil(span.getBoundingClientRect().height) + Math.round(5 * this.zoomLevel);
+      const r = Number(node.dataset.r);
+      if (this.fileH.has(r)) continue;
+      if (need > (this.grow.get(r) ?? 0)) this.grow.set(r, need);
+    }
   }
+
+  private styleOf(cell: SheetCell | undefined): SheetStyle | undefined {
+    if (!cell || cell.s == null) return undefined;
+    return this.host.meta.styles?.[cell.s];
+  }
+
+  /** 某格（合并区按左上角算）的样式。 */
+  private styleAt(r: number, c: number): SheetStyle | undefined {
+    const span = this.spans.get(`${r}:${c}`);
+    return this.styleOf(this.cellsByKey.get(span ? `${span.r0}:${span.c0}` : `${r}:${c}`));
+  }
+
+  /**
+   * 一条边的 CSS。Excel 的排法：每格只负责左/上边，右/下边由邻居的左/上边来画，
+   * 这样相邻两格不会把同一条线叠成 2px；窗口边缘那一条没邻居，才自己补上。
+   */
+  private edge(st: SheetStyle | undefined, side: "t" | "r" | "b" | "l", r0: number, c0: number, r1: number, c1: number): string {
+    const own = st?.bd?.[side];
+    if (own) return own;
+    let near: string | undefined;
+    if (side === "l") near = c0 > 0 ? this.styleAt(r0, c0 - 1)?.bd?.r : undefined;
+    else if (side === "t") near = r0 > 0 ? this.styleAt(r0 - 1, c0)?.bd?.b : undefined;
+    else if (side === "r") near = this.styleAt(r0, c1 + 1)?.bd?.l;
+    else near = this.styleAt(r1 + 1, c0)?.bd?.t;
+    if (near) return near;
+    return this.showGrid ? GRID_LINE : "none";
+  }
+
+  /** 底色、边框、对齐（不含文字）。 */
+  private paintBox(
+    node: HTMLElement,
+    st: SheetStyle | undefined,
+    cell: SheetCell | undefined,
+    r0: number,
+    c0: number,
+    r1: number,
+    c1: number,
+    openR: boolean,
+    openB: boolean,
+  ): void {
+    if (st?.bg) node.style.backgroundColor = st.bg;
+    node.style.borderTop = this.edge(st, "t", r0, c0, r1, c1);
+    node.style.borderLeft = this.edge(st, "l", r0, c0, r1, c1);
+    node.style.borderRight = openR ? this.edge(st, "r", r0, c0, r1, c1) : "none";
+    node.style.borderBottom = openB ? this.edge(st, "b", r0, c0, r1, c1) : "none";
+    // #109 条件格式只能贴服务端算好的结果，不在前端重算规则。
+    const fx = cell?.fx;
+    if (fx?.bg) node.style.backgroundColor = fx.bg;
+  }
+
+  /** 画文字/数据条/图标；返回这一格至少要多少高度（换行时用来撑行）。 */
+  private paintContent(
+    node: HTMLElement,
+    cell: SheetCell | undefined,
+    st: SheetStyle | undefined,
+    width: number,
+    r0 = 0,
+    c0 = 0,
+    c1 = 0,
+  ): number {
+    const z = this.zoomLevel;
+    const fx = cell?.fx;
+    const f = st?.f;
+    const size = fontPx(st, z);
+
+    node.style.fontSize = `${size.toFixed(2)}px`;
+    node.style.fontFamily = f?.n ? `"${f.n}", ${FONT_STACK}` : FONT_STACK;
+    if (f?.b || fx?.b) node.style.fontWeight = "700";
+    if (f?.i) node.style.fontStyle = "italic";
+    if (f?.u) node.style.textDecoration = "underline";
+    else if (f?.st) node.style.textDecoration = "line-through";
+    const color = fx?.fg ?? f?.c;
+    if (color) node.style.color = color;
+
+    const auto = cell?.k === "n" ? "r" : cell?.k === "b" || cell?.k === "e" ? "c" : "l";
+    const h = st?.h ?? cell?.a ?? auto;
+    node.style.justifyContent = h === "c" ? "center" : h === "r" ? "flex-end" : "flex-start";
+    node.style.alignItems = st?.v === "t" ? "flex-start" : st?.v === "m" ? "center" : "flex-end";
+    node.style.lineHeight = st?.w ? MLINE_WRAP : MLINE;
+
+    const padX = Math.round(4 * z);
+    const ind = Math.round((st?.ind ?? 0) * 7 * z);
+    node.style.paddingLeft = `${padX + ind}px`;
+    node.style.paddingRight = `${padX}px`;
+    node.style.paddingBottom = `${Math.round(1.5 * z)}px`;
+
+    const text = cell?.t ?? "";
+    if (fx?.bar) {
+      const bar = el("span", "sd-bar");
+      bar.style.width = `${Math.round(fx.bar[0] * 1000) / 10}%`;
+      bar.style.backgroundColor = fx.bar[1];
+      node.append(bar);
+    }
+    if (fx?.icon) {
+      const icon = el("span", "sd-icon", fx.icon.g);
+      icon.dataset.set = fx.icon.s;
+      icon.dataset.level = String(fx.icon.l);
+      icon.style.color = fx.icon.c;
+      node.append(icon);
+    }
+    if (!text) return 0;
+
+    const body = el("span", "sd-txt", text);
+    node.style.whiteSpace = st?.w ? "pre-wrap" : "nowrap";
+    body.style.whiteSpace = st?.w ? "pre-wrap" : "nowrap";
+    if (st?.w) body.style.wordBreak = "break-word";
+    node.append(body);
+
+    const font = fontCss(st, z);
+    const avail = Math.max(4, width - padX * 2 - ind - 2);
+    const need = this.textW(text, font);
+
+    // 缩小字体填充：字小了不换行也不裁（Excel 的 shrink to fit）。
+    if (st?.sh && need > avail) {
+      const k = Math.max(0.5, avail / need);
+      node.style.fontSize = `${(size * k).toFixed(2)}px`;
+      return 0;
+    }
+    // 换行：高度等节点上树之后再量（见 paint() 末尾），这里只做个记号。
+    if (st?.w) {
+      node.dataset.wrap = "1";
+      return 0;
+    }
+    // 数字放不下显示 ###：不裁、不溢出（Excel / WPS 都这样）。
+    if (cell?.k === "n" && need > avail) {
+      const hash = Math.max(1, this.textW("#", font));
+      body.textContent = "#".repeat(Math.max(1, Math.floor(avail / hash)));
+      node.classList.add("is-hash");
+      return 0;
+    }
+    // 文本比本格宽：旁边空格子借得到就溢出（居中双向、靠右往左、靠左往右），借不到就裁。
+    if (need > avail && this.roomFor(r0, c0, c1, h) > need - avail) node.classList.add("sd-ovf");
+    return 0;
+  }
+
+  /** 本格左右还空着多少像素（遇到有内容的格就停），最多看 8 列。 */
+  private roomFor(r0: number, c0: number, c1: number, align: "l" | "c" | "r" | "j"): number {
+    const info = this.info();
+    let room = 0;
+    if (align !== "l") {
+      for (let c = c0 - 1; c >= 0 && c0 - c <= 8; c--) {
+        if (this.occupied(r0, c)) break;
+        room += this.widthOf(c);
+      }
+    }
+    if (align !== "r") {
+      for (let c = c1 + 1; c < info.cols && c - c1 <= 8; c++) {
+        if (this.occupied(r0, c)) break;
+        room += this.widthOf(c);
+      }
+    }
+    return room;
+  }
+
+  private occupied(r: number, c: number): boolean {
+    const key = `${r}:${c}`;
+    // 只有格式化、没内容的格子在 Excel 里照样让文字穿过去，所以看 t 不看键是否存在。
+    if (this.cellsByKey.get(key)?.t) return true;
+    return this.spans.has(key);
+  }
+
+  /** 文字宽度（canvas 量，带缓存）。 */
+  private textW(text: string, font: string): number {
+    const key = `${font}\n${text}`;
+    const hit = this.tw.get(key);
+    if (hit !== undefined) return hit;
+    if (!this.mctx) this.mctx = document.createElement("canvas").getContext("2d");
+    let w: number;
+    if (this.mctx) {
+      this.mctx.font = font;
+      w = this.mctx.measureText(text).width;
+    } else {
+      // 没有 canvas（极老的浏览器）：按字号粗估，宁可宽一点。
+      const size = Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1] ?? 14);
+      w = text.length * size * 0.55;
+    }
+    if (this.tw.size > 5000) this.tw.clear();
+    this.tw.set(key, w);
+    return w;
+  }
+
 }

@@ -525,6 +525,156 @@ export function makeCsvFixtures(outDir) {
   return { utf8, bom, gbk, big, files: [utf8, bom, gbk, big] };
 }
 
+/**
+ * 富样式 fixture（#427）：把 Excel 里常见的「好看」都放进来一份，专治渲染退化。
+ *
+ * 标题行（18pt 粗体 + medium 下边框 + 合并）、深蓝表头（白字 / 居中 / 换行）、
+ * 隔行浅蓝填充、细灰四边框、货币 / 日期 / 百分比 / 负数红括号 / 千分位、右缩进两格、
+ * 自动换行的备注、30 字符宽的长列、行 3 显式 34.5pt、行 9 隐藏、冻结 B3、
+ * 合计行黄底粗体、一行溢出到右侧空列的长文本；第二张表 `showGridLines="0"`。
+ */
+const STYLED_FONTS = [
+  `<font><sz val="11"/><color rgb="FF1F2430"/><name val="Calibri"/><family val="2"/></font>`, // 0 正文
+  `<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>`, // 1 表头白字
+  `<font><b/><sz val="18"/><color rgb="FF1F3864"/><name val="Calibri"/></font>`, // 2 标题
+  `<font><sz val="9"/><color rgb="FF7F7F7F"/><name val="Calibri"/></font>`, // 3 小灰（备注）
+  `<font><b/><sz val="12"/><color rgb="FF1F2430"/><name val="Calibri"/></font>`, // 4 合计
+  `<font><b/><sz val="16"/><color rgb="FF2E75B6"/><name val="Calibri"/></font>`, // 5 说明页大标题
+];
+const STYLED_FILLS = [
+  `<fill><patternFill patternType="none"/></fill>`,
+  `<fill><patternFill patternType="gray125"/></fill>`,
+  `<fill><patternFill patternType="solid"><fgColor rgb="FF1F4E79"/><bgColor indexed="64"/></patternFill></fill>`, // 深蓝表头
+  `<fill><patternFill patternType="solid"><fgColor rgb="FFDDEBF7"/><bgColor indexed="64"/></patternFill></fill>`, // 隔行浅蓝
+  `<fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill>`, // 合计黄
+];
+const styledSide = (rgb = "FFD9D9D9") => `<color rgb="${rgb}"/><style val="thin"/>`;
+const STYLED_BORDERS = [
+  `<border><left/><right/><top/><bottom/><diagonal/></border>`, // 0 无
+  `<border><left>${styledSide()}</left><right>${styledSide()}</right><top>${styledSide()}</top><bottom>${styledSide()}</bottom><diagonal/></border>`, // 1 细灰四边
+  `<border><left>${styledSide()}</left><right>${styledSide()}</right><top>${styledSide()}</top><bottom><color rgb="FF1F4E79"/><style val="medium"/></bottom><diagonal/></border>`, // 2 表头
+  `<border><left>${styledSide("FFBFBFBF")}</left><right>${styledSide("FFBFBFBF")}</right><top><color rgb="FF1F4E79"/><style val="medium"/></top><bottom><color rgb="FF1F4E79"/><style val="medium"/></bottom><diagonal/></border>`, // 3 标题/合计
+];
+
+/** 富样式 fixture 的内容，导出给 probe 断言用。 */
+export const STYLED = {
+  sheet: "销售明细",
+  header: ["地区", "产品", "单价", "数量", "占比", "日期", "备注", "状态"],
+  rows: [
+    ["华东", "螺丝 M6", 1234.5, 1234568, 0.123, 45678, "这是一段很长的备注，用来测换行与行高自适应", "进行中", 812346, 6400, 12],
+    ["东北", "产品 4", 110.5, 3702, 0.04, 45296, "短备注", "已完成", 2333, 300, 3],
+    ["西北", "产品 5", 114, 4936, 0.05, 45297, "含税价，季度结算，需要财务复核后入账", "待审核", 3110, 400, 4],
+    ["华中", "产品 6", 117.5, 6170, 0.06, 45298, "", "已完成", 3888, 500, 5],
+    ["华南", "产品 7（出口）", 121, 7404, 0.07, 45299, "出口报关号 SH-2024-0912", "进行中", 4665, 600, 6],
+    ["华北", "产品 1", 124.5, 8638, 0.08, 45300, "", "已完成", 5443, 700, 7],
+    // 第 9 行被 hidden="1" 藏起来：行号要直接跳到 10。
+    ["西南", "产品 2", 126, 9426, 0.09, 45301, "这一行在文件里被隐藏", "已完成", 6220, 800, 8],
+    ["华北", "产品 2", 128.5, 10214, 0.1, 45302, "", "已完成", 6998, 900, 9],
+  ],
+  /** 合计行（1 基）、隐藏行、显式加高的行。 */
+  totalRow: 11,
+  hiddenRow: 9,
+  tallRow: 3,
+};
+
+export function buildStyledXlsx() {
+  const xfs = [];
+  const xf = (numFmt, font, fill, border, align) =>
+    `<xf numFmtId="${numFmt}" fontId="${font}" fillId="${fill}" borderId="${border}" xfId="0" applyFont="1" applyFill="1" applyBorder="1"${align ? ' applyAlignment="1"' : ""}>${align ? `<alignment ${align}/>` : ""}</xf>`;
+  const add = (numFmt, font, fill, border, align) => xfs.push(xf(numFmt, font, fill, border, align)) - 1;
+  const DEF = add(0, 0, 0, 0);
+  const TITLE = add(0, 2, 0, 3, 'horizontal="center" vertical="center"');
+  const HEAD = add(0, 1, 2, 2, 'horizontal="center" vertical="center" wrapText="1"');
+  const TEXT = add(0, 0, 0, 1, 'vertical="center"');
+  const MONEY = add(164, 0, 0, 1, 'horizontal="right" vertical="center"');
+  const DATE = add(165, 0, 0, 1, 'horizontal="center" vertical="center"');
+  const PCT = add(167, 0, 0, 1, 'horizontal="center" vertical="center"');
+  const NOTE = add(0, 3, 0, 1, 'vertical="center" wrapText="1"');
+  const NEG = add(169, 0, 0, 1, 'horizontal="right" vertical="center"');
+  const INT = add(3, 0, 0, 1, 'horizontal="right" vertical="center"');
+  const TOT_MONEY = add(164, 4, 4, 3, 'horizontal="right" vertical="center"');
+  const TOT_TEXT = add(0, 4, 4, 3, 'horizontal="center" vertical="center"');
+  const PLAIN_INDENT = add(0, 0, 0, 0, 'horizontal="left" indent="2"');
+  const BIG = add(0, 5, 0, 0, 'horizontal="center" vertical="center"');
+  // 隔行浅蓝：同样的对齐/边框，只换 fill。
+  const B_TEXT = add(0, 0, 3, 1, 'vertical="center"');
+  const B_MONEY = add(164, 0, 3, 1, 'horizontal="right" vertical="center"');
+  const B_DATE = add(165, 0, 3, 1, 'horizontal="center" vertical="center"');
+  const B_PCT = add(167, 0, 3, 1, 'horizontal="center" vertical="center"');
+  const B_NOTE = add(0, 3, 3, 1, 'vertical="center" wrapText="1"');
+  const B_NEG = add(169, 0, 3, 1, 'horizontal="right" vertical="center"');
+  const B_INT = add(3, 0, 3, 1, 'horizontal="right" vertical="center"');
+
+  const inline = (ref, st, text) => `<c r="${ref}" s="${st}" t="inlineStr"><is><t xml:space="preserve">${esc(text)}</t></is></c>`;
+  const num = (ref, st, n) => `<c r="${ref}" s="${st}"><v>${n}</v></c>`;
+  const bare = (ref, st) => `<c r="${ref}" s="${st}"/>`;
+
+  const widths = [11, 16, 13, 10, 9, 12, 30, 11, 10, 11, 10];
+  const cols = widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join("");
+
+  const rows = [];
+  rows.push(
+    `<row r="1" ht="33" customHeight="1">${inline("A1", TITLE, "2024 年度销售汇总（华东 / 华南 / 华北）")}${["B", "C", "D", "E", "F", "G", "H"].map((c) => bare(`${c}1`, TITLE)).join("")}</row>`,
+  );
+  rows.push(`<row r="2" ht="24" customHeight="1">${STYLED.header.map((h, i) => inline(`${colName(i)}2`, HEAD, h)).join("")}</row>`);
+  STYLED.rows.forEach((d, i) => {
+    const r = 3 + i;
+    const band = i % 2 === 1;
+    const ht = i === 0 ? ' ht="34.5" customHeight="1"' : "";
+    const hidden = r === STYLED.hiddenRow ? ' hidden="1"' : "";
+    rows.push(
+      `<row r="${r}"${ht}${hidden}>` +
+        inline(`A${r}`, band ? B_TEXT : TEXT, d[0]) +
+        inline(`B${r}`, band ? B_TEXT : TEXT, d[1]) +
+        num(`C${r}`, band ? B_MONEY : MONEY, d[2]) +
+        num(`D${r}`, band ? B_MONEY : MONEY, d[3]) +
+        num(`E${r}`, band ? B_PCT : PCT, d[4]) +
+        num(`F${r}`, band ? B_DATE : DATE, d[5]) +
+        inline(`G${r}`, band ? B_NOTE : NOTE, d[6]) +
+        inline(`H${r}`, band ? B_TEXT : TEXT, d[7]) +
+        num(`I${r}`, band ? B_MONEY : MONEY, d[8]) +
+        num(`J${r}`, band ? B_NEG : NEG, i === 2 ? -d[9] : d[9]) +
+        num(`K${r}`, band ? B_INT : INT, d[10]) +
+        `</row>`,
+    );
+  });
+  const tr = STYLED.totalRow;
+  rows.push(
+    `<row r="${tr}" ht="22" customHeight="1">${inline(`A${tr}`, TOT_TEXT, "合计")}${bare(`B${tr}`, TOT_TEXT)}${num(`C${tr}`, TOT_MONEY, 2450.66)}${num(`D${tr}`, TOT_MONEY, 268128)}${num(`E${tr}`, TOT_MONEY, 1)}${bare(`F${tr}`, TOT_TEXT)}${inline(`G${tr}`, TOT_TEXT, "以上为 2024 年全年数据")}${bare(`H${tr}`, TOT_TEXT)}</row>`,
+  );
+  rows.push(
+    `<row r="${tr + 1}">${inline(`A${tr + 1}`, PLAIN_INDENT, "缩进两格的说明文字")}${inline(`B${tr + 1}`, TEXT, "这是一段会溢出到右侧空白列的很长很长的文本，用来验证 Excel 的 overflow 行为")}${["C", "D", "E", "F", "G", "H"].map((c) => bare(`${c}${tr + 1}`, DEF)).join("")}</row>`,
+  );
+
+  const sheet1 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:K${tr + 1}"/><sheetViews><sheetView tabSelected="1" workbookViewId="0"><pane xSplit="1" ySplit="2" topLeftCell="B3" activePane="bottomRight" state="frozen"/><selection pane="bottomRight" activeCell="B3" sqref="B3"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15" defaultColWidth="8.43"/><cols>${cols}</cols><sheetData>${rows.join("")}</sheetData><mergeCells count="1"><mergeCell ref="A1:H1"/></mergeCells><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
+  const sheet2 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:C2"/><sheetViews><sheetView showGridLines="0" workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/><sheetData><row r="1" ht="21" customHeight="1">${inline("A1", BIG, "无网格线的说明页")}${bare("B1", BIG)}${bare("C1", BIG)}</row><row r="2">${inline("A2", TEXT, "左侧留白，居中显示的日期：")}${num("B2", DATE, 45678)}${bare("C2", DEF)}</row></sheetData><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
+  const theme = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office"><a:themeElements><a:clrScheme name="Office"><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1><a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="44546A"/></a:dk2><a:lt2><a:srgbClr val="E7E6E6"/></a:lt2><a:accent1><a:srgbClr val="4472C4"/></a:accent1><a:accent2><a:srgbClr val="ED7D31"/></a:accent2><a:accent3><a:srgbClr val="A5A5A5"/></a:accent3><a:accent4><a:srgbClr val="FFC000"/></a:accent4><a:accent5><a:srgbClr val="5B9BD5"/></a:accent5><a:accent6><a:srgbClr val="70AD47"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fontScheme name="Office"><a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="Office"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>`;
+
+  return zipSync(
+    {
+      "[Content_Types].xml": strToU8(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/></Types>`,
+      ),
+      "_rels/.rels": strToU8(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+      ),
+      "xl/workbook.xml": strToU8(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${STYLED.sheet}" sheetId="1" r:id="rId1"/><sheet name="说明" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+      ),
+      "xl/_rels/workbook.xml.rels": strToU8(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>`,
+      ),
+      "xl/theme/theme1.xml": strToU8(theme),
+      "xl/styles.xml": strToU8(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="4"><numFmt numFmtId="164" formatCode="&quot;¥&quot;#,##0.00"/><numFmt numFmtId="165" formatCode="yyyy-mm-dd"/><numFmt numFmtId="167" formatCode="0.0%"/><numFmt numFmtId="169" formatCode="#,##0.00;[Red](#,##0.00)"/></numFmts><fonts count="${STYLED_FONTS.length}">${STYLED_FONTS.join("")}</fonts><fills count="${STYLED_FILLS.length}">${STYLED_FILLS.join("")}</fills><borders count="${STYLED_BORDERS.length}">${STYLED_BORDERS.join("")}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${xfs.length}">${xfs.join("")}</cellXfs><cellStyles count="1"><cellStyle name="常规" xfId="0" builtinId="0"/></cellStyles></styleSheet>`,
+      ),
+      "xl/worksheets/sheet1.xml": strToU8(sheet1),
+      "xl/worksheets/sheet2.xml": strToU8(sheet2),
+    },
+    { level: 6 },
+  );
+}
+
 export function makeFixtures(outDir) {
   fs.mkdirSync(outDir, { recursive: true });
   const file = path.join(outDir, "plain.xlsx");
@@ -537,8 +687,10 @@ export function makeFixtures(outDir) {
   fs.writeFileSync(cf, buildConditionalXlsx());
   const formula = path.join(outDir, "formula.xlsx");
   fs.writeFileSync(formula, buildFormulaXlsx());
+  const styled = path.join(outDir, "styled.xlsx");
+  fs.writeFileSync(styled, buildStyledXlsx());
   const csv = makeCsvFixtures(outDir);
-  return { plain: file, report, chart, cf, formula, csv, files: [file, report, chart, cf, formula, ...csv.files] };
+  return { plain: file, report, chart, cf, formula, styled, csv, files: [file, report, chart, cf, formula, styled, ...csv.files] };
 }
 
 /** OLE2 复合文档头：老式 .xls，以及加密过的 OOXML 包（CFB 包着加密流）都以它开头。 */

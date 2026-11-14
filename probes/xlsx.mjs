@@ -300,7 +300,8 @@ try {
   await page.evaluate(() => {
     const view = document.querySelector(".sd-view");
     if (view) {
-      view.scrollTop = 60 * 28;
+      const rh = document.querySelector(".sd-cell[data-r=\"0\"]")?.offsetHeight ?? 20;
+      view.scrollTop = 60 * rh;
       view.dispatchEvent(new Event("scroll"));
     }
   });
@@ -441,9 +442,15 @@ try {
   const narrow = await page.evaluate(() => {
     const el = document.querySelector('.sd-cell[data-r="2"][data-c="7"]');
     if (!el) return null;
-    return { w: Math.round(el.getBoundingClientRect().width), clip: el.scrollWidth > el.clientWidth, nowrap: getComputedStyle(el).whiteSpace };
+    const txt = el.querySelector(".sd-txt");
+    return {
+      w: Math.round(el.getBoundingClientRect().width),
+      clip: !!txt && txt.scrollWidth > el.clientWidth,
+      ovf: el.classList.contains("sd-ovf"),
+      nowrap: getComputedStyle(el).whiteSpace,
+    };
   });
-  check("窄列内容被裁不撑破", narrow?.clip === true && narrow?.nowrap === "nowrap", JSON.stringify(narrow));
+  check("窄列内容被裁不撑破", narrow?.clip === true && narrow?.ovf === false && narrow?.nowrap === "nowrap", JSON.stringify(narrow));
 
   // 数字 / 货币 / 百分比 / 日期 / 时刻：格式取自文件，45678 必须是日期。
   check("货币格式", (await cellText(2, 2)) === "¥1,234.50", String(await cellText(2, 2)));
@@ -501,10 +508,123 @@ try {
   await until(async () => (await cellText(0, 0)) === "2024 年度销售汇总", 5000, "sheet switched back");
   check("切回来还是合并标题", (await cellText(0, 0)) === "2024 年度销售汇总", String(await cellText(0, 0)));
 
-  // ---------------------------------------------------------------- 条件格式（#109）
-  // 五类规则都在桥端求值，前端只吃结果：底色、字色、加粗、数据条宽度、图标等级。
+  // ---------------------------------------------------------------- 富样式（#427）
+  // 样式表里的字体 / 填充 / 边框 / 换行 / 行高 / 隐藏行列，都要真的画出来，不是只有数字格式。
   await page.locator(".sd-close").first().click();
   await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+  await openSheet("styled.xlsx");
+
+  const cellCss = (r, c) =>
+    page.evaluate(
+      ([rr, cc]) => {
+        const el = document.querySelector(`.sd-cell[data-r="${rr}"][data-c="${cc}"]`);
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        const txt = el.querySelector(".sd-txt");
+        const rect = el.getBoundingClientRect();
+        const nums = (v) => (String(v).match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
+        return {
+          text: el.textContent ?? "",
+          bg: nums(cs.backgroundColor),
+          color: nums(cs.color),
+          size: parseFloat(cs.fontSize),
+          weight: Number(cs.fontWeight) || 400,
+          align: cs.justifyContent,
+          pad: parseFloat(cs.paddingLeft),
+          wrap: cs.whiteSpace,
+          bt: cs.borderTopStyle,
+          bl: cs.borderLeftStyle,
+          bw: parseFloat(cs.borderLeftWidth),
+          w: Math.round(rect.width),
+          h: Math.round(rect.height),
+          ovf: el.classList.contains("sd-ovf"),
+          overflowPx: txt ? txt.scrollWidth - el.clientWidth : 0,
+          hash: el.classList.contains("is-hash"),
+        };
+      },
+      [r, c],
+    );
+  const sameRgb = (a, b, tol = 2) => a.length >= 3 && b.every((v, i) => Math.abs(a[i] - v) <= tol);
+
+  // 行高：默认 15pt → 20px；文件里 33pt → 44px；34.5pt → 46px；换行的行自己撑高。
+  check("默认行高按 15pt 算", (await cellCss(3, 0))?.h === 20, JSON.stringify(await cellCss(3, 0)));
+  check("换行行比默认高", ((await cellCss(4, 0))?.h ?? 0) > 20, JSON.stringify(await cellCss(4, 0)));
+  check("文件行高生效（33pt）", (await cellCss(0, 0))?.h === 44, JSON.stringify(await cellCss(0, 0)));
+  check("文件行高生效（34.5pt）", (await cellCss(2, 6))?.h === 46, JSON.stringify(await cellCss(2, 6)));
+  const h9 = await page.locator('.sd-cell[data-r="8"]').count();
+  const rno9 = await page.locator('.sd-rowno[data-r="8"]').count();
+  check("隐藏行不画格也不画行号", h9 === 0 && rno9 === 0, `${h9}/${rno9}`);
+  const rno10 = await page.locator('.sd-rowno[data-r="9"]').count();
+  check("隐藏行之后接着编号", rno10 === 1, String(rno10));
+
+  // 字体：标题 18pt 粗体深蓝；表头白字；正文 11pt。
+  const titleCss = await cellCss(0, 0);
+  check("标题字号取文件值", titleCss?.size === 24 && titleCss?.weight === 700, JSON.stringify({ size: titleCss?.size, weight: titleCss?.weight }));
+  check("标题颜色取主题 rgb", !!titleCss && sameRgb(titleCss.color, [31, 56, 100]), JSON.stringify(titleCss?.color));
+  const head = await cellCss(1, 0);
+  check("表头深蓝填充", !!head && sameRgb(head.bg, [31, 78, 121]), JSON.stringify(head?.bg));
+  check("表头白字", !!head && sameRgb(head.color, [255, 255, 255]), JSON.stringify(head?.color));
+  const bodySize = (await cellCss(2, 0))?.size ?? 0;
+  check("正文 11pt", bodySize > 14.4 && bodySize < 14.9, String(bodySize));
+
+  // 边框：细灰四边 → 相邻格共用一条 1px，不是叠成 2px。
+  const bodied = await cellCss(2, 0);
+  check("细边框来自样式表", bodied?.bt === "solid" && bodied?.bl === "solid" && bodied?.bw === 1, JSON.stringify({ bt: bodied?.bt, bl: bodied?.bl, bw: bodied?.bw }));
+  const headBottom = await page.evaluate(() => {
+    const a = document.querySelector('.sd-cell[data-r="2"][data-c="0"]');
+    const b = document.querySelector('.sd-cell[data-r="3"][data-c="0"]');
+    if (!a || !b) return null;
+    return { a: getComputedStyle(a).borderBottomWidth, b: getComputedStyle(b).borderTopWidth, ab: a.getBoundingClientRect().bottom, bt: b.getBoundingClientRect().top };
+  });
+  check("相邻格只画一条边框", headBottom?.a === "0px" && headBottom?.b !== "0px" && Math.abs(headBottom?.ab - headBottom?.bt) <= 1, JSON.stringify(headBottom));
+
+  // 数字格式 + 对齐：货币右对齐，负数按格式变成红括号，放不下就满格 #。
+  const money = await cellCss(2, 2);
+  check("货币格式显示", money?.text === "¥1,234.50", JSON.stringify(money?.text));
+  check("数字右对齐", /^(flex|flow)-end$/.test(money?.align ?? ""), JSON.stringify(money?.align));
+  check("负数按格式显示括号", (await cellText(4, 9)) === "(400.00)", String(await cellText(4, 9)));
+  const wide = await cellCss(2, 3);
+  check("数字放不下显示 ###", wide?.hash === true && /^#+$/.test(wide?.text ?? ""), JSON.stringify({ text: wide?.text, hash: wide?.hash }));
+
+  // 排版：换行、溢出到右边的空格、右缩进两格。
+  check("wrapText 真是换行", (await cellCss(2, 6))?.wrap === "pre-wrap", JSON.stringify((await cellCss(2, 6))?.wrap));
+  const spill = await cellCss(11, 1);
+  check("长文本溢出到右侧空格", spill?.ovf === true && spill?.overflowPx > 0, JSON.stringify({ ovf: spill?.ovf, over: spill?.overflowPx }));
+  const wrapFit = await page.evaluate(() =>
+    [...document.querySelectorAll(".sd-cell[data-wrap=\"1\"]")].map((el) => {
+      const span = el.querySelector(".sd-txt");
+      const cb = el.getBoundingClientRect();
+      const sb = span ? span.getBoundingClientRect() : null;
+      return { r: el.dataset.r, c: el.dataset.c, cellH: Math.round(cb.height), spanH: sb ? Math.round(sb.height) : 0, bottomGap: sb ? Math.round(cb.bottom - sb.bottom) : null };
+    }),
+  );
+  check("换行内容不被行高截断", wrapFit.length > 0 && wrapFit.every((w) => w.cellH >= w.spanH), JSON.stringify(wrapFit));
+  const indented = await cellCss(11, 0);
+  check("indent 变成左内边距", (indented?.pad ?? 0) >= 12, JSON.stringify(indented?.pad));
+
+  // 合计行：黄底粗体；第二张表关掉网格线。
+  const total = await cellCss(10, 0);
+  check("合计行黄底粗体", !!total && sameRgb(total.bg, [255, 242, 204]) && total.weight === 700, JSON.stringify({ bg: total?.bg, weight: total?.weight }));
+  await page.screenshot({ path: path.join(OUT, "08-styled.png") });
+  await page.locator(".sd-wstab", { hasText: "说明" }).first().click();
+  await until(async () => (await cellText(0, 0)) === "无网格线的说明页", 5000, "styled sheet 2");
+  await page.waitForTimeout(150);
+  const noGrid = await cellCss(1, 0);
+  check("showGridLines=0 时不画网格线", noGrid?.bt === "none" && noGrid?.bl === "none", JSON.stringify({ bt: noGrid?.bt, bl: noGrid?.bl }));
+  check("说明页文本左对齐", /^(flex|flow)-start$/.test(noGrid?.align ?? ""), JSON.stringify(noGrid?.align));
+  const closeDbg = await page.evaluate(() => {
+    const c = document.querySelector(".sd-close");
+    const b = c?.getBoundingClientRect();
+    const hit = b ? document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2) : null;
+    return { has: !!c, box: b ? [b.left, b.top, b.width, b.height] : null, hit: hit ? `${hit.tagName}.${hit.className}` : null };
+  });
+  log(`关闭键 ${JSON.stringify(closeDbg)}`);
+  await page.locator(".sd-close").first().click({ timeout: 5000 }).catch((e) => log(`关闭键点不动 ${e.message.split("\n")[0]}`));
+  if (await page.locator(".sd").count()) await page.evaluate(() => document.querySelector(".sd-close")?.click());
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+
+  // ---------------------------------------------------------------- 条件格式（#109）
+  // 五类规则都在桥端求值，前端只吃结果：底色、字色、加粗、数据条宽度、图标等级。
   await openSheet("cf.xlsx");
 
   const fxOf = (r, c) =>
@@ -673,23 +793,26 @@ try {
         color: cs.borderTopColor,
         title: el.getAttribute("title") ?? "",
         outline: cs.outlineStyle,
+        outlineWidth: cs.outlineWidth,
+        outlineColor: cs.outlineColor,
+        shadow: cs.boxShadow,
       };
     });
   const nc = await ncInfo();
   check("缺缓存值格显空", nc?.text === "" && (await cellText(2, 3)) !== "0", JSON.stringify(nc?.text));
-  check("缺缓存值格是红虚线", nc?.style === "dashed" && parseFloat(nc.width) >= 1 && red(nc.color), JSON.stringify({ style: nc?.style, width: nc?.width, color: nc?.color }));
+  check("缺缓存值格是红虚线", nc?.outline === "dashed" && parseFloat(nc.outlineWidth) >= 1 && red(nc.outlineColor), JSON.stringify({ outline: nc?.outline, width: nc?.outlineWidth, color: nc?.outlineColor }));
   check("缺缓存值格悬停给公式和解释", /B3\*C3/.test(nc?.title ?? "") && /需用表格软件重算/.test(nc?.title ?? ""), nc?.title);
 
   await clickCell(2, 3);
   const ncSel = await ncInfo();
   check("选中缺缓存值格显示公式", (await fxBar())?.text === "=B3*C3", (await fxBar())?.text);
-  check("选中格有可见边框", ncSel?.outline === "solid", JSON.stringify({ outline: ncSel?.outline }));
+  check("选中格有可见边框", /inset/.test(ncSel?.shadow ?? ""), JSON.stringify({ shadow: ncSel?.shadow }));
   const selRing = await page.evaluate(() => {
     const el = document.querySelector('.sd-cell[data-r="2"][data-c="3"]');
     const cs = getComputedStyle(el);
-    return { style: cs.outlineStyle, width: cs.outlineWidth, color: cs.outlineColor };
+    return { style: cs.boxShadow, width: cs.outlineWidth, color: cs.outlineColor };
   });
-  check("选中格边框画出来了", selRing.style === "solid" && parseFloat(selRing.width) >= 1, JSON.stringify(selRing));
+  check("选中格边框画出来了", /inset/.test(selRing.style ?? "") && /15, 118, 110/.test(selRing.style ?? ""), JSON.stringify(selRing));
   check("缺缓存值格还是空的", (await cellText(2, 3)) === "", String(await cellText(2, 3)));
 
   const st1 = await status();
@@ -753,7 +876,8 @@ try {
   await page.evaluate(() => {
     const view = document.querySelector(".sd-view");
     if (view) {
-      view.scrollTop = 60 * 28;
+      const rh = document.querySelector(".sd-cell[data-r=\"0\"]")?.offsetHeight ?? 20;
+      view.scrollTop = 60 * rh;
       view.dispatchEvent(new Event("scroll"));
     }
   });
@@ -913,7 +1037,7 @@ try {
 
       const reqs = windowRequests.slice(winStart);
       const top = reqs[0];
-      const vis = await page.evaluate(() => Math.ceil((document.querySelector(".sd-view")?.clientHeight ?? 0) / 28));
+      const vis = await page.evaluate(() => Math.ceil((document.querySelector(".sd-view")?.clientHeight ?? 0) / (document.querySelector(".sd-cell[data-r=\"0\"]")?.offsetHeight ?? 20)));
       let bytesTop = 0;
       let partBytes = 0;
       if (s.tier !== "none") {
@@ -1382,6 +1506,14 @@ if (SKIP_PDF) {
   await page.locator('[data-k="zin"]').first().click();
   await page.locator('[data-k="zin"]').first().click();
   await page.waitForTimeout(200);
+  // 找完 9 行之后视口被滚下去一截，缩放下先把视口拉回顶部，量的是同一块区域。
+  await page.evaluate(() => {
+    const v = document.querySelector(".sd-view");
+    v.scrollTop = 0;
+    v.scrollLeft = 0;
+    v.dispatchEvent(new Event("scroll"));
+  });
+  await page.waitForTimeout(250);
   const z1 = await cellBox(1, 0);
   const pct1 = await page.evaluate(() => (document.querySelector(".sd-zoom-pct")?.textContent ?? "").trim());
   check("缩放百分比", pct1 === "120%", pct1);
@@ -1451,6 +1583,7 @@ if (SKIP_PDF) {
 } catch (err) {
   failures++;
   console.error("FAIL 异常:", err?.stack ?? err);
+  console.error("页面异常:", typeof pageErrors === "undefined" ? "(unknown)" : pageErrors.join(" | ") || "(none)");
   console.error(bridgeOut.join("").slice(-3000));
 } finally {
   if (browser) await browser.close();

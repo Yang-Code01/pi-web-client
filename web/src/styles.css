@@ -4189,60 +4189,61 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-block-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #3d4757; }
 .sd-block-size { flex: none; color: #8a94a3; font-size: 11.5px; white-space: nowrap; }
 
-/* 网格：行列头各占一条，正文自己滚。 */
+/* 网格：行列头各占一条，正文自己滚（尺寸跟 grid.ts 的 HEAD_W / HEAD_H 对齐）。 */
 .sd-grid {
   flex: 1 1 auto; min-width: 0; min-height: 0;
-  display: grid; grid-template-columns: 44px minmax(0, 1fr); grid-template-rows: 28px minmax(0, 1fr);
+  display: grid; grid-template-columns: 40px minmax(0, 1fr); grid-template-rows: 24px minmax(0, 1fr);
   background: #fff;
   font: 13px/1.4 var(--sans);
 }
-.sd-corner { background: #f4f6f8; border-right: 1px solid #e3e6ea; border-bottom: 1px solid #e3e6ea; }
-.sd-colhead { position: relative; overflow: hidden; background: #f4f6f8; border-bottom: 1px solid #e3e6ea; }
-.sd-rowhead { position: relative; overflow: hidden; background: #f8f9fb; border-right: 1px solid #e3e6ea; }
+.sd-corner { background: #f0f0f0; border-right: 1px solid #dbdbdb; border-bottom: 1px solid #dbdbdb; }
+.sd-colhead { position: relative; overflow: hidden; background: #f0f0f0; border-bottom: 1px solid #cfcfcf; }
+.sd-rowhead { position: relative; overflow: hidden; background: #f0f0f0; border-right: 1px solid #cfcfcf; }
 .sd-colhead-in, .sd-rowhead-in { position: absolute; left: 0; right: 0; top: 0; will-change: transform; }
 .sd-col {
-  position: absolute; top: 0; height: 28px; display: flex; align-items: center; justify-content: center;
-  color: #5b6472; font-size: calc(11.5px * var(--sd-z, 1)); font-weight: 500;
-  border-right: 1px solid #e3e6ea; box-sizing: border-box;
+  position: absolute; top: 0; height: 24px; display: flex; align-items: center; justify-content: center;
+  color: #4a4a4a; font-size: 11.5px; font-weight: 400;
+  border-right: 1px solid #dbdbdb; box-sizing: border-box;
 }
+.sd-col.sel { color: #0f766e; font-weight: 600; }
 .sd-rowno {
-  position: absolute; left: 0; right: 0; display: flex; align-items: center; justify-content: flex-end;
-  padding-right: 8px; box-sizing: border-box;
-  color: #98a2b3; font-size: calc(11.5px * var(--sd-z, 1));
-  border-bottom: 1px solid #e8ebef;
+  position: absolute; left: 0; right: 0; display: flex; align-items: center; justify-content: center;
+  box-sizing: border-box; color: #4a4a4a; font-size: 11.5px;
+  border-bottom: 1px solid #dbdbdb;
 }
+.sd-rowno.sel { color: #0f766e; font-weight: 600; }
 .sd-viewwrap { position: relative; min-width: 0; min-height: 0; }
 .sd-view { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
 /* #107：网格自己吃键盘；焦点环不画在滚动容器上（格子里的描边已经说明在哪）。 */
 .sd-view:focus { outline: none; }
 .sd-view:focus-visible { outline: 1px solid #c3d5e4; outline-offset: -1px; }
-/* 网格线由每个格子自己的边框画：列宽取文件值，固定 110px 的底纹会错位。 */
 .sd-space { position: relative; background: #fff; }
 .sd-cells { position: absolute; left: 0; top: 0; }
+/* #429 格子的字号、底色、四边框、内边距都由 grid.ts 内联给：同一屏里每格的行高/列宽都可能不同。 */
 .sd-cell {
   position: absolute; box-sizing: border-box;
-  display: flex; align-items: center;
-  padding: 0 8px; overflow: hidden; white-space: nowrap; text-overflow: clip;
-  background: #fff; border-right: 1px solid #e8ebef; border-bottom: 1px solid #e8ebef;
-  color: #1f2430; cursor: default; user-select: none;
-  /* #107：缩放把字和内边距一起缩，行高/列宽由 grid.ts 量好。 */
-  font-size: calc(13px * var(--sd-z, 1));
-  padding-left: calc(8px * var(--sd-z, 1)); padding-right: calc(8px * var(--sd-z, 1));
+  display: flex; overflow: hidden;
+  background: #fff; color: #1f2430; cursor: default; user-select: none; white-space: nowrap;
 }
-.sd-cell.is-n { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.sd-cell > .sd-txt { min-width: 0; overflow: hidden; text-overflow: clip; }
+.sd-cell.is-n { font-variant-numeric: tabular-nums; }
 .sd-cell[data-span] { z-index: 1; }
+/* 文本溢出到右边的空格子里：只让字溢出，节点自己的底色/边框还留在本格。 */
+.sd-cell.sd-ovf { overflow: visible; z-index: 2; pointer-events: none; }
+.sd-cell.sd-ovf > .sd-txt { flex: none; overflow: visible; }
 .sd-cell.k-e { color: #b42318; }
 /* #109 条件格式：数据条垫在文字下面，图标和文字同一行，宽度由服务端算好的比例给。 */
-.sd-cell .sd-bar { position: absolute; left: 0; top: 1px; bottom: 1px; border-radius: 2px; opacity: 0.55; pointer-events: none; }
+.sd-cell .sd-bar { position: absolute; left: 0; top: 1px; bottom: 1px; border-radius: 1px; opacity: 0.5; pointer-events: none; }
 .sd-cell .sd-txt { position: relative; z-index: 1; }
-.sd-cell .sd-icon { position: relative; z-index: 1; flex: none; margin-right: 4px; font-size: 12px; line-height: 1; }
-/* #111：选中的格子（不抢焦点、不加输入框）与「只有公式、没存结果」的格子（显空 + 红虚线）。 */
-.sd-cell.sel { outline: 2px solid #4b7ea8; outline-offset: -2px; z-index: 2; }
-/* #107：一块选区（用垫色而不是边框，条件格式的背景还在）+ 查找命中。 */
-.sd-cell.in-sel { background-image: linear-gradient(rgba(75, 126, 168, 0.14), rgba(75, 126, 168, 0.14)); }
+.sd-cell .sd-icon { position: relative; z-index: 1; flex: none; margin-right: 3px; font-size: 11px; line-height: 1; }
+/* 选区四边的描边由 grid.ts 用 inset 阴影拼（跟边框正交，不吃掉格子的边框）。 */
+.sd-cell.sel, .sd-cell.in-sel { z-index: 3; }
+.sd-cell.in-sel { background-image: linear-gradient(rgba(15, 118, 110, 0.1), rgba(15, 118, 110, 0.1)); }
 .sd-cell.hit { background-image: linear-gradient(rgba(214, 158, 0, 0.22), rgba(214, 158, 0, 0.22)); }
-.sd-cell.hit-on { background-image: linear-gradient(rgba(214, 158, 0, 0.34), rgba(214, 158, 0, 0.34)); outline: 2px solid #c99700; outline-offset: -2px; z-index: 3; }
-.sd-cell.is-nc { border: 1px dashed #d92d20; }
+.sd-cell.hit-on { background-image: linear-gradient(rgba(214, 158, 0, 0.34), rgba(214, 158, 0, 0.34)); outline: 1.5px solid #c99700; outline-offset: -2px; z-index: 4; }
+.sd-cell.is-nc { outline: 1px dashed #d92d20; outline-offset: -1px; }
+/* 填充柄：选区右下角的小方块。 */
+.sd-fill { position: absolute; width: 6px; height: 6px; background: #0f766e; border: 1px solid #fff; z-index: 4; pointer-events: none; }
 
 /* 冻结窗格：行/列各画一层贴在边上，滚动时不动（#108）。 */
 .sd-colhead-frz {
