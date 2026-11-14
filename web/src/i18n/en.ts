@@ -3094,7 +3094,6 @@ export const en: Dict = {
   "要填客户端授权码（16 位），不是登录密码。到邮箱网页版的「设置 → POP3/SMTP/IMAP」里开启服务并生成。": "Enter the 16-character app password, not your login password. Enable the services and generate one in the webmail under Settings → POP3/SMTP/IMAP.",
   "邮箱分区": "Mail sections",
   "AI 权限": "AI permissions",
-  "发送记录": "Send log",
   "{n} 个账号": "{n} accounts",
   "{n} 个未验证": "{n} unverified",
   "写一封新的": "Write a new one",

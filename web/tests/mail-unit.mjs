@@ -55,10 +55,12 @@ test("大小：与「设置 → 本机管理」同一口径（空格 + 最多一
 });
 
 test("审计结果：存草稿不能显示成「已发出」", () => {
-  assert.equal(auditOutcome({ tool: "mail_draft", ok: true }), "draft");
-  assert.equal(auditOutcome({ tool: "mail_send", ok: true }), "sent");
+  assert.equal(auditOutcome({ tool: "mail_draft", ok: true, messageId: "draft" }), "draft");
+  // 页面自己点「存草稿」走 /api/mail/send + draft:true，桥不传 tool，只有 messageId 能认。
+  assert.equal(auditOutcome({ ok: true, messageId: "draft" }), "draft");
+  assert.equal(auditOutcome({ tool: "mail_send", ok: true, messageId: "<real@qq.com>" }), "sent");
   assert.equal(auditOutcome({ tool: "mail_send", ok: false }), "failed");
-  assert.equal(auditOutcome({ tool: "mail_draft", ok: false }), "failed");
-  // 老记录没有 tool 字段：只能按 ok 判，别抛错。
+  assert.equal(auditOutcome({ tool: "mail_draft", ok: false, messageId: "draft" }), "failed");
+  // 老记录没有 tool、也没有 messageId：只能按 ok 判，别抛错。
   assert.equal(auditOutcome({ ok: true }), "sent");
 });

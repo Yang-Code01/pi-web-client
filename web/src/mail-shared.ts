@@ -156,13 +156,16 @@ export function parseRecipients(text: string): string[] {
 /**
  * 审计行的结果：`draft` / `sent` / `failed`。
  *
- * 桥端把「存草稿」也写进同一个审计文件（`tool: "mail_draft"`、`messageId: "draft"`，见
- * `bridge/src/mail.ts`），所以不能只看 `ok`：只看 `ok` 会把「存进草稿箱」显示成「已发出」，
- * 用户以为信已经寄出去了，实际上还在草稿箱里。
+ * 桥端把「存草稿」也写进同一个审计文件，而两种存法长得不一样：
+ * - AI 调 `mail_draft` → `tool: "mail_draft"`；
+ * - 页面自己的「存草稿」走 `/api/mail/send` + `draft: true` → 没有 `tool`（桥不知道该叫它什么）。
+ * 两者都会写 `messageId: "draft"`（见 `bridge/src/mail.ts` 的 `appendAudit`），所以两个都得认。
+ * 只看 `ok` 会把草稿说成「已发出」，用户以为信寄出去了，实际还在草稿箱。
  */
-export function auditOutcome(row: { tool?: string; ok: boolean }): "draft" | "sent" | "failed" {
-  if (row.tool === "mail_draft") return row.ok ? "draft" : "failed";
-  return row.ok ? "sent" : "failed";
+export function auditOutcome(row: { tool?: string; ok: boolean; messageId?: string }): "draft" | "sent" | "failed" {
+  if (!row.ok) return "failed";
+  if (row.tool === "mail_draft" || row.messageId === "draft") return "draft";
+  return "sent";
 }
 
 /** 邮件时间：今天只给 `HH:MM`，其余给日期（列表行很窄）。`0` 表示拿不到时间。 */

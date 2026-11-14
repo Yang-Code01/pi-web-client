@@ -3,9 +3,6 @@ import { formatBytes } from "./bytes.ts";
 import { createEl as el, fileIcon } from "./chat.ts";
 import { tr } from "./i18n/index.ts";
 
-// 文件大小的口径只留一份（`bytes.ts`），这里保留再导出，老的引用路径不用改。
-export { formatBytes };
-
 /**
  * One directory browser, three call sites: the new-session sheet's 📁 浏览, the attachment picker,
  * and the viewer's 浏览 pane of the file explorer. Listings come from `/api/dirs`; the file
