@@ -4612,7 +4612,9 @@ D
 3. **加守门用例** `web/tests/viewport-units-unit.mjs`（挂进 `npm --prefix web run typecheck`，也可单跑 `npm run test:viewport`）：扫 `web/src/*.css`（`web/src/peer/` 是另一张没有 zoom 的页面，不在范围内），除了 `--vh1` / `--vw1` 那两行定义和带豁免标记的行，出现裸 `vh` / `vw` / `dvh` / `svh` / `lvh` / `dvw` 就红并指出文件行号。**这条是整个决定里真正管用的部分** —— 前三次都写了文档没写守卫，所以第四次还是发生了。
 4. **分支工作台 / 目录与仓库的窄版判据从 `@media` 换成 `@container`**（`.branch-sheet { container-type: inline-size }`，同 `.viewer` 的理由）：窄版规则（cmp 两列、单列历史 / 差异、侧栏下移、动词左对齐、藏 Esc 提示）整套搬进 `@container (max-width: 720px)`；头行两级降级 —— 卡宽 < 960 标题让位只留 `⎇`，< 720 常驻动词收进「全部动词 · 24」（那一页本来就有全部 24 条）。`.branch-title { overflow: hidden }` 与 `.branch-head { flex-wrap: wrap }` 兜底，任何一步都不许再画到按钮上。`.branch-sheet` 自己的宽高仍留在 `@media`：容器查询不能给容器自己写样式。
 
-**没做的（已知仍属同一类，另开票）：** `app.ts` 里还有几处 `menu.style.left = innerWidth - 220` 之类直接拿**视觉 px** 往 `#app` 里的 fixed 元素上写坐标的零散落位（`stickMenu` 那套已经除过 scale，零散这几处没有）；`.repos-*` / 工具权限浮层之外，仍有一些面板用 `@media` 判窄版而不是 `@container`。
+**顺带审过、结论是没问题：** `app.ts` 那几处 `menu.style.left = innerWidth - 220` / `menu.style.right = innerWidth - r.right`（右键菜单、终端菜单、工具权限浮层）与 `menuplace.ts#stickMenu` —— 它们全都 `document.body.append`，不在 zoom 子树里，用视觉 px 定位是对的。**不是**每一处 `innerWidth` 都要除 scale：先看它是不是挂在 `#app` 里。
+
+**没做的（已知仍属同一类，另开票）：** 还有一批面板用 `@media` 判窄版而不是 `@container`（`.repos-*` 一族、部分工具浮层）—— 它们是「嵌在栏里时窄版不触发」的下一个候选，这轮只覆盖了分支工作台与目录与仓库。
 
 **代价：** 字号 150% 下嵌在右栏的常驻动词要收起来，得多点一下「全部动词 · 24」；200% 时独立的卡也进窄版（单列 + 顶部 tab），一屏只看得到两三行提交 —— 仍可滚、仍能关；只当上限用的 `max-width: Nvw`（模型 chip、消息图片）现在按「面板宽度的 N%」算而不是「视口的 N%」，高字号下会比以前更早出现省略号 —— 那才是它本该有的意思。
 
