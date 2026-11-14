@@ -7295,6 +7295,7 @@ export class App {
     if (s.modified) sum.append(pill("mod", tr("修改 {p1}", { p1: s.modified })));
     if (s.deleted) sum.append(pill("del", tr("删除 {p1}", { p1: s.deleted })));
     if (s.unknown) sum.append(pill("unk", tr("未知 {p1}", { p1: s.unknown })));
+    if (s.generated) sum.append(pill("gen", tr("目录 {p1}", { p1: s.generated })));
     if (s.added || s.removed) sum.append(el("span", "art-sum-count", `+${s.added} −${s.removed}`));
     if (data.baseline !== "exact") sum.append(el("span", "art-sum-note", data.baseline === "none" ? tr("没有写入前的原文，状态只能靠猜") : tr("部分文件没有写入前的原文")));
 
@@ -7302,16 +7303,31 @@ export class App {
     let filter: Filter = "all";
     const paint = (): void => {
       list.replaceChildren();
-      for (const r of data.items) {
-        if (filter !== "all" && r.status !== filter) continue;
-        list.append(this.artifactRow(sessionId, r, data));
+      const shown = data.items.filter((r) => filter === "all" || r.status === filter);
+      const tools = shown.filter((r) => r.origin === "tool");
+      if (tools.length) {
+        list.append(this.artifactGroup(tr("工具写入"), "", tools.length));
+        for (const r of tools) list.append(this.artifactRow(sessionId, r, data));
       }
-      if (!list.childElementCount) list.append(el("div", "empty", tr("这一类里没有文件。")));
+      const groups = new Map<string, ArtifactRow[]>();
+      for (const r of shown) {
+        if (r.origin !== "directory") continue;
+        const key = r.group || "";
+        const bucket = groups.get(key) ?? [];
+        bucket.push(r);
+        groups.set(key, bucket);
+      }
+      for (const [group, rows] of groups) {
+        list.append(this.artifactGroup(tr("会话声明的目录"), group, rows.length));
+        for (const r of rows) list.append(this.artifactRow(sessionId, r, data));
+      }
+      if (!shown.length) list.append(el("div", "empty", tr("这一类里没有文件。")));
     };
     const chips: { key: Filter; label: string; n: number }[] = [
       { key: "all", label: tr("全部"), n: data.items.length },
       { key: "new", label: tr("新增"), n: s.new },
       { key: "modified", label: tr("修改"), n: s.modified },
+      { key: "generated", label: tr("目录产物"), n: s.generated },
       { key: "deleted", label: tr("已删除"), n: s.deleted },
       { key: "unknown", label: tr("未知"), n: s.unknown },
     ];
@@ -7329,6 +7345,15 @@ export class App {
     paint();
   }
 
+  /** D252 默认 A：工具写入与会话声明目录分段，沿用现有状态筛选。 */
+  private artifactGroup(title: string, groupPath: string, n: number): HTMLElement {
+    const head = el("div", "art-group");
+    head.append(el("strong", undefined, title));
+    if (groupPath) head.append(el("span", "gp-path", groupPath));
+    head.append(el("span", "gp-n", String(n)));
+    return head;
+  }
+
   /** 弹窗里的一行。`writes` 是「这个会话写过它几次」，不是行数。 */
   private artifactRow(sessionId: string, r: ArtifactRow, data: ArtifactList): HTMLElement {
     const row = el("button", `art-row st-${r.status}`);
@@ -7337,10 +7362,12 @@ export class App {
     const line = el("span", "art-line");
     line.append(el("span", "art-name", name), el("span", `art-badge st-${r.status}`, this.artStatusLabel(r.status)));
     if (r.added || r.removed) line.append(el("span", "art-count", `+${r.added} −${r.removed}`));
-    line.append(el("span", "art-tools", `${r.tool}×${r.writes}`));
+    const isDir = r.origin === "directory";
+    if (!isDir) line.append(el("span", "art-tools", `${r.tool}×${r.writes}`));
     if (r.estimate) line.append(el("span", "art-est", tr("按 git 估算")));
-    main.append(line, el("span", "art-path", r.path));
-    if (!r.diffable && r.why) main.append(el("span", "art-why", this.artifactWhyText(r.why)));
+    main.append(line, el("span", isDir ? "art-rel" : "art-path", isDir ? (r.rel || r.path) : r.path));
+    if (isDir) main.append(el("span", "art-dir-note", tr("脚本生成 · 点开预览")));
+    else if (!r.diffable && r.why) main.append(el("span", "art-why", this.artifactWhyText(r.why)));
     row.append(el("span", "art-ico", previewIcon(r.path)), main);
     row.title = r.path;
     if (r.diffable) {
@@ -7361,6 +7388,7 @@ export class App {
     if (status === "modified") return tr("修改");
     if (status === "same") return tr("未变");
     if (status === "deleted") return tr("已删除");
+    if (status === "generated") return tr("本次生成");
     return tr("未知");
   }
 
@@ -7520,6 +7548,8 @@ export class App {
         return tr("文件太大，只给行数统计");
       case "diff-rewrite":
         return tr("改动太大，按「整体重写」统计");
+      case "generated-no-baseline":
+        return tr("脚本生成 · 点开预览");
       default:
         return "";
     }

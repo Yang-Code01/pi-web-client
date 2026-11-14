@@ -21,7 +21,7 @@
     "test:rpc": "node bridge/tests/write-after-end.mjs",
     "test:ask": "node --experimental-strip-types bridge/tests/ask-unit.mjs && node bridge/tests/ask-e2e.mjs",
     "test:context": "node --experimental-transform-types --test bridge/tests/context-log-unit.mjs && node --experimental-transform-types --test web/tests/context-unit.mjs && node --experimental-strip-types --test web/tests/chrome-unit.mjs",
-    "test:artifacts": "node bridge/tests/artifacts-unit.mjs && node bridge/tests/artifacts-e2e.mjs",
+    "test:artifacts": "node bridge/tests/artifacts-declared-dirs-unit.mjs && node bridge/tests/artifacts-unit.mjs && node bridge/tests/artifacts-e2e.mjs",
     "test:ask:ui": "node bridge/tests/ask-ui.mjs",
     "test:ask-tab": "node --experimental-strip-types web/tests/ask-tab-unit.mjs",
     "test:ask-card": "node --experimental-strip-types web/tests/ask-card-unit.mjs",

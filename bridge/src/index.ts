@@ -1066,8 +1066,9 @@ async function main(): Promise<void> {
       }
     }
 
-    // D208: 产物弹窗的数据。页面把自己重放历史时收到的 write/edit 路径递过来（最近写的在前），
-    // 桥负责解析、查基线、算行数；路径来自已登录页面，读盘本身不超过 /api/preview 已有的能力。
+    // D208 + D252: 产物弹窗的数据。页面把自己重放历史时收到的 write/edit 路径递过来（最近写的在前），
+    // 桥负责解析、查基线、算行数，再从 assistant 正文声明的目录补脚本批量生成物；读盘本身不超过
+    // /api/preview 已有的能力。
     if (url.pathname === "/api/artifacts/list" && req.method === "POST") {
       const body = await readBody(req).catch(() => ({}));
       const sessionId = String(body.sessionId ?? "");
@@ -1079,7 +1080,7 @@ async function main(): Promise<void> {
         .slice(0, 500)
         .map((it: any) => ({ path: String(it.path), tool: String(it.tool ?? "write"), writes: Number(it.writes) || 1 }));
       try {
-        return json(res, 200, await listArtifacts(sessionId, where.cwd, items));
+        return json(res, 200, await listArtifacts(sessionId, where.cwd, items, { file: where.file, startedAt: where.startedAt }));
       } catch (err: any) {
         log(`artifacts.list failed: ${String(err?.message ?? err)}`);
         return fail(res, 500, "artifacts_failed", "读不了这个会话的产物");

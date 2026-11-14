@@ -4510,3 +4510,22 @@ D
 - 残留没修：`following` 只在 wheel / touch / 键盘手势里关闭，**拖滚动条上滚**（不产生这些手势）之后 `following` 仍是 true，一到内容增量就回到底部。修它要动 D94 的重入条件，另开一条。
 
 **验证：** `probes/ops-expand-scroll.mjs` 五个 case —— A 装得下的短会话点开 ops（视口不动 + 槽宽不变）、A2 同一会话点开**小**一块（增量不到一屏，视口同样不动）、B 已溢出且上滚过再点开（视口不动，别为了修 A 把跟流一起关掉）、C 跟流中视口被顶矮 60px（仍贴底）、D 跟流中右栏拉开 136px（仍贴底）。去掉那一行 CSS：A 红（`top 0 → 6482`）、A2 红（`top 0 → 294`）、B/C/D 绿；加上后 A/A2/B/C/D 全绿，headless 与 `PI_PROBE_BROWSER=msedge` 各跑一遍（A 的槽宽断言只有 msedge 才有意义）。相邻探针 `jump-nothing-below`（D168）/ `composer-grow`（#319）/ `scroll-race` 全绿；`round10-scroll` 判「↓ 在正中」原来拿 border-box 宽度当中心，滚动条一占位就差 9px —— 改成按 `clientWidth`（内容盒）算，本条目之前之后都成立。
+
+## D252 产物弹窗补上「会话声明目录」里的批量生成物（2026-11-15）
+
+**问题：** 用户报「功能测试」会话的产物弹窗只有 4 个文件，但 `F:\pi-web-client\.scratch\testbook\feature-chat\` 里有很多产物，「产物按钮里面的文件是不全的」。
+
+**根因：** 诊断用真 `/api/artifacts/list` 跑红：会话重放出的 write 系工具路径只有 5 条（截图当时 4 条），弹窗 5 行；目录里 52 个文件（复查时 53 个）一个都没出现，`MISSING from popup : 52`。`web/src/chat.ts:2135` 的 `WRITE_TOOLS` 和 `web/src/chat.ts:1543` 的 `artifacts()` 只把 `write` / `edit` 等工具调用登记进 `this.written`；`bridge/src/artifacts.ts` 的 `listArtifacts()` 又只遍历页面递来的 `inputs`，从不扫描磁盘。那 52 个文件是 `bash` 子进程里的 Playwright 录像、`page.screenshot`、`ffmpeg` 切片、`build-catalog.mjs` 与 `fs.writeFileSync` 生成的，从未经过 write 系工具。D208 早把「只认 write 系工具」写成已知取舍，所以这不是筛选 chip、500 上限或路径信任问题，而是弹窗把「工具写入事实」误当成了「磁盘产物事实」。把 52 个路径直接塞进旧接口会全部返回，但 50 个被 git 兜底估成 `modified` + `estimate`，把「不全」变成「状态错」，因此不能只补路径。
+
+**决定：**
+
+- 桥端 `listArtifacts(sessionId, cwd, inputs, session?)` 在工具行之后，**用 `node:readline` 流式扫整份会话 JSONL**，只取 `type === "message"` / `role === "assistant"` / `content[].type === "text"` 的正文，识别「产物（`绝对路径`）」这类明确交付声明。system prompt、thinking、compressed summary、工具输出都不算声明。真实「功能测试」会话的声明在第 520 行、后面又增长 1,477,819 字节，超出 `TRANSCRIPT_TAIL_BYTES = 512 * 1024` 的尾部窗口；只读尾部会漏，因此流式逐行读整份（内存不随会话长度增长）。`isTrustedPreviewPath` 的尾部窗口是另一处的路径提及策略，保持不动。
+- 声明目录必须位于 `cwd` 内、不是 `cwd` 根、realpath 不逃逸、路径段不含 `.git` / `node_modules` / `dist` / `build` 等；`.scratch` 故意不禁用（目标目录就在它下面）。递归只收常规文件与 `mtime >= startedAt - 5min` 的文件，跳过符号链接，单目录扫描上限 5000 条、合并总上限 500 条。
+- 目录行用独立语义：`origin: "directory"`、`status: "generated"`、`estimate: false`、`diffable: false`、`why: "generated-no-baseline"`，不伪造 `tool` / `writes`，不套 git 基线。`baseline` 只按工具行算；只有目录行时也是 `exact`，避免把整个清单标成「状态只能靠猜」。同一路径被工具写过保留工具行（精确基线优先）。
+- 前端默认 A 版式（用户选「按默认 A 直接开工」）：沿用现有 `.sheet.art-sheet` 与状态筛选，只加「工具写入」和「会话声明的目录」粘性分组标题、「目录产物」chip、中性 `本次生成` 徽章。目录行显示相对声明目录的路径，不显示假的 `tool×writes`，因 `diffable:false` 自动不进 diff 弹窗。`web/src/styles.css` 给产物弹窗的五个直接子元素钉死五行网格，避免隐藏元素把主体/底栏前挪。
+
+**为什么不是别的做法：** bash 命令解析只覆盖已知脚本形状，ffmpeg / Playwright / `node -e` 会漏且与 D208 冲突；全 cwd watcher 有噪声、跨会话归属与 Windows 事件可靠性问题；强制模型对每个二进制产物调 `write` / `open_preview` 走错语义且污染会话。`open_preview` 只打开、不登记清单。
+
+**代价 / 可改：** 只认 assistant 正文里明确写出「产物（`目录`）」的目录；模型没声明、或声明的是散文件而不是目录，仍不会补。分组/筛选/徽章是默认 A 版式，样张在 `.scratch/artifacts-declared-dirs/prototype/`（`.gitignore` 忽略，不进提交），以后换成折叠卡或标签页都不动桥端数据结构。
+
+**验证：** `bridge/tests/artifacts-declared-dirs-unit.mjs` 先写红（主症状断言 `0 !== 4`：`AssertionError [ERR_ASSERTION]: 脚本生成的 4 个新文件都应出现在产物弹窗里（旧文件不算）`）；后来又补「声明在前、后面又写 720 KB」用例，先红 `AssertionError [ERR_ASSERTION]: 声明被 512 KB 以后写的历史挤出尾部时也要能发现` / `0 !== 1`，改成整份流式扫描后全绿。五组用例覆盖：声明目录含子目录/二进制/旧文件，工具行优先，system/thinking 不误判，600,000 字符长会话尾部声明、720 KB 后续历史把声明挤出尾部仍能发现；`npm run test:artifacts`、`npm run typecheck`（含 `web/i18n-check.mjs`）、`npm run build` 与原真接口判定回路 `MISSING from popup : 0` 一并验收。

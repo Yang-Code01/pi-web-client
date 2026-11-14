@@ -3044,11 +3044,11 @@ export class SessionManager extends EventEmitter {
   }
 
   /** Where a session works and logs, whether or not it is loaded. */
-  locate(id: string): { cwd: string; file: string | null } | null {
+  locate(id: string): { cwd: string; file: string | null; startedAt?: string } | null {
     const s = this.sessions.get(id);
-    if (s) return { cwd: s.state.cwd, file: s.state.file };
+    if (s) return { cwd: s.state.cwd, file: s.state.file, startedAt: s.state.startedAt };
     const meta = this.metas().find((m) => m.id === id);
-    return meta ? { cwd: meta.cwd, file: meta.file } : null;
+    return meta ? { cwd: meta.cwd, file: meta.file, startedAt: meta.startedAt } : null;
   }
 
   /** Skill list for a session, or for a plain cwd when no session object is loaded yet. */

@@ -427,17 +427,28 @@ export interface SkillSourceItem {
  * - status 由桥比「写入前的原文」和现在的文件得出；
  * - `new` 只在这条路径在会话开始前确实不存在时出现；
  * - 拿不到原文时宁可 `unknown`，也不拿 git 冒充事实 —— 那种情况 `estimate` 为 true。
+ *
+ * D252: `generated` 是会话声明目录里由脚本批量生成的文件，没有写入前原文，独立成一类。
  */
-export type ArtifactStatus = "new" | "modified" | "same" | "deleted" | "unknown";
+export type ArtifactStatus = "new" | "modified" | "same" | "deleted" | "unknown" | "generated";
+export type ArtifactOrigin = "tool" | "directory";
 
 export interface ArtifactRow {
-  /** 模型写文件时用的路径原文（相对/绝对都可能有）。 */
+  /** 模型写文件时用的路径原文（相对/绝对都可能有）；目录行是相对 cwd 的路径。 */
   path: string;
   abs: string;
   status: ArtifactStatus;
-  /** 最后一次写它用的工具。 */
+  /** D252: 工具写入事实，还是 assistant 声明目录里发现的批量生成物。 */
+  origin: ArtifactOrigin;
+  /** 目录行所属声明目录（绝对路径，带尾斜杠）。 */
+  group?: string;
+  /** 目录行：确实来自 assistant 正文的明确交付声明。 */
+  declared?: boolean;
+  /** 目录行：相对声明目录的路径；工具行：相对 cwd 的路径。 */
+  rel?: string;
+  /** 最后一次写它用的工具（目录行为空）。 */
   tool: string;
-  /** 这个会话里被写过几次（write×2 edit×1 里的数字）。 */
+  /** 这个会话里被写过几次（write×2 edit×1 里的数字；目录行为 0）。 */
   writes: number;
   added: number;
   removed: number;
@@ -460,7 +471,8 @@ export type ArtifactWhy =
   | "binary-size-only"
   | "built-then-deleted"
   | "diff-too-large"
-  | "diff-rewrite";
+  | "diff-rewrite"
+  | "generated-no-baseline";
 
 export interface ArtifactSummary {
   new: number;
@@ -468,6 +480,8 @@ export interface ArtifactSummary {
   same: number;
   deleted: number;
   unknown: number;
+  /** D252: 会话声明目录里发现的批量生成物，独立计数。 */
+  generated: number;
   added: number;
   removed: number;
 }
@@ -475,7 +489,7 @@ export interface ArtifactSummary {
 export interface ArtifactList {
   items: ArtifactRow[];
   summary: ArtifactSummary;
-  /** exact = 每一行都有写入前的原文；partial = 一部分；none = 一条都没有。 */
+  /** exact = 每个可比的工具写入都有写入前的原文；仅目录行时也算 exact（D252）。 */
   baseline: "exact" | "partial" | "none";
 }
 
