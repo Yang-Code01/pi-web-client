@@ -862,6 +862,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .ops-tab .cnt { font: 10.5px/1 var(--mono); font-weight: 600; color: var(--faint); }
 .ops-tab[data-panel="fail"] { color: var(--danger); }
+/* 计数跟着失败走：灰数字嵌在红字旁边会读成「已读/未读」那种计数，不是「几条出事」。 */
+.ops-tab[data-panel="fail"] .cnt { color: var(--danger); }
 .ops-tab[data-panel="fail"].is-on { background: var(--danger-bg); }
 /* 面板也是一列网格：隐式的 `auto` 列会按 max-content 定宽，一条不换行的长命令能把它撑成几万像素。 */
 .ops-panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }

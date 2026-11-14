@@ -148,6 +148,10 @@ try {
   check("体内长出两枚页签", (await box.locator(".ops-tab").count()) === 2);
   check("页签名是「操作」「AI 执行失败」", /^操作 ?/.test(await text(box.locator(".ops-tab").first())) && /AI 执行失败/.test(await text(box.locator(".ops-tab[data-panel='fail']"))), JSON.stringify([await text(box.locator(".ops-tab").first()), await text(box.locator(".ops-tab[data-panel='fail']"))]));
   check("失败页签带计数 4", /4/.test(await text(box.locator(".ops-tab[data-panel='fail']"))), await text(box.locator(".ops-tab[data-panel='fail']")));
+  const aria = await box.locator(".ops-tab").evaluateAll((ns) => ns.map((n) => n.getAttribute("aria-selected")));
+  check("初始页签就带 aria-selected（不用等第一次点击）", aria.join() === "true,false", JSON.stringify(aria));
+  const cntColor = await box.locator(".ops-tab[data-panel='fail'] .cnt").evaluate((n) => getComputedStyle(n).color);
+  check("失败计数是红的（不是灰的计数点）", cntColor === "rgb(251, 113, 133)", cntColor);
   check("一开始停在操作页", await box.locator(".ops-panel[data-panel='ops']").isVisible() && !(await box.locator(".ops-panel[data-panel='fail']").isVisible()));
   await shot("tabs");
 

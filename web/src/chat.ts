@@ -180,7 +180,7 @@ export class ChatView {
   /** 本轮自动加载的技能组（见 `SkillGroup`）；换轮、重置、翻页插历史时清空。 */
   private skillGroup: SkillGroup | null = null;
   /** Each failure's item on the module's 「AI 执行失败」page, keyed by toolCallId. */
-  private failCards = new Map<string, HTMLElement>();
+  private failItems = new Map<string, HTMLElement>();
   /**
    * 本轮已经出过失败的卡片（toolCallId → 输入）。同一轮里后续只要有工具跑通，就给对应卡片补一句
    * 「后来它怎么绕过去的」——人关心的是任务最终有没有成，不是那一步本身亮不亮红。
@@ -717,7 +717,7 @@ export class ChatView {
     this.skillGroup = null;
     this.todoGroup = null;
     this.todoRows.clear();
-    this.failCards.clear();
+    this.failItems.clear();
     this.turnFails = [];
     this.written.clear();
     this.opsFiles = null;
@@ -1289,7 +1289,7 @@ export class ChatView {
       if (data.isError) {
         const name = card.querySelector(".name")?.textContent?.trim() || String(data.name ?? "tool");
         const cmd = card.querySelector(".cmd")?.textContent?.trim() || "";
-        this.failureCard(key, { tool: name, cmd, out: String(data.result ?? "") }, Number(data.durationMs ?? 0));
+        this.failureItem(key, { tool: name, cmd, out: String(data.result ?? "") }, Number(data.durationMs ?? 0));
         // `live`: 这是刚跑完的一次（不是历史回放），只有它值得「当场叫住」。
         this.onFail?.({ id: key, tool: name, cmd, out: String(data.result ?? ""), live: true });
       } else {
@@ -1345,7 +1345,7 @@ export class ChatView {
     const at = this.turnFails.findIndex((f) => f.key === item.toolCallId);
     if (at >= 0) this.turnFails[at].input = input;
     else this.turnFails.push({ key: item.toolCallId, input });
-    this.failureCard(item.toolCallId, input, item.durationMs);
+    this.failureItem(item.toolCallId, input, item.durationMs);
     this.onFail?.({ id: item.toolCallId, tool: item.name, cmd: input.cmd, out: input.out, at: item.ts });
   }
 
@@ -1361,7 +1361,7 @@ export class ChatView {
         fail.input.tool === item.name
           ? tr("后来它把同一条重做了一遍，这次跑通了")
           : tr("随后它改用 {p1}，拿到了结果", { p1: item.name });
-      this.failureCard(fail.key, fail.input);
+      this.failureItem(fail.key, fail.input);
     }
   }
 
@@ -1376,7 +1376,7 @@ export class ChatView {
     for (const fail of this.turnFails) {
       if (!fail.input.after || fail.input.after.endsWith(tail)) continue;
       fail.input.after += tail;
-      this.failureCard(fail.key, fail.input);
+      this.failureItem(fail.key, fail.input);
     }
   }
 
@@ -1387,19 +1387,19 @@ export class ChatView {
    * a repeat call rebuilds the item in place (the store may fill in the result after the error is
    * reported) without collapsing the raw log the reader just opened.
    */
-  private failureCard(key: string, input: FailureInput, ms?: number): void {
+  private failureItem(key: string, input: FailureInput, ms?: number): void {
     this.ensureOps();
     const panel = this.opsPanelEl("fail");
     if (!panel) return;
     const next = buildFailureItem(input, ms);
-    const prev = this.failCards.get(key);
+    const prev = this.failItems.get(key);
     // A rebuild must not slam the raw log shut under the cursor: carry the user's expand over.
     if (prev?.querySelector("details.raw")?.hasAttribute("open")) {
       next.querySelector("details.raw")?.setAttribute("open", "");
     }
     if (prev && prev.parentNode) prev.replaceWith(next);
     else panel.append(next);
-    this.failCards.set(key, next);
+    this.failItems.set(key, next);
     this.refreshOps();
     this.scrollToEnd();
   }
@@ -1605,6 +1605,8 @@ export class ChatView {
       btn.type = "button";
       btn.dataset.panel = id;
       btn.setAttribute("role", "tab");
+      // 第一页就是初始选中页：建的时候就写死，别等到第一次点击才补 aria-selected。
+      btn.setAttribute("aria-selected", String(id === "ops"));
       btn.append(document.createTextNode(label));
       btn.onclick = () => this.showOpsPanel(id);
       tabs.append(btn);
@@ -2152,7 +2154,7 @@ function durationText(ms?: number): string {
 function buildFailureItem(input: FailureInput, ms?: number): HTMLElement {
   const d = diagnose(input);
   const calm = d.level === "benign" || d.level === "abort";
-  const card = el("section", calm ? "fitem calm" : "fitem");
+  const item = el("section", calm ? "fitem calm" : "fitem");
 
   const who = input.cmd ? `${input.tool} · ${input.cmd}` : input.tool;
   const top = el("div", "fhead");
@@ -2174,7 +2176,7 @@ function buildFailureItem(input: FailureInput, ms?: number): HTMLElement {
   const impact = [d.effect, d.improve].filter(Boolean).join(tr("；"));
   grid.append(el("span", "k", tr("影响 / 改进")), el("span", "v", impact || "—"));
   if (d.needsYou) grid.append(el("span", "k", tr("要你做")), el("span", "v", d.needsYou));
-  card.append(top, grid);
+  item.append(top, grid);
 
   const { lines, keep } = excerpt(input.out);
   if (keep.length) {
@@ -2189,7 +2191,7 @@ function buildFailureItem(input: FailureInput, ms?: number): HTMLElement {
     }
     const ex = el("div", "ex");
     ex.append(body);
-    card.append(ex);
+    item.append(ex);
   }
 
   const raw = normalize(input.out) || tr("（没有输出）");
@@ -2200,8 +2202,8 @@ function buildFailureItem(input: FailureInput, ms?: number): HTMLElement {
   rawTop.append(el("span", "chev", "▸"), el("span", undefined, tr("完整输出（{p1} 字符）", { p1: raw.length })));
   rawBox.append(rawTop, el("pre", undefined, raw));
   foot.append(el("span", undefined, meta.join(" · ")), rawBox);
-  card.append(foot);
-  return card;
+  item.append(foot);
+  return item;
 }
 
 const WRITE_TOOLS = new Set(["write", "edit", "multiedit", "multi_edit", "create", "str_replace_editor", "apply_patch"]);
