@@ -716,6 +716,7 @@ export class SheetDialog {
         if (state) this.showFormula(state);
       },
       onResize: (kind, index, size) => void this.resize(kind, index, size),
+      onFilter: (c, value) => void this.filterBy(c, value),
     });
     this.grid = grid;
     this.pane.replaceChildren(grid.root);
@@ -723,7 +724,7 @@ export class SheetDialog {
       this.ribbon = new Ribbon(() => this.grid, this.acts, {
         find: () => this.openFind(),
         struct: (op) => void this.applyStruct(op),
-        filter: (col, value) => void this.applyStruct({ t: "filter", c: col ?? 0, value }),
+        filter: (col, value) => void this.filterBy(col, value),
         page: this.page
           ? {
               on: () => this.activeView === "page",
@@ -742,6 +743,21 @@ export class SheetDialog {
    * ——行列数和合并区都变了，网格只能重建。没保存的格子改动先拦住，不然坐标会错位。
    */
   private pendingMeta: SheetMeta | null = null;
+
+  /** #436 表头筛选：col 为 null 是清掉整片筛选。 */
+  private async filterBy(col: number | null, value: string | null): Promise<void> {
+    const f = this.grid?.info().filter;
+    if (!f) return;
+    await this.applyStruct({
+      t: "filter",
+      c: col ?? f.c0,
+      value: col === null ? null : value,
+      r1: f.r0,
+      c1: f.c0,
+      r2: f.r1,
+      c2: f.c1,
+    });
+  }
 
   /** #435 拖完列宽/行高：网格本地已经画好了，这里只负责写回文件。 */
   private async resize(kind: "col" | "row", index: number, size: number): Promise<void> {

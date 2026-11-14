@@ -27,6 +27,7 @@ import type {
   SheetMeta,
   SheetStyle,
   SheetStylePatch,
+  SheetValid,
   SheetWindow,
 } from "../types.ts";
 
@@ -84,6 +85,8 @@ export interface SheetGridHost {
   onEditing?: (state: { ref: string; text: string } | null) => void;
   /** #435 拖列宽 / 行高松手后回调：col 的 size 是字符数，row 是磅。 */
   onResize?: (kind: "col" | "row", index: number, size: number) => void;
+  /** #436 表头筛选：value 为 null 表示清掉这一列的筛选。 */
+  onFilter?: (c: number, value: string | null) => void;
 }
 
 /** 四个绘制层：主体、冻结行、冻结列、冻结角。 */
@@ -387,7 +390,8 @@ export class SheetGrid {
     void this.ensure();
   }
 
-  private info(): SheetInfo {
+  /** 当前表的元数据（对话框等外部需要读 filter/valid 时用）。 */
+  info(): SheetInfo {
     return this.host.meta.sheets.find((s) => s.name === this.sheet) ?? {
       name: this.sheet,
       rows: this.host.meta.rows,
@@ -690,6 +694,57 @@ export class SheetGrid {
 
   get gridShown(): boolean {
     return this.showGrid;
+  }
+
+  /** #436：点表头箭头弹候选值；第一条是「全部」。 */
+  private openFilter(anchor: HTMLElement, c: number): void {
+    const flt = this.info().filter;
+    if (!flt) return;
+    const values = flt.values[c] ?? [];
+    const all = tr("（全部）");
+    this.openList(anchor, [all, ...values], -1, c, (picked) => {
+      this.host.onFilter?.(c, picked === all ? null : picked);
+    });
+  }
+
+  /** #436：这格有没有数据验证（合并区取左上角那块）。 */
+  private validAt(r: number, c: number): SheetValid | undefined {
+    for (const v of this.info().valid ?? []) {
+      if (r >= v.r0 && r <= v.r1 && c >= v.c0 && c <= v.c1) return v;
+    }
+    return undefined;
+  }
+
+  /** #436：点小箭头弹出的选项列表；选一条就写进格子。 */
+  private openList(anchor: HTMLElement, options: string[], r: number, c: number, onPick?: (value: string) => void): void {
+    document.querySelector(".sd-list")?.remove();
+    const box = anchor.getBoundingClientRect();
+    const menu = el("div", "sd-list");
+    menu.style.left = `${Math.round(box.left)}px`;
+    menu.style.top = `${Math.round(box.bottom + 2)}px`;
+    for (const opt of options) {
+      const item = el("button", "sd-list-i", opt);
+      item.type = "button";
+      item.addEventListener("click", () => {
+        if (onPick) onPick(opt);
+        else this.writeAtCell(r, c, opt);
+        menu.remove();
+      });
+      menu.append(item);
+    }
+    document.body.append(menu);
+    const off = (ev: Event): void => {
+      if (menu.contains(ev.target as Node)) return;
+      menu.remove();
+      document.removeEventListener("pointerdown", off, true);
+    };
+    setTimeout(() => document.addEventListener("pointerdown", off, true), 0);
+  }
+
+  /** #436：往指定格写（下拉选值用，不弹编辑框）。 */
+  writeAtCell(r: number, c: number, text: string): void {
+    if (!this.editMode) return;
+    this.commitBatch([this.setEdit(r, c, this.parseInput(text, r, c))]);
   }
 
   /** #435：名称框里输 `A1` / `A1:C5` 就跳过去，顺便选中。 */
@@ -1493,6 +1548,22 @@ export class SheetGrid {
         grip.dataset.c = String(c);
         node.append(grip);
       }
+      // #436 自动筛选的列头箭头：有筛选区就把这列的候选值列出来。
+      const flt = this.info().filter;
+      if (this.editMode && flt && c >= flt.c0 && c <= flt.c1) {
+        const fbtn = el("div", "sd-fbtn", "▾");
+        fbtn.dataset.c = String(c);
+        fbtn.title = flt.active[c] ? tr("按 {p1} 筛选", { p1: flt.active[c] }) : tr("筛选");
+        fbtn.addEventListener("pointerdown", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        fbtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.openFilter(fbtn, c);
+        });
+        node.append(fbtn);
+      }
       (c < f.cols ? frzCols : cols).push(node);
     }
     this.colheadIn.replaceChildren(...cols);
@@ -1757,6 +1828,21 @@ export class SheetGrid {
           if (need > prev) this.grow.set(r0, need);
         }
 
+        // #436 数据验证：有下拉选项的格子在右边挂一个小箭头（只在编辑态）。
+        const vd = this.editMode ? this.validAt(r0, c0) : undefined;
+        if (vd?.options?.length) {
+          const dd = el("div", "sd-dd", "▾");
+          dd.title = tr("从列表里选");
+          dd.addEventListener("pointerdown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          });
+          dd.addEventListener("click", (e) => {
+            e.stopPropagation();
+            this.openList(dd, vd.options ?? [], r0, c0);
+          });
+          node.append(dd);
+        }
         // #435 超链接与批注：链接画成蓝色下划线（Ctrl/Cmd 点开），批注画右上角小红角。
         if (cell?.lnk) {
           node.classList.add("is-lnk");
@@ -1901,6 +1987,21 @@ export class SheetGrid {
     if (!text) return 0;
 
     const body = el("span", "sd-txt", text);
+    // #436 一格多字体：把整串换成按段画的 span，复制与查找用的仍是拼好的整串。
+    if (cell?.rt?.length && !(this.showFormulas && cell.f)) {
+      body.textContent = "";
+      for (const run of cell.rt) {
+        const seg = el("span", "sd-run", run.t);
+        if (run.f?.b) seg.style.fontWeight = "700";
+        if (run.f?.i) seg.style.fontStyle = "italic";
+        if (run.f?.u) seg.style.textDecoration = "underline";
+        if (run.f?.st) seg.style.textDecoration = "line-through";
+        if (run.f?.c) seg.style.color = run.f.c;
+        if (run.f?.s) seg.style.fontSize = `${((run.f.s * 4) / 3 * z).toFixed(2)}px`;
+        if (run.f?.n) seg.style.fontFamily = `"${run.f.n}", ${FONT_STACK}`;
+        body.append(seg);
+      }
+    }
     node.style.whiteSpace = st?.w ? "pre-wrap" : "nowrap";
     body.style.whiteSpace = st?.w ? "pre-wrap" : "nowrap";
     if (st?.w) body.style.wordBreak = "break-word";
@@ -1908,7 +2009,9 @@ export class SheetGrid {
 
     const font = fontCss(st, z);
     const avail = Math.max(4, width - padX * 2 - ind - 2);
-    const need = this.textW(text, font);
+    const need = cell?.rt?.length
+      ? cell.rt.reduce((sum, run) => sum + this.textW(run.t, fontCss(run.f ? { f: run.f } : undefined, z)), 0)
+      : this.textW(text, font);
 
     // 缩小字体填充：字小了不换行也不裁（Excel 的 shrink to fit）。
     if (st?.sh && need > avail) {

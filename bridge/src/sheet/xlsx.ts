@@ -9,6 +9,12 @@ import { formatValue } from "./numfmt.ts";
 import { buildCf, readDxfs, type CellFx, type SheetCf } from "./cf.ts";
 import { readStyles, type StyleTable, type WireStyle } from "./styles.ts";
 import { readSheetRefs, type SheetRefs } from "./refs.ts";
+import { readRichRuns, type WireRun } from "./rich.ts";
+import { readValidations, valuesInXml, type WireValid } from "./valid.ts";
+import { readFilter, type WireFilter } from "./filter.ts";
+export type { WireFilter } from "./filter.ts";
+export type { WireValid } from "./valid.ts";
+export type { WireRun } from "./rich.ts";
 import { readSheetImages, type WireImage } from "./media.ts";
 import { rangeRef, readSheetCharts, type RangeValues, type WireChart } from "./chart.ts";
 
@@ -32,6 +38,8 @@ export interface WireCell {
   lnk?: string;
   /** #435 这格有批注（正文拼成一行）。 */
   note?: string;
+  /** #436 富文本分段（一格多字体）：只有共享字符串里的 `<r>` 才带。 */
+  rt?: WireRun[];
   /** #109 条件格式算出来的样式：底色 / 字色 / 加粗 / 数据条 / 图标。 */
   fx?: CellFx;
   /** 公式原文（不带 `=`）。共享公式的子格只有 `si` 下标、没有正文，就不带这个。 */
@@ -88,6 +96,10 @@ export interface SheetInfo {
   images?: WireImage[];
   /** #434：表里的图表对象（柱/折线/饼/面积/散点），坐标与图片同一套锚点。 */
   charts?: WireChart[];
+  /** #436 数据验证：下拉选项与规则。 */
+  valid?: WireValid[];
+  /** #436 自动筛选：范围、每列去重值、当前筛选。 */
+  filter?: WireFilter;
   freeze?: FreezePane | null;
   /** #109：认不出的条件格式规则条数（状态条据此提示）。 */
   cfUnsupported?: number;
@@ -160,6 +172,10 @@ export interface Book {
   styles?: StyleTable;
   /** #435 超链接 / 批注，按表名缓存。 */
   refs?: Map<string, SheetRefs>;
+  /** #436 共享字符串的分段表，整本一次。 */
+  rich?: Map<number, WireRun[]>;
+  /** #436 数据验证（含下拉选项），按表名缓存。 */
+  valid?: Map<string, WireValid[]>;
 }
 
 import { attr, refOf, texts, unescapeXml } from "./xml.ts";
@@ -366,11 +382,21 @@ export function readBook(buf: Uint8Array): Book {
     let cfUnsupported = 0;
     let noCache = 0;
     let images: WireImage[] = [];
+    let valid: WireValid[] = [];
+    let filter: WireFilter | null = null;
     if (tier !== "none") {
       const xml = partText(buf, dir, part) ?? "";
       extras = sheetExtras(xml);
       noCache = countNoCache(xml);
       images = readSheetImages(buf, dir, part);
+      if (/<autoFilter[\s>]/.test(xml)) {
+        book.strings ??= sharedStrings(buf, dir);
+        filter = readFilter(xml, book.strings ?? []);
+      }
+      if (/<dataValidations[\s>]/.test(xml)) {
+        book.strings ??= sharedStrings(buf, dir);
+        valid = readValidations(xml, (ref) => valuesInXml(xml, ref, book.strings ?? []));
+      }
       if (tier === "full") {
         book.strings ??= sharedStrings(buf, dir);
         const dxfs = readDxfs(partText(buf, dir, "xl/styles.xml"));
@@ -399,6 +425,8 @@ export function readBook(buf: Uint8Array): Book {
       ...(extras.gridLines ? {} : { gridLines: false as const }),
       ...(extras.freeze ? { freeze: extras.freeze } : {}),
       ...(images.length ? { images } : {}),
+      ...(valid.length ? { valid } : {}),
+      ...(filter ? { filter } : {}),
       ...(cfUnsupported > 0 ? { cfUnsupported } : {}),
       ...(noCache ? { noCache } : {}),
     });
@@ -466,6 +494,7 @@ function countNoCache(xml: string): number {
 
 interface SheetCtx {
   strings: string[];
+  rich: Map<number, WireRun[]>;
   styles: StyleTable;
   date1904: boolean;
 }
@@ -497,7 +526,11 @@ function cellsOfRow(
     let cell: WireCell | null = null;
     if (kind === "s" && cached) {
       const text = ctx.strings[Number(v)];
-      if (text !== undefined) cell = { r: pos.r, c: pos.c, k: "s", t: text };
+      if (text !== undefined) {
+        cell = { r: pos.r, c: pos.c, k: "s", t: text };
+        const runs = ctx.rich?.get(Number(v));
+        if (runs) cell.rt = runs;
+      }
     } else if (kind === "inlineStr") {
       const is = /<is\b[^>]*>([\s\S]*?)<\/is>/.exec(inner)?.[1] ?? "";
       cell = { r: pos.r, c: pos.c, k: "s", t: texts(is) };
@@ -551,6 +584,7 @@ export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: numbe
   if (!entry) throw new Error("这个工作表是空的");
   const ctx: SheetCtx = {
     strings: (book.strings ??= sharedStrings(buf, book.dir)),
+    rich: (book.rich ??= readRichRuns(partText(buf, book.dir, "xl/sharedStrings.xml") ?? "")),
     styles: (book.styles ??= readStyles(null, null)),
     date1904: book.date1904,
   };
@@ -688,6 +722,7 @@ export function findInSheet(buf: Uint8Array, book: Book, sheet: string, query: s
   if (!q) return { sheet, matches, truncated: false };
   const ctx: SheetCtx = {
     strings: (book.strings ??= sharedStrings(buf, book.dir)),
+    rich: (book.rich ??= readRichRuns(partText(buf, book.dir, "xl/sharedStrings.xml") ?? "")),
     styles: (book.styles ??= readStyles(null, null)),
     date1904: book.date1904,
   };

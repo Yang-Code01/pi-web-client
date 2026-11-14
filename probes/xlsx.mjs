@@ -827,6 +827,55 @@ try {
   await page.locator(".sd-close").first().click();
   await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
 
+  // ---------------------------------------------------------------- 表头筛选（#436）
+  {
+    await openSheet("filter.xlsx");
+    await page.locator(".sd-editbtn").first().click();
+    await page.waitForTimeout(200);
+    check("有筛选区的列头有箭头", (await page.locator(".sd-fbtn").count()) === 2, String(await page.locator(".sd-fbtn").count()));
+    await page.locator('.sd-fbtn[data-c="0"]').click();
+    await page.waitForTimeout(150);
+    check("候选值来自这一列", (await page.locator(".sd-list-i").count()) === 4, String(await page.locator(".sd-list-i").count()));
+    await page.locator(".sd-list-i", { hasText: "华东" }).first().click();
+    await page.waitForTimeout(700);
+    check("筛掉的行走掉了", (await page.locator('.sd-cell[data-r="2"][data-c="0"]').count()) === 0);
+    check("留下的行还在", (await page.locator('.sd-cell[data-r="1"][data-c="0"]').count()) === 1);
+    await page.screenshot({ path: path.join(OUT, "16-filter.png") });
+    await page.locator('.sd-fbtn[data-c="0"]').click();
+    await page.waitForTimeout(150);
+    await page.locator(".sd-list-i", { hasText: "全部" }).first().click();
+    await page.waitForTimeout(700);
+    check("清掉筛选后行回来了", (await page.locator('.sd-cell[data-r="2"][data-c="0"]').count()) === 1);
+    await page.locator(".sd-close").first().click();
+    await page.waitForTimeout(200);
+  }
+
+  // ---------------------------------------------------------------- 数据验证下拉（#436）
+  {
+    await openSheet("valid.xlsx");
+    await page.locator(".sd-editbtn").first().click();
+    await page.waitForTimeout(150);
+    const a2 = page.locator('.sd-cell[data-r="1"][data-c="0"]');
+    check("单元格右侧有下拉箭头", (await a2.locator(".sd-dd").count()) === 1);
+    await a2.locator(".sd-dd").click();
+    await page.waitForTimeout(120);
+    const items = page.locator(".sd-list-i");
+    check("选项来自文件里的列表", (await items.count()) === 3, String(await items.count()));
+    await items.filter({ hasText: "待定" }).first().click();
+    await page.waitForTimeout(200);
+    check("选中后写进格子", (await a2.locator(".sd-txt").innerText()).trim() === "待定", await a2.locator(".sd-txt").innerText());
+    const b2 = page.locator('.sd-cell[data-r="1"][data-c="1"]');
+    await b2.locator(".sd-dd").click();
+    await page.waitForTimeout(120);
+    check("引用区域的选项也解析出来了", (await page.locator(".sd-list-i").count()) === 3);
+    await page.keyboard.press("Escape");
+    await page.mouse.click(10, 10);
+    await page.waitForTimeout(100);
+    await page.screenshot({ path: path.join(OUT, "15-valid.png") });
+    await page.locator(".sd-close").first().click();
+    await page.waitForTimeout(200);
+  }
+
   // ---------------------------------------------------------------- 编辑增强：拖列宽 / 名称框 / 公式栏（#435）
   {
     await openSheet("styled.xlsx");

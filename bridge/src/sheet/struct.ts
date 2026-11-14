@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { strToU8, unzipSync, zipSync } from "fflate";
 import { zipIndex } from "./zip.ts";
-import { attrOf, colName, partOf } from "./write.ts";
+import { attrOf, colName, escapeXml, partOf } from "./write.ts";
 
 export type StructOp =
   | { t: "merge"; r1: number; c1: number; r2: number; c2: number }
@@ -21,7 +21,7 @@ export type StructOp =
   | { t: "insCol" | "delCol"; at: number; n: number }
   | { t: "sort"; r1: number; c1: number; r2: number; c2: number; key: number; desc: boolean }
   /** 按某一列的值筛（`value: null` = 清除筛选）。Excel 里就是把不匹配的行藏起来。 */
-  | { t: "filter"; c: number; value: string | null }
+  | { t: "filter"; c: number; value: string | null; r1: number; c1: number; r2: number; c2: number }
   /** 抹掉选中区域上的条件格式（只删规则，不动底色/字色这些静态样式）。 */
   | { t: "clearCf"; r1: number; c1: number; r2: number; c2: number }
   /** 拖列宽（`w` 是字符数）/ 拖行高（`h` 是磅）。 */
@@ -321,6 +321,18 @@ function setRowHeight(xml: string, r: number, pt: number): string {
   return done ? placed : out.replace(/<\/sheetData>/, `${mk}</sheetData>`);
 }
 
+/** 把 `<autoFilter>` 换成当前这次筛选的状态；清筛选就把整块删掉。 */
+function replaceAutoFilter(
+  xml: string,
+  op: { c: number; value: string | null; r1: number; c1: number; r2: number; c2: number },
+): string {
+  const area = `${ref(op.c1, op.r1)}:${ref(op.c2, op.r2)}`;
+  const existing = /<autoFilter[^>]*?(?:\/>|>[\s\S]*?<\/autoFilter>)/.exec(xml)?.[0] ?? "";
+  if (op.value === null) return existing ? xml.replace(existing, "") : xml;
+  const block = `<autoFilter ref="${area}"><filterColumn colId="${op.c - op.c1}"><filters><filter val="${escapeXml(op.value)}"/></filters></filterColumn></autoFilter>`;
+  return existing ? xml.replace(existing, block) : xml.replace(/<\/sheetData>/, `</sheetData>${block}`);
+}
+
 export function applyStruct(xml: string, op: StructOp, sst: string[] = []): string {
   // 条件格式不在 sheetData 里，先办它，免得被「没有格子」挡回去。
   if (op.t === "clearCf") return clearCf(xml, op);
@@ -392,13 +404,15 @@ export function applyStruct(xml: string, op: StructOp, sst: string[] = []): stri
   }
   if (op.t === "filter") {
     const want = op.value === null ? null : op.value.trim();
+    // 只处理筛选区内的行：表头以上、范围以下的行不该被藏。
     for (const row of rows) {
+      if (row.r <= op.r1 || row.r > op.r2) continue;
       const cell = row.cells.get(op.c);
       const text = cell ? String(cellValue(cell, sst) ?? "").trim() : "";
       const hit = want === null || text === want;
       row.attrs = hit ? row.attrs.replace(/\s+hidden="[^"]*"/g, "").replace(/\s+hidden='[^']*'/g, "") : setAttr(row.attrs, "hidden", "1");
     }
-    return replaceSheetData(xml, rows);
+    return replaceAutoFilter(replaceSheetData(xml, rows), op);
   }
   return xml;
 }

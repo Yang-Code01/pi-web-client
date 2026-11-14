@@ -38,7 +38,7 @@ const MAX_EDIT_BYTES = 64 * 1024 * 1024;
 const utf8 = new TextDecoder("utf-8");
 const encoder = new TextEncoder();
 
-function escapeXml(s: string): string {
+export function escapeXml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")

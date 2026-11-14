@@ -672,6 +672,25 @@ export interface SheetCell {
   lnk?: string;
   /** #435：批注正文。 */
   note?: string;
+  /** #436：富文本分段（一格多字体）。 */
+  rt?: SheetRun[];
+}
+
+/** #436 数据验证（目前只用 list 的 options 做下拉）。 */
+export interface SheetValid {
+  r0: number;
+  c0: number;
+  r1: number;
+  c1: number;
+  kind: string;
+  options?: string[];
+  prompt?: string;
+}
+
+/** #436 一段带自己字体的文字。 */
+export interface SheetRun {
+  t: string;
+  f?: SheetFont;
 }
 
 /**
@@ -722,7 +741,7 @@ export type SheetStructOp =
   | { t: "merge" | "unmerge"; r1: number; c1: number; r2: number; c2: number }
   | { t: "insRow" | "delRow" | "insCol" | "delCol"; at: number; n: number }
   | { t: "sort"; r1: number; c1: number; r2: number; c2: number; key: number; desc: boolean }
-  | { t: "filter"; c: number; value: string | null }
+  | { t: "filter"; c: number; value: string | null; r1: number; c1: number; r2: number; c2: number }
   | { t: "clearCf"; r1: number; c1: number; r2: number; c2: number }
   | { t: "colWidth"; c: number; w: number }
   | { t: "rowHeight"; r: number; h: number };
@@ -788,6 +807,31 @@ export interface SheetInfo {
   images?: SheetImage[];
   /** #434：图表对象，坐标和图片同一套锚点。 */
   charts?: SheetChart[];
+  /** #436：数据验证（list 的 options 做下拉）。 */
+  valid?: SheetValid[];
+  /** #436：自动筛选（表头箭头与去重值）。 */
+  filter?: SheetFilter;
+}
+
+/** #436 自动筛选：范围、每列去重值、当前筛选值。 */
+export interface SheetFilter {
+  r0: number;
+  c0: number;
+  r1: number;
+  c1: number;
+  values: Record<number, string[]>;
+  active: Record<number, string>;
+}
+
+/** #436 一块数据验证规则（目前只用 list 的 options）。 */
+export interface SheetValid {
+  r0: number;
+  c0: number;
+  r1: number;
+  c1: number;
+  kind: string;
+  options?: string[];
+  prompt?: string;
 }
 
 /** #427：xlsx drawing 里的一张图，坐标是 0 基行列 + 格内偏移（px）。 */

@@ -4291,6 +4291,30 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sd-rowno.sel { color: #0f766e; font-weight: 600; }
 .sd-viewwrap { position: relative; min-width: 0; min-height: 0; }
 .sd-view { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; }
+/* #436 自动筛选：列头右侧的小箭头（和拖宽手柄分居两侧）。 */
+.sd-fbtn {
+  position: absolute; top: 2px; right: 2px; width: 14px; height: calc(100% - 4px);
+  display: flex; align-items: center; justify-content: center; border-radius: 3px;
+  color: #5b6472; font-size: 9px; cursor: pointer; z-index: 2;
+}
+.sd-fbtn:hover { background: #dde3ea; color: #16303f; }
+/* #436 数据验证的下拉箭头与选项菜单。 */
+.sd-dd {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 15px; display: flex; align-items: center;
+  justify-content: center; color: #5b6472; font-size: 9px; background: #eef1f5;
+  border-left: 1px solid #d9dee5; cursor: pointer; z-index: 3;
+}
+.sd-dd:hover { background: #e2e8ef; color: #1f2430; }
+.sd-list {
+  position: fixed; z-index: 4000; min-width: 120px; max-height: 260px; overflow-y: auto;
+  padding: 4px; border: 1px solid #d9dee5; border-radius: 8px; background: #fff;
+  box-shadow: 0 10px 28px rgb(20 30 40 / 18%);
+}
+.sd-list-i {
+  display: block; width: 100%; padding: 5px 10px; border: 0; border-radius: 5px; background: none;
+  color: #1f2430; font: 12px/1.5 var(--sans); text-align: left; cursor: pointer;
+}
+.sd-list-i:hover { background: #eef4f8; }
 /* #435 超链接 / 批注。链接只在悬停或按住 Ctrl 时听话，避免拖选误触。 */
 .sd-cell.is-lnk > .sd-txt { color: #0b57d0; text-decoration: underline; text-underline-offset: 2px; }
 .sd-cell.is-note::after {
