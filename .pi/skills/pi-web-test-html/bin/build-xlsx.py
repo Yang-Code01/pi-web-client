@@ -90,23 +90,26 @@ class Sheet:
 
 def case_sheet(case):
     sh = Sheet(case["id"], CASE_COLS)
+    module = case.get("module") or SPEC.get("module") or ""
+    priority = case.get("priority") or "—"
+    precondition = case.get("precondition") or "—"
     span = len(CASE_COLS)
     sh.merged_row("title", f'{case["id"]} · {case["title"]}', 30.0)
     sh.add(21, [
         {"c": 0, "v": "用例编号", "style": "meta-label"},
         {"c": 1, "v": case["id"], "style": "meta-value", "span": 2},
         {"c": 3, "v": "优先级", "style": "meta-label"},
-        {"c": 4, "v": case["priority"], "style": "meta-value-center"},
+        {"c": 4, "v": priority, "style": "meta-value-center"},
     ])
     sh.add(21, [
         {"c": 0, "v": "模块", "style": "meta-label"},
-        {"c": 1, "v": case["module"], "style": "meta-value", "span": 2},
+        {"c": 1, "v": module, "style": "meta-value", "span": 2},
         {"c": 3, "v": "结果", "style": "meta-label"},
         {"c": 4, "v": case["verdict"], "style": "verdict-" + VERDICT_STYLE[case["verdict"]][0]},
     ])
-    sh.add(row_height([(case["precondition"], sum(CASE_COLS[1:]))]), [
+    sh.add(row_height([(precondition, sum(CASE_COLS[1:]))]), [
         {"c": 0, "v": "前置条件", "style": "meta-label"},
-        {"c": 1, "v": case["precondition"], "style": "meta-value", "span": span - 1},
+        {"c": 1, "v": precondition, "style": "meta-value", "span": span - 1},
     ])
     sh.add(21, [
         {"c": 0, "v": "执行时间", "style": "meta-label"},
@@ -146,6 +149,24 @@ def case_sheet(case):
     return sh
 
 
+DEFAULT_CONCLUSION = (
+    "结论：能自动跑的全部通过；TC-03（Win+L 锁屏解锁）与 TC-10（UAC 读 Security 日志）"
+    "必须在真机上由人操作，脚本只记录操作前状态。"
+)
+DEFAULT_DATA_DIR = "测试实例用隔离状态目录 pi-web-test-dev/wk，跑完清空；不碰正式 7864 的 workclock 数据"
+DEFAULT_RERUN = [
+    "1. 起隔离环境： node .pi/skills/pi-web-client-test-dev/bin/env.mjs start --dir <仓库> --name wk   → 页面 127.0.0.1:17876，口令 test",
+    "2. 复位到全新状态： bash .scratch/testbook/reset.sh（卸计划任务、杀记录器、删状态目录、重启 bridge）",
+    "3. 跑测试书并截图： node .scratch/testbook/run.mjs   → .scratch/testbook/spec.json + shots/",
+    "4. 生成产物： python .scratch/testbook/build_xlsx.py && node .scratch/testbook/build_html.mjs",
+    "5. 收工： node .pi/skills/pi-web-client-test-dev/bin/env.mjs stop --id wk（本测试书跑完后已执行）",
+]
+DEFAULT_ENV_NOTE = (
+    "说明：记录器用例（TC-02 / TC-09）改的是本机计划任务 pi-web-client-workclock，"
+    "脚本每次跑前后都会核对外部真实状态；TC-06 / TC-07 的历史是脚本按记录器文件格式写入的种子数据，不经过 UI 伪造。"
+)
+
+
 def overview_sheet():
     sh = Sheet("总览", [12, 52, 26, 10, 10, 10, 26])
     sh.merged_row("title", SPEC["title"], 34.0)
@@ -158,8 +179,8 @@ def overview_sheet():
         sh.add(22, [
             {"c": 0, "v": case["id"], "style": "td-center"},
             {"c": 1, "v": case["title"], "style": "td"},
-            {"c": 2, "v": case["module"], "style": "td"},
-            {"c": 3, "v": case["priority"], "style": "td-center"},
+            {"c": 2, "v": case.get("module") or SPEC.get("module") or "", "style": "td"},
+            {"c": 3, "v": case.get("priority") or "—", "style": "td-center"},
             {"c": 4, "v": case["verdict"], "style": "verdict-" + VERDICT_STYLE[case["verdict"]][0]},
             {"c": 5, "v": len(case["steps"]), "style": "td-center"},
             {"c": 6, "v": note, "style": "td"},
@@ -189,7 +210,7 @@ def overview_sheet():
         {"c": 6, "v": "", "style": "meta-value"},
     ])
     sh.add(8, [])
-    sh.merged_row("note", "结论：能自动跑的全部通过；TC-03（Win+L 锁屏解锁）与 TC-10（UAC 读 Security 日志）必须在真机上由人操作，脚本只记录操作前状态。", 22.0)
+    sh.merged_row("note", SPEC.get("conclusion") or DEFAULT_CONCLUSION, 22.0)
     return sh
 
 
@@ -206,23 +227,17 @@ def env_sheet():
         ("PowerShell", f'{env["powershell"]}（build {env["pwsh5"]}）'),
         ("测试实例", f'branch {SPEC["branch"]}，bridge {env["bridge"]}，登录口令 {env["passphrase"]}'),
         ("浏览器", f'Chromium（Playwright），locale {env["pageLocale"]}，viewport {env["viewport"]}'),
-        ("数据目录", "测试实例用隔离状态目录 pi-web-test-dev/wk，跑完清空；不碰正式 7864 的 workclock 数据"),
+        ("数据目录", env.get("dataDir") or DEFAULT_DATA_DIR),
         ("页面无 JS 错误", "是" if not SPEC["pageErrors"] else "；".join(SPEC["pageErrors"][:3])),
     ]
     for k, v in items:
         sh.add(row_height([(v, 100)]), [{"c": 0, "v": k, "style": "meta-label"}, {"c": 1, "v": v, "style": "meta-value"}])
     sh.add(10, [])
     sh.merged_row("section", "复跑", 24.0)
-    for line in [
-        "1. 起隔离环境： node .pi/skills/pi-web-client-test-dev/bin/env.mjs start --dir <仓库> --name wk   → 页面 127.0.0.1:17876，口令 test",
-        "2. 复位到全新状态： bash .scratch/testbook/reset.sh（卸计划任务、杀记录器、删状态目录、重启 bridge）",
-        "3. 跑测试书并截图： node .scratch/testbook/run.mjs   → .scratch/testbook/spec.json + shots/",
-        "4. 生成产物： python .scratch/testbook/build_xlsx.py && node .scratch/testbook/build_html.mjs",
-        "5. 收工： node .pi/skills/pi-web-client-test-dev/bin/env.mjs stop --id wk（本测试书跑完后已执行）",
-    ]:
+    for line in SPEC.get("rerun") or DEFAULT_RERUN:
         sh.add(row_height([(line, 100)]), [{"c": 0, "v": "·", "style": "td-center"}, {"c": 1, "v": line, "style": "td-mono"}])
     sh.add(10, [])
-    sh.merged_row("note", "说明：记录器用例（TC-02 / TC-09）改的是本机计划任务 pi-web-client-workclock，脚本每次跑前后都会核对外部真实状态；TC-06 / TC-07 的历史是脚本按记录器文件格式写入的种子数据，不经过 UI 伪造。", 34.0)
+    sh.merged_row("note", SPEC.get("envNote") or DEFAULT_ENV_NOTE, 34.0)
     return sh
 
 
