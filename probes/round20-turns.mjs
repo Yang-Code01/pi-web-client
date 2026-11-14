@@ -64,17 +64,14 @@ const ASK = [
 const ROUND_TEXT =
   "这一轮的回复故意写长一点：缩略图要能滚，正文要能滚。任务列表如下 —— 先摸清现有结构，再把卷子数据补齐，" +
   "最后只改一个文件，不动数据格式、不重新加密、不重跑 verify。";
-const BULLETS = [
-  "把 buildModal() 换成共用的一份，年份/月份从同一张表里取，缺的月份不许再出现空白页",
-  "解析区改成 <details>，默认折叠，答案与解析一起展开，键盘也能开合",
-  "计时器挪到右上角，absolute 定位，别跟着题干滚动，也别挡住右上角的关闭",
-  "返回年份选择时用 sessionStorage 记住上一次的选择，而不是重置到默认年份",
-  "加密入口只在 node 侧跑，浏览器端不再加载 crypto-js，体积能小 40KB",
-  "卷子数据统一成 {year, month, sections[]}，旧的两套做一次迁移，宁可多写一个脚本",
-  "补 2020 年 7 月与 12 月的听力，题目文案沿用真题，题干里的图先用占位",
-];
 
-const items = (n) => {
+/** 会话 A 最后一轮的回答：一屏放不下，顶对齐才看得出跳转落在哪儿（不靠手数行数，靠行数阈值）。 */
+const LAST_ANSWER = Array.from(
+  { length: 32 },
+  (_, k) => `- 第 ${k + 1} 条：把 exam-lock.js 里的 buildModal() 换成共用的一份，缺的月份不许留空白页，其余一行不动。`,
+).join("\n");
+
+const items = (n, longLast = false) => {
   const out = [];
   for (let i = 0; i < n; i++) {
     const text = i < ASK.length ? ASK[i] : `第 ${i + 1} 轮：继续补齐第 ${i + 1} 套卷子，并检查解析是否折叠正常。`;
@@ -82,7 +79,9 @@ const items = (n) => {
     out.push({
       id: `a${i}`,
       kind: "assistant",
-      text: `${ROUND_TEXT}\n\n- 第 ${i + 1} 轮要点一：把 exam-lock.js 里的 buildModal() 换掉\n- 第 ${i + 1} 轮要点二：.lk-foot 改成右对齐\n- 第 ${i + 1} 轮要点三：其余一行不动。`,
+      text: longLast && i === n - 1
+        ? LAST_ANSWER
+        : `${ROUND_TEXT}\n\n- 第 ${i + 1} 轮要点一：把 exam-lock.js 里的 buildModal() 换掉\n- 第 ${i + 1} 轮要点二：.lk-foot 改成右对齐\n- 第 ${i + 1} 轮要点三：其余一行不动。`,
       thinking: "",
       model: "probe",
       ts: new Date(Date.now() - (n - i) * 59000).toISOString(),
@@ -91,11 +90,12 @@ const items = (n) => {
   return out;
 };
 
-const base = (id, name, n) => ({
+const base = (id, name, n, longLast = false) => ({
   id, name, cwd: path.join(REPO, ".scratch/probe-work/exam"), file: null, owned: true, origin: "web", running: false, done: false,
-  updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "", items: items(n),
+  updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "", items: items(n, longLast),
 });
-const A = base("probe-a", "考试模块 · 12 轮", 12);
+// A 的最后一轮故意比一屏还高：点最后一轮才有可顶到的顶部（否则只能贴底，那是另一个分支）。
+const A = base("probe-a", "考试模块 · 12 轮", 12, true);
 const B = base("probe-b", "长会话 · 200 轮", 200);
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 const ME = { version: "probe", pi: "probe", public: false, tunnel: TUNNEL, pushKey: null, pushCount: 0, sessionsRoot: "probe" };
@@ -317,14 +317,30 @@ try {
   await until(async () => !(await page.locator(".turn-list").isVisible()), 3000, "blur closes the list");
   log("keyboard path ok");
 
-  // 6) 点最后一行 → 直接回到底部并恢复跟流。
+  // 6) 点最后一行 → 落在最后一次输入上（不是页面末尾），并且同样停住跟流（D60 修订）。
   await page.locator(".turn-rail").hover();
   await until(async () => page.locator(".turn-list").isVisible(), 4000, "list again");
+  const paneTopLast = (await rect(page, ".chat-scroll")).top;
   await page.locator(".turn-row").nth(11).click();
-  await until(async () => Math.abs((await scrollTop(page)) - (await maxScroll(page))) < 4, 5000, "back at the bottom");
-  assert(await page.locator(".chat-jump").isHidden(), "following resumes after jumping to the last round");
+  await until(async () => {
+    const r = await rect(page, ".chat-scroll .msg.user", 11);
+    return r && Math.abs(r.top - paneTopLast) < 40;
+  }, 5000, "jump to the last round");
+  await sleep(600);
+  const lastJump = await rect(page, ".chat-scroll .msg.user", 11);
+  const gapLast = await page.evaluate(() => {
+    const s = document.querySelector(".chat-scroll");
+    return s.scrollHeight - s.scrollTop - s.clientHeight;
+  });
+  log("last round top after jump:", lastJump.top.toFixed(1), "pane top:", paneTopLast.toFixed(1), "gap below:", gapLast);
+  assert(Math.abs(lastJump.top - paneTopLast) < 16, `the last input lands at the top of the transcript (top ${lastJump.top.toFixed(1)}, pane ${paneTopLast.toFixed(1)})`);
+  assert(gapLast > 200, `the last input is not parked at the end of the answer (gap ${gapLast})`);
+  assert(await page.locator(".chat-jump").isVisible(), "jumping to the last round stops following too");
 
-  // 7) 90 轮的会话：刻度会被抽样，但最后一根刻度仍然是最后一轮，点它还是回到底部。
+  // 7) 200 轮的会话：刻度会被抽样，但最后一根刻度仍然是最后一轮。
+  //    B 的每一轮都比一屏短，最后一轮的开头本来就落在最后一屏里 —— 顶对齐与贴底是同一个像素，
+  //    所以这里点完仍停在底部、跟流不被打断（jumpToTurn 里那条 startTop >= maxScroll 的分支）。
+  //    刻度本身点不到：指针扫过去时列表会展开并盖住刻度那一列。
   await page.locator('.session-card[data-id="probe-b"]').click();
   await until(async () => (await page.locator(".chat-scroll .msg.user").count()) === 200, 15000, "200 user messages");
   await sleep(500);
@@ -338,9 +354,21 @@ try {
   log("long rail:", JSON.stringify(rail2), "view:", JSON.stringify(scroll2));
   assert(rail2.top >= scroll2.top && rail2.bottom <= scroll2.bottom - 4, `200 rounds: the rail stops at the transcript, not under the composer (rail ${rail2.top}..${rail2.bottom}, view ${scroll2.top}..${scroll2.bottom})`);
   // 抽样不能把最后一轮漏掉：最后一根刻度点的就是最新那一轮
-  await page.locator(".turn-tick").last().click();
-  await until(async () => Math.abs((await scrollTop(page)) - (await maxScroll(page))) < 4, 6000, "last tick goes to the bottom");
-  log("last tick → bottom: ok");
+  await page.evaluate(() => {
+    const ticks = [...document.querySelectorAll(".turn-tick")];
+    ticks[ticks.length - 1].click();
+  });
+  await until(async () => Math.abs((await scrollTop(page)) - (await maxScroll(page))) < 4, 6000, "last tick settles at the bottom");
+  const lastRoundSeen = await page.evaluate(() => {
+    const users = [...document.querySelectorAll(".chat-scroll .msg.user")];
+    const last = users[users.length - 1].getBoundingClientRect();
+    const pane = document.querySelector(".chat-scroll").getBoundingClientRect();
+    return { top: last.top, bottom: last.bottom, paneTop: pane.top, paneBottom: pane.bottom };
+  });
+  log("last input after the last tick:", JSON.stringify(lastRoundSeen));
+  assert(lastRoundSeen.top >= lastRoundSeen.paneTop - 2 && lastRoundSeen.bottom <= lastRoundSeen.paneBottom + 2, "the last tick brings the last input into view");
+  assert(await page.locator(".chat-jump").isHidden(), "no room to scroll up → following is kept");
+  log("last tick → last input at the end of the transcript: ok");
   await page.locator(".turn-rail").hover();
   await until(async () => page.locator(".turn-list").isVisible(), 4000, "list on the long session");
   assert((await page.locator(".turn-row").count()) === 200, "the list still holds every round");
