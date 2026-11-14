@@ -658,6 +658,87 @@ try {
   await page.locator(".sd-close").first().click();
   await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
 
+  // ---------------------------------------------------------------- 编辑（#432）
+  // 编辑模式：直接敲字盖掉原文、Ctrl+Z/Y 撤销重做、保存写回原文件，样式跟着格子走。
+  await openSheet("styled.xlsx");
+  const bookFile = path.join(WORK, "styled.xlsx");
+  const mtimeBefore = fs.statSync(bookFile).mtimeMs;
+  const bgBefore = (await cellCss(3, 1))?.bg ?? [];
+
+  const editBtn = page.locator(".sd-editbtn");
+  check("浮窗里有「编辑」按钮", (await editBtn.count()) === 1, String(await editBtn.count()));
+  check("只读时「保存」不出现", (await page.locator(".sd-save-grid").isVisible()) === false, "");
+  await editBtn.click();
+  check("点下去变成「完成」", (await editBtn.textContent())?.trim() === "完成", String(await editBtn.textContent()));
+  check(
+    "底栏标成「编辑中」",
+    (await page.locator(".sd-ro").textContent())?.trim() === "编辑中",
+    String(await page.locator(".sd-ro").textContent()),
+  );
+
+  const editB4 = page.locator('.sd-cell[data-r="3"][data-c="1"]');
+  const was = (await editB4.textContent())?.trim() ?? "";
+  await editB4.click();
+  await page.keyboard.type("99");
+  await page.keyboard.press("Escape");
+  // 等过双击窗口（400ms）：同一格 400ms 内连点两次 = 双击 → selectBlock 把焦点挪到整块右下角。
+  await page.waitForTimeout(600);
+  check("Esc 取消：原文不动", (await cellText(3, 1)) === was, `${was} → ${await cellText(3, 1)}`);
+
+  await editB4.click();
+  await page.keyboard.type("99");
+  await page.keyboard.press("Enter");
+  await until(async () => (await cellText(3, 1)) === "99", 3000, "edited");
+  const saveBtn = page.locator(".sd-save-grid");
+  check("直接敲字盖掉原文，Enter 提交", (await cellText(3, 1)) === "99", String(await cellText(3, 1)));
+  check("有改动才亮「保存」", await saveBtn.isVisible(), "");
+  check("按钮上写着改了几格", ((await saveBtn.textContent()) ?? "").includes("1"), String(await saveBtn.textContent()));
+
+  await page.keyboard.press("Control+z");
+  await until(async () => (await cellText(3, 1)) === was, 3000, "undo");
+  check("Ctrl+Z 退回原文", (await cellText(3, 1)) === was, String(await cellText(3, 1)));
+  await page.keyboard.press("Control+y");
+  await until(async () => (await cellText(3, 1)) === "99", 3000, "redo");
+  check("Ctrl+Y 再改回来", (await cellText(3, 1)) === "99", String(await cellText(3, 1)));
+
+  await page.locator('.sd-cell[data-r="4"][data-c="2"]').dblclick();
+  await page.locator("textarea.sd-edit").waitFor({ timeout: 3000 });
+  check("双击进原地编辑框", (await page.locator("textarea.sd-edit").count()) === 1, "");
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("7.5");
+  await page.keyboard.press("Tab");
+  await page.waitForTimeout(150);
+  check("Tab 提交并往右走", (await cellText(4, 2)) === "7.5", String(await cellText(4, 2)));
+
+  // 选区多格 + Delete：一次清一片。
+  await page.locator('.sd-cell[data-r="5"][data-c="1"]').click();
+  await page.keyboard.down("Shift");
+  await page.locator('.sd-cell[data-r="5"][data-c="2"]').click();
+  await page.keyboard.up("Shift");
+  await page.keyboard.press("Delete");
+  await page.waitForTimeout(150);
+  check("Delete 清掉选区", (await cellText(5, 1)) === "" && (await cellText(5, 2)) === "", `${await cellText(5, 1)}/${await cellText(5, 2)}`);
+
+  await saveBtn.click();
+  await until(async () => ((await saveBtn.textContent()) ?? "").includes("已保存"), 10000, "saved");
+  const mtimeAfter = fs.statSync(bookFile).mtimeMs;
+  check("保存真的写回原文件（mtime 变了）", mtimeAfter > mtimeBefore, `${mtimeBefore} → ${mtimeAfter}`);
+  check("留了一份 .bak", fs.existsSync(`${bookFile}.bak`), "");
+  check("保存后改动账清了（按钮藏起来）", (await page.locator(".sd-save-grid").isVisible()) === false, "");
+
+  // 关掉重开：值是从文件里读回来的，不是内存里的假象。
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+  await openSheet("styled.xlsx");
+  check("重开还看得到改过的值", (await cellText(3, 1)) === "99", String(await cellText(3, 1)));
+  // C5 本来就带货币格式（`"¥"#,##0.00`）：改数字不该把格式冲掉，所以显示成 ¥7.50。
+  check("重开还看得到新写的数", (await cellText(4, 2)) === "¥7.50", String(await cellText(4, 2)));
+  const bgAfter = (await cellCss(3, 1))?.bg ?? [];
+  check("写回没把格子的底色弄丢", bgAfter.join() === bgBefore.join(), `${bgBefore.join()} / ${bgAfter.join()}`);
+  await page.screenshot({ path: path.join(OUT, "10-edit.png") });
+  await page.locator(".sd-close").first().click();
+  await until(async () => (await page.locator(".sd").count()) === 0, 5000, "dialog closed");
+
   // ---------------------------------------------------------------- 条件格式（#109）
   // 五类规则都在桥端求值，前端只吃结果：底色、字色、加粗、数据条宽度、图标等级。
   await openSheet("cf.xlsx");

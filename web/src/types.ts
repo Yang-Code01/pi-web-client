@@ -670,6 +670,13 @@ export interface SheetCell {
   s?: number;
 }
 
+/** #432：保存时提交给桥端的一条改动；`cell` 为 null 表示清空这一格。 */
+export interface SheetEditOp {
+  r: number;
+  c: number;
+  cell: { k: "s" | "n" | "b" | "e" | "f"; t?: string; v?: number; f?: string } | null;
+}
+
 /** 合并区，0 基闭区间。 */
 export interface SheetMerge {
   r0: number;

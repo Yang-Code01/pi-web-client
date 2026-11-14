@@ -17,7 +17,7 @@
  */
 import { tr, errText } from "../i18n/index.ts";
 import { clampNum } from "../floatwin.ts";
-import type { SheetCell, SheetInfo, SheetMerge, SheetMeta, SheetStyle, SheetWindow } from "../types.ts";
+import type { SheetCell, SheetEditOp, SheetInfo, SheetMerge, SheetMeta, SheetStyle, SheetWindow } from "../types.ts";
 
 /** 默认行高（px）：Excel 15pt。 */
 export const ROW_H = 20;
@@ -50,6 +50,13 @@ interface Range {
   c1: number;
 }
 
+/** #432：一次改动（一批粘贴算一条撤销记录里的多条）。 */
+interface EditEntry {
+  key: string;
+  before: SheetCell | null;
+  after: SheetCell | null;
+}
+
 export interface SheetGridHost {
   meta: SheetMeta;
   sheet: string;
@@ -60,6 +67,10 @@ export interface SheetGridHost {
   mediaUrl?: (sheet: string, id: string) => string;
   /** #111：选中格变了（公式栏跟着走）：`ref` 是 A1 式坐标，`text` 是公式原文或显示值。 */
   onSelect?: (sel: { ref: string; text: string } | null) => void;
+  /** #432：有未保存的改动时通知浮窗（保存按钮 / 脏标记）。 */
+  onDirty?: (count: number) => void;
+  /** #432：开始在格子里敲字 / 结束编辑（公式栏跟着切）。 */
+  onEditing?: (state: { ref: string; text: string } | null) => void;
 }
 
 /** 四个绘制层：主体、冻结行、冻结列、冻结角。 */
@@ -161,6 +172,14 @@ export class SheetGrid {
 
   private lastTap = { t: 0, r: -1, c: -1 };
 
+  /** #432：改过但还没保存的格子（key = "r:c"）。null 表示「清空」，跟「没这格」区分开。 */
+  private edits = new Map<string, SheetCell | null>();
+  private undoStack: EditEntry[][] = [];
+  private redoStack: EditEntry[][] = [];
+  private editor: { r: number; c: number; node: HTMLTextAreaElement; original: string } | null = null;
+  /** 编辑模式：双击进编辑（只读预览里双击还是「选一片连续区」）。 */
+  private editMode = false;
+
   /** 量文字宽用的画布（建一次，量上千格也不抖）。 */
   private mctx: CanvasRenderingContext2D | null = null;
   private readonly tw = new Map<string, number>();
@@ -217,6 +236,7 @@ export class SheetGrid {
     this.view.addEventListener("pointercancel", this.onPointerUp);
     this.view.addEventListener("keydown", this.onKeyDown);
     this.view.addEventListener("copy", this.onCopy);
+    this.view.addEventListener("paste", this.onPaste);
   }
 
   /** 首次取数；解析失败把话显示在网格中央。 */
@@ -268,6 +288,7 @@ export class SheetGrid {
     this.view.removeEventListener("pointercancel", this.onPointerUp);
     this.view.removeEventListener("keydown", this.onKeyDown);
     this.view.removeEventListener("copy", this.onCopy);
+    this.view.removeEventListener("paste", this.onPaste);
     this.root.remove();
   }
 
@@ -492,7 +513,7 @@ export class SheetGrid {
     for (let r = s.r0; r <= s.r1; r++) {
       const row: string[] = [];
       for (let c = s.c0; c <= s.c1; c++) {
-        const cell = this.cellsByKey.get(`${r}:${c}`);
+        const cell = this.cellAt(r, c);
         // 数字格复制原始值（粘回去还是数，不是「￥1,234」），其余复制显示串。
         row.push(cell?.v != null ? String(cell.v) : (cell?.t ?? ""));
       }
@@ -500,6 +521,250 @@ export class SheetGrid {
     }
     return lines.join("\n");
   }
+
+  // ------------------------------------------------------------------ 编辑（#432）
+
+  /** 改过的格子优先于窗口缓存：保存前不重取，重取也不会把本地改动冲掉。 */
+  private cellAt(r: number, c: number): SheetCell | undefined {
+    const key = `${r}:${c}`;
+    const mine = this.edits.get(key);
+    if (mine !== undefined) return mine ?? undefined;
+    return this.cellsByKey.get(key);
+  }
+
+  /** 开关编辑模式（浮窗的「编辑」按钮）；关掉时把正在编辑的那格收尾。 */
+  setEditMode(on: boolean): void {
+    if (this.editMode === on) return;
+    this.editMode = on;
+    if (!on) this.commitEdit(null);
+    this.root.classList.toggle("is-editing", on);
+  }
+
+  /** 有没保存的改动。 */
+  get dirty(): boolean {
+    return this.edits.size > 0;
+  }
+
+  get editCount(): number {
+    return this.edits.size;
+  }
+
+  /** 把改动整理成桥端要的形状。公式只发正文，别的按格子的实际类型发。 */
+  editOps(): SheetEditOp[] {
+    const out: SheetEditOp[] = [];
+    for (const [key, cell] of this.edits) {
+      const [r, c] = key.split(":").map(Number);
+      if (!cell) out.push({ r, c, cell: null });
+      else if (cell.f) out.push({ r, c, cell: { k: "f", f: cell.f } });
+      else if (cell.k === "n") out.push({ r, c, cell: { k: "n", v: Number(cell.v ?? cell.t) } });
+      else if (cell.k === "b") out.push({ r, c, cell: { k: "b", v: cell.t.toUpperCase() === "TRUE" ? 1 : 0 } });
+      else if (cell.k === "e") out.push({ r, c, cell: { k: "e", t: cell.t } });
+      else out.push({ r, c, cell: { k: "s", t: cell.t } });
+    }
+    return out;
+  }
+
+  /** 保存成功后清账：改动已经落盘，接着从文件里重新取。 */
+  clearEdits(): void {
+    this.edits.clear();
+    this.undoStack = [];
+    this.redoStack = [];
+    this.notifyDirty();
+    this.render();
+  }
+
+  private notifyDirty(): void {
+    this.host.onDirty?.(this.edits.size);
+  }
+
+  private setEdit(r: number, c: number, cell: SheetCell | null): EditEntry {
+    const key = `${r}:${c}`;
+    const before = this.cellAt(r, c) ?? null;
+    this.edits.set(key, cell);
+    return { key, before, after: cell };
+  }
+
+  /** 一批改动落账：只留一条撤销记录，重做栈按 Excel 的规矩清空。 */
+  private commitBatch(batch: EditEntry[]): void {
+    if (!batch.length) return;
+    this.undoStack.push(batch);
+    if (this.undoStack.length > 200) this.undoStack.shift();
+    this.redoStack.length = 0;
+    this.notifyDirty();
+    this.render();
+  }
+
+  /** Ctrl+Z：按批回退（一次粘贴算一步，不是一格一步）。 */
+  undo(): void {
+    const batch = this.undoStack.pop();
+    if (!batch) return;
+    for (let i = batch.length - 1; i >= 0; i--) {
+      const e = batch[i];
+      if (e.before) this.edits.set(e.key, e.before);
+      else this.edits.delete(e.key);
+    }
+    this.redoStack.push(batch);
+    this.notifyDirty();
+    this.render();
+  }
+
+  /** Ctrl+Y / Ctrl+Shift+Z。 */
+  redo(): void {
+    const batch = this.redoStack.pop();
+    if (!batch) return;
+    for (const e of batch) {
+      if (e.after) this.edits.set(e.key, e.after);
+      else this.edits.delete(e.key);
+    }
+    this.undoStack.push(batch);
+    this.notifyDirty();
+    this.render();
+  }
+
+  /** 开始编辑当前格：`initial` 是用户直接敲的那个字符（Excel 的「盖掉原文」）。 */
+  beginEdit(initial?: string): void {
+    if (this.editor) this.commitEdit(null);
+    const info = this.info();
+    if (!info.rows || !info.cols) return;
+    const { r, c } = this.focus;
+    const span = this.spans.get(`${r}:${c}`);
+    const r0 = span ? span.r0 : r;
+    const c0 = span ? span.c0 : c;
+    const r1 = span ? span.r1 : r;
+    const c1 = span ? span.c1 : c;
+    const cell = this.cellAt(r0, c0);
+    const st = this.styleOf(cell);
+    const node = el("textarea", "sd-edit");
+    node.value = initial ?? (cell?.f ? `=${cell.f}` : (cell?.t ?? ""));
+    node.spellcheck = false;
+    node.style.left = `${this.leftOf(c0)}px`;
+    node.style.top = `${this.topOf(r0)}px`;
+    node.style.width = `${this.leftOf(c1 + 1) - this.leftOf(c0)}px`;
+    node.style.minHeight = `${Math.max(this.topOf(r1 + 1) - this.topOf(r0), 18)}px`;
+    node.style.font = fontCss(st, this.zoomLevel);
+    node.style.lineHeight = String(MLINE);
+    const auto = cell?.k === "n" ? "r" : cell?.k === "b" || cell?.k === "e" ? "c" : "l";
+    const align = st?.h ?? cell?.a ?? auto;
+    node.style.textAlign = align === "c" ? "center" : align === "r" ? "right" : "left";
+    node.style.paddingLeft = `${Math.round((4 + (st?.ind ?? 0) * 12) * this.zoomLevel)}px`;
+    node.addEventListener("keydown", (ev) => this.onEditorKey(ev));
+    node.addEventListener("blur", () => {
+      // 点别处 = 提交（Excel 行为）；已经结束的编辑不能再提一次。
+      if (this.editor?.node === node) this.commitEdit(null);
+    });
+    this.cells.append(node);
+    const before = cell?.f ? `=${cell.f}` : (cell?.t ?? "");
+    this.editor = { r: r0, c: c0, node, original: before };
+    this.host.onEditing?.({ ref: `${colName(c0)}${r0 + 1}`, text: node.value });
+    node.focus({ preventScroll: true });
+    // 光标放末尾（replace 模式下第一个字符已经盖掉原文了，再全选会把刚敲的字也盖掉）。
+    node.setSelectionRange(node.value.length, node.value.length);
+  }
+
+  /** 编辑框里的键：Enter/Shift+Enter/Tab/Esc 都按 Excel 的意思收尾，别的键留给输入。 */
+  private onEditorKey(ev: KeyboardEvent): void {
+    ev.stopPropagation();
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      this.cancelEdit();
+      return;
+    }
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      this.commitEdit(ev.shiftKey ? "up" : "down");
+      return;
+    }
+    if (ev.key === "Tab") {
+      ev.preventDefault();
+      this.commitEdit(ev.shiftKey ? "left" : "right");
+    }
+  }
+
+  /** 收尾：写回改动、挪焦点（`move` 为空就只收尾，比如失焦）。 */
+  commitEdit(move: "up" | "down" | "left" | "right" | null): void {
+    const ed = this.editor;
+    if (!ed) return;
+    this.editor = null;
+    const text = ed.node.value;
+    ed.node.remove();
+    this.host.onEditing?.(null);
+    if (text !== ed.original) this.commitBatch([this.setEdit(ed.r, ed.c, this.parseInput(text, ed.r, ed.c))]);
+    if (move) this.moveFocus(move);
+    // 编辑框没了，焦点要回到网格：否则接着敲字 / Ctrl+Z 都落在 body 上。
+    this.focusView();
+  }
+
+  /** Esc：什么都不改，回到网格。 */
+  cancelEdit(): void {
+    const ed = this.editor;
+    if (!ed) return;
+    this.editor = null;
+    ed.node.remove();
+    this.host.onEditing?.(null);
+    this.focusView();
+  }
+
+  /** 敲进去的文本 → 格子：= 开头是公式，纯数字是数，TRUE/FALSE 是布尔，其余是文本。 */
+  private parseInput(text: string, r: number, c: number): SheetCell | null {
+    if (text === "") return null;
+    if (text.startsWith("=")) {
+      const f = text.slice(1).trim();
+      return f ? { r, c, k: "s", t: text, f } : null;
+    }
+    const raw = text.trim();
+    if (/^(true|false)$/i.test(raw)) return { r, c, k: "b", t: raw.toUpperCase(), v: raw.toUpperCase() === "TRUE" ? 1 : 0 };
+    if (/^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/.test(raw)) return { r, c, k: "n", t: raw, v: Number(raw) };
+    return { r, c, k: "s", t: text };
+  }
+
+  private moveFocus(dir: "up" | "down" | "left" | "right"): void {
+    const info = this.info();
+    let { r, c } = this.focus;
+    if (dir === "up") r = Math.max(0, r - 1);
+    else if (dir === "down") r = Math.min(info.rows - 1, r + 1);
+    else if (dir === "left") c = Math.max(0, c - 1);
+    else c = Math.min(info.cols - 1, c + 1);
+    this.anchor = { r, c };
+    this.focus = { r, c };
+    this.afterSelect();
+    this.reveal(r, c);
+  }
+
+  /** Delete / Backspace：清掉选区里的内容（样式也跟着没，跟 Excel 的 Delete 一致）。 */
+  private clearSelection(): void {
+    const sel = this.rect();
+    const batch: EditEntry[] = [];
+    for (let r = sel.r0; r <= sel.r1; r++) {
+      for (let c = sel.c0; c <= sel.c1; c++) {
+        const cur = this.cellAt(r, c);
+        if (!cur || (cur.t === "" && !cur.f)) continue;
+        batch.push(this.setEdit(r, c, null));
+      }
+    }
+    this.commitBatch(batch);
+  }
+
+  /** Ctrl+V：TSV 从锚点铺开，数字转成数、别的原样。 */
+  private onPaste = (ev: ClipboardEvent): void => {
+    if (this.editor) return;
+    const text = ev.clipboardData?.getData("text/plain") ?? "";
+    if (!text) return;
+    ev.preventDefault();
+    const lines = text.replace(/\r/g, "").split("\n");
+    if (lines.length && lines[lines.length - 1] === "") lines.pop();
+    const info = this.info();
+    const batch: EditEntry[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const cells = lines[i].split("\t");
+      for (let j = 0; j < cells.length; j++) {
+        const r = this.anchor.r + i;
+        const c = this.anchor.c + j;
+        if (r >= info.rows || c >= info.cols) continue;
+        batch.push(this.setEdit(r, c, this.parseInput(cells[j], r, c)));
+      }
+    }
+    this.commitBatch(batch);
+  };
 
   /** 把键盘焦点给网格（查找框收起之后回到格子上）。 */
   focusView(): void {
@@ -518,6 +783,14 @@ export class SheetGrid {
     this.lastTap = { t: again ? 0 : now, r: pos.r, c: pos.c };
     if (again) {
       this.dragging = false;
+      if (this.editMode) {
+        // 双击进编辑：这一下的默认聚焦先走完，下一帧再开编辑框，否则刚出来就被 blur 掉。
+        this.anchor = anchor;
+        this.focus = pos;
+        this.afterSelect();
+        requestAnimationFrame(() => this.beginEdit());
+        return;
+      }
       this.selectBlock(pos);
       this.focusView();
       this.afterSelect();
@@ -597,7 +870,7 @@ export class SheetGrid {
   private selectBlock(at: { r: number; c: number }): void {
     const info = this.info();
     const filled = (r: number, c: number): boolean => {
-      const cell = this.cellsByKey.get(`${r}:${c}`);
+      const cell = this.cellAt(r, c);
       return !!cell && (cell.t !== "" || cell.v != null);
     };
     let { r0, r1, c0, c1 } = { r0: at.r, r1: at.r, c0: at.c, c1: at.c };
@@ -613,7 +886,35 @@ export class SheetGrid {
 
   /** #107：方向键 / Home / End / PageUp / PageDown；按住 Shift 是扩，不按是换格。 */
   private onKeyDown = (ev: KeyboardEvent): void => {
-    if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
+    const mod = ev.ctrlKey || ev.metaKey;
+    if (mod && (ev.key === "z" || ev.key === "Z")) {
+      ev.preventDefault();
+      if (ev.shiftKey) this.redo();
+      else this.undo();
+      return;
+    }
+    if (mod && (ev.key === "y" || ev.key === "Y")) {
+      ev.preventDefault();
+      this.redo();
+      return;
+    }
+    if (ev.altKey || mod) return;
+    if (ev.key === "F2") {
+      ev.preventDefault();
+      this.beginEdit();
+      return;
+    }
+    if (ev.key === "Delete" || ev.key === "Backspace") {
+      ev.preventDefault();
+      this.clearSelection();
+      return;
+    }
+    // 直接敲字就是「盖掉原文开始编辑」（Excel/WPS 一样）。
+    if (ev.key.length === 1) {
+      ev.preventDefault();
+      this.beginEdit(ev.key);
+      return;
+    }
     const info = this.info();
     if (!info.rows || !info.cols) return;
     const rowH = Math.max(12, this.heightOf(this.focus.r) || ROW_H);
@@ -763,7 +1064,7 @@ export class SheetGrid {
   private notify(): void {
     if (this.destroyed) return;
     const sel = this.focus;
-    const cell = this.cellsByKey.get(`${sel.r}:${sel.c}`);
+    const cell = this.cellAt(sel.r, sel.c);
     const text = cell?.f ? `=${cell.f}` : (cell?.t ?? "");
     this.host.onSelect?.({ ref: this.selectionRef, text });
   }
@@ -898,16 +1199,18 @@ export class SheetGrid {
       if (!this.cellsByKey.size) this.show(tr("读不了这张表：{p1}", { p1: this.error }));
     } finally {
       this.loading = false;
-      if (this.destroyed) return;
-      if (epoch !== this.epoch) {
-        void this.ensure();
-        return;
-      }
-      this.render();
-      this.notify();
-      if (this.again) {
-        this.again = false;
-        void this.ensure();
+      // finally 里别用 return：会把上面 catch 的「停下别画」盖掉。
+      if (!this.destroyed) {
+        if (epoch !== this.epoch) {
+          void this.ensure();
+        } else {
+          this.render();
+          this.notify();
+          if (this.again) {
+            this.again = false;
+            void this.ensure();
+          }
+        }
       }
     }
   }
@@ -988,6 +1291,8 @@ export class SheetGrid {
     this.frzH.style.top = `${frzH}px`;
     this.frzH.hidden = !f.rows;
 
+    // 编辑框是 cells 的子节点，重建时会被 replaceChildren 冲掉：放回原处继续用。
+    if (this.editor) this.cells.append(this.editor.node);
     this.drawImages();
     this.drawHandle();
 
@@ -1087,7 +1392,7 @@ export class SheetGrid {
         const c1 = span ? span.c1 : c;
         if (this.layerOf(r1, c1) !== layer) continue;
 
-        const cell = this.cellsByKey.get(`${r0}:${c0}`);
+        const cell = this.cellAt(r0, c0);
         const st = this.styleOf(cell);
         const width = this.leftOf(c1 + 1) - this.leftOf(c0);
         const height = this.topOf(r1 + 1) - this.topOf(r0);
@@ -1152,7 +1457,7 @@ export class SheetGrid {
   /** 某格（合并区按左上角算）的样式。 */
   private styleAt(r: number, c: number): SheetStyle | undefined {
     const span = this.spans.get(`${r}:${c}`);
-    return this.styleOf(this.cellsByKey.get(span ? `${span.r0}:${span.c0}` : `${r}:${c}`));
+    return this.styleOf(this.cellAt(span ? span.r0 : r, span ? span.c0 : c));
   }
 
   /**
@@ -1300,7 +1605,7 @@ export class SheetGrid {
   private occupied(r: number, c: number): boolean {
     const key = `${r}:${c}`;
     // 只有格式化、没内容的格子在 Excel 里照样让文字穿过去，所以看 t 不看键是否存在。
-    if (this.cellsByKey.get(key)?.t) return true;
+    if (this.cellAt(r, c)?.t) return true;
     return this.spans.has(key);
   }
 

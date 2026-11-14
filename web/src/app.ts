@@ -7824,6 +7824,8 @@ export class App {
       findSheet: (sheet, q) => api.sheetFind(info.token, sheet, q),
       // #427：表里的图片走独立的字节端点，凭据还是这扇窗的 token。
       mediaUrl: (sheet, id) => api.sheetMediaUrl(info.token, sheet, id),
+      // #432：改过的格子写回原文件（桥端只认这张表的凭据）。
+      saveSheet: (sheet, ops) => api.sheetEdit(info.token, sheet, ops),
       onQuote: (text) => this.quoteInto(text),
       // #112：有图表的文件自动转一次 PDF；没有的也能手动切过去看打印版式。
       page: { token: info.token },

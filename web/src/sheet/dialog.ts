@@ -5,7 +5,7 @@
  * 拖标题栏移动、拖右下角改宽高、拖顶边只改高、双击复原、打开时 clamp 回可视区。
  */
 import { tr, errText, fmtTime, fmtNum } from "../i18n/index.ts";
-import type { SheetInfo, SheetMatches, SheetMeta, SheetWindow } from "../types.ts";
+import type { SheetEditOp, SheetInfo, SheetMatches, SheetMeta, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
 import { SheetGrid, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP } from "./grid.ts";
 import { SheetPage } from "./page.ts";
@@ -41,6 +41,8 @@ export interface SheetDialogOpts {
   findSheet?: (sheet: string, q: string) => Promise<SheetMatches>;
   /** #427：表里图片的字节地址（`/api/sheet/media?...`）。没有就不画图。 */
   mediaUrl?: (sheet: string, id: string) => string;
+  /** #432：把编辑过的格子写回原文件；不给就保持只读。 */
+  saveSheet?: (sheet: string, ops: SheetEditOp[]) => Promise<{ mtime: number; size: number; cells: number }>;
   /** #107：把「文件路径 + A1:C9」交给对话框（只插入，不发送）。 */
   onQuote?: (text: string) => void;
   /** #112：页面视图；xlsx 都有，CSV 没有。有它才出并排 / 两个标签页。 */
@@ -115,6 +117,11 @@ export class SheetDialog {
   private narrow = false;
   private activeView: "grid" | "page" = "grid";
   private ro: ResizeObserver | null = null;
+  /** #432：编辑模式的开关、脏计数、保存按钮。 */
+  private editOn = false;
+  private dirty = 0;
+  private editBtn: HTMLButtonElement | null = null;
+  private gridSave: HTMLButtonElement | null = null;
 
   constructor(opts: SheetDialogOpts) {
     this.opts = opts;
@@ -228,7 +235,22 @@ export class SheetDialog {
     quote.type = "button";
     quote.title = tr("把选区（文件路径 + A1:C9）插进对话框，不发送");
     quote.onclick = () => this.quote();
-    this.tools.append(this.findBtn, this.findBar, spacer, quote);
+    this.tools.append(this.findBtn, this.findBar, spacer);
+    if (opts.saveSheet) {
+      const edit = el("button", "sd-act sd-editbtn", tr("编辑"));
+      edit.type = "button";
+      edit.title = tr("编辑（双击格子或直接敲字；Ctrl+S 保存）");
+      edit.onclick = () => this.toggleEdit();
+      this.editBtn = edit;
+      const save = el("button", "sd-act sd-save-grid", tr("保存"));
+      save.type = "button";
+      save.disabled = true;
+      save.hidden = true;
+      save.onclick = () => void this.saveGrid();
+      this.gridSave = save;
+      this.tools.append(edit, save);
+    }
+    this.tools.append(quote);
     // CSV 没有源码面以外的查找（本地内存里已经有全文，但本票只做 .xlsx）。
     if (!opts.findSheet) {
       this.findBtn.hidden = true;
@@ -255,6 +277,12 @@ export class SheetDialog {
     if (mod && (ev.key === "f" || ev.key === "F") && this.opts.findSheet) {
       ev.preventDefault();
       this.openFind();
+      return;
+    }
+    // #432：Excel 的肌肉记忆——Ctrl+S 存编辑，不用去点按钮。
+    if (mod && (ev.key === "s" || ev.key === "S") && this.opts.saveSheet) {
+      ev.preventDefault();
+      void this.saveGrid();
       return;
     }
     if (ev.key === "Escape" && !this.findBar.hidden) {
@@ -451,6 +479,53 @@ export class SheetDialog {
     if (which === "grid") this.grid?.refresh();
   }
 
+  /** #432：编辑模式开关；关掉时把正在编辑的格子收尾。 */
+  private toggleEdit(): void {
+    this.editOn = !this.editOn;
+    this.grid?.setEditMode(this.editOn);
+    if (this.editBtn) {
+      this.editBtn.classList.toggle("on", this.editOn);
+      this.editBtn.textContent = this.editOn ? tr("完成") : tr("编辑");
+    }
+    this.roChip.textContent = this.editOn ? tr("编辑中") : tr("只读");
+    this.roChip.classList.toggle("is-edit", this.editOn);
+    this.grid?.focusView();
+  }
+
+  /** 有改动才亮「保存」；数字挂在按钮上，用户一眼能看到改了几格。 */
+  private setDirty(n: number): void {
+    this.dirty = n;
+    const btn = this.gridSave;
+    if (!btn) return;
+    btn.hidden = n === 0;
+    btn.disabled = n === 0;
+    btn.textContent = n ? tr("保存 {p1}", { p1: n }) : tr("保存");
+  }
+
+  /** #432：把改动交给桥端写回原文件；成功之后重新取一次可视窗口。 */
+  private async saveGrid(): Promise<void> {
+    const grid = this.grid;
+    const save = this.gridSave;
+    if (!grid || !save || !this.opts.saveSheet || !grid.dirty) return;
+    save.disabled = true;
+    save.textContent = tr("保存中…");
+    try {
+      const out = await this.opts.saveSheet(grid.activeSheet, grid.editOps());
+      grid.clearEdits();
+      this.setDirty(0);
+      grid.refresh();
+      save.textContent = tr("已保存");
+      window.setTimeout(() => this.setDirty(0), 1200);
+      this.status.textContent = tr("已保存（{p1} 格）", { p1: out.cells });
+      this.status.hidden = false;
+    } catch (err) {
+      save.disabled = false;
+      this.setDirty(grid.editCount);
+      this.status.textContent = errText(err);
+      this.status.hidden = false;
+    }
+  }
+
   /** #111：选中格的原文（公式带 `=`）/ 值；空表里的格子就是空串。 */
   private showFormula(sel: { ref: string; text: string } | null): void {
     if (!sel) {
@@ -610,6 +685,10 @@ export class SheetDialog {
       mediaUrl: (sheet, id) => this.opts.mediaUrl?.(sheet, id) ?? "",
       onSelect: (sel) => this.showFormula(sel),
       onStale: () => this.stale(),
+      onDirty: (n) => this.setDirty(n),
+      onEditing: (state) => {
+        if (state) this.showFormula(state);
+      },
     });
     this.grid = grid;
     this.pane.replaceChildren(grid.root);
@@ -633,6 +712,7 @@ export class SheetDialog {
 
   close(): void {
     if (this.closed) return;
+    if (this.grid?.dirty && !window.confirm(tr("有未保存的改动，确定关闭？"))) return;
     this.closed = true;
     this.destroy();
     this.opts.onClose();

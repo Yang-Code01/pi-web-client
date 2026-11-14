@@ -1,4 +1,4 @@
-import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetMatches, SheetMeta, SheetWindow, TrDoc, TrDocResp, TrJob, TrPrefsResp, TrSyncResp, TunnelState } from "./types.ts";
+import type { ArtifactDiff, ArtifactList, GitDiff, GitExecResult, GitHistory, GitInfo, GitOpParams, GitRefs, GitWorktreeState, Me, PreviewInfo, SessionState, SheetEditOp, SheetMatches, SheetMeta, SheetWindow, TrDoc, TrDocResp, TrJob, TrPrefsResp, TrSyncResp, TunnelState } from "./types.ts";
 import type { JiraDownloadPlan, JiraDownloadResult, JiraIssue, JiraIssueDetail, JiraProject, JiraSearchMeta, JiraUserOption } from "./jira-shared.ts";
 import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
 
@@ -235,6 +235,13 @@ export const api = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token, sheet, q }),
+    }),
+  /** #432: write edited cells back into the workbook (bridge patches the sheet XML and re-zips). */
+  sheetEdit: (token: string, sheet: string, ops: SheetEditOp[]) =>
+    req<{ mtime: number; size: number; cells: number }>("/api/sheet/edit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token, sheet, ops }),
     }),
   /** #427: one image from the workbook, addressed by its zip part inside this sheet's meta. */
   sheetMediaUrl: (token: string, sheet: string, id: string) =>

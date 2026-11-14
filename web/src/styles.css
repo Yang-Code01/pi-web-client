@@ -4166,6 +4166,11 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .sd-act:hover { background: #eef1f5; color: #1f2430; }
 .sd-act:disabled { opacity: 0.5; cursor: default; }
+/* #432：编辑模式开着的时候按钮是实心的，一眼能看出「现在能改」。 */
+.sd-act.on { background: #0f766e; border-color: #0f766e; color: #fff; }
+.sd-act.on:hover { background: #0d6b63; color: #fff; }
+.sd-save-grid:not([hidden]) { border-color: #0f766e; color: #0f766e; font-weight: 600; }
+.sd-ro.is-edit { color: #0f766e; background: #e7f5f2; }
 .sd-dl { margin-left: auto; }
 
 /* 盖住网格说话：文件被改过 / 这个格式不支持。 */
@@ -4231,6 +4236,13 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 /* 文本溢出到右边的空格子里：只让字溢出，节点自己的底色/边框还留在本格。 */
 .sd-cell.sd-ovf { overflow: visible; z-index: 2; pointer-events: none; }
 .sd-cell.sd-ovf > .sd-txt { flex: none; overflow: visible; }
+/* #432：原地编辑框——盖住这一格（合并区就盖整片），字体/对齐由内联样式接着格子给。 */
+.sd-edit {
+  position: absolute; z-index: 5; box-sizing: border-box; margin: 0;
+  border: 2px solid #0f766e; outline: none; resize: none; overflow: hidden;
+  background: #fff; color: #1f2430; padding: 0 4px; border-radius: 0;
+  box-shadow: 0 0 0 1px #fff;
+}
 /* #427：文件里钉在格子上的图片。压在格子之上、选区之下，不吃指针事件。 */
 .sd-img {
   position: absolute; z-index: 2; object-fit: fill;

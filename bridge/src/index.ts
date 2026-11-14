@@ -84,7 +84,8 @@ import { isTrustedPreviewPath, kindOf, openPreview, readAttachableImage, readTex
 import { MAX_TRANSLATE_BYTES, TR_DEFAULT_MODEL, TR_LANGS, applySync, cutSections, isTrLang, planSync, readDoc, readTrPrefs, runPiTranslate, splitSections, writeDoc, writeTrPrefs, type TrLang, type TrSection } from "./translate.ts";
 import { TranslateJobs } from "./translatejob.ts";
 import { diffArtifact, listArtifacts, recordSnapshot } from "./artifacts.ts";
-import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow, readMedia as readSheetMedia } from "./sheet/index.ts";
+import { fileGrant, findSheet, grantIsStale, readMeta as readSheetMeta, readWindow as readSheetWindow, readMedia as readSheetMedia, registerFileGrant } from "./sheet/index.ts";
+import { saveBook as saveSheetBook, type EditOp } from "./sheet/write.ts";
 import { sheetPdfFile, sheetPdfKey, sheetPdfStatus } from "./sheet/pdf.ts";
 import { countSlides, slidesAvailable, slidesPdfFile, slidesPdfKey, slidesPdfStatus, slidesProbe } from "./slides/index.ts";
 import { PeerHost, peerEntry } from "./peer.ts";
@@ -1130,6 +1131,25 @@ async function main(): Promise<void> {
         return json(res, 200, await readSheetWindow(grant.abs, String(body.sheet ?? ""), r0, r1, c0, c1));
       } catch (err: any) {
         return fail(res, 400, String(err?.code ?? ""), String(err?.message ?? err));
+      }
+    }
+
+    // #432：把编辑过的格子写回原文件。mtime 还是预览时那一个才写，否则让用户重开。
+    if (url.pathname === "/api/sheet/edit" && req.method === "POST") {
+      if (publicReq) return fail(res, 403, "sheet_public", "通过公网访问时不提供表格内容，回本机操作");
+      const body = await readBody(req).catch(() => ({}));
+      const token = String(body.token ?? "");
+      const grant = await resolveSheetGrant(res, token);
+      if (!grant) return;
+      const ops = Array.isArray(body.ops) ? (body.ops as EditOp[]).slice(0, 20000) : [];
+      if (!ops.length) return fail(res, 400, "sheet_edit_empty", "没有要保存的改动");
+      try {
+        const out = await saveSheetBook(grant.abs, String(body.sheet ?? ""), ops, grant.mtimeMs);
+        // 存完文件就是新版了：刷新凭据的 mtime，接着编辑/翻页都还能用。
+        registerFileGrant(token, grant.abs, out.mtime);
+        return json(res, 200, out);
+      } catch (err: any) {
+        return fail(res, 400, String(err?.code ?? "sheet_write"), String(err?.message ?? err));
       }
     }
 
