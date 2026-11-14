@@ -5,7 +5,8 @@
  *
  * 自带丢弃式 bridge（端口 7893），不碰 7864；只读本机数据，不真的改 DNS / 重启 WinNAT——
  * 两者都会弹 UAC 并动整机网络，留本机手验。截图落在 .scratch/shots/sysmanage-ui.png。
- * 末尾另开几个放大字号的上下文，验三套控制台都不会被 #app 的 zoom 顶出视口。
+ * 末尾另开几个放大字号的上下文，验三套控制台都不会被 #app 的 zoom 顶出视口，
+ * 本机管理五个分区及概况跳转也不会横向穿出面板。
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -192,6 +193,57 @@ async function checkZoomLayout(scale, width, height) {
       Boolean(onScreen(g.back) && onScreen(g.console) && onScreen(g.foot) && inConsole(g.head) && inConsole(g.main) && inConsole(g.foot) && g.main.bottom <= g.foot.top + 1),
       JSON.stringify(g),
     );
+    if (name === "本机管理") {
+      // 外壳没顶出视口还不够：五个分区各自有网格/表格，放大字号后布局 px 变少，
+      // 原生 @media 看的是视口宽度（D158），不触发窄版折叠时内容会横向穿出 .sys-pane。
+      const nav = zoomPage.locator(".sys-nav__item");
+      const SECTIONS = [
+        { wait: ".sys-card" },
+        { wait: ".sys-dns" },
+        { wait: ".sys-table tbody tr" },
+        { wait: ".sys-table--services tbody tr" },
+        { wait: ".sys-wk-hero" },
+      ];
+      const paneGeometry = () => zoomPage.evaluate(() => {
+        const pane = document.querySelector(".sys-pane");
+        const b = pane.getBoundingClientRect();
+        const offenders = [...pane.querySelectorAll("*")]
+          .filter((e) => {
+            const r = e.getBoundingClientRect();
+            return r.width > 0 && (r.right > b.right + 1 || r.left < b.left - 1);
+          })
+          .slice(0, 5)
+          .map((e) => `${e.className || e.tagName}@${e.getBoundingClientRect().right.toFixed(1)}`);
+        return {
+          clientWidth: pane.clientWidth,
+          scrollWidth: pane.scrollWidth,
+          paneRight: +b.right.toFixed(1),
+          offenders,
+        };
+      });
+      for (let i = 0; i < SECTIONS.length; i += 1) {
+        const label = (await nav.nth(i).innerText()).trim().replace(/\s+/g, " ");
+        await nav.nth(i).click();
+        await zoomPage.locator(SECTIONS[i].wait).first().waitFor({ timeout: 20_000 });
+        const p = await paneGeometry();
+        check(
+          `字号 ${scale} @${width}×${height} ${label}：内容不横向穿出面板`,
+          p.scrollWidth <= p.clientWidth + 1 && p.offenders.length === 0,
+          JSON.stringify(p),
+        );
+      }
+      // 概况里的「查看网络与 DNS」也是一条入口，跳过去后同样不能横向溢出。
+      await nav.nth(0).click();
+      await zoomPage.locator(".sys-more").first().waitFor({ timeout: 20_000 });
+      await zoomPage.locator(".sys-more").first().click();
+      await zoomPage.locator(".sys-dns").first().waitFor({ timeout: 20_000 });
+      const jump = await paneGeometry();
+      check(
+        `字号 ${scale} @${width}×${height} 概况跳转网络与 DNS：内容不横向穿出面板`,
+        jump.scrollWidth <= jump.clientWidth + 1 && jump.offenders.length === 0,
+        JSON.stringify(jump),
+      );
+    }
     await zoomPage.keyboard.press("Escape");
     await zoomPage.waitForTimeout(150);
   }

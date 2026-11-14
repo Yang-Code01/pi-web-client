@@ -1093,22 +1093,34 @@ export class App {
     return this.prefs.scale || 1;
   }
 
+  /** 视口宽度换算成 `#app` 里的布局 px：CSS 的 vw/vh 与固定 px 都按这个尺度渲染（D123 / D158）。 */
+  private layoutWidth(): number {
+    return window.innerWidth / this.uiScale();
+  }
+
   /**
    * 有效宽度 < 900 就是窄版。媒体查询看的是**视口**宽度，而 `#app` 上有 zoom：2.0 字号下
    * 1707px 的窗口只有 853 布局 px，`@media (max-width: 899px)` 却依然不触发（D158）。
    * 所以窄版的判据在 JS 里算一次，既给 `data-compact` 用，也给这里的所有 if 用 —— 两边不许分叉。
    */
   private compact(): boolean {
-    return window.innerWidth / this.uiScale() < 900;
+    return this.layoutWidth() < 900;
   }
 
   /**
    * 把上面的判据落到 `<html data-compact>`：CSS 的 899 / 900 断点都改读这个属性。
+   * 三套控制台的 900 / 720 / 640 折叠规则也按有效宽度落 `data-console-*`（D158），
+   * 否则放大字号时原生 @media 不触发，面板内容会横向穿出。
    * 返回「这次真的翻了」—— 调用方拿它决定要不要重排（拖动中跨过 900 时）。
    */
   private syncCompact(): boolean {
-    const compact = this.compact();
+    const width = this.layoutWidth();
+    const compact = width < 900;
     const root = document.documentElement;
+    // 控制台原本是 @media (max-width: 900/720/640px)，保留 <= 的边界；compact 仍是 < 900。
+    root.dataset.consoleNarrow = String(width <= 900);
+    root.dataset.consoleMid = String(width <= 720);
+    root.dataset.consoleTight = String(width <= 640);
     // 跟 `String(compact)` 比，而不是跟 "true" 比：首次调用必须把 "false" 也写下去，
     // 否则属性一直是 undefined，CSS 那边是在碰运气。
     const changed = root.dataset.compact !== String(compact);

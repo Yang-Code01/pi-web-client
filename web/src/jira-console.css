@@ -303,60 +303,57 @@
 
 /* ---------------------------------------------------------------- 窄屏 */
 
-@media (max-width: 900px) {
-  .jc-back {
-    padding: 10px;
-  }
-
-  .jc-console {
-    width: 100%;
-    height: 100%;
-  }
-
-  .jc-main {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  .jc-nav {
-    flex-direction: row;
-    padding: 8px 10px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    overflow-x: auto;
-  }
-
-  .jc-nav__item {
-    width: auto;
-    flex: none;
-    padding: 6px 9px;
-    font-size: 11.5px;
-  }
-
-  .jc-nav__item.on {
-    box-shadow: inset 0 -2px 0 var(--accent);
-  }
-
-  .jc-pane {
-    padding: 14px;
-  }
+/* D158：控制台按有效宽度折叠，#app 放大字号时原生 @media 不会跟着翻（见 app.ts syncCompact）。 */
+:where(html[data-console-narrow="true"]) .jc-back {
+  padding: 10px;
 }
 
-@media (max-width: 640px) {
-  .jc-console {
-    width: 100%;
-    height: 100%;
-    border-radius: 0;
-    border: 0;
-  }
+:where(html[data-console-narrow="true"]) .jc-console {
+  width: 100%;
+  height: 100%;
+}
 
-  .jc-head {
-    padding: 14px;
-  }
+:where(html[data-console-narrow="true"]) .jc-main {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+}
 
-  .jc-title {
-    font-size: 21px;
-  }
+:where(html[data-console-narrow="true"]) .jc-nav {
+  flex-direction: row;
+  padding: 8px 10px;
+  border-right: 0;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+:where(html[data-console-narrow="true"]) .jc-nav__item {
+  width: auto;
+  flex: none;
+  padding: 6px 9px;
+  font-size: 11.5px;
+}
+
+:where(html[data-console-narrow="true"]) .jc-nav__item.on {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+:where(html[data-console-narrow="true"]) .jc-pane {
+  padding: 14px;
+}
+
+:where(html[data-console-tight="true"]) .jc-console {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  border: 0;
+}
+
+:where(html[data-console-tight="true"]) .jc-head {
+  padding: 14px;
+}
+
+:where(html[data-console-tight="true"]) .jc-title {
+  font-size: 21px;
 }
 
 /* #407：行尾的「下载附件」与它下面的一行结果小结。没有结果时整块不占位 */
