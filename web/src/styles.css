@@ -4150,7 +4150,7 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .sd-rb-acts { margin-left: auto; display: flex; align-items: center; gap: 5px; padding: 3px 0; }
 .sd-rb-body { background: #fff; border-top: 1px solid #e9edf2; }
-.sd-rb-pane { display: flex; align-items: stretch; padding: 4px 8px 2px; overflow-x: auto; }
+.sd-rb-pane { display: flex; align-items: stretch; min-height: 54px; padding: 4px 8px 2px; overflow-x: auto; }
 .sd-rb-pane[hidden] { display: none; }
 .sd-rb-grp { display: flex; flex-direction: column; justify-content: space-between; padding: 0 7px; }
 .sd-rb-row { display: flex; align-items: center; gap: 2px; }
