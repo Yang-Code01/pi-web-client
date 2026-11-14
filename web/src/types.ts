@@ -598,6 +598,50 @@ export interface TrSyncResp {
 /** D166 表格预览：格子只带显示串，有数字格式的按格式显示。 */
 export type SheetCellKind = "n" | "s" | "b" | "e";
 
+/** #429 单元格字体（来自 styles.xml 的 `<fonts>`；没写的字段用默认值）。 */
+export interface SheetFont {
+  /** 字体族（"Calibri"、"宋体"）。 */
+  n?: string;
+  /** 字号，pt。 */
+  s?: number;
+  b?: 1;
+  i?: 1;
+  u?: 1;
+  /** 删除线。 */
+  st?: 1;
+  /** 字色 `#RRGGBB`。 */
+  c?: string;
+}
+
+/** 四边框，值是 CSS 简写（`1px solid #D9D9D9`）。 */
+export interface SheetBorders {
+  t?: string;
+  r?: string;
+  b?: string;
+  l?: string;
+}
+
+/**
+ * #429 一格样式：桥端把 styles.xml 的 cellXfs 拍平成一个数组，格子只记下标。
+ * 只带跟渲染有关的字段——数字格式在桥端已经套好了。
+ */
+export interface SheetStyle {
+  f?: SheetFont;
+  /** 填充色 `#RRGGBB`。 */
+  bg?: string;
+  bd?: SheetBorders;
+  h?: "l" | "c" | "r" | "j";
+  v?: "t" | "m" | "b";
+  /** 自动换行。 */
+  w?: 1;
+  /** 缩进级别（0-15）。 */
+  ind?: number;
+  /** 缩小字体填充。 */
+  sh?: 1;
+  /** 旋转角度（只认 90/180 的倍数）。 */
+  rot?: number;
+}
+
 /** #109 条件格式算出来的样式（前端只贴样式，不理解规则）。 */
 export interface SheetFx {
   bg?: string;
@@ -622,6 +666,107 @@ export interface SheetCell {
   f?: string;
   /** #111：只有公式、文件里没存结果——显示为空，不猜 0。 */
   noCache?: boolean;
+  /** #429：样式下标（meta.styles 的索引）。 */
+  s?: number;
+  /** #435：超链接地址（`#表!A1` 表示页内）。 */
+  lnk?: string;
+  /** #435：批注正文。 */
+  note?: string;
+  /** #436：富文本分段（一格多字体）。 */
+  rt?: SheetRun[];
+}
+
+/** #436 数据验证（目前只用 list 的 options 做下拉）。 */
+export interface SheetValid {
+  r0: number;
+  c0: number;
+  r1: number;
+  c1: number;
+  kind: string;
+  options?: string[];
+  prompt?: string;
+}
+
+/** #436 一段带自己字体的文字。 */
+export interface SheetRun {
+  t: string;
+  f?: SheetFont;
+}
+
+/**
+ * #433 样式补丁：只带「要改的那几项」，桥端会克隆原来的 xf 再改，
+ * 所以同格底色、字号这些没提的属性不会被抹掉。
+ */
+export type SheetEdge = "thin" | "medium" | "thick" | "double" | "dashed" | "dotted" | "none";
+
+export interface SheetBorderPatch {
+  t?: SheetEdge;
+  r?: SheetEdge;
+  b?: SheetEdge;
+  l?: SheetEdge;
+}
+
+export interface SheetStylePatch {
+  /** 加粗 / 斜体 / 下划线。 */
+  b?: boolean;
+  i?: boolean;
+  u?: boolean;
+  /** 字体名。 */
+  fn?: string;
+  /** 四边描边。 */
+  bd?: SheetBorderPatch;
+  /** 字号（pt）。 */
+  fs?: number;
+  /** 字色 `#RRGGBB`。 */
+  fc?: string;
+  /** 填充色；null = 去掉填充。 */
+  bg?: string | null;
+  h?: "l" | "c" | "r" | null;
+  v?: "t" | "m" | "b" | null;
+  /** 自动换行。 */
+  w?: boolean;
+  /** 内置数字格式 id（0 常规 / 2 0.00 / 3 #,##0 / 4 #,##0.00 / 9 0% / 10 0.00% / 14 日期）。 */
+  nf?: number;
+}
+
+/** #432：保存时提交给桥端的一条改动；`cell` 为 null 表示清空这一格。 */
+export interface SheetEditOp {
+  r: number;
+  c: number;
+  cell: { k: "s" | "n" | "b" | "e" | "f"; t?: string; v?: number; f?: string; style?: SheetStylePatch } | null;
+}
+
+/** #434: 结构改动，要动整张表的坐标，提交后立刻落盘。 */
+export type SheetStructOp =
+  | { t: "merge" | "unmerge"; r1: number; c1: number; r2: number; c2: number }
+  | { t: "insRow" | "delRow" | "insCol" | "delCol"; at: number; n: number }
+  | { t: "sort"; r1: number; c1: number; r2: number; c2: number; key: number; desc: boolean }
+  | { t: "filter"; c: number; value: string | null; r1: number; c1: number; r2: number; c2: number }
+  | { t: "clearCf"; r1: number; c1: number; r2: number; c2: number }
+  | { t: "colWidth"; c: number; w: number }
+  | { t: "rowHeight"; r: number; h: number };
+
+/** #434：表里的图表对象（柱/条、折线、饼、面积、散点）。 */
+export interface SheetSeries {
+  name: string;
+  values: (number | null)[];
+}
+
+export interface SheetChart {
+  id: string;
+  kind: "bar" | "line" | "pie" | "area" | "scatter";
+  horizontal?: 1;
+  title?: string;
+  cats: string[];
+  series: SheetSeries[];
+  c0: number;
+  r0: number;
+  ox: number;
+  oy: number;
+  c1?: number;
+  r1?: number;
+  ox1?: number;
+  oy1?: number;
 }
 
 /** 合并区，0 基闭区间。 */
@@ -650,6 +795,59 @@ export interface SheetInfo {
   cfUnsupported?: number;
   /** #111：这张表里「只有公式、没存结果」的格子数。 */
   noCache?: number;
+  /** #429：默认行高（px），文件 `<sheetFormatPr defaultRowHeight>` 换算来的。 */
+  defaultRowH?: number;
+  /** #429：文件里指定了高度的行（px，0 表示隐藏）。 */
+  rowH?: Record<number, number>;
+  hiddenRows?: number[];
+  hiddenCols?: number[];
+  /** #427：文件里要求不显示网格线（`showGridLines="0"`）。 */
+  gridLines?: false;
+  /** #427：钉在格子上的图片（两格锚点给右下坐标，一格锚点给固定宽高）。 */
+  images?: SheetImage[];
+  /** #434：图表对象，坐标和图片同一套锚点。 */
+  charts?: SheetChart[];
+  /** #436：数据验证（list 的 options 做下拉）。 */
+  valid?: SheetValid[];
+  /** #436：自动筛选（表头箭头与去重值）。 */
+  filter?: SheetFilter;
+}
+
+/** #436 自动筛选：范围、每列去重值、当前筛选值。 */
+export interface SheetFilter {
+  r0: number;
+  c0: number;
+  r1: number;
+  c1: number;
+  values: Record<number, string[]>;
+  active: Record<number, string>;
+}
+
+/** #436 一块数据验证规则（目前只用 list 的 options）。 */
+export interface SheetValid {
+  r0: number;
+  c0: number;
+  r1: number;
+  c1: number;
+  kind: string;
+  options?: string[];
+  prompt?: string;
+}
+
+/** #427：xlsx drawing 里的一张图，坐标是 0 基行列 + 格内偏移（px）。 */
+export interface SheetImage {
+  /** zip 内路径（`xl/media/image3.png`）：换字节的凭据，也是浏览器缓存键。 */
+  id: string;
+  c0: number;
+  r0: number;
+  ox: number;
+  oy: number;
+  c1?: number;
+  r1?: number;
+  ox1?: number;
+  oy1?: number;
+  w?: number;
+  h?: number;
 }
 
 /** #110 显示档：full 全量；light 只值（不涂条件格式）；none 不给（只给清单 + 尺寸）。 */
@@ -670,6 +868,8 @@ export interface SheetMeta {
   sheets: SheetInfo[];
   /** 包里有图表部件（#112）：页面视图值得自动转一次。 */
   charts?: boolean;
+  /** #429：去重后的样式表，格子用 `SheetCell.s` 索引它。 */
+  styles?: SheetStyle[];
 }
 
 export interface SheetWindow {
