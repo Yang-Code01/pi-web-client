@@ -390,6 +390,14 @@ export class SheetGrid {
     void this.ensure();
   }
 
+  /** 保存之后用：已经取过的分片全是旧的，全丢掉重取（否则刚写的格子会显示原样）。 */
+  reload(): void {
+    if (this.destroyed) return;
+    this.chunks = [];
+    this.cellsByKey.clear();
+    this.refresh();
+  }
+
   /** 当前表的元数据（对话框等外部需要读 filter/valid 时用）。 */
   info(): SheetInfo {
     return this.host.meta.sheets.find((s) => s.name === this.sheet) ?? {
@@ -1852,10 +1860,10 @@ export class SheetGrid {
           node.classList.add("is-note");
           node.title = cell.note;
         }
-        // #111：只有公式、没存结果的格子：显空 + 红虚线；原文和「去 Excel 重算」放在悬停里。
-        if (cell?.noCache) {
-          node.classList.add("is-nc");
-          node.title = [cell.f ? `=${cell.f}` : "", tr("需用表格软件重算")].filter(Boolean).join("\n");
+        // #111 / #435：公式格悬停给原文；算不出来的再补一句解释。
+        if (cell?.noCache) node.classList.add("is-nc");
+        if (cell?.f && !cell.lnk && !cell.note) {
+          node.title = [`=${cell.f}`, cell.noCache ? tr("预览没有算出这个公式") : ""].filter(Boolean).join("\n");
         }
         const inside = r0 >= sel.r0 && r0 <= sel.r1 && c0 >= sel.c0 && c0 <= sel.c1;
         if (this.focus.r === r0 && this.focus.c === c0) node.classList.add("sel");

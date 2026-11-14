@@ -12,6 +12,7 @@ import { readSheetRefs, type SheetRefs } from "./refs.ts";
 import { readRichRuns, type WireRun } from "./rich.ts";
 import { readValidations, valuesInXml, type WireValid } from "./valid.ts";
 import { readFilter, type WireFilter } from "./filter.ts";
+import { evaluate as evalFormula, err as calcErr, isErr, type CalcCtx, type EvalVal, type Matrix } from "./calc.ts";
 export type { WireFilter } from "./filter.ts";
 export type { WireValid } from "./valid.ts";
 export type { WireRun } from "./rich.ts";
@@ -46,6 +47,8 @@ export interface WireCell {
   f?: string;
   /** #111：只有公式、文件里没存上次的结果。这种格子显示为空，绝不猜 0。 */
   noCache?: boolean;
+  /** 公式格用的数字格式代码：算完结果要按它显示（不上屏，算完就删）。 */
+  nf?: string;
 }
 
 export interface WireRow {
@@ -176,6 +179,8 @@ export interface Book {
   rich?: Map<number, WireRun[]>;
   /** #436 数据验证（含下拉选项），按表名缓存。 */
   valid?: Map<string, WireValid[]>;
+  /** #435 公式求值器：只有「有公式没缓存值」的表才用，按需建。 */
+  calc?: BookCalc;
 }
 
 import { attr, refOf, texts, unescapeXml } from "./xml.ts";
@@ -554,7 +559,10 @@ function cellsOfRow(
     if (formula && !cell) cell = { r: pos.r, c: pos.c, k: "n", t: "" };
     if (cell && formula) cell.f = formula;
     // 只有 `<f>`、没 `<v>`（或 `<v></v>`）：Excel 没存结果。显空，等用户去 Excel 重算。
-    if (cell && formula && !cached) cell.noCache = true;
+    if (cell && formula && !cached) {
+      cell.noCache = true;
+      if (code) cell.nf = code;
+    }
     if (cell && align) cell.a = align;
     // 有样式没值的格子也得发：否则底色、边框就丢了（真文件里大片带边框的空区域）。
     if (!cell && styleAt !== undefined && styleAt > 0) cell = { r: pos.r, c: pos.c, k: "s", t: "" };
@@ -574,7 +582,7 @@ function cellsOfRow(
  * 只解析 [r0,r1] 的行；深表也不用先把整张表 XML 解成字符串。`bytes` 是这次
  * 实际解出来的表 XML 字节，用来验收「解压字节远小于整表」。
  */
-export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: number, r1: number, c0: number, c1: number): SheetWindow {
+export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: number, r1: number, c0: number, c1: number, calc = true): SheetWindow {
   const info = book.meta.sheets.find((s) => s.name === sheet);
   const tier = info?.tier ?? book.tiers.get(sheet) ?? "full";
   if (tier === "none") throw Object.assign(new Error("这张表太大，不在这里滚"), { code: "sheet_too_big" });
@@ -604,6 +612,8 @@ export function readWindow(buf: Uint8Array, book: Book, sheet: string, r0: numbe
       }
     }
   }
+  // #435 有公式没结果（Excel 没存缓存值）就自己算：预览不该显示空格子。
+  if (calc && info?.noCache) fillFormulaValues(buf, book, sheet, rows);
   return { sheet, r0, r1, c0, c1, rows, bytes, partBytes: entry.size };
 }
 
@@ -736,4 +746,113 @@ export function findInSheet(buf: Uint8Array, book: Book, sheet: string, query: s
     },
   });
   return { sheet, matches, truncated: matches.length >= limit };
+}
+
+/* ---------------------------------------------------------------- 公式（#435） */
+
+/** 一格里能参与计算的原值：数字取 `v`（没格式化过的），文本取 `t`。 */
+function rawOf(cell: WireCell): EvalVal {
+  if (cell.k === "n") {
+    const n = cell.v ?? Number(cell.t);
+    return Number.isFinite(n) ? n : 0;
+  }
+  if (cell.k === "b") return cell.t === "TRUE";
+  if (cell.k === "e") return calcErr(cell.t);
+  return cell.t === "" ? null : cell.t;
+}
+
+/**
+ * 按表懒建「整表小网格」的求值上下文。
+ *
+ * 只在真的遇到没缓存值的公式时才建；一张表最多 40 万格，再大就不算（宁可显示空，
+ * 也不把几百兆的表解出来）。跨表引用会顺带把那张表也建起来。
+ */
+class BookCalc implements CalcCtx {
+  private grids = new Map<string, Map<string, WireCell>>();
+  private memo = new Map<string, EvalVal>();
+  private busy = new Set<string>();
+  private buf: Uint8Array;
+  private book: Book;
+
+  constructor(buf: Uint8Array, book: Book) {
+    this.buf = buf;
+    this.book = book;
+  }
+
+  private grid(sheet: string): Map<string, WireCell> | null {
+    const hit = this.grids.get(sheet);
+    if (hit) return hit;
+    const info = this.book.meta.sheets.find((s) => s.name === sheet);
+    if (!info) return null;
+    if (info.rows * info.cols > 400_000) return null;
+    const win = readWindow(this.buf, this.book, sheet, 0, Math.max(0, info.rows - 1), 0, Math.max(0, info.cols - 1), false);
+    const grid = new Map<string, WireCell>();
+    for (const row of win.rows) for (const cell of row.cells) grid.set(`${cell.r}:${cell.c}`, cell);
+    this.grids.set(sheet, grid);
+    return grid;
+  }
+
+  cell(sheet: string | null, r: number, c: number): EvalVal {
+    const name = sheet ?? this.book.meta.name;
+    const key = `${name}!${r}:${c}`;
+    const done = this.memo.get(key);
+    if (done !== undefined) return done;
+    if (this.busy.has(key)) return calcErr("#CIRC!");
+    const grid = this.grid(name);
+    if (!grid) return calcErr("#REF!");
+    const cell = grid.get(`${r}:${c}`);
+    if (!cell) return null;
+    let val: EvalVal;
+    if (cell.f && cell.noCache) {
+      this.busy.add(key);
+      val = evalFormula(cell.f, name, this);
+      this.busy.delete(key);
+    } else val = rawOf(cell);
+    this.memo.set(key, val);
+    return val;
+  }
+
+  range(sheet: string | null, r0: number, c0: number, r1: number, c1: number): Matrix {
+    const m: EvalVal[][] = [];
+    const lastR = Math.min(r1, r0 + 4999);
+    const lastC = Math.min(c1, c0 + 499);
+    for (let r = r0; r <= lastR; r++) {
+      const row: EvalVal[] = [];
+      for (let c = c0; c <= lastC; c++) row.push(this.cell(sheet, r, c));
+      m.push(row);
+    }
+    return { k: "mx", m };
+  }
+}
+
+/** 把窗口里「有公式没缓存值」的格子算出来，就地写回显示串。 */
+function fillFormulaValues(buf: Uint8Array, book: Book, sheet: string, rows: WireRow[]): void {
+  const calc = (book.calc ??= new BookCalc(buf, book));
+  let budget = 20000;
+  for (const row of rows) {
+    for (const cell of row.cells) {
+      if (!cell.noCache || !cell.f) continue;
+      if (budget-- <= 0) return;
+      const v = calc.cell(sheet, cell.r, cell.c);
+      delete cell.noCache;
+      if (typeof v === "number") {
+        cell.k = "n";
+        cell.v = v;
+        cell.t = cell.nf ? formatValue(v, cell.nf, book.date1904) : String(v);
+      } else if (typeof v === "boolean") {
+        cell.k = "b";
+        cell.t = v ? "TRUE" : "FALSE";
+      } else if (v === null) {
+        cell.k = "n";
+        cell.t = "";
+      } else if (typeof v === "string") {
+        cell.k = "s";
+        cell.t = v;
+      } else if (isErr(v)) {
+        cell.k = "e";
+        cell.t = v.v;
+      }
+      delete cell.nf;
+    }
+  }
 }

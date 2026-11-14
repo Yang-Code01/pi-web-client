@@ -11,6 +11,7 @@ import { zipSync, strToU8, Zip, ZipDeflate } from "fflate";
 import { buildRefsXlsx } from "./refs-xlsx.mjs";
 import { buildValidXlsx } from "./valid-xlsx.mjs";
 import { buildFilterXlsx } from "./filter-xlsx.mjs";
+import { buildCalcXlsx } from "./calc-xlsx.mjs";
 
 const HEADER = ["地区", "产品", "单价", "数量", "金额", "备注", "编号", "错误"];
 
@@ -738,6 +739,8 @@ export function makeFixtures(outDir) {
   fs.writeFileSync(valid, buildValidXlsx());
   const filter = path.join(outDir, "filter.xlsx");
   fs.writeFileSync(filter, buildFilterXlsx());
+  const calc = path.join(outDir, "calc.xlsx");
+  fs.writeFileSync(calc, buildCalcXlsx());
   const file = path.join(outDir, "plain.xlsx");
   fs.writeFileSync(file, buildXlsx());
   const report = path.join(outDir, "report.xlsx");
@@ -753,7 +756,7 @@ export function makeFixtures(outDir) {
   const pic = path.join(outDir, "pic.xlsx");
   fs.writeFileSync(pic, buildPicXlsx());
   const csv = makeCsvFixtures(outDir);
-  return { plain: file, report, chart, cf, formula, styled, pic, refs, valid, filter, csv, files: [file, report, chart, cf, formula, styled, pic, refs, valid, filter, ...csv.files] };
+  return { plain: file, report, chart, cf, formula, styled, pic, refs, valid, filter, calc, csv, files: [file, report, chart, cf, formula, styled, pic, refs, valid, filter, calc, ...csv.files] };
 }
 
 /** OLE2 复合文档头：老式 .xls，以及加密过的 OOXML 包（CFB 包着加密流）都以它开头。 */
