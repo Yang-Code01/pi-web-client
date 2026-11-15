@@ -2693,6 +2693,8 @@ export const en: Dict = {
   "{p1} 失败": "{p1} failed",
   "数据来自 {p1} · 操作后会刷新": "Data from {p1} · refreshes after actions",
   "用输入的 ref 对照：{p1}": "Use typed ref as comparison: {p1}",
+  "用输入的分支：{p1}": "Use typed branch: {p1}",
+  "展开分支候选": "Show branch options",
   "已暂存": "Staged",
   "未暂存": "Unstaged",
   "未跟踪": "Untracked",

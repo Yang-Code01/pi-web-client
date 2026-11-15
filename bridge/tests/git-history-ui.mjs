@@ -197,7 +197,33 @@ try {
   // 交给 AI：选分支 + 写要求 → 实时预览 → 只预填到当前会话，不自动发送。
   await page.click(".go-tool-row [data-ai='1']");
   await page.waitForSelector(".go-ai-card .go-textarea");
-  check("AI 入口有分支下拉", await page.locator(".go-ai-card select.go-select").count() === 1);
+  check("AI 入口分支改成可输入", await page.locator(".go-ai-card .go-cmp-input").count() === 1 && await page.locator(".go-ai-card select.go-select").count() === 0);
+  check("AI 分支框默认当前分支", await page.inputValue(".go-ai-card .go-cmp-input") === "feat/x");
+  const branchBox = await page.evaluate(() => {
+    const input = document.querySelector(".go-ai-card .go-cmp-input");
+    const body = document.querySelector(".go-ai-card .go-card-body");
+    return input instanceof HTMLElement && body instanceof HTMLElement
+      ? { input: Math.round(input.getBoundingClientRect().width), body: Math.round(body.getBoundingClientRect().width) }
+      : null;
+  });
+  check("AI 分支框铺满整行", Boolean(branchBox) && branchBox.input > branchBox.body * 0.7, JSON.stringify(branchBox));
+  check("打开卡不自动弹分支菜单", await page.locator(".go-ai-card .go-cmp-menu:not([hidden])").count() === 0);
+  await page.click(".go-ai-card .go-cmp-toggle");
+  await page.waitForSelector(".go-ai-card .go-cmp-menu:not([hidden]) [data-aib-pick]");
+  await page.fill(".go-ai-card .go-cmp-input", "");
+  check("AI 分支菜单不含「自动」", await page.locator('.go-ai-card .go-cmp-menu [data-aib-pick=""]').count() === 0);
+  check("AI 分支菜单铺出全部候选", await page.locator(".go-ai-card .go-cmp-menu [data-aib-pick]").count() >= 43);
+  await page.click('.go-ai-card .go-cmp-menu [data-aib-pick="main"]');
+  check("点候选后菜单收起", await page.locator(".go-ai-card .go-cmp-menu:not([hidden])").count() === 0);
+  check("点候选回填输入框", await page.inputValue(".go-ai-card .go-cmp-input") === "main");
+  check("换分支后预览跟着变", ((await page.textContent(".go-ai-card pre")) ?? "").includes("选中的分支：main"));
+  await page.fill(".go-ai-card .go-cmp-input", "HEAD~1");
+  check("手输任意 ref 预览也认", ((await page.textContent(".go-ai-card pre")) ?? "").includes("选中的分支：HEAD~1"));
+  check("输入时菜单打开并有「用输入的分支」", await page.locator('.go-ai-card .go-cmp-menu:not([hidden]) [data-aib-use="1"]').count() === 1);
+  await page.press(".go-ai-card .go-cmp-input", "Enter");
+  check("回车收起菜单", await page.locator(".go-ai-card .go-cmp-menu:not([hidden])").count() === 0);
+  await page.fill(".go-ai-card .go-cmp-input", "feat/x");
+  await page.press(".go-ai-card .go-cmp-input", "Enter");
   check("AI 入口有两个出口", await page.locator(".go-ai-card [data-ai-go]").count() === 2);
   await page.fill(".go-ai-card .go-textarea", "先别动 git，告诉我该不该合并 main");
   const preview = await page.textContent(".go-ai-card pre");

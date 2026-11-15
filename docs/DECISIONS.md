@@ -5268,6 +5268,7 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **代价 / 可改：** 快捷键面板不再有可见的设置入口，只能记 `/hotkeys` 或继续用已绑定的键。若以后又需要一个可见入口，应把它放回动作表或命令面板，而不是设置抽屉。
 
 **验证：** `npm --prefix web run typecheck`（i18n 3194 键 × 3）、`npm run build:web`、`node probes/round6-keys.mjs` 全绿。
+
 ## D278 上下文洞察页 + 技能加载计数修复 + Context Browser 正文落盘（用户要求，2026-11-15）
 
 **问题：** ① 会话内 Context 面板只能看当前会话；设置 → 工具里没有跨会话入口。② 用户用了 `/skill:`，Token 统计里技能注入有占比，但「上下文统计 → 技能加载」一直是 0。③ Context Browser 只有 160 字预览，原版 dsh-context 可以展开系统提示词、工具 JSON schema、消息正文、思考、工具参数和工具结果；用户说「表现和原版差别很大」。
@@ -5294,3 +5295,21 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - `npm run test:context`：`context-log-unit`（v3 body、skill 拆分、usage cost、活动行仍脱敏）、`context-insight-unit`（聚合 / 费用 / 技能去重 / 旧日志 preview 兜底）、`context-unit`（`ctxSummary` 技能三种来源、`ctxBodyMap` 合并）、`chrome-unit` 全绿。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3246 键 × 3 + viewport）、`npm run build` 全绿。
 - 真桥 7871 + 真 Chromium：设置 → 连接与设置 → 工具里按钮顺序为「pi 设置 / 本机管理 / 热部署 / 上下文洞察」，点开 KPI / 近 7 天 / 活跃度 / 三个账本 / Context Composition / 分项目 / 会话卡片都出来；点项目 chip 过滤 KPI，点会话卡片回到该会话。
+
+## D279 「交给 AI 操作」的分支选择器与「对照分支」共用一套可输入控件（用户要求 2026-11-15）
+
+**问题：** 「分支操作工作台 → 交给 AI 操作」的「① 选一条分支」还是原生 `<select>`，只能在下拉里已经列出的几条分支中挑；同一张卡上方的「对照分支」早就是「输入即检索 + 点候选 + 直接回车用任意 ref」。用户要求把 AI 卡这一处也做成一样的。
+
+**决定：**
+
+1. **抽 `branchPicker()` 一处实现，两处共用。** 输入框、▾、候选菜单、检索、`全部 N 个分支` 折叠、「用输入的…」按钮都走同一份代码；`paintCmp()` 和 `openAi()` 不再各写一套。
+2. **AI 卡不提供「自动 · 跟随 origin/HEAD」。** 那是给对照分支表示「不指定 base」的空 ref；AI 卡必须选定一条分支才有意义，所以菜单里只有本地 / 远程 / 历史分支。
+3. **打开卡不自动弹菜单。** `openCard()` 会把焦点给第一个输入框；选择器默认聚焦即展开，这里传 `openOnFocus: false`，只有开始输入、点输入框或点 ▾ 才展开，免得菜单一开卡就盖住下面的要求框。
+4. **手输不校验。** 和大分支输入框一致，任意文本都原样接受并直接进提示词；不认识的 ref 由 agent 自己判断。
+5. **点候选立即收起并回填**，预览同步重算；底部按钮在 AI 卡里写「用输入的分支：{p1}」，不沿用「对照」的说法。
+
+**为什么：** 两处要的行为本来就一样，复制第二份只会让检索、折叠、键盘行为慢慢分叉。复用后「能输入」不是新增的另一套交互，而是同一套控件换个位置。
+
+**代价 / 可改：** 对照分支的菜单原来点到外面不会收，现在两处都用 document 的 pointerdown 收起（顺带修了对照那一处）；`paintCmpMenu()` 的类字段 `cmpAllOpen` / `cmpFoldKey` 移进了 picker 闭包，每个选择器各记各的折叠状态。
+
+**验证：** `bridge/tests/git-history-ui.mjs` 的 AI 段改成：无 `select.go-select`、默认当前分支、开卡不弹菜单、菜单无「自动」项、候选回填与预览联动、手输 `HEAD~1`、回车收起；`npm run typecheck`、`npm run build`、`npm run test:githist`、`npm run test:githist:ui` 全绿。
