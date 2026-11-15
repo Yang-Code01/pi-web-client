@@ -214,6 +214,27 @@ export function filterPackages(items: MarketPackage[], category: string, onlyIns
   return list;
 }
 
+/**
+ * Search ranking: an exact package name (or exact scoped tail) is always first, then a package whose
+ * name starts with the query, then the rest in the chosen sort order. Without a query this is just
+ * `sortPackages()`.
+ */
+export function rankSearchResults(items: MarketPackage[], query: string, sort: MarketSort, dir: MarketDir): MarketPackage[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return sortPackages(items, sort, dir);
+  const exact: MarketPackage[] = [];
+  const prefix: MarketPackage[] = [];
+  const rest: MarketPackage[] = [];
+  for (const pkg of items) {
+    const name = pkg.name.toLowerCase();
+    const tail = name.split("/").pop() ?? name;
+    if (name === q || tail === q) exact.push(pkg);
+    else if (name.startsWith(q) || tail.startsWith(q)) prefix.push(pkg);
+    else rest.push(pkg);
+  }
+  return [...sortPackages(exact, sort, dir), ...sortPackages(prefix, sort, dir), ...sortPackages(rest, sort, dir)];
+}
+
 /** Deal items alternately into N columns, like dshmarket's Masonry. */
 export function distributeColumns<T>(items: T[], columns: number): T[][] {
   const n = Math.max(1, Math.floor(columns) || 1);
@@ -291,7 +312,7 @@ function layoutMasonry(wrap: HTMLElement, items: MarketPackage[], render: (pkg: 
   const buckets = distributeColumns(items, columns);
   wrap.replaceChildren();
   for (const bucket of buckets) {
-    const col = el("div", "pm-masonry-col");
+    const col = el("div", "mk-masonry-col");
     for (const pkg of bucket) col.append(render(pkg));
     wrap.append(col);
   }
@@ -327,14 +348,14 @@ function mountMasonry(wrap: HTMLElement, items: MarketPackage[], render: (pkg: M
 // ------------------------------------------------------------------ rendering
 
 function emptyBlock(text: string, extra?: HTMLElement): HTMLElement {
-  const box = el("div", "pm-empty");
-  box.append(el("div", "pm-empty-text", text));
+  const box = el("div", "mk-empty");
+  box.append(el("div", "mk-empty-text", text));
   if (extra) box.append(extra);
   return box;
 }
 
 function pill(label: string, active: boolean, onclick: () => void): HTMLButtonElement {
-  const b = el("button", `pm-pill${active ? " on" : ""}`, label) as HTMLButtonElement;
+  const b = el("button", `mk-pill${active ? " on" : ""}`, label) as HTMLButtonElement;
   b.type = "button";
   b.onclick = onclick;
   return b;
@@ -343,11 +364,11 @@ function pill(label: string, active: boolean, onclick: () => void): HTMLButtonEl
 function installButton(pkg: MarketPackage, state: MarketViewState, actions: MarketActions, compact = false): HTMLElement {
   const busy = state.ops.some((op) => op.key === `install:${pkg.name}`);
   if (state.installed.has(pkg.name)) {
-    const ok = el("span", "pm-ok", "✓ ");
+    const ok = el("span", "mk-ok", "✓ ");
     ok.append(document.createTextNode(tr("已安装")));
     return ok;
   }
-  const b = el("button", `pm-install${compact ? " compact" : ""}`, busy ? tr("安装中…") : tr("安装")) as HTMLButtonElement;
+  const b = el("button", `mk-install${compact ? " compact" : ""}`, busy ? tr("安装中…") : tr("安装")) as HTMLButtonElement;
   b.type = "button";
   b.disabled = state.readOnly || busy;
   b.onclick = (ev) => {
@@ -360,7 +381,7 @@ function installButton(pkg: MarketPackage, state: MarketViewState, actions: Mark
 
 function avatar(pkg: MarketPackage): HTMLElement {
   const owner = pkg.owner || pkg.publisher || "";
-  const box = el("span", "pm-av");
+  const box = el("span", "mk-av");
   if (owner) {
     const img = el("img", "") as HTMLImageElement;
     img.src = `https://github.com/${encodeURIComponent(owner)}?size=96`;
@@ -380,10 +401,10 @@ function avatar(pkg: MarketPackage): HTMLElement {
 }
 
 function moreMenu(pkg: MarketPackage, state: MarketViewState, actions: MarketActions): HTMLDetailsElement {
-  const details = el("details", "pm-more") as HTMLDetailsElement;
+  const details = el("details", "mk-more") as HTMLDetailsElement;
   const summary = el("summary", "", "···");
   summary.title = tr("更多");
-  const menu = el("div", "pm-menu");
+  const menu = el("div", "mk-menu");
   const blocked = state.blocked.has(pkg.name);
   const blockBtn = el("button", "", blocked ? tr("取消屏蔽") : tr("屏蔽")) as HTMLButtonElement;
   blockBtn.type = "button";
@@ -403,15 +424,15 @@ function moreMenu(pkg: MarketPackage, state: MarketViewState, actions: MarketAct
 }
 
 function tag(text: string): HTMLElement {
-  return el("span", "pm-tag", text);
+  return el("span", "mk-tag", text);
 }
 
 function marketCard(pkg: MarketPackage, state: MarketViewState, actions: MarketActions): HTMLElement {
-  const card = el("article", "pm-card");
-  const row1 = el("div", "pm-row1");
-  const main = el("div", "pm-card-main");
-  const titleLine = el("div", "pm-title-line");
-  const name = el("a", "pm-name", pkg.name) as HTMLAnchorElement;
+  const card = el("article", "mk-card");
+  const row1 = el("div", "mk-row1");
+  const main = el("div", "mk-card-main");
+  const titleLine = el("div", "mk-title-line");
+  const name = el("a", "mk-name", pkg.name) as HTMLAnchorElement;
   name.href = pkg.link;
   name.target = "_blank";
   name.rel = "noopener";
@@ -420,35 +441,35 @@ function marketCard(pkg: MarketPackage, state: MarketViewState, actions: MarketA
   if (pkg.repository) titleLine.append(repoMark());
   main.append(titleLine);
 
-  const byline = el("div", "pm-byline");
+  const byline = el("div", "mk-byline");
   byline.append(avatar(pkg));
-  if (pkg.owner || pkg.publisher) byline.append(el("span", "pm-owner", pkg.owner || pkg.publisher || ""));
-  if (pkg.version) byline.append(el("span", "pm-meta", `· v${pkg.version}`));
-  if (pkg.monthly > 0) byline.append(el("span", "pm-meta", `· ↓ ${formatCount(pkg.monthly)}`));
+  if (pkg.owner || pkg.publisher) byline.append(el("span", "mk-owner", pkg.owner || pkg.publisher || ""));
+  if (pkg.version) byline.append(el("span", "mk-meta", `· v${pkg.version}`));
+  if (pkg.monthly > 0) byline.append(el("span", "mk-meta", `· ↓ ${formatCount(pkg.monthly)}`));
   main.append(byline);
-  const action = el("div", "pm-card-action");
+  const action = el("div", "mk-card-action");
   action.append(installButton(pkg, state, actions));
-  row1.append(main, el("div", "pm-grow"), action);
+  row1.append(main, el("div", "mk-grow"), action);
   card.append(row1);
 
-  const desc = el("div", "pm-desc", pkg.description || tr("（没有描述）"));
+  const desc = el("div", "mk-desc", pkg.description || tr("（没有描述）"));
   desc.title = pkg.description || "";
   card.append(desc);
 
-  const foot = el("div", "pm-foot");
-  const tags = el("div", "pm-tags");
-  tags.append(el("span", "pm-req", tr("未声明 pi 要求")));
+  const foot = el("div", "mk-foot");
+  const tags = el("div", "mk-tags");
+  tags.append(el("span", "mk-req", tr("未声明 pi 要求")));
   for (const id of categoriesOf(pkg)) tags.append(tag(categoryLabel(id)));
   foot.append(tags);
 
-  const acts = el("div", "pm-foot-actions");
-  const fav = el("button", `pm-fav${state.favorites.has(pkg.name) ? " on" : ""}`) as HTMLButtonElement;
+  const acts = el("div", "mk-foot-actions");
+  const fav = el("button", `mk-fav${state.favorites.has(pkg.name) ? " on" : ""}`) as HTMLButtonElement;
   fav.type = "button";
   fav.title = state.favorites.has(pkg.name) ? tr("取消收藏") : tr("加入收藏");
   fav.setAttribute("aria-pressed", String(state.favorites.has(pkg.name)));
   fav.append(svgIcon(ICON.bookmark, 14));
   fav.onclick = () => actions.onToggleFavorite(pkg.name);
-  const comments = el("button", "pm-comments", tr("评论")) as HTMLButtonElement;
+  const comments = el("button", "mk-comments", tr("评论")) as HTMLButtonElement;
   comments.type = "button";
   comments.title = tr("在 npm 上查看这个插件");
   comments.onclick = () => window.open(pkg.link, "_blank", "noopener");
@@ -459,12 +480,12 @@ function marketCard(pkg: MarketPackage, state: MarketViewState, actions: MarketA
 }
 
 function recentTile(pkg: MarketPackage, state: MarketViewState, actions: MarketActions): HTMLElement {
-  const tile = el("div", "pm-recent-tile");
-  const top = el("div", "pm-recent-top");
+  const tile = el("div", "mk-recent-tile");
+  const top = el("div", "mk-recent-top");
   const av = avatar(pkg);
-  av.classList.add("pm-recent-av");
-  const nameBox = el("div", "pm-recent-name");
-  const name = el("a", "pm-name", pkg.name) as HTMLAnchorElement;
+  av.classList.add("mk-recent-av");
+  const nameBox = el("div", "mk-recent-name");
+  const name = el("a", "mk-name", pkg.name) as HTMLAnchorElement;
   name.href = pkg.link;
   name.target = "_blank";
   name.rel = "noopener";
@@ -472,26 +493,26 @@ function recentTile(pkg: MarketPackage, state: MarketViewState, actions: MarketA
   nameBox.append(name);
   top.append(av, nameBox, installButton(pkg, state, actions, true));
   tile.append(top);
-  const bottom = el("div", "pm-recent-bottom");
-  bottom.append(el("p", "pm-recent-desc", pkg.description || ""));
+  const bottom = el("div", "mk-recent-bottom");
+  bottom.append(el("p", "mk-recent-desc", pkg.description || ""));
   bottom.append(moreMenu(pkg, state, actions));
   tile.append(bottom);
   return tile;
 }
 
 function statusLine(state: MarketViewState): HTMLElement {
-  const line = el("div", "pm-note");
-  if (state.error) line.append(el("span", "pm-note-bad", state.error));
+  const line = el("div", "mk-note");
+  if (state.error) line.append(el("span", "mk-note-bad", state.error));
   else if (state.items) {
-    if (state.loading) line.append(el("span", "pm-spin"), el("span", "", tr("正在刷新插件目录…")));
+    if (state.loading) line.append(el("span", "mk-spin"), el("span", "", tr("正在刷新插件目录…")));
     else line.append(el("span", "", tr("目录来自 npm（keywords:pi-package），按月下载量排序；搜索走 npm。")));
   }
   return line;
 }
 
 function searchRow(state: MarketViewState, actions: MarketActions): HTMLElement {
-  const row = el("div", "pm-search-row");
-  const field = el("label", "pm-search");
+  const row = el("div", "mk-search-row");
+  const field = el("label", "mk-search");
   field.append(svgIcon(ICON.search, 14));
   const input = el("input", "") as HTMLInputElement;
   input.placeholder = tr("搜索插件，例如：通知、终端、记忆…");
@@ -503,7 +524,7 @@ function searchRow(state: MarketViewState, actions: MarketActions): HTMLElement 
   };
   field.append(input);
   if (state.query) {
-    const clear = el("button", "pm-search-clear", "×") as HTMLButtonElement;
+    const clear = el("button", "mk-search-clear", "×") as HTMLButtonElement;
     clear.type = "button";
     clear.title = tr("清除搜索");
     clear.onclick = () => {
@@ -518,15 +539,15 @@ function searchRow(state: MarketViewState, actions: MarketActions): HTMLElement 
 }
 
 function filterMenu(state: MarketViewState, actions: MarketActions): HTMLElement {
-  const details = el("details", "pm-filter") as HTMLDetailsElement;
+  const details = el("details", "mk-filter") as HTMLDetailsElement;
   const summary = el("summary", "");
   summary.append(svgIcon(ICON.chevron, 14), el("span", "", tr("筛选")));
-  const panel = el("div", "pm-filter-menu");
+  const panel = el("div", "mk-filter-menu");
   const group = (title: string, items: [string, boolean, () => void][]) => {
-    const g = el("div", "pm-filter-group");
-    g.append(el("div", "pm-filter-title", title));
+    const g = el("div", "mk-filter-group");
+    g.append(el("div", "mk-filter-title", title));
     for (const [label, on, run] of items) {
-      const b = el("button", `pm-filter-item${on ? " on" : ""}`, label) as HTMLButtonElement;
+      const b = el("button", `mk-filter-item${on ? " on" : ""}`, label) as HTMLButtonElement;
       b.type = "button";
       b.onclick = () => {
         details.open = false;
@@ -551,9 +572,9 @@ function filterMenu(state: MarketViewState, actions: MarketActions): HTMLElement
 }
 
 function tabsRow(state: MarketViewState, actions: MarketActions): HTMLElement {
-  const tabs = el("div", "pm-tabs");
+  const tabs = el("div", "mk-tabs");
   const tab = (id: MarketTab, label: string, count?: number) => {
-    const b = el("button", `pm-tab${state.tab === id ? " on" : ""}`, count && count > 0 ? `${label} (${count})` : label) as HTMLButtonElement;
+    const b = el("button", `mk-tab${state.tab === id ? " on" : ""}`, count && count > 0 ? `${label} (${count})` : label) as HTMLButtonElement;
     b.type = "button";
     b.onclick = () => actions.onTab(id);
     tabs.append(b);
@@ -563,23 +584,23 @@ function tabsRow(state: MarketViewState, actions: MarketActions): HTMLElement {
   tab("installed", tr("已安装"), state.installed.size);
   tab("blocked", tr("已屏蔽"));
   tab("advanced", tr("高级"));
-  tabs.append(el("span", "pm-grow"));
+  tabs.append(el("span", "mk-grow"));
 
-  const exportBtn = el("button", "pm-top-btn") as HTMLButtonElement;
+  const exportBtn = el("button", "mk-top-btn") as HTMLButtonElement;
   exportBtn.type = "button";
   exportBtn.append(svgIcon(ICON.download, 14), el("span", "", tr("导出日志")));
   exportBtn.onclick = () => actions.onExportLog();
   tabs.append(exportBtn);
 
-  const tasks = el("details", "pm-tasks") as HTMLDetailsElement;
-  const summary = el("summary", "pm-top-btn");
+  const tasks = el("details", "mk-tasks") as HTMLDetailsElement;
+  const summary = el("summary", "mk-top-btn");
   summary.append(el("span", "", tr("任务")), svgIcon(ICON.chevron, 12));
-  const panel = el("div", "pm-task-menu");
-  if (!state.ops.length) panel.append(el("div", "pm-task-empty", tr("暂无进行中的操作")));
+  const panel = el("div", "mk-task-menu");
+  if (!state.ops.length) panel.append(el("div", "mk-task-empty", tr("暂无进行中的操作")));
   else for (const op of state.ops) {
-    const row = el("div", "pm-task-row");
+    const row = el("div", "mk-task-row");
     row.append(el("span", "", op.op));
-    if (op.state === "queued") row.append(el("span", "pm-task-state", tr("（排队中）")));
+    if (op.state === "queued") row.append(el("span", "mk-task-state", tr("（排队中）")));
     panel.append(row);
   }
   tasks.append(summary, panel);
@@ -588,8 +609,8 @@ function tabsRow(state: MarketViewState, actions: MarketActions): HTMLElement {
 }
 
 function categoryRow(state: MarketViewState, items: MarketPackage[], actions: MarketActions): HTMLElement {
-  const cats = el("div", "pm-cats");
-  const wrap = el("div", "pm-cats-wrap");
+  const cats = el("div", "mk-cats");
+  const wrap = el("div", "mk-cats-wrap");
   wrap.append(pill(tr("全部 ({p1})", { p1: formatCount(items.length) }), state.category === "all", () => actions.onCategory("all")));
   for (const def of CATEGORY_DEFS) {
     if (def.id === "other") continue;
@@ -605,39 +626,39 @@ function recentBlock(items: MarketPackage[], state: MarketViewState, actions: Ma
   const recent = sortPackages(items.filter((p) => !state.blocked.has(p.name)), "published", "desc").slice(0, 8);
   if (!recent.length) return null;
   if (state.recentHidden) {
-    const show = el("button", "pm-recent-show") as HTMLButtonElement;
+    const show = el("button", "mk-recent-show") as HTMLButtonElement;
     show.type = "button";
     show.append(svgIcon(ICON.chevronRight, 14), el("span", "", tr("显示最近收录")));
     show.onclick = () => actions.onToggleRecent(false);
     return show;
   }
-  const section = el("section", "pm-recent");
-  const head = el("div", "pm-recent-head");
-  const toggle = el("button", "pm-recent-toggle") as HTMLButtonElement;
+  const section = el("section", "mk-recent");
+  const head = el("div", "mk-recent-head");
+  const toggle = el("button", "mk-recent-toggle") as HTMLButtonElement;
   toggle.type = "button";
   toggle.append(svgIcon(ICON.chevron, 14), el("span", "", tr("最近收录")));
   head.append(toggle);
-  const hide = el("button", "pm-recent-hide", tr("隐藏这一块")) as HTMLButtonElement;
+  const hide = el("button", "mk-recent-hide", tr("隐藏这一块")) as HTMLButtonElement;
   hide.type = "button";
   hide.onclick = () => actions.onToggleRecent(true);
   head.append(hide);
   section.append(head);
-  const row = el("div", "pm-recent-row");
+  const row = el("div", "mk-recent-row");
   for (const pkg of recent) row.append(recentTile(pkg, state, actions));
   section.append(row);
   return section;
 }
 
 function loadingBlock(): HTMLElement {
-  const box = el("div", "pm-loading");
-  box.append(el("span", "pm-logo"), el("span", "", tr("正在加载插件目录…")));
+  const box = el("div", "mk-loading");
+  box.append(el("span", "mk-logo"), el("span", "", tr("正在加载插件目录…")));
   return box;
 }
 
 function errorBlock(state: MarketViewState, actions: MarketActions): HTMLElement {
-  const box = el("div", "pm-empty");
-  box.append(el("div", "pm-empty-text", state.error || tr("插件目录加载失败")));
-  const retry = el("button", "pm-install", tr("重试")) as HTMLButtonElement;
+  const box = el("div", "mk-empty");
+  box.append(el("div", "mk-empty-text", state.error || tr("插件目录加载失败")));
+  const retry = el("button", "mk-install", tr("重试")) as HTMLButtonElement;
   retry.type = "button";
   retry.onclick = () => actions.onRefresh();
   box.append(retry);
@@ -645,18 +666,19 @@ function errorBlock(state: MarketViewState, actions: MarketActions): HTMLElement
 }
 
 function discoverPage(state: MarketViewState, actions: MarketActions): HTMLElement {
-  const page = el("div", "pm-page");
+  const page = el("div", "mk-page");
   const items = state.items ?? [];
   page.append(statusLine(state));
   const recent = recentBlock(items, state, actions);
   if (recent) page.append(recent);
-  const filtered = sortPackages(filterPackages(items, state.category, state.onlyInstalled, state.installed, state.blocked), state.sort, state.dir);
+  const filtered = filterPackages(items, state.category, state.onlyInstalled, state.installed, state.blocked);
+  const ordered = state.query ? rankSearchResults(filtered, state.query, state.sort, state.dir) : sortPackages(filtered, state.sort, state.dir);
   if (!state.items) {
     page.append(state.error ? errorBlock(state, actions) : loadingBlock());
     return page;
   }
   if (!filtered.length) {
-    const clear = el("button", "pm-install", tr("清除筛选")) as HTMLButtonElement;
+    const clear = el("button", "mk-install", tr("清除筛选")) as HTMLButtonElement;
     clear.type = "button";
     clear.onclick = () => {
       actions.onCategory("all");
@@ -666,13 +688,13 @@ function discoverPage(state: MarketViewState, actions: MarketActions): HTMLEleme
     page.append(emptyBlock(tr("没有找到匹配的插件。"), clear));
     return page;
   }
-  const shown = filtered.slice(0, Math.max(12, state.visible));
-  const wrap = el("div", "pm-masonry");
+  const shown = ordered.slice(0, Math.max(12, state.visible));
+  const wrap = el("div", "mk-masonry");
   page.append(wrap);
   mountMasonry(wrap, shown, (pkg) => marketCard(pkg, state, actions));
-  if (filtered.length > shown.length) {
-    const more = el("div", "pm-load-more");
-    const b = el("button", "pm-install", tr("加载更多（还有 {p1} 个）", { p1: filtered.length - shown.length })) as HTMLButtonElement;
+  if (ordered.length > shown.length) {
+    const more = el("div", "mk-load-more");
+    const b = el("button", "mk-install", tr("加载更多（还有 {p1} 个）", { p1: ordered.length - shown.length })) as HTMLButtonElement;
     b.type = "button";
     b.onclick = () => actions.onVisible(state.visible + 30);
     more.append(b);
@@ -682,19 +704,20 @@ function discoverPage(state: MarketViewState, actions: MarketActions): HTMLEleme
 }
 
 function favoritesPage(state: MarketViewState, actions: MarketActions): HTMLElement {
-  const page = el("div", "pm-page");
+  const page = el("div", "mk-page");
   const items = state.items ?? [];
   if (!state.items) {
     page.append(state.error ? errorBlock(state, actions) : loadingBlock());
     return page;
   }
-  const favs = sortPackages(items.filter((p) => state.favorites.has(p.name) && !state.blocked.has(p.name)), state.sort, state.dir);
+  const favsRaw = items.filter((p) => state.favorites.has(p.name) && !state.blocked.has(p.name));
+  const favs = state.query ? rankSearchResults(favsRaw, state.query, state.sort, state.dir) : sortPackages(favsRaw, state.sort, state.dir);
   if (!favs.length) {
     page.append(emptyBlock(tr("还没有收藏。在「发现」里点书签图标，或在「已安装」的「···」里加入收藏。")));
     return page;
   }
-  page.append(el("div", "pm-note", tr("共 {p1} 个收藏", { p1: favs.length })));
-  const wrap = el("div", "pm-masonry");
+  page.append(el("div", "mk-note", tr("共 {p1} 个收藏", { p1: favs.length })));
+  const wrap = el("div", "mk-masonry");
   page.append(wrap);
   mountMasonry(wrap, favs, (pkg) => marketCard(pkg, state, actions));
   return page;
@@ -702,25 +725,25 @@ function favoritesPage(state: MarketViewState, actions: MarketActions): HTMLElem
 
 /** Inner 已安装：直接把外层「已安装」那块清单嵌进来，不再跳回左侧页签。 */
 function installedPage(state: MarketViewState, actions: MarketActions): HTMLElement {
-  const page = el("div", "pm-page pm-installed-page");
-  const host = el("div", "pm-installed-embed");
+  const page = el("div", "mk-page mk-installed-page");
+  const host = el("div", "mk-installed-embed");
   actions.renderInstalled(host);
   page.append(host);
   return page;
 }
 
 function blockedPage(state: MarketViewState, actions: MarketActions): HTMLElement {
-  const page = el("div", "pm-page");
+  const page = el("div", "mk-page");
   const names = [...state.blocked].sort((a, b) => a.localeCompare(b));
   if (!names.length) {
     page.append(emptyBlock(tr("还没有屏蔽任何插件。")));
     return page;
   }
-  const list = el("div", "pm-blocked-list");
+  const list = el("div", "mk-blocked-list");
   for (const name of names) {
-    const row = el("div", "pm-blocked-row");
-    row.append(el("span", "pm-blocked-name", name));
-    const b = el("button", "pm-install", tr("取消屏蔽")) as HTMLButtonElement;
+    const row = el("div", "mk-blocked-row");
+    row.append(el("span", "mk-blocked-name", name));
+    const b = el("button", "mk-install", tr("取消屏蔽")) as HTMLButtonElement;
     b.type = "button";
     b.onclick = () => actions.onUnblock(name);
     row.append(b);
@@ -731,17 +754,17 @@ function blockedPage(state: MarketViewState, actions: MarketActions): HTMLElemen
 }
 
 function advancedPage(state: MarketViewState, actions: MarketActions): HTMLElement {
-  const page = el("div", "pm-page pm-advanced");
+  const page = el("div", "mk-page mk-advanced");
   const section = (title: string, hint: string, body: HTMLElement) => {
-    const box = el("div", "pm-adv-card");
-    box.append(el("div", "pm-adv-title", title), el("div", "pm-adv-hint", hint), body);
+    const box = el("div", "mk-adv-card");
+    box.append(el("div", "mk-adv-title", title), el("div", "mk-adv-hint", hint), body);
     page.append(box);
   };
 
-  const sourceBox = el("div", "pm-adv-form");
-  const input = el("input", "pm-input") as HTMLInputElement;
+  const sourceBox = el("div", "mk-adv-form");
+  const input = el("input", "mk-input") as HTMLInputElement;
   input.placeholder = "npm:@scope/pkg · git:github.com/user/repo · ./local/path";
-  const go = el("button", "pm-install", tr("安装包")) as HTMLButtonElement;
+  const go = el("button", "mk-install", tr("安装包")) as HTMLButtonElement;
   go.type = "button";
   go.disabled = state.readOnly;
   go.onclick = () => {
@@ -751,8 +774,8 @@ function advancedPage(state: MarketViewState, actions: MarketActions): HTMLEleme
   sourceBox.append(input, go);
   section(tr("按来源安装包"), tr("商店里没有的 git、本地路径，直接从来源装。"), sourceBox);
 
-  const scopeBox = el("div", "pm-adv-form");
-  const scope = el("select", "pm-input") as HTMLSelectElement;
+  const scopeBox = el("div", "mk-adv-form");
+  const scope = el("select", "mk-input") as HTMLSelectElement;
   scope.append(new Option(tr("装到全局"), "global"), new Option(tr("装到当前项目"), "project"));
   scope.value = state.scope;
   scope.disabled = !state.canProject;
@@ -760,15 +783,15 @@ function advancedPage(state: MarketViewState, actions: MarketActions): HTMLEleme
   scopeBox.append(scope);
   section(tr("安装位置"), tr("当前项目不可用时只能装到全局。"), scopeBox);
 
-  const refreshBox = el("div", "pm-adv-form");
-  const refresh = el("button", "pm-install", tr("刷新插件目录")) as HTMLButtonElement;
+  const refreshBox = el("div", "mk-adv-form");
+  const refresh = el("button", "mk-install", tr("刷新插件目录")) as HTMLButtonElement;
   refresh.type = "button";
   refresh.onclick = () => actions.onRefresh();
   refreshBox.append(refresh);
   section(tr("目录"), tr("数据源是 npm（keywords:pi-package），和 pi.dev 画廊同一批包。"), refreshBox);
 
-  const exportBox = el("div", "pm-adv-form");
-  const exportBtn = el("button", "pm-install", tr("导出日志")) as HTMLButtonElement;
+  const exportBox = el("div", "mk-adv-form");
+  const exportBtn = el("button", "mk-install", tr("导出日志")) as HTMLButtonElement;
   exportBtn.type = "button";
   exportBtn.onclick = () => actions.onExportLog();
   exportBox.append(exportBtn);
@@ -779,11 +802,11 @@ function advancedPage(state: MarketViewState, actions: MarketActions): HTMLEleme
 /** Render the whole market. Caller repaints this on every state change. */
 export function renderPluginMarket(state: MarketViewState, actions: MarketActions): HTMLElement {
   resetMasonry();
-  const root = el("div", "pm-root");
+  const root = el("div", "mk-root");
   root.append(tabsRow(state, actions));
-  const body = el("div", "pm-body");
+  const body = el("div", "mk-body");
   if (state.tab !== "blocked" && state.tab !== "advanced" && state.tab !== "installed") {
-    const sticky = el("div", "pm-sticky");
+    const sticky = el("div", "mk-sticky");
     sticky.append(searchRow(state, actions));
     if (state.tab === "discover") sticky.append(categoryRow(state, state.items ?? [], actions));
     body.append(sticky);
@@ -804,7 +827,7 @@ if (typeof document !== "undefined") {
     "click",
     (ev) => {
       const target = ev.target as Node | null;
-      for (const details of document.querySelectorAll<HTMLDetailsElement>("details.pm-filter[open], details.pm-tasks[open], details.pm-more[open]")) {
+      for (const details of document.querySelectorAll<HTMLDetailsElement>("details.mk-filter[open], details.mk-tasks[open], details.mk-more[open]")) {
         if (target && !details.contains(target)) details.open = false;
       }
     },

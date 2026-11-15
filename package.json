@@ -102,7 +102,8 @@
     "test:deps:ui": "node bridge/tests/deps-ui.mjs",
     "test:image:ui": "node bridge/tests/session-image-ui.mjs",
     "test:repos:ui": "node bridge/tests/repos-ui.mjs",
-    "test:pluginmarket": "node --experimental-strip-types web/tests/pluginmarket-unit.mjs"
+    "test:pluginmarket": "node --experimental-strip-types web/tests/pluginmarket-unit.mjs",
+    "test:mcpmarket": "node --experimental-strip-types web/tests/mcpmarket-unit.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

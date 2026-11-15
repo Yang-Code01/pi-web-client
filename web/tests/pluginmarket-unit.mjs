@@ -11,6 +11,7 @@ import {
   filterPackages,
   formatCount,
   masonryColumns,
+  rankSearchResults,
   sortPackages,
 } from "../src/pluginmarket.ts";
 
@@ -51,6 +52,21 @@ test("sortPackages：下载量 / 收录时间 / 名称，升降序", () => {
   assert.deepEqual(sortPackages(list, "downloads", "asc").map((p) => p.name), ["b", "c", "a"]);
   assert.deepEqual(sortPackages(list, "published", "desc").map((p) => p.name), ["c", "b", "a"]);
   assert.deepEqual(sortPackages(list, "name", "asc").map((p) => p.name), ["a", "b", "c"]);
+});
+
+test("rankSearchResults：精确名字永远排第一，再看前缀，再按选择排序", () => {
+  const list = [
+    pkg("pi-mcp-adapter", { monthly: 2_100_000 }),
+    pkg("pi-web-access", { monthly: 1_400_000 }),
+    pkg("pi-web-accessory", { monthly: 900_000 }),
+    pkg("@scope/pi-web-access", { monthly: 100 }),
+  ];
+  assert.deepEqual(rankSearchResults(list, "pi-web-access", "downloads", "desc").map((p) => p.name), [
+    "pi-web-access",
+    "@scope/pi-web-access",
+    "pi-web-accessory",
+    "pi-mcp-adapter",
+  ]);
 });
 
 test("filterPackages：分类与只看已安装", () => {

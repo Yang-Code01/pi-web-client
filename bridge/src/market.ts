@@ -465,8 +465,15 @@ export function searchPackages(query: string, limit: number): Promise<StorePacka
   return cached(`store:${q}`, 10 * 60_000, async () => {
     const text = encodeURIComponent(`keywords:pi-package${q ? ` ${q}` : ""}`);
     // Ask npm to weigh popularity so the 250 it returns are the popular ones, then rank by downloads.
+    // With a query, exact package names come first and the rest keep npm's relevance order; the web
+    // side re-sorts the rest, but exact must survive the bridge's slice even for low-download packages.
     const data = await getJson<{ objects?: any[] }>(`https://registry.npmjs.org/-/v1/search?text=${text}&size=250&popularity=1.0&quality=0.0&maintenance=0.0`);
-    return (data.objects ?? []).map(toStore).sort((a, b) => b.monthly - a.monthly);
+    const list = (data.objects ?? []).map(toStore);
+    if (!q) return list.sort((a, b) => b.monthly - a.monthly);
+    const lower = q.toLowerCase();
+    const exact = list.filter((p) => p.name.toLowerCase() === lower || (p.name.toLowerCase().split("/").pop() ?? "") === lower);
+    const exactNames = new Set(exact.map((p) => p.name));
+    return [...exact, ...list.filter((p) => !exactNames.has(p.name))];
   }).then((list) => list.slice(0, limit));
 }
 
