@@ -5225,3 +5225,11 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - `npm run test:uploads`：`bridge/tests/uploads-unit.mjs` 12 项（basename / 非法字符 / 空名 / 保留名 / 中文 emoji / 0 字节 / 重名 -2 / 120 截断 / 64MB+1 拒收且不落半份 / 无残留临时文件 / 回滚越界拒绝 / 30 天清理）。
 - `npm run test:attach:ui`：新增三段 —— 真上传 `from-device.txt` 并核对内容、同名第二份落成 `from-device-2.txt` 且第一份没被覆盖、11 个文件被「一次最多 10 个文件」拦下；同时把这份 D163/D167 探针的选择器从旧的 `.sheet.file-picker` / `.model-row` 更新到现在的控制台 DOM（`.fc-back` / `.dir-row`），否则它在 D252 之后根本跑不起来。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3186 键 × 3 + viewport）、`npm run build` 全绿。
+
+## D275 字号默认值从 100% 调到 125%（用户要求 2026-11-15）
+
+**决定：** `DEFAULT_PREFS.scale` 改为 `1.25`：新设备、清过 `localStorage` 的浏览器第一次打开就是 125%，设置抽屉的「恢复默认」也回到 125%。已经存过 `pi.prefs.scale` 的浏览器保留原值，不迁移 —— 分不清「从来没动过」和「明确选了 100%」。设置里字号的读数高亮改成跟 `DEFAULT_PREFS.scale` 比较，否则默认状态会被标成「用户改过」。
+
+**为什么：** 用户要求默认大一号。125% 在常见的 1280 / 1440 桌面窗口下有效宽度仍是 1024 / 1152，高于 900 的窄版阈值，不会一上来就退成单栏。
+
+**验证：** `npm --prefix web run typecheck`、`npm run build`、`node bridge/tests/scratch-ui.mjs` 全绿；本地起桥实测全新 profile 的 `--ui-scale` 与 `#app zoom` 都是 1.25，1440 窗口仍是三栏。
