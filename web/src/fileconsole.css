@@ -57,6 +57,24 @@
   font-size: 11px;
 }
 
+/* 「从本设备选文件」：上传中按钮变进度，失败在右栏底部留一句红字（5 秒后自己消失）。 */
+.fc-tool[data-busy="1"] {
+  opacity: 0.75;
+  cursor: progress;
+}
+
+.fc-upload-error {
+  flex: none;
+  min-height: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.fc-upload-error:empty {
+  display: none;
+}
+
 /* 右栏：dirpicker 的控制台式版式。 */
 .fc-pane .dirpicker {
   display: flex;

@@ -11,6 +11,13 @@ import "./fileconsole.css";
  * 文件管理器（viewer 的浏览页）仍走 dirpicker 的行列表，只在自己的 head 里加动作按钮。
  */
 
+export interface DeviceUploadUi {
+  /** null = 已经开传但还算不出比例；0..1 = 已传字节 / 总字节。 */
+  progress: (ratio: number | null) => void;
+  /** 失败：按钮复原，弹层里留一句 5 秒的红字。 */
+  fail: (message: string) => void;
+}
+
 export interface FileConsoleOpts {
   start: string;
   cwd: string;
@@ -22,8 +29,8 @@ export interface FileConsoleOpts {
   /** 行 = 打开：关掉这个列表，在预览里打开。 */
   onOpen: (abs: string, name: string) => void;
   onClose: () => void;
-  /** 「从本设备选图片」：手机相册之类，不经桥的本机文件。 */
-  onDeviceImages: (files: File[]) => void;
+  /** 「从本设备选文件」：手机 / 另一台机器上的文件不经桥的本机文件系统，只能从浏览器上传。 */
+  onDeviceFiles: (files: File[], ui: DeviceUploadUi) => void;
   /** 左栏之外的东西（📎 引用当前文件夹、新建文件夹 / 文件）挂在面包屑右边。 */
   head?: HTMLElement[];
   /** 新建行：放在跳转 / 筛选下面、列表上面。 */
@@ -165,21 +172,52 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
     }
   };
 
-  // 「从本设备选图片」：手机 / 另一台机器上的图片不进这台机器的文件系统，只能从浏览器上传。
+  // 「从本设备选文件」：浏览器所在的设备（手机、另一台电脑）上的文件不在这台机器的文件系统里，
+  // 只能经桥上传：图片仍按图片附加，其他文件落进上传暂存区、把路径插进输入框。
   const deviceInput = el("input") as HTMLInputElement;
   deviceInput.type = "file";
-  deviceInput.accept = "image/*";
   deviceInput.multiple = true;
   deviceInput.hidden = true;
+  let deviceBusy = false;
+  let errorTimer = 0;
+  const deviceError = el("div", "fc-upload-error");
+  const resetDevice = (): void => {
+    deviceBusy = false;
+    device.disabled = false;
+    device.dataset.busy = "0";
+    device.textContent = tr("从本设备选文件");
+  };
+  const deviceUi: DeviceUploadUi = {
+    progress: (ratio) => {
+      deviceBusy = true;
+      device.disabled = true;
+      device.dataset.busy = "1";
+      device.textContent =
+        ratio === null
+          ? tr("上传中…")
+          : tr("上传中 {p1}%", { p1: Math.round(Math.min(1, Math.max(0, ratio)) * 100) });
+    },
+    fail: (message) => {
+      resetDevice();
+      deviceError.textContent = message;
+      window.clearTimeout(errorTimer);
+      errorTimer = window.setTimeout(() => {
+        deviceError.textContent = "";
+      }, 5000);
+    },
+  };
   deviceInput.onchange = () => {
     const files = Array.from(deviceInput.files ?? []);
     deviceInput.value = "";
-    if (files.length) opts.onDeviceImages(files);
+    if (!files.length || deviceBusy) return;
+    opts.onDeviceFiles(files, deviceUi);
   };
-  const device = el("button", "btn ghost fc-tool", tr("从本设备选图片")) as HTMLButtonElement;
+  const device = el("button", "btn ghost fc-tool", tr("从本设备选文件")) as HTMLButtonElement;
   device.type = "button";
-  device.title = tr("从当前浏览器所在的设备（例如手机相册）选图片附加");
-  device.onclick = () => deviceInput.click();
+  device.title = tr("从当前浏览器所在的设备选文件；图片按图片附加，其他文件上传到这台机器并插入路径");
+  device.onclick = () => {
+    if (!deviceBusy) deviceInput.click();
+  };
 
   const refresh = el("button", "btn ghost", tr("刷新")) as HTMLButtonElement;
   refresh.onclick = () => picker?.refresh();
@@ -239,6 +277,7 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
       else opts.onQuote(abs, name);
     },
   });
+  pane.append(deviceError);
 
   return {
     root: back,
