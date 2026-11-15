@@ -180,8 +180,11 @@ export class MailPanel {
   private root: HTMLElement | null = null;
   private lastFocus: HTMLElement | null = null;
   private untrap: (() => void) | null = null;
-  /** 面板「代」：开/关/刷新时 +1。整块重画靠它，**不是**用来判列表/详情过期的。 */
+  /** 面板「代」：只在开/关时 +1，用来判断整个面板是不是已经换了。
+   *  刷新不能动它，否则保存/验证这种「等请求回来再改 saving/testing」的操作会被自己的 reload 判过期。 */
   private seq = 0;
+  /** 刷新请求自己的代号：只用来丢掉旧的 reload，不影响保存/验证。 */
+  private reloadSeq = 0;
   /** 列表与详情各自的请求代号：切文件夹/账号、重新取数时 +1，回来对不上就丢掉。
    *  以前两处都比 `seq`，而切文件夹并不动 `seq`，于是先点的慢响应会盖掉后点的（选中的是 B、列表是 A）。 */
   private listSeq = 0;
@@ -224,6 +227,7 @@ export class MailPanel {
   open(): void {
     if (this.root) this.close();
     this.seq += 1;
+    this.reloadSeq += 1;
     this.config = null;
     this.loadError = "";
     this.notice = "";
@@ -258,6 +262,7 @@ export class MailPanel {
     this.untrap?.();
     this.untrap = null;
     this.seq += 1;
+    this.reloadSeq += 1;
     this.listSeq += 1;
     this.detailSeq += 1;
     this.confirmDeleteId = "";
@@ -285,10 +290,11 @@ export class MailPanel {
   }
 
   private async reload(): Promise<void> {
-    const seq = ++this.seq;
+    const seq = this.seq;
+    const load = ++this.reloadSeq;
     try {
       const config = await api.mailConfig();
-      if (seq !== this.seq || !this.root) return;
+      if (seq !== this.seq || load !== this.reloadSeq || !this.root) return;
       this.config = config;
       this.loadError = "";
       if (!config.accounts.length) {
@@ -300,9 +306,9 @@ export class MailPanel {
         return;
       }
       this.render();
-      await this.loadFolders(seq);
+      await this.loadFolders(seq, load);
     } catch (err) {
-      if (seq !== this.seq) return;
+      if (seq !== this.seq || load !== this.reloadSeq) return;
       this.loadError = failText(tr("打不开邮箱设置"), err);
       this.render();
     }
@@ -314,24 +320,24 @@ export class MailPanel {
     return [p?.imap ?? fallback, p?.smtp ?? { host: "", port: 465, secure: true }];
   }
 
-  private async loadFolders(seq: number): Promise<void> {
+  private async loadFolders(seq: number, load = this.reloadSeq): Promise<void> {
     const account = this.activeAccount();
     if (!account) return;
     try {
       const { folders } = await api.mailFolders(account.id);
-      if (seq !== this.seq || !this.root) return;
+      if (seq !== this.seq || load !== this.reloadSeq || !this.root) return;
       this.folders = folders;
       const known = folders.some((f) => f.path === this.folder);
       if (!known) this.folder = folders.find((f) => f.kind === "inbox")?.path ?? folders[0]?.path ?? "INBOX";
-      await this.loadMessages(seq);
+      await this.loadMessages(seq, false, load);
     } catch (err) {
-      if (seq !== this.seq) return;
+      if (seq !== this.seq || load !== this.reloadSeq) return;
       this.listError = failText(tr("拿不到邮件夹"), err);
       this.render();
     }
   }
 
-  private async loadMessages(seq: number, append = false): Promise<void> {
+  private async loadMessages(seq: number, append = false, load = this.reloadSeq): Promise<void> {
     const account = this.activeAccount();
     if (!account) return;
     const token = ++this.listSeq;
@@ -347,17 +353,17 @@ export class MailPanel {
         unread: this.unreadOnly,
       });
       // 过期判定两道：面板还在（seq） + 没有更新的请求（listSeq）。
-      if (seq !== this.seq || token !== this.listSeq || !this.root) return;
+      if (seq !== this.seq || token !== this.listSeq || load !== this.reloadSeq || !this.root) return;
       const merged = append ? [...this.messages, ...messages.filter((m) => !this.messages.some((old) => old.uid === m.uid))] : messages;
       this.messages = merged;
       this.listHasMore = messages.length >= LIST_PAGE;
       this.listError = "";
     } catch (err) {
-      if (seq !== this.seq || token !== this.listSeq) return;
+      if (seq !== this.seq || token !== this.listSeq || load !== this.reloadSeq) return;
       if (!append) this.messages = [];
       this.listError = failText(tr("邮件列表拿不到"), err);
     } finally {
-      if (seq === this.seq && token === this.listSeq) {
+      if (seq === this.seq && token === this.listSeq && load === this.reloadSeq) {
         this.listLoading = false;
         this.render();
       }
