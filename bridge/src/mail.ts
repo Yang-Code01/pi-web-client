@@ -553,6 +553,17 @@ function agentPolicyView(policy: MailPolicy): Omit<MailPolicy, "mutate"> {
   return rest;
 }
 
+/**
+ * 工具口的 HTML 先去掉 <head>/<style>/<script>，再截断。营销邮件经常前 20k 全是 CSS，
+ * 直接截会把正文（以及 `[图片]` 标记）切没；模型也不需要 CSS。
+ */
+export function htmlForModel(html: string): string {
+  return String(html ?? "")
+    .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, "")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+}
+
 /** 长正文截断并注明（工具口专用：上下文有限）。 */
 function clip(text: string, max: number, what: string): string {
   if (text.length <= max) return text;
@@ -629,7 +640,7 @@ export async function handleMailTool(req: http.IncomingMessage, res: http.Server
             ...detail,
             // 正文太长会把上下文吃满：留 20000 字，多的截断并说清楚。
             text: clip(detail.text, 20000, "正文"),
-            html: clip(detail.html ?? "", 20000, "HTML 正文") || null,
+            html: clip(htmlForModel(detail.html ?? ""), 20000, "HTML 正文") || null,
             // 附件能不能落盘由 `attachmentsAllowed` 一个信号说清，别每项再塞一个没人读的字段。
             attachments: detail.attachments,
           },

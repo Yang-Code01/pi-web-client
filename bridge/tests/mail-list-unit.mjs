@@ -169,6 +169,10 @@ check("面板口换 data URI，图片不用再拉一遍 IMAP", richDetail.html?.
 check("没有 Content-Disposition 的 image/* + Content-ID 也算内嵌", t.isInlineAttachment({ contentId: "<x@y>", contentType: "image/png" }));
 check("普通附件不算内嵌", !t.isInlineAttachment({ filename: "a.pdf", contentType: "application/pdf" }));
 
+// 工具口 20,000 字截断前先去掉 head/style，否则营销邮件前 20k 全是 CSS，正文被切没。
+const compacted = mail.htmlForModel('<html><head><style type="text/css">body{color:red}</style></head><body><p>正文</p><img src="cid:x"></body></html>');
+check("工具口先去掉 head/style 再截断", !compacted.includes("color:red") && compacted.includes("<p>正文</p>") && compacted.includes("cid:x"), compacted.slice(0, 120));
+
 // ---------------------------------------------------------------- 收尾
 
 const bad = results.filter((x) => !x.ok);
