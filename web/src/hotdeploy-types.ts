@@ -29,6 +29,10 @@ export interface HotdeployRun {
   exitCode?: number | null;
   error?: string | null;
   port?: number;
+  /** 本轮 worker 实际创建的 stash message；没有暂存时为空。 */
+  stash?: string;
+  /** 本地改动是否已经在换进程前恢复。 */
+  stashRestored?: boolean;
   /** worker 每进一个步骤记一次：`{ step, at }`（ms）。 */
   stamps?: { step: number; at: number }[];
 }

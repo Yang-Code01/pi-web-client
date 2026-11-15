@@ -14,7 +14,8 @@ import { errText, tr } from "./i18n/index.ts";
 import "./hotdeploy.css";
 
 /** 步骤名与 worker 的 step 序号一一对应；中文原文就是 i18n 键。 */
-const STEPS = ["检查更新", "拉取所选分支", "编译前端与桥", "换进程", "健康检查"];
+const STEPS = ["检查更新", "拉取所选分支", "编译前端与桥", "恢复本地改动", "换进程", "健康检查"];
+const RESTORE_STEP = 3;
 /** worker 写回来的 error 是稳定代号（D110），界面上得说人话。 */
 const FAIL_WHY: Record<string, string> = {
   "bad-args": "参数不对：多半是端口没给或占着。",
@@ -27,11 +28,20 @@ const FAIL_WHY: Record<string, string> = {
   "switch-failed": "git switch 没成功，日志里有它的原话。",
   "merge-failed": "快进合并没有成功，日志里有它的原话。",
   "build-failed": "编译没过，日志尾部有 tsc / vite 的报错。",
+  "stash-branch": "暂存只能用在当前分支；先切到那条分支再来。",
+  "stash-failed": "git stash 没成功，日志里有它的原话。",
+  "stash-pop-failed": "本地改动恢复失败，stash 还在；先看日志或手动 stash pop。",
   "start-failed": "新进程没起来，看那扇 pi bridge 窗口。",
   "stale-health": "新进程报的构建号不对：旧进程可能还占着端口。",
   crashed: "worker 被中途杀掉了。",
 };
 const POLL_MS = 1200;
+/** 失败横幅只说「源码没动」当且仅当分支没换、HEAD 也没快进。 */
+function sourceUnchanged(run: HotdeployRun | null): boolean {
+  if (!run?.fromBranch) return true;
+  if (run.fromBranch !== run.branch) return false;
+  return !run.toSha || run.fromSha === run.toSha;
+}
 /** 结束很久的老结果不该再弹出来：超过这么久就当没跑过。 */
 const RESULT_TTL_MS = 10 * 60_000;
 
@@ -73,6 +83,7 @@ class HotdeployPanel {
   private logCount!: HTMLElement;
   private statusBox!: HTMLElement;
   private runBtn!: HTMLButtonElement;
+  private stashBtn!: HTMLButtonElement;
   private hint!: HTMLElement;
 
   private snap: HotdeploySnapshot | null = null;
@@ -191,7 +202,13 @@ class HotdeployPanel {
     const grow = el("div", "hot-grow");
     this.runBtn = el("button", "btn primary hot-run", tr("热部署")) as HTMLButtonElement;
     this.runBtn.onclick = () => void this.run();
-    foot.append(this.hint, grow, this.runBtn);
+    this.stashBtn = el("button", "btn ghost hot-stash", tr("暂存后热部署")) as HTMLButtonElement;
+    this.stashBtn.hidden = true;
+    this.stashBtn.onclick = () => {
+      if (!confirm(tr("将先暂存主检出的未提交改动，编译完成后自动恢复；本次构建不包含这些改动。部署会切断正在跑的会话，继续？"))) return;
+      void this.run(this.selected, true);
+    };
+    foot.append(this.hint, grow, this.stashBtn, this.runBtn);
 
     // 日志尾钉在正文外面、状态条上面：正文滚起来它也一直在，份量不占正文高度。
     this.console.append(head, body, this.logBox, this.statusBox, foot);
@@ -362,12 +379,17 @@ class HotdeployPanel {
   private paintSteps(run: HotdeployRun | null, phase: Phase): void {
     const step = typeof run?.step === "number" ? run.step : 0;
     const stamps = run?.stamps ?? [];
+    const hasStash = Boolean(run?.stash);
     const at = (i: number) => stamps.find((s) => s.step === i)?.at ?? 0;
     this.steps.forEach((row, i) => {
       let cls = "";
       if (phase === "running") cls = i < step ? "ok" : i === step ? "run" : "";
       else if (phase === "ok") cls = "ok";
       else if (phase === "fail") cls = i < step ? "ok" : i === step ? "fail" : "skip";
+      if (i === RESTORE_STEP) {
+        if (!hasStash) cls = "skip";
+        else if (run?.stashRestored && cls === "skip") cls = "ok";
+      }
       row.className = `hot-step${cls ? ` ${cls}` : ""}`;
       const [ico, , info] = Array.from(row.children) as HTMLElement[];
       ico.textContent = cls === "ok" ? "✓" : cls === "fail" ? "✕" : cls === "run" ? "◐" : "○";
@@ -450,7 +472,7 @@ class HotdeployPanel {
       const head = el("div", "");
       head.append(el("b", "", tr("{step}失败", { step: stepName })));
       if (run?.exitCode) head.append(el("span", "", tr("（退出码 {code}）", { code: run.exitCode })));
-      const same = !run?.fromBranch || run.fromBranch === run.branch;
+      const same = sourceUnchanged(run);
       head.append(el("span", "", same
         ? tr("。源码没动（还在 {branch}），{port} 上仍是 {oldSha} 的旧构建。", {
           branch: run?.branch ?? "",
@@ -504,6 +526,8 @@ class HotdeployPanel {
 
   private paintFoot(run: HotdeployRun | null, phase: Phase): void {
     const snap = this.snap;
+    this.stashBtn.hidden = true;
+    this.stashBtn.disabled = true;
     this.hint.textContent = tr("切分支会连同 web/dist、bridge/dist 一起换");
     this.hint.classList.remove("hot-bad");
     this.runBtn.disabled = false;
@@ -525,19 +549,30 @@ class HotdeployPanel {
       this.hint.classList.add("hot-bad");
       return;
     }
-    if (snap.dirty) {
-      this.runBtn.disabled = true;
-      this.runBtn.textContent = tr("先提交改动");
-      this.hint.textContent = tr("主检出有未提交的改动：{files}", { files: snap.dirtyFiles.slice(0, 3).join(" · ") });
-      this.hint.classList.add("hot-bad");
-      return;
-    }
+    // 部署中优先于 dirty：worker 还没 stash 完时不能把「暂存后热部署」再露出来。
     if (phase === "running" || snap.busy) {
       this.runBtn.disabled = true;
       this.runBtn.textContent = tr("部署中…");
       return;
     }
     const picked = snap.branches.find((b) => b.name === this.selected);
+    if (snap.dirty) {
+      this.runBtn.disabled = true;
+      this.runBtn.textContent = tr("先提交改动");
+      const files = snap.dirtyFiles.slice(0, 3).join(" · ");
+      const canStash = !snap.detached && Boolean(snap.branch) && this.selected === snap.branch && !picked?.occupiedBy;
+      this.stashBtn.hidden = !canStash;
+      this.stashBtn.disabled = !canStash;
+      if (canStash) {
+        this.hint.textContent = tr("主检出有未提交的改动：{files}。可先暂存，构建后自动恢复", { files });
+      } else if (!snap.detached && this.selected !== snap.branch) {
+        this.hint.textContent = tr("暂存只能用在当前分支 {branch}；先切到那条分支或另选一条", { branch: snap.branch });
+      } else {
+        this.hint.textContent = tr("主检出有未提交的改动：{files}", { files });
+      }
+      this.hint.classList.add("hot-bad");
+      return;
+    }
     if (!picked) {
       this.runBtn.disabled = true;
       this.runBtn.textContent = tr("选一条分支");
@@ -574,7 +609,7 @@ class HotdeployPanel {
     }, 1000);
   }
 
-  private async run(branch = this.selected): Promise<void> {
+  private async run(branch = this.selected, stash = false): Promise<void> {
     if (!branch) return;
     this.notice = null;
     this.countdown = null;
@@ -583,7 +618,7 @@ class HotdeployPanel {
     this.pending = true;
     this.paint();
     try {
-      const out = await api.hotdeployRun(branch);
+      const out = await api.hotdeployRun(branch, stash);
       this.minePid = out.run?.pid ?? 0;
       this.pending = false;
       if (out.run && this.snap) this.snap.run = out.run;
