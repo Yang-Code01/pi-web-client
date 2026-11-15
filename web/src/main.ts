@@ -1,12 +1,14 @@
 import "./styles.css";
 import { api } from "./api.ts";
-import { App } from "./app.ts";
+import { App, bootScale } from "./app.ts";
 import type { Me } from "./types.ts";
 import { applyLang, bootLang, errText, tr } from "./i18n/index.ts";
 
 // 登录页在 App 之前就画出来了，所以语言得在这时先定下来（D110）：`pi.prefs.lang`
 // 优先，没存过/非法就问浏览器。这份 `bootLang()` 与「内网通」（peer.html）共用。
 applyLang(bootLang());
+// 登录页先于 App 画出：字号也先按已存/默认偏好挂上，别让第一眼停在 100%。
+document.documentElement.style.setProperty("--ui-scale", String(bootScale()));
 
 function loginScreen(onSuccess: (me: Me) => void): void {
   const app = document.getElementById("app")!;

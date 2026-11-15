@@ -5123,7 +5123,7 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **再后续（同日晚些）：** 外层的「已安装」页签删除，「插件市场 / MCP 市场 / 局域网市场」三颗；「MCP 商店」改名「MCP 市场」并按同一套 `.mk-*` 卡片 / 瀑布流重画（搜索、npm / PyPI / Docker / 远程分类、star / 名称排序、安装表单在卡片上方展开）。
 ## D271 Context 面板按 dsh-context 复刻：七类组成、逐请求快照、趋势与上下文浏览器（用户要求「用 rea 逆向本机的 dsh-context」）
 
-**修订（2026-11-15）：** 本条「只留预览、不镜像 transcript」的约束由 D276 取代；v3 的 `body` 行让浏览器能展开真实正文，并补上跨会话「上下文洞察」页与技能加载计数。
+**修订（2026-11-15）：** 本条「只留预览、不镜像 transcript」的约束由 D278 取代；v3 的 `body` 行让浏览器能展开真实正文，并补上跨会话「上下文洞察」页与技能加载计数。
 
 **问题：** 原来的 #384 面板只有 KPI + 六类估算 + 一张轮次柱状图；`context-log.ts` 只统计 `text` 块，assistant 的 thinking / toolCall 全记成 0，system 的 `sections` 也没拆，导致面板上看不到系统提示、工具定义、技能注入和助手回复。用户说「现在做的很垃圾」，要求照本机 `dsh-context@0.84.1` 重做。
 
@@ -5227,6 +5227,7 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - `npm run test:uploads`：`bridge/tests/uploads-unit.mjs` 12 项（basename / 非法字符 / 空名 / 保留名 / 中文 emoji / 0 字节 / 重名 -2 / 120 截断 / 64MB+1 拒收且不落半份 / 无残留临时文件 / 回滚越界拒绝 / 30 天清理）。
 - `npm run test:attach:ui`：新增三段 —— 真上传 `from-device.txt` 并核对内容、同名第二份落成 `from-device-2.txt` 且第一份没被覆盖、11 个文件被「一次最多 10 个文件」拦下；同时把这份 D163/D167 探针的选择器从旧的 `.sheet.file-picker` / `.model-row` 更新到现在的控制台 DOM（`.fc-back` / `.dir-row`），否则它在 D252 之后根本跑不起来。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3186 键 × 3 + viewport）、`npm run build` 全绿。
+
 ## D275 产物列表也收「交付」：open_preview 打开过的文件算本会话产物（用户报障 2026-11-15）
 
 **问题：** 一次会话里生成了 `Excel全能教学练习簿.xlsx`，回复里写着「已生成并在预览中打开」，但「📂 产物」弹窗里只有 `excel_build.py`。根因是列表只收 write 系工具（D208 第 5 条）：xlsx 是 `bash` 跑 python 脚本生成的，脚本产出的文件永远不会经过 write 钩子。而 `open_preview` 是网页会话的交付出口（D190 / D226），路径就在工具参数里，却没进列表 —— 用户看到「已打开」却找不到。
@@ -5246,7 +5247,28 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 
 **验证：** `web/tests/artifact-sources-unit.mjs`（7 条：两种来源、先后顺序、去重、无关工具、toolPath）接进 `npm run test:artifacts`；`bridge/tests/artifacts-unit.mjs` 新增一条「交付文件 → delivered-only」；`probes/artifacts-delivered.mjs` 用真桥 + 真 Chromium 复现用户那次的形状（xlsx 在列表里、`open_preview×1`、说明是脚本产物、py 仍是 `write×1`）；`npm run typecheck` / `npm run build` 通过。
 
-## D276 上下文洞察页 + 技能加载计数修复 + Context Browser 正文落盘（用户要求，2026-11-15）
+## D276 字号默认值从 100% 调到 125%（用户要求 2026-11-15）
+
+**决定：** `DEFAULT_PREFS.scale` 改为 `1.25`：新设备、清过 `localStorage` 的浏览器第一次打开就是 125%（登录页在 `App` 之前渲染，也先套用已存/默认字号），设置抽屉的「恢复默认」和双击字号轨道都回到 125%。已经存过 `pi.prefs.scale` 的浏览器保留原值，不迁移 —— 分不清「从来没动过」和「明确选了 100%」。设置里字号的读数高亮改成跟 `DEFAULT_PREFS.scale` 比较，否则默认状态会被标成「用户改过」。
+
+**为什么：** 用户要求默认大一号。125% 在常见的 1280 / 1440 桌面窗口下有效宽度仍是 1024 / 1152，高于 900 的窄版阈值，不会一上来就退成单栏。
+
+**代价：** 视口窄于 1125px 时有效宽度不足 900，1024 宽的小屏新设备会直接进入单栏；这是默认放大字号的直接结果，不为它做特殊回退。
+
+**验证：** `npm run typecheck`、`npm run build`、`node bridge/tests/scratch-ui.mjs` 全绿（用例新增登录页与 App 的默认 125% 断言）；本地起桥实测全新 profile 的 `--ui-scale` 与 `#app zoom` 都是 1.25，1440 窗口仍是三栏。
+
+## D277 设置抽屉的工具区去掉「快捷键」入口（用户要求 2026-11-15）
+
+**问题：** 「连接与设置」→「工具」里那颗「快捷键 / 设置快捷键」按钮，只是把同一张快捷键面板又开一遍；设置抽屉应放设置，不该再维护第二份动作入口。用户要求删掉它。
+
+**决定：** 只删设置抽屉里的这颗按钮，工具区保留 `pi 设置` / `本机管理` / `热部署`；快捷键面板、键位捕获和 `/hotkeys` 命令都保留。en / ja 的页签与齿轮提示从「Channels & hotkeys / 接続とショートカット」改成「Channels & tools / 接続とツール」。`probes/round6-keys.mjs` 改为从输入框走 `/hotkeys` 打开面板，不再找已删除的按钮。
+
+**为什么：** 删的是重复入口，不是功能；已经绑过的键位和动作表不受影响。
+
+**代价 / 可改：** 快捷键面板不再有可见的设置入口，只能记 `/hotkeys` 或继续用已绑定的键。若以后又需要一个可见入口，应把它放回动作表或命令面板，而不是设置抽屉。
+
+**验证：** `npm --prefix web run typecheck`（i18n 3194 键 × 3）、`npm run build:web`、`node probes/round6-keys.mjs` 全绿。
+## D278 上下文洞察页 + 技能加载计数修复 + Context Browser 正文落盘（用户要求，2026-11-15）
 
 **问题：** ① 会话内 Context 面板只能看当前会话；设置 → 工具里没有跨会话入口。② 用户用了 `/skill:`，Token 统计里技能注入有占比，但「上下文统计 → 技能加载」一直是 0。③ Context Browser 只有 160 字预览，原版 dsh-context 可以展开系统提示词、工具 JSON schema、消息正文、思考、工具参数和工具结果；用户说「表现和原版差别很大」。
 
@@ -5270,5 +5292,5 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **验证：**
 
 - `npm run test:context`：`context-log-unit`（v3 body、skill 拆分、usage cost、活动行仍脱敏）、`context-insight-unit`（聚合 / 费用 / 技能去重 / 旧日志 preview 兜底）、`context-unit`（`ctxSummary` 技能三种来源、`ctxBodyMap` 合并）、`chrome-unit` 全绿。
-- `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3248 键 × 3 + viewport）、`npm run build` 全绿。
-- 真桥 7871 + 真 Chromium：设置 → 连接与设置 → 工具里六颗按钮顺序为「快捷键 / pi 设置 / 本机管理 / 热部署 / 上下文洞察」，点开 KPI / 近 7 天 / 活跃度 / 三个账本 / Context Composition / 分项目 / 会话卡片都出来；点项目 chip 过滤 KPI，点会话卡片回到该会话。
+- `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3246 键 × 3 + viewport）、`npm run build` 全绿。
+- 真桥 7871 + 真 Chromium：设置 → 连接与设置 → 工具里按钮顺序为「pi 设置 / 本机管理 / 热部署 / 上下文洞察」，点开 KPI / 近 7 天 / 活跃度 / 三个账本 / Context Composition / 分项目 / 会话卡片都出来；点项目 chip 过滤 KPI，点会话卡片回到该会话。

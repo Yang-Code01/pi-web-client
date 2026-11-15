@@ -46,20 +46,9 @@ const until = async (fn, ms, what) => {
 
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
 const SESSION = { id: "probe-sess", name: "问卷探针", cwd: REPO, file: null, owned: false, origin: "disk", running: true, done: false, updatedAt: Date.now(), approvals: 0, asks: 0, locked: false, preview: "问两个问题" };
-const ASK = {
-  id: "ask_probe1",
-  sessionId: SESSION.id,
-  sessionName: SESSION.name,
-  createdAt: Date.now(),
-  questions: [
-    { id: "q1", label: "Q1", prompt: "先确认一下：这次改动要动 bridge 吗？", options: [{ value: "yes", label: "要动" }, { value: "no", label: "不动" }], allowOther: true },
-    { id: "q2", label: "Q2", prompt: "第二题：截图要不要一起给你？", options: [{ value: "yes", label: "要" }, { value: "no", label: "不要" }], allowOther: true },
-  ],
-};
 
 const TUNNEL = { status: "off", url: null, error: null, updatedAt: Date.now() };
 let sock = null;
-const send = (msg) => sock?.readyState === 1 && sock.send(JSON.stringify(msg));
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", BASE);
@@ -108,10 +97,10 @@ wss.on("connection", (ws) => {
         JSON.stringify({
           type: "session",
           sessionId: SESSION.id,
-          state: { ...SESSION, asks: 1 },
+          state: { ...SESSION, asks: 0 },
           items: [{ kind: "user", id: "u1", text: "帮我把问卷答了。" }],
           approvals: [],
-          asks: [ASK],
+          asks: [],
           budget: null,
         }),
       );
@@ -145,11 +134,13 @@ try {
   });
   await page.goto(BASE, { waitUntil: "networkidle" });
   await until(async () => (await page.locator(".session-card").count()) >= 1, 8000, "session card");
-  // The 快捷键 card sits in the right rail, above 关于.
-  const rail = page.locator(".pane").last();
-  const openBtn = rail.getByRole("button", { name: /设置快捷键|快捷键（已设/ });
-  await until(async () => (await openBtn.count()) > 0, 8000, "shortcut card");
-  await openBtn.click();
+  // The 设置抽屉 no longer carries a 快捷键 card; `/hotkeys` is the remaining way in.
+  await page.locator(".session-card").first().click();
+  await until(async () => (await page.locator(".hint-tools").count()) === 1, 8000, "session loaded");
+  const input = page.locator(".composer textarea");
+  await input.fill("/hotkeys");
+  await input.press("Enter");
+  await until(async () => (await input.inputValue()) === "", 3000, "command accepted");
   const sheet = page.locator(".keys-sheet");
   await until(async () => sheet.isVisible(), 4000, "keys sheet");
   const rows = sheet.locator(".keys-row");
