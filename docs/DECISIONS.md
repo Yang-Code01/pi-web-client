@@ -5195,8 +5195,8 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 
 **验证：**
 
-- `npm run test:mail`：`bridge/tests/mail-unit.mjs` 68/68、`mail-list-unit.mjs` 43/43（新增 cid 元数据、`keepCidLinks`、`htmlToText` 图片标记、无 disposition 的内嵌图、截断前去掉 head/style）、`web/tests/mail-unit.mjs` 14/14（新增 `cidKey`、`inlineImageMap`、CSP 默认/放行远程图）。
+- `npm run test:mail`：`bridge/tests/mail-unit.mjs` 68/68、`mail-list-unit.mjs` 43/43（新增 cid 元数据、`keepCidLinks`、`htmlToText` 图片标记、无 disposition 的内嵌图、截断前去掉 head/style）、`web/tests/mail-unit.mjs` 15/15（新增 `cidKey`、`inlineImageMap`、`srcset` 首个候选、CSP 默认/放行远程图）。
 - 真信箱（1304049579@qq.com）：uid=1328 面板渲染 11 张内嵌图（naturalWidth 800、iframe 高度 4,703px），附件区只列 `Jenil_Soni_-_Resume.pdf · 152 KB`；uid=1321 远程图 92 张，默认 `img[data-mc-blocked]` 全部收起、iframe 419px，点「显示图片（92）」后 92 张 `src` 全部恢复为原 `https://...`。
 - `mail_image` 工具口实测 uid=1328 index=0：`image/jpeg`、61,660 字节、base64 82,216 字符；`mail_read` 回 12 个附件（11 inline + 1 PDF），HTML 保留 `cid:` 且截断在 20,029 字。
-- `npm run test:mail:html`（真 Chromium）：script/iframe/on*/javascript: 清理、`cid:` 映射、`srcset`-only 图、远程图拦截与放行 CSP 全绿。
+- `npm run test:mail:html`（真 Chromium）：script/iframe/on*/javascript: 清理、`cid:` 映射、`srcset`-only 图、远程图拦截与放行 CSP 全绿；`npm run test:permission` 也覆盖 `mail_image` 在只读模式放行、`mail_attachment` / `mail_send` 被拦。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3180 键 × 3 + viewport）、`npm run build` 全绿。
