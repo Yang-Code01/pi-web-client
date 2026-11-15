@@ -4561,6 +4561,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   background: #f8f9fb; border-bottom: 1px solid #cfd6df; box-sizing: border-box;
 }
 .sd-colhead-frz[hidden], .sd-rowhead-frz[hidden] { display: none; }
+/* 冻结表头只有一格宽/高，普通握把的 -3px 会正好被 overflow:hidden 裁掉一半；贴边放。 */
+.sd-colhead-frz .sd-grip-v { right: 0; }
+.sd-rowhead-frz .sd-grip-h { bottom: 0; }
 .sd-frz { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .sd-frz-t, .sd-frz-l { position: absolute; overflow: hidden; }
 .sd-frz-t { top: 0; left: 0; right: 0; z-index: 2; }

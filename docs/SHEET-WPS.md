@@ -167,3 +167,50 @@ node tools/wps-inventory.mjs --funcs  # 函数名
 
 `mui/zh_CN/*.qm`（中英对照）目前解不出来；要读中文标签，最省事的路是 `rea capture-native-ui-scenario`
 把真实的 WPS 窗口点一遍读 AX 树，那需要在本机真启动 WPS——这一轮没做。
+
+## 8. 坐标命中：WPS 的 DP → LP 分层（D269）
+
+用户报「表格编辑时鼠标点中的格子和实际选中的格子有偏差」，顺着 WPS 的视图栈再逆一层。
+这一节不读界面 XML，读的是框架的符号表；命令都在本机可复现：
+
+```bash
+rea inspect-desktop-application /Applications/wpsoffice.app --detail summary \
+  --evidence_output .scratch/wps/app-inventory.json
+
+# etcore 的视图/视口接口（strings 不依赖调试符号）
+strings /Applications/wpsoffice.app/Contents/Frameworks/office6/etcore.framework/Versions/A/etcore \
+  | grep -E "IETViewPortTrans|IKETViewportService|IETViewportUtility|KWorksheetViewPanes|KViewportLayer" | sort -u
+# -> 16IETViewPortTrans / 19IKETViewportService / 18IETViewportUtility / 19KWorksheetViewPanes / 14KViewportLayer
+
+# etmain 里把设备坐标换成逻辑坐标的调用点
+nm /Applications/wpsoffice.app/Contents/Frameworks/office6/etmain.framework/Versions/A/etmain 2>/dev/null \
+  | c++filt | grep -E "DPtoLP|LPtoDP"
+# -> KAxOleObject::DPtoLP(IKViewportService*, kso_qt::QPoint*, unsigned int)
+# -> KAxOleObject::LPtoDP(IKViewportService*, kso_qt::QPoint*, unsigned int)
+```
+
+逆出来的分工是：
+
+- `etcore` 有 `KWorksheetView` / `KWorksheetViewPanes`，冻结窗格和视口是**分层的**（`KViewportLayer`，
+  渲染层 `RENDERLAYER0`）；`IETViewPortTrans` / `IETViewportUtility` / `IKETViewportService`
+  是视口变换那一层。
+- `etmain` 的鼠标路径里明确有 `DPtoLP`（device point → logical point）和反向的 `LPtoDP`。
+  也就是说 WPS **不拿窗口设备坐标直接去套行高列宽**：先把设备坐标换成逻辑坐标，再做命中；
+  滚动量、冻结偏移、视图缩放都在逻辑坐标那一侧。`DPtoLP failed!` 这种日志也是同一个边界。
+
+这正好是本项目 `#app { zoom: var(--ui-scale) }` 下的问题：`clientX / clientY` 和
+`getBoundingClientRect()` 是**视觉 px**，而 `leftOf()` / `topOf()`、行高列宽是**布局 px**。
+修法照 WPS 的分层：
+
+1. 指针进 `SheetGrid` 先除以界面缩放（`clientX - view左缘`) / scale，换回布局 px；
+2. 冻结带按 `leftOf(f.cols)` / `topOf(f.rows)` 分叉：冻结带不加滚动量，主区加 `scrollLeft/scrollTop`；
+3. 再用列前缀和 / 行前缀和二分命中。合并区命中的是整块，归到左上角（`spans`）。
+4. 拖列宽、拖行高、填充柄、换行行高的实测尺寸、并排分界线同样走这个换算；
+   指针动的视觉 25px，在「表格 200% × 界面 125%」下也只能改 25px 的视觉结果。
+
+顺带逆出来的两个 DOM 结构差异（WPS 的 panes 是同一视口里的层，我们是 `.sd-frz` 盖在 `.sd-view` 外）：
+
+- 冻结带的 pointer 事件原先挂在 `.sd-view` 上，点在冻结行/列上到不了网格；现在挂到网格 root，
+  仍用 `.sd-view` 的矩形判界。
+- WPS 的合并区命中天然是 pane 里的一格；我们按坐标先查 `spans`，把合并区归到左上角，
+  这样选区框和名称框都是整块（`A1`），不会出现点到 `C1` 就选 `A1:C1` 的半截选区。

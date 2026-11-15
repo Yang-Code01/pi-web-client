@@ -7,7 +7,7 @@
 import { tr, errText, fmtTime, fmtNum } from "../i18n/index.ts";
 import type { SheetEditOp, SheetStructOp, SheetInfo, SheetMatches, SheetMeta, SheetWindow } from "../types.ts";
 import { clampNum, dragFloat, measureFloat, pinFloat, type FloatBox } from "../floatwin.ts";
-import { SheetGrid, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP } from "./grid.ts";
+import { SheetGrid, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP, type SheetGridState } from "./grid.ts";
 import { Ribbon } from "./ribbon.ts";
 import { SheetPage } from "./page.ts";
 
@@ -100,6 +100,13 @@ export class SheetDialog {
   private readonly tier: HTMLElement;
   /** 缩放百分比：点它就是回 100%（数据驱动，不在 foot() 里重建）。 */
   private readonly zoomPct: HTMLButtonElement = el("button", "sd-zoom-pct", "100%");
+  /** 按表视图状态由浮窗持有：网格因为大表被销毁重建时，切回来还在。 */
+  private readonly sheetState: SheetGridState = {
+    colOverBySheet: new Map(),
+    rowOverBySheet: new Map(),
+    freezeBySheet: new Map(),
+    fmtOverBySheet: new Map(),
+  };
   /** #107：查找状态：命中坐标、当前那一处、请求序号（防止旧结果盖新结果）。 */
   private hits: { r: number; c: number }[] = [];
   private hitAt = 0;
@@ -647,6 +654,9 @@ export class SheetDialog {
   private async pickSheet(name: string): Promise<void> {
     const info = this.sheets.find((s) => s.name === name);
     if (!info || this.grid?.activeSheet === name) return;
+    // 改动账目是「r:c」、不带表名：切表前必须先落盘，否则会把这张表的改动写进下一张。
+    this.grid?.commitEdit(null);
+    if (this.guardDirty(tr("先保存改动，再切换工作表"))) return;
     for (const btn of this.wsTabs.children) {
       btn.setAttribute("aria-selected", btn.textContent === name ? "true" : "false");
     }
@@ -707,6 +717,8 @@ export class SheetDialog {
     const grid = new SheetGrid({
       meta,
       sheet,
+      scale: () => this.opts.scale(),
+      state: this.sheetState,
       fetchWindow: this.opts.fetchWindow,
       mediaUrl: (sheet, id) => this.opts.mediaUrl?.(sheet, id) ?? "",
       onSelect: (sel) => {
@@ -805,14 +817,19 @@ export class SheetDialog {
     }
   }
 
+  /** 有未保存改动时统一拦一下，并把原因写在底栏。 */
+  private guardDirty(message: string): boolean {
+    if (!this.grid?.dirty) return false;
+    this.status.textContent = message;
+    this.status.hidden = false;
+    return true;
+  }
+
   private async applyStruct(op: SheetStructOp): Promise<void> {
     const grid = this.grid;
     if (!grid || !this.opts.saveStruct) return;
     if (!grid.editing) return;
-    if (grid.dirty) {
-      this.status.textContent = tr("先保存改动，再改结构");
-      return;
-    }
+    if (this.guardDirty(tr("先保存改动，再改结构"))) return;
     try {
       const out = await this.opts.saveStruct(grid.activeSheet, op);
       const meta = this.pendingMeta ?? (await this.opts.loadMeta());
@@ -842,6 +859,8 @@ export class SheetDialog {
 
   close(): void {
     if (this.closed) return;
+    // 编辑框里刚敲完还没回车的那一笔，先落账再判断有没有改动。
+    this.grid?.commitEdit(null);
     if (this.grid?.dirty && !window.confirm(tr("有未保存的改动，确定关闭？"))) return;
     this.closed = true;
     this.destroy();
@@ -871,7 +890,8 @@ export class SheetDialog {
       if (this.narrow) return;
       ev.preventDefault();
       const box = panes.getBoundingClientRect();
-      const total = Math.max(1, box.width - split.offsetWidth);
+      const scale = this.opts.scale();
+      const total = Math.max(1, box.width - split.offsetWidth * scale);
       split.setPointerCapture(ev.pointerId);
       split.classList.add("drag");
       const move = (e: PointerEvent) => this.setSplit(clampNum((e.clientX - box.left) / total, 0.2, 0.8));

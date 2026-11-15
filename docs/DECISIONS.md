@@ -5003,7 +5003,56 @@ D
 
 **验证：** 新 `bridge/tests/hotdeploy-stash-unit.mjs` 在临时仓库覆盖 stash/pop、未跟踪文件恢复、旧 stash 不误取、冲突时 stash 保留、worker 在 build 失败后恢复改动，以及 worker 在 pop 冲突时停在恢复步骤、不进入换进程；`npm run test:hotdeploy` 串跑旧纯函数测试和这条集成测试。另用临时 bridge + Playwright 回归按钮显隐与确认框。
 
-## D269 插件市场照本机 DeepSeek 的 dshmarket 1.73.19 重画（用户要求「用 rea 逆向本机 deepseek 里面的插件市场 dshmarket，一比一复刻」）
+## D269 表格编辑「点哪格就是哪格」：照 WPS 的 DP→LP 分层换算指针坐标（用户报障 2026-11-15）
+
+**问题：** 表格编辑态里鼠标点一个格子，选中的却是右边/下面的一格甚至几格；越靠右/下偏得越多。字号越大越明显，125% 时 B10 会选到 B12、E2 会选到 F2。
+
+**根因：** `#app { zoom: var(--ui-scale) }`（D36 / D158）让 `clientX/clientY`、`getBoundingClientRect()` 都变成**视觉 px**，而网格的 `leftOf()` / `topOf()`、行高列宽、`scrollLeft/scrollTop` 是**布局 px**。`pointCell()` 却直接 `clientX - rect.left` 去和 `leftOf()` 比，等于把视觉 px 当布局 px；界面缩放 1.25 时每个格子被多算 25%，偏移随列/行累积。边界判界同样拿视觉指针去比 `clientWidth`（布局 px），右/下那片可点的格子会被判成界外。
+
+**为什么：** 命中坐标必须与行高列宽在同一坐标系里；视觉 px 只在最外层换算一次，换算点越少越不会在下一个 `getBoundingClientRect` 里复发。WPS 的 DP→LP 分层就是把这个边界固定成视图层的一件事。
+
+**先逆 WPS。** 按用户要求继续用 `rea` 读本机 WPS：
+
+```bash
+rea inspect-desktop-application /Applications/wpsoffice.app --detail summary \
+  --evidence_output .scratch/wps/app-inventory.json
+strings .../etcore.framework/Versions/A/etcore \
+  | grep -E "IETViewPortTrans|IKETViewportService|IETViewportUtility|KWorksheetViewPanes|KViewportLayer"
+nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
+```
+
+`etcore` 里有 `IETViewPortTrans` / `IKETViewportService` / `IETViewportUtility` / `KWorksheetViewPanes` / `KViewportLayer`（`RENDERLAYER0`），`etmain` 的鼠标路径明确调用 `KAxOleObject::DPtoLP(IKViewportService*, QPoint*, ...)` / `LPtoDP`。这说明 WPS 的同类写法是**先做设备坐标 → 逻辑坐标的换算，再做命中**；冻结、滚动、视图缩放都在逻辑坐标一侧，而不是拿窗口坐标直接套行高列宽。完整命令和结论落在 `docs/SHEET-WPS.md` 第 8 节。
+
+**决定（照 WPS 的分层）：**
+
+- `SheetGrid` 新增 `uiScale()`（浮窗把 `opts.scale` 传进来）；`pointCell()` 先 `(clientX - view左缘) / uiScale()` 换回布局 px，再按冻结带分叉、加滚动量，最后二分查行列。右/下边界用 `clientWidth * uiScale` 判，滚动条那条缝不算格子。
+- 同一换算覆盖所有指针几何：拖列宽/行高（再乘表格自身 `zoomLevel`）、填充柄拖动、换行行高的 `getBoundingClientRect` 实测值、并排视图的分界线。
+- **冻结带事件挂 root**：`.sd-frz` 是 `.sd-view` 之外的覆盖层，原来的 pointer 监听挂在 view 上，点冻结行/列根本到不了 `pointCell`；挂到网格 root 后仍用 view 的矩形判界，表头点击返回 null。
+- **冻结表头握把贴边**：冻结列/行的表头容器只有一格宽/高且 `overflow:hidden`，普通握把的 `right/bottom: -3px` 正好被裁掉一半，点不到；`colhead-frz` / `rowhead-frz` 里的握把改贴边。
+- **合并区归左上角**：`pointCell` 命中 `spans` 时返回 `span.r0/c0`，否则点合并标题中间会出现 `A1:G1` 这种半截选区，名称框也不对。
+- **按表视图状态集中到 `SheetGridState`**：列宽/行高/冻结/本地格式预览由浮窗持有；网格因为大表 `showTooBig` 被销毁重建时，切回来仍能恢复。
+- **Alt+Enter 分支提前**：旧代码先判普通 Enter，`ev.key === "Enter" && ev.altKey` 永远到不了；现在先判 Alt+Enter 并在编辑框里插入换行。
+- **切表先落账、按表分账**：改动账目只按 `"r:c"`、不带表名，有未保存改动时 `pickSheet` 直接提示「先保存改动，再切换工作表」；列宽/行高/冻结/本地格式预览按表保存，切回来不丢、切过去不串。关闭浮窗前先 `commitEdit`，刚敲完没回车的编辑不会丢。
+- 功能区下拉菜单的翻转判断把 `menu.offsetHeight`（布局 px）乘上界面缩放再和 `window.innerHeight`（视觉 px）比。
+
+**代价 / 可改：**
+
+- `uiScale()` 依赖浮窗传入的 `opts.scale()`；直接 new `SheetGrid` 的测试不传时按 1 处理（现有测试都是 1）。
+- 合并区点击归到左上角是「整块选择」，但 Shift 扩选跨过合并区时仍只扩到左上角，不是 Excel 那种把整块纳入矩形；边界情况留待以后。
+- 切表拦截是「先保存再切」，不是「每张表各留一份未保存草稿」；后者要改 `edits` 的键空间，工作量大，这一轮不做。
+- 切表会清掉撤销/重做栈（撤销记录没有表名，留着会把 A 表的 r:c 回退到 B 表）；每张表的撤销历史不跨表保留。
+- 拖列宽/行高仍是本地先画、松手写文件；如果写文件失败，本地覆盖值还在（旧行为，未改）。
+
+**验证：**
+
+- 新探针 `probes/sheet-hit.mjs`（`npm run probe:sheet`，可用 `PI_TEST_SCALE=0.8/1/1.5` 重跑）在 0.8 / 1 / 1.25 / 1.5 四档界面缩放下点 B2 / B10 / E2 / E10：修前 1.25 档得到 B12 / F2 / F12，修后全部命中；`report.xlsx` 的冻结表滚动后点 A1 / A21 / K21 全部命中（修前冻结带点击根本不动），冻结列拖选 A21:A25 也命中，报表 B 列加宽后切到明细不继承、切回来还在，有未保存改动时切表被拦。
+- 同一探针：表格缩放到 200% + 界面 125% 时拖行高 25px 从 50 → 75、拖列宽 25px 从 160 → 185；修前行高会被放大成 162.5 左右。
+- 同一探针新增换行行高：`styled.xlsx` 的换行行在表格 200% 下从 43.75 → 87.5（2.00×），不再按 4× 放大。
+- `Alt+Enter`：修前 `textarea.sd-edit` 直接消失并提交到下一格，修后仍在编辑框且值以换行结尾。
+- `npm --prefix web run typecheck`（tsc + i18n 3059 键 × 3 + 视图单位守卫）通过。
+- `npm run build:web` 通过。
+
+## D270 插件市场照本机 DeepSeek 的 dshmarket 1.73.19 重画（用户要求「用 rea 逆向本机 deepseek 里面的插件市场 dshmarket，一比一复刻」）
 
 **问题：** 输入框下那颗「扩展」按钮打开的管家里，「扩展商店」一直是 2015 年式的清单：一行一个包、月下载量、安装按钮。用户要求把入口改叫「插件」、把「扩展商店」改叫「插件市场」，并按本机 DeepSeek Harness 里的 dshmarket 1:1 重画插件市场。
 
