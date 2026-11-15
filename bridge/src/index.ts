@@ -44,6 +44,7 @@ import { APP_NAME, VERSION, agentDir, ensureStateDirs, readJson, resetScratchDir
 import { BUILD_ID } from "./build-id.ts";
 import { removePidFile, writePidFile } from "./pidfile.ts";
 import { clipboardFiles, listDirs, makeDir, makeFile, statFiles, statPath } from "./dirs.ts";
+import { MAX_UPLOAD_BYTES, pruneUploads, removeUpload, saveUpload } from "./uploads.ts";
 import { gitFetch, gitHistory, GitHistoryError, gitInfo, probeChildren } from "./git.ts";
 import { executeGitOp, gitDiff, gitRefs, gitState, type GitOpParams } from "./gitops.ts";
 import { listFiles, rankFiles } from "./filesearch.ts";
@@ -116,6 +117,8 @@ interface Config {
 /** D186：公网写入窗口 1 天（原 D15 是 10 分钟）—— 手机上批准不该一轮对话就重输一次口令。 */
 const STEP_UP_MS = 24 * 60 * 60 * 1000;
 const MAX_BODY = 30 * 1024 * 1024;
+/** #455 与 MAX_UPLOAD_BYTES 同一个数：readRaw 被挡和 saveUpload 自查，回的是同一句话。 */
+const UPLOAD_TOO_LARGE = "文件太大了（上限 64 MB）";
 
 interface ChildWatch {
   sessionId: string;
@@ -844,7 +847,7 @@ async function main(): Promise<void> {
     }
     // 手工上传 zip：和 /api/peer/upload 一样走原始字节，不把 64 MB 塞进 base64 的 WS 帧。
     if (url.pathname === "/api/market/publish-zip" && req.method === "POST") {
-      const raw = await readRaw(req, 64 * 1024 * 1024).catch(() => null);
+      const raw = await readRaw(req, MAX_UPLOAD_BYTES).catch(() => null);
       if (!raw) return json(res, 413, { error: "太大了（上限 64 MB）" });
       if (!authorized(req.headers.cookie)) return json(res, 401, { error: "要登录" });
       if (isTunnelRequest(req.headers)) return json(res, 403, { error: "通过公网访问时局域网市场只能查看" });
@@ -860,7 +863,7 @@ async function main(): Promise<void> {
       }
     }
     if (url.pathname === "/api/peer/upload" && req.method === "POST") {
-      const raw = await readRaw(req, 64 * 1024 * 1024).catch(() => null);
+      const raw = await readRaw(req, MAX_UPLOAD_BYTES).catch(() => null);
       if (!raw) return json(res, 413, { error: "太大了（上限 64 MB）" });
       try {
         return json(res, 200, await peer.upload(url.searchParams.get("peer") ?? "", url.searchParams.get("name") || "粘贴的图片.png", raw));
@@ -960,6 +963,42 @@ async function main(): Promise<void> {
       } catch (err) {
         return json(res, 400, { error: (err as Error).message });
       }
+    }
+
+    // #455 附件弹层「从本设备选文件」：非图片原件落到上传暂存区，回给页面一个可插进输入框的绝对路径。
+    // 走原始字节（和 /api/peer/upload 一样），64 MB 不经过 base64 帧；鉴权自己判，才回得出稳定错误码。
+    if (url.pathname === "/api/uploads" && req.method === "POST") {
+      if (!ok) return fail(res, 401, "unauthorized", "还没登录");
+      const sid = url.searchParams.get("session") ?? "";
+      if (!sessions.locate(sid)) return fail(res, 404, "session", "找不到这个会话");
+      const rawName = url.searchParams.get("name") ?? "";
+      if (!rawName.trim()) return fail(res, 400, "bad_name", "文件名不能为空");
+      const raw = await readRaw(req, MAX_UPLOAD_BYTES).catch(() => null);
+      if (!raw) {
+        log(`upload too_large ${sid.slice(0, 8)}`);
+        return fail(res, 413, "too_large", UPLOAD_TOO_LARGE);
+      }
+      try {
+        const saved = saveUpload(sid, rawName, raw);
+        log(`upload ${sid.slice(0, 8)} ${saved.name} ${saved.size}`);
+        return json(res, 200, { ok: true, path: saved.path, name: saved.name, size: saved.size });
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        if (code === "too_large") {
+          log(`upload too_large ${sid.slice(0, 8)}`);
+          return fail(res, 413, "too_large", UPLOAD_TOO_LARGE);
+        }
+        log(`upload failed ${sid.slice(0, 8)} write ${(err as Error).message}`);
+        return fail(res, 500, "write", `写不进上传暂存区：${(err as Error).message}`);
+      }
+    }
+    // 客户端回滚：批量上传中途失败时，把已经落盘的几份删掉，别留「看不见的垃圾」。
+    if (url.pathname === "/api/uploads/remove" && req.method === "POST") {
+      if (!ok) return fail(res, 401, "unauthorized", "还没登录");
+      const body = await readBody(req).catch(() => null);
+      const sid = String(body?.session ?? "");
+      if (!sessions.locate(sid)) return fail(res, 404, "session", "找不到这个会话");
+      return json(res, 200, { ok: removeUpload(sid, String(body?.path ?? "")) });
     }
 
     if (url.pathname === "/api/logout" && req.method === "POST") {
@@ -1162,7 +1201,7 @@ async function main(): Promise<void> {
           path: String(it.path),
           tool: String(it.tool ?? "write"),
           writes: Number(it.writes) || 1,
-          // D273：交付工具（open_preview）记下的行，没有基线时要说「脚本产物」而不是「桥没在运行」。
+          // D275：交付工具（open_preview）记下的行，没有基线时要说「脚本产物」而不是「桥没在运行」。
           ...(it.delivered === true ? { delivered: true } : {}),
         }));
       try {
@@ -3675,6 +3714,9 @@ async function main(): Promise<void> {
   server.listen(cfg.port, cfg.host, () => {
     // pid 文件：更新器靠它找到并重启「这一个」进程（见 pidfile.ts 的注释）。
     writePidFile(cfg.port);
+    // #455：上传暂存区顺手清掉 30 天没动过的会话目录与残留临时文件；失败只当没看见。
+    const prunedUploads = pruneUploads();
+    if (prunedUploads) log(`uploads: cleaned ${prunedUploads} stale item(s)`);
     log(`listening on http://${cfg.host}:${cfg.port}`);
     // D209：启动时探一次引擎，排错时第一眼看日志就知道「这台机器能不能站内翻页」。
     const slidesProbed = slidesProbe();

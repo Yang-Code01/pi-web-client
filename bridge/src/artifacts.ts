@@ -31,7 +31,7 @@ export interface ArtifactInput {
   path: string;
   tool: string;
   writes: number;
-  /** 这条来自交付工具（`open_preview`）而不是写入工具：没有写入前基线时换一种说法（D273）。 */
+  /** 这条来自交付工具（`open_preview`）而不是写入工具：没有写入前基线时换一种说法（D275）。 */
   delivered?: boolean;
 }
 
@@ -331,7 +331,7 @@ export async function listArtifacts(sessionId: string, cwd: string, inputs: Arti
         estimate = true;
       }
     }
-    // 脚本 / 程序生成的交付文件本来就没有写入前原文（D273）：别把「桥没在运行」这句错话扣在它头上。
+    // 脚本 / 程序生成的交付文件本来就没有写入前原文（D275）：别把「桥没在运行」这句错话扣在它头上。
     if (!known && !why) why = r.input.delivered ? "delivered-only" : "no-baseline";
 
     const binary = Boolean(snap?.binary) || Boolean(now && looksBinary(now)) || Boolean(!now && before && looksBinary(before));

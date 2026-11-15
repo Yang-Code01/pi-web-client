@@ -211,6 +211,18 @@ check("日上限只数 AI 发的（页面自己发的不算）", mc.sentToday("m
 mc.appendAudit({ t: Date.now(), account: "m1", from: "a@163.com", to: ["b@x.com"], subject: "草稿", by: "agent", tool: "mail_draft", ok: true, messageId: "draft" });
 check("草稿不占 AI 的日上限", mc.sentToday("m1") === 1, String(mc.sentToday("m1")));
 
+// mail_image 走「读邮件」权限；缺 uid 在连 IMAP 之前就回 bad-input，不碰网络。
+{
+  const { res, out } = fakeRes();
+  await mail.handleMailTool(
+    fakeReq("POST", { token: "t1", args: { account: deadId } }),
+    res,
+    new URL("http://127.0.0.1:7864/api/mail/tool/mail_image"),
+    { publicReq: false, byToken: () => ({ id: "s1" }), confirm: async () => ({ ok: true }) },
+  );
+  check("mail_image 缺 uid → bad-input", out.body?.code === "bad-input", String(out.body?.code));
+}
+
 // ---------------------------------------------------------------- 删账号要清掉白名单里的 id
 await call("POST", "/api/mail/policy", { accountIds: [deadId] });
 r = await call("DELETE", `/api/mail/accounts/${deadId}`);

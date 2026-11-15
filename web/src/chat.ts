@@ -221,7 +221,7 @@ export class ChatView {
   /** Something arrived while the user was reading up top. */
   private unread = false;
   private jump: HTMLButtonElement;
-  /** Files the agent wrote or delivered (D273), latest last. */
+  /** Files the agent wrote or delivered (D275), latest last. */
   private written = new Map<string, ArtifactSource>();
   /** Assistant replies the user folded; kept across rebuilds and session re-renders. */
   private collapsed = new Set<string>();
@@ -1537,7 +1537,7 @@ export class ChatView {
   }
 
   /**
-   * D208 / D273: 产物弹窗要的是「这条路径在这个会话里被写过几次、最后一次用什么工具」，不是文件状态 ——
+   * D208 / D275: 产物弹窗要的是「这条路径在这个会话里被写过几次、最后一次用什么工具」，不是文件状态 ——
    * 状态得桥去比写入前的原文（write 覆盖已有文件同样是「修改」）。相对/绝对写法故意原样保留：
    * 桥会按 abs 去重，这里要是合并了反而看不出用户当时用的是哪种写法。
    * 来源不止写入：`open_preview` 交付过的也算（`delivered`），脚本生成的 xlsx / html 只有这一条线索。

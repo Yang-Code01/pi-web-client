@@ -50,6 +50,8 @@ import {
 } from "./mailtransport.ts";
 
 const MAX_BODY = 2 * 1024 * 1024;
+/** 回给模型的单张内嵌图片上限（base64 后约 4MB，pi 的图片通道还能接住）。 */
+const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 
 export interface MailConfirmRequest {
   account: string;
@@ -484,11 +486,13 @@ export async function handleMail(req: http.IncomingMessage, res: http.ServerResp
         return true;
       }
       const file = await readAttachment(account, folder, uid, index);
+      // `inline=1` 给正文里的 <img> 用：同一份字节，只是别让浏览器当成下载。
+      const inline = url.searchParams.get("inline") === "1";
       res.writeHead(200, {
         "content-type": file.contentType || "application/octet-stream",
         "content-length": String(file.content.length),
-        "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
-        "cache-control": "no-store",
+        "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+        "cache-control": inline ? "private, max-age=3600" : "no-store",
       });
       res.end(file.content);
       return true;
@@ -547,6 +551,18 @@ function agentPolicyView(policy: MailPolicy): Omit<MailPolicy, "mutate"> {
   const { mutate: _unused, ...rest } = policy;
   void _unused;
   return rest;
+}
+
+/**
+ * 工具口的 HTML 先去掉 <head>/<style>/<script>，再截断。营销邮件经常前 20k 全是 CSS，
+ * 直接截会把正文（以及 `[图片]` 标记）切没；模型也不需要 CSS。
+ */
+export function htmlForModel(html: string): string {
+  return String(html ?? "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, "")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
 }
 
 /** 长正文截断并注明（工具口专用：上下文有限）。 */
@@ -615,7 +631,8 @@ export async function handleMailTool(req: http.IncomingMessage, res: http.Server
         if (denied) return toolJson(res, toolFail(denied, denialText(denied))), true;
         const uid = asInt(args?.uid, -1);
         if (uid < 0) return toolJson(res, toolFail("bad-input", "要给 `uid`（从 mail_list 里拿）。")), true;
-        const detail = await readMessage(account, String(args?.folder ?? "INBOX"), uid);
+        // 工具口保留 cid:：内嵌图片的 base64 不进模型上下文，图片另走 mail_image。
+        const detail = await readMessage(account, String(args?.folder ?? "INBOX"), uid, { keepCidLinks: true });
         // 「取附件」管的是往磁盘写文件，正文不该连坐：纯 HTML 的信以前就变成「没有纯文本正文」。
         const canAttach = !policyDenial(config, "attachments", account);
         return toolJson(res, {
@@ -624,7 +641,7 @@ export async function handleMailTool(req: http.IncomingMessage, res: http.Server
             ...detail,
             // 正文太长会把上下文吃满：留 20000 字，多的截断并说清楚。
             text: clip(detail.text, 20000, "正文"),
-            html: clip(detail.html ?? "", 20000, "HTML 正文") || null,
+            html: clip(htmlForModel(detail.html ?? ""), 20000, "HTML 正文") || null,
             // 附件能不能落盘由 `attachmentsAllowed` 一个信号说清，别每项再塞一个没人读的字段。
             attachments: detail.attachments,
           },
@@ -678,6 +695,34 @@ export async function handleMailTool(req: http.IncomingMessage, res: http.Server
         });
         if (!out.ok) return toolJson(res, toolFail(out.code ?? "send_failed", out.error ?? "发送失败")), true;
         return toolJson(res, { ...out, account: account.id }), true;
+      }
+
+      case "mail_image": {
+        const account = findAccount(config, args?.account ?? null);
+        if (!account) return toolJson(res, toolFail("no-account", "还没有配邮箱账号。")), true;
+        // 看内嵌图片不写磁盘，归「读邮件」管；不用让用户为了看一张图打开「取附件」。
+        const denied = policyDenial(config, "read", account);
+        if (denied) return toolJson(res, toolFail(denied, denialText(denied))), true;
+        const uid = asInt(args?.uid, -1);
+        if (uid < 0) return toolJson(res, toolFail("bad-input", "要给 `uid`。")), true;
+        const file = await readAttachment(account, String(args?.folder ?? "INBOX"), uid, asInt(args?.index, 0));
+        const mime = String(file.contentType ?? "").split(";")[0].trim().toLowerCase().replace(/^image\/jpg$/, "image/jpeg");
+        if (!mime.startsWith("image/")) {
+          return toolJson(res, toolFail("not-image", `第 ${asInt(args?.index, 0)} 项不是图片（${mime || "未知类型"}），用 mail_attachment 下载。`)), true;
+        }
+        if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mime)) {
+          return toolJson(res, toolFail("not-image", `图片格式 ${mime} 不能直接看，用 mail_attachment 存到本机再用 open_preview。`)), true;
+        }
+        if (file.content.length > MAX_IMAGE_BYTES) {
+          return toolJson(res, toolFail("image-too-large", `这张图 ${Math.round(file.content.length / 1024 / 1024 * 10) / 10}MB，超过 3MB，用 mail_attachment 存到本机再看。`)), true;
+        }
+        return toolJson(res, {
+          ok: true,
+          filename: file.filename,
+          contentType: mime,
+          size: file.content.length,
+          base64: file.content.toString("base64"),
+        }), true;
       }
 
       case "mail_attachment": {

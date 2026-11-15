@@ -27,6 +27,7 @@ import type {
   MailPolicyView,
   MailSummary,
 } from "./mail-shared.ts";
+import { buildMailFrameHtml, renderMailHtml } from "./mailhtml.ts";
 import { joinAddress, localPartFor, presetDomain, retargetAddress, splitAddress } from "./mail-shared.ts";
 import { auditOutcome, MAIL_POLICY_LABELS, mailErrorText, parseRecipients, portOf, secureForPort, sizeText, whenText } from "./mail-shared.ts";
 
@@ -160,6 +161,11 @@ function failText(what: string, err: unknown): string {
 /** 列表一页多少封（底部「看更早的」按这个往后翻）。 */
 const LIST_PAGE = 30;
 
+/** 邮件正文 iframe 的高度：先占位，load 后按内容量，超过上限才让它自己滚。 */
+const MAIL_FRAME_MIN_HEIGHT = 160;
+const MAIL_FRAME_MAX_HEIGHT = 20000;
+const MAIL_FRAME_SETTLE_MS = [120, 600];
+
 /** 审计行里的失败：桥给的是稳定错误码，翻成人话再显示（认不出来的只说「失败」，不露原文）。 */
 function auditFailText(code: string | undefined): string {
   const hit = mailErrorText(code);
@@ -205,11 +211,17 @@ export class MailPanel {
   private unreadOnly = false;
   /** 最后一页是不是取满了：取满就说明后面可能还有，底部给一个「看更早的」。 */
   private listHasMore = false;
+  /** 左栏邮件列表是否折叠；折叠后右栏占满整行，读 HTML 邮件时不再被窄列表挤着。 */
+  private listCollapsed = false;
 
   private detail: MailDetailView | null = null;
   private detailUid = -1;
   private detailLoading = false;
   private detailError = "";
+  /** 当前正文 iframe：折叠列表后只要重算这一只，不去 DOM 里按类名摸。 */
+  private detailFrame: HTMLIFrameElement | null = null;
+  /** 哪封信放行过远程图片（按 uid）；换一封信自然失效，关面板时清掉。 */
+  private remoteImagesUid = -1;
 
   private compose: Compose | null = null;
   private form: AccountForm | null = null;
@@ -240,12 +252,15 @@ export class MailPanel {
     this.listError = "";
     this.unreadOnly = false;
     this.listHasMore = false;
+    this.listCollapsed = false;
     this.listSeq += 1;
     this.detailSeq += 1;
     this.detail = null;
     this.detailUid = -1;
     this.detailLoading = false;
     this.detailError = "";
+    this.detailFrame = null;
+    this.remoteImagesUid = -1;
     this.compose = null;
     this.form = null;
     this.saving = false;
@@ -265,6 +280,8 @@ export class MailPanel {
     this.reloadSeq += 1;
     this.listSeq += 1;
     this.detailSeq += 1;
+    this.detailFrame = null;
+    this.remoteImagesUid = -1;
     this.confirmDeleteId = "";
     if (this.deleteTimer) window.clearTimeout(this.deleteTimer);
     this.deleteTimer = 0;
@@ -661,6 +678,7 @@ export class MailPanel {
   private inboxEl(): HTMLElement {
     const wrap = el("div", "mc-inbox");
     const bar = el("div", "mc-toolbar");
+    const split = el("div", "mc-split");
     const me = this.activeAccount();
     const accounts = this.config?.accounts ?? [];
 
@@ -725,15 +743,31 @@ export class MailPanel {
     unread.append(cb, el("span", "", tr("只看未读")));
     bar.append(unread);
 
+    const toggleList = el("button", "mc-mini") as HTMLButtonElement;
+    toggleList.type = "button";
+    toggleList.setAttribute("aria-controls", "mc-mail-list");
+    const paintListToggle = () => {
+      toggleList.textContent = this.listCollapsed ? tr("展开列表") : tr("折叠列表");
+      toggleList.setAttribute("aria-pressed", String(this.listCollapsed));
+      toggleList.title = this.listCollapsed ? tr("展开邮件列表") : tr("折叠邮件列表，让正文更宽");
+      split.classList.toggle("is-list-collapsed", this.listCollapsed);
+    };
+    paintListToggle();
+    toggleList.onclick = () => {
+      this.listCollapsed = !this.listCollapsed;
+      paintListToggle();
+      // 右栏变宽后正文会重新排版，iframe 高度跟着重算（复用同一组 settle 时序）。
+      for (const ms of [0, ...MAIL_FRAME_SETTLE_MS]) window.setTimeout(() => this.refitMailFrame(), ms);
+    };
+
     const refresh = el("button", "mc-mini", tr("刷新")) as HTMLButtonElement;
     refresh.type = "button";
     refresh.onclick = () => void this.loadMessages(this.seq);
     const write = el("button", "mc-mini mc-mini--primary", tr("写邮件")) as HTMLButtonElement;
     write.type = "button";
     write.onclick = () => this.startNewMail();
-    bar.append(refresh, write);
+    bar.append(toggleList, refresh, write);
 
-    const split = el("div", "mc-split");
     split.append(this.listEl(), this.readEl());
     wrap.append(bar, split);
     return wrap;
@@ -741,6 +775,7 @@ export class MailPanel {
 
   private listEl(): HTMLElement {
     const list = el("div", "mc-list");
+    list.id = "mc-mail-list";
     if (this.listError) {
       const box = el("div", "mc-empty mc-empty--bad");
       box.append(el("p", "", this.listError));
@@ -817,11 +852,13 @@ export class MailPanel {
     acts.append(reply, draft, analyze, aiReply);
     box.append(acts);
 
-    if (m.attachments.length) {
+    // 「附件」只认真正被标成附件的部分；带 Content-ID 但 disposition=attachment 的图仍是附件。
+    const files = m.attachments.filter((a) => !a.inline);
+    if (files.length) {
       const att = el("div", "mc-attach");
       // 页面上的附件是**人自己**在下载：不受「取附件」（那是 AI 的开关）管，永远给直链（D264）。
       att.append(el("div", "mc-attach__title", tr("附件")));
-      for (const a of m.attachments) {
+      for (const a of files) {
         const link = el("a", "mc-attach__row", `${a.filename} · ${sizeText(a.size)}`) as HTMLAnchorElement;
         link.href = api.mailAttachmentUrl({
           account: this.activeAccount()?.id,
@@ -835,8 +872,94 @@ export class MailPanel {
       box.append(att);
     }
 
-    box.append(el("pre", "mc-letter__text", m.text || tr("（没有纯文本正文）")));
+    const htmlBody = m.html?.trim() ? this.htmlBodyEl(m) : null;
+    if (htmlBody) box.append(htmlBody);
+    else box.append(el("pre", "mc-letter__text", m.text || tr("（没有纯文本正文）")));
     return box;
+  }
+
+  /**
+   * 邮件正文：HTML 放 sandbox iframe（脚本跑不了、样式也漏不出来），内嵌图片直接显示；
+   * 远程图片默认收起，点「显示图片」才放行 —— 和邮件客户端一个口径，别一打开信就把
+   * 本机 IP 和阅读行为送给发件人的追踪像素。
+   */
+  private htmlBodyEl(m: MailDetailView): HTMLElement | null {
+    const allowRemote = this.remoteImagesUid === m.uid;
+    const rendered = renderMailHtml(m.html ?? "", {
+      attachments: m.attachments,
+      allowRemote,
+      inlineUrl: (a) =>
+        api.mailAttachmentUrl({
+          account: this.activeAccount()?.id,
+          folder: this.folder,
+          uid: m.uid,
+          index: a.index,
+          inline: true,
+        }),
+    });
+
+    // 只有 <style> / 空 body 的信：清理完什么都没有，退回纯文本，别给一块空白。
+    if (!rendered.html.trim()) return null;
+    const wrap = el("div", "mc-body");
+    const remoteCount = rendered.remoteImages || rendered.remoteCss;
+    if (remoteCount > 0) {
+      const bar = el("div", "mc-body__bar");
+      const hint = el(
+        "span",
+        "mc-body__hint",
+        allowRemote ? tr("远程图片已显示") : tr("为保护隐私，远程图片默认不加载"),
+      );
+      bar.append(hint);
+      const label = allowRemote
+        ? tr("不显示图片")
+        : rendered.remoteImages > 0
+          ? tr("显示图片（{n}）", { n: String(rendered.remoteImages) })
+          : tr("显示远程图片");
+      const toggle = el("button", "mc-mini", label) as HTMLButtonElement;
+      toggle.type = "button";
+      toggle.onclick = () => {
+        this.remoteImagesUid = allowRemote ? -1 : m.uid;
+        this.render();
+      };
+      bar.append(toggle);
+      wrap.append(bar);
+    }
+
+    const frame = el("iframe", "mc-html") as HTMLIFrameElement;
+    frame.setAttribute("sandbox", "allow-same-origin allow-popups allow-popups-to-escape-sandbox");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.setAttribute("title", tr("邮件正文"));
+    frame.setAttribute("scrolling", "no");
+    frame.style.height = `${MAIL_FRAME_MIN_HEIGHT}px`;
+    frame.srcdoc = buildMailFrameHtml(rendered, allowRemote);
+    frame.onload = () => this.fitMailFrame(frame);
+    this.detailFrame = frame;
+    wrap.append(frame);
+    // iframe 的内容高度只有在 onload 之后才知道；图片是后加载的，再补两次。
+    for (const ms of MAIL_FRAME_SETTLE_MS) window.setTimeout(() => this.fitMailFrame(frame), ms);
+    return wrap;
+  }
+
+  private refitMailFrame(): void {
+    if (this.detailFrame?.isConnected) this.fitMailFrame(this.detailFrame);
+  }
+
+  private fitMailFrame(frame: HTMLIFrameElement): void {
+    const doc = frame.contentDocument;
+    if (!doc?.body) return;
+    // 先缩回最小高度再量 body：documentElement.scrollHeight 是 iframe 自己的视口，
+    // 拿它会让高度只能变大（折叠后正文变矮也收不回来）。
+    frame.style.height = `${MAIL_FRAME_MIN_HEIGHT}px`;
+    const contentHeight = Math.max(doc.body.scrollHeight, doc.body.getBoundingClientRect().height, MAIL_FRAME_MIN_HEIGHT);
+    const height = Math.min(Math.ceil(contentHeight), MAIL_FRAME_MAX_HEIGHT);
+    frame.style.height = `${height}px`;
+    frame.setAttribute("scrolling", contentHeight > MAIL_FRAME_MAX_HEIGHT ? "auto" : "no");
+    // 图片/字体加载完高度会变；监听这一次，别让正文被截掉半截。
+    for (const img of Array.from(doc.images)) {
+      if (img.complete) continue;
+      img.addEventListener("load", () => this.fitMailFrame(frame), { once: true });
+      img.addEventListener("error", () => this.fitMailFrame(frame), { once: true });
+    }
   }
 
   // -------------------------------------------------------------- 写信
