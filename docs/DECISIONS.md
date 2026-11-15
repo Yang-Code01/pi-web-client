@@ -5225,6 +5225,7 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - `npm run test:uploads`：`bridge/tests/uploads-unit.mjs` 12 项（basename / 非法字符 / 空名 / 保留名 / 中文 emoji / 0 字节 / 重名 -2 / 120 截断 / 64MB+1 拒收且不落半份 / 无残留临时文件 / 回滚越界拒绝 / 30 天清理）。
 - `npm run test:attach:ui`：新增三段 —— 真上传 `from-device.txt` 并核对内容、同名第二份落成 `from-device-2.txt` 且第一份没被覆盖、11 个文件被「一次最多 10 个文件」拦下；同时把这份 D163/D167 探针的选择器从旧的 `.sheet.file-picker` / `.model-row` 更新到现在的控制台 DOM（`.fc-back` / `.dir-row`），否则它在 D252 之后根本跑不起来。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3186 键 × 3 + viewport）、`npm run build` 全绿。
+
 ## D275 产物列表也收「交付」：open_preview 打开过的文件算本会话产物（用户报障 2026-11-15）
 
 **问题：** 一次会话里生成了 `Excel全能教学练习簿.xlsx`，回复里写着「已生成并在预览中打开」，但「📂 产物」弹窗里只有 `excel_build.py`。根因是列表只收 write 系工具（D208 第 5 条）：xlsx 是 `bash` 跑 python 脚本生成的，脚本产出的文件永远不会经过 write 钩子。而 `open_preview` 是网页会话的交付出口（D190 / D226），路径就在工具参数里，却没进列表 —— 用户看到「已打开」却找不到。
@@ -5243,3 +5244,13 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **修订：** D208 第 5 条「只认 write 系工具」扩成「write 系 + `open_preview`」；D208 的写入前快照、五档状态、diff 弹窗都不变。
 
 **验证：** `web/tests/artifact-sources-unit.mjs`（7 条：两种来源、先后顺序、去重、无关工具、toolPath）接进 `npm run test:artifacts`；`bridge/tests/artifacts-unit.mjs` 新增一条「交付文件 → delivered-only」；`probes/artifacts-delivered.mjs` 用真桥 + 真 Chromium 复现用户那次的形状（xlsx 在列表里、`open_preview×1`、说明是脚本产物、py 仍是 `write×1`）；`npm run typecheck` / `npm run build` 通过。
+
+## D276 字号默认值从 100% 调到 125%（用户要求 2026-11-15）
+
+**决定：** `DEFAULT_PREFS.scale` 改为 `1.25`：新设备、清过 `localStorage` 的浏览器第一次打开就是 125%（登录页在 `App` 之前渲染，也先套用已存/默认字号），设置抽屉的「恢复默认」和双击字号轨道都回到 125%。已经存过 `pi.prefs.scale` 的浏览器保留原值，不迁移 —— 分不清「从来没动过」和「明确选了 100%」。设置里字号的读数高亮改成跟 `DEFAULT_PREFS.scale` 比较，否则默认状态会被标成「用户改过」。
+
+**为什么：** 用户要求默认大一号。125% 在常见的 1280 / 1440 桌面窗口下有效宽度仍是 1024 / 1152，高于 900 的窄版阈值，不会一上来就退成单栏。
+
+**代价：** 视口窄于 1125px 时有效宽度不足 900，1024 宽的小屏新设备会直接进入单栏；这是默认放大字号的直接结果，不为它做特殊回退。
+
+**验证：** `npm run typecheck`、`npm run build`、`node bridge/tests/scratch-ui.mjs` 全绿（用例新增登录页与 App 的默认 125% 断言）；本地起桥实测全新 profile 的 `--ui-scale` 与 `#app zoom` 都是 1.25，1440 窗口仍是三栏。

@@ -3874,7 +3874,7 @@ export class App {
       range.style.setProperty("--fill", `${sizePct(v) * 100}%`);
       range.setAttribute("aria-valuetext", `${Math.round(v * 100)}%`);
       sizeRead.textContent = `${Math.round(v * 100)}%`;
-      sizeRead.classList.toggle("moved", Math.abs(v - 1) > 0.001);
+      sizeRead.classList.toggle("moved", Math.abs(v - DEFAULT_PREFS.scale) > 0.001);
       for (const t of ticks.children) {
         t.classList.toggle("past", Number((t as HTMLElement).dataset.v) < v - 0.001);
       }
@@ -3978,8 +3978,8 @@ export class App {
     };
     range.addEventListener("keyup", () => { if (!dragBox) commitSize(); });
     range.addEventListener("blur", () => { if (!dragBox) commitSize(); });
-    // 双击轨道回 100%：轨上没有「标准」这颗字了，得留一条回到原点的路。
-    rail.addEventListener("dblclick", () => setScale(1, true));
+    // 双击轨道回默认字号：轨上没有「标准」这颗字了，得留一条回到原点的路。
+    rail.addEventListener("dblclick", () => setScale(DEFAULT_PREFS.scale, true));
 
     paintSize(this.prefs.scale);
 
@@ -17835,8 +17835,11 @@ const PEEK_DELAY_MS = 3000;
 /** Grace after the pointer leaves, so crossing the 8px gap into the card isn't a "leave". */
 const PEEK_GAP_MS = 200;
 
+/** 默认字号只在这里写一份：滑杆刻度 `SIZE_STOPS` 也引用它，改默认值不会漏掉刻度。 */
+const DEFAULT_SCALE = 1.25;
+
 const DEFAULT_PREFS: Prefs = {
-  scale: 1,
+  scale: DEFAULT_SCALE,
   accent: "ice",
   text: "normal",
   lang: "zh-Hans",
@@ -18380,7 +18383,7 @@ function openSameOrigin(url: string): void {
 const SIZE_MIN = 0.8;
 const SIZE_MAX = 2;
 const SIZE_STEP = 0.01;
-const SIZE_STOPS = [0.9, 1, 1.12, 1.25];
+const SIZE_STOPS = [0.9, 1, 1.12, DEFAULT_SCALE];
 /** 磁吸半径：0.012 = 1.2%，在 480px 的轨上大约 5px。 */
 const SIZE_SNAP = 0.012;
 
@@ -18462,16 +18465,33 @@ const TEXT_STEPS: [Prefs["text"], string][] = [
   ["bright", tr("明亮")],
 ];
 
+/** 读取一个字号值：滑杆是连续的，只夹范围、留两位小数（老的 0.9 / 1 / 1.12 / 1.25 原样还能读回来）。 */
+function prefScale(raw: unknown): number {
+  const scale = Number(raw);
+  return Number.isFinite(scale) && scale > 0 ? clampScale(scale) : DEFAULT_PREFS.scale;
+}
+
+/**
+ * 登录页在 `App` 之前就画出来了：先把已存或默认字号挂到 `#app` 上，
+ * 否则新设备第一眼的登录页会停在 CSS 兜底的 100%。
+ */
+export function bootScale(): number {
+  try {
+    const raw = localStorage.getItem("pi.prefs");
+    return raw ? prefScale(JSON.parse(raw)?.scale) : DEFAULT_PREFS.scale;
+  } catch {
+    return DEFAULT_PREFS.scale;
+  }
+}
+
 function readPrefs(): Prefs {
   try {
     const raw = localStorage.getItem("pi.prefs");
     if (!raw) return { ...DEFAULT_PREFS, lang: detectLang() };
     const p = JSON.parse(raw);
-    const scale = Number(p?.scale);
     const accent = LEGACY_ACCENTS[String(p?.accent)] ?? String(p?.accent);
     return {
-      // 滑杆是连续的：只夹范围、留两位小数（老的 0.9 / 1 / 1.12 / 1.25 原样还能读回来）。
-      scale: Number.isFinite(scale) && scale > 0 ? clampScale(scale) : DEFAULT_PREFS.scale,
+      scale: prefScale(p?.scale),
       accent: ACCENTS[accent] ? accent : DEFAULT_PREFS.accent,
       text: TEXT_STEPS.some(([k]) => k === p?.text) ? (p.text as Prefs["text"]) : DEFAULT_PREFS.text,
       // 没存过语言（第一次打开、或老版本升上来）就跟着浏览器走。
