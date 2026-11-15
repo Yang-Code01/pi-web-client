@@ -3026,8 +3026,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
   --turn-min-w: 96px;
   --turn-max-w: 320px;
   --turn-r: 16px;
-  --turn-open-dur: 543ms;
-  --turn-close-dur: 343ms;
+  /* 比 WorkBuddy 的 543ms / 343ms 短一半：那 543ms 是「面板还没长到指针底下」的空窗，人手点下去
+     正好落在里面（实测 0–280ms 的点击全打在正文上）。与 turns.ts 的 OPEN_MS / CLOSE_MS 一致。 */
+  --turn-open-dur: 240ms;
+  --turn-close-dur: 200ms;
   --turn-ease-open: cubic-bezier(0.16, 1, 0.3, 1);
   --turn-ease-close: cubic-bezier(0.45, 0, 0.3, 1);
   --turn-dash: 8px;            /* 一根短横：平时 / 鼠标扫到 / 当前这一轮 */
@@ -3083,8 +3085,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .turn-rows { position: relative; width: 100%; height: var(--turn-rows-h, 0px); }
 
 /* 一行 = 一根刻度。收起时它只有 26px 高的空壳 + 右边一根短横，文字透明度 0。 */
+/* 行高 = 格距 28，中间不留缝：原来 26 + 2px 行距，那 2px 就是「点下去没反应」的空洞。 */
 .turn-row {
-  position: absolute; left: 0; right: 0; top: -13px; height: 26px;
+  position: absolute; left: 0; right: 0; top: -14px; height: 28px;
   display: flex; align-items: center; justify-content: flex-end; gap: 12px;
   width: auto; min-width: 0; padding: 3px 8px 3px 24px;
   background: none; border: 0; border-radius: 0;
@@ -3172,6 +3175,10 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 }
 .turn-hit:focus-visible { outline: 1px solid var(--accent-dim); outline-offset: -2px; border-radius: 999px; }
 .turn-rail.open .turn-hit { pointer-events: none; }
+/* 面板展开 / 展开中：整块外框也接指针。`clip-path` 会把「还没长出来」的那一半从命中测试里裁掉，
+   不补这一层，那些区域里的按下会直接穿到正文上 —— 而那正是人手点得最快的地方。
+   （事件照旧冒泡到 `.turn-rail`，由 turns.ts 的按下-抬起按几何命中的那一行去跳。） */
+.turn-rail.open .turn-panel-outer { pointer-events: auto; }
 
 /* #243: 未载入的轮次（ghost）淡一档占位；悬停仍不发光、不长个 —— 它还不是内容。
    收起时文字是透明的，但颜色这一档还是照写：一来展开的那一下不用换色，二来用例量得到「淡一档」。 */

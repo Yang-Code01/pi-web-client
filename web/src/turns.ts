@@ -19,10 +19,13 @@ import { tr } from "./i18n/index.ts";
 
 /** 收起时一根短横占的版面（px）。 */
 const STEP_COMPACT = 14;
-/** 展开后一行占的版面：行高 26 + 行距 2。 */
+/**
+ * 展开后一行占的版面。行高 = 格距 = 28：**不留缝**。原来是 26 + 2px 行距，那 2px 落在两行之间就是
+ * 「点下去没有任何反应」的空洞（实测点到了 `.turn-rows` 这个没有处理器的容器）。
+ */
 const STEP_EXPANDED = 28;
-const ROW_H = 26;
-const ROW_GAP = 2;
+const ROW_H = 28;
+const ROW_GAP = 0;
 /** 收起时最多摆下多少根短横，再多就在那一条带子里自己滚（不是抽样：一根都不许少）。 */
 const MAX_COMPACT_TICKS = 28;
 /** 展开后整块面板的高度上限；实际还会按正文视口高度收（见 `measure()`）。 */
@@ -39,11 +42,16 @@ const TEXT_MAX = 160;
 const SIZER_ITEMS = 24;
 const SIZER_CHARS = 120;
 /** 悬停意图：移到带子上等这么久才展开，移开等这么久才收起 —— 扫过去不算展开。 */
-const OPEN_INTENT_MS = 60;
+const OPEN_INTENT_MS = 40;
 const CLOSE_INTENT_MS = 180;
-/** 与 styles.css 的 `--turn-open-dur` / `--turn-close-dur` 一致（那边是动画，这边是收尾时机）。 */
-const OPEN_MS = 543;
-const CLOSE_MS = 343;
+/**
+ * 展开 / 收起的时长，与 styles.css 的 `--turn-open-dur` / `--turn-close-dur` 一致。
+ * **故意比 WorkBuddy 的 543ms / 343ms 短一半**：那 543ms 正好是「面板还没长到指针底下」的窗口，
+ * 人手点一下（移过去 200–400ms 就点）几乎每次都落在这个窗口里 —— 实测 0/60/120/200/280ms 的点击
+ * 全部打在正文上、360ms 那次 mousedown 与 mouseup 落在不同元素上，都被吞掉（见 D265 的补充）。
+ */
+const OPEN_MS = 240;
+const CLOSE_MS = 200;
 
 type Phase = "closed" | "opening" | "open" | "closing";
 
@@ -190,7 +198,10 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
   function measure(count: number): Geometry {
     const view = opts.viewport ?? host;
     const viewH = view.clientHeight || 560;
-    const maxPanel = Math.max(160, Math.min(MAX_PANEL_H, Math.round(viewH * PANEL_VIEWPORT_SHARE)));
+    // 量化到一整行的整数倍：正文视口抖动两三个像素（滚动条进场、输入框长高一点）不该让面板高度
+    // 跟着跳 14px —— 那会让「翻一页前后带子总高不变」这条不变量偶发地红。
+    const cap = Math.min(MAX_PANEL_H, Math.round(viewH * PANEL_VIEWPORT_SHARE));
+    const maxPanel = Math.max(160, STEP_EXPANDED * Math.floor(cap / STEP_EXPANDED));
     // 短横也得摆得进同一段高度：窄窗口下 28 根会顶穿视口。
     const fits = Math.floor((maxPanel - 20) / STEP_COMPACT);
     const ticks = Math.min(count, MAX_COMPACT_TICKS, Math.max(3, fits));
@@ -389,13 +400,12 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
     }
     cap.textContent = text.length > TEXT_MAX ? `${text.slice(0, TEXT_MAX)}…` : text;
     if (ghost) {
-      const id = ghosts[index].id;
-      row.onclick = () => opts.onPickGhost?.(id);
+      row.onclick = () => onClickRow(index);
       // ghost 还没载入：没有节点可预览，不挂 hover。
       row.onpointerenter = null;
       row.onpointerleave = null;
     } else {
-      row.onclick = () => opts.onPick(turn);
+      row.onclick = () => onClickRow(index);
       row.onpointerenter = () => {
         if (hot === turn) return;
         hot = turn;
@@ -410,6 +420,98 @@ export function mountTurnRail(host: HTMLElement, opts: TurnRailOpts): TurnRail {
       };
     }
   };
+
+  /**
+   * 指针的屏幕 y 落在**哪一行**上 —— 按行此刻的实际 rect 算，不靠 `elementFromPoint`。
+   * 两个理由：① 面板的 `clip-path` 会把还没长出来的那一半从命中测试里裁掉，事件直接穿到正文上；
+   * ② 行之间有缝、面板上下还有留白，点在缝里命中的是没有处理器的容器。几何反推把这些都变成
+   * 「最近的那一行」。展开动画进行中也成立：行的 rect 带着 transform，量到的就是它此刻在屏幕上的位置。
+   */
+  const rowAt = (clientY: number): number | null => {
+    let nearest: number | null = null;
+    let best = Infinity;
+    for (const row of rowNodes.values()) {
+      if (!row.isConnected) continue;
+      const rect = row.getBoundingClientRect();
+      if (!rect.height) continue;
+      if (clientY >= rect.top && clientY <= rect.bottom) return Number(row.dataset.i);
+      const dist = Math.abs(clientY - (rect.top + rect.bottom) / 2);
+      if (dist < best) {
+        best = dist;
+        nearest = Number(row.dataset.i);
+      }
+    }
+    // 最近的也远（点在面板上下的留白里）= 没点在任何一行上。
+    return best <= STEP_EXPANDED ? nearest : null;
+  };
+
+  /**
+   * 收起态（以及展开 / 收起的动画中）指针落在**哪一根短横**上 —— 按「收起那套坐标」反推。
+   *
+   * 这一条和 `rowAt()` 是两个口径，故意分开：面板正在长出来的时候，行在屏幕上滑动，同一处 y 上一
+   * 刻是第 6 根短横、下一刻是第 12 行。用户是**冲着那根短横**点下去的（那时他还没看到行文字），
+   * 所以这个阶段按短横算；等面板落定了（`open`）才按行算 —— 那时他看到什么就点中什么。
+   *
+   * 注意换尺：`getBoundingClientRect()` 是视觉 px（`#app` 上有 zoom），`compactY()` / `scrollTop`
+   * 是布局 px，中间要除一次 `--ui-scale`（D265 里 `frame()` 踩过同一个坑）。
+   */
+  const dashAt = (clientY: number): number | null => {
+    const box = list.getBoundingClientRect();
+    const y = (clientY - box.top) / uiScale() + list.scrollTop;
+    const at = Math.round((y - geom.compactOffset - 17) / STEP_COMPACT);
+    if (at < 0 || at >= total()) return null;
+    // 落在两根短横之间、或带子上下的留白里 = 没点中任何一根。
+    if (Math.abs(y - compactY(at)) > STEP_COMPACT / 2 + 1) return null;
+    return at;
+  };
+
+  /**
+   * 真的跳。同一次点击会被两条路各收到一遍（按下-抬起的几何命中 + 行自己的 click），去重一下：
+   * 400ms 内同一个下标只算一次。
+   */
+  let lastPick = { index: -1, at: 0 };
+  /**
+   * 这一次点击已经被「按下-抬起」那条路处理过了，紧跟其后的原生 `click` 别再算一遍。
+   * 必须挡：按下时按短横算出来是第 3 根，抬起时的 `click` 却落在「已经滑到那儿的那一行」上（第 7 行）
+   * —— 两条路各跳一次，后跑的那条（错的）赢，用户看到的就是「点了却跳去隔壁」。
+   */
+  let clickGuard = 0;
+  const onClickRow = (index: number): void => {
+    if (performance.now() < clickGuard) return;
+    pickRow(index);
+  };
+  const pickRow = (index: number): void => {
+    if (index < 0 || index >= total()) return;
+    const now = performance.now();
+    if (index === lastPick.index && now - lastPick.at < 400) return;
+    lastPick = { index, at: now };
+    if (isGhost(index)) opts.onPickGhost?.(ghosts[index].id);
+    else opts.onPick(turnOf(index));
+  };
+
+  // 按下时记下「指针底下是哪一行」，抬起时认这个账 —— 不要求 mouseup 还落在同一个元素上。
+  // 这修的是「面板长出来的那几百毫秒里点一下」：mousedown 打在正文 / 空白容器、mouseup 落在行上时，
+  // 浏览器把 click 派发给两者的**共同祖先**，行上的处理器根本不会跑（实测就是这一条把点击吞掉的）。
+  let press: { index: number; x: number; y: number } | null = null;
+  rail.addEventListener("pointerdown", (ev) => {
+    const e = ev as PointerEvent;
+    if (e.button !== 0) return;
+    // 面板落定了就按「行」算（看得见什么就点中什么）；还在长 / 收的时候按「短横」算（用户瞄的是那一根）。
+    const at = phase === "open" ? rowAt(e.clientY) : dashAt(e.clientY);
+    press = at === null ? null : { index: at, x: e.clientX, y: e.clientY };
+  });
+  window.addEventListener("pointerup", (ev) => {
+    const p = press;
+    press = null;
+    if (!p) return;
+    const e = ev as PointerEvent;
+    if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > 6) return;   // 拖出去 = 不要了
+    clickGuard = performance.now() + 400;
+    const wasClosed = phase === "closed";
+    pickRow(p.index);
+    // 收起态点短横：跳完顺手把面板摊开，让人看见自己落到哪一轮（只点一下就能跳，是这次修的主症状）。
+    if (wasClosed) openRail();
+  }, true);
 
   const buildRows = (): void => {
     const indices = shown ?? Array.from({ length: total() }, (_, i) => i);
