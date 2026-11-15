@@ -7,7 +7,7 @@ import { ChatView, createEl as el } from "./chat.ts";
 import { BUILD_ID } from "./build.ts";
 import { filterCommands, PANEL_COMMANDS, type CommandItem } from "./commands.ts";
 import { fileNameOf, hasPathToken, mountDirPicker, type DirPicker, type DirPickerState } from "./dirpicker.ts";
-import { openFileConsole, type FileConsoleHandle } from "./fileconsole.ts";
+import { openFileConsole, type DeviceUploadUi, type FileConsoleHandle } from "./fileconsole.ts";
 import { HL_MAX_BYTES, highlightFragment, langOf } from "./highlight.ts";
 import { imagesFromFiles, pastedFilesFrom, splitImages, type PendingImage } from "./images.ts";
 import { renderMarkdown } from "./md.ts";
@@ -133,6 +133,10 @@ const PLAN_SYNC_TEXT = "用 todo 把执行面板上的计划同步成实际进�
 // i18n-ignore-end
 
 /** #278：桥的 hello `caps` 里表示「ws.create 带 dir 能按目录建组」。旧桥没有这项。 */
+/** #455 上传暂存区的前端上限：和桥的 64 MB / 10 个对齐，先拦一道省得白传。 */
+const DEVICE_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
+const DEVICE_UPLOAD_MAX_FILES = 10;
+
 const WS_CREATE_DIR_CAP = "ws.create.dir";
 /** #278：桥的 hello `caps` 里表示「ws.resolve 能把子目录 / worktree 折回已有组」。旧桥没有这项。 */
 const WS_RESOLVE_DIR_CAP = "ws.resolve.dir";
@@ -14641,6 +14645,64 @@ export class App {
     this.imageSheetPaint?.();
   }
 
+  /**
+   * #455 「从本设备选文件」：图片仍走原来的内联附加；其余文件逐份传进桥的上传暂存区，
+   * 成功后把路径插到光标处。上限先在本机拦（64 MB / 10 个非图片文件），批量中途失败就回滚已落盘的。
+   */
+  private async takeDeviceFiles(files: File[], ui: DeviceUploadUi): Promise<void> {
+    const { images, others } = splitImages(files);
+    ui.progress(0);
+    if (!others.length) {
+      if (images.length) await this.addImages(images);
+      this.closeSheet();
+      return;
+    }
+    const sid = this.currentId ?? "";
+    if (!sid) {
+      ui.fail(tr("还没选中会话，文件没地方放"));
+      return;
+    }
+    if (others.length > DEVICE_UPLOAD_MAX_FILES) {
+      ui.fail(tr("一次最多 {p1} 个文件（图片不算）", { p1: DEVICE_UPLOAD_MAX_FILES }));
+      return;
+    }
+    const tooBig = others.find((f) => f.size > DEVICE_UPLOAD_MAX_BYTES);
+    if (tooBig) {
+      ui.fail(tr("「{p1}」太大了：单个文件上限 64 MB", { p1: tooBig.name }));
+      return;
+    }
+    const total = others.reduce((n, f) => n + f.size, 0);
+    const sent = others.map(() => 0);
+    const paths: string[] = [];
+    try {
+      for (let i = 0; i < others.length; i++) {
+        const file = others[i];
+        const saved = await api.uploadFile(sid, file, (ratio) => {
+          sent[i] = file.size * ratio;
+          const done = sent.reduce((a, b) => a + b, 0);
+          ui.progress(total ? done / total : 1);
+        });
+        sent[i] = file.size;
+        paths.push(saved.path);
+      }
+    } catch (ex: any) {
+      await Promise.all(paths.map((p) => api.removeUpload(sid, p)));
+      // 失败时输入框、草稿、待发图片都不动：图片留到全部上传成功之后才附加。
+      const code = ex?.code;
+      ui.fail(
+        code === "session" ? tr("这个会话不在了，刷新后再试")
+        : code === "too_large" ? tr("文件太大了（上限 64 MB）")
+        : code === "unsupported" ? tr("桥的版本不支持上传，更新后再试")
+        : code === "network" ? tr("网络断了，文件没传上去")
+        : tr("上传失败：{p1}", { p1: ex?.message ?? ex }),
+      );
+      return;
+    }
+    if (images.length) await this.addImages(images);
+    this.closeSheet();
+    this.insertPaths(paths);
+  }
+
   /** Put file paths into the composer at the caret, the way a terminal paste of a copied file does. */
   private insertPaths(paths: string[]): void {
     if (!paths.length) return;
@@ -14717,10 +14779,7 @@ export class App {
       },
       onOpen: (abs) => void this.openPreview(abs),
       onClose: () => this.closeSheet(),
-      onDeviceImages: (files) => {
-        this.closeSheet();
-        void this.addImages(files);
-      },
+      onDeviceFiles: (files, ui) => this.act(() => void this.takeDeviceFiles(files, ui)),
       head: [home.node, ref.node, mk.dirBtn, mk.fileBtn],
       beforeList: [mk.row],
       onState: (state) => {

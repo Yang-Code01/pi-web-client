@@ -189,6 +189,40 @@ export const api = {
     const blob = await res.blob();
     return new File([blob], path.split(/[\\/]/).pop() ?? "image", { type: blob.type });
   },
+  /**
+   * #455 「从本设备选文件」：非图片原件直传桥的上传暂存区。用 XHR 是为了拿到上传进度；
+   * 返回的绝对路径再插进输入框，模型用工具去读。
+   */
+  uploadFile: (sessionId: string, file: File, onProgress: (ratio: number) => void): Promise<{ path: string; name: string; size: number }> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const query = new URLSearchParams({ session: sessionId, name: file.name || "file" });
+      xhr.open("POST", `/api/uploads?${query.toString()}`);
+      xhr.withCredentials = true;
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable && ev.total) onProgress(ev.loaded / ev.total);
+      };
+      xhr.onload = () => {
+        let body: any = null;
+        try {
+          body = JSON.parse(xhr.responseText);
+        } catch {
+          body = null;
+        }
+        if (xhr.status >= 200 && xhr.status < 300 && typeof body?.path === "string") resolve(body);
+        else {
+          // 旧桥没有这个路由：404 且没有 JSON 错误体，别把它报成「会话不存在」。
+          const code = body?.code ?? (xhr.status === 404 ? "unsupported" : "upload");
+          reject(Object.assign(new Error(body?.error ?? `HTTP ${xhr.status}`), { status: xhr.status, code }));
+        }
+      };
+      xhr.onerror = () => reject(Object.assign(new Error("网络断了，文件没传上去"), { code: "network" }));
+      xhr.send(file);
+    });
+  },
+  /** 批量上传中途失败时回滚已经落盘的那几份；删不掉也不该盖住真正的失败原因。 */
+  removeUpload: (sessionId: string, path: string): Promise<{ ok: boolean }> =>
+    postJson<{ ok: boolean }>("/api/uploads/remove", { session: sessionId, path }).catch(() => ({ ok: false })),
   preview: (sessionId: string, path: string) =>
     req<PreviewInfo>("/api/preview", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId, path }) }),
   /**

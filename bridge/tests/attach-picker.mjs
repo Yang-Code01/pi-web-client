@@ -126,38 +126,127 @@ try {
 
   // ---- open the attachment picker: a fresh session should start at its cwd
   await page.locator(".hint-tools button", { hasText: "文件" }).click();
-  await page.locator(".sheet.file-picker .dirpicker").waitFor({ timeout: 10000 });
-  await page.locator(".sheet.file-picker .dir-row").first().waitFor({ timeout: 8000 });
+  await page.locator(".fc-back .dirpicker").waitFor({ timeout: 10000 });
+  await page.locator(".fc-back .dir-row").first().waitFor({ timeout: 8000 });
   await sleep(300);
 
   const ta = page.locator(".composer-input textarea");
   const fail = (msg) => {
     throw new Error(msg);
   };
+  const openPicker = async () => {
+    await page.locator(".hint-tools button", { hasText: "文件" }).click();
+    await page.locator(".fc-back .dirpicker").waitFor({ timeout: 10000 });
+    await page.locator(".fc-back .dir-row").first().waitFor({ timeout: 8000 });
+    await sleep(300);
+  };
+
+  // ---- #455 从本设备选文件：非图片落到桥的上传暂存区，绝对路径插进输入框
+  const deviceBtn = page.locator(".fc-back .dir-head button", { hasText: "从本设备选文件" });
+  if (!(await deviceBtn.count())) fail("附件弹层没有「从本设备选文件」按钮");
+  if (await page.locator(".fc-back .dir-head button", { hasText: "从本设备选图片" }).count()) {
+    fail("「从本设备选图片」还留着");
+  }
+  const deviceInput = page.locator(".fc-back input[type=file]");
+  const accept = await deviceInput.getAttribute("accept");
+  if (accept) fail(`选文件的输入框还限着 accept="${accept}"`);
+  const uploads = path.join(STATE, "uploads", SID);
+  const firstText = "hello from the phone\n第二行\n";
+  await deviceInput.setInputFiles({ name: "from-device.txt", mimeType: "text/plain", buffer: Buffer.from(firstText) });
+  await until(async () => (await page.locator(".fc-back").count()) === 0, 8000, "弹层在上传成功后关闭");
+  const firstPath = path.join(uploads, "from-device.txt");
+  if (!fs.existsSync(firstPath)) fail(`${firstPath} 没落盘`);
+  if (fs.readFileSync(firstPath, "utf8") !== firstText) fail("上传内容和原文件不一致");
+  await until(async () => (await ta.inputValue()).includes(firstPath), 5000, "第一条路径进输入框");
+  console.log(`UPLOAD: from-device.txt → ${firstPath}`);
+
+  // 同名第二份：落成 from-device-2.txt，第一份的内容不能被覆盖；两条路径都要在输入框里。
+  await openPicker();
+  await page.locator(".fc-back input[type=file]").setInputFiles({
+    name: "from-device.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("second"),
+  });
+  await until(async () => (await page.locator(".fc-back").count()) === 0, 8000, "第二份上传后关闭");
+  const secondPath = path.join(uploads, "from-device-2.txt");
+  if (!fs.existsSync(secondPath)) fail(`${secondPath} 没落盘（重名没加 -2）`);
+  if (fs.readFileSync(firstPath, "utf8") !== firstText) fail("第二份覆盖了第一份");
+  if (!(await ta.inputValue()).includes(secondPath)) fail("第二条路径没进输入框");
+  await ta.fill("");
+  console.log(`UPLOAD: 同名 → ${secondPath}，第一份没被覆盖`);
+
+  // 中文名 + 空格：URL 编码往返后仍按原名落盘，路径也原样插进输入框。
+  await openPicker();
+  await page.locator(".fc-back input[type=file]").setInputFiles({
+    name: "中文 名字.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("中文内容"),
+  });
+  await until(async () => (await page.locator(".fc-back").count()) === 0, 8000, "中文名上传后关闭");
+  const cnPath = path.join(uploads, "中文 名字.txt");
+  if (!fs.existsSync(cnPath)) fail(`${cnPath} 没落盘`);
+  if (fs.readFileSync(cnPath, "utf8") !== "中文内容") fail("中文名文件内容不一致");
+  if (!(await ta.inputValue()).includes(cnPath)) fail("中文名路径没进输入框");
+  await ta.fill("");
+  console.log(`UPLOAD: 中文名 → ${cnPath}`);
+
+  // 图片仍走内联附加：不落上传暂存区，出现 +1 图 的徽标。
+  await openPicker();
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nP4AAAAASUVORK5CYII=", "base64");
+  await page.locator(".fc-back input[type=file]").setInputFiles({ name: "pixel.png", mimeType: "image/png", buffer: png });
+  await until(async () => (await page.locator(".fc-back").count()) === 0, 8000, "图片附加后关闭");
+  await page.locator(".image-badge").filter({ hasText: "1 图" }).waitFor({ timeout: 5000 });
+  if (fs.existsSync(path.join(uploads, "pixel.png"))) fail("图片被传进了上传暂存区");
+  console.log("UPLOAD: png → 内联附加，未落盘");
+
+  // 上传失败：输入框原样不动、弹层不关、暂存区不留半份。
+  await openPicker();
+  await page.route(/\/api\/uploads\?/, (r) => r.abort());
+  await ta.fill("草稿别动");
+  await page.locator(".fc-back input[type=file]").setInputFiles({ name: "fail-upload.txt", mimeType: "text/plain", buffer: Buffer.from("nope") });
+  await page.locator(".fc-upload-error").filter({ hasText: "网络断了" }).waitFor({ timeout: 5000 });
+  if (!(await page.locator(".fc-back").count())) fail("上传失败后弹层被关掉了");
+  if ((await ta.inputValue()) !== "草稿别动") fail("上传失败改动了输入框");
+  if (fs.existsSync(path.join(uploads, "fail-upload.txt"))) fail("上传失败还留下了半份文件");
+  await page.unroute(/\/api\/uploads\?/);
+  await page.locator(".fc-back .sys-head button", { hasText: "关闭" }).first().click();
+  await until(async () => (await page.locator(".fc-back").count()) === 0, 5000, "关掉弹层继续后面的用例");
+  await ta.fill("");
+  console.log("UPLOAD: 失败 → 弹层还开着、草稿原样、没落半份");
+
+  // 一次 11 个非图片文件：前端先拦，一个都不许传。
+  await openPicker();
+  const eleven = Array.from({ length: 11 }, (_, i) => ({ name: `many-${i}.txt`, mimeType: "text/plain", buffer: Buffer.from("x") }));
+  await page.locator(".fc-back input[type=file]").setInputFiles(eleven);
+  await page.locator(".fc-upload-error").filter({ hasText: "一次最多" }).waitFor({ timeout: 5000 });
+  const left = fs.readdirSync(uploads).filter((n) => n.startsWith("many-"));
+  if (left.length) fail(`超限还传了 ${left.join("、")}`);
+  await ta.fill("");
+  console.log("UPLOAD: 11 个 → 「一次最多 10 个文件」拦下，没上传");
 
   // ---- D163: 引用当前文件夹 把正在浏览的目录插进输入框，重复点不插第二次
-  const opened = ((await page.locator(".sheet.file-picker .dir-path").textContent()) ?? "").trim();
+  const opened = ((await page.locator(".fc-back .dir-path").textContent()) ?? "").trim();
   console.log(`OPEN: "${opened}"`);
   if (!opened.includes("work")) fail(`弹层没有从会话工作目录打开（"${opened}"）`);
-  await page.locator(".sheet.file-picker .dir-head .dir-ref").click();
+  await page.locator(".fc-back .dir-head .dir-ref").click();
   await sleep(250);
   const filled = await ta.inputValue();
   if (filled.split(WORK).length - 1 !== 1) fail(`引用当前文件夹插入了 ${filled.split(WORK).length - 1} 次，期望 1（"${filled}"）`);
-  await page.locator(".sheet.file-picker .dir-head .dir-ref").click();
+  await page.locator(".fc-back .dir-head .dir-ref").click();
   await sleep(250);
   if ((await ta.inputValue()) !== filled) fail("重复点「引用当前文件夹」又插了一遍");
-  const said = (await page.locator(".sheet.file-picker .dir-head .dir-ref").textContent()) ?? "";
+  const said = (await page.locator(".fc-back .dir-head .dir-ref").textContent()) ?? "";
   if (!said.includes("已在输入框")) fail(`重复点击的反馈是「${said}」，期望「已在输入框」`);
   console.log(`REF: ${WORK} → 输入框 ${filled.split(WORK).length - 1} 次，复点反馈「${said.trim()}」`);
   await ta.fill("");
 
   // ---- 含空格的目录：插进去必须包一对引号，否则桥端读成两个路径
   const spaced = path.join(WORK, "has space");
-  await page.locator(".sheet.file-picker .dirpicker .model-row", { hasText: "has space" }).first().click();
+  await page.locator(".fc-back .dirpicker .dir-row", { hasText: "has space" }).first().click();
   await sleep(700);
-  const inSpaced = ((await page.locator(".sheet.file-picker .dir-path").textContent()) ?? "").trim();
+  const inSpaced = ((await page.locator(".fc-back .dir-path").textContent()) ?? "").trim();
   if (!inSpaced.endsWith("has space")) fail(`点 has space 没进去（"${inSpaced}"）`);
-  await page.locator(".sheet.file-picker .dir-head .dir-ref").click();
+  await page.locator(".fc-back .dir-head .dir-ref").click();
   await sleep(250);
   const quoted = await ta.inputValue();
   console.log(`SPACE: "${quoted}"`);
@@ -166,29 +255,29 @@ try {
 
   // ---- D163: 面包屑里的盘符段必须跳到那颗盘的根
   const drive = WORK.split(":")[0] + ":";
-  const crumb = page.locator(".sheet.file-picker .dir-path .crumb", { hasText: new RegExp(`^${drive}$`) });
+  const crumb = page.locator(".fc-back .dir-path .crumb", { hasText: new RegExp(`^${drive}$`) });
   if (!(await crumb.count())) fail(`面包屑里没有 ${drive} 那一段`);
   const before = seen.length;
   await crumb.first().click();
   await sleep(1200);
-  const where = ((await page.locator(".sheet.file-picker .dir-path").textContent()) ?? "").trim();
+  const where = ((await page.locator(".fc-back .dir-path").textContent()) ?? "").trim();
   const asked = seen.slice(before).map((s) => `${s.status} ${decodeURIComponent(s.url.split("?")[1] ?? "")}`);
   console.log(`CRUMB: 点 ${drive} → "${where}"  ${asked.join(" | ")}`);
   if (!where.endsWith(drive)) fail(`点 ${drive} 面包屑后停在 "${where}"，期望以 ${drive} 结尾`);
   // 盘根里至少得有我们这份检出所在的那一层（E:\yqm\… → 「yqm」），否则说明只换了面包屑没真列目录。
   // 不写死仓库目录名：worktree 可能放在 pi-web-client-wt、也可能别处。
   const topDir = path.relative(`${drive}\\`, WORK).split(/[\\/]/)[0];
-  if (!(await page.locator(".sheet.file-picker .dirpicker .model-row", { hasText: topDir }).count())) {
+  if (!(await page.locator(".fc-back .dirpicker .dir-row", { hasText: topDir }).count())) {
     fail(`${drive} 根目录里没有 ${topDir}，说明没落到盘根`);
   }
 
   // ---- D163: 按会话记住上次浏览的目录
-  await page.locator(".sheet.file-picker .sheet-head button", { hasText: /关闭/ }).click();
+  await page.locator(".fc-back .sys-head button", { hasText: /关闭/ }).click();
   await sleep(400);
   await page.locator(".hint-tools button", { hasText: "文件" }).click();
-  await page.locator(".sheet.file-picker .dirpicker").waitFor({ timeout: 10000 });
+  await page.locator(".fc-back .dirpicker").waitFor({ timeout: 10000 });
   await sleep(800);
-  const reopened = ((await page.locator(".sheet.file-picker .dir-path").textContent()) ?? "").trim();
+  const reopened = ((await page.locator(".fc-back .dir-path").textContent()) ?? "").trim();
   console.log(`MEMORY: 重开弹层 → "${reopened}"`);
   if (!reopened.endsWith(drive)) fail(`重开弹层落在 "${reopened}"，期望上次的 ${drive}\\`);
 
@@ -198,7 +287,7 @@ try {
     for (const k of keys) localStorage.setItem(k, "F:\\");
     localStorage.setItem("pi.attachDir.index", keys.join("\n"));
   });
-  await page.locator(".sheet.file-picker .dirpicker .model-row", { hasText: topDir }).first().click();
+  await page.locator(".fc-back .dirpicker .dir-row", { hasText: topDir }).first().click();
   await sleep(800);
   const kept = await page.evaluate(() => (localStorage.getItem("pi.attachDir.index") ?? "").split("\n").filter(Boolean));
   console.log(`LRU: 保留 ${kept.length} 条，最旧 ${kept[0]}`);
@@ -207,19 +296,19 @@ try {
   if (!kept.some((k) => k.startsWith("pi.attachDir:zz-drive-click"))) fail("当前会话没进索引");
 
   // ---- 记忆的目录没了（worktree 被删、换了机器）：退回会话 cwd，别停在盘符页
-  await page.locator(".sheet.file-picker .sheet-head button", { hasText: /关闭/ }).click();
+  await page.locator(".fc-back .sys-head button", { hasText: /关闭/ }).click();
   await sleep(400);
   await page.evaluate(() => localStorage.setItem("pi.attachDir:zz-drive-click", "F:\\no-such-dir-xyz"));
   await page.locator(".hint-tools button", { hasText: "文件" }).click();
-  await page.locator(".sheet.file-picker .dirpicker").waitFor({ timeout: 10000 });
+  await page.locator(".fc-back .dirpicker").waitFor({ timeout: 10000 });
   await sleep(1500);
-  const stale = ((await page.locator(".sheet.file-picker .dir-path").textContent()) ?? "").trim();
+  const stale = ((await page.locator(".fc-back .dir-path").textContent()) ?? "").trim();
   console.log(`STALE: 记忆指向不存在的目录 → "${stale}"`);
   if (!stale.includes("work")) fail(`记忆失效后落在 "${stale}"，期望退回会话 cwd（work）`);
 
   // ---- D167: 新建文件夹 / 新建文件（附件弹层与文件管理器共用同一份控件）
   // 只建一层、建完停在原地、新行是 .hit —— 不进入目录、不打开文件。
-  const pick = (sel) => page.locator(`.sheet.file-picker ${sel}`);
+  const pick = (sel) => page.locator(`.fc-back ${sel}`);
   const mkFileBtn = pick(".dir-head .dir-mk-file");
   const mkDirBtn = pick(".dir-head .dir-mk-dir");
   if (!(await mkFileBtn.isVisible()) || !(await mkDirBtn.isVisible())) fail("附件弹层的 ＋ 文件夹 / ＋ 文件 没露出来");
@@ -264,7 +353,7 @@ try {
   console.log(`MK: ＋ 文件夹 → zz-mk-dir（留在原地，已高亮）`);
 
   // ---- 文件管理器那一侧：同一对按钮，建出来的文件落在它正在浏览的目录里
-  await page.locator(".sheet.file-picker .sheet-head button", { hasText: /关闭/ }).click();
+  await page.locator(".fc-back .sys-head button", { hasText: /关闭/ }).click();
   await sleep(300);
   await page.locator('[data-act="files"]').first().click();
   await page.locator(".viewer-browse .dirpicker").waitFor({ timeout: 10000 });
@@ -283,14 +372,14 @@ try {
   await page.locator(".viewer-head .viewer-btn[title^=\"关闭\"]").first().click();
   await sleep(400);
   await page.locator(".hint-tools button", { hasText: "文件" }).click();
-  await page.locator(".sheet.file-picker .dirpicker").waitFor({ timeout: 10000 });
+  await page.locator(".fc-back .dirpicker").waitFor({ timeout: 10000 });
   await sleep(800);
 
   // ---- 此电脑：盘符列表
-  await page.locator(".sheet.file-picker .dir-path .crumb.root", { hasText: "此电脑" }).click();
-  await page.locator(".sheet.file-picker .vol-row").first().waitFor({ timeout: 8000 });
+  await page.locator(".fc-back .dir-path .crumb.root", { hasText: "此电脑" }).click();
+  await page.locator(".fc-back .vol-row").first().waitFor({ timeout: 8000 });
   await sleep(400);
-  const rows = await page.$$eval(".sheet.file-picker .dirpicker .model-row", (els) =>
+  const rows = await page.$$eval(".fc-back .dirpicker .model-row", (els) =>
     els.map((e) => ({ text: e.textContent.trim().slice(0, 40), cls: e.className, disabled: e.disabled })),
   );
   console.log("DRIVE ROWS:", JSON.stringify(rows, null, 1));
@@ -298,7 +387,7 @@ try {
   // ---- click every drive letter listed; each one must land on its own root
   const missed = [];
   for (const letter of "CDEFHI") {
-    const row = page.locator(".sheet.file-picker .dirpicker .model-row", { hasText: new RegExp(`^${letter}:`) });
+    const row = page.locator(".fc-back .dirpicker .model-row", { hasText: new RegExp(`^${letter}:`) });
     if (!(await row.count())) {
       console.log(`${letter}: no row`);
       continue;
@@ -306,18 +395,18 @@ try {
     const before = seen.length;
     await row.first().click().catch(async () => {
       // 盘符行是按钮，可能被 vol-row 的整行点击拦住：退回用文字定位。
-      await page.locator(".sheet.file-picker .dirpicker .model-row", { hasText: `${letter}:` }).first().click();
+      await page.locator(".fc-back .dirpicker .model-row", { hasText: `${letter}:` }).first().click();
     });
     await sleep(1200);
-    const crumbs = (await page.locator(".sheet.file-picker .dir-path").textContent()) ?? "";
-    const n = await page.locator(".sheet.file-picker .dirpicker .model-row").count();
+    const crumbs = (await page.locator(".fc-back .dir-path").textContent()) ?? "";
+    const n = await page.locator(".fc-back .dirpicker .dir-row").count();
     const calls = seen.slice(before).map((s) => `${s.status} ${decodeURIComponent(s.url.split("?")[1] ?? "")} → ${s.body.replace(/\s+/g, " ").slice(0, 120)}`);
     console.log(`\n=== ${letter}: path="${crumbs.trim()}" rows=${n}`);
     for (const c of calls) console.log(`    ${c}`);
     if (!crumbs.trim().endsWith(`${letter}:`)) missed.push(letter);
     else if (!n) missed.push(`${letter}(空)`);
     // back to the drive list for the next letter
-    await page.locator(".sheet.file-picker .dir-path .crumb.root", { hasText: "此电脑" }).click().catch(() => {});
+    await page.locator(".fc-back .dir-path .crumb.root", { hasText: "此电脑" }).click().catch(() => {});
     await sleep(500);
   }
   if (missed.length) fail(`这些盘没落到盘根：${missed.join(" ")}`);

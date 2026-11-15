@@ -5200,3 +5200,28 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - `mail_image` 工具口实测 uid=1328 index=0：`image/jpeg`、61,660 字节、base64 82,216 字符；`mail_read` 回 12 个附件（11 inline + 1 PDF），HTML 保留 `cid:` 且截断在 20,029 字。
 - `npm run test:mail:html`（真 Chromium）：script/iframe/on*/javascript: 清理、`cid:` 映射、`srcset`-only 图、远程图拦截与放行 CSP 全绿；`npm run test:permission` 也覆盖 `mail_image` 在只读模式放行、`mail_attachment` / `mail_send` 被拦。
 - `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3180 键 × 3 + viewport）、`npm run build` 全绿。
+
+## D274 附件弹层「从本设备选文件」：非图片上传到上传暂存区、路径进输入框（#455，用户要求 2026-11-15）
+
+**问题：** 「文件」弹层右上角只有「从本设备选图片」，浏览器所在设备上的 PDF / Word / 压缩包送不进来。pi 的 prompt 只认图片（`{type:"image", data, mimeType}`），没有随消息上传任意文件的通道；能做的只有把原件落到 pi 所在机器，再把绝对路径插进输入框，让模型用工具去读。
+
+**决定：**
+
+1. **一颗按钮、原地改名「从本设备选文件」**，`accept` 不再限制；手机上同一个入口同时给相册、拍照、选取文件。图片仍走原来的内联压缩附加，行为不变 —— 只有非图片才上传。
+2. **落点是桥状态目录下的「上传暂存区」** `uploads/<会话 id>/`，不叫收件箱（那是内网通 `~/.pi-peer/inbox`，D209 的可信根，两回事）。目录名只接受 `[A-Za-z0-9._-]+`；会话 id 必须能在 `sessions.locate()` 里解析（含休眠 / 归档，已删除的不行），绝不拿请求里的字符串直接拼路径。
+3. **`POST /api/uploads?session=&name=` 收原始字节**（和 `/api/peer/upload` 同一条路，不把 64 MB 塞进 base64 的 WS 帧）；单文件 64 MB、一次 10 个非图片文件由前端先拦。文件名只取 basename、洗控制字符与 Windows 非法字符、剪尾点空格、120 字符截断保留扩展名、Windows 保留名加 `_`；重名在扩展名前加 `-2`、`-3`。
+4. **原子落盘**：先写 `.upload-<uuid>.tmp`，再 `linkSync` 到最终名（不覆盖；不支持硬链接的盘退回 rename），最后删临时名。失败时不会留下半份看起来正常的文件；批量中途失败由前端调 `/api/uploads/remove` 回滚已落盘的几份。
+5. **成功后插路径、关弹层**：走现有的 `insertPaths()`（光标处、前后补空格），草稿与其他附件不动。公网访问走 `act()` 的 step-up 门；按钮里显示「上传中 42%」，失败在右栏底部留 5 秒红字。
+6. **清理**：桥启动时删 `uploads/` 下 30 天没动过的会话目录与根上的残留临时文件；只碰这个目录，删不掉不挡启动。
+
+**代价 / 可改：**
+
+- 非图片不进模型上下文：模型要读得自己去开文件；图片仍受 2048 长边压缩，原件不保留。
+- 上传是逐份串行的，10 个 64 MB 最坏要等一轮；换来的是进度准确、失败回滚简单。
+- 30 天清理只在启动时跑一次；长期不重启的桥不会清，后续可加定时器。
+
+**验证：**
+
+- `npm run test:uploads`：`bridge/tests/uploads-unit.mjs` 12 项（basename / 非法字符 / 空名 / 保留名 / 中文 emoji / 0 字节 / 重名 -2 / 120 截断 / 64MB+1 拒收且不落半份 / 无残留临时文件 / 回滚越界拒绝 / 30 天清理）。
+- `npm run test:attach:ui`：新增三段 —— 真上传 `from-device.txt` 并核对内容、同名第二份落成 `from-device-2.txt` 且第一份没被覆盖、11 个文件被「一次最多 10 个文件」拦下；同时把这份 D163/D167 探针的选择器从旧的 `.sheet.file-picker` / `.model-row` 更新到现在的控制台 DOM（`.fc-back` / `.dir-row`），否则它在 D252 之后根本跑不起来。
+- `npm --prefix bridge run typecheck`、`npm --prefix web run typecheck`（i18n 3186 键 × 3 + viewport）、`npm run build` 全绿。
