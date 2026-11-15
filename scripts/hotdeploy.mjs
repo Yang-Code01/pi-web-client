@@ -29,6 +29,8 @@ const REPO = path.resolve(argOf("--dir", path.resolve(import.meta.dirname, "..")
 const BRANCH = argOf("--branch", "");
 const PORT = Number(argOf("--port", process.env.PI_WEB_PORT || 7864));
 const STASH = process.argv.includes("--stash");
+/** 与前端 STEPS 里的「恢复本地改动」一致。 */
+const RESTORE_STEP = 3;
 // 拉起来的子进程必须落在我们盯着的端口上，否则它去抢 7864，我们永远等不到自己那个端口。
 process.env.PI_WEB_PORT = String(PORT);
 
@@ -61,7 +63,6 @@ const state = {
 let lockOwned = false;
 let oldPid = null;
 let newPid = null;
-let stashMessage = "";
 
 function log(...parts) {
   const line = `[${new Date().toISOString().slice(11, 19)}] ${parts.join(" ")}`;
@@ -102,6 +103,15 @@ function sh(file, args, opts = {}) {
 
 function git(args) {
   return sh("git", args);
+}
+
+function changedFiles() {
+  const dirty = String(git(["status", "--porcelain", "--untracked-files=normal"]).stdout ?? "").trim();
+  return dirty ? dirty.split(/\r?\n/).map((l) => l.slice(3).trim()).filter(Boolean) : [];
+}
+
+function changedLabel(files) {
+  return `${files.slice(0, 5).join("、")}${files.length > 5 ? "…" : ""}`;
 }
 
 function alive(pid) {
@@ -245,6 +255,8 @@ function finish(result, extra = {}) {
     fromSha: state.fromSha,
     toSha: state.toSha,
     buildId: state.buildId,
+    step: state.step,
+    exitCode: state.exitCode,
     oldPid,
     newPid,
     error: state.error ?? null,
@@ -269,13 +281,13 @@ function fail(step, result, code, message) {
 
 /** 失败时若还留着本轮 stash，先尝试恢复；恢复失败要把 stash message 留在 error 里。 */
 function failAfterStash(step, result, code, message) {
-  if (stashMessage && !state.stashRestored) {
-    const restored = stashRestore(REPO, stashMessage);
+  if (state.stash && !state.stashRestored) {
+    const restored = stashRestore(REPO, state.stash);
     if (restored.ok) {
       state.stashRestored = true;
       message = `${message}\n（本地改动已恢复到工作区）`;
     } else {
-      message = `${message}\n本地改动恢复失败（stash: ${stashMessage}）：${restored.why}`;
+      message = `${message}\n本地改动恢复失败（stash: ${state.stash}）：${restored.why}`;
     }
   }
   fail(step, result, code, message);
@@ -353,10 +365,9 @@ async function main() {
   writeState({});
   log(`当前 ${state.fromBranch} ${state.fromSha}`);
 
-  const dirty = String(git(["status", "--porcelain", "--untracked-files=normal"]).stdout ?? "").trim();
-  if (dirty) {
-    const files = dirty.split(/\r?\n/).map((l) => l.slice(3).trim()).filter(Boolean);
-    const list = `${files.slice(0, 5).join("、")}${files.length > 5 ? "…" : ""}`;
+  const files = changedFiles();
+  if (files.length) {
+    const list = changedLabel(files);
     if (!STASH) {
       fail(0, "dirty", null, `主检出有未提交的改动（${list}），先提交或还原再来`);
     }
@@ -365,15 +376,21 @@ async function main() {
     }
     const msg = `hotdeploy-${process.pid}-${Date.now().toString(36)}`;
     const pushed = stashPush(REPO, msg);
-    if (!pushed.ok) fail(0, "stash-failed", null, pushed.why);
-    stashMessage = msg;
+    if (!pushed.ok) {
+      if (pushed.created) {
+        state.stash = msg;
+        state.stashRestored = false;
+        writeState({});
+        failAfterStash(0, "stash-failed", null, `${pushed.why}\nstash 可能已经创建：${msg}`);
+      }
+      fail(0, "stash-failed", null, pushed.why);
+    }
     state.stash = msg;
     state.stashRestored = false;
     writeState({});
-    const left = String(git(["status", "--porcelain", "--untracked-files=normal"]).stdout ?? "").trim();
-    if (left) {
-      const rest = left.split(/\r?\n/).map((l) => l.slice(3).trim()).filter(Boolean);
-      failAfterStash(0, "stash-failed", null, `git stash 后工作区仍有改动（${rest.slice(0, 5).join("、")}${rest.length > 5 ? "…" : ""}）`);
+    const left = changedFiles();
+    if (left.length) {
+      failAfterStash(0, "stash-failed", null, `git stash 后工作区仍有改动（${changedLabel(left)}）`);
     }
     log(`已暂存 ${files.length} 个改动：${msg}`);
   }
@@ -418,11 +435,11 @@ async function main() {
   log(`build ok ${state.buildId}`);
 
   // ---- 3. 恢复本地改动（只有真的暂存了才走这里；必须在杀旧进程之前）
-  if (stashMessage) {
-    writeState({ step: 3 });
-    const restored = stashRestore(REPO, stashMessage);
+  if (state.stash) {
+    writeState({ step: RESTORE_STEP });
+    const restored = stashRestore(REPO, state.stash);
     if (!restored.ok) {
-      fail(3, "stash-pop-failed", null, `本地改动恢复失败：${restored.why}\nstash 还在：${stashMessage}`);
+      fail(RESTORE_STEP, "stash-pop-failed", null, `本地改动恢复失败：${restored.why}\nstash 还在：${state.stash}`);
     }
     state.stashRestored = true;
     writeState({});

@@ -4988,7 +4988,7 @@ D
 **决定：**
 
 - 只在**当前分支、非 detached** 时开放。stash 属于当前工作区，不能安全地 pop 到另一条分支；选别的分支、detached HEAD 都不显示这颗按钮。
-- worker 内部顺序固定为：`git stash push --include-untracked` → `git fetch` → `git merge --ff-only origin/<branch>` → `npm run build` → `git stash pop --index` → 杀旧 bridge / 起新 bridge。构建使用**干净分支**，本地改动不进入本次产物；`pop` 放在杀旧进程之前，恢复失败就不换进程。
+- worker 内部顺序固定为：`git stash push --include-untracked` → `git fetch` → `git merge --ff-only origin/<branch>` → `npm run build` → `git stash pop` → 杀旧 bridge / 起新 bridge。构建使用**干净分支**，本地改动不进入本次产物；`pop` 放在杀旧进程之前，恢复失败就不换进程。恢复只保证工作区内容回来，不还原 index 暂存状态；`pop --index` 在 index 冲突时可能已经落地文件却返回非零，worker 会误判。
 - stash message 用本轮唯一的 `hotdeploy-<pid>-<time>`，按 message 找 `stash@{n}` 再 pop，绝不盲取 `stash@{0}`（仓库里可能已经有旧 stash）。
 - 失败恢复：fetch / merge / build 任一步失败都先尝试恢复 stash；`pop` 冲突则中止部署，旧 bridge 继续跑，stash 保留并在错误里给出 message；worker 崩溃时 stash 仍在 `git stash list`。
 - 界面在 dirty 时保留禁用的「先提交改动」主按钮，旁边追加「暂存后热部署」次级按钮，点之前二次确认，说明「本次构建不包含这些改动」。
@@ -5001,4 +5001,4 @@ D
 - 只支持当前分支；不能把当前分支的 stash 带到别的分支。
 - 旧 stash 不会被复用或清理，仍留在 stash list 里。
 
-**验证：** 新 `bridge/tests/hotdeploy-stash-unit.mjs` 在临时仓库覆盖 stash/pop、未跟踪文件恢复、旧 stash 不误取、冲突时 stash 保留，以及 worker 在 build 失败后恢复改动；`npm run test:hotdeploy` 串跑旧纯函数测试和这条集成测试。另用临时 bridge + Playwright 回归按钮显隐与确认框。
+**验证：** 新 `bridge/tests/hotdeploy-stash-unit.mjs` 在临时仓库覆盖 stash/pop、未跟踪文件恢复、旧 stash 不误取、冲突时 stash 保留、worker 在 build 失败后恢复改动，以及 worker 在 pop 冲突时停在恢复步骤、不进入换进程；`npm run test:hotdeploy` 串跑旧纯函数测试和这条集成测试。另用临时 bridge + Playwright 回归按钮显隐与确认框。

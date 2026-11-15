@@ -58,7 +58,7 @@ function makeRepo() {
   assert.ok(findStash(repo, "old-stash"), "旧 stash 还在");
 
   const restored = stashRestore(repo, msg);
-  assert.equal(restored.ok, true, "stash pop --index 成功");
+  assert.equal(restored.ok, true, "stash pop 成功");
   assert.equal(read(repo, "a.txt"), "local change\n");
   assert.equal(read(repo, "new.txt"), "untracked\n", "未跟踪文件也要恢复");
   assert.equal(findStash(repo, msg), null, "pop 后新 stash 应该消失");
@@ -121,6 +121,58 @@ function makeRepo() {
   assert.equal(read(repo, "new.txt"), "untracked\n", "失败后未跟踪文件要恢复");
   assert.equal(git(repo, "stash", "list"), "", "失败恢复后不应留下本轮 stash");
 
+  fs.rmSync(repo, { recursive: true, force: true });
+  fs.rmSync(remote, { recursive: true, force: true });
+}
+
+// ------------------------------------------------- ④ worker pop 冲突：停在恢复步骤，不进入换进程
+{
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "hotdeploy-worker-conflict-"));
+  const remote = `${repo}-remote.git`;
+  git(repo, "init", "-q", "-b", "main");
+  git(repo, "config", "user.email", "hotdeploy@example.test");
+  git(repo, "config", "user.name", "hotdeploy test");
+  git(repo, "config", "core.autocrlf", "false");
+  fs.mkdirSync(path.join(repo, "bridge"));
+  write(repo, "bridge/package.json", JSON.stringify({ name: "fake-bridge", private: true }));
+  write(repo, "build.mjs", [
+    'import fs from "node:fs";',
+    'fs.mkdirSync("bridge/dist", { recursive: true });',
+    'fs.writeFileSync("bridge/dist/build-id.json", JSON.stringify({ id: "fake-build" }));',
+    "",
+  ].join("\n"));
+  write(repo, "package.json", JSON.stringify({ name: "fake", private: true, scripts: { build: "node build.mjs" } }));
+  write(repo, ".gitignore", ".scratch/\nbridge/dist/\n");
+  write(repo, "tracked.txt", "base\n");
+  git(repo, "add", ".");
+  git(repo, "commit", "-q", "-m", "base");
+  fs.mkdirSync(remote, { recursive: true });
+  git(remote, "init", "-q", "--bare");
+  git(repo, "remote", "add", "origin", remote);
+  git(repo, "push", "-q", "-u", "origin", "main");
+
+  // 远端把 tracked.txt 改掉；本地回到 base 后再改同一个文件，pop 必冲突。
+  write(repo, "tracked.txt", "remote\n");
+  git(repo, "add", "tracked.txt");
+  git(repo, "commit", "-q", "-m", "remote changed tracked.txt");
+  git(repo, "push", "-q", "origin", "main");
+  git(repo, "reset", "--hard", "HEAD~1");
+  write(repo, "tracked.txt", "local\n");
+
+  const worker = fileURLToPath(new URL("../../scripts/hotdeploy.mjs", import.meta.url));
+  const run = spawnSync(process.execPath, [worker, "--dir", repo, "--branch", "main", "--port", "65533", "--stash"], {
+    cwd: path.resolve(path.dirname(worker), ".."),
+    encoding: "utf8",
+  });
+  assert.notEqual(run.status, 0, "pop 冲突时 worker 必须报错");
+  const state = JSON.parse(read(repo, ".scratch/hot-deploy/state.json"));
+  assert.equal(state.step, 3, "必须停在恢复本地改动这一步");
+  assert.match(state.error, /本地改动恢复失败/, "错误里要说明恢复失败");
+  assert.ok(state.stash, "错误里要留下 stash message");
+  assert.ok(git(repo, "stash", "list").includes(state.stash), "冲突后 stash 必须保留");
+  assert.ok(!read(repo, ".scratch/hot-deploy/worker.log").includes("杀掉旧 bridge"), "不能进入换进程");
+
+  git(repo, "reset", "--hard", "HEAD");
   fs.rmSync(repo, { recursive: true, force: true });
   fs.rmSync(remote, { recursive: true, force: true });
 }

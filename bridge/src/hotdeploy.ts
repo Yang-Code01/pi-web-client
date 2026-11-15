@@ -367,7 +367,6 @@ async function startRun(req: http.IncomingMessage, res: http.ServerResponse, ctx
     fromSha: String(snap.head ?? ""),
     toSha: "",
     port: ctx.port,
-    stash: stash ? "pending" : "",
   };
   fs.mkdirSync(WORK, { recursive: true });
   try {

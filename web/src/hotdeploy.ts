@@ -36,6 +36,12 @@ const FAIL_WHY: Record<string, string> = {
   crashed: "worker 被中途杀掉了。",
 };
 const POLL_MS = 1200;
+/** 失败横幅只说「源码没动」当且仅当分支没换、HEAD 也没快进。 */
+function sourceUnchanged(run: HotdeployRun | null): boolean {
+  if (!run?.fromBranch) return true;
+  if (run.fromBranch !== run.branch) return false;
+  return !run.toSha || run.fromSha === run.toSha;
+}
 /** 结束很久的老结果不该再弹出来：超过这么久就当没跑过。 */
 const RESULT_TTL_MS = 10 * 60_000;
 
@@ -466,7 +472,7 @@ class HotdeployPanel {
       const head = el("div", "");
       head.append(el("b", "", tr("{step}失败", { step: stepName })));
       if (run?.exitCode) head.append(el("span", "", tr("（退出码 {code}）", { code: run.exitCode })));
-      const same = !run?.fromBranch || run.fromBranch === run.branch;
+      const same = sourceUnchanged(run);
       head.append(el("span", "", same
         ? tr("。源码没动（还在 {branch}），{port} 上仍是 {oldSha} 的旧构建。", {
           branch: run?.branch ?? "",
@@ -543,6 +549,7 @@ class HotdeployPanel {
       this.hint.classList.add("hot-bad");
       return;
     }
+    // 部署中优先于 dirty：worker 还没 stash 完时不能把「暂存后热部署」再露出来。
     if (phase === "running" || snap.busy) {
       this.runBtn.disabled = true;
       this.runBtn.textContent = tr("部署中…");

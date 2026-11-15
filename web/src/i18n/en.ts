@@ -2967,7 +2967,7 @@ export const en: Dict = {
   "git stash 没成功，日志里有它的原话。": "git stash didn’t work; the log has its exact words.",
   "换进程": "Swap the process",
   "本地改动恢复失败，stash 还在；先看日志或手动 stash pop。": "Couldn’t restore local changes; the stash is still there — check the log or run git stash pop manually.",
-  "暂存后热部署": "Stash and hot deploy",
+  "暂存后热部署": "Stash changes and hot deploy",
   "暂存只能用在当前分支；先切到那条分支再来。": "Stashing only works on the current branch; switch to it first.",
   "暂存只能用在当前分支 {branch}；先切到那条分支或另选一条": "Stashing only works on the current branch {branch}; switch to it or pick another branch first",
   "收 {path} 失败：{why}": "Could not remove {path}: {why}",
