@@ -75,7 +75,7 @@ export interface MailDetailView {
   cc: string[];
   date: number;
   text: string;
-  html?: string;
+  html?: string | null;
   attachments: MailAttachmentView[];
 }
 
