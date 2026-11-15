@@ -31,7 +31,7 @@ export interface MailHtmlRender {
   remote: number;
 }
 
-/** 1×1 透明 GIF：远程图被拦时占位，保留邮件原本的宽高。 */
+/** 1×1 透明 GIF：远程图被拦时替换 src，避免浏览器请求远程；实际显示由 CSS 收起。 */
 const TRANSPARENT_GIF = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 
 /** 能执行、能加载子文档、能提交表单的标签一律不要。`style` 留在白名单里，但内容要洗。 */
