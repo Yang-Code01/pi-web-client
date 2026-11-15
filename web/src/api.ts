@@ -193,10 +193,10 @@ export const api = {
     req<PreviewInfo>("/api/preview", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId, path }) }),
   /**
    * D208: 产物弹窗的两条数据。
-   * 列表由页面把重放历史时收到的 write/edit 递过去（路径 + 工具 + 次数），桥负责解析/查基线/算行数；
+   * 列表由页面把重放历史时收到的 write/edit 与 open_preview 递过去（路径 + 工具 + 次数 + 是否交付），桥负责解析/查基线/算行数；
    * 差异按路径单独取，切文件时只多拉这一份。
    */
-  artifactsList: (sessionId: string, items: { path: string; tool: string; writes: number }[]) =>
+  artifactsList: (sessionId: string, items: { path: string; tool: string; writes: number; delivered?: boolean }[]) =>
     req<ArtifactList>("/api/artifacts/list", {
       method: "POST",
       headers: { "content-type": "application/json" },

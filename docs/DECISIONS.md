@@ -5167,3 +5167,22 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - AGENTS.md / issue-tracker 里「直连失败才加 `HTTPS_PROXY=18791`」是 `gh` CLI 的手工代理约定，不适用于热部署 worker；worker 的规则以本条为准。
 
 **验证：** `bridge/tests/hotdeploy-unit.mjs` 新增 `proxyCandidates()` 单测（显式代理优先、去空白、URL 正规化后去重、默认兜底、`ALL_PROXY` 顺序）；`npm run test:hotdeploy` 通过。真实代理切换仍建议重启 bridge 后点一次热部署验证。
+
+## D273 产物列表也收「交付」：open_preview 打开过的文件算本会话产物（用户报障 2026-11-15）
+
+**问题：** 一次会话里生成了 `Excel全能教学练习簿.xlsx`，回复里写着「已生成并在预览中打开」，但「📂 产物」弹窗里只有 `excel_build.py`。根因是列表只收 write 系工具（D208 第 5 条）：xlsx 是 `bash` 跑 python 脚本生成的，脚本产出的文件永远不会经过 write 钩子。而 `open_preview` 是网页会话的交付出口（D190 / D226），路径就在工具参数里，却没进列表 —— 用户看到「已打开」却找不到。
+
+**决定：**
+
+1. **产物来源加第二条：`open_preview` 记「交付过」。** `web/src/artifact-sources.ts` 里 `WRITE_TOOLS` / `DELIVER_TOOLS` 两个集合，页面重放历史时都收。**写入优先**：同一路径先开后写就升级成写入那条，先写后开保留写入那条 —— 只有写入那条才有「写入前的原文」。
+2. **交付记录只进产物列表，不进这一轮的产物芯片。** 芯片答的是「这轮写了什么」，打开一个文件不算写。
+3. **桥端新增 `why: "delivered-only"`。** 交付来的行没有写入前基线时，说明是「脚本 / 程序生成」，不再套用「桥没在运行或扩展被关了」——那句话对脚本产物是错的。
+4. **只认 `open_preview`，不解析 `bash` 输出里的路径。** 按文本猜路径（`saved /…`）太脆，宁可少一条也不猜。
+
+**为什么：** 「产物」这个列表答的应该是「这个会话产出了 / 交付了什么」，而不是「哪个工具碰过盘」。write 钩子只能看到 write 系工具，脚本、构建、下载都绕开它；预览是这些文件唯一确定经过的一站，而交付提示词又只让模型走预览。
+
+**代价 / 可改：** 打开一个旧文件（比如让模型看一眼 README）也会出现在列表里，状态是「未知」。可以接受：open_preview 在交付提示词里只用于交付。若以后嫌吵，可以加「只收 mtime 晚于会话开始」的过滤，但那要会话起始时间，先不做。
+
+**修订：** D208 第 5 条「只认 write 系工具」扩成「write 系 + `open_preview`」；D208 的写入前快照、五档状态、diff 弹窗都不变。
+
+**验证：** `web/tests/artifact-sources-unit.mjs`（7 条：两种来源、先后顺序、去重、无关工具、toolPath）接进 `npm run test:artifacts`；`bridge/tests/artifacts-unit.mjs` 新增一条「交付文件 → delivered-only」；`probes/artifacts-delivered.mjs` 用真桥 + 真 Chromium 复现用户那次的形状（xlsx 在列表里、`open_preview×1`、说明是脚本产物、py 仍是 `write×1`）；`npm run typecheck` / `npm run build` 通过。

@@ -454,6 +454,7 @@ export interface ArtifactRow {
 /** 桥只发码，句子在页面（D208）；键与 `bridge/src/artifacts.ts` 的 ArtifactWhy 一一对应。 */
 export type ArtifactWhy =
   | "no-baseline"
+  | "delivered-only"
   | "git-head-missing"
   | "snapshot-too-big"
   | "size-only"
