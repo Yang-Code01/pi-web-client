@@ -116,6 +116,7 @@ function decodeHtmlText(text: string): string {
  */
 export function htmlToText(html: string): string {
   return html
+    .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
     .replace(/<img\b[^>]*>/gi, (tag) => {
       const alt = /\balt\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);

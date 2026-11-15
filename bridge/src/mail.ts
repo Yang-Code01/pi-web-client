@@ -559,6 +559,7 @@ function agentPolicyView(policy: MailPolicy): Omit<MailPolicy, "mutate"> {
  */
 export function htmlForModel(html: string): string {
   return String(html ?? "")
+    .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, "")
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
