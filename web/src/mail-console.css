@@ -304,6 +304,15 @@
   min-height: 0;
 }
 
+/* 折叠左栏后右栏独占宽度：读长邮件时不用再被 320px 的列表挤着。 */
+.mc-split.is-list-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.mc-split.is-list-collapsed .mc-list {
+  display: none;
+}
+
 .mc-list {
   display: flex;
   flex-direction: column;
@@ -885,6 +894,11 @@ a.mc-attach__row:hover {
   .mc-split {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(140px, 40%) minmax(0, 1fr);
+  }
+
+  .mc-split.is-list-collapsed {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr);
   }
 }
 

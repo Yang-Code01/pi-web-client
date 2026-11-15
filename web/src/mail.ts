@@ -211,11 +211,15 @@ export class MailPanel {
   private unreadOnly = false;
   /** 最后一页是不是取满了：取满就说明后面可能还有，底部给一个「看更早的」。 */
   private listHasMore = false;
+  /** 左栏邮件列表是否折叠；折叠后右栏占满整行，读 HTML 邮件时不再被窄列表挤着。 */
+  private listCollapsed = false;
 
   private detail: MailDetailView | null = null;
   private detailUid = -1;
   private detailLoading = false;
   private detailError = "";
+  /** 当前正文 iframe：折叠列表后只要重算这一只，不去 DOM 里按类名摸。 */
+  private detailFrame: HTMLIFrameElement | null = null;
   /** 哪封信放行过远程图片（按 uid）；换一封信自然失效，关面板时清掉。 */
   private remoteImagesUid = -1;
 
@@ -248,12 +252,14 @@ export class MailPanel {
     this.listError = "";
     this.unreadOnly = false;
     this.listHasMore = false;
+    this.listCollapsed = false;
     this.listSeq += 1;
     this.detailSeq += 1;
     this.detail = null;
     this.detailUid = -1;
     this.detailLoading = false;
     this.detailError = "";
+    this.detailFrame = null;
     this.remoteImagesUid = -1;
     this.compose = null;
     this.form = null;
@@ -274,6 +280,7 @@ export class MailPanel {
     this.reloadSeq += 1;
     this.listSeq += 1;
     this.detailSeq += 1;
+    this.detailFrame = null;
     this.remoteImagesUid = -1;
     this.confirmDeleteId = "";
     if (this.deleteTimer) window.clearTimeout(this.deleteTimer);
@@ -671,6 +678,7 @@ export class MailPanel {
   private inboxEl(): HTMLElement {
     const wrap = el("div", "mc-inbox");
     const bar = el("div", "mc-toolbar");
+    const split = el("div", "mc-split");
     const me = this.activeAccount();
     const accounts = this.config?.accounts ?? [];
 
@@ -735,15 +743,31 @@ export class MailPanel {
     unread.append(cb, el("span", "", tr("只看未读")));
     bar.append(unread);
 
+    const toggleList = el("button", "mc-mini") as HTMLButtonElement;
+    toggleList.type = "button";
+    toggleList.setAttribute("aria-controls", "mc-mail-list");
+    const paintListToggle = () => {
+      toggleList.textContent = this.listCollapsed ? tr("展开列表") : tr("折叠列表");
+      toggleList.setAttribute("aria-pressed", String(this.listCollapsed));
+      toggleList.title = this.listCollapsed ? tr("展开邮件列表") : tr("折叠邮件列表，让正文更宽");
+      split.classList.toggle("is-list-collapsed", this.listCollapsed);
+    };
+    paintListToggle();
+    toggleList.onclick = () => {
+      this.listCollapsed = !this.listCollapsed;
+      paintListToggle();
+      // 右栏变宽后正文会重新排版，iframe 高度跟着重算（复用同一组 settle 时序）。
+      for (const ms of [0, ...MAIL_FRAME_SETTLE_MS]) window.setTimeout(() => this.refitMailFrame(), ms);
+    };
+
     const refresh = el("button", "mc-mini", tr("刷新")) as HTMLButtonElement;
     refresh.type = "button";
     refresh.onclick = () => void this.loadMessages(this.seq);
     const write = el("button", "mc-mini mc-mini--primary", tr("写邮件")) as HTMLButtonElement;
     write.type = "button";
     write.onclick = () => this.startNewMail();
-    bar.append(refresh, write);
+    bar.append(toggleList, refresh, write);
 
-    const split = el("div", "mc-split");
     split.append(this.listEl(), this.readEl());
     wrap.append(bar, split);
     return wrap;
@@ -751,6 +775,7 @@ export class MailPanel {
 
   private listEl(): HTMLElement {
     const list = el("div", "mc-list");
+    list.id = "mc-mail-list";
     if (this.listError) {
       const box = el("div", "mc-empty mc-empty--bad");
       box.append(el("p", "", this.listError));
@@ -908,19 +933,27 @@ export class MailPanel {
     frame.style.height = `${MAIL_FRAME_MIN_HEIGHT}px`;
     frame.srcdoc = buildMailFrameHtml(rendered, allowRemote);
     frame.onload = () => this.fitMailFrame(frame);
+    this.detailFrame = frame;
     wrap.append(frame);
     // iframe 的内容高度只有在 onload 之后才知道；图片是后加载的，再补两次。
     for (const ms of MAIL_FRAME_SETTLE_MS) window.setTimeout(() => this.fitMailFrame(frame), ms);
     return wrap;
   }
 
+  private refitMailFrame(): void {
+    if (this.detailFrame?.isConnected) this.fitMailFrame(this.detailFrame);
+  }
+
   private fitMailFrame(frame: HTMLIFrameElement): void {
     const doc = frame.contentDocument;
     if (!doc?.body) return;
-    const height = Math.max(doc.body.scrollHeight, doc.documentElement?.scrollHeight ?? 0, MAIL_FRAME_MIN_HEIGHT);
-    const capped = Math.min(height + 2, MAIL_FRAME_MAX_HEIGHT);
-    frame.style.height = `${capped}px`;
-    if (height + 2 > MAIL_FRAME_MAX_HEIGHT) frame.setAttribute("scrolling", "auto");
+    // 先缩回最小高度再量 body：documentElement.scrollHeight 是 iframe 自己的视口，
+    // 拿它会让高度只能变大（折叠后正文变矮也收不回来）。
+    frame.style.height = `${MAIL_FRAME_MIN_HEIGHT}px`;
+    const contentHeight = Math.max(doc.body.scrollHeight, doc.body.getBoundingClientRect().height, MAIL_FRAME_MIN_HEIGHT);
+    const height = Math.min(Math.ceil(contentHeight), MAIL_FRAME_MAX_HEIGHT);
+    frame.style.height = `${height}px`;
+    frame.setAttribute("scrolling", contentHeight > MAIL_FRAME_MAX_HEIGHT ? "auto" : "no");
     // 图片/字体加载完高度会变；监听这一次，别让正文被截掉半截。
     for (const img of Array.from(doc.images)) {
       if (img.complete) continue;
