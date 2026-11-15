@@ -5254,3 +5254,15 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 **代价：** 视口窄于 1125px 时有效宽度不足 900，1024 宽的小屏新设备会直接进入单栏；这是默认放大字号的直接结果，不为它做特殊回退。
 
 **验证：** `npm run typecheck`、`npm run build`、`node bridge/tests/scratch-ui.mjs` 全绿（用例新增登录页与 App 的默认 125% 断言）；本地起桥实测全新 profile 的 `--ui-scale` 与 `#app zoom` 都是 1.25，1440 窗口仍是三栏。
+
+## D277 设置抽屉的工具区去掉「快捷键」入口（用户要求 2026-11-15）
+
+**问题：** 「连接与设置」→「工具」里那颗「快捷键 / 设置快捷键」按钮，只是把同一张快捷键面板又开一遍；设置抽屉应放设置，不该再维护第二份动作入口。用户要求删掉它。
+
+**决定：** 只删设置抽屉里的这颗按钮，工具区保留 `pi 设置` / `本机管理` / `热部署`；快捷键面板、键位捕获和 `/hotkeys` 命令都保留。en / ja 的页签与齿轮提示从「Channels & hotkeys / 接続とショートカット」改成「Channels & tools / 接続とツール」。`probes/round6-keys.mjs` 改为从输入框走 `/hotkeys` 打开面板，不再找已删除的按钮。
+
+**为什么：** 删的是重复入口，不是功能；已经绑过的键位和动作表不受影响。
+
+**代价 / 可改：** 快捷键面板不再有可见的设置入口，只能记 `/hotkeys` 或继续用已绑定的键。若以后又需要一个可见入口，应把它放回动作表或命令面板，而不是设置抽屉。
+
+**验证：** `npm --prefix web run typecheck`（i18n 3194 键 × 3）、`npm run build:web`、`node probes/round6-keys.mjs` 全绿。
