@@ -428,6 +428,38 @@
   color: var(--text);
 }
 
+/* 邮件正文：iframe 里白底黑字（邮件按浅色排版），外框仍跟面板暗色走。 */
+.mc-body {
+  margin-top: 12px;
+}
+
+.mc-body__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-3);
+}
+
+.mc-body__hint {
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--dim);
+}
+
+.mc-html {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
 .mc-acts {
   display: flex;
   flex-wrap: wrap;

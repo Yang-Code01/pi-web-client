@@ -313,11 +313,12 @@ export const api = {
   },
   /** 发送与存草稿走同一条路：`draft: true` 时桥只往草稿箱里写。 */
   mailSend: (body: MailSendInput) => postJson<{ ok: true; messageId?: string; draftUid?: number }>("/api/mail/send", body),
-  /** 附件直链（浏览器自己下载）。人自己点的不看「取附件」那个 AI 开关（D264）。 */
-  mailAttachmentUrl: (p: { account?: string; folder?: string; uid: number; index: number }) => {
+  /** 附件直链（`inline:true` 给正文 <img>）。人自己点的不看「取附件」那个 AI 开关（D264）。 */
+  mailAttachmentUrl: (p: { account?: string; folder?: string; uid: number; index: number; inline?: boolean }) => {
     const q = new URLSearchParams({ uid: String(p.uid), index: String(p.index) });
     if (p.account) q.set("account", p.account);
     if (p.folder) q.set("folder", p.folder);
+    if (p.inline) q.set("inline", "1");
     return `/api/mail/attachment?${q.toString()}`;
   },
   /** #248：Jira 面板。token 只在桥那边，这里拿到的是掩码；保存失败会抛带 `code` 的错。 */

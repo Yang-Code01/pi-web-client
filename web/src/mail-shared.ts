@@ -61,6 +61,10 @@ export interface MailAttachmentView {
   filename: string;
   contentType: string;
   size: number;
+  /** `Content-ID`（去掉尖括号）；内嵌图片才有。 */
+  contentId: string | null;
+  /** 正文引用的内嵌资源（multipart/related / Content-Disposition: inline）。 */
+  inline: boolean;
 }
 
 export interface MailDetailView {
@@ -71,7 +75,7 @@ export interface MailDetailView {
   cc: string[];
   date: number;
   text: string;
-  html?: string;
+  html?: string | null;
   attachments: MailAttachmentView[];
 }
 
@@ -260,6 +264,28 @@ export function auditOutcome(row: { tool?: string; ok: boolean; messageId?: stri
   if (!row.ok) return "failed";
   if (row.tool === "mail_draft" || row.messageId === "draft") return "draft";
   return "sent";
+}
+
+/** `cid:` / `<...>` / URL 编码三种写法都归一，正文里的 `cid:` 才能和附件表对上。 */
+export function cidKey(value: unknown): string {
+  let v = String(value ?? "").trim();
+  try {
+    v = decodeURIComponent(v);
+  } catch {
+    // 坏编码原样比，别因为一个百分号把整张图丢掉。
+  }
+  if (/^cid:/i.test(v)) v = v.slice(4);
+  return v.replace(/^<|>$/g, "").trim().toLowerCase();
+}
+
+/** Content-ID → 附件行；没有 Content-ID 的普通附件不进来。 */
+export function inlineImageMap(attachments: readonly MailAttachmentView[]): Map<string, MailAttachmentView> {
+  const map = new Map<string, MailAttachmentView>();
+  for (const a of attachments) {
+    const key = cidKey(a.contentId);
+    if (key) map.set(key, a);
+  }
+  return map;
 }
 
 /** 邮件时间：今天只给 `HH:MM`，其余给日期（列表行很窄）。`0` 表示拿不到时间。 */

@@ -16,6 +16,15 @@ const textResult = (text: string, details: Record<string, unknown> = {}) => ({
   details,
 });
 
+/** 图片要和一段说明一起回：模型先看到「这是什么」，再看到图片本身。 */
+const imageResult = (text: string, data: string, mimeType: string, details: Record<string, unknown> = {}) => ({
+  content: [
+    { type: "text" as const, text },
+    { type: "image" as const, data, mimeType },
+  ],
+  details,
+});
+
 const READ_MS = 60_000;
 /** 桥等页面确认是 5 分钟，这条回环请求要比它长。 */
 const WRITE_MS = 330_000;
@@ -65,6 +74,8 @@ const NEXT_STEP: Record<string, string> = {
   "not-found": "这封信或这个账号不在了，重新列一下再试。",
   "bad-input": "参数不对，按工具说明补齐再试。",
   "too-large": "邮件太大，别重试；让用户用邮箱客户端打开。",
+  "not-image": "这一项不是可直接看的图片；要落盘就用 mail_attachment。",
+  "image-too-large": "这张图超过 3MB；用 mail_attachment 存到本机，再让用户用图片查看器打开。",
 };
 
 function explain(reply: ToolReply, fallback: string): string {
@@ -87,10 +98,31 @@ function dateText(ms: number): string {
 const accountParam = { type: "string", description: "账号 id（不填就用默认账号）。先用 mail_accounts 看有哪些" };
 const folderParam = { type: "string", description: "文件夹路径，默认 INBOX" };
 
-/** 纯 HTML 的信没有纯文本部分：把标签剥了给模型看，总比「没有正文」强。导出去是为了单测。 */
+function decodeHtmlText(text: string): string {
+  return text
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'");
+}
+
+/**
+ * 纯 HTML 的信没有纯文本部分：把标签剥了给模型看，总比「没有正文」强。导出去是为了单测。
+ *
+ * `<img>` 不能静默消失：以前剥完标签只剩空白，模型完全不知道信里有图。现在保留成
+ * `[图片：alt]` / `[图片]`，和 `mail_read` 的内嵌图片清单对得上。
+ */
 export function htmlToText(html: string): string {
   return html
-    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<img\b[^>]*>/gi, (tag) => {
+      const alt = /\balt\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
+      const label = decodeHtmlText(String(alt?.[2] ?? alt?.[3] ?? alt?.[4] ?? "").trim());
+      return label ? ` [图片：${label}] ` : " [图片] ";
+    })
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
     .replace(/<[^>]+>/g, "")
@@ -168,7 +200,7 @@ const mailReadTool = {
   name: "mail_read",
   label: "读邮件",
   description:
-    "读一封信的完整内容：发件人 / 收件人 / 时间 / 纯文本正文 / 附件清单。默认不改「已读」标记（用 PEEK 读）。正文超过 20000 字会被截断并注明；只有 HTML 正文的信会把标签剥掉给你看。附件要落盘用 mail_attachment。",
+    "读一封信的完整内容：发件人 / 收件人 / 时间 / 正文 / 附件与内嵌图片清单。默认不改「已读」标记（用 PEEK 读）。正文超过 20000 字会被截断并注明；只有 HTML 正文的信会把标签剥掉，图片保留成 `[图片]` / `[图片：alt]`。真正看内嵌图片用 mail_image；附件要落盘用 mail_attachment。",
   promptSnippet: "mail_read(account?, uid, folder?) → 一封信的正文与附件清单",
   parameters: {
     type: "object",
@@ -185,8 +217,18 @@ const mailReadTool = {
       const reply = await callTool("mail_read", params ?? {}, READ_MS);
       if (!reply.ok) return textResult(`没读出来：${explain(reply, "原因不明")}`, { ok: false, code: reply.code });
       const m = reply.message as any;
-      const attach = (m.attachments ?? []).length
-        ? `\n\n附件（${m.attachments.length}）：\n${m.attachments.map((a: any) => `- #${a.index} ${a.filename}（${Math.round((a.size ?? 0) / 1024)}KB，${a.contentType}）`).join("\n")}`
+      const all: any[] = m.attachments ?? [];
+      // `inline` 是桥按 Content-Disposition / related 判出来的；带 Content-ID 的普通图片附件
+      // （disposition=attachment）仍应留在附件清单里，不能只看 cid。
+      const images = all.filter((a) => a.inline && a.contentId && String(a.contentType ?? "").toLowerCase().startsWith("image/"));
+      const files = all.filter((a) => !a.inline);
+      const attach = files.length
+        ? `\n\n附件（${files.length}）：\n${files.map((a: any) => `- #${a.index} ${a.filename}（${Math.round((a.size ?? 0) / 1024)}KB，${a.contentType}）`).join("\n")}`
+        : "";
+      const imageList = images.length
+        ? `\n\n内嵌图片（${images.length}）：\n${images
+            .map((a: any) => `- #${a.index} ${a.filename}（${Math.round((a.size ?? 0) / 1024)}KB，${a.contentType}${a.contentId ? `，cid: ${a.contentId}` : ""}）`)
+            .join("\n")}\n（要看图片内容用 mail_image，带同样的 uid 和 index）`
         : "";
       // 纯 HTML 的信以前到这里就只剩「(没有纯文本正文)」—— 扒标签给模型看一眼。
       const plain = String(m.text ?? "").trim();
@@ -195,8 +237,13 @@ const mailReadTool = {
       const head = `主题：${m.subject}\n发件人：${m.from}\n收件人：${(m.to ?? []).join(", ") || "(无)"}\n时间：${dateText(m.date)}`;
       const note = fromHtml ? "\n\n（这封信只有 HTML 正文，下面是扒掉标签的纯文本）" : "";
       // 附件清单照样给，但「落盘」要用户开过「取附件」：说清，别让人以为点了就能下。
-      const lock = (m.attachments ?? []).length && reply.attachmentsAllowed === false ? "\n（要存到本机得让用户在邮箱设置里打开「取附件」。）" : "";
-      return textResult(`${head}\n\n${body || "(没有可读正文)"}${note}${attach}${lock}`, { ok: true, message: m, attachmentsAllowed: reply.attachmentsAllowed });
+      const lock = files.length && reply.attachmentsAllowed === false ? "\n（要存到本机得让用户在邮箱设置里打开「取附件」。）" : "";
+      return textResult(`${head}\n\n${body || "(没有可读正文)"}${note}${attach}${imageList}${lock}`, {
+        ok: true,
+        message: m,
+        attachmentsAllowed: reply.attachmentsAllowed,
+        inlineImages: images,
+      });
     } catch (err: any) {
       return textResult(`没读出来：${String(err?.message ?? err)}`, { ok: false, code: "channel" });
     }
@@ -292,11 +339,46 @@ const mailReplyTool = {
   },
 };
 
+const mailImageTool = {
+  name: "mail_image",
+  label: "看邮件图片",
+  description:
+    "把邮件里的一张内嵌图片作为图片返回给模型看（png / jpeg / gif / webp，单张不超过 3MB）。编号从 mail_read 的「内嵌图片」清单里拿。图片太大或格式不支持时改用 mail_attachment 存到本机。",
+  promptSnippet: "mail_image(account?, uid, index, folder?) → 内嵌图片内容（ImageContent）",
+  parameters: {
+    type: "object",
+    properties: {
+      account: accountParam,
+      folder: folderParam,
+      uid: { type: "number", description: "邮件 uid" },
+      index: { type: "number", description: "内嵌图片的附件序号（mail_read 清单里的 #）" },
+    },
+    required: ["uid", "index"],
+    additionalProperties: false,
+  },
+  async execute(_id: string, params: any) {
+    try {
+      const reply = await callTool("mail_image", params ?? {}, READ_MS);
+      if (!reply.ok) return textResult(`没看到这张图：${explain(reply, "原因不明")}`, { ok: false, code: reply.code });
+      const data = String(reply.base64 ?? "");
+      if (!data) return textResult("没看到这张图：桥没有返回图片数据。", { ok: false, code: "empty" });
+      return imageResult(
+        `内嵌图片：${reply.filename}（${Math.round(Number(reply.size ?? 0) / 1024)}KB，${reply.contentType}）`,
+        data,
+        String(reply.contentType),
+        { ok: true, filename: reply.filename, size: reply.size, contentType: reply.contentType },
+      );
+    } catch (err: any) {
+      return textResult(`没看到这张图：${String(err?.message ?? err)}`, { ok: false, code: "channel" });
+    }
+  },
+};
+
 const mailAttachmentTool = {
   name: "mail_attachment",
   label: "取附件",
   description:
-    "把某封信的第 index 个附件下载到本机（`<状态目录>/mail/downloads/<账号>/`），返回落盘路径。index 从 0 开始，用 mail_read 的附件清单确认序号。下载后要给人看可以用 open_preview。",
+    "把某封信的第 index 个附件（含内嵌图片）下载到本机（`<状态目录>/mail/downloads/<账号>/`），返回落盘路径。index 从 0 开始，用 mail_read 的附件 / 内嵌图片清单确认序号。下载后要给人看可以用 open_preview。",
   promptSnippet: "mail_attachment(account?, uid, index, folder?) → 下载附件到本机并返回路径",
   parameters: {
     type: "object",
@@ -327,6 +409,7 @@ const TOOLS = [
   mailSendTool,
   mailDraftTool,
   mailReplyTool,
+  mailImageTool,
   mailAttachmentTool,
 ];
 

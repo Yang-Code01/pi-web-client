@@ -8,7 +8,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { auditOutcome, joinAddress, localPartFor, MAIL_ERROR_TEXT, MAIL_POLICY_LABELS, MailConfirmQueue, mailErrorText, parseRecipients, portOf, presetDomain, retargetAddress, secureForPort, sizeText, splitAddress, whenText } from "../src/mail-shared.ts";
+import { auditOutcome, cidKey, inlineImageMap, joinAddress, localPartFor, MAIL_ERROR_TEXT, MAIL_POLICY_LABELS, MailConfirmQueue, mailErrorText, parseRecipients, portOf, presetDomain, retargetAddress, secureForPort, sizeText, splitAddress, whenText } from "../src/mail-shared.ts";
+import { buildMailFrameHtml, firstSrcsetUrl } from "../src/mailhtml.ts";
 
 test("权限表覆盖六个开关，键与桥端一致", () => {
   assert.deepEqual(
@@ -193,4 +194,48 @@ test("邮箱地址：预设域名跟着邮箱类型走，只拆本地部分", ()
   // 换到没有固定域名的企业邮 / 自定义：只留本地部分，别把 163 的地址带过去。
   assert.equal(retargetAddress("alice@163.com", "163.com", ""), "alice");
   assert.equal(retargetAddress("alice@163.com", "163.com", "", ["163.com"]), "alice");
+});
+
+
+test("内嵌图片：cid 的三种写法归一到同一把钥匙", () => {
+  assert.equal(cidKey("<Logo@X>"), "logo@x");
+  assert.equal(cidKey("cid:logo@x"), "logo@x");
+  assert.equal(cidKey("cid:logo%40x"), "logo@x");
+  assert.equal(cidKey("cid%3Alogo%40x"), "logo@x");
+  assert.equal(cidKey("  cid:%3Clogo%40x%3E  "), "logo@x");
+  assert.equal(cidKey(""), "");
+  assert.equal(cidKey(null), "");
+  // 坏编码不能把整张图丢掉：原样比。
+  assert.equal(cidKey("cid:bad%zz"), "bad%zz");
+});
+
+test("内嵌图片：Content-ID → 附件行，普通附件不进来", () => {
+  const atts = [
+    { index: 0, filename: "logo.png", contentType: "image/png", size: 10, contentId: "<Logo@X>", inline: true },
+    { index: 1, filename: "report.pdf", contentType: "application/pdf", size: 20, contentId: null, inline: false },
+    { index: 2, filename: "no-cid.png", contentType: "image/png", size: 30, inline: true },
+  ];
+  const map = inlineImageMap(atts);
+  assert.equal(map.size, 1);
+  assert.equal(map.get("logo@x")?.index, 0);
+});
+
+test("srcset：只有 srcset 的图也能找到第一个候选 URL", () => {
+  assert.equal(firstSrcsetUrl("https://x.test/a.png 1x, https://x.test/b.png 2x"), "https://x.test/a.png");
+  assert.equal(firstSrcsetUrl("  https://x.test/a.png  "), "https://x.test/a.png");
+  assert.equal(firstSrcsetUrl("data:image/png;base64,AAAA 1x"), "data:image/png;base64,AAAA");
+  assert.equal(firstSrcsetUrl(""), "");
+});
+
+test("邮件 HTML 外壳：默认 CSP 不放远程图片，点「显示图片」才放行", () => {
+  const rendered = { html: "<p>hi</p>", remoteImages: 2, remoteCss: 0 };
+  const blocked = buildMailFrameHtml(rendered, false);
+  assert.match(blocked, /script-src 'none'/);
+  assert.match(blocked, /frame-src 'none'/);
+  assert.match(blocked, /img-src data: blob: 'self';/);
+  assert.ok(!blocked.includes("https: http:"), "默认不该允许远程图片");
+  assert.ok(blocked.includes("<p>hi</p>"));
+
+  const shown = buildMailFrameHtml(rendered, true);
+  assert.match(shown, /img-src data: blob: 'self' https: http:/);
 });
