@@ -132,11 +132,11 @@ const CONTINUE_TEXT = "继续";
 const PLAN_SYNC_TEXT = "用 todo 把执行面板上的计划同步成实际进度：确实做完的标 completed，不再需要的 delete，整份作废就 clear；没做完的保持原状。只做这一件事，做完回一句「计划已同步」。";
 // i18n-ignore-end
 
-/** #278：桥的 hello `caps` 里表示「ws.create 带 dir 能按目录建组」。旧桥没有这项。 */
 /** #455 上传暂存区的前端上限：和桥的 64 MB / 10 个对齐，先拦一道省得白传。 */
 const DEVICE_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
 const DEVICE_UPLOAD_MAX_FILES = 10;
 
+/** #278：桥的 hello `caps` 里表示「ws.create 带 dir 能按目录建组」。旧桥没有这项。 */
 const WS_CREATE_DIR_CAP = "ws.create.dir";
 /** #278：桥的 hello `caps` 里表示「ws.resolve 能把子目录 / worktree 折回已有组」。旧桥没有这项。 */
 const WS_RESOLVE_DIR_CAP = "ws.resolve.dir";
@@ -14678,6 +14678,10 @@ export class App {
       for (let i = 0; i < others.length; i++) {
         const file = others[i];
         const saved = await api.uploadFile(sid, file, (ratio) => {
+          if (ratio === null) {
+            ui.progress(null);
+            return;
+          }
           sent[i] = file.size * ratio;
           const done = sent.reduce((a, b) => a + b, 0);
           ui.progress(total ? done / total : 1);
@@ -14696,6 +14700,10 @@ export class App {
         : code === "network" ? tr("网络断了，文件没传上去")
         : tr("上传失败：{p1}", { p1: ex?.message ?? ex }),
       );
+      return;
+    }
+    if (this.currentId !== sid) {
+      ui.fail(tr("上传完成时会话已经切走了，文件在 {p1}", { p1: paths.join(" ") }));
       return;
     }
     if (images.length) await this.addImages(images);

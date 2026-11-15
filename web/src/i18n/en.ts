@@ -248,6 +248,7 @@ export const en: Dict = {
   "一次最多 {p1} 个文件（图片不算）": "At most {p1} files at a time (images excluded)",
   "「{p1}」太大了：单个文件上限 64 MB": "\"{p1}\" is too large: 64 MB per file",
   "上传失败：{p1}": "Upload failed: {p1}",
+  "上传完成时会话已经切走了，文件在 {p1}": "The session changed while uploading — the files are in {p1}",
   "这个会话不在了，刷新后再试": "That session is gone — refresh and try again",
   "文件太大了（上限 64 MB）": "File too large (64 MB max)",
   "桥的版本不支持上传，更新后再试": "This bridge is too old to upload files — update it and try again",

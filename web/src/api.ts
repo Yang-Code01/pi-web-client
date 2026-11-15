@@ -4,6 +4,9 @@ import type { MailAccountInput, MailAccountView, MailConfigView, MailDetailView,
 import type { DnsResult, SysNetwork, WinnatResult, SysOverview, SysPorts, SysServices, SysWorkclock, WorkclockAgentResult, WorkclockBackfill, WorkclockSettings } from "./sysmanage-types.ts";
 import type { HotdeployRemoveResult, HotdeployRun, HotdeploySnapshot } from "./hotdeploy-types.ts";
 
+/** 上传暂存区落盘后回给页面的那份文件。 */
+export type UploadedFile = { path: string; name: string; size: number };
+
 /**
  * D110: bridge 的错误响应是 `{ error, code?, params? }`。`error` 是中文兜底，`code` 才是给界面
  * 翻译用的键（`errText()` 拿 `code` + `params` 查词典）。两个字段都挂到 Error 上，认不出 `code`
@@ -193,14 +196,14 @@ export const api = {
    * #455 「从本设备选文件」：非图片原件直传桥的上传暂存区。用 XHR 是为了拿到上传进度；
    * 返回的绝对路径再插进输入框，模型用工具去读。
    */
-  uploadFile: (sessionId: string, file: File, onProgress: (ratio: number) => void): Promise<{ path: string; name: string; size: number }> => {
+  uploadFile: (sessionId: string, file: File, onProgress: (ratio: number | null) => void): Promise<UploadedFile> => {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const query = new URLSearchParams({ session: sessionId, name: file.name || "file" });
       xhr.open("POST", `/api/uploads?${query.toString()}`);
       xhr.withCredentials = true;
       xhr.upload.onprogress = (ev) => {
-        if (ev.lengthComputable && ev.total) onProgress(ev.loaded / ev.total);
+        onProgress(ev.lengthComputable && ev.total ? ev.loaded / ev.total : null);
       };
       xhr.onload = () => {
         let body: any = null;
@@ -216,7 +219,7 @@ export const api = {
           reject(Object.assign(new Error(body?.error ?? `HTTP ${xhr.status}`), { status: xhr.status, code }));
         }
       };
-      xhr.onerror = () => reject(Object.assign(new Error("网络断了，文件没传上去"), { code: "network" }));
+      xhr.onerror = () => reject(Object.assign(new Error("network"), { code: "network" }));
       xhr.send(file);
     });
   },

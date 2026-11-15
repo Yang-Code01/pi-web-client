@@ -117,6 +117,8 @@ interface Config {
 /** D186：公网写入窗口 1 天（原 D15 是 10 分钟）—— 手机上批准不该一轮对话就重输一次口令。 */
 const STEP_UP_MS = 24 * 60 * 60 * 1000;
 const MAX_BODY = 30 * 1024 * 1024;
+/** #455 与 MAX_UPLOAD_BYTES 同一个数：readRaw 被挡和 saveUpload 自查，回的是同一句话。 */
+const UPLOAD_TOO_LARGE = "文件太大了（上限 64 MB）";
 
 interface ChildWatch {
   sessionId: string;
@@ -969,15 +971,24 @@ async function main(): Promise<void> {
       if (!ok) return fail(res, 401, "unauthorized", "还没登录");
       const sid = url.searchParams.get("session") ?? "";
       if (!sessions.locate(sid)) return fail(res, 404, "session", "找不到这个会话");
+      const rawName = url.searchParams.get("name") ?? "";
+      if (!rawName.trim()) return fail(res, 400, "bad_name", "文件名不能为空");
       const raw = await readRaw(req, MAX_UPLOAD_BYTES).catch(() => null);
-      if (!raw) return fail(res, 413, "too_large", "文件太大了（上限 64 MB）");
+      if (!raw) {
+        log(`upload too_large ${sid.slice(0, 8)}`);
+        return fail(res, 413, "too_large", UPLOAD_TOO_LARGE);
+      }
       try {
-        const saved = saveUpload(sid, url.searchParams.get("name") || "file", raw);
+        const saved = saveUpload(sid, rawName, raw);
         log(`upload ${sid.slice(0, 8)} ${saved.name} ${saved.size}`);
-        return json(res, 200, { path: saved.path, name: saved.name, size: saved.size });
+        return json(res, 200, { ok: true, path: saved.path, name: saved.name, size: saved.size });
       } catch (err) {
-        if ((err as { code?: string }).code === "too_large") return fail(res, 413, "too_large", "文件太大了（上限 64 MB）");
-        log(`upload failed ${sid.slice(0, 8)} ${(err as Error).message}`);
+        const code = (err as { code?: string }).code;
+        if (code === "too_large") {
+          log(`upload too_large ${sid.slice(0, 8)}`);
+          return fail(res, 413, "too_large", UPLOAD_TOO_LARGE);
+        }
+        log(`upload failed ${sid.slice(0, 8)} write ${(err as Error).message}`);
         return fail(res, 500, "write", `写不进上传暂存区：${(err as Error).message}`);
       }
     }

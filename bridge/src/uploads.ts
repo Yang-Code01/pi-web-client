@@ -44,14 +44,18 @@ export function safeName(raw: string): string {
   return name;
 }
 
+/** 最后一个扩展名，`foo.tar.gz` → `{ base: "foo.tar", ext: ".gz" }`；没有扩展名时 ext 为空。 */
+function splitExt(name: string): { base: string; ext: string } {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? { base: name.slice(0, dot), ext: name.slice(dot) } : { base: name, ext: "" };
+}
+
 function clampName(name: string): string {
   if (Array.from(name).length <= NAME_MAX) return name;
-  const dot = name.lastIndexOf(".");
-  let ext = dot > 0 ? name.slice(dot) : "";
-  if (Array.from(ext).length > 24) ext = "";
-  const base = ext ? name.slice(0, name.length - ext.length) : name;
-  const room = NAME_MAX - Array.from(ext).length;
-  return Array.from(base).slice(0, Math.max(1, room)).join("") + ext;
+  const { base, ext } = splitExt(name);
+  const kept = Array.from(ext).length > 24 ? "" : ext;
+  const room = NAME_MAX - Array.from(kept).length;
+  return Array.from(base).slice(0, Math.max(1, room)).join("") + kept;
 }
 
 export interface SavedUpload {
@@ -104,9 +108,8 @@ export function saveUpload(sessionId: string, rawName: string, data: Buffer): Sa
 
 /** 在最后一个扩展名前插序号：foo.tar.gz → foo.tar-2.gz。 */
 function numbered(name: string, n: number): string {
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return `${name}-${n}`;
-  return `${name.slice(0, dot)}-${n}${name.slice(dot)}`;
+  const { base, ext } = splitExt(name);
+  return `${base}-${n}${ext}`;
 }
 
 /** 客户端回滚用：只肯删本会话目录里的直属文件。 */
@@ -142,13 +145,8 @@ export function pruneUploads(now = Date.now(), ttl = UPLOAD_TTL_MS): number {
   let removed = 0;
   for (const entry of entries) {
     const abs = path.join(uploadsRoot(), entry.name);
-    if (entry.isDirectory()) {
-      if (now - newestMtime(abs) <= ttl) continue;
-    } else if (!entry.isFile() || !entry.name.startsWith(".upload-")) {
-      continue;
-    } else if (now - newestMtime(abs) <= ttl) {
-      continue;
-    }
+    const ours = entry.isDirectory() || (entry.isFile() && entry.name.startsWith(".upload-"));
+    if (!ours || now - newestMtime(abs) <= ttl) continue;
     try {
       fs.rmSync(abs, { recursive: true, force: true });
       removed += 1;

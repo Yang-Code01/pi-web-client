@@ -178,7 +178,6 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
   deviceInput.type = "file";
   deviceInput.multiple = true;
   deviceInput.hidden = true;
-  const deviceLabel = tr("从本设备选文件");
   let deviceBusy = false;
   let errorTimer = 0;
   const deviceError = el("div", "fc-upload-error");
@@ -186,7 +185,7 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
     deviceBusy = false;
     device.disabled = false;
     device.dataset.busy = "0";
-    device.textContent = deviceLabel;
+    device.textContent = tr("从本设备选文件");
   };
   const deviceUi: DeviceUploadUi = {
     progress: (ratio) => {
@@ -213,7 +212,7 @@ export function openFileConsole(opts: FileConsoleOpts): FileConsoleHandle {
     if (!files.length || deviceBusy) return;
     opts.onDeviceFiles(files, deviceUi);
   };
-  const device = el("button", "btn ghost fc-tool", deviceLabel) as HTMLButtonElement;
+  const device = el("button", "btn ghost fc-tool", tr("从本设备选文件")) as HTMLButtonElement;
   device.type = "button";
   device.title = tr("从当前浏览器所在的设备选文件；图片按图片附加，其他文件上传到这台机器并插入路径");
   device.onclick = () => {
