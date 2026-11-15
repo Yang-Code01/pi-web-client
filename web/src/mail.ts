@@ -825,7 +825,7 @@ export class MailPanel {
     acts.append(reply, draft, analyze, aiReply);
     box.append(acts);
 
-    const files = m.attachments.filter((a) => !a.inline);
+    const files = m.attachments.filter((a) => !a.inline && !(a.contentId && String(a.contentType ?? "").toLowerCase().startsWith("image/")));
     if (files.length) {
       const att = el("div", "mc-attach");
       // 页面上的附件是**人自己**在下载：不受「取附件」（那是 AI 的开关）管，永远给直链（D264）。
