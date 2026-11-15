@@ -63,6 +63,7 @@ import { skillOf } from "./skill.ts";
 import { chromeFrom, isChromeVisible, isSessionOnly, narrowForcedVisible, type ChromeContext, type ChromeId, type ChromeState } from "./chrome.ts";
 import { type CtxLine } from "./context.ts";
 import { ContextPanel, type ContextPanelData } from "./context-panel.ts";
+import { ContextInsightsView } from "./context-insights.ts";
 import { Socket } from "./ws.ts";
 import { execView, type ExecChildRunInput, type ExecPhase, type ExecPlanSnapshot, type ExecPlanView, type ExecRound, type ExecRoundStats, type ExecStatsSnapshot, type ExecSubagentRow, type ExecViewModel } from "./exec-view.ts";
 import { buildTree, type Tree, type TreeGroup } from "./tree.ts";
@@ -404,7 +405,7 @@ export class App {
   };
   /** Appearance prefs (scale / accent / text lightness), persisted in localStorage. */
   private prefs: Prefs = readPrefs();
-  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | "wsnew" | "wsdelete" | "context" | null = null;
+  private sheetKind: "model" | "display" | "new" | "manage" | "keys" | "tree" | "settings" | "share" | "ext" | "skillstore" | "peer" | "intro" | "bg" | "wsnew" | "wsdelete" | "context" | "context-insights" | null = null;
   /** The new-session dialog stays up until the bridge answers with the started session (or an error). */
   private creating: { finish: (error?: string) => void } | null = null;
   /** 新建文件夹 / 新建文件共用一个等待表：两条结果的形状一样（`{ path }` / `{ error }`，D167）。 */
@@ -416,6 +417,8 @@ export class App {
   private ctxLogs = new Map<string, CtxLine[]>();
   /** #384：Context 面板实例；关闭 sheet 时一起丢掉，展开状态不跨会话。 */
   private contextPanel: ContextPanel | null = null;
+  /** 设置 → 工具 → 上下文洞察（跨会话）。 */
+  private contextInsights: ContextInsightsView | null = null;
   /** Context budget chosen in the model sheet (bridge enforces it); null = window size. */
   private budget: number | null = null;
   /** Extension status lines / widgets / title for the current session (#18). */
@@ -4169,7 +4172,10 @@ export class App {
       this.closeSheet();
       openHotdeploy();
     };
-    keysTools.append(keysBtn, piSettings, sysmanage, hotdeploy);
+    const contextInsights = el("button", "btn", tr("上下文洞察")) as HTMLButtonElement;
+    contextInsights.title = tr("跨会话的上下文统计：全体与分项目的 Token、费用、技能、工具与命令");
+    contextInsights.onclick = () => this.openContextInsightSheet();
+    keysTools.append(keysBtn, piSettings, sysmanage, hotdeploy, contextInsights);
     keys.append(keysTools);
     page.append(keys);
 
@@ -4644,6 +4650,7 @@ export class App {
     this.sheet = null;
     this.sheetKind = null;
     this.contextPanel = null;
+    this.contextInsights = null;
     this.mgrRefresh = null;
     this.imageSheetPaint = null;
     this.wsPane = null;
@@ -5125,6 +5132,38 @@ export class App {
     btn.onclick = () => this.openContextSheet();
     this.contextBtn = btn;
     return btn;
+  }
+
+  /** 设置 → 工具 → 上下文洞察：跨会话总览，点会话卡片直接跳过去。 */
+  private openContextInsightSheet(): void {
+    this.closeSheet();
+    this.sheetKind = "context-insights";
+    const back = el("div", "sheet-back");
+    back.onclick = (ev) => {
+      if (ev.target === back) this.closeSheet();
+    };
+    const sheet = el("div", "sheet settings-sheet context-insight-sheet");
+    const head = el("div", "sheet-head");
+    head.append(el("div", "sheet-title", tr("上下文洞察")));
+    const close = el("button", "btn ghost", tr("关闭"));
+    close.onclick = () => this.closeSheet();
+    head.append(close);
+    const body = el("div", "settings-body");
+    const host = el("div", "ci-host");
+    body.append(host);
+    sheet.append(head, body);
+    back.append(sheet);
+    this.overlay(back);
+    this.sheet = back;
+    const view = new ContextInsightsView(host, {
+      currentId: this.currentId,
+      openSession: (id) => {
+        this.closeSheet();
+        this.openSession(id);
+      },
+    });
+    this.contextInsights = view;
+    void view.load();
   }
 
   /** 面板（sheet，同技能商店形态）：KPI + 组成 / 事件 / 趋势 / 文件 / 命令 / provider 计量。 */

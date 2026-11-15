@@ -27,7 +27,8 @@ import { pageBefore } from "./history.ts";
 import type { StateFailure } from "./statefile.ts";
 import { writeLifecycle } from "./lifecycle.ts";
 import { Terminals, openConsole, openWithApp, revealInFileManager } from "./terminal.ts";
-import { SessionManager, isPermissionMode, type AskAnswer, type AskQuestion, type RuntimeStats } from "./sessions.ts";
+import { SessionManager, contextLogDir, isPermissionMode, type AskAnswer, type AskQuestion, type RuntimeStats } from "./sessions.ts";
+import { collectContextInsight } from "./context-insight.ts";
 import { resolveChildSessionFile } from "./bgruns.ts";
 import { entriesToItems } from "./items.ts";
 import type { Item } from "./items.ts";
@@ -1714,6 +1715,20 @@ async function main(): Promise<void> {
 
     if (url.pathname === "/api/sessions") {
       return json(res, 200, { sessions: sessions.list(), tunnel: tunnel.state });
+    }
+
+    // 设置 → 工具 → 上下文洞察：跨会话的 Token / 费用 / 技能 / 工具 / 项目汇总。
+    // 读取所有 ctxlog 的聚合，不把逐请求正文搬出桥；解析结果按文件 mtime/size 缓存。
+    if (url.pathname === "/api/context/insights" && req.method === "GET") {
+      return json(
+        res,
+        200,
+        await collectContextInsight({
+          sessions: sessions.list(),
+          workspace: sessions.workspaces.snapshot(),
+          root: contextLogDir(),
+        }),
+      );
     }
 
     if (url.pathname === "/api/session" && req.method === "GET") {

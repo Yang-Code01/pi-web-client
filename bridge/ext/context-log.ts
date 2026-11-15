@@ -5,9 +5,11 @@
  * of. This companion extension rides pi's hooks and appends one JSON line per observation to a
  * per-session file under the bridge's state dir. The bridge tails that file and the web's Context
  * panel renders it (stats / token split / timing / current context / trend / browser / events /
- * file activity / command activity). Five kinds of lines share one `seq`:
+ * file activity / command activity). Six kinds of lines share one `seq`:
  *   request   `context_with_system`, right before every LLM call: category totals plus a compact
- *             snapshot of the header and the context items (previews only, never full bodies)
+ *             snapshot of the header and the context items
+ *   body      full-ish content for one item, written once per changed (id, digest) so the browser
+ *             can expand system prompts, tool schemas, messages, arguments and tool results
  *   usage     `message_end` for an assistant message: provider usage for the request before it
  *   event     `session_compact` / `session_compact_failed` / `model_select` / `inject`
  *   activity  `tool_execution_end`: every tool call; file and shell calls keep extra metadata
@@ -16,10 +18,10 @@
  * everything else ÷ 4. It is an estimate — the provider's own usage numbers remain the source of
  * truth for totals (`stats` WS message); this file is the only source for the *split*.
  *
- * Privacy: activity lines never store a command's full text nor a tool's output. Shell commands
- * are reduced to the program name; file lines store the path, the operation and line deltas.
- * Context item previews are clipped to 160 characters; they exist so the browser can show what a
- * row *is*, not to mirror the transcript.
+ * Privacy: this is the same machine-local evidence the session JSONL already holds. The browser
+ * needs the actual prompt / schema / message / arguments / result to answer "what is in this
+ * request", so `body` lines keep that content (capped at MAX_BODY). Activity lines still keep only
+ * metadata: shell commands reduce to a program name and file lines to path + line deltas.
  *
  * Written by the bridge with LOG_DIR filled in (pisettings.ts install pattern, same as
  * session-lock.ts). Never throws: logging must not break the pi it rides on.
@@ -28,12 +30,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 const LOG_DIR: string = "__LOG_DIR__";
-const VERSION = 2;
+const VERSION = 3;
 const MAX_PATH = 240;
 const MAX_PREVIEW = 160;
 const MAX_ITEMS = 400;
 const MAX_TOOLS = 80;
 const MAX_SECTIONS = 24;
+const MAX_BODY = 64 * 1024;
 
 type Cat = "sys" | "tools" | "user" | "inject" | "skill" | "asst" | "toolr";
 
@@ -141,12 +144,37 @@ function argTokens(args: unknown): number {
   }
 }
 
+function prettyArgs(args: unknown): string {
+  if (args == null) return "";
+  if (typeof args === "string") return args;
+  try {
+    return JSON.stringify(args, null, 2);
+  } catch {
+    return "";
+  }
+}
+
+/** The same fold-back rule as `sessionfile.ts`: a SKILL.md may quote `</skill>`, so the last close ends it. */
+const SKILL_BLOCK = /^\s*<skill\b([^>]*)>([\s\S]*)<\/skill>([\s\S]*)$/;
+const SKILL_NAME = /\bname="([^"]*)"/;
+const SKILL_LOCATION = /\blocation="([^"]*)"/;
+
+function skillExpansion(raw: string): { name: string; location?: string; body: string; args: string; command: string } | null {
+  const m = SKILL_BLOCK.exec(raw);
+  if (!m) return null;
+  const name = SKILL_NAME.exec(m[1])?.[1];
+  if (!name) return null;
+  const location = SKILL_LOCATION.exec(m[1])?.[1];
+  const args = m[3].trim();
+  return { name, ...(location ? { location } : {}), body: m[2], args, command: args ? `/skill:${name} ${args}` : `/skill:${name}` };
+}
+
 interface BlockInfo {
   kind: "text" | "thinking" | "toolCall" | "image" | "other";
   tokens: number;
-  /** Full-ish text used only to estimate tokens; never written as-is for tools. */
+  /** Full text / JSON used for the browser body; never placed in the compact preview. */
   text: string;
-  /** Privacy-safe preview written to the ctxlog item. */
+  /** One-line preview written to the ctxlog item. */
   preview: string;
   toolName?: string;
   toolCallId?: string;
@@ -171,11 +199,11 @@ function blockInfo(b: any): BlockInfo {
     } catch {
       keys = "";
     }
-    // Never write command lines / file bodies into the preview; keys are enough to identify the call.
+    // The preview stays privacy-safe (keys only); the full argument body goes to a `body` line.
     return {
       kind: "toolCall",
       tokens: estTokens(name) + argTokens(args),
-      text: name,
+      text: prettyArgs(args),
       preview: keys ? `${name}(${keys})` : name,
       toolName: name,
       toolCallId: typeof b.id === "string" ? b.id : typeof b.toolCallId === "string" ? b.toolCallId : undefined,
@@ -264,6 +292,10 @@ export default function contextLog(pi: any): void {
   let step = 0;
   let lastUserKey = "";
   const seenSections = new Map<string, string>();
+  /** item id → digest of the last body written; bodies are large, so only changes are appended. */
+  const bodyDigests = new Map<string, string>();
+  /** skill invocation message key → already emitted its inject event (the message stays in context). */
+  const seenSkillKeys = new Set<string>();
   /** toolCallId → what `tool_execution_start` saw; `end` sometimes omits toolName / args. */
   const pending = new Map<string, { toolName: string; args: any; parent: boolean; start: number }>();
 
@@ -282,6 +314,16 @@ export default function contextLog(pi: any): void {
     return at;
   };
 
+  /** Full text for the Context Browser; unchanged items are not written again. */
+  const body = (id: string, content: string, meta: Record<string, unknown> = {}): void => {
+    if (!content) return;
+    const text = content.length > MAX_BODY ? `${content.slice(0, MAX_BODY - 1)}…` : content;
+    const digest = hash32(`${text}\n${JSON.stringify(meta)}`);
+    if (bodyDigests.get(id) === digest) return;
+    bodyDigests.set(id, digest);
+    line({ ...meta, kind: "body", id, content: text });
+  };
+
   pi.on("session_start", async (_event: any, ctx: any) => {
     file = null;
     seq = 0;
@@ -292,6 +334,8 @@ export default function contextLog(pi: any): void {
     step = 0;
     lastUserKey = "";
     seenSections.clear();
+    bodyDigests.clear();
+    seenSkillKeys.clear();
     pending.clear();
     try {
       const id = String(ctx.sessionManager?.getSessionId?.() ?? "");
@@ -306,6 +350,8 @@ export default function contextLog(pi: any): void {
 
   pi.on("session_shutdown", async () => {
     file = null;
+    bodyDigests.clear();
+    seenSkillKeys.clear();
     pending.clear();
   });
 
@@ -324,6 +370,8 @@ export default function contextLog(pi: any): void {
     let users = 0;
     let lastUserText = "";
     const injections: Array<{ label: string; tokens: number }> = [];
+    const skillNames = new Set<string>();
+    const callArgs = new Map<string, { name: string; args: unknown }>();
 
     for (const msg of messages) {
       m++;
@@ -357,6 +405,7 @@ export default function contextLog(pi: any): void {
               };
               items.push(item);
               headerSystem.push(item);
+              body(item.id, text, { cat, label: item.label });
               // A changed non-prompt section is an injection event: the dashboard lists it next
               // to compaction / model switches instead of making the reader diff the prompt.
               if (key !== "preamble" && key !== "tools") {
@@ -382,6 +431,7 @@ export default function contextLog(pi: any): void {
           };
           items.push(item);
           headerSystem.push(item);
+          body(item.id, contentText, { cat: "sys", label: "system" });
         } else if (Array.isArray(msg?.content)) {
           // Some hosts pass the system prompt as content blocks instead of `sections`.
           contentBlocks(msg).forEach((b, bi) => {
@@ -398,6 +448,7 @@ export default function contextLog(pi: any): void {
             };
             items.push(item);
             headerSystem.push(item);
+            body(item.id, b.text, { cat: "sys", label: "system" });
           });
         }
         for (const tool of Array.isArray(msg?.toolsAdded) ? msg.toolsAdded : []) {
@@ -416,21 +467,74 @@ export default function contextLog(pi: any): void {
           };
           items.push(item);
           headerTools.push(item);
+          let schema = "";
+          try {
+            schema = JSON.stringify({ name, description: tool?.description ?? "", parameters: tool?.parameters ?? tool?.inputSchema ?? {} }, null, 2);
+          } catch {
+            schema = String(tool?.description ?? name);
+          }
+          body(item.id, schema, { cat: "tools", label: name, kind: "tool" });
         }
         perMessage.push({ role, tokens: total, blocks: 1, toolCalls: 0 });
+        continue;
+      }
+
+      const base = messageKey(msg, m);
+
+      // A `/skill:<name>` prompt reaches pi expanded as `<skill name="…">SKILL.md</skill> args`.
+      // dsh-context gives that block its own category (Skill Injections); keep the args as the
+      // user message and do not let the whole SKILL.md hide inside the user row.
+      const userText = role === "user" ? textOf(msg?.content) : "";
+      const skill = userText ? skillExpansion(userText) : null;
+      if (skill) {
+        const blockText = skill.args ? userText.slice(0, Math.max(0, userText.length - skill.args.length)) : userText;
+        const skillTokens = estTokens(blockText);
+        const argsTokens = skill.args ? estTokens(skill.args) : 0;
+        cats.skill += skillTokens;
+        cats.user += argsTokens;
+        skillNames.add(skill.name);
+        const skillItem: Item = {
+          id: `${base}:skill`,
+          cat: "skill",
+          label: skill.name,
+          tokens: skillTokens,
+          kind: "skill",
+          sub: "skill",
+          preview: oneLine(skill.body),
+        };
+        items.push(skillItem);
+        body(skillItem.id, skill.body, { cat: "skill", label: skill.name, ...(skill.location ? { path: skill.location } : {}) });
+        if (argsTokens) {
+          const argsItem: Item = {
+            id: `${base}:args`,
+            cat: "user",
+            label: "user",
+            tokens: argsTokens,
+            kind: "user",
+            preview: oneLine(skill.args),
+          };
+          items.push(argsItem);
+          body(argsItem.id, skill.args, { cat: "user", label: "user" });
+        }
+        const skillKey = `${base}:${skill.name}`;
+        if (!seenSkillKeys.has(skillKey)) {
+          seenSkillKeys.add(skillKey);
+          injections.push({ label: `skill:${skill.name}`, tokens: skillTokens });
+        }
+        perMessage.push({ role, tokens: skillTokens + argsTokens, blocks: 1, toolCalls: 0 });
         continue;
       }
 
       const blocks = contentBlocks(msg);
       let msgTotal = 0;
       let toolCalls = 0;
-      const base = messageKey(msg, m);
       blocks.forEach((b, bi) => {
         msgTotal += b.tokens;
         let cat = roleCat(role);
         let kind: string = b.kind;
         let label = role;
         let sub: string | undefined;
+        let meta: Record<string, unknown> = {};
         if (role === "assistant") {
           if (b.kind === "thinking") {
             split.reasoning += b.tokens;
@@ -442,6 +546,8 @@ export default function contextLog(pi: any): void {
             kind = "call";
             label = b.toolName ?? "toolCall";
             sub = "call";
+            if (b.toolCallId) callArgs.set(b.toolCallId, { name: label, args: b.text });
+            meta = { tool: label, kind: "call" };
           } else {
             split.answer += b.tokens;
             kind = "answer";
@@ -451,14 +557,25 @@ export default function contextLog(pi: any): void {
           cat = "toolr";
           kind = "result";
           label = String(msg?.toolName ?? "result");
+          const call = msg?.toolCallId ? callArgs.get(String(msg.toolCallId)) : undefined;
+          meta = {
+            tool: label,
+            kind: "result",
+            status: msg?.isError ? "failed" : "ok",
+            ...(call?.args ? { args: String(call.args) } : {}),
+            ...(typeof msg?.command === "string" ? { command: msg.command } : {}),
+            ...(typeof msg?.exitCode === "number" ? { exitCode: msg.exitCode } : {}),
+          };
         } else if (role === "user") {
           cat = "user";
           kind = "user";
           label = "user";
+          meta = { kind: "user" };
         } else {
           cat = "inject";
           kind = "inject";
           label = String(msg?.customType ?? msg?.source ?? "inject");
+          meta = { kind: "inject", label };
         }
         cats[cat] += b.tokens;
         const item: Item = {
@@ -473,6 +590,7 @@ export default function contextLog(pi: any): void {
         if (b.kind === "image") item.preview = "image";
         if (role === "toolResult" || role === "bashExecution") item.preview = String(msg?.toolName ?? "result");
         items.push(item);
+        if (b.kind !== "image") body(item.id, b.text, { cat, label, ...meta });
       });
       if (!blocks.length) {
         // A message with no content is still one row in the browser (e.g. an empty custom notice).
@@ -493,6 +611,7 @@ export default function contextLog(pi: any): void {
     }
 
     const total = cats.sys + cats.tools + cats.user + cats.inject + cats.skill + cats.asst + cats.toolr;
+    const foldedUser = skillExpansion(lastUserText)?.command ?? lastUserText;
     const keptItems = items.slice(-MAX_ITEMS);
     const keptTools = headerTools.slice(0, MAX_TOOLS);
     requestStartedAt = Date.now();
@@ -507,6 +626,8 @@ export default function contextLog(pi: any): void {
       total,
       cats,
       split,
+      skills: [...skillNames],
+      lastUser: clip(foldedUser.replace(/\s+/g, " ").trim(), 160),
       messages: m,
       roles: roleCounts,
       perMessage: perMessage.slice(-MAX_ITEMS),
@@ -565,6 +686,7 @@ export default function contextLog(pi: any): void {
     const started = typeof msg?.timestamp === "number" ? msg.timestamp : requestStartedAt;
     const waitMs = requestStartedAt > 0 ? Math.max(0, Math.round(started - requestStartedAt)) : 0;
     const elapsed = requestStartedAt > 0 ? Math.max(0, Math.round(Date.now() - requestStartedAt)) : 0;
+    const totalCost = typeof u?.cost === "number" ? u.cost : u?.cost?.total;
     line({
       kind: "usage",
       atSeq: lastRequestSeq,
@@ -574,6 +696,7 @@ export default function contextLog(pi: any): void {
       waitMs,
       usage,
       out,
+      ...(typeof totalCost === "number" && Number.isFinite(totalCost) ? { cost: totalCost } : {}),
     });
   });
 
@@ -643,12 +766,14 @@ export default function contextLog(pi: any): void {
     };
     if (typeof event?.durationMs === "number") common.durationMs = Math.round(event.durationMs);
     if (started.parent) common.parent = true;
+    const skillName = name === "skill" ? String(started.args?.name ?? started.args?.skill ?? "skill") : "";
+    if (skillName) common.skillName = clip(skillName, 120);
 
     if (name === "skill") {
       line({
         kind: "event",
         event: "inject",
-        label: `skill:${String(started.args?.name ?? started.args?.skill ?? "skill")}`,
+        label: `skill:${skillName}`,
         tokens: 0,
         atSeq: lastRequestSeq,
       });
@@ -666,6 +791,11 @@ export default function contextLog(pi: any): void {
     }
     const args = started.args ?? {};
     const p = typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : "";
+    if (op === "read") {
+      // 隐式技能加载：模型直接读了 `<skill>/SKILL.md`，pi 没有 skill 工具调用可记。
+      const skill = /([^/\\]+)[/\\]SKILL\.md$/i.exec(p);
+      if (skill) line({ kind: "event", event: "inject", label: `skill:${skill[1]}`, tokens: 0, atSeq: lastRequestSeq });
+    }
     let added = 0;
     let removed = 0;
     if (op === "write") added = countLines(args.content);

@@ -37,6 +37,8 @@ const ctx = (id) => ({
 const msgs = (arr) => arr;
 const logFile = (id) => path.join(logDir, id, `${id}.ctx.jsonl`);
 const rows = (id) => (fs.existsSync(logFile(id)) ? fs.readFileSync(logFile(id), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+const reqRows = (id) => rows(id).filter((r) => r.kind === "request");
+const bodyRows = (id) => rows(id).filter((r) => r.kind === "body");
 
 /** 一次 LLM 请求；默认只带一条 user 消息。 */
 const request = (h, id, messages = msgs([{ role: "user", content: "hello world 1234" }])) => h.context_with_system({ messages }, ctx(id));
@@ -46,17 +48,18 @@ test("session_start 建目录、写 request 行；shutdown 后不再写", async 
   await h.session_start({ reason: "startup" }, ctx("abc123"));
   assert.ok(fs.existsSync(path.join(logDir, "abc123")), "会话目录按 id 前缀落位");
   await request(h, "abc123");
-  const r = rows("abc123");
-  assert.equal(r.length, 1, "一次 LLM 调用写一行");
-  assert.equal(r[0].v, 2);
-  assert.equal(r[0].seq, 1);
+  const r = reqRows("abc123");
+  assert.equal(r.length, 1, "一次 LLM 调用写一条 request 行");
+  assert.equal(r[0].v, 3);
   assert.equal(r[0].kind, "request");
   assert.ok(r[0].ts > 0);
   assert.equal(typeof r[0].total, "number");
   assert.ok(r[0].cats.user > 0);
+  const b = bodyRows("abc123");
+  assert.ok(b.some((x) => x.content.includes("hello world 1234")), "正文行写给 Context Browser");
   await h.session_shutdown({}, ctx("abc123"));
   await request(h, "abc123", msgs([{ role: "user", content: "after shutdown" }]));
-  assert.equal(rows("abc123").length, 1, "shutdown 后不再写");
+  assert.equal(reqRows("abc123").length, 1, "shutdown 后不再写");
 });
 
 test("七类分类：system / toolsAdded / user / assistant / toolResult / 块数组都吃", async () => {
@@ -68,7 +71,7 @@ test("七类分类：system / toolsAdded / user / assistant / toolResult / 块�
     { role: "assistant", content: [{ type: "text", text: "好的，这就去" }, { type: "toolCall", toolCallId: "t1", tool: "read", args: {} }] },
     { role: "toolResult", toolCallId: "t1", content: [{ type: "text", text: "x".repeat(400) }] },
   ]));
-  const r = rows("cat123");
+  const r = reqRows("cat123");
   assert.equal(r.length, 1);
   const x = r[0];
   assert.equal(x.kind, "request");
@@ -84,6 +87,9 @@ test("七类分类：system / toolsAdded / user / assistant / toolResult / 块�
   assert.ok(x.header.system.length > 0, "header.system 带系统提示分段");
   assert.ok(x.header.tools.length > 0, "header.tools 带工具定义");
   assert.ok(x.items.length >= 5, "items 逐条落盘");
+  const bodies = bodyRows("cat123");
+  assert.ok(bodies.some((b) => b.cat === "tools" && b.content.includes("Read a file")), "工具 schema 正文落盘");
+  assert.ok(bodies.some((b) => b.content.includes("x".repeat(50))), "工具结果正文落盘");
 });
 
 test("三类行共用一个 seq；换会话归零，pending 工具调用也清掉", async () => {
@@ -100,12 +106,16 @@ test("三类行共用一个 seq；换会话归零，pending 工具调用也清�
   await h.session_compact({ compactionEntry: { tokensBefore: 200 }, reason: "threshold", willRetry: false }); // 7 event, atSeq=6
 
   const a = rows("seq111");
-  assert.deepEqual(a.map((r) => r.seq), [1, 2, 3, 4, 5, 6, 7]);
-  assert.deepEqual(a.map((r) => r.kind), ["request", "event", "activity", "event", "activity", "request", "event"]);
-  assert.equal(a[1].atSeq, 1, "压缩事件挂在第一次请求之后");
-  assert.equal(a[3].atSeq, 1, "换模型事件也在同一位置");
-  assert.equal(a[2].atSeq, 1, "活动行同样记住当时的 lastRequestSeq");
-  assert.equal(a[6].atSeq, 6, "第二次请求之后的事件 atSeq 跟着更新");
+  const firstReq = a.find((r) => r.kind === "request");
+  const secondReq = a.filter((r) => r.kind === "request")[1];
+  const evs = a.filter((r) => r.kind === "event");
+  const acts = a.filter((r) => r.kind === "activity");
+  assert.equal(firstReq.turn, 1);
+  assert.equal(secondReq.turn, 2);
+  assert.equal(evs[0].atSeq, firstReq.seq, "压缩事件挂在第一次请求之后");
+  assert.equal(evs[1].atSeq, firstReq.seq, "换模型事件也在同一位置");
+  assert.equal(acts[0].atSeq, firstReq.seq, "活动行同样记住当时的 lastRequestSeq");
+  assert.equal(evs[2].atSeq, secondReq.seq, "第二次请求之后的事件 atSeq 跟着更新");
 
   // 换会话：seq 归零，旧会话里没结束的工具调用不会串到新文件。
   await h.tool_execution_start({ toolCallId: "old", toolName: "bash", args: { command: "git status" } }, ctx("seq111"));
@@ -113,8 +123,8 @@ test("三类行共用一个 seq；换会话归零，pending 工具调用也清�
   await h.tool_execution_end({ toolCallId: "old", isError: false, result: "ok" }, ctx("seq222"));
   assert.equal(rows("seq222").length, 0, "pending 被 session_start 清掉，旧调用不写进新会话");
   await request(h, "seq222", msgs([{ role: "user", content: "fresh" }]));
-  const b = rows("seq222");
-  assert.deepEqual(b.map((r) => r.seq), [1], "新会话重新从 1 开始");
+  const b = reqRows("seq222");
+  assert.equal(b.length, 1, "新会话重新从 1 开始，只写一条 request");
   assert.equal(b[0].kind, "request");
 });
 
@@ -125,21 +135,22 @@ test("显式事件：压缩带 tokensBefore、失败不落 error 正文、换模
   await h.session_compact({ compactionEntry: { tokensBefore: 12345, summary: "绝密摘要" }, reason: "threshold", willRetry: false });
   await h.session_compact_failed({ reason: "overflow", errorMessage: "boom", aborted: true, willRetry: false });
   await h.model_select({ model: { id: "b", name: "Big", provider: "x" }, previousModel: { id: "a", name: "Small" }, source: "set" });
-  const r = rows("evt111");
-  assert.equal(r.length, 4);
-  assert.equal(r[1].event, "compact");
-  assert.equal(r[1].before, 12345);
-  assert.equal(r[1].reason, "threshold");
-  assert.equal(r[1].atSeq, 1);
-  assert.equal(r[1].willRetry, false);
-  assert.ok(!JSON.stringify(r[1]).includes("绝密摘要"), "压缩摘要不落盘");
-  assert.equal(r[2].event, "compact_failed");
-  assert.equal(r[2].aborted, true);
-  assert.ok(!JSON.stringify(r[2]).includes("boom"), "errorMessage 不落盘");
-  assert.equal(r[3].event, "model");
-  assert.equal(r[3].model, "b");
-  assert.equal(r[3].previous, "a");
-  assert.ok(!JSON.stringify(r[3]).includes("provider"), "整个 model 对象不落盘");
+  const r = rows("evt111").filter((x) => x.kind === "event");
+  const firstReq = reqRows("evt111")[0];
+  assert.equal(r.length, 3);
+  assert.equal(r[0].event, "compact");
+  assert.equal(r[0].before, 12345);
+  assert.equal(r[0].reason, "threshold");
+  assert.equal(r[0].atSeq, firstReq.seq);
+  assert.equal(r[0].willRetry, false);
+  assert.ok(!JSON.stringify(r[0]).includes("绝密摘要"), "压缩摘要不落盘");
+  assert.equal(r[1].event, "compact_failed");
+  assert.equal(r[1].aborted, true);
+  assert.ok(!JSON.stringify(r[1]).includes("boom"), "errorMessage 不落盘");
+  assert.equal(r[2].event, "model");
+  assert.equal(r[2].model, "b");
+  assert.equal(r[2].previous, "a");
+  assert.ok(!JSON.stringify(r[2]).includes("provider"), "整个 model 对象不落盘");
 });
 
 test("工具活动：命令只留程序名、文件只留路径与行数，正文 / 输出 / 参数都不落盘", async () => {
@@ -150,13 +161,13 @@ test("工具活动：命令只留程序名、文件只留路径与行数，正�
   // 命令：start 带完整 command，end 故意不带 toolName（fake-pi 的形状），也不落 result。
   await h.tool_execution_start({ toolCallId: "c1", toolName: "bash", args: { command: "SECRET_TOKEN=abc sudo npm install --verbose" } }, ctx("act111"));
   await h.tool_execution_end({ toolCallId: "c1", isError: false, durationMs: 12.6, result: "super secret output" }, ctx("act111"));
-  const c = rows("act111")[1];
+  const c = rows("act111").find((r) => r.kind === "activity" && r.activity === "command");
   assert.equal(c.kind, "activity");
   assert.equal(c.activity, "command");
   assert.equal(c.program, "npm", "跳过环境变量与 sudo，只取程序名");
   assert.equal(c.status, "ok");
   assert.equal(c.durationMs, 13, "耗时取整");
-  assert.equal(c.atSeq, 1);
+  assert.equal(c.atSeq, reqRows("act111")[0].seq);
   assert.equal(c.parent, undefined);
   const craw = JSON.stringify(c);
   assert.deepEqual(
@@ -171,7 +182,7 @@ test("工具活动：命令只留程序名、文件只留路径与行数，正�
   // 读文件：end 带 result 对象，也不能落正文。
   await h.tool_execution_start({ toolCallId: "c2", toolName: "read", args: { path: "src/app.ts" } }, ctx("act111"));
   await h.tool_execution_end({ toolCallId: "c2", isError: false, result: { content: [{ type: "text", text: "file body" }] } }, ctx("act111"));
-  const fr = rows("act111")[2];
+  const fr = rows("act111").filter((r) => r.kind === "activity" && r.activity === "file")[0];
   assert.equal(fr.activity, "file");
   assert.equal(fr.op, "read");
   assert.equal(fr.path, "src/app.ts");
@@ -183,7 +194,7 @@ test("工具活动：命令只留程序名、文件只留路径与行数，正�
   // edit 用 pi 的 edits[] 形状；失败状态也要记。
   await h.tool_execution_start({ toolCallId: "c3", toolName: "edit", args: { path: "src/a.ts", edits: [{ oldText: "a\nb", newText: "c" }] } }, ctx("act111"));
   await h.tool_execution_end({ toolCallId: "c3", toolName: "edit", isError: true, result: "edit failed" }, ctx("act111"));
-  const fe = rows("act111")[3];
+  const fe = rows("act111").filter((r) => r.kind === "activity" && r.activity === "file")[1];
   assert.equal(fe.op, "edit");
   assert.equal(fe.added, 1);
   assert.equal(fe.removed, 2, "a\\nb 是 2 行");
@@ -193,18 +204,18 @@ test("工具活动：命令只留程序名、文件只留路径与行数，正�
   // write 用 content 行数；顶层 oldText/newText 与 edits[] 同时出现时只数 edits[]。
   await h.tool_execution_start({ toolCallId: "c4", toolName: "write", args: { path: "new.ts", content: "x\ny\nz" } }, ctx("act111"));
   await h.tool_execution_end({ toolCallId: "c4", isError: false, result: "ok" }, ctx("act111"));
-  const fw = rows("act111")[4];
+  const fw = rows("act111").filter((r) => r.kind === "activity" && r.activity === "file")[2];
   assert.equal(fw.op, "write");
   assert.equal(fw.added, 3);
   assert.equal(fw.removed, 0);
 
   // 其它工具也要进工具账本；没有 start 的 end 仍然不写行。
-  const before = rows("act111").length;
+  const before = rows("act111").filter((r) => r.kind === "activity").length;
   await h.tool_execution_start({ toolCallId: "c5", toolName: "custom", args: { path: "x" } }, ctx("act111"));
   await h.tool_execution_end({ toolCallId: "c5", isError: false, durationMs: 7, result: "ok" }, ctx("act111"));
   await h.tool_execution_end({ toolCallId: "ghost", isError: false, result: "ok" }, ctx("act111"));
-  assert.equal(rows("act111").length, before + 1, "未知工具也记一条 tool activity");
-  const ft = rows("act111").at(-1);
+  assert.equal(rows("act111").filter((r) => r.kind === "activity").length, before + 1, "未知工具也记一条 tool activity");
+  const ft = rows("act111").filter((r) => r.kind === "activity").at(-1);
   assert.equal(ft.activity, "tool");
   assert.equal(ft.tool, "custom");
   assert.equal(ft.durationMs, 7);
@@ -217,7 +228,7 @@ test("usage / items / turn+step：message_end 记 provider 用量，逐请求快
     { role: "system", sections: { preamble: "p".repeat(40), rules: "r".repeat(30), skills: "s".repeat(20) }, toolsAdded: [{ name: "read", description: "Read", parameters: { type: "object" } }] },
     { role: "user", content: "first question" },
   ]));
-  await h.message_end({ message: { role: "assistant", model: "m1", timestamp: Date.now() - 10, durationMs: 120, stopReason: "toolUse", usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 4, reasoning: 8, totalTokens: 64 }, content: [{ type: "thinking", thinking: "hmm" }, { type: "toolCall", name: "read", arguments: { path: "a.ts" } }] } });
+  await h.message_end({ message: { role: "assistant", model: "m1", timestamp: Date.now() - 10, durationMs: 120, stopReason: "toolUse", usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 4, reasoning: 8, totalTokens: 64, cost: { total: 0.125 } }, content: [{ type: "thinking", thinking: "hmm" }, { type: "toolCall", name: "read", arguments: { path: "a.ts" } }] } });
   await request(h, "use111", msgs([
     { role: "system", sections: { preamble: "p".repeat(40), rules: "r".repeat(30), skills: "s".repeat(20) }, toolsAdded: [{ name: "read", description: "Read", parameters: { type: "object" } }] },
     { role: "user", content: "first question" },
@@ -225,17 +236,22 @@ test("usage / items / turn+step：message_end 记 provider 用量，逐请求快
     { role: "toolResult", toolCallId: "t1", toolName: "read", content: [{ type: "text", text: "file body" }] },
   ]));
   const a = rows("use111");
-  assert.equal(a[0].kind, "request");
+  const reqs = a.filter((x) => x.kind === "request");
+  assert.equal(reqs[0].kind, "request");
   assert.equal(a.at(-1).kind, "request");
   assert.ok(a.some((x) => x.kind === "usage"), "usage 行落在请求之间");
+  const bodies = a.filter((x) => x.kind === "body");
+  assert.ok(bodies.some((b) => b.content.includes("p".repeat(40))), "系统提示词正文落盘");
+  assert.ok(bodies.some((b) => b.content.includes("Read") && b.content.includes("parameters")), "工具 schema 正文落盘");
+  assert.ok(bodies.some((b) => b.content.includes("file body")), "工具结果正文落盘");
   assert.ok(a.filter((x) => x.kind === "event" && x.event === "inject").length >= 2, "sections 首次出现记为注入事件");
   const u = a.find((x) => x.kind === "usage");
-  assert.equal(u.atSeq, 1);
+  assert.equal(u.atSeq, reqs[0].seq);
   assert.equal(u.usage.totalTokens, 64);
   assert.equal(u.usage.cacheRead, 30);
+  assert.equal(u.cost, 0.125, "usage 行带 provider 费用，供洞察页汇总");
   assert.ok(u.out.reasoning > 0 && u.out.calls > 0, "out 分块估算");
   assert.ok(u.waitMs >= 0);
-  const reqs = a.filter((x) => x.kind === "request");
   const r1 = reqs[0], r2 = reqs[1];
   assert.equal(r1.turn, 1);
   assert.equal(r1.step, 1);
@@ -259,13 +275,29 @@ test("usage 缺少 durationMs 时用本地 elapsed 兜底，耗时卡不塌成 0
   assert.ok(u.durationMs < 2000);
 });
 
+test("技能注入：/skill 展开归入 skill 类、计数有名字、正文落盘", async () => {
+  const h = load();
+  await h.session_start({ reason: "new" }, ctx("skill111"));
+  const body = "SKILL BODY ".repeat(40);
+  await request(h, "skill111", msgs([
+    { role: "user", content: `<skill name="grill-me" location="/tmp/SKILL.md">${body}</skill> 帮我审一下` },
+  ]));
+  const req = reqRows("skill111")[0];
+  assert.ok(req.cats.skill > 0, "技能正文计入 skill 类，不再全算 user");
+  assert.ok(req.cats.user > 0, "技能参数仍算 user");
+  assert.deepEqual(req.skills, ["grill-me"], "请求行带技能名，供摘要去重计数");
+  assert.ok(req.items.some((i) => i.cat === "skill" && i.label === "grill-me"), "浏览器有独立的技能条目");
+  assert.ok(bodyRows("skill111").some((b) => b.cat === "skill" && b.content.includes("SKILL BODY")), "技能正文可展开");
+  assert.ok(rows("skill111").some((r) => r.kind === "event" && r.event === "inject" && r.label === "skill:grill-me"), "技能加载事件");
+});
+
 test("CJK 与 ASCII 的估算权重不同（中文 ÷1.5、英文 ÷4）", async () => {
   const h = load();
   await h.session_start({ reason: "new" }, ctx("est111"));
   await request(h, "est111", msgs([{ role: "user", content: "你好世界" }]));
   await request(h, "est111", msgs([{ role: "user", content: "abcdefgh" }]));
-  const r = rows("est111");
+  const r = reqRows("est111");
   assert.equal(r[0].cats.user, Math.ceil(4 / 1.5), "4 个汉字 ÷1.5");
   assert.equal(r[1].cats.user, Math.ceil(8 / 4), "8 个字母 ÷4");
-  assert.deepEqual(r.map((x) => x.kind), ["request", "request"]);
+  assert.equal(r.length, 2);
 });

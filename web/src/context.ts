@@ -2,12 +2,13 @@
  * #384 Context 面板的纯函数：ctxlog 行 → 面板要看的视图（stats / token / timing / trend /
  * browser / events / 文件 / 命令）。
  *
- * 这里不碰 DOM、不碰 WS：五类行分流、组成加法、billed 拆分、趋势粒度、浏览器 delta 都是可单测的
+ * 这里不碰 DOM、不碰 WS：六类行分流、组成加法、billed 拆分、趋势粒度、浏览器 delta 都是可单测的
  * 纯逻辑（web/tests/context-unit.mjs）。context-panel.ts 只拿这里的产物去画。
  *
  * 数据形状见 bridge/ext/context-log.ts（扩展落盘）和 bridge/src/sessions.ts 的 `CtxLine`：
- * 一次 ctxlog 是五类行共用同一 `seq` 的 JSONL：
+ * 一次 ctxlog 是六类行共用同一 `seq` 的 JSONL：
  *   request   `context_with_system` 的七类组成估算 + 条目快照
+ *   body      浏览器展开用的正文（按 item id 去重写）
  *   usage     `message_end` 的 provider 用量（一次请求一行）
  *   event     `session_compact` / `session_compact_failed` / `model_select` / 注入
  *   activity  `tool_execution_end` 的工具 / 文件 / 命令（只有元数据，没有正文）
@@ -42,6 +43,20 @@ export interface CtxSplit {
   calls: number;
 }
 
+export interface CtxBodyMeta {
+  tool?: string;
+  args?: string;
+  status?: "ok" | "failed";
+  path?: string;
+  command?: string;
+  exitCode?: number;
+}
+
+/** `kind: "body"` 行：Context Browser 展开后的正文（系统提示词 / schema / 消息 / 参数 / 结果）。 */
+export interface CtxBody extends CtxBodyMeta {
+  content: string;
+}
+
 export interface CtxItem {
   id: string;
   cat: string;
@@ -50,6 +65,9 @@ export interface CtxItem {
   kind?: string;
   sub?: string;
   preview?: string;
+  /** 由最近的 `kind:"body"` 行补上；旧日志没有就是 undefined。 */
+  content?: string;
+  body?: CtxBody;
 }
 
 export interface CtxUsage {
@@ -78,13 +96,15 @@ export interface CtxLine {
   seq: number;
   ts?: number;
   v?: number;
-  kind?: "request" | "usage" | "event" | "activity";
+  kind?: "request" | "usage" | "event" | "activity" | "body";
   cwd?: string | null;
   turn?: number;
   step?: number;
   users?: number;
   total?: number;
   cats?: CtxCats;
+  skills?: string[];
+  lastUser?: string;
   split?: CtxSplit;
   messages?: number;
   roles?: Record<string, number>;
@@ -98,6 +118,13 @@ export interface CtxLine {
   stopReason?: string;
   out?: CtxSplit;
   waitMs?: number;
+  cost?: number;
+  // body
+  id?: string;
+  content?: string;
+  args?: string;
+  command?: string;
+  exitCode?: number;
   // event
   event?: "compact" | "compact_failed" | "model" | "inject";
   label?: string;
@@ -120,6 +147,7 @@ export interface CtxLine {
   status?: "ok" | "failed";
   durationMs?: number;
   parent?: boolean;
+  skillName?: string;
 }
 
 /** 七类的稳定 id 与文案（顺序 = 图例 / 明细行的顺序，从上往下）。 */
@@ -351,9 +379,11 @@ export function ctxTokenStats(lines: CtxLine[]): CtxTokenStats {
     }
     const u = usage.get(req.seq);
     if (u) {
-      bill.toolCalls += (c?.toolr ?? 0) + (u.out.calls || 0);
-      bill.reasoning += u.out.reasoning || 0;
-      bill.answers += u.out.answer || 0;
+      const split = req.split;
+      const splitEmpty = !u.out.reasoning && !u.out.answer && !u.out.calls;
+      bill.toolCalls += (c?.toolr ?? 0) + (splitEmpty ? split?.calls ?? 0 : u.out.calls || 0);
+      bill.reasoning += splitEmpty ? split?.reasoning ?? 0 : u.out.reasoning || 0;
+      bill.answers += splitEmpty ? split?.answer ?? 0 : u.out.answer || 0;
       // Provider usage is the truth for the totals; the split above is local estimate.
       input += u.usage.input;
       output += u.usage.output;
@@ -571,6 +601,26 @@ export function ctxTrendRows(lines: CtxLine[], gran: "step" | "turn", mode: "ful
   return out;
 }
 
+/** 正文行按 item id 合并；同一 id 后面的行覆盖前面的（插件只在内容变化时写）。 */
+export function ctxBodyMap(lines: CtxLine[], before?: number): Map<string, CtxBody> {
+  const out = new Map<string, CtxBody>();
+  for (const l of lines) {
+    if (l.kind !== "body" || typeof l.id !== "string" || typeof l.content !== "string") continue;
+    // 同 id 的系统段 / 工具定义可能在后续请求里改过；看第 N 步时只能用第 N 步之前写下的正文。
+    if (typeof before === "number" && typeof l.ts === "number" && l.ts > before) continue;
+    out.set(l.id, {
+      content: l.content,
+      ...(typeof l.tool === "string" ? { tool: l.tool } : {}),
+      ...(typeof l.args === "string" ? { args: l.args } : {}),
+      ...(l.status === "ok" || l.status === "failed" ? { status: l.status } : {}),
+      ...(typeof l.path === "string" ? { path: l.path } : {}),
+      ...(typeof l.command === "string" ? { command: l.command } : {}),
+      ...(typeof l.exitCode === "number" ? { exitCode: l.exitCode } : {}),
+    });
+  }
+  return out;
+}
+
 /** 浏览器条目：七类分组、token、占比；delta 模式只保留相较基线新增/变大的条目。 */
 export interface CtxBrowserCat {
   id: string;
@@ -655,6 +705,13 @@ export function ctxBrowserView(
   if (headerItems.length) {
     const have = new Set(items.map((it) => it.id));
     items = [...headerItems.filter((it) => !have.has(it.id)).map((it) => ({ ...it })), ...items];
+  }
+  const bodies = ctxBodyMap(lines, selected.ts);
+  if (bodies.size) {
+    items = items.map((it) => {
+      const body = bodies.get(it.id);
+      return body ? { ...it, content: body.content, body } : it;
+    });
   }
   if (mode === "delta" && baseline) {
     const baseMap = new Map<string, number>();
@@ -787,7 +844,9 @@ export function ctxToolRows(lines: CtxLine[]): CtxToolRow[] {
 export interface CtxSummary {
   turns: number;
   steps: number;
+  /** 去重后的技能名数量（dsh-context 的 Skill Loads 口径）。 */
   skills: number;
+  skillNames: string[];
   answers: number;
   users: number;
   toolRows: CtxToolRow[];
@@ -804,18 +863,40 @@ export function ctxSummary(lines: CtxLine[]): CtxSummary {
   let turns = 0;
   for (const r of reqs) turns = Math.max(turns, r.turn ?? 0);
   let answers = 0;
-  for (const u of usage.values()) if (u.out.answer > 0) answers++;
-  if (!usage.size) answers = reqs.length;
+  for (const r of reqs) {
+    const u = usage.get(r.seq);
+    if ((u?.out.answer ?? 0) > 0 || (r.split?.answer ?? 0) > 0) answers++;
+  }
+  if (!usage.size && !reqs.some((r) => (r.split?.answer ?? 0) > 0)) answers = reqs.length;
   const toolRows = ctxToolRows(lines);
-  const skillToolRuns = toolRows.find((t) => t.tool === "skill")?.runs ?? 0;
-  const skillEventRuns = events.filter((e) => e.kind === "inject" && e.label.startsWith("skill:")).length;
-  const skillRuns = Math.max(skillToolRuns, skillEventRuns);
+  const skillNames = new Set<string>();
+  for (const r of reqs) for (const name of r.skills ?? []) if (name) skillNames.add(name);
+  for (const e of events) if (e.kind === "inject" && e.label.startsWith("skill:")) skillNames.add(e.label.slice(6));
+  // 旧日志没有 `skills` 字段：`/skill:` 展开的正文会把 `<skill name="…">` 写进 user 条目的 preview。
+  for (const r of reqs) {
+    for (const it of r.items ?? []) {
+      const m = /<skill\b[^>]*\bname="([^"]+)"/.exec(it.preview ?? "");
+      if (m) skillNames.add(m[1]);
+    }
+  }
+  for (const l of lines) {
+    if (l.kind !== "activity") continue;
+    if (typeof l.skillName === "string" && l.skillName) skillNames.add(l.skillName);
+    else if (l.tool === "skill") skillNames.add("skill");
+    if (l.activity === "file" && l.op === "read") {
+      const m = /([^/\\]+)[/\\]SKILL\.md$/i.exec(l.path ?? "");
+      if (m) skillNames.add(m[1]);
+    }
+  }
+  // 旧日志只有 `skill` 工具活动、没有名字：至少显示 1，不要把用过的技能画成 0。
+  if (!skillNames.size && (toolRows.find((t) => t.tool === "skill")?.runs ?? 0) > 0) skillNames.add("skill");
   const userIds = new Set<string>();
   for (const r of reqs) for (const it of r.items ?? []) if (it.cat === "user") userIds.add(it.id);
   return {
     turns: turns || (reqs.length ? 1 : 0),
     steps: reqs.length,
-    skills: skillRuns,
+    skills: skillNames.size,
+    skillNames: [...skillNames],
     answers,
     users: Math.max(userIds.size, last?.users ?? 0),
     toolRows,
