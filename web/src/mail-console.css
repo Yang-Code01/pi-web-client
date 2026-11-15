@@ -455,7 +455,6 @@
 .mc-html {
   display: block;
   width: 100%;
-  min-height: 160px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #fff;

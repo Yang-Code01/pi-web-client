@@ -161,6 +161,11 @@ function failText(what: string, err: unknown): string {
 /** 列表一页多少封（底部「看更早的」按这个往后翻）。 */
 const LIST_PAGE = 30;
 
+/** 邮件正文 iframe 的高度：先占位，load 后按内容量，超过上限才让它自己滚。 */
+const MAIL_FRAME_MIN_HEIGHT = 160;
+const MAIL_FRAME_MAX_HEIGHT = 20000;
+const MAIL_FRAME_SETTLE_MS = [120, 600];
+
 /** 审计行里的失败：桥给的是稳定错误码，翻成人话再显示（认不出来的只说「失败」，不露原文）。 */
 function auditFailText(code: string | undefined): string {
   const hit = mailErrorText(code);
@@ -900,22 +905,22 @@ export class MailPanel {
     frame.setAttribute("referrerpolicy", "no-referrer");
     frame.setAttribute("title", tr("邮件正文"));
     frame.setAttribute("scrolling", "no");
+    frame.style.height = `${MAIL_FRAME_MIN_HEIGHT}px`;
     frame.srcdoc = buildMailFrameHtml(rendered, allowRemote);
     frame.onload = () => this.fitMailFrame(frame);
     wrap.append(frame);
     // iframe 的内容高度只有在 onload 之后才知道；图片是后加载的，再补两次。
-    window.setTimeout(() => this.fitMailFrame(frame), 120);
-    window.setTimeout(() => this.fitMailFrame(frame), 600);
+    for (const ms of MAIL_FRAME_SETTLE_MS) window.setTimeout(() => this.fitMailFrame(frame), ms);
     return wrap;
   }
 
   private fitMailFrame(frame: HTMLIFrameElement): void {
     const doc = frame.contentDocument;
     if (!doc?.body) return;
-    const height = Math.max(doc.body.scrollHeight, doc.documentElement?.scrollHeight ?? 0, 160);
-    const capped = Math.min(height + 2, 20000);
+    const height = Math.max(doc.body.scrollHeight, doc.documentElement?.scrollHeight ?? 0, MAIL_FRAME_MIN_HEIGHT);
+    const capped = Math.min(height + 2, MAIL_FRAME_MAX_HEIGHT);
     frame.style.height = `${capped}px`;
-    if (height + 2 > 20000) frame.setAttribute("scrolling", "auto");
+    if (height + 2 > MAIL_FRAME_MAX_HEIGHT) frame.setAttribute("scrolling", "auto");
     // 图片/字体加载完高度会变；监听这一次，别让正文被截掉半截。
     for (const img of Array.from(doc.images)) {
       if (img.complete) continue;
