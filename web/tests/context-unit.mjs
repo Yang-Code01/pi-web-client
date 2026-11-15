@@ -20,6 +20,7 @@ import {
   ctxTotal,
   ctxBillRows,
   ctxBrowserView,
+  ctxBodyMap,
   ctxDur,
   ctxPct,
   ctxSummary,
@@ -297,4 +298,38 @@ test("ctxSummary / ctxToolRows：工具账本含 bash / read / 其它工具，�
   assert.equal(s.events.model, 1);
   assert.deepEqual(s.toolRows.map((r) => [r.tool, r.runs]).sort(), [["bash", 1], ["plugin_manager", 1], ["read", 1]].sort());
   assert.equal(ctxToolRows(lines).find((r) => r.tool === "plugin_manager").failed, 1);
+});
+
+test("ctxSummary 技能加载：请求行的 skills 名去重，不再一直显示 0", () => {
+  const lines = [
+    req({ seq: 1, turn: 1, skills: ["grill-me", "review"] }),
+    req({ seq: 2, turn: 2, skills: ["grill-me"] }),
+    { ...req({ seq: 3, turn: 2 }), skills: [] },
+    { v: 2, seq: 4, ts: 0, kind: "activity", activity: "tool", tool: "skill", skillName: "deploy" },
+  ];
+  const s = ctxSummary(lines);
+  assert.equal(s.skills, 3, "grill-me / review / deploy 三个不同技能");
+  assert.deepEqual(s.skillNames.sort(), ["deploy", "grill-me", "review"]);
+});
+
+test("ctxSummary 技能加载：旧日志没有 skills 字段时从 user preview 的 <skill name> 兜底", () => {
+  const preview = '<skill name="grill-me" location="/tmp/SKILL.md">正文…</skill>';
+  const s = ctxSummary([req({ seq: 1, items: [{ id: "u1", cat: "user", label: "user", tokens: 10, preview }] })]);
+  assert.equal(s.skills, 1);
+  assert.deepEqual(s.skillNames, ["grill-me"]);
+});
+
+test("ctxBodyMap / ctxBrowserView：body 行把正文合并回对应条目", () => {
+  const lines = [
+    req({ seq: 1, items: [item("u1", "user", 10, { preview: "短预览" }), item("tool:read", "tools", 20)] }),
+    { v: 3, seq: 2, ts: 0, kind: "body", id: "u1", content: "这是用户消息的完整正文" },
+    { v: 3, seq: 3, ts: 0, kind: "body", id: "tool:read", content: '{\n  "name": "read"\n}', tool: "read" },
+  ];
+  const bodies = ctxBodyMap(lines);
+  assert.equal(bodies.size, 2);
+  assert.equal(bodies.get("u1").content, "这是用户消息的完整正文");
+  const view = ctxBrowserView(lines, 1, "step", "full");
+  const u = view.items.find((i) => i.id === "u1");
+  assert.equal(u.content, "这是用户消息的完整正文");
+  assert.equal(u.preview, "短预览", "预览不被正文覆盖");
 });

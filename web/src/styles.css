@@ -5199,6 +5199,9 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .sheet.context-sheet { width: min(1360px, calc(var(--vw1) * 97)); max-height: calc(var(--vh1) * 92); }
 .context-sheet .settings-body { gap: 0; padding: 10px 14px 14px; }
 .ctx-host { display: block; min-width: 0; }
+.sheet.context-insight-sheet { width: min(1320px, calc(var(--vw1) * 97)); max-height: calc(var(--vh1) * 92); }
+.context-insight-sheet .settings-body { gap: 0; padding: 10px 14px 14px; }
+.ci-host { display: block; min-width: 0; }
 
 /* ---------------------------------------------------------------- D235 分支操作工作台
    沿用 D193 的 .branch-sheet 尺寸 / 遮罩 / 令牌，只补三 tab、居中操作卡（样张 D）、
