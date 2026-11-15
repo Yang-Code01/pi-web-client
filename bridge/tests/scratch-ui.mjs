@@ -99,9 +99,24 @@ await new Promise((r) => ws.on("open", r));
 
 const browser = await chromium.launch();
 try {
+  // D275：新 profile 的登录页和 App 都该是 125%。这条用例后面要把基线钉回 100%，
+  // 先在这个干净 context 里验默认值 —— 登录页在 App 之前渲染，不能只验登录后的 App。
+  const defaults = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "zh-CN" });
+  const defaultsPage = await defaults.newPage();
+  await defaultsPage.goto(BASE);
+  await defaultsPage.locator(".login").waitFor({ timeout: 20000 });
+  const loginZoom = await defaultsPage.evaluate(() => getComputedStyle(document.querySelector("#app")).zoom);
+  check("登录页默认字号 125%", loginZoom === "1.25", loginZoom);
+  await defaults.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
+  await defaultsPage.goto(BASE);
+  await defaultsPage.waitForSelector(".app", { timeout: 20000 });
+  const appZoom = await defaultsPage.evaluate(() => getComputedStyle(document.querySelector("#app")).zoom);
+  check("App 默认字号 125%", appZoom === "1.25", appZoom);
+  await defaults.close();
+
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "zh-CN" });
   await ctx.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
-  // 默认字号已经是 125%；这条用例量的是「标准 100% → 特大 125%」的缩放差，先把基线钉回 100%。
+  // 这条用例量的是「标准 100% → 特大 125%」的缩放差，先把基线钉回 100%。
   // 只改 scale，别把语言等其它偏好一起冲掉（这段脚本每次导航都会再跑一遍）。
   await ctx.addInitScript(() => {
     let prefs = {};

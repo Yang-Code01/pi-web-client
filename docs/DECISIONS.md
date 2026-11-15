@@ -5228,8 +5228,10 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 
 ## D275 字号默认值从 100% 调到 125%（用户要求 2026-11-15）
 
-**决定：** `DEFAULT_PREFS.scale` 改为 `1.25`：新设备、清过 `localStorage` 的浏览器第一次打开就是 125%，设置抽屉的「恢复默认」也回到 125%。已经存过 `pi.prefs.scale` 的浏览器保留原值，不迁移 —— 分不清「从来没动过」和「明确选了 100%」。设置里字号的读数高亮改成跟 `DEFAULT_PREFS.scale` 比较，否则默认状态会被标成「用户改过」。
+**决定：** `DEFAULT_PREFS.scale` 改为 `1.25`：新设备、清过 `localStorage` 的浏览器第一次打开就是 125%（登录页在 `App` 之前渲染，也先套用已存/默认字号），设置抽屉的「恢复默认」和双击字号轨道都回到 125%。已经存过 `pi.prefs.scale` 的浏览器保留原值，不迁移 —— 分不清「从来没动过」和「明确选了 100%」。设置里字号的读数高亮改成跟 `DEFAULT_PREFS.scale` 比较，否则默认状态会被标成「用户改过」。
 
 **为什么：** 用户要求默认大一号。125% 在常见的 1280 / 1440 桌面窗口下有效宽度仍是 1024 / 1152，高于 900 的窄版阈值，不会一上来就退成单栏。
 
-**验证：** `npm --prefix web run typecheck`、`npm run build`、`node bridge/tests/scratch-ui.mjs` 全绿；本地起桥实测全新 profile 的 `--ui-scale` 与 `#app zoom` 都是 1.25，1440 窗口仍是三栏。
+**代价：** 视口窄于 1125px 时有效宽度不足 900，1024 宽的小屏新设备会直接进入单栏；这是默认放大字号的直接结果，不为它做特殊回退。
+
+**验证：** `npm run typecheck`、`npm run build`、`node bridge/tests/scratch-ui.mjs` 全绿（用例新增登录页与 App 的默认 125% 断言）；本地起桥实测全新 profile 的 `--ui-scale` 与 `#app zoom` 都是 1.25，1440 窗口仍是三栏。
