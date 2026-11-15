@@ -15,7 +15,7 @@
 import { tr } from "./i18n/index.ts";
 import { createEl as el } from "./chat.ts";
 
-export type MarketTab = "discover" | "themes" | "favorites" | "installed" | "blocked" | "advanced";
+export type MarketTab = "discover" | "favorites" | "installed" | "blocked" | "advanced";
 export type MarketSort = "downloads" | "published" | "name";
 export type MarketDir = "desc" | "asc";
 
@@ -72,7 +72,7 @@ export interface MarketActions {
   onInstall(pkg: MarketPackage): void;
   onToggleFavorite(name: string): void;
   onToggleBlock(name: string): void;
-  onOpenInstalled(): void;
+  renderInstalled(host: HTMLElement): void;
   onRefresh(): void;
   onScope(scope: "global" | "project"): void;
   onInstallSource(source: string): void;
@@ -179,7 +179,7 @@ export function categoryLabel(id: string): string {
 
 /**
  * Which categories a pi package belongs to. Keyword hits win first (they are the author's own
- * labels), then a description/name regex catches packages that did not tag themselves. At most two
+ * labels), then a description/name regex catches packages that did not tag themselves. One
  * chip per card, and never an empty list.
  */
 export function categoriesOf(pkg: MarketPackage): string[] {
@@ -479,42 +479,6 @@ function recentTile(pkg: MarketPackage, state: MarketViewState, actions: MarketA
   return tile;
 }
 
-function themeCard(pkg: MarketPackage, state: MarketViewState, actions: MarketActions): HTMLElement {
-  const card = el("article", "pm-theme-card");
-  const cover = el("div", "pm-theme-cover");
-  // Deterministic swatch from the package name; dshmarket uses the plugin's real screenshots.
-  let h = 0;
-  for (const ch of pkg.name) h = (h * 31 + ch.charCodeAt(0)) | 0;
-  const hue = Math.abs(h) % 360;
-  cover.style.background = `linear-gradient(135deg, hsl(${hue} 32% 24%), hsl(${(hue + 42) % 360} 38% 16%))`;
-  const swatches = el("div", "pm-swatches");
-  for (const d of [0, 18, 36]) {
-    const i = el("i", "");
-    i.style.background = `hsl(${(hue + d) % 360} 46% 52%)`;
-    swatches.append(i);
-  }
-  cover.append(swatches, el("span", "pm-theme-preview", tr("预览")));
-  card.append(cover);
-  const body = el("div", "pm-theme-body");
-  const head = el("div", "pm-theme-head");
-  const title = el("a", "pm-name", pkg.name) as HTMLAnchorElement;
-  title.href = pkg.link;
-  title.target = "_blank";
-  title.rel = "noopener";
-  head.append(title);
-  if (pkg.repository) head.append(repoMark());
-  head.append(el("span", "pm-grow"), installButton(pkg, state, actions, true));
-  body.append(head);
-  const byline = el("div", "pm-byline");
-  byline.append(el("span", "pm-owner", pkg.owner || pkg.publisher || ""));
-  if (pkg.version) byline.append(el("span", "pm-meta", `· v${pkg.version}`));
-  if (pkg.monthly > 0) byline.append(el("span", "pm-meta", `· ↓ ${formatCount(pkg.monthly)}`));
-  body.append(byline);
-  body.append(el("p", "pm-theme-desc", pkg.description || ""));
-  card.append(body);
-  return card;
-}
-
 function statusLine(state: MarketViewState): HTMLElement {
   const line = el("div", "pm-note");
   if (state.error) line.append(el("span", "pm-note-bad", state.error));
@@ -533,16 +497,9 @@ function searchRow(state: MarketViewState, actions: MarketActions): HTMLElement 
   input.placeholder = tr("搜索插件，例如：通知、终端、记忆…");
   input.value = state.query;
   input.spellcheck = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  input.oninput = () => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => actions.onQuery(input.value), 300);
-  };
+  input.oninput = () => actions.onQuery(input.value);
   input.onkeydown = (ev) => {
-    if (ev.key === "Enter") {
-      if (timer) clearTimeout(timer);
-      actions.onQuery(input.value);
-    }
+    if (ev.key === "Enter") actions.onQuery(input.value);
   };
   field.append(input);
   if (state.query) {
@@ -602,12 +559,8 @@ function tabsRow(state: MarketViewState, actions: MarketActions): HTMLElement {
     tabs.append(b);
   };
   tab("discover", tr("发现"));
-  tab("themes", tr("主题"));
   tab("favorites", tr("收藏"), state.favorites.size);
-  const installed = el("button", "pm-tab", tr("已安装 ({p1})", { p1: state.installed.size })) as HTMLButtonElement;
-  installed.type = "button";
-  installed.onclick = () => actions.onOpenInstalled();
-  tabs.append(installed);
+  tab("installed", tr("已安装"), state.installed.size);
   tab("blocked", tr("已屏蔽"));
   tab("advanced", tr("高级"));
   tabs.append(el("span", "pm-grow"));
@@ -641,7 +594,6 @@ function categoryRow(state: MarketViewState, items: MarketPackage[], actions: Ma
   for (const def of CATEGORY_DEFS) {
     if (def.id === "other") continue;
     const count = items.filter((p) => categoriesOf(p).includes(def.id)).length;
-    if (!count && items.length) continue;
     wrap.append(pill(categoryLabel(def.id), state.category === def.id, () => actions.onCategory(def.id)));
   }
   cats.append(wrap);
@@ -738,7 +690,7 @@ function favoritesPage(state: MarketViewState, actions: MarketActions): HTMLElem
   }
   const favs = sortPackages(items.filter((p) => state.favorites.has(p.name) && !state.blocked.has(p.name)), state.sort, state.dir);
   if (!favs.length) {
-    page.append(emptyBlock(tr("还没有收藏。在「发现」或「主题」里点书签图标，或在「已安装」的「···」里加入收藏。")));
+    page.append(emptyBlock(tr("还没有收藏。在「发现」里点书签图标，或在「已安装」的「···」里加入收藏。")));
     return page;
   }
   page.append(el("div", "pm-note", tr("共 {p1} 个收藏", { p1: favs.length })));
@@ -748,22 +700,12 @@ function favoritesPage(state: MarketViewState, actions: MarketActions): HTMLElem
   return page;
 }
 
-function themesPage(state: MarketViewState, actions: MarketActions): HTMLElement {
-  const page = el("div", "pm-page");
-  const items = state.items ?? [];
-  if (!state.items) {
-    page.append(state.error ? errorBlock(state, actions) : loadingBlock());
-    return page;
-  }
-  const themes = sortPackages(items.filter((p) => !state.blocked.has(p.name) && (categoriesOf(p).includes("ui") || /theme|skin|外观|主题|皮肤/i.test(`${p.name} ${p.description}`))), state.sort, state.dir);
-  if (!themes.length) {
-    page.append(emptyBlock(tr("目录里暂无主题。")));
-    return page;
-  }
-  page.append(el("div", "pm-note", tr("{p1} 款主题", { p1: themes.length })));
-  const grid = el("div", "pm-theme-grid");
-  for (const pkg of themes.slice(0, Math.max(12, state.visible))) grid.append(themeCard(pkg, state, actions));
-  page.append(grid);
+/** Inner 已安装：直接把外层「已安装」那块清单嵌进来，不再跳回左侧页签。 */
+function installedPage(state: MarketViewState, actions: MarketActions): HTMLElement {
+  const page = el("div", "pm-page pm-installed-page");
+  const host = el("div", "pm-installed-embed");
+  actions.renderInstalled(host);
+  page.append(host);
   return page;
 }
 
@@ -840,15 +782,15 @@ export function renderPluginMarket(state: MarketViewState, actions: MarketAction
   const root = el("div", "pm-root");
   root.append(tabsRow(state, actions));
   const body = el("div", "pm-body");
-  if (state.tab !== "blocked" && state.tab !== "advanced") {
+  if (state.tab !== "blocked" && state.tab !== "advanced" && state.tab !== "installed") {
     const sticky = el("div", "pm-sticky");
     sticky.append(searchRow(state, actions));
     if (state.tab === "discover") sticky.append(categoryRow(state, state.items ?? [], actions));
     body.append(sticky);
   }
   if (state.tab === "discover") body.append(discoverPage(state, actions));
-  else if (state.tab === "themes") body.append(themesPage(state, actions));
   else if (state.tab === "favorites") body.append(favoritesPage(state, actions));
+  else if (state.tab === "installed") body.append(installedPage(state, actions));
   else if (state.tab === "blocked") body.append(blockedPage(state, actions));
   else if (state.tab === "advanced") body.append(advancedPage(state, actions));
   root.append(body);

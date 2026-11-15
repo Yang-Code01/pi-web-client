@@ -504,6 +504,7 @@ export class App {
   private marketVisible = 30;
   private marketFavorites: Set<string> = loadMarketSet(FAVORITES_KEY);
   private marketBlocked: Set<string> = loadMarketSet(BLOCKED_KEY);
+  private marketQueryTimer: ReturnType<typeof setTimeout> | null = null;
   private marketRecentHidden = (() => {
     try {
       return localStorage.getItem(RECENT_HIDDEN_KEY) === "1";
@@ -13578,10 +13579,15 @@ export class App {
         this.paintExtIfOpen();
       },
       onQuery: (query) => {
+        // 输入立刻写进状态（切分类 / 点卡片不会把刚打的字丢回旧值），请求仍防抖 300ms。
         this.extStore.query = query;
         this.marketVisible = 30;
-        this.requestExtStore();
-        this.paintExtIfOpen();
+        if (this.marketQueryTimer) clearTimeout(this.marketQueryTimer);
+        this.marketQueryTimer = setTimeout(() => {
+          this.marketQueryTimer = null;
+          this.requestExtStore();
+          this.paintExtIfOpen();
+        }, 300);
       },
       onCategory: (category) => {
         this.marketCategory = category;
@@ -13622,11 +13628,14 @@ export class App {
         saveMarketSet(BLOCKED_KEY, this.marketBlocked);
         this.paintExtIfOpen();
       },
-      onOpenInstalled: () => {
-        this.extTab = "installed";
-        this.paintExtIfOpen();
+      renderInstalled: (host) => {
+        this.paintExtInstalled(host);
       },
       onRefresh: () => {
+        if (this.marketQueryTimer) {
+          clearTimeout(this.marketQueryTimer);
+          this.marketQueryTimer = null;
+        }
         this.extStore.items = null;
         this.extStore.error = undefined;
         this.extStore.inflight = null;
