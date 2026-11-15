@@ -6,7 +6,7 @@ Issues and specs for this repo live as GitHub issues in `Yang-Code01/pi-web-clie
 
 **先直连**：`gh api repos/Yang-Code01/pi-web-client --jq .full_name`。能返回名字就直接用，不要加代理。
 
-直连失败（超时 / 403）时才把本机代理挂在命令上：
+直连失败（超时 / 403）时才把本机代理挂在命令上（热部署 worker 的代理选择见 D272，不适用本节）：
 
 - `HTTPS_PROXY=http://127.0.0.1:18791 gh issue list …` —— `gh` 没有配置文件可读，只能逐条给。
 - `git` **故意**没有全局代理（会漏到别的 host），逐条给：`git -c http.https://github.com/.proxy=http://127.0.0.1:18791 push`。

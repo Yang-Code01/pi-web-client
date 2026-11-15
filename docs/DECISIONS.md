@@ -5144,3 +5144,26 @@ nm .../etmain.framework/Versions/A/etmain | c++filt | grep -E "DPtoLP|LPtoDP"
 - `node --experimental-transform-types --test bridge/tests/context-log-unit.mjs`（8/8）与 `web/tests/context-unit.mjs`（15/15）覆盖 v2 行、usage、items、turn/step、七类、billed、timing、trend、browser、旧日志兜底。
 - `npm run typecheck` 通过（i18n 3175 键 × 3、viewport 守卫）。
 - 临时 bridge + 合成 ctxlog 的 Playwright 截图核对：1360px sheet、1600/1000px 视口、展开手风琴、增量、轮次、文件筛选均正常。
+
+## D272 热部署 fetch 的代理按环境候选，不写死一个端口（用户报障 2026-11-15）
+
+**问题：** 热部署第一次拉取分支时，worker 先用进程环境里的代理，失败后回退到写死的 `127.0.0.1:18791`。这台机器上 bridge 启动时的 `HTTPS_PROXY` 指向已经停掉的 `127.0.0.1:2078`，而当前代理是 `127.0.0.1:7899`；于是直连和回退都失败，热部署卡在「检查更新」，7864 仍跑旧构建。代理是环境事实，不该在代码里只认某台机器的端口。
+
+**为什么：** 代理端口是机器的环境事实，不是产品常量；把它写死在 worker 里，换机器或代理进程换端口就会让整次部署失败。候选链把「用户显式指定」放最前，其次跟随当前进程环境，最后才保留历史默认；同时必须先做一次不继承旧代理的真直连，否则 `HTTPS_PROXY` 会让所谓「直连」继续撞旧端口。
+
+**取代：** D254 / D255 建立的热部署 worker 里，`fetchOrigin()` 只认 `127.0.0.1:18791` 的旧实现细节；D254 / D255 的分支切换、进程替换等其余约定不变。
+
+**决定：**
+
+- `scripts/hotdeploy-git.mjs` 的 `proxyCandidates(env)` 按顺序收集、正规化并去重：`BILLION_CONTEXT_PROXY` → `HTTPS_PROXY` / `https_proxy` → `HTTP_PROXY` / `http_proxy` → `ALL_PROXY` / `all_proxy` → `http://127.0.0.1:18791`（最后兜底）。正规化包括补 `http://`、统一小写、去掉末尾斜杠。
+- `scripts/hotdeploy.mjs` 的 `fetchOrigin()` 先用清空代理环境变量的子进程做真直连（并用 `-c http.proxy=` / `-c https.proxy=` 清掉 git 配置）；失败后逐个代理重试，使用通用 `http.proxy` / `https.proxy`，不绑定 GitHub host；全部失败时，`state.json` / `last-run.json` 保留直连和每个代理的实际失败原因，不再只报最后一次，并在末尾提示重启 bridge。
+- 不在代码里自动探测/启动代理，也不改 bridge 的环境变量；bridge 进程启动时继承的旧代理，需要重启 bridge 才能更新，这一点在错误文案外由用户/运维处理。
+
+**代价 / 可改：**
+
+- 代理候选多时，全失败会多花几次 git 超时；但成功路径不受影响。要更快可以给每个候选加独立超时。
+- `http.proxy` 只对 HTTP(S) 远程生效；`origin` 是 SSH 地址时，候选代理不会生效。
+- `ALL_PROXY` 若是 socks 代理，是否可用取决于本机 git/curl；失败会出现在错误列表里，不会静默跳过。
+- AGENTS.md / issue-tracker 里「直连失败才加 `HTTPS_PROXY=18791`」是 `gh` CLI 的手工代理约定，不适用于热部署 worker；worker 的规则以本条为准。
+
+**验证：** `bridge/tests/hotdeploy-unit.mjs` 新增 `proxyCandidates()` 单测（显式代理优先、去空白、URL 正规化后去重、默认兜底、`ALL_PROXY` 顺序）；`npm run test:hotdeploy` 通过。真实代理切换仍建议重启 bridge 后点一次热部署验证。

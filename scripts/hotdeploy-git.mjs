@@ -14,6 +14,36 @@ function gitIn(repo, args) {
   };
 }
 
+const DEFAULT_HOTDEPLOY_PROXY = "http://127.0.0.1:18791";
+export { DEFAULT_HOTDEPLOY_PROXY };
+
+/** 统一代理 URL：补 http://、压小写、去末尾斜杠，避免同一代理因写法不同重复尝试。 */
+function normalizeProxy(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`;
+  try {
+    return new URL(withScheme).href.replace(/\/+$/, "");
+  } catch {
+    return withScheme.replace(/\/+$/, "");
+  }
+}
+
+/**
+ * 热部署 fetch 的代理候选：先让用户显式指定，再跟随当前环境，最后才用历史默认端口。
+ * 同一代理只保留一次。
+ */
+export function proxyCandidates(env = process.env) {
+  const out = [];
+  for (const key of ["BILLION_CONTEXT_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]) {
+    const value = normalizeProxy(env[key]);
+    if (value && !out.includes(value)) out.push(value);
+  }
+  const fallback = normalizeProxy(DEFAULT_HOTDEPLOY_PROXY);
+  if (!out.includes(fallback)) out.push(fallback);
+  return out;
+}
+
 /** `git stash list --format=%gd%x09%H%x09%s`：按唯一 message 找，别盲取 stash@{0}。 */
 export function findStash(repo, message) {
   const r = gitIn(repo, ["stash", "list", "--format=%gd%x09%H%x09%s"]);

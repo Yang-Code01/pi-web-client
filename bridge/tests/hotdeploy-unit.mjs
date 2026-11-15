@@ -10,6 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildBranchRows, parseRefLines, parseTrack, parseWorktrees, tailLines } from "../src/hotdeploy.ts";
+import { DEFAULT_HOTDEPLOY_PROXY, proxyCandidates } from "../../scripts/hotdeploy-git.mjs";
 
 const TAB = String.fromCharCode(9);
 
@@ -93,5 +94,30 @@ const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "hotdeploy-")), "wor
 fs.writeFileSync(log, "one\ntwo\nthree\nfour\n");
 assert.deepEqual(tailLines(log, 2), ["three", "four"], "只要末尾 N 行");
 assert.deepEqual(tailLines(path.join(path.dirname(log), "nope.log"), 5), [], "没有日志就是空的，不炸");
+
+// ------------------------------------------------- ⑥ 热部署 fetch 的代理候选
+
+const DEFAULT_PROXY = DEFAULT_HOTDEPLOY_PROXY;
+assert.deepEqual(
+  proxyCandidates({ BILLION_CONTEXT_PROXY: "http://127.0.0.1:7899", HTTPS_PROXY: "http://127.0.0.1:7899" }),
+  ["http://127.0.0.1:7899", DEFAULT_PROXY],
+  "显式代理优先，重复值只留一次，默认代理兜底",
+);
+assert.deepEqual(
+  proxyCandidates({ HTTPS_PROXY: " http://127.0.0.1:7899 ", HTTP_PROXY: "http://127.0.0.1:7899" }),
+  ["http://127.0.0.1:7899", DEFAULT_PROXY],
+  "环境代理去空白后去重",
+);
+assert.deepEqual(
+  proxyCandidates({ HTTPS_PROXY: "HTTP://127.0.0.1:7899/", HTTP_PROXY: "http://127.0.0.1:7899" }),
+  ["http://127.0.0.1:7899", DEFAULT_PROXY],
+  "代理 URL 正规化后去重",
+);
+assert.deepEqual(proxyCandidates({}), [DEFAULT_PROXY], "没有环境代理时仍尝试历史默认端口");
+assert.deepEqual(
+  proxyCandidates({ BILLION_CONTEXT_PROXY: "http://127.0.0.1:7899", ALL_PROXY: "socks5://127.0.0.1:1080" }),
+  ["http://127.0.0.1:7899", "socks5://127.0.0.1:1080", DEFAULT_PROXY],
+  "ALL_PROXY 排在 HTTP(S)_PROXY 之后",
+);
 
 console.log("hotdeploy-unit: ok");
