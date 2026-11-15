@@ -3874,7 +3874,7 @@ export class App {
       range.style.setProperty("--fill", `${sizePct(v) * 100}%`);
       range.setAttribute("aria-valuetext", `${Math.round(v * 100)}%`);
       sizeRead.textContent = `${Math.round(v * 100)}%`;
-      sizeRead.classList.toggle("moved", Math.abs(v - 1) > 0.001);
+      sizeRead.classList.toggle("moved", Math.abs(v - DEFAULT_PREFS.scale) > 0.001);
       for (const t of ticks.children) {
         t.classList.toggle("past", Number((t as HTMLElement).dataset.v) < v - 0.001);
       }
@@ -17834,7 +17834,7 @@ const PEEK_DELAY_MS = 3000;
 const PEEK_GAP_MS = 200;
 
 const DEFAULT_PREFS: Prefs = {
-  scale: 1,
+  scale: 1.25,
   accent: "ice",
   text: "normal",
   lang: "zh-Hans",

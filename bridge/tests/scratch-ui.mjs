@@ -101,6 +101,13 @@ const browser = await chromium.launch();
 try {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "zh-CN" });
   await ctx.addCookies([{ name: cookieName, value: cookieValue, domain: "127.0.0.1", path: "/" }]);
+  // 默认字号已经是 125%；这条用例量的是「标准 100% → 特大 125%」的缩放差，先把基线钉回 100%。
+  // 只改 scale，别把语言等其它偏好一起冲掉（这段脚本每次导航都会再跑一遍）。
+  await ctx.addInitScript(() => {
+    let prefs = {};
+    try { prefs = JSON.parse(localStorage.getItem("pi.prefs") ?? "{}"); } catch { /* ignore */ }
+    localStorage.setItem("pi.prefs", JSON.stringify({ ...prefs, scale: 1 }));
+  });
   const page = await ctx.newPage();
   page.on("pageerror", (e) => log("pageerror:", e.message));
   await page.addInitScript(() => {
