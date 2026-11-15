@@ -8,12 +8,14 @@
  * 页面轮询的就是这个文件；结束写 last-run.json。
  *
  * 结论沿用 D154：先 build 后杀进程（build 失败时旧服务原样活着）、只按 pid 杀不 taskkill /T、
- * 新进程开可见 PowerShell 窗口（关窗即停）、不 stash / 不 reset / 不 rebase。
+ * 新进程开可见 PowerShell 窗口（关窗即停）。D268 起支持 --stash：只暂存当前分支，构建用
+ * 分支已提交内容，换进程前恢复；不 reset / 不 rebase。
  */
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { stashPush, stashRestore } from "./hotdeploy-git.mjs";
 
 const WIN = process.platform === "win32";
 
@@ -26,6 +28,7 @@ function argOf(name, fallback) {
 const REPO = path.resolve(argOf("--dir", path.resolve(import.meta.dirname, "..")));
 const BRANCH = argOf("--branch", "");
 const PORT = Number(argOf("--port", process.env.PI_WEB_PORT || 7864));
+const STASH = process.argv.includes("--stash");
 // 拉起来的子进程必须落在我们盯着的端口上，否则它去抢 7864，我们永远等不到自己那个端口。
 process.env.PI_WEB_PORT = String(PORT);
 
@@ -51,11 +54,14 @@ const state = {
   exitCode: null,
   error: null,
   port: PORT,
+  stash: "",
+  stashRestored: false,
   stamps: [],
 };
 let lockOwned = false;
 let oldPid = null;
 let newPid = null;
+let stashMessage = "";
 
 function log(...parts) {
   const line = `[${new Date().toISOString().slice(11, 19)}] ${parts.join(" ")}`;
@@ -242,6 +248,8 @@ function finish(result, extra = {}) {
     oldPid,
     newPid,
     error: state.error ?? null,
+    stash: state.stash || null,
+    stashRestored: state.stashRestored,
     log: LOG,
   };
   try {
@@ -257,6 +265,20 @@ function finish(result, extra = {}) {
 
 function fail(step, result, code, message) {
   finish(result, { step, exitCode: code, error: message });
+}
+
+/** 失败时若还留着本轮 stash，先尝试恢复；恢复失败要把 stash message 留在 error 里。 */
+function failAfterStash(step, result, code, message) {
+  if (stashMessage && !state.stashRestored) {
+    const restored = stashRestore(REPO, stashMessage);
+    if (restored.ok) {
+      state.stashRestored = true;
+      message = `${message}\n（本地改动已恢复到工作区）`;
+    } else {
+      message = `${message}\n本地改动恢复失败（stash: ${stashMessage}）：${restored.why}`;
+    }
+  }
+  fail(step, result, code, message);
 }
 
 /** 本机 GitHub 直连常不通：按 AGENTS.md，失败才按需带代理，不写进全局 config。 */
@@ -334,35 +356,54 @@ async function main() {
   const dirty = String(git(["status", "--porcelain", "--untracked-files=normal"]).stdout ?? "").trim();
   if (dirty) {
     const files = dirty.split(/\r?\n/).map((l) => l.slice(3).trim()).filter(Boolean);
-    fail(0, "dirty", null, `主检出有未提交的改动（${files.slice(0, 5).join("、")}${files.length > 5 ? "…" : ""}），先提交或还原再来`);
+    const list = `${files.slice(0, 5).join("、")}${files.length > 5 ? "…" : ""}`;
+    if (!STASH) {
+      fail(0, "dirty", null, `主检出有未提交的改动（${list}），先提交或还原再来`);
+    }
+    if (cur === "HEAD" || cur !== BRANCH) {
+      fail(0, "stash-branch", null, `暂存只能用在当前分支上：现在在 ${cur === "HEAD" ? "(detached)" : cur}，目标是 ${BRANCH}`);
+    }
+    const msg = `hotdeploy-${process.pid}-${Date.now().toString(36)}`;
+    const pushed = stashPush(REPO, msg);
+    if (!pushed.ok) fail(0, "stash-failed", null, pushed.why);
+    stashMessage = msg;
+    state.stash = msg;
+    state.stashRestored = false;
+    writeState({});
+    const left = String(git(["status", "--porcelain", "--untracked-files=normal"]).stdout ?? "").trim();
+    if (left) {
+      const rest = left.split(/\r?\n/).map((l) => l.slice(3).trim()).filter(Boolean);
+      failAfterStash(0, "stash-failed", null, `git stash 后工作区仍有改动（${rest.slice(0, 5).join("、")}${rest.length > 5 ? "…" : ""}）`);
+    }
+    log(`已暂存 ${files.length} 个改动：${msg}`);
   }
 
   const fetched = fetchOrigin();
-  if (!fetched.ok) fail(0, "fetch-failed", null, `git fetch 失败：${String(fetched.err || "").slice(0, 600)}`);
+  if (!fetched.ok) failAfterStash(0, "fetch-failed", null, `git fetch 失败：${String(fetched.err || "").slice(0, 600)}`);
   const has = localBranch(BRANCH) || git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${BRANCH}`]).status === 0;
-  if (!has) fail(0, "no-branch", null, `本地和 origin 都没有这条分支：${BRANCH}`);
+  if (!has) failAfterStash(0, "no-branch", null, `本地和 origin 都没有这条分支：${BRANCH}`);
   log("fetch ok");
 
   // ---- 1. 拉取所选分支
   writeState({ step: 1 });
   const taken = occupiedBy(BRANCH);
-  if (taken) fail(1, "occupied", null, `${BRANCH} 已经被 ${taken} 检出；先去那个目录收掉它，或换一条分支`);
+  if (taken) failAfterStash(1, "occupied", null, `${BRANCH} 已经被 ${taken} 检出；先去那个目录收掉它，或换一条分支`);
 
   if (localBranch(BRANCH)) {
     if (cur !== BRANCH) {
       const sw = git(["switch", BRANCH]);
-      if (sw.status !== 0) fail(1, "switch-failed", sw.status, `git switch ${BRANCH} 失败：${String(sw.stderr || "").trim().slice(0, 600)}`);
+      if (sw.status !== 0) failAfterStash(1, "switch-failed", sw.status, `git switch ${BRANCH} 失败：${String(sw.stderr || "").trim().slice(0, 600)}`);
     }
     const behind = git(["rev-list", "--count", `HEAD..origin/${BRANCH}`]);
     const n = Number(String(behind.stdout ?? "").trim() || 0);
     if (n > 0) {
       log(`落后 origin/${BRANCH} ${n} 个提交，ff-only 跟上`);
       const mg = git(["merge", "--ff-only", `origin/${BRANCH}`]);
-      if (mg.status !== 0) fail(1, "merge-failed", mg.status, `合不上 origin/${BRANCH}：${String(mg.stderr || "").trim().slice(0, 600)}`);
+      if (mg.status !== 0) failAfterStash(1, "merge-failed", mg.status, `合不上 origin/${BRANCH}：${String(mg.stderr || "").trim().slice(0, 600)}`);
     }
   } else {
     const sw = git(["switch", "-c", BRANCH, "--track", `origin/${BRANCH}`]);
-    if (sw.status !== 0) fail(1, "switch-failed", sw.status, `git switch -c ${BRANCH} 失败：${String(sw.stderr || "").trim().slice(0, 600)}`);
+    if (sw.status !== 0) failAfterStash(1, "switch-failed", sw.status, `git switch -c ${BRANCH} 失败：${String(sw.stderr || "").trim().slice(0, 600)}`);
   }
   state.toSha = shortHead();
   writeState({});
@@ -371,13 +412,25 @@ async function main() {
   // ---- 2. 编译（失败就停在这里：旧进程照跑，窗口期为零）
   writeState({ step: 2 });
   const built = build();
-  if (built.code !== 0) fail(2, "build-failed", built.code, String(built.why || "").slice(0, 1200));
+  if (built.code !== 0) failAfterStash(2, "build-failed", built.code, String(built.why || "").slice(0, 1200));
   state.buildId = distBuildId();
   writeState({});
   log(`build ok ${state.buildId}`);
 
-  // ---- 3. 换进程
-  writeState({ step: 3 });
+  // ---- 3. 恢复本地改动（只有真的暂存了才走这里；必须在杀旧进程之前）
+  if (stashMessage) {
+    writeState({ step: 3 });
+    const restored = stashRestore(REPO, stashMessage);
+    if (!restored.ok) {
+      fail(3, "stash-pop-failed", null, `本地改动恢复失败：${restored.why}\nstash 还在：${stashMessage}`);
+    }
+    state.stashRestored = true;
+    writeState({});
+    log("本地改动已恢复");
+  }
+
+  // ---- 4. 换进程
+  writeState({ step: 4 });
   oldPid = await portPid();
   if (oldPid) {
     log(`杀掉旧 bridge pid ${oldPid}`);
@@ -396,8 +449,8 @@ async function main() {
   startBridge();
   log("新窗口已拉起，等 /healthz");
 
-  // ---- 4. 健康检查
-  writeState({ step: 4 });
+  // ---- 5. 健康检查
+  writeState({ step: 5 });
   const deadline = Date.now() + 45_000;
   let last = null;
   while (Date.now() < deadline) {
@@ -408,9 +461,9 @@ async function main() {
     }
     await sleep(400);
   }
-  if (!last) fail(4, "start-failed", null, `45 秒内 ${PORT} 上没有响应；看新开的那扇窗口，或到 ${LOG} 看输出`);
+  if (!last) fail(5, "start-failed", null, `45 秒内 ${PORT} 上没有响应；看新开的那扇窗口，或到 ${LOG} 看输出`);
   if (state.buildId && String(last.buildId ?? "") !== state.buildId) {
-    fail(4, "stale-health", null, `端口回话的是旧进程（${last.buildId}），新构建 ${state.buildId} 没起来；多半是没抢到端口`);
+    fail(5, "stale-health", null, `端口回话的是旧进程（${last.buildId}），新构建 ${state.buildId} 没起来；多半是没抢到端口`);
   }
   newPid = Number.isInteger(last.pid) ? last.pid : null;
   log(`healthz ok ${last.buildId} pid ${newPid ?? "-"}`);
@@ -419,7 +472,7 @@ async function main() {
 
 main().catch((err) => {
   try {
-    fail(state.step ?? 0, "crashed", null, String(err?.stack ?? err).slice(0, 1200));
+    failAfterStash(state.step ?? 0, "crashed", null, String(err?.stack ?? err).slice(0, 1200));
   } catch {
     process.exit(1);
   }
