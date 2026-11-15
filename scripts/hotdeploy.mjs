@@ -15,7 +15,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { stashPush, stashRestore } from "./hotdeploy-git.mjs";
+import { proxyCandidates, stashPush, stashRestore } from "./hotdeploy-git.mjs";
 
 const WIN = process.platform === "win32";
 
@@ -101,8 +101,19 @@ function sh(file, args, opts = {}) {
   return spawnSync(file, args, { cwd: REPO, encoding: "utf8", ...opts });
 }
 
-function git(args) {
-  return sh("git", args);
+function git(args, env) {
+  return sh("git", args, env ? { env } : {});
+}
+
+/** 真直连：去掉进程里的代理变量，并显式清空 git 的 http.proxy；否则残留的 HTTPS_PROXY 仍会被 libcurl 使用。 */
+function proxyFreeEnv() {
+  const env = { ...process.env };
+  for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "GIT_PROXY_COMMAND"]) delete env[key];
+  return env;
+}
+
+function gitReason(result) {
+  return String(result.stderr || result.stdout || result.error?.message || "无输出").trim().slice(0, 300);
 }
 
 function changedFiles() {
@@ -295,12 +306,21 @@ function failAfterStash(step, result, code, message) {
 
 /** 本机 GitHub 直连常不通：按 AGENTS.md，失败才按需带代理，不写进全局 config。 */
 function fetchOrigin() {
-  const direct = git(["fetch", "--prune", "--quiet", "origin"]);
+  const direct = git(["-c", "http.proxy=", "-c", "https.proxy=", "fetch", "--prune", "--quiet", "origin"], proxyFreeEnv());
   if (direct.status === 0) return { ok: true };
-  const proxy = process.env.BILLION_CONTEXT_PROXY || "http://127.0.0.1:18791";
-  log("git fetch 直连失败，改用代理", proxy, String(direct.stderr || "").trim().slice(0, 200));
-  const viaProxy = git(["-c", `http.https://github.com/.proxy=${proxy}`, "fetch", "--prune", "--quiet", "origin"]);
-  return { ok: viaProxy.status === 0, err: viaProxy.status === 0 ? "" : String(viaProxy.stderr || "").trim() };
+  const failures = [`直连：${gitReason(direct)}`];
+  log("git fetch 直连失败，改用代理", gitReason(direct));
+  for (const proxy of proxyCandidates()) {
+    const viaProxy = git(["-c", `http.proxy=${proxy}`, "-c", `https.proxy=${proxy}`, "fetch", "--prune", "--quiet", "origin"]);
+    if (viaProxy.status === 0) {
+      log("git fetch 代理成功", proxy);
+      return { ok: true };
+    }
+    const reason = gitReason(viaProxy);
+    failures.push(`代理 ${proxy}：${reason}`);
+    log("git fetch 代理失败", proxy, reason);
+  }
+  return { ok: false, err: `${failures.join("；")}；如果 bridge 启动时继承了旧代理，重启 bridge 后再试` };
 }
 
 function occupiedBy(branch) {
@@ -396,7 +416,7 @@ async function main() {
   }
 
   const fetched = fetchOrigin();
-  if (!fetched.ok) failAfterStash(0, "fetch-failed", null, `git fetch 失败：${String(fetched.err || "").slice(0, 600)}`);
+  if (!fetched.ok) failAfterStash(0, "fetch-failed", null, `git fetch 失败：${String(fetched.err || "")}`);
   const has = localBranch(BRANCH) || git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${BRANCH}`]).status === 0;
   if (!has) failAfterStash(0, "no-branch", null, `本地和 origin 都没有这条分支：${BRANCH}`);
   log("fetch ok");
