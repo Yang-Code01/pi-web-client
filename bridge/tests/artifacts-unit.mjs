@@ -134,6 +134,21 @@ function sid(tag) {
   assert.equal(d.reason, "no-baseline");
 }
 
+// ---------------------------------------------------------------- 交付文件（脚本生成，没有写入前原文）
+{
+  const dir = tmpdir();
+  const id = sid("delivered");
+  write(dir, "book.xlsx", "not really a workbook\n");
+  const row = (await listArtifacts(id, dir, [{ path: "book.xlsx", tool: "open_preview", writes: 2, delivered: true }])).items[0];
+  assert.equal(row.status, "unknown");
+  assert.equal(row.why, "delivered-only", "脚本产物没有写入前原文，不能说成「桥没在运行」");
+  assert.equal(row.tool, "open_preview");
+  assert.equal(row.writes, 2);
+  // 同一条路径由写入工具报上来时，说法仍是 no-baseline（没交付这层身份）。
+  const viaWrite = (await listArtifacts(id, dir, [{ path: "book.xlsx", tool: "write", writes: 1 }])).items[0];
+  assert.equal(viaWrite.why, "no-baseline");
+}
+
 // ---------------------------------------------------------------- 路径：相对/绝对写的是同一个文件
 {
   const dir = tmpdir();

@@ -1,3 +1,4 @@
+import { artifactSources, noteArtifact, toolPath, type ArtifactSource } from "./artifact-sources.ts";
 import { askQuestions, parseAskResult } from "./ask-result.ts";
 import { diagnose, excerpt, LEVEL_LABEL, normalize, type FailureInput } from "./diagnose.ts";
 import { reviewBody, reviewDisplay } from "./failures.ts";
@@ -220,8 +221,8 @@ export class ChatView {
   /** Something arrived while the user was reading up top. */
   private unread = false;
   private jump: HTMLButtonElement;
-  /** Files the agent wrote or edited in this session, latest last. */
-  private written = new Map<string, { tool: string; at: number; writes: number }>();
+  /** Files the agent wrote or delivered (D275), latest last. */
+  private written = new Map<string, ArtifactSource>();
   /** Assistant replies the user folded; kept across rebuilds and session re-renders. */
   private collapsed = new Set<string>();
   /** Set by the app: the 停止 button on a running `!cmd` card. */
@@ -1535,26 +1536,22 @@ export class ChatView {
     this.opsFiles = null;
   }
 
-  /** Files written or edited so far, newest first. */
   /**
-   * D208: 产物弹窗要的是「这条路径在这个会话里被写过几次、最后一次用什么工具」，不是文件状态 ——
+   * D208 / D275: 产物弹窗要的是「这条路径在这个会话里被写过几次、最后一次用什么工具」，不是文件状态 ——
    * 状态得桥去比写入前的原文（write 覆盖已有文件同样是「修改」）。相对/绝对写法故意原样保留：
    * 桥会按 abs 去重，这里要是合并了反而看不出用户当时用的是哪种写法。
+   * 来源不止写入：`open_preview` 交付过的也算（`delivered`），脚本生成的 xlsx / html 只有这一条线索。
    */
-  artifacts(): { path: string; tool: string; writes: number }[] {
-    return [...this.written.entries()].reverse().map(([path, v]) => ({ path, tool: v.tool, writes: v.writes }));
+  artifacts(): { path: string; tool: string; writes: number; delivered?: boolean }[] {
+    return artifactSources(this.written);
   }
 
   /** A write/edit lands in the session's artifact list and as a chip under this turn's module. */
   private noteWrite(name: unknown, args: unknown): void {
-    const tool = String(name ?? "").toLowerCase();
-    if (!WRITE_TOOLS.has(tool)) return;
-    const path = toolPath(args);
-    if (!path) return;
-    // 同一个路径再写一次：计数 +1，同时挪到 Map 末尾（artifacts() 反着取 = 最近写的在前）。
-    const prev = this.written.get(path);
-    this.written.delete(path);
-    this.written.set(path, { tool, at: Date.now(), writes: (prev?.writes ?? 0) + 1 });
+    const hit = noteArtifact(this.written, name, args);
+    // 打开（交付）只进产物列表；这一轮下面的芯片仍然只画「写过」。
+    if (!hit || !hit.isWrite) return;
+    const path = hit.path;
     const box = this.opsBox;
     if (!box || box.parentNode !== this.root) return;
     if (!this.opsFiles || !this.opsFiles.isConnected) {
@@ -2209,18 +2206,6 @@ function buildFailureItem(input: FailureInput, ms?: number): HTMLElement {
   foot.append(el("span", undefined, meta.join(" · ")), rawBox);
   item.append(foot);
   return item;
-}
-
-const WRITE_TOOLS = new Set(["write", "edit", "multiedit", "multi_edit", "create", "str_replace_editor", "apply_patch"]);
-
-function toolPath(args: unknown): string {
-  if (!args || typeof args !== "object") return "";
-  const a = args as Record<string, unknown>;
-  for (const key of ["path", "file_path", "filePath", "file", "filename"]) {
-    const v = a[key];
-    if (typeof v === "string" && v.trim()) return v.trim();
-  }
-  return "";
 }
 
 function baseName(p: string): string {

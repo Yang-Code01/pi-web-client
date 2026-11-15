@@ -7426,6 +7426,8 @@ export class App {
     switch (why) {
       case "no-baseline":
         return tr("会话开始时没有留下原文（桥没在运行或扩展被关了），文件也不在 git 的 HEAD 里");
+      case "delivered-only":
+        return tr("这个文件不是写入工具写的（脚本 / 程序生成的），没有写入前的原文；点开就是看它现在的样子");
       case "git-head-missing":
         return tr("这个文件在 git 的 HEAD 里读不出来");
       case "snapshot-too-big":

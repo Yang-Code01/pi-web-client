@@ -808,6 +808,7 @@ export const en: Dict = {
   "这一类里没有文件。": "Nothing in this group.",
   "这个会话没有可以对比改动的文件。": "This session has no files with a comparable change.",
   "这个文件没有写入前的原文，读不出改了什么。点「在查看器里打开」看现在的样子。": "No copy from before the write for this file, so the change cannot be shown. Use “Open in viewer” to see it as it is now.",
+  "这个文件不是写入工具写的（脚本 / 程序生成的），没有写入前的原文；点开就是看它现在的样子": "This file was not written by a writing tool (a script or program produced it), so there is no copy from before the write. Opening it shows what it looks like now.",
   "部分文件没有写入前的原文": "Some files have no copy from before the write",
   "本周": "This week",
   "本地": "Local",
