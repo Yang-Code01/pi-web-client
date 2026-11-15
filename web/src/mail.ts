@@ -211,6 +211,8 @@ export class MailPanel {
   private unreadOnly = false;
   /** 最后一页是不是取满了：取满就说明后面可能还有，底部给一个「看更早的」。 */
   private listHasMore = false;
+  /** 左栏邮件列表是否折叠；折叠后右栏占满整行，读 HTML 邮件时不再被窄列表挤着。 */
+  private listCollapsed = false;
 
   private detail: MailDetailView | null = null;
   private detailUid = -1;
@@ -248,6 +250,7 @@ export class MailPanel {
     this.listError = "";
     this.unreadOnly = false;
     this.listHasMore = false;
+    this.listCollapsed = false;
     this.listSeq += 1;
     this.detailSeq += 1;
     this.detail = null;
@@ -735,15 +738,30 @@ export class MailPanel {
     unread.append(cb, el("span", "", tr("只看未读")));
     bar.append(unread);
 
+    const toggleList = el("button", "mc-mini", this.listCollapsed ? tr("展开列表") : tr("折叠列表")) as HTMLButtonElement;
+    toggleList.type = "button";
+    toggleList.setAttribute("aria-expanded", this.listCollapsed ? "false" : "true");
+    toggleList.title = this.listCollapsed ? tr("展开邮件列表") : tr("折叠邮件列表，让正文更宽");
+    toggleList.onclick = () => {
+      this.listCollapsed = !this.listCollapsed;
+      split.classList.toggle("is-list-collapsed", this.listCollapsed);
+      toggleList.textContent = this.listCollapsed ? tr("展开列表") : tr("折叠列表");
+      toggleList.setAttribute("aria-expanded", this.listCollapsed ? "false" : "true");
+      toggleList.title = this.listCollapsed ? tr("展开邮件列表") : tr("折叠邮件列表，让正文更宽");
+      // 右栏变宽后正文会重新排版，iframe 高度跟着重算。
+      const frame = wrap.querySelector<HTMLIFrameElement>(".mc-html");
+      if (frame) window.setTimeout(() => this.fitMailFrame(frame), 60);
+    };
+
     const refresh = el("button", "mc-mini", tr("刷新")) as HTMLButtonElement;
     refresh.type = "button";
     refresh.onclick = () => void this.loadMessages(this.seq);
     const write = el("button", "mc-mini mc-mini--primary", tr("写邮件")) as HTMLButtonElement;
     write.type = "button";
     write.onclick = () => this.startNewMail();
-    bar.append(refresh, write);
+    bar.append(toggleList, refresh, write);
 
-    const split = el("div", "mc-split");
+    const split = el("div", this.listCollapsed ? "mc-split is-list-collapsed" : "mc-split");
     split.append(this.listEl(), this.readEl());
     wrap.append(bar, split);
     return wrap;
