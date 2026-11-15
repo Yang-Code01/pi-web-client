@@ -27,6 +27,7 @@ import type {
   MailPolicyView,
   MailSummary,
 } from "./mail-shared.ts";
+import { joinAddress, localPartFor, presetDomain, retargetAddress, splitAddress } from "./mail-shared.ts";
 import { auditOutcome, MAIL_POLICY_LABELS, mailErrorText, parseRecipients, portOf, secureForPort, sizeText, whenText } from "./mail-shared.ts";
 
 export interface MailHandoff {
@@ -117,6 +118,38 @@ function formOf(account: MailAccountView): AccountForm {
     smtpPort: String(account.smtp.port),
     advanced: false,
   };
+}
+
+type AutoComplete = "off" | "on" | "name" | "email" | "username" | "new-password";
+
+function textInput(value: string, type = "text", autocomplete?: AutoComplete): HTMLInputElement {
+  const inp = el("input", "mc-input") as HTMLInputElement;
+  inp.type = type;
+  inp.value = value;
+  // Chrome / Edge 对密码框无视 "off"，会把浏览器存的本站登录密码自动填进来，
+  // 看着像「授权码已经填好了」。密码框统一走 "new-password"（和 Jira 的 API token 同一口径）。
+  // 其他字段只在语义明确时给 autocomplete，别一刀切 "off"。
+  if (autocomplete) inp.autocomplete = autocomplete;
+  inp.spellcheck = false;
+  return inp;
+}
+
+function fieldRow(label: string, content: HTMLElement): HTMLElement {
+  const row = el("label", "mc-field");
+  row.append(el("span", "mc-field__label", label), content);
+  return row;
+}
+
+function formInput(
+  label: string,
+  value: string,
+  type = "text",
+  oninput?: (v: string) => void,
+  autocomplete?: AutoComplete,
+): HTMLElement {
+  const inp = textInput(value, type, autocomplete);
+  inp.oninput = () => oninput?.(inp.value);
+  return fieldRow(label, inp);
 }
 
 /** 「哪一步没成」+ 桥的错误：`errText` 只认一个参数，语境在自己这层加。 */
@@ -959,6 +992,51 @@ export class MailPanel {
     return wrap;
   }
 
+  /** 邮箱地址：个人邮箱只填 @ 前面的部分，域名由邮箱类型带出来；企业邮 / 自定义整框输入。 */
+  private addressField(f: AccountForm): HTMLElement {
+    const cfg = this.config!;
+    const domain = presetDomain(cfg.presets, f.preset);
+    const local = localPartFor(f.address, domain);
+    const inp = textInput(local !== null ? local : f.address, local !== null ? "text" : "email", local !== null ? "off" : "email");
+    if (local === null) {
+      inp.placeholder = "you@example.com";
+      inp.oninput = () => (f.address = inp.value);
+      return fieldRow(tr("邮箱地址"), inp);
+    }
+    inp.placeholder = tr("填 @ 前面的部分");
+    const domainLabel = el("span", "mc-address__domain", `@${domain}`);
+    inp.oninput = () => {
+      const raw = inp.value;
+      const parts = splitAddress(raw);
+      if (!parts) {
+        f.address = raw ? joinAddress(raw, domain) : "";
+        domainLabel.hidden = false;
+        return;
+      }
+      // 用户开始输入完整地址时先把固定后缀藏起来，避免看起来像两个 @。
+      f.address = raw;
+      domainLabel.hidden = true;
+    };
+    // 失焦时只做静态归位，不重画：重画会把光标/点击目标一起换掉。
+    inp.onblur = () => {
+      const parts = splitAddress(inp.value);
+      if (!parts) return;
+      if (!parts.domain) {
+        inp.value = parts.local;
+        f.address = parts.local ? joinAddress(parts.local, domain) : "";
+        domainLabel.hidden = false;
+        return;
+      }
+      if (parts.domain.toLowerCase() !== domain.toLowerCase()) return;
+      inp.value = parts.local;
+      f.address = parts.local ? joinAddress(parts.local, domain) : "";
+      domainLabel.hidden = false;
+    };
+    const wrap = el("div", "mc-address");
+    wrap.append(inp, domainLabel);
+    return fieldRow(tr("邮箱地址"), wrap);
+  }
+
   private formEl(f: AccountForm): HTMLElement {
     const cfg = this.config!;
     const box = el("section", "mc-section mc-section--form");
@@ -966,22 +1044,6 @@ export class MailPanel {
     head.append(el("div", "mc-section__label", f.id ? tr("改账号") : tr("新账号")));
     head.append(el("div", "mc-section__meta", tr("授权码不是登录密码")));
     box.append(head);
-
-    const input = (label: string, value: string, type = "text", oninput?: (v: string) => void): HTMLElement => {
-      const row = el("label", "mc-field");
-      row.append(el("span", "mc-field__label", label));
-      const inp = el("input", "mc-input") as HTMLInputElement;
-      inp.type = type;
-      inp.value = value;
-      inp.oninput = () => oninput?.(inp.value);
-      row.append(inp);
-      return row;
-    };
-
-    const grid = el("div", "mc-form__grid");
-    grid.append(input(tr("邮箱地址"), f.address, "email", (v) => (f.address = v)));
-    grid.append(input(tr("显示名"), f.label, "text", (v) => (f.label = v)));
-    box.append(grid);
 
     const presetRow = el("label", "mc-field");
     presetRow.append(el("span", "mc-field__label", tr("邮箱类型")));
@@ -993,8 +1055,13 @@ export class MailPanel {
       pick.append(opt);
     }
     pick.onchange = () => {
-      f.preset = pick.value;
-      const [imap, smtp] = this.presetEndpoints(cfg, pick.value);
+      const next = pick.value;
+      // 先换域名再换预设：地址如果本来就是预设域名，跟着一起换；换到企业邮 / 自定义
+      // （没有固定域名）时只留本地部分，避免把旧服务商的地址悄悄带过去。
+      const knownDomains = Object.values(cfg.presets).flatMap((p) => (p.domain ? [p.domain] : []));
+      f.address = retargetAddress(f.address, presetDomain(cfg.presets, f.preset), presetDomain(cfg.presets, next), knownDomains);
+      f.preset = next;
+      const [imap, smtp] = this.presetEndpoints(cfg, next);
       f.imapHost = imap.host;
       f.imapPort = String(imap.port);
       f.smtpHost = smtp.host;
@@ -1005,10 +1072,14 @@ export class MailPanel {
     presetRow.append(pick);
     box.append(presetRow);
 
+    const grid = el("div", "mc-form__grid");
+    grid.append(this.addressField(f), formInput(tr("显示名"), f.label, "text", (v) => (f.label = v), "name"));
+    box.append(grid);
+
     const creds = el("div", "mc-form__grid");
     creds.append(
-      input(tr("登录账号（多数就是地址全称）"), f.user, "text", (v) => (f.user = v)),
-      input(tr("客户端授权码"), f.secret, "password", (v) => (f.secret = v)),
+      formInput(tr("登录账号（多数就是地址全称）"), f.user, "text", (v) => (f.user = v), "username"),
+      formInput(tr("客户端授权码"), f.secret, "password", (v) => (f.secret = v), "new-password"),
     );
     box.append(creds);
     box.append(
@@ -1031,10 +1102,10 @@ export class MailPanel {
     if (f.advanced) {
       const advGrid = el("div", "mc-form__grid");
       advGrid.append(
-        input(tr("IMAP 服务器"), f.imapHost, "text", (v) => (f.imapHost = v)),
-        input(tr("IMAP 端口"), f.imapPort, "number", (v) => (f.imapPort = v)),
-        input(tr("SMTP 服务器"), f.smtpHost, "text", (v) => (f.smtpHost = v)),
-        input(tr("SMTP 端口"), f.smtpPort, "number", (v) => (f.smtpPort = v)),
+        formInput(tr("IMAP 服务器"), f.imapHost, "text", (v) => (f.imapHost = v)),
+        formInput(tr("IMAP 端口"), f.imapPort, "number", (v) => (f.imapPort = v)),
+        formInput(tr("SMTP 服务器"), f.smtpHost, "text", (v) => (f.smtpHost = v)),
+        formInput(tr("SMTP 端口"), f.smtpPort, "number", (v) => (f.smtpPort = v)),
       );
       box.append(advGrid);
     }
@@ -1194,20 +1265,36 @@ export class MailPanel {
   // -------------------------------------------------------------- 写
 
   private async saveAccount(f: AccountForm): Promise<void> {
-    if (!f.address.trim()) {
-      this.formError = tr("邮箱地址不能空");
+    const address = f.address.trim();
+    // 个人邮箱的地址是「本地部分 + 固定域名」，只剩个 @域名 也不能存。
+    const domain = this.config ? presetDomain(this.config.presets, f.preset) : "";
+    if (!address) {
+      this.formError = domain ? tr("邮箱地址要填 @ 前面的部分") : tr("邮箱地址不能空");
       this.render();
       return;
+    }
+    if (domain) {
+      const local = localPartFor(address, domain);
+      if (local === null) {
+        this.formError = tr("邮箱地址要以 @{domain} 结尾", { domain });
+        this.render();
+        return;
+      }
+      if (local === "") {
+        this.formError = tr("邮箱地址要填 @ 前面的部分");
+        this.render();
+        return;
+      }
     }
     this.saving = true;
     this.formError = "";
     this.render();
     const seq = this.seq;
     const body: MailAccountInput = {
-      label: f.label.trim() || f.address.trim(),
-      address: f.address.trim(),
+      label: f.label.trim() || address,
+      address,
       preset: f.preset,
-      user: f.user.trim() || f.address.trim(),
+      user: f.user.trim() || address,
       secret: f.secret,
       // TLS 由端口算（以前 IMAP 恒 true、SMTP 就看字符串里有没有 587，143 / 25 永远连不上）。
       imap: { host: f.imapHost.trim(), port: portOf(f.imapPort, 993), secure: secureForPort(portOf(f.imapPort, 993), "imap") },

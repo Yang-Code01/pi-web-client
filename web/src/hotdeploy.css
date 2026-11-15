@@ -310,6 +310,8 @@
 }
 .hot-bad { color: var(--warn); }
 .hot-grow { flex: 1; }
+/* hidden 属性要压过 .btn 的 display，否则按钮还会留在底栏里。 */
+.hot-stash[hidden] { display: none; }
 
 /* ---------------------------------------------------------------- 顶栏提示
    主检出停在非 main 分支时挂一枚，点开就是热部署。 */

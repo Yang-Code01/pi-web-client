@@ -96,22 +96,31 @@ export const DEFAULT_POLICY: MailPolicy = {
  * 常见邮箱的服务器。网易排在最前（这一栏最常填的就是它），后面按国内、国外分。
  * `custom` 不给默认值 —— 填错了要人说，不要猜。
  *
+ * `domain` 是个人邮箱的默认域名，新账号选完类型后表单把 `@域名` 直接带出来；企业邮
+ * （qiye163 / exmail / aliyunqy）的域名随公司走，不能猜，所以不写。
+ *
  * 只列 993/465 这两组「隐式 TLS」的端口，唯一例外是 Outlook 与 iCloud：它们把 587 留给
  * STARTTLS，`secure: false` 时 nodemailer 会自己升级。
  */
-export const PRESETS: Record<Exclude<MailPreset, "custom">, { label: string; imap: MailEndpoint; smtp: MailEndpoint }> = {
+export const PRESETS: Record<
+  Exclude<MailPreset, "custom">,
+  { label: string; domain?: string; imap: MailEndpoint; smtp: MailEndpoint }
+> = {
   "163": {
     label: "163 邮箱",
+    domain: "163.com",
     imap: { host: "imap.163.com", port: 993, secure: true },
     smtp: { host: "smtp.163.com", port: 465, secure: true },
   },
   "126": {
     label: "126 邮箱",
+    domain: "126.com",
     imap: { host: "imap.126.com", port: 993, secure: true },
     smtp: { host: "smtp.126.com", port: 465, secure: true },
   },
   yeah: {
     label: "yeah.net",
+    domain: "yeah.net",
     imap: { host: "imap.yeah.net", port: 993, secure: true },
     smtp: { host: "smtp.yeah.net", port: 465, secure: true },
   },
@@ -122,6 +131,7 @@ export const PRESETS: Record<Exclude<MailPreset, "custom">, { label: string; ima
   },
   qq: {
     label: "QQ 邮箱",
+    domain: "qq.com",
     imap: { host: "imap.qq.com", port: 993, secure: true },
     smtp: { host: "smtp.qq.com", port: 465, secure: true },
   },
@@ -132,6 +142,7 @@ export const PRESETS: Record<Exclude<MailPreset, "custom">, { label: string; ima
   },
   aliyun: {
     label: "阿里云邮箱",
+    domain: "aliyun.com",
     imap: { host: "imap.aliyun.com", port: 993, secure: true },
     smtp: { host: "smtp.aliyun.com", port: 465, secure: true },
   },
@@ -142,41 +153,49 @@ export const PRESETS: Record<Exclude<MailPreset, "custom">, { label: string; ima
   },
   sina: {
     label: "新浪邮箱",
+    domain: "sina.com",
     imap: { host: "imap.sina.com", port: 993, secure: true },
     smtp: { host: "smtp.sina.com", port: 465, secure: true },
   },
   "189": {
     label: "天翼邮箱",
+    domain: "189.cn",
     imap: { host: "imap.189.cn", port: 993, secure: true },
     smtp: { host: "smtp.189.cn", port: 465, secure: true },
   },
   gmail: {
     label: "Gmail",
+    domain: "gmail.com",
     imap: { host: "imap.gmail.com", port: 993, secure: true },
     smtp: { host: "smtp.gmail.com", port: 465, secure: true },
   },
   outlook: {
     label: "Outlook / Hotmail",
+    domain: "outlook.com",
     imap: { host: "outlook.office365.com", port: 993, secure: true },
     smtp: { host: "smtp.office365.com", port: 587, secure: false },
   },
   icloud: {
     label: "iCloud 邮箱",
+    domain: "icloud.com",
     imap: { host: "imap.mail.me.com", port: 993, secure: true },
     smtp: { host: "smtp.mail.me.com", port: 587, secure: false },
   },
   yahoo: {
     label: "Yahoo 邮箱",
+    domain: "yahoo.com",
     imap: { host: "imap.mail.yahoo.com", port: 993, secure: true },
     smtp: { host: "smtp.mail.yahoo.com", port: 465, secure: true },
   },
   zoho: {
     label: "Zoho 邮箱",
+    domain: "zoho.com",
     imap: { host: "imap.zoho.com", port: 993, secure: true },
     smtp: { host: "smtp.zoho.com", port: 465, secure: true },
   },
   yandex: {
     label: "Yandex 邮箱",
+    domain: "yandex.com",
     imap: { host: "imap.yandex.com", port: 993, secure: true },
     smtp: { host: "smtp.yandex.com", port: 465, secure: true },
   },

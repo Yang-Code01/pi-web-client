@@ -579,6 +579,33 @@ a.mc-attach__row:hover {
   color: var(--faint);
 }
 
+/* 邮箱地址：本地部分 + 随「邮箱类型」切换的固定域名；企业邮 / 自定义退回整框。 */
+.mc-address {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.mc-address .mc-input {
+  flex: 1;
+  min-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.mc-address__domain {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-radius: 0 8px 8px 0;
+  background: var(--panel-3);
+  color: var(--dim);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
 /* ---------------------------------------------------------------- 开关 */
 
 .mc-switch {

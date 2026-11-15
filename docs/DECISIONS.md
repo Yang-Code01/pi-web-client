@@ -4968,7 +4968,42 @@ D
 - 单元测试（新建，`npm run test:sheet`）：`sheet-numfmt-unit.mjs` 60 条（两位数小数、千分位、缩放逗号、科学记数、分数、中文数字、日期时刻、1904、文本段、`isDateCode`）；`sheet-calc-unit.mjs` 148 条（17 类函数的真值 + 错误码 + 通配 + 日期条件）；`sheet-style-unit.mjs` 9 条（自定义 numFmt 写回：代码去重、id 从 164 起、引号转义、`<numFmts>` 位置、二次写入不新增）。
 - 老行为的护栏没动：`probes/xlsx.mjs` 里 356 条断言照旧跑（`¥1,234.50` / `(400.00)` / `12.3%` / `2025-01-21` 这些显示串逐条比过），并新增 **10 条**：填充柄拖出等差序列、`Ctrl+↓` 跳连续区末尾、底栏求和/计数、清除菜单、边框菜单只加下边框、色板 26 格、点色板立刻换底色、数字格式菜单选「中文大写数字」当场变字、函数库把 `=SUM(` 填进公式栏、存盘重开后中文大写还在。整轮 **244 ok**（改前 234 ok）。
 - 这台 macOS 上 `probes/xlsx.mjs` 有 3 条本来就红（`千分位整数` 量出 `#######`、`Tab 提交并往右走` / `重开还看得到新写的数` 读到 `7.5¥114.00`），**main 上未改动的构建同样红**——是字体度量差异，不是这一轮引入的（对比方式：在 main 检出上 `npm run build && node probes/xlsx.mjs`，失败集合逐条相同）。
-## D267 插件市场照本机 DeepSeek 的 dshmarket 1.73.19 重画（用户要求「用 rea 逆向本机 deepseek 里面的插件市场 dshmarket，一比一复刻」）
+
+## D267 邮箱新账号：地址只填 @ 前面的部分，授权码不再被浏览器自动填（用户要求 2026-11-15）
+
+**问题：** 用户说「邮箱地址，应该有默认值，跟随用户选择的邮箱类型，自动切换。另外客户端授权码，现在会直接填入值，应该是 Edge 保存的当前网页的密码。这个改掉」。
+
+**决定：**
+
+- 个人邮箱预设（163 / 126 / yeah / qq / aliyun / sina / 189 / gmail / outlook / icloud / yahoo / zoho / yandex）在 bridge 的预设表里加 `domain`；邮箱地址输入拆成「本地部分 + 固定 @ 域名」，类型切换时只换域名、保留前缀。企业邮 / 自定义没有固定域名，退回整框输入；切到它们时只留前缀，避免把旧服务商地址静默保存。
+- 域名只是表单默认值，不替用户填本地部分；保存时仍要校验地址以当前预设域名结尾。
+- 客户端授权码输入框统一 `autocomplete="new-password"`（与 Jira API token 同口径），避免 Chrome / Edge 把本站保存的登录密码自动填进密码框；其他字段按语义给 `name` / `username` / `email`，不再一律 `off`。
+
+**代价：** 地址编辑从单框变成「前缀 + 固定后缀」，粘贴完整本域地址时会把后缀临时藏起来；这层逻辑在 `mail-shared.ts` 里单测，UI 用临时探针验证，没进常驻测试。
+
+## D268 热部署可以先暂存再部署：干净构建，部署前恢复（用户要求 2026-11-15）
+
+**问题：** 主检出只要有一个未提交的改动（哪怕只是 `package-lock.json` 的 npm 元数据），热部署就整个灰掉，用户只能先提交或还原。用户要求加一颗按钮，先 `stash`、`pull`、`pop` 再部署。
+
+**决定：**
+
+- 只在**当前分支、非 detached** 时开放。stash 属于当前工作区，不能安全地 pop 到另一条分支；选别的分支、detached HEAD 都不显示这颗按钮。
+- worker 内部顺序固定为：`git stash push --include-untracked` → `git fetch` → `git merge --ff-only origin/<branch>` → `npm run build` → `git stash pop` → 杀旧 bridge / 起新 bridge。构建使用**干净分支**，本地改动不进入本次产物；`pop` 放在杀旧进程之前，恢复失败就不换进程。恢复只保证工作区内容回来，不还原 index 暂存状态；`pop --index` 在 index 冲突时可能已经落地文件却返回非零，worker 会误判。
+- stash message 用本轮唯一的 `hotdeploy-<pid>-<time>`，按 message 找 `stash@{n}` 再 pop，绝不盲取 `stash@{0}`（仓库里可能已经有旧 stash）。
+- 失败恢复：fetch / merge / build 任一步失败都先尝试恢复 stash；`pop` 冲突则中止部署，旧 bridge 继续跑，stash 保留并在错误里给出 message；worker 崩溃时 stash 仍在 `git stash list`。
+- 界面在 dirty 时保留禁用的「先提交改动」主按钮，旁边追加「暂存后热部署」次级按钮，点之前二次确认，说明「本次构建不包含这些改动」。
+- 不自动 `reset` / `checkout`，不做 dirty build。D254/D255 的默认拒绝保留，只有显式传 stash 参数才走这条路。
+
+**代价 / 限制：**
+
+- 本次构建不包含本地未提交改动；要验证 WIP 仍需先提交或另开分支。
+- `pop` 可能与上游冲突（尤其同一个 `package-lock.json` 被两边改），冲突后需要手动解决再重试。
+- 只支持当前分支；不能把当前分支的 stash 带到别的分支。
+- 旧 stash 不会被复用或清理，仍留在 stash list 里。
+
+**验证：** 新 `bridge/tests/hotdeploy-stash-unit.mjs` 在临时仓库覆盖 stash/pop、未跟踪文件恢复、旧 stash 不误取、冲突时 stash 保留、worker 在 build 失败后恢复改动，以及 worker 在 pop 冲突时停在恢复步骤、不进入换进程；`npm run test:hotdeploy` 串跑旧纯函数测试和这条集成测试。另用临时 bridge + Playwright 回归按钮显隐与确认框。
+
+## D269 插件市场照本机 DeepSeek 的 dshmarket 1.73.19 重画（用户要求「用 rea 逆向本机 deepseek 里面的插件市场 dshmarket，一比一复刻」）
 
 **问题：** 输入框下那颗「扩展」按钮打开的管家里，「扩展商店」一直是 2015 年式的清单：一行一个包、月下载量、安装按钮。用户要求把入口改叫「插件」、把「扩展商店」改叫「插件市场」，并按本机 DeepSeek Harness 里的 dshmarket 1:1 重画插件市场。
 

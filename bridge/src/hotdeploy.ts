@@ -63,6 +63,8 @@ export interface RunState {
   exitCode?: number | null;
   error?: string | null;
   port?: number;
+  stash?: string;
+  stashRestored?: boolean;
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -330,6 +332,7 @@ async function startRun(req: http.IncomingMessage, res: http.ServerResponse, ctx
   if (link.linked) return fail(res, 409, "hotdeploy_worktree", "这个 bridge 是从 worktree 起的，热部署只在主检出里用");
   const body = await readJsonBody(req).catch(() => null);
   const branch = typeof body?.branch === "string" ? body.branch.trim() : "";
+  const stash = body?.stash === true;
   if (!branch) return fail(res, 400, "hotdeploy_branch", "没说要部署哪条分支");
   if (!fs.existsSync(WORKER)) return fail(res, 500, "hotdeploy_worker", `缺少 ${WORKER}`);
 
@@ -341,7 +344,15 @@ async function startRun(req: http.IncomingMessage, res: http.ServerResponse, ctx
     return fail(res, 409, "hotdeploy_occupied", `${branch} 被另一个 worktree 检出：${row.occupiedBy}；先在那儿收掉它`);
   }
   if (snap.busy) return fail(res, 409, "hotdeploy_busy", "上一轮热部署还没结束");
-  if (snap.dirty) {
+  if (stash) {
+    if (snap.detached || !snap.branch) {
+      return fail(res, 409, "hotdeploy_stash_branch", "当前是 detached HEAD，暂存只能用在一条本地分支上");
+    }
+    if (branch !== snap.branch) {
+      return fail(res, 409, "hotdeploy_stash_branch", `暂存只能部署当前分支 ${snap.branch}；先切到 ${branch} 再来`);
+    }
+  }
+  if (snap.dirty && !stash) {
     const list = (snap.dirtyFiles as string[]).slice(0, 3).join("、");
     return fail(res, 409, "hotdeploy_dirty", `主检出有未提交的改动（${list}…），先提交或还原再来`);
   }
@@ -360,7 +371,9 @@ async function startRun(req: http.IncomingMessage, res: http.ServerResponse, ctx
   fs.mkdirSync(WORK, { recursive: true });
   try {
     const fd = fs.openSync(LOG, "a");
-    const child = spawn(process.execPath, [WORKER, "--dir", REPO, "--branch", branch, "--port", String(ctx.port)], {
+    const args = [WORKER, "--dir", REPO, "--branch", branch, "--port", String(ctx.port)];
+    if (stash) args.push("--stash");
+    const child = spawn(process.execPath, args, {
       cwd: REPO,
       detached: true,
       stdio: ["ignore", fd, fd],

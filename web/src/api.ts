@@ -412,7 +412,8 @@ export const api = {
   /** 热部署：换分支 → 编译 → 换进程。写接口只在桥端本机/局域网放行，公网 403。 */
   hotdeploy: () => req<HotdeploySnapshot>("/api/hotdeploy"),
   hotdeployLog: (lines = 160) => req<{ lines: string[] }>(`/api/hotdeploy/log?lines=${lines}`),
-  hotdeployRun: (branch: string) => postJson<{ ok: boolean; run: HotdeployRun }>("/api/hotdeploy/run", { branch }),
+  hotdeployRun: (branch: string, stash = false) =>
+    postJson<{ ok: boolean; run: HotdeployRun }>("/api/hotdeploy/run", { branch, ...(stash ? { stash: true } : {}) }),
   hotdeployRemoveWorktree: (path: string, force = false) =>
     postJson<HotdeployRemoveResult>("/api/hotdeploy/remove-worktree", { path, force }),
   notifyTest: () => req<{ push: number; wechat: string }>("/api/notify-test", { method: "POST" }),
