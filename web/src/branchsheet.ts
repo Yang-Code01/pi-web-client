@@ -104,9 +104,6 @@ export class BranchSheet {
   private foldedGroups: Record<string, boolean> = (() => {
     try { return (JSON.parse(localStorage.getItem("pi.goGroupsFolded") ?? "null") as Record<string, boolean> | null) ?? {}; } catch { return {}; }
   })();
-  /** 对照下拉里「全部 N 个分支」这一折的展开状态；默认收起，换检索词就收回。 */
-  private cmpAllOpen = false;
-  private cmpFoldKey = "";
   /** 只要最新那次请求的答案：换对照分支拉得快时，旧答案不许盖新的。 */
   private ticket = 0;
   private esc: ((ev: KeyboardEvent) => void) | null = null;
@@ -131,7 +128,9 @@ export class BranchSheet {
 
     const head = el("div", "branch-head");
     const title = el("div", "branch-title");
-    title.append(el("span", "branch-glyph", "⎇"), el("span", "", tr("分支操作工作台")), (this.repoEl = el("span", "branch-repo", shortDir(opts.dir))));
+    const repo = el("span", "branch-repo", shortDir(opts.dir));
+    this.repoEl = repo;
+    title.append(el("span", "branch-glyph", "⎇"), el("span", "", tr("分支操作工作台")), repo);
     this.repoEl.title = opts.dir;
     const tools = el("div", "branch-tools");
     const row = el("span", "go-tool-row");
@@ -206,8 +205,8 @@ export class BranchSheet {
       if (ev.key !== "Escape") return;
       ev.preventDefault();
       ev.stopPropagation();
-      if (!this.opLayer.hidden) this.closeOp();
-      else this.close();
+      if (this.opLayer.hidden) this.close();
+      else this.closeOp();
     };
     document.addEventListener("keydown", this.esc, true);
     this.sheet.focus();
@@ -398,29 +397,22 @@ export class BranchSheet {
     mid.append(pills);
     if (data.mergeBase) mid.append(el("span", "bc-fork", tr("分叉于 {p1} · {p2}", { p1: data.mergeBase.h, p2: fmtRelative(data.mergeBase.at) })));
 
-    const right = el("div", "bc-end right go-cmp-picker");
+    const right = el("div", "bc-end right");
     const current = data.base || tr("自动 · 跟随 origin/HEAD");
-    const input = el("input", "go-cmp-input") as HTMLInputElement;
-    input.type = "text";
-    input.value = data.base;
-    input.placeholder = tr("搜索分支或输入 ref");
-    input.setAttribute("aria-label", tr("对照分支"));
-    input.dataset.cmpInput = "1";
-    const menu = el("div", "go-cmp-menu");
-    menu.hidden = true;
-    menu.dataset.cmpMenu = "1";
-    const toggle = btn("▾", "btn ghost go-cmp-toggle");
-    toggle.dataset.cmpToggle = "1";
-    toggle.title = tr("搜索对照分支");
-    input.oninput = () => this.paintCmpMenu(menu, input.value);
-    input.onfocus = () => this.paintCmpMenu(menu, input.value);
-    input.onkeydown = (ev) => {
-      if (ev.key !== "Enter") return;
-      ev.preventDefault();
-      this.applyCmp(input.value.trim() || (this.refs?.defaultBase ?? ""));
-    };
-    toggle.onclick = () => this.paintCmpMenu(menu, input.value, true);
-    right.append(input, toggle, menu, el("span", "bc-tag go-cmp-tag", current));
+    const picker = this.branchPicker({
+      value: data.base,
+      placeholder: tr("搜索分支或输入 ref"),
+      ariaLabel: tr("对照分支"),
+      toggleTitle: tr("搜索对照分支"),
+      key: "cmp",
+      auto: tr("自动 · 跟随 origin/HEAD"),
+      isActive: (name) => name === this.base,
+      useLabel: (text) => tr("用输入的 ref 对照：{p1}", { p1: text || "…" }),
+      onPick: (ref) => this.applyCmp(ref),
+      // 空输入回车仍按老规矩落到默认对照分支；点「自动」那一项才是不带 ref 的对照。
+      onSubmit: (ref) => this.applyCmp(ref || (this.refs?.defaultBase ?? "")),
+    });
+    right.append(picker.wrap, el("span", "bc-tag go-cmp-tag", current));
 
     const bar = el("div", "bc-bar");
     const total = data.ahead + data.behind;
@@ -434,48 +426,145 @@ export class BranchSheet {
     this.cmpEl.replaceChildren(left, mid, right, bar, counts);
   }
 
-  /** 候选 = 自动 + 本地/远程两组；输入是子串检索，也能直接回车用任意 ref。 */
-  private paintCmpMenu(menu: HTMLElement, query: string, forceOpen = false): void {
-    if (forceOpen && !menu.hidden) { menu.hidden = true; this.cmpAllOpen = false; this.cmpFoldKey = ""; return; }
-    menu.hidden = false;
-    const q = query.trim().toLowerCase();
-    // 输入变了就收回「全部」：检索是主线，折叠区只是给「想挑别的分支」留的出口。
-    if (query.trim() !== this.cmpFoldKey) { this.cmpFoldKey = query.trim(); this.cmpAllOpen = false; }
-    const all = [
-      { name: "", label: tr("自动 · 跟随 origin/HEAD"), group: tr("自动") },
-      ...(this.refs?.groups.flatMap((g) => g.refs.map((r) => ({ name: r.name, label: r.name, group: tr(g.name) }))) ?? []),
-      ...this.data?.branches.filter((b) => !(this.refs?.groups.some((g) => g.refs.some((r) => r.name === b.name)))).map((b) => ({ name: b.name, label: b.name, group: tr("历史") })) ?? [],
-    ];
-    const hit = all.filter((r) => !q || r.label.toLowerCase().includes(q) || r.group.toLowerCase().includes(q));
-    const list = el("div", "go-cmp-list");
-    // 有检索词时列表会被筛短（图里只剩当前对照那一条），想挑别的分支就得先清空输入。
-    // 于是补一折「全部 N 个分支」：默认收起，点开才铺全量；检索词一改又收回。
-    const branchTotal = all.filter((r) => r.name !== "").length;
-    const folded = Boolean(q) && all.some((r) => r.name !== "" && !hit.includes(r));
-    if (folded) {
-      const head = btn("", "go-cmp-fold");
-      head.dataset.cmpFold = "1";
-      head.setAttribute("aria-expanded", String(this.cmpAllOpen));
-      head.title = tr("展开看所有分支");
-      head.append(
-        el("span", "go-cmp-caret", this.cmpAllOpen ? "▾" : "▸"),
-        el("span", "go-cmp-fold-name", tr("全部 {p1} 个分支", { p1: branchTotal })),
-        el("span", "go-cmp-fold-count", tr("匹配 {p1}", { p1: hit.filter((r) => r.name !== "").length })),
-      );
-      head.onclick = () => { this.cmpAllOpen = !this.cmpAllOpen; this.paintCmpMenu(menu, query); };
-      list.append(head);
-    }
-    for (const r of folded && this.cmpAllOpen ? all : hit) {
-      const b = btn(`${r.label} · ${r.group}`, "go-cmp-pick");
-      b.dataset.cmpPick = r.name;
-      b.classList.toggle("on", r.name === this.base);
-      b.onclick = () => this.applyCmp(r.name);
-      list.append(b);
-    }
-    const use = btn(tr("用输入的 ref 对照：{p1}", { p1: query.trim() || "…" }), "go-cmp-use");
-    use.dataset.cmpUse = "1";
-    use.onclick = () => this.applyCmp(query.trim());
-    menu.replaceChildren(list, use);
+  /**
+   * 分支选择器：能检索、能点，也能直接输任意 ref。对照分支与「交给 AI 操作」共用这一份，
+   * 差别只在传不传 auto（AI 卡不想要「自动 · 跟随 origin/HEAD」这一项）。
+   */
+  private branchPicker(opts: {
+    value: string;
+    placeholder: string;
+    ariaLabel: string;
+    toggleTitle: string;
+    key: string;
+    useLabel: (text: string) => string;
+    onPick: (value: string) => void;
+    onInput?: (value: string) => void;
+    onSubmit?: (value: string) => void;
+    isActive?: (name: string) => boolean;
+    auto?: string;
+    ensure?: string[];
+    openOnFocus?: boolean;
+  }): { wrap: HTMLElement; input: HTMLInputElement } {
+    // 「全部 N 个分支」这一折的状态按每个选择器各记一份：默认收起，换检索词就收回。
+    let allOpen = false;
+    let foldKey = "";
+    let listening = false;
+
+    const wrap = el("div", "go-cmp-picker");
+    const input = el("input", "go-cmp-input") as HTMLInputElement;
+    input.type = "text";
+    input.value = opts.value;
+    input.placeholder = opts.placeholder;
+    input.setAttribute("aria-label", opts.ariaLabel);
+    input.setAttribute(`data-${opts.key}-input`, "1");
+
+    const menu = el("div", "go-cmp-menu");
+    menu.hidden = true;
+    menu.setAttribute(`data-${opts.key}-menu`, "1");
+
+    const toggle = btn("▾", "btn ghost go-cmp-toggle");
+    toggle.setAttribute(`data-${opts.key}-toggle`, "1");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.title = opts.toggleTitle;
+
+    const outside = (ev: PointerEvent): void => {
+      if (!wrap.contains(ev.target as Node)) close();
+    };
+    const close = (): void => {
+      menu.hidden = true;
+      toggle.setAttribute("aria-expanded", "false");
+      allOpen = false;
+      foldKey = "";
+      if (listening) { listening = false; document.removeEventListener("pointerdown", outside, true); }
+    };
+    const pick = (value: string): void => {
+      input.value = value;
+      close();
+      // AI 卡里选完把焦点还给输入框，好接着改字；对照分支会立刻重载重画，不用管焦点。
+      if (opts.openOnFocus === false) input.focus();
+      opts.onPick(value);
+    };
+    const submit = (): void => {
+      const value = input.value.trim();
+      input.value = value;
+      close();
+      (opts.onSubmit ?? opts.onPick)(value);
+    };
+    const paint = (query: string, forceOpen = false): void => {
+      if (forceOpen && !menu.hidden) { close(); return; }
+      menu.hidden = false;
+      toggle.setAttribute("aria-expanded", "true");
+      if (!listening) { listening = true; document.addEventListener("pointerdown", outside, true); }
+      const q = query.trim().toLowerCase();
+      // 输入变了就收回「全部」：检索是主线，折叠区只是给「想挑别的分支」留的出口。
+      if (query.trim() !== foldKey) { foldKey = query.trim(); allOpen = false; }
+      const seen = new Set<string>();
+      const all: { name: string; label: string; group: string }[] = [];
+      if (opts.auto !== undefined) all.push({ name: "", label: opts.auto, group: tr("自动") });
+      for (const g of this.refs?.groups ?? []) {
+        for (const r of g.refs) {
+          if (seen.has(r.name)) continue;
+          seen.add(r.name);
+          all.push({ name: r.name, label: r.name, group: tr(g.name) });
+        }
+      }
+      for (const b of this.data?.branches ?? []) {
+        if (seen.has(b.name)) continue;
+        seen.add(b.name);
+        all.push({ name: b.name, label: b.name, group: tr("历史") });
+      }
+      // refs 还没读回来时，至少把当前选中的分支留在列表里。
+      for (const name of opts.ensure ?? []) {
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        all.push({ name, label: name, group: tr("历史") });
+      }
+      const hit = all.filter((r) => !q || r.label.toLowerCase().includes(q) || r.group.toLowerCase().includes(q));
+      const list = el("div", "go-cmp-list");
+      // 有检索词时列表会被筛短，想挑别的分支就得先清空输入。
+      // 于是补一折「全部 N 个分支」：默认收起，点开才铺全量；检索词一改又收回。
+      const branchTotal = all.filter((r) => r.name !== "").length;
+      const folded = Boolean(q) && all.some((r) => r.name !== "" && !hit.includes(r));
+      if (folded) {
+        const head = btn("", "go-cmp-fold");
+        head.setAttribute(`data-${opts.key}-fold`, "1");
+        head.setAttribute("aria-expanded", String(allOpen));
+        head.title = tr("展开看所有分支");
+        head.append(
+          el("span", "go-cmp-caret", allOpen ? "▾" : "▸"),
+          el("span", "go-cmp-fold-name", tr("全部 {p1} 个分支", { p1: branchTotal })),
+          el("span", "go-cmp-fold-count", tr("匹配 {p1}", { p1: hit.filter((r) => r.name !== "").length })),
+        );
+        head.onclick = () => { allOpen = !allOpen; paint(query); };
+        list.append(head);
+      }
+      for (const r of folded && allOpen ? all : hit) {
+        const b = btn(`${r.label} · ${r.group}`, "go-cmp-pick");
+        b.setAttribute(`data-${opts.key}-pick`, r.name);
+        b.classList.toggle("on", (opts.isActive ?? ((name) => name === input.value))(r.name));
+        b.onclick = () => pick(r.name);
+        list.append(b);
+      }
+      const typed = query.trim();
+      const use = btn(opts.useLabel(typed), "go-cmp-use");
+      use.setAttribute(`data-${opts.key}-use`, "1");
+      // AI 卡没有「自动」这一项，空输入时没有可用的东西可选。
+      use.disabled = !typed && opts.auto === undefined;
+      use.onclick = () => { if (!use.disabled) pick(typed); };
+      menu.replaceChildren(list, use);
+    };
+
+    input.oninput = () => { opts.onInput?.(input.value); paint(input.value); };
+    input.onfocus = () => { if (opts.openOnFocus !== false) paint(input.value); };
+    input.onclick = () => { if (menu.hidden) paint(input.value); };
+    input.onkeydown = (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      submit();
+    };
+    toggle.onclick = () => paint(input.value, true);
+    wrap.append(input, toggle, menu);
+    return { wrap, input };
   }
 
   private applyCmp(ref: string): void {
@@ -614,7 +703,10 @@ export class BranchSheet {
   }
 
   private row(commit: GitCommit, side: "left" | "right"): HTMLElement {
-    const row = el("div", `bc-row ${commit.set === "common" ? "common" : commit.set === "left" ? "only" : "onlyR"}`);
+    let setClass = "onlyR";
+    if (commit.set === "common") setClass = "common";
+    else if (commit.set === "left") setClass = "only";
+    const row = el("div", `bc-row ${setClass}`);
     row.dataset.h = commit.h;
     row.title = `${commit.h} · ${commit.an} · ${fmtRelative(commit.at)}\n${commit.s}`;
     const subject = el("span", "bc-s");
@@ -768,25 +860,28 @@ export class BranchSheet {
     const card = el("div", "go-card go-ai-card");
     card.append(this.cardHead(tr("交给 AI 操作"), tr("只把提示词放进输入框，不自动发送、不先动 git"), false, ""));
     const body = el("div", "go-card-body");
-    const branch = el("select", "go-select") as HTMLSelectElement;
-    const names = this.refs?.groups.flatMap((g) => g.refs.map((r) => r.name)) ?? [this.selectedBranch];
-    for (const n of [...new Set([this.selectedBranch, ...names])]) {
-      const o = el("option") as HTMLOptionElement;
-      o.value = n;
-      o.textContent = n;
-      o.selected = n === this.selectedBranch;
-      branch.append(o);
-    }
     const req = el("textarea", "go-textarea") as HTMLTextAreaElement;
     req.rows = 3;
     req.placeholder = tr("输入你的要求，例如：判断该切到 main 还是先合并，别直接动 git");
     const preview = pre("");
-    const sync = (): void => { preview.textContent = this.branchPrompt(branch.value, req.value); };
-    branch.onchange = sync;
-    req.oninput = sync;
-    sync();
+    const sync = (value: string): void => { preview.textContent = this.branchPrompt(value, req.value); };
+    // 和对照分支同一个选择器：可检索、可点、也可直接输 ref；打开卡时不自动弹菜单。
+    const picker = this.branchPicker({
+      value: this.selectedBranch,
+      placeholder: tr("搜索分支或输入 ref"),
+      ariaLabel: tr("分支"),
+      toggleTitle: tr("展开分支候选"),
+      key: "aib",
+      ensure: [this.selectedBranch],
+      openOnFocus: false,
+      useLabel: (text) => tr("用输入的分支：{p1}", { p1: text || "…" }),
+      onPick: (value) => sync(value),
+      onInput: (value) => sync(value),
+    });
+    req.oninput = () => sync(picker.input.value);
+    sync(picker.input.value);
     body.append(
-      el("label", "go-label", tr("① 选一条分支")), branch,
+      el("label", "go-label", tr("① 选一条分支")), picker.wrap,
       el("label", "go-label", tr("② 输入要求")), req,
       el("label", "go-label", tr("提示词预览")), preview,
       el("div", "go-note", tr("新会话并预填 / 预填到当前会话都只填不发；复用输入框的 prefill() 与 newSessionWith()。")),
@@ -1118,9 +1213,13 @@ export class BranchSheet {
   }
 
   private paintResult(out: GitExecResult, op: GitOpDef, params: GitOpParams): void {
-    const banner = el("div", out.ok && !out.pending ? "go-result-card ok" : out.pending ? "go-result-card warn" : "go-result-card bad");
-    const title = out.ok && !out.pending ? tr("执行成功 · 已刷新")
-      : out.pending ? tr("仓库停在冲突状态") : tr("执行失败 · exit {p1}", { p1: out.exitCode });
+    let tone = "bad";
+    if (out.ok && !out.pending) tone = "ok";
+    else if (out.pending) tone = "warn";
+    const banner = el("div", `go-result-card ${tone}`);
+    let title = tr("执行失败 · exit {p1}", { p1: out.exitCode });
+    if (out.ok && !out.pending) title = tr("执行成功 · 已刷新");
+    else if (out.pending) title = tr("仓库停在冲突状态");
     banner.append(el("div", "go-result-title", title));
     // argv 是传给 git 的参数（不含程序名），补上 `git` 才是用户能照着复制的命令。
     banner.append(el("label", "go-label", tr("已执行命令")), pre(`$ git ${out.argv.join(" ")}`));

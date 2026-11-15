@@ -5212,8 +5212,12 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .branch-tools { flex-wrap: wrap; justify-content: flex-end; }
 
 /* 对照分支：可输入检索的下拉，替代 D193 的纯 .bc-base 下拉。 */
-.go-cmp-picker { position: relative; flex-wrap: wrap; }
+.go-cmp-picker { position: relative; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .go-cmp-input { appearance: none; width: min(190px, calc(var(--vw1) * 18)); font: 12.5px var(--mono); color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 3px 8px; }
+/* AI 卡里铺满整行：输入框吃掉剩下的宽，▾ 留在右端。 */
+.go-ai-card .go-cmp-picker { width: 100%; }
+.go-ai-card .go-cmp-input { flex: 1 1 auto; width: auto; min-width: 0; box-sizing: border-box; font-size: 12px; padding: 6px 8px; border-radius: 7px; background: var(--sunken); }
+.go-ai-card .go-cmp-menu { width: 100%; }
 .go-cmp-input:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
 .go-cmp-toggle { padding: 3px 7px; }
 .go-cmp-tag { max-width: 13rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
