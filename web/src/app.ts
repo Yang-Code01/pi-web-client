@@ -825,7 +825,7 @@ export class App {
     collapseRight.dataset.side = "right";
     collapseRight.dataset.act = "queue";
     collapseRight.onclick = () => this.togglePane("queue");
-    // 这颗以前是「Aa」：现在它是整个设置抽屉（外观 + 语言 + 通道 + 快捷键）的入口，所以画成齿轮。
+    // 这颗以前是「Aa」：现在它是整个设置抽屉（外观 + 语言 + 通道 + 工具）的入口，所以画成齿轮。
     // 16px 是量出来的：13px 的 ⚙ 在这个等宽字体里糊成一圈，看不出八颗齿；U+FE0E 要单色字形，不要彩色 emoji。
     const look = el("button", "icon-btn set-btn", "\u2699\uFE0E");
     look.title = tr("设置：外观 / 连接与设置");
