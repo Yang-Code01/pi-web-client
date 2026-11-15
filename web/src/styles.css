@@ -3010,88 +3010,191 @@ body.row-resizing { cursor: ns-resize; user-select: none; }
 .pin-chip.lock small { color: var(--dim); }
 .pin-chip.done small { color: var(--ok); }
 
-/* ---------------------------------------------------------------- 轮次缩略图（Q-028）
-   对话右缘一条刻度带：一根刻度 = 一轮用户输入，位置随内容滚动而高亮当前那一轮。鼠标移到带上才
-   展开左侧的小列表（每行一轮输入，单行右对齐，末行＝当前轮），点一行或一根刻度就跳回那一轮。
-   带子放在滚动条（10px）左边 —— 压在滚动条上就没法拖了。 */
+/* ---------------------------------------------------------------- 轮次缩略图（Q-028 / D265 重写）
+   对话右缘一条短横组成的刻度带：一根短横 = 一轮用户输入，位置随内容滚动而高亮当前那一轮。
+   鼠标移到带上（或键盘聚焦）整块展开成一张毛玻璃面板 —— 每行一轮输入，单行右对齐，末行＝当前轮；
+   点一行就跳回那一轮，扫过某行时正文里对应那条用户消息亮一下。
+
+   结构与手感照 WorkBuddy 5.9.3 的 `conversation-history-navigation`：
+   收起和展开是**同一批节点**（`.turn-row`，里面一根 `.dash` 加一行 `.txt`），只是两套坐标系
+   —— 收起 14px 一格（只看得到短横，文字 opacity:0）、展开 28px 一格。切形态时 turns.ts 用
+   `--turn-expanded-scroll-offset` / `--turn-scroll-compensation` 把行推回原来的视线上，等动画放完
+   再在关掉过渡的那一帧里换 scrollTop（`.turn-rail.scroll-commit`），所以看起来是「同一块东西长大」。
+   右缘那段留白（`.chat-scroll` 的 32px）就是它的走廊：短横列落在留白里，不压气泡。 */
 .turn-rail {
-  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
-  display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
-  width: 14px; padding: 12px 0; z-index: 7;
+  --turn-w: 40px;              /* 收起时那一条带子的宽度 = 面板被裁出来的宽度 */
+  --turn-min-w: 96px;
+  --turn-max-w: 320px;
+  --turn-r: 16px;
+  --turn-open-dur: 543ms;
+  --turn-close-dur: 343ms;
+  --turn-ease-open: cubic-bezier(0.16, 1, 0.3, 1);
+  --turn-ease-close: cubic-bezier(0.45, 0, 0.3, 1);
+  --turn-dash: 8px;            /* 一根短横：平时 / 鼠标扫到 / 当前这一轮 */
+  --turn-dash-hover: 16px;
+  --turn-dash-cur: 24px;
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  width: var(--turn-w); height: var(--turn-outer-h, 0px);
+  /* 收起时只有那条带子接指针（见 .turn-hit）；带子本身让位给子节点 */
+  pointer-events: none; z-index: 7;
 }
 .turn-rail[hidden] { display: none; }
-.turn-tick {
-  width: 9px; height: 2px; padding: 0; border: 0; border-radius: 4px;
-  background: var(--line-lit); cursor: pointer;
-  transition: background 0.12s ease, width 0.12s ease;
+
+/* 外框：右缘对齐带子右缘，向左长（宽度由里面的 .turn-sizer 按最长那几行撑出来）。 */
+.turn-panel-outer {
+  position: absolute; right: 0; top: 0; height: 100%;
+  width: max-content; min-width: var(--turn-min-w); max-width: var(--turn-max-w);
+  pointer-events: none;
 }
-/* 当前这一轮（落在视口顶部的那一轮）稍宽稍亮；鼠标扫到的那一轮用强调色 */
-.turn-tick.cur { width: 11px; background: var(--dim); }
-.turn-tick.hot, .turn-tick:hover { width: 14px; background: var(--accent); }
-/* #243: 整段历史里还没载入的轮次先占位 —— 淡一档（现成的 --faint）。
-   #244: 点它不再是空动作：自动往回翻页去把那一轮要回来（悬停仍不发光、不长个，它还不是内容）。 */
-.turn-tick.ghost { background: color-mix(in srgb, var(--faint) 25%, transparent); }
-.turn-tick.ghost:hover { width: 9px; background: color-mix(in srgb, var(--faint) 25%, transparent); }
+/* 面板本体：收起态被 clip-path 裁成「带子宽度 × 带子高度」的一小条，展开时张开成整块。
+   圆角靠 clip-path 的 round —— overflow:hidden 裁不出圆角的那一圈描边。 */
+.turn-panel {
+  position: relative; width: max-content; min-width: var(--turn-min-w); max-width: var(--turn-max-w);
+  height: 100%; box-sizing: border-box; border-radius: var(--turn-r);
+  overflow: hidden; pointer-events: none;
+  clip-path: inset(var(--turn-closed-inset-y, 0px) 0 var(--turn-closed-inset-y, 0px) calc(100% - var(--turn-w)) round var(--turn-r));
+  transition: clip-path var(--turn-close-dur) var(--turn-ease-close);
+}
+/* 那一层底：收起时缩成一条 40px 宽、只在带子高度内的窄条（opacity:0，看不见），展开时铺满整块。 */
+.turn-surface {
+  position: absolute; right: 0; left: calc(100% - var(--turn-w));
+  top: var(--turn-closed-inset-y, 0px); bottom: var(--turn-closed-inset-y, 0px);
+  opacity: 0; border: 1px solid var(--line); border-radius: var(--turn-r);
+  background: color-mix(in srgb, var(--panel-3) 92%, transparent);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  transition: top var(--turn-close-dur) var(--turn-ease-close), bottom var(--turn-close-dur) var(--turn-ease-close),
+    left var(--turn-close-dur) var(--turn-ease-close), opacity var(--turn-close-dur) var(--turn-ease-close);
+}
+/* 量宽用的隐形尺子：把最长的几条塞进来，面板的 max-content 就是它。 */
+.turn-sizer {
+  display: grid; height: 0; padding: 0 44px 0 24px; overflow: hidden; visibility: hidden;
+  width: max-content; min-width: var(--turn-min-w); max-width: var(--turn-max-w);
+  box-sizing: border-box; white-space: nowrap;
+  font: 400 13px/1.5 var(--sans);
+}
+/* 滚动容器：两种形态共用（收起时它也在滚，只是被裁得只剩那一条带子看得见）。 */
+.turn-list {
+  position: absolute; right: 0; top: var(--turn-expanded-inset-y, 0px); width: 100%;
+  height: var(--turn-panel-h, 0px); overflow: hidden;
+  overscroll-behavior: contain; scrollbar-width: none;
+}
+.turn-list::-webkit-scrollbar { width: 0; height: 0; }
+.turn-rows { position: relative; width: 100%; height: var(--turn-rows-h, 0px); }
+
+/* 一行 = 一根刻度。收起时它只有 26px 高的空壳 + 右边一根短横，文字透明度 0。 */
+.turn-row {
+  position: absolute; left: 0; right: 0; top: -13px; height: 26px;
+  display: flex; align-items: center; justify-content: flex-end; gap: 12px;
+  width: auto; min-width: 0; padding: 3px 8px 3px 24px;
+  background: none; border: 0; border-radius: 0;
+  color: var(--dim); font: 400 13px/1.5 var(--sans); text-align: right;
+  cursor: default; pointer-events: none;
+  transform: translateY(calc(var(--turn-compact-y, 0px) + var(--turn-scroll-compensation, 0px)));
+  transition: transform var(--turn-close-dur) var(--turn-ease-close), color var(--turn-close-dur) var(--turn-ease-close),
+    font-weight var(--turn-close-dur) var(--turn-ease-close);
+}
+.turn-row:focus-visible { outline: 1px solid var(--accent-dim); outline-offset: -2px; border-radius: 8px; }
+/* 文字：单行、右对齐、超宽打点。收起时往右缩 16px 且全透明（展开时长出来）。 */
+.turn-row .txt {
+  flex: 1 0 0; min-width: 0; max-width: calc(var(--turn-max-w) - 32px - 36px); margin-right: 36px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: right;
+  opacity: 0; transform: translateX(16px);
+  transition: opacity var(--turn-close-dur) var(--turn-ease-close), transform var(--turn-close-dur) var(--turn-ease-close);
+}
+/* 短横：终点钉在同一个右缘上，只有宽度和颜色变（这是「刻度」的唯一形态）。 */
+.turn-row .dash {
+  position: absolute; top: 50%; right: 16px; width: var(--turn-dash); height: 2px; margin-top: -1px;
+  border-radius: 999px; background: color-mix(in srgb, var(--text) 26%, transparent);
+  transition: right var(--turn-close-dur) var(--turn-ease-close), width var(--turn-close-dur) var(--turn-ease-close),
+    background var(--turn-close-dur) var(--turn-ease-close);
+}
+
+/* ---- 展开 */
+.turn-rail.open .turn-panel {
+  clip-path: inset(var(--turn-expanded-inset-y, 0px) 0 var(--turn-expanded-inset-y, 0px) 0 round var(--turn-r));
+  pointer-events: auto;
+  transition-duration: var(--turn-open-dur); transition-timing-function: var(--turn-ease-open);
+}
+.turn-rail.open .turn-surface {
+  top: var(--turn-expanded-inset-y, 0px); bottom: var(--turn-expanded-inset-y, 0px); left: 0; opacity: 1;
+  transition-duration: var(--turn-open-dur); transition-timing-function: var(--turn-ease-open);
+}
+.turn-rail.open .turn-list { overflow-y: auto; overflow-x: hidden; }
+.turn-rail.open .turn-list::-webkit-scrollbar { width: 4px; height: 0; display: block; }
+.turn-rail.open .turn-list::-webkit-scrollbar-thumb { border: 0; min-height: 20px; background: var(--line-lit); }
+.turn-rail.open .turn-list::-webkit-scrollbar-thumb:hover { background: var(--line-lit); }
+.turn-rail.open .turn-row {
+  color: var(--dim); cursor: pointer; pointer-events: auto;
+  transform: translateY(calc(var(--turn-expanded-y, 0px) + var(--turn-expanded-scroll-offset, 0px)));
+  transition-duration: var(--turn-open-dur); transition-timing-function: var(--turn-ease-open);
+}
+.turn-rail.open .turn-row .txt { opacity: 1; transform: none; }
+.turn-rail.open .turn-row .dash { right: 8px; }
+/* 扫到的那一行：字往右挪一点、短横变长变亮（「就是这一根」）。 */
+.turn-rail.open .turn-row.hot { color: var(--text); }
+.turn-rail.open .turn-row.hot .txt { transform: translateX(12px); }
+.turn-rail.open .turn-row.hot .dash { width: var(--turn-dash-hover); background: currentColor; }
+/* 当前这一轮：字更白更重，短横最长。 */
+.turn-rail.open .turn-row.cur { color: var(--text); font-weight: 500; }
+.turn-rail.open .turn-row.cur .dash { width: var(--turn-dash-cur); background: currentColor; }
+/* 收起态里「你在这儿」只能靠颜色说话（宽度留到展开后才作为强调）。 */
+.turn-row.cur .dash { width: 14px; background: var(--text); }
+/* 动画放完之后，滚动带来的位移改用短过渡（跟着滚轮走要跟手，不要那 543ms）。 */
+.turn-rail.open.settled .turn-row,
+.turn-rail.open.settled .turn-row .txt,
+.turn-rail.open.settled .turn-row .dash { transition-duration: 0.18s; transition-delay: 0s; transition-timing-function: var(--ease); }
+/* 换 scrollTop 的那一帧：所有过渡关掉，肉眼看不见这次跳。 */
+.turn-rail.scroll-commit .turn-row,
+.turn-rail.scroll-commit .turn-row .txt,
+.turn-rail.scroll-commit .turn-row .dash { transition: none !important; }
+
+/* 列表上下两条淡出：滚到那一头就不淡了（`turns.ts` 按 scrollTop 挂 class）。 */
+.turn-list.fade-top {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 100%);
+}
+.turn-list.fade-bottom {
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 16px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 16px), transparent 100%);
+}
+.turn-list.fade-top.fade-bottom {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+}
+
+/* 收起时唯一接指针的东西：盖在那一列短横上的透明按钮（hover / 聚焦都经它）。 */
+.turn-hit {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  width: var(--turn-w); height: var(--turn-compact-h, 0px);
+  padding: 0; border: 0; background: none; cursor: default;
+  pointer-events: auto;
+}
+.turn-hit:focus-visible { outline: 1px solid var(--accent-dim); outline-offset: -2px; border-radius: 999px; }
+.turn-rail.open .turn-hit { pointer-events: none; }
+
+/* #243: 未载入的轮次（ghost）淡一档占位；悬停仍不发光、不长个 —— 它还不是内容。
+   收起时文字是透明的，但颜色这一档还是照写：一来展开的那一下不用换色，二来用例量得到「淡一档」。 */
+.turn-row.ghost { color: var(--faint); }
+.turn-row.ghost .dash { background: color-mix(in srgb, var(--faint) 45%, transparent); }
+.turn-rail.open .turn-row.ghost { color: var(--faint); }
+.turn-rail.open .turn-row.ghost.hot { color: var(--faint); }
+.turn-rail.open .turn-row.ghost.hot .dash { background: color-mix(in srgb, var(--faint) 60%, transparent); }
 /* #244: 自动往回翻页期间淡的那一段轻脉动 —— 「那一带正在动」，不然用户只看到按钮转圈。 */
 @keyframes turn-busy {
   0%, 100% { opacity: 0.4; }
   50% { opacity: 1; }
 }
-.turn-rail.busy .turn-tick.ghost { animation: turn-busy 1.1s ease-in-out infinite; }
-/* #244: 跳转失败的那句「没翻到第 N 轮」。带子固定在右缘，不随滚动走；正文顶部那一行在视口上方，
-   所以「可见」靠这里：从带子顶端往左伸出去，3 秒后自己消失（不接点击，只是说话）。 */
+.turn-rail.busy .turn-row.ghost .dash { animation: turn-busy 1.1s ease-in-out infinite; }
+/* #244: 跳转失败的那句「没翻到第 N 轮」。带子固定在右缘、不随滚动走；正文顶部那一行在视口上方，
+   所以「可见」靠这里：挂在面板上沿外面，不接点击（只是说话）。 */
 .turn-note {
-  position: absolute; right: 22px; top: 0; white-space: nowrap;
-  padding: 4px 9px; border-radius: 999px; font-size: 12px; line-height: 1.4;
-  color: var(--text); background: var(--panel-3); border: 1px solid rgba(255, 255, 255, 0.08);
+  position: absolute; right: 0; top: calc(var(--turn-expanded-inset-y, 0px) - 8px);
+  transform: translateY(-100%);
+  white-space: nowrap; padding: 4px 9px; border-radius: 999px; font-size: 12px; line-height: 1.4;
+  color: var(--text); background: var(--panel-3); border: 1px solid var(--line);
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45); pointer-events: none;
 }
-/* 展开时刻度让位：弹层正好盖住这一列，行尾那根短横接替它 —— 看起来是同一块面板，不是一个框外面
-   还挂着一列刻度（用户口径：鼠标移上去「要和 chat 融合到同一个框里面」）。 */
-.turn-rail:hover .turn-tick,
-.turn-rail:has(:focus-visible) .turn-tick { opacity: 0; }
-
-.turn-list {
-  /* right: 0 = 面板右缘就是刻度那一列的右缘（再往右 2px 是 8px 宽的滚动条）。 */
-  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
-  display: none; grid-template-columns: minmax(0, 1fr); grid-auto-rows: min-content; gap: 1px;
-  width: min(420px, calc(var(--vw1) * 42)); max-height: min(calc(var(--vh1) * 62), 440px);
-  overflow-y: auto; overscroll-behavior: contain;
-  /* 右内边距小一点：那一列短横要贴着面板右缘（参考图里就是这样），不能缩进一大截。 */
-  padding: 8px 4px 8px 8px; border-radius: 12px;
-  background: var(--panel-3); border: 1px solid rgba(255, 255, 255, 0.07);
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-}
-/* 展开靠 :hover / :focus-within —— 列表是带子的子节点，指针从刻度扫到列表也算没离开 */
-.turn-rail:hover .turn-list,
-/* 键盘 Tab 进来也要展开；但鼠标点完那一行随即失去「可见焦点」，列表不会一直挂着不关 */
-.turn-rail:has(:focus-visible) .turn-list { display: grid; }
-.turn-list::-webkit-scrollbar { width: 6px; }
-.turn-list::-webkit-scrollbar-thumb { border-width: 2px; min-height: 20px; }
-.turn-row {
-  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
-  width: 100%; padding: 4px 4px 4px 8px; border: 0; border-radius: 8px;
-  background: transparent; color: var(--accent); font-size: 13px; line-height: 1.5;
-  text-align: right; cursor: pointer;
-}
-.turn-row .txt { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 行尾短横就是「刻度」在这一行的化身：平时 10px，当前这一轮拉长到 24px 并且更白（参考图里
-   最后一行就是这么一条长横）。 */
-.turn-row .dash {
-  flex: 0 0 10px; height: 1px; border-radius: 4px; background: var(--line-lit);
-  transition: flex-basis 0.14s ease, background 0.14s ease;
-}
-.turn-row.cur { color: var(--text); background: rgba(255, 255, 255, 0.055); }
-.turn-row.cur .dash { flex-basis: 24px; background: var(--text); }
-.turn-row.hot, .turn-row:hover { background: rgba(125, 211, 252, 0.16); color: #fff; }
-.turn-row.hot .dash, .turn-row:hover .dash { background: var(--accent); }
-/* #243: 未载入的行同理 —— 淡一档、不跟指针反应（没有节点可闪）；#244 起点了会自动翻页去找。 */
-.turn-row.ghost { color: var(--faint); }
-.turn-row.ghost .dash { background: color-mix(in srgb, var(--faint) 45%, transparent); }
-.turn-row.ghost:hover { background: transparent; color: var(--faint); }
-.turn-row.ghost:hover .dash { background: color-mix(in srgb, var(--faint) 45%, transparent); }
 
 /* 悬停预览：正文里对应那条用户消息描一圈边（点完那一下也会亮一下再退掉） */
 .msg.user .body { transition: border-color 0.16s ease, box-shadow 0.16s ease; }
